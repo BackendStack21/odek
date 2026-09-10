@@ -120,7 +120,7 @@ export function scrollToBottom() {
 // ── Message cap ──
 const MAX_MESSAGES = 80;
 export function pruneMessages() {
-  const items = messagesEl.querySelectorAll(':scope > .msg, :scope > .tool-block, :scope > .subagent-group, :scope > .thinking-block');
+  const items = messagesEl.querySelectorAll(':scope > .msg, :scope > .turn-stream, :scope > .tool-block, :scope > .subagent-group, :scope > .thinking-block');
   if (items.length > MAX_MESSAGES) {
     for (let i = 0, n = items.length - MAX_MESSAGES; i < n; i++) {
       items[i].remove();

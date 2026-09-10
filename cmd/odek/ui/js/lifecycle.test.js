@@ -115,6 +115,7 @@ class FakeEl {
     this.children.push(c);
     return c;
   }
+  get parentElement() { return this.parentNode; }
   append(...cs) { cs.forEach(c => this.appendChild(c)); }
   // Mirrors ws.test.js: position ignored, node lands as a child — enough
   // for sessions.js's top-level search-clear bootstrap to survive import.
@@ -172,7 +173,7 @@ const ids = ['messages', 'prompt', 'send-btn', 'completion', 'ws-status', 'ws-do
   'attach-btn', 'file-chips', 'toast', 'announcer', 'model-picker', 'thinking-picker',
   'custom-model-input', 'theme-btn', 'panels-btn', 'shortcuts-overlay',
   'status-group', 'ping-latency', 'stream-badge', 'sessions-more', 'sidebar-count',
-  'sandbox-badge', 'plan-panel'];
+  'sandbox-badge', 'plan-panel', 'conn-banner', 'sr-status'];
 ids.forEach(id => { byId[id] = new FakeEl('div'); byId[id].id = id; });
 
 globalThis.document = {
@@ -219,6 +220,7 @@ const ws = await import('./ws.js');
 const approvals = await import('./approvals.js');
 const health = await import('./health.js');
 const plan = await import('./plan.js');
+const commands = await import('./commands.js');
 
 function deliver(event) {
   S.ws.onmessage({ data: JSON.stringify(event) });
@@ -359,6 +361,56 @@ test('reconnect resets busy, re-enables the prompt, and tells the user', () => {
   health.stopHeartbeat(); // don't leak the heartbeat interval into the suite
 });
 
+test('disconnect shows a banner and one transcript notice until restored', () => {
+  const sock = S.ws;
+  sock.onopen();
+  assert.equal(byId['conn-banner'].hidden, true, 'banner hidden while connected');
+
+  sock.onclose();
+  const banner = byId['conn-banner'];
+  assert.equal(banner.hidden, false, 'banner visible after drop');
+  assert.match(banner.textContent, /connection lost/i);
+  assert.equal(byId['ws-status'].textContent, 'reconnecting');
+  assert.ok(byId['ws-dot'].className.includes('disconnected'));
+  const lost = systemMessages();
+  assert.ok(lost.length >= 1, 'outage is narrated in the transcript');
+  assert.match(collectText(lost[lost.length - 1]).join(' '), /Connection lost/);
+  const afterDrop = lost.length;
+
+  sock.onclose(); // backoff retry — same outage
+  assert.equal(systemMessages().length, afterDrop, 'retries do not spam the transcript');
+
+  sock.onopen();
+  assert.equal(byId['conn-banner'].hidden, true, 'banner clears on restore');
+  const restored = systemMessages();
+  assert.ok(restored.length > afterDrop, 'restore is narrated after the drop');
+  assert.match(collectText(restored[restored.length - 1]).join(' '), /Connection restored/);
+  health.stopHeartbeat();
+});
+
+test('send while disconnected toasts instead of failing silently', () => {
+  S.ws.readyState = 3;
+  byId.prompt.value = 'hello';
+  input.send();
+  assert.equal(S.ws.sent.length, 0, 'no prompt frame on a dead socket');
+  assert.match(byId.toast.textContent, /connection lost/);
+  assert.ok(byId.toast.classList.contains('show'));
+});
+
+test('disconnect drops pending approval and clarify cards', () => {
+  const sock = S.ws;
+  sock.onopen();
+  deliver({ type: 'approval_request', id: 'apr-drop', risk: 'local_write', command: 'echo hi', allow_trust: true });
+  assert.equal(S.activeApprovalId, 'apr-drop');
+  deliver({ type: 'clarify_request', id: 'cl-drop', question: 'which one?', timeout_seconds: 30 });
+  sock.onclose();
+  assert.equal(S.activeApprovalId, null, 'approval card must not outlive the socket');
+  assert.equal(S.approvalQueue.length, 0);
+  assert.equal(S.activeApprovalCard, null);
+  assert.equal(byId.messages.querySelectorAll('.approval-card').length, 0, 'clarify card gone too');
+  health.stopHeartbeat();
+});
+
 // ── F-B1: delegate_tasks tool_result must not route into other tool blocks. ──
 test('delegate_tasks tool_result completes the group without touching other blocks', () => {
   deliver({ type: 'tool_call', name: 'shell', data: '"ls"' });
@@ -378,42 +430,51 @@ test('delegate_tasks tool_result completes the group without touching other bloc
 });
 
 function spine() {
-  return byId.messages.children.map((c) => {
-    if (c.classList.contains('thinking-block')) return 'thinking';
-    if (c.classList.contains('tool-block')) return 'tool';
-    if (c.classList.contains('subagent-group')) return 'subagent';
-    if (c.classList.contains('approval-card')) return 'approval';
-    if (c.classList.contains('msg') && c.classList.contains('assistant')) return 'answer';
-    if (c.classList.contains('msg') && c.classList.contains('user')) return 'user';
-    return c.className || c.tagName;
-  });
+  const out = [];
+  const walk = (nodes) => {
+    (nodes || []).forEach((c) => {
+      if (c.classList.contains('turn-stream')) {
+        walk(c.children);
+        return;
+      }
+      if (c.classList.contains('thinking-block') || c.classList.contains('thinking-line')) out.push('thinking');
+      else if (c.classList.contains('tool-block')) out.push('tool');
+      else if (c.classList.contains('subagent-group')) out.push('subagent');
+      else if (c.classList.contains('approval-card')) out.push('approval');
+      else if (c.classList.contains('msg') && c.classList.contains('assistant')) out.push('answer');
+      else if (c.classList.contains('msg') && c.classList.contains('user')) out.push('user');
+      else out.push(c.className || c.tagName);
+    });
+  };
+  walk(byId.messages.children);
+  return out;
 }
 
-// The model emits answer tokens in the same LLM message as tool_calls.
-// token_delta must not win the append race — live spine is thinking → tools → answer.
-test('token then tool_call paints tools before the answer', () => {
+// token / token_delta is a visible assistant reply. It stays in the
+// timeline in arrival order — a following tool_call does not park it last.
+test('token then tool_call paints the reply then the tool', () => {
   deliver({ type: 'turn_started', turn_id: 't-order-1' });
   deliver({ type: 'token_delta', turn_id: 't-order-1', content: 'Running.' });
   deliver({ type: 'tool_call', turn_id: 't-order-1', name: 'shell', data: '{"command":"echo hi"}' });
-  assert.deepEqual(spine(), ['tool', 'answer']);
+  assert.deepEqual(spine(), ['answer', 'tool']);
 });
 
-test('thinking, token, tool_call stays thinking → tools → answer', () => {
+test('thinking, token, tool_call stays thinking → reply → tool', () => {
   deliver({ type: 'turn_started', turn_id: 't-order-2' });
   deliver({ type: 'thinking_delta', turn_id: 't-order-2', content: 'plan' });
   deliver({ type: 'token_delta', turn_id: 't-order-2', content: 'Running.' });
   deliver({ type: 'tool_call', turn_id: 't-order-2', name: 'read_file', data: '{"path":"a.go"}' });
-  assert.deepEqual(spine(), ['thinking', 'tool', 'answer']);
+  assert.deepEqual(spine(), ['thinking', 'answer', 'tool']);
 });
 
-test('late first thinking slides in front of tools that raced ahead', () => {
+test('late first thinking stays after tools that already rendered', () => {
   deliver({ type: 'turn_started', turn_id: 't-order-3' });
   deliver({ type: 'tool_call', turn_id: 't-order-3', name: 'shell', data: '{}' });
   deliver({ type: 'thinking_delta', turn_id: 't-order-3', content: 'late' });
-  assert.deepEqual(spine(), ['thinking', 'tool']);
+  assert.deepEqual(spine(), ['tool', 'thinking']);
 });
 
-test('a second iteration keeps answer last: think → tool → think → tool → answer', () => {
+test('a second iteration keeps arrival order: think → reply → tool → think → reply → tool', () => {
   deliver({ type: 'turn_started', turn_id: 't-order-4' });
   deliver({ type: 'thinking_delta', turn_id: 't-order-4', content: 'one' });
   deliver({ type: 'token_delta', turn_id: 't-order-4', content: 'Running 1.' });
@@ -422,7 +483,83 @@ test('a second iteration keeps answer last: think → tool → think → tool �
   deliver({ type: 'thinking_delta', turn_id: 't-order-4', content: 'two' });
   deliver({ type: 'token_delta', turn_id: 't-order-4', content: 'Running 2.' });
   deliver({ type: 'tool_call', turn_id: 't-order-4', name: 'read_file', data: '{}' });
-  assert.deepEqual(spine(), ['thinking', 'tool', 'thinking', 'tool', 'answer']);
+  assert.deepEqual(spine(), ['thinking', 'answer', 'tool', 'thinking', 'answer', 'tool']);
+  const streams = byId.messages.children.filter((c) => c.classList.contains('turn-stream'));
+  assert.equal(streams.length, 1, 'thinking, partial replies, and tools share one sequential stream');
+  const kinds = streams[0].children.map((c) => {
+    if (c.classList.contains('thinking-line')) return 'thinking';
+    if (c.classList.contains('thinking-block')) return 'thinking';
+    if (c.classList.contains('tool-block')) return 'tool';
+    if (c.classList.contains('msg')) return 'answer';
+    return c.className;
+  });
+  assert.deepEqual(kinds, ['thinking', 'answer', 'tool', 'thinking', 'answer', 'tool']);
+});
+
+test('partial assistant replies stay as separate timeline rows around tools', () => {
+  deliver({ type: 'turn_started', turn_id: 't-partials' });
+  deliver({ type: 'token_delta', turn_id: 't-partials', content: 'Let me look at src/.' });
+  deliver({ type: 'tool_call', turn_id: 't-partials', name: 'shell', data: '{"command":"ls src"}' });
+  deliver({ type: 'token_delta', turn_id: 't-partials', content: 'Found 3 files.' });
+  render.streamFlush();
+  assert.deepEqual(spine(), ['answer', 'tool', 'answer']);
+  const answers = byId.messages.querySelectorAll('.msg.assistant');
+  assert.equal(answers.length, 2, 'each token burst is its own assistant row');
+  const first = collectText(answers[0]).join(' ');
+  const second = collectText(answers[1]).join(' ');
+  assert.match(first, /Let me look/);
+  assert.match(second, /Found 3 files/);
+  assert.equal(first.includes('Found 3 files'), false, 'later text must not concatenate into the first row');
+  assert.ok(answers[0].classList.contains('partial'), 'the sealed mid-turn reply is marked partial');
+  assert.equal(answers[1].classList.contains('partial'), false, 'the live row stays open');
+});
+
+test('session history paints assistant content before that message\'s tools', () => {
+  render.renderSessionHistory([
+    { role: 'user', content: 'look' },
+    {
+      role: 'assistant',
+      content: 'Let me look.',
+      tool_calls: [{ id: 'c1', function: { name: 'shell', arguments: '{}' } }],
+    },
+    { role: 'assistant', content: 'Found 3 files.' },
+  ]);
+  assert.deepEqual(spine(), ['user', 'answer', 'tool', 'answer']);
+  const answers = byId.messages.querySelectorAll('.msg.assistant');
+  assert.equal(answers.length, 2);
+  assert.match(collectText(answers[0]).join(' '), /Let me look/);
+  assert.match(collectText(answers[1]).join(' '), /Found 3 files/);
+});
+
+test('reasoning stays collapsed until the toggle is opened', () => {
+  deliver({ type: 'turn_started', turn_id: 't-think-hide' });
+  deliver({ type: 'thinking_delta', turn_id: 't-think-hide', content: 'secret plan' });
+  const content = byId.messages.querySelector('.thinking-content');
+  assert.ok(content, 'collapsed thinking block rendered');
+  assert.equal(content.classList.contains('open'), false, 'reasoning hidden by default');
+  const toggle = byId.messages.querySelector('.thinking-toggle');
+  toggle.dispatch('click');
+  assert.equal(content.classList.contains('open'), true, 'click reveals reasoning');
+});
+
+test('reasoning fragments render as separate rows, not one glued paragraph', () => {
+  deliver({ type: 'turn_started', turn_id: 't-think-rows' });
+  deliver({ type: 'thinking_delta', turn_id: 't-think-rows', content: 'I should read the file.' });
+  deliver({ type: 'thinking_delta', turn_id: 't-think-rows', content: 'Then I will search.' });
+  const lines = byId.messages.querySelectorAll('.thinking-line');
+  assert.equal(lines.length, 2, 'each complete fragment is its own row');
+  assert.equal(lines[0].textContent, 'I should read the file.');
+  assert.equal(lines[1].textContent, 'Then I will search.');
+});
+
+test('token-sized reasoning pieces stay on the same row', () => {
+  deliver({ type: 'turn_started', turn_id: 't-think-join' });
+  deliver({ type: 'thinking_delta', turn_id: 't-think-join', content: 'Hel' });
+  deliver({ type: 'thinking_delta', turn_id: 't-think-join', content: 'lo' });
+  deliver({ type: 'thinking_delta', turn_id: 't-think-join', content: ' there' });
+  const lines = byId.messages.querySelectorAll('.thinking-line');
+  assert.equal(lines.length, 1, 'SSE token pieces join the current row');
+  assert.equal(lines[0].textContent, 'Hello there');
 });
 
 test('latest assistant reply is never folded; the previous long one is', () => {
@@ -618,6 +755,62 @@ test('non-2xx @-completion response hides the popup instead of throwing', async 
     assert.equal(byId.completion.classList.contains('visible'), false, 'popup hidden on error');
   } finally {
     globalThis.fetch = oldFetch;
+    prompt.value = '';
+  }
+});
+
+test('slash completion lists palette items for a leading /', async () => {
+  const prompt = byId.prompt;
+  prompt.value = '/new';
+  prompt.selectionStart = 4;
+  try {
+    byId.prompt.dispatch('input');
+    await new Promise((r) => setTimeout(r, 200));
+    assert.equal(byId.completion.classList.contains('visible'), true, 'slash popup shown');
+    const items = byId.completion.querySelectorAll('.comp-item');
+    assert.ok(items.length >= 1, 'palette rows rendered');
+    assert.equal(S.compMode, 'slash');
+  } finally {
+    prompt.value = '';
+  }
+});
+
+test('composer Enter dispatches palette slash verbs, not filesystem paths', () => {
+  const calls = [];
+  commands.setCommandHandlers({
+    help: () => calls.push('help'),
+    clear: () => calls.push('clear'),
+    retry: () => {},
+    cancel: () => {},
+    copyLast: () => {},
+    exportSession: () => {},
+    cycleTheme: () => {},
+    stats: () => {},
+    toggleNotify: () => {},
+    shutdown: () => {},
+    switchModel: () => {},
+    switchThinking: () => {},
+  });
+  assert.equal(commands.maybeHandleComposerEnter('/help'), true);
+  assert.deepEqual(calls, ['help']);
+  assert.equal(commands.maybeHandleComposerEnter('/Users/src/main.go'), false);
+  assert.ok(commands.paletteItems('new').some((i) => i.id === 'new'));
+  assert.equal(commands.isComposerSlashInput('/new', 4), true);
+  assert.equal(commands.isComposerSlashInput('/Users/src/main.go', 18), false);
+  assert.equal(commands.isComposerSlashInput('/tmp', 4), false);
+  assert.equal(commands.isComposerSlashInput('/', 1), true);
+});
+
+test('slash completion does not open for a filesystem path', async () => {
+  const prompt = byId.prompt;
+  prompt.value = '/Users/src/main.go';
+  prompt.selectionStart = prompt.value.length;
+  try {
+    prompt.dispatch('input');
+    await new Promise((r) => setTimeout(r, 200));
+    assert.equal(byId.completion.classList.contains('visible'), false, 'path must not open slash popup');
+    assert.notEqual(S.compMode, 'slash');
+  } finally {
     prompt.value = '';
   }
 });

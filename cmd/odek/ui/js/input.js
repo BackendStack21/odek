@@ -8,10 +8,10 @@ import {
 } from './dom.js';
 import {
   escapeHtml, escapeAttr, formatFileSize,   scrollToBottom,
-  showCancel, toggleShortcuts, SCROLL_THRESHOLD, teach,
+  showCancel, toggleShortcuts, SCROLL_THRESHOLD, teach, showToast,
 } from './utils.js';
 import { addMessage, resetTurnState, showLoading, paintIntent } from './render.js';
-import { maybeHandleComposerEnter } from './commands.js';
+import { maybeHandleComposerEnter, paletteItems, isComposerSlashInput } from './commands.js';
 
 function queueId() {
   return 'q' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
@@ -69,7 +69,9 @@ function moveQueue(i, delta) {
 
 export function drainQueue() {
   // Do not auto-send through a live approval — the operator is still deciding.
+  // A dead socket must not consume the queue either; reconnect drains it.
   if (S.busy || S.activeApprovalId || !S.promptQueue.length) return;
+  if (!S.ws || S.ws.readyState !== WebSocket.OPEN) return;
   const next = S.promptQueue.shift();
   renderQueueStrip();
   sendPayload(next.text, next.attachments, next.display, next.model, next.thinking);
@@ -79,7 +81,10 @@ S.drainQueue = drainQueue;
 // ── Send ──
 export function send() {
   // F-B2: dead socket still rejects BEFORE touching attachments.
-  if (!S.ws || S.ws.readyState !== WebSocket.OPEN) return;
+  if (!S.ws || S.ws.readyState !== WebSocket.OPEN) {
+    showToast('connection lost — reconnecting');
+    return;
+  }
   const text = promptEl.value.trim();
   if (!text && S.attachedFiles.length === 0) return;
 
@@ -326,13 +331,17 @@ promptEl.addEventListener('keydown', (e) => {
       return;
     }
     if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      selectCompletion();
-      return;
+      if (S.compMode === 'slash' && !isComposerSlashInput(promptEl.value, promptEl.selectionStart)) {
+        hideCompletion();
+      } else {
+        e.preventDefault();
+        selectCompletion();
+        return;
+      }
     }
     if (e.key === 'Escape') {
       e.preventDefault();
-      completionEl.classList.remove('visible');
+      hideCompletion();
       return;
     }
   }
@@ -392,16 +401,20 @@ promptEl.addEventListener('input', () => {
 });
 
 promptEl.addEventListener('keydown', (e) => {
-  if (e.key === '@') {
+  if (e.key === '@' || e.key === '/') {
     if (completionTimer) clearTimeout(completionTimer);
     completionTimer = setTimeout(checkCompletion, 150);
   }
 
   // Tab for completion selection
   if (e.key === 'Tab' && completionEl.classList.contains('visible')) {
-    e.preventDefault();
-    selectCompletion();
-    return;
+    if (S.compMode === 'slash' && !isComposerSlashInput(promptEl.value, promptEl.selectionStart)) {
+      hideCompletion();
+    } else {
+      e.preventDefault();
+      selectCompletion();
+      return;
+    }
   }
 });
 
@@ -409,8 +422,16 @@ promptEl.addEventListener('keydown', (e) => {
 completionEl.addEventListener('click', (e) => {
   const item = e.target.closest('.comp-item');
   if (!item) return;
+  if (S.compMode === 'slash') {
+    completionEl.querySelectorAll('.comp-item').forEach(el => {
+      el.classList.toggle('selected', el === item);
+      el.setAttribute('aria-selected', el === item);
+    });
+    selectCompletion();
+    return;
+  }
   replaceCompletion(item.dataset.id);
-  completionEl.classList.remove('visible');
+  hideCompletion();
 });
 
 completionEl.addEventListener('mousemove', (e) => {
@@ -422,23 +443,57 @@ completionEl.addEventListener('mousemove', (e) => {
   });
 });
 
+let slashRows = [];
+
+function hideCompletion() {
+  completionEl.classList.remove('visible');
+  S.compMode = '';
+  slashRows = [];
+}
+
+function trySlashCompletion(val, cursor) {
+  if (!isComposerSlashInput(val, cursor)) return false;
+  const q = val.slice(1, cursor);
+  slashRows = paletteItems(q);
+  S.compMode = 'slash';
+  S.lastAtIdx = 0;
+  S.lastCursor = cursor;
+  S.compQuery = q;
+  if (!slashRows.length) {
+    hideCompletion();
+    return true;
+  }
+  completionEl.innerHTML = slashRows.map((r, i) =>
+    `<div class="comp-item${i === 0 ? ' selected' : ''}" role="option" aria-selected="${i === 0}" data-idx="${i}">
+      <span class="comp-type">${escapeAttr(r.kind)}</span>
+      <span class="comp-label">${escapeHtml(r.title)}</span>
+      <span class="comp-detail">${escapeHtml(r.hint || '')}</span>
+    </div>`
+  ).join('');
+  completionEl.classList.add('visible');
+  return true;
+}
+
 async function checkCompletion() {
   const val = promptEl.value;
   const cursor = promptEl.selectionStart;
+  if (trySlashCompletion(val, cursor)) return;
+
   const before = val.slice(0, cursor);
 
   const atIdx = before.lastIndexOf('@');
   if (atIdx < 0) {
-    completionEl.classList.remove('visible');
+    hideCompletion();
     return;
   }
 
   const query = before.slice(atIdx + 1).split(/\s/)[0];
   if (!query) {
-    completionEl.classList.remove('visible');
+    hideCompletion();
     return;
   }
 
+  S.compMode = 'at';
   S.lastAtIdx = atIdx;
   S.lastCursor = cursor;
   S.compQuery = query;
@@ -451,12 +506,12 @@ async function checkCompletion() {
       headers: apiHeaders()
     });
     if (!resp.ok) {
-      completionEl.classList.remove('visible');
+      hideCompletion();
       return;
     }
     const results = await resp.json();
     if (!Array.isArray(results) || results.length === 0) {
-      completionEl.classList.remove('visible');
+      hideCompletion();
       return;
     }
     if (promptEl.value + '\u0000' + promptEl.selectionStart !== reqToken) {
@@ -473,7 +528,7 @@ async function checkCompletion() {
 
     completionEl.classList.add('visible');
   } catch {
-    completionEl.classList.remove('visible');
+    hideCompletion();
   }
 }
 
@@ -491,10 +546,23 @@ function moveCompletionSelection(delta) {
 }
 
 function selectCompletion() {
+  if (S.compMode === 'slash') {
+    const selected = completionEl.querySelector('.selected');
+    const idx = selected ? parseInt(selected.dataset.idx, 10) : 0;
+    const row = slashRows[idx];
+    hideCompletion();
+    promptEl.value = '';
+    promptEl.style.height = 'auto';
+    if (row && row.run) {
+      try { row.run(); } catch (err) { showToast(err.message || 'command failed'); }
+    }
+    promptEl.focus();
+    return;
+  }
   const selected = completionEl.querySelector('.selected');
   if (!selected) return;
   replaceCompletion(selected.dataset.id);
-  completionEl.classList.remove('visible');
+  hideCompletion();
 }
 
 function replaceCompletion(id) {

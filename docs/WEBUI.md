@@ -126,7 +126,7 @@ The bundled client is a **zero-framework command center** — same EMBER languag
 
 - **Model + thinking pickers** — top-bar selects for the active model and reasoning depth (`disabled` / `low` / `medium` / `high`). Thinking is persisted as `odek_thinking` and sent on every prompt.
 - **Command palette (`⌘K` / `Ctrl+K`)** — fuzzy jump to commands, sessions, models, and inspector workspaces
-- **Slash verbs** — composer handles only `/new` `/clear` `/retry` `/cancel` `/stop`; everything else lives in the palette (typed `shutdown` death-gate stays a modal)
+- **Slash commands** — typing `/` in the composer opens the same completions as the palette (commands, sessions, models). `Enter`/`Tab` runs the selected item; `/new` `/clear` `/retry` `/cancel` `/stop` `/help` and the other palette verbs also dispatch on Enter. Typed `shutdown` death-gate stays a modal
 - **Prompt queue** — `Enter` while a turn is running holds the next prompt (reorder / delete in the strip above the composer); the queue drains automatically on `done`
 - **Three themes** — `ember-dark` · `ember-light` · `high-contrast` (health popover or palette)
 - **Desktop notifications** — opt-in; titles/bodies are truncated and never include raw tool arguments
@@ -135,17 +135,16 @@ The bundled client is a **zero-framework command center** — same EMBER languag
 ### Chat interface
 
 - **Plain text input** — type your prompt, press `Enter` to send (or queue), `Shift+Enter` for a newline
-- **Slash / palette** — composer `/` verbs are `/new` `/clear` `/retry` `/cancel` `/stop`; other commands live in `⌘K`; printable keys always type in the composer. Bodek-style JIT tips (`💡 tip: …`) dwell 8s the first time a queue, tool step, or swarm appears.
+- **Slash / palette** — typing `/` in the composer autocompletes the same items as `⌘K` (commands, sessions, models). Palette verbs also dispatch from the composer on Enter. Printable keys always type in the composer. Bodek-style JIT tips (`💡 tip: …`) dwell 8s the first time a queue, tool step, or swarm appears.
 - **Long replies** — the latest assistant answer is never folded. Older overflows get a sticky `Show more ↓` / `Show less ↑` fold under the content (not a floating pill). History reload keeps the last reply open.
 - **Multi-turn sessions** — each prompt continues the same conversation (the inspector **Sessions** tab lists history)
 - **Turn receipts** — Bodek-style coding receipt on the `⬡ odek` head (`touched N · +A −D · tests`), not a tool count
 - **Wake turns** — `turn_started.initiated=system` renders as `⬡ odek · wake` on the assistant head, never as a user message
-- **Busy spinner** — Bodek braille spinner in the top bar, composer rail, and transcript while a turn runs (`reasoning · 4s`), so the default view always shows the agent is working
+- **Busy spinner** — Bodek braille spinner in the top bar, composer rail, and transcript while a turn runs (`reasoning · 4s`). The spinner keeps moving across thinking, tools, and approval waits — removing the transcript placeholder does not freeze it.
 - **Live plan & jobs** — Bodek header chips (`plan 1/4`, `● 2 jobs` / `✗ job`) stay visible when idle; click opens the inspector Now tab. While a turn runs the status rail appends `▸ plan 2/5 · <active step> · ⛔N`. A `plan` tool_call patches the snapshot on that frame; REST confirms after `tool_result`.
 - **Markdown** — hand-written tokenizer (zero deps, no CDN): headings, lists, task lists, quotes, GFM tables, fenced code with copy, emphasis, strikethrough, allowlisted links/autolinks. Images are caption links, never `<img>` (CSP + no remote fetch). Streaming-safe: an open fence still renders; an open `**` stays literal.
 - **Live streaming** *(on by default; `--no-stream` / `stream: false` / `ODEK_STREAM=false`)* — answer and reasoning fragments arrive as they are generated (`token_delta` / `thinking_delta`) and render through the same rAF-batched pipeline; streaming state is in the health popover. Providers that reject SSE fall back silently to the bulk path.
-- **Reasoning blocks** — calm default: collapsed `thinking` toggle (Bodek `^E` model). Opened blocks stay open; history starts collapsed
-- **Tool call blocks** — Bodek heads: `▶` + `▸/✓/✗` + monochrome glyph + steel name + faint args. Live and history share one spine: thinking → tools → answer (token_delta cannot race ahead of `tool_call`). Args and results stay collapsed until the head is opened; long results truncate behind “show all”
+- **Reasoning, partial replies, and tools** — one sequential log per turn. Reasoning is collapsed behind a **▶ thinking** toggle (hidden by default; click to expand). Visible assistant text (`token_delta` / `token`, including DeepSeek/GLM mid-turn “Let me look…” replies) is a timeline row sealed when a tool starts so the next tokens open a new row instead of concatenating the turn. Tool heads sit in that same stream in arrival order. Tool args and results stay collapsed until the head is opened; long results truncate behind “show all”. History replays the same interleaved log.
 - **Sub-agent swarm** — `delegate_tasks` uses the same spine as a tool step (`▶ ▸ ⑂ delegate_tasks · 1/2 agents`) plus an always-on chip strip (`⟳ SA1 <goal|tool>`). Click a chip (or the head) for the `⎿` log and summary; the inspector Now tab still lists every agent.
 - **Inline approvals** — dangerous operations block the run and show a decision card (risk class, plain-language explanation, verbatim command). Friction mode (after 3 same-class approvals in 60s) requires typing the literal word `approve`; `trust session` is hidden for destructive/blocked/unknown classes. Keyboard: `A` approve, `D` deny, `T` trust
 - **Clarify** — when the agent needs a decision, a question card waits for a typed answer (5 minute wait). Bound to that WebSocket session; headless REST runs do not register the tool.
@@ -157,7 +156,9 @@ The bundled client is a **zero-framework command center** — same EMBER languag
 
 ### Server status & heartbeat
 
-The top-bar status group (`connected / reconnecting…`) doubles as a **health popover** — click it for version, uptime, model, sandbox/streaming state, live connection count, WebSocket round-trip latency, session tokens/cost, theme, notifications, and lifetime usage. An application-level heartbeat (`ping`/`pong` every 20s) measures RTT and detects dead links early; the server also pushes `keepalive` every 20s so idle proxies do not drop a silent thinking turn.
+The top-bar status group (`connected / reconnecting`) doubles as a **health popover** — click it for version, uptime, model, sandbox/streaming state, live connection count, WebSocket round-trip latency, session tokens/cost, theme, notifications, and lifetime usage. An application-level heartbeat (`ping`/`pong` every 20s) measures RTT and detects dead links early; the server also pushes `keepalive` every 20s so idle proxies do not drop a silent thinking turn.
+
+A dropped socket is **not** lamp-only. The top-bar word turns amber (`reconnecting`), a sticky `#conn-banner` sits above the transcript (`connection lost · retrying in Ns`) until the socket is open again, and one system line is written per outage (`⚠ Connection lost — reconnecting…`). Restore writes `Connection restored` (or notes that an in-flight turn ended). Sending while down toasts instead of failing silently. Retries do not spam the log.
 
 ### Inspector (`⌘.`)
 
@@ -183,15 +184,15 @@ Each response shows **per-message token stats** appended to the assistant bubble
 
 The **status strip** shows a live context-window gauge once a run reports data, plus a session-cost chip when prices are configured:
 
-- **Context gauge** — a hairline bar and tabular `%` from per-iteration `usage` events, against the model's window size from `/api/models`. Amber above 60%, red above 85%; a `context_trimmed` signal flashes the gauge. Without a known window size it shows raw tokens. Hover for exact numbers and the trimming note.
-- **Session tokens** — `⇥ in ↦ out`, cumulative session totals from `done` events (health popover).
-- **Session cost** — Bodek header chip `$0.201` (`#cost-chip`), estimated from the session's token totals and the resolved prices (`/api/limits`: `model_prices` per-model override, flat pair fallback — the client-side twin of `limits.ResolvePrices`). Hidden entirely when no prices are configured. Click opens the health popover for the token breakdown.
+- **Context gauge** — a hairline bar and tabular `%` from per-iteration `usage` events (and a streamed-token estimate between them), against the model's window size from `/api/models` or `usage.maxContextTokens`. Amber above 60%, red above 85%; a `context_trimmed` signal flashes the gauge. Without a known window size it shows raw tokens. Hover for exact numbers and the trimming note.
+- **Session tokens** — `⇥ in ↦ out`, cumulative session totals. `usage.inputTokens` / `usage.outputTokens` overlay this-run spend on the pre-turn baseline so the numbers move mid-turn; `done` replaces them with the persisted session totals (health popover).
+- **Session cost** — Bodek header chip `$0.201` (`#cost-chip`), estimated from those live session totals and the resolved prices (`/api/limits`: `model_prices` per-model override, flat pair fallback — the client-side twin of `limits.ResolvePrices`). Hidden entirely when no prices are configured. Click opens the health popover for the token breakdown.
 
 Each assistant message's stats footer also gains a per-turn cost (`◈`) when prices are configured, and the inline loading indicator shows **live elapsed time and iteration count** (`thinking · 7s · iter 2`) while the run is in flight. `/api/usage` aggregates server-lifetime totals with cost.
 
 ### Inline loading indicator
 
-While a turn is running, Bodek's braille spinner (`⠋⠙⠹…`, 12 fps) appears in the top bar (`#busy-spin`) and the composer status rail (`#intent-rail`); operator sends also get a compact `.loading-indicator` under the last message. The label stays stable (`reasoning` → tool progress → `composing`) with elapsed time and the live plan strip — it does not cycle verbs. `prefers-reduced-motion` freezes the glyph at `⠿`. Wake and remote turns arm the top-bar and rail. The chrome clears on `done` / cancel / error.
+While a turn is running, Bodek's braille spinner (`⠋⠙⠹…`, 12 fps) appears in the top bar (`#busy-spin`) and the composer status rail (`#intent-rail`); operator sends also get a compact `.loading-indicator` under the last message until the first thinking/tool/answer lands. The spinner keeps moving while tools, approvals, or long LLM calls are in flight — dropping the transcript placeholder does not freeze it. The label stays stable (`reasoning` → tool progress → `composing`) with elapsed time and the live plan strip — it does not cycle verbs. `prefers-reduced-motion` freezes the braille glyph at `⠿`; tool-head CSS spinners still rotate (they are wait-state status). Wake and remote turns arm the top-bar and rail. The chrome clears on `done` / cancel / error.
 
 ### Smart autoscroll
 
@@ -662,7 +663,7 @@ The UI communicates entirely over a single WebSocket at `/ws`. Messages are newl
 | `subagent_log` | Sub-agent progress within `delegate_tasks` | `task_idx`, `task_id`, `name`, `event`, `data` (redacted, capped 8 KiB) |
 | `subagent_state` | Per-task sub-agent lifecycle transition (`started`/`active`/`finished`); child emits `subagent_started`/`subagent_progress`/`subagent_finished` records over the same protocol. A sub-agent killed without reporting (user stop, turn cancel, timeout, flood-kill, crash) gets its terminal `finished` transition emitted by the parent instead, so cards never stay `running` | `task_idx`, `task_id`, `run_key`, `phase`, `status`, `step`, `iterations`, `tool`, `duration_seconds`, `tokens_used` |
 | `done` | Agent finishes — **emitted only after the session is persisted**, so refreshing session state on `done` is race-free | `latency` (seconds), `windowTokens` (final parent conversation window), `maxContextTokens` (resolved model limit; omitted when unknown), `inputTokens` (run-cumulative input across all calls, incl. sub-agent spend — billing), `outputTokens`, `cacheCreationTokens`, `cacheReadTokens`, `cachedTokens`, `sessionContextTokens`, `sessionOutputTokens`, plus optional last-call speed fields (see [Generation speed](#generation-speed-external-clients)) and `llmDurationMs` (sum of main think-step LLM calls this run) |
-| `usage` | After each LLM iteration of a running turn | `windowTokens`, `maxContextTokens` (omitted when the model limit is unknown), `outputTokens` (run-cumulative) (camelCase — `windowTokens` is the parent-only window size that drives the metrics gauge; child rounds and side-call summaries never move it), plus optional this-call speed fields (see [Generation speed](#generation-speed-external-clients)) |
+| `usage` | After each LLM iteration of a running turn | `windowTokens`, `maxContextTokens` (omitted when the model limit is unknown), `inputTokens` (run-cumulative billing input), `outputTokens` (run-cumulative) (camelCase — `windowTokens` is the parent-only window size that drives the metrics gauge; child rounds and side-call summaries never move it), plus optional this-call speed fields (see [Generation speed](#generation-speed-external-clients)) |
 | `error` | Agent or server error | `message` |
 | `approval_request` | Agent needs user approval for dangerous operation; blocks the run up to `timeout_seconds` (60s default) | `id`, `risk` (class name), `command` (or resource), `description`, `is_operation`, `allow_trust`, `friction`, `friction_approvals`, `timeout_seconds` (the effective server-enforced wait in seconds — render the card's countdown from it) |
 | `approval_ack` | Server confirms an approval response | `id`, `action` |
@@ -701,6 +702,11 @@ Example event sequence:
 {"type":"token","content":"The `src/` directory contains 3 files:","turn_id":"t_9f86d081884c7d65"}
 {"type":"done","latency":4.2,"turn_id":"t_9f86d081884c7d65"}
 ```
+
+Each `token` / `token_delta` burst is its own assistant row in the turn
+log. A `tool_call` seals the current row so the next tokens open a new
+one — DeepSeek/GLM-style “Let me look…” then a tool then more text is a
+timeline, not one concatenated bubble.
 
 With streaming enabled (`--stream` / `stream: true` / `ODEK_STREAM=true`) the
 answer arrives as `token_delta` / `thinking_delta` fragments as the provider
@@ -810,7 +816,7 @@ match as plain text. The bundled WebUI implements this in
 - **Design**: self-contained "EMBER" theme — electric amber on a near-void page, type instead of cards, a 36px status-strip topbar, inspector workspaces (sessions / now / memory / ops), and ≤200ms color/opacity answers. Design tokens are CSS custom properties in `style.css` (`--bg-0…4`, `--amber`, `--line`, spacing/radius/motion scales) with a full light-mode variant and `prefers-reduced-motion` support; the Azeret Mono variable font is self-hosted from `ui/fonts/` so the UI works offline. Reading text caps at 13px (`--fs-base`) — user and assistant share it; markdown headings stay at that size; chrome is 11–12px. Display sizes (`--fs-lg` / `--fs-xl`) are wordmarks only. Inputs use 16px on coarse pointers so iOS Safari does not zoom.
 - **Streaming**: fragments (`token_delta`/`thinking_delta`) and bulk `token` events share one rAF-batched render pipeline
 - **DOM budget**: the message list is capped at 80 elements (`MAX_MESSAGES`); older messages are pruned
-- **Resilience**: auto-reconnect with exponential backoff (1s doubling to a 30s cap, reset after a stable connection) plus the 20s application heartbeat and the server's 20s `keepalive`
+- **Resilience**: auto-reconnect with exponential backoff (1s doubling to a 30s cap, reset after a stable connection) plus the 20s application heartbeat and the server's 20s `keepalive`. A drop is visible: amber top-bar word, sticky `#conn-banner` with retry countdown, one transcript line per outage, and a composer toast if you send while down.
 - **Tests**: `node --test cmd/odek/ui/js/` (markdown + untrusted-envelope goldens, and api.js request-shape E2E against a mocked fetch) plus Go-side WebUI E2E (`cmd/odek/webui_e2e_test.go`): asset/header/CSP contract, token injection, JS↔HTML id and JS↔CSS class contracts, and full client journeys (streamed WS run, headless run with the remote-approval bridge, kick, pin/export) through the production mux (`newServeMux` — the same constructor `serveCmd` uses, so tests cannot drift from the real mounting)
 
 ## Tips

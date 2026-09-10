@@ -4,18 +4,19 @@
 // hello pushed on connect.
 import { S, setSessionToken, getSessionToken } from './state.js';
 import { getWsToken } from './net.js';
-import { dotEl, statusEl, sendBtn, skeletonEl, messagesEl, modelLabel, promptEl } from './dom.js';
+import { dotEl, statusEl, sendBtn, skeletonEl, modelLabel, promptEl } from './dom.js';
 import { formatErrorMessage, showToast, announce, showCancel } from './utils.js';
 import {
   streamToken, streamThinking, streamFlush, endThinking, endStream,
   addToolCall, addToolResult, addSubagentGroup, completeSubagents,
   appendSubagentLog, addSystemMessage, updateSubagentState,
+  lastAssistantBubble,
 } from './render.js';
 import { queueApproval, dismissApproval, clearApprovals, expireApproval } from './approvals.js';
 import { queueClarify, dismissClarify, clearClarify, expireClarify } from './clarify.js';
 import { loadSessions } from './sessions.js';
 import { onPong, onServerInfo, startHeartbeat, stopHeartbeat, notifyUser } from './health.js';
-import { metricsLiveContext, metricsDone, metricsApplySpeed, metricsResetSpeed, turnStatsHTML, setMetricsModel } from './metrics.js';
+import { metricsLiveContext, metricsDone, metricsApplySpeed, metricsResetSpeed, metricsBeginTurn, metricsLiveUsage, turnStatsHTML, setMetricsModel } from './metrics.js';
 import { drainQueue } from './input.js';
 import { setIntent, openTurn, markWakeTurn, sealTurn, paintIntent } from './render.js';
 import { badgeNow } from './panels.js';
@@ -29,14 +30,93 @@ let reconnectDelay = 1000;
 // reconnect — the previous turn died with the socket, and the input must be
 // unbricked instead of waiting for a 'done' that never comes.
 let wasConnected = false;
+// One transcript notice per outage (not every backoff retry).
+let lostNotified = false;
+let droppedBusy = false;
+let retryTimer = null;
+let retryDeadline = 0;
+let reconnectTimer = null;
+
+function connBannerEl() {
+  return document.getElementById('conn-banner');
+}
+
+function stopRetryTick() {
+  if (retryTimer) {
+    clearInterval(retryTimer);
+    retryTimer = null;
+  }
+}
+
+function paintConnBanner(phase) {
+  const el = connBannerEl();
+  if (!el) return;
+  el.hidden = false;
+  if (phase === 'wait') {
+    const left = Math.max(0, Math.ceil((retryDeadline - Date.now()) / 1000));
+    el.textContent = left > 0
+      ? '⚠ connection lost · retrying in ' + left + 's'
+      : '⚠ connection lost · reconnecting…';
+    return;
+  }
+  el.textContent = '⚠ connection lost · reconnecting…';
+}
+
+function hideConnBanner() {
+  stopRetryTick();
+  const el = connBannerEl();
+  if (!el) return;
+  el.hidden = true;
+  el.textContent = '';
+}
+
+function noteDisconnect() {
+  stopHeartbeat();
+  if (dotEl) dotEl.className = 'dot disconnected';
+  if (statusEl) statusEl.textContent = 'reconnecting';
+  sendBtn.disabled = true;
+
+  droppedBusy = !!S.busy;
+  streamFlush();
+  endThinking();
+  endStream();
+  // Same teardown as cancelled/error: the approval/clarify wait died with
+  // the socket. Leave the prompt queue; drainQueue no-ops until restore.
+  clearApprovals({ drain: false });
+  clearClarify();
+  stopPlanLiveIfIdle();
+
+  stopRetryTick();
+  retryDeadline = Date.now() + reconnectDelay;
+  paintConnBanner('wait');
+  retryTimer = setInterval(() => paintConnBanner('wait'), 250);
+  if (retryTimer && typeof retryTimer.unref === 'function') retryTimer.unref();
+
+  // Lamp is easy to miss (the connected word is hidden). Banner + one
+  // transcript line fire only after we had a live socket, and only once
+  // per outage so retries do not spam the log.
+  if (wasConnected && !lostNotified) {
+    lostNotified = true;
+    addSystemMessage('⚠ Connection lost — reconnecting…');
+    announce('Connection lost. Reconnecting.');
+  }
+}
 
 export function connect() {
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
+  stopRetryTick();
+  if (connBannerEl() && !connBannerEl().hidden) paintConnBanner('try');
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   const token = getWsToken();
   const protocols = token ? ['odek.' + token] : [];
   S.ws = new WebSocket(proto + '//' + location.host + '/ws', protocols);
 
   S.ws.onopen = () => {
+    hideConnBanner();
+    lostNotified = false;
     dotEl.className = 'dot connected';
     statusEl.textContent = 'connected';
     sendBtn.disabled = false;
@@ -50,7 +130,11 @@ export function connect() {
       // transcript; only the completion is missing.
       S.busy = false;
       promptEl.disabled = false;
-      addSystemMessage('Connection restored — the previous turn ended before completion.');
+      addSystemMessage(droppedBusy
+        ? 'Connection restored — the previous turn ended before completion.'
+        : 'Connection restored.');
+      announce('Connection restored.');
+      droppedBusy = false;
       // Re-adopt the session so the new connection's agent gets the memory
       // buffer (bodek does this; the old WebUI did not).
       if (S.sessionId) {
@@ -60,19 +144,19 @@ export function connect() {
           auth_token: getSessionToken(S.sessionId) || undefined,
         });
       }
+      drainQueue();
     }
     wasConnected = true;
-    // Connection state is visual (status lamp); #sr-status is turn lifecycle only.
     startHeartbeat();
   };
 
   S.ws.onclose = () => {
-    stopHeartbeat();
-    dotEl.className = 'dot disconnected';
-    statusEl.textContent = 'reconnecting...';
-    sendBtn.disabled = true;
-    // Reconnect is visual; do not narrate the status lamp.
-    setTimeout(connect, reconnectDelay);
+    noteDisconnect();
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null;
+      connect();
+    }, reconnectDelay);
+    if (reconnectTimer && typeof reconnectTimer.unref === 'function') reconnectTimer.unref();
     reconnectDelay = Math.min(reconnectDelay * 2, 30000);
   };
 
@@ -97,6 +181,7 @@ export function connect() {
         S.currentTurnId = event.turn_id || null;
         S.currentTurnInitiated = event.initiated || 'operator';
         metricsResetSpeed();
+        metricsBeginTurn();
         openTurn(event);
         if (event.initiated === 'system') markWakeTurn(event);
         // Wake/remote turns never go through sendPayload — arm busy so
@@ -148,9 +233,9 @@ export function connect() {
       }
 
       // ── Live streaming fragments (protocol v2) ──
-      // token_delta appends to the streaming answer bubble through the same
-      // rAF-batched pipeline the bulk token event used; thinking_delta
-      // appends to the collapsible reasoning block.
+      // token_delta is visible assistant text (not reasoning). Each burst
+      // is a timeline row; a following tool_call seals that row so the next
+      // tokens open a new one. thinking_delta is the italic reasoning log.
       case 'token_delta':
         if (!sameTurn) break;
         setIntent('composing');
@@ -217,6 +302,7 @@ export function connect() {
         // server-resolved model limit — beats the /api/models table.
         S.runIterations = (S.runIterations || 0) + 1;
         metricsLiveContext(event.windowTokens, event.maxContextTokens);
+        metricsLiveUsage(event);
         metricsApplySpeed(event);
         break;
 
@@ -268,7 +354,7 @@ export function connect() {
         // Append per-message stats to the last assistant bubble
         const statsHTML = turnStatsHTML(event);
         if (statsHTML) {
-          const lastAssistant = messagesEl.querySelector('.msg.assistant:last-child .bubble');
+          const lastAssistant = lastAssistantBubble();
           if (lastAssistant) {
             const stats = document.createElement('div');
             stats.className = 'msg-stats';
@@ -526,6 +612,9 @@ function handleAgentSignal(event) {
   switch (event.event) {
     case 'tool_recovery':
       showToast('🔁 Tool recovery: ' + (event.tool || ''));
+      break;
+    case 'tool_running':
+      setIntent((event.tool ? event.tool + ' · ' : '') + (event.detail || 'running'));
       break;
   }
 }

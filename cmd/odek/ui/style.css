@@ -245,6 +245,9 @@ button:disabled { cursor: not-allowed; }
   background: var(--red);
   animation: pulse-red 1.1s var(--ease) infinite;
 }
+.dot.disconnected + #ws-status {
+  color: var(--amber);
+}
 @keyframes pulse-green {
   0%   { box-shadow: 0 0 0 0 color-mix(in srgb, var(--green) 45%, transparent); }
   70%  { box-shadow: 0 0 0 6px transparent; }
@@ -1194,6 +1197,18 @@ button:disabled { cursor: not-allowed; }
 /* ═══════════════════════════════════════════════════════════════════════
    MAIN — chat column
 ═══════════════════════════════════════════════════════════════════════ */
+#conn-banner {
+  flex-shrink: 0;
+  padding: 7px 16px;
+  text-align: center;
+  font-size: var(--fs-xs);
+  letter-spacing: .06em;
+  color: var(--amber);
+  background: color-mix(in srgb, var(--amber) 10%, var(--bg-0));
+  border-bottom: 1px solid var(--line);
+}
+#conn-banner[hidden] { display: none; }
+
 #main {
   display: flex;
   flex-direction: column;
@@ -1527,7 +1542,36 @@ body.light .msg.user .sender { color: var(--amber-hi); }
   letter-spacing: .06em;
 }
 
-/* ── Thinking / reasoning ──────────────────────────────────────────── */
+/* ── Turn stream — sequential reasoning + tool log ─────────────────── */
+.turn-stream {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: var(--space-4);
+  width: 100%;
+}
+.turn-stream .thinking-block,
+.turn-stream .tool-block,
+.turn-stream .subagent-group,
+.turn-stream .approval-card,
+.turn-stream .clarify-card {
+  margin-bottom: 0;
+}
+.turn-stream > .msg {
+  margin-bottom: var(--space-2);
+  animation: none;
+}
+.turn-stream > .msg:last-child { margin-bottom: 0; }
+
+/* Live token_delta host. min-height keeps the empty bubble from collapsing
+   before the first fragment paints. */
+.stream-content { min-height: 1.65em; }
+
+/* Mid-turn reply sealed when a tool starts so the next tokens open a new
+   row. Slightly quieter than the live/final answer. */
+.msg.partial { opacity: .88; }
+
+/* ── Thinking / reasoning (legacy collapsed block + stream rows) ────── */
 .thinking-block {
   margin-bottom: var(--space-3);
   border: none;
@@ -1570,6 +1614,12 @@ body.light .msg.user .sender { color: var(--amber-hi); }
   overflow-y: auto;
 }
 .thinking-content.open { display: block; animation: fade-slide var(--dur-slow) var(--ease) both; }
+.thinking-line {
+  display: block;
+  margin: 0 0 0.4em;
+}
+.thinking-line:last-child { margin-bottom: 0; }
+.thinking-content .thinking-line { margin: 0 0 0.4em; }
 
 /* ── Streaming cursor ──────────────────────────────────────────────── */
 .stream-cursor {
@@ -2815,5 +2865,10 @@ body.theme-classic {}
     animation-iteration-count: 1 !important;
     transition-duration: .01ms !important;
     scroll-behavior: auto !important;
+  }
+  /* Wait-state spinners are status, not decoration — keep them moving. */
+  .tb-spinner.running {
+    animation-duration: .8s !important;
+    animation-iteration-count: infinite !important;
   }
 }

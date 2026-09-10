@@ -1109,6 +1109,9 @@ func usageFrame(info loop.IterationInfo) (map[string]any, bool) {
 		"type":         "usage",
 		"outputTokens": info.OutputTokens,
 	}
+	if info.InputTokens > 0 {
+		frame["inputTokens"] = info.InputTokens
+	}
 	if info.WindowTokens > 0 {
 		frame["windowTokens"] = info.WindowTokens
 	}
@@ -2165,11 +2168,10 @@ func handlePrompt(
 	// Tool events (tool_call / tool_result) already fired live during
 	// RunWithMessages via ToolEventHandler — skip them here.
 	//
-	// Assistant messages with ToolCalls are intermediate "thinking + act"
-	// turns. Their Content (e.g. "Let me check that file…") was narrated
-	// live via the IterationCallback progress bubble; re-sending it here
-	// would make it appear *after* all tool blocks in the response bubble,
-	// which is confusing. Skip their Content.
+	// Assistant messages with ToolCalls are intermediate "think + act"
+	// turns. Their Content (e.g. "Let me check that file…") was streamed
+	// live as token_delta / token timeline rows; re-sending it here would
+	// duplicate those partials after the tools. Skip their Content.
 	//
 	// The final assistant message (no ToolCalls) carries:
 	//   • ReasoningContent — the model's private reasoning for this turn.

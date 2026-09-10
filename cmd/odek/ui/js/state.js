@@ -62,10 +62,12 @@ export const S = {
   streamBubbleEl: null,
   streamContentEl: null,
   streamBuffer: '',   // unflushed fragments awaiting the next rAF
-  streamText: '',     // full accumulated answer text for this turn
+  streamText: '',     // text of the current (unsealed) assistant row
   streamCursorEl: null,
   streamRAF: null,
-  thinkingContentEl: null, // current thinking block if any
+  thinkingContentEl: null, // .thinking-content of the live collapsed reasoning block
+  thinkingLineEl: null,    // current reasoning row inside that block
+  turnStreamEl: null,      // sequential thinking + tool log for this turn
 
   // ── Tool call state ──
   currentToolBlock: null,
@@ -96,10 +98,11 @@ export const S = {
   pendingDeleteId: null,
   sessionsSig: '',
 
-  // ── @-completion ──
+  // ── @ / slash completion ──
   lastAtIdx: -1,
   lastCursor: -1,
   compQuery: '',
+  compMode: '', // 'at' | 'slash'
 
   // ── Saved nodes for restoring the empty state after clearing ──
   savedEmptyStateNode: null,

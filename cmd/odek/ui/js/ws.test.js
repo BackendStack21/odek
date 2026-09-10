@@ -232,10 +232,18 @@ test('stream-idle errors render a stall hint', () => {
 
 // ── usage/done feed the ctx gauge with the parent window (wire v3) ──
 
-test('usage event seeds the gauge with the parent window and server model limit', () => {
-  deliver({ type: 'usage', windowTokens: 38412, maxContextTokens: 200000, outputTokens: 512 });
-  assert.equal(S.metrics.ctxTokens, 38412, 'gauge must show the parent window, not a cumulative');
-  assert.equal(S.metrics.maxContext, 200000, 'server-reported model limit must override the models table');
+test('turn_started then usage grows session cost from the pre-turn baseline', () => {
+  S.metrics.pricesConfigured = true;
+  S.metrics.inPrice = 1;
+  S.metrics.outPrice = 3;
+  S.metrics.sessIn = 10000;
+  S.metrics.sessOut = 2000;
+  deliver({ type: 'turn_started', turn_id: 't-cost' });
+  deliver({ type: 'usage', windowTokens: 5000, maxContextTokens: 128000, inputTokens: 400, outputTokens: 50 });
+  assert.equal(S.metrics.ctxTokens, 5000);
+  assert.equal(S.metrics.maxContext, 128000);
+  assert.equal(S.metrics.sessIn, 10400);
+  assert.equal(S.metrics.sessOut, 2050);
 });
 
 test('usage without windowTokens never moves the gauge', () => {
