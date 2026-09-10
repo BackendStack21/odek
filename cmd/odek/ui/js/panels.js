@@ -284,7 +284,7 @@ function wireConsolidate(btnId, target) {
     try {
       const preview = await previewMemory(target);
       if (version !== S.viewVersion) return;
-      const card=document.createElement('section');card.className='management-card memory-preview';
+      const card=document.createElement('section');card.className='management-card';card.dataset.memoryPreview='true';
       const title=document.createElement('h4');title.textContent='Review proposed memory changes';card.appendChild(title);
       renderResult(card,{name:'diff',output:'--- Current facts\n+++ Proposed facts\n'+(preview.before||[]).map(x=>'- '+x).join('\n')+'\n'+(preview.after||[]).map(x=>'+ '+x).join('\n')});
       const apply=document.createElement('button');apply.type='button';apply.className='management-action';apply.textContent='Apply reviewed changes';
@@ -1024,6 +1024,6 @@ S.resetPanels = () => {
   for (const id of ['mf-user-count', 'mf-env-count', 'mf-pending-count']) {
     const node = document.getElementById(id); if (node) node.textContent = '';
   }
-  drawer.querySelectorAll('.memory-preview').forEach(node => node.remove());
+  drawer.querySelectorAll('[data-memory-preview]').forEach(node => node.remove());
   document.getElementById('ptab-now')?.classList.remove('live');
 };
