@@ -16,6 +16,7 @@ func TestUsageFrame_IncludesWindow(t *testing.T) {
 	frame, ok := usageFrame(loop.IterationInfo{
 		WindowTokens:     38412,
 		MaxContextTokens: 200000,
+		InputTokens:      18432,
 		OutputTokens:     512,
 		CallDurationMs:   8100,
 		CallInputTokens:  18432,
@@ -36,6 +37,9 @@ func TestUsageFrame_IncludesWindow(t *testing.T) {
 	}
 	if frame["outputTokens"] != 512 {
 		t.Errorf("outputTokens = %v, want 512 (run-cumulative)", frame["outputTokens"])
+	}
+	if frame["inputTokens"] != 18432 {
+		t.Errorf("inputTokens = %v, want 18432 (run-cumulative)", frame["inputTokens"])
 	}
 	if frame["callDurationMs"] != int64(8100) || frame["callOutputTokens"] != 78 || frame["tokensPerSecond"] != 9.6 {
 		t.Errorf("this-call fields missing: %v", frame)

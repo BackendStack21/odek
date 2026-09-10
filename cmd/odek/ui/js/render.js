@@ -11,21 +11,14 @@ import {
 import { markdownToHtml } from './markdown.js';
 import { parseUntrusted } from './untrusted.js';
 import { classifyToolResult, chipsHtml, prettyToolBody, collectReceipt, formatReceipt } from './tools.js';
+import { metricsNoteOutput } from './metrics.js';
 
 // ── Turn state ──
 // resetTurnState clears all per-turn streaming/tool/sub-agent state. Called
 // before a new turn (send), on new session, and when loading a session.
 export function resetTurnState() {
-  // Finished-turn reasoning stays collapsed (Bodek calm default).
-  // Only blocks this renderer marked .live are touched.
-  messagesEl.querySelectorAll('.thinking-block.live').forEach(block => {
-    const content = block.querySelector('.thinking-content');
-    const toggle = block.querySelector('.thinking-toggle');
-    const arrow = toggle ? toggle.querySelector('.arrow') : null;
-    if (content) content.classList.remove('open');
-    if (arrow) arrow.classList.remove('open');
-    if (toggle) toggle.setAttribute('aria-expanded', 'false');
-    block.classList.remove('live');
+  messagesEl.querySelectorAll('.turn-stream.live').forEach((el) => {
+    el.classList.remove('live');
   });
 
   S.streamBuffer = '';
@@ -40,6 +33,8 @@ export function resetTurnState() {
   S.currentToolBlock = null;
   S.subagentGroup = null;
   S.thinkingContentEl = null;
+  S.thinkingLineEl = null;
+  S.turnStreamEl = null;
   S.toolBlockQueues.clear();
   S.toolStartQueues.clear();
   S.inToolGroup = false;
@@ -96,6 +91,10 @@ function paintSpin() {
 
 function startSpin() {
   paintSpin();
+  if (!S.loadingTimer) {
+    S.loadingTimer = setInterval(paintIntent, 1000);
+    if (S.loadingTimer && typeof S.loadingTimer.unref === 'function') S.loadingTimer.unref();
+  }
   if (spinTimer || reduceMotion()) return;
   spinTimer = setInterval(() => {
     if (!S.busy) { stopSpin(); return; }
@@ -108,6 +107,10 @@ function startSpin() {
 function stopSpin() {
   if (spinTimer) { clearInterval(spinTimer); spinTimer = null; }
   spinIdx = 0;
+  if (S.loadingTimer) {
+    clearInterval(S.loadingTimer);
+    S.loadingTimer = null;
+  }
 }
 
 export function paintIntent() {
@@ -232,8 +235,14 @@ function attachWakeChip(wrapper) {
 
 export function sealTurn(event) {
   const tid = event && event.turn_id;
-  const last = (tid && messagesEl.querySelector('.msg.assistant[data-turn-id="' + tid + '"] .bubble'))
-    || messagesEl.querySelector('.msg.assistant:last-child .bubble');
+  let msg = null;
+  const all = messagesEl.querySelectorAll('.msg.assistant');
+  for (let i = all.length - 1; i >= 0; i--) {
+    if (tid && all[i].dataset && all[i].dataset.turnId && all[i].dataset.turnId !== tid) continue;
+    msg = all[i];
+    break;
+  }
+  const last = msg && msg.querySelector ? msg.querySelector('.bubble') : null;
   if (!last || !S.turnReceipt) return;
   const line = formatReceipt(S.turnReceipt);
   if (!line) return;
@@ -259,7 +268,6 @@ export function showLoading() {
   messagesEl.appendChild(el);
   S.loadingEl = el;
   setIntent('reasoning');
-  S.loadingTimer = setInterval(paintIntent, 1000);
   pruneMessages();
   forceScrollBottom();
 }
@@ -269,19 +277,20 @@ export function hideLoading() {
     S.loadingEl.remove();
     S.loadingEl = null;
   }
-  if (S.loadingTimer) {
-    clearInterval(S.loadingTimer);
-    S.loadingTimer = null;
-  }
-  stopSpin();
+  // The transcript placeholder is gone, but the turn may still be running
+  // (thinking, tools, approvals). Keep the header/rail spinner moving.
+  if (S.busy) paintIntent();
+  else stopSpin();
 }
 
 // ── Live turn spine ──
-// The model often emits answer tokens in the same LLM message as tool_calls
-// (serve E2E: token → tool_call). token_delta would otherwise create the
-// answer bubble first and a naive append would paint answer → tools.
-// History already uses thinking → tools → answer; insertTurnWork keeps
-// the live path on that same spine even when events race.
+// One sequential log per turn: collapsed reasoning toggles, partial
+// assistant replies (token / token_delta), and tool heads in arrival
+// order. Models such as DeepSeek and GLM emit visible assistant text
+// before/between tool calls ("Let me look at that file…") — those are
+// replies, not reasoning, and each burst is sealed when a tool starts
+// so the next tokens open a new row instead of concatenating the whole
+// turn into one bubble. Reasoning stays behind ▶ thinking until opened.
 function hasClass(el, name) {
   if (!el) return false;
   if (el.classList && el.classList.contains) return el.classList.contains(name);
@@ -293,99 +302,137 @@ function liveAnswerEl() {
   return (el && el.parentNode === messagesEl) ? el : null;
 }
 
-function firstTurnOfKind(kindClass) {
-  const kids = messagesEl.children || [];
-  for (let i = 0; i < kids.length; i++) {
-    const el = kids[i];
-    if (!hasClass(el, kindClass)) continue;
-    if (S.currentTurnId) {
-      if (el.dataset && el.dataset.turnId === S.currentTurnId) return el;
-      continue;
-    }
-    if (hasClass(el, 'live') || el === S.streamBubbleEl) return el;
-  }
-  return null;
+export function lastAssistantBubble() {
+  const all = messagesEl.querySelectorAll('.msg.assistant');
+  if (!all || !all.length) return null;
+  const msg = all[all.length - 1];
+  return msg.querySelector ? msg.querySelector('.bubble') : null;
 }
 
-function turnHasThinking(except) {
+function streamIsMounted() {
+  const el = S.turnStreamEl;
+  if (!el || !messagesEl) return false;
   const kids = messagesEl.children || [];
   for (let i = 0; i < kids.length; i++) {
-    const el = kids[i];
-    if (el === except) continue;
-    if (!hasClass(el, 'thinking-block')) continue;
-    if (S.currentTurnId) {
-      if (el.dataset && el.dataset.turnId === S.currentTurnId) return true;
-      continue;
-    }
-    if (hasClass(el, 'live')) return true;
+    if (kids[i] === el) return true;
   }
   return false;
 }
 
-function parkAnswerLast() {
-  const answer = liveAnswerEl();
-  if (answer) messagesEl.appendChild(answer);
+function ensureTurnStream() {
+  if (streamIsMounted()) return S.turnStreamEl;
+  hideLoading();
+  hideEmptyState();
+  const stream = document.createElement('div');
+  stream.className = 'turn-stream live';
+  if (S.currentTurnId && stream.dataset) stream.dataset.turnId = S.currentTurnId;
+  messagesEl.appendChild(stream);
+  S.turnStreamEl = stream;
+  return stream;
 }
 
 export function insertTurnWork(el, kind) {
   if (S.currentTurnId && el.dataset) el.dataset.turnId = S.currentTurnId;
   hideLoading();
-  if (kind === 'thinking' && !turnHasThinking(el)) {
-    const firstTool = firstTurnOfKind('tool-block') || firstTurnOfKind('subagent-group');
-    if (firstTool) {
-      messagesEl.insertBefore(el, firstTool);
-      parkAnswerLast();
-      return;
-    }
-  }
-  const answer = liveAnswerEl();
-  if (answer) {
-    messagesEl.insertBefore(el, answer);
+  // Tool steps share the sequential log with reasoning and partial
+  // assistant replies. Approval/clarify cards stay on the transcript
+  // itself — they are operator chrome.
+  if (hasClass(el, 'tool-block') || hasClass(el, 'subagent-group') || kind === 'thinking') {
+    ensureTurnStream().appendChild(el);
     return;
   }
-  messagesEl.appendChild(el);
+  const answer = liveAnswerEl();
+  if (answer) messagesEl.insertBefore(el, answer);
+  else messagesEl.appendChild(el);
 }
 
 // ── Thinking ──
+// Reasoning stays behind a collapsed "▶ thinking" toggle (hidden by
+// default). Rows still accumulate inside the block so an expand shows
+// fragments in order. Token-sized SSE pieces join the current row; a
+// new fragment (or an explicit newline) opens a new row. A tool_call
+// seals the block so later reasoning is a new toggle after that tool.
+// Visible assistant text is token_delta — it is never parked here.
 export function streamThinking(content) {
-  if (!S.thinkingContentEl) {
-    // Remove cursor from any active stream
-    removeStreamCursor();
+  if (!content) return;
+  removeStreamCursor();
+  ensureThinkingBlock();
+  appendThinkingFragment(content);
+  metricsNoteOutput(String(content).length);
+  scrollBottom();
+}
 
-    // Live reasoning stays collapsed (Bodek calm default). .live marks
-    // this turn's block so the next prompt can leave history alone.
-    const block = document.createElement('div');
-    block.className = 'thinking-block live';
-    block.innerHTML =
-      '<div class="thinking-toggle" role="button" tabindex="0" aria-expanded="false">' +
-        '<span class="arrow">▶</span> thinking' +
-      '</div>' +
-      '<div class="thinking-content">' + escapeHtml(content) + '</div>';
-    insertTurnWork(block, 'thinking');
+function thinkingBlockMounted() {
+  const el = S.thinkingContentEl;
+  return !!(el && el.parentNode);
+}
 
-    S.thinkingContentEl = block.querySelector('.thinking-content');
-    hideEmptyState();
-    pruneMessages();
-    scrollBottom();
-  } else {
-    S.thinkingContentEl.textContent += content;
-    // Auto-follow the newest line while the block is open — but only when
-    // it is open, so a user who collapses mid-turn isn't fought.
-    if (S.thinkingContentEl.classList.contains('open')) {
-      S.thinkingContentEl.scrollTop = S.thinkingContentEl.scrollHeight;
-    }
-    scrollBottom();
+function ensureThinkingBlock() {
+  if (thinkingBlockMounted()) return;
+  const block = document.createElement('div');
+  block.className = 'thinking-block live';
+  block.innerHTML =
+    '<div class="thinking-toggle" role="button" tabindex="0" aria-expanded="false">' +
+      '<span class="arrow">▶</span> thinking' +
+    '</div>' +
+    '<div class="thinking-content"></div>';
+  ensureTurnStream().appendChild(block);
+  S.thinkingContentEl = block.querySelector('.thinking-content');
+  S.thinkingLineEl = null;
+  pruneMessages();
+}
+
+function thinkingContinuation(prev, next) {
+  if (!prev || next == null) return false;
+  if (next.startsWith('\n') || prev.endsWith('\n')) return false;
+  if (/^\s/.test(next)) return true;
+  const t = next.trimStart();
+  if (!t) return true;
+  if (t.length <= 6 && /^[,.;:!?…'"”)\]}]/.test(t)) return true;
+  if (/^[a-z0-9]/.test(t) && next.length < 32) return true;
+  return false;
+}
+
+function fragmentRows(content) {
+  const raw = String(content);
+  if (raw.length > 80 && /[.!?][\s]/.test(raw)) {
+    return raw.split(/\n|(?<=[.!?])\s+/);
   }
+  return raw.split('\n');
+}
+
+function newThinkingLine(text) {
+  if (!S.thinkingContentEl) return;
+  const line = document.createElement('div');
+  line.className = 'thinking-line';
+  line.textContent = text || '';
+  S.thinkingContentEl.appendChild(line);
+  S.thinkingLineEl = line;
+}
+
+function appendThinkingFragment(content) {
+  fragmentRows(content).forEach((chunk, i) => {
+    if (i > 0) {
+      if (chunk) newThinkingLine(chunk);
+      return;
+    }
+    const prev = S.thinkingLineEl ? S.thinkingLineEl.textContent : '';
+    if (!S.thinkingLineEl || !thinkingContinuation(prev, chunk)) {
+      newThinkingLine(chunk);
+    } else {
+      S.thinkingLineEl.textContent += chunk;
+    }
+  });
 }
 
 function toggleThinking(el) {
+  const parent = el.parentElement || el.parentNode;
   const arrow = el.querySelector('.arrow');
-  const content = el.parentElement.querySelector('.thinking-content');
+  const content = parent && parent.querySelector ? parent.querySelector('.thinking-content') : null;
   if (content) {
     content.classList.toggle('open');
-    arrow.classList.toggle('open');
+    if (arrow && arrow.classList) arrow.classList.toggle('open');
     el.setAttribute('aria-expanded', content.classList.contains('open'));
-    // Auto-open on first click
     if (content.classList.contains('open')) {
       scrollBottom();
     }
@@ -393,7 +440,12 @@ function toggleThinking(el) {
 }
 
 export function endThinking() {
+  if (S.thinkingContentEl) {
+    const block = S.thinkingContentEl.parentElement || S.thinkingContentEl.parentNode;
+    if (block && block.classList) block.classList.remove('live');
+  }
   S.thinkingContentEl = null;
+  S.thinkingLineEl = null;
 }
 
 // ── Streaming ──
@@ -428,6 +480,29 @@ function ensureStreamBubble() {
   }
 }
 
+// sealPartialResponse parks the current assistant bubble in the timeline
+// so later token_delta / token fragments open a new row after whatever
+// comes next (usually a tool head). Without this, DeepSeek/GLM-style
+// mid-turn replies concatenate into one aggregated bubble.
+function sealPartialResponse() {
+  streamFlush();
+  if (!S.streamBubbleEl) return;
+  removeStreamCursor();
+  const content = S.streamContentEl;
+  if (content) {
+    if (content.classList && content.classList.remove) content.classList.remove('stream-content');
+    if (content.removeAttribute) content.removeAttribute('id');
+    else content.id = '';
+  }
+  if (S.streamBubbleEl.classList && S.streamBubbleEl.classList.add) {
+    S.streamBubbleEl.classList.add('partial');
+  }
+  S.streamBubbleEl = null;
+  S.streamContentEl = null;
+  S.streamText = '';
+  S.streamCursorEl = null;
+}
+
 function appendStreamText(text) {
   ensureStreamBubble();
   // Accumulate and re-render the WHOLE answer so far. Fragments must never
@@ -437,6 +512,7 @@ function appendStreamText(text) {
   // (fences, lists) correct while the answer streams.
   S.streamText += text;
   S.streamContentEl.innerHTML = markdownToHtml(S.streamText);
+  metricsNoteOutput(text.length);
   if (S.streamCursorEl) {
     const host = streamCursorHost();
     if (S.streamCursorEl.parentNode !== host) host.appendChild(S.streamCursorEl);
@@ -477,17 +553,17 @@ function startStream() {
   wrapper.innerHTML =
     '<div class="bubble">' +
       '<div class="sender">' + assistantSender() + '</div>' +
-      '<div class="content" id="stream-content"></div>' +
+      '<div class="content stream-content"></div>' +
     '</div>';
   attachWakeChip(wrapper);
-  messagesEl.appendChild(wrapper);
+  ensureTurnStream().appendChild(wrapper);
 
   S.streamText = '';
   S.streamCursorEl = document.createElement('span');
   S.streamCursorEl.className = 'stream-cursor';
   S.streamBubbleEl = wrapper;
-  S.streamContentEl = wrapper.querySelector('#stream-content');
-  S.streamContentEl.appendChild(S.streamCursorEl);
+  S.streamContentEl = wrapper.querySelector('.stream-content');
+  if (S.streamContentEl && S.streamCursorEl) S.streamContentEl.appendChild(S.streamCursorEl);
   compactOlderAnswers(wrapper);
   const bubble = wrapper.querySelector('.bubble');
   if (bubble) addCopyButton(bubble);
@@ -497,6 +573,7 @@ function startStream() {
 
 export function endStream() {
   removeStreamCursor();
+  sealTurnStream();
   // The live answer is the latest — never fold it. Older long replies
   // were already compacted when this bubble opened.
   S.streamBubbleEl = null;
@@ -505,6 +582,9 @@ export function endStream() {
   S.streamCursorEl = null;
   S.currentToolBlock = null;
   S.subagentGroup = null;
+  S.thinkingContentEl = null;
+  S.thinkingLineEl = null;
+  S.turnStreamEl = null;
   S.toolBlockQueues.clear();
   S.toolStartQueues.clear();
   S.inToolGroup = false;
@@ -514,6 +594,13 @@ export function endStream() {
   sendBtn.disabled = !S.ws || S.ws.readyState !== WebSocket.OPEN;
   promptEl.disabled = false;
   promptEl.focus();
+}
+
+function sealTurnStream() {
+  if (S.turnStreamEl) S.turnStreamEl.classList.remove('live');
+  messagesEl.querySelectorAll('.turn-stream.live').forEach((el) => {
+    el.classList.remove('live');
+  });
 }
 
 // ── Message rendering ──
@@ -651,6 +738,7 @@ function formatToolArgs(data) {
 
 // ── Tool Calls ──
 export function addToolCall(name, data) {
+  sealPartialResponse();
   removeStreamCursor();
   S.inToolGroup = true;
 
@@ -672,7 +760,7 @@ export function addToolCall(name, data) {
 
   insertTurnWork(el, 'tool');
   S.currentToolBlock = el;
-  teach('steps', 'tip: click a tool head to expand its output · thinking stays folded');
+  teach('steps', 'tip: click a tool head to expand its output');
 
   // Push into per-name FIFO queues so parallel results route correctly.
   if (!S.toolBlockQueues.has(name)) S.toolBlockQueues.set(name, []);
@@ -832,8 +920,9 @@ function subagentCardHTML(i, goal, withStop) {
 }
 
 export function addSubagentGroup(command) {
-  removeStreamCursor();
   if (S.subagentGroup) return; // only one group at a time
+  sealPartialResponse();
+  removeStreamCursor();
 
   let tasks = [];
   try {
@@ -1200,6 +1289,10 @@ export function renderSessionHistory(messages) {
 
     if (msg.reasoning_content) renderHistoricalThinking(msg.reasoning_content);
 
+    // Content before tools: the model streams the visible reply first,
+    // then acts. Putting tools first parked every partial after the log.
+    if (msg.content) renderHistoricalAssistant(msg.content);
+
     const toolCalls = Array.isArray(msg.tool_calls) ? msg.tool_calls : [];
     if (toolCalls.length > 0) {
       toolCalls.forEach(tc => {
@@ -1213,22 +1306,53 @@ export function renderSessionHistory(messages) {
         }
       });
     }
-    if (msg.content) {
-      renderAssistantMessage(msg.content);
-    }
   });
 }
 
-// renderHistoricalThinking renders a completed reasoning block (collapsed).
+function renderHistoricalAssistant(content) {
+  const wrapper = document.createElement('div');
+  wrapper.className = 'msg assistant';
+  wrapper.innerHTML =
+    '<div class="bubble">' +
+      '<div class="sender">' + assistantSender() + '</div>' +
+      '<div class="content">' + markdownToHtml(content) + '</div>' +
+    '</div>';
+  attachWakeChip(wrapper);
+  ensureHistoryStream().appendChild(wrapper);
+  const bubble = wrapper.querySelector('.bubble');
+  if (bubble) addCopyButton(bubble);
+  compactOlderAnswers(wrapper);
+}
+
+// renderHistoricalThinking appends reasoning rows into the current turn
+// stream so history matches the live interleaved log.
 function renderHistoricalThinking(content) {
   const block = document.createElement('div');
   block.className = 'thinking-block';
   block.innerHTML =
     '<div class="thinking-toggle" role="button" tabindex="0" aria-expanded="false">' +
-        '<span class="arrow">▶</span> thinking' +
+      '<span class="arrow">▶</span> thinking' +
     '</div>' +
-    '<div class="thinking-content">' + escapeHtml(content) + '</div>';
-  messagesEl.appendChild(block);
+    '<div class="thinking-content"></div>';
+  ensureHistoryStream().appendChild(block);
+  const host = block.querySelector('.thinking-content');
+  String(content || '').split('\n').forEach((line) => {
+    if (!line) return;
+    const row = document.createElement('div');
+    row.className = 'thinking-line';
+    row.textContent = line;
+    host.appendChild(row);
+  });
+}
+
+function ensureHistoryStream() {
+  const kids = messagesEl.children || [];
+  const last = kids.length ? kids[kids.length - 1] : null;
+  if (last && hasClass(last, 'turn-stream')) return last;
+  const stream = document.createElement('div');
+  stream.className = 'turn-stream';
+  messagesEl.appendChild(stream);
+  return stream;
 }
 
 // renderHistoricalToolBlock renders a completed tool call with its result
@@ -1246,7 +1370,7 @@ function renderHistoricalToolBlock(name, args, result) {
       (preview ? ' <span class="tb-preview">' + escapeHtml(preview) + '</span>' : '') +
     '</div>' +
     '<div class="tb-body">' + escapeHtml(formatToolArgs(args)) + '</div>';
-  messagesEl.appendChild(el);
+  ensureHistoryStream().appendChild(el);
   if (result) appendToolResultContent(el, result);
 }
 
@@ -1260,7 +1384,7 @@ function renderHistoricalSubagents(args, output) {
   const group = document.createElement('div');
   group.className = 'subagent-group';
   group.innerHTML = subagentHeadHTML(tasks.length) + '<div class="subagent-grid"></div>';
-  messagesEl.appendChild(group);
+  ensureHistoryStream().appendChild(group);
   const grid = group.querySelector('.subagent-grid');
 
   tasks.forEach((task, i) => {
@@ -1297,13 +1421,8 @@ function nodeHolds(parent, node) {
 }
 
 function assistantMessages() {
-  const out = [];
-  const kids = messagesEl.children || [];
-  for (let i = 0; i < kids.length; i++) {
-    const el = kids[i];
-    if (hasClass(el, 'msg') && hasClass(el, 'assistant')) out.push(el);
-  }
-  return out;
+  const found = messagesEl.querySelectorAll('.msg.assistant');
+  return found ? Array.from(found) : [];
 }
 
 function releaseCollapse(bubble) {

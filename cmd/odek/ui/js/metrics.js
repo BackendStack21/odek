@@ -29,6 +29,9 @@ S.metrics = {
   tokPerSec: 0,         // last think-step rate; 0 = unknown / omit
   tokPerSecKind: '',    // 'generation' | 'e2e' | ''
   model: '',
+  turnBaseIn: 0,        // sessIn at turn start — live cost overlays run totals
+  turnBaseOut: 0,
+  streamedOutChars: 0,  // chars streamed since last usage/done (live cost/gauge)
 };
 
 // init loads prices and context sizes once, then resolves for the current
@@ -89,6 +92,14 @@ function resolvePrices() {
 
 // ── Event entry points ──
 
+// metricsBeginTurn snapshots session totals so usage frames can overlay
+// this-run spend without waiting for done.
+export function metricsBeginTurn() {
+  S.metrics.turnBaseIn = S.metrics.sessIn || 0;
+  S.metrics.turnBaseOut = S.metrics.sessOut || 0;
+  S.metrics.streamedOutChars = 0;
+}
+
 // liveContext: a per-iteration usage event — the freshest parent window
 // size plus the server-resolved model limit (when reported).
 export function metricsLiveContext(windowTokens, maxContextTokens) {
@@ -96,6 +107,52 @@ export function metricsLiveContext(windowTokens, maxContextTokens) {
   if (!windowTokens || windowTokens <= 0) { renderMetrics(); return; }
   S.metrics.ctxTokens = windowTokens;
   renderMetrics();
+}
+
+// metricsLiveUsage overlays run-cumulative tokens onto the session
+// totals captured at turn start so the cost chip and ctx gauge move
+// after every LLM iteration, not only on done.
+export function metricsLiveUsage(evt) {
+  if (!evt) { renderMetrics(); return; }
+  S.metrics.streamedOutChars = 0;
+  const inTok = Number(evt.inputTokens);
+  const callIn = Number(evt.callInputTokens);
+  if (inTok > 0) {
+    S.metrics.sessIn = S.metrics.turnBaseIn + inTok;
+  } else if (callIn > 0) {
+    S.metrics.sessIn = (S.metrics.sessIn || S.metrics.turnBaseIn) + callIn;
+  }
+  const outTok = Number(evt.outputTokens);
+  const callOut = Number(evt.callOutputTokens);
+  if (outTok > 0) {
+    S.metrics.sessOut = S.metrics.turnBaseOut + outTok;
+  } else if (callOut > 0) {
+    S.metrics.sessOut = (S.metrics.sessOut || S.metrics.turnBaseOut) + callOut;
+  }
+  renderMetrics();
+}
+
+let streamMetricsRAF = null;
+
+// metricsNoteOutput counts streamed reasoning/answer characters so the
+// cost chip and ctx fill keep moving between usage frames.
+export function metricsNoteOutput(chars) {
+  const n = Number(chars);
+  if (!(n > 0)) return;
+  S.metrics.streamedOutChars = (S.metrics.streamedOutChars || 0) + n;
+  if (typeof requestAnimationFrame !== 'function') {
+    renderMetrics();
+    return;
+  }
+  if (streamMetricsRAF) return;
+  streamMetricsRAF = requestAnimationFrame(() => {
+    streamMetricsRAF = null;
+    renderMetrics();
+  });
+}
+
+function streamedOutTokens() {
+  return Math.round((S.metrics.streamedOutChars || 0) / 4);
 }
 
 // pickTokPerSec prefers decode-ish generation rate when the stream measured
@@ -157,6 +214,7 @@ export function metricsDone(evt) {
   // is the run-cumulative billing total incl. sub-agent spend. 0/absent =
   // "not reported": hold the last known value instead of zeroing.
   if (evt && evt.windowTokens > 0) S.metrics.ctxTokens = evt.windowTokens;
+  S.metrics.streamedOutChars = 0;
   metricsApplySpeed(evt);
 }
 
@@ -168,6 +226,7 @@ export function metricsFromSession(sess) {
   S.metrics.ctxTokens = 0; // unknown until the next run reports it
   S.metrics.tokPerSec = 0;
   S.metrics.tokPerSecKind = '';
+  S.metrics.streamedOutChars = 0;
   if (sess.model) setMetricsModel(sess.model);
   renderMetrics();
 }
@@ -178,6 +237,9 @@ export function resetMetrics() {
   S.metrics.sessOut = 0;
   S.metrics.tokPerSec = 0;
   S.metrics.tokPerSecKind = '';
+  S.metrics.turnBaseIn = 0;
+  S.metrics.turnBaseOut = 0;
+  S.metrics.streamedOutChars = 0;
   renderMetrics();
 }
 
@@ -207,7 +269,8 @@ export function turnStatsHTML(event) {
 // sessionCostUSD estimates the current session's spend from its totals.
 export function sessionCostUSD() {
   if (!S.metrics.pricesConfigured) return null;
-  return S.metrics.sessIn / 1e6 * S.metrics.inPrice + S.metrics.sessOut / 1e6 * S.metrics.outPrice;
+  const extraOut = streamedOutTokens();
+  return S.metrics.sessIn / 1e6 * S.metrics.inPrice + (S.metrics.sessOut + extraOut) / 1e6 * S.metrics.outPrice;
 }
 
 // turnCostUSD prices one turn's usage (for per-message stats).
@@ -234,7 +297,9 @@ export function renderMetrics() {
   const cluster = document.getElementById('metrics');
   if (!cluster) return;
   const m = S.metrics;
-  const hasAny = m.ctxTokens > 0 || m.sessIn > 0 || m.sessOut > 0 || m.tokPerSec > 0;
+  const extraOut = streamedOutTokens();
+  const shownCtx = m.ctxTokens + extraOut;
+  const hasAny = shownCtx > 0 || m.sessIn > 0 || m.sessOut > 0 || extraOut > 0 || m.tokPerSec > 0;
   cluster.classList.toggle('visible', hasAny);
 
   // Context gauge: percentage against the model's window when known,
@@ -243,20 +308,20 @@ export function renderMetrics() {
   const pct = document.getElementById('ctx-pct');
   const gauge = document.getElementById('ctx-gauge');
   if (gauge) {
-    const showGauge = m.ctxTokens > 0;
+    const showGauge = shownCtx > 0;
     gauge.classList.toggle('on', showGauge);
     if (showGauge) {
       let ratio = 0;
       if (m.maxContext > 0) {
-        ratio = Math.min(1, m.ctxTokens / m.maxContext);
+        ratio = Math.min(1, shownCtx / m.maxContext);
         if (pct) pct.textContent = Math.round(ratio * 100) + '%';
       } else if (pct) {
-        pct.textContent = formatNum(m.ctxTokens);
+        pct.textContent = formatNum(shownCtx);
       }
       if (fill) fill.style.width = (ratio * 100).toFixed(1) + '%';
       gauge.classList.toggle('warn', m.maxContext > 0 && ratio > 0.6);
       gauge.classList.toggle('hot', m.maxContext > 0 && ratio > 0.85);
-      gauge.title = 'Context: ' + formatNum(m.ctxTokens) + ' tokens' +
+      gauge.title = 'Context: ' + formatNum(shownCtx) + ' tokens' +
         (m.maxContext > 0 ? ' of ~' + formatNum(m.maxContext) + ' (' + Math.round(ratio * 100) + '%)' : '') +
         ' — the engine trims history automatically near the limit';
     }

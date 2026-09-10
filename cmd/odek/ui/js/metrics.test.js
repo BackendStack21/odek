@@ -53,7 +53,7 @@ globalThis.localStorage = (() => {
 })();
 
 const { S } = await import('./state.js');
-const { formatUSD, sessionCostUSD, renderMetrics, metricsDone, resetMetrics, pickTokPerSec, formatTokPerSec, metricsApplySpeed, metricsResetSpeed, turnStatsHTML } = await import('./metrics.js');
+const { formatUSD, sessionCostUSD, renderMetrics, metricsDone, resetMetrics, pickTokPerSec, formatTokPerSec, metricsApplySpeed, metricsResetSpeed, turnStatsHTML, metricsBeginTurn, metricsLiveUsage, metricsLiveContext, metricsNoteOutput } = await import('./metrics.js');
 
 beforeEach(() => {
   S.metrics.pricesConfigured = false;
@@ -64,6 +64,9 @@ beforeEach(() => {
   S.metrics.ctxTokens = 0;
   S.metrics.tokPerSec = 0;
   S.metrics.tokPerSecKind = '';
+  S.metrics.turnBaseIn = 0;
+  S.metrics.turnBaseOut = 0;
+  S.metrics.streamedOutChars = 0;
   byId['cost-chip'].hidden = true;
   byId['cost-chip'].textContent = '';
   byId['speed-chip'].hidden = true;
@@ -177,3 +180,36 @@ test('turnStatsHTML includes tok/s from this-call fields, never invented from to
   const none = turnStatsHTML({ latency: 0.5, inputTokens: 10, outputTokens: 800 });
   assert.equal(none.includes('tok/s'), false);
 });
+
+test('usage overlays run-cumulative tokens onto session totals mid-turn', () => {
+  S.metrics.pricesConfigured = true;
+  S.metrics.inPrice = 1;
+  S.metrics.outPrice = 3;
+  S.metrics.sessIn = 10000;
+  S.metrics.sessOut = 2000;
+  metricsBeginTurn();
+  metricsLiveContext(5000, 128000);
+  metricsLiveUsage({ inputTokens: 400, outputTokens: 50, windowTokens: 5000 });
+  assert.equal(S.metrics.ctxTokens, 5000);
+  assert.equal(S.metrics.sessIn, 10400);
+  assert.equal(S.metrics.sessOut, 2050);
+  assert.equal(sessionCostUSD().toFixed(5), '0.01655');
+  assert.equal(byId['cost-chip'].hidden, false);
+  assert.equal(byId['ctx-gauge'].classList.contains('on'), true);
+  assert.equal(byId['ctx-fill'].style.width, '3.9%');
+});
+
+test('streamed output chars bump the live cost until the next usage frame', () => {
+  S.metrics.pricesConfigured = true;
+  S.metrics.inPrice = 0;
+  S.metrics.outPrice = 4;
+  S.metrics.sessIn = 0;
+  S.metrics.sessOut = 0;
+  metricsBeginTurn();
+  metricsNoteOutput(400); // ~100 tokens
+  assert.ok(sessionCostUSD() > 0);
+  metricsLiveUsage({ outputTokens: 20 });
+  assert.equal(S.metrics.streamedOutChars, 0);
+  assert.equal(S.metrics.sessOut, 20);
+});
+
