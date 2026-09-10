@@ -1563,6 +1563,14 @@ body.light .msg.user .sender { color: var(--amber-hi); }
 }
 .turn-stream > .msg:last-child { margin-bottom: 0; }
 
+/* Live token_delta host. min-height keeps the empty bubble from collapsing
+   before the first fragment paints. */
+.stream-content { min-height: 1.65em; }
+
+/* Mid-turn reply sealed when a tool starts so the next tokens open a new
+   row. Slightly quieter than the live/final answer. */
+.msg.partial { opacity: .88; }
+
 /* ── Thinking / reasoning (legacy collapsed block + stream rows) ────── */
 .thinking-block {
   margin-bottom: var(--space-3);
