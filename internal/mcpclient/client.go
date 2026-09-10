@@ -800,19 +800,14 @@ func (c *Client) call(ctx context.Context, method string, params json.RawMessage
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	// Bound the request with the per-server timeout (or DefaultTimeout when
-	// the server has no override) unless the caller already supplied a
-	// deadline. A hung MCP server must not deadlock the agent loop or startup
-	// discovery.
-	if _, ok := ctx.Deadline(); !ok {
-		timeout := c.timeout
-		if timeout <= 0 {
-			timeout = DefaultTimeout
-		}
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, timeout)
-		defer cancel()
+	// Both limits apply: a caller's longer run deadline must not weaken the
+	// server timeout, while WithTimeout preserves an earlier parent deadline.
+	timeout := c.timeout
+	if timeout <= 0 {
+		timeout = DefaultTimeout
 	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 
 	// Assign unique ID and register a response channel.
 	respCh := make(chan callResponse, 1)
