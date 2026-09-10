@@ -42,6 +42,17 @@ const MaxArtifactBytes int64 = 64 << 20
 // The artifact content is only ever read to compute the verification hash; it
 // is never returned to the caller.
 func Validate(ref Ref, roots []string) (string, error) {
+	return validate(ref, roots, true)
+}
+
+// ValidateMetadata validates the schema, path confinement, type, size, and hash
+// syntax without reading file content. Callers must verify the digest against
+// the bytes they actually read before exposing those bytes.
+func ValidateMetadata(ref Ref, roots []string) (string, error) {
+	return validate(ref, roots, false)
+}
+
+func validate(ref Ref, roots []string, verifyHash bool) (string, error) {
 	if ref.Schema != SchemaArtifactRef {
 		return "", fmt.Errorf("artifact schema %q does not match %q", ref.Schema, SchemaArtifactRef)
 	}
@@ -127,6 +138,9 @@ func Validate(ref Ref, roots []string) (string, error) {
 	if ref.SHA256 != "" {
 		if !isLowerHexSHA256(ref.SHA256) {
 			return "", fmt.Errorf("artifact %q sha256 %q is not a lowercase hex SHA-256 digest", ref.ID, ref.SHA256)
+		}
+		if !verifyHash {
+			return resolved, nil
 		}
 		sum, err := fileSHA256(resolved, fi.Size())
 		if err != nil {

@@ -813,7 +813,7 @@ match as plain text. The bundled WebUI implements this in
 - Vanilla JS + CSS SPA split into native ES modules under `js/` — no build step, no bundler, no CDN. Module map: `main` (init/theme/keyboard) · `commands` (⌘K palette + 5 composer slash verbs) · `tools` (typed result chips) · `ws` (protocol v2 + `turn_started`/`bg_job`) · `api` (typed REST client) · `sessions` · `panels` (inspector workspaces: sessions / now / results / memory / ops / manage) · `plan` · `health` (heartbeat + notifications) · `render`/`markdown`/`untrusted` · `approvals` · `input` (send, queue, `@`, attachments) · `state`/`dom`/`utils`/`net`/`escape`
 - **Escaping**: all server-controlled strings are inserted escaped (`escapeHtml`/`escapeAttr`/`textContent`); `markdownToHtml` HTML-escapes all input by default and allowlists link schemes — see "Content sanitization contract" above. No inline scripts or handlers anywhere (CSP `script-src 'self'`); generated content uses event delegation
 - **Untrusted envelope**: `js/untrusted.js` unwraps the model-facing `<untrusted_content_*>` envelope before display (body shown; source discarded)
-- **Design**: self-contained EMBER dark, light and high-contrast themes. Locally bundled Manrope serves reading/interface text and Azeret Mono serves code. Comfortable density uses 15px reading text; compact uses 13px. The 56px desktop header becomes two rows on mobile, with a collapsible session rail from 1100px, hidden by default, and a resizable inspector. CSS variables define colors, spacing and typography; reduced motion is respected. No CDN or font network request is required.
+- **Design**: self-contained EMBER dark, light and high-contrast themes. Locally bundled Geist Sans serves reading/interface text and Geist Mono serves code. Comfortable density uses 16px reading text; compact uses 13px. The 56px desktop header becomes two rows on mobile, with a collapsible session rail from 1100px, hidden by default, and a resizable inspector. CSS variables define colors, spacing and typography; reduced motion is respected. No CDN or font network request is required.
 - **Streaming**: fragments (`token_delta`/`thinking_delta`) and bulk `token` events share one rAF-batched render pipeline
 - **DOM budget**: the message list is capped at 80 elements (`MAX_MESSAGES`); older messages are pruned
 - **Resilience**: auto-reconnect with exponential backoff (1s doubling to a 30s cap, reset after a stable connection) plus the 20s application heartbeat and the server's 20s `keepalive`. A drop is visible: amber top-bar word, sticky `#conn-banner` with retry countdown, one transcript line per outage, and a composer toast if you send while down.
@@ -867,13 +867,17 @@ Uploads return `upload_id`, `session_id` and `auth_token`. Send the opaque
 supplies the local uploaded file reference inside an untrusted attachment boundary;
 image/audio interpretation uses the configured vision/transcription tools. Files
 are stored under the serving workspace’s `.odek-artifacts/uploads/`, with a suffix
-derived from detected MIME, so workspace-confined tools can read them. The home
-storage janitor does not sweep these project uploads; remove them when no longer
-needed. Binary
-uploads are not silently decoded as text or sent as native model image parts.
+derived from detected MIME, so workspace-confined tools can read them. Uploads are removed with their sessions and swept at startup and every minute.
+The workspace retains at most 128 uploads / 256 MiB for seven days, evicting the
+oldest first. Attachments in active turns are pinned against retention until the
+turn ends; new uploads are rejected if pinned files leave insufficient capacity.
+Session deletion still removes its uploads immediately. Upload handles are process-local; pending uploads must be reattached
+after a restart. Existing files count toward retention without being trusted as
+new user uploads. Binary uploads are not silently decoded as text or sent as native model image parts.
 
 The `artifact` WebSocket event carries session-bound metadata for a validated MCP
 artifact. Preview capture revalidates roots and digest and opens through `os.Root`.
+Preview reads share a 40 MiB per-turn budget, including failed captures.
 Each copy is capped at 10 MiB; the process cache is capped at 40 MiB/128 entries and
 is cleared on restart. Missing/evicted artifacts return 404. Original extension
 files are unaffected. Media rendering uses authenticated Blob URLs; HTML/SVG and

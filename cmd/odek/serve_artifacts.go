@@ -43,7 +43,31 @@ var browserArtifacts = browserArtifactStore{entries: map[string]browserArtifact{
 // capture takes an immutable, bounded copy through an allowed filesystem root.
 // Later downloads cannot race a tool replacing a file or changing a symlink.
 func (cache *browserArtifactStore) capture(sid string, ref artifact.Ref, roots []string) (browserArtifact, error) {
-	path, err := artifact.Validate(ref, roots)
+	return cache.captureBudget(sid, ref, roots, nil)
+}
+
+// previewBudget bounds aggregate content reads across a turn, including failed
+// captures, so many references cannot amplify preview work without limit.
+type previewBudget struct {
+	sync.Mutex
+	remaining int64
+}
+
+func (b *previewBudget) reserve(n int64) bool {
+	if b == nil {
+		return true
+	}
+	b.Lock()
+	defer b.Unlock()
+	if n > b.remaining {
+		return false
+	}
+	b.remaining -= n
+	return true
+}
+
+func (cache *browserArtifactStore) captureBudget(sid string, ref artifact.Ref, roots []string, budget *previewBudget) (browserArtifact, error) {
+	path, err := artifact.ValidateMetadata(ref, roots)
 	if err != nil {
 		return browserArtifact{}, err
 	}
@@ -76,7 +100,15 @@ func (cache *browserArtifactStore) capture(sid string, ref artifact.Ref, roots [
 			root.Close()
 			return browserArtifact{}, fmt.Errorf("artifact exceeds preview limit or is not a regular file")
 		}
-		data, e = io.ReadAll(io.LimitReader(f, previewArtifactLimit+1))
+		if !budget.reserve(stat.Size() + 1) {
+			f.Close()
+			root.Close()
+			return browserArtifact{}, fmt.Errorf("turn preview budget exhausted")
+		}
+		data, e = io.ReadAll(io.LimitReader(f, stat.Size()+1))
+		if e == nil && int64(len(data)) != stat.Size() {
+			e = fmt.Errorf("artifact changed during capture")
+		}
 		f.Close()
 		root.Close()
 		if e != nil {
@@ -162,7 +194,11 @@ func handleBrowserArtifacts(store *session.Store, cache *browserArtifactStore) h
 // Uploads are addressed by opaque IDs in prompts. Client-supplied paths never
 // become attachment paths; only the server-created, session-bound file is used.
 type browserUpload struct {
+	restored              bool
+	pins                  int
 	sessionID, path, name string
+	workspace             string
+	created               time.Time
 	size                  int
 }
 
@@ -215,24 +251,30 @@ func handleBrowserUpload(store *session.Store, model, workspace string) http.Han
 		}
 		browserUploads.Lock()
 		defer browserUploads.Unlock()
-		if len(browserUploads.entries) >= 128 {
-			http.Error(w, "upload limit reached for this server; restart to clear upload handles", 429)
+		if _, err := store.Load(sess.ID); err != nil {
+			http.Error(w, "upload session unavailable", 409)
+			return
+		}
+		if err := pruneBrowserUploadsLocked(workspace, len(data), time.Now()); err != nil {
+			http.Error(w, "upload retention cleanup failed", 503)
 			return
 		}
 		id := newTurnID()
 		suffix := map[string]string{"image/png": ".png", "image/jpeg": ".jpg", "image/gif": ".gif", "image/webp": ".webp", "audio/mpeg": ".mp3", "audio/wave": ".wav", "audio/x-wav": ".wav", "audio/ogg": ".ogg", "application/ogg": ".ogg", "application/pdf": ".pdf"}[media]
 		rel := filepath.Join(".odek-artifacts", "uploads", sess.ID, id+suffix)
-		root, err := os.OpenRoot(workspace)
+		root, err := openUploadRoot(workspace, true)
 		if err != nil {
 			http.Error(w, "upload storage unavailable", 500)
 			return
 		}
 		defer root.Close()
-		if err = root.MkdirAll(filepath.Dir(rel), 0700); err != nil {
+		sessionRoot, err := openUploadDir(root, sess.ID, true)
+		if err != nil {
 			http.Error(w, "upload storage unavailable", 500)
 			return
 		}
-		f, err := root.OpenFile(rel, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+		defer sessionRoot.Close()
+		f, err := sessionRoot.OpenFile(filepath.Base(rel), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 		if err != nil {
 			http.Error(w, "cannot store upload", 500)
 			return
@@ -240,12 +282,12 @@ func handleBrowserUpload(store *session.Store, model, workspace string) http.Han
 		_, err = f.Write(data)
 		closeErr := f.Close()
 		if err != nil || closeErr != nil {
-			_ = root.Remove(rel)
+			_ = sessionRoot.Remove(filepath.Base(rel))
 			http.Error(w, "cannot store upload", 500)
 			return
 		}
 		full := filepath.Join(workspace, rel)
-		browserUploads.entries[id] = browserUpload{sessionID: sess.ID, path: full, name: name, size: len(data)}
+		browserUploads.entries[id] = browserUpload{sessionID: sess.ID, path: full, name: name, size: len(data), workspace: workspace, created: time.Now().UTC()}
 		digest := sha256.Sum256(data)
 		size := int64(len(data))
 		ref := artifact.Ref{Schema: artifact.SchemaArtifactRef, ID: id, URI: "file://" + full, MediaType: media, SHA256: hex.EncodeToString(digest[:]), SizeBytes: &size}
@@ -263,5 +305,28 @@ func resolveBrowserUpload(id, sid string) (browserUpload, bool) {
 	browserUploads.Lock()
 	defer browserUploads.Unlock()
 	item, ok := browserUploads.entries[id]
-	return item, ok && item.sessionID == sid
+	return item, ok && !item.restored && item.sessionID == sid
+}
+
+// acquireBrowserUpload protects an accepted attachment from retention for a turn.
+func acquireBrowserUpload(id, sid string) (browserUpload, func(), bool) {
+	browserUploads.Lock()
+	defer browserUploads.Unlock()
+	item, ok := browserUploads.entries[id]
+	if !ok || item.restored || item.sessionID != sid {
+		return browserUpload{}, nil, false
+	}
+	item.pins++
+	browserUploads.entries[id] = item
+	var once sync.Once
+	return item, func() {
+		once.Do(func() {
+			browserUploads.Lock()
+			defer browserUploads.Unlock()
+			if current, ok := browserUploads.entries[id]; ok {
+				current.pins--
+				browserUploads.entries[id] = current
+			}
+		})
+	}, true
 }

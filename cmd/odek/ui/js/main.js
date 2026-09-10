@@ -49,13 +49,15 @@ if (S.savedEmptyStateNode) {
   });
 }
 
-const THEMES = ['ember-dark', 'ember-light', 'high-contrast'];
-const THEME_GLYPH = { 'ember-dark': '◐', 'ember-light': '☀', 'high-contrast': '▣' };
+const THEMES = ['ember-dark', 'ember-light', 'midnight', 'high-contrast'];
+const THEME_GLYPH = { 'ember-dark': '◐', 'ember-light': '☀', 'midnight': '☾', 'high-contrast': '▣' };
+
+const THEME_NAME = { 'ember-dark': 'Ember', 'ember-light': 'Porcelain', midnight: 'Midnight', 'high-contrast': 'High contrast' };
 
 function applyTheme(name) {
   const theme = THEMES.includes(name) ? name : 'ember-dark';
   S.theme = theme;
-  document.body.classList.remove('light', 'theme-ember-dark', 'theme-ember-light', 'theme-high-contrast', 'theme-classic');
+  document.body.classList.remove('light', 'theme-ember-dark', 'theme-ember-light', 'theme-high-contrast', 'theme-classic', 'theme-midnight');
   document.body.classList.add('theme-' + theme);
   if (theme === 'ember-light') document.body.classList.add('light');
   const root = document.documentElement;
@@ -64,7 +66,8 @@ function applyTheme(name) {
   const btn = document.getElementById('theme-btn');
   if (btn) {
     btn.textContent = THEME_GLYPH[theme] || '◐';
-    btn.title = 'Theme: ' + theme + ' (click to cycle)';
+    btn.title = 'Theme: ' + THEME_NAME[theme] + ' (click to cycle)';
+    btn.setAttribute('aria-label', btn.title);
   }
 }
 
@@ -72,7 +75,7 @@ function cycleTheme(want) {
   if (want && THEMES.includes(want)) { applyTheme(want); return; }
   const i = THEMES.indexOf(S.theme);
   applyTheme(THEMES[(i + 1) % THEMES.length]);
-  showToast('Theme: ' + S.theme);
+  showToast('Theme: ' + THEME_NAME[S.theme]);
 }
 
 applyTheme(S.theme);

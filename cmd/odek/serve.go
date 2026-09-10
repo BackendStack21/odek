@@ -510,7 +510,7 @@ func serveCmd(args []string) error {
 
 	// ONE background-command manager for the whole serve process: agents
 	// are per connection/run, but jobs must outlive them. Nil when the
-	// feature is disabled (or in sandbox mode — see newServeBGManager).
+	// feature is disabled. Sandbox routing is bound per agent.
 	bgMgr := newServeBGManager(resolved)
 	setServeBGManager(bgMgr)
 
@@ -556,6 +556,8 @@ func serveCmd(args []string) error {
 	maintCtx, maintCancel := context.WithCancel(context.Background())
 	defer maintCancel()
 	startStorageMaintenance(maintCtx, resolved)
+	workspace, _ := os.Getwd()
+	startServeRetention(maintCtx, store, workspace, bgMgr)
 
 	return serveOnListener(listener, mux)
 }
@@ -616,6 +618,7 @@ func newServeMux(d serveMuxDeps) *http.ServeMux {
 		}))))
 	}
 	workspace, _ := os.Getwd()
+	wireServeSessionCleanup(store, d.BGManager, workspace)
 	mux.Handle("/api/uploads", apiAuth(handleBrowserUpload(store, resolved.Model, workspace)))
 	mux.Handle("/api/artifacts", apiAuth(handleBrowserArtifacts(store, &browserArtifacts)))
 	mux.Handle("/api/artifacts/", apiAuth(handleBrowserArtifacts(store, &browserArtifacts)))
@@ -755,6 +758,7 @@ func serveOnListener(listener net.Listener, mux *http.ServeMux) error {
 	// Catch Ctrl-C and SIGTERM.
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(quit)
 
 	serveErr := make(chan error, 1)
 	go func() {
@@ -763,9 +767,10 @@ func serveOnListener(listener net.Listener, mux *http.ServeMux) error {
 		}
 	}()
 
+	var servingError error
 	select {
-	case err := <-serveErr:
-		return err
+	case servingError = <-serveErr:
+		fmt.Fprintf(os.Stderr, "odek serve: listener failed: %v; shutting down...\n", servingError)
 	case sig := <-quit:
 		fmt.Fprintf(os.Stderr, "\nodek serve: %s received, shutting down...\n", sig)
 	case <-serveShutdownCh:
@@ -808,8 +813,9 @@ func serveOnListener(listener net.Listener, mux *http.ServeMux) error {
 		fmt.Fprintln(os.Stderr, "odek serve: drain timeout — some containers may still be running")
 	}
 
+	retrySandboxCleanup()
 	fmt.Fprintln(os.Stderr, "odek serve: stopped")
-	return nil
+	return servingError
 }
 
 // drainServeWork waits (bounded) for all live WebSocket handler goroutines
@@ -938,7 +944,11 @@ func newServeAgent(resolved config.ResolvedConfig, system string, runKey string,
 		if sandboxErr != nil {
 			return nil, nil, nil, nil, nil, nil, approver, fmt.Errorf("sandbox: %w", sandboxErr)
 		}
-		_ = sbContainerName // not used in serve mode
+		if bgRT != nil {
+			bgRT.SetContainer(sbContainerName)
+			bgRT.serveSandbox = &serveSandboxLease{container: sbContainerName, cleanup: sandboxCleanup}
+			sandboxCleanup = bgRT.serveSandbox.close
+		}
 	} else {
 		warnSandboxDisabled()
 	}
@@ -963,6 +973,12 @@ func newServeAgent(resolved config.ResolvedConfig, system string, runKey string,
 	// Build the shared prompt-injection guard for this connection.
 	injectionGuard, err := guard.New(&resolved.Guard)
 	if err != nil {
+		if sandboxCleanup != nil {
+			_ = sandboxCleanup()
+		}
+		if mcpCleanup != nil {
+			mcpCleanup()
+		}
 		return nil, nil, nil, nil, nil, nil, approver, fmt.Errorf("guard: %w", err)
 	}
 	guardCleanup := func() error {
@@ -1938,11 +1954,12 @@ func handlePrompt(
 		var wrapped []string
 		for _, att := range msg.Attachments {
 			if att.UploadID != "" {
-				upload, ok := resolveBrowserUpload(att.UploadID, msg.SessionID)
+				upload, release, ok := acquireBrowserUpload(att.UploadID, msg.SessionID)
 				if !ok {
 					sendError(send, "attachment unavailable or belongs to another session")
 					return currSess
 				}
+				defer release()
 				total += upload.size
 				if total > maxTotalAttachmentBytes {
 					sendError(send, "total attachment size exceeds 10 MB")
@@ -2138,11 +2155,12 @@ func handlePrompt(
 	} else if auditSessID != "" {
 		ctx = withReadLedger(ctx, auditSessID)
 	}
+	previewAllowance := &previewBudget{remaining: previewCacheLimit}
 	ctx = artifact.WithObserver(ctx, func(ref artifact.Ref, roots []string) {
 		if sid == "" {
 			return
 		}
-		if item, err := browserArtifacts.capture(sid, ref, roots); err == nil {
+		if item, err := browserArtifacts.captureBudget(sid, ref, roots, previewAllowance); err == nil {
 			send(map[string]any{"type": "artifact", "artifact": item})
 		}
 	})
@@ -3294,6 +3312,9 @@ var staticFiles = map[string][2]string{
 	"/app.js":    {"ui/app.js", "application/javascript; charset=utf-8"},
 	// Self-hosted font (variable weight 100–700) so the UI works offline and
 	// does not depend on the Google Fonts CDN.
+	"/fonts/geist.woff2":         {"ui/fonts/geist.woff2", "font/woff2"},
+	"/fonts/geist-mono.woff2":    {"ui/fonts/geist-mono.woff2", "font/woff2"},
+	"/fonts/geist-LICENSE.txt":   {"ui/fonts/geist-LICENSE.txt", "text/plain; charset=utf-8"},
 	"/fonts/manrope.ttf":         {"ui/fonts/manrope.ttf", "font/ttf"},
 	"/fonts/manrope-LICENSE.txt": {"ui/fonts/manrope-LICENSE.txt", "text/plain; charset=utf-8"},
 	"/fonts/azeret-mono.woff2":   {"ui/fonts/azeret-mono.woff2", "font/woff2"},

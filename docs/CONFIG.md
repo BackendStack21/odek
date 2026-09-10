@@ -1209,10 +1209,15 @@ ends — there is no detach mode in v1.
 A project `odek.json` may only LOWER the numeric caps (same clamp philosophy
 as `limits`). Headless `odek run` and scheduled runs are single-session
 processes: background jobs end when the run ends. `/jobs` (REPL and Telegram)
-lists live jobs. On `odek serve` with sandbox mode enabled the `bg_*` tools
-are removed entirely (fail-closed: the shared manager cannot bind one
-container name across sessions) — run serve without sandbox for background
-commands.
+lists live jobs. On `odek serve`, `bg_*` tools are available in sandbox mode. Each job is
+pinned to the launching agent’s container; disconnecting or completing a REST
+run releases the agent’s ownership but keeps that container until its jobs end.
+Job access remains session-scoped across reconnects. Server shutdown stops all
+jobs and drains pending cleanup with a bounded deadline. Deleting a session
+stops its jobs and rejects late launches. Failed container removals retain retry
+ownership for maintenance and final shutdown; Docker removal attempts are bounded.
+Missing sandbox routing fails closed.
+Sandbox images must provide `sh` and `setsid` for process-group cleanup.
 
 Wake-on-complete also emits two WebSocket frames for clients: `bg_job` on
 every job transition (`job_id`, `session_id`, `status`, and — once terminal —

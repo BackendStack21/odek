@@ -8,7 +8,7 @@ modules. It adds no frontend build step or runtime framework dependency.
 | Improvement | Implemented behavior |
 | --- | --- |
 | Trustworthy execution | Correlated call IDs, explicit outcomes, persisted historical outcomes, read/write receipt distinction, Go test package recognition. |
-| Workspace design | Bundled Manrope typography, comfortable/compact density, collapsible desktop session rail (hidden by default), resizable inspector, consistent SVG icons, mobile two-row header, dark/light/high-contrast themes and reduced motion. |
+| Workspace design | Bundled Geist Sans typography, comfortable/compact density, collapsible desktop session rail (hidden by default), resizable inspector, consistent SVG icons, mobile two-row header, Ember/Porcelain/Midnight/high-contrast themes and reduced motion. |
 | Tool visualization | Shared code, unified/aligned split diff, terminal, search references, source links, HTTP status, expandable JSON and text views; tool-specific plan steps, parallel command outcomes, batch file/edit groups and semantic headers; bounded pages, search, raw, copy and save. |
 | Result navigation | Session result collection, inspect/jump controls, temporal plan-step links, agent trace links and searchable background-job output. |
 | Session recovery | Tab-scoped text drafts, in-memory attachment drafts, session-owned prompt queues, explicit resume after interruption, late-upload session guards. |

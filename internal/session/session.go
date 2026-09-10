@@ -10,7 +10,7 @@
 // or by listing metadata for browsing.
 //
 // The Store is intentionally minimal — it's a JSON file manager, not a
-// database. Session struct fields are all public, so callers can mutate
+// database. Session content fields are public, so callers can mutate
 // the session directly and call Save(). This makes advanced operations
 // (editing, truncating, merging sessions) trivial at the CLI layer.
 package session
@@ -46,8 +46,12 @@ var MaxSessionFileBytes = 32 * 1024 * 1024 // 32 MiB
 // ── Types ──────────────────────────────────────────────────────────────
 
 // Session represents a single multi-turn conversation with the agent.
-// All fields are exported for direct manipulation at the CLI layer.
+// Content fields are exported for direct manipulation at the CLI layer.
 type Session struct {
+	// A loaded snapshot may update its original ID only while it still exists.
+	// Assigning a new ID explicitly creates a separate session.
+	persistedID string
+
 	ID        string    `json:"id"`                   // e.g. "20260518-abc123…" (128-bit random suffix)
 	AuthToken string    `json:"auth_token,omitempty"` // session-scoped secret required by serve handlers
 	CreatedAt time.Time `json:"created_at"`           // first message time
@@ -533,6 +537,11 @@ func (s *Store) saveLocked(sess *Session) error {
 		return err
 	}
 	defer unlock()
+	if sess.persistedID == sess.ID {
+		if _, err := os.Lstat(s.path(sess.ID)); err != nil {
+			return fmt.Errorf("session: cannot update removed session: %w", err)
+		}
+	}
 
 	// Redact secrets before writing to disk. This is defense-in-depth: the
 	// loop engine already redacts tool outputs, but this catches any secrets
@@ -608,6 +617,8 @@ func (s *Store) saveLocked(sess *Session) error {
 	if err := fsatomic.WriteFile(s.path(sess.ID), data, 0600); err != nil {
 		return fmt.Errorf("session: write: %w", err)
 	}
+
+	sess.persistedID = sess.ID
 
 	// Update the index atomically.
 	idx := s.loadIndex()
@@ -741,6 +752,7 @@ func (s *Store) Load(id string) (*Session, error) {
 	if sess.ID != id {
 		return nil, fmt.Errorf("session: load %q: ID mismatch (file contains %q)", id, sess.ID)
 	}
+	sess.persistedID = sess.ID
 	return &sess, nil
 }
 

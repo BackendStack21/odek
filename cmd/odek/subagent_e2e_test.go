@@ -92,6 +92,7 @@ func TestMain(m *testing.M) {
 	keep := map[string]bool{
 		"ODEK_NO_SANDBOX":               true,
 		"ODEK_E2E":                      true,
+		"ODEK_BG_SANDBOX_TEST_IMAGE":    true,
 		"ODEK_TEST_HOME":                true,
 		"ODEK_TEST_KEEP_REAL_HOME":      true,
 		"ODEK_SUPPRESS_SANDBOX_WARNING": true,

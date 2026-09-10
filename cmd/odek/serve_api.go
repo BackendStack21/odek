@@ -845,6 +845,15 @@ func handleMemoryConsolidate(memoryDir string, resolved config.ResolvedConfig) h
 		if resolved.LLM.RequestTimeoutSeconds > 0 {
 			timeout = resolved.LLM.RequestTimeoutSeconds
 		}
+		if body.Mode == "apply" {
+			mm := memory.NewMemoryManager(memoryDir, nil, resolved.Memory)
+			if err := mm.ApplyConsolidation(body.Target, body.Preview); err != nil {
+				http.Error(w, err.Error(), http.StatusConflict)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
 		client, err := llmclient.Dial(resolved.Provider, resolved.Model, resolved.APIKey, resolved.BaseURL)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
@@ -865,14 +874,6 @@ func handleMemoryConsolidate(memoryDir string, resolved config.ResolvedConfig) h
 				return
 			}
 			writeAPIJSON(w, 200, preview)
-			return
-		}
-		if body.Mode == "apply" {
-			if err := mm.ApplyConsolidation(body.Target, body.Preview); err != nil {
-				http.Error(w, err.Error(), 409)
-				return
-			}
-			w.WriteHeader(204)
 			return
 		}
 		if body.Mode != "" {

@@ -63,15 +63,10 @@ func backgroundSettingsFrom(resolved config.ResolvedConfig) BackgroundSettings {
 	}
 }
 
-// newServeBGManager builds the shared manager from resolved config. It
-// returns nil when background commands are disabled — or when sandbox mode
-// is on: the manager's SandboxWrap bakes in ONE container name, but serve
-// creates a fresh container per connection, so bg spawns cannot be routed
-// through the agent's container today. Rather than letting bg_start run on
-// the host while the operator believes everything is confined, the feature
-// stays off in serve sandbox mode.
+// newServeBGManager shares job accounting across agents; sandbox routing is
+// supplied per launch by the originating agent and required in sandbox mode.
 func newServeBGManager(resolved config.ResolvedConfig) *bgproc.Manager {
-	if !resolved.Background.Enabled || resolved.Sandbox {
+	if !resolved.Background.Enabled {
 		return nil
 	}
 	s := backgroundSettingsFrom(resolved)
@@ -82,8 +77,12 @@ func newServeBGManager(resolved config.ResolvedConfig) *bgproc.Manager {
 		s.MaxOutputBytes = 1 << 20
 	}
 	cfg := bgproc.Config{
+		RequireSandbox:    resolved.Sandbox,
 		MaxJobsPerSession: s.MaxJobs,
 		MaxOutputBytes:    s.MaxOutputBytes,
+	}
+	if resolved.Dangerous.StripSecretsEnvChildrenEnabled() {
+		cfg.StripEnvNames = secretsEnvNames()
 	}
 	if s.MaxTimeoutSeconds > 0 {
 		cfg.MaxTimeout = time.Duration(s.MaxTimeoutSeconds) * time.Second

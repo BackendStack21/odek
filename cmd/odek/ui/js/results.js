@@ -101,6 +101,7 @@ export function renderResult(host, { name = '', output = '', args = '', compact 
   let limit = compact ? (view ? 3 : 12) : RESULT_PAGE;
   const draw = () => {
     body.textContent = '';
+    body.dataset.toolKind = view && !plain ? view.kind : '';
     if (view && !plain) {
       const query = (search.value || '').toLowerCase();
       const items = view.items.filter(item => !query || JSON.stringify(item).toLowerCase().includes(query));
