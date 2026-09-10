@@ -40,7 +40,7 @@ func (l *serveSandboxLease) acquire() (bgproc.SpawnOptions, error) {
 }
 
 // cleanupClosed serializes attempts and retains ownership after failure.
-// Cleanup callbacks must be bounded; production uses a Docker command deadline.
+// Production callbacks own bounded retries; the lease must not multiply them.
 func (l *serveSandboxLease) cleanupClosed() error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -49,18 +49,11 @@ func (l *serveSandboxLease) cleanupClosed() error {
 	}
 	// Publish before any blocking removal so shutdown can always find us.
 	pendingSandboxCleanup.Store(l, struct{}{})
-	var err error
-	for attempt := 0; attempt < 3; attempt++ {
-		if err = l.cleanup(); err == nil {
-			l.cleanup = nil
-			pendingSandboxCleanup.Delete(l)
-			return nil
-		}
-		if attempt < 2 {
-			time.Sleep(100 * time.Millisecond)
-		}
+	err := l.cleanup()
+	if err == nil {
+		l.cleanup = nil
+		pendingSandboxCleanup.Delete(l)
 	}
-	pendingSandboxCleanup.Store(l, struct{}{})
 	return err
 }
 

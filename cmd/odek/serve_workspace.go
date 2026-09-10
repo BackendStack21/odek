@@ -18,7 +18,7 @@ func workspaceCapabilities() map[string]any {
 }
 func handleCapabilities(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", 405)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	writeAPIJSON(w, 200, workspaceCapabilities())
@@ -29,7 +29,7 @@ func handleCapabilities(w http.ResponseWriter, r *http.Request) {
 func handleSchedules(home string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet && r.Method != http.MethodPost && r.Method != http.MethodDelete {
-			http.Error(w, "method not allowed", 405)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
 		store, err := schedule.NewStoreAt(home)
@@ -122,7 +122,7 @@ func handleMaintenance(home string, resolved config.ResolvedConfig) http.Handler
 			return
 		}
 		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", 405)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
 		var body struct {

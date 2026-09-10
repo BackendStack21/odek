@@ -38,6 +38,7 @@ export const S = {
   // ── Connection / session ──
   ws: null,
   sessionId: null,
+  viewVersion: 0, // invalidates inspector requests across session changes
   sessionTokens: {}, // session id -> auth token
   busy: false,
   health: null,      // last server info snapshot (health.js)

@@ -183,6 +183,26 @@ sidebarSearch.addEventListener('keydown', (e) => {
 });
 syncSearchClear();
 
+// Clear transient state before any new session data can render.
+function resetSessionViews() {
+  S.viewVersion++;
+  if (S.currentTurnId) {
+    S.closedTurnIds ||= new Set();
+    S.closedTurnIds.add(S.currentTurnId);
+    if (S.closedTurnIds.size > 80) S.closedTurnIds.delete(S.closedTurnIds.values().next().value);
+  }
+  S.currentTurnId = null;
+  S.currentTurnInitiated = 'operator';
+  S.pendingWakeChip = null;
+  S.lastPrompt = '';
+  S.lastFailedPrompt = '';
+  S.runStartedAt = 0;
+  S.runIterations = 0;
+  S.resetPanels?.();
+}
+
+let sessionLoadVersion = 0;
+
 // ── New Session ──
 export function newSession() {
   // F-A2: a live turn owns the transcript and the socket. Ask before
@@ -192,11 +212,13 @@ export function newSession() {
     if (!confirm('A turn is still running. Cancel it and switch to a new session?')) return;
     if (cancelBtn) cancelBtn.click();
   }
+  sessionLoadVersion++;
   S.pauseQueue?.();
   S.saveDraft?.();
   S.saveAttachments?.();
   S.clearResults?.();
   S.sessionId = null;
+  resetSessionViews();
   resetMetrics();
   // Plan and jobs are session-scoped — drop both before the next attach.
   S.jobs = [];
@@ -238,6 +260,7 @@ export async function loadAndRenderSession(sid) {
     if (!confirm('A turn is still running. Cancel it and switch sessions?')) return;
     if (cancelBtn) cancelBtn.click();
   }
+  const loadVersion = ++sessionLoadVersion;
   try {
     // Bootstrap the session token when missing (ensureSessionToken captures
     // the server's X-Session-Token echo on its detail fetch).
@@ -246,6 +269,7 @@ export async function loadAndRenderSession(sid) {
       token = await ensureSessionToken(sid);
     }
     const sess = await getSession(sid, token || undefined);
+    if (loadVersion !== sessionLoadVersion) return;
 
     // Switch session ID so the next prompt continues this session, and
     // seed the metrics cluster from the stored totals.
@@ -254,6 +278,7 @@ export async function loadAndRenderSession(sid) {
   S.saveAttachments?.();
     S.clearResults?.();
     S.sessionId = sid;
+    resetSessionViews();
     S.restoreDraft?.();
   S.restoreAttachments?.();
     metricsFromSession(sess);

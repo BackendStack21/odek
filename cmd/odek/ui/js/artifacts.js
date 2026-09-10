@@ -36,4 +36,4 @@ export async function loadArtifacts() {
  try{const data=await apiFetch('/api/artifacts?session_id='+encodeURIComponent(sid),{sessionToken:getSessionToken(sid)});if(version!==requestVersion||sid!==S.sessionId)return;for(const item of data.artifacts||[])add(item);if(!(data.artifacts||[]).length)byId('artifact-list')?.appendChild(node('p','management-note','No captured artifacts in this session.'));if(data.retention)byId('artifact-list')?.appendChild(node('p','management-note',data.retention));}catch(e){if(version===requestVersion){const root=byId('artifact-list');if(root)root.textContent=e.status===404?'Artifact previews are unavailable on this server.':e.message;}}
 }
 S.onArtifact=add;S.resetArtifacts=reset;
-byId('ptab-outputs')?.addEventListener('click',loadArtifacts);
+S.loadArtifacts = loadArtifacts;

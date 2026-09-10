@@ -85,6 +85,10 @@ function refreshActivePanel() {
     loadMemory();
     loadSkills();
     loadTools();
+  } else if (name === 'manage') {
+    S.loadManagement?.();
+  } else if (name === 'outputs') {
+    S.loadArtifacts?.();
   } else if (name === 'ops') {
     loadRuns();
     loadEvents();
@@ -135,11 +139,15 @@ overlay.addEventListener('click', () => togglePanels(false));
 
 // ── Memory panel ──
 async function loadMemory() {
+  const version = S.viewVersion;
+  const sid = S.sessionId;
+  const current = () => version === S.viewVersion && sid === S.sessionId;
   const userList = document.getElementById('mf-user-list');
   const envList = document.getElementById('mf-env-list');
   const pendingList = document.getElementById('mf-pending-list');
   try {
     const mem = await getMemory();
+    if (!current()) return;
     renderFacts(userList, (mem.facts && mem.facts.user) || [], 'user');
     renderFacts(envList, (mem.facts && mem.facts.env) || [], 'env');
     const uc = document.getElementById('mf-user-count');
@@ -148,6 +156,7 @@ async function loadMemory() {
     if (ec) ec.textContent = ((mem.facts && mem.facts.env) || []).length + '/' + (mem.fact_limits ? mem.fact_limits.env : '—');
     renderPending(pendingList, (mem.episodes && mem.episodes.pending) || []);
   } catch (err) {
+    if (!current()) return;
     userList.innerHTML = '<div class="mf-empty">failed to load: ' + escapeHtml(err.message) + '</div>';
   }
 }
@@ -270,10 +279,12 @@ function wireConsolidate(btnId, target) {
   const btn = document.getElementById(btnId);
   if (!btn) return;
   btn.addEventListener('click', async () => {
+    const version = S.viewVersion;
     btn.disabled = true;
     try {
       const preview = await previewMemory(target);
-      const card=document.createElement('section');card.className='management-card';
+      if (version !== S.viewVersion) return;
+      const card=document.createElement('section');card.className='management-card memory-preview';
       const title=document.createElement('h4');title.textContent='Review proposed memory changes';card.appendChild(title);
       renderResult(card,{name:'diff',output:'--- Current facts\n+++ Proposed facts\n'+(preview.before||[]).map(x=>'- '+x).join('\n')+'\n'+(preview.after||[]).map(x=>'+ '+x).join('\n')});
       const apply=document.createElement('button');apply.type='button';apply.className='management-action';apply.textContent='Apply reviewed changes';
@@ -291,9 +302,13 @@ wireConsolidate('mf-env-consolidate', 'env');
 
 // ── Skills panel ──
 async function loadSkills() {
+  const version = S.viewVersion;
+  const sid = S.sessionId;
+  const current = () => version === S.viewVersion && sid === S.sessionId;
   const list = document.getElementById('skills-list');
   try {
     const data = await getSkills();
+    if (!current()) return;
     const skills = (data && data.skills) || [];
     list.textContent = '';
     if (!skills.length) {
@@ -363,6 +378,7 @@ async function loadSkills() {
             showToast('skill promoted');
             loadSkills();
           } catch (err) {
+            if (!current()) return;
             promo.disabled = false;
             showToast('promote failed: ' + err.message);
           }
@@ -373,15 +389,20 @@ async function loadSkills() {
       list.appendChild(row);
     });
   } catch (err) {
+    if (!current()) return;
     list.innerHTML = '<div class="mf-empty">failed to load: ' + escapeHtml(err.message) + '</div>';
   }
 }
 
 // ── Tools panel ──
 async function loadTools() {
+  const version = S.viewVersion;
+  const sid = S.sessionId;
+  const current = () => version === S.viewVersion && sid === S.sessionId;
   const list = document.getElementById('tools-list');
   try {
     const data = await getTools();
+    if (!current()) return;
     const tools = (data && data.tools) || [];
     list.textContent = '';
     const header = document.createElement('div');
@@ -408,6 +429,7 @@ async function loadTools() {
       list.appendChild(row);
     });
   } catch (err) {
+    if (!current()) return;
     list.innerHTML = '<div class="mf-empty">failed to load: ' + escapeHtml(err.message) + '</div>';
   }
 }
@@ -425,8 +447,10 @@ function stopRunPolling() {
 }
 
 async function loadRuns() {
+  const version = S.viewVersion;
   stopRunPolling();
   await refreshRuns();
+  if (version !== S.viewVersion || !workspaceOpen('ops')) return;
   runsPollTimer = setInterval(refreshRuns, 3000);
 }
 
@@ -439,6 +463,9 @@ const RUN_STATUS_CLASS = {
 };
 
 async function refreshRuns() {
+  const version = S.viewVersion;
+  const sid = S.sessionId;
+  const current = () => version === S.viewVersion && sid === S.sessionId;
   const list = document.getElementById('runs-list');
   if (!workspaceOpen('ops')) {
     stopRunPolling();
@@ -446,6 +473,7 @@ async function refreshRuns() {
   }
   try {
     const data = await listRuns(30);
+    if (!current()) return;
     const runs = (data && data.runs) || [];
     const preserved=new Map();
     list.querySelectorAll('.run-row').forEach(row=>{const detail=row.querySelector('.run-detail');if(detail?.open)preserved.set(row.dataset.runId,detail);});
@@ -463,6 +491,7 @@ async function refreshRuns() {
     }
     runs.forEach(run => {const row=renderRunRow(run);const detail=preserved.get(run.id);if(detail){row.querySelector('.run-detail')?.remove();row.appendChild(detail);}list.appendChild(row);});
   } catch (err) {
+    if (!current()) return;
     list.innerHTML = '<div class="mf-empty">failed to load: ' + escapeHtml(err.message) + '</div>';
   }
 }
@@ -591,9 +620,16 @@ function renderRunRow(run) {
 // ── Events panel ───────────────────────────────────────────────────────
 
 async function loadEvents() {
+  const version = S.viewVersion;
+  const sid = S.sessionId;
+  const current = () => version === S.viewVersion && sid === S.sessionId;
   const list = document.getElementById('events-list');
+  if (document.getElementById('events-session-filter')?.checked && !sid) {
+    list.textContent = 'No events in this new session.'; return;
+  }
   try {
     const data = await getEvents({ limit: 100, sessionId: document.getElementById('events-session-filter')?.checked ? S.sessionId || '' : '' });
+    if (!current()) return;
     const evs = (data && data.events) || [];
     list.textContent = '';
     const header = document.createElement('div');
@@ -629,6 +665,7 @@ async function loadEvents() {
       list.appendChild(row);
     });
   } catch (err) {
+    if (!current()) return;
     list.innerHTML = '<div class="mf-empty">failed to load: ' + escapeHtml(err.message) + '</div>';
   }
 }
@@ -648,12 +685,17 @@ function stopAgentsPolling() {
 }
 
 async function loadJobs() {
+  const version = S.viewVersion;
   stopJobsPolling();
   await refreshJobs();
+  if (version !== S.viewVersion || !workspaceOpen('now')) return;
   jobsPollTimer = setInterval(refreshJobs, 3000);
 }
 
 async function refreshJobs() {
+  const version = S.viewVersion;
+  const sid = S.sessionId;
+  const current = () => version === S.viewVersion && sid === S.sessionId;
   const list = document.getElementById('jobs-list');
   if (!list) return;
   if (!workspaceOpen('now')) { stopJobsPolling(); return; }
@@ -669,6 +711,7 @@ async function refreshJobs() {
   }
   try {
     const data = await listJobs(getSessionToken(S.sessionId) || undefined);
+    if (!current()) return;
     const jobs = (data && data.jobs) || [];
     S.jobs = jobs;
     paintIntent();
@@ -689,6 +732,7 @@ async function refreshJobs() {
     jobs.forEach((j) => {const row=renderJobRow(j);if(preserved.has(j.id))row.appendChild(preserved.get(j.id));list.appendChild(row);});
     badgeNow();
   } catch (err) {
+    if (!current()) return;
     list.innerHTML = '<div class="mf-empty">failed to load: ' + escapeHtml(err.message) + '</div>';
   }
 }
@@ -760,17 +804,24 @@ async function showJobOutput(id, row) {
 }
 
 async function loadAgents() {
+  const version = S.viewVersion;
   stopAgentsPolling();
   await refreshAgents();
+  if (version !== S.viewVersion || !workspaceOpen('now')) return;
   agentsPollTimer = setInterval(refreshAgents, 3000);
 }
 
 async function refreshAgents() {
+  const version = S.viewVersion;
+  const sid = S.sessionId;
+  const current = () => version === S.viewVersion && sid === S.sessionId;
   const list = document.getElementById('agents-list');
   if (!list) return;
   if (!workspaceOpen('now')) { stopAgentsPolling(); return; }
+  if (!sid) { list.textContent = 'No sub-agents in this new session.'; return; }
   try {
     const data = await listSubagents();
+    if (!current()) return;
     const entries = (data && data.entries) || [];
     list.textContent = '';
     const header = document.createElement('div');
@@ -818,6 +869,7 @@ async function refreshAgents() {
       list.appendChild(row);
     });
   } catch (err) {
+    if (!current()) return;
     list.innerHTML = '<div class="mf-empty">failed to load: ' + escapeHtml(err.message) + '</div>';
   }
 }
@@ -828,6 +880,9 @@ function formatTok(n) {
 }
 
 async function loadConfig() {
+  const version = S.viewVersion;
+  const sid = S.sessionId;
+  const current = () => version === S.viewVersion && sid === S.sessionId;
   const list = document.getElementById('config-list');
   if (!list) return;
   try {
@@ -837,6 +892,7 @@ async function loadConfig() {
       getConnections().catch(() => null),
       getUsage().catch(() => null),
     ]);
+    if (!current()) return;
     list.textContent = '';
     const dump = document.createElement('pre');
     dump.className = 'cfg-dump';
@@ -921,6 +977,7 @@ async function loadConfig() {
           showToast('kicked');
           loadConfig();
         } catch (err) {
+    if (!current()) return;
           showToast('kick failed: ' + err.message);
         }
       });
@@ -941,6 +998,7 @@ async function loadConfig() {
     });
     list.appendChild(shut);
   } catch (err) {
+    if (!current()) return;
     list.innerHTML = '<div class="mf-empty">failed to load: ' + escapeHtml(err.message) + '</div>';
   }
 }
@@ -949,3 +1007,23 @@ document.getElementById('events-search')?.addEventListener('input', loadEvents);
 document.getElementById('events-session-filter')?.addEventListener('change', loadEvents);
 
 document.getElementById('tools-search')?.addEventListener('input', loadTools);
+
+// Invalidate visible and hidden inspector contents together. Closing the drawer
+// alone leaves old forms, expanded details, and polling responses alive.
+S.resetPanels = () => {
+  stopRunPolling(); stopJobsPolling(); stopAgentsPolling(); stopPlanPolling();
+  S.resetManagement?.();
+  for (const id of ['jobs-list', 'agents-list', 'runs-list', 'events-list', 'config-list',
+    'mf-user-list', 'mf-env-list', 'mf-pending-list', 'skills-list', 'tools-list']) {
+    const node = document.getElementById(id);
+    if (node) node.textContent = '';
+  }
+  for (const id of ['tools-search', 'events-search', 'run-create-prompt', 'mf-user-input', 'mf-env-input']) {
+    const node = document.getElementById(id); if (node) node.value = '';
+  }
+  for (const id of ['mf-user-count', 'mf-env-count', 'mf-pending-count']) {
+    const node = document.getElementById(id); if (node) node.textContent = '';
+  }
+  drawer.querySelectorAll('.memory-preview').forEach(node => node.remove());
+  document.getElementById('ptab-now')?.classList.remove('live');
+};

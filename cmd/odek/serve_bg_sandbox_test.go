@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -201,13 +202,13 @@ func TestServeSandboxBackgroundDocker(t *testing.T) {
 func TestServeSandboxCleanupRetriesAndRetainsFailure(t *testing.T) {
 	attempts := 0
 	fail := true
-	l := &serveSandboxLease{container: "retry", cleanup: func() error {
+	l := &serveSandboxLease{container: "retry", cleanup: newSandboxCleanup("retry", func(context.Context) error {
 		attempts++
 		if fail {
 			return fmt.Errorf("temporary Docker failure")
 		}
 		return nil
-	}}
+	})}
 	if err := l.close(); err == nil {
 		t.Fatal("expected cleanup failure")
 	}

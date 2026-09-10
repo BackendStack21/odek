@@ -1,5 +1,6 @@
 // Operator management forms use the same authenticated REST contracts as chat.
 import { getCapabilities, listSchedules, saveSchedule, removeSchedule, getMaintenance, runMaintenance, startRun } from './api.js';
+import { S } from './state.js';
 import { showToast } from './utils.js';
 const byId = id => document.getElementById(id);
 function el(tag, cls, text) { const n = document.createElement(tag); if (cls) n.className = cls; if (text != null) n.textContent = text; return n; }
@@ -67,6 +68,11 @@ function editSchedule(root, job = {}) {
   form.addEventListener('submit',async e=>{e.preventDefault();submit.disabled=true;try {await saveSchedule({...job,name:name.value,task:task.value,cron:cron.value,timezone:tz.value,enabled:enabled.checked,catchup:catchup.checked,deliver:{kind:delivery.value,chat_id:Number(chat.value)||0}});await loadManagement();showToast('Schedule saved');}catch(err){showToast(err.message);submit.disabled=false;}});
   root.prepend(form);name.focus();
 }
-byId('ptab-manage')?.addEventListener('click',loadManagement);
+S.loadManagement = loadManagement;
+S.resetManagement = () => {
+  generation++;
+  const root = byId('management-body');
+  if (root) root.textContent = '';
+};
 const runForm=byId('run-create-form');
 runForm?.addEventListener('submit',async e=>{e.preventDefault();const input=byId('run-create-prompt');const button=byId('run-create-submit');if(!input.value.trim())return;button.disabled=true;try {const run=await startRun(input.value);input.value='';showToast('Run started: '+run.run_id);byId('ptab-ops')?.click();}catch(err){showToast(err.message);}finally{button.disabled=false;}});

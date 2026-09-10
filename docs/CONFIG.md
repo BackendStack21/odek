@@ -1215,7 +1215,10 @@ run releases the agent’s ownership but keeps that container until its jobs end
 Job access remains session-scoped across reconnects. Server shutdown stops all
 jobs and drains pending cleanup with a bounded deadline. Deleting a session
 stops its jobs and rejects late launches. Failed container removals retain retry
-ownership for maintenance and final shutdown; Docker removal attempts are bounded.
+ownership for maintenance and final shutdown. All execution modes retry Docker
+removal up to three times, with a five-second deadline per attempt. If removal
+still fails, cleanup reports the container name and a manual removal command;
+short-lived CLI processes cannot keep retrying after exit.
 Missing sandbox routing fails closed.
 Sandbox images must provide `sh` and `setsid` for process-group cleanup.
 

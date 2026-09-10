@@ -154,7 +154,7 @@ func (cache *browserArtifactStore) captureBudget(sid string, ref artifact.Ref, r
 func handleBrowserArtifacts(store *session.Store, cache *browserArtifactStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
-			http.Error(w, "method not allowed", 405)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
 		sess, code, msg := authenticateJobsRequest(store, r)
@@ -210,7 +210,7 @@ var browserUploads = struct {
 func handleBrowserUpload(store *session.Store, model, workspace string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", 405)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
 		var sess *session.Session
@@ -239,7 +239,7 @@ func handleBrowserUpload(store *session.Store, model, workspace string) http.Han
 		switch media {
 		case "image/png", "image/jpeg", "image/gif", "image/webp", "audio/mpeg", "audio/wave", "audio/x-wav", "audio/ogg", "application/ogg", "application/pdf":
 		default:
-			http.Error(w, "unsupported binary attachment type", 415)
+			http.Error(w, "unsupported binary attachment type", http.StatusUnsupportedMediaType)
 			return
 		}
 		if sess == nil {
@@ -252,11 +252,11 @@ func handleBrowserUpload(store *session.Store, model, workspace string) http.Han
 		browserUploads.Lock()
 		defer browserUploads.Unlock()
 		if _, err := store.Load(sess.ID); err != nil {
-			http.Error(w, "upload session unavailable", 409)
+			http.Error(w, "upload session unavailable", http.StatusConflict)
 			return
 		}
 		if err := pruneBrowserUploadsLocked(workspace, len(data), time.Now()); err != nil {
-			http.Error(w, "upload retention cleanup failed", 503)
+			http.Error(w, "upload retention cleanup failed", http.StatusServiceUnavailable)
 			return
 		}
 		id := newTurnID()

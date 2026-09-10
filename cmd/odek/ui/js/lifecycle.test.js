@@ -925,3 +925,79 @@ test('stopping rejects new work and settles delegated agents', () => {
   assert.equal(card.querySelector('.sa-status').textContent,'stopped');
   assert.equal(card.dataset.finalized,'1');
 });
+
+let inspector;
+async function prepareInspector() {
+  const drawer = document.getElementById('panels');
+  if (!inspector) {
+    for (const name of ['now', 'manage', 'ops']) {
+      const tab = document.getElementById('ptab-' + name);
+      tab.className = 'ptab' + (name === 'now' ? ' active' : '');
+      tab.dataset.tab = name;
+      drawer.appendChild(tab);
+    }
+    inspector = await import('./panels.js');
+    await import('./management.js');
+  }
+  return drawer;
+}
+
+test('newSession resets inspector views and retires the previous turn', async () => {
+  await prepareInspector();
+  const oldFetch = globalThis.fetch;
+  try {
+    S.sessionId = 'previous'; S.currentTurnId = 'previous-turn'; S.lastFailedPrompt = 'old retry';
+    S.jobs = [{ id: 'old', status: 'running' }];
+    const ids = ['management-body', 'jobs-list', 'agents-list', 'runs-list', 'events-list', 'config-list', 'mf-user-list', 'skills-list', 'tools-list'];
+    ids.forEach(id => { document.getElementById(id).textContent = 'previous session data'; });
+    sessions.newSession();
+    ids.forEach(id => assert.equal(byId[id].textContent, '', id + ' reset'));
+    assert.equal(S.currentTurnId, null);
+    assert.equal(S.lastFailedPrompt, '');
+    assert.deepEqual(S.jobs, []);
+    assert.ok(S.closedTurnIds.has('previous-turn'));
+  } finally { globalThis.fetch = oldFetch; inspector.togglePanels(false); }
+});
+
+test('late jobs response cannot repopulate a new session', async () => {
+  const drawer = await prepareInspector();
+  const oldFetch = globalThis.fetch;
+  let finish;
+  try {
+    drawer.querySelectorAll('.ptab').forEach(tab => tab.classList.toggle('active', tab.dataset.tab === 'now'));
+    S.sessionId = 'old-session';
+    globalThis.fetch = path => path === '/api/jobs'
+      ? new Promise(resolve => { finish = resolve; })
+      : Promise.resolve({ok:true, headers:{get:()=> 'application/json'}, json:async()=>({entries:[]})});
+    inspector.togglePanels(true);
+    assert.equal(typeof finish, 'function');
+    sessions.newSession();
+    finish({ok:true, headers:{get:()=> 'application/json'}, json:async()=>({jobs:[{id:'stale-job',status:'running'}]})});
+    await new Promise(resolve => setTimeout(resolve, 0));
+    assert.deepEqual(S.jobs, []);
+    assert.equal(byId['jobs-list'].textContent, '');
+    assert.equal(byId['ptab-now'].classList.contains('live'), false);
+  } finally { globalThis.fetch = oldFetch; inspector.togglePanels(false); }
+});
+
+test('management ignores pre-reset responses and reloads when reopened', async () => {
+  const drawer = await prepareInspector();
+  const oldFetch = globalThis.fetch;
+  let finish;
+  let requests = 0;
+  try {
+    drawer.querySelectorAll('.ptab').forEach(tab => tab.classList.toggle('active', tab.dataset.tab === 'manage'));
+    globalThis.fetch = () => { requests++; return new Promise(resolve => { finish = resolve; }); };
+    inspector.togglePanels(true);
+    sessions.newSession();
+    finish({ok:true, headers:{get:()=> 'application/json'}, json:async()=>({features:{schedules:true}})});
+    await new Promise(resolve => setTimeout(resolve, 0));
+    assert.equal(byId['management-body'].textContent, '');
+    assert.equal(requests, 1, 'stale capabilities must not start schedule fetch');
+    inspector.togglePanels(true);
+    assert.equal(requests, 2, 'reopening reloads selected Manage tab');
+    S.resetManagement();
+    finish({ok:true, headers:{get:()=> 'application/json'}, json:async()=>({features:{}})});
+    await new Promise(resolve => setTimeout(resolve, 0));
+  } finally { globalThis.fetch = oldFetch; inspector.togglePanels(false); }
+});
