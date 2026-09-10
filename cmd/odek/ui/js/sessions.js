@@ -1,3 +1,4 @@
+import { icon } from './icons.js';
 // Sessions inspector tab: server-side search (debounced), pagination
 // ("more"), session switch (WS session_switch), rename/delete, and
 // transcript export (markdown / json download).
@@ -122,10 +123,10 @@ function renderSessionItems() {
           </span>
         </button>
         <span class="si-actions">
-          <button class="pin-btn${s.pinned ? ' on' : ''}" type="button" title="${s.pinned ? 'Unpin' : 'Pin to top'}" aria-label="${s.pinned ? 'Unpin session' : 'Pin session to top'}">📌</button>
-          <button class="rename-btn" type="button" title="Rename" aria-label="Rename session">✎</button>
-          <button class="export-btn" type="button" title="Export transcript (Shift: JSON)" aria-label="Export transcript">⇩</button>
-          <button class="del-btn" type="button" title="Delete" aria-label="Delete session">✕</button>
+          <button class="pin-btn${s.pinned ? ' on' : ''}" type="button" title="${s.pinned ? 'Unpin' : 'Pin to top'}" aria-label="${s.pinned ? 'Unpin session' : 'Pin session to top'}">${icon('pin')}</button>
+          <button class="rename-btn" type="button" title="Rename" aria-label="Rename session">${icon('edit')}</button>
+          <button class="export-btn" type="button" title="Export transcript (Shift: JSON)" aria-label="Export transcript">${icon('download')}</button>
+          <button class="del-btn" type="button" title="Delete" aria-label="Delete session">${icon('close')}</button>
         </span>
       </div>`;
   }).join('');
@@ -191,6 +192,10 @@ export function newSession() {
     if (!confirm('A turn is still running. Cancel it and switch to a new session?')) return;
     if (cancelBtn) cancelBtn.click();
   }
+  S.pauseQueue?.();
+  S.saveDraft?.();
+  S.saveAttachments?.();
+  S.clearResults?.();
   S.sessionId = null;
   resetMetrics();
   // Plan and jobs are session-scoped — drop both before the next attach.
@@ -215,6 +220,8 @@ export function newSession() {
   sessionListEl.querySelectorAll('.session-item').forEach(s => s.classList.remove('active'));
   showToast('New session');
   promptEl.value = '';
+  S.restoreDraft?.();
+  S.restoreAttachments?.();
   promptEl.style.height = 'auto';
   promptEl.focus();
   if (typeof S.closePanels === 'function') S.closePanels();
@@ -242,7 +249,13 @@ export async function loadAndRenderSession(sid) {
 
     // Switch session ID so the next prompt continues this session, and
     // seed the metrics cluster from the stored totals.
+    S.pauseQueue?.();
+  S.saveDraft?.();
+  S.saveAttachments?.();
+    S.clearResults?.();
     S.sessionId = sid;
+    S.restoreDraft?.();
+  S.restoreAttachments?.();
     metricsFromSession(sess);
     // Swap the plan panel over to the newly loaded session (clears the
     // previous session's rows synchronously, then refetches if visible).
@@ -415,6 +428,7 @@ export async function executeDeleteSession() {
 
 // ── Open the inspector sessions tab ──
 export function toggleSidebar() {
+  if (document.body.classList.contains("workspace-wide")) { S.toggleSessionRail?.(); return; }
   const drawer = document.getElementById('panels');
   const tab = drawer && drawer.querySelector('.ptab.active');
   if (drawer && drawer.classList.contains('active') && tab && tab.dataset.tab === 'sessions') {

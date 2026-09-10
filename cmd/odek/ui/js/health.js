@@ -116,7 +116,7 @@ export function renderPopover() {
   set('hp-latency', h.latencyMs != null ? h.latencyMs + 'ms' : '—');
   const u = h.usage;
   set('hp-usage', u
-    ? u.promptsCompleted + '/' + u.promptsStarted + ' prompts · ' + fmtTokens(u.tokensIn) + ' in · ' + fmtTokens(u.tokensOut) + ' out' +
+    ? (u.promptsCompleted ?? '—') + '/' + (u.promptsStarted ?? '—') + ' prompts · ' + fmtTokens(u.tokensIn) + ' in · ' + fmtTokens(u.tokensOut) + ' out' +
       (u.pricesConfigured ? ' · ≈$' + u.costUsd.toFixed(4) : '') +
       (u.plansCreated || u.plansUpdated || u.plansBlocked
         ? ' · plan ' + (u.plansCreated || 0) + '/' + (u.plansUpdated || 0) + '/' + (u.plansBlocked || 0)

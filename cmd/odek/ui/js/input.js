@@ -1,6 +1,7 @@
+import { uploadMedia } from './api.js';
 // Prompt handling: send, history navigation, @-completion, file
 // attachments, drag-and-drop, auto-resize, and the scroll-bottom button.
-import { S, getSessionToken } from './state.js';
+import { S, setSessionToken, getSessionToken } from './state.js';
 import { apiHeaders } from './net.js';
 import {
   messagesEl, promptEl, sendBtn, completionEl,
@@ -26,6 +27,10 @@ export function renderQueueStrip() {
     return;
   }
   strip.hidden = false;
+  if(S.queuePaused) {
+    const resume=document.createElement('button');resume.type='button';resume.className='management-action';resume.textContent='Queue paused · resume';
+    resume.addEventListener('click',()=>{S.queuePaused=false;renderQueueStrip();drainQueue();});strip.appendChild(resume);
+  }
   S.promptQueue.forEach((item, i) => {
     const row = document.createElement('div');
     row.className = 'queue-row';
@@ -70,16 +75,20 @@ function moveQueue(i, delta) {
 export function drainQueue() {
   // Do not auto-send through a live approval — the operator is still deciding.
   // A dead socket must not consume the queue either; reconnect drains it.
-  if (S.busy || S.activeApprovalId || !S.promptQueue.length) return;
+  if (S.queuePaused || S.busy || S.activeApprovalId || !S.promptQueue.length) return;
   if (!S.ws || S.ws.readyState !== WebSocket.OPEN) return;
+  const first=S.promptQueue[0];
+  if(first.session_id!=null && first.session_id!==S.sessionId){S.queuePaused=true;renderQueueStrip();showToast('This queue belongs to another session. Open that session to resume.');return;}
   const next = S.promptQueue.shift();
   renderQueueStrip();
   sendPayload(next.text, next.attachments, next.display, next.model, next.thinking);
 }
 S.drainQueue = drainQueue;
+S.pauseQueue = () => { S.queuePaused = true; renderQueueStrip(); };
 
 // ── Send ──
 export function send() {
+  if (S.uploading) { showToast('Wait for attachments to finish uploading'); return; }
   // F-B2: dead socket still rejects BEFORE touching attachments.
   if (!S.ws || S.ws.readyState !== WebSocket.OPEN) {
     showToast('connection lost — reconnecting');
@@ -99,7 +108,7 @@ export function send() {
   if (S.attachedFiles.length > 0) {
     const chips = S.attachedFiles.map(f => '📎 ' + f.name + ' (' + formatFileSize(f.size) + ')').join('\n');
     display = chips + (text ? '\n\n' + text : '');
-    attachments = S.attachedFiles.map(f => ({ name: f.name, content: f.content }));
+    attachments = S.attachedFiles.map(f => ({ name: f.name, content: f.content, ...(f.upload_id ? {upload_id:f.upload_id} : {}) }));
     clearAttachedFiles();
   }
 
@@ -108,11 +117,13 @@ export function send() {
   localStorage.setItem('odek_history', JSON.stringify(S.history));
   S.historyIdx = S.history.length;
   promptEl.value = '';
+  S.saveDraft?.();
   promptEl.style.height = 'auto';
 
   if (S.busy) {
     S.promptQueue.push({
       id: queueId(),
+      session_id: S.sessionId,
       text,
       display,
       attachments,
@@ -178,6 +189,10 @@ function clearAttachedFiles() {
   S.attachedFiles = [];
   renderFileChips();
 }
+
+const attachmentDrafts = new Map();
+S.saveAttachments = () => { attachmentDrafts.set(S.sessionId || "new", S.attachedFiles.slice()); };
+S.restoreAttachments = () => { S.attachedFiles = attachmentDrafts.get(S.sessionId || "new") || []; renderFileChips(); };
 
 function renderFileChips() {
   // Build nodes with textContent rather than innerHTML so a file name can
@@ -267,19 +282,32 @@ function readFileAsText(file) {
   });
 }
 
-function handleFiles(fileList) {
-  const promises = [];
-  for (let i = 0; i < fileList.length; i++) {
-    const file = fileList[i];
-    promises.push(
-      readFileAsText(file).then(content => {
-        addAttachedFile({name: file.name, size: file.size, content});
-      }).catch(err => {
-        addErrorChip(file.name, err.message || 'could not read file');
-      })
-    );
+let uploadSequence=Promise.resolve();
+function handleFiles(fileList) { const files=Array.from(fileList);const owner=S.sessionId;uploadSequence=uploadSequence.then(()=>processFiles(files,owner));return uploadSequence; }
+async function processFiles(fileList, owner) {
+  // Serialize uploads so files attached to a new conversation share one session.
+  for (const file of fileList) {
+    if (S.sessionId !== owner) { showToast('Session changed; attach these files again in the intended session.'); return; }
+    if (file.size > 5 * 1024 * 1024) { addErrorChip(file.name,'File too large (max 5 MB)'); continue; }
+    if (S.attachedFiles.reduce((n,f)=>n+f.size,0)+file.size>10*1024*1024) { addErrorChip(file.name,'total attachments exceed 10 MB');continue; }
+    try {
+      if (/^(image\/|audio\/|application\/pdf$)/.test(file.type)) {
+        if(S.busy){addErrorChip(file.name,'Wait for the current turn before uploading media');continue;}
+        const sid=S.sessionId;
+        S.uploading=true;sendBtn.disabled=true;
+        const progress=document.createElement('span');progress.className='file-chip';progress.textContent='Uploading '+file.name+'…';fileChips.appendChild(progress);
+        let data;try{data=await uploadMedia(file,sid,getSessionToken(sid));}finally{progress.remove();S.uploading=false;sendBtn.disabled=S.busy || !S.ws || S.ws.readyState!==WebSocket.OPEN;}
+        if(S.sessionId!==sid){addErrorChip(file.name,'Session changed during upload; attach again');continue;}
+        S.sessionId=data.session_id;owner=data.session_id;setSessionToken(data.session_id,data.auth_token);
+        addAttachedFile({name:file.name,size:file.size,upload_id:data.upload_id,content:''});
+      } else {
+        const content=await readFileAsText(file);
+        if (S.sessionId !== owner) { showToast('Session changed while reading the attachment.'); return; }
+        if(content.includes('\u0000'))throw new Error('Unsupported binary attachment');
+        addAttachedFile({name:file.name,size:file.size,content});
+      }
+    } catch(err){addErrorChip(file.name,err.message || 'could not read file');}
   }
-  return Promise.all(promises);
 }
 
 // Attach button

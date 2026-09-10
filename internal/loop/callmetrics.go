@@ -190,6 +190,7 @@ func (e *Engine) emitIterationCompleted(iteration, toolsCalled int) {
 		"input_tokens":  e.TotalInputTokens,
 		"output_tokens": e.TotalOutputTokens,
 		"tools_called":  toolsCalled,
+		"budget":        e.BudgetSnapshot(),
 	}
 	e.lastCall.AppendEventData(data)
 	e.emitEvent(events.Event{

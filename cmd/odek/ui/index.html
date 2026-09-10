@@ -6,6 +6,7 @@
 <meta name="odek-ws-token" content="{{ODEK_WS_TOKEN}}"/>
 <title>odek</title>
 <link rel="stylesheet" href="/style.css"/>
+<link rel="preload" href="/fonts/manrope.ttf" as="font" type="font/ttf" crossorigin>
 <link rel="preload" href="/fonts/azeret-mono.woff2" as="font" type="font/woff2" crossorigin>
 </head>
 <body>
@@ -72,6 +73,7 @@
     <div class="hp-row"><span class="hp-k">speed</span><span class="hp-v" id="m-speed">—</span></div>
     <div class="hp-row"><span class="hp-k">cost</span><span class="hp-v" id="m-cost">—</span></div>
     <div class="hp-actions">
+      <button id="density-btn" type="button" aria-label="Toggle display density">Comfortable</button>
       <button id="theme-btn" title="Cycle theme" aria-label="Cycle theme">◐</button>
       <button id="notify-btn" title="Desktop notifications" aria-label="Desktop notifications" aria-pressed="false">◌</button>
     </div>
@@ -79,13 +81,17 @@
 
   <div id="sidebar-overlay"></div>
 
+  <aside id="session-rail" aria-label="Session navigation" hidden aria-hidden="true"></aside>
   <aside id="panels" role="complementary" aria-label="Inspector" aria-hidden="true">
+    <div id="inspector-resize" role="separator" aria-label="Resize inspector" aria-orientation="vertical" aria-valuemin="320" aria-valuemax="700" aria-valuenow="420" tabindex="0"></div>
     <div id="panels-header">
       <div id="panels-tabs" role="tablist" aria-label="Inspector workspaces">
         <button class="ptab" id="ptab-sessions" data-tab="sessions" role="tab" aria-selected="false" aria-controls="ppanel-sessions" tabindex="-1">sessions</button>
         <button class="ptab active" id="ptab-now" data-tab="now" role="tab" aria-selected="true" aria-controls="ppanel-now" tabindex="0">now</button>
+        <button class="ptab" id="ptab-outputs" data-tab="outputs" role="tab" aria-selected="false" aria-controls="ppanel-outputs" tabindex="-1">results <span id="output-count">0</span></button>
         <button class="ptab" id="ptab-memory" data-tab="memory" role="tab" aria-selected="false" aria-controls="ppanel-memory" tabindex="-1">memory</button>
         <button class="ptab" id="ptab-ops" data-tab="ops" role="tab" aria-selected="false" aria-controls="ppanel-ops" tabindex="-1">ops</button>
+      <button class="ptab" id="ptab-manage" data-tab="manage" role="tab" aria-selected="false" aria-controls="ppanel-manage" tabindex="-1">manage</button>
       </div>
       <button id="panels-close" title="Close" aria-label="Close inspector">✕</button>
     </div>
@@ -93,11 +99,11 @@
       <section class="ppanel" id="ppanel-sessions" data-panel="sessions" role="tabpanel" aria-labelledby="ptab-sessions" hidden aria-hidden="true">
         <nav id="sidebar" aria-label="Sessions">
           <div id="sidebar-header">
-            <h3><span class="sr-only">Sessions</span> <span id="sidebar-count" class="sidebar-count"></span></h3>
+            <h3><span>Sessions</span> <span id="sidebar-count" class="sidebar-count"></span></h3>
             <button class="new-session-btn" type="button" title="New session">＋</button>
           </div>
           <div class="sidebar-search-wrap">
-            <input id="sidebar-search" type="text" placeholder="find…" autocomplete="off" />
+            <input id="sidebar-search" type="text" placeholder="Search sessions…" aria-label="Search sessions" autocomplete="off" />
           </div>
           <div id="session-list"></div>
           <button id="sessions-more" type="button" hidden>more</button>
@@ -105,6 +111,7 @@
       </section>
       <section class="ppanel active" id="ppanel-now" data-panel="now" role="tabpanel" aria-labelledby="ptab-now">
         <div class="ppanel-scroll">
+          <h4 class="ws-head">execution budget</h4><div id="budget-view" class="budget-view">Budget usage appears after the first iteration.</div>
           <h4 class="ws-head">plan</h4>
           <div id="plan-list"></div>
           <h4 class="ws-head">jobs</h4>
@@ -113,6 +120,7 @@
           <div id="agents-list"></div>
         </div>
       </section>
+      <section class="ppanel" id="ppanel-outputs" data-panel="outputs" role="tabpanel" aria-labelledby="ptab-outputs" hidden aria-hidden="true"><div class="ppanel-scroll"><h4 class="ws-head">Artifacts</h4><div id="artifact-list"></div><h4 class="ws-head">Tool results</h4><div id="output-list"></div><div id="output-detail" hidden></div></div></section>
       <section class="ppanel" id="ppanel-memory" data-panel="memory" role="tabpanel" aria-labelledby="ptab-memory" hidden aria-hidden="true">
         <div class="ppanel-scroll">
           <div class="mf-section">
@@ -140,15 +148,17 @@
           <h4 class="ws-head">skills</h4>
           <div id="skills-list"></div>
           <h4 class="ws-head">tools</h4>
-          <div id="tools-list"></div>
+          <label class="management-field">Find a tool<input id="tools-search" type="search" placeholder="Name or capability…"></label><div id="tools-list"></div>
         </div>
       </section>
+      <section class="ppanel" id="ppanel-manage" data-panel="manage" role="tabpanel" aria-labelledby="ptab-manage" hidden aria-hidden="true"><div class="ppanel-scroll" id="management-body"></div></section>
       <section class="ppanel" id="ppanel-ops" data-panel="ops" role="tabpanel" aria-labelledby="ptab-ops" hidden aria-hidden="true">
         <div class="ppanel-scroll">
           <h4 class="ws-head">runs</h4>
+          <form id="run-create-form" class="management-card"><label class="management-field">Start a background run<textarea id="run-create-prompt" required maxlength="32000" placeholder="Describe the work…"></textarea></label><button type="submit" class="management-action" id="run-create-submit">Start run</button></form>
           <div id="runs-list"></div>
           <h4 class="ws-head">events</h4>
-          <div id="events-list"></div>
+          <label class="management-field">Filter events<input id="events-search" type="search" placeholder="Tool, event type, run…"></label><label class="event-filter"><input id="events-session-filter" type="checkbox"> Current session only</label><div id="events-list"></div>
           <h4 class="ws-head">config</h4>
           <div id="config-list"></div>
         </div>
@@ -171,8 +181,9 @@
       <div id="empty-state">
         <div id="empty-state-inner">
           <div class="es-mark" aria-hidden="true"></div>
-          <div class="es-name">odek</div>
-          <p class="es-sub">Ask anything. odek will read, edit, and run from here.</p>
+          <div class="es-eyebrow">YOUR AGENT WORKSPACE</div>
+          <h1 class="es-name">Make room for<br>your next idea.</h1>
+          <p class="es-sub">From a first question to a finished project.<br>Plan, build, and explore with odek.</p>
           <div class="es-hints">
             <button type="button" class="es-tip" data-hint="palette"><kbd>⌘K</kbd> commands, sessions, models</button>
             <button type="button" class="es-tip" data-hint="at"><kbd>@</kbd> mention a file or past session</button>
@@ -195,7 +206,7 @@
         <div id="completion" role="listbox" aria-label="Resource completion"></div>
         <div id="input-row">
           <div id="input-wrap">
-            <textarea id="prompt" rows="1" placeholder="What should odek do?"></textarea>
+            <textarea id="prompt" aria-label="Message odek" rows="1" placeholder="What should odek do?"></textarea>
           </div>
           <div class="composer-bar">
             <button id="attach-btn" type="button" title="Attach files">
@@ -203,7 +214,7 @@
             </button>
             <input type="file" id="file-input" multiple style="display:none"/>
             <span class="composer-hint">@ mention a file or session · / commands · ⌘K palette</span>
-            <button id="send-btn" type="button" disabled>↵</button>
+            <button id="send-btn" type="button" aria-label="Send message" disabled>↑</button>
           </div>
         </div>
       </div>

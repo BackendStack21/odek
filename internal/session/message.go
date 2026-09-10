@@ -13,6 +13,8 @@ import (
 // The SDK's Message is used only at the HTTP call boundary
 // (internal/llmclient). Do not persist SDK types — they have no json tags.
 type Message struct {
+	// ToolOutcome is execution metadata; it is never sent to the model.
+	ToolOutcome       string        `json:"tool_outcome,omitempty"`
 	Role              string        `json:"role"`
 	Content           string        `json:"content"`
 	Name              string        `json:"name,omitempty"`

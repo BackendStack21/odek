@@ -690,6 +690,7 @@ func (c *Client) CallTool(ctx context.Context, name string, argsJSON string) (st
 					return "", fmt.Errorf("mcpclient %s: tool %s: artifact ref rejected: %w", c.name, name, err)
 				}
 			}
+			artifact.Observe(ctx, env.Artifacts, c.artifactRoots)
 			return c.applyResultLimit(name, c.renderCappedEnvelope(name, env)+suffix), nil
 		}
 	}
@@ -706,6 +707,7 @@ func (c *Client) CallTool(ctx context.Context, name string, argsJSON string) (st
 		// output — compact text plus metadata lines — not just the text
 		// field (audit 2026-08: oversized id/summary fields rode past the
 		// cap that only ever bounded env.Text).
+		artifact.Observe(ctx, env.Artifacts, c.artifactRoots)
 		return c.renderCappedEnvelope(name, env), nil
 	}
 

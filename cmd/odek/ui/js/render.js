@@ -11,12 +11,18 @@ import {
 import { markdownToHtml } from './markdown.js';
 import { parseUntrusted } from './untrusted.js';
 import { classifyToolResult, chipsHtml, prettyToolBody, collectReceipt, formatReceipt } from './tools.js';
+import { toolIcon } from './icons.js';
+import { renderResult, resultText } from './results.js';
+import { toolPreview, toolArguments, toolView, renderToolItems } from './toolviews.js';
 import { metricsNoteOutput } from './metrics.js';
 
 // ── Turn state ──
 // resetTurnState clears all per-turn streaming/tool/sub-agent state. Called
 // before a new turn (send), on new session, and when loading a session.
 export function resetTurnState() {
+  settlePendingWork("interrupted");
+  S.turnEnded = false;
+  S.stopRequested = false;
   messagesEl.querySelectorAll('.turn-stream.live').forEach((el) => {
     el.classList.remove('live');
   });
@@ -210,6 +216,8 @@ export function syncLiveChrome() {
 }
 
 export function openTurn(event) {
+  S.turnEnded = false;
+  S.stopRequested = false;
   S.currentTurnId = (event && event.turn_id) || S.currentTurnId;
   S.currentTurnInitiated = (event && event.initiated) || 'operator';
   S.turnReceipt = { files: [], plus: 0, minus: 0, tests: '', tools: 0 };
@@ -571,7 +579,49 @@ function startStream() {
   scrollBottom();
 }
 
-export function endStream() {
+// Resolve pending indicators before their correlation queues are discarded.
+export function settlePendingWork(reason = 'interrupted') {
+  const stopping = reason === 'stopping';
+  const label = stopping ? 'Stopping…' : reason === 'cancelled' ? 'Stopped' : 'Interrupted';
+  for (const queue of S.toolBlockQueues.values()) {
+    for (const block of queue) {
+      block.querySelector('.tb-spinner')?.classList.remove('running');
+      const status = block.querySelector('.tb-status');
+      if (status) { status.textContent = '⊘'; status.title = label; status.classList.remove('ok','err'); }
+      const latency = block.querySelector('.tb-latency');
+      if (latency) latency.textContent = label;
+      block.dataset.pendingState = reason;
+    }
+  }
+  if (S.subagentGroup) {
+    S.subagentGroup.querySelectorAll('.subagent-card').forEach(card => {
+      if (card.dataset.finalized === '1') return;
+      card.classList.remove('running');
+      card.querySelector('.sa-stop')?.remove();
+      const status = card.querySelector('.sa-status');
+      if (status) status.textContent = label.toLowerCase();
+      if (!stopping) { card.dataset.finalized = '1'; card.classList.add('stopped'); }
+    });
+    refreshSubagentHead(S.subagentGroup);
+  }
+}
+
+export function requestTurnStop() {
+  S.stopRequested = true;
+  S.pauseQueue?.();
+  settlePendingWork('stopping');
+  setIntent('stopping');
+}
+
+export function endStream(reason = "interrupted") {
+  settlePendingWork(reason);
+  S.turnEnded = true;
+  setIntent('');
+  if (S.currentTurnId) {
+    S.closedTurnIds ||= new Set();
+    S.closedTurnIds.add(S.currentTurnId);
+    if (S.closedTurnIds.size > 32) S.closedTurnIds.delete(S.closedTurnIds.values().next().value);
+  }
   removeStreamCursor();
   sealTurnStream();
   // The live answer is the latest — never fold it. Older long replies
@@ -702,25 +752,7 @@ export function toolEmoji(name) {
 }
 
 // Extract a short human-readable preview from tool args JSON.
-function buildToolPreview(name, data) {
-  if (!data) return '';
-  try {
-    const obj = JSON.parse(data);
-    switch (name) {
-      case 'read_file':    return String(obj.path || '').slice(0, 60);
-      case 'write_file':   return String(obj.path || '').slice(0, 60);
-      case 'search_files': return (obj.pattern || obj.query || '').slice(0, 50);
-      case 'multi_grep':   return (obj.pattern || '').slice(0, 50);
-      case 'shell':        return (obj.command || '').slice(0, 60);
-      case 'browser_navigate': case 'web_extract': return (obj.url || '').slice(0, 60);
-      case 'web_search':   return (obj.query || '').slice(0, 60);
-      default: {
-        const first = Object.values(obj)[0];
-        return first != null ? String(first).slice(0, 50) : '';
-      }
-    }
-  } catch { return ''; }
-}
+const buildToolPreview = toolPreview;
 
 // Format tool args for the expanded body — pretty-print JSON or show raw.
 function formatToolArgs(data) {
@@ -736,8 +768,23 @@ function formatToolArgs(data) {
   }
 }
 
+function appendToolArguments(block, name, args) {
+  const body = block.querySelector('.tb-body');
+  const details = document.createElement('details'); details.className = 'result-arguments';
+  const summary = document.createElement('summary'); summary.textContent = 'Arguments'; details.appendChild(summary);
+  const view = toolArguments(name, args);
+  let built = false;
+  details.addEventListener('toggle', () => {
+    if (!details.open || built) return;
+    built = true;
+    if (view) renderToolItems(details, view.items.slice(0,200), renderResult);
+    const raw = document.createElement('pre'); raw.textContent = formatToolArgs(args); details.appendChild(raw);
+  });
+  body.appendChild(details);
+}
+
 // ── Tool Calls ──
-export function addToolCall(name, data) {
+export function addToolCall(name, data, callId = '') {
   sealPartialResponse();
   removeStreamCursor();
   S.inToolGroup = true;
@@ -750,23 +797,28 @@ export function addToolCall(name, data) {
     '<div class="tb-header" role="button" tabindex="0" aria-expanded="false">' +
       '<span class="arrow">▶</span>' +
       ' <span class="tb-status">▸</span>' +
-      ' <span class="tb-emoji">' + toolGlyph(name) + '</span>' +
+      ' <span class="tb-emoji">' + toolIcon(name) + '</span>' +
       ' <span class="tb-name">' + escapeHtml(name) + '</span>' +
       (preview ? ' <span class="tb-preview">' + escapeHtml(preview) + '</span>' : '') +
       ' <span class="tb-spinner running"></span>' +
       ' <span class="tb-latency"></span>' +
     '</div>' +
-    '<div class="tb-body">' + escapeHtml(formatToolArgs(data)) + '</div>';
+    '<div class="tb-body"></div>';
+  appendToolArguments(el, name, data);
 
   insertTurnWork(el, 'tool');
   S.currentToolBlock = el;
+  el.dataset.toolName = name;
+  el.dataset.toolArgs = data;
+  el.dataset.callId = callId;
   teach('steps', 'tip: click a tool head to expand its output');
 
   // Push into per-name FIFO queues so parallel results route correctly.
-  if (!S.toolBlockQueues.has(name)) S.toolBlockQueues.set(name, []);
-  S.toolBlockQueues.get(name).push(el);
-  if (!S.toolStartQueues.has(name)) S.toolStartQueues.set(name, []);
-  S.toolStartQueues.get(name).push(performance.now());
+  const key = callId || name;
+  if (!S.toolBlockQueues.has(key)) S.toolBlockQueues.set(key, []);
+  S.toolBlockQueues.get(key).push(el);
+  if (!S.toolStartQueues.has(key)) S.toolStartQueues.set(key, []);
+  S.toolStartQueues.get(key).push(performance.now());
 
   pruneMessages();
   scrollBottom();
@@ -776,11 +828,16 @@ export function addToolCall(name, data) {
 // (same toggle as args), truncating long output behind a "show all" expander.
 // Shared by the live path (addToolResult) and session-history rendering.
 function appendToolResultContent(block, output) {
+  const view = toolView(block.dataset.toolName || '', resultText(output), block.dataset.toolArgs || '');
+  const preview = block.querySelector('.tb-preview');
+  if (view && preview) { preview.textContent = view.summary; preview.title = view.summary; }
+
   const resultEl = document.createElement('div');
   resultEl.className = 'tb-result';
   const body = block.querySelector('.tb-body');
   (body || block).appendChild(resultEl);
-  fillToolResult(resultEl, output || '', true);
+  renderResult(resultEl, { name: block.dataset.toolName || '', output, args:block.dataset.toolArgs || '', compact: true });
+  if (typeof S.recordResult === 'function') S.recordResult(block, output);
 }
 
 // fillToolResult renders tool output into resultEl. The server sends raw,
@@ -809,16 +866,17 @@ function fillToolResult(resultEl, output, truncate) {
   }
 }
 
-export function addToolResult(name, output) {
+export function addToolResult(name, output, callId = '', outcome = 'unknown') {
+  const key = callId || name;
   // Route to the matching pending block via FIFO queue.
-  const queue = S.toolBlockQueues.get(name);
-  const block = (queue && queue.length > 0) ? queue.shift() : S.currentToolBlock;
+  const queue = S.toolBlockQueues.get(key);
+  const block = (queue && queue.length > 0) ? queue.shift() : (callId ? null : S.currentToolBlock);
   if (!block) return;
 
   // Remove spinner; show latency.
   const spinner = block.querySelector('.tb-spinner');
   if (spinner) spinner.classList.remove('running');
-  const startQueue = S.toolStartQueues.get(name);
+  const startQueue = S.toolStartQueues.get(key);
   if (startQueue && startQueue.length > 0) {
     const start = startQueue.shift();
     const ms = performance.now() - start;
@@ -828,10 +886,11 @@ export function addToolResult(name, output) {
 
   const status = block.querySelector('.tb-status');
   if (status) {
-    const failed = /(?:^|\n)(?:error|failed|denied|fatal)[:\s]/i.test(output || '');
-    status.textContent = failed ? '✗' : '✓';
+    const failed = outcome === 'failed';
+    status.textContent = failed ? '✗' : outcome === 'completed' ? '✓' : '·';
+    status.title = outcome === 'completed' ? 'Tool returned; inspect output for task results' : outcome === 'failed' ? 'Tool execution failed' : 'Execution outcome unavailable';
     status.classList.toggle('err', failed);
-    status.classList.toggle('ok', !failed);
+    status.classList.toggle('ok', outcome === 'completed');
   }
 
   appendToolResultContent(block, output || '');
@@ -847,7 +906,7 @@ export function addToolResult(name, output) {
     }
   }
   if (S.turnReceipt) {
-    const piece = collectReceipt(name, '', output || '');
+    const piece = collectReceipt(name, outcome === 'completed' ? block.dataset.toolArgs : '', output || '');
     S.turnReceipt.tools = (S.turnReceipt.tools || 0) + 1;
     S.turnReceipt.plus += piece.plus;
     S.turnReceipt.minus += piece.minus;
@@ -1275,12 +1334,15 @@ export function appendSubagentLog(taskIdx, event) {
 // re-rendered, so a reloaded session silently dropped most of what happened.
 export function renderSessionHistory(messages) {
   // Index tool results by call id for matching against assistant tool_calls.
-  const resultsById = new Map();
-  messages.forEach(m => {
-    if (m.role === 'tool' && m.tool_call_id) resultsById.set(m.tool_call_id, m.content || '');
-  });
-
-  messages.forEach(msg => {
+  messages.forEach((msg, messageIndex) => {
+    // Correlate within this assistant group: some providers reuse IDs across turns.
+    const resultsById = new Map();
+    const outcomesById = new Map();
+    for(let index=messageIndex+1;index<messages.length && messages[index].role==='tool';index++) {
+      const result=messages[index];
+      const key=result.tool_call_id || 'position-'+(index-messageIndex-1);
+      resultsById.set(key,result.content || '');outcomesById.set(key,result.tool_outcome || 'unknown');
+    }
     if (msg.role === 'user') {
       addMessage('user', stripAttachmentBodies(msg.content || ''));
       return;
@@ -1295,14 +1357,15 @@ export function renderSessionHistory(messages) {
 
     const toolCalls = Array.isArray(msg.tool_calls) ? msg.tool_calls : [];
     if (toolCalls.length > 0) {
-      toolCalls.forEach(tc => {
+      toolCalls.forEach((tc, toolIndex) => {
         const name = (tc.function && tc.function.name) || 'tool';
         const args = (tc.function && tc.function.arguments) || '';
-        const result = resultsById.get(tc.id) || '';
+        const key=tc.id || 'position-'+toolIndex;
+        const result = resultsById.get(key) || '';
         if (name === 'delegate_tasks') {
           renderHistoricalSubagents(args, result);
         } else {
-          renderHistoricalToolBlock(name, args, result);
+          renderHistoricalToolBlock(name, args, result, outcomesById.get(key));
         }
       });
     }
@@ -1357,19 +1420,24 @@ function ensureHistoryStream() {
 
 // renderHistoricalToolBlock renders a completed tool call with its result
 // (no spinner, no latency — those are live-turn concerns).
-function renderHistoricalToolBlock(name, args, result) {
+function renderHistoricalToolBlock(name, args, result, outcome = 'unknown') {
   const preview = buildToolPreview(name, args);
   const el = document.createElement('div');
   el.className = 'tool-block';
   el.innerHTML =
     '<div class="tb-header" role="button" tabindex="0" aria-expanded="false">' +
       '<span class="arrow">▶</span>' +
-      ' <span class="tb-status ok">✓</span>' +
-      ' <span class="tb-emoji">' + toolGlyph(name) + '</span>' +
+      ' <span class="tb-status" title="Historical execution outcome unavailable">·</span>' +
+      ' <span class="tb-emoji">' + toolIcon(name) + '</span>' +
       ' <span class="tb-name">' + escapeHtml(name) + '</span>' +
       (preview ? ' <span class="tb-preview">' + escapeHtml(preview) + '</span>' : '') +
     '</div>' +
-    '<div class="tb-body">' + escapeHtml(formatToolArgs(args)) + '</div>';
+    '<div class="tb-body"></div>';
+  appendToolArguments(el, name, args);
+  el.dataset.toolName = name;
+  el.dataset.toolArgs = args;
+  const status = el.querySelector('.tb-status');
+  if (status) { status.textContent = outcome === 'failed' ? '✗' : outcome === 'completed' ? '✓' : '·'; status.title = outcome === 'unknown' ? 'Historical execution outcome unavailable' : 'Tool ' + outcome; status.classList.toggle('err', outcome === 'failed'); }
   ensureHistoryStream().appendChild(el);
   if (result) appendToolResultContent(el, result);
 }

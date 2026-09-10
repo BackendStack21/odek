@@ -3,9 +3,9 @@
 import { S, getSessionToken } from './state.js';
 import { showToast, announce, escapeHtml } from './utils.js';
 import {
-  getMemory, addMemoryFact, removeMemoryFact, promoteEpisode, consolidateMemory,
+  getMemory, previewMemory, applyMemoryPreview, addMemoryFact, removeMemoryFact, promoteEpisode, consolidateMemory,
   getSkills, getTools, promoteSkill,
-  listRuns, cancelRun, answerRunApproval, getEvents,
+  listRuns, getRun, getSkill, cancelRun, answerRunApproval, getEvents,
   listJobs, getJobOutput, stopJob, listSubagents,
   getConfig, getMCPServers, getConnections, kickConnection, getUsage,
 } from './api.js';
@@ -13,6 +13,7 @@ import {
 // need it without dragging the whole drawer along); its lifecycle is wired
 // into the tab dispatch here like every other panel.
 import { refreshPlanPanel, startPlanPolling, stopPlanPolling } from './plan.js';
+import { renderResult } from './results.js';
 import { paintIntent } from './render.js';
 
 const drawer = document.getElementById('panels');
@@ -22,6 +23,7 @@ const overlay = document.getElementById('panels-overlay');
 export function togglePanels(force) {
   const want = force != null ? force : !drawer.classList.contains('active');
   drawer.classList.toggle('active', want);
+  document.body.classList.toggle('inspector-open', want);
   overlay.classList.toggle('active', want);
   drawer.setAttribute('aria-hidden', want ? 'false' : 'true');
   const pbtn = document.getElementById('panels-btn');
@@ -38,7 +40,7 @@ export function togglePanels(force) {
     if (pbtn && pbtn.focus) pbtn.focus();
   }
   const hamburger = document.getElementById('hamburger-btn');
-  if (hamburger) hamburger.setAttribute('aria-expanded', String(want && activeWorkspace() === 'sessions'));
+  if (hamburger && !document.body.classList.contains('workspace-wide')) hamburger.setAttribute('aria-expanded', String(want && activeWorkspace() === 'sessions'));
 }
 S.closePanels = () => togglePanels(false);
 
@@ -103,9 +105,10 @@ drawer.querySelectorAll('.ptab').forEach(btn => {
       p.hidden = !on;
       p.setAttribute('aria-hidden', String(!on));
     });
+    btn.scrollIntoView?.({block:'nearest',inline:'nearest'});
     refreshActivePanel();
     const hamburger = document.getElementById('hamburger-btn');
-    if (hamburger) {
+    if (hamburger && !document.body.classList.contains('workspace-wide')) {
       hamburger.setAttribute('aria-expanded', String(drawer.classList.contains('active') && btn.dataset.tab === 'sessions'));
     }
   });
@@ -113,7 +116,7 @@ drawer.querySelectorAll('.ptab').forEach(btn => {
 const tabsEl = document.getElementById('panels-tabs');
 if (tabsEl) {
   tabsEl.addEventListener('keydown', (e) => {
-    const tabs = Array.from(drawer.querySelectorAll('.ptab'));
+    const tabs = Array.from(drawer.querySelectorAll('.ptab')).filter(tab => !(tab.dataset.tab === 'sessions' && document.body.classList.contains('workspace-wide')));
     const i = tabs.indexOf(document.activeElement);
     if (i < 0) return;
     let next = -1;
@@ -269,9 +272,13 @@ function wireConsolidate(btnId, target) {
   btn.addEventListener('click', async () => {
     btn.disabled = true;
     try {
-      await consolidateMemory(target);
-      showToast('consolidated ' + target);
-      loadMemory();
+      const preview = await previewMemory(target);
+      const card=document.createElement('section');card.className='management-card';
+      const title=document.createElement('h4');title.textContent='Review proposed memory changes';card.appendChild(title);
+      renderResult(card,{name:'diff',output:'--- Current facts\n+++ Proposed facts\n'+(preview.before||[]).map(x=>'- '+x).join('\n')+'\n'+(preview.after||[]).map(x=>'+ '+x).join('\n')});
+      const apply=document.createElement('button');apply.type='button';apply.className='management-action';apply.textContent='Apply reviewed changes';
+      apply.addEventListener('click',async()=>{apply.disabled=true;try{await applyMemoryPreview(target,preview);card.remove();loadMemory();showToast('Memory updated');}catch(e){showToast(e.message);apply.disabled=false;}});
+      const cancel=document.createElement('button');cancel.type='button';cancel.className='management-action';cancel.textContent='Discard';cancel.addEventListener('click',()=>card.remove());card.append(apply,cancel);btn.insertAdjacentElement('afterend',card);
     } catch (err) {
       showToast('consolidate failed: ' + err.message);
     } finally {
@@ -338,6 +345,10 @@ async function loadSkills() {
       src.className = 'sk-src';
       src.textContent = sk.source || '';
       row.append(head, desc, src);
+      const review = document.createElement('details'); review.className = 'skill-review';
+      const summary = document.createElement('summary'); summary.textContent = 'Review content and provenance'; review.appendChild(summary);
+      review.addEventListener('toggle', async () => { if (!review.open || review.dataset.loaded) return; try {const full = await getSkill(sk.name); const body = document.createElement('pre');body.className='skill-body';body.textContent=full.body || '';const provenance=document.createElement('pre');provenance.className='skill-body';provenance.textContent=JSON.stringify(full.provenance || {},null,2);review.append(body,provenance);review.dataset.loaded='1';}catch(e){showToast(e.message);} });
+      row.appendChild(review);
       if (sk.needs_review) {
         const actions = document.createElement('div');
         actions.className = 'sk-actions';
@@ -345,6 +356,7 @@ async function loadSkills() {
         promo.className = 'sk-promote';
         promo.textContent = sk.untrusted ? 'force promote' : 'promote';
         promo.addEventListener('click', async () => {
+          if (!review.dataset.loaded || !review.open) { review.open = true; showToast('Review the skill content before promoting it'); return; }
           promo.disabled = true;
           try {
             await promoteSkill(sk.name, !!sk.untrusted);
@@ -377,7 +389,8 @@ async function loadTools() {
     header.textContent = tools.filter(t => t.enabled).length + ' of ' + tools.length +
       ' enabled' + (data && data.mcp_servers ? ' · ' + data.mcp_servers + ' MCP server(s)' : '');
     list.appendChild(header);
-    tools.forEach(t => {
+    const query=(document.getElementById('tools-search')?.value || '').toLowerCase();
+    tools.filter(t=>!query||(t.name+' '+(t.description||'')).toLowerCase().includes(query)).forEach(t => {
       const row = document.createElement('div');
       row.className = 'tool-row' + (t.enabled ? '' : ' off');
       const name = document.createElement('span');
@@ -386,7 +399,12 @@ async function loadTools() {
       const state = document.createElement('span');
       state.className = 'tool-state ' + (t.enabled ? 'ok' : 'off');
       state.textContent = t.enabled ? 'on' : 'off';
-      row.append(name, state);
+      const info = document.createElement('details'); info.className = 'tool-catalog-detail';
+      const summary = document.createElement('summary');summary.textContent = 'Details';info.appendChild(summary);
+      const desc = document.createElement('p');desc.textContent=t.description || 'Description unavailable';
+      const schema = document.createElement('pre');schema.textContent=JSON.stringify(t.schema || {},null,2);
+      info.append(desc,schema);if(t.reason){const reason=document.createElement('p');reason.textContent=t.reason;info.appendChild(reason);}
+      row.append(name, state, info);
       list.appendChild(row);
     });
   } catch (err) {
@@ -429,6 +447,8 @@ async function refreshRuns() {
   try {
     const data = await listRuns(30);
     const runs = (data && data.runs) || [];
+    const preserved=new Map();
+    list.querySelectorAll('.run-row').forEach(row=>{const detail=row.querySelector('.run-detail');if(detail?.open)preserved.set(row.dataset.runId,detail);});
     list.textContent = '';
     const header = document.createElement('div');
     header.className = 'tools-summary';
@@ -441,7 +461,7 @@ async function refreshRuns() {
       list.appendChild(el);
       return;
     }
-    runs.forEach(run => list.appendChild(renderRunRow(run)));
+    runs.forEach(run => {const row=renderRunRow(run);const detail=preserved.get(run.id);if(detail){row.querySelector('.run-detail')?.remove();row.appendChild(detail);}list.appendChild(row);});
   } catch (err) {
     list.innerHTML = '<div class="mf-empty">failed to load: ' + escapeHtml(err.message) + '</div>';
   }
@@ -450,6 +470,7 @@ async function refreshRuns() {
 function renderRunRow(run) {
   const row = document.createElement('div');
   row.className = 'run-row';
+  row.dataset.runId=run.id;
 
   const head = document.createElement('div');
   head.className = 'run-head';
@@ -490,7 +511,27 @@ function renderRunRow(run) {
     body.appendChild(errEl);
   }
 
-  row.append(head, body);
+  const details = document.createElement('details');
+  details.className = 'run-detail';
+  const summary = document.createElement('summary'); summary.textContent = 'Full run details'; details.appendChild(summary);
+  const detailBody = document.createElement('div');
+  const refreshDetail = document.createElement('button');
+  refreshDetail.type = 'button'; refreshDetail.className = 'management-action'; refreshDetail.textContent = 'Refresh details';
+  const loadDetail = async () => {
+    refreshDetail.disabled = true;
+    try {
+      const full = await getRun(run.id);
+      detailBody.textContent = '';
+      renderResult(detailBody, {name:'run', output:full.result || full.error || 'Run still in progress'});
+      details.dataset.loaded = '1';
+    } catch(e) { showToast(e.message); }
+    finally { refreshDetail.disabled = false; }
+  };
+  refreshDetail.addEventListener('click', loadDetail);
+  details.append(refreshDetail, detailBody);
+  details.addEventListener('toggle', () => { if (details.open && !details.dataset.loaded) loadDetail(); });
+  if (run.session_id) { const open = document.createElement('button'); open.type = 'button'; open.className = 'management-action'; open.textContent = 'Open session'; open.addEventListener('click', async () => { const {loadAndRenderSession} = await import('./sessions.js'); await loadAndRenderSession(run.session_id); }); body.appendChild(open); }
+  row.append(head, body, details);
 
   // Pending approvals — inline approve/deny/trust.
   const pending = run.pending_approvals || [];
@@ -510,7 +551,9 @@ function renderRunRow(run) {
       b.addEventListener('click', async () => {
         b.disabled = true;
         try {
-          await answerRunApproval(run.id, ap.id, action);
+          let confirmation;
+          if ((ap.friction || ap.requires_confirmation) && action !== 'deny') { confirmation = prompt('Type ' + action + ' to confirm this approval'); if (confirmation !== action) { b.disabled = false; return; } }
+          await answerRunApproval(run.id, ap.id, action, confirmation);
           showToast('approval ' + action + 'd');
           refreshRuns();
         } catch (e) {
@@ -550,7 +593,7 @@ function renderRunRow(run) {
 async function loadEvents() {
   const list = document.getElementById('events-list');
   try {
-    const data = await getEvents({ limit: 100 });
+    const data = await getEvents({ limit: 100, sessionId: document.getElementById('events-session-filter')?.checked ? S.sessionId || '' : '' });
     const evs = (data && data.events) || [];
     list.textContent = '';
     const header = document.createElement('div');
@@ -564,7 +607,8 @@ async function loadEvents() {
       list.appendChild(el);
       return;
     }
-    evs.forEach(ev => {
+    const query=(document.getElementById('events-search')?.value || '').toLowerCase();
+    evs.filter(ev=>!query||JSON.stringify(ev).toLowerCase().includes(query)).forEach(ev => {
       const row = document.createElement('div');
       row.className = 'event-row';
       const t = document.createElement('span');
@@ -581,6 +625,7 @@ async function loadEvents() {
       if (ev.run_id) bits.push((ev.run_id || '').slice(0, 12));
       ctx.textContent = bits.join(' · ');
       row.append(t, ctx, when);
+      const details=document.createElement('details');details.className='event-details';const summary=document.createElement('summary');summary.textContent='Details';const body=document.createElement('pre');body.textContent=JSON.stringify(ev,null,2);details.append(summary,body);row.appendChild(details);
       list.appendChild(row);
     });
   } catch (err) {
@@ -627,6 +672,7 @@ async function refreshJobs() {
     const jobs = (data && data.jobs) || [];
     S.jobs = jobs;
     paintIntent();
+    const preserved=new Map();list.querySelectorAll('.job-row').forEach(row=>{const output=row.querySelector('.job-output');if(output)preserved.set(row.dataset.jobId,output);});
     list.textContent = '';
     const header = document.createElement('div');
     header.className = 'tools-summary';
@@ -640,7 +686,7 @@ async function refreshJobs() {
       badgeNow();
       return;
     }
-    jobs.forEach((j) => list.appendChild(renderJobRow(j)));
+    jobs.forEach((j) => {const row=renderJobRow(j);if(preserved.has(j.id))row.appendChild(preserved.get(j.id));list.appendChild(row);});
     badgeNow();
   } catch (err) {
     list.innerHTML = '<div class="mf-empty">failed to load: ' + escapeHtml(err.message) + '</div>';
@@ -650,6 +696,7 @@ async function refreshJobs() {
 function renderJobRow(job) {
   const row = document.createElement('div');
   row.className = 'job-row';
+  row.dataset.jobId=job.id;
   const head = document.createElement('div');
   head.className = 'job-head';
   const st = document.createElement('span');
@@ -699,13 +746,14 @@ function renderJobRow(job) {
 async function showJobOutput(id, row) {
   let pre = row.querySelector('.job-output');
   if (pre) { pre.remove(); return; }
-  pre = document.createElement('pre');
+  pre = document.createElement('div');
   pre.className = 'job-output';
   pre.textContent = 'loading…';
   row.appendChild(pre);
   try {
     const data = await getJobOutput(id, getSessionToken(S.sessionId) || undefined);
-    pre.textContent = (data && data.output) || '(empty)';
+    pre.textContent = '';
+    renderResult(pre, {name:'bg_output',output:(data && data.output) || '(empty)'});
   } catch (err) {
     pre.textContent = err.message;
   }
@@ -755,6 +803,8 @@ async function refreshAgents() {
         a.last_tool,
       ].filter(Boolean).join(' · ');
       row.append(phase, goal, meta);
+      const trace=document.createElement('button');trace.type='button';trace.className='management-action';trace.textContent='Show conversation trace';
+      trace.addEventListener('click',()=>{const card=[...document.querySelectorAll('.subagent-card')].find(c=>c.dataset.taskId===a.task_id);if(card){togglePanels(false);card.scrollIntoView({block:'center'});const head=card.querySelector('.sa-top');if(head?.getAttribute('aria-expanded')!=='true')head?.click();}else showToast('This agent trace is not in the current conversation.');});row.appendChild(trace);
       if (a.phase === 'started' || a.phase === 'active') {
         const stop = document.createElement('button');
         stop.className = 'agent-stop';
@@ -894,3 +944,8 @@ async function loadConfig() {
     list.innerHTML = '<div class="mf-empty">failed to load: ' + escapeHtml(err.message) + '</div>';
   }
 }
+
+document.getElementById('events-search')?.addEventListener('input', loadEvents);
+document.getElementById('events-session-filter')?.addEventListener('change', loadEvents);
+
+document.getElementById('tools-search')?.addEventListener('input', loadTools);

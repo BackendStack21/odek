@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/BackendStack21/odek"
+	"github.com/BackendStack21/odek/internal/artifact"
 	"github.com/BackendStack21/odek/internal/bgproc"
 	"github.com/BackendStack21/odek/internal/budget"
 	"github.com/BackendStack21/odek/internal/config"
@@ -614,6 +615,14 @@ func newServeMux(d serveMuxDeps) *http.ServeMux {
 			h.ServeHTTP(w, r)
 		}))))
 	}
+	workspace, _ := os.Getwd()
+	mux.Handle("/api/uploads", apiAuth(handleBrowserUpload(store, resolved.Model, workspace)))
+	mux.Handle("/api/artifacts", apiAuth(handleBrowserArtifacts(store, &browserArtifacts)))
+	mux.Handle("/api/artifacts/", apiAuth(handleBrowserArtifacts(store, &browserArtifacts)))
+	mux.Handle("/api/capabilities", apiAuth(http.HandlerFunc(handleCapabilities)))
+	mux.Handle("/api/schedules", apiAuth(handleSchedules(expandHome("~/.odek"))))
+	mux.Handle("/api/schedules/", apiAuth(handleSchedules(expandHome("~/.odek"))))
+	mux.Handle("/api/maintenance", apiAuth(handleMaintenance(expandHome("~/.odek"), resolved)))
 	mux.Handle("/api/resources", apiAuth(handleResourceSearch(resourceReg)))
 	mux.Handle("/api/sessions", apiAuth(handleSessionListPaged(store)))
 	mux.Handle("/api/sessions/", apiAuth(handleSessionByID(store, resolved.TrustedProxies, wsToken)))
@@ -1011,13 +1020,12 @@ func newServeAgent(resolved config.ResolvedConfig, system string, runKey string,
 		EventHandler: func(ev events.Event) {
 			recordPlanUsage(ev)
 			serveEvents.add(ev)
+			if ev.Type == events.TypeIterationCompleted || ev.Type == events.TypeBudgetExceeded {
+				sendFn(map[string]any{"type": "runtime_event", "event": ev})
+			}
 		},
-		ToolEventHandler: func(event, name, data string) {
-			sendFn(map[string]any{
-				"type": event,
-				"name": name,
-				"data": data,
-			})
+		ToolDetailHandler: func(event loop.ToolDetailEvent) {
+			sendFn(map[string]any{"type": event.Type, "name": event.Name, "data": event.Data, "call_id": event.CallID, "outcome": event.Outcome})
 		},
 		SkillEventHandler: func(event skills.SkillEvent) {
 			sendFn(map[string]any{
@@ -1183,6 +1191,7 @@ func snapshotServerConfig(resolved config.ResolvedConfig) wsServerSnapshot {
 // immutable wsServerSnapshot, never from the live resolved config.
 func wsServerInfoEvent(startedAt time.Time, snap wsServerSnapshot) map[string]any {
 	return map[string]any{
+		"capabilities":   workspaceCapabilities(),
 		"version":        version,
 		"model":          snap.model,
 		"sandbox":        snap.sandbox,
@@ -1195,8 +1204,9 @@ func wsServerInfoEvent(startedAt time.Time, snap wsServerSnapshot) map[string]an
 // ── WebSocket Types ────────────────────────────────────────────────────
 
 type wsAttachment struct {
-	Name    string `json:"name"`
-	Content string `json:"content"`
+	UploadID string `json:"upload_id,omitempty"`
+	Name     string `json:"name"`
+	Content  string `json:"content"`
 }
 
 type wsClientMsg struct {
@@ -1236,12 +1246,14 @@ func newTurnID() string {
 // is active (R3). Lifecycle and sub-agent frames stay untouched so old
 // clients see byte-identical shapes for them.
 var turnTaggedFrames = map[string]bool{
-	"thinking":    true,
-	"token":       true,
-	"tool_call":   true,
-	"tool_result": true,
-	"done":        true,
-	"error":       true,
+	"thinking":      true,
+	"token":         true,
+	"tool_call":     true,
+	"tool_result":   true,
+	"runtime_event": true,
+	"artifact":      true,
+	"done":          true,
+	"error":         true,
 }
 
 // wsTurnAnnotator tags outbound frames with the active turn id (R3) so a
@@ -1925,6 +1937,20 @@ func handlePrompt(
 		var total int
 		var wrapped []string
 		for _, att := range msg.Attachments {
+			if att.UploadID != "" {
+				upload, ok := resolveBrowserUpload(att.UploadID, msg.SessionID)
+				if !ok {
+					sendError(send, "attachment unavailable or belongs to another session")
+					return currSess
+				}
+				total += upload.size
+				if total > maxTotalAttachmentBytes {
+					sendError(send, "total attachment size exceeds 10 MB")
+					return currSess
+				}
+				wrapped = append(wrapped, wrapUntrusted(ctx, "attachment:"+upload.name, "User-uploaded file: "+upload.name+"\nLocal path: "+upload.path))
+				continue
+			}
 			if att.Name == "" || att.Content == "" {
 				continue
 			}
@@ -2112,6 +2138,14 @@ func handlePrompt(
 	} else if auditSessID != "" {
 		ctx = withReadLedger(ctx, auditSessID)
 	}
+	ctx = artifact.WithObserver(ctx, func(ref artifact.Ref, roots []string) {
+		if sid == "" {
+			return
+		}
+		if item, err := browserArtifacts.capture(sid, ref, roots); err == nil {
+			send(map[string]any{"type": "artifact", "artifact": item})
+		}
+	})
 	_, allMessages, err := agent.RunWithMessages(ctx, messages)
 	latency := time.Since(start)
 	if auditSessID != "" {
@@ -3260,7 +3294,9 @@ var staticFiles = map[string][2]string{
 	"/app.js":    {"ui/app.js", "application/javascript; charset=utf-8"},
 	// Self-hosted font (variable weight 100–700) so the UI works offline and
 	// does not depend on the Google Fonts CDN.
-	"/fonts/azeret-mono.woff2": {"ui/fonts/azeret-mono.woff2", "font/woff2"},
+	"/fonts/manrope.ttf":         {"ui/fonts/manrope.ttf", "font/ttf"},
+	"/fonts/manrope-LICENSE.txt": {"ui/fonts/manrope-LICENSE.txt", "text/plain; charset=utf-8"},
+	"/fonts/azeret-mono.woff2":   {"ui/fonts/azeret-mono.woff2", "font/woff2"},
 }
 
 func handleStatic(wsToken string) http.HandlerFunc {
@@ -3351,7 +3387,7 @@ func handleStatic(wsToken string) http.HandlerFunc {
 		// Strict CSP: no inline scripts (all handlers are addEventListener /
 		// delegation), styles only from self + the few style="" attributes in
 		// index.html. frame-ancestors replaces the old standalone CSP line.
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' ws: wss:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; frame-src blob:; object-src 'none'; font-src 'self'; connect-src 'self' ws: wss:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
 		w.Write(data)
 	}
 }

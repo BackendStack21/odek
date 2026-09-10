@@ -3,7 +3,7 @@
 import { S, getSessionToken } from './state.js';
 import { promptEl, skeletonEl } from './dom.js';
 import { escapeHtml, escapeAttr, showToast, toggleShortcuts, hideCancel, closeDialog, formatNum } from './utils.js';
-import { addSystemMessage } from './render.js';
+import { addSystemMessage, requestTurnStop, endStream } from './render.js';
 import { loadSessions, loadAndRenderSession } from './sessions.js';
 import { connect, wsSend } from './ws.js';
 import { togglePanels } from './panels.js';
@@ -17,6 +17,9 @@ import './input.js';
 import './approvals.js';
 import './health.js';
 import './commands.js';
+import './workspace.js';
+import './management.js';
+import './artifacts.js';
 
 // ── Init ──
 // Save references so newSession() can restore the empty state after clearing.
@@ -202,6 +205,7 @@ function switchModel(modelId) {
 // the REST endpoint when the socket is down but the session is known.
 function cancelAgent() {
   if (!S.sessionId) {
+    if (S.busy) { requestTurnStop(); S.ws?.close(); endStream('cancelled'); addSystemMessage('⏹ Cancelled'); return; }
     hideCancel();
     addSystemMessage('⏹ No active session to cancel');
     return;
@@ -212,13 +216,18 @@ function cancelAgent() {
     session_id: S.sessionId,
     auth_token: token || undefined,
   })) {
+    requestTurnStop();
     hideCancel();
     addSystemMessage('⏹ Cancel requested');
     return;
   }
-  cancelSession(S.sessionId, token || undefined).catch(() => {});
-  hideCancel();
-  addSystemMessage('⏹ Canceled');
+  const sid = S.sessionId;
+  requestTurnStop();
+  cancelSession(sid, token || undefined).then(() => {
+    if (S.sessionId !== sid) return;
+    endStream('cancelled');
+    addSystemMessage('⏹ Cancelled');
+  }).catch(err => { showToast('Cancel failed: ' + err.message); });
 }
 document.getElementById('cancel-btn').addEventListener('click', cancelAgent);
 

@@ -34,6 +34,9 @@ export function classifyToolResult(name, output) {
     });
   }
 
+  const goPassed = (text.match(/^ok\s+\S+/gm) || []).length;
+  const goFailed = (text.match(/^FAIL\s+\S+/gm) || []).length;
+  if ((goPassed || goFailed) && /^(shell|parallel_shell)$/.test(name)) chips.push({ kind: 'test', label: goPassed + ' packages passed' + (goFailed ? ' · ' + goFailed + ' failed' : ''), tone: goFailed ? 'danger' : 'ok' });
   const tests = text.match(GO_TEST);
   if (tests && (name === 'shell' || name === 'parallel_shell')) {
     const passed = tests[1] || '0';
@@ -91,9 +94,10 @@ export function collectReceipt(name, argsJSON, output) {
   const receipt = { files: [], plus: 0, minus: 0, tests: '', tools: 1 };
   try {
     const obj = JSON.parse(argsJSON || '{}');
-    const path = obj.path || obj.file || '';
+    const writes = /^(write_file|patch|batch_patch)$/.test(name);
+    const path = writes ? obj.path || obj.file || '' : '';
     if (path) receipt.files.push(String(path));
-    if (Array.isArray(obj.paths)) receipt.files.push(...obj.paths.map(String));
+    if (writes && Array.isArray(obj.paths)) receipt.files.push(...obj.paths.map(String));
   } catch { /* ignore */ }
   const chips = classifyToolResult(name, output);
   for (const c of chips) {
@@ -109,7 +113,7 @@ export function collectReceipt(name, argsJSON, output) {
 export function formatReceipt(r) {
   if (!r) return '';
   const bits = [];
-  if (r.files && r.files.length) bits.push('touched ' + r.files.length);
+  if (r.files && r.files.length) bits.push('modified ' + new Set(r.files).size);
   if (r.plus || r.minus) bits.push('+' + r.plus + ' −' + r.minus);
   if (r.tests) bits.push(r.tests);
   return bits.join(' · ');
