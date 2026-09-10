@@ -201,6 +201,8 @@ func exhaustedTaskBudget(tb *taskBudget) *budget.Error {
 		return &budget.Error{Limit: budget.LimitToolCalls}
 	case tb.CostExhausted:
 		return &budget.Error{Limit: budget.LimitCostUSD}
+	case tb.InputTokensExhausted:
+		return &budget.Error{Limit: budget.LimitInputTokens}
 	}
 	return nil
 }

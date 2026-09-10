@@ -349,6 +349,13 @@ func (t *delegateTasksTool) Call(args string) (string, error) {
 		go func(i int, taskID, goal, ctx, guidance, trust, maxRisk, profile, artifactDir string) {
 			defer wg.Done()
 			defer func() { <-sem }()
+			defer func() {
+				if p := recover(); p != nil {
+					mu.Lock()
+					results[i] = fmt.Sprintf(`{"status":"error","error":%q}`, fmt.Sprintf("sub-agent worker panicked: %v", p))
+					mu.Unlock()
+				}
+			}()
 			r := run(i, taskID, goal, ctx, guidance, trust, maxRisk, profile, artifactDir)
 			mu.Lock()
 			results[i] = r
@@ -1058,8 +1065,8 @@ func taskBudgetFromSnapshot(s budget.Snapshot) *taskBudget {
 		CostExhausted:        s.CostExhausted,
 		InputTokensExhausted: s.InputTokensExhausted,
 	}
-	if tb.MaxRuntimeSeconds <= 0 && tb.MaxToolCalls <= 0 && tb.MaxCostUSD <= 0 &&
-		!tb.RuntimeExhausted && !tb.ToolCallsExhausted && !tb.CostExhausted {
+	if tb.MaxRuntimeSeconds <= 0 && tb.MaxToolCalls <= 0 && tb.MaxCostUSD <= 0 && tb.MaxInputTokens <= 0 &&
+		!tb.RuntimeExhausted && !tb.ToolCallsExhausted && !tb.CostExhausted && !tb.InputTokensExhausted {
 		return nil
 	}
 	return tb
