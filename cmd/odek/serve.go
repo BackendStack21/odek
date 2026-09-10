@@ -629,7 +629,7 @@ func newServeMux(d serveMuxDeps) *http.ServeMux {
 	mux.Handle("/api/resources", apiAuth(handleResourceSearch(resourceReg)))
 	mux.Handle("/api/sessions", apiAuth(handleSessionListPaged(store)))
 	mux.Handle("/api/sessions/", apiAuth(handleSessionByID(store, resolved.TrustedProxies, wsToken)))
-	mux.Handle("/api/models", apiAuth(handleModelList(resolved.Model, newServeModelLister(resolved))))
+	mux.Handle("/api/models", apiAuth(handleModelList(resolved.Model, newServeModelLister(resolved), resolved.Provider)))
 	mux.Handle("/api/limits", apiAuth(handleLimits(resolved.Model, resolved.Limits)))
 	mux.Handle("/api/cancel", apiAuth(handleCancel(store)))
 	mux.Handle("/api/health", apiAuth(handleHealth(state)))
@@ -3187,22 +3187,29 @@ func modelListEntry(id, display string, maxCtx int, current bool) modelEntry {
 		display = id
 	}
 	e := modelEntry{ID: id, MaxContext: maxCtx, Description: display, Current: current}
-	if maxCtx > 0 {
+	if maxCtx > 0 && maxCtx%1_000_000 == 0 {
+		e.Description = fmt.Sprintf("%s — %dM ctx", display, maxCtx/1_000_000)
+	} else if maxCtx > 0 {
 		e.Description = fmt.Sprintf("%s — %dK ctx", display, maxCtx/1024)
 	}
 	return e
 }
 
 // handleModelList is GET /api/models. The payload is the provider's
-// ListModels catalog (when the lister is set) plus the configured model,
+// ListModels catalog (when the lister is set), provider shortcuts, and the configured model,
 // marked current. /api/profiles is retired — this is the picker source.
-func handleModelList(configuredModel string, list modelLister) http.HandlerFunc {
+func handleModelList(configuredModel string, list modelLister, provider string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
 		byID := make(map[string]modelEntry)
+		if provider == "deepseek" || provider == "" {
+			for _, id := range []string{"deepseek-flash", "deepseek-pro"} {
+				byID[id] = modelListEntry(id, id, llmclient.LastResortContext(id), id == configuredModel)
+			}
+		}
 		if list != nil {
 			ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 			defer cancel()

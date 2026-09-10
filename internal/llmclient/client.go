@@ -174,6 +174,11 @@ func New(s *sdk.SDK, providerID, model string) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Pro is an Odek shortcut until DeepSeek publishes a versionless Pro ID.
+	// Keep custom providers' model namespaces untouched.
+	if providerID == "deepseek" && model == "deepseek-pro" {
+		model = "deepseek-v4-pro"
+	}
 	chat, err := s.Chat(providerID, model)
 	if err != nil {
 		return nil, err
@@ -648,7 +653,9 @@ func LastResortContext(model string) int {
 		{"k3-256k", 262_144},
 		{"k3", 1_000_000},
 		{"deepseek-v4", 1_000_000}, // pro, flash, v4.1-* (official 1M window)
-		{"deepseek-", 131_072},     // v3 chat / reasoner
+		{"deepseek-flash", 1_000_000},
+		{"deepseek-pro", 1_000_000},
+		{"deepseek-", 131_072}, // v3 chat / reasoner
 		// OpenAI — api.openai.com ListModels omits context_length.
 		{"gpt-6", 1_050_000},
 		{"gpt-5.6", 1_050_000},

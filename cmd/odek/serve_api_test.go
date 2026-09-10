@@ -432,7 +432,7 @@ func TestHandleSessionByID_GET_RateLimit(t *testing.T) {
 
 func TestHandleModelList_ReturnsOnlyConfiguredModel(t *testing.T) {
 	// Must return exactly one entry — the configured model — not KnownProfiles.
-	handler := handleModelList("deepseek-v4-flash", nil)
+	handler := handleModelList("deepseek-v4-flash", nil, "custom")
 	req := httptest.NewRequest(http.MethodGet, "/api/models", nil)
 	w := httptest.NewRecorder()
 	handler(w, req)
@@ -463,7 +463,7 @@ func TestHandleModelList_ReturnsOnlyConfiguredModel(t *testing.T) {
 }
 
 func TestHandleModelList_DeepSeekV41UsesV4Window(t *testing.T) {
-	handler := handleModelList("deepseek-v4.1-flash-expires-on-0910", nil)
+	handler := handleModelList("deepseek-v4.1-flash-expires-on-0910", nil, "custom")
 	w := httptest.NewRecorder()
 	handler(w, httptest.NewRequest(http.MethodGet, "/api/models", nil))
 	var models []modelEntry
@@ -479,7 +479,7 @@ func TestHandleModelList_DeepSeekV41UsesV4Window(t *testing.T) {
 }
 
 func TestHandleModelList_EmptyConfigModel_ReturnsEmptyList(t *testing.T) {
-	handler := handleModelList("", nil)
+	handler := handleModelList("", nil, "custom")
 	req := httptest.NewRequest(http.MethodGet, "/api/models", nil)
 	w := httptest.NewRecorder()
 	handler(w, req)
@@ -498,7 +498,7 @@ func TestHandleModelList_EmptyConfigModel_ReturnsEmptyList(t *testing.T) {
 
 func TestHandleModelList_UnknownModelStillReturned(t *testing.T) {
 	// A custom model not in KnownProfiles must still appear in the list.
-	handler := handleModelList("my-custom-llm", nil)
+	handler := handleModelList("my-custom-llm", nil, "custom")
 	req := httptest.NewRequest(http.MethodGet, "/api/models", nil)
 	w := httptest.NewRecorder()
 	handler(w, req)
@@ -528,7 +528,7 @@ func TestHandleModelList_MergesListedModels(t *testing.T) {
 			{ID: "glm-5.3-flash", DisplayName: "GLM 5.3 Flash", ContextWindow: 0},
 		}, nil
 	}
-	handler := handleModelList("glm-5.3-flash", list)
+	handler := handleModelList("glm-5.3-flash", list, "custom")
 	w := httptest.NewRecorder()
 	handler(w, httptest.NewRequest(http.MethodGet, "/api/models", nil))
 	var models []modelEntry
@@ -558,7 +558,7 @@ func TestHandleModelList_OpenAILastResortContext(t *testing.T) {
 			{ID: "gpt-4o", DisplayName: "GPT-4o", ContextWindow: 0},
 		}, nil
 	}
-	handler := handleModelList("gpt-5.6-luna", list)
+	handler := handleModelList("gpt-5.6-luna", list, "custom")
 	w := httptest.NewRecorder()
 	handler(w, httptest.NewRequest(http.MethodGet, "/api/models", nil))
 	var models []modelEntry
@@ -735,7 +735,7 @@ func TestHandleLimits_MethodNotAllowed(t *testing.T) {
 }
 
 func TestHandleModelList_MethodNotAllowed(t *testing.T) {
-	handler := handleModelList("m", nil)
+	handler := handleModelList("m", nil, "custom")
 	for _, method := range []string{http.MethodPost, http.MethodDelete, http.MethodPut} {
 		req := httptest.NewRequest(method, "/api/models", nil)
 		w := httptest.NewRecorder()
@@ -749,7 +749,7 @@ func TestHandleModelList_MethodNotAllowed(t *testing.T) {
 func TestHandleModelList_NoDeepSeekHardcoding(t *testing.T) {
 	// Verify that the list does NOT contain KnownProfiles entries when a
 	// non-deepseek model is configured. The old bug included all KnownProfiles.
-	handler := handleModelList("gpt-4o", nil)
+	handler := handleModelList("gpt-4o", nil, "custom")
 	req := httptest.NewRequest(http.MethodGet, "/api/models", nil)
 	w := httptest.NewRecorder()
 	handler(w, req)
