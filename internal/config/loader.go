@@ -2828,20 +2828,20 @@ func resolveSkills(cfg *SkillsConfig) skills.SkillsConfig {
 
 // resolveDangerous merges file-level and potential env-level dangerous config.
 // If no config is provided, returns an empty DangerousConfig (safe defaults).
-// When validate is true, invalid non_interactive values are rejected with a
-// warning and forced to "deny" so headless runs cannot accidentally
-// auto-approve dangerous ops.
+// Invalid enum values select a deny policy; validate controls warning output.
 func resolveDangerous(cfg *danger.DangerousConfig, validate bool) danger.DangerousConfig {
 	if cfg == nil {
 		return danger.DangerousConfig{}
 	}
 	resolved := *cfg
-	if validate && resolved.NonInteractive != nil {
-		if _, ok := danger.ParseNonInteractiveAction(*resolved.NonInteractive); !ok {
-			fmt.Fprintf(os.Stderr, "odek: warning: invalid non_interactive value %q — must be 'allow', 'deny', or 'read_only'; using 'deny'\n", *resolved.NonInteractive)
-			deny := "deny"
-			resolved.NonInteractive = &deny
+	// A bad class/action key invalidates the whole policy; discarding just
+	// the typo could expose an allow default or an allowlisted command.
+	if err := resolved.Validate(); err != nil {
+		if validate {
+			fmt.Fprintf(os.Stderr, "odek: warning: invalid dangerous policy: %v; using deny\n", err)
 		}
+		deny := "deny"
+		return danger.DangerousConfig{DefaultAction: &deny, NonInteractive: &deny}
 	}
 	return resolved
 }

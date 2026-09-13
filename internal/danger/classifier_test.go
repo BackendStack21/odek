@@ -579,9 +579,9 @@ func TestClassify_ConfigDefaults(t *testing.T) {
 	if got := cfg.ActionFor(Unknown); got != Deny {
 		t.Errorf("ActionFor(unknown) = %s, want deny", got)
 	}
-	// A class string that isn't in the table at all falls back to prompt.
-	if got := cfg.ActionFor(RiskClass("bogus")); got != Prompt {
-		t.Errorf("ActionFor(bogus) = %s, want prompt (fallback)", got)
+	// A class string that is not in the table fails closed.
+	if got := cfg.ActionFor(RiskClass("bogus")); got != Deny {
+		t.Errorf("ActionFor(bogus) = %s, want deny (invalid class)", got)
 	}
 }
 
@@ -1017,8 +1017,8 @@ func TestParseAction(t *testing.T) {
 	if got := parseAction("DENY"); got != Deny {
 		t.Errorf("parseAction(DENY) = %s", got)
 	}
-	if got := parseAction("unknown"); got != Prompt {
-		t.Errorf("parseAction(unknown) = %s, want prompt", got)
+	if got := parseAction("unknown"); got != Deny {
+		t.Errorf("parseAction(unknown) = %s, want deny", got)
 	}
 }
 
@@ -1084,8 +1084,8 @@ func TestParseNonInteractiveAction(t *testing.T) {
 func TestActionFor_UnknownClass(t *testing.T) {
 	cfg := &DangerousConfig{}
 	action := cfg.ActionFor(RiskClass("nonexistent"))
-	if action != Prompt {
-		t.Errorf("unknown class should prompt, got %s", action)
+	if action != Deny {
+		t.Errorf("unknown class should deny, got %s", action)
 	}
 }
 

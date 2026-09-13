@@ -736,7 +736,7 @@ func TestIsPackageManagerRun_BunBareFile(t *testing.T) {
 func TestParseAction_AllForms(t *testing.T) {
 	cases := map[string]Action{
 		"allow": Allow, "ALLOW": Allow, " deny ": Deny,
-		"prompt": Prompt, "garbage": Prompt, "": Prompt,
+		"prompt": Prompt, "garbage": Deny, "": Deny,
 	}
 	for in, want := range cases {
 		if got := parseAction(in); got != want {

@@ -155,8 +155,8 @@ func TestShellTool_Call_CommandFails(t *testing.T) {
 func TestShellTool_Call_CommandFailsWithStderr(t *testing.T) {
 	st := &shellTool{}
 	result, err := st.Call(`{"command": "echo error >&2 && exit 1"}`)
-	if err != nil {
-		t.Errorf("Call() should return output even on error, got: %v", err)
+	if err == nil {
+		t.Error("Call() should return a failure alongside captured stderr")
 	}
 	if !strings.Contains(result, "error") {
 		t.Errorf("result = %q, want it to contain 'error'", result)

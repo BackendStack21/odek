@@ -136,10 +136,10 @@ func TestReReadAfterMutationRelicenses(t *testing.T) {
 	}
 }
 
-func TestWasReadFresh_LargeFileFallsBackToStat(t *testing.T) {
+func TestWasReadFresh_LargeFileNeverGetsStatOnlyTrust(t *testing.T) {
 	dir, _ := setupFingerprintScript(t)
 	big := filepath.Join(dir, "big.sh")
-	// Larger than the hashing cap: fingerprint is size+mtime only.
+	// Larger than the hashing cap: a complete content receipt is unavailable.
 	payload := "#!/bin/sh\n" + "# pad line\n"
 	data := []byte(payload)
 	for len(data) <= (1 << 20) {
@@ -150,8 +150,8 @@ func TestWasReadFresh_LargeFileFallsBackToStat(t *testing.T) {
 	}
 
 	RecordRead(big)
-	if !WasReadFresh(big) {
-		t.Fatal("unmutated large file must stay fresh via stat fingerprint")
+	if WasReadFresh(big) {
+		t.Fatal("large file must not get a stat-only execution license")
 	}
 
 	if err := os.WriteFile(big, append(data, '\n'), 0755); err != nil {

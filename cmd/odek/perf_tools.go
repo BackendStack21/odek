@@ -288,7 +288,7 @@ func (t *batchPatchTool) Call(argsJSON string) (result string, err error) {
 			}
 			entry.Success = true
 			entry.Diff = wrapUntrusted(t.toolCtx(), "batch_patch:"+p.Path, diff)
-			danger.RecordReadCtx(t.toolCtx(), p.Path) // authored this session
+			// Patches expose changed fragments only; require a complete read before execution.
 			results[idx] = entry
 			continue
 		}
@@ -334,7 +334,7 @@ func (t *batchPatchTool) Call(argsJSON string) (result string, err error) {
 
 		entry.Success = true
 		entry.Diff = wrapUntrusted(t.toolCtx(), "batch_patch:"+p.Path, diff)
-		danger.RecordReadCtx(t.toolCtx(), p.Path) // authored this session
+		// Patches expose changed fragments only; require a complete read before execution.
 		results[idx] = entry
 	}
 
@@ -385,9 +385,10 @@ func (t *parallelShellTool) Description() string {
 }
 
 type parallelShellCmd struct {
-	Command     string `json:"command"`
-	Description string `json:"description,omitempty"`
-	Timeout     int    `json:"timeout,omitempty"`
+	Command      string `json:"command"`
+	Description  string `json:"description,omitempty"`
+	Timeout      int    `json:"timeout,omitempty"`
+	approvedRisk danger.RiskClass
 }
 
 type parallelShellEntry struct {
@@ -451,16 +452,17 @@ func (t *parallelShellTool) Call(argsJSON string) (result string, err error) {
 	}
 
 	// Pre-check all commands for approval
-	for _, c := range args.Commands {
+	for i, c := range args.Commands {
 		action := t.dangerousConfig.ActionForCommand(c.Command)
 		cls, unreadTargets := danger.ClassifyScriptGateCtx(t.toolCtx(), c.Command)
+		args.Commands[i].approvedRisk = cls
 		// unread-script execution gates under unread_exec even when
 		// code_execution was allowed or its class trusted (deny wins
 		// outright; both must allow to allow — see shellTool.checkApproval).
 		if len(unreadTargets) > 0 {
 			unreadAction := t.dangerousConfig.ActionFor(danger.UnreadExec)
 			switch {
-			case unreadAction == danger.Deny:
+			case action == danger.Deny || unreadAction == danger.Deny:
 				action = danger.Deny
 			case action == danger.Allow && unreadAction == danger.Allow:
 				action = danger.Allow
@@ -482,6 +484,9 @@ func (t *parallelShellTool) Call(argsJSON string) (result string, err error) {
 			if err := t.promptCommand(cls, c.Command, c.Description); err != nil {
 				return jsonError(fmt.Sprintf("command rejected: %s", c.Command))
 			}
+		case danger.Allow:
+		default:
+			return jsonError("invalid command policy action")
 		}
 	}
 
@@ -590,6 +595,13 @@ func (t *parallelShellTool) runOne(cmd parallelShellCmd) parallelShellEntry {
 		return nil
 	}
 	shCmd.WaitDelay = 3 * time.Second
+	if cmd.approvedRisk != "" {
+		if err := revalidateShellRisk(t.toolCtx(), cmd.Command, cmd.approvedRisk); err != nil {
+			entry.Error = err.Error()
+			entry.ExitCode = -1
+			return entry
+		}
+	}
 
 	err := shCmd.Run()
 	// Killing the host-side `docker exec` client does not terminate the
@@ -600,10 +612,10 @@ func (t *parallelShellTool) runOne(cmd parallelShellCmd) parallelShellEntry {
 	}
 	// successful read-only viewer runs mark operands as read, same as
 	// the serial shell tool.
-	if err == nil {
-		recordViewerReads(t.toolCtx(), cmd.Command)
+	if err == nil && t.containerName == "" {
+		recordViewerReads(t.toolCtx(), cmd.Command, stdout.String())
 	}
-	entry.Stdout = strings.TrimSpace(stdout.String())
+	entry.Stdout = stdout.String()
 	entry.Stderr = strings.TrimSpace(stderr.String())
 	entry.DurationMs = time.Since(start).Milliseconds()
 

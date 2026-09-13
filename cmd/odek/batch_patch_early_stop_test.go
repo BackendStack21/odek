@@ -34,8 +34,8 @@ func TestBatchPatchEarlyStopOnFirstFailure(t *testing.T) {
 		},
 	})
 	out, err := tool.Call(string(args))
-	if err != nil {
-		t.Fatalf("Call error: %v", err)
+	if err == nil {
+		t.Fatal("failed batch must return a typed failure")
 	}
 
 	var resp struct {

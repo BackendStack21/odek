@@ -275,12 +275,12 @@ func TestLoadConfig_SchedulesDangerousEnvOnlyAction(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("ODEK_SCHEDULES_DANGEROUS_ACTION", "allow")
-	t.Setenv("ODEK_SCHEDULES_DANGEROUS_NON_INTERACTIVE", "prompt")
+	t.Setenv("ODEK_SCHEDULES_DANGEROUS_NON_INTERACTIVE", "read_only")
 	cfg := LoadConfig(CLIFlags{})
 	if cfg.Schedules.Dangerous.DefaultAction == nil || *cfg.Schedules.Dangerous.DefaultAction != "allow" {
 		t.Errorf("default action not set from env")
 	}
-	if cfg.Schedules.Dangerous.NonInteractive == nil || *cfg.Schedules.Dangerous.NonInteractive != "prompt" {
+	if cfg.Schedules.Dangerous.NonInteractive == nil || *cfg.Schedules.Dangerous.NonInteractive != "read_only" {
 		t.Errorf("non_interactive not set from env")
 	}
 }

@@ -158,8 +158,8 @@ func TestBrowser_Redirect_BlockedTargetIsNotFetched(t *testing.T) {
 	bt := newBrowserTool(promptSystemWrite(ap))
 
 	res, err := bt.Call(fmt.Sprintf(`{"action":"navigate","url":%q}`, redir.URL))
-	if err != nil {
-		t.Fatalf("Call: %v", err)
+	if err == nil {
+		t.Fatal("expected typed operation failure alongside result")
 	}
 	if strings.Contains(res, "SECRET-METADATA") {
 		t.Fatalf("blocked redirect target body leaked into result: %s", res)
@@ -195,8 +195,8 @@ func TestHTTPBatch_Redirect_BlockedTargetIsNotFetched(t *testing.T) {
 	ht := newHTTPBatchTool(promptSystemWrite(ap))
 
 	res, err := ht.Call(fmt.Sprintf(`{"requests":[{"url":%q}]}`, redir.URL))
-	if err != nil {
-		t.Fatalf("Call: %v", err)
+	if err == nil {
+		t.Fatal("expected typed operation failure alongside result")
 	}
 	if strings.Contains(res, "SECRET-METADATA") {
 		t.Fatalf("blocked redirect target body leaked into result: %s", res)

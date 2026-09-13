@@ -14,8 +14,8 @@ import (
 func TestShellTool_ReportsExitStatusWithOutput(t *testing.T) {
 	st := &shellTool{}
 	out, err := st.Call(`{"command":"echo hello; exit 3"}`)
-	if err != nil {
-		t.Fatalf("expected annotated output for a failing command with stdout, got error: %v", err)
+	if err == nil {
+		t.Fatal("expected a typed failure alongside stdout")
 	}
 	if !strings.Contains(out, "hello") {
 		t.Errorf("stdout content lost: %q", out)
@@ -29,8 +29,8 @@ func TestShellTool_ReportsExitStatusWithStderrOnly(t *testing.T) {
 	st := &shellTool{}
 	// stderr present, exit 1: stderr stays visible AND the failure is named.
 	out, err := st.Call(`{"command":"echo boom >&2; exit 1"}`)
-	if err != nil {
-		t.Fatalf("expected annotated output, got error: %v", err)
+	if err == nil {
+		t.Fatal("expected a typed failure alongside stderr")
 	}
 	if !strings.Contains(out, "boom") {
 		t.Errorf("stderr content lost: %q", out)

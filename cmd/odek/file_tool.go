@@ -3,6 +3,8 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -18,6 +20,7 @@ import (
 
 	"github.com/BackendStack21/odek"
 	"github.com/BackendStack21/odek/internal/danger"
+	"github.com/BackendStack21/odek/internal/tool"
 )
 
 // ── ReadFile Tool ──────────────────────────────────────────────────────
@@ -217,6 +220,12 @@ type readFileTool struct {
 
 func (t *readFileTool) Name() string { return "read_file" }
 
+func (t *readFileTool) CallContext(ctx context.Context, args string) (string, error) {
+	call := &readFileTool{dangerousConfig: t.dangerousConfig, restrictToCWD: t.restrictToCWD}
+	call.SetContext(ctx)
+	return call.Call(args)
+}
+
 func (t *readFileTool) Description() string {
 	return `Read a text file with line numbers and pagination.
 Replaces shell cat / sed -n 'X,Yp' / head — zero forks, line-numbered, size-capped output.
@@ -338,7 +347,7 @@ func (t *readFileTool) Call(argsJSON string) (string, error) {
 		return jsonError(fmt.Sprintf("cannot seek %q: %v", args.Path, err))
 	}
 
-	content, totalLines, err := readLinesWithCount(f, args.Offset, args.Limit)
+	content, totalLines, receipt, err := readLinesWithReceipt(f, args.Offset, args.Limit)
 	if err != nil {
 		return jsonError(fmt.Sprintf("cannot read %q: %v", args.Path, err))
 	}
@@ -346,8 +355,8 @@ func (t *readFileTool) Call(argsJSON string) (string, error) {
 	// Only a FULL-file read licenses later execution of this file:
 	// a partial read (offset/limit window over a longer
 	// file) showed the model a prefix — the payload could ride below.
-	if args.Offset <= 1 && args.Limit >= totalLines {
-		danger.RecordReadCtx(t.toolCtx(), resolvedPath)
+	if receipt.complete {
+		danger.RecordReadContentCtx(t.toolCtx(), resolvedPath, receipt.size, receipt.digest)
 	}
 
 	result := readFileResult{
@@ -466,7 +475,7 @@ func (t *writeFileTool) Call(argsJSON string) (string, error) {
 			return jsonError(fmt.Sprintf("cannot write %q via sandbox: %v", args.Path, err))
 		}
 		// Content authored this session is content the agent has seen.
-		danger.RecordReadCtx(t.toolCtx(), args.Path)
+		danger.RecordReadContentCtx(t.toolCtx(), args.Path, int64(len(args.Content)), sha256.Sum256([]byte(args.Content)))
 		return jsonResult(writeFileResult{
 			Success: true,
 			Path:    args.Path,
@@ -513,7 +522,7 @@ func (t *writeFileTool) Call(argsJSON string) (string, error) {
 	}
 
 	// Content authored this session is content the agent has seen.
-	danger.RecordReadCtx(t.toolCtx(), args.Path)
+	danger.RecordReadContentCtx(t.toolCtx(), args.Path, int64(len(args.Content)), sha256.Sum256([]byte(args.Content)))
 	return jsonResult(writeFileResult{
 		Success: true,
 		Path:    args.Path,
@@ -1024,8 +1033,8 @@ func (t *patchTool) Call(argsJSON string) (string, error) {
 		return jsonError(fmt.Sprintf("cannot write %q: %v", args.Path, err))
 	}
 
-	// Content (re)authored this session is content the agent has seen.
-	danger.RecordReadCtx(t.toolCtx(), args.Path)
+	// A patch shows only the changed fragments; it does not license execution
+	// of the remaining file. A complete read can grant a new receipt.
 	return jsonResult(patchResult{
 		Success: true,
 		Diff:    wrapUntrusted(t.toolCtx(), "patch:"+args.Path, diff),
@@ -1036,13 +1045,18 @@ func (t *patchTool) Call(argsJSON string) (string, error) {
 
 func jsonError(msg string) (string, error) {
 	data, _ := json.Marshal(map[string]string{"error": msg})
-	return string(data), nil
+	return string(data), tool.NewPermanentError(msg)
 }
 
 func jsonResult(v any) (string, error) {
 	data, err := json.Marshal(v)
 	if err != nil {
 		return jsonError("marshal error: " + err.Error())
+	}
+	if outcome, ok := v.(nativeToolOutcome); ok {
+		if msg := outcome.nativeError(); msg != "" {
+			return string(data), tool.NewPermanentError(msg)
+		}
 	}
 	return string(data), nil
 }
@@ -1091,8 +1105,21 @@ func isBinary(data []byte) bool {
 // The returned content is capped at maxReadBytes to avoid unbounded memory
 // consumption from huge lines or huge limits.
 func readLinesWithCount(f *os.File, offset, limit int) (string, int, error) {
+	content, lines, _, err := readLinesWithReceipt(f, offset, limit)
+	return content, lines, err
+}
+
+type fileReadReceipt struct {
+	complete bool
+	size     int64
+	digest   [32]byte
+}
+
+func readLinesWithReceipt(f *os.File, offset, limit int) (string, int, fileReadReceipt, error) {
 	var out strings.Builder
-	scanner := bufio.NewScanner(f)
+	digest := sha256.New()
+	count := &countingReader{reader: io.TeeReader(f, digest)}
+	scanner := bufio.NewScanner(count)
 	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
 	lineNum := 0
 	start := offset
@@ -1127,7 +1154,20 @@ func readLinesWithCount(f *os.File, offset, limit int) (string, int, error) {
 		}
 	}
 
-	return strings.TrimSuffix(out.String(), "\n"), lineNum, scanner.Err()
+	receipt := fileReadReceipt{complete: !truncated && scanner.Err() == nil && offset <= 1 && limit >= lineNum, size: count.size}
+	copy(receipt.digest[:], digest.Sum(nil))
+	return strings.TrimSuffix(out.String(), "\n"), lineNum, receipt, scanner.Err()
+}
+
+type countingReader struct {
+	reader io.Reader
+	size   int64
+}
+
+func (r *countingReader) Read(p []byte) (int, error) {
+	n, err := r.reader.Read(p)
+	r.size += int64(n)
+	return n, err
 }
 
 // resolveReadPath resolves symlinks in the directory components of path,
@@ -1398,6 +1438,12 @@ type batchReadTool struct {
 
 func (t *batchReadTool) Name() string { return "batch_read" }
 
+func (t *batchReadTool) CallContext(ctx context.Context, args string) (string, error) {
+	call := &batchReadTool{dangerousConfig: t.dangerousConfig, restrictToCWD: t.restrictToCWD}
+	call.SetContext(ctx)
+	return call.Call(args)
+}
+
 func (t *batchReadTool) Description() string {
 	return `Read multiple files in a single call. Files are read in parallel and results are returned as an array.
 Each file entry supports offset and limit for pagination (same as read_file).
@@ -1559,15 +1605,15 @@ func (t *batchReadTool) readSingle(arg batchReadFileArg) batchReadFileResult {
 		return batchReadFileResult{Path: arg.Path, Error: fmt.Sprintf("cannot seek %q: %v", arg.Path, err)}
 	}
 
-	content, totalLines, err := readLinesWithCount(f, arg.Offset, arg.Limit)
+	content, totalLines, receipt, err := readLinesWithReceipt(f, arg.Offset, arg.Limit)
 	if err != nil {
 		return batchReadFileResult{Path: arg.Path, Error: fmt.Sprintf("cannot read %q: %v", arg.Path, err)}
 	}
 
 	// full-file reads only — same rationale as
 	// read_file.
-	if arg.Offset <= 1 && arg.Limit >= totalLines {
-		danger.RecordReadCtx(t.toolCtx(), resolvedPath)
+	if receipt.complete {
+		danger.RecordReadContentCtx(t.toolCtx(), resolvedPath, receipt.size, receipt.digest)
 	}
 	return batchReadFileResult{
 		Path:       arg.Path,

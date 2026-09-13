@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/BackendStack21/odek"
 	"github.com/BackendStack21/odek/internal/danger"
+	toolpkg "github.com/BackendStack21/odek/internal/tool"
 )
 
 // ── ReadFile Tool ──────────────────────────────────────────────────────
@@ -156,8 +158,8 @@ func TestReadFile_Directory(t *testing.T) {
 func TestReadFile_InvalidJSON(t *testing.T) {
 	tool := &readFileTool{}
 	result, err := tool.Call(`{invalid}`)
-	if err != nil {
-		t.Fatalf("Call() error: %v", err)
+	if err == nil {
+		t.Fatal("expected typed operation failure alongside result")
 	}
 	var r struct {
 		Error string `json:"error"`
@@ -628,8 +630,8 @@ func TestPatch_EmptyOldString(t *testing.T) {
 func TestPatch_InvalidJSON(t *testing.T) {
 	tool := &patchTool{}
 	result, err := tool.Call(`{invalid}`)
-	if err != nil {
-		t.Fatalf("Call() error: %v", err)
+	if err == nil {
+		t.Fatal("expected typed operation failure alongside result")
 	}
 	var r struct {
 		Error string `json:"error"`
@@ -1083,8 +1085,8 @@ func TestWriteFile_InvalidJSON(t *testing.T) {
 	tool := &writeFileTool{}
 	// Invalid JSON should return an error
 	result, err := tool.Call(`{invalid json}`)
-	if err != nil {
-		t.Fatalf("Call() error: %v", err)
+	if err == nil {
+		t.Fatal("expected typed operation failure alongside result")
 	}
 	var r struct {
 		Error string `json:"error"`
@@ -1441,8 +1443,32 @@ func callJSON(t *testing.T, tool interface {
 }, args string) string {
 	t.Helper()
 	result, err := tool.Call(args)
-	if err != nil {
-		t.Fatalf("Call() error: %v", err)
+	var envelope struct {
+		Error string `json:"error"`
+	}
+	_ = json.Unmarshal([]byte(result), &envelope)
+	if envelope.Error != "" {
+		if err == nil || err.Error() != envelope.Error {
+			t.Fatalf("error envelope and typed outcome disagree: %s / %v", result, err)
+		}
+	} else if err != nil {
+		var native *toolpkg.PermanentError
+		if !errors.As(err, &native) {
+			t.Fatalf("Call() error: %v", err)
+		}
+		var batch struct {
+			Results []struct {
+				Error string `json:"error"`
+			} `json:"results"`
+		}
+		_ = json.Unmarshal([]byte(result), &batch)
+		failed := false
+		for _, entry := range batch.Results {
+			failed = failed || entry.Error != ""
+		}
+		if !failed {
+			t.Fatalf("typed failure has no matching error envelope: %s / %v", result, err)
+		}
 	}
 	return result
 }
@@ -1962,8 +1988,8 @@ func TestWriteFile_TrustedClassesAllow(t *testing.T) {
 func TestPatch_InvalidJSONArgs(t *testing.T) {
 	tool := &patchTool{}
 	result, err := tool.Call(`{invalid}`)
-	if err != nil {
-		t.Fatalf("Call() error: %v", err)
+	if err == nil {
+		t.Fatal("expected typed operation failure alongside result")
 	}
 	var r struct {
 		Error string `json:"error"`
@@ -1980,11 +2006,11 @@ func TestPatch_InvalidJSONArgs(t *testing.T) {
 // ── jsonResult Tests ──────────────────────────────────────────────────
 
 func TestJsonResult_Error(t *testing.T) {
-	// json.Marshal fails on functions — but jsonResult wraps the error
-	// in a JSON response, so it returns nil error.
+	// A marshal failure is returned both in the JSON envelope and as a
+	// typed failure so the engine cannot count it as completed work.
 	result, err := jsonResult(func() {})
-	if err != nil {
-		t.Fatalf("jsonResult should return nil error, got: %v", err)
+	if err == nil {
+		t.Fatal("jsonResult marshal failure must return an error")
 	}
 	// The error should be in the JSON string
 	if !strings.Contains(result, `"error"`) {
