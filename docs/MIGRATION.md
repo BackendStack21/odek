@@ -1,5 +1,28 @@
 # Migrating to odek v2
 
+## Danger-policy defaults (v2.15.1)
+
+Two default changes, aimed at the out-of-box experience:
+
+1. **`network_egress` now defaults to `allow`** (was `prompt`). Outbound
+   commands like `curl`, `wget`, `git push` run unprompted. SSRF/dial-guard,
+   redirect re-classification, and the `install` gate are unaffected.
+   To restore the old behavior:
+   ```json
+   "dangerous": { "classes": { "network_egress": "prompt" } }
+   ```
+2. **`odek init --global` no longer writes `"action": "prompt"`** into
+   `~/.odek/config.json`. That global override replaced *every* per-class
+   default — including `safe` and `local_write`, which are supposed to run
+   unprompted — so an init-produced config prompted on every command and
+   downgraded `unknown` from deny to prompt. New configs rely on the built-in
+   per-class defaults.
+
+Existing configs are untouched: an explicit `"action"` in your config still
+wins over the new defaults. Note one knock-on: scheduled jobs follow the
+global egress default too — gate them via `schedules.dangerous.classes` if
+unattended egress matters to you.
+
 ## Removed tools (v2.13+)
 
 The `tr`, `sort`, `count_lines`, and `word_count` tools were removed as
