@@ -39,13 +39,11 @@ func TestReserveExternalUsage_BoundsParallelSpawns(t *testing.T) {
 		t.Fatalf("post-settle reservation = %d, want 300 (cap 1000 - charged 100 - reserved 600)", got)
 	}
 
-	// Settle the rest: actual clamped to the grant (child cannot exceed
-	// the cap it was handed) — charged = 100 + 600 = 700; the 300 grant
-	// from the last Reserve is still outstanding.
+	// A completed provider call can overshoot its grant. Preserve all usage.
 	e.SettleExternalUsage(600, 99999)
 	snap := e.BudgetSnapshot()
-	if snap.RemainingInputTokens != 300 {
-		t.Fatalf("after clamped settle, remaining = %d, want 300", snap.RemainingInputTokens)
+	if snap.RemainingInputTokens != 0 {
+		t.Fatalf("after overshoot, remaining = %d, want 0", snap.RemainingInputTokens)
 	}
 	if e.externalReserved != 300 {
 		t.Fatalf("outstanding reservation = %d, want 300", e.externalReserved)

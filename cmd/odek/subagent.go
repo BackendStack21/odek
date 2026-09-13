@@ -135,14 +135,16 @@ func neutraliseSubagentInputLiterals(s string) string {
 // optional — old children ignore the flags (version skew keeps the old
 // clamping behavior) and old parents simply never emit them.
 type taskBudget struct {
-	MaxRuntimeSeconds    int64   `json:"max_runtime_seconds,omitempty"`
-	MaxToolCalls         int64   `json:"max_tool_calls,omitempty"`
-	MaxCostUSD           float64 `json:"max_cost_usd,omitempty"`
-	MaxInputTokens       int64   `json:"max_input_tokens,omitempty"`
-	RuntimeExhausted     bool    `json:"runtime_exhausted,omitempty"`
-	ToolCallsExhausted   bool    `json:"tool_calls_exhausted,omitempty"`
-	CostExhausted        bool    `json:"cost_exhausted,omitempty"`
-	InputTokensExhausted bool    `json:"input_tokens_exhausted,omitempty"`
+	MaxRuntimeSeconds     int64   `json:"max_runtime_seconds,omitempty"`
+	MaxToolCalls          int64   `json:"max_tool_calls,omitempty"`
+	MaxCostUSD            float64 `json:"max_cost_usd,omitempty"`
+	MaxOutputTokens       int64   `json:"max_output_tokens,omitempty"`
+	MaxInputTokens        int64   `json:"max_input_tokens,omitempty"`
+	RuntimeExhausted      bool    `json:"runtime_exhausted,omitempty"`
+	ToolCallsExhausted    bool    `json:"tool_calls_exhausted,omitempty"`
+	CostExhausted         bool    `json:"cost_exhausted,omitempty"`
+	OutputTokensExhausted bool    `json:"output_tokens_exhausted,omitempty"`
+	InputTokensExhausted  bool    `json:"input_tokens_exhausted,omitempty"`
 }
 
 // clampLimits narrows the operator limits by the parent-supplied task
@@ -165,6 +167,9 @@ func clampLimits(op budget.Limits, tb *taskBudget) budget.Limits {
 	if tb.CostExhausted {
 		op.MaxCostUSD = 0
 	}
+	if tb.OutputTokensExhausted {
+		op.MaxOutputTokens = 0
+	}
 	if tb.InputTokensExhausted {
 		op.MaxInputTokens = 0
 	}
@@ -179,6 +184,9 @@ func clampLimits(op budget.Limits, tb *taskBudget) budget.Limits {
 	}
 	if tb.MaxInputTokens > 0 && (op.MaxInputTokens <= 0 || tb.MaxInputTokens < op.MaxInputTokens) {
 		op.MaxInputTokens = tb.MaxInputTokens
+	}
+	if tb.MaxOutputTokens > 0 && (op.MaxOutputTokens <= 0 || tb.MaxOutputTokens < op.MaxOutputTokens) {
+		op.MaxOutputTokens = tb.MaxOutputTokens
 	}
 	return op
 }
@@ -201,6 +209,8 @@ func exhaustedTaskBudget(tb *taskBudget) *budget.Error {
 		return &budget.Error{Limit: budget.LimitToolCalls}
 	case tb.CostExhausted:
 		return &budget.Error{Limit: budget.LimitCostUSD}
+	case tb.OutputTokensExhausted:
+		return &budget.Error{Limit: budget.LimitOutputTokens}
 	case tb.InputTokensExhausted:
 		return &budget.Error{Limit: budget.LimitInputTokens}
 	}
@@ -556,6 +566,7 @@ type subagentResult struct {
 	SummaryTruncated bool             `json:"summary_truncated,omitempty"` // headline was cut — parent should fetch artifacts (C)
 	SummaryRunes     int              `json:"summary_runes,omitempty"`     // ORIGINAL headline rune count before the cap
 	FilesChanged     []string         `json:"files_changed,omitempty"`     // changed files
+	Usage            *budget.Usage    `json:"usage,omitempty"`             // provider-reported accounting vector
 	TokensUsed       int              `json:"tokens_used"`                 // total tokens consumed
 	Iterations       int              `json:"iterations"`                  // think-act cycles used
 	DurationSeconds  float64          `json:"duration_seconds"`            // wall-clock runtime
@@ -883,6 +894,10 @@ func subagentCmd(args []string) error {
 		return fmt.Errorf("parent budget exhausted before start: %w", berr)
 	}
 
+	if taskBudgetBlock != nil && taskBudgetBlock.MaxCostUSD > 0 && !resolved.Limits.ResolveForModel(resolved.Model).CostEnforcementActive() {
+		return fmt.Errorf("shared cost budget requires prices for child model %q", resolved.Model)
+	}
+
 	//  wire context: everything the protocol-2 telemetry records
 	// and the result envelope report about this child's run posture. All
 	// values are RESOLVED — post operator-profile application, post
@@ -1120,11 +1135,9 @@ func subagentCmd(args []string) error {
 		}
 	}
 
-	// Count tokens (approximate from all messages)
-	tokensUsed := 0
-	for _, msg := range allMessages {
-		tokensUsed += len(msg.Content) / 4 // rough estimate
-	}
+	// Charge the same provider-reported vector used by the engine caps.
+	usage := agent.BudgetUsage()
+	tokensUsed := int(budget.AddCount(usage.TotalInput(), usage.OutputTokens))
 
 	// Classify the outcome (contract): typed budget errors map to
 	// budget_exhausted, partial-summary markers to partial (with reason),
@@ -1139,6 +1152,7 @@ func subagentCmd(args []string) error {
 		PartialReason:   outcome.Reason,
 		Summary:         summary,
 		TokensUsed:      tokensUsed,
+		Usage:           &usage,
 		Iterations:      iterations,
 		DurationSeconds: latency.Seconds(),
 		ParentSession:   cfg.parentSession,
@@ -1197,7 +1211,7 @@ func subagentCmd(args []string) error {
 	// when no price side is configured: clients must render cost as
 	// unavailable, never $0.
 	if agent != nil && wireCtx.Cost.configured() {
-		result.CostUSD = wireCtx.Cost.estimate(int64(agent.TotalInputTokens()), int64(agent.TotalOutputTokens()))
+		result.CostUSD = usage.CostUSD
 	}
 
 	// Output JSON to stdout — the envelope is emitted exactly once, here.
