@@ -98,6 +98,8 @@ export function toolView(name, raw, input = '') {
       if (!Array.isArray(data.hunks) || data.hunks.some(h=>!object(h) || !Array.isArray(h.lines) || h.lines.some(l=>!object(l)))) return null;
       kind = 'diff'; items = [entry(`${displayValue(data.path_a)} → ${displayValue(data.path_b)}`,'','',[section('Changes','diff',unifiedDiff(data))])]; break;
     case 'count_lines': case 'word_count': case 'checksum': case 'sort': case 'head_tail':
+      // count_lines/word_count/sort tools were removed; cases kept so persisted
+      // old-session transcripts still render.
       if (!Array.isArray(data.results)) return null;
       kind = 'files'; items = results.map(r => entry(r.path,r.error ? 'failed' : '', '', [section('Details','text',Object.entries(r).filter(([k])=>k!=='path').map(([k,v])=>`${k.replace(/_/g,' ')}: ${displayValue(v)}`).join('\n'))])); break;
     default:

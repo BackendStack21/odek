@@ -1177,7 +1177,7 @@ func computeDiff(a, b []string) []diffHunk {
 }
 
 // ═════════════════════════════════════════════════════════════════════════
-// 7. multi_grep — Search multiple patterns in parallel
+// 6. multi_grep — Search multiple patterns in parallel
 // ═════════════════════════════════════════════════════════════════════════
 
 const maxGrepPatterns = 10
@@ -1403,7 +1403,7 @@ func (t *multiGrepTool) searchPattern(pattern, root, fileGlob string, limit int)
 }
 
 // ═════════════════════════════════════════════════════════════════════════
-// 8. json_query — Query/extract from JSON files
+// 7. json_query — Query/extract from JSON files
 // ═════════════════════════════════════════════════════════════════════════
 
 type jsonQueryTool struct {
@@ -1579,7 +1579,7 @@ func jsonPathQuery(data interface{}, query string) (interface{}, error) {
 }
 
 // ═════════════════════════════════════════════════════════════════════════
-// 9. tree — Structured directory tree listing
+// 8. tree — Structured directory tree listing
 // ═════════════════════════════════════════════════════════════════════════
 
 type treeTool struct {
@@ -1771,7 +1771,7 @@ func buildTree(ctx context.Context, root, path string, depth, maxDepth int, incl
 }
 
 // ═════════════════════════════════════════════════════════════════════════
-// 10. checksum — Compute file hashes natively
+// 9. checksum — Compute file hashes natively
 // ═════════════════════════════════════════════════════════════════════════
 
 const maxChecksumFiles = 10
@@ -1908,7 +1908,7 @@ func (t *checksumTool) hashFile(arg checksumFileArg) (entry checksumEntry) {
 }
 
 // ═════════════════════════════════════════════════════════════════════════
-// 12. head_tail — Quick file preview (first/last N lines)
+// 10. head_tail — Quick file preview (first/last N lines)
 // ═════════════════════════════════════════════════════════════════════════
 
 // maxHeadTailTotalBytes caps the content returned by head_tail for a single
@@ -2112,7 +2112,7 @@ func truncateHeadTailLines(lines []string) []string {
 }
 
 // ═════════════════════════════════════════════════════════════════════════
-// 13. base64 — Encode/decode base64
+// 11. base64 — Encode/decode base64
 // ═════════════════════════════════════════════════════════════════════════
 
 type base64Tool struct {

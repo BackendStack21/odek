@@ -72,12 +72,12 @@
     "code-reviewer": {
       "description": "Strictly read-only code review with reasoning-capable tools",
       "max_risk": "safe",
-      "tools": { "enabled": ["plan", "read_file", "batch_read", "glob", "file_info", "search_files", "multi_grep", "tree", "count_lines", "head_tail", "diff", "word_count", "checksum", "sort", "base64", "tr", "json_query", "math_eval"] }
+      "tools": { "enabled": ["plan", "read_file", "batch_read", "glob", "file_info", "search_files", "multi_grep", "tree", "head_tail", "diff", "checksum", "base64", "json_query", "math_eval"] }
     },
     "security-auditor": {
       "description": "Read-only security review; no shell, no writes, no network",
       "max_risk": "safe",
-      "tools": { "enabled": ["plan", "read_file", "batch_read", "glob", "file_info", "search_files", "multi_grep", "tree", "count_lines", "head_tail", "diff", "word_count", "checksum", "base64", "tr", "json_query"] }
+      "tools": { "enabled": ["plan", "read_file", "batch_read", "glob", "file_info", "search_files", "multi_grep", "tree", "head_tail", "diff", "checksum", "base64", "json_query"] }
     },
     "ops-inspector": {
       "description": "Read-only infrastructure and service inspection commands",
@@ -99,7 +99,7 @@
     "judge": {
       "description": "Evaluate a proposal or result against given criteria; strictly read-only",
       "max_risk": "safe",
-      "tools": { "enabled": ["plan", "read_file", "batch_read", "glob", "file_info", "search_files", "multi_grep", "tree", "diff", "count_lines", "json_query", "math_eval"] }
+      "tools": { "enabled": ["plan", "read_file", "batch_read", "glob", "file_info", "search_files", "multi_grep", "tree", "diff", "json_query", "math_eval"] }
     },
     "scout": {
       "description": "Fast codebase reconnaissance with a minimal read-only toolkit",
@@ -109,7 +109,7 @@
     "librarian": {
       "description": "Locate and summarize relevant code or documentation; read-only",
       "max_risk": "safe",
-      "tools": { "enabled": ["plan", "read_file", "batch_read", "glob", "file_info", "search_files", "multi_grep", "tree", "count_lines", "head_tail", "word_count"] }
+      "tools": { "enabled": ["plan", "read_file", "batch_read", "glob", "file_info", "search_files", "multi_grep", "tree", "head_tail"] }
     },
     "researcher": {
       "description": "Web research with network egress; no shell",
@@ -119,7 +119,7 @@
     "web-reader": {
       "description": "Fetch and extract specific pages; no shell, strict tool whitelist",
       "max_risk": "network_egress",
-      "tools": { "enabled": ["browser", "http_batch", "read_file", "batch_read", "glob", "word_count"] }
+      "tools": { "enabled": ["browser", "http_batch", "read_file", "batch_read", "glob"] }
     },
     "writer": {
       "description": "Author and edit documentation and prose; no shell, no network",
@@ -129,7 +129,7 @@
     "translator": {
       "description": "Translate content with a minimal read/write toolkit",
       "max_risk": "local_write",
-      "tools": { "enabled": ["read_file", "write_file", "batch_read", "glob", "word_count", "tr"] }
+      "tools": { "enabled": ["read_file", "write_file", "batch_read", "glob"] }
     },
     "data-analyst": {
       "description": "Run predefined analysis entry points over local data",
@@ -140,12 +140,12 @@
     "media-describer": {
       "description": "Transcribe audio and describe images; read-only media toolkit",
       "max_risk": "safe",
-      "tools": { "enabled": ["transcribe", "vision", "read_file", "batch_read", "glob", "file_info", "word_count"] }
+      "tools": { "enabled": ["transcribe", "vision", "read_file", "batch_read", "glob", "file_info"] }
     },
     "summarizer": {
       "description": "Condense sessions and documents; strictly read-only",
       "max_risk": "safe",
-      "tools": { "enabled": ["session_search", "read_file", "batch_read", "glob", "search_files", "tree", "count_lines", "head_tail", "word_count"] }
+      "tools": { "enabled": ["session_search", "read_file", "batch_read", "glob", "search_files", "tree", "head_tail"] }
     }
   }
 }
