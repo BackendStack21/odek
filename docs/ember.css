@@ -1,6 +1,14 @@
 /* Ember landing page: warm amber, generous type, and the real workspace. */
 
 @font-face {
+  font-family: 'Space Grotesk';
+  font-style: normal;
+  font-weight: 300 700;
+  font-display: swap;
+  src: url('/fonts/space-grotesk.woff2') format('woff2');
+}
+
+@font-face {
   font-family: Geist;
   font-style: normal;
   font-weight: 100 900;
@@ -41,7 +49,7 @@
   --red:   #ff6b6b;
   --blue:  #6aadff;
 
-  --ui: 'Geist', system-ui, sans-serif;
+  --ui: 'Space Grotesk', 'Geist', system-ui, sans-serif;
   --code: 'Azeret Mono', 'JetBrains Mono', 'Fira Mono', ui-monospace, monospace;
   --code-ink: #9ec8ff;
   --code-fg:  #c9daf0;
