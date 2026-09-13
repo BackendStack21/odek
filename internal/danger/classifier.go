@@ -181,6 +181,13 @@ type ToolOperation struct {
 func ClassifyPath(path string) RiskClass {
 	path = expandShellTokenPath(path)
 	lexical := classifyPathLexical(path)
+	// Character pseudo-devices (stdio aliases, discards) stay LocalWrite no
+	// matter where they resolve: on Linux /dev/stdout is a symlink through
+	// /proc/self/fd to a /dev/pts entry, and both resolved prefixes would
+	// otherwise escalate a benign discard to Destructive.
+	if abs, err := filepath.Abs(expandShellTokenPath(path)); err == nil && isBenignCharDevice(filepath.Clean(abs)) {
+		return LocalWrite
+	}
 	resolved, err := resolvePathTarget(path)
 	if err != nil {
 		return worstOf(lexical, SystemWrite)
@@ -336,7 +343,7 @@ var persistenceDirMarkers = []string{
 	"/var/spool/cron/",    // per-user crontabs (Linux)
 	"/usr/lib/cron/tabs/", // per-user crontabs (macOS)
 	"/etc/systemd/",       // system units — boot / timer triggered
-	"/lib/systemd/",       // also covers /usr/lib/systemd/ as substring
+	"/lib/systemd/system/", // distro unit dir (symlinked /sbin/init → /lib/systemd/systemd must NOT match)
 	"/etc/profile.d/",     // sourced by login shells
 	// macOS launchd — case-insensitive match covers /Library and
 	// ~/Library forms alike once ~ is expanded.
