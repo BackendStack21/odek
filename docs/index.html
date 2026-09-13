@@ -69,7 +69,7 @@
       "name": "How do I install odek?",
       "acceptedAnswer": {
         "@type": "Answer",
-        "text": "Download the Linux or macOS binary and checksums.txt from GitHub Releases, verify the SHA-256, then install to ~/.local/bin. Do not use go install …@latest — Go ignores v2 tags for this module path and would install an older v1 release. To build from source, clone the latest release tag and go install with -ldflags that pin that tag."
+        "text": "Run: curl -fsSL https://odek.21no.de/install.sh | sh — it downloads the Linux or macOS binary, verifies the SHA-256 against the release checksums.txt, and installs to ~/.local/bin. Do not use go install …@latest — Go ignores v2 tags for this module path and would install an older v1 release. To build from source, clone the latest release tag and go install with -ldflags that pin that tag."
       }
     },
     {
@@ -257,14 +257,27 @@
 
     <section class="step" id="install" aria-labelledby="install-h">
       <h2 id="install-h"><span class="mark">▸</span> <span class="n">01</span> · install</h2>
-      <p>Prebuilt binary, SHA-256 checked, then <code>~/.local/bin</code>. If <code>odek version</code> is not found, add that directory to <code>PATH</code>.</p>
+      <p>One line. Checksum-verified prebuilt binary, then <code>~/.local/bin</code> (or <code>/usr/local/bin</code>). If <code>odek version</code> is not found, add that directory to <code>PATH</code>.</p>
 
       <div class="code-block">
         <div class="cb-header">
-          <span class="cb-lang">▸ bash · prebuilt</span>
+          <span class="cb-lang">▸ bash · one line</span>
           <button type="button" class="cb-copy" data-copy>copy</button>
         </div>
-        <pre><code>OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+        <pre><code>curl -fsSL https://odek.21no.de/install.sh | sh</code></pre>
+      </div>
+      <p class="copy-hint" hidden>copied — paste in a terminal. The installer refuses to install anything it cannot verify against the release checksums.</p>
+
+      <p>Later, <code>odek upgrade</code> self-updates from GitHub Releases the same way (SHA-256 verified). The script is <a href="https://github.com/BackendStack21/odek/blob/main/docs/install.sh">readable here</a> — pipe-to-sh should always be a choice, not a habit.</p>
+
+      <details>
+        <summary>Prefer manual steps? Download and verify yourself</summary>
+        <div class="code-block">
+          <div class="cb-header">
+            <span class="cb-lang">▸ bash · manual</span>
+            <button type="button" class="cb-copy" data-copy>copy</button>
+          </div>
+          <pre><code>OS=$(uname -s | tr '[:upper:]' '[:lower:]')
 ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
 ASSET="odek-${OS}-${ARCH}"
 TMP=$(mktemp -d)
@@ -282,10 +295,8 @@ install -m 755 "${TMP}/${ASSET}" "${HOME}/.local/bin/odek"
 rm -rf "${TMP}"
 export PATH="${HOME}/.local/bin:${PATH}"
 odek version</code></pre>
-      </div>
-      <p class="copy-hint" hidden>copied — paste in a terminal. if <code>odek: command not found</code>, add <code>~/.local/bin</code> to <code>PATH</code>.</p>
-
-      <p>Later, <code>odek upgrade</code> self-updates from GitHub Releases the same way (SHA-256 verified).</p>
+        </div>
+      </details>
 
       <details>
         <summary>Have Go? Install from the latest tag — never <code>go install …@latest</code></summary>
