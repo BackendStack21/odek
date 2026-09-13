@@ -116,13 +116,14 @@ func wrapUntrustedSubagentInput(body string) string {
 }
 
 // neutraliseSubagentInputLiterals replaces literal occurrences of
-// "untrusted_input" with a look-alike so a parent-supplied close tag cannot
-// pair with our nonce'd wrapper.
+// "untrusted_input" with a visually distinct form (middle dot, same
+// contract as wrapUntrusted) so a parent-supplied close tag cannot pair
+// with our nonce'd wrapper or look like a real fence to the model.
 func neutraliseSubagentInputLiterals(s string) string {
 	if !strings.Contains(s, "untrusted_input") {
 		return s
 	}
-	return strings.ReplaceAll(s, "untrusted_input", "untrustedˍinput")
+	return strings.ReplaceAll(s, "untrusted_input", "untrusted·input")
 }
 
 // taskBudget carries the parent's remaining budget into the child when

@@ -43,7 +43,8 @@ var injectionPatterns = []InjectionPattern{
 
 	// ── Encoded / obfuscated instructions ──────────────────────────
 	{regexp.MustCompile(`base64\s*(decode|encoded|encode)\s*:?\s*[A-Za-z0-9+/=]{20,}`), "base64-encoded payload"},
-	{regexp.MustCompile(`(decode|interpret|execute)\s+(this|the following)\s+(base64|hex|encoded)`), "encoded instruction"},
+	{regexp.MustCompile(`(decode|interpret|execute)\s+(this|the following)\s+(base64|hex|rot13|encoded)`), "encoded instruction"},
+	{regexp.MustCompile(`rot13\s+(decode|decoded|encode|encoded)`), "encoded instruction"},
 
 	// ── HTML / markup injections ───────────────────────────────────
 	{regexp.MustCompile(`(?s)<!--.{0,80}(ignore|disregard|new instructions|system prompt).{0,80}-->`), "HTML comment injection"},
@@ -51,7 +52,11 @@ var injectionPatterns = []InjectionPattern{
 
 	// ── Social engineering / confusion ─────────────────────────────
 	{regexp.MustCompile(`you (have been|are being) (hacked|compromised|tricked)`), "gaslighting"},
-	{regexp.MustCompile(`the user (said|wants|told you)`), "user impersonation"},
+	{regexp.MustCompile(`the user (said|says|wants|told you)`), "user impersonation"},
+	{regexp.MustCompile(`the principal (said|says|wants|told you)`), "principal impersonation"},
+	{regexp.MustCompile(`forget (all )?(your |the )?(rules|instructions|safety)`), "forget rules"},
+	{regexp.MustCompile(`act as (dan|developer mode|jailbreak)\b`), "jailbreak persona"},
+	{regexp.MustCompile(`override (your |the )?(safety|security) (guidelines|rules|restrictions|policies)`), "safety override"},
 	{regexp.MustCompile(`(from now on|henceforth|starting now),? (you (are|will|must|shall))`), "permanent override"},
 	{regexp.MustCompile(`^\s*#+ (new|updated|revised|corrected) (system prompt|instructions?)`), "markdown header injection"},
 

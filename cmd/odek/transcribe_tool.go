@@ -226,7 +226,7 @@ func (t *transcribeTool) Call(argsJSON string) (result string, err error) {
 
 	// Security: classify the audio file path
 	if err := t.dangerousConfig.CheckOperation(danger.ToolOperation{
-		Name: "transcribe", Resource: args.Path, Risk: danger.ClassifyPath(args.Path),
+		Name: "transcribe", Resource: args.Path, Risk: classifyResolvedPath(args.Path),
 	}, nil); err != nil {
 		return jsonError(err.Error())
 	}

@@ -22,6 +22,19 @@ import (
 	"github.com/BackendStack21/odek/internal/skills"
 )
 
+// withSessionExecution holds the session execution lock for the duration
+// of fn, including if fn panics. AcquireExecution must not be paired with
+// a defer inside the REPL for-loop — that defer would bind to the outer
+// function and leak the lock across turns.
+func withSessionExecution(ctx context.Context, store *session.Store, sessionID string, fn func() error) error {
+	release, err := store.AcquireExecution(ctx, sessionID)
+	if err != nil {
+		return err
+	}
+	defer release()
+	return fn()
+}
+
 // ── REPL ──────────────────────────────────────────────────────────────
 
 // replCmd handles `odek repl [flags]`.
@@ -231,7 +244,7 @@ func replCmd(args []string) error {
 		if sess == nil || checkpointErr != nil {
 			return
 		}
-		sess.Messages = snapshot
+		sess.Messages = dropDanglingToolCalls(snapshot)
 		if err := store.SaveNoIndex(sess); err != nil {
 			checkpointErr = fmt.Errorf("persist REPL checkpoint: %w", err)
 			if checkpointCancel != nil {
@@ -289,93 +302,89 @@ func replCmd(args []string) error {
 			turn++
 			continue
 		}
-		release, err := store.AcquireExecution(ctx, sess.ID)
-		if err != nil {
-			return err
-		}
-		latest, err := store.Load(sess.ID)
-		if err != nil {
-			release()
-			return err
-		}
-		sess = latest
-		if mm := agent.Memory(); mm != nil {
-			mm.ClearBuffer()
-			mm.RestoreBuffer(sess.Buffer)
-		}
-		originalInput := input
-		auditTurn := sess.Turns + 1
-		turnCtx, turnCancel := context.WithCancel(ctx)
-		checkpointErr, checkpointCancel = nil, turnCancel
-		runCtx := withAuditRecorder(turnCtx, auditStore, sess.ID, auditTurn)
-		runCtx = withReadLedger(runCtx, sess.ID)
-
-		// Resolve @references in REPL input
-		cwd, _ := os.Getwd()
-		if enriched, err := enrichTask(runCtx, input, nil, cwd); err == nil {
-			input = enriched
-		}
-
-		// Build message history: session messages + new user input
-		messages := sess.GetMessages()
-		if resumedSession {
-			// Return-after-break: on session resume, inject a concise
-			// summary of where the user left off (first turn only).
-			messages = injectReturnAfterBreak(ctx, agent.Memory(), messages)
-			resumedSession = false
-		}
-		histLen := len(messages)
-		messages = append(messages, session.Message{Role: "user", Content: input})
-
-		// Append user input to buffer (AppendBuffer summarizes raw text).
-		if mm := agent.Memory(); mm != nil {
-			mm.AppendBuffer("user", input)
-		}
-
-		// Run agent with full history
-		rend.Start(input)
-		_, allMessages, err := agent.RunWithMessages(runCtx, messages)
-		turnCancel()
-		if checkpointErr != nil {
-			err = checkpointErr
-		}
-		if err != nil {
-			recordTurnAudit(auditStore, sess.ID, auditTurn, originalInput, auditTurnDelta(allMessages, histLen))
-			// Persist the partial history so the interrupted turn survives
-			// up to the last completed step (mirrors the Telegram cancel path).
-			persistPartialMessages(store, sess, allMessages)
-			fmt.Fprintf(os.Stderr, "odek: agent error: %v\n", err)
-			release()
-			continue
-		}
-		recordTurnAudit(auditStore, sess.ID, auditTurn, originalInput, auditTurnDelta(allMessages, histLen))
-
-		// Append agent response to buffer (AppendBuffer summarizes raw text).
-		if mm := agent.Memory(); mm != nil && len(allMessages) > 0 {
-			if last := allMessages[len(allMessages)-1]; last.Role == "assistant" {
-				mm.AppendBuffer("agent", last.Content)
+		if err := withSessionExecution(ctx, store, sess.ID, func() error {
+			latest, err := store.Load(sess.ID)
+			if err != nil {
+				return err
 			}
-		}
-
-		// The per-turn persist callback already saved the full history;
-		// reload and Save once more to persist the buffer and update the
-		// vector index for the completed turn.
-		updated, loadErr := store.Load(sess.ID)
-		if loadErr != nil {
-			release()
-			return fmt.Errorf("reload completed session: %w", loadErr)
-		}
-		sess = updated
-		if sess != nil {
+			sess = latest
 			if mm := agent.Memory(); mm != nil {
-				sess.Buffer = mm.GetBuffer()
+				mm.ClearBuffer()
+				mm.RestoreBuffer(sess.Buffer)
 			}
-			if err := store.Save(sess); err != nil {
-				fmt.Fprintf(os.Stderr, "odek: save error: %v\n", err)
-			}
-		}
+			originalInput := input
+			auditTurn := sess.Turns + 1
+			turnCtx, turnCancel := context.WithCancel(ctx)
+			checkpointErr, checkpointCancel = nil, turnCancel
+			runCtx := withAuditRecorder(turnCtx, auditStore, sess.ID, auditTurn)
+			runCtx = withReadLedger(runCtx, sess.ID)
 
-		release()
+			// Resolve @references in REPL input
+			cwd, _ := os.Getwd()
+			if enriched, err := enrichTask(runCtx, input, nil, cwd); err == nil {
+				input = enriched
+			}
+
+			// Build message history: session messages + new user input
+			messages := sess.GetMessages()
+			if resumedSession {
+				// Return-after-break: on session resume, inject a concise
+				// summary of where the user left off (first turn only).
+				messages = injectReturnAfterBreak(ctx, agent.Memory(), messages)
+				resumedSession = false
+			}
+			histLen := len(messages)
+			messages = append(messages, session.Message{Role: "user", Content: input})
+
+			// Append user input to buffer (AppendBuffer summarizes raw text).
+			if mm := agent.Memory(); mm != nil {
+				mm.AppendBuffer("user", input)
+			}
+
+			// Run agent with full history
+			rend.Start(input)
+			_, allMessages, err := agent.RunWithMessages(runCtx, messages)
+			turnCancel()
+			if checkpointErr != nil {
+				err = checkpointErr
+			}
+			if err != nil {
+				recordTurnAudit(auditStore, sess.ID, auditTurn, originalInput, auditTurnDelta(allMessages, histLen))
+				// Persist the partial history so the interrupted turn survives
+				// up to the last completed step (mirrors the Telegram cancel path).
+				persistPartialMessages(store, sess, allMessages)
+				fmt.Fprintf(os.Stderr, "odek: agent error: %v\n", err)
+				return nil
+			}
+			recordTurnAudit(auditStore, sess.ID, auditTurn, originalInput, auditTurnDelta(allMessages, histLen))
+
+			// Append agent response to buffer (AppendBuffer summarizes raw text).
+			if mm := agent.Memory(); mm != nil && len(allMessages) > 0 {
+				if last := allMessages[len(allMessages)-1]; last.Role == "assistant" {
+					mm.AppendBuffer("agent", last.Content)
+				}
+			}
+
+			// The per-turn persist callback already saved the full history;
+			// reload and Save once more to persist the buffer and update the
+			// vector index for the completed turn.
+			updated, loadErr := store.Load(sess.ID)
+			if loadErr != nil {
+				return fmt.Errorf("reload completed session: %w", loadErr)
+			}
+			sess = updated
+			if sess != nil {
+				if mm := agent.Memory(); mm != nil {
+					sess.Buffer = mm.GetBuffer()
+				}
+				if err := store.Save(sess); err != nil {
+					fmt.Fprintf(os.Stderr, "odek: save error: %v\n", err)
+				}
+			}
+			return nil
+		}); err != nil {
+			return err
+		}
 
 		// Follow-up suggestions after the turn (presentation-only, printed
 		// on stderr like the rest of the REPL's turn output; not persisted).

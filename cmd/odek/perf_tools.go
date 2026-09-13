@@ -14,6 +14,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"hash"
 	"io"
 	"math"
 	"net/http"
@@ -70,7 +71,7 @@ func readFileNoFollow(path string) ([]byte, error) {
 		return nil, fmt.Errorf("file too large (%d bytes, max %d)", info.Size(), maxFileReadBytes)
 	}
 
-	return io.ReadAll(io.LimitReader(f, maxFileReadBytes+1))
+	return readCapped(f, maxFileReadBytes)
 }
 
 // ═════════════════════════════════════════════════════════════════════════
@@ -234,15 +235,14 @@ func (t *batchPatchTool) Call(argsJSON string) (result string, err error) {
 			continue
 		}
 
-		var sb strings.Builder
-		_, err = io.Copy(&sb, f)
+		originalBytes, err := readCapped(f, maxFileReadBytes)
 		f.Close()
 		if err != nil {
 			entry.Error = fmt.Sprintf("cannot read %q: %v", p.Path, err)
 			results[idx] = entry
 			continue
 		}
-		original := sb.String()
+		original := string(originalBytes)
 
 		if !strings.Contains(original, p.OldString) {
 			entry.Error = fmt.Sprintf("old_string not found in %q", p.Path)
@@ -453,6 +453,9 @@ func (t *parallelShellTool) Call(argsJSON string) (result string, err error) {
 
 	// Pre-check all commands for approval
 	for i, c := range args.Commands {
+		if strings.TrimSpace(c.Command) == "" {
+			return jsonError("empty command")
+		}
 		action := t.dangerousConfig.ActionForCommand(c.Command)
 		cls, unreadTargets := danger.ClassifyScriptGateCtx(t.toolCtx(), c.Command)
 		args.Commands[i].approvedRisk = cls
@@ -523,6 +526,7 @@ func (t *parallelShellTool) promptCommand(cls danger.RiskClass, cmd, description
 	approver := t.approver
 	if approver == nil {
 		ttyApprover := danger.NewTTYApprover(&t.dangerousConfig)
+		ttyApprover.Ctx = t.toolCtx()
 		if t.trustedClasses != nil {
 			ttyApprover.SetTrustedClasses(t.trustedClasses)
 		}
@@ -1283,7 +1287,7 @@ func (t *multiGrepTool) Call(argsJSON string) (string, error) {
 // discovered while searching $HOME), it returns skip=true so the walker does
 // not silently read sensitive files.
 func (t *multiGrepTool) checkSearchPath(path string) (skip bool, reason string) {
-	risk := danger.ClassifyPath(path)
+	risk := classifyResolvedPath(path)
 	if err := t.dangerousConfig.CheckOperation(danger.ToolOperation{
 		Name: "multi_grep", Resource: path, Risk: risk,
 	}, nil); err != nil {
@@ -1662,7 +1666,7 @@ func (t *treeTool) Call(argsJSON string) (result string, err error) {
 	// metadata leak structure even without file contents.
 	checkTreePath := func(p string) bool {
 		return t.dangerousConfig.CheckOperation(danger.ToolOperation{
-			Name: "tree", Resource: p, Risk: danger.ClassifyPath(p),
+			Name: "tree", Resource: p, Risk: classifyResolvedPath(p),
 		}, nil) != nil
 	}
 
@@ -1886,25 +1890,25 @@ func (t *checksumTool) hashFile(arg checksumFileArg) (entry checksumEntry) {
 		return checksumEntry{Path: arg.Path, Algorithm: algo, Error: fmt.Sprintf("file too large (%d bytes, max %d)", info.Size(), maxFileReadBytes)}
 	}
 
-	var hash string
+	var h hash.Hash
 	switch algo {
 	case "sha256":
-		h := sha256.New()
-		io.Copy(h, f)
-		hash = hex.EncodeToString(h.Sum(nil))
+		h = sha256.New()
 	case "sha1":
-		h := sha1.New()
-		io.Copy(h, f)
-		hash = hex.EncodeToString(h.Sum(nil))
+		h = sha1.New()
 	case "md5":
-		h := md5.New()
-		io.Copy(h, f)
-		hash = hex.EncodeToString(h.Sum(nil))
+		h = md5.New()
 	default:
 		return checksumEntry{Path: arg.Path, Algorithm: algo, Error: fmt.Sprintf("unsupported algorithm: %s", algo)}
 	}
-
-	return checksumEntry{Path: arg.Path, Algorithm: algo, Hash: hash}
+	n, err := io.Copy(h, io.LimitReader(f, maxFileReadBytes+1))
+	if err != nil {
+		return checksumEntry{Path: arg.Path, Algorithm: algo, Error: fmt.Sprintf("cannot hash %q: %v", arg.Path, err)}
+	}
+	if n > maxFileReadBytes {
+		return checksumEntry{Path: arg.Path, Algorithm: algo, Error: fmt.Sprintf("file too large (%d bytes, max %d)", n, maxFileReadBytes)}
+	}
+	return checksumEntry{Path: arg.Path, Algorithm: algo, Hash: hex.EncodeToString(h.Sum(nil))}
 }
 
 // ═════════════════════════════════════════════════════════════════════════

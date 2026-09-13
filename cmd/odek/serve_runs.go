@@ -754,11 +754,11 @@ func startServeRun(
 	// endpoint (2026-08 audit: the AuthToken field was accepted but never
 	// checked, so a cookie-only caller could resume and mutate any
 	// session). A session_id that does not load is fine — handlePrompt
-	// creates a fresh session. Legacy sessions without a token get one
-	// minted and persisted by validateSessionToken.
+	// creates a fresh session. Legacy sessions without a stored token
+	// are minted, but the minted token must be presented (strict).
 	if req.SessionID != "" && store != nil {
 		if sess, err := store.Load(req.SessionID); err == nil && sess != nil {
-			if _, ok := validateSessionToken(store, sess, req.AuthToken); !ok {
+			if !validateSessionTokenStrict(store, sess, req.AuthToken) {
 				return nil, errInvalidSessionToken
 			}
 		}

@@ -179,7 +179,7 @@ func TestClassify_NetworkEgress_Commands(t *testing.T) {
 		{"curl https://example.com", NetworkEgress},
 		{"wget https://example.com/file", NetworkEgress},
 		{"git push origin main", NetworkEgress},
-		{"git push --force origin main", NetworkEgress},
+		{"git push --force origin main", SystemWrite},
 		{"git clone https://github.com/user/repo", NetworkEgress},
 		{"git fetch origin", NetworkEgress},
 		{"git pull origin main", NetworkEgress},
@@ -187,7 +187,7 @@ func TestClassify_NetworkEgress_Commands(t *testing.T) {
 		// for the subcommand (regression: these were misclassified as safe).
 		{"git -C /repo push origin main", NetworkEgress},
 		{"git -c http.proxy=http://evil fetch origin", NetworkEgress},
-		{"git --git-dir /repo/.git push origin", NetworkEgress},
+		{"git --git-dir /repo/.git push origin", SystemWrite},
 		{"git -C /repo -c key=val pull", NetworkEgress},
 		{"scp file user@remote:/path", NetworkEgress},
 		{"rsync -avz ./ user@remote:/backup", NetworkEgress},
@@ -357,8 +357,9 @@ func TestClassify_ScriptAndPackageManagerExecution(t *testing.T) {
 		{"bun start", CodeExecution},
 		{"bun index.ts", CodeExecution},
 		{"cargo run", CodeExecution},
-		{"cargo build", CodeExecution},
-		{"cargo test", CodeExecution},
+		{"cargo build", Safe},
+		{"cargo test", Safe},
+		{"cargo bench", CodeExecution},
 		// Package-manager installs still classify as install, not code exec.
 		{"npm install express", Install},
 		{"bun add left-pad", Install},
@@ -622,9 +623,9 @@ func TestClassify_Config_Allowlist(t *testing.T) {
 	}{
 		{"git push origin main", Allow},
 		{"npm run deploy", Allow},
-		{"git push origin feature", Allow},  // egress default (not in allowlist, egress allows)
-		{"sudo tee /etc/hosts x", Prompt},   // not in allowlist, system_write prompts
-		{"rm -rf /", Deny},                  // default for destructive
+		{"git push origin feature", Allow}, // egress default (not in allowlist, egress allows)
+		{"sudo tee /etc/hosts x", Prompt},  // not in allowlist, system_write prompts
+		{"rm -rf /", Deny},                 // default for destructive
 	}
 	for _, tt := range tests {
 		t.Run(tt.cmd, func(t *testing.T) {

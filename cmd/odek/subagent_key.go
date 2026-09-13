@@ -101,6 +101,14 @@ func readKeyFromInheritedFD() string {
 	if err != nil && err != io.EOF {
 		return ""
 	}
+	if n == len(buf) {
+		extra := make([]byte, 1)
+		n2, err2 := f.Read(extra)
+		if n2 > 0 || (err2 != nil && err2 != io.EOF) {
+			// Fail closed: a truncated key is worse than no key.
+			return ""
+		}
+	}
 	for n > 0 && (buf[n-1] == '\n' || buf[n-1] == '\r' || buf[n-1] == ' ' || buf[n-1] == '\t') {
 		n--
 	}

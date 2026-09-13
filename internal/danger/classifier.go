@@ -253,7 +253,11 @@ func classifyPathLexical(path string) RiskClass {
 		// exact-case match would let a case variant slip past the guard.
 		lowerAbs, lowerHome := strings.ToLower(abs), strings.ToLower(home)
 		for _, sub := range []string{"/.ssh", "/.config", "/.gnupg", "/.aws", "/.kube",
-			"/.docker", "/.gitconfig", "/.env"} {
+			"/.docker", "/.gitconfig", "/.env",
+			"/.netrc", "/.npmrc", "/.pypirc", "/.pgpass",
+			"/.git-credentials", "/.my.cnf", "/.mylogin.cnf",
+			"/.cargo", "/.gem", "/.azure", "/.password-store",
+			"/.terraform.d", "/.vault-token"} {
 			if strings.HasPrefix(lowerAbs, lowerHome+sub) {
 				return SystemWrite
 			}
@@ -332,19 +336,19 @@ var shellRCFilesLower = func() map[string]bool {
 // leading slash) keeps relative paths like .github/workflows/x.yml working
 // after filepath.Abs without reimplementing git/CI layout resolution.
 var persistenceDirMarkers = []string{
-	"/.git/hooks/",        // runs on commit, push, checkout
-	"/.github/workflows/", // runs on the next push, with CI credentials
-	"/etc/cron.d/",        // runs on a schedule
-	"/etc/crontab",        // runs on a schedule
-	"/etc/cron.daily/",    // runs daily (Debian run-parts)
-	"/etc/cron.hourly/",   // runs hourly
-	"/etc/cron.weekly/",   // runs weekly
-	"/etc/cron.monthly/",  // runs monthly
-	"/var/spool/cron/",    // per-user crontabs (Linux)
-	"/usr/lib/cron/tabs/", // per-user crontabs (macOS)
-	"/etc/systemd/",       // system units — boot / timer triggered
+	"/.git/hooks/",         // runs on commit, push, checkout
+	"/.github/workflows/",  // runs on the next push, with CI credentials
+	"/etc/cron.d/",         // runs on a schedule
+	"/etc/crontab",         // runs on a schedule
+	"/etc/cron.daily/",     // runs daily (Debian run-parts)
+	"/etc/cron.hourly/",    // runs hourly
+	"/etc/cron.weekly/",    // runs weekly
+	"/etc/cron.monthly/",   // runs monthly
+	"/var/spool/cron/",     // per-user crontabs (Linux)
+	"/usr/lib/cron/tabs/",  // per-user crontabs (macOS)
+	"/etc/systemd/",        // system units — boot / timer triggered
 	"/lib/systemd/system/", // distro unit dir (symlinked /sbin/init → /lib/systemd/systemd must NOT match)
-	"/etc/profile.d/",     // sourced by login shells
+	"/etc/profile.d/",      // sourced by login shells
 	// macOS launchd — case-insensitive match covers /Library and
 	// ~/Library forms alike once ~ is expanded.
 	"/library/launchdaemons",
@@ -1114,6 +1118,17 @@ var writePrefixes = map[string]bool{
 	"sed": true, "tee": true,
 	"rm": true, "mv": true, "cp": true, "touch": true,
 	"mkdir": true, "rmdir": true, "chmod": true, "chown": true,
+	// ln / install / chgrp were special-cased for system-path escalation
+	// but missing here, so a workspace `ln -s a b` fell through to
+	// unknown (deny). They are ordinary local writes; the operand scan
+	// still promotes a system or persistence target.
+	"ln": true, "install": true, "chgrp": true,
+	// Archive tools write extracted/compressed files. List-only forms
+	// (`tar -t`, `unzip -l`) still allow — same action as local_write —
+	// instead of unknown-deny. `--to-command` / `-I` escalate in
+	// isCodeExecution before this set is consulted.
+	"tar": true, "unzip": true, "zip": true,
+	"gzip": true, "gunzip": true, "pigz": true,
 	// chattr mutates file attributes (including the immutable flag) the same
 	// way chmod mutates permissions; recursive use at a system root is
 	// escalated by the same operand scan, and formerly it fell through to
@@ -1142,7 +1157,7 @@ var projectExecCommands = map[string]bool{
 var systemPrefixes = map[string]bool{
 	"sudo": true, "apt": true, "apt-get": true, "yum": true,
 	"brew": true, "dpkg": true, "systemctl": true, "service": true,
-	"useradd": true, "groupadd": true, "passwd": true, "chown": true,
+	"useradd": true, "groupadd": true, "passwd": true,
 }
 
 var destructivePrefixes = map[string]bool{
@@ -1222,22 +1237,24 @@ var installPrefixes = map[string]bool{
 	"npm": true, "pip": true, "pip3": true, "gem": true,
 	"cargo": true, "brew": true, "go": true,
 	"pnpm": true, "yarn": true, "bun": true, "apk": true,
+	"uv": true,
 }
 
 // pkgRunSubcommands map package managers to the subcommands that execute
-// arbitrary project-defined code: package.json lifecycle/`run` scripts, cargo
-// build scripts (build.rs), test harnesses, etc. These are code execution, not
-// a plain install — an attacker who can drop a malicious package.json or
-// build.rs runs code the moment one of these is invoked. Subcommands that only
-// download (e.g. "go mod download") are handled as installs instead, and go's
-// run/test/build verbs are intentionally absent here (see isCodeExecution /
-// isInstall) so existing go build|test|mod-tidy behaviour is preserved.
+// arbitrary project-defined code: package.json lifecycle/`run` scripts,
+// cargo binaries/benches, etc. These are code execution, not a plain
+// install. Subcommands that only download (e.g. "go mod download") are
+// handled as installs instead. Compile/test verbs for go and cargo
+// (`go build`/`go test`, `cargo build`/`cargo test`) are intentionally
+// absent so the main compile-and-test loop stays safe — the same bar as
+// reversible local git porcelain. `cargo run` / `cargo bench` still
+// execute a built binary and stay here.
 var pkgRunSubcommands = map[string]map[string]bool{
 	"npm":   {"start": true, "run": true, "run-script": true, "test": true, "stop": true, "restart": true, "exec": true},
 	"pnpm":  {"start": true, "run": true, "test": true, "exec": true},
 	"yarn":  {"start": true, "run": true, "test": true, "exec": true},
 	"bun":   {"start": true, "run": true, "test": true, "exec": true},
-	"cargo": {"run": true, "build": true, "test": true, "bench": true},
+	"cargo": {"run": true, "bench": true},
 }
 
 // safeCommands are read-only / no-op programs that inspect state or
@@ -1277,6 +1294,9 @@ var safeCommands = map[string]bool{
 	"id": true, "whoami": true, "groups": true, "users": true, "who": true,
 	"w": true, "last": true, "getent": true, "ps": true, "pgrep": true,
 	"pidof": true, "netstat": true, "ss": true, "locale": true,
+	// Signaling a process is reversible (restart it). kill of pid 1 or
+	// broadcast pid -1 still escalates in isSystemWrite.
+	"kill": true, "pkill": true, "killall": true,
 	"getconf": true, "which": true, "whereis": true, "type": true, "hash": true,
 	// control / no-op builtins
 	"true": true, "false": true, ":": true, "test": true, "[": true,
@@ -1757,6 +1777,12 @@ func isScriptEvalInterpreter(name string) bool {
 	switch name {
 	case "luajit", "osascript", "ipython":
 		return true
+	}
+	if strings.HasPrefix(name, "python") {
+		rest := strings.TrimPrefix(name, "python")
+		if rest == "" || rest[0] == '3' || rest[0] == '2' {
+			return true
+		}
 	}
 	if strings.HasPrefix(name, "lua") {
 		rest := strings.TrimPrefix(name, "lua")
@@ -2369,6 +2395,11 @@ var envExecNames = map[string]bool{
 	"GIT_ASKPASS": true, "GIT_PROXY_COMMAND": true,
 	"GIT_EXEC_PATH":     true,
 	"GIT_CONFIG_GLOBAL": true, "GIT_CONFIG_SYSTEM": true, "GIT_CONFIG_PARAMETERS": true,
+	// Path hijacks: retarget metadata/worktree/index so a planted repo
+	// or corrupt index is what a later "safe" git verb actually sees.
+	"GIT_DIR": true, "GIT_WORK_TREE": true, "GIT_INDEX_FILE": true,
+	"GIT_OBJECT_DIRECTORY": true, "GIT_ALTERNATE_OBJECT_DIRECTORIES": true,
+	"GIT_COMMON_DIR": true, "GIT_NAMESPACE": true,
 }
 
 // posixShells source $ENV (and honour $SHELL for some features). Used so
@@ -2529,7 +2560,11 @@ var sensitivePathFragments = []string{
 	"/.ssh", "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519",
 	"/.aws/credentials", "/.aws/config", "/.config/gcloud",
 	"/.kube/config", "/.docker/config.json", "/.netrc", "/.pgpass",
-	"/.git-credentials", "/.gnupg", "/proc/self/environ", "/environ",
+	"/.git-credentials", "/.gnupg", "/.npmrc", "/.pypirc",
+	"/.my.cnf", "/.mylogin.cnf",
+	"/.cargo/credentials", "/.gem/credentials", "/.azure/credentials",
+	"/.password-store", "/.terraform.d", "/.vault-token",
+	"/proc/self/environ", "/environ",
 }
 
 func isSensitivePath(tok string) bool {
@@ -3004,8 +3039,23 @@ func classifyCommand(tokens []string) RiskClass {
 	// fell through every check — a prompt-injection payload could wipe a
 	// working tree with zero friction. They now require explicit approval
 	// (system_write → prompt by default), like other irreversible mutations.
-	if first == "git" && isGitDataLoss(tokens) {
+	if first == "git" && (isGitDataLoss(tokens) || gitRetargetsFilesystem(tokens)) {
 		return SystemWrite
+	}
+
+	// git submodule foreach runs an arbitrary inner command in every
+	// submodule; classify that command, not the outer git verb.
+	if first == "git" {
+		if inner := gitSubmoduleForeachInner(tokens); inner != "" {
+			return Classify(inner)
+		}
+	}
+
+	// docker / docker-compose: inspect stays safe, run/build executes
+	// image code, pull is egress, prune/image+volume rm is hard to undo.
+	// Unrecognised verbs stay unknown (deny), matching fail-closed.
+	if first == "docker" || first == "docker-compose" {
+		return classifyContainerCLI(first, tokens)
 	}
 
 	// Code execution checks (pipe to shell, eval, -e/-c flags)
@@ -3260,6 +3310,11 @@ func isSystemWrite(first string, tokens []string) bool {
 	if systemPrefixes[first] {
 		return true
 	}
+	// kill pid 1 (init) or broadcast pid -1 is host-level, not a
+	// hung-test cleanup. Ordinary kill/pkill stay safe via safeCommands.
+	if first == "kill" && killTargetsInitOrBroadcast(tokens) {
+		return true
+	}
 	// chmod that sets the setuid/setgid bit is privilege escalation regardless
 	// of the target path: a setuid binary runs with its owner's privileges, so
 	// `chmod u+s`, `chmod 4755`, `chmod 6755`, etc. must require approval. Plain
@@ -3318,8 +3373,12 @@ func isSystemWrite(first string, tokens []string) bool {
 // shape (e.g. a file named build+gen.s).
 func chmodSetsSUIDGID(tokens []string) bool {
 	for _, tok := range tokens[1:] {
+		// chmod --reference copies mode bits including setuid/setgid.
+		if tok == "--reference" || strings.HasPrefix(tok, "--reference=") {
+			return true
+		}
 		if strings.HasPrefix(tok, "-") {
-			continue // flag (e.g. -R, --recursive, --reference=FILE)
+			continue // flag (e.g. -R, --recursive)
 		}
 		// Symbolic: any clause that sets the 's' permission (u+s, g+s, a+s, +s,
 		// ug+rs, u=rws, a=rwxs, …). Both '+' (add) and '=' (set exactly) can
@@ -3334,12 +3393,14 @@ func chmodSetsSUIDGID(tokens []string) bool {
 				return true
 			}
 		}
-		// Octal: a 4-digit mode whose first digit has bit 4 (setuid) or 2
-		// (setgid) set. 3-digit modes have no special-permission digit.
-		if len(tok) == 4 && isOctalMode(tok) {
-			switch tok[0] {
-			case '2', '3', '4', '5', '6', '7':
-				return true
+		// Octal: special-permission digits are everything but the last
+		// three. 04755 and 4755 both set setuid; 0755 / 1755 (sticky only)
+		// do not. 3-digit modes have no special-permission digit.
+		if isOctalMode(tok) && len(tok) >= 4 {
+			for _, d := range tok[:len(tok)-3] {
+				if d >= '2' && d <= '7' {
+					return true
+				}
 			}
 		}
 		// First non-flag operand is the mode; everything after is a filename.
@@ -3393,47 +3454,8 @@ func isNetworkEgress(first string, tokens []string) bool {
 	}
 	// git subcommands that inherently contact a remote.
 	if first == "git" {
-		// Find the git subcommand, skipping the initial "git" token and any
-		// leading path (e.g. /usr/bin/git) or global options. Some global
-		// options take a *separate* value token that does not start with "-"
-		// (e.g. "git -C <path> push", "git -c <key=val> fetch"); that value
-		// must not be mistaken for the subcommand, otherwise a remote-contacting
-		// command is misclassified as non-egress and could be auto-allowed.
-		sub := ""
-		seenGit := false
-		skipNext := false
-		for _, tok := range tokens {
-			if !seenGit && commandName(tok) == "git" {
-				seenGit = true
-				continue
-			}
-			if !seenGit {
-				continue
-			}
-			if skipNext {
-				skipNext = false
-				continue
-			}
-			if strings.HasPrefix(tok, "-") {
-				switch tok {
-				case "-C", "-c", "--git-dir", "--work-tree", "--namespace",
-					"--exec-path", "--super-prefix", "--config-env":
-					// These consume the following token as their value.
-					skipNext = true
-				}
-				continue
-			}
-			sub = tok
-			break
-		}
-		switch sub {
-		case "clone", "fetch", "pull":
-			return true
-		case "push":
-			// "git push" with no remote is harmless (prints upstream info).
-			return hasArgAfter(tokens, "push", "")
-		}
-		return false
+		sub, args := gitSubcommandAndArgs(tokens)
+		return gitContactsRemote(sub, tokens, args)
 	}
 	// gh subcommands inherently contact the GitHub API — the same class as
 	// git's remote-contacting subcommands. Only meta invocations (help,
@@ -3539,6 +3561,23 @@ func isGitCodeExecution(tokens []string) bool {
 			if tok == "config" {
 				return true
 			}
+			if tok == "filter-branch" {
+				for _, a := range tokens[i+1:] {
+					switch {
+					case a == "--tree-filter", a == "--index-filter",
+						a == "--msg-filter", a == "--commit-filter",
+						a == "--tag-name-filter", a == "--parent-filter":
+						return true
+					case strings.HasPrefix(a, "--tree-filter="),
+						strings.HasPrefix(a, "--index-filter="),
+						strings.HasPrefix(a, "--msg-filter="),
+						strings.HasPrefix(a, "--commit-filter="),
+						strings.HasPrefix(a, "--tag-name-filter="),
+						strings.HasPrefix(a, "--parent-filter="):
+						return true
+					}
+				}
+			}
 		}
 
 		if consumed {
@@ -3592,11 +3631,104 @@ func gitSubcommandAndArgs(tokens []string) (sub string, args []string) {
 	return "", nil
 }
 
+// gitRetargetsFilesystem reports whether the invocation points git at a
+// different repo, worktree, or index via --git-dir / --work-tree. Same
+// class of hijack as GIT_DIR=… env assignments.
+func gitRetargetsFilesystem(tokens []string) bool {
+	for _, tok := range tokens {
+		if tok == "--git-dir" || strings.HasPrefix(tok, "--git-dir=") ||
+			tok == "--work-tree" || strings.HasPrefix(tok, "--work-tree=") {
+			return true
+		}
+	}
+	return false
+}
+
+// gitContactsRemote reports whether a parsed git subcommand talks to a remote.
+func gitContactsRemote(sub string, tokens, args []string) bool {
+	switch sub {
+	case "clone", "fetch", "pull", "ls-remote",
+		"daemon", "instaweb", "fetch-pack", "upload-pack",
+		"send-pack", "receive-pack":
+		return true
+	case "push":
+		// "git push" with no remote is harmless (prints upstream info).
+		return hasArgAfter(tokens, "push", "")
+	case "remote":
+		return len(args) > 0 && (args[0] == "update" || args[0] == "prune")
+	case "submodule":
+		if len(args) == 0 {
+			return false
+		}
+		switch args[0] {
+		case "update", "add", "sync":
+			return true
+		}
+		return false
+	case "archive":
+		for _, a := range args {
+			if a == "--remote" || strings.HasPrefix(a, "--remote=") {
+				return true
+			}
+		}
+		return false
+	case "lfs":
+		if len(args) == 0 {
+			return false
+		}
+		switch args[0] {
+		case "fetch", "pull", "push", "clone":
+			return true
+		}
+		return false
+	case "svn":
+		if len(args) == 0 {
+			return false
+		}
+		switch args[0] {
+		case "fetch", "clone", "dcommit", "rebase":
+			return true
+		}
+		return false
+	}
+	return false
+}
+
+// gitSubmoduleForeachInner returns the command git submodule foreach will
+// run in each submodule, or empty when this is not a foreach invocation.
+func gitSubmoduleForeachInner(tokens []string) string {
+	sub, args := gitSubcommandAndArgs(tokens)
+	if sub != "submodule" || len(args) == 0 || args[0] != "foreach" {
+		return ""
+	}
+	rest := args[1:]
+	for len(rest) > 0 && strings.HasPrefix(rest[0], "-") {
+		if rest[0] == "--" {
+			rest = rest[1:]
+			break
+		}
+		rest = rest[1:]
+	}
+	if len(rest) == 0 {
+		return ""
+	}
+	return strings.Join(rest, " ")
+}
+
 // isGitDataLoss reports whether a git invocation irreversibly destroys
 // uncommitted work, branches, stashes, or history:
 //
 //	git clean -f…            (unless -n/--dry-run is also given)
-//	git reset --hard
+//	git reset --hard | --merge
+//	git switch -f | --discard-changes
+//	git rebase / cherry-pick / am   (except --abort / --quit)
+//	git filter-branch / filter-repo
+//	git replace -d / update-ref -d
+//	git bundle unbundle
+//	git init --separate-git-dir
+//	git push --force / -f / --force-with-lease
+//	git read-tree -u --reset
+//	git submodule deinit -f
 //	git checkout -f | -- <path> | <pathspec>
 //	git restore <pathspec>   (worktree restore; --staged-only is safe)
 //	git branch -D | -d -f
@@ -3630,7 +3762,54 @@ func isGitDataLoss(tokens []string) bool {
 		}
 		return force && !dryRun
 	case "reset":
-		return hasAny(args, "--hard")
+		return hasAny(args, "--hard", "--merge")
+	case "switch":
+		// -f/--force/--discard-changes throws away uncommitted work,
+		// matching git checkout -f.
+		for _, a := range args {
+			if a == "--force" || a == "--discard-changes" ||
+				(isShortFlagToken(a) && strings.ContainsRune(a[1:], 'f')) {
+				return true
+			}
+		}
+		return false
+	case "rebase", "cherry-pick", "am":
+		// History rewrite. --abort/--quit only restore the pre-rebase
+		// state and are recovery, not loss.
+		return !hasAny(args, "--abort", "--quit")
+	case "filter-branch", "filter-repo":
+		return true
+	case "replace":
+		return hasAny(args, "-d", "--delete")
+	case "update-ref":
+		return hasAny(args, "-d", "--delete")
+	case "bundle":
+		return len(args) > 0 && args[0] == "unbundle"
+	case "init":
+		for _, a := range args {
+			if a == "--separate-git-dir" || strings.HasPrefix(a, "--separate-git-dir=") {
+				return true
+			}
+		}
+		return false
+	case "push":
+		// Force-push rewrites remote history. Network egress is
+		// auto-allowed by default, so this must be data-loss instead.
+		for _, a := range args {
+			if a == "--force" || strings.HasPrefix(a, "--force-with-lease") ||
+				(isShortFlagToken(a) && strings.ContainsRune(a[1:], 'f')) {
+				return true
+			}
+		}
+		return false
+	case "read-tree":
+		// -u --reset writes the worktree to match the tree-ish.
+		return hasAny(args, "--reset") && (hasAny(args, "-u") || hasShortFlag(args, 'u'))
+	case "submodule":
+		if len(args) > 0 && args[0] == "deinit" {
+			return hasAny(args, "--force") || hasShortFlag(args, 'f')
+		}
+		return false
 	case "checkout":
 		// -f/--force or a pathspec (-- <path>, ".", "./…") discards local
 		// changes. A bare branch operand (git checkout main) switches, keeps
@@ -3723,6 +3902,15 @@ func isShortFlagToken(tok string) bool {
 	return strings.HasPrefix(tok, "-") && !strings.HasPrefix(tok, "--") && len(tok) > 1
 }
 
+func hasShortFlag(args []string, flag rune) bool {
+	for _, a := range args {
+		if isShortFlagToken(a) && strings.ContainsRune(a[1:], flag) {
+			return true
+		}
+	}
+	return false
+}
+
 func isCodeExecution(first string, tokens []string) bool {
 	// git -c/--config-env can inject arbitrary shell commands via aliases,
 	// core.pager, core.fsmonitor, credential.helper, etc.; git config writes
@@ -3766,10 +3954,23 @@ func isCodeExecution(first string, tokens []string) bool {
 	if first == "bun" && hasAny(tokens, "-e", "--eval") {
 		return true
 	}
+	// deno eval/run execute code. deno is a stdin-exec interpreter (so
+	// it is a known command, not unknown/deny) but was missing the
+	// eval/run gate that bun -e has — `deno run pwn.ts` was Safe.
+	if first == "deno" && hasAny(tokens, "eval", "run", "repl", "test", "task", "compile", "-e", "--eval") {
+		return true
+	}
 
 	// Package-manager subcommands that run arbitrary project-defined scripts
-	// (npm/yarn/pnpm/bun run|start|test|exec, cargo run|build|test|bench, …).
+	// (npm/yarn/pnpm/bun run|start|test|exec, cargo run|bench, …).
 	if isPackageManagerRun(first, tokens) {
+		return true
+	}
+
+	// tar --to-command / --use-compress-program / -I run an arbitrary
+	// helper on each archive member. Without this gate those forms
+	// would be local_write (tar is a write prefix) and auto-allow.
+	if first == "tar" && tarRunsCommand(tokens) {
 		return true
 	}
 
@@ -3809,8 +4010,11 @@ func isCodeExecution(first string, tokens []string) bool {
 		if (first == "pnpm" || first == "yarn") && hasAny(tokens, "dlx") {
 			return true
 		}
-		// uv run / uv tool run execute code.
-		if first == "uv" && hasAny(tokens, "run", "tool") {
+		// uv run / uv tool run execute code. `uv tool` alone is a
+		// namespace (`uv tool list` is inspect; `uv tool install` is
+		// handled as install below) — do not treat every `tool` token
+		// as execution.
+		if first == "uv" && hasAny(tokens, "run") {
 			return true
 		}
 		return false
@@ -4118,6 +4322,12 @@ func isInstall(first string, tokens []string) bool {
 		return hasArgAfter(tokens, "brew", "install")
 	}
 
+	// uv sync / add / pip install / tool install fetch or materialise
+	// a project environment. `uv run` is code execution above.
+	if first == "uv" {
+		return uvIsInstall(tokens)
+	}
+
 	return false
 }
 
@@ -4137,6 +4347,291 @@ func hasArgAfter(tokens []string, after, target string) bool {
 			}
 			return false
 		}
+	}
+	return false
+}
+
+func uvIsInstall(tokens []string) bool {
+	var args []string
+	for _, tok := range tokens[1:] {
+		if !strings.HasPrefix(tok, "-") {
+			args = append(args, tok)
+		}
+	}
+	if len(args) == 0 {
+		return false
+	}
+	switch args[0] {
+	case "sync", "add", "remove":
+		return true
+	case "pip":
+		return len(args) > 1 && (args[1] == "install" || args[1] == "uninstall")
+	case "tool":
+		return len(args) > 1 && (args[1] == "install" || args[1] == "uninstall")
+	case "python":
+		return len(args) > 1 && args[1] == "install"
+	}
+	return false
+}
+
+func tarRunsCommand(tokens []string) bool {
+	for _, tok := range tokens[1:] {
+		if tok == "--to-command" || tok == "--use-compress-program" || tok == "-I" {
+			return true
+		}
+		if strings.HasPrefix(tok, "--to-command=") || strings.HasPrefix(tok, "--use-compress-program=") {
+			return true
+		}
+	}
+	return false
+}
+
+func killTargetsInitOrBroadcast(tokens []string) bool {
+	skipNext := false
+	afterDashDash := false
+	for _, tok := range tokens[1:] {
+		if skipNext {
+			skipNext = false
+			continue
+		}
+		if tok == "--" {
+			afterDashDash = true
+			continue
+		}
+		if !afterDashDash {
+			switch tok {
+			case "-s", "-n", "--signal":
+				skipNext = true
+				continue
+			}
+			if strings.HasPrefix(tok, "--signal=") {
+				continue
+			}
+			// -TERM / -9 / -HUP are signals. -1 is left for the pid
+			// check so `kill -- -1` and a bare `-1` operand escalate.
+			if strings.HasPrefix(tok, "-") && tok != "-1" {
+				continue
+			}
+		}
+		if tok == "1" || tok == "-1" {
+			return true
+		}
+	}
+	return false
+}
+
+// classifyContainerCLI classifies docker / docker-compose by effect.
+// Inspect/list is safe; run/exec/build/compose up executes image code;
+// pull/push is egress; prune and image/volume deletion are hard to undo.
+// Unrecognised verbs stay unknown (deny).
+func classifyContainerCLI(first string, tokens []string) RiskClass {
+	verbs := containerVerbPath(first, tokens)
+	if containerRunsImage(verbs) {
+		return CodeExecution
+	}
+	if containerContactsRemote(verbs) {
+		return NetworkEgress
+	}
+	if containerIsHardMutation(verbs, tokens) {
+		return SystemWrite
+	}
+	if containerIsKnownLocal(verbs) {
+		return Safe
+	}
+	return Unknown
+}
+
+var containerGlobalFlagsWithArg = map[string]bool{
+	"-H": true, "--host": true,
+	"-c": true, "--context": true,
+	"-l": true, "--log-level": true,
+	"--config":    true,
+	"--tlscacert": true, "--tlscert": true, "--tlskey": true,
+}
+
+var containerComposeFlagsWithArg = map[string]bool{
+	"-f": true, "--file": true,
+	"-p": true, "--project-name": true,
+	"--profile": true, "--env-file": true,
+	"--project-directory": true,
+	"--ansi":              true, "--parallel": true,
+}
+
+func skipContainerFlags(tokens []string, withArg map[string]bool) []string {
+	skipNext := false
+	for i := 0; i < len(tokens); i++ {
+		if skipNext {
+			skipNext = false
+			continue
+		}
+		tok := tokens[i]
+		if tok == "--" {
+			if i+1 < len(tokens) {
+				return tokens[i+1:]
+			}
+			return nil
+		}
+		if !strings.HasPrefix(tok, "-") {
+			return tokens[i:]
+		}
+		if strings.Contains(tok, "=") {
+			continue
+		}
+		if withArg[tok] {
+			skipNext = true
+		}
+	}
+	return nil
+}
+
+func containerVerbPath(first string, tokens []string) []string {
+	if first == "docker-compose" {
+		rest := skipContainerFlags(tokens[1:], containerComposeFlagsWithArg)
+		if len(rest) == 0 {
+			return []string{"compose"}
+		}
+		return []string{"compose", rest[0]}
+	}
+	rest := skipContainerFlags(tokens[1:], containerGlobalFlagsWithArg)
+	if len(rest) == 0 {
+		return nil
+	}
+	cmd := rest[0]
+	switch cmd {
+	case "compose", "container", "image", "volume", "network",
+		"system", "builder", "buildx", "plugin", "context",
+		"manifest", "secret", "config":
+		sub := skipContainerFlags(rest[1:], containerComposeFlagsWithArg)
+		if len(sub) == 0 {
+			return []string{cmd}
+		}
+		return []string{cmd, sub[0]}
+	default:
+		return []string{cmd}
+	}
+}
+
+func containerVerb(verbs []string) (group, cmd string) {
+	if len(verbs) == 0 {
+		return "", ""
+	}
+	if len(verbs) == 1 {
+		return "", verbs[0]
+	}
+	return verbs[0], verbs[1]
+}
+
+func containerRunsImage(verbs []string) bool {
+	group, cmd := containerVerb(verbs)
+	switch group {
+	case "":
+		switch cmd {
+		case "run", "exec", "build", "create", "attach":
+			return true
+		}
+	case "compose":
+		switch cmd {
+		case "up", "run", "exec", "build", "create", "watch":
+			return true
+		}
+	case "container":
+		switch cmd {
+		case "run", "exec", "create", "attach":
+			return true
+		}
+	case "image", "buildx", "builder":
+		return cmd == "build" || cmd == "bake"
+	}
+	return false
+}
+
+func containerContactsRemote(verbs []string) bool {
+	group, cmd := containerVerb(verbs)
+	switch group {
+	case "":
+		switch cmd {
+		case "pull", "push", "login", "logout", "search":
+			return true
+		}
+	case "compose", "image":
+		return cmd == "pull" || cmd == "push"
+	case "manifest":
+		return cmd == "push" || cmd == "inspect"
+	}
+	return false
+}
+
+func containerIsHardMutation(verbs []string, tokens []string) bool {
+	group, cmd := containerVerb(verbs)
+	if group == "compose" && cmd == "down" {
+		for _, tok := range tokens {
+			if tok == "-v" || tok == "--volumes" || tok == "--rmi" || strings.HasPrefix(tok, "--rmi=") {
+				return true
+			}
+		}
+		return false
+	}
+	if cmd == "prune" {
+		return true
+	}
+	switch group {
+	case "":
+		return cmd == "rmi"
+	case "image":
+		return cmd == "rm" || cmd == "rmi"
+	case "volume":
+		return cmd == "rm"
+	}
+	return false
+}
+
+func containerIsKnownLocal(verbs []string) bool {
+	if len(verbs) == 0 {
+		return true // docker --help / docker --version
+	}
+	group, cmd := containerVerb(verbs)
+	if group == "" {
+		switch cmd {
+		case "ps", "images", "logs", "inspect", "version", "info",
+			"events", "top", "stats", "port", "history", "diff",
+			"stop", "rm", "kill", "pause", "unpause", "restart",
+			"rename", "update", "wait", "start",
+			"help", "completion":
+			return true
+		}
+		return false
+	}
+	switch group {
+	case "compose":
+		switch cmd {
+		case "ps", "logs", "config", "images", "version", "ls", "list",
+			"down", "stop", "rm", "pause", "unpause", "restart", "kill",
+			"start", "port", "top", "events":
+			return true
+		}
+	case "container":
+		switch cmd {
+		case "ls", "ps", "logs", "inspect", "stats", "top", "port",
+			"diff", "wait", "stop", "rm", "kill", "pause", "unpause",
+			"restart", "rename", "start":
+			return true
+		}
+	case "image":
+		switch cmd {
+		case "ls", "inspect", "history":
+			return true
+		}
+	case "volume", "network", "plugin", "context", "secret", "config":
+		switch cmd {
+		case "ls", "inspect", "list":
+			return true
+		}
+	case "system":
+		return cmd == "df" || cmd == "info" || cmd == "events"
+	case "buildx", "builder":
+		return cmd == "version" || cmd == "ls" || cmd == "inspect"
+	case "manifest":
+		return false // inspect is network above
 	}
 	return false
 }
