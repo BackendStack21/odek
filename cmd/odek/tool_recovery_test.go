@@ -65,27 +65,6 @@ func TestReadFile_DirectorySuggestsAlternatives(t *testing.T) {
 	}
 }
 
-func TestCountLines_DirectorySuggestsAlternatives(t *testing.T) {
-	dir := t.TempDir()
-	tool := &countLinesTool{}
-	result := callJSON(t, tool, fmt.Sprintf(`{"files":[{"path":"%s"}]}`, dir))
-	var r struct {
-		Results []struct {
-			Error string `json:"error"`
-		} `json:"results"`
-	}
-	mustUnmarshal(t, result, &r)
-	if len(r.Results) == 0 {
-		t.Fatal("expected a result")
-	}
-	if r.Results[0].Error == "" {
-		t.Fatal("expected error for directory path")
-	}
-	if !strings.Contains(r.Results[0].Error, "tree") && !strings.Contains(r.Results[0].Error, "glob") {
-		t.Errorf("error should suggest tree or glob, got: %s", r.Results[0].Error)
-	}
-}
-
 func TestBatchRead_DirectorySuggestsAlternatives(t *testing.T) {
 	dir := t.TempDir()
 	tool := &batchReadTool{}

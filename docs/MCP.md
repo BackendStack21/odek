@@ -43,7 +43,7 @@ JSON-RPC 2.0 on stdin/stdout. Logs go to stderr.
 | `shell`, `parallel_shell`, `patch`, `batch_patch` | `web_search` — only when `web_search.base_url` is set |
 | `read_file`, `write_file`, `search_files`, `batch_read`, `glob`, `file_info` | `plan` — only when planning is enabled (on by default) |
 | `browser`, `http_batch` | |
-| `multi_grep`, `diff`, `tree`, `count_lines`, `head_tail`, `word_count`, `checksum`, `sort`, `base64`, `tr`, `json_query`, `math_eval` | |
+| `multi_grep`, `diff`, `tree`, `head_tail`, `checksum`, `base64`, `json_query`, `math_eval` | |
 | `session_search`, `transcribe`, `vision` | |
 | `skill_load`, `skill_list`, `artifact_read`, `list_subagent_profiles` | |
 | `config_view`, `list_tools` | |

@@ -952,7 +952,7 @@ Live, historical and Results inspector views use the same presentation models.
 | `read_file`, `write_file`, `patch`, `diff` | Content extracted from the actual tool DTO, write outcomes, and unified/split diff rendering. |
 | `http_batch` | Individual request statuses and errors. |
 | `search_files`, `multi_grep` | File matches and per-pattern result groups with counts/skipped paths. |
-| `count_lines`, `word_count`, `checksum`, `sort`, `head_tail` | Per-file detail groups. |
+| `checksum`, `head_tail` | Per-file detail groups. |
 | Other `batch_*` tools | Generic per-item inspection when the tool returns a `results` array, without inventing success status. |
 
 Nested result bodies are built only when opened. Inline collections initially

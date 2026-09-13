@@ -389,16 +389,13 @@ odek mcp --sandbox
 | `math_eval` | Arithmetic via go/parser AST (`42*17+256/10 = 97`) |
 | `diff` | LCS structured line diff |
 | `json_query` | Dot-path query with array indexing (`users[0].name`) |
-| `tr` | Text transform: upper/lower/char/string/delete |
 | `base64` | Encode files/strings, decode base64 |
-| `count_lines` | Streaming line/byte count, parallel files |
-| `word_count` | Streaming word/line/char/byte count |
 | `checksum` | SHA-256, SHA-1, MD5 hashing |
 | `tree` | Structured directory tree listing |
 
-> **Size limits:** file inputs for `sort`, `head_tail`, `diff`, `json_query`,
-> `tr`, `base64`, `count_lines`, `word_count`, `checksum`, and `batch_patch` are
-> capped at 10 MiB. Inline `string`/`content` arguments for `base64` and `tr` are
+> **Size limits:** file inputs for `head_tail`, `diff`, `json_query`,
+> `base64`, `checksum`, and `batch_patch` are
+> capped at 10 MiB. Inline `string`/`content` arguments for `base64` are
 > also capped at 10 MiB to prevent prompt-injected multi-hundred-megabyte
 > payloads from OOMing the process.
 

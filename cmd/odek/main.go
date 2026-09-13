@@ -127,6 +127,8 @@ Think of the best Chief of Staff a founder could have, fused with a Principal-gr
 · "write_file" NOT "echo", "tee", "cat heredoc"
 · "patch" NOT "sed", "awk"
 
+The perf tools (batch_read, batch_patch, parallel_shell, http_batch, math_eval, diff, multi_grep, json_query, tree, checksum, head_tail, base64) are pure-Go, zero-subprocess implementations of their shell equivalents — prefer them over shell for file inspection and transformation; they run without forks, approval friction, or output-pipeline risk.
+
 One wrong name wastes an entire iteration. Be precise.
 
 ## Search performance — cost scales with file count
@@ -2390,8 +2392,6 @@ func applySandboxToolBindings(tools []odek.Tool, containerName string) {
 			tool.restrictToCWD = true
 		case *diffTool:
 			tool.restrictToCWD = true
-		case *countLinesTool:
-			tool.restrictToCWD = true
 		case *multiGrepTool:
 			tool.restrictToCWD = true
 		case *jsonQueryTool:
@@ -2400,15 +2400,9 @@ func applySandboxToolBindings(tools []odek.Tool, containerName string) {
 			tool.restrictToCWD = true
 		case *checksumTool:
 			tool.restrictToCWD = true
-		case *sortTool:
-			tool.restrictToCWD = true
 		case *headTailTool:
 			tool.restrictToCWD = true
 		case *base64Tool:
-			tool.restrictToCWD = true
-		case *trTool:
-			tool.restrictToCWD = true
-		case *wordCountTool:
 			tool.restrictToCWD = true
 		case *visionTool:
 			tool.restrictToCWD = true
@@ -2438,8 +2432,6 @@ func toolRestrictsToCWD(t odek.Tool) bool {
 		return tool.restrictToCWD
 	case *diffTool:
 		return tool.restrictToCWD
-	case *countLinesTool:
-		return tool.restrictToCWD
 	case *multiGrepTool:
 		return tool.restrictToCWD
 	case *jsonQueryTool:
@@ -2448,15 +2440,9 @@ func toolRestrictsToCWD(t odek.Tool) bool {
 		return tool.restrictToCWD
 	case *checksumTool:
 		return tool.restrictToCWD
-	case *sortTool:
-		return tool.restrictToCWD
 	case *headTailTool:
 		return tool.restrictToCWD
 	case *base64Tool:
-		return tool.restrictToCWD
-	case *trTool:
-		return tool.restrictToCWD
-	case *wordCountTool:
 		return tool.restrictToCWD
 	case *visionTool:
 		return tool.restrictToCWD
@@ -2617,16 +2603,12 @@ func builtinTools(dc danger.DangerousConfig, sm *skills.SkillManager, approver d
 		newHTTPBatchTool(dc),
 		&mathEvalTool{},
 		&diffTool{dangerousConfig: dc},
-		&countLinesTool{dangerousConfig: dc},
 		&multiGrepTool{dangerousConfig: dc},
 		&jsonQueryTool{dangerousConfig: dc},
 		&treeTool{dangerousConfig: dc},
 		&checksumTool{dangerousConfig: dc},
-		&sortTool{dangerousConfig: dc},
 		&headTailTool{dangerousConfig: dc},
 		&base64Tool{dangerousConfig: dc},
-		&trTool{dangerousConfig: dc},
-		&wordCountTool{dangerousConfig: dc},
 		newTranscribeTool(dc, tcfg.Transcription),
 		newVisionTool(dc, tcfg.Vision),
 		// session_search returns content from arbitrary past sessions —

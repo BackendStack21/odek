@@ -11,8 +11,8 @@ environment supports:
 
 - Core tools: `shell`, `delegate_tasks`, `read_file`, `write_file`, `search_files`,
   `patch`, `batch_read`, `batch_patch`, `glob`, `file_info`, `parallel_shell`,
-  `http_batch`, `math_eval`, `diff`, `count_lines`, `multi_grep`, `json_query`,
-  `tree`, `checksum`, `sort`, `head_tail`, `base64`, `tr`, `word_count`
+  `http_batch`, `math_eval`, `diff`, `multi_grep`, `json_query`,
+  `tree`, `checksum`, `head_tail`, `base64`
 - Planning: `plan` (present when planning is enabled — on by default; `--no-planning` / `planning.enabled: false` removes it)
 - Media tools: `transcribe`, `vision`
 - Memory: `memory` (persistent facts/episodes)
@@ -213,7 +213,7 @@ Use these exact names in config, env vars, and CLI flags:
 | Delegation | `delegate_tasks` |
 | Files | `read_file`, `write_file`, `patch`, `batch_read`, `batch_patch`, `glob`, `file_info` |
 | Search | `search_files`, `multi_grep`, `session_search` |
-| Data / transform | `math_eval`, `diff`, `count_lines`, `json_query`, `tree`, `checksum`, `sort`, `head_tail`, `base64`, `tr`, `word_count`, `http_batch` |
+| Data / transform | `math_eval`, `diff`, `json_query`, `tree`, `checksum`, `head_tail`, `base64`, `http_batch` |
 | Planning | `plan` (when planning is enabled — on by default) |
 | Media | `transcribe`, `vision` |
 | Network | `browser`, `web_search` |

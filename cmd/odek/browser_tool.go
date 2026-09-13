@@ -120,15 +120,8 @@ func (t *browserTool) checkRedirect(req *http.Request, via []*http.Request) erro
 func (t *browserTool) Name() string { return "browser" }
 
 func (t *browserTool) Description() string {
-	return `Navigate and interact with web pages. Four actions:
-
-  navigate — Fetch a URL and extract page content + interactive elements
-  snapshot — Return the current page's text view with ref IDs for elements
-  click    — Follow a link or interact with an element by ref ID
-  back     — Return to the previous page in navigation history
-
-Typical flow: navigate(url), then snapshot() to get element ref IDs (e.g. @e1), then click(ref).
-Note: regex-based HTML parsing with NO JavaScript execution. Best for server-rendered HTML pages; SPAs and JS-heavy sites may return limited content.`
+	return `Navigate and interact with web pages: navigate (fetch URL + extract content/elements), snapshot (text view with element ref IDs), click(ref), back. Typical flow: navigate(url) → snapshot() → click(@ref).
+Regex-based HTML parsing, NO JavaScript execution — best for server-rendered pages; SPAs may return limited content.`
 }
 
 // browserArgs holds all possible parameters for the browser tool.
