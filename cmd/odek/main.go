@@ -1421,11 +1421,9 @@ const globalConfigTemplate = `{
   "sandbox_env": {},
   "sandbox_volumes": [],
   "dangerous": {
-    "action": "prompt",
     "non_interactive": "read_only",
     "classes": {
       "destructive": "deny",
-      "network_egress": "prompt",
       "code_execution": "prompt",
       "install": "prompt",
       "system_write": "prompt"

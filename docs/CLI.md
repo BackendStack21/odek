@@ -246,11 +246,10 @@ Configurable via the `dangerous` section in `~/.odek/config.json` (operator-only
 ```json
 {
   "dangerous": {
-    "action": "prompt",
     "non_interactive": "read_only",
     "classes": {
       "destructive": "prompt",
-      "network_egress": "allow"
+      "network_egress": "prompt"
     },
     "allowlist": ["git push origin main"],
     "denylist": ["rm -rf /"]

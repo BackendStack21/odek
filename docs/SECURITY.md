@@ -118,6 +118,8 @@ If the sidecar flags content, the behavior mirrors a local scan flag: writes are
 
 The `shell` tool tokenises commands and classifies each into one of 11 risk classes (`safe`, `local_write`, `system_write`, `persistence`, `unread_exec`, `destructive`, `network_egress`, `code_execution`, `install`, `unknown`, `blocked`). Per-class policy (allow / prompt / deny) is configurable.
 
+**Default posture (new users):** `safe`, `local_write`, and `network_egress` are **allowed** without prompting — the friction-free path for local-first development work; `system_write`, `persistence`, `unread_exec`, `code_execution`, and `install` **prompt**; `destructive`, `blocked`, and `unknown` are **denied** (fail closed). Egress guard rails that remain regardless of this policy: the `browser`/`http_batch`/`web_search` SSRF dial guard (internal-IP refusal, redirect re-classification, IP pinning) and the `install` gate. Note the dial guard is transport-layer and covers those three tools only — **shell-based egress (`curl`, `wget`) has no IP-level guard** and now runs unprompted; operators who need that gated set `dangerous.classes.network_egress: "prompt"`.
+
 The gate **fails closed**: a command whose program name matches neither the known-safe allowlist nor any known-dangerous pattern is classified `unknown` and **denied by default** (same as `destructive`). Recognised commands used benignly are `safe`. So a novel or obfuscated verb cannot slip through as "safe" — to permit a specific tool, allowlist it or set `"unknown": "prompt"`.
 
 The classifier resists the common evasion families (see the package doc in `internal/danger/classifier.go` for the full model; the bullets below are examples, not an exhaustive list):

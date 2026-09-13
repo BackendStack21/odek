@@ -791,7 +791,7 @@ var defaultActions = map[RiskClass]Action{
 	Persistence:   Prompt,
 	UnreadExec:    Prompt,
 	Destructive:   Deny,
-	NetworkEgress: Prompt,
+	NetworkEgress: Allow,
 	CodeExecution: Prompt,
 	Install:       Prompt,
 	Blocked:       Deny,

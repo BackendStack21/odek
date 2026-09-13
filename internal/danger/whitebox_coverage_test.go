@@ -64,7 +64,7 @@ func TestCheckOperation_BlockedAlwaysDenies(t *testing.T) {
 func TestCheckOperation_Prompt_DelegatesToApprover(t *testing.T) {
 	fa := &fakeApprover{}
 	cfg := &DangerousConfig{Approver: fa}
-	op := ToolOperation{Name: "browser", Resource: "https://x.com", Risk: NetworkEgress}
+	op := ToolOperation{Name: "browser", Resource: "https://x.com", Risk: SystemWrite}
 	if err := cfg.CheckOperation(op, nil); err != nil {
 		t.Errorf("CheckOperation = %v, want nil (approver approved)", err)
 	}
@@ -76,7 +76,7 @@ func TestCheckOperation_Prompt_DelegatesToApprover(t *testing.T) {
 func TestCheckOperation_Prompt_ApproverDenies(t *testing.T) {
 	fa := &fakeApprover{err: os.ErrPermission}
 	cfg := &DangerousConfig{Approver: fa}
-	op := ToolOperation{Name: "shell", Resource: "curl x", Risk: NetworkEgress}
+	op := ToolOperation{Name: "shell", Resource: "tee /etc/x", Risk: SystemWrite}
 	if err := cfg.CheckOperation(op, nil); err == nil {
 		t.Error("CheckOperation should propagate the approver's denial")
 	}
