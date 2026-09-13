@@ -364,7 +364,10 @@ type Engine struct {
 	// confident all-clear cannot misreport side effects that already
 	// happened. Reset at runLoop entry; only touched from the loop
 	// goroutine.
-	runMutations []string
+	runMutations        []string
+	durableTranscript   []session.Message
+	activeTurnID        string
+	pendingVerification map[string]bool
 
 	// completionNudged is the one-shot completion-nudge flag: a tool-less
 	// assistant turn with open plan steps or uncaught mutations gets one
@@ -506,6 +509,8 @@ type Engine struct {
 	// currently in-flight sub-agents (ReserveExternalUsage), released on
 	// SettleExternalUsage. Guarded by externalChargeMu.
 	externalReserved int64
+	externalGrants   map[uint64]budget.Grant
+	externalGrantSeq uint64
 
 	// Cache metrics accumulated across all iterations.
 	TotalCacheCreationTokens int  // Anthropic: tokens written to cache
@@ -725,6 +730,9 @@ func (e *Engine) callLLM(ctx context.Context, messages []session.Message, tools 
 		return e.deltaHandler(d)
 	})
 	stamp(res, firstDelta)
+	// Termination is normalized in the adapter (mapResult): endpoints that
+	// omit finish_reason on ordinary responses are Complete by contract.
+	// A genuinely cut stream surfaces as a transport error handled upstream.
 	return res, err
 }
 
@@ -940,7 +948,7 @@ func protectRecentActBatches(messages []session.Message, n int) map[int]struct{}
 			i--
 		}
 		if i >= 0 && messages[i].Role == "assistant" && len(messages[i].ToolCalls) > 0 {
-			for j := i + 1; j <= end; j++ {
+			for j := i; j <= end; j++ {
 				protected[j] = struct{}{}
 			}
 			batches++
@@ -1223,6 +1231,8 @@ func (e *Engine) planTitleQuery() string {
 // Performance: uses a running token total to avoid O(n²) re-scanning of
 // the full message list on every iteration.
 func (e *Engine) trimContext(ctx context.Context, messages []session.Message, toolDefs []llmclient.ToolDef) []session.Message {
+	messages = e.refreshEffectEvidence(ctx, messages)
+	e.checkpointTranscript(messages)
 	messages = e.applyPendingDigest(ctx, messages)
 	// Always drop old thinking-model replay, even when no token budget is
 	// set — those blocks otherwise grow without bound on reasoner models.
@@ -1289,29 +1299,23 @@ func (e *Engine) trimContext(ctx context.Context, messages []session.Message, to
 	}
 	droppedGroups := 0
 	var droppedForDigest []session.Message
-	// The original task is the first user message at/after the head. When
-	// a leading injection set ctxLeadDroppableFrom, headLen stops BEFORE
-	// the task — without this guard, pass 2 drops the task as the first
-	// standalone group, violating the documented protected-head invariant
-	// ("the first user message — the original task — is never dropped").
-	taskIdx := -1
-	if e.ctxLeadDroppableFrom > 0 {
-		for i := head; i < len(messages); i++ {
-			if messages[i].Role == "user" {
-				taskIdx = i
-				break
-			}
+	// Principal messages retain their role and precedence. Completed tail
+	// batches remain intact even when the model rejects an oversized context.
+	protected := protectRecentActBatches(messages, 2)
+	for i, m := range messages {
+		if (m.Role == "user" && !strings.HasPrefix(m.Name, "bg-")) || isEffectEvidence(m) {
+			protected[i] = struct{}{}
 		}
 	}
 	for totalTokens > budget {
-		if len(messages) <= head {
-			break // can't trim further — only the protected head remains
-		}
 		start := head
-		if start == taskIdx {
-			// The scan reached the original task: everything older has
-			// been dropped, the task itself is protected, and pass 2 drops
-			// strictly oldest-first — so prefix dropping ends here.
+		for start < len(messages) {
+			if _, keep := protected[start]; !keep {
+				break
+			}
+			start++
+		}
+		if start >= len(messages) {
 			break
 		}
 		groupEnd := start + 1
@@ -1338,9 +1342,15 @@ func (e *Engine) trimContext(ctx context.Context, messages []session.Message, to
 
 		// Drop the entire group atomically
 		messages = append(messages[:start], messages[groupEnd:]...)
-		if taskIdx > start {
-			taskIdx -= groupEnd - start
+		nextProtected := make(map[int]struct{}, len(protected))
+		for idx := range protected {
+			if idx < start {
+				nextProtected[idx] = struct{}{}
+			} else if idx >= groupEnd {
+				nextProtected[idx-(groupEnd-start)] = struct{}{}
+			}
 		}
+		protected = nextProtected
 	}
 
 	// Rolling compaction: install an extractive digest immediately so the
@@ -1480,138 +1490,37 @@ func isContextLengthError(err error) bool {
 // that nearly every model can handle.
 func trimToSurvival(msgs []session.Message) []session.Message {
 	if len(msgs) <= 3 {
-		return msgs // already minimal enough
+		return msgs
 	}
-	start := 0
-	if msgs[0].Role == "system" {
-		start = 1 // keep system
-	}
-
-	// First user message (the original task) — kept when it differs from the
-	// last user message, so a long multi-turn session does not silently lose
-	// what it was asked to do.
-	firstUserIdx := -1
-	for i := start; i < len(msgs); i++ {
-		if msgs[i].Role == "user" {
-			firstUserIdx = i
-			break
+	keep := protectRecentActBatches(msgs, 2)
+	for i, m := range msgs {
+		if (i == 0 && m.Role == "system") ||
+			(m.Role == "user" && !strings.HasPrefix(m.Name, "bg-")) ||
+			isDigestMessage(m) || isPlanMessage(m) || isEffectEvidence(m) {
+			keep[i] = struct{}{}
 		}
 	}
-
-	// Last user message (the current task/input) — always keep it.
-	// Background-notice injections are user-role messages flagged at
-	// append time; the survival set must keep the REAL user input, not
-	// the newest notice (same rule as lastUserMessage).
-	lastUserIdx := -1
-	for i := len(msgs) - 1; i >= 0; i-- {
-		if msgs[i].Role == "user" && !strings.HasPrefix(msgs[i].Name, "bg-") {
-			lastUserIdx = i
-			break
-		}
-	}
-
-	// Locate the protected digest and plan messages BEFORE the group walk
-	// below: the walk absorbs preceding system messages into turn groups,
-	// and absorbing these would duplicate them (they are also preserved
-	// standalone) — on resume the stale higher-index copy would win.
-	//
-	// Both scans cover the whole post-task zone, not just the leading run:
-	// refreshDigest/refreshPlanMessage insert right AFTER the protected head
-	// — and headLen includes the first user message — so a freshly created
-	// digest or plan sits after firstUserIdx. Dropping either here would
-	// discard the paid-for compacted history / forward-state plan exactly
-	// when context pressure is highest (audit 2026-08).
-	digestIdx := -1
-	for i := start; i < len(msgs); i++ {
-		if isDigestMessage(msgs[i]) {
-			digestIdx = i
-			break
-		}
-	}
-	planIdx := -1
-	for i := start; i < len(msgs); i++ {
-		if isPlanMessage(msgs[i]) {
-			planIdx = i
-			break
-		}
-	}
-
-	// Collect the last 2 complete assistant→tool groups before the user msg.
-	// Each group is a sub-slice in correct internal order: [system*, assistant, tool*].
-	scanFrom := lastUserIdx - 1
-	if lastUserIdx < 0 {
-		scanFrom = len(msgs) - 1
-	}
-	var groups [][]session.Message
-	seen := 0
-	for i := scanFrom; i > start && seen < 2; i-- {
-		if msgs[i].Role == "assistant" && len(msgs[i].ToolCalls) > 0 {
-			var group []session.Message
-
-			// Preceding system messages (corrections, warnings). The walk
-			// stops at the digest/plan messages so they are never absorbed —
-			// they are preserved standalone below (see scan above).
-			preStart := i - 1
-			for preStart > start && msgs[preStart].Role == "system" && preStart != digestIdx && preStart != planIdx {
-				preStart--
+	for i := range keep {
+		if msgs[i].Role == "assistant" {
+			for j := i - 1; j >= 0 && msgs[j].Role == "system"; j-- {
+				keep[j] = struct{}{}
 			}
-			for k := preStart + 1; k < i; k++ {
-				group = append(group, msgs[k])
-			}
-
-			// Assistant message with tool calls
-			group = append(group, msgs[i])
-
-			// Following tool results
-			for j := i + 1; j < len(msgs) && msgs[j].Role == "tool"; j++ {
-				group = append(group, msgs[j])
-			}
-
-			groups = append(groups, group)
-			i = preStart + 1 // skip past the group we just consumed
-			seen++
 		}
 	}
-
-	// Build survival set: system + warning + digest + task + recent groups + last user
-	totalGroupMsgs := 0
-	for _, g := range groups {
-		totalGroupMsgs += len(g)
+	out := make([]session.Message, 0, len(keep)+1)
+	warning := session.Message{Role: "system", Content: "[Context trimmed to survive: earlier optional context was dropped. Principal instructions and recent completed tool batches retain their original order.]"}
+	if msgs[0].Role != "system" {
+		out = append(out, warning)
 	}
-	survival := make([]session.Message, 0, start+3+totalGroupMsgs+1)
-	if start > 0 {
-		survival = append(survival, msgs[0]) // system message
+	for i, m := range msgs {
+		if _, ok := keep[i]; ok {
+			out = append(out, m)
+		}
+		if i == 0 && m.Role == "system" {
+			out = append(out, warning)
+		}
 	}
-	// Add a context-warning system message
-	warning := "[Context trimmed to survive: the conversation history exceeded the model's context window. Earlier turns have been dropped. If you need information from earlier in the conversation, the agent may ask for a summary.]"
-	survival = append(survival, session.Message{Role: "system", Content: warning})
-
-	if digestIdx >= 0 {
-		survival = append(survival, msgs[digestIdx])
-	}
-
-	if planIdx >= 0 {
-		survival = append(survival, msgs[planIdx])
-	}
-
-	// Add the original task when it differs from the last user message.
-	if firstUserIdx >= 0 && firstUserIdx != lastUserIdx {
-		survival = append(survival, msgs[firstUserIdx])
-	}
-
-	// Add the recent groups in chronological order (groups were collected
-	// from newest to oldest, so reverse them while preserving each group's
-	// internal order: system* → assistant(tool_calls) → tool*).
-	for i := len(groups) - 1; i >= 0; i-- {
-		survival = append(survival, groups[i]...)
-	}
-
-	// Add the last user message
-	if lastUserIdx >= 0 {
-		survival = append(survival, msgs[lastUserIdx])
-	}
-
-	return survival
+	return out
 }
 
 // ── Rolling Compaction ─────────────────────────────────────────────────
@@ -1765,7 +1674,7 @@ func (e *Engine) installDigest(ctx context.Context, messages []session.Message, 
 // goroutine — it mutates TotalInputTokens.
 func (e *Engine) applyPendingDigest(ctx context.Context, messages []session.Message) []session.Message {
 	e.compactMu.Lock()
-	if !e.pendingDigestReady || e.pendingDigest == "" {
+	if !e.pendingDigestReady {
 		e.compactMu.Unlock()
 		return messages
 	}
@@ -1778,6 +1687,9 @@ func (e *Engine) applyPendingDigest(ctx context.Context, messages []session.Mess
 	e.compactMu.Unlock()
 	if usage != nil {
 		e.recordSideCallUsage(usage)
+	}
+	if summary == "" {
+		return messages
 	}
 	e.compactDigest = summary
 	return e.installDigest(ctx, messages, summary)
@@ -1811,7 +1723,7 @@ func (e *Engine) startDigestSideCall(parent context.Context, dropped []session.M
 			return
 		}
 		e.digestCancel = nil
-		if summary == "" {
+		if summary == "" && usage == nil {
 			return
 		}
 		e.pendingDigest = summary
@@ -1967,8 +1879,8 @@ func (e *Engine) summarizeDroppedWithUsage(ctx context.Context, dropped []sessio
 		{Role: "system", Content: compactionSystemPrompt},
 		{Role: "user", Content: e.sideCallPlanPrefix() + b.String()},
 	})
-	if err != nil || res == nil {
-		return "", nil
+	if err != nil || res == nil || (res.Termination != "" && res.Termination != llmclient.TerminationComplete) {
+		return "", res
 	}
 	return strings.TrimSpace(res.Content), res
 }
@@ -2158,7 +2070,8 @@ func (e *Engine) summarizeProgress(ctx context.Context, messages []session.Messa
 	// The summary call passes no tools; a response that still requests tool
 	// calls is not a summary (its content is pre-tool chatter), so treat it
 	// as a failure and keep the original error path.
-	if len(res.ToolCalls) > 0 {
+	if len(res.ToolCalls) > 0 || (res.Termination != "" && res.Termination != llmclient.TerminationComplete) {
+		e.recordSideCallUsage(res)
 		return ""
 	}
 	e.recordSideCallUsage(res)
@@ -2217,6 +2130,8 @@ func (e *Engine) recordSideCallUsage(res *llmclient.CallResult) {
 	if res == nil {
 		return
 	}
+	e.externalChargeMu.Lock()
+	defer e.externalChargeMu.Unlock()
 	e.TotalInputTokens += res.InputTokens
 	e.TotalOutputTokens += res.OutputTokens
 	e.TotalCacheCreationTokens += res.CacheCreationTokens
@@ -2283,12 +2198,14 @@ func (e *Engine) Run(ctx context.Context, task string) (string, error) {
 	e.lastSkillRaw = ""
 	e.ctxLeadDroppableFrom = -1
 	e.resetDedupKeys()
+	e.externalChargeMu.Lock()
 	e.TotalInputTokens = 0
 	e.TotalOutputTokens = 0
 	e.TotalCacheCreationTokens = 0
 	e.TotalCacheReadTokens = 0
 	e.TotalCachedTokens = 0
 	e.TotalCacheReported = false
+	e.externalChargeMu.Unlock()
 	e.lastCall = CallMetrics{}
 	e.TotalLLMDurationMs = 0
 	e.TotalThinkOutputTokens = 0
@@ -2413,12 +2330,14 @@ func (e *Engine) RunWithMessages(ctx context.Context, messages []session.Message
 	e.lastSkillRaw = ""
 	e.ctxLeadDroppableFrom = -1
 	e.resetDedupKeys()
+	e.externalChargeMu.Lock()
 	e.TotalInputTokens = 0
 	e.TotalOutputTokens = 0
 	e.TotalCacheCreationTokens = 0
 	e.TotalCacheReadTokens = 0
 	e.TotalCachedTokens = 0
 	e.TotalCacheReported = false
+	e.externalChargeMu.Unlock()
 	e.lastCall = CallMetrics{}
 	e.TotalLLMDurationMs = 0
 	e.TotalThinkOutputTokens = 0
@@ -2469,10 +2388,23 @@ type trustAllSetter interface{ SetTrustAll(bool) }
 // It runs the ReAct loop on the given messages and returns the final
 // answer plus the complete updated message history.
 func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer string, messages []session.Message, err error) {
+	startTime := time.Now()
+	if max := e.budgetLimits.MaxRuntimeSeconds; max > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithDeadlineCause(ctx, startTime.Add(time.Duration(max)*time.Second), &budget.Error{Limit: budget.LimitRuntime, Observed: max, Maximum: max})
+		defer cancel()
+	}
 	messages = in
 	defer func() {
 		messages = e.finishDigestSideCall(ctx, messages)
+		e.checkpointTranscript(messages)
+		messages = session.CloneMessages(e.durableTranscript)
 		e.cancelDigestSideCall()
+		if cause, expired := budget.As(context.Cause(ctx)); expired {
+			if _, already := budget.As(err); !already {
+				_, messages, err = e.budgetExceeded(ctx, messages, cause, 0)
+			}
+		}
 		if e.budget != nil {
 			if berr := e.budget.CheckUsageWithCache(int64(e.TotalInputTokens), int64(e.TotalCacheReadTokens), int64(e.TotalCacheCreationTokens), int64(e.TotalOutputTokens)); berr != nil {
 				if err == nil {
@@ -2484,23 +2416,30 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 	ctx = withRunIngestTaint(ctx, messages)
 	messages = e.ensureRuntimeSystem(messages)
 	messages = e.sanitizePersistedSystemMessages(ctx, messages)
+	e.startTranscript(messages)
 	tools := e.buildToolDefs()
 	if e.client != nil {
 		e.client.PromptCache = e.PromptCaching
 	}
-	startTime := time.Now()
 	// Hard execution budgets (odek-extension/v1): nil when no limits are
 	// configured, in which case every check below is a no-op.
+	e.externalChargeMu.Lock()
 	e.budget = budget.NewChecker(e.budgetLimits, startTime)
 	if e.budget != nil && e.budgetNow != nil {
 		e.budget.SetNowFunc(e.budgetNow)
 	}
+	e.externalChargeMu.Unlock()
 	// Reset per-session tool error tracking
 	e.maxConsecutiveToolErrors = make(map[string]int)
 	// Reset per-session repeated-call (stall) tracking
 	e.toolRepeatCounts = nil
 	// Reset the run's mutation ledger and completion-nudge state.
+	e.externalChargeMu.Lock()
+	e.externalReserved = 0
+	e.externalGrants = nil
+	e.externalChargeMu.Unlock()
 	e.runMutations = nil
+	e.pendingVerification = nil
 	e.completionNudged = false
 	e.sawReadAfterMutation = false
 	// Finalization requests never carry across runs.
@@ -2616,7 +2555,7 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 				// finds no match — so a no-match doesn't re-run the (potentially
 				// slow) skill matcher on every remaining iteration of the turn.
 				e.lastSkillMsg = userMsg
-				if skillContext := e.skillLoader(userMsg); skillContext != "" {
+				if skillContext := contextValue(ctx, userMsg, e.skillLoader); skillContext != "" {
 					messages = e.injectSkillContext(ctx, messages, skillContext)
 				}
 			}
@@ -2634,7 +2573,7 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 				if titles := e.planTitleQuery(); titles != "" {
 					query = titles + "\n" + userMsg
 				}
-				if episodeContext := e.episodeCtx(query); episodeContext != "" {
+				if episodeContext := contextValue(ctx, query, e.episodeCtx); episodeContext != "" {
 					messages = e.injectEpisodeContext(ctx, messages, episodeContext)
 				}
 			}
@@ -2646,7 +2585,8 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 		// later) so that messages[0] (baseSystem) remains stable across
 		// turns — letting DeepSeek/Anthropic prompt caching keep it cached.
 		if e.memoryPromptFunc != nil {
-			if memBlock := e.memoryPromptFunc(); memBlock != "" {
+			memoryPrompt := e.memoryPromptFunc
+			if memBlock := contextValue(ctx, "", func(string) string { return memoryPrompt() }); memBlock != "" {
 				rawMemBlock := memBlock
 				if rawMemBlock == e.lastMemRaw && e.lastMemBlock != "" {
 					memBlock = e.lastMemBlock
@@ -2755,6 +2695,15 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 
 		result, err := e.callLLM(ctx, messages, tools)
 		if err != nil {
+			if result != nil {
+				e.recordSideCallUsage(result)
+				if result.Content != "" && !isContextLengthError(err) {
+					partial := "[Partial response: interrupted]\n\n" + result.Content
+					messages = append(messages, session.Message{Role: "assistant", Content: partial, ReasoningContent: result.ReasoningContent})
+					e.emitMessagesPersist(messages)
+					return partial, messages, &PartialResponseError{Reason: llmclient.TerminationInterrupted, Cause: err}
+				}
+			}
 			// Context-length-exceeded errors: don't die — try aggressive
 			// trimming and retry once. The trimContext at the top of the
 			// loop may have been too conservative (75% budget) or the
@@ -2813,6 +2762,7 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 		}
 
 		// Accumulate token usage across iterations
+		e.externalChargeMu.Lock()
 		e.TotalInputTokens += result.InputTokens
 		e.TotalOutputTokens += result.OutputTokens
 		e.recordThinkCall(result)
@@ -2830,6 +2780,7 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 		e.TotalCacheReadTokens += result.CacheReadTokens
 		e.TotalCachedTokens += result.CachedTokens
 		e.TotalCacheReported = e.TotalCacheReported || result.CacheReported
+		e.externalChargeMu.Unlock()
 
 		// Hard execution budget: token totals and estimated cost are checked
 		// after every LLM response, before the result is acted on. messages
@@ -2852,6 +2803,24 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 				return result.Content, messages, err
 			}
 			return e.budgetExceeded(ctx, messages, berr, i+1)
+		}
+
+		if runtimeErr := context.Cause(ctx); runtimeErr != nil {
+			if berr, ok := budget.As(runtimeErr); ok {
+				return e.budgetExceeded(ctx, messages, berr, i+1)
+			}
+			return "", messages, runtimeErr
+		}
+		if termination := result.Termination; termination != llmclient.TerminationComplete && termination != "" {
+			partial := fmt.Sprintf("[Partial response: %s]", termination)
+			if result.Content != "" {
+				partial += "\n\n" + result.Content
+			}
+			// Never dispatch incomplete tool arguments, even when they happen
+			// to parse as JSON. The provider did not finish authoring the call.
+			messages = append(messages, session.Message{Role: "assistant", Content: partial, ReasoningContent: result.ReasoningContent})
+			e.emitMessagesPersist(messages)
+			return partial, messages, &PartialResponseError{Reason: termination}
 		}
 
 		// No tool calls = final answer
@@ -2927,6 +2896,15 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 			e.emitIterationCompleted(i+1, 0)
 			e.emitMessagesPersist(messages)
 			return result.Content, messages, nil
+		}
+
+		for _, tc := range result.ToolCalls {
+			if !json.Valid([]byte(tc.Function.Arguments)) {
+				partial := "[Partial response: interrupted] Model returned incomplete tool arguments; no tools in this batch executed."
+				messages = append(messages, session.Message{Role: "assistant", Content: partial})
+				e.emitMessagesPersist(messages)
+				return partial, messages, &PartialResponseError{Reason: llmclient.TerminationInterrupted}
+			}
 		}
 
 		// Render the model's thinking (reasoning before tool calls)
@@ -3163,6 +3141,14 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 			}
 		}
 
+		// Reserve this batch's own calls before descendants inspect the shared
+		// budget, so child grants cannot consume their parent's admitted slots.
+		if !batchDenied {
+			e.externalChargeMu.Lock()
+			e.budget.RecordToolCalls(execN)
+			e.externalChargeMu.Unlock()
+		}
+
 		// Phase 2: execute tools in parallel (bounded by semaphore)
 		type execResult struct {
 			output string
@@ -3172,8 +3158,11 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 			// failure recovery) must use this instead of sniffing output
 			// text: a successful read/grep result can legitimately
 			// contain the literal `"error":` as data.
-			errored    bool
-			durationMs int64
+			errored     bool
+			durationMs  int64
+			outcome     tool.Outcome
+			deliveryCtx context.Context
+			intact      bool
 		}
 		parallel := e.MaxToolParallel
 		if parallel <= 0 {
@@ -3181,6 +3170,13 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 		}
 		sem := make(chan struct{}, parallel)
 		results := make([]execResult, len(result.ToolCalls))
+		done := make([]chan struct{}, len(result.ToolCalls))
+		effects := make([]callEffects, len(result.ToolCalls))
+		for i, tc := range result.ToolCalls {
+			done[i] = make(chan struct{})
+			effects[i] = e.executionEffects(tc)
+		}
+		var workers sync.WaitGroup
 
 		if batchDenied {
 			for i := range results {
@@ -3196,13 +3192,49 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 						),
 						errored: true,
 					}
+					close(done[i])
 					continue
 				}
-				sem <- struct{}{} // acquire — blocks if at cap
+				workers.Add(1)
 				go func(idx int, tcRef session.ToolCall) {
+					defer workers.Done()
+					defer close(done[idx])
+					defer func() {
+						if r := recover(); r != nil {
+							results[idx] = execResult{output: fmt.Sprintf("error: tool %q panicked: %v", tcRef.Function.Name, r), errored: true, outcome: tool.Outcome{Status: "failed", ErrorClass: "panic"}}
+						}
+					}()
+					for prior := 0; prior < idx; prior++ {
+						conflict := effectConflict(effects[prior], effects[idx])
+						if tcRef.Function.Name == result.ToolCalls[prior].Function.Name {
+							t := e.registry.Get(tcRef.Function.Name)
+							_, hasSetter := t.(interface{ SetContext(context.Context) })
+							_, hasCallContext := t.(interface {
+								CallContext(context.Context, string) (string, error)
+							})
+							conflict = conflict || (hasSetter && !hasCallContext)
+						}
+						if conflict {
+							select {
+							case <-done[prior]:
+							case <-toolCtx.Done():
+								results[idx] = execResult{output: "error: cancelled before execution", errored: true, outcome: tool.OutcomeFor(toolCtx.Err())}
+								return
+							}
+						}
+					}
+					select {
+					case sem <- struct{}{}:
+					case <-toolCtx.Done():
+						results[idx] = execResult{output: "error: cancelled before execution", errored: true, outcome: tool.OutcomeFor(toolCtx.Err())}
+						return
+					}
 					defer func() { <-sem }() // release
 
 					callStart := time.Now()
+					callCtx := danger.BeginReadDelivery(toolCtx)
+					outcome := tool.Outcome{Status: "failed", ErrorClass: "tool_error"}
+					intact := false
 					t := e.registry.Get(tcRef.Function.Name)
 					// errored is the real outcome: true for the not-found
 					// default below, flipped off only when a tool actually
@@ -3215,7 +3247,11 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 						// (e.g. delegate_tasks kills sub-agents on parent cancel).
 						// toolCtx carries the remaining runtime deadline.
 						if ctxTool, ok := t.(interface{ SetContext(context.Context) }); ok {
-							ctxTool.SetContext(toolCtx)
+							if _, direct := t.(interface {
+								CallContext(context.Context, string) (string, error)
+							}); !direct {
+								ctxTool.SetContext(callCtx)
+							}
 						}
 						// Heartbeat watchdog: emit "tool_running" signals while
 						// this call is still executing so long-running tools
@@ -3235,12 +3271,26 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 									errored = true
 								}
 							}()
-							res, err := t.Call(tcRef.Function.Arguments)
+							var res string
+							var err error
+							if ct, ok := t.(interface {
+								CallContext(context.Context, string) (string, error)
+							}); ok {
+								res, err = ct.CallContext(callCtx, tcRef.Function.Arguments)
+							} else {
+								res, err = t.Call(tcRef.Function.Arguments)
+							}
+							outcome = tool.OutcomeFor(err)
 							if err != nil {
-								output = fmt.Sprintf("error: %s", err.Error())
+								if res != "" {
+									output = redact.RedactSecrets(res)
+								} else {
+									output = fmt.Sprintf("error: %s", err.Error())
+								}
 								errored = true
 							} else {
 								output = redact.RedactSecrets(res)
+								intact = output == res
 							}
 						}()
 						if ext, ok := t.(interface {
@@ -3259,23 +3309,13 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 							}
 						}
 					}
-					results[idx] = execResult{output: output, errored: errored, durationMs: time.Since(callStart).Milliseconds()}
+					results[idx] = execResult{output: output, errored: errored, durationMs: time.Since(callStart).Milliseconds(), outcome: outcome, deliveryCtx: callCtx, intact: intact}
 				}(i, tc)
 			}
-			// Drain the semaphore — wait for all goroutines to finish.
-			for i := 0; i < cap(sem); i++ {
-				sem <- struct{}{}
-			}
+			workers.Wait()
 		}
 
 		cancelTool()
-
-		// Account the executed batch against the tool-call budget. Denied
-		// batches never ran, so they do not count. Skipped overflow slots
-		// in a shrunk batch also do not count.
-		if !batchDenied {
-			e.budget.RecordToolCalls(execN)
-		}
 
 		// Reset the batch trustAll grant now that this iteration's tools have
 		// run. Scoping it to the iteration (rather than deferring to function
@@ -3285,14 +3325,26 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 		}
 
 		// Phase 3: process results in order (render, compress, append to messages)
+		e.checkpointTranscript(messages)
 		const maxOutput = 4096
 		for i, tc := range result.ToolCalls {
 			output := results[i].output
+			fullOutput := output
 
 			// ledger the mutating calls that completed this run so the
 			// final reply can be reconciled against what actually happened.
-			e.recordMutation(tc.Function.Name, tc.Function.Arguments, output)
-			e.recordReadCheck(tc.Function.Name, tc.Function.Arguments, output, results[i].errored)
+			if !results[i].errored || tc.Function.Name == "batch_patch" || tc.Function.Name == "parallel_shell" {
+				e.recordMutation(tc.Function.Name, tc.Function.Arguments, output)
+			}
+			if results[i].errored && tc.Function.Name == "batch_patch" {
+				for _, path := range successfulPatchPaths(output) {
+					e.recordReadCheck("patch", fmt.Sprintf(`{"path":%q}`, path), "", false)
+				}
+			} else if results[i].errored && tc.Function.Name == "parallel_shell" && len(parallelShellEntries(output)) > 0 {
+				e.recordReadCheck(tc.Function.Name, tc.Function.Arguments, output, false)
+			} else {
+				e.recordReadCheck(tc.Function.Name, tc.Function.Arguments, output, results[i].errored)
+			}
 
 			// Tool results: only shown in verbose mode.
 			if e.narrator == nil && e.renderer != nil && e.interactionMode != "off" {
@@ -3327,7 +3379,10 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 				}
 				if failed {
 					ev.Type = events.TypeToolCallFailed
-					ev.Data["error_class"] = "tool_error"
+					ev.Data["error_class"] = results[i].outcome.ErrorClass
+					if ev.Data["error_class"] == "" {
+						ev.Data["error_class"] = "tool_error"
+					}
 				} else {
 					ev.Type = events.TypeToolCallCompleted
 					ev.Data["result_bytes"] = len(results[i].output)
@@ -3339,6 +3394,9 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 			// Compress large tool outputs to save context window.
 			// Keep the first and last portions — head usually contains
 			// the most important info, tail may have final results.
+			if results[i].deliveryCtx != nil {
+				danger.FinishReadDelivery(results[i].deliveryCtx, !results[i].errored && results[i].intact && len(output) <= maxOutput)
+			}
 			if len(output) > maxOutput {
 				head := maxOutput * 3 / 4 // 3KB head
 				tail := maxOutput / 4     // 1KB tail
@@ -3349,6 +3407,7 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 			}
 			if results[i].durationMs >= longToolRuntimeMs {
 				output += "\n" + formatLongToolRuntimeFooter(results[i].durationMs)
+				fullOutput += "\n" + formatLongToolRuntimeFooter(results[i].durationMs)
 			}
 
 			// Wrap tool output in unbreakable delimiters so the model
@@ -3363,9 +3422,9 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 				tc.Function.Name, nonce, output, tc.Function.Name, nonce,
 			)
 
-			messages = append(messages, session.Message{
+			toolMessage := []session.Message{{
 				Role:    "tool",
-				Content: delimited,
+				Content: strings.Replace(delimited, output, fullOutput, 1),
 				ToolOutcome: func() string {
 					if results[i].errored {
 						return "failed"
@@ -3374,7 +3433,10 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 				}(),
 				Name:       tc.Function.Name,
 				ToolCallID: tc.ID,
-			})
+			}}
+			e.checkpointTranscript(toolMessage)
+			toolMessage[0].Content = delimited
+			messages = append(messages, toolMessage[0])
 		}
 
 		// ── Tool error recovery: track consecutive failures per tool ──
@@ -3527,7 +3589,7 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 		// a promoted skill. Titles are query text, not instructions.
 		if e.skillRematchPending.Swap(false) {
 			if titles := e.planTitleQuery(); titles != "" && e.skillLoader != nil {
-				if skillContext := e.skillLoader(titles); skillContext != "" {
+				if skillContext := contextValue(ctx, titles, e.skillLoader); skillContext != "" {
 					messages = e.injectSkillContext(ctx, messages, skillContext)
 				}
 			}
@@ -3641,10 +3703,11 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 // append to shared ToolCalls backing arrays — a handed-out snapshot must
 // not change under the caller. Nil callback = no-op.
 func (e *Engine) emitMessagesPersist(messages []session.Message) {
+	e.checkpointTranscript(messages)
 	if e.messagesPersistCallback == nil {
 		return
 	}
-	snapshot := session.CloneMessages(messages)
+	snapshot := session.CloneMessages(e.durableTranscript)
 	e.messagesPersistCallback(snapshot)
 }
 

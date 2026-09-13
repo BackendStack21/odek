@@ -1631,8 +1631,9 @@ type timedTool struct {
 	mu          sync.Mutex
 }
 
-func (t *timedTool) Name() string        { return t.name }
-func (t *timedTool) Description() string { return t.description }
+func (t *timedTool) Effects(string) tool.Effects { return tool.Effects{} }
+func (t *timedTool) Name() string                { return t.name }
+func (t *timedTool) Description() string         { return t.description }
 func (t *timedTool) Schema() any {
 	return map[string]any{"type": "object", "properties": map[string]any{}}
 }
@@ -3522,7 +3523,6 @@ func TestRED_RunWithMessages_ReplacesStaleSystem(t *testing.T) {
 	}
 }
 
-
 // TestRED_RunWithMessages_EmptyRuntimeDoesNotTrustPersistedSystem pins the
 // fail-closed boundary: a persisted system-role message must not become the
 // authoritative prompt merely because the current runtime prompt is empty.
@@ -3556,7 +3556,6 @@ func TestRED_RunWithMessages_EmptyRuntimeDoesNotTrustPersistedSystem(t *testing.
 		t.Fatalf("persisted system message remained trusted with empty runtime prompt: %#v", got)
 	}
 }
-
 
 func TestRED_PlanMessageContent_WrapsModelControlledBodyWithoutConfiguredWrapper(t *testing.T) {
 	store := NewPlanStore(12, 2000)

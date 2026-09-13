@@ -123,6 +123,17 @@ func callSessionSearch(t *testing.T, tool *sessionSearchTool, args string) strin
 	return result
 }
 
+// callSessionSearchErr asserts the typed-error contract: invalid input
+// returns a Go error (operational failure), not a JSON envelope.
+func callSessionSearchErr(t *testing.T, tool *sessionSearchTool, args string) error {
+	t.Helper()
+	_, err := tool.Call(args)
+	if err == nil {
+		t.Fatal("expected Call() error")
+	}
+	return err
+}
+
 func parseResult(t *testing.T, data string) sessionSearchBasicResult {
 	t.Helper()
 	var r sessionSearchBasicResult
@@ -214,10 +225,8 @@ func TestSessionSearch_GetEmptyID(t *testing.T) {
 	defer cleanup()
 
 	tool := newSessionSearchTool(store)
-	result := callSessionSearch(t, tool, `{"action":"get","query":""}`)
-	r := parseResult(t, result)
-
-	if r.Error == "" {
+	_, err := tool.Call(`{"action":"get","query":""}`)
+	if err == nil {
 		t.Fatal("expected error for empty session ID")
 	}
 }
@@ -293,10 +302,8 @@ func TestSessionSearch_SearchEmptyQuery(t *testing.T) {
 	defer cleanup()
 
 	tool := newSessionSearchTool(store)
-	result := callSessionSearch(t, tool, `{"action":"search","query":""}`)
-	r := parseResult(t, result)
-
-	if r.Error == "" {
+	_, err := tool.Call(`{"action":"search","query":""}`)
+	if err == nil {
 		t.Fatal("expected error for empty search query")
 	}
 }
@@ -306,10 +313,8 @@ func TestSessionSearch_FindEmptyQuery(t *testing.T) {
 	defer cleanup()
 
 	tool := newSessionSearchTool(store)
-	result := callSessionSearch(t, tool, `{"action":"find","query":""}`)
-	r := parseResult(t, result)
-
-	if r.Error == "" {
+	_, err := tool.Call(`{"action":"find","query":""}`)
+	if err == nil {
 		t.Fatal("expected error for empty find query")
 	}
 }
@@ -319,14 +324,12 @@ func TestSessionSearch_UnknownAction(t *testing.T) {
 	defer cleanup()
 
 	tool := newSessionSearchTool(store)
-	result := callSessionSearch(t, tool, `{"action":"unknown"}`)
-	r := parseResult(t, result)
-
-	if r.Error == "" {
+	_, err := tool.Call(`{"action":"unknown"}`)
+	if err == nil {
 		t.Fatal("expected error for unknown action")
 	}
-	if !strings.Contains(r.Error, "unknown") {
-		t.Errorf("error should mention 'unknown', got: %s", r.Error)
+	if !strings.Contains(err.Error(), "unknown") {
+		t.Errorf("error should mention 'unknown', got: %s", err.Error())
 	}
 }
 
@@ -350,10 +353,8 @@ func TestSessionSearch_MissingAction(t *testing.T) {
 	defer cleanup()
 
 	tool := newSessionSearchTool(store)
-	result := callSessionSearch(t, tool, `{}`)
-	r := parseResult(t, result)
-
-	if r.Error == "" {
+	_, err := tool.Call(`{}`)
+	if err == nil {
 		t.Fatal("expected error for missing action")
 	}
 }

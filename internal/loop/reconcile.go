@@ -107,11 +107,35 @@ func parallelShellEntries(output string) []struct{ Command string } {
 	return cmds
 }
 
+func successfulPatchPaths(output string) []string {
+	var env struct {
+		Results []struct {
+			Path    string `json:"path"`
+			Success bool   `json:"success"`
+			Error   string `json:"error"`
+		} `json:"results"`
+	}
+	if json.Unmarshal([]byte(output), &env) != nil {
+		return nil
+	}
+	var paths []string
+	for _, entry := range env.Results {
+		if entry.Success && entry.Error == "" && entry.Path != "" {
+			paths = append(paths, entry.Path)
+		}
+	}
+	return paths
+}
+
 // recordMutation updates the run ledger for one completed tool call.
 // Called from the loop's result phase, where success/failure is known.
 func (e *Engine) recordMutation(name, args, output string) {
 	before := len(e.runMutations)
 	switch {
+	case name == "batch_patch":
+		for _, path := range successfulPatchPaths(output) {
+			e.runMutations = append(e.runMutations, "patch "+path)
+		}
 	case mutatingToolNames[name]:
 		if jsonToolFailed(output) {
 			return
@@ -163,42 +187,7 @@ var readCheckToolNames = map[string]bool{
 // recordReadCheck marks that a successful read-only check ran after the
 // latest mutation. Failed calls never count. Mutating shell stays a mutation.
 func (e *Engine) recordReadCheck(name, args, output string, errored bool) {
-	if errored {
-		return
-	}
-	if readCheckToolNames[name] {
-		if jsonToolFailed(output) {
-			return
-		}
-		e.sawReadAfterMutation = true
-		return
-	}
-	switch name {
-	case "shell", "terminal":
-		if shellOutputFailed(output) {
-			return
-		}
-		var p struct {
-			Command string `json:"command"`
-		}
-		if err := json.Unmarshal([]byte(args), &p); err != nil || p.Command == "" {
-			return
-		}
-		if !mutatingShellCommand(p.Command) {
-			e.sawReadAfterMutation = true
-		}
-	case "parallel_shell":
-		entries := parallelShellEntries(output)
-		if len(entries) == 0 {
-			return
-		}
-		for _, r := range entries {
-			if mutatingShellCommand(r.Command) {
-				return
-			}
-		}
-		e.sawReadAfterMutation = true
-	}
+	e.recordVerificationEffects(name, args, errored)
 }
 
 // replyDenialClaims returns the denial claims present in a final reply.

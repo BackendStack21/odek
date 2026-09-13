@@ -14,8 +14,8 @@ func TestShellTool_StderrWithEmptyStdout(t *testing.T) {
 	st := &shellTool{}
 	// Command that writes only to stderr and fails
 	result, err := st.Call(`{"command": "echo error msg >&2 && exit 1"}`)
-	if err != nil {
-		t.Fatalf("Call() should return stderr on error, not error: %v", err)
+	if err == nil {
+		t.Fatal("expected typed operation failure alongside result")
 	}
 	if !strings.Contains(result, "error msg") {
 		t.Errorf("result = %q, should contain stderr 'error msg'", result)
@@ -25,8 +25,8 @@ func TestShellTool_StderrWithEmptyStdout(t *testing.T) {
 func TestShellTool_StderrWithStdoutAndError(t *testing.T) {
 	st := &shellTool{}
 	result, err := st.Call(`{"command": "echo stdout_line && echo stderr_line >&2 && exit 1"}`)
-	if err != nil {
-		t.Fatalf("Call() should return combined output, not error: %v", err)
+	if err == nil {
+		t.Fatal("failing shell command must return a typed failure and combined output")
 	}
 	if !strings.Contains(result, "stdout_line") {
 		t.Errorf("result should contain stdout content, got: %s", result)

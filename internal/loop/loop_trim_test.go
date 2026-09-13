@@ -162,6 +162,10 @@ func TestTrimContext_WarningIncludesDroppedToolNames(t *testing.T) {
 		{Role: "user", Content: "task"},
 		{Role: "assistant", ToolCalls: tc("c1", "read_file")},
 		{Role: "tool", Content: "small", ToolCallID: "c1"},
+		{Role: "assistant", ToolCalls: tc("c2", "file_info")},
+		{Role: "tool", Content: "small", ToolCallID: "c2"},
+		{Role: "assistant", ToolCalls: tc("c3", "checksum")},
+		{Role: "tool", Content: "small", ToolCallID: "c3"},
 		{Role: "assistant", Content: strings.Repeat("pad ", 2000)},
 		{Role: "user", Content: "latest input"},
 	}

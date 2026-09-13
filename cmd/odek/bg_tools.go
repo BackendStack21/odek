@@ -13,6 +13,7 @@ import (
 	"github.com/BackendStack21/odek"
 	"github.com/BackendStack21/odek/internal/bgproc"
 	"github.com/BackendStack21/odek/internal/config"
+	"github.com/BackendStack21/odek/internal/danger"
 	"github.com/BackendStack21/odek/internal/events"
 	"github.com/BackendStack21/odek/internal/redact"
 )
@@ -377,6 +378,7 @@ func (t *bgStartTool) Call(args string) (string, error) {
 	if t.shell == nil {
 		return "", fmt.Errorf("bg_start unavailable: approval gate not wired")
 	}
+	approvedRisk, _ := danger.ClassifyScriptGateCtx(t.shell.toolCtx(), p.Command)
 	if err := t.shell.checkApproval(p.Command, "background job"); err != nil {
 		return "", err
 	}
@@ -387,6 +389,12 @@ func (t *bgStartTool) Call(args string) (string, error) {
 		if err != nil {
 			return "", err
 		}
+	}
+	if err := revalidateShellRisk(t.shell.toolCtx(), p.Command, approvedRisk); err != nil {
+		if opts.Release != nil {
+			opts.Release()
+		}
+		return "", err
 	}
 	job, err := t.rt.mgr.StartWithOptions(t.rt.session, p.Command, "", time.Duration(p.TimeoutSeconds)*time.Second, opts)
 	if err != nil {

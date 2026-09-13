@@ -564,8 +564,8 @@ func TestResolveURL_SameDirRelative(t *testing.T) {
 func TestBrowser_Navigate_BadJSON(t *testing.T) {
 	b := newTestBrowserTool()
 	result, err := b.Call(`{"action":"navigate","url":123}`)
-	if err != nil {
-		t.Fatalf("Call() error: %v", err)
+	if err == nil {
+		t.Fatal("expected typed operation failure alongside result")
 	}
 	var r struct {
 		Error string `json:"error"`
