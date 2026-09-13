@@ -151,8 +151,7 @@ func TestRED_TreeFiltersHiddenBeforeTruncating(t *testing.T) {
 }
 
 // ────────────────────────────────────────────────────────────────────────
-// count_lines adds +1 per scanned line unconditionally, so
-// files without a trailing newline overcount chars vs their own bytes.
+// batch_read must reject negative offsets instead of clamping silently.
 func TestRED_BatchReadRejectsNegativeOffset(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "f.txt")

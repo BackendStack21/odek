@@ -379,7 +379,6 @@ odek mcp --sandbox
 | `batch_patch` | Apply N edits atomically across files |
 | `glob` | Find files by glob pattern |
 | `file_info` | Stat metadata (size, mod_time, mode, type) |
-| `sort` | Sort lines asc/desc/unique/numeric/case-insensitive |
 | `head_tail` | First/last N lines, streaming, parallel |
 | `search_files` | Regex content search or glob file find; sensitive discovered paths are returned in `skipped` |
 
