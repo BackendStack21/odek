@@ -5,7 +5,10 @@
 One binary. One loop. Zero frameworks. ReAct (Reasoning + Acting) — think, therefore act.
 
 ```bash
-# Install from a v2 release tag (requires Go ≥ 1.25.13 — see GETTING_STARTED.md).
+# One-line install (macOS/Linux, checksum-verified prebuilt binary):
+curl -fsSL https://odek.21no.de/install.sh | sh
+
+# Or install from a v2 release tag (requires Go ≥ 1.25.13 — see GETTING_STARTED.md).
 # Do not use @latest: Go ignores v2 tags on this module path and would
 # install an older v1 release.
 go install github.com/BackendStack21/odek/cmd/odek@v2.11.2

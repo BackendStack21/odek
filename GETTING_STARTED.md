@@ -36,10 +36,16 @@ export PATH="$(go env GOPATH)/bin:$PATH"
 Do not use `go install …@latest`: Go ignores v2 tags for this repository's
 historical v1 module path and would install an older v1 release.
 
-**Or grab a prebuilt binary** from the
-[releases page](https://github.com/BackendStack21/odek/releases) — binaries for
-Linux and macOS (amd64 & arm64) plus a `checksums.txt` for verification.
-Linux / macOS (verifies SHA-256, then installs to `~/.local/bin`):
+**Or grab a prebuilt binary** — one line (verifies SHA-256, installs to
+`~/.local/bin` or `/usr/local/bin`):
+
+```bash
+curl -fsSL https://odek.21no.de/install.sh | sh
+```
+
+Prefer manual steps? Binaries for Linux and macOS (amd64 & arm64) plus a
+`checksums.txt` for verification live on the
+[releases page](https://github.com/BackendStack21/odek/releases):
 
 ```bash
 OS=$(uname -s | tr '[:upper:]' '[:lower:]')
