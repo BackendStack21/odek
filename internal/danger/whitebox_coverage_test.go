@@ -483,6 +483,7 @@ func TestIsEnvironmentDump(t *testing.T) {
 	notDump := [][]string{
 		{"env", "FOO=bar", "rm", "-rf", "/"}, // wraps a real command
 		{"env", "node", "x.js"},
+		{"printenv", "PATH"},
 		{"ls"},
 		{},
 	}

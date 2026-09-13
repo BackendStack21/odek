@@ -103,11 +103,11 @@ func TestClassify_SystemWrite_Commands(t *testing.T) {
 		{"sudo apt update", SystemWrite},
 		{"sudo rm /etc/nginx/nginx.conf", SystemWrite},
 		{"echo 'config' > /etc/nginx/conf.d/default.conf", SystemWrite},
-		{"apt install nginx", SystemWrite},
-		{"apt-get update", SystemWrite},
-		{"yum install httpd", SystemWrite},
-		{"brew install node", SystemWrite},
-		{"dpkg -i package.deb", SystemWrite},
+		{"apt install nginx", Install},
+		{"apt-get update", Install},
+		{"yum install httpd", Install},
+		{"brew install node", Install},
+		{"dpkg -i package.deb", Install},
 		{"systemctl restart nginx", SystemWrite},
 		{"service nginx restart", SystemWrite},
 		{"useradd john", SystemWrite},
@@ -305,8 +305,8 @@ func TestClassify_Install_Commands(t *testing.T) {
 		{"gem install rails", Install},
 		{"cargo install ripgrep", Install},
 		{"go install github.com/foo/bar@latest", Install},
-		{"apt install python3", SystemWrite},
-		{"apt-get install git", SystemWrite},
+		{"apt install python3", Install},
+		{"apt-get install git", Install},
 	}
 	for _, tt := range tests {
 		t.Run(tt.cmd, func(t *testing.T) {

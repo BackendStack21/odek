@@ -1129,6 +1129,13 @@ var writePrefixes = map[string]bool{
 	// isCodeExecution before this set is consulted.
 	"tar": true, "unzip": true, "zip": true,
 	"gzip": true, "gunzip": true, "pigz": true,
+	"xz": true, "unxz": true, "bzip2": true, "bunzip2": true,
+	"zstd": true, "unzstd": true, "7z": true, "7za": true,
+	"unrar": true, "unar": true, "cpio": true, "jar": true,
+	"patch": true, "strip": true, "ssh-keygen": true,
+	"pandoc": true, "ffmpeg": true, "convert": true, "magick": true,
+	"mktemp": true, "truncate": true, "fallocate": true,
+	"dos2unix": true, "unix2dos": true,
 	// chattr mutates file attributes (including the immutable flag) the same
 	// way chmod mutates permissions; recursive use at a system root is
 	// escalated by the same operand scan, and formerly it fell through to
@@ -1152,11 +1159,12 @@ var displayVerbs = map[string]bool{
 // than unknown (deny). They must NOT be added to safeCommands.
 var projectExecCommands = map[string]bool{
 	"make": true, "gmake": true, "pytest": true, "py.test": true,
+	"just": true, "task": true, "jest": true, "vitest": true,
+	"bazel": true, "rake": true, "mix": true,
 }
 
 var systemPrefixes = map[string]bool{
-	"sudo": true, "apt": true, "apt-get": true, "yum": true,
-	"brew": true, "dpkg": true, "systemctl": true, "service": true,
+	"sudo": true, "systemctl": true, "service": true,
 	"useradd": true, "groupadd": true, "passwd": true,
 }
 
@@ -1185,6 +1193,9 @@ var networkPrefixes = map[string]bool{
 	"socat": true, "rclone": true,
 	// DNS lookups double as exfiltration channels
 	"dig": true, "nslookup": true, "host": true, "drill": true,
+	"ping": true, "ping6": true, "traceroute": true, "traceroute6": true,
+	"openssl":   true,
+	"redis-cli": true, "psql": true, "mysql": true, "pg_isready": true,
 	// other downloaders
 	"aria2c": true, "axel": true, "httpie": true,
 }
@@ -1208,6 +1219,7 @@ var embeddedShellInterpreters = map[string]bool{
 var codeEvalPrefixes = map[string]bool{
 	"eval": true, "node": true, "python": true, "python3": true,
 	"perl": true, "ruby": true, "php": true,
+	"java": true,
 }
 
 // stdinExecInterpreters read and execute a program from standard input when no
@@ -1237,7 +1249,13 @@ var installPrefixes = map[string]bool{
 	"npm": true, "pip": true, "pip3": true, "gem": true,
 	"cargo": true, "brew": true, "go": true,
 	"pnpm": true, "yarn": true, "bun": true, "apk": true,
-	"uv": true,
+	"uv":  true,
+	"apt": true, "apt-get": true, "yum": true, "dnf": true,
+	"dpkg":   true,
+	"poetry": true, "pipenv": true, "bundle": true, "composer": true,
+	"rustup": true,
+	"nvm":    true, "fnm": true, "pyenv": true, "rbenv": true,
+	"nodenv": true, "asdf": true,
 }
 
 // pkgRunSubcommands map package managers to the subcommands that execute
@@ -1250,11 +1268,15 @@ var installPrefixes = map[string]bool{
 // reversible local git porcelain. `cargo run` / `cargo bench` still
 // execute a built binary and stay here.
 var pkgRunSubcommands = map[string]map[string]bool{
-	"npm":   {"start": true, "run": true, "run-script": true, "test": true, "stop": true, "restart": true, "exec": true},
-	"pnpm":  {"start": true, "run": true, "test": true, "exec": true},
-	"yarn":  {"start": true, "run": true, "test": true, "exec": true},
-	"bun":   {"start": true, "run": true, "test": true, "exec": true},
-	"cargo": {"run": true, "bench": true},
+	"npm":      {"start": true, "run": true, "run-script": true, "test": true, "stop": true, "restart": true, "exec": true},
+	"pnpm":     {"start": true, "run": true, "test": true, "exec": true},
+	"yarn":     {"start": true, "run": true, "test": true, "exec": true},
+	"bun":      {"start": true, "run": true, "test": true, "exec": true},
+	"cargo":    {"run": true, "bench": true},
+	"poetry":   {"run": true, "shell": true},
+	"pipenv":   {"run": true, "shell": true},
+	"bundle":   {"exec": true},
+	"composer": {"run": true, "run-script": true, "exec": true, "test": true},
 }
 
 // safeCommands are read-only / no-op programs that inspect state or
@@ -1318,6 +1340,37 @@ var safeCommands = map[string]bool{
 	"fd": true, "fdfind": true, "eza": true, "exa": true, "lsd": true,
 	"htop": true, "btop": true, "glances": true, "pstree": true, "procs": true,
 	"duf": true, "dust": true, "delta": true, "hexyl": true, "glow": true,
+	// Language toolchains: compile / format / lint. Same bar as go build
+	// and cargo test — workspace output is reversible. A system-path
+	// operand still escalates via touchesSystemPath (`gofmt -w /etc/x`).
+	"gofmt": true, "goimports": true, "gofumpt": true,
+	"golangci-lint": true, "staticcheck": true, "golint": true,
+	"rustc": true, "rustfmt": true,
+	"gcc": true, "g++": true, "c++": true, "clang": true, "clang++": true, "cc": true,
+	"javac": true,
+	"tsc":   true, "eslint": true, "prettier": true,
+	"ruff": true, "black": true, "mypy": true, "flake8": true, "isort": true,
+	"cmake": true, "ninja": true, "meson": true,
+	"mvn": true, "mvnw": true, "gradle": true, "gradlew": true,
+	"dotnet": true, "sbt": true,
+	"swiftc": true, "kotlinc": true,
+	// More formatters / linters (workspace-reversible).
+	"rubocop": true, "stylua": true, "yapf": true, "autopep8": true,
+	"shfmt": true, "shellcheck": true, "hadolint": true, "yamllint": true,
+	"rust-analyzer": true,
+	// Binary / host inspect (read-only).
+	"objdump": true, "nm": true, "otool": true, "ldd": true, "readelf": true,
+	"ip": true, "ifconfig": true,
+	"ssh-add": true, "gpg": true, "gpg2": true,
+	"ffprobe": true, "identify": true,
+	"gdb": true, "lldb": true,
+	"sqlite3": true, "swift": true,
+	"printenv": true,
+	"uuidgen":  true, "ncal": true, "factor": true, "bc": true, "dc": true,
+	"units": true, "iconv": true, "pkg-config": true,
+	"cloc": true, "tokei": true, "scc": true,
+	"protoc": true, "buf": true,
+	"sysctl": true, "sync": true,
 }
 
 // ── Classifier ─────────────────────────────────────────────────────────
@@ -1803,7 +1856,7 @@ func isEnvironmentDump(tokens []string) bool {
 	}
 	name := commandName(tokens[0])
 	if name == "printenv" {
-		return true
+		return printenvDumpsAll(tokens)
 	}
 	if name != "env" {
 		return false
@@ -2295,6 +2348,8 @@ var privilegedWrappers = map[string]bool{
 // from hiding the real command behind a benign-looking head token.
 var execWrappers = map[string]bool{
 	"env": true, "xargs": true, "nohup": true, "nice": true, "ionice": true,
+	"ccache": true, "sccache": true,
+	"strace": true, "ltrace": true, "dtruss": true,
 	"setsid": true, "stdbuf": true, "time": true, "timeout": true,
 	"command": true, "exec": true, "builtin": true, "watch": true,
 	"busybox": true, "unbuffer": true,
@@ -2340,6 +2395,18 @@ func unwrapWrappers(tokens []string) ([]string, RiskClass) {
 				// must consume the next token so it is not mistaken for
 				// the inner command (`xargs -I P echo P` is echo, not P).
 				if argvComposers[name] && xargsValueFlags[t] && i+1 < len(tokens) {
+					i += 2
+					continue
+				}
+				if name == "watch" && (t == "-n" || t == "--interval") && i+1 < len(tokens) {
+					i += 2
+					continue
+				}
+				if name == "env" && (t == "-u" || t == "--unset" || t == "-C" || t == "--chdir" || t == "-S" || t == "--split-string") && i+1 < len(tokens) {
+					i += 2
+					continue
+				}
+				if name == "strace" && (t == "-e" || t == "-p" || t == "-o" || t == "--output" || t == "-s") && i+1 < len(tokens) {
 					i += 2
 					continue
 				}
@@ -2991,7 +3058,7 @@ func classifyCommand(tokens []string) RiskClass {
 
 	// Environment dumps are equivalent to reading the process's credential
 	// store; they are never safe even when used benignly.
-	if first == "printenv" {
+	if first == "printenv" && printenvDumpsAll(tokens) {
 		return SystemWrite
 	}
 
@@ -3054,8 +3121,23 @@ func classifyCommand(tokens []string) RiskClass {
 	// docker / docker-compose: inspect stays safe, run/build executes
 	// image code, pull is egress, prune/image+volume rm is hard to undo.
 	// Unrecognised verbs stay unknown (deny), matching fail-closed.
-	if first == "docker" || first == "docker-compose" {
+	if first == "docker" || first == "docker-compose" || first == "podman" || first == "nerdctl" {
 		return classifyContainerCLI(first, tokens)
+	}
+	if first == "direnv" {
+		return classifyDirenv(tokens)
+	}
+	if first == "kubectl" || first == "helm" || first == "terraform" {
+		return classifyInfraCLI(first, tokens)
+	}
+	if first == "hugo" {
+		return classifyHugo(tokens)
+	}
+	if first == "aws" || first == "gcloud" || first == "az" {
+		if networkInfoQuery(tokens) {
+			return Safe
+		}
+		return Unknown
 	}
 
 	// Code execution checks (pipe to shell, eval, -e/-c flags)
@@ -3315,6 +3397,9 @@ func isSystemWrite(first string, tokens []string) bool {
 	if first == "kill" && killTargetsInitOrBroadcast(tokens) {
 		return true
 	}
+	if first == "sysctl" && hasAny(tokens, "-w", "--write") {
+		return true
+	}
 	// chmod that sets the setuid/setgid bit is privilege escalation regardless
 	// of the target path: a setuid binary runs with its owner's privileges, so
 	// `chmod u+s`, `chmod 4755`, `chmod 6755`, etc. must require approval. Plain
@@ -3457,9 +3542,16 @@ func isNetworkEgress(first string, tokens []string) bool {
 		sub, args := gitSubcommandAndArgs(tokens)
 		return gitContactsRemote(sub, tokens, args)
 	}
+	// openssl version/dgst stay local; s_client and friends open a socket.
+	if first == "openssl" {
+		return opensslContactsRemote(tokens)
+	}
 	// gh subcommands inherently contact the GitHub API — the same class as
 	// git's remote-contacting subcommands. Only meta invocations (help,
 	// completion, version queries) stay local and fall through to Safe.
+	if first == "openssl" {
+		return opensslContactsRemote(tokens)
+	}
 	if first == "gh" {
 		skipNext := false
 		for _, tok := range tokens[1:] {
@@ -3932,8 +4024,9 @@ func isCodeExecution(first string, tokens []string) bool {
 	}
 
 	// npx/bunx/uvx/pipx fetch and run a (possibly remote) package.
+	// Version/help queries do not run anything (`npx --version`).
 	if remoteRunPrefixes[first] {
-		return true
+		return interpreterRunsCode(tokens)
 	}
 
 	// trap registers a payload the same shell executes on a signal or exit
@@ -4017,6 +4110,32 @@ func isCodeExecution(first string, tokens []string) bool {
 		if first == "uv" && hasAny(tokens, "run") {
 			return true
 		}
+		// dotnet/sbt run execute the built project. compile/test stay
+		// safe via the toolchain allowlist.
+		if first == "dotnet" && hasAny(tokens, "run") {
+			return true
+		}
+		if first == "sbt" && hasAny(tokens, "run") {
+			return true
+		}
+		if first == "swift" && hasAny(tokens, "run") {
+			return true
+		}
+		if (first == "gdb" || first == "lldb") && interpreterRunsCode(tokens) {
+			return true
+		}
+		if first == "sqlite3" && sqliteRunsShell(tokens) {
+			return true
+		}
+		if first == "buf" && hasAny(tokens, "generate") {
+			return true
+		}
+		return false
+	}
+
+	// Syntax-check flags do not execute the file (`php -l`, `ruby -c`,
+	// `node --check`). They used to prompt as code_execution.
+	if interpreterIsSyntaxCheck(first, tokens) {
 		return false
 	}
 
@@ -4036,8 +4155,8 @@ func isCodeExecution(first string, tokens []string) bool {
 // without running code — version and help queries. Anything else is either a
 // script-file argument or a code-bearing flag.
 var interpreterInfoFlags = map[string]bool{
-	"--version": true, "-V": true, "-v": true,
-	"--help": true, "-h": true, "--help-all": true,
+	"--version": true, "-version": true, "-V": true, "-v": true,
+	"--help": true, "-h": true, "--help-all": true, "--list": true,
 }
 
 // trapIsQuery reports whether a trap invocation only queries the current
@@ -4279,10 +4398,11 @@ func isInstall(first string, tokens []string) bool {
 
 	// npm/pnpm/yarn/bun/pip/gem install / ci / add
 	switch first {
-	case "npm", "pnpm", "yarn", "bun", "pip", "pip3", "gem", "apk":
+	case "npm", "pnpm", "yarn", "bun", "pip", "pip3", "gem", "apk",
+		"poetry", "pipenv", "bundle", "composer":
 		for _, tok := range tokens[1:] {
 			switch tok {
-			case "install", "i", "ci", "add":
+			case "install", "i", "ci", "add", "require", "update", "remove", "uninstall":
 				return true
 			}
 		}
@@ -4291,6 +4411,21 @@ func isInstall(first string, tokens []string) bool {
 	// cargo install
 	if first == "cargo" {
 		return hasArgAfter(tokens, "cargo", "install")
+	}
+
+	// Host package managers: install/upgrade mutate the machine;
+	// list/info/--version fall through as safe.
+	if first == "brew" || first == "apt" || first == "apt-get" || first == "yum" || first == "dnf" {
+		return hostPkgMutates(tokens)
+	}
+	if first == "dpkg" {
+		return dpkgInstalls(tokens)
+	}
+	if first == "rustup" {
+		return rustupMutates(tokens)
+	}
+	if first == "nvm" || first == "fnm" || first == "pyenv" || first == "rbenv" || first == "nodenv" || first == "asdf" {
+		return versionManagerMutates(tokens)
 	}
 
 	// go subcommands that fetch remote code: go install <pkg>, go get,
@@ -4317,11 +4452,6 @@ func isInstall(first string, tokens []string) bool {
 		return false
 	}
 
-	// brew install
-	if first == "brew" {
-		return hasArgAfter(tokens, "brew", "install")
-	}
-
 	// uv sync / add / pip install / tool install fetch or materialise
 	// a project environment. `uv run` is code execution above.
 	if first == "uv" {
@@ -4346,6 +4476,199 @@ func hasArgAfter(tokens []string, after, target string) bool {
 				}
 			}
 			return false
+		}
+	}
+	return false
+}
+
+func printenvDumpsAll(tokens []string) bool {
+	for _, tok := range tokens[1:] {
+		if tok == "-0" || tok == "--null" || tok == "--help" || tok == "--version" {
+			continue
+		}
+		if strings.HasPrefix(tok, "-") {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func classifyHugo(tokens []string) RiskClass {
+	for _, tok := range tokens[1:] {
+		if strings.HasPrefix(tok, "-") {
+			if interpreterInfoFlags[tok] {
+				continue
+			}
+			continue
+		}
+		switch tok {
+		case "server", "serve":
+			return CodeExecution
+		case "version", "help", "config", "list", "mod":
+			return Safe
+		default:
+			return LocalWrite
+		}
+	}
+	if networkInfoQuery(tokens) {
+		return Safe
+	}
+	// Bare `hugo` builds the site into public/.
+	return LocalWrite
+}
+
+func classifyInfraCLI(first string, tokens []string) RiskClass {
+	var verb string
+	for _, tok := range tokens[1:] {
+		if strings.HasPrefix(tok, "-") {
+			continue
+		}
+		verb = tok
+		break
+	}
+	if verb == "" {
+		return Safe
+	}
+	switch first {
+	case "kubectl":
+		switch verb {
+		case "get", "describe", "logs", "top", "explain",
+			"api-resources", "api-versions", "cluster-info",
+			"config", "version", "diff", "auth", "wait":
+			return NetworkEgress
+		case "exec", "attach", "run", "debug", "port-forward", "proxy", "cp":
+			return CodeExecution
+		case "apply", "create", "delete", "replace", "patch", "scale",
+			"rollout", "annotate", "label", "taint", "drain", "cordon",
+			"uncordon", "expose":
+			return SystemWrite
+		}
+	case "helm":
+		switch verb {
+		case "list", "ls", "status", "show", "get", "history",
+			"version", "env", "search", "template", "lint", "diff":
+			return NetworkEgress
+		case "install", "upgrade", "uninstall", "rollback", "push":
+			return SystemWrite
+		}
+	case "terraform":
+		switch verb {
+		case "plan", "validate", "fmt", "show", "output", "version",
+			"providers", "console", "graph", "state":
+			return NetworkEgress
+		case "apply", "destroy", "import", "taint", "untaint":
+			return SystemWrite
+		}
+	}
+	return Unknown
+}
+
+func interpreterIsSyntaxCheck(first string, tokens []string) bool {
+	switch first {
+	case "php":
+		return hasAny(tokens, "-l", "--syntax-check")
+	case "ruby":
+		return hasAny(tokens, "-c") && !hasAny(tokens, "-e")
+	case "node":
+		return hasAny(tokens, "--check")
+	}
+	return false
+}
+
+func sqliteRunsShell(tokens []string) bool {
+	for _, tok := range tokens[1:] {
+		low := strings.ToLower(tok)
+		if strings.Contains(low, ".shell") || strings.Contains(low, ".system") {
+			return true
+		}
+	}
+	return false
+}
+
+func classifyDirenv(tokens []string) RiskClass {
+	for _, tok := range tokens[1:] {
+		if strings.HasPrefix(tok, "-") {
+			continue
+		}
+		switch tok {
+		case "exec":
+			return CodeExecution
+		case "allow", "permit", "deny", "revoke":
+			return Persistence
+		case "status", "version", "help", "hook", "export", "stdlib":
+			return Safe
+		default:
+			return Unknown
+		}
+	}
+	return Safe
+}
+
+func versionManagerMutates(tokens []string) bool {
+	for _, tok := range tokens[1:] {
+		if strings.HasPrefix(tok, "-") {
+			continue
+		}
+		switch tok {
+		case "install", "uninstall", "global", "local", "shell", "rehash":
+			return true
+		}
+		return false
+	}
+	return false
+}
+
+func opensslContactsRemote(tokens []string) bool {
+	for _, tok := range tokens[1:] {
+		if strings.HasPrefix(tok, "-") {
+			continue
+		}
+		switch tok {
+		case "s_client", "s_server", "s_time", "ocsp":
+			return true
+		}
+		return false
+	}
+	return false
+}
+
+func rustupMutates(tokens []string) bool {
+	for _, tok := range tokens[1:] {
+		if strings.HasPrefix(tok, "-") {
+			continue
+		}
+		switch tok {
+		case "install", "update", "uninstall", "self", "toolchain", "target", "component", "override":
+			return true
+		}
+		return false
+	}
+	return false
+}
+
+func hostPkgMutates(tokens []string) bool {
+	for _, tok := range tokens[1:] {
+		if strings.HasPrefix(tok, "-") {
+			continue
+		}
+		switch tok {
+		case "install", "reinstall", "uninstall", "upgrade",
+			"dist-upgrade", "full-upgrade", "remove", "purge",
+			"autoremove", "update", "tap":
+			return true
+		}
+	}
+	return false
+}
+
+func dpkgInstalls(tokens []string) bool {
+	for _, tok := range tokens[1:] {
+		if tok == "-i" || tok == "--install" || strings.HasPrefix(tok, "--install=") {
+			return true
+		}
+		if strings.HasPrefix(tok, "-") && !strings.HasPrefix(tok, "--") && strings.Contains(tok[1:], "i") {
+			return true
 		}
 	}
 	return false
