@@ -143,16 +143,9 @@ type shellTool struct {
 func (t *shellTool) Name() string { return "shell" }
 
 func (t *shellTool) Description() string {
-	return `Run a shell command and return its output.
-Use for builds, test suites, git operations, package management, and scripts that need a real process. For file inspection prefer the zero-fork tools: read_file, glob, tree, search_files, head_tail.
-In sandbox mode (--sandbox), commands run inside the Docker container with restricted permissions.
-In host mode (default), commands run with the same permissions as the odek process.
-
-Risk classes: safe, local_write, system_write, destructive, network_egress, code_execution, install, unknown, blocked
-High-risk operations may prompt for approval (configurable via dangerous section in odek.json).
-The gate fails closed: an unrecognised command classifies as "unknown" and is denied by default.
-
-Output is fully buffered: nothing is returned until the command finishes; set timeout_seconds for known long-running commands so a stuck one fails fast. Work that would block the turn for minutes (builds, full test suites, dev servers, watchers) belongs in bg_start instead.`
+	return `Run a shell command and return its output. Use for builds, tests, git, package management, scripts. For file inspection prefer the zero-fork tools (read_file, glob, tree, search_files, head_tail).
+Output is fully buffered: nothing is returned until the command exits (a tool_running heartbeat fires every 60s while it runs). Set timeout_seconds explicitly for long commands so stuck ones fail fast (default/clamp: 1800s). Work that would block the turn for minutes belongs in bg_start instead.
+High-risk operations may prompt for approval (Risk classes: safe, local_write, system_write, destructive, network_egress, code_execution, install, unknown, blocked); the gate fails closed — unrecognised commands are denied.`
 }
 
 func (t *shellTool) Schema() any {

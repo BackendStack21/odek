@@ -332,18 +332,9 @@ type bgStartTool struct {
 func (t *bgStartTool) Name() string { return "bg_start" }
 
 func (t *bgStartTool) Description() string {
-	return `Start a shell command in the background and return immediately.
-Use for long-running work: builds, full test suites, dev servers, watchers, fuzz runs, batch jobs.
-The command runs detached from the conversation: you keep working while it
-runs. Completion is delivered automatically: the exit notice is injected into
-a later iteration of a running turn, and when the turn has ended the client
-wakes the session on job completion (or the notice is delivered on the next
-turn). Never call sleep or otherwise pause to wait for a job — it blocks the
-loop for nothing. Poll with bg_status / bg_output only if notices are
-disabled or your current turn depends on the result.
-timeout_seconds: optional kill timer; 0 or absent = run until session end
-(operator cap may clamp explicit values). Jobs are killed when the session
-or the process ends. Output is capped; retrieve it with bg_output.`
+	return `Start a shell command in the background and return immediately — for long-running work (builds, full test suites, dev servers, watchers).
+Completion is delivered automatically (notice injected into a running turn; the session wakes on job completion when the turn has ended) — never call sleep to wait for a job. Poll with bg_status / bg_output only if your current turn depends on the result.
+timeout_seconds: optional kill timer; 0/absent = run until session end. Output is capped; retrieve with bg_output.`
 }
 
 func (t *bgStartTool) Schema() any {

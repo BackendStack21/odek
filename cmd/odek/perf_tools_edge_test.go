@@ -200,59 +200,6 @@ func TestDiff_SingleLineFiles(t *testing.T) {
 
 // ─── CountLines Edge Cases ────────────────────────────────────────────
 
-func TestCountLines_NoTrailingNewline(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "no_eol.txt")
-	os.WriteFile(path, []byte("line1\nline2"), 0644)
-
-	tool := &countLinesTool{}
-	args := fmt.Sprintf(`{"files":[{"path":"%s"}]}`, path)
-	result := callJSON(t, tool, args)
-
-	var r struct {
-		Results []struct {
-			Lines int    `json:"lines"`
-			Error string `json:"error"`
-		} `json:"results"`
-	}
-	mustUnmarshal(t, result, &r)
-	if r.Results[0].Lines != 2 {
-		t.Errorf("lines = %d, want 2 for file without trailing newline", r.Results[0].Lines)
-	}
-}
-
-func TestCountLines_UnicodeContent(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "unicode.txt")
-	os.WriteFile(path, []byte("日本語\n中文\nруский\n"), 0644)
-
-	tool := &countLinesTool{}
-	args := fmt.Sprintf(`{"files":[{"path":"%s"}]}`, path)
-	result := callJSON(t, tool, args)
-
-	var r struct {
-		Results []struct {
-			Lines int    `json:"lines"`
-			Chars int    `json:"chars"`
-			Bytes int64  `json:"bytes"`
-			Error string `json:"error"`
-		} `json:"results"`
-		Total struct {
-			Lines int   `json:"lines"`
-			Chars int   `json:"chars"`
-			Bytes int64 `json:"bytes"`
-		} `json:"total"`
-	}
-	mustUnmarshal(t, result, &r)
-	if r.Results[0].Error != "" {
-		t.Fatalf("error: %s", r.Results[0].Error)
-	}
-	if r.Results[0].Lines != 3 {
-		t.Errorf("lines = %d, want 3", r.Results[0].Lines)
-	}
-}
-
-// ─── MultiGrep Edge Cases ─────────────────────────────────────────────
 
 func TestMultiGrep_ZeroMatches(t *testing.T) {
 	dir := t.TempDir()

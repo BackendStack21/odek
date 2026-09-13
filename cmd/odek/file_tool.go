@@ -1445,15 +1445,7 @@ func (t *batchReadTool) CallContext(ctx context.Context, args string) (string, e
 }
 
 func (t *batchReadTool) Description() string {
-	return `Read multiple files in a single call. Files are read in parallel and results are returned as an array.
-Each file entry supports offset and limit for pagination (same as read_file).
-Use this when you need to read several files at once — it's faster than N sequential read_file calls.
-
-Returns an array of results, one per file, each with:
-  path — the file path requested
-  content — file content with line numbers (or truncated by offset/limit)
-  total_lines — total lines in the file
-  error — error message if the file couldn't be read (file not found, binary, etc.)`
+	return `Read up to 10 files in one parallel call — faster than N sequential read_file calls. Each entry supports offset/limit pagination (same as read_file) and returns {path, content, total_lines, error}.`
 }
 
 type batchReadFileArg struct {

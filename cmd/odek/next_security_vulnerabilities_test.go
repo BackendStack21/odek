@@ -496,38 +496,6 @@ func TestDiff_WrapsContent(t *testing.T) {
 	}
 }
 
-func TestSort_WrapsContent(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "test.txt")
-	os.WriteFile(path, []byte("zebra\napple\n"), 0644)
-
-	tool := &sortTool{dangerousConfig: danger.DangerousConfig{}}
-	result := callJSON(t, tool, fmt.Sprintf(`{"path":%q}`, path))
-	var r struct {
-		Output string `json:"output"`
-	}
-	mustUnmarshal(t, result, &r)
-	if !strings.HasPrefix(r.Output, "<untrusted_content_") {
-		t.Fatalf("sort output should be wrapped in untrusted_content, got: %q", r.Output)
-	}
-}
-
-func TestTr_WrapsContent(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "test.txt")
-	os.WriteFile(path, []byte("hello\n"), 0644)
-
-	tool := &trTool{dangerousConfig: danger.DangerousConfig{}}
-	result := callJSON(t, tool, fmt.Sprintf(`{"path":%q,"transformations":[{"type":"upper"}]}`, path))
-	var r struct {
-		Result string `json:"result"`
-	}
-	mustUnmarshal(t, result, &r)
-	if !strings.HasPrefix(r.Result, "<untrusted_content_") {
-		t.Fatalf("tr result should be wrapped in untrusted_content, got: %q", r.Result)
-	}
-}
-
 func TestJsonQuery_WrapsStringValue(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test.json")

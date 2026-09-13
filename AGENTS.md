@@ -41,7 +41,7 @@ cmd/odek/
   file_tool.go                Built-in file tools (read_file, write_file, search_files, patch, batch_read, glob, file_info)
   external_ref.go             --external-ref flag parsing (run + continue) → session.ExternalRef
   perf_tools.go               Performance/parallelism tools (batch_patch, parallel_shell, http_batch, math_eval, diff,
-                              count_lines, multi_grep, json_query, tree, checksum, sort, head_tail, base64, tr, word_count)
+                              multi_grep, json_query, tree, checksum, head_tail, base64)
   mcp.go                      MCP server implementation (stdio transport)
   mcp_approval.go             Per-tool MCP server approval UI and persistence (key hashes limits/artifact_roots)
   project_sandbox_approval.go Project-level sandbox config approval gate
@@ -129,7 +129,7 @@ ReAct cycle: observe → think → act → repeat.
 - **Execution budgets** — `limits` config section + `--max-runtime/--max-tool-calls/--max-input-tokens/--max-output-tokens/--max-cost-usd` on `run`; typed `budget.Error` → CLI exit code 4; session persisted before return. Per-model prices via `limits.model_prices` with flat-pair fallback; cost enforcement only when cap + prices configured. `odek init --global` scaffolds the section (zeros = off). `GET /api/limits` on serve exposes limits + effective prices for cost rendering.
 
 ### Tools
-All built-in tools with zero subprocess forks: batch_read, batch_patch, parallel_shell, http_batch, math_eval, diff, count_lines, multi_grep, json_query, tree, checksum, sort, head_tail, base64, tr, word_count, transcribe, browser, read_file, write_file, search_files, patch, shell, delegate_tasks, session_search, config_view, list_tools.
+All built-in tools with zero subprocess forks: batch_read, batch_patch, parallel_shell, http_batch, math_eval, diff, multi_grep, json_query, tree, checksum, head_tail, base64, transcribe, browser, read_file, write_file, search_files, patch, shell, delegate_tasks, session_search, config_view, list_tools.
 
 ### Terminal Rendering (`internal/render/`)
 Vertical space compression is baked into the render paths; blank lines removed from Iteration/FinalAnswer/Summary. Raw-mode cursor uses `\r\n` for cross-platform compatibility.

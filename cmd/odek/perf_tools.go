@@ -824,7 +824,7 @@ type mathEvalTool struct{}
 
 func (t *mathEvalTool) Name() string { return "math_eval" }
 func (t *mathEvalTool) Description() string {
-	return `Evaluate a math expression and return the result. Supports: +, -, *, /, %, parentheses, decimal numbers. Zero-fork — no subprocess spawned. Example: "42 * 17 + 256 / 10"`
+	return `Evaluate a math expression: +, -, *, /, %, parentheses, decimals. Example: "42 * 17 + 256 / 10"`
 }
 
 type mathEvalArgs struct {
@@ -976,7 +976,7 @@ type diffTool struct {
 
 func (t *diffTool) Name() string { return "diff" }
 func (t *diffTool) Description() string {
-	return `Compare two files and return structured hunks. Replaces shell diff / cmp — and uniquely compares a file against inline content (path + content) without temp files or process substitution. Each hunk has a type (equal/added/removed) and line-by-line content. Zero-fork LCS-based diff — no subprocess spawned.`
+	return `Compare two files, or a file against inline content (path + content — no temp files needed). Returns structured hunks with type (equal/added/removed) and line-by-line content.`
 }
 
 type diffArgs struct {
@@ -1177,183 +1177,7 @@ func computeDiff(a, b []string) []diffHunk {
 }
 
 // ═════════════════════════════════════════════════════════════════════════
-// 6. count_lines — Quick line/byte/char counts
-// ═════════════════════════════════════════════════════════════════════════
-
-const maxCountFiles = 20
-
-type countLinesTool struct {
-	dangerousConfig danger.DangerousConfig
-	restrictToCWD   bool // sandbox: reject paths that escape the workspace
-}
-
-func (t *countLinesTool) Name() string { return "count_lines" }
-func (t *countLinesTool) Description() string {
-	return `Count lines, bytes, and characters in one or more files. Replaces shell wc -l / wc -c — exact per-file and aggregate totals, zero subprocess forks. Streaming scanner, zero-alloc on content.`
-}
-
-type countFileArg struct {
-	Path string `json:"path"`
-}
-
-type countFileEntry struct {
-	Path  string `json:"path"`
-	Lines int    `json:"lines"`
-	Bytes int64  `json:"bytes"`
-	Chars int    `json:"chars"`
-	Error string `json:"error,omitempty"`
-}
-
-type countLinesArgs struct {
-	Files []countFileArg `json:"files"`
-}
-
-type countLinesResult struct {
-	Results []countFileEntry `json:"results"`
-	Total   countFileEntry   `json:"total"`
-}
-
-func (t *countLinesTool) Schema() any {
-	return map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"files": map[string]any{
-				"type":        "array",
-				"description": "Files to count (max 20). Each: {path}.",
-				"minItems":    1,
-				"maxItems":    maxCountFiles,
-				"items": map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"path": map[string]any{"type": "string", "description": "File path."},
-					},
-					"required": []string{"path"},
-				},
-			},
-		},
-		"required": []string{"files"},
-	}
-}
-
-func (t *countLinesTool) Call(argsJSON string) (string, error) {
-	var args countLinesArgs
-	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
-		return jsonError("invalid arguments: " + err.Error())
-	}
-	if len(args.Files) == 0 {
-		return jsonError("at least one file is required")
-	}
-	if len(args.Files) > maxCountFiles {
-		return jsonError(fmt.Sprintf("max %d files per call", maxCountFiles))
-	}
-
-	results := parallelMap(args.Files, toolConcurrency(),
-		func(f countFileArg) countFileEntry { return t.countFile(f.Path) },
-		func(f countFileArg, p any) countFileEntry {
-			return countFileEntry{Path: f.Path, Error: fmt.Sprintf("internal error: %v", p)}
-		})
-
-	var total countFileEntry
-	total.Path = "(total)"
-	for _, r := range results {
-		if r.Error == "" {
-			total.Lines += r.Lines
-			total.Bytes += r.Bytes
-			total.Chars += r.Chars
-		}
-	}
-
-	return jsonResult(countLinesResult{Results: results, Total: total})
-}
-
-func (t *countLinesTool) countFile(path string) (entry countFileEntry) {
-	defer func() {
-		if r := recover(); r != nil {
-			entry = countFileEntry{Path: path, Error: fmt.Sprintf("internal error: %v", r)}
-		}
-	}()
-	if path == "" {
-		return countFileEntry{Error: "path is required"}
-	}
-	if err := confineIfRestricted(t.restrictToCWD, path); err != nil {
-		return countFileEntry{Path: path, Error: err.Error()}
-	}
-
-	if err := t.dangerousConfig.CheckOperation(danger.ToolOperation{
-		Name: "count_lines", Resource: path, Risk: classifyResolvedPath(path),
-	}, nil); err != nil {
-		return countFileEntry{Path: path, Error: err.Error()}
-	}
-
-	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
-	if err != nil {
-		return countFileEntry{Path: path, Error: fmt.Sprintf("cannot open %q: %v", path, err)}
-	}
-	defer f.Close()
-
-	info, err := f.Stat()
-	if err != nil {
-		return countFileEntry{Path: path, Error: fmt.Sprintf("cannot stat %q: %v", path, err)}
-	}
-	if info.IsDir() {
-		return countFileEntry{Path: path, Error: fmt.Sprintf("%q is a directory — use tree or glob to explore directories", path)}
-	}
-	if info.Size() > maxFileReadBytes {
-		return countFileEntry{Path: path, Error: fmt.Sprintf("file too large (%d bytes, max %d)", info.Size(), maxFileReadBytes)}
-	}
-
-	lines := 0
-	chars := 0
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
-	for scanner.Scan() {
-		lines++
-		chars += len([]rune(scanner.Text())) + 1
-	}
-	// bufio.Scanner silently stops on tokens over its 1 MiB cap and on read
-	// errors — surfacing nothing would report wrong counts as fact.
-	if err := scanner.Err(); err != nil {
-		return countFileEntry{
-			Path:  path,
-			Error: fmt.Sprintf("cannot read %q fully: %v", path, err),
-			Lines: lines,
-			Bytes: info.Size(),
-			Chars: chars,
-		}
-	}
-
-	// The +1 per scanned line assumes a trailing newline. Files that end
-	// without one were overcounted by 1 relative to their own byte size.
-	if lines > 0 && chars > 0 && !fileEndsWithNewline(f) {
-		chars--
-	}
-
-	return countFileEntry{
-		Path:  path,
-		Lines: lines,
-		Bytes: info.Size(),
-		Chars: chars,
-	}
-}
-
-// fileEndsWithNewline peeks at the final byte of an open file without
-// disturbing callers that are done with it.
-func fileEndsWithNewline(f *os.File) bool {
-	info, err := f.Stat()
-	if err != nil || info.Size() == 0 {
-		return false
-	}
-	if _, err := f.Seek(-1, io.SeekEnd); err != nil {
-		return true // can't tell — keep the historical assumption
-	}
-	var one [1]byte
-	n, _ := f.Read(one[:])
-	f.Seek(0, io.SeekStart)
-	return n == 1 && one[0] == '\n'
-}
-
-// ═════════════════════════════════════════════════════════════════════════
-// 7. multi_grep — Search multiple patterns in parallel
+// 6. multi_grep — Search multiple patterns in parallel
 // ═════════════════════════════════════════════════════════════════════════
 
 const maxGrepPatterns = 10
@@ -1366,7 +1190,7 @@ type multiGrepTool struct {
 
 func (t *multiGrepTool) Name() string { return "multi_grep" }
 func (t *multiGrepTool) Description() string {
-	return `Search for multiple regex patterns in parallel across files. Each pattern runs its own directory walk with bounded concurrency. Returns structured {pattern, path, line, content} results. Replaces shell grep -rn / rg as well as N serial search_files calls — structured, capped output, zero subprocess forks.`
+	return `Search multiple regex patterns in parallel (max 10) — one pass instead of N serial search_files calls. Returns structured {pattern, path, line, content} results. Prefer over search_files when you have 2+ patterns.`
 }
 
 type grepMatch struct {
@@ -1579,7 +1403,7 @@ func (t *multiGrepTool) searchPattern(pattern, root, fileGlob string, limit int)
 }
 
 // ═════════════════════════════════════════════════════════════════════════
-// 8. json_query — Query/extract from JSON files
+// 7. json_query — Query/extract from JSON files
 // ═════════════════════════════════════════════════════════════════════════
 
 type jsonQueryTool struct {
@@ -1755,7 +1579,7 @@ func jsonPathQuery(data interface{}, query string) (interface{}, error) {
 }
 
 // ═════════════════════════════════════════════════════════════════════════
-// 9. tree — Structured directory tree listing
+// 8. tree — Structured directory tree listing
 // ═════════════════════════════════════════════════════════════════════════
 
 type treeTool struct {
@@ -1947,7 +1771,7 @@ func buildTree(ctx context.Context, root, path string, depth, maxDepth int, incl
 }
 
 // ═════════════════════════════════════════════════════════════════════════
-// 10. checksum — Compute file hashes natively
+// 9. checksum — Compute file hashes natively
 // ═════════════════════════════════════════════════════════════════════════
 
 const maxChecksumFiles = 10
@@ -1959,7 +1783,7 @@ type checksumTool struct {
 
 func (t *checksumTool) Name() string { return "checksum" }
 func (t *checksumTool) Description() string {
-	return `Compute cryptographic hashes of files using SHA-256 (default), SHA-1, or MD5. Uses Go crypto stdlib — zero subprocess fork, pure Go implementation; works inside the sandbox where shell hash tools may be absent.`
+	return `Compute SHA-256 (default), SHA-1, or MD5 hashes of files — works inside sandboxes where shell hash tools may be absent.`
 }
 
 type checksumFileArg struct {
@@ -2084,208 +1908,7 @@ func (t *checksumTool) hashFile(arg checksumFileArg) (entry checksumEntry) {
 }
 
 // ═════════════════════════════════════════════════════════════════════════
-// 11. sort — Sort lines in files natively
-// ═════════════════════════════════════════════════════════════════════════
-
-type sortTool struct {
-	ctxTool
-	dangerousConfig danger.DangerousConfig
-	restrictToCWD   bool // sandbox: reject paths that escape the workspace
-}
-
-func (t *sortTool) Name() string { return "sort" }
-func (t *sortTool) Description() string {
-	return `Sort lines in one or more files. Supports ascending (default), descending, unique (dedup), numeric, case-insensitive, and reverse. For multiple files, results are merged. Returns the sorted text in the result — source files are never modified; persist with write_file. Zero-fork — pure Go sort with no subprocess.`
-}
-
-type sortArgs struct {
-	Path       string        `json:"path,omitempty"`  // single file
-	Files      []sortFileArg `json:"files,omitempty"` // multiple files
-	Order      string        `json:"order,omitempty"` // "asc" (default) or "desc"
-	Unique     bool          `json:"unique,omitempty"`
-	Numeric    bool          `json:"numeric,omitempty"`
-	IgnoreCase bool          `json:"ignore_case,omitempty"`
-	Reverse    bool          `json:"reverse,omitempty"`
-}
-
-type sortFileArg struct {
-	Path string `json:"path"`
-}
-
-type sortEntry struct {
-	File  string `json:"file"`
-	Lines int    `json:"lines"`
-	Error string `json:"error,omitempty"`
-}
-
-type sortResult struct {
-	Results []sortEntry `json:"results"`
-	Output  string      `json:"output,omitempty"` // sorted content (single file mode)
-	Total   int         `json:"total"`
-}
-
-func (t *sortTool) Schema() any {
-	return map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"path":        map[string]any{"type": "string", "description": "Single file to sort."},
-			"files":       map[string]any{"type": "array", "description": "Multiple files to sort (results merged).", "items": map[string]any{"type": "object", "properties": map[string]any{"path": map[string]any{"type": "string"}}, "required": []string{"path"}}},
-			"order":       map[string]any{"type": "string", "enum": []string{"asc", "desc"}, "description": "Sort order (default: asc)."},
-			"unique":      map[string]any{"type": "boolean", "description": "Remove duplicate lines."},
-			"numeric":     map[string]any{"type": "boolean", "description": "Numeric sort (by number prefix)."},
-			"ignore_case": map[string]any{"type": "boolean", "description": "Case-insensitive sort."},
-			"reverse":     map[string]any{"type": "boolean", "description": "Reverse sort order."},
-		},
-	}
-}
-
-func (t *sortTool) Call(argsJSON string) (result string, err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			err = fmt.Errorf("sort: panic: %v", r)
-			result = `{"error":"internal tool error"}`
-		}
-	}()
-	var args sortArgs
-	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
-		return jsonError("invalid arguments: " + err.Error())
-	}
-
-	var paths []string
-	if args.Path != "" {
-		paths = []string{args.Path}
-	} else if len(args.Files) > 0 {
-		for _, f := range args.Files {
-			paths = append(paths, f.Path)
-		}
-	} else {
-		return jsonError("provide path or files")
-	}
-	if len(paths) > 20 {
-		return jsonError("max 20 files per sort call")
-	}
-
-	// Direction: order selects asc/desc (case-insensitive enum — the
-	// schema pins ["asc","desc"] but models emit "DESC" etc.), and an
-	// unknown value is a clean error rather than a silent ascending sort.
-	// reverse then flips the effective direction (desc+reverse = asc).
-	desc := false
-	switch strings.ToLower(strings.TrimSpace(args.Order)) {
-	case "":
-		// default ascending
-	case "asc":
-	case "desc":
-		desc = true
-	default:
-		return jsonError(fmt.Sprintf("invalid order %q (use \"asc\" or \"desc\")", args.Order))
-	}
-	if args.Reverse {
-		desc = !desc
-	}
-
-	// Read all files
-	var allLines []string
-	var results []sortEntry
-	for _, p := range paths {
-		if err := confineIfRestricted(t.restrictToCWD, p); err != nil {
-			results = append(results, sortEntry{File: p, Error: err.Error()})
-			continue
-		}
-		if err := t.dangerousConfig.CheckOperation(danger.ToolOperation{
-			Name: "sort", Resource: p, Risk: classifyResolvedPath(p),
-		}, nil); err != nil {
-			results = append(results, sortEntry{File: p, Error: err.Error()})
-			continue
-		}
-		f, err := os.OpenFile(p, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
-		if err != nil {
-			results = append(results, sortEntry{File: p, Error: fmt.Sprintf("cannot open %q: %v", p, err)})
-			continue
-		}
-		info, err := f.Stat()
-		if err != nil {
-			f.Close()
-			results = append(results, sortEntry{File: p, Error: fmt.Sprintf("cannot stat %q: %v", p, err)})
-			continue
-		}
-		if info.Size() > maxFileReadBytes {
-			f.Close()
-			results = append(results, sortEntry{File: p, Error: fmt.Sprintf("file too large (%d bytes, max %d)", info.Size(), maxFileReadBytes)})
-			continue
-		}
-		data, err := io.ReadAll(f)
-		f.Close()
-		if err != nil {
-			results = append(results, sortEntry{File: p, Error: err.Error()})
-			continue
-		}
-		lines := strings.Split(string(data), "\n")
-		// Trim trailing empty
-		if len(lines) > 0 && lines[len(lines)-1] == "" {
-			lines = lines[:len(lines)-1]
-		}
-		results = append(results, sortEntry{File: p, Lines: len(lines)})
-		allLines = append(allLines, lines...)
-	}
-
-	if len(allLines) == 0 {
-		return jsonResult(sortResult{Results: results})
-	}
-
-	// Sort
-	sort.Slice(allLines, func(i, j int) bool {
-		a, b := allLines[i], allLines[j]
-		if args.IgnoreCase {
-			a, b = strings.ToLower(a), strings.ToLower(b)
-		}
-		if args.Numeric {
-			var ai, bi float64
-			fa := strings.Fields(a)
-			fb := strings.Fields(b)
-			if len(fa) > 0 {
-				ai, _ = strconv.ParseFloat(fa[0], 64)
-			}
-			if len(fb) > 0 {
-				bi, _ = strconv.ParseFloat(fb[0], 64)
-			}
-			if desc {
-				return ai > bi
-			}
-			return ai < bi
-		}
-		if desc {
-			return a > b
-		}
-		return a < b
-	})
-
-	// Unique
-	if args.Unique {
-		seen := make(map[string]bool)
-		unique := make([]string, 0, len(allLines))
-		for _, line := range allLines {
-			key := line
-			if args.IgnoreCase {
-				key = strings.ToLower(key)
-			}
-			if !seen[key] {
-				seen[key] = true
-				unique = append(unique, line)
-			}
-		}
-		allLines = unique
-	}
-
-	output := strings.Join(allLines, "\n")
-	return jsonResult(sortResult{
-		Results: results,
-		Output:  wrapUntrusted(t.toolCtx(), "sort:"+strings.Join(paths, ","), output),
-		Total:   len(allLines),
-	})
-}
-
-// ═════════════════════════════════════════════════════════════════════════
-// 12. head_tail — Quick file preview (first/last N lines)
+// 10. head_tail — Quick file preview (first/last N lines)
 // ═════════════════════════════════════════════════════════════════════════
 
 // maxHeadTailTotalBytes caps the content returned by head_tail for a single
@@ -2489,7 +2112,7 @@ func truncateHeadTailLines(lines []string) []string {
 }
 
 // ═════════════════════════════════════════════════════════════════════════
-// 13. base64 — Encode/decode base64
+// 11. base64 — Encode/decode base64
 // ═════════════════════════════════════════════════════════════════════════
 
 type base64Tool struct {
@@ -2589,329 +2212,6 @@ func (t *base64Tool) Call(argsJSON string) (result string, err error) {
 	return jsonResult(base64Result{Encoded: wrapUntrusted(t.toolCtx(), args.Path, encoded), Size: len(data)})
 }
 
-// ═════════════════════════════════════════════════════════════════════════
-// 14. tr — Native text transformation
-// ═════════════════════════════════════════════════════════════════════════
-
-type trTool struct {
-	ctxTool
-	dangerousConfig danger.DangerousConfig
-	restrictToCWD   bool // sandbox: reject paths that escape the workspace
-}
-
-func (t *trTool) Name() string { return "tr" }
-func (t *trTool) Description() string {
-	return `Transform text: case conversion, character replacement, string substitution, character deletion. READ-ONLY: operates on a file or inline content and returns the transformed text in the result — the source file is NEVER modified; persist changes with write_file or patch. Zero-fork — pure Go string transformations.`
-}
-
-type trTransform struct {
-	From string `json:"from,omitempty"` // for char/string replacement
-	To   string `json:"to,omitempty"`
-	Type string `json:"type,omitempty"` // "upper", "lower", "char", "string", "delete"
-}
-
-type trArgs struct {
-	Path            string        `json:"path,omitempty"`
-	Content         string        `json:"content,omitempty"`
-	Transformations []trTransform `json:"transformations"`
-}
-
-type trResult struct {
-	Result   string `json:"result"`
-	Error    string `json:"error,omitempty"`
-	FromFile bool   `json:"from_file,omitempty"`
-}
-
-func (t *trTool) Schema() any {
-	return map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"path":    map[string]any{"type": "string", "description": "File to transform."},
-			"content": map[string]any{"type": "string", "description": "Inline string to transform."},
-			"transformations": map[string]any{
-				"type": "array", "description": "Transformations to apply (in order).",
-				"items": map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"type": map[string]any{"type": "string", "enum": []string{"upper", "lower", "char", "string", "delete"}, "description": "upper/lower/char/string/delete."},
-						"from": map[string]any{"type": "string", "description": "Source characters/string (for char/string/delete types)."},
-						"to":   map[string]any{"type": "string", "description": "Target characters/string (for char/string types)."},
-					},
-					"required": []string{"type"},
-				},
-			},
-		},
-		"required": []string{"transformations"},
-	}
-}
-
-func (t *trTool) Call(argsJSON string) (result string, err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			err = fmt.Errorf("tr: panic: %v", r)
-			result = `{"error":"internal tool error"}`
-		}
-	}()
-	var args trArgs
-	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
-		return jsonError("invalid arguments: " + err.Error())
-	}
-	if len(args.Transformations) == 0 {
-		return jsonError("at least one transformation is required")
-	}
-	if len(args.Content) > maxInlineContentBytes {
-		return jsonError(fmt.Sprintf("inline content too large (max %d bytes)", maxInlineContentBytes))
-	}
-
-	var text string
-	fromFile := false
-	if args.Path != "" {
-		if err := confineIfRestricted(t.restrictToCWD, args.Path); err != nil {
-			return jsonError(err.Error())
-		}
-		if err := t.dangerousConfig.CheckOperation(danger.ToolOperation{
-			Name: "tr", Resource: args.Path, Risk: classifyResolvedPath(args.Path),
-		}, nil); err != nil {
-			return jsonError(err.Error())
-		}
-		data, err := readFileNoFollow(args.Path)
-		if err != nil {
-			return jsonResult(trResult{Error: fmt.Sprintf("cannot read %q: %v", args.Path, err)})
-		}
-		text = string(data)
-		fromFile = true
-	} else {
-		text = args.Content
-	}
-
-	for _, tf := range args.Transformations {
-		switch tf.Type {
-		case "upper":
-			text = strings.ToUpper(text)
-		case "lower":
-			text = strings.ToLower(text)
-		case "char":
-			if tf.From == "" {
-				return jsonResult(trResult{Error: "from is required for char transformation"})
-			}
-			// POSIX tr semantics: map each source character through the
-			// target set positionally (runes, not bytes). A shorter target
-			// set repeats its last character; an empty target set deletes
-			// mapped characters. The previous implementation fell back to
-			// whole-string ReplaceAll whenever the sets had equal byte
-			// length or a single-char target — making `char abc→xyz` a
-			// no-op — and indexed the target by BYTE offset with a RUNE
-			// index.
-			fromRunes := []rune(tf.From)
-			toRunes := []rune(tf.To)
-			text = strings.Map(func(r rune) rune {
-				for i, fr := range fromRunes {
-					if fr == r {
-						switch {
-						case len(toRunes) == 0:
-							return -1 // delete
-						case i < len(toRunes):
-							return toRunes[i]
-						default:
-							return toRunes[len(toRunes)-1]
-						}
-					}
-				}
-				return r
-			}, text)
-		case "string":
-			if tf.From == "" {
-				return jsonResult(trResult{Error: "from is required for string transformation"})
-			}
-			if len(tf.To) > len(tf.From) {
-				// Cap the projected output: ReplaceAll with a large `to`
-				// can expand a bounded input unboundedly — reject before
-				// expanding instead of risking an OOM.
-				occ := strings.Count(text, tf.From)
-				projected := len(text) + occ*(len(tf.To)-len(tf.From))
-				if projected > maxFileReadBytes {
-					return jsonResult(trResult{Error: fmt.Sprintf(
-						"string transformation would expand %d bytes to ~%d bytes (max %d); use a smaller replacement",
-						len(text), projected, maxFileReadBytes)})
-				}
-			}
-			text = strings.ReplaceAll(text, tf.From, tf.To)
-		case "delete":
-			if tf.From == "" {
-				return jsonResult(trResult{Error: "from is required for delete transformation"})
-			}
-			text = strings.Map(func(r rune) rune {
-				if strings.ContainsRune(tf.From, r) {
-					return -1
-				}
-				return r
-			}, text)
-		default:
-			return jsonResult(trResult{Error: fmt.Sprintf("unknown transformation type: %q", tf.Type)})
-		}
-	}
-
-	if fromFile {
-		text = wrapUntrusted(t.toolCtx(), args.Path, text)
-	}
-	return jsonResult(trResult{Result: text, FromFile: fromFile})
-}
-
-// ═════════════════════════════════════════════════════════════════════════
-// 15. word_count — Count words in files
-// ═════════════════════════════════════════════════════════════════════════
-
-const maxWordCountFiles = 20
-
-type wordCountTool struct {
-	dangerousConfig danger.DangerousConfig
-	restrictToCWD   bool // sandbox: reject paths that escape the workspace
-}
-
-func (t *wordCountTool) Name() string { return "word_count" }
-func (t *wordCountTool) Description() string {
-	return `Count words, lines, and characters in one or more files. Replaces shell wc — exact per-file and aggregate totals, zero subprocess forks. Streaming scanner, no full-content load.`
-}
-
-type wordCountFileArg struct {
-	Path string `json:"path"`
-}
-
-type wordCountEntry struct {
-	Path  string `json:"path"`
-	Lines int    `json:"lines"`
-	Words int    `json:"words"`
-	Chars int    `json:"chars"`
-	Bytes int64  `json:"bytes"`
-	Error string `json:"error,omitempty"`
-}
-
-type wordCountArgs struct {
-	Files []wordCountFileArg `json:"files"`
-}
-
-type wordCountResult struct {
-	Results []wordCountEntry `json:"results"`
-	Total   wordCountEntry   `json:"total"`
-}
-
-func (t *wordCountTool) Schema() any {
-	return map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"files": map[string]any{
-				"type": "array", "description": "Files to count (max 20).",
-				"items": map[string]any{
-					"type": "object", "properties": map[string]any{"path": map[string]any{"type": "string"}},
-					"required": []string{"path"},
-				},
-			},
-		},
-		"required": []string{"files"},
-	}
-}
-
-func (t *wordCountTool) Call(argsJSON string) (string, error) {
-	var args wordCountArgs
-	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
-		return jsonError("invalid arguments: " + err.Error())
-	}
-	if len(args.Files) == 0 {
-		return jsonError("at least one file is required")
-	}
-	if len(args.Files) > maxWordCountFiles {
-		return jsonError(fmt.Sprintf("max %d files per call", maxWordCountFiles))
-	}
-
-	results := parallelMap(args.Files, toolConcurrency(),
-		func(f wordCountFileArg) wordCountEntry { return t.countWords(f.Path) },
-		func(f wordCountFileArg, p any) wordCountEntry {
-			return wordCountEntry{Path: f.Path, Error: fmt.Sprintf("internal error: %v", p)}
-		})
-
-	var total wordCountEntry
-	total.Path = "(total)"
-	for _, r := range results {
-		if r.Error == "" {
-			total.Lines += r.Lines
-			total.Words += r.Words
-			total.Chars += r.Chars
-			total.Bytes += r.Bytes
-		}
-	}
-
-	return jsonResult(wordCountResult{Results: results, Total: total})
-}
-
-func (t *wordCountTool) countWords(path string) (entry wordCountEntry) {
-	defer func() {
-		if r := recover(); r != nil {
-			entry = wordCountEntry{Path: path, Error: fmt.Sprintf("internal error: %v", r)}
-		}
-	}()
-	if err := confineIfRestricted(t.restrictToCWD, path); err != nil {
-		return wordCountEntry{Path: path, Error: err.Error()}
-	}
-	if err := t.dangerousConfig.CheckOperation(danger.ToolOperation{
-		Name: "word_count", Resource: path, Risk: classifyResolvedPath(path),
-	}, nil); err != nil {
-		return wordCountEntry{Path: path, Error: err.Error()}
-	}
-
-	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
-	if err != nil {
-		return wordCountEntry{Path: path, Error: fmt.Sprintf("cannot open %q: %v", path, err)}
-	}
-	defer f.Close()
-
-	info, err := f.Stat()
-	if err != nil {
-		return wordCountEntry{Path: path, Error: fmt.Sprintf("cannot stat: %v", err)}
-	}
-	if info.IsDir() {
-		return wordCountEntry{Path: path, Error: fmt.Sprintf("%q is a directory — use tree or glob to explore directories", path)}
-	}
-	if info.Size() > maxFileReadBytes {
-		return wordCountEntry{Path: path, Error: fmt.Sprintf("file too large (%d bytes, max %d)", info.Size(), maxFileReadBytes)}
-	}
-
-	lines := 0
-	words := 0
-	chars := 0
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
-	for scanner.Scan() {
-		lines++
-		line := scanner.Text()
-		chars += len([]rune(line)) + 1
-		words += len(strings.Fields(line))
-	}
-	// Surface scanner failures instead of returning truncated counts as fact
-	// (see countFile); and drop the per-line +1 when the file has no
-	// trailing newline so chars matches the reported byte size.
-	if err := scanner.Err(); err != nil {
-		return wordCountEntry{
-			Path:  path,
-			Error: fmt.Sprintf("cannot read %q fully: %v", path, err),
-			Lines: lines,
-			Words: words,
-			Chars: chars,
-			Bytes: info.Size(),
-		}
-	}
-	if lines > 0 && chars > 0 && !fileEndsWithNewline(f) {
-		chars--
-	}
-
-	return wordCountEntry{
-		Path:  path,
-		Lines: lines,
-		Words: words,
-		Chars: chars,
-		Bytes: info.Size(),
-	}
-}
-
 // ── Compile-time interface checks ────────────────────────────────────
 var (
 	_ odek.Tool = (*batchPatchTool)(nil)
@@ -2919,14 +2219,10 @@ var (
 	_ odek.Tool = (*httpBatchTool)(nil)
 	_ odek.Tool = (*mathEvalTool)(nil)
 	_ odek.Tool = (*diffTool)(nil)
-	_ odek.Tool = (*countLinesTool)(nil)
 	_ odek.Tool = (*multiGrepTool)(nil)
 	_ odek.Tool = (*jsonQueryTool)(nil)
 	_ odek.Tool = (*treeTool)(nil)
 	_ odek.Tool = (*checksumTool)(nil)
-	_ odek.Tool = (*sortTool)(nil)
 	_ odek.Tool = (*headTailTool)(nil)
 	_ odek.Tool = (*base64Tool)(nil)
-	_ odek.Tool = (*trTool)(nil)
-	_ odek.Tool = (*wordCountTool)(nil)
 )

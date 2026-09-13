@@ -2614,13 +2614,9 @@ func TestRED_SetupSandbox_ConfinesHostReadTools(t *testing.T) {
 		&multiGrepTool{},
 		&jsonQueryTool{},
 		&diffTool{},
-		&countLinesTool{},
 		&treeTool{},
 		&checksumTool{},
-		&sortTool{},
-		&wordCountTool{},
 		&base64Tool{},
-		&trTool{},
 		&visionTool{},
 		&transcribeTool{},
 	}

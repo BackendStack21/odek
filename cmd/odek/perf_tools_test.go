@@ -446,64 +446,6 @@ func TestDiff_IdenticalFiles(t *testing.T) {
 	}
 }
 
-// ── CountLines Tests ──────────────────────────────────────────────────
-
-func TestCountLines_Basic(t *testing.T) {
-	dir := t.TempDir()
-	path1 := filepath.Join(dir, "a.txt")
-	path2 := filepath.Join(dir, "b.txt")
-	os.WriteFile(path1, []byte("line1\nline2\nline3\n"), 0644)
-	os.WriteFile(path2, []byte("hello\n"), 0644)
-
-	tool := &countLinesTool{}
-	args := fmt.Sprintf(`{"files":[{"path":"%s"},{"path":"%s"}]}`, path1, path2)
-	result := callJSON(t, tool, args)
-
-	var r struct {
-		Results []struct {
-			Path  string `json:"path"`
-			Lines int    `json:"lines"`
-			Bytes int64  `json:"bytes"`
-			Chars int    `json:"chars"`
-			Error string `json:"error"`
-		} `json:"results"`
-		Total struct {
-			Lines int   `json:"lines"`
-			Bytes int64 `json:"bytes"`
-		} `json:"total"`
-	}
-	mustUnmarshal(t, result, &r)
-
-	if len(r.Results) != 2 {
-		t.Fatalf("Results = %d, want 2", len(r.Results))
-	}
-	if r.Results[0].Lines != 3 {
-		t.Errorf("file 0 lines = %d, want 3", r.Results[0].Lines)
-	}
-	if r.Results[1].Lines != 1 {
-		t.Errorf("file 1 lines = %d, want 1", r.Results[1].Lines)
-	}
-	if r.Total.Lines != 4 {
-		t.Errorf("total lines = %d, want 4", r.Total.Lines)
-	}
-}
-
-func TestCountLines_NotFound(t *testing.T) {
-	tool := &countLinesTool{}
-	result := callJSON(t, tool, `{"files":[{"path":"/nonexistent"}]}`)
-
-	var r struct {
-		Results []struct {
-			Error string `json:"error"`
-		} `json:"results"`
-	}
-	mustUnmarshal(t, result, &r)
-
-	if r.Results[0].Error == "" {
-		t.Errorf("expected error for nonexistent file")
-	}
-}
-
 // ── MultiGrep Tests ───────────────────────────────────────────────────
 
 func TestMultiGrep_Basic(t *testing.T) {
@@ -763,74 +705,6 @@ func TestChecksum_DefaultAlgorithm(t *testing.T) {
 	}
 }
 
-// ── Sort Tests ───────────────────────────────────────────────────────
-
-func TestSort_Basic(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "test.txt")
-	os.WriteFile(path, []byte("c\nb\na\n"), 0644)
-
-	tool := &sortTool{}
-	args := fmt.Sprintf(`{"path":"%s"}`, path)
-	result := callJSON(t, tool, args)
-
-	var r struct {
-		Output string `json:"output"`
-		Total  int    `json:"total"`
-		Error  string `json:"error,omitempty"`
-	}
-	mustUnmarshal(t, result, &r)
-
-	if r.Error != "" {
-		t.Fatalf("error: %s", r.Error)
-	}
-	if r.Total != 3 {
-		t.Errorf("total = %d, want 3", r.Total)
-	}
-	if unwrapUntrusted(r.Output) != "a\nb\nc" {
-		t.Errorf("output = %q, want a\\nb\\nc", r.Output)
-	}
-}
-
-func TestSort_Desc(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "test.txt")
-	os.WriteFile(path, []byte("a\nb\nc\n"), 0644)
-
-	tool := &sortTool{}
-	args := fmt.Sprintf(`{"path":"%s","order":"desc"}`, path)
-	result := callJSON(t, tool, args)
-
-	var r struct {
-		Output string `json:"output"`
-	}
-	mustUnmarshal(t, result, &r)
-
-	if unwrapUntrusted(r.Output) != "c\nb\na" {
-		t.Errorf("output = %q, want c\\nb\\na", r.Output)
-	}
-}
-
-func TestSort_Unique(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "test.txt")
-	os.WriteFile(path, []byte("a\nb\na\nc\nb\n"), 0644)
-
-	tool := &sortTool{}
-	args := fmt.Sprintf(`{"path":"%s","unique":true}`, path)
-	result := callJSON(t, tool, args)
-
-	var r struct {
-		Output string `json:"output"`
-		Total  int    `json:"total"`
-	}
-	mustUnmarshal(t, result, &r)
-
-	if r.Total != 3 {
-		t.Errorf("total = %d, want 3", r.Total)
-	}
-}
-
 // ── HeadTail Tests ───────────────────────────────────────────────────
 
 func TestHeadTail_Head(t *testing.T) {
@@ -959,162 +833,6 @@ func TestBase64_File(t *testing.T) {
 	}
 }
 
-// ── Tr Tests ─────────────────────────────────────────────────────────
-
-func TestTr_Upper(t *testing.T) {
-	tool := &trTool{}
-	result := callJSON(t, tool, `{"content":"hello world","transformations":[{"type":"upper"}]}`)
-
-	var r struct {
-		Result string `json:"result"`
-	}
-	mustUnmarshal(t, result, &r)
-
-	if r.Result != "HELLO WORLD" {
-		t.Errorf("result = %q, want 'HELLO WORLD'", r.Result)
-	}
-}
-
-func TestTr_Lower(t *testing.T) {
-	tool := &trTool{}
-	result := callJSON(t, tool, `{"content":"HELLO","transformations":[{"type":"lower"}]}`)
-
-	var r struct {
-		Result string `json:"result"`
-	}
-	mustUnmarshal(t, result, &r)
-
-	if r.Result != "hello" {
-		t.Errorf("result = %q, want 'hello'", r.Result)
-	}
-}
-
-func TestTr_StringReplace(t *testing.T) {
-	tool := &trTool{}
-	result := callJSON(t, tool, `{"content":"foo bar foo","transformations":[{"type":"string","from":"foo","to":"baz"}]}`)
-
-	var r struct {
-		Result string `json:"result"`
-	}
-	mustUnmarshal(t, result, &r)
-
-	if r.Result != "baz bar baz" {
-		t.Errorf("result = %q, want 'baz bar baz'", r.Result)
-	}
-}
-
-func TestTr_Delete(t *testing.T) {
-	tool := &trTool{}
-	result := callJSON(t, tool, `{"content":"hello 123 world","transformations":[{"type":"delete","from":"123"}]}`)
-
-	var r struct {
-		Result string `json:"result"`
-	}
-	mustUnmarshal(t, result, &r)
-
-	if r.Result != "hello  world" {
-		t.Errorf("result = %q, want 'hello  world'", r.Result)
-	}
-}
-
-func TestTr_MultipleTransforms(t *testing.T) {
-	tool := &trTool{}
-	result := callJSON(t, tool, `{"content":"Hello World","transformations":[{"type":"lower"},{"type":"string","from":" ","to":"_"}]}`)
-
-	var r struct {
-		Result string `json:"result"`
-	}
-	mustUnmarshal(t, result, &r)
-
-	if r.Result != "hello_world" {
-		t.Errorf("result = %q, want 'hello_world'", r.Result)
-	}
-}
-
-// ── WordCount Tests ──────────────────────────────────────────────────
-
-func TestWordCount_Basic(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "test.txt")
-	os.WriteFile(path, []byte("hello world\nfoo bar baz\n"), 0644)
-
-	tool := &wordCountTool{}
-	args := fmt.Sprintf(`{"files":[{"path":"%s"}]}`, path)
-	result := callJSON(t, tool, args)
-
-	var r struct {
-		Results []struct {
-			Lines int    `json:"lines"`
-			Words int    `json:"words"`
-			Chars int    `json:"chars"`
-			Bytes int64  `json:"bytes"`
-			Error string `json:"error"`
-		} `json:"results"`
-		Total struct {
-			Lines int `json:"lines"`
-			Words int `json:"words"`
-		} `json:"total"`
-	}
-	mustUnmarshal(t, result, &r)
-
-	if len(r.Results) != 1 {
-		t.Fatalf("Results = %d, want 1", len(r.Results))
-	}
-	if r.Results[0].Error != "" {
-		t.Fatalf("error: %s", r.Results[0].Error)
-	}
-	if r.Results[0].Lines != 2 {
-		t.Errorf("lines = %d, want 2", r.Results[0].Lines)
-	}
-	if r.Results[0].Words != 5 {
-		t.Errorf("words = %d, want 5", r.Results[0].Words)
-	}
-	if r.Total.Words != 5 {
-		t.Errorf("total words = %d, want 5", r.Total.Words)
-	}
-}
-
-func TestWordCount_MultipleFiles(t *testing.T) {
-	dir := t.TempDir()
-	path1 := filepath.Join(dir, "a.txt")
-	path2 := filepath.Join(dir, "b.txt")
-	os.WriteFile(path1, []byte("one two\n"), 0644)
-	os.WriteFile(path2, []byte("three four five\n"), 0644)
-
-	tool := &wordCountTool{}
-	args := fmt.Sprintf(`{"files":[{"path":"%s"},{"path":"%s"}]}`, path1, path2)
-	result := callJSON(t, tool, args)
-
-	var r struct {
-		Total struct {
-			Lines int `json:"lines"`
-			Words int `json:"words"`
-		} `json:"total"`
-	}
-	mustUnmarshal(t, result, &r)
-
-	if r.Total.Lines != 2 {
-		t.Errorf("total lines = %d, want 2", r.Total.Lines)
-	}
-	if r.Total.Words != 5 {
-		t.Errorf("total words = %d, want 5", r.Total.Words)
-	}
-}
-
-func TestWordCount_NotFound(t *testing.T) {
-	tool := &wordCountTool{}
-	result := callJSON(t, tool, `{"files":[{"path":"/nonexistent"}]}`)
-	var r struct {
-		Results []struct {
-			Error string `json:"error"`
-		} `json:"results"`
-	}
-	mustUnmarshal(t, result, &r)
-	if r.Results[0].Error == "" {
-		t.Errorf("expected error for nonexistent file")
-	}
-}
-
 // ── Security & Edge Case Tests ──────────────────────────────────────
 //
 // These tests verify that every tool properly gates through the danger
@@ -1172,24 +890,6 @@ func TestHeadTail_SymlinkRejected(t *testing.T) {
 
 // ── Empty File Handling ──────────────────────────────────────────────
 
-func TestSort_EmptyFile(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "empty.txt")
-	os.WriteFile(path, []byte{}, 0644)
-
-	tool := &sortTool{}
-	args := fmt.Sprintf(`{"path":"%s"}`, path)
-	result := callJSON(t, tool, args)
-
-	var r struct {
-		Output string `json:"output"`
-		Total  int    `json:"total"`
-	}
-	mustUnmarshal(t, result, &r)
-	if r.Total != 0 {
-		t.Errorf("total = %d, want 0", r.Total)
-	}
-}
 
 func TestHeadTail_EmptyFile(t *testing.T) {
 	dir := t.TempDir()
@@ -1216,50 +916,6 @@ func TestHeadTail_EmptyFile(t *testing.T) {
 	}
 }
 
-func TestWordCount_EmptyFile(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "empty.txt")
-	os.WriteFile(path, []byte{}, 0644)
-
-	tool := &wordCountTool{}
-	args := fmt.Sprintf(`{"files":[{"path":"%s"}]}`, path)
-	result := callJSON(t, tool, args)
-
-	var r struct {
-		Results []struct {
-			Lines int    `json:"lines"`
-			Words int    `json:"words"`
-			Error string `json:"error"`
-		} `json:"results"`
-	}
-	mustUnmarshal(t, result, &r)
-	if r.Results[0].Lines != 0 || r.Results[0].Words != 0 {
-		t.Errorf("empty file: lines=%d words=%d, want 0", r.Results[0].Lines, r.Results[0].Words)
-	}
-}
-
-// ── Binary File Protection ───────────────────────────────────────────
-
-func TestCountLines_BinaryFile(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "binary.bin")
-	os.WriteFile(path, []byte{0x00, 0x01, 0x02, 0x03}, 0644)
-
-	tool := &countLinesTool{}
-	args := fmt.Sprintf(`{"files":[{"path":"%s"}]}`, path)
-	result := callJSON(t, tool, args)
-
-	var r struct {
-		Results []struct {
-			Lines int    `json:"lines"`
-			Error string `json:"error"`
-		} `json:"results"`
-	}
-	mustUnmarshal(t, result, &r)
-	if r.Results[0].Error != "" {
-		t.Fatalf("error: %s", r.Results[0].Error)
-	}
-}
 
 // ── Max Limits Enforcement ───────────────────────────────────────────
 
@@ -1319,17 +975,6 @@ func TestHTTPBatch_MaxURLs(t *testing.T) {
 
 // ── Empty Args Rejection ─────────────────────────────────────────────
 
-func TestSort_NoPath(t *testing.T) {
-	tool := &sortTool{}
-	result := callJSON(t, tool, `{}`)
-	var r struct {
-		Error string `json:"error"`
-	}
-	mustUnmarshal(t, result, &r)
-	if !strings.Contains(r.Error, "provide path") {
-		t.Errorf("should require path, got: %s", r.Error)
-	}
-}
 
 func TestBase64_NoArgs(t *testing.T) {
 	tool := &base64Tool{}
@@ -1343,17 +988,6 @@ func TestBase64_NoArgs(t *testing.T) {
 	}
 }
 
-func TestTr_NoTransformations(t *testing.T) {
-	tool := &trTool{}
-	result := callJSON(t, tool, `{"content":"hello","transformations":[]}`)
-	var r struct {
-		Error string `json:"error"`
-	}
-	mustUnmarshal(t, result, &r)
-	if !strings.Contains(r.Error, "at least one") {
-		t.Errorf("should require transformations, got: %s", r.Error)
-	}
-}
 
 // ── Invalid JSON Rejection ───────────────────────────────────────────
 
@@ -1367,16 +1001,12 @@ func TestTools_InvalidJSON(t *testing.T) {
 		{"http_batch", newHTTPBatchTool(danger.DangerousConfig{})},
 		{"math_eval", &mathEvalTool{}},
 		{"diff", &diffTool{}},
-		{"count_lines", &countLinesTool{}},
 		{"multi_grep", &multiGrepTool{}},
 		{"json_query", &jsonQueryTool{}},
 		{"tree", &treeTool{}},
 		{"checksum", &checksumTool{}},
-		{"sort", &sortTool{}},
 		{"head_tail", &headTailTool{}},
 		{"base64", &base64Tool{}},
-		{"tr", &trTool{}},
-		{"word_count", &wordCountTool{}},
 	}
 
 	for _, tc := range tools {
@@ -1447,79 +1077,6 @@ func TestTools_MissingRequired(t *testing.T) {
 	})
 }
 
-// ── Tr Edge Cases ────────────────────────────────────────────────────
-
-func TestTr_ChainTransforms(t *testing.T) {
-	tool := &trTool{}
-	result := callJSON(t, tool, `{"content":"abc123def456","transformations":[
-		{"type":"delete","from":"123456"},
-		{"type":"upper"},
-		{"type":"string","from":"DEF","to":"XYZ"}
-	]}`)
-	var r struct{ Result string }
-	mustUnmarshal(t, result, &r)
-	if r.Result != "ABCXYZ" {
-		t.Errorf("chained result = %q, want 'ABCXYZ'", r.Result)
-	}
-}
-
-func TestTr_FileInput(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "test.txt")
-	os.WriteFile(path, []byte("hello world\n"), 0644)
-
-	tool := &trTool{}
-	args := fmt.Sprintf(`{"path":"%s","transformations":[{"type":"upper"}]}`, path)
-	result := callJSON(t, tool, args)
-
-	var r struct {
-		Result   string `json:"result"`
-		FromFile bool   `json:"from_file"`
-	}
-	mustUnmarshal(t, result, &r)
-	if !r.FromFile {
-		t.Error("should indicate from_file=true")
-	}
-	if unwrapUntrusted(r.Result) != "HELLO WORLD" {
-		t.Errorf("result = %q, want 'HELLO WORLD' (unwrapped)", r.Result)
-	}
-}
-
-// ── Sort Edge Cases ──────────────────────────────────────────────────
-
-func TestSort_IgnoreCase(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "test.txt")
-	os.WriteFile(path, []byte("Beta\nalpha\nGamma\n"), 0644)
-
-	tool := &sortTool{}
-	args := fmt.Sprintf(`{"path":"%s","ignore_case":true}`, path)
-	result := callJSON(t, tool, args)
-
-	var r struct{ Output string }
-	mustUnmarshal(t, result, &r)
-	if unwrapUntrusted(r.Output) != "alpha\nBeta\nGamma" {
-		t.Errorf("case-insensitive sort = %q", r.Output)
-	}
-}
-
-func TestSort_MultipleFiles(t *testing.T) {
-	dir := t.TempDir()
-	path1 := filepath.Join(dir, "a.txt")
-	path2 := filepath.Join(dir, "b.txt")
-	os.WriteFile(path1, []byte("b\nc\n"), 0644)
-	os.WriteFile(path2, []byte("a\n"), 0644)
-
-	tool := &sortTool{}
-	args := fmt.Sprintf(`{"files":[{"path":"%s"},{"path":"%s"}]}`, path1, path2)
-	result := callJSON(t, tool, args)
-
-	var r struct{ Output string }
-	mustUnmarshal(t, result, &r)
-	if unwrapUntrusted(r.Output) != "a\nb\nc" {
-		t.Errorf("merged sort = %q, want 'a\\nb\\nc'", r.Output)
-	}
-}
 
 // ── Diff Edge Cases ──────────────────────────────────────────────────
 
@@ -1544,55 +1101,6 @@ func TestDiff_FileVsStringEmpty(t *testing.T) {
 	}
 }
 
-// ── WordCount Edge Cases ─────────────────────────────────────────────
-
-func TestWordCount_TotalAggregation(t *testing.T) {
-	dir := t.TempDir()
-	path1 := filepath.Join(dir, "a.txt")
-	path2 := filepath.Join(dir, "b.txt")
-	os.WriteFile(path1, []byte("one two\nthree\n"), 0644)
-	os.WriteFile(path2, []byte("four five six\n"), 0644)
-
-	tool := &wordCountTool{}
-	args := fmt.Sprintf(`{"files":[{"path":"%s"},{"path":"%s"}]}`, path1, path2)
-	result := callJSON(t, tool, args)
-
-	var r struct {
-		Total struct {
-			Lines int `json:"lines"`
-			Words int `json:"words"`
-		} `json:"total"`
-	}
-	mustUnmarshal(t, result, &r)
-	if r.Total.Lines != 3 {
-		t.Errorf("total lines = %d, want 3", r.Total.Lines)
-	}
-	if r.Total.Words != 6 {
-		t.Errorf("total words = %d, want 6", r.Total.Words)
-	}
-}
-
-// ── CountLines Edge Cases ────────────────────────────────────────────
-
-func TestCountLines_TotalLineCount(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "test.txt")
-	os.WriteFile(path, []byte("a\nb\nc\n"), 0644)
-
-	tool := &countLinesTool{}
-	args := fmt.Sprintf(`{"files":[{"path":"%s"}]}`, path)
-	result := callJSON(t, tool, args)
-
-	var r struct {
-		Total struct {
-			Lines int `json:"lines"`
-		} `json:"total"`
-	}
-	mustUnmarshal(t, result, &r)
-	if r.Total.Lines != 3 {
-		t.Errorf("total = %d, want 3", r.Total.Lines)
-	}
-}
 
 // ── JSONQuery Edge Cases ─────────────────────────────────────────────
 
@@ -1791,16 +1299,12 @@ func TestPerfTools_Metadata(t *testing.T) {
 		tool metaTool
 	}{
 		{"diff", &diffTool{}},
-		{"count_lines", &countLinesTool{}},
 		{"multi_grep", &multiGrepTool{}},
 		{"json_query", &jsonQueryTool{}},
 		{"tree", &treeTool{}},
 		{"checksum", &checksumTool{}},
-		{"sort", &sortTool{}},
 		{"head_tail", &headTailTool{}},
 		{"base64", &base64Tool{}},
-		{"tr", &trTool{}},
-		{"word_count", &wordCountTool{}},
 	}
 	for _, tc := range tools {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1814,51 +1318,6 @@ func TestPerfTools_Metadata(t *testing.T) {
 				t.Error("Schema should not be nil")
 			}
 		})
-	}
-}
-
-// ── Sort Numeric Edge Cases ──────────────────────────────────────────────
-
-func TestSort_Numeric(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "nums.txt")
-	os.WriteFile(path, []byte("10\n2\n30\n1\n"), 0644)
-
-	tool := &sortTool{}
-	args := fmt.Sprintf(`{"path":"%s","numeric":true}`, path)
-	result := callJSON(t, tool, args)
-
-	var r struct {
-		Output string `json:"output"`
-		Total  int    `json:"total"`
-	}
-	mustUnmarshal(t, result, &r)
-	if r.Total != 4 {
-		t.Errorf("total = %d, want 4", r.Total)
-	}
-	if unwrapUntrusted(r.Output) != "1\n2\n10\n30" {
-		t.Errorf("numeric sort = %q, want '1\\n2\\n10\\n30'", r.Output)
-	}
-}
-
-func TestSort_NumericWithEmptyLine(t *testing.T) {
-	// Empty lines should not cause panic (regression test)
-	dir := t.TempDir()
-	path := filepath.Join(dir, "mixed.txt")
-	os.WriteFile(path, []byte("10\n\n30\n1\n"), 0644)
-
-	tool := &sortTool{}
-	args := fmt.Sprintf(`{"path":"%s","numeric":true}`, path)
-	result := callJSON(t, tool, args)
-
-	var r struct {
-		Output string `json:"output"`
-		Total  int    `json:"total"`
-		Error  string `json:"error,omitempty"`
-	}
-	mustUnmarshal(t, result, &r)
-	if r.Total != 4 {
-		t.Errorf("total = %d, want 4", r.Total)
 	}
 }
 
@@ -1955,29 +1414,6 @@ func TestParallelShell_Timeout(t *testing.T) {
 	}
 }
 
-// ── WordCount Binary File ───────────────────────────────────────────────
-
-func TestWordCount_BinaryFile(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "data.bin")
-	os.WriteFile(path, []byte{0x00, 0xFF, 0x00, 0xFF}, 0644)
-
-	tool := &wordCountTool{}
-	args := fmt.Sprintf(`{"files":[{"path":"%s"}]}`, path)
-	result := callJSON(t, tool, args)
-
-	var r struct {
-		Results []struct {
-			Lines int    `json:"lines"`
-			Words int    `json:"words"`
-			Error string `json:"error"`
-		} `json:"results"`
-	}
-	mustUnmarshal(t, result, &r)
-	if r.Results[0].Error != "" {
-		t.Fatalf("error: %s", r.Results[0].Error)
-	}
-}
 
 // makeOversizedFile creates a sparse file larger than maxFileReadBytes for
 // testing size-cap rejections without actually writing multi-gigabyte data.
@@ -1992,22 +1428,6 @@ func makeOversizedFile(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return path
-}
-
-func TestCountLines_RejectsHugeFile(t *testing.T) {
-	path := makeOversizedFile(t)
-	tool := &countLinesTool{}
-	result := callJSON(t, tool, fmt.Sprintf(`{"files":[{"path":"%s"}]}`, path))
-
-	var r struct {
-		Results []struct {
-			Error string `json:"error"`
-		} `json:"results"`
-	}
-	mustUnmarshal(t, result, &r)
-	if r.Results[0].Error == "" || !strings.Contains(r.Results[0].Error, "too large") {
-		t.Errorf("expected 'too large' error, got %q", r.Results[0].Error)
-	}
 }
 
 func TestChecksum_RejectsHugeFile(t *testing.T) {
@@ -2042,22 +1462,6 @@ func TestHeadTail_RejectsHugeFile(t *testing.T) {
 	}
 }
 
-func TestWordCount_RejectsHugeFile(t *testing.T) {
-	path := makeOversizedFile(t)
-	tool := &wordCountTool{}
-	result := callJSON(t, tool, fmt.Sprintf(`{"files":[{"path":"%s"}]}`, path))
-
-	var r struct {
-		Results []struct {
-			Error string `json:"error"`
-		} `json:"results"`
-	}
-	mustUnmarshal(t, result, &r)
-	if r.Results[0].Error == "" || !strings.Contains(r.Results[0].Error, "too large") {
-		t.Errorf("expected 'too large' error, got %q", r.Results[0].Error)
-	}
-}
-
 func TestBase64_RejectsHugeInlineContent(t *testing.T) {
 	huge := strings.Repeat("a", maxInlineContentBytes+1)
 	tool := &base64Tool{}
@@ -2072,21 +1476,6 @@ func TestBase64_RejectsHugeInlineContent(t *testing.T) {
 	}
 }
 
-func TestTr_RejectsHugeInlineContent(t *testing.T) {
-	huge := strings.Repeat("a", maxInlineContentBytes+1)
-	tool := &trTool{}
-	result := callJSON(t, tool, fmt.Sprintf(`{"content":"%s","transformations":[{"type":"upper"}]}`, huge))
-
-	var r struct {
-		Error string `json:"error"`
-	}
-	mustUnmarshal(t, result, &r)
-	if r.Error == "" || !strings.Contains(r.Error, "too large") {
-		t.Errorf("expected 'too large' error, got %q", r.Error)
-	}
-}
-
-// makeExactSizeFile creates a sparse file exactly maxFileReadBytes bytes.
 func makeExactSizeFile(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -2098,25 +1487,6 @@ func makeExactSizeFile(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return path
-}
-
-func TestCountLines_AcceptsExactSizeFile(t *testing.T) {
-	path := makeExactSizeFile(t)
-	tool := &countLinesTool{}
-	result := callJSON(t, tool, fmt.Sprintf(`{"files":[{"path":"%s"}]}`, path))
-
-	var r struct {
-		Results []struct {
-			Error string `json:"error"`
-		} `json:"results"`
-	}
-	mustUnmarshal(t, result, &r)
-	// The exact-size file must pass the size gate (not rejected as "too
-	// large"). A 10 MiB single-line file exceeds the scanner cap, which now
-	// surfaces as an explicit partial-read error instead of silent zeros.
-	if strings.Contains(r.Results[0].Error, "too large") {
-		t.Errorf("size gate must accept a file at the exact limit, got %q", r.Results[0].Error)
-	}
 }
 
 func TestChecksum_AcceptsExactSizeFile(t *testing.T) {
@@ -2175,25 +1545,6 @@ func TestHeadTail_TailRejectsHugeFile(t *testing.T) {
 	}
 }
 
-func TestWordCount_AcceptsExactSizeFile(t *testing.T) {
-	path := makeExactSizeFile(t)
-	tool := &wordCountTool{}
-	result := callJSON(t, tool, fmt.Sprintf(`{"files":[{"path":"%s"}]}`, path))
-
-	var r struct {
-		Results []struct {
-			Error string `json:"error"`
-		} `json:"results"`
-	}
-	mustUnmarshal(t, result, &r)
-	// The exact-size file must pass the size gate (not rejected as "too
-	// large"). A 10 MiB single-line file exceeds the scanner cap, which now
-	// surfaces as an explicit partial-read error instead of silent zeros.
-	if strings.Contains(r.Results[0].Error, "too large") {
-		t.Errorf("size gate must accept a file at the exact limit, got %q", r.Results[0].Error)
-	}
-}
-
 func TestBase64_AcceptsExactSizeInlineContent(t *testing.T) {
 	// All-'a' string of exactly maxInlineContentBytes bytes; base64 encoding
 	// will succeed and the cap should allow it.
@@ -2225,24 +1576,6 @@ func TestBase64_RejectsHugeDecodeString(t *testing.T) {
 	mustUnmarshal(t, result, &r)
 	if r.Error == "" || !strings.Contains(r.Error, "too large") {
 		t.Errorf("expected 'too large' error for decode string, got %q", r.Error)
-	}
-}
-
-func TestTr_AcceptsExactSizeInlineContent(t *testing.T) {
-	content := strings.Repeat("a", maxInlineContentBytes)
-	tool := &trTool{}
-	result := callJSON(t, tool, fmt.Sprintf(`{"content":"%s","transformations":[{"type":"upper"}]}`, content))
-
-	var r struct {
-		Result string `json:"result"`
-		Error  string `json:"error"`
-	}
-	mustUnmarshal(t, result, &r)
-	if r.Error != "" {
-		t.Errorf("expected no error at exact inline size limit, got %q", r.Error)
-	}
-	if len(r.Result) != maxInlineContentBytes {
-		t.Errorf("result length = %d, want %d", len(r.Result), maxInlineContentBytes)
 	}
 }
 

@@ -1,10 +1,9 @@
 package main
 
 // RED-first tests for the bughunt-v3 perf/file tool fixes:
-//  1. tr string transform unbounded expansion
-//  2. base64 decode unwrapped output
-//  3. search/multi_grep silently skipping unopenable files (fd pressure)
-//  4. unwrapped FS-derived match paths (glob, searchFiles, multiGrep)
+//  1. base64 decode unwrapped output
+//  2. search/multi_grep silently skipping unopenable files (fd pressure)
+//  3. unwrapped FS-derived match paths (glob, searchFiles, multiGrep)
 
 import (
 	"fmt"
@@ -13,29 +12,6 @@ import (
 	"strings"
 	"testing"
 )
-
-// 1. tr: a small input plus a large replacement must be rejected, not expanded.
-func TestTr_RejectsUnboundedStringExpansion(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("permission-based test unreliable as root")
-	}
-	big := strings.Repeat("x", 3<<20) // 3 MiB replacement, 4 occurrences → ~12 MiB
-	tool := &trTool{}
-	args := fmt.Sprintf(`{"content":"aaaa","transformations":[{"type":"string","from":"a","to":%q}]}`, big)
-	result := callJSON(t, tool, args)
-
-	var r struct {
-		Result string `json:"result"`
-		Error  string `json:"error"`
-	}
-	mustUnmarshal(t, result, &r)
-	if r.Error == "" {
-		t.Fatalf("expected expansion-cap error, got result of %d bytes", len(r.Result))
-	}
-	if len(r.Result) > 1<<20 {
-		t.Errorf("result should not contain the expanded output")
-	}
-}
 
 // 2. base64: decoded strings cross the trust boundary like every other
 // tool output and must be wrapped.
