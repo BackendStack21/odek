@@ -167,7 +167,7 @@ cat <<EOF
 
 Odek is installed. Next, set up your provider:
 
-  1. odek init                      # creates ~/.odek/config.json
+  1. odek init --global             # creates ~/.odek/config.json
   2. Add your provider API key, e.g.:
        "providers": { "openai": { "apiKey": "sk-..." } }
   3. odek run "your first task"
