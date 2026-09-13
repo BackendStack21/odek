@@ -21,7 +21,10 @@ Two default changes, aimed at the out-of-box experience:
 Existing configs are untouched: an explicit `"action"` in your config still
 wins over the new defaults. Note one knock-on: scheduled jobs follow the
 global egress default too — gate them via `schedules.dangerous.classes` if
-unattended egress matters to you.
+unattended egress matters to you. Sub-agent profiles with
+`max_risk: "network_egress"` are unaffected (profile caps are class-rank
+based, not action based), but operator configs pinning explicit egress
+actions keep what they set.
 
 ## Removed tools (v2.13+)
 
