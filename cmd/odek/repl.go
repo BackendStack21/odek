@@ -225,15 +225,18 @@ func replCmd(args []string) error {
 
 	// Persist per-turn progress so an interrupted turn (Ctrl-C) survives up
 	// to the last completed step instead of losing the whole turn.
+	var checkpointErr error
+	var checkpointCancel context.CancelFunc
 	agent.SetMessagesPersistCallback(func(snapshot []session.Message) {
-		if sess == nil || len(snapshot) < len(sess.Messages) {
-			// The loop trimmed history in place — keep the richer state
-			// already persisted instead of overwriting it.
+		if sess == nil || checkpointErr != nil {
 			return
 		}
 		sess.Messages = snapshot
 		if err := store.SaveNoIndex(sess); err != nil {
-			fmt.Fprintf(os.Stderr, "odek: save error: %v\n", err)
+			checkpointErr = fmt.Errorf("persist REPL checkpoint: %w", err)
+			if checkpointCancel != nil {
+				checkpointCancel()
+			}
 		}
 	})
 	cwd, _ := os.Getwd()
@@ -286,9 +289,25 @@ func replCmd(args []string) error {
 			turn++
 			continue
 		}
+		release, err := store.AcquireExecution(ctx, sess.ID)
+		if err != nil {
+			return err
+		}
+		latest, err := store.Load(sess.ID)
+		if err != nil {
+			release()
+			return err
+		}
+		sess = latest
+		if mm := agent.Memory(); mm != nil {
+			mm.ClearBuffer()
+			mm.RestoreBuffer(sess.Buffer)
+		}
 		originalInput := input
 		auditTurn := sess.Turns + 1
-		runCtx := withAuditRecorder(ctx, auditStore, sess.ID, auditTurn)
+		turnCtx, turnCancel := context.WithCancel(ctx)
+		checkpointErr, checkpointCancel = nil, turnCancel
+		runCtx := withAuditRecorder(turnCtx, auditStore, sess.ID, auditTurn)
 		runCtx = withReadLedger(runCtx, sess.ID)
 
 		// Resolve @references in REPL input
@@ -316,12 +335,17 @@ func replCmd(args []string) error {
 		// Run agent with full history
 		rend.Start(input)
 		_, allMessages, err := agent.RunWithMessages(runCtx, messages)
+		turnCancel()
+		if checkpointErr != nil {
+			err = checkpointErr
+		}
 		if err != nil {
 			recordTurnAudit(auditStore, sess.ID, auditTurn, originalInput, auditTurnDelta(allMessages, histLen))
 			// Persist the partial history so the interrupted turn survives
 			// up to the last completed step (mirrors the Telegram cancel path).
 			persistPartialMessages(store, sess, allMessages)
 			fmt.Fprintf(os.Stderr, "odek: agent error: %v\n", err)
+			release()
 			continue
 		}
 		recordTurnAudit(auditStore, sess.ID, auditTurn, originalInput, auditTurnDelta(allMessages, histLen))
@@ -336,7 +360,12 @@ func replCmd(args []string) error {
 		// The per-turn persist callback already saved the full history;
 		// reload and Save once more to persist the buffer and update the
 		// vector index for the completed turn.
-		sess, _ = store.Load(sess.ID)
+		updated, loadErr := store.Load(sess.ID)
+		if loadErr != nil {
+			release()
+			return fmt.Errorf("reload completed session: %w", loadErr)
+		}
+		sess = updated
 		if sess != nil {
 			if mm := agent.Memory(); mm != nil {
 				sess.Buffer = mm.GetBuffer()
@@ -345,6 +374,8 @@ func replCmd(args []string) error {
 				fmt.Fprintf(os.Stderr, "odek: save error: %v\n", err)
 			}
 		}
+
+		release()
 
 		// Follow-up suggestions after the turn (presentation-only, printed
 		// on stderr like the rest of the REPL's turn output; not persisted).

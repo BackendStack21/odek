@@ -25,6 +25,7 @@ type SessionManager struct {
 	Mu              sync.RWMutex
 	BaseDir         string
 	SessionTTL      time.Duration
+	saveLocks       sync.Map // per-chat save serialization, independent of the cache mutex
 	clarifyChannels sync.Map // map[int64]chan string — per-chat clarify response channels
 
 	// archived marks chats whose session was archived by /new while a
@@ -38,6 +39,8 @@ type SessionManager struct {
 
 // ChatSession represents a single Telegram chat's agent conversation.
 type ChatSession struct {
+	// stored retains the backing revision and metadata for conflict-safe saves.
+	stored     *session.Session
 	ChatID     int64
 	SessionID  string
 	Messages   []session.Message
@@ -127,101 +130,77 @@ func (sm *SessionManager) GetOrCreate(chatID int64) (*ChatSession, error) {
 // and the backing session.Store. It updates LastActive, increments
 // TurnCount, and writes a full session.Session to the store.
 func (sm *SessionManager) Save(chatID int64, messages []session.Message) error {
-	sm.Mu.Lock()
-	cs, ok := sm.Cache[chatID]
-	if ok {
-		// Copy-on-write: create a new ChatSession so existing pointers
-		// held by Load() callers are not mutated, avoiding data races.
-		updated := *cs
-		updated.Messages = messages
-		updated.LastActive = time.Now()
-		updated.TurnCount++
-		cs = &updated
-		sm.Cache[chatID] = cs
-	} else {
-		cs = &ChatSession{
-			ChatID:     chatID,
-			SessionID:  fmt.Sprintf("tg-%d", chatID),
-			Messages:   messages,
-			LastActive: time.Now(),
-			TurnCount:  1,
-		}
-		sm.Cache[chatID] = cs
-	}
-	// Snapshot fields needed after unlock to avoid data race:
-	sessionID := cs.SessionID
-	createdAt := cs.CreatedAt
-	turnCount := cs.TurnCount
-	sm.Mu.Unlock()
-
-	sess := &session.Session{
-		ID:        sessionID,
-		CreatedAt: createdAt,
-		UpdatedAt: time.Now(),
-		Model:     "",
-		Turns:     turnCount,
-		Task:      fmt.Sprintf("tg-%d", chatID),
-		Messages:  messages,
-	}
-
-	return sm.Store.Save(sess)
+	return sm.save(chatID, messages, false, false)
 }
 
-// SaveNoIndex mirrors Save but persists through Store.SaveNoIndex, skipping
-// the vector-index update. Embedding can be a remote HTTP call and must not
-// fire every loop iteration — this is used by the per-turn persist callback
-// for crash/interrupt-safe resume. The semantic index is still updated once
-// per completed turn by the final Save. Unlike Save it does NOT increment
-// TurnCount: it checkpoints mid-turn progress, and TurnCount is
-// user-visible in /sessions — only a completed turn may advance it.
+// SaveNoIndex checkpoints completed steps without remote vector indexing or
+// incrementing the chat's completed-turn counter.
 func (sm *SessionManager) SaveNoIndex(chatID int64, messages []session.Message) error {
-	sm.Mu.Lock()
-	cs, ok := sm.Cache[chatID]
-	if ok {
-		// Copy-on-write: create a new ChatSession so existing pointers
-		// held by Load() callers are not mutated, avoiding data races.
-		updated := *cs
-		updated.Messages = messages
-		updated.LastActive = time.Now()
-		cs = &updated
-		sm.Cache[chatID] = cs
+	return sm.save(chatID, messages, true, true)
+}
+
+// SaveCheckpoint persists an indexed checkpoint without counting a completed
+// turn. The prompt is searchable during the run; per-step saves use SaveNoIndex.
+func (sm *SessionManager) SaveCheckpoint(chatID int64, messages []session.Message) error {
+	return sm.save(chatID, messages, true, false)
+}
+
+func (sm *SessionManager) save(chatID int64, messages []session.Message, checkpoint, skipIndex bool) error {
+	lock, _ := sm.saveLocks.LoadOrStore(chatID, new(sync.Mutex))
+	mu := lock.(*sync.Mutex)
+	mu.Lock()
+	defer mu.Unlock()
+	sm.Mu.RLock()
+	cs := sm.Cache[chatID]
+	archived := sm.archived[chatID]
+	sm.Mu.RUnlock()
+	original := cs
+	if cs == nil && checkpoint && archived {
+		return nil
+	}
+	if cs == nil {
+		cs = &ChatSession{ChatID: chatID, SessionID: fmt.Sprintf("tg-%d", chatID)}
+		// A cold cache must not construct an unversioned replacement of an
+		// existing transcript. Load once; CAS protects the following write.
+		stored, err := sm.Store.Load(cs.SessionID)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		cs.stored = stored
+		if stored != nil {
+			cs.CreatedAt, cs.TurnCount = stored.CreatedAt, stored.Turns
+		}
+	}
+	updated := *cs
+	updated.Messages = session.CloneMessages(messages)
+	updated.LastActive = time.Now()
+	if !checkpoint {
+		updated.TurnCount++
+	}
+	stored := &session.Session{ID: updated.SessionID, CreatedAt: updated.CreatedAt, Task: fmt.Sprintf("tg-%d", chatID)}
+	if cs.stored != nil {
+		copy := *cs.stored
+		stored = &copy
+	}
+	stored.Messages = session.CloneMessages(messages)
+	stored.UpdatedAt = updated.LastActive
+	stored.Turns = updated.TurnCount
+	var err error
+	if skipIndex {
+		err = sm.Store.SaveNoIndex(stored)
 	} else {
-		// A cache miss alone is legitimate (e.g. a cold-start persist —
-		// pinned by TestSessionManager_SaveNoIndex): create the entry and
-		// checkpoint. But when the chat was ARCHIVED (/new) out from under
-		// a still-running turn, the write would resurrect the archived
-		// session under the old "tg-<chatID>" ID — "starting fresh"
-		// silently resumed the old conversation. Skip the write for
-		// archived chats; GetOrCreate clears the marker on the next turn.
-		if sm.archived[chatID] {
-			sm.Mu.Unlock()
-			return nil
-		}
-		cs = &ChatSession{
-			ChatID:     chatID,
-			SessionID:  fmt.Sprintf("tg-%d", chatID),
-			Messages:   messages,
-			LastActive: time.Now(),
-		}
-		sm.Cache[chatID] = cs
+		err = sm.Store.Save(stored)
 	}
-	// Snapshot fields needed after unlock to avoid data race:
-	sessionID := cs.SessionID
-	createdAt := cs.CreatedAt
-	turnCount := cs.TurnCount
+	if err != nil {
+		return err
+	}
+	updated.stored = stored
+	sm.Mu.Lock()
+	if sm.Cache[chatID] == original {
+		sm.Cache[chatID] = &updated
+	}
 	sm.Mu.Unlock()
-
-	sess := &session.Session{
-		ID:        sessionID,
-		CreatedAt: createdAt,
-		UpdatedAt: time.Now(),
-		Model:     "",
-		Turns:     turnCount,
-		Task:      fmt.Sprintf("tg-%d", chatID),
-		Messages:  messages,
-	}
-
-	return sm.Store.SaveNoIndex(sess)
+	return nil
 }
 
 // Load retrieves a ChatSession from the cache first, then from the
@@ -250,6 +229,7 @@ func (sm *SessionManager) Load(chatID int64) (*ChatSession, error) {
 	}
 
 	cs = &ChatSession{
+		stored:     sess,
 		ChatID:     chatID,
 		SessionID:  sess.ID,
 		Messages:   sess.Messages,
@@ -309,6 +289,11 @@ func (sm *SessionManager) ArchiveAndDelete(chatID int64) error {
 			Turns:     cs.TurnCount,
 			Task:      fmt.Sprintf("tg-%d", chatID),
 			Messages:  cs.Messages,
+		}
+		if cs.stored != nil {
+			copy := *cs.stored
+			copy.Messages = session.CloneMessages(cs.Messages)
+			sess = &copy
 		}
 		if err := sm.Store.Save(sess); err != nil {
 			return fmt.Errorf("archive: persist before archive: %w", err)

@@ -13,6 +13,10 @@ import (
 // The SDK's Message is used only at the HTTP call boundary
 // (internal/llmclient). Do not persist SDK types — they have no json tags.
 type Message struct {
+	// ID and TurnID identify durable records independently of model-context
+	// offsets. They are persistence metadata and are not sent to providers.
+	ID     string `json:"id,omitempty"`
+	TurnID string `json:"turn_id,omitempty"`
 	// ToolOutcome is execution metadata; it is never sent to the model.
 	ToolOutcome       string        `json:"tool_outcome,omitempty"`
 	Role              string        `json:"role"`

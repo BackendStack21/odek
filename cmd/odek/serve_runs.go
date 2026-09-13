@@ -868,6 +868,12 @@ func startServeRun(
 	serveRunsWG.Add(1)
 	go func() {
 		defer serveRunsWG.Done()
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				run.finish("failed", "run failed: internal error")
+				serveLogf("run panic contained run_id=%s", run.ID)
+			}
+		}()
 		defer cleanup()
 		var sessionIn, sessionOut int
 		serveLogf("run_started run_id=%s", run.ID)

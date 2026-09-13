@@ -53,7 +53,7 @@ func startTestServer(t *testing.T) *testServer {
 		t.Fatalf("listen: %v", err)
 	}
 
-	store, err := session.NewStore()
+	store, err := session.NewStoreWithDir(t.TempDir())
 	if err != nil {
 		t.Fatalf("session store: %v", err)
 	}

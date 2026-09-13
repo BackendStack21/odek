@@ -1438,6 +1438,23 @@ func handleChatMessage(
 	handler.SetApprover(chatID, approver)
 	defer handler.DeleteApprover(chatID)
 
+	leaseCtx, leaseCancel := context.WithCancel(context.Background())
+	chatCancels.Store(chatID, leaseCancel)
+	defer chatCancels.LoadAndDelete(chatID)
+	defer leaseCancel()
+	release, err := sessionManager.Store.AcquireExecution(leaseCtx, fmt.Sprintf("tg-%d", chatID))
+	if err != nil {
+		chatCancels.LoadAndDelete(chatID)
+		reportError(bot, chatID, messageID, "Session wait cancelled: "+err.Error())
+		return
+	}
+	defer release()
+	// Refresh cached history only after owning execution, including turns
+	// committed by serve or another process while this chat was waiting.
+	sessionManager.Mu.Lock()
+	delete(sessionManager.Cache, chatID)
+	sessionManager.Mu.Unlock()
+
 	// Get or create the session for this chat.
 	cs, err := sessionManager.GetOrCreate(chatID)
 	if err != nil {
@@ -1461,22 +1478,15 @@ func handleChatMessage(
 	cs.Messages = append(cs.Messages, session.Message{Role: "user", Content: text})
 	cs.LastActive = time.Now()
 
-	// Persist the user message immediately so session_search can find it
-	// inside the agent loop. Without this, the current turn is only in
-	// memory and invisible to both vector search and deepSearch.
-	// Build a session.Snapshot directly to avoid incrementing TurnCount
-	// (that happens once at the end in the normal Save path).
-	sess := &session.Session{
-		ID:        cs.SessionID,
-		CreatedAt: cs.CreatedAt,
-		UpdatedAt: time.Now(),
-		Model:     "",
-		Turns:     cs.TurnCount,
-		Task:      fmt.Sprintf("tg-%d", chatID),
-		Messages:  cs.Messages,
+	// Persist the prompt through the revision-aware manager before execution.
+	if err := sessionManager.SaveCheckpoint(chatID, cs.Messages); err != nil {
+		reportError(bot, chatID, messageID, "Failed to preserve prompt: "+err.Error())
+		return
 	}
-	if err := sessionManager.Store.Save(sess); err != nil {
-		log.Error("save session before agent run", "chat_id", chatID, "error", err)
+	sess, err := sessionManager.Store.Load(cs.SessionID)
+	if err != nil {
+		reportError(bot, chatID, messageID, "Failed to load session: "+err.Error())
+		return
 	}
 
 	// Build the agent with Telegram approver.
@@ -2016,10 +2026,10 @@ func handleChatMessage(
 		agentCancel context.CancelFunc
 	)
 	if resolved.Telegram.AgentTimeout > 0 {
-		agentCtx, agentCancel = context.WithTimeout(context.Background(),
+		agentCtx, agentCancel = context.WithTimeout(leaseCtx,
 			time.Duration(resolved.Telegram.AgentTimeout)*time.Second)
 	} else {
-		agentCtx, agentCancel = context.WithCancel(context.Background())
+		agentCtx, agentCancel = context.WithCancel(leaseCtx)
 	}
 	agentCtx = withAuditRecorder(agentCtx, auditStore, cs.SessionID, auditTurn)
 	agentCtx = withReadLedger(agentCtx, cs.SessionID)
@@ -2035,22 +2045,24 @@ func handleChatMessage(
 	// in-progress turn. Uses SaveNoIndex: embedding can be a remote HTTP call
 	// and must not fire every loop iteration — the final Save below still
 	// updates the vector index once per completed turn.
-	persistedLen := len(cs.Messages)
+	var checkpointErr error
 	agent.SetMessagesPersistCallback(func(snapshot []session.Message) {
-		trimmed := dropDanglingToolCalls(snapshot)
-		if len(trimmed) < persistedLen {
-			// The loop trimmed history in place — keep the richer state
-			// already persisted instead of overwriting it.
+		if checkpointErr != nil {
 			return
 		}
+		trimmed := dropDanglingToolCalls(snapshot)
 		if err := sessionManager.SaveNoIndex(chatID, trimmed); err != nil {
+			checkpointErr = fmt.Errorf("persist Telegram checkpoint: %w", err)
+			agentCancel()
 			log.Error("per-turn session persist", "chat_id", chatID, "error", err)
 		}
-		persistedLen = len(trimmed)
 	})
 
 	// Run the agent with the full message history (multi-turn).
 	response, updatedMessages, err := agent.RunWithMessages(agentCtx, cs.Messages)
+	if checkpointErr != nil {
+		err = checkpointErr
+	}
 	recordTurnAudit(auditStore, cs.SessionID, auditTurn, auditUserText, auditTurnDelta(updatedMessages, auditHistLen))
 	if err != nil {
 		// Clean up any tool trace messages on error.
@@ -2065,7 +2077,7 @@ func handleChatMessage(
 			// or context updates made before cancellation.
 			cs.LastActive = time.Now()
 			if len(updatedMessages) > 0 {
-				cs.Messages = updatedMessages
+				cs.Messages = dropDanglingToolCalls(updatedMessages)
 			}
 			if saveErr := sessionManager.Save(chatID, cs.Messages); saveErr != nil {
 				log.Error("save session after cancel", "chat_id", chatID, "error", saveErr)
@@ -2106,7 +2118,8 @@ func handleChatMessage(
 	cs.Messages = updatedMessages
 	cs.TurnCount++
 	if err := sessionManager.Save(chatID, cs.Messages); err != nil {
-		fmt.Fprintf(os.Stderr, "odek telegram: session save: %v\n", err)
+		reportError(bot, chatID, messageID, "Failed to save completed turn: "+err.Error())
+		return
 	}
 
 	// Send the response, then append compact stats as a separate message.
@@ -2229,7 +2242,7 @@ func friendlyRunError(err error) string {
 		return msg
 	}
 	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, os.ErrDeadlineExceeded) {
-		return "Agent error: the model request timed out. Your session is intact and any completed work is saved. "+
+		return "Agent error: the model request timed out. Your session is intact and any completed work is saved. " +
 			"Resend your message to try again; if this keeps happening, check the provider status or raise the timeout in config."
 	}
 	return "Agent error: " + err.Error()
