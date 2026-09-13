@@ -367,7 +367,7 @@ Risk classes and their built-in default actions:
 | `persistence` | `prompt` | Deferred-execution writes: shell profiles, git hooks, CI workflows, cron, systemd/launchd, package lifecycle scripts |
 | `unread_exec` | `prompt` | Executing a script whose contents were not read in the session |
 | `destructive` | `deny` | Irreversible operations (recursive deletes, force-pushes, data-loss verbs) |
-| `network_egress` | `prompt` | Outbound network operations (`curl`, `wget`, package fetches) |
+| `network_egress` | `allow` | Outbound network operations (`curl`, `wget`, package fetches). Allowed by default for a friction-free start; set `"prompt"` to gate every egress |
 | `code_execution` | `prompt` | Arbitrary code execution paths |
 | `install` | `prompt` | Package/tool installation |
 | `blocked` | `deny` | Hard-coded malicious patterns |
@@ -982,7 +982,7 @@ engine. Every field has an `ODEK_SCHEDULES_*` environment override.
 
 ### Schedule-specific dangerous policy
 
-Scheduled jobs run unattended, so by default the scheduler denies any class that would require an approval prompt (`network_egress`, `system_write`, `code_execution`, `install`, `unknown`, `persistence`, `unread_exec`). You can override this for cron jobs without widening the policy for interactive CLI/REPL/WebUI use.
+Scheduled jobs run unattended, so by default the scheduler denies any class that would require an approval prompt (`system_write`, `code_execution`, `install`, `unknown`, `persistence`, `unread_exec`). Note: since `network_egress` now defaults to `allow` globally, scheduled jobs also egress unprompted — unattended egress from a cron context is a higher-risk surface, so gate it explicitly via `schedules.dangerous.classes: {"network_egress": "deny"}` (or set it back to `prompt` globally) if that matters to you. You can override the scheduler policy without widening the policy for interactive CLI/REPL/WebUI use.
 
 ```json
 {

@@ -563,8 +563,8 @@ func TestClassify_ConfigDefaults(t *testing.T) {
 	if got := cfg.ActionFor(Destructive); got != Deny {
 		t.Errorf("ActionFor(destructive) = %s, want deny", got)
 	}
-	if got := cfg.ActionFor(NetworkEgress); got != Prompt {
-		t.Errorf("ActionFor(network_egress) = %s, want prompt", got)
+	if got := cfg.ActionFor(NetworkEgress); got != Allow {
+		t.Errorf("ActionFor(network_egress) = %s, want allow (new-user default: egress proceeds unprompted; operators can set prompt)", got)
 	}
 	if got := cfg.ActionFor(CodeExecution); got != Prompt {
 		t.Errorf("ActionFor(code_execution) = %s, want prompt", got)
@@ -622,7 +622,8 @@ func TestClassify_Config_Allowlist(t *testing.T) {
 	}{
 		{"git push origin main", Allow},
 		{"npm run deploy", Allow},
-		{"git push origin feature", Prompt}, // not in allowlist
+		{"git push origin feature", Allow},  // egress default (not in allowlist, egress allows)
+		{"sudo tee /etc/hosts x", Prompt},   // not in allowlist, system_write prompts
 		{"rm -rf /", Deny},                  // default for destructive
 	}
 	for _, tt := range tests {
