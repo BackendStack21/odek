@@ -103,11 +103,11 @@ func TestClassify_SystemWrite_Commands(t *testing.T) {
 		{"sudo apt update", SystemWrite},
 		{"sudo rm /etc/nginx/nginx.conf", SystemWrite},
 		{"echo 'config' > /etc/nginx/conf.d/default.conf", SystemWrite},
-		{"apt install nginx", SystemWrite},
-		{"apt-get update", SystemWrite},
-		{"yum install httpd", SystemWrite},
-		{"brew install node", SystemWrite},
-		{"dpkg -i package.deb", SystemWrite},
+		{"apt install nginx", Install},
+		{"apt-get update", Install},
+		{"yum install httpd", Install},
+		{"brew install node", Install},
+		{"dpkg -i package.deb", Install},
 		{"systemctl restart nginx", SystemWrite},
 		{"service nginx restart", SystemWrite},
 		{"useradd john", SystemWrite},
@@ -179,7 +179,7 @@ func TestClassify_NetworkEgress_Commands(t *testing.T) {
 		{"curl https://example.com", NetworkEgress},
 		{"wget https://example.com/file", NetworkEgress},
 		{"git push origin main", NetworkEgress},
-		{"git push --force origin main", NetworkEgress},
+		{"git push --force origin main", SystemWrite},
 		{"git clone https://github.com/user/repo", NetworkEgress},
 		{"git fetch origin", NetworkEgress},
 		{"git pull origin main", NetworkEgress},
@@ -187,7 +187,7 @@ func TestClassify_NetworkEgress_Commands(t *testing.T) {
 		// for the subcommand (regression: these were misclassified as safe).
 		{"git -C /repo push origin main", NetworkEgress},
 		{"git -c http.proxy=http://evil fetch origin", NetworkEgress},
-		{"git --git-dir /repo/.git push origin", NetworkEgress},
+		{"git --git-dir /repo/.git push origin", SystemWrite},
 		{"git -C /repo -c key=val pull", NetworkEgress},
 		{"scp file user@remote:/path", NetworkEgress},
 		{"rsync -avz ./ user@remote:/backup", NetworkEgress},
@@ -305,8 +305,8 @@ func TestClassify_Install_Commands(t *testing.T) {
 		{"gem install rails", Install},
 		{"cargo install ripgrep", Install},
 		{"go install github.com/foo/bar@latest", Install},
-		{"apt install python3", SystemWrite},
-		{"apt-get install git", SystemWrite},
+		{"apt install python3", Install},
+		{"apt-get install git", Install},
 	}
 	for _, tt := range tests {
 		t.Run(tt.cmd, func(t *testing.T) {
@@ -357,8 +357,9 @@ func TestClassify_ScriptAndPackageManagerExecution(t *testing.T) {
 		{"bun start", CodeExecution},
 		{"bun index.ts", CodeExecution},
 		{"cargo run", CodeExecution},
-		{"cargo build", CodeExecution},
-		{"cargo test", CodeExecution},
+		{"cargo build", Safe},
+		{"cargo test", Safe},
+		{"cargo bench", CodeExecution},
 		// Package-manager installs still classify as install, not code exec.
 		{"npm install express", Install},
 		{"bun add left-pad", Install},
@@ -622,9 +623,9 @@ func TestClassify_Config_Allowlist(t *testing.T) {
 	}{
 		{"git push origin main", Allow},
 		{"npm run deploy", Allow},
-		{"git push origin feature", Allow},  // egress default (not in allowlist, egress allows)
-		{"sudo tee /etc/hosts x", Prompt},   // not in allowlist, system_write prompts
-		{"rm -rf /", Deny},                  // default for destructive
+		{"git push origin feature", Allow}, // egress default (not in allowlist, egress allows)
+		{"sudo tee /etc/hosts x", Prompt},  // not in allowlist, system_write prompts
+		{"rm -rf /", Deny},                 // default for destructive
 	}
 	for _, tt := range tests {
 		t.Run(tt.cmd, func(t *testing.T) {

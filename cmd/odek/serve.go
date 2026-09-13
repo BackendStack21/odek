@@ -1550,7 +1550,7 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 					writeWSError(conn, "session not found")
 					continue
 				}
-				if _, ok := validateSessionToken(store, sess, msg.AuthToken); !ok {
+				if !validateSessionTokenStrict(store, sess, msg.AuthToken) {
 					writeWSError(conn, "invalid session token")
 					continue
 				}
@@ -1687,7 +1687,7 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 				writeWSError(conn, "session not found")
 				continue
 			}
-			if _, ok := validateSessionToken(store, sess, msg.AuthToken); !ok {
+			if !validateSessionTokenStrict(store, sess, msg.AuthToken) {
 				writeWSError(conn, "invalid session token")
 				continue
 			}
@@ -2131,7 +2131,7 @@ func handlePrompt(
 			if persistErr != nil {
 				return
 			}
-			sess.Messages = filterPersistSnapshot(head, snapshot)
+			sess.Messages = dropDanglingToolCalls(filterPersistSnapshot(head, snapshot))
 			if err := store.SaveNoIndex(sess); err != nil {
 				persistErr = fmt.Errorf("failed to persist session: %w", err)
 				cancelRun()

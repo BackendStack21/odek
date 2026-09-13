@@ -2,6 +2,7 @@ package danger
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -111,6 +112,9 @@ type TTYApprover struct {
 	mu              sync.Mutex
 	TTYPath         string // overridden in tests
 	trustAll        bool   // when true, all PromptCommand calls auto-approve
+	// Ctx, when set, cancels a blocked TTY read (Ctrl-C / turn cancel).
+	// A nil Ctx waits indefinitely, matching the historical prompt.
+	Ctx context.Context
 
 	// Approval-fatigue mitigation. After FrictionThreshold approvals of
 	// the same class within FrictionWindow, the next prompt requires
@@ -320,9 +324,11 @@ func (a *TTYApprover) promptLocked(cls RiskClass, cmd, description string) error
 		fmt.Fprintf(os.Stderr, "\n   [A]pprove  [D]eny  (trust-session disabled for %s): ", cls)
 	}
 
-	// Read a single line of input from the TTY
+	// Read a single line of input from the TTY. A cancelled context
+	// closes the TTY so ReadString cannot wedge the process after
+	// Ctrl-C or turn cancel.
 	reader := bufio.NewReader(tty)
-	line, err := reader.ReadString('\n')
+	line, err := a.readTTYLine(tty, reader)
 	if err != nil {
 		return fmt.Errorf("approval prompt error: %w", err)
 	}
@@ -367,6 +373,42 @@ func (a *TTYApprover) promptLocked(cls RiskClass, cmd, description string) error
 		return a.promptLocked(cls, cmd, description)
 	default:
 		return fmt.Errorf("operation denied by user: %s", cmd)
+	}
+}
+
+func (a *TTYApprover) promptContext() context.Context {
+	if a != nil && a.Ctx != nil {
+		return a.Ctx
+	}
+	return context.Background()
+}
+
+func (a *TTYApprover) readTTYLine(tty *os.File, reader *bufio.Reader) (string, error) {
+	ctx := a.promptContext()
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	type lineResult struct {
+		line string
+		err  error
+	}
+	ch := make(chan lineResult, 1)
+	go func() {
+		line, err := reader.ReadString('\n')
+		ch <- lineResult{line, err}
+	}()
+	select {
+	case <-ctx.Done():
+		// Unblock the reader if the fd supports it; do not wait for
+		// ReadString — a fifo with another open writer may stay blocked.
+		_ = tty.SetReadDeadline(time.Now())
+		_ = tty.Close()
+		return "", ctx.Err()
+	case r := <-ch:
+		if r.err != nil && ctx.Err() != nil {
+			return "", ctx.Err()
+		}
+		return r.line, r.err
 	}
 }
 

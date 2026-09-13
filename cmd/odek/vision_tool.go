@@ -252,7 +252,7 @@ func (t *visionTool) Call(argsJSON string) (result string, err error) {
 
 	// Security: classify the file path
 	if err := t.dangerousConfig.CheckOperation(danger.ToolOperation{
-		Name: "vision", Resource: args.Path, Risk: danger.ClassifyPath(args.Path),
+		Name: "vision", Resource: args.Path, Risk: classifyResolvedPath(args.Path),
 	}, nil); err != nil {
 		return jsonError(err.Error())
 	}

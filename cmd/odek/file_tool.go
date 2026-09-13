@@ -347,7 +347,7 @@ func (t *readFileTool) Call(argsJSON string) (string, error) {
 		return jsonError(fmt.Sprintf("cannot seek %q: %v", args.Path, err))
 	}
 
-	content, totalLines, receipt, err := readLinesWithReceipt(f, args.Offset, args.Limit)
+	content, totalLines, receipt, err := readLinesWithReceipt(io.LimitReader(f, maxFileReadBytes), args.Offset, args.Limit)
 	if err != nil {
 		return jsonError(fmt.Sprintf("cannot read %q: %v", args.Path, err))
 	}
@@ -642,7 +642,7 @@ func (t *searchFilesTool) Call(argsJSON string) (string, error) {
 	}
 
 	// Security: check search path
-	risk := danger.ClassifyPath(args.Path)
+	risk := classifyResolvedPath(args.Path)
 	if err := t.dangerousConfig.CheckOperation(danger.ToolOperation{
 		Name: "search_files", Resource: args.Path, Risk: risk,
 	}, nil); err != nil {
@@ -664,7 +664,7 @@ func (t *searchFilesTool) Call(argsJSON string) (string, error) {
 // discovered while searching $HOME), it returns skip=true so the walker does
 // not silently read sensitive files.
 func (t *searchFilesTool) checkSearchPath(path string) (skip bool, reason string) {
-	risk := danger.ClassifyPath(path)
+	risk := classifyResolvedPath(path)
 	if err := t.dangerousConfig.CheckOperation(danger.ToolOperation{
 		Name: "search_files", Resource: path, Risk: risk,
 	}, nil); err != nil {
@@ -955,12 +955,11 @@ func (t *patchTool) Call(argsJSON string) (string, error) {
 	origMode := info.Mode().Perm()
 
 	// Read content through the opened fd (not re-opening the path)
-	var sb strings.Builder
-	_, err = io.Copy(&sb, f)
+	originalBytes, err := readCapped(f, maxFileReadBytes)
 	if err != nil {
 		return jsonError(fmt.Sprintf("cannot read %q: %v", args.Path, err))
 	}
-	original := sb.String()
+	original := string(originalBytes)
 
 	// Check that old_string exists
 	if !strings.Contains(original, args.OldString) {
@@ -1109,16 +1108,30 @@ func readLinesWithCount(f *os.File, offset, limit int) (string, int, error) {
 	return content, lines, err
 }
 
+// readCapped copies at most max bytes from r. A file that grows past the
+// cap after Stat is still rejected — the limit is enforced on the read,
+// not the earlier size snapshot.
+func readCapped(r io.Reader, max int64) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(r, max+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > max {
+		return nil, fmt.Errorf("file too large (%d bytes, max %d)", len(data), max)
+	}
+	return data, nil
+}
+
 type fileReadReceipt struct {
 	complete bool
 	size     int64
 	digest   [32]byte
 }
 
-func readLinesWithReceipt(f *os.File, offset, limit int) (string, int, fileReadReceipt, error) {
+func readLinesWithReceipt(r io.Reader, offset, limit int) (string, int, fileReadReceipt, error) {
 	var out strings.Builder
 	digest := sha256.New()
-	count := &countingReader{reader: io.TeeReader(f, digest)}
+	count := &countingReader{reader: io.TeeReader(r, digest)}
 	scanner := bufio.NewScanner(count)
 	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
 	lineNum := 0
@@ -1597,7 +1610,7 @@ func (t *batchReadTool) readSingle(arg batchReadFileArg) batchReadFileResult {
 		return batchReadFileResult{Path: arg.Path, Error: fmt.Sprintf("cannot seek %q: %v", arg.Path, err)}
 	}
 
-	content, totalLines, receipt, err := readLinesWithReceipt(f, arg.Offset, arg.Limit)
+	content, totalLines, receipt, err := readLinesWithReceipt(io.LimitReader(f, maxFileReadBytes), arg.Offset, arg.Limit)
 	if err != nil {
 		return batchReadFileResult{Path: arg.Path, Error: fmt.Sprintf("cannot read %q: %v", arg.Path, err)}
 	}
@@ -1711,8 +1724,9 @@ func (t *globTool) Call(argsJSON string) (result string, err error) {
 		args.Path = confined
 	}
 
-	// Security: classify search root path
-	risk := danger.ClassifyPath(args.Path)
+	// Security: classify search root path after resolving directory
+	// symlinks so a workspace link into ~/.ssh is not auto-allowed.
+	risk := classifyResolvedPath(args.Path)
 	if err := t.dangerousConfig.CheckOperation(danger.ToolOperation{
 		Name: "glob", Resource: args.Path, Risk: risk,
 	}, nil); err != nil {

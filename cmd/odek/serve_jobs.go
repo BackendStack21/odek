@@ -164,9 +164,13 @@ func newServeBGRuntime(mgr *bgproc.Manager, notify bool) *bgRuntime {
 // loop (WS) or the run goroutine (headless), which are also the only
 // goroutines that invoke the tools and the notice provider.
 func bindBGRuntime(rt *bgRuntime, sessionID string) {
-	if rt != nil && sessionID != "" {
-		rt.session = sessionID
+	if rt == nil || sessionID == "" {
+		return
 	}
+	if rt.session != "" && rt.session != sessionID && rt.mgr != nil {
+		rt.mgr.StopAll(rt.session)
+	}
+	rt.session = sessionID
 }
 
 // ── REST surface ─────────────────────────────────────────────────────────

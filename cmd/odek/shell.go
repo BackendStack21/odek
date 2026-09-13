@@ -181,7 +181,7 @@ func (t *shellTool) Call(args string) (string, error) {
 	if err := json.Unmarshal([]byte(args), &input); err != nil {
 		return "", fmt.Errorf("shell: parse args: %w", err)
 	}
-	if input.Command == "" {
+	if strings.TrimSpace(input.Command) == "" {
 		return "", fmt.Errorf("shell: empty command")
 	}
 
@@ -364,6 +364,7 @@ func (t *shellTool) promptUser(cmd, description string) error {
 	approver := t.approver
 	if approver == nil {
 		ttyApprover := danger.NewTTYApprover(&t.dangerousConfig)
+		ttyApprover.Ctx = t.toolCtx()
 		if t.trustedClasses != nil {
 			ttyApprover.SetTrustedClasses(t.trustedClasses)
 		}
