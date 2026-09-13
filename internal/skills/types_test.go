@@ -46,4 +46,3 @@ func TestValidateSkillName_Valid(t *testing.T) {
 		t.Errorf("unexpected error for valid name: %v", err)
 	}
 }
-

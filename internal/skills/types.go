@@ -91,11 +91,11 @@ type SkillProvenance struct {
 
 // SkillsConfig holds the skills section of odek.json.
 type SkillsConfig struct {
-	MaxAutoLoad  int      `json:"max_auto_load"`
-	MaxLazySlots int      `json:"max_lazy_slots"`
-	Dirs         []string `json:"dirs,omitempty"`
+	MaxAutoLoad  int          `json:"max_auto_load"`
+	MaxLazySlots int          `json:"max_lazy_slots"`
+	Dirs         []string     `json:"dirs,omitempty"`
 	Import       ImportConfig `json:"import"`
-	Verbose      bool     `json:"verbose"` // show full skill banners when loaded
+	Verbose      bool         `json:"verbose"` // show full skill banners when loaded
 
 	// Embedding opts skill matching into a remote (HTTP) embedding backend for
 	// real semantic matching. nil (default) = local RandomProjections. It is

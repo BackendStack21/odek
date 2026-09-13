@@ -8,7 +8,7 @@ import (
 func TestNew_Default(t *testing.T) {
 	g, err := New(nil)
 	if err != nil {
-		 t.Fatalf("New(nil) error: %v", err)
+		t.Fatalf("New(nil) error: %v", err)
 	}
 	if g == nil {
 		t.Fatal("expected non-nil guard")

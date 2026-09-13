@@ -46,10 +46,10 @@ func TestSecretsEnv_DotenvConveniences(t *testing.T) {
 	}, "\n"))
 
 	cases := map[string]string{
-		"SE_DOT_PLAIN":   "plainval",      // export prefix stripped
-		"SE_DOT_QUOTED":  "quoted val",    // double quotes stripped
-		"SE_DOT_SINGLE":  "single val",    // single quotes stripped
-		"SE_DOT_COMMENT": "value",         // whitespace-preceded comment stripped
+		"SE_DOT_PLAIN":   "plainval",                    // export prefix stripped
+		"SE_DOT_QUOTED":  "quoted val",                  // double quotes stripped
+		"SE_DOT_SINGLE":  "single val",                  // single quotes stripped
+		"SE_DOT_COMMENT": "value",                       // whitespace-preceded comment stripped
 		"SE_DOT_HASHURL": "https://example.com/pw#frag", // embedded # kept
 	}
 	for k, want := range cases {

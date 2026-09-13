@@ -31,10 +31,10 @@ func TestClampRetentionHours(t *testing.T) {
 	cases := []struct {
 		in, want int
 	}{
-		{0, 0},                       // keep forever
-		{-1, 0},                      // negative → 0 (never future cutoff)
-		{-1 << 30, 0},                // deep negative
-		{24, 24},                     // in-range passthrough
+		{0, 0},        // keep forever
+		{-1, 0},       // negative → 0 (never future cutoff)
+		{-1 << 30, 0}, // deep negative
+		{24, 24},      // in-range passthrough
 		{MaxRetentionDays, MaxRetentionDays},
 		{MaxRetentionDays + 1, MaxRetentionDays}, // overflow-class cap
 	}

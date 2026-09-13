@@ -3,7 +3,7 @@
 // Lock opens or creates a lock file and acquires an exclusive lock on it.
 // The returned release function must be called to unlock and close the file.
 //
-// Advisory semantics
+// # Advisory semantics
 //
 // The lock is advisory: it only serializes callers that also use this package
 // (or otherwise cooperate on the same lock file). A non-cooperating process

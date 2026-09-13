@@ -418,4 +418,3 @@ func TestSweepMediaInfoError(t *testing.T) {
 		t.Errorf("freed = %d, want 0 (unreadable entries are skipped)", freed)
 	}
 }
-
