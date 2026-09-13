@@ -1,5 +1,20 @@
 # Migrating to odek v2
 
+## Removed tools (v2.13+)
+
+The `tr`, `sort`, `count_lines`, and `word_count` tools were removed as
+shell-duplicate conveniences (see the token-efficiency change). Replacements:
+
+- `tr` → `batch_patch` for file edits, or in-model transforms for inline text
+- `sort` → `shell` (`sort` command)
+- `count_lines` / `word_count` → `file_info` (size), `read_file` (total_lines),
+  or `shell` (`wc`)
+
+Old sessions that contain calls to these tools still render and replay
+correctly; internal taint classification retains the removed names on purpose.
+
+## LLM client (v2.0.0)
+
 v2.0.0 replaces the local OpenAI-compatible HTTP client (`internal/llm`) with
 [`github.com/BackendStack21/go-llm-sdk`](https://github.com/BackendStack21/go-llm-sdk).
 LLM identity is now **provider id + model**, not a free-floating `base_url`.
