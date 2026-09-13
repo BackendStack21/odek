@@ -29,7 +29,7 @@ func TestClient_ConcurrentCallsNoResponseLoss(t *testing.T) {
 		stdout:    bufio.NewReader(clientRead),
 		pending:   make(map[int]chan callResponse),
 		done:      make(chan struct{}),
-		writeCh:   make(chan []byte, 32),
+		writeCh:   make(chan *queuedRequest, 32),
 		writeDone: make(chan struct{}),
 		closed:    make(chan struct{}),
 	}

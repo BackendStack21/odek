@@ -154,8 +154,8 @@ func TestWebSearch_MaxResultsTruncation(t *testing.T) {
 func TestWebSearch_EmptyQuery(t *testing.T) {
 	tool := newWebSearchTool(allowAllDanger(), config.WebSearchConfig{BaseURL: "http://unused"})
 	raw, err := tool.Call(`{"query":"   "}`)
-	if err != nil {
-		t.Fatalf("Call error: %v", err)
+	if err == nil {
+		t.Fatal("expected typed operation failure alongside result")
 	}
 	if !strings.Contains(raw, "query is required") {
 		t.Errorf("expected 'query is required', got %q", raw)

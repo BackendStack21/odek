@@ -111,7 +111,6 @@ func TestIsBuiltinProviderID_MatchesSDKRegistry(t *testing.T) {
 // Dial of an unknown host registers the v1 "legacy" OpenAI-format provider
 // and overlays selected-provider key/URL — the same path as a custom gateway.
 
-
 func TestTemperatureForModel_OmitsUnsupportedGPT6Temperature(t *testing.T) {
 	for _, model := range []string{"gpt-6-astra", "openai/gpt-6-astra", "GPT-6-ASTRA"} {
 		if got := temperatureForModel(model, 0); got != 0 {

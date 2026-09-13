@@ -39,7 +39,7 @@ func newStuckPipeClient(timeout time.Duration) (*Client, func()) {
 		stdout:    bufio.NewReader(clientRead),
 		lineCh:    make(chan lineResult, 10),
 		done:      make(chan struct{}),
-		writeCh:   make(chan []byte, 2),
+		writeCh:   make(chan *queuedRequest, 2),
 		writeDone: make(chan struct{}),
 		closed:    make(chan struct{}),
 		pending:   make(map[int]chan callResponse),

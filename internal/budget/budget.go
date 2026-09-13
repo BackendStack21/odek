@@ -165,10 +165,11 @@ func MicroToUSD(micro int64) float64 { return float64(micro) / 1e6 }
 // Checker is not safe for concurrent use; the loop engine consults it from
 // the single loop goroutine only.
 type Checker struct {
-	limits    Limits
-	start     time.Time
-	now       func() time.Time
-	toolCalls int64
+	limits                 Limits
+	start                  time.Time
+	now                    func() time.Time
+	toolCalls              int64
+	externalCostAdjustment float64
 }
 
 // NewChecker returns a Checker enforcing l, measuring runtime from start.
@@ -220,7 +221,7 @@ func (c *Checker) CheckRuntime() *Error {
 // uncached portion (see internal/llm applyUsage), so callers sum input +
 // cache through this entry point instead of CheckUsage.
 func (c *Checker) CheckUsageWithCache(inputTokens, cacheReadTokens, cacheCreationTokens, outputTokens int64) *Error {
-	return c.CheckUsage(inputTokens+cacheReadTokens+cacheCreationTokens, outputTokens)
+	return c.CheckUsage(AddCount(AddCount(inputTokens, cacheReadTokens), cacheCreationTokens), outputTokens)
 }
 
 func (c *Checker) CheckUsage(inputTokens, outputTokens int64) *Error {
@@ -234,7 +235,7 @@ func (c *Checker) CheckUsage(inputTokens, outputTokens int64) *Error {
 		return &Error{Limit: LimitOutputTokens, Observed: outputTokens, Maximum: max}
 	}
 	if c.limits.CostEnforcementActive() {
-		cost := c.limits.EstimatedCostUSD(inputTokens, outputTokens)
+		cost := c.Cost(inputTokens, outputTokens)
 		if cost >= c.limits.MaxCostUSD {
 			return &Error{Limit: LimitCostUSD, Observed: microUSD(cost), Maximum: microUSD(c.limits.MaxCostUSD)}
 		}
@@ -253,7 +254,7 @@ func (c *Checker) CheckToolBatch(n int) *Error {
 	if c == nil || c.limits.MaxToolCalls <= 0 {
 		return nil
 	}
-	wouldBe := c.toolCalls + int64(n)
+	wouldBe := AddCount(c.toolCalls, int64(n))
 	if wouldBe > c.limits.MaxToolCalls {
 		return &Error{Limit: LimitToolCalls, Observed: wouldBe, Maximum: c.limits.MaxToolCalls}
 	}
@@ -294,7 +295,7 @@ func (c *Checker) RemainingRuntime() (d time.Duration, limited bool) {
 // RecordToolCalls accounts n executed tool calls against the budget.
 func (c *Checker) RecordToolCalls(n int) {
 	if c != nil {
-		c.toolCalls += int64(n)
+		c.toolCalls = AddCount(c.toolCalls, int64(n))
 	}
 }
 
@@ -382,7 +383,7 @@ func (c *Checker) Snapshot(inputTokens, outputTokens int64) Snapshot {
 		}
 	}
 	if c.limits.CostEnforcementActive() {
-		cost := c.limits.EstimatedCostUSD(inputTokens, outputTokens)
+		cost := c.Cost(inputTokens, outputTokens)
 		if r := c.limits.MaxCostUSD - cost; r > 0 {
 			s.RemainingCostUSD = r
 		} else {

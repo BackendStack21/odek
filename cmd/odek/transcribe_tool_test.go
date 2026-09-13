@@ -29,8 +29,8 @@ func TestTranscribe_MissingBinary(t *testing.T) {
 
 	args := fmt.Sprintf(`{"path":"%s"}`, path)
 	result, err := tool.Call(args)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if err == nil {
+		t.Fatal("expected typed operation failure alongside result")
 	}
 
 	var r struct {
@@ -61,8 +61,8 @@ func TestTranscribe_MissingModel(t *testing.T) {
 
 	args := fmt.Sprintf(`{"path":"%s"}`, path)
 	result, err := tool.Call(args)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if err == nil {
+		t.Fatal("expected typed operation failure alongside result")
 	}
 
 	var r struct {
@@ -81,8 +81,8 @@ func TestTranscribe_FileNotFound(t *testing.T) {
 	tool := newTranscribeTool(danger.DangerousConfig{}, config.TranscriptionConfig{})
 	args := `{"path":"/nonexistent/audio.ogg"}`
 	result, err := tool.Call(args)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if err == nil {
+		t.Fatal("expected typed operation failure alongside result")
 	}
 
 	var r struct {
@@ -100,8 +100,8 @@ func TestTranscribe_FileNotFound(t *testing.T) {
 func TestTranscribe_EmptyPath(t *testing.T) {
 	tool := newTranscribeTool(danger.DangerousConfig{}, config.TranscriptionConfig{})
 	result, err := tool.Call(`{"path":""}`)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if err == nil {
+		t.Fatal("expected typed operation failure alongside result")
 	}
 	var r struct {
 		Error string `json:"error"`
@@ -141,8 +141,8 @@ func TestTranscribe_SymlinkRejected(t *testing.T) {
 	tool := newTranscribeTool(danger.DangerousConfig{}, config.TranscriptionConfig{})
 	args := fmt.Sprintf(`{"path":"%s"}`, link)
 	result, err := tool.Call(args)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if err == nil {
+		t.Fatal("expected typed operation failure alongside result")
 	}
 	var r struct {
 		Error string `json:"error"`

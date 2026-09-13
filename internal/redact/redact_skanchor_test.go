@@ -11,7 +11,7 @@ import (
 // event stream. A provider key must start at a word boundary.
 func TestRedactSecrets_SkPatternNotMidWord(t *testing.T) {
 	inputs := []string{
-		"task-notes-for-the-release-branch-are-ready-now",        // prose slug
+		"task-notes-for-the-release-branch-are-ready-now",         // prose slug
 		"the risk-assessment-workflow-uses-these-checklists-here", // prose
 		"see desk-level-planning-notes-and-assumptions-sections",  // another word ending in -sk
 	}

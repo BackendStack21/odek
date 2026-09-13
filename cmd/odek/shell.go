@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -192,6 +193,7 @@ func (t *shellTool) Call(args string) (string, error) {
 	}
 
 	// Check approval before executing
+	approvedRisk, _ := danger.ClassifyScriptGateCtx(t.toolCtx(), input.Command)
 	if err := t.checkApproval(input.Command, input.Description); err != nil {
 		return "", err
 	}
@@ -238,6 +240,9 @@ func (t *shellTool) Call(args string) (string, error) {
 	errW := &limitWriter{buf: &errBuf, limit: maxShellOutputBytes}
 	cmd.Stdout = outW
 	cmd.Stderr = errW
+	if err := revalidateShellRisk(t.toolCtx(), input.Command, approvedRisk); err != nil {
+		return "", err
+	}
 
 	err := cmd.Run()
 
@@ -259,15 +264,13 @@ func (t *shellTool) Call(args string) (string, error) {
 		return "", fmt.Errorf("shell: command cancelled: %s", input.Command)
 	}
 
-	output := strings.TrimSpace(outBuf.String())
+	output := outBuf.String()
 	stderrStr := strings.TrimSpace(errBuf.String())
 
-	// a successful read-only viewer run (cat/head/tail/…) marks its
-	// file operands as read for the session, so a later execution of the
-	// same script passes the unread-exec gate. Only success counts — a
-	// failed `cat env.sh` must never license executing env.sh.
-	if err == nil {
-		recordViewerReads(t.toolCtx(), input.Command)
+	// Only a complete, successful host cat can issue a delivery receipt.
+	// Partial viewers and failed commands cannot license unseen script bytes.
+	if err == nil && t.containerName == "" {
+		recordViewerReads(t.toolCtx(), input.Command, outBuf.String())
 	}
 
 	if stderrStr != "" {
@@ -285,7 +288,7 @@ func (t *shellTool) Call(args string) (string, error) {
 		// the failure explicitly — without this, a failing test/build run
 		// was indistinguishable from a passing one.
 		output += "\n[command failed: " + err.Error() + "]"
-		return wrapUntrusted(t.toolCtx(), "$ "+input.Command, output), nil
+		return wrapUntrusted(t.toolCtx(), "$ "+input.Command, output), fmt.Errorf("shell: %w", err)
 	}
 	if output == "" {
 		output = "(no output)"
@@ -308,7 +311,7 @@ func (t *shellTool) checkApproval(cmd, description string) error {
 	if _, targets := danger.ClassifyScriptGateCtx(t.toolCtx(), cmd); len(targets) > 0 {
 		unreadAction := t.dangerousConfig.ActionFor(danger.UnreadExec)
 		switch {
-		case unreadAction == danger.Deny:
+		case action == danger.Deny || unreadAction == danger.Deny:
 			action = danger.Deny
 		case action == danger.Allow && unreadAction == danger.Allow:
 			action = danger.Allow
@@ -334,8 +337,20 @@ func (t *shellTool) checkApproval(cmd, description string) error {
 	case danger.Prompt:
 		return t.promptUser(cmd, description)
 	default:
-		return nil
+		return fmt.Errorf("invalid policy action %q: command denied", action)
 	}
+}
+
+// Recheck immediately before dispatch: an approval may have waited while a
+// symlink target or a previously read script changed. A changed class needs
+// a new invocation/approval. Shell-side changes after dispatch require an OS
+// filesystem boundary and cannot be excluded by this snapshot check.
+func revalidateShellRisk(ctx context.Context, command string, approved danger.RiskClass) error {
+	current, _ := danger.ClassifyScriptGateCtx(ctx, command)
+	if current != approved {
+		return fmt.Errorf("command target risk changed from %s to %s before execution; retry for fresh approval", approved, current)
+	}
+	return nil
 }
 
 // promptUser classifies the command and asks the user to approve it.
@@ -415,47 +430,20 @@ func (t *shellTool) buildCmd(ctx context.Context, command string) (*exec.Cmd, fu
 // pid-marker file inside the container.
 var sandboxCmdSeq atomic.Uint64
 
-// readViewerCommands are commands whose only effect on a file operand is to
-// show its contents. A successful run of one of these marks the operands as
-// read for the session read ledger. Best-effort field parsing: the
-// ledger is an approval affordance, not a security boundary — recording a
-// false positive would only loosen a gate, never tighten one incorrectly.
-var readViewerCommands = map[string]bool{
-	"cat": true, "head": true, "tail": true, "less": true, "more": true,
-	"bat": true, "zcat": true, "nl": true,
-}
-
-func recordViewerReads(ctx context.Context, cmd string) {
+// recordViewerReads licenses only a plain, complete cat of one literal path.
+// Partial viewers, shell syntax, transformed output, and container paths cannot
+// establish coverage of the host file. The digest binds the captured stdout to
+// the bytes at that path; the loop confirms delivery after applying its cap.
+func recordViewerReads(ctx context.Context, cmd, stdout string) {
 	fields := strings.Fields(cmd)
-	if len(fields) == 0 {
+	if len(fields) != 2 || filepath.Base(fields[0]) != "cat" {
 		return
 	}
-	base := filepath.Base(strings.Trim(fields[0], `"'`))
-	if !readViewerCommands[base] {
+	path := fields[1]
+	if strings.HasPrefix(path, "-") || strings.ContainsAny(cmd, "\"'`$|&;<>*?[]{}()\\\n\r") {
 		return
 	}
-	// Review finding CRIT-001: any pipe or redirect means the model did not
-	// see the operand's bytes — `cat payload.sh > run.sh` writes a copy the
-	// model never viewed, and `cat big.sh | head -1` shows a prefix. Both
-	// must license nothing: recording here would silently defeat the
-	// unread-exec gate. Only plain viewer invocations record.
-	for _, f := range fields[1:] {
-		switch f {
-		case "|", ">", ">>", "&>", "&>>", ">&", ">>&", "2>", "2>>", "||", "&&", ";":
-			return
-		}
-		if strings.HasPrefix(f, ">") || strings.HasPrefix(f, "2>") {
-			return // attached forms like >file, 2>file
-		}
-	}
-	for _, f := range fields[1:] {
-		if f == "" || strings.HasPrefix(f, "-") {
-			continue
-		}
-		if st, err := os.Stat(f); err == nil && !st.IsDir() {
-			danger.RecordReadCtx(ctx, f)
-		}
-	}
+	danger.RecordReadContentCtx(ctx, path, int64(len(stdout)), sha256.Sum256([]byte(stdout)))
 }
 
 // wrapSandboxCommand builds the "docker exec" argv that runs command inside

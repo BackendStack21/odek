@@ -13,10 +13,10 @@ import (
 )
 
 func TestResolveMaintenance_ClampsRetentionBounds(t *testing.T) {
-	huge := int(999999)            // ~2740 years — wraps int64 ns duration math
-	neg := int(-5)                 // future cutoff by construction
-	tiny := int64(0)               // explicit 0 = disabled / keep forever, preserved
-	bigHours := int(99999999)      // hours also overflow at ~2.6e9
+	huge := int(999999)       // ~2740 years — wraps int64 ns duration math
+	neg := int(-5)            // future cutoff by construction
+	tiny := int64(0)          // explicit 0 = disabled / keep forever, preserved
+	bigHours := int(99999999) // hours also overflow at ~2.6e9
 
 	got := resolveMaintenance(&MaintenanceConfig{
 		Enabled:              boolPtr(true),
@@ -43,4 +43,3 @@ func TestResolveMaintenance_ClampsRetentionBounds(t *testing.T) {
 		t.Fatalf("explicit LogMaxMB=0 (disable) must be preserved, got %d", got.LogMaxMB)
 	}
 }
-

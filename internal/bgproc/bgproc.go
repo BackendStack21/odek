@@ -138,6 +138,8 @@ type jobEntry struct {
 	stopping      bool
 	exited        chan struct{} // closed once cleanup completes
 	processExited chan struct{} // closed immediately after Wait, before cleanup
+	groupStopped  chan struct{} // closed after group teardown, independently of leader exit
+	stopErr       error
 
 	cmd      *exec.Cmd
 	followUp func()
@@ -242,6 +244,7 @@ func (m *Manager) StartWithOptions(sessionID, command, cwd string, timeout time.
 		reason:        StatusRunning, // sentinel: no forced stop pending
 		exited:        make(chan struct{}),
 		processExited: make(chan struct{}),
+		groupStopped:  make(chan struct{}),
 		cmd:           cmd,
 		followUp:      followUp,
 		release:       opts.Release,
@@ -326,6 +329,10 @@ func (m *Manager) wait(sessionID string, e *jobEntry) {
 	if e.timer != nil {
 		e.timer.Stop()
 	}
+	// The leader can exit while children remain. Keep the job owned until
+	// group cleanup settles, including after an otherwise normal exit.
+	m.forceStop(sessionID, e, StatusRunning)
+	<-e.groupStopped
 
 	m.mu.Lock()
 	now := time.Now().UTC()
@@ -367,6 +374,10 @@ func (m *Manager) wait(sessionID string, e *jobEntry) {
 			e.job.ExitCode = -1
 		}
 		e.job.Err = err.Error()
+	}
+	if e.stopErr != nil {
+		e.job.Status = StatusFailed
+		e.job.Err = fmt.Sprintf("process-group cleanup: %v", e.stopErr)
 	}
 	notice := Notice{
 		JobID:       e.job.ID,
@@ -422,27 +433,53 @@ func (m *Manager) forceStop(sessionID string, e *jobEntry, reason Status) {
 	pid := e.cmd.Process.Pid
 	m.mu.Unlock()
 
-	// Signal the whole group (negative pid) so shell-spawned children die
-	// with the job. If the group does not exist (child already reaped, or
-	// a platform where setpgid did not apply), fall back to the direct pid.
-	signal := func(sig syscall.Signal) {
-		if err := syscall.Kill(-pid, sig); err != nil {
-			_ = syscall.Kill(pid, sig)
+	go func() {
+		err := stopProcessGroup(pid, stopGrace)
+		m.mu.Lock()
+		e.stopErr = err
+		close(e.groupStopped)
+		m.mu.Unlock()
+	}()
+}
+
+// stopProcessGroup follows the group's lifetime, not just its leader. Once
+// the group is absent we never retry or fall back to a potentially reused PID.
+func stopProcessGroup(pid int, grace time.Duration) error {
+	if err := syscall.Kill(-pid, syscall.SIGTERM); err != nil {
+		if errors.Is(err, syscall.ESRCH) {
+			return nil
+		}
+		return fmt.Errorf("terminate group %d: %w", pid, err)
+	}
+	deadline := time.NewTimer(grace)
+	defer deadline.Stop()
+	tick := time.NewTicker(20 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		if err := syscall.Kill(-pid, 0); err != nil {
+			if errors.Is(err, syscall.ESRCH) {
+				return nil
+			}
+			// A permission result during exit is not proof that the group
+			// has disappeared. Continue waiting through the escalation
+			// deadline; only ESRCH permits early completion.
+			if !errors.Is(err, syscall.EPERM) {
+				return fmt.Errorf("probe group %d: %w", pid, err)
+			}
+		}
+		select {
+		case <-tick.C:
+		case <-deadline.C:
+			err := syscall.Kill(-pid, syscall.SIGKILL)
+			if errors.Is(err, syscall.ESRCH) {
+				return nil
+			}
+			if err != nil {
+				return fmt.Errorf("kill group %d: %w", pid, err)
+			}
+			return nil
 		}
 	}
-	signal(syscall.SIGTERM)
-	go func() {
-		select {
-		case <-e.processExited:
-		case <-time.After(stopGrace):
-			select {
-			case <-e.processExited:
-				return
-			default:
-			}
-			signal(syscall.SIGKILL)
-		}
-	}()
 }
 
 // Stop stops the job if it is running and owned by sessionID. It returns the

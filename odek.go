@@ -25,6 +25,7 @@ import (
 	"log"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/BackendStack21/odek/internal/budget"
@@ -483,7 +484,7 @@ func New(cfg Config) (*Agent, error) {
 	// Build tool registry from external Tool interface
 	tools := make([]tool.Tool, len(cfg.Tools))
 	for i, t := range cfg.Tools {
-		tools[i] = &toolAdapter{t}
+		tools[i] = &toolAdapter{t: t}
 	}
 
 	// Load AGENTS.md from the working directory and append to system message.
@@ -622,7 +623,7 @@ func New(cfg Config) (*Agent, error) {
 		if cfg.DangerousConfig != nil {
 			mt.SetDangerousConfig(cfg.DangerousConfig)
 		}
-		tools = append(tools, &toolAdapter{mt})
+		tools = append(tools, &toolAdapter{t: mt})
 	}
 	registry := tool.NewRegistry(tools)
 
@@ -946,16 +947,28 @@ func (a *Agent) EmitEvent(ev events.Event) {
 	a.emitter.Emit(ev)
 }
 
+// BudgetUsage is the public usage vector, including descendant work.
+type BudgetUsage = budget.Usage
+
+// BudgetUsage returns the complete accounting vector for this run, including
+// descendant work and model-priced cost.
+func (a *Agent) BudgetUsage() BudgetUsage {
+	if a == nil || a.engine == nil {
+		return budget.Usage{}
+	}
+	return a.engine.BudgetUsage()
+}
+
 // TotalInputTokens returns the cumulative prompt tokens consumed across all
 // iterations of the most recent RunWithMessages call.
 func (a *Agent) TotalInputTokens() int {
-	return a.engine.TotalInputTokens
+	return int(a.engine.BudgetUsage().InputTokens)
 }
 
 // TotalOutputTokens returns the cumulative completion tokens generated
 // across all iterations of the most recent RunWithMessages call.
 func (a *Agent) TotalOutputTokens() int {
-	return a.engine.TotalOutputTokens
+	return int(a.engine.BudgetUsage().OutputTokens)
 }
 
 // CallMetrics is the last main think-step LLM call's timing and derived
@@ -1001,13 +1014,13 @@ func (a *Agent) MaxContextTokens() int {
 // TotalCacheCreationTokens returns the cumulative Anthropic cache creation
 // tokens across all iterations of the most recent run.
 func (a *Agent) TotalCacheCreationTokens() int {
-	return a.engine.TotalCacheCreationTokens
+	return int(a.engine.BudgetUsage().CacheCreationTokens)
 }
 
 // TotalCacheReadTokens returns the cumulative Anthropic cache read tokens
 // across all iterations of the most recent run.
 func (a *Agent) TotalCacheReadTokens() int {
-	return a.engine.TotalCacheReadTokens
+	return int(a.engine.BudgetUsage().CacheReadTokens)
 }
 
 // TotalCachedTokens returns the cumulative OpenAI cached prompt tokens
@@ -1178,15 +1191,50 @@ func expandHome(path string) string {
 	return path
 }
 
+// PartialResponseError identifies an incomplete model response. Run returns
+// any available partial text together with this error.
+type PartialResponseError = loop.PartialResponseError
+
 // toolAdapter bridges odek.Tool to internal/tool.Tool.
 type toolAdapter struct {
-	t Tool
+	callMu sync.Mutex
+	t      Tool
 }
 
 func (a *toolAdapter) Name() string        { return a.t.Name() }
 func (a *toolAdapter) Description() string { return a.t.Description() }
 func (a *toolAdapter) Schema() any         { return a.t.Schema() }
 func (a *toolAdapter) Call(args string) (string, error) {
+	return a.t.Call(args)
+}
+
+// ToolEffects declares scheduling dependencies for optional Effects methods.
+type ToolEffects = tool.Effects
+
+func (a *toolAdapter) Effects(args string) tool.Effects {
+	if provider, ok := a.t.(interface{ Effects(string) tool.Effects }); ok {
+		return provider.Effects(args)
+	}
+	return tool.Effects{Unknown: true}
+}
+
+// CallContext isolates invocation state for context-aware tools. Legacy
+// setters remain supported and are serialized with their matching call.
+func (a *toolAdapter) CallContext(ctx context.Context, args string) (string, error) {
+	if ct, ok := a.t.(interface {
+		CallContext(context.Context, string) (string, error)
+	}); ok {
+		return ct.CallContext(ctx, args)
+	}
+	if ct, ok := a.t.(interface{ SetContext(context.Context) }); ok {
+		a.callMu.Lock()
+		defer a.callMu.Unlock()
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		ct.SetContext(ctx)
+		return a.t.Call(args)
+	}
 	return a.t.Call(args)
 }
 

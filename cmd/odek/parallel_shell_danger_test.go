@@ -36,8 +36,8 @@ func TestParallelShell_Danger_NilApproverNonInteractiveDeny(t *testing.T) {
 	args := fmt.Sprintf(`{"commands":[{"command":"touch %s"}]}`, marker)
 
 	result, err := tool.Call(args)
-	if err != nil {
-		t.Fatalf("Call() should return error payload, not a Go error: %v", err)
+	if err == nil {
+		t.Fatal("denied command must return a typed failure")
 	}
 	if !strings.Contains(result, "command rejected") && !strings.Contains(result, "denied") {
 		t.Fatalf("expected rejection error in result, got: %s", result)
@@ -90,8 +90,8 @@ func TestParallelShell_Danger_NilApproverTTYDeny(t *testing.T) {
 	args := fmt.Sprintf(`{"commands":[{"command":"touch %s"}]}`, marker)
 
 	result, err := tool.Call(args)
-	if err != nil {
-		t.Fatalf("Call() should return error payload, not a Go error: %v", err)
+	if err == nil {
+		t.Fatal("denied command must return a typed failure")
 	}
 	if !strings.Contains(result, "command rejected") && !strings.Contains(result, "denied") {
 		t.Fatalf("expected rejection error in result, got: %s", result)

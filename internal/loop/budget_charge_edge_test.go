@@ -5,10 +5,10 @@ import "testing"
 func TestSettleExternalUsageEdgeBranches(t *testing.T) {
 	t.Run("negative granted clamps to zero", func(t *testing.T) {
 		e := &Engine{}
-		// granted<0 clamps to 0; actual(50) then clamps down to the grant (0) — nothing charged.
+		// Invalid negative grant cannot erase real usage.
 		e.SettleExternalUsage(-100, 50)
-		if e.TotalInputTokens != 0 {
-			t.Errorf("TotalInputTokens = %d, want 0 (actual clamped to grant 0)", e.TotalInputTokens)
+		if e.TotalInputTokens != 50 {
+			t.Errorf("TotalInputTokens = %d, want 50", e.TotalInputTokens)
 		}
 		if e.externalReserved != 0 {
 			t.Errorf("externalReserved = %d, want 0", e.externalReserved)
@@ -26,15 +26,15 @@ func TestSettleExternalUsageEdgeBranches(t *testing.T) {
 		}
 	})
 
-	t.Run("actual above granted clamps to grant", func(t *testing.T) {
+	t.Run("actual above granted is charged in full", func(t *testing.T) {
 		e := &Engine{}
 		got := e.ReserveExternalUsage(100)
 		if got != 100 {
 			t.Fatalf("ReserveExternalUsage = %d, want 100 (unconfigured pass-through)", got)
 		}
 		e.SettleExternalUsage(100, 5000)
-		if e.TotalInputTokens != 100 {
-			t.Errorf("TotalInputTokens = %d, want 100 (clamped to grant)", e.TotalInputTokens)
+		if e.TotalInputTokens != 5000 {
+			t.Errorf("TotalInputTokens = %d, want 5000 (actual usage)", e.TotalInputTokens)
 		}
 		if e.externalReserved != 0 {
 			t.Errorf("externalReserved = %d, want 0 after settle", e.externalReserved)

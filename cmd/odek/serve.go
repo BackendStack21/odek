@@ -76,7 +76,7 @@ const planMessagePrefix = "[Current plan:"
 // persisted for a serve session. The session's own leading system message
 // (head) is preserved; dynamically-injected system messages (skills,
 // memory, episodes, trim warnings) are dropped so persisted snapshots
-// don't accumulate internal injections or corrupt future origLen
+// don't accumulate internal injections or corrupt future turn-boundary
 // calculations; compaction digest and protected plan system messages are
 // kept so a resumed session retains its compacted history and its plan.
 func filterPersistSnapshot(head, snapshot []session.Message) []session.Message {
@@ -139,80 +139,53 @@ var wsConnSem = make(chan struct{}, maxWSConnections)
 // it more expensive to rapidly churn connections and exhaust wsConnSem.
 var wsUpgradeLimiter = newRateLimiter(30, time.Minute)
 
-// promptCancels maps a session ID to the cancel function for the prompt
-// currently executing on that session. A mutex protects the map so concurrent
-// WebSocket handlers and the HTTP /api/cancel endpoint can access it safely.
-// Using session IDs as keys scopes cancellation to the caller's session,
-// preventing one connection from cancelling another connection's prompt.
-// promptCancelEntry pairs a cancel func with a generation counter so an
-// earlier prompt's unregister cannot delete a newer prompt's registration.
-type promptCancelEntry struct {
-	cancel context.CancelFunc
-	gen    int64
-}
-
+// promptCancels contains every active or queued prompt for a session. The
+// session cancel endpoint explicitly cancels all of them; REST run cancellation
+// remains scoped to its run ID.
 var (
 	promptCancelMu  sync.Mutex
-	promptCancels   = map[string]*promptCancelEntry{}
+	promptCancels   = map[string]map[int64]context.CancelFunc{}
 	promptCancelGen int64
 )
 
-// registerPromptCancel records cancel as the active cancel function for
-// sessionID. The returned unregister func removes it ONLY if it is still
-// the live registration — when two prompts run on the same session, the
-// first finisher must not strip the second's cancel func.
 func registerPromptCancel(sessionID string, cancel context.CancelFunc) (unregister func()) {
 	if sessionID == "" || cancel == nil {
 		return func() {}
 	}
 	gen := atomic.AddInt64(&promptCancelGen, 1)
 	promptCancelMu.Lock()
-	promptCancels[sessionID] = &promptCancelEntry{cancel: cancel, gen: gen}
+	if promptCancels[sessionID] == nil {
+		promptCancels[sessionID] = map[int64]context.CancelFunc{}
+	}
+	promptCancels[sessionID][gen] = cancel
 	promptCancelMu.Unlock()
-
 	return func() {
 		promptCancelMu.Lock()
-		if cur, ok := promptCancels[sessionID]; ok && cur.gen == gen {
+		delete(promptCancels[sessionID], gen)
+		if len(promptCancels[sessionID]) == 0 {
 			delete(promptCancels, sessionID)
 		}
 		promptCancelMu.Unlock()
 	}
 }
 
-// unregisterPromptCancel removes whatever cancel function is currently
-// registered for sessionID. Prefer the unregister closure returned by
-// registerPromptCancel; this variant is kept for callers that don't track
-// their registration generation.
 func unregisterPromptCancel(sessionID string) {
-	if sessionID == "" {
-		return
-	}
 	promptCancelMu.Lock()
 	delete(promptCancels, sessionID)
 	promptCancelMu.Unlock()
 }
 
-// cancelPrompt cancels the active prompt for sessionID, if any. It returns
-// true if a cancel function was found and invoked.
 func cancelPrompt(sessionID string) bool {
-	if sessionID == "" {
-		return false
-	}
 	promptCancelMu.Lock()
-	entry, ok := promptCancels[sessionID]
+	var cancels []context.CancelFunc
+	for _, cancel := range promptCancels[sessionID] {
+		cancels = append(cancels, cancel)
+	}
 	promptCancelMu.Unlock()
-	if !ok {
-		return false
+	for _, cancel := range cancels {
+		cancel()
 	}
-	var cancel context.CancelFunc
-	if entry != nil {
-		cancel = entry.cancel
-	}
-	if cancel == nil {
-		return false
-	}
-	cancel()
-	return true
+	return len(cancels) != 0
 }
 
 // wsConns tracks every active WebSocket connection so serveOnListener can
@@ -1859,21 +1832,35 @@ func handlePrompt(
 	deltas *wsDeltaCounters,
 	bg *bgRuntime,
 	turn *wsTurnAnnotator,
-) *session.Session {
+) (result *session.Session) {
+	var sess *session.Session
+	var turnID string
+	// This is the shared REST, WebSocket, and wake execution boundary. A
+	// failed turn must not unwind a daemon goroutine and terminate the host.
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			atomic.AddInt64(&serveStats.PromptsFailed, 1)
+			serveLogf("turn panic contained")
+			if sess != nil {
+				sess.Messages = append(sess.Messages, session.Message{Role: "assistant", TurnID: turnID, Content: "[Turn aborted: internal error. Completed checkpoints were preserved.]"})
+				_ = store.SaveNoIndex(sess)
+				result = sess
+			} else {
+				result = currSess
+			}
+			sendError(send, "turn failed: internal error")
+		}
+	}()
+	ctx, cancelRun := context.WithCancel(ctx)
+	defer cancelRun()
 	prompt := msg.Content
 	sessionID := msg.SessionID
+	if sessionID == "" && currSess != nil {
+		sessionID = currSess.ID
+	}
 
-	// Register the cancel entry BEFORE any session I/O so a cancel that
-	// races the setup window (session load/create, @-ref resolution,
-	// attachment wrapping) is honored instead of silently dropped — the
-	// registry lookup would otherwise miss and the prompt would run to
-	// completion. Chosen over a tombstone/pending-cancel flag because it
-	// reuses the generation-guarded registry as-is: the late registration
-	// below (needed for newly-created sessions whose ID exists only after
-	// store.Create) replaces this entry, and both unregister defers are
-	// generation-safe. Brand-new sessions keep a small window, but no
-	// client can learn their ID — and thus target a cancel — before the
-	// "session" event is sent.
+	// Register before session I/O and execution waiting. Session cancellation
+	// includes queued prompts, so cancelled work cannot dispatch later.
 	if sessionID != "" && promptCancel != nil {
 		defer registerPromptCancel(sessionID, promptCancel)()
 	}
@@ -1899,15 +1886,28 @@ func handlePrompt(
 	originalPrompt := prompt
 	atomic.AddInt64(&serveStats.PromptsStarted, 1)
 
-	// Load or create session early so the audit recorder can be attached
-	// before @-references and Web-UI attachments are wrapped.
-	var sess *session.Session
+	// Acquire ownership before loading execution history: REST, WebSocket,
+	// and background wakes all pass through this boundary.
 	var err error
 	if sessionID != "" {
+		release, lockErr := store.AcquireExecution(ctx, sessionID)
+		if lockErr != nil {
+			sendError(send, lockErr.Error())
+			return currSess
+		}
+		defer release()
 		sess, err = store.Load(sessionID)
 		if err != nil {
-			sess = nil
+			sendError(send, "session not found")
+			return currSess
 		}
+		// Other transports may have completed a turn while this run waited.
+		if mm := agent.Memory(); mm != nil {
+			mm.ClearBuffer()
+			mm.RestoreBuffer(sess.Buffer)
+		}
+		*sessionInputTokens = int(sess.InputTokens)
+		*sessionOutputTokens = int(sess.OutputTokens)
 	}
 
 	// Run agent. Audit recorder wired around the loop so every
@@ -1992,9 +1992,9 @@ func handlePrompt(
 		}
 	}
 
-	// Build message history
+	// Build message history with an identity that survives compaction.
+	turnID = newTurnID()
 	var messages []session.Message
-	isNewSession := false
 	// System-initiated wake turns carry a Name marker ("bg-wake") so the
 	// loop's user-input hooks skip them exactly like drained bg-notice
 	// messages, and so the transcript exposes their provenance. The gate is
@@ -2007,16 +2007,15 @@ func handlePrompt(
 
 	if sess != nil {
 		messages = sess.GetMessages()
-		messages = append(messages, session.Message{Role: "user", Content: enrichedPrompt, Name: userName})
+		messages = append(messages, session.Message{Role: "user", Content: enrichedPrompt, Name: userName, TurnID: turnID})
 	} else {
-		isNewSession = true
 		// Persist an empty system slot. RunWithMessages restores the
 		// current engine prompt at run time so session files never store
 		// identity, home paths, or the security pillar (and so a stale
 		// stored prompt cannot override the runtime one).
 		messages = []session.Message{
 			{Role: "system", Content: ""},
-			{Role: "user", Content: enrichedPrompt, Name: userName},
+			{Role: "user", Content: enrichedPrompt, Name: userName, TurnID: turnID},
 		}
 
 		// Persist new session
@@ -2025,12 +2024,19 @@ func handlePrompt(
 			resolved.Model,
 			shorten(prompt, 60),
 		)
-		if err == nil {
-			sess = newSess
-			sess.Sandbox = resolved.Sandbox
-			sess.Provider = resolved.Provider
-			store.Save(sess)
+		if err != nil {
+			sendError(send, "failed to create session: "+err.Error())
+			return currSess
 		}
+		sess = newSess
+		release, err := store.AcquireExecution(ctx, sess.ID)
+		if err != nil {
+			sendError(send, err.Error())
+			return sess
+		}
+		defer release()
+		sess.Sandbox = resolved.Sandbox
+		sess.Provider = resolved.Provider
 	}
 
 	cwd, _ := os.Getwd()
@@ -2064,7 +2070,7 @@ func handlePrompt(
 	// here. The generation-guarded unregister only removes OUR registration
 	// — a concurrent newer prompt on the same session keeps its own cancel
 	// func when we finish first.
-	if sid != "" && promptCancel != nil {
+	if sid != "" && sid != sessionID && promptCancel != nil {
 		defer registerPromptCancel(sid, promptCancel)()
 	}
 	sessFrame := map[string]any{"type": "session", "session_id": sid, "auth_token": authToken, "model": resolved.Model, "sandbox": resolved.Sandbox}
@@ -2080,7 +2086,6 @@ func handlePrompt(
 	// initiated label is computed by the wakeInitiated type gate; client
 	// input cannot influence it (R5). The session frame keeps its legacy
 	// system_initiated stamp for old clients.
-	turnID := newTurnID()
 	send(map[string]any{
 		"type":       "turn_started",
 		"turn_id":    turnID,
@@ -2108,30 +2113,28 @@ func handlePrompt(
 		deltas.reset()
 	}
 
-	origLen := len(messages) - 1 // initial estimate: index of the user message we appended
-
 	// Persist per-turn progress so an interrupted run can be resumed from
 	// the last completed step instead of losing the whole in-progress turn.
 	// Mirror the store path below: dynamically-injected system messages
 	// (skills, memory, episodes) are filtered out so persisted snapshots
-	// don't accumulate internal injections or corrupt future origLen
+	// don't accumulate internal injections or corrupt future turn-boundary
 	// calculations. The session's own leading system message and rolling-
 	// compaction digest system messages are preserved (see
 	// filterPersistSnapshot).
+	var persistErr error
 	if sess != nil {
 		var head []session.Message
 		if len(sess.Messages) > 0 && sess.Messages[0].Role == "system" {
 			head = sess.Messages[:1]
 		}
 		agent.SetMessagesPersistCallback(func(snapshot []session.Message) {
-			if len(snapshot) < len(sess.Messages) {
-				// The loop trimmed history in place — keep the richer state
-				// already persisted instead of overwriting it.
+			if persistErr != nil {
 				return
 			}
 			sess.Messages = filterPersistSnapshot(head, snapshot)
 			if err := store.SaveNoIndex(sess); err != nil {
-				fmt.Fprintf(os.Stderr, "odek: warning: failed to persist session: %v\n", err)
+				persistErr = fmt.Errorf("failed to persist session: %w", err)
+				cancelRun()
 			}
 		})
 	}
@@ -2143,9 +2146,10 @@ func handlePrompt(
 	// — observed repeatedly on 2026-08-29. SaveNoIndex skips the remote
 	// vector index; a successful turn re-indexes on the final save below.
 	if sess != nil {
-		sess.Messages = append(sess.Messages, session.Message{Role: "user", Content: enrichedPrompt, Name: userName})
+		sess.Messages = append(sess.Messages, session.Message{Role: "user", Content: enrichedPrompt, Name: userName, TurnID: turnID})
 		if err := store.SaveNoIndex(sess); err != nil {
-			fmt.Fprintf(os.Stderr, "odek: warning: failed to persist session: %v\n", err)
+			sendError(send, "failed to persist prompt: "+err.Error())
+			return sess
 		}
 	}
 
@@ -2165,9 +2169,12 @@ func handlePrompt(
 		}
 	})
 	_, allMessages, err := agent.RunWithMessages(ctx, messages)
+	if persistErr != nil {
+		err = persistErr
+	}
 	latency := time.Since(start)
 	if auditSessID != "" {
-		recordTurnAudit(auditStore, auditSessID, auditTurn, originalPrompt, auditTurnDelta(allMessages, origLen))
+		recordTurnAudit(auditStore, auditSessID, auditTurn, originalPrompt, session.TurnMessages(allMessages, turnID))
 	}
 	if sl != nil {
 		sl.logf("turn_completed session=%s latency_ms=%d", sid, latency.Milliseconds())
@@ -2192,26 +2199,16 @@ func handlePrompt(
 		// returning sess (not currSess) also keeps the caller's run record
 		// and in-memory session pointer in sync with the persisted state.
 		note := fmt.Sprintf("[Turn aborted: %s. The prompt above was preserved — send another message to retry or continue.]", providerFailureSummary(err))
-		sess.Messages = append(sess.Messages, session.Message{Role: "assistant", Content: note})
+		sess.Messages = append(sess.Messages, session.Message{Role: "assistant", TurnID: turnID, Content: note})
 		if err := store.SaveNoIndex(sess); err != nil {
 			fmt.Fprintf(os.Stderr, "odek: warning: failed to persist session: %v\n", err)
 		}
 		return sess
 	}
 
-	// Dynamic injections (skills, memory, episodes) insert extra system messages
-	// BEFORE the user turn during RunWithMessages, shifting its index in allMessages
-	// beyond the pre-run origLen estimate. Search forward to find where the new
-	// user message actually landed, so newMsgs starts exactly there.
-	for i := origLen; i < len(allMessages); i++ {
-		if allMessages[i].Role == "user" {
-			origLen = i
-			break
-		}
-	}
-
-	// New messages = user message we added + everything the agent appended.
-	newMsgs := allMessages[origLen:]
+	// Turn identity is independent of context offsets, history compaction,
+	// and duplicate user text across turns.
+	newMsgs := session.TurnMessages(allMessages, turnID)
 
 	// Stream the final assistant response.
 	//
@@ -2290,12 +2287,15 @@ func handlePrompt(
 	// The message history was already persisted per-turn by the persist
 	// callback above (which filters dynamically-injected system messages —
 	// skills, memory, episodes — so they are not stored in the session and
-	// don't corrupt future origLen calculations on subsequent turns).
+	// don't corrupt future turn boundaries on subsequent turns).
 	if sess != nil {
 		if mm := agent.Memory(); mm != nil {
 			sess.Buffer = mm.GetBuffer()
 		}
-		store.Save(sess)
+		if err := store.Save(sess); err != nil {
+			sendError(send, "failed to save completed turn: "+err.Error())
+			return sess
+		}
 	}
 
 	// done is sent only AFTER the final save: clients refresh their session
@@ -2329,9 +2329,8 @@ func handlePrompt(
 		return m
 	}())
 
-	// If we started a new session, return it so the WebSocket loop
-	// tracks it for future turns and OnSessionEnd.
-	if isNewSession && sess != nil {
+	// Return the refreshed snapshot for future turns and OnSessionEnd.
+	if sess != nil {
 		return sess
 	}
 	return currSess

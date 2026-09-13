@@ -50,9 +50,9 @@ func DefaultConfig() Config {
 
 // Report summarises what one Sweep pass removed.
 type Report struct {
-	SessionsRemoved  int
-	AuditRemoved     int
-	PlansRemoved     int
+	SessionsRemoved int
+	AuditRemoved    int
+	PlansRemoved    int
 	// ArtifactsRemoved counts every artifacts removal: expired task
 	// subtrees, wholesale session dirs, and pruned empty parents.
 	ArtifactsRemoved int

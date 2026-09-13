@@ -316,6 +316,7 @@ type CallResult struct {
 	CachedTokens        int
 	CacheReported       bool
 	FinishReason        string
+	Termination         Termination
 	// DurationMs is wall time of this call, stamped by the engine's think
 	// path. TTFTMs / GenerationMs are streaming-only (0 on the buffered
 	// path or when no non-tool-args delta arrived).
@@ -516,6 +517,7 @@ func mapResult(res *sdk.ChatResult) *CallResult {
 		ReasoningContent:    res.ReasoningContent,
 		ThinkingSignature:   res.ThinkingSignature,
 		FinishReason:        res.FinishReason,
+		Termination:         NormalizeTermination(res.FinishReason),
 		InputTokens:         res.Usage.PromptTokens,
 		OutputTokens:        res.Usage.CompletionTokens,
 		CacheCreationTokens: res.Usage.CacheCreationTokens,

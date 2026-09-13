@@ -179,6 +179,23 @@ type ToolOperation struct {
 //
 // macOS: /private/{etc,var,tmp} are transparently normalised before matching.
 func ClassifyPath(path string) RiskClass {
+	path = expandShellTokenPath(path)
+	lexical := classifyPathLexical(path)
+	// Character pseudo-devices (stdio aliases, discards) stay LocalWrite no
+	// matter where they resolve: on Linux /dev/stdout is a symlink through
+	// /proc/self/fd to a /dev/pts entry, and both resolved prefixes would
+	// otherwise escalate a benign discard to Destructive.
+	if abs, err := filepath.Abs(expandShellTokenPath(path)); err == nil && isBenignCharDevice(filepath.Clean(abs)) {
+		return LocalWrite
+	}
+	resolved, err := resolvePathTarget(path)
+	if err != nil {
+		return worstOf(lexical, SystemWrite)
+	}
+	return worstOf(lexical, classifyPathLexical(resolved))
+}
+
+func classifyPathLexical(path string) RiskClass {
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		return SystemWrite
@@ -326,7 +343,7 @@ var persistenceDirMarkers = []string{
 	"/var/spool/cron/",    // per-user crontabs (Linux)
 	"/usr/lib/cron/tabs/", // per-user crontabs (macOS)
 	"/etc/systemd/",       // system units — boot / timer triggered
-	"/lib/systemd/",       // also covers /usr/lib/systemd/ as substring
+	"/lib/systemd/system/", // distro unit dir (symlinked /sbin/init → /lib/systemd/systemd must NOT match)
 	"/etc/profile.d/",     // sourced by login shells
 	// macOS launchd — case-insensitive match covers /Library and
 	// ~/Library forms alike once ~ is expanded.
@@ -351,6 +368,15 @@ var persistenceBaseNames = map[string]bool{
 // ClassifyPath (reads of these files stay at their existing class) and
 // reserve the persistence escalation for writes via ClassifyPathWrite.
 func IsPersistencePath(path string) bool {
+	path = expandShellTokenPath(path)
+	if isPersistencePathLexical(path) {
+		return true
+	}
+	resolved, err := resolvePathTarget(path)
+	return err == nil && isPersistencePathLexical(resolved)
+}
+
+func isPersistencePathLexical(path string) bool {
 	// Expand ~ / $HOME shorthands so direct API callers (file tools, tests)
 	// behave identically to shell-token classification.
 	path = expandShellTokenPath(path)
@@ -777,10 +803,13 @@ var defaultActions = map[RiskClass]Action{
 
 // ActionFor returns the configured action for the given risk class.
 // Per-class overrides in Classes win first, then the global default
-// action (the "action" field), then built-in defaults, then Prompt.
+// action (the "action" field), then built-in defaults. Unknown enum values deny.
 func (c *DangerousConfig) ActionFor(cls RiskClass) Action {
+	if !ValidRiskClass(cls) || c.Validate() != nil {
+		return Deny
+	}
 	// If the user explicitly configured an action for this class, use it.
-	if c.Classes != nil {
+	if c != nil && c.Classes != nil {
 		if a, ok := c.Classes[cls]; ok {
 			return a
 		}
@@ -793,20 +822,58 @@ func (c *DangerousConfig) ActionFor(cls RiskClass) Action {
 	}
 	// Global default action overrides all built-in defaults.
 	// Set "action": "allow" for YOLO mode, "action": "deny" for lockdown.
-	if c.DefaultAction != nil {
+	if c != nil && c.DefaultAction != nil {
 		return parseAction(*c.DefaultAction)
 	}
 	// Fallback to built-in defaults
 	if a, ok := defaultActions[cls]; ok {
 		return a
 	}
-	return Prompt
+	return Deny
+}
+
+// ValidRiskClass reports whether a policy key names a supported class.
+func ValidRiskClass(cls RiskClass) bool {
+	_, ok := defaultActions[cls]
+	return ok
+}
+
+// Validate rejects malformed policy instead of silently falling back to a
+// weaker default. Direct API construction uses this same validation gate.
+func (c *DangerousConfig) Validate() error {
+	if c == nil {
+		return nil
+	}
+	for cls, action := range c.Classes {
+		if !ValidRiskClass(cls) {
+			return fmt.Errorf("unknown risk class %q", cls)
+		}
+		if action != Allow && action != Deny && action != Prompt {
+			return fmt.Errorf("invalid action %q for risk class %q", action, cls)
+		}
+	}
+	if c.DefaultAction != nil {
+		switch strings.ToLower(strings.TrimSpace(*c.DefaultAction)) {
+		case "allow", "deny", "prompt":
+		default:
+			return fmt.Errorf("invalid default action %q", *c.DefaultAction)
+		}
+	}
+	if c.NonInteractive != nil {
+		if _, ok := ParseNonInteractiveAction(*c.NonInteractive); !ok {
+			return fmt.Errorf("invalid non_interactive action %q", *c.NonInteractive)
+		}
+	}
+	return nil
 }
 
 // ActionForCommand returns the action for a specific command string.
 // Allowlist and denylist are checked first (exact match for allowlist,
 // prefix match for denylist), then falls back to the risk-class-based action.
 func (c *DangerousConfig) ActionForCommand(cmd string) Action {
+	if c.Validate() != nil {
+		return Deny
+	}
 	cmd = strings.TrimSpace(cmd)
 	if cmd == "" {
 		return Allow
@@ -890,7 +957,7 @@ func (c *DangerousConfig) CheckOperation(op ToolOperation, trustedClasses map[Ri
 		}
 		return approver.PromptOperation(op)
 	default:
-		return nil
+		return fmt.Errorf("invalid policy action %q: operation denied", action)
 	}
 }
 
@@ -900,8 +967,10 @@ func parseAction(s string) Action {
 		return Allow
 	case "deny":
 		return Deny
-	default:
+	case "prompt":
 		return Prompt
+	default:
+		return Deny
 	}
 }
 
@@ -2432,6 +2501,14 @@ func classifyResourceToken(tok string) RiskClass {
 	}
 	if isSensitiveOdekPath(tok) {
 		return SystemWrite
+	}
+	path := expandShellTokenPath(tok)
+	if _, err := os.Stat(path); err == nil {
+		if resolved, err := resolvePathTarget(path); err == nil {
+			if isSensitivePath(resolved) || isSensitiveOdekPath(resolved) {
+				return SystemWrite
+			}
+		}
 	}
 	return Safe
 }

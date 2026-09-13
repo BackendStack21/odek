@@ -54,7 +54,9 @@ func (e *Engine) BudgetSnapshot() budget.Snapshot {
 	if e == nil {
 		return budget.Snapshot{}
 	}
-	return e.budget.Snapshot(int64(e.TotalInputTokens)+int64(e.TotalCacheReadTokens)+int64(e.TotalCacheCreationTokens), int64(e.TotalOutputTokens))
+	e.externalChargeMu.Lock()
+	defer e.externalChargeMu.Unlock()
+	return e.budgetSnapshotLocked()
 }
 
 // ChargeExternalUsage records usage incurred OUTSIDE this engine's own LLM
@@ -73,7 +75,7 @@ func (e *Engine) ChargeExternalUsage(tokens int64) {
 	}
 	e.externalChargeMu.Lock()
 	defer e.externalChargeMu.Unlock()
-	e.TotalInputTokens += int(tokens)
+	e.TotalInputTokens = int(budget.AddCount(int64(e.TotalInputTokens), tokens))
 }
 
 // ReserveExternalUsage atomically reserves input-token headroom for an
@@ -111,8 +113,8 @@ func (e *Engine) ReserveExternalUsage(tokens int64) int64 {
 }
 
 // SettleExternalUsage reconciles a completed reservation: releases the
-// grant and charges the ACTUAL reported usage (clamped to the grant — the
-// child cannot exceed the cap it was handed). granted=0 (unreserved spawn)
+// grant and charges the ACTUAL reported usage, including overshoot.
+// granted=0 (unreserved spawn)
 // falls back to a plain charge.
 func (e *Engine) SettleExternalUsage(granted, actual int64) {
 	if e == nil {
@@ -124,9 +126,6 @@ func (e *Engine) SettleExternalUsage(granted, actual int64) {
 	if actual < 0 {
 		actual = 0
 	}
-	if actual > granted {
-		actual = granted
-	}
 	e.externalChargeMu.Lock()
 	defer e.externalChargeMu.Unlock()
 	e.externalReserved -= granted
@@ -134,7 +133,7 @@ func (e *Engine) SettleExternalUsage(granted, actual int64) {
 		e.externalReserved = 0
 	}
 	if actual > 0 {
-		e.TotalInputTokens += int(actual)
+		e.TotalInputTokens = int(budget.AddCount(int64(e.TotalInputTokens), actual))
 	}
 }
 

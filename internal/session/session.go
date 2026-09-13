@@ -20,6 +20,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -51,6 +52,13 @@ type Session struct {
 	// A loaded snapshot may update its original ID only while it still exists.
 	// Assigning a new ID explicitly creates a separate session.
 	persistedID string
+
+	// Revision is checked under the store's cross-process write lock. A stale
+	// loaded snapshot can never replace a newer committed transcript.
+	Revision uint64 `json:"revision,omitempty"`
+	// Generation distinguishes deletion/recreation of a fixed session ID.
+	// Revisions alone cannot reject an old snapshot after a counter restarts.
+	Generation string `json:"generation,omitempty"`
 
 	ID        string    `json:"id"`                   // e.g. "20260518-abc123…" (128-bit random suffix)
 	AuthToken string    `json:"auth_token,omitempty"` // session-scoped secret required by serve handlers
@@ -98,6 +106,11 @@ type Session struct {
 	// these refs verbatim; it NEVER resolves or dereferences their URIs.
 	ExternalRefs []ExternalRef `json:"external_refs,omitempty"`
 }
+
+// ErrConflict reports that another writer committed after this snapshot was
+// loaded. The caller must reload and reconcile; retrying the stale save is not
+// safe for an execution transcript.
+var ErrConflict = errors.New("session: stale revision")
 
 // ExternalRef is an operator-supplied pointer to state that lives outside
 // odek (a CI run, a dashboard, an object-store entry, …). odek stores and
@@ -537,11 +550,48 @@ func (s *Store) saveLocked(sess *Session) error {
 		return err
 	}
 	defer unlock()
-	if sess.persistedID == sess.ID {
-		if _, err := os.Lstat(s.path(sess.ID)); err != nil {
-			return fmt.Errorf("session: cannot update removed session: %w", err)
-		}
+	info, statErr := os.Lstat(s.path(sess.ID))
+	alias := statErr == nil && info.Mode()&os.ModeSymlink != 0
+	var current *Session
+	var loadErr error
+	if !alias {
+		current, loadErr = s.Load(sess.ID)
 	}
+	if alias {
+		// Atomic replacement owns this directory entry, never the alias's
+		// target. Do not read the target to check its unrelated revision.
+	} else if loadErr == nil {
+		if sess.persistedID != "" && sess.persistedID != sess.ID {
+			return fmt.Errorf("%w: destination session already exists", ErrConflict)
+		}
+		if current.Generation != sess.Generation || current.Revision != sess.Revision {
+			return fmt.Errorf("%w: have %d, current %d", ErrConflict, sess.Revision, current.Revision)
+		}
+	} else if !errors.Is(loadErr, os.ErrNotExist) {
+		return loadErr
+	} else if sess.persistedID == sess.ID {
+		return fmt.Errorf("session: cannot update removed session: %w", loadErr)
+	}
+	previousRevision := sess.Revision
+	previousGeneration := sess.Generation
+	if current == nil && sess.persistedID != sess.ID {
+		sess.Revision = 0
+		sess.Generation = ""
+	}
+	if sess.Generation == "" {
+		sess.Generation = generateID()
+	}
+	if sess.Revision == ^uint64(0) {
+		return fmt.Errorf("session: revision exhausted")
+	}
+	sess.Revision++
+	committed := false
+	defer func() {
+		if !committed {
+			sess.Revision = previousRevision
+			sess.Generation = previousGeneration
+		}
+	}()
 
 	// Redact secrets before writing to disk. This is defense-in-depth: the
 	// loop engine already redacts tool outputs, but this catches any secrets
@@ -619,6 +669,7 @@ func (s *Store) saveLocked(sess *Session) error {
 	}
 
 	sess.persistedID = sess.ID
+	committed = true
 
 	// Update the index atomically.
 	idx := s.loadIndex()

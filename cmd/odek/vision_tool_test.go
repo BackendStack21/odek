@@ -99,8 +99,8 @@ func decodeVisionResult(t *testing.T, raw string) visionResult {
 func TestVision_EmptyPath(t *testing.T) {
 	tool := newVisionTool(danger.DangerousConfig{}, config.VisionConfig{})
 	result, err := tool.Call(`{"path":""}`)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if err == nil {
+		t.Fatal("expected typed operation failure alongside result")
 	}
 	var r struct {
 		Error string `json:"error"`
@@ -129,8 +129,8 @@ func TestVision_InvalidJSON(t *testing.T) {
 func TestVision_FileNotFound(t *testing.T) {
 	tool := newVisionTool(danger.DangerousConfig{}, config.VisionConfig{})
 	result, err := tool.Call(`{"path":"/nonexistent/image.jpg"}`)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if err == nil {
+		t.Fatal("expected typed operation failure alongside result")
 	}
 	r := decodeVisionResult(t, result)
 	if !strings.Contains(r.Error, "cannot open") {
@@ -147,8 +147,8 @@ func TestVision_SymlinkRejected(t *testing.T) {
 
 	tool := newVisionTool(danger.DangerousConfig{}, config.VisionConfig{})
 	result, err := tool.Call(fmt.Sprintf(`{"path":"%s"}`, link))
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if err == nil {
+		t.Fatal("expected typed operation failure alongside result")
 	}
 	r := decodeVisionResult(t, result)
 	if r.Error == "" {
@@ -162,8 +162,8 @@ func TestVision_MissingBinary(t *testing.T) {
 	})
 	path := fakeImageFile(t, ".jpg")
 	result, err := tool.Call(fmt.Sprintf(`{"path":"%s"}`, path))
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if err == nil {
+		t.Fatal("expected typed operation failure alongside result")
 	}
 	r := decodeVisionResult(t, result)
 	if !strings.Contains(r.Error, "llama") && !strings.Contains(r.Error, "not found") {
@@ -178,8 +178,8 @@ func TestVision_MissingModel(t *testing.T) {
 	})
 	path := fakeImageFile(t, ".jpg")
 	result, err := tool.Call(fmt.Sprintf(`{"path":"%s"}`, path))
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if err == nil {
+		t.Fatal("expected typed operation failure alongside result")
 	}
 	r := decodeVisionResult(t, result)
 	if !strings.Contains(r.Error, "model") && !strings.Contains(r.Error, "not found") {
@@ -198,8 +198,8 @@ func TestVision_MissingMmproj(t *testing.T) {
 	})
 	path := fakeImageFile(t, ".jpg")
 	result, err := tool.Call(fmt.Sprintf(`{"path":"%s"}`, path))
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if err == nil {
+		t.Fatal("expected typed operation failure alongside result")
 	}
 	r := decodeVisionResult(t, result)
 	if !strings.Contains(r.Error, "mmproj") && !strings.Contains(r.Error, "projector") {
@@ -316,8 +316,8 @@ func TestVision_VideoFallsBackOnMissingFfmpeg(t *testing.T) {
 	})
 	videoPath := fakeVideoFile(t)
 	result, err := tool.Call(fmt.Sprintf(`{"path":"%s"}`, videoPath))
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if err == nil {
+		t.Fatal("expected typed operation failure alongside result")
 	}
 	r := decodeVisionResult(t, result)
 	if !strings.Contains(r.Error, "ffmpeg") && !strings.Contains(r.Error, "ffprobe") {

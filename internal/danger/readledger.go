@@ -26,8 +26,8 @@ import (
 // capable-model failure observed in the study.
 //
 // The ledger is FINGERPRINTED (TOCTOU hardening): a license is bound to
-// the file state at display time (size + mtime, sha256 for files up to
-// readFingerprintMaxBytes). A file mutated after its read — via another
+// the file state at display time (size + mtime + sha256). Files above
+// readFingerprintMaxBytes never receive an execution-read license. A file mutated after its read — via another
 // tool, a lifecycle hook, or a background process — loses the license and
 // the gate re-fires; re-reading the mutated content re-licenses it.
 // Audit-time reads (scanUnreadScripts) never enter the ledger: the
@@ -60,6 +60,72 @@ var readLedgers = map[string]map[string]readEntry{}
 
 type ledgerKeyCtx struct{}
 
+type readDeliveryCtx struct{}
+type readDelivery struct {
+	mu      sync.Mutex
+	entries map[string]readEntry
+}
+
+// BeginReadDelivery defers file-read receipts until the executor confirms that
+// the complete result reached the model. Each tool call gets its own scope.
+func BeginReadDelivery(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, readDeliveryCtx{}, &readDelivery{entries: make(map[string]readEntry)})
+}
+
+// FinishReadDelivery publishes only receipts from an untruncated successful
+// tool result. The receipt keeps the digest captured while producing output;
+// a mutation before delivery cannot substitute unseen bytes.
+func FinishReadDelivery(ctx context.Context, delivered bool) {
+	if ctx == nil {
+		return
+	}
+	d, ok := ctx.Value(readDeliveryCtx{}).(*readDelivery)
+	if !ok {
+		return
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if delivered {
+		readLedgerMu.Lock()
+		for path, entry := range d.entries {
+			ledgerMapLocked(ledgerKeyFrom(ctx))[path] = entry
+		}
+		readLedgerMu.Unlock()
+	}
+	d.entries = nil
+}
+
+// RecordReadContentCtx records the exact bytes delivered by a tool, after it
+// has verified complete coverage and no local truncation. The current path
+// must still contain those bytes, and loop-managed reads await delivery.
+func RecordReadContentCtx(ctx context.Context, path string, size int64, digest [32]byte) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	abs, err := resolvePathTarget(path)
+	if err != nil {
+		return
+	}
+	entry, ok := fingerprintFile(abs)
+	if !ok || !entry.hashed || entry.size != size || entry.hash != digest {
+		return
+	}
+	if d, ok := ctx.Value(readDeliveryCtx{}).(*readDelivery); ok {
+		d.mu.Lock()
+		if d.entries != nil {
+			d.entries[abs] = entry
+		}
+		d.mu.Unlock()
+		return
+	}
+	readLedgerMu.Lock()
+	ledgerMapLocked(ledgerKeyFrom(ctx))[abs] = entry
+	readLedgerMu.Unlock()
+}
+
 // WithLedgerKey scopes subsequent RecordReadCtx / WasReadFreshCtx /
 // ClassifyScriptGateCtx / UnreadScriptTargetsCtx calls on ctx to key.
 // An empty key selects the process-global default ledger.
@@ -91,10 +157,8 @@ func ledgerMapLocked(key string) map[string]readEntry {
 	return m
 }
 
-// readFingerprintMaxBytes caps content hashing. Files beyond this size
-// carry a size+mtime fingerprint only — a documented gap for adversarial
-// same-size mutation with a preserved mtime on very large files, which is
-// out of the threat model for repo-supplied scripts.
+// readFingerprintMaxBytes caps content hashing. Files beyond this size fail
+// closed rather than receiving a weaker size+mtime-only license.
 const readFingerprintMaxBytes = 1 << 20 // 1 MiB
 
 // RecordRead marks path as read this session. Paths are normalised to
@@ -118,7 +182,7 @@ func recordReadKey(key, path string) {
 	if path == "" {
 		return
 	}
-	abs, err := filepath.Abs(path)
+	abs, err := resolvePathTarget(path)
 	if err != nil {
 		return
 	}
@@ -144,7 +208,7 @@ func WasReadCtx(ctx context.Context, path string) bool {
 }
 
 func wasReadKey(key, path string) bool {
-	abs, err := filepath.Abs(path)
+	abs, err := resolvePathTarget(path)
 	if err != nil {
 		return false
 	}
@@ -160,8 +224,7 @@ func wasReadKey(key, path string) bool {
 
 // WasReadFresh reports whether path was read this session AND the bytes on
 // disk are still the state that was displayed (or authored) at record
-// time: same size, same mtime, and — for files up to readFingerprintMaxBytes
-// — the same sha256 digest. A read that is no longer fresh does not license
+// time: same size, same mtime, and the same sha256 digest. A read that is no longer fresh does not license
 // execution; the gate re-fires until the mutated content is re-read
 // (which renews the fingerprint, because now the model has seen THAT).
 func WasReadFresh(path string) bool {
@@ -174,7 +237,7 @@ func WasReadFreshCtx(ctx context.Context, path string) bool {
 }
 
 func wasReadFreshKey(key, path string) bool {
-	abs, err := filepath.Abs(path)
+	abs, err := resolvePathTarget(path)
 	if err != nil {
 		return false
 	}
@@ -222,12 +285,15 @@ func fingerprintFile(abs string) (readEntry, bool) {
 		return readEntry{}, false
 	}
 	e := readEntry{size: st.Size(), modNano: st.ModTime().UnixNano()}
-	if st.Size() <= readFingerprintMaxBytes {
-		if data, err := io.ReadAll(f); err == nil {
-			e.hash = sha256.Sum256(data)
-			e.hashed = true
-		}
+	if st.Size() > readFingerprintMaxBytes {
+		return readEntry{}, false
 	}
+	data, err := io.ReadAll(io.LimitReader(f, readFingerprintMaxBytes+1))
+	if err != nil || int64(len(data)) != st.Size() {
+		return readEntry{}, false
+	}
+	e.hash = sha256.Sum256(data)
+	e.hashed = true
 	return e, true
 }
 

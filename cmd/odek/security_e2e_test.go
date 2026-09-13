@@ -346,8 +346,8 @@ func TestSecurity_ConfigConsistency_SystemPath(t *testing.T) {
 		}
 
 		result, err := tt.tool.Call(args)
-		if err != nil {
-			t.Fatalf("%s: unexpected error: %v", tt.name, err)
+		if err == nil {
+			t.Fatalf("%s: denied operation must return a typed failure", tt.name)
 		}
 		var r struct {
 			Error string `json:"error"`

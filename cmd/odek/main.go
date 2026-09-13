@@ -2003,6 +2003,12 @@ func run(args []string) error {
 			if err != nil {
 				return fmt.Errorf("save session: %w", err)
 			}
+			release, err := store.AcquireExecution(ctx, sess.ID)
+			if err != nil {
+				return err
+			}
+			defer release()
+
 			// Attach operator-supplied external-state refs at creation time.
 			// Already validated at startup; AddExternalRefs dedupes on
 			// (kind, uri, created_by). odek never dereferences the URIs.
@@ -2078,7 +2084,10 @@ func run(args []string) error {
 					break
 				}
 			}
-			_ = sessionStore.Save(latest)
+			if err := sessionStore.Save(latest); err != nil {
+				return fmt.Errorf("persist enriched prompt: %w", err)
+			}
+			runSess = latest
 		}
 	}
 
@@ -2103,16 +2112,17 @@ func run(args []string) error {
 		// Persist per-turn progress so an interrupted run (Ctrl-C, SIGTERM,
 		// crash) can be resumed via `odek continue` from the last completed
 		// step instead of losing the whole in-progress turn.
+		var checkpointErr error
 		if runSess != nil {
 			agent.SetMessagesPersistCallback(func(snapshot []session.Message) {
-				if len(snapshot) < len(runSess.Messages) {
-					// The loop trimmed history in place — keep the richer
-					// state already persisted instead of overwriting it.
+				if checkpointErr != nil {
 					return
 				}
 				runSess.Messages = snapshot
 				if err := sessionStore.SaveNoIndex(runSess); err != nil {
-					fmt.Fprintf(os.Stderr, "odek: warning: failed to persist run session: %v\n", err)
+					checkpointErr = fmt.Errorf("persist run checkpoint: %w", err)
+					cancel()
+					return
 				}
 				agent.EmitEvent(events.Event{
 					Type:      events.TypeSessionSaved,
@@ -2123,6 +2133,9 @@ func run(args []string) error {
 		}
 
 		result, allMessages, runErr = agent.RunWithMessages(ctx, messages)
+		if checkpointErr != nil {
+			runErr = checkpointErr
+		}
 
 		// Append agent response to buffer
 		if runErr == nil && len(allMessages) > 0 {
@@ -2137,30 +2150,18 @@ func run(args []string) error {
 		}
 
 		if runErr == nil {
-			// Re-load the pre-created session and append the messages produced
-			// by the run. The per-turn persist callback above already saved the
-			// full history, so this delta is usually empty — Append still
-			// refreshes metadata and updates the vector index.
-			latest, err := sessionStore.Load(sessionID)
-			if err != nil {
-				return fmt.Errorf("load session: %w", err)
+			if runSess == nil {
+				return fmt.Errorf("session was not created")
 			}
-			var newMsgs []session.Message
-			if n := len(latest.GetMessages()); n < len(allMessages) {
-				newMsgs = allMessages[n:]
+			runSess.Messages = allMessages
+			runSess.Sandbox = resolved.Sandbox
+			if mm := agent.Memory(); mm != nil {
+				runSess.Buffer = mm.GetBuffer()
 			}
-			if err := sessionStore.Append(sessionID, newMsgs); err != nil {
+			if err := sessionStore.Save(runSess); err != nil {
 				return fmt.Errorf("save session: %w", err)
 			}
-			updated, err := sessionStore.Load(sessionID)
-			if err != nil {
-				return fmt.Errorf("reload session: %w", err)
-			}
-			updated.Sandbox = resolved.Sandbox
-			if mm := agent.Memory(); mm != nil {
-				updated.Buffer = mm.GetBuffer()
-			}
-			sessionStore.Save(updated)
+			updated := runSess
 			fmt.Fprintf(os.Stderr, "odek: session %s saved — continue with: odek continue \"...\"\n", updated.ID)
 		}
 
@@ -3096,11 +3097,6 @@ func persistPartialMessages(store *session.Store, sess *session.Session, message
 		return
 	}
 	messages = dropDanglingToolCalls(messages)
-	if len(messages) < len(sess.Messages) {
-		// The loop trimmed history in place — keep the richer state already
-		// persisted by the per-turn callback instead of overwriting it.
-		return
-	}
 	sess.Messages = messages
 	if err := store.SaveNoIndex(sess); err != nil {
 		fmt.Fprintf(os.Stderr, "odek: warning: failed to persist session: %v\n", err)
@@ -3168,12 +3164,21 @@ func continueCmd(args []string) error {
 		return fmt.Errorf("session store: %w", err)
 	}
 
-	var sess *session.Session
-	if sessionID != "" {
-		sess, err = store.Load(sessionID)
-	} else {
-		sess, err = store.Latest()
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer cancel()
+	if sessionID == "" {
+		latest, err := store.Latest()
+		if err != nil {
+			return fmt.Errorf("load session: %w", err)
+		}
+		sessionID = latest.ID
 	}
+	release, err := store.AcquireExecution(ctx, sessionID)
+	if err != nil {
+		return err
+	}
+	defer release()
+	sess, err := store.Load(sessionID)
 	if err != nil {
 		return fmt.Errorf("load session: %w", err)
 	}
@@ -3343,11 +3348,6 @@ func continueCmd(args []string) error {
 	// so it cannot be derived from sess afterwards.
 	histLen := len(messages)
 
-	// Create the run context early so that the return-after-break summary can
-	// be recorded in the audit log before the turn starts.
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer cancel()
-
 	// Audit: record every untrusted-content ingestion that fires during
 	// this turn. The recorder is scoped to the run context so a later turn
 	// (or background goroutine) cannot accidentally write to the wrong
@@ -3383,19 +3383,22 @@ func continueCmd(args []string) error {
 	// Persist per-turn progress so an interrupted run (Ctrl-C, SIGTERM,
 	// crash) can be resumed again from the last completed step instead of
 	// losing the whole in-progress turn.
+	var checkpointErr error
 	agent.SetMessagesPersistCallback(func(snapshot []session.Message) {
-		if len(snapshot) < len(sess.Messages) {
-			// The loop trimmed history in place — keep the richer state
-			// already persisted instead of overwriting it.
+		if checkpointErr != nil {
 			return
 		}
 		sess.Messages = snapshot
 		if err := store.SaveNoIndex(sess); err != nil {
-			fmt.Fprintf(os.Stderr, "odek: warning: failed to persist session: %v\n", err)
+			checkpointErr = fmt.Errorf("persist continuation checkpoint: %w", err)
+			cancel()
 		}
 	})
 
 	result, allMessages, err := agent.RunWithMessages(ctx, messages)
+	if checkpointErr != nil {
+		err = checkpointErr
+	}
 	recordTurnAudit(auditStore, sessIDCapture, currentTurn, originalTask, auditTurnDelta(allMessages, histLen))
 	if err != nil {
 		// Persist the partial history so the interrupted turn survives up
