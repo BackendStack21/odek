@@ -149,4 +149,4 @@ agent, err := odek.New(odek.Config{
 
 ## Cache / cost budgets
 
-Cache usage fields come from the SDK (`Usage.Cache*`). Pin **go-llm-sdk v0.3.2+** so GPT-5.6 tools+reasoning stays on (`POST /v1/responses`) and cache-token parsing remains honest.
+Cache usage fields come from the SDK (`Usage.Cache*`). Pin **go-llm-sdk v0.3.3+** so GPT-5.6 tools+reasoning stays on (`POST /v1/responses`), cache-token parsing remains honest, and DeepSeek thinking-mode tool loops replay `reasoning_content` instead of dropping it (v0.3.2 and older lose the key on turns where the provider elided reasoning, and the loop 400s from then on).
