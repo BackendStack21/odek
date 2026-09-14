@@ -21,6 +21,10 @@ docker/.odek/*
 
 sec_findings.md
 
+# Local commercial brief (not product docs)
+PITCH.html
+PITCH.pdf
+
 # Docs-audit working set — local only
 docs_findings.md
 SUB_AGENTS_IMPROVEMENTS.md

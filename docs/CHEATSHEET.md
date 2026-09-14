@@ -361,7 +361,7 @@ odek mcp --sandbox
 ## Key Design Properties
 
 - **Minimal Go dependencies** — all minimal-dependency Go packages from 21no.de
-- **~11 MB static binary**
+- **<15 MB static binary**
 - **One loop, one interface** — tool implementers write `func Call(args string) (string, error)`
 - **File-based config** — no YAML, no DSL, no schema generation
 - **Sandbox on by default** (CLI) with loud unsandboxed fallback when Docker is missing — no container runtime *required*, isolation unless you opt out

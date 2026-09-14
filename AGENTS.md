@@ -9,7 +9,7 @@ It provides context about the project's architecture, conventions, and how to up
 
 - **Package:** `odek` (Go module: `github.com/BackendStack21/odek`)
 - **What it is:** Minimal Go autonomous agent runtime — ReAct (Reasoning + Acting) loop with zero frameworks (stdlib + a few focused packages).
-- **Binary:** `odek` — single static binary, ~11 MB, instant startup.
+- **Binary:** `odek` — single static binary, <15 MB, instant startup.
 - **Config:** Five-layer priority: `~/.odek/secrets.env` → `~/.odek/config.json` → `./odek.json` → `ODEK_*` env vars → CLI flags.
 - **Extension contract:** `odek-extension/v1` (docs/EXTENSIONS.md) — MCP server limits, artifact refs, runtime events, external session refs, execution budgets.
 - **Releases:** tag-driven (`git tag vX.Y.Z && git push --tags` builds binaries + release). See [GitHub Releases](https://github.com/BackendStack21/odek/releases).
