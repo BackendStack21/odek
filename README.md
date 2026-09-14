@@ -32,7 +32,7 @@ odek is not a framework. It's a **runtime** — the smallest possible surface ar
 | | odek | Python agents (LangChain, CrewAI, etc.) |
 |---|---|---|
 | Dependencies | **6.** 3× 21no.de, 3× golang.org/x | 200+ packages |
-| Binary size | ~11 MB static | 50-200 MB with venv |
+| Binary size | <15 MB static | 50-200 MB with venv |
 | Startup | **Instant** | 2-10s (Python imports) |
 | Sandbox | **Default-on** Docker sandbox (`--no-sandbox` to opt out) | Requires manual Docker setup |
 | Tool interface | One interface, one method | Class hierarchies + decorators |

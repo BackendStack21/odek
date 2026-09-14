@@ -2,7 +2,7 @@
 
 Install **odek** (the agent engine), configure it with a **GLM 5.3 Flash** subscription from **z.ai**, and — optionally — add **bodek**, a polished terminal UI on top.
 
-odek is a single static Go binary (~11 MB, instant startup). No Python, no Node, no framework — one binary and an API key is the whole install.
+odek is a single static Go binary (<15 MB, instant startup). No Python, no Node, no framework — one binary and an API key is the whole install.
 
 ---
 

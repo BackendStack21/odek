@@ -435,7 +435,7 @@ func telegramCmd(args []string) error {
 	systemMessage += "- odek website: https://odek.21no.de\n"
 	systemMessage += "- Built by: 21no.de (https://21no.de)\n"
 	systemMessage += "- Binary name: odek\n"
-	systemMessage += "- Language: Go, minimal dependencies, ~11 MB binary\n"
+	systemMessage += "- Language: Go, minimal dependencies, <15 MB binary\n"
 	systemMessage += "\n"
 	systemMessage += "File attachment:\n"
 	systemMessage += "- You CAN send files (zip, pdf, images, csv, etc.) in BOTH intermediate replies\n"
