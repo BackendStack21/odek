@@ -47,6 +47,15 @@ actually reasons, and a reasoning summary is streamed back. `thinking=disabled`
 stays on Chat Completions with `reasoning_effort: none`. The same Responses
 route is used for GPT-5.4/5.5 when an explicit thinking level is set.
 
+**DeepSeek (`deepseek`, the default id):** thinking mode requires
+`reasoning_content` to be replayed on every assistant turn of a request that
+carries tools, including turns where the provider returned no reasoning of
+its own, which happens on some turns. With go-llm-sdk v0.3.3+ odek echoes the
+key on tool-carrying requests, so such a turn no longer serializes without it.
+On v0.3.2 and older the key is dropped when empty and a long tool loop dies
+mid-run with `400 ... The reasoning_content in the thinking mode must be
+passed back to the API`, then fails on every later request in that loop.
+
 ## odek knobs (not in the SDK)
 
 | Knob | Where |
