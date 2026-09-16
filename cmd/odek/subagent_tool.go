@@ -233,21 +233,21 @@ func (t *delegateTasksTool) Schema() any {
 						},
 						"guidance": map[string]any{
 							"type":        "string",
-							"description": "Optional. How the child should approach the task (not a system-prompt override). For output-heavy work: \"Write the full deliverable as a flat file in your artifact dir; keep the final answer to a short headline.\"",
+							"description": "Optional. How the child should approach the task (not a system-prompt override). For output-heavy work: deliver as a flat file in your artifact dir, final answer a short headline.",
 						},
 						"trust_level": map[string]any{
 							"type":        "string",
 							"enum":        []string{"trusted", "untrusted"},
-							"description": "Trust level of the goal/context strings. Omitted = \"untrusted\" — stricter approval defaults, the safe choice. Set \"trusted\" only when every part of goal/context is internally sourced (no fetched pages, no outside-CWD files, no MCP tool output); trust never increases downward.",
+							"description": "Trust level of the goal/context strings. Omitted = \"untrusted\" (safer). Set \"trusted\" only when all of goal/context is internally sourced — no fetched pages, outside-CWD files, or MCP tool output.",
 						},
 						"max_risk": map[string]any{
 							"type":        "string",
 							"enum":        []string{"safe", "local_write", "system_write", "destructive", "code_execution", "network_egress", "install", "blocked"},
-							"description": "Optional cap on the sub-agent's allowed risk class. Tool calls above this class will be denied in the sub-agent without prompting. Use for fan-out tasks that should be read-only.",
+							"description": "Optional cap on the sub-agent's allowed risk class; calls above it are denied without prompting.",
 						},
 						"profile": map[string]any{
 							"type":        "string",
-							"description": "Optional. Name of an operator-defined capability profile (top-level profiles config). The profile's max_risk, allowlist, and tool filter OVERRIDE the operator's global config for this sub-agent. Invoke list_subagent_profiles first to discover available profiles and pick the right one. Unknown names fail the task; when this field is omitted, the operator's default profile (subagent.default_profile) applies.",
+							"description": "Optional. Operator-defined capability profile name (profiles config); its max_risk/allowlist/tool-filter override global config. Call list_subagent_profiles first to pick one. Omitted = subagent.default_profile.",
 						},
 					},
 					"required": []string{"goal"},

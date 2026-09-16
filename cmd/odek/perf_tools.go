@@ -1418,7 +1418,7 @@ type jsonQueryTool struct {
 
 func (t *jsonQueryTool) Name() string { return "json_query" }
 func (t *jsonQueryTool) Description() string {
-	return `Parse a JSON file and extract a value using a dot-path query. Supports array indexing with [N]. Empty query returns the entire parsed JSON. Zero-fork — pure Go JSON traversal. Works inside the sandbox where shell jq may be absent.`
+	return `Parse a JSON file and extract a value using a dot-path query. Supports array indexing with [N]. Empty query returns the entire parsed JSON.`
 }
 
 type jsonQueryArgs struct {
@@ -1594,7 +1594,7 @@ type treeTool struct {
 
 func (t *treeTool) Name() string { return "tree" }
 func (t *treeTool) Description() string {
-	return `List the directory tree with file counts, sizes, and nesting. Returns a structured tree: each entry shows path, is_dir, file_count, total_size, children, depth. Zero-fork — pure Go directory walk. Entries deeper than max_depth (default 3, max 10) are silently cut — pass 10 before concluding a file is absent.`
+	return `List the directory tree with file counts, sizes, and nesting. Returns a structured tree: each entry shows path, is_dir, file_count, total_size, children, depth. Entries deeper than max_depth (default 3, max 10) are silently cut — pass 10 before concluding a file is absent.`
 }
 
 type treeArgs struct {
@@ -1929,7 +1929,7 @@ type headTailTool struct {
 
 func (t *headTailTool) Name() string { return "head_tail" }
 func (t *headTailTool) Description() string {
-	return `Read the first or last N lines of one or more files. Reports the file's exact total line count (the head path scans the whole file, bounded by a 1 MiB line buffer). Supports multiple files in parallel. Zero-fork — pure Go scanner. Default 10 lines, max 100 — this is a peek, not the file; for whole content use read_file, and compare the returned count to total_lines before trusting it.`
+	return `Read the first or last N lines of one or more files. Reports the file's exact total line count (the head path scans the whole file, bounded by a 1 MiB line buffer). Supports multiple files in parallel. Default 10 lines, max 100 — this is a peek, not the file; for whole content use read_file, and compare the returned count to total_lines before trusting it.`
 }
 
 type headTailFileArg struct {
@@ -2127,7 +2127,7 @@ type base64Tool struct {
 
 func (t *base64Tool) Name() string { return "base64" }
 func (t *base64Tool) Description() string {
-	return `Encode or decode base64. Supports file input (path) or inline string (content). Encode: file or string → base64. Decode: base64 string → decoded string. Zero-fork — pure Go encoding; works inside the sandbox where shell xxd/openssl may be absent. Use path for file, content for inline string, decode=true to decode.`
+	return `Encode or decode base64. Supports file input (path) or inline string (content). Encode: file or string → base64. Decode: base64 string → decoded string. Use path for file, content for inline string, decode=true to decode.`
 }
 
 type base64Args struct {

@@ -143,9 +143,9 @@ type shellTool struct {
 func (t *shellTool) Name() string { return "shell" }
 
 func (t *shellTool) Description() string {
-	return `Run a shell command and return its output. Use for builds, tests, git, package management, scripts. For file inspection prefer the zero-fork tools (read_file, glob, tree, search_files, head_tail).
-Output is fully buffered: nothing is returned until the command exits (a tool_running heartbeat fires every 60s while it runs). Set timeout_seconds explicitly for long commands so stuck ones fail fast (default/clamp: 1800s). Work that would block the turn for minutes belongs in bg_start instead.
-High-risk operations may prompt for approval (Risk classes: safe, local_write, system_write, destructive, network_egress, code_execution, install, unknown, blocked); the gate fails closed — unrecognised commands are denied.`
+	return `Run a shell command and return its output. Use for builds, tests, git, package management, scripts. For file inspection prefer read_file, glob, tree, search_files, head_tail.
+Output is fully buffered: nothing returns until the command exits (a tool_running heartbeat fires every 60s). Set timeout_seconds for long commands so stuck ones fail fast (default/clamp: 1800s). Work that would block the turn for minutes belongs in bg_start.
+High-risk operations may prompt for approval (see Risk classes in docs/SECURITY.md); the gate fails closed — unrecognised commands are denied.`
 }
 
 func (t *shellTool) Schema() any {
