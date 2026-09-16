@@ -165,7 +165,8 @@ odek can emit a structured runtime event stream: **one JSON object per line
   `tool_call_started`, `tool_call_completed`, `tool_call_failed`,
   `session_saved`, `context_trimmed`, `budget_exceeded`, `run_completed`,
   `run_failed`, `plan_created`, `plan_updated`, `plan_blocked`, `subagent_denied`,
-  `subagent_spawned`, `subagent_completed`, `subagent_concurrency_wait`.
+  `subagent_spawned`, `subagent_completed`, `subagent_concurrency_wait`,
+  `side_call_usage`.
 - `run_id` is a random 128-bit hex identifier generated per agent run and
   stamped on every event of that run. `session_id` appears once the session
   is known; earlier events omit it. `iteration` is the 1-based loop
@@ -190,6 +191,7 @@ Per-type `data` fields:
 | `tool_call_failed` | `call_id`, `duration_ms`, `error_class` |
 | `session_saved` | `message_count` |
 | `context_trimmed` | `mode` (`proactive`/`survival`), `dropped_groups`, `truncated_results` |
+| `side_call_usage` | `kind` (`compaction`/`progress_summary`/`main_partial`), `input_tokens`, `output_tokens`, `cache_read`, `cache_create` — `compaction`/`progress_summary` are side-call cost emitted separately from main-path token accounting; `main_partial` covers a failed main-path call's partial tokens (pre-existing charging, now observable) |
 | `budget_exceeded` | `limit_name` (`runtime`/`tool_calls`/`input_tokens`/`output_tokens`/`cost_usd`), `observed`, `limit` |
 | `run_completed` | `duration_ms` (run wall clock, tools included), `input_tokens`, `output_tokens` (run totals), `llm_duration_ms` (sum of main think-step LLM calls), `tokens_per_second` (think-step output / `llm_duration_ms`; omitted when unknown) |
 | `run_failed` | `duration_ms`, `error_class`, plus the same `llm_duration_ms` / `tokens_per_second` as `run_completed` when at least one think step was measured before the failure |

@@ -832,7 +832,7 @@ func TestCompactionSystemPrompt_SkeletonAndIPI(t *testing.T) {
 	}
 }
 
-func TestSummarizeDropped_IncludesRemainingPlanIDsNotTitles(t *testing.T) {
+func TestSummarizeDropped_IncludesRemainingPlanIDsAndTitles(t *testing.T) {
 	var bodies []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		data, _ := io.ReadAll(r.Body)
@@ -854,12 +854,17 @@ func TestSummarizeDropped_IncludesRemainingPlanIDsNotTitles(t *testing.T) {
 	if !strings.Contains(body, "s2=in_progress") || !strings.Contains(body, "s3=pending") {
 		t.Errorf("remaining plan ids missing from summarizer input: %.400s", body)
 	}
-	if strings.Contains(body, secretPlanTitle) || strings.Contains(body, secretPlanNote) {
-		t.Errorf("plan titles/notes leaked into summarizer input: %.400s", body)
+	// Titles are model-authored context the summarizer needs (the plan
+	// message itself may be the dropped content). Notes stay out.
+	if !strings.Contains(body, secretPlanTitle) {
+		t.Errorf("remaining plan titles missing from summarizer input: %.400s", body)
+	}
+	if strings.Contains(body, secretPlanNote) {
+		t.Errorf("plan notes leaked into summarizer input: %.400s", body)
 	}
 }
 
-func TestExtractiveDigest_IncludesRemainingPlanIDsNotTitles(t *testing.T) {
+func TestExtractiveDigest_IncludesRemainingPlanIDsAndTitles(t *testing.T) {
 	store := NewPlanStore(12, 2000)
 	seedPlanMessage(t, store)
 	engine := &Engine{planStore: store}
@@ -867,8 +872,11 @@ func TestExtractiveDigest_IncludesRemainingPlanIDsNotTitles(t *testing.T) {
 	if !strings.Contains(got, "s2=in_progress") || !strings.Contains(got, "s3=pending") {
 		t.Errorf("remaining plan ids missing from extractive digest: %.400s", got)
 	}
-	if strings.Contains(got, secretPlanTitle) || strings.Contains(got, secretPlanNote) {
-		t.Errorf("plan titles/notes leaked into extractive digest: %.400s", got)
+	if !strings.Contains(got, secretPlanTitle) {
+		t.Errorf("remaining plan titles missing from extractive digest: %.400s", got)
+	}
+	if strings.Contains(got, secretPlanNote) {
+		t.Errorf("plan notes leaked into extractive digest: %.400s", got)
 	}
 	if !strings.Contains(got, "old work") {
 		t.Errorf("dropped content missing from extractive digest: %.400s", got)
@@ -900,8 +908,8 @@ func TestSummarizeProgress_IncludesRemainingPlanIDs(t *testing.T) {
 	if !strings.Contains(body, "s2=in_progress") {
 		t.Errorf("remaining plan ids missing from progress summarizer input: %.400s", body)
 	}
-	if strings.Contains(body, secretPlanTitle) {
-		t.Errorf("plan title leaked into progress summarizer input: %.400s", body)
+	if !strings.Contains(body, secretPlanTitle) {
+		t.Errorf("remaining plan titles missing from progress summarizer input: %.400s", body)
 	}
 }
 
