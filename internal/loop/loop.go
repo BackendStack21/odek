@@ -541,16 +541,21 @@ type Engine struct {
 	// (Config.Compaction). compactDigest holds the last LLM digest (or the
 	// wrapped body restored on resume). An extractive sketch is installed
 	// immediately so the think step is not blocked on the side call.
-	compaction         bool
-	compactDigest      string
-	digestInstalled    bool // digest system message is in this run's history
-	compactMu          sync.Mutex
-	digestGen          uint64
-	digestCancel       context.CancelFunc
-	pendingDropped     []session.Message
-	pendingDigest      string
-	pendingUsage       *llmclient.CallResult
-	pendingDigestReady bool
+	compaction            bool
+	compactDigest         string
+	digestInstalled       bool   // digest system message is in this run's history
+	lastDigestRaw         string // last summary passed to installDigest (wrapper cache key)
+	lastDigestWrapped     string // cached wrapped form; reused while summary unchanged to avoid nonce churn
+	compactMu             sync.Mutex
+	digestGen             uint64
+	digestCancel          context.CancelFunc
+	digestInFlight        bool // a summarizer side call is running; new trims debounce instead of canceling
+	digestDirty           bool // drops arrived while the side call was in flight; refetch after it lands
+	pendingDropped        []session.Message
+	pendingDroppedCovered int // prefix length of pendingDropped the ready digest actually summarized
+	pendingDigest         string
+	pendingUsage          *llmclient.CallResult
+	pendingDigestReady    bool
 
 	// planStore holds the structured plan state (internal/loop/plan.go).
 	// Shared with the plan tool — one store, two holders, mirroring how the
@@ -1639,7 +1644,18 @@ func (e *Engine) installDigest(ctx context.Context, messages []session.Message, 
 		return messages
 	}
 	e.digestInstalled = true
-	body := e.protectDerivedContext(ctx, "compaction", summary)
+	// Reuse the cached wrapper while the summary is unchanged: a fresh nonce
+	// per install churns the digest message bytes and invalidates the
+	// provider prefix cache from the digest position onward (same treatment
+	// as the plan message and the memory slot).
+	var body string
+	if summary == e.lastDigestRaw && e.lastDigestWrapped != "" {
+		body = e.lastDigestWrapped
+	} else {
+		body = e.protectDerivedContext(ctx, "compaction", summary)
+		e.lastDigestRaw = summary
+		e.lastDigestWrapped = body
+	}
 	content := digestMsgHeader + body
 
 	for i := range messages {
@@ -1683,7 +1699,14 @@ func (e *Engine) applyPendingDigest(ctx context.Context, messages []session.Mess
 	e.pendingDigest = ""
 	e.pendingUsage = nil
 	e.pendingDigestReady = false
-	e.pendingDropped = nil
+	// Trim only the prefix the digest actually covered — drops that arrived
+	// while the side call was in flight stay queued for the next side call.
+	if e.pendingDroppedCovered >= len(e.pendingDropped) {
+		e.pendingDropped = nil
+	} else {
+		e.pendingDropped = e.pendingDropped[e.pendingDroppedCovered:]
+	}
+	e.pendingDroppedCovered = 0
 	e.compactMu.Unlock()
 	if usage != nil {
 		e.recordSideCallUsage(usage)
@@ -1695,40 +1718,58 @@ func (e *Engine) applyPendingDigest(ctx context.Context, messages []session.Mess
 	return e.installDigest(ctx, messages, summary)
 }
 
-// startDigestSideCall runs summarizeDropped in the background. A newer
-// trim cancels the in-flight HTTP so a stale result cannot overwrite a
-// newer extractive sketch. Skipped when the run is already over budget.
+// startDigestSideCall runs summarizeDropped in the background. A new trim
+// while a call is in flight DEBOUNCES instead of canceling: restarting the
+// whole HTTP round-trip per trim burned full LLM calls under trim bursts.
+// pendingDropped keeps accumulating; when the in-flight call lands, a dirty
+// flag refetches a follow-up call over the remaining delta, so no drops are
+// ever left unsummarized. Skipped when the run is already over budget.
 func (e *Engine) startDigestSideCall(parent context.Context, dropped []session.Message) {
 	if e.client == nil || !e.budgetAllowsSideCall() {
 		return
 	}
-	dropped = append([]session.Message(nil), dropped...)
-	prev := e.compactDigest
 	e.compactMu.Lock()
-	if e.digestCancel != nil {
-		e.digestCancel()
+	if e.digestInFlight {
+		e.digestDirty = true
+		e.compactMu.Unlock()
+		return
 	}
+	prev := e.compactDigest
 	e.digestGen++
 	gen := e.digestGen
 	callCtx, cancel := context.WithTimeout(parent, e.sideTimeout())
 	e.digestCancel = cancel
+	e.digestInFlight = true
 	e.compactMu.Unlock()
 
 	go func() {
 		defer cancel()
 		summary, usage := e.summarizeDroppedWithUsage(callCtx, dropped, prev)
 		e.compactMu.Lock()
-		defer e.compactMu.Unlock()
+		e.digestInFlight = false
+		refetch := e.digestDirty
+		e.digestDirty = false
 		if gen != e.digestGen {
+			e.compactMu.Unlock()
 			return
 		}
 		e.digestCancel = nil
-		if summary == "" && usage == nil {
-			return
+		if summary != "" || usage != nil {
+			e.pendingDigest = summary
+			e.pendingUsage = usage
+			e.pendingDroppedCovered = len(dropped)
+			e.pendingDigestReady = true
 		}
-		e.pendingDigest = summary
-		e.pendingUsage = usage
-		e.pendingDigestReady = true
+		// Dirty refetch: drops arrived while this call was in flight. Spawn
+		// a follow-up over the uncovered suffix so nothing stays unsummarized.
+		var delta []session.Message
+		if refetch && len(e.pendingDropped) > len(dropped) {
+			delta = append([]session.Message(nil), e.pendingDropped[len(dropped):]...)
+		}
+		e.compactMu.Unlock()
+		if len(delta) > 0 {
+			e.startDigestSideCall(context.Background(), delta)
+		}
 	}()
 }
 
@@ -1738,6 +1779,8 @@ func (e *Engine) cancelDigestSideCall() {
 	e.compactMu.Lock()
 	cancel := e.digestCancel
 	e.digestCancel = nil
+	e.digestInFlight = false
+	e.digestDirty = false
 	e.digestGen++
 	e.compactMu.Unlock()
 	if cancel != nil {
