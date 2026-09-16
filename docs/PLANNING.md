@@ -529,6 +529,21 @@ semantics, payload minimality, `ExtractPlan`), `cmd/odek/serve_plan_test.go`
   fingerprint classified `local_write` or higher (or whose last outcome was
   denied/blocked) escalates to “stop retrying that class” and names the next
   pending step as `next_non_mutating`. Still a hint — never an auto-exec.
+  Hints **escalate** instead of resetting: the interval between fires doubles
+  (3 → 6 → 12 → … identical calls per fingerprint), and repeat fires are
+  marked with an `again` suffix/detail so the model can tell a fresh hint
+  from an escalated repeat (`tool_recovery` detail reads `repeated identical
+  call (Nx<tool>, again)`).
+- **Bounded background-job polling.** `bg_status` / `bg_output` fingerprints
+  get a 3× raised stall threshold — 9 identical polls with no state change —
+  before the same corrective hint fires with a poll-specific message (the job
+  may be stuck or the id dead). Legitimate polling with changing results
+  never trips it.
+- **Remaining-steps prefix on side calls.** The compaction-digest and
+  progress-summary side-call payloads are prepended with the remaining plan
+  steps **including titles** (`Remaining plan steps: …`), not bare ids —
+  these payloads may be the only surviving context after a trim, so ids alone
+  tell the summarizer nothing. Stall hints keep the title-free id format.
 - **Blocked-step streak.** Three consecutive transitions to `blocked` inject
   a decompose-or-`create` hint and emit `plan_blocked` (`steps`, `blocked`,
   `version` only). The streak resets on `create` or a `done` / `in_progress`

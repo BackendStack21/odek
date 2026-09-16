@@ -217,6 +217,7 @@ Key properties:
 - **Size cap**: defaults to 100 MB with `retention_decay` eviction; pinned atoms are never evicted.
 - **Tool surface**: `memory` tool actions `add_atom`, `search_atoms`, `forget_atom`, `pin_atom`, `list_quarantine`, `confirm_pending_review`, `reject_pending_review`, and `list_pending_review`.
 - **CLI surface**: `odek memory extended forget|promote|pin|quarantine|compact|stats|consolidate|nudges|pending|confirm|reject`.
+- **Pending user-model corrections**: unconfirmed `pending_review` entries age out after `memory.extended.user_state_pending_max_age_days` (default 14; explicit `0` disables expiry). Only unconfirmed pending entries are pruned — confirmed facts are never touched.
 
 **Proactive nudges** (opt-in): when `memory.extended.proactive_nudges_enabled` is `true` (default `false`), Extended Memory can synthesize short, user-facing nudges from trusted atoms — open questions, stale goals, blockers, and drift. Delivery is capped by `nudge_max_per_day` with a per-kind cooldown (`nudge_cooldown_hours`); goals only become "stale" after `nudge_stale_goal_days`. The Telegram bot pushes at most one nudge after a completed turn (in the background, prefixed with 💡). `odek memory extended nudges` prints a preview of up to 2 nudges without consuming the daily cap.
 
