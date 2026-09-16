@@ -507,6 +507,27 @@ func formatRemainingPlanSteps(state PlanState) string {
 	return strings.Join(parts, " ")
 }
 
+// formatRemainingPlanStepsDetailed is the side-call variant: it appends the
+// normalized step title ("s1=pending - Ship the parser"). Titles are
+// model-authored, already on the main transcript, and stored normalized
+// (newlines/em dashes flattened at create), so the grammar stays one step
+// per token. The summarizer needs them — its payload may be the only
+// context where the plan survives after a trim.
+func formatRemainingPlanStepsDetailed(state PlanState) string {
+	var parts []string
+	for _, st := range state.Steps {
+		if st.Status == StepDone {
+			continue
+		}
+		if st.Title != "" {
+			parts = append(parts, st.ID+"="+string(st.Status)+" - "+st.Title)
+		} else {
+			parts = append(parts, st.ID+"="+string(st.Status))
+		}
+	}
+	return strings.Join(parts, "; ")
+}
+
 // normalizePlanText flattens text so the rendered line grammar stays
 // unambiguous: newlines become spaces (one step = one line) and em dashes
 // become hyphens (the renderer reserves " — " as the title/note separator).

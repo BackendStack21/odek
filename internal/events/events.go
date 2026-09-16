@@ -46,6 +46,7 @@ const (
 	TypePlanBlocked        = "plan_blocked"
 	TypeSubagentSpawned    = "subagent_spawned"
 	TypeSubagentCompleted  = "subagent_completed"
+	TypeSideCallUsage      = "side_call_usage"
 )
 
 // Budget limit names carried in budget_exceeded events (data.limit_name).

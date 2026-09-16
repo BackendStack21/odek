@@ -1738,7 +1738,7 @@ func (e *Engine) applyPendingDigest(ctx context.Context, messages []session.Mess
 	e.pendingDroppedCovered = 0
 	e.compactMu.Unlock()
 	if usage != nil {
-		e.recordSideCallUsage(usage)
+		e.recordSideCallUsage("compaction", usage)
 	}
 	if summary == "" {
 		return messages
@@ -1893,7 +1893,7 @@ func (e *Engine) protectDerivedContext(ctx context.Context, source, content stri
 func (e *Engine) summarizeDropped(ctx context.Context, dropped []session.Message) string {
 	summary, usage := e.summarizeDroppedWithUsage(ctx, dropped, e.compactDigest)
 	if usage != nil {
-		e.recordSideCallUsage(usage)
+		e.recordSideCallUsage("compaction", usage)
 	}
 	return summary
 }
@@ -1957,9 +1957,12 @@ func (e *Engine) summarizeDroppedWithUsage(ctx context.Context, dropped []sessio
 	return strings.TrimSpace(res.Content), res
 }
 
-// sideCallPlanPrefix prepends remaining plan step IDs and statuses to a
-// compaction or progress-summary user payload. Titles and notes stay out —
-// they already live in the wrapped plan message on the main transcript.
+// sideCallPlanPrefix prepends remaining plan steps to a compaction or
+// progress-summary user payload, WITH titles: these payloads may be the
+// only surviving context after a trim (the wrapped plan message itself can
+// be dropped), so bare ids tell the summarizer nothing. Titles are
+// model-authored and stored normalized — no new exposure. (Stall hints
+// keep the title-free format; that pin is unchanged.)
 func (e *Engine) sideCallPlanPrefix() string {
 	if e == nil || e.planStore == nil {
 		return ""
@@ -1968,11 +1971,11 @@ func (e *Engine) sideCallPlanPrefix() string {
 	if !ok {
 		return ""
 	}
-	ids := formatRemainingPlanSteps(state)
+	ids := formatRemainingPlanStepsDetailed(state)
 	if ids == "" {
 		return ""
 	}
-	return "Remaining plan steps (ids and statuses only): " + ids + "\n\n"
+	return "Remaining plan steps: " + ids + "\n\n"
 }
 
 // ── Protected plan message (digest-pattern integration) ───────────────
@@ -2143,10 +2146,10 @@ func (e *Engine) summarizeProgress(ctx context.Context, messages []session.Messa
 	// calls is not a summary (its content is pre-tool chatter), so treat it
 	// as a failure and keep the original error path.
 	if len(res.ToolCalls) > 0 || (res.Termination != "" && res.Termination != llmclient.TerminationComplete) {
-		e.recordSideCallUsage(res)
+		e.recordSideCallUsage("progress_summary", res)
 		return ""
 	}
-	e.recordSideCallUsage(res)
+	e.recordSideCallUsage("progress_summary", res)
 	return strings.TrimSpace(res.Content)
 }
 
@@ -2198,21 +2201,41 @@ func (e *Engine) budgetExceeded(ctx context.Context, messages []session.Message,
 // per-run totals. Totals feed budget enforcement (max_input_tokens /
 // max_output_tokens / cost caps) and usage reporting; a side call invisible
 // to them silently exceeds the caps and under-reports consumption.
-func (e *Engine) recordSideCallUsage(res *llmclient.CallResult) {
+// recordSideCallUsage merges a compaction/progress-summary side call's
+// tokens into the run totals and emits a side_call_usage signal so run
+// events (--events-jsonl) and /api/usage consumers can quantify the
+// side-call cost separately from the main conversation.
+func (e *Engine) recordSideCallUsage(kind string, res *llmclient.CallResult) {
 	if res == nil {
 		return
 	}
 	e.externalChargeMu.Lock()
-	defer e.externalChargeMu.Unlock()
 	e.TotalInputTokens += res.InputTokens
 	e.TotalOutputTokens += res.OutputTokens
 	e.TotalCacheCreationTokens += res.CacheCreationTokens
 	e.TotalCacheReadTokens += res.CacheReadTokens
 	e.TotalCachedTokens += res.CachedTokens
 	e.TotalCacheReported = e.TotalCacheReported || res.CacheReported
-	// Note: side calls (compaction/budget summaries) deliberately do NOT
-	// update lastPromptTokens — their prompts are tiny {system, snippet},
-	// not the conversation window.
+	e.externalChargeMu.Unlock()
+	// Note: side calls deliberately do NOT update lastPromptTokens — their
+	// prompts are tiny {system, snippet}, not the conversation window.
+	e.emitSignal(SignalEvent{
+		Type: "side_call_usage",
+		Tool: kind,
+		Detail: fmt.Sprintf("in=%d out=%d cache_read=%d cache_create=%d",
+			res.InputTokens, res.OutputTokens, res.CacheReadTokens, res.CacheCreationTokens),
+	})
+	e.emitEvent(events.Event{
+		Type: events.TypeSideCallUsage,
+		Tool: kind,
+		Data: map[string]any{
+			"kind":          kind,
+			"input_tokens":  res.InputTokens,
+			"output_tokens": res.OutputTokens,
+			"cache_read":    res.CacheReadTokens,
+			"cache_create":  res.CacheCreationTokens,
+		},
+	})
 }
 
 // promptWindowTokens normalizes a call's provider-reported usage into the
@@ -2773,7 +2796,7 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 		result, err := e.callLLM(ctx, messages, tools)
 		if err != nil {
 			if result != nil {
-				e.recordSideCallUsage(result)
+				e.recordSideCallUsage("interrupted_partial", result)
 				if result.Content != "" && !isContextLengthError(err) {
 					partial := "[Partial response: interrupted]\n\n" + result.Content
 					messages = append(messages, session.Message{Role: "assistant", Content: partial, ReasoningContent: result.ReasoningContent})
