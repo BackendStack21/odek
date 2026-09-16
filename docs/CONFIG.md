@@ -621,6 +621,7 @@ The `memory` section controls the persistent memory system (see [docs/MEMORY.md]
 | `infer_user_state` | `true` | — | — | Reserved for future user-state model inference. Currently accepted but ignored. |
 | `user_state_turn_interval` | `5` | — | — | Turns between user-model inference passes (when the user-state model is active). |
 | `user_state_max_pending` | `20` | — | — | Cap on pending user-model corrections queue. |
+| `user_state_pending_max_age_days` | `14` | `0` disables | — | Drop unconfirmed pending corrections older than this many days (confirmed facts are never touched). |
 | `associations_enabled` | `true` | — | — | Atom associations: semantic neighbors linked for co-recall. |
 | `association_semantic_top_k` | `3` | — | — | Semantic neighbors linked per atom. |
 | `proactive_return_after_break` | `true` | — | — | Return-after-break summary on the first turn after a gap. |
