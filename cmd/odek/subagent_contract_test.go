@@ -823,7 +823,8 @@ func TestExtractSummary_AssistantWithToolCallsOnly(t *testing.T) {
 }
 
 // Updated for the headline cap (SUBAGENT_RESULT_ARTIFACTS_PLAN.md):
-// extractSummary now carries 2048 runes instead of the old 500-rune cut.
+// extractSummary carries 2048 runes; since the tail-keep change the cut
+// preserves the END of the answer (verdicts) with a leading ellipsis.
 func TestExtractSummary_TruncatesLongOutput(t *testing.T) {
 	longContent := strings.Repeat("a", 3000)
 	msgs := []session.Message{
@@ -833,8 +834,11 @@ func TestExtractSummary_TruncatesLongOutput(t *testing.T) {
 	if len([]rune(summary)) > subagentHeadlineMaxRunes+1 { // cap + ellipsis
 		t.Errorf("extractSummary too long: %d runes (max %d)", len([]rune(summary)), subagentHeadlineMaxRunes+1)
 	}
-	if !strings.HasSuffix(summary, "…") {
-		t.Errorf("truncated summary should end with '…', got: %q", summary)
+	if !strings.HasPrefix(summary, "…") {
+		t.Errorf("truncated summary should start with '…' (tail-keep), got: %q", summary)
+	}
+	if !strings.HasSuffix(summary, longContent[len(longContent)-10:]) {
+		t.Errorf("tail-keep summary must preserve the answer END, got: %q", summary)
 	}
 }
 

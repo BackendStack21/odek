@@ -28,8 +28,11 @@ func TestExtractSummary_HeadlineCap(t *testing.T) {
 	if n := len([]rune(got)); n != subagentHeadlineMaxRunes+1 { // cap + ellipsis
 		t.Errorf("headline cap: got %d runes, want %d (cap + ellipsis)", n, subagentHeadlineMaxRunes+1)
 	}
-	if !strings.HasPrefix(got, long[:subagentHeadlineMaxRunes]) {
-		t.Error("headline must preserve the answer prefix")
+	if !strings.HasPrefix(got, "…") {
+		t.Error("tail-keep headline must mark the cut with a leading ellipsis")
+	}
+	if !strings.HasSuffix(got, long[len(long)-subagentHeadlineMaxRunes:]) {
+		t.Error("tail-keep headline must preserve the answer END")
 	}
 }
 

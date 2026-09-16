@@ -242,11 +242,14 @@ func intBudgetBand(max, remaining int64, exhausted bool, t int, label string) st
 // set status/partial_reason without string-matching the markers themselves.
 func PartialSummaryReason(final string) (string, bool) {
 	switch {
-	case strings.HasPrefix(final, budgetSummaryMarker):
+	// Contains, not HasPrefix: the sub-agent headline is tail-kept, so an
+	// over-cap partial summary loses its leading bytes — the marker must
+	// still be detected anywhere in the text (markers are unique sentinels).
+	case strings.Contains(final, budgetSummaryMarker):
 		return "iteration_budget", true
-	case strings.HasPrefix(final, execBudgetSummaryMarker):
+	case strings.Contains(final, execBudgetSummaryMarker):
 		return "execution_budget", true
-	case strings.HasPrefix(final, timeBudgetSummaryMarker):
+	case strings.Contains(final, timeBudgetSummaryMarker):
 		return "time_budget", true
 	}
 	return "", false
