@@ -3881,11 +3881,6 @@ func isBGPollTool(name string) bool {
 	return name == "bg_status" || name == "bg_output"
 }
 
-// isPow2 reports whether n is a positive power of two.
-func isPow2(n int) bool {
-	return n > 0 && n&(n-1) == 0
-}
-
 // againSuffix marks an escalated (repeat) stall hint so the model can tell
 // it apart from the first one — the loop is persistent, not self-correcting.
 func againSuffix(repeat bool) string {
