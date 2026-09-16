@@ -32,7 +32,7 @@ func TestDelegateTasksDescription_ArtifactChannel(t *testing.T) {
 		"32 KB",
 		"artifact_read(id)",
 		"flat file in your artifact dir",
-		"trailing … means it was cut",
+		"leading … marks the cut",
 	} {
 		if !strings.Contains(desc, want) {
 			t.Errorf("Description() missing %q — the parent LLM cannot learn the artifact protocol", want)

@@ -207,7 +207,7 @@ func (t *delegateTasksTool) Description() string {
 	return `Spawn sub-agent processes for independent sub-tasks. Each child has a fresh context — put everything it needs in goal/context. Children never prompt for approvals (denials are listed). Trust never increases downward. Depth is capped.
 
 Result delivery — two channels per sub-agent:
-- Headline: the sub-agent's final answer, capped at ~2000 characters. Treat it as a status summary; a trailing … means it was cut.
+- Headline: the sub-agent's final answer, capped at ~2000 characters keeping the END (verdicts, next actions) — a leading … marks the cut.
 - Artifacts: validated file deliverables (id, type, size, one-line summary). text/* ≤32 KB is inlined; fetch the rest with artifact_read(id). For artifact-heavy work, set guidance to write a flat file in your artifact dir and keep the final answer to a short headline.`
 }
 

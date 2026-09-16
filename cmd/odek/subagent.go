@@ -1364,12 +1364,15 @@ const subagentHeadlineMaxRunes = 2048
 
 // extractSummaryInfo returns the child's final answer cut to the headline
 // cap, the ORIGINAL rune count, and whether it was cut (C — the parent
-// render turns this into a visible truncation marker). The bulk channel is
-// the artifact protocol; the headline is a status summary.
+// render turns this into a visible truncation marker). The cut keeps the
+// TAIL of the answer with a leading ellipsis: verdicts, recommendations,
+// and next actions live at the end of a report — a head cut dropped
+// exactly the conclusions. The bulk channel is the artifact protocol; the
+// headline is a status summary.
 func extractSummaryInfo(messages []session.Message) (string, int, bool) {
 	for i := len(messages) - 1; i >= 0; i-- {
 		if messages[i].Role == "assistant" && messages[i].Content != "" {
-			s, total := truncateWithLen(messages[i].Content, subagentHeadlineMaxRunes)
+			s, total := truncateTailWithLen(messages[i].Content, subagentHeadlineMaxRunes)
 			return s, total, total > subagentHeadlineMaxRunes
 		}
 	}
@@ -1392,6 +1395,20 @@ func truncateWithLen(s string, n int) (string, int) {
 		return s, len(runes)
 	}
 	return string(runes[:n]) + "…", len(runes)
+}
+
+// truncateTailWithLen keeps the LAST n runes of s (prepending "…") and
+// reports the ORIGINAL rune count. Used by the sub-agent headline: the end
+// of a report carries the verdict; the start is boilerplate.
+func truncateTailWithLen(s string, n int) (string, int) {
+	runes := []rune(s)
+	if n <= 0 {
+		return "…", len(runes)
+	}
+	if len(runes) <= n {
+		return s, len(runes)
+	}
+	return "…" + string(runes[len(runes)-n:]), len(runes)
 }
 
 func extractFilesChanged(messages []session.Message) []string {

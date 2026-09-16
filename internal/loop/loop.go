@@ -549,9 +549,10 @@ type Engine struct {
 	compactMu             sync.Mutex
 	digestGen             uint64
 	digestCancel          context.CancelFunc
-	digestInFlight        bool // a summarizer side call is running; new trims debounce instead of canceling
-	digestDirty           bool // drops arrived while the side call was in flight; refetch after it lands
-	digestCallStart       int  // pendingDropped index where the in-flight call's input begins
+	digestInFlight        bool           // a summarizer side call is running; new trims debounce instead of canceling
+	digestDirty           bool           // drops arrived while the side call was in flight; refetch after it lands
+	digestCallStart       int            // pendingDropped index where the in-flight call's input begins
+	toolStallMilestones   map[string]int // next stall-hint threshold per fingerprint (doubles per fire)
 	pendingDropped        []session.Message
 	pendingDroppedCovered int // prefix length of pendingDropped the ready digest actually summarized
 	pendingDigest         string
@@ -3508,6 +3509,9 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 		const (
 			errThreshold   = 3 // consecutive errors before intervention
 			stallThreshold = 3 // consecutive identical successful calls before intervention
+			// bgPollStallThreshold: polling is legitimate (results change), so
+			// poll fingerprints get a 3× raised threshold before the hint.
+			bgPollStallThreshold = 3 * stallThreshold
 		)
 		var corrections []string
 		for idx, tc := range result.ToolCalls {
@@ -3540,10 +3544,28 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 				// polling exists.
 				fp := toolName + "\x00" + tc.Function.Arguments
 				if isBGPollTool(toolName) {
-					// Background-job polling tools: leave the counters
-					// untouched — identical polling is normal, AND
-					// interleaved ordinary-call repetition must still
-					// count toward the threshold.
+					// Background-job polling tools: legitimate repetition, but
+					// BOUNDED — after 3× the normal threshold of identical
+					// polls (a pinned dead job id), fire the same hint. Count
+					// in the same fingerprint map with a raised milestone.
+					if e.toolRepeatCounts == nil {
+						e.toolRepeatCounts = make(map[string]int)
+					}
+					if _, ok := e.toolRepeatCounts[fp]; !ok && len(e.toolRepeatCounts) >= 64 {
+						evictLowestStallCount(e.toolRepeatCounts)
+					}
+					e.toolRepeatCounts[fp]++
+					if e.toolRepeatCounts[fp] >= bgPollStallThreshold {
+						corrections = append(corrections, fmt.Sprintf(
+							"⚠️ You polled %q with identical arguments %d times with no state change%s. The job may be stuck or the id wrong: check bg_list for valid ids, read bg_output for the job's progress, or move on.",
+							toolName, e.toolRepeatCounts[fp], againSuffix(e.toolRepeatCounts[fp] > bgPollStallThreshold)))
+						e.emitSignal(SignalEvent{
+							Type:   "tool_recovery",
+							Tool:   toolName,
+							Detail: fmt.Sprintf("repeated identical poll (%dx%s)", e.toolRepeatCounts[fp], againDetail(e.toolRepeatCounts[fp] > bgPollStallThreshold)),
+						})
+						e.toolRepeatCounts[fp] *= 2
+					}
 				} else {
 					if e.toolRepeatCounts == nil {
 						e.toolRepeatCounts = make(map[string]int)
@@ -3552,10 +3574,15 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 						evictLowestStallCount(e.toolRepeatCounts)
 					}
 					e.toolRepeatCounts[fp]++
-					if e.toolRepeatCounts[fp] >= stallThreshold {
+					milestone, ok := e.toolStallMilestones[fp]
+					if !ok {
+						milestone = stallThreshold
+					}
+					if e.toolRepeatCounts[fp] >= milestone {
+						warned := e.toolRepeatCounts[fp] >= stallThreshold*2
 						correction := fmt.Sprintf(
-							"⚠️ You called %q with identical arguments %d times (possibly interleaved with other calls) with no new information. Change approach: vary the arguments, switch to a different tool, or move on to the next step — repeating the same call will not produce a different result.",
-							toolName, e.toolRepeatCounts[fp])
+							"⚠️ You called %q with identical arguments %d times (possibly interleaved with other calls) with no new information%s. Change approach: vary the arguments, switch to a different tool, or move on to the next step — repeating the same call will not produce a different result.",
+							toolName, e.toolRepeatCounts[fp], againSuffix(warned))
 						if e.planStore != nil {
 							if state, ok := e.planStore.Snapshot(); ok {
 								cls, _ := classifyToolCall(toolName, tc.Function.Arguments)
@@ -3578,12 +3605,16 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 						e.emitSignal(SignalEvent{
 							Type:   "tool_recovery",
 							Tool:   toolName,
-							Detail: fmt.Sprintf("repeated identical call (%dx, possibly interleaved)", e.toolRepeatCounts[fp]),
+							Detail: fmt.Sprintf("repeated identical call (%dx%s, possibly interleaved)", e.toolRepeatCounts[fp], againDetail(warned)),
 						})
-						// Reset this fingerprint's counter after injecting
-						// the suggestion (same semantics as the error-recovery
-						// counter).
-						e.toolRepeatCounts[fp] = 0
+						// Escalate, don't reset: the hint interval doubles
+						// (3 → 6 → 12 → …) so a hint-resistant loop gets
+						// progressively fewer interruptions while later hints
+						// say "again" — the loop is persistent, not correcting.
+						if e.toolStallMilestones == nil {
+							e.toolStallMilestones = make(map[string]int)
+						}
+						e.toolStallMilestones[fp] = milestone * 2
 					}
 				}
 			}
@@ -3795,10 +3826,32 @@ func (e *Engine) appendRemainingPlan(ctx context.Context, messages []session.Mes
 }
 
 // isBGPollTool reports whether the tool is a read-only background-job
-// polling tool exempt from stall detection (identical arguments are the
-// normal polling pattern; the result changes between calls).
+// polling tool. Poll fingerprints get an elevated stall threshold rather
+// than a total exemption (a pinned dead job id must not poll forever).
 func isBGPollTool(name string) bool {
 	return name == "bg_status" || name == "bg_output"
+}
+
+// isPow2 reports whether n is a positive power of two.
+func isPow2(n int) bool {
+	return n > 0 && n&(n-1) == 0
+}
+
+// againSuffix marks an escalated (repeat) stall hint so the model can tell
+// it apart from the first one — the loop is persistent, not self-correcting.
+func againSuffix(repeat bool) string {
+	if repeat {
+		return " again"
+	}
+	return ""
+}
+
+// againDetail is the signal-detail counterpart of againSuffix.
+func againDetail(repeat bool) string {
+	if repeat {
+		return ", again"
+	}
+	return ""
 }
 
 // lastUserMessage returns the content of the most recent user message.
