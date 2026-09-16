@@ -32,7 +32,7 @@ type Config struct {
 	InferUserState                  *bool             `json:"infer_user_state,omitempty"`
 	UserStateTurnInterval           int               `json:"user_state_turn_interval,omitempty"`
 	UserStateMaxPending             int               `json:"user_state_max_pending,omitempty"`
-	UserStatePendingMaxAgeDays      int               `json:"user_state_pending_max_age_days,omitempty"`
+	UserStatePendingMaxAgeDays      *int              `json:"user_state_pending_max_age_days,omitempty"` // nil = default 14; 0 = never expire
 	AssociationsEnabled             *bool             `json:"associations_enabled,omitempty"`
 	AssociationSemanticTopK         int               `json:"association_semantic_top_k,omitempty"`
 	SemanticDedupThreshold          *float32          `json:"semantic_dedup_threshold,omitempty"`
@@ -67,6 +67,8 @@ type LLMConfig struct {
 // boolPtr returns a pointer to b.
 func boolPtr(b bool) *bool { return &b }
 
+func intPtr(i int) *int { return &i }
+
 // floatPtr returns a pointer to f.
 func floatPtr(f float32) *float32 { return &f }
 
@@ -90,7 +92,7 @@ func DefaultConfig() Config {
 		InferUserState:                  boolPtr(true),
 		UserStateTurnInterval:           5,
 		UserStateMaxPending:             20,
-		UserStatePendingMaxAgeDays:      14,
+		UserStatePendingMaxAgeDays:      intPtr(14),
 		AssociationsEnabled:             boolPtr(true),
 		AssociationSemanticTopK:         3,
 		SemanticDedupThreshold:          floatPtr(0.92),
@@ -160,7 +162,7 @@ func Resolve(cfg Config) Config {
 	if cfg.UserStateMaxPending > 0 {
 		def.UserStateMaxPending = cfg.UserStateMaxPending
 	}
-	if cfg.UserStatePendingMaxAgeDays != 0 {
+	if cfg.UserStatePendingMaxAgeDays != nil {
 		def.UserStatePendingMaxAgeDays = cfg.UserStatePendingMaxAgeDays
 	}
 	if cfg.AssociationsEnabled != nil {

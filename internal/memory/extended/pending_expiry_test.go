@@ -18,7 +18,7 @@ import (
 
 func TestApplyDiff_ExpiredPendingPruned(t *testing.T) {
 	u := NewUserModel()
-	u.cfg.UserStatePendingMaxAgeDays = 14
+	u.cfg.UserStatePendingMaxAgeDays = intPtr(14)
 
 	old := time.Now().UTC().Add(-30 * 24 * time.Hour)
 	fresh := time.Now().UTC().Add(-2 * 24 * time.Hour)
@@ -49,7 +49,7 @@ func TestApplyDiff_ExpiredPendingPruned(t *testing.T) {
 
 func TestApplyDiff_ZeroAgeDisablesExpiry(t *testing.T) {
 	u := NewUserModel()
-	u.cfg.UserStatePendingMaxAgeDays = 0 // legacy: never expire
+	u.cfg.UserStatePendingMaxAgeDays = intPtr(0) // explicit disable
 
 	old := time.Now().UTC().Add(-365 * 24 * time.Hour)
 	u.state.PendingReview = []PendingReview{
@@ -66,7 +66,7 @@ func TestApplyDiff_ZeroAgeDisablesExpiry(t *testing.T) {
 
 func TestApplyDiff_NewPendingNotExpiredBySameRun(t *testing.T) {
 	u := NewUserModel()
-	u.cfg.UserStatePendingMaxAgeDays = 14
+	u.cfg.UserStatePendingMaxAgeDays = intPtr(14)
 
 	// A diff adding a fresh entry must not have it pruned in the same call
 	// (CreatedAt is stamped at apply time = now).
@@ -82,7 +82,7 @@ func TestApplyDiff_NewPendingNotExpiredBySameRun(t *testing.T) {
 
 func TestSummary_ExpiredEntriesShrinkPendingBlock(t *testing.T) {
 	u := NewUserModel()
-	u.cfg.UserStatePendingMaxAgeDays = 14
+	u.cfg.UserStatePendingMaxAgeDays = intPtr(14)
 
 	old := time.Now().UTC().Add(-60 * 24 * time.Hour)
 	u.state.PendingReview = []PendingReview{
@@ -96,5 +96,24 @@ func TestSummary_ExpiredEntriesShrinkPendingBlock(t *testing.T) {
 	summary := u.Summary()
 	if strings.Contains(summary, "Pending review (2)") {
 		t.Errorf("summary still advertises 2 pending entries after expiry:\n%.300s", summary)
+	}
+}
+
+// TestResolve_ZeroAgeDisables: the config contract '0 disables expiry'
+// must survive Resolve — an explicit JSON 0 is a disable, not 'unset →
+// default 14'. This pins the pointer-field merge (a plain int field with
+// a != 0 guard made 0 unreachable, found by adversarial review).
+func TestResolve_ZeroAgeDisables(t *testing.T) {
+	resolved := Resolve(Config{
+		UserStatePendingMaxAgeDays: intPtr(0),
+	})
+	if resolved.UserStatePendingMaxAgeDays == nil || *resolved.UserStatePendingMaxAgeDays != 0 {
+		t.Fatalf("Resolve(UserStatePendingMaxAgeDays=0) must keep 0 (disable), got %v", resolved.UserStatePendingMaxAgeDays)
+	}
+
+	// Absent = default 14.
+	resolved = Resolve(Config{})
+	if resolved.UserStatePendingMaxAgeDays == nil || *resolved.UserStatePendingMaxAgeDays != 14 {
+		t.Fatalf("Resolve(absent) must yield default 14, got %v", resolved.UserStatePendingMaxAgeDays)
 	}
 }
