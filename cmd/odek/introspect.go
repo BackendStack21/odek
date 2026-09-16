@@ -72,6 +72,7 @@ func buildConfigView(resolved config.ResolvedConfig) map[string]any {
 			"facts_limit_env":          resolved.Memory.FactsLimitEnv,
 			"extract_on_end":           boolPtr(resolved.Memory.ExtractOnEnd),
 			"consolidate_on_end":       boolPtr(resolved.Memory.ConsolidateOnEnd),
+			"consolidate_at_cap_pct":   resolved.Memory.ConsolidateAtCapPct,
 			"min_turns_for_extraction": resolved.Memory.MinTurnsForExtraction,
 		},
 		"skills": map[string]any{

@@ -79,7 +79,7 @@ Episode extraction runs **asynchronously** — it does not block the agent loop.
 
 ## Automatic Cap Maintenance (LLM-driven eviction)
 
-The agent maintains its own fact files. When a fact file fills up, the **agent itself** evicts older entries — there is no background rewriter and no silent consolidation. Every eviction is an explicit, auditable `remove`/`replace` call inside the normal agent loop.
+The agent maintains its own fact files. When a fact file fills up, the **agent itself** evicts older entries — every eviction is an explicit, auditable `remove`/`replace` call inside the normal agent loop. The one automatic quality pass is cap-triggered consolidation (below): it merges redundant entries via LLM but never silently deletes — the applied snapshot is re-scanned and verified against the file state at snapshot time.
 
 Three affordances make this work:
 
@@ -103,7 +103,7 @@ Additionally, the system-prompt memory block appends a one-line warning when a f
 ⚠ env fact file 97% full — evict stale entries via memory remove before your next add.
 ```
 
-Caps are configured via `facts_limit_user` / `facts_limit_env` (defaults: 4,000 / 8,000 chars, counted as bytes — consistent with cap accounting). Deliberately **not** built: automatic consolidation on write (a mid-flow LLM rewrite risks dropping load-bearing details and amplifies provider throttling) and date-based auto-eviction (age alone says nothing about value — a days-old pointer to untracked work can be the only durable record of it).
+Caps are configured via `facts_limit_user` / `facts_limit_env` (defaults: 4,000 / 8,000 chars, counted as bytes — consistent with cap accounting). When a fact file crosses `consolidate_at_cap_pct` (default 80%, `0` disables) of its cap, a background LLM consolidation pass merges redundant entries — the merge output is re-scanned and applied only if the file has not changed since the snapshot, so concurrent writes conflict instead of being overwritten. Deliberately **not** built: date-based auto-eviction (age alone says nothing about value — a days-old pointer to untracked work can be the only durable record of it).
 
 ## Merge-on-Write (go-vector Integration)
 

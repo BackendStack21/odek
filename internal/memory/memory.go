@@ -140,6 +140,11 @@ func boolPtr(b bool) *bool { return BoolPtr(b) }
 
 func intPtr(i int) *int { return &i }
 
+// capConsolidateCooldownSeconds is the minimum interval between
+// cap-triggered consolidations, so adds that keep the file hovering at the
+// threshold cannot churn LLM consolidation passes.
+const capConsolidateCooldownSeconds = 600
+
 // DefaultMemoryConfig returns sensible defaults.
 func DefaultMemoryConfig() MemoryConfig {
 	return MemoryConfig{
@@ -186,8 +191,11 @@ type MemoryManager struct {
 	extended *extended.ExtendedMemory
 
 	// capConsolidateInFlight guards the cap-triggered background
-	// consolidation: one pass per target crossing at a time.
+	// consolidation: one pass per manager (both targets share it) at a time.
 	capConsolidateInFlight atomic.Bool
+	// lastCapConsolidateUnix is the unix time of the last cap-triggered
+	// pass (cooldown gate against threshold-hovering LLM churn).
+	lastCapConsolidateUnix atomic.Int64
 
 	// guard is the shared prompt-injection detector.
 	guard guard.Guard
@@ -625,14 +633,19 @@ func (m *MemoryManager) fireAfterUnlock(unlock func(), events *[]MemoryEvent) {
 // sessions never hit the session-end trigger, so entries otherwise fossilize
 // near the cap for the life of the process.
 //
+// Guard scope: ONE pass per manager (both targets share it) — an in-flight
+// 'user' pass suppresses an 'env' crossing until it lands; the next env add
+// re-arms. A cooldown (capConsolidateCooldown) prevents LLM churn when adds
+// keep the file hovering at the threshold.
+//
 // Lock discipline: the LLM call must NOT run under the facts flock —
 // Consolidate holds the flock across its LLM call, which would block every
 // AddFact in a live session for the LLM duration. Instead: snapshot entries
 // flock-free, merge in a temp clone (PreviewConsolidation), then
 // ApplyConsolidation, which takes the flock only for the verified snapshot
-// swap and conflicts instead of overwriting concurrent writes. A per-target
-// in-flight guard prevents stacking duplicate LLM calls. Best-effort: errors
-// are logged, never surfaced to AddFact callers.
+// swap and conflicts instead of overwriting concurrent writes. The pass runs
+// via RunBackground so process exit drains it instead of killing it
+// mid-LLM-call. Best-effort: errors are logged, never surfaced to AddFact.
 func (m *MemoryManager) maybeConsolidateAtCap(target string) {
 	pct := 0
 	if m.cfg.ConsolidateAtCapPct != nil {
@@ -647,6 +660,10 @@ func (m *MemoryManager) maybeConsolidateAtCap(target string) {
 	if !m.capConsolidateInFlight.CompareAndSwap(false, true) {
 		return // a pass is already running — it will cover these entries
 	}
+	if now := time.Now().Unix(); now-m.lastCapConsolidateUnix.Load() < capConsolidateCooldownSeconds {
+		m.capConsolidateInFlight.Store(false)
+		return
+	}
 	go func() {
 		defer m.capConsolidateInFlight.Store(false)
 
@@ -654,16 +671,10 @@ func (m *MemoryManager) maybeConsolidateAtCap(target string) {
 		if err != nil || len(entries) <= 1 {
 			return // nothing to consolidate
 		}
-		size := 0
-		for i, e := range entries {
-			size += len(e)
-			if i > 0 {
-				size++ // separator
-			}
-		}
-		if size*100 < m.facts.cap(target)*pct {
+		if m.facts.sizeOf(entries)*100 < m.facts.cap(target)*pct {
 			return
 		}
+		m.lastCapConsolidateUnix.Store(time.Now().Unix())
 
 		preview, err := m.PreviewConsolidation(target)
 		if err != nil {
