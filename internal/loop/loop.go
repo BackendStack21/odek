@@ -50,9 +50,22 @@ func formatLongToolRuntime(ms int64) string {
 	return fmt.Sprintf("%dm%02ds", sec/60, sec%60)
 }
 
-// dropStallFingerprints removes stall-map entries for one tool name so a
-// failing sibling cannot wipe a looping successful call's streak.
 func dropStallFingerprints(m map[string]int, toolName string) {
+	if m == nil {
+		return
+	}
+	prefix := toolName + "\x00"
+	for k := range m {
+		if strings.HasPrefix(k, prefix) {
+			delete(m, k)
+		}
+	}
+}
+
+// dropStallMilestones mirrors dropStallFingerprints for the milestone map,
+// so a reset fingerprint re-arms at the base threshold instead of inheriting
+// an escalated milestone from earlier runs.
+func dropStallMilestones(m map[string]int, toolName string) {
 	if m == nil {
 		return
 	}
@@ -2494,6 +2507,7 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 	e.maxConsecutiveToolErrors = make(map[string]int)
 	// Reset per-session repeated-call (stall) tracking
 	e.toolRepeatCounts = nil
+	e.toolStallMilestones = nil
 	// Reset the run's mutation ledger and completion-nudge state.
 	e.externalChargeMu.Lock()
 	e.externalReserved = 0
@@ -3531,6 +3545,7 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 				// this tool's fingerprints only so a looping sibling still
 				// accumulates toward the stall threshold.
 				dropStallFingerprints(e.toolRepeatCounts, toolName)
+				dropStallMilestones(e.toolStallMilestones, toolName)
 			} else {
 				e.maxConsecutiveToolErrors[toolName] = 0
 
@@ -3553,18 +3568,28 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 					}
 					if _, ok := e.toolRepeatCounts[fp]; !ok && len(e.toolRepeatCounts) >= 64 {
 						evictLowestStallCount(e.toolRepeatCounts)
+						delete(e.toolStallMilestones, fp)
 					}
 					e.toolRepeatCounts[fp]++
-					if e.toolRepeatCounts[fp] >= bgPollStallThreshold {
+					milestone, mok := e.toolStallMilestones[fp]
+					if !mok {
+						milestone = bgPollStallThreshold
+					}
+					if e.toolRepeatCounts[fp] >= milestone {
+						pm := e.toolRepeatCounts[fp]
 						corrections = append(corrections, fmt.Sprintf(
 							"⚠️ You polled %q with identical arguments %d times with no state change%s. The job may be stuck or the id wrong: check bg_list for valid ids, read bg_output for the job's progress, or move on.",
-							toolName, e.toolRepeatCounts[fp], againSuffix(e.toolRepeatCounts[fp] > bgPollStallThreshold)))
+							toolName, pm, againSuffix(mok)))
 						e.emitSignal(SignalEvent{
 							Type:   "tool_recovery",
 							Tool:   toolName,
-							Detail: fmt.Sprintf("repeated identical poll (%dx%s)", e.toolRepeatCounts[fp], againDetail(e.toolRepeatCounts[fp] > bgPollStallThreshold)),
+							Detail: fmt.Sprintf("repeated identical poll (%dx%s)", pm, againDetail(mok)),
 						})
-						e.toolRepeatCounts[fp] *= 2
+						// Escalate via milestone, keep the count accurate.
+						if e.toolStallMilestones == nil {
+							e.toolStallMilestones = make(map[string]int)
+						}
+						e.toolStallMilestones[fp] = milestone * 2
 					}
 				} else {
 					if e.toolRepeatCounts == nil {
@@ -3572,6 +3597,7 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 					}
 					if _, ok := e.toolRepeatCounts[fp]; !ok && len(e.toolRepeatCounts) >= 64 {
 						evictLowestStallCount(e.toolRepeatCounts)
+						delete(e.toolStallMilestones, fp)
 					}
 					e.toolRepeatCounts[fp]++
 					milestone, ok := e.toolStallMilestones[fp]
