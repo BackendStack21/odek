@@ -541,16 +541,22 @@ type Engine struct {
 	// (Config.Compaction). compactDigest holds the last LLM digest (or the
 	// wrapped body restored on resume). An extractive sketch is installed
 	// immediately so the think step is not blocked on the side call.
-	compaction         bool
-	compactDigest      string
-	digestInstalled    bool // digest system message is in this run's history
-	compactMu          sync.Mutex
-	digestGen          uint64
-	digestCancel       context.CancelFunc
-	pendingDropped     []session.Message
-	pendingDigest      string
-	pendingUsage       *llmclient.CallResult
-	pendingDigestReady bool
+	compaction            bool
+	compactDigest         string
+	digestInstalled       bool   // digest system message is in this run's history
+	lastDigestRaw         string // last summary passed to installDigest (wrapper cache key)
+	lastDigestWrapped     string // cached wrapped form; reused while summary unchanged to avoid nonce churn
+	compactMu             sync.Mutex
+	digestGen             uint64
+	digestCancel          context.CancelFunc
+	digestInFlight        bool // a summarizer side call is running; new trims debounce instead of canceling
+	digestDirty           bool // drops arrived while the side call was in flight; refetch after it lands
+	digestCallStart       int  // pendingDropped index where the in-flight call's input begins
+	pendingDropped        []session.Message
+	pendingDroppedCovered int // prefix length of pendingDropped the ready digest actually summarized
+	pendingDigest         string
+	pendingUsage          *llmclient.CallResult
+	pendingDigestReady    bool
 
 	// planStore holds the structured plan state (internal/loop/plan.go).
 	// Shared with the plan tool — one store, two holders, mirroring how the
@@ -1597,6 +1603,7 @@ func (e *Engine) refreshDigest(ctx context.Context, messages []session.Message, 
 	e.compactMu.Lock()
 	e.pendingDropped = append(e.pendingDropped, dropped...)
 	all := append([]session.Message(nil), e.pendingDropped...)
+	startIdx := len(e.pendingDropped) - len(dropped)
 	e.compactMu.Unlock()
 
 	extractive := e.extractiveDigest(all)
@@ -1604,7 +1611,20 @@ func (e *Engine) refreshDigest(ctx context.Context, messages []session.Message, 
 		return messages
 	}
 	messages = e.installDigest(ctx, messages, extractive)
-	e.startDigestSideCall(ctx, all)
+	e.startDigestSideCall(ctx, startIdx, dropped)
+	// Delta refetch: drops arrived while the previous side call was in
+	// flight. applyPendingDigest (called at the top) has already trimmed the
+	// covered prefix, so anything still queued is exactly the uncovered
+	// suffix — fetch it with start 0. Spawning here on the loop goroutine
+	// (not from the completing side-call goroutine) keeps queue indices and
+	// flight state on one thread of control: no cross-generation races.
+	e.compactMu.Lock()
+	dirty := e.digestDirty && !e.digestInFlight
+	e.digestDirty = false
+	e.compactMu.Unlock()
+	if dirty && len(e.pendingDropped) > 0 {
+		e.startDigestSideCall(ctx, 0, append([]session.Message(nil), e.pendingDropped...))
+	}
 	return messages
 }
 
@@ -1639,7 +1659,18 @@ func (e *Engine) installDigest(ctx context.Context, messages []session.Message, 
 		return messages
 	}
 	e.digestInstalled = true
-	body := e.protectDerivedContext(ctx, "compaction", summary)
+	// Reuse the cached wrapper while the summary is unchanged: a fresh nonce
+	// per install churns the digest message bytes and invalidates the
+	// provider prefix cache from the digest position onward (same treatment
+	// as the plan message and the memory slot).
+	var body string
+	if summary == e.lastDigestRaw && e.lastDigestWrapped != "" {
+		body = e.lastDigestWrapped
+	} else {
+		body = e.protectDerivedContext(ctx, "compaction", summary)
+		e.lastDigestRaw = summary
+		e.lastDigestWrapped = body
+	}
 	content := digestMsgHeader + body
 
 	for i := range messages {
@@ -1683,7 +1714,14 @@ func (e *Engine) applyPendingDigest(ctx context.Context, messages []session.Mess
 	e.pendingDigest = ""
 	e.pendingUsage = nil
 	e.pendingDigestReady = false
-	e.pendingDropped = nil
+	// Trim only the prefix the digest actually covered — drops that arrived
+	// while the side call was in flight stay queued for the next side call.
+	if e.pendingDroppedCovered >= len(e.pendingDropped) {
+		e.pendingDropped = nil
+	} else {
+		e.pendingDropped = e.pendingDropped[e.pendingDroppedCovered:]
+	}
+	e.pendingDroppedCovered = 0
 	e.compactMu.Unlock()
 	if usage != nil {
 		e.recordSideCallUsage(usage)
@@ -1695,40 +1733,58 @@ func (e *Engine) applyPendingDigest(ctx context.Context, messages []session.Mess
 	return e.installDigest(ctx, messages, summary)
 }
 
-// startDigestSideCall runs summarizeDropped in the background. A newer
-// trim cancels the in-flight HTTP so a stale result cannot overwrite a
-// newer extractive sketch. Skipped when the run is already over budget.
-func (e *Engine) startDigestSideCall(parent context.Context, dropped []session.Message) {
+// startDigestSideCall summarizes dropped (a snapshot of pendingDropped whose
+// first element sits at index `start` in the live queue). A new trim while a
+// call is in flight DEBOUNCES instead of canceling: restarting the whole HTTP
+// round-trip per trim burned full LLM calls under trim bursts. pendingDropped
+// keeps accumulating; when the in-flight call lands, a follow-up call
+// summarizes the uncovered suffix (identity-based: covered = start + len at
+// issue time, computed under the same lock) so nothing stays unsummarized.
+// Refetch only after a successful call — a failed call leaves drops queued
+// for the next natural trim, bounding retries. Skipped when over budget.
+func (e *Engine) startDigestSideCall(parent context.Context, start int, dropped []session.Message) {
 	if e.client == nil || !e.budgetAllowsSideCall() {
 		return
 	}
-	dropped = append([]session.Message(nil), dropped...)
 	prev := e.compactDigest
 	e.compactMu.Lock()
-	if e.digestCancel != nil {
-		e.digestCancel()
+	if e.digestInFlight {
+		e.digestDirty = true
+		e.compactMu.Unlock()
+		return
 	}
 	e.digestGen++
 	gen := e.digestGen
 	callCtx, cancel := context.WithTimeout(parent, e.sideTimeout())
 	e.digestCancel = cancel
+	e.digestInFlight = true
+	e.digestCallStart = start
 	e.compactMu.Unlock()
 
 	go func() {
 		defer cancel()
 		summary, usage := e.summarizeDroppedWithUsage(callCtx, dropped, prev)
 		e.compactMu.Lock()
-		defer e.compactMu.Unlock()
+		// Compare-and-clear: only the goroutine owning the current generation
+		// may touch the flight flags — cancelDigestSideCall may already have
+		// started a successor whose live state must not be stomped.
 		if gen != e.digestGen {
+			e.compactMu.Unlock()
 			return
 		}
+		e.digestInFlight = false
 		e.digestCancel = nil
-		if summary == "" && usage == nil {
-			return
+		ok := summary != "" || usage != nil
+		if ok {
+			e.pendingDigest = summary
+			e.pendingUsage = usage
+			e.pendingDroppedCovered = e.digestCallStart + len(dropped)
+			e.pendingDigestReady = true
 		}
-		e.pendingDigest = summary
-		e.pendingUsage = usage
-		e.pendingDigestReady = true
+		// digestDirty is intentionally left set: the delta refetch is spawned
+		// by refreshDigest on the loop goroutine — spawning here would race
+		// applyPendingDigest's queue rebase and desync the covered indices.
+		e.compactMu.Unlock()
 	}()
 }
 
@@ -1738,6 +1794,8 @@ func (e *Engine) cancelDigestSideCall() {
 	e.compactMu.Lock()
 	cancel := e.digestCancel
 	e.digestCancel = nil
+	e.digestInFlight = false
+	e.digestDirty = false
 	e.digestGen++
 	e.compactMu.Unlock()
 	if cancel != nil {
@@ -2354,6 +2412,8 @@ func (e *Engine) RunWithMessages(ctx context.Context, messages []session.Message
 func (e *Engine) syncDigestFromMessages(messages []session.Message) {
 	e.compactDigest = ""
 	e.digestInstalled = false
+	e.lastDigestRaw = ""
+	e.lastDigestWrapped = ""
 	for _, m := range messages {
 		if !isDigestMessage(m) {
 			continue
@@ -2464,6 +2524,8 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 	e.trimTruncTotal = 0
 	e.trimDroppedTools = nil
 	e.digestInstalled = false
+	e.lastDigestRaw = ""
+	e.lastDigestWrapped = ""
 	e.resetDigestSideCall()
 	e.syncDigestFromMessages(messages)
 
