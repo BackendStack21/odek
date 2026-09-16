@@ -2796,7 +2796,7 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 		result, err := e.callLLM(ctx, messages, tools)
 		if err != nil {
 			if result != nil {
-				e.recordSideCallUsage("interrupted_partial", result)
+				e.recordSideCallUsage("main_partial", result)
 				if result.Content != "" && !isContextLengthError(err) {
 					partial := "[Partial response: interrupted]\n\n" + result.Content
 					messages = append(messages, session.Message{Role: "assistant", Content: partial, ReasoningContent: result.ReasoningContent})

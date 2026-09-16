@@ -520,7 +520,11 @@ func formatRemainingPlanStepsDetailed(state PlanState) string {
 			continue
 		}
 		if st.Title != "" {
-			parts = append(parts, st.ID+"="+string(st.Status)+" - "+st.Title)
+			// ';' is the list separator on this surface — strip it from titles
+			// (nothing machine-parses the list, but unambiguous tokens keep
+			// the summarizer from seeing phantom steps).
+			title := strings.ReplaceAll(st.Title, ";", ",")
+			parts = append(parts, st.ID+"="+string(st.Status)+" - "+title)
 		} else {
 			parts = append(parts, st.ID+"="+string(st.Status))
 		}
