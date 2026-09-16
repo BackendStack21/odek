@@ -551,6 +551,7 @@ type Engine struct {
 	digestCancel          context.CancelFunc
 	digestInFlight        bool // a summarizer side call is running; new trims debounce instead of canceling
 	digestDirty           bool // drops arrived while the side call was in flight; refetch after it lands
+	digestCallStart       int  // pendingDropped index where the in-flight call's input begins
 	pendingDropped        []session.Message
 	pendingDroppedCovered int // prefix length of pendingDropped the ready digest actually summarized
 	pendingDigest         string
@@ -1602,6 +1603,7 @@ func (e *Engine) refreshDigest(ctx context.Context, messages []session.Message, 
 	e.compactMu.Lock()
 	e.pendingDropped = append(e.pendingDropped, dropped...)
 	all := append([]session.Message(nil), e.pendingDropped...)
+	startIdx := len(e.pendingDropped) - len(dropped)
 	e.compactMu.Unlock()
 
 	extractive := e.extractiveDigest(all)
@@ -1609,7 +1611,7 @@ func (e *Engine) refreshDigest(ctx context.Context, messages []session.Message, 
 		return messages
 	}
 	messages = e.installDigest(ctx, messages, extractive)
-	e.startDigestSideCall(ctx, all)
+	e.startDigestSideCall(ctx, startIdx, dropped)
 	return messages
 }
 
@@ -1718,57 +1720,68 @@ func (e *Engine) applyPendingDigest(ctx context.Context, messages []session.Mess
 	return e.installDigest(ctx, messages, summary)
 }
 
-// startDigestSideCall runs summarizeDropped in the background. A new trim
-// while a call is in flight DEBOUNCES instead of canceling: restarting the
-// whole HTTP round-trip per trim burned full LLM calls under trim bursts.
-// pendingDropped keeps accumulating; when the in-flight call lands, a dirty
-// flag refetches a follow-up call over the remaining delta, so no drops are
-// ever left unsummarized. Skipped when the run is already over budget.
-func (e *Engine) startDigestSideCall(parent context.Context, dropped []session.Message) {
+// startDigestSideCall summarizes dropped (a snapshot of pendingDropped whose
+// first element sits at index `start` in the live queue). A new trim while a
+// call is in flight DEBOUNCES instead of canceling: restarting the whole HTTP
+// round-trip per trim burned full LLM calls under trim bursts. pendingDropped
+// keeps accumulating; when the in-flight call lands, a follow-up call
+// summarizes the uncovered suffix (identity-based: covered = start + len at
+// issue time, computed under the same lock) so nothing stays unsummarized.
+// Refetch only after a successful call — a failed call leaves drops queued
+// for the next natural trim, bounding retries. Skipped when over budget.
+func (e *Engine) startDigestSideCall(parent context.Context, start int, dropped []session.Message) {
 	if e.client == nil || !e.budgetAllowsSideCall() {
 		return
 	}
+	prev := e.compactDigest
 	e.compactMu.Lock()
 	if e.digestInFlight {
 		e.digestDirty = true
 		e.compactMu.Unlock()
 		return
 	}
-	prev := e.compactDigest
 	e.digestGen++
 	gen := e.digestGen
 	callCtx, cancel := context.WithTimeout(parent, e.sideTimeout())
 	e.digestCancel = cancel
 	e.digestInFlight = true
+	e.digestCallStart = start
 	e.compactMu.Unlock()
 
 	go func() {
 		defer cancel()
 		summary, usage := e.summarizeDroppedWithUsage(callCtx, dropped, prev)
 		e.compactMu.Lock()
-		e.digestInFlight = false
-		refetch := e.digestDirty
-		e.digestDirty = false
+		// Compare-and-clear: only the goroutine owning the current generation
+		// may touch the flight flags — cancelDigestSideCall may already have
+		// started a successor whose live state must not be stomped.
 		if gen != e.digestGen {
 			e.compactMu.Unlock()
 			return
 		}
+		e.digestInFlight = false
 		e.digestCancel = nil
-		if summary != "" || usage != nil {
+		refetch := e.digestDirty
+		e.digestDirty = false
+		covered := e.digestCallStart + len(dropped)
+		ok := summary != "" || usage != nil
+		if ok {
 			e.pendingDigest = summary
 			e.pendingUsage = usage
-			e.pendingDroppedCovered = len(dropped)
+			e.pendingDroppedCovered = covered
 			e.pendingDigestReady = true
 		}
-		// Dirty refetch: drops arrived while this call was in flight. Spawn
-		// a follow-up over the uncovered suffix so nothing stays unsummarized.
+		// Dirty refetch over the uncovered suffix, computed under the same
+		// lock and derived from the run-scoped parent so a canceled run does
+		// not leave an orphan call running.
 		var delta []session.Message
-		if refetch && len(e.pendingDropped) > len(dropped) {
-			delta = append([]session.Message(nil), e.pendingDropped[len(dropped):]...)
+		deltaStart := covered
+		if refetch && ok && covered < len(e.pendingDropped) {
+			delta = append([]session.Message(nil), e.pendingDropped[covered:]...)
 		}
 		e.compactMu.Unlock()
 		if len(delta) > 0 {
-			e.startDigestSideCall(context.Background(), delta)
+			e.startDigestSideCall(parent, deltaStart, delta)
 		}
 	}()
 }
@@ -2397,6 +2410,8 @@ func (e *Engine) RunWithMessages(ctx context.Context, messages []session.Message
 func (e *Engine) syncDigestFromMessages(messages []session.Message) {
 	e.compactDigest = ""
 	e.digestInstalled = false
+	e.lastDigestRaw = ""
+	e.lastDigestWrapped = ""
 	for _, m := range messages {
 		if !isDigestMessage(m) {
 			continue
@@ -2507,6 +2522,8 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 	e.trimTruncTotal = 0
 	e.trimDroppedTools = nil
 	e.digestInstalled = false
+	e.lastDigestRaw = ""
+	e.lastDigestWrapped = ""
 	e.resetDigestSideCall()
 	e.syncDigestFromMessages(messages)
 

@@ -109,11 +109,11 @@ func TestStartDigestSideCall_DebouncesInFlightCall(t *testing.T) {
 	engine.sideCallTimeout = 15 * time.Second
 
 	dropped := []session.Message{{Role: "tool", Content: "dropped output"}}
-	engine.startDigestSideCall(context.Background(), dropped)
+	engine.startDigestSideCall(context.Background(), 0, dropped)
 	<-firstStarted
 
 	// A second trim while the first call is in flight must NOT cancel it.
-	engine.startDigestSideCall(context.Background(), dropped)
+	engine.startDigestSideCall(context.Background(), 0, dropped)
 
 	mu.Lock()
 	wasCanceled := canceled
