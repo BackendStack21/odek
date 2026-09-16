@@ -260,7 +260,34 @@ func (a *TTYApprover) promptLocked(cls RiskClass, cmd, description string) error
 		return nil
 	}
 
-	// Open /dev/tty for interactive approval
+	// Open /dev/tty for interactive approval. Inside a test binary with no
+	// fixture TTY, never open the real controlling terminal: on macOS the
+	// open succeeds for a background process but the read raises SIGTTIN and
+	// stops the whole test binary (observed hang). Also covers the
+	// zero-value struct (empty TTYPath): with no NonInteractive config the
+	// legacy path returned nil — a fail-open default for a security gate.
+	// Approvers with an explicit fixture TTYPath (or SetTTYPathForTest) are
+	// unaffected and proceed to the open below.
+	effectiveTTY := a.TTYPath
+	if effectiveTTY == "" {
+		effectiveTTY = ttyPath()
+	}
+	if testing.Testing() && (effectiveTTY == "" || effectiveTTY == "/dev/tty") {
+		if a.DangerousConfig != nil {
+			switch a.DangerousConfig.NonInteractiveAction() {
+			case Allow:
+				return nil
+			case ReadOnly:
+				if Rank(cls) < Rank(SystemWrite) && (cls == Safe || isReadToolName(description)) {
+					return nil
+				}
+				return fmt.Errorf("operation denied (non-interactive read_only mode): %s", cmd)
+			default:
+				return fmt.Errorf("operation denied (non-interactive mode): %s", cmd)
+			}
+		}
+		return fmt.Errorf("operation denied (test binary, no approval fixture): %s", cmd)
+	}
 	tty, err := os.OpenFile(a.TTYPath, os.O_RDWR, 0)
 	if err != nil {
 		// Non-interactive: use the configured fallback.
@@ -283,7 +310,10 @@ func (a *TTYApprover) promptLocked(cls RiskClass, cmd, description string) error
 				return fmt.Errorf("operation denied (non-interactive mode): %s", cmd)
 			}
 		}
-		return nil
+		// No fallback configured and no interactive terminal: deny. The
+		// legacy path returned nil here — a fail-open default for a
+		// security gate (headless/CI runs silently approved everything).
+		return fmt.Errorf("operation denied (no approval channel configured): %s", cmd)
 	}
 	defer tty.Close()
 

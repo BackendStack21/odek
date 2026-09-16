@@ -212,14 +212,19 @@ func TestSetTrustAll_ThenDisable(t *testing.T) {
 	}
 }
 
-func TestPromptCommand_NoTTY_NilConfigDefaultAllow(t *testing.T) {
+func TestPromptCommand_NoTTY_NilConfigFailClosed(t *testing.T) {
 	a := NewTTYApprover(nil)
 	a.TTYPath = "/nonexistent/tty-for-test"
 
-	// Nil config with no TTY → NonInteractive defaults to Allow → returns nil
+	// Nil config with no TTY must deny, not silently approve: the legacy
+	// default-allow was a fail-open hole in the security gate (headless/CI
+	// runs with no DangerousConfig auto-approved every Prompt-class op).
 	err := a.PromptCommand(SystemWrite, "some command", "")
-	if err != nil {
-		t.Errorf("expected nil for nil config + no TTY, got: %v", err)
+	if err == nil {
+		t.Fatal("expected denial for nil config + no TTY (fail-closed gate)")
+	}
+	if !strings.Contains(err.Error(), "denied") {
+		t.Errorf("expected 'denied' in error message, got: %v", err)
 	}
 }
 
