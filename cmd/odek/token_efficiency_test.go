@@ -73,7 +73,7 @@ func TestToolDescriptions_SleepWaitStatedOnce(t *testing.T) {
 		if strings.Contains(d.desc, "Never sleep-wait for a job") || strings.Contains(d.desc, "delivered automatically") || strings.Contains(d.desc, "see bg_start") {
 			t.Errorf("%s repeats bg_start's full sleep-wait contract (keep only the short reminder): %q", d.name, d.desc)
 		}
-		if strings.HasPrefix(d.name, "bg_") && !strings.Contains(d.desc, "Never sleep-wait.") {
+		if strings.HasPrefix(d.name, "bg_") && !strings.Contains(d.desc, "sleep-wait") {
 			t.Errorf("%s lacks the short no-sleep reminder: %q", d.name, d.desc)
 		}
 	}

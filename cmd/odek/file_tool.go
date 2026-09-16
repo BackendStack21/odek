@@ -1643,7 +1643,7 @@ type globTool struct {
 func (t *globTool) Name() string { return "glob" }
 
 func (t *globTool) Description() string {
-	return `Find files by glob pattern. Returns matching file paths sorted by modification time (newest first).
+	return `Find files by glob pattern. Returns matching file paths sorted by modification time (newest first). "**" spans directories (e.g. "**/*.py" finds Python files recursively), "*" does not.
 Returns an array of {path, size, is_dir} for each match, wrapped as {"matches":[…]}; an empty result is {"matches":null} — that means zero matches, not an error.`
 }
 

@@ -14,6 +14,8 @@ import (
 // fail closed: return a denial error promptly. Fixture-driven tests
 // (ttyPathForTest / TTYPath override) are unaffected.
 func TestTTYApprover_TestBinaryFailsClosed(t *testing.T) {
+	SetTTYPathForTest("") // isolate from sibling tests leaking a fixture path
+	t.Cleanup(func() { SetTTYPathForTest("") })
 	// Real construction path: TTYPath = /dev/tty, no DangerousConfig.
 	a := NewTTYApprover(nil)
 
@@ -39,6 +41,8 @@ func TestTTYApprover_TestBinaryFailsClosed(t *testing.T) {
 // path, no NonInteractive config) must never approve. Silent approval is
 // the worst possible default for a security gate.
 func TestZeroValueApprover_DoesNotFailOpen(t *testing.T) {
+	SetTTYPathForTest("") // isolate from sibling tests leaking a fixture path
+	t.Cleanup(func() { SetTTYPathForTest("") })
 	var a TTYApprover
 	if err := a.PromptCommand(SystemWrite, "cat /etc/shadow", "read_file"); err == nil {
 		t.Fatal("zero-value TTYApprover approved a system_write operation — fail-open default")

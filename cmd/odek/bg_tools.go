@@ -399,7 +399,7 @@ type bgListTool struct{ rt *bgRuntime }
 
 func (t *bgListTool) Name() string { return "bg_list" }
 func (t *bgListTool) Description() string {
-	return "List this session's background jobs with id, status, runtime, and exit code. Never sleep-wait."
+	return "List this session's background jobs with id, status, runtime, and exit code. Never sleep-wait — completion wakes you."
 }
 func (t *bgListTool) Schema() any {
 	return map[string]any{"type": "object", "properties": map[string]any{}}
@@ -436,7 +436,7 @@ func (t *bgStatusTool) Description() string {
 exit code, duration, and output size. Returns {"status":"unknown"} for ids
 that never existed, were started by another session, died with a restart,
 or whose finished record was evicted (the oldest finished jobs are pruned
-when the per-session record cap is exceeded). Never sleep-wait.`
+when the per-session record cap is exceeded). Never sleep-wait — completion wakes you.`
 }
 
 func (t *bgStatusTool) Schema() any {
@@ -485,7 +485,7 @@ func (t *bgOutputTool) Description() string {
 	return `Read a background job's captured output (stdout+stderr interleaved).
 Pass the returned next_cursor as since to continue reading; output older
 than the ring buffer is marked as truncated. Chunks are capped at 32 KiB.
-Only the job's own session can read it. Never sleep-wait.`
+Only the job's own session can read it. Never sleep-wait — completion wakes you.`
 }
 
 func (t *bgOutputTool) Schema() any {
@@ -523,7 +523,7 @@ func (t *bgStopTool) Name() string { return "bg_stop" }
 func (t *bgStopTool) Description() string {
 	return `Stop a background job (SIGTERM to the process group, SIGKILL after a
 grace window). Returns the job's terminal status; stopping an
-already-finished job is not an error. Never sleep-wait.`
+already-finished job is not an error. Never sleep-wait — completion wakes you.`
 }
 
 func (t *bgStopTool) Schema() any {

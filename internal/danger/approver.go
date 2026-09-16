@@ -310,7 +310,10 @@ func (a *TTYApprover) promptLocked(cls RiskClass, cmd, description string) error
 				return fmt.Errorf("operation denied (non-interactive mode): %s", cmd)
 			}
 		}
-		return nil
+		// No fallback configured and no interactive terminal: deny. The
+		// legacy path returned nil here — a fail-open default for a
+		// security gate (headless/CI runs silently approved everything).
+		return fmt.Errorf("operation denied (no approval channel configured): %s", cmd)
 	}
 	defer tty.Close()
 
