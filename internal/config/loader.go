@@ -2873,6 +2873,9 @@ func resolveMemory(cfg *memory.MemoryConfig) memory.MemoryConfig {
 	if cfg.ConsolidateOnEnd != nil {
 		def.ConsolidateOnEnd = cfg.ConsolidateOnEnd
 	}
+	if cfg.ConsolidateAtCapPct != nil {
+		def.ConsolidateAtCapPct = cfg.ConsolidateAtCapPct
+	}
 	if cfg.LLMSearch != nil {
 		def.LLMSearch = cfg.LLMSearch
 	}

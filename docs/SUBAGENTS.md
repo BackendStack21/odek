@@ -124,7 +124,9 @@ The `delegate_tasks` tool is available in CLI, REPL, Web UI, Telegram, and headl
 ```
 
 The `summary` is the headline channel: the child's final answer, capped at
-2048 runes. When `summary_truncated` is set, the parent-side render appends
+2048 runes. Truncation is **tail-keep** — the END of the answer is preserved
+(verdicts, next actions, key decisions), and a leading `…` marks the cut.
+When `summary_truncated` is set, the parent-side render appends
 `headline truncated (2048 of N runes shown) — fetch artifacts via
 artifact_read or re-run with a narrower goal` (the `artifact_read` half is
 omitted in processes that do not have the tool, i.e. mid-tree parents).
@@ -502,7 +504,9 @@ Parent synthesizes: "Created 3 files:
 
 ## Result artifacts
 
-The result contract is two-channel: the headline (≤ 2048 runes) carries status;
+The result contract is two-channel: the headline (≤ 2048 runes, tail-kept —
+the END of the child answer survives so verdicts and next actions reach the
+parent; a leading `…` marks the cut) carries status;
 the bulk rides files. The child is told this at request time: deliverables
 larger than a headline go as FLAT files into its per-task staging directory
 (`.odek-artifacts/<task_id>/` inside the workspace — nested directories are

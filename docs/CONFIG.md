@@ -520,6 +520,7 @@ The `memory` section controls the persistent memory system (see [docs/MEMORY.md]
     "add_threshold": 0.3,
     "auto_approve_episodes": false,
     "episode_dedup_threshold": 0.92,
+    "consolidate_at_cap_pct": 80,
     "max_episodes": 500,
     "episode_ttl_days": 0,
     "embedding": {
@@ -543,6 +544,7 @@ The `memory` section controls the persistent memory system (see [docs/MEMORY.md]
 | `buffer_enabled` | true | Enable the turn-level buffer |
 | `merge_on_write` | true | Use go-vector RP similarity to auto-merge related entries (fast, no LLM — uses simple string merge) |
 | `consolidate_on_end` | true | At session end, run an LLM consolidation pass over `user.md` and `env.md` in a background goroutine. This is the quality complement to `merge_on_write`: merge-on-write handles obvious duplicates immediately (no LLM), while consolidation handles near-duplicates and paraphrases at session end with full LLM quality. Requires `llm_consolidate: true`. **Note:** facts in the borderline similarity band (0.3–0.7 cosine) are now always added immediately and only merged by this consolidation pass — if you set `consolidate_on_end: false`, near-duplicate facts will accumulate rather than being merged. |
+| `consolidate_at_cap_pct` | 80 | Percentage of `facts_limit_user`/`facts_limit_env` above which a background consolidation pass fires for that fact file on `AddFact` — long-lived serve/REPL sessions never reach the session-end trigger, so entries otherwise fossilize near the cap. Snapshot/preview is taken flock-free; the flock is held only for the verified apply swap, never across the LLM call. A per-target in-flight guard prevents stacked duplicate LLM calls. Explicit `0` disables the cap trigger. Best-effort: errors are logged, never surfaced to callers. Requires `llm_consolidate: true`. |
 | `extract_on_end` | true | At session end (≥3 turns), extract a narrative episode summary via LLM for later recall |
 | `min_turns_for_extraction` | 3 | Minimum conversation turns before end-of-session extraction runs |
 | `extract_facts` | **false** | **Opt-in.** At session end (≥3 turns), auto-extract a few **durable** facts (stable user preferences, project invariants) into `user.md`/`env.md`. Off by default — see the security note below. Independent of `extract_on_end`; to disable *all* end-of-session LLM extraction set `llm_extract: false`. |

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/BackendStack21/odek/internal/embedding"
@@ -94,6 +95,7 @@ type MemoryConfig struct {
 	ExtractOnEnd          *bool   `json:"extract_on_end,omitempty"`
 	ExtractFacts          *bool   `json:"extract_facts,omitempty"`
 	ConsolidateOnEnd      *bool   `json:"consolidate_on_end,omitempty"`
+	ConsolidateAtCapPct   *int    `json:"consolidate_at_cap_pct,omitempty"`
 	LLMSearch             *bool   `json:"llm_search,omitempty"`
 	LLMExtract            *bool   `json:"llm_extract,omitempty"`
 	LLMConsolidate        *bool   `json:"llm_consolidate,omitempty"`
@@ -136,6 +138,13 @@ func BoolPtr(b bool) *bool { return &b }
 
 func boolPtr(b bool) *bool { return BoolPtr(b) }
 
+func intPtr(i int) *int { return &i }
+
+// capConsolidateCooldownSeconds is the minimum interval between
+// cap-triggered consolidations, so adds that keep the file hovering at the
+// threshold cannot churn LLM consolidation passes.
+const capConsolidateCooldownSeconds = 600
+
 // DefaultMemoryConfig returns sensible defaults.
 func DefaultMemoryConfig() MemoryConfig {
 	return MemoryConfig{
@@ -148,6 +157,7 @@ func DefaultMemoryConfig() MemoryConfig {
 		ExtractOnEnd:          boolPtr(true),
 		ExtractFacts:          boolPtr(false), // opt-in: persistent-poisoning risk, see SECURITY.md
 		ConsolidateOnEnd:      boolPtr(true),  // restores LLM merge quality removed from AddFact
+		ConsolidateAtCapPct:   intPtr(80),     // nil-safe: 0 disables the cap trigger
 		LLMSearch:             boolPtr(true),  // LLM ranker by default — relevance over recency
 		LLMExtract:            boolPtr(true),
 		LLMConsolidate:        boolPtr(true),
@@ -179,6 +189,13 @@ type MemoryManager struct {
 	llm      LLMClient
 	cfg      MemoryConfig
 	extended *extended.ExtendedMemory
+
+	// capConsolidateInFlight guards the cap-triggered background
+	// consolidation: one pass per manager (both targets share it) at a time.
+	capConsolidateInFlight atomic.Bool
+	// lastCapConsolidateUnix is the unix time of the last cap-triggered
+	// pass (cooldown gate against threshold-hovering LLM churn).
+	lastCapConsolidateUnix atomic.Int64
 
 	// guard is the shared prompt-injection detector.
 	guard guard.Guard
@@ -236,6 +253,9 @@ func NewMemoryManager(memoryDir string, llc LLMClient, cfg MemoryConfig) *Memory
 	}
 	if cfg.ConsolidateOnEnd != nil {
 		def.ConsolidateOnEnd = cfg.ConsolidateOnEnd
+	}
+	if cfg.ConsolidateAtCapPct != nil {
+		def.ConsolidateAtCapPct = cfg.ConsolidateAtCapPct
 	}
 	if cfg.LLMSearch != nil {
 		def.LLMSearch = cfg.LLMSearch
@@ -608,6 +628,66 @@ func (m *MemoryManager) fireAfterUnlock(unlock func(), events *[]MemoryEvent) {
 	}
 }
 
+// maybeConsolidateAtCap fires ONE background consolidation for target when
+// its size crosses ConsolidateAtCapPct of the cap. Long-lived serve/REPL
+// sessions never hit the session-end trigger, so entries otherwise fossilize
+// near the cap for the life of the process.
+//
+// Guard scope: ONE pass per manager (both targets share it) — an in-flight
+// 'user' pass suppresses an 'env' crossing until it lands; the next env add
+// re-arms. A cooldown (capConsolidateCooldown) prevents LLM churn when adds
+// keep the file hovering at the threshold.
+//
+// Lock discipline: the LLM call must NOT run under the facts flock —
+// Consolidate holds the flock across its LLM call, which would block every
+// AddFact in a live session for the LLM duration. Instead: snapshot entries
+// flock-free, merge in a temp clone (PreviewConsolidation), then
+// ApplyConsolidation, which takes the flock only for the verified snapshot
+// swap and conflicts instead of overwriting concurrent writes. The pass runs
+// via RunBackground so process exit drains it instead of killing it
+// mid-LLM-call. Best-effort: errors are logged, never surfaced to AddFact.
+func (m *MemoryManager) maybeConsolidateAtCap(target string) {
+	pct := 0
+	if m.cfg.ConsolidateAtCapPct != nil {
+		pct = *m.cfg.ConsolidateAtCapPct
+	}
+	if pct <= 0 || pct > 100 {
+		return
+	}
+	if m.llm == nil || m.cfg.LLMConsolidate == nil || !*m.cfg.LLMConsolidate {
+		return
+	}
+	if !m.capConsolidateInFlight.CompareAndSwap(false, true) {
+		return // a pass is already running — it will cover these entries
+	}
+	if now := time.Now().Unix(); now-m.lastCapConsolidateUnix.Load() < capConsolidateCooldownSeconds {
+		m.capConsolidateInFlight.Store(false)
+		return
+	}
+	go func() {
+		defer m.capConsolidateInFlight.Store(false)
+
+		entries, err := m.facts.Entries(target)
+		if err != nil || len(entries) <= 1 {
+			return // nothing to consolidate
+		}
+		if m.facts.sizeOf(entries)*100 < m.facts.cap(target)*pct {
+			return
+		}
+		m.lastCapConsolidateUnix.Store(time.Now().Unix())
+
+		preview, err := m.PreviewConsolidation(target)
+		if err != nil {
+			log.Printf("memory: cap-triggered consolidation preview (%s): %v", target, err)
+			return
+		}
+		if err := m.ApplyConsolidation(target, preview); err != nil {
+			log.Printf("memory: cap-triggered consolidation apply (%s): %v", target, err)
+		}
+		m.markPromptDirty()
+	}()
+}
+
 // ── Fact Operations ─────────────────────────────────────────────────
 
 // AddFact appends a new fact entry. Performs:
@@ -717,6 +797,7 @@ func (m *MemoryManager) AddFact(target, content string) error {
 	if !existedBefore {
 		pending = append(pending, MemoryEvent{Type: "fact_added", Target: target, Content: trimmed})
 	}
+	m.maybeConsolidateAtCap(target)
 
 	// Incrementally update merge detector instead of re-reading + re-embedding all.
 	// Check dedup: if content already existed in the entries we read at the top,
