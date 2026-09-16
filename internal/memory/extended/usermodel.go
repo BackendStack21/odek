@@ -332,6 +332,20 @@ func (u *UserModel) applyDiff(ctx context.Context, diff userStateDiff) error {
 	if len(u.state.PendingReview) > maxPending {
 		u.state.PendingReview = u.state.PendingReview[len(u.state.PendingReview)-maxPending:]
 	}
+	// Age expiry: unconfirmed inferences older than the window are dropped
+	// (the count cap alone keeps the NEWEST, letting stale chains ride in
+	// the memory head indefinitely). 0/negative disables expiry. Confirmed
+	// facts are never touched here — this prunes PendingReview only.
+	if maxAgeDays := u.cfg.UserStatePendingMaxAgeDays; maxAgeDays > 0 {
+		cutoff := time.Now().UTC().AddDate(0, 0, -maxAgeDays)
+		kept := u.state.PendingReview[:0]
+		for _, p := range u.state.PendingReview {
+			if p.CreatedAt.IsZero() || p.CreatedAt.After(cutoff) {
+				kept = append(kept, p)
+			}
+		}
+		u.state.PendingReview = kept
+	}
 	return nil
 }
 
