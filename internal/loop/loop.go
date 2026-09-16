@@ -1612,6 +1612,19 @@ func (e *Engine) refreshDigest(ctx context.Context, messages []session.Message, 
 	}
 	messages = e.installDigest(ctx, messages, extractive)
 	e.startDigestSideCall(ctx, startIdx, dropped)
+	// Delta refetch: drops arrived while the previous side call was in
+	// flight. applyPendingDigest (called at the top) has already trimmed the
+	// covered prefix, so anything still queued is exactly the uncovered
+	// suffix — fetch it with start 0. Spawning here on the loop goroutine
+	// (not from the completing side-call goroutine) keeps queue indices and
+	// flight state on one thread of control: no cross-generation races.
+	e.compactMu.Lock()
+	dirty := e.digestDirty && !e.digestInFlight
+	e.digestDirty = false
+	e.compactMu.Unlock()
+	if dirty && len(e.pendingDropped) > 0 {
+		e.startDigestSideCall(ctx, 0, append([]session.Message(nil), e.pendingDropped...))
+	}
 	return messages
 }
 
@@ -1761,28 +1774,17 @@ func (e *Engine) startDigestSideCall(parent context.Context, start int, dropped 
 		}
 		e.digestInFlight = false
 		e.digestCancel = nil
-		refetch := e.digestDirty
-		e.digestDirty = false
-		covered := e.digestCallStart + len(dropped)
 		ok := summary != "" || usage != nil
 		if ok {
 			e.pendingDigest = summary
 			e.pendingUsage = usage
-			e.pendingDroppedCovered = covered
+			e.pendingDroppedCovered = e.digestCallStart + len(dropped)
 			e.pendingDigestReady = true
 		}
-		// Dirty refetch over the uncovered suffix, computed under the same
-		// lock and derived from the run-scoped parent so a canceled run does
-		// not leave an orphan call running.
-		var delta []session.Message
-		deltaStart := covered
-		if refetch && ok && covered < len(e.pendingDropped) {
-			delta = append([]session.Message(nil), e.pendingDropped[covered:]...)
-		}
+		// digestDirty is intentionally left set: the delta refetch is spawned
+		// by refreshDigest on the loop goroutine — spawning here would race
+		// applyPendingDigest's queue rebase and desync the covered indices.
 		e.compactMu.Unlock()
-		if len(delta) > 0 {
-			e.startDigestSideCall(parent, deltaStart, delta)
-		}
 	}()
 }
 
