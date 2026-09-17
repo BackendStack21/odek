@@ -77,6 +77,17 @@ func dropStallMilestones(m map[string]int, toolName string) {
 	}
 }
 
+// LastPartialReason reports the engine-recorded reason the last run
+// concluded with a partial summary. Unlike PartialSummaryReason (a legacy
+// text-matching fallback for stored sessions), this cannot be spoofed by a
+// model echoing marker text.
+func (e *Engine) LastPartialReason() (string, bool) {
+	if e.lastPartialReason == "" {
+		return "", false
+	}
+	return e.lastPartialReason, true
+}
+
 // evictLowestStallCount drops one fingerprint with the lowest repeat count
 // (key tie-break) so the 64-entry bound does not wipe the whole map.
 func evictLowestStallCount(m map[string]int) (string, bool) {
@@ -555,18 +566,23 @@ type Engine struct {
 	// (Config.Compaction). compactDigest holds the last LLM digest (or the
 	// wrapped body restored on resume). An extractive sketch is installed
 	// immediately so the think step is not blocked on the side call.
-	compaction            bool
-	compactDigest         string
-	digestInstalled       bool   // digest system message is in this run's history
-	lastDigestRaw         string // last summary passed to installDigest (wrapper cache key)
-	lastDigestWrapped     string // cached wrapped form; reused while summary unchanged to avoid nonce churn
-	compactMu             sync.Mutex
-	digestGen             uint64
-	digestCancel          context.CancelFunc
-	digestInFlight        bool           // a summarizer side call is running; new trims debounce instead of canceling
-	digestDirty           bool           // drops arrived while the side call was in flight; refetch after it lands
-	digestCallStart       int            // pendingDropped index where the in-flight call's input begins
-	toolStallMilestones   map[string]int // next stall-hint threshold per fingerprint (doubles per fire)
+	compaction          bool
+	compactDigest       string
+	digestInstalled     bool   // digest system message is in this run's history
+	lastDigestRaw       string // last summary passed to installDigest (wrapper cache key)
+	lastDigestWrapped   string // cached wrapped form; reused while summary unchanged to avoid nonce churn
+	compactMu           sync.Mutex
+	digestGen           uint64
+	digestCancel        context.CancelFunc
+	digestInFlight      bool           // a summarizer side call is running; new trims debounce instead of canceling
+	digestDirty         bool           // drops arrived while the side call was in flight; refetch after it lands
+	digestCallStart     int            // pendingDropped index where the in-flight call's input begins
+	toolStallMilestones map[string]int // next stall-hint threshold per fingerprint (doubles per fire)
+	// lastPartialReason records WHY the last run ended in a partial
+	// summary ("iteration_budget", "execution_budget", "time_budget") —
+	// set out-of-band at the engine's finalization paths so callers never
+	// re-derive the classification from model-echoable marker text.
+	lastPartialReason     string
 	pendingDropped        []session.Message
 	pendingDroppedCovered int // prefix length of pendingDropped the ready digest actually summarized
 	pendingDigest         string
@@ -2184,6 +2200,7 @@ func (e *Engine) budgetExceeded(ctx context.Context, messages []session.Message,
 	// still has headroom. For runtime/token/cost exhaustion, skip it.
 	if berr.Limit == budget.LimitToolCalls && e.budgetAllowsSideCall() {
 		if summary := e.summarizeProgress(ctx, messages); summary != "" {
+			e.lastPartialReason = "execution_budget"
 			messages = append(messages, session.Message{
 				Role:    "assistant",
 				Content: execBudgetSummaryMarker + "\n\n" + e.protectDerivedContext(ctx, "progress_summary", summary),
@@ -3789,9 +3806,12 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 		progressSummary = e.summarizeProgress(ctx, messages)
 	}
 	marker := budgetSummaryMarker
+	reason := "iteration_budget"
 	if finalizeReason == timeBudgetFinalization {
 		marker = timeBudgetSummaryMarker
+		reason = "time_budget"
 	}
+	e.lastPartialReason = reason
 	if summary := progressSummary; summary != "" {
 		final := marker + "\n\n" + summary
 		persistedFinal := marker + "\n\n" + e.protectDerivedContext(ctx, "progress_summary", summary)
