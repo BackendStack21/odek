@@ -235,20 +235,6 @@ func intBudgetBand(max, remaining int64, exhausted bool, t int, label string) st
 	return ""
 }
 
-// partialReasonHeadWindow bounds marker detection to the head of a final
-// answer. Engine-stamped markers are PREPENDED to the partial summary, and
-// tail-keep truncation only removes leading bytes, so a genuine marker is
-// always found within this window — while a successful answer that merely
-// QUOTES a marker in its (model-controlled) body is not.
-const partialReasonHeadWindow = 1024
-
-func headWindow(s string) string {
-	if len(s) <= partialReasonHeadWindow {
-		return s
-	}
-	return s[:partialReasonHeadWindow]
-}
-
 // PartialSummaryReason classifies a final answer produced by one of the
 // engine's budget-exhaustion paths. It returns (reason, true) when the text
 // carries a partial-summary marker — "iteration_budget", "execution_budget",
