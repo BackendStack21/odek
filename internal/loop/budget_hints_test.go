@@ -260,3 +260,20 @@ func TestEngine_RequestFinalization_GracefulTimeBudgetSummary(t *testing.T) {
 		t.Fatal("Run did not return after finalization request")
 	}
 }
+
+// A model-controlled final answer that merely QUOTES a budget marker
+// (markers are public constants in this repo) must not be classified as a
+// budget-exhausted partial summary. Marker detection is therefore bounded
+// to the head of the text: the engine prepends markers, and tail-keep
+// truncation only removes leading bytes, so a genuine partial summary
+// always carries the marker within the head window.
+func TestPartialSummaryReason_MarkerQuotedBeyondHeadNotDetected(t *testing.T) {
+	tail := strings.Repeat("x", 1200) + budgetSummaryMarker + " more text"
+	if reason, ok := PartialSummaryReason(tail); ok {
+		t.Errorf("marker quoted beyond the head window was classified as partial (reason=%q)", reason)
+	}
+	head := strings.Repeat("x", 900) + budgetSummaryMarker
+	if reason, ok := PartialSummaryReason(head); !ok || reason != "iteration_budget" {
+		t.Errorf("marker within the head window not detected: (%q, %v)", reason, ok)
+	}
+}

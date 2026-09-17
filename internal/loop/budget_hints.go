@@ -235,6 +235,20 @@ func intBudgetBand(max, remaining int64, exhausted bool, t int, label string) st
 	return ""
 }
 
+// partialReasonHeadWindow bounds marker detection to the head of a final
+// answer. Engine-stamped markers are PREPENDED to the partial summary, and
+// tail-keep truncation only removes leading bytes, so a genuine marker is
+// always found within this window — while a successful answer that merely
+// QUOTES a marker in its (model-controlled) body is not.
+const partialReasonHeadWindow = 1024
+
+func headWindow(s string) string {
+	if len(s) <= partialReasonHeadWindow {
+		return s
+	}
+	return s[:partialReasonHeadWindow]
+}
+
 // PartialSummaryReason classifies a final answer produced by one of the
 // engine's budget-exhaustion paths. It returns (reason, true) when the text
 // carries a partial-summary marker — "iteration_budget", "execution_budget",
@@ -245,11 +259,11 @@ func PartialSummaryReason(final string) (string, bool) {
 	// Contains, not HasPrefix: the sub-agent headline is tail-kept, so an
 	// over-cap partial summary loses its leading bytes — the marker must
 	// still be detected anywhere in the text (markers are unique sentinels).
-	case strings.Contains(final, budgetSummaryMarker):
+	case strings.Contains(headWindow(final), budgetSummaryMarker):
 		return "iteration_budget", true
-	case strings.Contains(final, execBudgetSummaryMarker):
+	case strings.Contains(headWindow(final), execBudgetSummaryMarker):
 		return "execution_budget", true
-	case strings.Contains(final, timeBudgetSummaryMarker):
+	case strings.Contains(headWindow(final), timeBudgetSummaryMarker):
 		return "time_budget", true
 	}
 	return "", false
