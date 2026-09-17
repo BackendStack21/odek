@@ -291,15 +291,19 @@ func extractDenials(messages []session.Message) ([]SubagentDenial, int) {
 			continue
 		}
 		for _, line := range strings.Split(msg.Content, "\n") {
-			i := strings.Index(line, denialMarker)
-			if i < 0 {
+			// Anchor to line start: both producers (danger.CheckOperation,
+			// the shell tool) emit the marker at the start of the tool
+			// result. A file listing or fetched page merely CONTAINING the
+			// marker text must not yield spoofed denials that steer the
+			// parent.
+			if !strings.HasPrefix(line, denialMarker) {
 				continue
 			}
 			total++
 			if len(out) >= maxReportedDenials {
 				continue
 			}
-			rest := strings.TrimSpace(line[i+len(denialMarker):])
+			rest := strings.TrimSpace(line[len(denialMarker):])
 			d := SubagentDenial{Tool: msg.Name, Reason: truncate(rest, 200)}
 			if k := strings.LastIndex(rest, " (risk: "); k >= 0 && strings.HasSuffix(rest, ")") {
 				d.Class = strings.TrimSpace(rest[k+len(" (risk: ") : len(rest)-1])

@@ -256,14 +256,16 @@ func headWindow(s string) string {
 // set status/partial_reason without string-matching the markers themselves.
 func PartialSummaryReason(final string) (string, bool) {
 	switch {
-	// Head-windowed Contains: the engine PREPENDS markers to partial
-	// summaries (always in the head), while a marker merely QUOTED deep in a
-	// model-controlled body must not flip a successful answer to partial.
-	case strings.Contains(headWindow(final), budgetSummaryMarker):
+	// Prefix, not Contains: the engine PREPENDS markers at byte 0 of the
+	// raw final answer (sub-agent classification feeds untruncated text),
+	// so only a byte-0 match identifies a genuine budget-exhaustion
+	// summary — a marker merely QUOTED anywhere in a successful answer is
+	// not one, however early it appears.
+	case strings.HasPrefix(final, budgetSummaryMarker):
 		return "iteration_budget", true
-	case strings.Contains(headWindow(final), execBudgetSummaryMarker):
+	case strings.HasPrefix(final, execBudgetSummaryMarker):
 		return "execution_budget", true
-	case strings.Contains(headWindow(final), timeBudgetSummaryMarker):
+	case strings.HasPrefix(final, timeBudgetSummaryMarker):
 		return "time_budget", true
 	}
 	return "", false
