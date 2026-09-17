@@ -693,11 +693,18 @@ func (m *MemoryManager) maybeConsolidateAtCap(target string, mutated bool) {
 			}
 			if m.facts.sizeOf(entries)*100 < m.facts.cap(target)*pct {
 				// Under cap — but a trigger may have arrived while this pass
-				// was mid-flight (possibly for the OTHER target); take over
-				// the pending target and loop.
+				// was mid-flight (possibly for the OTHER target); take over the
+				// pending target and loop. A SAME-target takeover is
+				// cooldown-gated so a hot AddFact stream cannot ping-pong
+				// passes; a different target is an independent crossing.
 				pending := m.capConsolidatePending.Swap(nil)
 				if pending == nil {
 					return
+				}
+				if *pending == target {
+					if now := time.Now().Unix(); now-m.lastCapConsolidateUnix.Load() < capConsolidateCooldownSeconds {
+						return
+					}
 				}
 				target = *pending
 				continue
@@ -718,11 +725,18 @@ func (m *MemoryManager) maybeConsolidateAtCap(target string, mutated bool) {
 			m.lastCapConsolidateUnix.Store(time.Now().Unix())
 			m.markPromptDirty()
 			// Take over any target that triggered mid-flight (possibly the
-			// other fact file) before leaving; the cooldown still gates the
-			// NEXT fresh crossing.
+			// other fact file) before leaving. A SAME-target takeover is
+			// cooldown-gated (fresh success re-arms it) so a hot AddFact
+			// stream cannot chain unbounded passes; a different target is an
+			// independent crossing and proceeds.
 			pending := m.capConsolidatePending.Swap(nil)
 			if pending == nil {
 				return
+			}
+			if *pending == target {
+				if now := time.Now().Unix(); now-m.lastCapConsolidateUnix.Load() < capConsolidateCooldownSeconds {
+					return
+				}
 			}
 			target = *pending
 		}

