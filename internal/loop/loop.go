@@ -3632,8 +3632,8 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 					}
 					if e.toolRepeatCounts[fp] >= milestone {
 						// The milestone already encodes escalation history — derive
-					// `warned` from it instead of re-deriving from the raw count.
-					warned := milestone > stallThreshold
+						// `warned` from it instead of re-deriving from the raw count.
+						warned := milestone > stallThreshold
 						correction := fmt.Sprintf(
 							"⚠️ You called %q with identical arguments %d times (possibly interleaved with other calls) with no new information%s. Change approach: vary the arguments, switch to a different tool, or move on to the next step — repeating the same call will not produce a different result.",
 							toolName, e.toolRepeatCounts[fp], againSuffix(warned))

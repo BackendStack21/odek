@@ -890,7 +890,6 @@ func TestHeadTail_SymlinkRejected(t *testing.T) {
 
 // ── Empty File Handling ──────────────────────────────────────────────
 
-
 func TestHeadTail_EmptyFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "empty.txt")
@@ -915,7 +914,6 @@ func TestHeadTail_EmptyFile(t *testing.T) {
 		t.Errorf("count = %d, want 0", r.Results[0].Count)
 	}
 }
-
 
 // ── Max Limits Enforcement ───────────────────────────────────────────
 
@@ -975,7 +973,6 @@ func TestHTTPBatch_MaxURLs(t *testing.T) {
 
 // ── Empty Args Rejection ─────────────────────────────────────────────
 
-
 func TestBase64_NoArgs(t *testing.T) {
 	tool := &base64Tool{}
 	result := callJSON(t, tool, `{}`)
@@ -987,7 +984,6 @@ func TestBase64_NoArgs(t *testing.T) {
 		t.Errorf("should require args, got: %s", r.Error)
 	}
 }
-
 
 // ── Invalid JSON Rejection ───────────────────────────────────────────
 
@@ -1077,7 +1073,6 @@ func TestTools_MissingRequired(t *testing.T) {
 	})
 }
 
-
 // ── Diff Edge Cases ──────────────────────────────────────────────────
 
 func TestDiff_FileVsStringEmpty(t *testing.T) {
@@ -1100,7 +1095,6 @@ func TestDiff_FileVsStringEmpty(t *testing.T) {
 		t.Error("expected at least one hunk (removed)")
 	}
 }
-
 
 // ── JSONQuery Edge Cases ─────────────────────────────────────────────
 
@@ -1413,7 +1407,6 @@ func TestParallelShell_Timeout(t *testing.T) {
 		t.Errorf("duration_ms = %d, expected ~1000 (timeout=1s, sleep=10)", r.Results[0].DurationMs)
 	}
 }
-
 
 // makeOversizedFile creates a sparse file larger than maxFileReadBytes for
 // testing size-cap rejections without actually writing multi-gigabyte data.

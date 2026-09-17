@@ -200,7 +200,6 @@ func TestDiff_SingleLineFiles(t *testing.T) {
 
 // ─── CountLines Edge Cases ────────────────────────────────────────────
 
-
 func TestMultiGrep_ZeroMatches(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "a.txt"), []byte("nothing here\n"), 0644)

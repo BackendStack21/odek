@@ -298,6 +298,19 @@ func (u *UserModel) applyDiff(ctx context.Context, diff userStateDiff) error {
 	if maxPending <= 0 {
 		maxPending = DefaultConfig().UserStateMaxPending
 	}
+	// Age expiry BEFORE building the dedup set: a fresh inference matching a
+	// stale entry must re-create the entry, not be dedup-skipped against a
+	// doomed one that expiry then removes — losing the inference entirely.
+	if maxAge := u.cfg.UserStatePendingMaxAgeDays; maxAge != nil && *maxAge > 0 {
+		cutoff := time.Now().UTC().AddDate(0, 0, -*maxAge)
+		kept := u.state.PendingReview[:0]
+		for _, p := range u.state.PendingReview {
+			if p.CreatedAt.IsZero() || p.CreatedAt.After(cutoff) {
+				kept = append(kept, p)
+			}
+		}
+		u.state.PendingReview = kept
+	}
 	existing := make(map[string]bool, len(u.state.PendingReview))
 	for _, p := range u.state.PendingReview {
 		existing[p.Field+"\x00"+p.Value] = true
@@ -328,22 +341,6 @@ func (u *UserModel) applyDiff(ctx context.Context, diff userStateDiff) error {
 			p.CreatedAt = time.Now().UTC()
 		}
 		u.state.PendingReview = append(u.state.PendingReview, p)
-	}
-	// Age expiry FIRST, then the count trim: a stale entry occupying a cap
-	// slot must not push a fresh entry out before the stale one is dropped.
-	// Unconfirmed inferences older than the window are dropped (the count
-	// cap alone keeps the NEWEST, letting stale chains ride in the memory
-	// head indefinitely). 0/negative disables expiry. Confirmed facts are
-	// never touched here — this prunes PendingReview only.
-	if maxAge := u.cfg.UserStatePendingMaxAgeDays; maxAge != nil && *maxAge > 0 {
-		cutoff := time.Now().UTC().AddDate(0, 0, -*maxAge)
-		kept := u.state.PendingReview[:0]
-		for _, p := range u.state.PendingReview {
-			if p.CreatedAt.IsZero() || p.CreatedAt.After(cutoff) {
-				kept = append(kept, p)
-			}
-		}
-		u.state.PendingReview = kept
 	}
 	if len(u.state.PendingReview) > maxPending {
 		u.state.PendingReview = u.state.PendingReview[len(u.state.PendingReview)-maxPending:]

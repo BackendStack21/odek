@@ -522,8 +522,10 @@ func formatRemainingPlanStepsDetailed(state PlanState) string {
 		if st.Title != "" {
 			// ';' is the list separator on this surface — strip it from titles
 			// (nothing machine-parses the list, but unambiguous tokens keep
-			// the summarizer from seeing phantom steps).
-			title := strings.ReplaceAll(st.Title, ";", ",")
+			// the summarizer from seeing phantom steps). Titles are normalized
+			// at create time, but re-normalize at render: older/tampered stores
+			// can hold raw newlines that would inject phantom lines.
+			title := normalizePlanText(strings.ReplaceAll(st.Title, ";", ","))
 			parts = append(parts, st.ID+"="+string(st.Status)+" - "+title)
 		} else {
 			parts = append(parts, st.ID+"="+string(st.Status))

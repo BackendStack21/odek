@@ -256,9 +256,9 @@ func headWindow(s string) string {
 // set status/partial_reason without string-matching the markers themselves.
 func PartialSummaryReason(final string) (string, bool) {
 	switch {
-	// Contains, not HasPrefix: the sub-agent headline is tail-kept, so an
-	// over-cap partial summary loses its leading bytes — the marker must
-	// still be detected anywhere in the text (markers are unique sentinels).
+	// Head-windowed Contains: the engine PREPENDS markers to partial
+	// summaries (always in the head), while a marker merely QUOTED deep in a
+	// model-controlled body must not flip a successful answer to partial.
 	case strings.Contains(headWindow(final), budgetSummaryMarker):
 		return "iteration_budget", true
 	case strings.Contains(headWindow(final), execBudgetSummaryMarker):
