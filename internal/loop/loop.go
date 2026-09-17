@@ -2437,6 +2437,7 @@ func isFullyWrappedUntrusted(content string) bool {
 // (empty or stale persisted system entries are replaced).
 func (e *Engine) RunWithMessages(ctx context.Context, messages []session.Message) (string, []session.Message, error) {
 	// Reset token accounting for this run
+	e.lastPartialReason = "" // per-run: no stale partial classification from a previous run
 	e.memMsgIdx = -1
 	e.skillMsgIdx = -1
 	e.lastSkillBlock = ""

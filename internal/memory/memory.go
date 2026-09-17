@@ -720,7 +720,17 @@ func (m *MemoryManager) maybeConsolidateAtCap(target string, mutated bool) {
 		return
 	}
 	m.RunBackground(func() {
-		defer m.capConsolidateInFlight.Store(false)
+		defer func() {
+			m.capConsolidateInFlight.Store(false)
+			// A trigger that arrived between the final consume and this
+			// release set its bit while inFlight still read true (its CAS
+			// failed) — it would strand until the next crossing. Re-check
+			// and relaunch; the relaunch is cooldown-gated so this cannot
+			// spin.
+			if mask := m.capConsolidatePending.Load(); mask != 0 {
+				m.maybeConsolidateAtCap(target, true)
+			}
+		}()
 
 		for {
 			entries, err := m.facts.Entries(target)
