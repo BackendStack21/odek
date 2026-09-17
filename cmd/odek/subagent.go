@@ -1144,7 +1144,7 @@ func subagentCmd(args []string) error {
 	// budget_exhausted, partial-summary markers to partial (with reason),
 	// hard timeouts to error+timeout, everything else to success/error.
 	summary, summaryRunes, summaryTruncated := extractSummaryInfo(allMessages)
-	reason, partial := loop.PartialSummaryReason(summary)
+	reason, partial := loop.PartialSummaryReason(rawFinalAssistant(allMessages))
 	outcome := classifySubagentRun(err, partial, reason, sigCtx)
 
 	// Build result
@@ -1377,6 +1377,18 @@ func extractSummaryInfo(messages []session.Message) (string, int, bool) {
 		}
 	}
 	return "", 0, false
+}
+
+// rawFinalAssistant returns the UNTRUNCATED content of the last assistant
+// message. Budget-summary markers are engine-prepended, and tail-keep
+// truncation strips the head — classification must see the raw text.
+func rawFinalAssistant(messages []session.Message) string {
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == "assistant" && messages[i].Content != "" {
+			return messages[i].Content
+		}
+	}
+	return ""
 }
 
 func extractSummary(messages []session.Message) string {

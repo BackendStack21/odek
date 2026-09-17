@@ -193,10 +193,10 @@ type MemoryManager struct {
 	// capConsolidateInFlight guards the cap-triggered background
 	// consolidation: one pass per manager (both targets share it) at a time.
 	capConsolidateInFlight atomic.Bool
-// capConsolidatePending marks a trigger that arrived while a pass was
-// already running. The running pass re-checks the flag after finishing so
-// entries added after its snapshot are still covered instead of dropped.
-capConsolidatePending atomic.Bool
+	// capConsolidatePending marks a trigger that arrived while a pass was
+	// already running. The running pass re-checks the flag after finishing so
+	// entries added after its snapshot are still covered instead of dropped.
+	capConsolidatePending atomic.Bool
 	// lastCapConsolidateUnix is the unix time of the last cap-triggered
 	// pass (cooldown gate against threshold-hovering LLM churn).
 	lastCapConsolidateUnix atomic.Int64
@@ -658,6 +658,11 @@ func (m *MemoryManager) maybeConsolidateAtCap(target string, mutated bool) {
 	if pct <= 0 || pct > 100 {
 		return
 	}
+	if pct > 99 {
+		// pct=100 can never fire: FactStore.Add rejects adds that would
+		// exceed the cap, so size==cap is unreachable. Clamp to 99.
+		pct = 99
+	}
 	if m.llm == nil || m.cfg.LLMConsolidate == nil || !*m.cfg.LLMConsolidate {
 		return
 	}
@@ -778,6 +783,7 @@ func (m *MemoryManager) AddFact(target, content string) error {
 				// Update merge detector incrementally — only re-embed the changed entry
 				m.merge.ReplaceEntry(similarIdx, merged)
 				m.markPromptDirty()
+				m.maybeConsolidateAtCap(target, true)
 				pending = append(pending, MemoryEvent{
 					Type:       "fact_merged",
 					Target:     target,
