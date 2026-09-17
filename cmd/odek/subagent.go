@@ -295,18 +295,34 @@ func extractDenials(messages []session.Message) ([]SubagentDenial, int) {
 		if msg.Role != "tool" || !strings.Contains(msg.Content, denialMarker) {
 			continue
 		}
+		// Untrusted-content wrapper blocks carry externally sourced text
+		// (files, web pages). A marker line inside them is DATA, not a
+		// real denial — skip until the closing tag.
+		inUntrusted := false
 		for _, line := range strings.Split(msg.Content, "\n") {
-			// Anchor to line start in either real-producer form: the raw
-			// marker (danger.CheckOperation, the shell tool) or the engine's
-			// error rendering ("error: " + marker). A file listing or fetched
-			// page merely CONTAINING the marker text mid-line must not yield
-			// spoofed denials that steer the parent.
+			if strings.HasPrefix(line, "<untrusted") && strings.Contains(line, "content_") {
+				inUntrusted = !strings.HasPrefix(line, "</untrusted")
+				continue
+			}
+			if strings.HasPrefix(line, "</untrusted") {
+				inUntrusted = false
+				continue
+			}
+			if inUntrusted {
+				continue
+			}
+			// Anchor to line start (after leading whitespace) in either
+			// real-producer form: the raw marker (danger.CheckOperation,
+			// the shell tool) or the engine's error rendering
+			// ("error: " + marker). Mid-line occurrences in file listings
+			// or fetched pages must not yield spoofed denials.
+			trimmed := strings.TrimSpace(line)
 			var rest string
 			switch {
-			case strings.HasPrefix(line, denialErrPrefix):
-				rest = strings.TrimSpace(line[len(denialErrPrefix):])
-			case strings.HasPrefix(line, denialMarker):
-				rest = strings.TrimSpace(line[len(denialMarker):])
+			case strings.HasPrefix(trimmed, denialErrPrefix):
+				rest = strings.TrimSpace(trimmed[len(denialErrPrefix):])
+			case strings.HasPrefix(trimmed, denialMarker):
+				rest = strings.TrimSpace(trimmed[len(denialMarker):])
 			default:
 				continue
 			}
@@ -1158,7 +1174,14 @@ func subagentCmd(args []string) error {
 	// budget_exhausted, partial-summary markers to partial (with reason),
 	// hard timeouts to error+timeout, everything else to success/error.
 	summary, summaryRunes, summaryTruncated := extractSummaryInfo(allMessages)
-	reason, partial := loop.PartialSummaryReason(rawFinalAssistant(allMessages))
+	// Prefer the ENGINE-RECORDED reason — set out-of-band at the
+	// finalization paths, impossible to spoof by echoing marker text.
+	// PartialSummaryReason on the raw text is only a fallback for engines
+	// that predate the field (stored-session replays).
+	reason, partial := agent.LastPartialReason()
+	if !partial {
+		reason, partial = loop.PartialSummaryReason(rawFinalAssistant(allMessages))
+	}
 	outcome := classifySubagentRun(err, partial, reason, sigCtx)
 
 	// Build result

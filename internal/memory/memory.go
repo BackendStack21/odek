@@ -193,11 +193,12 @@ type MemoryManager struct {
 	// capConsolidateInFlight guards the cap-triggered background
 	// consolidation: one pass per manager (both targets share it) at a time.
 	capConsolidateInFlight atomic.Bool
-	// capConsolidatePending carries the TARGET of a trigger that arrived
-	// while a pass was already running (nil = none). The running pass
-	// re-checks it so entries added after its snapshot are still covered —
-	// including when the pending target differs from the running pass's.
-	capConsolidatePending atomic.Pointer[string]
+	// capConsolidatePending is a bitmask of fact-file targets (bit 0:
+	// "user", bit 1: "env") whose cap trigger arrived while a pass was
+	// already running. The pass consumes bits — never wipes — so a trigger
+	// racing the loop entry is not lost, and both targets survive a
+	// latest-wins overwrite (OR-accumulate instead of replace).
+	capConsolidatePending atomic.Int32
 	// lastCapConsolidateUnix is the unix time of the last cap-triggered
 	// pass (cooldown gate against threshold-hovering LLM churn).
 	lastCapConsolidateUnix atomic.Int64
@@ -633,6 +634,40 @@ func (m *MemoryManager) fireAfterUnlock(unlock func(), events *[]MemoryEvent) {
 	}
 }
 
+func capTargetBit(target string) int32 {
+	if target == "user" {
+		return 1
+	}
+	return 2 // "env"
+}
+
+func (m *MemoryManager) markCapPending(target string) {
+	m.capConsolidatePending.Or(capTargetBit(target))
+}
+
+// consumeCapPending atomically clears and returns the pending-target mask.
+func (m *MemoryManager) consumeCapPending() int32 {
+	return m.capConsolidatePending.Swap(0)
+}
+
+// takeOverPending selects the next pending target from a mask, preferring
+// a target OTHER than `current` (an independent crossing); clearing its
+// bit. Returns (target, true) when one remains.
+func takeOverPending(mask int32, current string) (string, bool) {
+	// Prefer the other fact file: it is an independent crossing.
+	other := "env"
+	if current == "env" {
+		other = "user"
+	}
+	if mask&capTargetBit(other) != 0 {
+		return other, true
+	}
+	if mask&capTargetBit(current) != 0 {
+		return current, true
+	}
+	return "", false
+}
+
 // maybeConsolidateAtCap fires ONE background consolidation for target when
 // its size crosses ConsolidateAtCapPct of the cap. Long-lived serve/REPL
 // sessions never hit the session-end trigger, so entries otherwise fossilize
@@ -656,12 +691,14 @@ func (m *MemoryManager) maybeConsolidateAtCap(target string, mutated bool) {
 	if m.cfg.ConsolidateAtCapPct != nil {
 		pct = *m.cfg.ConsolidateAtCapPct
 	}
-	if pct <= 0 || pct > 100 {
+	if pct <= 0 {
 		return
 	}
 	if pct > 99 {
 		// pct=100 can never fire: FactStore.Add rejects adds that would
-		// exceed the cap, so size==cap is unreachable. Clamp to 99.
+		// exceed the cap, so size==cap is unreachable — and anything
+		// higher must not silently disable the trigger either; the
+		// documented contract treats values above 99 as 99.
 		pct = 99
 	}
 	if m.llm == nil || m.cfg.LLMConsolidate == nil || !*m.cfg.LLMConsolidate {
@@ -671,10 +708,11 @@ func (m *MemoryManager) maybeConsolidateAtCap(target string, mutated bool) {
 		return // dedup no-op: the corpus is unchanged, nothing new to cover
 	}
 	if !m.capConsolidateInFlight.CompareAndSwap(false, true) {
-		// A pass is already running — it snapshotted its entries BEFORE this
-		// add landed, so record the target for a re-check instead of
-		// dropping the trigger (latest target wins; the re-check covers it).
-		m.capConsolidatePending.Store(&target)
+		// A pass is already running — it snapshotted its entries BEFORE
+		// this add landed. OR the target's bit into the pending mask so
+		// the pass services it: every distinct target that crosses
+		// mid-flight gets its own re-check (no latest-wins loss).
+		m.markCapPending(target)
 		return
 	}
 	if now := time.Now().Unix(); now-m.lastCapConsolidateUnix.Load() < capConsolidateCooldownSeconds {
@@ -682,63 +720,62 @@ func (m *MemoryManager) maybeConsolidateAtCap(target string, mutated bool) {
 		return
 	}
 	m.RunBackground(func() {
-		defer m.capConsolidateInFlight.Store(false)
+		defer func() {
+			m.capConsolidateInFlight.Store(false)
+			// A trigger that arrived between the final consume and this
+			// release set its bit while inFlight still read true (its CAS
+			// failed) — it would strand until the next crossing. Re-check
+			// and relaunch; the relaunch is cooldown-gated so this cannot
+			// spin.
+			if mask := m.capConsolidatePending.Load(); mask != 0 {
+				m.maybeConsolidateAtCap(target, true)
+			}
+		}()
 
 		for {
-			m.capConsolidatePending.Store(nil)
-
 			entries, err := m.facts.Entries(target)
-			if err != nil || len(entries) <= 1 {
-				return // nothing to consolidate
-			}
-			if m.facts.sizeOf(entries)*100 < m.facts.cap(target)*pct {
-				// Under cap — but a trigger may have arrived while this pass
-				// was mid-flight (possibly for the OTHER target); take over the
-				// pending target and loop. A SAME-target takeover is
-				// cooldown-gated so a hot AddFact stream cannot ping-pong
-				// passes; a different target is an independent crossing.
-				pending := m.capConsolidatePending.Swap(nil)
-				if pending == nil {
+			if err == nil && len(entries) > 1 &&
+				m.facts.sizeOf(entries)*100 >= m.facts.cap(target)*pct {
+				// Stamp the cooldown ONLY after a successful apply: a
+				// failed pass (preview error, snapshot conflict) must not
+				// burn the 600s window — the next crossing retries.
+				preview, perr := m.PreviewConsolidation(target)
+				if perr != nil {
+					log.Printf("memory: cap-triggered consolidation preview (%s): %v", target, perr)
 					return
 				}
-				if *pending == target {
-					if now := time.Now().Unix(); now-m.lastCapConsolidateUnix.Load() < capConsolidateCooldownSeconds {
-						return
-					}
+				if aerr := m.ApplyConsolidation(target, preview); aerr != nil {
+					log.Printf("memory: cap-triggered consolidation apply (%s): %v", target, aerr)
+					return
 				}
-				target = *pending
-				continue
+				m.lastCapConsolidateUnix.Store(time.Now().Unix())
+				m.markPromptDirty()
 			}
-			// Stamp the cooldown ONLY after a successful apply: a failed pass
-			// (preview error, snapshot conflict) must not burn the 600s window
-			// with nothing consolidated — the next crossing retries.
 
-			preview, err := m.PreviewConsolidation(target)
-			if err != nil {
-				log.Printf("memory: cap-triggered consolidation preview (%s): %v", target, err)
+			// Consume bits set by triggers that arrived DURING this
+			// iteration (mid-LLM-call) and service them. Consume—never
+			// wipe—so a trigger racing the next loop entry survives.
+			mask := m.consumeCapPending()
+			next, ok := takeOverPending(mask, target)
+			if !ok {
 				return
 			}
-			if err := m.ApplyConsolidation(target, preview); err != nil {
-				log.Printf("memory: cap-triggered consolidation apply (%s): %v", target, err)
-				return
-			}
-			m.lastCapConsolidateUnix.Store(time.Now().Unix())
-			m.markPromptDirty()
-			// Take over any target that triggered mid-flight (possibly the
-			// other fact file) before leaving. A SAME-target takeover is
-			// cooldown-gated (fresh success re-arms it) so a hot AddFact
-			// stream cannot chain unbounded passes; a different target is an
-			// independent crossing and proceeds.
-			pending := m.capConsolidatePending.Swap(nil)
-			if pending == nil {
-				return
-			}
-			if *pending == target {
+			// Same-target takeover is cooldown-gated so a hot AddFact
+			// stream on one file cannot ping-pong passes; a different
+			// target is an independent crossing and always proceeds.
+			if next == target {
 				if now := time.Now().Unix(); now-m.lastCapConsolidateUnix.Load() < capConsolidateCooldownSeconds {
+					// Drop only the gated same-target bit; service any
+					// other target still pending in the mask.
+					mask &^= capTargetBit(target)
+					if other, ok2 := takeOverPending(mask, target); ok2 {
+						target = other
+						continue
+					}
 					return
 				}
 			}
-			target = *pending
+			target = next
 		}
 	})
 }

@@ -351,8 +351,17 @@ func (u *UserModel) applyDiff(ctx context.Context, diff userStateDiff) error {
 		}
 		u.state.PendingReview = append(u.state.PendingReview, p)
 	}
-	if len(u.state.PendingReview) > maxPending {
-		u.state.PendingReview = u.state.PendingReview[len(u.state.PendingReview)-maxPending:]
+	// Trim to maxPending by evicting the OLDEST entries (min CreatedAt),
+	// not by slice position — a just-refreshed reinforced entry must never
+	// be dropped while stale tail entries survive.
+	for len(u.state.PendingReview) > maxPending {
+		oldest := 0
+		for i, p := range u.state.PendingReview {
+			if p.CreatedAt.Before(u.state.PendingReview[oldest].CreatedAt) {
+				oldest = i
+			}
+		}
+		u.state.PendingReview = append(u.state.PendingReview[:oldest], u.state.PendingReview[oldest+1:]...)
 	}
 	return nil
 }

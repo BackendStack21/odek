@@ -256,6 +256,12 @@ func TestEngine_RequestFinalization_GracefulTimeBudgetSummary(t *testing.T) {
 		if !ok || reason != "time_budget" {
 			t.Errorf("PartialSummaryReason = (%q, %v), want (time_budget, true)", reason, ok)
 		}
+		// Out-of-band reason: the engine records WHY it finalized, so the
+		// sub-agent contract never re-derives the classification from
+		// model-echoable marker text.
+		if reason, ok := engine.LastPartialReason(); !ok || reason != "time_budget" {
+			t.Errorf("LastPartialReason = (%q, %v), want (time_budget, true)", reason, ok)
+		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("Run did not return after finalization request")
 	}

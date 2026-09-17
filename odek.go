@@ -959,6 +959,17 @@ func (a *Agent) BudgetUsage() BudgetUsage {
 	return a.engine.BudgetUsage()
 }
 
+// LastPartialReason reports the engine-recorded reason the last run
+// concluded with a partial summary ("iteration_budget", "execution_budget",
+// or "time_budget"). Unlike text-marker matching, it cannot be spoofed by
+// a model echoing public marker constants in a successful answer.
+func (a *Agent) LastPartialReason() (string, bool) {
+	if a == nil || a.engine == nil {
+		return "", false
+	}
+	return a.engine.LastPartialReason()
+}
+
 // TotalInputTokens returns the cumulative prompt tokens consumed across all
 // iterations of the most recent RunWithMessages call.
 func (a *Agent) TotalInputTokens() int {

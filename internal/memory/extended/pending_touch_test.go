@@ -52,3 +52,31 @@ func TestApplyDiff_ZeroCreatedAtExpired(t *testing.T) {
 		t.Fatalf("zero-CreatedAt entry survived expiry, pending = %d", len(u.state.PendingReview))
 	}
 }
+
+// Regression: the maxPending trim kept entries by slice position, so a
+// just-refreshed (reinforced) entry at the head was evicted while stale
+// tail entries survived — defeating the CreatedAt refresh. The trim must
+// evict the OLDEST entries by CreatedAt, not by position.
+func TestApplyDiff_MaxPendingEvictsOldestByTime(t *testing.T) {
+	u := NewUserModel()
+	u.cfg.UserStateMaxPending = 2
+
+	now := time.Now().UTC()
+	u.state.PendingReview = []PendingReview{
+		{ID: "fresh", Field: "focus.blocker", Value: "active blocker", CreatedAt: now},
+		{ID: "stale1", Field: "style.tone", Value: "old tone", CreatedAt: now.Add(-72 * time.Hour)},
+		{ID: "stale2", Field: "style.humor", Value: "old humor", CreatedAt: now.Add(-48 * time.Hour)},
+	}
+
+	if err := u.applyDiff(context.Background(), userStateDiff{}); err != nil {
+		t.Fatalf("applyDiff: %v", err)
+	}
+	if len(u.state.PendingReview) != 2 {
+		t.Fatalf("pending = %d, want 2", len(u.state.PendingReview))
+	}
+	for _, p := range u.state.PendingReview {
+		if p.ID == "stale1" {
+			t.Fatal("trim evicted by position: the OLDEST entry survived and a fresher one was dropped")
+		}
+	}
+}
