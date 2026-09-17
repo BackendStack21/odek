@@ -193,6 +193,10 @@ type MemoryManager struct {
 	// capConsolidateInFlight guards the cap-triggered background
 	// consolidation: one pass per manager (both targets share it) at a time.
 	capConsolidateInFlight atomic.Bool
+// capConsolidatePending marks a trigger that arrived while a pass was
+// already running. The running pass re-checks the flag after finishing so
+// entries added after its snapshot are still covered instead of dropped.
+capConsolidatePending atomic.Bool
 	// lastCapConsolidateUnix is the unix time of the last cap-triggered
 	// pass (cooldown gate against threshold-hovering LLM churn).
 	lastCapConsolidateUnix atomic.Int64
@@ -646,7 +650,7 @@ func (m *MemoryManager) fireAfterUnlock(unlock func(), events *[]MemoryEvent) {
 // swap and conflicts instead of overwriting concurrent writes. The pass runs
 // via RunBackground so process exit drains it instead of killing it
 // mid-LLM-call. Best-effort: errors are logged, never surfaced to AddFact.
-func (m *MemoryManager) maybeConsolidateAtCap(target string) {
+func (m *MemoryManager) maybeConsolidateAtCap(target string, mutated bool) {
 	pct := 0
 	if m.cfg.ConsolidateAtCapPct != nil {
 		pct = *m.cfg.ConsolidateAtCapPct
@@ -657,35 +661,58 @@ func (m *MemoryManager) maybeConsolidateAtCap(target string) {
 	if m.llm == nil || m.cfg.LLMConsolidate == nil || !*m.cfg.LLMConsolidate {
 		return
 	}
+	if !mutated {
+		return // dedup no-op: the corpus is unchanged, nothing new to cover
+	}
 	if !m.capConsolidateInFlight.CompareAndSwap(false, true) {
-		return // a pass is already running — it will cover these entries
+		// A pass is already running — it snapshotted its entries BEFORE this
+		// add landed, so flag a re-check instead of dropping the trigger.
+		m.capConsolidatePending.Store(true)
+		return
 	}
 	if now := time.Now().Unix(); now-m.lastCapConsolidateUnix.Load() < capConsolidateCooldownSeconds {
 		m.capConsolidateInFlight.Store(false)
 		return
 	}
-	go func() {
+	m.RunBackground(func() {
 		defer m.capConsolidateInFlight.Store(false)
 
-		entries, err := m.facts.Entries(target)
-		if err != nil || len(entries) <= 1 {
-			return // nothing to consolidate
-		}
-		if m.facts.sizeOf(entries)*100 < m.facts.cap(target)*pct {
-			return
-		}
-		m.lastCapConsolidateUnix.Store(time.Now().Unix())
+		for {
+			m.capConsolidatePending.Store(false)
 
-		preview, err := m.PreviewConsolidation(target)
-		if err != nil {
-			log.Printf("memory: cap-triggered consolidation preview (%s): %v", target, err)
+			entries, err := m.facts.Entries(target)
+			if err != nil || len(entries) <= 1 {
+				return // nothing to consolidate
+			}
+			if m.facts.sizeOf(entries)*100 < m.facts.cap(target)*pct {
+				// Under cap — but a trigger may have arrived while this
+				// pass was mid-flight; loop once more before giving up.
+				if !m.capConsolidatePending.CompareAndSwap(true, false) {
+					return
+				}
+				continue
+			}
+			// Stamp the cooldown ONLY after a successful apply: a failed pass
+			// (preview error, snapshot conflict) must not burn the 600s window
+			// with nothing consolidated — the next crossing retries.
+
+			preview, err := m.PreviewConsolidation(target)
+			if err != nil {
+				log.Printf("memory: cap-triggered consolidation preview (%s): %v", target, err)
+				return
+			}
+			if err := m.ApplyConsolidation(target, preview); err != nil {
+				log.Printf("memory: cap-triggered consolidation apply (%s): %v", target, err)
+				return
+			}
+			m.lastCapConsolidateUnix.Store(time.Now().Unix())
+			m.markPromptDirty()
+			// Success: the corpus shrank below the cap and the cooldown now
+			// gates re-triggers; residual entries are covered on the next
+			// genuine crossing.
 			return
 		}
-		if err := m.ApplyConsolidation(target, preview); err != nil {
-			log.Printf("memory: cap-triggered consolidation apply (%s): %v", target, err)
-		}
-		m.markPromptDirty()
-	}()
+	})
 }
 
 // ── Fact Operations ─────────────────────────────────────────────────
@@ -797,7 +824,7 @@ func (m *MemoryManager) AddFact(target, content string) error {
 	if !existedBefore {
 		pending = append(pending, MemoryEvent{Type: "fact_added", Target: target, Content: trimmed})
 	}
-	m.maybeConsolidateAtCap(target)
+	m.maybeConsolidateAtCap(target, !existedBefore)
 
 	// Incrementally update merge detector instead of re-reading + re-embedding all.
 	// Check dedup: if content already existed in the entries we read at the top,

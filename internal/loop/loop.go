@@ -79,9 +79,9 @@ func dropStallMilestones(m map[string]int, toolName string) {
 
 // evictLowestStallCount drops one fingerprint with the lowest repeat count
 // (key tie-break) so the 64-entry bound does not wipe the whole map.
-func evictLowestStallCount(m map[string]int) {
+func evictLowestStallCount(m map[string]int) (string, bool) {
 	if len(m) == 0 {
-		return
+		return "", false
 	}
 	minK := ""
 	minV := 0
@@ -94,6 +94,7 @@ func evictLowestStallCount(m map[string]int) {
 		}
 	}
 	delete(m, minK)
+	return minK, true
 }
 
 // startToolHeartbeat launches a watchdog goroutine that emits a
@@ -3590,8 +3591,9 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 						e.toolRepeatCounts = make(map[string]int)
 					}
 					if _, ok := e.toolRepeatCounts[fp]; !ok && len(e.toolRepeatCounts) >= 64 {
-						evictLowestStallCount(e.toolRepeatCounts)
-						delete(e.toolStallMilestones, fp)
+						if evicted, found := evictLowestStallCount(e.toolRepeatCounts); found {
+							delete(e.toolStallMilestones, evicted)
+						}
 					}
 					e.toolRepeatCounts[fp]++
 					milestone, mok := e.toolStallMilestones[fp]
@@ -3619,8 +3621,9 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 						e.toolRepeatCounts = make(map[string]int)
 					}
 					if _, ok := e.toolRepeatCounts[fp]; !ok && len(e.toolRepeatCounts) >= 64 {
-						evictLowestStallCount(e.toolRepeatCounts)
-						delete(e.toolStallMilestones, fp)
+						if evicted, found := evictLowestStallCount(e.toolRepeatCounts); found {
+							delete(e.toolStallMilestones, evicted)
+						}
 					}
 					e.toolRepeatCounts[fp]++
 					milestone, ok := e.toolStallMilestones[fp]
@@ -3628,7 +3631,9 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 						milestone = stallThreshold
 					}
 					if e.toolRepeatCounts[fp] >= milestone {
-						warned := e.toolRepeatCounts[fp] >= stallThreshold*2
+						// The milestone already encodes escalation history — derive
+					// `warned` from it instead of re-deriving from the raw count.
+					warned := milestone > stallThreshold
 						correction := fmt.Sprintf(
 							"⚠️ You called %q with identical arguments %d times (possibly interleaved with other calls) with no new information%s. Change approach: vary the arguments, switch to a different tool, or move on to the next step — repeating the same call will not produce a different result.",
 							toolName, e.toolRepeatCounts[fp], againSuffix(warned))
