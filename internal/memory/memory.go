@@ -193,10 +193,11 @@ type MemoryManager struct {
 	// capConsolidateInFlight guards the cap-triggered background
 	// consolidation: one pass per manager (both targets share it) at a time.
 	capConsolidateInFlight atomic.Bool
-	// capConsolidatePending marks a trigger that arrived while a pass was
-	// already running. The running pass re-checks the flag after finishing so
-	// entries added after its snapshot are still covered instead of dropped.
-	capConsolidatePending atomic.Bool
+	// capConsolidatePending carries the TARGET of a trigger that arrived
+	// while a pass was already running (nil = none). The running pass
+	// re-checks it so entries added after its snapshot are still covered —
+	// including when the pending target differs from the running pass's.
+	capConsolidatePending atomic.Pointer[string]
 	// lastCapConsolidateUnix is the unix time of the last cap-triggered
 	// pass (cooldown gate against threshold-hovering LLM churn).
 	lastCapConsolidateUnix atomic.Int64
@@ -671,8 +672,9 @@ func (m *MemoryManager) maybeConsolidateAtCap(target string, mutated bool) {
 	}
 	if !m.capConsolidateInFlight.CompareAndSwap(false, true) {
 		// A pass is already running — it snapshotted its entries BEFORE this
-		// add landed, so flag a re-check instead of dropping the trigger.
-		m.capConsolidatePending.Store(true)
+		// add landed, so record the target for a re-check instead of
+		// dropping the trigger (latest target wins; the re-check covers it).
+		m.capConsolidatePending.Store(&target)
 		return
 	}
 	if now := time.Now().Unix(); now-m.lastCapConsolidateUnix.Load() < capConsolidateCooldownSeconds {
@@ -683,18 +685,28 @@ func (m *MemoryManager) maybeConsolidateAtCap(target string, mutated bool) {
 		defer m.capConsolidateInFlight.Store(false)
 
 		for {
-			m.capConsolidatePending.Store(false)
+			m.capConsolidatePending.Store(nil)
 
 			entries, err := m.facts.Entries(target)
 			if err != nil || len(entries) <= 1 {
 				return // nothing to consolidate
 			}
 			if m.facts.sizeOf(entries)*100 < m.facts.cap(target)*pct {
-				// Under cap — but a trigger may have arrived while this
-				// pass was mid-flight; loop once more before giving up.
-				if !m.capConsolidatePending.CompareAndSwap(true, false) {
+				// Under cap — but a trigger may have arrived while this pass
+				// was mid-flight (possibly for the OTHER target); take over the
+				// pending target and loop. A SAME-target takeover is
+				// cooldown-gated so a hot AddFact stream cannot ping-pong
+				// passes; a different target is an independent crossing.
+				pending := m.capConsolidatePending.Swap(nil)
+				if pending == nil {
 					return
 				}
+				if *pending == target {
+					if now := time.Now().Unix(); now-m.lastCapConsolidateUnix.Load() < capConsolidateCooldownSeconds {
+						return
+					}
+				}
+				target = *pending
 				continue
 			}
 			// Stamp the cooldown ONLY after a successful apply: a failed pass
@@ -712,10 +724,21 @@ func (m *MemoryManager) maybeConsolidateAtCap(target string, mutated bool) {
 			}
 			m.lastCapConsolidateUnix.Store(time.Now().Unix())
 			m.markPromptDirty()
-			// Success: the corpus shrank below the cap and the cooldown now
-			// gates re-triggers; residual entries are covered on the next
-			// genuine crossing.
-			return
+			// Take over any target that triggered mid-flight (possibly the
+			// other fact file) before leaving. A SAME-target takeover is
+			// cooldown-gated (fresh success re-arms it) so a hot AddFact
+			// stream cannot chain unbounded passes; a different target is an
+			// independent crossing and proceeds.
+			pending := m.capConsolidatePending.Swap(nil)
+			if pending == nil {
+				return
+			}
+			if *pending == target {
+				if now := time.Now().Unix(); now-m.lastCapConsolidateUnix.Load() < capConsolidateCooldownSeconds {
+					return
+				}
+			}
+			target = *pending
 		}
 	})
 }
@@ -1006,8 +1029,13 @@ Entries for %s:
 		if entry == "" {
 			continue
 		}
+		// Drop scan-rejected entries instead of failing the whole pass: a
+		// single poisoned entry must not block consolidation of the rest —
+		// with the cooldown stamped only on success, a fatal path here
+		// burns LLM calls forever on a hostile corpus.
 		if err := m.scanContent(context.Background(), entry); err != nil {
-			return fmt.Errorf("memory: consolidated entry rejected: %w", err)
+			log.Printf("memory: consolidated entry rejected: %v", err)
+			continue
 		}
 		kept = append(kept, entry)
 	}

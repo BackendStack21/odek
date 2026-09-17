@@ -267,6 +267,11 @@ func buildLifespanBlock(timeoutSeconds, maxIterations int, limits budget.Limits)
 // results; a test round-trips the real producer against the parser.
 const denialMarker = "operation denied by configuration: "
 
+// denialErrPrefix is prepended by the engine when a denied tool call's
+// error is rendered into the tool message (loop.go: `error: %s`). Genuine
+// denials therefore arrive on lines starting with EITHER form.
+const denialErrPrefix = "error: " + denialMarker
+
 // maxReportedDenials caps the denials array in the result contract; the
 // total count is reported separately so the parent still sees the scale.
 const maxReportedDenials = 20
@@ -291,15 +296,24 @@ func extractDenials(messages []session.Message) ([]SubagentDenial, int) {
 			continue
 		}
 		for _, line := range strings.Split(msg.Content, "\n") {
-			i := strings.Index(line, denialMarker)
-			if i < 0 {
+			// Anchor to line start in either real-producer form: the raw
+			// marker (danger.CheckOperation, the shell tool) or the engine's
+			// error rendering ("error: " + marker). A file listing or fetched
+			// page merely CONTAINING the marker text mid-line must not yield
+			// spoofed denials that steer the parent.
+			var rest string
+			switch {
+			case strings.HasPrefix(line, denialErrPrefix):
+				rest = strings.TrimSpace(line[len(denialErrPrefix):])
+			case strings.HasPrefix(line, denialMarker):
+				rest = strings.TrimSpace(line[len(denialMarker):])
+			default:
 				continue
 			}
 			total++
 			if len(out) >= maxReportedDenials {
 				continue
 			}
-			rest := strings.TrimSpace(line[i+len(denialMarker):])
 			d := SubagentDenial{Tool: msg.Name, Reason: truncate(rest, 200)}
 			if k := strings.LastIndex(rest, " (risk: "); k >= 0 && strings.HasSuffix(rest, ")") {
 				d.Class = strings.TrimSpace(rest[k+len(" (risk: ") : len(rest)-1])

@@ -305,7 +305,9 @@ func (u *UserModel) applyDiff(ctx context.Context, diff userStateDiff) error {
 		cutoff := time.Now().UTC().AddDate(0, 0, -*maxAge)
 		kept := u.state.PendingReview[:0]
 		for _, p := range u.state.PendingReview {
-			if p.CreatedAt.IsZero() || p.CreatedAt.After(cutoff) {
+			// Zero CreatedAt marks a legacy/hand-edited entry with no
+			// verifiable timestamp — treat it as expired, not immortal.
+			if p.CreatedAt.After(cutoff) {
 				kept = append(kept, p)
 			}
 		}
@@ -324,9 +326,16 @@ func (u *UserModel) applyDiff(ctx context.Context, diff userStateDiff) error {
 			continue
 		}
 		// Dedup by (field, value): repeated inferences of the same fact must
-		// not pile up duplicate review entries.
+		// not pile up duplicate review entries — and must REFRESH the stored
+		// entry's CreatedAt, or continuously reinforced knowledge ages out at
+		// the expiry window while one-offs survive.
 		key := p.Field + "\x00" + p.Value
 		if existing[key] {
+			for i := range u.state.PendingReview {
+				if u.state.PendingReview[i].Field+"\x00"+u.state.PendingReview[i].Value == key {
+					u.state.PendingReview[i].CreatedAt = time.Now().UTC()
+				}
+			}
 			continue
 		}
 		existing[key] = true

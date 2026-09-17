@@ -268,12 +268,27 @@ func TestEngine_RequestFinalization_GracefulTimeBudgetSummary(t *testing.T) {
 // truncation only removes leading bytes, so a genuine partial summary
 // always carries the marker within the head window.
 func TestPartialSummaryReason_MarkerQuotedBeyondHeadNotDetected(t *testing.T) {
-	tail := strings.Repeat("x", 1200) + budgetSummaryMarker + " more text"
-	if reason, ok := PartialSummaryReason(tail); ok {
-		t.Errorf("marker quoted beyond the head window was classified as partial (reason=%q)", reason)
+	// Markers are only valid at byte 0 — anywhere else is a quote.
+	quoted := strings.Repeat("x", 900) + budgetSummaryMarker
+	if reason, ok := PartialSummaryReason(quoted); ok {
+		t.Errorf("marker quoted at offset 900 was classified as partial (reason=%q)", reason)
 	}
-	head := strings.Repeat("x", 900) + budgetSummaryMarker
-	if reason, ok := PartialSummaryReason(head); !ok || reason != "iteration_budget" {
-		t.Errorf("marker within the head window not detected: (%q, %v)", reason, ok)
+	if reason, ok := PartialSummaryReason(budgetSummaryMarker + "\n\nsummary"); !ok || reason != "iteration_budget" {
+		t.Errorf("genuine byte-0 marker not detected: (%q, %v)", reason, ok)
+	}
+}
+
+// A marker merely QUOTED at the head of a successful answer must not flip
+// the run to partial: the engine always PREPENDS markers at byte 0 of the
+// raw final text, so only a byte-0 prefix match identifies a genuine
+// budget-exhaustion summary.
+func TestPartialSummaryReason_QuotedMarkerInHeadNotDetected(t *testing.T) {
+	quoted := "The engine marks budget exhaustion with " + budgetSummaryMarker + " as documented."
+	if reason, ok := PartialSummaryReason(quoted); ok {
+		t.Errorf("marker quoted mid-head was classified as partial (reason=%q)", reason)
+	}
+	// Genuine engine output: marker at byte 0.
+	if reason, ok := PartialSummaryReason(budgetSummaryMarker + "\n\nsummary"); !ok || reason != "iteration_budget" {
+		t.Errorf("genuine byte-0 marker not detected: (%q, %v)", reason, ok)
 	}
 }
