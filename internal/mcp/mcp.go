@@ -101,6 +101,7 @@ func NewServer(version string, tools []NativeTool, reader io.Reader, writer io.W
 
 type protocolReader struct {
 	reader     *bufio.Reader
+	closer     io.Closer
 	state      *protocolState
 	pending    []byte
 	pendingErr error
@@ -109,7 +110,18 @@ type protocolReader struct {
 }
 
 func newProtocolReader(reader io.Reader, state *protocolState) io.Reader {
-	return &protocolReader{reader: bufio.NewReader(reader), state: state}
+	var closer io.Closer
+	if c, ok := reader.(io.Closer); ok {
+		closer = c
+	}
+	return &protocolReader{reader: bufio.NewReader(reader), closer: closer, state: state}
+}
+
+func (r *protocolReader) Close() error {
+	if r.closer == nil {
+		return nil
+	}
+	return r.closer.Close()
 }
 
 func (r *protocolReader) Read(p []byte) (int, error) {
@@ -255,7 +267,30 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 	fmt.Fprintln(os.Stderr)
 
-	return s.gmcp.RunWithIOContext(ctx, s.reader, s.writer)
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	stop := make(chan struct{})
+	watcherDone := make(chan struct{})
+	if closer, ok := s.reader.(io.Closer); ok {
+		go func() {
+			defer close(watcherDone)
+			select {
+			case <-ctx.Done():
+				_ = closer.Close()
+			case <-stop:
+			}
+		}()
+	} else {
+		close(watcherDone)
+	}
+	err := s.gmcp.RunWithIOContext(ctx, s.reader, s.writer)
+	close(stop)
+	<-watcherDone
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
+	return err
 }
 
 // ── ToolCaller Interface ───────────────────────────────────────────────

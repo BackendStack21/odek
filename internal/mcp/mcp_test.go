@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"strings"
 	"testing"
+	"time"
 )
 
 type namedTool struct{ name string }
@@ -529,6 +531,52 @@ func TestRED_Server_RunPropagatesCancelledContext(t *testing.T) {
 	if err := s.Run(ctx); !errors.Is(err, context.Canceled) {
 		t.Fatalf("Run error = %v, want context.Canceled", err)
 	}
+}
+
+func TestServer_RunCancellationUnblocksPipeReader(t *testing.T) {
+	reader, writer := io.Pipe()
+	defer writer.Close()
+	tracked := &readEntryCloser{Reader: reader, closer: reader, entered: make(chan struct{})}
+	server := NewServer("v0.0.0-test", nil, tracked, io.Discard)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- server.Run(ctx) }()
+	select {
+	case <-tracked.entered:
+	case <-time.After(time.Second):
+		t.Fatal("server did not enter the blocking read")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Run error = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Run remained blocked after context cancellation")
+	}
+}
+
+type readEntryCloser struct {
+	io.Reader
+	closer  io.Closer
+	entered chan struct{}
+}
+
+func (r *readEntryCloser) Read(p []byte) (int, error) {
+	select {
+	case <-r.entered:
+	default:
+		close(r.entered)
+	}
+	return r.Reader.Read(p)
+}
+
+func (r *readEntryCloser) Close() error {
+	if r.closer != nil {
+		return r.closer.Close()
+	}
+	return nil
 }
 
 func TestServer_Ping(t *testing.T) {

@@ -141,7 +141,7 @@ func (u *UserModel) Save() error {
 		return nil
 	}
 	u.mu.RLock()
-	state := u.state
+	state := cloneUserState(u.state)
 	u.mu.RUnlock()
 	return u.store.Save(state)
 }
@@ -569,7 +569,20 @@ func (u *UserModel) State() UserState {
 	}
 	u.mu.RLock()
 	defer u.mu.RUnlock()
-	return u.state
+	return cloneUserState(u.state)
+}
+
+// cloneUserState makes State and Save snapshots independent of the live model.
+// UserState contains several slices; a struct copy alone aliases their backing
+// arrays and lets callers or concurrent inference mutate a supposedly stable
+// snapshot.
+func cloneUserState(s UserState) UserState {
+	s.Technical.Languages = append([]string(nil), s.Technical.Languages...)
+	s.Technical.Patterns = append([]string(nil), s.Technical.Patterns...)
+	s.Technical.Tools = append([]string(nil), s.Technical.Tools...)
+	s.InteractionPatterns.CommonOpeners = append([]string(nil), s.InteractionPatterns.CommonOpeners...)
+	s.PendingReview = append([]PendingReview(nil), s.PendingReview...)
+	return s
 }
 
 // Summary formats the user model for system-prompt injection. The formatted

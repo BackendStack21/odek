@@ -336,6 +336,10 @@ func splitChunks(text string, maxBytes int) []string {
 				chunks = append(chunks, current.String())
 				current.Reset()
 			}
+			if fenced := splitMarkdownParagraph(p, maxBytes); len(fenced) > 0 {
+				chunks = append(chunks, fenced...)
+				continue
+			}
 			// Split the paragraph at spaces
 			remaining := p
 			for len(remaining) > 0 {
@@ -376,4 +380,121 @@ func splitChunks(text string, maxBytes int) []string {
 	}
 
 	return chunks
+}
+
+// splitMarkdownParagraph keeps fenced spans independently valid MarkdownV2 by
+// closing and reopening a fence at the Telegram size boundary. It operates at
+// line boundaries, which also handles prose surrounding and adjacent blocks.
+func splitMarkdownParagraph(p string, maxBytes int) []string {
+	if !strings.Contains(p, "```") {
+		return nil
+	}
+	lines := strings.SplitAfter(p, "\n")
+	var chunks []string
+	proseStart, codeStart := 0, -1
+	for i, line := range lines {
+		if !strings.HasPrefix(strings.TrimSuffix(line, "\n"), "```") {
+			continue
+		}
+		if codeStart < 0 {
+			prose := strings.Join(lines[proseStart:i], "")
+			if prose != "" {
+				parts := splitPlainSegment(prose, maxBytes)
+				if len(parts) == 0 {
+					return nil
+				}
+				chunks = append(chunks, parts...)
+			}
+			codeStart = i
+			continue
+		}
+		blockChunks := splitSingleFencedBlock(strings.Join(lines[codeStart:i+1], ""), maxBytes)
+		if len(blockChunks) == 0 {
+			return nil
+		}
+		chunks = append(chunks, blockChunks...)
+		codeStart = -1
+		proseStart = i + 1
+	}
+	if codeStart >= 0 {
+		return nil
+	}
+	prose := strings.Join(lines[proseStart:], "")
+	if prose != "" {
+		parts := splitPlainSegment(prose, maxBytes)
+		if len(parts) == 0 {
+			return nil
+		}
+		chunks = append(chunks, parts...)
+	}
+	return chunks
+}
+
+func splitPlainSegment(text string, maxBytes int) []string {
+	var out []string
+	for len(text) > maxBytes {
+		cut := strings.LastIndexByte(text[:maxBytes], ' ')
+		if cut <= 0 {
+			cut = maxBytes
+		}
+		for cut > 0 && !utf8.RuneStart(text[cut]) {
+			cut--
+		}
+		if cut > 0 && text[cut-1] == '\\' {
+			cut--
+		}
+		if cut == 0 {
+			return nil
+		}
+		out = append(out, text[:cut])
+		text = strings.TrimLeftFunc(text[cut:], unicode.IsSpace)
+	}
+	if text != "" {
+		out = append(out, text)
+	}
+	return out
+}
+
+func splitSingleFencedBlock(p string, maxBytes int) []string {
+	if len(p) <= maxBytes {
+		return []string{p}
+	}
+	openEnd := strings.IndexByte(p, '\n')
+	closeStart := strings.LastIndex(p, "\n```")
+	if openEnd < 0 || closeStart <= openEnd {
+		return nil
+	}
+	prefix, body, suffix := p[:openEnd+1], p[openEnd+1:closeStart], p[closeStart:]
+	capacity := maxBytes - len(prefix) - len(suffix)
+	if capacity <= 0 {
+		return nil
+	}
+	var chunks []string
+	for len(body) > capacity {
+		cut := capacity
+		for cut > 0 && !utf8.RuneStart(body[cut]) {
+			cut--
+		}
+		if cut == 0 {
+			return nil
+		}
+		// Keep an odd run of backslashes with the escaped character that
+		// follows it; otherwise a chunk boundary changes Markdown meaning.
+		slashes := 0
+		for j := cut - 1; j >= 0 && body[j] == '\\'; j-- {
+			slashes++
+		}
+		if slashes%2 == 1 {
+			cut--
+		}
+		if cut == 0 {
+			return nil
+		}
+		chunks = append(chunks, prefix+body[:cut]+suffix)
+		body = body[cut:]
+		// Preserve the original opening fence and optional language marker.
+		prefix = p[:openEnd+1]
+		capacity = maxBytes - len(prefix) - len(suffix)
+	}
+	return append(chunks, prefix+body+suffix)
 }

@@ -48,6 +48,63 @@ func TestSplitChunks_CodeBlockIntact(t *testing.T) {
 	}
 }
 
+func TestSplitChunks_LongCodeBlockKeepsEachChunkParseable(t *testing.T) {
+	input := "```\n" + strings.Repeat("x ", 3000) + "\n```"
+	chunks := splitChunks(input, 4096)
+	if len(chunks) < 2 {
+		t.Fatalf("expected long code block to split, got %d chunk(s)", len(chunks))
+	}
+	for i, chunk := range chunks {
+		if strings.Count(chunk, "```")%2 != 0 {
+			t.Fatalf("chunk %d has unbalanced code fences", i)
+		}
+		if len(chunk) > 4096 {
+			t.Fatalf("chunk %d exceeds Telegram limit: %d", i, len(chunk))
+		}
+	}
+}
+
+func TestSplitChunks_MixedProseAndAdjacentCodeBlocks(t *testing.T) {
+	input := "intro\n```go\n" + strings.Repeat("é\n", 3000) + "```\nafter\n```\nsecond\n```"
+	chunks := splitChunks(input, 4096)
+	if len(chunks) < 2 {
+		t.Fatalf("expected mixed response to split, got %d chunk(s)", len(chunks))
+	}
+	for i, chunk := range chunks {
+		if len(chunk) > 4096 || strings.Count(chunk, "```")%2 != 0 {
+			t.Fatalf("chunk %d invalid: bytes=%d fences=%d", i, len(chunk), strings.Count(chunk, "```"))
+		}
+	}
+	joined := strings.Join(chunks, "")
+	for _, marker := range []string{"intro", "é", "after", "second"} {
+		if !strings.Contains(joined, marker) {
+			t.Fatalf("split lost content marker %q", marker)
+		}
+	}
+}
+
+func TestSplitChunks_MixedOversizedCodeLineKeepsLimitAndLanguage(t *testing.T) {
+	for _, n := range []int{4090, 6000} {
+		input := "intro\n```go\n" + strings.Repeat("x", n) + "\n```\nafter"
+		chunks := splitChunks(input, 4096)
+		for i, chunk := range chunks {
+			if len(chunk) > 4096 || strings.Count(chunk, "```")%2 != 0 {
+				t.Fatalf("n=%d chunk %d invalid: bytes=%d fences=%d", n, i, len(chunk), strings.Count(chunk, "```"))
+			}
+		}
+		joined := strings.Join(chunks, "")
+		body := strings.ReplaceAll(strings.ReplaceAll(joined, "```go", ""), "```", "")
+		for _, marker := range []string{"intro", "after"} {
+			if !strings.Contains(joined, marker) {
+				t.Fatalf("n=%d split lost marker/content %q", n, marker)
+			}
+		}
+		if strings.Count(body, "x") != n {
+			t.Fatalf("n=%d code body was not reconstructable: got %d x bytes", n, strings.Count(body, "x"))
+		}
+	}
+}
+
 // TestSplitChunks_MultipleCodeBlocks verifies that multiple code blocks
 // are each kept intact during chunking.
 func TestSplitChunks_MultipleCodeBlocks(t *testing.T) {
