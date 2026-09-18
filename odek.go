@@ -235,7 +235,7 @@ type Config struct {
 	// (schema odek.event/v1 — see docs/EXTENSIONS.md): run_started,
 	// iteration_completed, tool_call_started/completed/failed,
 	// session_saved, context_trimmed, budget_exceeded, plan_created,
-	// plan_updated, plan_blocked, subagent_denied, subagent_spawned,
+	// plan_updated, plan_blocked, plan_reassessment, subagent_denied, subagent_spawned,
 	// subagent_completed, subagent_concurrency_wait, run_completed,
 	// run_failed.
 	//
