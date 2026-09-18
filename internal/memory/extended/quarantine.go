@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/BackendStack21/odek/internal/flock"
 	"github.com/BackendStack21/odek/internal/fsatomic"
 	"github.com/BackendStack21/odek/internal/session"
 )
@@ -18,13 +19,14 @@ import (
 // promotes them.
 type Quarantine struct {
 	file    string
+	lock    string
 	mu      sync.RWMutex
 	ttlDays int
 }
 
 // NewQuarantine creates a Quarantine store rooted at dir.
 func NewQuarantine(dir string) *Quarantine {
-	return &Quarantine{file: filepath.Join(dir, "quarantine.json")}
+	return &Quarantine{file: filepath.Join(dir, "quarantine.json"), lock: filepath.Join(dir, "quarantine.lock")}
 }
 
 // SetTTLDays configures the TTL used when evicting expired entries at load
@@ -69,6 +71,11 @@ func (q *Quarantine) StoreWithReason(atom MemoryAtom, reason string) error {
 
 	q.mu.Lock()
 	defer q.mu.Unlock()
+	release, err := q.acquireLock()
+	if err != nil {
+		return err
+	}
+	defer release()
 
 	entries, err := q.loadLocked()
 	if err != nil {
@@ -98,6 +105,11 @@ func (q *Quarantine) StoreWithReason(atom MemoryAtom, reason string) error {
 func (q *Quarantine) List() ([]MemoryAtom, error) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
+	release, err := q.acquireLock()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 
 	entries, err := q.loadLocked()
 	if err != nil {
@@ -119,6 +131,11 @@ func (q *Quarantine) List() ([]MemoryAtom, error) {
 func (q *Quarantine) ListEntries() ([]QuarantinedAtom, error) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
+	release, err := q.acquireLock()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 
 	entries, err := q.loadLocked()
 	if err != nil {
@@ -143,6 +160,11 @@ func (q *Quarantine) EvictExpired(ttlDays int) (int, error) {
 
 	q.mu.Lock()
 	defer q.mu.Unlock()
+	release, err := q.acquireLock()
+	if err != nil {
+		return 0, err
+	}
+	defer release()
 
 	entries, err := q.loadAtomsLocked()
 	if err != nil {
@@ -174,6 +196,11 @@ func (q *Quarantine) Promote(id string) (MemoryAtom, error) {
 	}
 	q.mu.Lock()
 	defer q.mu.Unlock()
+	release, err := q.acquireLock()
+	if err != nil {
+		return MemoryAtom{}, err
+	}
+	defer release()
 
 	entries, err := q.loadLocked()
 	if err != nil {
@@ -194,6 +221,11 @@ func (q *Quarantine) Forget(id string) error {
 	}
 	q.mu.Lock()
 	defer q.mu.Unlock()
+	release, err := q.acquireLock()
+	if err != nil {
+		return err
+	}
+	defer release()
 
 	entries, err := q.loadLocked()
 	if err != nil {
@@ -235,6 +267,13 @@ func (q *Quarantine) loadLocked() ([]quarantineEntry, error) {
 		}
 	}
 	return entries, nil
+}
+
+func (q *Quarantine) acquireLock() (func(), error) {
+	if err := os.MkdirAll(filepath.Dir(q.file), 0700); err != nil {
+		return nil, fmt.Errorf("extended quarantine: mkdir lock dir: %w", err)
+	}
+	return flock.Lock(q.lock)
 }
 
 // evictExpiredLocked is the inner implementation of EvictExpired. It filters

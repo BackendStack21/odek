@@ -653,20 +653,28 @@ func (c *Client) CallTool(ctx context.Context, name string, argsJSON string) (st
 		// the model and bypassing artifact-ref validation. Parse each item
 		// for the envelope instead; a schema-matched but malformed item still
 		// fails closed.
-		var envErr error
+		var envelopeTexts []string
 		for _, p := range parts {
 			e, eerr := artifact.ParseEnvelope(p)
 			if eerr != nil {
-				envErr = eerr
-				continue
+				return "", fmt.Errorf("mcpclient %s: tool %s: %w", c.name, name, eerr)
 			}
 			if e != nil {
-				env = e
-				break
+				if env == nil {
+					env = e
+				}
+				envelopeTexts = append(envelopeTexts, e.Text)
+				if env != e {
+					env.Artifacts = append(env.Artifacts, e.Artifacts...)
+				}
+				if len(env.Artifacts) > artifact.MaxArtifactsPerEnvelope {
+					return "", fmt.Errorf("mcpclient %s: tool %s: envelope carries %d artifacts; the cap is %d", c.name, name, len(env.Artifacts), artifact.MaxArtifactsPerEnvelope)
+				}
+				continue
 			}
 		}
-		if env == nil && envErr != nil {
-			return "", fmt.Errorf("mcpclient %s: tool %s: %w", c.name, name, envErr)
+		if env != nil {
+			env.Text = strings.Join(envelopeTexts, "\n")
 		}
 		// Preserve the non-envelope items after the rendered form: the
 		// trailing notes are ordinary text the server meant the model to
