@@ -17,6 +17,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/BackendStack21/odek"
 	"github.com/BackendStack21/odek/internal/artifact"
@@ -204,7 +205,7 @@ func (t *delegateTasksTool) SetEventEmitter(fn func(events.Event)) {
 }
 
 func (t *delegateTasksTool) Description() string {
-	return `Spawn sub-agent processes for independent sub-tasks. Each child has a fresh context — put everything it needs in goal/context. Children never prompt for approvals (denials are listed). Trust never increases downward. Depth is capped.
+	return `Spawn sub-agent processes for independent sub-tasks. Each child has a fresh context — put everything it needs in goal/context. Children never prompt for approvals (denials are listed). Trust never increases downward. Depth is capped. Set a task's optional model to select another model from the same configured provider (for example, a faster model for a simple reviewer); omitted inherits the parent model.
 
 Result delivery — two channels per sub-agent:
 - Headline: the sub-agent's final answer, capped at ~2000 characters keeping the END (verdicts, next actions) — a leading … marks the cut.
@@ -249,6 +250,12 @@ func (t *delegateTasksTool) Schema() any {
 							"type":        "string",
 							"description": "Optional. Operator-defined capability profile name (profiles config); its max_risk/allowlist/tool-filter override global config. Call list_subagent_profiles first to pick one. Omitted = subagent.default_profile.",
 						},
+						"model": map[string]any{
+							"type":        "string",
+							"minLength":   1,
+							"maxLength":   256,
+							"description": "Optional. Model name for this child task. Omitted = inherit the parent model.",
+						},
 					},
 					"required": []string{"goal"},
 				},
@@ -270,12 +277,13 @@ func (t *delegateTasksTool) Call(args string) (string, error) {
 
 	var input struct {
 		Tasks []struct {
-			Goal       string `json:"goal"`
-			Context    string `json:"context"`
-			Guidance   string `json:"guidance,omitempty"`
-			TrustLevel string `json:"trust_level,omitempty"`
-			MaxRisk    string `json:"max_risk,omitempty"`
-			Profile    string `json:"profile,omitempty"`
+			Goal       string  `json:"goal"`
+			Context    string  `json:"context"`
+			Guidance   string  `json:"guidance,omitempty"`
+			TrustLevel string  `json:"trust_level,omitempty"`
+			MaxRisk    string  `json:"max_risk,omitempty"`
+			Profile    string  `json:"profile,omitempty"`
+			Model      *string `json:"model,omitempty"`
 		} `json:"tasks"`
 		Description string `json:"description,omitempty"`
 	}
@@ -287,6 +295,17 @@ func (t *delegateTasksTool) Call(args string) (string, error) {
 	}
 	if len(input.Tasks) > 8 {
 		return `{"error":"max 8 tasks per call"}`, nil
+	}
+	selectedModels := make([]string, len(input.Tasks))
+	for i, task := range input.Tasks {
+		if task.Model == nil {
+			continue
+		}
+		model, err := validateSubagentModel(*task.Model)
+		if err != nil {
+			return fmt.Sprintf(`{"error":"task %d model: %v"}`, i+1, err), nil
+		}
+		selectedModels[i] = model
 	}
 	// Trust is provenance-derived, not model-declarable. Once this run has
 	// ingested external content, a tool call cannot label attacker-derived
@@ -342,11 +361,9 @@ func (t *delegateTasksTool) Call(args string) (string, error) {
 		}
 		t.acquireSem(sem, emitFn, i)
 		run := t.runTaskFn
-		if run == nil {
-			run = t.runTask
-		}
+		model := selectedModels[i]
 		wg.Add(1)
-		go func(i int, taskID, goal, ctx, guidance, trust, maxRisk, profile, artifactDir string) {
+		go func(i int, taskID, goal, ctx, guidance, trust, maxRisk, profile, artifactDir, model string) {
 			defer wg.Done()
 			defer func() { <-sem }()
 			defer func() {
@@ -356,11 +373,16 @@ func (t *delegateTasksTool) Call(args string) (string, error) {
 					mu.Unlock()
 				}
 			}()
-			r := run(i, taskID, goal, ctx, guidance, trust, maxRisk, profile, artifactDir)
+			var r string
+			if run != nil {
+				r = run(i, taskID, goal, ctx, guidance, trust, maxRisk, profile, artifactDir)
+			} else {
+				r = t.runTaskWithModel(i, taskID, goal, ctx, guidance, trust, maxRisk, profile, artifactDir, model)
+			}
 			mu.Lock()
 			results[i] = r
 			mu.Unlock()
-		}(i, taskID, task.Goal, task.Context, task.Guidance, task.TrustLevel, task.MaxRisk, task.Profile, dirs[i])
+		}(i, taskID, task.Goal, task.Context, task.Guidance, task.TrustLevel, task.MaxRisk, task.Profile, dirs[i], model)
 	}
 
 	// Wait for every goroutine. Never refill a shared limiter's slots to
@@ -432,6 +454,10 @@ func (t *delegateTasksTool) chargeParentUsage(tokens int64) {
 }
 
 func (t *delegateTasksTool) runTask(taskIdx int, taskID, goal, taskContext, guidance, trustLevel, maxRisk, profile, artifactDir string) string {
+	return t.runTaskWithModel(taskIdx, taskID, goal, taskContext, guidance, trustLevel, maxRisk, profile, artifactDir, "")
+}
+
+func (t *delegateTasksTool) runTaskWithModel(taskIdx int, taskID, goal, taskContext, guidance, trustLevel, maxRisk, profile, artifactDir, model string) string {
 	// Parent-side fail-closed validation: an unknown profile name must
 	// fail the task BEFORE a child is spawned — the tool schema promises
 	// "unknown names fail the task", and a silently-bare child would run
@@ -480,6 +506,9 @@ func (t *delegateTasksTool) runTask(taskIdx int, taskID, goal, taskContext, guid
 	task.ArtifactRoot = artifactDir
 	task.Provider = t.provider
 	task.Model = t.model
+	if model != "" {
+		task.Model = model
+	}
 	task.BaseURL = t.baseURL
 	if err := json.NewEncoder(taskFile).Encode(task); err != nil {
 		taskFile.Close()
@@ -1078,6 +1107,22 @@ func newTaskEnvelope(taskID, goal, context, guidance, trustLevel, maxRisk, profi
 		Budget:      budget,
 		ParentTrust: parentTrust,
 	}
+}
+
+func validateSubagentModel(model string) (string, error) {
+	for _, r := range model {
+		if r < 0x20 || r == 0x7f || unicode.IsControl(r) {
+			return "", errors.New("contains control characters")
+		}
+	}
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return "", errors.New("must be non-empty")
+	}
+	if len([]rune(model)) > 256 {
+		return "", errors.New("is too long (maximum 256 characters)")
+	}
+	return model, nil
 }
 
 // subagentDeniedEvent is emitted on the runtime event stream for every
