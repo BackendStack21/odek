@@ -1,10 +1,13 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -200,6 +203,49 @@ func TestWebSearch_BackendUnreachable(t *testing.T) {
 		t.Errorf("expected unreachable error, got %q", out.Error)
 	}
 }
+
+func TestWebSearch_RetryWaitHonorsCancellation(t *testing.T) {
+	orig := searxngRetryDelay
+	searxngRetryDelay = time.Hour
+	t.Cleanup(func() { searxngRetryDelay = orig })
+
+	firstAttempt := make(chan struct{}, 1)
+	tool := newWebSearchTool(allowAllDanger(), config.WebSearchConfig{BaseURL: "http://search.invalid"})
+	tool.client.Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
+		select {
+		case firstAttempt <- struct{}{}:
+		default:
+		}
+		return nil, &url.Error{Op: "dial", URL: "http://search.invalid", Err: syscall.ECONNREFUSED}
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	tool.SetContext(ctx)
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := tool.query("cancel me", "")
+		done <- err
+	}()
+	select {
+	case <-firstAttempt:
+	case <-time.After(time.Second):
+		t.Fatal("first request was not attempted")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != context.Canceled {
+			t.Fatalf("query error = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("query remained asleep in retry delay after cancellation")
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
 func TestWebSearch_RedirectToInternalBlocked(t *testing.T) {
 	// A compromised/misconfigured SearXNG that 302s toward an internal host must

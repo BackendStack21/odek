@@ -229,6 +229,7 @@ func (t *webSearchTool) Call(argsJSON string) (result string, err error) {
 
 // query performs the SearXNG JSON request and decodes the response.
 func (t *webSearchTool) query(query, category string) (*searxngResponse, error) {
+	ctx := t.toolCtx()
 	endpoint, err := url.Parse(strings.TrimRight(t.cfg.BaseURL, "/") + "/search")
 	if err != nil {
 		return nil, fmt.Errorf("invalid web_search base_url %q: %v", t.cfg.BaseURL, err)
@@ -246,7 +247,7 @@ func (t *webSearchTool) query(query, category string) (*searxngResponse, error) 
 	}
 	endpoint.RawQuery = q.Encode()
 
-	req, err := http.NewRequestWithContext(t.toolCtx(), http.MethodGet, endpoint.String(), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
 	if err != nil {
 		return nil, fmt.Errorf("build request: %v", err)
 	}
@@ -262,7 +263,18 @@ func (t *webSearchTool) query(query, category string) (*searxngResponse, error) 
 		if err == nil || attempt >= searxngConnectRetries || !errors.Is(err, syscall.ECONNREFUSED) {
 			break
 		}
-		time.Sleep(searxngRetryDelay)
+		timer := time.NewTimer(searxngRetryDelay)
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			return nil, ctx.Err()
+		}
 	}
 	if err != nil {
 		return nil, fmt.Errorf("cannot reach SearXNG at %s — is the service running? (%v)", t.cfg.BaseURL, err)
