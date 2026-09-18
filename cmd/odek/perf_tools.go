@@ -1469,7 +1469,7 @@ func (t *jsonQueryTool) Call(argsJSON string) (result string, err error) {
 		return jsonError(err.Error())
 	}
 
-	f, err := os.OpenFile(args.Path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	f, err := os.OpenFile(args.Path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return jsonResult(jsonQueryResult{Path: args.Path, Error: fmt.Sprintf("cannot open %q: %v", args.Path, err)})
 	}
@@ -1479,12 +1479,22 @@ func (t *jsonQueryTool) Call(argsJSON string) (result string, err error) {
 	if err != nil {
 		return jsonResult(jsonQueryResult{Path: args.Path, Error: fmt.Sprintf("cannot stat %q: %v", args.Path, err)})
 	}
+	if !info.Mode().IsRegular() {
+		return jsonResult(jsonQueryResult{Path: args.Path, Error: fmt.Sprintf("cannot query %q: not a regular file", args.Path)})
+	}
 	if info.Size() > maxFileReadBytes {
 		return jsonResult(jsonQueryResult{Path: args.Path, Error: fmt.Sprintf("file too large (%d bytes, max %d)", info.Size(), maxFileReadBytes)})
 	}
 
+	dataBytes, err := io.ReadAll(io.LimitReader(f, maxFileReadBytes+1))
+	if err != nil {
+		return jsonResult(jsonQueryResult{Path: args.Path, Error: fmt.Sprintf("cannot read %q: %v", args.Path, err)})
+	}
+	if len(dataBytes) > maxFileReadBytes {
+		return jsonResult(jsonQueryResult{Path: args.Path, Error: fmt.Sprintf("file too large (%d bytes, max %d)", len(dataBytes), maxFileReadBytes)})
+	}
 	var data interface{}
-	if err := json.NewDecoder(f).Decode(&data); err != nil {
+	if err := json.Unmarshal(dataBytes, &data); err != nil {
 		return jsonResult(jsonQueryResult{Path: args.Path, Error: fmt.Sprintf("invalid JSON: %v", err)})
 	}
 

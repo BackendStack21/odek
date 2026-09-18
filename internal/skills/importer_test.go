@@ -6,7 +6,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 func TestFetchHTTP(t *testing.T) {
@@ -358,6 +360,40 @@ func TestFetchLocal_FileTooLarge(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "too large") {
 		t.Errorf("expected 'too large' error, got %v", err)
+	}
+}
+
+func TestFetchLocal_FIFODoesNotBlock(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "skill.fifo")
+	if err := syscall.Mkfifo(path, 0600); err != nil {
+		t.Skipf("FIFO unavailable: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() { _, err := fetchLocal(path, 1024); done <- err }()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("FIFO import unexpectedly succeeded")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("fetchLocal blocked on FIFO")
+	}
+}
+
+func TestFetchLocal_RegularFileSizeBounds(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "skill.md")
+	if err := os.WriteFile(path, []byte("12345"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	result, err := fetchLocal(path, 5)
+	if err != nil || result.Content != "12345" {
+		t.Fatalf("at-cap read: result=%v err=%v", result, err)
+	}
+	if err := os.WriteFile(path, []byte("123456"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fetchLocal(path, 5); err == nil || !strings.Contains(err.Error(), "too large") {
+		t.Fatalf("over-cap read error = %v", err)
 	}
 }
 
