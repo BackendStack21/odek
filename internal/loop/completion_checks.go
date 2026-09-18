@@ -15,14 +15,16 @@ func (e *Engine) recordPlanCheckResult(epoch uint64, tc session.ToolCall, callID
 	if e.planStore == nil || tc.Function.Name == "plan" {
 		return
 	}
-	if e.planStore.CheckEpoch() == epoch && e.planStore.MatchesCheck(tc.Function.Name, tc.Function.Arguments) {
+	if e.planStore.MatchesCheck(tc.Function.Name, tc.Function.Arguments) {
 		if failed {
 			// Failed verification may itself leave partial effects. Earlier
 			// checks cannot establish the state after that failure.
 			e.planStore.InvalidateChecks()
 		}
-		e.planStore.RecordCheckOutcome(epoch, tc.Function.Name, tc.Function.Arguments, callID, failed)
-		return
+		if e.planStore.CheckEpoch() == epoch {
+			e.planStore.RecordCheckOutcome(epoch, tc.Function.Name, tc.Function.Arguments, callID, failed)
+			return
+		}
 	}
 	fx := e.executionEffects(tc)
 	if fx.unknown || len(fx.writes) > 0 {

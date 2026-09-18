@@ -158,7 +158,7 @@ func TestPlan_Validate_BadArgsAndVerb(t *testing.T) {
 		t.Errorf("bad JSON error = %v, want plan: parse args:", err)
 	}
 	if _, err := s.Execute(`{"verb":"replan"}`); err == nil ||
-		!strings.Contains(err.Error(), `plan: unknown verb "replan" (want create/update/complete/get)`) {
+		!strings.Contains(err.Error(), `plan: unknown verb "replan" (want create/update/complete/revise/get)`) {
 		t.Errorf("unknown verb error = %v", err)
 	}
 	if _, ok := s.Snapshot(); ok {

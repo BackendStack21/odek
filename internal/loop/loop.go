@@ -869,8 +869,10 @@ func (e *Engine) SetPlanStore(s *PlanStore) {
 // emit plan_blocked. Payloads carry counts and version ONLY — never
 // step titles or notes.
 func (e *Engine) emitPlanChangeEvent(ch PlanChange) {
-	if ch.Created {
+	if ch.Created || ch.Revised {
 		e.skillRematchPending.Store(true)
+	}
+	if ch.Created {
 		e.emitEvent(events.Event{
 			Type: events.TypePlanCreated,
 			Data: map[string]any{
@@ -3749,7 +3751,7 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 			corrections = append(corrections, e.budgetWarnings(i+1, startTime, ctx, &hints)...)
 		}
 		if e.blockedHintPending.Swap(false) {
-			corrections = append(corrections, "⚠️ Plan has 3 consecutive blocked steps. Decompose the blocked work or `create` a new plan — do not keep marking steps blocked.")
+			corrections = append(corrections, "⚠️ Plan has 3 consecutive blocked steps. Use plan revise to decompose blocked work or change the approach while preserving acceptance checks — do not keep marking steps blocked.")
 		}
 		// Inject all corrections as a single system message
 		if len(corrections) > 0 {
@@ -3766,7 +3768,7 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 		// the persisted snapshot always carries the current plan.
 		messages = e.refreshPlanMessage(ctx, messages)
 
-		// After plan(create), rematch lazy skills on step titles only so a
+		// After plan(create/revise), rematch lazy skills on step titles only so a
 		// plan that names work the original user line missed can still load
 		// a promoted skill. Titles are query text, not instructions.
 		if e.skillRematchPending.Swap(false) {

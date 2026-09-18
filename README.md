@@ -201,7 +201,7 @@ odek run "@README.md what does this project do?"
 | [Extensions](docs/EXTENSIONS.md) | `odek-extension/v1` contract: MCP limits, artifact refs, event stream, external refs, budgets |
 | [Maintenance](docs/MAINTENANCE.md) | Storage janitor: retention, log rotation, `odek cleanup` |
 | [Extended Memory](docs/EXTENDED_MEMORY.md) | Atomic long-term memory layer (opt-in) |
-| [Planning](docs/PLANNING.md) | Plan tool, acceptance checks, completion evidence, resume behavior |
+| [Planning](docs/PLANNING.md) | Incremental plan revisions, acceptance checks, completion evidence |
 | [Runtime Evals](docs/EVALS.md) | Deterministic task scenarios, independent checks, JSON reports |
 | [Tool Selection](docs/TOOL_SELECTION.md) | Tool whitelist/blacklist guide and names reference |
 | [Daily Worker](docs/DAILY-WORKER.md) | Headless scheduled-worker patterns |

@@ -203,7 +203,7 @@ no-op.
 
 ### Collapse and overflow
 
-For plans without checks, when every step is `done`, the render collapses to a single line (~15 tokens),
+For plans without checks or revision metadata, when every step is `done`, the render collapses to a single line (~15 tokens),
 so an idle or completed plan doesn't tempt the model to keep reporting on
 finished work:
 
@@ -211,11 +211,11 @@ finished work:
 [Current plan: v7 — all 5 steps complete.]
 ```
 
-Checked plans retain every step and check even when all steps are done. They
+Checked and revised plans retain every step and check even when all steps are done. They
 reserve evidence space at validation time, so accepted updates never rely on
 lossy overflow rendering.
 
-For unchecked plans, when the render exceeds `max_render_chars`, the oldest `done` steps are
+For unrevised unchecked plans, when the render exceeds `max_render_chars`, the oldest `done` steps are
 dropped first behind an explicit marker:
 
 ```
@@ -263,77 +263,295 @@ standard built-in interface (`Name`/`Description`/`Schema`/`Call`).
 
 | Verb | Arguments | Effect |
 |------|-----------|--------|
-| `create` | `steps`: full ordered list (1..max_steps) | Replaces the whole plan wholesale — this *is* replanning. All steps start `pending`. |
+| `create` | `steps`: full ordered list (1..max_steps) | Replaces the ordered plan. Existing acceptance-check identity cannot be dropped or changed. New steps start `pending`; unchanged checked steps retain progress. Prefer `revise` for incremental changes. |
+| `revise` | `reason`, `operations` (≤8) | Applies bounded add/edit/move/split/supersede operations while preserving unaffected progress and evidence. `reason` is required and capped at 240 runes. |
 | `update` | `updates`: array of `{id, status?, note?}` | Batch status/note changes, applied in array order. Atomic: any invalid entry rejects the whole call. |
 | `complete` | `step_id` | Shorthand to mark one step `done`. Highest-frequency operation, one-field cheap. |
 | `get` | — | Returns the current plan (or `"No active plan."`). |
+
+### Incremental revisions
+
+Use `revise` when the plan changes after work or evidence already exists.
+It requires a `reason` of at most 240 runes and at most eight ordered
+`operations`. The supported operation kinds are:
+
+- `add`: insert `steps` after `after_id` or before `before_id`; omit both to append.
+- `edit`: change one `step_id` title or note, and optionally append checks.
+  A substantive title change reopens the step and resets its evidence.
+- `move`: place `step_id` after `after_id` or before `before_id`; omit both
+  to move it to the end.
+- `split`: replace `step_id` with replacement `steps`.
+- `supersede`: replace `step_id` with replacement `steps` because the original
+  approach is no longer applicable.
+
+`split` and `supersede` may set `carry_checks_to` to a successor step name.
+That successor receives all original checks with their tool, canonical
+arguments, descriptions, and identities unchanged; the carried evidence is
+reset to pending. Unaffected steps retain their status and evidence. The
+latest revision reason and an operation source/target summary are persisted;
+the plan does not keep unlimited revision history. The ordinary transcript
+retains earlier revision tool calls. `add` and `move` accept either `after_id`
+or `before_id`, including placement before the first step; specifying both
+is rejected. An edit may clear a note with `"note":""`. No-op revisions do
+not change the version or invalidate evidence. A `create` remains a full
+replacement for ordinary plans, but once acceptance checks exist it cannot
+drop or alter any original check identity, tool, arguments, or description.
+Unchanged checked steps keep their status and evidence. Changing their title
+invalidates that evidence; appending a pending check reopens a done step.
+
+Revision reasons describe plan changes only. They do not grant authorization,
+approve tools, or override budgets and policy. Newly declared checks in a
+revision cannot be satisfied by a tool call in the same parallel batch; they
+must be run afterward through the normal tool and approval path. There is no
+automatic optimizer, model-based cost planner, or automatic check execution
+in this feature.
+
+Example user prompt:
+
+> Fix the bug and keep the plan current as you learn. If a failed test reveals
+> more work, revise or split the affected step, keep its original acceptance
+> checks, preserve completed work, and record why the approach changed.
+
+Example:
+
+```json
+{"verb":"revise","reason":"The generated client needs a separate compatibility step","operations":[{"kind":"add","after_id":"tests","steps":[{"id":"compat","title":"Run compatibility checks"}]},{"kind":"edit","step_id":"tests","note":"Keep the original regression evidence"}]}
+```
 
 ### JSON Schema
 
 ```json
 {
+  "description": "Maintain your task plan. Create steps before starting multi-step work; update statuses as you go (in_progress when you start a step, done only after verifying it); mark blocked with a note explaining why. The plan is shown to you on every iteration and survives context trimming — trust it over your memory of earlier turns. Use revise when the approach changes so acceptance checks stay attached. For verifiable work, declare optional checks with exact tool arguments before running them in a later batch. Complete checked steps only after their tools succeed; do not self-certify. Plans without checks remain advisory.",
   "name": "plan",
-  "description": "Maintain your task plan. Create steps before starting
-multi-step work; update statuses as you go (in_progress when you start a step,
-done only after verifying it); mark blocked with a note explaining why. The
-plan is shown to you on every iteration and survives context trimming — trust
-it over your memory of earlier turns. Replan freely with create when the
-approach changes; plans without checks are steering aids, while checked steps
-also require their declared evidence before completion.",
   "parameters": {
-    "type": "object",
     "properties": {
-      "verb": {
-        "enum": ["create", "update", "complete", "get"],
-        "description": "create: replace the whole plan. update: batch
-status/note changes. complete: shorthand to mark one step done. get: return
-current plan."
-      },
-      "steps": {
-        "type": "array",
+      "operations": {
+        "description": "revise only: ordered atomic operations. Existing checks cannot be removed or changed. New checks require a later tool batch.",
         "items": {
-          "type": "object",
           "properties": {
-            "id":    { "type": "string" },
-            "title": { "type": "string" },
-            "note":  { "type": "string" },
+            "after_id": {
+              "description": "For add/move: place after this existing step. Use only one anchor; omit both to append.",
+              "type": "string"
+            },
+            "before_id": {
+              "description": "For add/move: place before this existing step. Mutually exclusive with after_id.",
+              "type": "string"
+            },
+            "carry_checks_to": {
+              "description": "Required when split/supersede replaces a checked step: replacement ID receiving all original checks, pending fresh verification.",
+              "type": "string"
+            },
             "checks": {
-              "type": "array", "maxItems": 4,
+              "description": "Optional checks with exact tool arguments. In revise edit, append only; IDs must not duplicate existing checks. Invoke tools separately through normal approval; only actual outcomes can pass checks.",
               "items": {
-                "type": "object",
                 "properties": {
-                  "id": { "type": "string" },
-                  "description": { "type": "string" },
-                  "tool": { "type": "string" },
-                  "arguments": { "type": "object" }
+                  "arguments": {
+                    "type": "object"
+                  },
+                  "description": {
+                    "type": "string"
+                  },
+                  "id": {
+                    "type": "string"
+                  },
+                  "tool": {
+                    "type": "string"
+                  }
                 },
-                "required": ["id", "description", "tool", "arguments"]
-              }
+                "required": [
+                  "id",
+                  "description",
+                  "tool",
+                  "arguments"
+                ],
+                "type": "object"
+              },
+              "maxItems": 4,
+              "type": "array"
+            },
+            "kind": {
+              "enum": [
+                "add",
+                "edit",
+                "move",
+                "split",
+                "supersede"
+              ]
+            },
+            "note": {
+              "description": "edit only: replace note, including an empty string to clear it.",
+              "type": "string"
+            },
+            "step_id": {
+              "description": "Existing step for edit/move/split/supersede.",
+              "type": "string"
+            },
+            "steps": {
+              "description": "New steps for add/split/supersede. Split requires at least two. Replacement IDs must be unique; carried checks are added to the target's declared checks.",
+              "items": {
+                "properties": {
+                  "checks": {
+                    "description": "Optional checks with exact tool arguments. In revise edit, append only; IDs must not duplicate existing checks. Invoke tools separately through normal approval; only actual outcomes can pass checks.",
+                    "items": {
+                      "properties": {
+                        "arguments": {
+                          "type": "object"
+                        },
+                        "description": {
+                          "type": "string"
+                        },
+                        "id": {
+                          "type": "string"
+                        },
+                        "tool": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "description",
+                        "tool",
+                        "arguments"
+                      ],
+                      "type": "object"
+                    },
+                    "maxItems": 4,
+                    "type": "array"
+                  },
+                  "id": {
+                    "type": "string"
+                  },
+                  "note": {
+                    "type": "string"
+                  },
+                  "title": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id",
+                  "title"
+                ],
+                "type": "object"
+              },
+              "minItems": 1,
+              "type": "array"
+            },
+            "title": {
+              "description": "edit only: replace title; changed work loses its prior check evidence and reopens if completed.",
+              "type": "string"
             }
           },
-          "required": ["id", "title"]
+          "required": [
+            "kind"
+          ],
+          "type": "object"
         },
-        "description": "create only: full ordered step list (1..max_steps).
-All steps start pending; mark the first one in_progress with a follow-up
-update (can ride the same parallel batch)."
+        "maxItems": 8,
+        "minItems": 1,
+        "type": "array"
+      },
+      "reason": {
+        "description": "revise only: bounded reason for the change.",
+        "maxLength": 240,
+        "type": "string"
+      },
+      "step_id": {
+        "description": "complete only",
+        "type": "string"
+      },
+      "steps": {
+        "description": "create only: full ordered step list (1..max_steps). New steps start pending. Existing checked requirements must remain identical; unchanged checked steps retain progress. Prefer revise for incremental changes.",
+        "items": {
+          "properties": {
+            "checks": {
+              "description": "Optional checks with exact tool arguments. In revise edit, append only; IDs must not duplicate existing checks. Invoke tools separately through normal approval; only actual outcomes can pass checks.",
+              "items": {
+                "properties": {
+                  "arguments": {
+                    "type": "object"
+                  },
+                  "description": {
+                    "type": "string"
+                  },
+                  "id": {
+                    "type": "string"
+                  },
+                  "tool": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id",
+                  "description",
+                  "tool",
+                  "arguments"
+                ],
+                "type": "object"
+              },
+              "maxItems": 4,
+              "type": "array"
+            },
+            "id": {
+              "type": "string"
+            },
+            "note": {
+              "type": "string"
+            },
+            "title": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "title"
+          ],
+          "type": "object"
+        },
+        "type": "array"
       },
       "updates": {
-        "type": "array",
+        "description": "update only: applied in array order; unknown id or unknown status fails the whole call (atomic).",
         "items": {
-          "type": "object",
           "properties": {
-            "id":     { "type": "string" },
-            "status": { "enum": ["pending", "in_progress", "done", "blocked"] },
-            "note":   { "type": "string" }
+            "id": {
+              "type": "string"
+            },
+            "note": {
+              "type": "string"
+            },
+            "status": {
+              "enum": [
+                "pending",
+                "in_progress",
+                "done",
+                "blocked"
+              ]
+            }
           },
-          "required": ["id"]
+          "required": [
+            "id"
+          ],
+          "type": "object"
         },
-        "description": "update only: applied in array order; unknown id or
-unknown status fails the whole call (atomic)."
+        "type": "array"
       },
-      "step_id": { "type": "string", "description": "complete only" }
+      "verb": {
+        "description": "create: replace the whole plan. update: batch status/note changes. complete: shorthand to mark one step done. revise: atomically add/edit/move/split/supersede steps while preserving checked requirements. get: return current plan.",
+        "enum": [
+          "create",
+          "update",
+          "complete",
+          "revise",
+          "get"
+        ]
+      }
     },
-    "required": ["verb"]
+    "required": [
+      "verb"
+    ],
+    "type": "object"
   }
 }
 ```
@@ -398,7 +616,7 @@ Resolved onto the config layer as `Planning PlanningConfig`
 |-----|---------|-------|---------|
 | `enabled` | `true` | global-off wins | Master switch; false removes the tool from the registry and skips all plan logic |
 | `max_steps` | `12` | 1..50 | `create` size cap; enforced fail-closed |
-| `max_render_chars` | `2000` | 200..8000 | Rendered message cap; checked plans must fit in full, unchecked overflow drops oldest done steps first |
+| `max_render_chars` | `2000` | 200..8000 | Rendered message cap; checked/revised plans must fit in full, unrevised unchecked overflow drops oldest done steps first |
 
 Disable precedence (highest wins): `--no-planning` flag → `ODEK_PLANNING=false`
 env → global config → project opt-out.
@@ -485,7 +703,7 @@ over-cap plan may still display on surfaces even when resume would drop it.
   plan message; `version`/`steps` are then zero/empty. A collapsed all-done
   plan parses to a version with no rows — `steps` is `[]`, not null.
 - Checked plans retain completed step rows. This endpoint exposes step
-  status, not individual check arguments, status, or call IDs; those remain
+  status, not individual check arguments, status, call IDs, or revision metadata; those remain
   in the protected plan transcript. Reading the endpoint does not invalidate
   evidence; resuming a run does.
 - **404** for an unknown session id; `note` is omitted when empty.
@@ -536,6 +754,13 @@ such a relay lands; responses are tiny, so the cadence is cheap.
 ---
 
 ## Tests
+
+Revision regressions cover atomic rejection, check-preserving splits and
+replacement, safe evidence retention, same-batch failures, no-op edits,
+reordering, render limits, wrapped save/resume, and skill rematching in
+`plan_revisions_test.go`, `revision_safety_test.go`, and
+`revision_integration_test.go`. [Runtime evals](EVALS.md) exercise complete
+replanning scenarios with independent fixture-state checks.
 
 `internal/loop/plan_test.go`:
 
@@ -646,7 +871,7 @@ semantics, payload minimality, `ExtractPlan`), `cmd/odek/serve_plan_test.go`
   these payloads may be the only surviving context after a trim, so ids alone
   tell the summarizer nothing. Stall hints keep the title-free id format.
 - **Blocked-step streak.** Three consecutive transitions to `blocked` inject
-  a decompose-or-`create` hint and emit `plan_blocked` (`steps`, `blocked`,
+  a decompose-with-`revise` hint and emit `plan_blocked` (`steps`, `blocked`,
   `version` only). The streak resets on `create` or a `done` / `in_progress`
   transition, and after firing (once then reset).
 - **Remaining-steps on exhaustion.** Pending / in_progress / blocked IDs and
@@ -685,9 +910,9 @@ for dashboards. No titles, notes, or loop behavior.
 
 ## Design Notes
 
-**One tool, four verbs — not many tools.** Tool schemas count against the
+**One tool, five verbs.** Tool schemas count against the
 context budget on every request; splitting into `plan_create`/`plan_update`/…
-would cost 4× schema tokens and reserve 4× names for marginal clarity.
+would repeat schema fields and reserve more names for marginal clarity.
 `complete` exists as a verb because it is the highest-frequency, lowest-
 argument operation — making it cheap encourages actually closing steps.
 
@@ -704,5 +929,5 @@ pattern instead: recognized-by-prefix, `headLen`-protected, upsert-in-place.
 
 **Bias to action.** The plan remains a steering instrument for ordinary
 steps; acceptance checks add a narrow completion gate without auto-executing
-anything. `create` replaces wholesale so replanning is one call, and the
-prompt distinguishes advisory steps from checked completion.
+anything. `revise` changes the approach incrementally while keeping acceptance checks.
+The prompt distinguishes advisory steps from checked completion.

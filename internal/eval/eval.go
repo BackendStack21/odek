@@ -27,6 +27,7 @@ type Fixture struct {
 	Values    map[string]string
 	Calls     []ToolCall
 	GoodCalls []ToolCall
+	Plan      *loop.PlanState
 	mu        sync.Mutex
 }
 
@@ -194,6 +195,11 @@ func runCase(parent context.Context, s Scenario, opts RunOptions) CaseReport {
 		parent = cancelled
 	}
 	result, runErr := e.Run(parent, s.Task)
+	if planStore != nil && s.Fixture != nil {
+		if state, ok := planStore.Snapshot(); ok {
+			s.Fixture.Plan = &state
+		}
+	}
 	mu.Lock()
 	snapshot := append([]ToolCall(nil), calls...)
 	mu.Unlock()
@@ -298,6 +304,9 @@ func Scenarios() []Scenario {
 	f6.Values["evidence"] = "evidence"
 	f7 := baseFixture()
 	f8 := baseFixture()
+	f9 := baseFixture()
+	f10 := baseFixture()
+	f11 := baseFixture()
 	return []Scenario{
 		{Name: "successful_fix_verified", Task: "write and verify artifact", Fixture: f1, Tools: []tool.Tool{Tool(f1, "write_file", "write"), Tool(f1, "read_file", "read")}, Responses: []string{toolCall("write_file", "w1", `{"key":"artifact","value":"fixed"}`), toolCall("read_file", "r1", `{"key":"artifact"}`), final("verified")}, Oracle: func(f *Fixture, r string, e error, _ []ToolCall) OracleResult {
 			if e != nil {
@@ -361,6 +370,24 @@ func Scenarios() []Scenario {
 				return OracleResult{Errors: []string{"missing check lacked incomplete marker"}}
 			}
 			return OracleResult{TaskSuccess: false}
+		}},
+		{Name: "incremental_replan_preserves_done", Task: "revise plan without losing completed work", Fixture: f9, Plan: true, Responses: []string{toolCall("plan", "p1", `{"verb":"create","steps":[{"id":"fix","title":"Fix"},{"id":"test","title":"Test"}]}`), toolCall("plan", "p2", `{"verb":"update","updates":[{"id":"fix","status":"done"}]}`), toolCall("plan", "p3", `{"verb":"revise","reason":"split test and reorder","operations":[{"kind":"split","step_id":"test","steps":[{"id":"test-a","title":"Test A"},{"id":"test-b","title":"Test B"}]},{"kind":"move","step_id":"fix","after_id":"test-b"}]}`), final("working")}, Oracle: func(f *Fixture, _ string, e error, c []ToolCall) OracleResult {
+			if e != nil || f.Plan == nil || len(f.Plan.Steps) != 3 || f.Plan.Steps[0].ID != "test-a" || f.Plan.Steps[1].ID != "test-b" || f.Plan.Steps[2].ID != "fix" || f.Plan.Steps[2].Status != loop.StepDone || len(c) != 3 || c[1].Error || c[2].Error {
+				return OracleResult{Errors: []string{"incremental update lost completed work or failed atomically"}}
+			}
+			return OracleResult{TaskSuccess: false}
+		}},
+		{Name: "acceptance_check_cannot_be_dropped", Task: "failed check must block completion", Fixture: f10, Plan: true, Tools: []tool.Tool{Tool(f10, "read_file", "read")}, Responses: []string{toolCall("plan", "p1", `{"verb":"create","steps":[{"id":"fix","title":"Fix","checks":[{"id":"e1","description":"Read evidence","tool":"read_file","arguments":{"key":"evidence"}}]}]}`), toolCall("read_file", "r1", `{"key":"evidence"}`), toolCall("plan", "p2", `{"verb":"revise","reason":"bad supersede","operations":[{"kind":"supersede","step_id":"fix","steps":[{"id":"replacement","title":"Replacement"}]}]}`), toolCall("plan", "p3", `{"verb":"create","steps":[{"id":"fix","title":"Fix"}]}`), final("blocked")}, Oracle: func(f *Fixture, r string, e error, c []ToolCall) OracleResult {
+			if e != nil || f.Plan == nil || len(f.Plan.Steps) != 1 || f.Plan.Steps[0].Status == loop.StepDone || len(f.Plan.Steps[0].Checks) != 1 || f.Plan.Steps[0].Checks[0].ID != "e1" || f.Plan.Steps[0].Checks[0].Status != loop.PlanCheckFailed || !strings.Contains(r, "[odek verification incomplete:") || len(c) != 4 || !c[1].Error || !c[2].Error || !c[3].Error {
+				return OracleResult{Errors: []string{"failed acceptance check was dropped or completion was accepted"}}
+			}
+			return OracleResult{TaskSuccess: false}
+		}},
+		{Name: "replan_rerun_can_finish", Task: "rerun failed check after fix", Fixture: f11, Plan: true, Tools: []tool.Tool{Tool(f11, "read_file", "read"), Tool(f11, "write_file", "write")}, Responses: []string{toolCall("plan", "p1", `{"verb":"create","steps":[{"id":"fix","title":"Fix","checks":[{"id":"e1","description":"Read evidence","tool":"read_file","arguments":{"key":"evidence"}}]}]}`), toolCall("read_file", "r1", `{"key":"evidence"}`), toolCall("plan", "p2", `{"verb":"revise","reason":"split fix after failure","operations":[{"kind":"split","step_id":"fix","carry_checks_to":"fix-a","steps":[{"id":"fix-a","title":"Fix A"},{"id":"fix-b","title":"Fix B"}]}]}`), toolCall("write_file", "w1", `{"key":"evidence","value":"fixed"}`), toolCall("read_file", "r2", `{"key":"evidence"}`), toolCall("plan", "p3", `{"verb":"update","updates":[{"id":"fix-a","status":"done"},{"id":"fix-b","status":"done"}]}`), final("complete")}, Oracle: func(f *Fixture, r string, e error, c []ToolCall) OracleResult {
+			if e != nil || f.Plan == nil || len(f.Plan.Steps) != 2 || f.Plan.Steps[0].Status != loop.StepDone || f.Plan.Steps[1].Status != loop.StepDone || len(f.Plan.Steps[0].Checks) != 1 || f.Plan.Steps[0].Checks[0].Status != loop.PlanCheckPassed || strings.Contains(r, "[odek verification incomplete:") || f.get("evidence") != "fixed" || len(c) != 6 || !c[1].Error || c[2].Error || c[3].Error || c[4].Error || c[5].Error {
+				return OracleResult{Errors: []string{"successful rerun did not complete the fixed acceptance check"}}
+			}
+			return OracleResult{TaskSuccess: true}
 		}},
 	}
 }

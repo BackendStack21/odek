@@ -77,8 +77,14 @@ type PlanCheck struct {
 // PlanState is the authoritative plan. Version bumps on every mutation and
 // is echoed in the rendered message so drift is correlatable.
 type PlanState struct {
-	Version int        `json:"version"`
-	Steps   []PlanStep `json:"steps"`
+	Version  int           `json:"version"`
+	Steps    []PlanStep    `json:"steps"`
+	Revision *PlanRevision `json:"revision,omitempty"`
+}
+
+type PlanRevision struct {
+	Reason  string   `json:"reason"`
+	Summary []string `json:"summary"`
 }
 
 // PlanChange describes one effective plan mutation for the change
@@ -95,6 +101,7 @@ type PlanChange struct {
 	Pending       int
 	Version       int  // store version after the mutation
 	BlockedStreak bool // true when this mutation tripped the 3-blocked streak
+	Revised       bool
 }
 
 // Structural caps enforced by validation (docs/PLANNING.md — Fail-Closed
@@ -129,6 +136,7 @@ type PlanStore struct {
 	lastBlocked    bool             // last status transition was to blocked
 	blockedFired   bool             // this mutation tripped the streak (consumed by notify)
 	epoch          uint64
+	revisionNotify bool
 }
 
 // NewPlanStore creates a store with the given resolved caps. Degenerate
@@ -191,10 +199,14 @@ func (s *PlanStore) Restore(st PlanState) {
 	s.blockedStreak = 0
 	s.lastBlocked = false
 	s.blockedFired = false
+	s.revisionNotify = false
 }
 
 func clonePlanState(st PlanState) PlanState {
 	st.Steps = append([]PlanStep(nil), st.Steps...)
+	if st.Revision != nil {
+		st.Revision = &PlanRevision{Reason: st.Revision.Reason, Summary: append([]string(nil), st.Revision.Summary...)}
+	}
 	for i := range st.Steps {
 		st.Steps[i].Checks = clonePlanChecks(st.Steps[i].Checks)
 	}
@@ -276,6 +288,7 @@ func (s *PlanStore) Execute(argsJSON string) (string, error) {
 	var res string
 	var err error
 	s.blockedFired = false
+	s.revisionNotify = false
 	switch args.Verb {
 	case "create":
 		res, err = s.create(args.Steps)
@@ -283,10 +296,12 @@ func (s *PlanStore) Execute(argsJSON string) (string, error) {
 		res, err = s.update(args.Updates)
 	case "complete":
 		res, err = s.complete(args.StepID)
+	case "revise":
+		res, err = s.revise(argsJSON)
 	case "get":
 		return s.get()
 	default:
-		return "", fmt.Errorf("plan: unknown verb %q (want create/update/complete/get)", args.Verb)
+		return "", fmt.Errorf("plan: unknown verb %q (want create/update/complete/revise/get)", args.Verb)
 	}
 	// A version bump is exactly the "effective mutation" contract: no-op
 	// update/complete calls return early without reassigning s.plan, so they
@@ -295,6 +310,7 @@ func (s *PlanStore) Execute(argsJSON string) (string, error) {
 	if err == nil && s.plan != nil && s.plan.Version != prevVersion {
 		s.notifyLocked(args.Verb == "create", s.blockedFired)
 	}
+	s.revisionNotify = false
 	return res, err
 }
 
@@ -309,6 +325,7 @@ func (s *PlanStore) notifyLocked(created, blockedStreak bool) {
 		Steps:         len(s.plan.Steps),
 		Version:       s.plan.Version,
 		BlockedStreak: blockedStreak,
+		Revised:       s.revisionNotify,
 	}
 	for _, st := range s.plan.Steps {
 		switch st.Status {
@@ -323,6 +340,7 @@ func (s *PlanStore) notifyLocked(created, blockedStreak bool) {
 		}
 	}
 	s.onChange(ch)
+	s.revisionNotify = false
 }
 
 // nextVersion returns the version the next successful mutation gets:
@@ -372,6 +390,11 @@ func (s *PlanStore) create(steps []planStepArg) (string, error) {
 		out = append(out, PlanStep{ID: id, Title: title, Status: StepPending, Note: normalizePlanText(in.Note), Checks: checks})
 	}
 	candidate := PlanState{Version: s.nextVersion(), Steps: out}
+	if s.plan != nil && hasPlanChecks(*s.plan) {
+		if err := preserveCheckedPlan(*s.plan, &candidate); err != nil {
+			return "", err
+		}
+	}
 	if !checkedPlanFits(candidate, s.maxRenderChars) {
 		return "", fmt.Errorf("plan: checked plan exceeds max_render_chars (%d) or uses reserved checks delimiter in title/note", s.maxRenderChars)
 	}
@@ -428,7 +451,7 @@ func (s *PlanStore) update(updates []planUpdateArg) (string, error) {
 	if s.plan != nil {
 		old = s.plan.Steps
 	}
-	candidate := PlanState{Version: s.nextVersion(), Steps: working}
+	candidate := PlanState{Version: s.nextVersion(), Steps: working, Revision: cloneRevision(s.plan.Revision)}
 	if !checkedPlanFits(candidate, s.maxRenderChars) {
 		return "", fmt.Errorf("plan: checked plan exceeds max_render_chars (%d) or uses reserved checks delimiter in title/note", s.maxRenderChars)
 	}
@@ -454,7 +477,7 @@ func (s *PlanStore) complete(stepID string) (string, error) {
 		return "", fmt.Errorf("plan: complete: step %q has checks that have not passed", working[idx].ID)
 	}
 	working[idx].Status = StepDone
-	candidate := PlanState{Version: s.nextVersion(), Steps: working}
+	candidate := PlanState{Version: s.nextVersion(), Steps: working, Revision: cloneRevision(s.plan.Revision)}
 	if !checkedPlanFits(candidate, s.maxRenderChars) {
 		return "", fmt.Errorf("plan: checked plan exceeds max_render_chars (%d) or uses reserved checks delimiter in title/note", s.maxRenderChars)
 	}
@@ -652,7 +675,7 @@ const planTruncatedMarker = "[plan truncated: exceeded max_render_chars]"
 // remainder still does not fit, the tail is hard-truncated.
 func renderPlan(p PlanState, maxChars int) string {
 	header := planHeaderLine(p)
-	if allStepsDone(p) {
+	if allStepsDone(p) && p.Revision == nil {
 		return header
 	}
 	lines := make([]string, 0, len(p.Steps))
@@ -662,6 +685,11 @@ func renderPlan(p PlanState, maxChars int) string {
 	build := func(omit map[int]bool, omitted int) string {
 		parts := make([]string, 0, len(lines)+2)
 		parts = append(parts, header)
+		if p.Revision != nil {
+			if b, err := json.Marshal(p.Revision); err == nil {
+				parts = append(parts, "[Plan revision: "+string(b)+"]")
+			}
+		}
 		if omitted > 0 {
 			parts = append(parts, fmt.Sprintf(planOverflowMarker, omitted))
 		}
@@ -711,7 +739,7 @@ func planHeaderLine(p PlanState) string {
 			blocked++
 		}
 	}
-	if len(p.Steps) > 0 && done == len(p.Steps) && !hasPlanChecks(p) {
+	if len(p.Steps) > 0 && done == len(p.Steps) && !hasPlanChecks(p) && p.Revision == nil {
 		return fmt.Sprintf("[Current plan: v%d — all %d steps complete.]", p.Version, len(p.Steps))
 	}
 	checked := ""
@@ -767,6 +795,7 @@ func parsePlanState(content string, maxSteps int) (PlanState, error) {
 		return PlanState{Version: version}, nil
 	}
 	lines = lines[1:]
+	var revision *PlanRevision
 
 	// An omission marker means the live render overflowed and dropped done
 	// steps. Resuming such a plan would be lossy — the omitted steps are
@@ -783,6 +812,15 @@ func parsePlanState(content string, maxSteps int) (PlanState, error) {
 	lines, err = unwrapPlanBody(lines)
 	if err != nil {
 		return PlanState{}, err
+	}
+	if len(lines) > 0 && strings.HasPrefix(lines[0], "[Plan revision: ") && strings.HasSuffix(lines[0], "]") {
+		var rev PlanRevision
+		raw := strings.TrimSuffix(strings.TrimPrefix(lines[0], "[Plan revision: "), "]")
+		if err := json.Unmarshal([]byte(raw), &rev); err != nil || !validPlanRevision(&rev) {
+			return PlanState{}, errors.New("plan: invalid revision metadata")
+		}
+		revision = &rev
+		lines = lines[1:]
 	}
 
 	if len(lines) == 0 {
@@ -821,7 +859,7 @@ func parsePlanState(content string, maxSteps int) (PlanState, error) {
 	if visibleBlocked != blocked {
 		return PlanState{}, fmt.Errorf("plan: header claims %d blocked, found %d", blocked, visibleBlocked)
 	}
-	state := PlanState{Version: version, Steps: steps}
+	state := PlanState{Version: version, Steps: steps, Revision: revision}
 	if checkedHeader != hasPlanChecks(state) {
 		return PlanState{}, errors.New("plan: check header does not match steps")
 	}
@@ -1074,10 +1112,28 @@ func (t *PlanTool) Description() string {
 		"update statuses as you go (in_progress when you start a step, done only after " +
 		"verifying it); mark blocked with a note explaining why. The plan is shown to you " +
 		"on every iteration and survives context trimming — trust it over your memory of " +
-		"earlier turns. Replan freely with create when the approach changes. For verifiable " +
+		"earlier turns. Use revise when the approach changes so acceptance checks stay attached. For verifiable " +
 		"work, declare optional checks with exact tool arguments before running them in a later " +
 		"batch. Complete checked steps only after their tools succeed; do not self-certify. " +
 		"Plans without checks remain advisory."
+}
+
+func planChecksSchema() map[string]any {
+	return map[string]any{
+		"type": "array", "maxItems": maxPlanChecks,
+		"description": "Optional checks with exact tool arguments. In revise edit, append only; IDs must not duplicate existing checks. Invoke tools separately through normal approval; only actual outcomes can pass checks.",
+		"items": map[string]any{"type": "object", "properties": map[string]any{
+			"id": map[string]any{"type": "string"}, "description": map[string]any{"type": "string"},
+			"tool": map[string]any{"type": "string"}, "arguments": map[string]any{"type": "object"},
+		}, "required": []string{"id", "description", "tool", "arguments"}},
+	}
+}
+
+func planStepSchema() map[string]any {
+	return map[string]any{"type": "object", "properties": map[string]any{
+		"id": map[string]any{"type": "string"}, "title": map[string]any{"type": "string"},
+		"note": map[string]any{"type": "string"}, "checks": planChecksSchema(),
+	}, "required": []string{"id", "title"}}
 }
 
 func (t *PlanTool) Schema() any {
@@ -1085,29 +1141,12 @@ func (t *PlanTool) Schema() any {
 		"type": "object",
 		"properties": map[string]any{
 			"verb": map[string]any{
-				"enum":        []string{"create", "update", "complete", "get"},
-				"description": "create: replace the whole plan. update: batch status/note changes. complete: shorthand to mark one step done. get: return current plan.",
+				"enum":        []string{"create", "update", "complete", "revise", "get"},
+				"description": "create: replace the whole plan. update: batch status/note changes. complete: shorthand to mark one step done. revise: atomically add/edit/move/split/supersede steps while preserving checked requirements. get: return current plan.",
 			},
 			"steps": map[string]any{
-				"type": "array",
-				"items": map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"id":    map[string]any{"type": "string"},
-						"title": map[string]any{"type": "string"},
-						"note":  map[string]any{"type": "string"},
-						"checks": map[string]any{
-							"type": "array", "maxItems": 4,
-							"description": "Optional declarative verification checks. Run the named tool separately; only its actual result can pass a check.",
-							"items": map[string]any{"type": "object", "properties": map[string]any{
-								"id": map[string]any{"type": "string"}, "description": map[string]any{"type": "string"},
-								"tool": map[string]any{"type": "string"}, "arguments": map[string]any{"type": "object"},
-							}, "required": []string{"id", "description", "tool", "arguments"}},
-						},
-					},
-					"required": []string{"id", "title"},
-				},
-				"description": "create only: full ordered step list (1..max_steps). All steps start pending; mark the first one in_progress with a follow-up update (can ride the same parallel batch).",
+				"type": "array", "items": planStepSchema(),
+				"description": "create only: full ordered step list (1..max_steps). New steps start pending. Existing checked requirements must remain identical; unchanged checked steps retain progress. Prefer revise for incremental changes.",
 			},
 			"updates": map[string]any{
 				"type": "array",
@@ -1125,6 +1164,22 @@ func (t *PlanTool) Schema() any {
 			"step_id": map[string]any{
 				"type":        "string",
 				"description": "complete only",
+			},
+			"reason": map[string]any{"type": "string", "maxLength": maxRevisionReason, "description": "revise only: bounded reason for the change."},
+			"operations": map[string]any{
+				"type": "array", "minItems": 1, "maxItems": maxRevisionOps,
+				"description": "revise only: ordered atomic operations. Existing checks cannot be removed or changed. New checks require a later tool batch.",
+				"items": map[string]any{"type": "object", "properties": map[string]any{
+					"kind":            map[string]any{"enum": []string{"add", "edit", "move", "split", "supersede"}},
+					"step_id":         map[string]any{"type": "string", "description": "Existing step for edit/move/split/supersede."},
+					"after_id":        map[string]any{"type": "string", "description": "For add/move: place after this existing step. Use only one anchor; omit both to append."},
+					"before_id":       map[string]any{"type": "string", "description": "For add/move: place before this existing step. Mutually exclusive with after_id."},
+					"title":           map[string]any{"type": "string", "description": "edit only: replace title; changed work loses its prior check evidence and reopens if completed."},
+					"note":            map[string]any{"type": "string", "description": "edit only: replace note, including an empty string to clear it."},
+					"checks":          planChecksSchema(),
+					"carry_checks_to": map[string]any{"type": "string", "description": "Required when split/supersede replaces a checked step: replacement ID receiving all original checks, pending fresh verification."},
+					"steps":           map[string]any{"type": "array", "minItems": 1, "items": planStepSchema(), "description": "New steps for add/split/supersede. Split requires at least two. Replacement IDs must be unique; carried checks are added to the target's declared checks."},
+				}, "required": []string{"kind"}},
 			},
 		},
 		"required": []string{"verb"},

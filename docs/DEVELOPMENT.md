@@ -175,7 +175,7 @@ Zero external test dependencies — tests use `httptest`, `testing`, and the sta
 ### Runtime evaluations
 
 Run `make eval` (or `go run ./cmd/odek-eval`) from the repository root. The
-eight scripted scenarios use the production loop with localhost fixture tools
+eleven scripted scenarios use the production loop with localhost fixture tools
 and independent outcome checks. The command writes a JSON report and exits
 nonzero if a scenario assertion fails; expected task failures can still pass
 the scenario. No model credentials or external provider calls are needed.

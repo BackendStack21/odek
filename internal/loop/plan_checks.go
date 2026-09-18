@@ -35,6 +35,13 @@ func clonePlanChecks(in []PlanCheck) []PlanCheck {
 	return out
 }
 
+func cloneRevision(in *PlanRevision) *PlanRevision {
+	if in == nil {
+		return nil
+	}
+	return &PlanRevision{Reason: in.Reason, Summary: append([]string(nil), in.Summary...)}
+}
+
 func clonePlanSteps(in []PlanStep) []PlanStep {
 	out := append([]PlanStep(nil), in...)
 	for i := range out {
@@ -121,7 +128,7 @@ func hasPlanChecks(p PlanState) bool {
 }
 
 func checkedPlanFits(p PlanState, maxChars int) bool {
-	if !hasPlanChecks(p) {
+	if !hasPlanChecks(p) && p.Revision == nil {
 		return true
 	}
 	reserve := clonePlanState(p)
@@ -143,6 +150,11 @@ func checkedPlanFits(p PlanState, maxChars int) bool {
 	size := len(planHeaderLine(reserve)) + 2*len(fmt.Sprint(len(reserve.Steps)))
 	for _, step := range reserve.Steps {
 		size += 1 + len(planStepLine(step))
+	}
+	if p.Revision != nil {
+		if b, err := json.Marshal(p.Revision); err == nil {
+			size += len(b) + len("[Plan revision: ]") + 1
+		}
 	}
 	return size <= maxChars
 }
@@ -339,7 +351,7 @@ func (s *PlanStore) InvalidateChecks() {
 		return
 	}
 	s.noteStatusTransitionsLocked(s.plan.Steps, working)
-	s.plan = &PlanState{Version: s.nextVersion(), Steps: working}
+	s.plan = &PlanState{Version: s.nextVersion(), Steps: working, Revision: cloneRevision(s.plan.Revision)}
 	s.notifyLocked(false, false)
 }
 
