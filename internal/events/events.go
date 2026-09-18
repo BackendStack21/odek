@@ -44,6 +44,7 @@ const (
 	TypePlanCreated        = "plan_created"
 	TypePlanUpdated        = "plan_updated"
 	TypePlanBlocked        = "plan_blocked"
+	TypePlanReassessment   = "plan_reassessment"
 	TypeSubagentSpawned    = "subagent_spawned"
 	TypeSubagentCompleted  = "subagent_completed"
 	TypeSideCallUsage      = "side_call_usage"

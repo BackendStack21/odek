@@ -659,8 +659,9 @@ stream (`Config.EventHandler`, `odek run --events-jsonl`, `/api/events`):
 | `plan_created` | `create` — including wholesale replace over an existing plan | `steps`, `version` |
 | `plan_updated` | every other version-bumping mutation (`update`, `complete`) | `steps`, `done`, `in_progress`, `blocked`, `pending`, `version` |
 | `plan_blocked` | three consecutive `blocked` status transitions | `steps`, `blocked`, `version` |
+| `plan_reassessment` | the active open plan meets a reassessment trigger | `reason`, `failure_batches` (always `3`) |
 
-Emission: `PlanStore.SetOnChange` wires the engine's emitter at
+For plan mutation events, `PlanStore.SetOnChange` wires the engine's emitter at
 `SetPlanStore` time; the store fires exactly once per effective mutation
 under its mutex, so event order always matches version order even inside
 parallel tool batches. Idempotent no-ops, the read-only `get` verb, and
@@ -669,10 +670,46 @@ counts and the version ONLY — never step titles or notes (the same
 minimality invariant as the args-digest rule on tool-call events). A
 note-only update bumps the version and therefore emits `plan_updated` with
 unchanged counts — deliberate, so the version stream stays gapless for
-consumers correlating versions. There is no `iteration` field: mutations
+consumers correlating versions. These events have no `iteration` field: mutations
 fire inside parallel tool goroutines with no iteration context; consumers
 correlate via the surrounding `tool_call_started`/`tool_call_completed`
-pair for the `plan` tool.
+pair for the `plan` tool. `plan_reassessment` is emitted separately after
+a completed tool batch and includes its iteration number.
+
+### Failure-driven reassessment
+
+With an active open plan, the engine emits a bounded reassessment hint when
+either of the initial triggers is met: the same acceptance check fails in
+three separate tool batches, or three consecutive observation batches fail
+with the same trusted runtime error class across at least two distinct
+hashed tool-and-argument fingerprints. Tool success resets the corresponding
+failure streak; a successful run of a check resets that check's failures.
+Batch-level approval denials, typed cancellations, budget-skipped calls,
+and background-polling outcomes do not count. Tool-internal generic errors
+remain ordinary failures when they cannot be distinguished from those outcomes.
+
+The hint appears on the next normal model request. It recommends changing the
+approach, splitting the work, or delegating a bounded investigation and
+reporting a blocker while preserving checks, approvals, and budgets. It never
+retries denied actions, bypasses approval, exceeds budgets, executes tools, or
+changes the plan automatically. A three-completed-batch cooldown permits at
+most two hints per run, and reassessment state resets at each turn. There is
+no generic inactivity trigger, full-budget optimizer, or cost-planning logic
+in this feature, and no side model call.
+
+The structured `odek.event/v1` event carries `reason` and
+`failure_batches: 3`; the corresponding `plan_reassessment` signal carries
+the reason code in `Detail` and the threshold in `Count`. Reason codes are
+`repeated_check_failure` and `varied_tool_failures`. Events carry no tool
+arguments, output, paths, or plan text.
+
+Only batches containing eligible observations advance the varied-failure
+streak; plan-only updates do not reset it. A mixed success/failure batch
+resets that streak. Repeated-check tracking retains at most 64 check
+fingerprints, with FIFO eviction; varied-failure tracking retains at most
+three error classes and eight fingerprints per class. These signals indicate
+repeated operational failures, not proof that unrelated commands share one
+underlying cause.
 
 ---
 
@@ -874,6 +911,14 @@ semantics, payload minimality, `ExtractPlan`), `cmd/odek/serve_plan_test.go`
   a decompose-with-`revise` hint and emit `plan_blocked` (`steps`, `blocked`,
   `version` only). The streak resets on `create` or a `done` / `in_progress`
   transition, and after firing (once then reset).
+- **Failure-driven reassessment.** An active open plan can request a
+  bounded approach change after three separate failures of one check, or
+  three consecutive observation batches sharing a trusted runtime error class
+  across at least two distinct tool/argument fingerprints. The next normal
+  model request receives at most two such hints per run with a three-batch
+  cooldown; batch denials, typed cancellations, budget-skipped calls, and
+  background-polling outcomes are excluded. No tool, side model call, or automatic plan change
+  is triggered.
 - **Remaining-steps on exhaustion.** Pending / in_progress / blocked IDs and
   statuses are appended as wrapped derived context (`plan_remaining`, ingest
   recorded) on iteration-cap, `budgetExceeded` (even when the summary side

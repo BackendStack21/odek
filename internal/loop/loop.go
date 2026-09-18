@@ -2569,6 +2569,7 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 	e.skillRematchPending.Store(false)
 	// Budget-awareness hint state is per-run.
 	hints := budgetHintState{}
+	var reassessment reassessmentMonitor
 
 	// Rebuild plan state from a persisted plan message so `odek continue`
 	// resumes with forward state instead of re-deriving it from history
@@ -3303,10 +3304,12 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 		results := make([]execResult, len(result.ToolCalls))
 		done := make([]chan struct{}, len(result.ToolCalls))
 		effects := make([]callEffects, len(result.ToolCalls))
+		declaredChecks := make([]bool, len(result.ToolCalls))
 		for i, tc := range result.ToolCalls {
 			done[i] = make(chan struct{})
 			effects[i] = e.executionEffects(tc)
 			if e.planStore != nil && e.planStore.MatchesCheck(tc.Function.Name, tc.Function.Arguments) {
+				declaredChecks[i] = true
 				// Acceptance checks are ordering barriers: even a read-only
 				// check may validate a condition affected by another resource.
 				// Its evidence must reflect prior mutations in this batch.
@@ -3742,6 +3745,29 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 				})
 				// Reset counter after injecting suggestion
 				e.maxConsecutiveToolErrors[toolName] = 0
+			}
+		}
+		// Reassess from real outcomes, once per completed batch. The fixed
+		// hint uses the next normal model request and never executes a tool.
+		if e.openPlanStepCount() > 0 {
+			observations := make([]reassessmentObservation, 0, len(result.ToolCalls))
+			for idx, tc := range result.ToolCalls {
+				if tc.Function.Name == "plan" || isBGPollTool(tc.Function.Name) || e.registry.Get(tc.Function.Name) == nil {
+					continue
+				}
+				outcome := results[idx].outcome
+				if outcome.Status != "completed" && !(outcome.Status == "failed" && (outcome.ErrorClass == "tool_error" || outcome.ErrorClass == "permanent" || outcome.ErrorClass == "panic")) {
+					continue
+				}
+				observations = append(observations, reassessmentObservation{
+					fingerprint: reassessmentFingerprint(tc), errorClass: outcome.ErrorClass,
+					failed: results[idx].errored, check: declaredChecks[idx],
+				})
+			}
+			if reason := reassessment.observe(i+1, observations); reason != "" {
+				corrections = append(corrections, reassessmentHint(reason))
+				e.emitSignal(SignalEvent{Type: "plan_reassessment", Detail: reason, Count: 3})
+				e.emitEvent(events.Event{Type: events.TypePlanReassessment, Iteration: i + 1, Data: map[string]any{"reason": reason, "failure_batches": 3}})
 			}
 		}
 		// Budget-awareness telemetry: when the run crosses 50/75/90% of its
