@@ -53,3 +53,60 @@ func TestNext_DstFallBackRepeatedHourNotInMask(t *testing.T) {
 			"+1h hour-jump stops advancing)")
 	}
 }
+
+func TestNext_DstFallBackNeverReturnsPastInstant(t *testing.T) {
+	loc, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Skipf("tzdata unavailable: %v", err)
+	}
+	s, err := ParseInLocation("* * * * *", loc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after := time.Date(2026, 11, 1, 6, 30, 0, 0, time.UTC) // 01:30 EST
+	got := s.Next(after)
+	want := time.Date(2026, 11, 1, 6, 31, 0, 0, time.UTC)
+	if !got.Equal(want) || !got.After(after) {
+		t.Fatalf("Next = %v (%s), want %v and strictly after %v", got, got.Location(), want, after)
+	}
+}
+
+func TestNext_DstFallBackFirstOccurrenceDoesNotSkipMinute(t *testing.T) {
+	loc, err := time.LoadLocation("Europe/Berlin")
+	if err != nil {
+		t.Skipf("tzdata unavailable: %v", err)
+	}
+	s, err := ParseInLocation("* * * * *", loc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 2026-10-25 01:30 UTC is 02:30 CEST, the first occurrence of the
+	// repeated 02:00 wall-clock hour.
+	after := time.Date(2026, 10, 25, 1, 30, 0, 0, time.UTC)
+	want := time.Date(2026, 10, 25, 1, 31, 0, 0, time.UTC)
+	if got := s.Next(after); !got.Equal(want) {
+		t.Fatalf("Next = %v (%s), want %v", got, got.Location(), want)
+	}
+}
+
+func TestNext_DstSkippedMidnightMakesProgress(t *testing.T) {
+	loc, err := time.LoadLocation("America/Santiago")
+	if err != nil {
+		t.Skipf("tzdata unavailable: %v", err)
+	}
+	s, err := ParseInLocation("0 0 7 * *", loc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after := time.Date(2026, 9, 5, 12, 0, 0, 0, loc)
+	ch := make(chan time.Time, 1)
+	go func() { ch <- s.Next(after) }()
+	select {
+	case got := <-ch:
+		if got.IsZero() || !got.After(after) {
+			t.Fatalf("Next = %v, want a future firing", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Next did not return across skipped midnight")
+	}
+}

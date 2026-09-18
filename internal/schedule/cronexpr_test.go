@@ -65,6 +65,23 @@ func TestNext_StepMinutes(t *testing.T) {
 	}
 }
 
+func TestNext_ExplicitStepOneStartsAtValueAndContinues(t *testing.T) {
+	s, err := Parse("5/1 * * * *")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, after := range []time.Time{
+		time.Date(2026, 6, 4, 10, 4, 0, 0, time.UTC),
+		time.Date(2026, 6, 4, 10, 5, 0, 0, time.UTC),
+	} {
+		got := s.Next(after)
+		want := after.Add(time.Minute)
+		if !got.Equal(want) {
+			t.Fatalf("Next(%v) = %v, want %v", after, got, want)
+		}
+	}
+}
+
 func TestNext_List(t *testing.T) {
 	s := mustParse(t, "0,30 * * * *")
 	after := time.Date(2026, 6, 4, 10, 10, 0, 0, time.UTC)

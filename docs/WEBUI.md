@@ -16,6 +16,23 @@ header + `odek.<token>` subprotocol). A plain `http://localhost:8080` loads
 the UI but cannot connect until you use the token URL. The UI reconnects
 automatically (exponential backoff, 1s → 30s cap) if the server restarts.
 
+### Session references in prompts
+
+WebSocket `prompt` messages and `POST /api/prompt` requests may include
+`reference_tokens`, mapping each `@sess:<id>` reference to that session's
+token:
+
+```json
+{"content":"summarize @sess:20260918-example","session_id":"current","auth_token":"current-token","reference_tokens":{"20260918-example":"referenced-token"}}
+```
+
+The server checks each referenced session token independently. The active
+session token is accepted for a reference only when it names the same session.
+Referenced transcripts are sanitized before entering model context, and never
+contain stored auth tokens. The complete enriched prompt, including uploaded
+attachments and context files, is capped at 12 MiB and oversized requests are
+rejected before execution.
+
 ## Architecture
 
 ```

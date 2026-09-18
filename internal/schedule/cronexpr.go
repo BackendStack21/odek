@@ -171,7 +171,9 @@ func parseField(field string, min, max int, names map[string]int) (mask uint64, 
 func parseItem(item string, min, max int, names map[string]int) (uint64, error) {
 	rng := item
 	step := 1
+	hasStep := false
 	if before, stepStr, found := strings.Cut(item, "/"); found {
+		hasStep = true
 		rng = before
 		n, err := strconv.Atoi(stepStr)
 		if err != nil || n <= 0 {
@@ -199,8 +201,9 @@ func parseItem(item string, min, max int, names map[string]int) (uint64, error) 
 			return 0, err
 		}
 		lo = v
-		// "a/n" means "from a to the maximum, stepping n"; a bare "a" is just a.
-		if step > 1 {
+		// "a/n" means "from a to the maximum, stepping n"; this includes
+		// the explicit (and useful) "a/1" spelling.
+		if hasStep {
 			hi = max
 		} else {
 			hi = v
@@ -274,35 +277,40 @@ func (s *Schedule) Next(after time.Time) time.Time {
 	after = after.In(s.loc)
 	limit := after.Add(matchHorizon)
 
-	// Start at the top of the next minute, seconds/nanoseconds zeroed. Rebuild
-	// via time.Date rather than Truncate so non-whole-minute historical zone
-	// offsets can't misalign the boundary.
-	y, mo, d := after.Date()
-	h, mi, _ := after.Clock()
-	t := time.Date(y, mo, d, h, mi, 0, 0, s.loc).Add(time.Minute)
+	// Start at the next local minute by flooring the actual instant before
+	// advancing, preserving historical non-whole-minute offsets. Rebuilding a wall
+	// minute with time.Date is ambiguous during a fall-back transition: zones
+	// differ in whether Date chooses the first or second occurrence. Duration
+	// arithmetic keeps the result strictly after the supplied instant.
+	t := after.Add(-time.Duration(after.Second())*time.Second - time.Duration(after.Nanosecond())).Add(time.Minute)
 
 	for t.Before(limit) {
 		if s.month&(1<<uint(int(t.Month()))) == 0 {
 			// Jump to the first day of next month at 00:00.
-			t = time.Date(t.Year(), t.Month(), 1, 0, 0, 0, 0, s.loc).AddDate(0, 1, 0)
+			next := time.Date(t.Year(), t.Month(), 1, 0, 0, 0, 0, s.loc).AddDate(0, 1, 0)
+			if !next.After(t) {
+				next = t.Add(time.Minute)
+			}
+			t = next
 			continue
 		}
 		if !s.dayMatches(t) {
 			// Jump to 00:00 of the next day.
-			t = time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, s.loc).AddDate(0, 0, 1)
+			next := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, s.loc).AddDate(0, 0, 1)
+			if !next.After(t) {
+				next = t.Add(time.Minute)
+			}
+			t = next
 			continue
 		}
 		if s.hour&(1<<uint(t.Hour())) == 0 {
-			// Jump to the top of the next hour. time.Date resolves an
-			// ambiguous wall time to its FIRST occurrence, so across a DST
-			// fall-back this +1h hop can land back on the repeated wall
-			// hour and stop advancing entirely — an infinite loop that
-			// wedges the scheduler. When the jump made no progress, fall
-			// back to plain duration arithmetic, which crosses the
-			// transition by construction.
-			next := time.Date(t.Year(), t.Month(), t.Day(), t.Hour(), 0, 0, 0, s.loc).Add(time.Hour)
+			// Jump to the top of the next wall-clock hour. Constructing the
+			// next hour directly avoids carrying the current minute across a
+			// repeated hour; if the local time is ambiguous or nonexistent,
+			// the progress check below falls back to minute stepping.
+			next := time.Date(t.Year(), t.Month(), t.Day(), t.Hour()+1, 0, 0, 0, s.loc)
 			if !next.After(t) {
-				next = t.Add(time.Hour)
+				next = t.Add(time.Minute)
 			}
 			t = next
 			continue

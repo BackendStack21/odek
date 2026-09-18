@@ -193,6 +193,7 @@ func (s *Scheduler) reconcile(now time.Time) {
 	// Skip records to persist are collected here and written AFTER the lock is
 	// released — SaveState does disk I/O and must not run under s.mu.
 	var skips []RunState
+	var projected []RunState
 
 	seen := make(map[string]bool, len(jobs))
 	for _, job := range jobs {
@@ -250,6 +251,11 @@ func (s *Scheduler) reconcile(now time.Time) {
 		case !prevNext.IsZero() && prevNext.Before(now) && catchup:
 			// A fire was missed while we were down and catchup is on → run asap.
 			s.next[job.ID] = now
+			if !s.running[job.ID] {
+				st := state[job.ID]
+				st.JobID, st.NextRun, st.Runs, st.Sig = job.ID, s.next[job.ID], s.runs[job.ID], newSig
+				projected = append(projected, st)
+			}
 		case !prevNext.IsZero() && prevNext.Before(now):
 			// Missed but no catchup → record the skip (persisted after unlock).
 			s.next[job.ID] = sched.Next(now)
@@ -258,8 +264,22 @@ func (s *Scheduler) reconcile(now time.Time) {
 				JobID: job.ID, LastStatus: StatusSkipped, LastRun: now,
 				NextRun: s.next[job.ID], Runs: s.runs[job.ID], Sig: newSig,
 			})
+		case !prevNext.IsZero() && !prevNext.Before(now):
+			// Preserve a persisted slot that is exactly due (so it can fire)
+			// or still in the future. Recomputing with Next(now) is strictly
+			// after now and would skip an exact restart boundary.
+			s.next[job.ID] = prevNext
 		default:
 			s.next[job.ID] = sched.Next(now)
+			// Keep the projected slot durable even before the first fire. This
+			// matters when the daemon is stopped between reconciliation and the
+			// first scheduled instant. A running job owns its state and will
+			// persist a newer snapshot when it completes.
+			if !s.running[job.ID] {
+				st := state[job.ID]
+				st.JobID, st.NextRun, st.Runs, st.Sig = job.ID, s.next[job.ID], s.runs[job.ID], newSig
+				projected = append(projected, st)
+			}
 		}
 	}
 
@@ -279,6 +299,22 @@ func (s *Scheduler) reconcile(now time.Time) {
 	for _, st := range skips {
 		if err := s.store.SaveState(st); err != nil {
 			s.log.Error("scheduler: save skip state failed", "id", st.JobID, "error", err)
+		}
+	}
+	for _, st := range projected {
+		// Re-check under the scheduler lock before writing. This avoids stale
+		// projections in the usual reload path; the subsequent file write is
+		// intentionally outside the lock because it performs disk I/O.
+		s.mu.Lock()
+		current, ok := s.next[st.JobID]
+		currentSig := s.sig[st.JobID]
+		running := s.running[st.JobID]
+		s.mu.Unlock()
+		if !ok || running || !current.Equal(st.NextRun) || currentSig != st.Sig {
+			continue
+		}
+		if err := s.store.SaveState(st); err != nil {
+			s.log.Error("scheduler: save projected state failed", "id", st.JobID, "error", err)
 		}
 	}
 }

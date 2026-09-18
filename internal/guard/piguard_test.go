@@ -5,10 +5,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -231,6 +234,38 @@ func TestPiguardClient_NonOKStatus(t *testing.T) {
 	}
 }
 
+func TestPiguardClient_RejectsInvalidClassification(t *testing.T) {
+	for _, response := range []string{`{}`, `{"label":"BENIGN"}`, `{"label":"OTHER","score":0.5}`, `{"label":"BENIGN","score":null}`, `{"label":"BENIGN","score":1.1}`} {
+		t.Run(response, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(response)) }))
+			defer server.Close()
+			g, err := newPiguardClient(&Config{Provider: ProviderPiguard, URL: server.URL + "/detect"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer g.Close()
+			if _, err := g.Detect(context.Background(), "hello"); err == nil {
+				t.Fatalf("accepted invalid response %s", response)
+			}
+		})
+	}
+}
+
+func TestPiguardClient_RejectsBatchCardinality(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"results":[{"label":"BENIGN","score":0.5}]}`))
+	}))
+	defer server.Close()
+	g, err := newPiguardClient(&Config{Provider: ProviderPiguard, URL: server.URL + "/detect"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer g.Close()
+	if _, err := g.DetectBatch(context.Background(), []string{"one", "two"}); err == nil {
+		t.Fatal("accepted short batch response")
+	}
+}
+
 // TestResultFromResponse_ThresholdSemantics pins the score semantics of the
 // PIGuard sidecar: the score is the confidence of the predicted label, not
 // the injection probability. A high-confidence BENIGN result (score ~1.0)
@@ -391,5 +426,59 @@ func TestPiguardClient_SocketDialError(t *testing.T) {
 
 	if _, err := g.Detect(context.Background(), "hello"); err == nil {
 		t.Fatal("expected dial error for missing socket")
+	}
+}
+
+func TestPiguardClient_SocketAlreadyCanceled(t *testing.T) {
+	g, err := newPiguardClient(&Config{Provider: ProviderPiguard, SocketPath: filepath.Join(t.TempDir(), "missing.sock")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer g.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := g.Detect(ctx, "hello"); !errors.Is(err, context.Canceled) {
+		t.Fatal("expected cancellation error")
+	}
+}
+
+func TestPiguardClient_SocketInFlightCancellation(t *testing.T) {
+	sock := fmt.Sprintf("/tmp/piguard-cancel-%d.sock", time.Now().UnixNano())
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ln.Close(); _ = os.Remove(sock) }()
+	received := make(chan struct{})
+	go func() {
+		c, e := ln.Accept()
+		if e == nil {
+			defer c.Close()
+			_, _ = bufio.NewReader(c).ReadBytes('\n')
+			close(received)
+			_, _ = io.Copy(io.Discard, c)
+		}
+	}()
+	g, err := newPiguardClient(&Config{Provider: ProviderPiguard, SocketPath: sock, TimeoutSeconds: 30})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer g.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { _, e := g.Detect(ctx, "hello"); done <- e }()
+	select {
+	case <-received:
+	case <-time.After(time.Second):
+		t.Fatal("socket server did not receive request")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatal("expected in-flight cancellation error")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("socket call ignored cancellation")
 	}
 }

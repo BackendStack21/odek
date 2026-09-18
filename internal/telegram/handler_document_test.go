@@ -26,8 +26,8 @@ func TestDownloadDocument_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DownloadDocument: %v", err)
 	}
-	if !strings.Contains(path, "report.pdf") {
-		t.Errorf("expected filename in path, got %q", path)
+	if !strings.Contains(filepath.Base(path), "report_") || filepath.Ext(path) != ".pdf" {
+		t.Errorf("expected hash-bearing PDF filename in path, got %q", path)
 	}
 
 	data, err := os.ReadFile(path)

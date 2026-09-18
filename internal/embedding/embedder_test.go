@@ -110,8 +110,28 @@ func TestNewTextEmbedderHTTP(t *testing.T) {
 	if !ok {
 		t.Fatalf("New = %T, want *httpTextEmbedder", emb)
 	}
-	if got := he.Fingerprint(); got != "http/mock-embed/0" {
-		t.Errorf("fingerprint = %q, want http/mock-embed/0", got)
+	if got := he.Fingerprint(); !strings.HasPrefix(got, "http/mock-embed/0/") {
+		t.Errorf("fingerprint = %q, want http/mock-embed/0/<endpoint hash>", got)
+	}
+}
+
+func TestHTTPFingerprintIncludesEndpointButNotSecrets(t *testing.T) {
+	a := New(&Config{Provider: "http", BaseURL: "HTTPS://Example.COM/v1/", Model: "m", APIKey: "sk-first"}, 64).Fingerprint()
+	b := New(&Config{Provider: "http", BaseURL: "https://example.com/v2?api_key=sk-second", Model: "m", APIKey: "sk-third"}, 64).Fingerprint()
+	if a == b {
+		t.Fatalf("different endpoint paths reused fingerprint: %q", a)
+	}
+	for _, secret := range []string{"sk-first", "sk-second", "sk-third", "api_key"} {
+		if strings.Contains(a, secret) || strings.Contains(b, secret) {
+			t.Fatalf("fingerprint leaked URL/API secret %q: %q %q", secret, a, b)
+		}
+	}
+	// Query strings are excluded, so adding a non-secret query parameter does
+	// not create a second embedding space for the same endpoint.
+	c := New(&Config{Provider: "http", BaseURL: "https://example.com/v2?x=1", Model: "m"}, 64).Fingerprint()
+	d := New(&Config{Provider: "http", BaseURL: "https://example.com/v2?x=2", Model: "m"}, 64).Fingerprint()
+	if c != d {
+		t.Fatalf("query-only endpoint variants differ: %q vs %q", c, d)
 	}
 }
 

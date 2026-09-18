@@ -13,10 +13,13 @@
 package embedding
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"maps"
 	"math"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -104,8 +107,8 @@ const DefaultTimeout = 10 * time.Second
 //   - stateless (HTTP APIs): Fit only warms a cache; Embed works at any time
 //     and vectors are stable across corpus changes.
 //
-// Fingerprint identifies the embedding space (provider/model/dims). Persisted
-// vectors are only reusable by an embedder with the same fingerprint.
+// Fingerprint identifies the embedding space (provider/model/dims/endpoint).
+// Persisted vectors are only reusable by an embedder with the same fingerprint.
 type TextEmbedder interface {
 	// Fit prepares the embedder for a corpus of raw (unfeaturized) texts.
 	Fit(corpus []string) error
@@ -152,8 +155,24 @@ func New(cfg *Config, rpDims int) TextEmbedder {
 	}
 	return &httpTextEmbedder{
 		api: vector.NewHTTPEmbedder(baseURL, model, cfg.Dims, opts...),
-		fp:  fmt.Sprintf("http/%s/%d", model, cfg.Dims),
+		fp:  fmt.Sprintf("http/%s/%d/%s", model, cfg.Dims, baseURLFingerprint(baseURL)),
 	}
+}
+
+// baseURLFingerprint identifies the remote embedding endpoint without
+// persisting credentials that may accidentally be present in a URL. Only the
+// normalized scheme, host, and path participate; query, fragment, and userinfo
+// are deliberately excluded.
+func baseURLFingerprint(raw string) string {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	var normalized string
+	if err == nil && u.Scheme != "" && u.Host != "" {
+		normalized = strings.ToLower(u.Scheme) + "://" + strings.ToLower(u.Host) + strings.TrimRight(u.EscapedPath(), "/")
+	} else {
+		normalized = strings.TrimRight(strings.ToLower(strings.TrimSpace(raw)), "/")
+	}
+	sum := sha256.Sum256([]byte(normalized))
+	return hex.EncodeToString(sum[:])
 }
 
 // Shared returns an embedder factory like New, except that for stateless

@@ -2,6 +2,7 @@ import { uploadMedia } from './api.js';
 // Prompt handling: send, history navigation, @-completion, file
 // attachments, drag-and-drop, auto-resize, and the scroll-bottom button.
 import { S, setSessionToken, getSessionToken } from './state.js';
+import { extractReferenceTokens } from './session-references.js';
 import { apiHeaders } from './net.js';
 import {
   messagesEl, promptEl, sendBtn, completionEl,
@@ -150,12 +151,14 @@ function sendPayload(text, attachments, display, model, thinking) {
   showLoading();
   showCancel();
 
+  const referenceTokens = extractReferenceTokens(text, getSessionToken);
   S.ws.send(JSON.stringify({
     type: 'prompt',
     content: text,
     attachments: attachments,
     session_id: S.sessionId,
     auth_token: getSessionToken(S.sessionId) || undefined,
+    reference_tokens: Object.keys(referenceTokens).length ? referenceTokens : undefined,
     model: model || S.currentModel || undefined,
     thinking: thinking || S.currentThinking || undefined,
   }));

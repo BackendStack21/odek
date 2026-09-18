@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"net/url"
@@ -124,8 +125,8 @@ func (p *piguardClient) Detect(ctx context.Context, text string) (Result, error)
 		return Result{}, err
 	}
 
-	var dr detectResponse
-	if err := json.Unmarshal(resp, &dr); err != nil {
+	dr, err := decodeDetectResponse(resp)
+	if err != nil {
 		return Result{}, fmt.Errorf("decode detect response: %w", err)
 	}
 	return resultFromResponse(dr, start, threshold(p.cfg)), nil
@@ -149,14 +150,23 @@ func (p *piguardClient) DetectBatch(ctx context.Context, texts []string) ([]Resu
 		return nil, err
 	}
 
-	var br batchResponse
-	if err := json.Unmarshal(resp, &br); err != nil {
+	var rawBatch struct {
+		Results []json.RawMessage `json:"results"`
+	}
+	if err := json.Unmarshal(resp, &rawBatch); err != nil {
 		return nil, fmt.Errorf("decode batch response: %w", err)
 	}
+	if len(rawBatch.Results) != len(texts) {
+		return nil, fmt.Errorf("decode batch response: got %d results for %d inputs", len(rawBatch.Results), len(texts))
+	}
 
-	results := make([]Result, len(br.Results))
+	results := make([]Result, len(rawBatch.Results))
 	thr := threshold(p.cfg)
-	for i, r := range br.Results {
+	for i, raw := range rawBatch.Results {
+		r, err := decodeDetectResponse(raw)
+		if err != nil {
+			return nil, fmt.Errorf("decode batch response item %d: %w", i, err)
+		}
 		results[i] = resultFromResponse(r, start, thr)
 	}
 	return results, nil
@@ -176,8 +186,8 @@ func (p *piguardClient) DetectLong(ctx context.Context, text string) (Result, er
 		return Result{}, err
 	}
 
-	var dr detectResponse
-	if err := json.Unmarshal(resp, &dr); err != nil {
+	dr, err := decodeDetectResponse(resp)
+	if err != nil {
 		return Result{}, fmt.Errorf("decode long response: %w", err)
 	}
 	return resultFromResponse(dr, start, threshold(p.cfg)), nil
@@ -194,7 +204,7 @@ func (p *piguardClient) rpc(ctx context.Context, endpoint string, body []byte) (
 	var resp []byte
 	var err error
 	if p.socketPath != "" {
-		resp, err = p.rpcSocket(body)
+		resp, err = p.rpcSocket(ctx, body)
 	} else {
 		resp, err = p.rpcHTTP(ctx, endpoint, body)
 	}
@@ -212,19 +222,43 @@ func (p *piguardClient) rpc(ctx context.Context, endpoint string, body []byte) (
 
 // rpcSocket forwards the payload as one newline-delimited JSON line to the
 // daemon's Unix socket and returns its single-line reply.
-func (p *piguardClient) rpcSocket(body []byte) ([]byte, error) {
-	conn, err := net.DialTimeout("unix", p.socketPath, 2*time.Second)
+func (p *piguardClient) rpcSocket(ctx context.Context, body []byte) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	dialCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	conn, err := (&net.Dialer{}).DialContext(dialCtx, "unix", p.socketPath)
 	if err != nil {
 		return nil, fmt.Errorf("dial piguard socket: %w", err)
 	}
 	defer conn.Close()
-	_ = conn.SetDeadline(time.Now().Add(timeout(p.cfg)))
+	deadline := time.Now().Add(timeout(p.cfg))
+	if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(deadline) {
+		deadline = ctxDeadline
+	}
+	_ = conn.SetDeadline(deadline)
+	stop := make(chan struct{})
+	defer close(stop)
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = conn.Close()
+		case <-stop:
+		}
+	}()
 
 	if _, err := conn.Write(append(bytes.TrimRight(body, "\n"), '\n')); err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
 		return nil, fmt.Errorf("write piguard socket: %w", err)
 	}
 	resp, err := bufio.NewReader(conn).ReadBytes('\n')
 	if err != nil && len(resp) == 0 {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
 		return nil, fmt.Errorf("read piguard socket: %w", err)
 	}
 	return bytes.TrimSpace(resp), nil
@@ -248,6 +282,52 @@ func (p *piguardClient) rpcHTTP(ctx context.Context, urlStr string, body []byte)
 		return nil, fmt.Errorf("unexpected status %d from %s", resp.StatusCode, urlStr)
 	}
 	return io.ReadAll(resp.Body)
+}
+
+func decodeDetectResponse(body []byte) (detectResponse, error) {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return detectResponse{}, err
+	}
+	if err := validateRawDetectResponse(raw); err != nil {
+		return detectResponse{}, err
+	}
+	var dr detectResponse
+	if err := json.Unmarshal(body, &dr); err != nil {
+		return detectResponse{}, err
+	}
+	if err := validateDetectResponse(dr); err != nil {
+		return detectResponse{}, err
+	}
+	return dr, nil
+}
+
+func validateRawDetectResponse(raw map[string]json.RawMessage) error {
+	label, ok := raw["label"]
+	if !ok {
+		return fmt.Errorf("missing label")
+	}
+	if string(label) == "null" {
+		return fmt.Errorf("invalid label")
+	}
+	score, ok := raw["score"]
+	if !ok {
+		return fmt.Errorf("missing score")
+	}
+	if string(score) == "null" {
+		return fmt.Errorf("invalid score")
+	}
+	return nil
+}
+
+func validateDetectResponse(r detectResponse) error {
+	if r.Label != "BENIGN" && r.Label != "INJECTION" {
+		return fmt.Errorf("invalid label %q", r.Label)
+	}
+	if math.IsNaN(r.Score) || math.IsInf(r.Score, 0) || r.Score < 0 || r.Score > 1 {
+		return fmt.Errorf("invalid score %v", r.Score)
+	}
+	return nil
 }
 
 // resultFromResponse converts a PIGuard response into a Result, applying the

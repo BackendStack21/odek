@@ -173,6 +173,14 @@ func TestReplaceRefs_EmptyContent(t *testing.T) {
 	}
 }
 
+func TestReplaceRefsBoundedRejectsRepeatedExpansion(t *testing.T) {
+	text := strings.TrimSpace(strings.Repeat("@file.txt ", 256))
+	_, err := ReplaceRefsBounded(text, map[string]string{"@file.txt": strings.Repeat("x", 50*1024)}, 1<<20)
+	if err == nil {
+		t.Fatal("expected bounded expansion error")
+	}
+}
+
 // ── FileResolver ───────────────────────────────────────────────────────
 
 func newTestDir(t *testing.T) string {

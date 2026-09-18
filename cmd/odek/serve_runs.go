@@ -712,13 +712,14 @@ func resetServeRuns() {
 
 // promptRequest is the body of POST /api/prompt.
 type promptRequest struct {
-	Content                string         `json:"content"`
-	SessionID              string         `json:"session_id"`
-	AuthToken              string         `json:"auth_token"`
-	Model                  string         `json:"model"`
-	Thinking               string         `json:"thinking"`
-	ApprovalTimeoutSeconds int            `json:"approval_timeout_seconds"`
-	Attachments            []wsAttachment `json:"attachments"`
+	Content                string            `json:"content"`
+	SessionID              string            `json:"session_id"`
+	AuthToken              string            `json:"auth_token"`
+	ReferenceTokens        map[string]string `json:"reference_tokens"`
+	Model                  string            `json:"model"`
+	Thinking               string            `json:"thinking"`
+	ApprovalTimeoutSeconds int               `json:"approval_timeout_seconds"`
+	Attachments            []wsAttachment    `json:"attachments"`
 }
 
 // startServeRun launches a headless agent run. It mirrors the WebSocket
@@ -843,13 +844,14 @@ func startServeRun(
 	registerRun(run)
 
 	msg := wsClientMsg{
-		Type:        "prompt",
-		Content:     req.Content,
-		SessionID:   req.SessionID,
-		AuthToken:   req.AuthToken,
-		Model:       req.Model,
-		Thinking:    req.Thinking,
-		Attachments: req.Attachments,
+		Type:            "prompt",
+		Content:         req.Content,
+		SessionID:       req.SessionID,
+		AuthToken:       req.AuthToken,
+		ReferenceTokens: req.ReferenceTokens,
+		Model:           req.Model,
+		Thinking:        req.Thinking,
+		Attachments:     req.Attachments,
 	}
 
 	// Approval waits are ctx-blind (see cancelRun): POST /api/cancel on the
