@@ -56,8 +56,14 @@ func FilterTools(tools []Tool, enabled, disabled []string, required map[string]b
 	var out []Tool
 	if enabled != nil {
 		// Preserve whitelist order so the result is deterministic and matches
-		// the order the user configured.
+		// the order the user configured. Ignore repeated names so a malformed
+		// or merged config cannot emit duplicate tool definitions.
+		seen := make(map[string]bool, len(enabled))
 		for _, name := range enabled {
+			if seen[name] {
+				continue
+			}
+			seen[name] = true
 			if tt, ok := byName[name]; ok {
 				out = append(out, tt)
 			}
@@ -82,6 +88,9 @@ func FilterTools(tools []Tool, enabled, disabled []string, required map[string]b
 		present[tt.Name()] = true
 	}
 	for name := range required {
+		if !required[name] {
+			continue
+		}
 		if !present[name] {
 			if tt, ok := byName[name]; ok {
 				filtered = append(filtered, tt)

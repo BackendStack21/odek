@@ -391,6 +391,46 @@ func TestReconcile_UnchangedKeepsNextFire(t *testing.T) {
 	}
 }
 
+func TestReconcile_PersistsInitialProjectedNextRun(t *testing.T) {
+	st := newTestStore(t)
+	job := addJob(t, st, Job{Name: "daily", Cron: "0 9 * * *", Task: "x",
+		Deliver: Delivery{Kind: DeliverStdout}, Enabled: true})
+	s := New(st, &fakeRunner{}, &fakeDeliverer{}, Options{})
+	now := time.Date(2026, 6, 4, 8, 0, 0, 0, time.UTC)
+	s.reconcile(now)
+	state, err := st.LoadState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := state[job.ID].NextRun; !got.Equal(time.Date(2026, 6, 4, 9, 0, 0, 0, time.UTC)) {
+		t.Fatalf("persisted NextRun = %v, want 2026-06-04 09:00 UTC", got)
+	}
+}
+
+func TestReconcile_PreservesPersistedDueOrFutureNextRun(t *testing.T) {
+	st := newTestStore(t)
+	job := addJob(t, st, Job{Name: "daily", Cron: "0 9 * * *", Task: "x",
+		Deliver: Delivery{Kind: DeliverStdout}, Enabled: true})
+	due := time.Date(2026, 6, 4, 9, 0, 0, 0, time.UTC)
+	if err := st.SaveState(RunState{JobID: job.ID, NextRun: due, Sig: jobSig(job)}); err != nil {
+		t.Fatal(err)
+	}
+	s := New(st, &fakeRunner{}, &fakeDeliverer{}, Options{})
+	s.reconcile(due)
+	if got := s.peekNext(job.ID); !got.Equal(due) {
+		t.Fatalf("exactly due NextRun = %v, want %v", got, due)
+	}
+	future := due.Add(24 * time.Hour)
+	if err := st.SaveState(RunState{JobID: job.ID, NextRun: future, Sig: jobSig(job)}); err != nil {
+		t.Fatal(err)
+	}
+	s2 := New(st, &fakeRunner{}, &fakeDeliverer{}, Options{})
+	s2.reconcile(due.Add(time.Hour))
+	if got := s2.peekNext(job.ID); !got.Equal(future) {
+		t.Fatalf("future persisted NextRun = %v, want %v", got, future)
+	}
+}
+
 func TestReconcile_SkipsInvalidJobWrittenDirectly(t *testing.T) {
 	// A malformed job that bypassed Validate (e.g. hand-edited file) must be
 	// skipped without aborting the reconcile of healthy jobs.

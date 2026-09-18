@@ -1,11 +1,46 @@
 package resource
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestSessionResolver_Load_SanitizesAuthToken(t *testing.T) {
+	dir := t.TempDir()
+	id := "20260918-sanitize"
+	data := `{"id":"` + id + `","auth_token":"secret-token","task":"private","messages":[{"role":"user","content":"hello"}]}`
+	if err := os.WriteFile(filepath.Join(dir, id+".json"), []byte(data), 0600); err != nil {
+		t.Fatal(err)
+	}
+	content, err := NewSessionResolver(dir).Load(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(content, "secret-token") || strings.Contains(content, "private") {
+		t.Fatalf("session metadata leaked: %s", content)
+	}
+	if !strings.Contains(content, "hello") {
+		t.Fatalf("transcript missing: %s", content)
+	}
+}
+
+func TestSessionResolver_SearchIgnoresAuxiliaryJSONAndRoutesPrefix(t *testing.T) {
+	dir := t.TempDir()
+	id := "20260918-search"
+	if err := os.WriteFile(filepath.Join(dir, id+".json"), []byte(`{"id":"`+id+`","messages":[]}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "index.json"), []byte(`{"entries":[]}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := NewSessionResolver(dir).Search(context.Background(), "sess:"+id, 10)
+	if err != nil || len(got) != 1 || got[0].ID != "@sess:"+id {
+		t.Fatalf("search=%v err=%v", got, err)
+	}
+}
 
 // The @-resource session resolver must carry the same hardening as the
 // file resolver: a planted symlink inside the sessions dir must not inline

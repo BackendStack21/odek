@@ -131,7 +131,7 @@ func (s *PlanStore) Snapshot() (PlanState, bool) {
 	if s.plan == nil {
 		return PlanState{}, false
 	}
-	return *s.plan, true
+	return clonePlanState(*s.plan), true
 }
 
 // LastTransitionBlocked reports whether the most recent status transition
@@ -148,11 +148,16 @@ func (s *PlanStore) LastTransitionBlocked() bool {
 func (s *PlanStore) Restore(st PlanState) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	cp := st
+	cp := clonePlanState(st)
 	s.plan = &cp
 	s.blockedStreak = 0
 	s.lastBlocked = false
 	s.blockedFired = false
+}
+
+func clonePlanState(st PlanState) PlanState {
+	st.Steps = append([]PlanStep(nil), st.Steps...)
+	return st
 }
 
 // Reset clears the state (run start with no persisted plan).

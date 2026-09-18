@@ -1199,14 +1199,15 @@ type wsAttachment struct {
 }
 
 type wsClientMsg struct {
-	Type        string         `json:"type"`
-	Content     string         `json:"content"`
-	SessionID   string         `json:"session_id"`
-	AuthToken   string         `json:"auth_token,omitempty"`
-	Model       string         `json:"model,omitempty"`
-	Thinking    string         `json:"thinking,omitempty"` // disabled|low|medium|high; omit/"" = inherit
-	Attachments []wsAttachment `json:"attachments,omitempty"`
-	TaskID      string         `json:"task_id,omitempty"` // subagent_cancel target
+	Type            string            `json:"type"`
+	Content         string            `json:"content"`
+	SessionID       string            `json:"session_id"`
+	AuthToken       string            `json:"auth_token,omitempty"`
+	ReferenceTokens map[string]string `json:"reference_tokens,omitempty"`
+	Model           string            `json:"model,omitempty"`
+	Thinking        string            `json:"thinking,omitempty"` // disabled|low|medium|high; omit/"" = inherit
+	Attachments     []wsAttachment    `json:"attachments,omitempty"`
+	TaskID          string            `json:"task_id,omitempty"` // subagent_cancel target
 	// SystemInitiated marks server-initiated turns (wake-on-complete).
 	// handlePrompt trusts it ONLY on Type=="bg_wake" items — the prompt
 	// path sanitizes both fields below, so a client cannot forge system
@@ -1934,14 +1935,55 @@ func handlePrompt(
 	// Resolve @ references (now recorded if a session is active)
 	refs := resource.ParseRefs(prompt)
 	resolvedRefs := make(map[string]string)
+	attemptedRefs := make(map[string]struct{})
+	resolvedBytes := 0
 	for _, ref := range refs {
+		if _, seen := attemptedRefs[ref.Raw]; seen {
+			if content, ok := resolvedRefs[ref.Raw]; ok {
+				resolvedBytes += 2*len(ref.Raw) + len(content) + 25
+				if resolvedBytes > resource.MaxExpandedPromptBytes {
+					sendError(send, "expanded prompt exceeds maximum size")
+					return currSess
+				}
+			}
+			continue
+		}
+		attemptedRefs[ref.Raw] = struct{}{}
+		if strings.HasPrefix(ref.Path, "sess:") {
+			refID := strings.TrimPrefix(ref.Path, "sess:")
+			refSess, loadErr := store.Load(refID)
+			if loadErr != nil {
+				sendError(send, "referenced session not found")
+				return currSess
+			}
+			token := msg.ReferenceTokens[refID]
+			if token == "" && refID == sessionID {
+				token = msg.AuthToken
+			}
+			if !validateSessionTokenStrict(store, refSess, token) {
+				sendError(send, "invalid token for referenced session")
+				return currSess
+			}
+		}
 		content, err := resources.Load(ctx, ref.Raw)
 		if err != nil {
 			continue
 		}
-		resolvedRefs[ref.Raw] = wrapUntrusted(ctx, "resource:"+ref.Raw, content)
+		wrapped := wrapUntrusted(ctx, "resource:"+ref.Raw, content)
+		if _, exists := resolvedRefs[ref.Raw]; !exists {
+			resolvedBytes += len(wrapped)
+		}
+		if resolvedBytes > resource.MaxExpandedPromptBytes {
+			sendError(send, "expanded prompt exceeds maximum size")
+			return currSess
+		}
+		resolvedRefs[ref.Raw] = wrapped
 	}
-	enrichedPrompt := resource.ReplaceRefs(prompt, resolvedRefs)
+	enrichedPrompt, err := resource.ReplaceRefsBounded(prompt, resolvedRefs, resource.MaxExpandedPromptBytes)
+	if err != nil {
+		sendError(send, err.Error())
+		return currSess
+	}
 
 	// Web UI file attachments cross the browser trust boundary. Wrap each one
 	// with the same nonce'd untrusted boundary used for tool output before
@@ -1990,6 +2032,10 @@ func handlePrompt(
 				enrichedPrompt = strings.Join(wrapped, "\n\n")
 			}
 		}
+	}
+	if len(enrichedPrompt) > resource.MaxExpandedPromptBytes {
+		sendError(send, "expanded prompt exceeds maximum size")
+		return currSess
 	}
 
 	// Build message history with an identity that survives compaction.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -188,6 +189,94 @@ type transcribeResult struct {
 	Error    string              `json:"error,omitempty"`
 }
 
+type parsedWhisperOutput struct {
+	Text     string
+	Language string
+	Duration float64
+	Segments []transcribeSegment
+}
+
+// readWhisperJSON reads a whisper.cpp sidecar with the same bound used for
+// captured stdout. The output path is in a private temporary directory.
+func readWhisperJSON(path string, maxBytes int64) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, maxBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > maxBytes {
+		return nil, fmt.Errorf("whisper output too large")
+	}
+	return data, nil
+}
+
+func parseWhisperJSON(data []byte) (parsedWhisperOutput, error) {
+	var out struct {
+		Text     string  `json:"text"`
+		Language string  `json:"language"`
+		Duration float64 `json:"duration"`
+		Segments []struct {
+			Start, End float64
+			Text       string
+		} `json:"segments"`
+		Result struct {
+			Language string `json:"language"`
+		} `json:"result"`
+		Transcription []struct {
+			Timestamps struct{ From, To string }  `json:"timestamps"`
+			Offsets    struct{ From, To float64 } `json:"offsets"`
+			Text       string                     `json:"text"`
+		} `json:"transcription"`
+	}
+	if err := json.Unmarshal(data, &out); err != nil {
+		return parsedWhisperOutput{}, err
+	}
+	parsed := parsedWhisperOutput{Text: out.Text, Language: out.Language, Duration: out.Duration}
+	if parsed.Language == "" {
+		parsed.Language = out.Result.Language
+	}
+	for _, s := range out.Segments {
+		parsed.Segments = append(parsed.Segments, transcribeSegment{Start: s.Start, End: s.End, Text: s.Text})
+	}
+	var transcriptionText strings.Builder
+	for _, s := range out.Transcription {
+		start, end := s.Offsets.From/1000, s.Offsets.To/1000
+		if s.Timestamps.From != "" {
+			if parsed, ok := parseWhisperTimestamp(s.Timestamps.From); ok {
+				start = parsed
+			}
+		}
+		if s.Timestamps.To != "" {
+			if parsed, ok := parseWhisperTimestamp(s.Timestamps.To); ok {
+				end = parsed
+			}
+		}
+		parsed.Segments = append(parsed.Segments, transcribeSegment{Start: start, End: end, Text: s.Text})
+		transcriptionText.WriteString(s.Text)
+		if end > parsed.Duration {
+			parsed.Duration = end
+		}
+	}
+	if transcriptionText.Len() > 0 {
+		parsed.Text += transcriptionText.String()
+	}
+	return parsed, nil
+}
+
+func parseWhisperTimestamp(value string) (float64, bool) {
+	var h, m, s, ms int
+	if _, err := fmt.Sscanf(value, "%d:%d:%d,%d", &h, &m, &s, &ms); err != nil {
+		if _, err := fmt.Sscanf(value, "%d:%d:%d.%d", &h, &m, &s, &ms); err != nil {
+			return 0, false
+		}
+	}
+	return float64(h*3600+m*60+s) + float64(ms)/1000, true
+}
+
 func (t *transcribeTool) Schema() any {
 	return map[string]any{
 		"type": "object",
@@ -284,9 +373,16 @@ func (t *transcribeTool) Call(argsJSON string) (result string, err error) {
 		lang = t.transcriptionCfg.Language
 	}
 
+	outputDir, err := os.MkdirTemp("", "odek-transcribe-json-")
+	if err != nil {
+		return jsonResult(transcribeResult{Error: fmt.Sprintf("cannot create whisper output directory: %v", err)})
+	}
+	defer os.RemoveAll(outputDir)
+
 	args2 := []string{
 		"--model", modelPathResolved,
 		"--output-json",
+		"--output-file", filepath.Join(outputDir, "result"),
 		"--file", wavPath,
 	}
 	if lang != "" {
@@ -296,7 +392,7 @@ func (t *transcribeTool) Call(argsJSON string) (result string, err error) {
 	const maxWhisperOutputBytes = 10 << 20 // 10 MiB
 	cmd := exec.CommandContext(t.toolCtx(), binary, args2...)
 	output, err := cmd.Output()
-	if err == nil && len(output) > maxWhisperOutputBytes {
+	if len(output) > maxWhisperOutputBytes {
 		return jsonResult(transcribeResult{
 			Error: fmt.Sprintf("whisper output too large (%d bytes, max %d)", len(output), maxWhisperOutputBytes),
 		})
@@ -312,19 +408,21 @@ func (t *transcribeTool) Call(argsJSON string) (result string, err error) {
 		})
 	}
 
-	// Parse whisper JSON output
-	var whisperOut struct {
-		Text     string  `json:"text"`
-		Language string  `json:"language"`
-		Duration float64 `json:"duration"`
-		Segments []struct {
-			Start float64 `json:"start"`
-			End   float64 `json:"end"`
-			Text  string  `json:"text"`
-		} `json:"segments"`
+	// whisper.cpp writes --output-json to a sidecar named after --output-file;
+	// older wrappers (and some test binaries) still print JSON on stdout.
+	jsonOutput := output
+	hasSidecar := false
+	if sidecar, readErr := readWhisperJSON(filepath.Join(outputDir, "result.json"), maxWhisperOutputBytes); readErr == nil {
+		jsonOutput = sidecar
+		hasSidecar = true
+	} else if !os.IsNotExist(readErr) {
+		return jsonResult(transcribeResult{Error: fmt.Sprintf("cannot read whisper JSON output: %v", readErr)})
 	}
-
-	if err := json.Unmarshal(output, &whisperOut); err != nil {
+	whisperOut, parseErr := parseWhisperJSON(jsonOutput)
+	if parseErr != nil {
+		if hasSidecar {
+			return jsonResult(transcribeResult{Error: fmt.Sprintf("failed to parse whisper output JSON: %v", parseErr)})
+		}
 		// whisper output may not be valid JSON depending on version
 		// Fallback: use raw text output
 		return jsonResult(transcribeResult{

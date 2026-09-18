@@ -1,6 +1,7 @@
 package telegram
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -507,14 +508,14 @@ func TestSanitizeDocName(t *testing.T) {
 		{"absolute path", "/etc/passwd", "passwd"},
 		{"deep traversal to config", "../../../home/user/.odek/config.json", "config.json"},
 		{"nested subdir", "a/b/c.txt", "c.txt"},
-		{"dot-dot only", "..", "doc_" + fileID[:16] + ".bin"},
-		{"empty falls back", "", "doc_" + fileID[:16] + ".bin"},
-		{"hidden file", ".bashrc", "doc_" + fileID[:16] + ".bin"},
-		{"hidden with traversal", "../../.ssh/.bashrc", "doc_" + fileID[:16] + ".bin"},
+		{"dot-dot only", "..", "doc_" + fileIDSuffix(fileID) + ".bin"},
+		{"empty falls back", "", "doc_" + fileIDSuffix(fileID) + ".bin"},
+		{"hidden file", ".bashrc", "doc_" + fileIDSuffix(fileID) + ".bin"},
+		{"hidden with traversal", "../../.ssh/.bashrc", "doc_" + fileIDSuffix(fileID) + ".bin"},
 		{"unsafe chars replaced", "report (final) v2!.pdf", "report__final__v2_.pdf"},
 		{"unicode replaced", "日本語.pdf", "___.pdf"},
 		{"long name truncated", strings.Repeat("a", 300) + ".pdf", strings.Repeat("a", 196) + ".pdf"},
-		{"only extension preserved", ".", "doc_" + fileID[:16] + ".bin"},
+		{"only extension preserved", ".", "doc_" + fileIDSuffix(fileID) + ".bin"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -634,5 +635,79 @@ func TestDownloadDocument_CountsTowardQuota(t *testing.T) {
 	_, err := DownloadDocument(bot, 42, "d2", "report2.bin")
 	if err == nil || !strings.Contains(err.Error(), "media quota exceeded") {
 		t.Fatalf("expected second document to exceed quota (first must be counted), got %v", err)
+	}
+}
+
+func TestDownloadDocument_SameNameKeepsDistinctFiles(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.String(), "getFile") {
+			var req struct {
+				FileID string `json:"file_id"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			if req.FileID == "d1" {
+				fmt.Fprint(w, `{"ok":true,"result":{"file_id":"d1","file_path":"documents/report-one.pdf"}}`)
+			} else {
+				fmt.Fprint(w, `{"ok":true,"result":{"file_id":"d2","file_path":"documents/report-two.pdf"}}`)
+			}
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "report-one.pdf") {
+			_, _ = w.Write([]byte("first"))
+		} else if strings.HasSuffix(r.URL.Path, "report-two.pdf") {
+			_, _ = w.Write([]byte("second"))
+		} else {
+			_, _ = w.Write([]byte("data"))
+		}
+	}))
+	defer ts.Close()
+	bot := testBot(t, ts)
+	t.Setenv("HOME", t.TempDir())
+	// The test server returns the same content endpoint; distinct IDs still
+	// must produce distinct paths and retain the PDF extension.
+	p1, err := DownloadDocument(bot, 42, "d1", "doc_report.pdf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p2, err := DownloadDocument(bot, 42, "d2", "doc_report.pdf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p1 == p2 || filepath.Ext(p1) != ".pdf" || filepath.Ext(p2) != ".pdf" {
+		t.Fatalf("paths %q and %q are not distinct PDF files", p1, p2)
+	}
+	if got, _ := os.ReadFile(p1); string(got) != "first" {
+		t.Fatalf("first file overwritten: %q", got)
+	}
+	if got, _ := os.ReadFile(p2); string(got) != "second" {
+		t.Fatalf("second file content: %q", got)
+	}
+}
+
+func TestSanitizeDocName_LongExtensionIsBounded(t *testing.T) {
+	got := sanitizeDocName("x."+strings.Repeat("a", 260), "id", "documents/file.bin")
+	if len(got) > maxDocNameLen {
+		t.Fatalf("sanitized name length %d exceeds %d", len(got), maxDocNameLen)
+	}
+}
+
+func TestDownloadDocument_LongExtensionIsBounded(t *testing.T) {
+	longPath := "documents/x." + strings.Repeat("a", 260)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.String(), "getFile") {
+			fmt.Fprintf(w, `{"ok":true,"result":{"file_id":"long","file_path":%q}}`, longPath)
+			return
+		}
+		_, _ = w.Write([]byte("long"))
+	}))
+	defer ts.Close()
+	t.Setenv("HOME", t.TempDir())
+	p, err := DownloadDocument(testBot(t, ts), 42, "long", "x."+strings.Repeat("a", 260))
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := filepath.Base(p)
+	if len(base) > 255 || len(strings.TrimPrefix(base, "doc_chat42_")) > maxDocNameLen {
+		t.Fatalf("filename lengths basename=%d document=%d", len(base), len(strings.TrimPrefix(base, "doc_chat42_")))
 	}
 }

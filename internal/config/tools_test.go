@@ -116,6 +116,23 @@ func TestToolConfig_ProjectConfigCanOnlyDisable(t *testing.T) {
 	}
 }
 
+func TestToolConfig_ProjectExplicitEmptyWhitelistClearsGlobal(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	writeConfig(t, filepath.Join(dir, ".odek", "config.json"), `{"tools":{"enabled":["web_search"]}}`)
+	wd := t.TempDir()
+	writeConfig(t, filepath.Join(wd, "odek.json"), `{"tools":{"enabled":[]}}`)
+	orig, _ := os.Getwd()
+	if err := os.Chdir(wd); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chdir(orig)
+	cfg := LoadConfig(CLIFlags{})
+	if cfg.Tools.Enabled == nil || len(cfg.Tools.Enabled) != 0 {
+		t.Fatalf("explicit empty whitelist = %v, want non-nil empty list", cfg.Tools.Enabled)
+	}
+}
+
 func TestToolConfig_CLIEnabledOverridesProjectAndGlobal(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("HOME", dir)

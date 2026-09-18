@@ -4,6 +4,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/BackendStack21/go-vector/pkg/vector"
@@ -69,8 +70,8 @@ func TestNewHTTPAppliesAPIKeyAndTimeout(t *testing.T) {
 		t.Fatalf("New(http) = %T, want *httpTextEmbedder", emb)
 	}
 	// Dims flow into the fingerprint so a model dimensionality change rebuilds.
-	if got := emb.Fingerprint(); got != "http/m/512" {
-		t.Errorf("fingerprint = %q, want http/m/512", got)
+	if got := emb.Fingerprint(); !strings.HasPrefix(got, "http/m/512/") {
+		t.Errorf("fingerprint = %q, want http/m/512/<endpoint hash>", got)
 	}
 }
 

@@ -3,6 +3,7 @@ package llmclient
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	sdk "github.com/BackendStack21/go-llm-sdk"
@@ -70,6 +71,65 @@ func TestToSDKMessages_DropsUnknownRoleWithToolGroup(t *testing.T) {
 	if len(msgs) != 2 || msgs[0].Content != "hi" || msgs[1].Content != "next" {
 		b, _ := json.Marshal(msgs)
 		t.Fatalf("expected only the two user turns, got %s", b)
+	}
+}
+
+func TestToSDKMessages_UnknownAfterUnrelatedTurnDoesNotDropEarlierToolGroup(t *testing.T) {
+	_, msgs := toSDKMessages([]session.Message{
+		{Role: "assistant", Content: "call", ToolCalls: []session.ToolCall{{ID: "c1", Type: "function"}}},
+		{Role: "tool", Name: "shell", ToolCallID: "c1", Content: "ok"},
+		{Role: "user", Content: "next"},
+		{Role: "garbage", Content: "ignored"},
+	}, false, false)
+	if len(msgs) != 3 || msgs[0].Role != sdk.RoleAssistant || msgs[1].Role != sdk.RoleTool || msgs[2].Role != sdk.RoleUser {
+		t.Fatalf("unrelated tool group was dropped: %+v", msgs)
+	}
+}
+
+func TestToSDKMessages_UnknownRoleGroupingBoundaries(t *testing.T) {
+	cases := []struct {
+		name string
+		in   []session.Message
+		want []string
+	}{
+		{
+			name: "consecutive unknown siblings stay with tool group",
+			in: []session.Message{
+				{Role: "assistant", Content: "call", ToolCalls: []session.ToolCall{{ID: "keep", Type: "function"}}},
+				{Role: "mystery", Content: "bad"}, {Role: "also-mystery"},
+				{Role: "tool", Name: "shell", ToolCallID: "keep", Content: "result"},
+				{Role: "user", Content: "after"},
+			},
+			want: []string{"after"},
+		},
+		{
+			name: "plain assistant boundary",
+			in: []session.Message{
+				{Role: "assistant", Content: "answer"}, {Role: "mystery", Content: "bad"},
+				{Role: "user", Content: "next"},
+			},
+			want: []string{"answer", "next"},
+		},
+		{
+			name: "system boundary",
+			in: []session.Message{
+				{Role: "system", Content: "identity"}, {Role: "mystery", Content: "bad"},
+				{Role: "user", Content: "next"},
+			},
+			want: []string{"next"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, got := toSDKMessages(tc.in, false, false)
+			var contents []string
+			for _, m := range got {
+				contents = append(contents, m.Content)
+			}
+			if strings.Join(contents, "\x00") != strings.Join(tc.want, "\x00") {
+				t.Fatalf("contents=%v want=%v", contents, tc.want)
+			}
+		})
 	}
 }
 

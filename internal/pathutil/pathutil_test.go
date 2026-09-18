@@ -53,8 +53,32 @@ func TestResolveDirSymlinks_FallsBackWhenParentMissing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if r, err := filepath.EvalSymlinks(dir); err == nil {
+		want = filepath.Join(r, "missing", "file")
+	}
 	if got != want {
 		t.Errorf("ResolveDirSymlinks missing-parent = %q, want %q", got, want)
+	}
+}
+
+func TestResolveDirSymlinks_ResolvesExistingSymlinkBeforeMissingSuffix(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink tests skipped on windows")
+	}
+	root := t.TempDir()
+	outside := t.TempDir()
+	link := filepath.Join(root, "link")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Fatal(err)
+	}
+	got := ResolveDirSymlinks(filepath.Join(link, "new", "file"))
+	resolvedOutside, err := filepath.EvalSymlinks(outside)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(resolvedOutside, "new", "file")
+	if got != want {
+		t.Fatalf("resolved missing suffix = %q, want %q", got, want)
 	}
 }
 
@@ -101,5 +125,19 @@ func TestWithinRoot_MissingRootFallsBack(t *testing.T) {
 func TestWithinRoot_Equality(t *testing.T) {
 	if !WithinRoot("/workspace", "/workspace") {
 		t.Error("expected root to be considered inside itself")
+	}
+}
+
+func TestResolveDirSymlinks_PreservesFinalSymlink(t *testing.T) {
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "link")
+	if err := os.Symlink(t.TempDir(), link); err != nil {
+		t.Fatal(err)
+	}
+	if got := ResolveDirSymlinks(link); got != link {
+		t.Fatalf("final symlink resolved to %q; O_NOFOLLOW callers need %q", got, link)
 	}
 }

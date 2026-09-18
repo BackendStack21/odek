@@ -405,13 +405,14 @@ type serveRun struct {
 	Result       string    `json:"result,omitempty"`
 	Error        string    `json:"error,omitempty"`
 
-	mu       sync.Mutex
-	cond     *sync.Cond
-	events   []map[string]any // bounded event tail
-	pending  map[string]*approvalRequest
-	approver *wsApprover
-	cancel   context.CancelFunc
-	cleanup  func()
+	mu              sync.Mutex
+	cond            *sync.Cond
+	events          []map[string]any // bounded event tail
+	pending         map[string]*approvalRequest
+	approver        *wsApprover
+	cancel          context.CancelFunc
+	cleanup         func()
+	resourcesActive bool // agent/MCP/sandbox cleanup is still in progress
 }
 
 // record is the run's event sink — the sendFn handed to newServeAgent and
@@ -586,6 +587,24 @@ func (r *serveRun) isTerminal() bool {
 	return runStatusTerminal(r.Status)
 }
 
+// releaseResources runs the run's teardown exactly at the lifecycle boundary
+// where its agent and external resources cease to count against capacity.
+// The nested defer clears the activity marker even if teardown panics; the
+// caller's outer panic guard still records the run failure.
+func (r *serveRun) releaseResources() {
+	r.mu.Lock()
+	cleanup := r.cleanup
+	r.mu.Unlock()
+	defer func() {
+		r.mu.Lock()
+		r.resourcesActive = false
+		r.mu.Unlock()
+	}()
+	if cleanup != nil {
+		cleanup()
+	}
+}
+
 func newRunID() string {
 	b := make([]byte, 10)
 	if _, err := rand.Read(b); err != nil {
@@ -626,9 +645,9 @@ func registerRun(r *serveRun) {
 	var completed []aged
 	for id, rr := range serveRuns.runs {
 		rr.mu.Lock()
-		st, end := rr.Status, rr.EndedAt
+		st, end, activeResources := rr.Status, rr.EndedAt, rr.resourcesActive
 		rr.mu.Unlock()
-		if runStatusTerminal(st) {
+		if runStatusTerminal(st) && !activeResources {
 			completed = append(completed, aged{id, end})
 		}
 	}
@@ -669,7 +688,7 @@ func activeRunCount() int {
 	n := 0
 	for _, rr := range serveRuns.runs {
 		rr.mu.Lock()
-		if rr.Status == "running" || rr.Status == "waiting_approval" {
+		if rr.Status == "running" || rr.Status == "waiting_approval" || rr.resourcesActive {
 			n++
 		}
 		rr.mu.Unlock()
@@ -712,13 +731,14 @@ func resetServeRuns() {
 
 // promptRequest is the body of POST /api/prompt.
 type promptRequest struct {
-	Content                string         `json:"content"`
-	SessionID              string         `json:"session_id"`
-	AuthToken              string         `json:"auth_token"`
-	Model                  string         `json:"model"`
-	Thinking               string         `json:"thinking"`
-	ApprovalTimeoutSeconds int            `json:"approval_timeout_seconds"`
-	Attachments            []wsAttachment `json:"attachments"`
+	Content                string            `json:"content"`
+	SessionID              string            `json:"session_id"`
+	AuthToken              string            `json:"auth_token"`
+	ReferenceTokens        map[string]string `json:"reference_tokens"`
+	Model                  string            `json:"model"`
+	Thinking               string            `json:"thinking"`
+	ApprovalTimeoutSeconds int               `json:"approval_timeout_seconds"`
+	Attachments            []wsAttachment    `json:"attachments"`
 }
 
 // startServeRun launches a headless agent run. It mirrors the WebSocket
@@ -765,11 +785,12 @@ func startServeRun(
 	}
 
 	run := &serveRun{
-		ID:        newRunID(),
-		Model:     resolved.Model,
-		Status:    "running",
-		StartedAt: time.Now().UTC(),
-		pending:   map[string]*approvalRequest{},
+		ID:              newRunID(),
+		Model:           resolved.Model,
+		Status:          "running",
+		StartedAt:       time.Now().UTC(),
+		pending:         map[string]*approvalRequest{},
+		resourcesActive: true,
 	}
 	run.cond = sync.NewCond(&run.mu)
 
@@ -843,13 +864,14 @@ func startServeRun(
 	registerRun(run)
 
 	msg := wsClientMsg{
-		Type:        "prompt",
-		Content:     req.Content,
-		SessionID:   req.SessionID,
-		AuthToken:   req.AuthToken,
-		Model:       req.Model,
-		Thinking:    req.Thinking,
-		Attachments: req.Attachments,
+		Type:            "prompt",
+		Content:         req.Content,
+		SessionID:       req.SessionID,
+		AuthToken:       req.AuthToken,
+		ReferenceTokens: req.ReferenceTokens,
+		Model:           req.Model,
+		Thinking:        req.Thinking,
+		Attachments:     req.Attachments,
 	}
 
 	// Approval waits are ctx-blind (see cancelRun): POST /api/cancel on the
@@ -874,7 +896,7 @@ func startServeRun(
 				serveLogf("run panic contained run_id=%s", run.ID)
 			}
 		}()
-		defer cleanup()
+		defer run.releaseResources()
 		var sessionIn, sessionOut int
 		serveLogf("run_started run_id=%s", run.ID)
 		sess := handlePrompt(ctx, recordSend, store, resources, resolved, agent, injectionGuard, nil, msg, &sessionIn, &sessionOut, cancelWithApproval, &deltas, bgRT, &turnTag)

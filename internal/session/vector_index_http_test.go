@@ -162,8 +162,8 @@ func TestVectorIndexFingerprintInvalidation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("meta not rewritten: %v", err)
 	}
-	if want := `"http/mock-embed/0"`; !strings.Contains(string(meta), want) {
-		t.Errorf("meta = %s, want fingerprint %s", meta, want)
+	if want := `"fingerprint":"http/mock-embed/0/`; !strings.Contains(string(meta), want) {
+		t.Errorf("meta = %s, want endpoint-qualified HTTP fingerprint", meta)
 	}
 }
 

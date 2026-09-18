@@ -472,20 +472,17 @@ func hasUser(msgs []sdk.Message) bool {
 }
 
 func groupBounds(in []session.Message, i int) (start, end int) {
-	// Walk back to the assistant tool_calls parent if this row is a tool
-	// result or an unknown sibling after one.
+	// Walk back only across the contiguous tool group immediately preceding
+	// this row. Never scan across a user/assistant turn: an unknown row after an
+	// unrelated turn must not cause that earlier tool group to be dropped.
 	start = i
-	for start > 0 && in[start].Role == "tool" {
+	for start > 0 && in[start-1].Role == "tool" {
 		start--
 	}
-	if start > 0 && in[start].Role != "assistant" {
-		// unknown role in the middle of a tool group: include the parent
-		for j := start; j >= 0; j-- {
-			if in[j].Role == "assistant" && len(in[j].ToolCalls) > 0 {
-				start = j
-				break
-			}
-		}
+	if start > 0 && in[start-1].Role == "assistant" && len(in[start-1].ToolCalls) > 0 {
+		start--
+	} else if session.UnknownRole(in[i].Role) && start == i {
+		return i, i + 1
 	}
 	end = i + 1
 	if start < len(in) && in[start].Role == "assistant" && len(in[start].ToolCalls) > 0 {

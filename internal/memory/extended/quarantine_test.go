@@ -1,6 +1,8 @@
 package extended
 
 import (
+	"fmt"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -150,5 +152,54 @@ func TestQuarantineConcurrentListWithTTL(t *testing.T) {
 	}
 	if len(atoms) != 0 {
 		t.Errorf("expected expired atom evicted, got %d", len(atoms))
+	}
+}
+
+func TestQuarantineConcurrentInstancesPreserveStores(t *testing.T) {
+	dir := t.TempDir()
+	const n = 24
+	var wg sync.WaitGroup
+	errs := make(chan error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			q := NewQuarantine(dir)
+			id, err := generateAtomID()
+			if err != nil {
+				errs <- err
+				return
+			}
+			errs <- q.Store(MemoryAtom{ID: id, Text: fmt.Sprintf("atom-%d", i), SourceClass: SourceWeb})
+		}(i)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	entries, err := NewQuarantine(dir).ListEntries()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != n {
+		t.Fatalf("concurrent quarantine stores retained %d/%d entries", len(entries), n)
+	}
+}
+
+func TestQuarantineStoreCreatesMissingDirectory(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "nested", "quarantine")
+	q := NewQuarantine(dir)
+	id, err := generateAtomID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := q.Store(MemoryAtom{ID: id, Text: "nested", SourceClass: SourceWeb}); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := q.List(); err != nil || len(got) != 1 {
+		t.Fatalf("List = %d, %v; want one entry", len(got), err)
 	}
 }

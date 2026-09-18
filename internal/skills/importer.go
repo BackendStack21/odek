@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -83,17 +84,28 @@ func fetchLocal(path string, maxBytes int) (*FetchResult, error) {
 		return nil, fmt.Errorf("path traversal detected: %q", path)
 	}
 
-	fi, err := os.Stat(cleaned)
+	f, err := os.OpenFile(cleaned, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, fmt.Errorf("read file: %w", err)
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("read file: %w", err)
+	}
+	if !fi.Mode().IsRegular() {
+		return nil, fmt.Errorf("read file: %q is not a regular file", cleaned)
 	}
 	if fi.Size() > int64(maxBytes) {
 		return nil, fmt.Errorf("file too large (%d bytes, max %d)", fi.Size(), maxBytes)
 	}
 
-	data, err := os.ReadFile(cleaned)
+	data, err := io.ReadAll(io.LimitReader(f, int64(maxBytes)+1))
 	if err != nil {
 		return nil, fmt.Errorf("read file: %w", err)
+	}
+	if len(data) > maxBytes {
+		return nil, fmt.Errorf("file too large (at least %d bytes, max %d)", len(data), maxBytes)
 	}
 
 	return &FetchResult{

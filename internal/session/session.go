@@ -22,11 +22,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 	"unicode"
 
@@ -782,16 +784,27 @@ func (s *Store) Load(id string) (*Session, error) {
 	if err := ValidateSessionID(id); err != nil {
 		return nil, err
 	}
-	info, err := os.Stat(s.path(id))
+	fd, err := os.OpenFile(s.path(id), os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, fmt.Errorf("session: load %q: %w", id, err)
+	}
+	defer fd.Close()
+	info, err := fd.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("session: load %q: %w", id, err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("session: load %q: not a regular file", id)
 	}
 	if info.Size() > int64(MaxSessionFileBytes) {
 		return nil, fmt.Errorf("session: load %q: file too large (%d bytes, max %d)", id, info.Size(), MaxSessionFileBytes)
 	}
-	data, err := os.ReadFile(s.path(id))
+	data, err := io.ReadAll(io.LimitReader(fd, int64(MaxSessionFileBytes)+1))
 	if err != nil {
 		return nil, fmt.Errorf("session: load %q: %w", id, err)
+	}
+	if len(data) > MaxSessionFileBytes {
+		return nil, fmt.Errorf("session: load %q: file grew beyond cap", id)
 	}
 	var sess Session
 	if err := json.Unmarshal(data, &sess); err != nil {

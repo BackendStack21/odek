@@ -9,6 +9,7 @@ package resource
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -50,6 +51,11 @@ const maxResourceSearchLimit = 100
 // are not useful for filename completion and can be abused to construct
 // expensive glob patterns or force long walks.
 const maxResourceQueryLength = 256
+
+// MaxExpandedPromptBytes bounds the complete prompt after @-references have
+// been inlined. Keeping this in the resource package lets CLI and serve share
+// the same allocation guard.
+const MaxExpandedPromptBytes = 12 << 20
 
 // Resource is a discovered resource returned by a Resolver.
 type Resource struct {
@@ -188,37 +194,60 @@ func ParseRefs(text string) []Ref {
 // blocks. The resolved map is keyed by the full @reference string
 // (e.g. "@src/main.go"). Unresolved references are left as-is.
 func ReplaceRefs(text string, resolved map[string]string) string {
-	refs := ParseRefs(text)
-	if len(refs) == 0 {
+	result, err := ReplaceRefsBounded(text, resolved, MaxExpandedPromptBytes)
+	if err != nil {
+		// Preserve the historical, non-error API. Callers that accept untrusted
+		// input should use ReplaceRefsBounded and surface the error.
 		return text
 	}
+	return result
+}
 
-	// Build replacement from right to left to preserve offsets
-	type replacement struct {
-		start, end int
-		newText    string
+// ReplaceRefsBounded replaces references while computing the final size before
+// allocating the output. It also writes once, avoiding the quadratic growth of
+// repeated append/slice replacement for prompts containing many references.
+func ReplaceRefsBounded(text string, resolved map[string]string, maxBytes int) (string, error) {
+	refs := ParseRefs(text)
+	if len(refs) == 0 {
+		if maxBytes > 0 && len(text) > maxBytes {
+			return "", fmt.Errorf("resource: expanded prompt exceeds %d bytes", maxBytes)
+		}
+		return text, nil
 	}
-	var replacements []replacement
+	total := len(text)
+	blocks := make(map[string]string)
 	for _, ref := range refs {
 		content, ok := resolved[ref.Raw]
 		if !ok || content == "" {
 			continue
 		}
-		block := fmt.Sprintf("\n\n--- %s ---\n%s\n--- end %s ---\n", ref.Raw, content, ref.Raw)
-		replacements = append(replacements, replacement{
-			start:   ref.Start,
-			end:     ref.End,
-			newText: block,
-		})
+		block, exists := blocks[ref.Raw]
+		if !exists {
+			block = fmt.Sprintf("\n\n--- %s ---\n%s\n--- end %s ---\n", ref.Raw, content, ref.Raw)
+			blocks[ref.Raw] = block
+		}
+		total += len(block) - (ref.End - ref.Start)
+		if maxBytes > 0 && total > maxBytes {
+			return "", fmt.Errorf("resource: expanded prompt exceeds %d bytes", maxBytes)
+		}
 	}
-
-	// Apply right-to-left so offsets stay valid
-	result := []byte(text)
-	for i := len(replacements) - 1; i >= 0; i-- {
-		r := replacements[i]
-		result = append(result[:r.start], append([]byte(r.newText), result[r.end:]...)...)
+	if maxBytes > 0 && len(text) > maxBytes {
+		return "", fmt.Errorf("resource: expanded prompt exceeds %d bytes", maxBytes)
 	}
-	return string(result)
+	var b strings.Builder
+	b.Grow(total)
+	last := 0
+	for _, ref := range refs {
+		block, ok := blocks[ref.Raw]
+		if !ok {
+			continue
+		}
+		b.WriteString(text[last:ref.Start])
+		b.WriteString(block)
+		last = ref.End
+	}
+	b.WriteString(text[last:])
+	return b.String(), nil
 }
 
 // ── File resolver ──────────────────────────────────────────────────────
@@ -354,9 +383,12 @@ func (f *FileResolver) Load(ctx context.Context, id string) (string, error) {
 		return "", fmt.Errorf("resource: file too large (%d bytes, max %d)", info.Size(), maxResourceFileBytes)
 	}
 
-	data, err := io.ReadAll(fd)
+	data, err := io.ReadAll(io.LimitReader(fd, maxResourceFileBytes+1))
 	if err != nil {
 		return "", err
+	}
+	if len(data) > maxResourceFileBytes {
+		return "", fmt.Errorf("resource: file grew beyond size cap")
 	}
 
 	// Truncate at 50KB to avoid context overflow
@@ -447,6 +479,7 @@ func NewSessionResolver(sessionDir string) *SessionResolver {
 func (s *SessionResolver) Prefix() string { return "sess:" }
 
 func (s *SessionResolver) Search(ctx context.Context, query string, limit int) ([]Resource, error) {
+	query = strings.TrimPrefix(strings.TrimPrefix(strings.TrimSpace(query), "@"), "sess:")
 	entries, err := os.ReadDir(s.dir)
 	if err != nil {
 		return nil, err
@@ -457,10 +490,37 @@ func (s *SessionResolver) Search(ctx context.Context, query string, limit int) (
 		if len(resources) >= limit {
 			break
 		}
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+		if e.IsDir() || e.Type()&os.ModeSymlink != 0 || !strings.HasSuffix(e.Name(), ".json") {
 			continue
 		}
 		id := strings.TrimSuffix(e.Name(), ".json")
+		// Session directories can contain auxiliary JSON (indexes, plans,
+		// metadata). Only advertise files that decode as a session with the
+		// same validated ID.
+		if err := session.ValidateSessionID(id); err != nil {
+			continue
+		}
+		var probe struct {
+			ID string `json:"id"`
+		}
+		if query != "" && !strings.Contains(id, query) {
+			continue
+		}
+		path := filepath.Join(s.dir, e.Name())
+		fd, openErr := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+		if openErr != nil {
+			continue
+		}
+		info, statErr := fd.Stat()
+		if statErr != nil || !info.Mode().IsRegular() || info.Size() > maxResourceFileBytes {
+			fd.Close()
+			continue
+		}
+		data, readErr := io.ReadAll(io.LimitReader(fd, maxResourceFileBytes+1))
+		fd.Close()
+		if readErr != nil || len(data) > maxResourceFileBytes || json.Unmarshal(data, &probe) != nil || probe.ID != id {
+			continue
+		}
 		if query == "" || strings.Contains(id, query) {
 			info, _ := e.Info()
 			detail := "session"
@@ -502,7 +562,7 @@ func (s *SessionResolver) Load(ctx context.Context, id string) (string, error) {
 	if !pathutil.WithinRoot(resolvedDir, resolved) {
 		return "", fmt.Errorf("resource: session file escapes sessions dir: %q", id)
 	}
-	fd, err := os.OpenFile(resolved, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	fd, err := os.OpenFile(resolved, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return "", err
 	}
@@ -517,13 +577,34 @@ func (s *SessionResolver) Load(ctx context.Context, id string) (string, error) {
 	if info.Size() > maxResourceFileBytes {
 		return "", fmt.Errorf("resource: session file too large (%d bytes, max %d)", info.Size(), maxResourceFileBytes)
 	}
-	data, err := io.ReadAll(fd)
+	data, err := io.ReadAll(io.LimitReader(fd, maxResourceFileBytes+1))
 	if err != nil {
 		return "", err
 	}
+	if len(data) > maxResourceFileBytes {
+		return "", fmt.Errorf("resource: session file grew beyond size cap")
+	}
 
-	// Return the full session JSON (it's already compact enough)
-	return string(data), nil
+	// Allowlist the transcript fields. In particular AuthToken and all other
+	// session metadata must never enter model context through @sess refs.
+	var transcript struct {
+		ID       string          `json:"id"`
+		Messages json.RawMessage `json:"messages"`
+	}
+	if err := json.Unmarshal(data, &transcript); err != nil {
+		return "", fmt.Errorf("resource: invalid session transcript")
+	}
+	if transcript.ID == "" {
+		transcript.ID = id
+	}
+	if len(transcript.Messages) == 0 {
+		transcript.Messages = json.RawMessage("[]")
+	}
+	out, err := json.Marshal(transcript)
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
 }
 
 func formatDuration(d time.Duration) string {

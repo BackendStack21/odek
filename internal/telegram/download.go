@@ -212,6 +212,22 @@ func DownloadDocument(bot *Bot, chatID int64, fileID, fileName string) (string, 
 	// toward the per-chat media quota (a bare "chat<chatID>_" prefix would not
 	// match the leading-underscore glob and would let documents bypass the cap).
 	safeName := sanitizeDocName(fileName, fileID, f.FilePath)
+	// Named documents also need the full Telegram ID in their path: the same
+	// filename can be used by two different files in one chat.
+	// Place the ID before the extension so the resulting file remains useful
+	// to callers that infer type from its suffix, and bound the whole name.
+	ext := filepath.Ext(safeName)
+	stem := strings.TrimSuffix(safeName, ext)
+	suffix := "_" + fileIDSuffix(fileID)
+	maxStem := maxDocNameLen - len(suffix) - len(ext)
+	if maxStem < 0 {
+		ext = ext[:maxDocNameLen-len(suffix)]
+		maxStem = 0
+	}
+	if len(stem) > maxStem {
+		stem = stem[:maxStem]
+	}
+	safeName = stem + suffix + ext
 	localPath := filepath.Join(dir, fmt.Sprintf("doc_chat%d_%s", chatID, safeName))
 
 	if err := os.WriteFile(localPath, data, 0600); err != nil {
@@ -275,7 +291,8 @@ func sanitizeDocName(fileName, fileID, filePath string) string {
 		}
 		maxStem := maxDocNameLen - len(ext)
 		if maxStem < 1 {
-			base = "name" + ext
+			// An attacker-controlled extension can itself exceed the limit.
+			base = base[:maxDocNameLen]
 		} else {
 			stem := base[:len(base)-len(ext)]
 			if len(stem) > maxStem {
@@ -294,7 +311,11 @@ func fallbackDocName(fileID, filePath string) string {
 	if ext == "" {
 		ext = ".bin"
 	}
-	return "doc_" + fileID[:min(16, len(fileID))] + ext
+	name := "doc_" + fileIDSuffix(fileID) + ext
+	if len(name) > maxDocNameLen {
+		name = name[:maxDocNameLen]
+	}
+	return name
 }
 
 // ── Media Cleanup ──────────────────────────────────────────────────────────

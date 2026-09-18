@@ -2721,7 +2721,8 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 }
 
 // resolveTools returns a concrete ToolConfig from a possibly-nil file config.
-// Empty Enabled/Disabled slices mean "no restriction" for that direction.
+// Nil Enabled means no whitelist; a non-nil empty Enabled disables optional
+// tools. An empty Disabled list imposes no additional restriction.
 func resolveTools(cfg *ToolsConfig) ToolConfig {
 	if cfg == nil {
 		return ToolConfig{}
@@ -3545,7 +3546,9 @@ func overlayFile(base, override FileConfig) FileConfig {
 		if base.Tools == nil {
 			base.Tools = &ToolsConfig{}
 		}
-		if len(override.Tools.Enabled) > 0 {
+		// A non-nil empty list is an explicit whitelist that disables every
+		// optional tool; nil means inherit the lower-priority layer.
+		if override.Tools.Enabled != nil {
 			base.Tools.Enabled = override.Tools.Enabled
 		}
 		base.Tools.Disabled = append(base.Tools.Disabled, override.Tools.Disabled...)
