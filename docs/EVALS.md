@@ -29,3 +29,28 @@ authorized real provider, but it must provide its own credentials, network
 policy, and model-message adapter. The shipped CLI intentionally does not
 evaluate live-model intelligence. Cost reporting stays unknown because the
 harness does not configure token prices.
+
+## Running and extending the suite
+
+```bash
+make eval
+# Save only the JSON report (without make's command echo):
+go run ./cmd/odek-eval > eval-report.json
+```
+
+Exit status is 0 when every scenario passes, 1 for scenario failures, and 2
+if the report cannot be encoded. The eight-case baseline includes a deliberate
+unguarded false-success control: all scenarios pass while
+`false_completion_rate` is 0.125. That expected control is not a failure of
+the checked-plan guard or a live-model benchmark.
+
+Add a case to `internal/eval.Scenarios` with fresh fixture state, scripted
+responses, tools, and an independent oracle. Assert the required state and
+observed tool outcomes, including expected failures; do not accept a success
+claim as proof. `task_success` answers whether the fixture task was completed;
+`scenario_passed` answers whether the runtime behaved as the test expected.
+Add regression assertions in `internal/eval/eval_test.go`, then run:
+
+```bash
+go test -count=1 -timeout=120s ./internal/eval ./internal/loop
+```

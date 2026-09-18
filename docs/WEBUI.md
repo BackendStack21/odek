@@ -310,6 +310,19 @@ The core session CRUD (session-token gated):
   at least one field required (**400** otherwise).
 - **DELETE** — removes the session and its index entry; **204**.
 
+### `GET /api/sessions/{id}/plan`
+
+Returns the persisted structured plan as `session_id`, `version`, `found`,
+and `steps` (each with `id`, `title`, `status`, and optional `note`). This
+read-only endpoint uses the session-token checks of the session API. A
+missing plan returns HTTP 200 with `found: false`; an unknown session is 404.
+
+Steps with acceptance checks cannot be marked done until their declared
+checks succeed. The endpoint and Now panel expose step statuses only;
+individual check evidence remains in the protected plan transcript. See
+[Planning](PLANNING.md#acceptance-checks) for declarations, invalidation,
+and resume behavior.
+
 ### `POST /api/cancel?session_id=`
 
 Cancels the prompt currently executing on a session (the REST twin of the

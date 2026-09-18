@@ -64,6 +64,17 @@ steps with checks also enforce their declared evidence before completion.
 
 ### Acceptance checks
 
+Example user prompt:
+
+> Fix the auth bug. Create a plan with an acceptance check that runs
+> `go test ./internal/auth`. Run that exact check after your changes and
+> only mark the step complete when it passes. If it fails or cannot run,
+> report the task as unverified.
+
+Replace the package path with one that exists in the target project. The
+agent turns this instruction into the check declaration below; the prompt
+itself does not bypass tool approval or execute a command.
+
 A step may declare up to four optional acceptance checks. Each check contains
 an `id`, human-readable `description`, exact `tool` name, and an `arguments`
 object. Checks are evidence requirements attached to the step; they are not
@@ -192,7 +203,7 @@ no-op.
 
 ### Collapse and overflow
 
-When every step is `done`, the render collapses to a single line (~15 tokens),
+For plans without checks, when every step is `done`, the render collapses to a single line (~15 tokens),
 so an idle or completed plan doesn't tempt the model to keep reporting on
 finished work:
 
@@ -200,7 +211,11 @@ finished work:
 [Current plan: v7 — all 5 steps complete.]
 ```
 
-When the render would exceed `max_render_chars`, the oldest `done` steps are
+Checked plans retain every step and check even when all steps are done. They
+reserve evidence space at validation time, so accepted updates never rely on
+lossy overflow rendering.
+
+For unchecked plans, when the render exceeds `max_render_chars`, the oldest `done` steps are
 dropped first behind an explicit marker:
 
 ```
@@ -281,7 +296,20 @@ current plan."
           "properties": {
             "id":    { "type": "string" },
             "title": { "type": "string" },
-            "note":  { "type": "string" }
+            "note":  { "type": "string" },
+            "checks": {
+              "type": "array", "maxItems": 4,
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": { "type": "string" },
+                  "description": { "type": "string" },
+                  "tool": { "type": "string" },
+                  "arguments": { "type": "object" }
+                },
+                "required": ["id", "description", "tool", "arguments"]
+              }
+            }
           },
           "required": ["id", "title"]
         },
@@ -326,6 +354,8 @@ committing).
 | `update` referencing unknown id | `plan: update: unknown step id %q` |
 | `update` with unrecognized status token | `plan: update: step[%d]: unknown status %q` |
 | `complete` with unknown/missing step_id | `plan: complete: unknown step id %q` |
+| checked step marked done before every check passes | `plan: complete: step %q has checks that have not passed` (or `plan: update: …`) |
+| checked plan exceeds render space or uses reserved delimiter | `plan: checked plan exceeds max_render_chars (%d) or uses reserved checks delimiter in title/note` |
 | status already terminal-equal (no-op) | allowed — returns current plan, **no version bump** |
 
 Notes:
@@ -368,7 +398,7 @@ Resolved onto the config layer as `Planning PlanningConfig`
 |-----|---------|-------|---------|
 | `enabled` | `true` | global-off wins | Master switch; false removes the tool from the registry and skips all plan logic |
 | `max_steps` | `12` | 1..50 | `create` size cap; enforced fail-closed |
-| `max_render_chars` | `2000` | 200..8000 | Rendered message cap; overflow drops oldest done steps first behind `[+N done steps omitted]` |
+| `max_render_chars` | `2000` | 200..8000 | Rendered message cap; checked plans must fit in full, unchecked overflow drops oldest done steps first |
 
 Disable precedence (highest wins): `--no-planning` flag → `ODEK_PLANNING=false`
 env → global config → project opt-out.
@@ -454,6 +484,10 @@ over-cap plan may still display on surfaces even when resume would drop it.
 - `found:false` (still HTTP 200) when the transcript carries no parseable
   plan message; `version`/`steps` are then zero/empty. A collapsed all-done
   plan parses to a version with no rows — `steps` is `[]`, not null.
+- Checked plans retain completed step rows. This endpoint exposes step
+  status, not individual check arguments, status, or call IDs; those remain
+  in the protected plan transcript. Reading the endpoint does not invalidate
+  evidence; resuming a run does.
 - **404** for an unknown session id; `note` is omitted when empty.
 - GET-only by contract: a non-GET request to `…/plan` cannot fall through
   to the base-session mutators (POST would otherwise rename the session
