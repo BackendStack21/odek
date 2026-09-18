@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -363,19 +364,30 @@ func (s *Store) saveState(sd *stateDoc) error {
 // than maxScheduleFileBytes are rejected to prevent OOM from a tampered or
 // corrupted multi-gigabyte blob.
 func readJSON(path string, v any) error {
-	info, err := os.Stat(path)
+	fd, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil
 		}
 		return fmt.Errorf("schedule: stat %s: %w", filepath.Base(path), err)
 	}
+	defer fd.Close()
+	info, err := fd.Stat()
+	if err != nil {
+		return fmt.Errorf("schedule: stat %s: %w", filepath.Base(path), err)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("schedule: %s is not a regular file", filepath.Base(path))
+	}
 	if info.Size() > maxScheduleFileBytes {
 		return fmt.Errorf("schedule: %s is too large (%d bytes, max %d)", filepath.Base(path), info.Size(), maxScheduleFileBytes)
 	}
-	data, err := os.ReadFile(path)
+	data, err := io.ReadAll(io.LimitReader(fd, maxScheduleFileBytes+1))
 	if err != nil {
 		return fmt.Errorf("schedule: read %s: %w", filepath.Base(path), err)
+	}
+	if len(data) > maxScheduleFileBytes {
+		return fmt.Errorf("schedule: %s grew beyond size cap", filepath.Base(path))
 	}
 	if len(data) == 0 {
 		return nil
