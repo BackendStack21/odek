@@ -869,8 +869,10 @@ func (e *Engine) SetPlanStore(s *PlanStore) {
 // emit plan_blocked. Payloads carry counts and version ONLY — never
 // step titles or notes.
 func (e *Engine) emitPlanChangeEvent(ch PlanChange) {
-	if ch.Created {
+	if ch.Created || ch.Revised {
 		e.skillRematchPending.Store(true)
+	}
+	if ch.Created {
 		e.emitEvent(events.Event{
 			Type: events.TypePlanCreated,
 			Data: map[string]any{
@@ -2034,8 +2036,10 @@ func (e *Engine) syncPlanFromMessages(messages []session.Message) []session.Mess
 		e.planStore.Restore(newest)
 		// The persisted render already reflects this version; seed the cache
 		// so the next refresh no-ops until the state changes.
-		e.planRenderedVersion = newest.Version
-		e.planRenderedContent = newestContent
+		if restored, ok := e.planStore.Snapshot(); ok && restored.Version == newest.Version {
+			e.planRenderedVersion = newest.Version
+			e.planRenderedContent = newestContent
+		}
 	}
 	return out
 }
@@ -2571,6 +2575,7 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 	// (docs/PLANNING.md — Restart Resume). Unparseable plan messages are
 	// removed from the history. No-op when planning is disabled.
 	messages = e.syncPlanFromMessages(messages)
+	messages = e.refreshPlanMessage(ctx, messages)
 
 	// Trim statistics and rolling-digest state are per-conversation, not
 	// per-engine: reset the counters and re-derive the digest from THIS
@@ -2912,7 +2917,7 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 				// (the tool-call path's dangling-call protection) throws
 				// away the only useful artifact. Persist the answer, still
 				// return the typed budget error.
-				result.Content = e.reconcileFinalReply(result.Content)
+				result.Content = e.appendCheckNotice(e.reconcileFinalReply(result.Content))
 				messages = append(messages, session.Message{
 					Role:             "assistant",
 					Content:          result.Content,
@@ -2964,7 +2969,7 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 			// reconcile the reply against the action ledger before it
 			// goes out. A reply that misreports side effects ("blocked",
 			// "no changes made") after they happened is worse than silence.
-			result.Content = e.reconcileFinalReply(result.Content)
+			result.Content = e.appendCheckNotice(e.reconcileFinalReply(result.Content))
 
 			if e.renderer != nil && e.interactionMode != "off" {
 				// Show the model's reasoning for the final answer before the
@@ -3268,6 +3273,13 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 			e.externalChargeMu.Unlock()
 		}
 
+		// Checks must be declared before this batch. A plan created or replaced
+		// within the batch cannot claim earlier actions as verification.
+		var checkEpoch uint64
+		if e.planStore != nil {
+			checkEpoch = e.planStore.CheckEpoch()
+		}
+
 		// Phase 2: execute tools in parallel (bounded by semaphore)
 		type execResult struct {
 			output string
@@ -3294,6 +3306,12 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 		for i, tc := range result.ToolCalls {
 			done[i] = make(chan struct{})
 			effects[i] = e.executionEffects(tc)
+			if e.planStore != nil && e.planStore.MatchesCheck(tc.Function.Name, tc.Function.Arguments) {
+				// Acceptance checks are ordering barriers: even a read-only
+				// check may validate a condition affected by another resource.
+				// Its evidence must reflect prior mutations in this batch.
+				effects[i].unknown = true
+			}
 		}
 		var workers sync.WaitGroup
 
@@ -3449,6 +3467,7 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 		for i, tc := range result.ToolCalls {
 			output := results[i].output
 			fullOutput := output
+			e.recordPlanCheckResult(checkEpoch, tc, callIDs[i], results[i].errored)
 
 			// ledger the mutating calls that completed this run so the
 			// final reply can be reconciled against what actually happened.
@@ -3732,7 +3751,7 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 			corrections = append(corrections, e.budgetWarnings(i+1, startTime, ctx, &hints)...)
 		}
 		if e.blockedHintPending.Swap(false) {
-			corrections = append(corrections, "⚠️ Plan has 3 consecutive blocked steps. Decompose the blocked work or `create` a new plan — do not keep marking steps blocked.")
+			corrections = append(corrections, "⚠️ Plan has 3 consecutive blocked steps. Use plan revise to decompose blocked work or change the approach while preserving acceptance checks — do not keep marking steps blocked.")
 		}
 		// Inject all corrections as a single system message
 		if len(corrections) > 0 {
@@ -3749,7 +3768,7 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 		// the persisted snapshot always carries the current plan.
 		messages = e.refreshPlanMessage(ctx, messages)
 
-		// After plan(create), rematch lazy skills on step titles only so a
+		// After plan(create/revise), rematch lazy skills on step titles only so a
 		// plan that names work the original user line missed can still load
 		// a promoted skill. Titles are query text, not instructions.
 		if e.skillRematchPending.Swap(false) {
@@ -3814,8 +3833,8 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 	}
 	e.lastPartialReason = reason
 	if summary := progressSummary; summary != "" {
-		final := marker + "\n\n" + summary
-		persistedFinal := marker + "\n\n" + e.protectDerivedContext(ctx, "progress_summary", summary)
+		final := e.appendCheckNotice(marker + "\n\n" + summary)
+		persistedFinal := e.appendCheckNotice(marker + "\n\n" + e.protectDerivedContext(ctx, "progress_summary", summary))
 
 		if e.renderer != nil && e.interactionMode != "off" {
 			// This summary comes from a buffered side call — nothing was
@@ -4263,7 +4282,7 @@ func (e *Engine) needsCompletionNudge() bool {
 	}
 	open := e.openPlanStepCount()
 	uncaught := len(e.runMutations) > 0 && !e.sawReadAfterMutation
-	return open > 0 || uncaught
+	return open > 0 || uncaught || len(e.pendingPlanChecks()) > 0
 }
 
 func (e *Engine) completionNudgeText() string {
@@ -4280,5 +4299,8 @@ func (e *Engine) completionNudgeText() string {
 		b.WriteString("Uncaught mutations remain. ")
 	}
 	b.WriteString("Either call the check, update the plan, or tell the principal what remains. Do not claim done.")
+	if pending := e.pendingPlanChecks(); len(pending) > 0 {
+		b.WriteString(" Declared acceptance checks remain unverified. Run their declared tools through the normal approval path, then complete the step; if blocked, report the missing verification. A plan update cannot self-certify a check.")
+	}
 	return b.String()
 }

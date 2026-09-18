@@ -6,6 +6,7 @@ package loop
 // ignore". Table-driven per existing plan_test.go conventions.
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -307,7 +308,7 @@ func TestPlan_ParseStepLine_Table(t *testing.T) {
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
-			if got != tc.want {
+			if !reflect.DeepEqual(got, tc.want) {
 				t.Errorf("step = %+v, want %+v", got, tc.want)
 			}
 		})

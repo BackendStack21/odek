@@ -408,7 +408,11 @@ Gives the agent a protected plan tool and a plan message that survives context t
 |-------|---------|---------|----------|-------------|
 | `planning.enabled` | `true` | `ODEK_PLANNING` | `--planning` / `--no-planning` | Enable the plan tool and protected plan message |
 | `planning.max_steps` | `12` | — | — | Plan steps allowed (clamped 1–50) |
-| `planning.max_render_chars` | `2000` | — | — | Cap on the rendered plan shown in the UI (clamped 200–8000) |
+| `planning.max_render_chars` | `2000` | — | — | Cap on the protected plan render (clamped 200–8000); checked or revised plans must fit in full, including reserved evidence space |
+
+Acceptance checks need no additional flag: declare them through `plan create`
+while planning is enabled. Large declarations may need a higher operator-set
+`max_render_chars`; project config cannot raise this cap.
 
 Feature behavior, verbs, and the security model are documented in [PLANNING.md](PLANNING.md).
 

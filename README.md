@@ -201,7 +201,8 @@ odek run "@README.md what does this project do?"
 | [Extensions](docs/EXTENSIONS.md) | `odek-extension/v1` contract: MCP limits, artifact refs, event stream, external refs, budgets |
 | [Maintenance](docs/MAINTENANCE.md) | Storage janitor: retention, log rotation, `odek cleanup` |
 | [Extended Memory](docs/EXTENDED_MEMORY.md) | Atomic long-term memory layer (opt-in) |
-| [Planning](docs/PLANNING.md) | Plan tool, protected plan message, security model |
+| [Planning](docs/PLANNING.md) | Incremental plan revisions, acceptance checks, completion evidence |
+| [Runtime Evals](docs/EVALS.md) | Deterministic task scenarios, independent checks, JSON reports |
 | [Tool Selection](docs/TOOL_SELECTION.md) | Tool whitelist/blacklist guide and names reference |
 | [Daily Worker](docs/DAILY-WORKER.md) | Headless scheduled-worker patterns |
 | [Providers](docs/PROVIDERS.md) | go-llm-sdk registry, `--provider`, v2 knobs |
@@ -238,6 +239,7 @@ The full `Config` struct supports: `Provider`, `Providers`, `BaseURL` (selected-
 go test ./...                 # full suite, no setup required
 go test -race ./...           # also clean under the race detector
 go test -cover ./...          # per-package coverage report
+make eval                    # scripted runtime evaluations, no model credentials
 ODEK_E2E=1 go test ./cmd/odek/   # opt-in Docker / subprocess E2E suite
 ```
 

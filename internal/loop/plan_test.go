@@ -1,6 +1,7 @@
 package loop
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
@@ -85,7 +86,7 @@ func TestPlan_Validate_UpdateAtomicity(t *testing.T) {
 				t.Errorf("version bumped after rejected update: %d -> %d", before.Version, after.Version)
 			}
 			for i, st := range after.Steps {
-				if st != before.Steps[i] {
+				if !reflect.DeepEqual(st, before.Steps[i]) {
 					t.Errorf("step %d changed after rejection: %+v -> %+v", i, before.Steps[i], st)
 				}
 			}
@@ -157,7 +158,7 @@ func TestPlan_Validate_BadArgsAndVerb(t *testing.T) {
 		t.Errorf("bad JSON error = %v, want plan: parse args:", err)
 	}
 	if _, err := s.Execute(`{"verb":"replan"}`); err == nil ||
-		!strings.Contains(err.Error(), `plan: unknown verb "replan" (want create/update/complete/get)`) {
+		!strings.Contains(err.Error(), `plan: unknown verb "replan" (want create/update/complete/revise/get)`) {
 		t.Errorf("unknown verb error = %v", err)
 	}
 	if _, ok := s.Snapshot(); ok {
@@ -204,7 +205,7 @@ func TestPlan_RenderParseRoundTrip(t *testing.T) {
 			t.Fatalf("steps = %d, want %d\nrendered:\n%s", len(got.Steps), len(in.Steps), rendered)
 		}
 		for i := range in.Steps {
-			if got.Steps[i] != in.Steps[i] {
+			if !reflect.DeepEqual(got.Steps[i], in.Steps[i]) {
 				t.Errorf("step[%d] = %+v, want %+v", i, got.Steps[i], in.Steps[i])
 			}
 		}
@@ -237,7 +238,7 @@ func TestPlan_RoundTripThroughValidation(t *testing.T) {
 		t.Fatalf("steps = %d, want %d", len(got.Steps), len(stored.Steps))
 	}
 	for i := range stored.Steps {
-		if got.Steps[i] != stored.Steps[i] {
+		if !reflect.DeepEqual(got.Steps[i], stored.Steps[i]) {
 			t.Errorf("step[%d] = %+v, want %+v", i, got.Steps[i], stored.Steps[i])
 		}
 	}

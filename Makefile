@@ -42,6 +42,10 @@ test-internal: ## Run only internal package tests (excludes cmd/odek)
 test-cmd: ## Run cmd/odek unit tests (env-gated E2E/sandbox suites skipped)
 	$(GO) test -short -count=1 -timeout 600s ./cmd/odek -skip 'TestE2E_|TestMCPE2E|TestSandbox'
 
+.PHONY: eval
+eval: ## Run deterministic local runtime evaluations (no credentials or external network)
+	$(GO) run ./cmd/odek-eval
+
 .PHONY: test-cli-serve
 test-cli-serve: ## Serve/WS/REST headless-run surface only (~1 min)
 	$(GO) test -short -count=1 -timeout 300s -run 'TestServe|TestWS|TestRestRun|TestPrompt|TestHandlePrompt' ./cmd/odek
