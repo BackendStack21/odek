@@ -285,8 +285,8 @@ func sanitizeVolumeMount(vol, workdir string) (string, bool) {
 	// passes, but the resolved path is outside workdir). Both sides are
 	// resolved so platforms where the workdir contains symlinks (macOS
 	// /var -> /private/var) compare canonical paths. When the parent does not
-	// exist yet, ResolveDirSymlinks returns the original absolute path and the
-	// lexical confinement check above remains the guarantee.
+	// exist yet, ResolveDirSymlinks resolves the nearest existing ancestor
+	// before appending the missing suffix, preserving the confinement check.
 	resolvedHost := pathutil.ResolveDirSymlinks(absHost)
 	if !pathutil.WithinRoot(absWorkdir, resolvedHost) {
 		fmt.Fprintf(os.Stderr, "odek: WARNING: rejecting volume mount %q (resolved host path %s escapes working directory %s)\n", vol, resolvedHost, absWorkdir)

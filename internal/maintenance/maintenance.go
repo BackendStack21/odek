@@ -12,6 +12,7 @@ import (
 	"context"
 	"fmt"
 	"io/fs"
+	"math"
 	"os"
 	"path/filepath"
 	"time"
@@ -436,7 +437,10 @@ func LogRotationNames() []string {
 // generation) and a fresh empty log is created. One backup generation only.
 // Returns the rotated log paths.
 func rotateLogs(home string, maxMB int64) ([]string, error) {
-	limit := maxMB << 20
+	limit := int64(math.MaxInt64)
+	if maxMB <= math.MaxInt64/(1<<20) {
+		limit = maxMB << 20
+	}
 	var rotated []string
 	for _, name := range LogRotationNames() {
 		path := filepath.Join(home, name)

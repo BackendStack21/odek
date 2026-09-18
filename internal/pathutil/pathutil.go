@@ -22,23 +22,35 @@ func CleanAbs(path string) (string, error) {
 
 // ResolveDirSymlinks returns the absolute, cleaned path with all directory
 // symlinks resolved. The final path component is left untouched so callers can
-// still enforce O_NOFOLLOW on it. If a directory component does not exist,
-// the original absolute path is returned so the caller can produce a sensible
-// "not found" error.
+// still enforce O_NOFOLLOW on it. Missing directory components are appended
+// to the resolved nearest existing ancestor.
 func ResolveDirSymlinks(path string) string {
 	abs, err := CleanAbs(path)
 	if err != nil {
 		return path
 	}
 
-	dir := filepath.Dir(abs)
-	base := filepath.Base(abs)
-
-	resolvedDir, err := filepath.EvalSymlinks(dir)
-	if err != nil {
-		return abs
+	// Resolve the nearest existing ancestor, then append the missing suffix.
+	// Resolving only filepath.Dir(abs) falls back lexically when any parent is
+	// absent, allowing an existing symlink ancestor to be hidden behind a new
+	// child path that Docker will create on the host.
+	cur := filepath.Dir(abs)
+	suffix := []string{filepath.Base(abs)}
+	for {
+		if resolved, err := filepath.EvalSymlinks(cur); err == nil {
+			for i := len(suffix) - 1; i >= 0; i-- {
+				resolved = filepath.Join(resolved, suffix[i])
+			}
+			return resolved
+		}
+		parent := filepath.Dir(cur)
+		name := filepath.Base(cur)
+		if parent == cur {
+			return abs
+		}
+		suffix = append(suffix, name)
+		cur = parent
 	}
-	return filepath.Join(resolvedDir, base)
 }
 
 // WithinRoot reports whether candidate resolves to a path inside root.
@@ -50,16 +62,17 @@ func ResolveDirSymlinks(path string) string {
 //
 // If root cannot be symlink-resolved (e.g. it does not exist yet in a test or
 // for a not-yet-created working directory), the comparison falls back to the
-// lexical absolute path, preserving the original sandbox semantics where the
-// resolved re-check was optional.
+// nearest existing ancestor with the missing suffix appended.
 func WithinRoot(root, candidate string) bool {
 	absRoot, err := CleanAbs(root)
 	if err != nil {
 		return false
 	}
-	resolvedRoot := absRoot
+	var resolvedRoot string
 	if r, err := filepath.EvalSymlinks(absRoot); err == nil {
 		resolvedRoot = r
+	} else {
+		resolvedRoot = ResolveDirSymlinks(absRoot)
 	}
 
 	resolved := ResolveDirSymlinks(candidate)

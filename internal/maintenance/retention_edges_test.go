@@ -1,11 +1,37 @@
 package maintenance
 
 import (
+	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 )
+
+func TestRotateLogs_LargeLimitDoesNotWrap(t *testing.T) {
+	home := t.TempDir()
+	path := filepath.Join(home, LogRotationNames()[0])
+	original := []byte("small")
+	if err := os.WriteFile(path, original, 0600); err != nil {
+		t.Fatal(err)
+	}
+	maxInt64 := int64(^uint64(0) >> 1)
+	_, err := Sweep(context.Background(), home, Config{LogMaxMB: maxInt64})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, original) {
+		t.Fatalf("small log changed under huge limit: %q", got)
+	}
+	if _, err := os.Stat(path + ".1"); !os.IsNotExist(err) {
+		t.Fatalf("small log unexpectedly rotated under huge limit: %v", err)
+	}
+}
 
 // ── ClampRetentionDays / ClampRetentionHours ────────────────────────────────
 

@@ -40,6 +40,11 @@ func RecordPromotion(userDir, name string, content []byte) error {
 			// until re-promoted (fail-safe direction).
 			reg = map[string]string{}
 		}
+		if reg == nil {
+			// JSON `null` is syntactically valid but unmarshals into a nil map;
+			// initialize it before recording the promotion.
+			reg = map[string]string{}
+		}
 	}
 	reg[name] = hex.EncodeToString(sum[:])
 	data, err := json.MarshalIndent(reg, "", "  ")
