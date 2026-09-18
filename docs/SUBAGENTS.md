@@ -98,7 +98,8 @@ The `delegate_tasks` tool is available in CLI, REPL, Web UI, Telegram, and headl
                                                //   (top-level `profiles` config). Its max_risk, allowlist,
                                                //   and tool filter OVERRIDE the operator's global config
                                                //   for this sub-agent. Unknown names fail the task.
-          "model":      { "type": "string" }   // Optional. Model ID supported by the parent's provider;
+          "model":      { "type": "string", "minLength": 1, "maxLength": 256 }
+                                               // Optional. Model ID supported by the parent's provider;
                                                //   omitted inherits the parent's model. Provider, endpoint,
                                                //   and credentials always remain those of the parent.
         },
@@ -460,31 +461,54 @@ The sub-agent system has three test layers:
 E2E tests:
 - Build the `odek` binary once via `TestMain`
 - Test the full pipeline: `tool.Call()` → `exec.Command("odek", "subagent", ...)` → JSON stdout → parse
-- Require no LLM provider (sub-agent fails on setup, producing JSON error — which is the exact contract verified)
+- Require no live LLM provider: setup-failure tests verify error contracts, and a local mock provider verifies selected model IDs and model-specific cost accounting.
 - Validate: binary exists, stderr emoji protocol, quiet mode, 100KB+ task files via temp files, missing binary graceful degradation
 
 ## Choosing a task model
 
-Choose a model supported by the configured provider for each task. For example,
-a parent using DeepSeek can request `deepseek-v4-flash` for an adversarial
-review while keeping the same provider, endpoint, and credentials:
+The main agent can set `tasks[].model` in `delegate_tasks` independently for
+each child. Omit it to inherit the parent's current model. A single batch can
+mix explicit model selections and inherited models without changing the
+parent or sibling tasks.
+
+For example, ask the main agent: “Run an adversarial review with a Flash model,
+and have another subagent review the test coverage using your current model.”
+For a parent configured to use DeepSeek, the tool arguments can be:
 
 ```json
 {
   "tasks": [
     {
-      "goal": "Review the authentication change for bypasses and write findings to review/auth.md",
+      "goal": "Review the authentication change for bypasses and report findings",
       "model": "deepseek-v4-flash",
-      "trust_level": "trusted",
-      "max_risk": "local_write",
-      "context": "Treat the implementation and test output as review material; do not change production code."
+      "max_risk": "safe",
+      "context": "Review the implementation and tests. Do not modify files."
+    },
+    {
+      "goal": "Review authentication test coverage and report missing cases",
+      "max_risk": "safe",
+      "context": "Review the tests independently. Do not modify files."
     }
   ]
 }
 ```
 
-The model ID is validated against the parent's provider. A task cannot select
-a different provider, API endpoint, or credential.
+The first child requests `deepseek-v4-flash`; the second inherits the parent's
+model. Use an exact model ID supported by your provider. “Flash” and “cheaper”
+are task guidance, not built-in model aliases or automatic price selectors.
+The provider validates model availability; odek does not discover available
+models or switch providers for a task. Provider, endpoint, and credentials
+remain inherited from the parent.
+
+Explicit model names must contain 1–256 characters after trimming surrounding
+spaces and must not contain control characters. Empty or invalid names reject
+the batch before any child starts. Omit `model` to request inheritance.
+
+Model selection does not change capability profiles, trust restrictions, or
+execution limits. With a shared cost budget, both input and output prices must
+resolve for the selected model through `limits.model_prices` or the flat-price
+fallback; otherwise the child fails before making an LLM call. Configure
+per-model prices when comparing spend across different models.
 
 ## Example: End-to-end flow
 
