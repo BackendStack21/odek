@@ -9,9 +9,9 @@ protected system message that is visible on every iteration — immune to
 context trimming, survival trim, and process restarts.
 
 Planning fits the ReAct loop without altering it: observe → think → act is
-unchanged, plan calls ride ordinary parallel tool batches, and nothing in the
-loop ever gates on plan existence or step order — a model that ignores the
-tool behaves exactly as if the feature did not exist. Planning is **on by
+unchanged and plan calls ride ordinary parallel tool batches. The runtime gates
+completion of steps with declared checks; plan existence and step order remain
+advisory. Planning is **on by
 default**; kill switches, in priority order: CLI flag (`--no-planning`),
 environment (`ODEK_PLANNING=false`), global config (`planning.enabled: false`),
 project config (opt-out only).
@@ -37,6 +37,16 @@ type PlanStep struct {
     Title  string     // ≤200 chars, flattened to one render line
     Status StepStatus
     Note   string     // optional, flattened like Title
+    Checks []PlanCheck // optional, at most 4 evidence checks
+}
+
+type PlanCheck struct {
+    ID          string
+    Description string
+    Tool        string
+    Arguments   map[string]any // canonical JSON arguments
+    Status      string           // "pending" | "passed" | "failed"
+    CallID      string           // matching tool-call evidence, when observed
 }
 
 type PlanState struct {
@@ -48,8 +58,64 @@ type PlanState struct {
 A `PlanStore` holds the state behind a dedicated mutex — plan calls can arrive
 inside a parallel tool batch (`max_tool_parallel` defaults to 4), so every
 mutation serializes. Caps come from *resolved* config values, never raw project
-config. Any status transition is allowed (pending→done included); only
-structural validity is enforced. The plan is advisory steering, not a contract.
+config. Unchecked steps allow any status transition (pending→done included).
+Plans without checks are advisory steering;
+steps with checks also enforce their declared evidence before completion.
+
+### Acceptance checks
+
+A step may declare up to four optional acceptance checks. Each check contains
+an `id`, human-readable `description`, exact `tool` name, and an `arguments`
+object. Checks are evidence requirements attached to the step; they are not
+commands or an execution queue. The model must invoke the named tool normally,
+through the ordinary approval and budget path. The runtime never auto-executes
+a check.
+
+When a tool call completes, the scheduler records evidence only when the tool
+name matches exactly and its canonical JSON arguments match exactly. The
+record includes the originating call ID and the actual tool outcome. A
+successful matching call marks the check `passed`; a matching failed call
+marks it `failed`. The latest matching outcome wins. Calls to mutating or
+unknown tools that do not match a declared check invalidate the step's check
+evidence conservatively across the whole plan, returning checks to `pending`.
+A failed matching check also invalidates prior evidence before recording its
+failure. Checks act as ordering barriers within a tool batch, and must be
+declared in an earlier batch to collect evidence.
+A step cannot be completed while any check is pending or failed. The model
+must use `plan complete` only after all checks pass; the runtime reports
+pending or failed checks in its completion notice and gives the existing
+single bounded completion nudge when the run is otherwise ready to finish.
+
+For example, the model can create a step with a real test command, then run
+that command and complete the step only after the matching successful result:
+
+```json
+{"verb":"create","steps":[{"id":"tests","title":"Run the auth regression suite","checks":[{"id":"go-test","description":"Auth package tests pass","tool":"shell","arguments":{"command":"go test ./internal/auth"}}]}]}
+```
+
+```json
+{"command":"go test ./internal/auth"}
+```
+
+```json
+{"verb":"complete","step_id":"tests"}
+```
+
+Use an execution tool such as `shell` for a test check; a `read_file` call
+that merely reads a script is not evidence that the test passed. Check status
+records the declared tool outcome, not semantic proof that the description is
+true, and there is no independent verifier model yet.
+
+On resume, persisted check evidence is downgraded to `pending`, and steps
+marked done with checks return to `in_progress` until the checks are rerun.
+Plans without checks remain compatible and advisory: their existing status
+behavior is unchanged.
+
+Checked declarations reserve space in the protected render. The runtime
+rejects a checked plan when its complete render cannot fit
+`max_render_chars`, and titles or notes containing the reserved ` || checks:`
+delimiter are rejected so the persisted representation remains unambiguous
+on resume.
 
 ### One store, two holders
 
@@ -197,7 +263,8 @@ multi-step work; update statuses as you go (in_progress when you start a step,
 done only after verifying it); mark blocked with a note explaining why. The
 plan is shown to you on every iteration and survives context trimming — trust
 it over your memory of earlier turns. Replan freely with create when the
-approach changes; plans are steering aids, not contracts.",
+approach changes; plans without checks are steering aids, while checked steps
+also require their declared evidence before completion.",
   "parameters": {
     "type": "object",
     "properties": {
@@ -562,8 +629,9 @@ for dashboards. No titles, notes, or loop behavior.
 
 ### Non-goals
 
-- **Not waterfall.** No gating anywhere: the loop never blocks on plan
-  existence, coverage, or step order.
+- **Not waterfall.** Unchecked plans never gate on plan existence, coverage, or
+  step order. Checked steps gate their own completion on declared evidence;
+  they do not impose a global plan order.
 - **No DAG/dependency graph.** An ordered flat list suffices; ordering is
   advisory.
 - **No Telegram markdown migration.** `/plan` continues to manage operator-
@@ -600,7 +668,7 @@ injection mechanism are deliberately droppable by trimming — exactly wrong for
 state that must survive the whole run. The plan uses the compaction-digest
 pattern instead: recognized-by-prefix, `headLen`-protected, upsert-in-place.
 
-**Bias to action.** The plan is a steering instrument, never a gate: no
-enforcement path exists anywhere in the loop, `create` replaces wholesale so
-replanning is one call, and the prompt frames plans as "steering aids, not
-contracts."
+**Bias to action.** The plan remains a steering instrument for ordinary
+steps; acceptance checks add a narrow completion gate without auto-executing
+anything. `create` replaces wholesale so replanning is one call, and the
+prompt distinguishes advisory steps from checked completion.
