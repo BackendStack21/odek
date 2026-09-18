@@ -683,8 +683,7 @@ func renderPlan(p PlanState, maxChars int) string {
 		lines = append(lines, planStepLine(st))
 	}
 	build := func(omit map[int]bool, omitted int) string {
-		parts := make([]string, 0, len(lines)+2)
-		parts = append(parts, header)
+		parts := []string{header}
 		if p.Revision != nil {
 			if b, err := json.Marshal(p.Revision); err == nil {
 				parts = append(parts, "[Plan revision: "+string(b)+"]")

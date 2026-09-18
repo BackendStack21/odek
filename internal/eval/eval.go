@@ -283,12 +283,32 @@ func (t fixtureTool) Call(raw string) (string, error) {
 }
 
 func toolCall(name, id, args string) string {
-	b, _ := json.Marshal(args)
-	return fmt.Sprintf(`{"choices":[{"message":{"content":"","tool_calls":[{"id":%q,"type":"function","function":{"name":%q,"arguments":%s}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":7,"completion_tokens":3}}`, id, name, b)
+	body := map[string]any{
+		"choices": []any{map[string]any{
+			"message": map[string]any{
+				"content": "",
+				"tool_calls": []any{map[string]any{
+					"id": id, "type": "function",
+					"function": map[string]any{"name": name, "arguments": args},
+				}},
+			},
+			"finish_reason": "tool_calls",
+		}},
+		"usage": map[string]int{"prompt_tokens": 7, "completion_tokens": 3},
+	}
+	b, _ := json.Marshal(body)
+	return string(b)
 }
 func final(text string) string {
-	b, _ := json.Marshal(text)
-	return fmt.Sprintf(`{"choices":[{"message":{"content":%s},"finish_reason":"stop"}],"usage":{"prompt_tokens":7,"completion_tokens":3}}`, b)
+	body := map[string]any{
+		"choices": []any{map[string]any{
+			"message":       map[string]any{"content": text},
+			"finish_reason": "stop",
+		}},
+		"usage": map[string]int{"prompt_tokens": 7, "completion_tokens": 3},
+	}
+	b, _ := json.Marshal(body)
+	return string(b)
 }
 
 func baseFixture() *Fixture { return &Fixture{Values: map[string]string{}} }

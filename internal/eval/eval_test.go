@@ -2,6 +2,7 @@ package eval
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/BackendStack21/odek/internal/llmclient"
@@ -47,5 +48,37 @@ func TestHarnessRejectsMissingOracleOrClient(t *testing.T) {
 	emptyClient := RunWithOptions(context.Background(), []Scenario{{Name: "no client", Oracle: func(*Fixture, string, error, []ToolCall) OracleResult { return OracleResult{} }}}, RunOptions{ClientFactory: func(string) (*llmclient.Client, error) { return nil, nil }})
 	if emptyClient.Failed != 1 || emptyClient.Cases[0].Error == "" {
 		t.Fatalf("accepted no client: %+v", emptyClient)
+	}
+}
+
+func TestScriptedResponsesEscapeJSONStrings(t *testing.T) {
+	value := "quoted\"\\\n\x01"
+	args := `{"value":"quoted\""}`
+	var response struct {
+		Choices []struct {
+			Message struct {
+				Content   string
+				ToolCalls []struct {
+					ID       string
+					Function struct {
+						Name      string
+						Arguments string
+					}
+				} `json:"tool_calls"`
+			}
+		}
+	}
+	if err := json.Unmarshal([]byte(toolCall(value, value, args)), &response); err != nil {
+		t.Fatal(err)
+	}
+	call := response.Choices[0].Message.ToolCalls[0]
+	if call.ID != value || call.Function.Name != value || call.Function.Arguments != args {
+		t.Fatal("tool fixture strings changed during encoding")
+	}
+	if err := json.Unmarshal([]byte(final(value)), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Choices[0].Message.Content != value {
+		t.Fatal("final fixture text changed during encoding")
 	}
 }
