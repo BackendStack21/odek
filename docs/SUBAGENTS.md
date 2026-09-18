@@ -94,10 +94,14 @@ The `delegate_tasks` tool is available in CLI, REPL, Web UI, Telegram, and headl
                                                //   accepts persistence, unknown, and unread_exec
                                                //   (validated at load; unread_exec is enforced by the
                                                //   trust lockdown, not this clamp).
-          "profile":    { "type": "string" }   // Optional. Operator-defined capability profile name
+          "profile":    { "type": "string" },  // Optional. Operator-defined capability profile name
                                                //   (top-level `profiles` config). Its max_risk, allowlist,
                                                //   and tool filter OVERRIDE the operator's global config
                                                //   for this sub-agent. Unknown names fail the task.
+          "model":      { "type": "string", "minLength": 1, "maxLength": 256 }
+                                               // Optional. Model ID supported by the parent's provider;
+                                               //   omitted inherits the parent's model. Provider, endpoint,
+                                               //   and credentials always remain those of the parent.
         },
         "required": ["goal"]
       }
@@ -227,7 +231,11 @@ For large prompts that exceed CLI argument length limits, use the `--task` flag 
 }
 ```
 
-All keys except `goal` are optional. `trust_level` / `max_risk` / `profile` mirror the `delegate_tasks` task fields; `parent_trust` records the spawning agent's trust; `provider` / `model` / `base_url` inherit from the parent run (`delegate_tasks` stamps them — they are not model-controlled tool args) and bind the FD-handed API key to that provider; `budget` carries the parent's remaining budget when `subagent.budget_inherit` is `"share"` — the child enforces `min(operator limits, inherited values)` (zero values are ignored).
+All keys except `goal` are optional. `trust_level`, `max_risk`, `profile`, and `model` mirror the `delegate_tasks` task fields; `parent_trust` records the spawning agent's trust. Omitted models inherit the parent's model. Model availability is validated by the provider.
+
+Through `delegate_tasks`, the model can select only a model ID on the parent's provider. The tool stamps the inherited provider and base URL and passes the API key through the existing file descriptor channel. Provider, endpoint, and credentials are not selectable tool arguments.
+
+In share mode, `budget` carries the parent's remaining budget; the child enforces `min(operator limits, inherited values)` (zero values are ignored). A shared cost budget requires both input and output prices for the selected model, resolved through an exact `limits.model_prices` match with per-field flat-price fallback; missing prices fail closed.
 
 The `delegate_tasks` tool always uses this file-based approach internally.
 
@@ -453,8 +461,54 @@ The sub-agent system has three test layers:
 E2E tests:
 - Build the `odek` binary once via `TestMain`
 - Test the full pipeline: `tool.Call()` → `exec.Command("odek", "subagent", ...)` → JSON stdout → parse
-- Require no LLM provider (sub-agent fails on setup, producing JSON error — which is the exact contract verified)
+- Require no live LLM provider: setup-failure tests verify error contracts, and a local mock provider verifies selected model IDs and model-specific cost accounting.
 - Validate: binary exists, stderr emoji protocol, quiet mode, 100KB+ task files via temp files, missing binary graceful degradation
+
+## Choosing a task model
+
+The main agent can set `tasks[].model` in `delegate_tasks` independently for
+each child. Omit it to inherit the parent's current model. A single batch can
+mix explicit model selections and inherited models without changing the
+parent or sibling tasks.
+
+For example, ask the main agent: “Run an adversarial review with a Flash model,
+and have another subagent review the test coverage using your current model.”
+For a parent configured to use DeepSeek, the tool arguments can be:
+
+```json
+{
+  "tasks": [
+    {
+      "goal": "Review the authentication change for bypasses and report findings",
+      "model": "deepseek-v4-flash",
+      "max_risk": "safe",
+      "context": "Review the implementation and tests. Do not modify files."
+    },
+    {
+      "goal": "Review authentication test coverage and report missing cases",
+      "max_risk": "safe",
+      "context": "Review the tests independently. Do not modify files."
+    }
+  ]
+}
+```
+
+The first child requests `deepseek-v4-flash`; the second inherits the parent's
+model. Use an exact model ID supported by your provider. “Flash” and “cheaper”
+are task guidance, not built-in model aliases or automatic price selectors.
+The provider validates model availability; odek does not discover available
+models or switch providers for a task. Provider, endpoint, and credentials
+remain inherited from the parent.
+
+Explicit model names must contain 1–256 characters after trimming surrounding
+spaces and must not contain control characters. Empty or invalid names reject
+the batch before any child starts. Omit `model` to request inheritance.
+
+Model selection does not change capability profiles, trust restrictions, or
+execution limits. With a shared cost budget, both input and output prices must
+resolve for the selected model through `limits.model_prices` or the flat-price
+fallback; otherwise the child fails before making an LLM call. Configure
+per-model prices when comparing spend across different models.
 
 ## Example: End-to-end flow
 
