@@ -27,6 +27,9 @@ type SignalEvent struct {
 	//                        human-readable elapsed, e.g. "running for 2m0s").
 	//                        Fires every interval until the call returns, so
 	//                        long-running tools no longer look like a hang.
+	//   "plan_reassessment" — repeated observed failures warrant reviewing
+	//                        the current plan (Detail = fixed reason code,
+	//                        Count = failure-batch threshold).
 	//   "budget_warning"   — the run crossed 50/75/90% of its iteration or
 	//                        wall-clock budget and the engine injected a
 	//                        budget-awareness hint (Detail = threshold and

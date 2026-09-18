@@ -10,8 +10,8 @@ import (
 
 func TestDefaultScenariosAreIndependentAndBounded(t *testing.T) {
 	r := Run(context.Background(), Scenarios())
-	if r.Total != 11 {
-		t.Fatalf("total=%d want 11", r.Total)
+	if r.Total != 14 {
+		t.Fatalf("total=%d want 14", r.Total)
 	}
 	if r.Failed != 0 {
 		t.Fatalf("scenario failures=%d report=%+v", r.Failed, r)
@@ -28,8 +28,8 @@ func TestDefaultScenariosAreIndependentAndBounded(t *testing.T) {
 			taskSuccess++
 		}
 	}
-	if taskSuccess != 4 {
-		t.Fatalf("task successes=%d want 4", taskSuccess)
+	if taskSuccess != 7 {
+		t.Fatalf("task successes=%d want 7", taskSuccess)
 	}
 	for _, c := range r.Cases {
 		if c.Name == "plan_check_failed" || c.Name == "plan_check_missing" {

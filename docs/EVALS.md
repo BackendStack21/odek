@@ -18,7 +18,8 @@ prices or estimate cost.
 The initial suite covers verified artifact work, a failed read followed by a
 false success claim, unrelated reads after a write, transient failure and
 recovery, cancellation, and plan acceptance checks for success, failed
-evidence, missing evidence, and incremental revision behavior. Negative cases can still be scenario passes
+evidence, missing evidence, incremental revision behavior, and bounded plan
+reassessment signals. Negative cases can still be scenario passes
 when the oracle correctly records that the task did not succeed. The plan
 cases use the production `plan` tool and `PlanStore`, including the runtime
 incomplete marker for failed or missing evidence.
@@ -39,9 +40,9 @@ go run ./cmd/odek-eval > eval-report.json
 ```
 
 Exit status is 0 when every scenario passes, 1 for scenario failures, and 2
-if the report cannot be encoded. The eleven-case baseline includes a deliberate
+if the report cannot be encoded. The fourteen-case baseline includes a deliberate
 unguarded false-success control: all scenarios pass while
-`false_completion_rate` is 1/11 (about 0.091). That expected control is not a failure of
+`false_completion_rate` is 1/14 (about 0.071). That expected control is not a failure of
 the checked-plan guard or a live-model benchmark.
 
 Add a case to `internal/eval.Scenarios` with fresh fixture state, scripted

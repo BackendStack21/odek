@@ -164,7 +164,7 @@ odek can emit a structured runtime event stream: **one JSON object per line
 - `type` is one of: `run_started`, `iteration_completed`,
   `tool_call_started`, `tool_call_completed`, `tool_call_failed`,
   `session_saved`, `context_trimmed`, `budget_exceeded`, `run_completed`,
-  `run_failed`, `plan_created`, `plan_updated`, `plan_blocked`, `subagent_denied`,
+  `run_failed`, `plan_created`, `plan_updated`, `plan_blocked`, `plan_reassessment`, `subagent_denied`,
   `subagent_spawned`, `subagent_completed`, `subagent_concurrency_wait`,
   `side_call_usage`.
 - `run_id` is a random 128-bit hex identifier generated per agent run and
@@ -198,6 +198,7 @@ Per-type `data` fields:
 | `plan_created` | `steps` (total count), `version` |
 | `plan_updated` | `steps`, `done`, `in_progress`, `blocked`, `pending`, `version` |
 | `plan_blocked` | `steps`, `blocked`, `version` |
+| `plan_reassessment` | `reason`, `failure_batches` (always `3`) |
 | `subagent_denied` | `task_index`, `class`, `reason` (emitted by `delegate_tasks` for each policy denial a child reports) |
 | `subagent_spawned` | `task_id`, `pid`, `depth`, `timeout_seconds`, `goal_sha256` (16 hex chars: first 8 bytes of SHA-256 of the goal; the goal itself is never logged) |
 | `subagent_completed` | `task_id`, `status`, plus optional `iterations`, `duration_seconds`, `tokens_used`, `artifact_count` when the child result carried them |
@@ -235,6 +236,11 @@ emits `plan_updated` with unchanged counts (the version stream stays
 gapless). Plan events carry no `iteration`: mutations fire inside parallel
 tool goroutines, so consumers correlate via the surrounding
 `tool_call_started`/`tool_call_completed` pair for the `plan` tool.
+`plan_reassessment` is emitted when an active open plan reaches one of the
+initial bounded failure triggers; its data contains only `reason` and
+`failure_batches: 3`. The corresponding hint is delivered on the next normal
+model request, with no side model call, tool execution, or automatic plan
+mutation.
 
 Sink behavior (`--events-jsonl`): the file is created (and hardened) with
 `0600` permissions, the parent directory must already exist, a symlink at the

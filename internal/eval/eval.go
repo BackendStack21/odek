@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -28,6 +29,7 @@ type Fixture struct {
 	Calls     []ToolCall
 	GoodCalls []ToolCall
 	Plan      *loop.PlanState
+	Hints     []string
 	mu        sync.Mutex
 }
 
@@ -42,14 +44,15 @@ type OracleResult struct {
 }
 
 type Scenario struct {
-	Name      string
-	Task      string
-	Responses []string
-	Tools     []tool.Tool
-	Fixture   *Fixture
-	Oracle    func(*Fixture, string, error, []ToolCall) OracleResult
-	Cancel    bool
-	Plan      bool
+	Name             string
+	Task             string
+	Responses        []string
+	Tools            []tool.Tool
+	Fixture          *Fixture
+	Oracle           func(*Fixture, string, error, []ToolCall) OracleResult
+	Cancel           bool
+	Plan             bool
+	RequestInspector func([]byte)
 }
 type ToolCallReport struct {
 	Name  string `json:"name"`
@@ -137,6 +140,11 @@ func runCase(parent context.Context, s Scenario, opts RunOptions) CaseReport {
 	calls := []ToolCall{}
 	n := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.RequestInspector != nil {
+			if body, readErr := io.ReadAll(io.LimitReader(r.Body, 2<<20)); readErr == nil {
+				s.RequestInspector(body)
+			}
+		}
 		mu.Lock()
 		i := n
 		n++
@@ -277,6 +285,8 @@ func (t fixtureTool) Call(raw string) (string, error) {
 			return v, nil
 		}
 		return "missing evidence", nil
+	case "always_fail":
+		return "fixture failure", fmt.Errorf("fixture failure")
 	default:
 		return "", fmt.Errorf("unknown fixture")
 	}
@@ -327,6 +337,9 @@ func Scenarios() []Scenario {
 	f9 := baseFixture()
 	f10 := baseFixture()
 	f11 := baseFixture()
+	f12 := baseFixture()
+	f13 := baseFixture()
+	f14 := baseFixture()
 	return []Scenario{
 		{Name: "successful_fix_verified", Task: "write and verify artifact", Fixture: f1, Tools: []tool.Tool{Tool(f1, "write_file", "write"), Tool(f1, "read_file", "read")}, Responses: []string{toolCall("write_file", "w1", `{"key":"artifact","value":"fixed"}`), toolCall("read_file", "r1", `{"key":"artifact"}`), final("verified")}, Oracle: func(f *Fixture, r string, e error, _ []ToolCall) OracleResult {
 			if e != nil {
@@ -409,6 +422,24 @@ func Scenarios() []Scenario {
 			}
 			return OracleResult{TaskSuccess: true}
 		}},
+		{Name: "reassessment_repeated_check_failure", Task: "recover after repeated acceptance check failures", Fixture: f12, Plan: true, RequestInspector: captureHints(f12), Tools: []tool.Tool{Tool(f12, "read_file", "read"), Tool(f12, "write_file", "write")}, Responses: []string{toolCall("plan", "p1", `{"verb":"create","steps":[{"id":"fix","title":"Fix","checks":[{"id":"e1","description":"Read evidence","tool":"read_file","arguments":{"key":"evidence"}}]}]}`), toolCall("read_file", "r1", `{"key":"evidence"}`), toolCall("read_file", "r2", `{"key":"evidence"}`), toolCall("read_file", "r3", `{"key":"evidence"}`), toolCall("plan", "p2", `{"verb":"revise","reason":"repair after repeated check failures","operations":[{"kind":"edit","step_id":"fix","note":"repair"}]}`), toolCall("write_file", "w1", `{"key":"evidence","value":"fixed"}`), toolCall("read_file", "r4", `{"key":"evidence"}`), toolCall("plan", "p3", `{"verb":"update","updates":[{"id":"fix","status":"done"}]}`), final("complete")}, Oracle: func(f *Fixture, r string, e error, c []ToolCall) OracleResult {
+			if e != nil || len(f.Hints) == 0 || !strings.HasPrefix(f.Hints[0], "[odek plan reassessment: repeated_check_failure]") || f.Plan == nil || len(f.Plan.Steps) != 1 || f.Plan.Steps[0].Status != loop.StepDone || f.get("evidence") != "fixed" || len(c) != 8 || !c[1].Error || !c[2].Error || !c[3].Error || c[4].Error || c[5].Error || c[6].Error || c[7].Error {
+				return OracleResult{Errors: []string{"repeated-check reassessment did not inject a hint and complete repair"}}
+			}
+			return OracleResult{TaskSuccess: true}
+		}},
+		{Name: "reassessment_varied_tool_failures", Task: "recover after varied tool failures", Fixture: f13, Plan: true, RequestInspector: captureHints(f13), Tools: []tool.Tool{Tool(f13, "fail_a", "always_fail"), Tool(f13, "fail_b", "always_fail"), Tool(f13, "fail_c", "always_fail"), Tool(f13, "read_file", "read"), Tool(f13, "write_file", "write")}, Responses: []string{toolCall("plan", "p1", `{"verb":"create","steps":[{"id":"fix","title":"Fix","checks":[{"id":"e1","description":"Read evidence","tool":"read_file","arguments":{"key":"evidence"}}]}]}`), toolCall("fail_a", "a1", `{}`), toolCall("fail_b", "b1", `{}`), toolCall("fail_c", "c1", `{}`), toolCall("write_file", "w1", `{"key":"evidence","value":"fixed"}`), toolCall("read_file", "r1", `{"key":"evidence"}`), toolCall("plan", "p2", `{"verb":"update","updates":[{"id":"fix","status":"done"}]}`), final("complete")}, Oracle: func(f *Fixture, r string, e error, c []ToolCall) OracleResult {
+			if e != nil || len(f.Hints) == 0 || !strings.HasPrefix(f.Hints[0], "[odek plan reassessment: varied_tool_failures]") || f.Plan == nil || len(f.Plan.Steps) != 1 || f.Plan.Steps[0].Status != loop.StepDone || f.get("evidence") != "fixed" || len(c) != 7 || !c[1].Error || !c[2].Error || !c[3].Error || c[4].Error || c[5].Error || c[6].Error {
+				return OracleResult{Errors: []string{"varied-failure reassessment did not inject a hint and complete repair"}}
+			}
+			return OracleResult{TaskSuccess: true}
+		}},
+		{Name: "reassessment_transient_failure_no_hint", Task: "recover from one transient failure", Fixture: f14, Plan: true, RequestInspector: captureHints(f14), Tools: []tool.Tool{Tool(f14, "flaky", "flaky")}, Responses: []string{toolCall("plan", "p1", `{"verb":"create","steps":[{"id":"fix","title":"Fix"}]}`), toolCall("flaky", "f1", `{}`), toolCall("flaky", "f2", `{}`), toolCall("plan", "p2", `{"verb":"update","updates":[{"id":"fix","status":"done"}]}`), final("complete")}, Oracle: func(f *Fixture, r string, e error, c []ToolCall) OracleResult {
+			if e != nil || len(f.Hints) != 0 || f.Plan == nil || len(f.Plan.Steps) != 1 || f.Plan.Steps[0].Status != loop.StepDone || f.get("attempts") != "2" || len(c) != 4 || !c[1].Error || c[2].Error || c[3].Error {
+				return OracleResult{Errors: []string{"transient recovery incorrectly triggered reassessment or failed completion"}}
+			}
+			return OracleResult{TaskSuccess: true}
+		}},
 	}
 }
 
@@ -421,4 +452,27 @@ func hasGoodCall(f *Fixture, name string) bool {
 		}
 	}
 	return false
+}
+
+func captureHints(f *Fixture) func([]byte) {
+	return func(body []byte) {
+		var req struct {
+			Messages []struct {
+				Role    string `json:"role"`
+				Content string `json:"content"`
+			} `json:"messages"`
+		}
+		if json.Unmarshal(body, &req) != nil {
+			return
+		}
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		for _, m := range req.Messages {
+			if m.Role == "system" {
+				if idx := strings.Index(m.Content, "[odek plan reassessment:"); idx >= 0 {
+					f.Hints = append(f.Hints, m.Content[idx:])
+				}
+			}
+		}
+	}
 }
