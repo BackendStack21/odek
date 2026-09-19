@@ -1,8 +1,12 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
+	"image"
+	"image/png"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +15,33 @@ import (
 	"github.com/BackendStack21/odek/internal/config"
 	"github.com/BackendStack21/odek/internal/danger"
 )
+
+type fakeVisionAnalyzer struct {
+	media []visionMedia
+	err   error
+}
+
+func (f *fakeVisionAnalyzer) AnalyzeVision(_ context.Context, _ string, _ string, media []visionMedia) (visionAnalysis, error) {
+	f.media = media
+	if f.err != nil {
+		return visionAnalysis{}, f.err
+	}
+	return visionAnalysis{Text: "provider description", Model: "test-model"}, nil
+}
+
+func providerPNG(t *testing.T) string {
+	t.Helper()
+	var b bytes.Buffer
+	// NewUniform has infinite bounds; png.Encode would never terminate.
+	if err := png.Encode(&b, image.NewRGBA(image.Rect(0, 0, 1, 1))); err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(t.TempDir(), "image.png")
+	if err := os.WriteFile(p, b.Bytes(), 0600); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -133,8 +164,8 @@ func TestVision_FileNotFound(t *testing.T) {
 		t.Fatal("expected typed operation failure alongside result")
 	}
 	r := decodeVisionResult(t, result)
-	if !strings.Contains(r.Error, "cannot open") {
-		t.Errorf("expected 'cannot open' in error, got: %s", r.Error)
+	if !strings.Contains(r.Error, "cannot stage file") {
+		t.Errorf("expected 'cannot stage file' in error, got: %s", r.Error)
 	}
 }
 
@@ -337,6 +368,54 @@ func TestVision_SchemaShape(t *testing.T) {
 	for _, want := range []string{`"path"`, `"prompt"`, `"required"`} {
 		if !strings.Contains(s, want) {
 			t.Errorf("schema missing %q; schema: %s", want, s)
+		}
+	}
+}
+
+func TestVision_ProviderUsesValidatedInlineMedia(t *testing.T) {
+	analyzer := &fakeVisionAnalyzer{}
+	tool := newVisionTool(danger.DangerousConfig{Classes: map[danger.RiskClass]danger.Action{
+		danger.NetworkEgress: danger.Allow,
+	}}, config.VisionConfig{Backend: "provider", Provider: "test", Model: "vision-test"})
+	tool.SetAnalyzer(analyzer)
+	raw, err := tool.Call(fmt.Sprintf(`{"path":%q}`, providerPNG(t)))
+	if err != nil {
+		t.Fatalf("provider Call: %v", err)
+	}
+	var out visionResult
+	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Error != "" || out.Model != "test-model" || len(analyzer.media) != 1 || analyzer.media[0].MIME != "image/png" {
+		t.Fatalf("result=%+v media=%+v", out, analyzer.media)
+	}
+	if len(analyzer.media[0].Data) == 0 {
+		t.Fatal("provider received empty media")
+	}
+}
+
+func TestVision_ProviderWithoutAnalyzerFails(t *testing.T) {
+	tool := newVisionTool(danger.DangerousConfig{Classes: map[danger.RiskClass]danger.Action{
+		danger.NetworkEgress: danger.Allow,
+	}}, config.VisionConfig{Backend: "provider"})
+	_, err := tool.Call(fmt.Sprintf(`{"path":%q}`, providerPNG(t)))
+	if err == nil {
+		t.Fatal("provider backend without analyzer returned nil error")
+	}
+}
+
+func TestVision_ProviderRejectsNonImageAndMalformedWebP(t *testing.T) {
+	tool := newVisionTool(danger.DangerousConfig{Classes: map[danger.RiskClass]danger.Action{
+		danger.NetworkEgress: danger.Allow,
+	}}, config.VisionConfig{Backend: "provider", Model: "vision-test"})
+	tool.SetAnalyzer(&fakeVisionAnalyzer{})
+	for _, data := range [][]byte{[]byte("plain text"), []byte("RIFF\x10\x00\x00\x00WEBPVP8Xbad")} {
+		p := filepath.Join(t.TempDir(), "input.bin")
+		if err := os.WriteFile(p, data, 0600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tool.Call(fmt.Sprintf(`{"path":%q}`, p)); err == nil {
+			t.Fatalf("accepted invalid provider media %q", data)
 		}
 	}
 }

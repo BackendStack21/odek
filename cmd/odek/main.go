@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/BackendStack21/odek"
+	"github.com/BackendStack21/odek/internal/budget"
 	"github.com/BackendStack21/odek/internal/config"
 	"github.com/BackendStack21/odek/internal/danger"
 	"github.com/BackendStack21/odek/internal/events"
@@ -1511,6 +1512,10 @@ const globalConfigTemplate = `{
     "binary_path": ""
   },
   "vision": {
+    "backend": "local",
+    "provider": "",
+    "model": "",
+    "max_tokens": 1024,
     "models_dir": "",
     "binary_path": "",
     "video_frames": 8,
@@ -2458,6 +2463,8 @@ func toolRestrictsToCWD(t odek.Tool) bool {
 type toolConfig struct {
 	Transcription config.TranscriptionConfig
 	Vision        config.VisionConfig
+	VisionOptions llmclient.Options
+	VisionLimits  budget.Limits
 	WebSearch     config.WebSearchConfig
 	// Subagent carries the resolved subagent section for delegate_tasks
 	// (timeout/concurrency/depth defaults + budget inheritance mode).
@@ -2507,6 +2514,8 @@ func toolConfigFromResolved(resolved config.ResolvedConfig) toolConfig {
 	return toolConfig{
 		Transcription: resolved.Transcription,
 		Vision:        resolved.Vision,
+		VisionOptions: llmclient.Options{Provider: resolved.Provider, APIKey: resolved.APIKey, BaseURL: resolved.BaseURL, Providers: resolved.ProviderOverrides(), Timeout: time.Duration(resolved.LLM.RequestTimeoutSeconds) * time.Second},
+		VisionLimits:  resolved.Limits,
 		WebSearch:     resolved.WebSearch,
 		Planning:      &resolved.Planning,
 		Subagent:      resolved.Subagent,
@@ -2560,6 +2569,7 @@ func builtinTools(dc danger.DangerousConfig, sm *skills.SkillManager, approver d
 		toolsDisabled: tcfg.Introspection.ToolsDisabled,
 		mcpServers:    tcfg.Introspection.MCPServers,
 	}
+	vision := newConfiguredVisionTool(dc, tcfg, approver)
 	tools := []odek.Tool{
 		shell,
 		&delegateTasksTool{
@@ -2608,7 +2618,7 @@ func builtinTools(dc danger.DangerousConfig, sm *skills.SkillManager, approver d
 		&headTailTool{dangerousConfig: dc},
 		&base64Tool{dangerousConfig: dc},
 		newTranscribeTool(dc, tcfg.Transcription),
-		newVisionTool(dc, tcfg.Vision),
+		vision,
 		// session_search returns content from arbitrary past sessions —
 		// including sessions that ingested untrusted content. That path
 		// otherwise bypasses the memory taint gate and the audit log, so

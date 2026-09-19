@@ -1,9 +1,17 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	_ "golang.org/x/image/webp"
+	"image"
+	_ "image/gif"
+	_ "image/jpeg"
+	_ "image/png"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,8 +20,10 @@ import (
 	"syscall"
 
 	"github.com/BackendStack21/odek"
+	"github.com/BackendStack21/odek/internal/budget"
 	"github.com/BackendStack21/odek/internal/config"
 	"github.com/BackendStack21/odek/internal/danger"
+	"github.com/BackendStack21/odek/internal/events"
 )
 
 var videoExts = map[string]bool{
@@ -186,10 +196,46 @@ type visionTool struct {
 	dangerousConfig danger.DangerousConfig
 	visionCfg       config.VisionConfig
 	restrictToCWD   bool // sandbox: reject paths that escape the workspace
+	analyzer        visionAnalyzer
+	approver        danger.Approver
+}
+
+type visionMedia struct {
+	MIME string
+	Data []byte
+}
+
+type visionAnalysis struct {
+	Text  string
+	Model string
+}
+
+type visionAnalyzer interface {
+	AnalyzeVision(context.Context, string, string, []visionMedia) (visionAnalysis, error)
+}
+
+func visionFailure(result visionResult, err error) (string, error) {
+	raw, _ := jsonResult(result)
+	return raw, err
 }
 
 func newVisionTool(dc danger.DangerousConfig, vc config.VisionConfig) *visionTool {
 	return &visionTool{dangerousConfig: dc, visionCfg: vc}
+}
+
+func (t *visionTool) SetAnalyzer(a visionAnalyzer)  { t.analyzer = a }
+func (t *visionTool) SetApprover(a danger.Approver) { t.approver = a }
+
+func (t *visionTool) SetBudgetView(v budget.View) {
+	if a, ok := t.analyzer.(interface{ SetBudgetView(budget.View) }); ok {
+		a.SetBudgetView(v)
+	}
+}
+
+func (t *visionTool) SetEventEmitter(fn func(events.Event)) {
+	if a, ok := t.analyzer.(interface{ SetEventEmitter(func(events.Event)) }); ok {
+		a.SetEventEmitter(fn)
+	}
 }
 
 func (t *visionTool) Name() string { return "vision" }
@@ -227,7 +273,97 @@ func (t *visionTool) Schema() any {
 	}
 }
 
-func (t *visionTool) Call(argsJSON string) (result string, err error) {
+const maxVisionPayload = 10 << 20
+
+func stageVisionInput(path string) (string, error) {
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return "", err
+	}
+	if !info.Mode().IsRegular() {
+		return "", fmt.Errorf("vision input is not a regular file")
+	}
+	if info.Size() > maxFileReadBytes {
+		return "", fmt.Errorf("file too large (%d bytes, max %d)", info.Size(), maxFileReadBytes)
+	}
+	tmp, err := os.CreateTemp("", "odek-vision-input-*"+filepath.Ext(path))
+	if err != nil {
+		return "", err
+	}
+	tmpPath := tmp.Name()
+	defer func() {
+		if err != nil {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+	var copied int64
+	copied, err = io.Copy(tmp, io.LimitReader(f, maxFileReadBytes+1))
+	if err != nil {
+		tmp.Close()
+		return "", err
+	}
+	if err = tmp.Close(); err != nil {
+		return "", err
+	}
+	if copied > maxFileReadBytes {
+		_ = os.Remove(tmpPath)
+		return "", fmt.Errorf("file too large (max %d bytes)", maxFileReadBytes)
+	}
+	return tmpPath, nil
+}
+
+func readVisionMedia(path string) ([]byte, string, error) {
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, "", err
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return nil, "", err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, "", fmt.Errorf("vision input is not a regular file")
+	}
+	if info.Size() > maxVisionPayload {
+		return nil, "", fmt.Errorf("file too large (%d bytes, max %d)", info.Size(), maxVisionPayload)
+	}
+	b, err := io.ReadAll(io.LimitReader(f, maxVisionPayload+1))
+	if err != nil {
+		return nil, "", err
+	}
+	if len(b) > maxVisionPayload {
+		return nil, "", fmt.Errorf("file too large (max %d bytes)", maxVisionPayload)
+	}
+	mimeType := http.DetectContentType(b)
+	switch mimeType {
+	case "image/jpeg", "image/png", "image/gif", "image/webp":
+	default:
+		return nil, "", fmt.Errorf("unsupported image type %q for provider vision", mimeType)
+	}
+	cfg, _, err := image.DecodeConfig(bytes.NewReader(b))
+	if err != nil {
+		return nil, "", fmt.Errorf("invalid image: %w", err)
+	}
+	if cfg.Width <= 0 || cfg.Height <= 0 || cfg.Width > 8192 || cfg.Height > 8192 || int64(cfg.Width)*int64(cfg.Height) > 40_000_000 {
+		return nil, "", fmt.Errorf("image dimensions exceed limits")
+	}
+	return b, mimeType, nil
+}
+
+func (t *visionTool) Call(argsJSON string) (string, error) {
+	return t.CallContext(t.toolCtx(), argsJSON)
+}
+
+func (t *visionTool) CallContext(ctx context.Context, argsJSON string) (result string, err error) {
+	if err := config.ValidateVisionConfig(t.visionCfg); err != nil {
+		return jsonError(err.Error())
+	}
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("vision: panic: %v", r)
@@ -256,64 +392,114 @@ func (t *visionTool) Call(argsJSON string) (result string, err error) {
 	}, nil); err != nil {
 		return jsonError(err.Error())
 	}
+	if strings.EqualFold(t.visionCfg.Backend, "provider") {
+		if err := t.dangerousConfig.CheckOperation(danger.ToolOperation{
+			Name: "vision", Resource: "provider:" + t.visionCfg.Provider, Risk: danger.NetworkEgress,
+		}, nil); err != nil {
+			return jsonError(err.Error())
+		}
+		if t.analyzer == nil {
+			return visionFailure(visionResult{Error: "vision provider backend is not configured"}, fmt.Errorf("vision provider backend is not configured"))
+		}
+		ext := strings.ToLower(filepath.Ext(args.Path))
+		kind := "image"
+		media := make([]visionMedia, 0, 1)
+		providerPrompt := prompt
+		totalPayload := 0
+		if videoExts[ext] {
+			kind = "video"
+			stagedVideo, serr := stageVisionInput(args.Path)
+			if serr != nil {
+				return visionFailure(visionResult{Error: serr.Error(), Type: kind}, serr)
+			}
+			defer os.Remove(stagedVideo)
+			n := t.visionCfg.VideoFrames
+			if n <= 0 {
+				n = 8
+			}
+			frames, ferr := extractVideoFrames(ctx, stagedVideo, n)
+			if ferr != nil {
+				return visionFailure(visionResult{Error: ferr.Error(), Type: kind}, ferr)
+			}
+			defer os.RemoveAll(filepath.Dir(frames[0]))
+			providerPrompt = fmt.Sprintf("These are %d frames sampled evenly from a video. %s", len(frames), prompt)
+			for _, frame := range frames {
+				data, mediaType, rerr := readVisionMedia(frame)
+				if rerr != nil {
+					return visionFailure(visionResult{Error: rerr.Error(), Type: kind}, rerr)
+				}
+				totalPayload += len(data)
+				if totalPayload > maxVisionPayload {
+					err := fmt.Errorf("video frames exceed provider payload limit (%d bytes)", maxVisionPayload)
+					return visionFailure(visionResult{Error: err.Error(), Type: kind}, err)
+				}
+				media = append(media, visionMedia{MIME: mediaType, Data: data})
+			}
+		} else {
+			data, mediaType, rerr := readVisionMedia(args.Path)
+			if rerr != nil {
+				return visionFailure(visionResult{Error: rerr.Error(), Type: kind}, rerr)
+			}
+			media = append(media, visionMedia{MIME: mediaType, Data: data})
+		}
+		analysis, err := t.analyzer.AnalyzeVision(ctx, t.visionCfg.Model, providerPrompt, media)
+		if err != nil {
+			return visionFailure(visionResult{Error: err.Error(), Model: analysis.Model, Type: kind}, err)
+		}
+		frames := 0
+		if kind == "video" {
+			frames = len(media)
+		}
+		return jsonResult(visionResult{Description: wrapUntrusted(ctx, "vision:"+args.Path, analysis.Text), Model: analysis.Model, Type: kind, Frames: frames})
+	}
 
-	// Check file exists (O_NOFOLLOW prevents symlink attacks)
-	f, err := os.OpenFile(args.Path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	// Stage the verified input so the local subprocess and ffmpeg read a
+	// private snapshot rather than reopening a path that may have changed.
+	stagedPath, err := stageVisionInput(args.Path)
 	if err != nil {
-		return jsonResult(visionResult{
-			Error: fmt.Sprintf("cannot open file %q: %v", args.Path, err),
-		})
+		return visionFailure(visionResult{Error: fmt.Sprintf("cannot stage file %q: %v", args.Path, err)}, err)
 	}
-	// Input size cap (2026-08 audit): vision had none, so a multi-gigabyte
-	// "image"/"video" went straight to llama-mtmd-cli/ffmpeg — host
-	// memory/disk DoS with no approval. Mirror transcribe's 10 MiB cap.
-	if info, serr := f.Stat(); serr == nil && info.Size() > maxFileReadBytes {
-		f.Close()
-		return jsonResult(visionResult{
-			Error: fmt.Sprintf("file too large (%d bytes, max %d)", info.Size(), maxFileReadBytes),
-		})
-	}
-	f.Close()
+	defer os.Remove(stagedPath)
 
 	binary, err := llamaMtmdBinary(t.visionCfg)
 	if err != nil {
-		return jsonResult(visionResult{Error: err.Error()})
+		return visionFailure(visionResult{Error: err.Error()}, err)
 	}
 	modelPath, mmprojPath, err := visionModelPaths(t.visionCfg)
 	if err != nil {
-		return jsonResult(visionResult{Error: err.Error()})
+		return visionFailure(visionResult{Error: err.Error()}, err)
 	}
 
 	ext := strings.ToLower(filepath.Ext(args.Path))
 	source := "vision:" + args.Path
 
 	if videoExts[ext] {
-		return t.analyzeVideo(binary, modelPath, mmprojPath, args.Path, prompt, source)
+		return t.analyzeVideo(ctx, binary, modelPath, mmprojPath, stagedPath, prompt, source)
 	}
-	return t.analyzeImage(binary, modelPath, mmprojPath, args.Path, prompt, source)
+	return t.analyzeImage(ctx, binary, modelPath, mmprojPath, stagedPath, prompt, source)
 }
 
-func (t *visionTool) analyzeImage(binary, modelPath, mmprojPath, imgPath, prompt, source string) (string, error) {
-	desc, err := runLlamaMtmd(t.toolCtx(), binary, modelPath, mmprojPath, prompt, []string{imgPath})
+func (t *visionTool) analyzeImage(ctx context.Context, binary, modelPath, mmprojPath, imgPath, prompt, source string) (string, error) {
+	desc, err := runLlamaMtmd(ctx, binary, modelPath, mmprojPath, prompt, []string{imgPath})
 	if err != nil {
-		return jsonResult(visionResult{Error: err.Error()})
+		return visionFailure(visionResult{Error: err.Error()}, err)
 	}
 	return jsonResult(visionResult{
-		Description: wrapUntrusted(t.toolCtx(), source, desc),
+		Description: wrapUntrusted(ctx, source, desc),
 		Model:       "minicpm-v-4.6",
 		Type:        "image",
 	})
 }
 
-func (t *visionTool) analyzeVideo(binary, modelPath, mmprojPath, videoPath, prompt, source string) (string, error) {
+func (t *visionTool) analyzeVideo(ctx context.Context, binary, modelPath, mmprojPath, videoPath, prompt, source string) (string, error) {
 	n := t.visionCfg.VideoFrames
 	if n <= 0 {
 		n = 8
 	}
 
-	frames, err := extractVideoFrames(t.toolCtx(), videoPath, n)
+	frames, err := extractVideoFrames(ctx, videoPath, n)
 	if err != nil {
-		return jsonResult(visionResult{Error: err.Error()})
+		return visionFailure(visionResult{Error: err.Error(), Type: "video"}, err)
 	}
 	defer os.RemoveAll(filepath.Dir(frames[0]))
 
@@ -321,12 +507,12 @@ func (t *visionTool) analyzeVideo(binary, modelPath, mmprojPath, videoPath, prom
 		"These are %d frames sampled evenly from a video. %s",
 		len(frames), prompt,
 	)
-	desc, err := runLlamaMtmd(t.toolCtx(), binary, modelPath, mmprojPath, videoPrompt, frames)
+	desc, err := runLlamaMtmd(ctx, binary, modelPath, mmprojPath, videoPrompt, frames)
 	if err != nil {
-		return jsonResult(visionResult{Error: err.Error()})
+		return visionFailure(visionResult{Error: err.Error(), Type: "video", Frames: len(frames)}, err)
 	}
 	return jsonResult(visionResult{
-		Description: wrapUntrusted(t.toolCtx(), source, desc),
+		Description: wrapUntrusted(ctx, source, desc),
 		Model:       "minicpm-v-4.6",
 		Type:        "video",
 		Frames:      len(frames),

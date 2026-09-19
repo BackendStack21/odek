@@ -858,34 +858,13 @@ func telegramCmd(args []string) error {
 		caption = strings.TrimSpace(caption)
 		caption = telegramGuardScan(context.Background(), caption, "photo caption")
 
-		// Auto-describe if configured and the vision model is available: run the
-		// photo through the local vision model FIRST to extract a description,
-		// then hand that description (plus the user's caption, if any) to the
-		// agent so it can answer the request. Mirrors voice auto-transcription.
-		if resolved.Vision.AutoDescribe {
-			tool := newVisionTool(resolved.Dangerous, resolved.Vision)
-			argsJSON, _ := json.Marshal(map[string]string{
-				"path":   localPath,
-				"prompt": photoVisionPrompt(caption),
-			})
-
-			result, err := tool.Call(string(argsJSON))
-			if err == nil {
-				var r struct {
-					Description string `json:"description"`
-					Error       string `json:"error"`
-				}
-				if json.Unmarshal([]byte(result), &r) == nil && r.Error == "" && r.Description != "" {
-					// r.Description is already wrapped in <untrusted_content>
-					// boundaries by the vision tool (image text is untrusted).
-					go handleChatMessage(chatID, messageID, userID,
-						photoVisionMessage(caption, r.Description),
-						bot, handler, sessionManager, resolved, systemMessage, handlerLog)
-					return "", nil
-				}
-			}
-			// Vision failed — fall through to the path-based message below.
-			handlerLog.Warn("auto-describe failed, falling back to path", "chat_id", chatID, "error", err)
+		// Queue auto-description inside the run so approvals, /stop, usage,
+		// and execution budgets cover both local and provider vision.
+		if resolved.Vision.AutoDescribeEnabled() {
+			go handleChatMessage(chatID, messageID, userID,
+				photoFallbackMessage(localPath, caption), bot, handler, sessionManager,
+				resolved, systemMessage, handlerLog, &telegramPhotoInput{Path: localPath, Caption: caption})
+			return "", nil
 		}
 
 		// Fallback: hand the agent the file path (and caption) so it can analyze
@@ -1392,6 +1371,7 @@ func handleChatMessage(
 	resolved config.ResolvedConfig,
 	systemMessage string,
 	log telegram.Logger,
+	photos ...*telegramPhotoInput,
 ) {
 	// Serialize per chat: only one agent loop runs per chat at a time.
 	// Prevents same-chat message racing that would corrupt session history.
@@ -2057,6 +2037,10 @@ func handleChatMessage(
 			log.Error("per-turn session persist", "chat_id", chatID, "error", err)
 		}
 	})
+
+	if len(photos) > 0 && photos[0] != nil {
+		agent.SetInitialToolCalls(telegramPhotoCalls(photos[0]))
+	}
 
 	// Run the agent with the full message history (multi-turn).
 	response, updatedMessages, err := agent.RunWithMessages(agentCtx, cs.Messages)

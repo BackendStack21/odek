@@ -415,7 +415,7 @@ Media files are saved to `~/.odek/media/` (created automatically on first downlo
 
 ### Auto-Describe (Photo → Vision)
 
-When `vision.auto_describe: true` is set in config (default) and the MiniCPM-V model is available, photos are automatically run through the local vision model before reaching the agent:
+When `vision.auto_describe: true` is set in config (default) and the configured vision backend is available, photos are automatically described before reaching the agent. The default backend is local MiniCPM-V; set `vision.backend` to `provider` and provide a `vision.model` to use the resolved main provider instead:
 
 ```
 Photo received → DownloadPhoto (largest size to disk)

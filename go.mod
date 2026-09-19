@@ -11,4 +11,6 @@ require (
 
 require golang.org/x/sys v0.47.0
 
-require github.com/BackendStack21/go-llm-sdk v0.3.3
+require github.com/BackendStack21/go-llm-sdk v0.4.0
+
+require golang.org/x/image v0.30.0

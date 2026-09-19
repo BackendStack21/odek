@@ -25,6 +25,16 @@ func (e *Engine) budgetSnapshotLocked() budget.Snapshot {
 // for sibling work and the parent's final synthesis. Runtime is a shared
 // deadline, not a quantity consumed independently by parallel children.
 func (e *Engine) ReserveExternalBudget(divisor int) (budget.Grant, error) {
+	return e.reserveExternalBudget(divisor, true)
+}
+
+// ReserveInferenceBudget reserves model-call headroom without reserving tool
+// calls: the enclosing vision tool has already been counted by the loop.
+func (e *Engine) ReserveInferenceBudget() (budget.Grant, error) {
+	return e.reserveExternalBudget(2, false)
+}
+
+func (e *Engine) reserveExternalBudget(divisor int, includeTools bool) (budget.Grant, error) {
 	e.externalChargeMu.Lock()
 	defer e.externalChargeMu.Unlock()
 	s := e.budgetSnapshotLocked()
@@ -43,6 +53,9 @@ func (e *Engine) ReserveExternalBudget(divisor int) (budget.Grant, error) {
 		{s.MaxOutputTokens, s.RemainingOutputTokens, &l.MaxOutputTokens, budget.LimitOutputTokens},
 		{s.MaxToolCalls, s.RemainingToolCalls, &l.MaxToolCalls, budget.LimitToolCalls},
 	} {
+		if !includeTools && dim.name == budget.LimitToolCalls {
+			continue
+		}
 		if dim.max > 0 {
 			*dim.target = dim.remaining / d
 			if *dim.target == 0 {

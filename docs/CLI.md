@@ -36,6 +36,12 @@
 
 ## Run flags
 
+Vision settings are operator-only configuration. The default `vision.backend`
+is `local`; set it to `provider` with a `vision.model` to use the resolved
+main provider (or `vision.provider` as an override). Provider credentials,
+endpoint, and format come from the existing `providers` entry, and the shared
+`llm.request_timeout_seconds` applies.
+
 Unknown flags are a **hard error** — they are never folded into the task text (a typo'd flag must not silently corrupt the prompt, and nothing that controls odek's argv should gain an injection vector). If your task text itself starts with `-`, pass it after an explicit `--` separator: `odek run -- "--dash-prefixed task"`.
 
 | Flag | Type | Default | Description |
