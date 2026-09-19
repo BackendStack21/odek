@@ -265,7 +265,7 @@ type planUpdateArg struct {
 
 type planArgs struct {
 	Verb    string          `json:"verb"`
-	Steps   []planStepArg   `json:"steps,omitempty"`
+	Steps   planStepList    `json:"steps,omitempty"`
 	Updates []planUpdateArg `json:"updates,omitempty"`
 	StepID  string          `json:"step_id,omitempty"`
 }
@@ -278,6 +278,53 @@ func (s *PlanStore) Execute(argsJSON string) (string, error) {
 	var args planArgs
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
 		return "", fmt.Errorf("plan: parse args: %w", err)
+	}
+	raw := planRawEnvelope(argsJSON)
+	// Argument-resilience layer: diagnostics before the typed switch, so a
+	// malformed envelope fails with the keys it actually carried. Every path
+	// below either returns a diagnostic error or proceeds into the same
+	// fail-closed validation as before — leniency is limited to shapes that
+	// are unambiguous (missing ids, string steps, a single steps wrapper).
+	if args.Verb == "" {
+		if keys := planReceivedKeys(raw); len(keys) > 0 {
+			return "", fmt.Errorf("plan: unknown verb \"\" (want create/update/complete/revise/get); received keys: %s — set \"verb\" to one of the five", keyList(keys))
+		}
+		return "", fmt.Errorf("plan: unknown verb %q (want create/update/complete/revise/get)", args.Verb)
+	}
+	var inference string
+	if args.Verb == "create" {
+		// Ambiguity gates on KEY PRESENCE, not decoded length: "steps":[] or
+		// "steps":null still means the model used the canonical field, so a
+		// competing list under another key is a conflict worth reporting.
+		_, stepsKey := raw["steps"]
+		if err := ambiguousStepsConflict(raw, stepsKey); err != nil {
+			return "", err
+		}
+		if err := wrapperStepsConflict(raw); err != nil {
+			return "", err
+		}
+		if len(args.Steps) == 0 && !stepsKey {
+			unwrapKey, derr := diagnoseCreateSteps(raw, argsJSON)
+			if derr != nil {
+				return "", derr
+			}
+			if unwrapKey != "" {
+				var obj map[string]json.RawMessage
+				if json.Unmarshal(raw[unwrapKey], &obj) == nil {
+					if inner, ok := obj["steps"]; ok {
+						if err := json.Unmarshal(inner, &args.Steps); err != nil {
+							return "", fmt.Errorf("plan: parse args: %w", err)
+						}
+						inference = fmt.Sprintf("plan: inferred steps from the %q wrapper object — nest steps at the top level next time", unwrapKey)
+					}
+				}
+			}
+		}
+	}
+	if args.Verb == "update" && len(args.Updates) == 0 {
+		if derr := diagnoseUpdateUpdates(raw); derr != nil {
+			return "", derr
+		}
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -311,6 +358,9 @@ func (s *PlanStore) Execute(argsJSON string) (string, error) {
 		s.notifyLocked(args.Verb == "create", s.blockedFired)
 	}
 	s.revisionNotify = false
+	if inference != "" && err == nil {
+		res = inference + "\n" + res
+	}
 	return res, err
 }
 
@@ -358,6 +408,7 @@ func (s *PlanStore) renderLocked() string {
 }
 
 func (s *PlanStore) create(steps []planStepArg) (string, error) {
+	steps = fillAutoStepIDs(steps, nil)
 	if len(steps) < 1 || len(steps) > s.maxSteps {
 		return "", fmt.Errorf("plan: create wants 1..%d steps, got %d", s.maxSteps, len(steps))
 	}

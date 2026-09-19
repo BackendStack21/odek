@@ -142,6 +142,36 @@ loop without late-bound plumbing. `reservedBuiltinToolNames()` probes with
 planning enabled, so `"plan"` stays reserved against MCP shadowing even when
 the operator disables the feature.
 
+### Argument resilience and diagnostic rejections
+
+`PlanStore.Execute` is fail-closed — any malformed input rejects the whole
+call and leaves state untouched — but rejections are **diagnostic**, not mute.
+When a call omits a required field (`steps` for create, `updates` for update,
+`verb` entirely), the error names the keys the call actually carried and the
+shape expected, so a model can correct the call in one retry instead of
+guessing:
+
+```
+plan: create requires 'steps' (array of {id,title,note,checks});
+received keys: [operations] — 'operations' is not recognized; did you mean 'steps'?
+```
+
+A small set of unambiguous shape mistakes is accepted instead of rejected:
+
+- **Missing step ids** are auto-assigned (`s1`, `s2`, … skipping ids already
+  in use, including existing plan steps on revise paths). Ids exist only to
+  target later updates, so a missing id is recoverable, not ambiguous.
+- **Bare string step entries** (`"steps": ["Investigate"]`) coerce to
+  `{title}` entries with auto-assigned ids.
+- **A single wrapper object** carrying the steps array
+  (`{"verb":"create","create":{"steps":[…]}}`) is unwrapped, and the result
+  notes the inference so the model learns the canonical top-level shape.
+
+Ambiguity stays a hard error: a call supplying step lists under two different
+keys is rejected (`ambiguous: both 'steps' and 'operations' supply step
+lists`). Length caps, duplicate detection, whitespace rules, and
+checked-step preservation are unchanged.
+
 ### The protected plan message
 
 The engine renders the state deterministically into a system message

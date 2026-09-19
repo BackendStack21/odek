@@ -28,7 +28,7 @@ type planRevisionOp struct {
 	BeforeID      string         `json:"before_id"`
 	Title         *string        `json:"title"`
 	Note          *string        `json:"note"`
-	Steps         []planStepArg  `json:"steps"`
+	Steps         planStepList   `json:"steps"`
 	CarryChecksTo string         `json:"carry_checks_to"`
 	Checks        []planCheckArg `json:"checks"`
 }
@@ -101,7 +101,7 @@ func (s *PlanStore) revise(raw string) (string, error) {
 	for _, op := range args.Operations {
 		switch op.Kind {
 		case "add":
-			steps, err := validateRevisionSteps(op.Steps)
+			steps, err := validateRevisionSteps(op.Steps, working)
 			if err != nil {
 				return "", err
 			}
@@ -166,7 +166,17 @@ func (s *PlanStore) revise(raw string) (string, error) {
 			if idx < 0 {
 				return "", fmt.Errorf("plan: revise: unknown step %q", op.StepID)
 			}
-			steps, err := validateRevisionSteps(op.Steps)
+			// Reserve every existing id except the replaced step's own — a
+			// superseded step's id may legitimately be reused by a replacement,
+			// all others must stay collision-free for auto-assigned ids.
+			replaced := working[idx].ID
+			reserved := make([]PlanStep, 0, len(working))
+			for _, st := range working {
+				if st.ID != replaced {
+					reserved = append(reserved, st)
+				}
+			}
+			steps, err := validateRevisionSteps(op.Steps, reserved)
 			if err != nil {
 				return "", err
 			}
@@ -251,7 +261,15 @@ func validateRevisionFinalSteps(steps []PlanStep, max int) error {
 	return nil
 }
 
-func validateRevisionSteps(in []planStepArg) ([]PlanStep, error) {
+// validateRevisionSteps validates the new steps of an add/split/supersede
+// operation. working carries the ids already present in the plan so
+// auto-assigned ids cannot collide with existing steps.
+func validateRevisionSteps(in []planStepArg, working []PlanStep) ([]PlanStep, error) {
+	reserved := make(map[string]bool, len(working))
+	for _, st := range working {
+		reserved[st.ID] = true
+	}
+	in = fillAutoStepIDs(in, reserved)
 	if len(in) == 0 {
 		return nil, fmt.Errorf("plan: revise: steps must not be empty")
 	}
