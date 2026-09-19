@@ -1,6 +1,6 @@
 module github.com/BackendStack21/odek
 
-go 1.25.13
+go 1.25.0
 
 require (
 	github.com/BackendStack21/go-mcp v1.3.0
@@ -13,4 +13,4 @@ require golang.org/x/sys v0.47.0
 
 require github.com/BackendStack21/go-llm-sdk v0.4.0
 
-require golang.org/x/image v0.30.0
+require golang.org/x/image v0.45.0

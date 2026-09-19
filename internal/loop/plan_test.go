@@ -37,7 +37,8 @@ func TestPlan_Validate_CreateCaps(t *testing.T) {
 	}{
 		{"zero steps", `{"verb":"create","steps":[]}`, "create wants 1..3 steps, got 0"},
 		{"over cap", `{"verb":"create","steps":[{"id":"a","title":"A"},{"id":"b","title":"B"},{"id":"c","title":"C"},{"id":"d","title":"D"}]}`, "create wants 1..3 steps, got 4"},
-		{"missing id", `{"verb":"create","steps":[{"title":"A"}]}`, "step[0]: id is required"},
+		// "missing id" is no longer a rejection: auto-assigned ids (see
+		// plan_args_resilience_test.go). Remaining shape errors stay hard.
 		{"missing title", `{"verb":"create","steps":[{"id":"a"}]}`, "step[0]: title is required"},
 		{"long id", `{"verb":"create","steps":[{"id":"` + strings.Repeat("x", 33) + `","title":"A"}]}`, "id is too long"},
 		{"long title", `{"verb":"create","steps":[{"id":"a","title":"` + strings.Repeat("x", 201) + `"}]}`, "title is too long"},
