@@ -79,7 +79,7 @@ func TestProviderVisionFailureAndMissingUsage(t *testing.T) {
 	}{
 		{"no_usage", `{"choices":[{"message":{"content":"description"},"finish_reason":"stop"}]}`, 200, false, true},
 		{"empty", `{"choices":[{"message":{"content":""},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":1}}`, 200, true, false},
-		{"provider_error", `{"error":{"message":"SECRET_IMAGE_ECHO","type":"invalid_request_error"}}`, 400, true, true},
+		{"provider_error", `{"error":{"message":"SECRET_IMAGE_ECHO","type":"invalid_request_error"}}`, 400, true, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -79,6 +79,12 @@ func (a *providerVisionAnalyzer) AnalyzeVision(ctx context.Context, model, promp
 			defer stop()
 		}
 		if grant.Limits.MaxCostUSD > 0 {
+			// A grant-level cap without configured prices is unenforceable
+			// (affordable would divide by zero → +Inf); reject instead of
+			// silently bypassing the cap.
+			if inputPrice <= 0 || outputPrice <= 0 {
+				return visionAnalysis{}, fmt.Errorf("vision: configure input and output prices for the vision model before using a cost budget")
+			}
 			affordable := math.Floor(grant.Limits.MaxCostUSD * 1e6 / outputPrice)
 			if affordable < 1 {
 				return visionAnalysis{}, &budget.Error{Limit: budget.LimitCostUSD}
@@ -103,6 +109,15 @@ func (a *providerVisionAnalyzer) AnalyzeVision(ctx context.Context, model, promp
 		u.CostUSD = (float64(u.TotalInput())*inputPrice + float64(u.OutputTokens)*outputPrice) / 1e6
 		if u.Valid() && (u.TotalInput() > 0 || u.OutputTokens > 0) {
 			usage = &u
+		}
+	}
+	if usage == nil && callErr != nil {
+		// The request was submitted; the provider may have processed tokens
+		// even though we never saw usage. Charge the output-token budget
+		// conservatively so an error path cannot settle zero.
+		usage = &budget.Usage{OutputTokens: int64(maxTokens), CostKnown: inputPrice > 0 && outputPrice > 0}
+		if usage.CostKnown {
+			usage.CostUSD = float64(usage.OutputTokens) * outputPrice / 1e6
 		}
 	}
 	if a.emit != nil {
