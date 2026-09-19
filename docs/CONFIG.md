@@ -1152,8 +1152,9 @@ Configures the `vision` tool (MiniCPM-V via `llama-mtmd-cli`).
 `vision` is operator-only and uses the shared `llm.request_timeout_seconds` for
 provider requests. It has no vision-specific secret, endpoint, format, or
 timeout fields. `video_frames` defaults to `8` and is capped at `32`.
-`auto_describe` remains an explicit opt-in/opt-out setting for the Telegram
-preprocessing path; omitting it preserves the existing default behavior.
+`auto_describe` defaults to `true` whether or not a `vision` section is
+present; set it to `false` explicitly to disable the Telegram preprocessing
+path.
 
 Example provider-backed configuration:
 
