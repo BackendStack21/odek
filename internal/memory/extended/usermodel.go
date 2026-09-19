@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -77,6 +78,19 @@ type UserModel struct {
 	recentMu     sync.Mutex
 	focusChanged bool
 	loaded       bool
+	atomExists   func(string) bool
+}
+
+// SetAtomChecker installs a predicate reporting whether a memory atom id
+// still exists in the atom store. When installed, Load runs a hygiene sweep
+// that drops pending-review entries referencing atoms that no longer exist.
+func (u *UserModel) SetAtomChecker(fn func(id string) bool) {
+	if u == nil {
+		return
+	}
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.atomExists = fn
 }
 
 // NewUserModel returns an in-memory stub. Use NewUserModelWithStore for
@@ -118,7 +132,9 @@ func (u *UserModel) scanContent(ctx context.Context, content string) error {
 // Load reads the persisted user model, if any. Missing files are not errors.
 // Loaded string values are scanned for injection patterns; fields that fail
 // the scan are dropped so a tampered user_model.json cannot poison the
-// system prompt.
+// system prompt. A hygiene sweep drops pending-review entries whose
+// referenced atom ids no longer exist and consolidates (field, value)
+// duplicates, keeping the highest confidence.
 func (u *UserModel) Load() error {
 	if u == nil || u.store == nil {
 		return nil
@@ -128,11 +144,102 @@ func (u *UserModel) Load() error {
 		return err
 	}
 	state = scanUserState(state, func(v string) bool { return u.scanContent(context.Background(), v) == nil })
+
 	u.mu.Lock()
-	defer u.mu.Unlock()
+	swept := sweepPendingReview(&state, u.atomExists)
+	if swept.dropped > 0 || swept.consolidated > 0 {
+		if err := u.store.Save(state); err != nil {
+			u.mu.Unlock()
+			return fmt.Errorf("user model: hygiene sweep persist: %w", err)
+		}
+	}
+	for _, id := range swept.droppedIDs {
+		log.Printf("extended memory: hygiene sweep dropped stale pending review %s (referenced atom missing)", id)
+	}
+	if swept.consolidated > 0 {
+		log.Printf("extended memory: hygiene sweep consolidated %d duplicate pending review(s)", swept.consolidated)
+	}
 	u.state = state
 	u.loaded = true
+	u.mu.Unlock()
 	return nil
+}
+
+// pendingSweep records what the load-time hygiene sweep changed.
+type pendingSweep struct {
+	dropped      int
+	droppedIDs   []string
+	consolidated int
+}
+
+// atomRefPattern matches 32-hex atom ids embedded in pending entry text.
+var atomRefPattern = regexp.MustCompile(`\b[0-9a-f]{32}\b`)
+
+// sweepPendingReview prunes and consolidates the pending-review queue.
+// entries referencing atoms that no longer exist are dropped (only when a
+// checker is installed — fail-open otherwise); identical (field, value)
+// duplicates collapse to the highest-confidence entry. Returns the swept
+// state unchanged when there is nothing to do.
+func sweepPendingReview(s *UserState, atomExists func(string) bool) pendingSweep {
+	var out pendingSweep
+	if len(s.PendingReview) <= 1 && atomExists == nil {
+		return out
+	}
+
+	if atomExists != nil {
+		kept := s.PendingReview[:0]
+		for _, p := range s.PendingReview {
+			// Only the free-text value is probed for atom references (fields
+			// are dotted paths, never hex ids). An entry is stale only when it
+			// references at least one atom and every reference is gone — a
+			// single live ref (or a bare 32-hex token that happens to be an
+			// MD5/hash rather than an atom id) keeps the entry.
+			refs := atomRefPattern.FindAllString(p.Value, -1)
+			stale := false
+			if len(refs) > 0 {
+				stale = true
+				for _, ref := range refs {
+					if atomExists(ref) {
+						stale = false
+						break
+					}
+				}
+			}
+			if stale {
+				out.dropped++
+				out.droppedIDs = append(out.droppedIDs, p.ID)
+				continue
+			}
+			kept = append(kept, p)
+		}
+		s.PendingReview = kept
+	}
+
+	// Consolidate identical (field, value) duplicates, keeping the entry
+	// with the highest confidence (ties: newest CreatedAt).
+	if len(s.PendingReview) > 1 {
+		type key struct{ field, value string }
+		best := make(map[key]int, len(s.PendingReview))
+		for i, p := range s.PendingReview {
+			k := key{p.Field, p.Value}
+			if j, ok := best[k]; !ok || p.Confidence > s.PendingReview[j].Confidence ||
+				(p.Confidence == s.PendingReview[j].Confidence && p.CreatedAt.After(s.PendingReview[j].CreatedAt)) {
+				best[k] = i
+			}
+		}
+		if len(best) < len(s.PendingReview) {
+			out.consolidated = len(s.PendingReview) - len(best)
+			kept := make([]PendingReview, 0, len(best))
+			for i, p := range s.PendingReview {
+				k := key{p.Field, p.Value}
+				if best[k] == i {
+					kept = append(kept, p)
+				}
+			}
+			s.PendingReview = kept
+		}
+	}
+	return out
 }
 
 // Save persists the current user model atomically.
@@ -287,6 +394,22 @@ func (u *UserModel) applyDiff(ctx context.Context, diff userStateDiff) error {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 
+	var unlock func()
+	if u.store != nil {
+		// Serialize the whole read-modify-write with other processes (CLI
+		// confirm/reject) and sync the pending queue from disk first, so this
+		// process's save cannot resurrect entries another process removed.
+		var err error
+		unlock, err = u.store.WithLock()
+		if err != nil {
+			return fmt.Errorf("user model: pending store lock: %w", err)
+		}
+		defer unlock()
+		if disk, err := u.store.Load(); err == nil {
+			u.state.PendingReview = disk.PendingReview
+		}
+	}
+
 	scanner := func(v string) bool { return u.scanContent(ctx, v) == nil }
 
 	applyStyle(&u.state.Style, diff.Style, scanner)
@@ -362,6 +485,13 @@ func (u *UserModel) applyDiff(ctx context.Context, diff userStateDiff) error {
 			}
 		}
 		u.state.PendingReview = append(u.state.PendingReview[:oldest], u.state.PendingReview[oldest+1:]...)
+	}
+	// Write through under the flock: the on-disk pending array is the single
+	// source of truth shared with other processes (CLI confirm/reject).
+	// Without immediate persistence, entries would exist only in this
+	// process's memory and cross-process list/confirm would diverge.
+	if u.store != nil {
+		return u.store.Save(u.state)
 	}
 	return nil
 }
@@ -506,12 +636,75 @@ func scanUserState(s UserState, scanner func(string) bool) UserState {
 }
 
 // ConfirmPendingReview applies a pending review to the model and persists it.
+// The pending queue is re-read from disk under the store lock first, so a
+// concurrent CLI process's mutations are never lost (the store file is the
+// single source of truth for the pending array).
 func (u *UserModel) ConfirmPendingReview(id string) error {
 	if u == nil {
 		return fmt.Errorf("user model: nil")
 	}
+	return u.mutatePendingReview(id, func(s *UserState, p PendingReview) {
+		applyPendingValue(s, p)
+	})
+}
+
+// RejectPendingReview removes a pending review without applying it.
+func (u *UserModel) RejectPendingReview(id string) error {
+	if u == nil {
+		return fmt.Errorf("user model: nil")
+	}
+	return u.mutatePendingReview(id, nil)
+}
+
+// mutatePendingReview re-reads the on-disk pending queue, removes the entry
+// with the given id, applies the optional mutation, writes the result
+// atomically, and reflects the converged state in memory.
+func (u *UserModel) mutatePendingReview(id string, apply func(*UserState, PendingReview)) error {
+	if u.store == nil {
+		// Checker-less in-memory model: operate on the in-memory queue.
+		u.mu.Lock()
+		defer u.mu.Unlock()
+		return u.removePendingInMemory(id, apply)
+	}
 	u.mu.Lock()
 	defer u.mu.Unlock()
+	unlock, err := u.store.WithLock()
+	if err != nil {
+		return fmt.Errorf("user model: pending store lock: %w", err)
+	}
+	defer unlock()
+
+	disk, err := u.store.Load()
+	if err != nil {
+		return err
+	}
+	// The disk state is authoritative in full — including style/focus — so a
+	// stale process cannot clobber another process's applied updates.
+
+	idx := -1
+	for i, p := range disk.PendingReview {
+		if p.ID == id {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return fmt.Errorf("user model: pending review %s not found", id)
+	}
+	if apply != nil {
+		apply(&disk, disk.PendingReview[idx])
+	}
+	disk.PendingReview = append(disk.PendingReview[:idx], disk.PendingReview[idx+1:]...)
+	if err := u.store.Save(disk); err != nil {
+		return err
+	}
+	u.state = disk
+	return nil
+}
+
+// removePendingInMemory removes an entry from the in-memory queue (used when
+// the model has no backing store).
+func (u *UserModel) removePendingInMemory(id string, apply func(*UserState, PendingReview)) error {
 	idx := -1
 	var pending PendingReview
 	for i, p := range u.state.PendingReview {
@@ -524,41 +717,40 @@ func (u *UserModel) ConfirmPendingReview(id string) error {
 	if idx < 0 {
 		return fmt.Errorf("user model: pending review %s not found", id)
 	}
-	applyPendingValue(&u.state, pending)
-	u.state.PendingReview = append(u.state.PendingReview[:idx], u.state.PendingReview[idx+1:]...)
-	return u.store.Save(u.state)
-}
-
-// RejectPendingReview removes a pending review without applying it.
-func (u *UserModel) RejectPendingReview(id string) error {
-	if u == nil {
-		return fmt.Errorf("user model: nil")
-	}
-	u.mu.Lock()
-	defer u.mu.Unlock()
-	idx := -1
-	for i, p := range u.state.PendingReview {
-		if p.ID == id {
-			idx = i
-			break
-		}
-	}
-	if idx < 0 {
-		return fmt.Errorf("user model: pending review %s not found", id)
+	if apply != nil {
+		apply(&u.state, pending)
 	}
 	u.state.PendingReview = append(u.state.PendingReview[:idx], u.state.PendingReview[idx+1:]...)
-	return u.store.Save(u.state)
+	return nil
 }
 
-// ListPendingReview returns pending reviews in creation order.
+// ListPendingReview returns pending reviews in creation order, re-read from
+// disk so cross-process mutations are immediately visible. Reads are not
+// flock-serialized; a confirm landing between the read and a caller's action
+// yields the usual bounded TOCTOU window, which the mutate path re-checks.
 func (u *UserModel) ListPendingReview() []PendingReview {
 	if u == nil {
 		return nil
 	}
+	if u.store == nil {
+		u.mu.RLock()
+		defer u.mu.RUnlock()
+		out := make([]PendingReview, len(u.state.PendingReview))
+		copy(out, u.state.PendingReview)
+		return out
+	}
 	u.mu.RLock()
 	defer u.mu.RUnlock()
-	out := make([]PendingReview, len(u.state.PendingReview))
-	copy(out, u.state.PendingReview)
+	disk, err := u.store.Load()
+	if err != nil {
+		// Fail-open on read errors: serve the last known in-memory snapshot
+		// rather than losing the agent-side view entirely.
+		out := make([]PendingReview, len(u.state.PendingReview))
+		copy(out, u.state.PendingReview)
+		return out
+	}
+	out := make([]PendingReview, len(disk.PendingReview))
+	copy(out, disk.PendingReview)
 	return out
 }
 

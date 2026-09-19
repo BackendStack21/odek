@@ -125,6 +125,16 @@ func New(dir string, llm LLMClient, cfg Config) *ExtendedMemory {
 	em.recall.SetPredictor(em.predictor)
 	em.recall.SetFollowUpSink(em.setLastFollowUps)
 	em.recall.stats = &em.stats
+	// Wire the hygiene sweep's atom-existence checker to the live atom store,
+	// before Load runs it. Only a definitive not-found counts as missing —
+	// transient read errors must not cause the sweep to drop entries.
+	em.userModel.SetAtomChecker(func(id string) bool {
+		_, err := store.Get(id)
+		if err == nil {
+			return true
+		}
+		return !strings.Contains(err.Error(), "not found")
+	})
 	_ = em.userModel.Load()
 	em.quarantine.SetTTLDays(cfg.QuarantineTTLDays)
 	if removed, err := em.quarantine.EvictExpired(cfg.QuarantineTTLDays); err != nil {

@@ -8,9 +8,14 @@ import (
 	"sync"
 
 	"github.com/BackendStack21/odek/internal/fsatomic"
+	"github.com/BackendStack21/odek/internal/flock"
 )
 
 const userStateFileName = "user_model.json"
+
+// userStateLockSuffix marks the advisory lock guarding cross-process
+// read-modify-write of the user model file.
+const userStateLockSuffix = ".lock"
 
 // UserStateStore persists UserState atomically to disk.
 type UserStateStore struct {
@@ -61,4 +66,20 @@ func (s *UserStateStore) Save(state UserState) error {
 		return fmt.Errorf("user state store: write: %w", err)
 	}
 	return nil
+}
+
+// WithLock acquires an advisory cross-process lock on the user model file so
+// that separate processes (serve + CLI) serialize read-modify-write cycles.
+// The returned unlock function is safe to call more than once.
+func (s *UserStateStore) WithLock() (func(), error) {
+	lockPath := s.file + userStateLockSuffix
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0700); err != nil {
+		return nil, fmt.Errorf("user state store: lock mkdir: %w", err)
+	}
+	unlock, err := flock.Lock(lockPath)
+	if err != nil {
+		return nil, err
+	}
+	var once sync.Once
+	return func() { once.Do(unlock) }, nil
 }
