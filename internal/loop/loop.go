@@ -341,6 +341,8 @@ type MessagesPersistCallback func(messages []session.Message)
 
 // Engine runs the agent loop: observe → think → act → repeat.
 type Engine struct {
+	initialToolCalls []session.ToolCall // trusted application prelude, consumed once
+
 	client         *llmclient.Client
 	registry       *tool.Registry
 	renderer       *render.Renderer // optional: colored terminal output
@@ -2570,6 +2572,8 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 	// Budget-awareness hint state is per-run.
 	hints := budgetHintState{}
 	var reassessment reassessmentMonitor
+	initialCalls := e.initialToolCalls
+	e.initialToolCalls = nil
 
 	// Rebuild plan state from a persisted plan message so `odek continue`
 	// resumes with forward state instead of re-deriving it from history
@@ -2818,7 +2822,16 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 		// the model's context window on this very call.
 		messages = e.trimContext(ctx, messages, tools)
 
-		result, err := e.callLLM(ctx, messages, tools)
+		var result *llmclient.CallResult
+		var err error
+		isInitial := len(initialCalls) > 0
+		if isInitial {
+			result = &llmclient.CallResult{ToolCalls: initialCalls}
+			initialCalls = nil
+			e.streamedThisCall = false
+		} else {
+			result, err = e.callLLM(ctx, messages, tools)
+		}
 		if err != nil {
 			if result != nil {
 				e.recordSideCallUsage("main_partial", result)
@@ -2890,7 +2903,9 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 		e.externalChargeMu.Lock()
 		e.TotalInputTokens += result.InputTokens
 		e.TotalOutputTokens += result.OutputTokens
-		e.recordThinkCall(result)
+		if !isInitial {
+			e.recordThinkCall(result)
+		}
 
 		// Feed the margin calibration in trimContext: provider-reported input
 		// tokens are ground truth for how accurate the local estimate is.

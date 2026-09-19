@@ -187,9 +187,18 @@ type TranscriptionConfig struct {
 	BinaryPath     string `json:"binary_path,omitempty"`
 }
 
-// VisionConfig controls the vision tool (MiniCPM-V 4.6 via llama-mtmd-cli).
+// VisionConfig controls local MiniCPM-V or provider-backed vision.
 // Populated from the "vision" section of odek.json or ~/.odek/config.json.
 type VisionConfig struct {
+	// Backend selects the local llama-mtmd-cli backend or the resolved main
+	// provider. Empty defaults to local.
+	Backend string `json:"backend,omitempty"`
+	// Provider optionally overrides the main provider when Backend is provider.
+	Provider string `json:"provider,omitempty"`
+	// Model is required when Backend is provider. Local uses its model files.
+	Model string `json:"model,omitempty"`
+	// MaxTokens caps provider vision output. Default: 1024.
+	MaxTokens int `json:"max_tokens,omitempty"`
 	// ModelsDir is the directory containing model.gguf and mmproj.gguf.
 	// Default: /usr/local/share/minicpm-v/models (Docker image path), with
 	// fallback to ~/.odek/minicpm-v/models for out-of-container installs.
@@ -202,8 +211,42 @@ type VisionConfig struct {
 	// AutoDescribe controls whether photos received over Telegram are
 	// automatically run through the vision model to extract a description
 	// before the agent answers (mirrors transcription.auto_transcribe).
-	// Default: true.
-	AutoDescribe bool `json:"auto_describe,omitempty"`
+	// Nil defaults to true — a supplied vision section without the field
+	// resolves to the same default as an absent section; explicit false
+	// disables it.
+	AutoDescribe *bool `json:"auto_describe,omitempty"`
+}
+
+// AutoDescribeEnabled reports the resolved auto_describe setting, filling
+// the unset (nil) case with the true default.
+func (v VisionConfig) AutoDescribeEnabled() bool {
+	return v.AutoDescribe == nil || *v.AutoDescribe
+}
+
+const (
+	VisionBackendLocal     = "local"
+	VisionBackendProvider  = "provider"
+	DefaultVisionMaxTokens = 1024
+	MaxVisionTokens        = 16384
+	MaxVisionVideoFrames   = 32
+)
+
+// ValidateVisionConfig rejects values that would otherwise silently select a
+// different backend or produce unbounded provider output.
+func ValidateVisionConfig(v VisionConfig) error {
+	if v.Backend != "" && v.Backend != VisionBackendLocal && v.Backend != VisionBackendProvider {
+		return fmt.Errorf("vision.backend must be %q or %q", VisionBackendLocal, VisionBackendProvider)
+	}
+	if v.Backend == VisionBackendProvider && strings.TrimSpace(v.Model) == "" {
+		return fmt.Errorf("vision.model is required when vision.backend=%q", VisionBackendProvider)
+	}
+	if v.MaxTokens < 0 || v.MaxTokens > MaxVisionTokens {
+		return fmt.Errorf("vision.max_tokens must be between 0 and %d", MaxVisionTokens)
+	}
+	if v.VideoFrames < 0 || v.VideoFrames > MaxVisionVideoFrames {
+		return fmt.Errorf("vision.video_frames must be between 0 and %d", MaxVisionVideoFrames)
+	}
+	return nil
 }
 
 // WebSearchConfig controls the web_search tool (self-hosted SearXNG backend).
@@ -743,8 +786,8 @@ type ResolvedConfig struct {
 	// Default: auto_transcribe=true, model="tiny", language="", no binary_path.
 	Transcription TranscriptionConfig
 
-	// Vision is the resolved vision config.
-	// Default: VideoFrames=8, ModelsDir="" (auto-detect), BinaryPath="" (PATH lookup).
+	// Vision is the resolved vision config. Provider-backed mode inherits the
+	// resolved main provider unless explicitly overridden.
 	Vision VisionConfig
 
 	// WebSearch is the resolved web_search config.
@@ -2638,6 +2681,9 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	if resolved.Provider == "" {
 		resolved.Provider = "deepseek"
 	}
+	// Resolve vision's inherited provider only after all provider aliases and
+	// environment/CLI overrides have been applied.
+	resolved.Vision = resolveVisionForProvider(cfg.Vision, resolved.Provider)
 
 	// Fill providers.<id>.api_key from the provider env (before Unsetenv)
 	// so NewSDK can authenticate without FromEnv after we scrub the
@@ -3065,15 +3111,31 @@ func resolveTranscription(cfg *TranscriptionConfig) TranscriptionConfig {
 // If the file config is nil, returns sensible defaults.
 func resolveVision(cfg *VisionConfig) VisionConfig {
 	if cfg != nil {
-		if cfg.VideoFrames == 0 {
-			cfg.VideoFrames = 8
+		v := *cfg
+		if v.Backend == "" {
+			v.Backend = VisionBackendLocal
 		}
-		return *cfg
+		if v.MaxTokens == 0 {
+			v.MaxTokens = DefaultVisionMaxTokens
+		}
+		if v.VideoFrames == 0 {
+			v.VideoFrames = 8
+		}
+		return v
 	}
 	return VisionConfig{
-		VideoFrames:  8,
-		AutoDescribe: true,
+		Backend:   VisionBackendLocal,
+		MaxTokens: DefaultVisionMaxTokens,
+		VideoFrames: 8,
 	}
+}
+
+func resolveVisionForProvider(cfg *VisionConfig, provider string) VisionConfig {
+	v := resolveVision(cfg)
+	if v.Backend == VisionBackendProvider && v.Provider == "" {
+		v.Provider = provider
+	}
+	return v
 }
 
 // resolveWebSearch returns the resolved web_search config, filling zero-valued

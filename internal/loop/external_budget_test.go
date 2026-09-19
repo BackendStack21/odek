@@ -103,3 +103,47 @@ func TestExternalBudgetInvalidReportsAndOverflowFailClosed(t *testing.T) {
 		t.Fatal("overflow reset input budget")
 	}
 }
+
+func TestReserveInferenceBudgetLeavesToolCallHeadroomOut(t *testing.T) {
+	e := vectorBudgetEngine()
+	e.budget.RecordToolCalls(20)
+	g, err := e.ReserveInferenceBudget()
+	if err != nil {
+		t.Fatalf("inference reservation blocked by exhausted tool calls: %v", err)
+	}
+	if g.Limits.MaxToolCalls != 0 {
+		t.Fatalf("inference grant reserved tool calls: %+v", g.Limits)
+	}
+	e.SettleExternalBudget(g, &budget.Usage{InputTokens: 10, OutputTokens: 5, CostUSD: .00002, CostKnown: true})
+	if got := e.BudgetUsage().ToolCalls; got != 20 {
+		t.Fatalf("tool calls double-counted: %d", got)
+	}
+}
+
+func TestReserveInferenceBudgetRejectsInferenceDimensions(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		limits budget.Limits
+		want   string
+	}{
+		{"input", budget.Limits{MaxInputTokens: 1}, budget.LimitInputTokens},
+		{"output", budget.Limits{MaxOutputTokens: 1}, budget.LimitOutputTokens},
+		{"runtime", budget.Limits{MaxRuntimeSeconds: 1}, budget.LimitRuntime},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			start := time.Now()
+			if tc.name == "runtime" {
+				start = start.Add(-2 * time.Second)
+			}
+			e := &Engine{budget: budget.NewChecker(tc.limits, start)}
+			if _, err := e.ReserveInferenceBudget(); err == nil || func() string {
+				if be, ok := budget.As(err); ok {
+					return be.Limit
+				}
+				return ""
+			}() != tc.want {
+				t.Fatalf("error=%v want limit %s", err, tc.want)
+			}
+		})
+	}
+}

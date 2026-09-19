@@ -1360,3 +1360,12 @@ func (n *memoryRenderNotifier) Notify(event memory.MemoryEvent) {
 
 // ToolDetailEvent carries correlated tool execution metadata to clients.
 type ToolDetailEvent = loop.ToolDetailEvent
+
+// SetInitialToolCalls queues application-supplied tool calls before the next
+// model request. The queue is consumed once and uses normal tool controls.
+// Call only between runs; never derive calls from untrusted message directives.
+func (a *Agent) SetInitialToolCalls(calls []session.ToolCall) {
+	if a != nil && a.engine != nil {
+		a.engine.SetInitialToolCalls(calls)
+	}
+}

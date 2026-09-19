@@ -1140,10 +1140,30 @@ Configures the `vision` tool (MiniCPM-V via `llama-mtmd-cli`).
 
 | Field | Default | Description |
 |-------|---------|-------------|
+| `backend` | `local` | `local` uses `llama-mtmd-cli`; `provider` uses the configured main LLM provider |
+| `provider` | main `provider` | Optional provider override when `backend` is `provider`; credentials and endpoint come from the existing `providers` map |
+| `model` | `""` | Provider model identifier; required when `backend` is `provider` |
+| `max_tokens` | `1024` | Maximum provider vision output tokens (maximum `16384`) |
 | `models_dir` | `/usr/local/share/minicpm-v/models` (container) with fallback to `~/.odek/minicpm-v/models` | Directory containing `model.gguf` and `mmproj.gguf` |
 | `binary_path` | `""` | Explicit path to `llama-mtmd-cli`; empty = `PATH` lookup |
 | `video_frames` | `8` | Number of frames sampled evenly from a video |
 | `auto_describe` | `true` | Automatically describe photos received over Telegram before the agent answers (mirrors `transcription.auto_transcribe`) |
+
+`vision` is operator-only and uses the shared `llm.request_timeout_seconds` for
+provider requests. It has no vision-specific secret, endpoint, format, or
+timeout fields. `video_frames` defaults to `8` and is capped at `32`.
+`auto_describe` remains an explicit opt-in/opt-out setting for the Telegram
+preprocessing path; omitting it preserves the existing default behavior.
+
+Example provider-backed configuration:
+
+```json
+{
+  "provider": "openai",
+  "providers": { "openai": { "api_key": "${OPENAI_API_KEY}" } },
+  "vision": { "backend": "provider", "model": "gpt-4.1-mini", "max_tokens": 1024 }
+}
+```
 
 ## Tool Progress
 
