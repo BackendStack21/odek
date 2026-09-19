@@ -280,6 +280,10 @@ Pending reviews must be explicitly confirmed or rejected by the user. They are n
 - `odek memory extended confirm <pending-id>` applies the inference to the model and persists it.
 - `odek memory extended reject <pending-id>` removes the inference without applying it.
 
+The pending queue is disk-backed: list, confirm, and reject re-read `user_model.json` under an advisory file lock before acting, so a running `odek serve` process and CLI invocations always observe the same queue — no stale ids, no cross-process "not found" errors, and concurrent mutations never overwrite each other. New pending inferences are written through to disk immediately.
+
+On load, a hygiene sweep keeps the queue clean: entries whose text references an atom id that no longer exists in the atom store are dropped (the drop is logged with the entry id to the serve/CLI log), and duplicate entries with identical field and value consolidate to the highest-confidence one.
+
 The agent's `memory` tool can list pending reviews (`list_pending_review`) and reject them (`reject_pending_review`), but it cannot confirm them — confirmation is deliberately reserved for the human-gated CLI to prevent a prompt-injected agent from approving its own inferences.
 
 Loaded and summarized user-model values are scanned for injection patterns; any field that fails the scan is dropped so a tampered `user_model.json` cannot poison the system prompt.
