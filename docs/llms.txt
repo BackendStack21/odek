@@ -41,7 +41,6 @@ Module path: `github.com/BackendStack21/odek`. Repository: https://github.com/Ba
 
 ## Optional
 
-- [Redaction Hardening](https://odek.21no.de/REDACTION_HARDENING.md): secret-redaction patterns and coverage
 - [Daily Worker Proposals](https://odek.21no.de/DAILY-WORKER.md): integration proposals comparing odek with other agent setups
 
 ## Notes for coding agents

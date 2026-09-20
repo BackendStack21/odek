@@ -11,7 +11,7 @@ import (
 )
 
 // These tests verify the high-severity correctness findings against the
-// batch_patch tool documented in IMPROVEMENTS_ROADMAP.md.
+// batch_patch tool.
 // They are expected to FAIL on the current code and to pass once the
 // underlying fixes land. Each test documents the exact line in
 // cmd/odek/perf_tools.go that needs to change.

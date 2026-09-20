@@ -232,7 +232,7 @@ func CountSecrets(text string) int {
 // It does NOT defend against arbitrary transformations the agent could apply
 // (gzip, openssl enc, char substitution) or against side-channel exfiltration
 // that never returns text to the tool surface — those are the job of the
-// network-egress controls, not redaction. See docs/REDACTION_HARDENING.md.
+// network-egress controls, not redaction.
 
 // minSecretLen is the shortest raw value we will register. Short values risk
 // over-redacting ordinary text, and real keys/tokens are far longer.

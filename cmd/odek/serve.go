@@ -2272,7 +2272,7 @@ func handlePrompt(
 	//   • ReasoningContent — the model's private reasoning for this turn.
 	//     The IterationCallback does NOT send reasoning for the final-answer
 	//     turn (its callback fires with IsPreTool=false and empty
-	//     ReasoningContent per loop.go:719). We send it here as a "thinking"
+	//     ReasoningContent). We send it here as a "thinking"
 	//     event so the UI can display it in a collapsible block.
 	//   • Content — the actual response text. Send as "token" events.
 	for _, msg := range newMsgs {
@@ -2403,7 +2403,7 @@ func (w *wsStreamWriter) Write(p []byte) (int, error) {
 // page open elsewhere in the user's browser cannot drive the agent or
 // approve dangerous tool calls. The policy allows the exact request
 // host:port on localhost / 127.0.0.1 / [::1] and an empty Origin (curl,
-// native clients). See IMPROVEMENTS_ROADMAP.md.
+// native clients).
 //
 // Note: this check is now defense-in-depth. The primary CSRF protection is
 // the per-instance wsToken validated by validateServeToken.

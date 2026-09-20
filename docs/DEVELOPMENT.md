@@ -142,7 +142,6 @@ docs/                         Documentation
   MAINTENANCE.md              Storage janitor + odek cleanup
   TOOL_SELECTION.md           tools.enabled/disabled reference
   CHEATSHEET.md               Quick reference
-  REDACTION_HARDENING.md      Secret redaction patterns
   DAILY-WORKER.md             Daily-worker usage guide
   DOCKER_COMPOSE_USER_GUIDE.md  docker/ compose stack guide
   DEVELOPMENT.md              This file

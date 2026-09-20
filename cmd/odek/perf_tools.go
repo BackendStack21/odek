@@ -295,7 +295,7 @@ func (t *batchPatchTool) Call(argsJSON string) (result string, err error) {
 
 		// Atomic write — preserve the original file's mode and surface any
 		// write error so a short or failed write cannot silently corrupt
-		// the target (see IMPROVEMENTS_ROADMAP.md).
+		// the target.
 		dir := filepath.Dir(p.Path)
 		tmpFile, err := os.CreateTemp(dir, ".tmp_batchpatch_*")
 		if err != nil {
