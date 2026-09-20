@@ -11,7 +11,7 @@ import (
 )
 
 // All three subtests use the production checkLocalOrigin helper so the
-// real fix is exercised, not a copy. See IMPROVEMENTS_ROADMAP.md.
+// real fix is exercised, not a copy.
 func newOriginTestServer() *httptest.Server {
 	srv := &golangws.Server{
 		Handshake: checkLocalOrigin,

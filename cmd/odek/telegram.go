@@ -994,14 +994,13 @@ func telegramCmd(args []string) error {
 // that minimizes disruption to active users while avoiding the race
 // conditions of in-process exec():
 //
-//   [1] /restart command (OnCommand handler, telegram.go:191-201)
+//   [1] /restart command (OnCommand handler)
 //       └─ returns "Restarting…" message to Telegram
 //       └─ after 500ms delay, sends SIGHUP to self
 //
-//   [2] SIGHUP handler (step 15, telegram.go:524-526)
-//       └─ calls gracefulRestart()
+//   [2] SIGHUP handler -- calls gracefulRestart()
 //
-//   [3] gracefulRestart() (telegram.go:665-729)
+//   [3] gracefulRestart()
 //       ├─ Phase 1: Notify + Cancel
 //       │  ├─ sets restartInProgress flag (blocks new agent runs)
 //       │  ├─ notifies all active chats via Telegram message

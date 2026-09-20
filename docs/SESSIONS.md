@@ -99,7 +99,7 @@ The `session_search` tool (available inside the agent loop, not as a CLI command
 
 **IMPORTANT:** After `search` returns matching session IDs, use `get` (not `search`) to read the actual conversation content. `get` returns the full `session_messages` array with every user and assistant message.
 
-From inside the Telegram bot, session recall is seamless: the current user message is persisted to the session store *before* the agent loop runs, so `session_search` can find the current conversation's data during the same turn.
+From inside the Telegram bot, session recall works in the same turn: the current user message is persisted to the session store *before* the agent loop runs, so `session_search` can find the current conversation's data during the same turn.
 
 ## Programmatic API
 

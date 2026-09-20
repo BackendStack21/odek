@@ -6,12 +6,12 @@ Extended Memory is opt-in. When disabled, odek keeps the existing three-tier mem
 
 ## Goals
 
-1. **Near-comprehensive recall** of the user's own statements, preferences, goals, and recurring patterns.
+1. **Recall of the user's own statements**, preferences, goals, and recurring patterns.
 2. **Anticipatory context**: the agent should load the context for the question the user is about to ask before they ask it.
 3. **Bounded resource usage**: a hard 100 MB default disk cap with intelligent eviction.
 4. **Semantic retrieval**: configurable top-K vector search over memory atoms instead of session-level summaries.
 5. **Trust-preserving storage**: user speech is trusted by default; everything indirect is tainted and quarantined until explicitly approved.
-6. **Cost isolation**: memory work can run on a dedicated, lightweight LLM while the main agent keeps using a powerful reasoning model.
+6. **Cost isolation**: memory work can run on a dedicated, lightweight LLM while the main agent keeps using the larger reasoning model.
 
 ## Mental Model
 
@@ -597,7 +597,7 @@ For the best cost/latency trade-off:
 }
 ```
 
-This runs memory extraction, user-state inference, predictive intent generation, and embedding locally while the main agent uses a powerful remote reasoning model.
+This runs memory extraction, user-state inference, predictive intent generation, and embedding locally while the main agent uses a remote reasoning model.
 
 ## Relationship to Existing Memory
 

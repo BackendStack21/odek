@@ -205,7 +205,6 @@ odek run "@README.md what does this project do?"
 | [Runtime Evals](docs/EVALS.md) | Deterministic task scenarios, independent checks, JSON reports |
 | [Tool Selection](docs/TOOL_SELECTION.md) | Tool whitelist/blacklist guide and names reference |
 | [Daily Worker](docs/DAILY-WORKER.md) | Headless scheduled-worker patterns |
-| [Providers](docs/PROVIDERS.md) | go-llm-sdk registry, `--provider`, v2 knobs |
 | [Migration (v2)](docs/MIGRATION.md) | v1 → v2 config, deleted profiles, embedder API |
 | [Development](docs/DEVELOPMENT.md) | Building, testing, contributing, project structure |
 
@@ -240,7 +239,7 @@ go test ./...                 # full suite, no setup required
 go test -race ./...           # also clean under the race detector
 go test -cover ./...          # per-package coverage report
 make eval                    # scripted runtime evaluations, no model credentials
-ODEK_E2E=1 go test ./cmd/odek/   # opt-in Docker / subprocess E2E suite
+ODEK_E2E=true go test ./cmd/odek/   # opt-in Docker / subprocess E2E suite
 ```
 
 Everything runs with `go test` — no Docker, no network, no external services required for the default unit suite. The opt-in `ODEK_E2E=1` set exercises the sandbox, sub-agent subprocess pipeline, and Web UI handshake against real Docker / real processes.
