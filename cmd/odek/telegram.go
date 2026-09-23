@@ -1477,6 +1477,14 @@ func handleChatMessage(
 	tools := builtinTools(resolved.Dangerous, nil, approver, resolved.MaxConcurrency, resolved.APIKey, toolConfigFromResolved(resolved), sessionManager.Store)
 	tools = appendBackgroundTools(tools, bgRT)
 
+	// Voice-reply speech backend: built once per turn only when the operator
+	// enabled tts.telegram_voice_replies with a provider-backed TTS backend.
+	tcfg := toolConfigFromResolved(resolved)
+	var voiceSpeech speechBackend
+	if tcfg.TTS.TelegramVoiceReplies && tcfg.TTS.Backend == config.TTSBackendProvider {
+		voiceSpeech = newSpeechClient(tcfg.TTS, tcfg.STT, tcfg.SpeechOptions)
+	}
+
 	// Apply tool filtering based on configuration, but preserve Telegram's
 	// required tools so the bot can always respond and ask clarifications.
 	requiredTelegramTools := map[string]bool{"send_message": true, "clarify": true}
@@ -2108,6 +2116,14 @@ func handleChatMessage(
 	// Send the response, then append compact stats as a separate message.
 	if response != "" {
 		handler.SendResponse(chatID, response, messageID)
+
+		// Optional voice-note echo of the answer. Strictly additive:
+		// text was already delivered, so any failure here is only logged.
+		if tcfg.TTS.TelegramVoiceReplies && voiceSpeech != nil {
+			if err := sendTelegramVoiceReply(bot, chatID, response, tcfg.TTS, voiceSpeech); err != nil {
+				log.Warn("telegram voice reply skipped", "chat_id", chatID, "error", err)
+			}
+		}
 
 		// Clean up all tool trace messages — they're stale after the response.
 		deleteToolTraceMessages(bot, chatID, &toolMsgIDs)

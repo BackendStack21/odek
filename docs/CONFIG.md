@@ -1152,6 +1152,7 @@ Configures the `vision` tool (MiniCPM-V via `llama-mtmd-cli`).
 `vision` is operator-only and uses the shared `llm.request_timeout_seconds` for
 provider requests. It has no vision-specific secret, endpoint, format, or
 timeout fields. `video_frames` defaults to `8` and is capped at `32`.
+
 `auto_describe` defaults to `true` whether or not a `vision` section is
 present; set it to `false` explicitly to disable the Telegram preprocessing
 path.
@@ -1165,6 +1166,73 @@ Example provider-backed configuration:
   "vision": { "backend": "provider", "model": "gpt-4.1-mini", "max_tokens": 1024 }
 }
 ```
+
+## Text-to-speech (`tts`)
+
+Configures provider-backed text-to-speech (the `speak` tool). There is no
+local TTS backend, so the tool stays unregistered until this section is
+present with `backend: "provider"`.
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `backend` | `""` | Must be `provider` (no local TTS backend exists) |
+| `provider` | main `provider` | Optional provider override; credentials and endpoint come from the existing `providers` map |
+| `model` | `""` | Provider TTS model identifier; required |
+| `voice` | `""` | Voice name (e.g. `alloy`); required and validated at load time |
+| `format` | `mp3` | Audio container; empty falls back to the provider default |
+| `speed` | `0` (omit) | Speaking-rate multiplier; `0` = provider default, capped at `4.0` |
+| `max_chars` | `4096` | Per-call input text cap (maximum `65536`) |
+| `telegram_voice_replies` | `false` | Send Telegram answers as voice messages when TTS is configured |
+
+`tts` is operator-only and uses the shared `llm.request_timeout_seconds`,
+bounded by the remaining run budget.
+
+### Failure behavior (`tts`)
+
+- **Section absent or backend not `provider`** — the `speak` tool is not
+  registered; the model never sees it.
+- **Invalid values at load time** (bad `speed`, `max_chars`, `voice`, missing
+  `model`/`voice`) — a loud stderr error is printed and text-to-speech is
+  disabled; the tool stays unregistered.
+- **Provider configured but API key missing** — the tool returns an
+  actionable error naming the expected environment variable; keys are never
+  included in errors.
+- **Request failures mid-call** — collapsed to a generic, key-free provider
+  error the agent can surface; the run continues.
+- **Empty or oversized provider audio** — explicit in-band tool errors.
+
+The `speak` tool and provider transcription are classified as
+`NetworkEgress` in addition to their local write: both send text/audio to a
+third-party endpoint, so profiles without egress approval will decline them.
+
+## Speech-to-text (`stt`)
+
+Configures speech-to-text. Omitting the whole section preserves local
+whisper.cpp behavior (the `transcription` section); `backend: "provider"`
+opts into provider transcription.
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `backend` | `local` | `local` uses whisper.cpp; `provider` uses the configured main LLM provider |
+| `provider` | main `provider` | Optional provider override when `backend` is `provider` |
+| `model` | `""` | Provider model identifier; required when `backend` is `provider` |
+| `max_audio_mb` | `25` | Maximum accepted audio upload size in MB (maximum `25`, matching the provider ceiling) |
+
+`stt` is operator-only: project-level `./odek.json` cannot set it. Both `tts`
+and `stt` are rejected from project config with the same warning pattern as
+`vision`.
+
+### Failure behavior (`stt`)
+
+- **Section absent** — local whisper.cpp behavior, byte-for-byte unchanged
+  (the `transcription` section stays authoritative).
+- **Invalid values at load time** — a loud stderr error is printed and the
+  backend falls back to local whisper; transcription never silently breaks.
+- **`backend: "provider"` with the provider down** — transcription fails
+  with a clear provider error; there is **no silent fallback to whisper**
+  (an unintended backend switch would mask the configuration problem).
+- **Oversized audio** — rejected before upload with the `max_audio_mb` limit
+  named in the error.
 
 ## Tool Progress
 

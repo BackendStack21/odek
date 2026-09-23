@@ -229,6 +229,18 @@ const (
 	DefaultVisionMaxTokens = 1024
 	MaxVisionTokens        = 16384
 	MaxVisionVideoFrames   = 32
+
+	TTSBackendProvider = "provider"
+
+	STTBackendLocal    = "local"
+	STTBackendProvider = "provider"
+
+	DefaultTTSMaxChars = 4096
+	MaxTTSChars        = 65536
+	MaxTTSSpeed        = 4.0
+
+	DefaultSTTMaxAudioMB = 25
+	MaxSTTAudioMB        = 25
 )
 
 // ValidateVisionConfig rejects values that would otherwise silently select a
@@ -245,6 +257,83 @@ func ValidateVisionConfig(v VisionConfig) error {
 	}
 	if v.VideoFrames < 0 || v.VideoFrames > MaxVisionVideoFrames {
 		return fmt.Errorf("vision.video_frames must be between 0 and %d", MaxVisionVideoFrames)
+	}
+	return nil
+}
+
+// TTSConfig controls provider-backed text-to-speech (the speak tool).
+// Populated from the "tts" section of odek.json or ~/.odek/config.json.
+// There is no local TTS backend today, so a supplied tts section must set
+// backend="provider"; omitting the section entirely disables the tool.
+type TTSConfig struct {
+	// Backend must be "provider" — the resolved main provider or an explicit
+	// Provider override supplies credentials and endpoint via providers.<id>.
+	Backend string `json:"backend,omitempty"`
+	// Provider optionally overrides the main provider. Empty inherits it.
+	Provider string `json:"provider,omitempty"`
+	// Model is the provider TTS model identifier. Required.
+	Model string `json:"model,omitempty"`
+	// Voice is required by the SDK's Speak call. Validated at load time.
+	Voice string `json:"voice,omitempty"`
+	// Format is the audio container. Default: "mp3".
+	Format string `json:"format,omitempty"`
+	// Speed is the speaking-rate multiplier. 0 = omit (provider default).
+	Speed float64 `json:"speed,omitempty"`
+	// MaxChars caps the per-call input text (DoS bound). Default: 4096.
+	MaxChars int `json:"max_chars,omitempty"`
+	// TelegramVoiceReplies controls whether Telegram answers are sent as
+	// voice messages when TTS is configured. Default: false.
+	TelegramVoiceReplies bool `json:"telegram_voice_replies,omitempty"`
+}
+
+// ValidateTTSConfig rejects values that would otherwise silently select an
+// unsupported backend or produce unbounded provider calls.
+func ValidateTTSConfig(v TTSConfig) error {
+	if v.Backend != TTSBackendProvider {
+		return fmt.Errorf("tts.backend must be %q (no local TTS backend exists)", TTSBackendProvider)
+	}
+	if strings.TrimSpace(v.Model) == "" {
+		return fmt.Errorf("tts.model is required when tts.backend=%q", TTSBackendProvider)
+	}
+	if strings.TrimSpace(v.Voice) == "" {
+		return fmt.Errorf("tts.voice is required when tts.backend=%q", TTSBackendProvider)
+	}
+	if v.Speed < 0 || v.Speed > MaxTTSSpeed {
+		return fmt.Errorf("tts.speed must be between 0 and %v (0 = omit)", MaxTTSSpeed)
+	}
+	if v.MaxChars < 0 || v.MaxChars > MaxTTSChars {
+		return fmt.Errorf("tts.max_chars must be between 0 and %d", MaxTTSChars)
+	}
+	return nil
+}
+
+// STTConfig controls speech-to-text: the local whisper.cpp backend (current
+// transcribe behavior) or an opt-in provider backend. Populated from the
+// "stt" section of odek.json or ~/.odek/config.json. Omitting the section
+// preserves local behavior.
+type STTConfig struct {
+	// Backend selects the local whisper.cpp backend or the resolved main
+	// provider. Empty defaults to local.
+	Backend string `json:"backend,omitempty"`
+	// Provider optionally overrides the main provider when Backend is provider.
+	Provider string `json:"provider,omitempty"`
+	// Model is required when Backend is provider. Local uses its model files.
+	Model string `json:"model,omitempty"`
+	// MaxAudioMB caps the accepted audio upload size. Default and maximum: 25.
+	MaxAudioMB int `json:"max_audio_mb,omitempty"`
+}
+
+// ValidateSTTConfig rejects values that would otherwise silently select an
+// unsupported backend or exceed the provider upload ceiling.
+func ValidateSTTConfig(v STTConfig) error {
+	if v.Backend != "" && v.Backend != STTBackendLocal && v.Backend != STTBackendProvider {
+		return fmt.Errorf("stt.backend must be %q or %q", STTBackendLocal, STTBackendProvider)
+	}
+	if v.Backend == STTBackendProvider && strings.TrimSpace(v.Model) == "" {
+		return fmt.Errorf("stt.model is required when stt.backend=%q", STTBackendProvider)
+	}
+	if v.MaxAudioMB < 0 || v.MaxAudioMB > MaxSTTAudioMB {
+		return fmt.Errorf("stt.max_audio_mb must be between 0 and %d", MaxSTTAudioMB)
 	}
 	return nil
 }
@@ -562,6 +651,15 @@ type FileConfig struct {
 	// Vision configures local image/video understanding (MiniCPM-V 4.6 via llama-mtmd-cli).
 	Vision *VisionConfig `json:"vision,omitempty"`
 
+	// TTS configures provider-backed text-to-speech. Operator-controlled:
+	// rejected from project-level ./odek.json — a repo must not choose where
+	// its text is sent for synthesis.
+	TTS *TTSConfig `json:"tts,omitempty"`
+
+	// STT configures speech-to-text. Operator-controlled: rejected from
+	// project-level ./odek.json — a repo must not redirect its audio uploads.
+	STT *STTConfig `json:"stt,omitempty"`
+
 	// WebSearch configures the web_search tool (self-hosted SearXNG backend).
 	WebSearch *WebSearchConfig `json:"web_search,omitempty"`
 
@@ -789,6 +887,14 @@ type ResolvedConfig struct {
 	// Vision is the resolved vision config. Provider-backed mode inherits the
 	// resolved main provider unless explicitly overridden.
 	Vision VisionConfig
+
+	// TTS is the resolved text-to-speech config. Empty Backend means the
+	// speak tool stays unregistered (there is no local TTS backend).
+	TTS TTSConfig
+
+	// STT is the resolved speech-to-text config. Defaults to the local
+	// whisper.cpp backend when the stt section is omitted.
+	STT STTConfig
 
 	// WebSearch is the resolved web_search config.
 	// Default: MaxResults=10, Timeout=15, BaseURL="" (tool disabled until set).
@@ -1629,6 +1735,16 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	if project.Vision != nil {
 		fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring vision from project config (%s); set it via ~/.odek/config.json\n", ProjectConfigPath())
 		project.Vision = nil
+	}
+	// TTS/STT choose which remote endpoints receive agent text and audio. A
+	// malicious repo must not be able to redirect those uploads.
+	if project.TTS != nil {
+		fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring tts from project config (%s); set it via ~/.odek/config.json\n", ProjectConfigPath())
+		project.TTS = nil
+	}
+	if project.STT != nil {
+		fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring stt from project config (%s); set it via ~/.odek/config.json\n", ProjectConfigPath())
+		project.STT = nil
 	}
 	if len(project.TrustedProxies) > 0 {
 		fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring trusted_proxies from project config (%s); set it via ~/.odek/config.json or ODEK_TRUSTED_PROXIES\n", ProjectConfigPath())
@@ -2685,6 +2801,30 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	// environment/CLI overrides have been applied.
 	resolved.Vision = resolveVisionForProvider(cfg.Vision, resolved.Provider)
 
+	// Resolve TTS/STT's inherited provider only after all provider aliases and
+	// environment/CLI overrides have been applied (same rule as vision).
+	// Invalid sections fail load-time validation loudly and disable the
+	// feature rather than silently misbehaving at call time.
+	resolved.TTS = TTSConfig{}
+	if cfg.TTS != nil {
+		if err := ValidateTTSConfig(*cfg.TTS); err != nil {
+			fmt.Fprintf(os.Stderr, "odek: error: invalid tts config: %v — disabling text-to-speech\n", err)
+		} else {
+			resolved.TTS = resolveTTSForProvider(cfg.TTS, resolved.Provider)
+		}
+	}
+	if cfg.STT != nil {
+		if err := ValidateSTTConfig(*cfg.STT); err != nil {
+			fmt.Fprintf(os.Stderr, "odek: error: invalid stt config: %v — falling back to local transcription\n", err)
+			resolved.STT = STTConfig{Backend: STTBackendLocal, MaxAudioMB: DefaultSTTMaxAudioMB}
+		} else {
+			resolved.STT = resolveSTTForProvider(cfg.STT, resolved.Provider)
+		}
+	}
+	if cfg.STT == nil {
+		resolved.STT = resolveSTTForProvider(nil, resolved.Provider)
+	}
+
 	// Fill providers.<id>.api_key from the provider env (before Unsetenv)
 	// so NewSDK can authenticate without FromEnv after we scrub the
 	// process environment.
@@ -3124,8 +3264,8 @@ func resolveVision(cfg *VisionConfig) VisionConfig {
 		return v
 	}
 	return VisionConfig{
-		Backend:   VisionBackendLocal,
-		MaxTokens: DefaultVisionMaxTokens,
+		Backend:     VisionBackendLocal,
+		MaxTokens:   DefaultVisionMaxTokens,
 		VideoFrames: 8,
 	}
 }
@@ -3133,6 +3273,55 @@ func resolveVision(cfg *VisionConfig) VisionConfig {
 func resolveVisionForProvider(cfg *VisionConfig, provider string) VisionConfig {
 	v := resolveVision(cfg)
 	if v.Backend == VisionBackendProvider && v.Provider == "" {
+		v.Provider = provider
+	}
+	return v
+}
+
+// resolveTTS returns the resolved TTS config. A nil section means the speak
+// tool stays unregistered (no local TTS backend exists), so no defaults are
+// invented beyond the format/output caps.
+func resolveTTS(cfg *TTSConfig) TTSConfig {
+	if cfg == nil {
+		return TTSConfig{}
+	}
+	v := *cfg
+	if v.Format == "" {
+		v.Format = "mp3"
+	}
+	if v.MaxChars == 0 {
+		v.MaxChars = DefaultTTSMaxChars
+	}
+	return v
+}
+
+func resolveTTSForProvider(cfg *TTSConfig, provider string) TTSConfig {
+	v := resolveTTS(cfg)
+	if v.Backend == TTSBackendProvider && v.Provider == "" {
+		v.Provider = provider
+	}
+	return v
+}
+
+// resolveSTT returns the resolved STT config. Omitting the whole stt section
+// preserves local whisper.cpp behavior (compat quirk pinned by tests).
+func resolveSTT(cfg *STTConfig) STTConfig {
+	if cfg == nil {
+		return STTConfig{Backend: STTBackendLocal, MaxAudioMB: DefaultSTTMaxAudioMB}
+	}
+	v := *cfg
+	if v.Backend == "" {
+		v.Backend = STTBackendLocal
+	}
+	if v.MaxAudioMB == 0 {
+		v.MaxAudioMB = DefaultSTTMaxAudioMB
+	}
+	return v
+}
+
+func resolveSTTForProvider(cfg *STTConfig, provider string) STTConfig {
+	v := resolveSTT(cfg)
+	if v.Backend == STTBackendProvider && v.Provider == "" {
 		v.Provider = provider
 	}
 	return v
@@ -3586,6 +3775,15 @@ func overlayFile(base, override FileConfig) FileConfig {
 	}
 	if override.Transcription != nil {
 		base.Transcription = override.Transcription
+	}
+	if override.Vision != nil {
+		base.Vision = override.Vision
+	}
+	if override.TTS != nil {
+		base.TTS = override.TTS
+	}
+	if override.STT != nil {
+		base.STT = override.STT
 	}
 	if override.Limits != nil {
 		// Reached only after clampProjectLimits ran, so the override already

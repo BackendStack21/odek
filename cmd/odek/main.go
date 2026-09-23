@@ -2465,6 +2465,11 @@ type toolConfig struct {
 	Vision        config.VisionConfig
 	VisionOptions llmclient.Options
 	VisionLimits  budget.Limits
+	// TTS/STT carry the resolved speech sections; provider-mode backends
+	// gate speak registration and the transcribe provider dispatch.
+	TTS           config.TTSConfig
+	STT           config.STTConfig
+	SpeechOptions llmclient.Options
 	WebSearch     config.WebSearchConfig
 	// Subagent carries the resolved subagent section for delegate_tasks
 	// (timeout/concurrency/depth defaults + budget inheritance mode).
@@ -2516,6 +2521,9 @@ func toolConfigFromResolved(resolved config.ResolvedConfig) toolConfig {
 		Vision:        resolved.Vision,
 		VisionOptions: llmclient.Options{Provider: resolved.Provider, APIKey: resolved.APIKey, BaseURL: resolved.BaseURL, Providers: resolved.ProviderOverrides(), Timeout: time.Duration(resolved.LLM.RequestTimeoutSeconds) * time.Second},
 		VisionLimits:  resolved.Limits,
+		TTS:           resolved.TTS,
+		STT:           resolved.STT,
+		SpeechOptions: llmclient.Options{Provider: resolved.Provider, APIKey: resolved.APIKey, BaseURL: resolved.BaseURL, Providers: resolved.ProviderOverrides(), Timeout: time.Duration(resolved.LLM.RequestTimeoutSeconds) * time.Second},
 		WebSearch:     resolved.WebSearch,
 		Planning:      &resolved.Planning,
 		Subagent:      resolved.Subagent,
@@ -2570,6 +2578,7 @@ func builtinTools(dc danger.DangerousConfig, sm *skills.SkillManager, approver d
 		mcpServers:    tcfg.Introspection.MCPServers,
 	}
 	vision := newConfiguredVisionTool(dc, tcfg, approver)
+	transcribe := newTranscribeTool(dc, tcfg.Transcription)
 	tools := []odek.Tool{
 		shell,
 		&delegateTasksTool{
@@ -2617,7 +2626,7 @@ func builtinTools(dc danger.DangerousConfig, sm *skills.SkillManager, approver d
 		&checksumTool{dangerousConfig: dc},
 		&headTailTool{dangerousConfig: dc},
 		&base64Tool{dangerousConfig: dc},
-		newTranscribeTool(dc, tcfg.Transcription),
+		transcribe,
 		vision,
 		// session_search returns content from arbitrary past sessions —
 		// including sessions that ingested untrusted content. That path
@@ -2625,6 +2634,18 @@ func builtinTools(dc danger.DangerousConfig, sm *skills.SkillManager, approver d
 		// wrap its whole output as untrusted (which also records an ingest).
 		&untrustedToolWrapper{inner: newSessionSearchTool(store), source: "session_search"},
 		newBrowserTool(dc),
+	}
+
+	// Speech provider wiring: speak is registered only when provider-backed
+	// TTS is configured; the transcribe tool dispatches to the provider STT
+	// backend only when stt.backend is "provider" (local whisper otherwise).
+	if speech := newSpeechClient(tcfg.TTS, tcfg.STT, tcfg.SpeechOptions); speech != nil {
+		if tcfg.TTS.Backend == config.TTSBackendProvider {
+			tools = append(tools, newSpeakTool(dc, tcfg.TTS, speech))
+		}
+		if tcfg.STT.Backend == config.STTBackendProvider {
+			transcribe.SetSpeechBackend(tcfg.STT, speech)
+		}
 	}
 
 	// artifact_read is registered only for top-level runs (SelfTrust empty):

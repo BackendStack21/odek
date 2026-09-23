@@ -447,6 +447,20 @@ Voice message received → DownloadVoice (OGG Opus to disk)
 
 **Docker:** the official image bundles the whisper.cpp CLI, the `small` (multilingual) model, and ffmpeg, with `auto_transcribe` enabled in the shipped configs — so voice transcription works out of the box with no host install, at usable German/English/Spanish quality. See [../docker/README.md](../docker/README.md#voice-transcription-out-of-the-box).
 
+**Provider STT:** setting `stt.backend: "provider"` in config routes transcription (including auto-transcribe) through the configured provider's transcription endpoint instead of local whisper. Local remains the default; see the `stt` section in [CONFIG.md](CONFIG.md).
+
+### Voice Replies (Text → Voice Note)
+
+When `tts.telegram_voice_replies: true` and TTS is provider-configured (see the `tts` section in [CONFIG.md](CONFIG.md)), each text answer is additionally delivered as a voice note:
+
+```
+Agent final text answer → delivered as text message (always)
+                       → synthesized via the TTS provider (text capped at tts.max_chars)
+                       → sent as a voice note through the chat-scoped media allowlist
+```
+
+The voice note is strictly additive — the text answer is always delivered. Synthesis failures are logged and skipped; they never fail the turn. The intermediate audio file is removed after delivery.
+
 ### Tool Progress (Narrator)
 
 Tool progress shows what the agent is doing in real time. Controlled by the `tool_progress` config field (independent from `interaction_mode`):
