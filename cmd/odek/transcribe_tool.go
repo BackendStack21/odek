@@ -155,6 +155,9 @@ type transcribeTool struct {
 	dangerousConfig  danger.DangerousConfig
 	transcriptionCfg config.TranscriptionConfig
 	restrictToCWD    bool // sandbox: reject paths that escape the workspace
+	// sttCfg/speech carry the provider STT backend (nil = local whisper).
+	sttCfg config.STTConfig
+	speech speechBackend
 }
 
 func newTranscribeTool(dc danger.DangerousConfig, tc config.TranscriptionConfig) *transcribeTool {
@@ -162,6 +165,56 @@ func newTranscribeTool(dc danger.DangerousConfig, tc config.TranscriptionConfig)
 		dangerousConfig:  dc,
 		transcriptionCfg: tc,
 	}
+}
+
+// SetSpeechBackend switches the tool to the provider STT backend. Local
+// whisper paths remain byte-for-byte unchanged when this is never called.
+func (t *transcribeTool) SetSpeechBackend(cfg config.STTConfig, backend speechBackend) {
+	t.sttCfg = cfg
+	t.speech = backend
+}
+
+// transcribeProvider dispatches to the provider STT backend. The audio file
+// is read with an O_NOFOLLOW open and capped at stt.max_audio_mb before it
+// ever leaves the machine.
+func (t *transcribeTool) transcribeProvider(args transcribeArgs, source string) (string, error) {
+	maxBytes := int64(t.sttCfg.MaxAudioMB) << 20
+	if maxBytes <= 0 {
+		maxBytes = int64(config.DefaultSTTMaxAudioMB) << 20
+	}
+	f, err := os.OpenFile(args.Path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return jsonResult(transcribeResult{Error: fmt.Sprintf("cannot open audio file %q: %v", args.Path, err)})
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return jsonResult(transcribeResult{Error: fmt.Sprintf("cannot stat audio file %q: %v", args.Path, err)})
+	}
+	if info.Size() > maxBytes {
+		return jsonResult(transcribeResult{Error: fmt.Sprintf("audio file too large (%d bytes, max %d bytes)", info.Size(), maxBytes)})
+	}
+	data, err := io.ReadAll(io.LimitReader(f, maxBytes+1))
+	if err != nil {
+		return jsonResult(transcribeResult{Error: fmt.Sprintf("cannot read audio file %q: %v", args.Path, err)})
+	}
+	lang := args.Language
+	if lang == "" {
+		lang = t.transcriptionCfg.Language
+	}
+	res, err := t.speech.TranscribeAudio(t.toolCtx(), filepath.Base(args.Path), data, lang)
+	if err != nil {
+		return jsonResult(transcribeResult{Error: err.Error()})
+	}
+	if res == nil || res.Text == "" {
+		return jsonResult(transcribeResult{Error: "stt: provider returned no transcription"})
+	}
+	return jsonResult(transcribeResult{
+		Text:     wrapUntrusted(t.toolCtx(), source, strings.TrimSpace(res.Text)),
+		Duration: res.DurationSec,
+		Model:    res.Model,
+		Language: res.Language,
+	})
 }
 
 func (t *transcribeTool) Name() string { return "transcribe" }
@@ -343,6 +396,11 @@ func (t *transcribeTool) Call(argsJSON string) (result string, err error) {
 	}
 
 	// Convert to WAV if needed (whisper.cpp doesn't support OGG Opus natively).
+	// Provider mode skips all local whisper handling entirely.
+	source := "transcribe:" + args.Path
+	if t.speech != nil {
+		return t.transcribeProvider(args, source)
+	}
 	wavPath := convertToWAV(t.toolCtx(), args.Path)
 	cleanup := func() {
 		if wavPath != args.Path {
@@ -433,7 +491,6 @@ func (t *transcribeTool) Call(argsJSON string) (result string, err error) {
 	}
 
 	// Convert segments
-	source := "transcribe:" + args.Path
 	segments := make([]transcribeSegment, len(whisperOut.Segments))
 	for i, s := range whisperOut.Segments {
 		segments[i] = transcribeSegment{Start: s.Start, End: s.End, Text: wrapUntrusted(t.toolCtx(), source, s.Text)}
