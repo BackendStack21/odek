@@ -1187,6 +1187,24 @@ present with `backend: "provider"`.
 `tts` is operator-only and uses the shared `llm.request_timeout_seconds`,
 bounded by the remaining run budget.
 
+### Failure behavior (`tts`)
+
+- **Section absent or backend not `provider`** — the `speak` tool is not
+  registered; the model never sees it.
+- **Invalid values at load time** (bad `speed`, `max_chars`, `voice`, missing
+  `model`/`voice`) — a loud stderr error is printed and text-to-speech is
+  disabled; the tool stays unregistered.
+- **Provider configured but API key missing** — the tool returns an
+  actionable error naming the expected environment variable; keys are never
+  included in errors.
+- **Request failures mid-call** — collapsed to a generic, key-free provider
+  error the agent can surface; the run continues.
+- **Empty or oversized provider audio** — explicit in-band tool errors.
+
+The `speak` tool and provider transcription are classified as
+`NetworkEgress` in addition to their local write: both send text/audio to a
+third-party endpoint, so profiles without egress approval will decline them.
+
 ## Speech-to-text (`stt`)
 
 Configures speech-to-text. Omitting the whole section preserves local
@@ -1203,6 +1221,18 @@ opts into provider transcription.
 `stt` is operator-only: project-level `./odek.json` cannot set it. Both `tts`
 and `stt` are rejected from project config with the same warning pattern as
 `vision`.
+
+### Failure behavior (`stt`)
+
+- **Section absent** — local whisper.cpp behavior, byte-for-byte unchanged
+  (the `transcription` section stays authoritative).
+- **Invalid values at load time** — a loud stderr error is printed and the
+  backend falls back to local whisper; transcription never silently breaks.
+- **`backend: "provider"` with the provider down** — transcription fails
+  with a clear provider error; there is **no silent fallback to whisper**
+  (an unintended backend switch would mask the configuration problem).
+- **Oversized audio** — rejected before upload with the `max_audio_mb` limit
+  named in the error.
 
 ## Tool Progress
 
