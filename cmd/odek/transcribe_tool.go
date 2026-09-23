@@ -372,6 +372,15 @@ func (t *transcribeTool) Call(argsJSON string) (result string, err error) {
 	}, nil); err != nil {
 		return jsonError(err.Error())
 	}
+	// The provider STT backend uploads the audio to a third-party endpoint,
+	// so it is additionally classified as network egress.
+	if t.speech != nil {
+		if err := t.dangerousConfig.CheckOperation(danger.ToolOperation{
+			Name: "transcribe", Resource: "provider:" + t.sttCfg.Provider, Risk: danger.NetworkEgress,
+		}, nil); err != nil {
+			return jsonError(err.Error())
+		}
+	}
 
 	// Check the audio file exists (O_NOFOLLOW to prevent symlink attacks) and
 	// reject inputs that would exhaust memory during conversion / transcription.

@@ -2803,8 +2803,27 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 
 	// Resolve TTS/STT's inherited provider only after all provider aliases and
 	// environment/CLI overrides have been applied (same rule as vision).
-	resolved.TTS = resolveTTSForProvider(cfg.TTS, resolved.Provider)
-	resolved.STT = resolveSTTForProvider(cfg.STT, resolved.Provider)
+	// Invalid sections fail load-time validation loudly and disable the
+	// feature rather than silently misbehaving at call time.
+	resolved.TTS = TTSConfig{}
+	if cfg.TTS != nil {
+		if err := ValidateTTSConfig(*cfg.TTS); err != nil {
+			fmt.Fprintf(os.Stderr, "odek: error: invalid tts config: %v — disabling text-to-speech\n", err)
+		} else {
+			resolved.TTS = resolveTTSForProvider(cfg.TTS, resolved.Provider)
+		}
+	}
+	if cfg.STT != nil {
+		if err := ValidateSTTConfig(*cfg.STT); err != nil {
+			fmt.Fprintf(os.Stderr, "odek: error: invalid stt config: %v — falling back to local transcription\n", err)
+			resolved.STT = STTConfig{Backend: STTBackendLocal, MaxAudioMB: DefaultSTTMaxAudioMB}
+		} else {
+			resolved.STT = resolveSTTForProvider(cfg.STT, resolved.Provider)
+		}
+	}
+	if cfg.STT == nil {
+		resolved.STT = resolveSTTForProvider(nil, resolved.Provider)
+	}
 
 	// Fill providers.<id>.api_key from the provider env (before Unsetenv)
 	// so NewSDK can authenticate without FromEnv after we scrub the
@@ -3756,6 +3775,15 @@ func overlayFile(base, override FileConfig) FileConfig {
 	}
 	if override.Transcription != nil {
 		base.Transcription = override.Transcription
+	}
+	if override.Vision != nil {
+		base.Vision = override.Vision
+	}
+	if override.TTS != nil {
+		base.TTS = override.TTS
+	}
+	if override.STT != nil {
+		base.STT = override.STT
 	}
 	if override.Limits != nil {
 		// Reached only after clampProjectLimits ran, so the override already

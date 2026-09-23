@@ -1153,6 +1153,20 @@ Configures the `vision` tool (MiniCPM-V via `llama-mtmd-cli`).
 provider requests. It has no vision-specific secret, endpoint, format, or
 timeout fields. `video_frames` defaults to `8` and is capped at `32`.
 
+`auto_describe` defaults to `true` whether or not a `vision` section is
+present; set it to `false` explicitly to disable the Telegram preprocessing
+path.
+
+Example provider-backed configuration:
+
+```json
+{
+  "provider": "openai",
+  "providers": { "openai": { "api_key": "${OPENAI_API_KEY}" } },
+  "vision": { "backend": "provider", "model": "gpt-4.1-mini", "max_tokens": 1024 }
+}
+```
+
 ## Text-to-speech (`tts`)
 
 Configures provider-backed text-to-speech (the `speak` tool). There is no
@@ -1189,19 +1203,6 @@ opts into provider transcription.
 `stt` is operator-only: project-level `./odek.json` cannot set it. Both `tts`
 and `stt` are rejected from project config with the same warning pattern as
 `vision`.
-`auto_describe` defaults to `true` whether or not a `vision` section is
-present; set it to `false` explicitly to disable the Telegram preprocessing
-path.
-
-Example provider-backed configuration:
-
-```json
-{
-  "provider": "openai",
-  "providers": { "openai": { "api_key": "${OPENAI_API_KEY}" } },
-  "vision": { "backend": "provider", "model": "gpt-4.1-mini", "max_tokens": 1024 }
-}
-```
 
 ## Tool Progress
 

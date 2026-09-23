@@ -1,6 +1,8 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -165,5 +167,65 @@ func TestResolveTTSForProviderInherits(t *testing.T) {
 	got := resolveTTSForProvider(&TTSConfig{Backend: TTSBackendProvider, Model: "m", Voice: "alloy"}, "openai")
 	if got.Provider != "openai" {
 		t.Fatalf("expected provider inheritance, got %q", got.Provider)
+	}
+}
+
+// LoadConfig must apply the tts/stt validators at load time: an invalid
+// section disables the feature (with a loud warning) instead of silently
+// misbehaving on the first call.
+func TestLoadConfig_InvalidTTSConfigDisabled(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	t.Chdir(dir)
+
+	os.MkdirAll(filepath.Join(dir, ".odek"), 0755)
+	global := filepath.Join(dir, ".odek", "config.json")
+	os.WriteFile(global, []byte(`{
+		"tts": {"backend": "provider", "model": "m", "voice": "alloy", "speed": 99}
+	}`), 0644)
+
+	cfg := LoadConfig(CLIFlags{})
+	if cfg.TTS.Backend != "" {
+		t.Errorf("invalid tts.speed must disable tts, got backend %q", cfg.TTS.Backend)
+	}
+}
+
+func TestLoadConfig_InvalidSTTConfigFallsBackToLocal(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	t.Chdir(dir)
+
+	os.MkdirAll(filepath.Join(dir, ".odek"), 0755)
+	global := filepath.Join(dir, ".odek", "config.json")
+	os.WriteFile(global, []byte(`{
+		"stt": {"backend": "provider"}
+	}`), 0644)
+
+	cfg := LoadConfig(CLIFlags{})
+	if cfg.STT.Backend != STTBackendLocal {
+		t.Errorf("invalid stt (provider without model) must fall back to local, got %q", cfg.STT.Backend)
+	}
+}
+
+func TestLoadConfig_ValidTTSSTTKept(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	t.Chdir(dir)
+
+	os.MkdirAll(filepath.Join(dir, ".odek"), 0755)
+	global := filepath.Join(dir, ".odek", "config.json")
+	os.WriteFile(global, []byte(`{
+		"provider": "openai",
+		"providers": {"openai": {"api_key": "sk-test"}},
+		"tts": {"backend": "provider", "model": "m", "voice": "alloy", "max_chars": 100},
+		"stt": {"backend": "provider", "model": "whisper-1", "max_audio_mb": 10}
+	}`), 0644)
+
+	cfg := LoadConfig(CLIFlags{})
+	if cfg.TTS.Backend != TTSBackendProvider || cfg.TTS.MaxChars != 100 {
+		t.Errorf("valid tts must be kept, got %+v", cfg.TTS)
+	}
+	if cfg.STT.Backend != STTBackendProvider || cfg.STT.MaxAudioMB != 10 {
+		t.Errorf("valid stt must be kept, got %+v", cfg.STT)
 	}
 }

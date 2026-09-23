@@ -89,9 +89,25 @@ func speakExt(mime, format string) string {
 		return "opus"
 	}
 	if format != "" {
-		return strings.TrimPrefix(strings.ToLower(format), ".")
+		return sanitizeSpeakFormat(format)
 	}
 	return "mp3"
+}
+
+// sanitizeSpeakFormat restricts the operator-configured tts.format to a
+// short lowercase alphanumeric extension so it can never smuggle path
+// separators, dots, or shell metacharacters into a filename.
+func sanitizeSpeakFormat(format string) string {
+	format = strings.TrimPrefix(strings.ToLower(format), ".")
+	if n := len(format); n == 0 || n > 8 {
+		return "mp3"
+	}
+	for _, r := range format {
+		if (r < 'a' || r > 'z') && (r < '0' || r > '9') {
+			return "mp3"
+		}
+	}
+	return format
 }
 
 // safeSpeakBasename restricts an operator/model-supplied filename to a plain
@@ -143,11 +159,19 @@ func (t *speakTool) Call(argsJSON string) (string, error) {
 	}
 
 	// Approval classification: writing inside the artifacts root is a local
-	// write, no egress or system surface is involved.
+	// write; the provider synthesis call additionally sends the text to a
+	// third-party endpoint, so it is classified as network egress.
 	if err := t.dangerousConfig.CheckOperation(danger.ToolOperation{
 		Name: "speak", Resource: outPath, Risk: danger.LocalWrite,
 	}, nil); err != nil {
 		return jsonError(err.Error())
+	}
+	if t.cfg.Backend == config.TTSBackendProvider {
+		if err := t.dangerousConfig.CheckOperation(danger.ToolOperation{
+			Name: "speak", Resource: "provider:" + t.cfg.Provider, Risk: danger.NetworkEgress,
+		}, nil); err != nil {
+			return jsonError(err.Error())
+		}
 	}
 
 	if err := os.MkdirAll(root, 0o700); err != nil {

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -50,13 +49,24 @@ func sendTelegramVoiceReply(bot *telegram.Bot, chatID int64, text string, tts co
 	if err != nil {
 		return err
 	}
-	ext := speakExt(res.MIMEType, tts.Format)
-	if ext == "" {
-		ext = "mp3"
+	ext := sanitizeSpeakFormat(speakExt(res.MIMEType, tts.Format))
+	// CreateTemp keeps concurrent replies to the same chat from clobbering
+	// each other's audio file; the chat-scoped prefix keeps the name inside
+	// the outbound media allowlist for this chat.
+	tmpFile, err := os.CreateTemp(dir, fmt.Sprintf("voice_chat%d_reply-*.%s", chatID, ext))
+	if err != nil {
+		return fmt.Errorf("tts create audio temp: %w", err)
 	}
-	outPath := filepath.Join(dir, fmt.Sprintf("voice_chat%d_reply.%s", chatID, ext))
-	if err := os.WriteFile(outPath, res.Audio, 0o600); err != nil {
-		return fmt.Errorf("tts write audio: %w", err)
+	outPath := tmpFile.Name()
+	_, werr := tmpFile.Write(res.Audio)
+	cerr := tmpFile.Close()
+	if werr != nil {
+		os.Remove(outPath)
+		return fmt.Errorf("tts write audio: %w", werr)
+	}
+	if cerr != nil {
+		os.Remove(outPath)
+		return fmt.Errorf("tts write audio: %w", cerr)
 	}
 
 	// Reuse the existing media delivery path (SendVoice + allowlist).
