@@ -1152,6 +1152,43 @@ Configures the `vision` tool (MiniCPM-V via `llama-mtmd-cli`).
 `vision` is operator-only and uses the shared `llm.request_timeout_seconds` for
 provider requests. It has no vision-specific secret, endpoint, format, or
 timeout fields. `video_frames` defaults to `8` and is capped at `32`.
+
+## Text-to-speech (`tts`)
+
+Configures provider-backed text-to-speech (the `speak` tool). There is no
+local TTS backend, so the tool stays unregistered until this section is
+present with `backend: "provider"`.
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `backend` | `""` | Must be `provider` (no local TTS backend exists) |
+| `provider` | main `provider` | Optional provider override; credentials and endpoint come from the existing `providers` map |
+| `model` | `""` | Provider TTS model identifier; required |
+| `voice` | `""` | Voice name (e.g. `alloy`); required and validated at load time |
+| `format` | `mp3` | Audio container; empty falls back to the provider default |
+| `speed` | `0` (omit) | Speaking-rate multiplier; `0` = provider default, capped at `4.0` |
+| `max_chars` | `4096` | Per-call input text cap (maximum `65536`) |
+| `telegram_voice_replies` | `false` | Send Telegram answers as voice messages when TTS is configured |
+
+`tts` is operator-only and uses the shared `llm.request_timeout_seconds`,
+bounded by the remaining run budget.
+
+## Speech-to-text (`stt`)
+
+Configures speech-to-text. Omitting the whole section preserves local
+whisper.cpp behavior (the `transcription` section); `backend: "provider"`
+opts into provider transcription.
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `backend` | `local` | `local` uses whisper.cpp; `provider` uses the configured main LLM provider |
+| `provider` | main `provider` | Optional provider override when `backend` is `provider` |
+| `model` | `""` | Provider model identifier; required when `backend` is `provider` |
+| `max_audio_mb` | `25` | Maximum accepted audio upload size in MB (maximum `25`, matching the provider ceiling) |
+
+`stt` is operator-only: project-level `./odek.json` cannot set it. Both `tts`
+and `stt` are rejected from project config with the same warning pattern as
+`vision`.
 `auto_describe` defaults to `true` whether or not a `vision` section is
 present; set it to `false` explicitly to disable the Telegram preprocessing
 path.
