@@ -3362,8 +3362,10 @@ var staticFiles = map[string][2]string{
 	"/":          {"ui/index.html", "text/html; charset=utf-8"},
 	"/style.css": {"ui/style.css", "text/css; charset=utf-8"},
 	"/app.js":    {"ui/app.js", "application/javascript; charset=utf-8"},
-	// Self-hosted font (variable weight 100–700) so the UI works offline and
-	// does not depend on the Google Fonts CDN.
+	// Self-hosted fonts so the UI works offline and does not depend on
+	// any font CDN. Space Grotesk: variable weight 300–700; Geist: 100–900.
+	"/fonts/space-grotesk.woff2": {"ui/fonts/space-grotesk.woff2", "font/woff2"},
+	"/fonts/space-grotesk-LICENSE.txt": {"ui/fonts/space-grotesk-LICENSE.txt", "text/plain; charset=utf-8"},
 	"/fonts/geist.woff2":         {"ui/fonts/geist.woff2", "font/woff2"},
 	"/fonts/geist-mono.woff2":    {"ui/fonts/geist-mono.woff2", "font/woff2"},
 	"/fonts/geist-LICENSE.txt":   {"ui/fonts/geist-LICENSE.txt", "text/plain; charset=utf-8"},
