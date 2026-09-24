@@ -317,7 +317,11 @@ It requires a `reason` of at most 240 runes and at most eight ordered
 `split` and `supersede` may set `carry_checks_to` to a successor step name.
 That successor receives all original checks with their tool, canonical
 arguments, descriptions, and identities unchanged; the carried evidence is
-reset to pending. Unaffected steps retain their status and evidence. The
+reset to pending. When `carry_checks_to` is omitted on a replacement of a
+checked step, the replacements must declare fresh checks of their own;
+otherwise the revision is rejected, so a checked requirement is never
+silently dropped.
+Unaffected steps retain their status and evidence. The
 latest revision reason and an operation source/target summary are persisted;
 the plan does not keep unlimited revision history. The ordinary transcript
 retains earlier revision tool calls. `add` and `move` accept either `after_id`
@@ -369,7 +373,7 @@ Example:
               "type": "string"
             },
             "carry_checks_to": {
-              "description": "Required when split/supersede replaces a checked step: replacement ID receiving all original checks, pending fresh verification.",
+              "description": "Optional. When a split/supersede replaces a checked step: either set to a replacement ID to give it the original checks (pending fresh verification), or omit and declare fresh checks on the replacements. Rejected when omitted and no replacement declares checks, so a checked requirement is never silently dropped.",
               "type": "string"
             },
             "checks": {

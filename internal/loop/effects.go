@@ -85,7 +85,7 @@ func effectsFor(tc session.ToolCall) callEffects {
 		return callEffects{reads: paths}
 	}
 	switch name {
-	case "math_eval", "web_search", "browser", "config_view", "list_tools", "session_search", "bg_status", "bg_output", "bg_list":
+	case "math_eval", "web_search", "browser", "config_view", "list_tools", "session_search", "bg_status", "bg_output", "bg_list", "bg_stop":
 		return callEffects{}
 	}
 	return callEffects{unknown: true}

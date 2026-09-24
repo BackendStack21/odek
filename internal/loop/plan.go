@@ -1227,7 +1227,7 @@ func (t *PlanTool) Schema() any {
 					"title":           map[string]any{"type": "string", "description": "edit only: replace title; changed work loses its prior check evidence and reopens if completed."},
 					"note":            map[string]any{"type": "string", "description": "edit only: replace note, including an empty string to clear it."},
 					"checks":          planChecksSchema(),
-					"carry_checks_to": map[string]any{"type": "string", "description": "Required when split/supersede replaces a checked step: replacement ID receiving all original checks, pending fresh verification."},
+					"carry_checks_to": map[string]any{"type": "string", "description": "Optional. When a split/supersede replaces a checked step, either set this to a replacement ID to give it the original checks (pending fresh verification), or omit it and declare fresh checks on the replacements. Rejected when omitted and no replacement declares checks, so a checked requirement is never silently dropped."},
 					"steps":           map[string]any{"type": "array", "minItems": 1, "items": planStepSchema(), "description": "New steps for add/split/supersede. Split requires at least two. Replacement IDs must be unique; carried checks are added to the target's declared checks."},
 				}, "required": []string{"kind"}},
 			},

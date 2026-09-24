@@ -183,10 +183,23 @@ func (s *PlanStore) revise(raw string) (string, error) {
 			if op.Kind == "split" && len(steps) < 2 {
 				return "", fmt.Errorf("plan: split requires at least two replacement steps")
 			}
-			if len(working[idx].Checks) > 0 {
-				if op.CarryChecksTo == "" {
-					return "", fmt.Errorf("plan: revise: carry_checks_to required")
+			hasChecks := len(working[idx].Checks) > 0
+			if hasChecks && op.CarryChecksTo == "" {
+				declaresChecks := false
+				for i := range steps {
+					if len(steps[i].Checks) > 0 {
+						declaresChecks = true
+						break
+					}
 				}
+				if !declaresChecks {
+					// A checked requirement must never silently vanish: either
+					// the original checks are carried to a named replacement,
+					// or the replacements declare fresh checks of their own.
+					return "", fmt.Errorf("plan: revise: carry_checks_to required unless replacements declare checks")
+				}
+			}
+			if hasChecks && op.CarryChecksTo != "" {
 				target := -1
 				for i := range steps {
 					if steps[i].ID == op.CarryChecksTo {
