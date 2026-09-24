@@ -462,6 +462,7 @@ const RUN_STATUS_CLASS = {
   cancelled: 'run-st-cancel',
 };
 
+let lastRunsSig = '';
 async function refreshRuns() {
   const version = S.viewVersion;
   const sid = S.sessionId;
@@ -475,6 +476,10 @@ async function refreshRuns() {
     const data = await listRuns(30);
     if (!current()) return;
     const runs = (data && data.runs) || [];
+    // Flicker guard: skip the rebuild when nothing changed.
+    const sig = JSON.stringify(runs.map(r => [r.id, r.status, r.error || '', r.updated_at || r.finished_at || '']));
+    if (sig === lastRunsSig && list && list.children.length) return;
+    lastRunsSig = sig;
     const preserved=new Map();
     list.querySelectorAll('.run-row').forEach(row=>{const detail=row.querySelector('.run-detail');if(detail?.open)preserved.set(row.dataset.runId,detail);});
     list.textContent = '';
@@ -666,6 +671,7 @@ async function loadEvents() {
     });
   } catch (err) {
     if (!current()) return;
+    lastRunsSig = '';
     list.innerHTML = '<div class="mf-empty">failed to load: ' + escapeHtml(err.message) + '</div>';
   }
 }
@@ -674,6 +680,7 @@ async function loadEvents() {
 
 let jobsPollTimer = null;
 let agentsPollTimer = null;
+let lastJobsSig = '';
 
 function stopJobsPolling() {
   if (jobsPollTimer) clearInterval(jobsPollTimer);
@@ -715,6 +722,10 @@ async function refreshJobs() {
     const jobs = (data && data.jobs) || [];
     S.jobs = jobs;
     paintIntent();
+    // Flicker guard: skip the rebuild when nothing changed.
+    const sig = JSON.stringify(jobs.map(j => [j.id, j.status, j.exit_code, j.runtime_s]));
+    if (sig === lastJobsSig && list.children.length) return;
+    lastJobsSig = sig;
     const preserved=new Map();list.querySelectorAll('.job-row').forEach(row=>{const output=row.querySelector('.job-output');if(output)preserved.set(row.dataset.jobId,output);});
     list.textContent = '';
     const header = document.createElement('div');
@@ -733,6 +744,7 @@ async function refreshJobs() {
     badgeNow();
   } catch (err) {
     if (!current()) return;
+    lastJobsSig = '';
     list.innerHTML = '<div class="mf-empty">failed to load: ' + escapeHtml(err.message) + '</div>';
   }
 }

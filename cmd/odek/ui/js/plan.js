@@ -79,9 +79,16 @@ function el(tag, className, text) {
 
 // renderPlan draws one API response into root (default: the panel list).
 // Exported for tests; production callers go through refreshPlanPanel.
+// Flicker guard: the Now panel polls every 1-3s — rebuilding the DOM on an
+// identical payload makes the strip blink. A structural signature of the
+// payload is compared against the last render; unchanged payloads keep the
+// existing nodes untouched.
 export function renderPlan(plan, root) {
   const target = root || listEl;
   if (!target) return;
+  const sig = planSig(plan);
+  if (target._planSig === sig && target.children.length) return;
+  target._planSig = sig;
   target.textContent = '';
   if (!plan || !plan.found) {
     target.appendChild(el('div', 'mf-empty', 'No active plan'));
@@ -115,6 +122,7 @@ export function renderPlan(plan, root) {
 
 function showPlanError(err) {
   if (!listEl) return;
+  listEl._planSig = '';
   listEl.textContent = '';
   const box = el('div', 'mf-empty', 'failed to load: ' + (err && err.message ? err.message : 'request failed'));
   listEl.appendChild(box);
@@ -324,6 +332,13 @@ if (typeof document.addEventListener === 'function') {
   });
 }
 
+// planSig builds a structural signature for skip-identical-render checks.
+function planSig(plan) {
+  const steps = (plan && plan.steps) || [];
+  return JSON.stringify([!!(plan && plan.found), (plan && plan.version) || 0,
+    steps.map(s => [s.id, s.title, s.status, s.note || ''])]);
+}
+
 // resetPlanPanel is the session-switch hook (newSession / loadAndRenderSession):
 // clear synchronously so a stale session's plan can never linger under a new
 // session id, then refetch right away when the panel is being watched.
@@ -332,6 +347,7 @@ export function resetPlanPanel() {
   S.planDirty = false;
   S.planVer = 0;
   S.planAvail = 'unknown';
+  if (listEl) listEl._planSig = '';
   planReqSeq++;
   if (planDebounceTimer) { clearTimeout(planDebounceTimer); planDebounceTimer = null; }
   paintIntent();

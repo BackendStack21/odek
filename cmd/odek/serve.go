@@ -3010,14 +3010,22 @@ func handleSessionByID(store *session.Store, trustedProxies []string, wsToken st
 		switch r.Method {
 		case http.MethodGet:
 			// Rate-limit session detail lookups per IP to slow brute-force
-			// enumeration of the 128-bit ID space.
-			if !sessionLookupLimiter.allow(clientIP(r, trustedProxies)) {
-				http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
-				return
+			// enumeration of the 128-bit ID space. The limiter only gates
+			// *rejected* requests: a caller presenting a valid per-session
+			// token is the legitimate owner (the WebUI Now panel polls
+			// these endpoints every 1-3s and would otherwise exhaust the
+			// budget alone). Rejects - unknown id or bad token - still
+			// burn budget.
+			rejectWithLimit := func(code int, msg string) {
+				if !sessionLookupLimiter.allow(clientIP(r, trustedProxies)) {
+					http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
+					return
+				}
+				http.Error(w, msg, code)
 			}
 			sess, err := store.Load(id)
 			if err != nil {
-				http.Error(w, "session not found", http.StatusNotFound)
+				rejectWithLimit(http.StatusNotFound, "session not found")
 				return
 			}
 			token := sessionTokenFromRequest(r)
@@ -3034,7 +3042,7 @@ func handleSessionByID(store *session.Store, trustedProxies []string, wsToken st
 				effectiveToken, ok = sess.AuthToken, true
 			}
 			if !ok {
-				http.Error(w, "invalid session token", http.StatusUnauthorized)
+				rejectWithLimit(http.StatusUnauthorized, "invalid session token")
 				return
 			}
 			if strings.HasSuffix(r.URL.Path, "/export") {
