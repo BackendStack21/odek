@@ -143,6 +143,10 @@ test('jobs and subagents hit their endpoints', async () => {
   await api.stopJob('j1', 'sess-9', 'tok');
   assert.equal(last().init.method, 'POST');
   assert.equal(last().url, '/api/jobs/j1/stop?session_id=sess-9');
+  await api.listJobs('', 'tok');
+  assert.equal(last().url, '/api/jobs?session_id=');
+  await api.listJobs('tok sess', 'tok');
+  assert.equal(last().url, '/api/jobs?session_id=tok%20sess');
   await api.listSubagents('rk');
   assert.equal(last().url, '/api/subagents?key=rk');
 });
