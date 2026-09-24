@@ -238,7 +238,7 @@ func TestBGChatNotifier_NilBotNoop(t *testing.T) {
 	n.BGExited(bgproc.Notice{JobID: "z", ExitCode: 0}) // must not panic
 }
 
-// F1 regression: jobs routed to a wake turn must be invisible to the
+// Jobs routed to a wake turn must be invisible to the
 // exit-watcher, or the watcher re-pushes the raw line the wake turn already
 // covered (the duplication the suppression exists to prevent).
 func TestTGWakeController_WakeRoutedSuppressesWatcher(t *testing.T) {
@@ -259,7 +259,7 @@ func TestTGWakeController_WakeRoutedSuppressesWatcher(t *testing.T) {
 	}
 }
 
-// F2 regression: when the chat turns busy between reserve and fire, the wake
+// When the chat turns busy between reserve and fire, the wake
 // must be dropped (not queued behind the user's turn) and the spend refunded.
 func TestTGWakeController_BusyAtFireDropsAndRefunds(t *testing.T) {
 	rec := &dispatchedRecorder{}

@@ -139,7 +139,7 @@ func TestPlanRevise_StringStepEntry_Coerced(t *testing.T) {
 	}
 }
 
-// Review fixes: presence-based ambiguity gate — steps:[] plus a competing
+// Presence-based ambiguity gate — steps:[] plus a competing
 // array is a conflict; wrapper alongside top-level steps is a conflict.
 func TestPlanReviewFixes_AmbiguityGates(t *testing.T) {
 	store := NewPlanStore(12, 4000)
@@ -151,7 +151,7 @@ func TestPlanReviewFixes_AmbiguityGates(t *testing.T) {
 	}
 }
 
-// Review fix: diagnostic key echo is bounded — hostile oversized keys cannot
+// Diagnostic key echo is bounded — hostile oversized keys cannot
 // flood the context through a rejection message.
 func TestPlanReviewFixes_BoundedKeyEcho(t *testing.T) {
 	store := NewPlanStore(12, 4000)
@@ -165,7 +165,7 @@ func TestPlanReviewFixes_BoundedKeyEcho(t *testing.T) {
 	}
 }
 
-// Review fix: trimmed-id dedupe — " s1" and an auto-assigned s1 must not
+// Trimmed-id dedupe: " s1" and an auto-assigned s1 must not
 // both pass into the plan.
 func TestPlanReviewFixes_TrimmedIDDedupe(t *testing.T) {
 	store := NewPlanStore(12, 4000)

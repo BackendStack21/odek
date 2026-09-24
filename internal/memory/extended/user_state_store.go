@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"sync"
 
-	"github.com/BackendStack21/odek/internal/fsatomic"
 	"github.com/BackendStack21/odek/internal/flock"
+	"github.com/BackendStack21/odek/internal/fsatomic"
 )
 
 const userStateFileName = "user_model.json"

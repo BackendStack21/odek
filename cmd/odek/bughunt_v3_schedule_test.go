@@ -6,7 +6,7 @@ package main
 // 1. acquireScheduleLock used a read-check-write pidfile: two daemons
 //    starting together could both pass the liveness check before either
 //    wrote its PID, and both would run the scheduler — every enabled job
-//    double-fires. A wave-1 hunter measured 196/200 concurrent pairs both
+//    double-fires. A stress harness measured 196/200 concurrent pairs both
 //    acquiring. The fix routes exclusion through a kernel-arbitrated
 //    non-blocking flock (flock.TryLock).
 //

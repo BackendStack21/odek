@@ -1,6 +1,6 @@
 package main
 
-// Bug-sweep batch 2 — /export route alias regression test.
+// Regression: the /export route alias must dispatch only for GET.
 //
 // RED-first: handleSessionByID stripped the /export suffix for ALL methods
 // while only GET dispatches to the export handler. DELETE /api/sessions/{id}/export

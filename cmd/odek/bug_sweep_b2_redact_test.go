@@ -1,6 +1,6 @@
 package main
 
-// Bug-sweep batch 2 (fix/bug-hunt-b2) — B6 regression test.
+// Regression: redactGoal must truncate on rune boundaries, not bytes.
 //
 // RED-first: redactGoal truncated by BYTES (goal[:2048]) while the constant
 // is named GoalChars — a multi-byte rune at the boundary was split,

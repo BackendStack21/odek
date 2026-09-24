@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// Bug-sweep 2026-08-31: a failing command that produced output returned
+// Regression: a failing command that produced output returned
 // (output, nil) — the exit status was silently dropped, so a failing test
 // run or build was indistinguishable from a passing one. The tool's own
 // comment stated the intent (surface the failure reason) the code did not

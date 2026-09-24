@@ -12,7 +12,7 @@ import (
 	"github.com/BackendStack21/odek/internal/tool"
 )
 
-// Bug-sweep 2026-08-31, wave 2 (internal/loop):
+// Regression tests for loop failure-handling bugs:
 //
 //  1. Failure classification sniffed output text for the literal `"error":`.
 //     A successful read/grep whose result legitimately contains that string

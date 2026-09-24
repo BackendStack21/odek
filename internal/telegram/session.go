@@ -71,8 +71,8 @@ func NewSessionManager(store *session.Store, ttl time.Duration) *SessionManager 
 
 // GetOrCreate returns the ChatSession for the given chatID.
 // Checks the in-memory cache first, then the backing session store,
-// and only creates a new empty session as a last resort. This ensures
-// conversations survive bot restarts without the user needing to ask
+// and only creates a new empty session as a last resort, so conversations
+// survive bot restarts without the user needing to ask
 // for resume explicitly.
 func (sm *SessionManager) GetOrCreate(chatID int64) (*ChatSession, error) {
 	sm.Mu.RLock()

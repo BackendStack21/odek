@@ -1,6 +1,7 @@
 package main
 
-// Bug-sweep batch 1 (fix/bug-hunt-b1) — B2/B3 regression tests.
+// Regression: cleanup dry-run must preview everything the real sweep removes
+// (artifact subtrees, oversized logs).
 //
 // RED-first: both failed against the pre-fix dry-run collector, which never
 // previewed artifact subtree deletions (the real sweep removes

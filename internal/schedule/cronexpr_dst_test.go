@@ -1,6 +1,6 @@
 package schedule
 
-// Bug-sweep batch 2 — DST fall-back regression test.
+// Regression: cron Next() must fire exactly once across a DST fall-back.
 //
 // RED-first: Next() jumped hours via time.Date(...).Add(time.Hour). Across
 // a DST fall-back, time.Date resolves an ambiguous wall time to its FIRST

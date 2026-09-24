@@ -6,9 +6,9 @@ import (
 )
 
 // normalizeForEmbedding lowercases text and reduces it to space-separated
-// alphanumeric tokens. This ensures go-vector's bag-of-words featurization is
-// not fragmented by punctuation or casing, so "Postgres," and "postgres" hash
-// to the same RP token.
+// alphanumeric tokens, so punctuation and casing do not fragment go-vector's
+// bag-of-words featurization — "Postgres," and "postgres" hash to the same
+// RP token.
 func normalizeForEmbedding(text string) string {
 	var b strings.Builder
 	b.Grow(len(text))

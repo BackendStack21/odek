@@ -5,7 +5,7 @@ import (
 	"time"
 )
 
-// Bug-sweep 2026-08-31: cache tokens (Anthropic cache_creation/cache_read,
+// Regression: cache tokens (Anthropic cache_creation/cache_read,
 // OpenAI cached_tokens, DeepSeek hit/miss) are real prompt tokens with real
 // cost, but CheckUsage never saw them — a cache-heavy run could blow
 // max_input_tokens and max_cost_usd without ever tripping the checker.

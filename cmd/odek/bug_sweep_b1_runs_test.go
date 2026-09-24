@@ -1,6 +1,6 @@
 package main
 
-// Bug-sweep batch 1 (fix/bug-hunt-b1) — B1 regression test.
+// Regression: DELETE /api/runs/{id} must report the run's real terminal status.
 //
 // RED-first: this failed against the pre-fix handler, which answered
 // DELETE /api/runs/{id} with the hardcoded status "cancelled" regardless of

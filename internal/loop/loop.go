@@ -423,8 +423,8 @@ type Engine struct {
 	messagesPersistCallback MessagesPersistCallback
 
 	// memoryPromptFunc is called before each LLM invocation to get fresh
-	// memory content. This ensures memory mutations during a session
-	// are visible to the agent on the next turn.
+	// memory content, so memory mutations during a session are visible
+	// to the agent on the next turn.
 	memoryPromptFunc func() string
 
 	// lastMemBlock is the memory block this engine injected most recently.
@@ -699,8 +699,8 @@ func (e *Engine) SetUntrustedWrapper(fn func(source, content string) string) {
 
 // SetMemoryPromptFunc sets the optional memory prompt callback.
 // When set, it is called before each LLM invocation to get fresh memory
-// content. This ensures the agent sees the latest facts even if it
-// modifies memory during a session.
+// content, so the agent sees the latest facts even if it modifies
+// memory during a session.
 func (e *Engine) SetMemoryPromptFunc(fn func() string) {
 	e.memoryPromptFunc = fn
 	if fn != nil {

@@ -10,7 +10,7 @@ import (
 	"github.com/BackendStack21/odek/internal/tool"
 )
 
-// Bug-sweep 2026-08-31: when a leading injection (skill/episode/extended-
+// When a leading injection (skill/episode/extended-
 // memory block) sets ctxLeadDroppableFrom, headLen stops BEFORE the first
 // user message — so pass 2 of trimContext dropped the original task as the
 // first standalone group, violating the documented protected-head invariant

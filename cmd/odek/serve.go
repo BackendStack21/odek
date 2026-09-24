@@ -3364,14 +3364,14 @@ var staticFiles = map[string][2]string{
 	"/app.js":    {"ui/app.js", "application/javascript; charset=utf-8"},
 	// Self-hosted fonts so the UI works offline and does not depend on
 	// any font CDN. Space Grotesk: variable weight 300–700; Geist: 100–900.
-	"/fonts/space-grotesk.woff2": {"ui/fonts/space-grotesk.woff2", "font/woff2"},
+	"/fonts/space-grotesk.woff2":       {"ui/fonts/space-grotesk.woff2", "font/woff2"},
 	"/fonts/space-grotesk-LICENSE.txt": {"ui/fonts/space-grotesk-LICENSE.txt", "text/plain; charset=utf-8"},
-	"/fonts/geist.woff2":         {"ui/fonts/geist.woff2", "font/woff2"},
-	"/fonts/geist-mono.woff2":    {"ui/fonts/geist-mono.woff2", "font/woff2"},
-	"/fonts/geist-LICENSE.txt":   {"ui/fonts/geist-LICENSE.txt", "text/plain; charset=utf-8"},
-	"/fonts/manrope.ttf":         {"ui/fonts/manrope.ttf", "font/ttf"},
-	"/fonts/manrope-LICENSE.txt": {"ui/fonts/manrope-LICENSE.txt", "text/plain; charset=utf-8"},
-	"/fonts/azeret-mono.woff2":   {"ui/fonts/azeret-mono.woff2", "font/woff2"},
+	"/fonts/geist.woff2":               {"ui/fonts/geist.woff2", "font/woff2"},
+	"/fonts/geist-mono.woff2":          {"ui/fonts/geist-mono.woff2", "font/woff2"},
+	"/fonts/geist-LICENSE.txt":         {"ui/fonts/geist-LICENSE.txt", "text/plain; charset=utf-8"},
+	"/fonts/manrope.ttf":               {"ui/fonts/manrope.ttf", "font/ttf"},
+	"/fonts/manrope-LICENSE.txt":       {"ui/fonts/manrope-LICENSE.txt", "text/plain; charset=utf-8"},
+	"/fonts/azeret-mono.woff2":         {"ui/fonts/azeret-mono.woff2", "font/woff2"},
 }
 
 func handleStatic(wsToken string) http.HandlerFunc {

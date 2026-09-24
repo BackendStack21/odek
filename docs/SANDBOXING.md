@@ -222,7 +222,7 @@ When running with `--sandbox --ctx <file>`, odek copies the ctx files into the c
 - Missing files and directories are silently skipped
 - In read-only mode, injection still works (docker cp writes to the container's overlay, not the volume bind-mount)
 
-This ensures the agent can both see the file content in its context **and** operate on the physical file using `read_file`, `patch`, `shell cat`, etc. without any "content visible but file doesn't exist" gap.
+The agent can both see the file content in its context **and** operate on the physical file using `read_file`, `patch`, `shell cat`, etc. — no "content visible but file doesn't exist" gap.
 
 ## Read-only mode
 

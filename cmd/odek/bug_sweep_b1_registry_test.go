@@ -1,6 +1,6 @@
 package main
 
-// Bug-sweep batch 1 (fix/bug-hunt-b1) — B4 regression test.
+// Regression: the sub-agent registry ring must not evict a running agent.
 //
 // RED-first: the registry ring evicted entries[0] regardless of phase, so a
 // still-running sub-agent could be evicted under ring pressure; its next

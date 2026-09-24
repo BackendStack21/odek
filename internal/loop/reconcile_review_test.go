@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// ── Review fixes: ledger fidelity and notice attribution ────────────────
+// ── Ledger fidelity and notice attribution ──────────────────────────
 
 func TestRecordMutation_PerEntryParallelShell(t *testing.T) {
 	// one failed sibling must not erase its successful neighbors.

@@ -48,9 +48,9 @@ type speakArgs struct {
 }
 
 type speakResult struct {
-	Path string `json:"path"`
-	Bytes int   `json:"bytes"`
-	MIME string `json:"mime,omitempty"`
+	Path  string `json:"path"`
+	Bytes int    `json:"bytes"`
+	MIME  string `json:"mime,omitempty"`
 	Model string `json:"model,omitempty"`
 	Error string `json:"error,omitempty"`
 }

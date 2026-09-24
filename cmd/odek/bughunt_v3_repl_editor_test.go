@@ -17,7 +17,7 @@ func swapStdin(t *testing.T, r io.Reader) {
 	t.Cleanup(func() { os.Stdin = old })
 }
 
-// Bug 1: parameterized CSI escapes (e.g. \x1b[3;5~ ctrl+Delete) leak their
+// Parameterized CSI escapes (e.g. \x1b[3;5~ ctrl+Delete) leak their
 // parameter tail ('5', '~') into the edit buffer as printable text.
 func TestEditorCSIParamTailNotInserted(t *testing.T) {
 	r, w, err := os.Pipe()
@@ -52,7 +52,7 @@ func TestEditorCSIParamTailNotInserted(t *testing.T) {
 	}
 }
 
-// Bug 2: cursor math must use display columns (wide runes = 2), not rune counts.
+// Cursor math must use display columns (wide runes = 2), not rune counts.
 func TestEditorDisplayWidth(t *testing.T) {
 	if got := displayWidth([]rune("你")); got != 2 {
 		t.Fatalf("displayWidth(\"你\") = %d, want 2", got)
@@ -68,7 +68,7 @@ func TestEditorDisplayWidth(t *testing.T) {
 	}
 }
 
-// Bug 3: the typed-but-unsent draft is lost after historyPrev then historyNext.
+// The typed-but-unsent draft is lost after historyPrev then historyNext.
 func TestEditorHistoryDraftPreserved(t *testing.T) {
 	e := newReplEditor("> ", nil)
 	e.history.Add("first")
@@ -86,7 +86,7 @@ func TestEditorHistoryDraftPreserved(t *testing.T) {
 	}
 }
 
-// Bug 4: Ctrl+C must disable bracketed paste mode before bailing. Pipes
+// Ctrl+C must disable bracketed paste mode before bailing. Pipes
 // cannot enter raw mode (ReadLine falls back to scanner), so drive the ^C
 // byte handler directly and inspect stderr.
 func TestReadLineCtrlCDisablesBracketedPaste(t *testing.T) {
