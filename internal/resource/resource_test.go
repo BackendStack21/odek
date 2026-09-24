@@ -395,7 +395,7 @@ func TestFileResolver_LoadTruncated(t *testing.T) {
 	}
 }
 
-// ── Bug #8: FileResolver.Load follows intermediate symlink directories ──────
+// ── FileResolver.Load must not follow intermediate symlink directories ──────
 
 func TestFileResolver_Load_SymlinkDirectoryTraversal(t *testing.T) {
 	// Workspace contains a symlinked directory that points outside the root.
@@ -776,7 +776,7 @@ func (e *emptyResolver) Load(ctx context.Context, id string) (string, error) {
 	return "", os.ErrNotExist
 }
 
-// ── Bug #7: SessionResolver.Load path traversal ─────────────────────────
+// ── SessionResolver.Load must reject path traversal ─────────────────────────
 
 func TestSessionResolverLoad_PathTraversal(t *testing.T) {
 	// Create a temp dir for sessions
@@ -815,7 +815,7 @@ func TestSessionResolverLoad_PathTraversal(t *testing.T) {
 	}
 }
 
-// ── Bug #30: FileResolver.Search follows symlinks via os.Stat ───────────────
+// ── FileResolver.Search must not follow symlinks for metadata ───────────────
 
 func TestFileResolverSearch_DoesNotFollowSymlinksForMetadata(t *testing.T) {
 	dir := t.TempDir()

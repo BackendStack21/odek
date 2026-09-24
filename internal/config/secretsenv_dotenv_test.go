@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-// Bug-sweep 2026-08-31: the secrets.env parser fed the highest-priority
+// The secrets.env parser fed the highest-priority
 // config layer but ignored dotenv conveniences operators rely on, and a
 // single overlong line silently dropped every secret after it.
 //

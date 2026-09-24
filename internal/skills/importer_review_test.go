@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-// Bug-sweep 2026-08-31 findings (verified against importer.go / loader.go):
+// Findings regression-tested against importer.go / loader.go:
 //
 //  1. ImportSkill never pinned NeedsReview — a URI-imported skill became
 //     trigger-matchable immediately, with DeriveKeywords building triggers

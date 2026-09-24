@@ -471,7 +471,7 @@ func TestVectorMatcher_DebugInfo(t *testing.T) {
 	}
 }
 
-// ── Synergy: All matchers together ─────────────────────────────────────
+// ── All matchers together ─────────────────────────────────────
 
 func TestMatchers_Synergy(t *testing.T) {
 	// Complex scenario: 3 skills with varying trigger quality

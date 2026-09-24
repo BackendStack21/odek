@@ -1,6 +1,7 @@
 package main
 
-// Bug-sweep batch 1 (fix/bug-hunt-b1) — B5 regression test.
+// Regression: a malformed result frame must not clobber the child-reported
+// terminal status.
 //
 // RED-first: when a child emitted subagent_finished(status=success) but its
 // framed result line failed to parse, the parent done relay unconditionally

@@ -1472,8 +1472,7 @@ func TestLoadConfig_LegacyAPIKeyEnvVarLost(t *testing.T) {
 // section is parsed and propagated through LoadConfig/resolveMemory, and that
 // the raw ${ENV_VAR} placeholders survive into ResolvedConfig (expansion is
 // deferred to embedder construction, where both base_url and api_key are run
-// through os.ExpandEnv). Closes the C2 end-to-end config gap surfaced by the
-// PR #27 verification pass.
+// through os.ExpandEnv.
 func TestLoadConfig_MemoryEmbeddingSection(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("HOME", dir)

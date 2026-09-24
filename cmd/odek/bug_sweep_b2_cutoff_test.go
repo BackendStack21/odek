@@ -1,6 +1,6 @@
 package main
 
-// Bug-sweep batch 2 — B7 cutoff-parity regression test.
+// Regression: retention cutoff parity between the sweep and its dry-run preview.
 //
 // The real sweep computes day-based cutoffs with duration arithmetic
 // (maintenance daysAgo: now - N*24h), explicitly to avoid DST-sensitive

@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// ── Bug 1: in-memory pending queue desyncs from the on-disk store ──────────
+// ── In-memory pending queue must not desync from the on-disk store ──────────
 
 // TestPendingWriteThroughAcrossProcesses verifies that a mutation performed
 // by a second process-like instance (the CLI) becomes visible in the first
@@ -159,7 +159,7 @@ func TestPendingSelfReferentialDefectEntryResolvable(t *testing.T) {
 	}
 }
 
-// ── Bug 2: pending entries referencing consumed/missing atom ids ───────────
+// ── Pending entries referencing consumed/missing atom ids must be dropped ───────────
 
 // TestLoadSweepDropsPendingWithMissingAtom verifies that a pending entry
 // whose referenced atom id no longer exists is dropped on load and the drop
@@ -373,4 +373,3 @@ func captureLogs(fn func()) string {
 	log.SetOutput(old)
 	return <-done
 }
-

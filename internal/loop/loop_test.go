@@ -1396,7 +1396,7 @@ func TestEngine_Run_CacheAccumulation_NoCache(t *testing.T) {
 
 // TestPromptTiering_SeparateMemoryMessage verifies that memory is injected
 // as a separate system message rather than concatenated into messages[0].
-// This ensures messages[0] (baseSystem) remains stable across turns for
+// messages[0] (baseSystem) remains stable across turns for
 // DeepSeek/Anthropic prompt caching.
 func TestPromptTiering_SeparateMemoryMessage(t *testing.T) {
 	callCount := 0
@@ -2505,7 +2505,7 @@ func TestEngine_InteractionModeDefault_ProducesRenderOutput(t *testing.T) {
 	}
 }
 
-// ── Bug #8: Tool goroutines lack panic recovery ─────────────────────────
+// ── Tool goroutines must recover panics ─────────────────────────
 // If a tool.Call() panics, the agent should not crash.
 
 type panicTool struct {

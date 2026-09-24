@@ -730,7 +730,7 @@ func captureStdout(fn func()) string {
 
 // Test parseRunFlags with a non-numeric --max-iter value.
 func TestParseRunFlags_MaxIterNonNumeric(t *testing.T) {
-	// Contract changed (m2 wave-3): a non-numeric --max-iter is an error,
+	// A non-numeric --max-iter is an error,
 	// matching every sibling numeric flag (--max-runtime, --max-tool-calls,
 	// …). The old behavior — fmt.Sscanf silently ignoring "abc" and the
 	// run proceeding with the default cap — hid typos from the operator.

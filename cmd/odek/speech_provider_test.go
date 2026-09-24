@@ -281,14 +281,14 @@ func TestSanitizeSpeakFormat_Branches(t *testing.T) {
 		{"", "mp3"},          // empty → default
 		{"123456789", "mp3"}, // > 8 chars → default
 		{"12345678", "12345678"},
-		{".mp3", "mp3"},     // leading dot stripped
-		{"..ogg", "mp3"},    // only the first dot stripped, second rejected
-		{"WAV", "wav"},      // lowercased
-		{"a-b", "mp3"},      // non-alphanumeric rejected
-		{"a/b", "mp3"},      // separator rejected
-		{"a.b", "mp3"},      // dot inside rejected
-		{"opus1", "opus1"},  // mixed letters+digits accepted
-		{"accenté", "mp3"},  // non-ASCII rejected
+		{".mp3", "mp3"},    // leading dot stripped
+		{"..ogg", "mp3"},   // only the first dot stripped, second rejected
+		{"WAV", "wav"},     // lowercased
+		{"a-b", "mp3"},     // non-alphanumeric rejected
+		{"a/b", "mp3"},     // separator rejected
+		{"a.b", "mp3"},     // dot inside rejected
+		{"opus1", "opus1"}, // mixed letters+digits accepted
+		{"accenté", "mp3"}, // non-ASCII rejected
 	}
 	for _, tc := range cases {
 		if got := sanitizeSpeakFormat(tc.in); got != tc.want {

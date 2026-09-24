@@ -13,20 +13,19 @@ import (
 	"github.com/BackendStack21/go-vector/pkg/vector"
 )
 
-// These tests close the gaps and harden the failure modes surfaced by the
-// PR #27 verification pass (AI Verification Protocol). They guard:
-//   - C10: api_key ${ENV_VAR} expansion (only base_url was asserted before).
-//   - C12: graceful degradation of the ranker (recency) and merge (no-merge)
+// These tests guard:
+//   - api_key ${ENV_VAR} expansion (only base_url was asserted before).
+//   - graceful degradation of the ranker (recency) and merge (no-merge)
 //     paths when embedding errors — safety-critical, previously untested.
-//   - C13: dedup never deletes a matched episode on an embed error.
+//   - dedup never deletes a matched episode on an embed error.
 //   - The cosineVector NaN/Inf guard (hostile embedding backend).
-//   - The HIGH finding: rebuild embeds OFF the index lock, so a slow embedding
-//     backend cannot serialize concurrent recall.
+//   - Rebuild embeds OFF the index lock, so a slow embedding backend cannot
+//     serialize concurrent recall.
 
-// ── C10: api_key env expansion ────────────────────────────────────────────────
+// ── api_key env expansion ────────────────────────────────────────────────
 
 // TestNewTextEmbedderExpandsAPIKey asserts api_key ${ENV_VAR} expansion reaches
-// the Authorization header — the half of C10 not covered by the base_url test.
+// the Authorization header — the api_key half, complementing the base_url test.
 func TestNewTextEmbedderExpandsAPIKey(t *testing.T) {
 	t.Setenv("ODEK_TEST_EMBED_KEY", "sk-expanded")
 	gotAuth := make(chan string, 1)
@@ -72,7 +71,7 @@ func (failingEmbedder) LoadState(string) bool                      { return fals
 
 var errEmbed = errors.New("embed: backend unavailable")
 
-// ── C12: ranker degrades to recency on embed error ────────────────────────────
+// ── ranker degrades to recency on embed error ────────────────────────────
 
 func TestEmbedderRankerRecencyFallbackOnError(t *testing.T) {
 	ranker := newEmbedderRanker(func() textEmbedder { return failingEmbedder{} })
@@ -96,7 +95,7 @@ func TestEmbedderRankerRecencyFallbackOnError(t *testing.T) {
 	}
 }
 
-// ── C12: merge classification degrades to "nobody" on embed error ─────────────
+// ── merge classification degrades to "nobody" on embed error ─────────────
 
 func TestMergeDetectorAddWithoutMergeOnEmbedError(t *testing.T) {
 	md := newMergeDetectorWithEmbedder(failingEmbedder{}, MergeThreshold, AddThreshold)
@@ -107,7 +106,7 @@ func TestMergeDetectorAddWithoutMergeOnEmbedError(t *testing.T) {
 	}
 }
 
-// ── C13: dedup never deletes a matched episode on embed error ─────────────────
+// ── dedup never deletes a matched episode on embed error ─────────────────
 
 func TestFindDuplicateSafeOnEmbedError(t *testing.T) {
 	resetEpIdxes()

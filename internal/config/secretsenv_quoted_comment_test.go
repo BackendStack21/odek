@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// Bug-sweep 2026-09-04: quote-strip and comment-strip were exclusive
+// Regression: quote-strip and comment-strip were exclusive
 // branches — a QUOTED value followed by an inline comment kept its quotes:
 // KEY="val" # comment  →  env value `"val"` (with quotes) → silent auth
 // 401s. Also: `export<TAB>KEY=v` was not recognized as an export line.

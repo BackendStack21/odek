@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-// Bug-sweep 2026-08-31: classifier gaps found by the module-by-module
+// Classifier gaps found by the module-by-module
 // expert review and verified against the dispatch order in classifyCommand.
 
 // TestClassify_TrapPayloadIsCodeExecution covers the `trap` hole: trap was

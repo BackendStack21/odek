@@ -11,7 +11,7 @@ import (
 	"github.com/BackendStack21/odek/internal/danger"
 )
 
-// ── Bug 1: glob / search_files(target=files) promise newest-first, but
+// glob / search_files(target=files) promise newest-first, but
 // confinedGlob used to stop the walk at `limit` in lexical order, so files
 // modified recently but sitting late in the walk never reached the mtime
 // sort. The fix collects up to maxGlobWalkMatches, sorts by mtime, and only
@@ -80,7 +80,7 @@ func TestSearchFilesFiles_NewestFirstWinsOverWalkOrder(t *testing.T) {
 	}
 }
 
-// ── Bug 2: isBinary must not classify multi-byte UTF-8 text as binary. The
+// isBinary must not classify multi-byte UTF-8 text as binary. The
 // old ratio heuristic counted every byte >= 0x7F as non-printable, so
 // Russian/CJK prose was rejected as binary by read_file / batch_read.
 
@@ -128,7 +128,7 @@ func TestBatchRead_CyrillicTextFileNotBinary(t *testing.T) {
 	}
 }
 
-// ── Bug 3: tree must apply the same per-discovered-path skip rules as the
+// tree must apply the same per-discovered-path skip rules as the
 // search tools (checkSearchPath). tree($HOME, include_hidden=true) used to
 // list ~/.odek, ~/.ssh, … because only the requested root was classified.
 

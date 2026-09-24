@@ -9,7 +9,7 @@ import (
 	"github.com/BackendStack21/odek/internal/danger"
 )
 
-// ── Review fixes for licensing holes ────────────────────────────────
+// ── Viewer reads: recorded only for genuine content reads ───────────
 
 func TestRecordViewerReads_PlainViewRecords(t *testing.T) {
 	danger.ResetReadLedgerForTest()
