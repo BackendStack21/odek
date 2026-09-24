@@ -710,7 +710,7 @@ async function refreshJobs() {
     return;
   }
   try {
-    const data = await listJobs(getSessionToken(S.sessionId) || undefined);
+    const data = await listJobs(S.sessionId, getSessionToken(S.sessionId) || undefined);
     if (!current()) return;
     const jobs = (data && data.jobs) || [];
     S.jobs = jobs;
@@ -774,7 +774,7 @@ function renderJobRow(job) {
       if (!confirm('Stop this background job?')) return;
       stop.disabled = true;
       try {
-        await stopJob(job.id, getSessionToken(S.sessionId) || undefined);
+        await stopJob(job.id, S.sessionId, getSessionToken(S.sessionId) || undefined);
         refreshJobs();
       } catch (err) {
         stop.disabled = false;
@@ -795,7 +795,7 @@ async function showJobOutput(id, row) {
   pre.textContent = 'loading…';
   row.appendChild(pre);
   try {
-    const data = await getJobOutput(id, getSessionToken(S.sessionId) || undefined);
+    const data = await getJobOutput(id, S.sessionId, getSessionToken(S.sessionId) || undefined);
     pre.textContent = '';
     renderResult(pre, {name:'bg_output',output:(data && data.output) || '(empty)'});
   } catch (err) {

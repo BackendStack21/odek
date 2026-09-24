@@ -231,20 +231,19 @@ export function shutdownServer() {
 }
 
 // ── Background jobs (session-scoped) ──
-export function listJobs(sessionToken) {
-  return apiFetch('/api/jobs', { sessionToken });
+export function listJobs(sessionId, sessionToken) {
+  return apiFetch('/api/jobs?session_id=' + encodeURIComponent(sessionId || ''), { sessionToken });
 }
 
-export function getJobOutput(id, sessionToken, { since = 0, limit } = {}) {
-  const params = new URLSearchParams();
+export function getJobOutput(id, sessionId, sessionToken, { since = 0, limit } = {}) {
+  const params = new URLSearchParams({ session_id: sessionId || '' });
   if (since) params.set('since', String(since));
   if (limit) params.set('limit', String(limit));
-  const q = params.toString();
-  return apiFetch('/api/jobs/' + encodeURIComponent(id) + '/output' + (q ? '?' + q : ''), { sessionToken });
+  return apiFetch('/api/jobs/' + encodeURIComponent(id) + '/output?' + params.toString(), { sessionToken });
 }
 
-export function stopJob(id, sessionToken) {
-  return apiFetch('/api/jobs/' + encodeURIComponent(id) + '/stop', {
+export function stopJob(id, sessionId, sessionToken) {
+  return apiFetch('/api/jobs/' + encodeURIComponent(id) + '/stop?session_id=' + encodeURIComponent(sessionId || ''), {
     method: 'POST',
     sessionToken,
   });

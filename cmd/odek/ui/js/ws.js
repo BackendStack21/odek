@@ -617,7 +617,7 @@ function startJobsWatch() {
 function kickJobsFetch() {
   const sid = S.sessionId;
   if (!sid) return;
-  listJobs(getSessionToken(sid) || undefined).then((data) => {
+  listJobs(sid, getSessionToken(sid) || undefined).then((data) => {
     if (S.sessionId !== sid) return;
     S.jobs = (data && data.jobs) || [];
     paintIntent();

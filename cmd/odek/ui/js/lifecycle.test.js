@@ -966,7 +966,7 @@ test('late jobs response cannot repopulate a new session', async () => {
   try {
     drawer.querySelectorAll('.ptab').forEach(tab => tab.classList.toggle('active', tab.dataset.tab === 'now'));
     S.sessionId = 'old-session';
-    globalThis.fetch = path => path === '/api/jobs'
+    globalThis.fetch = path => path.startsWith('/api/jobs')
       ? new Promise(resolve => { finish = resolve; })
       : Promise.resolve({ok:true, headers:{get:()=> 'application/json'}, json:async()=>({entries:[]})});
     inspector.togglePanels(true);

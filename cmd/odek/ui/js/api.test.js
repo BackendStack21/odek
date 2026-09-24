@@ -132,16 +132,17 @@ test('run endpoints use the right verbs and paths', async () => {
 });
 
 test('jobs and subagents hit their endpoints', async () => {
-  await api.listJobs('tok');
-  assert.equal(last().url, '/api/jobs');
+  await api.listJobs('sess-9', 'tok');
+  assert.equal(last().url, '/api/jobs?session_id=sess-9');
   assert.equal(last().init.headers['X-Session-Token'], 'tok');
-  await api.getJobOutput('j1', 'tok', { since: 10, limit: 32 });
+  await api.getJobOutput('j1', 'sess-9', 'tok', { since: 10, limit: 32 });
   const out = new URL(last().url, 'http://x');
   assert.equal(out.pathname, '/api/jobs/j1/output');
+  assert.equal(out.searchParams.get('session_id'), 'sess-9');
   assert.equal(out.searchParams.get('since'), '10');
-  await api.stopJob('j1', 'tok');
+  await api.stopJob('j1', 'sess-9', 'tok');
   assert.equal(last().init.method, 'POST');
-  assert.equal(last().url, '/api/jobs/j1/stop');
+  assert.equal(last().url, '/api/jobs/j1/stop?session_id=sess-9');
   await api.listSubagents('rk');
   assert.equal(last().url, '/api/subagents?key=rk');
 });
