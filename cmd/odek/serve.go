@@ -3039,6 +3039,14 @@ func handleSessionByID(store *session.Store, trustedProxies []string, wsToken st
 				// token only reaches the client that created the session,
 				// and the legacy bootstrap only covers sessions that have
 				// no token at all.
+				// Bootstrap requests still pay limiter budget: instance
+				// tokens are weaker secrets than per-session tokens, and
+				// this is a one-shot path (the client stores the returned
+				// session token) — legitimate clients never churn it.
+				if !sessionLookupLimiter.allow(clientIP(r, trustedProxies)) {
+					http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
+					return
+				}
 				effectiveToken, ok = sess.AuthToken, true
 			}
 			if !ok {

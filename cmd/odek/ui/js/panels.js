@@ -497,6 +497,7 @@ async function refreshRuns() {
     runs.forEach(run => {const row=renderRunRow(run);const detail=preserved.get(run.id);if(detail){row.querySelector('.run-detail')?.remove();row.appendChild(detail);}list.appendChild(row);});
   } catch (err) {
     if (!current()) return;
+    lastRunsSig = '';
     list.innerHTML = '<div class="mf-empty">failed to load: ' + escapeHtml(err.message) + '</div>';
   }
 }
@@ -671,12 +672,13 @@ async function loadEvents() {
     });
   } catch (err) {
     if (!current()) return;
-    lastRunsSig = '';
     list.innerHTML = '<div class="mf-empty">failed to load: ' + escapeHtml(err.message) + '</div>';
   }
 }
 
 // ── Jobs / agents / config ────────────────────────────────────────────
+// lastRunsSig is reset in refreshRuns' error path, not here — this catch
+// belongs to loadEvents, which has its own render cycle.
 
 let jobsPollTimer = null;
 let agentsPollTimer = null;

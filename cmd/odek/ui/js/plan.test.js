@@ -545,3 +545,16 @@ test('renderPlan skips the rebuild when the payload is unchanged', () => {
   assert.notDeepEqual(root.children, first, 'changed payload must rebuild');
   assert.match(root.children[0].textContent, /v4/);
 });
+
+// After an error renders (sig invalidated), the next good payload must render
+// again — the guard must never pin an error/empty frame in place.
+test('renderPlan renders again after a found:false frame invalidated the sig', () => {
+  const root = new FakeElement('div');
+  const p = { found: true, version: 3, steps: [{ id: 'a', title: 'one', status: 'pending' }] };
+  plan.renderPlan(p, root);
+  const first = root.children.slice();
+  plan.renderPlan({ found: false }, root);
+  assert.notDeepEqual(root.children, first);
+  plan.renderPlan(p, root);
+  assert.equal(root.children.length, 2, 'good payload must render after empty frame');
+});
