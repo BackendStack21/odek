@@ -97,3 +97,29 @@ func TestRevise_SupersedeChecklessReplacementRejected(t *testing.T) {
 		t.Fatalf("check evidence did not survive rejection: %v", got)
 	}
 }
+
+// The split variant shares the supersede code path but is a distinct
+// operation: a checked step split without carry_checks_to is legal exactly
+// when at least one replacement declares fresh checks, which then replace
+// the originals.
+func TestRevise_SplitWithFreshChecksReplacesOriginals(t *testing.T) {
+	s := NewPlanStore(4, 4000)
+	if _, err := s.Execute(checkedCreateArgs()); err != nil {
+		t.Fatal(err)
+	}
+	raw := `{"verb":"revise","reason":"split with fresh evidence","operations":[{"kind":"split","step_id":"s1","steps":[{"id":"s1a","title":"A","checks":[{"id":"c2","description":"fresh evidence","tool":"read_file","arguments":{"path":"out2"}}]},{"id":"s1b","title":"B"}]}]}`
+	if _, err := s.Execute(raw); err != nil {
+		t.Fatalf("split with fresh checks rejected: %v", err)
+	}
+	state, ok := s.Snapshot()
+	if !ok || len(state.Steps) != 2 {
+		t.Fatalf("unexpected steps after split: %+v", state)
+	}
+	checks := state.Steps[0].Checks
+	if len(checks) != 1 || checks[0].ID != "c2" || checks[0].Status != PlanCheckPending {
+		t.Fatalf("fresh checks did not replace originals: %+v", checks)
+	}
+	if got := s.PendingChecks(); len(got) != 1 || !strings.Contains(got[0], "s1a/c2") {
+		t.Fatalf("pending checks after split: %v", got)
+	}
+}
