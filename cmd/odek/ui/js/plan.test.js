@@ -525,3 +525,36 @@ test('a dirty optimistic patch is not overwritten by a non-confirm snapshot', ()
   assert.equal(S.planDirty, false);
   assert.equal(S.plan.steps[0].status, 'done');
 });
+
+// Flicker fix: re-rendering an identical payload must be a no-op for the DOM —
+// the Now panel polls every 1–3s and a full rebuild each cycle makes the strip
+// blink. Node identity is preserved when nothing changed; a real change still
+// rebuilds.
+test('renderPlan skips the rebuild when the payload is unchanged', () => {
+  const root = new FakeElement('div');
+  const p = { found: true, version: 3, steps: [{ id: 'a', title: 'one', status: 'pending' }] };
+  plan.renderPlan(p, root);
+  const first = root.children.slice();
+  assert.equal(first.length, 2); // header + one row
+
+  plan.renderPlan({ ...p, steps: [{ ...p.steps[0] }] }, root);
+  assert.deepEqual(root.children, first, 'identical payload must not rebuild the DOM');
+
+  const changed = { found: true, version: 4, steps: [{ id: 'a', title: 'one', status: 'done' }] };
+  plan.renderPlan(changed, root);
+  assert.notDeepEqual(root.children, first, 'changed payload must rebuild');
+  assert.match(root.children[0].textContent, /v4/);
+});
+
+// After an error renders (sig invalidated), the next good payload must render
+// again — the guard must never pin an error/empty frame in place.
+test('renderPlan renders again after a found:false frame invalidated the sig', () => {
+  const root = new FakeElement('div');
+  const p = { found: true, version: 3, steps: [{ id: 'a', title: 'one', status: 'pending' }] };
+  plan.renderPlan(p, root);
+  const first = root.children.slice();
+  plan.renderPlan({ found: false }, root);
+  assert.notDeepEqual(root.children, first);
+  plan.renderPlan(p, root);
+  assert.equal(root.children.length, 2, 'good payload must render after empty frame');
+});

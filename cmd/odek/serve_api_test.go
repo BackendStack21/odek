@@ -407,24 +407,30 @@ func TestHandleSessionByID_GET_RateLimit(t *testing.T) {
 	defer sessionLookupLimiter.reset()
 
 	handler := handleSessionByID(store, nil, "")
-	// Exhaust the 60/min allowance.
-	for i := 0; i < 60; i++ {
+	// Reject-side limiting: tokenless requests (the enumeration shape)
+	// exhaust the 60/min allowance, then get 429.
+	limited := false
+	for i := 0; i < 70; i++ {
 		req := httptest.NewRequest(http.MethodGet, "/api/sessions/"+sess.ID, nil)
-		req.Header.Set("X-Session-Token", sess.AuthToken)
 		w := httptest.NewRecorder()
 		handler(w, req)
-		if w.Code != http.StatusOK {
-			t.Fatalf("request %d: status = %d, want 200", i, w.Code)
+		if w.Code == http.StatusTooManyRequests {
+			limited = true
+			break
 		}
 	}
+	if !limited {
+		t.Error("tokenless requests were never rate limited, want 429 after 60 rejects")
+	}
 
-	// The next request from the same (loopback) IP should be rate limited.
+	// A valid token is the legitimate owner: never throttled even after
+	// the per-IP budget was exhausted by rejected requests.
 	req := httptest.NewRequest(http.MethodGet, "/api/sessions/"+sess.ID, nil)
 	req.Header.Set("X-Session-Token", sess.AuthToken)
 	w := httptest.NewRecorder()
 	handler(w, req)
-	if w.Code != http.StatusTooManyRequests {
-		t.Errorf("status = %d, want 429", w.Code)
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200 (valid token bypasses the limiter)", w.Code)
 	}
 }
 
