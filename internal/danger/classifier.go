@@ -1875,20 +1875,31 @@ func builtinEnvDump(tokens []string) bool {
 		return len(tokens) == 2 && tokens[1] == "-o"
 	case "export", "declare", "typeset":
 		sawPrint := false
+		sawExport := false
+		flagOnly := true
 		for _, t := range tokens[1:] {
 			if strings.HasPrefix(t, "-") {
 				if strings.Contains(t, "p") {
 					sawPrint = true
 				}
+				if strings.Contains(t, "x") {
+					sawExport = true
+				}
 				continue
 			}
 			if isAssignment(t) {
+				// `declare -x FOO=bar` declares, not dumps.
+				flagOnly = false
 				continue
 			}
 			// A name operand in print mode is a targeted query, not a dump.
 			return false
 		}
-		return sawPrint
+		// Flag-only `-p` prints all variables; flag-only `-x` on
+		// declare/typeset prints all exported variables (bash/zsh both).
+		// Either is a full-environment dump; any assignment makes it a
+		// declaration instead.
+		return flagOnly && (sawPrint || sawExport)
 	}
 	return false
 }
@@ -2345,6 +2356,12 @@ var namedForkBombShapeRe = regexp.MustCompile(`(?s)(?:^|[;&|\n])(\w+)\s*(?:\(\s*
 func isNamedForkBomb(m []string) bool {
 	defName, body, tailName := m[1], m[2], m[3]
 	if defName != tailName {
+		return false
+	}
+	// A fork bomb spawns itself concurrently: the body must contain a
+	// pipe or ampersand at all. Without one the worst case is a plain
+	// recursive function (a benign pattern), never unbounded spawning.
+	if !strings.ContainsAny(body, "|&") {
 		return false
 	}
 	return strings.Count(body, defName) >= 2
