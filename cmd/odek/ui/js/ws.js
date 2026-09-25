@@ -120,7 +120,7 @@ export function connect() {
     lostNotified = false;
     dotEl.className = 'dot connected';
     statusEl.textContent = 'connected';
-    sendBtn.disabled = false;
+    sendBtn.disabled = !!S.uploading;
     reconnectDelay = 1000;
     // Hide loading skeleton when connected
     if (skeletonEl) skeletonEl.classList.remove('visible');

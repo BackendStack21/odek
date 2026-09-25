@@ -14,6 +14,8 @@ import { resetPlanPanel } from './plan.js';
 
 const PAGE_SIZE = 50;
 const moreBtn = document.getElementById('sessions-more');
+let sessionListVersion = 0;
+let moreLoading = false;
 
 // syncSidebarCount updates the header badge with the visible session count.
 function syncSidebarCount() {
@@ -34,31 +36,47 @@ function updateActiveSessionItem() {
 // loadSessions fetches the first page for the current search query and
 // replaces the list. Called on init, refresh, and after turns complete.
 export async function loadSessions() {
+  const version = ++sessionListVersion;
+  moreLoading = false;
   S.sessionOffset = 0;
   S.sessionPages = [];
   S.sessionsExhausted = false;
-  await loadSessionsPage(true);
+  syncMoreButton();
+  await loadSessionsPage(true, version);
 }
 S.refreshSessions = loadSessions;
 
 // loadSessionsMore appends the next page (if any).
 export async function loadSessionsMore() {
-  if (S.sessionsExhausted) return;
-  await loadSessionsPage(false);
+  if (S.sessionsExhausted || !S.sessionPages.length || moreLoading) return;
+  const version = sessionListVersion;
+  moreLoading = true;
+  syncMoreButton();
+  try {
+    await loadSessionsPage(false, version);
+  } finally {
+    if (version === sessionListVersion) {
+      moreLoading = false;
+      syncMoreButton();
+    }
+  }
 }
 
-async function loadSessionsPage(replace) {
+async function loadSessionsPage(replace, version) {
   // Skeleton rows only on cold start (empty list); refreshes keep the
   // existing items so scroll position and hover state survive.
   if (replace && !sessionListEl.querySelector('.session-item')) {
     sessionListEl.innerHTML = '<div class="session-skel"></div>'.repeat(6);
   }
+  const query = S.sessionSearch;
+  const offset = S.sessionOffset;
   try {
     const data = await listSessions({
-      q: S.sessionSearch,
+      q: query,
       limit: PAGE_SIZE,
-      offset: S.sessionOffset,
+      offset,
     });
+    if (version !== sessionListVersion || query !== S.sessionSearch) return;
     const sessions = (data && data.sessions) || [];
     S.allSessions = sessions;
 
@@ -71,11 +89,12 @@ async function loadSessionsPage(replace) {
       const seen = new Set(S.sessionPages.map(s => s.id));
       S.sessionPages = S.sessionPages.concat(sessions.filter(s => !seen.has(s.id)));
     }
-    S.sessionOffset += sessions.length;
+    S.sessionOffset = offset + sessions.length;
     S.sessionsExhausted = sessions.length < PAGE_SIZE;
 
     renderSessionItems();
   } catch (err) {
+    if (version !== sessionListVersion || query !== S.sessionSearch) return;
     sessionListEl.querySelectorAll('.session-skel').forEach(el => el.remove());
     // A silent catch here is how a stale list goes unnoticed — say it.
     showToast('Session list refresh failed');
@@ -138,6 +157,7 @@ function renderSessionItems() {
 function syncMoreButton() {
   if (!moreBtn) return;
   moreBtn.hidden = S.sessionsExhausted || !S.sessionPages.length;
+  moreBtn.disabled = moreLoading;
 }
 
 if (moreBtn) moreBtn.addEventListener('click', loadSessionsMore);
@@ -231,7 +251,7 @@ export function newSession() {
   clearClarify();
   S.busy = false;
   hideLoading(); hideCancel();
-  sendBtn.disabled = !S.ws || S.ws.readyState !== WebSocket.OPEN;
+  sendBtn.disabled = S.uploading || !S.ws || S.ws.readyState !== WebSocket.OPEN;
   promptEl.disabled = false;
 
   // Clear messages and restore empty state.
@@ -304,7 +324,7 @@ export async function loadAndRenderSession(sid) {
     clearApprovals();
     clearClarify();
     S.busy = false; hideLoading(); hideCancel();
-    sendBtn.disabled = !S.ws || S.ws.readyState !== WebSocket.OPEN;
+    sendBtn.disabled = S.uploading || !S.ws || S.ws.readyState !== WebSocket.OPEN;
     promptEl.disabled = false;
 
     messagesEl.innerHTML = '';

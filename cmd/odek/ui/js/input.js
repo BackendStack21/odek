@@ -89,7 +89,7 @@ S.pauseQueue = () => { S.queuePaused = true; renderQueueStrip(); };
 
 // ── Send ──
 export function send() {
-  if (S.uploading) { showToast('Wait for attachments to finish uploading'); return; }
+  if (S.uploading) { showToast('Wait for attachments to finish processing'); return; }
   // F-B2: dead socket still rejects BEFORE touching attachments.
   if (!S.ws || S.ws.readyState !== WebSocket.OPEN) {
     showToast('connection lost — reconnecting');
@@ -285,8 +285,22 @@ function readFileAsText(file) {
   });
 }
 
-let uploadSequence=Promise.resolve();
-function handleFiles(fileList) { const files=Array.from(fileList);const owner=S.sessionId;uploadSequence=uploadSequence.then(()=>processFiles(files,owner));return uploadSequence; }
+let uploadSequence = Promise.resolve();
+let pendingFileBatches = 0;
+function handleFiles(fileList) {
+  const files = Array.from(fileList);
+  if (!files.length) return uploadSequence;
+  const owner = S.sessionId;
+  pendingFileBatches++;
+  S.uploading = true;
+  sendBtn.disabled = true;
+  uploadSequence = uploadSequence.then(() => processFiles(files, owner)).finally(() => {
+    pendingFileBatches--;
+    S.uploading = pendingFileBatches > 0;
+    sendBtn.disabled = S.busy || S.uploading || !S.ws || S.ws.readyState !== WebSocket.OPEN;
+  });
+  return uploadSequence;
+}
 async function processFiles(fileList, owner) {
   // Serialize uploads so files attached to a new conversation share one session.
   for (const file of fileList) {
@@ -297,14 +311,14 @@ async function processFiles(fileList, owner) {
       if (/^(image\/|audio\/|application\/pdf$)/.test(file.type)) {
         if(S.busy){addErrorChip(file.name,'Wait for the current turn before uploading media');continue;}
         const sid=S.sessionId;
-        S.uploading=true;sendBtn.disabled=true;
         const progress=document.createElement('span');progress.className='file-chip';progress.textContent='Uploading '+file.name+'…';fileChips.appendChild(progress);
-        let data;try{data=await uploadMedia(file,sid,getSessionToken(sid));}finally{progress.remove();S.uploading=false;sendBtn.disabled=S.busy || !S.ws || S.ws.readyState!==WebSocket.OPEN;}
+        let data;try{data=await uploadMedia(file,sid,getSessionToken(sid));}finally{progress.remove();}
         if(S.sessionId!==sid){addErrorChip(file.name,'Session changed during upload; attach again');continue;}
         S.sessionId=data.session_id;owner=data.session_id;setSessionToken(data.session_id,data.auth_token);
         addAttachedFile({name:file.name,size:file.size,upload_id:data.upload_id,content:''});
       } else {
-        const content=await readFileAsText(file);
+        const progress=document.createElement('span');progress.className='file-chip';progress.textContent='Reading '+file.name+'…';fileChips.appendChild(progress);
+        let content;try{content=await readFileAsText(file);}finally{progress.remove();}
         if (S.sessionId !== owner) { showToast('Session changed while reading the attachment.'); return; }
         if(content.includes('\u0000'))throw new Error('Unsupported binary attachment');
         addAttachedFile({name:file.name,size:file.size,content});
