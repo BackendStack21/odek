@@ -53,15 +53,15 @@ jobs:
       - name: checksums
         run: sha256sum odek-* > checksums.txt
 
-      # SPDX SBOM of a representative build. All matrix entries compile the
-      # same source with the same go.mod, so the module set is identical;
-      # one SBOM covers the release. Upload handled by the release step so
-      # the SBOM ships signed like every other asset.
+      # SPDX SBOM of the whole release directory: all four binaries plus the
+      # go.mod dependency set in one document (sbom-action's directory-catalog
+      # default; the single-artifact input is invalid in v0.24.x). Upload
+      # handled by the release step so the SBOM ships signed like every other
+      # asset.
       - name: SBOM
         uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
         with:
           format: spdx-json
-          artifact: odek-linux-amd64
           output-file: odek-${{ github.ref_name }}-sbom.spdx.json
           upload-artifact: false
           upload-release-assets: false
