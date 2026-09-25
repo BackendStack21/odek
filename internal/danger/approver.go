@@ -364,13 +364,30 @@ func (a *TTYApprover) promptLocked(cls RiskClass, cmd, description string) error
 	}
 	line = strings.TrimSpace(strings.ToLower(line))
 
-	// In friction mode, only the full word "approve" is accepted.
+	// In friction mode, only the full word "approve" is accepted. A short
+	// reflex answer ("a", "y", or a bare Enter — muscle memory from the
+	// non-friction prompt) gets ONE explicit re-prompt instead of a silent
+	// denial; an explicit denial input still denies immediately.
 	if friction {
-		if line == "approve" {
+		switch line {
+		case "approve":
 			a.recordApproval(cls)
 			return nil
+		case "d", "deny", "n", "no":
+			return fmt.Errorf("operation denied by user (friction mode): %s", cmd)
+		default:
+			fmt.Fprint(os.Stderr, "   Friction mode: type 'approve' (full word) to proceed, or 'd' to deny: ")
+			line2, err := a.readTTYLine(tty, reader)
+			if err != nil {
+				return fmt.Errorf("approval prompt error: %w", err)
+			}
+			line2 = strings.TrimSpace(strings.ToLower(line2))
+			if line2 == "approve" {
+				a.recordApproval(cls)
+				return nil
+			}
+			return fmt.Errorf("operation denied by user (friction mode): %s", cmd)
 		}
-		return fmt.Errorf("operation denied by user (friction mode): %s", cmd)
 	}
 
 	switch line {

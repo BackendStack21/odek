@@ -882,6 +882,11 @@ func (c *DangerousConfig) ActionForCommand(cmd string) Action {
 	if cmd == "" {
 		return Allow
 	}
+	// The raw-blocked floor runs before every list check: even an exact
+	// allowlist entry must not re-arm a fork bomb or other blocked shape.
+	if isRawBlocked(cmd) {
+		return Deny
+	}
 	// Allowlist has highest priority — exact match after trimming both sides.
 	for _, pattern := range c.Allowlist {
 		if cmd == strings.TrimSpace(pattern) {
@@ -1106,9 +1111,9 @@ func tokenize(input string) []string {
 	return tokens
 }
 
-// ── Safe command prefixes ──────────────────────────────────────────────
-// (Unused — classification falls through to Safe by default. Kept as
-// documentation of what's considered read-only.)
+// ── Write command prefixes ─────────────────────────────────────────────
+// Not consulted for default fall-through (classification defaults to Safe
+// when nothing matches); these gate verbs that write to the filesystem.
 
 var writePrefixes = map[string]bool{
 	// echo is deliberately absent: without a redirect it only prints, and
@@ -1339,6 +1344,7 @@ var safeCommands = map[string]bool{
 	// common modern read-only CLIs (ls/find/cat/ps/df/du/diff/hex viewers)
 	"fd": true, "fdfind": true, "eza": true, "exa": true, "lsd": true,
 	"htop": true, "btop": true, "glances": true, "pstree": true, "procs": true,
+	"top": true,
 	"duf": true, "dust": true, "delta": true, "hexyl": true, "glow": true,
 	// Language toolchains: compile / format / lint. Same bar as go build
 	// and cargo test — workspace output is reversible. A system-path
@@ -1737,6 +1743,13 @@ func classifyStage(tokens []string, pipedInto bool) RiskClass {
 	if isEnvironmentDump(tokens) {
 		return SystemWrite
 	}
+	// Shell-builtin dumps: bare `set`, `export -p`, `declare -p`, and
+	// `typeset -p` print the full environment / all shell variables,
+	// including secrets not covered by redaction patterns. Same threat
+	// as `env` / `printenv` → system_write.
+	if builtinEnvDump(tokens) {
+		return SystemWrite
+	}
 	cmdTokens, floor := unwrapWrappers(tokens)
 	cls := floor
 	if len(cmdTokens) > 0 {
@@ -1840,6 +1853,42 @@ func isScriptEvalInterpreter(name string) bool {
 	if strings.HasPrefix(name, "lua") {
 		rest := strings.TrimPrefix(name, "lua")
 		return rest == "" || (rest[0] >= '0' && rest[0] <= '9')
+	}
+	return false
+}
+
+// builtinEnvDump reports whether tokens are a shell-builtin invocation
+// that prints the environment or all shell variables: bare `set`,
+// `set -o`, and `export`/`declare`/`typeset` run in `-p` (print) mode
+// with no assignments. Setting variables or options (`export FOO=bar`,
+// `set -e`, `declare -i x=5`) is not a dump.
+func builtinEnvDump(tokens []string) bool {
+	if len(tokens) == 0 {
+		return false
+	}
+	switch commandName(tokens[0]) {
+	case "set":
+		if len(tokens) == 1 {
+			return true
+		}
+		// `set -o` prints all options; `set -o errexit` sets one.
+		return len(tokens) == 2 && tokens[1] == "-o"
+	case "export", "declare", "typeset":
+		sawPrint := false
+		for _, t := range tokens[1:] {
+			if strings.HasPrefix(t, "-") {
+				if strings.Contains(t, "p") {
+					sawPrint = true
+				}
+				continue
+			}
+			if isAssignment(t) {
+				continue
+			}
+			// A name operand in print mode is a targeted query, not a dump.
+			return false
+		}
+		return sawPrint
 	}
 	return false
 }
@@ -2034,6 +2083,17 @@ func extractSubstitutions(cmd string) (string, []string) {
 
 	i := 0
 	for i < len(cmd) {
+		// Inside double quotes a backslash escapes the next character:
+		// `\"` is a literal quote that must NOT toggle the double-quote
+		// state (same for \\, \$, \`). Without this, a single escaped
+		// quote desyncs the quote state and a later single-quoted span
+		// can hide a substitution body from extraction.
+		if cmd[i] == '\\' && inDouble && i+1 < len(cmd) &&
+			(cmd[i+1] == '"' || cmd[i+1] == '\\' || cmd[i+1] == '$' || cmd[i+1] == '`') {
+			out.WriteString(cmd[i : i+2])
+			i += 2
+			continue
+		}
 		// Double quotes toggle expansion context: inside them a `'` is data,
 		// not a quote span (so an apostrophe in a double-quoted argument
 		// cannot open a bogus single-quote span and hide later $()/backtick
@@ -2268,6 +2328,28 @@ func isKnownCommandName(name string) bool {
 // Canonical `:(){ :|:& };:` and spaced `: () { : | : & } ; :` still match.
 var rawForkBombRe = regexp.MustCompile(`(^|[;&|\s]):\s*(?:\(\s*\)\s*)?\{[^}]*[|&][^}]*\}\s*;?\s*:`)
 
+// namedForkBombShapeRe matches the outer shape of a function-definition
+// fork bomb: `name(){ body-with-pipe-or-amp };name` (or with spaces /
+// extra separators). The definition must start at a real command position
+// — start of input or right after `;`, `&`, `|`, or a newline — not in
+// argument position after another command's name (e.g. `echo bomb(){…}`).
+// Backreferences are unsupported in RE2, so the name-equality and
+// recursive-spawn checks are done in code over the captured groups.
+var namedForkBombShapeRe = regexp.MustCompile(`(?s)(?:^|[;&|\n])(\w+)\s*(?:\(\s*\)\s*)?\{([^}]*)\}\s*;?\s*(\w+)(?:\s|$)`)
+
+// isNamedForkBomb reports whether a shape match is a genuine
+// self-recursing fork bomb: the function defined, the function invoked
+// after the body, and at least two self-references inside the body (a
+// real bomb spawns itself more than once; a body calling it once with
+// other work is not self-sustaining).
+func isNamedForkBomb(m []string) bool {
+	defName, body, tailName := m[1], m[2], m[3]
+	if defName != tailName {
+		return false
+	}
+	return strings.Count(body, defName) >= 2
+}
+
 // isRawBlocked checks the raw command string for patterns that are
 // blocked regardless of tokenization artifacts.
 func isRawBlocked(cmd string) bool {
@@ -2275,7 +2357,15 @@ func isRawBlocked(cmd string) bool {
 	if cmd == ":(){ :|:& };:" {
 		return true
 	}
-	return rawForkBombRe.MatchString(cmd)
+	if rawForkBombRe.MatchString(cmd) {
+		return true
+	}
+	for _, m := range namedForkBombShapeRe.FindAllStringSubmatch(cmd, -1) {
+		if isNamedForkBomb(m) {
+			return true
+		}
+	}
+	return false
 }
 
 // splitSegments splits token sequences on command separators.
@@ -3549,9 +3639,6 @@ func isNetworkEgress(first string, tokens []string) bool {
 	// gh subcommands inherently contact the GitHub API — the same class as
 	// git's remote-contacting subcommands. Only meta invocations (help,
 	// completion, version queries) stay local and fall through to Safe.
-	if first == "openssl" {
-		return opensslContactsRemote(tokens)
-	}
 	if first == "gh" {
 		skipNext := false
 		for _, tok := range tokens[1:] {
