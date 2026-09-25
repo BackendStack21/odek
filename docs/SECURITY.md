@@ -487,6 +487,15 @@ All security-relevant state under `~/.odek` is written through `internal/fsatomi
 
 `odek upgrade` verifies the downloaded release against the published `checksums.txt` (SHA-256) and refuses to install a binary with no checksum entry, swapping it in atomically over the running executable. The latest-release lookup authenticates with `GITHUB_TOKEN` / `GH_TOKEN` when set; a 401/403/429 from the REST API falls back to the public HTML latest-release redirect and synthesized `browser_download_url`s (checksum verification is unchanged).
 
+Release binaries are additionally Sigstore keyless-signed at build time: each release ships `<artifact>.bundle` signatures and `<artifact>.attestation.bundle` in-toto attestations naming the exact source commit, plus an SPDX SBOM (`odek-<tag>-sbom.spdx.json`). Signatures are issued against the workflow's OIDC identity (`https://github.com/BackendStack21/odek/.github/workflows/release.yml@refs/tags/*`) and logged in the Rekor transparency log, so a mirrored or tampered release feed cannot forge a valid bundle. Verify with:
+
+```
+cosign verify-blob --bundle odek-darwin-arm64.bundle \
+  --certificate-identity-regexp '^https://github\.com/BackendStack21/odek/' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  odek-darwin-arm64
+```
+
 ### Resource bounds
 
 Hostile or accidental input is bounded everywhere it is sized, to keep it from OOMing or stalling the process. The major caps:
@@ -711,7 +720,7 @@ Background jobs inherit the shell tool's security model with no downgrade:
 | Served Web UI page is framed or clickjacked | `X-Frame-Options: DENY` + CSP `frame-ancestors 'none'`, no inline scripts |
 | Forged `<untrusted_content>` envelope renders as instructions in the Web UI | Client renders mismatched envelopes as plain text; all output HTML-escaped |
 | Skill imported from attacker URL with rebinding / `inet_aton` tricks | Import-time SSRF guard (scheme allowlist, 1-hop redirects, private-IP blocking) |
-| Compromised release feed serves a trojaned binary | `odek upgrade` verifies SHA-256 against `checksums.txt`, fails closed |
+| Compromised release feed serves a trojaned binary | `odek upgrade` verifies SHA-256 against `checksums.txt`, fails closed; artifacts are additionally Sigstore keyless-signed with the bundles published in the same release — a tampered feed cannot forge a signature rooted in the Rekor transparency log |
 | Compaction summary launders untrusted text into system context | Digest wrapped with the untrusted boundary |
 | Concurrent `odek schedule add` processes clobber each other | Cross-process `flock`; lock failure is a hard error |
 | Tampered `schedules.json` replaced with a multi-gigabyte blob | 10 MiB size cap |

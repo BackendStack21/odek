@@ -43,6 +43,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      id-token: write # OIDC identity for Sigstore keyless signing / attestation
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -52,13 +53,58 @@ jobs:
       - name: checksums
         run: sha256sum odek-* > checksums.txt
 
+      # SPDX SBOM of a representative build. All matrix entries compile the
+      # same source with the same go.mod, so the module set is identical;
+      # one SBOM covers the release. Upload handled by the release step so
+      # the SBOM ships signed like every other asset.
+      - name: SBOM
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+        with:
+          format: spdx-json
+          artifact: odek-linux-amd64
+          output-file: odek-${{ github.ref_name }}-sbom.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: v3.1.3 # pinned: a future cosign major must not break a tagged release mid-flight
+
+      # Keyless signing: Fulcio-issued certificate bound to this workflow's
+      # OIDC identity, logged in the Rekor transparency log. Explicit file
+      # list (not a glob) so generated .bundle outputs can never be re-signed.
+      - name: sign artifacts
+        run: |
+          BINARIES="odek-linux-amd64 odek-linux-arm64 odek-darwin-amd64 odek-darwin-arm64"
+          for f in $BINARIES checksums.txt; do
+            cosign sign-blob --yes --bundle "${f}.bundle" "$f"
+          done
+
+      # in-toto attestation naming the exact source commit each artifact was
+      # built from. Predicate type "custom" keeps the step free of cosign's
+      # SLSA schema validation; the content is SLSA-provenance-shaped.
+      - name: provenance attestation
+        env:
+          GIT_REF: ${{ github.ref }}
+          GIT_SHA: ${{ github.sha }}
+        run: |
+          printf '{
+            "builder": {"id": "https://github.com/BackendStack21/odek/.github/workflows/release.yml@%s"},
+            "buildType": "https://github.com/BackendStack21/odek/.github/workflows/release.yml",
+            "invocation": {"configSource": {"uri": "git+https://github.com/BackendStack21/odek", "digest": {"sha1": "%s"}}},
+            "metadata": {"completeness": {"parameters": true, "environment": false}, "reproducible": false},
+            "materials": [{"uri": "git+https://github.com/BackendStack21/odek", "digest": {"sha1": "%s"}}]
+          }' "${GIT_REF}" "${GIT_SHA}" "${GIT_SHA}" > provenance.json
+          BINARIES="odek-linux-amd64 odek-linux-arm64 odek-darwin-amd64 odek-darwin-arm64"
+          for f in $BINARIES checksums.txt; do
+            cosign attest-blob --yes --type custom --predicate provenance.json --bundle "${f}.attestation.bundle" "$f"
+          done
+
       - name: release
         uses: softprops/action-gh-release@v3
         with:
           files: |
-            odek-linux-amd64
-            odek-linux-arm64
-            odek-darwin-amd64
-            odek-darwin-arm64
+            odek-*
             checksums.txt
+            checksums.txt.bundle
           generate_release_notes: true
