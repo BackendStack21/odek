@@ -106,10 +106,17 @@ func TestHardeningNestedSubstitutionDepthCap(t *testing.T) {
 	done := make(chan RiskClass, 1)
 	go func() { done <- Classify(deep) }()
 	select {
-	case <-time.After(10 * time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatal("Classify did not terminate on deeply nested substitutions")
 	case got := <-done:
-		_ = got // any class is fine; termination is the point
+		// Past the substitution-depth cap the classifier fails closed.
+		if Rank(got) < Rank(Unknown) {
+			t.Errorf("Classify(deep nesting) = %v, want unknown (depth cap fail-closed)", got)
+		}
+	}
+	// Reasonable nesting still classifies normally.
+	if got := Classify("echo $(echo $(echo hi))"); got == Unknown {
+		t.Error("Classify(3-deep nesting) = unknown, want normal classification")
 	}
 }
 

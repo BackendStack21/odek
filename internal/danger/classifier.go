@@ -1400,7 +1400,15 @@ var safeCommands = map[string]bool{
 // and classifies each (see classifyPipeline/classifyStage). Every extracted
 // sub-expression is re-classified through Classify so nested commands cannot
 // hide one level deeper; the worst class across the whole tree is returned.
-func Classify(cmd string) RiskClass {
+// maxSubstDepth caps recursive re-classification of nested command
+// substitutions. Real commands nest a handful deep; hundreds of levels
+// are hostile input, and classifying each level re-normalizes the whole
+// remaining string (quadratic). Past the cap the classifier fails closed
+// instead of burning time.
+const maxSubstDepth = 64
+
+// classifyAtDepth is Classify with a nesting-depth budget.
+func classifyAtDepth(cmd string, depth int) RiskClass {
 	cmd = strings.TrimSpace(cmd)
 	if cmd == "" {
 		return Safe
@@ -1411,17 +1419,30 @@ func Classify(cmd string) RiskClass {
 		return Blocked
 	}
 
+	if depth > maxSubstDepth {
+		return Unknown
+	}
+
 	main, subs := normalize(cmd)
 	worst := classifyOne(main)
 	for _, s := range subs {
 		// Substitutions are themselves commands the shell will run.
-		// Re-enter Classify (not classifyOne) so nested substitutions
-		// inside them also normalise.
-		if r := Classify(s); Rank(r) > Rank(worst) {
+		// Re-enter the depth-tracked classifier (not classifyOne) so
+		// nested substitutions inside them also normalise.
+		if r := classifyAtDepth(s, depth+1); Rank(r) > Rank(worst) {
 			worst = r
 		}
 	}
 	return worst
+}
+
+// Classify returns the worst risk class found in cmd after normalisation
+// (shell evasion tricks, substitutions, wrappers, basenames) and token
+// classification (see classifyOne). Every extracted sub-expression is
+// re-classified recursively, bounded by maxSubstDepth; deeper nesting
+// fails closed as Unknown.
+func Classify(cmd string) RiskClass {
+	return classifyAtDepth(cmd, 0)
 }
 
 // classifyOne runs the existing token-level pipeline against an already-
