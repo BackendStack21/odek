@@ -641,7 +641,7 @@ export function endStream(reason = "interrupted") {
   S.busy = false;
   hideLoading();
   hideCancel();
-  sendBtn.disabled = !S.ws || S.ws.readyState !== WebSocket.OPEN;
+  sendBtn.disabled = S.uploading || !S.ws || S.ws.readyState !== WebSocket.OPEN;
   promptEl.disabled = false;
   promptEl.focus();
 }

@@ -1001,3 +1001,89 @@ test('management ignores pre-reset responses and reloads when reopened', async (
     await new Promise(resolve => setTimeout(resolve, 0));
   } finally { globalThis.fetch = oldFetch; inspector.togglePanels(false); }
 });
+
+test('session search ignores an older response that arrives last', async () => {
+  const oldFetch = globalThis.fetch;
+  const requests = [];
+  try {
+    globalThis.fetch = (path) => new Promise(resolve => requests.push({ path, resolve }));
+    S.sessionSearch = 'old';
+    const oldLoad = sessions.loadSessions();
+    S.sessionSearch = 'new';
+    const newLoad = sessions.loadSessions();
+    assert.equal(requests.length, 2);
+
+    const reply = (id) => ({
+      ok: true, status: 200,
+      headers: { get: () => 'application/json' },
+      json: async () => ({ sessions: [{ id, task: id, turns: 1 }] }),
+    });
+    requests[1].resolve(reply('new-id'));
+    await newLoad;
+    requests[0].resolve(reply('old-id'));
+    await oldLoad;
+    assert.equal(S.sessionSearch, 'new');
+    assert.equal(S.sessionPages[0].id, 'new-id');
+  } finally {
+    globalThis.fetch = oldFetch;
+    S.sessionSearch = '';
+  }
+});
+
+test('concurrent More clicks fetch one page and advance the offset once', async () => {
+  const oldFetch = globalThis.fetch;
+  const requests = [];
+  try {
+    S.sessionPages = Array.from({ length: 50 }, (_, i) => ({ id: 'first-' + i, task: 'first' }));
+    S.sessionOffset = 50;
+    S.sessionsExhausted = false;
+    globalThis.fetch = (path) => new Promise(resolve => requests.push({ path, resolve }));
+    const first = sessions.loadSessionsMore();
+    const second = sessions.loadSessionsMore();
+    assert.equal(requests.length, 1);
+    assert.match(requests[0].path, /offset=50/);
+    assert.equal(byId['sessions-more'].disabled, true);
+    requests[0].resolve({
+      ok: true, status: 200,
+      headers: { get: () => 'application/json' },
+      json: async () => ({ sessions: Array.from({ length: 50 }, (_, i) => ({ id: 'second-' + i, task: 'second' })) }),
+    });
+    await Promise.all([first, second]);
+    assert.equal(S.sessionPages.length, 100);
+    assert.equal(S.sessionOffset, 100);
+    assert.equal(byId['sessions-more'].disabled, false);
+  } finally { globalThis.fetch = oldFetch; }
+});
+
+test('send waits for a text attachment read and includes it afterward', async () => {
+  const oldReader = globalThis.FileReader;
+  let reader;
+  try {
+    globalThis.FileReader = class {
+      constructor() { reader = this; }
+      readAsText() {}
+    };
+    byId['file-input'].files = [{ name: 'note.txt', size: 5, type: 'text/plain' }];
+    byId['file-input'].dispatch('change');
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.ok(reader, 'file reading has started');
+    assert.equal(S.uploading, true);
+    assert.equal(byId['send-btn'].disabled, true);
+
+    byId.prompt.value = 'summarize attachment';
+    input.send();
+    assert.equal(S.ws.sent.length, 0);
+    assert.equal(byId.prompt.value, 'summarize attachment');
+
+    reader.result = 'hello';
+    reader.onload();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(S.uploading, false);
+    assert.equal(S.attachedFiles.length, 1);
+    input.send();
+    const sent = JSON.parse(S.ws.sent.at(-1));
+    assert.equal(sent.type, 'prompt');
+    assert.deepEqual(sent.attachments, [{ name: 'note.txt', content: 'hello' }]);
+  } finally { globalThis.FileReader = oldReader; }
+});
