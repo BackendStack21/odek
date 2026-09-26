@@ -52,7 +52,6 @@ func pooledTransport() *http.Transport {
 			DialContext: (&net.Dialer{
 				Timeout:   30 * time.Second,
 				KeepAlive: DefaultKeepAlive,
-				DualStack: true,
 			}).DialContext,
 			ForceAttemptHTTP2: true,
 		}

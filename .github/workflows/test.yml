@@ -19,7 +19,7 @@ jobs:
         with:
           # Minimum supported build toolchain is Go 1.25.12 (go.mod floor);
           # "1.25" resolves to the latest 1.25.x patch release.
-          go-version: "1.25"
+          go-version: "1.27"
 
       - name: build
         run: go build -o /tmp/odek-test github.com/BackendStack21/odek/cmd/odek && chmod +x /tmp/odek-test
@@ -40,12 +40,12 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.25"
+          go-version: "1.27"
 
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v7
         with:
-          version: v2.12.2
+          version: v2.14.0
           args: --timeout=10m
 
   ui-js:
