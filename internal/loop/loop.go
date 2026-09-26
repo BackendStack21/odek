@@ -862,7 +862,21 @@ func (e *Engine) SetPlanStore(s *PlanStore) {
 	e.planStore = s
 	if s != nil {
 		s.SetOnChange(e.emitPlanChangeEvent)
+		s.SetOnValidationFailure(e.emitPlanValidationFailed)
 	}
+}
+
+// emitPlanValidationFailed maps one rejected plan tool call onto the
+// runtime event stream. Payload carries the verb and a coarse failure
+// class ONLY — never raw arguments, step titles, or plan content.
+func (e *Engine) emitPlanValidationFailed(verb, class string) {
+	e.emitEvent(events.Event{
+		Type: events.TypePlanValidationFailed,
+		Data: map[string]any{
+			"verb":  verb,
+			"class": class,
+		},
+	})
 }
 
 // emitPlanChangeEvent maps one PlanStore mutation onto the structured

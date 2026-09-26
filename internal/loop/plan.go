@@ -127,16 +127,17 @@ const (
 // every mutation must serialize. Caps come from resolved config values —
 // never raw project config.
 type PlanStore struct {
-	mu             sync.Mutex
-	plan           *PlanState // nil until first plan(create)
-	maxSteps       int
-	maxRenderChars int
-	onChange       func(PlanChange) // optional; fired under mu after each effective mutation
-	blockedStreak  int              // consecutive blocked status transitions
-	lastBlocked    bool             // last status transition was to blocked
-	blockedFired   bool             // this mutation tripped the streak (consumed by notify)
-	epoch          uint64
-	revisionNotify bool
+	mu                  sync.Mutex
+	plan                *PlanState // nil until first plan(create)
+	maxSteps            int
+	maxRenderChars      int
+	onChange            func(PlanChange)         // optional; fired under mu after each effective mutation
+	onValidationFailure func(verb, class string) // optional; fired once per rejected call (see SetOnValidationFailure)
+	blockedStreak       int                      // consecutive blocked status transitions
+	lastBlocked         bool                     // last status transition was to blocked
+	blockedFired        bool                     // this mutation tripped the streak (consumed by notify)
+	epoch               uint64
+	revisionNotify      bool
 }
 
 // NewPlanStore creates a store with the given resolved caps. Degenerate
@@ -275,11 +276,25 @@ type planArgs struct {
 // Every effective mutation fires the OnChange callback exactly once per call
 // — never per-step within an atomic batch.
 func (s *PlanStore) Execute(argsJSON string) (string, error) {
+	res, err := s.executeArgs(argsJSON)
+	if err != nil {
+		s.mu.Lock()
+		fn := s.onValidationFailure
+		s.mu.Unlock()
+		if fn != nil {
+			fn(verbFromArgs(argsJSON), classifyPlanFailure(err))
+		}
+	}
+	return res, err
+}
+
+func (s *PlanStore) executeArgs(argsJSON string) (string, error) {
 	var args planArgs
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
 		return "", fmt.Errorf("plan: parse args: %w", err)
 	}
 	raw := planRawEnvelope(argsJSON)
+	var inference string
 	// Argument-resilience layer: diagnostics before the typed switch, so a
 	// malformed envelope fails with the keys it actually carried. Every path
 	// below either returns a diagnostic error or proceeds into the same
@@ -291,7 +306,46 @@ func (s *PlanStore) Execute(argsJSON string) (string, error) {
 		}
 		return "", fmt.Errorf("plan: unknown verb %q (want create/update/complete/revise/get)", args.Verb)
 	}
-	var inference string
+	// Field-name aliases (expert-review restricted): leniency is name-level
+	// only, never shape-level. complete accepts "id" for step_id; update
+	// accepts a single-step form via step_id. Conflicts are hard errors —
+	// a silent pick would hide half the model's intent.
+	if args.Verb == "complete" && args.StepID == "" {
+		if idRaw, ok := raw["id"]; ok {
+			var id string
+			if json.Unmarshal(idRaw, &id) == nil && id != "" {
+				args.StepID = id
+				inference = "plan: accepted \"id\" as alias for step_id on complete — use step_id next time"
+			}
+		}
+		if args.StepID == "" {
+			return "", teaching("complete", fmt.Sprintf("plan: complete requires 'step_id' (the step to mark done); received keys: %s", keyList(planReceivedKeys(raw))))
+		}
+	}
+	if args.Verb == "update" {
+		if sidRaw, hasSID := raw["step_id"]; hasSID {
+			var sid string
+			_ = json.Unmarshal(sidRaw, &sid)
+			switch {
+			case len(args.Updates) == 0:
+				u := planUpdateArg{ID: sid}
+				if raw["status"] != nil {
+					_ = json.Unmarshal(raw["status"], &u.Status)
+				}
+				if raw["note"] != nil {
+					_ = json.Unmarshal(raw["note"], &u.Note)
+				}
+				args.Updates = []planUpdateArg{u}
+				inference = `plan: accepted single-step form (step_id) — prefer {"verb":"update","updates":[...]} next time`
+			case len(args.Updates) > 1:
+				return "", teaching("update", "plan: step_id cannot be combined with multiple updates — send updates only")
+			default:
+				if args.Updates[0].ID != sid {
+					return "", teaching("update", fmt.Sprintf("plan: step_id %q conflicts with updates[0].id %q — they must agree", sid, args.Updates[0].ID))
+				}
+			}
+		}
+	}
 	if args.Verb == "create" {
 		// Ambiguity gates on KEY PRESENCE, not decoded length: "steps":[] or
 		// "steps":null still means the model used the canonical field, so a
@@ -323,7 +377,7 @@ func (s *PlanStore) Execute(argsJSON string) (string, error) {
 	}
 	if args.Verb == "update" && len(args.Updates) == 0 {
 		if derr := diagnoseUpdateUpdates(raw); derr != nil {
-			return "", derr
+			return "", teaching("update", derr.Error())
 		}
 	}
 	s.mu.Lock()
@@ -345,6 +399,9 @@ func (s *PlanStore) Execute(argsJSON string) (string, error) {
 		res, err = s.complete(args.StepID)
 	case "revise":
 		res, err = s.revise(argsJSON)
+		if err != nil {
+			err = teaching("revise", err.Error())
+		}
 	case "get":
 		return s.get()
 	default:
@@ -1162,10 +1219,11 @@ func (t *PlanTool) Description() string {
 		"update statuses as you go (in_progress when you start a step, done only after " +
 		"verifying it); mark blocked with a note explaining why. The plan is shown to you " +
 		"on every iteration and survives context trimming — trust it over your memory of " +
-		"earlier turns. Use revise when the approach changes so acceptance checks stay attached. For verifiable " +
-		"work, declare optional checks with exact tool arguments before running them in a later " +
-		"batch. Complete checked steps only after their tools succeed; do not self-certify. " +
-		"Plans without checks remain advisory."
+		"earlier turns. Per-verb shapes: " + planVerbExample("create") + " " + planVerbExample("update") + ". " +
+		"Use revise when the approach changes so acceptance checks stay attached (add/edit/move are the " +
+		"everyday operations; split/supersede are rarer). For verifiable work, declare optional checks with " +
+		"exact tool arguments before running them in a later batch. Complete checked steps only after their " +
+		"tools succeed; do not self-certify. Plans without checks remain advisory."
 }
 
 func planChecksSchema() map[string]any {
@@ -1191,8 +1249,10 @@ func (t *PlanTool) Schema() any {
 		"type": "object",
 		"properties": map[string]any{
 			"verb": map[string]any{
-				"enum":        []string{"create", "update", "complete", "revise", "get"},
-				"description": "create: replace the whole plan. update: batch status/note changes. complete: shorthand to mark one step done. revise: atomically add/edit/move/split/supersede steps while preserving checked requirements. get: return current plan.",
+				"enum": []string{"create", "update", "complete", "revise", "get"},
+				"description": "Field map by verb — create → steps[]; update → updates[]; complete → step_id; revise → operations[]; get → no fields. " +
+					"create: replace the whole plan. update: batch status/note changes. complete: shorthand to mark one step done. " +
+					"revise: atomically add/edit/move/split/supersede steps while preserving checked requirements. get: return current plan.",
 			},
 			"steps": map[string]any{
 				"type": "array", "items": planStepSchema(),
@@ -1213,7 +1273,7 @@ func (t *PlanTool) Schema() any {
 			},
 			"step_id": map[string]any{
 				"type":        "string",
-				"description": "complete only",
+				"description": "complete only: the step to mark done. Also accepted as a single-step alias on update (see verb description).",
 			},
 			"reason": map[string]any{"type": "string", "maxLength": maxRevisionReason, "description": "revise only: bounded reason for the change."},
 			"operations": map[string]any{
