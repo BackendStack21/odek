@@ -114,6 +114,10 @@ func validatePlanChecks(in []planCheckArg) ([]PlanCheck, error) {
 
 func allPlanChecksPassed(step PlanStep) bool {
 	for _, check := range step.Checks {
+		if check.Status == PlanCheckBlocked {
+			// Blocked = environment-denied, not missing evidence.
+			continue
+		}
 		if check.Status != PlanCheckPassed {
 			return false
 		}
@@ -234,7 +238,7 @@ func parsePlanChecks(raw string) ([]PlanCheck, error) {
 	}
 	args := make([]planCheckArg, len(in))
 	for i, check := range in {
-		if check.Status != "" && check.Status != PlanCheckPending && check.Status != PlanCheckPassed && check.Status != PlanCheckFailed {
+		if check.Status != "" && check.Status != PlanCheckPending && check.Status != PlanCheckPassed && check.Status != PlanCheckFailed && check.Status != PlanCheckBlocked {
 			return nil, fmt.Errorf("check[%d]: unknown status", i)
 		}
 		if len([]rune(check.CallID)) > maxPlanCheckCallIDChars {
@@ -326,6 +330,38 @@ func (s *PlanStore) RecordCheckOutcome(epoch uint64, tool, args, callID string, 
 	}
 }
 
+// RecordCheckDenied transitions a matching check to blocked after the
+// environment refused to run it (approval or config denial). Blocked checks
+// stop gating completion and stop counting as missing evidence.
+func (s *PlanStore) RecordCheckDenied(epoch uint64, tool, args, callID string) {
+	canonical, err := canonicalPlanArguments([]byte(args))
+	if err != nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if epoch != s.epoch || s.plan == nil {
+		return
+	}
+	callID = truncatePlanCallID(callID)
+	changed := false
+	for i := range s.plan.Steps {
+		for j := range s.plan.Steps[i].Checks {
+			check := &s.plan.Steps[i].Checks[j]
+			if check.Tool == tool && samePlanArguments(check.Arguments, canonical) {
+				if check.Status != PlanCheckBlocked || check.CallID != callID {
+					check.Status, check.CallID = PlanCheckBlocked, callID
+					changed = true
+				}
+			}
+		}
+	}
+	if changed {
+		s.plan.Version++
+		s.notifyLocked(false, false)
+	}
+}
+
 func truncatePlanCallID(callID string) string {
 	if callID != "" {
 		valid := len(callID) <= maxPlanCheckCallIDChars
@@ -382,7 +418,7 @@ func (s *PlanStore) PendingChecks() []string {
 	var out []string
 	for _, step := range s.planStepsLocked() {
 		for _, check := range step.Checks {
-			if check.Status != PlanCheckPassed {
+			if check.Status != PlanCheckPassed && check.Status != PlanCheckBlocked {
 				out = append(out, step.ID+"/"+check.ID)
 			}
 		}

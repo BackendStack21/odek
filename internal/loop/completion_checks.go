@@ -34,6 +34,18 @@ func (e *Engine) recordPlanCheckResult(epoch uint64, tc session.ToolCall, callID
 	}
 }
 
+func (e *Engine) recordPlanCheckDenied(epoch uint64, tc session.ToolCall, callID, output string) {
+	if e.planStore == nil || tc.Function.Name == "plan" {
+		return
+	}
+	// Environment denial: the approval gate (batch or tool-level) refused to
+	// run the call. The check is blocked, not failed — retrying it cannot
+	// succeed until the environment changes.
+	if strings.Contains(output, "approval denied") && e.planStore.MatchesCheck(tc.Function.Name, tc.Function.Arguments) {
+		e.planStore.RecordCheckDenied(epoch, tc.Function.Name, tc.Function.Arguments, callID)
+	}
+}
+
 func (e *Engine) pendingPlanChecks() []string {
 	if e == nil || e.planStore == nil {
 		return nil

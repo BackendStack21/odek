@@ -63,6 +63,10 @@ const (
 	PlanCheckPending PlanCheckStatus = "pending"
 	PlanCheckPassed  PlanCheckStatus = "passed"
 	PlanCheckFailed  PlanCheckStatus = "failed"
+	// PlanCheckBlocked marks a check the environment refused (approval or
+	// config denial). Blocked checks do not gate step completion; they stay
+	// visible for closeout honesty (coverage: 2/3, 1 blocked).
+	PlanCheckBlocked PlanCheckStatus = "blocked"
 )
 
 type PlanCheck struct {
@@ -269,6 +273,15 @@ type planArgs struct {
 	Steps   planStepList    `json:"steps,omitempty"`
 	Updates []planUpdateArg `json:"updates,omitempty"`
 	StepID  string          `json:"step_id,omitempty"`
+
+	// check_replace only: replace one dead/stale check with a fresh one,
+	// or mark it satisfied by equivalent evidence. Justification is
+	// mandatory — the replacement is audit-trailed via the revision
+	// mechanism.
+	CheckID       string         `json:"check_id,omitempty"`
+	Justification string         `json:"justification,omitempty"`
+	Replacement   *planCheckArg `json:"replacement,omitempty"`
+	EvidenceNote  string         `json:"evidence_note,omitempty"`
 }
 
 // Execute runs one plan tool call (the full argument envelope) and returns
@@ -302,9 +315,9 @@ func (s *PlanStore) executeArgs(argsJSON string) (string, error) {
 	// are unambiguous (missing ids, string steps, a single steps wrapper).
 	if args.Verb == "" {
 		if keys := planReceivedKeys(raw); len(keys) > 0 {
-			return "", fmt.Errorf("plan: unknown verb \"\" (want create/update/complete/revise/get); received keys: %s — set \"verb\" to one of the five", keyList(keys))
+			return "", fmt.Errorf("plan: unknown verb \"\" (want create/update/complete/revise/check_replace/get); received keys: %s — set \"verb\" to one of the six", keyList(keys))
 		}
-		return "", fmt.Errorf("plan: unknown verb %q (want create/update/complete/revise/get)", args.Verb)
+		return "", fmt.Errorf("plan: unknown verb %q (want create/update/complete/revise/check_replace/get)", args.Verb)
 	}
 	// Field-name aliases (expert-review restricted): leniency is name-level
 	// only, never shape-level. complete accepts "id" for step_id; update
@@ -402,10 +415,15 @@ func (s *PlanStore) executeArgs(argsJSON string) (string, error) {
 		if err != nil {
 			err = teaching("revise", err.Error())
 		}
+	case "check_replace":
+		res, err = s.checkReplace(args)
+		if err != nil {
+			err = teaching("check_replace", err.Error())
+		}
 	case "get":
 		return s.get()
 	default:
-		return "", fmt.Errorf("plan: unknown verb %q (want create/update/complete/revise/get)", args.Verb)
+		return "", fmt.Errorf("plan: unknown verb %q (want create/update/complete/revise/check_replace/get)", args.Verb)
 	}
 	// A version bump is exactly the "effective mutation" contract: no-op
 	// update/complete calls return early without reassigning s.plan, so they
@@ -499,8 +517,13 @@ func (s *PlanStore) create(steps []planStepArg) (string, error) {
 	}
 	candidate := PlanState{Version: s.nextVersion(), Steps: out}
 	if s.plan != nil && hasPlanChecks(*s.plan) {
-		if err := preserveCheckedPlan(*s.plan, &candidate); err != nil {
-			return "", err
+		preserveErr := preserveCheckedPlan(*s.plan, &candidate)
+		if preserveErr != nil {
+			// create may always reset: incompatible checked plans are
+			// superseded, not refused. The supersession is audit-trailed
+			// in the revision block so no verification history silently
+			// disappears.
+			candidate.Revision = archivedPlanRevision(*s.plan)
 		}
 	}
 	if !checkedPlanFits(candidate, s.maxRenderChars) {
@@ -565,6 +588,79 @@ func (s *PlanStore) update(updates []planUpdateArg) (string, error) {
 	}
 	s.noteStatusTransitionsLocked(old, working)
 	s.plan = &candidate
+	return s.renderLocked(), nil
+}
+
+// checkReplace replaces one declared check — either with a fresh pending
+// check (replacement) or with satisfied-by-equivalent-evidence (evidence_note).
+// The justification is mandatory and audit-trailed via the revision block.
+// This is the escape hatch for dead or stale checks (environment-denied,
+// unsatisfiable, or verified through another path).
+func (s *PlanStore) checkReplace(args planArgs) (string, error) {
+	// Caller holds s.mu (executeArgs dispatches under the store lock).
+	stepID := strings.TrimSpace(args.StepID)
+	checkID := strings.TrimSpace(args.CheckID)
+	justification := normalizePlanText(args.Justification)
+	if stepID == "" || checkID == "" {
+		return "", fmt.Errorf("plan: check_replace requires step_id and check_id — example: {\"verb\":\"check_replace\",\"step_id\":\"s1\",\"check_id\":\"c1\",\"justification\":\"why\",\"replacement\":{\"id\":\"fresh\",\"description\":\"verify\",\"tool\":\"read_file\",\"arguments\":{\"path\":\"out\"}}}")
+	}
+	if justification == "" {
+		return "", fmt.Errorf("plan: check_replace requires justification (why the old check is dead/stale)")
+	}
+	if s.plan == nil {
+		return "", fmt.Errorf("plan: no plan to revise — create one first")
+	}
+	idx := indexOfStep(s.plan.Steps, stepID)
+	if idx < 0 {
+		return "", fmt.Errorf("plan: check_replace: unknown step id %q", stepID)
+	}
+	step := &s.plan.Steps[idx]
+	ci := -1
+	for j, c := range step.Checks {
+		if c.ID == checkID {
+			ci = j
+			break
+		}
+	}
+	if ci < 0 {
+		return "", fmt.Errorf("plan: check_replace: unknown check id %q on step %q", checkID, stepID)
+	}
+	working := clonePlanSteps(s.plan.Steps)
+	wStep := &working[idx]
+	old := wStep.Checks[ci]
+	switch {
+	case args.Replacement != nil:
+		fresh, err := validatePlanChecks([]planCheckArg{*args.Replacement})
+		if err != nil {
+			return "", fmt.Errorf("plan: check_replace: replacement: %w", err)
+		}
+		wStep.Checks[ci] = fresh[0]
+	case args.EvidenceNote != "":
+		note := normalizePlanText(args.EvidenceNote)
+		if len(note) > maxPlanCheckDescChars {
+			note = note[:maxPlanCheckDescChars]
+		}
+		wStep.Checks[ci] = PlanCheck{
+			ID:          old.ID,
+			Description: old.Description + " (evidence: " + note + ")",
+			Tool:        old.Tool,
+			Arguments:   old.Arguments,
+			Status:      PlanCheckPassed,
+		}
+	default:
+		return "", fmt.Errorf("plan: check_replace requires replacement {id,description,tool,arguments} or evidence_note — example: {\"verb\":\"check_replace\",\"step_id\":\"s1\",\"check_id\":\"c1\",\"justification\":\"why\",\"evidence_note\":\"diff confirmed expected output\"}")
+	}
+	wStep.Checks[ci].CallID = ""
+	candidate := PlanState{Version: s.nextVersion(), Steps: working, Revision: &PlanRevision{
+		Reason:  "check " + stepID + "/" + checkID + " replaced: " + justification,
+		Summary: []string{"replaced " + stepID + "/" + checkID},
+	}}
+	if !checkedPlanFits(candidate, s.maxRenderChars) {
+		return "", fmt.Errorf("plan: checked plan exceeds max_render_chars (%d)", s.maxRenderChars)
+	}
+	s.noteStatusTransitionsLocked(s.plan.Steps, working)
+	s.plan = &candidate
+	s.notifyLocked(false, false)
 	return s.renderLocked(), nil
 }
 
@@ -1249,10 +1345,11 @@ func (t *PlanTool) Schema() any {
 		"type": "object",
 		"properties": map[string]any{
 			"verb": map[string]any{
-				"enum": []string{"create", "update", "complete", "revise", "get"},
-				"description": "Field map by verb — create → steps[]; update → updates[]; complete → step_id; revise → operations[]; get → no fields. " +
-					"create: replace the whole plan. update: batch status/note changes. complete: shorthand to mark one step done. " +
-					"revise: atomically add/edit/move/split/supersede steps while preserving checked requirements. get: return current plan.",
+				"enum": []string{"create", "update", "complete", "revise", "check_replace", "get"},
+				"description": "Field map by verb — create → steps[]; update → updates[]; complete → step_id; revise → operations[]; check_replace → step_id+check_id+justification+(replacement|evidence_note); get → no fields. " +
+					"create: replace the whole plan (may always reset; the superseded checked plan is archived). update: batch status/note changes. complete: shorthand to mark one step done. " +
+					"revise: atomically add/edit/move/split/supersede steps while preserving checked requirements. " +
+					"check_replace: replace one dead/stale/environment-denied check with a fresh one or mark it satisfied by equivalent evidence. get: return current plan.",
 			},
 			"steps": map[string]any{
 				"type": "array", "items": planStepSchema(),
@@ -1273,8 +1370,11 @@ func (t *PlanTool) Schema() any {
 			},
 			"step_id": map[string]any{
 				"type":        "string",
-				"description": "complete only: the step to mark done. Also accepted as a single-step alias on update (see verb description).",
+				"description": "complete/check_replace only: the step to mark done (complete) or whose check is replaced (check_replace). Also accepted as a single-step alias on update (see verb description).",
 			},
+			"check_id":          map[string]any{"type": "string", "maxLength": maxPlanCheckIDChars, "description": "check_replace only: the check being replaced."},
+			"justification":     map[string]any{"type": "string", "maxLength": maxPlanCheckDescChars, "description": "check_replace only: mandatory why the check is dead/stale; audit-trailed."},
+			"evidence_note":     map[string]any{"type": "string", "maxLength": maxPlanCheckDescChars, "description": "check_replace only: mark the check satisfied by equivalent verification that ran via other tools."},
 			"reason": map[string]any{"type": "string", "maxLength": maxRevisionReason, "description": "revise only: bounded reason for the change."},
 			"operations": map[string]any{
 				"type": "array", "minItems": 1, "maxItems": maxRevisionOps,

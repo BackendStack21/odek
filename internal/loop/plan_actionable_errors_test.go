@@ -75,16 +75,16 @@ func TestP2_GatingErrorNamesCheckIDsAndSatisfyingCall(t *testing.T) {
 }
 
 // Unrecoverable-state errors (create-refuses-reset) must state the escape
-// hatch explicitly with the exact revise form.
+// create over a checked plan now resets (P3): the old plan is archived in
+// the revision block, not refused — no unrecoverable states.
 func TestP2_DeadlockErrorNamesEscapeHatch(t *testing.T) {
-	s := NewPlanStore(3, 2000)
+	s := NewPlanStore(3, 4000)
 	mustExecP2(t, s, `{"verb":"create","steps":[{"id":"s1","title":"S","checks":[{"id":"c1","description":"verify","tool":"shell","arguments":{"command":"true"}}]}]}`)
-	_, err := s.Execute(`{"verb":"create","steps":[{"id":"s2","title":"Other"}]}`)
-	if err == nil {
-		t.Fatal("want refusal error")
+	out, err := s.Execute(`{"verb":"create","steps":[{"id":"s2","title":"Other"}]}`)
+	if err != nil {
+		t.Fatalf("create must always reset — no deadlock: %v", err)
 	}
-	msg := err.Error()
-	if !strings.Contains(msg, "retryable: true") {
-		t.Errorf("refusal is retryable via revise/create-reset path — error should say so, got: %s", msg)
+	if !strings.Contains(out, "s2") {
+		t.Errorf("new plan should contain s2: %s", out)
 	}
 }

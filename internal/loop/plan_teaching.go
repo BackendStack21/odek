@@ -21,6 +21,8 @@ func planVerbExample(verb string) string {
 		return `{"verb":"complete","step_id":"s1"}`
 	case "revise":
 		return `{"verb":"revise","operations":[{"kind":"add","steps":[{"id":"s4","title":"New step"}]}]}`
+	case "check_replace":
+		return `{"verb":"check_replace","step_id":"s1","check_id":"c1","justification":"why the old check is dead","replacement":{"id":"fresh","description":"verify","tool":"read_file","arguments":{"path":"out"}}}`
 	case "get":
 		return `{"verb":"get"}`
 	default:

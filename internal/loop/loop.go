@@ -3500,6 +3500,9 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 			output := results[i].output
 			fullOutput := output
 			e.recordPlanCheckResult(checkEpoch, tc, callIDs[i], results[i].errored)
+		if results[i].errored {
+			e.recordPlanCheckDenied(checkEpoch, tc, callIDs[i], results[i].output)
+		}
 
 			// ledger the mutating calls that completed this run so the
 			// final reply can be reconciled against what actually happened.
