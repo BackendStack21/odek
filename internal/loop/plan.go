@@ -637,8 +637,8 @@ func (s *PlanStore) checkReplace(args planArgs) (string, error) {
 		wStep.Checks[ci] = fresh[0]
 	case args.EvidenceNote != "":
 		note := normalizePlanText(args.EvidenceNote)
-		if len(note) > maxPlanCheckDescChars {
-			note = note[:maxPlanCheckDescChars]
+		if runes := []rune(note); len(runes) > maxPlanCheckDescChars {
+			note = string(runes[:maxPlanCheckDescChars])
 		}
 		wStep.Checks[ci] = PlanCheck{
 			ID:          old.ID,
@@ -660,7 +660,10 @@ func (s *PlanStore) checkReplace(args planArgs) (string, error) {
 	}
 	s.noteStatusTransitionsLocked(s.plan.Steps, working)
 	s.plan = &candidate
-	s.notifyLocked(false, false)
+	// executeArgs fires the single notify for every effective mutation;
+	// notifying here would double-fire plan_updated. Mark the revision so
+	// downstream change events carry Revised (same contract as revise).
+	s.revisionNotify = true
 	return s.renderLocked(), nil
 }
 

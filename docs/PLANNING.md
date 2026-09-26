@@ -300,6 +300,11 @@ standard built-in interface (`Name`/`Description`/`Schema`/`Call`).
 | `check_replace` | `step_id`, `check_id`, `justification`, plus `replacement` or `evidence_note` | Replaces one dead/stale/environment-denied check with a fresh pending one, or marks it satisfied by equivalent verification that ran via other tools. Justification is mandatory and audit-trailed in the revision block. |
 | `get` | — | Returns the current plan (or `"No active plan."`). |
 
+Note on wire compatibility: a check whose tool call was denied by the
+approval gate renders with status `blocked`. Sessions persisted by builds
+that know `blocked` fail to parse on older odek binaries (which reject the
+unknown status); resume such sessions only on equal-or-newer builds.
+
 ### Incremental revisions
 
 Use `revise` when the plan changes after work or evidence already exists.
