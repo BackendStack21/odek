@@ -411,9 +411,13 @@ func Scenarios() []Scenario {
 			}
 			return OracleResult{TaskSuccess: false}
 		}},
-		{Name: "acceptance_check_cannot_be_dropped", Task: "failed check must block completion", Fixture: f10, Plan: true, Tools: []tool.Tool{Tool(f10, "read_file", "read")}, Responses: []string{toolCall("plan", "p1", `{"verb":"create","steps":[{"id":"fix","title":"Fix","checks":[{"id":"e1","description":"Read evidence","tool":"read_file","arguments":{"key":"evidence"}}]}]}`), toolCall("read_file", "r1", `{"key":"evidence"}`), toolCall("plan", "p2", `{"verb":"revise","reason":"bad supersede","operations":[{"kind":"supersede","step_id":"fix","steps":[{"id":"replacement","title":"Replacement"}]}]}`), toolCall("plan", "p3", `{"verb":"create","steps":[{"id":"fix","title":"Fix"}]}`), final("blocked")}, Oracle: func(f *Fixture, r string, e error, c []ToolCall) OracleResult {
-			if e != nil || f.Plan == nil || len(f.Plan.Steps) != 1 || f.Plan.Steps[0].Status == loop.StepDone || len(f.Plan.Steps[0].Checks) != 1 || f.Plan.Steps[0].Checks[0].ID != "e1" || f.Plan.Steps[0].Checks[0].Status != loop.PlanCheckFailed || !strings.Contains(r, "[odek verification incomplete:") || len(c) != 4 || !c[1].Error || !c[2].Error || !c[3].Error {
-				return OracleResult{Errors: []string{"failed acceptance check was dropped or completion was accepted"}}
+		{Name: "acceptance_check_reset_is_audit_trailed", Task: "failed check must block completion", Fixture: f10, Plan: true, Tools: []tool.Tool{Tool(f10, "read_file", "read")}, Responses: []string{toolCall("plan", "p1", `{"verb":"create","steps":[{"id":"fix","title":"Fix","checks":[{"id":"e1","description":"Read evidence","tool":"read_file","arguments":{"key":"evidence"}}]}]}`), toolCall("read_file", "r1", `{"key":"evidence"}`), toolCall("plan", "p2", `{"verb":"revise","reason":"bad supersede","operations":[{"kind":"supersede","step_id":"fix","steps":[{"id":"replacement","title":"Replacement"}]}]}`), toolCall("plan", "p3", `{"verb":"create","steps":[{"id":"fix","title":"Fix"}]}`), final("blocked")}, Oracle: func(f *Fixture, r string, e error, c []ToolCall) OracleResult {
+			// create may always reset (no unrecoverable states), but the
+			// supersession must be audit-trailed: the archived revision names
+			// the dropped check, the new plan carries no stale check state,
+			// and the step is never marked done without evidence.
+			if e != nil || f.Plan == nil || len(f.Plan.Steps) != 1 || f.Plan.Steps[0].Status == loop.StepDone || len(f.Plan.Steps[0].Checks) != 0 || f.Plan.Revision == nil || !strings.Contains(f.Plan.Revision.Reason, "superseded") || len(c) != 4 || !c[1].Error || !c[2].Error || c[3].Error {
+				return OracleResult{Errors: []string{"create reset was not audit-trailed or stale check state leaked"}}
 			}
 			return OracleResult{TaskSuccess: false}
 		}},
