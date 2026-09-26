@@ -646,6 +646,7 @@ func New(cfg Config) (*Agent, error) {
 	for _, t := range cfg.Tools {
 		if pt, ok := t.(*loop.PlanTool); ok && pt.Store != nil {
 			engine.SetPlanStore(pt.Store)
+			engine.SetPlanRemind(pt.Remind)
 			break
 		}
 	}

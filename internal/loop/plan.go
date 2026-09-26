@@ -1301,8 +1301,11 @@ func ExtractPlan(messages []session.Message) (*PlanState, bool) {
 // the shared PlanStore (the memory-tool pattern: the CLI layer creates one
 // store and hands it to both this tool and the engine via SetPlanStore, so
 // mutations are visible to the loop without any late-bound plumbing).
+// PlanTool wires the shared store and carries the resolved remind flag
+// (planning.remind, default OFF) for engine discovery.
 type PlanTool struct {
-	Store *PlanStore
+	Store  *PlanStore
+	Remind bool
 }
 
 // NewPlanTool creates a PlanTool bound to the given store.

@@ -407,12 +407,21 @@ Gives the agent a protected plan tool and a plan message that survives context t
 | Field | Default | Env var | CLI flag | Description |
 |-------|---------|---------|----------|-------------|
 | `planning.enabled` | `true` | `ODEK_PLANNING` | `--planning` / `--no-planning` | Enable the plan tool and protected plan message |
+| `planning.remind` | `false` | — | — | Soft plan reminder: after 3 non-plan tool calls with no plan, one bounded hint is injected into the tool result, and plans created after work began are flagged `provisional`. Never a hard gate; project config cannot re-enable it when the operator set it off |
 | `planning.max_steps` | `12` | — | — | Plan steps allowed (clamped 1–50) |
 | `planning.max_render_chars` | `2000` | — | — | Cap on the protected plan render (clamped 200–8000); checked or revised plans must fit in full, including reserved evidence space |
 
 Acceptance checks need no additional flag: declare them through `plan create`
 while planning is enabled. Large declarations may need a higher operator-set
 `max_render_chars`; project config cannot raise this cap.
+
+Check lifecycle: checks whose tool call is denied by the approval gate or
+config transition to `blocked` — they stop gating step completion but stay
+visible for closeout honesty. A dead, stale, or environment-denied check can
+be replaced via the `check_replace` verb (fresh check or equivalent-evidence
+note; justification mandatory and audit-trailed). `create` may always reset
+a plan — the superseded checked plan is archived in the revision block, not
+lost.
 
 Feature behavior, verbs, and the security model are documented in [PLANNING.md](PLANNING.md).
 

@@ -427,6 +427,13 @@ func (s *PlanStore) PendingChecks() []string {
 	return out
 }
 
+// HasPlan reports whether a plan exists.
+func (s *PlanStore) HasPlan() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.plan != nil
+}
+
 func (s *PlanStore) planStepsLocked() []PlanStep {
 	if s.plan == nil {
 		return nil

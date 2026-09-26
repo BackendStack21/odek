@@ -2668,7 +2668,8 @@ func builtinTools(dc danger.DangerousConfig, sm *skills.SkillManager, approver d
 	// so tool mutations and the protected plan message share one state.
 	if tcfg.Planning != nil && tcfg.Planning.Enabled {
 		tools = append(tools, &loop.PlanTool{
-			Store: loop.NewPlanStore(tcfg.Planning.MaxSteps, tcfg.Planning.MaxRenderChars),
+			Store:  loop.NewPlanStore(tcfg.Planning.MaxSteps, tcfg.Planning.MaxRenderChars),
+			Remind: tcfg.Planning.Remind,
 		})
 	}
 
