@@ -49,7 +49,7 @@ func classifyPlanFailure(err error) string {
 		return "alias_conflict"
 	case strings.Contains(msg, "step_id cannot be combined"):
 		return "alias_ambiguous"
-	case strings.Contains(msg, "unknown step id"):
+	case strings.Contains(msg, "unknown step id"), strings.Contains(msg, "unknown step "):
 		return "unknown_step_id"
 	case strings.Contains(msg, "requires"):
 		return "missing_field"
@@ -61,7 +61,8 @@ func classifyPlanFailure(err error) string {
 }
 
 // verbFromArgs extracts the verb for event classification without a full
-// decode; an unparseable envelope reports "".
+// decode; an unparseable envelope reports "". The value is clamped to the
+// known enum so raw envelope text never reaches the event stream.
 func verbFromArgs(argsJSON string) string {
 	var probe struct {
 		Verb string `json:"verb"`
@@ -69,7 +70,12 @@ func verbFromArgs(argsJSON string) string {
 	if json.Unmarshal([]byte(argsJSON), &probe) != nil {
 		return ""
 	}
-	return probe.Verb
+	switch probe.Verb {
+	case "create", "update", "complete", "revise", "get":
+		return probe.Verb
+	default:
+		return "unknown"
+	}
 }
 
 // SetOnValidationFailure registers an optional callback fired once per

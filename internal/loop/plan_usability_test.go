@@ -3,7 +3,6 @@ package loop
 import (
 	"encoding/json"
 	"strings"
-	"sync"
 	"testing"
 )
 
@@ -124,13 +123,65 @@ func TestPlan_AliasPrecedenceHardErrors(t *testing.T) {
 	}
 }
 
+// ── Validation telemetry: SetOnValidationFailure ───────────────────────
+
+func TestPlan_ValidationFailureEvent(t *testing.T) {
+	s := mustStore(3, 2000)
+	type failure struct{ verb, class string }
+	var got []failure
+	s.SetOnValidationFailure(func(verb, class string) {
+		got = append(got, failure{verb, class})
+	})
+	if _, err := s.Execute(`{"verb":"update","steps":[]}`); err == nil {
+		t.Fatal("expected rejection")
+	}
+	if _, err := s.Execute(`{"verb":"bogus"}`); err == nil {
+		t.Fatal("expected rejection")
+	}
+	if _, err := s.Execute(`{"verb":"complete","step_id":"ghost"}`); err == nil {
+		t.Fatal("expected rejection")
+	}
+	// Successful calls must NOT fire the failure callback.
+	if _, err := s.Execute(`{"verb":"create","steps":[{"id":"s1","title":"A"}]}`); err != nil {
+		t.Fatal(err)
+	}
+	want := []failure{{"update", "missing_field"}, {"unknown", "unknown_verb"}, {"complete", "unknown_step_id"}}
+	if len(got) != len(want) {
+		t.Fatalf("failures = %+v, want %+v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("failure[%d] = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+}
+
+// Aliases on a fresh store (no plan yet) must fail with a teaching error,
+// not panic or silently succeed.
+func TestPlan_AliasBeforeCreate(t *testing.T) {
+	s := mustStore(3, 2000)
+	if _, err := s.Execute(`{"verb":"complete","id":"s1"}`); err == nil ||
+		!strings.Contains(err.Error(), "unknown step id") {
+		t.Fatalf("complete alias before create = %v, want unknown step id", err)
+	}
+	if _, err := s.Execute(`{"verb":"update","step_id":"s1","status":"done"}`); err == nil ||
+		!strings.Contains(err.Error(), "unknown step id") {
+		t.Fatalf("update alias before create = %v, want unknown step id", err)
+	}
+}
+
 // ── Canonical examples in the tool description stay schema-valid ───────
 
 func TestPlan_DescriptionExamplesDriftGuard(t *testing.T) {
 	desc := (&PlanTool{Store: mustStore(3, 2000)}).Description()
 	// Examples are embedded as bare JSON objects in the description; a
 	// json.Decoder walk extracts each one without delimiter ambiguity.
+	// Examples must execute against the validation rules, in the order the
+	// description emits them: create seeds the plan the update example
+	// mutates, so ONE fresh store runs the whole sequence per test
+	// invocation (-count>1 safe).
 	rest := desc
+	var examples []string
 	for {
 		idx := strings.Index(rest, "{\"verb\":")
 		if idx < 0 {
@@ -147,27 +198,18 @@ func TestPlan_DescriptionExamplesDriftGuard(t *testing.T) {
 		if full["verb"] == "" {
 			t.Fatalf("description example lacks verb: %s", raw)
 		}
-		// The examples must execute against the validation rules, in the
-		// order the description emits them: create seeds the plan the
-		// update example mutates, so one shared store runs the sequence.
-		shared := sharedDriftStore()
+		examples = append(examples, raw)
+	}
+	if len(examples) < 2 {
+		t.Fatalf("expected at least 2 examples in description, got %d", len(examples))
+	}
+	shared := mustStore(5, 4000)
+	for _, raw := range examples {
 		if _, err := shared.Execute(raw); err != nil {
 			t.Fatalf("description example fails validation (%v): %s", err, raw)
 		}
 	}
 }
-
-// sharedDriftStore backs the drift guard: fresh per test run, sized above
-// the example set.
-func sharedDriftStore() *PlanStore {
-	sharedOnce.Do(func() { sharedStore = mustStore(5, 4000) })
-	return sharedStore
-}
-
-var (
-	sharedOnce  sync.Once
-	sharedStore *PlanStore
-)
 
 // ── Schema presents per-verb field mapping ─────────────────────────────
 
