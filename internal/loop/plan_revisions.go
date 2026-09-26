@@ -40,7 +40,7 @@ func preserveCheckedPlan(old PlanState, next *PlanState) error {
 		}
 		idx := indexOfStep(next.Steps, previous.ID)
 		if idx < 0 {
-			return fmt.Errorf("plan: create cannot remove or change checked step %q; use revise", previous.ID)
+			return fmt.Errorf("plan: create cannot remove or change checked step %q; use revise (example: {\"verb\":\"revise\",\"operations\":[{\"kind\":\"add\",\"steps\":[{\"id\":\"s4\",\"title\":\"New step\"}]}]}) — retryable: true", previous.ID)
 		}
 		step := &next.Steps[idx]
 		for _, check := range previous.Checks {

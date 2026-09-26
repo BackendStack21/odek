@@ -486,7 +486,7 @@ func (s *PlanStore) create(steps []planStepArg) (string, error) {
 		seen[id] = true
 		title := normalizePlanText(in.Title)
 		if title == "" {
-			return "", fmt.Errorf("plan: step[%d]: title is required", i)
+			return "", fmt.Errorf("plan: steps[%d].title: required and empty after trimming — retryable: true", i)
 		}
 		if len(title) > maxPlanTitleChars {
 			return "", fmt.Errorf("plan: step[%d]: title is too long (%d > %d chars)", i, len(title), maxPlanTitleChars)
@@ -537,7 +537,7 @@ func (s *PlanStore) update(updates []planUpdateArg) (string, error) {
 			}
 			if working[idx].Status != st {
 				if st == StepDone && !allPlanChecksPassed(working[idx]) {
-					return "", fmt.Errorf("plan: update: step %q has checks that have not passed", working[idx].ID)
+					return "", fmt.Errorf("plan: update: step %q has checks that have not passed — retryable: true; blocking checks and satisfying calls: %s", working[idx].ID, blockingChecksDetail(working[idx]))
 				}
 				working[idx].Status = st
 				changed = true
@@ -582,7 +582,7 @@ func (s *PlanStore) complete(stepID string) (string, error) {
 	}
 	working := clonePlanSteps(s.plan.Steps)
 	if !allPlanChecksPassed(working[idx]) {
-		return "", fmt.Errorf("plan: complete: step %q has checks that have not passed", working[idx].ID)
+		return "", fmt.Errorf("plan: complete: step %q has checks that have not passed — retryable: true; blocking checks and satisfying calls: %s", working[idx].ID, blockingChecksDetail(working[idx]))
 	}
 	working[idx].Status = StepDone
 	candidate := PlanState{Version: s.nextVersion(), Steps: working, Revision: cloneRevision(s.plan.Revision)}

@@ -84,8 +84,11 @@ func validatePlanChecks(in []planCheckArg) ([]PlanCheck, error) {
 		}
 		seen[id] = true
 		description := normalizePlanText(raw.Description)
-		if description == "" || len([]rune(description)) > maxPlanCheckDescChars {
-			return nil, fmt.Errorf("check[%d]: invalid description", i)
+		if description == "" {
+			return nil, fmt.Errorf("check[%d].description: empty after trimming (max %d chars) — retryable: true", i, maxPlanCheckDescChars)
+		}
+		if len([]rune(description)) > maxPlanCheckDescChars {
+			return nil, fmt.Errorf("check[%d].description: %d chars exceeds max %d — retryable: true", i, len([]rune(description)), maxPlanCheckDescChars)
 		}
 		tool := strings.TrimSpace(raw.Tool)
 		if tool == "" || tool == "plan" || len([]rune(tool)) > maxPlanCheckToolChars {
@@ -116,6 +119,24 @@ func allPlanChecksPassed(step PlanStep) bool {
 		}
 	}
 	return true
+}
+
+// blockingChecksDetail renders every unpassed check of a step as
+// id + the exact tool call that satisfies it, so a gating error carries its
+// own recovery instructions instead of a bare refusal.
+func blockingChecksDetail(step PlanStep) string {
+	var parts []string
+	for _, check := range step.Checks {
+		if check.Status == PlanCheckPassed {
+			continue
+		}
+		args, _ := json.Marshal(check.Arguments)
+		parts = append(parts, fmt.Sprintf("%s: call %s with %s", check.ID, check.Tool, string(args)))
+	}
+	if len(parts) == 0 {
+		return "(none)"
+	}
+	return strings.Join(parts, "; ")
 }
 
 func hasPlanChecks(p PlanState) bool {
