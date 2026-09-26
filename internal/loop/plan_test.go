@@ -129,10 +129,22 @@ func TestPlan_Validate_CompleteUnknownID(t *testing.T) {
 	before, _ := s.Snapshot()
 
 	for _, args := range []string{
+		// Missing step_id now gets the teaching error (names the field +
+		// example); an unknown id keeps the original rejection.
 		`{"verb":"complete"}`,
 		`{"verb":"complete","step_id":""}`,
-		`{"verb":"complete","step_id":"ghost"}`,
 	} {
+		_, err := s.Execute(args)
+		if err == nil || !strings.Contains(err.Error(), `complete requires 'step_id'`) {
+			t.Fatalf("complete(%q) error = %v, want teaching error", args, err)
+		}
+		after, _ := s.Snapshot()
+		if after.Version != before.Version || after.Steps[0].Status != StepPending {
+			t.Errorf("state changed after rejected complete: %+v", after)
+		}
+	}
+	{
+		args := `{"verb":"complete","step_id":"ghost"}`
 		_, err := s.Execute(args)
 		if err == nil || !strings.Contains(err.Error(), `unknown step id`) {
 			t.Fatalf("complete(%q) error = %v, want unknown step id", args, err)
