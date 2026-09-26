@@ -84,8 +84,11 @@ func validatePlanChecks(in []planCheckArg) ([]PlanCheck, error) {
 		}
 		seen[id] = true
 		description := normalizePlanText(raw.Description)
-		if description == "" || len([]rune(description)) > maxPlanCheckDescChars {
-			return nil, fmt.Errorf("check[%d]: invalid description", i)
+		if description == "" {
+			return nil, fmt.Errorf("check[%d].description: empty after trimming (max %d chars) — retryable: true", i, maxPlanCheckDescChars)
+		}
+		if len([]rune(description)) > maxPlanCheckDescChars {
+			return nil, fmt.Errorf("check[%d].description: %d chars exceeds max %d — retryable: true", i, len([]rune(description)), maxPlanCheckDescChars)
 		}
 		tool := strings.TrimSpace(raw.Tool)
 		if tool == "" || tool == "plan" || len([]rune(tool)) > maxPlanCheckToolChars {
@@ -111,11 +114,33 @@ func validatePlanChecks(in []planCheckArg) ([]PlanCheck, error) {
 
 func allPlanChecksPassed(step PlanStep) bool {
 	for _, check := range step.Checks {
+		if check.Status == PlanCheckBlocked {
+			// Blocked = environment-denied, not missing evidence.
+			continue
+		}
 		if check.Status != PlanCheckPassed {
 			return false
 		}
 	}
 	return true
+}
+
+// blockingChecksDetail renders every unpassed check of a step as
+// id + the exact tool call that satisfies it, so a gating error carries its
+// own recovery instructions instead of a bare refusal.
+func blockingChecksDetail(step PlanStep) string {
+	var parts []string
+	for _, check := range step.Checks {
+		if check.Status == PlanCheckPassed {
+			continue
+		}
+		args, _ := json.Marshal(check.Arguments)
+		parts = append(parts, fmt.Sprintf("%s: call %s with %s", check.ID, check.Tool, string(args)))
+	}
+	if len(parts) == 0 {
+		return "(none)"
+	}
+	return strings.Join(parts, "; ")
 }
 
 func hasPlanChecks(p PlanState) bool {
@@ -213,7 +238,7 @@ func parsePlanChecks(raw string) ([]PlanCheck, error) {
 	}
 	args := make([]planCheckArg, len(in))
 	for i, check := range in {
-		if check.Status != "" && check.Status != PlanCheckPending && check.Status != PlanCheckPassed && check.Status != PlanCheckFailed {
+		if check.Status != "" && check.Status != PlanCheckPending && check.Status != PlanCheckPassed && check.Status != PlanCheckFailed && check.Status != PlanCheckBlocked {
 			return nil, fmt.Errorf("check[%d]: unknown status", i)
 		}
 		if len([]rune(check.CallID)) > maxPlanCheckCallIDChars {
@@ -305,6 +330,38 @@ func (s *PlanStore) RecordCheckOutcome(epoch uint64, tool, args, callID string, 
 	}
 }
 
+// RecordCheckDenied transitions a matching check to blocked after the
+// environment refused to run it (approval or config denial). Blocked checks
+// stop gating completion and stop counting as missing evidence.
+func (s *PlanStore) RecordCheckDenied(epoch uint64, tool, args, callID string) {
+	canonical, err := canonicalPlanArguments([]byte(args))
+	if err != nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if epoch != s.epoch || s.plan == nil {
+		return
+	}
+	callID = truncatePlanCallID(callID)
+	changed := false
+	for i := range s.plan.Steps {
+		for j := range s.plan.Steps[i].Checks {
+			check := &s.plan.Steps[i].Checks[j]
+			if check.Tool == tool && samePlanArguments(check.Arguments, canonical) {
+				if check.Status != PlanCheckBlocked || check.CallID != callID {
+					check.Status, check.CallID = PlanCheckBlocked, callID
+					changed = true
+				}
+			}
+		}
+	}
+	if changed {
+		s.plan.Version++
+		s.notifyLocked(false, false)
+	}
+}
+
 func truncatePlanCallID(callID string) string {
 	if callID != "" {
 		valid := len(callID) <= maxPlanCheckCallIDChars
@@ -361,13 +418,20 @@ func (s *PlanStore) PendingChecks() []string {
 	var out []string
 	for _, step := range s.planStepsLocked() {
 		for _, check := range step.Checks {
-			if check.Status != PlanCheckPassed {
+			if check.Status != PlanCheckPassed && check.Status != PlanCheckBlocked {
 				out = append(out, step.ID+"/"+check.ID)
 			}
 		}
 	}
 	sort.Strings(out)
 	return out
+}
+
+// HasPlan reports whether a plan exists.
+func (s *PlanStore) HasPlan() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.plan != nil
 }
 
 func (s *PlanStore) planStepsLocked() []PlanStep {

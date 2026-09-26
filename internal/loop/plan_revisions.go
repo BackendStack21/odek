@@ -33,6 +33,22 @@ type planRevisionOp struct {
 	Checks        []planCheckArg `json:"checks"`
 }
 
+// PlanRevision tracks the last supersession for audit. Summary entries are
+// bounded (maxRevisionSummary).
+func archivedPlanRevision(old PlanState) *PlanRevision {
+	rev := &PlanRevision{Reason: "create reset superseded the previous checked plan"}
+	for _, step := range old.Steps {
+		if len(step.Checks) == 0 {
+			continue
+		}
+		item := fmt.Sprintf("archived step %q (v%d)", step.ID, old.Version)
+		if len(rev.Summary) < maxRevisionSummary {
+			rev.Summary = append(rev.Summary, item)
+		}
+	}
+	return rev
+}
+
 func preserveCheckedPlan(old PlanState, next *PlanState) error {
 	for _, previous := range old.Steps {
 		if len(previous.Checks) == 0 {
@@ -40,7 +56,7 @@ func preserveCheckedPlan(old PlanState, next *PlanState) error {
 		}
 		idx := indexOfStep(next.Steps, previous.ID)
 		if idx < 0 {
-			return fmt.Errorf("plan: create cannot remove or change checked step %q; use revise", previous.ID)
+			return fmt.Errorf("plan: create cannot remove or change checked step %q; use revise (example: {\"verb\":\"revise\",\"operations\":[{\"kind\":\"add\",\"steps\":[{\"id\":\"s4\",\"title\":\"New step\"}]}]}) — retryable: true", previous.ID)
 		}
 		step := &next.Steps[idx]
 		for _, check := range previous.Checks {

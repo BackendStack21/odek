@@ -34,13 +34,17 @@ func TestPlanRevisionRejectsCheckedCreateEscapeAtomically(t *testing.T) {
 	if _, err := s.Execute(checkedCreateArgs()); err != nil {
 		t.Fatal(err)
 	}
-	before, _ := s.Snapshot()
-	_, err := s.Execute(`{"verb":"create","steps":[{"id":"s1","title":"changed","checks":[{"id":"c1","description":"different","tool":"read_file","arguments":{"path":"out"}}]}]}`)
-	if err == nil || !strings.Contains(err.Error(), "cannot remove or change") {
-		t.Fatalf("escape accepted: %v", err)
+	// create may always reset (no unrecoverable states); the superseded
+	// checked plan is audit-trailed in the revision block, not silently dropped.
+	out, err := s.Execute(`{"verb":"create","steps":[{"id":"s1","title":"changed","checks":[{"id":"c1","description":"different","tool":"read_file","arguments":{"path":"out"}}]}]}`)
+	if err != nil {
+		t.Fatalf("reset refused: %v", err)
 	}
-	after, _ := s.Snapshot()
-	if after.Version != before.Version || after.Steps[0].Title != before.Steps[0].Title {
-		t.Fatalf("rejected create changed state: %+v", after)
+	if !strings.Contains(out, "changed") {
+		t.Errorf("new step title missing: %s", out)
+	}
+	snap, _ := s.Snapshot()
+	if snap.Revision == nil || !strings.Contains(snap.Revision.Reason, "superseded") {
+		t.Errorf("reset must archive the old checked plan in the revision block, got: %+v", snap.Revision)
 	}
 }

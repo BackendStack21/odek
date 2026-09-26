@@ -293,11 +293,17 @@ standard built-in interface (`Name`/`Description`/`Schema`/`Call`).
 
 | Verb | Arguments | Effect |
 |------|-----------|--------|
-| `create` | `steps`: full ordered list (1..max_steps) | Replaces the ordered plan. Existing acceptance-check identity cannot be dropped or changed. New steps start `pending`; unchanged checked steps retain progress. Prefer `revise` for incremental changes. |
+| `create` | `steps`: full ordered list (1..max_steps) | Replaces the ordered plan. Unchanged checked steps retain progress and evidence; an incompatible prior checked plan is superseded and archived in the revision block (create may always reset — no unrecoverable states). Prefer `revise` for incremental changes. |
 | `revise` | `reason`, `operations` (≤8) | Applies bounded add/edit/move/split/supersede operations while preserving unaffected progress and evidence. `reason` is required and capped at 240 runes. |
 | `update` | `updates`: array of `{id, status?, note?}` | Batch status/note changes, applied in array order. Atomic: any invalid entry rejects the whole call. |
 | `complete` | `step_id` | Shorthand to mark one step `done`. Highest-frequency operation, one-field cheap. |
+| `check_replace` | `step_id`, `check_id`, `justification`, plus `replacement` or `evidence_note` | Replaces one dead/stale/environment-denied check with a fresh pending one, or marks it satisfied by equivalent verification that ran via other tools. Justification is mandatory and audit-trailed in the revision block. |
 | `get` | — | Returns the current plan (or `"No active plan."`). |
+
+Note on wire compatibility: a check whose tool call was denied by the
+approval gate renders with status `blocked`. Sessions persisted by builds
+that know `blocked` fail to parse on older odek binaries (which reject the
+unknown status); resume such sessions only on equal-or-newer builds.
 
 ### Incremental revisions
 

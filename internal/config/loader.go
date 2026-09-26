@@ -412,6 +412,7 @@ type SubagentConfig struct {
 // field-by-field across the global/project layers.
 type PlanningFileConfig struct {
 	Enabled        *bool `json:"enabled,omitempty"`
+	Remind         *bool `json:"remind,omitempty"`
 	MaxSteps       *int  `json:"max_steps,omitempty"`
 	MaxRenderChars *int  `json:"max_render_chars,omitempty"`
 }
@@ -421,6 +422,10 @@ type PlanningConfig struct {
 	// Enabled is the master switch: false removes the plan tool from the
 	// registry and skips all plan logic.
 	Enabled bool
+	// Remind enables the soft plan reminder (default OFF): after 3
+	// non-plan tool calls without a plan, one bounded hint is injected and
+	// late plans are flagged provisional. Never a hard gate.
+	Remind bool
 	// MaxSteps caps plan(create) size; enforced fail-closed.
 	MaxSteps int
 	// MaxRenderChars caps the rendered plan message; overflow drops the
@@ -439,7 +444,7 @@ const (
 // DefaultPlanningConfig returns the shipped defaults: planning on, 12 steps,
 // 2000-char render cap (~500 estimated tokens at ~4 chars/token).
 func DefaultPlanningConfig() PlanningConfig {
-	return PlanningConfig{Enabled: true, MaxSteps: 12, MaxRenderChars: 2000}
+	return PlanningConfig{Enabled: true, Remind: false, MaxSteps: 12, MaxRenderChars: 2000}
 }
 
 // BackgroundFileConfig is the "background" section of odek.json. Pointer
@@ -2631,6 +2636,9 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 		if cfg.Planning.Enabled != nil {
 			resolved.Planning.Enabled = *cfg.Planning.Enabled
 		}
+		if cfg.Planning.Remind != nil {
+			resolved.Planning.Remind = *cfg.Planning.Remind
+		}
 		if cfg.Planning.MaxSteps != nil {
 			resolved.Planning.MaxSteps = *cfg.Planning.MaxSteps
 		}
@@ -3519,6 +3527,12 @@ func clampProjectPlanning(global, project *PlanningFileConfig) {
 	}
 	project.MaxSteps = clampInt("max_steps", global.MaxSteps, project.MaxSteps)
 	project.MaxRenderChars = clampInt("max_render_chars", global.MaxRenderChars, project.MaxRenderChars)
+	// Remind is soft (a hint, not a gate), but an operator who turned it
+	// off globally should not be re-nagged by a project file.
+	if global.Remind != nil && !*global.Remind && project.Remind != nil && *project.Remind {
+		fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring planning.remind=true from project config (%s) — remind is disabled in ~/.odek/config.json\n", ProjectConfigPath())
+		project.Remind = nil
+	}
 }
 
 // clampProjectBackground enforces the background-section merge rule, the same
