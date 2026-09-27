@@ -60,6 +60,14 @@ const maxBrowserElements = 500
 // history limit cannot be bypassed by a small number of huge pages.
 const maxBrowserSnapshotBytes = 1 * 1024 * 1024
 
+// truncatePageContent caps page text at maxBrowserSnapshotBytes, backing up
+// to a UTF-8 rune boundary so a multibyte character split by the cap never
+// ships U+FFFD mojibake, and appends a truncation marker.
+func truncatePageContent(content string) string {
+	return truncateUTF8Safe(content, maxBrowserSnapshotBytes) +
+		"\n[content truncated: exceeds per-snapshot byte cap]"
+}
+
 // browserState holds the shared state for one browser session.
 type browserState struct {
 	mu      sync.Mutex
@@ -74,6 +82,7 @@ type browserTool struct {
 	ctxTool
 	state           *browserState
 	client          *http.Client
+	initMu          sync.Mutex
 	dangerousConfig danger.DangerousConfig
 	trustedClasses  map[danger.RiskClass]bool
 }
@@ -172,7 +181,9 @@ func (t *browserTool) Call(argsJSON string) (string, error) {
 		return jsonError("action is required (navigate, snapshot, click, back)")
 	}
 
-	// Ensure state and client exist
+	// Ensure state and client exist exactly once under lock — parallel
+	// first calls would otherwise race and build duplicate states.
+	t.initMu.Lock()
 	if t.state == nil {
 		t.state = &browserState{nextRef: 1}
 	}
@@ -183,6 +194,7 @@ func (t *browserTool) Call(argsJSON string) (string, error) {
 			Transport:     ssrfGuardedTransport(),
 		}
 	}
+	t.initMu.Unlock()
 
 	switch args.Action {
 	case "navigate":
@@ -472,8 +484,9 @@ func parseHTML(ctx context.Context, html, pageURL string, status int) browserSna
 
 	snap.Content = strings.Join(contentParts, "\n")
 	if len(snap.Content) > maxBrowserSnapshotBytes {
-		snap.Content = snap.Content[:maxBrowserSnapshotBytes] +
-			"\n[content truncated: exceeds per-snapshot byte cap]"
+		// Back up to a UTF-8 rune boundary so a multibyte character split
+		// by the cap never ships U+FFFD mojibake.
+		snap.Content = truncatePageContent(snap.Content)
 	}
 	snap.Elements = elements
 

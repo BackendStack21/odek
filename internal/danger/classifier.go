@@ -531,7 +531,9 @@ func ClassifyURL(rawURL string) RiskClass {
 		return NetworkEgress // can't parse — don't block, but will fail at fetch time
 	}
 
-	host := u.Hostname()
+	// A trailing-dot FQDN ("169.254.169.254.") resolves to the same host
+	// but would otherwise dodge both the IP and hostname checks.
+	host := strings.TrimSuffix(u.Hostname(), ".")
 
 	// Try as an IP address — uses browser-compatible parsing that handles
 	// decimal (127.0.0.1), octal (0177.0.0.1), hex (0x7f000001),
@@ -893,9 +895,11 @@ func (c *DangerousConfig) ActionForCommand(cmd string) Action {
 			return Allow
 		}
 	}
-	// Denylist is checked before classification — prefix match after trimming.
+	// Denylist is checked before classification — prefix match after
+	// collapsing internal whitespace runs on both sides, so 'git  push'
+	// (double space or tab) cannot bypass a 'git push' denylist entry.
 	for _, pattern := range c.Denylist {
-		if strings.HasPrefix(cmd, strings.TrimSpace(pattern)) {
+		if strings.HasPrefix(normalizeCommandSpacing(cmd), normalizeCommandSpacing(strings.TrimSpace(pattern))) {
 			return Deny
 		}
 	}

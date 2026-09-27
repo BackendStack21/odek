@@ -223,7 +223,7 @@ func (sm *SkillManager) reloadLocked() {
 	// Persist cache for next process invocation.
 	// Only the user dir is cached (global skills); project-level skills
 	// are re-scanned on each project switch.
-	savePersistentCache(sm.UserDir, sm.fileTimes, sm.prevSkills)
+	savePersistentCache(sm.UserDir, sm.ProjectDir, sm.fileTimes, sm.prevSkills)
 
 	// Scan first so flagged auto-load skills are demoted before the
 	// trigger matchers are built.

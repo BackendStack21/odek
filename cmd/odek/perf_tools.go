@@ -269,8 +269,7 @@ func (t *batchPatchTool) Call(argsJSON string) (result string, err error) {
 			continue
 		}
 
-		diff := fmt.Sprintf("--- a/%s\n+++ b/%s\n@@ -1 +1 @@\n-%s\n+%s\n",
-			p.Path, p.Path, truncatePreviewLine(original, 100), truncatePreviewLine(modified, 100))
+		diff := patchPreviewDiff(p.Path, original, modified, p.OldString, p.NewString)
 
 		// Preserve the original file's mode.
 		origMode := os.FileMode(0644)
@@ -344,6 +343,59 @@ func (t *batchPatchTool) Call(argsJSON string) (result string, err error) {
 // truncatePreviewLine shortens one side of a batch_patch preview line to max
 // bytes, backing off to a UTF-8 rune boundary so multibyte content never
 // renders as U+FFFD mojibake in the diff.
+// patchPreviewDiff renders a truthful unified-diff preview of a batch_patch
+// edit: the hunk covers the region around the actual old_string match, so the
+// -/+ lines show the real change even when the match sits far past the file
+// head (a fixed first-N-bytes window renders identical lines for both sides).
+func patchPreviewDiff(path, original, modified, oldString, newString string) string {
+	header := fmt.Sprintf("--- a/%s\n+++ b/%s\n", path, path)
+	const ctxBytes = 30 // context bytes kept on each side of the match
+	offset := strings.Index(original, oldString)
+	if offset < 0 {
+		// Match not found (e.g. preview computed before the check): fall
+		// back to a head preview of both versions.
+		return header + fmt.Sprintf("@@ -1 +1 @@\n-%s\n+%s\n",
+			truncatePreviewLine(original, 100), truncatePreviewLine(modified, 100))
+	}
+	newOffset := strings.Index(modified, newString)
+	if newOffset < 0 {
+		newOffset = offset
+	}
+	start := offset - ctxBytes
+	if start < 0 {
+		start = 0
+	}
+	end := offset + len(oldString) + ctxBytes
+	if end > len(original) {
+		end = len(original)
+	}
+	newStart := newOffset - ctxBytes
+	if newStart < 0 {
+		newStart = 0
+	}
+	newEnd := newOffset + len(newString) + ctxBytes
+	if newEnd > len(modified) {
+		newEnd = len(modified)
+	}
+	startLine := 1 + strings.Count(original[:start], "\n")
+	newStartLine := 1 + strings.Count(modified[:newStart], "\n")
+	var b strings.Builder
+	fmt.Fprintf(&b, "@@ -%d,%d +%d,%d @@\n", startLine, end-start, newStartLine, newEnd-newStart)
+	for _, ln := range strings.SplitAfter(original[start:end], "\n") {
+		if ln == "" {
+			continue
+		}
+		fmt.Fprintf(&b, "-%s\n", strings.TrimSuffix(ln, "\n"))
+	}
+	for _, ln := range strings.SplitAfter(modified[newStart:newEnd], "\n") {
+		if ln == "" {
+			continue
+		}
+		fmt.Fprintf(&b, "+%s\n", strings.TrimSuffix(ln, "\n"))
+	}
+	return header + b.String()
+}
+
 func truncatePreviewLine(s string, max int) string {
 	if len(s) <= max {
 		return s
@@ -1311,8 +1363,15 @@ func (t *multiGrepTool) searchPattern(pattern, root, fileGlob string, limit int)
 	resultBytes := 0
 
 	var skipped []string
+	var rootErr error
 	filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 		if err != nil || info == nil {
+			// Surface a missing/unreadable root instead of returning a
+			// silent count:0 result for a path that was never scanned.
+			if path == root {
+				rootErr = err
+				return err
+			}
 			return nil
 		}
 		if info.IsDir() {
@@ -1398,6 +1457,13 @@ func (t *multiGrepTool) searchPattern(pattern, root, fileGlob string, limit int)
 		return nil
 	})
 
+	rootErrOut := rootErr
+	if rootErrOut != nil {
+		return grepPatternResult{
+			Pattern: pattern,
+			Error:   fmt.Sprintf("cannot walk root %q: %v", root, rootErrOut),
+		}
+	}
 	return grepPatternResult{
 		Pattern: pattern,
 		Matches: matches,

@@ -393,6 +393,10 @@ func New(name string, cfg ServerConfig) (*Client, error) {
 
 	if err := cmd.Start(); err != nil {
 		stdin.Close()
+		// The stdout pipe reader must be released too, or the descriptor
+		// leaks on every failed start. Stderr is inherited (not piped), so
+		// there is nothing to close for it.
+		stdout.Close()
 		return nil, fmt.Errorf("mcpclient %s: start: %w", name, err)
 	}
 

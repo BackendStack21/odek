@@ -176,14 +176,18 @@ func TestSetTrustAll_ApprovesAll(t *testing.T) {
 	// Enable blanket trust
 	a.SetTrustAll(true)
 
-	// Destructive class should auto-approve despite NonInteractive=deny
-	if err := a.PromptCommand(Destructive, "rm -rf /", "dangerous command"); err != nil {
+	// Classes eligible for trust shortcuts auto-approve despite
+	// NonInteractive=deny.
+	if err := a.PromptCommand(SystemWrite, "touch /tmp/x", ""); err != nil {
 		t.Errorf("expected nil with trustAll=true, got: %v", err)
 	}
 
-	// Blocked class should also auto-approve
-	if err := a.PromptCommand(Blocked, "some blocked cmd", ""); err != nil {
-		t.Errorf("expected nil with trustAll=true, got: %v", err)
+	// Excluded classes always prompt, even with trustAll — they never
+	// receive trust shortcuts.
+	for _, cls := range []RiskClass{Destructive, Blocked} {
+		if err := a.PromptCommand(cls, "rm -rf /", "dangerous command"); err == nil {
+			t.Errorf("expected prompt denial for excluded class %s with trustAll=true", cls)
+		}
 	}
 }
 
@@ -194,8 +198,8 @@ func TestSetTrustAll_ThenDisable(t *testing.T) {
 	// Enable blanket trust
 	a.SetTrustAll(true)
 
-	// Should be approved
-	if err := a.PromptCommand(Destructive, "rm -rf /", ""); err != nil {
+	// Should be approved (an eligible class)
+	if err := a.PromptCommand(SystemWrite, "touch /tmp/x", ""); err != nil {
 		t.Errorf("expected nil with trustAll=true, got: %v", err)
 	}
 
@@ -246,17 +250,22 @@ func TestPromptCommand_TrustedClassSkipsTTY(t *testing.T) {
 	a := NewTTYApprover(&DangerousConfig{NonInteractive: strPtr("deny")})
 	a.TTYPath = "/nonexistent/tty-for-test"
 
-	// Trust Destructive class
+	// Destructive never receives trust shortcuts — even a per-class trust
+	// mark cannot skip its prompt.
 	a.SetTrustedClasses(map[RiskClass]bool{Destructive: true})
+	if err := a.PromptCommand(Destructive, "rm -rf /tmp/data", ""); err == nil {
+		t.Error("expected prompt denial for Destructive despite trusted class mark")
+	}
 
-	// Trusted class is checked before TTY → should succeed even with NonInteractive=deny
-	err := a.PromptCommand(Destructive, "rm -rf /tmp/data", "")
+	// A shortcut-eligible trusted class skips the TTY even with deny
+	a.SetTrustedClasses(map[RiskClass]bool{SystemWrite: true})
+	err := a.PromptCommand(SystemWrite, "touch /tmp/data", "")
 	if err != nil {
 		t.Errorf("expected nil for trusted class, got: %v", err)
 	}
 
-	// SystemWrite is NOT trusted → should be denied
-	err = a.PromptCommand(SystemWrite, "touch /etc/config", "")
+	// A class NOT in the trusted set → should be denied
+	err = a.PromptCommand(NetworkEgress, "curl http://example.com", "")
 	if err == nil {
 		t.Fatal("expected error for untrusted class with NonInteractive=deny")
 	}

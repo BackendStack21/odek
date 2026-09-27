@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -177,9 +178,12 @@ func loadPersistentCache(dir string) (fileCache, map[string]Skill) {
 }
 
 // savePersistentCache writes the current fileTimes and prevSkills to disk.
-// Errors are silently ignored — the cache is an optimization, not a
-// correctness requirement. Atomic write via temp file + rename.
-func savePersistentCache(dir string, fc fileCache, prev map[string]Skill) {
+// Entries belonging to skill directories other than the user dir and the
+// active project dir are dropped, so the persisted cache never accumulates
+// entries for deleted or switched-away projects. Errors are silently
+// ignored — the cache is an optimization, not a correctness requirement.
+// Atomic write via temp file + rename.
+func savePersistentCache(dir, projectDir string, fc fileCache, prev map[string]Skill) {
 	if dir == "" {
 		return
 	}
@@ -188,6 +192,13 @@ func savePersistentCache(dir string, fc fileCache, prev map[string]Skill) {
 		Skills:  make(map[string]cachedSkill, len(fc)),
 	}
 	for path, mtime := range fc {
+		if projectDir != "" && strings.HasPrefix(path, projectDir+string(filepath.Separator)) {
+			// keep current project entries
+		} else if strings.HasPrefix(path, dir+string(filepath.Separator)) {
+			// keep user-dir entries
+		} else {
+			continue
+		}
 		if skill, ok := prev[path]; ok {
 			cache.Skills[path] = cachedSkill{
 				MTime: mtime,

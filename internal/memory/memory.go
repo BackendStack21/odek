@@ -793,6 +793,11 @@ func (m *MemoryManager) AddFact(target, content string) error {
 		return fmt.Errorf("memory: disabled")
 	}
 
+	// Normalize once: FactStore stores trimmed content, so merge detection,
+	// dedup, and the corpus must all reason over the trimmed form or padded
+	// duplicates can append phantom corpus entries.
+	content = strings.TrimSpace(content)
+
 	// Serialize the whole read-modify-write across instances sharing this dir.
 	unlock, err := lockFactsDir(m.facts.dir)
 	if err != nil {

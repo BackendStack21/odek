@@ -251,10 +251,12 @@ func (a *TTYApprover) prompt(cls RiskClass, cmd, description string) error {
 // ttyPromptMu. It may recurse for the "context" command or after telling
 // the user that trust-session is unavailable for a high-impact class.
 func (a *TTYApprover) promptLocked(cls RiskClass, cmd, description string) error {
-	// Check session trust cache
+	// Check session trust cache. Trust shortcuts only ever cover classes
+	// TrustShortcutAllowed permits — Destructive, Persistence, UnreadExec,
+	// Blocked, Unknown and ToolBatch always prompt, even with trustAll set.
 	a.mu.Lock()
 	trusted := a.TrustedClasses != nil && a.TrustedClasses[cls]
-	trusted = trusted || a.trustAll
+	trusted = (trusted || a.trustAll) && TrustShortcutAllowed(cls)
 	a.mu.Unlock()
 	if trusted {
 		return nil
@@ -399,6 +401,9 @@ func (a *TTYApprover) promptLocked(cls RiskClass, cmd, description string) error
 			fmt.Fprintf(os.Stderr, "   trust-session not available for %s — type 'a' to approve once or 'd' to deny\n", cls)
 			return a.promptLocked(cls, cmd, description)
 		}
+		// A trust grant is an approval: record it so rapid-fire grants
+		// engage the same approval-fatigue friction as plain approvals.
+		a.recordApproval(cls)
 		// Cache this risk class for the session
 		a.mu.Lock()
 		if a.TrustedClasses != nil {
