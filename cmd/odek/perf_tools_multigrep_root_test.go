@@ -6,8 +6,8 @@ import (
 	"testing"
 )
 
-// A nonexistent walk root previously returned count:0 with no error —
-// the walk's root error was swallowed by the callback.
+// A nonexistent walk root must surface an error, not a silent count:0
+// result for a path that was never scanned.
 func TestMultiGrep_NonexistentRootIsError(t *testing.T) {
 	tool := &multiGrepTool{}
 	out, _ := tool.Call(`{"patterns":["x"],"path":"/nonexistent-dir-xyz-123456"}`)

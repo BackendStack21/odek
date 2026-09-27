@@ -12,12 +12,10 @@ import (
 	"github.com/BackendStack21/go-vector/pkg/vector"
 )
 
-// saveLocked mutates sess.Messages in place (redaction + capacity trim). If
-// the index write fails afterwards, the deferred rollback restored only
-// Revision/Generation — the caller's snapshot stayed trimmed/redacted while
-// the on-disk revision never advanced, so the next Save hit ErrConflict
-// forever. A failed save must leave the caller's Messages untouched.
-func TestRED_FailedIndexSaveRestoresMessages(t *testing.T) {
+// A failed save must leave the caller's snapshot untouched: saveLocked
+// mutates sess.Messages in place, and without a full restore the memory
+// copy stays trimmed/redacted while the on-disk revision never advanced.
+func TestFailedIndexSaveRestoresMessages(t *testing.T) {
 	dir := t.TempDir()
 	store, err := NewStoreWithDir(dir)
 	if err != nil {
@@ -103,7 +101,7 @@ func (b *blockingEmbedder) Fingerprint() string        { return "blocking" }
 func (b *blockingEmbedder) SaveState(path string)      {}
 func (b *blockingEmbedder) LoadState(path string) bool { return false }
 
-func TestRED_SearchEmbedDoesNotBlockAdd(t *testing.T) {
+func TestSearchEmbedDoesNotBlockAdd(t *testing.T) {
 	emb := &blockingEmbedder{
 		release: make(chan struct{}),
 		started: make(chan struct{}),

@@ -24,7 +24,7 @@ import (
 // *websocket.Conn — which is not concurrency-safe. The dead state must be
 // sticky: the same state pointer must come back and every later write must
 // fast-fail.
-func TestRED_WriteTimeoutDeadConnStaysDead(t *testing.T) {
+func TestWriteTimeoutDeadConnStaysDead(t *testing.T) {
 	old := wsWriteTimeout.Load()
 	wsWriteTimeout.Store(int64(150 * time.Millisecond))
 	t.Cleanup(func() { wsWriteTimeout.Store(old) })
@@ -143,9 +143,7 @@ func (p *wsPipe) bytesWritten() int {
 // validateSessionTokenStrict must compare BEFORE any mint+persist: with an
 // empty stored token, an unauthenticated probe (wrong token, DELETE) must get
 // a plain 401 and the session file on disk must be byte-for-byte unchanged.
-// Minting-and-saving on every probe rewrote the legacy file and rotated the
-// token under attacker control.
-func TestRED_TokenProbeDoesNotRewriteLegacySession(t *testing.T) {
+func TestTokenProbeDoesNotRewriteLegacySession(t *testing.T) {
 	dir := t.TempDir()
 	store, err := session.NewStoreWithDir(dir)
 	if err != nil {

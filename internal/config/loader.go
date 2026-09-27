@@ -1075,9 +1075,9 @@ func expandEnv(s string) string {
 		i = j + 1
 
 		if name == "" {
-			// $ followed by non-identifier: emit the '$' verbatim. The
-			// following byte is NOT consumed — eating it silently corrupted
-			// config values ("cost: $ 5" → "cost: $5", "$9.99" → "$.99").
+			// $ followed by non-identifier: emit the '$' verbatim and do
+			// NOT consume the following byte — "$ 5", "$9.99" and "$?"
+			// must survive expansion byte-for-byte.
 			buf.WriteByte('$')
 			continue
 		}

@@ -81,10 +81,10 @@ type Envelope struct {
 // claim the payload must back up.
 func ParseEnvelope(text string) (*Envelope, error) {
 	trimmed := strings.TrimSpace(text)
-	// A UTF-8 BOM in front of the envelope JSON made the '{' probe miss and
-	// the whole envelope fall through as "plain text" — the raw JSON with
-	// file:// refs then reached the model without artifact-root validation.
-	// Strip the BOM so an envelope is detected wherever tooling adds one.
+	// Strip a UTF-8 BOM: some tooling (including MCP servers) prepends one,
+	// and a BOM would make the '{' probe miss so the raw envelope JSON with
+	// file:// refs reaches the model as "plain text" without artifact-root
+	// validation.
 	trimmed = strings.TrimPrefix(trimmed, "\uFEFF")
 	if len(trimmed) == 0 || trimmed[0] != '{' {
 		return nil, nil

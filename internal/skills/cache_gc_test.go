@@ -8,8 +8,8 @@ import (
 	"time"
 )
 
-// Persisted cache entries for other projects' skill dirs accumulated
-// forever — save must keep only user-dir entries plus the current project.
+// Save must keep only user-dir entries plus the current project's skill
+// dir; entries for other projects are dropped.
 func TestSavePersistentCache_DropsOtherProjectEntries(t *testing.T) {
 	userDir := t.TempDir()
 	projectA := filepath.Join(t.TempDir(), "project-a")

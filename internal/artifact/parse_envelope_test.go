@@ -6,12 +6,9 @@ import (
 	"testing"
 )
 
-// An MCP server that prepends a UTF-8 BOM (or other tooling that does)
-// produces envelope text whose first byte is not '{' — ParseEnvelope used to
-// return (nil, nil) ("plain text"), and the mcpclient then delivered the raw
-// envelope JSON with file:// refs to the model without any artifact-root
-// validation. A BOM-prefixed envelope must parse like any other.
-func TestRED_ParseEnvelopeToleratesBOM(t *testing.T) {
+// A UTF-8 BOM before the envelope JSON must not turn the envelope into
+// "plain text": envelopes parse regardless of a leading BOM.
+func TestParseEnvelopeToleratesBOM(t *testing.T) {
 	env := &Envelope{Schema: SchemaToolResult, Text: "hello"}
 	raw, err := json.Marshal(env)
 	if err != nil {
@@ -23,7 +20,7 @@ func TestRED_ParseEnvelopeToleratesBOM(t *testing.T) {
 		t.Fatalf("BOM-prefixed envelope must parse, got error: %v", err)
 	}
 	if got == nil {
-		t.Fatal("BOM-prefixed envelope was treated as plain text (nil, nil) — fail-open for envelope JSON with file:// refs")
+		t.Fatal("BOM-prefixed envelope was treated as plain text (nil, nil) instead of parsing")
 	}
 	if got.Text != "hello" {
 		t.Fatalf("unexpected text: %q", got.Text)
@@ -32,7 +29,7 @@ func TestRED_ParseEnvelopeToleratesBOM(t *testing.T) {
 
 // Junk-prefixed text is still plain text, but text that merely has the
 // schema marker inside must not be misparsed either way.
-func TestRED_ParseEnvelopeJunkPrefixStaysPlain(t *testing.T) {
+func TestParseEnvelopeJunkPrefixStaysPlain(t *testing.T) {
 	env := &Envelope{Schema: SchemaToolResult, Text: "hi"}
 	raw, _ := json.Marshal(env)
 	got, err := ParseEnvelope("note: " + string(raw))

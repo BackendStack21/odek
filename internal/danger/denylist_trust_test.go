@@ -4,9 +4,8 @@ import (
 	"testing"
 )
 
-// Denylist prefix matching trimmed only the edges; internal whitespace runs
-// ('git<space><space>push', 'git\t push') bypassed a 'git push' denylist
-// entry and fell through to the class-based action.
+// Internal whitespace runs collapse to single spaces, so 'git  push' and
+// 'git\t push' still match the 'git push' denylist entry.
 func TestActionForCommand_DenylistInternalWhitespace(t *testing.T) {
 	cfg := DangerousConfig{
 		Classes:  map[RiskClass]Action{NetworkEgress: Allow},
@@ -19,9 +18,9 @@ func TestActionForCommand_DenylistInternalWhitespace(t *testing.T) {
 	}
 }
 
-// SetTrustAll previously short-circuited promptLocked for every class,
-// including the classes TrustShortcutAllowed explicitly excludes
-// (UnreadExec, Persistence, Destructive, Blocked, Unknown, ToolBatch).
+// SetTrustAll skips prompts only for classes TrustShortcutAllowed permits;
+// UnreadExec, Persistence, Destructive, Blocked, Unknown and ToolBatch
+// always prompt.
 func TestTrustAll_DoesNotSkipExcludedClasses(t *testing.T) {
 	a := NewTTYApprover(&DangerousConfig{})
 	a.TTYPath = "/nonexistent-tty-for-test"
