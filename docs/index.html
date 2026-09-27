@@ -69,7 +69,7 @@
       "name": "How do I install odek?",
       "acceptedAnswer": {
         "@type": "Answer",
-        "text": "Run: curl -fsSL https://odek.21no.de/install.sh | sh — it downloads the Linux or macOS binary, verifies the SHA-256 against the release checksums.txt, and installs to ~/.local/bin. Do not use go install …@latest — Go ignores v2 tags for this module path and would install an older v1 release. To build from source, clone the latest release tag and go install with -ldflags that pin that tag."
+        "text": "Run: curl -fsSL https://odek.21no.de/install.sh | sh — it downloads the Linux or macOS binary, verifies the SHA-256 against the release checksums.txt, and installs to /usr/local/bin (or ~/.local/bin when /usr/local/bin is not writable). Do not use go install …@latest — Go ignores v2 tags for this module path and would install an older v1 release. To build from source, clone the latest release tag and go install with -ldflags that pin that tag."
       }
     },
     {
@@ -243,7 +243,7 @@
               </td>
             </tr>
             <tr>
-              <td>Go ≥ 1.25.13</td>
+              <td>Go ≥ 1.27</td>
               <td>Only if you build from source. Not needed for the prebuilt binary.</td>
             </tr>
             <tr>
