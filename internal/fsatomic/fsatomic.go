@@ -66,11 +66,16 @@ func WriteFile(path string, data []byte, perm os.FileMode) (err error) {
 	tmp = "" // renamed — no longer ours to remove
 
 	// Make the rename itself durable by fsyncing the parent directory.
-	if d, derr := os.Open(dir); derr == nil {
-		defer d.Close()
-		if err := d.Sync(); err != nil {
-			return fmt.Errorf("fsatomic: fsync dir: %w", err)
-		}
+	// A failure to open the directory means durability cannot be
+	// guaranteed for the rename — report it instead of silently
+	// returning success.
+	d, derr := os.Open(dir)
+	if derr != nil {
+		return fmt.Errorf("fsatomic: open dir: %w", derr)
+	}
+	defer d.Close()
+	if err := d.Sync(); err != nil {
+		return fmt.Errorf("fsatomic: fsync dir: %w", err)
 	}
 	return nil
 }

@@ -182,7 +182,10 @@ func (a *wsApprover) PromptCommand(cls danger.RiskClass, cmd, description string
 	// the map write below (or SetTrustAll) is a data race that can fatally
 	// crash serve with "concurrent map read and map write".
 	a.mu.Lock()
-	trusted := a.approveAll[cls] || a.trustAll
+	// Trust-all honors the same class gate as the per-class trust shortcut:
+	// destructive/blocked/unknown prompts always need a real user decision,
+	// even after a blanket trust grant from an earlier benign batch.
+	trusted := a.approveAll[cls] || (a.trustAll && danger.TrustShortcutAllowed(cls))
 	a.mu.Unlock()
 	if trusted {
 		return nil
@@ -275,6 +278,10 @@ func (a *wsApprover) PromptCommand(cls danger.RiskClass, cmd, description string
 			a.mu.Lock()
 			a.approveAll[cls] = true
 			a.mu.Unlock()
+			// Trust grants count toward approval friction, same as the TTY
+			// path — otherwise reflexive trust-tapping never trips the
+			// fatigue guard on the WebUI.
+			a.recordApproval(cls)
 			return nil
 		default:
 			return fmt.Errorf("operation denied by user: %s", cmd)

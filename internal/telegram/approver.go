@@ -169,9 +169,11 @@ func allowTrustForClass(cls danger.RiskClass) bool {
 }
 
 func (a *TelegramApprover) PromptCommand(cls danger.RiskClass, cmd, description string) error {
-	// Check session trust cache
+	// Check session trust cache. Trust-all is gated by the same class rule
+	// as the per-class trust shortcut: destructive/blocked/unknown prompts
+	// always require an explicit user decision.
 	a.mu.Lock()
-	if a.trusted[cls] || a.trustAll {
+	if a.trusted[cls] || (a.trustAll && danger.TrustShortcutAllowed(cls)) {
 		a.mu.Unlock()
 		return nil
 	}
@@ -222,19 +224,26 @@ func (a *TelegramApprover) PromptCommand(cls danger.RiskClass, cmd, description 
 	}
 	markup := InlineKeyboardMarkup{InlineKeyboard: keyboard}
 
-	msg, err := a.bot.SendMessage(a.ChatID, text, &SendOpts{
-		ParseMode:   ParseModeMarkdownV2,
-		ReplyMarkup: &markup,
-	})
-	if err != nil {
-		return fmt.Errorf("telegram approver: send prompt: %w", err)
-	}
-
-	// Register the pending request with message ID and originating user.
-	pr := &pendingRequest{resp: make(chan string, 1), messageID: msg.ID, userID: a.userID, class: cls, allowTrust: allowTrust}
+	// Register the pending request BEFORE sending so a fast tap racing the
+	// SendMessage round-trip is not silently dropped (the callback used to
+	// find no pending entry yet, acknowledge with a toast, and the approval
+	// then timed out despite the user having acted).
+	pr := &pendingRequest{resp: make(chan string, 1), userID: a.userID, class: cls, allowTrust: allowTrust}
 	a.mu.Lock()
 	a.pending[id] = pr
 	a.mu.Unlock()
+
+	if msg, err := a.bot.SendMessage(a.ChatID, text, &SendOpts{
+		ParseMode:   ParseModeMarkdownV2,
+		ReplyMarkup: &markup,
+	}); err != nil {
+		a.mu.Lock()
+		delete(a.pending, id)
+		a.mu.Unlock()
+		return fmt.Errorf("telegram approver: send prompt: %w", err)
+	} else {
+		pr.messageID = msg.ID
+	}
 
 	defer func() {
 		a.mu.Lock()
@@ -345,7 +354,15 @@ func (a *TelegramApprover) HandleCallback(data string, userID int64) bool {
 		if pr.userID != 0 && pr.userID != userID {
 			return true
 		}
-		pr.resp <- action
+		// Non-blocking send: the buffered channel has a single-shot reader.
+		// A duplicate callback (double-tap, Telegram retry) arriving after
+		// the reader consumed the action must not block HandleCallback —
+		// it runs on the serialized update loop, so a blocking send would
+		// freeze the whole bot for every chat.
+		select {
+		case pr.resp <- action:
+		default:
+		}
 	}
 
 	return true
