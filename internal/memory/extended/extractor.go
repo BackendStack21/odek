@@ -78,27 +78,34 @@ var qualityRules = []struct {
 	re   *regexp.Regexp
 }{
 	{"session_id", regexp.MustCompile(`\bsession\s+[0-9]{8}-[0-9a-f]{4,}`)},
-	{"turn_number", regexp.MustCompile(`\bturn\s+[0-9]{1,3}\b`)},
+	{"turn_number", regexp.MustCompile(`\bturn\s+[0-9]{1,3}\s*[,)]`)},
 	{"pr_number", regexp.MustCompile(`(?i)\bpr\s+#[0-9]{1,6}\b`)},
-	{"commit_hash", regexp.MustCompile(`\b[0-9a-f]{7,40}\b.*\b(?:merged|commit|squash)`)},
-	{"commit_hash_merged", regexp.MustCompile(`\b(?:merged|squash-merged|commit)\s+(?:as\s+)?[0-9a-f]{7,40}\b`)},
+	{"commit_hash", regexp.MustCompile(`\b[0-9a-f]*[0-9][0-9a-f]{6,39}\b.*\b(?:merged|commit|squash)`)},
+	{"commit_hash_merged", regexp.MustCompile(`\b(?:merged|squash-merged|commit)\s+(?:as\s+)?[0-9a-f]*[0-9][0-9a-f]{6,39}\b`)},
 	{"version_tag", regexp.MustCompile(`(?i)\b(?:version\s+)?tag\s+(?:is\s+|v)?[0-9]+\.[0-9]+`)},
 	{"version_release", regexp.MustCompile(`\brelease\s+v?[0-9]+\.[0-9]+`)},
+	{"semver", regexp.MustCompile(`\bv[0-9]+\.[0-9]+\.[0-9]+\b`)},
 	{"pending_review_ref", regexp.MustCompile(`pending_review`)},
 	{"already_stored", regexp.MustCompile(`(?i)already stored`)},
 }
 
-// qualityViolation reports whether atom text violates the extractor
-// quality contract (provenance-in-text, release ephemera, or
-// self-referential bookkeeping). It is the mechanism behind the prompt's
-// negative examples: the prompt nudges the model, this filter enforces.
-func qualityViolation(text string) bool {
+// qualityViolation reports which rule (if any) an atom's text violates.
+// The returned rule name makes drops reviewable in logs.
+func qualityViolationRule(text string) (string, bool) {
 	for _, r := range qualityRules {
 		if r.re.MatchString(text) {
-			return true
+			return r.name, true
 		}
 	}
-	return false
+	return "", false
+}
+
+// qualityViolation reports whether atom text violates the extractor
+// quality contract (provenance-in-text, release ephemera, or
+// self-referential bookkeeping).
+func qualityViolation(text string) bool {
+	_, ok := qualityViolationRule(text)
+	return ok
 }
 
 // untrustedRe matches nonce'd untrusted content wrappers so they can be
@@ -298,8 +305,8 @@ func (e *Extractor) Extract(ctx context.Context, text string) ([]MemoryAtom, err
 		}
 		// Quality contract: drop atoms whose text embeds provenance or
 		// release ephemera. The prompt nudges; this filter enforces.
-		if qualityViolation(txt) {
-			log.Printf("extended memory: dropped atom violating quality contract: %.80s", txt)
+		if rule, bad := qualityViolationRule(txt); bad {
+			log.Printf("extended memory: dropped atom violating quality contract (rule %s): %.80s", rule, txt)
 			continue
 		}
 		typ := r.Type

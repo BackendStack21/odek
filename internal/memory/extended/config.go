@@ -146,6 +146,9 @@ func Resolve(cfg Config) Config {
 	if cfg.QuarantineTTLDays > 0 {
 		def.QuarantineTTLDays = cfg.QuarantineTTLDays
 	}
+	if cfg.EphemeralTTLDays > 0 {
+		def.EphemeralTTLDays = cfg.EphemeralTTLDays
+	}
 	if cfg.EvictionPolicy != "" {
 		def.EvictionPolicy = cfg.EvictionPolicy
 	}

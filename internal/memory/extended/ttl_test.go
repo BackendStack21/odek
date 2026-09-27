@@ -28,6 +28,7 @@ func TestAtomExpired(t *testing.T) {
 		{"old decision", MemoryAtom{Type: TypeDecision, CreatedAt: old}, false},
 		{"pinned error", MemoryAtom{Type: TypeError, CreatedAt: old, Pin: true}, false},
 		{"fresh error", MemoryAtom{Type: TypeError, CreatedAt: now}, false},
+		{"zero created_at legacy", MemoryAtom{Type: TypeError}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

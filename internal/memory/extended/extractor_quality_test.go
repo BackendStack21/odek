@@ -17,13 +17,16 @@ func TestQualityViolationDetectsProvenanceInText(t *testing.T) {
 		want bool
 	}{
 		{"session id", "User confirmed merge in session 20260918-3e4cb01f", true},
-		{"turn number", "User said merge after CI (turn 3)", true},
-		{"turn number bare", "decided at turn 12", true},
+		{"turn number parenthetical", "User said merge after CI (turn 3)", true},
+		{"turn number comma", "decided, at turn 12, to proceed", true},
+		{"turn prose not provenance", "per turn 100 requests are allowed", false},
 		{"pr number", "PR #45 was merged", true},
 		{"pr number lowercase", "pr #45 was merged", true},
 		{"commit hash", "squash-merged as 768d380 on main", true},
 		{"version tag", "the correct version tag is 1.14.8", true},
 		{"version tag v prefix", "release v1.42.3 shipped", true},
+		{"semver bare", "shipped v1.42.1 yesterday", true},
+		{"go version not a tag", "User works with Go 1.24", false},
 		{"pending_review self-reference", "consume/resolve pending_review entries 555af9bf", true},
 		{"already stored restatement", "already stored, no change: user prefers concise answers", true},
 
