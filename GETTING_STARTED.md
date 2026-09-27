@@ -12,40 +12,28 @@ odek is a single static Go binary (<15 MB, instant startup). No Python, no Node,
 |---|---|
 | macOS or Linux | Prebuilt binaries, amd64 & arm64. Windows: build from source with Go |
 | A z.ai API key | From the [GLM Coding Plan](https://z.ai/subscribe) subscription or pay-as-you-go. Create/manage keys at [z.ai Open Platform](https://z.ai/manage-apikey/apikey-list) |
-| Go ≥ 1.25.13 | *Only* if installing from source. Not needed for prebuilt binaries |
+| Go ≥ 1.27 | *Only* if installing from source. Not needed for prebuilt binaries |
 | Docker | *Optional* — enables the default-on sandbox. Skip it with `ODEK_NO_SANDBOX=1` (see [Step 4](#4-sandbox-docker-optional)) |
 
 ---
 
 ## 1. Install odek
 
-**From a release tag using source** (requires Go and Git):
-
-```bash
-TAG=$(git ls-remote --tags --sort=-v:refname \
-  https://github.com/BackendStack21/odek.git \
-  | awk '!/\^\{\}$/ {sub("refs/tags/", "", $2); print $2; exit}')
-TMP=$(mktemp -d)
-git clone --depth 1 --branch "${TAG}" \
-  https://github.com/BackendStack21/odek.git "${TMP}/odek"
-(cd "${TMP}/odek" && go install -ldflags "-X main.version=${TAG}" ./cmd/odek)
-rm -rf "${TMP}"
-export PATH="$(go env GOPATH)/bin:$PATH"
-```
-
-Do not use `go install …@latest`: Go ignores v2 tags for this repository's
-historical v1 module path and would install an older v1 release.
-
-**Or grab a prebuilt binary** — one line (verifies SHA-256, installs to
-`~/.local/bin` or `/usr/local/bin`):
+**One line** — downloads the Linux or macOS (amd64 & arm64) binary, verifies
+the SHA-256 against the release `checksums.txt`, and installs to
+`/usr/local/bin` (or `~/.local/bin` when `/usr/local/bin` is not writable):
 
 ```bash
 curl -fsSL https://odek.21no.de/install.sh | sh
 ```
 
-Prefer manual steps? Binaries for Linux and macOS (amd64 & arm64) plus a
-`checksums.txt` for verification live on the
-[releases page](https://github.com/BackendStack21/odek/releases):
+Later, `odek upgrade` self-updates from GitHub Releases the same way
+(SHA-256 verified). The script is
+[readable here](https://github.com/BackendStack21/odek/blob/main/docs/install.sh)
+— pipe-to-sh should always be a choice, not a habit.
+
+**Prefer manual steps?** Binaries plus a `checksums.txt` for verification
+live on the [releases page](https://github.com/BackendStack21/odek/releases):
 
 ```bash
 OS=$(uname -s | tr '[:upper:]' '[:lower:]')
@@ -73,8 +61,23 @@ Verify:
 odek version
 ```
 
-Later: `odek upgrade` self-updates from GitHub Releases (SHA-256 verified) —
-see [Keeping things up to date](#keeping-things-up-to-date).
+**Building from source instead** (requires Go ≥ 1.27 and Git) — clone the
+latest release tag and install with the version pinned:
+
+```bash
+TAG=$(git ls-remote --tags --sort=-v:refname \
+  https://github.com/BackendStack21/odek.git \
+  | awk '!/\^\{\}$/ {sub("refs/tags/", "", $2); print $2; exit}')
+TMP=$(mktemp -d)
+git clone --depth 1 --branch "${TAG}" \
+  https://github.com/BackendStack21/odek.git "${TMP}/odek"
+(cd "${TMP}/odek" && go install -ldflags "-X main.version=${TAG}" ./cmd/odek)
+rm -rf "${TMP}"
+export PATH="$(go env GOPATH)/bin:$PATH"
+```
+
+Do not use `go install …@latest`: Go ignores v2 tags for this repository's
+historical v1 module path and would install an older v1 release.
 
 ---
 
