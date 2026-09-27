@@ -594,6 +594,7 @@ The `memory` section controls the persistent memory system (see [docs/MEMORY.md]
       "memory_budget_chars": 2000,
       "decay_half_life_days": 30,
       "quarantine_ttl_days": 7,
+      "ephemeral_ttl_days": 14,
       "eviction_policy": "retention_decay",
       "predictive_intents": 3,
       "auto_extract_per_turn": true,
@@ -630,6 +631,7 @@ The `memory` section controls the persistent memory system (see [docs/MEMORY.md]
 | `memory_budget_chars` | `2000` | `ODEK_MEMORY_EXTENDED_MEMORY_BUDGET_CHARS` | `--memory-extended-memory-budget-chars` | Maximum injected Extended Memory context per turn. |
 | `decay_half_life_days` | `30` | — | — | Days until an atom's recall/eviction weight halves. |
 | `quarantine_ttl_days` | `7` | — | — | Days before a tainted atom is auto-deleted from quarantine. |
+| `ephemeral_ttl_days` | `14` | — | — | Days before ephemeral-class atoms (intent, goal, error, question, file) stop being recalled. Durable classes (preference, convention, fact, decision) never expire via TTL; pinned atoms are exempt. |
 | `eviction_policy` | `"retention_decay"` | — | — | Eviction algorithm. `"retention_decay"` is the only supported value. |
 | `predictive_intents` | `3` | — | — | Reserved for future predictive-intent recall. Currently accepted but ignored. |
 | `auto_extract_per_turn` | `true` | — | — | Extract atoms after every user message. |

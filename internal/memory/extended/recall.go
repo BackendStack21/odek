@@ -85,6 +85,7 @@ func (r *Recall) Query(ctx context.Context, query string, recent []string, state
 		log.Printf("extended memory: recall query failed: %v", err)
 		return "", err
 	}
+	res = filterExpiredAtoms(res, r.cfg.EphemeralTTLDays)
 	if len(res) == 0 {
 		return "", nil
 	}
