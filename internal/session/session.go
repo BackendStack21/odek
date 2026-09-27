@@ -595,8 +595,12 @@ func (s *Store) saveLocked(sess *Session) (err error) {
 	// ErrConflict forever with unsaved turns. Snapshot everything the
 	// mutation touches and restore it on any error return.
 	var (
-		snapshotTask       = sess.Task
-		snapshotMessages   = sess.Messages
+		snapshotTask = sess.Task
+		// Element copy, not a header copy: trimToFileCapLocked compacts the
+		// slice IN PLACE, which would corrupt the shared backing array under
+		// a header-copy snapshot and restore shifted/garbled contents after
+		// a failed post-trim save.
+		snapshotMessages   = append([]Message(nil), sess.Messages...)
 		snapshotBoundary   = sess.RedactBoundary
 		snapshotBoundaryFP = sess.RedactBoundaryFP
 	)

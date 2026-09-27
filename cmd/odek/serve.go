@@ -2805,8 +2805,13 @@ func connWriter(conn *golangws.Conn) *connWriteState {
 // write may still be blocked inside the conn; deleting the entry lets the
 // next connWriter create fresh live state and issue a concurrent Send on a
 // *golangws.Conn that is not concurrency-safe — interleaved torn frames.
-// States are tiny and keyed per connection, so retaining them for the
-// process lifetime is bounded by distinct connections served.
+// To keep long-lived serve processes from growing without bound, a sweep
+// kicks in past wsWriterStatesCap: dead entries not currently held by a
+// parked sender (mutex acquirable) are dropped. A dropped conn pointer can
+// only reappear via a writeWSJSON on the already-closed conn, which mints
+// fresh state whose Send fails immediately on the closed socket — harmless.
+const wsWriterStatesCap = 4096
+
 func releaseConnWriter(conn *golangws.Conn) {
 	if v, ok := wsConnWriters.Load(conn); ok {
 		w := v.(*connWriteState)
@@ -2814,6 +2819,25 @@ func releaseConnWriter(conn *golangws.Conn) {
 		w.dead = true
 		w.mu.Unlock()
 	}
+	sweepConnWriters()
+}
+
+func sweepConnWriters() {
+	n := 0
+	wsConnWriters.Range(func(_, _ any) bool { n++; return n <= wsWriterStatesCap+1 })
+	if n <= wsWriterStatesCap {
+		return
+	}
+	wsConnWriters.Range(func(k, v any) bool {
+		w := v.(*connWriteState)
+		if w.mu.TryLock() {
+			if w.dead {
+				wsConnWriters.Delete(k)
+			}
+			w.mu.Unlock()
+		}
+		return true
+	})
 }
 
 func writeWSJSON(conn *golangws.Conn, data any) {

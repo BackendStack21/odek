@@ -323,7 +323,9 @@ func sensitiveName(name string) bool {
 		return r
 	}, name))
 	for _, word := range []string{"APIKEY", "TOKEN", "SECRET", "PASSWORD", "PASSWD", "CREDENTIAL", "CREDENTIALS", "PRIVATEKEY", "ACCESSKEY", "SECRETKEY"} {
-		if len(fused) > len(word) && strings.HasSuffix(fused, word) {
+		// >= so a bare PASSWORD/TOKEN/SECRET env name is sensitive too;
+		// over-matching only over-redacts, which is the safe direction.
+		if len(fused) >= len(word) && strings.HasSuffix(fused, word) {
 			return true
 		}
 	}
