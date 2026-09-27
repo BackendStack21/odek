@@ -42,10 +42,10 @@ type SkillManager struct {
 	Notifier      SkillNotifier  // receives skill lifecycle events
 	mu            sync.RWMutex
 
-	// Skills file cache — tracks mod times and pre-parsed skills to avoid
-	// re-reading unchanged SKILL.md files on Reload().
-	fileTimes  fileCache        // path → last-known mod time
-	prevSkills map[string]Skill // path → cached parsed skill
+	// Skills file cache — tracks mod times and pre-parsed, hash-anchored
+	// skills to avoid re-parsing unchanged SKILL.md files on Reload().
+	fileTimes  fileCache   // path → last-known mod time
+	prevSkills skillCache  // path → cached parsed skill (content-hash anchored)
 	dirty      bool             // true after explicit mutation — bypasses cache on Reload
 
 	// embeddingCfg optionally selects a remote (HTTP) embedding backend for
@@ -213,7 +213,7 @@ func (sm *SkillManager) reloadLocked() {
 		// to avoid stale results from sub-second mtime granularity.
 		sm.Result = ScanDirs(sm.ProjectDir, sm.UserDir, extraDirs)
 		sm.fileTimes = make(fileCache)
-		sm.prevSkills = make(map[string]Skill)
+		sm.prevSkills = make(skillCache)
 		clearPersistentCache(sm.UserDir)
 		sm.dirty = false
 	} else {

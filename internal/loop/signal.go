@@ -54,11 +54,11 @@ type SignalHandler func(event SignalEvent)
 // are not guaranteed to be thread-safe. The contract only requires handlers
 // to be non-blocking, never concurrent-safe.
 func (e *Engine) emitSignal(ev SignalEvent) {
+	e.signalMu.Lock()
+	defer e.signalMu.Unlock()
 	if e.signalHandler == nil {
 		return
 	}
-	e.signalMu.Lock()
-	defer e.signalMu.Unlock()
 	if ev.Timestamp.IsZero() {
 		ev.Timestamp = time.Now().UTC()
 	}
@@ -66,5 +66,10 @@ func (e *Engine) emitSignal(ev SignalEvent) {
 }
 
 // SetSignalHandler sets the optional agent-loop signal callback. Passing nil
-// disables signal emission.
-func (e *Engine) SetSignalHandler(cb SignalHandler) { e.signalHandler = cb }
+// disables signal emission. The write is synchronized with emitSignal so
+// concurrent heartbeat goroutines never race on the handler field.
+func (e *Engine) SetSignalHandler(cb SignalHandler) {
+	e.signalMu.Lock()
+	defer e.signalMu.Unlock()
+	e.signalHandler = cb
+}

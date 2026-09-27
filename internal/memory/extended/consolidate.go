@@ -147,7 +147,8 @@ func (em *ExtendedMemory) mergeGroup(ctx context.Context, group []MemoryAtom) bo
 	// Validation passed: remove the originals, then store the merged atom
 	// through the normal add path so the size cap applies. Removing first
 	// also prevents semantic dedup from collapsing the merged atom back
-	// into one of its originals.
+	// into one of its originals. If storing fails for any reason, the
+	// originals are restored verbatim so the group is never lost.
 	for _, a := range group {
 		if err := em.store.Remove(a.ID); err != nil {
 			log.Printf("extended memory: consolidate remove original %s: %v", a.ID, err)
@@ -156,6 +157,12 @@ func (em *ExtendedMemory) mergeGroup(ctx context.Context, group []MemoryAtom) bo
 	}
 	if err := em.addAtoms(ctx, []MemoryAtom{merged}, false); err != nil {
 		log.Printf("extended memory: consolidate store merged atom: %v", err)
+		for _, a := range group {
+			if rerr := em.store.Add(a, em.cfg.AtomMaxChars); rerr != nil {
+				log.Printf("extended memory: consolidate rollback of original %s: %v", a.ID, rerr)
+			}
+		}
+		em.index.markDirty()
 		return false
 	}
 	_ = em.assoc.Persist()

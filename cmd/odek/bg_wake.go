@@ -374,10 +374,14 @@ func (wsWakeRouter) State(sessionID string) wakeConnState {
 // Post delivers the wake item to an idle bound connection's slot.
 func (wsWakeRouter) Post(sessionID string, item wsClientMsg) bool {
 	for _, c := range wsConnsForSession(sessionID) {
-		if c.isBusy() || c.wakeSlot == nil {
+		if c.isBusy() {
 			continue
 		}
-		if c.wakeSlot.post(item) {
+		slot, _ := c.wakeTarget()
+		if slot == nil {
+			continue
+		}
+		if slot.post(item) {
 			// Tell the client the agent is waking for this session so it
 			// can render progress without polling /api/jobs.
 			if c.conn != nil {

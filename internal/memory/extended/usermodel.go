@@ -397,8 +397,11 @@ func (u *UserModel) applyDiff(ctx context.Context, diff userStateDiff) error {
 	var unlock func()
 	if u.store != nil {
 		// Serialize the whole read-modify-write with other processes (CLI
-		// confirm/reject) and sync the pending queue from disk first, so this
-		// process's save cannot resurrect entries another process removed.
+		// confirm/reject) and sync the full state from disk first, so this
+		// process's save cannot resurrect entries another process removed
+		// OR clobber style/focus/interaction sections another process just
+		// persisted (applyDiff saves the entire state, so it must start
+		// from the on-disk truth, not from this process's stale copy).
 		var err error
 		unlock, err = u.store.WithLock()
 		if err != nil {
@@ -406,7 +409,9 @@ func (u *UserModel) applyDiff(ctx context.Context, diff userStateDiff) error {
 		}
 		defer unlock()
 		if disk, err := u.store.Load(); err == nil {
-			u.state.PendingReview = disk.PendingReview
+			u.state = disk
+		} else {
+			log.Printf("extended memory: user model disk load failed, applying diff to in-memory state: %v", err)
 		}
 	}
 

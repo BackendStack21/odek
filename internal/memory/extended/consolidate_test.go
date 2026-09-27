@@ -3,6 +3,7 @@ package extended
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -175,6 +176,38 @@ func TestConsolidateAtomsSkipsQuarantine(t *testing.T) {
 	}
 	if q, _ := em.ListQuarantine(); len(q) != 1 {
 		t.Errorf("expected quarantined atom untouched, got %d", len(q))
+	}
+}
+
+// TestConsolidateAtomsKeepsOriginalsWhenStoreFails verifies that a failure
+// to persist the merged atom never loses the group: if the store rejects the
+// merged atom (cap enforcement with nothing evictable), the originals must
+// remain in the live store.
+func TestConsolidateAtomsKeepsOriginalsWhenStoreFails(t *testing.T) {
+	// The merged text is large enough that enforcing a 1 KiB cap fails even
+	// on an otherwise empty store.
+	llm := newMockLLM(strings.Repeat("User prefers Go for backend services and tools ", 60))
+	em := newConsolidationEM(t, llm)
+	for _, a := range []MemoryAtom{
+		{Text: "User prefers Go for backend services", SourceClass: SourceUserSaid},
+		{Text: "User prefers Go for backend services and tools", SourceClass: SourceUserSaid},
+	} {
+		if err := em.AddAtom(context.Background(), a); err != nil {
+			t.Fatal(err)
+		}
+	}
+	em.testCapBytes = 1024
+
+	merged, err := em.ConsolidateAtoms(context.Background())
+	if err != nil {
+		t.Fatalf("ConsolidateAtoms failed: %v", err)
+	}
+	if merged != 0 {
+		t.Errorf("expected 0 merges when the merged atom cannot be stored, got %d", merged)
+	}
+	atoms, _ := em.List()
+	if len(atoms) != 2 {
+		t.Fatalf("expected both originals kept when store fails, got %d atoms: %+v", len(atoms), atoms)
 	}
 }
 

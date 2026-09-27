@@ -1425,9 +1425,11 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 	// Wake-on-complete delivery slot: the dispatcher posts bg_wake items
 	// here from timer goroutines; the slot's lock guarantees no post lands
 	// after the channel close below (see cmd/odek/bg_wake.go). The
-	// secret wake token makes wire-injected bg_wake items invalid.
-	connInfo.wakeToken = newWakeToken()
-	connInfo.wakeSlot = newConnWakeSlot(promptCh, connInfo.wakeToken)
+	// secret wake token makes wire-injected bg_wake items invalid. Both
+	// fields are installed under the connection lock — the dispatcher
+	// reads them concurrently (bindWakeSlot/wakeTarget pair).
+	wakeToken := newWakeToken()
+	connInfo.bindWakeSlot(newConnWakeSlot(promptCh, wakeToken), wakeToken)
 	go func() {
 		defer func() {
 			// slot.close() closes promptCh under the slot's lock (the
