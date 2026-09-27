@@ -26,6 +26,7 @@ type Config struct {
 	MemoryBudgetChars               int               `json:"memory_budget_chars,omitempty"`
 	DecayHalfLifeDays               int               `json:"decay_half_life_days,omitempty"`
 	QuarantineTTLDays               int               `json:"quarantine_ttl_days,omitempty"`
+	EphemeralTTLDays                int               `json:"ephemeral_ttl_days,omitempty"` // TTL for ephemeral atom classes (intent/goal/error/question/file); 0 = default
 	EvictionPolicy                  string            `json:"eviction_policy,omitempty"`
 	PredictiveIntents               int               `json:"predictive_intents,omitempty"`
 	AutoExtractPerTurn              *bool             `json:"auto_extract_per_turn,omitempty"`
@@ -86,6 +87,7 @@ func DefaultConfig() Config {
 		MemoryBudgetChars:               2000,
 		DecayHalfLifeDays:               30,
 		QuarantineTTLDays:               7,
+		EphemeralTTLDays:                DefaultEphemeralTTLDays,
 		EvictionPolicy:                  "retention_decay",
 		PredictiveIntents:               3,
 		AutoExtractPerTurn:              boolPtr(true),

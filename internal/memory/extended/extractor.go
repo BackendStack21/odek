@@ -49,8 +49,57 @@ Rules:
 - Do NOT extract ephemeral details specific only to this message.
 - If nothing durable is present, return an empty array.
 
+Do NOT extract release-specific or bookkeeping facts — they rot immediately:
+- Session IDs, turn numbers, timestamps, file paths, commit hashes.
+- Version tags, PR numbers, CI run statuses ("tag 1.14.8", "PR #45", "merged as 768d380").
+- A session ID like "20260918-3e4cb01f" is provenance, never content.
+- Statements about this memory system itself (pending reviews, stored atoms).
+- Restatements of something already durable — generalize instead.
+
+Examples of REJECTS (do not emit these):
+  "User said merge after CI passes (turn 3, session 20260918-…)" -> REJECT (provenance in text)
+  "The correct version tag is 1.14.8"                            -> REJECT (release-ephemeral)
+  "Consume pending_review entry 555af9bf"                        -> REJECT (self-referential bookkeeping)
+
+Examples of ACCEPTS:
+  "User requires CI to pass before any merge"                    -> generalizes across projects
+  "User prefers concise answers"                                 -> durable preference
+
 Output ONLY a JSON array. Example:
 [{"text":"User prefers concise answers","type":"preference","confidence":0.9}]`
+
+// qualityRules match atom text that violates the extractor quality
+// contract: provenance tokens (session IDs, turn numbers), release
+// ephemera (PR numbers, commit hashes, version tags), and self-referential
+// bookkeeping. Each pattern is deliberately anchored to its noise shape to
+// avoid false positives on legitimate atoms that merely contain digits.
+var qualityRules = []struct {
+	name string
+	re   *regexp.Regexp
+}{
+	{"session_id", regexp.MustCompile(`\bsession\s+[0-9]{8}-[0-9a-f]{4,}`)},
+	{"turn_number", regexp.MustCompile(`\bturn\s+[0-9]{1,3}\b`)},
+	{"pr_number", regexp.MustCompile(`(?i)\bpr\s+#[0-9]{1,6}\b`)},
+	{"commit_hash", regexp.MustCompile(`\b[0-9a-f]{7,40}\b.*\b(?:merged|commit|squash)`)},
+	{"commit_hash_merged", regexp.MustCompile(`\b(?:merged|squash-merged|commit)\s+(?:as\s+)?[0-9a-f]{7,40}\b`)},
+	{"version_tag", regexp.MustCompile(`(?i)\b(?:version\s+)?tag\s+(?:is\s+|v)?[0-9]+\.[0-9]+`)},
+	{"version_release", regexp.MustCompile(`\brelease\s+v?[0-9]+\.[0-9]+`)},
+	{"pending_review_ref", regexp.MustCompile(`pending_review`)},
+	{"already_stored", regexp.MustCompile(`(?i)already stored`)},
+}
+
+// qualityViolation reports whether atom text violates the extractor
+// quality contract (provenance-in-text, release ephemera, or
+// self-referential bookkeeping). It is the mechanism behind the prompt's
+// negative examples: the prompt nudges the model, this filter enforces.
+func qualityViolation(text string) bool {
+	for _, r := range qualityRules {
+		if r.re.MatchString(text) {
+			return true
+		}
+	}
+	return false
+}
 
 // untrustedRe matches nonce'd untrusted content wrappers so they can be
 // stripped before extraction.
@@ -158,6 +207,45 @@ func normalizeAtomText(text string) string {
 // their retention score. Explicit LLM-provided values in (0,1] are kept.
 const defaultExtractionConfidence = 0.7
 
+// ExtractionTypeQuota caps atoms minted per atom type in one extraction
+// run, so a verbose model cannot fill the store with one class of atom.
+const ExtractionTypeQuota = 3
+
+// ExtractionRunCap caps total atoms minted in one extraction run.
+const ExtractionRunCap = 8
+
+// applyExtractionQuotas quality-ranks candidate atoms and trims them to
+// the per-type quota and the overall run cap. Ranking is by confidence,
+// then stable order (first-seen wins ties).
+func applyExtractionQuotas(atoms []MemoryAtom) []MemoryAtom {
+	if len(atoms) <= ExtractionRunCap && len(atoms) <= ExtractionTypeQuota {
+		return atoms
+	}
+	// Stable sort by confidence descending.
+	idx := make([]int, len(atoms))
+	for i := range idx {
+		idx[i] = i
+	}
+	for i := 1; i < len(idx); i++ {
+		for j := i; j > 0 && atoms[idx[j]].Confidence > atoms[idx[j-1]].Confidence; j-- {
+			idx[j], idx[j-1] = idx[j-1], idx[j]
+		}
+	}
+	perType := make(map[string]int, len(atoms))
+	out := make([]MemoryAtom, 0, ExtractionRunCap)
+	for _, i := range idx {
+		if len(out) >= ExtractionRunCap {
+			break
+		}
+		if perType[atoms[i].Type] >= ExtractionTypeQuota {
+			continue
+		}
+		perType[atoms[i].Type]++
+		out = append(out, atoms[i])
+	}
+	return out
+}
+
 // Extract atoms from text. Returns nil if the LLM is unavailable, the output
 // is unparseable, or no atoms are found. Extracted atoms are sourced from the
 // user ("user_said").
@@ -208,6 +296,12 @@ func (e *Extractor) Extract(ctx context.Context, text string) ([]MemoryAtom, err
 		if txt == "" {
 			continue
 		}
+		// Quality contract: drop atoms whose text embeds provenance or
+		// release ephemera. The prompt nudges; this filter enforces.
+		if qualityViolation(txt) {
+			log.Printf("extended memory: dropped atom violating quality contract: %.80s", txt)
+			continue
+		}
 		typ := r.Type
 		if !validType(typ) {
 			typ = TypeObservation
@@ -230,7 +324,7 @@ func (e *Extractor) Extract(ctx context.Context, text string) ([]MemoryAtom, err
 			Confidence:  conf,
 		})
 	}
-	return atoms, nil
+	return applyExtractionQuotas(atoms), nil
 }
 
 func validType(t string) bool {
