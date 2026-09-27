@@ -527,8 +527,11 @@ classifications — never prompt or completion content.
 ### `GET /api/events?limit=&run_id=&session_id=`
 
 Recent `odek.event/v1` runtime events (ring of 500, oldest-first, filtered).
-Event payloads carry SHA-256 arg hashes and redacted fields only — never raw
-tool arguments. Every WS prompt and REST run feeds the same ring.
+`limit` defaults to 100; an explicit `limit=0` returns the full filtered
+ring (negative values are treated as 0); values above the ring size clamp
+to the ring. Event payloads carry SHA-256 arg hashes and redacted fields
+only — never raw tool arguments. Every WS prompt and REST run feeds the
+same ring.
 
 ### `GET /api/usage`
 

@@ -29,7 +29,7 @@ func escapeGlob(s string) string {
 	var b strings.Builder
 	for _, r := range s {
 		switch r {
-		case '*', '?', '[', ']', '^', '{', '}':
+		case '\\', '*', '?', '[', ']', '^', '{', '}':
 			b.WriteByte('\\')
 		}
 		b.WriteRune(r)

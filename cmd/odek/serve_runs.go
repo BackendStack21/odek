@@ -35,6 +35,7 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -116,9 +117,17 @@ func handleEvents() http.HandlerFunc {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		limit := parseIntDefault(r.URL.Query().Get("limit"), 100)
-		if limit < 1 {
-			limit = 100
+		// snapshot() treats limit<=0 as "return everything"; only absent or
+		// unparseable params get the default. An explicit limit=0 must reach
+		// snapshot so clients can request the untruncated feed.
+		limit := 100
+		if q := r.URL.Query().Get("limit"); q != "" {
+			if v, err := strconv.Atoi(q); err == nil {
+				limit = v
+			}
+		}
+		if limit < 0 {
+			limit = 0
 		}
 		if limit > serveEventsCap {
 			limit = serveEventsCap
@@ -459,11 +468,14 @@ func (r *serveRun) record(v any) error {
 			r.Status = "running"
 		}
 	case "token", "token_delta":
-		if c, _ := m["content"].(string); c != "" {
+		// A still-draining loop must not mutate a terminal run's result —
+		// the snapshot served by GET /api/runs/{id} would change between
+		// polls after the run already completed/failed.
+		if c, _ := m["content"].(string); c != "" && !runStatusTerminal(r.Status) {
 			r.Result += c
 		}
 	case "error":
-		if msg, _ := m["message"].(string); msg != "" {
+		if msg, _ := m["message"].(string); msg != "" && !runStatusTerminal(r.Status) {
 			r.Error = msg
 		}
 	case "done":
