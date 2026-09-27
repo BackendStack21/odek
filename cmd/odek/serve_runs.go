@@ -468,14 +468,19 @@ func (r *serveRun) record(v any) error {
 			r.Status = "running"
 		}
 	case "token", "token_delta":
-		// A still-draining loop must not mutate a terminal run's result —
+		// A still-draining loop must not grow a terminal run's result —
 		// the snapshot served by GET /api/runs/{id} would change between
 		// polls after the run already completed/failed.
 		if c, _ := m["content"].(string); c != "" && !runStatusTerminal(r.Status) {
 			r.Result += c
 		}
 	case "error":
-		if msg, _ := m["message"].(string); msg != "" && !runStatusTerminal(r.Status) {
+		// First error wins. NOT terminal-gated: the cancel path flips the
+		// status to "cancelled" first and the unwinding loop's error event
+		// arrives afterwards — dropping it would leave the run with a
+		// terminal status but no explanation (and starve clients polling
+		// for the unwind). Repeated late errors must not overwrite it.
+		if msg, _ := m["message"].(string); msg != "" && r.Error == "" {
 			r.Error = msg
 		}
 	case "done":
