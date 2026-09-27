@@ -222,7 +222,11 @@ func handleSessionExport(sess *session.Session, format string, w http.ResponseWr
 	case "json":
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=odek-session-%s.json", shortID(sess.ID)))
-		_ = json.NewEncoder(w).Encode(sess)
+		// The export is meant to be shareable — the session-scoped auth
+		// token must never appear in it.
+		sanitized := *sess
+		sanitized.AuthToken = ""
+		_ = json.NewEncoder(w).Encode(&sanitized)
 	default:
 		http.Error(w, "unsupported format (md|json)", http.StatusBadRequest)
 	}

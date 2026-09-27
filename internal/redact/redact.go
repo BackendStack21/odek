@@ -312,6 +312,23 @@ func sensitiveName(name string) bool {
 			return true
 		}
 	}
+	// Fused names with no separator at all (MYAPITOKEN, OPENAIAPIKEY) carry
+	// the secret word at the end. Suffix matching only — prefix matching
+	// false-positives on legitimate names like TOKENBUCKET. Short words are
+	// excluded so accidental endings (MONKEY → KEY) don't match.
+	fused := strings.ToUpper(strings.Map(func(r rune) rune {
+		if r == '_' || r == '-' {
+			return -1
+		}
+		return r
+	}, name))
+	for _, word := range []string{"APIKEY", "TOKEN", "SECRET", "PASSWORD", "PASSWD", "CREDENTIAL", "CREDENTIALS", "PRIVATEKEY", "ACCESSKEY", "SECRETKEY"} {
+		// >= so a bare PASSWORD/TOKEN/SECRET env name is sensitive too;
+		// over-matching only over-redacts, which is the safe direction.
+		if len(fused) >= len(word) && strings.HasSuffix(fused, word) {
+			return true
+		}
+	}
 	return false
 }
 

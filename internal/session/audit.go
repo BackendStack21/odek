@@ -17,6 +17,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -80,6 +81,14 @@ func boundedAuditResources(content string) []string {
 	return resources
 }
 
+// auditReadError marks a failed audit-log READ (permissions, I/O) as distinct
+// from a corrupt-log unmarshal failure. Reads must abort mutations so a
+// transient error cannot cause the next save to overwrite history.
+type auditReadError struct{ err error }
+
+func (e auditReadError) Error() string { return e.err.Error() }
+func (e auditReadError) Unwrap() error { return e.err }
+
 // RecordIngest appends an ingest entry for a session.
 func (s *AuditStore) RecordIngest(sessionID string, turn int, source, content string) error {
 	if err := ValidateSessionID(sessionID); err != nil {
@@ -88,6 +97,10 @@ func (s *AuditStore) RecordIngest(sessionID string, turn int, source, content st
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	log, lerr := s.loadLocked(sessionID)
+	var re auditReadError
+	if errors.As(lerr, &re) {
+		return lerr
+	}
 	if lerr != nil {
 		// Unparseable (torn/corrupt) log: keep the evidence aside and
 		// start a fresh log rather than silently discarding it.
@@ -113,6 +126,10 @@ func (s *AuditStore) RecordTurn(sessionID string, turn AuditTurn) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	log, lerr := s.loadLocked(sessionID)
+	var re auditReadError
+	if errors.As(lerr, &re) {
+		return lerr
+	}
 	if lerr != nil {
 		s.preserveCorruptLocked(sessionID)
 	}
@@ -135,7 +152,13 @@ func (s *AuditStore) loadLocked(sessionID string) (AuditLog, error) {
 	path := filepath.Join(s.dir, sessionID+".json")
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return AuditLog{SessionID: sessionID}, nil
+		if os.IsNotExist(err) {
+			return AuditLog{SessionID: sessionID}, nil
+		}
+		// Any other read failure (permissions, I/O) must surface: treating
+		// it as "no history yet" would let a transient error silently
+		// rewrite the audit trail on the next save.
+		return AuditLog{SessionID: sessionID}, auditReadError{err}
 	}
 	var log AuditLog
 	if err := json.Unmarshal(data, &log); err != nil {

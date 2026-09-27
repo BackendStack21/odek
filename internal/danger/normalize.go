@@ -92,6 +92,13 @@ var homoglyphMap = map[rune]rune{
 	'ｙ': 'y', 'ｚ': 'z',
 }
 
+// normalizeCommandSpacing collapses internal whitespace runs to single
+// spaces so denylist prefix matching cannot be bypassed by double spaces
+// or tabs between tokens ('git\u00a0\u00a0push' evading a 'git push' entry).
+func normalizeCommandSpacing(s string) string {
+	return strings.Join(strings.Fields(s), " ")
+}
+
 // isInvisible reports whether r is a zero-width or otherwise invisible
 // character commonly used to evade text scanners.
 func isInvisible(r rune) bool {

@@ -1071,13 +1071,19 @@ func expandEnv(s string) string {
 		}
 
 		// Find variable name: ${VAR} or $VAR or $VAR_NAME
-		name, w := parseVarName(s[j+1:])
-		i = j + 1 + w
+		name, _ := parseVarName(s[j+1:])
+		i = j + 1
 
 		if name == "" {
-			// $ followed by non-identifier: emit as-is
+			// $ followed by non-identifier: emit the '$' verbatim and do
+			// NOT consume the following byte — "$ 5", "$9.99" and "$?"
+			// must survive expansion byte-for-byte.
 			buf.WriteByte('$')
 			continue
+		}
+		i = j + 1 + len(name)
+		if s[j+1] == '{' {
+			i = j + 1 + len(name) + 2 // ${VAR}
 		}
 		buf.WriteString(os.Getenv(name))
 	}

@@ -2692,6 +2692,11 @@ func validateSessionToken(store *session.Store, sess *session.Session, token str
 		return "", false
 	}
 	if sess.AuthToken == "" {
+		if token != "" {
+			// A wrong token against a legacy session is a failed match, not
+			// a bootstrap: fail closed and leave the file untouched.
+			return "", false
+		}
 		sess.AuthToken = session.GenerateAuthToken()
 		if err := store.Save(sess); err != nil {
 			// If we cannot persist the token, still allow this request but do not
@@ -2720,10 +2725,12 @@ func validateSessionTokenStrict(store *session.Store, sess *session.Session, tok
 		return false
 	}
 	if sess.AuthToken == "" {
-		sess.AuthToken = session.GenerateAuthToken()
-		if err := store.Save(sess); err != nil {
-			return false
-		}
+		// A freshly minted token is random and unguessable, so a client
+		// cannot present it before learning it: the strict path cannot
+		// bootstrap at all. Deny the mutation without minting or writing —
+		// the read-path GET bootstrap is what mints the token and returns
+		// it to the client; strict calls match it afterwards.
+		return false
 	}
 	return subtle.ConstantTimeCompare([]byte(token), []byte(sess.AuthToken)) == 1
 }
@@ -2793,10 +2800,44 @@ func connWriter(conn *golangws.Conn) *connWriteState {
 	return actual.(*connWriteState)
 }
 
-// releaseConnWriter drops a closed connection's write state. Called from
-// handleWS's teardown and after a write-timeout teardown.
+// releaseConnWriter latches a closed connection's write state dead. The
+// entry itself must stay: a parked Message.Send goroutine from a timed-out
+// write may still be blocked inside the conn; deleting the entry lets the
+// next connWriter create fresh live state and issue a concurrent Send on a
+// *golangws.Conn that is not concurrency-safe — interleaved torn frames.
+// To keep long-lived serve processes from growing without bound, a sweep
+// kicks in past wsWriterStatesCap: dead entries not currently held by a
+// parked sender (mutex acquirable) are dropped. A dropped conn pointer can
+// only reappear via a writeWSJSON on the already-closed conn, which mints
+// fresh state whose Send fails immediately on the closed socket — harmless.
+const wsWriterStatesCap = 4096
+
 func releaseConnWriter(conn *golangws.Conn) {
-	wsConnWriters.Delete(conn)
+	if v, ok := wsConnWriters.Load(conn); ok {
+		w := v.(*connWriteState)
+		w.mu.Lock()
+		w.dead = true
+		w.mu.Unlock()
+	}
+	sweepConnWriters()
+}
+
+func sweepConnWriters() {
+	n := 0
+	wsConnWriters.Range(func(_, _ any) bool { n++; return n <= wsWriterStatesCap+1 })
+	if n <= wsWriterStatesCap {
+		return
+	}
+	wsConnWriters.Range(func(k, v any) bool {
+		w := v.(*connWriteState)
+		if w.mu.TryLock() {
+			if w.dead {
+				wsConnWriters.Delete(k)
+			}
+			w.mu.Unlock()
+		}
+		return true
+	})
 }
 
 func writeWSJSON(conn *golangws.Conn, data any) {
@@ -2830,7 +2871,6 @@ func writeWSJSON(conn *golangws.Conn, data any) {
 		// errors out.
 		w.dead = true
 		go func() { _ = conn.Close() }()
-		releaseConnWriter(conn)
 	}
 }
 

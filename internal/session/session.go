@@ -539,7 +539,7 @@ func redactMessageFP(m Message) string {
 	return hex.EncodeToString(h[:8])
 }
 
-func (s *Store) saveLocked(sess *Session) error {
+func (s *Store) saveLocked(sess *Session) (err error) {
 	// Reject malformed or traversal-bearing session IDs before the ID is used
 	// to build a filesystem path. A planted session file with an embedded
 	// "id":"../config" must not cause a subsequent Save/Append to overwrite
@@ -588,7 +588,29 @@ func (s *Store) saveLocked(sess *Session) error {
 	}
 	sess.Revision++
 	committed := false
+	// saveLocked mutates sess in place (secret redaction, capacity trim,
+	// boundary advance). A failed save must leave the caller's snapshot
+	// untouched: otherwise the memory copy stays trimmed while the on-disk
+	// revision never advanced (or diverged), and the next Save can hit
+	// ErrConflict forever with unsaved turns. Snapshot everything the
+	// mutation touches and restore it on any error return.
+	var (
+		snapshotTask = sess.Task
+		// Element copy, not a header copy: trimToFileCapLocked compacts the
+		// slice IN PLACE, which would corrupt the shared backing array under
+		// a header-copy snapshot and restore shifted/garbled contents after
+		// a failed post-trim save.
+		snapshotMessages   = append([]Message(nil), sess.Messages...)
+		snapshotBoundary   = sess.RedactBoundary
+		snapshotBoundaryFP = sess.RedactBoundaryFP
+	)
 	defer func() {
+		if err != nil {
+			sess.Task = snapshotTask
+			sess.Messages = snapshotMessages
+			sess.RedactBoundary = snapshotBoundary
+			sess.RedactBoundaryFP = snapshotBoundaryFP
+		}
 		if !committed {
 			sess.Revision = previousRevision
 			sess.Generation = previousGeneration

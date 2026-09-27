@@ -289,13 +289,23 @@ type SearchResult struct {
 // to keyword search. If the index was not ready, one rebuild is attempted
 // (subject to the cool-down).
 func (vi *VectorIndex) Search(query string, k int) ([]SearchResult, error) {
+	// The embed call may hit a slow remote backend; it must not run under
+	// the index mutex — one slow search would stall every Add/Save. The
+	// cheap readiness checks run under the lock; the embed runs outside;
+	// the store lookup re-takes the lock so it never races a concurrent Add.
 	vi.mu.Lock()
-	defer vi.mu.Unlock()
-
 	if !vi.ready {
 		_ = vi.rebuildLocked()
 	}
-	if !vi.ready || vi.store == nil || vi.store.Len() == 0 {
+	ready := vi.ready
+	hasVectors := vi.store != nil && vi.store.Len() > 0
+	// Respect the cool-down on the ready path too (see Add): a down backend
+	// must not be re-hit on every search — degrade to the keyword fallback.
+	inCooldown := !vi.failedAt.IsZero() && time.Since(vi.failedAt) < rebuildRetryInterval
+	emb := vi.emb
+	vi.mu.Unlock()
+
+	if !ready || !hasVectors || inCooldown {
 		return nil, nil
 	}
 	if k <= 0 {
@@ -304,16 +314,19 @@ func (vi *VectorIndex) Search(query string, k int) ([]SearchResult, error) {
 	if k > 20 {
 		k = 20
 	}
-	// Respect the cool-down on the ready path too (see Add): a down backend
-	// must not be re-hit on every search — degrade to the keyword fallback.
-	if !vi.failedAt.IsZero() && time.Since(vi.failedAt) < rebuildRetryInterval {
+
+	vec, err := emb.Embed(query)
+	if err != nil {
+		// Degrade to the keyword fallback rather than surfacing an error.
+		vi.mu.Lock()
+		vi.failedAt = time.Now()
+		vi.mu.Unlock()
 		return nil, nil
 	}
 
-	vec, err := vi.emb.Embed(query)
-	if err != nil {
-		// Degrade to the keyword fallback rather than surfacing an error.
-		vi.failedAt = time.Now()
+	vi.mu.Lock()
+	defer vi.mu.Unlock()
+	if vi.store == nil {
 		return nil, nil
 	}
 

@@ -50,9 +50,17 @@ func (c *Checker) RecordExternal(u Usage) {
 		return
 	}
 	c.toolCalls = AddCount(c.toolCalls, u.ToolCalls)
-	if u.CostKnown {
-		c.externalCostAdjustment += u.CostUSD - c.limits.EstimatedCostUSD(u.TotalInput(), u.OutputTokens)
+	if !u.CostKnown {
+		return
 	}
+	delta := u.CostUSD - c.limits.EstimatedCostUSD(u.TotalInput(), u.OutputTokens)
+	// Reject non-finite or out-of-range cost signals: converting them
+	// through microUSD is platform-dependent and poisons Observed with
+	// negative or saturated values.
+	if math.IsNaN(delta) || math.IsInf(delta, 0) || math.Abs(delta) > 1e12 {
+		return
+	}
+	c.externalCostAdjustment = math.Max(-1e12, math.Min(1e12, c.externalCostAdjustment+delta))
 }
 
 func (c *Checker) Cost(inputTokens, outputTokens int64) float64 {

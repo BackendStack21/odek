@@ -360,7 +360,10 @@ func (t *bgStartTool) Call(args string) (string, error) {
 		Command        string `json:"command"`
 		TimeoutSeconds int    `json:"timeout_seconds"`
 	}
-	if err := json.Unmarshal([]byte(args), &p); err != nil || strings.TrimSpace(p.Command) == "" {
+	if err := json.Unmarshal([]byte(args), &p); err != nil {
+		return "", fmt.Errorf("bg_start: invalid arguments (malformed JSON): %w", err)
+	}
+	if strings.TrimSpace(p.Command) == "" {
 		return "", fmt.Errorf("bg_start requires a non-empty \"command\"")
 	}
 	// Spawn-time approval, shell parity: the loop's batch gate only covers
