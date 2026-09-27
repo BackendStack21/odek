@@ -39,6 +39,20 @@ func TestAtomExpired(t *testing.T) {
 	}
 }
 
+// TestAtomExpiredTTLDaysFallback pins that a zero or negative TTL days
+// value falls back to the default rather than disabling or inverting the
+// TTL.
+func TestAtomExpiredTTLDaysFallback(t *testing.T) {
+	old := time.Now().UTC().AddDate(0, 0, -(DefaultEphemeralTTLDays + 1))
+	atom := MemoryAtom{Type: TypeError, CreatedAt: old}
+	if !AtomExpired(atom, 0, time.Now().UTC()) {
+		t.Error("ttlDays=0 must fall back to the default TTL, expiring an old ephemeral atom")
+	}
+	if !AtomExpired(atom, -5, time.Now().UTC()) {
+		t.Error("negative ttlDays must fall back to the default TTL")
+	}
+}
+
 // TestRecallSkipsExpiredEphemeralAtoms pins that expired ephemeral atoms
 // are not injected into the recall context.
 func TestRecallSkipsExpiredEphemeralAtoms(t *testing.T) {

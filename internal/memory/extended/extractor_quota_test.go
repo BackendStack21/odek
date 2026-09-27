@@ -48,6 +48,19 @@ func TestExtractorEnforcesTypeQuotas(t *testing.T) {
 	}
 }
 
+// TestApplyExtractionQuotasSmallBatchPassthrough pins that a batch within
+// both caps passes through untouched, in original order.
+func TestApplyExtractionQuotasSmallBatchPassthrough(t *testing.T) {
+	atoms := []MemoryAtom{
+		{Text: "a", Type: TypeFact, Confidence: 0.1},
+		{Text: "b", Type: TypeFact, Confidence: 0.9},
+	}
+	got := applyExtractionQuotas(atoms)
+	if len(got) != 2 || got[0].Text != "a" || got[1].Text != "b" {
+		t.Errorf("small batch must pass through in order, got %+v", got)
+	}
+}
+
 // TestExtractorTypeQuotaKeepsHighestConfidence pins that quota trimming is
 // quality-ranked: when over quota, the highest-confidence atoms survive.
 func TestExtractorTypeQuotaKeepsHighestConfidence(t *testing.T) {
