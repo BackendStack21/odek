@@ -15,7 +15,7 @@ func TestScanDirsCached_UnchangedFiles(t *testing.T) {
 	createSkill(t, dir, "test-skill", "test description", "## Test body", false)
 
 	fc := make(fileCache)
-	prev := make(map[string]Skill)
+	prev := make(skillCache)
 
 	// First scan — should parse the file
 	result := scanDirsCached(dir, "", nil, fc, prev)
@@ -35,8 +35,8 @@ func TestScanDirsCached_UnchangedFiles(t *testing.T) {
 	// Modify the prevSkills map's cached body to something different,
 	// then re-scan. Since the file hasn't changed, the stale body
 	// should still be returned (proving cache hit, not re-read).
-	oldBody := prev[skillPath].Body
-	prev[skillPath] = Skill{Name: "test-skill", Body: "STALE CACHED BODY"}
+	oldBody := prev[skillPath].Skill.Body
+	prev[skillPath] = cachedSkill{MTime: prev[skillPath].MTime, SHA256: prev[skillPath].SHA256, Skill: Skill{Name: "test-skill", Body: "STALE CACHED BODY"}}
 	result2 := scanDirsCached(dir, "", nil, fc, prev)
 	if len(result2.Lazy) != 1 {
 		t.Fatalf("expected 1 skill, got %d", len(result2.Lazy))
@@ -66,7 +66,7 @@ func TestScanDirsCached_DeletedFile(t *testing.T) {
 	createSkill(t, dir, "temp-skill", "desc", "## Body", false)
 
 	fc := make(fileCache)
-	prev := make(map[string]Skill)
+	prev := make(skillCache)
 
 	// First scan — populate cache
 	result := scanDirsCached(dir, "", nil, fc, prev)
@@ -97,7 +97,7 @@ func TestScanDirsCached_PriorityOrder(t *testing.T) {
 	createSkill(t, userDir, "user-only", "user unique", "## User unique", false)
 
 	fc := make(fileCache)
-	prev := make(map[string]Skill)
+	prev := make(skillCache)
 
 	// Project comes first — should win on shared-skill
 	result := scanDirsCached(projectDir, userDir, nil, fc, prev)
@@ -130,7 +130,7 @@ func TestScanDirsCached_NewFileAppears(t *testing.T) {
 	dir := t.TempDir()
 
 	fc := make(fileCache)
-	prev := make(map[string]Skill)
+	prev := make(skillCache)
 
 	// First scan with empty dir
 	result := scanDirsCached(dir, "", nil, fc, prev)
@@ -158,7 +158,7 @@ func TestScanDirsCached_AutoLoadSeparation(t *testing.T) {
 	createSkill(t, dir, "lazy-skill", "on demand", "## Lazy body", false)
 
 	fc := make(fileCache)
-	prev := make(map[string]Skill)
+	prev := make(skillCache)
 
 	// Scan as the user dir — project-dir skills are distrusted (forced to
 	// NeedsReview) and would never land in AutoLoad.

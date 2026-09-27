@@ -231,6 +231,24 @@ func (c *wsConnInfo) isBusy() bool {
 	return c.Busy
 }
 
+// bindWakeSlot installs the connection's wake-on-complete delivery slot and
+// its secret token under the connection lock. The wake dispatcher reads both
+// from timer goroutines via wakeTarget, so an unsynchronized write here would
+// race with an in-flight wake for the freshly registered connection.
+func (c *wsConnInfo) bindWakeSlot(slot *connWakeSlot, token string) {
+	c.mu.Lock()
+	c.wakeSlot, c.wakeToken = slot, token
+	c.mu.Unlock()
+}
+
+// wakeTarget returns the connection's wake slot and token under the lock;
+// either may be nil/empty before bindWakeSlot runs.
+func (c *wsConnInfo) wakeTarget() (*connWakeSlot, string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.wakeSlot, c.wakeToken
+}
+
 // wsConnsForSession returns the live connections currently bound to a
 // session (wake delivery + per-session busy checks).
 func wsConnsForSession(sessionID string) []*wsConnInfo {
@@ -827,21 +845,10 @@ func startServeRun(
 		cancel()
 		return nil, fmt.Errorf("agent: %w", err)
 	}
-	if err := applyServeThinking(agent, req.Thinking); err != nil {
-		cancel()
-		agent.Close() //nolint:errcheck
-		return nil, err
-	}
-
-	// Headless runs may wait longer than the socket default for approvals.
-	if req.ApprovalTimeoutSeconds > 0 {
-		t := time.Duration(req.ApprovalTimeoutSeconds) * time.Second
-		if t > maxRunApprovalWait {
-			t = maxRunApprovalWait
-		}
-		approver.SetApprovalTimeout(t)
-	}
-
+	// Teardown for everything newServeAgent created. Defined before the
+	// first post-construction failure path so an early return cannot leak
+	// the sandbox container, MCP subprocesses, or the injection guard
+	// (agent.Close alone does not destroy the sandbox).
 	cleanup := func() {
 		if approver != nil {
 			approver.Cancel()
@@ -856,6 +863,20 @@ func startServeRun(
 		if mcpCleanup != nil {
 			mcpCleanup()
 		}
+	}
+	if err := applyServeThinking(agent, req.Thinking); err != nil {
+		cancel()
+		cleanup()
+		return nil, err
+	}
+
+	// Headless runs may wait longer than the socket default for approvals.
+	if req.ApprovalTimeoutSeconds > 0 {
+		t := time.Duration(req.ApprovalTimeoutSeconds) * time.Second
+		if t > maxRunApprovalWait {
+			t = maxRunApprovalWait
+		}
+		approver.SetApprovalTimeout(t)
 	}
 	run.mu.Lock()
 	run.approver = approver

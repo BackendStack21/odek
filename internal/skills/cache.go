@@ -1,6 +1,8 @@
 package skills
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -15,9 +17,9 @@ import (
 type fileCache map[string]time.Time
 
 // scanDirsCached is the multi-directory equivalent of ScanDirs that uses
-// file modification time caching to skip unchanged files. Dirs are scanned
-// in project → user → extras priority order.
-func scanDirsCached(projectDir, userDir string, extraDirs []string, fc fileCache, prev map[string]Skill) *ScanResult {
+// file modification time + content hash caching to skip unchanged files.
+// Dirs are scanned in project → user → extras priority order.
+func scanDirsCached(projectDir, userDir string, extraDirs []string, fc fileCache, prev skillCache) *ScanResult {
 	var dirs []string
 	if projectDir != "" {
 		dirs = append(dirs, projectDir)
@@ -62,9 +64,13 @@ func scanDirsCached(projectDir, userDir string, extraDirs []string, fc fileCache
 }
 
 // scanDirCached reads all SKILL.md files in a skill directory, skipping
-// files whose mod time has not changed since the last scan. Returns the
-// parsed skills and updates the cache with current mod times.
-func scanDirCached(dir string, fc fileCache, prevSkills map[string]Skill) []Skill {
+// files whose mod time AND content hash are unchanged since the last scan.
+// The hash anchors the cache on content: a swap that preserves mtime
+// (touch -r, Chtimes, rsync -a) invalidates the entry instead of being
+// served stale — the injection scan and provenance gate must never be
+// silently skipped for changed content. Returns the parsed skills and
+// updates the cache.
+func scanDirCached(dir string, fc fileCache, prevSkills skillCache) []Skill {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil
@@ -94,11 +100,16 @@ func scanDirCached(dir string, fc fileCache, prevSkills map[string]Skill) []Skil
 		currentMod := info.ModTime()
 		prevMod, known := fc[skillPath]
 
-		// If mod time is unchanged and we have a cached parse result, reuse it
+		// If mod time is unchanged and the cached parse result's content
+		// hash still matches the file, reuse it. Reading + hashing is the
+		// cache-integrity check; parsing and the injection scan are what
+		// the cache actually skips.
 		if known && currentMod.Equal(prevMod) {
 			if cached, ok := prevSkills[skillPath]; ok {
-				skills = append(skills, cached)
-				continue
+				if data, err := os.ReadFile(skillPath); err == nil && contentHashMatches(cached, data) {
+					skills = append(skills, cached.Skill)
+					continue
+				}
 			}
 		}
 
@@ -109,19 +120,39 @@ func scanDirCached(dir string, fc fileCache, prevSkills map[string]Skill) []Skil
 			continue
 		}
 		s.Source = SkillSource{Dir: dir, Path: skillPath}
+		data, err := os.ReadFile(skillPath)
+		if err != nil {
+			delete(fc, skillPath)
+			continue
+		}
 		fc[skillPath] = currentMod
-		prevSkills[skillPath] = *s
+		prevSkills[skillPath] = cachedSkill{MTime: currentMod, SHA256: sha256Hex(data), Skill: *s}
 		skills = append(skills, *s)
 	}
 	return skills
+}
+
+// contentHashMatches reports whether the cached entry was anchored on the
+// given file content. Entries persisted by cache v1 carry no hash and never
+// match — they are re-parsed once and re-anchored.
+func contentHashMatches(c cachedSkill, data []byte) bool {
+	return c.SHA256 != "" && c.SHA256 == sha256Hex(data)
+}
+
+// sha256Hex returns the hex-encoded SHA-256 of data.
+func sha256Hex(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
 }
 
 // ── Persistent Disk Cache ─────────────────────────────────────────────
 
 const (
 	// cacheVersion is bumped when the cache format changes, automatically
-	// invalidating all existing cache files.
-	cacheVersion = 1
+	// invalidating all existing cache files. v2 added the content hash to
+	// cachedSkill (mtime-only keys served mtime-preserved content swaps
+	// stale, skipping the injection scan and provenance gate).
+	cacheVersion = 2
 
 	// cacheFileName is the name of the persistent cache file inside the
 	// user's skill directory. The leading dot keeps it hidden from ls.
@@ -136,11 +167,14 @@ type persistentCache struct {
 	Skills  map[string]cachedSkill `json:"skills"` // path → cached skill
 }
 
-// cachedSkill pairs a file's mtime with its parsed Skill, enabling
-// zero-parsing cache hits across process restarts.
+// cachedSkill pairs a file's mtime AND content hash with its parsed Skill,
+// enabling zero-parsing cache hits across process restarts. The hash anchors
+// validity on content: an mtime-preserving swap (touch -r, Chtimes, rsync -a)
+// invalidates the entry instead of being served stale.
 type cachedSkill struct {
-	MTime time.Time `json:"mtime"`
-	Skill Skill     `json:"skill"`
+	MTime  time.Time `json:"mtime"`
+	SHA256 string    `json:"sha256,omitempty"`
+	Skill  Skill     `json:"skill"`
 }
 
 // cachePath returns the path to the persistent cache file inside dir.
@@ -148,12 +182,16 @@ func cachePath(dir string) string {
 	return filepath.Join(dir, cacheFileName)
 }
 
+// skillCache maps a SKILL.md path to its cached parse result, anchored on
+// content hash (see cachedSkill).
+type skillCache map[string]cachedSkill
+
 // loadPersistentCache reads the cache file from dir. Returns empty maps
 // if the file doesn't exist, has an incompatible version, or is corrupt.
 // Never returns an error — degraded behavior is always safe here.
-func loadPersistentCache(dir string) (fileCache, map[string]Skill) {
+func loadPersistentCache(dir string) (fileCache, skillCache) {
 	fileTimes := make(fileCache)
-	prevSkills := make(map[string]Skill)
+	prevSkills := make(skillCache)
 
 	data, err := os.ReadFile(cachePath(dir))
 	if err != nil {
@@ -171,7 +209,7 @@ func loadPersistentCache(dir string) (fileCache, map[string]Skill) {
 
 	for path, cs := range cache.Skills {
 		fileTimes[path] = cs.MTime
-		prevSkills[path] = cs.Skill
+		prevSkills[path] = cs
 	}
 
 	return fileTimes, prevSkills
@@ -183,7 +221,7 @@ func loadPersistentCache(dir string) (fileCache, map[string]Skill) {
 // entries for deleted or switched-away projects. Errors are silently
 // ignored — the cache is an optimization, not a correctness requirement.
 // Atomic write via temp file + rename.
-func savePersistentCache(dir, projectDir string, fc fileCache, prev map[string]Skill) {
+func savePersistentCache(dir, projectDir string, fc fileCache, prev skillCache) {
 	if dir == "" {
 		return
 	}
@@ -199,11 +237,9 @@ func savePersistentCache(dir, projectDir string, fc fileCache, prev map[string]S
 		} else {
 			continue
 		}
-		if skill, ok := prev[path]; ok {
-			cache.Skills[path] = cachedSkill{
-				MTime: mtime,
-				Skill: skill,
-			}
+		if cs, ok := prev[path]; ok {
+			cs.MTime = mtime
+			cache.Skills[path] = cs
 		}
 	}
 

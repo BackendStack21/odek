@@ -20,10 +20,10 @@ func TestSavePersistentCache_DropsOtherProjectEntries(t *testing.T) {
 		filepath.Join(projectA, "beta", "SKILL.md"):  time.Unix(2, 0),
 		filepath.Join(projectB, "gamma", "SKILL.md"): time.Unix(3, 0),
 	}
-	prev := map[string]Skill{
-		filepath.Join(userDir, "alpha", "SKILL.md"):  {Name: "alpha"},
-		filepath.Join(projectA, "beta", "SKILL.md"):  {Name: "beta"},
-		filepath.Join(projectB, "gamma", "SKILL.md"): {Name: "gamma"},
+	prev := skillCache{
+		filepath.Join(userDir, "alpha", "SKILL.md"):  {Skill: Skill{Name: "alpha"}},
+		filepath.Join(projectA, "beta", "SKILL.md"):  {Skill: Skill{Name: "beta"}},
+		filepath.Join(projectB, "gamma", "SKILL.md"): {Skill: Skill{Name: "gamma"}},
 	}
 
 	savePersistentCache(userDir, projectB, fc, prev)

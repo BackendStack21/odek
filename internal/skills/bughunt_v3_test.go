@@ -38,7 +38,7 @@ func TestScanDirsCached_HonorsPromotion(t *testing.T) {
 
 	// Control (parity with the uncached path): before promotion, pinned.
 	fc := fileCache{}
-	prev := map[string]Skill{}
+	prev := skillCache{}
 	res := scanDirsCached(projDir, userDir, nil, fc, prev)
 	if s := findCached(res, "repo-skill"); s == nil || !s.Provenance.NeedsReview {
 		t.Fatalf("precondition: unpromoted project skill must be NeedsReview, got %+v", s)
