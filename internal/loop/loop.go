@@ -740,7 +740,27 @@ func (e *Engine) SetDeltaHandler(cb DeltaHandler) { e.deltaHandler = cb }
 // docs/STREAMING.md) and dispatches to CallStream when streaming is enabled.
 // Tool-argument deltas are suppressed: they are partial JSON and noise for
 // terminal consumers (the assembled calls still arrive via the result).
-func (e *Engine) callLLM(ctx context.Context, messages []session.Message, tools []llmclient.ToolDef) (*llmclient.CallResult, error) {
+func (e *Engine) callLLM(ctx context.Context, messages []session.Message, tools []llmclient.ToolDef) (result *llmclient.CallResult, callErr error) {
+	observedStart := time.Now()
+	e.emitEvent(events.Event{Type: "llm_call_started"})
+	defer func() {
+		typ := "llm_call_completed"
+		data := map[string]any{"duration_ms": time.Since(observedStart).Milliseconds()}
+		if result != nil {
+			data["input_tokens"] = result.InputTokens
+			data["output_tokens"] = result.OutputTokens
+			if result.TTFTMs > 0 {
+				data["ttft_ms"] = result.TTFTMs
+			}
+		}
+		if callErr != nil {
+			typ = "llm_call_failed"
+			for key, value := range events.ErrorData(callErr) {
+				data[key] = value
+			}
+		}
+		e.emitEvent(events.Event{Type: typ, Data: data})
+	}()
 	callCtx := ctx
 	if t := e.client.RequestTimeout(); t > 0 {
 		var cancel context.CancelFunc
@@ -3417,6 +3437,15 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 					defer func() { <-sem }() // release
 
 					callStart := time.Now()
+					executionReturned := false
+					defer func() {
+						status := "success"
+						if !executionReturned || results[idx].errored {
+							status = "failed"
+						}
+						e.emitEvent(events.Event{Type: "tool_execution_completed", Iteration: iterNum, Tool: tcRef.Function.Name, Data: map[string]any{"call_id": callIDs[idx], "duration_ms": time.Since(callStart).Milliseconds(), "status": status}})
+					}()
+					e.emitEvent(events.Event{Type: "tool_call_executing", Iteration: iterNum, Tool: tcRef.Function.Name, Data: map[string]any{"call_id": callIDs[idx]}})
 					callCtx := danger.BeginReadDelivery(toolCtx)
 					outcome := tool.Outcome{Status: "failed", ErrorClass: "tool_error"}
 					intact := false
@@ -3495,6 +3524,7 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 						}
 					}
 					results[idx] = execResult{output: output, errored: errored, durationMs: time.Since(callStart).Milliseconds(), outcome: outcome, deliveryCtx: callCtx, intact: intact}
+					executionReturned = true
 				}(i, tc)
 			}
 			workers.Wait()
@@ -3535,9 +3565,9 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 			output := results[i].output
 			fullOutput := output
 			e.recordPlanCheckResult(checkEpoch, tc, callIDs[i], results[i].errored)
-		if results[i].errored {
-			e.recordPlanCheckDenied(checkEpoch, tc, callIDs[i], results[i].output)
-		}
+			if results[i].errored {
+				e.recordPlanCheckDenied(checkEpoch, tc, callIDs[i], results[i].output)
+			}
 
 			// ledger the mutating calls that completed this run so the
 			// final reply can be reconciled against what actually happened.
@@ -3641,7 +3671,7 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 				e.planProvisionalFlag = true
 			}
 
-		toolMessage := []session.Message{{
+			toolMessage := []session.Message{{
 				Role:    "tool",
 				Content: strings.Replace(delimited, output, fullOutput, 1),
 				ToolOutcome: func() string {

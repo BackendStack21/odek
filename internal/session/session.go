@@ -33,6 +33,7 @@ import (
 	"unicode"
 
 	"github.com/BackendStack21/odek/internal/artifact"
+	"github.com/BackendStack21/odek/internal/diagnostics"
 	"github.com/BackendStack21/odek/internal/embedding"
 	"github.com/BackendStack21/odek/internal/flock"
 	"github.com/BackendStack21/odek/internal/fsatomic"
@@ -520,6 +521,7 @@ func (s *Store) addToVectorIndex(sess *Session) error {
 		return nil
 	}
 	if err := s.Vec.Add(sess.ID, sess.Messages); err != nil {
+		diagnostics.Report("session", "vector_index", sess.ID, err)
 		return fmt.Errorf("session: vector index add: %w", err)
 	}
 	return nil
@@ -540,6 +542,7 @@ func redactMessageFP(m Message) string {
 }
 
 func (s *Store) saveLocked(sess *Session) (err error) {
+	defer func() { diagnostics.Report("session", "save", sess.ID, err) }()
 	// Reject malformed or traversal-bearing session IDs before the ID is used
 	// to build a filesystem path. A planted session file with an embedded
 	// "id":"../config" must not cause a subsequent Save/Append to overwrite
@@ -802,7 +805,12 @@ func (s *Store) trimToFileCapLocked(sess *Session, data []byte) ([]byte, error) 
 
 // Load reads a session from disk by ID. Returns an error if the file
 // doesn't exist or can't be parsed.
-func (s *Store) Load(id string) (*Session, error) {
+func (s *Store) Load(id string) (_ *Session, loadErr error) {
+	defer func() {
+		if ValidateSessionID(id) == nil && !os.IsNotExist(loadErr) {
+			diagnostics.Report("session", "load", id, loadErr)
+		}
+	}()
 	if err := ValidateSessionID(id); err != nil {
 		return nil, err
 	}

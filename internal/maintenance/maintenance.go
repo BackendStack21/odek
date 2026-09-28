@@ -17,6 +17,8 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/BackendStack21/odek/internal/diagnostics"
+	"github.com/BackendStack21/odek/internal/runtimelog"
 	"github.com/BackendStack21/odek/internal/session"
 )
 
@@ -27,33 +29,36 @@ const mediaMaxAge = time.Hour
 
 // Config controls the storage-maintenance janitor.
 type Config struct {
-	Enabled              bool
-	IntervalMinutes      int   // janitor tick; default 60
-	SessionsMaxAgeDays   int   // delete sessions older than this; default 30; 0 = keep forever
-	AuditMaxAgeDays      int   // delete audit records older than this; default 14; 0 = keep
-	LogMaxMB             int64 // rotate telegram/schedule logs larger than this; default 50; 0 = no rotation
-	PlansMaxAgeDays      int   // delete telegram plans older than this; default 30; 0 = keep
-	ArtifactsMaxAgeHours int   // delete delegate_tasks artifact task dirs older than this, in any parent (incl. the shared unfiled bucket; aged session dirs go wholesale); default 24; 0 = keep
+	RuntimeLogMaxAgeHours int // record retention; default 168 (7 days); 0 = keep
+	Enabled               bool
+	IntervalMinutes       int   // janitor tick; default 60
+	SessionsMaxAgeDays    int   // delete sessions older than this; default 30; 0 = keep forever
+	AuditMaxAgeDays       int   // delete audit records older than this; default 14; 0 = keep
+	LogMaxMB              int64 // rotate telegram/schedule logs larger than this; default 50; 0 = no rotation
+	PlansMaxAgeDays       int   // delete telegram plans older than this; default 30; 0 = keep
+	ArtifactsMaxAgeHours  int   // delete delegate_tasks artifact task dirs older than this, in any parent (incl. the shared unfiled bucket; aged session dirs go wholesale); default 24; 0 = keep
 }
 
 // DefaultConfig returns the out-of-the-box maintenance policy.
 func DefaultConfig() Config {
 	return Config{
-		Enabled:              true,
-		IntervalMinutes:      60,
-		SessionsMaxAgeDays:   30,
-		AuditMaxAgeDays:      14,
-		LogMaxMB:             50,
-		PlansMaxAgeDays:      30,
-		ArtifactsMaxAgeHours: 24,
+		Enabled:               true,
+		RuntimeLogMaxAgeHours: 168,
+		IntervalMinutes:       60,
+		SessionsMaxAgeDays:    30,
+		AuditMaxAgeDays:       14,
+		LogMaxMB:              50,
+		PlansMaxAgeDays:       30,
+		ArtifactsMaxAgeHours:  24,
 	}
 }
 
 // Report summarises what one Sweep pass removed.
 type Report struct {
-	SessionsRemoved int
-	AuditRemoved    int
-	PlansRemoved    int
+	RuntimeLogRecordsRemoved int
+	SessionsRemoved          int
+	AuditRemoved             int
+	PlansRemoved             int
 	// ArtifactsRemoved counts every artifacts removal: expired task
 	// subtrees, wholesale session dirs, and pruned empty parents.
 	ArtifactsRemoved int
@@ -70,7 +75,8 @@ type Report struct {
 func Sweep(ctx context.Context, home string, cfg Config) (Report, error) {
 	var rep Report
 	var firstErr error
-	fail := func(err error) {
+	fail := func(operation string, err error) {
+		diagnostics.Report("maintenance", operation, "", err)
 		if err != nil && firstErr == nil {
 			firstErr = err
 		}
@@ -82,7 +88,7 @@ func Sweep(ctx context.Context, home string, cfg Config) (Report, error) {
 		}
 		n, err := sweepSessions(home, cfg.SessionsMaxAgeDays)
 		rep.SessionsRemoved = n
-		fail(err)
+		fail("sessions", err)
 	}
 
 	if cfg.AuditMaxAgeDays > 0 {
@@ -91,16 +97,21 @@ func Sweep(ctx context.Context, home string, cfg Config) (Report, error) {
 		}
 		n, err := sweepAudit(home, cfg.AuditMaxAgeDays)
 		rep.AuditRemoved = n
-		fail(err)
+		fail("audit", err)
 	}
 
+	if cfg.RuntimeLogMaxAgeHours > 0 {
+		n, err := runtimelog.Prune(ctx, filepath.Join(home, "runtime.log"), time.Now().Add(-time.Duration(ClampRetentionHours(cfg.RuntimeLogMaxAgeHours))*time.Hour), false)
+		rep.RuntimeLogRecordsRemoved = n
+		fail("runtime_log_retention", err)
+	}
 	if cfg.LogMaxMB > 0 {
 		if err := ctx.Err(); err != nil {
 			return rep, err
 		}
 		rotated, err := rotateLogs(home, cfg.LogMaxMB)
 		rep.LogsRotated = rotated
-		fail(err)
+		fail("log_rotation", err)
 	}
 
 	if cfg.PlansMaxAgeDays > 0 {
@@ -109,7 +120,7 @@ func Sweep(ctx context.Context, home string, cfg Config) (Report, error) {
 		}
 		n, err := sweepPlans(home, cfg.PlansMaxAgeDays)
 		rep.PlansRemoved = n
-		fail(err)
+		fail("plans", err)
 	}
 
 	if cfg.ArtifactsMaxAgeHours > 0 {
@@ -119,7 +130,7 @@ func Sweep(ctx context.Context, home string, cfg Config) (Report, error) {
 		n, freed, err := sweepArtifacts(home, time.Duration(cfg.ArtifactsMaxAgeHours)*time.Hour)
 		rep.ArtifactsRemoved = n
 		rep.ArtifactsFreed = freed
-		fail(err)
+		fail("artifacts", err)
 	}
 
 	if err := ctx.Err(); err != nil {
@@ -127,7 +138,7 @@ func Sweep(ctx context.Context, home string, cfg Config) (Report, error) {
 	}
 	freed, err := sweepMedia(home)
 	rep.MediaFreedBytes = freed
-	fail(err)
+	fail("media", err)
 
 	return rep, firstErr
 }
@@ -429,7 +440,7 @@ func sweepAudit(home string, maxAgeDays int) (int, error) {
 // serve.log was once rotated by the real sweep while the preview only knew
 // about two logs.
 func LogRotationNames() []string {
-	return []string{"telegram.log", "schedule.log", "serve.log"}
+	return []string{"telegram.log", "schedule.log", "serve.log", "runtime.log"}
 }
 
 // rotateLogs rotates each log named by LogRotationNames when it exceeds
@@ -444,6 +455,16 @@ func rotateLogs(home string, maxMB int64) ([]string, error) {
 	var rotated []string
 	for _, name := range LogRotationNames() {
 		path := filepath.Join(home, name)
+		if name == "runtime.log" {
+			did, err := runtimelog.Rotate(path, limit)
+			if err != nil {
+				return rotated, fmt.Errorf("maintenance: rotate runtime.log: %w", err)
+			}
+			if did {
+				rotated = append(rotated, path)
+			}
+			continue
+		}
 		info, err := os.Stat(path)
 		if err != nil {
 			if os.IsNotExist(err) {

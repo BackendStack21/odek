@@ -30,6 +30,7 @@ import (
 	"github.com/BackendStack21/odek/internal/bgproc"
 	"github.com/BackendStack21/odek/internal/budget"
 	"github.com/BackendStack21/odek/internal/config"
+	"github.com/BackendStack21/odek/internal/diagnostics"
 	"github.com/BackendStack21/odek/internal/events"
 	"github.com/BackendStack21/odek/internal/guard"
 	"github.com/BackendStack21/odek/internal/llmclient"
@@ -459,6 +460,7 @@ func serveCmd(args []string) error {
 		defer sl.Close()
 		sl.logf("serve_started addr=%s pid=%d", addr, os.Getpid())
 	} else {
+		diagnostics.Warning("serve", "surface_log_open", err)
 		fmt.Fprintf(os.Stderr, "odek serve: durable run log disabled (%v)\n", err)
 	}
 
@@ -716,7 +718,7 @@ func requestServeShutdown() {
 // pre-request header phase and idle keep-alives are timed).
 func newServeHTTPServer(mux *http.ServeMux) *http.Server {
 	return &http.Server{
-		Handler:           mux,
+		Handler:           diagnosticHTTPHandler(mux),
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}
@@ -743,6 +745,7 @@ func serveOnListener(listener net.Listener, mux *http.ServeMux) error {
 	var servingError error
 	select {
 	case servingError = <-serveErr:
+		diagnostics.Report("serve", "listener", "", servingError)
 		fmt.Fprintf(os.Stderr, "odek serve: listener failed: %v; shutting down...\n", servingError)
 	case sig := <-quit:
 		fmt.Fprintf(os.Stderr, "\nodek serve: %s received, shutting down...\n", sig)
@@ -754,6 +757,7 @@ func serveOnListener(listener net.Listener, mux *http.ServeMux) error {
 	httpCtx, httpCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer httpCancel()
 	if err := srv.Shutdown(httpCtx); err != nil {
+		diagnostics.Report("serve", "shutdown", "", err)
 		fmt.Fprintf(os.Stderr, "odek serve: http shutdown: %v\n", err)
 	}
 
@@ -1070,6 +1074,7 @@ func newServeAgent(resolved config.ResolvedConfig, system string, runKey string,
 		},
 	}
 	applyResolvedProvider(&serveCfg, resolved)
+	serveCfg.RuntimeLogSurface = "serve"
 	agent, err := odek.New(serveCfg)
 	if err != nil {
 		// Container was started but agent construction failed — clean up now
@@ -1842,6 +1847,11 @@ func handlePrompt(
 	// failed turn must not unwind a daemon goroutine and terminate the host.
 	defer func() {
 		if recovered := recover(); recovered != nil {
+			sid := ""
+			if sess != nil {
+				sid = sess.ID
+			}
+			diagnostics.Emit(events.Event{Type: "panic_recovered", SessionID: sid, TurnID: turnID, Data: map[string]any{"component": "serve", "operation": "turn", "error_class": "panic"}})
 			atomic.AddInt64(&serveStats.PromptsFailed, 1)
 			serveLogf("turn panic contained")
 			if sess != nil {
@@ -2964,6 +2974,7 @@ func newSubagentLogRelay(send func(v any) error) func(taskIdx int, taskID string
 }
 
 func sendError(send func(map[string]any), msg string) {
+	diagnostics.Warning("serve", "request_rejected", nil)
 	send(map[string]any{"type": "error", "message": msg})
 }
 

@@ -18,6 +18,7 @@ import (
 	"github.com/BackendStack21/odek/internal/budget"
 	"github.com/BackendStack21/odek/internal/config"
 	"github.com/BackendStack21/odek/internal/danger"
+	"github.com/BackendStack21/odek/internal/diagnostics"
 	"github.com/BackendStack21/odek/internal/events"
 	"github.com/BackendStack21/odek/internal/guard"
 	"github.com/BackendStack21/odek/internal/llmclient"
@@ -1528,12 +1529,14 @@ const globalConfigTemplate = `{
     "timezone": "UTC",
     "catchup": false
   },
+  "logging": {"enabled": false},
   "maintenance": {
     "enabled": true,
     "interval_minutes": 60,
     "sessions_max_age_days": 30,
     "audit_max_age_days": 14,
     "log_max_mb": 50,
+    "runtime_log_max_age_hours": 168,
     "plans_max_age_days": 30,
     "artifacts_max_age_hours": 24
   },
@@ -1963,6 +1966,7 @@ func run(args []string) error {
 		Limits:            resolved.Limits,
 	}
 	applyResolvedProvider(&runCfg, resolved)
+	runCfg.RuntimeLogSurface = "run"
 	agent, err := odek.New(runCfg)
 	if err != nil {
 		return err
@@ -2055,6 +2059,7 @@ func run(args []string) error {
 	if sessionID == "" {
 		sessionID = session.GenerateID()
 	}
+	agent.SetToolSessionID(sessionID)
 	ctx = withReadLedger(ctx, sessionID)
 	if auditStore == nil {
 		store, err := session.NewStore()
@@ -2319,6 +2324,7 @@ func ensureSandbox(resolved config.ResolvedConfig, tools []odek.Tool, cfg sandbo
 }
 
 func setupSandbox(tools []odek.Tool, cfg sandboxConfig) (containerName string, cleanup func() error, err error) {
+	defer func() { diagnostics.Report("sandbox", "setup", "", err) }()
 	// An implicit Dockerfile.odek build executes repo-controlled code on the
 	// host; refuse to proceed unless it was approved (startup prompt, trusted
 	// project, or ODEK_APPROVE_PROJECT_SANDBOX=1). Skipped when an explicit
@@ -2507,6 +2513,14 @@ type toolConfig struct {
 // applyResolvedProvider copies the v2 LLM identity (provider registry +
 // timeout/window) onto an odek.Config built from a ResolvedConfig.
 func applyResolvedProvider(cfg *odek.Config, resolved config.ResolvedConfig) {
+	if resolved.Logging.Enabled {
+		cfg.RuntimeLogPath = expandHome("~/.odek/runtime.log")
+		cfg.RuntimeLogMaxMB = resolved.Maintenance.LogMaxMB
+		// Prices support estimates on every surface without adding budget caps.
+		cfg.Limits.InputCostPerMillionUSD = resolved.Limits.InputCostPerMillionUSD
+		cfg.Limits.OutputCostPerMillionUSD = resolved.Limits.OutputCostPerMillionUSD
+		cfg.Limits.ModelPrices = resolved.Limits.ModelPrices
+	}
 	cfg.Provider = resolved.Provider
 	cfg.Providers = resolved.ProviderOverrides()
 	if resolved.LLM.RequestTimeoutSeconds > 0 {
@@ -3345,7 +3359,9 @@ func continueCmd(args []string) error {
 		Guard:            injectionGuard,
 		GuardConfig:      resolved.Guard,
 	}
+	contCfg.EventContext.SessionID = sess.ID
 	applyResolvedProvider(&contCfg, resolved)
+	contCfg.RuntimeLogSurface = "continue"
 	agent, err := odek.New(contCfg)
 	if err != nil {
 		return err

@@ -6,8 +6,11 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"slices"
 
 	"github.com/BackendStack21/odek/internal/budget"
+	"github.com/BackendStack21/odek/internal/diagnostics"
+	"github.com/BackendStack21/odek/internal/events"
 )
 
 // dispatch routes a top-level CLI invocation to its handler. It takes the
@@ -27,6 +30,19 @@ func dispatch(args []string) int {
 
 	cmd := args[0]
 	rest := args[1:]
+	// Protocol children relay diagnostics through their parent once initialized.
+	// Keep version queries independent of configuration and filesystem writes.
+	preview := cmd == "cleanup" && slices.Contains(rest, "--dry-run")
+	if !preview && (cmd != "subagent" || subagentDepth() == 0) && cmd != "version" && cmd != "--version" && cmd != "-v" {
+		closeLog := startOperationalLogging(commandSurface(cmd))
+		defer closeLog()
+		defer func() {
+			if value := recover(); value != nil {
+				diagnostics.Emit(events.Event{Type: "panic_recovered", Data: map[string]any{"component": "cli", "operation": "dispatch", "error_class": "panic"}})
+				panic(value) // preserve the original crash behavior after flushing
+			}
+		}()
+	}
 
 	switch cmd {
 	case "run":
@@ -66,6 +82,7 @@ func dispatch(args []string) int {
 	case "upgrade":
 		return cliExit(upgradeCmd(rest))
 	default:
+		diagnostics.Warning("cli", "unknown_command", nil)
 		fmt.Fprintf(os.Stderr, "odek: unknown command %q\n", cmd)
 		printUsage()
 		return 1
@@ -78,6 +95,7 @@ func cliExit(err error) int {
 	if err == nil {
 		return 0
 	}
+	logCommandFailure(err)
 	fmt.Fprintf(os.Stderr, "odek: %v\n", err)
 	return 1
 }
@@ -90,6 +108,7 @@ func runExit(err error) int {
 	if err == nil {
 		return 0
 	}
+	logCommandFailure(err)
 	fmt.Fprintf(os.Stderr, "odek: %v\n", err)
 	if _, ok := budget.As(err); ok {
 		return 4
@@ -123,6 +142,7 @@ func subagentExit(err error) int {
 		// Pre-run budget stop (share-mode exhaustion): the typed budget
 		// error arrived before any run started. Same wire contract as a
 		// mid-run exhaustion — budget_exhausted envelope, exit code 4.
+		logCommandFailure(err)
 		fmt.Fprintf(os.Stderr, "odek: %v\n", err)
 		_ = json.NewEncoder(os.Stdout).Encode(subagentResult{
 			Status:        "budget_exhausted",
@@ -131,6 +151,7 @@ func subagentExit(err error) int {
 		})
 		return 4
 	}
+	logCommandFailure(err)
 	fmt.Fprintf(os.Stderr, "odek: %v\n", err)
 	_ = json.NewEncoder(os.Stdout).Encode(subagentResult{
 		Status: "error",
@@ -148,5 +169,15 @@ func printVersion() {
 	fmt.Printf("  os/arch: %s/%s\n", runtime.GOOS, runtime.GOARCH)
 	if date := getVCSTime(); date != "" {
 		fmt.Printf("  built:   %s\n", date)
+	}
+}
+
+// commandSurface never copies an arbitrary CLI argument into metadata.
+func commandSurface(cmd string) string {
+	switch cmd {
+	case "run", "subagent", "continue", "init", "session", "audit", "repl", "skill", "serve", "mcp", "telegram", "schedule", "memory", "cleanup", "upgrade":
+		return cmd
+	default:
+		return "cli"
 	}
 }

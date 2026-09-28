@@ -65,3 +65,14 @@ func TryLock(path string) (func(), error) {
 		f.Close()
 	}, nil
 }
+
+// TryLockFile locks an already-open file without reopening its path. The caller
+// retains ownership of f and must keep it open until the returned unlock runs.
+// This permits callers to enforce no-symlink/regular-file checks on the exact
+// inode being locked.
+func TryLockFile(f *os.File) (func(), error) {
+	if err := tryLockFile(int(f.Fd())); err != nil {
+		return nil, err
+	}
+	return func() { unlockFile(int(f.Fd())) }, nil
+}

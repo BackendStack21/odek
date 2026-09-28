@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/BackendStack21/odek/internal/diagnostics"
+	"github.com/BackendStack21/odek/internal/events"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -1385,6 +1387,7 @@ func handleChatMessage(
 	// Recover from panics so a single bad agent run doesn't deadlock the chat.
 	defer func() {
 		if r := recover(); r != nil {
+			diagnostics.Emit(events.Event{Type: "panic_recovered", Data: map[string]any{"component": "telegram", "operation": "handler", "error_class": "panic"}})
 			log.Error("panic in handleChatMessage", "chat_id", chatID, "panic", r)
 			reportError(bot, chatID, messageID, fmt.Sprintf(
 				"Internal error: %v\n\nThe bot is still running. Use /new to start a fresh session.", r,
@@ -1992,7 +1995,9 @@ func handleChatMessage(
 		GuardConfig:     telegramGuardCfg,
 	}
 
+	agentCfg.EventContext.SessionID = sess.ID
 	applyResolvedProvider(&agentCfg, resolved)
+	agentCfg.RuntimeLogSurface = "telegram"
 	agent, err := odek.New(agentCfg)
 	if err != nil {
 		reportError(bot, chatID, messageID, "Failed to create agent: "+err.Error())
@@ -2462,6 +2467,7 @@ func sendAsync(bot *telegram.Bot, chatID int64, text string, opts *telegram.Send
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
+				diagnostics.Emit(events.Event{Type: "panic_recovered", Data: map[string]any{"component": "telegram", "operation": "handler", "error_class": "panic"}})
 				fmt.Fprintf(os.Stderr, "odek telegram: async send panic: %v\n", r)
 			}
 		}()

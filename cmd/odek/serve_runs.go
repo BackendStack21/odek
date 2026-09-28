@@ -42,6 +42,7 @@ import (
 	"time"
 
 	"github.com/BackendStack21/odek/internal/config"
+	"github.com/BackendStack21/odek/internal/diagnostics"
 	"github.com/BackendStack21/odek/internal/events"
 	"github.com/BackendStack21/odek/internal/resource"
 	"github.com/BackendStack21/odek/internal/session"
@@ -930,6 +931,7 @@ func startServeRun(
 		defer serveRunsWG.Done()
 		defer func() {
 			if recovered := recover(); recovered != nil {
+				diagnostics.Emit(events.Event{Type: "panic_recovered", Data: map[string]any{"component": "serve", "operation": "headless_run", "error_class": "panic"}})
 				run.finish("failed", "run failed: internal error")
 				serveLogf("run panic contained run_id=%s", run.ID)
 			}

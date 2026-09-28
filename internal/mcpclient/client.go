@@ -42,6 +42,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/BackendStack21/odek/internal/artifact"
+	"github.com/BackendStack21/odek/internal/diagnostics"
 )
 
 // ── Protocol Constants ──────────────────────────────────────────────────
@@ -359,7 +360,8 @@ func validateName(kind, name string) error {
 
 // New spawns an MCP server process and returns a client connected to it.
 // The server process is started immediately and cleaned up on Close().
-func New(name string, cfg ServerConfig) (*Client, error) {
+func New(name string, cfg ServerConfig) (_ *Client, setupErr error) {
+	defer func() { diagnostics.Report("mcp", "connect", "", setupErr) }()
 	if err := validateName("server", name); err != nil {
 		return nil, err
 	}
@@ -568,7 +570,8 @@ func (c *Client) Warnings() []string { return append([]string(nil), c.warnings..
 func (c *Client) ArtifactRoots() []string { return append([]string(nil), c.artifactRoots...) }
 
 // Discover performs the MCP handshake and returns all available tools.
-func (c *Client) Discover(ctx context.Context) ([]ToolDef, error) {
+func (c *Client) Discover(ctx context.Context) (_ []ToolDef, setupErr error) {
+	defer func() { diagnostics.Report("mcp", "discover", "", setupErr) }()
 	// Step 1: Initialize
 	if _, err := c.call(ctx, "initialize", json.RawMessage(`{"protocolVersion":"`+ProtocolVersion+`","capabilities":{},"clientInfo":{"name":"odek","version":"dev"}}`)); err != nil {
 		return nil, fmt.Errorf("mcpclient %s: initialize: %w", c.name, err)

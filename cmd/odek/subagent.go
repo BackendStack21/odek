@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/BackendStack21/odek/internal/session"
 	"io"
 	"os"
 	"os/signal"
@@ -19,9 +18,13 @@ import (
 	"github.com/BackendStack21/odek/internal/budget"
 	"github.com/BackendStack21/odek/internal/config"
 	"github.com/BackendStack21/odek/internal/danger"
+	"github.com/BackendStack21/odek/internal/diagnostics"
+	"github.com/BackendStack21/odek/internal/events"
 	"github.com/BackendStack21/odek/internal/loop"
 	"github.com/BackendStack21/odek/internal/redact"
 	"github.com/BackendStack21/odek/internal/render"
+	"github.com/BackendStack21/odek/internal/runtimelog"
+	"github.com/BackendStack21/odek/internal/session"
 	"github.com/BackendStack21/odek/internal/skills"
 )
 
@@ -718,16 +721,18 @@ func parseSubagentFlags(args []string) (subagentFlags, error) {
 // operator-defined capability profile; it was previously dropped by the
 // inline parser, so profiled delegate_tasks tasks silently ran bare.
 type taskFileSpec struct {
-	TaskID      string      `json:"task_id,omitempty"`
-	Protocol    int         `json:"protocol,omitempty"`
-	Goal        string      `json:"goal"`
-	Context     string      `json:"context"`
-	Guidance    string      `json:"guidance,omitempty"`
-	TrustLevel  string      `json:"trust_level,omitempty"`
-	MaxRisk     string      `json:"max_risk,omitempty"`
-	Profile     string      `json:"profile,omitempty"`
-	Budget      *taskBudget `json:"budget,omitempty"`
-	ParentTrust string      `json:"parent_trust,omitempty"`
+	EventContext  events.Context `json:"event_context,omitempty"`
+	RuntimeEvents bool           `json:"runtime_events,omitempty"`
+	TaskID        string         `json:"task_id,omitempty"`
+	Protocol      int            `json:"protocol,omitempty"`
+	Goal          string         `json:"goal"`
+	Context       string         `json:"context"`
+	Guidance      string         `json:"guidance,omitempty"`
+	TrustLevel    string         `json:"trust_level,omitempty"`
+	MaxRisk       string         `json:"max_risk,omitempty"`
+	Profile       string         `json:"profile,omitempty"`
+	Budget        *taskBudget    `json:"budget,omitempty"`
+	ParentTrust   string         `json:"parent_trust,omitempty"`
 	// ArtifactRoot is the per-task directory the PARENT created
 	// (~/.odek/artifacts/<session>/<task>). When set, the runner scans it at
 	// exit and attaches odek.artifact-ref/v1 refs to the result. Additive
@@ -779,11 +784,13 @@ func subagentCmd(args []string) error {
 	var taskGuidance string // how-to-approach guidance from the parent (if any)
 	var taskTrust string    // "trusted" or "untrusted" (from parent agent)
 	var taskMaxRisk string
-	var taskProfile string                 // capability profile selected by the parent
-	var taskBudgetBlock *taskBudget        // parent's remaining budget (share mode)
-	var taskArtifactRoot string            // per-task artifact dir from the envelope
-	var taskTaskID string                  // envelope task id (staging key)
-	var parentTrust string                 // parent's own effective trust
+	var taskProfile string          // capability profile selected by the parent
+	var taskBudgetBlock *taskBudget // parent's remaining budget (share mode)
+	var taskArtifactRoot string     // per-task artifact dir from the envelope
+	var taskTaskID string           // envelope task id (staging key)
+	var parentTrust string          // parent's own effective trust
+	var eventContext events.Context
+	var runtimeEvents bool
 	var taskID string                      // telemetry correlation id (protocol-2 parents)
 	var taskProtocol int                   // telemetry protocol version from the envelope
 	var taskProvider string                // parent-selected go-llm-sdk provider
@@ -821,6 +828,9 @@ func subagentCmd(args []string) error {
 		// stamp a task id; the child echoes it on every stdout record and
 		// frames its final result so the parent cannot misparse.
 		taskID = taskSpec.TaskID
+		eventContext = taskSpec.EventContext
+		eventContext.TaskID = taskID
+		runtimeEvents = taskSpec.RuntimeEvents
 		taskProtocol = taskSpec.Protocol
 		taskProvider = taskSpec.Provider
 		taskModel = taskSpec.Model
@@ -1108,34 +1118,47 @@ func subagentCmd(args []string) error {
 	if cfg.stream {
 		protocol2 = taskID != "" && taskProtocol >= subagentProtocolV2
 		if protocol2 {
-			telemetry = newSubagentTelemetryWriter(os.Stdout, taskID)
-			telemetry.emit(map[string]any{
-				"type":      "subagent_started",
-				"pid":       os.Getpid(),
-				"depth":     subagentDepth(),
-				"timeout_s": cfg.timeout,
-				"max_iter":  cfg.maxIter,
-			})
+			telemetry = newSubagentTelemetryWriterWithWire(os.Stdout, taskID, wireCtx)
+			telemetry.emitStarted(os.Getpid(), subagentDepth(), cfg.timeout, cfg.maxIter)
+			if runtimeEvents {
+				aCfg.EventContext = eventContext
+				aCfg.EventHandler = func(ev events.Event) {
+					if safe, ok := runtimelog.Sanitize(ev); ok {
+						telemetry.emit(map[string]any{"type": "runtime_event", "event": safe})
+					}
+				}
+			}
 		}
 		aCfg.ToolEventHandler = func(event, name, data string) {
-			line, _ := json.Marshal(map[string]string{
-				"type": event,
-				"name": name,
-				"data": data,
-			})
-			os.Stdout.Write(line)
-			os.Stdout.Write([]byte("\n"))
+			rec := map[string]any{"type": event, "name": name, "data": data}
+			if telemetry != nil {
+				telemetry.emit(rec)
+			} else {
+				line, _ := json.Marshal(rec)
+				_, _ = os.Stdout.Write(append(line, '\n'))
+			}
 			if telemetry != nil && event == "tool_call" {
 				telemetry.emitProgress(name)
 			}
 		}
 	}
+	if aCfg.EventContext.SessionID == "" {
+		aCfg.EventContext.SessionID = cfg.parentSession
+	}
 	applyResolvedProvider(&aCfg, resolved)
+	aCfg.RuntimeLogSurface = "subagent"
+	if protocol2 {
+		aCfg.RuntimeLogPath = ""
+	}
 	agent, err = odek.New(aCfg)
 	if err != nil {
 		return fmt.Errorf("create agent: %w", err)
 	}
 	defer agent.Close()
+	if protocol2 && runtimeEvents {
+		restoreDiagnostics := diagnostics.Install(agent.EmitEvent)
+		defer restoreDiagnostics()
+	}
 	if bgRT != nil {
 		agent.SetBackgroundNoticeProvider(bgRT.provider)
 	}
@@ -1252,6 +1275,14 @@ func subagentCmd(args []string) error {
 		result.CostUSD = usage.CostUSD
 	}
 
+	// Drain runtime records before the terminal envelope. Close is idempotent
+	// for the emitter; the deferred Agent.Close still handles other resources.
+	if runtimeEvents {
+		agent.FlushEvents()
+		if n := agent.DroppedEvents(); n > 0 {
+			telemetry.emit(map[string]any{"type": "runtime_event", "event": events.Event{Type: "logging_dropped", RunID: agent.RunID(), TaskID: taskID, Data: map[string]any{"dropped": n}}})
+		}
+	}
 	// Output JSON to stdout — the envelope is emitted exactly once, here.
 	// Protocol-2 children emit a compact subagent_finished record followed
 	// by a FRAMED result ({"type":"result",…}) so the parent's parser
@@ -1292,13 +1323,7 @@ func subagentCmd(args []string) error {
 		if merr == nil {
 			var inner map[string]any
 			_ = json.Unmarshal(raw, &inner)
-			framed, _ := json.Marshal(map[string]any{
-				"type":    "result",
-				"task_id": taskID,
-				"result":  inner,
-			})
-			os.Stdout.Write(framed)
-			os.Stdout.Write([]byte("\n"))
+			telemetry.emit(map[string]any{"type": "result", "result": inner})
 		} else {
 			enc := json.NewEncoder(os.Stdout)
 			enc.Encode(result)

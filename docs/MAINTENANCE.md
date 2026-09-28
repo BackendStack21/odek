@@ -41,7 +41,7 @@ commands (`odek run`, `odek repl`, …) do not run the janitor — use
 | Plans | `~/.odek/plans/**/*.md` (by mtime) | `plans_max_age_days` | 30 days |
 | Sub-agent artifacts | `~/.odek/artifacts/<session>/<task>/` and `~/.odek/artifacts/unfiled/<task>/` (task dirs by their own mtime; aged session dirs also go wholesale) | `artifacts_max_age_hours` | 24 hours (backstop — live removal happens on session delete) |
 | Telegram media | `~/.odek/media/` (by mtime) | fixed: 1 hour | freed bytes reported |
-| Logs | `~/.odek/telegram.log`, `~/.odek/schedule.log`, `~/.odek/serve.log` | `log_max_mb` | 50 MB (rotated) |
+| Logs | `~/.odek/telegram.log`, `~/.odek/schedule.log`, `~/.odek/serve.log`, `~/.odek/runtime.log` | `log_max_mb` | 50 MB (rotated) |
 
 Age for sessions is measured from the session's `updated_at`; for audit
 records, plans, and media from the file's modification time. Sub-agent
@@ -89,6 +89,7 @@ The `[maintenance]` section (all keys optional — defaults shown):
 | `sessions_max_age_days` | `30` | Delete sessions older than this |
 | `audit_max_age_days` | `14` | Delete prompt-injection audit records older than this |
 | `log_max_mb` | `50` | Rotate logs larger than this |
+| `runtime_log_max_age_hours` | `168` | Remove older timestamped runtime records from current and backup logs; `0` keeps them indefinitely |
 | `plans_max_age_days` | `30` | Delete plans older than this |
 | `artifacts_max_age_hours` | `24` | Sweep sub-agent artifact task dirs older than this, in any parent (including `unfiled`; emptied parent dirs are pruned; `0` keeps them forever; live removal still happens on session delete) |
 
@@ -144,3 +145,5 @@ you want to inspect the candidate list.
 - `internal/session` — session files are also capped at 32 MiB **at write
   time**: an oversized transcript is trimmed (oldest turns first, keeping the
   system message and the most recent turns) so it never becomes unloadable.
+
+See [Runtime logging](LOGGING.md) for runtime log expiration, correlation, and rotation semantics.

@@ -25,6 +25,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/BackendStack21/odek/internal/diagnostics"
 	"github.com/BackendStack21/odek/internal/fsatomic"
 )
 
@@ -167,7 +168,8 @@ func (s *AuditStore) loadLocked(sessionID string) (AuditLog, error) {
 	return log, nil
 }
 
-func (s *AuditStore) saveLocked(sessionID string, log AuditLog) error {
+func (s *AuditStore) saveLocked(sessionID string, log AuditLog) (saveErr error) {
+	defer func() { diagnostics.Report("audit", "save", sessionID, saveErr) }()
 	if err := os.MkdirAll(s.dir, 0700); err != nil {
 		return err
 	}

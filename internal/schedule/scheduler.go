@@ -4,6 +4,8 @@ import (
 	"context"
 	"sync"
 	"time"
+
+	"github.com/BackendStack21/odek/internal/diagnostics"
 )
 
 // Runner executes one scheduled job's task and returns the agent's final text,
@@ -397,11 +399,13 @@ func (s *Scheduler) execute(ctx context.Context, job Job, firedAt time.Time) {
 	case err != nil:
 		st.LastStatus = StatusError
 		st.LastError = err.Error()
+		diagnostics.Report("schedule", "run_job", "", err)
 		s.log.Error("scheduler: job run failed", "id", job.ID, "name", job.Name, "error", err)
 	default:
 		if derr := s.deliverer.Deliver(runCtx, job, result); derr != nil {
 			st.LastStatus = StatusError
 			st.LastError = "delivery: " + derr.Error()
+			diagnostics.Report("schedule", "delivery", "", derr)
 			s.log.Error("scheduler: delivery failed", "id", job.ID, "name", job.Name, "error", derr)
 		} else {
 			st.LastStatus = StatusOK
