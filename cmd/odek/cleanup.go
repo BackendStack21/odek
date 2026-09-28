@@ -11,6 +11,7 @@ import (
 
 	"github.com/BackendStack21/odek/internal/config"
 	"github.com/BackendStack21/odek/internal/maintenance"
+	"github.com/BackendStack21/odek/internal/runtimelog"
 	"github.com/BackendStack21/odek/internal/session"
 )
 
@@ -82,11 +83,12 @@ func startStorageMaintenance(ctx context.Context, resolved config.ResolvedConfig
 // success line when there was nothing to do.
 func printCleanupReport(r maintenance.Report) {
 	if r.SessionsRemoved == 0 && r.AuditRemoved == 0 && r.PlansRemoved == 0 &&
-		r.ArtifactsRemoved == 0 && r.MediaFreedBytes == 0 && len(r.LogsRotated) == 0 {
+		r.RuntimeLogRecordsRemoved == 0 && r.ArtifactsRemoved == 0 && r.MediaFreedBytes == 0 && len(r.LogsRotated) == 0 {
 		fmt.Println("Storage is clean — nothing to remove.")
 		return
 	}
 	fmt.Println("Cleanup complete:")
+	fmt.Printf("  runtime records removed: %d\n", r.RuntimeLogRecordsRemoved)
 	fmt.Printf("  sessions removed:      %d\n", r.SessionsRemoved)
 	fmt.Printf("  audit records removed: %d\n", r.AuditRemoved)
 	fmt.Printf("  plans removed:         %d\n", r.PlansRemoved)
@@ -220,12 +222,23 @@ func filesOlderThan(dir string, cutoff time.Time, recursive bool) []string {
 
 // printCleanupDryRun reports the candidate list without removing anything.
 func printCleanupDryRun(home string, cfg maintenance.Config) {
+	expired := 0
+	if cfg.RuntimeLogMaxAgeHours > 0 {
+		n, err := runtimelog.Prune(context.Background(), filepath.Join(home, "runtime.log"), time.Now().Add(-time.Duration(maintenance.ClampRetentionHours(cfg.RuntimeLogMaxAgeHours))*time.Hour), true)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "runtime log preview failed: %v\n", err)
+		} else {
+			expired = n
+		}
+	}
+
 	c := collectCleanupCandidates(home, cfg)
-	if len(c.sessions) == 0 && len(c.audit) == 0 && len(c.plans) == 0 && len(c.logs) == 0 && len(c.artifacts) == 0 {
+	if expired == 0 && len(c.sessions) == 0 && len(c.audit) == 0 && len(c.plans) == 0 && len(c.logs) == 0 && len(c.artifacts) == 0 {
 		fmt.Println("Dry run: storage is clean — nothing would be removed.")
 		return
 	}
 	fmt.Println("Dry run — nothing removed. Would remove:")
+	fmt.Printf("  runtime records expired: %d\n", expired)
 	fmt.Printf("  sessions:            %d\n", len(c.sessions))
 	fmt.Printf("  audit records:       %d\n", len(c.audit))
 	fmt.Printf("  plans:               %d\n", len(c.plans))

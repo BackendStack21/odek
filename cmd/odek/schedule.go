@@ -756,6 +756,7 @@ func runTaskHeadless(ctx context.Context, resolved config.ResolvedConfig, system
 		DangerousConfig: &dangerCfg,
 	}
 	applyResolvedProvider(&schedCfg, resolved)
+	schedCfg.RuntimeLogSurface = "schedule"
 	agent, err := odek.New(schedCfg)
 	if err != nil {
 		return "", 0, err
@@ -769,6 +770,7 @@ func runTaskHeadless(ctx context.Context, resolved config.ResolvedConfig, system
 	// runLoop choke point. Keeping the returned history lets unattended runs
 	// receive the same IPI ingest/divergence audit as interactive surfaces.
 	auditID := fmt.Sprintf("schedule-%d", time.Now().UnixNano())
+	agent.SetToolSessionID(auditID)
 	auditStore := session.NewAuditStore(expandHome("~/.odek/sessions"))
 	ctx = withAuditRecorder(ctx, auditStore, auditID, 1)
 	ctx = withReadLedger(ctx, auditID)

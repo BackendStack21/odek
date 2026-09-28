@@ -210,7 +210,11 @@ func replCmd(args []string) error {
 		Guard:            injectionGuard,
 		GuardConfig:      resolved.Guard,
 	}
+	if sess != nil {
+		replCfg.EventContext.SessionID = sess.ID
+	}
 	applyResolvedProvider(&replCfg, resolved)
+	replCfg.RuntimeLogSurface = "repl"
 	agent, err := odek.New(replCfg)
 	if err != nil {
 		return err

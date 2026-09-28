@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/BackendStack21/odek/internal/diagnostics"
 	"github.com/BackendStack21/odek/internal/flock"
 	"github.com/BackendStack21/odek/internal/transport"
 )
@@ -84,7 +85,8 @@ func (b *Bot) url(method string) string {
 
 // doJSONContext is like doJSON but respects context cancellation.
 // It uses context-aware HTTP requests and checks context.Done() during retry backoff.
-func (b *Bot) doJSONContext(ctx context.Context, method string, body any, dest any) error {
+func (b *Bot) doJSONContext(ctx context.Context, method string, body any, dest any) (requestErr error) {
+	defer func() { reportAPIFailure("api_request", requestErr) }()
 	var reqBody []byte
 	if body != nil {
 		var err error
@@ -191,7 +193,8 @@ func (b *Bot) StopRetries() {
 // Retries on transient errors: network errors, 429 (rate limit), and 5xx
 // server errors, with exponential backoff (1s, 2s, 4s, 8s; max 4 retries).
 // Does NOT retry on 4xx errors (except 429) — those are client errors.
-func (b *Bot) doJSON(method string, body any, dest any) error {
+func (b *Bot) doJSON(method string, body any, dest any) (requestErr error) {
+	defer func() { reportAPIFailure("api_request", requestErr) }()
 	var reqBody []byte
 	if body != nil {
 		var err error
@@ -283,7 +286,8 @@ func (b *Bot) doJSON(method string, body any, dest any) error {
 // NOTE: The entire file is read into memory before sending (bodyBytes).
 // This is intentional — it allows retry without re-reading the file from disk.
 // Telegram's 50 MB upload limit makes this acceptable for bot use cases.
-func (b *Bot) doUpload(method string, field string, path string, params map[string]any, dest any) error {
+func (b *Bot) doUpload(method string, field string, path string, params map[string]any, dest any) (requestErr error) {
+	defer func() { reportAPIFailure("upload", requestErr) }()
 	file, err := os.Open(path)
 	if err != nil {
 		b.log.Error("open file failed", "method", method, "path", path, "error", err)
@@ -784,4 +788,17 @@ func (b *Bot) SendChatAction(chatID int64, action string) error {
 		"action":  action,
 	}
 	return b.doJSON("sendChatAction", params, nil)
+}
+
+func reportAPIFailure(operation string, err error) {
+	if err == nil {
+		return
+	}
+	ev := diagnostics.Failure("telegram", operation, "", err)
+	var api *TelegramError
+	if errors.As(err, &api) {
+		ev.Data["http_status"] = api.Code
+		ev.Data["error_class"] = "telegram_api"
+	}
+	diagnostics.Emit(ev)
 }

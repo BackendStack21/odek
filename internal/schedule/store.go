@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/BackendStack21/odek/internal/diagnostics"
 	"github.com/BackendStack21/odek/internal/fsatomic"
 )
 
@@ -363,7 +364,8 @@ func (s *Store) saveState(sd *stateDoc) error {
 // its zero/default value so callers start from an empty document. Files larger
 // than maxScheduleFileBytes are rejected to prevent OOM from a tampered or
 // corrupted multi-gigabyte blob.
-func readJSON(path string, v any) error {
+func readJSON(path string, v any) (readErr error) {
+	defer func() { diagnostics.Report("schedule", "read_store", "", readErr) }()
 	fd, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -406,7 +408,8 @@ func readJSON(path string, v any) error {
 // The actual atomic write is delegated to internal/fsatomic, which uses a
 // random temp name with O_EXCL (so a pre-created symlink cannot be opened)
 // and fsyncs both the data and the parent directory before returning.
-func writeJSONAtomic(path string, v any) error {
+func writeJSONAtomic(path string, v any) (writeErr error) {
+	defer func() { diagnostics.Report("schedule", "write_store", "", writeErr) }()
 	data, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
 		return fmt.Errorf("schedule: marshal %s: %w", filepath.Base(path), err)

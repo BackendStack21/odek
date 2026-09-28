@@ -10,11 +10,9 @@
 package events
 
 import (
-	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
-	"errors"
 	"runtime"
 	"strconv"
 	"strings"
@@ -63,20 +61,40 @@ const (
 	LimitCostUSD      = "cost_usd"
 )
 
+// Context identifies an invocation and its delegation ancestry. SessionID is
+// inherited by children; TurnID distinguishes calls on a reused Agent.
+type Context struct {
+	RunID        string `json:"run_id,omitempty"`
+	SessionID    string `json:"session_id,omitempty"`
+	TurnID       string `json:"turn_id,omitempty"`
+	RootRunID    string `json:"root_run_id,omitempty"`
+	ParentRunID  string `json:"parent_run_id,omitempty"`
+	ParentTurnID string `json:"parent_turn_id,omitempty"`
+	TaskID       string `json:"task_id,omitempty"`
+	ParentTaskID string `json:"parent_task_id,omitempty"`
+}
+
 // Event is a single structured runtime event (schema odek.event/v1).
 //
 // Not every field is set for every Type; the zero value means "not
 // applicable" and is omitted from the JSON form. Data carries the per-type
 // fields documented in docs/EXTENSIONS.md.
 type Event struct {
-	Schema    string         `json:"schema"`
-	Type      string         `json:"type"`
-	RunID     string         `json:"run_id,omitempty"`
-	SessionID string         `json:"session_id,omitempty"`
-	Iteration int            `json:"iteration,omitempty"`
-	Tool      string         `json:"tool,omitempty"`
-	Timestamp time.Time      `json:"timestamp"`
-	Data      map[string]any `json:"data,omitempty"`
+	SourceTaskID string         `json:"source_task_id,omitempty"`
+	TurnID       string         `json:"turn_id,omitempty"`
+	RootRunID    string         `json:"root_run_id,omitempty"`
+	ParentRunID  string         `json:"parent_run_id,omitempty"`
+	ParentTurnID string         `json:"parent_turn_id,omitempty"`
+	TaskID       string         `json:"task_id,omitempty"`
+	ParentTaskID string         `json:"parent_task_id,omitempty"`
+	Schema       string         `json:"schema"`
+	Type         string         `json:"type"`
+	RunID        string         `json:"run_id,omitempty"`
+	SessionID    string         `json:"session_id,omitempty"`
+	Iteration    int            `json:"iteration,omitempty"`
+	Tool         string         `json:"tool,omitempty"`
+	Timestamp    time.Time      `json:"timestamp"`
+	Data         map[string]any `json:"data,omitempty"`
 }
 
 // NewRunID returns a random 128-bit hex run identifier. A fresh ID is
@@ -104,16 +122,7 @@ func ArgsDigest(args string) string {
 // tool_call_failed / run_failed events. Raw error text is never emitted:
 // it may contain attacker-controlled or secret-bearing content.
 func ErrorClass(err error) string {
-	switch {
-	case err == nil:
-		return ""
-	case errors.Is(err, context.Canceled):
-		return "context_canceled"
-	case errors.Is(err, context.DeadlineExceeded):
-		return "deadline_exceeded"
-	default:
-		return "error"
-	}
+	return classifyError(err)
 }
 
 // DefaultBufferSize is the default capacity of an Emitter's dispatch queue.
@@ -136,6 +145,7 @@ type Emitter struct {
 	mu        sync.RWMutex // guards runID, sessionID, and closed
 	runID     string
 	sessionID string
+	context   Context
 	closed    bool
 
 	// dispatchGoroutine identifies the dispatch goroutine so Close can tell
@@ -220,8 +230,29 @@ func (e *Emitter) Emit(ev Event) {
 	if e.closed {
 		return
 	}
-	if ev.RunID == "" {
+	if ev.RunID == "" || ev.RunID == e.runID {
 		ev.RunID = e.runID
+		if ev.TurnID == "" {
+			ev.TurnID = e.context.TurnID
+		}
+		if ev.TaskID == "" {
+			ev.TaskID = e.context.TaskID
+		}
+		if ev.ParentTaskID == "" {
+			ev.ParentTaskID = e.context.ParentTaskID
+		}
+		if ev.ParentRunID == "" {
+			ev.ParentRunID = e.context.ParentRunID
+		}
+		if ev.ParentTurnID == "" {
+			ev.ParentTurnID = e.context.ParentTurnID
+		}
+	}
+	if ev.RootRunID == "" {
+		ev.RootRunID = e.context.RootRunID
+		if ev.RootRunID == "" {
+			ev.RootRunID = e.runID
+		}
 	}
 	if ev.SessionID == "" {
 		ev.SessionID = e.sessionID
@@ -319,4 +350,26 @@ func (e *Emitter) Close() {
 		return
 	}
 	e.wg.Wait()
+}
+
+// SetContext installs trusted correlation metadata before execution begins.
+func (e *Emitter) SetContext(c Context) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.context = c
+	if c.SessionID != "" {
+		e.sessionID = c.SessionID
+	}
+}
+func (e *Emitter) SetTurnID(id string) { e.mu.Lock(); e.context.TurnID = id; e.mu.Unlock() }
+func (e *Emitter) Context() Context {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	c := e.context
+	c.RunID = e.runID
+	c.SessionID = e.sessionID
+	if c.RootRunID == "" {
+		c.RootRunID = e.runID
+	}
+	return c
 }

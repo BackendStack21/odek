@@ -31,6 +31,7 @@ import (
 	"github.com/BackendStack21/odek/internal/budget"
 	"github.com/BackendStack21/odek/internal/config"
 	"github.com/BackendStack21/odek/internal/danger"
+	"github.com/BackendStack21/odek/internal/diagnostics"
 	"github.com/BackendStack21/odek/internal/events"
 	"github.com/BackendStack21/odek/internal/guard"
 	"github.com/BackendStack21/odek/internal/llmclient"
@@ -39,6 +40,7 @@ import (
 	"github.com/BackendStack21/odek/internal/memory/extended"
 	"github.com/BackendStack21/odek/internal/narrate"
 	"github.com/BackendStack21/odek/internal/render"
+	"github.com/BackendStack21/odek/internal/runtimelog"
 	"github.com/BackendStack21/odek/internal/session"
 	"github.com/BackendStack21/odek/internal/skills"
 	"github.com/BackendStack21/odek/internal/tool"
@@ -54,6 +56,13 @@ type Tool interface {
 
 // Config configures an Agent instance.
 type Config struct {
+	// RuntimeLogPath enables asynchronous metadata-only JSONL logging. Empty
+	// disables it. RuntimeLogMaxMB=0 disables size rotation; Surface labels CLI use.
+	RuntimeLogPath    string
+	RuntimeLogMaxMB   int64
+	RuntimeLogSurface string
+	EventContext      events.Context
+
 	// Provider is the go-llm-sdk registry id (deepseek, openai, anthropic,
 	// gemini, zai, kimi, or a custom id from Providers). Empty defaults to
 	// deepseek.
@@ -313,6 +322,7 @@ type Agent struct {
 	sandboxCleanup func() error // destroys the sandbox container on Close()
 	skillManager   *skills.SkillManager
 	memoryManager  *memory.MemoryManager
+	runtimeLog     *runtimelog.Logger
 	emitter        *events.Emitter // non-nil when Config.EventHandler is set
 }
 
@@ -396,7 +406,8 @@ const (
 // If Config.SandboxCleanup is set, the cleanup function is called when
 // Close() is invoked. The caller is responsible for creating the sandbox
 // container and wiring up tool executables to use it before calling New().
-func New(cfg Config) (*Agent, error) {
+func New(cfg Config) (_ *Agent, setupErr error) {
+	defer func() { diagnostics.Report("agent", "initialize", cfg.EventContext.SessionID, setupErr) }()
 	for i, r := range cfg.ExternalRefs {
 		if err := r.Validate(); err != nil {
 			return nil, fmt.Errorf("odek: config external_refs[%d]: %w", i, err)
@@ -741,10 +752,19 @@ func New(cfg Config) (*Agent, error) {
 
 	// Wire agent-loop signal observability (context trim, tool recovery): fan
 	// out to the programmatic handler and the terminal renderer.
-	if cfg.AgentSignalHandler != nil || cfg.Renderer != nil {
+	if cfg.AgentSignalHandler != nil || cfg.Renderer != nil || cfg.EventHandler != nil || cfg.RuntimeLogPath != "" {
 		handler := cfg.AgentSignalHandler
 		renderer := cfg.Renderer
 		engine.SetSignalHandler(func(ev loop.SignalEvent) {
+			if ev.Type == "budget_warning" || ev.Type == "tool_recovery" {
+				data := map[string]any{"count": ev.Count}
+				for _, threshold := range []int{50, 75, 90} {
+					if strings.HasPrefix(ev.Detail, fmt.Sprintf("threshold_%d:", threshold)) {
+						data["threshold_percent"] = threshold
+					}
+				}
+				agent.EmitEvent(events.Event{Type: ev.Type, Tool: ev.Tool, Data: data})
+			}
 			if handler != nil {
 				handler(ev)
 			}
@@ -772,8 +792,23 @@ func New(cfg Config) (*Agent, error) {
 	// emitter dispatches on its own goroutine — buffered, drop-on-full,
 	// panic-isolated — so a slow or panicking handler can never stall or
 	// crash the loop.
-	if cfg.EventHandler != nil {
-		agent.emitter = events.NewEmitter(cfg.EventHandler, events.NewRunID())
+	handler := cfg.EventHandler
+	if cfg.RuntimeLogPath != "" {
+		logger, err := runtimelog.Open(cfg.RuntimeLogPath, cfg.RuntimeLogSurface, cfg.RuntimeLogMaxMB)
+		if err != nil {
+			return nil, fmt.Errorf("open runtime log: %w", err)
+		}
+		agent.runtimeLog = logger
+		handler = func(ev events.Event) {
+			logger.Emit(ev)
+			if cfg.EventHandler != nil {
+				cfg.EventHandler(ev)
+			}
+		}
+	}
+	if handler != nil {
+		agent.emitter = events.NewEmitter(handler, events.NewRunID())
+		agent.emitter.SetContext(cfg.EventContext)
 		engine.SetEventHandler(agent.emitter.Emit)
 		engine.SetEventsIncludeArgs(cfg.EventsIncludeArgs)
 	}
@@ -844,6 +879,7 @@ func (a *Agent) SystemPrompt() string {
 // Run executes the agent loop for the given task and returns the final answer.
 func (a *Agent) Run(ctx context.Context, task string) (string, error) {
 	start := time.Now()
+	a.beginTurn()
 	result, err := a.engine.Run(ctx, task)
 	a.emitRunFinished(start, err)
 	return result, err
@@ -859,9 +895,29 @@ func (a *Agent) Run(ctx context.Context, task string) (string, error) {
 // the conversation can be continued in a future call.
 func (a *Agent) RunWithMessages(ctx context.Context, messages []session.Message) (string, []session.Message, error) {
 	start := time.Now()
+	a.beginTurn()
 	result, msgs, err := a.engine.RunWithMessages(ctx, messages)
 	a.emitRunFinished(start, err)
 	return result, msgs, err
+}
+
+func (a *Agent) beginTurn() {
+	if a.emitter == nil {
+		return
+	}
+	a.emitter.SetTurnID(events.NewRunID())
+	a.bindEventContext()
+	a.emitter.Emit(events.Event{Type: "turn_started", Data: map[string]any{"model": a.config.Model}})
+}
+func (a *Agent) bindEventContext() {
+	if a.emitter == nil || a.registry == nil {
+		return
+	}
+	for _, t := range a.registry.Tools() {
+		if b, ok := t.(interface{ SetEventContext(events.Context) }); ok {
+			b.SetEventContext(a.emitter.Context())
+		}
+	}
 }
 
 // emitRunFinished emits run_completed / run_failed for a finished Run or
@@ -873,9 +929,15 @@ func (a *Agent) emitRunFinished(start time.Time, err error) {
 	durationMs := time.Since(start).Milliseconds()
 	if err != nil {
 		data := map[string]any{
-			"duration_ms": durationMs,
-			"error_class": events.ErrorClass(err),
+			"duration_ms":   durationMs,
+			"error_class":   events.ErrorClass(err),
+			"input_tokens":  a.engine.TotalInputTokens,
+			"output_tokens": a.engine.TotalOutputTokens,
 		}
+		for key, value := range events.ErrorData(err) {
+			data[key] = value
+		}
+		a.appendRuntimeCost(data)
 		a.engine.AppendRunLLMMetrics(data)
 		a.emitter.Emit(events.Event{
 			Type: events.TypeRunFailed,
@@ -888,6 +950,7 @@ func (a *Agent) emitRunFinished(start time.Time, err error) {
 		"input_tokens":  a.engine.TotalInputTokens,
 		"output_tokens": a.engine.TotalOutputTokens,
 	}
+	a.appendRuntimeCost(data)
 	a.engine.AppendRunLLMMetrics(data)
 	a.emitter.Emit(events.Event{
 		Type: events.TypeRunCompleted,
@@ -912,6 +975,7 @@ func (a *Agent) SetEventSessionID(id string) {
 		return
 	}
 	a.emitter.SetSessionID(id)
+	a.bindEventContext()
 }
 
 // sessionToolBinder is implemented by built-in tools that scope persistent
@@ -929,6 +993,7 @@ type sessionToolBinder interface {
 // session surfaces (run/continue/repl/telegram) bind once at startup or per
 // agent construction. No-op on a nil agent or when no tool qualifies.
 func (a *Agent) SetToolSessionID(id string) {
+	a.SetEventSessionID(id)
 	if a == nil || a.registry == nil {
 		return
 	}
@@ -1065,6 +1130,12 @@ func (a *Agent) Close() error {
 	// late events (e.g. run_completed) are not lost on process exit.
 	if a.emitter != nil {
 		a.emitter.Close()
+	}
+	if a.runtimeLog != nil {
+		if a.emitter != nil && a.emitter.Dropped() > 0 {
+			a.runtimeLog.Emit(events.Event{Type: "logging_dropped", RunID: a.RunID(), SessionID: a.emitter.Context().SessionID, Data: map[string]any{"dropped": a.emitter.Dropped()}})
+		}
+		a.runtimeLog.Close()
 	}
 	if a.sandboxCleanup != nil {
 		return a.sandboxCleanup()
@@ -1369,4 +1440,27 @@ func (a *Agent) SetInitialToolCalls(calls []session.ToolCall) {
 	if a != nil && a.engine != nil {
 		a.engine.SetInitialToolCalls(calls)
 	}
+}
+
+// FlushEvents drains and closes the event stream when a one-shot child must
+// write its terminal protocol frame before running deferred cleanup.
+func (a *Agent) FlushEvents() {
+	if a.emitter != nil {
+		a.emitter.Close()
+	}
+}
+
+func (a *Agent) appendRuntimeCost(data map[string]any) {
+	in, out := a.config.Limits.ResolvePrices(a.config.Model)
+	if in > 0 || out > 0 {
+		data["cost_usd"] = a.engine.BudgetUsage().CostUSD
+	}
+}
+
+// DroppedEvents reports loss before the configured event handler received data.
+func (a *Agent) DroppedEvents() uint64 {
+	if a.emitter == nil {
+		return 0
+	}
+	return a.emitter.Dropped()
 }

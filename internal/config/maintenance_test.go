@@ -41,13 +41,14 @@ func TestLoadConfig_MaintenanceGlobalFile(t *testing.T) {
 
 	cfg := LoadConfig(CLIFlags{})
 	want := maintenance.Config{
-		Enabled:              false,
-		IntervalMinutes:      15,
-		SessionsMaxAgeDays:   90,
-		AuditMaxAgeDays:      7,
-		LogMaxMB:             100,
-		PlansMaxAgeDays:      60,
-		ArtifactsMaxAgeHours: 24, // absent from the file ⇒ loader default applies
+		RuntimeLogMaxAgeHours: 168,
+		Enabled:               false,
+		IntervalMinutes:       15,
+		SessionsMaxAgeDays:    90,
+		AuditMaxAgeDays:       7,
+		LogMaxMB:              100,
+		PlansMaxAgeDays:       60,
+		ArtifactsMaxAgeHours:  24, // absent from the file ⇒ loader default applies
 	}
 	if cfg.Maintenance != want {
 		t.Errorf("Maintenance = %+v, want %+v", cfg.Maintenance, want)
@@ -143,13 +144,14 @@ func TestLoadConfig_MaintenanceEnvVars(t *testing.T) {
 
 	cfg := LoadConfig(CLIFlags{})
 	want := maintenance.Config{
-		Enabled:              false,
-		IntervalMinutes:      5,
-		SessionsMaxAgeDays:   7,
-		AuditMaxAgeDays:      3,
-		LogMaxMB:             10,
-		PlansMaxAgeDays:      15,
-		ArtifactsMaxAgeHours: 0, // explicit 0 via env = keep forever
+		RuntimeLogMaxAgeHours: 168,
+		Enabled:               false,
+		IntervalMinutes:       5,
+		SessionsMaxAgeDays:    7,
+		AuditMaxAgeDays:       3,
+		LogMaxMB:              10,
+		PlansMaxAgeDays:       15,
+		ArtifactsMaxAgeHours:  0, // explicit 0 via env = keep forever
 	}
 	if cfg.Maintenance != want {
 		t.Errorf("Maintenance = %+v, want %+v", cfg.Maintenance, want)

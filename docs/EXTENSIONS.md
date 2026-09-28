@@ -205,7 +205,7 @@ Per-type `data` fields:
 | `subagent_completed` | `task_id`, `status`, plus optional `iterations`, `duration_seconds`, `tokens_used`, `artifact_count` when the child result carried them |
 | `subagent_concurrency_wait` | `task_index`, `waited_ms` |
 
-`budget_warning` and `reply_ledger_mismatch` are **not** `odek.event/v1` types. They are `loop.SignalEvent`s (`Config.AgentSignalHandler`, WebSocket `agent_signal`).
+`budget_warning` and `reply_ledger_mismatch` are `loop.SignalEvent`s (`Config.AgentSignalHandler`, WebSocket `agent_signal`). The Agent also forwards metadata-only `budget_warning` and `tool_recovery` runtime events; raw signal detail text is excluded. `reply_ledger_mismatch` remains signal-only.
 
 `call_id` is the stable correlation key between a `tool_call_started` and
 its matching `tool_call_completed`/`tool_call_failed` event: the provider's
@@ -332,3 +332,22 @@ metadata-only lines in the model context, content inlined for text artifacts
 tool (id-keyed; paths never enter the model context). See
 `docs/SUBAGENTS.md — Result artifacts` and `docs/SECURITY.md` for the
 invariants.
+
+## Runtime logging event additions
+
+The additive event envelope also carries `turn_id`, `root_run_id`,
+`parent_run_id`, `parent_turn_id`, `task_id`, `parent_task_id`, and
+`source_task_id` when applicable. `run_id` identifies an Agent instance;
+`turn_id` distinguishes repeated Run/RunWithMessages calls on that instance.
+Additional types include `turn_started`, `llm_call_started/completed/failed`,
+`tool_call_executing`, `tool_execution_completed`, `subagent_queued`,
+`subagent_slot_acquired`, `subagent_started`, `subagent_running`,
+`subagent_failed`, and `logging_dropped`. Consumers must ignore unknown fields
+and types. Parent relay preserves child run IDs and stamps the owning session.
+See [Runtime logging](LOGGING.md) for timing and correlation semantics.
+
+Operational logging additionally emits `operation_failed`, `operation_warning`,
+and `panic_recovered`, with component/operation labels and typed error metadata
+(no raw error text). Runtime JSONL records include writer `process_id` and `pid`;
+these fields are additions to the log envelope, not required event-stream fields.
+See [failure diagnostics](LOGGING.md#investigating-failures) for coverage and limits.

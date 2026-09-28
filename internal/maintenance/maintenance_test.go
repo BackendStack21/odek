@@ -46,13 +46,14 @@ func writeSessionFixture(t *testing.T, home, id string, updatedAt time.Time) {
 func TestDefaultConfig(t *testing.T) {
 	cfg := DefaultConfig()
 	want := Config{
-		Enabled:              true,
-		IntervalMinutes:      60,
-		SessionsMaxAgeDays:   30,
-		AuditMaxAgeDays:      14,
-		LogMaxMB:             50,
-		PlansMaxAgeDays:      30,
-		ArtifactsMaxAgeHours: 24,
+		RuntimeLogMaxAgeHours: 168,
+		Enabled:               true,
+		IntervalMinutes:       60,
+		SessionsMaxAgeDays:    30,
+		AuditMaxAgeDays:       14,
+		LogMaxMB:              50,
+		PlansMaxAgeDays:       30,
+		ArtifactsMaxAgeHours:  24,
 	}
 	if cfg != want {
 		t.Errorf("DefaultConfig() = %+v, want %+v", cfg, want)

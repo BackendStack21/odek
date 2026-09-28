@@ -113,8 +113,9 @@ type delegateTasksTool struct {
 	// eventMu/emitEventFn carry the runtime event emitter injected by
 	// odek.New (SetEventEmitter); used to surface child denials as
 	// subagent_denied events.
-	eventMu     sync.Mutex
-	emitEventFn func(events.Event)
+	eventMu      sync.Mutex
+	emitEventFn  func(events.Event)
+	eventContext events.Context
 
 	// OnSubagentLog, if set, is called with each NDJSON progress line
 	// emitted by a sub-agent. taskIdx is the index within the current
@@ -163,6 +164,7 @@ func (t *delegateTasksTool) getSessionID() string {
 // and max_risk carry the DECLARED values here; the child's started record
 // overwrites them with the effective post-clamp values.
 func (t *delegateTasksTool) emitSubagentQueued(taskIdx int, taskID, goal, profile, maxRisk string) {
+	t.emitSubagentEvent(events.Event{Type: "subagent_queued", TaskID: taskID, Data: map[string]any{"task_index": taskIdx, "profile": profile, "max_risk": maxRisk}})
 	if t.OnSubagentLog == nil {
 		return // no wire attached (bare-struct tests, non-serve runs)
 	}
@@ -359,7 +361,17 @@ func (t *delegateTasksTool) Call(args string) (string, error) {
 				dirs[i] = d
 			}
 		}
-		t.acquireSem(sem, emitFn, i)
+		queuedAt := time.Now()
+		waitEmit := emitFn
+		if emitFn != nil {
+			waitEmit = func(ev events.Event) {
+				ev.TaskID = taskID
+				ev.ParentTaskID = t.childEventContext(taskID).ParentTaskID
+				emitFn(ev)
+			}
+		}
+		t.acquireSem(sem, waitEmit, i)
+		t.emitSubagentEvent(events.Event{Type: "subagent_slot_acquired", TaskID: taskID, Data: map[string]any{"waited_ms": time.Since(queuedAt).Milliseconds()}})
 		run := t.runTaskFn
 		model := selectedModels[i]
 		wg.Add(1)
@@ -403,8 +415,9 @@ func (t *delegateTasksTool) Call(args string) (string, error) {
 			}
 			for _, d := range r.Denials {
 				emit(events.Event{
-					Type: subagentDeniedEvent,
-					Tool: d.Tool,
+					Type:   subagentDeniedEvent,
+					TaskID: taskIDs[i],
+					Tool:   d.Tool,
 					Data: map[string]any{
 						"task_index": i,
 						"class":      d.Class,
@@ -457,7 +470,15 @@ func (t *delegateTasksTool) runTask(taskIdx int, taskID, goal, taskContext, guid
 	return t.runTaskWithModel(taskIdx, taskID, goal, taskContext, guidance, trustLevel, maxRisk, profile, artifactDir, "")
 }
 
-func (t *delegateTasksTool) runTaskWithModel(taskIdx int, taskID, goal, taskContext, guidance, trustLevel, maxRisk, profile, artifactDir, model string) string {
+func (t *delegateTasksTool) runTaskWithModel(taskIdx int, taskID, goal, taskContext, guidance, trustLevel, maxRisk, profile, artifactDir, model string) (output string) {
+	terminalEmitted := false
+	setupClass := "profile_error"
+	taskStart := time.Now()
+	defer func() {
+		if !terminalEmitted {
+			t.emitSubagentEvent(events.Event{Type: "subagent_failed", TaskID: taskID, Data: map[string]any{"error_class": setupClass, "duration_seconds": time.Since(taskStart).Seconds()}})
+		}
+	}()
 	// Parent-side fail-closed validation: an unknown profile name must
 	// fail the task BEFORE a child is spawned — the tool schema promises
 	// "unknown names fail the task", and a silently-bare child would run
@@ -479,6 +500,7 @@ func (t *delegateTasksTool) runTaskWithModel(taskIdx int, taskID, goal, taskCont
 	ctx, cancel := context.WithTimeout(parentCtx, t.timeout)
 	defer cancel()
 
+	setupClass = "budget_error"
 	reservation, err := t.reserveChildBudget()
 	if err != nil {
 		return fmt.Sprintf(`{"status":"error","error":%q,"summary":"","tokens_used":0}`, err.Error())
@@ -487,6 +509,7 @@ func (t *delegateTasksTool) runTaskWithModel(taskIdx int, taskID, goal, taskCont
 	taskBudgetBlock := reservation.limits
 
 	// Write task to temp file (avoids CLI arg length limits)
+	setupClass = "task_file_error"
 	taskFile, err := os.CreateTemp("", "odek-task-*.json")
 	if err != nil {
 		return fmt.Sprintf(`{"error":"temp file: %v"}`, err)
@@ -503,6 +526,8 @@ func (t *delegateTasksTool) runTaskWithModel(taskIdx int, taskID, goal, taskCont
 	defer registerSubagentCancel(taskID, cancel)()
 
 	task := newTaskEnvelope(taskID, goal, taskContext, guidance, trustLevel, maxRisk, profile, taskBudgetBlock, t.selfTrust)
+	task.EventContext = t.childEventContext(taskID)
+	task.RuntimeEvents = task.EventContext.ParentRunID != ""
 	task.ArtifactRoot = artifactDir
 	task.Provider = t.provider
 	task.Model = t.model
@@ -538,6 +563,7 @@ func (t *delegateTasksTool) runTaskWithModel(taskIdx int, taskID, goal, taskCont
 	// result to `read |0: file already closed`. We dup the write end
 	// to the child, close our copy after Start, and only force-close
 	// the reader if the scanner is still blocked (orphaned writers).
+	setupClass = "pipe_error"
 	stdout, stdoutW, err := os.Pipe()
 	if err != nil {
 		return fmt.Sprintf(`{"error":"pipe: %v"}`, err)
@@ -545,7 +571,7 @@ func (t *delegateTasksTool) runTaskWithModel(taskIdx int, taskID, goal, taskCont
 	cmd.Stdout = stdoutW
 
 	// Capture stderr for optional relay
-	stderrBuf := &strings.Builder{}
+	stderrBuf := &boundedStderr{}
 	cmd.Stderr = stderrBuf
 
 	// Hand the API key to the sub-agent via FD 3 instead of an env var.
@@ -561,6 +587,7 @@ func (t *delegateTasksTool) runTaskWithModel(taskIdx int, taskID, goal, taskCont
 		subagentDepthEnvVar+"="+strconv.Itoa(subagentDepth()+1))
 	var keyFile *os.File
 	var keyCleanup func()
+	setupClass = "key_handoff_error"
 	if t.apiKey != "" {
 		f, cleanup, err := writeKeyToUnlinkedFile(t.apiKey)
 		if err != nil {
@@ -579,6 +606,7 @@ func (t *delegateTasksTool) runTaskWithModel(taskIdx int, taskID, goal, taskCont
 		}()
 	}
 
+	setupClass = "spawn_error"
 	if err := cmd.Start(); err != nil {
 		_ = stdoutW.Close()
 		_ = stdout.Close()
@@ -594,9 +622,16 @@ func (t *delegateTasksTool) runTaskWithModel(taskIdx int, taskID, goal, taskCont
 	// result. A streamed tool_call event can embed full tool arguments (e.g. a
 	// large write_file), so lines routinely exceed bufio.Scanner's default 64KB
 	// token cap; scanSubagentStream raises the cap to avoid losing the result.
-	var onLog func(line string)
-	if t.OnSubagentLog != nil {
-		onLog = func(line string) { t.OnSubagentLog(taskIdx, taskID, line) }
+	activity := newSubagentActivity()
+	stopMonitor := t.monitorSubagent(taskID, activity, 60*time.Second)
+	defer stopMonitor()
+	onLog := func(line string) {
+		if t.relayRuntimeRecord(taskID, line, activity) {
+			return
+		}
+		if t.OnSubagentLog != nil {
+			t.OnSubagentLog(taskIdx, taskID, line)
+		}
 	}
 	// Scan the child's stdout concurrently with cmd.Wait. A full-drain
 	// read BEFORE Wait would let a killed child's orphaned grandchildren
@@ -638,7 +673,22 @@ func (t *delegateTasksTool) runTaskWithModel(taskIdx int, taskID, goal, taskCont
 	result, lastLine, scannerErr := scan.result, scan.lastLine, scan.err
 
 	status := subagentExitStatus(result, waitErr, ctx, scannerErr)
-	t.emitSubagentEvent(subagentCompletedEvent(taskID, result, status))
+	stopMonitor()
+	completed := subagentCompletedEvent(taskID, result, status)
+	completed.Data["exit_status"] = "exited"
+	if waitErr != nil {
+		completed.Data["exit_status"] = "nonzero_exit"
+	}
+	if ctx.Err() != nil {
+		completed.Data["exit_status"] = events.ErrorClass(ctx.Err())
+	}
+	completed.Data["duration_seconds"] = time.Since(taskStart).Seconds()
+	completed.Data["stderr_bytes"] = stderrBuf.n
+	if cmd.ProcessState != nil {
+		completed.Data["exit_code"] = cmd.ProcessState.ExitCode()
+	}
+	t.emitSubagentEvent(completed)
+	terminalEmitted = true
 	if result == nil && t.OnSubagentDone != nil {
 		// The child died without reporting (user cancel, turn cancel,
 		// timeout, flood-kill, crash): it cannot emit its own
@@ -1051,20 +1101,22 @@ func taskBudgetFromSnapshot(s budget.Snapshot) *taskBudget {
 
 // taskEnvelope is the task-file JSON contract handed to `odek subagent`.
 type taskEnvelope struct {
-	TaskID       string      `json:"task_id"`
-	Protocol     int         `json:"protocol,omitempty"`
-	Goal         string      `json:"goal"`
-	Context      string      `json:"context,omitempty"`
-	Guidance     string      `json:"guidance,omitempty"`
-	TrustLevel   string      `json:"trust_level,omitempty"`
-	MaxRisk      string      `json:"max_risk,omitempty"`
-	Profile      string      `json:"profile,omitempty"`
-	Budget       *taskBudget `json:"budget,omitempty"`
-	ParentTrust  string      `json:"parent_trust,omitempty"`
-	ArtifactRoot string      `json:"artifact_root,omitempty"`
-	Provider     string      `json:"provider,omitempty"`
-	Model        string      `json:"model,omitempty"`
-	BaseURL      string      `json:"base_url,omitempty"`
+	EventContext  events.Context `json:"event_context,omitempty"`
+	RuntimeEvents bool           `json:"runtime_events,omitempty"`
+	TaskID        string         `json:"task_id"`
+	Protocol      int            `json:"protocol,omitempty"`
+	Goal          string         `json:"goal"`
+	Context       string         `json:"context,omitempty"`
+	Guidance      string         `json:"guidance,omitempty"`
+	TrustLevel    string         `json:"trust_level,omitempty"`
+	MaxRisk       string         `json:"max_risk,omitempty"`
+	Profile       string         `json:"profile,omitempty"`
+	Budget        *taskBudget    `json:"budget,omitempty"`
+	ParentTrust   string         `json:"parent_trust,omitempty"`
+	ArtifactRoot  string         `json:"artifact_root,omitempty"`
+	Provider      string         `json:"provider,omitempty"`
+	Model         string         `json:"model,omitempty"`
+	BaseURL       string         `json:"base_url,omitempty"`
 }
 
 // subagentProtocolV2 is the telemetry protocol version stamped into task
@@ -1204,6 +1256,9 @@ func (t *delegateTasksTool) emitSubagentEvent(ev events.Event) {
 	t.eventMu.Lock()
 	defer t.eventMu.Unlock()
 	if t.emitEventFn != nil {
+		if ev.TaskID != "" && ev.TaskID != t.eventContext.TaskID && ev.ParentTaskID == "" {
+			ev.ParentTaskID = t.eventContext.TaskID
+		}
 		t.emitEventFn(ev)
 	}
 }
@@ -1214,7 +1269,8 @@ func (t *delegateTasksTool) emitSubagentEvent(ev events.Event) {
 func subagentSpawnedEvent(taskID string, pid, depth, timeoutSeconds int, goal string) events.Event {
 	sum := sha256.Sum256([]byte(goal))
 	return events.Event{
-		Type: events.TypeSubagentSpawned,
+		Type:   events.TypeSubagentSpawned,
+		TaskID: taskID,
 		Data: map[string]any{
 			"task_id":         taskID,
 			"pid":             pid,
@@ -1239,7 +1295,7 @@ func subagentCompletedEvent(taskID string, result map[string]any, fallbackStatus
 			status = s // the child's own classification wins
 			data["status"] = status
 		}
-		for _, k := range []string{"iterations", "duration_seconds", "tokens_used"} {
+		for _, k := range []string{"iterations", "duration_seconds", "tokens_used", "cost_usd"} {
 			if v, ok := result[k]; ok {
 				data[k] = v
 			}
@@ -1251,8 +1307,9 @@ func subagentCompletedEvent(taskID string, result map[string]any, fallbackStatus
 		}
 	}
 	return events.Event{
-		Type: events.TypeSubagentCompleted,
-		Data: data,
+		Type:   events.TypeSubagentCompleted,
+		TaskID: taskID,
+		Data:   data,
 	}
 }
 

@@ -14,6 +14,7 @@ import (
 
 	sdk "github.com/BackendStack21/go-llm-sdk"
 
+	"github.com/BackendStack21/odek/internal/diagnostics"
 	"github.com/BackendStack21/odek/internal/session"
 	"github.com/BackendStack21/odek/internal/transport"
 )
@@ -250,7 +251,8 @@ func (c *Client) IsAnthropic() bool {
 }
 
 // SimpleCall is the memory/title helper: one buffered turn, no tools.
-func (c *Client) SimpleCall(ctx context.Context, systemPrompt, userPrompt string) (string, error) {
+func (c *Client) SimpleCall(ctx context.Context, systemPrompt, userPrompt string) (_ string, callErr error) {
+	defer func() { diagnostics.Report("llm", "simple_call", "", callErr) }()
 	res, err := c.Chat.Call(ctx, &sdk.ChatRequest{
 		System:      []sdk.SystemBlock{{Text: systemPrompt}},
 		Messages:    []sdk.Message{{Role: sdk.RoleUser, Content: userPrompt}},
@@ -290,7 +292,8 @@ func (c *Client) prepareSideCall(messages []session.Message) *sdk.ChatRequest {
 // SideCall is the compaction / progress-summary helper: one buffered turn,
 // thinking off, no tools, capped MaxTokens. Usage still comes back on
 // CallResult so the loop can charge budgets.
-func (c *Client) SideCall(ctx context.Context, messages []session.Message) (*CallResult, error) {
+func (c *Client) SideCall(ctx context.Context, messages []session.Message) (_ *CallResult, callErr error) {
+	defer func() { diagnostics.Report("llm", "side_call", "", callErr) }()
 	if c == nil || c.Chat == nil {
 		return nil, fmt.Errorf("llm: no client")
 	}

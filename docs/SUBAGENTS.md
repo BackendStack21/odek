@@ -638,3 +638,11 @@ outcomes.
 - **Provide file paths** in context — saves the sub-agent from crawling the project tree.
 - **Check the trade-off** — spawning a sub-agent takes ~500ms. Don't delegate tasks that complete in 2 tool calls.
 - **Observation**: sub-agents work best for **greenfield** work (creating new files). Refactoring existing code often has too many implicit dependencies.
+
+## Persistent runtime logs
+
+Enable operator `logging.enabled` to monitor delegated tasks through
+`~/.odek/runtime.log`. Child records inherit the parent session ID and include
+task ancestry, model/tool timings, periodic activity observations, and terminal
+usage and exit diagnostics. Records expire according to
+`maintenance.runtime_log_max_age_hours`. See [Runtime logging](LOGGING.md).

@@ -1468,3 +1468,15 @@ odek run --memory-extended-enabled "remember that I prefer Go over Python"
 # CLI flag always wins
 odek run --model gpt-4o --base-url https://api.openai.com/v1 "task"
 ```
+
+## Runtime logging
+
+Operator-only `logging.enabled` (default `false`; environment
+`ODEK_LOGGING_ENABLED`) enables metadata-only JSONL logging to
+`~/.odek/runtime.log` across all execution surfaces. The janitor expires records
+using `maintenance.runtime_log_max_age_hours` (default `168`, `0` = keep;
+`ODEK_MAINTENANCE_RUNTIME_LOG_MAX_AGE_HOURS`). Size rotation uses
+`maintenance.log_max_mb`. Logging also covers command/startup failures, service
+diagnostics, and storage errors with component/operation labels and typed error
+categories. Writer process IDs correlate records emitted before a session exists.
+See [Runtime logging](LOGGING.md) for troubleshooting queries and coverage.

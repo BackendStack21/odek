@@ -85,9 +85,12 @@ func TestEngine_Events_ToolRunOrderAndShape(t *testing.T) {
 	// Expected order: tool started → tool completed → iteration 1 completed →
 	// iteration 2 (final answer) completed.
 	want := []string{
+		"llm_call_started", "llm_call_completed",
 		events.TypeToolCallStarted,
+		"tool_call_executing", "tool_execution_completed",
 		events.TypeToolCallCompleted,
 		events.TypeIterationCompleted,
+		"llm_call_started", "llm_call_completed",
 		events.TypeIterationCompleted,
 	}
 	got := col.types()
@@ -103,7 +106,7 @@ func TestEngine_Events_ToolRunOrderAndShape(t *testing.T) {
 	evs := col.all()
 
 	// tool_call_started: digest + size only, correct iteration.
-	start := evs[0]
+	start := evs[2]
 	if start.Tool != "echo" || start.Iteration != 1 {
 		t.Errorf("start event tool=%q iteration=%d, want echo/1", start.Tool, start.Iteration)
 	}
@@ -118,7 +121,7 @@ func TestEngine_Events_ToolRunOrderAndShape(t *testing.T) {
 	// tool_call_completed: same tool/iteration, carries duration + result size;
 	// correlated with the start event via the shared digest (recomputed here —
 	// the completed event deliberately carries no args fields of its own).
-	complete := evs[1]
+	complete := evs[5]
 	if complete.Tool != start.Tool || complete.Iteration != start.Iteration {
 		t.Errorf("completed event does not correlate with start: %+v vs %+v", complete, start)
 	}
@@ -133,7 +136,7 @@ func TestEngine_Events_ToolRunOrderAndShape(t *testing.T) {
 	}
 
 	// iteration_completed: cumulative tokens + tools_called.
-	iter1 := evs[2]
+	iter1 := evs[6]
 	if iter1.Iteration != 1 {
 		t.Errorf("iteration_completed #1 iteration = %d, want 1", iter1.Iteration)
 	}
@@ -143,7 +146,7 @@ func TestEngine_Events_ToolRunOrderAndShape(t *testing.T) {
 	if tok, _ := iter1.Data["input_tokens"].(int); tok != 11 {
 		t.Errorf("iteration 1 input_tokens = %v, want 11", tok)
 	}
-	iter2 := evs[3]
+	iter2 := evs[9]
 	if n, _ := iter2.Data["tools_called"].(int); n != 0 {
 		t.Errorf("final iteration tools_called = %v, want 0", n)
 	}
@@ -237,4 +240,29 @@ func TestEngine_Events_NilHandlerNoPanic(t *testing.T) {
 	if _, err := engine.Run(context.Background(), "hi"); err != nil {
 		t.Fatalf("Run() error: %v", err)
 	}
+}
+
+type contextPanicTool struct{ fakeTool }
+
+func (*contextPanicTool) SetContext(context.Context) { panic("context failure") }
+
+func TestExecutionCompletionReportsContextPanic(t *testing.T) {
+	server := newToolLoopServer("panic_context", `{}`)
+	defer server.Close()
+	registry := tool.NewRegistry([]tool.Tool{&contextPanicTool{fakeTool{name: "panic_context", description: "test panic"}}})
+	engine := New(testChatClient(t, server.URL), registry, 3, "", nil, 0)
+	col := &eventCollector{}
+	engine.SetEventHandler(col.handle)
+	if _, err := engine.Run(t.Context(), "run tool"); err != nil {
+		t.Fatal(err)
+	}
+	for _, ev := range col.all() {
+		if ev.Type == "tool_execution_completed" {
+			if ev.Data["status"] != "failed" {
+				t.Fatalf("panic reported as success: %+v", ev)
+			}
+			return
+		}
+	}
+	t.Fatal("missing immediate execution outcome")
 }

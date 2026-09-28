@@ -29,6 +29,7 @@ import (
 	sdk "github.com/BackendStack21/go-llm-sdk"
 	"github.com/BackendStack21/odek/internal/budget"
 	"github.com/BackendStack21/odek/internal/danger"
+	"github.com/BackendStack21/odek/internal/diagnostics"
 	"github.com/BackendStack21/odek/internal/embedding"
 
 	"github.com/BackendStack21/odek/internal/guard"
@@ -373,13 +374,14 @@ type ToolConfig struct {
 // Operator-controlled: rejected from project-level ./odek.json because it
 // governs DELETION of user data.
 type MaintenanceConfig struct {
-	Enabled              *bool  `json:"enabled,omitempty"`
-	IntervalMinutes      *int   `json:"interval_minutes,omitempty"`
-	SessionsMaxAgeDays   *int   `json:"sessions_max_age_days,omitempty"`
-	AuditMaxAgeDays      *int   `json:"audit_max_age_days,omitempty"`
-	LogMaxMB             *int64 `json:"log_max_mb,omitempty"`
-	PlansMaxAgeDays      *int   `json:"plans_max_age_days,omitempty"`
-	ArtifactsMaxAgeHours *int   `json:"artifacts_max_age_hours,omitempty"`
+	RuntimeLogMaxAgeHours *int   `json:"runtime_log_max_age_hours,omitempty"`
+	Enabled               *bool  `json:"enabled,omitempty"`
+	IntervalMinutes       *int   `json:"interval_minutes,omitempty"`
+	SessionsMaxAgeDays    *int   `json:"sessions_max_age_days,omitempty"`
+	AuditMaxAgeDays       *int   `json:"audit_max_age_days,omitempty"`
+	LogMaxMB              *int64 `json:"log_max_mb,omitempty"`
+	PlansMaxAgeDays       *int   `json:"plans_max_age_days,omitempty"`
+	ArtifactsMaxAgeHours  *int   `json:"artifacts_max_age_hours,omitempty"`
 }
 
 // ToolsConfig is the "tools" section of odek.json. It is intentionally a
@@ -536,7 +538,14 @@ func DefaultBackgroundConfig() BackgroundConfig {
 
 // FileConfig is the JSON schema used by ~/.odek/config.json and ./odek.json.
 // Pointer booleans distinguish "explicitly set to false" from "not set".
+// LoggingConfig enables local metadata-only runtime logs. This section is
+// operator-only; project files cannot enable or disable logging.
+type LoggingConfig struct {
+	Enabled bool `json:"enabled"`
+}
+
 type FileConfig struct {
+	Logging   *LoggingConfig                  `json:"logging,omitempty"`
 	Provider  string                          `json:"provider,omitempty"`
 	Model     string                          `json:"model,omitempty"`
 	BaseURL   string                          `json:"base_url,omitempty"`
@@ -770,6 +779,7 @@ type ProjectSandboxOverride struct {
 // ResolvedConfig is the fully merged result. Every field has a concrete
 // value — callers can read directly without checking for "not set".
 type ResolvedConfig struct {
+	Logging         LoggingConfig
 	Provider        string
 	Model           string
 	BaseURL         string
@@ -997,6 +1007,9 @@ func loadFile(path string) FileConfig {
 	}
 	f, err := os.Open(path)
 	if err != nil {
+		if !os.IsNotExist(err) {
+			diagnostics.Warning("config", "open_file", err)
+		}
 		return FileConfig{} // missing or unreadable = empty
 	}
 	defer f.Close()
@@ -1009,6 +1022,7 @@ func loadFile(path string) FileConfig {
 	// covered only secrets.env).
 	if info, serr := f.Stat(); serr == nil {
 		if perm := info.Mode().Perm(); perm&0077 != 0 {
+			diagnostics.Warning("config", "file_permissions", nil)
 			fmt.Fprintf(os.Stderr, "odek: WARNING: config %s is group/world-readable (%04o) and may contain secrets; run `chmod 600 %s`\n", path, perm, path)
 		}
 	}
@@ -1018,14 +1032,17 @@ func loadFile(path string) FileConfig {
 	// closes the TOCTOU window between stat and read.
 	data, err := io.ReadAll(io.LimitReader(f, maxConfigFileBytes+1))
 	if err != nil {
+		diagnostics.Warning("config", "read_file", err)
 		return FileConfig{}
 	}
 	if int64(len(data)) > maxConfigFileBytes {
+		diagnostics.Warning("config", "file_size_limit", nil)
 		fmt.Fprintf(os.Stderr, "odek: warning: config %s: file exceeds maximum size %d bytes — ignoring file\n", path, maxConfigFileBytes)
 		return FileConfig{}
 	}
 	var cfg FileConfig
 	if err := json.Unmarshal(data, &cfg); err != nil {
+		diagnostics.Warning("config", "decode_file", err)
 		fmt.Fprintf(os.Stderr, "odek: warning: config %s: invalid JSON — ignoring file: %v\n", path, err)
 		return FileConfig{} // invalid JSON = empty
 	}
@@ -1165,6 +1182,7 @@ func envBool(key string) *bool {
 // var is set but cannot be parsed and its value will be ignored (the
 // default applies), consistent with the other loader warnings.
 func warnBadEnvValue(key, v string, err error) {
+	diagnostics.Warning("config", "environment_value", err)
 	fmt.Fprintf(os.Stderr, "odek: warning: invalid ODEK_%s value %q — ignoring: %v\n", key, v, err)
 }
 
@@ -1327,6 +1345,9 @@ func resolveMaintenance(cfg *MaintenanceConfig) maintenance.Config {
 	}
 	if cfg.PlansMaxAgeDays != nil {
 		def.PlansMaxAgeDays = maintenance.ClampRetentionDays(*cfg.PlansMaxAgeDays)
+	}
+	if cfg.RuntimeLogMaxAgeHours != nil {
+		def.RuntimeLogMaxAgeHours = maintenance.ClampRetentionHours(*cfg.RuntimeLogMaxAgeHours)
 	}
 	if cfg.ArtifactsMaxAgeHours != nil {
 		def.ArtifactsMaxAgeHours = maintenance.ClampRetentionHours(*cfg.ArtifactsMaxAgeHours)
@@ -1691,6 +1712,10 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	}
 	// The maintenance section governs DELETION of user data (sessions, audit
 	// records, plans, logs). A malicious repo must not be able to set it.
+	if project.Logging != nil {
+		fmt.Fprintln(os.Stderr, "odek: WARNING: ignoring logging from project config; set it via ~/.odek/config.json or ODEK_LOGGING_ENABLED")
+		project.Logging = nil
+	}
 	if project.Maintenance != nil {
 		fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring maintenance from project config (%s); set it via ~/.odek/config.json or ODEK_MAINTENANCE_*\n", ProjectConfigPath())
 		project.Maintenance = nil
@@ -2192,9 +2217,17 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 		}
 	}
 
+	if v := envBool("LOGGING_ENABLED"); v != nil {
+		cfg.Logging = &LoggingConfig{Enabled: *v}
+	}
+
 	// Maintenance env overrides (ODEK_MAINTENANCE_*). Explicit 0 is meaningful
 	// for the retention knobs (0 = keep forever / disable), so they parse via
 	// the pointer helpers rather than envInt.
+	if v := envIntPtr("MAINTENANCE_RUNTIME_LOG_MAX_AGE_HOURS"); v != nil {
+		cfg.Maintenance = ensureMaintenance(cfg.Maintenance)
+		cfg.Maintenance.RuntimeLogMaxAgeHours = v
+	}
 	if v := envBool("MAINTENANCE_ENABLED"); v != nil {
 		cfg.Maintenance = ensureMaintenance(cfg.Maintenance)
 		cfg.Maintenance.Enabled = v
@@ -2542,6 +2575,10 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 		Tools:                  resolveTools(cfg.Tools),
 		InteractionMode:        ifZero(cfg.InteractionMode, "engaging"),
 		ToolProgress:           ifZero(cfg.ToolProgress, "all"),
+	}
+
+	if cfg.Logging != nil {
+		resolved.Logging = *cfg.Logging
 	}
 
 	// Built-in default sub-agent capability profile: unless the
@@ -3673,6 +3710,9 @@ func overlayFile(base, override FileConfig) FileConfig {
 	if override.Memory != nil {
 		base.Memory = override.Memory
 	}
+	if override.Logging != nil {
+		base.Logging = override.Logging
+	}
 	if override.Maintenance != nil {
 		base.Maintenance = override.Maintenance
 	}
@@ -3941,6 +3981,7 @@ func loadSecretsEnv() {
 	// to other local users (finding #78).
 	if info, err := f.Stat(); err == nil {
 		if perm := info.Mode().Perm(); perm&0077 != 0 {
+			diagnostics.Warning("config", "secrets_permissions", nil)
 			fmt.Fprintf(os.Stderr, "odek: WARNING: %s is group/world-readable (%04o); refusing to load secrets\n", path, perm)
 			return
 		}
@@ -4002,6 +4043,7 @@ func loadSecretsEnv() {
 		}
 	}
 	if err := scanner.Err(); err != nil {
+		diagnostics.Warning("config", "secrets_read", err)
 		fmt.Fprintf(os.Stderr, "odek: WARNING: %s: %v — remaining secrets were NOT loaded\n", path, err)
 	}
 }
