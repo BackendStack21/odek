@@ -47,12 +47,6 @@ func (w *diagnosticResponseWriter) WriteHeader(status int) {
 	}
 	w.ResponseWriter.WriteHeader(status)
 }
-func (w *diagnosticResponseWriter) Write(b []byte) (int, error) {
-	if w.status == 0 {
-		w.WriteHeader(http.StatusOK)
-	}
-	return w.ResponseWriter.Write(b)
-}
 func (w *diagnosticResponseWriter) Flush() {
 	if w.status == 0 {
 		w.WriteHeader(http.StatusOK)

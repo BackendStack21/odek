@@ -157,6 +157,7 @@ func TestHTTPDiagnosticsPrivacyAndResponseSemantics(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/failed/{id}", func(w http.ResponseWriter, r *http.Request) { http.Error(w, "PRIVATE response", 503) })
 	mux.HandleFunc("/flush", func(w http.ResponseWriter, r *http.Request) { w.(http.Flusher).Flush(); _, _ = w.Write([]byte("ok")) })
+	mux.HandleFunc("/ok", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte("ok")) })
 	mux.HandleFunc("/panic", func(w http.ResponseWriter, r *http.Request) { panic("PRIVATE panic") })
 	handler := diagnosticHTTPHandler(mux)
 	w := httptest.NewRecorder()
@@ -175,6 +176,11 @@ func TestHTTPDiagnosticsPrivacyAndResponseSemantics(t *testing.T) {
 	handler.ServeHTTP(w, httptest.NewRequest("GET", "/flush", nil))
 	if !w.Flushed || w.Body.String() != "ok" || len(got) != 2 {
 		t.Fatal("flush behavior changed")
+	}
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, httptest.NewRequest("GET", "/ok", nil))
+	if w.Code != http.StatusOK || w.Body.String() != "ok" || len(got) != 2 {
+		t.Fatal("implicit successful response changed")
 	}
 	func() {
 		defer func() {
