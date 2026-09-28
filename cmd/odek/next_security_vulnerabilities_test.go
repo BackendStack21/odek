@@ -242,9 +242,8 @@ func TestServe_CSRF_AllowsLocalhostOrigin(t *testing.T) {
 func TestServe_API_RequiresServeToken(t *testing.T) {
 	store := newTestSessionStore(t)
 	ln, mux := buildServeMux(t, store)
-	defer ln.Close()
 
-	go serveOnListener(ln, mux)
+	defer startServeTest(t, ln, mux)()
 	waitForHTTP(t, ln.Addr().String())
 
 	resp, err := http.Get("http://" + ln.Addr().String() + "/api/sessions")
@@ -260,13 +259,12 @@ func TestServe_API_RequiresServeToken(t *testing.T) {
 func TestServe_API_RequiresLocalHost(t *testing.T) {
 	store := newTestSessionStore(t)
 	ln, mux := buildServeMux(t, store)
-	defer ln.Close()
 
 	testTokenMu.Lock()
 	token := testLastToken
 	testTokenMu.Unlock()
 
-	go serveOnListener(ln, mux)
+	defer startServeTest(t, ln, mux)()
 	waitForHTTP(t, ln.Addr().String())
 
 	req, _ := http.NewRequest(http.MethodGet, "http://"+ln.Addr().String()+"/api/sessions", nil)
@@ -285,13 +283,12 @@ func TestServe_API_RequiresLocalHost(t *testing.T) {
 func TestServe_API_AcceptsServeTokenHeader(t *testing.T) {
 	store := newTestSessionStore(t)
 	ln, mux := buildServeMux(t, store)
-	defer ln.Close()
 
 	testTokenMu.Lock()
 	token := testLastToken
 	testTokenMu.Unlock()
 
-	go serveOnListener(ln, mux)
+	defer startServeTest(t, ln, mux)()
 	waitForHTTP(t, ln.Addr().String())
 
 	req, _ := http.NewRequest(http.MethodGet, "http://"+ln.Addr().String()+"/api/sessions", nil)
@@ -309,13 +306,12 @@ func TestServe_API_AcceptsServeTokenHeader(t *testing.T) {
 func TestServe_API_AcceptsServeTokenCookie(t *testing.T) {
 	store := newTestSessionStore(t)
 	ln, mux := buildServeMux(t, store)
-	defer ln.Close()
 
 	testTokenMu.Lock()
 	token := testLastToken
 	testTokenMu.Unlock()
 
-	go serveOnListener(ln, mux)
+	defer startServeTest(t, ln, mux)()
 	waitForHTTP(t, ln.Addr().String())
 
 	req, _ := http.NewRequest(http.MethodGet, "http://"+ln.Addr().String()+"/api/sessions", nil)

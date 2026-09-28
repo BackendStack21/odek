@@ -885,9 +885,8 @@ func TestServe_E2E_NoRepetitiveResponses(t *testing.T) {
 
 	store := newTestSessionStore(t)
 	ln, mux := buildServeMux(t, store)
-	defer ln.Close()
 
-	go serveOnListener(ln, mux)
+	defer startServeTest(t, ln, mux)()
 	waitForHTTP(t, ln.Addr().String())
 
 	conn := dialTestWS(t, ln.Addr().String())
@@ -964,9 +963,8 @@ func TestServe_E2E_SessionMessagesStoredWithoutSystemInjections(t *testing.T) {
 
 	// Build a mux that also includes the session-by-ID route so we can inspect it.
 	ln, mux := buildServeMuxWithSessionByID(t, store)
-	defer ln.Close()
 
-	go serveOnListener(ln, mux)
+	defer startServeTest(t, ln, mux)()
 	waitForHTTP(t, ln.Addr().String())
 
 	conn := dialTestWS(t, ln.Addr().String())

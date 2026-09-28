@@ -161,8 +161,7 @@ func TestServe_E2E_WSCancelInterruptsApprovalWait(t *testing.T) {
 
 	store := newTestSessionStore(t)
 	ln, mux := buildServeMuxPromptAll(t, store)
-	defer ln.Close()
-	go func() { _ = serveOnListener(ln, mux) }()
+	defer startServeTest(t, ln, mux)()
 	waitForHTTP(t, ln.Addr().String())
 
 	wsUpgradeLimiter.reset()
@@ -199,8 +198,7 @@ func TestServe_E2E_RESTCancelInterruptsApprovalWait(t *testing.T) {
 
 	store := newTestSessionStore(t)
 	ln, mux := buildServeMuxPromptAll(t, store)
-	defer ln.Close()
-	go func() { _ = serveOnListener(ln, mux) }()
+	defer startServeTest(t, ln, mux)()
 	waitForHTTP(t, ln.Addr().String())
 
 	wsUpgradeLimiter.reset()
@@ -335,8 +333,7 @@ func TestServe_E2E_WSCancelRunningPromptTerminalEvent(t *testing.T) {
 
 	store := newTestSessionStore(t)
 	ln, mux := buildServeMuxV2(t, store, nil)
-	defer ln.Close()
-	go func() { _ = serveOnListener(ln, mux) }()
+	defer startServeTest(t, ln, mux)()
 	waitForHTTP(t, ln.Addr().String())
 
 	wsUpgradeLimiter.reset()
@@ -384,8 +381,7 @@ func TestServe_E2E_ApprovalWorksAfterCancel(t *testing.T) {
 
 	store := newTestSessionStore(t)
 	ln, mux := buildServeMuxPromptAll(t, store)
-	defer ln.Close()
-	go func() { _ = serveOnListener(ln, mux) }()
+	defer startServeTest(t, ln, mux)()
 	waitForHTTP(t, ln.Addr().String())
 
 	wsUpgradeLimiter.reset()
@@ -491,9 +487,8 @@ func TestServe_E2E_CancelDuringSetupWindowHonored(t *testing.T) {
 	gate := &gatingResolver{entered: make(chan struct{}, 1), release: make(chan struct{})}
 	resReg := resource.NewRegistry(gate)
 	ln, mux := buildServeMuxWithResolvers(t, store, resReg)
-	defer ln.Close()
+	defer startServeTest(t, ln, mux)()
 	defer close(gate.release)
-	go func() { _ = serveOnListener(ln, mux) }()
 	waitForHTTP(t, ln.Addr().String())
 
 	wsUpgradeLimiter.reset()

@@ -81,9 +81,7 @@ func TestServe_E2E_PromptPathSessionSwitch_ClearsStaleBuffer(t *testing.T) {
 	}
 
 	ln, mux := buildServeMux(t, store)
-	defer ln.Close()
-	errCh := make(chan error, 1)
-	go func() { errCh <- serveOnListener(ln, mux) }()
+	defer startServeTest(t, ln, mux)()
 	waitForHTTP(t, ln.Addr().String())
 
 	wsUpgradeLimiter.reset()
