@@ -573,8 +573,7 @@ func TestServe_E2E_ServerInfoHelloAndPingPong(t *testing.T) {
 
 	store := newTestSessionStore(t)
 	ln, mux := buildServeMuxV2(t, store, nil)
-	defer ln.Close()
-	go func() { _ = serveOnListener(ln, mux) }()
+	defer startServeTest(t, ln, mux)()
 	waitForHTTP(t, ln.Addr().String())
 
 	wsUpgradeLimiter.reset()
@@ -613,8 +612,7 @@ func TestServe_E2E_ServerKeepalive(t *testing.T) {
 
 	store := newTestSessionStore(t)
 	ln, mux := buildServeMuxV2(t, store, nil)
-	defer ln.Close()
-	go func() { _ = serveOnListener(ln, mux) }()
+	defer startServeTest(t, ln, mux)()
 	waitForHTTP(t, ln.Addr().String())
 
 	wsUpgradeLimiter.reset()
@@ -644,8 +642,7 @@ func TestServe_E2E_SessionSwitchMessage(t *testing.T) {
 	}
 
 	ln, mux := buildServeMuxV2(t, store, nil)
-	defer ln.Close()
-	go func() { _ = serveOnListener(ln, mux) }()
+	defer startServeTest(t, ln, mux)()
 	waitForHTTP(t, ln.Addr().String())
 
 	wsUpgradeLimiter.reset()
@@ -684,8 +681,7 @@ func TestServe_E2E_WSCancelMessage(t *testing.T) {
 	}
 
 	ln, mux := buildServeMuxV2(t, store, nil)
-	defer ln.Close()
-	go func() { _ = serveOnListener(ln, mux) }()
+	defer startServeTest(t, ln, mux)()
 	waitForHTTP(t, ln.Addr().String())
 
 	wsUpgradeLimiter.reset()
@@ -729,8 +725,7 @@ func TestServe_E2E_StreamDeltas(t *testing.T) {
 	ln, mux := buildServeMuxV2(t, store, func(rc *config.ResolvedConfig) {
 		rc.Stream = true
 	})
-	defer ln.Close()
-	go func() { _ = serveOnListener(ln, mux) }()
+	defer startServeTest(t, ln, mux)()
 	waitForHTTP(t, ln.Addr().String())
 
 	wsUpgradeLimiter.reset()
@@ -796,8 +791,7 @@ func TestServe_E2E_StreamFallbackKeepsBulkPath(t *testing.T) {
 	ln, mux := buildServeMuxV2(t, store, func(rc *config.ResolvedConfig) {
 		rc.Stream = true
 	})
-	defer ln.Close()
-	go func() { _ = serveOnListener(ln, mux) }()
+	defer startServeTest(t, ln, mux)()
 	waitForHTTP(t, ln.Addr().String())
 
 	wsUpgradeLimiter.reset()

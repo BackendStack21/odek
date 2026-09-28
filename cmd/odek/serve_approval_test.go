@@ -89,9 +89,8 @@ func TestServe_E2E_ApprovalRoundTrip(t *testing.T) {
 
 	store := newTestSessionStore(t)
 	ln, mux := buildServeMuxPromptAll(t, store)
-	defer ln.Close()
 
-	go func() { _ = serveOnListener(ln, mux) }()
+	defer startServeTest(t, ln, mux)()
 	waitForHTTP(t, ln.Addr().String())
 
 	conn := dialTestWS(t, ln.Addr().String())

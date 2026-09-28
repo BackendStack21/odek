@@ -88,8 +88,7 @@ func startTurnServer(t *testing.T) *golangws.Conn {
 
 	store := newTestSessionStore(t)
 	ln, mux := buildServeMuxV2(t, store, nil)
-	t.Cleanup(func() { ln.Close() })
-	go func() { _ = serveOnListener(ln, mux) }()
+	t.Cleanup(startServeTest(t, ln, mux))
 	waitForHTTP(t, ln.Addr().String())
 
 	wsUpgradeLimiter.reset()

@@ -130,8 +130,7 @@ func TestAudit_WebSocketInvalidModelRejectedEarly(t *testing.T) {
 		t.Fatalf("session.NewStore: %v", err)
 	}
 	ln, mux := buildServeMux(t, store)
-	defer ln.Close()
-	go func() { _ = serveOnListener(ln, mux) }()
+	defer startServeTest(t, ln, mux)()
 	waitForHTTP(t, ln.Addr().String())
 
 	wsUpgradeLimiter.reset()

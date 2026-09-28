@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/fs"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -583,34 +582,8 @@ func TestServe_E2E_WebSocketPipeline(t *testing.T) {
 	mux.HandleFunc("/api/resources", handleResourceSearch(resourceReg))
 	mux.HandleFunc("/api/sessions", handleSessionList(store))
 
-	// Start serving on the pre-created listener in a goroutine
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- serveOnListener(ln, mux)
-	}()
-	defer ln.Close()
-
-	// Wait for server to be ready
-	var httpReady bool
-	for i := 0; i < 20; i++ {
-		time.Sleep(250 * time.Millisecond)
-		resp, err := http.Get("http://" + addr + "/")
-		if err == nil && resp.StatusCode == 200 {
-			resp.Body.Close()
-			httpReady = true
-			break
-		}
-	}
-	if !httpReady {
-		// Check if serveCmd returned an error immediately
-		select {
-		case err := <-errCh:
-			t.Fatalf("server exited before ready: %v", err)
-		default:
-			t.Fatal("server not ready after 5s")
-		}
-	}
-	defer ln.Close()
+	defer startServeTest(t, ln, mux)()
+	waitForHTTP(t, addr)
 
 	// 1. Connect via WebSocket
 	// Reset the per-IP upgrade limiter so this E2E test is not throttled by
@@ -703,13 +676,9 @@ func TestServe_E2E_FullWebUIFlow(t *testing.T) {
 
 	// 4. Build the real odek serve mux with mock config
 	ln, mux := buildServeMux(t, store)
-	defer ln.Close()
 
 	// 5. Start serving
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- serveOnListener(ln, mux)
-	}()
+	defer startServeTest(t, ln, mux)()
 
 	// 6. Wait for HTTP ready
 	waitForHTTP(t, ln.Addr().String())
@@ -849,37 +818,6 @@ func newTestSessionStore(t *testing.T) *session.Store {
 		t.Fatalf("session.NewStore: %v", err)
 	}
 	return store
-}
-
-// waitForOdekTreeQuiet blocks until a write newer than `since` has been seen
-// under dir and no file has been modified for quietWindow (bounded by
-// timeout). The serve handler issues its final store.Save — session file plus
-// vector-index files — and runs the learn loop AFTER sending the "done"
-// event (serve.go), so a test that returns on "done" can race those writes
-// and fail t.TempDir cleanup with "directory not empty". Best-effort: a
-// timeout is not a test failure.
-func waitForOdekTreeQuiet(dir string, since time.Time, quietWindow, timeout time.Duration) {
-	deadline := time.Now().Add(timeout)
-	sawWrite := false
-	for {
-		var latest time.Time
-		_ = filepath.WalkDir(dir, func(_ string, d fs.DirEntry, err error) error {
-			if err != nil || d.IsDir() {
-				return nil
-			}
-			if fi, err := d.Info(); err == nil && fi.ModTime().After(latest) {
-				latest = fi.ModTime()
-			}
-			return nil
-		})
-		if latest.After(since) {
-			sawWrite = true
-		}
-		if (sawWrite && time.Since(latest) >= quietWindow) || time.Now().After(deadline) {
-			return
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
 }
 
 // mockLLM creates an httptest.Server that handles both the model discovery call
@@ -1248,10 +1186,8 @@ func TestServe_E2E_MultiToolCall(t *testing.T) {
 
 	store := newTestSessionStore(t)
 	ln, mux := buildServeMux(t, store)
-	defer ln.Close()
 
-	errCh := make(chan error, 1)
-	go func() { errCh <- serveOnListener(ln, mux) }()
+	defer startServeTest(t, ln, mux)()
 	waitForHTTP(t, ln.Addr().String())
 
 	conn := dialTestWS(t, ln.Addr().String())
@@ -1369,10 +1305,8 @@ func TestServe_E2E_TokenStats(t *testing.T) {
 
 	store := newTestSessionStore(t)
 	ln, mux := buildServeMux(t, store)
-	defer ln.Close()
 
-	errCh := make(chan error, 1)
-	go func() { errCh <- serveOnListener(ln, mux) }()
+	defer startServeTest(t, ln, mux)()
 	waitForHTTP(t, ln.Addr().String())
 
 	conn := dialTestWS(t, ln.Addr().String())
@@ -1482,7 +1416,6 @@ statsCheck:
 
 	conn.SetReadDeadline(time.Now().Add(15 * time.Second))
 	var done2 map[string]any
-	var done2At time.Time
 	for i := 0; i < 15; i++ {
 		var raw []byte
 		if err := golangws.Message.Receive(conn, &raw); err != nil {
@@ -1496,7 +1429,6 @@ statsCheck:
 		}
 		if evt["type"] == "done" {
 			done2 = evt
-			done2At = time.Now()
 			goto sessionCheck
 		}
 		if evt["type"] == "error" {
@@ -1506,10 +1438,6 @@ statsCheck:
 	t.Fatal("did not receive second done event")
 
 sessionCheck:
-	// The final store.Save runs after "done" is sent — wait for the writes
-	// to settle so t.TempDir cleanup doesn't race them.
-	waitForOdekTreeQuiet(filepath.Join(os.Getenv("HOME"), ".odek"), done2At, 300*time.Millisecond, 10*time.Second)
-
 	if done2 == nil {
 		t.Fatal("second done event not found")
 	}
@@ -1563,10 +1491,8 @@ func TestServe_E2E_UsageEvents(t *testing.T) {
 
 	store := newTestSessionStore(t)
 	ln, mux := buildServeMux(t, store)
-	defer ln.Close()
 
-	errCh := make(chan error, 1)
-	go func() { errCh <- serveOnListener(ln, mux) }()
+	defer startServeTest(t, ln, mux)()
 	waitForHTTP(t, ln.Addr().String())
 
 	conn := dialTestWS(t, ln.Addr().String())
@@ -1580,7 +1506,6 @@ func TestServe_E2E_UsageEvents(t *testing.T) {
 
 	conn.SetReadDeadline(time.Now().Add(15 * time.Second))
 	var usages []map[string]any
-	var doneAt time.Time
 	for i := 0; i < 20; i++ {
 		var raw []byte
 		if err := golangws.Message.Receive(conn, &raw); err != nil {
@@ -1596,7 +1521,6 @@ func TestServe_E2E_UsageEvents(t *testing.T) {
 		case "usage":
 			usages = append(usages, evt)
 		case "done":
-			doneAt = time.Now()
 			goto usageCheck
 		case "error":
 			t.Fatalf("unexpected error: %v", evt["message"])
@@ -1605,11 +1529,6 @@ func TestServe_E2E_UsageEvents(t *testing.T) {
 	t.Fatal("did not receive done event")
 
 usageCheck:
-	// The final store.Save (session file + vector index) and the learn loop
-	// run after "done" is sent — wait for those writes to settle so
-	// t.TempDir cleanup doesn't race them ("directory not empty").
-	waitForOdekTreeQuiet(filepath.Join(os.Getenv("HOME"), ".odek"), doneAt, 300*time.Millisecond, 10*time.Second)
-
 	if len(usages) < 2 {
 		t.Fatalf("got %d usage events before done, want at least 2 (one per LLM turn)", len(usages))
 	}
@@ -1652,10 +1571,8 @@ func TestServe_E2E_LiveToolEvents(t *testing.T) {
 
 	store := newTestSessionStore(t)
 	ln, mux := buildServeMux(t, store)
-	defer ln.Close()
 
-	errCh := make(chan error, 1)
-	go func() { errCh <- serveOnListener(ln, mux) }()
+	defer startServeTest(t, ln, mux)()
 	waitForHTTP(t, ln.Addr().String())
 
 	conn := dialTestWS(t, ln.Addr().String())
@@ -1671,7 +1588,6 @@ func TestServe_E2E_LiveToolEvents(t *testing.T) {
 
 	var toolCallTime, toolResultTime, doneTime int
 	var eventOrder []string
-	var doneAt time.Time
 
 	// Additive protocol frames may precede done; the read deadline bounds the wait.
 	for i := 0; i < 100; i++ {
@@ -1699,7 +1615,6 @@ func TestServe_E2E_LiveToolEvents(t *testing.T) {
 			}
 		case "done":
 			doneTime = i
-			doneAt = time.Now()
 			goto doneCheck
 		case "error":
 			t.Fatalf("unexpected error: %v", evt["message"])
@@ -1707,10 +1622,6 @@ func TestServe_E2E_LiveToolEvents(t *testing.T) {
 	}
 
 doneCheck:
-	// The final store.Save runs after "done" is sent — wait for the writes
-	// to settle so t.TempDir cleanup doesn't race them.
-	waitForOdekTreeQuiet(filepath.Join(os.Getenv("HOME"), ".odek"), doneAt, 300*time.Millisecond, 10*time.Second)
-
 	t.Logf("Event order: %v", eventOrder)
 
 	if toolCallTime == 0 {
@@ -2024,11 +1935,10 @@ func TestServe_E2E_CancelWithMockLLM(t *testing.T) {
 
 	store := newTestSessionStore(t)
 	ln, mux := buildServeMux(t, store)
-	defer ln.Close()
 
-	errCh := make(chan error, 1)
-	go func() { errCh <- serveOnListener(ln, mux) }()
+	defer startServeTest(t, ln, mux)()
 	waitForHTTP(t, ln.Addr().String())
+	wsUpgradeLimiter.reset()
 
 	conn := dialTestWS(t, ln.Addr().String())
 	defer conn.Close()
@@ -2153,11 +2063,10 @@ func TestServe_Cancel_CannotCrossSessions(t *testing.T) {
 
 	store := newTestSessionStore(t)
 	ln, mux := buildServeMux(t, store)
-	defer ln.Close()
 
-	errCh := make(chan error, 1)
-	go func() { errCh <- serveOnListener(ln, mux) }()
+	defer startServeTest(t, ln, mux)()
 	waitForHTTP(t, ln.Addr().String())
+	wsUpgradeLimiter.reset()
 
 	// Victim connection: starts first, hits the slow LLM path.
 	victimConn := dialTestWS(t, ln.Addr().String())
@@ -2375,12 +2284,8 @@ func TestServe_E2E_AttachmentsWrappedAsUntrusted(t *testing.T) {
 
 	store := newTestSessionStore(t)
 	ln, mux := buildServeMux(t, store)
-	defer ln.Close()
 
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- serveOnListener(ln, mux)
-	}()
+	defer startServeTest(t, ln, mux)()
 	waitForHTTP(t, ln.Addr().String())
 
 	conn := dialTestWS(t, ln.Addr().String())
@@ -2467,10 +2372,8 @@ func TestServe_E2E_AttachmentsWrappedAsUntrusted(t *testing.T) {
 func TestServe_CSRF_TokenRequired(t *testing.T) {
 	store := newTestSessionStore(t)
 	ln, mux := buildServeMux(t, store)
-	defer ln.Close()
 
-	errCh := make(chan error, 1)
-	go func() { errCh <- serveOnListener(ln, mux) }()
+	defer startServeTest(t, ln, mux)()
 	waitForHTTP(t, ln.Addr().String())
 
 	addr := ln.Addr().String()
@@ -2565,10 +2468,8 @@ func TestServe_E2E_PromptSizeCap(t *testing.T) {
 
 	store := newTestSessionStore(t)
 	ln, mux := buildServeMux(t, store)
-	defer ln.Close()
 
-	errCh := make(chan error, 1)
-	go func() { errCh <- serveOnListener(ln, mux) }()
+	defer startServeTest(t, ln, mux)()
 	waitForHTTP(t, ln.Addr().String())
 
 	conn := dialTestWS(t, ln.Addr().String())
@@ -2616,10 +2517,8 @@ func TestServe_E2E_InvalidModelIDRejected(t *testing.T) {
 
 	store := newTestSessionStore(t)
 	ln, mux := buildServeMux(t, store)
-	defer ln.Close()
 
-	errCh := make(chan error, 1)
-	go func() { errCh <- serveOnListener(ln, mux) }()
+	defer startServeTest(t, ln, mux)()
 	waitForHTTP(t, ln.Addr().String())
 
 	conn := dialTestWS(t, ln.Addr().String())

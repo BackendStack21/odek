@@ -272,8 +272,7 @@ func TestServe_E2E_PingPongUsesConfigSnapshotNotLiveModel(t *testing.T) {
 
 	store := newTestSessionStore(t)
 	ln, mux := buildServeMuxV2(t, store, func(rc *config.ResolvedConfig) { rc.Model = "initial-model" })
-	defer ln.Close()
-	go func() { _ = serveOnListener(ln, mux) }()
+	defer startServeTest(t, ln, mux)()
 	waitForHTTP(t, ln.Addr().String())
 
 	wsUpgradeLimiter.reset()
