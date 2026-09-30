@@ -151,8 +151,8 @@ command palette (`⌘K` / `Ctrl+K`) and slash completions share destinations;
 clear-transcript and duplicate navigation actions are removed. `/clear` gives a
 New session hint. `/retry` prepares the previous prompt for review without sending.
 
-Execution context above the conversation shows the workspace, sandbox and
-operator permission policy. **Run settings** holds model, reasoning depth and
+**Run settings** in the top bar shows the workspace, execution mode and
+operator permission policy alongside model, reasoning depth and
 optional tighter caps for runtime, tool calls, tokens and cost. Zero or omitted
 caps retain operator limits; browser requests never raise existing operator caps
 or supply prices. Cost caps need configured input and output prices.
@@ -167,6 +167,12 @@ permission grants with revocation. Mobile inspectors trap focus, make the
 background inert, close with Escape and restore their opener. Async completion
 does not steal composer focus. Context browsing discovers files and sessions
 through the existing authenticated resolver.
+
+Automatic context trimming, tool recovery, memory maintenance and skill events
+do not create transcript notices, toasts or screen-reader announcements. Memory
+that requires a decision adds a direct Knowledge review action. Connection loss
+offers Reconnect now; only interrupted work prompts saved-progress review.
+User-requested action confirmations and actionable errors remain visible.
 
 ### Chat interface
 
@@ -242,9 +248,9 @@ Each response shows **per-message token stats** appended to the assistant bubble
 - ↳ **Output tokens**: cumulative completion tokens
 - ⛁ **Cache** (when non-zero): combined cache read / write / prefix hits
 
-The **status strip** shows a live context-window gauge once a run reports data, plus a session-cost chip when prices are configured:
+The **status strip** shows a session-cost chip when prices are configured. Context usage stays in the server-status popover:
 
-- **Context gauge** — a hairline bar and tabular `%` from per-iteration `usage` events (and a streamed-token estimate between them), against the model's window size from `/api/models` or `usage.maxContextTokens`. Amber above 60%, red above 85%; a `context_trimmed` signal flashes the gauge. Without a known window size it shows raw tokens. Hover for exact numbers and the trimming note.
+- **Context gauge** — a hairline bar and tabular `%` from per-iteration `usage` events (and a streamed-token estimate between them), against the model's window size from `/api/models` or `usage.maxContextTokens`. Without a known window size it shows raw tokens. This is an optional diagnostic, not a warning to review requirements.
 - **Session tokens** — `⇥ in ↦ out`, cumulative session totals. `usage.inputTokens` / `usage.outputTokens` overlay this-run spend on the pre-turn baseline so the numbers move mid-turn; `done` replaces them with the persisted session totals (health popover).
 - **Session cost** — Bodek header chip `$0.201` (`#cost-chip`), estimated from those live session totals and the resolved prices (`/api/limits`: `model_prices` per-model override, flat pair fallback — the client-side twin of `limits.ResolvePrices`). Hidden entirely when no prices are configured. Click opens the health popover for the token breakdown.
 

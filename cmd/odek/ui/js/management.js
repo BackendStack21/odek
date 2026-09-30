@@ -27,7 +27,7 @@ async function loadManagement(surface='manage') {
       root.appendChild(action('New schedule', () => editSchedule(root)));
       const data = await listSchedules();
       if (version !== generation) return;
-      const health=data.host_health;root.appendChild(el('p','scheduler-health',health?.status==='recent_heartbeat'?'Execution host heartbeat observed '+new Date(health.last_heartbeat).toLocaleTimeString()+'. Task execution still depends on host availability.':'No recent execution-host heartbeat. Start odek schedule daemon or the Telegram host to execute enabled schedules.'));
+      const health=data.host_health;root.appendChild(el('p','scheduler-health',health?.status==='recent_heartbeat'?'Scheduler recently active.':'Start odek schedule daemon or the Telegram host to run enabled schedules.'));
       root.appendChild(action('Refresh host status',()=>loadManagement()));
       for (const job of data.jobs || []) {
         const row = el('article', 'management-card');

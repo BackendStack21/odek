@@ -6,6 +6,9 @@ import { openDialog, closeDialog, announce, showToast } from './utils.js';
 import { send } from './input.js';
 
 const byId=id=>document.getElementById(id);
+const runSettings=byId('run-settings');
+runSettings?.addEventListener('keydown',event=>{if(event.key==='Escape'){runSettings.open=false;runSettings.querySelector('summary')?.focus();event.stopPropagation();}});
+document.addEventListener('click',event=>{if(runSettings?.open && !runSettings.contains(event.target))runSettings.open=false;});
 function node(tag,cls,text){const el=document.createElement(tag);if(cls)el.className=cls;if(text!=null)el.textContent=text;return el;}
 function action(label,fn){const el=node('button','management-action',label);el.type='button';el.addEventListener('click',fn);return el;}
 const DIMENSIONS=[['Runtime','max_runtime_seconds','limit-runtime','s'],['Tool calls','max_tool_calls','limit-tools',''],['Input tokens','max_input_tokens','limit-input',''],['Output tokens','max_output_tokens','limit-output',''],['Cost','max_cost_usd','limit-cost',' USD']];
@@ -40,6 +43,7 @@ S.refreshSupervision=()=>{
  for(const step of S.plan?.steps||[])if(step.status==='blocked')items.push(['Blocked: '+step.title,()=>S.requestFollowup('Help resolve blocked step '+step.id+': '+step.title)]);
  if(S.failedChecks)items.push([S.failedChecks+' failed checks · review evidence',()=>openTab('outputs')]);
  if(S.recoveryReason)items.push(['Interrupted work · review saved progress',()=>reviewRecovery()]);
+ if(S.knowledgeNeedsReview)items.push(['Review memory before allowing reuse',()=>openTab('memory')]);
  for(const item of S.agentAttention?.values() || [])items.push([item.label+' · '+item.status,()=>S.requestFollowup('Review delegated work: '+item.label+'. Verify its evidence and continue unfinished work.')]);
  const activeJobs=(S.jobs||[]).filter(job=>job.status==='running');if(!S.busy && activeJobs.length)items.push([activeJobs.length+' background jobs still running',()=>openTab('now')]);
  if(!items.length)root.appendChild(node('p','management-note','Nothing needs your decision.'));

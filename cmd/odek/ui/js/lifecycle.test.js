@@ -241,6 +241,7 @@ beforeEach(() => {
   ws.connect();
   approvalsTeardown();
   byId.messages.children.length = 0;
+  byId['conn-banner'].children.length = 0; // textContent clearing in the browser removes the retry button
   // Render-module singleton state survives the DOM wipe — stale references
   // make addSubagentGroup early-return and orphan the next group.
   render.resetTurnState();
@@ -344,7 +345,7 @@ test('loadAndRenderSession mid-run proceeds after confirmed cancel', async () =>
 });
 
 // ── F-A3: reconnect unbricks the input; first connect stays silent. ──
-test('reconnect resets busy, re-enables the prompt, and tells the user', () => {
+test('interrupted work offers saved-progress review after reconnect', () => {
   const sock1 = S.ws;
   sock1.onopen(); // first connect — silent
   assert.equal(systemMessages().length, 0, 'no restore notice on the first connect');
@@ -353,16 +354,17 @@ test('reconnect resets busy, re-enables the prompt, and tells the user', () => {
   // Simulate a turn in flight when the socket dies.
   S.busy = true;
   byId.prompt.disabled = true;
+  sock1.onclose();
   sock1.onopen(); // same handler shape a reconnecting socket gets
   assert.equal(S.busy, false, 'busy reset on reconnect');
   assert.equal(byId.prompt.disabled, false, 'prompt re-enabled on reconnect');
   const msgs = systemMessages();
   assert.ok(msgs.length >= 1, 'restore notice appended');
-  assert.match(collectText(msgs[msgs.length - 1]).join(' '), /Connection restored/);
+  assert.match(collectText(msgs[msgs.length - 1]).join(' '), /Review saved progress/);
   health.stopHeartbeat(); // don't leak the heartbeat interval into the suite
 });
 
-test('disconnect shows a banner and one transcript notice until restored', () => {
+test('idle disconnect offers retry without transcript or restoration noise', () => {
   const sock = S.ws;
   sock.onopen();
   assert.equal(byId['conn-banner'].hidden, true, 'banner hidden while connected');
@@ -370,12 +372,12 @@ test('disconnect shows a banner and one transcript notice until restored', () =>
   sock.onclose();
   const banner = byId['conn-banner'];
   assert.equal(banner.hidden, false, 'banner visible after drop');
-  assert.match(banner.textContent, /connection lost/i);
+  assert.match(banner.textContent, /Connection unavailable/);
+  assert.equal(banner.querySelector('.connection-retry').textContent, 'Reconnect now');
   assert.equal(byId['ws-status'].textContent, 'reconnecting');
   assert.ok(byId['ws-dot'].className.includes('disconnected'));
   const lost = systemMessages();
-  assert.ok(lost.length >= 1, 'outage is narrated in the transcript');
-  assert.match(collectText(lost[lost.length - 1]).join(' '), /Connection lost/);
+  assert.equal(lost.length, 0, 'idle outage does not narrate maintenance');
   const afterDrop = lost.length;
 
   sock.onclose(); // backoff retry — same outage
@@ -384,8 +386,7 @@ test('disconnect shows a banner and one transcript notice until restored', () =>
   sock.onopen();
   assert.equal(byId['conn-banner'].hidden, true, 'banner clears on restore');
   const restored = systemMessages();
-  assert.ok(restored.length > afterDrop, 'restore is narrated after the drop');
-  assert.match(collectText(restored[restored.length - 1]).join(' '), /Connection restored/);
+  assert.equal(restored.length, 0, 'automatic restore is silent');
   health.stopHeartbeat();
 });
 
@@ -394,8 +395,20 @@ test('send while disconnected toasts instead of failing silently', () => {
   byId.prompt.value = 'hello';
   input.send();
   assert.equal(S.ws.sent.length, 0, 'no prompt frame on a dead socket');
-  assert.match(byId.toast.textContent, /connection lost/);
+  assert.match(byId.toast.textContent, /Reconnect, then send again/);
   assert.ok(byId.toast.classList.contains('show'));
+});
+
+test('connection banner can reconnect immediately without transcript noise', () => {
+  const old=S.ws;old.onopen();old.onclose();
+  const retry=byId['conn-banner'].querySelector('.connection-retry');
+  retry.click();
+  assert.notEqual(S.ws,old,'retry opens a new connection');
+  assert.equal(retry.disabled,true,'pending connection prevents repeat clicks');
+  S.ws.onopen();
+  assert.equal(byId['conn-banner'].hidden,true);
+  assert.equal(systemMessages().length,0);
+  health.stopHeartbeat();
 });
 
 test('disconnect drops pending approval and clarify cards', () => {

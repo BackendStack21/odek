@@ -167,6 +167,7 @@ document.getElementById('panels-close').addEventListener('click', () => togglePa
 overlay.addEventListener('click', () => togglePanels(false));
 
 // ── Memory panel ──
+S.refreshKnowledge=()=>{if(workspaceOpen('memory')){loadMemory();loadSkills();}};
 async function loadMemory() {
   const version = S.viewVersion;
   const sid = S.sessionId;
@@ -184,6 +185,8 @@ async function loadMemory() {
     if (uc) uc.textContent = ((mem.facts && mem.facts.user) || []).length + '/' + (mem.fact_limits ? mem.fact_limits.user : '—');
     if (ec) ec.textContent = ((mem.facts && mem.facts.env) || []).length + '/' + (mem.fact_limits ? mem.fact_limits.env : '—');
     renderPending(pendingList, (mem.episodes && mem.episodes.pending) || []);
+    S.knowledgeNeedsReview=!!mem.episodes?.pending?.length;
+    S.refreshSupervision?.();
   } catch (err) {
     if (!current()) return;
     userList.innerHTML = '<div class="mf-empty">failed to load: ' + escapeHtml(err.message) + '</div>';

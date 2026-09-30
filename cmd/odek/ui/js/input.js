@@ -92,7 +92,7 @@ export function send() {
   if (S.uploading) { showToast('Wait for attachments to finish processing'); return; }
   // F-B2: dead socket still rejects BEFORE touching attachments.
   if (!S.ws || S.ws.readyState !== WebSocket.OPEN) {
-    showToast('connection lost — reconnecting');
+    showToast('Message not sent. Reconnect, then send again.');
     return;
   }
   const text = promptEl.value.trim();
@@ -328,7 +328,7 @@ async function processFiles(fileList, owner) {
       } else {
         const progress=document.createElement('span');progress.className='file-chip';progress.textContent='Reading '+file.name+'…';fileChips.appendChild(progress);
         let content;try{content=await readFileAsText(file);}finally{progress.remove();}
-        if (S.sessionId !== owner) { showToast('Session changed while reading the attachment.'); return; }
+        if (S.sessionId !== owner) { showToast('Session changed. Attach the file again in the intended session.'); return; }
         if(content.includes('\u0000'))throw new Error('Unsupported binary attachment');
         addAttachedFile({name:file.name,size:file.size,content});
       }

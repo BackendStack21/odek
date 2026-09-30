@@ -9,7 +9,8 @@ execution state, decisions, recovery and completion evidence.
   Settings separates preferences, knowledge, diagnostics and maintenance;
   scheduled work has its own entry point. The palette shares workspace
   destinations and removes duplicate commands and clear-transcript.
-- Execution context exposes workspace, sandbox and permission policy.
+- Run settings in the top bar exposes workspace, sandbox and permission policy;
+  the conversation has no extra execution-context row.
   Run settings group model, reasoning depth and tighter per-run runtime,
   tool-call, token and cost caps. Browser caps cannot raise operator limits.
 - Pointer Send/Queue, ordinary multiline editing, IME-safe submission,
@@ -30,6 +31,9 @@ execution state, decisions, recovery and completion evidence.
   Escape. Reading size is adjustable and async completion preserves focus.
 - Schedule presets, explicit timezone, next-three-fire preview, paused states,
   last results and recent execution-host heartbeat make schedules reviewable.
+
+- Internal maintenance events stay silent. Memory requiring review links to
+  Knowledge, and a disconnected connection offers Reconnect now.
 
 ## Compatibility and limits
 

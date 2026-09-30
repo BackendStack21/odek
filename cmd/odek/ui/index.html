@@ -27,11 +27,6 @@
     <button id="attention-chip" type="button" hidden></button>
     <span class="ir-spin" id="busy-spin" hidden aria-hidden="true" title="Agent is working"></span>
     <div id="metrics" aria-live="off">
-      <div class="ctx-gauge" id="ctx-gauge">
-        <span class="ctx-label" title="Context window usage">ctx</span>
-        <div class="ctx-bar"><div class="ctx-fill" id="ctx-fill"></div></div>
-        <span class="ctx-pct" id="ctx-pct">—</span>
-      </div>
       <span class="m-chip" id="plan-chip" hidden role="button" tabindex="0" title="Open plan"></span>
       <span class="m-chip" id="jobs-chip" hidden role="button" tabindex="0" title="Open jobs"></span>
     </div>
@@ -39,6 +34,18 @@
     <span class="m-chip" id="cost-chip" hidden role="button" tabindex="0" title="Session cost"></span>
     <span class="model" id="model-label"></span>
     <div class="top-controls">
+      <details id="run-settings"><summary>Run settings</summary><div class="run-settings-fields"><p id="execution-scope" class="management-note">Loading execution context…</p>      <select id="model-picker" title="Switch model" aria-label="Model">
+        <option value="">Loading...</option>
+      </select>
+      <select id="thinking-picker" title="Reasoning depth" aria-label="Reasoning depth">
+        <option value="disabled">disabled</option>
+        <option value="low">low</option>
+        <option value="medium">medium</option>
+        <option value="high">high</option>
+      </select>
+      <input id="custom-model-input" type="text" placeholder="model id…" title="Custom model ID — press Enter to apply" />
+<p class="management-note">Optional caps tighten server limits. Blank inherits the operator setting.</p>
+<label>Runtime (seconds)<input id="limit-runtime" type="number" min="1" step="1"></label><label>Tool calls<input id="limit-tools" type="number" min="1" step="1"></label><label>Input tokens<input id="limit-input" type="number" min="1" step="1"></label><label>Output tokens<input id="limit-output" type="number" min="1" step="1"></label><label>Cost (USD)<input id="limit-cost" type="number" min="0.000001" step="0.000001"></label><div id="effective-limits"></div></div></details>
       <button id="schedules-btn" type="button" aria-label="Scheduled work">Schedules</button>
       <button id="settings-btn" type="button" aria-label="Settings and administration">Settings</button>
       <button id="palette-btn" type="button" title="Command palette (⌘K)" aria-label="Command palette">
@@ -54,6 +61,12 @@
   </header>
 
   <div id="health-popover" hidden>
+    <div class="hp-row"><span class="hp-k">context</span>      <div class="ctx-gauge" id="ctx-gauge">
+        <span class="ctx-label" title="Context window usage">ctx</span>
+        <div class="ctx-bar"><div class="ctx-fill" id="ctx-fill"></div></div>
+        <span class="ctx-pct" id="ctx-pct">—</span>
+      </div>
+</div>
     <div class="hp-row"><span class="hp-k">version</span><span class="hp-v" id="hp-version">—</span></div>
     <div class="hp-row"><span class="hp-k">uptime</span><span class="hp-v" id="hp-uptime">—</span></div>
     <div class="hp-row"><span class="hp-k">model</span><span class="hp-v" id="hp-model">—</span></div>
@@ -171,18 +184,7 @@
   <div id="panels-overlay"></div>
 
   <main id="main">
-    <div id="execution-context"><span id="execution-scope">Loading execution context…</span><details id="run-settings"><summary>Run settings</summary><div class="run-settings-fields">      <select id="model-picker" title="Switch model" aria-label="Model">
-        <option value="">Loading...</option>
-      </select>
-      <select id="thinking-picker" title="Reasoning depth" aria-label="Reasoning depth">
-        <option value="disabled">disabled</option>
-        <option value="low">low</option>
-        <option value="medium">medium</option>
-        <option value="high">high</option>
-      </select>
-      <input id="custom-model-input" type="text" placeholder="model id…" title="Custom model ID — press Enter to apply" />
-<p class="management-note">Optional caps tighten server limits. Blank inherits the operator setting.</p>
-<label>Runtime (seconds)<input id="limit-runtime" type="number" min="1" step="1"></label><label>Tool calls<input id="limit-tools" type="number" min="1" step="1"></label><label>Input tokens<input id="limit-input" type="number" min="1" step="1"></label><label>Output tokens<input id="limit-output" type="number" min="1" step="1"></label><label>Cost (USD)<input id="limit-cost" type="number" min="0.000001" step="0.000001"></label><div id="effective-limits"></div></div></details></div>
+
     <div id="conn-banner" hidden role="status" aria-live="polite"></div>
     <div id="loading-skeleton">
       <div class="skeleton-bar"></div>
