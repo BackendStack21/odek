@@ -9,7 +9,7 @@ export function checkEvidence(item) {
   const chips=classifyToolResult(item.name,output).filter(chip=>chip.kind==='test');
   if(item.name!=='shell' || (!chips.length && !/\b(go test|pytest|npm test|node --test|cargo test|make test)\b/.test(command)))return null;
   const failed=item.outcome==='failed' || chips.some(chip=>chip.tone==='danger') || /^FAIL\b|^--- FAIL:|^not ok\b|^# fail [1-9]\d*\b|\b[1-9]\d* (?:failed|errors?)\b/m.test(output);
-  const passed=item.outcome==='completed' && !failed && (chips.some(chip=>chip.tone==='ok') || /^# fail 0$/m.test(output) && /^# pass [1-9]\d*$/m.test(output));
+  const passed=item.outcome==='completed' && !failed && (chips.some(chip=>chip.tone==='ok' && /\b[1-9]\d* (?:packages passed|passed)\b/.test(chip.label)) || /^# fail 0$/m.test(output) && /^# pass [1-9]\d*$/m.test(output));
   return {command,state:failed?'failed':passed?'passed':'unverified',item};
 }
 

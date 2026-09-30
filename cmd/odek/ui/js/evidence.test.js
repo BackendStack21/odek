@@ -26,3 +26,8 @@ test('failure summaries dominate earlier passing rows even when shell exits zero
  assert.equal(checkEvidence(check('pytest || true','1 failed, 4 passed in 0.2s')).state,'failed');
  assert.equal(checkEvidence(check('node --test || true','ok package 0.1s\n# pass 5\n# fail 1')).state,'failed');
 });
+
+
+test('zero executed tests do not establish passing validation',()=>{
+ assert.equal(checkEvidence(check('pytest','0 passed, 5 skipped in 0.2s')).state,'unverified');
+});

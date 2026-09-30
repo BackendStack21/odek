@@ -83,7 +83,7 @@ func recoveryView(sess *session.Session) map[string]any {
 	original := ""
 	if len(sess.Messages) > start {
 		m := sess.Messages[start]
-		if m.Role == "user" {
+		if m.Role == "user" && m.Name != "bg-wake" && m.Name != "bg-notice" {
 			if m.PrincipalPrompt != nil {
 				original = *m.PrincipalPrompt
 			} else if !strings.Contains(m.Content, "<untrusted_content_") {

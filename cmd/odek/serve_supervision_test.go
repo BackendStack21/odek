@@ -242,6 +242,10 @@ func TestSupervisionRecoveryNeverReplaysExpandedContentAsPrincipalInput(t *testi
 	if got := recoveryView(sess)["original_prompt"]; got != "" {
 		t.Fatalf("legacy expanded input replayed: %v", got)
 	}
+	sess.Messages = []session.Message{{Role: "user", Name: "bg-wake", Content: "Automated wake"}}
+	if got := recoveryView(sess)["original_prompt"]; got != "" {
+		t.Fatalf("automated wake became principal: %v", got)
+	}
 	sess.Messages = []session.Message{{Role: "assistant", Content: "Not a user prompt"}}
 	if got := recoveryView(sess)["original_prompt"]; got != "" {
 		t.Fatalf("assistant became principal: %v", got)
