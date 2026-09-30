@@ -53,7 +53,7 @@ globalThis.localStorage = (() => {
 })();
 
 const { S } = await import('./state.js');
-const { formatUSD, sessionCostUSD, renderMetrics, metricsDone, resetMetrics, pickTokPerSec, formatTokPerSec, metricsApplySpeed, metricsResetSpeed, turnStatsHTML, metricsBeginTurn, metricsLiveUsage, metricsLiveContext, metricsNoteOutput } = await import('./metrics.js');
+const { formatUSD, sessionCostUSD, renderMetrics, metricsDone, resetMetrics, pickTokPerSec, formatTokPerSec, metricsApplySpeed, metricsResetSpeed, turnStatsHTML, turnStatsSpans, metricsBeginTurn, metricsLiveUsage, metricsLiveContext, metricsNoteOutput } = await import('./metrics.js');
 
 beforeEach(() => {
   S.metrics.pricesConfigured = false;
@@ -179,6 +179,45 @@ test('turnStatsHTML includes tok/s from this-call fields, never invented from to
   assert.equal(html.includes('9.6 tok/s'), false, 'generation rate wins over end-to-end');
   const none = turnStatsHTML({ latency: 0.5, inputTokens: 10, outputTokens: 800 });
   assert.equal(none.includes('tok/s'), false);
+});
+
+// Pins the injection resistance of the done-frame stats footer: every span
+// value must be numeric-coerced (turnStatsSpans) or escaped (turnStatsHTML)
+// so a hostile done frame can never smuggle markup into the transcript.
+const HOSTILE = '<img src=x onerror="alert(1)">';
+
+test('turnStatsSpans coerces hostile done-frame values to inert numbers', () => {
+  const spans = turnStatsSpans({
+    latency: HOSTILE, inputTokens: HOSTILE, outputTokens: HOSTILE,
+    cacheReadTokens: HOSTILE, generationTokensPerSecond: HOSTILE,
+  });
+  assert.ok(spans.length > 0);
+  for (const sp of spans) {
+    assert.equal(sp.text.includes('<'), false, `markup leaked in text: ${sp.text}`);
+    assert.equal(sp.title.includes('<'), false, `markup leaked in title: ${sp.title}`);
+  }
+  // Coerced latency is finite → shows as 0ms, never the raw string.
+  assert.match(spans[0].text, /^⚡ 0ms$/);
+});
+
+test('turnStatsHTML escapes span titles and text against attribute/body injection', () => {
+  const html = turnStatsHTML({ latency: 1.2, inputTokens: 5 });
+  assert.doesNotMatch(html, /onerror|<img/i);
+  // No raw quote ever reaches the title attribute position.
+  const hostile = turnStatsSpans({ latency: HOSTILE });
+  const htmlHostile = turnStatsHTML({ latency: HOSTILE });
+  assert.equal(htmlHostile.includes(HOSTILE), false);
+  assert.equal(hostile.length > 0, true);
+});
+
+test('turnStatsHTML renders identical content to turnStatsSpans for normal events', () => {
+  const ev = { latency: 2.4, inputTokens: 1200, outputTokens: 300, generationTokensPerSecond: 30 };
+  const spans = turnStatsSpans(ev);
+  const html = turnStatsHTML(ev);
+  for (const sp of spans) {
+    assert.ok(html.includes(sp.text), `missing span text: ${sp.text}`);
+  }
+  assert.equal(html.split('<span').length - 1, spans.length);
 });
 
 test('usage overlays run-cumulative tokens onto session totals mid-turn', () => {

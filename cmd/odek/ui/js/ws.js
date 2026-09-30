@@ -16,7 +16,7 @@ import { queueApproval, dismissApproval, clearApprovals, expireApproval } from '
 import { queueClarify, dismissClarify, clearClarify, expireClarify } from './clarify.js';
 import { loadSessions } from './sessions.js';
 import { onPong, onServerInfo, startHeartbeat, stopHeartbeat, notifyUser } from './health.js';
-import { metricsLiveContext, metricsDone, metricsApplySpeed, metricsResetSpeed, metricsBeginTurn, metricsLiveUsage, turnStatsHTML, setMetricsModel } from './metrics.js';
+import { metricsLiveContext, metricsDone, metricsApplySpeed, metricsResetSpeed, metricsBeginTurn, metricsLiveUsage, turnStatsSpans, setMetricsModel } from './metrics.js';
 import { drainQueue } from './input.js';
 import { setIntent, openTurn, markWakeTurn, sealTurn, paintIntent } from './render.js';
 import { badgeNow } from './panels.js';
@@ -367,14 +367,23 @@ export function connect() {
         badgeNow();
         announce('Turn complete');
         drainQueue();
-        // Append per-message stats to the last assistant bubble
-        const statsHTML = turnStatsHTML(event);
-        if (statsHTML) {
+        // Append per-message stats to the last assistant bubble. Built via
+        // textContent/setAttribute (never innerHTML) so server-controlled
+        // values cannot be reinterpreted as markup even if a future field
+        // loses its numeric coercion upstream.
+        const statsSpans = turnStatsSpans(event);
+        if (statsSpans.length) {
           const lastAssistant = lastAssistantBubble();
           if (lastAssistant) {
             const stats = document.createElement('div');
             stats.className = 'msg-stats';
-            stats.innerHTML = statsHTML;
+            statsSpans.forEach((sp, i) => {
+              if (i > 0) stats.appendChild(document.createTextNode('  ·  '));
+              const span = document.createElement('span');
+              span.title = sp.title;
+              span.textContent = sp.text;
+              stats.appendChild(span);
+            });
             lastAssistant.appendChild(stats);
           }
         }
