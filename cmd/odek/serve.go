@@ -1314,6 +1314,7 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 	}
 	connInfo := &wsConnInfo{
 		ID:          newWSConnID(),
+		Model:       resolved.Model,
 		RemoteAddr:  remote,
 		ConnectedAt: time.Now().UTC(),
 		conn:        conn,
@@ -1335,7 +1336,16 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 	// and the processor-loop wsSend below, so every frame of a turn is
 	// attributed to it.
 	turnTag := &wsTurnAnnotator{}
-	wsSend := turnTag.wrap(func(m map[string]any) { writeWSJSON(conn, m) })
+	wsSend := turnTag.wrap(func(m map[string]any) {
+		if m["type"] == "session" {
+			if sid, _ := m["session_id"].(string); sid != "" {
+				// New conversations acquire an ID inside handlePrompt.
+				// Bind it before tools can finish and dispatch a wake.
+				connInfo.setLive(sid, true)
+			}
+		}
+		writeWSJSON(conn, m)
+	})
 	agent, bgRT, sandboxCleanup, mcpCleanup, guardCleanup, injectionGuard, approver, err := newServeAgent(resolved, system, connInfo.ID, func(v any) error {
 		if m, ok := v.(map[string]any); ok {
 			wsSend(m)
@@ -1671,7 +1681,15 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 			}
 			currentModel = msg.Model
 			resolved.Model = msg.Model
-			agent.SwitchModel(msg.Model)
+			func() {
+				// Model discovery may block. Keep the attached session busy
+				// so background completion cannot enqueue an extra wake.
+				live := connInfo.wireCopy()
+				connInfo.setLive(live.SessionID, true)
+				defer connInfo.setLive(live.SessionID, live.Busy)
+				agent.SwitchModel(msg.Model)
+				connInfo.setModel(msg.Model)
+			}()
 		}
 
 		if err := applyServeThinking(agent, msg.Thinking); err != nil {
@@ -1724,10 +1742,20 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 			}
 		}
 
-		connInfo.setLive(msg.SessionID, true)
+		effectiveSessionID := msg.SessionID
+		if effectiveSessionID == "" && currentSession != nil {
+			effectiveSessionID = currentSession.ID
+		}
+		connInfo.setLive(effectiveSessionID, true)
 		func() {
 			// Panic-safe Busy pairing.
-			defer connInfo.setLive(msg.SessionID, false)
+			defer func() {
+				sid := effectiveSessionID
+				if currentSession != nil {
+					sid = currentSession.ID
+				}
+				connInfo.setLive(sid, false)
+			}()
 			currentSession = handlePrompt(promptCtx, wsSend, store, resources, resolved, agent, injectionGuard, currentSession, msg, &sessionInputTokens, &sessionOutputTokens, promptCancelWithApproval, &deltas, bgRT, turnTag)
 		}()
 		connInfo.recordPrompt()

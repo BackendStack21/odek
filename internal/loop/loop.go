@@ -350,6 +350,7 @@ type Engine struct {
 	system         string
 	baseSystem     string                              // original system message without memory/skills
 	maxContext     int                                 // max context tokens (0 = no limit)
+	autoContext    bool                                // resolve the window again when the model changes
 	skillLoader    SkillLoader                         // optional: loads matching skills
 	lastSkillMsg   string                              // last user message that triggered skill loading (dedup)
 	lastEpiMsg     string                              // last user message that triggered episode search (dedup)
@@ -2348,6 +2349,10 @@ func (e *Engine) MaxContext() int {
 	}
 	return e.maxContext
 }
+
+// SetAutoContextWindow enables model-based context discovery on switches.
+// Leave it disabled when the operator supplied an explicit context limit.
+func (e *Engine) SetAutoContextWindow(enabled bool) { e.autoContext = enabled }
 
 // budgetAllowsSideCall reports whether one extra bounded LLM side call
 // (progress summary) is currently within every configured budget.
@@ -4377,7 +4382,7 @@ func classifyToolCallCtx(ctx context.Context, name, args string) (danger.RiskCla
 // SetModel updates the LLM model used by this engine at runtime.
 // The model string must be a valid OpenAI-compatible model identifier.
 func (e *Engine) SetModel(model string) {
-	if model == "" || e.client == nil {
+	if model == "" || e.client == nil || model == e.client.Model() {
 		return
 	}
 	n, err := e.client.RebindModel(model)
@@ -4386,6 +4391,16 @@ func (e *Engine) SetModel(model string) {
 	}
 	e.client = n
 	e.budgetLimits = e.configuredLimits.ResolveForModel(model)
+	if e.autoContext {
+		e.maxContext = llmclient.LastResortContext(model)
+		if e.maxContext == 0 {
+			e.maxContext = llmclient.DiscoverContext(context.Background(), n.Provider, model)
+		}
+	}
+	// Tokenizer calibration from the preceding model is no longer valid.
+	e.lastReportedInputTokens, e.lastEstimatedTotal = 0, 0
+	e.tightMargin = false
+	e.lastPromptTokens = 0
 }
 
 // SetThinking updates the thinking/reasoning mode used by this engine at

@@ -647,6 +647,7 @@ func New(cfg Config) (_ *Agent, setupErr error) {
 	registry := tool.NewRegistry(tools)
 
 	engine := loop.New(client, registry, cfg.MaxIterations, cfg.SystemMessage, cfg.Renderer, maxContext)
+	engine.SetAutoContextWindow(cfg.ContextWindow == 0)
 	engine.PromptCaching = cfg.PromptCaching
 	if cfg.Stream {
 		engine.SetStream(true)
