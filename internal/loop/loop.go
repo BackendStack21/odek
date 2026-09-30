@@ -634,7 +634,10 @@ type Engine struct {
 	// The per-run checker is created in runLoop so runtime is measured from
 	// the run start.
 	budgetLimits budget.Limits
-	budget       *budget.Checker
+	// configuredLimits retains the operator's flat fallback prices so model
+	// switches never inherit a previous model's resolved price overrides.
+	configuredLimits budget.Limits
+	budget           *budget.Checker
 	// budgetNow overrides the budget clock; nil = time.Now. Tests only.
 	budgetNow func() time.Time
 
@@ -966,9 +969,10 @@ func (e *Engine) SetSideCallTimeout(d time.Duration) { e.sideCallTimeout = d }
 // SetLimits configures hard execution budgets (odek-extension/v1): runtime,
 // tool-call count, input/output token totals, and estimated cost. The zero
 // value disables enforcement. Wired by odek.New from Config.Limits. The
-// model ID is fixed per run, so per-model prices (Limits.ModelPrices) are
-// resolved once here into the effective flat prices every cost check uses.
+// model ID is fixed per run. Model switches between runs re-resolve prices
+// from the original configuration rather than the preceding model's prices.
 func (e *Engine) SetLimits(l budget.Limits, model string) {
+	e.configuredLimits = l
 	e.budgetLimits = l.ResolveForModel(model)
 }
 
@@ -4381,6 +4385,7 @@ func (e *Engine) SetModel(model string) {
 		return
 	}
 	e.client = n
+	e.budgetLimits = e.configuredLimits.ResolveForModel(model)
 }
 
 // SetThinking updates the thinking/reasoning mode used by this engine at

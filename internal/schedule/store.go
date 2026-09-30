@@ -307,6 +307,16 @@ func (s *Store) LoadState() (map[string]RunState, error) {
 // SaveState writes (or replaces) the runtime state for a single job. Other
 // jobs' state is preserved.
 func (s *Store) SaveState(st RunState) error {
+	return s.saveRunState(st, false)
+}
+
+// Completion must not recreate state for a job removed while it ran. The
+// definition check and state write share the same cross-process file lock.
+func (s *Store) saveStateForExistingJob(st RunState) error {
+	return s.saveRunState(st, true)
+}
+
+func (s *Store) saveRunState(st RunState, requireJob bool) error {
 	if st.JobID == "" {
 		return fmt.Errorf("schedule: SaveState requires a JobID")
 	}
@@ -317,6 +327,22 @@ func (s *Store) SaveState(st RunState) error {
 		return err
 	}
 	defer release()
+	if requireJob {
+		doc, err := s.loadDoc()
+		if err != nil {
+			return err
+		}
+		found := false
+		for _, job := range doc.Jobs {
+			if job.ID == st.JobID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return nil
+		}
+	}
 	sd, err := s.loadState()
 	if err != nil {
 		return err
