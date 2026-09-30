@@ -1052,6 +1052,9 @@ sessions. Their output uses the generic raw/JSON fallback; see
   acquires execution ownership with a two-second deadline (409 while settling),
   reloads and revalidates authorization. Returns revision, generation,
   original_prompt, completed/failed/uncertain tool records, decisions and a warning.
+  Rerun text comes from redacted authored input stored before attachment/reference
+  expansion. Legacy expanded input returns an empty prompt and must be entered
+  again. This persistence metadata is excluded from provider messages.
 - `GET /api/schedules/preview?cron=0%209%20*%20*%201-5&timezone=Europe%2FBerlin`
   — validated cron/timezone and next three scheduled times; no definition saved.
 - `GET /api/schedules` also returns `host_health`: status `recent_heartbeat` or

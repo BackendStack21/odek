@@ -346,7 +346,6 @@ export function connect() {
         badgeNow();
         announce('Turn complete');
         S.paintEvidence?.();S.refreshSupervision?.();
-        drainQueue();
         // Append per-message stats to the last assistant bubble. Built via
         // textContent/setAttribute (never innerHTML) so server-controlled
         // values cannot be reinterpreted as markup even if a future field
@@ -370,6 +369,7 @@ export function connect() {
         // Consolidated metrics (context gauge + session tokens + cost).
         metricsDone(event);
         if (S.sessionId) loadSessions();
+        drainQueue();
         break;
 
       case 'error':

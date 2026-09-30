@@ -35,6 +35,14 @@ execution state, decisions, recovery and completion evidence.
 - Internal maintenance events stay silent. Memory requiring review links to
   Knowledge, and a disconnected connection offers Reconnect now.
 
+- Runtime implementation and its tests move to `internal/agent`; one small
+  root facade preserves existing Go imports. Public compatibility tests live
+  under `tests/apicompat`.
+- Queued prompts retain their original model settings. Recovery continuation
+  rechecks active work and uses a checkpoint attached only to that prompt;
+  rerun preparation uses authored text, never expanded attachment content.
+- Failing test summaries remain failures even when a shell wrapper exits zero.
+
 ## Compatibility and limits
 
 Existing sessions and external protocol clients remain supported through

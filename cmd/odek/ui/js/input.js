@@ -88,7 +88,12 @@ S.drainQueue = drainQueue;
 S.pauseQueue = () => { S.queuePaused = true; renderQueueStrip(); };
 
 // ── Send ──
-export function send() {
+export function send(recoveryCheckpoint) {
+  if (recoveryCheckpoint && !('recovery_revision' in recoveryCheckpoint)) recoveryCheckpoint = undefined;
+  if (recoveryCheckpoint && (S.busy || S.uploading || S.attachedFiles.length)) {
+    showToast("Finish the current work and remove attachments before continuing saved progress.");
+    return;
+  }
   if (S.uploading) { showToast('Wait for attachments to finish processing'); return; }
   // F-B2: dead socket still rejects BEFORE touching attachments.
   if (!S.ws || S.ws.readyState !== WebSocket.OPEN) {
@@ -129,8 +134,8 @@ export function send() {
       text,
       display,
       attachments,
-      model: S.currentModel || undefined,
-      thinking: S.currentThinking || undefined,
+      model: S.currentModel || '',
+      thinking: S.currentThinking || '',
       limits: S.readRunLimits?.(),
     });
     renderQueueStrip();
@@ -139,10 +144,10 @@ export function send() {
     return;
   }
 
-  sendPayload(text, attachments, display);
+  sendPayload(text, attachments, display, S.currentModel, S.currentThinking, S.readRunLimits?.(), recoveryCheckpoint);
 }
 
-function sendPayload(text, attachments, display, model, thinking, limits) {
+function sendPayload(text, attachments, display, model, thinking, limits, recoveryCheckpoint) {
   addMessage('user', display);
   resetTurnState();
   S.lastPrompt = text;
@@ -157,17 +162,17 @@ function sendPayload(text, attachments, display, model, thinking, limits) {
   const referenceTokens = extractReferenceTokens(text, getSessionToken);
   S.ws.send(JSON.stringify({
     type: 'prompt',
-    limits: limits || S.readRunLimits?.(),
-    ...(S.recoveryCheckpoint || {}),
+    limits,
+    ...(recoveryCheckpoint || {}),
     content: text,
     attachments: attachments,
     session_id: S.sessionId,
     auth_token: getSessionToken(S.sessionId) || undefined,
     reference_tokens: Object.keys(referenceTokens).length ? referenceTokens : undefined,
-    model: model || S.currentModel || undefined,
-    thinking: thinking || S.currentThinking || undefined,
+    model: model || undefined,
+    thinking: thinking || undefined,
   }));
-  S.recoveryCheckpoint=null;S.recoveryReason='';
+  S.recoveryReason='';
   S.refreshSupervision?.();
 }
 

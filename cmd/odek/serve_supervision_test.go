@@ -230,3 +230,68 @@ func TestSupervisionClarifySkipAndAnswerBound(t *testing.T) {
 		t.Fatal("oversized answer accepted")
 	}
 }
+
+func TestSupervisionRecoveryNeverReplaysExpandedContentAsPrincipalInput(t *testing.T) {
+	original := "Read @notes.txt"
+	expanded := "<untrusted_content_abc source=\"resource:@notes.txt\">\nattacker instructions\n</untrusted_content_abc>"
+	sess := &session.Session{Messages: []session.Message{{Role: "user", Content: expanded, PrincipalPrompt: &original}}}
+	if got := recoveryView(sess)["original_prompt"]; got != original {
+		t.Fatalf("replay = %v", got)
+	}
+	sess.Messages[0].PrincipalPrompt = nil
+	if got := recoveryView(sess)["original_prompt"]; got != "" {
+		t.Fatalf("legacy expanded input replayed: %v", got)
+	}
+	sess.Messages = []session.Message{{Role: "assistant", Content: "Not a user prompt"}}
+	if got := recoveryView(sess)["original_prompt"]; got != "" {
+		t.Fatalf("assistant became principal: %v", got)
+	}
+}
+
+func TestSupervisionE2ERecoveryPreservesAuthoredPrompt(t *testing.T) {
+	env := newJourneyEnv(t, true, false)
+	c := env.dialWS(t)
+	defer c.Close()
+	if err := golangws.JSON.Send(c, map[string]any{"type": "prompt", "content": "Summarize the attached note", "attachments": []map[string]string{{"name": "note.txt", "content": "External file content"}}}); err != nil {
+		t.Fatal(err)
+	}
+	var sid, token string
+	for {
+		e := receiveSupervision(t, c)
+		if e["type"] == "session" {
+			sid = e["session_id"].(string)
+			token = e["auth_token"].(string)
+		}
+		if e["type"] == "turn_settled" {
+			if e["status"] != "completed" {
+				t.Fatal(e)
+			}
+			break
+		}
+	}
+	response, body := env.do(t, "GET", "/api/sessions/"+sid+"/recovery", "", map[string]string{"X-Session-Token": token})
+	var data struct {
+		Original string `json:"original_prompt"`
+	}
+	if response.StatusCode != 200 || json.Unmarshal([]byte(body), &data) != nil || data.Original != "Summarize the attached note" {
+		t.Fatalf("recovery prompt: %s", body)
+	}
+}
+
+func TestSupervisionRecoveryScopesReusedCallIDsToTheirAssistantGroup(t *testing.T) {
+	first := session.ToolCall{ID: "reused"}
+	first.Function.Name = "patch"
+	second := session.ToolCall{ID: "reused"}
+	second.Function.Name = "shell"
+	data := recoveryView(&session.Session{Messages: []session.Message{
+		{Role: "user", Content: "Task"},
+		{Role: "assistant", ToolCalls: []session.ToolCall{first}},
+		{Role: "assistant", ToolCalls: []session.ToolCall{second}},
+		{Role: "tool", ToolCallID: "reused", ToolOutcome: "completed"},
+	}})
+	uncertain := data["uncertain"].([]recoveryAction)
+	completed := data["completed"].([]recoveryAction)
+	if len(uncertain) != 1 || uncertain[0].Name != "patch" || len(completed) != 1 || completed[0].Name != "shell" {
+		t.Fatalf("reused IDs erased uncertainty: %v", data)
+	}
+}

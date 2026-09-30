@@ -76,18 +76,40 @@ type recoveryAction struct {
 func recoveryView(sess *session.Session) map[string]any {
 	start := 0
 	for i, m := range sess.Messages {
-		if m.Role == "user" {
+		if m.Role == "user" && m.Name != "bg-wake" && m.Name != "bg-notice" {
 			start = i
 		}
 	}
 	original := ""
 	if len(sess.Messages) > start {
-		original = sess.Messages[start].Content
+		m := sess.Messages[start]
+		if m.Role == "user" {
+			if m.PrincipalPrompt != nil {
+				original = *m.PrincipalPrompt
+			} else if !strings.Contains(m.Content, "<untrusted_content_") {
+				// Legacy expanded input cannot safely become fresh principal instructions.
+				original = m.Content
+			}
+		}
 	}
 	completed, failed, uncertain := []recoveryAction{}, []recoveryAction{}, []recoveryAction{}
 	calls := map[string]string{}
 	order := []string{}
+	flushPending := func() {
+		for _, id := range order {
+			if name, ok := calls[id]; ok {
+				uncertain = append(uncertain, recoveryAction{ID: id, Name: name, Outcome: "unknown"})
+				delete(calls, id)
+			}
+		}
+		order = nil
+	}
 	for _, m := range sess.Messages[start:] {
+		// Providers may reuse call IDs in later assistant groups. A later return
+		// must not erase an earlier action whose outcome was never recorded.
+		if len(m.ToolCalls) > 0 {
+			flushPending()
+		}
 		for _, call := range m.ToolCalls {
 			calls[call.ID] = call.Function.Name
 			order = append(order, call.ID)
@@ -110,12 +132,7 @@ func recoveryView(sess *session.Session) map[string]any {
 		}
 		delete(calls, m.ToolCallID)
 	}
-	for _, id := range order {
-		if name, ok := calls[id]; ok {
-			uncertain = append(uncertain, recoveryAction{ID: id, Name: name, Outcome: "unknown"})
-			delete(calls, id)
-		}
-	}
+	flushPending()
 	return map[string]any{"session_id": sess.ID, "revision": sess.Revision, "generation": sess.Generation, "completed": completed, "failed": failed, "uncertain": uncertain, "original_prompt": original, "decisions": sess.Decisions, "warning": "A recorded tool return is not proof of task success. Interrupted actions may have side effects without a saved result; inspect the workspace before continuing."}
 }
 

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	sdk "github.com/BackendStack21/go-llm-sdk"
 
@@ -248,7 +249,9 @@ func TestDiscoverContext_ListModelsFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
-	if got := DiscoverContext(context.Background(), c.Provider, "llama3"); got != 0 {
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	if got := DiscoverContext(ctx, c.Provider, "llama3"); got != 0 {
 		t.Fatalf("failed ListModels must return 0, got %d", got)
 	}
 }
@@ -366,5 +369,17 @@ func TestMarkLastToolCache_CopiesAndMarksLast(t *testing.T) {
 func TestMarkLastToolCache_Empty(t *testing.T) {
 	if markLastToolCache(nil) != nil {
 		t.Fatal("nil in → nil out")
+	}
+}
+
+func TestPrincipalPromptMetadataNeverEntersProviderMessages(t *testing.T) {
+	principal := "metadata-only principal input"
+	_, messages := toSDKMessages([]session.Message{{Role: "user", Content: "Model-facing enriched content", PrincipalPrompt: &principal}}, false, false)
+	data, err := json.Marshal(messages)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), principal) || strings.Contains(string(data), "principal_prompt") {
+		t.Fatalf("persistence metadata reached provider: %s", data)
 	}
 }

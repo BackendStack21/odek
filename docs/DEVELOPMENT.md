@@ -8,7 +8,7 @@ no maintained changelog file — create a release/tag and GitHub produces the no
 
 ## Prerequisites
 
-- Go 1.25.13+ (matches `go.mod`; CI builds with the same toolchain line and runs `govulncheck` on every push/PR)
+- Go 1.27.0+ (matches `go.mod`; CI builds with the same toolchain line and runs `govulncheck` on every push/PR)
 - Docker (for sandbox integration tests only)
 
 ## Building
@@ -17,12 +17,18 @@ no maintained changelog file — create a release/tag and GitHub produces the no
 go build -o odek ./cmd/odek
 ```
 
+Runtime code and its tests live together under `internal/agent`. The root facade
+preserves the existing `github.com/BackendStack21/odek` import path, including
+`Agent` methods and public type identity. Package-local tests stay beside their
+implementation so they can exercise private behavior without exposing it.
+
 ## Source layout
 
 ```
-odek.go                       Public API (Config, New, Run, Close, Provider)
-odek_test.go                  Config defaults, API key fallback, Close lifecycle
+odek.go                       Small compatibility facade for the public Go API
+tests/apicompat/              Public import and API compatibility tests
 internal/
+  agent/                      Runtime implementation and package-local tests
   config/
     loader.go                 Config file loading, env vars, priority merge
     loader_test.go            Config loading tests

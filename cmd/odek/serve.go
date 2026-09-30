@@ -2183,7 +2183,7 @@ func handlePrompt(
 
 	if sess != nil {
 		messages = sess.GetMessages()
-		messages = append(messages, session.Message{Role: "user", Content: enrichedPrompt, Name: userName, TurnID: turnID})
+		messages = append(messages, session.Message{Role: "user", Content: enrichedPrompt, PrincipalPrompt: &originalPrompt, Name: userName, TurnID: turnID})
 	} else {
 		// Persist an empty system slot. RunWithMessages restores the
 		// current engine prompt at run time so session files never store
@@ -2191,7 +2191,7 @@ func handlePrompt(
 		// stored prompt cannot override the runtime one).
 		messages = []session.Message{
 			{Role: "system", Content: ""},
-			{Role: "user", Content: enrichedPrompt, Name: userName, TurnID: turnID},
+			{Role: "user", Content: enrichedPrompt, PrincipalPrompt: &originalPrompt, Name: userName, TurnID: turnID},
 		}
 
 		// Persist new session
@@ -2319,7 +2319,7 @@ func handlePrompt(
 	// — observed repeatedly on 2026-08-29. SaveNoIndex skips the remote
 	// vector index; a successful turn re-indexes on the final save below.
 	if sess != nil {
-		sess.Messages = append(sess.Messages, session.Message{Role: "user", Content: enrichedPrompt, Name: userName, TurnID: turnID})
+		sess.Messages = append(sess.Messages, session.Message{Role: "user", Content: enrichedPrompt, PrincipalPrompt: &originalPrompt, Name: userName, TurnID: turnID})
 		if err := store.SaveNoIndex(sess); err != nil {
 			sendError(send, "failed to persist prompt: "+err.Error())
 			return sess

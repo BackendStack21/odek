@@ -17,7 +17,7 @@ It provides context about the project's architecture, conventions, and how to up
 ## Source Layout
 
 ```
-odek.go                       Public API (Config, New, Run, Close, ProfileLabel, Tool interface)
+odek.go                       Compatibility facade for the public Go API (type aliases + forwarding functions)
 cmd/odek/
   main.go                     CLI entry point, flag parsing, commands, sandbox setup, system prompt,
                               --events-jsonl/--external-ref/budget flag wiring, init config templates
@@ -67,6 +67,7 @@ cmd/odek/
   security_report_validation_test.go  Regression bar for every documented mitigation
   *_test.go                   250+ unit + E2E tests covering all tools
 internal/
+  agent/                      Public runtime implementation and its package-local tests
   llmclient/                  Adapter over go-llm-sdk (DTO mapping, temperature polarity, SimpleCall, SideCall)
   loop/                       ReAct engine: observe → think → parallel-act → repeat. signal.go — SignalEvent observability
                               (context_trimmed, tool_recovery, tool_running heartbeat). Budget enforcement (budget.Checker)

@@ -17,6 +17,9 @@ type Message struct {
 	// offsets. They are persistence metadata and are not sent to providers.
 	ID     string `json:"id,omitempty"`
 	TurnID string `json:"turn_id,omitempty"`
+	// PrincipalPrompt preserves browser-authored input before resource expansion.
+	// It is persistence metadata and never sent to providers; nil denotes older records.
+	PrincipalPrompt *string `json:"principal_prompt,omitempty"`
 	// ToolOutcome is execution metadata; it is never sent to the model.
 	ToolOutcome       string        `json:"tool_outcome,omitempty"`
 	Role              string        `json:"role"`
@@ -95,6 +98,10 @@ func CloneMessages(msgs []Message) []Message {
 	out := make([]Message, len(msgs))
 	for i, m := range msgs {
 		out[i] = m
+		if m.PrincipalPrompt != nil {
+			prompt := *m.PrincipalPrompt
+			out[i].PrincipalPrompt = &prompt
+		}
 		if len(m.ToolCalls) > 0 {
 			tc := make([]ToolCall, len(m.ToolCalls))
 			copy(tc, m.ToolCalls)

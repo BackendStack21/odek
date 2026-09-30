@@ -67,23 +67,24 @@ export async function reviewRecovery(){
   const continueButton=action('Continue from saved progress',async()=>{
    continueButton.disabled=true;
    try{
-    const saved=await getSession(sid,getSessionToken(sid));if(sid!==S.sessionId)return;
+    const saved=await getSession(sid,getSessionToken(sid));if(sid!==S.sessionId||version!==recoveryVersion)return;
+    if(S.busy||S.uploading||S.attachedFiles.length){showToast('Finish the current work and remove attachments before continuing saved progress.');return;}
     if(saved.revision!==data.revision||saved.generation!==data.generation){showToast('Saved progress changed. Refresh recovery.');await reviewRecovery();return;}
-    S.recoveryCheckpoint={recovery_revision:data.revision,recovery_generation:data.generation};
     byId('prompt').value='Continue the original task from the saved conversation. Inspect the current workspace and recorded outcomes first. Avoid repeating completed actions; reconcile uncertain side effects before proceeding.';
-    S.recoveryReason='';S.closePanels?.();byId('prompt').focus();send();
+    S.closePanels?.();byId('prompt').focus();send({recovery_revision:data.revision,recovery_generation:data.generation});
    }catch(e){showToast(e.message);}finally{continueButton.disabled=false;}
   });
   continueButton.disabled=S.busy;
   root.append(continueButton,action('Refresh saved progress',reviewRecovery),action('Prepare to run again',()=>{
    const original=data.original_prompt || ''; 
-   S.requestFollowup(original);showToast('Review before running again. Completed actions may be repeated.');
+   if(!original){showToast('Write the prompt again and reattach any files before running.');return;}
+   S.requestFollowup(original);showToast('Review before running again and reattach any files. Completed actions may be repeated.');
   }));
  }catch(e){if(version===recoveryVersion)root.textContent=e.message;}
 }
 byId('recover-btn')?.addEventListener('click',reviewRecovery);
 S.onRecoveryNeeded=reason=>{S.recoveryReason=reason;S.refreshSupervision();};
-S.resetSupervision=()=>{recoveryVersion++;S.recoveryReason='';S.failedChecks=0;S.recoveryCheckpoint=null;S.agentAttention=new Map();const root=byId('recovery-view');if(root){root.hidden=true;root.textContent='';}S.refreshSupervision();};
+S.resetSupervision=()=>{recoveryVersion++;S.recoveryReason='';S.failedChecks=0;S.agentAttention=new Map();const root=byId('recovery-view');if(root){root.hidden=true;root.textContent='';}S.refreshSupervision();};
 
 // Context references use the existing resolver and session-token contract.
 let contextSequence=0;

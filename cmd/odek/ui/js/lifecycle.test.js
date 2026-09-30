@@ -1107,3 +1107,54 @@ test('send waits for a text attachment read and includes it afterward', async ()
 });
 
 afterEach(()=>approvals.clearApprovals({drain:false}));
+
+
+test('queued configured-default model settings survive later picker changes', () => {
+  const oldModel=S.currentModel,oldThinking=S.currentThinking;
+  try {
+    S.currentModel='';S.currentThinking='';S.busy=true;S.promptQueue=[];
+    byId.prompt.value='queued default';input.send();
+    S.currentModel='changed-model';S.currentThinking='high';S.busy=false;
+    input.drainQueue();
+    const frame=JSON.parse(S.ws.sent.at(-1));
+    assert.equal(frame.content,'queued default');
+    assert.equal(frame.model,undefined);assert.equal(frame.thinking,undefined);
+  } finally {S.currentModel=oldModel;S.currentThinking=oldThinking;S.promptQueue=[];}
+});
+
+test('recovery checkpoints stay on the explicitly authorized prompt', () => {
+  S.promptQueue=[];S.busy=true;byId.prompt.value='draft that must survive';
+  input.send({recovery_revision:9,recovery_generation:'saved'});
+  assert.equal(S.promptQueue.length,0);assert.equal(byId.prompt.value,'draft that must survive');
+  S.busy=false;input.send();
+  let frame=JSON.parse(S.ws.sent.at(-1));assert.equal(frame.recovery_revision,undefined);
+  S.busy=false;byId.prompt.value='continue saved';
+  input.send({recovery_revision:9,recovery_generation:'saved'});
+  frame=JSON.parse(S.ws.sent.at(-1));assert.equal(frame.recovery_revision,9);
+  assert.equal(frame.recovery_generation,'saved');
+});
+
+
+test('recovery rechecks active work after the saved-session request resolves', async () => {
+  const oldFetch=globalThis.fetch;
+  // Loading the supervision module also requests workspace metadata.
+  const response=data=>({ok:true,headers:{get:()=> 'application/json'},json:async()=>data});
+  globalThis.fetch=async()=>response({workspace:'fixture',limits:{}});
+  document.documentElement={style:{setProperty(){}}};
+  const supervision=await import('./supervision.js');
+  let resolveSaved;
+  S.sessionId='recovery-race';S.busy=false;S.attachedFiles=[];
+  globalThis.fetch=async url=>String(url).endsWith('/recovery')
+    ? response({revision:9,generation:'saved',completed:[],failed:[],uncertain:[],decisions:[]})
+    : await new Promise(resolve=>{resolveSaved=resolve;});
+  try {
+    await supervision.reviewRecovery();
+    const button=byId['recovery-view'].children.find(el=>el.textContent==='Continue from saved progress');
+    assert.ok(button);button.click();assert.ok(resolveSaved);
+    S.busy=true;byId.prompt.value='new draft';
+    const before=S.ws.sent.length;resolveSaved(response({revision:9,generation:'saved'}));
+    await new Promise(resolve=>setImmediate(resolve));
+    assert.equal(S.ws.sent.length,before);assert.equal(byId.prompt.value,'new draft');
+    assert.equal(S.promptQueue.length,0);
+  } finally {globalThis.fetch=oldFetch;S.resetSupervision();}
+});

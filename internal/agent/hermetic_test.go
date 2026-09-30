@@ -1,4 +1,4 @@
-package odek
+package agent
 
 import (
 	"fmt"
