@@ -153,6 +153,7 @@ func buildMCPServersView(resolved config.ResolvedConfig) []mcpEntry {
 			Args:             cfg.Args,
 			Project:          project[name],
 			AutoApprove:      cfg.AutoApprove,
+			Enabled:          !cfg.IsDisabled(),
 			TimeoutSeconds:   cfg.TimeoutSeconds,
 			MaxResponseBytes: cfg.MaxResponseBytes,
 			MaxResultChars:   cfg.MaxResultChars,

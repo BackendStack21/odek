@@ -2783,6 +2783,12 @@ func loadMCPTools(resolved config.ResolvedConfig, tools *[]odek.Tool) (func(), e
 	reserved := reservedBuiltinToolNames()
 	var cleaners []func()
 	for name, cfg := range resolved.MCPServers {
+		if cfg.IsDisabled() {
+			// Configured but off: keep the entry (approval hashes, later
+			// re-enable) but never start or discover it.
+			fmt.Fprintf(os.Stderr, "odek: mcp server %q disabled by config — skipping\n", name)
+			continue
+		}
 		client, err := mcpclient.New(name, cfg)
 		if err != nil {
 			// Clean up any servers we already started

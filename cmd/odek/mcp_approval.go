@@ -83,6 +83,11 @@ func approveMCPServersWithTTY(resolved config.ResolvedConfig, stdin io.Reader, s
 			continue
 		}
 
+		// A disabled server never runs, so there is nothing to approve.
+		if cfg.IsDisabled() {
+			continue
+		}
+
 		key := mcpApprovalKey(projectDir, name, cfg)
 		if approved[key] {
 			continue
