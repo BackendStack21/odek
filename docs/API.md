@@ -908,3 +908,15 @@ require github.com/BackendStack21/odek v0.16.1
 
 All `internal/` packages (`internal/llmclient`, `internal/memory`, `internal/skills`, `internal/config`, `internal/session`, `internal/danger`, `internal/resource`, `internal/render`, `internal/ws`) are not importable outside the module due to Go's `internal` package visibility rules.
 
+
+## Web task supervision
+
+The serve API also exposes `GET /api/workspace`, strict session-authenticated
+`GET /api/sessions/{id}/recovery`, and
+`GET /api/schedules/preview?cron=…&timezone=…`. Recovery checks revision and
+generation under execution ownership before continuing. WebSocket prompts and
+`POST /api/prompt` accept tighter `limits`; they cannot raise operator caps or
+supply prices. Session detail/export includes bounded, redacted `decisions`
+separate from the model transcript. Run list/detail includes a redacted `task`
+label. See [WEBUI.md](WEBUI.md#task-supervision-api-additions) for the complete
+wire contract and [v2.29.0 notes](RELEASE_v2.29.0.md) for the cumulative UI changes.

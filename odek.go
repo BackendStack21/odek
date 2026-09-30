@@ -1233,6 +1233,18 @@ func (a *Agent) SkillManager() *skills.SkillManager {
 	return a.skillManager
 }
 
+// SetExecutionLimits configures the next run's budgets. Call only between runs.
+// Hosts must enforce their own policy when accepting caller-supplied caps.
+func (a *Agent) SetExecutionLimits(limits budget.Limits) {
+	if a == nil {
+		return
+	}
+	a.config.Limits = limits
+	if a.engine != nil {
+		a.engine.SetLimits(limits, a.config.Model)
+	}
+}
+
 // SwitchModel updates the LLM model used by this agent at runtime.
 // The model string must be a valid OpenAI-compatible model identifier.
 // This is safe to call between RunWithMessages calls to switch models

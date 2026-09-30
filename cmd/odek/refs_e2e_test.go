@@ -70,6 +70,7 @@ func TestE2E_RunWithCtxFile(t *testing.T) {
 	os.Setenv("ODEK_BASE_URL", llmSrv.URL)
 	homeDir := t.TempDir()
 	os.Setenv("HOME", homeDir)
+	writeMockProviderFixture(t, homeDir, llmSrv.URL)
 	os.Unsetenv("ODEK_SYSTEM")
 
 	// Create a temp working directory with a test file
@@ -164,6 +165,7 @@ func TestE2E_RunWithAtRef(t *testing.T) {
 	os.Setenv("ODEK_BASE_URL", llmSrv.URL)
 	homeDir := t.TempDir()
 	os.Setenv("HOME", homeDir)
+	writeMockProviderFixture(t, homeDir, llmSrv.URL)
 	os.Unsetenv("ODEK_SYSTEM")
 
 	workDir := t.TempDir()
@@ -244,6 +246,7 @@ func TestE2E_RunWithBothCtxAndAtRef(t *testing.T) {
 	os.Setenv("ODEK_BASE_URL", llmSrv.URL)
 	homeDir := t.TempDir()
 	os.Setenv("HOME", homeDir)
+	writeMockProviderFixture(t, homeDir, llmSrv.URL)
 	os.Unsetenv("ODEK_SYSTEM")
 
 	workDir := t.TempDir()
@@ -328,6 +331,7 @@ func TestE2E_RunWithCtxMissingFile(t *testing.T) {
 	os.Setenv("ODEK_BASE_URL", llmSrv.URL)
 	homeDir := t.TempDir()
 	os.Setenv("HOME", homeDir)
+	writeMockProviderFixture(t, homeDir, llmSrv.URL)
 	os.Unsetenv("ODEK_SYSTEM")
 
 	sessionDir := filepath.Join(homeDir, ".odek", "sessions")
@@ -373,6 +377,7 @@ func TestE2E_RunWithCtxShortFlag(t *testing.T) {
 	os.Setenv("ODEK_BASE_URL", llmSrv.URL)
 	homeDir := t.TempDir()
 	os.Setenv("HOME", homeDir)
+	writeMockProviderFixture(t, homeDir, llmSrv.URL)
 	os.Unsetenv("ODEK_SYSTEM")
 
 	workDir := t.TempDir()
@@ -434,6 +439,7 @@ func TestE2E_RunWithMultipleCtxFiles(t *testing.T) {
 	os.Setenv("ODEK_BASE_URL", llmSrv.URL)
 	homeDir := t.TempDir()
 	os.Setenv("HOME", homeDir)
+	writeMockProviderFixture(t, homeDir, llmSrv.URL)
 	os.Unsetenv("ODEK_SYSTEM")
 
 	workDir := t.TempDir()

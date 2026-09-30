@@ -4,11 +4,13 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/BackendStack21/odek/internal/danger"
+	"github.com/BackendStack21/odek/internal/session"
 )
 
 // approvalRequest is sent from the serve WebSocket to the browser
@@ -76,6 +78,7 @@ type clarifyResponse struct {
 	Type   string `json:"type"`
 	ID     string `json:"id"`
 	Answer string `json:"answer"`
+	Action string `json:"action,omitempty"`
 }
 
 // wsApprover implements danger.Approver over a WebSocket channel.
@@ -85,6 +88,7 @@ type clarifyResponse struct {
 type wsApprover struct {
 	sendFn         func(v any) error      // sends JSON to WebSocket
 	pending        map[string]chan string // request ID → response channel
+	decisions      []session.Decision
 	pendingClarify map[string]chan string // clarify ID → answer channel
 	mu             sync.Mutex
 	approveAll     map[danger.RiskClass]bool // trust-cached risk classes
@@ -192,6 +196,8 @@ func (a *wsApprover) PromptCommand(cls danger.RiskClass, cmd, description string
 	}
 
 	id := a.newID()
+	decision := session.Decision{ID: id, Kind: "approval", Command: cmd, Risk: string(cls), State: "interrupted"}
+	defer func() { a.recordDecision(decision) }()
 	resp := make(chan string, 1)
 
 	a.mu.Lock()
@@ -256,6 +262,14 @@ func (a *wsApprover) PromptCommand(cls danger.RiskClass, cmd, description string
 			return fmt.Errorf("approval cancelled: %s", cmd)
 		default:
 		}
+		if action == "trust" && !allowTrust {
+			action = "approve"
+		}
+		if action != "approve" && action != "trust" {
+			action = "deny"
+		}
+		decision.Action = action
+		decision.State = "accepted"
 		// Ack the user's choice back to the browser for UI feedback.
 		a.sendFn(map[string]any{
 			"type":   "approval_ack",
@@ -289,6 +303,7 @@ func (a *wsApprover) PromptCommand(cls danger.RiskClass, cmd, description string
 	case <-cancelCh:
 		return fmt.Errorf("approval cancelled: %s", cmd)
 	case <-time.After(timeout):
+		decision.State = "expired"
 		// Tell the browser this card is dead BEFORE the timeout error
 		// surfaces to the run — otherwise the UI keeps a zombie approval
 		// card that blocks the whole approval queue. Late approval_response
@@ -350,6 +365,8 @@ func (a *wsApprover) newPrefixedID(prefix string) string {
 // is cancelled. A failed send returns immediately so the loop can continue.
 func (a *wsApprover) PromptClarify(question string) (string, error) {
 	id := a.newClarifyID()
+	decision := session.Decision{ID: id, Kind: "question", Command: question, State: "interrupted"}
+	defer func() { a.recordDecision(decision) }()
 	resp := make(chan string, 1)
 
 	a.mu.Lock()
@@ -385,18 +402,28 @@ func (a *wsApprover) PromptClarify(question string) (string, error) {
 			return "", fmt.Errorf("cancelled")
 		default:
 		}
+		if answer == clarifySkip {
+			decision.Action = "skip"
+			decision.State = "accepted"
+			a.sendFn(map[string]any{"type": "clarify_ack", "id": id, "action": "skip"})
+			return "", fmt.Errorf("question skipped by user; do not assume an answer")
+		}
 		answer = strings.TrimSpace(answer)
 		if answer == "" {
 			return "", fmt.Errorf("empty answer")
 		}
+		decision.Action = "answer"
+		decision.State = "accepted"
 		a.sendFn(map[string]any{
-			"type": "clarify_ack",
-			"id":   id,
+			"action": "answer",
+			"type":   "clarify_ack",
+			"id":     id,
 		})
 		return answer, nil
 	case <-cancelCh:
 		return "", fmt.Errorf("cancelled")
 	case <-time.After(timeout):
+		decision.State = "expired"
 		a.sendFn(map[string]any{
 			"type": "clarify_expired",
 			"id":   id,
@@ -408,7 +435,7 @@ func (a *wsApprover) PromptClarify(question string) (string, error) {
 // HandleClarifyResponse delivers a browser answer to a pending PromptClarify.
 // Empty answers are ignored so a blank card cannot complete the wait.
 func (a *wsApprover) HandleClarifyResponse(id, answer string) bool {
-	if strings.TrimSpace(answer) == "" {
+	if len(answer) > 32000 || strings.TrimSpace(answer) == "" {
 		return false
 	}
 	a.mu.Lock()
@@ -444,3 +471,54 @@ func (a *wsApprover) SetTrustAll(enabled bool) {
 	a.trustAll = enabled
 	a.mu.Unlock()
 }
+
+// TrustClasses returns a snapshot of explicit grants on this connection.
+func (a *wsApprover) TrustClasses() []string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	out := []string{}
+	for cls, allowed := range a.approveAll {
+		if allowed {
+			out = append(out, string(cls))
+		}
+	}
+	if a.trustAll {
+		out = append(out, "all eligible classes")
+	}
+	sort.Strings(out)
+	return out
+}
+func (a *wsApprover) RevokeTrust() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.approveAll = map[danger.RiskClass]bool{}
+	a.trustAll = false
+}
+
+// This sentinel never crosses the principal-channel boundary as an answer.
+const clarifySkip = "\x00odek-question-skipped\x00"
+
+func (a *wsApprover) HandleClarifySkip(id string) bool {
+	return a.HandleClarifyResponse(id, clarifySkip)
+}
+func (a *wsApprover) recordDecision(item session.Decision) {
+	item.At = time.Now().UTC()
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.decisions = append(a.decisions, item)
+	if len(a.decisions) > 128 {
+		a.decisions = a.decisions[len(a.decisions)-128:]
+	}
+}
+func (a *wsApprover) drainDecisions(turnID string) []session.Decision {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	out := a.decisions
+	a.decisions = nil
+	for i := range out {
+		out[i].TurnID = turnID
+	}
+	return out
+}
+
+type serveApproverKey struct{}

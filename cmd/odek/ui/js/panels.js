@@ -1,7 +1,7 @@
 // Inspector drawer: four workspaces (sessions / now / memory / ops).
 // Opened via the topbar button or ⌘. All data flows through js/api.js.
 import { S, getSessionToken } from './state.js';
-import { showToast, announce, escapeHtml } from './utils.js';
+import { showToast, announce, escapeHtml, isDialogOpen } from './utils.js';
 import {
   getMemory, previewMemory, applyMemoryPreview, addMemoryFact, removeMemoryFact, promoteEpisode, discardEpisode, consolidateMemory,
   getSkills, getTools, promoteSkill,
@@ -13,6 +13,7 @@ import {
 // need it without dragging the whole drawer along); its lifecycle is wired
 // into the tab dispatch here like every other panel.
 import { refreshPlanPanel, startPlanPolling, stopPlanPolling } from './plan.js';
+import { trustLabel } from './approvals.js';
 import { renderResult } from './results.js';
 import { paintIntent } from './render.js';
 
@@ -20,12 +21,29 @@ const drawer = document.getElementById('panels');
 const overlay = document.getElementById('panels-overlay');
 
 // ── Drawer shell ──
+function syncModal(){
+ const modal=drawer.classList.contains('active') && !matchMedia('(min-width: 1100px)').matches;
+ drawer.setAttribute('aria-modal',String(modal));drawer.setAttribute('role',modal?'dialog':'complementary');
+ for(const id of ['main','topbar','session-rail']){const el=document.getElementById(id);if(el)el.inert=modal;}
+}
+if(typeof matchMedia==='function')matchMedia('(min-width: 1100px)').addEventListener?.('change',syncModal);
+
+let panelOpener = null;
+S.panelSurface = 'task';
+S.setPanelSurface = surface => {
+  S.panelSurface = surface;
+  drawer.querySelectorAll('.ptab').forEach(tab => { tab.hidden = tab.dataset.surface !== surface; });
+};
+S.setPanelSurface('task');
 export function togglePanels(force) {
   const want = force != null ? force : !drawer.classList.contains('active');
+  if(want && !drawer.classList.contains('active')) panelOpener=document.activeElement;
+  drawer.inert=!want;
   drawer.classList.toggle('active', want);
   document.body.classList.toggle('inspector-open', want);
   overlay.classList.toggle('active', want);
   drawer.setAttribute('aria-hidden', want ? 'false' : 'true');
+  if(typeof matchMedia==='function')syncModal();
   const pbtn = document.getElementById('panels-btn');
   if (pbtn) pbtn.setAttribute('aria-expanded', String(want));
   if (want) {
@@ -37,7 +55,7 @@ export function togglePanels(force) {
     stopPlanPolling();
     stopJobsPolling();
     stopAgentsPolling();
-    if (pbtn && pbtn.focus) pbtn.focus();
+    if (panelOpener?.isConnected && panelOpener.focus) panelOpener.focus(); else if(pbtn?.focus) pbtn.focus();
   }
   const hamburger = document.getElementById('hamburger-btn');
   if (hamburger && !document.body.classList.contains('workspace-wide')) hamburger.setAttribute('aria-expanded', String(want && activeWorkspace() === 'sessions'));
@@ -85,8 +103,10 @@ function refreshActivePanel() {
     loadMemory();
     loadSkills();
     loadTools();
-  } else if (name === 'manage') {
-    S.loadManagement?.();
+  } else if (name === 'manage' || name === 'maintenance') {
+    S.loadManagement?.(name);
+  } else if (name === 'preferences') {
+    S.refreshPermissions?.();
   } else if (name === 'outputs') {
     S.loadArtifacts?.();
   } else if (name === 'ops') {
@@ -120,7 +140,7 @@ drawer.querySelectorAll('.ptab').forEach(btn => {
 const tabsEl = document.getElementById('panels-tabs');
 if (tabsEl) {
   tabsEl.addEventListener('keydown', (e) => {
-    const tabs = Array.from(drawer.querySelectorAll('.ptab')).filter(tab => !(tab.dataset.tab === 'sessions' && document.body.classList.contains('workspace-wide')));
+    const tabs = Array.from(drawer.querySelectorAll('.ptab')).filter(tab => !tab.hidden && !(tab.dataset.tab === 'sessions' && document.body.classList.contains('workspace-wide')));
     const i = tabs.indexOf(document.activeElement);
     if (i < 0) return;
     let next = -1;
@@ -134,6 +154,15 @@ if (tabsEl) {
     if (tabs[next].focus) tabs[next].focus();
   });
 }
+document.addEventListener('keydown',e=>{
+  if(!drawer.classList.contains('active') || isDialogOpen())return;
+  if(e.key==='Escape'){e.preventDefault();togglePanels(false);return;}
+  if(e.key!=='Tab' || (typeof matchMedia==='function' && matchMedia('(min-width: 1100px)').matches))return;
+  const items=Array.from(drawer.querySelectorAll('button,input,select,textarea,[tabindex="0"]')).filter(el=>!el.disabled && !el.hidden && el.tabIndex!==-1 && !el.closest('[hidden]'));
+  const first=items[0],last=items[items.length-1];
+  if(e.shiftKey && (document.activeElement===first || !drawer.contains(document.activeElement))){e.preventDefault();last?.focus();}
+  else if(!e.shiftKey && (document.activeElement===last || !drawer.contains(document.activeElement))){e.preventDefault();first?.focus();}
+});
 document.getElementById('panels-close').addEventListener('click', () => togglePanels(false));
 overlay.addEventListener('click', () => togglePanels(false));
 
@@ -534,7 +563,7 @@ function renderRunRow(run) {
   status.textContent = run.status || '?';
   const idEl = document.createElement('span');
   idEl.className = 'run-id';
-  idEl.textContent = (run.id || '').slice(0, 14);
+  idEl.textContent = run.task || (run.id || '').slice(0, 14);idEl.title=run.id || '';
   const when = document.createElement('span');
   when.className = 'run-when';
   when.textContent = run.started_at ? new Date(run.started_at).toLocaleTimeString() : '';
@@ -598,28 +627,37 @@ function renderRunRow(run) {
     cmd.textContent = ap.risk + ': ' + (ap.command || '');
     const actions = document.createElement('div');
     actions.className = 'run-approval-actions';
+    const feedback=document.createElement('p');feedback.className='management-note';feedback.setAttribute('role','status');
+    let pending=false;
+    let confirmationInput;
+    if(ap.friction || ap.requires_confirmation){const label=document.createElement('label');label.className='management-field';label.textContent='Type approve to confirm';confirmationInput=document.createElement('input');confirmationInput.className='ac-friction-input';label.appendChild(confirmationInput);card.appendChild(label);card.dataset.shownAt=String(Date.now());}
     const mk = (label, action, cls) => {
       const b = document.createElement('button');
       b.className = 'run-approval-btn ' + cls;
       b.textContent = label;
       if (action === 'trust' && ap.allow_trust === false) b.style.display = 'none';
       b.addEventListener('click', async () => {
-        b.disabled = true;
+        if(pending)return;
+        let confirmation;
+        if(confirmationInput && action!=='deny'){
+          confirmation=confirmationInput.value.trim();
+          if(confirmation!=='approve' || (ap.friction && Date.now()-Number(card.dataset.shownAt)<1500)){feedback.textContent='Type approve and pause before submitting.';confirmationInput.focus();return;}
+          confirmation=action;
+        }
+        pending=true;actions.querySelectorAll('button').forEach(button=>{button.disabled=true;});feedback.textContent='Sending decision…';
         try {
-          let confirmation;
-          if ((ap.friction || ap.requires_confirmation) && action !== 'deny') { confirmation = prompt('Type ' + action + ' to confirm this approval'); if (confirmation !== action) { b.disabled = false; return; } }
           await answerRunApproval(run.id, ap.id, action, confirmation);
-          showToast('approval ' + action + 'd');
+          feedback.textContent='Decision accepted by server.';S.recordDecision?.({id:ap.id,kind:'approval',command:ap.command,risk:ap.risk,action,state:'accepted'});
           refreshRuns();
         } catch (e) {
-          b.disabled = false;
+          pending=false;actions.querySelectorAll('button').forEach(button=>{button.disabled=false;});feedback.textContent='Decision not confirmed.';
           showToast('approval failed: ' + e.message);
         }
       });
       return b;
     };
-    actions.append(mk('deny', 'deny', 'deny'), mk('trust', 'trust', 'trust'), mk('approve', 'approve', 'approve'));
-    card.append(cmd, actions);
+    actions.append(mk('deny', 'deny', 'deny'), mk(trustLabel(ap.risk).replace('until disconnect','for this run'), 'trust', 'trust'), mk('approve', 'approve', 'approve'));
+    card.append(cmd, actions, feedback);
     row.appendChild(card);
   });
 

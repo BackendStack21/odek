@@ -31,12 +31,12 @@ func TestHandlePrompt_ReferencedSessionRequiresItsToken(t *testing.T) {
 	}
 	resources := resource.NewRegistry(resource.NewSessionResolver(store.Dir()))
 	var frames []map[string]any
-	msg := wsClientMsg{Type: "prompt", SessionID: caller.ID, Content: "@sess:" + foreign.ID, ReferenceTokens: map[string]string{foreign.ID: "wrong"}}
+	msg := wsClientMsg{Type: "prompt", SessionID: caller.ID, AuthToken: caller.AuthToken, Content: "@sess:" + foreign.ID, ReferenceTokens: map[string]string{foreign.ID: "wrong"}}
 	got := handlePrompt(context.Background(), func(m map[string]any) { frames = append(frames, m) }, store, resources, loadJSONMockResolved(), nil, nil, nil, msg, new(int), new(int), nil, nil, nil, nil)
 	if got != nil {
 		t.Fatalf("unauthorized reference returned session: %#v", got)
 	}
-	if len(frames) != 1 || !strings.Contains(frames[0]["message"].(string), "invalid token") {
+	if len(frames) != 2 || !strings.Contains(frames[0]["message"].(string), "invalid token") {
 		t.Fatalf("frames=%v", frames)
 	}
 }

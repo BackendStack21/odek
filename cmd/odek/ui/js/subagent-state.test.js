@@ -162,6 +162,23 @@ beforeEach(() => {
   S.subagentGroup = null;
 });
 
+test('bounded runtime headlines preserve partial outcomes and token evidence', () => {
+  const cs = delegateTwoTasks();
+  render.completeSubagents('📋 Sub-agent results:\n\n─── Task 1: alpha ───\nstatus: partial (iteration budget) · 4 iterations · ~120 tokens\nsummary: unfinished work\n\n─── Task 2: beta ───\nstatus: success · 2 iterations\nsummary: inspected files');
+  assert.equal(cs[0].querySelector('.sa-status').textContent, 'partial');
+  assert.ok(cs[0].classList.contains('partial'));
+  assert.equal(cs[0].dataset.tokens, '120');
+  assert.equal(cs[1].querySelector('.sa-status').textContent, 'done');
+});
+
+test('missing delegated results remain unknown', () => {
+  const cs = delegateTwoTasks();
+  render.completeSubagents('No recorded result');
+  assert.equal(cs[0].querySelector('.sa-status').textContent, 'unknown');
+  assert.ok(cs[0].classList.contains('unknown'));
+  assert.ok(!cs[0].classList.contains('completed'));
+});
+
 // ── started / active ──
 
 test('started keeps the card running; active shows tool + step', () => {
@@ -179,7 +196,7 @@ test('started keeps the card running; active shows tool + step', () => {
   assert.equal(cs[0].querySelector('.sa-goal').textContent, 'SA1 read_file', 'live chip prefers the current tool');
 
   // Sibling untouched.
-  assert.equal(cs[1].querySelector('.sa-status').textContent, 'running');
+  assert.equal(cs[1].querySelector('.sa-status').textContent, 'queued');
 });
 
 test('finished flips only its own card and updates the wave header', () => {

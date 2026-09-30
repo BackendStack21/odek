@@ -1,7 +1,7 @@
 // DOM-shim tests for the clarify card.
 // Run:
 //   node --test cmd/odek/ui/js/
-import { test, beforeEach } from 'node:test';
+import { test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 
 class FakeElement {
@@ -120,7 +120,9 @@ test('clarify card sends clarify_response with the typed answer', () => {
   const input = card.querySelector('.ac-friction-input');
   input.value = 'the first one';
   card.querySelector('.approve').click();
-  assert.deepEqual(sent, [{ type: 'clarify_response', id: 'clr-1', answer: 'the first one' }]);
+  assert.deepEqual(sent, [{ type: 'clarify_response', id: 'clr-1', answer: 'the first one',action:'answer' }]);
+  assert.ok(el('messages').querySelector('.approval-card'),'waits for acknowledgement');
+  clarify.dismissClarify('clr-1','answer');
   assert.equal(el('messages').querySelector('.approval-card'), null);
 });
 
@@ -134,4 +136,21 @@ test('clearClarify drops the card', () => {
   clarify.queueClarify({ id: 'clr-3', question: 'q' });
   clarify.clearClarify();
   assert.equal(el('messages').querySelector('.approval-card'), null);
+});
+
+afterEach(()=>clarify.clearClarify());
+
+test('multiline answers use explicit keyboard submission and respect IME',()=>{
+ clarify.queueClarify({id:'multi',question:'Describe the change'});
+ const input=el('messages').querySelector('.ac-friction-input');input.value='First line\nSecond line';
+ input.fire('keydown',{key:'Enter'});assert.equal(sent.length,0,'Enter is a newline');
+ input.fire('keydown',{key:'Enter',ctrlKey:true,isComposing:true});assert.equal(sent.length,0,'IME composition cannot submit');
+ input.fire('keydown',{key:'Enter',ctrlKey:true});assert.equal(sent.length,1);assert.equal(sent[0].answer,'First line\nSecond line');
+});
+test('skip is an acknowledged decision with no invented answer',()=>{
+ clarify.queueClarify({id:'skip',question:'Which option?'});
+ const card=el('messages').querySelector('.approval-card');card.children.find(child=>child.className==='ac-actions').children.find(child=>child.textContent==='Skip question').click();
+ assert.deepEqual(sent,[{type:'clarify_response',id:'skip',answer:'',action:'skip'}]);
+ assert.ok(el('messages').querySelector('.approval-card'));
+ clarify.dismissClarify('skip','skip');assert.equal(el('messages').querySelector('.approval-card'),null);
 });

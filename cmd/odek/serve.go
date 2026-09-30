@@ -580,6 +580,8 @@ func newServeMux(d serveMuxDeps) *http.ServeMux {
 	mux.Handle("/api/sessions", apiAuth(handleSessionListPaged(store)))
 	mux.Handle("/api/sessions/", apiAuth(handleSessionByID(store, resolved.TrustedProxies, wsToken)))
 	mux.Handle("/api/models", apiAuth(handleModelList(resolved.Model, newServeModelLister(resolved), resolved.Provider)))
+	mux.Handle("/api/workspace", apiAuth(handleWorkspace(resolved)))
+	mux.Handle("/api/schedules/preview", apiAuth(http.HandlerFunc(handleSchedulePreview)))
 	mux.Handle("/api/limits", apiAuth(handleLimits(resolved.Model, resolved.Limits)))
 	mux.Handle("/api/cancel", apiAuth(handleCancel(store)))
 	mux.Handle("/api/health", apiAuth(handleHealth(state)))
@@ -1195,15 +1197,18 @@ func hasPromptInput(content string, attachments []wsAttachment) bool {
 }
 
 type wsClientMsg struct {
-	Type            string            `json:"type"`
-	Content         string            `json:"content"`
-	SessionID       string            `json:"session_id"`
-	AuthToken       string            `json:"auth_token,omitempty"`
-	ReferenceTokens map[string]string `json:"reference_tokens,omitempty"`
-	Model           string            `json:"model,omitempty"`
-	Thinking        string            `json:"thinking,omitempty"` // disabled|low|medium|high; omit/"" = inherit
-	Attachments     []wsAttachment    `json:"attachments,omitempty"`
-	TaskID          string            `json:"task_id,omitempty"` // subagent_cancel target
+	Type               string            `json:"type"`
+	Content            string            `json:"content"`
+	SessionID          string            `json:"session_id"`
+	AuthToken          string            `json:"auth_token,omitempty"`
+	ReferenceTokens    map[string]string `json:"reference_tokens,omitempty"`
+	Model              string            `json:"model,omitempty"`
+	Thinking           string            `json:"thinking,omitempty"` // disabled|low|medium|high; omit/"" = inherit
+	Attachments        []wsAttachment    `json:"attachments,omitempty"`
+	Limits             *serveRunLimits   `json:"limits,omitempty"`
+	RecoveryRevision   *uint64           `json:"recovery_revision,omitempty"`
+	RecoveryGeneration string            `json:"recovery_generation,omitempty"`
+	TaskID             string            `json:"task_id,omitempty"` // subagent_cancel target
 	// SystemInitiated marks server-initiated turns (wake-on-complete).
 	// handlePrompt trusts it ONLY on Type=="bg_wake" items — the prompt
 	// path sanitizes both fields below, so a client cannot forge system
@@ -1475,6 +1480,14 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 				continue
 			}
 
+			if msgType.Type == "permissions_get" || msgType.Type == "permissions_revoke" {
+				if msgType.Type == "permissions_revoke" {
+					approver.RevokeTrust()
+				}
+				writeWSJSON(conn, map[string]any{"type": "permissions", "classes": approver.TrustClasses(), "scope": "this browser connection"})
+				continue
+			}
+
 			// Cancel the running prompt over the WebSocket itself (same
 			// session-scoped auth as POST /api/cancel — a cancel may only
 			// target a session whose token the caller holds).
@@ -1511,7 +1524,11 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 			if msgType.Type == "clarify_response" {
 				var resp clarifyResponse
 				if err := json.Unmarshal(data, &resp); err == nil {
-					approver.HandleClarifyResponse(resp.ID, resp.Answer)
+					if resp.Action == "skip" {
+						approver.HandleClarifySkip(resp.ID)
+					} else {
+						approver.HandleClarifyResponse(resp.ID, resp.Answer)
+					}
 				}
 				continue
 			}
@@ -1645,7 +1662,7 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 				// Panic-safe Busy pairing: a panic unwinding
 				// through handlePrompt must not latch Busy=true forever.
 				defer connInfo.setLive(wake.SessionID, false)
-				currentSession = handlePrompt(promptCtx, wsSend, store, resources, resolved, agent, injectionGuard, currentSession, wakeMsg, &sessionInputTokens, &sessionOutputTokens, promptCancelWithApproval, &deltas, bgRT, turnTag)
+				currentSession = handlePrompt(context.WithValue(promptCtx, serveApproverKey{}, approver), wsSend, store, resources, resolved, agent, injectionGuard, currentSession, wakeMsg, &sessionInputTokens, &sessionOutputTokens, promptCancelWithApproval, &deltas, bgRT, turnTag)
 			}()
 			promptCancel()
 			continue
@@ -1757,7 +1774,7 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 				}
 				connInfo.setLive(sid, false)
 			}()
-			currentSession = handlePrompt(promptCtx, wsSend, store, resources, resolved, agent, injectionGuard, currentSession, msg, &sessionInputTokens, &sessionOutputTokens, promptCancelWithApproval, &deltas, bgRT, turnTag)
+			currentSession = handlePrompt(context.WithValue(promptCtx, serveApproverKey{}, approver), wsSend, store, resources, resolved, agent, injectionGuard, currentSession, msg, &sessionInputTokens, &sessionOutputTokens, promptCancelWithApproval, &deltas, bgRT, turnTag)
 		}()
 		connInfo.recordPrompt()
 		sid := ""
@@ -1802,7 +1819,7 @@ func handleWSCancel(store *session.Store, conn *golangws.Conn, msg wsClientMsg) 
 		return
 	}
 	if cancelPrompt(msg.SessionID) {
-		writeWSJSON(conn, map[string]any{"type": "cancelled", "session_id": msg.SessionID})
+		writeWSJSON(conn, map[string]any{"type": "cancelled", "session_id": msg.SessionID, "requested": true})
 	} else {
 		writeWSJSON(conn, map[string]any{"type": "cancelled", "session_id": msg.SessionID, "idle": true})
 	}
@@ -1862,7 +1879,14 @@ func handlePrompt(
 	turn *wsTurnAnnotator,
 ) (result *session.Session) {
 	var sess *session.Session
+	var releaseExecution func()
 	turnID := newTurnID()
+	approver, _ := ctx.Value(serveApproverKey{}).(*wsApprover)
+	collectDecisions := func() {
+		if sess != nil && approver != nil {
+			sess.Decisions = append(sess.Decisions, approver.drainDecisions(turnID)...)
+		}
+	}
 	// A reused connection may switch sessions. Do not stamp setup events with
 	// its previous conversation or an unvalidated client-provided identifier.
 	agent.SetEventSessionID("")
@@ -1897,18 +1921,38 @@ func handlePrompt(
 			diagnostics.Emit(events.Event{Type: "panic_recovered", SessionID: sid, TurnID: turnID, Data: map[string]any{"component": "serve", "operation": "turn", "error_class": "panic"}})
 			atomic.AddInt64(&serveStats.PromptsFailed, 1)
 			if sess != nil {
+				collectDecisions()
 				sess.Messages = append(sess.Messages, session.Message{Role: "assistant", TurnID: turnID, Content: "[Turn aborted: internal error. Completed checkpoints were preserved.]"})
 				_ = store.SaveNoIndex(sess)
 				result = sess
 			} else {
 				result = currSess
 			}
+			outcomeErr = errors.New("turn failed: internal error")
 			sendError(send, "turn failed: internal error")
 		}
 		if outcomeErr != nil && requestCtx.Err() != nil {
 			outcomeErr = requestCtx.Err()
 		}
 		agent.FinishRun(outcomeErr)
+		status := "completed"
+		if outcomeErr != nil {
+			status = "failed"
+			if requestCtx.Err() != nil {
+				status = "cancelled"
+			}
+		}
+		sid := ""
+		if result != nil {
+			sid = result.ID
+		} else if sess != nil {
+			sid = sess.ID
+		}
+		if releaseExecution != nil {
+			releaseExecution()
+			releaseExecution = nil
+		}
+		originalSend(map[string]any{"type": "turn_settled", "turn_id": turnID, "session_id": sid, "status": status, "run_id": agent.RunID()})
 	}()
 	ctx, cancelRun := context.WithCancel(ctx)
 	defer cancelRun()
@@ -1916,6 +1960,11 @@ func handlePrompt(
 	sessionID := msg.SessionID
 	if sessionID == "" && currSess != nil {
 		sessionID = currSess.ID
+	}
+
+	if (msg.RecoveryRevision == nil) != (msg.RecoveryGeneration == "") || (msg.RecoveryRevision != nil && sessionID == "") {
+		sendError(send, "recovery requires a session, revision and generation")
+		return currSess
 	}
 
 	// Register before session I/O and execution waiting. Session cancellation
@@ -1946,6 +1995,14 @@ func handlePrompt(
 		}
 	}
 
+	effectiveLimits, limitErr := msg.Limits.resolve(resolved.Limits)
+	if limitErr != nil {
+		sendError(send, limitErr.Error())
+		return currSess
+	}
+	agent.SetExecutionLimits(effectiveLimits)
+	defer agent.SetExecutionLimits(resolved.Limits)
+
 	originalPrompt := prompt
 	atomic.AddInt64(&serveStats.PromptsStarted, 1)
 
@@ -1958,10 +2015,22 @@ func handlePrompt(
 			sendError(send, lockErr.Error())
 			return currSess
 		}
-		defer release()
+		releaseExecution = release
 		sess, err = store.Load(sessionID)
 		if err != nil {
 			sendError(send, "session not found")
+			return currSess
+		}
+		token := msg.AuthToken
+		if token == "" && currSess != nil && currSess.ID == sess.ID {
+			token = currSess.AuthToken
+		}
+		if !wakeInitiated(msg) && !validateSessionTokenStrict(store, sess, token) {
+			sendError(send, "invalid session token")
+			return currSess
+		}
+		if msg.RecoveryRevision != nil && (sess.Revision != *msg.RecoveryRevision || sess.Generation != msg.RecoveryGeneration) {
+			sendError(send, "Saved progress changed. Refresh recovery before continuing.")
 			return currSess
 		}
 		// Other transports may have completed a turn while this run waited.
@@ -2058,12 +2127,12 @@ func handlePrompt(
 		var wrapped []string
 		for _, att := range msg.Attachments {
 			if att.UploadID != "" {
-				upload, release, ok := acquireBrowserUpload(att.UploadID, sessionID)
+				upload, releaseUpload, ok := acquireBrowserUpload(att.UploadID, sessionID)
 				if !ok {
 					sendError(send, "attachment unavailable or belongs to another session")
 					return currSess
 				}
-				defer release()
+				defer releaseUpload()
 				total += upload.size
 				if total > maxTotalAttachmentBytes {
 					sendError(send, "total attachment size exceeds 10 MB")
@@ -2141,7 +2210,7 @@ func handlePrompt(
 			sendError(send, err.Error())
 			return sess
 		}
-		defer release()
+		releaseExecution = release
 		sess.Sandbox = resolved.Sandbox
 		sess.Provider = resolved.Provider
 	}
@@ -2234,6 +2303,7 @@ func handlePrompt(
 			if persistErr != nil {
 				return
 			}
+			collectDecisions()
 			sess.Messages = dropDanglingToolCalls(filterPersistSnapshot(head, snapshot))
 			if err := store.SaveNoIndex(sess); err != nil {
 				persistErr = fmt.Errorf("failed to persist session: %w", err)
@@ -2268,10 +2338,18 @@ func handlePrompt(
 			return
 		}
 		if item, err := browserArtifacts.captureBudget(sid, ref, roots, previewAllowance); err == nil {
+			item.TurnID = turnID
+			browserArtifacts.Lock()
+			if cached, ok := browserArtifacts.entries[item.ID]; ok {
+				cached.TurnID = turnID
+				browserArtifacts.entries[item.ID] = cached
+			}
+			browserArtifacts.Unlock()
 			send(map[string]any{"type": "artifact", "artifact": item})
 		}
 	})
 	_, allMessages, err := agent.RunWithMessages(ctx, messages)
+	collectDecisions()
 	if persistErr != nil {
 		err = persistErr
 	}
@@ -2298,9 +2376,9 @@ func handlePrompt(
 
 	if err != nil {
 		atomic.AddInt64(&serveStats.PromptsFailed, 1) // B3-SERVE-1: failed prompts must reach the usage aggregate
-		sendError(send, err.Error())
 		outcomeErr = err
 		if sess == nil {
+			sendError(send, err.Error())
 			return currSess
 		}
 		// Soft-fail: close the turn with an assistant-visible note so the
@@ -2313,6 +2391,7 @@ func handlePrompt(
 		if err := store.SaveNoIndex(sess); err != nil {
 			fmt.Fprintf(os.Stderr, "odek: warning: failed to persist session: %v\n", err)
 		}
+		sendError(send, outcomeErr.Error())
 		return sess
 	}
 
@@ -3072,6 +3151,10 @@ func handleSessionList(store *session.Store) http.HandlerFunc {
 
 func handleSessionByID(store *session.Store, trustedProxies []string, wsToken string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/recovery") {
+			handleRecovery(store)(w, r)
+			return
+		}
 		id := strings.TrimPrefix(r.URL.Path, "/api/sessions/")
 		// /api/sessions/{id}/export — transcript download (md|json). Shares
 		// the GET auth path below (rate limit + session token).

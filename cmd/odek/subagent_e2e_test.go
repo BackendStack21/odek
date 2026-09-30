@@ -377,10 +377,10 @@ func TestE2E_ToolAggregatesMultipleTasks(t *testing.T) {
 		}
 	}
 
-	// Each task should have a JSON result (status or error)
-	taskBlocks := strings.Count(result, `"status"`)
-	if taskBlocks < 1 {
-		t.Errorf("expected at least 1 JSON status block across 3 tasks, got %d\n%s", taskBlocks, result)
+	// Each task should have a bounded status headline.
+	taskBlocks := strings.Count(result, "status:")
+	if taskBlocks != 3 {
+		t.Errorf("expected a status for each of the 3 tasks, got %d\n%s", taskBlocks, result)
 	}
 }
 
@@ -610,5 +610,22 @@ func TestE2E_MixedGuidance(t *testing.T) {
 		if !strings.Contains(result, fmt.Sprintf("Task %d", i)) {
 			t.Errorf("missing Task %d in results", i)
 		}
+	}
+}
+
+// writeMockProviderFixture keeps credentials available across repeated config
+// loads; provider environment keys are deliberately scrubbed on the first load.
+func writeMockProviderFixture(t *testing.T, homeDir, baseURL string) {
+	t.Helper()
+	dir := filepath.Join(homeDir, ".odek")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(map[string]any{"provider": "fixture", "providers": map[string]any{"fixture": map[string]any{"api_key": "mock-provider-key", "base_url": baseURL, "format": "openai"}}, "memory": map[string]any{"enabled": false}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), data, 0600); err != nil {
+		t.Fatal(err)
 	}
 }

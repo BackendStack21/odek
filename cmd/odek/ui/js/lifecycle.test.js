@@ -4,7 +4,7 @@
 // F-C1 the .sa-stop delegation arm. Each test names the RED failure it
 // closed in its comment. Run:
 //   node --test cmd/odek/ui/js/
-import { test, beforeEach } from 'node:test';
+import { test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 
 // ── Mini-DOM: records listeners (delegation needs them) and parses the
@@ -683,7 +683,9 @@ test('approval sent on a live socket still delivers and closes the card', () => 
   S.activeApprovalCard.querySelector('.approve').dispatch('click');
   // FakeWebSocket records the raw JSON string — parse before comparing.
   assert.deepEqual(JSON.parse(sock.sent[0]), { type: 'approval_response', id: 'apr-u', action: 'approve' });
-  assert.equal(S.activeApprovalId, null);
+  assert.equal(S.activeApprovalId, 'apr-u');
+  deliver({type:'approval_ack',id:'apr-u',action:'approve'});
+  assert.equal(S.activeApprovalId,null);
   assert.equal(S.approvalQueue.length, 0);
 });
 
@@ -712,6 +714,8 @@ test('friction approve via keyboard path waits out the 1.5s cool-down', () => {
   card.dataset.shownAt = String(Date.now() - 2000); // cool-down elapsed
   approvals.sendApproval('approve');
   assert.equal(sock.sent.length, before + 1, 'delivered after the window');
+  assert.equal(S.approvalQueue.length, 1);
+  deliver({type:'approval_ack',id:'apr-f',action:'approve'});
   assert.equal(S.approvalQueue.length, 0);
 });
 
@@ -881,7 +885,9 @@ test('turn cancellation settles pending tools, preserves completed tools and rej
   render.requestTurnStop();
   assert.equal(pending.querySelector('.tb-spinner').classList.contains('running'),false);
   assert.equal(pending.querySelector('.tb-latency').textContent,'Stopping…');
-  deliver({type:'cancelled',turn_id:'stop-tools'});
+  deliver({type:'cancelled',turn_id:'stop-tools',requested:true});
+  assert.equal(pending.querySelector('.tb-latency').textContent,'Stopping…');
+  deliver({type:'turn_settled',turn_id:'stop-tools',status:'cancelled'});
   assert.equal(pending.querySelector('.tb-latency').textContent,'Stopped');
   assert.equal(completed.querySelector('.tb-status').textContent,'✓');
   assert.equal(S.queuePaused,true);
@@ -918,7 +924,9 @@ test('stopping rejects new work and settles delegated agents', () => {
   assert.equal(card.querySelector('.sa-status').textContent,'stopping…');
   assert.equal(card.classList.contains('running'),false);
   assert.equal(S.toolBlockQueues.has('too-late'),false);
-  deliver({type:'cancelled',turn_id:'stop-agents'});
+  deliver({type:'cancelled',turn_id:'stop-agents',requested:true});
+  assert.equal(card.querySelector('.sa-status').textContent,'stopping…');
+  deliver({type:'turn_settled',turn_id:'stop-agents',status:'cancelled'});
   assert.equal(card.querySelector('.sa-status').textContent,'stopped');
   assert.equal(card.dataset.finalized,'1');
 });
@@ -1084,3 +1092,5 @@ test('send waits for a text attachment read and includes it afterward', async ()
     assert.deepEqual(sent.attachments, [{ name: 'note.txt', content: 'hello' }]);
   } finally { globalThis.FileReader = oldReader; }
 });
+
+afterEach(()=>approvals.clearApprovals({drain:false}));

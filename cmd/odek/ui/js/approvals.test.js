@@ -5,7 +5,7 @@
 // regression shipped because nothing exercised this DOM behavior.
 // Run:
 //   node --test cmd/odek/ui/js/
-import { test, beforeEach } from 'node:test';
+import { test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 
 // ── Minimal browser shims (approvals.js → state/dom/utils/render) ──
@@ -214,6 +214,7 @@ test('answering one of two queued requests drops the stale hint on the next card
   approvals.queueApproval({ id: 'apr-b', risk: 'safe', command: 'two' });
   approvals.queueApproval({ id: 'apr-c', risk: 'safe', command: 'three' });
   S.activeApprovalCard.querySelector('.approve').click();
+  approvals.dismissApproval('apr-a','approve');
   // apr-b is now shown with one still waiting.
   const pos = S.activeApprovalCard.querySelector('.ac-queue-pos');
   assert.match(pos?.textContent || '', /request 1 of 2/);
@@ -235,7 +236,10 @@ test('approve button sends approval_response with the request id', () => {
   const { approve } = queueOne();
   approve.click();
   assert.deepEqual(sent, [{ type: 'approval_response', id: 'apr-1', action: 'approve' }]);
-  assert.equal(S.approvalQueue.length, 0, 'request removed after answering');
+  assert.equal(S.approvalQueue.length, 1, 'request remains until acknowledgement');
+  approve.click();assert.equal(sent.length,1,'duplicate click suppressed');
+  approvals.dismissApproval('apr-1','approve');
+  assert.equal(S.approvalQueue.length, 0, 'request removed after acknowledgement');
   assert.equal(S.activeApprovalId, null, 'card dismissed after answering');
 });
 
@@ -258,9 +262,11 @@ test('keyboard shortcuts answer the active card (a / d / t)', () => {
   const { approve } = queueOne({ id: 'apr-1', risk: 'local_write', command: 'one' });
   fireKey('a');
   assert.deepEqual(sent, [{ type: 'approval_response', id: 'apr-1', action: 'approve' }]);
+  approvals.dismissApproval('apr-1','approve');
   queueOne({ id: 'apr-2', risk: 'local_write', command: 'two' });
   fireKey('d');
   assert.deepEqual(sent.slice(1), [{ type: 'approval_response', id: 'apr-2', action: 'deny' }]);
+  approvals.dismissApproval('apr-2','deny');
   queueOne({ id: 'apr-3', risk: 'local_write', command: 'three' });
   fireKey('t');
   assert.deepEqual(sent.slice(2), [{ type: 'approval_response', id: 'apr-3', action: 'trust' }]);
@@ -290,6 +296,7 @@ test('requests queue FIFO; next card shows after answering', () => {
   assert.equal(S.activeApprovalId, 'apr-a');
   S.activeApprovalCard.querySelector('.approve').click();
   assert.deepEqual(sent, [{ type: 'approval_response', id: 'apr-a', action: 'approve' }]);
+  approvals.dismissApproval('apr-a','approve');
   assert.equal(S.activeApprovalId, 'apr-b');
   S.activeApprovalCard.querySelector('.deny').click();
   assert.deepEqual(sent, [
@@ -385,3 +392,5 @@ test('friction mode: Enter in the input approves once the gate passes', async ()
   }, 'friction gate to pass and Enter to approve');
   assert.deepEqual(sent, [{ type: 'approval_response', id: 'apr-1', action: 'approve' }]);
 });
+
+afterEach(()=>approvals.clearApprovals({drain:false}));

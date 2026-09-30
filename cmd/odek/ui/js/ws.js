@@ -20,7 +20,7 @@ import { metricsLiveContext, metricsDone, metricsApplySpeed, metricsResetSpeed, 
 import { drainQueue } from './input.js';
 import { setIntent, openTurn, markWakeTurn, sealTurn, paintIntent } from './render.js';
 import { badgeNow } from './panels.js';
-import { applyPlanMutation, schedulePlanRefresh, kickPlanLive, stopPlanLiveIfIdle, resetPlanPanel, fetchPlanSnapshot } from './plan.js';
+import { schedulePlanRefresh, kickPlanLive, stopPlanLiveIfIdle, resetPlanPanel, fetchPlanSnapshot } from './plan.js';
 import { listJobs } from './api.js';
 
 // Reconnect backoff: 1s doubling to a 30s cap; reset after a clean interval
@@ -124,6 +124,7 @@ export function connect() {
     reconnectDelay = 1000;
     // Hide loading skeleton when connected
     if (skeletonEl) skeletonEl.classList.remove('visible');
+    S.refreshPermissions?.();
     if (wasConnected) {
       // F-A3: reconnect, not first connect. A turn in flight died with the
       // old socket — reset busy and re-enable the prompt, or the client
@@ -135,6 +136,7 @@ export function connect() {
         ? 'Connection restored — the previous turn ended before completion.'
         : 'Connection restored.');
       announce('Connection restored.');
+      if(droppedBusy)S.onRecoveryNeeded?.('Connection interrupted the turn');
       droppedBusy = false;
       // Re-adopt the session so the new connection's agent gets the memory
       // buffer (bodek does this; the old WebUI did not).
@@ -171,7 +173,7 @@ export function connect() {
     let event;
     try { event = JSON.parse(e.data); } catch { return; }
 
-    if (event.turn_id && S.closedTurnIds?.has(event.turn_id)) return;
+    if (event.type!=='turn_settled' && event.turn_id && S.closedTurnIds?.has(event.turn_id)) return;
     if (S.turnEnded && ['tool_call','tool_result','thinking','thinking_delta','token','token_delta','subagent_state','subagent_log','approval_request','clarify_request','done'].includes(event.type)) return;
     if (S.stopRequested && ['tool_call','subagent_log','thinking','thinking_delta','approval_request','clarify_request'].includes(event.type)) return;
     if (S.stopRequested && event.type === 'subagent_state' && event.phase !== 'finished') return;
@@ -279,7 +281,7 @@ export function connect() {
         streamFlush();
         endThinking();
         setIntent(toolProgress(event.name, event.data));
-        if (event.name === 'plan') applyPlanMutation(event.data);
+        if (event.name === 'plan') schedulePlanRefresh();
         if (event.name === 'delegate_tasks') {
           addSubagentGroup(event.data);
         } else {
@@ -331,21 +333,26 @@ export function connect() {
       case 'cancelled':
         if (!sameTurn || (event.session_id && S.sessionId && event.session_id !== S.sessionId)) break;
         S.pauseQueue?.();
-        streamFlush();
-        endThinking();
-        endStream('cancelled');
-        setIntent('');
-        // The run is unwinding — drop every pending approval card so a
-        // stray click cannot approve an operation whose execution context
-        // is already dead (the server interrupts the approval wait on
-        // cancel, but the card would stay rendered waiting for an ack that
-        // never comes). Same teardown approval_ack uses, minus the ack.
-        clearApprovals();
-        clearClarify();
-        stopPlanLiveIfIdle();
-        addSystemMessage(event.idle ? '⏹ Nothing to cancel' : '⏹ Cancelled');
-        badgeNow();
-        announce('Turn cancelled');
+        if(event.idle){clearApprovals({drain:false});clearClarify();endStream('cancelled');addSystemMessage('No active execution to stop.');break;}
+        S.stopRequested=true;setIntent('stopping');
+        clearApprovals({drain:false});clearClarify();
+        if(event.requested){addSystemMessage('Stop accepted · waiting for execution to settle.');announce('Stop requested');}
+        else {endStream('interrupted');addSystemMessage('Stop outcome requires review.');S.onRecoveryNeeded?.('Stop outcome requires review');}
+        S.refreshSupervision?.();
+        break;
+
+      case 'turn_settled':
+        if(event.session_id && S.sessionId && event.session_id!==S.sessionId)break;
+        if(event.turn_id && S.currentTurnId && event.turn_id!==S.currentTurnId)break;
+        if(S.stopRequested && event.status==='cancelled'){
+          streamFlush();endThinking();endStream('cancelled');addSystemMessage('Execution stopped. Completed effects remain; background jobs have independent lifetimes.');announce('Execution stopped');
+          S.onRecoveryNeeded?.('Execution stopped');kickJobsFetch();
+        } else if(event.status!=='completed') {S.onRecoveryNeeded?.('Work interrupted');}
+        S.paintEvidence?.();S.refreshSupervision?.();
+        break;
+
+      case 'permissions':
+        S.onPermissions?.(event);
         break;
 
       case 'subagent_cancelled':
@@ -366,6 +373,7 @@ export function connect() {
         notifyUser('turn done', 'Turn finished');
         badgeNow();
         announce('Turn complete');
+        S.paintEvidence?.();S.refreshSupervision?.();
         drainQueue();
         // Append per-message stats to the last assistant bubble. Built via
         // textContent/setAttribute (never innerHTML) so server-controlled
@@ -395,15 +403,16 @@ export function connect() {
       case 'error':
         if (!sameTurn) break;
         S.pauseQueue?.();
-        streamFlush(); endThinking(); endStream();
-        setIntent('');
+        streamFlush(); endThinking();
+        if(S.stopRequested){setIntent('stopping');}else{endStream('interrupted');setIntent('');}
         S.lastFailedPrompt = S.lastPrompt;
+        S.onRecoveryNeeded?.('Work failed');
         // The run is unwinding on error — same approval teardown as
         // 'cancelled': a pending card would wait for an ack that never
         // comes and block the queue.
         clearApprovals();
         clearClarify();
-        addSystemMessage('⚠ ' + formatErrorMessage(event.message) + ' — Alt+R to retry');
+        addSystemMessage('⚠ ' + formatErrorMessage(event.message) + ' — Review saved progress before continuing or running again.');
         stopPlanLiveIfIdle();
         notifyUser('turn failed', 'A turn failed');
         badgeNow();
@@ -418,7 +427,7 @@ export function connect() {
       case 'approval_ack':
         // The request was answered (by this or another connected client);
         // drop it from the queue if it is still shown.
-        dismissApproval(event.id);
+        dismissApproval(event.id,event.action);
         break;
 
       case 'approval_expired':
@@ -434,7 +443,7 @@ export function connect() {
         break;
 
       case 'clarify_ack':
-        dismissClarify(event.id);
+        dismissClarify(event.id,event.action);
         break;
 
       case 'clarify_expired':
@@ -598,7 +607,7 @@ function upsertJob(event) {
   };
   if (idx >= 0) jobs[idx] = { ...jobs[idx], ...row };
   else jobs.unshift(row);
-  S.jobs = jobs.slice(0, 40);
+  S.jobs = jobs.slice(0, 40);S.refreshSupervision?.();
   paintIntent();
   badgeNow();
   if (event.status && event.status !== 'running') {
@@ -631,7 +640,7 @@ function kickJobsFetch() {
   if (!sid) return;
   listJobs(sid, getSessionToken(sid) || undefined).then((data) => {
     if (S.sessionId !== sid) return;
-    S.jobs = (data && data.jobs) || [];
+    S.jobs = (data && data.jobs) || [];S.refreshSupervision?.();
     paintIntent();
     badgeNow();
   }).catch(() => {});
@@ -642,6 +651,8 @@ function handleAgentSignal(event) {
     case 'tool_recovery':
       showToast('🔁 Tool recovery: ' + (event.tool || ''));
       break;
+    case 'context_trimmed':
+      addSystemMessage('Older context was compacted or trimmed. Review important requirements before continuing.');announce('Conversation context changed');break;
     case 'tool_running':
       setIntent((event.tool ? event.tool + ' · ' : '') + (event.detail || 'running'));
       break;

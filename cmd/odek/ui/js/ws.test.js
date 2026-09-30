@@ -4,7 +4,7 @@
 // drive the real ws.js message switch through a minimal browser shim —
 // the same harness approvals.test.js uses. Run:
 //   node --test cmd/odek/ui/js/
-import { test, beforeEach } from 'node:test';
+import { test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 
 // ── Minimal browser shims (ws.js → state/dom/utils/render/approvals/…) ──
@@ -308,3 +308,5 @@ test('done applies last-call tok/s from this-call fields', () => {
   });
   assert.equal(S.metrics.tokPerSec, 9.6);
 });
+
+afterEach(()=>approvals.clearApprovals({drain:false}));

@@ -49,6 +49,19 @@ var MaxSessionFileBytes = 32 * 1024 * 1024 // 32 MiB
 
 // ── Types ──────────────────────────────────────────────────────────────
 
+// Decision records a principal-channel choice separately from model context.
+// Receipt metadata is bounded and redacted when it crosses the store boundary.
+type Decision struct {
+	ID      string    `json:"id"`
+	Kind    string    `json:"kind"`
+	Command string    `json:"command,omitempty"`
+	Risk    string    `json:"risk,omitempty"`
+	Action  string    `json:"action,omitempty"`
+	State   string    `json:"state"`
+	TurnID  string    `json:"turn_id,omitempty"`
+	At      time.Time `json:"at"`
+}
+
 // Session represents a single multi-turn conversation with the agent.
 // Content fields are exported for direct manipulation at the CLI layer.
 type Session struct {
@@ -63,17 +76,18 @@ type Session struct {
 	// Revisions alone cannot reject an old snapshot after a counter restarts.
 	Generation string `json:"generation,omitempty"`
 
-	ID        string    `json:"id"`                   // e.g. "20260518-abc123…" (128-bit random suffix)
-	AuthToken string    `json:"auth_token,omitempty"` // session-scoped secret required by serve handlers
-	CreatedAt time.Time `json:"created_at"`           // first message time
-	UpdatedAt time.Time `json:"updated_at"`           // last append time
-	Model     string    `json:"model"`                // model name used
-	Provider  string    `json:"provider,omitempty"`   // LLM provider id used (v2; empty on pre-v2 files)
-	Turns     int       `json:"turns"`                // number of user turns
-	Task      string    `json:"task"`                 // first user message (label)
-	Sandbox   bool      `json:"sandbox"`              // was sandboxed — auto-apply on resume
-	Messages  []Message `json:"messages"`             // full conversation history
-	Buffer    []string  `json:"buffer,omitempty"`     // last N turn summaries (memory tier 2)
+	ID        string     `json:"id"`                   // e.g. "20260518-abc123…" (128-bit random suffix)
+	AuthToken string     `json:"auth_token,omitempty"` // session-scoped secret required by serve handlers
+	CreatedAt time.Time  `json:"created_at"`           // first message time
+	UpdatedAt time.Time  `json:"updated_at"`           // last append time
+	Model     string     `json:"model"`                // model name used
+	Provider  string     `json:"provider,omitempty"`   // LLM provider id used (v2; empty on pre-v2 files)
+	Turns     int        `json:"turns"`                // number of user turns
+	Task      string     `json:"task"`                 // first user message (label)
+	Sandbox   bool       `json:"sandbox"`              // was sandboxed — auto-apply on resume
+	Messages  []Message  `json:"messages"`             // full conversation history
+	Decisions []Decision `json:"decisions,omitempty"`
+	Buffer    []string   `json:"buffer,omitempty"` // last N turn summaries (memory tier 2)
 
 	// Pinned marks an operator-favorited session. Serve lists pinned
 	// sessions first; it is pure presentation metadata.
@@ -628,6 +642,15 @@ func (s *Store) saveLocked(sess *Session) (err error) {
 	// scanned — messages already redacted by a previous save are not
 	// re-scanned (see the field comment for the O(n²) rationale).
 	sess.Task = redact.RedactSecrets(sess.Task)
+	if len(sess.Decisions) > 128 {
+		sess.Decisions = sess.Decisions[len(sess.Decisions)-128:]
+	}
+	for i := range sess.Decisions {
+		sess.Decisions[i].Command = redact.RedactSecrets(sess.Decisions[i].Command)
+		if len(sess.Decisions[i].Command) > 4096 {
+			sess.Decisions[i].Command = sess.Decisions[i].Command[:4096] + "…"
+		}
+	}
 	boundary := sess.RedactBoundary
 	if boundary < 0 {
 		boundary = 0

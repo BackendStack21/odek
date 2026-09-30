@@ -58,7 +58,14 @@ func TestE2E_SubagentTaskModelReachesProvider(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, e2eBinary, "subagent", "--task", taskPath, "--quiet")
-	cmd.Env = append(os.Environ(), "ODEK_API_KEY=test-key", "ODEK_NO_SANDBOX=1", "HOME="+fixture, "USERPROFILE="+fixture)
+	key, cleanup, err := writeKeyToUnlinkedFile("test-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	defer key.Close()
+	cmd.ExtraFiles = []*os.File{key}
+	cmd.Env = append(os.Environ(), keyFDEnvVar+"=3", "ODEK_NO_SANDBOX=1", "HOME="+fixture, "USERPROFILE="+fixture)
 	cmd.Dir = fixture
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr

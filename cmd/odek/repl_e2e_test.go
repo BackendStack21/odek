@@ -70,6 +70,7 @@ func TestE2E_REPL_BasicPrompt(t *testing.T) {
 	os.Setenv("ODEK_BASE_URL", llmSrv.URL)
 	homeDir := t.TempDir()
 	os.Setenv("HOME", homeDir)
+	writeMockProviderFixture(t, homeDir, llmSrv.URL)
 	os.Unsetenv("ODEK_SYSTEM")
 
 	defer func() {
@@ -184,6 +185,7 @@ func TestE2E_REPL_MultiTurn(t *testing.T) {
 	os.Setenv("ODEK_BASE_URL", llmSrv.URL)
 	homeDir := t.TempDir()
 	os.Setenv("HOME", homeDir)
+	writeMockProviderFixture(t, homeDir, llmSrv.URL)
 	os.Unsetenv("ODEK_SYSTEM")
 
 	defer func() {
@@ -290,6 +292,7 @@ func TestE2E_REPL_SlashHelp(t *testing.T) {
 	os.Setenv("ODEK_BASE_URL", llmSrv.URL)
 	homeDir := t.TempDir()
 	os.Setenv("HOME", homeDir)
+	writeMockProviderFixture(t, homeDir, llmSrv.URL)
 	os.Unsetenv("ODEK_SYSTEM")
 
 	defer func() {

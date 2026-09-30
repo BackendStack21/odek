@@ -2,7 +2,7 @@
 // cancel, global keyboard shortcuts. Feature modules self-register their listeners.
 import { S, getSessionToken } from './state.js';
 import { promptEl, skeletonEl } from './dom.js';
-import { escapeHtml, escapeAttr, showToast, toggleShortcuts, hideCancel, closeDialog, formatNum } from './utils.js';
+import { escapeHtml, escapeAttr, showToast, toggleShortcuts, hideCancel, closeDialog, formatNum, openDialog } from './utils.js';
 import { addSystemMessage, requestTurnStop, endStream } from './render.js';
 import { loadSessions, loadAndRenderSession } from './sessions.js';
 import { connect, wsSend } from './ws.js';
@@ -20,6 +20,7 @@ import './commands.js';
 import './workspace.js';
 import './management.js';
 import './artifacts.js';
+import './supervision.js';
 
 // ── Init ──
 // Save references so newSession() can restore the empty state after clearing.
@@ -36,6 +37,7 @@ function activateOnKey(el, fn) {
   });
 }
 if (S.savedEmptyStateNode) {
+  S.savedEmptyStateNode.querySelectorAll('[data-starter]').forEach(button => button.addEventListener('click',()=>{promptEl.value=button.dataset.starter;promptEl.dispatchEvent(new Event('input',{bubbles:true}));promptEl.focus();}));
   const hintFn = {
     palette: () => togglePalette(true),
     at: () => { promptEl.focus(); if (!promptEl.value.includes('@')) promptEl.value += '@'; },
@@ -91,7 +93,7 @@ async function fetchModels() {
     const models = await getModels();
     S.availableModels = Array.isArray(models) ? models : [];
     if (S.availableModels.length === 0) {
-      picker.innerHTML = '<option value="">No models</option>';
+      picker.innerHTML = '<option value="">Configured model</option><option value="__custom__">Other (type model ID)…</option>';
       return;
     }
     let html = '';
@@ -208,7 +210,7 @@ function switchModel(modelId) {
 // the REST endpoint when the socket is down but the session is known.
 function cancelAgent() {
   if (!S.sessionId) {
-    if (S.busy) { requestTurnStop(); S.ws?.close(); endStream('cancelled'); addSystemMessage('⏹ Cancelled'); return; }
+    if (S.busy) { requestTurnStop(); S.ws?.close(); endStream('interrupted'); addSystemMessage('⏹ Stop requested; execution outcome requires reconciliation.'); return; }
     hideCancel();
     addSystemMessage('⏹ No active session to cancel');
     return;
@@ -228,8 +230,7 @@ function cancelAgent() {
   requestTurnStop();
   cancelSession(sid, token || undefined).then(() => {
     if (S.sessionId !== sid) return;
-    endStream('cancelled');
-    addSystemMessage('⏹ Cancelled');
+    addSystemMessage('⏹ Stop requested. Reconnect and review saved progress to confirm the outcome.');
   }).catch(err => { showToast('Cancel failed: ' + err.message); });
 }
 document.getElementById('cancel-btn').addEventListener('click', cancelAgent);
@@ -249,7 +250,7 @@ S.onSubagentStop = (taskID) => {
 };
 
 // ── Management panels ──
-document.getElementById('panels-btn').addEventListener('click', () => togglePanels());
+document.getElementById('panels-btn').addEventListener('click', () => { if(document.getElementById('panels').classList.contains('active') && S.panelSurface==='task') togglePanels(false); else openTab('now'); });
 const paletteBtn = document.getElementById('palette-btn');
 if (paletteBtn) paletteBtn.addEventListener('click', () => togglePalette(true));
 const notifyBtn = document.getElementById('notify-btn');
@@ -313,23 +314,9 @@ function showStats() {
   );
 }
 
-function clearTranscript() {
-  if (S.busy) { showToast('Finish or cancel the turn first'); return; }
-  if (!confirm('Clear the visible transcript? The session stays on disk.')) return;
-  messagesElClear();
-}
-
-function messagesElClear() {
-  const messages = document.getElementById('messages');
-  if (!messages) return;
-  messages.innerHTML = '';
-  if (S.savedScrollBtnNode) messages.appendChild(S.savedScrollBtnNode);
-  if (S.savedEmptyStateNode) messages.appendChild(S.savedEmptyStateNode);
-}
-
 function openShutdown() {
   const o = document.getElementById('shutdown-overlay');
-  if (o) o.classList.add('active');
+  if (o) openDialog(o);
   const inp = document.getElementById('shutdown-input');
   const btn = document.getElementById('shutdown-confirm');
   if (inp) { inp.value = ''; inp.focus(); }
@@ -338,7 +325,7 @@ function openShutdown() {
 
 function closeShutdown() {
   const o = document.getElementById('shutdown-overlay');
-  if (o) o.classList.remove('active');
+  if (o) closeDialog();
 }
 
 const shutdownInput = document.getElementById('shutdown-input');
@@ -363,7 +350,7 @@ if (shutdownCancel) shutdownCancel.addEventListener('click', closeShutdown);
 
 setCommandHandlers({
   help: toggleShortcuts,
-  clear: clearTranscript,
+  clear: () => showToast("Use New session to start with fresh context."),
   copyLast: copyLastReply,
   exportSession: exportActiveSession,
   retry: retryLast,
@@ -437,3 +424,7 @@ function jumpTurn(dir) {
   idx = Math.max(0, Math.min(turns.length - 1, idx + dir));
   if (turns[idx].scrollIntoView) turns[idx].scrollIntoView({ block: 'start' });
 }
+
+document.getElementById('settings-btn')?.addEventListener('click',()=>openTab('preferences'));
+document.getElementById('schedules-btn')?.addEventListener('click',()=>openTab('manage'));
+document.getElementById('shutdown-open')?.addEventListener('click',openShutdown);

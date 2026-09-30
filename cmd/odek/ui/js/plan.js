@@ -96,6 +96,7 @@ export function renderPlan(plan, root) {
   }
 
   target.appendChild(el('div', 'plan-header', planSummary(plan)));
+  target.appendChild(el('p','management-note','Plan status is reported by the agent. Review linked evidence before treating a step as verified.'));
 
   const steps = plan.steps || [];
   steps.forEach(step => {
@@ -114,6 +115,8 @@ export function renderPlan(plan, root) {
       body.appendChild(el('div', 'plan-note', truncateLine(step.note, NOTE_MAX_CHARS)));
     }
 
+    if(step.status==='done')body.appendChild(el('p','management-note','Agent marked complete · verification requires evidence'));
+    const verify=el('button','plan-results','Request verification');verify.type='button';verify.addEventListener('click',()=>S.requestFollowup?.('Verify plan step '+step.id+': '+step.title+'. Report supporting evidence and unresolved work.'));body.appendChild(verify);
     const results=el('button','plan-results','Related results');results.type='button';results.addEventListener('click',()=>S.showStepResults?.(step.id));body.appendChild(results);
     row.append(glyph, body);
     target.appendChild(row);
@@ -180,7 +183,7 @@ export function adoptPlan(plan, opts) {
   if (S.planDirty && !confirm) return;
   const ver = Number(plan.version) || 0;
   if (S.plan && S.planVer && ver < S.planVer) return;
-  S.plan = plan;
+  S.plan = plan;S.refreshSupervision?.();
   S.planVer = ver;
   S.planAvail = 'available';
   S.planDirty = false;

@@ -4,9 +4,10 @@ import { apiHeaders } from './net.js';
 import { showToast } from './utils.js';
 let urls = [];
 let requestVersion = 0;
+let artifacts=new Map();
 const byId = id => document.getElementById(id);
 function node(tag, cls, text) { const el=document.createElement(tag);if(cls)el.className=cls;if(text!=null)el.textContent=text;return el; }
-function reset() { requestVersion++; for(const url of urls) URL.revokeObjectURL(url);urls=[];const root=byId('artifact-list');if(root)root.textContent=''; }
+function reset() { requestVersion++; for(const url of urls) URL.revokeObjectURL(url);urls=[];artifacts.clear();S.artifactCount=0;const root=byId('artifact-list');if(root)root.textContent=''; }
 async function blobFor(item) {
  const response=await fetch('/api/artifacts/'+encodeURIComponent(item.id)+'?session_id='+encodeURIComponent(item.session_id),{headers:apiHeaders({'X-Session-Token':getSessionToken(item.session_id)})});
  if(!response.ok)throw new Error('Artifact unavailable. The preview cache may have expired.');
@@ -14,8 +15,13 @@ async function blobFor(item) {
 }
 function add(item) {
  if(!item || item.session_id!==S.sessionId)return;
- const root=byId('artifact-list');if(!root)return;
+ const root=byId('artifact-list');if(!root || artifacts.has(item.id))return;artifacts.set(item.id,item);S.artifactCount=artifacts.size;S.paintEvidence?.();
  const card=node('article','artifact-card');card.append(node('strong','',item.name),node('p','management-note',item.media_type+' · '+Math.ceil(item.size_bytes/1024)+' KB'));
+ card.dataset.artifactId=item.id;
+ const sameName=[...artifacts.values()].filter(other=>other.name===item.name);
+ const revision=node('p','management-note','Capture '+sameName.length+' with this filename · most recent capture');revision.dataset.captureLabel=item.name;
+ root.querySelectorAll('[data-capture-label]').forEach(label=>{if(label.dataset.captureLabel===item.name)label.textContent=label.textContent.replace(' · most recent capture','');});card.appendChild(revision);
+ card.appendChild(node('p','management-note','Captured '+(item.created_at || '')+' · '+(item.turn_id || 'turn unavailable')+' · SHA-256 '+(item.sha256 || 'unavailable')));
  const actions=node('div','artifact-actions');
  const download=node('button','management-action','Download');download.type='button';download.addEventListener('click',async()=>{try{const blob=await blobFor(item);const url=URL.createObjectURL(blob);const a=node('a');a.href=url;a.download=item.name;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}catch(e){showToast(e.message);}});actions.appendChild(download);
  const detected=String(item.media_type || '').split(';')[0];

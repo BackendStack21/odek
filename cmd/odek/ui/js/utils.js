@@ -180,7 +180,9 @@ export function openDialog(overlay) {
   if (!overlay) return;
   closeDialog();
   const dialog = overlay.querySelector('[role="dialog"]');
-  activeDialog = { overlay, returnFocus: document.activeElement };
+  const app=document.getElementById('app');
+  activeDialog = { overlay, returnFocus: document.activeElement, app, appWasInert:app?.inert || false };
+  if(app && !app.contains(overlay))app.inert=true;
   overlay.classList.add('active');
   if (dialog) {
     const preferred = dialog.querySelector('[data-autofocus]') || dialog.querySelector(FOCUSABLE_SEL);
@@ -190,14 +192,15 @@ export function openDialog(overlay) {
 
 export function closeDialog() {
   if (!activeDialog) return;
-  const { overlay, returnFocus } = activeDialog;
+  const { overlay, returnFocus,app,appWasInert } = activeDialog;
   activeDialog = null;
   overlay.classList.remove('active');
+  if(app)app.inert=appWasInert;
   if (returnFocus && returnFocus.focus) returnFocus.focus();
 }
 
 export function isDialogOpen(overlay) {
-  return !!(activeDialog && activeDialog.overlay === overlay);
+  return !!(activeDialog && (!overlay || activeDialog.overlay === overlay));
 }
 
 // Focus trap: keep Tab / Shift+Tab cycling inside the open dialog.
