@@ -781,8 +781,8 @@ func (r *outputRing) size() int64 {
 	return r.dropped + int64(len(r.buf))
 }
 
-// readFrom returns up to limit bytes (int: a buffer size, bounded at the
-// caller) of output after absolute offset since, plus the cursor for the
+// readFrom returns up to limit bytes, or one complete rune when it exceeds
+// the limit, of output after absolute offset since, plus the cursor for the
 // next read. The cursor is an absolute offset into the logical stream:
 // marker bytes are not counted.
 func (r *outputRing) readFrom(since int64, limit int) (string, int64) {
@@ -813,10 +813,21 @@ func (r *outputRing) readFrom(since int64, limit int) (string, int64) {
 	window := r.buf[int(rel):]
 	if limit > 0 && len(window) > limit {
 		cut := limit
-		for cut > 0 && !utf8.RuneStart(window[cut]) {
-			cut--
+		// Walk complete runes rather than testing continuation bytes:
+		// invalid UTF-8 is a one-byte RuneError, so binary output advances
+		// too. Always return at least one rune to avoid a stuck cursor.
+		boundary := 0
+		for boundary < cut {
+			_, width := utf8.DecodeRune(window[boundary:])
+			if boundary+width > cut {
+				if boundary == 0 {
+					boundary = width
+				}
+				break
+			}
+			boundary += width
 		}
-		window = window[:cut]
+		window = window[:boundary]
 	}
 	return marker + string(window), start + int64(len(window))
 }

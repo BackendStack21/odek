@@ -233,6 +233,12 @@ func (c *wsConnInfo) setLive(session string, busy bool) {
 	c.mu.Unlock()
 }
 
+func (c *wsConnInfo) setModel(model string) {
+	c.mu.Lock()
+	c.Model = model
+	c.mu.Unlock()
+}
+
 // isBusy reports the connection's busy flag (wake dispatcher's per-session
 // exclusion reads this — see cmd/odek/bg_wake.go).
 func (c *wsConnInfo) isBusy() bool {
@@ -490,6 +496,9 @@ func (r *serveRun) record(v any) error {
 		r.InputTokens = numberOf(m["inputTokens"])
 		r.OutputTokens = numberOf(m["outputTokens"])
 	case "session":
+		if id, _ := m["session_id"].(string); id != "" {
+			r.SessionID = id
+		}
 		// The session event carries the session auth token for live WS
 		// clients; recording it into the run's event tail would hand the
 		// token to any instance-token holder via GET /api/runs/{id},
@@ -822,6 +831,7 @@ func startServeRun(
 
 	run := &serveRun{
 		ID:              newRunID(),
+		SessionID:       req.SessionID,
 		Model:           resolved.Model,
 		Status:          "running",
 		StartedAt:       time.Now().UTC(),
