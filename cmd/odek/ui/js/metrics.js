@@ -13,6 +13,7 @@
 import { S } from './state.js';
 import { getLimits, getModels } from './api.js';
 import { formatNum } from './utils.js';
+import { escapeHtml, escapeAttr } from './escape.js';
 
 // Metrics state (kept on S so the health popover can read it too).
 S.metrics = {
@@ -243,27 +244,39 @@ export function resetMetrics() {
   renderMetrics();
 }
 
-// turnStatsHTML is the per-message footer on done. Speed uses this-call
-// fields only — never cumulative outputTokens / run latency.
-export function turnStatsHTML(event) {
-  if (!event || event.latency == null) return '';
+// turnStatsSpans is the per-message footer data on done: one entry per
+// stat chip as {title, text}. Speed uses this-call fields only — never
+// cumulative outputTokens / run latency. Returns plain data (no markup) so
+// callers can render via textContent; every field is numeric-coerced before
+// it leaves this function, so a hostile done frame can never smuggle markup.
+export function turnStatsSpans(event) {
+  if (!event || event.latency == null) return [];
   const lat = Number(event.latency);
   const latSafe = Number.isFinite(lat) ? lat : 0;
   const spans = [];
-  spans.push('<span title="Response time">⚡ ' + (latSafe < 1 ? (latSafe * 1000).toFixed(0) + 'ms' : latSafe.toFixed(1) + 's') + '</span>');
-  if (event.inputTokens != null) spans.push('<span title="Input tokens (run total, incl. sub-agents)">⌂ ' + formatNum(event.inputTokens) + '</span>');
-  if (event.outputTokens != null) spans.push('<span title="Output tokens (completion)">↳ ' + formatNum(event.outputTokens) + '</span>');
+  spans.push({ title: 'Response time', text: '⚡ ' + (latSafe < 1 ? (latSafe * 1000).toFixed(0) + 'ms' : latSafe.toFixed(1) + 's') });
+  if (event.inputTokens != null) spans.push({ title: 'Input tokens (run total, incl. sub-agents)', text: '⌂ ' + formatNum(event.inputTokens) });
+  if (event.outputTokens != null) spans.push({ title: 'Output tokens (completion)', text: '↳ ' + formatNum(event.outputTokens) });
   const cache = (event.cacheReadTokens || 0) + (event.cacheCreationTokens || 0) + (event.cachedTokens || 0);
-  if (cache > 0) spans.push('<span title="Cached tokens">⛁ ' + formatNum(cache) + '</span>');
+  if (cache > 0) spans.push({ title: 'Cached tokens', text: '⛁ ' + formatNum(cache) });
   const picked = pickTokPerSec(event);
   if (picked.rate > 0) {
-    spans.push('<span title="' + tokPerSecTitle(picked.kind) + '">↗ ' + formatTokPerSec(picked.rate) + '</span>');
+    spans.push({ title: tokPerSecTitle(picked.kind), text: '↗ ' + formatTokPerSec(picked.rate) });
   }
   const turnCost = turnCostUSD(event.inputTokens || 0, event.outputTokens || 0);
   if (turnCost != null && turnCost > 0) {
-    spans.push('<span title="Estimated cost of this turn at current prices">$ ' + turnCost.toFixed(4) + '</span>');
+    spans.push({ title: 'Estimated cost of this turn at current prices', text: '$ ' + turnCost.toFixed(4) });
   }
-  return spans.join('  ·  ');
+  return spans;
+}
+
+// turnStatsHTML renders the same spans as an HTML string. Kept for callers
+// that still need markup; both the title attribute and the body are escaped
+// so even a future non-numeric span value cannot open an injection channel.
+export function turnStatsHTML(event) {
+  return turnStatsSpans(event).map(sp =>
+    '<span title="' + escapeAttr(sp.title) + '">' + escapeHtml(sp.text) + '</span>'
+  ).join('  ·  ');
 }
 
 // sessionCostUSD estimates the current session's spend from its totals.
