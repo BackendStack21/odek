@@ -1,29 +1,19 @@
 package loop
 
 import (
-	"encoding/json"
 	"strings"
 	"testing"
 )
 
 // ── Ledger fidelity and notice attribution ──────────────────────────
 
-func TestRecordMutation_PerEntryParallelShell(t *testing.T) {
-	// one failed sibling must not erase its successful neighbors.
+func TestRecordMutation_IndividualShellOutcomes(t *testing.T) {
 	e := &Engine{}
-	output, _ := json.Marshal(map[string]any{"results": []map[string]any{
-		{"command": "echo a >> ~/.zshrc", "error": ""},
-		{"command": "false", "error": "exit status 1"},
-		{"command": "echo b >> ~/.profile", "error": ""},
-	}})
-	args, _ := json.Marshal(map[string]any{"commands": []map[string]any{
-		{"command": "echo a >> ~/.zshrc"},
-		{"command": "false"},
-		{"command": "echo b >> ~/.profile"},
-	}})
-	e.recordMutation("parallel_shell", string(args), string(output))
+	e.recordMutation("shell", `{"command":"echo a >> ~/.zshrc"}`, "")
+	e.recordMutation("shell", `{"command":"echo failed >> ~/.profile"}`, "error: denied")
+	e.recordMutation("shell", `{"command":"echo b >> ~/.profile"}`, "")
 	if len(e.runMutations) != 2 {
-		t.Fatalf("runMutations = %v, want the two successful writes only", e.runMutations)
+		t.Fatalf("mutations=%v, want only the two successful writes", e.runMutations)
 	}
 }
 

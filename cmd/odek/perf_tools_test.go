@@ -1,282 +1,28 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/BackendStack21/odek/internal/danger"
 )
 
-// ── BatchPatch Tests ──────────────────────────────────────────────────
 
-func TestBatchPatch_Basic(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "test.txt")
-	os.WriteFile(path, []byte("hello world\nfoo bar\n"), 0644)
 
-	tool := &batchPatchTool{}
-	args := fmt.Sprintf(`{"patches":[{"path":"%s","old_string":"foo","new_string":"baz"}]}`, path)
-	result := callJSON(t, tool, args)
+// ── HTTPRequest Tests ───────────────────────────────────────────────────
 
-	var r struct {
-		Results []struct {
-			Path    string `json:"path"`
-			Success bool   `json:"success"`
-			Error   string `json:"error"`
-		} `json:"results"`
-	}
+func TestHTTPRequest_InvalidURL(t *testing.T) {
+	tool := newHTTPRequestTool(danger.DangerousConfig{})
+	result := callJSON(t, tool, `{"url":"not-a-url"}`)
+
+	var r httpRequestResult
 	mustUnmarshal(t, result, &r)
 
-	if len(r.Results) != 1 {
-		t.Fatalf("Results = %d, want 1", len(r.Results))
-	}
-	if !r.Results[0].Success {
-		t.Fatalf("patch failed: %s", r.Results[0].Error)
-	}
-
-	data, _ := os.ReadFile(path)
-	if !strings.Contains(string(data), "baz") {
-		t.Errorf("file should contain 'baz', got: %s", string(data))
-	}
-}
-
-// TestBatchPatch_PathConfinement verifies batch_patch enforces the same
-// restrictToCWD confinement as write_file/patch: escapes are rejected
-// per-entry, and odek's trust anchors are excluded from the ~/.odek/
-// carve-out.
-func TestBatchPatch_PathConfinement(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "ok.txt")
-	os.WriteFile(path, []byte("hello world\n"), 0644)
-
-	origDir, _ := os.Getwd()
-	os.Chdir(dir)
-	defer os.Chdir(origDir)
-
-	home, _ := os.UserHomeDir()
-	tool := &batchPatchTool{restrictToCWD: true}
-	args := fmt.Sprintf(`{"patches":[
-		{"path":"ok.txt","old_string":"world","new_string":"there"},
-		{"path":"../escape.txt","old_string":"a","new_string":"b"},
-		{"path":"%s/.odek/config.json","old_string":"a","new_string":"b"}
-	]}`, home)
-	result := callJSON(t, tool, args)
-
-	var r struct {
-		Results []struct {
-			Success bool   `json:"success"`
-			Error   string `json:"error"`
-		} `json:"results"`
-	}
-	mustUnmarshal(t, result, &r)
-
-	if len(r.Results) != 3 {
-		t.Fatalf("Results = %d, want 3", len(r.Results))
-	}
-	if !r.Results[0].Success {
-		t.Errorf("in-CWD patch should succeed: %s", r.Results[0].Error)
-	}
-	if r.Results[1].Success || !strings.Contains(r.Results[1].Error, "escapes the working directory") {
-		t.Errorf("escape should be rejected, got success=%v err=%q", r.Results[1].Success, r.Results[1].Error)
-	}
-	if r.Results[2].Success || r.Results[2].Error == "" {
-		t.Errorf("~/.odek/config.json should be rejected, got success=%v err=%q", r.Results[2].Success, r.Results[2].Error)
-	}
-}
-
-func TestBatchPatch_MultipleFiles(t *testing.T) {
-	dir := t.TempDir()
-	path1 := filepath.Join(dir, "a.txt")
-	path2 := filepath.Join(dir, "b.txt")
-	os.WriteFile(path1, []byte("hello"), 0644)
-	os.WriteFile(path2, []byte("world"), 0644)
-
-	tool := &batchPatchTool{}
-	args := fmt.Sprintf(`{"patches":[
-		{"path":"%s","old_string":"hello","new_string":"hi"},
-		{"path":"%s","old_string":"world","new_string":"earth"}
-	]}`, path1, path2)
-	result := callJSON(t, tool, args)
-
-	var r struct {
-		Results []struct {
-			Success bool   `json:"success"`
-			Error   string `json:"error"`
-		} `json:"results"`
-	}
-	mustUnmarshal(t, result, &r)
-
-	if len(r.Results) != 2 {
-		t.Fatalf("Results = %d, want 2", len(r.Results))
-	}
-	for i, res := range r.Results {
-		if !res.Success {
-			t.Errorf("patch %d failed: %s", i, res.Error)
-		}
-	}
-}
-
-// TestBatchPatch_EarlyStop pins the documented early-stop contract
-// (tool Description(), promised since pre-v1.41.1): the first failing edit
-// stops the batch; later edits are reported skipped and never touch disk,
-// while edits applied before the failure are kept.
-func TestBatchPatch_EarlyStop(t *testing.T) {
-	dir := t.TempDir()
-	path1 := filepath.Join(dir, "a.txt")
-	os.WriteFile(path1, []byte("hello"), 0644)
-
-	tool := &batchPatchTool{}
-	args := fmt.Sprintf(`{"patches":[
-		{"path":"%s","old_string":"hello","new_string":"hi"},
-		{"path":"/nonexistent/file.txt","old_string":"x","new_string":"y"},
-		{"path":"%s","old_string":"hi","new_string":"bye"}
-	]}`, path1, path1)
-	result := callJSON(t, tool, args)
-
-	var r struct {
-		Results []struct {
-			Success bool   `json:"success"`
-			Error   string `json:"error"`
-		} `json:"results"`
-	}
-	mustUnmarshal(t, result, &r)
-
-	if len(r.Results) != 3 {
-		t.Fatalf("Results = %d, want 3", len(r.Results))
-	}
-	if !r.Results[0].Success {
-		t.Errorf("first patch should succeed")
-	}
-	if r.Results[1].Error == "" {
-		t.Errorf("second patch should have error (file not found)")
-	}
-	if r.Results[2].Success || !strings.Contains(r.Results[2].Error, "skipped") {
-		t.Errorf("third patch should be skipped (early-stop), got: %+v", r.Results[2])
-	}
-	// Edits applied BEFORE the failure are kept: hello→hi stuck, and the
-	// skipped third patch never ran (file stays "hi", not "bye").
-	data, _ := os.ReadFile(path1)
-	if string(data) != "hi" {
-		t.Errorf("file content should be 'hi' (first edit kept, third skipped), got: %s", string(data))
-	}
-}
-
-func TestBatchPatch_TrustedClasses(t *testing.T) {
-	deny := "deny"
-	dc := danger.DangerousConfig{
-		Classes: map[danger.RiskClass]danger.Action{
-			danger.LocalWrite: danger.Prompt,
-		},
-		NonInteractive: &deny,
-	}
-
-	dir := t.TempDir()
-	path := filepath.Join(dir, "test.txt")
-	os.WriteFile(path, []byte("hello world\nfoo bar\n"), 0644)
-
-	// Without trusted classes, non-interactive mode denies the local_write operation.
-	tool := &batchPatchTool{dangerousConfig: dc}
-	result := callJSON(t, tool, fmt.Sprintf(`{"patches":[{"path":"%s","old_string":"foo","new_string":"baz"}]}`, path))
-	var r1 struct {
-		Results []struct {
-			Success bool   `json:"success"`
-			Error   string `json:"error"`
-		} `json:"results"`
-	}
-	mustUnmarshal(t, result, &r1)
-	if r1.Results[0].Success {
-		t.Errorf("expected patch to be denied without trusted classes")
-	}
-
-	// With LocalWrite trusted, the operation should succeed.
-	tool = &batchPatchTool{
-		dangerousConfig: dc,
-		trustedClasses:  map[danger.RiskClass]bool{danger.LocalWrite: true},
-	}
-	result = callJSON(t, tool, fmt.Sprintf(`{"patches":[{"path":"%s","old_string":"foo","new_string":"baz"}]}`, path))
-	var r2 struct {
-		Results []struct {
-			Success bool `json:"success"`
-		} `json:"results"`
-	}
-	mustUnmarshal(t, result, &r2)
-	if !r2.Results[0].Success {
-		t.Errorf("expected patch to succeed with LocalWrite trusted, got: %s", r1.Results[0].Error)
-	}
-}
-
-// ── ParallelShell Tests ───────────────────────────────────────────────
-
-func TestParallelShell_Basic(t *testing.T) {
-	tool := &parallelShellTool{}
-	result := callJSON(t, tool, `{"commands":[
-		{"command":"echo hello"},
-		{"command":"echo world"}
-	]}`)
-
-	var r struct {
-		Results []struct {
-			Stdout   string `json:"stdout"`
-			ExitCode int    `json:"exit_code"`
-			Error    string `json:"error"`
-		} `json:"results"`
-	}
-	mustUnmarshal(t, result, &r)
-
-	if len(r.Results) != 2 {
-		t.Fatalf("Results = %d, want 2", len(r.Results))
-	}
-	if unwrapUntrusted(r.Results[0].Stdout) != "hello" {
-		t.Errorf("cmd 0 stdout = %q, want 'hello'", r.Results[0].Stdout)
-	}
-	if unwrapUntrusted(r.Results[1].Stdout) != "world" {
-		t.Errorf("cmd 1 stdout = %q, want 'world'", r.Results[1].Stdout)
-	}
-}
-
-func TestParallelShell_Error(t *testing.T) {
-	tool := &parallelShellTool{}
-	result := callJSON(t, tool, `{"commands":[{"command":"false"}]}`)
-
-	var r struct {
-		Results []struct {
-			ExitCode int    `json:"exit_code"`
-			Error    string `json:"error"`
-		} `json:"results"`
-	}
-	mustUnmarshal(t, result, &r)
-
-	if len(r.Results) != 1 {
-		t.Fatalf("Results = %d, want 1", len(r.Results))
-	}
-	if r.Results[0].ExitCode != 1 {
-		t.Errorf("exit code = %d, want 1", r.Results[0].ExitCode)
-	}
-}
-
-// ── HTTPBatch Tests ───────────────────────────────────────────────────
-
-func TestHTTPBatch_InvalidURL(t *testing.T) {
-	tool := newHTTPBatchTool(danger.DangerousConfig{})
-	result := callJSON(t, tool, `{"requests":[{"url":"not-a-url"}]}`)
-
-	var r struct {
-		Results []struct {
-			Error string `json:"error"`
-		} `json:"results"`
-	}
-	mustUnmarshal(t, result, &r)
-
-	if len(r.Results) != 1 {
-		t.Fatalf("Results = %d, want 1", len(r.Results))
-	}
-	if r.Results[0].Error == "" {
+	if r.Error == "" {
 		t.Errorf("expected error for invalid URL")
 	}
 }
@@ -446,69 +192,6 @@ func TestDiff_IdenticalFiles(t *testing.T) {
 	}
 }
 
-// ── MultiGrep Tests ───────────────────────────────────────────────────
-
-func TestMultiGrep_Basic(t *testing.T) {
-	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "a.txt"), []byte("TODO: fix this\nFIXME: later\n"), 0644)
-	os.WriteFile(filepath.Join(dir, "b.txt"), []byte("TODO: also this\n"), 0644)
-
-	tool := &multiGrepTool{}
-	args := fmt.Sprintf(`{"patterns":["TODO","FIXME"],"path":"%s"}`, dir)
-	result := callJSON(t, tool, args)
-
-	var r struct {
-		Results []struct {
-			Pattern string `json:"pattern"`
-			Count   int    `json:"count"`
-			Error   string `json:"error"`
-		} `json:"results"`
-	}
-	mustUnmarshal(t, result, &r)
-
-	if len(r.Results) != 2 {
-		t.Fatalf("Results = %d, want 2", len(r.Results))
-	}
-	if r.Results[0].Count+r.Results[1].Count != 3 {
-		t.Errorf("total matches should be 3, got TODO:%d FIXME:%d",
-			r.Results[0].Count, r.Results[1].Count)
-	}
-}
-
-func TestMultiGrep_EmptyPatterns(t *testing.T) {
-	tool := &multiGrepTool{}
-	result := callJSON(t, tool, `{"patterns":[]}`)
-	var r struct {
-		Error string `json:"error"`
-	}
-	mustUnmarshal(t, result, &r)
-	if !strings.Contains(r.Error, "at least one pattern") {
-		t.Errorf("error should mention 'pattern', got: %s", r.Error)
-	}
-}
-
-func TestMultiGrep_CheckSearchPath_DeniesSystemWrite(t *testing.T) {
-	home := makeTestHomeDir(t)
-	t.Setenv("HOME", home)
-
-	cfg := danger.DangerousConfig{
-		Classes: map[danger.RiskClass]danger.Action{danger.SystemWrite: danger.Deny},
-	}
-	tool := &multiGrepTool{dangerousConfig: cfg}
-
-	skip, reason := tool.checkSearchPath(filepath.Join(home, ".odek", "config.json"))
-	if !skip {
-		t.Fatalf("expected checkSearchPath to skip ~/.odek/config.json")
-	}
-	if !strings.Contains(reason, "system_write") {
-		t.Errorf("expected system_write denial, got %q", reason)
-	}
-
-	skip, _ = tool.checkSearchPath(filepath.Join(home, ".odek", "notes.md"))
-	if skip {
-		t.Errorf("expected non-anchor ~/.odek path to be allowed")
-	}
-}
 
 // ── JSONQuery Tests ───────────────────────────────────────────────────
 
@@ -619,7 +302,7 @@ func TestChecksum_Basic(t *testing.T) {
 	os.WriteFile(path, []byte("hello\n"), 0644)
 
 	tool := &checksumTool{}
-	args := fmt.Sprintf(`{"files":[{"path":"%s","algorithm":"sha256"}]}`, path)
+	args := fmt.Sprintf(`{"path":"%s","algorithm":"sha256"}`, path)
 	result := callJSON(t, tool, args)
 
 	var r struct {
@@ -647,38 +330,17 @@ func TestChecksum_Basic(t *testing.T) {
 }
 
 func TestChecksum_MultipleAlgorithms(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "test.txt")
-	os.WriteFile(path, []byte("test data\n"), 0644)
-
-	tool := &checksumTool{}
-	args := fmt.Sprintf(`{"files":[
-		{"path":"%s","algorithm":"sha256"},
-		{"path":"%s","algorithm":"sha1"},
-		{"path":"%s","algorithm":"md5"}
-	]}`, path, path, path)
-	result := callJSON(t, tool, args)
-
-	var r struct {
-		Results []struct {
-			Algorithm string `json:"algorithm"`
-			Hash      string `json:"hash"`
-			Error     string `json:"error"`
-		} `json:"results"`
+	path := filepath.Join(t.TempDir(), "test.txt")
+	if err := os.WriteFile(path, []byte("test data\n"), 0644); err != nil {
+		t.Fatal(err)
 	}
-	mustUnmarshal(t, result, &r)
-
-	if len(r.Results) != 3 {
-		t.Fatalf("Results = %d, want 3", len(r.Results))
-	}
-	if len(r.Results[0].Hash) != 64 {
-		t.Errorf("SHA256 length = %d, want 64", len(r.Results[0].Hash))
-	}
-	if len(r.Results[1].Hash) != 40 {
-		t.Errorf("SHA1 length = %d, want 40", len(r.Results[1].Hash))
-	}
-	if len(r.Results[2].Hash) != 32 {
-		t.Errorf("MD5 length = %d, want 32", len(r.Results[2].Hash))
+	for algorithm, size := range map[string]int{"sha256": 64, "sha1": 40, "md5": 32} {
+		result := callJSON(t, &checksumTool{}, fmt.Sprintf(`{"path":%q,"algorithm":%q}`, path, algorithm))
+		var r checksumResult
+		mustUnmarshal(t, result, &r)
+		if len(r.Results) != 1 || r.Results[0].Error != "" || len(r.Results[0].Hash) != size {
+			t.Fatalf("%s: %s", algorithm, result)
+		}
 	}
 }
 
@@ -688,7 +350,7 @@ func TestChecksum_DefaultAlgorithm(t *testing.T) {
 	os.WriteFile(path, []byte("data\n"), 0644)
 
 	tool := &checksumTool{}
-	args := fmt.Sprintf(`{"files":[{"path":"%s"}]}`, path)
+	args := fmt.Sprintf(`{"path":"%s"}`, path)
 	result := callJSON(t, tool, args)
 
 	var r struct {
@@ -713,7 +375,7 @@ func TestHeadTail_Head(t *testing.T) {
 	os.WriteFile(path, []byte("a\nb\nc\nd\ne\n"), 0644)
 
 	tool := &headTailTool{}
-	args := fmt.Sprintf(`{"files":[{"path":"%s"}],"lines":2,"mode":"head"}`, path)
+	args := fmt.Sprintf(`{"path":"%s","lines":2,"mode":"head"}`, path)
 	result := callJSON(t, tool, args)
 
 	var r struct {
@@ -746,7 +408,7 @@ func TestHeadTail_Tail(t *testing.T) {
 	os.WriteFile(path, []byte("a\nb\nc\nd\ne\n"), 0644)
 
 	tool := &headTailTool{}
-	args := fmt.Sprintf(`{"files":[{"path":"%s"}],"lines":2,"mode":"tail"}`, path)
+	args := fmt.Sprintf(`{"path":"%s","lines":2,"mode":"tail"}`, path)
 	result := callJSON(t, tool, args)
 
 	var r struct {
@@ -764,7 +426,7 @@ func TestHeadTail_Tail(t *testing.T) {
 
 func TestHeadTail_NotFound(t *testing.T) {
 	tool := &headTailTool{}
-	result := callJSON(t, tool, `{"files":[{"path":"/nonexistent"}]}`)
+	result := callJSON(t, tool, `{"path":"/nonexistent"}`)
 	var r struct {
 		Results []struct {
 			Error string `json:"error"`
@@ -841,31 +503,6 @@ func TestBase64_File(t *testing.T) {
 
 // ── Symlink Attack Detection ──────────────────────────────────────────
 
-func TestBatchPatch_SymlinkRejected(t *testing.T) {
-
-	dir := t.TempDir()
-	target := filepath.Join(dir, "target.txt")
-	os.WriteFile(target, []byte("secret\n"), 0644)
-	link := filepath.Join(dir, "link.txt")
-	os.Symlink(target, link)
-
-	tool := &batchPatchTool{}
-	// Try to patch through a symlink — should fail with O_NOFOLLOW
-	args := fmt.Sprintf(`{"patches":[{"path":"%s","old_string":"secret","new_string":"leaked"}]}`, link)
-	result := callJSON(t, tool, args)
-
-	var r struct {
-		Results []struct {
-			Success bool   `json:"success"`
-			Error   string `json:"error"`
-		} `json:"results"`
-	}
-	mustUnmarshal(t, result, &r)
-	if len(r.Results) > 0 && r.Results[0].Success {
-		t.Error("batch_patch should reject symlinks")
-	}
-}
-
 func TestHeadTail_SymlinkRejected(t *testing.T) {
 	dir := t.TempDir()
 	target := filepath.Join(dir, "target.txt")
@@ -874,7 +511,7 @@ func TestHeadTail_SymlinkRejected(t *testing.T) {
 	os.Symlink(target, link)
 
 	tool := &headTailTool{}
-	args := fmt.Sprintf(`{"files":[{"path":"%s"}],"lines":1}`, link)
+	args := fmt.Sprintf(`{"path":"%s","lines":1}`, link)
 	result := callJSON(t, tool, args)
 
 	var r struct {
@@ -896,7 +533,7 @@ func TestHeadTail_EmptyFile(t *testing.T) {
 	os.WriteFile(path, []byte{}, 0644)
 
 	tool := &headTailTool{}
-	args := fmt.Sprintf(`{"files":[{"path":"%s"}],"lines":5}`, path)
+	args := fmt.Sprintf(`{"path":"%s","lines":5}`, path)
 	result := callJSON(t, tool, args)
 
 	var r struct {
@@ -917,57 +554,11 @@ func TestHeadTail_EmptyFile(t *testing.T) {
 
 // ── Max Limits Enforcement ───────────────────────────────────────────
 
-func TestBatchPatch_MaxLimit(t *testing.T) {
-	tool := &batchPatchTool{}
-	patches := make([]string, 11)
-	for i := range patches {
-		patches[i] = fmt.Sprintf(`{"path":"test%d.txt","old_string":"a","new_string":"b"}`, i)
-	}
-	args := `{"patches":[` + strings.Join(patches, ",") + `]}`
-	result := callJSON(t, tool, args)
-
-	var r struct {
-		Error string `json:"error"`
-	}
-	mustUnmarshal(t, result, &r)
-	if !strings.Contains(r.Error, "max 10") {
-		t.Errorf("should reject >10 patches, got: %s", r.Error)
-	}
-}
-
-func TestMultiGrep_MaxPatterns(t *testing.T) {
-	tool := &multiGrepTool{}
-	patterns := make([]string, 11)
-	for i := range patterns {
-		patterns[i] = fmt.Sprintf(`"pattern%d"`, i)
-	}
-	args := `{"patterns":[` + strings.Join(patterns, ",") + `]}`
-	result := callJSON(t, tool, args)
-
-	var r struct {
-		Error string `json:"error"`
-	}
-	mustUnmarshal(t, result, &r)
-	if !strings.Contains(r.Error, "max 10") {
-		t.Errorf("should reject >10 patterns, got: %s", r.Error)
-	}
-}
-
-func TestHTTPBatch_MaxURLs(t *testing.T) {
-	tool := newHTTPBatchTool(danger.DangerousConfig{})
-	urls := make([]string, 11)
-	for i := range urls {
-		urls[i] = fmt.Sprintf(`{"url":"https://example.com/page%d"}`, i)
-	}
-	args := `{"requests":[` + strings.Join(urls, ",") + `]}`
-	result := callJSON(t, tool, args)
-
-	var r struct {
-		Error string `json:"error"`
-	}
-	mustUnmarshal(t, result, &r)
-	if !strings.Contains(r.Error, "max 10") {
-		t.Errorf("should reject >10 URLs, got: %s", r.Error)
+func TestHTTPRequest_RejectsBatchInput(t *testing.T) {
+	tool := newHTTPRequestTool(danger.DangerousConfig{})
+	result, err := tool.Call(`{"requests":[{"url":"https://example.com"}]}`)
+	if err == nil || !strings.Contains(result, "url is required") {
+		t.Fatalf("batch input accepted: %s, %v", result, err)
 	}
 }
 
@@ -992,12 +583,9 @@ func TestTools_InvalidJSON(t *testing.T) {
 		name string
 		tool interface{ Call(string) (string, error) }
 	}{
-		{"batch_patch", &batchPatchTool{}},
-		{"parallel_shell", &parallelShellTool{}},
-		{"http_batch", newHTTPBatchTool(danger.DangerousConfig{})},
+		{"http_request", newHTTPRequestTool(danger.DangerousConfig{})},
 		{"math_eval", &mathEvalTool{}},
 		{"diff", &diffTool{}},
-		{"multi_grep", &multiGrepTool{}},
 		{"json_query", &jsonQueryTool{}},
 		{"tree", &treeTool{}},
 		{"checksum", &checksumTool{}},
@@ -1027,23 +615,6 @@ func TestTools_InvalidJSON(t *testing.T) {
 // ── Missing Required Fields ──────────────────────────────────────────
 
 func TestTools_MissingRequired(t *testing.T) {
-	t.Run("batch_patch/empty", func(t *testing.T) {
-		result, _ := (&batchPatchTool{}).Call(`{"patches":[]}`)
-		var r struct{ Error string }
-		json.Unmarshal([]byte(result), &r)
-		if !strings.Contains(r.Error, "at least one") {
-			t.Errorf("expected error, got: %s", r.Error)
-		}
-	})
-
-	t.Run("parallel_shell/empty", func(t *testing.T) {
-		result, _ := (&parallelShellTool{}).Call(`{"commands":[]}`)
-		var r struct{ Error string }
-		json.Unmarshal([]byte(result), &r)
-		if !strings.Contains(r.Error, "at least one") {
-			t.Errorf("expected error, got: %s", r.Error)
-		}
-	})
 
 	t.Run("math_eval/empty", func(t *testing.T) {
 		result, _ := (&mathEvalTool{}).Call(`{"expression":""}`)
@@ -1124,7 +695,7 @@ func TestChecksum_InvalidAlgorithm(t *testing.T) {
 	os.WriteFile(path, []byte("data\n"), 0644)
 
 	tool := &checksumTool{}
-	args := fmt.Sprintf(`{"files":[{"path":"%s","algorithm":"sha3"}]}`, path)
+	args := fmt.Sprintf(`{"path":"%s","algorithm":"sha3"}`, path)
 	result := callJSON(t, tool, args)
 
 	var r struct {
@@ -1208,57 +779,26 @@ func TestBase64_DecodeInvalid(t *testing.T) {
 
 // ── HTTP Batch Edge Cases ────────────────────────────────────────────
 
-func TestHTTPBatch_DangerConfigDenyAll(t *testing.T) {
+func TestHTTPRequest_DangerConfigDenyAll(t *testing.T) {
 	action := "deny"
 	dc := danger.DangerousConfig{
 		DefaultAction: &action,
 	}
-	tool := newHTTPBatchTool(dc)
-	result := callJSON(t, tool, `{"requests":[{"url":"https://example.com"}]}`)
+	tool := newHTTPRequestTool(dc)
+	result := callJSON(t, tool, `{"url":"https://example.com"}`)
 
-	var r struct {
-		Results []struct {
-			URL   string `json:"url"`
-			Error string `json:"error"`
-		} `json:"results"`
-	}
+	var r httpRequestResult
 	mustUnmarshal(t, result, &r)
-	if len(r.Results) > 0 && r.Results[0].Error == "" {
+	if r.Error == "" {
 		t.Error("expected error for denied URL")
 	}
 }
 
 // ── Tool Metadata Tests ──────────────────────────────────────────────────
 
-func TestBatchPatch_Metadata(t *testing.T) {
-	tool := &batchPatchTool{}
-	if n := tool.Name(); n != "batch_patch" {
-		t.Errorf("Name = %q, want 'batch_patch'", n)
-	}
-	if d := tool.Description(); d == "" {
-		t.Error("Description should not be empty")
-	}
-	if s := tool.Schema(); s == nil {
-		t.Error("Schema should not be nil")
-	}
-}
-
-func TestParallelShell_Metadata(t *testing.T) {
-	tool := &parallelShellTool{}
-	if n := tool.Name(); n != "parallel_shell" {
-		t.Errorf("Name = %q", n)
-	}
-	if d := tool.Description(); d == "" {
-		t.Error("Description should not be empty")
-	}
-	if s := tool.Schema(); s == nil {
-		t.Error("Schema should not be nil")
-	}
-}
-
-func TestHTTPBatch_Metadata(t *testing.T) {
-	tool := newHTTPBatchTool(danger.DangerousConfig{})
-	if n := tool.Name(); n != "http_batch" {
+func TestHTTPRequest_Metadata(t *testing.T) {
+	tool := newHTTPRequestTool(danger.DangerousConfig{})
+	if n := tool.Name(); n != "http_request" {
 		t.Errorf("Name = %q", n)
 	}
 	if tool.Description() == "" {
@@ -1293,7 +833,6 @@ func TestPerfTools_Metadata(t *testing.T) {
 		tool metaTool
 	}{
 		{"diff", &diffTool{}},
-		{"multi_grep", &multiGrepTool{}},
 		{"json_query", &jsonQueryTool{}},
 		{"tree", &treeTool{}},
 		{"checksum", &checksumTool{}},
@@ -1328,7 +867,7 @@ func TestHeadTail_HeadTotalAccuracy(t *testing.T) {
 	os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0644)
 
 	tool := &headTailTool{}
-	args := fmt.Sprintf(`{"files":[{"path":"%s"}],"lines":3,"mode":"head"}`, path)
+	args := fmt.Sprintf(`{"path":"%s","lines":3,"mode":"head"}`, path)
 	result := callJSON(t, tool, args)
 
 	var r struct {
@@ -1351,62 +890,8 @@ func TestHeadTail_HeadTotalAccuracy(t *testing.T) {
 	}
 }
 
-// ── MultiGrep Glob Filter ───────────────────────────────────────────────
-
-func TestMultiGrep_GlobFilter(t *testing.T) {
-	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "a.go"), []byte("TODO: in go\n"), 0644)
-	os.WriteFile(filepath.Join(dir, "b.txt"), []byte("TODO: in txt\n"), 0644)
-
-	tool := &multiGrepTool{}
-	args := fmt.Sprintf(`{"patterns":["TODO"],"path":"%s","file_glob":"*.txt"}`, dir)
-	result := callJSON(t, tool, args)
-
-	var r struct {
-		Results []struct {
-			Pattern string `json:"pattern"`
-			Count   int    `json:"count"`
-			Error   string `json:"error"`
-		} `json:"results"`
-	}
-	mustUnmarshal(t, result, &r)
-	if len(r.Results) != 1 || r.Results[0].Count != 1 {
-		t.Errorf("expected 1 match in *.txt files, got TODO count=%d", r.Results[0].Count)
-	}
-}
 
 // ── Parallel Shell Timeout ──────────────────────────────────────────────
-
-func TestParallelShell_Timeout(t *testing.T) {
-	if raceEnabled {
-		t.Skip("skipping under race detector due to inherent Process.Kill() vs Run() timing race")
-	}
-	// Verify timeout mechanism works by checking the returned error
-	tool := &parallelShellTool{}
-	result := callJSON(t, tool, `{"commands":[{"command":"sleep 10","timeout":1}]}`)
-
-	var r struct {
-		Results []struct {
-			Error      string `json:"error"`
-			DurationMs int64  `json:"duration_ms"`
-		} `json:"results"`
-	}
-	mustUnmarshal(t, result, &r)
-	if len(r.Results) != 1 {
-		t.Fatalf("Results = %d, want 1", len(r.Results))
-	}
-	if r.Results[0].Error == "" {
-		t.Fatal("expected error for timed-out command")
-	}
-	if !strings.Contains(r.Results[0].Error, "timeout") {
-		t.Errorf("expected timeout error, got: %s", r.Results[0].Error)
-	}
-	// Duration should be ~1s (the timeout), not 10s (the sleep)
-	// Allow generous margin for CI variance
-	if r.Results[0].DurationMs > 5000 {
-		t.Errorf("duration_ms = %d, expected ~1000 (timeout=1s, sleep=10)", r.Results[0].DurationMs)
-	}
-}
 
 // makeOversizedFile creates a sparse file larger than maxFileReadBytes for
 // testing size-cap rejections without actually writing multi-gigabyte data.
@@ -1426,7 +911,7 @@ func makeOversizedFile(t *testing.T) string {
 func TestChecksum_RejectsHugeFile(t *testing.T) {
 	path := makeOversizedFile(t)
 	tool := &checksumTool{}
-	result := callJSON(t, tool, fmt.Sprintf(`{"files":[{"path":"%s"}]}`, path))
+	result := callJSON(t, tool, fmt.Sprintf(`{"path":"%s"}`, path))
 
 	var r struct {
 		Results []struct {
@@ -1442,7 +927,7 @@ func TestChecksum_RejectsHugeFile(t *testing.T) {
 func TestHeadTail_RejectsHugeFile(t *testing.T) {
 	path := makeOversizedFile(t)
 	tool := &headTailTool{}
-	result := callJSON(t, tool, fmt.Sprintf(`{"files":[{"path":"%s"}]}`, path))
+	result := callJSON(t, tool, fmt.Sprintf(`{"path":"%s"}`, path))
 
 	var r struct {
 		Results []struct {
@@ -1485,7 +970,7 @@ func makeExactSizeFile(t *testing.T) string {
 func TestChecksum_AcceptsExactSizeFile(t *testing.T) {
 	path := makeExactSizeFile(t)
 	tool := &checksumTool{}
-	result := callJSON(t, tool, fmt.Sprintf(`{"files":[{"path":"%s"}]}`, path))
+	result := callJSON(t, tool, fmt.Sprintf(`{"path":"%s"}`, path))
 
 	var r struct {
 		Results []struct {
@@ -1505,7 +990,7 @@ func TestChecksum_AcceptsExactSizeFile(t *testing.T) {
 func TestHeadTail_AcceptsExactSizeFile(t *testing.T) {
 	path := makeExactSizeFile(t)
 	tool := &headTailTool{}
-	result := callJSON(t, tool, fmt.Sprintf(`{"files":[{"path":"%s"}]}`, path))
+	result := callJSON(t, tool, fmt.Sprintf(`{"path":"%s"}`, path))
 
 	var r struct {
 		Results []struct {
@@ -1525,7 +1010,7 @@ func TestHeadTail_AcceptsExactSizeFile(t *testing.T) {
 func TestHeadTail_TailRejectsHugeFile(t *testing.T) {
 	path := makeOversizedFile(t)
 	tool := &headTailTool{}
-	result := callJSON(t, tool, fmt.Sprintf(`{"files":[{"path":"%s"}],"mode":"tail"}`, path))
+	result := callJSON(t, tool, fmt.Sprintf(`{"path":"%s","mode":"tail"}`, path))
 
 	var r struct {
 		Results []struct {
@@ -1573,106 +1058,3 @@ func TestBase64_RejectsHugeDecodeString(t *testing.T) {
 }
 
 // ── Parallel Shell Hardening (#44) ─────────────────────────────────────
-
-func TestParallelShell_TimeoutIsCapped(t *testing.T) {
-	// A requested timeout above the cap should be clamped, so a fast command
-	// still completes quickly instead of waiting for the huge value.
-	tool := &parallelShellTool{}
-	result := callJSON(t, tool, fmt.Sprintf(`{"commands":[{"command":"echo ok","timeout":%d}]}`, int(maxParallelShellTimeout.Seconds())+999999))
-
-	var r struct {
-		Results []struct {
-			Error      string `json:"error"`
-			DurationMs int64  `json:"duration_ms"`
-		} `json:"results"`
-	}
-	mustUnmarshal(t, result, &r)
-	if r.Results[0].Error != "" {
-		t.Errorf("expected no error, got %q", r.Results[0].Error)
-	}
-	if r.Results[0].DurationMs > 2000 {
-		t.Errorf("capped timeout should not delay a fast command: duration_ms=%d", r.Results[0].DurationMs)
-	}
-}
-
-func TestParallelShell_ContextCancellationKillsCommand(t *testing.T) {
-	if raceEnabled {
-		t.Skip("skipping under race detector due to process timing")
-	}
-	tool := &parallelShellTool{}
-	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-	defer cancel()
-	tool.SetContext(ctx)
-
-	entry := tool.runOne(parallelShellCmd{Command: "sleep 10", Timeout: 30})
-	if entry.Error == "" {
-		t.Fatal("expected error for cancelled command")
-	}
-	if !strings.Contains(entry.Error, "timeout") && !strings.Contains(entry.Error, "cancelled") {
-		t.Errorf("expected timeout/cancelled error, got %q", entry.Error)
-	}
-}
-
-func TestParallelShell_ProcessGroupKill(t *testing.T) {
-	if raceEnabled {
-		t.Skip("skipping under race detector due to process timing")
-	}
-	// A background child spawned by the shell must be killed when the command
-	// times out, not left orphaned. The parent sleeps and is killed; without
-	// group kill the background sleep would keep the stdout pipe open and
-	// Run() would hang until WaitDelay.
-	tool := &parallelShellTool{}
-	start := time.Now()
-	entry := tool.runOne(parallelShellCmd{Command: "sleep 1 & sleep 5", Timeout: 1})
-	elapsed := time.Since(start)
-	if entry.Error == "" || !strings.Contains(entry.Error, "timeout") {
-		t.Errorf("expected timeout error, got %q", entry.Error)
-	}
-	if elapsed > 3*time.Second {
-		t.Errorf("process group was not killed promptly: %v", elapsed)
-	}
-}
-
-func TestParallelShell_ContextCancel_Explicit(t *testing.T) {
-	if raceEnabled {
-		t.Skip("skipping under race detector due to process timing")
-	}
-	tool := &parallelShellTool{}
-	ctx, cancel := context.WithCancel(context.Background())
-	tool.SetContext(ctx)
-	// Cancel before the command starts to exercise the context.Canceled branch.
-	cancel()
-
-	entry := tool.runOne(parallelShellCmd{Command: "sleep 10", Timeout: 30})
-	if entry.Error == "" {
-		t.Fatal("expected error for cancelled command")
-	}
-	if !strings.Contains(entry.Error, "cancelled") {
-		t.Errorf("expected cancelled error, got %q", entry.Error)
-	}
-}
-
-// TestBatchPatch_DirSymlinkClassifiedByTarget verifies that batch_patch
-// entries are classified after directory-symlink resolution, so a workspace
-// "etc -> /etc" link cannot downgrade a system_write to local_write.
-func TestBatchPatch_DirSymlinkClassifiedByTarget(t *testing.T) {
-	dir := t.TempDir()
-	link := filepath.Join(dir, "etc")
-	if err := os.Symlink("/etc", link); err != nil {
-		t.Fatalf("symlink: %v", err)
-	}
-
-	tool := &batchPatchTool{dangerousConfig: denySystemWrites()}
-	out := callJSON(t, tool, `{"patches":[{"path":"`+filepath.Join(link, "hosts")+`","old_string":"x","new_string":"y"}]}`)
-
-	var res struct {
-		Results []struct {
-			Path  string `json:"path"`
-			Error string `json:"error"`
-		} `json:"results"`
-	}
-	mustUnmarshal(t, out, &res)
-	if len(res.Results) != 1 || !strings.Contains(res.Results[0].Error, "system_write") {
-		t.Errorf("batch_patch entry was not classified by its real target: %s", out)
-	}
-}

@@ -55,15 +55,10 @@ func TestArgSummary_PathTool(t *testing.T) {
 	}
 }
 
-func TestArgSummary_BatchPatchListsPaths(t *testing.T) {
-	args := `{"patches":[{"path":"a.py"},{"path":"b.py"}]}`
-	s := argSummary(context.Background(), "batch_patch", args)
-	if s == nil {
-		t.Fatal("nil summary for batch_patch")
-	}
-	paths, ok := s["path"].([]string)
-	if !ok || len(paths) != 2 {
-		t.Fatalf("path list = %v, want 2 entries", s["path"])
+func TestArgSummary_IndividualPatchTarget(t *testing.T) {
+	s := argSummary(context.Background(), "patch", `{"path":"a.py","old_string":"a","new_string":"b"}`)
+	if s == nil || s["path"] != "a.py" {
+		t.Fatalf("patch summary = %v", s)
 	}
 }
 

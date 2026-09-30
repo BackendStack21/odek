@@ -34,7 +34,7 @@ func writeSkipList(t *testing.T, home string, entries map[string]time.Time) {
 
 // skipIfRoot skips permission-based tests when running as root, since root
 // bypasses directory permission checks (mirrors the pattern used in
-// cmd/odek/batch_patch_audit_test.go).
+// cmd/odek/file_tool_test.go).
 func skipIfRoot(t *testing.T) {
 	t.Helper()
 	if os.Geteuid() == 0 {

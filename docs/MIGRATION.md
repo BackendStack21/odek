@@ -1,5 +1,75 @@
 # Migrating to odek v2
 
+## Batch execution tool retirement
+
+The batch execution tools have been removed from all built-in registries,
+including MCP and subagents. There are no compatibility aliases or opt-in
+legacy implementations. `delegate_tasks` and `bg_*` remain available for
+isolated agent work and background process management.
+
+| Removed tool | Replacement |
+|---|---|
+| `parallel_shell` | Individual `shell` calls |
+| `batch_patch` | Individual `patch` calls |
+| `batch_read` | Individual `read_file` calls |
+| `multi_grep` | Individual `search_files` calls |
+| `http_batch` | Individual `http_request` calls |
+
+Emit separate calls for independent operations in one model response. The
+loop schedules supported independent calls under `max_tool_parallel`
+(default 4), preserves input order for tool-result messages, and orders
+conflicting file operations. Stateful browser calls retain response order.
+Shell operations remain conservative barriers
+because the runtime cannot establish their independence. Models emitting one
+call at a time still work, with less overlap.
+
+`batch_patch` previously applied edits sequentially and stopped on the first
+failure, preserving edits already applied. Separate `patch` calls are not a
+transaction and do not provide batch-wide early-stop behavior. Submit dependent
+edits in successive model responses when a failure must stop later work.
+
+Each individual call consumes one `limits.max_tool_calls` unit and gets its own
+call ID, approval classification, outcome, and events. Ten reads now consume
+ten calls instead of one batched call. Review tight execution budgets without
+automatically increasing them.
+
+`checksum` and `head_tail` now accept one file per call:
+
+```json
+{"path":"README.md","algorithm":"sha256"}
+```
+
+```json
+{"path":"README.md","mode":"head","lines":10}
+```
+
+Their result envelopes retain `results`, containing one entry. Legacy `files`
+inputs without `path` are rejected. These tools have no internal worker pool.
+
+`http_request` accepts one URL, optional method (default GET), and headers:
+
+```json
+{"url":"https://example.com","method":"HEAD","headers":{"Accept":"text/html"}}
+```
+
+It returns `{url,status,content_length?,error?}` and discards response bodies.
+Use `browser` to read page content. The request keeps the 30-second timeout,
+SSRF/DNS-rebinding guard, redirect policy checks, proxy refusal, and untrusted
+network-error boundary. GET/HEAD/OPTIONS calls can overlap; other methods are
+conservative scheduling barriers.
+
+Update `tools.enabled`, `tools.disabled`, CLI `--tool`/`--no-tool`, environment
+filters, capability profiles, operator identity prompts, and skills referencing
+retired tools. Unknown filter names are ignored; they are not translated to
+replacements. Review restrictive filters explicitly so a retired denylist
+entry does not leave its replacement enabled unintentionally. The shipped
+profile template uses the replacements.
+
+The Web UI no longer has specialized argument previews, result cards, or
+renderers for these five tools, including old session transcripts. Generic
+raw/JSON rendering remains available. Stored historical tool names retain
+their memory-provenance classification to prevent unsafe replay.
+
 ## Danger-policy defaults (v2.15.1)
 
 Two default changes, aimed at the out-of-box experience:
@@ -31,7 +101,7 @@ actions keep what they set.
 The `tr`, `sort`, `count_lines`, and `word_count` tools were removed as
 shell-duplicate conveniences (see the token-efficiency change). Replacements:
 
-- `tr` → `batch_patch` for file edits, or in-model transforms for inline text
+- `tr` → `patch` for file edits, or in-model transforms for inline text
 - `sort` → `shell` (`sort` command)
 - `count_lines` / `word_count` → `file_info` (size), `read_file` (total_lines),
   or `shell` (`wc`)

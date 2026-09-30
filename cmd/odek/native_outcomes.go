@@ -17,66 +17,9 @@ func (r diffResult) nativeError() string        { return r.Error }
 func (r jsonQueryResult) nativeError() string   { return r.Error }
 func (r treeResult) nativeError() string        { return r.Error }
 func (r base64Result) nativeError() string      { return r.Error }
-func (r batchReadResult) nativeError() string {
-	failed := 0
-	for _, entry := range r.Results {
-		if entry.Error != "" {
-			failed++
-		}
-	}
-	if failed == 0 {
-		return ""
-	}
-	return fmt.Sprintf("%d of %d operations failed", failed, len(r.Results))
-}
-func (r batchPatchResult) nativeError() string {
-	failed := 0
-	for _, entry := range r.Results {
-		if entry.Error != "" {
-			failed++
-		}
-	}
-	if failed == 0 {
-		return ""
-	}
-	return fmt.Sprintf("%d of %d operations failed", failed, len(r.Results))
-}
-func (r parallelShellResult) nativeError() string {
-	failed := 0
-	for _, entry := range r.Results {
-		if entry.Error != "" {
-			failed++
-		}
-	}
-	if failed == 0 {
-		return ""
-	}
-	return fmt.Sprintf("%d of %d operations failed", failed, len(r.Results))
-}
-func (r httpBatchResult) nativeError() string {
-	failed := 0
-	for _, entry := range r.Results {
-		if entry.Error != "" {
-			failed++
-		}
-	}
-	if failed == 0 {
-		return ""
-	}
-	return fmt.Sprintf("%d of %d operations failed", failed, len(r.Results))
-}
-func (r multiGrepResult) nativeError() string {
-	failed := 0
-	for _, entry := range r.Results {
-		if entry.Error != "" {
-			failed++
-		}
-	}
-	if failed == 0 {
-		return ""
-	}
-	return fmt.Sprintf("%d of %d operations failed", failed, len(r.Results))
-}
+
+func (r httpRequestResult) nativeError() string { return r.Error }
+
 func (r checksumResult) nativeError() string {
 	failed := 0
 	for _, entry := range r.Results {

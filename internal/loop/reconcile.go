@@ -45,10 +45,10 @@ var denialClaimPatterns = []*regexp.Regexp{
 
 // mutatingToolNames are native tools whose success always mutates state.
 var mutatingToolNames = map[string]bool{
-	"write_file": true, "patch": true, "batch_patch": true,
+	"write_file": true, "patch": true,
 }
 
-// mutatingShellCommand reports whether a shell/parallel_shell command
+// mutatingShellCommand reports whether a shell command
 // writes, executes, or otherwise escalates — reads (ls, cat, grep…) do not
 // count as mutations for reconciliation.
 func mutatingShellCommand(cmd string) bool {
@@ -85,57 +85,11 @@ func jsonToolFailed(output string) bool {
 	return false
 }
 
-// parallelShellEntries extracts per-command outcomes from a parallel_shell
-// result envelope so one failed entry does not erase the mutations of its
-// successful siblings.
-func parallelShellEntries(output string) []struct{ Command string } {
-	var env struct {
-		Results []struct {
-			Command string `json:"command"`
-			Error   string `json:"error"`
-		} `json:"results"`
-	}
-	if err := json.Unmarshal([]byte(output), &env); err != nil {
-		return nil
-	}
-	var cmds []struct{ Command string }
-	for _, r := range env.Results {
-		if r.Error == "" && r.Command != "" {
-			cmds = append(cmds, struct{ Command string }{r.Command})
-		}
-	}
-	return cmds
-}
-
-func successfulPatchPaths(output string) []string {
-	var env struct {
-		Results []struct {
-			Path    string `json:"path"`
-			Success bool   `json:"success"`
-			Error   string `json:"error"`
-		} `json:"results"`
-	}
-	if json.Unmarshal([]byte(output), &env) != nil {
-		return nil
-	}
-	var paths []string
-	for _, entry := range env.Results {
-		if entry.Success && entry.Error == "" && entry.Path != "" {
-			paths = append(paths, entry.Path)
-		}
-	}
-	return paths
-}
-
 // recordMutation updates the run ledger for one completed tool call.
 // Called from the loop's result phase, where success/failure is known.
 func (e *Engine) recordMutation(name, args, output string) {
 	before := len(e.runMutations)
 	switch {
-	case name == "batch_patch":
-		for _, path := range successfulPatchPaths(output) {
-			e.runMutations = append(e.runMutations, "patch "+path)
-		}
 	case mutatingToolNames[name]:
 		if jsonToolFailed(output) {
 			return
@@ -162,12 +116,7 @@ func (e *Engine) recordMutation(name, args, output string) {
 		if mutatingShellCommand(p.Command) {
 			e.runMutations = append(e.runMutations, "shell: "+p.Command)
 		}
-	case name == "parallel_shell":
-		for _, r := range parallelShellEntries(output) {
-			if mutatingShellCommand(r.Command) {
-				e.runMutations = append(e.runMutations, "shell: "+r.Command)
-			}
-		}
+
 	}
 	if len(e.runMutations) > before {
 		e.sawReadAfterMutation = false
@@ -178,8 +127,8 @@ func (e *Engine) recordMutation(name, args, output string) {
 // post-mutation verification for the completion nudge. Shell is handled
 // separately so a mutating command cannot clear the uncaught-mutation flag.
 var readCheckToolNames = map[string]bool{
-	"read_file": true, "batch_read": true, "search_files": true,
-	"glob": true, "file_info": true, "diff": true, "multi_grep": true,
+	"read_file": true, "search_files": true,
+	"glob": true, "file_info": true, "diff": true,
 	"json_query": true, "tree": true, "count_lines": true,
 	"checksum": true, "session_search": true,
 }

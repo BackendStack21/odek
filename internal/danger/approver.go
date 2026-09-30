@@ -57,8 +57,8 @@ func TrustShortcutAllowed(cls RiskClass) bool {
 // inspection. Used by the read_only non-interactive fallback — the
 // description parameter of PromptOperation carries the tool name.
 var readToolNames = map[string]bool{
-	"read_file": true, "batch_read": true, "search_files": true, "glob": true,
-	"file_info": true, "tree": true, "diff": true, "multi_grep": true,
+	"read_file": true, "search_files": true, "glob": true,
+	"file_info": true, "tree": true, "diff": true,
 	"json_query": true, "count_lines": true, "checksum": true, "sort": true,
 	"head_tail": true, "base64": true, "tr": true, "word_count": true,
 	"transcribe": true, "session_search": true,
@@ -70,7 +70,7 @@ func isReadToolName(name string) bool {
 
 var (
 	// ttyPromptMu serializes all TTY approval prompts process-wide. Without
-	// this, concurrent tool calls (e.g. parallel_shell) each open /dev/tty
+	// this, concurrent tool calls (e.g. independent shell calls) each open /dev/tty
 	// with their own bufio.Reader and compete for keystrokes, so the user
 	// can approve a command they never saw.
 	ttyPromptMu sync.Mutex

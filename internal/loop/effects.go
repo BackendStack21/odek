@@ -46,13 +46,7 @@ func resourceIdentity(path string) string {
 func effectsFor(tc session.ToolCall) callEffects {
 	name := tc.Function.Name
 	var args struct {
-		Path  string `json:"path"`
-		Files []struct {
-			Path string `json:"path"`
-		} `json:"files"`
-		Patches []struct {
-			Path string `json:"path"`
-		} `json:"patches"`
+		Path string `json:"path"`
 	}
 	if json.Unmarshal([]byte(tc.Function.Arguments), &args) != nil {
 		return callEffects{unknown: true}
@@ -60,16 +54,6 @@ func effectsFor(tc session.ToolCall) callEffects {
 	var paths []string
 	if args.Path != "" {
 		paths = append(paths, resourceIdentity(args.Path))
-	}
-	for _, f := range args.Files {
-		if f.Path != "" {
-			paths = append(paths, resourceIdentity(f.Path))
-		}
-	}
-	for _, f := range args.Patches {
-		if f.Path != "" {
-			paths = append(paths, resourceIdentity(f.Path))
-		}
 	}
 	if mutatingToolNames[name] {
 		if len(paths) == 0 {
@@ -85,7 +69,11 @@ func effectsFor(tc session.ToolCall) callEffects {
 		return callEffects{reads: paths}
 	}
 	switch name {
-	case "math_eval", "web_search", "browser", "config_view", "list_tools", "session_search", "bg_status", "bg_output", "bg_list", "bg_stop":
+	case "browser":
+		// Navigation, snapshots, and clicks share browser state. Preserve
+		// response order rather than relying on mutex acquisition order.
+		return callEffects{unknown: true}
+	case "math_eval", "web_search", "config_view", "list_tools", "session_search", "bg_status", "bg_output", "bg_list", "bg_stop":
 		return callEffects{}
 	}
 	return callEffects{unknown: true}
@@ -157,7 +145,7 @@ func (e *Engine) recordVerificationEffects(name, args string, failed bool) {
 			e.pendingVerification[p] = true
 		}
 	}
-	if fx.unknown && (name == "shell" || name == "parallel_shell" || name == "terminal") {
+	if fx.unknown && (name == "shell" || name == "terminal") {
 		e.pendingVerification["*"] = true
 	}
 	// Only checks of concrete changed resources satisfy verification. Broad

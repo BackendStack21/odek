@@ -130,7 +130,7 @@ func TestDeriveProvenance_ReadFileMalformedArgsTaints(t *testing.T) {
 
 // Network / audio tools always taint regardless of arguments.
 func TestDeriveProvenance_AlwaysExternalToolsTaint(t *testing.T) {
-	for _, name := range []string{"http_batch", "transcribe", "web_search", "vision", "delegate_tasks", "artifact_read"} {
+	for _, name := range []string{"http_request", "http_batch", "transcribe", "web_search", "vision", "delegate_tasks", "artifact_read"} {
 		prov := DeriveProvenance([]session.Message{toolMsgArgs(name, `{"path":"internal/x.go"}`)})
 		if !prov.Untrusted {
 			t.Errorf("%s must always taint, got %+v", name, prov)

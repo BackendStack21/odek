@@ -732,7 +732,7 @@ export function toolGlyph(name) {
 
 export function toolEmoji(name) {
   if (name === 'read_file' || name === 'write_file' || name === 'search_files' ||
-      name === 'patch' || name === 'execute_code' || name === 'multi_grep') return '📝';
+      name === 'patch' || name === 'execute_code') return '📝';
   if (name === 'shell' || name === 'terminal' || name === 'process') return '💻';
   if (name === 'web_search' || name === 'web_extract' || name.startsWith('browser_')) return '🌐';
   if (name === 'memory' || name === 'session_search') return '🧠';

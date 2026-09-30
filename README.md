@@ -45,7 +45,7 @@ odek is not a framework. It's a **runtime** — the smallest possible surface ar
 Every session can run in an isolated Docker container: no network, no host mounts beyond the working directory, zero capabilities, destroyed on exit. Sandboxing is **on by default** for `odek run`, `odek repl`, and `odek serve`; opt out with `--no-sandbox` / `ODEK_NO_SANDBOX=1` (unsandboxed runs warn loudly, and `ODEK_REQUIRE_SANDBOX=1` makes them fatal). `--ctx` files are auto-injected into the container at `/workspace/`. Full security model in [docs/SANDBOXING.md](docs/SANDBOXING.md).
 
 ### 🛡️ Prompt-Injection-Aware
-External content the agent ingests (`browser`, `read_file`, `shell`, `search_files`, `multi_grep`, `transcribe`, `vision`, `web_search`, `session_search`, MCP tools) is wrapped in per-call nonce'd `<untrusted_content>` boundaries so the model can distinguish data from instructions. Redirect hops are re-classified (`browser`/`http_batch`), MCP tool descriptions are scanned for injection at registration, and the MCP error channel is wrapped too. The danger classifier resists common shell-evasion tricks (`$()`/backtick substitution, `$IFS`, brace expansion, `command`/`env` wrappers, `\rm`, basenamed absolute paths, and more). Approvers engage friction mode after 3 same-class approvals in 60 s. Memory episodes from tainted sessions are stored but never auto-replayed. Imported and project skills track provenance — untrusted ones stay excluded from trigger matching until explicit `odek skill promote --force`. `odek audit <session-id>` surfaces every ingest + per-turn divergence heuristic. Full threat model in [docs/SECURITY.md](docs/SECURITY.md).
+External content the agent ingests (`browser`, `read_file`, `shell`, `search_files`, `transcribe`, `vision`, `web_search`, `session_search`, MCP tools) is wrapped in per-call nonce'd `<untrusted_content>` boundaries so the model can distinguish data from instructions. Redirect hops are re-classified (`browser`/`http_request`), MCP tool descriptions are scanned for injection at registration, and the MCP error channel is wrapped too. The danger classifier resists common shell-evasion tricks (`$()`/backtick substitution, `$IFS`, brace expansion, `command`/`env` wrappers, `\rm`, basenamed absolute paths, and more). Approvers engage friction mode after 3 same-class approvals in 60 s. Memory episodes from tainted sessions are stored but never auto-replayed. Imported and project skills track provenance — untrusted ones stay excluded from trigger matching until explicit `odek skill promote --force`. `odek audit <session-id>` surfaces every ingest + per-turn divergence heuristic. Full threat model in [docs/SECURITY.md](docs/SECURITY.md).
 
 ### 🧩 Sub-Agent Delegation
 Parallel OS-process sub-agents via `delegate_tasks`. True isolation — each sub-agent is a fresh `odek subagent` process with its own config, tools, and termination timeout. Up to 8 concurrent workers. Operator-defined **capability profiles** (top-level `profiles` config) override a sub-agent's permissions by name and fail closed on unknown names — a curated starter set of 21 task profiles ships in [`profiles.template.json`](profiles.template.json). See [docs/SUBAGENTS.md](docs/SUBAGENTS.md) and [docs/SECURITY.md](docs/SECURITY.md).
@@ -92,7 +92,7 @@ Attach files to any prompt with `--ctx` / `-c` (CLI), `@filename` inline referen
 Built-in `read_file`, `write_file`, `search_files`, `patch`, `shell`, and `browser` tools. All gated by a unified security layer (`dangerous` config) — classify operations as `allow` / `deny` / `prompt` per risk class. No third-party dependencies. [docs/SECURITY.md](docs/SECURITY.md)
 
 ### 🌐 Local Web Search
-`web_search` queries a **self-hosted [SearXNG](https://docs.searxng.org/) metasearch instance** — no cloud search API, no keys. Returns ranked results (title, url, snippet) the agent then fetches with `browser` / `http_batch`; results are wrapped as untrusted content and gated as `network_egress`. The Docker Compose setup runs a SearXNG sidecar and enables it out of the box; standalone installs point `web_search.base_url` at any SearXNG instance. [docs/CHEATSHEET.md](docs/CHEATSHEET.md#web-search)
+`web_search` queries a **self-hosted [SearXNG](https://docs.searxng.org/) metasearch instance** — no cloud search API, no keys. Returns ranked results (title, url, snippet) the agent then fetches with `browser`; `http_request` checks status and size only; results are wrapped as untrusted content and gated as `network_egress`. The Docker Compose setup runs a SearXNG sidecar and enables it out of the box; standalone installs point `web_search.base_url` at any SearXNG instance. [docs/CHEATSHEET.md](docs/CHEATSHEET.md#web-search)
 
 ---
 
@@ -180,6 +180,12 @@ odek run "@README.md what does this project do?"
 | `--max-runtime/--max-tool-calls/--max-input-tokens/--max-output-tokens/--max-cost-usd` | Hard execution budgets — exhaustion exits with code 4 |
 
 ---
+
+
+Independent native tool calls are scheduled by the loop under `max_tool_parallel`
+(default 4). Batch execution tools have been retired; see the
+[migration guide](docs/MIGRATION.md#batch-execution-tool-retirement) for replacements
+and configuration changes. `delegate_tasks` and background job tools remain.
 
 ## Docs
 

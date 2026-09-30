@@ -55,15 +55,6 @@ func unansweredToolCalls(msgs []session.Message) int {
 	return n
 }
 
-func TestRED_ParallelShellRejectsEmptyCommand(t *testing.T) {
-	result, _ := (&parallelShellTool{}).Call(`{"commands":[{"command":""},{"command":"echo hi"}]}`)
-	var r struct{ Error string }
-	mustUnmarshal(t, result, &r)
-	if !strings.Contains(r.Error, "empty") {
-		t.Fatalf("parallel_shell empty command error = %q, want it to name empty", r.Error)
-	}
-}
-
 func TestRED_ReadFileCapsFullFileScan(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "big.txt")

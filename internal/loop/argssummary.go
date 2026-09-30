@@ -21,8 +21,7 @@ import (
 // unless the operator explicitly opts in via EventsIncludeArgs.
 
 const (
-	summaryMaxStr  = 512
-	summaryMaxList = 16
+	summaryMaxStr = 512
 )
 
 func clampSummaryStr(s string) string {
@@ -93,38 +92,6 @@ func argSummary(ctx context.Context, name, argsJSON string) map[string]any {
 			"argv0": argv0(p.Command),
 			"class": string(cls),
 		}
-	case "parallel_shell":
-		var p struct {
-			Commands []struct {
-				Command string `json:"command"`
-			} `json:"commands"`
-		}
-		if err := json.Unmarshal([]byte(argsJSON), &p); err != nil || len(p.Commands) == 0 {
-			return nil
-		}
-		var maxCls danger.RiskClass
-		var maxRank int
-		var argv0s []string
-		for _, c := range p.Commands {
-			if c.Command == "" {
-				continue
-			}
-			argv0s = append(argv0s, argv0(c.Command))
-			if cls, _ := danger.ClassifyScriptGateCtx(ctx, c.Command); danger.Rank(cls) > maxRank {
-				maxRank = danger.Rank(cls)
-				maxCls = cls
-			}
-			if len(argv0s) >= summaryMaxList {
-				break
-			}
-		}
-		if len(argv0s) == 0 {
-			return nil
-		}
-		return map[string]any{
-			"argv0": argv0s,
-			"class": string(maxCls),
-		}
 	case "write_file", "patch":
 		// Write tools: the class the write gate actually uses.
 		var p struct {
@@ -137,8 +104,8 @@ func argSummary(ctx context.Context, name, argsJSON string) map[string]any {
 			"path":  clampSummaryStr(p.Path),
 			"class": string(danger.ClassifyPathWrite(p.Path)),
 		}
-	case "read_file", "search_files", "batch_read", "file_info",
-		"glob", "diff", "multi_grep", "json_query", "tree", "count_lines", "checksum",
+	case "read_file", "search_files", "file_info",
+		"glob", "diff", "json_query", "tree", "count_lines", "checksum",
 		"sort", "head_tail", "base64", "tr", "word_count", "transcribe":
 		var p struct {
 			Path string `json:"path"`
@@ -150,52 +117,17 @@ func argSummary(ctx context.Context, name, argsJSON string) map[string]any {
 			"path":  clampSummaryStr(p.Path),
 			"class": string(danger.ClassifyPath(p.Path)),
 		}
-	case "batch_patch":
-		var p struct {
-			Patches []struct {
-				Path string `json:"path"`
-			} `json:"patches"`
-		}
-		if err := json.Unmarshal([]byte(argsJSON), &p); err != nil || len(p.Patches) == 0 {
-			return nil
-		}
-		maxRank := 0
-		var paths []string
-		for _, patch := range p.Patches {
-			if patch.Path == "" {
-				continue
-			}
-			paths = append(paths, clampSummaryStr(patch.Path))
-			if r := danger.Rank(danger.ClassifyPathWrite(patch.Path)); r > maxRank {
-				maxRank = r
-			}
-			if len(paths) >= summaryMaxList {
-				break
-			}
-		}
-		if len(paths) == 0 {
-			return nil
-		}
-		return map[string]any{
-			"path":  paths,
-			"class": string(riskClassFromRank(maxRank)),
-		}
-	case "browser", "http_batch", "web_search":
+	case "browser", "http_request", "web_search":
 		// Host only: full URLs can embed credentials or unguessable tokens.
 		var p struct {
-			URL     string `json:"url"`
-			Action  string `json:"action"`
-			Queries []struct {
-				URL string `json:"url"`
-			} `json:"requests"`
+			URL    string `json:"url"`
+			Action string `json:"action"`
 		}
 		if err := json.Unmarshal([]byte(argsJSON), &p); err != nil {
 			return nil
 		}
 		target := p.URL
-		if target == "" && len(p.Queries) > 0 {
-			target = p.Queries[0].URL
-		}
+
 		host := urlHost(target)
 		if host == "" && p.Action != "" {
 			return map[string]any{"action": clampSummaryStr(p.Action)}

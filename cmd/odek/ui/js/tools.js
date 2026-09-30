@@ -36,9 +36,9 @@ export function classifyToolResult(name, output) {
 
   const goPassed = (text.match(/^ok\s+\S+/gm) || []).length;
   const goFailed = (text.match(/^FAIL\s+\S+/gm) || []).length;
-  if ((goPassed || goFailed) && /^(shell|parallel_shell)$/.test(name)) chips.push({ kind: 'test', label: goPassed + ' packages passed' + (goFailed ? ' · ' + goFailed + ' failed' : ''), tone: goFailed ? 'danger' : 'ok' });
+  if ((goPassed || goFailed) && /^(shell)$/.test(name)) chips.push({ kind: 'test', label: goPassed + ' packages passed' + (goFailed ? ' · ' + goFailed + ' failed' : ''), tone: goFailed ? 'danger' : 'ok' });
   const tests = text.match(GO_TEST);
-  if (tests && (name === 'shell' || name === 'parallel_shell')) {
+  if (tests && (name === 'shell')) {
     const passed = tests[1] || '0';
     const skipped = tests[2];
     const failed = tests[3];
@@ -61,7 +61,7 @@ export function classifyToolResult(name, output) {
   }
 
   const hits = text.match(SEARCH_HITS);
-  if (hits && (name === 'search_files' || name === 'multi_grep' || name === 'session_search')) {
+  if (hits && (name === 'search_files' || name === 'session_search')) {
     chips.push({ kind: 'search', label: hits[1] + ' hits', tone: 'ok' });
   }
 
@@ -94,7 +94,7 @@ export function collectReceipt(name, argsJSON, output) {
   const receipt = { files: [], plus: 0, minus: 0, tests: '', tools: 1 };
   try {
     const obj = JSON.parse(argsJSON || '{}');
-    const writes = /^(write_file|patch|batch_patch)$/.test(name);
+    const writes = /^(write_file|patch)$/.test(name);
     const path = writes ? obj.path || obj.file || '' : '';
     if (path) receipt.files.push(String(path));
     if (writes && Array.isArray(obj.paths)) receipt.files.push(...obj.paths.map(String));

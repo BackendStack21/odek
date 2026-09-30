@@ -285,9 +285,7 @@ func ToolPreview(name, args string) string {
 			return truncateRunes(cmd, 60)
 		}
 		return ""
-	case "batch_read", "batch_patch", "parallel_shell":
-		return ""
-	case "http_batch", "browser":
+	case "http_request", "browser":
 		if u := extractJSONField(args, "url"); u != "" {
 			return truncateRunes(u, 60)
 		}

@@ -147,18 +147,6 @@ func TestShellRejectsSymlinkSwapDuringApproval(t *testing.T) {
 	if err := os.Symlink(ordinary, alias); err != nil {
 		t.Fatal(err)
 	}
-	t.Run("parallel_shell", func(t *testing.T) {
-		tool := &parallelShellTool{dangerousConfig: policy, approver: swap}
-		if _, err := tool.Call(securityProbeArgs(map[string]any{"commands": []map[string]string{{"command": "printf marker > " + alias}}})); err == nil {
-			t.Fatal("changed risk reused batch approval")
-		}
-	})
-	if err := os.Remove(alias); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(ordinary, alias); err != nil {
-		t.Fatal(err)
-	}
 	t.Run("background", func(t *testing.T) {
 		manager := bgproc.NewManager(bgproc.Config{MaxOutputBytes: 4096}, nil)
 		defer manager.Shutdown()

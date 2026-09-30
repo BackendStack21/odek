@@ -98,7 +98,7 @@ func promptSystemWrite(ap danger.Approver) danger.DangerousConfig {
 }
 
 // ════════════════════════════════════════════════════════════════════════
-// Fix #1 — redirect hops are re-classified (browser + http_batch).
+// Fix #1 — redirect hops are re-classified (browser + http_request).
 // ════════════════════════════════════════════════════════════════════════
 
 func TestBrowser_Redirect_ReclassifiesEveryHop(t *testing.T) {
@@ -175,7 +175,7 @@ func TestBrowser_Redirect_BlockedTargetIsNotFetched(t *testing.T) {
 	}
 }
 
-func TestHTTPBatch_Redirect_BlockedTargetIsNotFetched(t *testing.T) {
+func TestHTTPRequest_Redirect_BlockedTargetIsNotFetched(t *testing.T) {
 	mu := &sync.Mutex{}
 	finalHits := 0
 	final := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -192,9 +192,9 @@ func TestHTTPBatch_Redirect_BlockedTargetIsNotFetched(t *testing.T) {
 	defer redir.Close()
 
 	ap := &recordingApprover{deny: final.URL}
-	ht := newHTTPBatchTool(promptSystemWrite(ap))
+	ht := newHTTPRequestTool(promptSystemWrite(ap))
 
-	res, err := ht.Call(fmt.Sprintf(`{"requests":[{"url":%q}]}`, redir.URL))
+	res, err := ht.Call(fmt.Sprintf(`{"url":%q}`, redir.URL))
 	if err == nil {
 		t.Fatal("expected typed operation failure alongside result")
 	}
@@ -227,9 +227,9 @@ func TestBrowserClients_HaveCheckRedirectInstalled(t *testing.T) {
 	if bt.client.CheckRedirect == nil {
 		t.Error("browser client is missing CheckRedirect — redirects would not be re-classified")
 	}
-	ht := newHTTPBatchTool(danger.DangerousConfig{})
+	ht := newHTTPRequestTool(danger.DangerousConfig{})
 	if ht.client.CheckRedirect == nil {
-		t.Error("http_batch client is missing CheckRedirect — redirects would not be re-classified")
+		t.Error("http_request client is missing CheckRedirect — redirects would not be re-classified")
 	}
 }
 

@@ -82,7 +82,7 @@ func TestSearchFilesFiles_NewestFirstWinsOverWalkOrder(t *testing.T) {
 
 // isBinary must not classify multi-byte UTF-8 text as binary. The
 // old ratio heuristic counted every byte >= 0x7F as non-printable, so
-// Russian/CJK prose was rejected as binary by read_file / batch_read.
+// Russian/CJK prose was rejected as binary by read_file.
 
 const cyrillicProse = "Съешь же ещё этих мягких французских булок, да выпей чаю. "
 
@@ -97,34 +97,6 @@ func TestIsBinary_UTF8TextNotBinary(t *testing.T) {
 	}
 	if !isBinary([]byte("plain text\x00with a NUL byte")) {
 		t.Errorf("NUL-containing content not detected as binary")
-	}
-}
-
-func TestBatchRead_CyrillicTextFileNotBinary(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "ru.txt")
-	if err := os.WriteFile(path, []byte(strings.Repeat(cyrillicProse, 100)), 0644); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-
-	tool := &batchReadTool{}
-	result := callJSON(t, tool, fmt.Sprintf(`{"files":[{"path":%q}]}`, path))
-	var r struct {
-		Results []struct {
-			Path    string `json:"path"`
-			Content string `json:"content"`
-			Error   string `json:"error,omitempty"`
-		} `json:"results"`
-	}
-	mustUnmarshal(t, result, &r)
-	if len(r.Results) != 1 {
-		t.Fatalf("results = %d, want 1", len(r.Results))
-	}
-	if r.Results[0].Error != "" {
-		t.Fatalf("batch_read misclassified Cyrillic text as binary: %s", r.Results[0].Error)
-	}
-	if !strings.Contains(r.Results[0].Content, "Съешь") {
-		t.Errorf("batch_read returned no content for a UTF-8 text file")
 	}
 }
 

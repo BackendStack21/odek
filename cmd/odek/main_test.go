@@ -2567,19 +2567,9 @@ func TestDefaultSystem_IncludesReasoningScaffold(t *testing.T) {
 	}
 }
 
-// ── Batch Tool Awareness ─────────────────────────────────────────────
-
-// TestDefaultSystem_MentionsBatchTools verifies that defaultSystem tells
-// the agent about batch/parallel tools (batch_read, parallel_shell,
-// multi_grep) so it uses them instead of reading files one-by-one.
-// Without this instruction, the model wastes tokens on sequential reads
-// for tasks that could fetch 5 files in a single call.
-func TestDefaultSystem_MentionsBatchTools(t *testing.T) {
-	if !strings.Contains(defaultSystem, "batch_read") {
-		t.Error("defaultSystem should mention batch_read for efficient multi-file reads")
-	}
-	if !strings.Contains(defaultSystem, "parallel_shell") {
-		t.Error("defaultSystem should mention parallel_shell for parallel command execution")
+func TestDefaultSystem_MentionsNativeToolScheduling(t *testing.T) {
+	if !strings.Contains(defaultSystem, "max_tool_parallel") || !strings.Contains(defaultSystem, "separate tool calls") {
+		t.Fatal("system prompt omits native tool scheduling")
 	}
 }
 

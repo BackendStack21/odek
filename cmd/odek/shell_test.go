@@ -472,7 +472,7 @@ func TestClampShellTimeoutSeconds(t *testing.T) {
 }
 
 // TestShellTool_TimeoutSeconds_NonPositive verifies zero and negative
-// timeout_seconds values are treated as absent (same as parallel_shell):
+// timeout_seconds values are treated as absent:
 // a fast command succeeds without being clamped to an immediate timeout.
 func TestShellTool_TimeoutSeconds_NonPositive(t *testing.T) {
 	st := &shellTool{}

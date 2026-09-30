@@ -9,7 +9,7 @@ import (
 // (output, nil) — the exit status was silently dropped, so a failing test
 // run or build was indistinguishable from a passing one. The tool's own
 // comment stated the intent (surface the failure reason) the code did not
-// implement. parallel_shell already reports exit_code per command.
+// implement. Failed shell commands must expose their exit status.
 
 func TestShellTool_ReportsExitStatusWithOutput(t *testing.T) {
 	st := &shellTool{}

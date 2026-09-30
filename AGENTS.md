@@ -38,10 +38,11 @@ cmd/odek/
   subagent_tool.go            delegate_tasks built-in tool (sub-agent spawning)
   subagent_key.go             FD-based API key handoff (parent → sub-agent, never via env)
   browser_tool.go             Built-in browser tool (HTTP fetch + headless navigation)
-  file_tool.go                Built-in file tools (read_file, write_file, search_files, patch, batch_read, glob, file_info)
+  file_tool.go                Built-in file tools (read_file, write_file, search_files, patch, glob, file_info)
   external_ref.go             --external-ref flag parsing (run + continue) → session.ExternalRef
-  perf_tools.go               Performance/parallelism tools (batch_patch, parallel_shell, http_batch, math_eval, diff,
-                              multi_grep, json_query, tree, checksum, head_tail, base64)
+  perf_tools.go               Native utilities (math_eval, diff, json_query, tree, checksum, head_tail, base64)
+  http_request_tool.go        Single-URL HTTP status/size checks with SSRF and redirect guards
+  native_tool_context.go      Invocation-scoped contexts for independent native tool calls
   mcp.go                      MCP server implementation (stdio transport)
   mcp_approval.go             Per-tool MCP server approval UI and persistence (key hashes limits/artifact_roots)
   project_sandbox_approval.go Project-level sandbox config approval gate
@@ -62,7 +63,6 @@ cmd/odek/
   memory_cmd.go               `odek memory` command
   cleanup.go                  `odek cleanup [--dry-run]` one-shot storage sweep + janitor wiring (telegram/serve/schedule daemon)
   upgrade.go                  `odek upgrade [--check]` self-upgrade from GitHub Releases (checksums.txt SHA-256 verified)
-  parallel.go                 Parallelism helpers
   toolctx.go                  Tool-call context plumbing
   security_report_validation_test.go  Regression bar for every documented mitigation
   *_test.go                   250+ unit + E2E tests covering all tools
@@ -109,7 +109,7 @@ docs/                         Documentation (CLI, API, CONFIG, MCP, EXTENSIONS, 
 ReAct cycle: observe → think → act → repeat.
 - LLM returns tool calls or a final answer.
 - **Parallel tool execution** — independent tool calls run concurrently (`max_tool_parallel`, default: 4).
-- **Batch approval gate** — multiple risky tools shown in one prompt. `classifyToolCall` classifies every command inside `parallel_shell`, every path inside `batch_patch`, and the `browser` tool; shows full commands; withholds blanket `SetTrustAll` when unclassifiable tools (incl. MCP tools, classified `unknown`) remain.
+- **Batch approval gate** — multiple risky tools shown in one prompt. `classifyToolCall` classifies each individual `shell` command, each `patch`/`write_file` target, and the `browser` tool; shows full commands; withholds blanket `SetTrustAll` when unclassifiable tools (incl. MCP tools, classified `unknown`) remain.
 - **Tool-failure recovery** — retry transient errors, skip permanent failures, continue without crashing. Stall detection: 3 consecutive identical tool calls inject a corrective hint + fire `tool_recovery` — a hint, never aborts the run.
 - **Context-limit protection** — graduated trimming near the context window: old large tool results replaced with markers (4 most recent kept intact), then oldest turn groups dropped atomically (tool messages stay grouped with their parent). The protected head (system prompt, memory block, compaction digest, original task) is never dropped. Token estimator counts tool schemas + reasoning content; safety margin self-tightens when provider-reported tokens exceed estimates (`margin_calibrated` signal). `trimToSurvival` handles provider context-length errors. **Rolling compaction** (on by default; `compaction: false` / `ODEK_COMPACTION=false` / `--no-compaction`) sketches dropped groups extractively into a rolling digest immediately, then a thinking-off side call replaces that sketch with a model digest on a later iteration if it arrives.
 - **Interaction modes** — engaging (narrated), enhance (persistent), verbose (raw), off.
@@ -117,7 +117,7 @@ ReAct cycle: observe → think → act → repeat.
 - **Post-response async processing** — episode extraction and extended-memory extraction run in background goroutines; `Agent.Close` drains them (~15s bound).
 - **Per-turn session persistence** — `SetMessagesPersistCallback` fires after each completed step with a fresh snapshot; CLI/REPL/serve/Telegram wire it to `Store.SaveNoIndex` (atomic, skips remote vector indexing). Interrupted runs resume via `odek continue` from the last completed step; error paths persist partial history minus dangling tool calls. The final save per turn still updates the semantic index once.
 - **Storage maintenance janitor** — `maintenance.Start` sweeps `~/.odek` (retention, log rotation, media sweep) inside `odek telegram`/`serve`/`schedule daemon`; `odek cleanup [--dry-run]` runs it on demand. Session files are trimmed at write time when they would exceed `MaxSessionFileBytes`. Operator-only config. See docs/MAINTENANCE.md.
-- **Artifact-aware file search** — `search_files`/`multi_grep` skip `node_modules`, `vendor`, `.git`, `__pycache__`, `.venv`, etc.
+- **Artifact-aware file search** — `search_files` skip `node_modules`, `vendor`, `.git`, `__pycache__`, `.venv`, etc.
 - **Semantic session search** — `session_search` tool: go-vector RandomProjections + k-NN, two-tier (vector index → exhaustive fallback).
 - **Background commands** — `bg_start`/`bg_list`/`bg_status`/`bg_output`/`bg_stop` tools over a process-scoped, session-keyed process manager (`internal/bgproc`): session-scoped job lifetime, bounded in-memory output rings, spawn-time danger classification parity with `shell`, group-signal stop (sandbox mode via the pidfile follow-up). Config: `background` section (docs/CONFIG.md).
 
@@ -129,7 +129,7 @@ ReAct cycle: observe → think → act → repeat.
 - **Execution budgets** — `limits` config section + `--max-runtime/--max-tool-calls/--max-input-tokens/--max-output-tokens/--max-cost-usd` on `run`; typed `budget.Error` → CLI exit code 4; session persisted before return. Per-model prices via `limits.model_prices` with flat-pair fallback; cost enforcement only when cap + prices configured. `odek init --global` scaffolds the section (zeros = off). `GET /api/limits` on serve exposes limits + effective prices for cost rendering.
 
 ### Tools
-All built-in tools with zero subprocess forks: batch_read, batch_patch, parallel_shell, http_batch, math_eval, diff, multi_grep, json_query, tree, checksum, head_tail, base64, transcribe, browser, read_file, write_file, search_files, patch, shell, delegate_tasks, session_search, config_view, list_tools.
+Built-in tools include: http_request, math_eval, diff, json_query, tree, checksum, head_tail, base64, transcribe, browser, read_file, write_file, search_files, patch, shell, delegate_tasks, session_search, config_view, list_tools.
 
 ### Terminal Rendering (`internal/render/`)
 Vertical space compression is baked into the render paths; blank lines removed from Iteration/FinalAnswer/Summary. Raw-mode cursor uses `\r\n` for cross-platform compatibility.
@@ -148,7 +148,7 @@ Layered prompt-injection / approval-fatigue defenses. The full per-mitigation li
 - **Sub-agent caps** — `delegate_tasks` carries trust_level + max_risk enforced via the sub-agent's DangerousConfig; MCP tools withheld from untrusted sub-agents; API keys handed off via unlinked-tempfile FD, never env.
 - **MCP hardening** — subprocess env sanitization (secret-pattern stripping), tool-name/description/inputSchema validation + injection scans, per-tool approval for every server (keys hash command/args/env + schema hash + description text + all four limit fields), per-server limits with absolute ceilings, artifact-ref fail-closed validation.
 - **Config trust split** — `./odek.json` is untrusted: sensitive sections (provider, providers, llm, base_url, api_key, system, dangerous, memory, telegram, web_search, embedding, sessions, skills.dirs) ignored with warnings; sandbox knobs gated behind explicit operator approval (incl. implicit `Dockerfile.odek` builds, content-hash keyed); project limits may only lower global budgets, project prices rejected outright. Global config/secrets permission-checked; config files size-capped.
-- **Serve / network surface** — per-instance CSRF token on `/ws` and all `/api/*`, loopback Host checks, local-origin requirement for mutations, per-session auth tokens + rate limiting, clickjacking headers, WS message-size caps. SSRF dial guard (DNS-rebinding-safe, internal-IP refusal, proxy refusal) on browser/http_batch/web_search.
+- **Serve / network surface** — per-instance CSRF token on `/ws` and all `/api/*`, loopback Host checks, local-origin requirement for mutations, per-session auth tokens + rate limiting, clickjacking headers, WS message-size caps. SSRF dial guard (DNS-rebinding-safe, internal-IP refusal, proxy refusal) on browser/http_request/web_search.
 - **Budgets, events, refs (v1.24.0)** — budget clamp merge (see above); event stream carries SHA-256 arg hashes + sizes only (never raw args), redact applied, JSONL sink 0600/no-symlink/fsync-per-event, drop-on-full dispatch; external refs validated and never dereferenced.
 - **Resource bounds** — pervasive size caps (shell output 1 MiB/stream, perf-tool files 10 MiB, session files 32 MiB, skill files 1 MiB, browser snapshots/history/elements, tree width, search results, write_file content, patch expansion) to keep hostile input from OOMing the process.
 - **Telegram** — chat-scoped sessions/plans/media, callback binding to originating user, outbound media allowlist + approval, secret-subtree rejection, singleton flock, 0600 logs.

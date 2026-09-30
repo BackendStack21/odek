@@ -77,52 +77,6 @@ func TestReadFile_SymlinkDirectoryTraversal(t *testing.T) {
 	}
 }
 
-// TestBatchRead_SymlinkDirectoryTraversal verifies the same for batch_read.
-func TestBatchRead_SymlinkDirectoryTraversal(t *testing.T) {
-	skipIfSymlinksUnsupported(t)
-
-	cwd := t.TempDir()
-	origDir, _ := os.Getwd()
-	os.Chdir(cwd)
-	defer os.Chdir(origDir)
-
-	outsideDir := symlinkSensitiveDir(t)
-	outsideFile := filepath.Join(outsideDir, "secret.txt")
-	os.WriteFile(outsideFile, []byte("secret"), 0600)
-
-	link := filepath.Join(cwd, "link")
-	if err := os.Symlink(outsideDir, link); err != nil {
-		t.Fatalf("create symlink: %v", err)
-	}
-
-	dc := danger.DangerousConfig{
-		Classes: map[danger.RiskClass]danger.Action{
-			danger.SystemWrite: danger.Deny,
-		},
-	}
-	tool := &batchReadTool{dangerousConfig: dc}
-	result := callJSON(t, tool, fmt.Sprintf(`{"files":[{"path":%q}]}`, filepath.Join(link, "secret.txt")))
-
-	var r struct {
-		Results []struct {
-			Content string `json:"content"`
-			Error   string `json:"error,omitempty"`
-		} `json:"results"`
-	}
-	mustUnmarshal(t, result, &r)
-
-	if len(r.Results) != 1 {
-		t.Fatalf("expected 1 result, got %d", len(r.Results))
-	}
-	entry := r.Results[0]
-	if entry.Error == "" {
-		t.Fatalf("batch_read should reject symlink directory traversal to system_write path")
-	}
-	if !strings.Contains(entry.Error, "denied") {
-		t.Fatalf("expected denial error, got: %s", entry.Error)
-	}
-}
-
 // TestHeadTail_SymlinkDirectoryTraversal verifies that head_tail resolves
 // intermediate directory symlinks before classifying/opening.
 func TestHeadTail_SymlinkDirectoryTraversal(t *testing.T) {
@@ -148,7 +102,7 @@ func TestHeadTail_SymlinkDirectoryTraversal(t *testing.T) {
 		},
 	}
 	tool := &headTailTool{dangerousConfig: dc}
-	result := callJSON(t, tool, fmt.Sprintf(`{"files":[{"path":%q}],"lines":1}`, filepath.Join(link, "secret.txt")))
+	result := callJSON(t, tool, fmt.Sprintf(`{"path":%q,"lines":1}`, filepath.Join(link, "secret.txt")))
 
 	var r struct {
 		Results []struct {

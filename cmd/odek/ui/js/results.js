@@ -14,12 +14,12 @@ export function resultText(output) {
 export function resultKind(name, output) {
   const text = resultText(output).trim();
   if (['terminal','code','text'].includes(name)) return name;
-  if (/^(shell|parallel_shell|bg_output|bg_status)$/.test(name)) return 'terminal';
+  if (/^(shell|bg_output|bg_status)$/.test(name)) return 'terminal';
   if (/^(diff --git |@@ )/m.test(text) || /^--- [^\n]*\n\+\+\+ /m.test(text)) return 'diff';
   if (name === 'diff') return 'diff';
-  if (/^(code|read_file|batch_read|write_file|patch|batch_patch)$/.test(name)) return 'code';
-  if (/^(search_files|multi_grep|glob|tree|session_search)$/.test(name)) return 'search';
-  if (/^(browser|web_search|http_batch)$/.test(name)) return 'sources';
+  if (/^(code|read_file|write_file|patch)$/.test(name)) return 'code';
+  if (/^(search_files|glob|tree|session_search)$/.test(name)) return 'search';
+  if (/^(browser|web_search|http_request)$/.test(name)) return 'sources';
   try { JSON.parse(text); return 'json'; } catch { return 'text'; }
 }
 export function highlightCode(text) {

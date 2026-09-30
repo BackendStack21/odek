@@ -203,7 +203,7 @@ sidecar** backing the `web_search` tool — no cloud search API, no keys.
   and disables the anti-bot limiter, so **no Redis/Valkey is required**.
 - Set **`SEARXNG_SECRET`** in `.env` (e.g. `openssl rand -hex 32`).
 - The agent searches, gets ranked results, then fetches the URLs it wants with the
-  `browser` / `http_batch` tools. Results are wrapped as untrusted content.
+  `browser` tool (`http_request` checks status and size only). Results are wrapped as untrusted content.
 - SearXNG needs outbound internet to reach upstream engines (Google, Bing,
   DuckDuckGo, …). If you front the stack with an allowlisting egress proxy, permit those.
 - To run **without** web search: comment out the `searxng` service (and the

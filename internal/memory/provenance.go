@@ -45,8 +45,10 @@ type EpisodeProvenance struct {
 // `shell` is deliberately NOT in this set even though its output can carry
 // untrusted bytes: it is the agent's primary work tool and tainting it would
 // taint nearly every session, making the provenance gate useless.
+// Retired names remain here only to classify persisted historical transcripts.
 var AlwaysExternalTools = map[string]bool{
 	"browser":        true,
+	"http_request":   true,
 	"http_batch":     true,
 	"transcribe":     true,
 	"session_search": true,
@@ -65,7 +67,8 @@ var AlwaysExternalTools = map[string]bool{
 // This must list every tool that surfaces file contents/structure to the
 // model. A tool missing here would let an injected agent read a secret into a
 // TRUSTED, recallable episode; when adding a new file-reading tool, add it
-// here too.
+// here too. Retired names classify historical transcripts; they do not
+// register tools or enable execution.
 var PathReadingTools = map[string]bool{
 	"read_file":    true,
 	"search_files": true,

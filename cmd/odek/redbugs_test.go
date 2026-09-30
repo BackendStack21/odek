@@ -151,29 +151,6 @@ func TestRED_TreeFiltersHiddenBeforeTruncating(t *testing.T) {
 }
 
 // ────────────────────────────────────────────────────────────────────────
-// batch_read must reject negative offsets instead of clamping silently.
-func TestRED_BatchReadRejectsNegativeOffset(t *testing.T) {
-	dir := t.TempDir()
-	p := filepath.Join(dir, "f.txt")
-	os.WriteFile(p, []byte("l1\nl2\nl3\n"), 0o644)
-
-	tool := &batchReadTool{}
-	res := callJSON(t, tool, fmt.Sprintf(`{"files":[{"path":%q,"offset":-5}]}`, p))
-	var r struct {
-		Results []struct {
-			Error string `json:"error"`
-		} `json:"results"`
-	}
-	mustUnmarshal(t, res, &r)
-	if len(r.Results) != 1 {
-		t.Fatalf("results = %d, want 1", len(r.Results))
-	}
-	if r.Results[0].Error == "" {
-		t.Error("batch_read accepted negative offset; want rejection consistent with read_file")
-	}
-}
-
-// ────────────────────────────────────────────────────────────────────────
 // Repeatable --ctx flags overwrite instead of accumulate
 // so `odek run --ctx a.txt --ctx b.txt` silently drops a.txt.
 func TestRED_ParseRunFlagsCtxAccumulates(t *testing.T) {

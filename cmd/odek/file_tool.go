@@ -27,7 +27,7 @@ import (
 
 const maxLines = 2000
 
-// maxReadBytes caps the content returned by read_file / batch_read to prevent
+// maxReadBytes caps the content returned by read_file to prevent
 // memory exhaustion from huge files.
 const maxReadBytes = 1 << 20 // 1 MiB
 
@@ -40,7 +40,7 @@ const maxWriteFileContentBytes = maxReadBytes // 1 MiB
 const maxSearchLimit = 500
 
 // maxSearchResultBytes caps the total returned content bytes for a single
-// search_files / multi_grep content query.
+// search_files content query.
 const maxSearchResultBytes = maxReadBytes
 
 // maxGlobMatches caps the number of paths returned by the glob tool to prevent
@@ -557,7 +557,7 @@ func (t *searchFilesTool) Description() string {
 Two modes: target="content" searches inside files for a regex pattern,
 target="files" finds files by glob pattern.
 Results are sorted by modification time (newest first).
-For 2+ patterns at once, use multi_grep instead — one parallel pass.
+For independent patterns, emit separate search_files calls in the same response.
 Always pass file_glob ('*.go', '*.py', …) and a narrow path; without
 file_glob every file in the tree is scanned.`
 }
@@ -1224,7 +1224,7 @@ func resolveReadPath(path string) (string, error) {
 }
 
 // resolveWritePath resolves directory symlinks in path for write operations
-// (write_file, patch, batch_patch). Like resolveReadPath it leaves the final
+// (write_file, patch). Like resolveReadPath it leaves the final
 // component untouched — writes go through temp+rename, which replaces the
 // directory entry instead of following a final symlink — but it also handles
 // targets that do not exist yet: the path is walked up to its deepest
@@ -1428,203 +1428,6 @@ func truncateDiff(s string, maxLen int) string {
 		return firstLine[:cut] + "..."
 	}
 	return firstLine
-}
-
-// ── BatchRead Tool ────────────────────────────────────────────────────
-//
-// batch_read reads multiple files in a single tool call, executing reads
-// concurrently with bounded goroutines. This replaces N serial read_file
-// calls with one parallel batch — the single biggest perf win for
-// code-understanding tasks (fast_read benchmark was 23% due to serial
-// reads across 10 iterations).
-//
-// Security: each file path is individually classified and gated through
-// the same danger.CheckOperation path as read_file.
-
-const maxBatchFiles = 10
-
-type batchReadTool struct {
-	ctxTool
-	dangerousConfig danger.DangerousConfig
-	restrictToCWD   bool // sandbox: reject paths that escape the workspace
-}
-
-func (t *batchReadTool) Name() string { return "batch_read" }
-
-func (t *batchReadTool) CallContext(ctx context.Context, args string) (string, error) {
-	call := &batchReadTool{dangerousConfig: t.dangerousConfig, restrictToCWD: t.restrictToCWD}
-	call.SetContext(ctx)
-	return call.Call(args)
-}
-
-func (t *batchReadTool) Description() string {
-	return `Read up to 10 files in one parallel call — faster than N sequential read_file calls. Each entry supports offset/limit pagination (same as read_file) and returns {path, content, total_lines, error}.`
-}
-
-type batchReadFileArg struct {
-	Path   string `json:"path"`
-	Offset int    `json:"offset"`
-	Limit  int    `json:"limit"`
-}
-
-type batchReadFileResult struct {
-	Path       string `json:"path"`
-	Content    string `json:"content"`
-	TotalLines int    `json:"total_lines"`
-	Error      string `json:"error,omitempty"`
-}
-
-type batchReadArgs struct {
-	Files []batchReadFileArg `json:"files"`
-}
-
-type batchReadResult struct {
-	Results []batchReadFileResult `json:"results"`
-}
-
-func (t *batchReadTool) Schema() any {
-	return map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"files": map[string]any{
-				"type":        "array",
-				"description": "Files to read (max 10). Each entry: {path, offset?, limit?}.",
-				"minItems":    1,
-				"maxItems":    maxBatchFiles,
-				"items": map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"path": map[string]any{
-							"type":        "string",
-							"description": "Path to the file to read (absolute or relative).",
-						},
-						"offset": map[string]any{
-							"type":        "integer",
-							"description": "Line number to start from (1-indexed, default: 1).",
-						},
-						"limit": map[string]any{
-							"type":        "integer",
-							"description": "Maximum lines to return (default: 500, max: 2000).",
-						},
-					},
-					"required": []string{"path"},
-				},
-			},
-		},
-		"required": []string{"files"},
-	}
-}
-
-func (t *batchReadTool) Call(argsJSON string) (result string, err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			err = fmt.Errorf("batch_read: panic: %v", r)
-			result = `{"error":"internal tool error"}`
-		}
-	}()
-	var args batchReadArgs
-	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
-		return jsonError("invalid arguments: " + err.Error())
-	}
-	if len(args.Files) == 0 {
-		return jsonError("at least one file is required")
-	}
-	if len(args.Files) > maxBatchFiles {
-		return jsonError(fmt.Sprintf("max %d files per batch_read call", maxBatchFiles))
-	}
-
-	results := parallelMap(args.Files, toolConcurrency(), t.readSingle,
-		func(f batchReadFileArg, p any) batchReadFileResult {
-			return batchReadFileResult{Path: f.Path, Error: fmt.Sprintf("internal error: %v", p)}
-		})
-
-	return jsonResult(batchReadResult{Results: results})
-}
-
-func (t *batchReadTool) readSingle(arg batchReadFileArg) batchReadFileResult {
-	if arg.Path == "" {
-		return batchReadFileResult{Error: "path is required"}
-	}
-	if t.restrictToCWD {
-		if _, err := confineToCWD(arg.Path); err != nil {
-			return batchReadFileResult{Path: arg.Path, Error: err.Error()}
-		}
-	}
-	// Reject invalid offsets like read_file does — the pagination schema is
-	// identical across both tools, so silently coercing negative values to
-	// line 1 would hide a caller bug.
-	if arg.Offset < 0 {
-		return batchReadFileResult{Path: arg.Path, Error: "offset must be a positive integer (1-indexed)"}
-	}
-	if arg.Offset == 0 {
-		arg.Offset = 1
-	}
-	if arg.Limit <= 0 {
-		arg.Limit = 500
-	}
-	if arg.Limit > maxLines {
-		arg.Limit = maxLines
-	}
-
-	// Security: resolve directory symlinks before classification.
-	resolvedPath, err := resolveReadPath(arg.Path)
-	if err != nil {
-		return batchReadFileResult{Path: arg.Path, Error: err.Error()}
-	}
-
-	// Security: classify path and check operation
-	risk := danger.ClassifyPath(resolvedPath)
-	if err := t.dangerousConfig.CheckOperation(danger.ToolOperation{
-		Name: "batch_read", Resource: resolvedPath, Risk: risk,
-	}, nil); err != nil {
-		return batchReadFileResult{Path: arg.Path, Error: err.Error()}
-	}
-
-	// Open without following symlinks
-	f, err := os.OpenFile(resolvedPath, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return batchReadFileResult{Path: arg.Path, Error: fmt.Sprintf("file not found: %s", arg.Path)}
-		}
-		return batchReadFileResult{Path: arg.Path, Error: fmt.Sprintf("cannot open %q: %v", arg.Path, err)}
-	}
-	defer f.Close()
-
-	info, err := f.Stat()
-	if err != nil {
-		return batchReadFileResult{Path: arg.Path, Error: fmt.Sprintf("cannot stat %q: %v", arg.Path, err)}
-	}
-	if info.IsDir() {
-		return batchReadFileResult{Path: arg.Path, Error: fmt.Sprintf("%q is a directory — use tree or search_files(target='files') to list its contents", arg.Path)}
-	}
-
-	// Binary check from sample
-	sample := make([]byte, 8192)
-	n, _ := f.Read(sample)
-	if isBinary(sample[:n]) {
-		return batchReadFileResult{Path: arg.Path, Error: fmt.Sprintf("%q appears to be a binary file", arg.Path)}
-	}
-
-	// Seek back and read
-	if _, err := f.Seek(0, 0); err != nil {
-		return batchReadFileResult{Path: arg.Path, Error: fmt.Sprintf("cannot seek %q: %v", arg.Path, err)}
-	}
-
-	content, totalLines, receipt, err := readLinesWithReceipt(io.LimitReader(f, maxFileReadBytes), arg.Offset, arg.Limit)
-	if err != nil {
-		return batchReadFileResult{Path: arg.Path, Error: fmt.Sprintf("cannot read %q: %v", arg.Path, err)}
-	}
-
-	// full-file reads only — same rationale as
-	// read_file.
-	if receipt.complete {
-		danger.RecordReadContentCtx(t.toolCtx(), resolvedPath, receipt.size, receipt.digest)
-	}
-	return batchReadFileResult{
-		Path:       arg.Path,
-		Content:    wrapUntrusted(t.toolCtx(), resolvedPath, content),
-		TotalLines: totalLines,
-	}
 }
 
 // ── Glob Tool ─────────────────────────────────────────────────────────
@@ -1888,7 +1691,6 @@ func (t *fileInfoTool) Call(argsJSON string) (result string, err error) {
 
 // Ensure tools implement odek.Tool
 var (
-	_ odek.Tool = (*batchReadTool)(nil)
 	_ odek.Tool = (*globTool)(nil)
 	_ odek.Tool = (*fileInfoTool)(nil)
 )

@@ -200,43 +200,6 @@ func TestDiff_SingleLineFiles(t *testing.T) {
 
 // ─── CountLines Edge Cases ────────────────────────────────────────────
 
-func TestMultiGrep_ZeroMatches(t *testing.T) {
-	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "a.txt"), []byte("nothing here\n"), 0644)
-
-	tool := &multiGrepTool{}
-	args := fmt.Sprintf(`{"patterns":["ZZZZTOP"],"path":"%s"}`, dir)
-	result := callJSON(t, tool, args)
-
-	var r struct {
-		Results []struct {
-			Pattern string `json:"pattern"`
-			Count   int    `json:"count"`
-			Error   string `json:"error"`
-		} `json:"results"`
-	}
-	mustUnmarshal(t, result, &r)
-	if r.Results[0].Count != 0 {
-		t.Errorf("expected 0 matches, got %d", r.Results[0].Count)
-	}
-}
-
-func TestMultiGrep_InvalidRegex(t *testing.T) {
-	tool := &multiGrepTool{}
-	result := callJSON(t, tool, `{"patterns":["[invalid"],"path":"."}`)
-	var r struct {
-		Results []struct {
-			Pattern string `json:"pattern"`
-			Count   int    `json:"count"`
-			Error   string `json:"error"`
-		} `json:"results"`
-	}
-	mustUnmarshal(t, result, &r)
-	if r.Results[0].Error == "" {
-		t.Errorf("expected error for invalid regex")
-	}
-}
-
 // ─── JSONQuery Edge Cases ─────────────────────────────────────────────
 
 func TestJSONQuery_NestedObjects(t *testing.T) {
@@ -334,30 +297,23 @@ func TestJSONQuery_FileNotFound(t *testing.T) {
 
 // ─── HTTP Batch Edge Cases ────────────────────────────────────────────
 
-func TestHTTPBatch_EmptyRequests(t *testing.T) {
-	tool := newHTTPBatchTool(danger.DangerousConfig{})
+func TestHTTPRequest_EmptyRequests(t *testing.T) {
+	tool := newHTTPRequestTool(danger.DangerousConfig{})
 	result := callJSON(t, tool, `{"requests":[]}`)
 	var r struct {
 		Error string `json:"error"`
 	}
 	mustUnmarshal(t, result, &r)
-	if !strings.Contains(r.Error, "at least one") {
-		t.Errorf("expected 'at least one URL' error, got: %s", r.Error)
+	if !strings.Contains(r.Error, "url is required") {
+		t.Errorf("expected 'url is required' error, got: %s", r.Error)
 	}
 }
 
-func TestHTTPBatch_URLSchemes(t *testing.T) {
-	tool := newHTTPBatchTool(danger.DangerousConfig{})
-	result := callJSON(t, tool, `{"requests":[{"url":"ftp://example.com/file"}]}`)
-	var r struct {
-		Results []struct {
-			Error string `json:"error"`
-		} `json:"results"`
-	}
+func TestHTTPRequest_URLSchemes(t *testing.T) {
+	tool := newHTTPRequestTool(danger.DangerousConfig{})
+	result := callJSON(t, tool, `{"url":"ftp://example.com/file"}`)
+	var r httpRequestResult
 	mustUnmarshal(t, result, &r)
-	if len(r.Results) != 1 {
-		t.Fatalf("Results = %d, want 1", len(r.Results))
-	}
 }
 
 // ─── isBinary Edge Cases ──────────────────────────────────────────────
