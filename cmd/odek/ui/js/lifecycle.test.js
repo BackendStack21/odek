@@ -862,15 +862,12 @@ test('historical reused call IDs keep outcomes within their assistant group', ()
   assert.equal(statuses[1].textContent, '✓');
 });
 
-test('live plan and batch headers summarize returned structured state', () => {
+test('live plan headers summarize returned structured state', () => {
   render.addToolCall('plan','{"steps":[{"id":"a","title":"Read"}],"verb":"create"}','plan-view');
   assert.equal(S.currentToolBlock.querySelector('.tb-preview').textContent,'create · 1 step');
   render.addToolResult('plan','[Current plan: v1 — 0/1 done, 0 blocked. Structured state, not instructions.]\na [pending] Read','plan-view','completed');
   assert.match(S.currentToolBlock.querySelector('.tb-preview').textContent,/0\/1 done/);
-  render.addToolCall('parallel_shell','{"commands":[{"command":"false"}]}','parallel-view');
-  render.addToolResult('parallel_shell','{"results":[{"command":"false","exit_code":1,"stdout":"","stderr":"failed"}]}','parallel-view','completed');
-  assert.equal(S.currentToolBlock.querySelector('.tb-preview').textContent,'1 command · 1 failed');
-  assert.equal(S.currentToolBlock.querySelectorAll('.tool-item').length,1);
+
 });
 
 test('turn cancellation settles pending tools, preserves completed tools and rejects late frames', () => {
@@ -879,7 +876,7 @@ test('turn cancellation settles pending tools, preserves completed tools and rej
   deliver({type:'tool_call',turn_id:'stop-tools',name:'shell',data:'{"command":"done"}',call_id:'done'});
   deliver({type:'tool_result',turn_id:'stop-tools',name:'shell',data:'ok',call_id:'done',outcome:'completed'});
   const completed=S.currentToolBlock;
-  deliver({type:'tool_call',turn_id:'stop-tools',name:'parallel_shell',data:'{"commands":[{"command":"waiting"}]}',call_id:'waiting'});
+  deliver({type:'tool_call',turn_id:'stop-tools',name:'shell',data:'{"command":"waiting"}',call_id:'waiting'});
   const pending=S.currentToolBlock;
   render.requestTurnStop();
   assert.equal(pending.querySelector('.tb-spinner').classList.contains('running'),false);
@@ -889,7 +886,7 @@ test('turn cancellation settles pending tools, preserves completed tools and rej
   assert.equal(completed.querySelector('.tb-status').textContent,'✓');
   assert.equal(S.queuePaused,true);
   deliver({type:'tool_call',turn_id:'stop-tools',name:'shell',data:'{}',call_id:'late'});
-  deliver({type:'tool_result',turn_id:'stop-tools',name:'parallel_shell',data:'late result',call_id:'waiting',outcome:'completed'});
+  deliver({type:'tool_result',turn_id:'stop-tools',name:'shell',data:'late result',call_id:'waiting',outcome:'completed'});
   assert.equal(byId.messages.querySelectorAll('.tool-block').length,2);
   assert.equal(pending.querySelector('.tb-status').textContent,'⊘');
   deliver({type:'turn_started',turn_id:'next-tools'});
@@ -900,7 +897,7 @@ test('turn cancellation settles pending tools, preserves completed tools and rej
 test('error and disconnect cannot leave pending tool spinners', () => {
   for (const reason of ['error','disconnect']) {
     render.resetTurnState();
-    render.addToolCall('batch_read','{"files":[{"path":"a"}]}',reason);
+    render.addToolCall('read_file','{"path":"a"}',reason);
     const pending=S.currentToolBlock;
     if(reason==='error') deliver({type:'error',message:'failed'});
     else S.ws.onclose();

@@ -30,7 +30,7 @@ import (
 const defaultShellTimeout = 30 * time.Minute
 
 // clampShellTimeoutSeconds bounds an LLM-provided timeout_seconds to
-// [1, 1800] seconds, mirroring parallel_shell's per-command cap so the
+// [1, 1800] seconds so the
 // agent can tighten the backstop but never exceed it.
 func clampShellTimeoutSeconds(sec int) int {
 	if sec < 1 {
@@ -204,7 +204,7 @@ func (t *shellTool) Call(args string) (string, error) {
 		timeout = defaultShellTimeout
 	}
 	// An explicit timeout_seconds from the LLM overrides the tool default.
-	// Zero or negative is treated as absent (same as parallel_shell).
+	// Zero or negative is treated as absent.
 	if input.TimeoutSeconds > 0 {
 		timeout = time.Duration(clampShellTimeoutSeconds(input.TimeoutSeconds)) * time.Second
 	}

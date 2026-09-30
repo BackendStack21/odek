@@ -10,8 +10,8 @@ With no `tools` configuration, odek registers **all** built-in tools that its
 environment supports:
 
 - Core tools: `shell`, `delegate_tasks`, `read_file`, `write_file`, `search_files`,
-  `patch`, `batch_read`, `batch_patch`, `glob`, `file_info`, `parallel_shell`,
-  `http_batch`, `math_eval`, `diff`, `multi_grep`, `json_query`,
+  `patch`, `glob`, `file_info`,
+  `http_request`, `math_eval`, `diff`, `json_query`,
   `tree`, `checksum`, `head_tail`, `base64`
 - Planning: `plan` (present when planning is enabled — on by default; `--no-planning` / `planning.enabled: false` removes it)
 - Media tools: `transcribe`, `vision`
@@ -34,6 +34,11 @@ environment supports:
 
 Nothing is hidden by default. You opt out with `disabled`, or opt in with
 `enabled`.
+
+Independent native calls use the loop's `max_tool_parallel` limit (default 4).
+Conflicting file operations and shell calls stay ordered. See
+[batch tool migration](MIGRATION.md#batch-execution-tool-retirement) for removed
+tools, replacement inputs, and filter migration.
 
 ## Configuration
 
@@ -136,7 +141,6 @@ Because `--tool` sets a whitelist, only those four tools are registered.
       "web_search",
       "read_file",
       "session_search",
-      "multi_grep",
       "search_files"
     ]
   }
@@ -152,7 +156,7 @@ spawn sub-agents.
 {
   "tools": {
     "disabled": [
-      "write_file", "patch", "batch_patch", "delegate_tasks",
+      "write_file", "patch", "delegate_tasks",
       "browser", "web_search"
     ]
   }
@@ -209,11 +213,11 @@ Use these exact names in config, env vars, and CLI flags:
 
 | Category | Names |
 |---|---|
-| Shell / execution | `shell`, `parallel_shell` |
+| Shell / execution | `shell` |
 | Delegation | `delegate_tasks` |
-| Files | `read_file`, `write_file`, `patch`, `batch_read`, `batch_patch`, `glob`, `file_info` |
-| Search | `search_files`, `multi_grep`, `session_search` |
-| Data / transform | `math_eval`, `diff`, `json_query`, `tree`, `checksum`, `head_tail`, `base64`, `http_batch` |
+| Files | `read_file`, `write_file`, `patch`, `glob`, `file_info` |
+| Search | `search_files`, `session_search` |
+| Data / transform | `math_eval`, `diff`, `json_query`, `tree`, `checksum`, `head_tail`, `base64`, `http_request` |
 | Planning | `plan` (when planning is enabled — on by default) |
 | Media | `transcribe`, `vision` |
 | Network | `browser`, `web_search` |

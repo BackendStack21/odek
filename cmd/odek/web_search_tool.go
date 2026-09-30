@@ -66,7 +66,7 @@ func newWebSearchTool(dc danger.DangerousConfig, cfg config.WebSearchConfig) *we
 // checkRedirect re-classifies every redirect hop. The configured base_url is
 // trusted, but a compromised, buggy, or misconfigured SearXNG could 3xx the
 // client toward an internal/metadata endpoint (SSRF). Re-classifying each hop —
-// the same guard browser/http_batch install — closes that. Installing
+// the same guard browser/http_request install — closes that. Installing
 // CheckRedirect disables Go's implicit 10-hop cap, so we re-impose it.
 func (t *webSearchTool) checkRedirect(req *http.Request, via []*http.Request) error {
 	if len(via) >= 10 {
@@ -84,7 +84,7 @@ func (t *webSearchTool) checkRedirect(req *http.Request, via []*http.Request) er
 func (t *webSearchTool) Name() string { return "web_search" }
 
 func (t *webSearchTool) Description() string {
-	return `Search the web via a self-hosted SearXNG metasearch instance. Returns ranked results (title, url, snippet, engine) plus any direct answers. Use this to find pages, then fetch the most relevant URLs with the browser (http_batch returns response metadata only, not page content). Results come from external search engines and are treated as untrusted content.`
+	return `Search the web via a self-hosted SearXNG metasearch instance. Returns ranked results (title, url, snippet, engine) plus any direct answers. Use this to find pages, then fetch the most relevant URLs with the browser (http_request returns response metadata only, not page content). Results come from external search engines and are treated as untrusted content.`
 }
 
 type webSearchArgs struct {
@@ -169,7 +169,7 @@ func (t *webSearchTool) Call(argsJSON string) (result string, err error) {
 
 	// Security: a web search ultimately fans out to external search engines and
 	// leaks the query terms beyond the trust boundary, so gate it as network
-	// egress — consistent with the browser/http_batch tools. The backend URL is
+	// egress — consistent with the browser/http_request tools. The backend URL is
 	// fixed config (not agent-controlled), so there is no SSRF surface here.
 	if err := t.dangerousConfig.CheckOperation(danger.ToolOperation{
 		Name: "web_search", Resource: query, Risk: danger.NetworkEgress,

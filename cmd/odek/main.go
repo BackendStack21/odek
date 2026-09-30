@@ -108,7 +108,7 @@ Think of the best Chief of Staff a founder could have, fused with a Principal-gr
 · TDD for production/repo code: failing test first, make it pass, then ship. Throwaway scripts and ops one-liners don't need ceremony tests — just verify they ran.
 · Run tests with -race and -count=1 where applicable, other languages: follow project test conventions. Verify after every change; never claim a success you didn't observe.
 · Keep docs (README) in sync with code in the same commit.
-· Use batch tools for 3+ items: batch_read, parallel_shell, multi_grep, batch_patch.
+· Emit separate tool calls for independent operations in the same response; the runtime schedules them with max_tool_parallel. Dependent edits that must stop on failure belong in successive responses. Shell calls remain conservatively ordered.
 · The skills catalog lists names and one-line descriptions for promoted skills; skills that need review are named only. Load a body with skill_load when you need the instructions.
 · For complex work (3+ file changes): decompose with delegate_tasks — each sub-agent gets a focused goal + context — then synthesize the results. Sub-agents follow the same identity and rules.
 
@@ -129,7 +129,7 @@ Think of the best Chief of Staff a founder could have, fused with a Principal-gr
 · "write_file" NOT "echo", "tee", "cat heredoc"
 · "patch" NOT "sed", "awk"
 
-The perf tools (batch_read, batch_patch, parallel_shell, http_batch, math_eval, diff, multi_grep, json_query, tree, checksum, head_tail, base64) are pure-Go, zero-subprocess implementations of their shell equivalents — prefer them over shell for file inspection and transformation; they run without forks, approval friction, or output-pipeline risk.
+The native tools (math_eval, diff, json_query, tree, checksum, head_tail, base64) provide focused operations without shell subprocesses. Prefer native file tools for inspection and edits. Use http_request for one URL status check and browser for page content. Each tool call consumes one tool-call budget unit.
 
 One wrong name wastes an entire iteration. Be precise.
 
@@ -2269,8 +2269,7 @@ func deliverToTelegram(text string, resolved config.ResolvedConfig) error {
 //
 // The container-lifecycle logic (image resolution, "docker run" argument
 // construction) lives in internal/sandbox. This wrapper exists in cmd/odek
-// because it mutates package-local tool types (*shellTool /
-// *parallelShellTool) — that wiring cannot move out without leaking
+// because it mutates package-local tool types (such as *shellTool) — that wiring cannot move out without leaking
 // agent-tool internals into the sandbox package.
 //
 // The returned cleanup function destroys the container; always invoke it
@@ -2383,27 +2382,19 @@ func applySandboxToolBindings(tools []odek.Tool, containerName string) {
 		switch tool := t.(type) {
 		case *shellTool:
 			tool.containerName = containerName
-		case *parallelShellTool:
-			tool.containerName = containerName
 		case *writeFileTool:
 			tool.containerName = containerName
 		case *patchTool:
 			tool.containerName = containerName
-		case *batchPatchTool:
-			tool.containerName = containerName
 		case *readFileTool:
 			tool.restrictToCWD = true
 		case *searchFilesTool:
-			tool.restrictToCWD = true
-		case *batchReadTool:
 			tool.restrictToCWD = true
 		case *globTool:
 			tool.restrictToCWD = true
 		case *fileInfoTool:
 			tool.restrictToCWD = true
 		case *diffTool:
-			tool.restrictToCWD = true
-		case *multiGrepTool:
 			tool.restrictToCWD = true
 		case *jsonQueryTool:
 			tool.restrictToCWD = true
@@ -2429,21 +2420,15 @@ func toolRestrictsToCWD(t odek.Tool) bool {
 		return tool.restrictToCWD
 	case *searchFilesTool:
 		return tool.restrictToCWD
-	case *batchReadTool:
-		return tool.restrictToCWD
 	case *globTool:
 		return tool.restrictToCWD
 	case *fileInfoTool:
-		return tool.restrictToCWD
-	case *batchPatchTool:
 		return tool.restrictToCWD
 	case *writeFileTool:
 		return tool.restrictToCWD
 	case *patchTool:
 		return tool.restrictToCWD
 	case *diffTool:
-		return tool.restrictToCWD
-	case *multiGrepTool:
 		return tool.restrictToCWD
 	case *jsonQueryTool:
 		return tool.restrictToCWD
@@ -2630,15 +2615,11 @@ func builtinTools(dc danger.DangerousConfig, sm *skills.SkillManager, approver d
 		&writeFileTool{dangerousConfig: dc, restrictToCWD: true},
 		&searchFilesTool{dangerousConfig: dc},
 		&patchTool{dangerousConfig: dc, restrictToCWD: true},
-		&batchReadTool{dangerousConfig: dc},
 		&globTool{dangerousConfig: dc},
 		&fileInfoTool{dangerousConfig: dc, restrictToCWD: true},
-		&batchPatchTool{dangerousConfig: dc, restrictToCWD: true},
-		&parallelShellTool{dangerousConfig: dc, approver: approver},
-		newHTTPBatchTool(dc),
+		newHTTPRequestTool(dc),
 		&mathEvalTool{},
 		&diffTool{dangerousConfig: dc},
-		&multiGrepTool{dangerousConfig: dc},
 		&jsonQueryTool{dangerousConfig: dc},
 		&treeTool{dangerousConfig: dc},
 		&checksumTool{dangerousConfig: dc},

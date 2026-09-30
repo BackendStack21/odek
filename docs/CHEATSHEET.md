@@ -151,7 +151,7 @@ Settings: `auto_describe` (Telegram photo → description before the agent answe
 ### Web Search
 - **`web_search`** tool queries a self-hosted **SearXNG** metasearch instance — no cloud search API, no keys
 - Returns ranked results (title, url, snippet, engine) + direct answers; results are wrapped as untrusted content
-- The agent then fetches the URLs it wants with `browser` / `http_batch`
+- The agent then fetches page content with `browser`; `http_request` checks status and size only
 - **Registered only when `web_search.base_url` is set.** The Docker compose setup runs a SearXNG sidecar and sets it automatically; outside Docker, run SearXNG yourself and point `base_url` at it
 - Gated as `network_egress` (prompts in restricted, allowed in godmode) — the backend URL is fixed config, so there is no SSRF surface
 - Configure via `web_search` section:
@@ -375,11 +375,9 @@ odek mcp --sandbox
 | `read_file` | Read with line numbers, offset/limit pagination |
 | `write_file` | Atomic temp+rename write, path confinement |
 | `patch` | Find-and-replace with unified diff output |
-| `batch_read` | Read N files in parallel, one call |
-| `batch_patch` | Apply N edits atomically across files |
 | `glob` | Find files by glob pattern |
 | `file_info` | Stat metadata (size, mod_time, mode, type) |
-| `head_tail` | First/last N lines, streaming, parallel |
+| `head_tail` | First/last N lines of one file; bounded scan reports total lines |
 | `search_files` | Regex content search or glob file find; sensitive discovered paths are returned in `skipped` |
 
 ### Data Processing (in-process, no shell fork)
@@ -389,27 +387,25 @@ odek mcp --sandbox
 | `diff` | LCS structured line diff |
 | `json_query` | Dot-path query with array indexing (`users[0].name`) |
 | `base64` | Encode files/strings, decode base64 |
-| `checksum` | SHA-256, SHA-1, MD5 hashing |
+| `checksum` | SHA-256, SHA-1, MD5 hashing of one file |
 | `tree` | Structured directory tree listing |
 
 > **Size limits:** file inputs for `head_tail`, `diff`, `json_query`,
-> `base64`, `checksum`, and `batch_patch` are
+> `base64`, and `checksum` are
 > capped at 10 MiB. Inline `string`/`content` arguments for `base64` are
 > also capped at 10 MiB to prevent prompt-injected multi-hundred-megabyte
 > payloads from OOMing the process.
 
-### Multi-Pattern (parallel goroutine search)
+### Search
 | Tool | Description |
 |------|-------------|
-| `multi_grep` | Search N regex patterns in parallel; sensitive discovered paths are returned in `skipped` |
 | `search_files` | Single-pattern content/file search |
 
 ### Execution (shell replacement)
 | Tool | Description |
 |------|-------------|
 | `shell` | Single command, danger-classified |
-| `parallel_shell` | N commands, true parallel, per-cmd timeout (capped at 30m), process-group kill on cancel |
-| `http_batch` | N URLs parallel fetch (no HTML parse) |
+| `http_request` | One URL status/size check; response body discarded |
 | `browser` | HTTP fetch + regex HTML extraction; link URLs wrapped as untrusted |
 
 ### Agent Infrastructure

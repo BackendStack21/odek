@@ -2,8 +2,8 @@ package main
 
 // RED-first tests for the bughunt-v3 perf/file tool fixes:
 //  1. base64 decode unwrapped output
-//  2. search/multi_grep silently skipping unopenable files (fd pressure)
-//  3. unwrapped FS-derived match paths (glob, searchFiles, multiGrep)
+//  2. search silently skipping unopenable files (fd pressure)
+//  3. unwrapped FS-derived match paths (glob, searchFiles)
 
 import (
 	"fmt"
@@ -71,48 +71,6 @@ func TestSearchFiles_ReportsUnopenableFile(t *testing.T) {
 	}
 }
 
-// 3b. multi_grep: same silent-skip fix.
-func TestMultiGrep_ReportsUnopenableFile(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("permission-based test unreliable as root")
-	}
-	dir := t.TempDir()
-	good := filepath.Join(dir, "good.txt")
-	os.WriteFile(good, []byte("needle here\n"), 0644)
-	bad := filepath.Join(dir, "bad.txt")
-	os.WriteFile(bad, []byte("needle secret\n"), 0644)
-	if err := os.Chmod(bad, 0000); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.Chmod(bad, 0644) })
-
-	tool := &multiGrepTool{}
-	args := fmt.Sprintf(`{"patterns":["needle"],"path":%q}`, dir)
-	result := callJSON(t, tool, args)
-	var r struct {
-		Results []struct {
-			Pattern string `json:"pattern"`
-			Matches []struct {
-				Path string `json:"path"`
-			} `json:"matches"`
-			Skipped []string `json:"skipped"`
-		} `json:"results"`
-	}
-	mustUnmarshal(t, result, &r)
-	if len(r.Results) != 1 {
-		t.Fatalf("expected 1 result, got %d", len(r.Results))
-	}
-	found := false
-	for _, s := range r.Results[0].Skipped {
-		if strings.Contains(s, "bad.txt") {
-			found = true
-		}
-	}
-	if !found {
-		t.Errorf("expected bad.txt in skipped list, got %v", r.Results[0].Skipped)
-	}
-}
-
 // 4. FS-derived match paths must be wrapped like sibling outputs.
 func TestGlob_WrapsMatchPaths(t *testing.T) {
 	dir := t.TempDir()
@@ -153,28 +111,5 @@ func TestSearchFiles_GrepWrapsMatchPath(t *testing.T) {
 	}
 	if !strings.HasPrefix(r.Matches[0].Path, "<untrusted_content_") {
 		t.Errorf("search_files match path should be wrapped, got %q", r.Matches[0].Path)
-	}
-}
-
-func TestMultiGrep_WrapsMatchPath(t *testing.T) {
-	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "a.txt"), []byte("needle\n"), 0644)
-
-	tool := &multiGrepTool{}
-	args := fmt.Sprintf(`{"patterns":["needle"],"path":%q}`, dir)
-	result := callJSON(t, tool, args)
-	var r struct {
-		Results []struct {
-			Matches []struct {
-				Path string `json:"path"`
-			} `json:"matches"`
-		} `json:"results"`
-	}
-	mustUnmarshal(t, result, &r)
-	if len(r.Results) != 1 || len(r.Results[0].Matches) == 0 {
-		t.Fatal("expected 1 match")
-	}
-	if !strings.HasPrefix(r.Results[0].Matches[0].Path, "<untrusted_content_") {
-		t.Errorf("multi_grep match path should be wrapped, got %q", r.Results[0].Matches[0].Path)
 	}
 }

@@ -94,7 +94,7 @@ func TestDirectoryInputs_ConsistentErrors(t *testing.T) {
 			Error string `json:"error"`
 		} `json:"results"`
 	}
-	mustUnmarshal(t, callJSON(t, &headTailTool{}, `{"files":[{"path":"`+dir+`"}]}`), &ht)
+	mustUnmarshal(t, callJSON(t, &headTailTool{}, `{"path":"`+dir+`"}`), &ht)
 	if len(ht.Results) != 1 || !strings.Contains(ht.Results[0].Error, "is a directory") {
 		t.Errorf("head_tail(dir) error = %+v, want a clear is-a-directory error", ht.Results)
 	}

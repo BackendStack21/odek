@@ -977,19 +977,17 @@ Live, historical and Results inspector views use the same presentation models.
 | Tools | Structured presentation |
 | --- | --- |
 | `plan` | Version/progress summary and step states: pending, in progress, done, blocked. Requested changes remain distinct from returned state. |
-| `parallel_shell` | Expandable commands with individual exit codes, duration, stdout, stderr and errors; partial failure counts in the collapsed header. |
-| `batch_read` | Separate file contents, total lines and per-file errors. |
-| `batch_patch` | Separate edit outcomes and expandable diffs/errors. |
 | `read_file`, `write_file`, `patch`, `diff` | Content extracted from the actual tool DTO, write outcomes, and unified/split diff rendering. |
-| `http_batch` | Individual request statuses and errors. |
-| `search_files`, `multi_grep` | File matches and per-pattern result groups with counts/skipped paths. |
+| `search_files` | File matches with counts/skipped paths. |
 | `checksum`, `head_tail` | Per-file detail groups. |
-| Other `batch_*` tools | Generic per-item inspection when the tool returns a `results` array, without inventing success status. |
 
 Nested result bodies are built only when opened. Inline collections initially
 show three items; additional items are paged. Search includes child output.
 Raw, copy and save retain the complete received payload. Malformed or truncated
 JSON falls back to text rather than presenting requested work as completed.
-A successful tool callback is distinct from the individual outcomes within a
-batch, which are displayed explicitly. Go test failure lines remain terminal
+Tool callback outcomes are displayed explicitly. Go test failure lines remain terminal
 output and are not mistaken for diff headers.
+
+Retired batch execution tools have no specialized views, including in historical
+sessions. Their output uses the generic raw/JSON fallback; see
+[the migration guide](MIGRATION.md#batch-execution-tool-retirement).

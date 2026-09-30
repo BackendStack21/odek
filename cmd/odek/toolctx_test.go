@@ -41,28 +41,21 @@ func TestCtxTool_ConcurrentSetContext(t *testing.T) {
 	wg.Wait()
 }
 
-// TestHTTPBatch_ContextCancelled verifies the propagated context aborts the
+// TestHTTPRequest_ContextCancelled verifies the propagated context aborts the
 // fetch: a cancelled context yields an error entry instead of a real request.
-func TestHTTPBatch_ContextCancelled(t *testing.T) {
-	tool := newHTTPBatchTool(allowAllDanger())
+func TestHTTPRequest_ContextCancelled(t *testing.T) {
+	tool := newHTTPRequestTool(allowAllDanger())
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // already cancelled
 	tool.SetContext(ctx)
 
-	result := callJSON(t, tool, `{"requests":[{"url":"http://example.com/"}]}`)
-	var r struct {
-		Results []struct {
-			Error string `json:"error"`
-		} `json:"results"`
-	}
+	result := callJSON(t, tool, `{"url":"http://example.com/"}`)
+	var r httpRequestResult
 	mustUnmarshal(t, result, &r)
-	if len(r.Results) != 1 {
-		t.Fatalf("Results = %d, want 1", len(r.Results))
-	}
-	if r.Results[0].Error == "" {
+	if r.Error == "" {
 		t.Fatal("expected an error from the cancelled context")
 	}
-	if !strings.Contains(r.Results[0].Error, "context canceled") {
-		t.Errorf("error should reflect cancellation, got: %s", r.Results[0].Error)
+	if !strings.Contains(r.Error, "context canceled") {
+		t.Errorf("error should reflect cancellation, got: %s", r.Error)
 	}
 }

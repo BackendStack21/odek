@@ -821,7 +821,7 @@ The top-level `profiles` section defines named permission envelopes. When a task
     "research": {
       "description": "Read-only web research — fetches pages, never edits or runs anything",
       "max_risk": "safe",
-      "tools": { "disabled": ["write_file", "patch", "batch_patch", "shell"] }
+      "tools": { "disabled": ["write_file", "patch", "shell"] }
     },
     "builder": {
       "description": "Write and verify code changes with project build/test commands allowlisted",
@@ -1278,7 +1278,7 @@ The progress system is an evolving single message that gets edited in-place (sim
 Key behaviors:
 - **Smart previews** — instead of showing raw JSON args, the system extracts meaningful context: filename for file tools, the command text for shell, URL for browser, query text for memory/search tools, audio filename for transcribe, file path for vision, query for web_search
 - **Edit throttling** — edits are rate-limited to one every 1.5 seconds to avoid hitting Telegram's flood control limits. Rapid tool chains don't produce 429 errors
-- **Tool dedup** — when the same tool runs consecutively (common with parallel batch tools like `batch_read`), identical lines are collapsed into a `(×N)` counter instead of repeating N times
+- **Tool dedup** — when the same tool runs consecutively (common with repeated native tool calls), identical lines are collapsed into a `(×N)` counter instead of repeating N times
 - **Flood control fallback** — if an edit message fails with "flood" or "retry after", the system automatically switches to sending new messages instead of editing. This prevents the bot from becoming unresponsive under heavy load
 - **Content reset** — when the agent calls `send_message` mid-run to send an interim message, the progress bubble resets below that content, keeping the chat timeline in correct order
 
@@ -1416,7 +1416,7 @@ Deliberately **not** set, because the defaults are the recommendation:
 ```json
 {
   "max_iterations": 30,
-  "tools": { "disabled": ["browser", "http_batch"] }
+  "tools": { "disabled": ["browser", "http_request"] }
 }
 ```
 

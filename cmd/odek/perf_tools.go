@@ -2,7 +2,6 @@ package main
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"crypto/md5"
 	"crypto/sha1"
@@ -17,17 +16,12 @@ import (
 	"hash"
 	"io"
 	"math"
-	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"syscall"
-	"time"
 
 	"github.com/BackendStack21/odek"
 	"github.com/BackendStack21/odek/internal/danger"
@@ -75,805 +69,7 @@ func readFileNoFollow(path string) ([]byte, error) {
 }
 
 // ═════════════════════════════════════════════════════════════════════════
-// 1. batch_patch — Apply multiple find-replace edits in one call
-// ═════════════════════════════════════════════════════════════════════════
-
-const maxBatchPatches = 10
-
-type batchPatchTool struct {
-	ctxTool
-	dangerousConfig danger.DangerousConfig
-	trustedClasses  map[danger.RiskClass]bool // cached user-approved risk classes
-	restrictToCWD   bool                      // when true, reject paths escaping the working directory
-	// containerName, when set, routes writes through the sandbox container so
-	// that read-only workspace mounts are enforced.
-	containerName string
-}
-
-func (t *batchPatchTool) Name() string { return "batch_patch" }
-func (t *batchPatchTool) Description() string {
-	return `Apply up to 10 find-replace edits in one call — across one or more files, including several edits to the same file; prefer this over N sequential patch calls whenever you have more than one edit. Edits are applied sequentially — this is NOT one atomic transaction: at the first failing edit the remaining edits are skipped (early-stop) and the edits already applied are kept. Each individual edit uses O_NOFOLLOW read + atomic temp+rename write, same as the patch tool.`
-}
-
-type batchPatchArg struct {
-	Path       string `json:"path"`
-	OldString  string `json:"old_string"`
-	NewString  string `json:"new_string"`
-	ReplaceAll bool   `json:"replace_all,omitempty"`
-}
-
-type batchPatchEntry struct {
-	Path    string `json:"path"`
-	Success bool   `json:"success"`
-	Diff    string `json:"diff,omitempty"`
-	Error   string `json:"error,omitempty"`
-}
-
-type batchPatchArgs struct {
-	Patches []batchPatchArg `json:"patches"`
-}
-
-type batchPatchResult struct {
-	Results []batchPatchEntry `json:"results"`
-}
-
-func (t *batchPatchTool) Schema() any {
-	return map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"patches": map[string]any{
-				"type":        "array",
-				"description": "Edits to apply (max 10). Each: {path, old_string, new_string, replace_all?}.",
-				"minItems":    1,
-				"maxItems":    maxBatchPatches,
-				"items": map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"path":        map[string]any{"type": "string", "description": "File path."},
-						"old_string":  map[string]any{"type": "string", "description": "Text to find."},
-						"new_string":  map[string]any{"type": "string", "description": "Replacement (empty = delete)."},
-						"replace_all": map[string]any{"type": "boolean", "description": "Replace all occurrences (default: false)."},
-					},
-					"required": []string{"path", "old_string"},
-				},
-			},
-		},
-		"required": []string{"patches"},
-	}
-}
-
-func (t *batchPatchTool) Call(argsJSON string) (result string, err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			err = fmt.Errorf("batch_patch: panic: %v", r)
-			result = `{"error":"internal tool error"}`
-		}
-	}()
-	var args batchPatchArgs
-	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
-		return jsonError("invalid arguments: " + err.Error())
-	}
-	if len(args.Patches) == 0 {
-		return jsonError("at least one patch is required")
-	}
-	if len(args.Patches) > maxBatchPatches {
-		return jsonError(fmt.Sprintf("max %d patches per call", maxBatchPatches))
-	}
-
-	results := make([]batchPatchEntry, len(args.Patches))
-
-	for idx, p := range args.Patches {
-		entry := batchPatchEntry{Path: p.Path}
-		// Early-stop contract (AGENTS.md, tool description): the first
-		// failing edit stops the batch — later edits are skipped, not
-		// attempted, so the model never re-applies against a stale plan.
-		if idx > 0 && results[idx-1].Error != "" {
-			entry.Error = "skipped: an earlier patch failed (early-stop)"
-			results[idx] = entry
-			continue
-		}
-		if p.OldString == "" {
-			entry.Error = "old_string is required"
-			results[idx] = entry
-			continue
-		}
-
-		// Path confinement: same as write_file/patch — reject paths that
-		// escape the working directory.
-		if t.restrictToCWD {
-			resolved, err := confineToCWD(p.Path)
-			if err != nil {
-				entry.Error = err.Error()
-				results[idx] = entry
-				continue
-			}
-			p.Path = resolved
-			entry.Path = resolved
-		}
-
-		// Resolve directory symlinks so the classifier — and the write
-		// itself — target the real location, same as write_file/patch.
-		resolved, err := resolveWritePath(p.Path)
-		if err != nil {
-			entry.Error = err.Error()
-			results[idx] = entry
-			continue
-		}
-		p.Path = resolved
-		entry.Path = resolved
-
-		patchRisk := danger.ClassifyPathWrite(p.Path)
-		if escalated, isHook := danger.LifecycleContentClass(p.Path, p.NewString, patchRisk); isHook {
-			patchRisk = escalated
-		}
-		if err := t.dangerousConfig.CheckOperation(danger.ToolOperation{
-			Name: "batch_patch", Resource: p.Path, Risk: patchRisk,
-		}, t.trustedClasses); err != nil {
-			entry.Error = err.Error()
-			results[idx] = entry
-			continue
-		}
-
-		f, err := os.OpenFile(p.Path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
-		if err != nil {
-			entry.Error = fmt.Sprintf("cannot open %q: %v", p.Path, err)
-			results[idx] = entry
-			continue
-		}
-
-		info, err := f.Stat()
-		if err != nil {
-			f.Close()
-			entry.Error = fmt.Sprintf("cannot stat %q: %v", p.Path, err)
-			results[idx] = entry
-			continue
-		}
-		if info.Size() > maxFileReadBytes {
-			f.Close()
-			entry.Error = fmt.Sprintf("file too large (%d bytes, max %d)", info.Size(), maxFileReadBytes)
-			results[idx] = entry
-			continue
-		}
-
-		originalBytes, err := readCapped(f, maxFileReadBytes)
-		f.Close()
-		if err != nil {
-			entry.Error = fmt.Sprintf("cannot read %q: %v", p.Path, err)
-			results[idx] = entry
-			continue
-		}
-		original := string(originalBytes)
-
-		if !strings.Contains(original, p.OldString) {
-			entry.Error = fmt.Sprintf("old_string not found in %q", p.Path)
-			results[idx] = entry
-			continue
-		}
-		if !p.ReplaceAll {
-			if n := strings.Count(original, p.OldString); n > 1 {
-				entry.Error = fmt.Sprintf("old_string is not unique in %q (%d occurrences); set replace_all=true or use a larger unique snippet", p.Path, n)
-				results[idx] = entry
-				continue
-			}
-		}
-
-		var modified string
-		if p.ReplaceAll {
-			modified = strings.ReplaceAll(original, p.OldString, p.NewString)
-		} else {
-			modified = strings.Replace(original, p.OldString, p.NewString, 1)
-		}
-		if len(modified) > maxFileReadBytes {
-			entry.Error = fmt.Sprintf("patch result too large (%d bytes, max %d)", len(modified), maxFileReadBytes)
-			results[idx] = entry
-			continue
-		}
-
-		diff := patchPreviewDiff(p.Path, original, modified, p.OldString, p.NewString)
-
-		// Preserve the original file's mode.
-		origMode := os.FileMode(0644)
-		if st, err := os.Stat(p.Path); err == nil {
-			origMode = st.Mode().Perm()
-		}
-
-		// When sandbox mode is active, route the write through the container so
-		// a read-only workspace mount is actually enforced.
-		if t.containerName != "" {
-			if err := sandboxWriteFile(t.containerName, p.Path, []byte(modified), origMode); err != nil {
-				entry.Error = fmt.Sprintf("cannot write %q via sandbox: %v", p.Path, err)
-				results[idx] = entry
-				continue
-			}
-			entry.Success = true
-			entry.Diff = wrapUntrusted(t.toolCtx(), "batch_patch:"+p.Path, diff)
-			// Patches expose changed fragments only; require a complete read before execution.
-			results[idx] = entry
-			continue
-		}
-
-		// Atomic write — preserve the original file's mode and surface any
-		// write error so a short or failed write cannot silently corrupt
-		// the target.
-		dir := filepath.Dir(p.Path)
-		tmpFile, err := os.CreateTemp(dir, ".tmp_batchpatch_*")
-		if err != nil {
-			entry.Error = fmt.Sprintf("cannot create temp file: %v", err)
-			results[idx] = entry
-			continue
-		}
-		tmpPath := tmpFile.Name()
-		if _, werr := tmpFile.Write([]byte(modified)); werr != nil {
-			tmpFile.Close()
-			os.Remove(tmpPath)
-			entry.Error = fmt.Sprintf("cannot write temp for %q: %v", p.Path, werr)
-			results[idx] = entry
-			continue
-		}
-		if cerr := tmpFile.Chmod(origMode); cerr != nil {
-			tmpFile.Close()
-			os.Remove(tmpPath)
-			entry.Error = fmt.Sprintf("cannot set mode on temp for %q: %v", p.Path, cerr)
-			results[idx] = entry
-			continue
-		}
-		if cerr := tmpFile.Close(); cerr != nil {
-			os.Remove(tmpPath)
-			entry.Error = fmt.Sprintf("cannot close temp for %q: %v", p.Path, cerr)
-			results[idx] = entry
-			continue
-		}
-
-		if err := os.Rename(tmpPath, p.Path); err != nil {
-			os.Remove(tmpPath)
-			entry.Error = fmt.Sprintf("cannot write %q: %v", p.Path, err)
-			results[idx] = entry
-			continue
-		}
-
-		entry.Success = true
-		entry.Diff = wrapUntrusted(t.toolCtx(), "batch_patch:"+p.Path, diff)
-		// Patches expose changed fragments only; require a complete read before execution.
-		results[idx] = entry
-	}
-
-	return jsonResult(batchPatchResult{Results: results})
-}
-
-// truncatePreviewLine shortens one side of a batch_patch preview line to max
-// bytes, backing off to a UTF-8 rune boundary so multibyte content never
-// renders as U+FFFD mojibake in the diff.
-// patchPreviewDiff renders a truthful unified-diff preview of a batch_patch
-// edit: the hunk covers the region around the actual old_string match, so the
-// -/+ lines show the real change even when the match sits far past the file
-// head (a fixed first-N-bytes window renders identical lines for both sides).
-func patchPreviewDiff(path, original, modified, oldString, newString string) string {
-	header := fmt.Sprintf("--- a/%s\n+++ b/%s\n", path, path)
-	const ctxBytes = 30 // context bytes kept on each side of the match
-	offset := strings.Index(original, oldString)
-	if offset < 0 {
-		// Match not found (e.g. preview computed before the check): fall
-		// back to a head preview of both versions.
-		return header + fmt.Sprintf("@@ -1 +1 @@\n-%s\n+%s\n",
-			truncatePreviewLine(original, 100), truncatePreviewLine(modified, 100))
-	}
-	newOffset := strings.Index(modified, newString)
-	if newOffset < 0 {
-		newOffset = offset
-	}
-	start := offset - ctxBytes
-	if start < 0 {
-		start = 0
-	}
-	end := offset + len(oldString) + ctxBytes
-	if end > len(original) {
-		end = len(original)
-	}
-	newStart := newOffset - ctxBytes
-	if newStart < 0 {
-		newStart = 0
-	}
-	newEnd := newOffset + len(newString) + ctxBytes
-	if newEnd > len(modified) {
-		newEnd = len(modified)
-	}
-	startLine := 1 + strings.Count(original[:start], "\n")
-	newStartLine := 1 + strings.Count(modified[:newStart], "\n")
-	var b strings.Builder
-	fmt.Fprintf(&b, "@@ -%d,%d +%d,%d @@\n", startLine, end-start, newStartLine, newEnd-newStart)
-	for _, ln := range strings.SplitAfter(original[start:end], "\n") {
-		if ln == "" {
-			continue
-		}
-		fmt.Fprintf(&b, "-%s\n", strings.TrimSuffix(ln, "\n"))
-	}
-	for _, ln := range strings.SplitAfter(modified[newStart:newEnd], "\n") {
-		if ln == "" {
-			continue
-		}
-		fmt.Fprintf(&b, "+%s\n", strings.TrimSuffix(ln, "\n"))
-	}
-	return header + b.String()
-}
-
-func truncatePreviewLine(s string, max int) string {
-	if len(s) <= max {
-		return s
-	}
-	cut := truncateUTF8Safe(s, max)
-	if cut == "" {
-		return "…"
-	}
-	return cut + "…"
-}
-
-// ═════════════════════════════════════════════════════════════════════════
-// 2. parallel_shell — Run N shell commands concurrently
-// ═════════════════════════════════════════════════════════════════════════
-
-const maxParallelShellCmds = 8
-
-type parallelShellTool struct {
-	ctxTool
-	dangerousConfig danger.DangerousConfig
-	approver        danger.Approver
-	// containerName, when set, routes every command through "docker exec"
-	// so sandbox isolation is preserved — same as shellTool.
-	containerName string
-
-	// ttyPath is the path to the terminal device for approval prompts.
-	// Overridden in tests to mock user input. Only used when approver is nil.
-	ttyPath string
-
-	// trustedClasses caches user-approved risk classes for this process.
-	// Set when user presses T (trust this session) at the prompt.
-	trustedClasses map[danger.RiskClass]bool
-	trustedMu      sync.Mutex
-}
-
-func (t *parallelShellTool) Name() string { return "parallel_shell" }
-func (t *parallelShellTool) Description() string {
-	return `Run multiple independent shell commands in parallel. Each command gets its own process. Returns structured results with stdout, stderr, exit_code, and duration for each command. Commands requiring approval are checked before execution.`
-}
-
-type parallelShellCmd struct {
-	Command      string `json:"command"`
-	Description  string `json:"description,omitempty"`
-	Timeout      int    `json:"timeout,omitempty"`
-	approvedRisk danger.RiskClass
-}
-
-type parallelShellEntry struct {
-	Index      int    `json:"index"`
-	Command    string `json:"command"`
-	Stdout     string `json:"stdout"`
-	Stderr     string `json:"stderr"`
-	ExitCode   int    `json:"exit_code"`
-	DurationMs int64  `json:"duration_ms"`
-	Error      string `json:"error,omitempty"`
-}
-
-type parallelShellArgs struct {
-	Commands []parallelShellCmd `json:"commands"`
-}
-
-type parallelShellResult struct {
-	Results []parallelShellEntry `json:"results"`
-}
-
-func (t *parallelShellTool) Schema() any {
-	return map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"commands": map[string]any{
-				"type":        "array",
-				"description": "Commands to run in parallel (max 8). Each: {command, description?, timeout?}.",
-				"minItems":    1,
-				"maxItems":    maxParallelShellCmds,
-				"items": map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"command":     map[string]any{"type": "string", "description": "Shell command to execute."},
-						"description": map[string]any{"type": "string", "description": "Explain what this command does (shown in approval)."},
-						"timeout":     map[string]any{"type": "integer", "description": "Per-command timeout in seconds (default: 30)."},
-					},
-					"required": []string{"command"},
-				},
-			},
-		},
-		"required": []string{"commands"},
-	}
-}
-
-func (t *parallelShellTool) Call(argsJSON string) (result string, err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			err = fmt.Errorf("parallel_shell: panic: %v", r)
-			result = `{"error":"internal tool error"}`
-		}
-	}()
-	var args parallelShellArgs
-	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
-		return jsonError("invalid arguments: " + err.Error())
-	}
-	if len(args.Commands) == 0 {
-		return jsonError("at least one command is required")
-	}
-	if len(args.Commands) > maxParallelShellCmds {
-		return jsonError(fmt.Sprintf("max %d commands per call", maxParallelShellCmds))
-	}
-
-	// Pre-check all commands for approval
-	for i, c := range args.Commands {
-		if strings.TrimSpace(c.Command) == "" {
-			return jsonError("empty command")
-		}
-		action := t.dangerousConfig.ActionForCommand(c.Command)
-		cls, unreadTargets := danger.ClassifyScriptGateCtx(t.toolCtx(), c.Command)
-		args.Commands[i].approvedRisk = cls
-		// unread-script execution gates under unread_exec even when
-		// code_execution was allowed or its class trusted (deny wins
-		// outright; both must allow to allow — see shellTool.checkApproval).
-		if len(unreadTargets) > 0 {
-			unreadAction := t.dangerousConfig.ActionFor(danger.UnreadExec)
-			switch {
-			case action == danger.Deny || unreadAction == danger.Deny:
-				action = danger.Deny
-			case action == danger.Allow && unreadAction == danger.Allow:
-				action = danger.Allow
-			default:
-				action = danger.Prompt
-				if c.Description == "" {
-					c.Description = fmt.Sprintf("executes a script whose contents have not been read this session: %s", strings.Join(unreadTargets, ", "))
-				}
-				// Audit-then-exec enrichment — see shellTool.checkApproval.
-				if findings := scanUnreadScripts(unreadTargets); len(findings) > 0 {
-					c.Description += " — ⚠️ injection scan: " + strings.Join(findings, "; ")
-				}
-			}
-		}
-		switch action {
-		case danger.Deny:
-			return jsonError(fmt.Sprintf("command denied: %s", c.Command))
-		case danger.Prompt:
-			if err := t.promptCommand(cls, c.Command, c.Description); err != nil {
-				return jsonError(fmt.Sprintf("command rejected: %s", c.Command))
-			}
-		case danger.Allow:
-		default:
-			return jsonError("invalid command policy action")
-		}
-	}
-
-	// Commands are pre-approved above; run them with bounded concurrency and
-	// per-worker panic recovery. Results stay in input order, so Index == slot.
-	results := parallelMap(args.Commands, toolConcurrency(), t.runOne,
-		func(c parallelShellCmd, p any) parallelShellEntry {
-			return parallelShellEntry{Command: c.Command, Error: fmt.Sprintf("internal error: %v", p)}
-		})
-	for i := range results {
-		results[i].Index = i
-		// stdout/stderr cross the shell trust boundary; wrap them with a
-		// per-call nonce boundary so injected command output cannot masquerade
-		// as instructions.
-		if results[i].Stdout != "" {
-			results[i].Stdout = wrapUntrusted(t.toolCtx(), fmt.Sprintf("parallel_shell:%d:stdout", i), results[i].Stdout)
-		}
-		if results[i].Stderr != "" {
-			results[i].Stderr = wrapUntrusted(t.toolCtx(), fmt.Sprintf("parallel_shell:%d:stderr", i), results[i].Stderr)
-		}
-	}
-
-	return jsonResult(parallelShellResult{Results: results})
-}
-
-// promptCommand asks the configured approver, or falls back to a TTYApprover,
-// for approval of a single command. This mirrors shellTool.promptUser so that
-// parallel_shell cannot bypass interactive approval when no explicit approver
-// is injected.
-func (t *parallelShellTool) promptCommand(cls danger.RiskClass, cmd, description string) error {
-	// Reuse a single TTYApprover per tool instance so the friction counter
-	// and trust cache survive across multiple prompts.
-	t.trustedMu.Lock()
-	approver := t.approver
-	if approver == nil {
-		ttyApprover := danger.NewTTYApprover(&t.dangerousConfig)
-		ttyApprover.Ctx = t.toolCtx()
-		if t.trustedClasses != nil {
-			ttyApprover.SetTrustedClasses(t.trustedClasses)
-		}
-		if t.ttyPath != "" {
-			ttyApprover.TTYPath = t.ttyPath
-		}
-		t.approver = ttyApprover
-		approver = ttyApprover
-	}
-	t.trustedMu.Unlock()
-
-	err := approver.PromptCommand(cls, cmd, description)
-	if err == nil {
-		if tty, ok := approver.(*danger.TTYApprover); ok {
-			t.trustedMu.Lock()
-			t.trustedClasses = tty.TrustedClasses
-			t.trustedMu.Unlock()
-		}
-	}
-	return err
-}
-
-// maxParallelShellTimeout is the absolute upper bound for a single
-// parallel_shell command. Callers can request less, but never more.
-const maxParallelShellTimeout = 30 * time.Minute
-
-// runOne executes a single pre-approved command with a per-command timeout.
-// It binds to the agent context, runs the command in its own process group,
-// and kills the whole group on cancellation or timeout so forked children
-// cannot outlive the command.
-func (t *parallelShellTool) runOne(cmd parallelShellCmd) parallelShellEntry {
-	timeoutSec := cmd.Timeout
-	if timeoutSec <= 0 {
-		timeoutSec = 30
-	}
-	if timeoutSec > int(maxParallelShellTimeout.Seconds()) {
-		timeoutSec = int(maxParallelShellTimeout.Seconds())
-	}
-	timeout := time.Duration(timeoutSec) * time.Second
-
-	start := time.Now()
-	entry := parallelShellEntry{Command: cmd.Command}
-
-	base := t.toolCtx()
-	ctx, cancel := context.WithTimeout(base, timeout)
-	defer cancel()
-
-	var shCmd *exec.Cmd
-	var killInContainer func()
-	if t.containerName != "" {
-		argv, followUp := wrapSandboxCommand(t.containerName, cmd.Command)
-		shCmd = exec.CommandContext(ctx, "docker", argv...)
-		killInContainer = followUp
-	} else {
-		shCmd = exec.CommandContext(ctx, "sh", "-c", cmd.Command)
-	}
-	var stdout, stderr bytes.Buffer
-	outW := &limitWriter{buf: &stdout, limit: maxShellOutputBytes}
-	errW := &limitWriter{buf: &stderr, limit: maxShellOutputBytes}
-	shCmd.Stdout = outW
-	shCmd.Stderr = errW
-
-	// Run in a new process group so a forked child (e.g. `sh -c "sleep 3600 &"`)
-	// is killed along with the shell leader when the context is cancelled.
-	shCmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	shCmd.Cancel = func() error {
-		if shCmd.Process != nil {
-			_ = syscall.Kill(-shCmd.Process.Pid, syscall.SIGKILL)
-		}
-		return nil
-	}
-	shCmd.WaitDelay = 3 * time.Second
-	if cmd.approvedRisk != "" {
-		if err := revalidateShellRisk(t.toolCtx(), cmd.Command, cmd.approvedRisk); err != nil {
-			entry.Error = err.Error()
-			entry.ExitCode = -1
-			return entry
-		}
-	}
-
-	err := shCmd.Run()
-	// Killing the host-side `docker exec` client does not terminate the
-	// in-container process (Docker does not propagate the signal); kill its
-	// process group explicitly so a timed-out command cannot linger.
-	if ctx.Err() != nil && killInContainer != nil {
-		killInContainer()
-	}
-	// successful read-only viewer runs mark operands as read, same as
-	// the serial shell tool.
-	if err == nil && t.containerName == "" {
-		recordViewerReads(t.toolCtx(), cmd.Command, stdout.String())
-	}
-	entry.Stdout = stdout.String()
-	entry.Stderr = strings.TrimSpace(stderr.String())
-	entry.DurationMs = time.Since(start).Milliseconds()
-
-	if err != nil {
-		if ctx.Err() == context.DeadlineExceeded {
-			entry.Error = fmt.Sprintf("timeout after %ds", timeoutSec)
-		} else if ctx.Err() == context.Canceled {
-			entry.Error = "cancelled"
-		} else if exitErr, ok := err.(*exec.ExitError); ok {
-			entry.ExitCode = exitErr.ExitCode()
-		} else {
-			entry.Error = err.Error()
-		}
-	}
-
-	return entry
-}
-
-// ═════════════════════════════════════════════════════════════════════════
-// 3. http_batch — Fetch N URLs in parallel
-// ═════════════════════════════════════════════════════════════════════════
-
-const maxHTTPBatchURLs = 10
-
-type httpBatchTool struct {
-	ctxTool
-	dangerousConfig danger.DangerousConfig
-	client          *http.Client
-}
-
-func newHTTPBatchTool(dc danger.DangerousConfig) *httpBatchTool {
-	t := &httpBatchTool{dangerousConfig: dc}
-	t.client = &http.Client{
-		Timeout:       30 * time.Second,
-		CheckRedirect: t.checkRedirect,
-		Transport:     ssrfGuardedTransport(),
-	}
-	return t
-}
-
-// checkRedirect re-classifies every redirect hop. http_batch only checks
-// the initial URL before the request, so without this a benign-classified
-// URL could 302 to an SSRF target (cloud metadata, internal host) that the
-// initial ClassifyURL gate would have blocked. The body is discarded, but
-// the request itself — and the leaked status/content-length — is the
-// vector we close here. Installing CheckRedirect disables Go's implicit
-// 10-hop cap, so we re-impose it.
-func (t *httpBatchTool) checkRedirect(req *http.Request, via []*http.Request) error {
-	if len(via) >= 10 {
-		return fmt.Errorf("stopped after 10 redirects")
-	}
-	target := req.URL.String()
-	risk := danger.ClassifyURL(target)
-	if err := t.dangerousConfig.CheckOperation(danger.ToolOperation{
-		Name: "http_batch", Resource: target, Risk: risk,
-	}, nil); err != nil {
-		return fmt.Errorf("redirect to %s blocked: %w", target, err)
-	}
-	return nil
-}
-
-func (t *httpBatchTool) Name() string { return "http_batch" }
-func (t *httpBatchTool) Description() string {
-	return `Check multiple URLs in parallel — returns HTTP status code, content length, and error per URL; response BODIES are NOT returned (read content with browser or shell instead). Best for link-health and availability checks, not content fetching. Max 10 URLs per call.`
-}
-
-type httpBatchReq struct {
-	URL     string            `json:"url"`
-	Method  string            `json:"method,omitempty"`
-	Headers map[string]string `json:"headers,omitempty"`
-}
-
-type httpBatchEntry struct {
-	URL           string `json:"url"`
-	Status        int    `json:"status"`
-	ContentLength int64  `json:"content_length,omitempty"`
-	Error         string `json:"error,omitempty"`
-}
-
-type httpBatchArgs struct {
-	Requests []httpBatchReq `json:"requests"`
-}
-
-type httpBatchResult struct {
-	Results []httpBatchEntry `json:"results"`
-}
-
-func (t *httpBatchTool) Schema() any {
-	return map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"requests": map[string]any{
-				"type":        "array",
-				"description": "URLs to fetch in parallel (max 10). Each: {url, method?, headers?}.",
-				"minItems":    1,
-				"maxItems":    maxHTTPBatchURLs,
-				"items": map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"url":     map[string]any{"type": "string", "description": "URL to fetch (http/https)."},
-						"method":  map[string]any{"type": "string", "description": "HTTP method (default: GET)."},
-						"headers": map[string]any{"type": "object", "description": "Optional HTTP headers."},
-					},
-					"required": []string{"url"},
-				},
-			},
-		},
-		"required": []string{"requests"},
-	}
-}
-
-func (t *httpBatchTool) Call(argsJSON string) (result string, err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			err = fmt.Errorf("http_batch: panic: %v", r)
-			result = `{"error":"internal tool error"}`
-		}
-	}()
-	var args httpBatchArgs
-	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
-		return jsonError("invalid arguments: " + err.Error())
-	}
-	if len(args.Requests) == 0 {
-		return jsonError("at least one URL is required")
-	}
-	if len(args.Requests) > maxHTTPBatchURLs {
-		return jsonError(fmt.Sprintf("max %d URLs per call", maxHTTPBatchURLs))
-	}
-
-	// Security checks run serially up front (they may prompt the user), then
-	// only the approved fetches run in parallel. Denied requests get an error
-	// entry in place and are not fetched.
-	results := make([]httpBatchEntry, len(args.Requests))
-	type httpJob struct {
-		idx int
-		req httpBatchReq
-	}
-	var todo []httpJob
-	for i, req := range args.Requests {
-		risk := danger.ClassifyURL(req.URL)
-		if err := t.dangerousConfig.CheckOperation(danger.ToolOperation{
-			Name: "http_batch", Resource: req.URL, Risk: risk,
-		}, nil); err != nil {
-			results[i] = httpBatchEntry{URL: req.URL, Error: err.Error()}
-			continue
-		}
-		todo = append(todo, httpJob{idx: i, req: req})
-	}
-
-	done := parallelMap(todo, toolConcurrency(),
-		func(j httpJob) httpBatchEntry { return t.fetchOne(j.req) },
-		func(j httpJob, p any) httpBatchEntry {
-			return httpBatchEntry{URL: j.req.URL, Error: fmt.Sprintf("internal error: %v", p)}
-		})
-	for k, j := range todo {
-		results[j.idx] = done[k]
-	}
-
-	return jsonResult(httpBatchResult{Results: results})
-}
-
-// fetchOne performs a single pre-approved HTTP request through the SSRF-guarded
-// client and reports status + content length (body discarded, capped at 1 MiB).
-func (t *httpBatchTool) fetchOne(r httpBatchReq) httpBatchEntry {
-	method := r.Method
-	if method == "" {
-		method = "GET"
-	}
-
-	entry := httpBatchEntry{URL: r.URL}
-	httpReq, err := http.NewRequestWithContext(t.toolCtx(), method, r.URL, nil)
-	if err != nil {
-		entry.Error = err.Error()
-		return entry
-	}
-
-	for k, v := range r.Headers {
-		httpReq.Header.Set(k, v)
-	}
-	httpReq.Header.Set("User-Agent", "odek-http-batch/0.1")
-
-	resp, err := t.client.Do(httpReq)
-	if err != nil {
-		// Wrap network/TLS errors as untrusted so attacker-controlled text in
-		// x509 / dial errors cannot reach the model outside the untrusted boundary.
-		entry.Error = wrapUntrusted(t.toolCtx(), r.URL, err.Error())
-		return entry
-	}
-	defer resp.Body.Close()
-
-	entry.Status = resp.StatusCode
-	entry.ContentLength = resp.ContentLength
-	if entry.ContentLength <= 0 {
-		n, _ := io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
-		entry.ContentLength = n
-	}
-
-	return entry
-}
-
-// ═════════════════════════════════════════════════════════════════════════
-// 4. math_eval — Evaluate arithmetic expressions
+// math_eval — Evaluate arithmetic expressions
 // ═════════════════════════════════════════════════════════════════════════
 
 type mathEvalTool struct{}
@@ -1021,7 +217,7 @@ func evalNode(node ast.Expr) (float64, error) {
 }
 
 // ═════════════════════════════════════════════════════════════════════════
-// 5. diff — Structured file comparison
+// diff — Structured file comparison
 // ═════════════════════════════════════════════════════════════════════════
 
 type diffTool struct {
@@ -1233,247 +429,7 @@ func computeDiff(a, b []string) []diffHunk {
 }
 
 // ═════════════════════════════════════════════════════════════════════════
-// 6. multi_grep — Search multiple patterns in parallel
-// ═════════════════════════════════════════════════════════════════════════
-
-const maxGrepPatterns = 10
-
-type multiGrepTool struct {
-	ctxTool
-	dangerousConfig danger.DangerousConfig
-	restrictToCWD   bool // sandbox: reject roots that escape the workspace
-}
-
-func (t *multiGrepTool) Name() string { return "multi_grep" }
-func (t *multiGrepTool) Description() string {
-	return `Search multiple regex patterns in parallel (max 10) — one pass instead of N serial search_files calls. Returns structured {pattern, path, line, content} results. Prefer over search_files when you have 2+ patterns.`
-}
-
-type grepMatch struct {
-	Path    string `json:"path"`
-	Line    int    `json:"line"`
-	Content string `json:"content"`
-}
-
-type grepPatternResult struct {
-	Pattern string      `json:"pattern"`
-	Matches []grepMatch `json:"matches"`
-	Count   int         `json:"count"`
-	Skipped []string    `json:"skipped,omitempty"`
-	Error   string      `json:"error,omitempty"`
-}
-
-type multiGrepArgs struct {
-	Patterns []string `json:"patterns"`
-	Path     string   `json:"path,omitempty"`
-	FileGlob string   `json:"file_glob,omitempty"`
-	Limit    int      `json:"limit,omitempty"`
-}
-
-type multiGrepResult struct {
-	Results []grepPatternResult `json:"results"`
-}
-
-func (t *multiGrepTool) Schema() any {
-	return map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"patterns": map[string]any{
-				"type":        "array",
-				"description": "Regex patterns to search for (max 10).",
-				"minItems":    1,
-				"maxItems":    maxGrepPatterns,
-				"items":       map[string]any{"type": "string"},
-			},
-			"path":      map[string]any{"type": "string", "description": "Root directory (default: '.')."},
-			"file_glob": map[string]any{"type": "string", "description": "Filter files by glob (e.g. '*.go')."},
-			"limit":     map[string]any{"type": "integer", "description": "Max matches per pattern (default: 50). The walk stops silently at the cap — raise to 200+ when completeness matters."},
-		},
-		"required": []string{"patterns"},
-	}
-}
-
-func (t *multiGrepTool) Call(argsJSON string) (string, error) {
-	var args multiGrepArgs
-	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
-		return jsonError("invalid arguments: " + err.Error())
-	}
-	if len(args.Patterns) == 0 {
-		return jsonError("at least one pattern is required")
-	}
-	if len(args.Patterns) > maxGrepPatterns {
-		return jsonError(fmt.Sprintf("max %d patterns per call", maxGrepPatterns))
-	}
-	if args.Path == "" {
-		args.Path = "."
-	}
-	if args.Limit <= 0 {
-		args.Limit = 50
-	}
-	if args.Limit > maxSearchLimit {
-		args.Limit = maxSearchLimit
-	}
-	if err := confineIfRestricted(t.restrictToCWD, args.Path); err != nil {
-		return jsonError(err.Error())
-	}
-
-	if err := t.dangerousConfig.CheckOperation(danger.ToolOperation{
-		Name: "multi_grep", Resource: args.Path, Risk: classifyResolvedPath(args.Path),
-	}, nil); err != nil {
-		return jsonError(err.Error())
-	}
-
-	results := parallelMap(args.Patterns, toolConcurrency(),
-		func(pat string) grepPatternResult {
-			return t.searchPattern(pat, args.Path, args.FileGlob, args.Limit)
-		},
-		func(pat string, p any) grepPatternResult {
-			return grepPatternResult{Pattern: pat, Error: fmt.Sprintf("internal error: %v", p)}
-		})
-
-	return jsonResult(multiGrepResult{Results: results})
-}
-
-// checkSearchPath classifies a discovered path the same way the root path was
-// checked in Call. If the path is more restrictive (e.g. a file under ~/.odek
-// discovered while searching $HOME), it returns skip=true so the walker does
-// not silently read sensitive files.
-func (t *multiGrepTool) checkSearchPath(path string) (skip bool, reason string) {
-	risk := classifyResolvedPath(path)
-	if err := t.dangerousConfig.CheckOperation(danger.ToolOperation{
-		Name: "multi_grep", Resource: path, Risk: risk,
-	}, nil); err != nil {
-		return true, err.Error()
-	}
-	return false, ""
-}
-
-func (t *multiGrepTool) searchPattern(pattern, root, fileGlob string, limit int) (result grepPatternResult) {
-	defer func() {
-		if r := recover(); r != nil {
-			result = grepPatternResult{Pattern: pattern, Error: fmt.Sprintf("internal error: %v", r)}
-		}
-	}()
-	re, err := regexp.Compile(pattern)
-	if err != nil {
-		return grepPatternResult{Pattern: pattern, Error: fmt.Sprintf("invalid regex: %v", err)}
-	}
-
-	var matches []grepMatch
-	resultBytes := 0
-
-	var skipped []string
-	var rootErr error
-	filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
-		if err != nil || info == nil {
-			// Surface a missing/unreadable root instead of returning a
-			// silent count:0 result for a path that was never scanned.
-			if path == root {
-				rootErr = err
-				return err
-			}
-			return nil
-		}
-		if info.IsDir() {
-			if strings.HasPrefix(info.Name(), ".") && info.Name() != "." {
-				return filepath.SkipDir
-			}
-			if skipDir(info.Name()) {
-				return filepath.SkipDir
-			}
-			// Security: classify each directory before descending.
-			if skip, reason := t.checkSearchPath(path); skip {
-				skipped = append(skipped, path+": "+reason)
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		// Skip symlinks — prevents TOCTOU and listing unreadable files.
-		if info.Mode()&os.ModeSymlink != 0 {
-			return nil
-		}
-		// Security: classify each file before reading.
-		if skip, reason := t.checkSearchPath(path); skip {
-			skipped = append(skipped, path+": "+reason)
-			return nil
-		}
-		if fileGlob != "" {
-			match, _ := filepath.Match(fileGlob, info.Name())
-			if !match {
-				return nil
-			}
-		}
-
-		f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
-		if err != nil {
-			// Surface the miss instead of silently returning nil — under fd
-			// pressure (or a permissions change) silent drops make results
-			// quietly incomplete.
-			skipped = append(skipped, fmt.Sprintf("%s: %v", path, err))
-			return nil
-		}
-
-		sample := make([]byte, 512)
-		n, _ := f.Read(sample)
-		if isBinary(sample[:n]) {
-			f.Close()
-			return nil
-		}
-		f.Seek(0, 0)
-
-		scanner := bufio.NewScanner(f)
-		scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
-		lineNum := 0
-		for scanner.Scan() {
-			lineNum++
-			line := scanner.Text()
-			if re.MatchString(line) {
-				trimmed := strings.TrimSpace(line)
-				if resultBytes+len(trimmed) > maxSearchResultBytes {
-					f.Close()
-					return filepath.SkipAll
-				}
-				resultBytes += len(trimmed)
-				matches = append(matches, grepMatch{
-					Path:    wrapUntrusted(t.toolCtx(), path, path),
-					Line:    lineNum,
-					Content: wrapUntrusted(t.toolCtx(), fmt.Sprintf("%s:%d", path, lineNum), trimmed),
-				})
-				if len(matches) >= limit {
-					f.Close()
-					return filepath.SkipAll
-				}
-			}
-		}
-		if err := scanner.Err(); err != nil {
-			// The scan aborted early (e.g. a line over the 1 MiB cap):
-			// report the file instead of silently missing matches.
-			skipped = append(skipped, fmt.Sprintf("%s: %v", path, err))
-		}
-		f.Close()
-		if len(matches) >= limit {
-			return filepath.SkipAll
-		}
-		return nil
-	})
-
-	rootErrOut := rootErr
-	if rootErrOut != nil {
-		return grepPatternResult{
-			Pattern: pattern,
-			Error:   fmt.Sprintf("cannot walk root %q: %v", root, rootErrOut),
-		}
-	}
-	return grepPatternResult{
-		Pattern: pattern,
-		Matches: matches,
-		Count:   len(matches),
-		Skipped: skipped,
-	}
-}
-
-// ═════════════════════════════════════════════════════════════════════════
-// 7. json_query — Query/extract from JSON files
+// json_query — Query/extract from JSON files
 // ═════════════════════════════════════════════════════════════════════════
 
 type jsonQueryTool struct {
@@ -1659,7 +615,7 @@ func jsonPathQuery(data interface{}, query string) (interface{}, error) {
 }
 
 // ═════════════════════════════════════════════════════════════════════════
-// 8. tree — Structured directory tree listing
+// tree — Structured directory tree listing
 // ═════════════════════════════════════════════════════════════════════════
 
 type treeTool struct {
@@ -1736,7 +692,7 @@ func (t *treeTool) Call(argsJSON string) (result string, err error) {
 	}
 
 	// checkTreePath classifies a discovered path the same way the root path
-	// was checked above — the same rule search_files / multi_grep apply via
+	// was checked above — the same rule search_files apply via
 	// checkSearchPath. A broad root (e.g. $HOME with include_hidden) must not
 	// silently expose sensitive subtrees such as ~/.odek or ~/.ssh: names and
 	// metadata leak structure even without file contents.
@@ -1851,10 +807,8 @@ func buildTree(ctx context.Context, root, path string, depth, maxDepth int, incl
 }
 
 // ═════════════════════════════════════════════════════════════════════════
-// 9. checksum — Compute file hashes natively
+// checksum — Compute file hashes natively
 // ═════════════════════════════════════════════════════════════════════════
-
-const maxChecksumFiles = 10
 
 type checksumTool struct {
 	dangerousConfig danger.DangerousConfig
@@ -1863,7 +817,7 @@ type checksumTool struct {
 
 func (t *checksumTool) Name() string { return "checksum" }
 func (t *checksumTool) Description() string {
-	return `Compute SHA-256 (default), SHA-1, or MD5 hashes of files — works inside sandboxes where shell hash tools may be absent.`
+	return `Compute SHA-256 (default), SHA-1, or MD5 hash of one file — works inside sandboxes where shell hash tools may be absent.`
 }
 
 type checksumFileArg struct {
@@ -1878,55 +832,26 @@ type checksumEntry struct {
 	Error     string `json:"error,omitempty"`
 }
 
-type checksumArgs struct {
-	Files []checksumFileArg `json:"files"`
-}
-
 type checksumResult struct {
 	Results []checksumEntry `json:"results"`
 }
 
 func (t *checksumTool) Schema() any {
-	return map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"files": map[string]any{
-				"type":        "array",
-				"description": "Files to hash (max 10). Each: {path, algorithm?} — 'sha256' (default), 'sha1', 'md5'.",
-				"minItems":    1,
-				"maxItems":    maxChecksumFiles,
-				"items": map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"path":      map[string]any{"type": "string", "description": "File path."},
-						"algorithm": map[string]any{"type": "string", "description": "Hash algorithm: sha256 (default), sha1, md5."},
-					},
-					"required": []string{"path"},
-				},
-			},
-		},
-		"required": []string{"files"},
-	}
+	return map[string]any{"type": "object", "properties": map[string]any{
+		"path":      map[string]any{"type": "string", "description": "File to hash."},
+		"algorithm": map[string]any{"type": "string", "enum": []string{"sha256", "sha1", "md5"}},
+	}, "required": []string{"path"}}
 }
 
 func (t *checksumTool) Call(argsJSON string) (string, error) {
-	var args checksumArgs
+	var args checksumFileArg
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
 		return jsonError("invalid arguments: " + err.Error())
 	}
-	if len(args.Files) == 0 {
-		return jsonError("at least one file is required")
+	if args.Path == "" {
+		return jsonError("path is required; use one checksum call per file")
 	}
-	if len(args.Files) > maxChecksumFiles {
-		return jsonError(fmt.Sprintf("max %d files per call", maxChecksumFiles))
-	}
-
-	results := parallelMap(args.Files, toolConcurrency(), t.hashFile,
-		func(cf checksumFileArg, p any) checksumEntry {
-			return checksumEntry{Path: cf.Path, Algorithm: strings.ToLower(cf.Algorithm), Error: fmt.Sprintf("internal error: %v", p)}
-		})
-
-	return jsonResult(checksumResult{Results: results})
+	return jsonResult(checksumResult{Results: []checksumEntry{t.hashFile(args)}})
 }
 
 func (t *checksumTool) hashFile(arg checksumFileArg) (entry checksumEntry) {
@@ -1988,13 +913,11 @@ func (t *checksumTool) hashFile(arg checksumFileArg) (entry checksumEntry) {
 }
 
 // ═════════════════════════════════════════════════════════════════════════
-// 10. head_tail — Quick file preview (first/last N lines)
+// head_tail — Quick file preview (first/last N lines)
 // ═════════════════════════════════════════════════════════════════════════
 
 // maxHeadTailTotalBytes caps the content returned by head_tail for a single
-// file. Combined with the 10-file-per-call limit (see Call), this bounds a
-// head_tail response to ~10 MiB. Without it, 10 files × 100 lines × 1 MiB
-// lines could allocate roughly 1 GB in a single tool call.
+// file. A preview cannot exceed 1 MiB even when individual lines are large.
 const maxHeadTailTotalBytes = maxReadBytes // 1 MiB per file
 
 type headTailTool struct {
@@ -2005,17 +928,13 @@ type headTailTool struct {
 
 func (t *headTailTool) Name() string { return "head_tail" }
 func (t *headTailTool) Description() string {
-	return `Read the first or last N lines of one or more files. Reports the file's exact total line count (the head path scans the whole file, bounded by a 1 MiB line buffer). Supports multiple files in parallel. Default 10 lines, max 100 — this is a peek, not the file; for whole content use read_file, and compare the returned count to total_lines before trusting it.`
-}
-
-type headTailFileArg struct {
-	Path string `json:"path"`
+	return `Read the first or last N lines of one file. Reports the file's exact total line count (the head path scans the whole file, bounded by a 1 MiB line buffer). Default 10 lines, max 100 — this is a peek, not the file; for whole content use read_file, and compare the returned count to total_lines before trusting it.`
 }
 
 type headTailArgs struct {
-	Files []headTailFileArg `json:"files"`
-	Lines int               `json:"lines,omitempty"`
-	Mode  string            `json:"mode,omitempty"` // "head" (default) or "tail"
+	Path  string `json:"path"`
+	Lines int    `json:"lines,omitempty"`
+	Mode  string `json:"mode,omitempty"` // "head" (default) or "tail"
 }
 
 type headTailFileResult struct {
@@ -2034,17 +953,11 @@ func (t *headTailTool) Schema() any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"files": map[string]any{
-				"type": "array", "description": "Files to preview (max 10).",
-				"items": map[string]any{
-					"type": "object", "properties": map[string]any{"path": map[string]any{"type": "string"}},
-					"required": []string{"path"},
-				},
-			},
+			"path":  map[string]any{"type": "string", "description": "File to preview."},
 			"lines": map[string]any{"type": "integer", "description": "Number of lines (default: 10, max: 100)."},
 			"mode":  map[string]any{"type": "string", "enum": []string{"head", "tail"}, "description": "head (default) or tail."},
 		},
-		"required": []string{"files"},
+		"required": []string{"path"},
 	}
 }
 
@@ -2053,12 +966,10 @@ func (t *headTailTool) Call(argsJSON string) (string, error) {
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
 		return jsonError("invalid arguments: " + err.Error())
 	}
-	if len(args.Files) == 0 {
-		return jsonError("at least one file is required")
+	if args.Path == "" {
+		return jsonError("path is required; use one head_tail call per file")
 	}
-	if len(args.Files) > 10 {
-		return jsonError("max 10 files per call")
-	}
+
 	n := args.Lines
 	if n <= 0 {
 		n = 10
@@ -2071,13 +982,10 @@ func (t *headTailTool) Call(argsJSON string) (string, error) {
 		mode = "head"
 	}
 
-	results := parallelMap(args.Files, toolConcurrency(),
-		func(f headTailFileArg) headTailFileResult { return t.readPreview(f.Path, n, mode) },
-		func(f headTailFileArg, p any) headTailFileResult {
-			return headTailFileResult{Path: f.Path, Error: fmt.Sprintf("internal error: %v", p)}
-		})
-
-	return jsonResult(headTailResult{Results: results})
+	if mode != "head" && mode != "tail" {
+		return jsonError("mode must be head or tail")
+	}
+	return jsonResult(headTailResult{Results: []headTailFileResult{t.readPreview(args.Path, n, mode)}})
 }
 
 func (t *headTailTool) readPreview(path string, n int, mode string) (result headTailFileResult) {
@@ -2192,7 +1100,7 @@ func truncateHeadTailLines(lines []string) []string {
 }
 
 // ═════════════════════════════════════════════════════════════════════════
-// 11. base64 — Encode/decode base64
+// base64 — Encode/decode base64
 // ═════════════════════════════════════════════════════════════════════════
 
 type base64Tool struct {
@@ -2294,12 +1202,8 @@ func (t *base64Tool) Call(argsJSON string) (result string, err error) {
 
 // ── Compile-time interface checks ────────────────────────────────────
 var (
-	_ odek.Tool = (*batchPatchTool)(nil)
-	_ odek.Tool = (*parallelShellTool)(nil)
-	_ odek.Tool = (*httpBatchTool)(nil)
 	_ odek.Tool = (*mathEvalTool)(nil)
 	_ odek.Tool = (*diffTool)(nil)
-	_ odek.Tool = (*multiGrepTool)(nil)
 	_ odek.Tool = (*jsonQueryTool)(nil)
 	_ odek.Tool = (*treeTool)(nil)
 	_ odek.Tool = (*checksumTool)(nil)

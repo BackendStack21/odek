@@ -456,7 +456,7 @@ func telegramCmd(args []string) error {
 	systemMessage += "- ALWAYS use file_glob (e.g. '*.go', '*.md') to restrict the file types scanned.\n"
 	systemMessage += "- ALWAYS use a narrow path — never '/' or '/root' without file_glob.\n"
 	systemMessage += "- Without file_glob, every readable file in the subtree is opened and scanned.\n"
-	systemMessage += "- For multi-pattern searches, use multi_grep (parallel walk, less overhead).\n"
+	systemMessage += "- For independent searches, emit separate search_files calls in one response.\n"
 	systemMessage += "\n"
 
 	// Telegram-specific system prompt additions

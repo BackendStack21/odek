@@ -70,6 +70,40 @@ func TestConflictingReadWaitsForWrite(t *testing.T) {
 	}
 }
 
+func TestStatefulBrowserCallsPreserveResponseOrder(t *testing.T) {
+	srv := contractServer(t, `{"choices":[{"message":{"tool_calls":[{"id":"n","type":"function","function":{"name":"browser","arguments":"{\"action\":\"navigate\",\"url\":\"https://example.com\"}"}},{"id":"s","type":"function","function":{"name":"browser","arguments":"{\"action\":\"snapshot\"}"}}]},"finish_reason":"tool_calls"}]}`)
+	defer srv.Close()
+	started, release, snapshot := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	var state, observed atomic.Int32
+	browser := &contractTool{name: "browser", run: func(args string) (string, error) {
+		if strings.Contains(args, "navigate") {
+			close(started)
+			<-release
+			state.Store(1)
+			return "loaded", nil
+		}
+		observed.Store(state.Load())
+		close(snapshot)
+		return "snapshot", nil
+	}}
+	e := New(testChatClient(t, srv.URL), tool.NewRegistry([]tool.Tool{browser}), 4, "sys", nil, 0)
+	done := make(chan error, 1)
+	go func() { _, err := e.Run(context.Background(), "navigate then inspect"); done <- err }()
+	<-started
+	select {
+	case <-snapshot:
+		t.Error("snapshot ran before preceding navigation completed")
+	case <-time.After(30 * time.Millisecond):
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if observed.Load() != 1 {
+		t.Fatal("snapshot observed stale browser state")
+	}
+}
+
 func TestIndependentReadsRemainParallel(t *testing.T) {
 	srv := contractServer(t, `{"choices":[{"message":{"tool_calls":[{"id":"a","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"a.go\"}"}},{"id":"b","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"b.go\"}"}}]},"finish_reason":"tool_calls"}]}`)
 	defer srv.Close()

@@ -62,7 +62,7 @@ func TestBrowser_SnapshotByteCap(t *testing.T) {
 	}
 }
 
-// ── 2. search_files / multi_grep must cap limit and result size ──────────
+// ── 2. search_files must cap limit and result size ──────────
 
 func TestSearchFiles_LimitCap(t *testing.T) {
 	dir := t.TempDir()
@@ -103,30 +103,6 @@ func TestSearchFiles_ResultByteCap(t *testing.T) {
 	}
 	if total > 1024*1024 {
 		t.Fatalf("search_files returned %d bytes of content, expected cap near 1 MiB", total)
-	}
-}
-
-func TestMultiGrep_LimitCap(t *testing.T) {
-	dir := t.TempDir()
-	var lines []string
-	for i := 0; i < 600; i++ {
-		lines = append(lines, "match")
-	}
-	os.WriteFile(filepath.Join(dir, "data.txt"), []byte(strings.Join(lines, "\n")), 0644)
-
-	tool := &multiGrepTool{dangerousConfig: danger.DangerousConfig{}}
-	result := callJSON(t, tool, fmt.Sprintf(`{"patterns":["match"],"path":%q,"limit":10000}`, dir))
-	var r struct {
-		Results []struct {
-			Matches []any `json:"matches"`
-		} `json:"results"`
-	}
-	mustUnmarshal(t, result, &r)
-	if len(r.Results) != 1 {
-		t.Fatalf("expected 1 pattern result, got %d", len(r.Results))
-	}
-	if len(r.Results[0].Matches) > 500 {
-		t.Fatalf("multi_grep limit was not capped: got %d matches", len(r.Results[0].Matches))
 	}
 }
 
@@ -451,7 +427,7 @@ func TestHeadTail_WrapsContent(t *testing.T) {
 	os.WriteFile(path, []byte("hello world\n"), 0644)
 
 	tool := &headTailTool{dangerousConfig: danger.DangerousConfig{}}
-	result := callJSON(t, tool, fmt.Sprintf(`{"files":[{"path":%q}],"lines":10}`, path))
+	result := callJSON(t, tool, fmt.Sprintf(`{"path":%q,"lines":10}`, path))
 	var r struct {
 		Results []struct {
 			Lines []string `json:"lines"`
@@ -508,7 +484,7 @@ func TestJsonQuery_WrapsStringValue(t *testing.T) {
 	}
 }
 
-// ── 6. Shell / parallel_shell must cap command output ────────────────────
+// ── 6. Shell must cap command output ────────────────────
 
 func TestShell_CapsOutputSize(t *testing.T) {
 	dir := t.TempDir()
@@ -529,36 +505,11 @@ func TestShell_CapsOutputSize(t *testing.T) {
 	}
 }
 
-func TestParallelShell_CapsOutputSize(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "huge.txt")
-	os.WriteFile(path, []byte(strings.Repeat("x", 15*1024*1024)), 0644)
+// ── 6a. http_request must wrap network/TLS errors as untrusted ─────────────
 
+func TestHTTPRequest_WrapsErrors(t *testing.T) {
 	allow := "allow"
-	tool := &parallelShellTool{dangerousConfig: danger.DangerousConfig{NonInteractive: &allow}}
-	result := callJSON(t, tool, fmt.Sprintf(`{"commands":[{"command":"cat %s"}]}`, path))
-	var r struct {
-		Results []struct {
-			Stdout string `json:"stdout"`
-			Stderr string `json:"stderr"`
-			Error  string `json:"error,omitempty"`
-		} `json:"results"`
-	}
-	mustUnmarshal(t, result, &r)
-	if len(r.Results) != 1 {
-		t.Fatalf("expected 1 result, got %d", len(r.Results))
-	}
-	out := r.Results[0].Stdout + r.Results[0].Stderr
-	if len(out) > 1024*1024+200 {
-		t.Fatalf("parallel_shell returned %d bytes, expected cap near 1 MiB", len(out))
-	}
-}
-
-// ── 6a. http_batch must wrap network/TLS errors as untrusted ─────────────
-
-func TestHTTPBatch_WrapsErrors(t *testing.T) {
-	allow := "allow"
-	tool := &httpBatchTool{
+	tool := &httpRequestTool{
 		dangerousConfig: danger.DangerousConfig{NonInteractive: &allow},
 	}
 	tool.client = &http.Client{
@@ -567,21 +518,14 @@ func TestHTTPBatch_WrapsErrors(t *testing.T) {
 		}),
 	}
 
-	result := callJSON(t, tool, `{"requests":[{"url":"https://target.com/"}]}`)
-	var r struct {
-		Results []struct {
-			Error string `json:"error"`
-		} `json:"results"`
-	}
+	result := callJSON(t, tool, `{"url":"https://target.com/"}`)
+	var r httpRequestResult
 	mustUnmarshal(t, result, &r)
-	if len(r.Results) != 1 {
-		t.Fatalf("expected 1 result, got %d", len(r.Results))
-	}
-	if r.Results[0].Error == "" {
+	if r.Error == "" {
 		t.Fatal("expected error")
 	}
-	if !strings.HasPrefix(r.Results[0].Error, "<untrusted_content_") {
-		t.Errorf("http_batch error should be wrapped as untrusted, got: %q", r.Results[0].Error)
+	if !strings.HasPrefix(r.Error, "<untrusted_content_") {
+		t.Errorf("http_request error should be wrapped as untrusted, got: %q", r.Error)
 	}
 }
 
@@ -609,50 +553,6 @@ func TestBrowser_NavigateTimeout(t *testing.T) {
 	}
 }
 
-// ── 8. batch_patch must reject huge files and wrap diff output ───────────
-
-func TestBatchPatch_RejectsHugeFile(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "huge.txt")
-	os.WriteFile(path, []byte(strings.Repeat("x", 15*1024*1024)), 0644)
-
-	tool := &batchPatchTool{}
-	result := callJSON(t, tool, fmt.Sprintf(`{"patches":[{"path":%q,"old_string":"xxx","new_string":"yyy"}]}`, path))
-	var r struct {
-		Results []struct {
-			Success bool   `json:"success"`
-			Error   string `json:"error,omitempty"`
-		} `json:"results"`
-	}
-	mustUnmarshal(t, result, &r)
-	if len(r.Results) != 1 {
-		t.Fatalf("expected 1 result, got %d", len(r.Results))
-	}
-	if r.Results[0].Success {
-		t.Fatal("batch_patch should reject a 15 MiB file")
-	}
-	if r.Results[0].Error == "" {
-		t.Fatal("batch_patch should return an error for a 15 MiB file")
-	}
-}
-
-func TestBatchPatch_WrapsDiff(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "test.txt")
-	os.WriteFile(path, []byte("hello world\n"), 0644)
-
-	tool := &batchPatchTool{}
-	result := callJSON(t, tool, fmt.Sprintf(`{"patches":[{"path":%q,"old_string":"hello","new_string":"goodbye"}]}`, path))
-	var r struct {
-		Results []struct {
-			Diff string `json:"diff"`
-		} `json:"results"`
-	}
-	mustUnmarshal(t, result, &r)
-	if len(r.Results) == 0 || !strings.HasPrefix(r.Results[0].Diff, "<untrusted_content_") {
-		t.Fatalf("batch_patch diff should be wrapped in untrusted_content, got: %q", r.Results[0].Diff)
-	}
-}
 
 // ── 9. Transcribe must reject huge / symlinked audio inputs ──────────────
 
@@ -972,7 +872,6 @@ printf '{"status":"success","summary":"%s","files_changed":[],"iterations":1,"to
 	}
 }
 
-// ── 20. patch / batch_patch must cap ReplaceAll expansion ────────────────
 
 func TestPatch_RejectsOutputExpansion(t *testing.T) {
 	dir := t.TempDir()
@@ -992,28 +891,6 @@ func TestPatch_RejectsOutputExpansion(t *testing.T) {
 	}
 	if !strings.Contains(r.Error, "too large") {
 		t.Fatalf("expected size error, got: %q", r.Error)
-	}
-}
-
-func TestBatchPatch_RejectsOutputExpansion(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "data.txt")
-	os.WriteFile(path, []byte(strings.Repeat("a", 2000)), 0644)
-
-	tool := &batchPatchTool{}
-	result := callJSON(t, tool, fmt.Sprintf(`{"patches":[{"path":%q,"old_string":"a","new_string":%q,"replace_all":true}]}`, path, strings.Repeat("x", 10000)))
-	var r struct {
-		Results []struct {
-			Success bool   `json:"success"`
-			Error   string `json:"error,omitempty"`
-		} `json:"results"`
-	}
-	mustUnmarshal(t, result, &r)
-	if len(r.Results) != 1 || r.Results[0].Success {
-		t.Fatal("batch_patch should reject a ReplaceAll that explodes output size")
-	}
-	if !strings.Contains(r.Results[0].Error, "too large") {
-		t.Fatalf("expected size error, got: %q", r.Results[0].Error)
 	}
 }
 
@@ -1234,7 +1111,7 @@ func TestHeadTail_CapsOutputSize(t *testing.T) {
 	os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0644)
 
 	tool := &headTailTool{dangerousConfig: danger.DangerousConfig{}}
-	result := callJSON(t, tool, fmt.Sprintf(`{"files":[{"path":%q}],"lines":100}`, path))
+	result := callJSON(t, tool, fmt.Sprintf(`{"path":%q,"lines":100}`, path))
 	var r struct {
 		Results []struct {
 			Lines []string `json:"lines"`
@@ -1252,56 +1129,6 @@ func TestHeadTail_CapsOutputSize(t *testing.T) {
 	}
 	if total > maxHeadTailTotalBytes+200 {
 		t.Fatalf("head_tail returned %d bytes of content, expected cap near %d", total, maxHeadTailTotalBytes)
-	}
-}
-
-// TestHeadTail_CapsOutputSizeMultiFile locks the aggregate bound: the per-file
-// cap (maxHeadTailTotalBytes) combined with the 10-file-per-call limit means a
-// single head_tail response stays within ~10 files × the per-file cap, even
-// when every file is individually oversized.
-func TestHeadTail_CapsOutputSizeMultiFile(t *testing.T) {
-	dir := t.TempDir()
-	const nFiles = 10
-	var paths []string
-	for f := 0; f < nFiles; f++ {
-		path := filepath.Join(dir, fmt.Sprintf("big-%d.txt", f))
-		var lines []string
-		for i := 0; i < 10; i++ {
-			lines = append(lines, fmt.Sprintf("line-%d-%s", i, strings.Repeat("x", 200*1024)))
-		}
-		os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0644)
-		paths = append(paths, path)
-	}
-
-	var fileArgs []string
-	for _, p := range paths {
-		fileArgs = append(fileArgs, fmt.Sprintf("{\"path\":%q}", p))
-	}
-	tool := &headTailTool{dangerousConfig: danger.DangerousConfig{}}
-	result := callJSON(t, tool, fmt.Sprintf(`{"files":[%s],"lines":100}`, strings.Join(fileArgs, ",")))
-	var r struct {
-		Results []struct {
-			Lines []string `json:"lines"`
-		} `json:"results"`
-	}
-	mustUnmarshal(t, result, &r)
-	if len(r.Results) != nFiles {
-		t.Fatalf("expected %d results, got %d", nFiles, len(r.Results))
-	}
-
-	total := 0
-	for _, res := range r.Results {
-		fileTotal := 0
-		for _, line := range res.Lines {
-			fileTotal += len(unwrapUntrusted(line))
-		}
-		if fileTotal > maxHeadTailTotalBytes+200 {
-			t.Fatalf("per-file content %d bytes exceeds per-file cap %d", fileTotal, maxHeadTailTotalBytes)
-		}
-		total += fileTotal
-	}
-	if total > nFiles*(maxHeadTailTotalBytes+200) {
-		t.Fatalf("aggregate head_tail content %d bytes exceeds bound %d", total, nFiles*maxHeadTailTotalBytes)
 	}
 }
 

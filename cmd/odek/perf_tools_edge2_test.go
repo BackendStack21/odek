@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"unicode/utf8"
 )
 
 // ─── Checksum Edge Cases ──────────────────────────────────────────────
@@ -17,7 +16,7 @@ func TestChecksum_EmptyFile(t *testing.T) {
 	os.WriteFile(path, []byte{}, 0644)
 
 	tool := &checksumTool{}
-	args := fmt.Sprintf(`{"files":[{"path":"%s","algorithm":"md5"}]}`, path)
+	args := fmt.Sprintf(`{"path":"%s","algorithm":"md5"}`, path)
 	result := callJSON(t, tool, args)
 
 	var r struct {
@@ -37,52 +36,30 @@ func TestChecksum_EmptyFile(t *testing.T) {
 	}
 }
 
-func TestChecksum_MultipleFilesDiffHashes(t *testing.T) {
+func TestChecksum_IndividualFilesDiffHashes(t *testing.T) {
 	dir := t.TempDir()
-	path1 := filepath.Join(dir, "a.txt")
-	path2 := filepath.Join(dir, "b.txt")
-	os.WriteFile(path1, []byte("hello"), 0644)
-	os.WriteFile(path2, []byte("world"), 0644)
-
-	tool := &checksumTool{}
-	args := fmt.Sprintf(`{"files":[{"path":"%s"},{"path":"%s"}]}`, path1, path2)
-	result := callJSON(t, tool, args)
-
-	var r struct {
-		Results []struct {
-			Path  string `json:"path"`
-			Hash  string `json:"hash"`
-			Error string `json:"error"`
-		} `json:"results"`
-	}
-	mustUnmarshal(t, result, &r)
-	if len(r.Results) != 2 {
-		t.Fatalf("Results = %d, want 2", len(r.Results))
-	}
-	for i, res := range r.Results {
-		if res.Error != "" {
-			t.Errorf("result %d error: %s", i, res.Error)
+	var hashes []string
+	for i, content := range []string{"hello", "world"} {
+		path := filepath.Join(dir, fmt.Sprintf("file%d.txt", i))
+		if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+			t.Fatal(err)
 		}
-		if res.Hash == "" {
-			t.Errorf("result %d hash is empty", i)
+		var r checksumResult
+		mustUnmarshal(t, callJSON(t, &checksumTool{}, fmt.Sprintf(`{"path":%q}`, path)), &r)
+		if len(r.Results) != 1 || r.Results[0].Error != "" || r.Results[0].Hash == "" {
+			t.Fatalf("unexpected result: %+v", r)
 		}
+		hashes = append(hashes, r.Results[0].Hash)
 	}
-	if r.Results[0].Hash == r.Results[1].Hash {
-		t.Errorf("different files should have different hashes")
+	if hashes[0] == hashes[1] {
+		t.Fatal("different files have identical hashes")
 	}
 }
 
 func TestChecksum_EmptyPath(t *testing.T) {
-	tool := &checksumTool{}
-	result := callJSON(t, tool, `{"files":[{"path":""}]}`)
-	var r struct {
-		Results []struct {
-			Error string `json:"error"`
-		} `json:"results"`
-	}
-	mustUnmarshal(t, result, &r)
-	if r.Results[0].Error == "" {
-		t.Errorf("expected error for empty path")
+	output, err := (&checksumTool{}).Call(`{"path":""}`)
+	if err == nil || !strings.Contains(output, "path is required") {
+		t.Fatalf("empty path accepted: %s (%v)", output, err)
 	}
 }
 
@@ -197,78 +174,6 @@ func TestTree_MaxDepthLimit(t *testing.T) {
 	}
 }
 
-// ─── BatchPatch Additional Edge Cases ─────────────────────────────────
-
-// TestTruncateDiff_RuneBoundary pins the batch_patch preview truncation:
-// the cut backs off to a UTF-8 rune boundary and appends the ellipsis, so
-// multibyte content never renders as U+FFFD mojibake in the diff.
-func TestTruncateDiff_RuneBoundary(t *testing.T) {
-	long := strings.Repeat("æ", 60)       // 60 runes × 2 bytes = 120 bytes
-	got := truncatePreviewLine(long, 101) // 101 lands inside rune 50 (bytes 100..101)
-	if !utf8.ValidString(got) || strings.ContainsRune(got, utf8.RuneError) {
-		t.Fatalf("truncateDiff produced invalid UTF-8: %q", got)
-	}
-	want := strings.Repeat("æ", 50) + "…"
-	if got != want {
-		t.Errorf("cut = %q (len %d), want %q (len %d)", got, len(got), want, len(want))
-	}
-	if short := truncatePreviewLine("plain", 100); short != "plain" {
-		t.Errorf("truncatePreviewLine(short) = %q, want unchanged", short)
-	}
-}
-
-func TestBatchPatch_AllFailContinue(t *testing.T) {
-	tool := &batchPatchTool{}
-	result := callJSON(t, tool, `{"patches":[
-		{"path":"/nonexistent/a.txt","old_string":"x","new_string":"y"},
-		{"path":"/nonexistent/b.txt","old_string":"x","new_string":"y"},
-		{"path":"/nonexistent/c.txt","old_string":"x","new_string":"y"}
-	]}`)
-	var r struct {
-		Results []struct {
-			Success bool   `json:"success"`
-			Error   string `json:"error"`
-		} `json:"results"`
-	}
-	mustUnmarshal(t, result, &r)
-	if len(r.Results) != 3 {
-		t.Fatalf("Results = %d, want 3", len(r.Results))
-	}
-	for i, res := range r.Results {
-		if res.Success {
-			t.Errorf("result %d should have failed", i)
-		}
-		if res.Error == "" {
-			t.Errorf("result %d should have error", i)
-		}
-	}
-}
-
-func TestBatchPatch_ReplaceAll(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "dupes.txt")
-	os.WriteFile(path, []byte("foo bar foo baz foo\n"), 0644)
-
-	tool := &batchPatchTool{}
-	args := fmt.Sprintf(`{"patches":[{"path":"%s","old_string":"foo","new_string":"qux","replace_all":true}]}`, path)
-	result := callJSON(t, tool, args)
-
-	var r struct {
-		Results []struct {
-			Success bool   `json:"success"`
-			Diff    string `json:"diff"`
-			Error   string `json:"error"`
-		} `json:"results"`
-	}
-	mustUnmarshal(t, result, &r)
-	if !r.Results[0].Success {
-		t.Fatalf("patch failed: %s", r.Results[0].Error)
-	}
-	data, _ := os.ReadFile(path)
-	if string(data) != "qux bar qux baz qux\n" {
-		t.Errorf("replace_all result = %q, want 'qux bar qux baz qux\\n'", string(data))
-	}
-}
 
 // ─── CountLines Empty File ────────────────────────────────────────────
 
@@ -303,7 +208,7 @@ func TestHeadTail_FewerLinesThanN(t *testing.T) {
 	os.WriteFile(path, []byte("only one line\n"), 0644)
 
 	tool := &headTailTool{}
-	args := fmt.Sprintf(`{"files":[{"path":"%s"}],"lines":10,"mode":"head"}`, path)
+	args := fmt.Sprintf(`{"path":"%s","lines":10,"mode":"head"}`, path)
 	result := callJSON(t, tool, args)
 
 	var r struct {
@@ -331,7 +236,7 @@ func TestHeadTail_TailOnSmallFile(t *testing.T) {
 	os.WriteFile(path, []byte("a\nb\nc\n"), 0644)
 
 	tool := &headTailTool{}
-	args := fmt.Sprintf(`{"files":[{"path":"%s"}],"lines":5,"mode":"tail"}`, path)
+	args := fmt.Sprintf(`{"path":"%s","lines":5,"mode":"tail"}`, path)
 	result := callJSON(t, tool, args)
 
 	var r struct {

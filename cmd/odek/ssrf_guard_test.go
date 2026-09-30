@@ -189,10 +189,10 @@ func TestBrowser_SSRF_ResolvesInternal(t *testing.T) {
 	}
 }
 
-// TestHTTPBatch_SSRF_ResolvesInternal exercises the guard through the real
-// http_batch fetch path.
-func TestHTTPBatch_SSRF_ResolvesInternal(t *testing.T) {
-	tool := newHTTPBatchTool(danger.DangerousConfig{})
+// TestHTTPRequest_SSRF_ResolvesInternal exercises the guard through the real
+// http_request fetch path.
+func TestHTTPRequest_SSRF_ResolvesInternal(t *testing.T) {
+	tool := newHTTPRequestTool(danger.DangerousConfig{})
 	tool.client = &http.Client{
 		CheckRedirect: tool.checkRedirect,
 		Transport: &http.Transport{
@@ -200,17 +200,10 @@ func TestHTTPBatch_SSRF_ResolvesInternal(t *testing.T) {
 		},
 	}
 
-	result := callJSON(t, tool, `{"requests":[{"url":"http://internal-disguised.example.com/"}]}`)
-	var r struct {
-		Results []struct {
-			Error string `json:"error"`
-		} `json:"results"`
-	}
+	result := callJSON(t, tool, `{"url":"http://internal-disguised.example.com/"}`)
+	var r httpRequestResult
 	mustUnmarshal(t, result, &r)
-	if len(r.Results) != 1 {
-		t.Fatalf("Results = %d, want 1", len(r.Results))
-	}
-	if r.Results[0].Error == "" {
+	if r.Error == "" {
 		t.Fatal("expected fetch to be blocked by the dial guard")
 	}
 }
@@ -275,12 +268,12 @@ func TestSSRFGuardedTransport_Installed(t *testing.T) {
 		t.Error("browser tool Transport is missing the guarded DialContext")
 	}
 
-	h := newHTTPBatchTool(danger.DangerousConfig{})
+	h := newHTTPRequestTool(danger.DangerousConfig{})
 	if h.client.Transport == nil {
-		t.Error("http_batch tool client has no Transport — SSRF guard not installed")
+		t.Error("http_request tool client has no Transport — SSRF guard not installed")
 	}
 	if tr, ok := h.client.Transport.(*http.Transport); !ok || tr.DialContext == nil {
-		t.Error("http_batch tool Transport is missing the guarded DialContext")
+		t.Error("http_request tool Transport is missing the guarded DialContext")
 	}
 
 	w := newWebSearchTool(danger.DangerousConfig{}, config.WebSearchConfig{})

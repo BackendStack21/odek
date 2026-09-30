@@ -5,7 +5,7 @@
 // inputs (image resolution, "docker run" argument construction, file
 // injection) but does not know about agent tools. The cmd/odek wrapper
 // composes these helpers with the tool registry — keeping the
-// shellTool / parallelShellTool wiring out of this package preserves the
+// shellTool wiring out of this package preserves the
 // "no agent tool internals" boundary.
 //
 // See docs/SANDBOXING.md for the user-facing security model.

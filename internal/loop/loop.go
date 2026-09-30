@@ -3581,18 +3581,10 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 
 			// ledger the mutating calls that completed this run so the
 			// final reply can be reconciled against what actually happened.
-			if !results[i].errored || tc.Function.Name == "batch_patch" || tc.Function.Name == "parallel_shell" {
+			if !results[i].errored {
 				e.recordMutation(tc.Function.Name, tc.Function.Arguments, output)
 			}
-			if results[i].errored && tc.Function.Name == "batch_patch" {
-				for _, path := range successfulPatchPaths(output) {
-					e.recordReadCheck("patch", fmt.Sprintf(`{"path":%q}`, path), "", false)
-				}
-			} else if results[i].errored && tc.Function.Name == "parallel_shell" && len(parallelShellEntries(output)) > 0 {
-				e.recordReadCheck(tc.Function.Name, tc.Function.Arguments, output, false)
-			} else {
-				e.recordReadCheck(tc.Function.Name, tc.Function.Arguments, output, results[i].errored)
-			}
+			e.recordReadCheck(tc.Function.Name, tc.Function.Arguments, output, results[i].errored)
 
 			// Tool results: only shown in verbose mode.
 			if e.narrator == nil && e.renderer != nil && e.interactionMode != "off" {
@@ -4132,35 +4124,6 @@ func (e *Engine) buildToolDefs() []llmclient.ToolDef {
 // This mirrors the classification that the actual tool's Call() method
 // performs, so the batch gate only prompts for tools that would
 // actually require user approval.
-// riskClassFromRank is the inverse of danger.Rank. It is used when the
-// highest-ranked classification is selected from a list of commands/paths.
-func riskClassFromRank(r int) danger.RiskClass {
-	switch r {
-	case 10:
-		return danger.Blocked
-	case 9:
-		return danger.Destructive
-	case 8:
-		return danger.Unknown
-	case 7:
-		return danger.Persistence
-	case 6:
-		return danger.SystemWrite
-	case 5:
-		return danger.CodeExecution
-	case 4:
-		return danger.NetworkEgress
-	case 3:
-		return danger.Install
-	case 2:
-		return danger.LocalWrite
-	case 1:
-		return danger.Safe
-	default:
-		return ""
-	}
-}
-
 func classifyToolCall(name, args string) (danger.RiskClass, string) {
 	return classifyToolCallCtx(context.Background(), name, args)
 }
@@ -4208,41 +4171,6 @@ func classifyToolCallCtx(ctx context.Context, name, args string) (danger.RiskCla
 		}
 		_ = json.Unmarshal([]byte(args), &id)
 		return "", id.JobID
-	case "parallel_shell":
-		// The commands live inside a JSON array. Classify every command and
-		// surface all of them in the batch approval prompt so one cannot hide
-		// behind another.
-		var p struct {
-			Commands []struct {
-				Command     string `json:"command"`
-				Description string `json:"description,omitempty"`
-			} `json:"commands"`
-		}
-		if err := json.Unmarshal([]byte(args), &p); err != nil || len(p.Commands) == 0 {
-			return "", ""
-		}
-		var maxRank int
-		var maxCls danger.RiskClass
-		var parts []string
-		for _, c := range p.Commands {
-			if c.Command == "" {
-				continue
-			}
-			cls, _ := danger.ClassifyScriptGateCtx(ctx, c.Command)
-			if r := danger.Rank(cls); r > maxRank {
-				maxRank = r
-				maxCls = cls
-			}
-			if c.Description != "" {
-				parts = append(parts, fmt.Sprintf("%s (%s)", c.Command, c.Description))
-			} else {
-				parts = append(parts, c.Command)
-			}
-		}
-		if len(parts) == 0 {
-			return "", ""
-		}
-		return maxCls, strings.Join(parts, "; ")
 	case "write_file":
 		// Write targets use the write-aware classifier so deferred-execution
 		// targets (shell profiles, hooks, CI workflows, …) escalate to the
@@ -4275,8 +4203,8 @@ func classifyToolCallCtx(ctx context.Context, name, args string) (danger.RiskCla
 			return cls, p.Path
 		}
 		return cls, p.Path
-	case "read_file", "search_files", "batch_read", "file_info", "glob",
-		"diff", "multi_grep", "json_query", "tree", "count_lines", "checksum",
+	case "read_file", "search_files", "file_info", "glob",
+		"diff", "json_query", "tree", "count_lines", "checksum",
 		"sort", "head_tail", "base64", "tr", "word_count", "transcribe":
 		// Reads keep the direction-agnostic classifier — reading a CI
 		// workflow or hook file must stay frictionless.
@@ -4287,37 +4215,6 @@ func classifyToolCallCtx(ctx context.Context, name, args string) (danger.RiskCla
 			return "", ""
 		}
 		return danger.ClassifyPath(p.Path), p.Path
-	case "batch_patch":
-		// Each patch has its own path; classify every path so a destructive
-		// edit cannot hide behind a benign first patch.
-		var p struct {
-			Patches []struct {
-				Path      string `json:"path"`
-				NewString string `json:"new_string"`
-			} `json:"patches"`
-		}
-		if err := json.Unmarshal([]byte(args), &p); err != nil || len(p.Patches) == 0 {
-			return "", ""
-		}
-		var maxRank int
-		var paths []string
-		for _, patch := range p.Patches {
-			if patch.Path == "" {
-				continue
-			}
-			cls := danger.ClassifyPathWrite(patch.Path)
-			if lc, ok := danger.LifecycleContentClass(patch.Path, patch.NewString, cls); ok {
-				cls = lc
-			}
-			if r := danger.Rank(cls); r > maxRank {
-				maxRank = r
-			}
-			paths = append(paths, patch.Path)
-		}
-		if len(paths) == 0 {
-			return "", ""
-		}
-		return riskClassFromRank(maxRank), strings.Join(paths, "; ")
 	case "browser":
 		// The modern browser tool is a single `browser` call with an action
 		// field. Network-bearing actions are egress; everything else is safe.
@@ -4336,7 +4233,7 @@ func classifyToolCallCtx(ctx context.Context, name, args string) (danger.RiskCla
 		default:
 			return danger.NetworkEgress, args
 		}
-	case "http_batch":
+	case "http_request":
 		return danger.NetworkEgress, args
 	case "delegate_tasks":
 		// Spawning sub-agents is a trust-mutating operation: a compromised or
