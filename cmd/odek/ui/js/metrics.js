@@ -335,8 +335,7 @@ export function renderMetrics() {
       gauge.classList.toggle('warn', m.maxContext > 0 && ratio > 0.6);
       gauge.classList.toggle('hot', m.maxContext > 0 && ratio > 0.85);
       gauge.title = 'Context: ' + formatNum(shownCtx) + ' tokens' +
-        (m.maxContext > 0 ? ' of ~' + formatNum(m.maxContext) + ' (' + Math.round(ratio * 100) + '%)' : '') +
-        ' — the engine trims history automatically near the limit';
+        (m.maxContext > 0 ? ' of ~' + formatNum(m.maxContext) + ' (' + Math.round(ratio * 100) + '%)' : '');
     }
   }
 

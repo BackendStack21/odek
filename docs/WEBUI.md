@@ -137,17 +137,42 @@ Two token layers:
 
 ## Features
 
-### Command center
+### Task workspace
 
-The bundled client is a **zero-framework command center** — same EMBER language as bodek, but built for a pointer, a persistent inspector, and a command palette.
+The default workspace centers on the current task. **Overview** shows execution
+state, decisions needing attention, recovery, plan progress, jobs and delegated
+work. **Deliverables** separates captured artifacts, recorded file edits,
+validation evidence and durable decision receipts. **Activity** contains searchable
+raw tool returns with completed, failed or unknown execution outcomes.
 
-- **Model + thinking pickers** — top-bar selects for the active model and reasoning depth (`disabled` / `low` / `medium` / `high`). Thinking is persisted as `odek_thinking` and sent on every prompt.
-- **Command palette (`⌘K` / `Ctrl+K`)** — fuzzy jump to commands, sessions, models, and inspector workspaces
-- **Slash commands** — typing `/` in the composer opens the same completions as the palette (commands, sessions, models). `Enter`/`Tab` runs the selected item; `/new` `/clear` `/retry` `/cancel` `/stop` `/help` and the other palette verbs also dispatch on Enter. Typed `shutdown` death-gate stays a modal
-- **Prompt queue** — `Enter` while a turn is running holds the next prompt (reorder / delete in the strip above the composer); the queue drains automatically on `done`
-- **Three themes** — `ember-dark` · `ember-light` · `high-contrast` (health popover or palette)
-- **Desktop notifications** — opt-in; titles/bodies are truncated and never include raw tool arguments
-- **Inspector (`⌘.`)** — four workspaces: **Sessions**, **Now** (plan / jobs / agents), **Memory** (facts / skills / tools), **Ops** (runs / events / config). Kick is two-step; shutdown is a typed confirm.
+**Settings** contains preferences, knowledge and tool administration, runtime
+diagnostics and storage maintenance. **Schedules** has its own workspace. The
+command palette (`⌘K` / `Ctrl+K`) and slash completions share destinations;
+clear-transcript and duplicate navigation actions are removed. `/clear` gives a
+New session hint. `/retry` prepares the previous prompt for review without sending.
+
+**Run settings** in the top bar shows the workspace, execution mode and
+operator permission policy alongside model, reasoning depth and
+optional tighter caps for runtime, tool calls, tokens and cost. Zero or omitted
+caps retain operator limits; browser requests never raise existing operator caps
+or supply prices. Cost caps need configured input and output prices.
+
+The composer supports pointer Send/Queue, Enter to send, Shift+Enter for newlines,
+IME composition, ordinary multiline cursor editing and Alt+Up/Down history with
+draft restoration. Queued messages retain their model, reasoning and limit
+choices. Failures, stops and disconnects pause the queue.
+
+Preferences include themes, reading size, density, notifications and connection
+permission grants with revocation. Mobile inspectors trap focus, make the
+background inert, close with Escape and restore their opener. Async completion
+does not steal composer focus. Context browsing discovers files and sessions
+through the existing authenticated resolver.
+
+Automatic context trimming, tool recovery, memory maintenance and skill events
+do not create transcript notices, toasts or screen-reader announcements. Memory
+that requires a decision adds a direct Knowledge review action. Connection loss
+offers Reconnect now; only interrupted work prompts saved-progress review.
+User-requested action confirmations and actionable errors remain visible.
 
 ### Chat interface
 
@@ -155,10 +180,10 @@ The bundled client is a **zero-framework command center** — same EMBER languag
 - **Slash / palette** — typing `/` in the composer autocompletes the same items as `⌘K` (commands, sessions, models). Palette verbs also dispatch from the composer on Enter. Printable keys always type in the composer. Bodek-style JIT tips (`💡 tip: …`) dwell 8s the first time a queue, tool step, or swarm appears.
 - **Long replies** — the latest assistant answer is never folded. Older overflows get a sticky `Show more ↓` / `Show less ↑` fold under the content (not a floating pill). History reload keeps the last reply open.
 - **Multi-turn sessions** — each prompt continues the same conversation (the inspector **Sessions** tab lists history)
-- **Turn receipts** — Bodek-style coding receipt on the `⬡ odek` head (`touched N · +A −D · tests`), not a tool count
+- **Turn evidence** — recorded file edits and checks on the assistant head; checks are aggregated by exact command, with failed or unverified outcomes retained
 - **Wake turns** — `turn_started.initiated=system` renders as `⬡ odek · wake` on the assistant head, never as a user message
 - **Busy spinner** — Bodek braille spinner in the top bar, composer rail, and transcript while a turn runs (`reasoning · 4s`). The spinner keeps moving across thinking, tools, and approval waits — removing the transcript placeholder does not freeze it.
-- **Live plan & jobs** — Bodek header chips (`plan 1/4`, `● 2 jobs` / `✗ job`) stay visible when idle; click opens the inspector Now tab. While a turn runs the status rail appends `▸ plan 2/5 · <active step> · ⛔N`. A `plan` tool_call patches the snapshot on that frame; REST confirms after `tool_result`.
+- **Live plan & jobs** — Bodek header chips (`plan 1/4`, `● 2 jobs` / `✗ job`) stay visible when idle; click opens the inspector Now tab. While a turn runs the status rail appends `▸ plan 2/5 · <active step> · ⛔N`. Plan progress is agent-reported; the UI refreshes persisted state after tool results and provides a verification action.
 - **Markdown** — hand-written tokenizer (zero deps, no CDN): headings, lists, task lists, quotes, GFM tables, fenced code with copy, emphasis, strikethrough, allowlisted links/autolinks. Images are caption links, never `<img>` (CSP + no remote fetch). Streaming-safe: an open fence still renders; an open `**` stays literal.
 - **Live streaming** *(on by default; `--no-stream` / `stream: false` / `ODEK_STREAM=false`)* — answer and reasoning fragments arrive as they are generated (`token_delta` / `thinking_delta`) and render through the same rAF-batched pipeline; streaming state is in the health popover. Providers that reject SSE fall back silently to the bulk path.
 - **Reasoning, partial replies, and tools** — one sequential log per turn. Reasoning is collapsed behind a **▶ thinking** toggle (hidden by default; click to expand). Visible assistant text (`token_delta` / `token`, including DeepSeek/GLM mid-turn “Let me look…” replies) is a timeline row sealed when a tool starts so the next tokens open a new row instead of concatenating the turn. Tool heads sit in that same stream in arrival order. Tool args and results stay collapsed until the head is opened; long results truncate behind “show all”. History replays the same interleaved log.
@@ -173,18 +198,42 @@ The bundled client is a **zero-framework command center** — same EMBER languag
 
 ### Server status & heartbeat
 
-The top-bar status group (`connected / reconnecting`) doubles as a **health popover** — click it for version, uptime, model, sandbox/streaming state, live connection count, WebSocket round-trip latency, session tokens/cost, theme, notifications, and lifetime usage. An application-level heartbeat (`ping`/`pong` every 20s) measures RTT and detects dead links early; the server also pushes `keepalive` every 20s so idle proxies do not drop a silent thinking turn.
+The top-bar status group (`connected / reconnecting`) doubles as a **health popover** — click it for version, uptime, model, sandbox/streaming state, live connection count, WebSocket round-trip latency, session tokens/cost and lifetime usage. An application-level heartbeat (`ping`/`pong` every 20s) measures RTT and detects dead links early; the server also pushes `keepalive` every 20s so idle proxies do not drop a silent thinking turn.
 
 A dropped socket is **not** lamp-only. The top-bar word turns amber (`reconnecting`), a sticky `#conn-banner` sits above the transcript (`connection lost · retrying in Ns`) until the socket is open again, and one system line is written per outage (`⚠ Connection lost — reconnecting…`). Restore writes `Connection restored` (or notes that an in-flight turn ended). Sending while down toasts instead of failing silently. Retries do not spam the log.
 
 ### Inspector (`⌘.`)
 
-The right-side drawer exposes the REST management surface in four workspaces:
+The task drawer has Overview, Deliverables and Activity tabs. Sessions use the
+left rail on wide screens and a drawer on smaller screens. Settings separates
+Preferences, Knowledge, Runtime diagnostics and Maintenance; Schedules opens
+scheduled work separately. Existing memory, skill promotion, tool schemas,
+headless runs, events, config and connection controls remain available there.
 
-- **Sessions** — the session index (search, pin, rename, export, delete, “more”). The top-bar list button and the empty-state inspector tip open this tab. Switching or starting a session closes the drawer.
-- **Now** — the active session plan and background jobs, plus `GET /api/subagents` with per-task stop. Bodek cadences: a `plan` tool_call patches the snapshot immediately, `tool_result` confirms via REST (250ms debounce), the strip polls every 1s while a turn runs and the Now tab polls every 3s. Jobs: `bg_job` kicks `GET /api/jobs` now, 10s watcher otherwise, 3s while Now is open. The Now tab badges when a plan or job is live. Header chips (`plan 1/4`, `● 2 jobs` / `✗ job`) stay visible when idle; click opens Now. While busy the status rail appends `▸ plan 2/5 · <active step> · ⛔N`.
-- **Memory** — user/env facts with add/remove, caps, pending-review episode promote, skills (promote / force-promote), and the built-in tool registry
-- **Ops** — headless REST runs (`POST /api/prompt`: status, cancel, remote approve/deny/trust), the recent `odek.event/v1` feed, sanitized config, MCP listing, two-step connection kick, and the typed `shutdown` death-gate
+Plan states are labeled agent-reported rather than verified. Delegated tasks
+start queued; started, partial, budget-limited, failed, cancelled and unknown
+outcomes stay distinct. Raw activity is bounded to 300 results / 16 MiB per view;
+persisted conversation history remains the source for reloading.
+
+Approval and question cards remain visible, disabled while sending, until server
+acknowledgement. Approval grants name their actual connection scope; protected
+classes retain per-call confirmation and friction. Questions support multiline
+answers, Skip and Stop; Ctrl/Cmd+Enter submits. Receipts record accepted, expired
+or interrupted decisions, are redacted and bounded to the latest 128 per session,
+and are kept separate from model context. Temporary trust survives session
+switches on that connection, and can be revoked in Preferences.
+
+Stops show **Stopping…** on the request acknowledgement, then **Stopped** only
+on execution settlement. Completed side effects are preserved and background
+jobs have independent lifetimes. Recovery waits for execution ownership to be
+released and lists recorded returns, failures and uncertain outcomes. Continue
+uses persisted context plus a checked revision/generation; Prepare to run again
+requires reviewing the previous task and warns about duplicate side effects.
+
+Schedules offer weekday, daily and weekly presets, explicit timezone, advanced
+cron and a preview of the next three fires. Paused jobs have no next scheduled
+time. Host health reports recent heartbeat or unavailable; a saved definition
+alone does not imply a daemon is running.
 
 ### @ resource completion
 
@@ -199,9 +248,9 @@ Each response shows **per-message token stats** appended to the assistant bubble
 - ↳ **Output tokens**: cumulative completion tokens
 - ⛁ **Cache** (when non-zero): combined cache read / write / prefix hits
 
-The **status strip** shows a live context-window gauge once a run reports data, plus a session-cost chip when prices are configured:
+The **status strip** shows a session-cost chip when prices are configured. Context usage stays in the server-status popover:
 
-- **Context gauge** — a hairline bar and tabular `%` from per-iteration `usage` events (and a streamed-token estimate between them), against the model's window size from `/api/models` or `usage.maxContextTokens`. Amber above 60%, red above 85%; a `context_trimmed` signal flashes the gauge. Without a known window size it shows raw tokens. Hover for exact numbers and the trimming note.
+- **Context gauge** — a hairline bar and tabular `%` from per-iteration `usage` events (and a streamed-token estimate between them), against the model's window size from `/api/models` or `usage.maxContextTokens`. Without a known window size it shows raw tokens. This is an optional diagnostic, not a warning to review requirements.
 - **Session tokens** — `⇥ in ↦ out`, cumulative session totals. `usage.inputTokens` / `usage.outputTokens` overlay this-run spend on the pre-turn baseline so the numbers move mid-turn; `done` replaces them with the persisted session totals (health popover).
 - **Session cost** — Bodek header chip `$0.201` (`#cost-chip`), estimated from those live session totals and the resolved prices (`/api/limits`: `model_prices` per-model override, flat pair fallback — the client-side twin of `limits.ResolvePrices`). Hidden entirely when no prices are configured. Click opens the health popover for the token breakdown.
 
@@ -686,7 +735,9 @@ The UI communicates entirely over a single WebSocket at `/ws`. Messages are newl
 | `turn_started` | Emitted for **every** turn (operator and system-initiated wake alike) immediately after the matching `session` frame and before the first streamed frame — clients open/upsert the streaming card by `turn_id`, so a missed `session` frame can no longer strand a turn | `turn_id` (`t_<hex>`), `session_id`, `initiated` (`"operator"` or `"system"` — computed server-side via the wake provenance gate; client input cannot influence it), `model` (mirrors the `session` frame's `model`) |
 | `token_delta` | Live streamed answer fragment (streaming on) | `content` (markdown fragment) |
 | `thinking_delta` | Live streamed reasoning fragment (streaming on) | `content` |
-| `cancelled` | After a `cancel` message is honored | `session_id`, `idle` (true when nothing was running) |
+| `cancelled` | Cancellation request acknowledged | `session_id`, `requested` (true while execution is still settling), `idle` (true when nothing was running) |
+| `turn_settled` | Execution and checkpoint unwinding finished | `session_id`, `turn_id`, `run_id`, `status` (`completed`, `failed`, `cancelled`) |
+| `permissions` | Connection grants after `permissions_get` or `permissions_revoke` | `classes`, `scope` |
 | `subagent_cancelled` | Ack for a `subagent_cancel` message | `session_id`, `task_id`, `accepted` (false is a benign race — the task already finished) |
 | `token` | Final answer text (bulk; **suppressed when streamed via `token_delta`**) | `content` (markdown) |
 | `thinking` | Reasoning content (bulk; suppressed when `thinking_delta` streamed it) | `content` |
@@ -992,3 +1043,31 @@ output and are not mistaken for diff headers.
 Retired batch execution tools have no specialized views, including in historical
 sessions. Their output uses the generic raw/JSON fallback; see
 [the migration guide](MIGRATION.md#batch-execution-tool-retirement).
+
+## Task supervision API additions
+
+- `GET /api/workspace` — authenticated workspace, sandbox, permission policy,
+  configured limits and capability flags. No credentials.
+- `GET /api/sessions/{id}/recovery` — strict session-token authorization;
+  acquires execution ownership with a two-second deadline (409 while settling),
+  reloads and revalidates authorization. Returns revision, generation,
+  original_prompt, completed/failed/uncertain tool records, decisions and a warning.
+  Rerun text comes from redacted authored input stored before attachment/reference
+  expansion. Legacy expanded input returns an empty prompt and must be entered
+  again. This persistence metadata is excluded from provider messages.
+- `GET /api/schedules/preview?cron=0%209%20*%20*%201-5&timezone=Europe%2FBerlin`
+  — validated cron/timezone and next three scheduled times; no definition saved.
+- `GET /api/schedules` also returns `host_health`: status `recent_heartbeat` or
+  `unavailable`, latest heartbeat and recent host count. Schedulers write a 0600
+  heartbeat every 15 seconds, expire after 45 seconds, and remove it on shutdown.
+
+WebSocket `prompt` and `POST /api/prompt` accept `limits` with
+`max_runtime_seconds`, `max_tool_calls`, `max_input_tokens`, `max_output_tokens`
+and `max_cost_usd`; each can only tighten operator caps. Recovery continuation
+additionally supplies `recovery_revision` and `recovery_generation`; both must
+match the session loaded under execution ownership, otherwise the turn fails
+without executing. `permissions_get` snapshots temporary grants;
+`permissions_revoke` clears grants on this connection. `clarify_response` accepts
+`action: "answer"` (default) or `"skip"`; Skip returns a skipped-question tool
+error without inventing an answer. `clarify_ack.action` confirms that choice.
+Existing protocol clients may omit these additive fields.

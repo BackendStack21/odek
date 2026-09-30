@@ -44,6 +44,7 @@ import (
 	"github.com/BackendStack21/odek/internal/config"
 	"github.com/BackendStack21/odek/internal/diagnostics"
 	"github.com/BackendStack21/odek/internal/events"
+	"github.com/BackendStack21/odek/internal/redact"
 	"github.com/BackendStack21/odek/internal/resource"
 	"github.com/BackendStack21/odek/internal/session"
 	golangws "golang.org/x/net/websocket"
@@ -428,6 +429,7 @@ var (
 // serveRun is one headless agent execution started via POST /api/prompt.
 type serveRun struct {
 	// Serialized state (via snapshot).
+	Task         string    `json:"task,omitempty"`
 	ID           string    `json:"id"`
 	SessionID    string    `json:"session_id"`
 	Model        string    `json:"model"`
@@ -600,6 +602,7 @@ func (r *serveRun) snapshot(includeEvents bool) map[string]any {
 		"id":            r.ID,
 		"session_id":    r.SessionID,
 		"model":         r.Model,
+		"task":          r.Task,
 		"status":        r.Status,
 		"started_at":    r.StartedAt,
 		"ended_at":      r.EndedAt,
@@ -776,6 +779,9 @@ func resetServeRuns() {
 
 // promptRequest is the body of POST /api/prompt.
 type promptRequest struct {
+	Limits                 *serveRunLimits   `json:"limits,omitempty"`
+	RecoveryRevision       *uint64           `json:"recovery_revision,omitempty"`
+	RecoveryGeneration     string            `json:"recovery_generation,omitempty"`
 	Content                string            `json:"content"`
 	SessionID              string            `json:"session_id"`
 	AuthToken              string            `json:"auth_token"`
@@ -805,6 +811,9 @@ func startServeRun(
 	if req.Model != "" && (len(req.Model) > maxModelIDBytes || !modelIDPattern.MatchString(req.Model)) {
 		return nil, fmt.Errorf("invalid model ID")
 	}
+	if _, err := req.Limits.resolve(resolved.Limits); err != nil {
+		return nil, err
+	}
 	if _, _, err := resolveServeThinking(req.Thinking); err != nil {
 		return nil, err
 	}
@@ -831,6 +840,7 @@ func startServeRun(
 
 	run := &serveRun{
 		ID:              newRunID(),
+		Task:            shorten(redact.RedactSecrets(req.Content), 160),
 		SessionID:       req.SessionID,
 		Model:           resolved.Model,
 		Status:          "running",
@@ -913,6 +923,7 @@ func startServeRun(
 	registerRun(run)
 
 	msg := wsClientMsg{
+		Limits: req.Limits, RecoveryRevision: req.RecoveryRevision, RecoveryGeneration: req.RecoveryGeneration,
 		Type:            "prompt",
 		Content:         req.Content,
 		SessionID:       req.SessionID,
@@ -948,6 +959,7 @@ func startServeRun(
 		defer run.releaseResources()
 		var sessionIn, sessionOut int
 		ctx = context.WithValue(ctx, serveRunIDKey{}, run.ID)
+		ctx = context.WithValue(ctx, serveApproverKey{}, approver)
 		sess := handlePrompt(ctx, recordSend, store, resources, resolved, agent, injectionGuard, nil, msg, &sessionIn, &sessionOut, cancelWithApproval, &deltas, bgRT, &turnTag)
 		run.mu.Lock()
 		// Failed/cancelled turns send no done frame, but their provider

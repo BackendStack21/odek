@@ -20,7 +20,7 @@ import { metricsLiveContext, metricsDone, metricsApplySpeed, metricsResetSpeed, 
 import { drainQueue } from './input.js';
 import { setIntent, openTurn, markWakeTurn, sealTurn, paintIntent } from './render.js';
 import { badgeNow } from './panels.js';
-import { applyPlanMutation, schedulePlanRefresh, kickPlanLive, stopPlanLiveIfIdle, resetPlanPanel, fetchPlanSnapshot } from './plan.js';
+import { schedulePlanRefresh, kickPlanLive, stopPlanLiveIfIdle, resetPlanPanel, fetchPlanSnapshot } from './plan.js';
 import { listJobs } from './api.js';
 
 // Reconnect backoff: 1s doubling to a 30s cap; reset after a clean interval
@@ -30,42 +30,27 @@ let reconnectDelay = 1000;
 // reconnect — the previous turn died with the socket, and the input must be
 // unbricked instead of waiting for a 'done' that never comes.
 let wasConnected = false;
-// One transcript notice per outage (not every backoff retry).
-let lostNotified = false;
 let droppedBusy = false;
-let retryTimer = null;
-let retryDeadline = 0;
 let reconnectTimer = null;
 
 function connBannerEl() {
   return document.getElementById('conn-banner');
 }
 
-function stopRetryTick() {
-  if (retryTimer) {
-    clearInterval(retryTimer);
-    retryTimer = null;
-  }
-}
-
-function paintConnBanner(phase) {
+function paintConnBanner() {
   const el = connBannerEl();
   if (!el) return;
   el.hidden = false;
-  if (phase === 'wait') {
-    const left = Math.max(0, Math.ceil((retryDeadline - Date.now()) / 1000));
-    el.textContent = left > 0
-      ? '⚠ connection lost · retrying in ' + left + 's'
-      : '⚠ connection lost · reconnecting…';
-    return;
-  }
-  el.textContent = '⚠ connection lost · reconnecting…';
+  const existing=el.querySelector('.connection-retry');if(existing){existing.disabled=false;return;}
+  el.textContent = 'Connection unavailable. ';
+  const retry=document.createElement('button');retry.type='button';retry.className='connection-retry';retry.textContent='Reconnect now';
+  retry.addEventListener('click',()=>{retry.disabled=true;connect();});el.appendChild(retry);
 }
 
 function hideConnBanner() {
-  stopRetryTick();
   const el = connBannerEl();
   if (!el) return;
+  if(el.contains?.(document.activeElement))promptEl.focus();
   el.hidden = true;
   el.textContent = '';
 }
@@ -76,7 +61,7 @@ function noteDisconnect() {
   if (statusEl) statusEl.textContent = 'reconnecting';
   sendBtn.disabled = true;
 
-  droppedBusy = !!S.busy;
+  droppedBusy = droppedBusy || !!S.busy;
   if (droppedBusy) S.pauseQueue?.();
   streamFlush();
   endThinking();
@@ -87,20 +72,9 @@ function noteDisconnect() {
   clearClarify();
   stopPlanLiveIfIdle();
 
-  stopRetryTick();
-  retryDeadline = Date.now() + reconnectDelay;
-  paintConnBanner('wait');
-  retryTimer = setInterval(() => paintConnBanner('wait'), 250);
-  if (retryTimer && typeof retryTimer.unref === 'function') retryTimer.unref();
+  paintConnBanner();
 
-  // Lamp is easy to miss (the connected word is hidden). Banner + one
-  // transcript line fire only after we had a live socket, and only once
-  // per outage so retries do not spam the log.
-  if (wasConnected && !lostNotified) {
-    lostNotified = true;
-    addSystemMessage('⚠ Connection lost — reconnecting…');
-    announce('Connection lost. Reconnecting.');
-  }
+  if (droppedBusy) S.onRecoveryNeeded?.('Connection interrupted the turn');
 }
 
 export function connect() {
@@ -108,8 +82,8 @@ export function connect() {
     clearTimeout(reconnectTimer);
     reconnectTimer = null;
   }
-  stopRetryTick();
-  if (connBannerEl() && !connBannerEl().hidden) paintConnBanner('try');
+  if (connBannerEl() && !connBannerEl().hidden) paintConnBanner();
+  const retry=connBannerEl()?.querySelector('.connection-retry');if(retry)retry.disabled=true;
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   const token = getWsToken();
   const protocols = token ? ['odek.' + token] : [];
@@ -117,13 +91,13 @@ export function connect() {
 
   S.ws.onopen = () => {
     hideConnBanner();
-    lostNotified = false;
     dotEl.className = 'dot connected';
     statusEl.textContent = 'connected';
     sendBtn.disabled = !!S.uploading;
     reconnectDelay = 1000;
     // Hide loading skeleton when connected
     if (skeletonEl) skeletonEl.classList.remove('visible');
+    S.refreshPermissions?.();
     if (wasConnected) {
       // F-A3: reconnect, not first connect. A turn in flight died with the
       // old socket — reset busy and re-enable the prompt, or the client
@@ -131,10 +105,11 @@ export function connect() {
       // transcript; only the completion is missing.
       S.busy = false;
       promptEl.disabled = false;
-      addSystemMessage(droppedBusy
-        ? 'Connection restored — the previous turn ended before completion.'
-        : 'Connection restored.');
-      announce('Connection restored.');
+      if(droppedBusy){
+        addSystemMessage('Work was interrupted. Review saved progress before continuing.');
+        announce('Work was interrupted. Review saved progress.');
+        S.onRecoveryNeeded?.('Connection interrupted the turn');
+      }
       droppedBusy = false;
       // Re-adopt the session so the new connection's agent gets the memory
       // buffer (bodek does this; the old WebUI did not).
@@ -171,7 +146,7 @@ export function connect() {
     let event;
     try { event = JSON.parse(e.data); } catch { return; }
 
-    if (event.turn_id && S.closedTurnIds?.has(event.turn_id)) return;
+    if (event.type!=='turn_settled' && event.turn_id && S.closedTurnIds?.has(event.turn_id)) return;
     if (S.turnEnded && ['tool_call','tool_result','thinking','thinking_delta','token','token_delta','subagent_state','subagent_log','approval_request','clarify_request','done'].includes(event.type)) return;
     if (S.stopRequested && ['tool_call','subagent_log','thinking','thinking_delta','approval_request','clarify_request'].includes(event.type)) return;
     if (S.stopRequested && event.type === 'subagent_state' && event.phase !== 'finished') return;
@@ -199,7 +174,6 @@ export function connect() {
         kickPlanLive();
         paintIntent();
         badgeNow();
-        announce('Turn started');
         break;
 
       case 'artifact':
@@ -279,7 +253,7 @@ export function connect() {
         streamFlush();
         endThinking();
         setIntent(toolProgress(event.name, event.data));
-        if (event.name === 'plan') applyPlanMutation(event.data);
+        if (event.name === 'plan') schedulePlanRefresh();
         if (event.name === 'delegate_tasks') {
           addSubagentGroup(event.data);
         } else {
@@ -331,21 +305,26 @@ export function connect() {
       case 'cancelled':
         if (!sameTurn || (event.session_id && S.sessionId && event.session_id !== S.sessionId)) break;
         S.pauseQueue?.();
-        streamFlush();
-        endThinking();
-        endStream('cancelled');
-        setIntent('');
-        // The run is unwinding — drop every pending approval card so a
-        // stray click cannot approve an operation whose execution context
-        // is already dead (the server interrupts the approval wait on
-        // cancel, but the card would stay rendered waiting for an ack that
-        // never comes). Same teardown approval_ack uses, minus the ack.
-        clearApprovals();
-        clearClarify();
-        stopPlanLiveIfIdle();
-        addSystemMessage(event.idle ? '⏹ Nothing to cancel' : '⏹ Cancelled');
-        badgeNow();
-        announce('Turn cancelled');
+        if(event.idle){clearApprovals({drain:false});clearClarify();endStream('cancelled');addSystemMessage('No active execution to stop.');break;}
+        S.stopRequested=true;setIntent('stopping');
+        clearApprovals({drain:false});clearClarify();
+        if(event.requested){addSystemMessage('Stop accepted · waiting for execution to settle.');announce('Stop requested');}
+        else {endStream('interrupted');addSystemMessage('Stop outcome requires review.');S.onRecoveryNeeded?.('Stop outcome requires review');}
+        S.refreshSupervision?.();
+        break;
+
+      case 'turn_settled':
+        if(event.session_id && S.sessionId && event.session_id!==S.sessionId)break;
+        if(event.turn_id && S.currentTurnId && event.turn_id!==S.currentTurnId)break;
+        if(S.stopRequested && event.status==='cancelled'){
+          streamFlush();endThinking();endStream('cancelled');addSystemMessage('Execution stopped. Review saved progress before continuing.');announce('Execution stopped');
+          S.onRecoveryNeeded?.('Execution stopped');kickJobsFetch();
+        } else if(event.status!=='completed') {S.onRecoveryNeeded?.('Work interrupted');}
+        S.paintEvidence?.();S.refreshSupervision?.();
+        break;
+
+      case 'permissions':
+        S.onPermissions?.(event);
         break;
 
       case 'subagent_cancelled':
@@ -366,7 +345,7 @@ export function connect() {
         notifyUser('turn done', 'Turn finished');
         badgeNow();
         announce('Turn complete');
-        drainQueue();
+        S.paintEvidence?.();S.refreshSupervision?.();
         // Append per-message stats to the last assistant bubble. Built via
         // textContent/setAttribute (never innerHTML) so server-controlled
         // values cannot be reinterpreted as markup even if a future field
@@ -390,20 +369,22 @@ export function connect() {
         // Consolidated metrics (context gauge + session tokens + cost).
         metricsDone(event);
         if (S.sessionId) loadSessions();
+        drainQueue();
         break;
 
       case 'error':
         if (!sameTurn) break;
         S.pauseQueue?.();
-        streamFlush(); endThinking(); endStream();
-        setIntent('');
+        streamFlush(); endThinking();
+        if(S.stopRequested){setIntent('stopping');}else{endStream('interrupted');setIntent('');}
         S.lastFailedPrompt = S.lastPrompt;
+        S.onRecoveryNeeded?.('Work failed');
         // The run is unwinding on error — same approval teardown as
         // 'cancelled': a pending card would wait for an ack that never
         // comes and block the queue.
         clearApprovals();
         clearClarify();
-        addSystemMessage('⚠ ' + formatErrorMessage(event.message) + ' — Alt+R to retry');
+        addSystemMessage('⚠ ' + formatErrorMessage(event.message) + ' — Review saved progress before continuing or running again.');
         stopPlanLiveIfIdle();
         notifyUser('turn failed', 'A turn failed');
         badgeNow();
@@ -418,7 +399,7 @@ export function connect() {
       case 'approval_ack':
         // The request was answered (by this or another connected client);
         // drop it from the queue if it is still shown.
-        dismissApproval(event.id);
+        dismissApproval(event.id,event.action);
         break;
 
       case 'approval_expired':
@@ -434,7 +415,7 @@ export function connect() {
         break;
 
       case 'clarify_ack':
-        dismissClarify(event.id);
+        dismissClarify(event.id,event.action);
         break;
 
       case 'clarify_expired':
@@ -442,11 +423,12 @@ export function connect() {
         break;
 
       case 'skill_event':
-        handleSkillEvent(event);
+        S.refreshKnowledge?.();
         break;
 
       case 'memory_event':
-        handleMemoryEvent(event);
+        if(event.event==='episode_pending_review'){S.knowledgeNeedsReview=true;S.refreshSupervision?.();}
+        S.refreshKnowledge?.();
         break;
 
       case 'agent_signal':
@@ -463,60 +445,6 @@ export function wsSend(obj) {
     return true;
   }
   return false;
-}
-
-// ── Skill Events ──
-// Remaining kinds after the self-learning removal: loaded/autoloaded
-// (silent — noisy per turn) and deleted (CLI `odek skill delete`).
-function handleSkillEvent(event) {
-  switch (event.event) {
-    case 'deleted':
-      showToast('✗ Skill deleted: ' + (event.skill_name || ''));
-      break;
-    case 'loaded': case 'autoloaded':
-      // Silent — noisy to show every skill load.
-      break;
-  }
-}
-
-// ── Memory Events ──
-function handleMemoryEvent(event) {
-  switch (event.event) {
-    case 'fact_added':
-      showToast('🧠 Memory fact added (' + (event.target || '') + ')');
-      break;
-    case 'fact_merged':
-      showToast('🧠 Memory fact merged (' + (event.target || '') + ')');
-      break;
-    case 'fact_replaced':
-      showToast('🧠 Memory fact updated (' + (event.target || '') + ')');
-      break;
-    case 'fact_removed':
-      showToast('🧠 Memory fact removed (' + (event.target || '') + ')');
-      break;
-    case 'fact_consolidated':
-      showToast('🧠 Memory consolidated (' + (event.target || '') + ': ' +
-        (event.count || 0) + ' → ' + (event.new_count || 0) + ')');
-      break;
-    case 'episode_stored':
-      // Silent by default — fires after every qualifying session.
-      break;
-    case 'episode_promoted':
-      showToast('💾 ✓ Episode promoted: ' + (event.session_id || ''));
-      break;
-    case 'episode_discarded':
-      showToast('🗑️ Episode discarded: ' + (event.session_id || ''));
-      break;
-    case 'episode_evicted':
-      showToast('💾 ✗ ' + (event.count || 0) + ' episode(s) evicted');
-      break;
-    case 'episode_pending_review':
-      showToast('🔒 Episode pending review (untrusted): ' + (event.session_id || ''));
-      break;
-    case 'episode_deduped':
-      // Silent — internal dedup detail.
-      break;
-  }
 }
 
 // Bodek toolProgress — one calm label for the status line (progress.go).
@@ -598,7 +526,7 @@ function upsertJob(event) {
   };
   if (idx >= 0) jobs[idx] = { ...jobs[idx], ...row };
   else jobs.unshift(row);
-  S.jobs = jobs.slice(0, 40);
+  S.jobs = jobs.slice(0, 40);S.refreshSupervision?.();
   paintIntent();
   badgeNow();
   if (event.status && event.status !== 'running') {
@@ -631,7 +559,7 @@ function kickJobsFetch() {
   if (!sid) return;
   listJobs(sid, getSessionToken(sid) || undefined).then((data) => {
     if (S.sessionId !== sid) return;
-    S.jobs = (data && data.jobs) || [];
+    S.jobs = (data && data.jobs) || [];S.refreshSupervision?.();
     paintIntent();
     badgeNow();
   }).catch(() => {});
@@ -639,8 +567,8 @@ function kickJobsFetch() {
 
 function handleAgentSignal(event) {
   switch (event.event) {
-    case 'tool_recovery':
-      showToast('🔁 Tool recovery: ' + (event.tool || ''));
+    // Automatic recovery and context maintenance need no principal action.
+    case 'tool_recovery': case 'context_trimmed':
       break;
     case 'tool_running':
       setIntent((event.tool ? event.tool + ' · ' : '') + (event.detail || 'running'));

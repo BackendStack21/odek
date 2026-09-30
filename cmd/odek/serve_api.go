@@ -304,6 +304,14 @@ func exportSessionMarkdown(sess *session.Session) string {
 		b.WriteString("- **Sandboxed:** yes\n")
 	}
 	b.WriteString("\n---\n\n")
+	if len(sess.Decisions) > 0 {
+		b.WriteString("## Principal decisions\n\n")
+		for _, decision := range sess.Decisions {
+			text := decision.Kind + " · " + decision.Action + " · " + decision.State + "\n" + decision.Risk + " · " + decision.TurnID + "\n" + decision.Command
+			fence := codeFence(text)
+			b.WriteString(fence + "text\n" + text + "\n" + fence + "\n\n")
+		}
+	}
 
 	for _, m := range sess.Messages {
 		switch m.Role {

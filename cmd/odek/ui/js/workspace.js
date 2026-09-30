@@ -1,18 +1,20 @@
 // Workspace navigation, per-session drafts and the inspectable result collection.
 import { S } from './state.js';
 import { renderResult, resultKind } from './results.js';
-import { togglePanels } from './panels.js';
 import { toolPreview } from './toolviews.js';
+import { openTab } from './commands.js';
+import { summarizeEvidence } from './evidence.js';
 
 const byId = id => document.getElementById(id);
 function textNode(tag, cls, text) {
   const el = document.createElement(tag); el.className = cls; el.textContent = text; return el;
 }
-const outputs = [];
+const outputs = [];S.activityPruned=false;
 export function clearResults() {
-  outputs.length = 0;
+  outputs.length = 0;S.activityPruned=false;
   const budget=byId("budget-view");if(budget){budget.textContent="Budget usage appears after the first iteration.";budget.classList.remove("budget-exhausted");}
   S.resetArtifacts?.();
+  S.resetSupervision?.();S.clearDecisionReceipts?.();
   const detail=byId('output-detail');if(detail){detail.textContent='';detail.hidden=true;}
   const list=byId('output-list');if(list)list.hidden=false;
   paintResults();
@@ -22,32 +24,39 @@ function paintResults() {
   if (!list) return;
   list.textContent = '';
   if (!outputs.length) list.appendChild(textNode('p', 'workspace-empty', 'Results will appear here as odek works. Open any result to inspect its full output.'));
+  if(S.activityPruned)list.appendChild(textNode('p','management-note','Older raw results were removed from this view to limit memory. Reload the saved session to review persisted history.'));
+  const query=(byId('activity-search')?.value || '').toLowerCase();
   for (const item of outputs) {
+    if(query && !(item.name+' '+item.preview+' '+item.outcome).toLowerCase().includes(query))continue;
     const button = textNode('button', 'output-item', ''); button.type = 'button';
-    button.append(textNode('span', 'output-kind', resultKind(item.name, item.output)), textNode('strong', 'output-name', item.name), textNode('span', 'output-path', item.preview));
+    button.dataset.outcome=item.outcome;
+    button.append(textNode('span','output-outcome',item.outcome==='completed'?'Returned':item.outcome==='failed'?'Failed':'Unknown'),textNode('span', 'output-kind', resultKind(item.name, item.output)), textNode('strong', 'output-name', item.name), textNode('span', 'output-path', item.preview));
     button.addEventListener('click', () => inspect(item)); list.appendChild(button);
   }
-  const count = byId('output-count'); if (count) count.textContent = String(outputs.length);
+  paintEvidence();
 }
 function inspect(item) {
   const detail = byId('output-detail'); if (!detail) return;
   detail.textContent = '';
   const back = textNode('button', 'result-action', '← All results'); back.type = 'button';
-  back.addEventListener('click', () => { detail.hidden = true; byId('output-list').hidden = false; });
+  back.addEventListener('click', () => { detail.hidden = true; byId('output-list').hidden = false; byId('output-list').querySelector('button')?.focus(); });
   const jump = textNode('button', 'result-action', 'Show in conversation'); jump.type = 'button';
   jump.addEventListener('click', () => {
+    S.closePanels?.();
     if (item.block.isConnected) { item.block.scrollIntoView({ block: 'center', behavior: 'auto' }); item.block.querySelector('.tb-header')?.focus(); }
   });
   detail.append(back, jump, textNode('h3', 'output-title', item.name));
   renderResult(detail, item);
   detail.hidden = false; byId('output-list').hidden = true;
-  togglePanels(true); byId('ptab-outputs')?.click();
+  openTab('activity');detail.tabIndex=-1;detail.focus();
 }
 S.recordResult = (block, output) => {
-  const item = { block, output, name: block.dataset.toolName || 'tool', args: block.dataset.toolArgs || '', preview: toolPreview(block.dataset.toolName || '', block.dataset.toolArgs || '') };
+  const item = { block, output, outcome:block.dataset.outcome || 'unknown', turnId:block.dataset.turnId || '', callId:block.dataset.callId || '', name: block.dataset.toolName || 'tool', args: block.dataset.toolArgs || '', preview: toolPreview(block.dataset.toolName || '', block.dataset.toolArgs || '') };
   item.stepId=(S.plan?.steps || []).find(step=>step.status==='in_progress')?.id || '';
   outputs.push(item);
-  while(outputs.length>300 || outputs.reduce((n,result)=>n+result.output.length,0)>16*1024*1024)outputs.shift();
+  let pruned=false;
+  while(outputs.length>300 || outputs.reduce((n,result)=>n+result.output.length,0)>16*1024*1024){outputs.shift();pruned=true;}
+  if(pruned)S.activityPruned=true;
   paintResults();
   const body = block.querySelector('.tb-body');
   if (body) { const button = textNode('button', 'result-inspect', 'Inspect result ↗'); button.type = 'button'; button.addEventListener('click', () => inspect(item)); body.appendChild(button); }
@@ -144,5 +153,27 @@ S.showStepResults = stepId => {
   detail.appendChild(textNode('p','management-note','Results recorded while this step was active. This is a timeline association, not a claim of validation.'));
   if(!matches.length)detail.appendChild(textNode('p','workspace-empty','No recorded tool results for this step in the current view.'));
   for(const item of matches){const button=textNode('button','output-item',item.name+' · '+item.preview);button.type='button';button.addEventListener('click',()=>inspect(item));detail.appendChild(button);}
-  detail.hidden=false;byId('output-list').hidden=true;togglePanels(true);byId('ptab-outputs')?.click();
+  detail.hidden=false;byId('output-list').hidden=true;openTab('activity');detail.tabIndex=-1;detail.focus();
 };
+
+function paintEvidence(){
+ const root=byId('completion-view');if(!root)return;root.textContent='';
+ const records=outputs;
+ const summary=summarizeEvidence(records);S.failedChecks=summary.checks.filter(check=>check.state==='failed').length;
+ root.appendChild(textNode('p','management-note','Evidence recorded in this session. Tool execution and task success are distinct.'));
+ root.appendChild(textNode('h4','ws-head','Recorded file edits'));
+ if(!summary.files.length)root.appendChild(textNode('p','management-note','No file edits recorded by file tools. Shell or external changes may require separate review.'));
+ for(const file of summary.files){const button=textNode('button','output-item',file.path);button.type='button';button.addEventListener('click',()=>inspect(file.item));root.appendChild(button);}
+ root.appendChild(textNode('h4','ws-head','Validation checks'));
+ if(!summary.checks.length)root.appendChild(textNode('p','management-note','No validation checks recorded. Verification has not been established.'));
+ for(const check of summary.checks){
+  const row=textNode('button','output-item',check.state+' · '+check.command);row.type='button';row.dataset.outcome=check.state;
+  if(check.previous.length)row.appendChild(textNode('span','management-note','Earlier attempts: '+check.previous.join(', ')+' · superseded for this exact command.'));
+  row.addEventListener('click',()=>inspect(check.item));root.appendChild(row);
+ }
+ if(summary.failed || summary.unknown)root.appendChild(textNode('p','management-note',summary.failed+' failed tool calls · '+summary.unknown+' calls with unavailable outcomes. Review Activity for unresolved work.'));
+ const count=byId('output-count');if(count)count.textContent=String(summary.files.length+summary.checks.length+(S.artifactCount||0));
+ S.refreshSupervision?.();
+}
+S.paintEvidence=paintEvidence;
+byId('activity-search')?.addEventListener('input',paintResults);

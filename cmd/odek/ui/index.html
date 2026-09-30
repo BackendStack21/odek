@@ -24,13 +24,9 @@
       <span id="stream-badge" hidden title="Live token streaming">stream</span>
     </span>
     <div class="top-spacer"></div>
+    <button id="attention-chip" type="button" hidden></button>
     <span class="ir-spin" id="busy-spin" hidden aria-hidden="true" title="Agent is working"></span>
     <div id="metrics" aria-live="off">
-      <div class="ctx-gauge" id="ctx-gauge">
-        <span class="ctx-label" title="Context window usage">ctx</span>
-        <div class="ctx-bar"><div class="ctx-fill" id="ctx-fill"></div></div>
-        <span class="ctx-pct" id="ctx-pct">—</span>
-      </div>
       <span class="m-chip" id="plan-chip" hidden role="button" tabindex="0" title="Open plan"></span>
       <span class="m-chip" id="jobs-chip" hidden role="button" tabindex="0" title="Open jobs"></span>
     </div>
@@ -38,7 +34,7 @@
     <span class="m-chip" id="cost-chip" hidden role="button" tabindex="0" title="Session cost"></span>
     <span class="model" id="model-label"></span>
     <div class="top-controls">
-      <select id="model-picker" title="Switch model">
+      <details id="run-settings"><summary>Run settings</summary><div class="run-settings-fields"><p id="execution-scope" class="management-note">Loading execution context…</p>      <select id="model-picker" title="Switch model" aria-label="Model">
         <option value="">Loading...</option>
       </select>
       <select id="thinking-picker" title="Reasoning depth" aria-label="Reasoning depth">
@@ -48,6 +44,10 @@
         <option value="high">high</option>
       </select>
       <input id="custom-model-input" type="text" placeholder="model id…" title="Custom model ID — press Enter to apply" />
+<p class="management-note">Optional caps tighten server limits. Blank inherits the operator setting.</p>
+<label>Runtime (seconds)<input id="limit-runtime" type="number" min="1" step="1"></label><label>Tool calls<input id="limit-tools" type="number" min="1" step="1"></label><label>Input tokens<input id="limit-input" type="number" min="1" step="1"></label><label>Output tokens<input id="limit-output" type="number" min="1" step="1"></label><label>Cost (USD)<input id="limit-cost" type="number" min="0.000001" step="0.000001"></label><div id="effective-limits"></div></div></details>
+      <button id="schedules-btn" type="button" aria-label="Scheduled work">Schedules</button>
+      <button id="settings-btn" type="button" aria-label="Settings and administration">Settings</button>
       <button id="palette-btn" type="button" title="Command palette (⌘K)" aria-label="Command palette">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
       </button>
@@ -61,6 +61,12 @@
   </header>
 
   <div id="health-popover" hidden>
+    <div class="hp-row"><span class="hp-k">context</span>      <div class="ctx-gauge" id="ctx-gauge">
+        <span class="ctx-label" title="Context window usage">ctx</span>
+        <div class="ctx-bar"><div class="ctx-fill" id="ctx-fill"></div></div>
+        <span class="ctx-pct" id="ctx-pct">—</span>
+      </div>
+</div>
     <div class="hp-row"><span class="hp-k">version</span><span class="hp-v" id="hp-version">—</span></div>
     <div class="hp-row"><span class="hp-k">uptime</span><span class="hp-v" id="hp-uptime">—</span></div>
     <div class="hp-row"><span class="hp-k">model</span><span class="hp-v" id="hp-model">—</span></div>
@@ -72,26 +78,25 @@
     <div class="hp-row"><span class="hp-k">tokens</span><span class="hp-v" id="m-tok">—</span></div>
     <div class="hp-row"><span class="hp-k">speed</span><span class="hp-v" id="m-speed">—</span></div>
     <div class="hp-row"><span class="hp-k">cost</span><span class="hp-v" id="m-cost">—</span></div>
-    <div class="hp-actions">
-      <button id="density-btn" type="button" aria-label="Toggle display density">Comfortable</button>
-      <button id="theme-btn" title="Cycle theme" aria-label="Cycle theme">◐</button>
-      <button id="notify-btn" title="Desktop notifications" aria-label="Desktop notifications" aria-pressed="false">◌</button>
-    </div>
+
   </div>
 
   <div id="sidebar-overlay"></div>
 
   <aside id="session-rail" aria-label="Session navigation" hidden aria-hidden="true"></aside>
-  <aside id="panels" role="complementary" aria-label="Inspector" aria-hidden="true">
+  <aside id="panels" inert role="complementary" aria-label="Inspector" aria-hidden="true">
     <div id="inspector-resize" role="separator" aria-label="Resize inspector" aria-orientation="vertical" aria-valuemin="320" aria-valuemax="700" aria-valuenow="420" tabindex="0"></div>
     <div id="panels-header">
       <div id="panels-tabs" role="tablist" aria-label="Inspector workspaces">
-        <button class="ptab" id="ptab-sessions" data-tab="sessions" role="tab" aria-selected="false" aria-controls="ppanel-sessions" tabindex="-1">sessions</button>
-        <button class="ptab active" id="ptab-now" data-tab="now" role="tab" aria-selected="true" aria-controls="ppanel-now" tabindex="0">now</button>
-        <button class="ptab" id="ptab-outputs" data-tab="outputs" role="tab" aria-selected="false" aria-controls="ppanel-outputs" tabindex="-1">results <span id="output-count">0</span></button>
-        <button class="ptab" id="ptab-memory" data-tab="memory" role="tab" aria-selected="false" aria-controls="ppanel-memory" tabindex="-1">memory</button>
-        <button class="ptab" id="ptab-ops" data-tab="ops" role="tab" aria-selected="false" aria-controls="ppanel-ops" tabindex="-1">ops</button>
-      <button class="ptab" id="ptab-manage" data-tab="manage" role="tab" aria-selected="false" aria-controls="ppanel-manage" tabindex="-1">manage</button>
+        <button class="ptab" id="ptab-sessions" data-surface="sessions" data-tab="sessions" role="tab" aria-selected="false" aria-controls="ppanel-sessions" tabindex="-1">sessions</button>
+        <button class="ptab active" id="ptab-now" data-surface="task" data-tab="now" role="tab" aria-selected="true" aria-controls="ppanel-now" tabindex="0">Overview</button>
+        <button class="ptab" id="ptab-outputs" data-surface="task" data-tab="outputs" role="tab" aria-selected="false" aria-controls="ppanel-outputs" tabindex="-1">Deliverables <span id="output-count">0</span></button>
+        <button class="ptab" id="ptab-memory" data-surface="admin" data-tab="memory" role="tab" aria-selected="false" aria-controls="ppanel-memory" tabindex="-1">Knowledge</button>
+        <button class="ptab" id="ptab-ops" data-surface="admin" data-tab="ops" role="tab" aria-selected="false" aria-controls="ppanel-ops" tabindex="-1">Diagnostics</button>
+      <button class="ptab" id="ptab-manage" data-surface="schedules" data-tab="manage" role="tab" aria-selected="false" aria-controls="ppanel-manage" tabindex="-1">Scheduled work</button>
+        <button class="ptab" id="ptab-activity" data-surface="task" data-tab="activity" role="tab" aria-selected="false" aria-controls="ppanel-activity" tabindex="-1">Activity</button>
+        <button class="ptab" id="ptab-preferences" data-surface="admin" data-tab="preferences" role="tab" aria-selected="false" aria-controls="ppanel-preferences" tabindex="-1">Preferences</button>
+        <button class="ptab" id="ptab-maintenance" data-surface="admin" data-tab="maintenance" role="tab" aria-selected="false" aria-controls="ppanel-maintenance" tabindex="-1">Maintenance</button>
       </div>
       <button id="panels-close" title="Close" aria-label="Close inspector">✕</button>
     </div>
@@ -111,6 +116,10 @@
       </section>
       <section class="ppanel active" id="ppanel-now" data-panel="now" role="tabpanel" aria-labelledby="ptab-now">
         <div class="ppanel-scroll">
+          <h3 id="task-status" tabindex="-1">Ready for your next task</h3>
+          <div id="attention-view" aria-label="Needs your attention"></div>
+          <div id="recovery-view" hidden></div>
+          <button id="recover-btn" type="button" class="management-action">Review saved progress</button>
           <h4 class="ws-head">execution budget</h4><div id="budget-view" class="budget-view">Budget usage appears after the first iteration.</div>
           <h4 class="ws-head">plan</h4>
           <div id="plan-list"></div>
@@ -120,7 +129,14 @@
           <div id="agents-list"></div>
         </div>
       </section>
-      <section class="ppanel" id="ppanel-outputs" data-panel="outputs" role="tabpanel" aria-labelledby="ptab-outputs" hidden aria-hidden="true"><div class="ppanel-scroll"><h4 class="ws-head">Artifacts</h4><div id="artifact-list"></div><h4 class="ws-head">Tool results</h4><div id="output-list"></div><div id="output-detail" hidden></div></div></section>
+      <section class="ppanel" id="ppanel-outputs" data-panel="outputs" role="tabpanel" aria-labelledby="ptab-outputs" hidden aria-hidden="true"><div class="ppanel-scroll"><h3>Deliverables and evidence</h3><div id="completion-view"></div><h4 class="ws-head">Decisions</h4><div id="decision-receipts"></div><h4 class="ws-head">Artifacts</h4><div id="artifact-list"></div><button id="all-activity-btn" type="button" class="management-action">Inspect all activity</button></div></section>
+      <section class="ppanel" id="ppanel-activity" data-panel="activity" role="tabpanel" aria-labelledby="ptab-activity" hidden aria-hidden="true"><div class="ppanel-scroll"><p class="management-note">Tool returns and their recorded execution outcomes. A completed tool is not proof of task success.</p><label class="management-field">Filter activity<input id="activity-search" type="search" placeholder="Tool, file, command…"></label><div id="output-list"></div><div id="output-detail" hidden></div></div></section>
+      <section class="ppanel" id="ppanel-preferences" data-panel="preferences" role="tabpanel" aria-labelledby="ptab-preferences" hidden aria-hidden="true"><div class="ppanel-scroll"><h3>Appearance and notifications</h3>    <div class="hp-actions">
+      <button id="density-btn" type="button" aria-label="Toggle display density">Comfortable</button>
+      <button id="theme-btn" title="Cycle theme" aria-label="Cycle theme">◐</button>
+      <button id="notify-btn" title="Desktop notifications" aria-label="Desktop notifications" aria-pressed="false">◌</button>
+    </div><label class="management-field">Reading text size<select id="reading-size"><option value="15">Comfortable · 15px</option><option value="17">Large · 17px</option><option value="19">Larger · 19px</option></select></label><h4 class="ws-head">Connection permissions</h4><p class="management-note">Temporary grants apply to this browser connection, across its sessions, until revoked or disconnected. Operator policy still applies.</p><div id="permissions-view">Checking permissions…</div><button id="permissions-revoke" type="button" class="management-action">Revoke temporary grants</button><button id="shutdown-open" type="button" class="management-action">Shut down server…</button></div></section>
+      <section class="ppanel" id="ppanel-maintenance" data-panel="maintenance" role="tabpanel" aria-labelledby="ptab-maintenance" hidden aria-hidden="true"><div class="ppanel-scroll" id="maintenance-body"></div></section>
       <section class="ppanel" id="ppanel-memory" data-panel="memory" role="tabpanel" aria-labelledby="ptab-memory" hidden aria-hidden="true">
         <div class="ppanel-scroll">
           <div class="mf-section">
@@ -168,6 +184,7 @@
   <div id="panels-overlay"></div>
 
   <main id="main">
+
     <div id="conn-banner" hidden role="status" aria-live="polite"></div>
     <div id="loading-skeleton">
       <div class="skeleton-bar"></div>
@@ -182,14 +199,9 @@
         <div id="empty-state-inner">
           <div class="es-mark" aria-hidden="true"></div>
           <div class="es-eyebrow">YOUR AGENT WORKSPACE</div>
-          <h1 class="es-name">Make room for<br>your next idea.</h1>
-          <p class="es-sub">From a first question to a finished project.<br>Plan, build, and explore with odek.</p>
-          <div class="es-hints">
-            <button type="button" class="es-tip" data-hint="palette"><kbd>⌘K</kbd> commands, sessions, models</button>
-            <button type="button" class="es-tip" data-hint="at"><kbd>@</kbd> mention a file or past session</button>
-            <button type="button" class="es-tip" data-hint="slash"><kbd>/</kbd> commands (same as ⌘K)</button>
-            <button type="button" class="es-tip" data-hint="inspector"><kbd>⌘.</kbd> inspector · <kbd>?</kbd> shortcuts</button>
-          </div>
+          <h1 class="es-name">What shall we<br>work on?</h1>
+          <p class="es-sub">Give odek a task. Review progress, decisions, and results here.</p>
+          <div class="es-hints"><button type="button" class="es-tip" data-starter="Explore this workspace and explain its architecture.">Understand this workspace</button><button type="button" class="es-tip" data-starter="Review the current changes and identify risks.">Review current changes</button><button type="button" class="es-tip" data-starter="Help me plan a change. Ask about the intended outcome before editing files.">Plan a change</button></div>
         </div>
       </div>
     </div>
@@ -206,9 +218,10 @@
         <div id="completion" role="listbox" aria-label="Resource completion"></div>
         <div id="input-row">
           <div id="input-wrap">
-            <textarea id="prompt" aria-label="Message odek" rows="1" placeholder="What should odek do?"></textarea>
+            <textarea id="prompt" aria-label="Message odek" rows="1" aria-controls="completion" aria-expanded="false" aria-autocomplete="list" placeholder="What should odek do?"></textarea>
           </div>
           <div class="composer-bar">
+            <button id="context-btn" type="button" class="management-action">Context</button>
             <button id="attach-btn" type="button" title="Attach files">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
             </button>
@@ -272,6 +285,7 @@
   </div>
 </div>
 
+<div id="context-overlay"><div id="context-dialog" role="dialog" aria-modal="true" aria-labelledby="context-title" tabindex="-1"><h3 id="context-title">Add context</h3><p>Find a workspace file or saved session. Selected references appear in your message.</p><label class="management-field">Find files or sessions<input id="context-search" type="search" placeholder="Filename or sess:session-id" data-autofocus></label><div id="context-results"></div><button id="context-close" type="button" class="management-action">Done</button></div></div>
 <div id="sr-status" class="sr-only" role="status" aria-live="polite"></div>
 <div class="toast" id="toast"></div>
 

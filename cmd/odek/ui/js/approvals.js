@@ -70,7 +70,10 @@ function updateQueuePosition(card) {
 // dismissApproval removes a request from the queue (and its card if shown)
 // without sending a response — used when the server acks an answer that
 // came from another client.
-export function dismissApproval(id) {
+export function trustLabel(risk){return 'Allow '+(risk==='local_write'?'workspace writes':String(risk||'this risk class').replaceAll('_',' '))+' until disconnect';}
+export function dismissApproval(id, action) {
+  const answered=S.approvalQueue.find(e=>e.id===id);
+  if(answered && !answered._expired)S.recordDecision?.({id,kind:'approval',command:answered.command,risk:answered.risk,action:action || answered._action || 'answered elsewhere',state:'accepted'});
   const idx = S.approvalQueue.findIndex(e => e.id === id);
   if (idx >= 0) S.approvalQueue.splice(idx, 1);
   if (S.activeApprovalId === id) {
@@ -82,6 +85,7 @@ export function dismissApproval(id) {
     updateQueuePosition(S.activeApprovalCard);
   }
   syncSweep();
+  S.refreshSupervision?.();
 }
 
 // expireApproval handles the server's approval_expired frame (F-A1): the
@@ -90,6 +94,9 @@ export function dismissApproval(id) {
 // a late frame (or a late approval_ack for the same id) can never resurrect
 // a closed card.
 export function expireApproval(id) {
+  const expired=S.approvalQueue.find(e=>e.id===id);
+  if(expired)S.recordDecision?.({id,kind:'approval',command:expired.command,risk:expired.risk,state:'expired'});
+  if(expired)expired._expired=true;
   dismissApproval(id);
 }
 
@@ -130,13 +137,11 @@ function sweepExpired() {
   // Expired queued-but-hidden requests: their approval_expired frame may
   // still arrive later — expireApproval is a no-op for unknown ids.
   for (let i = S.approvalQueue.length - 1; i >= 1; i--) {
-    if (now >= deadlineOf(S.approvalQueue[i])) S.approvalQueue.splice(i, 1);
+    if (now >= deadlineOf(S.approvalQueue[i])) expireApproval(S.approvalQueue[i].id);
   }
   const active = S.approvalQueue[0];
   if (active && now >= deadlineOf(active)) {
-    S.approvalQueue.shift();
-    removeActiveApprovalCard();
-    showNextApproval();
+    expireApproval(active.id);
     updateQueuePosition(S.activeApprovalCard);
   } else if (active) {
     renderCountdown(S.activeApprovalCard, Math.max(0, Math.ceil((deadlineOf(active) - now) / 1000)));
@@ -154,6 +159,7 @@ function showNextApproval() {
   }
   S.activeApprovalId = event.id;
   renderApprovalCard(event);
+  S.refreshSupervision?.();
 }
 
 // removeActiveApprovalCard removes the rendered card only. It must NOT touch
@@ -164,6 +170,7 @@ function showNextApproval() {
 // which sets it to the shown request or null when the queue is empty.
 export function removeActiveApprovalCard() {
   if (S.activeApprovalCard) {
+    if (S.activeApprovalCard.contains?.(document.activeElement)) document.getElementById('prompt')?.focus();
     S.activeApprovalCard.remove();
     S.activeApprovalCard = null;
   }
@@ -176,6 +183,7 @@ export function removeActiveApprovalCard() {
 // when the socket is already dead so a queued prompt is not sent into the
 // void; reconnect calls drainQueue once the link is up.
 export function clearApprovals(opts) {
+  for(const event of S.approvalQueue)S.recordDecision?.({id:event.id,kind:'approval',command:event.command,risk:event.risk,action:event._action,state:event._pending?'not confirmed':'interrupted'});
   S.approvalQueue.length = 0;
   removeActiveApprovalCard();
   S.activeApprovalId = null;
@@ -267,8 +275,8 @@ function renderApprovalCard(event) {
   denyBtn.addEventListener('click', () => sendApproval('deny'));
   const trustBtn = document.createElement('button');
   trustBtn.className = 'trust';
-  trustBtn.innerHTML = 'trust session <kbd>t</kbd>';
-  trustBtn.title = 'Trust this risk class for the rest of the session [t]';
+  trustBtn.textContent = trustLabel(event.risk);
+  trustBtn.title = 'Allow this risk class on this browser connection until revoked or disconnected [t]';
   trustBtn.addEventListener('click', () => sendApproval('trust'));
   const approveBtn = document.createElement('button');
   approveBtn.className = 'approve';
@@ -321,6 +329,7 @@ function renderApprovalCard(event) {
 export function sendApproval(action) {
   if (!S.activeApprovalId) return;
   const event = S.approvalQueue[0];
+  if(event?._pending)return;
   // Honor the friction gate for keyboard-triggered approvals too.
   if (event && event.friction && action === 'approve') {
     const input = S.activeApprovalCard && S.activeApprovalCard.querySelector('.ac-friction-input');
@@ -342,12 +351,11 @@ export function sendApproval(action) {
     addSystemMessage('⚠ approval not delivered — connection down');
     return;
   }
-  S.approvalQueue.shift();
-  removeActiveApprovalCard();
-  showNextApproval();
-  syncSweep();
-  announce(action === 'trust' ? 'Risk class trusted for this session' :
-           action === 'approve' ? 'Approved' : 'Denied');
+  event._pending=true;event._action=action;
+  S.activeApprovalCard.querySelectorAll('button').forEach(button=>{button.disabled=true;});
+  const pending=document.createElement('p');pending.className='management-note';pending.textContent='Sending decision… waiting for server acceptance';S.activeApprovalCard.appendChild(pending);
+  announce('Sending decision');
+  S.refreshSupervision?.();
 }
 
 // Keyboard operation while an approval card is active. Ignored when the

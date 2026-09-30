@@ -52,7 +52,8 @@ func TestClientSpeak_Success(t *testing.T) {
 
 func TestClientSpeak_ProviderError(t *testing.T) {
 	c := speechTestClient(t, func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "boom", http.StatusInternalServerError)
+		// A permanent provider error verifies propagation without SDK retry backoff.
+		http.Error(w, "boom", http.StatusBadRequest)
 	})
 	if _, err := c.Speak(context.Background(), "tts-1", SpeakRequest{Text: "hello", Voice: "alloy"}); err == nil {
 		t.Fatal("expected error from non-200 response")
@@ -83,7 +84,8 @@ func TestClientTranscribe_Success(t *testing.T) {
 
 func TestClientTranscribe_ProviderError(t *testing.T) {
 	c := speechTestClient(t, func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "boom", http.StatusInternalServerError)
+		// A permanent provider error verifies propagation without SDK retry backoff.
+		http.Error(w, "boom", http.StatusBadRequest)
 	})
 	if _, err := c.Transcribe(context.Background(), "whisper-1", TranscribeRequest{Audio: []byte("wav-bytes")}); err == nil {
 		t.Fatal("expected error from non-200 response")

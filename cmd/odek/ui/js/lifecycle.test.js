@@ -4,7 +4,7 @@
 // F-C1 the .sa-stop delegation arm. Each test names the RED failure it
 // closed in its comment. Run:
 //   node --test cmd/odek/ui/js/
-import { test, beforeEach } from 'node:test';
+import { test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 
 // ── Mini-DOM: records listeners (delegation needs them) and parses the
@@ -241,6 +241,7 @@ beforeEach(() => {
   ws.connect();
   approvalsTeardown();
   byId.messages.children.length = 0;
+  byId['conn-banner'].children.length = 0; // textContent clearing in the browser removes the retry button
   // Render-module singleton state survives the DOM wipe — stale references
   // make addSubagentGroup early-return and orphan the next group.
   render.resetTurnState();
@@ -344,7 +345,7 @@ test('loadAndRenderSession mid-run proceeds after confirmed cancel', async () =>
 });
 
 // ── F-A3: reconnect unbricks the input; first connect stays silent. ──
-test('reconnect resets busy, re-enables the prompt, and tells the user', () => {
+test('interrupted work offers saved-progress review after reconnect', () => {
   const sock1 = S.ws;
   sock1.onopen(); // first connect — silent
   assert.equal(systemMessages().length, 0, 'no restore notice on the first connect');
@@ -353,16 +354,17 @@ test('reconnect resets busy, re-enables the prompt, and tells the user', () => {
   // Simulate a turn in flight when the socket dies.
   S.busy = true;
   byId.prompt.disabled = true;
+  sock1.onclose();
   sock1.onopen(); // same handler shape a reconnecting socket gets
   assert.equal(S.busy, false, 'busy reset on reconnect');
   assert.equal(byId.prompt.disabled, false, 'prompt re-enabled on reconnect');
   const msgs = systemMessages();
   assert.ok(msgs.length >= 1, 'restore notice appended');
-  assert.match(collectText(msgs[msgs.length - 1]).join(' '), /Connection restored/);
+  assert.match(collectText(msgs[msgs.length - 1]).join(' '), /Review saved progress/);
   health.stopHeartbeat(); // don't leak the heartbeat interval into the suite
 });
 
-test('disconnect shows a banner and one transcript notice until restored', () => {
+test('idle disconnect offers retry without transcript or restoration noise', () => {
   const sock = S.ws;
   sock.onopen();
   assert.equal(byId['conn-banner'].hidden, true, 'banner hidden while connected');
@@ -370,12 +372,12 @@ test('disconnect shows a banner and one transcript notice until restored', () =>
   sock.onclose();
   const banner = byId['conn-banner'];
   assert.equal(banner.hidden, false, 'banner visible after drop');
-  assert.match(banner.textContent, /connection lost/i);
+  assert.match(banner.textContent, /Connection unavailable/);
+  assert.equal(banner.querySelector('.connection-retry').textContent, 'Reconnect now');
   assert.equal(byId['ws-status'].textContent, 'reconnecting');
   assert.ok(byId['ws-dot'].className.includes('disconnected'));
   const lost = systemMessages();
-  assert.ok(lost.length >= 1, 'outage is narrated in the transcript');
-  assert.match(collectText(lost[lost.length - 1]).join(' '), /Connection lost/);
+  assert.equal(lost.length, 0, 'idle outage does not narrate maintenance');
   const afterDrop = lost.length;
 
   sock.onclose(); // backoff retry — same outage
@@ -384,8 +386,7 @@ test('disconnect shows a banner and one transcript notice until restored', () =>
   sock.onopen();
   assert.equal(byId['conn-banner'].hidden, true, 'banner clears on restore');
   const restored = systemMessages();
-  assert.ok(restored.length > afterDrop, 'restore is narrated after the drop');
-  assert.match(collectText(restored[restored.length - 1]).join(' '), /Connection restored/);
+  assert.equal(restored.length, 0, 'automatic restore is silent');
   health.stopHeartbeat();
 });
 
@@ -394,8 +395,20 @@ test('send while disconnected toasts instead of failing silently', () => {
   byId.prompt.value = 'hello';
   input.send();
   assert.equal(S.ws.sent.length, 0, 'no prompt frame on a dead socket');
-  assert.match(byId.toast.textContent, /connection lost/);
+  assert.match(byId.toast.textContent, /Reconnect, then send again/);
   assert.ok(byId.toast.classList.contains('show'));
+});
+
+test('connection banner can reconnect immediately without transcript noise', () => {
+  const old=S.ws;old.onopen();old.onclose();
+  const retry=byId['conn-banner'].querySelector('.connection-retry');
+  retry.click();
+  assert.notEqual(S.ws,old,'retry opens a new connection');
+  assert.equal(retry.disabled,true,'pending connection prevents repeat clicks');
+  S.ws.onopen();
+  assert.equal(byId['conn-banner'].hidden,true);
+  assert.equal(systemMessages().length,0);
+  health.stopHeartbeat();
 });
 
 test('disconnect drops pending approval and clarify cards', () => {
@@ -683,7 +696,9 @@ test('approval sent on a live socket still delivers and closes the card', () => 
   S.activeApprovalCard.querySelector('.approve').dispatch('click');
   // FakeWebSocket records the raw JSON string — parse before comparing.
   assert.deepEqual(JSON.parse(sock.sent[0]), { type: 'approval_response', id: 'apr-u', action: 'approve' });
-  assert.equal(S.activeApprovalId, null);
+  assert.equal(S.activeApprovalId, 'apr-u');
+  deliver({type:'approval_ack',id:'apr-u',action:'approve'});
+  assert.equal(S.activeApprovalId,null);
   assert.equal(S.approvalQueue.length, 0);
 });
 
@@ -712,6 +727,8 @@ test('friction approve via keyboard path waits out the 1.5s cool-down', () => {
   card.dataset.shownAt = String(Date.now() - 2000); // cool-down elapsed
   approvals.sendApproval('approve');
   assert.equal(sock.sent.length, before + 1, 'delivered after the window');
+  assert.equal(S.approvalQueue.length, 1);
+  deliver({type:'approval_ack',id:'apr-f',action:'approve'});
   assert.equal(S.approvalQueue.length, 0);
 });
 
@@ -881,7 +898,9 @@ test('turn cancellation settles pending tools, preserves completed tools and rej
   render.requestTurnStop();
   assert.equal(pending.querySelector('.tb-spinner').classList.contains('running'),false);
   assert.equal(pending.querySelector('.tb-latency').textContent,'Stopping…');
-  deliver({type:'cancelled',turn_id:'stop-tools'});
+  deliver({type:'cancelled',turn_id:'stop-tools',requested:true});
+  assert.equal(pending.querySelector('.tb-latency').textContent,'Stopping…');
+  deliver({type:'turn_settled',turn_id:'stop-tools',status:'cancelled'});
   assert.equal(pending.querySelector('.tb-latency').textContent,'Stopped');
   assert.equal(completed.querySelector('.tb-status').textContent,'✓');
   assert.equal(S.queuePaused,true);
@@ -918,7 +937,9 @@ test('stopping rejects new work and settles delegated agents', () => {
   assert.equal(card.querySelector('.sa-status').textContent,'stopping…');
   assert.equal(card.classList.contains('running'),false);
   assert.equal(S.toolBlockQueues.has('too-late'),false);
-  deliver({type:'cancelled',turn_id:'stop-agents'});
+  deliver({type:'cancelled',turn_id:'stop-agents',requested:true});
+  assert.equal(card.querySelector('.sa-status').textContent,'stopping…');
+  deliver({type:'turn_settled',turn_id:'stop-agents',status:'cancelled'});
   assert.equal(card.querySelector('.sa-status').textContent,'stopped');
   assert.equal(card.dataset.finalized,'1');
 });
@@ -1083,4 +1104,57 @@ test('send waits for a text attachment read and includes it afterward', async ()
     assert.equal(sent.type, 'prompt');
     assert.deepEqual(sent.attachments, [{ name: 'note.txt', content: 'hello' }]);
   } finally { globalThis.FileReader = oldReader; }
+});
+
+afterEach(()=>approvals.clearApprovals({drain:false}));
+
+
+test('queued configured-default model settings survive later picker changes', () => {
+  const oldModel=S.currentModel,oldThinking=S.currentThinking;
+  try {
+    S.currentModel='';S.currentThinking='';S.busy=true;S.promptQueue=[];
+    byId.prompt.value='queued default';input.send();
+    S.currentModel='changed-model';S.currentThinking='high';S.busy=false;
+    input.drainQueue();
+    const frame=JSON.parse(S.ws.sent.at(-1));
+    assert.equal(frame.content,'queued default');
+    assert.equal(frame.model,undefined);assert.equal(frame.thinking,undefined);
+  } finally {S.currentModel=oldModel;S.currentThinking=oldThinking;S.promptQueue=[];}
+});
+
+test('recovery checkpoints stay on the explicitly authorized prompt', () => {
+  S.promptQueue=[];S.busy=true;byId.prompt.value='draft that must survive';
+  input.send({recovery_revision:9,recovery_generation:'saved'});
+  assert.equal(S.promptQueue.length,0);assert.equal(byId.prompt.value,'draft that must survive');
+  S.busy=false;input.send();
+  let frame=JSON.parse(S.ws.sent.at(-1));assert.equal(frame.recovery_revision,undefined);
+  S.busy=false;byId.prompt.value='continue saved';
+  input.send({recovery_revision:9,recovery_generation:'saved'});
+  frame=JSON.parse(S.ws.sent.at(-1));assert.equal(frame.recovery_revision,9);
+  assert.equal(frame.recovery_generation,'saved');
+});
+
+
+test('recovery rechecks active work after the saved-session request resolves', async () => {
+  const oldFetch=globalThis.fetch;
+  // Loading the supervision module also requests workspace metadata.
+  const response=data=>({ok:true,headers:{get:()=> 'application/json'},json:async()=>data});
+  globalThis.fetch=async()=>response({workspace:'fixture',limits:{}});
+  document.documentElement={style:{setProperty(){}}};
+  const supervision=await import('./supervision.js');
+  let resolveSaved;
+  S.sessionId='recovery-race';S.busy=false;S.attachedFiles=[];
+  globalThis.fetch=async url=>String(url).endsWith('/recovery')
+    ? response({revision:9,generation:'saved',completed:[],failed:[],uncertain:[],decisions:[]})
+    : await new Promise(resolve=>{resolveSaved=resolve;});
+  try {
+    await supervision.reviewRecovery();
+    const button=byId['recovery-view'].children.find(el=>el.textContent==='Continue from saved progress');
+    assert.ok(button);button.click();assert.ok(resolveSaved);
+    S.busy=true;byId.prompt.value='new draft';
+    const before=S.ws.sent.length;resolveSaved(response({revision:9,generation:'saved'}));
+    await new Promise(resolve=>setImmediate(resolve));
+    assert.equal(S.ws.sent.length,before);assert.equal(byId.prompt.value,'new draft');
+    assert.equal(S.promptQueue.length,0);
+  } finally {globalThis.fetch=oldFetch;S.resetSupervision();}
 });

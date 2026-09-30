@@ -26,6 +26,9 @@ import (
 // into the sandbox container and accessible via the container's shell.
 func TestE2E_SandboxFileInjection(t *testing.T) {
 	skipIfNoE2E(t)
+	if !dockerAvailable() {
+		t.Skip("Docker daemon unavailable")
+	}
 
 	// Create temp file to inject
 	workDir := t.TempDir()
@@ -78,6 +81,9 @@ func TestE2E_SandboxFileInjection(t *testing.T) {
 // in subdirectories preserve their relative path in the container.
 func TestE2E_SandboxFileInjection_NestedPath(t *testing.T) {
 	skipIfNoE2E(t)
+	if !dockerAvailable() {
+		t.Skip("Docker daemon unavailable")
+	}
 
 	workDir := t.TempDir()
 	subDir := filepath.Join(workDir, "subdir")
@@ -129,6 +135,9 @@ func TestE2E_SandboxFileInjection_NestedPath(t *testing.T) {
 // path files outside cwd are injected by basename into /workspace/.
 func TestE2E_SandboxFileInjection_AbsolutePath(t *testing.T) {
 	skipIfNoE2E(t)
+	if !dockerAvailable() {
+		t.Skip("Docker daemon unavailable")
+	}
 
 	// Create a file outside the working directory
 	externalDir := t.TempDir()
@@ -179,6 +188,9 @@ func TestE2E_SandboxFileInjection_AbsolutePath(t *testing.T) {
 // multiple files at once.
 func TestE2E_SandboxFileInjection_MultipleFiles(t *testing.T) {
 	skipIfNoE2E(t)
+	if !dockerAvailable() {
+		t.Skip("Docker daemon unavailable")
+	}
 
 	workDir := t.TempDir()
 	os.WriteFile(filepath.Join(workDir, "a.txt"), []byte("file A"), 0644)
@@ -225,6 +237,9 @@ func TestE2E_SandboxFileInjection_MultipleFiles(t *testing.T) {
 // the in-container processes kept running until the container was destroyed.
 func TestE2E_SandboxTimeoutKillsInContainerProcesses(t *testing.T) {
 	skipIfNoE2E(t)
+	if !dockerAvailable() {
+		t.Skip("Docker daemon unavailable")
+	}
 
 	workDir := t.TempDir()
 	containerName := fmt.Sprintf("odek-test-timeout-%d", time.Now().UnixNano())

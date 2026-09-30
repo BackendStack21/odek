@@ -1,7 +1,7 @@
 import { uploadMedia } from './api.js';
 // Prompt handling: send, history navigation, @-completion, file
 // attachments, drag-and-drop, auto-resize, and the scroll-bottom button.
-import { S, setSessionToken, getSessionToken } from './state.js';
+import { S, setSessionToken, getSessionToken, ensureSessionToken } from './state.js';
 import { extractReferenceTokens } from './session-references.js';
 import { apiHeaders } from './net.js';
 import {
@@ -10,7 +10,7 @@ import {
 } from './dom.js';
 import {
   escapeHtml, escapeAttr, formatFileSize,   scrollToBottom,
-  showCancel, toggleShortcuts, SCROLL_THRESHOLD, teach, showToast,
+  showCancel, toggleShortcuts, SCROLL_THRESHOLD, teach, showToast, announce,
 } from './utils.js';
 import { addMessage, resetTurnState, showLoading, paintIntent } from './render.js';
 import { maybeHandleComposerEnter, paletteItems, isComposerSlashInput } from './commands.js';
@@ -41,19 +41,19 @@ export function renderQueueStrip() {
     const up = document.createElement('button');
     up.type = 'button';
     up.className = 'queue-btn';
-    up.textContent = '▲';
+    up.textContent = '▲'; up.setAttribute('aria-label','Move queued message '+(i+1)+' earlier');
     up.disabled = i === 0;
     up.addEventListener('click', () => moveQueue(i, -1));
     const down = document.createElement('button');
     down.type = 'button';
     down.className = 'queue-btn';
-    down.textContent = '▼';
+    down.textContent = '▼'; down.setAttribute('aria-label','Move queued message '+(i+1)+' later');
     down.disabled = i === S.promptQueue.length - 1;
     down.addEventListener('click', () => moveQueue(i, 1));
     const del = document.createElement('button');
     del.type = 'button';
     del.className = 'queue-btn';
-    del.textContent = '✕';
+    del.textContent = '✕'; del.setAttribute('aria-label','Remove queued message '+(i+1));
     del.addEventListener('click', () => {
       S.promptQueue.splice(i, 1);
       renderQueueStrip();
@@ -82,17 +82,22 @@ export function drainQueue() {
   if(first.session_id!=null && first.session_id!==S.sessionId){S.queuePaused=true;renderQueueStrip();showToast('This queue belongs to another session. Open that session to resume.');return;}
   const next = S.promptQueue.shift();
   renderQueueStrip();
-  sendPayload(next.text, next.attachments, next.display, next.model, next.thinking);
+  sendPayload(next.text, next.attachments, next.display, next.model, next.thinking, next.limits);
 }
 S.drainQueue = drainQueue;
 S.pauseQueue = () => { S.queuePaused = true; renderQueueStrip(); };
 
 // ── Send ──
-export function send() {
+export function send(recoveryCheckpoint) {
+  if (recoveryCheckpoint && !('recovery_revision' in recoveryCheckpoint)) recoveryCheckpoint = undefined;
+  if (recoveryCheckpoint && (S.busy || S.uploading || S.attachedFiles.length)) {
+    showToast("Finish the current work and remove attachments before continuing saved progress.");
+    return;
+  }
   if (S.uploading) { showToast('Wait for attachments to finish processing'); return; }
   // F-B2: dead socket still rejects BEFORE touching attachments.
   if (!S.ws || S.ws.readyState !== WebSocket.OPEN) {
-    showToast('connection lost — reconnecting');
+    showToast('Message not sent. Reconnect, then send again.');
     return;
   }
   const text = promptEl.value.trim();
@@ -104,6 +109,7 @@ export function send() {
     return;
   }
 
+  if(S.validateRunLimits && !S.validateRunLimits())return;
   let display = text;
   let attachments = [];
   if (S.attachedFiles.length > 0) {
@@ -128,18 +134,20 @@ export function send() {
       text,
       display,
       attachments,
-      model: S.currentModel || undefined,
-      thinking: S.currentThinking || undefined,
+      model: S.currentModel || '',
+      thinking: S.currentThinking || '',
+      limits: S.readRunLimits?.(),
     });
     renderQueueStrip();
+    announce('Message queued. '+S.promptQueue.length+' waiting.');
     teach('queue', 'tip: Enter queues the next prompt · reorder in the strip above');
     return;
   }
 
-  sendPayload(text, attachments, display);
+  sendPayload(text, attachments, display, S.currentModel, S.currentThinking, S.readRunLimits?.(), recoveryCheckpoint);
 }
 
-function sendPayload(text, attachments, display, model, thinking) {
+function sendPayload(text, attachments, display, model, thinking, limits, recoveryCheckpoint) {
   addMessage('user', display);
   resetTurnState();
   S.lastPrompt = text;
@@ -147,28 +155,34 @@ function sendPayload(text, attachments, display, model, thinking) {
   S.busy = true;
   S.runStartedAt = Date.now();
   S.runIterations = 0;
-  sendBtn.disabled = true;
+  sendBtn.disabled = false; sendBtn.textContent='Queue'; sendBtn.setAttribute('aria-label','Queue next message');
   showLoading();
   showCancel();
 
   const referenceTokens = extractReferenceTokens(text, getSessionToken);
   S.ws.send(JSON.stringify({
     type: 'prompt',
+    limits,
+    ...(recoveryCheckpoint || {}),
     content: text,
     attachments: attachments,
     session_id: S.sessionId,
     auth_token: getSessionToken(S.sessionId) || undefined,
     reference_tokens: Object.keys(referenceTokens).length ? referenceTokens : undefined,
-    model: model || S.currentModel || undefined,
-    thinking: thinking || S.currentThinking || undefined,
+    model: model || undefined,
+    thinking: thinking || undefined,
   }));
+  S.recoveryReason='';
+  S.refreshSupervision?.();
 }
 
 export function retryLast() {
   const text = S.lastFailedPrompt || S.lastPrompt;
   if (!text) { return; }
   promptEl.value = text;
-  send();
+  promptEl.dispatchEvent(new Event('input',{bubbles:true}));
+  promptEl.focus();
+  showToast('Review the prompt before running again. Completed actions may be repeated.');
 }
 
 // ── File Attachments ──
@@ -297,7 +311,7 @@ function handleFiles(fileList) {
   uploadSequence = uploadSequence.then(() => processFiles(files, owner)).finally(() => {
     pendingFileBatches--;
     S.uploading = pendingFileBatches > 0;
-    sendBtn.disabled = S.busy || S.uploading || !S.ws || S.ws.readyState !== WebSocket.OPEN;
+    sendBtn.disabled = S.uploading || !S.ws || S.ws.readyState !== WebSocket.OPEN;
   });
   return uploadSequence;
 }
@@ -319,7 +333,7 @@ async function processFiles(fileList, owner) {
       } else {
         const progress=document.createElement('span');progress.className='file-chip';progress.textContent='Reading '+file.name+'…';fileChips.appendChild(progress);
         let content;try{content=await readFileAsText(file);}finally{progress.remove();}
-        if (S.sessionId !== owner) { showToast('Session changed while reading the attachment.'); return; }
+        if (S.sessionId !== owner) { showToast('Session changed. Attach the file again in the intended session.'); return; }
         if(content.includes('\u0000'))throw new Error('Unsupported binary attachment');
         addAttachedFile({name:file.name,size:file.size,content});
       }
@@ -367,6 +381,7 @@ promptEl.addEventListener('input', () => {
 
 // ── Input handlers ──
 promptEl.addEventListener('keydown', (e) => {
+  if(e.isComposing || e.keyCode===229)return;
   // @-completion keyboard navigation takes precedence while visible:
   // ↑/↓ move, Enter/Tab accept, Esc dismisses.
   if (completionEl.classList.contains('visible')) {
@@ -412,24 +427,29 @@ promptEl.addEventListener('keydown', (e) => {
   // History up/down (only when completion is hidden)
   if (completionEl.classList.contains('visible')) return;
 
-  if (e.key === 'ArrowUp') {
+  if (e.key === 'ArrowUp' && (e.altKey || !promptEl.value)) {
+    if(!e.altKey && promptEl.value)return;
+    if(S.historyIdx===S.history.length)S.historyDraft=promptEl.value;
     if (S.historyIdx > 0) {
       e.preventDefault();
       S.historyIdx--;
       promptEl.value = S.history[S.historyIdx] || '';
+      S.saveDraft?.();
       promptEl.selectionStart = promptEl.selectionEnd = promptEl.value.length;
     }
     return;
   }
-  if (e.key === 'ArrowDown') {
+  if (e.key === 'ArrowDown' && e.altKey) {
     if (S.historyIdx < S.history.length - 1) {
       e.preventDefault();
       S.historyIdx++;
       promptEl.value = S.history[S.historyIdx] || '';
+      S.saveDraft?.();
     } else {
       S.historyIdx = S.history.length;
-      promptEl.value = '';
+      promptEl.value = S.historyDraft || '';
     }
+    S.saveDraft?.();
     return;
   }
 });
@@ -471,6 +491,7 @@ completionEl.addEventListener('click', (e) => {
     completionEl.querySelectorAll('.comp-item').forEach(el => {
       el.classList.toggle('selected', el === item);
       el.setAttribute('aria-selected', el === item);
+      if(el===item)promptEl.setAttribute('aria-activedescendant',el.id);
     });
     selectCompletion();
     return;
@@ -485,12 +506,14 @@ completionEl.addEventListener('mousemove', (e) => {
   completionEl.querySelectorAll('.comp-item').forEach(el => {
     el.classList.toggle('selected', el === item);
     el.setAttribute('aria-selected', el === item);
+      if(el===item)promptEl.setAttribute('aria-activedescendant',el.id);
   });
 });
 
 let slashRows = [];
 
 function hideCompletion() {
+  promptEl.setAttribute('aria-expanded','false');promptEl.removeAttribute?.('aria-activedescendant');
   completionEl.classList.remove('visible');
   S.compMode = '';
   slashRows = [];
@@ -515,7 +538,7 @@ function trySlashCompletion(val, cursor) {
       <span class="comp-detail">${escapeHtml(r.hint || '')}</span>
     </div>`
   ).join('');
-  completionEl.classList.add('visible');
+  completionEl.classList.add('visible'); syncCompletionARIA();
   return true;
 }
 
@@ -571,7 +594,7 @@ async function checkCompletion() {
       </div>`
     ).join('');
 
-    completionEl.classList.add('visible');
+    completionEl.classList.add('visible'); syncCompletionARIA();
   } catch {
     hideCompletion();
   }
@@ -588,6 +611,7 @@ function moveCompletionSelection(delta) {
     el.classList.toggle('selected', i === idx);
     el.setAttribute('aria-selected', i === idx);
   });
+  syncCompletionARIA();
 }
 
 function selectCompletion() {
@@ -610,9 +634,19 @@ function selectCompletion() {
   hideCompletion();
 }
 
-function replaceCompletion(id) {
-  promptEl.value = promptEl.value.slice(0, S.lastAtIdx) + id + ' ' + promptEl.value.slice(S.lastCursor);
-  const newPos = S.lastAtIdx + id.length + 1;
-  promptEl.selectionStart = promptEl.selectionEnd = newPos;
-  promptEl.focus();
+async function replaceCompletion(id) {
+  const original=promptEl.value,owner=S.sessionId,start=S.lastAtIdx,end=S.lastCursor;
+  if(id.startsWith('@sess:')){
+    if(!await ensureSessionToken(id.slice(6))){showToast('Session context unavailable.');return;}
+    if(promptEl.value!==original || S.sessionId!==owner)return;
+  }
+  promptEl.value = original.slice(0,start)+id+' '+original.slice(end);
+  const newPos=start+id.length+1;
+  promptEl.selectionStart=promptEl.selectionEnd=newPos;
+  S.saveDraft?.();promptEl.dispatchEvent(new Event('input',{bubbles:true}));promptEl.focus();
+}
+
+function syncCompletionARIA(){
+ promptEl.setAttribute('aria-expanded','true');
+ completionEl.querySelectorAll('.comp-item').forEach((el,i)=>{el.id='completion-option-'+i;if(el.classList.contains('selected'))promptEl.setAttribute('aria-activedescendant',el.id);});
 }

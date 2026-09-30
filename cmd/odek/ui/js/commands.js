@@ -13,12 +13,10 @@ const resultsEl = () => document.getElementById('palette-results');
 
 const COMMANDS = [
   { id: 'new', title: 'New session', hint: '/new', run: () => newSession() },
-  { id: 'clear', title: 'Clear transcript', hint: '/clear', run: () => dispatchSlash('/clear') },
   { id: 'copy', title: 'Copy last reply', hint: 'palette', run: () => dispatchSlash('/copy') },
   { id: 'export-md', title: 'Export markdown', hint: 'palette', run: () => dispatchSlash('/export md') },
   { id: 'export-json', title: 'Export JSON', hint: 'palette', run: () => dispatchSlash('/export json') },
   { id: 'retry', title: 'Retry last prompt', hint: '/retry', run: () => dispatchSlash('/retry') },
-  { id: 'cancel', title: 'Cancel running turn', hint: '/cancel', run: () => dispatchSlash('/cancel') },
   { id: 'stop', title: 'Stop running turn', hint: '/stop', run: () => dispatchSlash('/stop') },
   { id: 'theme', title: 'Cycle theme', hint: 'palette', run: () => dispatchSlash('/theme') },
   { id: 'notify', title: 'Toggle notifications', hint: 'palette', run: () => dispatchSlash('/notify') },
@@ -26,17 +24,15 @@ const COMMANDS = [
   { id: 'help', title: 'Keyboard shortcuts', hint: '?', run: () => dispatchSlash('/help') },
   { id: 'stats', title: 'Session stats', hint: 'palette', run: () => dispatchSlash('/stats') },
   { id: 'sessions', title: 'Sessions', hint: '⌘.', run: () => openTab('sessions') },
-  { id: 'shutdown', title: 'Shut down serve', hint: 'typed confirm', run: () => dispatchSlash('/shutdown') },
-  { id: 'tab-sessions', title: 'Inspector · sessions', hint: '⌘.', run: () => openTab('sessions') },
-  { id: 'tab-now', title: 'Inspector · now', hint: '⌘.', run: () => openTab('now') },
-  { id: 'tab-memory', title: 'Inspector · memory', hint: '⌘.', run: () => openTab('memory') },
-  { id: 'tab-ops', title: 'Inspector · ops', hint: '⌘.', run: () => openTab('ops') },
+  { id: 'tab-now', title: 'Task overview', hint: '⌘.', run: () => openTab('now') },
+  { id: 'tab-memory', title: 'Knowledge settings', hint: '⌘.', run: () => openTab('memory') },
+  { id: 'tab-ops', title: 'Runtime diagnostics', hint: '⌘.', run: () => openTab('ops') },
 ];
 
 const SLASH_VERBS = new Set([
-  'help', 'new', 'clear', 'copy', 'export', 'retry', 'queue', 'theme',
+  'help', 'new', 'copy', 'export', 'retry', 'queue', 'theme',
   'stats', 'cancel', 'notify', 'shutdown', 'model', 'thinking',
-  'now', 'memory', 'ops', 'plan', 'jobs', 'agents', 'skills', 'tools',
+  'outputs', 'activity', 'preferences', 'manage', 'maintenance', 'now', 'memory', 'ops', 'plan', 'jobs', 'agents', 'skills', 'tools',
   'runs', 'events', 'config', 'sessions', 'session', 'stop',
 ]);
 
@@ -59,6 +55,9 @@ export function isComposerSlashInput(val, cursor) {
   }
   return false;
 }
+export const WORKSPACES = { sessions: {id:'ptab-sessions', surface:'sessions'}, now: {id:'ptab-now',surface:'task'}, outputs:{id:'ptab-outputs',surface:'task'}, activity:{id:'ptab-activity',surface:'task'}, preferences:{id:'ptab-preferences',surface:'admin'}, memory:{id:'ptab-memory',surface:'admin'}, ops:{id:'ptab-ops',surface:'admin'}, manage:{id:'ptab-manage',surface:'schedules'}, maintenance:{id:'ptab-maintenance',surface:'admin'} };
+for (const [id,title] of [['outputs','Deliverables and evidence'],['activity','Inspect activity'],['preferences','Preferences and permissions'],['manage','Scheduled work'],['maintenance','Storage maintenance']]) COMMANDS.push({id:'tab-'+id,title,hint:'workspace',run:()=>openTab(id)});
+
 const TAB_WS = {
   sessions: 'sessions', session: 'sessions',
   plan: 'now', jobs: 'now', agents: 'now', now: 'now',
@@ -74,10 +73,12 @@ const TAB_ID = {
 
 export function openTab(name) {
   if ((name === 'sessions' || name === 'session') && document.body.classList.contains('workspace-wide')) { if (!S.sessionRailOpen) S.toggleSessionRail?.(); document.getElementById('sidebar-search')?.focus(); return; }
-  togglePanels(true);
   const ws = TAB_WS[name] || name;
-  const btn = document.getElementById(TAB_ID[ws] || 'ptab-now');
-  if (btn) btn.click();
+  S.setPanelSurface?.(WORKSPACES[ws]?.surface || 'task');
+  togglePanels(true);
+  S.setPanelSurface?.(WORKSPACES[ws]?.surface || 'task');
+  const btn = document.getElementById(WORKSPACES[ws]?.id || TAB_ID[ws] || 'ptab-now');
+  if (btn) {btn.click();btn.focus?.();}
 }
 S.openSessionsPanel = () => openTab('sessions');
 

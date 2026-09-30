@@ -24,6 +24,7 @@ const previewCacheLimit = 40 << 20
 
 type browserArtifact struct {
 	ID        string    `json:"id"`
+	TurnID    string    `json:"turn_id,omitempty"`
 	SessionID string    `json:"session_id"`
 	Name      string    `json:"name"`
 	MediaType string    `json:"media_type"`

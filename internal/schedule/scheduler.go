@@ -137,6 +137,8 @@ func (s *Scheduler) Reload() {
 // scheduling new fires and waits for in-flight executions to finish before
 // returning ctx.Err().
 func (s *Scheduler) Run(ctx context.Context) error {
+	stopHeartbeat := s.startHeartbeat(ctx)
+	defer stopHeartbeat()
 	s.reconcile(s.opts.Now())
 	lastMod := s.store.ModTime()
 

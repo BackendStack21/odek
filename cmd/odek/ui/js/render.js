@@ -1,3 +1,4 @@
+import { checkEvidence } from './evidence.js';
 // Message rendering: streaming, thinking, tool blocks, sub-agent swarm,
 // session-history rendering, collapse/copy affordances, and the loading
 // indicator. Imports only from state/dom/utils/markdown/untrusted.
@@ -643,7 +644,8 @@ export function endStream(reason = "interrupted") {
   hideCancel();
   sendBtn.disabled = S.uploading || !S.ws || S.ws.readyState !== WebSocket.OPEN;
   promptEl.disabled = false;
-  promptEl.focus();
+  sendBtn.textContent='↑';sendBtn.setAttribute('aria-label','Send message');
+  S.refreshSupervision?.();
 }
 
 function sealTurnStream() {
@@ -811,6 +813,8 @@ export function addToolCall(name, data, callId = '') {
   el.dataset.toolName = name;
   el.dataset.toolArgs = data;
   el.dataset.callId = callId;
+  el.dataset.turnId=S.currentTurnId || '';
+  el.dataset.outcome='running';
   teach('steps', 'tip: click a tool head to expand its output');
 
   // Push into per-name FIFO queues so parallel results route correctly.
@@ -893,6 +897,7 @@ export function addToolResult(name, output, callId = '', outcome = 'unknown') {
     status.classList.toggle('ok', outcome === 'completed');
   }
 
+  block.dataset.outcome=outcome || 'unknown';
   appendToolResultContent(block, output || '');
 
   const chips = classifyToolResult(name, prettyToolBody(output || ''));
@@ -908,9 +913,12 @@ export function addToolResult(name, output, callId = '', outcome = 'unknown') {
   if (S.turnReceipt) {
     const piece = collectReceipt(name, outcome === 'completed' ? block.dataset.toolArgs : '', output || '');
     S.turnReceipt.tools = (S.turnReceipt.tools || 0) + 1;
-    S.turnReceipt.plus += piece.plus;
-    S.turnReceipt.minus += piece.minus;
-    if (piece.tests) S.turnReceipt.tests = piece.tests;
+    S.turnReceipt.diffs ||= new Set();
+    const fingerprint=block.dataset.toolArgs+'|'+output;
+    if(outcome==='completed' && /^(patch|write_file)$/.test(name) && !S.turnReceipt.diffs.has(fingerprint)){S.turnReceipt.diffs.add(fingerprint);S.turnReceipt.plus+=piece.plus;S.turnReceipt.minus+=piece.minus;}
+    const receiptCheck=checkEvidence({name,args:block.dataset.toolArgs,output,outcome});
+    if(receiptCheck){S.turnReceipt.checks ||= new Map();S.turnReceipt.checks.set(receiptCheck.command,receiptCheck.state);}
+    S.turnReceipt.tests=S.turnReceipt.checks?.size ? [...S.turnReceipt.checks.values()].filter(state=>state==='passed').length+' checks passed · '+[...S.turnReceipt.checks.values()].filter(state=>state==='failed').length+' failed · '+[...S.turnReceipt.checks.values()].filter(state=>state==='unverified').length+' unverified' : '';
     S.turnReceipt.files.push(...piece.files);
   }
   scrollBottom();
@@ -948,7 +956,7 @@ function saChipLabel(idx, text) {
 function saFinishGlyph(status) {
   if (status === 'cancelled') return '⊘';
   if (status === 'timeout') return '⏱';
-  if (status === 'partial' || status === 'budget_exhausted') return '◐';
+  if (status === 'partial' || status === 'budget_exhausted' || status==='budget_exceeded') return '◐';
   if (status && status !== 'success') return '✗';
   return '✓';
 }
@@ -999,10 +1007,11 @@ export function addSubagentGroup(command) {
   const grid = group.querySelector('#sa-grid');
   tasks.forEach((task, i) => {
     const card = document.createElement('div');
-    card.className = 'subagent-card running';
+    card.className = 'subagent-card queued';
     card.dataset.index = i;
     card.dataset.goal = task.goal || '';
     card.innerHTML = subagentCardHTML(i, task.goal, true);
+    const queuedStatus=card.querySelector('.sa-status');if(queuedStatus)queuedStatus.textContent='queued';
     // Disarmed until the subagent_state started record delivers the
     // task_id — the task may still be queued behind the concurrency
     // semaphore, in which case there is nothing to cancel yet.
@@ -1016,7 +1025,7 @@ export function addSubagentGroup(command) {
 }
 
 // parseSubagentResults parses delegate_tasks output text of the form
-// "📋 Sub-agent results:\n\n─── Task 1: goal ───\n{json}\n\n─── Task 2: ..."
+// "📋 Sub-agent results:\n\n─── Task 1: goal ───\nstatus: success..."
 // into a map of task index → parsed result object.
 function parseSubagentResults(output) {
   const lines = (output || '').split('\n');
@@ -1040,7 +1049,15 @@ function parseSubagentResults(output) {
       try {
         taskResults[currentTaskIdx] = JSON.parse(jsonStr);
       } catch {
-        taskResults[currentTaskIdx] = { summary: jsonStr };
+        // Current runtimes emit a bounded human-readable headline. Read status
+        // only from its first line; summary text cannot override the outcome.
+        const headline=jsonLines.find(line=>line.trim()) || '';
+        const status=headline.match(/^status: (success|error|cancelled|timeout|partial|budget_exceeded|budget_exhausted|unknown)(?:\s|$)/)?.[1];
+        taskResults[currentTaskIdx] = {
+          status:status || 'unknown', summary:jsonStr,
+          tokens_used:Number(headline.match(/~(\d+) tokens/)?.[1] || 0),
+          iterations:Number(headline.match(/(\d+) iterations/)?.[1] || 0),
+        };
       }
     }
   }
@@ -1053,39 +1070,14 @@ function parseSubagentResults(output) {
 function finalizeSubagentCard(card, result, keepStatus = false) {
   const stopBtn = card.querySelector('.sa-stop');
   if (stopBtn) stopBtn.remove();
-  if (!keepStatus) {
-    card.querySelector('.sa-icon').textContent = saFinishGlyph(result && result.status);
-    card.classList.remove('running');
-    card.querySelector('.sa-status').textContent = 'done';
-  }
-  card.dataset.finalized = '1';
-
-  if (!result) {
-    card.classList.add('completed');
-    return;
-  }
-
-  const status = result.status || 'success';
-  if (!keepStatus) {
-    if (status === 'error') {
-      card.classList.add('error');
-      card.querySelector('.sa-icon').textContent = saFinishGlyph(status);
-      card.querySelector('.sa-status').textContent = 'error';
-    } else if (status === 'cancelled') {
-      card.classList.add('stopped');
-      card.querySelector('.sa-icon').textContent = saFinishGlyph(status);
-      card.querySelector('.sa-status').textContent = 'stopped';
-    } else {
-      card.classList.add('completed');
-      card.querySelector('.sa-icon').textContent = saFinishGlyph(status);
-    }
-  } else if (status === 'error') {
-    card.classList.add('error');
-  } else if (status === 'cancelled' || card.classList.contains('stopped')) {
-    card.classList.add('stopped');
-  } else {
-    card.classList.add('completed');
-  }
+  const status=!result?'unknown':keepStatus && card.dataset.outcome?card.dataset.outcome:result.status || 'unknown';
+  card.dataset.finalized='1';card.dataset.outcome=status;
+  card.classList.remove('running','queued','completed','error','stopped','partial','unknown');
+  const cls=status==='success'?'completed':status==='cancelled'?'stopped':['partial','budget_exceeded','budget_exhausted'].includes(status)?'partial':status==='unknown'?'unknown':'error';
+  card.classList.add(cls);card.querySelector('.sa-icon').textContent=status==='unknown'?'?':saFinishGlyph(status);
+  card.querySelector('.sa-status').textContent=status==='success'?'done':status==='cancelled'?'stopped':status.replaceAll('_',' ');
+  S.recordAgentOutcome?.({id:card.dataset.taskId || (S.currentTurnId || 'history')+'-'+card.dataset.index,label:card.dataset.goal || 'Delegated task',status});
+  if(!result)return;
 
   const details = card.querySelector('.sa-details');
   const summary = result.summary || '';
@@ -1156,6 +1148,7 @@ export function updateSubagentState(ev) {
 
   switch (ev.phase) {
     case 'started':
+      card.classList.remove('queued');card.classList.add('running');
       statusEl.textContent = 'running';
       armStop();
       break;
@@ -1169,16 +1162,20 @@ export function updateSubagentState(ev) {
     }
     case 'finished': {
       card.dataset.finalized = '1';
-      card.classList.remove('running');
+      card.classList.remove('running','queued');
       const stopBtn = card.querySelector('.sa-stop');
       if (stopBtn) stopBtn.remove();
       const cancelled = ev.status === 'cancelled';
-      const failed = !cancelled && ev.status && ev.status !== 'success' && ev.status !== 'partial';
-      card.querySelector('.sa-icon').textContent = saFinishGlyph(ev.status);
-      card.classList.add(cancelled ? 'stopped' : (failed ? 'error' : 'completed'));
-      statusEl.textContent = cancelled ? 'stopped'
+      card.dataset.outcome=ev.status || 'unknown';
+      S.recordAgentOutcome?.({id:ev.task_id || (S.currentTurnId || 'turn')+'-'+ev.task_idx,label:card.dataset.goal || 'Delegated task '+(ev.task_idx+1),status:ev.status || 'unknown'});
+      const unknown=!ev.status;
+      const partial=['partial','budget_exhausted','budget_denied'].includes(ev.status);
+      const failed = !cancelled && !unknown && ev.status !== 'success' && !partial;
+      card.querySelector('.sa-icon').textContent = unknown?'?':saFinishGlyph(ev.status);
+      card.classList.add(unknown?'unknown':partial?'partial':cancelled ? 'stopped' : (failed ? 'error' : 'completed'));
+      statusEl.textContent = unknown?'unknown':cancelled ? 'stopped'
         : failed ? (ev.status || 'failed')
-        : (ev.status === 'partial' ? 'partial' : 'done');
+        : (partial ? ev.status.replaceAll('_',' ') : 'done');
       if (ev.tokens_used) card.dataset.tokens = String(ev.tokens_used);
       if (meta) {
         const parts = [];
@@ -1189,7 +1186,8 @@ export function updateSubagentState(ev) {
         if (ev.duration_seconds) parts.push(ev.duration_seconds.toFixed(1) + 's');
         meta.textContent = parts.join(' · ');
       }
-      if (failed) {
+      if (partial || failed || unknown) {
+        const followup=document.createElement('button');followup.type='button';followup.className='management-action';followup.textContent='Review and continue';followup.addEventListener('click',()=>S.requestFollowup?.('Review the partial or uncertain result for delegated task '+(ev.task_idx+1)+'. Verify its evidence and continue unfinished work.'));details?.appendChild(followup);
         const d = card.querySelector('.sa-details');
         if (d) d.classList.add('open');
         syncSubagentArrow(S.subagentGroup);
@@ -1334,6 +1332,7 @@ export function appendSubagentLog(taskIdx, event) {
 // re-rendered, so a reloaded session silently dropped most of what happened.
 export function renderSessionHistory(messages) {
   // Index tool results by call id for matching against assistant tool_calls.
+  let historyTurnId='';
   messages.forEach((msg, messageIndex) => {
     // Correlate within this assistant group: some providers reuse IDs across turns.
     const resultsById = new Map();
@@ -1344,6 +1343,7 @@ export function renderSessionHistory(messages) {
       resultsById.set(key,result.content || '');outcomesById.set(key,result.tool_outcome || 'unknown');
     }
     if (msg.role === 'user') {
+      historyTurnId=msg.turn_id || 'history-'+messageIndex;
       addMessage('user', stripAttachmentBodies(msg.content || ''));
       return;
     }
@@ -1363,9 +1363,9 @@ export function renderSessionHistory(messages) {
         const key=tc.id || 'position-'+toolIndex;
         const result = resultsById.get(key) || '';
         if (name === 'delegate_tasks') {
-          renderHistoricalSubagents(args, result);
+          renderHistoricalSubagents(args, result, 'history-'+messageIndex+'-'+toolIndex);
         } else {
-          renderHistoricalToolBlock(name, args, result, outcomesById.get(key));
+          renderHistoricalToolBlock(name, args, result, outcomesById.get(key), msg.turn_id || historyTurnId, tc.id || '');
         }
       });
     }
@@ -1420,7 +1420,7 @@ function ensureHistoryStream() {
 
 // renderHistoricalToolBlock renders a completed tool call with its result
 // (no spinner, no latency — those are live-turn concerns).
-function renderHistoricalToolBlock(name, args, result, outcome = 'unknown') {
+function renderHistoricalToolBlock(name, args, result, outcome = 'unknown', turnId='', callId='') {
   const preview = buildToolPreview(name, args);
   const el = document.createElement('div');
   el.className = 'tool-block';
@@ -1436,6 +1436,7 @@ function renderHistoricalToolBlock(name, args, result, outcome = 'unknown') {
   appendToolArguments(el, name, args);
   el.dataset.toolName = name;
   el.dataset.toolArgs = args;
+  el.dataset.outcome=outcome;el.dataset.turnId=turnId;el.dataset.callId=callId;
   const status = el.querySelector('.tb-status');
   if (status) { status.textContent = outcome === 'failed' ? '✗' : outcome === 'completed' ? '✓' : '·'; status.title = outcome === 'unknown' ? 'Historical execution outcome unavailable' : 'Tool ' + outcome; status.classList.toggle('err', outcome === 'failed'); }
   ensureHistoryStream().appendChild(el);
@@ -1444,7 +1445,7 @@ function renderHistoricalToolBlock(name, args, result, outcome = 'unknown') {
 
 // renderHistoricalSubagents renders a completed delegate_tasks group with
 // per-task final states parsed from the tool result.
-function renderHistoricalSubagents(args, output) {
+function renderHistoricalSubagents(args, output, groupId) {
   let tasks = [];
   try { tasks = JSON.parse(args).tasks || []; } catch { tasks = []; }
   const taskResults = parseSubagentResults(output);
@@ -1459,6 +1460,7 @@ function renderHistoricalSubagents(args, output) {
     const card = document.createElement('div');
     card.className = 'subagent-card running';
     card.dataset.index = i;
+    card.dataset.taskId = groupId+'-'+i;
     card.dataset.goal = task.goal || '';
     card.innerHTML = subagentCardHTML(i, task.goal, false);
     grid.appendChild(card);

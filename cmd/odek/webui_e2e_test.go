@@ -31,6 +31,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -513,12 +514,13 @@ func TestWebUI_CSSWellFormedAndVarsDefined(t *testing.T) {
 
 // journeyEnv wires the production mux against a mock LLM.
 type journeyEnv struct {
-	srv      *httptest.Server
-	mux      *http.ServeMux
-	token    string
-	store    *session.Store
-	resolved config.ResolvedConfig
-	llm      *mockLLMServer
+	srv        *httptest.Server
+	mux        *http.ServeMux
+	token      string
+	store      *session.Store
+	resolved   config.ResolvedConfig
+	llm        *mockLLMServer
+	wsHandlers sync.WaitGroup
 }
 
 func newJourneyEnv(t *testing.T, stream bool, dangerPromptAll bool) *journeyEnv {
@@ -580,9 +582,34 @@ func newJourneyEnv(t *testing.T, stream bool, dangerPromptAll bool) *journeyEnv 
 		WsToken:       wsToken,
 		MemoryDir:     filepath.Join(t.TempDir(), "memory"),
 	})
-	srv := httptest.NewServer(mux)
-	t.Cleanup(srv.Close)
-	return &journeyEnv{srv: srv, mux: mux, token: wsToken, store: store, resolved: resolved, llm: llm}
+	env := &journeyEnv{mux: mux, token: wsToken, store: store, resolved: resolved, llm: llm}
+	env.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/ws" {
+			env.wsHandlers.Add(1)
+			defer env.wsHandlers.Done()
+		}
+		mux.ServeHTTP(w, r)
+	}))
+	t.Cleanup(func() {
+		env.srv.Close()
+		// HTTP shutdown leaves hijacked WebSockets alive. Close this
+		// fixture's sockets and drain agent cleanup before deleting its home.
+		wsConns.Range(func(key, _ any) bool {
+			conn := key.(*golangws.Conn)
+			if req := conn.Request(); req != nil && req.Host == env.srv.Listener.Addr().String() {
+				_ = conn.Close()
+			}
+			return true
+		})
+		done := make(chan struct{})
+		go func() { env.wsHandlers.Wait(); serveRunsWG.Wait(); close(done) }()
+		select {
+		case <-done:
+		case <-time.After(20 * time.Second):
+			t.Error("fixture agents did not finish cleanup")
+		}
+	})
+	return env
 }
 
 func (e *journeyEnv) do(t *testing.T, method, path, body string, hdr map[string]string) (*http.Response, string) {
@@ -623,6 +650,7 @@ func (e *journeyEnv) dialWS(t *testing.T) *golangws.Conn {
 	if err != nil {
 		t.Fatalf("WS dial: %v", err)
 	}
+	t.Cleanup(func() { _ = conn.Close() })
 	return conn
 }
 

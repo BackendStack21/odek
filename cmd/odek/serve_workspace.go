@@ -14,7 +14,7 @@ import (
 
 // workspaceCapabilities is additive: clients must tolerate missing features.
 func workspaceCapabilities() map[string]any {
-	return map[string]any{"version": 1, "features": map[string]bool{"media_uploads": true, "artifact_previews": true, "tool_identity": true, "tool_outcomes": true, "skill_review": true, "schedules": true, "maintenance": true, "tool_schemas": true}, "result_renderers": []string{"code", "diff", "terminal", "search", "json", "sources", "text"}}
+	return map[string]any{"version": 1, "features": map[string]bool{"media_uploads": true, "artifact_previews": true, "tool_identity": true, "tool_outcomes": true, "skill_review": true, "schedules": true, "maintenance": true, "tool_schemas": true, "run_limits": true, "recovery": true, "turn_settled": true, "permissions": true, "decision_receipts": true, "schedule_preview": true}, "result_renderers": []string{"code", "diff", "terminal", "search", "json", "sources", "text"}}
 }
 func handleCapabilities(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -55,6 +55,9 @@ func handleSchedules(home string) http.HandlerFunc {
 			}
 			next := map[string]time.Time{}
 			for _, j := range jobs {
+				if !j.Enabled {
+					continue
+				}
 				loc := time.UTC
 				if j.Timezone != "" {
 					if l, e := time.LoadLocation(j.Timezone); e == nil {
@@ -65,7 +68,7 @@ func handleSchedules(home string) http.HandlerFunc {
 					next[j.ID] = expr.Next(time.Now())
 				}
 			}
-			writeAPIJSON(w, 200, map[string]any{"jobs": jobs, "states": states, "next": next, "execution_host": "schedule daemon or Telegram"})
+			writeAPIJSON(w, 200, map[string]any{"jobs": jobs, "states": states, "next": next, "execution_host": "schedule daemon or Telegram", "host_health": schedule.ReadHostHealth(home, time.Now())})
 			return
 		}
 		if r.Method == http.MethodDelete {

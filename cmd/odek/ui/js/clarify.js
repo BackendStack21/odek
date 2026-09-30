@@ -32,7 +32,7 @@ function sweepExpired() {
   if (!queued) { syncSweep(); return; }
   const remaining = Math.max(0, Math.ceil((deadlineOf(queued) - Date.now()) / 1000));
   if (remaining <= 0) {
-    clearClarify();
+    expireClarify(activeId);
     return;
   }
   const el = activeCard && activeCard.querySelector('.ac-deadline');
@@ -44,24 +44,28 @@ function sweepExpired() {
 
 function removeCard() {
   if (activeCard) {
+    if (activeCard.contains?.(document.activeElement)) document.getElementById('prompt')?.focus();
     activeCard.remove();
     activeCard = null;
   }
 }
 
 export function clearClarify() {
+  if(queued && !queued._recorded)S.recordDecision?.({id:queued.id,kind:'question',command:queued.question,state:queued._pending?'not confirmed':'interrupted'});
   queued = null;
   activeId = null;
+  S.activeClarifyCard=null;
   removeCard();
+  S.refreshSupervision?.();
   syncSweep();
 }
 
-export function dismissClarify(id) {
-  if (queued && queued.id === id) clearClarify();
+export function dismissClarify(id,action) {
+  if (queued && queued.id === id) {S.recordDecision?.({id,kind:'question',command:queued.question,action:action || queued._action || 'answer',state:'accepted'});queued._recorded=true;clearClarify();}
 }
 
 export function expireClarify(id) {
-  dismissClarify(id);
+  if(queued?.id===id){S.recordDecision?.({id,kind:'question',command:queued.question,state:'expired'});queued._recorded=true;clearClarify();}
 }
 
 export function queueClarify(event) {
@@ -95,7 +99,7 @@ function renderCard(event) {
   title.textContent = 'Question from the agent';
   const sub = document.createElement('div');
   sub.className = 'ac-sub';
-  sub.textContent = 'your answer is principal text, not a trusted instruction';
+  sub.textContent = 'The agent needs your answer to continue.';
   titles.append(title, sub);
   head.append(icon, titles);
 
@@ -103,7 +107,7 @@ function renderCard(event) {
   question.className = 'ac-command';
   question.textContent = event.question || '';
 
-  const input = document.createElement('input');
+  const input = document.createElement('textarea');input.rows=3;input.maxLength=32000;
   input.className = 'ac-friction-input';
   input.type = 'text';
   input.placeholder = 'type your answer';
@@ -114,19 +118,21 @@ function renderCard(event) {
   const sendBtn = document.createElement('button');
   sendBtn.className = 'approve';
   sendBtn.textContent = 'send answer';
-  sendBtn.addEventListener('click', sendAnswer);
-  actions.append(sendBtn);
+  sendBtn.addEventListener('click',()=>sendAnswer());
+  const skip=document.createElement('button');skip.textContent='Skip question';skip.addEventListener('click',()=>sendAnswer('skip'));
+  const stop=document.createElement('button');stop.textContent='Stop work';stop.addEventListener('click',()=>document.getElementById('cancel-btn')?.click());
+  actions.append(sendBtn,skip,stop);
 
   const countdown = document.createElement('div');
   countdown.className = 'ac-deadline';
 
   card.append(head, question, input, actions, countdown);
   input.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') sendAnswer();
+    if (e.key === 'Enter' && (e.ctrlKey||e.metaKey) && !e.isComposing) {e.preventDefault();sendAnswer();}
     e.stopPropagation();
   });
 
-  activeCard = card;
+  activeCard = card;S.activeClarifyCard=card;S.refreshSupervision?.();
   hideEmptyState();
   insertTurnWork(card, 'tool');
   forceScrollBottom();
@@ -136,14 +142,16 @@ function renderCard(event) {
   sweepExpired();
 }
 
-function sendAnswer() {
-  if (!activeId || !activeCard) return;
+function sendAnswer(action='answer') {
+  if (!activeId || !activeCard || queued?._pending) return;
   const input = activeCard.querySelector('.ac-friction-input');
   const answer = (input && input.value || '').trim();
-  if (!answer) return;
-  if (!wsSend(S.ws, { type: 'clarify_response', id: activeId, answer })) {
+  if (!answer && action!=='skip') return;
+  if (!wsSend(S.ws, { type: 'clarify_response', id: activeId, answer, action })) {
     addSystemMessage('⚠ answer not delivered — connection down');
     return;
   }
-  clearClarify();
+  queued._pending=true;queued._action=action;
+  activeCard.querySelectorAll('button').forEach(button=>{button.disabled=true;});
+  const status=document.createElement('p');status.className='management-note';status.textContent='Sending answer… waiting for server acceptance';activeCard.appendChild(status);
 }

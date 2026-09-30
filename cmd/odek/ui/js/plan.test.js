@@ -231,7 +231,7 @@ test('hostile step titles/notes render inert — no element parsing, raw text on
   // Exactly the expected structure: header + two rows, nothing else — a
   // hostile payload parsed as HTML would have spawned extra nodes.
   assert.equal(rowsIn(list).length, 2);
-  assert.equal(list.children.length, 3);
+  assert.equal(list.children.length, 4);
 
   // No executable/embedding element anywhere in the rendered tree.
   const tags = [];
@@ -535,7 +535,7 @@ test('renderPlan skips the rebuild when the payload is unchanged', () => {
   const p = { found: true, version: 3, steps: [{ id: 'a', title: 'one', status: 'pending' }] };
   plan.renderPlan(p, root);
   const first = root.children.slice();
-  assert.equal(first.length, 2); // header + one row
+  assert.equal(first.length, 3); // header, provenance note, one row
 
   plan.renderPlan({ ...p, steps: [{ ...p.steps[0] }] }, root);
   assert.deepEqual(root.children, first, 'identical payload must not rebuild the DOM');
@@ -556,5 +556,5 @@ test('renderPlan renders again after a found:false frame invalidated the sig', (
   plan.renderPlan({ found: false }, root);
   assert.notDeepEqual(root.children, first);
   plan.renderPlan(p, root);
-  assert.equal(root.children.length, 2, 'good payload must render after empty frame');
+  assert.equal(root.children.length, 3, 'good payload must render after empty frame');
 });

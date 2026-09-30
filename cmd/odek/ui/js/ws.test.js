@@ -4,7 +4,7 @@
 // drive the real ws.js message switch through a minimal browser shim —
 // the same harness approvals.test.js uses. Run:
 //   node --test cmd/odek/ui/js/
-import { test, beforeEach } from 'node:test';
+import { test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 
 // ── Minimal browser shims (ws.js → state/dom/utils/render/approvals/…) ──
@@ -217,6 +217,32 @@ test('keepalive frames are ignored — no system message, no busy change', () =>
   assert.equal(el('messages').children.length, before, 'keepalive must not append transcript noise');
 });
 
+test('automatic context, recovery, memory and skill events stay silent', async () => {
+  await new Promise(resolve=>setTimeout(resolve,40)); // drain announcements from prior decision tests
+  const toast=el('toast');toast.textContent='unchanged';
+  const status=el('sr-status');status.textContent='unchanged';
+  const busy=S.busy;
+  deliver({type:'agent_signal',event:'context_trimmed',detail:'margin_calibrated'});
+  deliver({type:'agent_signal',event:'tool_recovery',tool:'shell'});
+  for(const event of ['fact_added','fact_merged','fact_replaced','fact_removed','fact_consolidated','episode_stored','episode_promoted','episode_discarded','episode_evicted','episode_deduped'])deliver({type:'memory_event',event});
+  deliver({type:'skill_event',event:'deleted',skill_name:'fixture'});
+  await new Promise(resolve=>setTimeout(resolve,40));
+  assert.equal(el('messages').children.length,0);
+  assert.equal(toast.textContent,'unchanged');
+  assert.equal(status.textContent,'unchanged');
+  assert.equal(S.busy,busy,'internal maintenance does not interrupt execution');
+});
+
+test('memory needing a principal decision exposes review without a toast', () => {
+  const toast=el('toast');toast.textContent='unchanged';
+  S.knowledgeNeedsReview=false;
+  deliver({type:'memory_event',event:'episode_pending_review',session_id:'fixture'});
+  assert.equal(S.knowledgeNeedsReview,true);
+  assert.equal(toast.textContent,'unchanged');
+  assert.equal(el('messages').children.length,0);
+  S.knowledgeNeedsReview=false;
+});
+
 test('provider timeout errors render a retry hint, not the raw SDK line', () => {
   deliver({ type: 'error', message: 'iteration 3: context deadline exceeded' });
   const html = el('messages').children.at(-1).innerHTML;
@@ -308,3 +334,5 @@ test('done applies last-call tok/s from this-call fields', () => {
   });
   assert.equal(S.metrics.tokPerSec, 9.6);
 });
+
+afterEach(()=>approvals.clearApprovals({drain:false}));

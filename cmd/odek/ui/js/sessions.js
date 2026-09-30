@@ -206,6 +206,7 @@ syncSearchClear();
 // Clear transient state before any new session data can render.
 function resetSessionViews() {
   S.viewVersion++;
+  S.resetSupervision?.();
   if (S.currentTurnId) {
     S.closedTurnIds ||= new Set();
     S.closedTurnIds.add(S.currentTurnId);
@@ -342,6 +343,7 @@ export async function loadAndRenderSession(sid) {
     }
 
     renderSessionHistory(messages);
+    S.restoreDecisionReceipts?.(sess.decisions || []);
 
     forceScrollBottom();
     showToast('Session loaded');

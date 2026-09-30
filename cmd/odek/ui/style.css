@@ -3172,3 +3172,96 @@ body.theme-high-contrast #empty-state-inner::before { display:none; }
   .es-tip { padding:12px; font-size:12px; }
   .es-name { font-size:36px; }
 }
+
+/* Task supervision: clear reading surfaces and separate administration. */
+:root { --reading-size: 15px; }
+[hidden] { display: none !important; }
+#execution-scope { overflow-wrap:anywhere; }
+#run-settings { min-width:0; }
+#run-settings > summary { cursor:pointer; color:var(--text-2); padding:8px; font:12px var(--ui); border:1px solid var(--line-2); border-radius:8px; white-space:nowrap; }
+#run-settings[open] { width:min(480px,100%); }
+.run-settings-fields { display:grid; grid-template-columns:1fr 1fr; gap:12px; padding:12px; background:var(--bg-2); border:1px solid var(--line-2); border-radius:var(--r-md); }
+.run-settings-fields > p, #effective-limits, .permission-policy { grid-column:1 / -1; }
+.run-settings-fields label { display:flex; flex-direction:column; gap:6px; }
+.run-settings-fields input, .run-settings-fields select { width:100%; min-height:36px; border:1px solid var(--line-3); background:var(--bg-1); color:var(--text); padding:6px 8px; border-radius:6px; }
+#model-picker, #thinking-picker { display:block !important; max-width:100%; min-width:0; }
+#speed-chip { display:none !important; }
+#schedules-btn, #settings-btn, #attention-chip { width:auto; height:auto; min-height:32px; padding:4px 8px; font:12px var(--ui); color:var(--text-2); }
+#attention-chip { color:var(--amber-hi); }
+#panels[inert] { pointer-events:none; }
+#panels-tabs { overflow:visible; flex-wrap:wrap; }
+#panels-tabs .ptab { letter-spacing:0; text-transform:none; font-size:13px; min-height:38px; }
+#task-status { margin:8px 0 16px; font-size:19px; line-height:1.4; }
+#attention-view { display:flex; flex-direction:column; gap:8px; margin-bottom:20px; }
+#recovery-view { padding:16px; border:1px solid var(--amber); border-radius:10px; margin:12px 0; }
+#completion-view { padding-bottom:12px; }
+.output-outcome { display:block; font-size:12px; color:var(--text-2); margin-bottom:6px; }
+.output-item[data-outcome="failed"] { border-left:3px solid var(--red); }
+.output-item[data-outcome="passed"] { border-left:3px solid var(--green); }
+.output-item[data-outcome="unknown"], .output-item[data-outcome="unverified"] { border-left:3px solid var(--amber); }
+.output-item[data-outcome="failed"] .output-outcome { color:var(--red); }
+#activity-search { width:100%; }
+#output-detail:focus { outline:none; }
+.permission-policy { padding:8px 0; }
+.scheduler-health, .schedule-preview { font:13px/1.7 var(--ui); color:var(--text-2); overflow-wrap:anywhere; margin:12px 0; }
+.schedule-result { margin:12px 0; }
+.schedule-advanced { padding:12px; border:1px solid var(--line-2); border-radius:8px; }
+.schedule-advanced summary { cursor:pointer; margin-bottom:8px; }
+.subagent-card.queued, .subagent-card.unknown { color:var(--text-2); }
+.subagent-card.unknown .sa-status { color:var(--amber); }
+.decision-receipt { margin:10px 0; padding:10px 14px; border-left:2px solid var(--line-3); color:var(--text-2); font:12px/1.6 var(--ui); }
+.decision-receipt pre { white-space:pre-wrap; overflow-wrap:anywhere; max-height:180px; overflow:auto; }
+.management-action, .queue-btn, .plan-results { min-height:36px; }
+.queue-btn { min-width:36px; }
+#send-btn { width:auto; min-width:40px; padding:0 10px; }
+#context-btn { min-height:36px; }
+#context-overlay { position:fixed; inset:0; z-index:150; background:rgba(0,0,0,.6); display:none; align-items:center; justify-content:center; padding:20px; }
+#context-overlay.active { display:flex; }
+#context-dialog { width:min(560px,100%); max-height:80vh; overflow:auto; background:var(--bg-2); color:var(--text); border:1px solid var(--line-3); border-radius:14px; padding:24px; }
+#context-results { display:flex; flex-direction:column; gap:8px; padding:12px 0; }
+#context-dialog input { width:100%; }
+.content { font-size:var(--reading-size); line-height:1.75; }
+@media (max-width: 1099px) {
+ #panels { width:min(100vw,560px); }
+ #schedules-btn, #settings-btn { font-size:11px; padding:4px 6px; }
+ #execution-scope { font-size:11px; }
+ #panels-tabs .ptab { min-height:44px; }
+ .management-action, .queue-btn, .plan-results, #context-btn { min-height:44px; }
+ .queue-btn { min-width:44px; }
+ .content { font-size:var(--reading-size); }
+}
+@media (max-width: 480px) {
+ #topbar { gap:6px; }
+ .top-brand-text { display:none; }
+ #attention-chip { max-width:80px; font-size:10px; }
+ .run-settings-fields { grid-template-columns:1fr; }
+}
+
+#run-settings { position:relative; flex:none; }
+#run-settings[open] { width:auto; }
+.run-settings-fields { position:absolute; top:100%; right:0; z-index:40; width:min(480px,calc(100vw - 40px)); max-height:60vh; overflow:auto; box-shadow:0 12px 36px rgba(0,0,0,.3); }
+#schedules-btn, #settings-btn, #attention-chip { background:transparent; border:1px solid var(--line-2); border-radius:8px; cursor:pointer; }
+#schedules-btn:hover, #settings-btn:hover, #attention-chip:hover { background:var(--bg-2); color:var(--text); }
+.subagent-card.partial .sa-status { color:var(--amber); }
+@media(max-width:1099px){.run-settings-fields{width:min(480px,calc(100vw - 28px));}}
+.run-settings-fields > #model-picker, .run-settings-fields > #thinking-picker { grid-column:auto; grid-row:auto; }
+.run-settings-fields > #custom-model-input { grid-column:1 / -1; grid-row:auto; }
+@media(max-width:767px){
+ #topbar { position:relative; }
+ #run-settings { grid-column:1 / 3; grid-row:2; position:static; }
+ #run-settings > summary { min-height:36px; box-sizing:border-box; }
+ #run-settings .run-settings-fields { top:100%; right:12px; }
+ #schedules-btn { grid-column:3; grid-row:2; width:auto; min-height:36px; }
+ #settings-btn { grid-column:4 / 6; grid-row:2; width:auto; min-height:36px; }
+ #status-group { grid-column:2; }
+ #attention-chip { grid-column:3; grid-row:1; justify-self:start; width:auto; max-width:110px; min-height:36px; }
+}
+
+.run-settings-fields > #model-picker, .run-settings-fields > #thinking-picker, .run-settings-fields > #custom-model-input { order:0; }
+
+#conn-banner .connection-retry { margin-left:8px; min-height:36px; padding:6px 12px; border:1px solid var(--line-3); border-radius:6px; background:var(--bg-2); color:var(--text); cursor:pointer; }
+.artifact-provenance { margin:8px 0; }
+.artifact-provenance summary { cursor:pointer; font:12px var(--ui); color:var(--text-2); }
+
+#health-popover #ctx-gauge { display:flex; }
+#health-popover .ctx-label { display:none; }
