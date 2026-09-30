@@ -1179,6 +1179,20 @@ type wsAttachment struct {
 	Content  string `json:"content"`
 }
 
+// An attachment contributes input only when handlePrompt can consume its
+// upload ID or its named text content. Empty placeholders are not a task.
+func hasPromptInput(content string, attachments []wsAttachment) bool {
+	if strings.TrimSpace(content) != "" {
+		return true
+	}
+	for _, att := range attachments {
+		if att.UploadID != "" || (att.Name != "" && att.Content != "") {
+			return true
+		}
+	}
+	return false
+}
+
 type wsClientMsg struct {
 	Type            string            `json:"type"`
 	Content         string            `json:"content"`
@@ -1641,7 +1655,8 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 		msg.SystemInitiated = false
 		msg.WakeToken = ""
 
-		if msg.Content == "" {
+		if !hasPromptInput(msg.Content, msg.Attachments) {
+			writeWSError(conn, "prompt content or attachments required")
 			continue
 		}
 
@@ -1883,6 +1898,10 @@ func handlePrompt(
 	// Server-side cap on prompt size (finding #69). A client can already send
 	// up to the WebSocket frame cap; reject anything above a reasonable prompt
 	// limit before storing it in the session or forwarding it to the LLM.
+	if !hasPromptInput(prompt, msg.Attachments) {
+		sendError(send, "prompt content or attachments required")
+		return currSess
+	}
 	if len(prompt) > maxPromptBytes {
 		sendError(send, "prompt exceeds maximum size")
 		return currSess
@@ -2010,7 +2029,7 @@ func handlePrompt(
 		var wrapped []string
 		for _, att := range msg.Attachments {
 			if att.UploadID != "" {
-				upload, release, ok := acquireBrowserUpload(att.UploadID, msg.SessionID)
+				upload, release, ok := acquireBrowserUpload(att.UploadID, sessionID)
 				if !ok {
 					sendError(send, "attachment unavailable or belongs to another session")
 					return currSess
@@ -2228,6 +2247,18 @@ func handlePrompt(
 		err = persistErr
 	}
 	latency := time.Since(start)
+	// Provider usage is incurred even when the turn is truncated, cancelled,
+	// or exceeds its budget. Record it before either outcome returns.
+	contextTokens := agent.TotalInputTokens()
+	outputTokens := agent.TotalOutputTokens()
+	*sessionInputTokens += contextTokens
+	*sessionOutputTokens += outputTokens
+	atomic.AddInt64(&serveStats.TokensIn, int64(contextTokens))
+	atomic.AddInt64(&serveStats.TokensOut, int64(outputTokens))
+	if sess != nil {
+		sess.InputTokens += int64(contextTokens)
+		sess.OutputTokens += int64(outputTokens)
+	}
 	if auditSessID != "" {
 		recordTurnAudit(auditStore, auditSessID, auditTurn, originalPrompt, session.TurnMessages(allMessages, turnID))
 	}
@@ -2315,23 +2346,10 @@ func handlePrompt(
 		}
 	}
 
-	contextTokens := agent.TotalInputTokens()
-	outputTokens := agent.TotalOutputTokens()
 	cacheCreate := agent.TotalCacheCreationTokens()
 	cacheRead := agent.TotalCacheReadTokens()
 	cached := agent.TotalCachedTokens()
-	*sessionInputTokens += contextTokens
-	*sessionOutputTokens += outputTokens
-	atomic.AddInt64(&serveStats.TokensIn, int64(contextTokens))
-	atomic.AddInt64(&serveStats.TokensOut, int64(outputTokens))
 	atomic.AddInt64(&serveStats.PromptsCompleted, 1)
-
-	// Cumulative per-session usage (observability only — budgets are
-	// enforced per-run by internal/budget).
-	if sess != nil {
-		sess.InputTokens += int64(contextTokens)
-		sess.OutputTokens += int64(outputTokens)
-	}
 
 	// Save session — persist buffer and update the vector index.
 	// The message history was already persisted per-turn by the persist

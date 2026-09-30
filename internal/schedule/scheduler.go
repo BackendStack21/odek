@@ -67,7 +67,10 @@ type Scheduler struct {
 	opts      Options
 	log       Logger
 
-	mu       sync.Mutex
+	mu sync.Mutex
+	// stateMu orders scheduling transitions and persistence without holding
+	// mu during disk I/O. Completion cannot overwrite a newer projection.
+	stateMu  sync.Mutex
 	jobs     map[string]Job       // id → latest definition
 	compiled map[string]*Schedule // id → parsed cron
 	sig      map[string]string    // id → cron|tz signature, to detect changes on reload
@@ -179,6 +182,8 @@ func (s *Scheduler) Wait() { s.wg.Wait() }
 // were disabled are dropped. It is called on startup and whenever the
 // schedules file changes.
 func (s *Scheduler) reconcile(now time.Time) {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
 	jobs, err := s.store.List()
 	if err != nil {
 		s.log.Error("scheduler: list jobs failed", "error", err)
@@ -292,7 +297,9 @@ func (s *Scheduler) reconcile(now time.Time) {
 			delete(s.compiled, id)
 			delete(s.jobs, id)
 			delete(s.sig, id)
-			delete(s.runs, id)
+			if !s.running[id] {
+				delete(s.runs, id)
+			}
 		}
 	}
 	s.mu.Unlock()
@@ -326,6 +333,7 @@ func (s *Scheduler) reconcile(now time.Time) {
 // already executing is not fired again (overlap guard); its schedule still
 // advances so it doesn't pile up.
 func (s *Scheduler) fireDue(ctx context.Context, now time.Time) {
+	s.stateMu.Lock()
 	s.mu.Lock()
 	var toFire []Job
 	for id, nt := range s.next {
@@ -350,6 +358,7 @@ func (s *Scheduler) fireDue(ctx context.Context, now time.Time) {
 		toFire = append(toFire, s.jobs[id])
 	}
 	s.mu.Unlock()
+	s.stateMu.Unlock()
 
 	for i, job := range toFire {
 		// Acquire a slot, but stay responsive to cancellation: if all slots are
@@ -377,15 +386,24 @@ func (s *Scheduler) fireDue(ctx context.Context, now time.Time) {
 
 // execute runs a single job, delivers its result, and persists run state.
 func (s *Scheduler) execute(ctx context.Context, job Job, firedAt time.Time) {
-	defer func() {
-		s.mu.Lock()
-		s.running[job.ID] = false
-		s.mu.Unlock()
-	}()
-
 	s.mu.Lock()
 	st := RunState{JobID: job.ID, LastRun: firedAt, Runs: s.runs[job.ID], NextRun: s.next[job.ID], Sig: jobSig(job)}
 	s.mu.Unlock()
+	defer func() {
+		s.stateMu.Lock()
+		defer s.stateMu.Unlock()
+		s.mu.Lock()
+		st.NextRun = s.next[job.ID]
+		if sig, tracked := s.sig[job.ID]; tracked {
+			st.Sig = sig
+		}
+		st.Runs = max(st.Runs, s.runs[job.ID])
+		s.running[job.ID] = false
+		s.mu.Unlock()
+		if serr := s.store.saveStateForExistingJob(st); serr != nil {
+			s.log.Error("scheduler: save state failed", "id", job.ID, "error", serr)
+		}
+	}()
 
 	// Bound the run so a hung agent/tool can't hold its concurrency slot forever.
 	runCtx := ctx
@@ -412,9 +430,6 @@ func (s *Scheduler) execute(ctx context.Context, job Job, firedAt time.Time) {
 			st.LastResult = preview(result)
 			s.log.Info("scheduler: job delivered", "id", job.ID, "name", job.Name, "tokens", tokens)
 		}
-	}
-	if serr := s.store.SaveState(st); serr != nil {
-		s.log.Error("scheduler: save state failed", "id", job.ID, "error", serr)
 	}
 }
 

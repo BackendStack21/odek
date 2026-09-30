@@ -787,8 +787,8 @@ func startServeRun(
 	resources *resource.Registry,
 	req promptRequest,
 ) (*serveRun, error) {
-	if strings.TrimSpace(req.Content) == "" {
-		return nil, fmt.Errorf("content required")
+	if !hasPromptInput(req.Content, req.Attachments) {
+		return nil, fmt.Errorf("content required or usable attachments required")
 	}
 	if len(req.Content) > maxPromptBytes {
 		return nil, fmt.Errorf("prompt exceeds maximum size")
@@ -940,6 +940,10 @@ func startServeRun(
 		ctx = context.WithValue(ctx, serveRunIDKey{}, run.ID)
 		sess := handlePrompt(ctx, recordSend, store, resources, resolved, agent, injectionGuard, nil, msg, &sessionIn, &sessionOut, cancelWithApproval, &deltas, bgRT, &turnTag)
 		run.mu.Lock()
+		// Failed/cancelled turns send no done frame, but their provider
+		// usage still belongs in the final run snapshot.
+		run.InputTokens = int64(agent.TotalInputTokens())
+		run.OutputTokens = int64(agent.TotalOutputTokens())
 		if sess != nil {
 			run.SessionID = sess.ID
 		}
