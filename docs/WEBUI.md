@@ -458,7 +458,7 @@ plan parses to a version with `steps: []`). Unknown session ids return
 **404**; `note` is omitted when empty. Strictly GET-only: non-GET requests
 to `…/plan` do not fall through to the base-session mutators.
 
-### `GET /api/memory` · `POST/DELETE /api/memory/facts` · `POST /api/memory/episodes/promote`
+### `GET /api/memory` · `POST/DELETE /api/memory/facts` · `POST /api/memory/episodes/promote` · `POST /api/memory/episodes/discard`
 
 Operator-gated memory management (the REST face of `odek memory`):
 
@@ -466,6 +466,7 @@ Operator-gated memory management (the REST face of `odek memory`):
 - `POST /api/memory/facts` `{target:"user"|"env", content}` — adds through the same MemoryManager path the agent's memory tool uses, including the unsafe-content filter (`curl … | sh`-style facts are rejected).
 - `DELETE /api/memory/facts` `{target, old_text}` — removes the matching entry.
 - `POST /api/memory/episodes/promote` `{session_id}` — promotes a tainted episode to recallable, the same human gate as the CLI. The agent cannot reach these endpoints (its browser/http tools refuse loopback via the SSRF guard, and it never holds the instance token), so the gate stays human.
+- `POST /api/memory/episodes/discard` `{session_id}` — removes a pending (untrusted, unapproved) episode permanently (index entry + summary file). Refuses episodes that are approved, trusted, or auto-approved — only quarantine-removal goes through this gate. Same operator-only access as promote; CLI twin: `odek memory discard <session_id>`.
 
 ### `GET /api/skills`
 
