@@ -54,6 +54,9 @@ type Tool interface {
 	Call(args string) (string, error)
 }
 
+// LoggingOptions configures the opt-in metadata log for Go API callers.
+type LoggingOptions = runtimelog.Options
+
 // Config configures an Agent instance.
 type Config struct {
 	// RuntimeLogPath enables asynchronous metadata-only JSONL logging. Empty
@@ -61,6 +64,7 @@ type Config struct {
 	RuntimeLogPath    string
 	RuntimeLogMaxMB   int64
 	RuntimeLogSurface string
+	RuntimeLogOptions *LoggingOptions
 	EventContext      events.Context
 
 	// Provider is the go-llm-sdk registry id (deepseek, openai, anthropic,
@@ -316,14 +320,18 @@ type Config struct {
 
 // Agent is the agent loop runtime.
 type Agent struct {
-	config         Config
-	engine         *loop.Engine
-	registry       *tool.Registry
-	sandboxCleanup func() error // destroys the sandbox container on Close()
-	skillManager   *skills.SkillManager
-	memoryManager  *memory.MemoryManager
-	runtimeLog     *runtimelog.Logger
-	emitter        *events.Emitter // non-nil when Config.EventHandler is set
+	config             Config
+	engine             *loop.Engine
+	registry           *tool.Registry
+	sandboxCleanup     func() error // destroys the sandbox container on Close()
+	skillManager       *skills.SkillManager
+	memoryManager      *memory.MemoryManager
+	runtimeLog         *runtimelog.Logger
+	releaseRuntimeLog  func()
+	emitter            *events.Emitter // non-nil when Config.EventHandler is set
+	invocationActive   bool
+	invocationExecuted bool
+	invocationStarted  time.Time
 }
 
 // ToolFilterConfig controls which tools are exposed to the LLM.
@@ -752,7 +760,7 @@ func New(cfg Config) (_ *Agent, setupErr error) {
 
 	// Wire agent-loop signal observability (context trim, tool recovery): fan
 	// out to the programmatic handler and the terminal renderer.
-	if cfg.AgentSignalHandler != nil || cfg.Renderer != nil || cfg.EventHandler != nil || cfg.RuntimeLogPath != "" {
+	if cfg.AgentSignalHandler != nil || cfg.Renderer != nil || cfg.EventHandler != nil || cfg.RuntimeLogPath != "" || cfg.RuntimeLogOptions != nil {
 		handler := cfg.AgentSignalHandler
 		renderer := cfg.Renderer
 		engine.SetSignalHandler(func(ev loop.SignalEvent) {
@@ -793,14 +801,26 @@ func New(cfg Config) (_ *Agent, setupErr error) {
 	// panic-isolated — so a slow or panicking handler can never stall or
 	// crash the loop.
 	handler := cfg.EventHandler
-	if cfg.RuntimeLogPath != "" {
-		logger, err := runtimelog.Open(cfg.RuntimeLogPath, cfg.RuntimeLogSurface, cfg.RuntimeLogMaxMB)
+	if cfg.RuntimeLogPath != "" || cfg.RuntimeLogOptions != nil {
+		opts := runtimelog.Options{Path: cfg.RuntimeLogPath, Surface: cfg.RuntimeLogSurface, Level: "debug", MaxFileMB: cfg.RuntimeLogMaxMB, MaxFiles: 2}
+		if cfg.RuntimeLogOptions != nil {
+			opts = *cfg.RuntimeLogOptions
+			if cfg.RuntimeLogSurface != "" {
+				opts.Surface = cfg.RuntimeLogSurface
+			}
+		}
+		logger, release, err := runtimelog.Acquire(opts)
 		if err != nil {
 			return nil, fmt.Errorf("open runtime log: %w", err)
 		}
 		agent.runtimeLog = logger
+		agent.releaseRuntimeLog = release
 		handler = func(ev events.Event) {
-			logger.Emit(ev)
+			if cfg.RuntimeLogSurface != "" {
+				logger.EmitForSurface(ev, cfg.RuntimeLogSurface)
+			} else {
+				logger.Emit(ev)
+			}
 			if cfg.EventHandler != nil {
 				cfg.EventHandler(ev)
 			}
@@ -851,18 +871,6 @@ func New(cfg Config) (_ *Agent, setupErr error) {
 	agent.registry = registry
 	agent.sandboxCleanup = cfg.SandboxCleanup
 
-	// Emit run_started now that the engine is fully wired. The session ID is
-	// stamped onto later events via SetEventSessionID once the caller knows it.
-	if agent.emitter != nil {
-		agent.emitter.Emit(events.Event{
-			Type: events.TypeRunStarted,
-			Data: map[string]any{
-				"model":          cfg.Model,
-				"sandbox":        cfg.SandboxCleanup != nil,
-				"max_iterations": cfg.MaxIterations,
-			},
-		})
-	}
 	return agent, nil
 }
 
@@ -877,11 +885,14 @@ func (a *Agent) SystemPrompt() string {
 }
 
 // Run executes the agent loop for the given task and returns the final answer.
-func (a *Agent) Run(ctx context.Context, task string) (string, error) {
-	start := time.Now()
-	a.beginTurn()
+func (a *Agent) Run(ctx context.Context, task string) (answer string, outcome error) {
+	owned := !a.invocationActive
+	if owned {
+		a.BeginRun("", "")
+		defer a.finishOwnedRun(&outcome)
+	}
+	a.invocationExecuted = true
 	result, err := a.engine.Run(ctx, task)
-	a.emitRunFinished(start, err)
 	return result, err
 }
 
@@ -893,22 +904,72 @@ func (a *Agent) Run(ctx context.Context, task string) (string, error) {
 // Returns the final answer plus the complete updated message history.
 // The caller should persist the history (e.g. to a session file) so
 // the conversation can be continued in a future call.
-func (a *Agent) RunWithMessages(ctx context.Context, messages []session.Message) (string, []session.Message, error) {
-	start := time.Now()
-	a.beginTurn()
+func (a *Agent) RunWithMessages(ctx context.Context, messages []session.Message) (answer string, history []session.Message, outcome error) {
+	owned := !a.invocationActive
+	if owned {
+		turnID := ""
+		for i := len(messages) - 1; i >= 0; i-- {
+			if messages[i].Role == "user" && messages[i].Name != "bg-notice" {
+				turnID = messages[i].TurnID
+				break
+			}
+		}
+		a.BeginRun("", turnID)
+		defer a.finishOwnedRun(&outcome)
+	}
+	a.invocationExecuted = true
 	result, msgs, err := a.engine.RunWithMessages(ctx, messages)
-	a.emitRunFinished(start, err)
 	return result, msgs, err
 }
 
-func (a *Agent) beginTurn() {
+func (a *Agent) finishOwnedRun(outcome *error) {
+	if value := recover(); value != nil {
+		a.FinishRun(fmt.Errorf("invocation panicked"))
+		panic(value)
+	}
+	a.FinishRun(*outcome)
+}
+
+// BeginRun begins an invocation whose outcome includes caller-owned work such as
+// persistence. Calls to Run/RunWithMessages inside it do not emit terminal events.
+// The caller must call FinishRun exactly once, including on failure. Agent runs
+// are sequential; callers must not execute concurrent invocations on one Agent.
+func (a *Agent) BeginRun(runID, turnID string) {
+	if a == nil || a.invocationActive {
+		return
+	}
+	a.invocationActive = true
+	a.invocationExecuted = false
+	a.invocationStarted = time.Now()
 	if a.emitter == nil {
 		return
 	}
-	a.emitter.SetTurnID(events.NewRunID())
+	if runID == "" {
+		runID = events.NewRunID()
+	}
+	if inherited := a.config.EventContext.TurnID; inherited != "" {
+		turnID = inherited
+	}
+	if turnID == "" {
+		turnID = events.NewRunID()
+	}
+	a.emitter.BeginRun(runID, turnID)
+	a.engine.SetInvocationTurnID(turnID)
 	a.bindEventContext()
+	a.emitter.Emit(events.Event{Type: events.TypeRunStarted, Data: map[string]any{"model": a.config.Model, "sandbox": a.config.SandboxCleanup != nil, "max_iterations": a.config.MaxIterations}})
 	a.emitter.Emit(events.Event{Type: "turn_started", Data: map[string]any{"model": a.config.Model}})
 }
+
+// FinishRun records the complete invocation outcome, including required saves.
+// Repeated calls are ignored so a cleanup path cannot emit duplicate outcomes.
+func (a *Agent) FinishRun(err error) {
+	if a == nil || !a.invocationActive {
+		return
+	}
+	a.invocationActive = false
+	a.emitRunFinished(a.invocationStarted, err)
+}
+
 func (a *Agent) bindEventContext() {
 	if a.emitter == nil || a.registry == nil {
 		return
@@ -929,16 +990,13 @@ func (a *Agent) emitRunFinished(start time.Time, err error) {
 	durationMs := time.Since(start).Milliseconds()
 	if err != nil {
 		data := map[string]any{
-			"duration_ms":   durationMs,
-			"error_class":   events.ErrorClass(err),
-			"input_tokens":  a.engine.TotalInputTokens,
-			"output_tokens": a.engine.TotalOutputTokens,
+			"duration_ms": durationMs,
+			"error_class": events.ErrorClass(err),
 		}
 		for key, value := range events.ErrorData(err) {
 			data[key] = value
 		}
-		a.appendRuntimeCost(data)
-		a.engine.AppendRunLLMMetrics(data)
+		a.appendInvocationUsage(data)
 		a.emitter.Emit(events.Event{
 			Type: events.TypeRunFailed,
 			Data: data,
@@ -946,16 +1004,23 @@ func (a *Agent) emitRunFinished(start time.Time, err error) {
 		return
 	}
 	data := map[string]any{
-		"duration_ms":   durationMs,
-		"input_tokens":  a.engine.TotalInputTokens,
-		"output_tokens": a.engine.TotalOutputTokens,
+		"duration_ms": durationMs,
 	}
-	a.appendRuntimeCost(data)
-	a.engine.AppendRunLLMMetrics(data)
+	a.appendInvocationUsage(data)
 	a.emitter.Emit(events.Event{
 		Type: events.TypeRunCompleted,
 		Data: data,
 	})
+}
+
+func (a *Agent) appendInvocationUsage(data map[string]any) {
+	if !a.invocationExecuted {
+		return
+	}
+	data["input_tokens"] = a.engine.TotalInputTokens
+	data["output_tokens"] = a.engine.TotalOutputTokens
+	a.appendRuntimeCost(data)
+	a.engine.AppendRunLLMMetrics(data)
 }
 
 // RunID returns the random identifier stamped on every runtime event of this
@@ -1135,7 +1200,11 @@ func (a *Agent) Close() error {
 		if a.emitter != nil && a.emitter.Dropped() > 0 {
 			a.runtimeLog.Emit(events.Event{Type: "logging_dropped", RunID: a.RunID(), SessionID: a.emitter.Context().SessionID, Data: map[string]any{"dropped": a.emitter.Dropped()}})
 		}
-		a.runtimeLog.Close()
+		if a.releaseRuntimeLog != nil {
+			a.releaseRuntimeLog()
+		} else {
+			a.runtimeLog.Close()
+		}
 	}
 	if a.sandboxCleanup != nil {
 		return a.sandboxCleanup()

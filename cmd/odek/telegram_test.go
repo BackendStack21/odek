@@ -26,9 +26,40 @@ import (
 // ── spawnChild tests ──────────────────────────────────────────────────
 
 func TestSpawnChild_StartsChildProcess(t *testing.T) {
-	err := spawnChild()
+	// Restart the test executable with one harmless test, never the whole suite:
+	// inheriting the suite arguments recursively spawned detached test runners.
+	originalArgs := os.Args
+	os.Args = []string{originalArgs[0], "-test.run=^TestGetVersion_NotEmpty$"}
+	defer func() { os.Args = originalArgs }()
+	var child *os.Process
+	err := spawnChildWithStarter(func(name string, argv []string, attr *os.ProcAttr) (*os.Process, error) {
+		if attr.Files[2] != os.Stderr {
+			t.Error("restart must preserve operator stderr")
+		}
+		var err error
+		child, err = os.StartProcess(name, argv, attr)
+		return child, err
+	})
 	if err != nil {
-		t.Logf("spawnChild returned error (may be expected in test env): %v", err)
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		state, err := child.Wait()
+		if err == nil && !state.Success() {
+			err = fmt.Errorf("child exited: %s", state)
+		}
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(30 * time.Second):
+		_ = child.Kill()
+		<-done
+		t.Fatal("restart test child did not exit")
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io/fs"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -63,7 +64,14 @@ logs.
 // defaulted type; this helper is the single mapping point if the resolved
 // shape ever diverges.
 func maintenanceConfig(resolved config.ResolvedConfig) maintenance.Config {
-	return resolved.Maintenance
+	cfg := resolved.Maintenance
+	log := resolved.Logging
+	path := expandHome(log.File)
+	if path == "" {
+		path = expandHome("~/.odek/runtime.log")
+	}
+	cfg.RuntimeLog = runtimelog.Options{Path: path, Level: log.Level, MaxFileMB: log.MaxFileMB, MaxFiles: log.MaxFiles, MaxAgeHours: log.MaxAgeHours}
+	return cfg
 }
 
 // startStorageMaintenance starts the background storage janitor when the
@@ -119,16 +127,15 @@ func humanBytes(n int64) string {
 // list locally for display only. Media cleanup is not previewed — its
 // retention policy lives inside the maintenance package. Artifact removals
 // ARE previewed via maintenance.ArtifactsSweepCandidates (shared with the
-// sweep itself), and the log list is shared with
-// maintenance.LogRotationNames — so preview and sweep can never drift apart.
+// sweep itself); runtime records use the same runtimelog pruning API.
 
 // cleanupCandidates lists what a sweep WOULD remove, per category.
 type cleanupCandidates struct {
-	sessions  []string
-	audit     []string
-	plans     []string
-	logs      []string
-	artifacts []string
+	sessions          []string
+	audit             []string
+	plans             []string
+	artifacts         []string
+	runtimeLogBackups []string
 }
 
 // collectCleanupCandidates enumerates expired files under home without
@@ -152,13 +159,8 @@ func collectCleanupCandidates(home string, cfg maintenance.Config) cleanupCandid
 		// (both consume the same plan inside maintenance).
 		c.artifacts = maintenance.ArtifactsSweepCandidates(home, time.Duration(cfg.ArtifactsMaxAgeHours)*time.Hour)
 	}
-	if cfg.LogMaxMB > 0 {
-		for _, name := range maintenance.LogRotationNames() {
-			p := filepath.Join(home, name)
-			if info, err := os.Stat(p); err == nil && info.Size() > cfg.LogMaxMB*1024*1024 {
-				c.logs = append(c.logs, p)
-			}
-		}
+	if cfg.RuntimeLog.Path != "" {
+		c.runtimeLogBackups, _ = runtimelog.ExcessBackupPaths(cfg.RuntimeLog.Path, cfg.RuntimeLog.MaxFiles)
 	}
 	return c
 }
@@ -223,29 +225,42 @@ func filesOlderThan(dir string, cutoff time.Time, recursive bool) []string {
 // printCleanupDryRun reports the candidate list without removing anything.
 func printCleanupDryRun(home string, cfg maintenance.Config) {
 	expired := 0
-	if cfg.RuntimeLogMaxAgeHours > 0 {
-		n, err := runtimelog.Prune(context.Background(), filepath.Join(home, "runtime.log"), time.Now().Add(-time.Duration(maintenance.ClampRetentionHours(cfg.RuntimeLogMaxAgeHours))*time.Hour), true)
+	rotateRuntimeLog := false
+	if cfg.RuntimeLog.Path != "" && cfg.RuntimeLog.MaxAgeHours > 0 {
+		n, err := runtimelog.PruneWithOptions(context.Background(), cfg.RuntimeLog.Path, time.Now().Add(-time.Duration(maintenance.ClampRetentionHours(cfg.RuntimeLog.MaxAgeHours))*time.Hour), true, cfg.RuntimeLog.MaxFiles)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "runtime log preview failed: %v\n", err)
 		} else {
 			expired = n
 		}
 	}
+	if cfg.RuntimeLog.Path != "" && cfg.RuntimeLog.MaxFileMB > 0 {
+		limit := int64(math.MaxInt64)
+		if cfg.RuntimeLog.MaxFileMB <= math.MaxInt64/(1<<20) {
+			limit = cfg.RuntimeLog.MaxFileMB << 20
+		}
+		if info, err := os.Lstat(cfg.RuntimeLog.Path); err == nil && info.Mode().IsRegular() && info.Size() > limit {
+			rotateRuntimeLog = true
+		}
+	}
 
 	c := collectCleanupCandidates(home, cfg)
-	if expired == 0 && len(c.sessions) == 0 && len(c.audit) == 0 && len(c.plans) == 0 && len(c.logs) == 0 && len(c.artifacts) == 0 {
+	if expired == 0 && !rotateRuntimeLog && len(c.sessions) == 0 && len(c.audit) == 0 && len(c.plans) == 0 && len(c.artifacts) == 0 && len(c.runtimeLogBackups) == 0 {
 		fmt.Println("Dry run: storage is clean — nothing would be removed.")
 		return
 	}
 	fmt.Println("Dry run — nothing removed. Would remove:")
 	fmt.Printf("  runtime records expired: %d\n", expired)
+	if rotateRuntimeLog {
+		fmt.Printf("  runtime log rotated: %s\n", cfg.RuntimeLog.Path)
+	}
+	if len(c.runtimeLogBackups) > 0 {
+		fmt.Printf("  excess runtime log backups: %d\n", len(c.runtimeLogBackups))
+	}
 	fmt.Printf("  sessions:            %d\n", len(c.sessions))
 	fmt.Printf("  audit records:       %d\n", len(c.audit))
 	fmt.Printf("  plans:               %d\n", len(c.plans))
 	for _, p := range c.artifacts {
 		fmt.Printf("  artifact subtree:    %s\n", p)
-	}
-	for _, p := range c.logs {
-		fmt.Printf("  log rotated:         %s\n", p)
 	}
 }

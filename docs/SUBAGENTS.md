@@ -641,8 +641,11 @@ outcomes.
 
 ## Persistent runtime logs
 
-Enable operator `logging.enabled` to monitor delegated tasks through
-`~/.odek/runtime.log`. Child records inherit the parent session ID and include
-task ancestry, model/tool timings, periodic activity observations, and terminal
-usage and exit diagnostics. Records expire according to
-`maintenance.runtime_log_max_age_hours`. See [Runtime logging](LOGGING.md).
+The unified operational log records delegated task lifecycle and timings when
+the parent CLI has logging enabled. Child records share the conversation's
+`session_id` and user-visible `turn_id`, while each invocation has its own
+`run_id`; `root_run_id`, `parent_run_id`, and `task_id` describe the delegation
+tree. Terminal task status and the parent's observed child-process exit status
+are separate fields. An unfinished tree row does not prove a child is still
+running. Records expire according to `logging.max_age_hours`. See
+[Runtime logging](LOGGING.md).

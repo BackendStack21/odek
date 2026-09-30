@@ -58,7 +58,6 @@ func TestSweepStepFailureDoesNotBlockOthers(t *testing.T) {
 
 	cfg := DefaultConfig()
 	cfg.AuditMaxAgeDays = 0
-	cfg.LogMaxMB = 0
 	cfg.PlansMaxAgeDays = 0
 
 	rep, err := Sweep(context.Background(), home, cfg)
@@ -242,99 +241,6 @@ func TestSweepAuditRemoveError(t *testing.T) {
 	}
 }
 
-// ── rotateLogs ─────────────────────────────────────────────────────────
-
-// TestRotateLogsStatError covers a non-NotExist Stat failure via a symlink
-// loop at the log path.
-func TestRotateLogsStatError(t *testing.T) {
-	home := t.TempDir()
-	if err := os.Symlink("telegram.log", filepath.Join(home, "telegram.log")); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := rotateLogs(home, 1); err == nil || !strings.Contains(err.Error(), "stat telegram.log") {
-		t.Errorf("rotateLogs error = %v, want a stat error", err)
-	}
-}
-
-// TestRotateLogsRenameError makes the rename fail by removing the write bit
-// from the home directory.
-func TestRotateLogsRenameError(t *testing.T) {
-	skipIfRoot(t)
-	home := t.TempDir()
-	big := make([]byte, 2<<20)
-	writeFileAt(t, filepath.Join(home, "telegram.log"), big, time.Now())
-	if err := os.Chmod(home, 0500); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.Chmod(home, 0755) })
-
-	if _, err := rotateLogs(home, 1); err == nil || !strings.Contains(err.Error(), "rotate telegram.log") {
-		t.Errorf("rotateLogs error = %v, want a rotate error", err)
-	}
-}
-
-// TestRotateLogsRecreateError exhausts the process file-descriptor budget so
-// the rename succeeds but recreating the fresh log fails.
-func TestRotateLogsRecreateError(t *testing.T) {
-	home := t.TempDir()
-	big := make([]byte, 2<<20)
-	writeFileAt(t, filepath.Join(home, "telegram.log"), big, time.Now())
-
-	var fds []*os.File
-	defer func() {
-		for _, f := range fds {
-			f.Close()
-		}
-	}()
-	for {
-		f, err := os.Open(os.DevNull)
-		if err != nil {
-			break // budget exhausted (EMFILE)
-		}
-		fds = append(fds, f)
-	}
-
-	_, err := rotateLogs(home, 1)
-	if err == nil || !strings.Contains(err.Error(), "truncate telegram.log") {
-		t.Errorf("rotateLogs error = %v, want a truncate error", err)
-	}
-	// The rename already happened, so the backup generation must exist.
-	if _, statErr := os.Stat(filepath.Join(home, "telegram.log.1")); statErr != nil {
-		t.Errorf("backup telegram.log.1 missing after rename: %v", statErr)
-	}
-}
-
-// TestRotateLogsRotatesServeLog pins serve.log coverage in the janitor's
-// rotation list (fix 4 of the sub-agent reliability work: the durable serve
-// log must not grow unbounded).
-func TestRotateLogsRotatesServeLog(t *testing.T) {
-	home := t.TempDir()
-	big := make([]byte, 2<<20)
-	writeFileAt(t, filepath.Join(home, "serve.log"), big, time.Now())
-
-	rotated, err := rotateLogs(home, 1)
-	if err != nil {
-		t.Fatalf("rotateLogs: %v", err)
-	}
-	want := filepath.Join(home, "serve.log")
-	found := false
-	for _, p := range rotated {
-		if p == want {
-			found = true
-		}
-	}
-	if !found {
-		t.Errorf("serve.log not rotated; rotated = %v", rotated)
-	}
-	if _, err := os.Stat(want + ".1"); err != nil {
-		t.Errorf("backup serve.log.1 missing: %v", err)
-	}
-}
-
-// ── sweepPlans / sweepMedia ────────────────────────────────────────────
-
-// TestSweepPlansStatError covers a non-NotExist Stat failure via a symlink
-// loop at the plans root.
 func TestSweepPlansStatError(t *testing.T) {
 	home := t.TempDir()
 	if err := os.Symlink("plans", filepath.Join(home, "plans")); err != nil {

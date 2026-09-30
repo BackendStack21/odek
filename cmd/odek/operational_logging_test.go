@@ -14,6 +14,7 @@ import (
 	"github.com/BackendStack21/odek/internal/diagnostics"
 	"github.com/BackendStack21/odek/internal/events"
 	"github.com/BackendStack21/odek/internal/maintenance"
+	"github.com/BackendStack21/odek/internal/runtimelog"
 	"github.com/BackendStack21/odek/internal/session"
 )
 
@@ -63,9 +64,9 @@ func TestOperationalLoggingStartupAndCommandFailure(t *testing.T) {
 	records := readOperationalRecords(t, home)
 	var configFailure, commandFailure bool
 	for _, record := range records {
-		data := record["data"].(map[string]any)
+		data := record["metadata"].(map[string]any)
 		configFailure = configFailure || data["operation"] == "decode_file"
-		commandFailure = commandFailure || data["component"] == "cli" && record["level"] == "ERROR"
+		commandFailure = commandFailure || data["component"] == "cli" && record["level"] == "error"
 	}
 	if !configFailure || !commandFailure {
 		t.Fatalf("missing startup/command diagnostics: %+v", records)
@@ -99,20 +100,20 @@ func TestOperationalLoggingStorageAndMaintenance(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(brokenHome, "runtime.log"), 0700); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := maintenance.Sweep(t.Context(), brokenHome, maintenance.Config{RuntimeLogMaxAgeHours: 1, LogMaxMB: 1}); err == nil {
+	if _, err := maintenance.Sweep(t.Context(), brokenHome, maintenance.Config{RuntimeLog: runtimelog.Options{Path: filepath.Join(brokenHome, "runtime.log"), MaxFileMB: 1, MaxFiles: 4, MaxAgeHours: 1}}); err == nil {
 		t.Fatal("sweep unexpectedly succeeded")
 	}
 	closeLog()
 	records := readOperationalRecords(t, home)
 	operations := map[string]bool{}
 	for _, record := range records {
-		data := record["data"].(map[string]any)
+		data := record["metadata"].(map[string]any)
 		operations[data["component"].(string)+"/"+data["operation"].(string)] = true
 		if data["component"] == "session" && record["session_id"] != sess.ID {
 			t.Fatal("session correlation lost")
 		}
 	}
-	for _, op := range []string{"session/save", "maintenance/runtime_log_retention", "maintenance/log_rotation"} {
+	for _, op := range []string{"session/save", "maintenance/runtime_log_retention", "maintenance/runtime_log_rotation"} {
 		if !operations[op] {
 			t.Fatalf("missing %s: %+v", op, records)
 		}

@@ -41,17 +41,20 @@ commands (`odek run`, `odek repl`, …) do not run the janitor — use
 | Plans | `~/.odek/plans/**/*.md` (by mtime) | `plans_max_age_days` | 30 days |
 | Sub-agent artifacts | `~/.odek/artifacts/<session>/<task>/` and `~/.odek/artifacts/unfiled/<task>/` (task dirs by their own mtime; aged session dirs also go wholesale) | `artifacts_max_age_hours` | 24 hours (backstop — live removal happens on session delete) |
 | Telegram media | `~/.odek/media/` (by mtime) | fixed: 1 hour | freed bytes reported |
-| Logs | `~/.odek/telegram.log`, `~/.odek/schedule.log`, `~/.odek/serve.log`, `~/.odek/runtime.log` | `log_max_mb` | 50 MB (rotated) |
+| Runtime log | Configured `logging.file` (default `~/.odek/runtime.log`) and numbered backups | `logging.max_age_hours`, `logging.max_file_mb`, `logging.max_files` | 168 hours, 25 MiB, 4 files total |
 
 Age for sessions is measured from the session's `updated_at`; for audit
 records, plans, and media from the file's modification time. Sub-agent
 artifacts age per **task dir**: each expired `task-*` subtree is removed
 individually inside its parent (session dir or the shared `unfiled` bucket),
-and a parent left empty is pruned. Oversized logs
-are **rotated**, not deleted — the current log is renamed to `<name>.1`
-(one backup generation) and a fresh log is started. The sweep report includes
-the rotated paths. Downloaded Telegram media is transient and expires after a
-fixed 1 hour.
+and a parent left empty is pruned. Runtime log retention and rotation follow
+the operator-only `logging` policy. Its maximum file count is enforced even
+when age pruning and size rotation are disabled. An enabled CLI logger applies retention at
+process startup; the janitor repeats that policy on its interval, and
+`odek cleanup` uses the same policy on demand. If logging is disabled, an
+ordinary CLI command does not prune the log. The active file and numbered
+backups are age-pruned and rotated to the configured total file count.
+Downloaded Telegram media is transient and expires after a fixed 1 hour.
 
 ## What is NEVER touched
 
@@ -61,8 +64,9 @@ The janitor only expires the categories above. It never touches:
 - **Skill files** — `SKILL.md` definitions
 - **Schedules** — `schedules.json`, `schedule-state.json`
 - **Trust anchors** — `config.json`, `secrets.env`, `IDENTITY.md`,
-  approval stores, lock files, and everything else under `~/.odek/` that is
-  not in the "What is cleaned" table
+  approval stores, schedule/session lock files, and everything else under
+  `~/.odek/` that is not in the "What is cleaned" table. The runtime logger's
+  `.lock` sidecar coordinates writes and rotation; it is not a retention target.
 
 ## Configuration
 
@@ -75,7 +79,6 @@ The `[maintenance]` section (all keys optional — defaults shown):
     "interval_minutes": 60,
     "sessions_max_age_days": 30,
     "audit_max_age_days": 14,
-    "log_max_mb": 50,
     "plans_max_age_days": 30,
     "artifacts_max_age_hours": 24
   }
@@ -88,8 +91,6 @@ The `[maintenance]` section (all keys optional — defaults shown):
 | `interval_minutes` | `60` | Minutes between automatic sweeps |
 | `sessions_max_age_days` | `30` | Delete sessions older than this |
 | `audit_max_age_days` | `14` | Delete prompt-injection audit records older than this |
-| `log_max_mb` | `50` | Rotate logs larger than this |
-| `runtime_log_max_age_hours` | `168` | Remove older timestamped runtime records from current and backup logs; `0` keeps them indefinitely |
 | `plans_max_age_days` | `30` | Delete plans older than this |
 | `artifacts_max_age_hours` | `24` | Sweep sub-agent artifact task dirs older than this, in any parent (including `unfiled`; emptied parent dirs are pruned; `0` keeps them forever; live removal still happens on session delete) |
 
@@ -111,7 +112,7 @@ Cleanup complete:
   plans removed:         2
   artifacts removed:     3
   media freed:           48.2 MB
-  log rotated:           /home/you/.odek/schedule.log
+  runtime records removed: 12
 ```
 
 When there is nothing to do it prints a single quiet line:
@@ -130,7 +131,7 @@ Dry run — nothing removed. Would remove:
   audit records:       34
   plans:               2
   artifact subtree:    /home/you/.odek/artifacts/20260101-abc
-  log rotated:         /home/you/.odek/schedule.log
+  runtime records expired: 12
 ```
 
 Like `odek session cleanup`, the command deletes data without a confirmation
@@ -146,4 +147,4 @@ you want to inspect the candidate list.
   time**: an oversized transcript is trimmed (oldest turns first, keeping the
   system message and the most recent turns) so it never becomes unloadable.
 
-See [Runtime logging](LOGGING.md) for runtime log expiration, correlation, and rotation semantics.
+See [Runtime logging](LOGGING.md) for runtime log expiration, correlation, and rotation semantics. Logging settings define retention and rotation; maintenance settings only schedule the janitor.

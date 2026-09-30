@@ -102,15 +102,16 @@ func TestCliDeliverer_Log(t *testing.T) {
 	t.Setenv("HOME", home)
 	d := cliDeliverer{resolved: config.ResolvedConfig{}}
 	job := schedule.Job{ID: "jb-1", Name: "logjob", Deliver: schedule.Delivery{Kind: schedule.DeliverLog}}
-	if err := d.Deliver(context.Background(), job, "hello from cron"); err != nil {
-		t.Fatalf("Deliver(log): %v", err)
+	out := captureStdout(func() {
+		if err := d.Deliver(context.Background(), job, "hello from cron"); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !strings.Contains(out, "hello from cron") || !strings.Contains(out, "jb-1") {
+		t.Fatal(out)
 	}
-	data, err := os.ReadFile(filepath.Join(home, ".odek", "schedule.log"))
-	if err != nil {
-		t.Fatalf("read log: %v", err)
-	}
-	if !strings.Contains(string(data), "hello from cron") || !strings.Contains(string(data), "jb-1") {
-		t.Errorf("log missing content: %q", string(data))
+	if _, err := os.Stat(filepath.Join(home, ".odek", "schedule.log")); !os.IsNotExist(err) {
+		t.Fatal("legacy schedule.log created")
 	}
 }
 
@@ -184,17 +185,15 @@ func TestTelegramDeliverer_NoChatErrors(t *testing.T) {
 }
 
 func TestTelegramDeliverer_FallsBackForLog(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	// Non-telegram kinds route to the CLI deliverer; the bot is untouched.
 	d := telegramDeliverer{bot: nil, fallback: cliDeliverer{resolved: config.ResolvedConfig{}}}
 	job := schedule.Job{ID: "jb-x", Name: "logjob", Deliver: schedule.Delivery{Kind: schedule.DeliverLog}}
-	if err := d.Deliver(context.Background(), job, "logged via fallback"); err != nil {
-		t.Fatalf("Deliver(log): %v", err)
-	}
-	data, err := os.ReadFile(filepath.Join(home, ".odek", "schedule.log"))
-	if err != nil || !strings.Contains(string(data), "logged via fallback") {
-		t.Errorf("fallback log path failed: err=%v content=%q", err, string(data))
+	out := captureStdout(func() {
+		if err := d.Deliver(context.Background(), job, "delivered via fallback"); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !strings.Contains(out, "delivered via fallback") {
+		t.Fatal(out)
 	}
 }
 
@@ -202,13 +201,11 @@ func TestAppendScheduleLog_RedactsSecrets(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	job := schedule.Job{ID: "jb-secret", Name: "api_key=sk-12345678901234567890123456789012"}
-	if err := appendScheduleLog(job, "token is ghp_123456789012345678901234567890123456"); err != nil {
-		t.Fatalf("appendScheduleLog: %v", err)
-	}
-	data, err := os.ReadFile(filepath.Join(home, ".odek", "schedule.log"))
-	if err != nil {
-		t.Fatalf("read log: %v", err)
-	}
+	data := []byte(captureStdout(func() {
+		if err := appendScheduleLog(job, "token is ghp_123456789012345678901234567890123456"); err != nil {
+			t.Fatal(err)
+		}
+	}))
 	if strings.Contains(string(data), "sk-12345678901234567890123456789012") {
 		t.Error("log should not contain the raw OpenAI-style key")
 	}
@@ -346,5 +343,17 @@ func TestBuildHeadlessDangerConfig_ScheduleOverridesAllowed(t *testing.T) {
 	}
 	if *cfg.NonInteractive != "deny" {
 		t.Errorf("non_interactive should remain denied by safety floor, got %s", *cfg.NonInteractive)
+	}
+}
+
+func TestDeliverStdoutRedactsSecrets(t *testing.T) {
+	job := schedule.Job{Name: "api_key=sk-12345678901234567890123456789012", Deliver: schedule.Delivery{Kind: schedule.DeliverStdout}}
+	out := captureStdout(func() {
+		if err := (cliDeliverer{}).Deliver(t.Context(), job, "ghp_123456789012345678901234567890123456"); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if strings.Contains(out, "12345678901234567890123456789012") {
+		t.Fatal("scheduled output leaked a secret")
 	}
 }

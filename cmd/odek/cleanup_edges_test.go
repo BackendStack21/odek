@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/BackendStack21/odek/internal/maintenance"
+	"github.com/BackendStack21/odek/internal/runtimelog"
 )
 
 // writeCleanupFile writes content to path (creating parents) and backdates
@@ -90,18 +91,6 @@ func TestHumanBytes(t *testing.T) {
 	}
 }
 
-// TestCollectCleanupCandidates_Logs covers the oversized-log candidate branch.
-func TestCollectCleanupCandidates_Logs(t *testing.T) {
-	home := t.TempDir()
-	big := make([]byte, 2<<20) // 2 MiB > 1 MB limit
-	writeCleanupFile(t, filepath.Join(home, "schedule.log"), big, time.Hour)
-
-	c := collectCleanupCandidates(home, maintenance.Config{LogMaxMB: 1})
-	if len(c.logs) != 1 {
-		t.Errorf("logs candidates = %d, want 1", len(c.logs))
-	}
-}
-
 // TestSessionCandidates_StoreError covers the NewStoreWithDir failure branch:
 // the sessions path exists as a regular file.
 func TestSessionCandidates_StoreError(t *testing.T) {
@@ -111,6 +100,19 @@ func TestSessionCandidates_StoreError(t *testing.T) {
 	}
 	if got := sessionCandidates(home, time.Now()); got != nil {
 		t.Errorf("sessionCandidates = %v, want nil", got)
+	}
+}
+
+func TestCleanupPreviewListsExcessRuntimeBackupsWithRetentionDisabled(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "runtime.log")
+	for _, name := range []string{path, path + ".1", path + ".2", path + ".9"} {
+		if err := os.WriteFile(name, []byte("record"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	c := collectCleanupCandidates(t.TempDir(), maintenance.Config{RuntimeLog: runtimelog.Options{Path: path, MaxFiles: 2, MaxFileMB: 0, MaxAgeHours: 0}})
+	if len(c.runtimeLogBackups) != 2 {
+		t.Fatalf("excess backups=%v want .2 and .9", c.runtimeLogBackups)
 	}
 }
 

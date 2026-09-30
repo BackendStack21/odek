@@ -394,6 +394,7 @@ type Engine struct {
 	runMutations        []string
 	durableTranscript   []session.Message
 	activeTurnID        string
+	invocationTurnID    string
 	pendingVerification map[string]bool
 
 	// completionNudged is the one-shot completion-nudge flag: a tool-less

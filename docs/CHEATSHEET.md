@@ -300,7 +300,7 @@ Default network: `none` (air-gapped). Set `bridge` for internet access.
 - Access control: restrict by chat ID or user ID
 - Incoming message/caption length enforced in UTF-16 code units, matching Telegram's limits
 - `send_message` tool escapes text for Telegram MarkdownV2 before sending, so prompt-injected formatting cannot hide links or fake buttons
-- Logging: configurable log level and log file
+- Operational logging: query local metadata-only records with `odek logs`; see [Runtime logging](LOGGING.md)
 
 See [docs/TELEGRAM.md](TELEGRAM.md) for full documentation.
 

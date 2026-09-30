@@ -18,16 +18,16 @@ import (
 	"github.com/BackendStack21/odek/internal/flock"
 )
 
-func records(t *testing.T, path string) []events.Event {
+func records(t *testing.T, path string) []Record {
 	t.Helper()
 	b, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var out []events.Event
+	var out []Record
 	scanner := bufio.NewScanner(strings.NewReader(string(b)))
 	for scanner.Scan() {
-		var ev events.Event
+		var ev Record
 		if err := json.Unmarshal(scanner.Bytes(), &ev); err != nil {
 			t.Fatal(err)
 		}
@@ -40,7 +40,7 @@ func records(t *testing.T, path string) []events.Event {
 }
 func TestMetadataBoundary(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "runtime.log")
-	l, err := Open(path, "test", 50)
+	l, err := OpenWithOptions(Options{Path: path, Surface: "test", MaxFileMB: 50, MaxFiles: 4, Level: "debug"})
 	if err != nil {
 		t.Fatal(err)
 	}

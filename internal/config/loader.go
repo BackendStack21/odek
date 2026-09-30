@@ -374,14 +374,12 @@ type ToolConfig struct {
 // Operator-controlled: rejected from project-level ./odek.json because it
 // governs DELETION of user data.
 type MaintenanceConfig struct {
-	RuntimeLogMaxAgeHours *int   `json:"runtime_log_max_age_hours,omitempty"`
-	Enabled               *bool  `json:"enabled,omitempty"`
-	IntervalMinutes       *int   `json:"interval_minutes,omitempty"`
-	SessionsMaxAgeDays    *int   `json:"sessions_max_age_days,omitempty"`
-	AuditMaxAgeDays       *int   `json:"audit_max_age_days,omitempty"`
-	LogMaxMB              *int64 `json:"log_max_mb,omitempty"`
-	PlansMaxAgeDays       *int   `json:"plans_max_age_days,omitempty"`
-	ArtifactsMaxAgeHours  *int   `json:"artifacts_max_age_hours,omitempty"`
+	Enabled              *bool `json:"enabled,omitempty"`
+	IntervalMinutes      *int  `json:"interval_minutes,omitempty"`
+	SessionsMaxAgeDays   *int  `json:"sessions_max_age_days,omitempty"`
+	AuditMaxAgeDays      *int  `json:"audit_max_age_days,omitempty"`
+	PlansMaxAgeDays      *int  `json:"plans_max_age_days,omitempty"`
+	ArtifactsMaxAgeHours *int  `json:"artifacts_max_age_hours,omitempty"`
 }
 
 // ToolsConfig is the "tools" section of odek.json. It is intentionally a
@@ -538,14 +536,85 @@ func DefaultBackgroundConfig() BackgroundConfig {
 
 // FileConfig is the JSON schema used by ~/.odek/config.json and ./odek.json.
 // Pointer booleans distinguish "explicitly set to false" from "not set".
-// LoggingConfig enables local metadata-only runtime logs. This section is
-// operator-only; project files cannot enable or disable logging.
+// LoggingConfig is the fully resolved local runtime log policy.
 type LoggingConfig struct {
-	Enabled bool `json:"enabled"`
+	Enabled     bool   `json:"enabled"`
+	Level       string `json:"level"`
+	File        string `json:"file"`
+	MaxFileMB   int64  `json:"max_file_mb"`
+	MaxFiles    int    `json:"max_files"`
+	MaxAgeHours int    `json:"max_age_hours"`
+}
+
+// FileLoggingConfig uses pointers so explicit false/zero values override the
+// operator defaults.
+type FileLoggingConfig struct {
+	Enabled     *bool   `json:"enabled,omitempty"`
+	Level       *string `json:"level,omitempty"`
+	File        *string `json:"file,omitempty"`
+	MaxFileMB   *int64  `json:"max_file_mb,omitempty"`
+	MaxFiles    *int    `json:"max_files,omitempty"`
+	MaxAgeHours *int    `json:"max_age_hours,omitempty"`
+}
+
+func ensureLogging(c *FileLoggingConfig) *FileLoggingConfig {
+	if c == nil {
+		return &FileLoggingConfig{}
+	}
+	return c
+}
+
+func resolveLogging(c *FileLoggingConfig) LoggingConfig {
+	def := LoggingConfig{Enabled: true, Level: "info", File: "~/.odek/runtime.log", MaxFileMB: 25, MaxFiles: 4, MaxAgeHours: 168}
+	if c == nil {
+		return def
+	}
+	if c.Enabled != nil {
+		def.Enabled = *c.Enabled
+	}
+	if c.Level != nil {
+		def.Level = strings.ToLower(strings.TrimSpace(*c.Level))
+	}
+	if def.Level != "debug" && def.Level != "info" && def.Level != "warn" && def.Level != "error" {
+		def.Level = "info"
+	}
+	if c.File != nil {
+		def.File = strings.TrimSpace(*c.File)
+		if def.File == "" {
+			def.File = "~/.odek/runtime.log"
+		} else if !filepath.IsAbs(def.File) && !strings.HasPrefix(def.File, "~/") {
+			def.File = filepath.Join("~/.odek", def.File)
+		}
+	}
+	if c.MaxFileMB != nil {
+		def.MaxFileMB = *c.MaxFileMB
+	}
+	if c.MaxFiles != nil {
+		def.MaxFiles = *c.MaxFiles
+	}
+	if c.MaxAgeHours != nil {
+		def.MaxAgeHours = *c.MaxAgeHours
+	}
+	if def.MaxFileMB < 0 {
+		def.MaxFileMB = 0
+	}
+	if def.MaxFiles < 1 {
+		def.MaxFiles = 1
+	}
+	if def.MaxFiles > 32 {
+		def.MaxFiles = 32
+	}
+	if def.MaxAgeHours < 0 {
+		def.MaxAgeHours = 0
+	}
+	if def.MaxAgeHours > 87600 {
+		def.MaxAgeHours = 87600
+	}
+	return def
 }
 
 type FileConfig struct {
-	Logging   *LoggingConfig                  `json:"logging,omitempty"`
+	Logging   *FileLoggingConfig              `json:"logging,omitempty"`
 	Provider  string                          `json:"provider,omitempty"`
 	Model     string                          `json:"model,omitempty"`
 	BaseURL   string                          `json:"base_url,omitempty"`
@@ -1340,14 +1409,8 @@ func resolveMaintenance(cfg *MaintenanceConfig) maintenance.Config {
 	if cfg.AuditMaxAgeDays != nil {
 		def.AuditMaxAgeDays = maintenance.ClampRetentionDays(*cfg.AuditMaxAgeDays)
 	}
-	if cfg.LogMaxMB != nil {
-		def.LogMaxMB = *cfg.LogMaxMB
-	}
 	if cfg.PlansMaxAgeDays != nil {
 		def.PlansMaxAgeDays = maintenance.ClampRetentionDays(*cfg.PlansMaxAgeDays)
-	}
-	if cfg.RuntimeLogMaxAgeHours != nil {
-		def.RuntimeLogMaxAgeHours = maintenance.ClampRetentionHours(*cfg.RuntimeLogMaxAgeHours)
 	}
 	if cfg.ArtifactsMaxAgeHours != nil {
 		def.ArtifactsMaxAgeHours = maintenance.ClampRetentionHours(*cfg.ArtifactsMaxAgeHours)
@@ -1710,8 +1773,8 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 		fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring memory from project config (%s); set it via ~/.odek/config.json\n", ProjectConfigPath())
 		project.Memory = nil
 	}
-	// The maintenance section governs DELETION of user data (sessions, audit
-	// records, plans, logs). A malicious repo must not be able to set it.
+	// The maintenance section governs storage cleanup schedules and non-log data
+	// retention. A malicious repo must not be able to set it.
 	if project.Logging != nil {
 		fmt.Fprintln(os.Stderr, "odek: WARNING: ignoring logging from project config; set it via ~/.odek/config.json or ODEK_LOGGING_ENABLED")
 		project.Logging = nil
@@ -2218,16 +2281,32 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	}
 
 	if v := envBool("LOGGING_ENABLED"); v != nil {
-		cfg.Logging = &LoggingConfig{Enabled: *v}
+		cfg.Logging = ensureLogging(cfg.Logging)
+		cfg.Logging.Enabled = v
+	}
+	if v := envString("LOGGING_LEVEL"); v != "" {
+		cfg.Logging = ensureLogging(cfg.Logging)
+		cfg.Logging.Level = &v
+	}
+	if v := envString("LOGGING_FILE"); v != "" {
+		cfg.Logging = ensureLogging(cfg.Logging)
+		cfg.Logging.File = &v
+	}
+	if v := envInt64Ptr("LOGGING_MAX_FILE_MB"); v != nil {
+		cfg.Logging = ensureLogging(cfg.Logging)
+		cfg.Logging.MaxFileMB = v
+	}
+	if v := envIntPtr("LOGGING_MAX_FILES"); v != nil {
+		cfg.Logging = ensureLogging(cfg.Logging)
+		cfg.Logging.MaxFiles = v
+	}
+	if v := envIntPtr("LOGGING_MAX_AGE_HOURS"); v != nil {
+		cfg.Logging = ensureLogging(cfg.Logging)
+		cfg.Logging.MaxAgeHours = v
 	}
 
-	// Maintenance env overrides (ODEK_MAINTENANCE_*). Explicit 0 is meaningful
-	// for the retention knobs (0 = keep forever / disable), so they parse via
-	// the pointer helpers rather than envInt.
-	if v := envIntPtr("MAINTENANCE_RUNTIME_LOG_MAX_AGE_HOURS"); v != nil {
-		cfg.Maintenance = ensureMaintenance(cfg.Maintenance)
-		cfg.Maintenance.RuntimeLogMaxAgeHours = v
-	}
+	// Maintenance env overrides (ODEK_MAINTENANCE_*). These govern the
+	// maintenance schedule and non-log storage retention only.
 	if v := envBool("MAINTENANCE_ENABLED"); v != nil {
 		cfg.Maintenance = ensureMaintenance(cfg.Maintenance)
 		cfg.Maintenance.Enabled = v
@@ -2243,10 +2322,6 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	if v := envIntPtr("MAINTENANCE_AUDIT_MAX_AGE_DAYS"); v != nil {
 		cfg.Maintenance = ensureMaintenance(cfg.Maintenance)
 		cfg.Maintenance.AuditMaxAgeDays = v
-	}
-	if v := envInt64Ptr("MAINTENANCE_LOG_MAX_MB"); v != nil {
-		cfg.Maintenance = ensureMaintenance(cfg.Maintenance)
-		cfg.Maintenance.LogMaxMB = v
 	}
 	if v := envIntPtr("MAINTENANCE_PLANS_MAX_AGE_DAYS"); v != nil {
 		cfg.Maintenance = ensureMaintenance(cfg.Maintenance)
@@ -2570,15 +2645,12 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 		WebSearch:              resolveWebSearch(cfg.WebSearch),
 		Schedules:              resolveSchedules(cfg.Schedules),
 		Maintenance:            resolveMaintenance(cfg.Maintenance),
+		Logging:                resolveLogging(cfg.Logging),
 		Subagent:               resolveSubagent(cfg.Subagent),
 		Profiles:               resolveProfiles(cfg.Profiles),
 		Tools:                  resolveTools(cfg.Tools),
 		InteractionMode:        ifZero(cfg.InteractionMode, "engaging"),
 		ToolProgress:           ifZero(cfg.ToolProgress, "all"),
-	}
-
-	if cfg.Logging != nil {
-		resolved.Logging = *cfg.Logging
 	}
 
 	// Built-in default sub-agent capability profile: unless the
@@ -3260,12 +3332,6 @@ func resolveTelegram(cfg *telegram.TelegramConfig) telegram.TelegramConfig {
 	}
 	if len(cfg.FallbackURLs) > 0 {
 		base.FallbackURLs = cfg.FallbackURLs
-	}
-	if cfg.LogLevel != "" {
-		base.LogLevel = cfg.LogLevel
-	}
-	if cfg.LogFile != "" {
-		base.LogFile = cfg.LogFile
 	}
 	if cfg.DefaultChatID != 0 {
 		base.DefaultChatID = cfg.DefaultChatID

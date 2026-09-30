@@ -923,8 +923,6 @@ The `telegram` section configures the Telegram bot integration and the `--delive
     "max_download_size": 5242880,
     "media_quota_per_chat": 52428800,
     "session_ttl_hours": 24,
-    "log_level": "info",
-    "log_file": "",
     "default_chat_id": 8592463065
   }
 }
@@ -947,8 +945,6 @@ The `telegram` section configures the Telegram bot integration and the `--delive
 | `health_addr` | `ODEK_TELEGRAM_HEALTH_ADDR` | — (disabled) | Listen address for the bot's health endpoint (e.g. `127.0.0.1:9090`) |
 | `max_download_size` | `ODEK_TELEGRAM_MAX_DOWNLOAD_SIZE` | 5242880 (5 MiB) | Per-file byte cap for Telegram voice/photo/document downloads. Set to `-1` to disable. |
 | `media_quota_per_chat` | `ODEK_TELEGRAM_MEDIA_QUOTA_PER_CHAT` | 0 (disabled) | Total bytes of downloaded media allowed per chat. `0` disables the quota. |
-| `log_level` | — | info | Log level: debug, info, warn, error |
-| `log_file` | — | stderr | Log file path (empty = stderr) |
 | `default_chat_id` | — | 0 | **Required for `--deliver`** — numeric chat ID where `odek run --deliver` sends results. Get this from your bot's update or use a tool like `@userinfobot`. |
 
 ### --deliver flag
@@ -1049,7 +1045,6 @@ Every field has an `ODEK_MAINTENANCE_*` environment override.
     "interval_minutes": 60,
     "sessions_max_age_days": 30,
     "audit_max_age_days": 14,
-    "log_max_mb": 50,
     "plans_max_age_days": 30
   }
 }
@@ -1061,7 +1056,6 @@ Every field has an `ODEK_MAINTENANCE_*` environment override.
 | `interval_minutes` | `ODEK_MAINTENANCE_INTERVAL_MINUTES` | `60` | Minutes between sweeps. The first sweep runs after one interval, never at startup. |
 | `sessions_max_age_days` | `ODEK_MAINTENANCE_SESSIONS_MAX_AGE_DAYS` | `30` | Delete sessions (and their index/vector-index entries) older than this. `0` = keep forever. |
 | `audit_max_age_days` | `ODEK_MAINTENANCE_AUDIT_MAX_AGE_DAYS` | `14` | Delete `~/.odek/sessions/audit/*.json` records older than this. `0` = keep forever. |
-| `log_max_mb` | `ODEK_MAINTENANCE_LOG_MAX_MB` | `50` | Rotate `~/.odek/telegram.log`, `~/.odek/schedule.log`, and `~/.odek/serve.log` larger than this: current log becomes `<name>.1` (one backup generation) and a fresh empty log is started. `0` = no rotation. |
 | `plans_max_age_days` | `ODEK_MAINTENANCE_PLANS_MAX_AGE_DAYS` | `30` | Delete Telegram plan files (`~/.odek/plans/**/*.md`) older than this; emptied chat directories are removed. `0` = keep forever. |
 | `artifacts_max_age_hours` | `ODEK_MAINTENANCE_ARTIFACTS_MAX_AGE_HOURS` | `24` | Delete sub-agent result artifact subtrees (`~/.odek/artifacts/<session>/`) older than this. This is the **backstop** — the primary lifecycle is the session-cleanup cascade (deleting a session removes its artifacts immediately). `0` = keep forever. |
 
@@ -1471,12 +1465,10 @@ odek run --model gpt-4o --base-url https://api.openai.com/v1 "task"
 
 ## Runtime logging
 
-Operator-only `logging.enabled` (default `false`; environment
-`ODEK_LOGGING_ENABLED`) enables metadata-only JSONL logging to
-`~/.odek/runtime.log` across all execution surfaces. The janitor expires records
-using `maintenance.runtime_log_max_age_hours` (default `168`, `0` = keep;
-`ODEK_MAINTENANCE_RUNTIME_LOG_MAX_AGE_HOURS`). Size rotation uses
-`maintenance.log_max_mb`. Logging also covers command/startup failures, service
-diagnostics, and storage errors with component/operation labels and typed error
-categories. Writer process IDs correlate records emitted before a session exists.
-See [Runtime logging](LOGGING.md) for troubleshooting queries and coverage.
+Operational logging is enabled by default for CLI commands and writes
+metadata-only JSONL records to `~/.odek/runtime.log`. The `logging` section is
+operator-only; it sets the level, file, rotation size/count, and retention age.
+`maintenance.enabled` and `maintenance.interval_minutes` control when the
+janitor runs, while logging settings control log retention and rotation. Go
+library users opt in by setting `Config.RuntimeLogPath`. See
+[Runtime logging](LOGGING.md) for configuration, querying, and field meanings.

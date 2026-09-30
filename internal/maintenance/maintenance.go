@@ -29,27 +29,26 @@ const mediaMaxAge = time.Hour
 
 // Config controls the storage-maintenance janitor.
 type Config struct {
-	RuntimeLogMaxAgeHours int // record retention; default 168 (7 days); 0 = keep
-	Enabled               bool
-	IntervalMinutes       int   // janitor tick; default 60
-	SessionsMaxAgeDays    int   // delete sessions older than this; default 30; 0 = keep forever
-	AuditMaxAgeDays       int   // delete audit records older than this; default 14; 0 = keep
-	LogMaxMB              int64 // rotate telegram/schedule logs larger than this; default 50; 0 = no rotation
-	PlansMaxAgeDays       int   // delete telegram plans older than this; default 30; 0 = keep
-	ArtifactsMaxAgeHours  int   // delete delegate_tasks artifact task dirs older than this, in any parent (incl. the shared unfiled bucket; aged session dirs go wholesale); default 24; 0 = keep
+	// RuntimeLog is the operator's runtime log policy. Maintenance owns only
+	// when this policy is swept, not its path or retention limits.
+	RuntimeLog           runtimelog.Options
+	Enabled              bool
+	IntervalMinutes      int // janitor tick; default 60
+	SessionsMaxAgeDays   int // delete sessions older than this; default 30; 0 = keep forever
+	AuditMaxAgeDays      int // delete audit records older than this; default 14; 0 = keep
+	PlansMaxAgeDays      int // delete telegram plans older than this; default 30; 0 = keep
+	ArtifactsMaxAgeHours int // delete delegate_tasks artifact task dirs older than this; default 24; 0 = keep
 }
 
 // DefaultConfig returns the out-of-the-box maintenance policy.
 func DefaultConfig() Config {
 	return Config{
-		Enabled:               true,
-		RuntimeLogMaxAgeHours: 168,
-		IntervalMinutes:       60,
-		SessionsMaxAgeDays:    30,
-		AuditMaxAgeDays:       14,
-		LogMaxMB:              50,
-		PlansMaxAgeDays:       30,
-		ArtifactsMaxAgeHours:  24,
+		Enabled:              true,
+		IntervalMinutes:      60,
+		SessionsMaxAgeDays:   30,
+		AuditMaxAgeDays:      14,
+		PlansMaxAgeDays:      30,
+		ArtifactsMaxAgeHours: 24,
 	}
 }
 
@@ -100,18 +99,30 @@ func Sweep(ctx context.Context, home string, cfg Config) (Report, error) {
 		fail("audit", err)
 	}
 
-	if cfg.RuntimeLogMaxAgeHours > 0 {
-		n, err := runtimelog.Prune(ctx, filepath.Join(home, "runtime.log"), time.Now().Add(-time.Duration(ClampRetentionHours(cfg.RuntimeLogMaxAgeHours))*time.Hour), false)
+	if cfg.RuntimeLog.Path != "" {
+		path := cfg.RuntimeLog.Path
+		if path == "~/.odek/runtime.log" {
+			path = filepath.Join(home, "runtime.log")
+		}
+		policy := cfg.RuntimeLog
+		policy.Path = path
+		n, err := runtimelog.PruneAtStartup(ctx, policy)
 		rep.RuntimeLogRecordsRemoved = n
 		fail("runtime_log_retention", err)
-	}
-	if cfg.LogMaxMB > 0 {
-		if err := ctx.Err(); err != nil {
-			return rep, err
+		if cfg.RuntimeLog.MaxFileMB > 0 {
+			if err := ctx.Err(); err != nil {
+				return rep, err
+			}
+			limit := int64(math.MaxInt64)
+			if cfg.RuntimeLog.MaxFileMB <= math.MaxInt64/(1<<20) {
+				limit = cfg.RuntimeLog.MaxFileMB << 20
+			}
+			did, err := runtimelog.RotateWithOptions(path, limit, cfg.RuntimeLog.MaxFiles)
+			if did {
+				rep.LogsRotated = append(rep.LogsRotated, path)
+			}
+			fail("runtime_log_rotation", err)
 		}
-		rotated, err := rotateLogs(home, cfg.LogMaxMB)
-		rep.LogsRotated = rotated
-		fail("log_rotation", err)
 	}
 
 	if cfg.PlansMaxAgeDays > 0 {
@@ -433,64 +444,6 @@ func sweepAudit(home string, maxAgeDays int) (int, error) {
 		}
 	}
 	return removed, nil
-}
-
-// LogRotationNames lists the log files rotateLogs may rotate. Shared with
-// the cleanup dry-run preview (cmd/odek) so the two can never drift again —
-// serve.log was once rotated by the real sweep while the preview only knew
-// about two logs.
-func LogRotationNames() []string {
-	return []string{"telegram.log", "schedule.log", "serve.log", "runtime.log"}
-}
-
-// rotateLogs rotates each log named by LogRotationNames when it exceeds
-// maxMB: the current log is renamed to <name>.1 (replacing any previous
-// generation) and a fresh empty log is created. One backup generation only.
-// Returns the rotated log paths.
-func rotateLogs(home string, maxMB int64) ([]string, error) {
-	limit := int64(math.MaxInt64)
-	if maxMB <= math.MaxInt64/(1<<20) {
-		limit = maxMB << 20
-	}
-	var rotated []string
-	for _, name := range LogRotationNames() {
-		path := filepath.Join(home, name)
-		if name == "runtime.log" {
-			did, err := runtimelog.Rotate(path, limit)
-			if err != nil {
-				return rotated, fmt.Errorf("maintenance: rotate runtime.log: %w", err)
-			}
-			if did {
-				rotated = append(rotated, path)
-			}
-			continue
-		}
-		info, err := os.Stat(path)
-		if err != nil {
-			if os.IsNotExist(err) {
-				continue
-			}
-			return rotated, fmt.Errorf("maintenance: stat %s: %w", name, err)
-		}
-		if info.Size() <= limit {
-			continue
-		}
-		// os.Rename replaces an existing <name>.1 on POSIX filesystems.
-		if err := os.Rename(path, path+".1"); err != nil {
-			return rotated, fmt.Errorf("maintenance: rotate %s: %w", name, err)
-		}
-		// Recreate an empty log with the same restrictive permissions the
-		// appenders use, so they keep working on a fresh file.
-		f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
-		if err != nil {
-			return rotated, fmt.Errorf("maintenance: truncate %s: %w", name, err)
-		}
-		if err := f.Close(); err != nil {
-			return rotated, fmt.Errorf("maintenance: truncate %s: %w", name, err)
-		}
-		rotated = append(rotated, path)
-	}
-	return rotated, nil
 }
 
 // sweepPlans deletes Telegram plan files (<home>/plans/**/*.md) older than

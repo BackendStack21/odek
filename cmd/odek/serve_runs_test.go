@@ -409,6 +409,11 @@ func newRestRunEnv(t *testing.T, llmURL string, mutate func(*config.ResolvedConf
 		resource.NewFileResolver(cwd),
 		resource.NewSessionResolver(filepath.Join(home, ".odek", "sessions")),
 	)
+	t.Cleanup(func() {
+		if !drainServeWork(10 * time.Second) {
+			t.Error("REST workers did not drain before fixture cleanup")
+		}
+	})
 	return &restRunEnv{
 		store:     store,
 		resources: res,

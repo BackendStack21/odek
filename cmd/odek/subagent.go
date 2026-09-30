@@ -1149,6 +1149,7 @@ func subagentCmd(args []string) error {
 	aCfg.RuntimeLogSurface = "subagent"
 	if protocol2 {
 		aCfg.RuntimeLogPath = ""
+		aCfg.RuntimeLogOptions = nil
 	}
 	agent, err = odek.New(aCfg)
 	if err != nil {

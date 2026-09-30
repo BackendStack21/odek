@@ -46,14 +46,12 @@ func writeSessionFixture(t *testing.T, home, id string, updatedAt time.Time) {
 func TestDefaultConfig(t *testing.T) {
 	cfg := DefaultConfig()
 	want := Config{
-		RuntimeLogMaxAgeHours: 168,
-		Enabled:               true,
-		IntervalMinutes:       60,
-		SessionsMaxAgeDays:    30,
-		AuditMaxAgeDays:       14,
-		LogMaxMB:              50,
-		PlansMaxAgeDays:       30,
-		ArtifactsMaxAgeHours:  24,
+		Enabled:              true,
+		IntervalMinutes:      60,
+		SessionsMaxAgeDays:   30,
+		AuditMaxAgeDays:      14,
+		PlansMaxAgeDays:      30,
+		ArtifactsMaxAgeHours: 24,
 	}
 	if cfg != want {
 		t.Errorf("DefaultConfig() = %+v, want %+v", cfg, want)
@@ -83,7 +81,6 @@ func TestSweepSessions(t *testing.T) {
 			cfg.SessionsMaxAgeDays = tc.maxAgeDays
 			// Isolate the session step from the others.
 			cfg.AuditMaxAgeDays = 0
-			cfg.LogMaxMB = 0
 			cfg.PlansMaxAgeDays = 0
 
 			rep, err := Sweep(context.Background(), home, cfg)
@@ -108,7 +105,6 @@ func TestSweepSessionsIdempotent(t *testing.T) {
 
 	cfg := DefaultConfig()
 	cfg.AuditMaxAgeDays = 0
-	cfg.LogMaxMB = 0
 	cfg.PlansMaxAgeDays = 0
 
 	rep1, err := Sweep(context.Background(), home, cfg)
@@ -135,7 +131,6 @@ func TestSweepAudit(t *testing.T) {
 
 	cfg := DefaultConfig()
 	cfg.SessionsMaxAgeDays = 0
-	cfg.LogMaxMB = 0
 	cfg.PlansMaxAgeDays = 0
 
 	rep, err := Sweep(context.Background(), home, cfg)
@@ -161,7 +156,6 @@ func TestSweepAuditDisabledAndMissing(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.AuditMaxAgeDays = 0 // keep forever
 	cfg.SessionsMaxAgeDays = 0
-	cfg.LogMaxMB = 0
 	cfg.PlansMaxAgeDays = 0
 
 	rep, err := Sweep(context.Background(), home, cfg)
@@ -182,79 +176,6 @@ func TestSweepAuditDisabledAndMissing(t *testing.T) {
 	}
 }
 
-func TestRotateLogs(t *testing.T) {
-	big := make([]byte, 2<<20) // 2 MiB
-	for i := range big {
-		big[i] = 'x'
-	}
-
-	tests := []struct {
-		name        string
-		logMaxMB    int64
-		telegramLog []byte // nil = file absent
-		scheduleLog []byte
-		staleBackup bool // pre-create telegram.log.1 to verify replacement
-		wantRotated int
-	}{
-		{"oversized telegram.log rotates", 1, big, nil, false, 1},
-		{"small logs untouched", 50, []byte("small"), []byte("small"), false, 0},
-		{"existing .1 replaced", 1, big, nil, true, 1},
-		{"both logs rotate", 1, big, big, false, 2},
-		{"zero disables rotation", 0, big, big, false, 0},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			home := t.TempDir()
-			now := time.Now()
-			if tc.telegramLog != nil {
-				writeFileAt(t, filepath.Join(home, "telegram.log"), tc.telegramLog, now)
-			}
-			if tc.scheduleLog != nil {
-				writeFileAt(t, filepath.Join(home, "schedule.log"), tc.scheduleLog, now)
-			}
-			if tc.staleBackup {
-				writeFileAt(t, filepath.Join(home, "telegram.log.1"), []byte("stale"), now)
-			}
-
-			cfg := DefaultConfig()
-			cfg.LogMaxMB = tc.logMaxMB
-			cfg.SessionsMaxAgeDays = 0
-			cfg.AuditMaxAgeDays = 0
-			cfg.PlansMaxAgeDays = 0
-
-			rep, err := Sweep(context.Background(), home, cfg)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if len(rep.LogsRotated) != tc.wantRotated {
-				t.Fatalf("LogsRotated = %v, want %d entries", rep.LogsRotated, tc.wantRotated)
-			}
-			for _, path := range rep.LogsRotated {
-				info, err := os.Stat(path)
-				if err != nil {
-					t.Fatalf("rotated log %s missing: %v", path, err)
-				}
-				if info.Size() != 0 {
-					t.Errorf("rotated log %s not truncated: size %d", path, info.Size())
-				}
-				backup, err := os.ReadFile(path + ".1")
-				if err != nil {
-					t.Fatalf("backup %s.1 missing: %v", path, err)
-				}
-				if len(backup) != len(big) {
-					t.Errorf("backup %s.1 size = %d, want %d", path, len(backup), len(big))
-				}
-			}
-			if tc.staleBackup {
-				backup, _ := os.ReadFile(filepath.Join(home, "telegram.log.1"))
-				if string(backup) == "stale" {
-					t.Error("stale .1 backup should have been replaced")
-				}
-			}
-		})
-	}
-}
-
 func TestSweepPlans(t *testing.T) {
 	home := t.TempDir()
 	old := time.Now().Add(-60 * 24 * time.Hour)
@@ -266,7 +187,6 @@ func TestSweepPlans(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.SessionsMaxAgeDays = 0
 	cfg.AuditMaxAgeDays = 0
-	cfg.LogMaxMB = 0
 
 	rep, err := Sweep(context.Background(), home, cfg)
 	if err != nil {
@@ -294,7 +214,6 @@ func TestSweepPlansDisabled(t *testing.T) {
 	cfg.PlansMaxAgeDays = 0
 	cfg.SessionsMaxAgeDays = 0
 	cfg.AuditMaxAgeDays = 0
-	cfg.LogMaxMB = 0
 
 	rep, err := Sweep(context.Background(), home, cfg)
 	if err != nil {
@@ -316,7 +235,6 @@ func TestSweepMedia(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.SessionsMaxAgeDays = 0
 	cfg.AuditMaxAgeDays = 0
-	cfg.LogMaxMB = 0
 	cfg.PlansMaxAgeDays = 0
 
 	rep, err := Sweep(context.Background(), home, cfg)

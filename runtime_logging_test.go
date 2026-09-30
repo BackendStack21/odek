@@ -12,6 +12,7 @@ import (
 
 	"github.com/BackendStack21/odek/internal/budget"
 	"github.com/BackendStack21/odek/internal/events"
+	"github.com/BackendStack21/odek/internal/runtimelog"
 )
 
 func TestRuntimeLoggingSessionAndDistinctTurns(t *testing.T) {
@@ -21,7 +22,7 @@ func TestRuntimeLoggingSessionAndDistinctTurns(t *testing.T) {
 	}))
 	defer server.Close()
 	path := filepath.Join(t.TempDir(), "runtime.log")
-	a, err := New(Config{Model: "test", BaseURL: server.URL, APIKey: "test-key", MaxIterations: 2, RuntimeLogPath: path, Limits: budget.Limits{InputCostPerMillionUSD: 2, OutputCostPerMillionUSD: 4}, InteractionMode: "off", NoProjectFile: true})
+	a, err := New(Config{Model: "test", BaseURL: server.URL, APIKey: "test-key", MaxIterations: 2, RuntimeLogOptions: &LoggingOptions{Path: path, Level: "debug", Surface: "library", MaxFiles: 4}, Limits: budget.Limits{InputCostPerMillionUSD: 2, OutputCostPerMillionUSD: 4}, InteractionMode: "off", NoProjectFile: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,25 +44,19 @@ func TestRuntimeLoggingSessionAndDistinctTurns(t *testing.T) {
 	finished := 0
 	scanner := bufio.NewScanner(strings.NewReader(string(b)))
 	for scanner.Scan() {
-		var ev events.Event
+		var ev runtimelog.Record
 		if err := json.Unmarshal(scanner.Bytes(), &ev); err != nil {
 			t.Fatal(err)
 		}
-		if ev.Type == "run_started" {
-			if ev.SessionID != "" {
-				t.Fatal("fabricated pre-session ID")
-			}
-			continue
-		}
-		if ev.SessionID != "session-123" || ev.TurnID == "" {
+		if ev.SessionID != "session-123" || ev.TurnID == "" || ev.Surface != "library" {
 			t.Fatalf("missing correlation: %+v", ev)
 		}
-		if ev.Type == "turn_started" {
+		if ev.Event == "run.started" {
 			turns[ev.TurnID] = true
 		}
-		if ev.Type == "run_completed" {
+		if ev.Event == "run.finished" {
 			finished++
-			if ev.Data["cost_usd"] == nil {
+			if ev.Metadata["cost_usd"] == nil {
 				t.Fatal("missing configured cost")
 			}
 		}
@@ -96,15 +91,15 @@ func TestRuntimeLoggingProviderFailure(t *testing.T) {
 	}
 	found := map[string]bool{}
 	for _, line := range strings.Split(strings.TrimSpace(string(b)), "\n") {
-		var ev events.Event
+		var ev runtimelog.Record
 		if err := json.Unmarshal([]byte(line), &ev); err != nil {
 			t.Fatal(err)
 		}
-		if ev.Type == "llm_call_failed" || ev.Type == "run_failed" {
-			if ev.SessionID != "session" || ev.TurnID == "" || ev.Data["error_class"] != "provider_auth" || ev.Data["http_status"] != float64(401) {
+		if ev.Event == "model.call_failed" || ev.Event == "run.finished" {
+			if ev.SessionID != "session" || ev.TurnID == "" || ev.Error == nil || ev.Error.Code != "provider.auth" || ev.Error.HTTPStatus != 401 {
 				t.Fatalf("missing failure detail/correlation: %+v", ev)
 			}
-			found[ev.Type] = true
+			found[ev.Event] = true
 		}
 	}
 	if len(found) != 2 {

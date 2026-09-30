@@ -15,13 +15,36 @@ import (
 // Each replacement is atomic under the writers' lock. Malformed/undated records
 // are retained; a scan error leaves the original file intact. Preview is read-only.
 func Prune(ctx context.Context, path string, cutoff time.Time, preview bool) (int, error) {
+	return PruneWithOptions(ctx, path, cutoff, preview, 2)
+}
+
+// PruneWithOptions removes expired records from the active file and every
+// configured backup generation under the same lock used by append/rotation.
+// maxFiles counts the active file.
+func PruneWithOptions(ctx context.Context, path string, cutoff time.Time, preview bool, maxFiles int) (int, error) {
+	if maxFiles < 1 {
+		maxFiles = 1
+	}
+	if maxFiles > 32 {
+		maxFiles = 32
+	}
 	if _, err := os.Lstat(filepath.Dir(path)); os.IsNotExist(err) {
 		return 0, nil
 	}
-	if _, err := os.Lstat(path); os.IsNotExist(err) {
-		if _, err := os.Lstat(path + ".1"); os.IsNotExist(err) {
-			return 0, nil
+	any := false
+	for i := 0; i < maxFiles; i++ {
+		name := path
+		if i > 0 {
+			name += fmt.Sprintf(".%d", i)
 		}
+		if _, err := os.Lstat(name); err == nil {
+			any = true
+		} else if !os.IsNotExist(err) {
+			return 0, err
+		}
+	}
+	if !any {
+		return 0, nil
 	}
 	if !preview {
 		release, err := lock(path)
@@ -29,9 +52,16 @@ func Prune(ctx context.Context, path string, cutoff time.Time, preview bool) (in
 			return 0, err
 		}
 		defer release()
+		if err := removeExcessBackupsLocked(path, maxFiles); err != nil {
+			return 0, err
+		}
 	}
 	total := 0
-	for _, name := range []string{path, path + ".1"} {
+	for i := 0; i < maxFiles; i++ {
+		name := path
+		if i > 0 {
+			name += fmt.Sprintf(".%d", i)
+		}
 		n, err := pruneFile(ctx, name, cutoff, preview)
 		total += n
 		if err != nil {
@@ -39,6 +69,45 @@ func Prune(ctx context.Context, path string, cutoff time.Time, preview bool) (in
 		}
 	}
 	return total, nil
+}
+
+// PruneAtStartup exposes synchronous startup retention to the process owner.
+// The caller decides whether a pruning error is fatal and can report the
+// removed-record count without coupling logger construction to maintenance.
+func PruneAtStartup(ctx context.Context, opts Options) (int, error) {
+	if opts.Path == "" {
+		return 0, nil
+	}
+	if opts.MaxFiles < 1 {
+		opts.MaxFiles = 1
+	}
+	if opts.MaxFiles > 32 {
+		opts.MaxFiles = 32
+	}
+	if opts.MaxAgeHours < 0 {
+		opts.MaxAgeHours = 0
+	}
+	if opts.MaxAgeHours > 87600 {
+		opts.MaxAgeHours = 87600
+	}
+	removed := 0
+	if opts.MaxAgeHours > 0 {
+		n, err := PruneWithOptions(ctx, opts.Path, time.Now().Add(-time.Duration(opts.MaxAgeHours)*time.Hour), false, opts.MaxFiles)
+		removed += n
+		if err != nil {
+			return removed, err
+		}
+	} else {
+		release, err := lock(opts.Path)
+		if err != nil {
+			return 0, err
+		}
+		defer release()
+		if err := removeExcessBackupsLocked(opts.Path, opts.MaxFiles); err != nil {
+			return 0, err
+		}
+	}
+	return removed, nil
 }
 func pruneFile(ctx context.Context, path string, cutoff time.Time, preview bool) (int, error) {
 	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)

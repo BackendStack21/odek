@@ -1,37 +1,11 @@
 package maintenance
 
 import (
-	"bytes"
-	"context"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 )
-
-func TestRotateLogs_LargeLimitDoesNotWrap(t *testing.T) {
-	home := t.TempDir()
-	path := filepath.Join(home, LogRotationNames()[0])
-	original := []byte("small")
-	if err := os.WriteFile(path, original, 0600); err != nil {
-		t.Fatal(err)
-	}
-	maxInt64 := int64(^uint64(0) >> 1)
-	_, err := Sweep(context.Background(), home, Config{LogMaxMB: maxInt64})
-	if err != nil {
-		t.Fatal(err)
-	}
-	got, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(got, original) {
-		t.Fatalf("small log changed under huge limit: %q", got)
-	}
-	if _, err := os.Stat(path + ".1"); !os.IsNotExist(err) {
-		t.Fatalf("small log unexpectedly rotated under huge limit: %v", err)
-	}
-}
 
 // ── ClampRetentionDays / ClampRetentionHours ────────────────────────────────
 
@@ -148,51 +122,5 @@ func TestSweepArtifacts_PruneNonEmptyDirFails(t *testing.T) {
 	}
 	if removed != 1 {
 		t.Fatalf("removed = %d, want 1 (empty parent pruned)", removed)
-	}
-}
-
-// ── rotateLogs ───────────────────────────────────────────────────────────────
-
-// Rotation happy path with a pre-seeded oversized log verifies the rename +
-// recreate cycle end to end.
-func TestRotateLogs_OversizedRotated(t *testing.T) {
-	home := t.TempDir()
-	names := LogRotationNames()
-	if len(names) == 0 {
-		t.Fatal("LogRotationNames returned no names")
-	}
-	path := filepath.Join(home, names[0])
-	big := make([]byte, 2<<20) // 2 MB > 1 MB limit
-	if err := os.WriteFile(path, big, 0600); err != nil {
-		t.Fatal(err)
-	}
-	rotated, err := rotateLogs(home, 1)
-	if err != nil {
-		t.Fatalf("rotateLogs error: %v", err)
-	}
-	if len(rotated) != 1 || rotated[0] != path {
-		t.Fatalf("rotated = %v, want [%s]", rotated, path)
-	}
-	if _, err := os.Stat(path + ".1"); err != nil {
-		t.Fatalf("rotated file missing: %v", err)
-	}
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if info.Size() != 0 {
-		t.Fatalf("recreated log size = %d, want 0", info.Size())
-	}
-}
-
-// Missing logs are skipped silently (IsNotExist branch).
-func TestRotateLogs_MissingLogsSkipped(t *testing.T) {
-	home := t.TempDir()
-	rotated, err := rotateLogs(home, 1)
-	if err != nil {
-		t.Fatalf("rotateLogs error: %v", err)
-	}
-	if len(rotated) != 0 {
-		t.Fatalf("rotated = %v, want empty", rotated)
 	}
 }

@@ -19,7 +19,7 @@ func (t *delegateTasksTool) childEventContext(taskID string) events.Context {
 	t.eventMu.Lock()
 	defer t.eventMu.Unlock()
 	c := t.eventContext
-	return events.Context{RootRunID: c.RootRunID, ParentRunID: c.RunID, ParentTurnID: c.TurnID, SessionID: c.SessionID, TaskID: taskID, ParentTaskID: c.TaskID}
+	return events.Context{RootRunID: c.RootRunID, ParentRunID: c.RunID, ParentTurnID: c.TurnID, TurnID: c.TurnID, SessionID: c.SessionID, TaskID: taskID, ParentTaskID: c.TaskID}
 }
 
 // subagentActivity tracks observations, not inferred health. Pending calls can
@@ -105,6 +105,7 @@ func (t *delegateTasksTool) relayRuntimeRecord(taskID, line string, a *subagentA
 	c := t.childEventContext(taskID)
 	ev.SourceTaskID = taskID
 	ev.SessionID = c.SessionID
+	ev.TurnID = c.TurnID
 	ev.RootRunID = c.RootRunID
 	if ev.TaskID == "" || ev.TaskID == taskID {
 		ev.TaskID = taskID
