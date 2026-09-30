@@ -138,6 +138,13 @@ export function promoteEpisode(sessionId) {
   });
 }
 
+export function discardEpisode(sessionId) {
+  return apiFetch('/api/memory/episodes/discard', {
+    method: 'POST',
+    body: JSON.stringify({ session_id: sessionId }),
+  });
+}
+
 // ── Skills / Tools ──
 export function getSkills() {
   return apiFetch('/api/skills');

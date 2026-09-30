@@ -984,6 +984,18 @@ button:disabled { cursor: not-allowed; }
 }
 .mf-promote:hover { background: var(--amber-glow); transform: translateY(-1px); }
 .mf-promote:disabled { opacity: .5; cursor: wait; transform: none; }
+.mf-discard {
+  align-self: flex-start;
+  background: transparent;
+  border: 1px solid var(--red-dim);
+  border-radius: var(--r-pill);
+  font-size: var(--fs-xs);
+  color: var(--text-3);
+  padding: 3px var(--space-3);
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease), transform var(--dur-fast) var(--ease-snap);
+}
+.mf-discard:hover { background: var(--red-dim); color: var(--red); transform: translateY(-1px); }
+.mf-discard:disabled { opacity: .5; cursor: wait; transform: none; }
 
 /* ── Skills panel ──────────────────────────────────────────────────── */
 .sk-row {

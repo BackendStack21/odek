@@ -1961,6 +1961,8 @@ func handleChatMessage(
 				msg = "🔒 Episode pending review (untrusted): " + event.SessionID
 			case "episode_promoted":
 				msg = "💾 Episode promoted: " + event.SessionID
+			case "episode_discarded":
+				msg = "🗑️ Episode discarded: " + event.SessionID
 			default:
 				return
 			}

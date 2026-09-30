@@ -504,6 +504,9 @@ function handleMemoryEvent(event) {
     case 'episode_promoted':
       showToast('💾 ✓ Episode promoted: ' + (event.session_id || ''));
       break;
+    case 'episode_discarded':
+      showToast('🗑️ Episode discarded: ' + (event.session_id || ''));
+      break;
     case 'episode_evicted':
       showToast('💾 ✗ ' + (event.count || 0) + ' episode(s) evicted');
       break;

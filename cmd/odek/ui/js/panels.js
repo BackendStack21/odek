@@ -3,7 +3,7 @@
 import { S, getSessionToken } from './state.js';
 import { showToast, announce, escapeHtml } from './utils.js';
 import {
-  getMemory, previewMemory, applyMemoryPreview, addMemoryFact, removeMemoryFact, promoteEpisode, consolidateMemory,
+  getMemory, previewMemory, applyMemoryPreview, addMemoryFact, removeMemoryFact, promoteEpisode, discardEpisode, consolidateMemory,
   getSkills, getTools, promoteSkill,
   listRuns, getRun, getSkill, cancelRun, answerRunApproval, getEvents,
   listJobs, getJobOutput, stopJob, listSubagents,
@@ -242,7 +242,27 @@ function renderPending(container, pending) {
         showToast('promote failed: ' + err.message);
       }
     });
-    row.append(body, promote);
+    const discard = document.createElement('button');
+    discard.className = 'mf-discard';
+    discard.textContent = 'discard';
+    discard.title = 'Remove this episode permanently — it is never recalled';
+    discard.addEventListener('click', async () => {
+      discard.disabled = true;
+      if (!window.confirm('Discard this episode permanently? It is removed from memory and never recalled.')) {
+        discard.disabled = false;
+        return;
+      }
+      try {
+        await discardEpisode(ep.session_id);
+        showToast('episode discarded');
+        announce('Episode discarded');
+        loadMemory();
+      } catch (err) {
+        discard.disabled = false;
+        showToast('discard failed: ' + err.message);
+      }
+    });
+    row.append(body, promote, discard);
     container.appendChild(row);
   });
 }
