@@ -10,6 +10,7 @@ package main
 //   POST /api/memory/facts                  add a fact          {target, content}
 //   DEL  /api/memory/facts                  remove a fact       {target, old_text}
 //   POST /api/memory/episodes/promote       promote an episode  {session_id}
+//   POST /api/memory/episodes/discard       discard an episode  {session_id}
 //   GET  /api/skills                        skill listing (source, provenance)
 //   GET  /api/tools                         tool registry + filter state
 //   GET  /api/models                        provider ListModels + configured model
@@ -557,6 +558,35 @@ func handleMemoryEpisodePromote(memoryDir string) http.HandlerFunc {
 			return
 		}
 		if err := memory.NewEpisodeStore(memoryDir, nil).Promote(body.SessionID); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+// handleMemoryEpisodeDiscard removes a pending (untrusted, unapproved)
+// episode from memory. The other side of the promote human gate — reachable
+// only with the operator instance token, never by the agent.
+// POST {session_id}
+func handleMemoryEpisodeDiscard(memoryDir string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var body struct {
+			SessionID string `json:"session_id"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&body); err != nil {
+			http.Error(w, "invalid JSON", http.StatusBadRequest)
+			return
+		}
+		if body.SessionID == "" {
+			http.Error(w, "session_id required", http.StatusBadRequest)
+			return
+		}
+		if err := memory.NewEpisodeStore(memoryDir, nil).Discard(body.SessionID); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}

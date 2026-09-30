@@ -595,6 +595,7 @@ func newServeMux(d serveMuxDeps) *http.ServeMux {
 		}
 	})))
 	mux.Handle("/api/memory/episodes/promote", apiAuth(handleMemoryEpisodePromote(memoryDir)))
+	mux.Handle("/api/memory/episodes/discard", apiAuth(handleMemoryEpisodeDiscard(memoryDir)))
 	mux.Handle("/api/skills", apiAuth(handleSkills(resolved.Skills)))
 	mux.Handle("/api/skills/promote", apiAuth(handleSkillPromote()))
 	mux.Handle("/api/tools", apiAuth(handleTools(resolved)))

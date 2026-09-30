@@ -619,6 +619,68 @@ func (e *EpisodeStore) Promote(sessionID string) error {
 	return nil
 }
 
+// Discard removes a pending (untrusted, unapproved) episode from the index
+// and deletes its summary file. This is the other side of the human gate:
+// where Promote approves a tainted episode for recall, Discard rejects it
+// permanently. It is intentionally NOT exposed to the agent (only via
+// `odek memory discard` / the operator API) so a prompt-injected agent
+// cannot erase audit-relevant memory.
+//
+// Returns an error if the session is unknown or not actually pending
+// review: approved, trusted, and auto-approved episodes are recallable
+// memory and are never deletable through this path.
+func (e *EpisodeStore) Discard(sessionID string) error {
+	if err := session.ValidateSessionID(sessionID); err != nil {
+		return fmt.Errorf("memory: episodes discard: %w", err)
+	}
+	unlock, err := lockEpisodes(e.dir)
+	if err != nil {
+		return err
+	}
+	e.invalidateIndexCache()
+	e.mu.Lock()
+
+	idx, err := e.ReadIndex()
+	if err != nil {
+		e.mu.Unlock()
+		unlock()
+		return err
+	}
+	found := false
+	kept := idx[:0]
+	for _, ep := range idx {
+		if ep.SessionID == sessionID {
+			found = true
+			if ep.Provenance.UserApproved || !ep.Provenance.Untrusted || ep.Provenance.AutoApproved {
+				e.mu.Unlock()
+				unlock()
+				return fmt.Errorf("memory: episode %q is not pending review (approved, trusted, or auto-approved)", sessionID)
+			}
+			continue
+		}
+		kept = append(kept, ep)
+	}
+	if !found {
+		e.mu.Unlock()
+		unlock()
+		return fmt.Errorf("memory: episode %q not found", sessionID)
+	}
+	if err := e.writeIndex(kept); err != nil {
+		e.mu.Unlock()
+		unlock()
+		return err
+	}
+	// Delete the summary file only after the index write succeeded, so a
+	// failed write never leaves a dangling index entry.
+	e.removeEpisodeFile(sessionID)
+	sharedEpisodeIndex(e.dir, e.newEmbedder).markDirty()
+	e.mu.Unlock()
+	unlock()
+	// Fired after releasing the lock (see notifyAll).
+	e.notifyAll([]MemoryEvent{{Type: "episode_discarded", SessionID: sessionID}})
+	return nil
+}
+
 // PendingReview returns the episodes that are untrusted and not yet
 // user-approved — the ones currently excluded from recall that a user may
 // want to promote. Ordered newest-first (as ReadIndex returns them).

@@ -409,6 +409,48 @@ func TestHandleMemoryEpisodePromote_OKAndBadID(t *testing.T) {
 	}
 }
 
+func TestHandleMemoryEpisodeDiscard_OKAndBadID(t *testing.T) {
+	dir := newTestMemoryDir(t)
+	epStore := memory.NewEpisodeStore(dir, nil)
+	prov := memory.EpisodeProvenance{Untrusted: true}
+	if err := epStore.WriteWithProvenance("20260102-cccc", "did a thing", 4, prov); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/memory/episodes/discard", strings.NewReader(`{"session_id":"20260102-cccc"}`))
+	w := httptest.NewRecorder()
+	handleMemoryEpisodeDiscard(dir)(w, req)
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("discard status = %d (body: %s)", w.Code, w.Body.String())
+	}
+
+	pending, err := memory.NewEpisodeStore(dir, nil).PendingReview()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range pending {
+		if p.SessionID == "20260102-cccc" {
+			t.Error("episode still pending after discard")
+		}
+	}
+	idx, _ := memory.NewEpisodeStore(dir, nil).ReadIndex()
+	for _, ep := range idx {
+		if ep.SessionID == "20260102-cccc" {
+			t.Error("discarded episode still in index")
+		}
+	}
+
+	// Traversal-shaped id and unknown session must both 400.
+	for _, body := range []string{`{"session_id":"../../etc"}`, `{"session_id":"2026-nope"}`} {
+		req = httptest.NewRequest(http.MethodPost, "/api/memory/episodes/discard", strings.NewReader(body))
+		w = httptest.NewRecorder()
+		handleMemoryEpisodeDiscard(dir)(w, req)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("body %s: status = %d, want 400", body, w.Code)
+		}
+	}
+}
+
 // ── GET /api/skills ──────────────────────────────────────────────────
 
 func TestHandleSkills_ListingWithProvenance(t *testing.T) {

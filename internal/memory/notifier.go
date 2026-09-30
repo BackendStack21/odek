@@ -32,6 +32,9 @@ type MemoryEvent struct {
 	//                             (Sessions, Count=number evicted)
 	//   "episode_promoted"      — a tainted episode was user-approved for recall
 	//                             (SessionID)
+	//   "episode_discarded"     — a pending episode was discarded (removed) by
+	//                             the operator
+	//                             (SessionID)
 	//   "episode_pending_review"— an untrusted, unapproved episode was stored and
 	//                             is excluded from recall until promoted
 	//                             (SessionID)

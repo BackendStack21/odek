@@ -174,6 +174,9 @@ test('memory mutations hit their endpoints', async () => {
   await api.promoteEpisode('2026-x');
   assert.equal(last().url, '/api/memory/episodes/promote');
   assert.equal(last().init.body, JSON.stringify({ session_id: '2026-x' }));
+  await api.discardEpisode('2026-x');
+  assert.equal(last().url, '/api/memory/episodes/discard');
+  assert.equal(last().init.body, JSON.stringify({ session_id: '2026-x' }));
 });
 
 // ── Response handling ──

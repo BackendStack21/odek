@@ -15,7 +15,7 @@ import (
 	"github.com/BackendStack21/odek/internal/memory/extended"
 )
 
-// memoryCmd handles `odek memory <list|promote|extended> [args]`.
+// memoryCmd handles `odek memory <list|promote|discard|extended> [args]`.
 //
 // This is the human-gated surface for the episode-memory trust control.
 // Episodes whose originating session touched external content (web/http/MCP/
@@ -67,11 +67,22 @@ func memoryCmd(args []string) error {
 		fmt.Printf("odek: promoted episode %q — it can now be recalled into future sessions\n", id)
 		return nil
 
+	case "discard", "reject":
+		if len(subArgs) == 0 {
+			return fmt.Errorf("usage: odek memory discard <session_id>")
+		}
+		id := subArgs[0]
+		if err := store.Discard(id); err != nil {
+			return err
+		}
+		fmt.Printf("odek: discarded episode %q — it was removed from memory and will never be recalled\n", id)
+		return nil
+
 	case "extended":
 		return extendedMemoryCmd(dir, subArgs)
 
 	default:
-		return fmt.Errorf("unknown memory subcommand %q (expected: list, promote, extended)", sub)
+		return fmt.Errorf("unknown memory subcommand %q (expected: list, promote, discard, extended)", sub)
 	}
 }
 

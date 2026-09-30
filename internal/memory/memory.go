@@ -1460,6 +1460,16 @@ func (m *MemoryManager) PromoteEpisode(sessionID string) error {
 	return m.episodes.Promote(sessionID)
 }
 
+// DiscardEpisode removes a pending (untrusted, unapproved) episode from
+// memory. Human-gated counterpart of PromoteEpisode — see
+// EpisodeStore.Discard.
+func (m *MemoryManager) DiscardEpisode(sessionID string) error {
+	if m.cfg.Enabled == nil || !*m.cfg.Enabled {
+		return fmt.Errorf("memory: disabled")
+	}
+	return m.episodes.Discard(sessionID)
+}
+
 // PendingReviewEpisodes lists episodes that are untrusted and not yet
 // user-approved (currently excluded from recall).
 func (m *MemoryManager) PendingReviewEpisodes() ([]EpisodeMeta, error) {
