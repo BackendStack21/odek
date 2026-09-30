@@ -13,7 +13,8 @@
 | `odek session delete <id>` | Delete a session |
 | `odek session trim <id> <n>` | Keep only the `n` most recent messages |
 | `odek session cleanup <days>` | Delete sessions older than N days (see also: automatic storage maintenance below) |
-| `odek cleanup [--dry-run]` | One-shot storage sweep of `~/.odek`: expired sessions, audit records, plans, and oversized-log rotation, per the `[maintenance]` config. `--dry-run` previews without deleting. The same sweep runs automatically in the Telegram bot, `odek serve`, and `odek schedule daemon`. See [MAINTENANCE.md](MAINTENANCE.md) |
+| `odek cleanup [--dry-run]` | One-shot storage sweep of `~/.odek`: expired sessions, audit records, plans, artifacts, media, and runtime-log retention. `--dry-run` previews without changing files. The same sweep runs automatically in long-lived services when maintenance is enabled. See [MAINTENANCE.md](MAINTENANCE.md) |
+| `odek logs [filters]` | Query, follow, or display the local operational log. See [Runtime logging](LOGGING.md) for filters and examples. |
 | `odek skill list` | List all available skills |
 | `odek skill view <name>` | View a skill's full content |
 | `odek skill delete <name>` | Delete a skill |
@@ -25,7 +26,7 @@
 | `odek memory extended <forget|promote|pin|quarantine|compact|stats|consolidate|nudges|pending|confirm|reject> [args]` | Extended-memory operations: delete/promote/pin atoms, list or confirm/reject pending-review atoms, quarantine listing, manual compaction, store stats, consolidate, and proactive-nudge management |
 | `odek audit <session-id>` | Print the prompt-injection audit log for a session (JSON) |
 | `odek audit --list` | List sessions with non-zero ingest counts and divergence flags |
-| `odek serve [--addr <addr>] [--open] [--no-sandbox] [--trusted-proxies <ips/cidrs>] [--log-file <path>]` | Web UI server (default `127.0.0.1:8080`). Sandbox is on by default; pass `--no-sandbox` to disable. Flags: `--tool` / `--no-tool` (repeatable), `--prompt-caching` / `--no-prompt-caching`, `--compaction` / `--no-compaction`, `--announce-budget` / `--no-announce-budget`, `--planning` / `--no-planning`, `--stream` / `--no-stream`, `--log-file` (durable run/turn log, default `~/.odek/serve.log`). Binding to a non-loopback address prints a loud warning because anyone with the token can drive the agent. `--trusted-proxies` honours `X-Forwarded-For`/`X-Real-Ip` only from those addresses. |
+| `odek serve [--addr <addr>] [--open] [--no-sandbox] [--trusted-proxies <ips/cidrs>]` | Web UI server (default `127.0.0.1:8080`). Sandbox is on by default; pass `--no-sandbox` to disable. Flags: `--tool` / `--no-tool` (repeatable), `--prompt-caching` / `--no-prompt-caching`, `--compaction` / `--no-compaction`, `--announce-budget` / `--no-announce-budget`, `--planning` / `--no-planning`, `--stream` / `--no-stream`. Binding to a non-loopback address prints a loud warning because anyone with the token can drive the agent. `--trusted-proxies` honours `X-Forwarded-For`/`X-Real-Ip` only from those addresses. |
 | `odek subagent --goal <string> [flags]` | Run a focused sub-task; outputs JSON on stdout. Spawned by `delegate_tasks` tool. Flags: `--goal`, `--task <file>`, `--context`, `--timeout` (≤1800s), `--max-iter` (≤100), `--profile <name>`, `--parent-session <id>`, `--quiet`, `--stream`. |
 | `odek init [--global|--local] [--force]` | Create a config file template (scope-aware: full schema globally, project-safe fields locally) |
 | `odek mcp [--sandbox]` | MCP server over stdio (built-in tools minus `delegate_tasks` / `memory`). Also loads `mcp_servers`. Sandbox is opt-in (`--sandbox`), unlike `odek run`. See [MCP.md](MCP.md) |

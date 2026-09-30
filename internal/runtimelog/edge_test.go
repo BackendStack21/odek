@@ -31,7 +31,7 @@ func TestLogLevelsAndInvalidRecords(t *testing.T) {
 		{"subagent_failed", "", "ERROR"}, {"tool_call_failed", "", "WARN"}, {"subagent_denied", "", "WARN"},
 		{"budget_warning", "", "WARN"}, {"tool_recovery", "", "WARN"}, {"logging_dropped", "", "WARN"},
 		{"subagent_completed", "success", "INFO"}, {"subagent_completed", "completed", "INFO"},
-		{"subagent_completed", "partial", "WARN"}, {"subagent_completed", "cancelled", "WARN"},
+		{"subagent_completed", "partial", "WARN"}, {"subagent_completed", "cancelled", "INFO"},
 		{"subagent_completed", "timeout", "ERROR"}, {"subagent_completed", "", "ERROR"},
 	}
 	for _, tc := range cases {
@@ -57,19 +57,36 @@ func TestLogLevelsAndInvalidRecords(t *testing.T) {
 		t.Fatalf("records=%d want=%d", len(lines), len(cases))
 	}
 	for i, line := range lines {
-		var rec struct{ Type, Level string }
+		var rec struct{ Event, Level string }
 		if err := json.Unmarshal([]byte(line), &rec); err != nil {
 			t.Fatal(err)
 		}
-		if rec.Type != cases[i].typ || rec.Level != cases[i].level {
+		wantEvent := strings.ReplaceAll(cases[i].typ, "_", ".")
+		if cases[i].typ == "run_failed" {
+			wantEvent = "run.finished"
+		}
+		if cases[i].typ == "llm_call_failed" {
+			wantEvent = "model.call_failed"
+		}
+		if cases[i].typ == "subagent_completed" || cases[i].typ == "subagent_failed" {
+			wantEvent = "subagent.finished"
+		}
+		if cases[i].typ == "tool_call_failed" {
+			wantEvent = "tool.failed"
+		}
+		if rec.Event != wantEvent || strings.ToUpper(rec.Level) != cases[i].level {
 			t.Fatalf("record %d: %+v", i, rec)
 		}
 	}
-	// An oversized origin label cannot bypass the per-record byte bound.
+	// Origin labels are bounded before serialization.
 	oversized := &Logger{queue: make(chan []byte, 1), surface: strings.Repeat("x", maxRecordBytes)}
 	oversized.Emit(events.Event{Type: "run_started"})
-	if oversized.Dropped() != 1 || len(oversized.queue) != 0 {
-		t.Fatal("oversized record entered queue")
+	if oversized.Dropped() != 0 || len(oversized.queue) != 1 {
+		t.Fatal("bounded surface metadata was rejected")
+	}
+	var stored Record
+	if err := json.Unmarshal(bytes.TrimSpace(<-oversized.queue), &stored); err != nil || len(stored.Surface) > 128 {
+		t.Fatalf("surface label not bounded: %+v, %v", stored, err)
 	}
 }
 

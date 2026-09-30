@@ -67,6 +67,9 @@ Five-layer priority chain: `~/.odek/secrets.env` → `global (~/.odek/config.jso
 ### ⏱️ Execution Budgets & Runtime Events
 Hard stop runaway tasks: `--max-runtime`, `--max-tool-calls`, `--max-input-tokens`, `--max-output-tokens`, `--max-cost-usd` (or the `limits` config section, with per-model pricing via `limits.model_prices`). On exhaustion the session is persisted for resume and the CLI exits with dedicated **exit code 4**. Follow any run from an external process with `--events-jsonl` (structured `odek.event/v1` JSONL, secrets-redacted, args hashed) or the `EventHandler` Go API; `GET /api/limits` on `odek serve` exposes limits + effective prices for cost rendering. [docs/EXTENSIONS.md](docs/EXTENSIONS.md)
 
+### 🧾 Operational Logs
+CLI and service activity is recorded in a local metadata-only `odek.log/v1` JSONL file (`~/.odek/runtime.log` by default). Query runs, failures, and delegated task trees with `odek logs`; prompts, answers, tool arguments, and results are excluded. This local log is separate from the `odek.event/v1` stream used by `--events-jsonl` and the Go `EventHandler`. [docs/LOGGING.md](docs/LOGGING.md)
+
 ### 🔌 LLM-Agnostic
 Multi-provider via [go-llm-sdk](https://github.com/BackendStack21/go-llm-sdk): DeepSeek, OpenAI, Anthropic, Gemini, Z.ai (GLM), Kimi, plus any OpenAI-compatible gateway. Provider id + model — no auto-thinking or auto-timeout from the model name. [docs/PROVIDERS.md](docs/PROVIDERS.md)
 
@@ -152,6 +155,7 @@ odek run "@README.md what does this project do?"
 | `odek telegram` | Run the Telegram bot (also hosts the embedded scheduler) |
 | `odek schedule <add\|list\|...>` | Native cron scheduler (see [docs/SCHEDULES.md](docs/SCHEDULES.md)) |
 | `odek cleanup [--dry-run]` | One-shot storage sweep of `~/.odek` (see [docs/MAINTENANCE.md](docs/MAINTENANCE.md)) |
+| `odek logs [filters]` | Query or follow local operational logs (see [docs/LOGGING.md](docs/LOGGING.md)) |
 | `odek upgrade [--check]` | Self-upgrade from GitHub Releases (SHA-256 verified) |
 | `odek version` | Print version |
 

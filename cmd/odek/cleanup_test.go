@@ -137,21 +137,18 @@ func TestCleanupDryRun_Candidates(t *testing.T) {
 	}
 }
 
-// TestMaintenanceConfigMapping pins the resolved-config → maintenance.Config
-// field mapping so a shape change in config.ResolvedConfig.Maintenance fails
-// here first.
+// TestMaintenanceConfigMapping pins maintenance scheduling and logger policy.
 func TestMaintenanceConfigMapping(t *testing.T) {
 	resolved := config.ResolvedConfig{Maintenance: maintenance.Config{
 		Enabled:            true,
 		IntervalMinutes:    60,
 		SessionsMaxAgeDays: 30,
 		AuditMaxAgeDays:    14,
-		LogMaxMB:           50,
 		PlansMaxAgeDays:    30,
-	}}
+	}, Logging: config.LoggingConfig{Enabled: true, Level: "debug", File: "~/.odek/custom.log", MaxFileMB: 11, MaxFiles: 5, MaxAgeHours: 24}}
 	cfg := maintenanceConfig(resolved)
 	if !cfg.Enabled || cfg.IntervalMinutes != 60 || cfg.SessionsMaxAgeDays != 30 ||
-		cfg.AuditMaxAgeDays != 14 || cfg.LogMaxMB != 50 || cfg.PlansMaxAgeDays != 30 {
+		cfg.AuditMaxAgeDays != 14 || cfg.PlansMaxAgeDays != 30 || cfg.RuntimeLog.Path != expandHome("~/.odek/custom.log") || cfg.RuntimeLog.Level != "debug" || cfg.RuntimeLog.MaxFileMB != 11 || cfg.RuntimeLog.MaxFiles != 5 || cfg.RuntimeLog.MaxAgeHours != 24 {
 		t.Errorf("maintenanceConfig mapping wrong: %+v", cfg)
 	}
 }

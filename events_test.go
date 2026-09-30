@@ -339,16 +339,14 @@ func TestAgent_Events_SessionIDOnceKnown(t *testing.T) {
 	agent.Close() // drains the emitter
 
 	evs := col.all()
-	// run_started fired in New, before the session was known.
-	if evs[0].Type != events.TypeRunStarted || evs[0].SessionID != "" {
-		t.Errorf("run_started session_id = %q, want empty", evs[0].SessionID)
-	}
-	// Everything after SetEventSessionID carries it.
-	for i, ev := range evs[1:] {
+	// Setup does not fabricate an invocation; caller events and subsequent
+	// invocation events all retain the session once the caller binds it.
+	for i, ev := range evs {
 		if ev.SessionID != "sess-42" {
-			t.Errorf("event %d (%s) session_id = %q, want sess-42", i+1, ev.Type, ev.SessionID)
+			t.Errorf("event %d (%s) session_id = %q", i, ev.Type, ev.SessionID)
 		}
 	}
+
 }
 
 func TestAgent_Events_BudgetExceededPrecedesRunFailed(t *testing.T) {

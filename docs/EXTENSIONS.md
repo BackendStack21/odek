@@ -335,6 +335,11 @@ invariants.
 
 ## Runtime logging event additions
 
+This section describes additions to the existing `odek.event/v1` extension
+stream. The local operational file is a separate `odek.log/v1` JSONL format
+configured under `logging` and queried with `odek logs`; it does not change the
+Go `EventHandler` or `--events-jsonl` contract. See [Runtime logging](LOGGING.md).
+
 The additive event envelope also carries `turn_id`, `root_run_id`,
 `parent_run_id`, `parent_turn_id`, `task_id`, `parent_task_id`, and
 `source_task_id` when applicable. `run_id` identifies an Agent instance;
@@ -346,8 +351,8 @@ Additional types include `turn_started`, `llm_call_started/completed/failed`,
 and types. Parent relay preserves child run IDs and stamps the owning session.
 See [Runtime logging](LOGGING.md) for timing and correlation semantics.
 
-Operational logging additionally emits `operation_failed`, `operation_warning`,
+The local operational log additionally emits `operation_failed`, `operation_warning`,
 and `panic_recovered`, with component/operation labels and typed error metadata
-(no raw error text). Runtime JSONL records include writer `process_id` and `pid`;
-these fields are additions to the log envelope, not required event-stream fields.
+(no raw error text). Operational log records include writer `process_id` and
+`pid`; these fields are additions to the log envelope, not required event-stream fields.
 See [failure diagnostics](LOGGING.md#investigating-failures) for coverage and limits.

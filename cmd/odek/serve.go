@@ -308,7 +308,6 @@ func serveCmd(args []string) error {
 	var stream *bool
 	var sandboxImage, sandboxNetwork, sandboxMemory, sandboxCPUs, sandboxUser string
 	var toolsEnabled, toolsDisabled, trustedProxies []string
-	var logFile string
 
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -395,12 +394,6 @@ func serveCmd(args []string) error {
 			for j := range trustedProxies {
 				trustedProxies[j] = strings.TrimSpace(trustedProxies[j])
 			}
-		case "--log-file":
-			i++
-			if i >= len(args) {
-				return fmt.Errorf("--log-file requires a value")
-			}
-			logFile = args[i]
 		default:
 			return fmt.Errorf("unknown flag %q for serve", args[i])
 		}
@@ -445,24 +438,6 @@ func serveCmd(args []string) error {
 
 	cwd, _ := os.Getwd()
 	home, _ := os.UserHomeDir()
-
-	// Durable run/turn log (fix 4 of the sub-agent reliability work): every
-	// serve turn and headless run is recorded with IDs, statuses, and short
-	// failure classifications so provider failures (429 saturation) are
-	// visible after the fact. Default ~/.odek/serve.log — a sibling of
-	// telegram.log/schedule.log so the storage janitor's rotation covers it.
-	logPath := logFile
-	if logPath == "" {
-		logPath = filepath.Join(home, ".odek", "serve.log")
-	}
-	if sl, err := openServeLog(logPath); err == nil {
-		setServeLog(sl)
-		defer sl.Close()
-		sl.logf("serve_started addr=%s pid=%d", addr, os.Getpid())
-	} else {
-		diagnostics.Warning("serve", "surface_log_open", err)
-		fmt.Fprintf(os.Stderr, "odek serve: durable run log disabled (%v)\n", err)
-	}
 
 	resourceReg := resource.NewRegistry(
 		resource.NewFileResolver(cwd),
@@ -691,7 +666,6 @@ Flags:
   --tool name              Enable a tool for the LLM (repeatable)
   --no-tool name           Disable a tool for the LLM (repeatable)
   --trusted-proxies list   Comma-separated IPs/CIDRs whose X-Forwarded-For headers are trusted
-  --log-file path          Durable run/turn log (default: ~/.odek/serve.log, mode 0600)
   --help, -h               Show this help`)
 }
 
@@ -729,6 +703,8 @@ func newServeHTTPServer(mux *http.ServeMux) *http.Server {
 // and gives in-flight requests up to 5 seconds to finish.
 func serveOnListener(listener net.Listener, mux *http.ServeMux) error {
 	srv := newServeHTTPServer(mux)
+	diagnostics.Emit(events.Event{Type: "service_started", Data: map[string]any{"component": "serve"}})
+	defer diagnostics.Emit(events.Event{Type: "service_stopped", Data: map[string]any{"component": "serve"}})
 
 	// Catch Ctrl-C and SIGTERM.
 	quit := make(chan os.Signal, 1)
@@ -1842,7 +1818,30 @@ func handlePrompt(
 	turn *wsTurnAnnotator,
 ) (result *session.Session) {
 	var sess *session.Session
-	var turnID string
+	turnID := newTurnID()
+	// A reused connection may switch sessions. Do not stamp setup events with
+	// its previous conversation or an unvalidated client-provided identifier.
+	agent.SetEventSessionID("")
+	if msg.SessionID == "" && currSess != nil {
+		agent.SetEventSessionID(currSess.ID)
+	}
+	runID, _ := ctx.Value(serveRunIDKey{}).(string)
+	agent.BeginRun(runID, turnID)
+	requestCtx := ctx
+	outcomeErr := errors.New("serve turn did not complete")
+	originalSend := send
+	send = func(frame map[string]any) {
+		frame["run_id"] = agent.RunID()
+		switch frame["type"] {
+		case "done":
+			outcomeErr = nil
+		case "error":
+			if message, ok := frame["message"].(string); ok {
+				outcomeErr = errors.New(message)
+			}
+		}
+		originalSend(frame)
+	}
 	// This is the shared REST, WebSocket, and wake execution boundary. A
 	// failed turn must not unwind a daemon goroutine and terminate the host.
 	defer func() {
@@ -1853,7 +1852,6 @@ func handlePrompt(
 			}
 			diagnostics.Emit(events.Event{Type: "panic_recovered", SessionID: sid, TurnID: turnID, Data: map[string]any{"component": "serve", "operation": "turn", "error_class": "panic"}})
 			atomic.AddInt64(&serveStats.PromptsFailed, 1)
-			serveLogf("turn panic contained")
 			if sess != nil {
 				sess.Messages = append(sess.Messages, session.Message{Role: "assistant", TurnID: turnID, Content: "[Turn aborted: internal error. Completed checkpoints were preserved.]"})
 				_ = store.SaveNoIndex(sess)
@@ -1863,6 +1861,10 @@ func handlePrompt(
 			}
 			sendError(send, "turn failed: internal error")
 		}
+		if outcomeErr != nil && requestCtx.Err() != nil {
+			outcomeErr = requestCtx.Err()
+		}
+		agent.FinishRun(outcomeErr)
 	}()
 	ctx, cancelRun := context.WithCancel(ctx)
 	defer cancelRun()
@@ -2051,7 +2053,6 @@ func handlePrompt(
 	}
 
 	// Build message history with an identity that survives compaction.
-	turnID = newTurnID()
 	var messages []session.Message
 	// System-initiated wake turns carry a Name marker ("bg-wake") so the
 	// loop's user-input hooks skip them exactly like drained bg-notice
@@ -2155,10 +2156,6 @@ func handlePrompt(
 		turn.begin(turnID)
 		defer turn.end() // streamed frames stop carrying this id at return
 	}
-	sl := activeServeLog()
-	if sl != nil {
-		sl.logf("turn_started session=%s model=%s", sid, resolved.Model)
-	}
 
 	// Append user input to buffer (AppendBuffer summarizes raw text).
 	if mm := agent.Memory(); mm != nil {
@@ -2234,9 +2231,6 @@ func handlePrompt(
 	if auditSessID != "" {
 		recordTurnAudit(auditStore, auditSessID, auditTurn, originalPrompt, session.TurnMessages(allMessages, turnID))
 	}
-	if sl != nil {
-		sl.logf("turn_completed session=%s latency_ms=%d", sid, latency.Milliseconds())
-	}
 	streamedReasoning, streamedContent := 0, 0
 	if deltas != nil {
 		streamedReasoning, streamedContent = deltas.snapshot()
@@ -2245,9 +2239,7 @@ func handlePrompt(
 	if err != nil {
 		atomic.AddInt64(&serveStats.PromptsFailed, 1) // B3-SERVE-1: failed prompts must reach the usage aggregate
 		sendError(send, err.Error())
-		if sl != nil {
-			sl.logf("turn_failed session=%s summary=%s", sid, providerFailureSummary(err))
-		}
+		outcomeErr = err
 		if sess == nil {
 			return currSess
 		}
@@ -2352,6 +2344,7 @@ func handlePrompt(
 		}
 		if err := store.Save(sess); err != nil {
 			sendError(send, "failed to save completed turn: "+err.Error())
+			outcomeErr = err
 			return sess
 		}
 	}

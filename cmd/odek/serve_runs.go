@@ -933,12 +933,11 @@ func startServeRun(
 			if recovered := recover(); recovered != nil {
 				diagnostics.Emit(events.Event{Type: "panic_recovered", Data: map[string]any{"component": "serve", "operation": "headless_run", "error_class": "panic"}})
 				run.finish("failed", "run failed: internal error")
-				serveLogf("run panic contained run_id=%s", run.ID)
 			}
 		}()
 		defer run.releaseResources()
 		var sessionIn, sessionOut int
-		serveLogf("run_started run_id=%s", run.ID)
+		ctx = context.WithValue(ctx, serveRunIDKey{}, run.ID)
 		sess := handlePrompt(ctx, recordSend, store, resources, resolved, agent, injectionGuard, nil, msg, &sessionIn, &sessionOut, cancelWithApproval, &deltas, bgRT, &turnTag)
 		run.mu.Lock()
 		if sess != nil {
@@ -948,22 +947,10 @@ func startServeRun(
 		run.mu.Unlock()
 		if ctx.Err() == context.Canceled {
 			run.finish("cancelled", "")
-			sl := activeServeLog()
-			if sl != nil {
-				sl.logf("run_finished run_id=%s session=%s status=cancelled", run.ID, run.SessionID)
-			}
 		} else if errMsg != "" {
 			run.finish("failed", errMsg)
-			sl := activeServeLog()
-			if sl != nil {
-				sl.logf("run_finished run_id=%s session=%s status=failed", run.ID, run.SessionID)
-			}
 		} else {
 			run.finish("completed", "")
-			sl := activeServeLog()
-			if sl != nil {
-				sl.logf("run_finished run_id=%s session=%s status=completed", run.ID, run.SessionID)
-			}
 		}
 	}()
 
@@ -1192,3 +1179,6 @@ func cancelRun(run *serveRun) {
 	}
 	run.finish("cancelled", "")
 }
+
+// serveRunIDKey ties the REST run registry to the agent invocation.
+type serveRunIDKey struct{}

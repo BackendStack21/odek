@@ -242,10 +242,15 @@ func TestBuildScheduledMCPTools_NoServers(t *testing.T) {
 	cleanup() // no-op, must not panic
 }
 
-func TestAppendScheduleLog_HomeError(t *testing.T) {
+func TestAppendScheduleLog_DoesNotNeedHome(t *testing.T) {
 	t.Setenv("HOME", "")
-	if err := appendScheduleLog(schedule.Job{ID: "jb-1", Name: "j"}, "x"); err == nil {
-		t.Error("appendScheduleLog should error when HOME is unresolvable")
+	out := captureStdout(func() {
+		if err := appendScheduleLog(schedule.Job{ID: "jb-1", Name: "j"}, "x"); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !strings.Contains(out, "jb-1") {
+		t.Fatal(out)
 	}
 }
 

@@ -1,7 +1,7 @@
 # Scheduled Tasks (native cron)
 
 odek can run agent tasks on a cron schedule and deliver each result somewhere —
-a Telegram chat, stdout, or a log file. The scheduler is **native and
+a Telegram chat or stdout. The scheduler is **native and
 in-process**: it runs inside a long-lived odek process that has already
 resolved its configuration (API key, model, bot token, default chat) into
 memory. A scheduled task therefore sees exactly what an interactive `odek run`
@@ -166,7 +166,7 @@ odek schedule next "0 9 * * 1-5"   # validate an expression and see upcoming fir
 | Kind | Result goes to |
 |---|---|
 | `stdout` | the daemon's stdout (or the bot's container logs) |
-| `log` | appended to `~/.odek/schedule.log` |
+| `log` | compatibility alias for daemon stdout (redacted) |
 | `telegram` | the configured `telegram.default_chat_id` |
 | `telegram:<chatID>` | a specific chat |
 
@@ -196,8 +196,8 @@ that performs high-risk operations, run it interactively via `odek run` or the
 `/schedule run` command so an approver can review each action.
 
 Task definitions in `schedules.json` are owner-authored (same trust level as
-`config.json`); the file is written `0600`. Results written to
-`~/.odek/schedule.log` are redacted for secrets before they hit disk.
+`config.json`); the file is written `0600`. Delivery output is redacted before
+it is written to stdout. The unified runtime log never stores that output.
 
 ---
 

@@ -15,7 +15,6 @@ import (
 func TestResolveMaintenance_ClampsRetentionBounds(t *testing.T) {
 	huge := int(999999)       // ~2740 years — wraps int64 ns duration math
 	neg := int(-5)            // future cutoff by construction
-	tiny := int64(0)          // explicit 0 = disabled / keep forever, preserved
 	bigHours := int(99999999) // hours also overflow at ~2.6e9
 
 	got := resolveMaintenance(&MaintenanceConfig{
@@ -24,7 +23,6 @@ func TestResolveMaintenance_ClampsRetentionBounds(t *testing.T) {
 		AuditMaxAgeDays:      &neg,
 		PlansMaxAgeDays:      &huge,
 		ArtifactsMaxAgeHours: &bigHours,
-		LogMaxMB:             &tiny,
 	})
 
 	if got.SessionsMaxAgeDays < 0 || got.SessionsMaxAgeDays > 36500 {
@@ -38,8 +36,5 @@ func TestResolveMaintenance_ClampsRetentionBounds(t *testing.T) {
 	}
 	if got.ArtifactsMaxAgeHours < 0 || got.ArtifactsMaxAgeHours > 24*36500 {
 		t.Fatalf("ArtifactsMaxAgeHours = %d passed through unclamped; want within [0, %d]", got.ArtifactsMaxAgeHours, 24*36500)
-	}
-	if got.LogMaxMB != 0 {
-		t.Fatalf("explicit LogMaxMB=0 (disable) must be preserved, got %d", got.LogMaxMB)
 	}
 }

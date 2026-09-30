@@ -130,7 +130,7 @@ func TestE2E_SubagentRuntimeLogging(t *testing.T) {
 	_ = os.Mkdir(filepath.Join(home, ".odek"), 0700)
 	_ = os.WriteFile(filepath.Join(home, ".odek", "config.json"), []byte(`{"logging":{"enabled":true},"memory":{"enabled":false},"limits":{"input_cost_per_million_usd":2,"output_cost_per_million_usd":4}}`), 0600)
 	path := filepath.Join(home, ".odek", "runtime.log")
-	logger, err := runtimelog.Open(path, "test", 50)
+	logger, err := runtimelog.OpenWithOptions(runtimelog.Options{Path: path, Surface: "test", Level: "debug", MaxFileMB: 50, MaxFiles: 4})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,19 +165,19 @@ func TestE2E_SubagentRuntimeLogging(t *testing.T) {
 	}
 	seen := map[string]bool{}
 	for _, line := range strings.Split(strings.TrimSpace(string(b)), "\n") {
-		var ev events.Event
+		var ev runtimelog.Record
 		if err := json.Unmarshal([]byte(line), &ev); err != nil {
 			t.Fatal(err)
 		}
 		if ev.SessionID != "session-1" || ev.TaskID != "child-task" {
 			t.Fatalf("missing session/task: %+v", ev)
 		}
-		seen[ev.Type] = true
-		if ev.Type == "subagent_completed" && (ev.Data["exit_status"] != "exited" || ev.Data["cost_usd"] == nil) {
+		seen[ev.Event] = true
+		if ev.Event == "subagent.finished" && (ev.Metadata["exit_status"] != "exited" || ev.Metadata["cost_usd"] == nil) {
 			t.Fatalf("terminal diagnostics: %+v", ev)
 		}
 	}
-	for _, typ := range []string{"subagent_spawned", "turn_started", "llm_call_started", "llm_call_completed", "run_completed", "subagent_completed"} {
+	for _, typ := range []string{"subagent.spawned", "turn.started", "model.call_started", "model.call_finished", "run.finished", "subagent.finished"} {
 		if !seen[typ] {
 			t.Errorf("missing %s", typ)
 		}
@@ -189,7 +189,9 @@ func TestRuntimeExpirationDryRunReportsWork(t *testing.T) {
 	path := filepath.Join(dir, "runtime.log")
 	b, _ := json.Marshal(events.Event{Type: "run_completed", Timestamp: time.Now().Add(-48 * time.Hour)})
 	_ = os.WriteFile(path, append(b, '\n'), 0600)
-	out := captureStdout(func() { printCleanupDryRun(dir, maintenance.Config{RuntimeLogMaxAgeHours: 24}) })
+	out := captureStdout(func() {
+		printCleanupDryRun(dir, maintenance.Config{RuntimeLog: runtimelog.Options{Path: path, MaxAgeHours: 24, MaxFiles: 4}})
+	})
 	if !strings.Contains(out, "runtime records expired: 1") || strings.Contains(out, "storage is clean") {
 		t.Fatalf("misleading preview: %s", out)
 	}

@@ -43,8 +43,6 @@ All configuration flows through `TelegramConfig` and can be set via environment 
 | `ODEK_TELEGRAM_AGENT_TIMEOUT` | AgentTimeout (`agent_timeout_seconds`) | 900 (15m; 0 = unlimited) |
 | `ODEK_TELEGRAM_FALLBACK_URLS` | FallbackURLs | — |
 | `ODEK_TELEGRAM_HEALTH_ADDR` | HealthAddr (`health_addr`) | — (empty = health endpoint disabled) |
-| `ODEK_TELEGRAM_LOG_LEVEL` | LogLevel | info |
-| `ODEK_TELEGRAM_LOG_FILE` | LogFile | stderr |
 | `ODEK_TELEGRAM_DEFAULT_CHAT_ID` | DefaultChatID (`default_chat_id`) | — (used for `--deliver` and as admin fallback) |
 | `ODEK_TELEGRAM_MAX_DOWNLOAD_SIZE` | MaxDownloadSize (`max_download_size`) | 5 MiB (0 = default, <0 = unlimited, >0 = cap in bytes) |
 | `ODEK_TELEGRAM_MEDIA_QUOTA_PER_CHAT` | MediaQuotaPerChat (`media_quota_per_chat`) | 0 (disabled; >0 = per-chat byte quota) |
@@ -171,7 +169,10 @@ for {
 }
 ```
 
-> **Log file permissions.** `telegram.NewFileLogger` creates log files with `0600` permissions (owner read/write only). Existing files created by earlier versions are also hardened to `0600` on open, so chat IDs and task snippets are not world-readable.
+The CLI records Telegram service and agent lifecycle metadata in the unified
+`~/.odek/runtime.log`; use `odek logs --surface telegram` to query it. The
+operational log excludes message text and other conversation content. See
+[Runtime logging](LOGGING.md).
 
 ## Message Handler (`handler.go`)
 

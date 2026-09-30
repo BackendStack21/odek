@@ -31,9 +31,9 @@ func dispatch(args []string) int {
 	cmd := args[0]
 	rest := args[1:]
 	// Protocol children relay diagnostics through their parent once initialized.
-	// Keep version queries independent of configuration and filesystem writes.
+	// Keep version queries and read-only log queries independent of logger writes.
 	preview := cmd == "cleanup" && slices.Contains(rest, "--dry-run")
-	if !preview && (cmd != "subagent" || subagentDepth() == 0) && cmd != "version" && cmd != "--version" && cmd != "-v" {
+	if !preview && cmd != "logs" && (cmd != "subagent" || subagentDepth() == 0) && cmd != "version" && cmd != "--version" && cmd != "-v" {
 		closeLog := startOperationalLogging(commandSurface(cmd))
 		defer closeLog()
 		defer func() {
@@ -79,6 +79,8 @@ func dispatch(args []string) int {
 		return cliExit(memoryCmd(rest))
 	case "cleanup":
 		return cliExit(cleanupCmd(rest))
+	case "logs":
+		return cliExit(logsCmd(rest))
 	case "upgrade":
 		return cliExit(upgradeCmd(rest))
 	default:

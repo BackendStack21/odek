@@ -362,6 +362,19 @@ func (e *Emitter) SetContext(c Context) {
 	}
 }
 func (e *Emitter) SetTurnID(id string) { e.mu.Lock(); e.context.TurnID = id; e.mu.Unlock() }
+
+// BeginRun replaces invocation identity atomically. Queued events already carry
+// their original context and cannot be relabelled by a subsequent invocation.
+func (e *Emitter) BeginRun(runID, turnID string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.runID = runID
+	e.context.RunID = runID
+	e.context.TurnID = turnID
+	if e.context.ParentRunID == "" {
+		e.context.RootRunID = runID
+	}
+}
 func (e *Emitter) Context() Context {
 	e.mu.RLock()
 	defer e.mu.RUnlock()

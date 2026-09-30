@@ -108,12 +108,6 @@ func ConfigFromEnv(base TelegramConfig) TelegramConfig {
 	if v := os.Getenv("ODEK_TELEGRAM_HEALTH_ADDR"); v != "" {
 		cfg.HealthAddr = v
 	}
-	if v := os.Getenv("ODEK_TELEGRAM_LOG_LEVEL"); v != "" {
-		cfg.LogLevel = v
-	}
-	if v := os.Getenv("ODEK_TELEGRAM_LOG_FILE"); v != "" {
-		cfg.LogFile = v
-	}
 	if v := os.Getenv("ODEK_TELEGRAM_DEFAULT_CHAT_ID"); v != "" {
 		if id, err := strconv.ParseInt(v, 10, 64); err == nil {
 			cfg.DefaultChatID = id

@@ -339,3 +339,29 @@ func TestJSONLSink_HardensExistingFilePerms(t *testing.T) {
 		t.Errorf("existing file mode = %o, want hardened to 600", perm)
 	}
 }
+
+func TestBeginRunPreservesQueuedIdentityAndChildRoot(t *testing.T) {
+	handler, got := collect()
+	e := NewEmitter(handler, "initial")
+	e.SetContext(Context{SessionID: "session"})
+	e.BeginRun("first", "turn1")
+	e.Emit(Event{Type: TypeRunStarted})
+	e.BeginRun("second", "turn2")
+	e.Emit(Event{Type: TypeRunStarted})
+	e.SetContext(Context{ParentRunID: "second", RootRunID: "second"})
+	e.BeginRun("child", "turn2")
+	e.Emit(Event{Type: TypeRunStarted})
+	e.Close()
+	records := got()
+	if len(records) != 3 {
+		t.Fatal(records)
+	}
+	for i, id := range []string{"first", "second", "child"} {
+		if records[i].RunID != id {
+			t.Fatalf("queued identity changed: %+v", records)
+		}
+	}
+	if records[0].TurnID != "turn1" || records[0].RootRunID != "first" || records[1].RootRunID != "second" || records[2].RootRunID != "second" || records[2].ParentRunID != "second" {
+		t.Fatal(records)
+	}
+}

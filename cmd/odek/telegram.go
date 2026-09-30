@@ -356,8 +356,7 @@ func telegramCmd(args []string) error {
 	bot.MediaQuotaPerChat = cfg.MediaQuotaPerChat
 
 	// 4b. Create logger.
-	level := telegram.ParseLogLevel(cfg.LogLevel)
-	rootLog := telegram.NewFileLogger(level, cfg.LogFile)
+	rootLog := newOperationalSurfaceLogger("telegram")
 	botLog := rootLog.With("component", "bot")
 	handlerLog := rootLog.With("component", "handler")
 	pollerLog := rootLog.With("component", "poller")
@@ -956,6 +955,9 @@ func telegramCmd(args []string) error {
 		}
 	}
 
+	diagnostics.Emit(events.Event{Type: "service_started", Data: map[string]any{"component": "telegram"}})
+	defer diagnostics.Emit(events.Event{Type: "service_stopped", Data: map[string]any{"component": "telegram"}})
+
 	// 16. Start polling in a background goroutine.
 	updates := make(chan telegram.Update, 100)
 	go func() {
@@ -1277,7 +1279,7 @@ func gracefulRestart(bot *telegram.Bot) {
 }
 
 // spawnChild starts a new odek telegram process detached from the parent.
-// Stderr is redirected to /tmp/odek-telegram.log so startup errors are visible.
+// Stderr is inherited; operational diagnostics use the configured runtime log.
 func spawnChild() error {
 	return spawnChildWithStarter(os.StartProcess)
 }
@@ -1301,11 +1303,7 @@ func spawnChildWithStarter(starter processStarter) error {
 	copy(argv, os.Args)
 	argv[0] = exe
 
-	// Open stderr log file for the child so startup errors aren't lost.
-	stderr, err := os.OpenFile("/tmp/odek-telegram.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
-	if err != nil {
-		stderr = nil // fallback: child gets /dev/null
-	}
+	stderr := os.Stderr
 
 	// Build child environment: parent env only. The API key is passed via an
 	// inherited file descriptor instead of the environment so it does not
@@ -1329,7 +1327,7 @@ func spawnChildWithStarter(starter processStarter) error {
 	attr := &os.ProcAttr{
 		Env: childEnv,
 		// Detach: nil stdin/stdout so child is reparented to init.
-		// Stderr is captured to the log file for debugging.
+		// Stderr remains attached to the operator's existing destination.
 		// FD 3 carries the API key when needed.
 		Files: files,
 	}
@@ -2054,11 +2052,15 @@ func handleChatMessage(
 		agent.SetInitialToolCalls(telegramPhotoCalls(photos[0]))
 	}
 
-	// Run the agent with the full message history (multi-turn).
+	// Include the final session save in the invocation outcome.
+	agent.BeginRun("", "")
+	var outcome error
+	defer finishAgentInvocation(agent, &outcome)
 	response, updatedMessages, err := agent.RunWithMessages(agentCtx, cs.Messages)
 	if checkpointErr != nil {
 		err = checkpointErr
 	}
+	outcome = err
 	recordTurnAudit(auditStore, cs.SessionID, auditTurn, auditUserText, auditTurnDelta(updatedMessages, auditHistLen))
 	if err != nil {
 		// Clean up any tool trace messages on error.
@@ -2114,6 +2116,7 @@ func handleChatMessage(
 	cs.Messages = updatedMessages
 	cs.TurnCount++
 	if err := sessionManager.Save(chatID, cs.Messages); err != nil {
+		outcome = err
 		reportError(bot, chatID, messageID, "Failed to save completed turn: "+err.Error())
 		return
 	}

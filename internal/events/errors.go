@@ -28,6 +28,10 @@ func ErrorData(err error) map[string]any {
 	if errors.As(err, &api) {
 		data["http_status"] = api.Status
 	}
+	var rate *sdk.RateLimitError
+	if errors.As(err, &rate) {
+		data["attempts"] = rate.Attempts
+	}
 	return data
 }
 

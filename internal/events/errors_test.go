@@ -67,3 +67,14 @@ type privacyWrappedError struct{ err error }
 
 func (e *privacyWrappedError) Error() string { return "PRIVATE" }
 func (e *privacyWrappedError) Unwrap() error { return e.err }
+
+func TestErrorDataRetainsRateLimitAttemptsWithoutMessage(t *testing.T) {
+	data := ErrorData(fmt.Errorf("PRIVATE wrapper: %w", &sdk.RateLimitError{APIError: sdk.APIError{Status: 429, Message: "PRIVATE body"}, Attempts: 3}))
+	if data["attempts"] != 3 || data["http_status"] != 429 {
+		t.Fatal(data)
+	}
+	body, _ := json.Marshal(data)
+	if strings.Contains(string(body), "PRIVATE") {
+		t.Fatal(string(body))
+	}
+}

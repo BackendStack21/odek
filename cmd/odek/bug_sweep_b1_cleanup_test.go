@@ -1,15 +1,12 @@
 package main
 
-// Regression: cleanup dry-run must preview everything the real sweep removes
-// (artifact subtrees, oversized logs).
+// Regression: cleanup dry-run must preview artifact subtree removals.
 //
 // RED-first: both failed against the pre-fix dry-run collector, which never
 // previewed artifact subtree deletions (the real sweep removes
-// ~/.odek/artifacts/<session_id>/ by default) and whose log list omitted
-// serve.log even though rotateLogs rotates it.
+// ~/.odek/artifacts/<session_id>/ by default).
 
 import (
-	"bytes"
 	"os"
 	"path/filepath"
 	"testing"
@@ -40,20 +37,4 @@ func TestCleanupDryRun_PreviewsArtifactSubtrees(t *testing.T) {
 		}
 	}
 	t.Fatalf("dry-run omitted artifact subtree %q that the real sweep deletes; previewed artifacts = %v", artDir, c.artifacts)
-}
-
-func TestCleanupDryRun_IncludesServeLog(t *testing.T) {
-	home := t.TempDir()
-	p := filepath.Join(home, "serve.log")
-	if err := os.WriteFile(p, bytes.Repeat([]byte("a"), 2*1024*1024), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	cfg := maintenance.Config{LogMaxMB: 1}
-	c := collectCleanupCandidates(home, cfg)
-	for _, l := range c.logs {
-		if l == p {
-			return
-		}
-	}
-	t.Fatalf("dry-run omitted oversized serve.log %q; previewed logs = %v", p, c.logs)
 }

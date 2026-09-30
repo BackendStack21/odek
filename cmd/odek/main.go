@@ -1203,6 +1203,7 @@ func printUsage() {
   odek schedule <list|add|rm|enable|disable|run|next|daemon>
   odek memory <list|promote <session_id>>
   odek cleanup [--dry-run]
+  odek logs [filters] [--follow] [--json]
   odek upgrade [--check]
   odek version | odek --version
 
@@ -1237,6 +1238,7 @@ Commands:
                        Human-gated on purpose — not available to the agent.
   cleanup             One-shot storage sweep of ~/.odek (sessions, audit,
                        plans, skill skips, log rotation). --dry-run previews.
+  logs                Read retained operational logs without starting the logger.
   init                Create a config file (default: ./odek.json)
   upgrade             Self-upgrade to the latest GitHub release
                        Downloads the asset for the current OS/arch, verifies
@@ -1529,14 +1531,12 @@ const globalConfigTemplate = `{
     "timezone": "UTC",
     "catchup": false
   },
-  "logging": {"enabled": false},
+  "logging": {"enabled": true, "level": "info", "file": "~/.odek/runtime.log", "max_file_mb": 25, "max_files": 4, "max_age_hours": 168},
   "maintenance": {
     "enabled": true,
     "interval_minutes": 60,
     "sessions_max_age_days": 30,
     "audit_max_age_days": 14,
-    "log_max_mb": 50,
-    "runtime_log_max_age_hours": 168,
     "plans_max_age_days": 30,
     "artifacts_max_age_hours": 24
   },
@@ -1719,7 +1719,7 @@ func initConfig(args []string) error {
 //  8. Run the agent loop with the user's task
 //
 // The caller is responsible for printing the error and calling os.Exit.
-func run(args []string) error {
+func run(args []string) (outcome error) {
 	f, err := parseRunFlags(args)
 	if err != nil {
 		return err
@@ -1972,6 +1972,8 @@ func run(args []string) error {
 		return err
 	}
 	defer agent.Close()
+	agent.BeginRun("", "")
+	defer finishAgentInvocation(agent, &outcome)
 	if bgRT != nil {
 		bgEmit = eventHandler
 		bgRT.SetContainer(runContainerName)
@@ -2514,8 +2516,10 @@ type toolConfig struct {
 // timeout/window) onto an odek.Config built from a ResolvedConfig.
 func applyResolvedProvider(cfg *odek.Config, resolved config.ResolvedConfig) {
 	if resolved.Logging.Enabled {
-		cfg.RuntimeLogPath = expandHome("~/.odek/runtime.log")
-		cfg.RuntimeLogMaxMB = resolved.Maintenance.LogMaxMB
+		opts := loggingOptions(resolved.Logging, cfg.RuntimeLogSurface)
+		cfg.RuntimeLogOptions = &opts
+		cfg.RuntimeLogPath = opts.Path
+		cfg.RuntimeLogMaxMB = opts.MaxFileMB
 		// Prices support estimates on every surface without adding budget caps.
 		cfg.Limits.InputCostPerMillionUSD = resolved.Limits.InputCostPerMillionUSD
 		cfg.Limits.OutputCostPerMillionUSD = resolved.Limits.OutputCostPerMillionUSD
@@ -3186,7 +3190,7 @@ func continueCLIFlags(sess *session.Session) config.CLIFlags {
 	return config.CLIFlags{Model: sess.Model, Provider: sess.Provider}
 }
 
-func continueCmd(args []string) error {
+func continueCmd(args []string) (outcome error) {
 	sessionID, refSpecs, task, err := parseContinueArgs(args)
 	if err != nil {
 		return err
@@ -3367,6 +3371,8 @@ func continueCmd(args []string) error {
 		return err
 	}
 	defer agent.Close()
+	agent.BeginRun("", "")
+	defer finishAgentInvocation(agent, &outcome)
 	// File delegate_tasks artifacts under the resumed session so the store's
 	// OnDelete cascade owns their lifecycle.
 	agent.SetToolSessionID(sess.ID)

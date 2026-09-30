@@ -19,6 +19,8 @@ import (
 	"github.com/BackendStack21/odek"
 	"github.com/BackendStack21/odek/internal/config"
 	"github.com/BackendStack21/odek/internal/danger"
+	"github.com/BackendStack21/odek/internal/diagnostics"
+	"github.com/BackendStack21/odek/internal/events"
 	"github.com/BackendStack21/odek/internal/flock"
 	"github.com/BackendStack21/odek/internal/guard"
 	"github.com/BackendStack21/odek/internal/loop"
@@ -318,7 +320,7 @@ func scheduleDaemon(_ []string) error {
 	}
 	defer mcpCleanup()
 
-	logger := telegram.NewFileLogger(telegram.LogInfo, "") // "" → stderr
+	logger := newOperationalSurfaceLogger("schedule")
 	sched := schedule.New(st,
 		agentRunner{resolved: resolved, system: system, mcpTools: mcpTools},
 		cliDeliverer{resolved: resolved},
@@ -341,6 +343,8 @@ func scheduleDaemon(_ []string) error {
 	}
 	fmt.Fprintf(os.Stderr, "odek schedule daemon ⏰  %d job(s) loaded (%d enabled). Ctrl-C to stop.\n", len(jobs), enabled)
 
+	diagnostics.Emit(events.Event{Type: "service_started", Data: map[string]any{"component": "schedule"}})
+	defer diagnostics.Emit(events.Event{Type: "service_stopped", Data: map[string]any{"component": "schedule"}})
 	if err := sched.Run(ctx); err != nil && err != context.Canceled {
 		return err
 	}
@@ -362,7 +366,7 @@ func (r agentRunner) Run(ctx context.Context, job schedule.Job) (string, int64, 
 	return runTaskHeadless(ctx, r.resolved, r.system, job.Task, r.mcpTools)
 }
 
-// cliDeliverer routes results to stdout, a log file, or Telegram, honouring a
+// cliDeliverer routes results to stdout or Telegram, honouring a
 // per-job chat ID (falling back to the configured default_chat_id).
 type cliDeliverer struct {
 	resolved config.ResolvedConfig
@@ -371,7 +375,7 @@ type cliDeliverer struct {
 func (d cliDeliverer) Deliver(ctx context.Context, job schedule.Job, result string) error {
 	switch job.Deliver.Kind {
 	case schedule.DeliverStdout:
-		fmt.Printf("\n── %s · %s ──\n%s\n", job.Name, time.Now().Format(time.RFC1123), result)
+		fmt.Printf("\n── %s · %s ──\n%s\n", redact.RedactSecrets(job.Name), time.Now().Format(time.RFC1123), redact.RedactSecrets(result))
 		return nil
 	case schedule.DeliverLog:
 		return appendScheduleLog(job, result)
@@ -896,28 +900,15 @@ func firstWords(s string, n int) string {
 	return strings.Join(fields, " ")
 }
 
-// appendScheduleLog appends a delivered result to ~/.odek/schedule.log.
-// Both the job label and the result are run through secret redaction before
-// they are written, because task output can contain API keys, tokens, or
-// private keys fetched or produced by the agent.
+// appendScheduleLog delivers unaddressed scheduler output to the terminal.
+// The operational log records delivery metadata only, never result text.
 func appendScheduleLog(job schedule.Job, result string) error {
-	home, err := os.UserHomeDir()
+	_, err := fmt.Fprintf(os.Stdout, "[%s] %s (%s)\n%s\n\n", time.Now().Format(time.RFC3339), redact.RedactSecrets(job.Name), job.ID, redact.RedactSecrets(result))
 	if err != nil {
-		return err
+		diagnostics.Report("schedule", "delivery", "", err)
+	} else {
+		diagnostics.Emit(events.Event{Type: "schedule_delivered", Data: map[string]any{"component": "schedule", "operation": "delivery", "result_bytes": len(result)}})
 	}
-	dir := filepath.Join(home, ".odek")
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return err
-	}
-	path := filepath.Join(dir, "schedule.log")
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	name := redact.RedactSecrets(job.Name)
-	safe := redact.RedactSecrets(result)
-	_, err = fmt.Fprintf(f, "[%s] %s (%s)\n%s\n\n", time.Now().Format(time.RFC3339), name, job.ID, safe)
 	return err
 }
 

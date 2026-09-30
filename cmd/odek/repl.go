@@ -347,11 +347,15 @@ func replCmd(args []string) error {
 
 			// Run agent with full history
 			rend.Start(input)
+			agent.BeginRun("", "")
+			var outcome error
+			defer finishAgentInvocation(agent, &outcome)
 			_, allMessages, err := agent.RunWithMessages(runCtx, messages)
 			turnCancel()
 			if checkpointErr != nil {
 				err = checkpointErr
 			}
+			outcome = err
 			if err != nil {
 				recordTurnAudit(auditStore, sess.ID, auditTurn, originalInput, auditTurnDelta(allMessages, histLen))
 				// Persist the partial history so the interrupted turn survives
@@ -374,6 +378,7 @@ func replCmd(args []string) error {
 			// vector index for the completed turn.
 			updated, loadErr := store.Load(sess.ID)
 			if loadErr != nil {
+				outcome = loadErr
 				return fmt.Errorf("reload completed session: %w", loadErr)
 			}
 			sess = updated
@@ -382,6 +387,7 @@ func replCmd(args []string) error {
 					sess.Buffer = mm.GetBuffer()
 				}
 				if err := store.Save(sess); err != nil {
+					outcome = err
 					fmt.Fprintf(os.Stderr, "odek: save error: %v\n", err)
 				}
 			}
