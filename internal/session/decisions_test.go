@@ -64,3 +64,28 @@ func TestPrincipalPromptMetadataIsClonedAndRedacted(t *testing.T) {
 		t.Fatal("saving mutated the original prompt")
 	}
 }
+
+func TestPrincipalPromptRedactionIsIndependentOfTranscriptBoundary(t *testing.T) {
+	store, err := NewStoreWithDir(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	prompt := "Initial prompt"
+	sess, err := store.Create([]Message{{Role: "user", Content: "Task", PrincipalPrompt: &prompt}, {Role: "assistant", Content: "Complete"}}, "fixture", "Task")
+	if err != nil {
+		t.Fatal(err)
+	}
+	secret := "changed-principal-metadata-secret"
+	redact.RegisterSecret(secret)
+	sess.Messages[0].PrincipalPrompt = &secret
+	if err := store.SaveNoIndex(sess); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := store.Load(sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Messages[0].PrincipalPrompt == nil || strings.Contains(*loaded.Messages[0].PrincipalPrompt, secret) {
+		t.Fatal("older metadata escaped incremental redaction")
+	}
+}

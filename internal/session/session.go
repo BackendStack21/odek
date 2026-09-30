@@ -551,11 +551,7 @@ func (s *Store) addToVectorIndex(sess *Session) error {
 // deterministic over the (already-redacted) persisted form, so an unchanged
 // head matches across saves and any trim/rewrite invalidates the boundary.
 func redactMessageFP(m Message) string {
-	principal := ""
-	if m.PrincipalPrompt != nil {
-		principal = *m.PrincipalPrompt
-	}
-	h := sha256.Sum256([]byte(principal + "\x00" + m.Role + "\x00" + m.Content + "\x00" + m.ReasoningContent))
+	h := sha256.Sum256([]byte(m.Role + "\x00" + m.Content + "\x00" + m.ReasoningContent))
 	return hex.EncodeToString(h[:8])
 }
 
@@ -675,13 +671,17 @@ func (s *Store) saveLocked(sess *Session) (err error) {
 			boundary = 0
 		}
 	}
-	for i := boundary; i < len(sess.Messages); i++ {
-		sess.Messages[i].Content = redact.RedactSecrets(sess.Messages[i].Content)
-		sess.Messages[i].ReasoningContent = redact.RedactSecrets(sess.Messages[i].ReasoningContent)
+	// Authored-input metadata is independently mutable and always redacted;
+	// it does not rely on the model transcript's incremental scan boundary.
+	for i := range sess.Messages {
 		if sess.Messages[i].PrincipalPrompt != nil {
 			prompt := redact.RedactSecrets(*sess.Messages[i].PrincipalPrompt)
 			sess.Messages[i].PrincipalPrompt = &prompt
 		}
+	}
+	for i := boundary; i < len(sess.Messages); i++ {
+		sess.Messages[i].Content = redact.RedactSecrets(sess.Messages[i].Content)
+		sess.Messages[i].ReasoningContent = redact.RedactSecrets(sess.Messages[i].ReasoningContent)
 	}
 
 	data, err := json.Marshal(sess)
