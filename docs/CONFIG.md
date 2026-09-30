@@ -895,6 +895,7 @@ Code's `mcpServers` object; odek does not expand `${VAR}` in `env`.
 | Field | Description |
 |-------|-------------|
 | `command` | Executable to spawn (required) |
+| `enabled` | Server on/off switch. Omitted or `true` = enabled (back-compat); `false` keeps the entry configured (preserving approval hashes for later re-enable) but the server is never started, discovered, or prompted for. Surfaced as `enabled` in `odek introspect` / `GET /api/mcp` so configured-but-off servers stay visible |
 | `args` | Optional command-line arguments |
 | `env` | Optional overrides (empty string unsets). Secret-looking keys are stripped even here |
 | `timeout_seconds` | Per-request timeout (default `30`; clamped to `3600` with a warning) |

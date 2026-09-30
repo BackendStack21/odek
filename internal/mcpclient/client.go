@@ -220,6 +220,12 @@ type ServerConfig struct {
 	// before the result is rendered for the model.
 	ArtifactRoots []string `json:"artifact_roots,omitempty"`
 
+	// Enabled toggles this server. Nil or true = enabled (back-compat:
+	// presence in mcp_servers means it runs). False keeps the entry
+	// configured (preserving approval hashes for later re-enable) but it
+	// is never started, discovered, or prompted for.
+	Enabled *bool `json:"enabled,omitempty"`
+
 	// AutoApprove marks the server as trusted by the operator: it skips the
 	// project-server approval prompt and the per-tool registration prompts
 	// (schema guard scans still apply). TRUST RULES: the flag is honored
@@ -231,6 +237,12 @@ type ServerConfig struct {
 	// only — deliberately excluded from approval keys, which hash
 	// execution-relevant fields.
 	AutoApprove bool `json:"auto_approve,omitempty"`
+}
+
+// IsDisabled reports whether the server is explicitly turned off via
+// enabled:false. Nil (absent) means enabled — the historical behavior.
+func (s ServerConfig) IsDisabled() bool {
+	return s.Enabled != nil && !*s.Enabled
 }
 
 // lineResult carries the result of a single readLine from the reader goroutine.
