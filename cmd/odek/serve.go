@@ -3152,7 +3152,7 @@ func handleSessionList(store *session.Store) http.HandlerFunc {
 func handleSessionByID(store *session.Store, trustedProxies []string, wsToken string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/recovery") {
-			handleRecovery(store)(w, r)
+			handleRecovery(store, trustedProxies)(w, r)
 			return
 		}
 		id := strings.TrimPrefix(r.URL.Path, "/api/sessions/")
@@ -3219,11 +3219,36 @@ func handleSessionByID(store *session.Store, trustedProxies []string, wsToken st
 				// tokens are weaker secrets than per-session tokens, and
 				// this is a one-shot path (the client stores the returned
 				// session token) — legitimate clients never churn it.
+				// The bootstrap is mint-only: it returns the session token
+				// header with a minimal body, never the transcript itself —
+				// the weaker instance token must not yield session contents.
+				// Callers re-fetch the detail with the minted per-session
+				// token (the WebUI's ensureSessionToken already follows this
+				// two-step flow).
 				if !sessionLookupLimiter.allow(clientIP(r, trustedProxies)) {
 					http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
 					return
 				}
-				effectiveToken, ok = sess.AuthToken, true
+				// Export and plan views are explicit operator-initiated
+				// downloads that authenticate with the instance cookie in
+				// the browser; they stay reachable on the bootstrap path.
+				// The base detail response is mint-only.
+				if strings.HasSuffix(r.URL.Path, "/export") {
+					w.Header().Set("X-Session-Token", sess.AuthToken)
+					handleSessionExport(sess, exportFormat, w)
+					return
+				}
+				if planView {
+					w.Header().Set("X-Session-Token", sess.AuthToken)
+					handleSessionPlan(sess, w)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				if sess.AuthToken != "" {
+					w.Header().Set("X-Session-Token", sess.AuthToken)
+				}
+				writeAPIJSON(w, http.StatusOK, map[string]any{"session_id": sess.ID, "bootstrapped": true})
+				return
 			}
 			if !ok {
 				rejectWithLimit(http.StatusUnauthorized, "invalid session token")
@@ -3316,13 +3341,23 @@ func clientIP(r *http.Request, trustedProxies []string) string {
 			// right-most entry is the one the trusted proxy appended, while
 			// the left-most is client-supplied and spoofable — rotating it
 			// would rotate rate-limit buckets and grow the limiter map.
+			var candidate string
 			if i := strings.LastIndex(fwd, ","); i >= 0 {
-				return strings.TrimSpace(fwd[i+1:])
+				candidate = strings.TrimSpace(fwd[i+1:])
+			} else {
+				candidate = strings.TrimSpace(fwd)
 			}
-			return strings.TrimSpace(fwd)
+			// The value must parse as an IP: an unparseable header would
+			// become an attacker-rotated limiter bucket key ("a", "b", …),
+			// defeating every per-IP rate limit behind the proxy.
+			if net.ParseIP(candidate) != nil {
+				return candidate
+			}
 		}
-		if real := r.Header.Get("X-Real-Ip"); real != "" {
-			return real
+		if real := strings.TrimSpace(r.Header.Get("X-Real-Ip")); real != "" {
+			if net.ParseIP(real) != nil {
+				return real
+			}
 		}
 	}
 	return host
@@ -3603,6 +3638,7 @@ func handleStatic(wsToken string) http.HandlerFunc {
 		// cookie (sent automatically on same-site WebSocket upgrades) and as a
 		// meta tag (read by app.js and sent as a WebSocket subprotocol).
 		if r.URL.Path == "/" && wsToken != "" {
+			authed := false
 			// Constant-time, like every other comparison in this file: this
 			// is the one endpoint that mints the authenticated cookie.
 			if subtle.ConstantTimeCompare([]byte(r.URL.Query().Get("token")), []byte(wsToken)) == 1 {
@@ -3623,10 +3659,22 @@ func handleStatic(wsToken string) http.HandlerFunc {
 				})
 				data = []byte(strings.Replace(string(data), "{{ODEK_WS_TOKEN}}", wsToken, 1))
 				w.Header().Set("Cache-Control", "no-store")
-			} else {
-				// No valid token in the URL: serve the UI but leave the meta tag
-				// empty so the browser cannot connect until the user uses the
-				// token URL printed to the console.
+				authed = true
+			} else if c, err := r.Cookie(wsTokenCookieName); err == nil &&
+				subtle.ConstantTimeCompare([]byte(c.Value), []byte(wsToken)) == 1 {
+				// Returning browser: the HttpOnly cookie minted by an earlier
+				// token URL is sufficient — the tokenized URL is needed only
+				// once per browser, shrinking the URL's exposure window and
+				// enabling a redirect-based strip later without breaking the
+				// client contract.
+				data = []byte(strings.Replace(string(data), "{{ODEK_WS_TOKEN}}", wsToken, 1))
+				w.Header().Set("Cache-Control", "no-store")
+				authed = true
+			}
+			if !authed {
+				// No valid token in the URL or cookie: serve the UI but leave
+				// the meta tag empty so the browser cannot connect until the
+				// user uses the token URL printed to the console.
 				data = []byte(strings.Replace(string(data), "{{ODEK_WS_TOKEN}}", "", 1))
 			}
 		}

@@ -152,7 +152,7 @@ func NormalizeForScan(text string) string {
 		if isInvisible(r) {
 			continue
 		}
-		if unicode.Is(unicode.Mn, r) || unicode.Is(unicode.Me, r) {
+		if unicode.Is(unicode.Mn, r) || unicode.Is(unicode.Me, r) || unicode.Is(unicode.Mc, r) {
 			continue
 		}
 		b.WriteRune(r)

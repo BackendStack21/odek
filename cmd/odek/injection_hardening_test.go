@@ -43,6 +43,25 @@ func (m *mockGuard) DetectLong(ctx context.Context, text string) (guard.Result, 
 
 func (m *mockGuard) Close() error { return nil }
 
+// TestSanitizeMCPDescription_SizeCapBoundary pins the exact cap boundary:
+// exactly maxMCPDescriptionRunes must pass untruncated, +1 must truncate,
+// and multibyte runes at the boundary must not be split.
+func TestSanitizeMCPDescription_SizeCapBoundary(t *testing.T) {
+	exact := strings.Repeat("é", maxMCPDescriptionRunes) // multibyte at every position
+	got := testSanitizeMCPDescription("srv", "tool", exact)
+	if strings.Contains(got, "truncated") {
+		t.Errorf("exactly-cap description must not be truncated (got truncation notice)")
+	}
+	over := strings.Repeat("é", maxMCPDescriptionRunes+1)
+	got = testSanitizeMCPDescription("srv", "tool", over)
+	if !strings.Contains(got, "truncated") {
+		t.Errorf("cap+1 description must be truncated")
+	}
+	if !strings.HasSuffix(strings.TrimSpace(strings.Split(got, "\n[odek:")[0]), "é") {
+		t.Errorf("truncation must be rune-safe (no split multibyte)")
+	}
+}
+
 func TestSanitizeMCPDescription_MockGuardWithholds(t *testing.T) {
 	clean := "Fetch the current weather for a city."
 	got := sanitizeMCPDescription("weather", "get_weather", clean, &mockGuard{}, guard.Config{Provider: guard.ProviderPiguard})
