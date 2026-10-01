@@ -232,6 +232,44 @@ func TestConsolidateAtomsPreconditions(t *testing.T) {
 	}
 }
 
+// TestAddAtom_RefreshDuplicateKeepsTrustedClass pins the dedup sibling of
+// the consolidation taint fix: a tainted incoming near-duplicate of a
+// trusted live atom must never launder its source class — refreshDuplicate
+// keeps the existing atom's class and only bumps recency/confidence.
+func TestAddAtom_RefreshDuplicateKeepsTrustedClass(t *testing.T) {
+	llm := newMockLLM("irrelevant")
+	em := newConsolidationEM(t, llm)
+
+	trusted := MemoryAtom{
+		Text:        "User prefers Go for backend services",
+		SourceClass: SourceUserSaid,
+		Confidence:  0.9,
+	}
+	if err := em.AddAtom(context.Background(), trusted); err != nil {
+		t.Fatal(err)
+	}
+	// A tainted atom with identical text goes to quarantine, not the live
+	// store — the refresh path must never see it.
+	tainted := MemoryAtom{
+		Text:        "User prefers Go for backend services",
+		SourceClass: SourceWeb,
+		Confidence:  0.99, // higher than the trusted original
+	}
+	if err := em.AddAtom(context.Background(), tainted); err != nil {
+		t.Fatal(err)
+	}
+	atoms, _ := em.List()
+	if len(atoms) != 1 {
+		t.Fatalf("expected 1 live atom, got %d", len(atoms))
+	}
+	if atoms[0].SourceClass != SourceUserSaid && atoms[0].SourceClass != SourceUserApproved {
+		t.Errorf("live atom class laundered to %q; dedup refresh must keep the trusted class", atoms[0].SourceClass)
+	}
+	if q, _ := em.ListQuarantine(); len(q) != 1 {
+		t.Errorf("expected tainted duplicate quarantined, got %d", len(q))
+	}
+}
+
 // TestConsolidateAtomsTaintDominant pins defense-in-depth against taint
 // laundering in consolidation. Live stores today only hold trusted classes
 // (addAtoms quarantines tainted classes, PromoteAtom re-stamps to

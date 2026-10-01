@@ -49,7 +49,7 @@ func TestSupervisionRecoveryAuthorizationAndOwnership(t *testing.T) {
 		r := httptest.NewRequest("GET", "/api/sessions/"+sess.ID+"/recovery", nil)
 		r.Header.Set("X-Session-Token", token)
 		w := httptest.NewRecorder()
-		handleRecovery(store)(w, r)
+		handleRecovery(store, nil)(w, r)
 		return w
 	}
 	if w := request("wrong"); w.Code != 401 {

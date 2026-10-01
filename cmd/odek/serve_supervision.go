@@ -138,20 +138,30 @@ func recoveryView(sess *session.Session) map[string]any {
 
 // The execution lock makes the snapshot usable only after an interrupted run
 // releases ownership. Continuation checks its revision again under that lock.
-func handleRecovery(store *session.Store) http.HandlerFunc {
+func handleRecovery(store *session.Store, trustedProxies []string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
 		id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/sessions/"), "/recovery")
+		rejectWithLimit := func(code int, msg string) {
+			// Same per-IP budget as the base session detail path: rejected
+			// lookups (unknown id or bad token) must burn limiter budget or
+			// this sub-route becomes an unthrottled enumeration oracle.
+			if !sessionLookupLimiter.allow(clientIP(r, trustedProxies)) {
+				http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
+				return
+			}
+			http.Error(w, msg, code)
+		}
 		sess, err := store.Load(id)
 		if err != nil {
-			http.Error(w, "session not found", http.StatusNotFound)
+			rejectWithLimit(http.StatusNotFound, "session not found")
 			return
 		}
 		if !validateSessionTokenStrict(store, sess, sessionTokenFromRequest(r)) {
-			http.Error(w, "invalid session token", http.StatusUnauthorized)
+			rejectWithLimit(http.StatusUnauthorized, "invalid session token")
 			return
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
