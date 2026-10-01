@@ -1,6 +1,7 @@
 package skills
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -126,20 +127,67 @@ func fetchHTTP(urlStr string, maxBytes int, timeoutSecs int) (*FetchResult, erro
 // fetchHTTPAllow is fetchHTTP with an explicit private-host override for
 // callers that own the target choice (internal tests, operator tooling).
 func fetchHTTPAllow(urlStr string, maxBytes int, timeoutSecs int, allowPrivate bool) (*FetchResult, error) {
-	if !allowPrivate {
-		if u, err := url.Parse(urlStr); err == nil && isPrivateHost(u.Hostname()) {
+	return fetchHTTPDial(urlStr, maxBytes, timeoutSecs, net.LookupHost, allowPrivate)
+}
+
+// fetchHTTPDial is the HTTP fetch with an injectable resolver. The dial is
+// pinned to the SAME resolution the private-IP check ran on: the transport's
+// DialContext resolves the host, validates every candidate IP against the
+// private-range check, and dials the checked IP directly. A fresh resolution
+// inside http.Client.Get would allow DNS rebinding (public answer for the
+// check, private answer for the dial).
+func fetchHTTPDial(urlStr string, maxBytes int, timeoutSecs int, resolve func(string) ([]string, error), allowPrivate ...bool) (*FetchResult, error) {
+	allowed := false
+	if len(allowPrivate) > 0 {
+		allowed = allowPrivate[0]
+	}
+	if !allowed {
+		if u, err := url.Parse(urlStr); err == nil && hostIsPrivate(u.Hostname(), resolve) {
 			return nil, fmt.Errorf("refusing to fetch private/internal host: %s", u.Hostname())
 		}
 	}
+	dialer := &net.Dialer{Timeout: time.Duration(timeoutSecs) * time.Second}
+	transport := &http.Transport{
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			host, port, err := net.SplitHostPort(addr)
+			if err != nil {
+				return nil, err
+			}
+			ips, err := resolve(host)
+			if err != nil {
+				return nil, err
+			}
+			var chosen net.IP
+			for _, ipStr := range ips {
+				ip := net.ParseIP(ipStr)
+				if ip == nil {
+					continue
+				}
+				if !allowed && isPrivateIP(ip) {
+					return nil, fmt.Errorf("blocked connection to private IP for host %q", host)
+				}
+				if chosen == nil {
+					chosen = ip
+				}
+			}
+			if chosen == nil {
+				return nil, fmt.Errorf("no valid IP for host %q", host)
+			}
+			// Dial the checked IP — never a second, unverified resolution.
+			return dialer.DialContext(ctx, network, net.JoinHostPort(chosen.String(), port))
+		},
+	}
 	client := &http.Client{
-		Timeout: time.Duration(timeoutSecs) * time.Second,
+		Timeout:   time.Duration(timeoutSecs) * time.Second,
+		Transport: transport,
 		CheckRedirect: func(r *http.Request, via []*http.Request) error {
 			if len(via) >= 1 {
 				return fmt.Errorf("too many redirects")
 			}
-			// Block redirects to private/internal IPs
+			// Block redirects to private/internal IPs (the pinned dialer
+			// re-checks at dial time as well — this is the early signal).
 			host := r.URL.Hostname()
-			if isPrivateHost(host) {
+			if hostIsPrivate(host, resolve) {
 				return fmt.Errorf("redirect to private IP blocked: %s", host)
 			}
 			return nil
@@ -359,6 +407,13 @@ func ImportSkill(opts ImportOptions, confirmFn func(assessment *ImportAssessment
 // Uses proper IP parsing (handles decimal, octal, hex, short, integer forms)
 // and checks RFC 1918, RFC 6598, IPv6 ULA, link-local, and metadata hostnames.
 func isPrivateHost(host string) bool {
+	return hostIsPrivate(host, net.LookupHost)
+}
+
+// hostIsPrivate is isPrivateHost with an injectable resolver so callers
+// that pin the dial (fetchHTTPDial) run the check and the dial on the SAME
+// resolution.
+func hostIsPrivate(host string, resolve func(string) ([]string, error)) bool {
 	// Well-known private hostnames (fast path, no network lookup)
 	switch strings.ToLower(host) {
 	case "localhost", "localhost.localdomain", "localhost6", "localhost6.localdomain6",
@@ -385,7 +440,7 @@ func isPrivateHost(host string) bool {
 	// If it's a hostname (not an IP), resolve it to check for private IPs.
 	// This catches cases like DNS rebinding where the hostname resolves
 	// to a private IP at connection time.
-	ips, err := net.LookupHost(host)
+	ips, err := resolve(host)
 	if err != nil {
 		return false // can't resolve — let the connection attempt fail naturally
 	}

@@ -809,7 +809,19 @@ func (c *Client) renderCappedEnvelope(tool string, env *artifact.Envelope) strin
 	}
 	capped := *env
 	capped.Text = truncateRunes(env.Text, textBudget)
-	return artifact.Render(&capped) + notice
+	out := artifact.Render(&capped) + notice
+	// Hard cap on the FULL model-facing output, metadata included. The
+	// metadata lines are the preferred survivor, but a hostile server can
+	// pack 64 artifacts × max-length fields (~790k runes) — the operator's
+	// max_result_chars must hold absolutely, or the "compact resolvable
+	// payload" becomes a deliberate cap-defeat and prompt-stuffing channel.
+	if n := utf8.RuneCountInString(out); n > limit {
+		out = truncateRunes(out, limit) +
+			fmt.Sprintf("\n[odek: output truncated at %d chars — artifact metadata exceeded the per-server cap; some artifact lines were cut]", limit)
+		// Keep the final output at the cap even with the extra notice.
+		out = truncateRunes(out, limit)
+	}
+	return out
 }
 
 // truncateRunes returns s cut to at most n runes (never splitting a multi-byte

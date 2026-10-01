@@ -144,6 +144,35 @@ func TestAudit_RenderedEnvelopeOutputCapped(t *testing.T) {
 	}
 }
 
+// TestAudit_EnvelopeMetadataBlockHardCap pins the multi-artifact worst case:
+// MaxArtifactsPerEnvelope(64) × max-length id/summary fields make the
+// metadata block alone (~790k runes) up to ~4× the default 200k cap. The
+// operator's max_result_chars must hold absolutely — when even the bounded
+// metadata block crowds out everything, artifact lines are cut rather than
+// the cap being exceeded.
+func TestAudit_EnvelopeMetadataBlockHardCap(t *testing.T) {
+	c := &Client{name: "meta-srv", maxResultChars: 200000}
+	arts := make([]artifact.Ref, artifact.MaxArtifactsPerEnvelope)
+	for i := range arts {
+		arts[i] = artifact.Ref{
+			Schema:    artifact.SchemaArtifactRef,
+			ID:        strings.Repeat("i", artifact.MaxFieldRunes),
+			URI:       "file:///tmp/x.bin",
+			MediaType: "text/plain",
+			Summary:   strings.Repeat("s", artifact.MaxFieldRunes),
+		}
+	}
+	env := &artifact.Envelope{
+		Schema:    artifact.SchemaToolResult,
+		Text:      strings.Repeat("t", 1000),
+		Artifacts: arts,
+	}
+	out := c.renderCappedEnvelope("log_scan", env)
+	if n := utf8.RuneCountInString(out); n > 200000 {
+		t.Errorf("metadata-stuffed envelope = %d chars, want <= 200000 (metadata block must not ride past the cap)", n)
+	}
+}
+
 // TestAudit_EnvelopeHugeIDTextCappedEndToEnd drives the same guarantee
 // through CallTool against the mock extension server, with the server
 // inflating both the envelope text and the artifact id via the
