@@ -147,6 +147,10 @@ func fetchHTTPDial(urlStr string, maxBytes int, timeoutSecs int, resolve func(st
 		}
 	}
 	dialer := &net.Dialer{Timeout: time.Duration(timeoutSecs) * time.Second}
+	// Deliberately no Proxy: ProxyFromEnvironment here: a proxy in the path
+	// would perform its own dial to the target, bypassing the pinned,
+	// validated IP below — the same posture as the main ssrf_guard, which
+	// refuses proxy env vars outright for network tools.
 	transport := &http.Transport{
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			host, port, err := net.SplitHostPort(addr)
