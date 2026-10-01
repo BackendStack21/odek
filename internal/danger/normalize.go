@@ -140,13 +140,19 @@ func ContainsInvisible(s string) bool {
 }
 
 // NormalizeForScan returns a lower-cased, whitespace-normalized form of text
-// with invisible characters removed. It does NOT fold homoglyphs so that
-// non-English patterns (e.g., Russian, French) still match.
+// with invisible characters and combining marks removed. It does NOT fold
+// homoglyphs so that non-English patterns (e.g., Russian, French) still match.
+// Combining diacritical marks (U+0300–U+036F etc.) are stripped because they
+// render invisibly inside a word while breaking contiguous-pattern matching —
+// "instructio\u0301ns" must scan like "instructions".
 func NormalizeForScan(text string) string {
 	var b strings.Builder
 	b.Grow(len(text))
 	for _, r := range text {
 		if isInvisible(r) {
+			continue
+		}
+		if unicode.Is(unicode.Mn, r) || unicode.Is(unicode.Me, r) {
 			continue
 		}
 		b.WriteRune(r)

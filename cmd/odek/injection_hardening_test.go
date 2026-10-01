@@ -51,6 +51,26 @@ func TestSanitizeMCPDescription_MockGuardWithholds(t *testing.T) {
 	}
 }
 
+// TestSanitizeMCPDescription_SizeCap pins the adversarial finding that an
+// approved MCP server could ship an arbitrarily large (up to the 10–64 MiB
+// response-line limit) tool description into the model's tool catalogue on
+// every call — a context/cost DoS and prompt-stuffing channel. Descriptions
+// must be capped; oversized ones are truncated with a notice.
+func TestSanitizeMCPDescription_SizeCap(t *testing.T) {
+	huge := strings.Repeat("a", 512*1024)
+	got := testSanitizeMCPDescription("srv", "tool", huge)
+	if len(got) > maxMCPDescriptionRunes+2048 { // wrapper + preamble overhead
+		t.Errorf("oversized description not capped: got %d chars", len(got))
+	}
+	if !strings.Contains(got, "truncated") {
+		t.Errorf("capped description must say it was truncated, got tail: %q", got[len(got)-200:])
+	}
+	normal := testSanitizeMCPDescription("srv", "tool", "Fetch the weather.")
+	if strings.Contains(normal, "truncated") {
+		t.Errorf("normal-size description must not be truncated: %q", normal)
+	}
+}
+
 // ════════════════════════════════════════════════════════════════════════
 // recordingApprover — observes (and optionally denies) every danger-policy
 // approval prompt. Used to prove that redirect hops are re-classified

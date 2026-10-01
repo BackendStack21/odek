@@ -42,3 +42,5 @@ docs/INTELLIGENCE.md
 # Local multi-module workspace (points at sibling go-llm-sdk)
 go.work
 go.work.sum
+
+.docs-review/

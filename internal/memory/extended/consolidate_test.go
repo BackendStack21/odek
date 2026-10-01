@@ -232,6 +232,67 @@ func TestConsolidateAtomsPreconditions(t *testing.T) {
 	}
 }
 
+// TestConsolidateAtomsTaintDominant pins defense-in-depth against taint
+// laundering in consolidation. Live stores today only hold trusted classes
+// (addAtoms quarantines tainted classes, PromoteAtom re-stamps to
+// user_approved), but a legacy or externally-written user_model.json can
+// contain live tainted atoms. The merged atom inherits the HIGHEST-confidence
+// member's source class, so a tainted near-duplicate paired with a trusted
+// atom would launder its text into a trusted, every-turn-recallable atom
+// while the tainted originals are deleted. Taint must dominate: any tainted
+// member taints the merged atom.
+func TestConsolidateAtomsTaintDominant(t *testing.T) {
+	llm := newMockLLM("User prefers Go for backend services and tools")
+	em := newConsolidationEM(t, llm)
+
+	trusted := MemoryAtom{
+		Text:        "User prefers Go for backend services",
+		SourceClass: SourceUserSaid,
+		Confidence:  0.9,
+	}
+	tainted := MemoryAtom{
+		Text:        "User prefers Go for backend services and tools",
+		SourceClass: SourceInferred, // legacy-store scenario: tainted but live
+		Confidence:  0.5,
+	}
+	// Seed the live store directly, bypassing the addAtoms quarantine gate,
+	// to simulate a store written before that gate existed.
+	trustedID, err := generateAtomID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	trusted.ID = trustedID
+	taintedID, err := generateAtomID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tainted.ID = taintedID
+	for _, a := range []MemoryAtom{trusted, tainted} {
+		if err := em.store.Add(a, em.cfg.AtomMaxChars); err != nil {
+			t.Fatal(err)
+		}
+	}
+	em.index.markDirty()
+
+	mergedCount, err := em.ConsolidateAtoms(context.Background())
+	if err != nil {
+		t.Fatalf("ConsolidateAtoms failed: %v", err)
+	}
+	if mergedCount != 1 {
+		t.Fatalf("expected 1 merged group, got %d", mergedCount)
+	}
+	atoms, _ := em.List()
+	if len(atoms) != 0 {
+		t.Fatalf("expected 0 live atoms after consolidation (tainted merge must not go live), got %d", len(atoms))
+	}
+	// The merged atom must be preserved in quarantine, not silently lost.
+	if q, _ := em.ListQuarantine(); len(q) != 1 {
+		t.Fatalf("expected 1 quarantined merged atom, got %d", len(q))
+	} else if !IsTaintedSourceClass(q[0].SourceClass) {
+		t.Errorf("quarantined merged atom source class %q must be tainted; taint laundering", q[0].SourceClass)
+	}
+}
+
 // TestGroupBySimilarity verifies the greedy near-duplicate clustering.
 func TestGroupBySimilarity(t *testing.T) {
 	atom := func(id string) MemoryAtom { return MemoryAtom{ID: id, Text: id} }

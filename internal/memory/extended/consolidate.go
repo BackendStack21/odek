@@ -117,13 +117,24 @@ func (em *ExtendedMemory) mergeGroup(ctx context.Context, group []MemoryAtom) bo
 
 	// Base the merged atom on the highest-confidence group member (type,
 	// pin, and confidence carry over) with a refreshed CreatedAt and the
-	// union of the group's outward associations.
+	// union of the group's outward associations. Taint is dominant: if any
+	// member carries a tainted source class (possible in legacy or
+	// externally-written stores), the merged atom inherits it instead of the
+	// highest-confidence member's trusted class — near-duplicate merging
+	// must never launder tainted text into a trusted, every-turn-recallable
+	// atom.
 	merged := group[0]
 	inGroup := make(map[string]bool, len(group))
 	for _, a := range group {
 		inGroup[a.ID] = true
 		if a.Confidence > merged.Confidence {
 			merged = a
+		}
+	}
+	for _, a := range group {
+		if IsTaintedSourceClass(a.SourceClass) {
+			merged.SourceClass = a.SourceClass
+			break
 		}
 	}
 	var related []string

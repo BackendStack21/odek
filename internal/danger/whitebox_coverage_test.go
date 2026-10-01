@@ -250,6 +250,10 @@ func TestIsOdekTrustAnchor(t *testing.T) {
 		"telegram.pid", "schedule.pid", "schedule.log",
 		"skills", "skills/evil/SKILL.md", "sessions/s.json",
 		"audit/turn-1.json", "plans/p.md",
+		// Memory state persists into future system prompts; the runtime
+		// log is the forensic trail. Both are trust anchors.
+		"memory", "memory/episodes.json", "memory/extended/user_model.json",
+		"runtime.log",
 	}
 	for _, rel := range anchors {
 		if !isOdekTrustAnchor(home, mk(rel)) {
@@ -257,7 +261,7 @@ func TestIsOdekTrustAnchor(t *testing.T) {
 		}
 	}
 	nonAnchors := []string{
-		mk("memory/episodes.json"), mk("notes.md"), mk("media/a.jpg"),
+		mk("notes.md"), mk("media/a.jpg"),
 		mk("skillsZZ/x"),            // prefix-but-not-dir must not match
 		home + "/other/config.json", // outside ~/.odek
 		"/etc/config.json",          // unrelated absolute path

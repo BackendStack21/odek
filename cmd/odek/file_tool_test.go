@@ -796,15 +796,16 @@ func TestConfineToCWD_DoubleDotEscape(t *testing.T) {
 }
 
 // TestConfineToCWD_AllowsOdekDir verifies that non-sensitive paths under
-// ~/.odek/ (memory, state) are allowed by confineToCWD even when they are
+// ~/.odek/ (state, media) are allowed by confineToCWD even when they are
 // outside the project CWD — blocking these forces wasteful shell workarounds.
+// memory/ is a trust anchor now (persisted atoms re-enter future system
+// prompts) and belongs with the protected set, not here.
 func TestConfineToCWD_AllowsOdekDir(t *testing.T) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, p := range []string{
-		home + "/.odek/memory/episodes.json",
 		home + "/.odek/notes.md",
 		home + "/.odek/media/photo.jpg",
 	} {
@@ -1404,6 +1405,11 @@ func TestIsProtectedOdekPath_CaseInsensitive(t *testing.T) {
 		"SESSIONS/abc.json",
 		"AUDIT/turn.json",
 		"PLANS/evil.md",
+		// Persistent memory state is a trust anchor: written atoms and
+		// episodes re-enter the system prompt of every future session.
+		"MEMORY/extended/user_model.json",
+		"memory/episodes.json",
+		"runtime.log",
 	}
 	for _, c := range cases {
 		if !isProtectedOdekPath(c) {
@@ -1429,10 +1435,15 @@ func TestConfineToCWD_CaseInsensitiveOdekAnchor(t *testing.T) {
 		t.Fatal("confineToCWD(~/.ODEK/config.json) allowed; want protected-odek rejection")
 	}
 
-	// The case-variant carve-out still admits non-anchor state paths
-	// (memory/ is not a trust anchor) — folding must not over-block.
-	if _, err := confineToCWD(filepath.Join(home, ".ODEK", "memory", "facts.md")); err != nil {
-		t.Fatalf("confineToCWD(~/.ODEK/memory/facts.md) = %v, want carve-out allow", err)
+	// The case-variant carve-out still admits non-anchor state paths —
+	// folding must not over-block. (memory/ is now a trust anchor too, so
+	// media/ is the non-anchor probe.)
+	if _, err := confineToCWD(filepath.Join(home, ".ODEK", "media", "x.jpg")); err != nil {
+		t.Fatalf("confineToCWD(~/.ODEK/media/x.jpg) = %v, want carve-out allow", err)
+	}
+	// memory state must be rejected in case-variant form as well.
+	if _, err := confineToCWD(filepath.Join(home, ".ODEK", "memory", "facts.md")); err == nil {
+		t.Fatal("confineToCWD(~/.ODEK/memory/facts.md) allowed; want protected-odek rejection")
 	}
 }
 
