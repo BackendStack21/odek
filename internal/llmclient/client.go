@@ -390,7 +390,10 @@ func temperatureForModel(model string, temperature float64) float64 {
 	if slash := strings.LastIndexByte(name, '/'); slash >= 0 {
 		name = name[slash+1:]
 	}
-	if strings.HasPrefix(name, "gpt-6-") || name == "gpt-6" {
+	// GPT-6 family reasoning models reject the temperature parameter
+	// outright (LiteLLM/OpenAI HTTP 400). Versioned names use both
+	// separators: "gpt-6-astra" and "gpt-6.1-sol" must both omit it.
+	if strings.HasPrefix(name, "gpt-6-") || strings.HasPrefix(name, "gpt-6.") || name == "gpt-6" {
 		return 0 // SDK zero omits temperature from the wire request.
 	}
 	return sdkTemperature(temperature)
