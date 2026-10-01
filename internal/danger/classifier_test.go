@@ -1415,8 +1415,8 @@ func TestClassifyPath_OdekTrustAnchors(t *testing.T) {
 		{home + "/.odek/mcp_tool_approvals.json", SystemWrite},
 		{home + "/.odek/restart.json", SystemWrite},
 		{home + "/.odek/telegram.lock", SystemWrite},
-		// non-anchor ~/.odek state stays local
-		{home + "/.odek/memory/episodes.json", LocalWrite},
+		// memory state is a trust anchor (re-enters future system prompts)
+		{home + "/.odek/memory/episodes.json", SystemWrite},
 		{home + "/.odek/notes.md", LocalWrite},
 		{home + "/.odek/media/photo.jpg", LocalWrite},
 	}

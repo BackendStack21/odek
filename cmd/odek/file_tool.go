@@ -1393,6 +1393,7 @@ func isProtectedOdekPath(rel string) bool {
 		"telegram.pid",
 		"schedule.pid",
 		"schedule.log",
+		"runtime.log",
 	}
 	for _, p := range protectedExact {
 		if rel == p {
@@ -1406,6 +1407,7 @@ func isProtectedOdekPath(rel string) bool {
 		"sessions", // conversation history & auth tokens
 		"audit",    // forensic audit log
 		"plans",    // persisted task plans
+		"memory",   // persisted memory state re-enters future system prompts
 	}
 	for _, d := range protectedDirs {
 		if rel == d || strings.HasPrefix(rel, d+string(filepath.Separator)) {

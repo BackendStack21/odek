@@ -499,6 +499,7 @@ func isOdekTrustAnchor(home, abs string) bool {
 		"telegram.pid",
 		"schedule.pid",
 		"schedule.log",
+		"runtime.log",
 	}
 	for _, p := range protectedExact {
 		if rel == p {
@@ -510,6 +511,7 @@ func isOdekTrustAnchor(home, abs string) bool {
 		"sessions",
 		"audit",
 		"plans",
+		"memory",
 	}
 	for _, d := range protectedDirs {
 		if rel == d || strings.HasPrefix(rel, d+string(filepath.Separator)) {
