@@ -68,6 +68,15 @@ func TestClientIPRejectsMalformedProxyHeaders(t *testing.T) {
 	if got := clientIP(r2, []string{"127.0.0.1"}); got != "127.0.0.1" {
 		t.Errorf("clientIP with malformed XFF = %q, want socket peer 127.0.0.1", got)
 	}
+	// XFF present-but-malformed must not fall through to X-Real-Ip: that
+	// would reopen valid-IP bucket rotation via attacker-chosen X-Real-Ip.
+	r3b := httptest.NewRequest("GET", "/", nil)
+	r3b.RemoteAddr = "127.0.0.1:55558"
+	r3b.Header.Set("X-Forwarded-For", "junk")
+	r3b.Header.Set("X-Real-Ip", "10.9.9.9")
+	if got := clientIP(r3b, []string{"127.0.0.1"}); got != "127.0.0.1" {
+		t.Errorf("clientIP with malformed XFF + valid X-Real-Ip = %q, want socket peer (XFF presence must win)", got)
+	}
 	// Valid header values are still honored.
 	r3 := httptest.NewRequest("GET", "/", nil)
 	r3.RemoteAddr = "127.0.0.1:55557"
