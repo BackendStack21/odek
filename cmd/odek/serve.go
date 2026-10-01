@@ -3341,18 +3341,22 @@ func clientIP(r *http.Request, trustedProxies []string) string {
 			// right-most entry is the one the trusted proxy appended, while
 			// the left-most is client-supplied and spoofable — rotating it
 			// would rotate rate-limit buckets and grow the limiter map.
+			// The value must parse as an IP: an unparseable header would
+			// become an attacker-rotated limiter bucket key ("a", "b", …),
+			// defeating every per-IP rate limit behind the proxy.
+			// XFF presence wins: never fall back to X-Real-Ip when XFF is
+			// set, or a malformed XFF plus attacker-chosen X-Real-Ip reopens
+			// valid-IP bucket rotation.
 			var candidate string
 			if i := strings.LastIndex(fwd, ","); i >= 0 {
 				candidate = strings.TrimSpace(fwd[i+1:])
 			} else {
 				candidate = strings.TrimSpace(fwd)
 			}
-			// The value must parse as an IP: an unparseable header would
-			// become an attacker-rotated limiter bucket key ("a", "b", …),
-			// defeating every per-IP rate limit behind the proxy.
 			if net.ParseIP(candidate) != nil {
 				return candidate
 			}
+			return host
 		}
 		if real := strings.TrimSpace(r.Header.Get("X-Real-Ip")); real != "" {
 			if net.ParseIP(real) != nil {
