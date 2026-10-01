@@ -112,7 +112,7 @@ func TestIsBuiltinProviderID_MatchesSDKRegistry(t *testing.T) {
 // and overlays selected-provider key/URL — the same path as a custom gateway.
 
 func TestTemperatureForModel_OmitsUnsupportedGPT6Temperature(t *testing.T) {
-	for _, model := range []string{"gpt-6-astra", "openai/gpt-6-astra", "GPT-6-ASTRA"} {
+	for _, model := range []string{"gpt-6-astra", "openai/gpt-6-astra", "GPT-6-ASTRA", "gpt-6.1-sol", "openai/gpt-6.1-sol", "GPT-6.1-SOL"} {
 		if got := temperatureForModel(model, 0); got != 0 {
 			t.Errorf("temperatureForModel(%q, 0) = %v, want SDK omit sentinel 0", model, got)
 		}
