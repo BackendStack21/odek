@@ -58,6 +58,18 @@ agent, err := odek.New(odek.Config{
 
 The handler receives `llm.DeltaReasoning` and `llm.DeltaContent` fragments (tool-argument fragments are suppressed by the engine — they are partial JSON). It is invoked synchronously and must be non-blocking, like the other loop callbacks.
 
+Assistant text before a tool call is a visible progress note. It is distinct
+from provider-reported reasoning (OpenAI exposes an opt-in summary through
+Responses; see [OpenAI reasoning documentation](https://developers.openai.com/api/docs/guides/reasoning)).
+Both streamed and buffered notes appear before the tools they introduce.
+The Web UI receives buffered notes as `token` events and streamed notes as
+`token_delta`; Telegram sends completed pre-tool notes as progress messages.
+Programmatic `IterationCallback` consumers receive the full note in
+`IterationInfo.Content` when `IsPreTool` is true. `StreamedContent` and
+`StreamedReasoning` report delivery for that iteration, so consumers can
+suppress duplicates independently. Post-tool and final callbacks omit the
+note; final replies retain their ordinary response path.
+
 ## Terminal Output
 
 With streaming enabled, `odek run` and `odek repl` print reasoning and the answer as they arrive, then the regular per-iteration statistics:
@@ -84,7 +96,7 @@ The reasoning block is dimmed with a single 🧠 cue, the answer follows after a
 
 - **Hard deadline + idle watchdog.** Every streamed call is bounded by a wall-clock deadline (`llm.request_timeout_seconds`, default 300s) covering the whole stream, plus a 300s idle watchdog (`llm.stream_idle_timeout_seconds`, floor 5s) that trips when no SSE event — including provider keepalive comments — arrives. A trickling or stalled stream can never run unbounded.
 - **No duplicated partial output.** Transient failures are retried with the same backoff as the buffered path, but only until the first fragment has been delivered; after that, the failure is terminal and the partial text stays as printed.
-- **Learn-once fallbacks.** A provider that rejects the `stream_options` field is retried once without it (streaming continues); a provider that rejects `stream` outright, or answers a streamed request with a non-SSE body, switches permanently to the buffered path. Both are learned per client, not configured.
+- **Learn-once fallbacks.** A provider that rejects the `stream_options` field is retried once without it (streaming continues); a provider that rejects `stream` outright, or answers a streamed request with a non-SSE body, switches permanently to the buffered path. A successful JSON response is consumed directly, preserving that generation's text, reasoning, tool calls and usage without a replacement request. Delivery tracking is per iteration and per kind; earlier streamed notes cannot hide a later buffered note or final answer. Fallbacks are learned per provider, not configured.
 - **Billing errors still fail fast.** A 429 reporting an empty balance or exhausted quota is returned immediately with the provider's message; it is never retried into an opaque timeout.
 
 ## Not Yet Streamed

@@ -188,7 +188,7 @@ func ClassifyPath(path string) RiskClass {
 	// matter where they resolve: on Linux /dev/stdout is a symlink through
 	// /proc/self/fd to a /dev/pts entry, and both resolved prefixes would
 	// otherwise escalate a benign discard to Destructive.
-	if abs, err := filepath.Abs(expandShellTokenPath(path)); err == nil && isBenignCharDevice(filepath.Clean(abs)) {
+	if isDirectBenignDevice(path) {
 		return LocalWrite
 	}
 	resolved, err := resolvePathTarget(path)
@@ -304,6 +304,12 @@ func isBenignCharDevice(abs string) bool {
 		return true
 	}
 	return strings.HasPrefix(abs, "/dev/fd/")
+}
+
+// isDirectBenignDevice excludes unresolved .. components: cleaning those
+// before following a symlink can turn a protected target into a stdio alias.
+func isDirectBenignDevice(path string) bool {
+	return filepath.IsAbs(path) && filepath.Clean(path) == path && isBenignCharDevice(path)
 }
 
 // shellRCFiles are dotfiles in $HOME that shells execute automatically on

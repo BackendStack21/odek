@@ -174,6 +174,8 @@ func (e *Engine) recordThinkCall(res *llmclient.CallResult) {
 }
 
 func (e *Engine) withCallMetrics(info IterationInfo) IterationInfo {
+	info.StreamedReasoning = e.streamedReasoning
+	info.StreamedContent = e.streamedContent
 	m := e.lastCall
 	info.CallDurationMs = m.DurationMs
 	info.TTFTMs = m.TTFTMs

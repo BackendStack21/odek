@@ -483,6 +483,13 @@ func (r *serveRun) record(v any) error {
 		if c, _ := m["content"].(string); c != "" && !runStatusTerminal(r.Status) {
 			r.Result += c
 		}
+	case "tool_call":
+		// Notes remain in the event timeline. A tool ends their text burst,
+		// so the final result contains the eventual answer instead of every
+		// assistant preamble concatenated with it.
+		if !runStatusTerminal(r.Status) {
+			r.Result = ""
+		}
 	case "error":
 		// First error wins. NOT terminal-gated: the cancel path flips the
 		// status to "cancelled" first and the unwinding loop's error event

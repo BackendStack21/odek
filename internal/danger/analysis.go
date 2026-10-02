@@ -352,7 +352,7 @@ func (s *shellAnalysisState) assign(tokens []string) {
 func resolveInDirectory(path, cwd string) string {
 	path = expandShellTokenPath(path)
 	if !filepath.IsAbs(path) {
-		path = filepath.Join(cwd, path)
+		path = cwd + string(filepath.Separator) + path
 	}
 	if resolved, err := resolvePathTarget(path); err == nil {
 		return resolved
@@ -367,6 +367,15 @@ func (s *shellAnalysisState) targetRisk(target, cwd string, known bool) RiskClas
 	}
 	if (!known || s.uncertain) && !filepath.IsAbs(expandShellTokenPath(target)) {
 		return Unknown
+	}
+	// Keep stdio aliases intact: Linux resolves /dev/stderr through procfs
+	// to the runner's output pipe, which is not a destructive write target.
+	abs := target
+	if !filepath.IsAbs(abs) {
+		abs = cwd + string(filepath.Separator) + abs
+	}
+	if isDirectBenignDevice(abs) {
+		return LocalWrite
 	}
 	path := resolveInDirectory(target, cwd)
 	return worstOf(ClassifyPathWrite(path), classifyResourceToken(path))
