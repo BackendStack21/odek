@@ -3767,6 +3767,12 @@ func clampProjectBackground(global, project *BackgroundFileConfig) {
 }
 
 func overlayFile(base, override FileConfig) FileConfig {
+	if override.Verify != nil {
+		// Operator-only section: the higher layer (global ~/.odek over the
+		// sanitized project layer) replaces wholesale; project-level verify
+		// is already nil-ed before this point.
+		base.Verify = override.Verify
+	}
 	if override.Provider != "" {
 		base.Provider = override.Provider
 	}
