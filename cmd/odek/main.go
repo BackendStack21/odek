@@ -1622,11 +1622,7 @@ const localConfigTemplate = `{
     "max_lazy_slots": 5,
     "verbose": false
   },
-  "mcp_servers": {},
-  "schedules": {
-    "enabled": true,
-    "timezone": "UTC"
-  }
+  "mcp_servers": {}
 }`
 
 // initConfig creates a new config file — local ./odek.json by default, or

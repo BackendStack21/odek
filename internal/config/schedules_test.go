@@ -256,8 +256,8 @@ func TestLoadConfig_SchedulesProjectPrivilegeIgnored(t *testing.T) {
 	if len(cfg.Schedules.TelegramAdminChats) != 1 || cfg.Schedules.TelegramAdminChats[0] != 222 {
 		t.Errorf("project telegram_admin_chats must not replace global, got %v", cfg.Schedules.TelegramAdminChats)
 	}
-	if cfg.Schedules.Timezone != "Europe/Berlin" {
-		t.Errorf("project timezone should still apply, got %q", cfg.Schedules.Timezone)
+	if cfg.Schedules.Timezone == "Europe/Berlin" {
+		t.Error("schedules are global-only: project timezone must not apply")
 	}
 }
 
