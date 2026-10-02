@@ -86,14 +86,21 @@ func TestGlobalConfigTemplate_NoDeadOrMissingKeys(t *testing.T) {
 
 // TestLocalConfigTemplate_RemainsProjectSafe re-pins the local template's
 // contract so global-template work cannot leak operator-only fields into it.
+// Project-honored bool/int knobs (prompt_caching, stream, compaction,
+// announce_budget, planning, limits) are documented in the template in
+// inherit-neutral form only: null bools and zero ints. Explicit true/false
+// would pin a value that overrides the operator's global config — the
+// "default-pinning" this test forbids.
 func TestLocalConfigTemplate_RemainsProjectSafe(t *testing.T) {
 	for _, op := range []string{
 		`"provider"`, `"providers"`, `"api_key"`, `"base_url"`, `"llm"`, `"system"`, `"dangerous"`, `"memory"`,
 		`"guard"`, `"maintenance"`, `"telegram"`, `"web_search"`,
 		`"embedding"`, `"sessions"`, `"trusted_proxies"`, `"profiles"`,
 		`"subagent"`, `"max_concurrent"`, `"catchup"`,
-		`"sandbox"`, `"compaction"`, `"limits"`,
-		`"prompt_caching"`, `"stream"`, `"announce_budget"`,
+		`"sandbox"`, `"compaction": true`, `"compaction": false`,
+		`"limits": {"max_runtime_seconds": 1`, `"prompt_caching": true`, `"prompt_caching": false`,
+		`"stream": true`, `"stream": false`, `"announce_budget": true`, `"announce_budget": false`,
+		`"planning": {`+"\n"+`    "enabled": true`, `"planning": {`+"\n"+`    "enabled": false`,
 	} {
 		if strings.Contains(localConfigTemplate, op) {
 			t.Errorf("localConfigTemplate contains operator-only or default-pinning key %s", op)

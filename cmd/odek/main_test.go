@@ -1116,12 +1116,15 @@ func TestInitConfig_Local(t *testing.T) {
 			t.Errorf("local config must not contain %q (project configs may only enable it), got: %s", field, content)
 		}
 	}
-	// compaction defaults to ON; an explicit "compaction": false in a fresh
-	// project config would silently disable it, so the key must be omitted
-	// (inherit) rather than pinned. Same for planning (default-on).
-	for _, field := range []string{"compaction", "planning"} {
-		if strings.Contains(content, field) {
-			t.Errorf("local config must not pin %q (default-on; omit to inherit), got: %s", field, content)
+	// compaction and planning default to ON; a fresh project config may
+	// document these project-honored keys but only in inherit-neutral form
+	// (null bools / zero ints) — an explicit value would pin over the
+	// operator's global config.
+	for _, field := range []string{"compaction", "planning", "prompt_caching", "stream", "announce_budget"} {
+		for _, pinned := range []string{field + "\": true", field + "\": false"} {
+			if strings.Contains(content, pinned) {
+				t.Errorf("local config must not pin %q (inherit-neutral null/0 only), got: %s", field, content)
+			}
 		}
 	}
 	// Must be valid JSON.
@@ -1299,11 +1302,13 @@ func TestInitConfig_LocalTemplateLoadsClean(t *testing.T) {
 	if fc.Sandbox != nil || fc.SandboxReadonly != nil {
 		t.Error("localConfigTemplate must not pin sandbox/sandbox_readonly (project configs may only enable, never disable)")
 	}
-	if fc.Compaction != nil {
-		t.Error("localConfigTemplate must not pin compaction (default-on; omit the key to inherit)")
+	if fc.Compaction != nil && *fc.Compaction != true {
+		t.Error("localConfigTemplate must not pin compaction off (inherit-neutral only)")
 	}
-	if fc.Planning != nil {
-		t.Error("localConfigTemplate must not pin planning (default-on; omit the key to inherit)")
+	// planning may be documented in inherit-neutral form: present section
+	// with nil Enabled and zero caps pins nothing over the global config.
+	if fc.Planning != nil && (fc.Planning.Enabled != nil && !*fc.Planning.Enabled) {
+		t.Error("localConfigTemplate must not disable planning (inherit-neutral only)")
 	}
 	if fc.Skills != nil && len(fc.Skills.Dirs) > 0 {
 		t.Error("localConfigTemplate must not set skills.dirs (rejected from project configs)")
