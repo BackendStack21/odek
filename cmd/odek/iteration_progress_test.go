@@ -2,8 +2,10 @@ package main
 
 import (
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/BackendStack21/odek/internal/loop"
 )
@@ -30,6 +32,24 @@ func TestServeIterationProgress(t *testing.T) {
 				t.Fatalf("events=%v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestTelegramNoteChunks_ConserveText(t *testing.T) {
+	for _, note := range []string{"", "Short note.", strings.Repeat("a", 4091), strings.Repeat("a", 4092), strings.Repeat("界", 4000), strings.Repeat("🙂", 4000), strings.Repeat("Mixed 界🙂 notes\n", 1000), strings.Repeat("\x80", 9000)} {
+		chunks := telegramNoteChunks(note)
+		want := ""
+		if note != "" {
+			want = "💬 " + note
+		}
+		if got := strings.Join(chunks, ""); got != want {
+			t.Fatalf("note bytes lost: got=%d want=%d", len(got), len(want))
+		}
+		for _, chunk := range chunks {
+			if len(chunk) > 4096 || (utf8.ValidString(note) && !utf8.ValidString(chunk)) {
+				t.Fatalf("invalid chunk: bytes=%d valid=%v", len(chunk), utf8.ValidString(chunk))
+			}
+		}
 	}
 }
 

@@ -1892,8 +1892,8 @@ func handleChatMessage(
 					bot.SendMessage(chatID, "💭 "+reasoning,
 						&telegram.SendOpts{ReplyToMessageID: messageID})
 				}
-				if note != "" {
-					bot.SendMessage(chatID, "💬 "+note,
+				for _, chunk := range telegramNoteChunks(note) {
+					bot.SendMessage(chatID, chunk,
 						&telegram.SendOpts{ReplyToMessageID: messageID})
 				}
 				if info.IsPreTool {

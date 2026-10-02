@@ -34,6 +34,7 @@ and Telegram, including buffered responses and streaming fallbacks.
   from reasoning summaries. Engaging terminal mode preserves the actual note.
   Web UI and Telegram progress callbacks receive notes before tool events;
   headless REST event histories retain them without prefixing final results.
+  Long Telegram notes are chunked without dropping bytes or splitting UTF-8.
 - Stream delivery is tracked per iteration and per text kind. Earlier deltas
   cannot hide later buffered notes, final replies or iteration-budget summaries.
 - SDK v0.6.1 consumes a successful JSON response to a streaming request
