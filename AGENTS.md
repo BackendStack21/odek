@@ -73,8 +73,15 @@ internal/
                               (context_trimmed, tool_recovery, tool_running heartbeat). Budget enforcement (budget.Checker)
                               + odek.event/v1 emission.
   tool/                       Thread-safe tool registry, clarify.go, send_message.go
-  danger/                     Command/URL classification + bypass-resistant tokenizer. TTYApprover with friction mode.
-  auth/                       Interactive approval system
+  danger/                     Command/URL classification + bypass-resistant tokenizer. Approver interface +
+                              TTYApprover with friction mode (interactive approval system lives here).
+  bgproc/                     Session-scoped background process manager (bg_* tools): bounded output rings,
+                              spawn-time danger classification parity, group-signal stop
+  diagnostics/                Runtime diagnostics helpers
+  embedding/                  Embedding + featurization for semantic session search
+  eval/                       Plan-tool / behavioral evaluation harness
+  guard/                      Content-scope injection scanner (guard.ScanContentWithScope) + PIGuard sidecar integration
+  logquery/                   Structured query over runtime logs
   memory/                     MemoryManager (facts, buffer, episodes, merge, scan). EpisodeProvenance — tainted episodes never auto-replayed.
   session/                    Session store (CRUD, trim, cleanup, compact JSON). AuditStore + divergence heuristic.
                               ExternalRef — opaque operator-supplied refs, never dereferenced.
@@ -99,6 +106,8 @@ internal/
   fsatomic/                   Atomic file-write helpers
   pathutil/                   Path helpers
   resource/                   @-resource resolver (files, sessions) with size/symlink hardening
+  runtimelog/                 Runtime log store (replaces the retired ~/.odek/serve.log) with retention
+  schedule/                   Cron-style scheduler: cronexpr, store, scheduler (global-only surface)
   transport/                  Shared HTTP transport with connection pooling
   ws/                         RFC 6455 WebSocket framing
 docs/                         Documentation (CLI, API, CONFIG, MCP, EXTENSIONS, MEMORY, TELEGRAM, SECURITY, etc.)
