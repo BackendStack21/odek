@@ -1413,9 +1413,13 @@ const globalConfigTemplate = `{
     "max_wakes_per_hour": 30
   },
   "interaction_mode": "engaging",
+  "tool_progress": "all",
+  "tool_progress_cleanup": true,
   "no_color": false,
   "no_agents": false,
   "system": "",
+  "embedding": {},
+  "sessions": {},
   "sandbox_image": "",
   "sandbox_network": "none",
   "sandbox_readonly": false,
@@ -1478,7 +1482,17 @@ const globalConfigTemplate = `{
     "extract_facts": false,
     "auto_approve_episodes": false,
     "merge_on_write": true,
-    "consolidate_on_end": true
+    "consolidate_on_end": true,
+    "llm_search": true,
+    "llm_extract": true,
+    "llm_consolidate": true,
+    "facts_limit_user": 4000,
+    "facts_limit_env": 8000,
+    "buffer_lines": 20,
+    "consolidate_at_cap_pct": 80,
+    "merge_threshold": 0.7,
+    "add_threshold": 0.3,
+    "extended": {}
   },
   "subagent": {
     "max_concurrency": 3,
@@ -1529,7 +1543,8 @@ const globalConfigTemplate = `{
     "enabled": true,
     "max_concurrent": 2,
     "timezone": "UTC",
-    "catchup": false
+    "catchup": false,
+    "allow_telegram_management": false
   },
   "logging": {"enabled": true, "level": "info", "file": "~/.odek/runtime.log", "max_file_mb": 25, "max_files": 4, "max_age_hours": 168},
   "maintenance": {
@@ -1574,8 +1589,24 @@ const localConfigTemplate = `{
   "max_iterations": 0,
   "max_tool_parallel": 0,
   "interaction_mode": "",
+  "prompt_caching": null,
+  "stream": null,
+  "compaction": null,
+  "announce_budget": null,
   "no_color": false,
   "no_agents": false,
+  "planning": {
+    "enabled": null,
+    "max_steps": 0,
+    "max_render_chars": 0
+  },
+  "limits": {
+    "max_runtime_seconds": 0,
+    "max_tool_calls": 0,
+    "max_input_tokens": 0,
+    "max_output_tokens": 0,
+    "max_cost_usd": 0
+  },
   "sandbox_image": "",
   "sandbox_network": "none",
   "sandbox_memory": "",
