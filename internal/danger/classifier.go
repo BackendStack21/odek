@@ -3,15 +3,17 @@
 //
 // Classification is token-based (not regex) — it respects quotes, pipes,
 // redirects, compound commands (&&, ||, ;), and multi-line input. Each
-// command is classified into one of 9 risk classes, and the user can
-// configure which actions (allow/prompt/deny) apply to each class.
+// command retains independent risk effects, and the user can configure
+// which actions (allow/prompt/deny) apply to each class. Classify returns a
+// summary; ActionForCommand combines every effect as deny > prompt > allow.
 //
 // The gate fails CLOSED. A command whose program name is recognised but
 // used benignly classifies as Safe (allow); a command whose verb is NOT
 // recognised classifies as Unknown and is denied by default. The set of
-// recognised-safe commands (safeCommands) is therefore an explicit
-// read-only allowlist — extend it, or the per-profile allowlist, to permit
-// a tool rather than relying on it slipping through unclassified.
+// recognised commands have explicit adapters for known execution and write
+// forms. Unrecognized programs retain Unknown even beside ordinary redirects.
+// This remains a heuristic filter; allowlisting a program does not prove that
+// every option or embedded language is harmless.
 //
 // # Threat model
 //
@@ -29,7 +31,7 @@
 //     - $(…)/`…`/<(…)/>(…) subst.  extractSubstitutions (bodies classified too)
 //     - command/exec/builtin       stripCommandWrappers
 //     - \-escapes (r\m, \rm)       collapseUnquotedBackslashes
-//     - absolute paths (/bin/rm)   basenameFirstToken + commandName
+//     - absolute paths (/bin/rm)   commandName (identity preserved)
 //     The tokenizer additionally treats quote boundaries as NON word
 //     boundaries, so empty/adjacent quotes like r""m and "rm" still
 //     resolve to the single word `rm`.
@@ -45,7 +47,8 @@
 //     determinable the pipeline fails closed (unknown → deny). A stage that
 //     pipes INTO a shell similarly composes a static payload (`echo rm -rf /
 //     | sh` classifies like `rm -rf /`) so the real effect, not just
-//     code_execution, wins. The worst class across all parts wins (see rank).
+//     code_execution, wins. All independent effects survive policy evaluation;
+//     rank chooses only the legacy display summary.
 //
 //  3. Wrapper unwrapping (unwrapWrappers). Leading execution wrappers
 //     (env, xargs, nohup, nice, setsid, timeout, …) are stripped so the
@@ -68,9 +71,9 @@
 // This is a heuristic defence-in-depth layer, NOT a sandbox or a complete
 // shell interpreter. It does not, and cannot, catch everything:
 //
-//   - Variable indirection: `X=rm; $X -rf /` — the value of $X is not
-//     tracked. Note the fail-closed default turns this from a silent bypass
-//     into a denial: the unrecognised `$X` verb classifies as Unknown.
+//   - Shell state beyond static assignments and known cwd changes. Runtime
+//     variable transformations and ambiguous conditional/background writes
+//     fail closed as Unknown when their destination cannot be determined.
 //   - Fully dynamic construction from runtime data, command output, or
 //     environment the classifier cannot evaluate.
 //   - Arbitrary value transformations beyond the enumerated encodings
@@ -185,7 +188,7 @@ func ClassifyPath(path string) RiskClass {
 	// matter where they resolve: on Linux /dev/stdout is a symlink through
 	// /proc/self/fd to a /dev/pts entry, and both resolved prefixes would
 	// otherwise escalate a benign discard to Destructive.
-	if abs, err := filepath.Abs(expandShellTokenPath(path)); err == nil && isBenignCharDevice(filepath.Clean(abs)) {
+	if isDirectBenignDevice(path) {
 		return LocalWrite
 	}
 	resolved, err := resolvePathTarget(path)
@@ -226,25 +229,11 @@ func classifyPathLexical(path string) RiskClass {
 	}
 
 	for _, prefix := range []string{"/boot", "/dev", "/proc", "/sys", "/mnt", "/media"} {
-		if strings.HasPrefix(abs, prefix) {
+		if abs == prefix || strings.HasPrefix(abs, prefix+"/") {
 			return Destructive
 		}
 	}
 
-	// Temp directory paths are always local, not system. This handles
-	// macOS where temp dirs live under /var/folders/, preventing false
-	// SystemWrite classification (matching Linux /tmp behavior).
-	// os.TempDir may include a trailing separator on some platforms;
-	// Clean normalises it before the prefix check.
-	if tmpDir := filepath.Clean(os.TempDir()); abs == tmpDir || strings.HasPrefix(abs, tmpDir+string(filepath.Separator)) {
-		return LocalWrite
-	}
-
-	for _, prefix := range []string{"/etc", "/root", "/var", "/run", "/lib", "/usr", "/bin", "/sbin", "/opt", "/srv"} {
-		if strings.HasPrefix(abs, prefix) {
-			return SystemWrite
-		}
-	}
 	home, _ := os.UserHomeDir()
 	if home != "" {
 		// Case-fold the home-relative prefix comparisons: the filesystem may
@@ -284,6 +273,22 @@ func classifyPathLexical(path string) RiskClass {
 			return SystemWrite
 		}
 	}
+
+	// Ordinary temp paths are local after home-sensitive checks. This handles
+	// macOS where temp dirs live under /var/folders/, preventing false
+	// SystemWrite classification (matching Linux /tmp behavior).
+	// os.TempDir may include a trailing separator on some platforms;
+	// Clean normalises it before the prefix check.
+	if tmpDir := filepath.Clean(os.TempDir()); abs == tmpDir || strings.HasPrefix(abs, tmpDir+string(filepath.Separator)) {
+		return LocalWrite
+	}
+
+	for _, prefix := range []string{"/etc", "/root", "/var", "/run", "/lib", "/usr", "/bin", "/sbin", "/opt", "/srv"} {
+		if abs == prefix || strings.HasPrefix(abs, prefix+"/") {
+			return SystemWrite
+		}
+	}
+
 	return LocalWrite
 }
 
@@ -299,6 +304,12 @@ func isBenignCharDevice(abs string) bool {
 		return true
 	}
 	return strings.HasPrefix(abs, "/dev/fd/")
+}
+
+// isDirectBenignDevice excludes unresolved .. components: cleaning those
+// before following a symlink can turn a protected target into a stdio alias.
+func isDirectBenignDevice(path string) bool {
+	return filepath.IsAbs(path) && filepath.Clean(path) == path && isBenignCharDevice(path)
 }
 
 // shellRCFiles are dotfiles in $HOME that shells execute automatically on
@@ -816,17 +827,14 @@ func (c *DangerousConfig) ActionFor(cls RiskClass) Action {
 	if !ValidRiskClass(cls) || c.Validate() != nil {
 		return Deny
 	}
+	if cls == Blocked {
+		return Deny
+	}
 	// If the user explicitly configured an action for this class, use it.
 	if c != nil && c.Classes != nil {
 		if a, ok := c.Classes[cls]; ok {
 			return a
 		}
-	}
-	// Blocked is always denied regardless of global default action.
-	// This covers commands like "rm -rf /" that are hardcoded as
-	// unrecoverable even in YOLO mode.
-	if cls == Blocked {
-		return Deny
 	}
 	// Global default action overrides all built-in defaults.
 	// Set "action": "allow" for YOLO mode, "action": "deny" for lockdown.
@@ -859,6 +867,9 @@ func (c *DangerousConfig) Validate() error {
 		if action != Allow && action != Deny && action != Prompt {
 			return fmt.Errorf("invalid action %q for risk class %q", action, cls)
 		}
+		if cls == Blocked && action != Deny {
+			return fmt.Errorf("blocked operations must remain denied")
+		}
 	}
 	if c.DefaultAction != nil {
 		switch strings.ToLower(strings.TrimSpace(*c.DefaultAction)) {
@@ -882,13 +893,17 @@ func (c *DangerousConfig) ActionForCommand(cmd string) Action {
 	if c.Validate() != nil {
 		return Deny
 	}
-	cmd = strings.TrimSpace(cmd)
-	if cmd == "" {
+	trimmed := strings.TrimSpace(cmd)
+	if trimmed == "" {
 		return Allow
 	}
-	// The raw-blocked floor runs before every list check: even an exact
+	// Keep escaped whitespace intact during analysis; trimming it can change
+	// the executable word while allowlist matching still trims whole entries.
+	analysis := Analyze(cmd)
+	cmd = trimmed
+	// Full blocked classification runs before every list check: even an exact
 	// allowlist entry must not re-arm a fork bomb or other blocked shape.
-	if isRawBlocked(cmd) {
+	if analysis.Class() == Blocked {
 		return Deny
 	}
 	// Allowlist has highest priority — exact match after trimming both sides.
@@ -906,8 +921,11 @@ func (c *DangerousConfig) ActionForCommand(cmd string) Action {
 		}
 	}
 	// Classify and use class-based action
-	cls := Classify(cmd)
-	return c.ActionFor(cls)
+	action := Allow
+	for _, cls := range analysis.Effects {
+		action = stricterAction(action, c.ActionFor(cls))
+	}
+	return action
 }
 
 // NonInteractiveAction returns the action to use when no TTY is available.
@@ -1269,15 +1287,9 @@ var installPrefixes = map[string]bool{
 	"nodenv": true, "asdf": true,
 }
 
-// pkgRunSubcommands map package managers to the subcommands that execute
-// arbitrary project-defined code: package.json lifecycle/`run` scripts,
-// cargo binaries/benches, etc. These are code execution, not a plain
-// install. Subcommands that only download (e.g. "go mod download") are
-// handled as installs instead. Compile/test verbs for go and cargo
-// (`go build`/`go test`, `cargo build`/`cargo test`) are intentionally
-// absent so the main compile-and-test loop stays safe — the same bar as
-// reversible local git porcelain. `cargo run` / `cargo bench` still
-// execute a built binary and stay here.
+// pkgRunSubcommands identifies project-script invocation. Compile/test
+// runners and plugin-loading toolchains are handled by adapterRunsCode,
+// retaining execution policy even when their ordinary use is routine.
 var pkgRunSubcommands = map[string]map[string]bool{
 	"npm":      {"start": true, "run": true, "run-script": true, "test": true, "stop": true, "restart": true, "exec": true},
 	"pnpm":     {"start": true, "run": true, "test": true, "exec": true},
@@ -1290,17 +1302,9 @@ var pkgRunSubcommands = map[string]map[string]bool{
 	"composer": {"run": true, "run-script": true, "exec": true, "test": true},
 }
 
-// safeCommands are read-only / no-op programs that inspect state or
-// transform stdin→stdout without touching the filesystem, network, or
-// privileges. They classify as Safe (allow) so ordinary inspection keeps
-// working under the fail-closed default. A command here that is given a
-// write redirect or a system/sensitive path is still escalated by the
-// LocalWrite / SystemWrite / resource-scan checks before this set is
-// consulted — so adding a tool here cannot make `cmd > /etc/x` allowed.
-//
-// Only genuinely non-mutating tools belong here: anything that writes
-// files, mutates system state, opens the network, or executes arbitrary
-// code must NOT be added (it would become silently allowed).
+// safeCommands registers tools with benign forms. Execution, mutation,
+// output-target and sensitive-resource adapters run before this fallback.
+// Adding a tool here requires reviewing its helper and configuration routes.
 var safeCommands = map[string]bool{
 	// listing / reading files
 	"ls": true, "ll": true, "dir": true, "vdir": true, "cat": true, "tac": true,
@@ -1352,9 +1356,8 @@ var safeCommands = map[string]bool{
 	"htop": true, "btop": true, "glances": true, "pstree": true, "procs": true,
 	"top": true,
 	"duf": true, "dust": true, "delta": true, "hexyl": true, "glow": true,
-	// Language toolchains: compile / format / lint. Same bar as go build
-	// and cargo test — workspace output is reversible. A system-path
-	// operand still escalates via touchesSystemPath (`gofmt -w /etc/x`).
+	// Toolchain metadata and inspection forms. Project/plugin execution
+	// and formatting writes are classified by their adapters first.
 	"gofmt": true, "goimports": true, "gofumpt": true,
 	"golangci-lint": true, "staticcheck": true, "golint": true,
 	"rustc": true, "rustfmt": true,
@@ -1387,88 +1390,14 @@ var safeCommands = map[string]bool{
 
 // ── Classifier ─────────────────────────────────────────────────────────
 
-// Classify determines the risk class of a shell command using token-level
-// heuristics. Returns the highest-severity class detected.
-//
-// Priority (highest to lowest):
-// blocked > destructive > system_write > code_execution > network_egress >
-// install > local_write > safe
-//
-// Pipeline (see the package doc for the full evasion model):
-//
-//	raw cmd ─▶ isRawBlocked ─▶ normalize ─┬─▶ classifyOne(main) ─┐
-//	                                       └─▶ Classify(sub) ⟳ ───┴─▶ worst wins
-//
-// normalize neutralises shell evasion tricks (ANSI-C/$IFS/brace expansion,
-// $(…)/`…`/<(…) substitutions, command/exec wrappers, backslash escapes,
-// absolute-path basenames) and returns the rewritten command plus any
-// substitution bodies. classifyOne then splits into segments and pipe stages
-// and classifies each (see classifyPipeline/classifyStage). Every extracted
-// sub-expression is re-classified through Classify so nested commands cannot
-// hide one level deeper; the worst class across the whole tree is returned.
-// maxSubstDepth caps recursive re-classification of nested command
-// substitutions. Real commands nest a handful deep; hundreds of levels
-// are hostile input, and classifying each level re-normalizes the whole
-// remaining string (quadratic). Past the cap the classifier fails closed
-// instead of burning time.
+// Recursion bounds command substitutions and nested shell/eval payloads.
+// Static variable expansion has its own byte bound in analysis.go.
 const maxSubstDepth = 64
 
-// classifyAtDepth is Classify with a nesting-depth budget.
-func classifyAtDepth(cmd string, depth int) RiskClass {
-	cmd = strings.TrimSpace(cmd)
-	if cmd == "" {
-		return Safe
-	}
-
-	// Check blocked patterns on raw command (before tokenization mangles them)
-	if isRawBlocked(cmd) {
-		return Blocked
-	}
-
-	if depth > maxSubstDepth {
-		return Unknown
-	}
-
-	main, subs := normalize(cmd)
-	worst := classifyOne(main)
-	for _, s := range subs {
-		// Substitutions are themselves commands the shell will run.
-		// Re-enter the depth-tracked classifier (not classifyOne) so
-		// nested substitutions inside them also normalise.
-		if r := classifyAtDepth(s, depth+1); Rank(r) > Rank(worst) {
-			worst = r
-		}
-	}
-	return worst
-}
-
-// Classify returns the worst risk class found in cmd after normalisation
-// (shell evasion tricks, substitutions, wrappers, basenames) and token
-// classification (see classifyOne). Every extracted sub-expression is
-// re-classified recursively, bounded by maxSubstDepth; deeper nesting
-// fails closed as Unknown.
+// Classify returns the highest-ranked display class from Analyze. Policy
+// callers must use ActionForCommand so independent denials cannot be masked.
 func Classify(cmd string) RiskClass {
-	return classifyAtDepth(cmd, 0)
-}
-
-// classifyOne runs the existing token-level pipeline against an already-
-// normalised command string.
-func classifyOne(cmd string) RiskClass {
-	tokens := tokenize(cmd)
-	if len(tokens) == 0 {
-		return Safe
-	}
-
-	segments := splitSegments(tokens)
-
-	worst := Safe
-	for _, seg := range segments {
-		cls := classifyPipeline(seg)
-		if Rank(cls) > Rank(worst) {
-			worst = cls
-		}
-	}
-	return worst
+	return Analyze(cmd).Class()
 }
 
 // classifyPipeline classifies one command segment that may contain pipes.
@@ -2001,7 +1930,6 @@ func normalize(cmd string) (string, []string) {
 	cmd, subs := extractSubstitutions(cmd)
 	cmd = stripCommandWrappers(cmd)
 	cmd = collapseUnquotedBackslashes(cmd)
-	cmd = basenameFirstToken(cmd)
 	return cmd, subs
 }
 
@@ -2313,30 +2241,6 @@ func collapseUnquotedBackslashes(cmd string) string {
 	return out.String()
 }
 
-// basenameFirstToken rewrites the first whitespace-separated token to
-// its basename if it is an absolute path. This makes `/bin/rm -rf /`
-// classify the same as `rm -rf /`. We only rewrite when the basename
-// matches a known prefix set (rm/dd/sudo/...) so legitimate non-command
-// arguments are not altered.
-func basenameFirstToken(cmd string) string {
-	trimmed := strings.TrimLeft(cmd, " \t")
-	if !strings.HasPrefix(trimmed, "/") {
-		return cmd
-	}
-	sp := strings.IndexAny(trimmed, " \t")
-	var first, rest string
-	if sp < 0 {
-		first, rest = trimmed, ""
-	} else {
-		first, rest = trimmed[:sp], trimmed[sp:]
-	}
-	base := filepath.Base(first)
-	if !isKnownCommandName(base) {
-		return cmd
-	}
-	return base + rest
-}
-
 func isKnownCommandName(name string) bool {
 	if name == "rm" || name == "sudo" {
 		return true
@@ -2587,7 +2491,7 @@ func hasDynamicSubst(tokens []string) bool {
 // it is a common application flag name (ENV=production) and only matters
 // when the inner command is a POSIX shell (see posixShells).
 var envExecNames = map[string]bool{
-	"LD_PRELOAD": true, "LD_LIBRARY_PATH": true, "LD_AUDIT": true,
+	"PATH": true, "LD_PRELOAD": true, "LD_LIBRARY_PATH": true, "LD_AUDIT": true,
 	"DYLD_INSERT_LIBRARIES": true, "DYLD_LIBRARY_PATH": true,
 	"BASH_ENV": true, "ZDOTDIR": true,
 	"NODE_OPTIONS": true, "PERL5OPT": true, "RUBYOPT": true,
@@ -2861,7 +2765,15 @@ func isSensitiveOdekPath(tok string) bool {
 		return false
 	}
 	abs = filepath.Clean(abs)
-	return isOdekTrustAnchor(home, abs)
+	if isOdekTrustAnchor(home, abs) {
+		return true
+	}
+	resolvedHome, err := resolvePathTarget(home)
+	if err != nil {
+		return false
+	}
+	resolvedPath, err := resolvePathTarget(abs)
+	return err == nil && isOdekTrustAnchor(resolvedHome, resolvedPath)
 }
 
 // classifyShellTokenPath expands ~ and common environment-variable shorthands
@@ -2989,7 +2901,7 @@ func isPersistenceWrite(first string, tokens []string) bool {
 	}
 	// Write-command operands: `cp x .git/hooks/pre-commit`,
 	// `mv y ~/.config/systemd/user/evil.service`.
-	if writePrefixes[first] || first == "ln" || first == "install" {
+	if (writePrefixes[first] && !commandOnlyReads(first, tokens)) || first == "ln" || first == "install" {
 		for _, tok := range tokens[1:] {
 			if IsPersistencePath(expandShellTokenPath(tok)) {
 				return true
@@ -3014,7 +2926,7 @@ func isPersistenceWrite(first string, tokens []string) bool {
 				return true
 			}
 			if lt == "pkg" {
-				if strings.Contains(strings.ToLower(strings.Join(tokens[i+1:], " ")), "scripts") {
+				if hasAny(tokens[i+1:], "set", "delete") && strings.Contains(strings.ToLower(strings.Join(tokens[i+1:], " ")), "scripts") {
 					return true
 				}
 			}
@@ -3023,7 +2935,7 @@ func isPersistenceWrite(first string, tokens []string) bool {
 	// jq rewriting package.json scripts: `jq '.scripts.preinstall=…' package.json`.
 	if first == "jq" {
 		joined := strings.ToLower(strings.Join(tokens, " "))
-		if strings.Contains(joined, ".scripts") && strings.Contains(joined, "package.json") {
+		if strings.Contains(joined, ".scripts") && strings.Contains(joined, "package.json") && regexp.MustCompile(`(?:\|=|[+*/-]?=)`).MatchString(joined) {
 			return true
 		}
 	}
@@ -3185,6 +3097,21 @@ func classifyCommand(tokens []string) RiskClass {
 	if len(tokens) == 0 {
 		return Safe
 	}
+	cls := classifyKnownCommand(tokens)
+	name := commandName(tokens[0])
+	if !isKnownCommandName(name) && !specialCommandNames[name] {
+		cls = worstOf(cls, Unknown)
+	}
+	if explicitUntrustedExecutable(tokens[0]) {
+		cls = worstOf(cls, CodeExecution)
+	}
+	return cls
+}
+
+func classifyKnownCommand(tokens []string) RiskClass {
+	if len(tokens) == 0 {
+		return Safe
+	}
 
 	// Resolve the program name from its basename so /bin/rm, /usr/bin/curl
 	// and ./sh classify the same as their bare names in any pipe stage.
@@ -3248,7 +3175,7 @@ func classifyCommand(tokens []string) RiskClass {
 	// submodule; classify that command, not the outer git verb.
 	if first == "git" {
 		if inner := gitSubmoduleForeachInner(tokens); inner != "" {
-			return Classify(inner)
+			return CodeExecution
 		}
 	}
 
@@ -3299,10 +3226,10 @@ func classifyCommand(tokens []string) RiskClass {
 	// redirect to a system path beats the LocalWrite classification.
 	// Display verbs without a redirect only print the string; they do not
 	// open it (`echo /etc/passwd` is Safe, `cat /etc/shadow` is not).
-	if !displayVerbs[first] && touchesSystemPath(tokens) {
+	if !displayVerbs[first] && touchesSystemPath(tokens[1:]) {
 		return SystemWrite
 	}
-	if displayVerbs[first] && stageHasOutputRedirect(tokens) && touchesSystemPath(tokens) {
+	if displayVerbs[first] && stageHasOutputRedirect(tokens) && touchesSystemPath(tokens[1:]) {
 		return SystemWrite
 	}
 
@@ -3531,6 +3458,9 @@ func isSystemWrite(first string, tokens []string) bool {
 	if first == "kill" && killTargetsInitOrBroadcast(tokens) {
 		return true
 	}
+	if hostInspectorMutates(first, tokens) {
+		return true
+	}
 	if first == "sysctl" && hasAny(tokens, "-w", "--write") {
 		return true
 	}
@@ -3548,7 +3478,7 @@ func isSystemWrite(first string, tokens []string) bool {
 	// to local_write (auto-allow) before the touchesSystemPath fallback runs,
 	// because that fallback only fires for commands that fell through every
 	// write check. Escalate them here so they prompt instead.
-	if writePrefixes[first] || first == "ln" || first == "install" {
+	if (writePrefixes[first] && !commandOnlyReads(first, tokens)) || first == "ln" || first == "install" {
 		for _, tok := range tokens[1:] {
 			if shellPathIsSensitive(tok) {
 				return true
@@ -3642,6 +3572,12 @@ func isOctalMode(s string) bool {
 }
 
 func isLocalWrite(first string, tokens []string) bool {
+	if commandOnlyReads(first, tokens) && !stageHasOutputRedirect(tokens) {
+		return false
+	}
+	if formattingMutates(first, tokens) {
+		return true
+	}
 	// echo without redirect is safe (just displaying text)
 	if first == "echo" {
 		for _, tok := range tokens {
@@ -3753,6 +3689,7 @@ var gitCodeExecConfigKeys = map[string]bool{
 	"core.pager":        true,
 	"core.fsmonitor":    true,
 	"credential.helper": true,
+	"core.hookspath":    true, "core.editor": true, "sequence.editor": true, "core.sshcommand": true,
 }
 
 // isGitCodeExecution reports whether a git invocation carries a config override
@@ -3815,7 +3752,7 @@ func isGitCodeExecution(tokens []string) bool {
 		if strings.HasPrefix(key, "alias.") && strings.HasPrefix(value, "!") {
 			return true
 		}
-		if gitCodeExecConfigKeys[key] {
+		if gitCodeExecConfigKeys[key] || strings.HasPrefix(key, "filter.") || strings.HasPrefix(key, "diff.") || strings.HasPrefix(key, "merge.") {
 			return true
 		}
 	}
@@ -4135,9 +4072,18 @@ func hasShortFlag(args []string, flag rune) bool {
 }
 
 func isCodeExecution(first string, tokens []string) bool {
+	if pipedShells[first] && (flagArg(tokens, "-c") != "" || shellHasOperand(tokens)) {
+		return true
+	}
+	if first == "find" && hasAny(tokens, "-exec", "-execdir", "-ok", "-okdir") {
+		return true
+	}
 	// git -c/--config-env can inject arbitrary shell commands via aliases,
 	// core.pager, core.fsmonitor, credential.helper, etc.; git config writes
 	// can persist the same payloads.
+	if adapterRunsCode(first, tokens) {
+		return true
+	}
 	if first == "git" && isGitCodeExecution(tokens) {
 		return true
 	}
@@ -4396,7 +4342,7 @@ func awkScriptHasShellExec(tok string) bool {
 		return false
 	}
 	lower := strings.ToLower(tok)
-	if strings.Contains(lower, "system(") {
+	if regexp.MustCompile(`\bsystem\b|@[A-Za-z_]`).MatchString(lower) {
 		return true
 	}
 	return strings.Contains(tok, "|")
@@ -4479,18 +4425,14 @@ func sedScriptHasShellExec(tok string) bool {
 	}
 	// Standalone 'e' command, possibly separated by semicolons/newlines or
 	// followed by an optional command argument (e.g. "e whoami").
-	if regexp.MustCompile(`(^|[;\n])e(\s|$|[;\n])`).MatchString(tok) {
+	if regexp.MustCompile(`(?:^|[;{}\n])\s*(?:[0-9$]+(?:,[0-9$]+)?\s*|/[^/]+/\s*)?e(?:\s|$|[;{}\n])`).MatchString(tok) {
 		return true
 	}
-	// s/<pattern>/<replacement>/<flags> with an 'e' flag.
-	if tok[0] == 's' && len(tok) >= 4 {
-		delim := tok[1]
-		if delim != 0 && delim != '\\' && strings.Count(tok, string(delim)) >= 3 {
-			last := strings.LastIndex(tok, string(delim))
-			flags := tok[last+1:]
-			if strings.ContainsAny(flags, "eE") {
-				return true
-			}
+	for _, flags := range sedSubstitutionFlags(tok) {
+		// A write destination is data, even when its name contains 'e'.
+		flags, _, _ = strings.Cut(flags, "w")
+		if strings.ContainsAny(flags, "eE") {
+			return true
 		}
 	}
 	return false
@@ -4698,11 +4640,11 @@ func classifyInfraCLI(first string, tokens []string) RiskClass {
 func interpreterIsSyntaxCheck(first string, tokens []string) bool {
 	switch first {
 	case "php":
-		return hasAny(tokens, "-l", "--syntax-check")
+		return hasAny(tokens, "-l", "--syntax-check") && syntaxCheckArgumentsOnly(tokens, "-l", "--syntax-check")
 	case "ruby":
-		return hasAny(tokens, "-c") && !hasAny(tokens, "-e")
+		return hasAny(tokens, "-c") && syntaxCheckArgumentsOnly(tokens, "-c")
 	case "node":
-		return hasAny(tokens, "--check")
+		return hasAny(tokens, "--check", "-c") && syntaxCheckArgumentsOnly(tokens, "--check", "-c")
 	}
 	return false
 }
@@ -4710,7 +4652,7 @@ func interpreterIsSyntaxCheck(first string, tokens []string) bool {
 func sqliteRunsShell(tokens []string) bool {
 	for _, tok := range tokens[1:] {
 		low := strings.ToLower(tok)
-		if strings.Contains(low, ".shell") || strings.Contains(low, ".system") {
+		if strings.Contains(low, ".shell") || strings.Contains(low, ".system") || strings.Contains(low, ".read") || strings.Contains(low, ".load") || strings.Contains(low, "load_extension") || strings.Contains(low, "-init") {
 			return true
 		}
 	}
@@ -4830,7 +4772,7 @@ func uvIsInstall(tokens []string) bool {
 
 func tarRunsCommand(tokens []string) bool {
 	for _, tok := range tokens[1:] {
-		if tok == "--to-command" || tok == "--use-compress-program" || tok == "-I" {
+		if tok == "--checkpoint-action" || tok == "--to-command" || tok == "--use-compress-program" || tok == "-I" || strings.HasPrefix(tok, "-I") || strings.HasPrefix(tok, "--checkpoint-action=exec") {
 			return true
 		}
 		if strings.HasPrefix(tok, "--to-command=") || strings.HasPrefix(tok, "--use-compress-program=") {
@@ -4888,6 +4830,9 @@ func classifyContainerCLI(first string, tokens []string) RiskClass {
 	}
 	if containerIsHardMutation(verbs, tokens) {
 		return SystemWrite
+	}
+	if formattingMutates(first, tokens) {
+		return LocalWrite
 	}
 	if containerIsKnownLocal(verbs) {
 		return Safe
@@ -5101,7 +5046,7 @@ func touchesSystemPath(tokens []string) bool {
 		if isRedirectToken(tok) {
 			continue
 		}
-		if isSystemPath(tok) || shellPathIsHomeSensitive(tok) {
+		if (isSystemPath(tok) && tok != "/etc/passwd" && Rank(classifyShellTokenPath(tok)) >= Rank(SystemWrite)) || shellPathIsHomeSensitive(tok) {
 			return true
 		}
 	}

@@ -317,6 +317,9 @@ type IterationInfo struct {
 	GenerationTokensPerSecond float64       // call output / generation_ms; 0 = omitted
 	HasFinalAnswer            bool          // true when the agent reached a final answer
 	ReasoningContent          string        // LLM reasoning before tool calls (empty if none)
+	Content                   string        // assistant note before tool calls (empty on post-tool/final callbacks)
+	StreamedReasoning         bool          // reasoning delivered by this call's delta handler
+	StreamedContent           bool          // assistant text delivered by this call's delta handler
 	IsPreTool                 bool          // true when fired BEFORE tool execution (shows reasoning + tools)
 }
 
@@ -372,9 +375,9 @@ type Engine struct {
 	stream bool
 	// deltaHandler receives streamed fragments when stream is on.
 	deltaHandler DeltaHandler
-	// streamedThisCall reports whether the current think call forwarded any
-	// delta to the handler — used to suppress duplicate render output.
-	streamedThisCall bool
+	// Per-kind delivery is reset at every think call, including fallback.
+	streamedReasoning bool
+	streamedContent   bool
 
 	// eventHandler, when set, receives structured runtime events
 	// (schema odek.event/v1): iteration_completed, tool_call_started /
@@ -773,7 +776,7 @@ func (e *Engine) callLLM(ctx context.Context, messages []session.Message, tools 
 		defer cancel()
 	}
 
-	e.streamedThisCall = false
+	e.streamedReasoning, e.streamedContent = false, false
 	start := time.Now()
 	stamp := func(res *llmclient.CallResult, firstDelta time.Time) {
 		if res == nil {
@@ -801,7 +804,11 @@ func (e *Engine) callLLM(ctx context.Context, messages []session.Message, tools 
 		if firstDelta.IsZero() {
 			firstDelta = time.Now()
 		}
-		e.streamedThisCall = true
+		if d.Kind == llmclient.DeltaReasoning {
+			e.streamedReasoning = true
+		} else if d.Kind == llmclient.DeltaContent {
+			e.streamedContent = true
+		}
 		return e.deltaHandler(d)
 	})
 	stamp(res, firstDelta)
@@ -2888,7 +2895,7 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 		if isInitial {
 			result = &llmclient.CallResult{ToolCalls: initialCalls}
 			initialCalls = nil
-			e.streamedThisCall = false
+			e.streamedReasoning, e.streamedContent = false, false
 		} else {
 			result, err = e.callLLM(ctx, messages, tools)
 		}
@@ -2952,7 +2959,7 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 		// the terminal live, Thinking/FinalAnswer suppress their bodies so
 		// nothing double-prints; stats headers and the summary still render.
 		if e.renderer != nil {
-			e.renderer.SetStreamedOutput(e.streamedThisCall)
+			e.renderer.SetStreamedKinds(e.streamedReasoning, e.streamedContent)
 			if e.interactionMode != "off" {
 				latency := time.Duration(result.DurationMs) * time.Millisecond
 				e.renderer.Iteration(i+1, e.maxIter, latency, result.InputTokens, result.OutputTokens, 0)
@@ -3107,16 +3114,9 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 			}
 		}
 
-		// Render the model's thinking (reasoning before tool calls)
-		// In engaging mode, narrate the thinking; in verbose mode, show raw content.
-		if e.narrator != nil && result.Content != "" {
-			if msg := e.narrator.ThinkingMessage(result.Content); msg != "" {
-				if e.renderer != nil {
-					e.renderer.NarratorMessage(msg)
-				}
-			}
-		} else if e.renderer != nil && result.Content != "" && e.interactionMode != "off" {
-			e.renderer.Thinking(result.Content)
+		if e.renderer != nil && e.interactionMode != "off" {
+			e.renderer.Thinking(result.ReasoningContent)
+			e.renderer.Note(result.Content)
 		}
 
 		// Build assistant message with tool calls
@@ -3189,6 +3189,7 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 				TotalLatency:        time.Since(startTime),
 				HasFinalAnswer:      false,
 				ReasoningContent:    result.ReasoningContent,
+				Content:             result.Content,
 				IsPreTool:           true,
 			}))
 		}
@@ -3296,8 +3297,26 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 				}
 				// Check the user's configured action for this risk class.
 				// If the DangerousConfig says Allow, skip it — no approval needed.
-				if e.dangerousCfg != nil && e.dangerousCfg.ActionFor(risk) == danger.Allow {
-					continue // auto-allowed by config, no batch approval needed
+				if e.dangerousCfg != nil {
+					action := e.dangerousCfg.ActionFor(risk)
+					if tc.Function.Name == "shell" || tc.Function.Name == "terminal" || tc.Function.Name == "bg_start" {
+						var command struct {
+							Command string `json:"command"`
+						}
+						if json.Unmarshal([]byte(tc.Function.Arguments), &command) == nil {
+							action = e.dangerousCfg.ActionForCommand(command.Command)
+							_, targets := danger.ClassifyScriptGateCtx(ctx, command.Command)
+							if action != danger.Deny && len(targets) > 0 && e.dangerousCfg.ActionFor(danger.UnreadExec) != danger.Allow {
+								action = e.dangerousCfg.ActionFor(danger.UnreadExec)
+								risk = danger.UnreadExec
+							} else if action == danger.Prompt {
+								risk = e.dangerousCfg.PromptClassForCommand(command.Command)
+							}
+						}
+					}
+					if action == danger.Allow {
+						continue
+					}
 				}
 				// Without DangerousConfig, fall back to blocking: include the tool
 				// so the batch gate plays safe and prompts.
@@ -3969,6 +3988,8 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 	}
 	e.lastPartialReason = reason
 	if summary := progressSummary; summary != "" {
+		// The buffered summary replaces the last main call's delivery state.
+		e.streamedReasoning, e.streamedContent = false, false
 		final := e.appendCheckNotice(marker + "\n\n" + summary)
 		persistedFinal := e.appendCheckNotice(marker + "\n\n" + e.protectDerivedContext(ctx, "progress_summary", summary))
 

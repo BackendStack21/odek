@@ -57,11 +57,15 @@ func TestRED_GitFilterRepoReplaceAndBundleAreDataLoss(t *testing.T) {
 			t.Errorf("Classify(%q) = %s, want system_write", c, got)
 		}
 	}
-	// Reversible local porcelain stays safe — same bar as git add /
-	// git commit. Prompting on every rm or gc is approval noise.
+	// Hook/filter/fsmonitor operations retain execution; metadata listing
+	// and non-executing local forms retain their existing classification.
 	for _, c := range []string{"git status", "git tag -l", "git rm -r tracked-dir/", "git gc --prune=now --aggressive", "git add .", "git commit -m x"} {
-		if got := Classify(c); got != Safe {
-			t.Errorf("Classify(%q) = %s, want safe (reversible local git)", c, got)
+		want := Safe
+		if c == "git commit -m x" || c == "git status" || c == "git gc --prune=now --aggressive" || c == "git add ." {
+			want = CodeExecution
+		}
+		if got := Classify(c); got != want {
+			t.Errorf("Classify(%q) = %s, want %s (local Git effects)", c, got, want)
 		}
 	}
 }

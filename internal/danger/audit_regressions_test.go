@@ -131,7 +131,7 @@ func TestAudit_EnvPrefixAssignmentValues(t *testing.T) {
 		{"ENV=production ls", Safe},
 		{"SHELL=/bin/bash echo hi", Safe},
 		{"SHELL=/bin/sh echo hi", Safe},
-		{"GIT_TRACE2=1 git status", Safe},
+		{"GIT_TRACE2=1 git status", CodeExecution},
 	}
 	// Inert values must not escalate beyond what the bare verb already
 	// classifies as (node app.js is code_execution on its own; make is
@@ -174,7 +174,7 @@ func TestAudit_SedAttachedExpressionForms(t *testing.T) {
 		{"sed 's/foo/bar/e' file", CodeExecution},
 		{"sed -e 's/foo/bar/e' file", CodeExecution},
 		{"sed -f script.sed file", CodeExecution},
-		{"sed 's/foo/bar/' file", LocalWrite},
+		{"sed 's/foo/bar/' file", Safe},
 	}
 	for _, tt := range tests {
 		t.Run(tt.cmd, func(t *testing.T) {
@@ -222,7 +222,7 @@ func TestAudit_GitWorktreeRemove(t *testing.T) {
 		{"git worktree remove ../other", SystemWrite},
 		{"git worktree prune", SystemWrite},
 		{"git worktree list", Safe},
-		{"git worktree add ../x", Safe},
+		{"git worktree add ../x", CodeExecution},
 	}
 	for _, tt := range tests {
 		t.Run(tt.cmd, func(t *testing.T) {

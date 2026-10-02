@@ -1886,13 +1886,15 @@ func handleChatMessage(
 			// was silently dropped.
 			if info.IsPreTool || info.HasFinalAnswer {
 				reasoningProgressLine = ""
-				if info.ReasoningContent != "" {
-					firstSentence := render.FirstSentence(info.ReasoningContent)
-					if firstSentence != "" {
-						reasoningProgressLine = firstSentence
-						bot.SendMessage(chatID, "💭 "+firstSentence,
-							&telegram.SendOpts{ReplyToMessageID: messageID})
-					}
+				reasoning, note := telegramIterationProgress(info)
+				if reasoning != "" {
+					reasoningProgressLine = reasoning
+					bot.SendMessage(chatID, "💭 "+reasoning,
+						&telegram.SendOpts{ReplyToMessageID: messageID})
+				}
+				for _, chunk := range telegramNoteChunks(note) {
+					bot.SendMessage(chatID, chunk,
+						&telegram.SendOpts{ReplyToMessageID: messageID})
 				}
 				if info.IsPreTool {
 					return // pre-tool: stats not yet available, nothing more to do

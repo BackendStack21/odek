@@ -93,11 +93,11 @@ type Renderer struct {
 	skillVerbose  bool // show skill notifications (auto-load, save, suggest, etc.)
 	memoryVerbose bool // show memory lifecycle + agent-signal notifications
 
-	// streamedOutput marks that the current iteration's reasoning/content
-	// were already streamed to the terminal live (see SetStreamedOutput);
-	// Thinking and FinalAnswer then suppress their bodies so nothing
-	// double-prints.
-	streamedOutput bool
+	// streamedOutput keeps headers on a fresh line after live fragments;
+	// the per-kind flags suppress only bodies already delivered live.
+	streamedOutput    bool
+	streamedReasoning bool
+	streamedContent   bool
 
 	// streamLastKind tracks the kind of the last streamed fragment so kind
 	// transitions can insert separation (reasoning block → answer body).
@@ -112,8 +112,15 @@ type Renderer struct {
 // non-streamed renders (e.g. the iteration-budget partial summary). It also
 // resets the stream-fragment state for the next iteration.
 func (r *Renderer) SetStreamedOutput(v bool) {
+	r.SetStreamedKinds(v, v)
+}
+
+// SetStreamedKinds suppresses only text that was delivered live in this
+// iteration. A reasoning-only stream must not hide buffered assistant text.
+func (r *Renderer) SetStreamedKinds(reasoning, content bool) {
 	if r != nil {
-		r.streamedOutput = v
+		r.streamedOutput = reasoning || content
+		r.streamedReasoning, r.streamedContent = reasoning, content
 		r.streamLastKind = 0
 	}
 }
@@ -238,10 +245,18 @@ func (r *Renderer) Iteration(n, maxN int, latency time.Duration, inTokens, outTo
 
 // Thinking prints the model's reasoning text with a brain emoji.
 func (r *Renderer) Thinking(text string) {
-	if r.disable() || text == "" || r.streamedOutput {
+	if r.disable() || text == "" || r.streamedReasoning {
 		return
 	}
 	fmt.Fprintln(r.w, r.style(dim+italic, "🧠 "+text))
+}
+
+// Note prints user-facing assistant text before tool execution.
+func (r *Renderer) Note(text string) {
+	if r.disable() || text == "" || r.streamedContent {
+		return
+	}
+	fmt.Fprintln(r.w, text)
 }
 
 // NarratorMessage prints an engaging, human-friendly narration line.
@@ -519,7 +534,7 @@ func (r *Renderer) FinalAnswer(text string) {
 	if r.disable() || text == "" {
 		return
 	}
-	if r.streamedOutput {
+	if r.streamedContent {
 		// The text was already streamed live; print only a separator so the
 		// Summary line below doesn't glue onto the streamed output.
 		fmt.Fprintln(r.w)

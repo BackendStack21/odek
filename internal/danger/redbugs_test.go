@@ -61,7 +61,7 @@ func TestRED_GitCheckoutPathspecSilentDiscard(t *testing.T) {
 		}
 	}
 	// Branch switching must stay safe.
-	if got := Classify("git checkout main"); got != Safe {
+	if got := Classify("git checkout main"); got != CodeExecution {
 		t.Errorf("Classify(git checkout main) = %v, want safe", got)
 	}
 }

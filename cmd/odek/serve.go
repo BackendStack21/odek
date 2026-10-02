@@ -798,21 +798,22 @@ func drainServeWork(timeout time.Duration) bool {
 // ── Agent Builder ──────────────────────────────────────────────────────
 
 // wsDeltaCounters tracks streamed-fragment activity for the prompt currently
-// executing on a WebSocket connection. Reset at prompt start; consulted by
-// the IterationCallback (to suppress the per-iteration reasoning echo while
-// deltas are flowing) and after the run (to skip the post-run bulk re-send
-// of content the client already received live). When a provider rejects SSE
-// and the LLM client falls back to the buffered path, no deltas fire, the
-// counters stay zero, and the legacy bulk events are sent as before.
+// executing on a WebSocket connection. The final call's per-kind delivery
+// state controls its bulk resend; run counters retain partial-output state
+// when a run fails before a final callback. Reset at prompt start.
 type wsDeltaCounters struct {
-	mu        sync.Mutex
-	reasoning int
-	content   int
+	mu             sync.Mutex
+	reasoning      int
+	content        int
+	finalSeen      bool
+	finalReasoning bool
+	finalContent   bool
 }
 
 func (c *wsDeltaCounters) reset() {
 	c.mu.Lock()
 	c.reasoning, c.content = 0, 0
+	c.finalSeen, c.finalReasoning, c.finalContent = false, false, false
 	c.mu.Unlock()
 }
 
@@ -828,10 +829,42 @@ func (c *wsDeltaCounters) addContent() {
 	c.mu.Unlock()
 }
 
-func (c *wsDeltaCounters) snapshot() (reasoning, content int) {
+// finalSnapshot uses the final call's delivery state, so deltas from a
+// prior tool iteration cannot suppress a buffered final answer.
+func (c *wsDeltaCounters) finalSnapshot() (reasoning, content int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.reasoning, c.content
+	if !c.finalSeen {
+		return c.reasoning, c.content // interrupted run: retain partial-output suppression
+	}
+	if c.finalReasoning {
+		reasoning = 1
+	}
+	if c.finalContent {
+		content = 1
+	}
+	return
+}
+
+func (c *wsDeltaCounters) markFinal(info loop.IterationInfo) {
+	c.mu.Lock()
+	c.finalSeen = true
+	c.finalReasoning, c.finalContent = info.StreamedReasoning, info.StreamedContent
+	c.mu.Unlock()
+}
+
+// serveIterationProgress delivers buffered reasoning and assistant notes
+// before tools start. Streamed bodies have already arrived in timeline order.
+func serveIterationProgress(sendFn func(any) error, info loop.IterationInfo) {
+	if !info.IsPreTool {
+		return
+	}
+	if info.ReasoningContent != "" && !info.StreamedReasoning {
+		sendFn(map[string]any{"type": "thinking", "content": info.ReasoningContent})
+	}
+	if info.Content != "" && !info.StreamedContent {
+		sendFn(map[string]any{"type": "token", "content": info.Content})
+	}
 }
 
 func newServeAgent(resolved config.ResolvedConfig, system string, runKey string, sendFn func(v any) error, deltas *wsDeltaCounters, principalClarify bool) (*odek.Agent, *bgRuntime, func() error, func(), func() error, guard.Guard, *wsApprover, error) {
@@ -1029,19 +1062,12 @@ func newServeAgent(resolved config.ResolvedConfig, system string, runKey string,
 				"count":  event.Count,
 			})
 		},
-		// Stream thinking/reasoning content to the WebUI.
-		// Only fire for pre-tool iterations (reasoning before tool calls);
-		// post-tool callbacks have no new reasoning to display. Skipped when
-		// delta streaming is delivering reasoning live (thinking_delta) —
-		// the echo would duplicate it after the fact.
+		// Deliver pre-tool reasoning and assistant notes before tool events,
+		// suppressing only bodies already streamed by this iteration.
 		IterationCallback: func(info loop.IterationInfo) {
-			if info.IsPreTool && info.ReasoningContent != "" {
-				if reasoningDeltas, _ := deltas.snapshot(); reasoningDeltas == 0 {
-					sendFn(map[string]any{
-						"type":    "thinking",
-						"content": info.ReasoningContent,
-					})
-				}
+			serveIterationProgress(sendFn, info)
+			if info.HasFinalAnswer && deltas != nil {
+				deltas.markFinal(info)
 			}
 			// Live usage: parent window for the ctx gauge, plus this-call
 			// speed fields. Providers that omit usage still emit a frame
@@ -2371,7 +2397,7 @@ func handlePrompt(
 	}
 	streamedReasoning, streamedContent := 0, 0
 	if deltas != nil {
-		streamedReasoning, streamedContent = deltas.snapshot()
+		streamedReasoning, streamedContent = deltas.finalSnapshot()
 	}
 
 	if err != nil {
@@ -2412,10 +2438,9 @@ func handlePrompt(
 	// duplicate those partials after the tools. Skip their Content.
 	//
 	// The final assistant message (no ToolCalls) carries:
-	//   • ReasoningContent — the model's private reasoning for this turn.
+	//   • ReasoningContent — provider-reported reasoning/summary for this turn.
 	//     The IterationCallback does NOT send reasoning for the final-answer
-	//     turn (its callback fires with IsPreTool=false and empty
-	//     ReasoningContent). We send it here as a "thinking"
+	//     turn (its callback fires with IsPreTool=false). We send it here as a "thinking"
 	//     event so the UI can display it in a collapsible block.
 	//   • Content — the actual response text. Send as "token" events.
 	for _, msg := range newMsgs {
@@ -2432,7 +2457,7 @@ func handlePrompt(
 
 		// Final answer: send reasoning as a thinking event first (if present),
 		// then stream the response text. Both bulk sends are skipped when the
-		// client already received this run's fragments live (token_delta /
+		// client already received this final call's fragments live (token_delta /
 		// thinking_delta) — re-sending would duplicate the whole answer. A
 		// provider that rejected SSE leaves the counters at zero and takes
 		// this bulk path unchanged.

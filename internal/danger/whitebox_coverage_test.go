@@ -456,20 +456,6 @@ func TestSubstValue(t *testing.T) {
 	}
 }
 
-func TestBasenameFirstToken(t *testing.T) {
-	cases := map[string]string{
-		"/bin/rm -rf /":      "rm -rf /",           // known command → basename
-		"rm -rf /":           "rm -rf /",           // already bare
-		"/opt/tool/data.txt": "/opt/tool/data.txt", // unknown basename → untouched
-		"./local args":       "./local args",       // not absolute → untouched
-	}
-	for in, want := range cases {
-		if got := basenameFirstToken(in); got != want {
-			t.Errorf("basenameFirstToken(%q) = %q, want %q", in, got, want)
-		}
-	}
-}
-
 func TestIsEnvironmentDump(t *testing.T) {
 	dump := [][]string{
 		{"printenv"},
@@ -709,9 +695,9 @@ func TestIsInstall_MoreManagers(t *testing.T) {
 		{"apk add curl", Install},
 		{"go mod download", Install},
 		{"go get example.com/x", Install},
-		{"go install example.com/x@latest", Install},
-		{"go build ./...", Safe}, // local build, not install
-		{"go mod tidy", Safe},    // not a download
+		{"go install example.com/x@latest", CodeExecution},
+		{"go build ./...", CodeExecution}, // local build, not install
+		{"go mod tidy", LocalWrite},       // not a download
 		{"bun add left-pad", Install},
 		{"pnpm install", Install},
 	}
