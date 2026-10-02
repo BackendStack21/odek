@@ -1544,7 +1544,7 @@ const globalConfigTemplate = `{
     "max_concurrent": 2,
     "timezone": "UTC",
     "catchup": false,
-    "allow_telegram_management": false
+    "allow_telegram_management": true
   },
   "logging": {"enabled": true, "level": "info", "file": "~/.odek/runtime.log", "max_file_mb": 25, "max_files": 4, "max_age_hours": 168},
   "maintenance": {

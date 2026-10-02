@@ -46,6 +46,8 @@ func TestGlobalTemplateDocumentsFullDefaultSurface(t *testing.T) {
 	}
 	if _, ok := sched["allow_telegram_management"]; !ok {
 		t.Error("schedules section missing allow_telegram_management")
+	} else if v, _ := sched["allow_telegram_management"].(bool); !v {
+		t.Error(`schedules.allow_telegram_management must be true (the code default) — pinning false silently disables Telegram schedule management for every init user`)
 	}
 }
 

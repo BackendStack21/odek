@@ -100,7 +100,7 @@ func TestLocalConfigTemplate_RemainsProjectSafe(t *testing.T) {
 		`"sandbox"`, `"compaction": true`, `"compaction": false`,
 		`"limits": {"max_runtime_seconds": 1`, `"prompt_caching": true`, `"prompt_caching": false`,
 		`"stream": true`, `"stream": false`, `"announce_budget": true`, `"announce_budget": false`,
-		`"planning": {\n    "enabled": true`, `"planning": {\n    "enabled": false`,
+		`"planning": {`+"\n"+`    "enabled": true`, `"planning": {`+"\n"+`    "enabled": false`,
 	} {
 		if strings.Contains(localConfigTemplate, op) {
 			t.Errorf("localConfigTemplate contains operator-only or default-pinning key %s", op)
