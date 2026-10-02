@@ -174,7 +174,6 @@ func TestTree_MaxDepthLimit(t *testing.T) {
 	}
 }
 
-
 // ─── CountLines Empty File ────────────────────────────────────────────
 
 func TestGlob_RecursivePattern(t *testing.T) {

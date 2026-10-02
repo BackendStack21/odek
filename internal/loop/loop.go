@@ -632,6 +632,13 @@ type Engine struct {
 	// Zero means use the default (30s). Callers scale it off the resolved
 	// client timeout so slow providers don't silently lose the digest.
 	sideCallTimeout time.Duration
+	// verifyCfg configures the final-answer verification stage; zero value
+	// keeps it disabled. verifyClient optionally points the verification
+	// side calls at a cheaper model. verifyCyclesUsed counts corrective
+	// cycles consumed this run.
+	verifyCfg        VerifyConfig
+	verifyClient     *llmclient.Client
+	verifyCyclesUsed int
 
 	// budgetLimits holds the hard execution budgets for a run
 	// (odek-extension/v1 — see docs/EXTENSIONS.md). Zero value = no budgets.
@@ -3053,6 +3060,34 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 			// goes out. A reply that misreports side effects ("blocked",
 			// "no changes made") after they happened is worse than silence.
 			result.Content = e.appendCheckNotice(e.reconcileFinalReply(result.Content))
+
+			// Verification pass: before the answer is persisted or
+			// returned, a bounded side call checks it against the task.
+			if v, ran := e.runVerifyStage(ctx, messages, result.Content); ran {
+				e.verifyCyclesUsed++
+				if v.Verdict == "fail" {
+					if e.verifyCfg.Mode != VerifyModeStrict && e.verifyCyclesLeft() {
+						// Hint mode: corrective cycle — the loop
+						// continues instead of returning. The verdict
+						// prose is untrusted-wrapped in the system hint.
+						messages = append(messages, session.Message{
+							Role:             "assistant",
+							Content:          result.Content,
+							ReasoningContent: result.ReasoningContent,
+						})
+						messages = append(messages, session.Message{
+							Role:    "system",
+							Content: e.verifyCorrectiveText(v),
+						})
+						e.emitMessagesPersist(messages)
+						continue
+					}
+					// Strict mode, or hint mode out of cycles: the answer
+					// ships marked, so consumers are not misled. Verifier
+					// prose is never concatenated into the answer.
+					result.Content = VerifyFailedMarker + "\n\n" + result.Content
+				}
+			}
 
 			if e.renderer != nil && e.interactionMode != "off" {
 				// Show the model's reasoning for the final answer before the

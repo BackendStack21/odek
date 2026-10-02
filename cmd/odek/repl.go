@@ -206,6 +206,8 @@ func replCmd(args []string) error {
 		Stream:           resolved.Stream,
 		DeltaHandler:     streamDeltaPrinter(resolved.Stream, rend),
 		Compaction:       resolved.Compaction,
+		Verify:           verifyEngineCfg(resolved),
+		VerifyModel:      resolved.Verify.Model,
 		AnnounceBudget:   &resolved.AnnounceBudget,
 		Guard:            injectionGuard,
 		GuardConfig:      resolved.Guard,

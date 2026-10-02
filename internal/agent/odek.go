@@ -316,6 +316,15 @@ type Config struct {
 	// --no-compaction disables it); library users of New must opt in
 	// explicitly here.
 	Compaction bool
+
+	// Verify enables the engine-level final-answer verification pass
+	// (docs/CONFIG.md, section "verify"). When non-nil and enabled, a
+	// thinking-off side call checks the terminal answer against the task
+	// before it is returned; hint mode re-tries once, strict mode marks.
+	// VerifyModel optionally points the verifier at a cheaper model
+	// (empty keeps the agent's model/provider).
+	Verify      *loop.VerifyConfig
+	VerifyModel string
 }
 
 // Agent is the agent loop runtime.
@@ -656,6 +665,17 @@ func New(cfg Config) (_ *Agent, setupErr error) {
 		engine.SetDeltaHandler(cfg.DeltaHandler)
 	}
 	engine.SetCompaction(cfg.Compaction)
+	if cfg.Verify != nil && cfg.Verify.Enabled {
+		engine.SetVerify(*cfg.Verify)
+		if cfg.VerifyModel != "" {
+			if vc, err := llmclient.New(sdkInst, cfg.Provider, cfg.VerifyModel); err == nil {
+				vc.Thinking = "disabled"
+				engine.SetVerifyClient(vc)
+			} else {
+				log.Printf("odek: warning: verify model %q unavailable (%v); verification uses the main model", cfg.VerifyModel, err)
+			}
+		}
+	}
 	engine.SetLimits(cfg.Limits, cfg.Model)
 
 	// Wire the shared plan store: the plan tool (registered by the CLI layer

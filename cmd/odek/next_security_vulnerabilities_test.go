@@ -553,7 +553,6 @@ func TestBrowser_NavigateTimeout(t *testing.T) {
 	}
 }
 
-
 // ── 9. Transcribe must reject huge / symlinked audio inputs ──────────────
 
 func TestTranscribe_RejectsHugeFile(t *testing.T) {
@@ -871,7 +870,6 @@ printf '{"status":"success","summary":"%s","files_changed":[],"iterations":1,"to
 		t.Fatalf("delegate_tasks summary returned %d bytes, expected cap near 1 MiB", len(result))
 	}
 }
-
 
 func TestPatch_RejectsOutputExpansion(t *testing.T) {
 	dir := t.TempDir()

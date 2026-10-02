@@ -405,9 +405,76 @@ type SubagentConfig struct {
 	// disable the built-in default envelope. Operator-controlled (rejected
 	// from project-level ./odek.json like the rest of this section).
 	DefaultProfile string `json:"default_profile,omitempty"`
+	// Verify explicitly opts sub-agents into the final-answer verification
+	// pass. Same schema as the top-level verify section. Absent (the
+	// default) keeps sub-agent verification off — delegate_tasks never
+	// enables it implicitly, so N children cannot multiply verify cost.
+	Verify *VerifyFileConfig `json:"verify,omitempty"`
+}
+
+// VerifyFileConfig is the file-level "verify" section (docs/CONFIG.md).
+// Pointer fields distinguish "not set" from explicit values. Operator-only:
+// rejected from project-level ./odek.json.
+type VerifyFileConfig struct {
+	Enabled   *bool  `json:"enabled,omitempty"`
+	Mode      string `json:"mode,omitempty"`       // hint | strict | off
+	Model     string `json:"model,omitempty"`      // optional cheaper model
+	MaxCycles *int   `json:"max_cycles,omitempty"` // corrective re-try budget
+	MaxTokens *int   `json:"max_tokens,omitempty"` // auxiliary completion cap
+}
+
+// VerifyResolved is the resolved verification configuration. The zero value
+// is fully disabled; mode defaults to "hint" when enabled.
+type VerifyResolved struct {
+	Enabled   bool
+	Mode      string
+	Model     string
+	MaxCycles int
+	MaxTokens int
+}
+
+// verifyCyclesFileMax is the file-level ceiling on corrective cycles.
+const verifyCyclesFileMax = 3
+
+// resolveVerify merges the file-level verify section into a resolved value.
+// Absent section => disabled (no behavior change on upgrade).
+func resolveVerify(f *VerifyFileConfig) VerifyResolved {
+	var v VerifyResolved
+	if f == nil {
+		return v
+	}
+	if f.Enabled != nil {
+		v.Enabled = *f.Enabled
+	}
+	v.Mode = f.Mode
+	if v.Mode == "" {
+		v.Mode = "hint"
+	}
+	switch v.Mode {
+	case "hint", "strict", "off":
+	default:
+		fmt.Fprintf(os.Stderr, "odek: WARNING: unknown verify.mode %q; using \"hint\"\n", v.Mode)
+		v.Mode = "hint"
+	}
+	v.Model = f.Model
+	v.MaxCycles = 1
+	if f.MaxCycles != nil && *f.MaxCycles > 0 {
+		v.MaxCycles = *f.MaxCycles
+		if v.MaxCycles > verifyCyclesFileMax {
+			fmt.Fprintf(os.Stderr, "odek: WARNING: verify.max_cycles clamped to %d\n", verifyCyclesFileMax)
+			v.MaxCycles = verifyCyclesFileMax
+		}
+	}
+	v.MaxTokens = 0
+	if f.MaxTokens != nil && *f.MaxTokens > 0 {
+		v.MaxTokens = *f.MaxTokens
+	}
+	return v
 }
 
 // PlanningFileConfig is the "planning" section of odek.json. Pointer fields
+// distinguish "not set" (inherit the default) from explicit values so partial
+// sections merge field-by-field across the global/project layers.
 // distinguish "not set" from explicit values so partial sections merge
 // field-by-field across the global/project layers.
 type PlanningFileConfig struct {
@@ -648,6 +715,12 @@ type FileConfig struct {
 	// enabled:false and may only LOWER the caps (see clampProjectPlanning).
 	Planning *PlanningFileConfig `json:"planning,omitempty"`
 
+	// Verify configures the engine-level final-answer verification pass.
+	// Operator-only: rejected from project-level ./odek.json — a malicious
+	// repo must not be able to point the verifier at a different model or
+	// raise its cycle budget.
+	Verify *VerifyFileConfig `json:"verify,omitempty"`
+
 	// Background configures the bg_* tool family (background shell jobs
 	// scoped to the agent session). The global config may set anything;
 	// the project config may set enabled:false / notify:"off" and may
@@ -867,6 +940,10 @@ type ResolvedConfig struct {
 
 	// Planning is the resolved planning configuration (docs/PLANNING.md).
 	Planning PlanningConfig
+
+	// Verify is the resolved final-answer verification configuration
+	// (docs/CONFIG.md, section "verify"). Disabled by default.
+	Verify VerifyResolved
 
 	// Background is the resolved background-commands configuration
 	// (bg_* tool family; docs/CONFIG.md). Defaults on.
@@ -1466,6 +1543,9 @@ type SubagentResolved struct {
 	// selects none: DefaultProfileName (built-in), an operator-defined
 	// name, or DefaultProfileDisabled ("none" = no envelope).
 	DefaultProfile string
+	// Verify is the resolved sub-agent verification opt-in (absent section
+	// resolves fully disabled; sub-agents never verify implicitly).
+	Verify VerifyResolved
 }
 
 // resolveSubagent merges the file-level subagent section over the defaults.
@@ -1481,6 +1561,9 @@ func resolveSubagent(cfg *SubagentConfig) SubagentResolved {
 		AnnounceBudget: true,
 		BudgetInherit:  BudgetInheritOperator,
 		DefaultProfile: DefaultProfileName,
+	}
+	if cfg != nil && cfg.Verify != nil {
+		res.Verify = resolveVerify(cfg.Verify)
 	}
 	if cfg == nil {
 		return res
@@ -1769,6 +1852,13 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	if project.Subagent != nil {
 		fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring subagent from project config (%s); set it via ~/.odek/config.json\n", ProjectConfigPath())
 		project.Subagent = nil
+	}
+	// The verify section controls the final-answer verification pass,
+	// including which model runs it and its cycle budget. A malicious repo
+	// must not be able to point the verifier elsewhere or widen its cycles.
+	if project.Verify != nil {
+		fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring verify from project config (%s); set it via ~/.odek/config.json\n", ProjectConfigPath())
+		project.Verify = nil
 	}
 	// Profiles define permission envelopes. A malicious repo must not be
 	// able to author (or shadow) the operator's profiles.
@@ -2759,6 +2849,9 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	// fall back to the shipped defaults, mirroring the runtime's own
 	// fallback (newBackgroundRuntime).
 	resolved.Background = DefaultBackgroundConfig()
+	// Verification pass resolves from the operator-level verify section;
+	// absent section keeps it fully disabled.
+	resolved.Verify = resolveVerify(cfg.Verify)
 	if cfg.Background != nil {
 		if cfg.Background.Enabled != nil {
 			resolved.Background.Enabled = *cfg.Background.Enabled
