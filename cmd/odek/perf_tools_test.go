@@ -11,8 +11,6 @@ import (
 	"github.com/BackendStack21/odek/internal/danger"
 )
 
-
-
 // ── HTTPRequest Tests ───────────────────────────────────────────────────
 
 func TestHTTPRequest_InvalidURL(t *testing.T) {
@@ -191,7 +189,6 @@ func TestDiff_IdenticalFiles(t *testing.T) {
 		}
 	}
 }
-
 
 // ── JSONQuery Tests ───────────────────────────────────────────────────
 
@@ -889,7 +886,6 @@ func TestHeadTail_HeadTotalAccuracy(t *testing.T) {
 		t.Errorf("total = %d, want 100", r.Results[0].Total)
 	}
 }
-
 
 // ── Parallel Shell Timeout ──────────────────────────────────────────────
 

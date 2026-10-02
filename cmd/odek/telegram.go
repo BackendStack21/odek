@@ -1802,6 +1802,8 @@ func handleChatMessage(
 		Renderer:         rend,
 		PromptCaching:    resolved.PromptCaching,
 		Compaction:       resolved.Compaction,
+		Verify:           verifyEngineCfg(resolved),
+		VerifyModel:      resolved.Verify.Model,
 		AnnounceBudget:   &resolved.AnnounceBudget,
 		MemoryConfig:     resolved.Memory,
 		MemoryDir:        expandHome("~/.odek/memory"),

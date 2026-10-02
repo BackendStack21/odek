@@ -400,6 +400,27 @@ Compaction and iteration-budget progress summaries are **auxiliary** LLM calls: 
 |-------|---------|---------|----------|-------------|
 | `compaction` | `true` | `ODEK_COMPACTION` | `--compaction` / `--no-compaction` | Enable LLM-based rolling compaction of trimmed context. Each compaction costs one extra LLM call per trim. Set to `false` (or pass `--no-compaction`) to disable. |
 
+## Verification pass (`verify`)
+
+Before the loop returns a final answer, an optional verification stage checks it against the original task with a bounded, tool-less, thinking-off side call (the same auxiliary-call machinery as compaction digests). The verifier sees the task, a name+args trace of executed tool calls, and the candidate answer, and must return a JSON verdict: `{"verdict":"pass|fail","reasons":[...],"missing":[...]}`.
+
+- **hint** mode (default): a `fail` verdict injects a corrective system hint and the loop re-answers once (`max_cycles`, ceiling 3). Verifier prose is wrapped as untrusted content. If the cycle budget is exhausted, the answer still ships, prefixed with `[Verification failed — answer returned unverified]`.
+- **strict** mode: no corrective re-try; a failing answer is returned immediately with the same fixed marker prefix. Verifier prose is never concatenated into the answer.
+- Verification calls are budget-accounted like any LLM call; when the remaining budget cannot cover one, the stage is skipped (`skipped: budget`) and the run proceeds normally. A failed verifier call never fails the run — the answer ships unverified.
+- Events: `verification_started` / `verification_completed` (data: `verdict`, `cycles_used`, `skipped_reason?`) on the `odek.event/v1` stream.
+
+Disabled by default — an absent `verify` section changes nothing. **Operator-only**: the section is ignored (with a warning) in project-level `./odek.json`.
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `verify.enabled` | `false` | Master switch for the final-answer verification stage |
+| `verify.mode` | `hint` | `hint` (one bounded corrective re-try), `strict` (marker only), or `off` (stage disabled even when enabled) |
+| `verify.model` | *(agent model)* | Optional cheaper model for verification side calls (same provider/credentials as the main agent) |
+| `verify.max_cycles` | `1` | Corrective re-try budget; hard ceiling `3` |
+| `verify.max_tokens` | *(SDK side-call cap)* | Output cap for the verifier completion |
+
+Sub-agents never verify by default and `delegate_tasks` never enables it implicitly. Explicit opt-in only, under `subagent.verify` with the same fields.
+
 ## Planning (`planning`)
 
 Gives the agent a protected plan tool and a plan message that survives context trimming. On by default; accepted by `run`, `repl`, and `serve`.

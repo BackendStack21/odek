@@ -1503,6 +1503,13 @@ const globalConfigTemplate = `{
     "budget_inherit": "operator",
     "default_profile": "default"
   },
+  "verify": {
+    "enabled": false,
+    "mode": "hint",
+    "model": "",
+    "max_cycles": 1,
+    "max_tokens": 0
+  },
   "limits": {
     "max_runtime_seconds": 0,
     "max_tool_calls": 0,
@@ -1981,6 +1988,8 @@ func run(args []string) (outcome error) {
 		Stream:            resolved.Stream,
 		DeltaHandler:      streamDeltaPrinter(resolved.Stream, rend),
 		Compaction:        resolved.Compaction,
+		Verify:            verifyEngineCfg(resolved),
+		VerifyModel:       resolved.Verify.Model,
 		AnnounceBudget:    &resolved.AnnounceBudget,
 		MemoryDir:         expandHome("~/.odek/memory"),
 		MemoryConfig:      resolved.Memory,
@@ -2526,6 +2535,20 @@ type toolConfig struct {
 // here, not per call site.
 // applyResolvedProvider copies the v2 LLM identity (provider registry +
 // timeout/window) onto an odek.Config built from a ResolvedConfig.
+// verifyEngineCfg maps the resolved verify section onto the engine-level
+// verification configuration. Nil when disabled so library semantics stay
+// "absent = off".
+func verifyEngineCfg(resolved config.ResolvedConfig) *loop.VerifyConfig {
+	if !resolved.Verify.Enabled || resolved.Verify.Mode == "off" {
+		return nil
+	}
+	return &loop.VerifyConfig{
+		Enabled:   true,
+		Mode:      resolved.Verify.Mode,
+		MaxCycles: resolved.Verify.MaxCycles,
+	}
+}
+
 func applyResolvedProvider(cfg *odek.Config, resolved config.ResolvedConfig) {
 	if resolved.Logging.Enabled {
 		opts := loggingOptions(resolved.Logging, cfg.RuntimeLogSurface)
@@ -3370,6 +3393,8 @@ func continueCmd(args []string) (outcome error) {
 		PromptCaching:    resolved.PromptCaching,
 		Stream:           resolved.Stream,
 		Compaction:       resolved.Compaction,
+		Verify:           verifyEngineCfg(resolved),
+		VerifyModel:      resolved.Verify.Model,
 		AnnounceBudget:   &resolved.AnnounceBudget,
 		MemoryDir:        expandHome("~/.odek/memory"),
 		MemoryConfig:     resolved.Memory,

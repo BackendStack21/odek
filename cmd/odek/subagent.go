@@ -1142,6 +1142,14 @@ func subagentCmd(args []string) error {
 			}
 		}
 	}
+	if resolved.Subagent.Verify.Enabled {
+		subVerify := &loop.VerifyConfig{
+			Enabled:   true,
+			Mode:      resolved.Subagent.Verify.Mode,
+			MaxCycles: resolved.Subagent.Verify.MaxCycles,
+		}
+		aCfg.Verify = subVerify
+	}
 	if aCfg.EventContext.SessionID == "" {
 		aCfg.EventContext.SessionID = cfg.parentSession
 	}

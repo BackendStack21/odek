@@ -997,6 +997,8 @@ func newServeAgent(resolved config.ResolvedConfig, system string, runKey string,
 		// config "prompt_caching": false. Library odek.New stays opt-in.
 		PromptCaching:  resolved.PromptCaching,
 		Compaction:     resolved.Compaction,
+		Verify:         verifyEngineCfg(resolved),
+		VerifyModel:    resolved.Verify.Model,
 		AnnounceBudget: &resolved.AnnounceBudget,
 		// Live streaming: forward SSE fragments to the browser as
 		// thinking_delta / token_delta events (docs/STREAMING.md). Default
