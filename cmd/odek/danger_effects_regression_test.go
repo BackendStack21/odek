@@ -86,6 +86,21 @@ func TestDangerEffectsDenialSurvivesOtherAllowedClasses(t *testing.T) {
 	}
 }
 
+func TestDangerEffectsNonUTF8UnreadScript(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	if err := os.WriteFile("program", append([]byte{'#', 0xff, '\n'}, []byte("printf marker > marker\n")...), 0700); err != nil {
+		t.Fatal(err)
+	}
+	st := &shellTool{dangerousConfig: danger.DangerousConfig{Classes: map[danger.RiskClass]danger.Action{danger.CodeExecution: danger.Allow, danger.UnreadExec: danger.Deny}}}
+	if _, err := st.Call(`{"command":"./program"}`); err == nil {
+		t.Fatal("non-UTF-8 script bypassed unread denial")
+	}
+	if _, err := os.Stat("marker"); !os.IsNotExist(err) {
+		t.Fatal("denied script wrote its marker")
+	}
+}
+
 func TestDangerEffectsShellGate(t *testing.T) {
 	dir := t.TempDir()
 	t.Chdir(dir)

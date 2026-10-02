@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"unicode/utf8"
 )
 
 // ── Read ledger + unread-script execution gate ────────────────────
@@ -386,7 +385,7 @@ func executableTextFile(path string) bool {
 	if err != nil && err != io.EOF {
 		return false
 	}
-	return n > 0 && !strings.ContainsRune(string(head[:n]), 0) && utf8.Valid(head[:n])
+	return n > 0 && !strings.ContainsRune(string(head[:n]), 0)
 }
 
 func fileHasShebang(path string) bool {

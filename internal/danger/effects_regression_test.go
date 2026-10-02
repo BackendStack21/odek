@@ -173,6 +173,9 @@ func TestEffectsStateAndHelperSpellings(t *testing.T) {
 	if executableTextFile("missing") {
 		t.Fatal("missing file treated as executable text")
 	}
+	if executableTextFile(".") {
+		t.Fatal("directory treated as executable text")
+	}
 	if err := os.WriteFile("binary", []byte{0x7f, 'E', 'L', 'F', 0}, 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -184,6 +187,12 @@ func TestEffectsStateAndHelperSpellings(t *testing.T) {
 	}
 	if executableTextFile("empty") {
 		t.Fatal("empty file treated as shell text")
+	}
+	if err := os.WriteFile("non-utf8", []byte{'#', 0xff, '\n', 'e', 'c', 'h', 'o', ' ', 'o', 'k', '\n'}, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if !executableTextFile("non-utf8") || len(UnreadScriptTargets("./non-utf8")) != 1 {
+		t.Fatal("non-UTF-8 shell text escaped unread provenance")
 	}
 	if err := os.Symlink("cycle", "cycle"); err != nil {
 		t.Fatal(err)
