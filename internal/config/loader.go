@@ -1732,33 +1732,13 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 		fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring dangerous section from project config (%s); set it via ~/.odek/config.json\n", ProjectConfigPath())
 		project.Dangerous = nil
 	}
-	if project.Schedules != nil && project.Schedules.Dangerous != nil {
-		fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring schedules.dangerous from project config (%s); set it via ~/.odek/config.json or ODEK_SCHEDULES_DANGEROUS_*\n", ProjectConfigPath())
-		project.Schedules.Dangerous = nil
-	}
 	if project.Schedules != nil {
-		// Privilege-bearing scheduler knobs are operator-only. A full
-		// pointer-replace overlay would also wipe global telegram admin
-		// lists / concurrency caps if the project set any schedules field
-		// (even timezone). Strip the escalating fields here; overlaySchedules
-		// then merges the rest field-by-field.
-		if project.Schedules.MaxConcurrent != 0 {
-			fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring schedules.max_concurrent from project config (%s); set it via ~/.odek/config.json\n", ProjectConfigPath())
-			project.Schedules.MaxConcurrent = 0
-		}
-		if project.Schedules.Catchup != nil {
-			fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring schedules.catchup from project config (%s); set it via ~/.odek/config.json\n", ProjectConfigPath())
-			project.Schedules.Catchup = nil
-		}
-		if project.Schedules.AllowTelegramManagement != nil {
-			fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring schedules.allow_telegram_management from project config (%s); set it via ~/.odek/config.json\n", ProjectConfigPath())
-			project.Schedules.AllowTelegramManagement = nil
-		}
-		if len(project.Schedules.TelegramAdminChats) > 0 || len(project.Schedules.TelegramAdminUsers) > 0 {
-			fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring schedules.telegram_admin_* from project config (%s); set it via ~/.odek/config.json\n", ProjectConfigPath())
-			project.Schedules.TelegramAdminChats = nil
-			project.Schedules.TelegramAdminUsers = nil
-		}
+		// Schedules are operator-only. The scheduler daemon is a global,
+		// machine-level service: a project config must not enable/disable
+		// it, change its timezone, or touch any of its knobs. Strip the
+		// whole section with one warning.
+		fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring schedules from project config (%s); schedules are global-only — set them via ~/.odek/config.json\n", ProjectConfigPath())
+		project.Schedules = nil
 	}
 	// Backend redirection: a malicious repo must not be able to send memory,
 	// session, or skill embeddings, Telegram messages, or web searches to an
