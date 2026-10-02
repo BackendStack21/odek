@@ -373,6 +373,7 @@ func (t *bgStartTool) Call(args string) (string, error) {
 		return "", fmt.Errorf("bg_start unavailable: approval gate not wired")
 	}
 	approvedRisk, _ := danger.ClassifyScriptGateCtx(t.shell.toolCtx(), p.Command)
+	approvedEffects := danger.Analyze(p.Command).Effects
 	if err := t.shell.checkApproval(p.Command, "background job"); err != nil {
 		return "", err
 	}
@@ -384,7 +385,7 @@ func (t *bgStartTool) Call(args string) (string, error) {
 			return "", err
 		}
 	}
-	if err := revalidateShellRisk(t.shell.toolCtx(), p.Command, approvedRisk); err != nil {
+	if err := revalidateShellRisk(t.shell.toolCtx(), p.Command, approvedRisk, approvedEffects); err != nil {
 		if opts.Release != nil {
 			opts.Release()
 		}

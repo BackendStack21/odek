@@ -3296,8 +3296,26 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 				}
 				// Check the user's configured action for this risk class.
 				// If the DangerousConfig says Allow, skip it — no approval needed.
-				if e.dangerousCfg != nil && e.dangerousCfg.ActionFor(risk) == danger.Allow {
-					continue // auto-allowed by config, no batch approval needed
+				if e.dangerousCfg != nil {
+					action := e.dangerousCfg.ActionFor(risk)
+					if tc.Function.Name == "shell" || tc.Function.Name == "terminal" || tc.Function.Name == "bg_start" {
+						var command struct {
+							Command string `json:"command"`
+						}
+						if json.Unmarshal([]byte(tc.Function.Arguments), &command) == nil {
+							action = e.dangerousCfg.ActionForCommand(command.Command)
+							_, targets := danger.ClassifyScriptGateCtx(ctx, command.Command)
+							if action != danger.Deny && len(targets) > 0 && e.dangerousCfg.ActionFor(danger.UnreadExec) != danger.Allow {
+								action = e.dangerousCfg.ActionFor(danger.UnreadExec)
+								risk = danger.UnreadExec
+							} else if action == danger.Prompt {
+								risk = e.dangerousCfg.PromptClassForCommand(command.Command)
+							}
+						}
+					}
+					if action == danger.Allow {
+						continue
+					}
 				}
 				// Without DangerousConfig, fall back to blocking: include the tool
 				// so the batch gate plays safe and prompts.

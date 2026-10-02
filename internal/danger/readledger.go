@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"unicode/utf8"
 )
 
 // ── Read ledger + unread-script execution gate ────────────────────
@@ -363,13 +364,29 @@ func looksLikeScriptFile(tok string, interpreterOperand bool) bool {
 		// ./tool or /abs/tool with a shebang: executed regardless of
 		// suffix. Without a shebang an interpreter still runs the file
 		// via the ENOEXEC fallback (bash ./no-shebang), so gate it there
-		// too. Direct invocation of a shebang-less file keeps the old
-		// bar: a compiled binary has no shebang either, and exec-ing it
-		// is not script interpretation.
-		return interpreterOperand || fileHasShebang(path)
+		// too. Direct invocation also recognizes extensionless text because
+		// the shell can interpret it after ENOEXEC; binary files retain
+		// execution policy without being treated as text scripts.
+		return interpreterOperand || fileHasShebang(path) || executableTextFile(path)
 	}
 	ext := strings.ToLower(filepath.Ext(path))
 	return scriptFileExtensions[ext]
+}
+
+// ENOEXEC lets a shell execute extensionless text without a shebang. Binary
+// executables retain their code-execution classification without text provenance.
+func executableTextFile(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	var head [512]byte
+	n, err := f.Read(head[:])
+	if err != nil && err != io.EOF {
+		return false
+	}
+	return n > 0 && !strings.ContainsRune(string(head[:n]), 0) && utf8.Valid(head[:n])
 }
 
 func fileHasShebang(path string) bool {
@@ -401,39 +418,16 @@ func UnreadScriptTargetsCtx(ctx context.Context, cmd string) []string {
 }
 
 func unreadScriptTargetsKey(key, cmd string) []string {
-	cmd = strings.TrimSpace(cmd)
-	if cmd == "" {
-		return nil
-	}
-	main, subs := normalize(cmd)
 	var out []string
-	seen := make(map[string]bool)
-	collect := func(c string) {
-		for _, t := range unreadTargetsOne(key, c) {
-			if !seen[t] {
-				seen[t] = true
-				out = append(out, t)
-			}
-		}
-	}
-	collect(main)
-	for _, s := range subs {
-		collect(s)
-	}
-	return out
-}
-
-func unreadTargetsOne(key, cmd string) []string {
-	var out []string
-	for _, seg := range splitSegments(tokenize(cmd)) {
-		for _, stage := range splitPipes(seg) {
-			out = append(out, unreadTargetsStage(key, stage)...)
+	for _, path := range Analyze(cmd).ExecutionFiles {
+		if !wasReadFreshKey(key, path) {
+			out = append(out, path)
 		}
 	}
 	return out
 }
 
-func unreadTargetsStage(key string, stage []string) []string {
+func stageExecutionFiles(stage []string, cwd string) []string {
 	if len(stage) == 0 {
 		return nil
 	}
@@ -443,6 +437,10 @@ func unreadTargetsStage(key string, stage []string) []string {
 	}
 	name := commandName(cmdTokens[0])
 	operands := cmdTokens[1:]
+	helperTargets := executionFileTargets(name, cmdTokens)
+	if interpreterIsSyntaxCheck(name, cmdTokens) {
+		return nil
+	}
 
 	isExec := false
 	// interpreterStage marks stages where the interpreter itself decides how
@@ -460,9 +458,20 @@ func unreadTargetsStage(key string, stage []string) []string {
 	case strings.Contains(cmdTokens[0], "/"):
 		// Direct invocation: ./scripts/build.sh, path/to/tool
 		isExec = true
-		operands = cmdTokens // the script itself is the first operand
+		operands = cmdTokens[:1] // the direct execution target
 	case scriptFileExtensions[strings.ToLower(filepath.Ext(name))]:
 		isExec = true
+	}
+	if len(helperTargets) > 0 {
+		if name == "node" && hasAny(cmdTokens, "--check", "-c") {
+			operands = helperTargets
+		} else if isExec {
+			operands = append(append([]string(nil), operands...), helperTargets...)
+		} else {
+			operands = helperTargets
+		}
+		isExec = true
+		interpreterStage = true
 	}
 	if !isExec {
 		return nil
@@ -473,20 +482,17 @@ func unreadTargetsStage(key string, stage []string) []string {
 		if tok == "-c" || tok == "-e" || tok == "-m" || tok == "-s" {
 			continue // inline payload / module flags — not file execution
 		}
-		if looksLikeScriptFile(tok, interpreterStage) {
-			// Freshness is checked against the EXPANDED path — that is what
-			// RecordRead ledgers (cat $HOME/env.sh records the absolute
-			// path). Checking the raw token made a read of the same file
-			// invisible to the gate and re-gated it.
-			abs, err := filepath.Abs(expandShellTokenPath(tok))
-			if err != nil {
-				continue
-			}
-			abs = filepath.Clean(abs)
-			if !wasReadFreshKey(key, abs) {
-				out = append(out, abs)
-			}
+		if strings.HasPrefix(tok, "-") || strings.Contains(tok, "://") {
+			continue
 		}
+		path := expandShellTokenPath(tok)
+		if !filepath.IsAbs(path) {
+			path = filepath.Join(cwd, path)
+		}
+		if looksLikeScriptFile(path, interpreterStage) {
+			out = append(out, filepath.Clean(path))
+		}
+
 	}
 	return out
 }

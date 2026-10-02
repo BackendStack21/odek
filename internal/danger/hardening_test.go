@@ -291,12 +291,12 @@ func TestHardening_NoRegressionOnBenign(t *testing.T) {
 		{"env FOO=bar go version", Safe},
 		{"env FOO=bar printenv FOO", Safe},
 		{"find . -name '*.go'", Safe},
-		{"git status", Safe},
+		{"git status", CodeExecution},
 		{"ls -la /tmp", Safe},
 		{"cat main.go", Safe},
 		{"rm -rf node_modules", LocalWrite},
 		{"echo hi", Safe},
-		{"timeout 30 go test ./...", Safe},
+		{"timeout 30 go test ./...", CodeExecution},
 	}
 	for _, tc := range cases {
 		if got := Classify(tc.cmd); got != tc.cls {
@@ -423,14 +423,14 @@ func TestHardening_GitDataLossVerbs(t *testing.T) {
 		{"git clean -fdx -n", Safe},
 		{"git reset", Safe},
 		{"git reset --soft HEAD~1", Safe},
-		{"git checkout main", Safe},
-		{"git checkout -b feature", Safe},
-		{"git restore --staged file", Safe},
+		{"git checkout main", CodeExecution},
+		{"git checkout -b feature", CodeExecution},
+		{"git restore --staged file", CodeExecution},
 		{"git branch -d feature", Safe},
-		{"git stash", Safe},
-		{"git stash pop", Safe},
+		{"git stash", CodeExecution},
+		{"git stash pop", CodeExecution},
 		{"git reflog", Safe},
-		{"git status", Safe},
+		{"git status", CodeExecution},
 	}
 	for _, tc := range cases {
 		if got := Classify(tc.cmd); got != tc.cls {

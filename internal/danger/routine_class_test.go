@@ -2,23 +2,22 @@ package danger
 
 import "testing"
 
-// Routine workspace tools must follow effect, not "this binary is scary."
-// Prompt/deny is reserved for hard-to-undo or executing work; reversible
-// local porcelain stays allow (safe / local_write / network_egress).
-func TestClassify_RoutineWorkspaceToolsStayAllow(t *testing.T) {
+// Workspace tools retain their actual execution, mutation and network effects.
+// Routine use does not turn project code or helper execution into inspection.
+func TestClassify_RoutineWorkspaceToolsFollowEffects(t *testing.T) {
 	tests := []struct {
 		cmd string
 		cls RiskClass
 	}{
 		// Compile/test matches go build / go test.
-		{"cargo build", Safe},
-		{"cargo build --release", Safe},
-		{"cargo test", Safe},
-		{"cargo check", Safe},
-		{"cargo clippy", Safe},
+		{"cargo build", CodeExecution},
+		{"cargo build --release", CodeExecution},
+		{"cargo test", CodeExecution},
+		{"cargo check", CodeExecution},
+		{"cargo clippy", CodeExecution},
 		{"cargo fmt", Safe},
-		{"go test ./...", Safe},
-		{"go build -o bin/x .", Safe},
+		{"go test ./...", CodeExecution},
+		{"go build -o bin/x .", CodeExecution},
 
 		// Workspace file mutation, including verbs that used to fall
 		// through to unknown (deny) because they were missing from
@@ -27,18 +26,18 @@ func TestClassify_RoutineWorkspaceToolsStayAllow(t *testing.T) {
 		{"chown user file", LocalWrite},
 		{"chgrp staff file", LocalWrite},
 		{"install bin/x dest", LocalWrite},
-		{"tar -tzf archive.tar.gz", LocalWrite},
+		{"tar -tzf archive.tar.gz", Safe},
 		{"tar -xzf archive.tar.gz", LocalWrite},
-		{"unzip -l file.zip", LocalWrite},
+		{"unzip -l file.zip", Safe},
 		{"unzip file.zip", LocalWrite},
 		{"gzip -d f.gz", LocalWrite},
 		{"gunzip f.gz", LocalWrite},
 
 		// Process signals except init/broadcast.
-		{"kill 123", Safe},
-		{"kill -9 123", Safe},
-		{"pkill x", Safe},
-		{"killall x", Safe},
+		{"kill 123", LocalWrite},
+		{"kill -9 123", LocalWrite},
+		{"pkill x", LocalWrite},
+		{"killall x", LocalWrite},
 
 		// Docker inspect / lifecycle. compose down without -v is
 		// disposable container state, like git rm.
@@ -48,9 +47,9 @@ func TestClassify_RoutineWorkspaceToolsStayAllow(t *testing.T) {
 		{"docker inspect ctr", Safe},
 		{"docker compose ps", Safe},
 		{"docker compose -f compose.yml ps", Safe},
-		{"docker compose down", Safe},
-		{"docker stop ctr", Safe},
-		{"docker rm ctr", Safe},
+		{"docker compose down", LocalWrite},
+		{"docker stop ctr", LocalWrite},
+		{"docker rm ctr", LocalWrite},
 		{"docker --version", Safe},
 
 		// uv inspect
@@ -59,27 +58,27 @@ func TestClassify_RoutineWorkspaceToolsStayAllow(t *testing.T) {
 
 		// Language toolchains: compile / format / lint.
 		{"gofmt -l .", Safe},
-		{"gofmt -w .", Safe},
-		{"goimports -w .", Safe},
-		{"golangci-lint run", Safe},
+		{"gofmt -w .", LocalWrite},
+		{"goimports -w .", LocalWrite},
+		{"golangci-lint run", CodeExecution},
 		{"staticcheck ./...", Safe},
 		{"rustc --version", Safe},
-		{"rustc src/main.rs", Safe},
-		{"rustfmt src/main.rs", Safe},
-		{"gcc -o a a.c", Safe},
-		{"clang -o a a.c", Safe},
-		{"tsc --noEmit", Safe},
-		{"eslint src", Safe},
-		{"prettier --write .", Safe},
+		{"rustc src/main.rs", CodeExecution},
+		{"rustfmt src/main.rs", LocalWrite},
+		{"gcc -o a a.c", LocalWrite},
+		{"clang -o a a.c", LocalWrite},
+		{"tsc --noEmit", CodeExecution},
+		{"eslint src", CodeExecution},
+		{"prettier --write .", CodeExecution},
 		{"ruff check .", Safe},
-		{"black .", Safe},
-		{"mypy src", Safe},
-		{"javac Main.java", Safe},
+		{"black .", LocalWrite},
+		{"mypy src", CodeExecution},
+		{"javac Main.java", CodeExecution},
 		{"cmake --version", Safe},
-		{"mvn test", Safe},
-		{"gradle test", Safe},
-		{"dotnet build", Safe},
-		{"dotnet test", Safe},
+		{"mvn test", CodeExecution},
+		{"gradle test", CodeExecution},
+		{"dotnet build", CodeExecution},
+		{"dotnet test", CodeExecution},
 		{"java -version", Safe},
 
 		// More archives + patch.
@@ -88,7 +87,7 @@ func TestClassify_RoutineWorkspaceToolsStayAllow(t *testing.T) {
 		{"bzip2 -d f.bz2", LocalWrite},
 		{"zstd -d f.zst", LocalWrite},
 		{"7z x archive.7z", LocalWrite},
-		{"7z l archive.7z", LocalWrite},
+		{"7z l archive.7z", Safe},
 		{"unrar x archive.rar", LocalWrite},
 		{"patch -p1 < diff.patch", LocalWrite},
 
@@ -134,16 +133,16 @@ func TestClassify_RoutineWorkspaceToolsStayAllow(t *testing.T) {
 		{"php -l file.php", Safe},
 		{"ruby -c file.rb", Safe},
 		{"node --check file.js", Safe},
-		{"rubocop", Safe},
-		{"stylua src", Safe},
-		{"shfmt -w .", Safe},
+		{"rubocop", CodeExecution},
+		{"stylua src", LocalWrite},
+		{"shfmt -w .", LocalWrite},
 		{"shellcheck script.sh", Safe},
 		{"hadolint Dockerfile", Safe},
 		{"yamllint .", Safe},
-		{"swiftc main.swift", Safe},
+		{"swiftc main.swift", CodeExecution},
 		{"swift --version", Safe},
-		{"swift build", Safe},
-		{"kotlinc Hello.kt", Safe},
+		{"swift build", CodeExecution},
+		{"kotlinc Hello.kt", CodeExecution},
 		{"ffprobe in.mp4", Safe},
 		{"identify in.png", Safe},
 		{"sqlite3 --version", Safe},
@@ -171,7 +170,7 @@ func TestClassify_RoutineWorkspaceToolsStayAllow(t *testing.T) {
 		{"iconv -f utf-8 -t ascii", Safe},
 		{"sysctl -a", Safe},
 		{"sync", Safe},
-		{"ccache gcc -c a.c", Safe},
+		{"ccache gcc -c a.c", LocalWrite},
 		{"strace ls", Safe},
 		{"strace -e open ls", Safe},
 		{"redis-cli --version", Safe},
@@ -194,8 +193,8 @@ func TestClassify_RoutineWorkspaceToolsStayAllow(t *testing.T) {
 		if got != tt.cls {
 			t.Errorf("Classify(%q) = %s, want %s", tt.cmd, got, tt.cls)
 		}
-		if act := cfg.ActionForCommand(tt.cmd); act != Allow {
-			t.Errorf("ActionForCommand(%q) = %s, want allow (class %s)", tt.cmd, act, got)
+		if act := cfg.ActionForCommand(tt.cmd); act != cfg.ActionFor(tt.cls) {
+			t.Errorf("ActionForCommand(%q) = %s, want the default action for class %s", tt.cmd, act, got)
 		}
 	}
 }
