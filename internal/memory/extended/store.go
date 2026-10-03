@@ -36,6 +36,16 @@ type AtomStore struct {
 	chunksDir string
 	atomsFile string
 	mu        sync.RWMutex
+	// chunk cache: atom ID → (chunk mtime when loaded, text). Recall queries
+	// List() every atom; the cache turns each repeated read into one Stat.
+	// Mirrors the mtime-keyed index cache used by the episode store.
+	chunkCache   map[string]chunkCacheEntry
+	chunkCacheMu sync.Mutex
+}
+
+type chunkCacheEntry struct {
+	mtime time.Time
+	text  string
 }
 
 // NewAtomStore creates an AtomStore rooted at dir (e.g. ~/.odek/memory/extended).
@@ -181,6 +191,11 @@ func (s *AtomStore) Remove(id string) error {
 			filtered = append(filtered, m)
 		}
 	}
+	// Drop the cache entry so a recreated atom with a coincidentally equal
+	// mtime cannot serve stale text.
+	s.chunkCacheMu.Lock()
+	delete(s.chunkCache, id)
+	s.chunkCacheMu.Unlock()
 	if len(filtered) == len(metas) {
 		return fmt.Errorf("extended store: atom %s not found", id)
 	}
@@ -206,7 +221,7 @@ func (s *AtomStore) List() ([]MemoryAtom, error) {
 
 	atoms := make([]MemoryAtom, 0, len(metas))
 	for _, meta := range metas {
-		text, err := os.ReadFile(s.chunkPath(meta.ID))
+		text, err := s.chunkText(meta.ID)
 		if err != nil {
 			continue
 		}
@@ -391,6 +406,36 @@ func (s *AtomStore) sizeLocked() (int64, error) {
 
 func (s *AtomStore) chunkPath(id string) string {
 	return filepath.Join(s.chunksDir, id+".md")
+}
+
+// chunkText reads an atom chunk through the mtime-keyed cache: a repeated
+// List (each recall query) costs one Stat per unchanged atom instead of a
+// full file read. External edits change the mtime and are picked up.
+func (s *AtomStore) chunkText(id string) (string, error) {
+	path := s.chunkPath(id)
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", err
+	}
+	s.chunkCacheMu.Lock()
+	if c, ok := s.chunkCache[id]; ok && c.mtime.Equal(info.ModTime()) {
+		s.chunkCacheMu.Unlock()
+		return c.text, nil
+	}
+	s.chunkCacheMu.Unlock()
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	text := string(data)
+	s.chunkCacheMu.Lock()
+	if s.chunkCache == nil {
+		s.chunkCache = make(map[string]chunkCacheEntry)
+	}
+	s.chunkCache[id] = chunkCacheEntry{mtime: info.ModTime(), text: text}
+	s.chunkCacheMu.Unlock()
+	return text, nil
 }
 
 // dirLocks serializes mutations across AtomStore instances that share the same

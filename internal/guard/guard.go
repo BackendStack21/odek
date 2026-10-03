@@ -36,7 +36,7 @@ type Config struct {
 	BatchURL        string      `json:"batch_url,omitempty"`         // e.g. http://127.0.0.1:8080/raw
 	SocketPath      string      `json:"socket_path,omitempty"`       // /tmp/piguard.sock (unix mode)
 	Threshold       float64     `json:"threshold,omitempty"`         // default 0.9
-	TimeoutSeconds  int         `json:"timeout_seconds,omitempty"`   // default 5
+	TimeoutSeconds  int         `json:"timeout_seconds,omitempty"`   // default 1
 	FallbackToLocal *bool       `json:"fallback_to_local,omitempty"` // default true
 	MaxTextLength   int         `json:"max_text_length,omitempty"`   // default 0 = unlimited
 	Scan            *ScanConfig `json:"scan,omitempty"`              // per-subsystem toggles
@@ -60,7 +60,7 @@ func DefaultConfig() *Config {
 	return &Config{
 		Provider:        ProviderLocal,
 		Threshold:       0.9,
-		TimeoutSeconds:  5,
+		TimeoutSeconds:  1,
 		FallbackToLocal: boolPtr(true),
 		Scan:            DefaultScanConfig(),
 	}
@@ -157,9 +157,12 @@ func IsEnabled(cfg *ScanConfig, scope string) bool {
 }
 
 // timeout returns the configured timeout as a duration, with a safe default.
+// The default is 1s: the guard is a warning-only sidecar, so a hung or
+// overloaded sidecar must not add 5s of latency to every tool result. It
+// remains operator-overridable via guard.timeout_seconds / --guard-timeout.
 func timeout(cfg *Config) time.Duration {
 	if cfg == nil || cfg.TimeoutSeconds <= 0 {
-		return 5 * time.Second
+		return 1 * time.Second
 	}
 	return time.Duration(cfg.TimeoutSeconds) * time.Second
 }

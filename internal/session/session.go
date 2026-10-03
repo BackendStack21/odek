@@ -205,6 +205,29 @@ type Store struct {
 	dir string // e.g. /home/user/.odek/sessions/
 	mu  sync.Mutex
 
+	// marshalCount counts session marshals performed by saveLocked. It
+	// exists to let tests assert the single-marshal-per-save contract;
+	// reads/writes happen under mu.
+	marshalCount int
+
+	// indexDiskReads counts how many times loadIndex actually read
+	// index.json from disk (cache misses). Test observability only;
+	// guarded by idxMu.
+	indexDiskReads int
+
+	// idxMu guards the index cache below. It is a separate lock because
+	// Latest/List read the index without holding mu; lock order when both
+	// are held: mu → idxMu.
+	idxMu sync.Mutex
+	// idxCache is the parsed index keyed by session id, with idxMod/idxSize
+	// stamping the on-disk file it was built from. Any observable change to
+	// index.json (mtime or size) triggers a reload, so an index rewritten by
+	// another odek process is picked up on the next load.
+	idxCache map[string]*IndexEntry
+	idxLoaded bool
+	idxMod    time.Time
+	idxSize   int64
+
 	// trimWarned records session IDs for which the write-path size-cap trim
 	// warning has already been emitted, so the warning fires once per session
 	// per process instead of on every Append of an oversized session.
@@ -380,23 +403,58 @@ func (s *Store) indexPath() string {
 	return filepath.Join(s.dir, indexFile)
 }
 
-// loadIndex reads the session index from disk.
-// Returns an empty map if the index doesn't exist or can't be parsed
-// (backward compat with existing session directories that have no index).
+// loadIndex returns the session index, using the in-memory cache whenever
+// index.json is unchanged on disk (mtime+size stamp). The returned map is a
+// fresh copy: callers mutate it freely without corrupting the cache.
+// Backward compatible with session directories that have no index (empty map).
 func (s *Store) loadIndex() map[string]*IndexEntry {
+	s.idxMu.Lock()
+	defer s.idxMu.Unlock()
+	if s.idxCache == nil {
+		s.idxCache = make(map[string]*IndexEntry)
+	}
+	info, err := os.Stat(s.indexPath())
+	if err != nil {
+		// File gone (or unreadable): reset to empty so callers observe the
+		// absence instead of stale cached entries.
+		s.idxCache = make(map[string]*IndexEntry)
+		s.idxLoaded = false
+		s.idxMod, s.idxSize = time.Time{}, 0
+		s.indexDiskReads++
+		return make(map[string]*IndexEntry)
+	}
+	if info.ModTime().Equal(s.idxMod) && info.Size() == s.idxSize && s.idxLoaded {
+		return copyIndex(s.idxCache)
+	}
+	s.indexDiskReads++
 	data, err := os.ReadFile(s.indexPath())
 	if err != nil {
 		return make(map[string]*IndexEntry)
 	}
 	var entries []*IndexEntry
-	if err := json.Unmarshal(data, &entries); err != nil {
-		return make(map[string]*IndexEntry)
+	m := make(map[string]*IndexEntry)
+	if err := json.Unmarshal(data, &entries); err == nil {
+		for _, e := range entries {
+			m[e.ID] = e
+		}
 	}
-	m := make(map[string]*IndexEntry, len(entries))
-	for _, e := range entries {
-		m[e.ID] = e
+	// Parse failures keep the previous stamp uncached so a later, valid
+	// rewrite is always re-read.
+	if err == nil {
+		s.idxCache = m
+		s.idxLoaded = true
+		s.idxMod, s.idxSize = info.ModTime(), info.Size()
 	}
-	return m
+	return copyIndex(m)
+}
+
+func copyIndex(m map[string]*IndexEntry) map[string]*IndexEntry {
+	out := make(map[string]*IndexEntry, len(m))
+	for k, v := range m {
+		e := *v
+		out[k] = &e
+	}
+	return out
 }
 
 // fileLock acquires an exclusive flock on sessions.lock so index.json
@@ -411,8 +469,9 @@ func (s *Store) fileLock() (func(), error) {
 	return rel, nil
 }
 
-// saveIndexLocked atomically writes the index to disk.
-// Caller must hold s.mu.
+// saveIndexLocked atomically writes the index to disk and refreshes the
+// in-memory cache. Caller must hold s.mu. idx is owned by the caller; the
+// store keeps its own copy.
 func (s *Store) saveIndexLocked(idx map[string]*IndexEntry) error {
 	entries := make([]*IndexEntry, 0, len(idx))
 	for _, e := range idx {
@@ -424,6 +483,13 @@ func (s *Store) saveIndexLocked(idx map[string]*IndexEntry) error {
 	}
 	if err := fsatomic.WriteFile(s.indexPath(), data, 0600); err != nil {
 		return fmt.Errorf("session: write index: %w", err)
+	}
+	if info, err := os.Stat(s.indexPath()); err == nil {
+		s.idxMu.Lock()
+		s.idxCache = copyIndex(idx)
+		s.idxLoaded = true
+		s.idxMod, s.idxSize = info.ModTime(), info.Size()
+		s.idxMu.Unlock()
 	}
 	return nil
 }
@@ -684,6 +750,17 @@ func (s *Store) saveLocked(sess *Session) (err error) {
 		sess.Messages[i].ReasoningContent = redact.RedactSecrets(sess.Messages[i].ReasoningContent)
 	}
 
+	// Set the redact boundary (and its fingerprint anchor) BEFORE the
+	// marshal: every message below the boundary was redacted by earlier
+	// saves and the rest just above, so the boundary is simply the surviving
+	// count — and setting it first lets an ordinary (under-cap) save marshal
+	// the transcript exactly once instead of twice.
+	sess.RedactBoundary = len(sess.Messages)
+	sess.RedactBoundaryFP = ""
+	if n := len(sess.Messages); n > 0 {
+		sess.RedactBoundaryFP = redactMessageFP(sess.Messages[n-1])
+	}
+	s.marshalCount++
 	data, err := json.Marshal(sess)
 	if err != nil {
 		return fmt.Errorf("session: marshal: %w", err)
@@ -693,10 +770,10 @@ func (s *Store) saveLocked(sess *Session) (err error) {
 	// session allowed to grow past it on disk would become unloadable. Trim
 	// the oldest message groups (keeping the system message at index 0 and
 	// the most recent turns, mirroring the loop's trim semantics) until the
-	// serialized form fits.
+	// serialized form fits. This is the rare path: the trim re-marshals
+	// internally, then the boundary is recomputed for the shrunken
+	// transcript and marshaled once more.
 	if len(data) > MaxSessionFileBytes {
-		// The trim's own marshaled form is discarded: the final marshal
-		// below recomputes it after RedactBoundary is updated.
 		if _, err = s.trimToFileCapLocked(sess, data); err != nil {
 			return err
 		}
@@ -707,19 +784,19 @@ func (s *Store) saveLocked(sess *Session) (err error) {
 			s.trimWarned[sess.ID] = struct{}{}
 			fmt.Fprintf(os.Stderr, "odek: warning: session %s exceeded %d bytes on write — oldest messages trimmed to stay within the load cap\n", sess.ID, MaxSessionFileBytes)
 		}
-	}
-	// Every surviving message is now redacted: those before the boundary by
-	// earlier saves, the rest just now — and trimming only removes messages,
-	// so the boundary is simply the surviving count. Set it (and its
-	// fingerprint anchor) before the final marshal so they persist.
-	sess.RedactBoundary = len(sess.Messages)
-	sess.RedactBoundaryFP = ""
-	if n := len(sess.Messages); n > 0 {
-		sess.RedactBoundaryFP = redactMessageFP(sess.Messages[n-1])
-	}
-	data, err = json.Marshal(sess)
-	if err != nil {
-		return fmt.Errorf("session: marshal: %w", err)
+		// Trimming shrank the transcript and may have inserted a marker:
+		// re-anchor the boundary and remarshal (trim's own bytes predate
+		// the boundary update).
+		sess.RedactBoundary = len(sess.Messages)
+		sess.RedactBoundaryFP = ""
+		if n := len(sess.Messages); n > 0 {
+			sess.RedactBoundaryFP = redactMessageFP(sess.Messages[n-1])
+		}
+		s.marshalCount++
+		data, err = json.Marshal(sess)
+		if err != nil {
+			return fmt.Errorf("session: marshal: %w", err)
+		}
 	}
 
 	if err := fsatomic.WriteFile(s.path(sess.ID), data, 0600); err != nil {
