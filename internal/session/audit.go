@@ -278,12 +278,15 @@ var errAuditUnreadableTarget = errors.New("audit log path is a symlink or direct
 // mean the log is forensic evidence and must be preserved aside.
 func corruptJSONLIndex(data []byte) bool {
 	lines := bytes.Split(bytes.TrimRight(data, "\n"), []byte("\n"))
-	invalid, valid := 0, 0
-	for _, line := range lines {
+	invalid := 0
+	valid := 0
+	lastNonEmpty := -1
+	for i, line := range lines {
 		line = bytes.TrimSpace(line)
 		if len(line) == 0 {
 			continue
 		}
+		lastNonEmpty = i
 		var rec auditRecord
 		if json.Unmarshal(line, &rec) != nil || (rec.Type != "ingest" && rec.Type != "turn") {
 			invalid++
@@ -294,19 +297,19 @@ func corruptJSONLIndex(data []byte) bool {
 	if invalid == 0 {
 		return false
 	}
-	// Only the trailing fragment may be invalid, and only when a valid
-	// prefix exists to salvage. The last line is salvageable only when it
-	// is not itself a well-formed typed record (a parseable line with an
-	// unknown type is foreign data, not a torn tail).
-	if valid > 0 && invalid == 1 {
-		last := bytes.TrimSpace(lines[len(lines)-1])
-		var rec auditRecord
-		if json.Unmarshal(last, &rec) != nil {
-			return false // unparseable tail fragment: torn, salvageable
-		}
-		return rec.Type != "ingest" && rec.Type != "turn"
+	if valid == 0 {
+		return true // nothing salvageable
 	}
-	return true
+	// Salvageable only when the sole invalid line is the LAST non-empty
+	// line AND it is an unparseable fragment (a crash mid-append). An
+	// invalid line anywhere earlier, or a parseable line with an unknown
+	// type at the tail, is corruption: preserve the log aside.
+	if invalid != 1 {
+		return true
+	}
+	last := bytes.TrimSpace(lines[lastNonEmpty])
+	var rec auditRecord
+	return json.Unmarshal(last, &rec) == nil
 }
 
 // isLegacyAuditJSON reports whether data is a legacy whole-file audit log

@@ -36,6 +36,7 @@ type JSONLSink struct {
 	flushInterval time.Duration
 
 	dirty     bool
+	writeGen  uint64
 	syncing   bool
 	closed    bool
 	flushCh   chan struct{} // closed by Close to stop the flusher
@@ -101,6 +102,7 @@ func (s *JSONLSink) Write(ev Event) error {
 		return err
 	}
 	s.dirty = true
+	s.writeGen++
 	s.ensureFlusherLocked()
 	return nil
 }
@@ -143,13 +145,17 @@ func (s *JSONLSink) syncOnce() {
 	}
 	s.syncing = true
 	fn := s.syncFn
+	gen := s.writeGen
 	s.mu.Unlock()
 
 	err := fn()
 
 	s.mu.Lock()
 	s.syncing = false
-	if err == nil {
+	// Clear dirty only when no write landed while the sync was in flight:
+	// a concurrent Write re-marks dirty and bumps writeGen, and its data
+	// is not covered by this fsync — the next tick must commit it.
+	if err == nil && s.writeGen == gen {
 		s.dirty = false
 	}
 	s.mu.Unlock()
