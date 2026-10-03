@@ -140,6 +140,12 @@ func (s *AuditStore) Load(sessionID string) (AuditLog, error) {
 // migrating legacy whole-file JSON on the way. Reads abort the append on
 // transient I/O errors; a torn trailing line (crash mid-append) is
 // salvaged by rewriting only the damaged tail.
+//
+// Durability note: appends are O_APPEND writes without fsync — a process
+// crash cannot tear the OS buffer (line writes are single small appends),
+// but an OS crash may lose the most recent records. The JSONL form
+// preserves the full prior trail either way; this is the same trade-off
+// the events stream documents for its group-commit window.
 func (s *AuditStore) appendRecord(sessionID string, rec auditRecord) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -289,11 +295,16 @@ func corruptJSONLIndex(data []byte) bool {
 		return false
 	}
 	// Only the trailing fragment may be invalid, and only when a valid
-	// prefix exists to salvage.
+	// prefix exists to salvage. The last line is salvageable only when it
+	// is not itself a well-formed typed record (a parseable line with an
+	// unknown type is foreign data, not a torn tail).
 	if valid > 0 && invalid == 1 {
 		last := bytes.TrimSpace(lines[len(lines)-1])
 		var rec auditRecord
-		return json.Unmarshal(last, &rec) == nil
+		if json.Unmarshal(last, &rec) != nil {
+			return false // unparseable tail fragment: torn, salvageable
+		}
+		return rec.Type != "ingest" && rec.Type != "turn"
 	}
 	return true
 }

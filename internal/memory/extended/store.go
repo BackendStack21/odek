@@ -433,6 +433,13 @@ func (s *AtomStore) chunkText(id string) (string, error) {
 	if s.chunkCache == nil {
 		s.chunkCache = make(map[string]chunkCacheEntry)
 	}
+	// Bound the cache: atom stores hold a bounded atom population, but the
+	// cache must never grow past the store itself. Past the cap the cache
+	// resets wholesale — cheaper than eviction bookkeeping for a
+	// warm-up-sized cache.
+	if len(s.chunkCache) >= 4096 {
+		s.chunkCache = make(map[string]chunkCacheEntry)
+	}
 	s.chunkCache[id] = chunkCacheEntry{mtime: info.ModTime(), text: text}
 	s.chunkCacheMu.Unlock()
 	return text, nil

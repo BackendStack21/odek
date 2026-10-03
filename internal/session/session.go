@@ -227,6 +227,7 @@ type Store struct {
 	idxLoaded bool
 	idxMod    time.Time
 	idxSize   int64
+	idxIno    uint64
 
 	// trimWarned records session IDs for which the write-path size-cap trim
 	// warning has already been emitted, so the warning fires once per session
@@ -415,15 +416,22 @@ func (s *Store) loadIndex() map[string]*IndexEntry {
 	}
 	info, err := os.Stat(s.indexPath())
 	if err != nil {
-		// File gone (or unreadable): reset to empty so callers observe the
-		// absence instead of stale cached entries.
-		s.idxCache = make(map[string]*IndexEntry)
-		s.idxLoaded = false
-		s.idxMod, s.idxSize = time.Time{}, 0
+		if os.IsNotExist(err) {
+			// File gone: reset so callers observe the absence instead of
+			// stale cached entries.
+			s.idxCache = make(map[string]*IndexEntry)
+			s.idxLoaded = false
+			s.idxMod, s.idxSize, s.idxIno = time.Time{}, 0, 0
+			s.indexDiskReads++
+			return make(map[string]*IndexEntry)
+		}
+		// Transient stat error (permissions, EINTR, network mount hiccup):
+		// never wipe the cache on it — an empty map would make every
+		// session vanish from listings. Serve the last known-good copy.
 		s.indexDiskReads++
-		return make(map[string]*IndexEntry)
+		return copyIndex(s.idxCache)
 	}
-	if info.ModTime().Equal(s.idxMod) && info.Size() == s.idxSize && s.idxLoaded {
+	if info.ModTime().Equal(s.idxMod) && info.Size() == s.idxSize && fileInode(info) == s.idxIno && s.idxLoaded {
 		return copyIndex(s.idxCache)
 	}
 	s.indexDiskReads++
@@ -444,6 +452,7 @@ func (s *Store) loadIndex() map[string]*IndexEntry {
 		s.idxCache = m
 		s.idxLoaded = true
 		s.idxMod, s.idxSize = info.ModTime(), info.Size()
+		s.idxIno = fileInode(info)
 	}
 	return copyIndex(m)
 }
@@ -489,6 +498,7 @@ func (s *Store) saveIndexLocked(idx map[string]*IndexEntry) error {
 		s.idxCache = copyIndex(idx)
 		s.idxLoaded = true
 		s.idxMod, s.idxSize = info.ModTime(), info.Size()
+		s.idxIno = fileInode(info)
 		s.idxMu.Unlock()
 	}
 	return nil
