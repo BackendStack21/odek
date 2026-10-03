@@ -18,8 +18,8 @@ func TestLoadConfig_GuardDefaults(t *testing.T) {
 	if cfg.Guard.Threshold != 0.9 {
 		t.Errorf("Guard.Threshold = %v, want 0.9", cfg.Guard.Threshold)
 	}
-	if cfg.Guard.TimeoutSeconds != 5 {
-		t.Errorf("Guard.TimeoutSeconds = %d, want 5", cfg.Guard.TimeoutSeconds)
+	if cfg.Guard.TimeoutSeconds != guard.DefaultConfig().TimeoutSeconds {
+		t.Errorf("Guard.TimeoutSeconds = %d, want %d (guard.DefaultConfig)", cfg.Guard.TimeoutSeconds, guard.DefaultConfig().TimeoutSeconds)
 	}
 	if cfg.Guard.FallbackToLocal == nil || !*cfg.Guard.FallbackToLocal {
 		t.Error("Guard.FallbackToLocal should default to true")

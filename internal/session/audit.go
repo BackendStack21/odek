@@ -14,6 +14,7 @@
 package session
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -90,33 +91,23 @@ type auditReadError struct{ err error }
 func (e auditReadError) Error() string { return e.err.Error() }
 func (e auditReadError) Unwrap() error { return e.err }
 
-// RecordIngest appends an ingest entry for a session.
+// RecordIngest appends an ingest entry for a session. The log is stored
+// as append-only JSONL (one record per line) so an ingest never rewrites
+// existing history; legacy whole-file JSON logs are migrated on first
+// write.
 func (s *AuditStore) RecordIngest(sessionID string, turn int, source, content string) error {
 	if err := ValidateSessionID(sessionID); err != nil {
 		return err
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	log, lerr := s.loadLocked(sessionID)
-	var re auditReadError
-	if errors.As(lerr, &re) {
-		return lerr
-	}
-	if lerr != nil {
-		// Unparseable (torn/corrupt) log: keep the evidence aside and
-		// start a fresh log rather than silently discarding it.
-		s.preserveCorruptLocked(sessionID)
-	}
-	log.SessionID = sessionID
 	sum := sha256.Sum256([]byte(content))
-	log.Ingests = append(log.Ingests, AuditIngest{
+	rec := AuditIngest{
 		Turn:        turn,
 		Source:      source,
 		ContentHash: hex.EncodeToString(sum[:8]),
 		Resources:   boundedAuditResources(content),
 		At:          time.Now().UTC(),
-	})
-	return s.saveLocked(sessionID, log)
+	}
+	return s.appendRecord(sessionID, auditRecord{Type: "ingest", Ingest: &rec})
 }
 
 // RecordTurn appends a turn assessment for a session.
@@ -124,19 +115,15 @@ func (s *AuditStore) RecordTurn(sessionID string, turn AuditTurn) error {
 	if err := ValidateSessionID(sessionID); err != nil {
 		return err
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	log, lerr := s.loadLocked(sessionID)
-	var re auditReadError
-	if errors.As(lerr, &re) {
-		return lerr
-	}
-	if lerr != nil {
-		s.preserveCorruptLocked(sessionID)
-	}
-	log.SessionID = sessionID
-	log.Turns = append(log.Turns, turn)
-	return s.saveLocked(sessionID, log)
+	return s.appendRecord(sessionID, auditRecord{Type: "turn", Turn: &turn})
+}
+
+// auditRecord is one JSONL line: a typed envelope around the per-record
+// payloads. Exactly one payload field is set per record.
+type auditRecord struct {
+	Type   string      `json:"type"`
+	Turn   *AuditTurn  `json:"turn,omitempty"`
+	Ingest *AuditIngest `json:"ingest,omitempty"`
 }
 
 // Load returns the audit log for a session, or empty if not present.
@@ -147,6 +134,202 @@ func (s *AuditStore) Load(sessionID string) (AuditLog, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.loadLocked(sessionID)
+}
+
+// appendRecord appends one JSONL record to the session's audit log,
+// migrating legacy whole-file JSON on the way. Reads abort the append on
+// transient I/O errors; a torn trailing line (crash mid-append) is
+// salvaged by rewriting only the damaged tail.
+//
+// Durability note: appends are O_APPEND writes without fsync — a process
+// crash cannot tear the OS buffer (line writes are single small appends),
+// but an OS crash may lose the most recent records. The JSONL form
+// preserves the full prior trail either way; this is the same trade-off
+// the events stream documents for its group-commit window.
+func (s *AuditStore) appendRecord(sessionID string, rec auditRecord) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := os.MkdirAll(s.dir, 0700); err != nil {
+		return err
+	}
+	path := filepath.Join(s.dir, sessionID+".json")
+
+	// Probe the existing file. A read failure other than NotExist must
+	// surface so a transient error cannot cause history loss.
+	legacy := false
+	if fi, err := os.Lstat(path); err != nil {
+		if !os.IsNotExist(err) {
+			err := auditReadError{err}
+			diagnostics.Report("audit", "read", sessionID, err)
+			return err
+		}
+	} else if fi.Mode()&os.ModeSymlink != 0 {
+		// A symlink planted at the log path must never be followed: write
+		// the record via atomic rename, which replaces the directory entry
+		// with a fresh regular file and leaves the symlink's target intact.
+		line, err := json.Marshal(rec)
+		if err != nil {
+			return err
+		}
+		if err := fsatomic.WriteFile(path, append(line, '\n'), 0600); err != nil {
+			diagnostics.Report("audit", "save", sessionID, err)
+			return err
+		}
+		return nil
+	} else if fi.IsDir() {
+		err := auditReadError{errAuditUnreadableTarget}
+		diagnostics.Report("audit", "read", sessionID, err)
+		return err
+	} else if data, err := os.ReadFile(path); err == nil {
+		legacy = isLegacyAuditJSON(data)
+		if !legacy {
+			// Validate the JSONL tail. A torn LAST line (crash mid-append)
+			// is salvageable: appending after it keeps the valid prefix and
+			// Load skips the fragment. Corruption anywhere else (or a
+			// wholly unparseable file) is forensic evidence — preserve it
+			// aside and start a fresh log rather than append behind it.
+			if corrupted := corruptJSONLIndex(data); corrupted {
+				s.preserveCorruptLocked(sessionID)
+			}
+		}
+	} else {
+		// Read of an existing file failed (permissions, I/O): abort rather
+		// than risk clobbering history.
+		err := auditReadError{err}
+		diagnostics.Report("audit", "read", sessionID, err)
+		return err
+	}
+
+	if legacy {
+		// Legacy pretty-printed file: migrate by decoding and re-emitting
+		// every record as JSONL (atomic replace), then append the new one.
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		var old AuditLog
+		if err := json.Unmarshal(data, &old); err != nil {
+			s.preserveCorruptLocked(sessionID)
+		} else {
+			var buf bytes.Buffer
+			enc := json.NewEncoder(&buf)
+			writeRecords := func() error {
+				for i := range old.Ingests {
+					if err := enc.Encode(auditRecord{Type: "ingest", Ingest: &old.Ingests[i]}); err != nil {
+						return err
+					}
+				}
+				for i := range old.Turns {
+					if err := enc.Encode(auditRecord{Type: "turn", Turn: &old.Turns[i]}); err != nil {
+						return err
+					}
+				}
+				return enc.Encode(rec)
+			}
+			if err := writeRecords(); err != nil {
+				return err
+			}
+			if err := fsatomic.WriteFile(path, buf.Bytes(), 0600); err != nil {
+				diagnostics.Report("audit", "save", sessionID, err)
+				return err
+			}
+			return nil
+		}
+	}
+
+	line, err := json.Marshal(rec)
+	if err != nil {
+		return err
+	}
+	line = append(line, '\n')
+	// Repair a torn tail (crash mid-append left a fragment with no final
+	// newline): start the new record on a fresh line so it stays parseable.
+	if tail, err := os.ReadFile(path); err == nil && len(tail) > 0 && tail[len(tail)-1] != '\n' {
+		last := bytes.TrimSpace(bytes.Split(tail, []byte("\n"))[len(bytes.Split(tail, []byte("\n")))-1])
+		var probe auditRecord
+		if json.Unmarshal(last, &probe) != nil {
+			line = append([]byte{'\n'}, line...)
+		}
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+	if err != nil {
+		diagnostics.Report("audit", "append", sessionID, err)
+		return err
+	}
+	if _, err := f.Write(line); err != nil {
+		f.Close()
+		diagnostics.Report("audit", "append", sessionID, err)
+		return err
+	}
+	if err := f.Close(); err != nil {
+		diagnostics.Report("audit", "append", sessionID, err)
+		return err
+	}
+	return nil
+}
+
+// errAuditUnreadableTarget marks a directory planted at the audit-log
+// path — writes must refuse instead of truncating.
+var errAuditUnreadableTarget = errors.New("audit log path is a symlink or directory")
+
+// corruptJSONLIndex reports whether a JSONL audit log is corrupt beyond a
+// salvageable torn tail. A torn LAST line (a crash mid-append) is expected
+// and salvageable; invalid lines anywhere else — or no valid line at all —
+// mean the log is forensic evidence and must be preserved aside.
+func corruptJSONLIndex(data []byte) bool {
+	lines := bytes.Split(bytes.TrimRight(data, "\n"), []byte("\n"))
+	invalid := 0
+	valid := 0
+	lastNonEmpty := -1
+	for i, line := range lines {
+		line = bytes.TrimSpace(line)
+		if len(line) == 0 {
+			continue
+		}
+		lastNonEmpty = i
+		var rec auditRecord
+		if json.Unmarshal(line, &rec) != nil || (rec.Type != "ingest" && rec.Type != "turn") {
+			invalid++
+		} else {
+			valid++
+		}
+	}
+	if invalid == 0 {
+		return false
+	}
+	if valid == 0 {
+		return true // nothing salvageable
+	}
+	// Salvageable only when the sole invalid line is the LAST non-empty
+	// line AND it is an unparseable fragment (a crash mid-append). An
+	// invalid line anywhere earlier, or a parseable line with an unknown
+	// type at the tail, is corruption: preserve the log aside.
+	if invalid != 1 {
+		return true
+	}
+	last := bytes.TrimSpace(lines[lastNonEmpty])
+	var rec auditRecord
+	return json.Unmarshal(last, &rec) == nil
+}
+
+// isLegacyAuditJSON reports whether data is a legacy whole-file audit log
+// (a JSON object) rather than the append-only JSONL form (one typed record
+// per line). A JSONL record also starts with '{', so the discriminator is
+// the typed envelope: JSONL lines carry "type":"ingest"|"turn" while the
+// legacy object carries the top-level "session_id" key.
+func isLegacyAuditJSON(data []byte) bool {
+	trimmed := bytes.TrimLeft(data, " \t\r\n")
+	if !bytes.HasPrefix(trimmed, []byte("{")) {
+		return false
+	}
+	firstLine := trimmed
+	if i := bytes.IndexByte(trimmed, '\n'); i >= 0 {
+		firstLine = trimmed[:i]
+	}
+	if bytes.Contains(firstLine, []byte(`"type":"ingest"`)) || bytes.Contains(firstLine, []byte(`"type":"turn"`)) {
+		return false
+	}
+	return bytes.Contains(trimmed, []byte(`"session_id"`))
 }
 
 func (s *AuditStore) loadLocked(sessionID string) (AuditLog, error) {
@@ -161,28 +344,40 @@ func (s *AuditStore) loadLocked(sessionID string) (AuditLog, error) {
 		// rewrite the audit trail on the next save.
 		return AuditLog{SessionID: sessionID}, auditReadError{err}
 	}
-	var log AuditLog
-	if err := json.Unmarshal(data, &log); err != nil {
-		return AuditLog{SessionID: sessionID}, err
+
+	if isLegacyAuditJSON(data) {
+		var log AuditLog
+		if err := json.Unmarshal(data, &log); err != nil {
+			return AuditLog{SessionID: sessionID}, err
+		}
+		return log, nil
+	}
+
+	// JSONL form: decode line by line. A torn final line (crash mid-append)
+	// is skipped rather than failing the whole log; the last complete
+	// record boundary defines the history.
+	log := AuditLog{SessionID: sessionID}
+	for _, line := range bytes.Split(data, []byte("\n")) {
+		line = bytes.TrimSpace(line)
+		if len(line) == 0 {
+			continue
+		}
+		var rec auditRecord
+		if err := json.Unmarshal(line, &rec); err != nil {
+			continue // torn or corrupt tail — keep the salvaged prefix
+		}
+		switch rec.Type {
+		case "ingest":
+			if rec.Ingest != nil {
+				log.Ingests = append(log.Ingests, *rec.Ingest)
+			}
+		case "turn":
+			if rec.Turn != nil {
+				log.Turns = append(log.Turns, *rec.Turn)
+			}
+		}
 	}
 	return log, nil
-}
-
-func (s *AuditStore) saveLocked(sessionID string, log AuditLog) (saveErr error) {
-	defer func() { diagnostics.Report("audit", "save", sessionID, saveErr) }()
-	if err := os.MkdirAll(s.dir, 0700); err != nil {
-		return err
-	}
-	path := filepath.Join(s.dir, sessionID+".json")
-	data, err := json.MarshalIndent(log, "", "  ")
-	if err != nil {
-		return err
-	}
-	// Atomic + symlink-safe (2026-08 audit): os.WriteFile followed a
-	// symlink planted at the target and truncated whatever it pointed at;
-	// a crash mid-write also left torn JSON. The temp+fsync+rename in
-	// fsatomic replaces the directory entry instead of following it.
-	return fsatomic.WriteFile(path, data, 0600)
 }
 
 // preserveCorruptLocked moves an unparseable audit log aside instead of

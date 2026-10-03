@@ -119,6 +119,9 @@ type ScanResult struct {
 // ScanInjection checks content for prompt injection attempts.
 // Returns nil if no threats detected, or a list of found threats.
 // Each threat includes a label describing what was found.
+// Folding is skipped when the homoglyph-folded text equals the normalized
+// text: the second regex pass over identical input cannot produce a
+// different result.
 func ScanInjection(content string) []ScanResult {
 	if content == "" {
 		return nil
@@ -139,11 +142,13 @@ func ScanInjection(content string) []ScanResult {
 	// Pattern matching runs on normalized text so blacklists are resilient
 	// to case, whitespace, and zero-width characters. We also scan a
 	// homoglyph-folded version so mixed-script attacks that look like ASCII
-	// are still caught.
+	// are still caught. Folding is skipped entirely when the normalized
+	// text contains no foldable characters (the common case).
 	normalized := NormalizeForScan(content)
 	folded := FoldHomoglyphs(normalized)
+	foldDistinct := folded != normalized
 	for _, p := range injectionPatterns {
-		if p.Re.MatchString(normalized) || p.Re.MatchString(folded) {
+		if p.Re.MatchString(normalized) || (foldDistinct && p.Re.MatchString(folded)) {
 			results = append(results, ScanResult{
 				Label:   p.Label,
 				Pattern: p.Re.String(),

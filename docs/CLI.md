@@ -99,7 +99,7 @@ Unknown flags are a **hard error** — they are never folded into the task text 
 | `--guard-long-url <url>` | string | — | Guard sidecar long-text endpoint |
 | `--guard-socket-path <path>` | string | — | Guard sidecar Unix socket path |
 | `--guard-threshold <score>` | float | `0.9` | Injection score threshold |
-| `--guard-timeout <seconds>` | int | `5` | Guard sidecar request timeout |
+| `--guard-timeout <seconds>` | int | `1` | Guard sidecar request timeout |
 | `--guard-fallback` / `--guard-no-fallback` | bool | `true` | Fall back to local scan if sidecar fails |
 | `--guard-scan-memory` / `--guard-no-scan-memory` | bool | `true` | Guard legacy/Extended Memory surfaces |
 | `--guard-scan-system-prompt` / `--guard-no-scan-system-prompt` | bool | `true` | Guard system-prompt sources |

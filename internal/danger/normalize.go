@@ -146,8 +146,14 @@ func ContainsInvisible(s string) bool {
 // render invisibly inside a word while breaking contiguous-pattern matching —
 // "instructio\u0301ns" must scan like "instructions".
 func NormalizeForScan(text string) string {
+	// Single pass: drop invisible/combining characters and collapse
+	// whitespace runs to single spaces while building, so the old
+	// build → ToLower → Fields+Join copy chain becomes one build plus
+	// one ToLower copy (ToLower over the string keeps the exact original
+	// case-folding semantics).
 	var b strings.Builder
 	b.Grow(len(text))
+	prevSpace := true // leading whitespace is dropped
 	for _, r := range text {
 		if isInvisible(r) {
 			continue
@@ -155,12 +161,17 @@ func NormalizeForScan(text string) string {
 		if unicode.Is(unicode.Mn, r) || unicode.Is(unicode.Me, r) || unicode.Is(unicode.Mc, r) {
 			continue
 		}
+		if unicode.IsSpace(r) {
+			if !prevSpace {
+				b.WriteByte(' ')
+				prevSpace = true
+			}
+			continue
+		}
 		b.WriteRune(r)
+		prevSpace = false
 	}
-	normalized := strings.ToLower(b.String())
-	// Collapse all whitespace to a single space so patterns do not have to
-	// account for arbitrary runs of spaces, tabs, or newlines.
-	return strings.Join(strings.Fields(normalized), " ")
+	return strings.ToLower(strings.TrimSuffix(b.String(), " "))
 }
 
 // FoldHomoglyphs returns text with common Unicode confusables (Cyrillic/Greek
