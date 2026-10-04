@@ -626,3 +626,27 @@ func TestSaveMCPApprovals_DoesNotFollowSymlink(t *testing.T) {
 		t.Fatal("approval file is still a symlink — fsatomic must replace the directory entry")
 	}
 }
+
+func TestMCPApprovalKey_StdioKeysStableAcrossURLFields(t *testing.T) {
+	// stdio approval keys must stay byte-identical to the pre-HTTP-transport
+	// formula: url/token_env are hashed only for URL servers, so existing
+	// stdio approvals survive the upgrade without a re-prompt.
+	base := mcpclient.ServerConfig{Command: "npx", Args: []string{"server.js"}}
+	variant := base
+	variant.TokenEnv = "MCP_SOMETHING" // ignored: URL is empty
+	if got := mcpApprovalKey("/p", "srv", variant); got != mcpApprovalKey("/p", "srv", base) {
+		t.Fatal("stdio approval key changed when only token_env was set")
+	}
+
+	// URL servers: the URL is part of the key, so swapping the endpoint
+	// invalidates a prior approval.
+	urlA := mcpclient.ServerConfig{URL: "https://a.example.com/rpc"}
+	urlB := mcpclient.ServerConfig{URL: "https://b.example.com/rpc"}
+	if mcpApprovalKey("/p", "srv", urlA) == mcpApprovalKey("/p", "srv", urlB) {
+		t.Fatal("URL server approval key did not change with the URL")
+	}
+	// And a URL server never collides with a stdio server.
+	if mcpApprovalKey("/p", "srv", urlA) == mcpApprovalKey("/p", "srv", base) {
+		t.Fatal("URL and stdio approval keys collided")
+	}
+}

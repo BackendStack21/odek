@@ -34,6 +34,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"strings"
@@ -194,7 +195,19 @@ type ServerConfig struct {
 	Args []string `json:"args,omitempty"`
 	// Env overrides environment variables for the subprocess.
 	// Empty strings remove the variable from the environment.
+	// Ignored for URL-configured servers (no subprocess).
 	Env map[string]string `json:"env,omitempty"`
+
+	// URL configures the Streamable HTTP transport instead of a stdio
+	// subprocess: JSON-RPC messages are posted to this http(s) endpoint.
+	// When set, Command/Args/Env are ignored. Project-level configs may not
+	// use auto_approve with URL servers without a matching global entry.
+	URL string `json:"url,omitempty"`
+	// TokenEnv names an environment variable holding the Bearer token sent
+	// as Authorization on every request to URL. The token itself never
+	// enters config files; only the variable name does. Resolved from the
+	// operator environment (e.g. ~/.odek/secrets.env) at connect time.
+	TokenEnv string `json:"token_env,omitempty"`
 
 	// TimeoutSeconds bounds each request to this server when the caller does
 	// not supply a deadline. Zero uses DefaultTimeout (30s). Values above
@@ -296,6 +309,12 @@ type Client struct {
 	pending   map[int]chan callResponse // routes responses to waiting callers
 	writeErr  error                     // sticky writer failure, set once
 	closeOnce sync.Once
+
+	// URL transport (Streamable HTTP). Set only when ServerConfig.URL is
+	// non-empty; the stdio fields above are unused in that mode.
+	url   string
+	token string
+	httpc *http.Client
 }
 
 // normalizeLimits resolves the effective per-server limits from cfg, applying
@@ -372,7 +391,9 @@ func validateName(kind, name string) error {
 
 // New spawns an MCP server process and returns a client connected to it.
 // The server process is started immediately and cleaned up on Close().
-func New(name string, cfg ServerConfig) (_ *Client, setupErr error) {
+// When cfg.URL is set, New returns a Streamable HTTP transport client
+// instead (no subprocess); opts may supply an SSRF-guarded HTTP client.
+func New(name string, cfg ServerConfig, opts ...Option) (_ *Client, setupErr error) {
 	defer func() { diagnostics.Report("mcp", "connect", "", setupErr) }()
 	if err := validateName("server", name); err != nil {
 		return nil, err
@@ -381,6 +402,32 @@ func New(name string, cfg ServerConfig) (_ *Client, setupErr error) {
 	timeout, maxResp, maxChars, warnings, err := normalizeLimits(name, cfg)
 	if err != nil {
 		return nil, err
+	}
+
+	if cfg.URL != "" {
+		var o httpOptions
+		for _, opt := range opts {
+			opt(&o)
+		}
+		c, err := newHTTPClient(name, cfg, o)
+		if err != nil {
+			return nil, err
+		}
+		c.timeout = timeout
+		c.maxResponseBytes = maxResp
+		c.maxResultChars = maxChars
+		c.warnings = warnings
+		// Surface an unset token variable early: the alternative is an
+		// opaque 401 from the remote server on the first request.
+		if cfg.TokenEnv != "" && c.token == "" {
+			c.warnings = append(c.warnings, fmt.Sprintf("mcp server %q: token_env %s is set but the environment variable is empty; requests will be sent unauthenticated", name, cfg.TokenEnv))
+		}
+		c.artifactRoots = append([]string(nil), cfg.ArtifactRoots...)
+		return c, nil
+	}
+
+	if cfg.Command == "" {
+		return nil, fmt.Errorf("mcpclient %s: server config must set either url or command", name)
 	}
 
 	cmd := exec.Command(cfg.Command, cfg.Args...)
@@ -542,6 +589,10 @@ func buildEnv(overrides map[string]string) []string {
 // Close terminates the MCP server process and cleans up resources.
 // Safe to call multiple times.
 func (c *Client) Close() error {
+	if c.url != "" {
+		c.closeHTTP()
+		return nil
+	}
 	// Unblock the writer goroutine if it is idle, then signal EOF to the
 	// server. Guarded so repeated Close calls stay safe.
 	c.closeOnce.Do(func() { close(c.closed) })
@@ -841,6 +892,9 @@ func truncateRunes(s string, n int) string {
 
 // call sends a JSON-RPC request and waits for the matching response.
 func (c *Client) call(ctx context.Context, method string, params json.RawMessage) (json.RawMessage, error) {
+	if c.url != "" {
+		return c.httpCall(ctx, method, params)
+	}
 	if ctx == nil {
 		ctx = context.Background()
 	}

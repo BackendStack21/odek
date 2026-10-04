@@ -896,7 +896,8 @@ Rules:
 
 Connect to **external MCP servers** and register their tools as `<server>__<tool>`
 (e.g. `playwright__navigate`). The `command` / `args` / `env` shape matches Claude
-Code's `mcpServers` object; odek does not expand `${VAR}` in `env`.
+Code's `mcpServers` object; odek does not expand `${VAR}` in `env`. Alternatively,
+set `url` on an entry to use the **Streamable HTTP transport** (no subprocess).
 
 ```json
 {
@@ -908,6 +909,10 @@ Code's `mcpServers` object; odek does not expand `${VAR}` in `env`.
     "fetch": {
       "command": "uvx",
       "args": ["mcp-server-fetch"]
+    },
+    "remote": {
+      "url": "https://mcp.example.com/rpc",
+      "token_env": "MCP_REMOTE_TOKEN"
     }
   }
 }
@@ -915,7 +920,9 @@ Code's `mcpServers` object; odek does not expand `${VAR}` in `env`.
 
 | Field | Description |
 |-------|-------------|
-| `command` | Executable to spawn (required) |
+| `command` | Executable to spawn (required unless `url` is set; ignored when `url` is set) |
+| `url` | `http(s)` endpoint for the Streamable HTTP transport. Absolute URLs only, no embedded credentials (use `token_env`). The server's host is dialed through odek's SSRF guard (internal-IP refusal, DNS-rebinding-safe pinning) |
+| `token_env` | Name of the environment variable holding the Bearer token sent as `Authorization` on every request to `url`. Must be uppercase `MCP_`-prefixed (e.g. `MCP_REMOTE_TOKEN`); other names are rejected. Resolved from the operator environment (e.g. `~/.odek/secrets.env`); the token itself never enters config files |
 | `enabled` | Server on/off switch. Omitted or `true` = enabled (back-compat); `false` keeps the entry configured (preserving approval hashes for later re-enable) but the server is never started, discovered, or prompted for. Surfaced as `enabled` in `odek introspect` / `GET /api/mcp` so configured-but-off servers stay visible |
 | `args` | Optional command-line arguments |
 | `env` | Optional overrides (empty string unsets). Secret-looking keys are stripped even here |
