@@ -162,7 +162,7 @@ func (c *Client) httpCall(ctx context.Context, method string, params json.RawMes
 		return nil, fmt.Errorf("http %d: %s", resp.StatusCode, truncateForError(body, 512))
 	}
 	if strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") {
-		body = sseData(body)
+		return c.matchSSEFrame(body, id)
 	}
 
 	var r response
@@ -172,21 +172,118 @@ func (c *Client) httpCall(ctx context.Context, method string, params json.RawMes
 	if r.Error != nil {
 		return nil, r.Error
 	}
+	return c.matchedResult(r, id)
+}
+
+// matchSSEFrame parses an SSE body into complete event payloads and returns
+// the result of the frame whose JSON-RPC id matches the request. Servers may
+// interleave notification frames (no id) with the response; per the SSE spec
+// a single event's data is the concatenation of its data: lines.
+func (c *Client) matchSSEFrame(body []byte, id int) (json.RawMessage, error) {
+	var parseErr error
+	for _, frame := range sseFrames(body) {
+		var r response
+		if err := json.Unmarshal([]byte(frame), &r); err != nil {
+			parseErr = err
+			continue
+		}
+		if r.Method != "" {
+			continue // server-initiated notification frame
+		}
+		return c.matchedResult(r, id)
+	}
+	if parseErr != nil {
+		return nil, fmt.Errorf("parse response: %w", parseErr)
+	}
+	return nil, fmt.Errorf("sse stream carried no JSON-RPC response frame for request id %d", id)
+}
+
+// matchedResult verifies the response carries the caller's request id.
+// Without this, a notification or out-of-order frame is silently returned as
+// the answer (an empty result) instead of an error.
+func (c *Client) matchedResult(r response, id int) (json.RawMessage, error) {
+	if r.ID != id {
+		return nil, fmt.Errorf("response id %d does not match request id %d", r.ID, id)
+	}
+	if r.Error != nil {
+		return nil, r.Error
+	}
 	return r.Result, nil
 }
 
-// sseData extracts the JSON payload of the first SSE data: line. The space
-// after the colon is optional per the SSE spec.
-func sseData(body []byte) []byte {
-	for _, line := range strings.Split(string(body), "\n") {
+// httpNotify sends a JSON-RPC notification (no id, no response expected) to
+// the Streamable HTTP endpoint. 202 Accepted is the expected status; 200 with
+// a discarded body is tolerated.
+func (c *Client) httpNotify(ctx context.Context, method string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	timeout := c.timeout
+	if timeout <= 0 {
+		timeout = DefaultTimeout
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	payload, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "method": method})
+	if err != nil {
+		return fmt.Errorf("marshal notification: %w", err)
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.url, bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "application/json, text/event-stream")
+	if c.token != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	resp, err := c.httpc.Do(httpReq)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+	if resp.StatusCode != http.StatusAccepted && resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("notify %q: http %d", method, resp.StatusCode)
+	}
+	return nil
+}
+
+// sseFrames parses an SSE body into complete event payloads: within one
+// event, data: lines are joined with "\n" (spec behavior); events are
+// separated by blank lines; comment/event/id field lines are ignored. A
+// trailing unterminated event still yields its accumulated data.
+func sseFrames(body []byte) []string {
+	var frames []string
+	var data []string
+	flush := func() {
+		if len(data) > 0 {
+			frames = append(frames, strings.Join(data, "\n"))
+			data = nil
+		}
+	}
+	for _, line := range strings.Split(strings.ReplaceAll(string(body), "\r\n", "\n"), "\n") {
+		line = strings.TrimSuffix(line, "\r")
+		if line == "" {
+			flush()
+			continue
+		}
 		d, ok := strings.CutPrefix(line, "data:")
 		if !ok {
 			continue
 		}
-		d = strings.TrimPrefix(d, " ")
-		if len(d) > 0 {
-			return []byte(d)
-		}
+		data = append(data, strings.TrimPrefix(d, " "))
+	}
+	flush()
+	return frames
+}
+
+// sseData returns the first SSE event payload; retained for callers that
+// only care about a single-frame stream.
+func sseData(body []byte) []byte {
+	if frames := sseFrames(body); len(frames) > 0 {
+		return []byte(frames[0])
 	}
 	return body
 }
