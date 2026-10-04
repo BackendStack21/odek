@@ -233,3 +233,161 @@ func TestURLTransportCloseIdempotent(t *testing.T) {
 		t.Fatalf("second Close: %v", err)
 	}
 }
+
+func TestWithHTTPClientInjectsTransport(t *testing.T) {
+	ts := httptest.NewServer((&httpMCPServer{}).handler())
+	defer ts.Close()
+
+	injected := &http.Client{}
+	c, err := New("remote", ServerConfig{URL: ts.URL}, WithHTTPClient(injected))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if c.httpc != injected {
+		t.Fatal("WithHTTPClient client not used")
+	}
+	ctx := context.Background()
+	if _, err := c.Discover(ctx); err != nil {
+		t.Fatalf("discover via injected client: %v", err)
+	}
+}
+
+func TestSSEDataVariants(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want string
+	}{
+		{"first data line wins", ": comment\ndata: {\"a\":1}\ndata: {\"b\":2}\n\n", `{"a":1}`},
+		{"no space after colon", "data:{\"a\":2}\n", `{"a":2}`},
+		{"empty data line skipped, next used", "data:\ndata: {\"a\":3}\n", `{"a":3}`},
+		{"no data lines returns body unchanged", "event: x\nid: 1\n", "event: x\nid: 1\n"},
+	}
+	for _, tc := range cases {
+		if got := string(sseData([]byte(tc.body))); got != tc.want {
+			t.Errorf("%s: got %q want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestTokenEnvAllowedVariants(t *testing.T) {
+	for _, ok := range []string{"MCP_A", "MCP_1", "MCP_A_B"} {
+		if !tokenEnvAllowed(ok) {
+			t.Errorf("tokenEnvAllowed(%q) = false, want true", ok)
+		}
+	}
+	for _, bad := range []string{"", "MCP", "mcp_a", "MCP_a", "MCP-A", "MCP_A$", strings.Repeat("MCP_", 20)} {
+		if tokenEnvAllowed(bad) {
+			t.Errorf("tokenEnvAllowed(%q) = true, want false", bad)
+		}
+	}
+}
+
+func TestValidateServerURLErrorBranches(t *testing.T) {
+	if _, err := validateServerURL("http://[::1"); err == nil {
+		t.Error("expected parse error for malformed URL")
+	}
+}
+
+func TestHTTPCallErrorBranches(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Method string `json:"method"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		switch req.Method {
+		case "tools/list":
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte(strings.Repeat("boom ", 300))) // body truncated in error
+			return
+		case "tools/call":
+			w.Write([]byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"tool exploded"}}`))
+			return
+		default:
+			w.Write([]byte(`not json`))
+		}
+	}))
+	defer ts.Close()
+
+	c, err := New("errs", ServerConfig{URL: ts.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	ctx := context.Background()
+
+	// Non-200: error includes status and a truncated body.
+	_, err = c.call(ctx, "tools/list", nil)
+	if err == nil || !strings.Contains(err.Error(), "http 500") {
+		t.Fatalf("expected http 500 error, got %v", err)
+	}
+	if len(err.Error()) > 600 {
+		t.Errorf("error body not truncated: %d chars", len(err.Error()))
+	}
+
+	// JSON-RPC error object surfaces as-is.
+	_, err = c.call(ctx, "tools/call", nil)
+	if err == nil || !strings.Contains(err.Error(), "MCP error -32000") {
+		t.Fatalf("expected MCP error, got %v", err)
+	}
+
+	// Malformed JSON body fails as a parse error.
+	_, err = c.call(ctx, "initialize", nil)
+	if err == nil || !strings.Contains(err.Error(), "parse response") {
+		t.Fatalf("expected parse error, got %v", err)
+	}
+}
+
+func TestHTTPCallContextTimeout(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(2 * time.Second)
+		w.Write([]byte(`{}`))
+	}))
+	defer ts.Close()
+
+	c, err := New("slow", ServerConfig{URL: ts.URL, TimeoutSeconds: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	start := time.Now()
+	if _, err := c.call(context.Background(), "tools/list", nil); err == nil {
+		t.Fatal("expected timeout error")
+	}
+	if time.Since(start) > 1900*time.Millisecond {
+		t.Fatal("per-server timeout not enforced")
+	}
+}
+
+func TestHTTPClientWarnsOnMissingTokenEnv(t *testing.T) {
+	t.Setenv("MCP_MISSING_TOKEN", "")
+	c, err := New("warn", ServerConfig{URL: "https://mcp.example.com", TokenEnv: "MCP_MISSING_TOKEN"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	found := false
+	for _, w := range c.Warnings() {
+		if strings.Contains(w, "MCP_MISSING_TOKEN") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected missing-token warning, got %v", c.Warnings())
+	}
+}
+
+func TestURLClientWarningsAndArtifactRoots(t *testing.T) {
+	c, err := New("warn", ServerConfig{URL: "https://mcp.example.com", TimeoutSeconds: 99999, ArtifactRoots: []string{"/tmp/roots"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if len(c.Warnings()) == 0 {
+		t.Fatal("expected clamp warning for oversized timeout_seconds")
+	}
+	if got := c.ArtifactRoots(); len(got) != 1 || got[0] != "/tmp/roots" {
+		t.Fatalf("unexpected artifact roots: %v", got)
+	}
+}

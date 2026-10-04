@@ -417,6 +417,11 @@ func New(name string, cfg ServerConfig, opts ...Option) (_ *Client, setupErr err
 		c.maxResponseBytes = maxResp
 		c.maxResultChars = maxChars
 		c.warnings = warnings
+		// Surface an unset token variable early: the alternative is an
+		// opaque 401 from the remote server on the first request.
+		if cfg.TokenEnv != "" && c.token == "" {
+			c.warnings = append(c.warnings, fmt.Sprintf("mcp server %q: token_env %s is set but the environment variable is empty; requests will be sent unauthenticated", name, cfg.TokenEnv))
+		}
 		c.artifactRoots = append([]string(nil), cfg.ArtifactRoots...)
 		return c, nil
 	}
