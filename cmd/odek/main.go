@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -2839,7 +2841,16 @@ func loadMCPTools(resolved config.ResolvedConfig, tools *[]odek.Tool) (func(), e
 			fmt.Fprintf(os.Stderr, "odek: mcp server %q disabled by config — skipping\n", name)
 			continue
 		}
-		client, err := mcpclient.New(name, cfg)
+		// The server's URL host is explicitly trusted for this connection
+		// (mirrors web_search.base_url): internal-by-name services may be
+		// dialed, while every dial is still pinned to a validated IP.
+		allowedHost := ""
+		if u, err := url.Parse(cfg.URL); err == nil && cfg.URL != "" {
+			allowedHost = u.Hostname()
+		}
+		client, err := mcpclient.New(name, cfg, mcpclient.WithHTTPClient(&http.Client{
+			Transport: ssrfGuardedTransport(allowedHost),
+		}))
 		if err != nil {
 			// Clean up any servers we already started
 			for _, c := range cleaners {

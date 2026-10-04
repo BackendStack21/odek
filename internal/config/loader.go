@@ -2023,7 +2023,7 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	// with no definition behind it (auto_approve + empty command) is not a
 	// server — drop it so nothing tries to connect to it.
 	for name, mc := range cfg.MCPServers {
-		if mc.AutoApprove && mc.Command == "" {
+		if mc.AutoApprove && mc.Command == "" && mc.URL == "" {
 			delete(cfg.MCPServers, name)
 		}
 	}
@@ -4024,7 +4024,19 @@ func overlayFile(base, override FileConfig) FileConfig {
 // mcpExecEqual reports whether two MCP server configs have the same
 // execution fingerprint. A command-less marker never matches a real
 // server, so name-only global trust cannot bless a project command.
+// URL-configured servers compare by their URL + token_env + limits —
+// again a name-only marker (no url, no command) matches nothing.
 func mcpExecEqual(a, b mcpclient.ServerConfig) bool {
+	if a.Command == "" && b.Command == "" {
+		if a.URL == "" || b.URL == "" {
+			return false
+		}
+		if a.URL != b.URL || a.TokenEnv != b.TokenEnv || a.TimeoutSeconds != b.TimeoutSeconds ||
+			a.MaxResponseBytes != b.MaxResponseBytes || a.MaxResultChars != b.MaxResultChars {
+			return false
+		}
+		return slices.Equal(a.ArtifactRoots, b.ArtifactRoots)
+	}
 	if a.Command == "" || b.Command == "" {
 		return false
 	}

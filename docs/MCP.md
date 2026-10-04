@@ -109,6 +109,8 @@ odek spawns each configured server as a subprocess, sends `initialize` with prot
 
 Put `mcp_servers` in `~/.odek/config.json` (operator-trusted) or `./odek.json` (project; extra approval). The `command` / `args` / `env` shape matches Claude Code's `mcpServers` object. odek does **not** expand `${VAR}` in `mcp_servers.*.env`.
 
+A server entry may instead set `url` to use the **Streamable HTTP transport** — no subprocess. JSON-RPC messages are posted to the endpoint (plain JSON or single-event SSE responses), and all per-server limits, tool-name validation, and per-tool approvals apply identically. Set `token_env` to the name of an environment variable (resolved from the operator environment, e.g. `~/.odek/secrets.env`) holding the Bearer token; the token itself never enters config files.
+
 ```json
 {
   "mcp_servers": {
@@ -124,6 +126,11 @@ Put `mcp_servers` in `~/.odek/config.json` (operator-trusted) or `./odek.json` (
       "max_response_bytes": 2097152,
       "max_result_chars": 100000,
       "artifact_roots": ["/var/ci-artifacts"]
+    },
+    "remote": {
+      "url": "https://mcp.example.com/rpc",
+      "token_env": "MCP_REMOTE_TOKEN",
+      "timeout_seconds": 60
     }
   }
 }
@@ -131,7 +138,9 @@ Put `mcp_servers` in `~/.odek/config.json` (operator-trusted) or `./odek.json` (
 
 | Field | Default | Notes |
 |-------|---------|-------|
-| `command` | required | Executable to spawn. |
+| `command` | required* | Executable to spawn. *Required unless `url` is set; when `url` is set, `command`/`args`/`env` are ignored. |
+| `url` | — | `http(s)` endpoint for the Streamable HTTP transport. Only absolute `http`/`https` URLs with no embedded credentials are accepted. The server's host is dialed through odek's SSRF guard (internal-IP refusal, DNS-rebinding-safe pinning). |
+| `token_env` | — | Name of the environment variable holding the Bearer token sent as `Authorization` on every request. Never put the token itself in config. |
 | `args` | `[]` | |
 | `env` | `{}` | Overrides; empty string unsets. Secret-looking keys are stripped even here. |
 | `timeout_seconds` | `30` | Per-request; clamped to 3600 (warning). |
@@ -152,9 +161,9 @@ Registered name is `<server>__<tool>` (`playwright__navigate`). Server and tool 
 
 Two layers, both fail closed when no TTY and nothing else grants trust.
 
-**1. Server spawn** — project-level servers only (`./odek.json`). Global servers in `~/.odek/config.json` skip this. Stored in `~/.odek/mcp_approvals.json` (0600). The key hashes project directory, server name, command, args, env, and the four extension limit fields (`timeout_seconds`, `max_response_bytes`, `max_result_chars`, `artifact_roots`). Schema and description are **not** in this key.
+**1. Server spawn** — project-level servers only (`./odek.json`). Global servers in `~/.odek/config.json` skip this. Stored in `~/.odek/mcp_approvals.json` (0600). The key hashes project directory, server name, command, args, env, and the four extension limit fields (`timeout_seconds`, `max_response_bytes`, `max_result_chars`, `artifact_roots`); for URL-configured servers it hashes `url` and `token_env` instead of command/args/env. Schema and description are **not** in this key.
 
-**2. Per-tool register** — **every** server, including global. Stored in `~/.odek/mcp_tool_approvals.json` (0600). The key hashes project directory, server name, tool name, command, args, env, the four limit fields, the canonical-JSON SHA-256 of `inputSchema`, and the full description. The TTY prompt shows the (sanitized) description plus `schema: sha256:… (N bytes)` — not the env map. Env values are shown on the **server** prompt.
+**2. Per-tool register** — **every** server, including global. Stored in `~/.odek/mcp_tool_approvals.json` (0600). The key hashes project directory, server name, tool name, command, args, env, the four limit fields (or `url`/`token_env` for HTTP servers), the canonical-JSON SHA-256 of `inputSchema`, and the full description. The TTY prompt shows the (sanitized) description plus `schema: sha256:… (N bytes)` — not the env map. Env values are shown on the **server** prompt.
 
 Ways to approve:
 
