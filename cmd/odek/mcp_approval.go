@@ -404,8 +404,13 @@ func hashEnv(h hash.Hash, env map[string]string) {
 // prior approvals. Artifact roots are sorted so reordering alone does not
 // force a re-prompt.
 func hashServerLimits(h hash.Hash, cfg mcpclient.ServerConfig) {
-	fmt.Fprintf(h, "\x00url:%s", cfg.URL)
-	fmt.Fprintf(h, "\x00token_env:%s", cfg.TokenEnv)
+	// URL-transport identity fields are hashed only for URL servers, so
+	// stdio approval keys stay byte-identical across this feature's
+	// introduction — existing operators are not re-prompted on upgrade.
+	if cfg.URL != "" {
+		fmt.Fprintf(h, "\x00url:%s", cfg.URL)
+		fmt.Fprintf(h, "\x00token_env:%s", cfg.TokenEnv)
+	}
 	fmt.Fprintf(h, "\x00timeout_seconds:%d", cfg.TimeoutSeconds)
 	fmt.Fprintf(h, "\x00max_response_bytes:%d", cfg.MaxResponseBytes)
 	fmt.Fprintf(h, "\x00max_result_chars:%d", cfg.MaxResultChars)
