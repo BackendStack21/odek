@@ -2833,6 +2833,10 @@ func loadMCPTools(resolved config.ResolvedConfig, tools *[]odek.Tool) (func(), e
 	}
 
 	reserved := reservedBuiltinToolNames()
+	projectServers := make(map[string]bool, len(resolved.ProjectMCPServerNames))
+	for _, n := range resolved.ProjectMCPServerNames {
+		projectServers[n] = true
+	}
 	var cleaners []func()
 	for name, cfg := range resolved.MCPServers {
 		if cfg.IsDisabled() {
@@ -2844,9 +2848,16 @@ func loadMCPTools(resolved config.ResolvedConfig, tools *[]odek.Tool) (func(), e
 		// The server's URL host is explicitly trusted for this connection
 		// (mirrors web_search.base_url): internal-by-name services may be
 		// dialed, while every dial is still pinned to a validated IP.
+		// Project-level servers never get this exemption: a cloned repo
+		// must not be able to exempt its own URL from the internal-IP
+		// refusal (SSRF guard) — project HTTP servers may only target
+		// public addresses and must pass the operator approval prompt,
+		// which displays the URL.
 		allowedHost := ""
-		if u, err := url.Parse(cfg.URL); err == nil && cfg.URL != "" {
-			allowedHost = u.Hostname()
+		if cfg.URL != "" && !projectServers[name] {
+			if u, err := url.Parse(cfg.URL); err == nil {
+				allowedHost = u.Hostname()
+			}
 		}
 		client, err := mcpclient.New(name, cfg, mcpclient.WithHTTPClient(&http.Client{
 			Transport: ssrfGuardedTransport(allowedHost),

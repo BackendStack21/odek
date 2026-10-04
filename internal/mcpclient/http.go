@@ -55,6 +55,27 @@ func WithHTTPClient(c *http.Client) Option {
 	return func(o *httpOptions) { o.client = c }
 }
 
+// tokenEnvAllowed restricts which environment variables token_env may name.
+// A project-level config can set url to an attacker host; an unrestricted
+// token_env would then ship any operator secret (provider API keys, cloud
+// credentials) to that host as a Bearer token. Names must be uppercase
+// MCP_-prefixed identifiers, so operators declare MCP tokens explicitly in
+// ~/.odek/secrets.env (e.g. MCP_REMOTE_TOKEN) and no other secret is
+// reachable through this field.
+func tokenEnvAllowed(name string) bool {
+	if !strings.HasPrefix(name, "MCP_") || len(name) > 64 {
+		return false
+	}
+	for _, r := range name {
+		switch {
+		case r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 // newHTTPClient builds the URL-transport branch of New: no subprocess, no
 // read/write goroutines; every call() round-trips one HTTP request.
 func newHTTPClient(name string, cfg ServerConfig, opts httpOptions) (*Client, error) {
@@ -64,6 +85,9 @@ func newHTTPClient(name string, cfg ServerConfig, opts httpOptions) (*Client, er
 
 	token := ""
 	if cfg.TokenEnv != "" {
+		if !tokenEnvAllowed(cfg.TokenEnv) {
+			return nil, fmt.Errorf("mcpclient %s: token_env %q is not allowed; it must be an uppercase MCP_-prefixed variable name (declare the token in ~/.odek/secrets.env)", name, cfg.TokenEnv)
+		}
 		token = os.Getenv(cfg.TokenEnv)
 	}
 

@@ -157,8 +157,8 @@ func TestURLTransportBearerToken(t *testing.T) {
 	ts := httptest.NewServer(srv.handler())
 	defer ts.Close()
 
-	t.Setenv("ODEK_TEST_MCP_TOKEN", "sekrit")
-	c, err := New("remote-auth", ServerConfig{URL: ts.URL, TokenEnv: "ODEK_TEST_MCP_TOKEN"})
+	t.Setenv("MCP_TEST_TOKEN", "sekrit")
+	c, err := New("remote-auth", ServerConfig{URL: ts.URL, TokenEnv: "MCP_TEST_TOKEN"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -171,14 +171,32 @@ func TestURLTransportBearerToken(t *testing.T) {
 	}
 
 	// Without the env var set, the server rejects with 401.
-	t.Setenv("ODEK_TEST_MCP_TOKEN", "")
-	c2, err := New("remote-noauth", ServerConfig{URL: ts.URL, TokenEnv: "ODEK_TEST_MCP_TOKEN"})
+	t.Setenv("MCP_TEST_TOKEN", "")
+	c2, err := New("remote-noauth", ServerConfig{URL: ts.URL, TokenEnv: "MCP_TEST_TOKEN"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer c2.Close()
 	if _, err := c2.Discover(ctx); err == nil {
 		t.Fatal("expected auth failure without token")
+	}
+}
+
+func TestTokenEnvNamespaceRestricted(t *testing.T) {
+	ts := httptest.NewServer((&httpMCPServer{}).handler())
+	defer ts.Close()
+
+	// A project config must not be able to name arbitrary secret vars
+	// (e.g. ANTHROPIC_API_KEY) and ship them to an attacker host.
+	for _, bad := range []string{"ANTHROPIC_API_KEY", "mcp_token", "MCP-BAD", "MCP_" + strings.Repeat("X", 100)} {
+		if _, err := New("evil", ServerConfig{URL: ts.URL, TokenEnv: bad}); err == nil {
+			t.Errorf("token_env %q: expected rejection", bad)
+		}
+	}
+	// Uppercase MCP_-prefixed names are accepted.
+	t.Setenv("MCP_OK_TOKEN", "x")
+	if _, err := New("ok", ServerConfig{URL: ts.URL, TokenEnv: "MCP_OK_TOKEN"}); err != nil {
+		t.Errorf("valid token_env rejected: %v", err)
 	}
 }
 

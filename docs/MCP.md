@@ -109,7 +109,7 @@ odek spawns each configured server as a subprocess, sends `initialize` with prot
 
 Put `mcp_servers` in `~/.odek/config.json` (operator-trusted) or `./odek.json` (project; extra approval). The `command` / `args` / `env` shape matches Claude Code's `mcpServers` object. odek does **not** expand `${VAR}` in `mcp_servers.*.env`.
 
-A server entry may instead set `url` to use the **Streamable HTTP transport** — no subprocess. JSON-RPC messages are posted to the endpoint (plain JSON or single-event SSE responses), and all per-server limits, tool-name validation, and per-tool approvals apply identically. Set `token_env` to the name of an environment variable (resolved from the operator environment, e.g. `~/.odek/secrets.env`) holding the Bearer token; the token itself never enters config files.
+A server entry may instead set `url` to use the **Streamable HTTP transport** — no subprocess. JSON-RPC messages are posted to the endpoint (plain JSON or single-event SSE responses), and all per-server limits, tool-name validation, and per-tool approvals apply identically. Set `token_env` to the name of an environment variable (resolved from the operator environment, e.g. `~/.odek/secrets.env`) holding the Bearer token; the variable must be uppercase `MCP_`-prefixed (e.g. `MCP_REMOTE_TOKEN`) — no other secret can be reached through this field — and the token itself never enters config files. Project-level servers get no SSRF host exemption: their URLs may only target public addresses and always require the operator approval prompt, which displays the URL.
 
 ```json
 {
@@ -139,8 +139,7 @@ A server entry may instead set `url` to use the **Streamable HTTP transport** �
 | Field | Default | Notes |
 |-------|---------|-------|
 | `command` | required* | Executable to spawn. *Required unless `url` is set; when `url` is set, `command`/`args`/`env` are ignored. |
-| `url` | — | `http(s)` endpoint for the Streamable HTTP transport. Only absolute `http`/`https` URLs with no embedded credentials are accepted. The server's host is dialed through odek's SSRF guard (internal-IP refusal, DNS-rebinding-safe pinning). |
-| `token_env` | — | Name of the environment variable holding the Bearer token sent as `Authorization` on every request. Never put the token itself in config. |
+| `url` | — | `http(s)` endpoint for the Streamable HTTP transport. Only absolute `http`/`https` URLs with no embedded credentials are accepted. Operator-configured (global) servers' hosts are dialed through odek's SSRF guard with the host allow-listed (internal services reachable); project-configured servers get no host exemption — internal-IP refusal applies — and always require the approval prompt. |
 | `args` | `[]` | |
 | `env` | `{}` | Overrides; empty string unsets. Secret-looking keys are stripped even here. |
 | `timeout_seconds` | `30` | Per-request; clamped to 3600 (warning). |

@@ -4044,7 +4044,14 @@ func mcpExecEqual(a, b mcpclient.ServerConfig) bool {
 		a.MaxResponseBytes != b.MaxResponseBytes || a.MaxResultChars != b.MaxResultChars {
 		return false
 	}
-	if !slices.Equal(a.Args, b.Args) || !slices.Equal(a.ArtifactRoots, b.ArtifactRoots) {
+	if !slices.Equal(a.Args, b.Args) {
+		return false
+	}
+	rootsA := append([]string(nil), a.ArtifactRoots...)
+	rootsB := append([]string(nil), b.ArtifactRoots...)
+	sort.Strings(rootsA)
+	sort.Strings(rootsB)
+	if !slices.Equal(rootsA, rootsB) {
 		return false
 	}
 	return maps.Equal(a.Env, b.Env)
