@@ -3,6 +3,7 @@ package mcpclient
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -80,6 +81,12 @@ func (s *httpMCPServer) handler() http.Handler {
 		s.requests = append(s.requests, req.Method)
 		sse := s.sse
 		s.mu.Unlock()
+
+		// Notifications carry no id and get no response body.
+		if req.ID == 0 {
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
 
 		var result any
 		switch req.Method {
@@ -259,15 +266,269 @@ func TestSSEDataVariants(t *testing.T) {
 		body string
 		want string
 	}{
-		{"first data line wins", ": comment\ndata: {\"a\":1}\ndata: {\"b\":2}\n\n", `{"a":1}`},
+		// Per the SSE spec, one event's data: lines are joined with \n.
+		{"multi-line data joined", ": comment\ndata: {\"a\":\ndata: 1}\n\n", "{\"a\":\n1}"},
+		{"first event wins", "data: {\"a\":1}\n\ndata: {\"b\":2}\n\n", `{"a":1}`},
 		{"no space after colon", "data:{\"a\":2}\n", `{"a":2}`},
-		{"empty data line skipped, next used", "data:\ndata: {\"a\":3}\n", `{"a":3}`},
-		{"no data lines returns body unchanged", "event: x\nid: 1\n", "event: x\nid: 1\n"},
+		{"empty data line yields empty joined line", "data:\ndata: {\"a\":3}\n", "\n{\"a\":3}"},
+		{"CRLF terminated", "data: {\"a\":4}\r\n\r\n", `{"a":4}`},
+		{"no data lines yields no frames", "event: x\nid: 1\n", ""},
 	}
 	for _, tc := range cases {
-		if got := string(sseData([]byte(tc.body))); got != tc.want {
+		frames := sseFrames([]byte(tc.body))
+		got := ""
+		if len(frames) > 0 {
+			got = frames[0]
+		}
+		if got != tc.want {
 			t.Errorf("%s: got %q want %q", tc.name, got, tc.want)
 		}
+	}
+}
+
+func TestSSEFramesMultiEvent(t *testing.T) {
+	body := ": ping\n\n" +
+		"event: message\ndata: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/tools/list_changed\"}\n\n" +
+		"data: {\"jsonrpc\":\"2.0\",\"id\":7,\"result\":{\"tools\":[]}}\n\n"
+	frames := sseFrames([]byte(body))
+	if len(frames) != 2 {
+		t.Fatalf("expected 2 frames, got %d: %q", len(frames), frames)
+	}
+	if frames[0] != `{"jsonrpc":"2.0","method":"notifications/tools/list_changed"}` {
+		t.Errorf("frame 0: %q", frames[0])
+	}
+	if frames[1] != `{"jsonrpc":"2.0","id":7,"result":{"tools":[]}}` {
+		t.Errorf("frame 1: %q", frames[1])
+	}
+}
+
+func TestURLTransportResponseIDVerified(t *testing.T) {
+	// Server replies with a wrong id: must be an error, not a silent empty result.
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"jsonrpc":"2.0","id":999,"result":{"tools":[]}}`))
+	}))
+	defer ts.Close()
+	c, err := New("wrong-id", ServerConfig{URL: ts.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	_, err = c.call(context.Background(), "tools/list", nil)
+	if err == nil || !strings.Contains(err.Error(), "does not match request id") {
+		t.Fatalf("expected id mismatch error, got %v", err)
+	}
+}
+
+func TestURLTransportSSENoResponseFrame(t *testing.T) {
+	// Stream with only notification frames: must error, not return empty.
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/x\"}\n\n")
+	}))
+	defer ts.Close()
+	c, err := New("sse-notify-only", ServerConfig{URL: ts.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	_, err = c.call(context.Background(), "tools/list", nil)
+	if err == nil || !strings.Contains(err.Error(), "no JSON-RPC response frame") {
+		t.Fatalf("expected no-response-frame error, got %v", err)
+	}
+}
+
+func TestURLTransportSSEGarbageFrameThenResponse(t *testing.T) {
+	// A malformed frame is skipped (retained as parse error) and the valid
+	// frame still wins; if nothing valid exists the parse error surfaces.
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			ID int `json:"id"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: not-json\n\n")
+		fmt.Fprintf(w, "data: {\"jsonrpc\":\"2.0\",\"id\":%d,\"result\":{}}\n\n", req.ID)
+	}))
+	defer ts.Close()
+	c, err := New("sse-garbage", ServerConfig{URL: ts.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if _, err := c.call(context.Background(), "tools/list", nil); err != nil {
+		t.Fatalf("valid frame should win after garbage: %v", err)
+	}
+}
+
+func TestURLTransportSSEOnlyGarbage(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: not-json\n\n")
+	}))
+	defer ts.Close()
+	c, err := New("sse-bad", ServerConfig{URL: ts.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	_, err = c.call(context.Background(), "tools/list", nil)
+	if err == nil || !strings.Contains(err.Error(), "parse response") {
+		t.Fatalf("expected parse error, got %v", err)
+	}
+}
+
+func TestURLTransportSSEErrorFrameMatchesID(t *testing.T) {
+	// JSON-RPC error with the right id surfaces over SSE; wrong id errors first.
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			ID int `json:"id"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprintf(w, "data: {\"jsonrpc\":\"2.0\",\"id\":%d,\"error\":{\"code\":-1,\"message\":\"boom\"}}\n\n", req.ID)
+	}))
+	defer ts.Close()
+	c, err := New("sse-err", ServerConfig{URL: ts.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	_, err = c.call(context.Background(), "tools/list", nil)
+	if err == nil || !strings.Contains(err.Error(), "MCP error -1") {
+		t.Fatalf("expected MCP error via SSE, got %v", err)
+	}
+}
+
+func TestHTTPNotifyErrorStatus(t *testing.T) {
+	// Discover treats a rejected notification as best-effort (ignored), so
+	// drive httpNotify directly against a 500 endpoint.
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer ts.Close()
+	c, err := New("notify-500", ServerConfig{URL: ts.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if err := c.httpNotify(context.Background(), "notifications/initialized"); err == nil {
+		t.Fatal("expected notify error on http 500")
+	}
+}
+
+func TestURLTransportSSEUnrelatedResponseBeforeOurs(t *testing.T) {
+	// A streaming server interleaves an unrelated response before ours;
+	// the scan must keep looking for the matching id.
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			ID int `json:"id"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprintf(w, "data: {\"jsonrpc\":\"2.0\",\"id\":%d,\"result\":{\"other\":true}}\n\n", req.ID+100)
+		fmt.Fprintf(w, "data: {\"jsonrpc\":\"2.0\",\"id\":%d,\"result\":{\"tools\":[{\"name\":\"echo\",\"description\":\"d\"}]}}\n\n", req.ID)
+	}))
+	defer ts.Close()
+	c, err := New("sse-interleaved", ServerConfig{URL: ts.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	defs, err := c.Discover(context.Background())
+	if err != nil {
+		t.Fatalf("discover: %v", err)
+	}
+	if len(defs) != 1 || defs[0].Name != "echo" {
+		t.Fatalf("unexpected tools: %+v", defs)
+	}
+}
+
+func TestURLTransportJSONErrorFrameWrongIDRejected(t *testing.T) {
+	// Plain-JSON path: an error object with a mismatched id must not be
+	// accepted as this call's answer.
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"jsonrpc":"2.0","id":42,"error":{"code":-32000,"message":"spoofed"}}`))
+	}))
+	defer ts.Close()
+	c, err := New("json-spoof", ServerConfig{URL: ts.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	_, err = c.call(context.Background(), "tools/list", nil)
+	if err == nil {
+		t.Fatal("expected id mismatch error")
+	}
+	if strings.Contains(err.Error(), "spoofed") {
+		t.Fatalf("spoofed error text leaked through: %v", err)
+	}
+	if !strings.Contains(err.Error(), "does not match request id") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestURLTransportSSENotificationBeforeResponse(t *testing.T) {
+	// SSE stream opens with a server notification (no id), then the actual
+	// response — the parser must skip the notification frame.
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			ID     int    `json:"id"`
+			Method string `json:"method"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		reqID := req.ID
+		var result string
+		switch req.Method {
+		case "initialize":
+			result = `{"protocolVersion":"` + ProtocolVersion + `","serverInfo":{"name":"t","version":"1"}}`
+		case "tools/list":
+			result = `{"tools":[{"name":"echo","description":"d"}]}`
+		default:
+			result = `{}`
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprintf(w, "event: message\ndata: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/roots/list_changed\"}\n\n")
+		fmt.Fprintf(w, "data: {\"jsonrpc\":\"2.0\",\"id\":%d,\"result\":%s}\n\n", reqID, result)
+	}))
+	defer ts.Close()
+
+	c, err := New("sse-multi", ServerConfig{URL: ts.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	defs, err := c.Discover(context.Background())
+	if err != nil {
+		t.Fatalf("discover: %v", err)
+	}
+	if len(defs) != 1 || defs[0].Name != "echo" {
+		t.Fatalf("unexpected tools: %+v", defs)
+	}
+}
+
+func TestURLTransportSendsInitializedNotification(t *testing.T) {
+	srv := &httpMCPServer{}
+	ts := httptest.NewServer(srv.handler())
+	defer ts.Close()
+
+	c, err := New("init-note", ServerConfig{URL: ts.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if _, err := c.Discover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	srv.mu.Lock()
+	defer srv.mu.Unlock()
+	found := false
+	for _, m := range srv.requests {
+		if m == "notifications/initialized" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("notifications/initialized not sent; requests: %v", srv.requests)
 	}
 }
 
@@ -293,6 +554,7 @@ func TestValidateServerURLErrorBranches(t *testing.T) {
 func TestHTTPCallErrorBranches(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
+			ID     int    `json:"id"`
 			Method string `json:"method"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&req)
@@ -302,7 +564,7 @@ func TestHTTPCallErrorBranches(t *testing.T) {
 			w.Write([]byte(strings.Repeat("boom ", 300))) // body truncated in error
 			return
 		case "tools/call":
-			w.Write([]byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"tool exploded"}}`))
+			fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%d,"error":{"code":-32000,"message":"tool exploded"}}`, req.ID)
 			return
 		default:
 			w.Write([]byte(`not json`))

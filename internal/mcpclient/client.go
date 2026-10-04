@@ -640,6 +640,14 @@ func (c *Client) Discover(ctx context.Context) (_ []ToolDef, setupErr error) {
 		return nil, fmt.Errorf("mcpclient %s: initialize: %w", c.name, err)
 	}
 
+	// Step 1b: MCP requires a notifications/initialized notice after the
+	// initialize response. Over HTTP this is best-effort: a lenient server
+	// that rejects notifications outright still works for requests, while
+	// a strict spec-compliant server requires it before tools/list.
+	if c.url != "" {
+		_ = c.httpNotify(ctx, "notifications/initialized")
+	}
+
 	// Step 2: List tools
 	raw, err := c.call(ctx, "tools/list", nil)
 	if err != nil {
