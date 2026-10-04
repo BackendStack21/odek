@@ -169,16 +169,18 @@ func (c *Client) httpCall(ctx context.Context, method string, params json.RawMes
 	if err := json.Unmarshal(body, &r); err != nil {
 		return nil, fmt.Errorf("parse response: %w", err)
 	}
-	if r.Error != nil {
-		return nil, r.Error
-	}
+	// matchedResult verifies the id first: a mismatched-id or notification
+	// frame carrying an error object must not be accepted as this call's
+	// answer (the error text could otherwise be spoofed by the server).
 	return c.matchedResult(r, id)
 }
 
 // matchSSEFrame parses an SSE body into complete event payloads and returns
 // the result of the frame whose JSON-RPC id matches the request. Servers may
-// interleave notification frames (no id) with the response; per the SSE spec
-// a single event's data is the concatenation of its data: lines.
+// interleave notification frames (no id) and unrelated responses with ours;
+// per the SSE spec a single event's data is the concatenation of its data:
+// lines. Every non-notification frame is inspected before erroring, so an
+// interleaved earlier response does not break the match.
 func (c *Client) matchSSEFrame(body []byte, id int) (json.RawMessage, error) {
 	var parseErr error
 	for _, frame := range sseFrames(body) {
@@ -189,6 +191,9 @@ func (c *Client) matchSSEFrame(body []byte, id int) (json.RawMessage, error) {
 		}
 		if r.Method != "" {
 			continue // server-initiated notification frame
+		}
+		if r.ID != id {
+			continue // unrelated response; keep scanning
 		}
 		return c.matchedResult(r, id)
 	}
@@ -277,15 +282,6 @@ func sseFrames(body []byte) []string {
 	}
 	flush()
 	return frames
-}
-
-// sseData returns the first SSE event payload; retained for callers that
-// only care about a single-frame stream.
-func sseData(body []byte) []byte {
-	if frames := sseFrames(body); len(frames) > 0 {
-		return []byte(frames[0])
-	}
-	return body
 }
 
 func truncateForError(b []byte, n int) string {

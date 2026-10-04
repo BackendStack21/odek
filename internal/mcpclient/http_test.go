@@ -272,10 +272,15 @@ func TestSSEDataVariants(t *testing.T) {
 		{"no space after colon", "data:{\"a\":2}\n", `{"a":2}`},
 		{"empty data line yields empty joined line", "data:\ndata: {\"a\":3}\n", "\n{\"a\":3}"},
 		{"CRLF terminated", "data: {\"a\":4}\r\n\r\n", `{"a":4}`},
-		{"no data lines returns body unchanged", "event: x\nid: 1\n", "event: x\nid: 1\n"},
+		{"no data lines yields no frames", "event: x\nid: 1\n", ""},
 	}
 	for _, tc := range cases {
-		if got := string(sseData([]byte(tc.body))); got != tc.want {
+		frames := sseFrames([]byte(tc.body))
+		got := ""
+		if len(frames) > 0 {
+			got = frames[0]
+		}
+		if got != tc.want {
 			t.Errorf("%s: got %q want %q", tc.name, got, tc.want)
 		}
 	}
@@ -411,6 +416,57 @@ func TestHTTPNotifyErrorStatus(t *testing.T) {
 	}
 }
 
+func TestURLTransportSSEUnrelatedResponseBeforeOurs(t *testing.T) {
+	// A streaming server interleaves an unrelated response before ours;
+	// the scan must keep looking for the matching id.
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			ID int `json:"id"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprintf(w, "data: {\"jsonrpc\":\"2.0\",\"id\":%d,\"result\":{\"other\":true}}\n\n", req.ID+100)
+		fmt.Fprintf(w, "data: {\"jsonrpc\":\"2.0\",\"id\":%d,\"result\":{\"tools\":[{\"name\":\"echo\",\"description\":\"d\"}]}}\n\n", req.ID)
+	}))
+	defer ts.Close()
+	c, err := New("sse-interleaved", ServerConfig{URL: ts.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	defs, err := c.Discover(context.Background())
+	if err != nil {
+		t.Fatalf("discover: %v", err)
+	}
+	if len(defs) != 1 || defs[0].Name != "echo" {
+		t.Fatalf("unexpected tools: %+v", defs)
+	}
+}
+
+func TestURLTransportJSONErrorFrameWrongIDRejected(t *testing.T) {
+	// Plain-JSON path: an error object with a mismatched id must not be
+	// accepted as this call's answer.
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"jsonrpc":"2.0","id":42,"error":{"code":-32000,"message":"spoofed"}}`))
+	}))
+	defer ts.Close()
+	c, err := New("json-spoof", ServerConfig{URL: ts.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	_, err = c.call(context.Background(), "tools/list", nil)
+	if err == nil {
+		t.Fatal("expected id mismatch error")
+	}
+	if strings.Contains(err.Error(), "spoofed") {
+		t.Fatalf("spoofed error text leaked through: %v", err)
+	}
+	if !strings.Contains(err.Error(), "does not match request id") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestURLTransportSSENotificationBeforeResponse(t *testing.T) {
 	// SSE stream opens with a server notification (no id), then the actual
 	// response — the parser must skip the notification frame.
@@ -498,6 +554,7 @@ func TestValidateServerURLErrorBranches(t *testing.T) {
 func TestHTTPCallErrorBranches(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
+			ID     int    `json:"id"`
 			Method string `json:"method"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&req)
@@ -507,7 +564,7 @@ func TestHTTPCallErrorBranches(t *testing.T) {
 			w.Write([]byte(strings.Repeat("boom ", 300))) // body truncated in error
 			return
 		case "tools/call":
-			w.Write([]byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"tool exploded"}}`))
+			fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%d,"error":{"code":-32000,"message":"tool exploded"}}`, req.ID)
 			return
 		default:
 			w.Write([]byte(`not json`))
