@@ -756,7 +756,7 @@ The UI communicates entirely over a single WebSocket at `/ws`. Messages are newl
 | `clarify_expired` | Server declares the question dead after `timeout_seconds` with no answer | `id` |
 | `skill_event` | Skill lifecycle event (`loaded`/`autoloaded`/`used`/`deleted` — `skill_save`/`skill_patch` were removed with the self-learning feature) | `event`, `skill_name`, `skills`, `heuristic` |
 | `memory_event` | Memory lifecycle event | `event`, `target`, `session_id`, `content`, `count`, `new_count`, `untrusted` |
-| `agent_signal` | Agent self-observability signal | `event`, `detail`, `tool`, `count` |
+| `agent_signal` | Agent self-observability signal. `provider_learn_fallback` (once per provider per SDK fallback flag) means the provider rejected streaming or a request parameter — e.g. the buffered downgrade ends live reasoning/token deltas for that provider; the WebUI toasts `detail` | `event`, `detail`, `tool`, `count`, `kind`/`provider` (learn fallback only) |
 | `bg_job` | Background-job transition (start / exit). Upsert by `job_id`. Terminal frames add `exit_code`, `duration_ms`, `output_bytes`, `command_head` | `job_id`, `session_id`, `status` |
 | `bg_wake` | Server is starting a system-initiated wake turn after an idle job completes | `session_id` |
 
