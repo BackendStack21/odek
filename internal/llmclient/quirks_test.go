@@ -10,6 +10,7 @@ import (
 func quirksEqual(got, want sdk.Quirks) bool {
 	return got.ThinkingObject == want.ThinkingObject &&
 		got.ReasoningEffort == want.ReasoningEffort &&
+		got.IncludeReasoning == want.IncludeReasoning &&
 		got.AnthropicVersion == want.AnthropicVersion &&
 		slices.Equal(got.ForceThinking, want.ForceThinking)
 }
@@ -46,10 +47,13 @@ func TestNewSDK_DefaultQuirksForCustomProviders(t *testing.T) {
 		t.Fatalf("NewSDK: %v", err)
 	}
 	for id, want := range map[string]sdk.Quirks{
-		"litellm":   {ReasoningEffort: true},
+		// OpenAI-format gateways: ReasoningEffort alone is not enough —
+		// gateways in the OpenRouter family also need the explicit
+		// include_reasoning opt-in or they return no reasoning at all.
+		"litellm":   {ReasoningEffort: true, IncludeReasoning: true},
 		"my-anth":   {ThinkingObject: true, AnthropicVersion: "2023-06-01"},
 		"my-gem":    {},
-		"legacy-ov": {ReasoningEffort: true},
+		"legacy-ov": {ReasoningEffort: true, IncludeReasoning: true},
 	} {
 		got := mustProvider(t, s, id).Config().Quirks
 		if !quirksEqual(got, want) {
@@ -128,7 +132,7 @@ func TestDial_LegacyGetsOpenAIReasoningQuirks(t *testing.T) {
 		t.Fatalf("Dial: %v", err)
 	}
 	got := c.Provider.Config().Quirks
-	want := sdk.Quirks{ReasoningEffort: true}
+	want := sdk.Quirks{ReasoningEffort: true, IncludeReasoning: true}
 	if !quirksEqual(got, want) {
 		t.Fatalf("legacy quirks = %+v, want %+v", got, want)
 	}

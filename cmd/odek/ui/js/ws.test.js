@@ -250,6 +250,25 @@ test('provider timeout errors render a retry hint, not the raw SDK line', () => 
   assert.ok(!html.includes('deadline exceeded'), 'raw SDK timeout must not leak');
 });
 
+// provider_learn_fallback: the one agent signal that IS actionable — the
+// provider stopped streaming, so live reasoning/tokens are gone for it.
+// Toast with the readable detail; never transcript noise.
+test('provider learn fallback surfaces as a toast, not transcript noise', () => {
+  const toast = el('toast');
+  const before = el('messages').children.length;
+  deliver({ type: 'agent_signal', event: 'provider_learn_fallback', kind: 'buffered', provider: 'litellm', detail: 'provider "litellm" downgraded to buffered responses; streaming (live reasoning) is off for this provider' });
+  assert.equal(el('messages').children.length, before, 'learn fallback must not append transcript messages');
+  assert.match(toast.textContent, /litellm/);
+  assert.match(toast.textContent, /buffered/);
+  assert.ok(toast.classList.contains('show'), 'toast must be visible');
+});
+
+test('provider learn fallback without detail still toasts a generic line', () => {
+  const toast = el('toast');
+  deliver({ type: 'agent_signal', event: 'provider_learn_fallback', kind: 'none_effort', provider: 'gw' });
+  assert.ok(toast.textContent.length > 0, 'generic fallback line shown');
+});
+
 test('stream-idle errors render a stall hint', () => {
   deliver({ type: 'error', message: 'llm: stream idle for over 2m0s without an event' });
   const html = el('messages').children.at(-1).innerHTML;

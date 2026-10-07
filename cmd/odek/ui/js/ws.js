@@ -573,5 +573,11 @@ function handleAgentSignal(event) {
     case 'tool_running':
       setIntent((event.tool ? event.tool + ' · ' : '') + (event.detail || 'running'));
       break;
+    case 'provider_learn_fallback':
+      // Rare (once per provider per fallback flag, process lifetime) and
+      // actionable: the provider stopped streaming, so live reasoning and
+      // token deltas are gone for it. Dwell long enough to read.
+      showToast(event.detail || 'provider fallback engaged', 8000);
+      break;
   }
 }

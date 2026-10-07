@@ -3,7 +3,7 @@ module github.com/BackendStack21/odek
 go 1.27.0
 
 require (
-	github.com/BackendStack21/go-llm-sdk v0.6.1
+	github.com/BackendStack21/go-llm-sdk v0.7.0
 	github.com/BackendStack21/go-mcp v1.4.0
 	github.com/BackendStack21/go-vector v1.4.0
 	golang.org/x/image v0.46.0

@@ -871,6 +871,10 @@ type FileProviderOverride struct {
 	APIKey  string `json:"api_key,omitempty"`
 	BaseURL string `json:"base_url,omitempty"`
 	Format  string `json:"format,omitempty"`
+	// IncludeReasoning opts a strict OpenAI-format gateway out of the
+	// include_reasoning wire flag (SDK has no learn-once fallback for it).
+	// Nil/omitted = default on.
+	IncludeReasoning *bool `json:"include_reasoning,omitempty"`
 }
 
 // ProviderOverrides converts the resolved providers map for odek.New.
@@ -880,7 +884,7 @@ func (c ResolvedConfig) ProviderOverrides() map[string]llmclient.ProviderOverrid
 	}
 	out := make(map[string]llmclient.ProviderOverride, len(c.Providers))
 	for id, ov := range c.Providers {
-		out[id] = llmclient.ProviderOverride{APIKey: ov.APIKey, BaseURL: ov.BaseURL, Format: ov.Format}
+		out[id] = llmclient.ProviderOverride{APIKey: ov.APIKey, BaseURL: ov.BaseURL, Format: ov.Format, IncludeReasoning: ov.IncludeReasoning}
 	}
 	return out
 }
@@ -3038,7 +3042,7 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 		if ov.APIKey == "" {
 			ov.APIKey = firstNonEmptyEnv(providerAPIKeyEnv(id)...)
 		}
-		if ov.APIKey != "" || ov.BaseURL != "" || ov.Format != "" {
+		if ov.APIKey != "" || ov.BaseURL != "" || ov.Format != "" || ov.IncludeReasoning != nil {
 			providers[id] = ov
 		}
 	}

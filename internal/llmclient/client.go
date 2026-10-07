@@ -76,12 +76,18 @@ type ProviderOverride struct {
 	APIKey  string
 	BaseURL string
 	Format  string // openai | anthropic | gemini; required for custom ids
+	// IncludeReasoning overrides the OpenAI-format default (send
+	// include_reasoning: true). Nil = default on; false = omit the field
+	// for strict gateways that reject it. No learn-once fallback exists
+	// for this flag, so a rejecting provider must be configured here.
+	IncludeReasoning *bool
 }
 
 // NewSDK constructs a process-usable SDK from resolved options. Keys come
 // from overrides, not a post-Unsetenv FromEnv(). Transport is odek's pooled
 // dialer (HTTP_PROXY + one pool).
 func NewSDK(opts Options) (*sdk.SDK, error) {
+	installLearnBridge()
 	timeout := opts.Timeout
 	if timeout <= 0 {
 		timeout = DefaultTimeout
@@ -104,13 +110,20 @@ func NewSDK(opts Options) (*sdk.SDK, error) {
 		// Custom (non built-in) providers get per-format default quirks;
 		// with zero quirks the SDK silently drops ChatRequest.Thinking on
 		// OpenAI-format gateways (LiteLLM, OpenRouter, vLLM) and reasoning
-		// tokens never come back. Built-ins keep their registry quirks.
+		// tokens never come back. The IncludeReasoning flag is the second
+		// half of that: gateways in the OpenRouter family also need the
+		// explicit include_reasoning opt-in on the wire before they emit
+		// reasoning. Built-ins keep their registry quirks (api.openai.com
+		// must not receive the gateway flag).
 		if !isBuiltinProviderID(id) {
 			format := sdk.Format(ov.Format)
 			if format == "" {
 				format = sdk.FormatOpenAI
 			}
 			if q, ok := formatDefaultQuirks(format); ok {
+				if format == sdk.FormatOpenAI && ov.IncludeReasoning != nil && !*ov.IncludeReasoning {
+					q.IncludeReasoning = false
+				}
 				popts = append(popts, sdk.WithQuirks(q))
 			}
 		}
@@ -582,11 +595,16 @@ func isBuiltinProviderID(id string) bool {
 
 // formatDefaultQuirks returns the safe default quirks for a wire format —
 // what every mainstream OpenAI-compatible gateway (and the official
-// Anthropic API) accepts. Gemini needs none; unknown formats are left alone.
+// Anthropic API) accepts. The OpenAI set includes the gateway reasoning
+// opt-in: mainstream gateways (LiteLLM, OpenRouter, vLLM) accept
+// include_reasoning and need it to return reasoning at all, while strict
+// gateways opt out per provider via include_reasoning=false (the SDK has
+// no learn-once fallback for this flag). Gemini needs none;
+// unknown formats are left alone.
 func formatDefaultQuirks(f sdk.Format) (sdk.Quirks, bool) {
 	switch f {
 	case sdk.FormatOpenAI:
-		return sdk.Quirks{ReasoningEffort: true}, true
+		return sdk.Quirks{ReasoningEffort: true, IncludeReasoning: true}, true
 	case sdk.FormatAnthropic:
 		return sdk.Quirks{ThinkingObject: true, AnthropicVersion: "2023-06-01"}, true
 	case sdk.FormatGemini:

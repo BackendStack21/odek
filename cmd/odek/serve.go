@@ -1152,6 +1152,18 @@ func serveDeltaHandler(sendFn func(v any) error, deltas *wsDeltaCounters) func(l
 	}
 }
 
+// learnSignalFrame renders one provider learn event as the agent_signal
+// frame sent to WebSocket clients.
+func learnSignalFrame(ev llmclient.LearnEvent) map[string]any {
+	return map[string]any{
+		"type":     "agent_signal",
+		"event":    "provider_learn_fallback",
+		"detail":   llmclient.LearnDetail(ev),
+		"kind":     string(ev.Kind),
+		"provider": ev.Provider,
+	}
+}
+
 // serveStateStartedAt returns the tracked start time, or the process start
 // as a fallback when no serveState was wired (tests pass nil).
 func serveStateStartedAt(st *serveState) time.Time {
@@ -1392,6 +1404,19 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 		writeWSError(conn, fmt.Sprintf("agent: %v", err))
 		return
 	}
+
+	// Provider learn-once fallbacks (SDK v0.7.0) surface as agent_signal
+	// frames on this connection. Without this, a provider silently
+	// downgrading to buffered mode (no live reasoning/tokens) is
+	// indistinguishable from one that never streamed. Registered after the
+	// agent exists (construction makes no LLM calls, so nothing can fire
+	// earlier) and unregistered when the connection handler exits; dispatch
+	// is synchronous on the request goroutine and wsSend only serializes a
+	// small map.
+	unregisterLearnSink := llmclient.RegisterLearnSink(func(ev llmclient.LearnEvent) {
+		wsSend(learnSignalFrame(ev))
+	})
+	defer unregisterLearnSink()
 
 	// Immutable snapshot for the socket-reader goroutine: the pong
 	// heartbeat below runs on the reader while the processor loop may write
