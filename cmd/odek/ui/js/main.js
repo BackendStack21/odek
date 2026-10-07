@@ -282,15 +282,26 @@ function openNowFromChip() {
 });
 
 const costChip = document.getElementById('cost-chip');
-const speedChip = document.getElementById('speed-chip');
-for (const chip of [costChip, speedChip]) {
-  if (!chip) continue;
+if (costChip) {
   const openCost = (e) => {
     e.stopPropagation();
     togglePopover();
   };
-  chip.addEventListener('click', openCost);
-  chip.addEventListener('keydown', (e) => {
+  costChip.addEventListener('click', openCost);
+  costChip.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    e.preventDefault();
+    openCost(e);
+  });
+}
+const ctxChip = document.getElementById('ctx-chip');
+if (ctxChip) {
+  const openCost = (e) => {
+    e.stopPropagation();
+    togglePopover();
+  };
+  ctxChip.addEventListener('click', openCost);
+  ctxChip.addEventListener('keydown', (e) => {
     if (e.key !== 'Enter' && e.key !== ' ') return;
     e.preventDefault();
     openCost(e);
@@ -425,6 +436,31 @@ function jumpTurn(dir) {
   if (turns[idx].scrollIntoView) turns[idx].scrollIntoView({ block: 'start' });
 }
 
-document.getElementById('settings-btn')?.addEventListener('click',()=>openTab('preferences'));
-document.getElementById('schedules-btn')?.addEventListener('click',()=>openTab('manage'));
+// Preferences gear: small topbar popover (mirrors #health-popover behavior).
+const prefsPopover = () => document.getElementById('prefs-popover');
+function togglePrefsPopover(force) {
+  const p = prefsPopover();
+  const btn = document.getElementById('prefs-btn');
+  if (!p) return;
+  const want = force != null ? !!force : p.hidden;
+  p.hidden = !want;
+  btn?.setAttribute('aria-expanded', String(want));
+  if (want) {
+    S.refreshPermissions?.();
+    setTimeout(() => {
+      document.addEventListener('click', prefsOutsideDismiss, { once: true });
+      document.addEventListener('keydown', prefsEscDismiss, { once: true });
+    }, 0);
+  }
+}
+function prefsOutsideDismiss(e) {
+  const p = prefsPopover();
+  if (p && !p.hidden && !p.contains(e.target) && !document.getElementById('prefs-btn')?.contains(e.target)) togglePrefsPopover(false);
+  else if (p && !p.hidden) document.addEventListener('click', prefsOutsideDismiss, { once: true });
+}
+function prefsEscDismiss(e) {
+  if (e.key === 'Escape' && prefsPopover() && !prefsPopover().hidden) togglePrefsPopover(false);
+}
+S.openPrefsPopover = () => togglePrefsPopover(true);
+document.getElementById('prefs-btn')?.addEventListener('click', (e) => { e.stopPropagation(); togglePrefsPopover(); });
 document.getElementById('shutdown-open')?.addEventListener('click',openShutdown);

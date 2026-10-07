@@ -948,7 +948,7 @@ let inspector;
 async function prepareInspector() {
   const drawer = document.getElementById('panels');
   if (!inspector) {
-    for (const name of ['now', 'manage', 'ops']) {
+    for (const name of ['now', 'outputs', 'memory', 'ops']) {
       const tab = document.getElementById('ptab-' + name);
       tab.className = 'ptab' + (name === 'now' ? ' active' : '');
       tab.dataset.tab = name;
@@ -1001,21 +1001,32 @@ test('late jobs response cannot repopulate a new session', async () => {
 test('management ignores pre-reset responses and reloads when reopened', async () => {
   const drawer = await prepareInspector();
   const oldFetch = globalThis.fetch;
-  let finish;
-  let requests = 0;
+  let requests;
+  const reply = (body) => ({ ok: true, headers: { get: () => 'application/json' }, json: async () => body });
   try {
-    drawer.querySelectorAll('.ptab').forEach(tab => tab.classList.toggle('active', tab.dataset.tab === 'manage'));
-    globalThis.fetch = () => { requests++; return new Promise(resolve => { finish = resolve; }); };
+    drawer.querySelectorAll('.ptab').forEach(tab => tab.classList.toggle('active', tab.dataset.tab === 'ops'));
+    requests = [];
+    globalThis.fetch = (path) => {
+      const req = { path: String(path), resolve: null };
+      req.promise = new Promise(res => { req.resolve = res; });
+      requests.push(req);
+      return req.promise;
+    };
     inspector.togglePanels(true);
     sessions.newSession();
-    finish({ok:true, headers:{get:()=> 'application/json'}, json:async()=>({features:{schedules:true}})});
+    const staleCaps = requests.find(r => r.path.includes('capabilit'));
+    assert.ok(staleCaps, 'capabilities requested before reset');
+    staleCaps.resolve(reply({ features: { schedules: true } }));
     await new Promise(resolve => setTimeout(resolve, 0));
-    assert.equal(byId['management-body'].textContent, '');
-    assert.equal(requests, 1, 'stale capabilities must not start schedule fetch');
+    assert.equal(requests.filter(r => r.path.includes('schedules')).length, 0, 'stale capabilities must not start schedule fetch');
     inspector.togglePanels(true);
-    assert.equal(requests, 2, 'reopening reloads selected Manage tab');
+    const freshCaps = requests.filter(r => r.path.includes('capabilit')).pop();
+    assert.ok(freshCaps, 'reopening re-requests capabilities');
+    freshCaps.resolve(reply({ features: { schedules: true } }));
+    await new Promise(resolve => setTimeout(resolve, 0));
+    assert.ok(requests.some(r => r.path.includes('schedules')), 'reopening reloads the Server tab');
     S.resetManagement();
-    finish({ok:true, headers:{get:()=> 'application/json'}, json:async()=>({features:{}})});
+    for (const r of requests) r.resolve(reply({}));
     await new Promise(resolve => setTimeout(resolve, 0));
   } finally { globalThis.fetch = oldFetch; inspector.togglePanels(false); }
 });

@@ -48,8 +48,16 @@ function inspect(item) {
   detail.append(back, jump, textNode('h3', 'output-title', item.name));
   renderResult(detail, item);
   detail.hidden = false; byId('output-list').hidden = true;
-  openTab('activity');detail.tabIndex=-1;detail.focus();
+  openActivityDetails();detail.tabIndex=-1;detail.focus();
 }
+// Reveal the collapsed in-panel activity view instead of a separate tab.
+function openActivityDetails() {
+  openTab('outputs');
+  const d = byId('activity-details');
+  if (d) { d.open = true; d.scrollIntoView?.({ block: 'start' }); }
+}
+S.openActivityDetails = openActivityDetails;
+
 S.recordResult = (block, output) => {
   const item = { block, output, outcome:block.dataset.outcome || 'unknown', turnId:block.dataset.turnId || '', callId:block.dataset.callId || '', name: block.dataset.toolName || 'tool', args: block.dataset.toolArgs || '', preview: toolPreview(block.dataset.toolName || '', block.dataset.toolArgs || '') };
   item.stepId=(S.plan?.steps || []).find(step=>step.status==='in_progress')?.id || '';
@@ -88,23 +96,22 @@ density?.addEventListener('click', () => setDensity(document.body.classList.cont
 
 S.sessionRailOpen = false;
 function syncSessionRail() {
-  const wide = document.body.classList.contains('workspace-wide');
-  const open = wide && S.sessionRailOpen;
+  const open = S.sessionRailOpen;
   document.body.classList.toggle('sessions-open', open);
   const rail = byId('session-rail');
   if (rail) { rail.hidden = !open; rail.setAttribute('aria-hidden', String(!open)); }
   const button = byId('hamburger-btn');
-  if (button && wide) { button.setAttribute('aria-expanded', String(open)); button.setAttribute('aria-controls','session-rail'); }
-  else if (button) button.setAttribute('aria-controls','panels');
+  if (button) { button.setAttribute('aria-expanded', String(open)); button.setAttribute('aria-controls','session-rail'); }
 }
 S.toggleSessionRail = () => { S.sessionRailOpen = !S.sessionRailOpen; syncSessionRail(); };
 
-// Move the existing session navigation instead of maintaining duplicate lists.
+// Keep the workspace-wide marker for CSS/behavior branches; the rail hosts
+// the single session list on every width.
 if (typeof matchMedia === 'function') {
   const wide = matchMedia('(min-width: 1100px)');
   const relocate = () => {
-    const target = byId(wide.matches ? 'session-rail' : 'ppanel-sessions');
-    const sidebar = byId('sidebar'); if (target && sidebar) target.appendChild(sidebar);
+    const target = byId('session-rail');
+    const sidebar = byId('sidebar'); if (target && sidebar && sidebar.parentElement !== target) target.appendChild(sidebar);
     document.body.classList.toggle('workspace-wide', wide.matches);
     syncSessionRail();
   };

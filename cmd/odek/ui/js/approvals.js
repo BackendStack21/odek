@@ -174,6 +174,8 @@ export function removeActiveApprovalCard() {
     S.activeApprovalCard.remove();
     S.activeApprovalCard = null;
   }
+  const overlay = document.getElementById('approval-overlay');
+  if (overlay && !overlay.children.length) overlay.hidden = true;
 }
 
 // clearApprovals drops every pending request and the rendered card — used on
@@ -319,8 +321,16 @@ function renderApprovalCard(event) {
   // F-B4: stamp arrival so every approve path (button, Enter, global 'a')
   // enforces the same 1.5s friction cool-down.
   card.dataset.shownAt = String(Date.now());
-  hideEmptyState();
-  insertTurnWork(card, 'tool');
+  // Global overlay: approvals render above the transcript regardless of
+  // inspector state, so they are never buried inside a panel.
+  const overlay = document.getElementById('approval-overlay');
+  if (overlay) {
+    overlay.hidden = false;
+    overlay.appendChild(card);
+  } else {
+    hideEmptyState();
+    insertTurnWork(card, 'tool');
+  }
   forceScrollBottom();
   card.focus({ preventScroll: true });
   announce('Approval required: ' + (event.risk || 'unknown') + ' risk operation');
@@ -371,7 +381,7 @@ document.addEventListener('keydown', (e) => {
   const active = document.activeElement;
   if (active && S.activeApprovalCard && !S.activeApprovalCard.contains(active)) return;
   const trustVisible = S.activeApprovalCard &&
-    !S.activeApprovalCard.querySelector('.trust').style.display;
+    !S.activeApprovalCard.querySelector('.trust')?.style.display;
   if (e.key === 'a' || e.key === 'A') {
     e.preventDefault();
     sendApproval('approve');

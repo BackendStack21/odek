@@ -1,4 +1,5 @@
-// Inspector drawer: four workspaces (sessions / now / memory / ops).
+// Inspector drawer: three workspaces (now / memory / ops). The session list
+// lives in the topbar session rail, not in the inspector.
 // Opened via the topbar button or ⌘. All data flows through js/api.js.
 import { S, getSessionToken } from './state.js';
 import { showToast, announce, escapeHtml, isDialogOpen } from './utils.js';
@@ -57,8 +58,6 @@ export function togglePanels(force) {
     stopAgentsPolling();
     if (panelOpener?.isConnected && panelOpener.focus) panelOpener.focus(); else if(pbtn?.focus) pbtn.focus();
   }
-  const hamburger = document.getElementById('hamburger-btn');
-  if (hamburger && !document.body.classList.contains('workspace-wide')) hamburger.setAttribute('aria-expanded', String(want && activeWorkspace() === 'sessions'));
 }
 S.closePanels = () => togglePanels(false);
 
@@ -91,9 +90,7 @@ function refreshActivePanel() {
     stopAgentsPolling();
   }
   if (name !== 'ops') stopRunPolling();
-  if (name === 'sessions') {
-    if (typeof S.refreshSessions === 'function') S.refreshSessions();
-  } else if (name === 'now') {
+  if (name === 'now') {
     refreshPlanPanel();
     startPlanPolling();
     loadJobs();
@@ -102,17 +99,14 @@ function refreshActivePanel() {
   } else if (name === 'memory') {
     loadMemory();
     loadSkills();
-    loadTools();
-  } else if (name === 'manage' || name === 'maintenance') {
-    S.loadManagement?.(name);
-  } else if (name === 'preferences') {
-    S.refreshPermissions?.();
-  } else if (name === 'outputs') {
-    S.loadArtifacts?.();
   } else if (name === 'ops') {
     loadRuns();
     loadEvents();
     loadConfig();
+    loadTools();
+    S.loadManagement?.('ops');
+  } else if (name === 'outputs') {
+    S.loadArtifacts?.();
   }
 }
 
@@ -132,7 +126,7 @@ drawer.querySelectorAll('.ptab').forEach(btn => {
     btn.scrollIntoView?.({block:'nearest',inline:'nearest'});
     refreshActivePanel();
     const hamburger = document.getElementById('hamburger-btn');
-    if (hamburger && !document.body.classList.contains('workspace-wide')) {
+    if (hamburger) {
       hamburger.setAttribute('aria-expanded', String(drawer.classList.contains('active') && btn.dataset.tab === 'sessions'));
     }
   });
@@ -140,7 +134,7 @@ drawer.querySelectorAll('.ptab').forEach(btn => {
 const tabsEl = document.getElementById('panels-tabs');
 if (tabsEl) {
   tabsEl.addEventListener('keydown', (e) => {
-    const tabs = Array.from(drawer.querySelectorAll('.ptab')).filter(tab => !tab.hidden && !(tab.dataset.tab === 'sessions' && document.body.classList.contains('workspace-wide')));
+    const tabs = Array.from(drawer.querySelectorAll('.ptab')).filter(tab => !tab.hidden);
     const i = tabs.indexOf(document.activeElement);
     if (i < 0) return;
     let next = -1;
@@ -156,6 +150,8 @@ if (tabsEl) {
 }
 document.addEventListener('keydown',e=>{
   if(!drawer.classList.contains('active') || isDialogOpen())return;
+  const prefs=document.getElementById('prefs-popover');
+  if(prefs&&!prefs.hidden)return;
   if(e.key==='Escape'){e.preventDefault();togglePanels(false);return;}
   if(e.key!=='Tab' || (typeof matchMedia==='function' && matchMedia('(min-width: 1100px)').matches))return;
   const items=Array.from(drawer.querySelectorAll('button,input,select,textarea,[tabindex="0"]')).filter(el=>!el.disabled && !el.hidden && el.tabIndex!==-1 && !el.closest('[hidden]'));

@@ -473,16 +473,9 @@ export async function executeDeleteSession() {
   }
 }
 
-// ── Open the inspector sessions tab ──
+// ── Toggle the single session rail ──
 export function toggleSidebar() {
-  if (document.body.classList.contains("workspace-wide")) { S.toggleSessionRail?.(); return; }
-  const drawer = document.getElementById('panels');
-  const tab = drawer && drawer.querySelector('.ptab.active');
-  if (drawer && drawer.classList.contains('active') && tab && tab.dataset.tab === 'sessions') {
-    if (typeof S.closePanels === 'function') S.closePanels();
-    return;
-  }
-  if (typeof S.openSessionsPanel === 'function') S.openSessionsPanel();
+  S.toggleSessionRail?.();
 }
 
 // ── Session list click delegation ──
