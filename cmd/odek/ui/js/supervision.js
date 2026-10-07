@@ -38,7 +38,9 @@ S.refreshSupervision=()=>{
  const title=byId('task-status');if(title)title.textContent=S.stopRequested&&S.busy?'Stopping…':S.busy?'Working on your task':S.recoveryReason?'Work needs review':'Ready to continue';
  const root=byId('attention-view');if(!root)return;root.textContent='';
  const items=[];
- if(S.activeApprovalId)items.push(['Approval waiting',()=>{S.closePanels?.();S.activeApprovalCard?.scrollIntoView?.({block:'center'});S.activeApprovalCard?.focus();}]);
+ // Approvals render in the global #approval-overlay above the transcript,
+ // so they are not attention-view rows — the chip routes to them instead.
+ const approvalCount = S.approvalQueue?.length || (S.activeApprovalId ? 1 : 0);
  if(S.activeClarifyCard)items.push(['Answer the agent',()=>{S.closePanels?.();S.activeClarifyCard.scrollIntoView?.({block:'center'});S.activeClarifyCard.querySelector('textarea')?.focus();}]);
  for(const step of S.plan?.steps||[])if(step.status==='blocked')items.push(['Blocked: '+step.title,()=>S.requestFollowup('Help resolve blocked step '+step.id+': '+step.title)]);
  if(S.failedChecks)items.push([S.failedChecks+' failed checks · review evidence',()=>openTab('outputs')]);
@@ -46,9 +48,9 @@ S.refreshSupervision=()=>{
  if(S.knowledgeNeedsReview)items.push(['Review memory before allowing reuse',()=>openTab('memory')]);
  for(const item of S.agentAttention?.values() || [])items.push([item.label+' · '+item.status,()=>S.requestFollowup('Review delegated work: '+item.label+'. Verify its evidence and continue unfinished work.')]);
  const activeJobs=(S.jobs||[]).filter(job=>job.status==='running');if(!S.busy && activeJobs.length)items.push([activeJobs.length+' background jobs still running',()=>openTab('now')]);
- if(!items.length)root.appendChild(node('p','management-note','Nothing needs your decision.'));
+ if(!items.length && !approvalCount)root.appendChild(node('p','management-note','Nothing needs your decision.'));
  for(const [label,fn] of items)root.appendChild(action(label,fn));
- const chip=byId('attention-chip');if(chip){chip.hidden=!items.length;chip.textContent=items.length+' need attention';}
+ const chip=byId('attention-chip');if(chip){chip.hidden=!(items.length||approvalCount);chip.textContent=(items.length+approvalCount)+' need attention';}
 };
 
 let recoveryVersion=0;
@@ -111,8 +113,8 @@ const size=byId('reading-size');
 function setReadingSize(value){const n=[15,17,19].includes(Number(value))?Number(value):15;document.documentElement.style.setProperty('--reading-size',n+'px');if(size)size.value=String(n);try{localStorage.setItem('odek_reading_size',String(n));}catch{/* optional preference */}}
 try{setReadingSize(localStorage.getItem('odek_reading_size'));}catch{setReadingSize(15);}
 size?.addEventListener('change',()=>setReadingSize(size.value));
-byId('all-activity-btn')?.addEventListener('click',()=>openTab('activity'));
-byId('attention-chip')?.addEventListener('click',()=>openTab('now'));
+byId('all-activity-btn')?.addEventListener('click',()=>S.openActivityDetails?.());
+byId('attention-chip')?.addEventListener('click',()=>{if(S.approvalQueue?.length){S.activeApprovalCard?.scrollIntoView?.({block:'center'});S.activeApprovalCard?.focus();}else openTab('now');});
 S.refreshSupervision();
 
 let decisions=new Map();

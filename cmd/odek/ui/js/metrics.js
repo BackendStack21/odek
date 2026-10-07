@@ -376,10 +376,18 @@ export function renderMetrics() {
     speed.title = speedTip;
     speed.classList.toggle('on', !!speedLabel);
   }
-  const speedChip = document.getElementById('speed-chip');
-  if (speedChip) {
-    speedChip.hidden = !speedLabel;
-    speedChip.textContent = speedLabel;
-    speedChip.title = speedTip || 'Generation speed';
+
+  // Context chip: the only topbar context metric; full detail lives in the
+  // health popover. Shows the percentage against the window when known,
+  // otherwise the raw token count.
+  const ctxChip = document.getElementById('ctx-chip');
+  if (ctxChip) {
+    ctxChip.hidden = shownCtx <= 0;
+    if (shownCtx > 0) {
+      const pctLabel = m.maxContext > 0 ? Math.round(Math.min(1, shownCtx / m.maxContext) * 100) + '%' : formatNum(shownCtx);
+      ctxChip.textContent = 'ctx ' + pctLabel;
+      ctxChip.title = 'Context: ' + formatNum(shownCtx) + ' tokens' +
+        (m.maxContext > 0 ? ' of ~' + formatNum(m.maxContext) : '');
+    }
   }
 }

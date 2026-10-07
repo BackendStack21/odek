@@ -55,28 +55,35 @@ export function isComposerSlashInput(val, cursor) {
   }
   return false;
 }
-export const WORKSPACES = { sessions: {id:'ptab-sessions', surface:'sessions'}, now: {id:'ptab-now',surface:'task'}, outputs:{id:'ptab-outputs',surface:'task'}, activity:{id:'ptab-activity',surface:'task'}, preferences:{id:'ptab-preferences',surface:'admin'}, memory:{id:'ptab-memory',surface:'admin'}, ops:{id:'ptab-ops',surface:'admin'}, manage:{id:'ptab-manage',surface:'schedules'}, maintenance:{id:'ptab-maintenance',surface:'admin'} };
-for (const [id,title] of [['outputs','Deliverables and evidence'],['activity','Inspect activity'],['preferences','Preferences and permissions'],['manage','Scheduled work'],['maintenance','Storage maintenance']]) COMMANDS.push({id:'tab-'+id,title,hint:'workspace',run:()=>openTab(id)});
+export const WORKSPACES = { now: {id:'ptab-now', surface:'task'}, outputs:{id:'ptab-outputs',surface:'task'}, memory:{id:'ptab-memory',surface:'admin'}, ops:{id:'ptab-ops',surface:'admin'} };
+for (const [id,title] of [['outputs','Deliverables and evidence'],['server','Server: runs, events, schedules, maintenance']]) COMMANDS.push({id:'tab-'+id,title,hint:'workspace',run:()=>openTab(id)});
 
 const TAB_WS = {
   sessions: 'sessions', session: 'sessions',
   plan: 'now', jobs: 'now', agents: 'now', now: 'now',
   memory: 'memory', skills: 'memory', tools: 'memory',
-  runs: 'ops', events: 'ops', config: 'ops', ops: 'ops',
+  runs: 'ops', events: 'ops', config: 'ops', ops: 'ops', server: 'ops',
+  // Removed tabs keep their slash verbs working by retargeting:
+  manage: 'ops', maintenance: 'ops', schedules: 'ops',
+  activity: 'outputs',
+  preferences: 'preferences',
 };
 const TAB_ID = {
-  sessions: 'ptab-sessions',
   now: 'ptab-now',
   memory: 'ptab-memory',
   ops: 'ptab-ops',
 };
 
 export function openTab(name) {
-  if ((name === 'sessions' || name === 'session') && document.body.classList.contains('workspace-wide')) { if (!S.sessionRailOpen) S.toggleSessionRail?.(); document.getElementById('sidebar-search')?.focus(); return; }
+  if (name === 'preferences') { S.openPrefsPopover?.(); return; }
+  if (name === 'sessions' || name === 'session') {
+    if (!S.sessionRailOpen) S.toggleSessionRail?.();
+    document.getElementById('sidebar-search')?.focus();
+    return;
+  }
   const ws = TAB_WS[name] || name;
   S.setPanelSurface?.(WORKSPACES[ws]?.surface || 'task');
   togglePanels(true);
-  S.setPanelSurface?.(WORKSPACES[ws]?.surface || 'task');
   const btn = document.getElementById(WORKSPACES[ws]?.id || TAB_ID[ws] || 'ptab-now');
   if (btn) {btn.click();btn.focus?.();}
 }
@@ -243,6 +250,7 @@ export function dispatchSlash(raw) {
     case 'now':
     case 'memory':
     case 'ops':
+    case 'server':
     case 'plan':
     case 'jobs':
     case 'agents':
@@ -251,6 +259,11 @@ export function dispatchSlash(raw) {
     case 'runs':
     case 'events':
     case 'config':
+    case 'outputs':
+    case 'activity':
+    case 'manage':
+    case 'maintenance':
+    case 'preferences':
       openTab(cmd);
       break;
     case 'sessions':

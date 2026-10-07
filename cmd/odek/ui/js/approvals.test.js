@@ -182,9 +182,20 @@ test('approval request renders an inline decision card with the active id set', 
   // Regression: the id used to be nulled during render, deadening every
   // button. It must equal the shown request the moment the card appears.
   assert.equal(S.activeApprovalId, 'apr-1');
-  assert.ok(el('messages').children.includes(card), 'card appended to #messages');
+  assert.ok(el('approval-overlay').children.includes(card), 'card appended to #approval-overlay');
   assert.equal(card.querySelector('.ac-command').textContent, 'echo hi');
   assert.equal(card.getAttribute('role'), 'alertdialog');
+});
+
+test('approval overlay hides again once the queue drains', () => {
+  const overlay = el('approval-overlay');
+  queueOne();
+  assert.equal(overlay.hidden, false, 'overlay un-hides while a card is shown');
+  assert.ok(overlay.children.includes(S.activeApprovalCard));
+  approvals.clearApprovals();
+  assert.equal(S.activeApprovalId, null);
+  assert.equal(overlay.children.length, 0);
+  assert.equal(overlay.hidden, true, 'overlay must not stay visible with an empty queue');
 });
 
 test('trust button hidden when the server disallows class trust', () => {

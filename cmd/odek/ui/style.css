@@ -499,10 +499,6 @@ button:disabled { cursor: not-allowed; }
 /* ═══════════════════════════════════════════════════════════════════════
    SIDEBAR — session index
 ═══════════════════════════════════════════════════════════════════════ */
-#ppanel-sessions.ppanel.active {
-  display: flex;
-  flex-direction: column;
-}
 #sidebar {
   background: transparent;
   border-right: none;
@@ -2507,6 +2503,22 @@ body.light .composer-bar { border-top-color: rgba(0, 0, 0, .06); }
 }
 #confirm-actions .delete-confirm:hover { filter: brightness(1.1); }
 
+/* Global approval overlay: sits above the transcript regardless of the
+   inspector state so queued approvals are never buried in a panel. */
+#approval-overlay {
+  position: fixed;
+  top: calc(var(--topbar-h) + 12px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 60;
+  width: min(640px, calc(100vw - 32px));
+  max-height: min(70vh, 560px);
+  overflow: auto;
+  pointer-events: none;
+}
+#approval-overlay:not([hidden]) { pointer-events: auto; }
+#approval-overlay .approval-card { box-shadow: 0 12px 36px rgba(0,0,0,.35); margin-bottom: 8px; }
+
 .toast {
   position: fixed;
   bottom: var(--space-5);
@@ -2588,11 +2600,11 @@ body.light .composer-bar { border-top-color: rgba(0, 0, 0, .06); }
   padding: 1px 8px;
 }
 .m-chip.hot { color: var(--red); border-color: var(--red); }
-#plan-chip, #jobs-chip, #cost-chip, #speed-chip {
+#plan-chip, #jobs-chip, #cost-chip {
   cursor: pointer;
   user-select: none;
 }
-#plan-chip[hidden], #jobs-chip[hidden], #cost-chip[hidden], #speed-chip[hidden] { display: none; }
+#plan-chip[hidden], #jobs-chip[hidden], #cost-chip[hidden] { display: none; }
 #sandbox-badge, #stream-badge {
   font-size: var(--fs-xs);
   letter-spacing: .04em;
@@ -2893,6 +2905,13 @@ body { font-family: var(--ui); }
 body.density-compact { --fs-base: 13px; --fs-md: 13px; --fs-sm: 12px; --fs-xs: 11px; --topbar-h: 44px; --content-w: 760px; }
 #topbar { background: var(--bg-1); border-bottom: 1px solid var(--line-2); gap: 12px; }
 #session-rail { display: none; }
+@media (max-width: 1099px) {
+  body.sessions-open #session-rail {
+    display: flex; position: fixed; top: var(--topbar-h); left: 0; bottom: 0;
+    width: min(320px, 85vw); z-index: 55; overflow: auto;
+    border-right: 1px solid var(--line-2); background: var(--bg-1); padding: 12px 8px;
+  }
+}
 #main { min-width: 0; background: var(--bg-0); }
 #messages { padding: 40px 24px; }
 #messages > * { max-width: min(var(--content-w), 100%); }
@@ -2948,13 +2967,12 @@ body.density-compact { --fs-base: 13px; --fs-md: 13px; --fs-sm: 12px; --fs-xs: 1
 .tb-body { white-space: pre-wrap; }
 .tb-result { padding: 0; border: 0; }
 @media (min-width: 1100px) {
-  #app { grid-template-columns: 240px minmax(0, 1fr); }
+  #app { grid-template-columns: minmax(0, 1fr); }
   #session-rail { display: flex; grid-column: 1; grid-row: 2; min-height: 0; border-right: 1px solid var(--line-2); background: var(--bg-1); padding: 12px 8px; }
-  #main { grid-column: 2; grid-row: 2; }
+  #main { grid-row: 2; }
   #sidebar { width: 100%; }
   #sidebar-header { padding: 12px 10px 16px; }
   #sidebar-header h3 { font: 600 13px var(--ui); color: var(--text-2); }
-  #hamburger-btn, #ptab-sessions { display: none; }
   .session-item { border-radius: 8px; margin: 3px 0; padding: 12px; }
   .session-item .task { font: 500 13px/1.5 var(--ui); }
   .session-item.active { background: var(--amber-dim); }
@@ -3047,7 +3065,7 @@ body.workspace-wide #session-rail { min-width: 0; }
   #hamburger-btn { grid-column: 1; grid-row: 1; }
   .top-brand { grid-column: 2; grid-row: 1; }
   #status-group { grid-column: 3; grid-row: 1; justify-self: start; }
-  .top-spacer, #metrics, #busy-spin, #speed-chip, #cost-chip { display: none !important; }
+  .top-spacer, #metrics, #busy-spin, #cost-chip { display: none !important; }
   .top-controls { display: contents; }
   #palette-btn { grid-column: 4; grid-row: 1; width: 40px; height: 40px; }
   #panels-btn { grid-column: 5; grid-row: 1; width: 40px; height: 40px; }
@@ -3185,7 +3203,6 @@ body.theme-high-contrast #empty-state-inner::before { display:none; }
 .run-settings-fields label { display:flex; flex-direction:column; gap:6px; }
 .run-settings-fields input, .run-settings-fields select { width:100%; min-height:36px; border:1px solid var(--line-3); background:var(--bg-1); color:var(--text); padding:6px 8px; border-radius:6px; }
 #model-picker, #thinking-picker { display:block !important; max-width:100%; min-width:0; }
-#speed-chip { display:none !important; }
 #schedules-btn, #settings-btn, #attention-chip { width:auto; height:auto; min-height:32px; padding:4px 8px; font:12px var(--ui); color:var(--text-2); }
 #attention-chip { color:var(--amber-hi); }
 #panels[inert] { pointer-events:none; }
@@ -3265,3 +3282,60 @@ body.theme-high-contrast #empty-state-inner::before { display:none; }
 
 #health-popover #ctx-gauge { display:flex; }
 #health-popover .ctx-label { display:none; }
+
+/* ── Collapsed workspace sections (Activity inside Deliverables, Server merges) ── */
+.ws-details {
+  margin: var(--space-4) 0;
+  border: 1px solid var(--line-1);
+  border-radius: 8px;
+  padding: 0;
+}
+.ws-details > summary {
+  cursor: pointer;
+  padding: 8px 12px;
+  font: 12px var(--ui);
+  color: var(--text-2);
+  user-select: none;
+}
+.ws-details > summary:hover { color: var(--text); background: var(--bg-2); }
+.ws-details[open] > summary { border-bottom: 1px solid var(--line-1); color: var(--text); }
+.ws-details > *:not(summary) { margin: 12px; }
+
+/* ── Preferences gear button + popover ─────────────────────────────── */
+#prefs-btn {
+  width: 32px;
+  height: 32px;
+  min-height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid var(--line-2);
+  border-radius: 8px;
+  cursor: pointer;
+  color: var(--text-2);
+}
+#prefs-btn:hover { background: var(--bg-2); color: var(--text); }
+#prefs-btn svg { width: 16px; height: 16px; }
+
+/* NOTE: visibility is driven by the `hidden` attribute — no `display`
+   rule may be set here or it would override it. */
+#prefs-popover {
+  position: fixed;
+  top: calc(var(--topbar-h) + 8px);
+  right: 16px;
+  z-index: 260;
+  min-width: 280px;
+  max-width: min(360px, calc(100vw - 32px));
+  padding: var(--space-3) var(--space-4);
+  background: var(--bg-0);
+  border: 1px solid var(--line-2);
+  border-radius: 0;
+  box-shadow: none;
+  animation: pop-in var(--dur-slow) var(--ease-spring) both;
+}
+#prefs-popover h3 { margin: 0 0 var(--space-2); font-size: var(--fs-sm); }
+#prefs-popover .ws-head { margin-top: var(--space-3); }
+@media (max-width: 640px) {
+  #prefs-popover { left: var(--space-3); right: var(--space-3); min-width: 0; }
+}

@@ -13,47 +13,56 @@ function field(form, title, value = '', type = 'text') {
 }
 function action(title, fn) { const b = el('button', 'management-action', title); b.type = 'button'; b.addEventListener('click', async () => { b.disabled = true; try { await fn(); } catch (e) { showToast(e.message); } finally { b.disabled = false; } }); return b; }
 let generation = 0;
-async function loadManagement(surface='manage') {
+async function loadManagement(surface='ops') {
   const version = ++generation;
-  const root = byId(surface==='maintenance'?'maintenance-body':'management-body'); if (!root) return;
-  root.textContent = 'Loading…';
+  const wantSchedules = surface === 'manage' || surface === 'ops';
+  const wantMaintenance = surface === 'maintenance' || surface === 'ops';
+  const schedRoot = byId('management-body');
+  const maintRoot = byId('maintenance-body');
+  const legacyRoot = surface === 'maintenance' ? maintRoot : schedRoot;
+  if (wantSchedules && wantMaintenance) { if (schedRoot) schedRoot.textContent = 'Loading…'; if (maintRoot) maintRoot.textContent = 'Loading…'; }
+  else if (legacyRoot) legacyRoot.textContent = 'Loading…';
   try {
     const caps = await getCapabilities();
     if (version !== generation) return;
-    root.textContent = '';
-    if (surface==='manage' && caps.features?.schedules) {
-      root.appendChild(el('h3', 'management-title', 'Scheduled work'));
-      root.appendChild(el('p', 'management-note', 'Manage recurring tasks. A running scheduler daemon or Telegram host executes enabled schedules.'));
-      root.appendChild(action('New schedule', () => editSchedule(root)));
+    if (wantSchedules && schedRoot) {
+      const r = schedRoot; r.textContent = '';
+      if (caps.features?.schedules) {
+      r.appendChild(el('h3', 'management-title', 'Scheduled work'));
+      r.appendChild(el('p', 'management-note', 'Manage recurring tasks. A running scheduler daemon or Telegram host executes enabled schedules.'));
+      r.appendChild(action('New schedule', () => editSchedule(r)));
       const data = await listSchedules();
       if (version !== generation) return;
-      const health=data.host_health;root.appendChild(el('p','scheduler-health',health?.status==='recent_heartbeat'?'Scheduler recently active.':'Start odek schedule daemon or the Telegram host to run enabled schedules.'));
-      root.appendChild(action('Refresh host status',()=>loadManagement()));
+      const health=data.host_health;r.appendChild(el('p','scheduler-health',health?.status==='recent_heartbeat'?'Scheduler recently active.':'Start odek schedule daemon or the Telegram host to run enabled schedules.'));
+      r.appendChild(action('Refresh host status',()=>loadManagement()));
       for (const job of data.jobs || []) {
         const row = el('article', 'management-card');
         row.append(el('strong', '', job.name || job.id), el('p', 'management-note', job.cron + ' · ' + (job.timezone || 'UTC') + ' · ' + (job.enabled ? 'Enabled' : 'Paused')));
         if (job.enabled && data.next?.[job.id]) row.appendChild(el('p', 'management-note', 'Next scheduled time: ' + new Date(data.next[job.id]).toLocaleString()));
         const state = data.states?.[job.id]; if (state) row.appendChild(el('p', 'management-note', 'Last run: ' + (state.last_status || 'Never') + (state.last_error ? ' · ' + state.last_error : '')));
         if(state?.last_result){const detail=el('details','schedule-result');detail.append(el('summary','','Last run result'),el('pre','management-report',state.last_result));row.appendChild(detail);}
-        row.append(action('Edit', () => editSchedule(root, job)), action(job.enabled ? 'Pause' : 'Enable', async () => { await saveSchedule({...job, enabled:!job.enabled}); await loadManagement(); }), action('Delete', async () => { if (confirm('Delete schedule “' + (job.name || job.id) + '”?')) { await removeSchedule(job.id); await loadManagement(); } }));
-        root.appendChild(row);
+        row.append(action('Edit', () => editSchedule(r, job)), action(job.enabled ? 'Pause' : 'Enable', async () => { await saveSchedule({...job, enabled:!job.enabled}); await loadManagement(); }), action('Delete', async () => { if (confirm('Delete schedule “' + (job.name || job.id) + '”?')) { await removeSchedule(job.id); await loadManagement(); } }));
+        r.appendChild(row);
       }
-      if (!(data.jobs || []).length) root.appendChild(el('p', 'workspace-empty', 'No schedules yet. Create one to make recurring work easier.'));
+      if (!(data.jobs || []).length) r.appendChild(el('p', 'workspace-empty', 'No schedules yet. Create one to make recurring work easier.'));
+      } else r.appendChild(el('p','workspace-empty','This server does not expose scheduling controls.'));
     }
-    if (surface==='maintenance' && caps.features?.maintenance) {
+    if (wantMaintenance && maintRoot) {
+      const m = maintRoot; m.textContent = '';
+      if (caps.features?.maintenance) {
       const data = await getMaintenance(); if (version !== generation) return;
-      root.appendChild(el('h3', 'management-title', 'Storage maintenance'));
-      root.appendChild(el('p', 'management-note', data.description));
+      m.appendChild(el('h3', 'management-title', 'Storage maintenance'));
+      m.appendChild(el('p', 'management-note', data.description));
       const policy = el('dl', 'management-policy');
       for (const [key,value] of Object.entries(data.policy || {})) { policy.append(el('dt','',key.replace(/_/g,' ').replace(/([A-Z])/g,' $1').trim()),el('dd','',typeof value==='number'?value.toLocaleString():String(value))); }
-      root.appendChild(policy);
+      m.appendChild(policy);
       const form = el('div','management-card');
       const confirmInput = field(form, 'Type cleanup to apply the retention policy');
       form.appendChild(action('Run cleanup', async () => { if (confirmInput.value !== 'cleanup') { showToast('Type cleanup first'); return; } const report = await runMaintenance(confirmInput.value); confirmInput.value = ''; const result=el('pre','management-report',JSON.stringify(report,null,2));form.appendChild(result); }));
-      root.appendChild(form);
+      m.appendChild(form);
+      } else m.appendChild(el('p','workspace-empty','This server does not expose maintenance controls.'));
     }
-    if (!(surface==='manage'?caps.features?.schedules:caps.features?.maintenance)) root.appendChild(el('p','workspace-empty','This server does not expose scheduling or maintenance controls.'));
-  } catch (e) { if (version === generation) root.textContent = 'Management unavailable: ' + e.message; }
+  } catch (e) { if (version === generation && legacyRoot) legacyRoot.textContent = 'Management unavailable: ' + e.message; }
 }
 function editSchedule(root, job = {}) {
   root.querySelector('.schedule-editor')?.remove();

@@ -36,7 +36,7 @@ const byId = {
   'm-cost': new FakeEl(),
   'm-speed': new FakeEl(),
   'cost-chip': new FakeEl(),
-  'speed-chip': new FakeEl(),
+  'ctx-chip': new FakeEl(),
 };
 globalThis.document = {
   getElementById: (id) => byId[id] || null,
@@ -69,8 +69,8 @@ beforeEach(() => {
   S.metrics.streamedOutChars = 0;
   byId['cost-chip'].hidden = true;
   byId['cost-chip'].textContent = '';
-  byId['speed-chip'].hidden = true;
-  byId['speed-chip'].textContent = '';
+  byId['ctx-chip'].hidden = true;
+  byId['ctx-chip'].textContent = '';
   byId['m-speed'].textContent = '—';
 });
 
@@ -129,35 +129,34 @@ test('formatTokPerSec matches the CLI one-decimal suffix', () => {
   assert.equal(formatTokPerSec(100), '100.0 tok/s');
 });
 
-test('speed chip stays hidden until a think-step rate arrives', () => {
+test('speed chip is gone; the rate lives in the popover row only', () => {
   renderMetrics();
-  assert.equal(byId['speed-chip'].hidden, true);
+  assert.equal(document.getElementById('speed-chip'), null);
   assert.equal(byId['m-speed'].textContent, '—');
+  assert.equal(byId['ctx-chip'].hidden, true);
 });
 
-test('usage-style applySpeed shows generation rate on the chip and popover', () => {
+test('usage-style applySpeed shows generation rate in the popover row', () => {
   metricsApplySpeed({ generationTokensPerSecond: 25.2, tokensPerSecond: 9.6 });
-  assert.equal(byId['speed-chip'].hidden, false);
-  assert.equal(byId['speed-chip'].textContent, '25.2 tok/s');
   assert.equal(byId['m-speed'].textContent, '25.2 tok/s');
-  assert.match(byId['speed-chip'].title, /first streamed token/);
+  assert.match(byId['m-speed'].title, /first streamed token/);
 });
 
-test('a usage frame without a rate holds the last chip', () => {
+test('a usage frame without a rate holds the last rate', () => {
   metricsApplySpeed({ tokensPerSecond: 9.6 });
   metricsApplySpeed({ outputTokens: 10 });
   assert.equal(S.metrics.tokPerSec, 9.6);
-  assert.equal(byId['speed-chip'].textContent, '9.6 tok/s');
+  assert.equal(byId['m-speed'].textContent, '9.6 tok/s');
 });
 
-test('resetSpeed and resetMetrics hide the chip', () => {
+test('resetSpeed and resetMetrics clear the rate and context chip', () => {
   metricsApplySpeed({ tokensPerSecond: 9.6 });
   metricsResetSpeed();
-  assert.equal(byId['speed-chip'].hidden, true);
+  assert.equal(S.metrics.tokPerSec, 0);
   metricsApplySpeed({ tokensPerSecond: 9.6 });
   resetMetrics();
   assert.equal(S.metrics.tokPerSec, 0);
-  assert.equal(byId['speed-chip'].hidden, true);
+  assert.equal(byId['ctx-chip'].hidden, true);
 });
 
 test('done applies last-call speed without using cumulative outputTokens', () => {
@@ -166,7 +165,7 @@ test('done applies last-call speed without using cumulative outputTokens', () =>
     tokensPerSecond: 9.6, outputTokens: 800, latency: 0.05,
   });
   assert.equal(S.metrics.tokPerSec, 9.6);
-  assert.equal(byId['speed-chip'].textContent, '9.6 tok/s');
+  assert.equal(byId['m-speed'].textContent, '9.6 tok/s');
 });
 
 test('turnStatsHTML includes tok/s from this-call fields, never invented from totals', () => {
