@@ -3286,7 +3286,7 @@ body.theme-high-contrast #empty-state-inner::before { display:none; }
 /* ── Collapsed workspace sections (Activity inside Deliverables, Server merges) ── */
 .ws-details {
   margin: var(--space-4) 0;
-  border: 1px solid var(--line-1);
+  border: 1px solid var(--line-3);
   border-radius: 8px;
   padding: 0;
 }
@@ -3298,7 +3298,7 @@ body.theme-high-contrast #empty-state-inner::before { display:none; }
   user-select: none;
 }
 .ws-details > summary:hover { color: var(--text); background: var(--bg-2); }
-.ws-details[open] > summary { border-bottom: 1px solid var(--line-1); color: var(--text); }
+.ws-details[open] > summary { border-bottom: 1px solid var(--line-3); color: var(--text); }
 .ws-details > *:not(summary) { margin: 12px; }
 
 /* ── Preferences gear button + popover ─────────────────────────────── */
