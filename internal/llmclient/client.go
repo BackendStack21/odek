@@ -76,6 +76,11 @@ type ProviderOverride struct {
 	APIKey  string
 	BaseURL string
 	Format  string // openai | anthropic | gemini; required for custom ids
+	// IncludeReasoning overrides the OpenAI-format default (send
+	// include_reasoning: true). Nil = default on; false = omit the field
+	// for strict gateways that reject it. No learn-once fallback exists
+	// for this flag, so a rejecting provider must be configured here.
+	IncludeReasoning *bool
 }
 
 // NewSDK constructs a process-usable SDK from resolved options. Keys come
@@ -116,6 +121,9 @@ func NewSDK(opts Options) (*sdk.SDK, error) {
 				format = sdk.FormatOpenAI
 			}
 			if q, ok := formatDefaultQuirks(format); ok {
+				if format == sdk.FormatOpenAI && ov.IncludeReasoning != nil && !*ov.IncludeReasoning {
+					q.IncludeReasoning = false
+				}
 				popts = append(popts, sdk.WithQuirks(q))
 			}
 		}
@@ -590,7 +598,8 @@ func isBuiltinProviderID(id string) bool {
 // Anthropic API) accepts. The OpenAI set includes the gateway reasoning
 // opt-in: mainstream gateways (LiteLLM, OpenRouter, vLLM) accept
 // include_reasoning and need it to return reasoning at all, while strict
-// official-API clients override quirks explicitly. Gemini needs none;
+// gateways opt out per provider via include_reasoning=false (the SDK has
+// no learn-once fallback for this flag). Gemini needs none;
 // unknown formats are left alone.
 func formatDefaultQuirks(f sdk.Format) (sdk.Quirks, bool) {
 	switch f {

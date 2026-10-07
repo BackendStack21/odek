@@ -6,6 +6,7 @@ import (
 
 	"github.com/BackendStack21/odek/internal/diagnostics"
 	"github.com/BackendStack21/odek/internal/events"
+	"github.com/BackendStack21/odek/internal/redact"
 
 	sdk "github.com/BackendStack21/go-llm-sdk"
 )
@@ -25,25 +26,46 @@ const (
 	LearnDropStreamOpts = sdk.LearnDropStreamOpts
 )
 
+// learnDetailMax is the clamp for provider-supplied text (message and
+// provider id) in client-facing detail lines — a verbose or hostile
+// gateway must not be able to push megabytes through a signal frame.
+const learnDetailMax = 2048
+
+// learnDetailClamp truncates s to learnDetailMax bytes, marking the cut.
+func learnDetailClamp(s string) string {
+	if len(s) <= learnDetailMax {
+		return s
+	}
+	// Cut on a rune boundary.
+	n := learnDetailMax
+	for n > 0 && (s[n]&0xC0) == 0x80 {
+		n--
+	}
+	return s[:n] + "…"
+}
+
 // LearnDetail renders the event as one human-readable line for clients and
-// logs.
+// logs. Provider-supplied text (id, error message) is redacted and clamped:
+// it reaches WebSocket clients and UI toasts verbatim otherwise.
 func LearnDetail(e LearnEvent) string {
-	detail := fmt.Sprintf("provider %q fallback engaged: %s", e.Provider, e.Kind)
+	provider := learnDetailClamp(redact.RedactSecrets(e.Provider))
+	message := learnDetailClamp(redact.RedactSecrets(e.Message))
+	detail := fmt.Sprintf("provider %q fallback engaged: %s", provider, e.Kind)
 	switch e.Kind {
 	case LearnBuffered:
-		detail = fmt.Sprintf("provider %q downgraded to buffered responses; streaming (live reasoning) is off for this provider", e.Provider)
+		detail = fmt.Sprintf("provider %q downgraded to buffered responses; streaming (live reasoning) is off for this provider", provider)
 	case LearnResponses:
-		detail = fmt.Sprintf("provider %q requires the /responses endpoint for reasoning with tools", e.Provider)
+		detail = fmt.Sprintf("provider %q requires the /responses endpoint for reasoning with tools", provider)
 	case LearnNoneEffort:
-		detail = fmt.Sprintf("provider %q rejected reasoning_effort with tools; effort pinned to none", e.Provider)
+		detail = fmt.Sprintf("provider %q rejected reasoning_effort with tools; effort pinned to none", provider)
 	case LearnDropStreamOpts:
-		detail = fmt.Sprintf("provider %q rejected stream_options; field omitted", e.Provider)
+		detail = fmt.Sprintf("provider %q rejected stream_options; field omitted", provider)
 	}
 	if e.Status != 0 {
 		detail += fmt.Sprintf(" (HTTP %d)", e.Status)
 	}
-	if e.Message != "" {
-		detail += ": " + e.Message
+	if message != "" {
+		detail += ": " + message
 	}
 	return detail
 }

@@ -302,7 +302,7 @@ Top-level execution knobs. Every one also exists as a CLI flag and an `ODEK_*` e
 | Field | Default | Description |
 |-------|---------|-------------|
 | `provider` | `deepseek` | go-llm-sdk registry id (`deepseek`, `openai`, `anthropic`, `gemini`, `zai`, `kimi`, or a custom id). See [Providers](PROVIDERS.md) |
-| `providers` | `{}` | Per-id `api_key` / `base_url` / `format` overrides. `${VAR}` expands. Operator-only |
+| `providers` | `{}` | Per-id `api_key` / `base_url` / `format` overrides. `${VAR}` expands. Operator-only. `include_reasoning` (boolean, default `true` on OpenAI-format custom providers) opts a strict gateway out of the `include_reasoning` wire flag — the SDK has no automatic fallback for it |
 | `model` | `deepseek-v4-flash` | LLM model ID. No auto-thinking or auto-timeout from the name |
 | `base_url` | SDK default for `provider` | Selected-provider URL override (v1 alias). DeepSeek default is `https://api.deepseek.com` (no `/v1`) |
 | `thinking` | `""` (omit) | Reasoning depth: `disabled`, `low`, `medium`, `high`. Aliases: `enabled`/`on` → `medium`, `off` → `disabled`, `mid` → `medium`, `max` → `high`. Set explicitly — not inferred from the model name |
