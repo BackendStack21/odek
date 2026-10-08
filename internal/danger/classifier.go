@@ -103,6 +103,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 // ── Types ──────────────────────────────────────────────────────────────
@@ -1458,10 +1460,25 @@ func classifyArgvComposerSink(upstream [][]string, stage []string) RiskClass {
 		composed = append(composed, payload...)
 		return classifyStage(composed, false)
 	}
-	if xargsDangerousVerb(commandName(inner[0])) {
+	if xargsInnerDangerous(inner) {
 		return Unknown
 	}
 	return Safe
+}
+
+// xargsInnerDangerous reports whether the command an argv composer runs is,
+// once execution wrappers (nohup, timeout, env, sudo, command, …) are
+// stripped, a verb that xargsDangerousVerb fails closed on. Without the
+// unwrap `xargs nohup rm -rf` hid the real verb behind the wrapper.
+func xargsInnerDangerous(inner []string) bool {
+	if len(inner) == 0 {
+		return false
+	}
+	if xargsDangerousVerb(commandName(inner[0])) {
+		return true
+	}
+	unwrapped, _ := unwrapWrappers(inner)
+	return len(unwrapped) > 0 && xargsDangerousVerb(commandName(unwrapped[0]))
 }
 
 // classifyPipedShellSink composes a statically determinable upstream
@@ -1477,11 +1494,12 @@ func classifyPipedShellSink(upstream [][]string, stage []string) RiskClass {
 	if !pipedShells[commandName(cmdTokens[0])] {
 		return Safe
 	}
-	payload, static := staticPipePayload(upstream)
-	if !static || len(payload) == 0 {
+	text, static := staticPipeText(upstream)
+	text = strings.TrimSpace(strings.ReplaceAll(text, "\x00", " "))
+	if !static || text == "" {
 		return Safe
 	}
-	cls := Classify(strings.Join(payload, " "))
+	cls := Classify(text)
 	if cls == Unknown {
 		return Safe
 	}
@@ -1502,7 +1520,7 @@ func classifyXargsFileInput(stage []string) RiskClass {
 	if !xargsHasExternalArgSource(stage) {
 		return Safe
 	}
-	if xargsDangerousVerb(commandName(inner[0])) {
+	if xargsInnerDangerous(inner) {
 		return Unknown
 	}
 	return Safe
@@ -1626,16 +1644,32 @@ var xargsValueFlags = map[string]bool{
 // staticPipePayload returns the literal tokens an upstream pipeline feeds
 // into the sink's stdin when they are statically determinable: a single
 // producer stage of `echo <args>` or `printf <args>` with no shell
-// substitutions or variable expansions in its arguments. Anything else
-// (file readers, find, command output, $VARS, multi-stage transforms) is
-// not statically determinable and reports ok=false.
+// substitutions or variable expansions in its arguments. The tokens are the
+// producer's decoded output split on whitespace and NUL, the way an argv
+// composer splits its input. Anything else (file readers, find, command
+// output, $VARS, multi-stage transforms) is not statically determinable and
+// reports ok=false.
 func staticPipePayload(upstream [][]string) (payload []string, ok bool) {
-	if len(upstream) != 1 {
+	text, ok := staticPipeText(upstream)
+	if !ok {
 		return nil, false
+	}
+	return strings.FieldsFunc(text, func(r rune) bool {
+		return r == 0 || unicode.IsSpace(r)
+	}), true
+}
+
+// staticPipeText returns the exact bytes a single `echo` / `printf` producer
+// writes to the pipe, with backslash escapes and printf format directives
+// decoded (both programs decode them before the sink sees the data). It
+// reports ok=false whenever the output cannot be determined statically.
+func staticPipeText(upstream [][]string) (text string, ok bool) {
+	if len(upstream) != 1 {
+		return "", false
 	}
 	stage := upstream[0]
 	if len(stage) == 0 {
-		return nil, false
+		return "", false
 	}
 	// `env echo / | xargs rm` and `command echo / | xargs rm` are the
 	// same static producer as bare echo once wrappers are stripped.
@@ -1646,7 +1680,7 @@ func staticPipePayload(upstream [][]string) (payload []string, ok bool) {
 	switch commandName(stage[0]) {
 	case "echo":
 		args = stage[1:]
-		for len(args) > 0 && (args[0] == "-n" || args[0] == "-e" || args[0] == "-E") {
+		for len(args) > 0 && isEchoFlagCluster(args[0]) {
 			args = args[1:]
 		}
 	case "printf":
@@ -1655,16 +1689,221 @@ func staticPipePayload(upstream [][]string) (payload []string, ok bool) {
 			args = args[1:]
 		}
 	default:
-		return nil, false
+		return "", false
 	}
 	for _, a := range args {
 		// A token containing $ or a backtick expands at runtime, so the real
 		// payload is not statically determinable.
 		if strings.ContainsAny(a, "$`") {
-			return nil, false
+			return "", false
 		}
 	}
-	return args, true
+	if commandName(stage[0]) == "printf" {
+		return printfOutput(args)
+	}
+	// echo may interpret escapes (-e, or always in some shells), so decode
+	// whenever a backslash is present; decoding is the stricter reading.
+	joined := strings.Join(args, " ")
+	if strings.Contains(joined, `\`) {
+		var out []byte
+		out, _ = decodeEscapes(out, joined, false)
+		return string(out), true
+	}
+	return joined, true
+}
+
+// isEchoFlagCluster reports whether tok is an echo option such as -n, -e,
+// -E, -ne or -neE.
+func isEchoFlagCluster(tok string) bool {
+	if len(tok) < 2 || tok[0] != '-' {
+		return false
+	}
+	for _, r := range tok[1:] {
+		if r != 'n' && r != 'e' && r != 'E' {
+			return false
+		}
+	}
+	return true
+}
+
+// decodeEscapes appends s to out with backslash escapes decoded as echo -e,
+// printf %b and a printf format do. The second result is false when a `\c`
+// escape cuts the output short. inFormat selects the printf-format flavour of
+// octal escapes (`\NNN`); echo and %b also accept `\0NNN`.
+func decodeEscapes(out []byte, s string, inFormat bool) ([]byte, bool) {
+	for i := 0; i < len(s); {
+		if s[i] != '\\' {
+			out = append(out, s[i])
+			i++
+			continue
+		}
+		b, n, stop := decodeEchoEscape(s, i, inFormat)
+		out = append(out, b...)
+		if stop {
+			return out, false
+		}
+		i += n
+	}
+	return out, true
+}
+
+// decodeEchoEscape decodes the single backslash escape starting at s[i] and
+// returns its bytes and the number of input bytes it spans.
+func decodeEchoEscape(s string, i int, inFormat bool) (out []byte, n int, stop bool) {
+	if i+1 >= len(s) {
+		return []byte{'\\'}, 1, false
+	}
+	c := s[i+1]
+	switch {
+	case c == 'a':
+		return []byte{7}, 2, false
+	case c == 'b':
+		return []byte{8}, 2, false
+	case c == 'f':
+		return []byte{12}, 2, false
+	case c == 'n':
+		return []byte{10}, 2, false
+	case c == 'r':
+		return []byte{13}, 2, false
+	case c == 't':
+		return []byte{9}, 2, false
+	case c == 'v':
+		return []byte{11}, 2, false
+	case c == 'e' || c == 'E':
+		return []byte{27}, 2, false
+	case c == 'c':
+		return nil, 2, true
+	case c == '\\' || c == '"' || c == '\'':
+		return []byte{c}, 2, false
+	case c == 'x' || c == 'u' || c == 'U':
+		limit := 2
+		if c == 'u' {
+			limit = 4
+		} else if c == 'U' {
+			limit = 8
+		}
+		v, digits := 0, 0
+		for digits < limit && i+2+digits < len(s) && isHexDigit(s[i+2+digits]) {
+			v = v*16 + hexDigitValue(s[i+2+digits])
+			digits++
+		}
+		if digits == 0 || (c != 'x' && v > unicode.MaxRune) {
+			return []byte{'\\', c}, 2, false
+		}
+		if c == 'x' {
+			return []byte{byte(v)}, 2 + digits, false
+		}
+		return utf8.AppendRune(nil, rune(v)), 2 + digits, false
+	case c >= '0' && c <= '7':
+		// printf formats take up to three octal digits including the
+		// first; echo -e and %b take `\0` plus up to three more.
+		start := i + 1
+		if c == '0' && !inFormat {
+			start = i + 2
+		}
+		v, digits := 0, 0
+		for digits < 3 && start+digits < len(s) && s[start+digits] >= '0' && s[start+digits] <= '7' {
+			v = v*8 + int(s[start+digits]-'0')
+			digits++
+		}
+		return []byte{byte(v)}, start + digits - i, false
+	}
+	return []byte{'\\', c}, 2, false
+}
+
+func isHexDigit(b byte) bool {
+	return (b >= '0' && b <= '9') || (b >= 'a' && b <= 'f') || (b >= 'A' && b <= 'F')
+}
+
+func hexDigitValue(b byte) int {
+	switch {
+	case b >= '0' && b <= '9':
+		return int(b - '0')
+	case b >= 'a' && b <= 'f':
+		return int(b-'a') + 10
+	}
+	return int(b-'A') + 10
+}
+
+// printfOutput expands `printf FORMAT [ARG…]`: the format is decoded and
+// re-applied until every argument is consumed. Directives it does not model
+// (`*` widths, unknown conversions) report ok=false so the caller treats the
+// output as undeterminable.
+func printfOutput(args []string) (string, bool) {
+	if len(args) == 0 {
+		return "", true
+	}
+	format, rest := args[0], args[1:]
+	var out []byte
+	for {
+		var consumed int
+		var stop, ok bool
+		out, consumed, stop, ok = printfPass(out, format, rest)
+		if !ok {
+			return "", false
+		}
+		if stop || consumed == 0 || consumed >= len(rest) || len(out) > 1<<16 {
+			break
+		}
+		rest = rest[consumed:]
+	}
+	return string(out), true
+}
+
+// printfPass applies the format once, returning how many arguments the
+// directives consumed and whether a `\c` escape ended the output.
+func printfPass(out []byte, format string, rest []string) ([]byte, int, bool, bool) {
+	consumed := 0
+	next := func() string {
+		if consumed < len(rest) {
+			consumed++
+			return rest[consumed-1]
+		}
+		return ""
+	}
+	for i := 0; i < len(format); i++ {
+		switch c := format[i]; c {
+		case '\\':
+			b, n, stop := decodeEchoEscape(format, i, true)
+			out = append(out, b...)
+			if stop {
+				return out, consumed, true, true
+			}
+			i += n - 1
+		case '%':
+			i++
+			if i < len(format) && format[i] == '%' {
+				out = append(out, '%')
+				continue
+			}
+			for i < len(format) && strings.IndexByte("-+ #0123456789.", format[i]) >= 0 {
+				i++
+			}
+			if i >= len(format) {
+				return out, consumed, false, false
+			}
+			switch format[i] {
+			case 's', 'q', 'd', 'i', 'u', 'x', 'X', 'o', 'e', 'E', 'f', 'F', 'g', 'G', 'a', 'A':
+				out = append(out, next()...)
+			case 'c':
+				if arg := next(); arg != "" {
+					_, n := utf8.DecodeRuneInString(arg)
+					out = append(out, arg[:n]...)
+				}
+			case 'b':
+				var cont bool
+				out, cont = decodeEscapes(out, next(), false)
+				if !cont {
+					return out, consumed, true, true
+				}
+			default:
+				return out, consumed, false, false
+			}
+		default:
+			out = append(out, c)
+		}
+	}
+	return out, consumed, false, true
 }
 
 // xargsDangerousVerb reports whether a verb invoked through pipe-fed xargs
@@ -1706,10 +1945,22 @@ func classifyStage(tokens []string, pipedInto bool) RiskClass {
 	if builtinEnvDump(tokens) {
 		return SystemWrite
 	}
-	cmdTokens, floor := unwrapWrappers(tokens)
+	cmdTokens, floor, envTails := unwrapWrappersTracked(tokens)
 	cls := floor
+	// The dump checks above only see the raw head token. A dump behind a
+	// wrapper or assignment prefix (`FOO=1 env`, `nohup env`, `timeout 5 env`,
+	// `env env`, `FOO=1 export -p`) prints the same environment.
+	for _, tail := range envTails {
+		if isEnvironmentDump(tail) {
+			cls = worstOf(cls, SystemWrite)
+		}
+	}
+	if len(cmdTokens) > 0 && (isEnvironmentDump(cmdTokens) || builtinEnvDump(cmdTokens)) {
+		cls = worstOf(cls, SystemWrite)
+	}
 	if len(cmdTokens) > 0 {
 		cls = worstOf(cls, classifyCommand(cmdTokens))
+		cls = worstOf(cls, exportedAssignmentRisk(cmdTokens))
 
 		name := commandName(cmdTokens[0])
 		// A shell interpreter that executes code: piped-in data (`… | bash`),
@@ -1718,7 +1969,7 @@ func classifyStage(tokens []string, pipedInto bool) RiskClass {
 			if pipedInto {
 				cls = worstOf(cls, CodeExecution)
 			}
-			if arg := flagArg(cmdTokens, "-c"); arg != "" {
+			if arg := shellInlineScript(cmdTokens); arg != "" {
 				cls = worstOf(cls, CodeExecution)
 				cls = worstOf(cls, Classify(arg))
 			} else if shellHasOperand(cmdTokens) {
@@ -1815,8 +2066,8 @@ func isScriptEvalInterpreter(name string) bool {
 
 // builtinEnvDump reports whether tokens are a shell-builtin invocation
 // that prints the environment or all shell variables: bare `set`,
-// `set -o`, and `export`/`declare`/`typeset` run in `-p` (print) mode
-// with no assignments. Setting variables or options (`export FOO=bar`,
+// `set -o`, and `export`/`declare`/`typeset` with no operands (bare, or
+// only flags such as `-p` / `-x`). Setting variables or options (`export FOO=bar`,
 // `set -e`, `declare -i x=5`) is not a dump.
 func builtinEnvDump(tokens []string) bool {
 	if len(tokens) == 0 {
@@ -1830,16 +2081,12 @@ func builtinEnvDump(tokens []string) bool {
 		// `set -o` prints all options; `set -o errexit` sets one.
 		return len(tokens) == 2 && tokens[1] == "-o"
 	case "export", "declare", "typeset":
-		sawPrint := false
-		sawExport := false
+		sawFunc := false
 		flagOnly := true
 		for _, t := range tokens[1:] {
 			if strings.HasPrefix(t, "-") {
-				if strings.Contains(t, "p") {
-					sawPrint = true
-				}
-				if strings.Contains(t, "x") {
-					sawExport = true
+				if strings.ContainsAny(t, "fF") {
+					sawFunc = true
 				}
 				continue
 			}
@@ -1851,11 +2098,11 @@ func builtinEnvDump(tokens []string) bool {
 			// A name operand in print mode is a targeted query, not a dump.
 			return false
 		}
-		// Flag-only `-p` prints all variables; flag-only `-x` on
-		// declare/typeset prints all exported variables (bash/zsh both).
-		// Either is a full-environment dump; any assignment makes it a
-		// declaration instead.
-		return flagOnly && (sawPrint || sawExport)
+		// Flag-only `-p` / `-x` and bare `export` / `declare` / `typeset`
+		// list every (exported) variable. Any assignment makes it a
+		// declaration instead; only the function-listing flags (-f / -F)
+		// print something other than variables.
+		return flagOnly && !sawFunc
 	}
 	return false
 }
@@ -1889,10 +2136,13 @@ func isEnvironmentDump(tokens []string) bool {
 			i++
 			continue
 		}
-		if (t == "-u" || t == "--unset" ||
-			t == "-C" || t == "--chdir" ||
-			t == "-S" || t == "--split-string") && i+1 < len(tokens) {
-			i += 2
+		if next, _, split, ok := envOptionValue(tokens, i); ok {
+			if split {
+				// -S STRING supplies the command env runs; it is not a
+				// flag-only invocation, and unwrapWrappers classifies it.
+				return false
+			}
+			i = next
 			continue
 		}
 		// Equals-form long options carry their value inside the token
@@ -2402,7 +2652,62 @@ var execWrappers = map[string]bool{
 // the real command is the one classified; an assignment-only command (no
 // verb) is left empty and treated as Safe.
 func unwrapWrappers(tokens []string) ([]string, RiskClass) {
+	inner, floor, _ := unwrapWrappersTracked(tokens)
+	return inner, floor
+}
+
+// envOptionValue recognises a value-taking option of env at tokens[i]:
+// -u NAME, -C DIR, -S STRING, -a NAME, -P PATH (value fused into the cluster
+// or in the next token) and their long spellings --unset, --chdir,
+// --split-string, --argv0 (value after `=` or in the next token, unambiguous
+// prefixes accepted as getopt_long does). It returns the index after the
+// option and its value, and whether the option is the split-string one.
+func envOptionValue(tokens []string, i int) (next int, value string, split bool, ok bool) {
+	t := tokens[i]
+	take := func(fused string, fusedOK bool, after int) (int, string) {
+		if fusedOK {
+			return after, fused
+		}
+		if after < len(tokens) {
+			return after + 1, tokens[after]
+		}
+		return after, ""
+	}
+	if strings.HasPrefix(t, "--") {
+		name, val, hasEq := strings.Cut(t[2:], "=")
+		if name == "" {
+			return 0, "", false, false
+		}
+		for _, long := range []string{"unset", "chdir", "split-string", "argv0"} {
+			if strings.HasPrefix(long, name) {
+				next, value = take(val, hasEq, i+1)
+				return next, value, long == "split-string", true
+			}
+		}
+		return 0, "", false, false
+	}
+	if len(t) < 2 || t[0] != '-' {
+		return 0, "", false, false
+	}
+	for k := 1; k < len(t); k++ {
+		switch t[k] {
+		case 'u', 'C', 'S', 'a', 'P':
+			rest := t[k+1:]
+			next, value = take(rest, rest != "", i+1)
+			return next, value, t[k] == 'S', true
+		}
+	}
+	return 0, "", false, false
+}
+
+// unwrapWrappersTracked is unwrapWrappers that also returns, for every `env`
+// wrapper consumed, the token tail that starts at it, so callers can tell
+// when a wrapper chain ends in a bare `env` (an environment dump) that no
+// inner command is left to represent.
+func unwrapWrappersTracked(tokens []string) ([]string, RiskClass, [][]string) {
 	floor := Safe
+	var envTails [][]string
+	var splitValues []string
 	var assignments []string
 	i := 0
 	for i < len(tokens) && isAssignment(tokens[i]) {
@@ -2420,6 +2725,9 @@ func unwrapWrappers(tokens []string) ([]string, RiskClass) {
 		}
 		if priv {
 			floor = worstOf(floor, SystemWrite)
+		}
+		if name == "env" {
+			envTails = append(envTails, tokens[i:])
 		}
 		i++ // consume the wrapper itself
 		for i < len(tokens) {
@@ -2440,9 +2748,14 @@ func unwrapWrappers(tokens []string) ([]string, RiskClass) {
 					i += 2
 					continue
 				}
-				if name == "env" && (t == "-u" || t == "--unset" || t == "-C" || t == "--chdir" || t == "-S" || t == "--split-string") && i+1 < len(tokens) {
-					i += 2
-					continue
+				if name == "env" {
+					if next, val, split, ok := envOptionValue(tokens, i); ok {
+						if split {
+							splitValues = append(splitValues, val)
+						}
+						i = next
+						continue
+					}
 				}
 				if name == "strace" && (t == "-e" || t == "-p" || t == "-o" || t == "--output" || t == "-s") && i+1 < len(tokens) {
 					i += 2
@@ -2468,7 +2781,18 @@ func unwrapWrappers(tokens []string) ([]string, RiskClass) {
 		// and LD_PRELOAD do not depend on the inner verb.
 		floor = worstOf(floor, envAssignmentRisk(assignments, inner))
 	}
-	return inner, floor
+	if len(splitValues) > 0 {
+		// `env -S STRING` splits STRING into the command (and arguments)
+		// that env runs, ahead of any remaining operands, so the split
+		// string is a real command line and is classified as one.
+		var composed []string
+		for _, v := range splitValues {
+			composed = append(composed, tokenize(v)...)
+		}
+		composed = append(composed, inner...)
+		floor = worstOf(floor, classifyStage(composed, false))
+	}
+	return inner, floor, envTails
 }
 
 func hasDynamicSubst(tokens []string) bool {
@@ -2500,6 +2824,16 @@ var envExecNames = map[string]bool{
 	"GIT_ASKPASS": true, "GIT_PROXY_COMMAND": true,
 	"GIT_EXEC_PATH":     true,
 	"GIT_CONFIG_GLOBAL": true, "GIT_CONFIG_SYSTEM": true, "GIT_CONFIG_PARAMETERS": true,
+	// GIT_CONFIG_COUNT with GIT_CONFIG_KEY_<n>/GIT_CONFIG_VALUE_<n> injects
+	// config exactly like `git -c` (see envAssignmentRisk for the indexed names).
+	"GIT_CONFIG_COUNT": true,
+	// JVM option files/agents, less preprocessors, ssh askpass helpers and
+	// glibc gconv module paths all load or exec attacker-chosen code from
+	// otherwise read-only commands (`java -version`, `less f`, `iconv`).
+	"JAVA_TOOL_OPTIONS": true, "_JAVA_OPTIONS": true, "JDK_JAVA_OPTIONS": true,
+	"LESSOPEN": true, "LESSCLOSE": true,
+	"SSH_ASKPASS": true, "SSH_ASKPASS_REQUIRE": true,
+	"GCONV_PATH": true,
 	// Path hijacks: retarget metadata/worktree/index so a planted repo
 	// or corrupt index is what a later "safe" git verb actually sees.
 	"GIT_DIR": true, "GIT_WORK_TREE": true, "GIT_INDEX_FILE": true,
@@ -2558,6 +2892,9 @@ func envAssignmentRisk(assignments []string, inner []string) RiskClass {
 		if envExecNames[upper] || strings.HasSuffix(upper, "PAGER") {
 			return SystemWrite
 		}
+		if strings.HasPrefix(upper, "GIT_CONFIG_KEY_") || strings.HasPrefix(upper, "GIT_CONFIG_VALUE_") {
+			return SystemWrite
+		}
 		if upper == "ENV" && posixShells[innerName] {
 			return SystemWrite
 		}
@@ -2572,6 +2909,44 @@ func envAssignmentRisk(assignments []string, inner []string) RiskClass {
 		}
 	}
 	return Safe
+}
+
+// exportedAssignmentRisk applies envAssignmentRisk to the NAME=value operands
+// of `export`, `declare -x`, `typeset -x` and `local -x`: the variable reaches
+// every later command of the same shell line exactly like a leading
+// assignment would. The inner command is not known here, so an exported ENV
+// with a path-like value is judged as if a POSIX shell consumed it.
+func exportedAssignmentRisk(tokens []string) RiskClass {
+	if len(tokens) == 0 {
+		return Safe
+	}
+	switch commandName(tokens[0]) {
+	case "export":
+	case "declare", "typeset", "local":
+		exports := false
+		for _, t := range tokens[1:] {
+			if isShortFlagToken(t) && strings.ContainsRune(t[1:], 'x') {
+				exports = true
+			}
+		}
+		if !exports {
+			return Safe
+		}
+	default:
+		return Safe
+	}
+	var assignments []string
+	var inner []string
+	for _, t := range tokens[1:] {
+		if !isAssignment(t) {
+			continue
+		}
+		assignments = append(assignments, t)
+		if name, val, _ := strings.Cut(t, "="); strings.EqualFold(name, "ENV") && strings.ContainsAny(val, "/~.") {
+			inner = []string{"sh"}
+		}
+	}
+	return envAssignmentRisk(assignments, inner)
 }
 
 // knownSafeShellValue reports whether val names a system shell rather than
@@ -3039,6 +3414,59 @@ func flagArg(tokens []string, flag string) string {
 	return ""
 }
 
+// shellInlineScriptIndex returns the index of the inline script of a shell
+// invocation (`bash -c SCRIPT`), or -1 when the invocation has none. tokens[0]
+// is the shell itself. Any short-flag cluster containing `c` (-c, -lc, -ec,
+// -xc, -ce) selects inline mode; the script is then the first operand, so
+// value-taking shell options (-o NAME, -O NAME, --rcfile FILE, --init-file
+// FILE) and `--` are honoured instead of being mistaken for the script.
+// Redirections ahead of the script are skipped with their targets.
+func shellInlineScriptIndex(tokens []string) int {
+	sawC := false
+	for i := 1; i < len(tokens); i++ {
+		t := tokens[i]
+		switch {
+		case t == "--":
+			if sawC && i+1 < len(tokens) {
+				return i + 1
+			}
+			return -1
+		case isRedirectToken(t):
+			i++ // skip the redirect target
+		case strings.HasPrefix(t, "--"):
+			if t == "--rcfile" || t == "--init-file" {
+				i++
+			}
+		case len(t) > 1 && (t[0] == '-' || t[0] == '+'):
+			for _, r := range t[1:] {
+				switch r {
+				case 'c':
+					if t[0] == '-' {
+						sawC = true
+					}
+				case 'o', 'O':
+					i++ // option name follows as its own token
+				}
+			}
+		default:
+			if sawC {
+				return i
+			}
+			return -1
+		}
+	}
+	return -1
+}
+
+// shellInlineScript returns the inline `-c` script of a shell invocation, or
+// "" when there is none.
+func shellInlineScript(tokens []string) string {
+	if i := shellInlineScriptIndex(tokens); i >= 0 {
+		return tokens[i]
+	}
+	return ""
+}
+
 // hasAny reports whether any token equals one of names.
 func hasAny(tokens []string, names ...string) bool {
 	for _, t := range tokens {
@@ -3108,6 +3536,28 @@ func classifyCommand(tokens []string) RiskClass {
 	return cls
 }
 
+// manRunsProgram reports whether man options name a program to execute: the
+// pager (-P PROG, fused -PPROG or inside a cluster, --pager[=PROG] and its
+// unambiguous abbreviations) or the HTML browser (-H, --html).
+func manRunsProgram(args []string) bool {
+	for _, a := range args {
+		switch {
+		case a == "--":
+			return false
+		case strings.HasPrefix(a, "--"):
+			name, _, _ := strings.Cut(a[2:], "=")
+			if len(name) >= 3 && (strings.HasPrefix("pager", name) || strings.HasPrefix("html", name)) {
+				return true
+			}
+		case isShortFlagToken(a):
+			if strings.ContainsAny(a[1:], "PH") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func classifyKnownCommand(tokens []string) RiskClass {
 	if len(tokens) == 0 {
 		return Safe
@@ -3121,6 +3571,13 @@ func classifyKnownCommand(tokens []string) RiskClass {
 	// store; they are never safe even when used benignly.
 	if first == "printenv" && printenvDumpsAll(tokens) {
 		return SystemWrite
+	}
+
+	// man runs the -P/--pager value through `sh -c` (and -H/--html launches a
+	// browser command); the MANPAGER spelling is already escalated as an
+	// environment assignment, so the flag spelling is code execution too.
+	if first == "man" && manRunsProgram(tokens[1:]) {
+		return CodeExecution
 	}
 
 	// odek self-invocations can reach human-gated trust mutations (`odek memory
@@ -4072,7 +4529,7 @@ func hasShortFlag(args []string, flag rune) bool {
 }
 
 func isCodeExecution(first string, tokens []string) bool {
-	if pipedShells[first] && (flagArg(tokens, "-c") != "" || shellHasOperand(tokens)) {
+	if pipedShells[first] && (shellInlineScript(tokens) != "" || shellHasOperand(tokens)) {
 		return true
 	}
 	if first == "find" && hasAny(tokens, "-exec", "-execdir", "-ok", "-okdir") {
