@@ -1,7 +1,12 @@
 package danger
 
 import (
+	"context"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -430,4 +435,169 @@ func TestLeftover_DeclarationBuiltinsDropDynamicValues(t *testing.T) {
 			t.Errorf("ActionForCommand(%q) = allow, want the unresolved $S to stay gated", cmd)
 		}
 	}
+}
+
+func ledgerCtx(key string) context.Context { return WithLedgerKey(context.Background(), key) }
+
+func ledgerFiles(t *testing.T, n int) []string {
+	t.Helper()
+	dir := t.TempDir()
+	paths := make([]string, n)
+	for i := range paths {
+		paths[i] = filepath.Join(dir, "s"+strconv.Itoa(i)+".sh")
+		if err := os.WriteFile(paths[i], []byte("echo "+strconv.Itoa(i)+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return paths
+}
+
+// A session's ledger holds a bounded number of paths; the oldest reads fall
+// out first and simply stop licensing execution (the gate re-fires).
+func TestLeftover_ReadLedgerPerSessionPathCap(t *testing.T) {
+	ResetReadLedgerForTest()
+	t.Cleanup(ResetReadLedgerForTest)
+	old := maxLedgerPaths
+	maxLedgerPaths = 8
+	t.Cleanup(func() { maxLedgerPaths = old })
+	paths := ledgerFiles(t, 20)
+	ctx := ledgerCtx("cap")
+	for _, p := range paths {
+		RecordReadCtx(ctx, p)
+	}
+	if got := ledgerSizeForTest("cap"); got > maxLedgerPaths {
+		t.Fatalf("ledger holds %d paths, cap is %d", got, maxLedgerPaths)
+	}
+	for _, p := range paths[len(paths)-4:] {
+		if !WasReadFreshCtx(ctx, p) {
+			t.Errorf("recent read %s was evicted", filepath.Base(p))
+		}
+	}
+	for _, p := range paths[:4] {
+		if WasReadFreshCtx(ctx, p) {
+			t.Errorf("oldest read %s survived the cap", filepath.Base(p))
+		}
+	}
+	// an evicted file gates again until it is re-read
+	if got := UnreadScriptTargetsCtx(ctx, "bash "+paths[0]); len(got) != 1 {
+		t.Errorf("evicted script not gated: %v", got)
+	}
+	RecordReadCtx(ctx, paths[0])
+	if got := UnreadScriptTargetsCtx(ctx, "bash "+paths[0]); len(got) != 0 {
+		t.Errorf("re-read script still gated: %v", got)
+	}
+	// re-recording a held path does not grow the ledger
+	before := ledgerSizeForTest("cap")
+	RecordReadCtx(ctx, paths[0])
+	if after := ledgerSizeForTest("cap"); after != before {
+		t.Errorf("re-record grew ledger %d -> %d", before, after)
+	}
+}
+
+// Idle sessions are evicted least-recently-used once too many keys exist; the
+// process-global default ledger is never evicted.
+func TestLeftover_ReadLedgerSessionCapEvictsLeastRecentlyUsed(t *testing.T) {
+	ResetReadLedgerForTest()
+	t.Cleanup(ResetReadLedgerForTest)
+	old := maxLedgerSessions
+	maxLedgerSessions = 4
+	t.Cleanup(func() { maxLedgerSessions = old })
+	paths := ledgerFiles(t, 1)
+	p := paths[0]
+	RecordRead(p) // default ledger
+	for _, k := range []string{"a", "b", "c"} {
+		RecordReadCtx(ledgerCtx(k), p)
+	}
+	// touch a so b is now the least recently used
+	if !WasReadFreshCtx(ledgerCtx("a"), p) {
+		t.Fatal("a should be licensed")
+	}
+	RecordReadCtx(ledgerCtx("d"), p)
+	RecordReadCtx(ledgerCtx("e"), p)
+	if ledgerSessionsForTest() > maxLedgerSessions {
+		t.Fatalf("%d sessions held, cap %d", ledgerSessionsForTest(), maxLedgerSessions)
+	}
+	if !WasReadFresh(p) {
+		t.Error("default ledger was evicted")
+	}
+	if WasReadFreshCtx(ledgerCtx("b"), p) {
+		t.Error("least recently used session b survived")
+	}
+	if !WasReadFreshCtx(ledgerCtx("e"), p) {
+		t.Error("newest session e is missing")
+	}
+}
+
+func TestLeftover_ForgetReadLedger(t *testing.T) {
+	ResetReadLedgerForTest()
+	t.Cleanup(ResetReadLedgerForTest)
+	p := ledgerFiles(t, 1)[0]
+	RecordReadCtx(ledgerCtx("s1"), p)
+	RecordReadCtx(ledgerCtx("s2"), p)
+	RecordRead(p)
+	ForgetReadLedger("s1")
+	if WasReadFreshCtx(ledgerCtx("s1"), p) || WasReadCtx(ledgerCtx("s1"), p) {
+		t.Error("s1 ledger survived ForgetReadLedger")
+	}
+	if !WasReadFreshCtx(ledgerCtx("s2"), p) || !WasReadFresh(p) {
+		t.Error("ForgetReadLedger(s1) removed another session's reads")
+	}
+	// the key can be used again afterwards
+	RecordReadCtx(ledgerCtx("s1"), p)
+	if !WasReadFreshCtx(ledgerCtx("s1"), p) {
+		t.Error("forgotten key cannot record again")
+	}
+	ForgetReadLedger("never-existed")
+}
+
+// Concurrent record, check, forget and eviction must be race free.
+func TestLeftover_ReadLedgerConcurrentEviction(t *testing.T) {
+	ResetReadLedgerForTest()
+	t.Cleanup(ResetReadLedgerForTest)
+	oldP, oldS := maxLedgerPaths, maxLedgerSessions
+	maxLedgerPaths, maxLedgerSessions = 6, 5
+	t.Cleanup(func() { maxLedgerPaths, maxLedgerSessions = oldP, oldS })
+	paths := ledgerFiles(t, 16)
+	var wg sync.WaitGroup
+	for g := 0; g < 8; g++ {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+			for i := 0; i < 200; i++ {
+				ctx := ledgerCtx("k" + strconv.Itoa((g+i)%9))
+				p := paths[(g*7+i)%len(paths)]
+				switch i % 5 {
+				case 0, 1:
+					RecordReadCtx(ctx, p)
+				case 2:
+					WasReadFreshCtx(ctx, p)
+				case 3:
+					UnreadScriptTargetsCtx(ctx, "bash "+p)
+				default:
+					if i%10 == 4 {
+						ForgetReadLedger("k" + strconv.Itoa(i%9))
+					}
+				}
+			}
+		}(g)
+	}
+	wg.Wait()
+	if ledgerSessionsForTest() > maxLedgerSessions+1 {
+		t.Errorf("%d sessions held after churn, cap %d", ledgerSessionsForTest(), maxLedgerSessions)
+	}
+}
+
+func ledgerSizeForTest(key string) int {
+	readLedgerMu.RLock()
+	defer readLedgerMu.RUnlock()
+	if l := readLedgers[key]; l != nil {
+		return len(l.entries)
+	}
+	return 0
+}
+
+func ledgerSessionsForTest() int {
+	readLedgerMu.RLock()
+	defer readLedgerMu.RUnlock()
+	return len(readLedgers)
 }

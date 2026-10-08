@@ -30,6 +30,7 @@ import (
 	"github.com/BackendStack21/odek/internal/bgproc"
 	"github.com/BackendStack21/odek/internal/budget"
 	"github.com/BackendStack21/odek/internal/config"
+	"github.com/BackendStack21/odek/internal/danger"
 	"github.com/BackendStack21/odek/internal/diagnostics"
 	"github.com/BackendStack21/odek/internal/events"
 	"github.com/BackendStack21/odek/internal/guard"
@@ -3335,6 +3336,7 @@ func handleSessionByID(store *session.Store, trustedProxies []string, wsToken st
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
+			danger.ForgetReadLedger(id)
 			w.WriteHeader(http.StatusNoContent)
 
 		case http.MethodPost:

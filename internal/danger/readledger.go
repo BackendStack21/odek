@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 )
 
@@ -48,6 +49,9 @@ type readEntry struct {
 	modNano int64
 	hash    [32]byte
 	hashed  bool
+	// seq orders entries by when they were recorded; the oldest are evicted
+	// first when a session ledger is full. Assigned by the ledger.
+	seq uint64
 }
 
 var readLedgerMu sync.RWMutex
@@ -58,7 +62,33 @@ var readLedgerMu sync.RWMutex
 // without a context — that keeps CLI-shaped tests working. Long-lived
 // surfaces (serve, telegram, schedule) stamp WithLedgerKey on the run
 // context so a read in session A cannot license execution in session B.
-var readLedgers = map[string]map[string]readEntry{}
+//
+// The ledgers are bounded: a session holds at most maxLedgerPaths paths
+// (oldest reads evicted first) and at most maxLedgerSessions session keys
+// exist at once (least recently used evicted first; the default key never).
+// Eviction only ever removes a licence, so an evicted script gates again
+// until it is re-read. Callers drop a finished session with
+// ForgetReadLedger.
+var readLedgers = map[string]*sessionLedger{}
+
+// Ledger bounds. Variables so tests can exercise eviction cheaply.
+var (
+	maxLedgerPaths    = 4096
+	maxLedgerSessions = 1024
+)
+
+// ledgerClock orders ledger activity: entry recording and session use.
+var ledgerClock atomic.Uint64
+
+// sessionLedger is one session's read receipts.
+type sessionLedger struct {
+	entries map[string]readEntry
+	// lastUsed is the ledgerClock value of the latest record or lookup; it is
+	// updated under the read lock, hence atomic.
+	lastUsed atomic.Uint64
+}
+
+func (l *sessionLedger) touch() { l.lastUsed.Store(ledgerClock.Add(1)) }
 
 type ledgerKeyCtx struct{}
 
@@ -93,7 +123,7 @@ func FinishReadDelivery(ctx context.Context, delivered bool) {
 	if delivered {
 		readLedgerMu.Lock()
 		for path, entry := range d.entries {
-			ledgerMapLocked(ledgerKeyFrom(ctx))[path] = entry
+			putLedgerLocked(ledgerKeyFrom(ctx), path, entry)
 		}
 		readLedgerMu.Unlock()
 	}
@@ -124,7 +154,7 @@ func RecordReadContentCtx(ctx context.Context, path string, size int64, digest [
 		return
 	}
 	readLedgerMu.Lock()
-	ledgerMapLocked(ledgerKeyFrom(ctx))[abs] = entry
+	putLedgerLocked(ledgerKeyFrom(ctx), abs, entry)
 	readLedgerMu.Unlock()
 }
 
@@ -148,15 +178,75 @@ func ledgerKeyFrom(ctx context.Context) string {
 	return ""
 }
 
-// ledgerMapLocked returns the path map for key. Caller must hold
-// readLedgerMu (write lock if the map may be created).
-func ledgerMapLocked(key string) map[string]readEntry {
-	m := readLedgers[key]
-	if m == nil {
-		m = make(map[string]readEntry)
-		readLedgers[key] = m
+// putLedgerLocked records entry for path in the key's ledger, creating the
+// ledger (and evicting the least recently used one when too many sessions
+// exist) and trimming the oldest paths when the ledger is full. Caller must
+// hold readLedgerMu for writing.
+func putLedgerLocked(key, path string, entry readEntry) {
+	l := readLedgers[key]
+	if l == nil {
+		evictSessionsLocked(key)
+		l = &sessionLedger{entries: make(map[string]readEntry)}
+		readLedgers[key] = l
 	}
-	return m
+	entry.seq = ledgerClock.Add(1)
+	l.entries[path] = entry
+	l.touch()
+	if len(l.entries) > maxLedgerPaths {
+		evictOldestPathsLocked(l)
+	}
+}
+
+// evictSessionsLocked makes room for a new session key by dropping the least
+// recently used ledgers. The default (empty) key and the incoming key are
+// never candidates.
+func evictSessionsLocked(incoming string) {
+	for len(readLedgers) >= maxLedgerSessions {
+		victim, oldest := "", ^uint64(0)
+		for key, l := range readLedgers {
+			if key == "" || key == incoming {
+				continue
+			}
+			if used := l.lastUsed.Load(); used < oldest {
+				victim, oldest = key, used
+			}
+		}
+		if oldest == ^uint64(0) {
+			return
+		}
+		delete(readLedgers, victim)
+	}
+}
+
+// evictOldestPathsLocked trims a full ledger to seven eighths of its cap,
+// removing the entries recorded longest ago, so a steady stream of reads
+// does not pay for a scan on every insert.
+func evictOldestPathsLocked(l *sessionLedger) {
+	keep := maxLedgerPaths - maxLedgerPaths/8
+	if keep < 1 {
+		keep = 1
+	}
+	type aged struct {
+		path string
+		seq  uint64
+	}
+	all := make([]aged, 0, len(l.entries))
+	for path, e := range l.entries {
+		all = append(all, aged{path, e.seq})
+	}
+	sort.Slice(all, func(i, j int) bool { return all[i].seq < all[j].seq })
+	for _, a := range all[:len(all)-keep] {
+		delete(l.entries, a.path)
+	}
+}
+
+// ForgetReadLedger drops every read receipt recorded under sessionKey. Call
+// it when a session ends or is reset so its licences do not outlive it; the
+// key can be used again afterwards. The empty key clears the default ledger.
+func ForgetReadLedger(sessionKey string) {
+	readLedgerMu.Lock()
+	delete(readLedgers, sessionKey)
+	readLedgerMu.Unlock()
 }
 
 // readFingerprintMaxBytes caps content hashing. Files beyond this size fail
@@ -193,7 +283,7 @@ func recordReadKey(key, path string) {
 		entry = e
 	}
 	readLedgerMu.Lock()
-	ledgerMapLocked(key)[filepath.Clean(abs)] = entry
+	putLedgerLocked(key, filepath.Clean(abs), entry)
 	readLedgerMu.Unlock()
 }
 
@@ -216,11 +306,12 @@ func wasReadKey(key, path string) bool {
 	}
 	readLedgerMu.RLock()
 	defer readLedgerMu.RUnlock()
-	m := readLedgers[key]
-	if m == nil {
+	l := readLedgers[key]
+	if l == nil {
 		return false
 	}
-	_, ok := m[filepath.Clean(abs)]
+	l.touch()
+	_, ok := l.entries[filepath.Clean(abs)]
 	return ok
 }
 
@@ -245,11 +336,12 @@ func wasReadFreshKey(key, path string) bool {
 	}
 	clean := filepath.Clean(abs)
 	readLedgerMu.RLock()
-	m := readLedgers[key]
+	l := readLedgers[key]
 	var entry readEntry
 	ok := false
-	if m != nil {
-		entry, ok = m[clean]
+	if l != nil {
+		l.touch()
+		entry, ok = l.entries[clean]
 	}
 	readLedgerMu.RUnlock()
 	if !ok || entry.size < 0 {
@@ -328,7 +420,7 @@ func fingerprintFile(abs string) (readEntry, bool) {
 // ResetReadLedgerForTest clears the session ledger.
 func ResetReadLedgerForTest() {
 	readLedgerMu.Lock()
-	readLedgers = map[string]map[string]readEntry{}
+	readLedgers = map[string]*sessionLedger{}
 	readLedgerMu.Unlock()
 }
 

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/BackendStack21/odek/internal/danger"
 	"github.com/BackendStack21/odek/internal/diagnostics"
 	"github.com/BackendStack21/odek/internal/events"
 	"os"
@@ -304,6 +305,9 @@ func resetChatForNew(chatID int64, sessionManager *telegram.SessionManager, hand
 	if err := sessionManager.ArchiveAndDelete(chatID); err != nil {
 		log.Warn("archive session", "chat_id", chatID, "error", err)
 	}
+	// The next session of this chat reuses the "tg-<chat>" ledger key, so
+	// reads from the archived conversation must not license its executions.
+	danger.ForgetReadLedger(fmt.Sprintf("tg-%d", chatID))
 	if a := handler.GetApprover(chatID); a != nil {
 		a.ResetTrust()
 	}
