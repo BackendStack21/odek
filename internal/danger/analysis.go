@@ -85,6 +85,9 @@ type shellAnalysisState struct {
 	cwd       string
 	vars      map[string]string
 	uncertain bool
+	// unquoted names the variables the analyzed text references outside any
+	// quoting, where the shell word-splits and globs their values.
+	unquoted map[string]bool
 }
 
 // Bound static expansion independently of recursion: repeated assignments
@@ -117,14 +120,36 @@ func analyzeWithState(cmd string, depth int, inherited *shellAnalysisState) Anal
 			state.vars[name] = value
 		}
 	}
+	state.unquoted = unquotedVariableRefs(main)
 	segments := splitSegments(tokens)
+	operators := segmentOperators(tokens)
 	if len(subs) > 0 && hasAny(tokens, "cd", "pushd", "popd") {
 		result.add(Unknown)
 	}
 	// Conditional alternatives and background state cannot be carried as one
 	// deterministic cwd/variable snapshot. Stateful stages below fail closed.
 	ambiguous := hasAny(tokens, "||", "&")
-	for _, segment := range segments {
+	// Mutations made behind `&&` only happen when every earlier operand
+	// succeeded. Inside the chain they are carried (the rest of the chain only
+	// runs once they happened); when the chain ends, the state they touched
+	// is unknown.
+	chainVars := make(map[string]bool)
+	chainCwd := false
+	endChain := func() {
+		for name := range chainVars {
+			delete(state.vars, name)
+			delete(chainVars, name)
+		}
+		if chainCwd {
+			state.uncertain = true
+			chainCwd = false
+		}
+	}
+	for segmentIndex, segment := range segments {
+		afterAnd := operators[segmentIndex] == "&&"
+		if !afterAnd {
+			endChain()
+		}
 		stages := splitPipes(segment)
 		prepared := make([][]string, 0, len(stages))
 		for _, stage := range stages {
@@ -175,12 +200,22 @@ func analyzeWithState(cmd string, depth int, inherited *shellAnalysisState) Anal
 				}
 			}
 			if len(inner) == 0 {
-				if len(stages) == 1 && !ambiguous {
-					state.assign(stage)
+				if len(stages) == 1 {
+					if ambiguous {
+						state.forget(assignedNames(stage)...)
+					} else {
+						state.assign(stage)
+						if afterAnd {
+							for _, assigned := range assignedNames(stage) {
+								chainVars[assigned] = true
+							}
+						}
+					}
 				}
 				continue
 			}
 			name := commandName(inner[0])
+			state.rebind(name, inner)
 			if isCodeExecution(name, inner) || explicitUntrustedExecutable(inner[0]) || (i > 0 && (pipedShells[name] || isStdinExecInterpreter(name) || embeddedShellInterpreters[name])) {
 				result.add(CodeExecution)
 			}
@@ -254,12 +289,18 @@ func analyzeWithState(cmd string, depth int, inherited *shellAnalysisState) Anal
 				if len(stages) > 1 {
 					continue
 				}
+				wasUncertain := state.uncertain
 				state.uncertain = ambiguous || name == "popd"
-				path := os.Getenv("HOME")
-				if len(inner) > 1 {
-					path = inner[len(inner)-1]
+				if afterAnd {
+					chainCwd = true
 				}
-				if strings.ContainsAny(path, "$*?[]") || path == "-" {
+				path, known := directoryOperand(name, inner[1:])
+				if !known || strings.ContainsAny(path, "$*?[]") || path == "-" {
+					state.uncertain = true
+					continue
+				}
+				if wasUncertain && !filepath.IsAbs(expandShellTokenPath(path)) {
+					// A relative step from an unknown directory stays unknown.
 					state.uncertain = true
 					continue
 				}
@@ -273,6 +314,7 @@ func analyzeWithState(cmd string, depth int, inherited *shellAnalysisState) Anal
 		}
 		result.add(classifyPipeline(pipeline))
 	}
+	endChain()
 	for _, sub := range subs {
 		result.merge(analyzeWithState(sub, depth+1, &state))
 	}
@@ -297,35 +339,19 @@ func environmentRunsCode(prefix []string) bool {
 	return false
 }
 
+// expand substitutes the statically known shell variables into tokens. Each
+// token is scanned once for `$` and names are looked up in the variable map,
+// so the cost is linear in the command length regardless of how many
+// variables are known. Substituted values are not rescanned.
 func (s *shellAnalysisState) expand(tokens []string) []string {
 	out := append([]string(nil), tokens...)
+	separators := " \t\n\r*?["
+	if ifs, ok := s.vars["IFS"]; ok {
+		separators += ifs
+	}
 	for i, token := range out {
-		// Shell-local values are substituted without executing expansions.
-		for name, value := range s.vars {
-			braced := "${" + name + "}"
-			if len(value) > 0 && strings.Count(token, braced) > maxStaticWordBytes/len(value) {
-				token = dynamicSubstToken
-				break
-			}
-			token = strings.ReplaceAll(token, "${"+name+"}", value)
-			for pos := 0; pos < len(token); {
-				start := strings.Index(token[pos:], "$"+name)
-				if start < 0 {
-					break
-				}
-				start += pos
-				end := start + 1 + len(name)
-				if end < len(token) && isShellVarByte(token[end]) {
-					pos = end
-					continue
-				}
-				if len(token)-(end-start)+len(value) > maxStaticWordBytes {
-					token = dynamicSubstToken
-					break
-				}
-				token = token[:start] + value + token[end:]
-				pos = start + len(value)
-			}
+		if strings.IndexByte(token, '$') >= 0 {
+			token = s.expandToken(token, isAssignment(tokens[i]), separators)
 		}
 		if len(token) > maxStaticWordBytes {
 			token = dynamicSubstToken
@@ -337,6 +363,187 @@ func (s *shellAnalysisState) expand(tokens []string) []string {
 		out[i] = token
 	}
 	return out
+}
+
+// expandToken substitutes known variables into one token. An unquoted
+// reference whose value the shell would word-split or glob cannot be one
+// operand, so the whole token fails closed to the dynamic marker.
+func (s *shellAnalysisState) expandToken(token string, assignment bool, separators string) string {
+	var b strings.Builder
+	for pos := 0; pos < len(token); {
+		dollar := strings.IndexByte(token[pos:], '$')
+		if dollar < 0 {
+			b.WriteString(token[pos:])
+			break
+		}
+		dollar += pos
+		b.WriteString(token[pos:dollar])
+		name, end := variableReference(token, dollar)
+		if name == "" {
+			b.WriteByte('$')
+			pos = dollar + 1
+			continue
+		}
+		value, known := s.vars[name]
+		if !known {
+			b.WriteString(token[dollar:end])
+			pos = end
+			continue
+		}
+		if !assignment && s.unquoted[name] && strings.ContainsAny(value, separators) {
+			return dynamicSubstToken
+		}
+		if b.Len()+len(value) > maxStaticWordBytes {
+			return dynamicSubstToken
+		}
+		b.WriteString(value)
+		pos = end
+	}
+	return b.String()
+}
+
+// variableReference parses `$name` or `${name}` at token[dollar] and returns
+// the variable name and the index just past the reference; an empty name
+// means the `$` does not start a plain variable reference.
+func variableReference(token string, dollar int) (name string, end int) {
+	start := dollar + 1
+	if start < len(token) && token[start] == '{' {
+		closing := strings.IndexByte(token[start:], '}')
+		if closing < 0 {
+			return "", 0
+		}
+		name = token[start+1 : start+closing]
+		for j := 0; j < len(name); j++ {
+			if !isShellVarByte(name[j]) {
+				return "", 0
+			}
+		}
+		return name, start + closing + 1
+	}
+	end = start
+	for end < len(token) && isShellVarByte(token[end]) {
+		end++
+	}
+	return token[start:end], end
+}
+
+// unquotedVariableRefs returns the variables referenced outside single and
+// double quotes, where the shell splits and globs the expanded value.
+func unquotedVariableRefs(text string) map[string]bool {
+	refs := make(map[string]bool)
+	inSingle, inDouble := false, false
+	for i := 0; i < len(text); i++ {
+		ch := text[i]
+		switch {
+		case ch == '\\' && !inSingle:
+			i++
+		case ch == '\'' && !inDouble:
+			inSingle = !inSingle
+		case ch == '"' && !inSingle:
+			inDouble = !inDouble
+		case ch == '$' && !inSingle && !inDouble:
+			if name, end := variableReference(text, i); name != "" {
+				refs[name] = true
+				i = end - 1
+			}
+		}
+	}
+	return refs
+}
+
+// segmentOperators returns, for each segment splitSegments produces, the
+// separator that precedes it ("" for the first). A newline right after `&&`
+// or `||` continues the list, so it keeps the earlier operator.
+func segmentOperators(tokens []string) []string {
+	var ops []string
+	pending, current := "", ""
+	inSegment := false
+	for _, tok := range tokens {
+		switch tok {
+		case ";", "&&", "||", "&":
+			if inSegment {
+				ops = append(ops, current)
+				inSegment = false
+			} else if tok == ";" && (pending == "&&" || pending == "||") {
+				continue
+			}
+			pending = tok
+		default:
+			if !inSegment {
+				current = pending
+				inSegment = true
+			}
+		}
+	}
+	if inSegment {
+		ops = append(ops, current)
+	}
+	return ops
+}
+
+// assignedNames lists the variable names bound by the NAME=value words.
+func assignedNames(tokens []string) []string {
+	var names []string
+	for _, tok := range tokens {
+		if isAssignment(tok) {
+			name, _, _ := strings.Cut(tok, "=")
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
+// forget drops statically known values; later references stay unexpanded
+// and are treated as unknown by the target checks.
+func (s *shellAnalysisState) forget(names ...string) {
+	for _, name := range names {
+		delete(s.vars, name)
+	}
+}
+
+// rebind drops the known value of every variable a builtin binds or removes
+// at run time (read, printf -v, getopts, unset, export/declare, ...). The
+// value is only known to the shell, so the earlier static value is stale.
+func (s *shellAnalysisState) rebind(name string, inner []string) {
+	operandName := func(tok string) string {
+		tok, _, _ = strings.Cut(tok, "=")
+		tok, _, _ = strings.Cut(tok, "[")
+		return tok
+	}
+	switch name {
+	case "read":
+		s.forget("REPLY")
+		for _, tok := range inner[1:] {
+			s.forget(operandName(tok))
+		}
+	case "mapfile", "readarray":
+		s.forget("MAPFILE")
+		for _, tok := range inner[1:] {
+			s.forget(operandName(tok))
+		}
+	case "getopts":
+		s.forget("OPTARG", "OPTIND", "OPTERR")
+		for _, tok := range inner[1:] {
+			s.forget(operandName(tok))
+		}
+	case "printf":
+		for i := 1; i < len(inner); i++ {
+			if inner[i] == "-v" && i+1 < len(inner) {
+				s.forget(operandName(inner[i+1]))
+			} else if strings.HasPrefix(inner[i], "-v") && len(inner[i]) > 2 {
+				s.forget(operandName(inner[i][2:]))
+			}
+		}
+	case "unset", "export", "declare", "typeset", "local", "readonly", "let":
+		for _, tok := range inner[1:] {
+			if isShortFlagToken(tok) && strings.Contains(tok, "n") && name != "unset" && name != "let" {
+				// declare -n makes a name an alias of another variable.
+				clear(s.vars)
+				return
+			}
+			s.forget(operandName(tok))
+		}
+	}
 }
 
 func (s *shellAnalysisState) assign(tokens []string) {
@@ -381,6 +588,106 @@ func (s *shellAnalysisState) targetRisk(target, cwd string, known bool) RiskClas
 	return worstOf(ClassifyPathWrite(path), classifyResourceToken(path))
 }
 
+// isInputOutputRedirect reports whether tok is a redirection operator whose
+// next token is its target.
+func isInputOutputRedirect(tok string) bool {
+	switch tok {
+	case "<", "<<", "<<<", "<&", "<>":
+		return true
+	}
+	return isRedirectToken(tok)
+}
+
+// directoryOperand returns the directory a cd/pushd stage moves to. Redirect
+// operators with their targets (and the file descriptor digit before them) and
+// the -L/-P/-e/-@ options are skipped. known is false when the destination
+// cannot be determined (no pushd operand, stack rotation, other options, more
+// than one operand).
+func directoryOperand(name string, args []string) (path string, known bool) {
+	var operands []string
+	optionsDone := false
+	for i := 0; i < len(args); i++ {
+		tok := args[i]
+		if isInputOutputRedirect(tok) {
+			i++
+			continue
+		}
+		if isAllDigits(tok) && i+1 < len(args) && isInputOutputRedirect(args[i+1]) {
+			continue
+		}
+		if !optionsDone {
+			if tok == "--" {
+				optionsDone = true
+				continue
+			}
+			if isShortFlagToken(tok) {
+				if strings.Trim(tok[1:], "LPe@") == "" {
+					continue
+				}
+				return "", false
+			}
+			if strings.HasPrefix(tok, "--") || (strings.HasPrefix(tok, "+") && len(tok) > 1) {
+				return "", false
+			}
+		}
+		operands = append(operands, tok)
+	}
+	switch len(operands) {
+	case 0:
+		if name == "cd" {
+			return os.Getenv("HOME"), true
+		}
+		return "", false
+	case 1:
+		return operands[0], true
+	}
+	return "", false
+}
+
+// skipWrapperArguments returns the index just past the options and numeric
+// operands that the wrapper name takes after position from, mirroring how
+// unwrapWrappers walks them, so a following wrapper such as env is seen.
+func skipWrapperArguments(name string, tokens []string, from int) int {
+	i := from
+	for i < len(tokens) {
+		t := tokens[i]
+		switch {
+		case t == "--":
+			return i + 1
+		case strings.HasPrefix(t, "-") && t != "-":
+			if wrapperOptionTakesValue(name, t) && i+1 < len(tokens) {
+				i += 2
+				continue
+			}
+			i++
+		case (name == "timeout" || name == "nice" || name == "ionice") && isNumericish(t):
+			i++
+		default:
+			return i
+		}
+	}
+	return i
+}
+
+// wrapperOptionTakesValue reports whether the wrapper's option consumes the
+// following token as its value.
+func wrapperOptionTakesValue(name, option string) bool {
+	if argvComposers[name] {
+		return xargsValueFlags[option]
+	}
+	switch name {
+	case "watch":
+		return option == "-n" || option == "--interval"
+	case "strace":
+		return hasAny([]string{"-e", "-p", "-o", "--output", "-s"}, option)
+	case "timeout":
+		return hasAny([]string{"-s", "--signal", "-k", "--kill-after"}, option)
+	case "stdbuf":
+		return hasAny([]string{"-i", "-o", "-e", "--input", "--output", "--error"}, option)
+	}
+	return false
+}
+
 func wrapperDirectory(tokens []string, cwd string) (string, bool) {
 	for i := 0; i < len(tokens); i++ {
 		tok := tokens[i]
@@ -392,6 +699,7 @@ func wrapperDirectory(tokens []string, cwd string) (string, bool) {
 			break
 		}
 		if name != "env" {
+			i = skipWrapperArguments(name, tokens, i+1) - 1
 			continue
 		}
 		for j := i + 1; j < len(tokens); j++ {

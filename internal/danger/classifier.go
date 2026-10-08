@@ -937,7 +937,7 @@ func (c *DangerousConfig) ActionForCommand(cmd string) Action {
 // An explicitly set but INVALID value fails closed to Deny: a typo must
 // never silently loosen the gate.
 func (c *DangerousConfig) NonInteractiveAction() Action {
-	if c.NonInteractive != nil {
+	if c != nil && c.NonInteractive != nil {
 		action, ok := ParseNonInteractiveAction(*c.NonInteractive)
 		if ok {
 			return action
@@ -977,7 +977,10 @@ func (c *DangerousConfig) CheckOperation(op ToolOperation, trustedClasses map[Ri
 			op.Name, op.Resource, op.Risk)
 	case Prompt:
 		// Use configured approver, or fall back to TTY
-		approver := c.Approver
+		var approver Approver
+		if c != nil {
+			approver = c.Approver
+		}
 		if approver == nil {
 			approver = NewTTYApprover(c)
 		}

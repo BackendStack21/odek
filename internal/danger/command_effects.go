@@ -413,6 +413,19 @@ func semanticWriteTargets(name string, tokens []string) []string {
 				targets = append(targets, strings.TrimPrefix(tok, flag+"="))
 				break
 			}
+			// GNU getopt_long accepts any unambiguous prefix of a long
+			// option; an abbreviation is treated as the option it could be.
+			if inline, hasInline, ok := longOptionAbbreviation(tok, flag); ok {
+				if hasInline {
+					targets = append(targets, inline)
+				} else if i+1 < len(tokens) {
+					i++
+					targets = append(targets, tokens[i])
+				} else {
+					targets = append(targets, dynamicSubstToken)
+				}
+				break
+			}
 		}
 	}
 	if name == "curl" || name == "wget" {
@@ -427,13 +440,35 @@ func semanticWriteTargets(name string, tokens []string) []string {
 			if name == "wget" && strings.HasPrefix(tok, "-P") && len(tok) > 2 {
 				dir = tok[2:]
 			}
+			// Abbreviated long spellings of the directory options and -P
+			// fused behind other short flags (-qP dir, -qP/dir).
+			if !flags[strings.SplitN(tok, "=", 2)[0]] {
+				for _, full := range []string{"--output-dir", "--directory-prefix"} {
+					if inline, hasInline, ok := longOptionAbbreviation(tok, full); ok {
+						if hasInline {
+							dir = inline
+						} else if i+1 < len(tokens) {
+							dir = tokens[i+1]
+						}
+					}
+				}
+			}
+			if name == "wget" && i > 0 {
+				next := ""
+				if i+1 < len(tokens) {
+					next = tokens[i+1]
+				}
+				if value, ok := shortClusterValue(name, flags, tok, next, 'P'); ok && value != "" {
+					dir = value
+				}
+			}
 		}
 		for i, target := range targets {
 			if target != "-" && dir != "." && !filepath.IsAbs(target) {
 				targets[i] = filepath.Join(dir, target)
 			}
 		}
-		if (name == "wget" && !optionPresent(tokens, "-O", "--output-document")) || (name == "curl" && optionPresent(tokens, "-O", "--remote-name", "--remote-name-all")) {
+		if (name == "wget" && !optionPresent(tokens, "-O", "--output-document")) || (name == "curl" && curlRemoteName(tokens)) {
 			found := false
 			for _, tok := range tokens[1:] {
 				u, err := url.Parse(tok)
@@ -466,6 +501,63 @@ func shortOptionTakesValue(name string, flag byte) bool {
 		return strings.ContainsRune("rpu", rune(flag))
 	case "install":
 		return strings.ContainsRune("mog", rune(flag))
+	}
+	return false
+}
+
+// longOptionAbbreviation reports whether tok spells the GNU long option full
+// (for example "--target-directory") as a strict prefix of it, with an
+// optional inline "=value". Exact spellings are matched by the callers.
+func longOptionAbbreviation(tok, full string) (inline string, hasInline, ok bool) {
+	if !strings.HasPrefix(tok, "--") || !strings.HasPrefix(full, "--") {
+		return "", false, false
+	}
+	spelled, inline, hasInline := strings.Cut(tok, "=")
+	if len(spelled) <= 2 || len(spelled) >= len(full) || !strings.HasPrefix(full, spelled) {
+		return "", false, false
+	}
+	return inline, hasInline, true
+}
+
+// shortClusterValue looks for the short option want inside one fused cluster
+// token (-qP, -sSLO, -qP/dir). A value-taking option consumes the rest of its
+// word, so scanning stops there. The value of want, when it takes one, is the
+// rest of the word or else the next token.
+func shortClusterValue(name string, flags map[string]bool, tok, next string, want byte) (value string, ok bool) {
+	if !isShortFlagToken(tok) {
+		return "", false
+	}
+	for j := 1; j < len(tok); j++ {
+		if tok[j] == want {
+			if j+1 < len(tok) {
+				return tok[j+1:], true
+			}
+			return next, true
+		}
+		if shortOptionTakesValue(name, tok[j]) || flags["-"+tok[j:j+1]] {
+			break
+		}
+	}
+	return "", false
+}
+
+// curlRemoteName reports whether curl names its output after the URL (-O,
+// --remote-name, --remote-name-all), including -O fused into a short cluster
+// and abbreviated long spellings.
+func curlRemoteName(tokens []string) bool {
+	if optionPresent(tokens, "-O", "--remote-name", "--remote-name-all") {
+		return true
+	}
+	flags := map[string]bool{"-o": true, "-D": true, "-c": true}
+	for _, tok := range tokens[1:] {
+		if _, ok := shortClusterValue("curl", flags, tok, "", 'O'); ok {
+			return true
+		}
+		for _, full := range []string{"--remote-name", "--remote-name-all"} {
+			if _, _, ok := longOptionAbbreviation(tok, full); ok {
+				return true
+			}
+		}
 	}
 	return false
 }
