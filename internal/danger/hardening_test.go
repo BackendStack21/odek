@@ -279,6 +279,7 @@ func TestHardening_ANSICOctalDigitCap(t *testing.T) {
 // TestHardening_NoRegressionOnBenign guards against over-classification of
 // ordinary developer commands that must remain low-risk.
 func TestHardening_NoRegressionOnBenign(t *testing.T) {
+	chdirUnarmedRepo(t)
 	cases := []struct {
 		cmd string
 		cls RiskClass
@@ -291,7 +292,7 @@ func TestHardening_NoRegressionOnBenign(t *testing.T) {
 		{"env FOO=bar go version", Safe},
 		{"env FOO=bar printenv FOO", Safe},
 		{"find . -name '*.go'", Safe},
-		{"git status", CodeExecution},
+		{"git status", Safe},
 		{"ls -la /tmp", Safe},
 		{"cat main.go", Safe},
 		{"rm -rf node_modules", LocalWrite},
@@ -396,6 +397,7 @@ func TestHardening_RootLevelMutationTargets(t *testing.T) {
 // now require approval (system_write → prompt by default); dry-run and
 // non-destructive forms stay Safe.
 func TestHardening_GitDataLossVerbs(t *testing.T) {
+	chdirUnarmedRepo(t)
 	cases := []struct {
 		cmd string
 		cls RiskClass
@@ -423,14 +425,14 @@ func TestHardening_GitDataLossVerbs(t *testing.T) {
 		{"git clean -fdx -n", Safe},
 		{"git reset", Safe},
 		{"git reset --soft HEAD~1", Safe},
-		{"git checkout main", CodeExecution},
-		{"git checkout -b feature", CodeExecution},
-		{"git restore --staged file", CodeExecution},
+		{"git checkout main", Safe},
+		{"git checkout -b feature", Safe},
+		{"git restore --staged file", Safe},
 		{"git branch -d feature", Safe},
-		{"git stash", CodeExecution},
-		{"git stash pop", CodeExecution},
+		{"git stash", Safe},
+		{"git stash pop", Safe},
 		{"git reflog", Safe},
-		{"git status", CodeExecution},
+		{"git status", Safe},
 	}
 	for _, tc := range cases {
 		if got := Classify(tc.cmd); got != tc.cls {

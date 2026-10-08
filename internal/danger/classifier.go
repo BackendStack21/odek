@@ -1576,16 +1576,26 @@ func Classify(cmd string) RiskClass {
 // that pipes INTO a shell interpreter is treated as code execution
 // (`curl … | bash`). The worst stage wins.
 func classifyPipeline(tokens []string) RiskClass {
+	return classifyPipelineIn(tokens, nil)
+}
+
+// classifyPipelineIn is classifyPipeline with the git working-directory
+// context of each stage. repos must line up with the pipe stages; any other
+// length is treated as unknown for every stage.
+func classifyPipelineIn(tokens []string, repos []*gitRepoCtx) RiskClass {
 	stages := splitPipes(tokens)
+	if len(repos) != len(stages) {
+		repos = make([]*gitRepoCtx, len(stages))
+	}
 	worst := Safe
 	for idx, stage := range stages {
 		// idx > 0 means this stage receives piped input from the previous one.
-		worst = worstOf(worst, classifyStage(stage, idx > 0))
+		worst = worstOf(worst, classifyStageIn(stage, idx > 0, repos[idx]))
 		if idx > 0 {
 			// A pipe-fed argv composer turns upstream stdout into command
 			// arguments, so `echo "/" | xargs rm -rf` executes `rm -rf /`
 			// even though no stage literally contains that command.
-			worst = worstOf(worst, classifyArgvComposerSink(stages[:idx], stage))
+			worst = worstOf(worst, classifyArgvComposerSink(stages[:idx], stage, repos[idx]))
 			// A pipe-fed shell executes its stdin as a script. When that
 			// stdin is a static literal, classify the payload as a command
 			// so `echo rm -rf / | sh` is destructive, not merely
@@ -1617,7 +1627,7 @@ func classifyPipeline(tokens []string) RiskClass {
 // damage, the pipeline fails closed as Unknown (deny-by-default): the same
 // treatment an unrecognised verb gets, because the command that will actually
 // run is unknowable at classification time.
-func classifyArgvComposerSink(upstream [][]string, stage []string) RiskClass {
+func classifyArgvComposerSink(upstream [][]string, stage []string, repo *gitRepoCtx) RiskClass {
 	inner, ok := argvComposerInnerCommand(stage)
 	if !ok || len(inner) == 0 {
 		return Safe
@@ -1626,7 +1636,7 @@ func classifyArgvComposerSink(upstream [][]string, stage []string) RiskClass {
 		composed := make([]string, 0, len(inner)+len(payload))
 		composed = append(composed, inner...)
 		composed = append(composed, payload...)
-		return classifyStage(composed, false)
+		return classifyStageIn(composed, false, repo)
 	}
 	if xargsInnerDangerous(inner) {
 		return Unknown
@@ -2083,6 +2093,13 @@ func xargsDangerousVerb(name string) bool {
 // pipedInto reports whether the stage's stdin comes from an upstream pipe, in
 // which case feeding it to a shell interpreter is code execution.
 func classifyStage(tokens []string, pipedInto bool) RiskClass {
+	return classifyStageIn(tokens, pipedInto, nil)
+}
+
+// classifyStageIn is classifyStage with the working-directory context of the
+// stage. A nil repo means the directory is unknown, so git verbs whose risk
+// depends on the repository state fail closed.
+func classifyStageIn(tokens []string, pipedInto bool, repo *gitRepoCtx) RiskClass {
 	if len(tokens) == 0 {
 		return Safe
 	}
@@ -2114,7 +2131,7 @@ func classifyStage(tokens []string, pipedInto bool) RiskClass {
 		cls = worstOf(cls, SystemWrite)
 	}
 	if len(cmdTokens) > 0 {
-		cls = worstOf(cls, classifyCommand(cmdTokens))
+		cls = worstOf(cls, classifyCommand(cmdTokens, repo))
 		cls = worstOf(cls, exportedAssignmentRisk(cmdTokens))
 
 		name := commandName(cmdTokens[0])
@@ -4073,11 +4090,11 @@ var reNumericish = regexp.MustCompile(`^[0-9]+(\.[0-9]+)?[smhd]?$`)
 
 // classifyCommand classifies a single command (no separators, no pipes).
 // Wrapper stripping and pipe/segment handling happen in the callers.
-func classifyCommand(tokens []string) RiskClass {
+func classifyCommand(tokens []string, repo *gitRepoCtx) RiskClass {
 	if len(tokens) == 0 {
 		return Safe
 	}
-	cls := classifyKnownCommand(tokens)
+	cls := classifyKnownCommand(tokens, repo)
 	name := commandName(tokens[0])
 	if !isKnownCommandName(name) && !specialCommandNames[name] {
 		cls = worstOf(cls, Unknown)
@@ -4110,7 +4127,7 @@ func manRunsProgram(args []string) bool {
 	return false
 }
 
-func classifyKnownCommand(tokens []string) RiskClass {
+func classifyKnownCommand(tokens []string, repo *gitRepoCtx) RiskClass {
 	if len(tokens) == 0 {
 		return Safe
 	}
@@ -4219,7 +4236,7 @@ func classifyKnownCommand(tokens []string) RiskClass {
 	}
 
 	// Code execution checks (pipe to shell, eval, -e/-c flags)
-	if isCodeExecution(first, tokens) {
+	if isCodeExecution(first, tokens, repo) {
 		return CodeExecution
 	}
 
@@ -4857,7 +4874,12 @@ func gitConfigKeyRunsProgram(key string) bool {
 		return true
 	}
 	switch {
-	case strings.HasPrefix(key, "credential.") && strings.HasSuffix(key, ".helper"),
+	case strings.HasPrefix(key, "include.") || strings.HasPrefix(key, "includeif."),
+		// An included file can set any key above; config-defined hooks and
+		// interactive diff filters are programs git spawns.
+		strings.HasPrefix(key, "hook.") && strings.HasSuffix(key, ".command"),
+		key == "interactive.difffilter",
+		strings.HasPrefix(key, "credential.") && strings.HasSuffix(key, ".helper"),
 		strings.HasPrefix(key, "remote.") && (strings.HasSuffix(key, ".uploadpack") || strings.HasSuffix(key, ".receivepack")),
 		strings.HasPrefix(key, "gpg.") && strings.HasSuffix(key, ".program"):
 		return true
@@ -4972,6 +4994,9 @@ func isGitCodeExecution(tokens []string) bool {
 		key, value, _ := strings.Cut(val, "=")
 		key = strings.ToLower(key)
 		if strings.HasPrefix(key, "alias.") && strings.HasPrefix(value, "!") {
+			return true
+		}
+		if strings.HasPrefix(key, "submodule.") && strings.HasSuffix(key, ".update") && strings.HasPrefix(value, "!") {
 			return true
 		}
 		if gitConfigKeyRunsProgram(key) || strings.HasPrefix(key, "filter.") || strings.HasPrefix(key, "diff.") || strings.HasPrefix(key, "merge.") {
@@ -5311,7 +5336,7 @@ func hasShortFlag(args []string, flag rune) bool {
 	return false
 }
 
-func isCodeExecution(first string, tokens []string) bool {
+func isCodeExecution(first string, tokens []string, repo *gitRepoCtx) bool {
 	if pipedShells[first] && (shellInlineScript(tokens) != "" || shellHasOperand(tokens)) {
 		return true
 	}
@@ -5321,7 +5346,7 @@ func isCodeExecution(first string, tokens []string) bool {
 	// git -c/--config-env can inject arbitrary shell commands via aliases,
 	// core.pager, core.fsmonitor, credential.helper, etc.; git config writes
 	// can persist the same payloads.
-	if adapterRunsCode(first, tokens) {
+	if adapterRunsCode(first, tokens, repo) {
 		return true
 	}
 	if first == "git" && isGitCodeExecution(tokens) {

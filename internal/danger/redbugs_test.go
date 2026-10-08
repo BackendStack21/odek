@@ -51,6 +51,7 @@ func TestRED_WipeTargetTraversalBypass(t *testing.T) {
 // exactly like the `-- <path>` form, but classifies as safe while the
 // documented `--` form prompts as system_write.
 func TestRED_GitCheckoutPathspecSilentDiscard(t *testing.T) {
+	chdirUnarmedRepo(t)
 	cmds := []string{
 		"git checkout HEAD src/app.go",
 		"git checkout origin/main src/app.go",
@@ -61,7 +62,7 @@ func TestRED_GitCheckoutPathspecSilentDiscard(t *testing.T) {
 		}
 	}
 	// Branch switching must stay safe.
-	if got := Classify("git checkout main"); got != CodeExecution {
+	if got := Classify("git checkout main"); got != Safe {
 		t.Errorf("Classify(git checkout main) = %v, want safe", got)
 	}
 }

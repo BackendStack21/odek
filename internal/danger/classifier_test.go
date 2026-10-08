@@ -3,6 +3,7 @@ package danger
 import (
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -767,9 +768,15 @@ func TestClassify_GitClone(t *testing.T) {
 }
 
 func TestClassify_GitStatusRunsConfiguredMonitor(t *testing.T) {
-	got := Classify("git status")
-	if got != CodeExecution {
-		t.Errorf("Classify(git status) = %s, want code_execution", got)
+	isolateGitEnv(t)
+	repo := makeRepo(t, t.TempDir(), "")
+	t.Chdir(repo)
+	if got := Classify("git status"); got != Safe {
+		t.Errorf("Classify(git status) in an unarmed repository = %s, want safe", got)
+	}
+	writeTestFile(t, filepath.Join(repo, ".git", "config"), "[core]\n\tfsmonitor = ./monitor\n", 0o644)
+	if got := Classify("git status"); got != CodeExecution {
+		t.Errorf("Classify(git status) with core.fsmonitor = %s, want code_execution", got)
 	}
 }
 
@@ -806,6 +813,7 @@ func TestClassify_RsyncRemote(t *testing.T) {
 // git config can inject arbitrary shell commands through aliases, pager, and
 // credential helpers, so they must classify as code_execution.
 func TestClassify_GitConfigCodeExecution(t *testing.T) {
+	chdirUnarmedRepo(t)
 	tests := []struct {
 		cmd  string
 		want RiskClass
@@ -820,8 +828,10 @@ func TestClassify_GitConfigCodeExecution(t *testing.T) {
 		{`git config user.email x`, CodeExecution},
 		// Benign config overrides stay in their normal class.
 		{`git -c http.proxy=http://evil fetch origin`, NetworkEgress},
+		// An unresolvable repository fails closed; a resolvable unarmed one
+		// is routine.
 		{`git -C /repo status`, CodeExecution},
-		{`git status`, CodeExecution},
+		{`git status`, Safe},
 	}
 	for _, tt := range tests {
 		t.Run(tt.cmd, func(t *testing.T) {

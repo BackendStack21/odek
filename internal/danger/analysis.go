@@ -236,6 +236,7 @@ func analyzeWithState(cmd string, depth int, inherited *shellAnalysisState) Anal
 			prepared = append(prepared, stage)
 		}
 		var pipeline []string
+		var repos []*gitRepoCtx
 		for i, stage := range prepared {
 			legacyStage := append([]string(nil), stage...)
 			stageCwd, cwdKnown := wrapperDirectory(stage, state.cwd)
@@ -272,7 +273,9 @@ func analyzeWithState(cmd string, depth int, inherited *shellAnalysisState) Anal
 			pipeline = append(pipeline, legacyStage...)
 			// Preserve findings from each stage before pipeline summaries can
 			// replace them with a differently configured higher-ranked class.
-			result.add(classifyStage(legacyStage, i > 0))
+			repo := newGitRepoCtx(stageCwd, cwdKnown && !state.uncertain, stage[:len(stage)-len(inner)], state.vars)
+			repos = append(repos, repo)
+			result.add(classifyStageIn(legacyStage, i > 0, repo))
 			if floor != Safe {
 				result.add(floor)
 				if environmentRunsCode(stage[:len(stage)-len(inner)]) {
@@ -303,7 +306,7 @@ func analyzeWithState(cmd string, depth int, inherited *shellAnalysisState) Anal
 			if secretNameOperand(name, inner[1:]) || stageTouchesCredentialFile(stage, inner, displayVerbs[name]) {
 				result.add(SystemWrite)
 			}
-			if isCodeExecution(name, inner) || explicitUntrustedExecutable(inner[0]) || (i > 0 && (pipedShells[name] || isStdinExecInterpreter(name) || embeddedShellInterpreters[name])) {
+			if isCodeExecution(name, inner, repo) || explicitUntrustedExecutable(inner[0]) || (i > 0 && (pipedShells[name] || isStdinExecInterpreter(name) || embeddedShellInterpreters[name])) {
 				result.add(CodeExecution)
 			}
 			if isNetworkEgress(name, inner) {
@@ -427,7 +430,7 @@ func analyzeWithState(cmd string, depth int, inherited *shellAnalysisState) Anal
 				}
 			}
 		}
-		result.add(classifyPipeline(pipeline))
+		result.add(classifyPipelineIn(pipeline, repos))
 	}
 	endChain()
 	for _, sub := range subs {
