@@ -917,6 +917,8 @@ The serve API also exposes `GET /api/workspace`, strict session-authenticated
 generation under execution ownership before continuing. WebSocket prompts and
 `POST /api/prompt` accept tighter `limits`; they cannot raise operator caps or
 supply prices. Session detail/export includes bounded, redacted `decisions`
-separate from the model transcript. Run list/detail includes a redacted `task`
+separate from the model transcript; the `command` of an approval decision is
+the sanitized text the human was shown (control, bidi and invisible characters
+escaped, long values shortened), not the raw bytes. Run list/detail includes a redacted `task`
 label. See [WEBUI.md](WEBUI.md#task-supervision-api-additions) for the complete
 wire contract and [v2.29.0 notes](RELEASE_v2.29.0.md) for the cumulative UI changes.

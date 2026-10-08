@@ -55,3 +55,27 @@ Add regression assertions in `internal/eval/eval_test.go`, then run:
 ```bash
 go test -count=1 -timeout=120s ./internal/eval ./internal/loop
 ```
+
+## Classifier probes and fuzzing
+
+The harness above evaluates the agent loop. The command classifier
+(`internal/danger`) is checked separately, without a model, by deterministic
+probes and fuzz targets:
+
+- **Probes** are table-driven assertions on `Classify(cmd)` and
+  `Analyze(cmd).Effects` — each row pins one rule (a command shape and the
+  class or effects it must produce, plus the near-miss that must stay weaker).
+  They need a non-root `HOME`:
+  `HOME=/home/user go test -count=1 ./internal/danger/`.
+- **Fuzz targets** (`FuzzSeparatorThenWipe`, `FuzzPipeIntoShell`,
+  `FuzzHarmlessPrefixKeepsRank`, `FuzzAnalyzeBounded` in
+  `internal/danger/monotonicity_fuzz_test.go`) assert invariants for any input
+  rather than particular verdicts: a destructive suffix is never hidden by a
+  prefix or separator, a pipe into a shell is at least `code_execution`, a
+  harmless prefix never lowers a verdict, and analysis stays within a time
+  bound up to `danger.MaxCommandBytes`.
+- `cmd/odek/security_report_validation_test.go` is the regression bar for every
+  documented mitigation.
+
+See [DEVELOPMENT.md](DEVELOPMENT.md#classifier-tests-and-fuzzing) for commands
+and the conventions for adding a probe.

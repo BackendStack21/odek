@@ -1,3 +1,13 @@
+// Quote-aware normalisation phases. normalize.go owns the entry point and the
+// character-level folding; this file holds the phases that rewrite command
+// text: backslash-newline joins, comment stripping, here-document consumption,
+// ANSI-C $'...' decoding and brace expansion (lists and {1..3}/{a..c}
+// sequences, under word, byte and work caps). Every phase tracks quotes,
+// escapes and nested constructs through the shared shellLex tracker, so text
+// that is data to the shell (inside quotes, a comment or a data-only
+// here-document) is never rewritten as if it were live syntax, and live syntax
+// is never hidden by quoting tricks.
+
 package danger
 
 import (

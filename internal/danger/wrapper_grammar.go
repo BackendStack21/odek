@@ -1,3 +1,11 @@
+// Option grammar for the wrappers that run another command. One table
+// (wrapperSpecs) and one parser serve the unwrapping in the classifier and the
+// denylist matcher, so both agree on which word is the wrapped command, which
+// options consume a value, and which option carries a shell command line
+// (script -c, flock -c, env -S, watch) that is analysed as a command rather
+// than skipped. Subcommand wrappers (nix, mise, direnv exec, asdf exec) are
+// handled by subcommandWrapper.
+
 package danger
 
 import "strings"

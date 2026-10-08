@@ -63,8 +63,23 @@ internal/
     sandbox.go                Docker container lifecycle (image resolve, run args, file injection)
     sandbox_test.go           Sandbox tests (BuildRunArgs, ResolveImage, InjectFiles)
   danger/
-    classifier.go             Command/URL classification for security gating
+    classifier.go             Command/URL classification for security gating; package doc lists the layers and limits
+    analysis.go               Analyze: per-effect result, shell state, input/token caps
+    command_effects.go        Per-tool exec/write adapters
+    normalize.go              Unicode folding + command spacing
+    normalize_phases.go       Quote-aware normalisation phases (line joins, comments, here-docs, ANSI-C, braces)
+    compound.go               Compound-command parser (loops, if/case, groups, functions, [[ ]], (( )))
+    wrapper_grammar.go        Shared option grammar for execution wrappers
+    denylist.go               Denylist matching at every command position
+    secret_reads.go           Secret environment variables and credential files
+    network_upload.go         network_upload class (uploads, credentialed requests, listeners, tunnels)
+    gh_adapter.go             GitHub CLI by command and verb
+    git_repo_arming.go        Repository-aware git hook/driver escalation
+    readledger.go             Read ledger for the unread-script gate (bounded, per session)
+    ledger_indirect.go        Scripts delivered through pipes, substitutions and program-file options
+    display.go                SanitizeForDisplay / SanitizeInline for approval prompts
     classifier_test.go        Risk classification, 11 classes, config overrides
+    monotonicity_fuzz_test.go Fuzz invariants (see "Classifier tests and fuzzing")
     approver.go               Approver interface + TTYApprover (CLI /dev/tty)
   memory/
     memory.go                 MemoryManager orchestrator (facts, buffer, episodes)
@@ -186,6 +201,56 @@ nonzero if a scenario assertion fails; expected task failures can still pass
 the scenario. No model credentials or external provider calls are needed.
 See [EVALS.md](EVALS.md) for report fields, limitations, and adding scenarios.
 
+### Classifier tests and fuzzing
+
+`internal/danger` is the approval gate's only line of defence against a
+prompt-injected command, so its tests are written as probes of rules, not as
+examples of attacks.
+
+```bash
+# Always run with a non-root HOME: /root is a system prefix and counts as the
+# current user's home only when HOME resolves there.
+HOME=/home/user go test -count=1 ./internal/danger/
+
+# Fuzz targets (monotonicity invariants), one at a time:
+HOME=/home/user go test -fuzz=FuzzSeparatorThenWipe     -fuzztime=30s ./internal/danger/
+HOME=/home/user go test -fuzz=FuzzPipeIntoShell         -fuzztime=30s ./internal/danger/
+HOME=/home/user go test -fuzz=FuzzHarmlessPrefixKeepsRank -fuzztime=30s ./internal/danger/
+HOME=/home/user go test -fuzz=FuzzAnalyzeBounded        -fuzztime=30s ./internal/danger/
+```
+
+- **Probe style.** Tests are table-driven: a command string and the expected
+  verdict. Assert `Classify(cmd)` for the display summary and
+  `Analyze(cmd).Effects` for the independent effects (a policy denies on any
+  one of them), and for a negative case assert the weaker class too, so a rule
+  that over-fires is caught as readily as one that under-fires. Keep
+  commands short and benign-looking; the test names the rule it pins, not an
+  exploit. Helpers such as `nuUpload`/`nuEgress` in `network_upload_test.go`
+  show the shape.
+- **`HOME`.** Home-anchored rules (`~/.ssh`, shell rc files, `~/.odek`) depend
+  on the current user's home. `TestMain` replaces a temp `HOME` with a
+  non-temp directory when one exists; elsewhere, run with a real, non-root
+  `HOME` as above. Git-arming tests build throwaway repositories in
+  `t.TempDir()` under a hermetic `HOME` and system git config, and never
+  touch the real repository.
+- **Fuzz invariants.** `monotonicity_fuzz_test.go` states properties that hold
+  for any input: appending a destructive command to any prefix through any
+  separator is never classified below deny-by-default; piping any prefix into a
+  shell is at least `code_execution`; putting a dangerous command behind a
+  harmless prefix or wrapper never lowers its rank; analysis of any input up to
+  `danger.MaxCommandBytes` finishes in bounded time. Under plain `go test` they
+  run a small curated corpus; with `-fuzz` they also seed from every string
+  literal in the package's regression tests. A failure the fuzzer finds should
+  be minimised and added to the regression tests as a table row.
+- **Regression bar.** `cmd/odek/security_report_validation_test.go` pins every
+  documented mitigation (see [SECURITY.md](SECURITY.md)); a change that
+  loosens a rule there must update the documented mitigation in the same
+  commit. Scope it with
+  `go test -count=1 ./cmd/odek -run 'TestReport' -short`.
+- **Vet and format.** Run `go vet ./internal/danger/` and
+  `gofmt -l internal/danger`. `golangci-lint` can fail to run on this module's
+  Go version; CI runs it.
+
 ### Test layers
 
 | Layer | Runner | What's tested |
@@ -212,7 +277,7 @@ CI (`.github/workflows/test.yml`) runs the unit suite under `-race` on every pus
 | `internal/ws` | WebSocket constant verification |
 | `internal/resource` | @-reference parsing, file resolution, session resolution, security |
 | `internal/render` | Terminal output, no-color mode, nil safety, tool call/result rendering |
-| `internal/danger` | Command classification across 11 risk classes (incl. fail-closed `unknown`), config overrides, allow/denylist, classifier-bypass attempts, approver friction |
+| `internal/danger` | Command classification across 11 risk classes (incl. `network_upload` and fail-closed `unknown`), compound commands, wrapper grammar, repo-aware git rule, read ledger, secret reads, allow/denylist position matching, display sanitization, classifier-bypass attempts, fuzz invariants, approver friction |
 | `internal/memory` | Facts CRUD, buffer ring, episodes, merge detector (go-vector), ReplaceEntry/AppendEntry, memory tool, security scan, LLM ranking, episode provenance |
 | `internal/skills` | Loading, triggers, import, agent tools (skill_load/skill_list), ValidateSkillName, isPrivateHost |
 | `internal/telegram` | Bot client, long-polling, command handlers, session management, plan CRUD, voice/photo download, health server, retry/backoff |

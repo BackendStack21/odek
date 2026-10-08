@@ -2,10 +2,11 @@
 // a configurable approval system for dangerous operations.
 //
 // Classification is token-based (not regex) — it respects quotes, pipes,
-// redirects, compound commands (&&, ||, ;), and multi-line input. Each
-// command retains independent risk effects, and the user can configure
-// which actions (allow/prompt/deny) apply to each class. Classify returns a
-// summary; ActionForCommand combines every effect as deny > prompt > allow.
+// redirects, compound commands (&&, ||, ;, loops, conditionals, groups), and
+// multi-line input. Each command retains independent risk effects, and the
+// user can configure which actions (allow/prompt/deny) apply to each class.
+// Classify returns a summary; ActionForCommand combines every effect as
+// deny > prompt > allow.
 //
 // The gate fails CLOSED. A command whose program name is recognised but
 // used benignly classifies as Safe (allow); a command whose verb is NOT
@@ -23,22 +24,31 @@
 // The design therefore errs toward the worse class when in doubt, and is
 // built in layers that each close a category of evasion:
 //
-//  1. Normalisation (see normalize) rewrites the command so token-level
-//     analysis can see through shell tricks before classification runs:
+//  1. Normalisation (see normalize and normalize_phases.go) rewrites the
+//     command so token-level analysis can see through shell tricks before
+//     classification runs. The phases share one quote-aware lexer (shellLex),
+//     so a construct is rewritten only where the shell would treat it as live:
 //     - \<newline> continuations   joinLineContinuations (joined before anything else)
-//     - here-document bodies       consumeHeredocs (data for cat/tee/…, else classified)
+//     - here-document bodies       consumeHeredocs (data for cat/tee/…, else classified;
+//     substitutions in an unquoted body are still classified)
 //     - comments                   stripComments
-//     - $'…' ANSI-C escapes        decodeANSIC   ($'\x72\x6d' → rm)
+//     - $'…' ANSI-C escapes        decodeANSIC   ($'\x72\x6d' → rm; \u/\U and
+//     the other escapes decode, the result is emitted as a quoted literal)
 //     - $IFS word-splitting        expandIFS     (rm$IFS-rf$IFS/ → rm -rf /)
-//     - {a,b,c} brace expansion    expandBraces  ({rm,-rf,/} → rm -rf /, /et{c,c}/x → /etc/x)
-//     - $(…)/`…`/<(…)/>(…) subst.  extractSubstitutions (bodies classified too;
-//     also skips $((…)) arithmetic and strips empty $N/$@ inside words)
+//     - {a,b,c} and {1..3}/{a..c}  expandBraces  ({rm,-rf,/} → rm -rf /, /et{c,c}/x →
+//     /etc/x; a group distributes its preamble and postscript; the word,
+//     byte and work caps fail closed to an unknown overflow command)
+//     - $(…)/`…`/<(…)/>(…) subst.  extractSubstitutions (bodies classified too,
+//     nested backticks unescaped; $((…)) is arithmetic and not a command;
+//     empty $N/$@ inside words vanish; a substitution glued to word
+//     characters stays in its word)
 //     - command/exec/builtin       stripCommandWrappers
-//     - \-escapes (r\m, \rm)       collapseUnquotedBackslashes
+//     - \-escapes (r\m, \rm)       collapseUnquotedBackslashes (inert escapes stay inert)
 //     - absolute paths (/bin/rm)   commandName (identity preserved)
 //     The tokenizer additionally treats quote boundaries as NON word
 //     boundaries, so empty/adjacent quotes like r""m and "rm" still
-//     resolve to the single word `rm`.
+//     resolve to the single word `rm`. An unterminated quote classifies
+//     Unknown.
 //
 //  2. Structural decomposition. A command is split into segments (on ;,
 //     &&, ||), each segment into pipe stages (on |), and EVERY stage is
@@ -53,29 +63,65 @@
 //     | sh` classifies like `rm -rf /`) so the real effect, not just
 //     code_execution, wins. All independent effects survive policy evaluation;
 //     rank chooses only the legacy display summary.
-//     Compound commands (loops, if/case, groups, subshells, functions, [[ ]]
-//     and (( ))) are parsed by parseShell (compound.go): the simple commands
-//     inside are classified one by one, a static for list is unrolled with
-//     the loop variable bound per element, branch and loop state is joined
-//     so nothing a branch may not have run is trusted afterwards, and a
-//     construct that cannot be paired classifies Unknown while its contents
-//     are still judged.
+//     Compound commands (loops, if/case/select, time/!/coproc, groups,
+//     subshells, function definitions and calls, [[ ]] and (( ))) are parsed
+//     by parseShell (compound.go): the simple commands inside are classified
+//     one by one, a static for list is unrolled with the loop variable bound
+//     per element (a glob list per pattern, a dynamic list binds a dynamic
+//     marker), branch and loop state is joined so nothing a branch may not
+//     have run is trusted afterwards, and a construct that cannot be paired
+//     classifies Unknown while its contents are still judged. Variable state
+//     carries across `&&` chains only inside the chain.
 //
 //  3. Wrapper unwrapping (unwrapWrappers). Leading execution wrappers
-//     (env, xargs, nohup, nice, setsid, timeout, …) are stripped so the
-//     real command underneath is classified; privileged wrappers (sudo,
-//     doas, pkexec) additionally impose a system_write floor and then let
-//     the inner command escalate further (sudo rm -rf /var → destructive).
+//     (env, xargs, nohup, setsid, command, and the option-bearing wrappers
+//     timeout, nice, ionice, stdbuf, chrt, taskset, flock, script, arch,
+//     unbuffer, strace, watch, nix/mise/direnv/asdf exec, …) are stripped so
+//     the real command underneath is classified. The option-bearing wrappers
+//     share one grammar (wrapper_grammar.go: value-taking short, long and
+//     abbreviated options, fixed operands, command-string options such as
+//     `script -c`, `flock -c`, `env -S`), so an option value is never read as
+//     the wrapped command. Privileged wrappers (sudo, doas, pkexec)
+//     additionally impose a system_write floor and then let the inner command
+//     escalate further (sudo rm -rf /var → destructive).
 //
 //  4. Verb-independent resource scanning (classifyResourceToken). Some
 //     resources are dangerous regardless of the command touching them:
-//     /dev/tcp and /dev/udp pseudo-devices (reverse-shell channels) and
+//     /dev/tcp and /dev/udp pseudo-devices (reverse-shell channels),
 //     sensitive credential paths (~/.ssh, /etc/shadow, ~/.aws/credentials,
-//     /proc/self/environ, …). These are flagged wherever they appear.
+//     /proc/self/environ, …), secret-shaped environment variables and
+//     credential files by basename, extension or directory (secret_reads.go).
+//     These are flagged wherever they appear.
 //
 //  5. Payload re-classification. Shell -c strings (bash -c '…') and the
 //     bodies of command/process substitutions are themselves classified by
 //     re-entering Classify, so nested commands cannot hide a level deeper.
+//
+//  6. Tool adapters. Tools whose danger depends on verb and options have
+//     adapters in command_effects.go and its neighbours: gh by command and
+//     verb (gh_adapter.go), network uploads, listeners and tunnels split from
+//     plain egress as NetworkUpload (network_upload.go), exec-capable options
+//     of tar/sed/ssh/rsync/git/kubectl/…, and a repository-aware rule for
+//     git (git_repo_arming.go): ordinary verbs such as status, commit or
+//     merge escalate to code_execution only when the repository they target
+//     is armed (an executable hook, core.hooksPath, an fsmonitor command, a
+//     filter or driver, an editor), and an undeterminable repository counts
+//     as armed.
+//
+//  7. Unread-script gate (readledger.go, ledger_indirect.go). Executing a
+//     script the session never read is gated, including scripts delivered
+//     through pipes, substitutions, eval, find -exec and program-file
+//     options. The ledger is fingerprinted and bounded.
+//
+// The denylist is applied in ActionForCommand before class-based actions. An
+// entry is a token prefix matched at every command position the shell would
+// run (denylist.go), not a raw string prefix of the whole line.
+//
+// Analysis is bounded: input longer than MaxCommandBytes classifies Unknown
+// and is denied before any phase runs, one Analyze call examines at most a
+// fixed number of tokens across nested payloads, and here-document, brace and
+// substitution scanning carry their own budgets; an exceeded budget fails
+// closed as Unknown.
 //
 // # Limitations
 //
@@ -85,8 +131,13 @@
 //   - Shell state beyond static assignments and known cwd changes. Runtime
 //     variable transformations and ambiguous conditional/background writes
 //     fail closed as Unknown when their destination cannot be determined.
+//     Values that exist only at run time (command output, a dynamic for list)
+//     are opaque; the denylist does not resolve them.
 //   - Fully dynamic construction from runtime data, command output, or
 //     environment the classifier cannot evaluate.
+//   - Repository state is read when the command is classified. A hook or
+//     config written by another process between classification and execution
+//     is not seen; one written earlier in the same command is.
 //   - Arbitrary value transformations beyond the enumerated encodings
 //     (e.g. a secret piped through gzip/openssl before exfiltration).
 //   - Interpreter escape hatches we do not special-case. Common ones ARE
@@ -1042,7 +1093,8 @@ func (c *DangerousConfig) Validate() error {
 
 // ActionForCommand returns the action for a specific command string.
 // Allowlist and denylist are checked first (exact match for allowlist,
-// prefix match for denylist), then falls back to the risk-class-based action.
+// token-prefix match at every command position for denylist), then falls back
+// to the risk-class-based action.
 func (c *DangerousConfig) ActionForCommand(cmd string) Action {
 	if c.Validate() != nil {
 		return Deny

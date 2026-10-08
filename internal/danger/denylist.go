@@ -1,3 +1,11 @@
+// Denylist matching. A denylist entry is a sequence of command tokens, and it
+// matches a leading token sequence at any command position (segments, pipe
+// stages, wrappers, shell -c payloads, eval operands, find -exec, command and
+// process substitutions, compound command bodies, env -S payloads), after tool
+// global options are stripped and statically known variables are resolved. It
+// is never a raw string prefix of the whole line, so `rm -rf /` does not match
+// `rm -rf /tmp`, and a differently spelled flag (`rm -fr`) is its own entry.
+
 package danger
 
 import "strings"
