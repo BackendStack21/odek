@@ -287,9 +287,9 @@ func FuzzHarmlessPrefixKeepsRank(f *testing.F) {
 // magnitude above the measured cost (tens of milliseconds); they catch
 // superlinear blow-ups, not scheduling noise. TestLargeInputShapesFinishQuickly
 // holds the tighter per-shape bound.
-const (
-	boundedAnalyzeSlow = 5 * time.Second
-	boundedAnalyzeHang = 20 * time.Second
+var (
+	boundedAnalyzeSlow = 5 * time.Second * testSlowFactor()
+	boundedAnalyzeHang = 20 * time.Second * testSlowFactor()
 )
 
 // FuzzAnalyzeBounded: every input up to the size cap analyzes without

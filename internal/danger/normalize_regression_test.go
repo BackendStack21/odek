@@ -121,7 +121,7 @@ func TestLargeInputShapesFinishQuickly(t *testing.T) {
 	for name, cmd := range shapes {
 		start := time.Now()
 		a := Analyze(cmd)
-		if d := time.Since(start); d > 2*time.Second {
+		if d := time.Since(start); d > 2*time.Second*testSlowFactor() {
 			t.Errorf("%s: Analyze of %d bytes took %v", name, len(cmd), d)
 		}
 		if !ValidRiskClass(a.Class()) {
@@ -164,4 +164,14 @@ func TestManyHeredocOperatorsStillClassifyBody(t *testing.T) {
 	if cls := Classify(cmd); !monoDeniesByDefault(cls) {
 		t.Errorf("Classify(many heredocs then wipe) = %s, want deny-by-default class", cls)
 	}
+}
+
+// testSlowFactor scales timing bounds for instrumented test binaries: the
+// race detector and atomic coverage counters slow the classifier by an order
+// of magnitude, which is not the algorithmic blowup the bounds guard against.
+func testSlowFactor() time.Duration {
+	if raceEnabled {
+		return 10
+	}
+	return 1
 }

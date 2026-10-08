@@ -2,6 +2,7 @@ package danger
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -277,6 +278,7 @@ func TestSecretReadHeuristics_StaySafe(t *testing.T) {
 // follow the home rules: ordinary files are local writes, rc files,
 // credential directories and odek anchors still escalate.
 func TestHomeIsRoot_OrdinaryWritesAreLocal(t *testing.T) {
+	requireReadableRoot(t)
 	t.Setenv("HOME", "/root")
 	for _, cmd := range []string{
 		"echo x > ~/notes.txt",
@@ -305,6 +307,7 @@ func TestHomeIsRoot_OrdinaryWritesAreLocal(t *testing.T) {
 }
 
 func TestHomeIsRoot_ProtectedHomePathsStillEscalate(t *testing.T) {
+	requireReadableRoot(t)
 	t.Setenv("HOME", "/root")
 	for _, cmd := range []string{
 		"echo x > ~/.bashrc",
@@ -346,6 +349,7 @@ func TestHomeIsRoot_ProtectedHomePathsStillEscalate(t *testing.T) {
 // `rm -rf /root/x` and `rm -rf ~/x` name the same directory when HOME=/root,
 // so they carry the same effects.
 func TestHomeIsRoot_WipeTargetParity(t *testing.T) {
+	requireReadableRoot(t)
 	t.Setenv("HOME", "/root")
 	for _, pair := range [][2]string{
 		{"rm -rf /root/x", "rm -rf ~/x"},
@@ -534,4 +538,15 @@ func hasRawControlExceptStyle(s string) bool {
 	s = strings.ReplaceAll(s, "\x1b[1m", "")
 	s = strings.ReplaceAll(s, "\x1b[0m", "")
 	return hasRawControl(s)
+}
+
+// requireReadableRoot skips a test that uses /root as the current user's home
+// when the test process cannot look inside /root: path resolution then fails
+// closed to system_write regardless of the home rules, which is the intended
+// behaviour for an unreadable directory, not the behaviour under test.
+func requireReadableRoot(t *testing.T) {
+	t.Helper()
+	if _, err := os.ReadDir("/root"); err != nil {
+		t.Skipf("/root is not readable by this process: %v", err)
+	}
 }
