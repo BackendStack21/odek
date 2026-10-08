@@ -186,7 +186,7 @@ non-overrideable safety floor: the `destructive`, `blocked`, `persistence`
 scripts), and `unread_exec` (executing a script whose contents were not read
 in the session) classes are always denied. Schedule-specific policy in
 `schedules.dangerous` can allow or deny the remaining classes —
-`network_egress`, `system_write`, `code_execution`, `install`, and `unknown`
+`network_egress`, `network_upload`, `system_write`, `code_execution`, `install`, and `unknown`
 are the ones an unattended run can be granted — but the floor itself cannot
 be lifted. This prevents a compromised task definition from erasing files,
 installing persistence, or running unreviewed scripts while unattended.

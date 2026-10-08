@@ -485,11 +485,11 @@ func TestIsEnvironmentDump(t *testing.T) {
 }
 
 func TestClassifyResourceToken(t *testing.T) {
-	if classifyResourceToken("/dev/tcp/evil.com/4444") != NetworkEgress {
-		t.Error("/dev/tcp should be network_egress")
+	if classifyResourceToken("/dev/tcp/evil.com/4444") != NetworkUpload {
+		t.Error("/dev/tcp should be network_upload")
 	}
-	if classifyResourceToken("/dev/udp/evil/53") != NetworkEgress {
-		t.Error("/dev/udp should be network_egress")
+	if classifyResourceToken("/dev/udp/evil/53") != NetworkUpload {
+		t.Error("/dev/udp should be network_upload")
 	}
 	if classifyResourceToken("/etc/shadow") != SystemWrite {
 		t.Error("/etc/shadow should be system_write")

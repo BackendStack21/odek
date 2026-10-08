@@ -22,6 +22,7 @@ export const APPROVAL_RISK_META = {
   system_write:   { icon: '⚠️', level: 'warn',   why: 'Modifies system files or settings outside the workspace.' },
   destructive:    { icon: '🚫', level: 'danger', why: 'Irreversibly destroys data. This cannot be undone.' },
   network_egress: { icon: '🌐', level: 'warn',   why: 'Sends data out to the network.' },
+  network_upload: { icon: '📤', level: 'warn',   why: 'Sends local files or data out, uses credentials, or opens a listener or tunnel.' },
   code_execution: { icon: '⚠️', level: 'warn',   why: 'Executes arbitrary code.' },
   install:        { icon: '📦', level: 'warn',   why: 'Installs packages or dependencies.' },
   unknown:        { icon: '🚫', level: 'danger', why: 'Unrecognized command — the gate fails closed on these.' },

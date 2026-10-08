@@ -366,6 +366,7 @@ container after editing (`... up` again) since the config is mounted at startup.
     "denylist": ["git push --force"],              // always blocked
     "classes": {
       "network_egress": "allow",                   // loosen one class
+      "network_upload": "prompt",                  // local files/stdin sent out, credentials, mutating methods, local->remote copies, listeners/tunnels (also carries network_egress)
       "persistence": "prompt",                     // writes to shell rc / .envrc / git hooks / CI workflows / cron / systemd / npm lifecycle — never trust-shortcuttable
       "unread_exec": "prompt"                      // executing a repo-supplied script requires reading it this session first
     }

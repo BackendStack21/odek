@@ -98,6 +98,7 @@ Every shell command and file write is danger-classified; per-class action is all
 | `local_write` | allow | workspace writes |
 | `install` | prompt | `pip install`, `npm install`, … |
 | `network_egress` | prompt | `curl`, `git push`, browser |
+| `network_upload` | prompt | local content leaving or a channel opening: `curl -d @f`/`-T`/`-u`/`-X POST`, `scp f host:`, `rsync src/ host:`, `cat f \| nc`, `ssh -L`/`-R`, `nc -l` (also carries `network_egress`) |
 | `code_execution` | prompt | `bash -c`, `source`, pipe-to-shell |
 | `system_write` | prompt | `/etc`, `~/.ssh`, `~/.odek` trust anchors |
 | `persistence` | prompt | deferred-execution writes: shell profiles, `.envrc`, git hooks, CI workflows, cron/systemd/launchd, lifecycle scripts |

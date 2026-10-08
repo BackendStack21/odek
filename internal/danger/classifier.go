@@ -124,6 +124,7 @@ const (
 	Persistence   RiskClass = "persistence"
 	Destructive   RiskClass = "destructive"
 	NetworkEgress RiskClass = "network_egress"
+	NetworkUpload RiskClass = "network_upload"
 	CodeExecution RiskClass = "code_execution"
 	Install       RiskClass = "install"
 	Blocked       RiskClass = "blocked"
@@ -144,6 +145,15 @@ const (
 // payload fires later, in a context the user trusts (every future shell,
 // the next push, the next test run). Keyed on write targets, not command
 // shape, and gated even when the repo documents the write.
+//
+// NetworkUpload: network operations that send local content out or let a
+// remote party in — request bodies read from a file, stdin or a runtime
+// substitution, credentials or client certificates, mutating methods,
+// local-source/remote-destination transfers, and opened listeners or tunnels
+// (see network_upload.go for the exact rule and the line drawn against plain
+// egress). It ranks between NetworkEgress and CodeExecution, defaults to
+// Prompt, and always travels with a NetworkEgress effect so the two classes
+// are evaluated independently.
 
 // Action represents what to do when a command of a given risk class is detected.
 type Action string
@@ -901,6 +911,7 @@ var defaultActions = map[RiskClass]Action{
 	UnreadExec:    Prompt,
 	Destructive:   Deny,
 	NetworkEgress: Allow,
+	NetworkUpload: Prompt,
 	CodeExecution: Prompt,
 	Install:       Prompt,
 	Blocked:       Deny,
@@ -3207,7 +3218,9 @@ func assignmentValueArmed(val string) bool {
 func classifyResourceToken(tok string) RiskClass {
 	lt := strings.ToLower(tok)
 	if strings.Contains(lt, "/dev/tcp/") || strings.Contains(lt, "/dev/udp/") {
-		return NetworkEgress
+		// A shell-opened raw socket carries data in both directions, so it
+		// is an upload channel, not a plain fetch.
+		return NetworkUpload
 	}
 	if isSensitivePath(tok) {
 		return SystemWrite
@@ -4150,9 +4163,14 @@ func classifyKnownCommand(tokens []string) RiskClass {
 	if first == "hugo" {
 		return classifyHugo(tokens)
 	}
-	if first == "aws" || first == "gcloud" || first == "az" {
+	if first == "aws" || first == "gcloud" || first == "az" || first == "gsutil" {
 		if networkInfoQuery(tokens) {
 			return Safe
+		}
+		// Only the narrow local-to-object-store upload forms are classified;
+		// every other subcommand keeps failing closed.
+		if cloudUploadForm(first, tokens[1:]) {
+			return NetworkUpload
 		}
 		return Unknown
 	}
@@ -6488,26 +6506,32 @@ func isSystemPath(path string) bool {
 func Rank(cls RiskClass) int {
 	switch cls {
 	case Blocked:
-		return 10
+		return 11
 	case Destructive:
-		return 9
+		return 10
 	case Unknown:
 		// Ranked above the prompt-level classes so a single unknown stage in
 		// a pipeline/compound command dominates benign siblings (e.g.
 		// `pip install x && weirdverb` stays deny-by-default), but below
 		// Destructive/Blocked so those keep their more informative label.
-		return 8
+		return 9
 	case Persistence:
 		// Deferred-execution writes outrank plain system writes: a
 		// persistence target is a system write PLUS later execution.
-		return 7
+		return 8
 	case SystemWrite:
-		return 6
+		return 7
 	case UnreadExec:
 		// Same "must prompt" tier as SystemWrite: executing an unread
 		// script. Kept out of TrustShortcutAllowed separately.
-		return 6
+		return 7
 	case CodeExecution:
+		return 6
+	case NetworkUpload:
+		// Local content leaving the machine, or a remote party gaining a
+		// channel in, outranks plain egress (so the display summary and a
+		// max_risk cap treat it as the worse of the two) but ranks below
+		// code execution, which can do everything an upload can and more.
 		return 5
 	case NetworkEgress:
 		return 4

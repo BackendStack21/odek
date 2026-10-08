@@ -87,7 +87,7 @@ The `delegate_tasks` tool is available in CLI, REPL, Web UI, Telegram, and headl
                                                //   untrusted tasks run with stricter approval defaults.
           "max_risk":   { "type": "string",
                           "enum": ["safe", "local_write", "system_write", "destructive",
-                                   "code_execution", "network_egress", "install", "blocked"] },
+                                   "code_execution", "network_egress", "network_upload", "install", "blocked"] },
                                                // Optional cap on the allowed risk class. Calls above the
                                                //   cap are denied without prompting — use for read-only
                                                //   fan-out tasks. Operator profiles.*.max_risk also

@@ -47,7 +47,8 @@ const ToolBatchClass = RiskClass("tool_batch")
 // was granted, so a one-time "trust" must not cover every future hook,
 // profile, and CI-workflow write. UnreadExec is excluded because the
 // entire point of the gate is per-script review — trusting it once would
-// blanket-approve every unread script for the session.
+// blanket-approve every unread script for the session. NetworkUpload keeps
+// the shortcut, like SystemWrite: the friction rules cover repeated approvals.
 func TrustShortcutAllowed(cls RiskClass) bool {
 	return cls != Destructive && cls != Blocked && cls != Unknown &&
 		cls != ToolBatchClass && cls != Persistence && cls != UnreadExec

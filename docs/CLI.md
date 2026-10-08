@@ -212,7 +212,7 @@ Spawn focused sub-agents. Each task carries parent-side trust signals:
 }
 ```
 
-- `trust_level`: `"untrusted"` (default when omitted) or `"trusted"`. **Every** sub-agent runs non-interactive (`non_interactive: deny` is forced — trusted ones never prompt either). Untrusted tasks additionally deny `destructive`, `code_execution`, `install`, `system_write`, `persistence`, `unread_exec`, `network_egress`, `unknown`, and `blocked`.
+- `trust_level`: `"untrusted"` (default when omitted) or `"trusted"`. **Every** sub-agent runs non-interactive (`non_interactive: deny` is forced — trusted ones never prompt either). Untrusted tasks additionally deny `destructive`, `code_execution`, `install`, `system_write`, `persistence`, `unread_exec`, `network_egress`, `network_upload`, `unknown`, and `blocked`.
 - `max_risk`: highest risk class the sub-agent may execute. Anything ranked above it is forced to `deny`.
 - **Trust is non-increasing downward**: the delegate tool stamps the parent's own effective trust into the task (`parent_trust`), and the child runs at `min(parent_trust, trust_level)`. A task tree rooted in untrusted content cannot spawn trusted children.
 - **Sub-agents never prompt for approvals.** Every sub-agent runs non-interactive — prompt-class operations are denied even for trusted sub-agents; the operator `allowlist` (exact pre-approved invocations) is the only path to prompt-class operations. Denied operations are reported in the result's `denials` array (`{tool, class, reason}`, capped at 20 with `denials_total` carrying the full count) and surfaced as `subagent_denied` runtime events, so the parent can adapt or escalate instead of failing blind.
@@ -230,6 +230,7 @@ When running without `--sandbox`, odek classifies every shell command by risk an
 | 🟠 system_write | **prompt** | `sudo`, `apt install`, writes to `/etc/`, `chmod -R 777 /`, `git reset --hard`, `git clean -fdx` |
 | 🔴 destructive | **deny** | `rm -rf /`, `dd if=/dev/zero`, `mkfs` |
 | 🔴 network_egress | **prompt** | `curl`, `git push`, `ssh`, `scp` |
+| 🔴 network_upload | **prompt** | `curl -d @file`, `curl -T`, `curl -u`, `curl -X POST`, `scp file host:`, `rsync src/ host:dst`, `cat f \| nc host`, `ssh -L`/`-R`, `nc -l` |
 | 🔴 code_execution | **prompt** | `curl url \| bash`, `eval`, `node -e`, `go run` |
 | 🟠 install | **prompt** | `npm install`, `pip install`, `go install <path>` |
 | 🟠 persistence | **prompt** | writes to shell profiles, git hooks, CI workflows, cron/systemd |

