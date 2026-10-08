@@ -2893,6 +2893,13 @@ func isPersistenceWrite(first string, tokens []string) bool {
 		}
 		return false
 	}
+	// git maintenance start/register install a recurring background job
+	// (crontab entry, launchd plist, or systemd user timers).
+	if first == "git" {
+		if sub, args := gitSubcommandAndArgs(tokens); sub == "maintenance" && len(args) > 0 && (args[0] == "start" || args[0] == "register") {
+			return true
+		}
+	}
 	// Redirect targets: `echo hook >> ~/.zshrc`, `printf x > .envrc`.
 	for i, tok := range tokens {
 		if isRedirectToken(tok) && i+1 < len(tokens) && IsPersistencePath(expandShellTokenPath(tokens[i+1])) {
@@ -3690,6 +3697,72 @@ var gitCodeExecConfigKeys = map[string]bool{
 	"core.fsmonitor":    true,
 	"credential.helper": true,
 	"core.hookspath":    true, "core.editor": true, "sequence.editor": true, "core.sshcommand": true,
+	"core.askpass": true, "core.gitproxy": true, "core.alternaterefscommand": true,
+	"uploadpack.packobjectshook": true, "gpg.program": true,
+}
+
+// gitConfigKeyRunsProgram reports whether a (lower-cased) git config key names
+// a program or shell snippet git spawns: the fixed keys above plus the
+// per-URL / per-remote / per-format variants (credential.<url>.helper,
+// remote.<name>.uploadpack, gpg.<format>.program).
+func gitConfigKeyRunsProgram(key string) bool {
+	if gitCodeExecConfigKeys[key] {
+		return true
+	}
+	switch {
+	case strings.HasPrefix(key, "credential.") && strings.HasSuffix(key, ".helper"),
+		strings.HasPrefix(key, "remote.") && (strings.HasSuffix(key, ".uploadpack") || strings.HasSuffix(key, ".receivepack")),
+		strings.HasPrefix(key, "gpg.") && strings.HasSuffix(key, ".program"):
+		return true
+	}
+	return false
+}
+
+// gitProgramOptions are the long options of network subcommands whose value is
+// a program git runs locally to reach the "remote" (or a template directory
+// whose hooks are copied into the new repository). git accepts any unambiguous
+// prefix of a long option, so a prefix of one of these is flagged too.
+var gitProgramOptions = []string{"upload-pack", "receive-pack", "exec", "template"}
+
+// gitRunsProgramOption reports whether the subcommand arguments carry a
+// program-valued option (--upload-pack, -u on clone, --receive-pack, --exec,
+// --template).
+func gitRunsProgramOption(sub string, args []string) bool {
+	switch sub {
+	case "clone", "fetch", "pull", "ls-remote", "push", "fetch-pack",
+		"send-pack", "archive", "init":
+	default:
+		return false
+	}
+	for _, a := range args {
+		if a == "--" {
+			break
+		}
+		if strings.HasPrefix(a, "--") {
+			name, _, _ := strings.Cut(a[2:], "=")
+			if name == "" {
+				continue
+			}
+			for _, opt := range gitProgramOptions {
+				if strings.HasPrefix(opt, name) {
+					return true
+				}
+			}
+			continue
+		}
+		// clone -u <upload-pack>, also fused (-u/path) or clustered (-vu path).
+		if sub == "clone" && isShortFlagToken(a) {
+			for _, c := range a[1:] {
+				if c == 'u' {
+					return true
+				}
+				if strings.ContainsRune("obcj", c) {
+					break
+				}
+			}
+		}
+	}
+	return false
 }
 
 // isGitCodeExecution reports whether a git invocation carries a config override
@@ -3707,11 +3780,13 @@ func isGitCodeExecution(tokens []string) bool {
 		var val string
 		consumed := false
 		switch {
-		case tok == "-c" || tok == "--config-env":
+		case tok == "-c" || tok == "--config-env" || tok == "--config":
 			if i+1 < len(tokens) {
 				val = tokens[i+1]
 				consumed = true
 			}
+		case strings.HasPrefix(tok, "--config="):
+			val = tok[len("--config="):]
 		case strings.HasPrefix(tok, "-c"):
 			val = tok[2:]
 		case strings.HasPrefix(tok, "--config-env="):
@@ -3752,11 +3827,12 @@ func isGitCodeExecution(tokens []string) bool {
 		if strings.HasPrefix(key, "alias.") && strings.HasPrefix(value, "!") {
 			return true
 		}
-		if gitCodeExecConfigKeys[key] || strings.HasPrefix(key, "filter.") || strings.HasPrefix(key, "diff.") || strings.HasPrefix(key, "merge.") {
+		if gitConfigKeyRunsProgram(key) || strings.HasPrefix(key, "filter.") || strings.HasPrefix(key, "diff.") || strings.HasPrefix(key, "merge.") {
 			return true
 		}
 	}
-	return false
+	sub, args := gitSubcommandAndArgs(tokens)
+	return gitRunsProgramOption(sub, args)
 }
 
 // gitSubcommandAndArgs returns the git subcommand and the tokens that follow
@@ -3955,9 +4031,26 @@ func isGitDataLoss(tokens []string) bool {
 	case "push":
 		// Force-push rewrites remote history. Network egress is
 		// auto-allowed by default, so this must be data-loss instead.
+		// Mirror/prune/delete pushes and forced (+) or deleting (:) refspecs
+		// overwrite or remove remote refs the same way. git accepts any
+		// unambiguous long-option prefix, so a prefix is flagged too.
 		for _, a := range args {
-			if a == "--force" || strings.HasPrefix(a, "--force-with-lease") ||
-				(isShortFlagToken(a) && strings.ContainsRune(a[1:], 'f')) {
+			if strings.HasPrefix(a, "--") {
+				name, _, _ := strings.Cut(a[2:], "=")
+				if name == "" {
+					continue
+				}
+				for _, opt := range []string{"force", "force-with-lease", "force-if-includes", "mirror", "delete", "prune"} {
+					if strings.HasPrefix(opt, name) {
+						return true
+					}
+				}
+				continue
+			}
+			if isShortFlagToken(a) && (strings.ContainsRune(a[1:], 'f') || strings.ContainsRune(a[1:], 'd')) {
+				return true
+			}
+			if strings.HasPrefix(a, "+") || strings.HasPrefix(a, ":") {
 				return true
 			}
 		}
@@ -4411,6 +4504,102 @@ func sedRunsShellCode(tokens []string) bool {
 	return false
 }
 
+// sedHasExecCommand reports whether any statement of an inline sed script is
+// the bare `e` command, behind any GNU address form. Statements start at the
+// script start and after `;`, `{`, `}` or a newline.
+func sedHasExecCommand(script string) bool {
+	for i := 0; i <= len(script); i++ {
+		if i == 0 || strings.IndexByte(";{}\n", script[i-1]) >= 0 {
+			if sedExecAt(script, i) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// sedExecAt parses `[addr1[,addr2]][!]e` starting at i. addr is a line number,
+// `$`, `first~step`, or a /re/ (or \cREc) with optional I/M flags; addr2 may
+// also be `+N` or `~N`. Whitespace is allowed around the pieces, and `!` may
+// repeat.
+func sedExecAt(s string, i int) bool {
+	skip := func(j int) int {
+		for j < len(s) && (s[j] == ' ' || s[j] == '\t') {
+			j++
+		}
+		return j
+	}
+	j := skip(i)
+	if end, ok := sedAddressEnd(s, j); ok {
+		j = skip(end)
+		if j < len(s) && s[j] == ',' {
+			j = skip(j + 1)
+			if j < len(s) && (s[j] == '+' || s[j] == '~') {
+				j++
+				for j < len(s) && s[j] >= '0' && s[j] <= '9' {
+					j++
+				}
+			} else if end, ok := sedAddressEnd(s, j); ok {
+				j = end
+			} else {
+				return false
+			}
+			j = skip(j)
+		}
+	}
+	for j < len(s) && s[j] == '!' {
+		j = skip(j + 1)
+	}
+	if j >= len(s) || s[j] != 'e' {
+		return false
+	}
+	return j+1 == len(s) || strings.IndexByte(" \t\r\n;{}", s[j+1]) >= 0
+}
+
+// sedAddressEnd parses one sed address at i and returns the index after it.
+func sedAddressEnd(s string, i int) (int, bool) {
+	if i >= len(s) {
+		return i, false
+	}
+	switch c := s[i]; {
+	case c >= '0' && c <= '9':
+		j := i
+		for j < len(s) && s[j] >= '0' && s[j] <= '9' {
+			j++
+		}
+		if j < len(s) && s[j] == '~' {
+			k := j + 1
+			for k < len(s) && s[k] >= '0' && s[k] <= '9' {
+				k++
+			}
+			j = k
+		}
+		return j, true
+	case c == '$':
+		return i + 1, true
+	case c == '/' || (c == '\\' && i+1 < len(s)):
+		delim, j := c, i+1
+		if c == '\\' {
+			delim, j = s[i+1], i+2
+		}
+		for j < len(s) && s[j] != delim {
+			if s[j] == '\\' {
+				j++
+			}
+			j++
+		}
+		if j >= len(s) {
+			return i, false
+		}
+		j++
+		for j < len(s) && (s[j] == 'I' || s[j] == 'M') {
+			j++
+		}
+		return j, true
+	}
+	return i, false
+}
+
 // sedScriptHasShellExec detects the sed 'e' command in an inline script.
 // It looks for a standalone 'e' command or an 'e' flag on an s/// substitution.
 func sedScriptHasShellExec(tok string) bool {
@@ -4425,7 +4614,7 @@ func sedScriptHasShellExec(tok string) bool {
 	}
 	// Standalone 'e' command, possibly separated by semicolons/newlines or
 	// followed by an optional command argument (e.g. "e whoami").
-	if regexp.MustCompile(`(?:^|[;{}\n])\s*(?:[0-9$]+(?:,[0-9$]+)?\s*|/[^/]+/\s*)?e(?:\s|$|[;{}\n])`).MatchString(tok) {
+	if sedHasExecCommand(tok) {
 		return true
 	}
 	for _, flags := range sedSubstitutionFlags(tok) {
@@ -4567,11 +4756,30 @@ func printenvDumpsAll(tokens []string) bool {
 	return true
 }
 
+// hugoFlagsWithValue are hugo's value-taking flags (lower-cased) that may
+// precede the subcommand; their value must not be read as the verb.
+var hugoFlagsWithValue = map[string]bool{
+	"-s": true, "--source": true, "-d": true, "--destination": true,
+	"-b": true, "--baseurl": true, "-c": true, "--contentdir": true,
+	"-e": true, "--environment": true, "-l": true, "--layoutdir": true,
+	"-t": true, "--theme": true, "--themesdir": true, "--config": true,
+	"--configdir": true, "--cachedir": true, "--loglevel": true,
+	"--poll": true, "-p": true, "--port": true, "--bind": true,
+	"--ignorevendorpaths": true, "--timeout": true, "--tlscertfile": true,
+	"--tlskeyfile": true, "--cpuprofile": true, "--memprofile": true,
+	"--mutexprofile": true, "--trace": true,
+}
+
 func classifyHugo(tokens []string) RiskClass {
+	skipNext := false
 	for _, tok := range tokens[1:] {
+		if skipNext {
+			skipNext = false
+			continue
+		}
 		if strings.HasPrefix(tok, "-") {
-			if interpreterInfoFlags[tok] {
-				continue
+			if !strings.Contains(tok, "=") && hugoFlagsWithValue[strings.ToLower(tok)] {
+				skipNext = true
 			}
 			continue
 		}
@@ -4591,17 +4799,67 @@ func classifyHugo(tokens []string) RiskClass {
 	return LocalWrite
 }
 
-func classifyInfraCLI(first string, tokens []string) RiskClass {
-	var verb string
+// infraFlagsWithValue are the value-taking global flags of each infra CLI that
+// may precede the verb; the value (a namespace, context, ...) is not the verb.
+var infraFlagsWithValue = map[string]map[string]bool{
+	"kubectl": {
+		"-n": true, "--namespace": true, "--context": true, "--kubeconfig": true,
+		"--cluster": true, "--user": true, "-s": true, "--server": true,
+		"--as": true, "--as-group": true, "--as-uid": true, "--cache-dir": true,
+		"--certificate-authority": true, "--client-certificate": true,
+		"--client-key": true, "--log-flush-frequency": true, "--password": true,
+		"--username": true, "--profile": true, "--profile-output": true,
+		"--request-timeout": true, "--tls-server-name": true, "--token": true,
+		"-v": true, "--v": true, "--vmodule": true,
+	},
+	"helm": {
+		"-n": true, "--namespace": true, "--kube-context": true, "--kubeconfig": true,
+		"--burst-limit": true, "--kube-apiserver": true, "--kube-as-group": true,
+		"--kube-as-user": true, "--kube-ca-file": true, "--kube-tls-server-name": true,
+		"--kube-token": true, "--qps": true, "--registry-config": true,
+		"--repository-cache": true, "--repository-config": true,
+	},
+}
+
+// infraVerbs returns the non-flag tokens after the command, skipping the value
+// of value-taking global flags.
+func infraVerbs(first string, tokens []string) []string {
+	withValue := infraFlagsWithValue[first]
+	var verbs []string
+	skipNext := false
 	for _, tok := range tokens[1:] {
-		if strings.HasPrefix(tok, "-") {
+		if skipNext {
+			skipNext = false
 			continue
 		}
-		verb = tok
-		break
+		if strings.HasPrefix(tok, "-") {
+			if !strings.Contains(tok, "=") && withValue[tok] {
+				skipNext = true
+			}
+			continue
+		}
+		verbs = append(verbs, tok)
 	}
-	if verb == "" {
+	return verbs
+}
+
+func classifyInfraCLI(first string, tokens []string) RiskClass {
+	verbs := infraVerbs(first, tokens)
+	if len(verbs) == 0 {
 		return Safe
+	}
+	verb := verbs[0]
+	var sub string
+	if len(verbs) > 1 {
+		sub = verbs[1]
+	}
+	// helm hands the rendered manifests to the named post-renderer program.
+	if first == "helm" {
+		for _, tok := range tokens[1:] {
+			if tok == "--post-renderer" || strings.HasPrefix(tok, "--post-renderer=") {
+				return CodeExecution
+			}
+		}
 	}
 	switch first {
 	case "kubectl":
@@ -4609,6 +4867,10 @@ func classifyInfraCLI(first string, tokens []string) RiskClass {
 		case "get", "describe", "logs", "top", "explain",
 			"api-resources", "api-versions", "cluster-info",
 			"config", "version", "diff", "auth", "wait":
+			// auth reconcile creates and updates RBAC objects.
+			if verb == "auth" && sub == "reconcile" {
+				return SystemWrite
+			}
 			return NetworkEgress
 		case "exec", "attach", "run", "debug", "port-forward", "proxy", "cp":
 			return CodeExecution
@@ -4629,6 +4891,13 @@ func classifyInfraCLI(first string, tokens []string) RiskClass {
 		switch verb {
 		case "plan", "validate", "fmt", "show", "output", "version",
 			"providers", "console", "graph", "state":
+			// state rm/mv/push/replace-provider edit the state in place.
+			if verb == "state" {
+				switch sub {
+				case "rm", "mv", "push", "replace-provider":
+					return SystemWrite
+				}
+			}
 			return NetworkEgress
 		case "apply", "destroy", "import", "taint", "untaint":
 			return SystemWrite
@@ -4770,13 +5039,67 @@ func uvIsInstall(tokens []string) bool {
 	return false
 }
 
+// tarCommandLongOptions are GNU tar long options whose value names a program
+// tar executes (compression filter, per-member pipe, volume-change script,
+// checkpoint action, remote shell / rmt helpers).
+var tarCommandLongOptions = []string{
+	"use-compress-program", "to-command", "info-script", "new-volume-script",
+	"checkpoint-action", "rsh-command", "rmt-command",
+}
+
+// tarShortOptionsWithArg are the GNU tar short options that take a value.
+const tarShortOptionsWithArg = "gCTXfFLbHVIKN"
+
+// tarRunsCommand reports whether a tar invocation names a program for tar to
+// execute. GNU tar accepts any unambiguous prefix of a long option, so a token
+// that is a prefix of a command-taking option is flagged (an ambiguous prefix
+// is a tar error anyway). Short letters are scanned inside bundled clusters
+// (-xIf prog) and in the old-style first operand (tar xIf prog a.tar), where
+// the option values arrive as later words.
 func tarRunsCommand(tokens []string) bool {
-	for _, tok := range tokens[1:] {
-		if tok == "--checkpoint-action" || tok == "--to-command" || tok == "--use-compress-program" || tok == "-I" || strings.HasPrefix(tok, "-I") || strings.HasPrefix(tok, "--checkpoint-action=exec") {
+	for i, tok := range tokens[1:] {
+		if strings.HasPrefix(tok, "--") {
+			name, value, hasValue := strings.Cut(tok[2:], "=")
+			// An exact option name wins over the longer one it prefixes.
+			if name == "" || name == "checkpoint" {
+				continue
+			}
+			for _, opt := range tarCommandLongOptions {
+				if !strings.HasPrefix(opt, name) {
+					continue
+				}
+				if opt == "checkpoint-action" && hasValue && !strings.HasPrefix(value, "exec") {
+					break
+				}
+				return true
+			}
+			continue
+		}
+		if strings.HasPrefix(tok, "-") && len(tok) > 1 {
+			if tarClusterRunsCommand(tok[1:], false) {
+				return true
+			}
+			continue
+		}
+		if i == 0 && tarClusterRunsCommand(tok, true) {
 			return true
 		}
-		if strings.HasPrefix(tok, "--to-command=") || strings.HasPrefix(tok, "--use-compress-program=") {
+	}
+	return false
+}
+
+// tarClusterRunsCommand scans a run of short option letters for -I or -F. In a
+// dash-prefixed cluster the first value-taking letter swallows the rest of the
+// word; in an old-style cluster every value comes from a later word, so every
+// letter is a real option.
+func tarClusterRunsCommand(letters string, oldStyle bool) bool {
+	for j := 0; j < len(letters); j++ {
+		c := letters[j]
+		if c == 'I' || c == 'F' {
 			return true
+		}
+		if !oldStyle && strings.IndexByte(tarShortOptionsWithArg, c) >= 0 {
+			return false
 		}
 	}
 	return false
@@ -4854,6 +5177,8 @@ var containerComposeFlagsWithArg = map[string]bool{
 	"--profile": true, "--env-file": true,
 	"--project-directory": true,
 	"--ansi":              true, "--parallel": true,
+	"--progress": true, "-H": true, "--host": true, "--context": true,
+	"--log-level": true, "--tlscacert": true, "--tlscert": true, "--tlskey": true,
 }
 
 func skipContainerFlags(tokens []string, withArg map[string]bool) []string {
