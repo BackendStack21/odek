@@ -498,6 +498,8 @@ func semanticWriteTargets(name string, tokens []string) []string {
 				}
 			}
 		}
+	case "gh":
+		targets = append(targets, ghWriteTargets(tokens)...)
 	case "git":
 		// --output=FILE on the history/diff viewers and archive writes FILE;
 		// archive also takes the short -o FILE / -oFILE spelling.

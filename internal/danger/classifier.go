@@ -1317,8 +1317,8 @@ var networkPrefixes = map[string]bool{
 	"curl": true, "wget": true, "scp": true, "rsync": true,
 	"nc": true, "ncat": true, "ssh": true, "sftp": true,
 	"ftp": true, "tftp": true, "telnet": true, "git": true,
-	// gh is the GitHub CLI: like git's remote-contacting subcommands, every
-	// real gh subcommand talks to the GitHub API (see isNetworkEgress).
+	// gh is the GitHub CLI: every real gh subcommand talks to the GitHub API.
+	// Its verbs are classified individually (see classifyGH).
 	"gh": true,
 	// reverse-shell / tunnelling relays
 	"socat": true, "rclone": true,
@@ -4141,6 +4141,9 @@ func classifyKnownCommand(tokens []string) RiskClass {
 	if first == "direnv" {
 		return classifyDirenv(tokens)
 	}
+	if first == "gh" {
+		return classifyGH(tokens)
+	}
 	if first == "kubectl" || first == "helm" || first == "terraform" {
 		return classifyInfraCLI(first, tokens)
 	}
@@ -4698,6 +4701,10 @@ func isLocalWrite(first string, tokens []string) bool {
 	if writePrefixes[first] {
 		return true
 	}
+	// gh run download / release download write the fetched files locally.
+	if first == "gh" && ghWritesLocalFiles(tokens) {
+		return true
+	}
 	// find -fprint/-fprintf write match lists to a file (arbitrary path)
 	if first == "find" && hasAny(tokens, "-fprint", "-fprintf") {
 		return true
@@ -4724,33 +4731,11 @@ func isNetworkEgress(first string, tokens []string) bool {
 	if first == "openssl" {
 		return opensslContactsRemote(tokens)
 	}
-	// gh subcommands inherently contact the GitHub API — the same class as
-	// git's remote-contacting subcommands. Only meta invocations (help,
-	// completion, version queries) stay local and fall through to Safe.
+	// gh contacts GitHub for everything except help, version and completion;
+	// an unrecognised verb counts as network-capable too (its own class,
+	// unknown, is decided by classifyGH).
 	if first == "gh" {
-		skipNext := false
-		for _, tok := range tokens[1:] {
-			if skipNext {
-				skipNext = false
-				continue
-			}
-			if strings.HasPrefix(tok, "-") {
-				// -R/--repo consumes the following token as its value; it must
-				// not be mistaken for the subcommand (parity with git -C).
-				if tok == "-R" || tok == "--repo" {
-					skipNext = true
-				}
-				continue
-			}
-			// First non-flag token is the subcommand.
-			switch tok {
-			case "help", "completion", "version":
-				return false
-			}
-			return true
-		}
-		// Bare gh or flags only (e.g. gh --version, gh --help).
-		return false
+		return ghContactsNetwork(tokens)
 	}
 	// rsync: any non-flag operand containing `:` names a remote — the
 	// implicit-current-user ssh form (host:/path, no `@`), the rsync://

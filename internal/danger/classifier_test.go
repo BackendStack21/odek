@@ -217,19 +217,20 @@ func TestClassify_NetworkEgress_GitPushNeedsRemote(t *testing.T) {
 }
 
 func TestClassify_NetworkEgress_Gh(t *testing.T) {
-	// gh gets the same classification as git: every real subcommand contacts
-	// the GitHub API (network egress); meta invocations stay local (safe).
+	// gh reads of the GitHub API are network egress; mutation, deletion and
+	// credential verbs are classified by verb (see gh_adapter_test.go); meta
+	// invocations stay local (safe).
 	tests := []struct {
 		cmd string
 		cls RiskClass
 	}{
 		{"gh pr view 123", NetworkEgress},
-		{"gh pr merge 125 --squash", NetworkEgress},
+		{"gh pr merge 125 --squash", SystemWrite},
 		{"gh repo clone owner/repo", NetworkEgress},
-		{"gh repo delete owner/repo --yes", NetworkEgress},
+		{"gh repo delete owner/repo --yes", Destructive},
 		{"gh api /user", NetworkEgress},
-		{"gh auth login", NetworkEgress},
-		{"gh release delete v1.0.0 --yes", NetworkEgress},
+		{"gh auth login", SystemWrite},
+		{"gh release delete v1.0.0 --yes", Destructive},
 		{"/usr/local/bin/gh pr checks", NetworkEgress},
 		// -R/--repo consumes the following token as its value; it must not be
 		// mistaken for the subcommand (parity with git -C).
