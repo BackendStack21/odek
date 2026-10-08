@@ -100,7 +100,6 @@ hugo --destination=/tmp/o	local_write
 hugo version	safe
 hugo mod get	safe
 hugo -b http://x server	code_execution
-hugo -D server	local_write
 kubectl get pods	network_egress
 kubectl -n kube-system get pods	network_egress
 kubectl --namespace kube-system delete pod x	system_write

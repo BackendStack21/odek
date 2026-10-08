@@ -5106,34 +5106,30 @@ func isGitCodeExecution(tokens []string) bool {
 	return gitRunsProgramOption(sub, args)
 }
 
+// gitGlobalOptions is the grammar of the options git accepts before the
+// subcommand: -C and -c take the next word, and the long ones take it too
+// unless spelled --opt=value. git reads them exactly (no abbreviations) and
+// the first operand is the subcommand.
+var gitGlobalOptions = optSpec{
+	short: "Cc",
+	long:  valueOpts("git-dir work-tree namespace exec-path super-prefix config-env"),
+	posix: true,
+}
+
 // gitSubcommandAndArgs returns the git subcommand and the tokens that follow
 // it, skipping global options. Options that take a separate value token
 // (-C, -c, --git-dir, …) consume that token so it is not mistaken for the
 // subcommand.
 func gitSubcommandAndArgs(tokens []string) (sub string, args []string) {
-	seenGit := false
-	skipNext := false
 	for i, tok := range tokens {
-		if !seenGit {
-			if commandName(tok) == "git" {
-				seenGit = true
-			}
+		if commandName(tok) != "git" {
 			continue
 		}
-		if skipNext {
-			skipNext = false
-			continue
+		words := gitGlobalOptions.parse(tokens[i+1:]).args()
+		if len(words) == 0 {
+			return "", nil
 		}
-		if strings.HasPrefix(tok, "-") {
-			switch tok {
-			case "-C", "-c", "--git-dir", "--work-tree", "--namespace",
-				"--exec-path", "--super-prefix", "--config-env":
-				// These consume the following token as their value.
-				skipNext = true
-			}
-			continue
-		}
-		return tok, tokens[i+1:]
+		return words[0], words[1:]
 	}
 	return "", nil
 }
@@ -6027,34 +6023,21 @@ func printenvDumpsAll(tokens []string) bool {
 	return true
 }
 
-// hugoFlagsWithValue are hugo's value-taking flags (lower-cased) that may
-// precede the subcommand; their value must not be read as the verb.
-var hugoFlagsWithValue = map[string]bool{
-	"-s": true, "--source": true, "-d": true, "--destination": true,
-	"-b": true, "--baseurl": true, "-c": true, "--contentdir": true,
-	"-e": true, "--environment": true, "-l": true, "--layoutdir": true,
-	"-t": true, "--theme": true, "--themesdir": true, "--config": true,
-	"--configdir": true, "--cachedir": true, "--loglevel": true,
-	"--poll": true, "-p": true, "--port": true, "--bind": true,
-	"--ignorevendorpaths": true, "--timeout": true, "--tlscertfile": true,
-	"--tlskeyfile": true, "--cpuprofile": true, "--memprofile": true,
-	"--mutexprofile": true, "--trace": true,
+// hugoOptions is the grammar of hugo's options, which may precede the
+// subcommand: their values must not be read as the verb. hugo (cobra) folds
+// long option names to lower case but keeps short letters case-sensitive (-d
+// takes the destination, -D builds drafts).
+var hugoOptions = optSpec{
+	short: "sdbcelpt",
+	long: valueOpts("source destination baseurl contentdir environment layoutdir theme themesdir config configdir cachedir " +
+		"loglevel poll port bind ignorevendorpaths timeout tlscertfile tlskeyfile cpuprofile memprofile mutexprofile trace"),
+	foldLong: true,
+	posix:    true,
 }
 
 func classifyHugo(tokens []string) RiskClass {
-	skipNext := false
-	for _, tok := range tokens[1:] {
-		if skipNext {
-			skipNext = false
-			continue
-		}
-		if strings.HasPrefix(tok, "-") {
-			if !strings.Contains(tok, "=") && hugoFlagsWithValue[strings.ToLower(tok)] {
-				skipNext = true
-			}
-			continue
-		}
-		switch tok {
+	if words := hugoOptions.parse(tokens[1:]).args(); len(words) > 0 {
+		switch words[0] {
 		case "server", "serve":
 			return CodeExecution
 		case "version", "help", "config", "list", "mod":
@@ -6070,48 +6053,34 @@ func classifyHugo(tokens []string) RiskClass {
 	return LocalWrite
 }
 
-// infraFlagsWithValue are the value-taking global flags of each infra CLI that
-// may precede the verb; the value (a namespace, context, ...) is not the verb.
-var infraFlagsWithValue = map[string]map[string]bool{
+// infraOptions are the global options of each infra CLI that may precede the
+// verb; the value (a namespace, context, ...) is not the verb. Both are pflag
+// programs: exact long names, clustering short letters.
+var infraOptions = map[string]optSpec{
 	"kubectl": {
-		"-n": true, "--namespace": true, "--context": true, "--kubeconfig": true,
-		"--cluster": true, "--user": true, "-s": true, "--server": true,
-		"--as": true, "--as-group": true, "--as-uid": true, "--cache-dir": true,
-		"--certificate-authority": true, "--client-certificate": true,
-		"--client-key": true, "--log-flush-frequency": true, "--password": true,
-		"--username": true, "--profile": true, "--profile-output": true,
-		"--request-timeout": true, "--tls-server-name": true, "--token": true,
-		"-v": true, "--v": true, "--vmodule": true,
+		short: "nsv",
+		long: valueOpts("namespace context kubeconfig cluster user server as as-group as-uid cache-dir " +
+			"certificate-authority client-certificate client-key log-flush-frequency password username profile " +
+			"profile-output request-timeout tls-server-name token v vmodule"),
 	},
 	"helm": {
-		"-n": true, "--namespace": true, "--kube-context": true, "--kubeconfig": true,
-		"--burst-limit": true, "--kube-apiserver": true, "--kube-as-group": true,
-		"--kube-as-user": true, "--kube-ca-file": true, "--kube-tls-server-name": true,
-		"--kube-token": true, "--qps": true, "--registry-config": true,
-		"--repository-cache": true, "--repository-config": true,
+		short: "n",
+		long: valueOpts("namespace kube-context kubeconfig burst-limit kube-apiserver kube-as-group kube-as-user " +
+			"kube-ca-file kube-tls-server-name kube-token qps registry-config repository-cache repository-config"),
 	},
+}
+
+// infraFlagsWithValue lists the value-taking spellings of each infra CLI's
+// global options, for callers that compare whole words.
+var infraFlagsWithValue = map[string]map[string]bool{
+	"kubectl": infraOptions["kubectl"].valueFlags(),
+	"helm":    infraOptions["helm"].valueFlags(),
 }
 
 // infraVerbs returns the non-flag tokens after the command, skipping the value
 // of value-taking global flags.
 func infraVerbs(first string, tokens []string) []string {
-	withValue := infraFlagsWithValue[first]
-	var verbs []string
-	skipNext := false
-	for _, tok := range tokens[1:] {
-		if skipNext {
-			skipNext = false
-			continue
-		}
-		if strings.HasPrefix(tok, "-") {
-			if !strings.Contains(tok, "=") && withValue[tok] {
-				skipNext = true
-			}
-			continue
-		}
-		verbs = append(verbs, tok)
-	}
-	return verbs
+	return infraOptions[first].parse(tokens[1:]).args()
 }
 
 func classifyInfraCLI(first string, tokens []string) RiskClass {
@@ -6437,60 +6406,36 @@ func classifyContainerCLI(first string, tokens []string) RiskClass {
 	return Unknown
 }
 
-var containerGlobalFlagsWithArg = map[string]bool{
-	"-H": true, "--host": true,
-	"-c": true, "--context": true,
-	"-l": true, "--log-level": true,
-	"--config":    true,
-	"--tlscacert": true, "--tlscert": true, "--tlskey": true,
+// containerGlobalOptions are the docker-style options that may precede the
+// verb. The verb is the first operand.
+var containerGlobalOptions = optSpec{
+	short: "Hcl",
+	long:  valueOpts("host context log-level config tlscacert tlscert tlskey"),
+	posix: true,
 }
 
-var containerComposeFlagsWithArg = map[string]bool{
-	"-f": true, "--file": true,
-	"-p": true, "--project-name": true,
-	"--profile": true, "--env-file": true,
-	"--project-directory": true,
-	"--ansi":              true, "--parallel": true,
-	"--progress": true, "-H": true, "--host": true, "--context": true,
-	"--log-level": true, "--tlscacert": true, "--tlscert": true, "--tlskey": true,
+// containerComposeOptions are the options that may precede a compose verb or
+// the sub-verb of a container group.
+var containerComposeOptions = optSpec{
+	short: "fpH",
+	long: valueOpts("file project-name profile env-file project-directory ansi parallel progress " +
+		"host context log-level tlscacert tlscert tlskey"),
+	posix: true,
 }
 
-func skipContainerFlags(tokens []string, withArg map[string]bool) []string {
-	skipNext := false
-	for i := 0; i < len(tokens); i++ {
-		if skipNext {
-			skipNext = false
-			continue
-		}
-		tok := tokens[i]
-		if tok == "--" {
-			if i+1 < len(tokens) {
-				return tokens[i+1:]
-			}
-			return nil
-		}
-		if !strings.HasPrefix(tok, "-") {
-			return tokens[i:]
-		}
-		if strings.Contains(tok, "=") {
-			continue
-		}
-		if withArg[tok] {
-			skipNext = true
-		}
-	}
-	return nil
-}
+// containerGlobalFlagsWithArg lists the value-taking spellings of the global
+// options, for callers that compare whole words.
+var containerGlobalFlagsWithArg = containerGlobalOptions.valueFlags()
 
 func containerVerbPath(first string, tokens []string) []string {
 	if first == "docker-compose" {
-		rest := skipContainerFlags(tokens[1:], containerComposeFlagsWithArg)
+		rest := containerComposeOptions.parse(tokens[1:]).args()
 		if len(rest) == 0 {
 			return []string{"compose"}
 		}
 		return []string{"compose", rest[0]}
 	}
-	rest := skipContainerFlags(tokens[1:], containerGlobalFlagsWithArg)
+	rest := containerGlobalOptions.parse(tokens[1:]).args()
 	if len(rest) == 0 {
 		return nil
 	}
@@ -6499,7 +6444,7 @@ func containerVerbPath(first string, tokens []string) []string {
 	case "compose", "container", "image", "volume", "network",
 		"system", "builder", "buildx", "plugin", "context",
 		"manifest", "secret", "config":
-		sub := skipContainerFlags(rest[1:], containerComposeFlagsWithArg)
+		sub := containerComposeOptions.parse(rest[1:]).args()
 		if len(sub) == 0 {
 			return []string{cmd}
 		}

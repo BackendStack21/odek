@@ -179,6 +179,11 @@ func TestOptSpecReadsSpellingsTheOldParsersMisread(t *testing.T) {
 		{"xargs -0I {} rm -rf /", Destructive, "-0I is a cluster whose I takes {}; the command is rm"},
 		{"xargs --max-a 1 rm -rf /", Destructive, "--max-a abbreviates --max-args, which takes 1"},
 		{"xargs -iE rm -rf /", Destructive, "-i takes only a fused value, so E is its replace string and rm is the command"},
+		{"hugo -D server", CodeExecution, "hugo -D is --buildDrafts, not -d (destination): server is the subcommand"},
+		{"hugo -E server", CodeExecution, "hugo -E is --buildExpired, not -e (environment): server is the subcommand"},
+		{"hugo -Dd out server", CodeExecution, "-D takes no value, -d takes out"},
+		{"kubectl -An ns get pods", NetworkEgress, "-A is a flag, so -An takes ns as the namespace and get is the verb"},
+		{"docker -Dl debug ps", Safe, "-D is a flag and -l takes debug: ps is the verb"},
 	} {
 		if !analysisHas(tc.cmd, tc.want) {
 			t.Errorf("Analyze(%q) = %v, want %s: %s", tc.cmd, Analyze(tc.cmd).Effects, tc.want, tc.why)

@@ -288,7 +288,7 @@ func (s optSpec) parse(args []string) optResult {
 		tok := args[i]
 		switch {
 		case tok == "--" && !s.ignoreDashDash:
-			r.rest = args[i+1:]
+			r.rest = args[i+1 : len(args) : len(args)]
 			return r
 		case len(tok) > 1 && tok[0] == '-':
 			opts, next := s.option(args, i)
@@ -299,7 +299,11 @@ func (s optSpec) parse(args []string) optResult {
 				r.operandAt = i
 			}
 			if s.posix || (s.operandLimit > 0 && len(r.operands) >= s.operandLimit) {
-				r.operands = append(r.operands, args[i:]...)
+				if len(r.operands) == 0 {
+					r.operands = args[i:len(args):len(args)]
+				} else {
+					r.operands = append(r.operands, args[i:]...)
+				}
 				return r
 			}
 			r.operands = append(r.operands, tok)
@@ -307,4 +311,22 @@ func (s optSpec) parse(args []string) optResult {
 		}
 	}
 	return r
+}
+
+// valueFlags lists every spelling of the options that take a value ("-n",
+// "--namespace") for callers that compare whole words.
+func (s optSpec) valueFlags() map[string]bool {
+	out := make(map[string]bool)
+	for _, c := range s.short {
+		out["-"+string(c)] = true
+	}
+	for _, ex := range s.exact {
+		out[ex] = true
+	}
+	for name, takes := range s.long {
+		if takes {
+			out["--"+name] = true
+		}
+	}
+	return out
 }
