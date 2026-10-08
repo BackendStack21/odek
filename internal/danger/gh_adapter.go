@@ -297,90 +297,11 @@ func ghLookup(cmd, verb string) (RiskClass, string, bool) {
 	return Unknown, verb, false
 }
 
-// ghFlag is one parsed option of a gh verb.
-type ghFlag struct {
-	name  string // "-X" or "--method"
-	value string
-	has   bool // a value was supplied
-}
-
-// ghParseArgs splits a verb's arguments into options and operands the way
-// pflag does. shortValue lists the short letters that take a value;
-// longValue the long names that take one. Operands after `--` are returned
-// separately as rest.
-func ghParseArgs(args []string, shortValue string, longValue ...string) (flags []ghFlag, operands, rest []string) {
-	isLongValue := func(name string) bool {
-		for _, l := range longValue {
-			if l == name {
-				return true
-			}
-		}
-		return false
-	}
-	for i := 0; i < len(args); i++ {
-		tok := args[i]
-		switch {
-		case tok == "--":
-			rest = append(rest, args[i+1:]...)
-			return
-		case strings.HasPrefix(tok, "--"):
-			name, value, hasEq := strings.Cut(tok[2:], "=")
-			f := ghFlag{name: "--" + name}
-			switch {
-			case hasEq:
-				f.value, f.has = value, true
-			case isLongValue(name) && i+1 < len(args):
-				i++
-				f.value, f.has = args[i], true
-			}
-			flags = append(flags, f)
-		case strings.HasPrefix(tok, "-") && len(tok) > 1:
-			for j := 1; j < len(tok); j++ {
-				letter := tok[j]
-				f := ghFlag{name: "-" + string(letter)}
-				if strings.IndexByte(shortValue, letter) >= 0 {
-					value := strings.TrimPrefix(tok[j+1:], "=")
-					switch {
-					case j+1 < len(tok):
-						f.value, f.has = value, true
-					case i+1 < len(args):
-						i++
-						f.value, f.has = args[i], true
-					}
-					flags = append(flags, f)
-					break
-				}
-				flags = append(flags, f)
-			}
-		default:
-			operands = append(operands, tok)
-		}
-	}
-	return
-}
-
-// ghFlagValues returns the values given for any of the named options.
-func ghFlagValues(flags []ghFlag, names ...string) []string {
-	var out []string
-	for _, f := range flags {
-		for _, n := range names {
-			if f.name == n && f.has {
-				out = append(out, f.value)
-			}
-		}
-	}
-	return out
-}
-
-func ghHasFlag(flags []ghFlag, names ...string) bool {
-	for _, f := range flags {
-		for _, n := range names {
-			if f.name == n {
-				return true
-			}
-		}
-	}
-	return false
+// ghOptions is the option grammar of a gh verb. gh is a pflag program: short
+// letters cluster, `-X=value` is accepted, long options are exact (no
+// abbreviations), and only the listed letters and names take a value.
+func ghOptions(short string, long ...string) optSpec {
+	return optSpec{short: short, long: valueOpts(strings.Join(long, " ")), shortEq: true}
 }
 
 // classifyGH classifies one gh invocation. tokens[0] is the program.
@@ -409,22 +330,19 @@ func classifyGH(tokens []string) RiskClass {
 	key := p.cmd + " " + verb
 	switch key {
 	case "auth status":
-		flags, _, _ := ghParseArgs(p.args, "h", "hostname")
-		if ghHasFlag(flags, "--show-token", "-t") {
+		if ghOptions("h", "hostname").parse(p.args).has("--show-token", "-t") {
 			return SystemWrite
 		}
 	case "config get", "config list":
 		// A token is not a config key, but the hosts file that holds one is
 		// read through the same accessor; fail closed on the name.
-		_, operands, rest := ghParseArgs(p.args, "h", "host")
-		for _, o := range append(operands, rest...) {
+		for _, o := range ghOptions("h", "host").parse(p.args).args() {
 			if strings.Contains(strings.ToLower(o), "token") {
 				return SystemWrite
 			}
 		}
 	case "config set":
-		_, operands, rest := ghParseArgs(p.args, "h", "host")
-		operands = append(operands, rest...)
+		operands := ghOptions("h", "host").parse(p.args).args()
 		if len(operands) > 0 {
 			switch strings.ToLower(operands[0]) {
 			case "editor", "pager", "browser":
@@ -445,11 +363,11 @@ func classifyGH(tokens []string) RiskClass {
 // ghAliasSetClass: an alias whose expansion starts with `!` (or one created
 // with --shell) runs through the shell whenever it is invoked.
 func ghAliasSetClass(args []string) RiskClass {
-	flags, operands, rest := ghParseArgs(args, "")
-	if ghHasFlag(flags, "--shell", "-s") {
+	r := ghOptions("").parse(args)
+	if r.has("--shell", "-s") {
 		return CodeExecution
 	}
-	for _, o := range append(operands, rest...) {
+	for _, o := range r.args() {
 		if strings.HasPrefix(o, "!") {
 			return CodeExecution
 		}
@@ -469,11 +387,11 @@ func ghTargetClass(path string) RiskClass {
 // ghDownloadTargets lists where run/release download put their files:
 // -D/--dir, and for release download -O/--output (`-` is stdout).
 func ghDownloadTargets(cmd string, args []string) []string {
-	flags, _, _ := ghParseArgs(args, "DOpnAR", "dir", "output", "pattern", "name", "archive", "repo")
-	targets := ghFlagValues(flags, "-D", "--dir")
+	r := ghOptions("DOpnAR", "dir", "output", "pattern", "name", "archive", "repo").parse(args)
+	targets := r.values("-D", "--dir")
 	output := false
 	if cmd == "release" {
-		for _, o := range ghFlagValues(flags, "-O", "--output") {
+		for _, o := range r.values("-O", "--output") {
 			output = true
 			if o != "-" {
 				targets = append(targets, o)
@@ -499,11 +417,11 @@ func ghDownloadClass(cmd string, args []string) RiskClass {
 // ghCloneOperands returns the clone destination (second operand) and the
 // options gh hands to git clone (everything after `--`).
 func ghCloneOperands(args []string) (dest string, gitArgs []string) {
-	_, operands, rest := ghParseArgs(args, "u", "upstream-remote-name")
-	if len(operands) > 1 {
-		dest = operands[1]
+	r := ghOptions("u", "upstream-remote-name").parse(args)
+	if len(r.operands) > 1 {
+		dest = r.operands[1]
 	}
-	return dest, rest
+	return dest, r.rest
 }
 
 func ghCloneClass(args []string) RiskClass {
@@ -562,18 +480,18 @@ func ghContactsNetwork(tokens []string) bool {
 // ghAPIClass classifies `gh api`: a request that sends a body or uses a
 // method other than GET/HEAD changes remote state, DELETE removes it.
 func ghAPIClass(args []string) RiskClass {
-	flags, operands, rest := ghParseArgs(args, "XfFHqtp",
-		"method", "field", "raw-field", "header", "input", "jq", "template", "preview", "hostname", "cache")
-	operands = append(operands, rest...)
+	r := ghOptions("XfFHqtp",
+		"method", "field", "raw-field", "header", "input", "jq", "template", "preview", "hostname", "cache").parse(args)
+	operands := r.args()
 	if len(operands) == 0 {
-		if ghHasFlag(flags, "--help") {
+		if r.has("--help") {
 			return Safe
 		}
 		return Unknown
 	}
 	endpoint := strings.ToLower(strings.TrimRight(operands[0], "/"))
 
-	methods := ghFlagValues(flags, "-X", "--method")
+	methods := r.values("-X", "--method")
 	deleting, mutating := false, false
 	for _, m := range methods {
 		switch strings.ToUpper(m) {
@@ -591,14 +509,14 @@ func ghAPIClass(args []string) RiskClass {
 		return SystemWrite
 	}
 
-	input := ghHasFlag(flags, "--input")
-	hasFields := ghHasFlag(flags, "-f", "-F", "--field", "--raw-field")
+	input := r.has("--input")
+	hasFields := r.has("-f", "-F", "--field", "--raw-field")
 
 	if endpoint == "graphql" || strings.HasSuffix(endpoint, "/graphql") {
 		if input {
 			return SystemWrite
 		}
-		for _, v := range ghFlagValues(flags, "-f", "-F", "--field", "--raw-field") {
+		for _, v := range r.values("-f", "-F", "--field", "--raw-field") {
 			key, val, _ := strings.Cut(v, "=")
 			if key != "query" {
 				continue

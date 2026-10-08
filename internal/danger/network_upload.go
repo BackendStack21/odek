@@ -2,7 +2,6 @@ package danger
 
 import (
 	"net/url"
-	"sort"
 	"strings"
 )
 
@@ -33,144 +32,6 @@ import (
 // egress: the command text is on the command line and nothing local is sent.
 // Every upload also carries NetworkEgress so a policy that denies egress still
 // denies the upload; the two effects are evaluated independently.
-
-// cliSyntax describes one tool's option grammar well enough to find an option
-// and its value, and to separate operands from option values.
-type cliSyntax struct {
-	// shortValue lists the short option letters that take a value (the rest of
-	// the cluster, or the next word).
-	shortValue string
-	// long maps each long option to whether it takes a value. GNU-style
-	// unambiguous prefixes resolve against this table.
-	long map[string]bool
-	// alias maps a short option letter to the long option it stands for.
-	alias map[byte]string
-	// operandLimit, when positive, ends option parsing at the first operand
-	// beyond that count (ssh: the host is operand one, the remote command
-	// starts at operand two).
-	operandLimit int
-}
-
-type cliOption struct {
-	// names are the canonical long names (or "-x" for a short option without
-	// an alias) the spelling can stand for: several when an abbreviation is
-	// ambiguous.
-	names    []string
-	value    string
-	hasValue bool
-}
-
-func (o cliOption) is(names ...string) bool {
-	for _, n := range o.names {
-		for _, want := range names {
-			if n == want {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func fieldSet(s string) map[string]bool {
-	out := make(map[string]bool)
-	for _, f := range strings.Fields(s) {
-		out[f] = true
-	}
-	return out
-}
-
-// longTable builds a long-option table from space-separated lists of options
-// that take a value and options that do not.
-func longTable(withValue, flags string) map[string]bool {
-	out := make(map[string]bool)
-	for _, f := range strings.Fields(flags) {
-		out[f] = false
-	}
-	for _, f := range strings.Fields(withValue) {
-		out[f] = true
-	}
-	return out
-}
-
-func (s cliSyntax) resolveLong(name string) []string {
-	if _, ok := s.long[name]; ok {
-		return []string{"--" + name}
-	}
-	var cands []string
-	for known := range s.long {
-		if strings.HasPrefix(known, name) {
-			cands = append(cands, "--"+known)
-		}
-	}
-	if len(cands) == 0 {
-		return []string{"--" + name}
-	}
-	sort.Strings(cands)
-	return cands
-}
-
-func (s cliSyntax) takesValue(names []string) bool {
-	for _, n := range names {
-		if s.long[strings.TrimPrefix(n, "--")] {
-			return true
-		}
-	}
-	return false
-}
-
-// parse splits args (the words after the program name, redirections already
-// removed) into options and operands. Fused short clusters (`-sT file`,
-// `-d@file`), `--opt=value`, `--opt value`, unambiguous long prefixes and the
-// `--` terminator are understood.
-func (s cliSyntax) parse(args []string) (opts []cliOption, operands []string) {
-	for i := 0; i < len(args); i++ {
-		tok := args[i]
-		switch {
-		case tok == "--":
-			operands = append(operands, args[i+1:]...)
-			return
-		case strings.HasPrefix(tok, "--"):
-			name, val, hasEq := strings.Cut(tok[2:], "=")
-			names := s.resolveLong(name)
-			opt := cliOption{names: names}
-			switch {
-			case hasEq:
-				opt.value, opt.hasValue = val, true
-			case s.takesValue(names) && i+1 < len(args):
-				i++
-				opt.value, opt.hasValue = args[i], true
-			}
-			opts = append(opts, opt)
-		case len(tok) > 1 && tok[0] == '-':
-			for j := 1; j < len(tok); j++ {
-				c := tok[j]
-				name := "-" + string(c)
-				if long, ok := s.alias[c]; ok {
-					name = long
-				}
-				opt := cliOption{names: []string{name}}
-				if strings.IndexByte(s.shortValue, c) >= 0 {
-					opt.value = tok[j+1:]
-					opt.hasValue = true
-					if opt.value == "" && i+1 < len(args) {
-						i++
-						opt.value = args[i]
-					}
-					opts = append(opts, opt)
-					break
-				}
-				opts = append(opts, opt)
-			}
-		default:
-			if s.operandLimit > 0 && len(operands) >= s.operandLimit {
-				operands = append(operands, args[i:]...)
-				return
-			}
-			operands = append(operands, tok)
-		}
-	}
-	return
-}
 
 // splitStdinRedirect removes redirections from args and reports whether the
 // command's stdin is fed from a file, a here-document/string or another file
@@ -332,8 +193,9 @@ func networkTransferEffects(name string, inner []string, feed stdinFeed) []RiskC
 
 // ── curl ────────────────────────────────────────────────────────────
 
-var curlSyntax = cliSyntax{
-	shortValue: "AbcCdDeEFHKmoPQrtTuUwxXyYz",
+var curlSyntax = optSpec{
+	abbrev: true,
+	short:  "AbcCdDeEFHKmoPQrtTuUwxXyYz",
 	alias: map[byte]string{
 		'A': "--user-agent", 'b': "--cookie", 'd': "--data", 'e': "--referer",
 		'E': "--cert", 'F': "--form", 'H': "--header", 'n': "--netrc",
@@ -383,9 +245,10 @@ var curlHostGuess = []string{"smtp.", "dict.", "ldap."}
 
 func curlTransfer(args []string) transferVerdict {
 	var v transferVerdict
-	opts, operands := curlSyntax.parse(args)
+	r := curlSyntax.parse(args)
+	operands := r.args()
 	urls := append([]string(nil), operands...)
-	for _, o := range opts {
+	for _, o := range r.opts {
 		val := o.value
 		for _, n := range o.names {
 			base := n
@@ -495,9 +358,10 @@ func fileURLReadClass(rest string) RiskClass {
 
 // ── wget ────────────────────────────────────────────────────────────
 
-var wgetSyntax = cliSyntax{
-	shortValue: "aoeOiBtTwQPlARDIXUn",
-	alias:      map[byte]string{'e': "--execute", 'O': "--output-document"},
+var wgetSyntax = optSpec{
+	abbrev: true,
+	short:  "aoeOiBtTwQPlARDIXUn",
+	alias:  map[byte]string{'e': "--execute", 'O': "--output-document"},
 	long: longTable(
 		"execute post-data post-file body-data body-file method header user password http-user http-password "+
 			"proxy-user proxy-password ftp-user ftp-password load-cookies save-cookies certificate private-key "+
@@ -512,8 +376,9 @@ var wgetSyntax = cliSyntax{
 
 func wgetTransfer(args []string) transferVerdict {
 	var v transferVerdict
-	opts, operands := wgetSyntax.parse(args)
-	for _, o := range opts {
+	r := wgetSyntax.parse(args)
+	operands := r.args()
+	for _, o := range r.opts {
 		val := o.value
 		for _, n := range o.names {
 			switch n {
@@ -591,16 +456,17 @@ func rsyncRemote(op string) bool {
 	return strings.HasPrefix(op, "rsync://") || strings.HasPrefix(op, "[") || colonBeforeSlash(op)
 }
 
-var scpSyntax = cliSyntax{shortValue: "cDFiJloPSX"}
+var scpSyntax = optSpec{abbrev: true, short: "cDFiJloPSX"}
 
 func scpTransfer(args []string) transferVerdict {
-	_, operands := scpSyntax.parse(args)
+	operands := scpSyntax.parse(args).args()
 	return transferVerdict{upload: uploadByDirection(operands, scpRemote)}
 }
 
-var rsyncSyntax = cliSyntax{
-	shortValue: "efBTM@",
-	alias:      map[byte]string{'e': "--rsh"},
+var rsyncSyntax = optSpec{
+	abbrev: true,
+	short:  "efBTM@",
+	alias:  map[byte]string{'e': "--rsh"},
 	long: longTable(
 		"rsh rsync-path exclude include exclude-from include-from filter files-from port bwlimit timeout "+
 			"contimeout log-file log-file-format password-file temp-dir compare-dest copy-dest link-dest "+
@@ -613,9 +479,10 @@ var rsyncSyntax = cliSyntax{
 }
 
 func rsyncTransfer(args []string) transferVerdict {
-	opts, operands := rsyncSyntax.parse(args)
+	r := rsyncSyntax.parse(args)
+	operands := r.args()
 	v := transferVerdict{upload: uploadByDirection(operands, rsyncRemote)}
-	for _, o := range opts {
+	for _, o := range r.opts {
 		if o.is("--daemon") {
 			v.upload = true
 		}
@@ -623,12 +490,12 @@ func rsyncTransfer(args []string) transferVerdict {
 	return v
 }
 
-var sftpSyntax = cliSyntax{shortValue: "BbcDFiJlOoPRsSX"}
+var sftpSyntax = optSpec{abbrev: true, short: "BbcDFiJlOoPRsSX"}
 
 func sftpTransfer(args []string, stdin bool) transferVerdict {
 	v := transferVerdict{upload: stdin}
-	opts, _ := sftpSyntax.parse(args)
-	for _, o := range opts {
+	r := sftpSyntax.parse(args)
+	for _, o := range r.opts {
 		// A batch file is a command script that may put files.
 		if o.is("-b") {
 			v.upload = true
@@ -637,7 +504,8 @@ func sftpTransfer(args []string, stdin bool) transferVerdict {
 	return v
 }
 
-var rcloneSyntax = cliSyntax{
+var rcloneSyntax = optSpec{
+	abbrev: true,
 	long: longTable(
 		"config transfers checkers bwlimit exclude include filter exclude-from include-from filter-from "+
 			"files-from log-file log-level min-age max-age min-size max-size retries low-level-retries timeout "+
@@ -649,7 +517,7 @@ var rcloneSyntax = cliSyntax{
 func rcloneRemote(op string) bool { return colonBeforeSlash(op) }
 
 func rcloneTransfer(args []string) transferVerdict {
-	_, operands := rcloneSyntax.parse(args)
+	operands := rcloneSyntax.parse(args).args()
 	if len(operands) == 0 {
 		return transferVerdict{}
 	}
@@ -665,7 +533,16 @@ func rcloneTransfer(args []string) transferVerdict {
 
 // ── ssh and socket tools ────────────────────────────────────────────
 
-var sshSyntax = cliSyntax{shortValue: "BbcDEeFIiJLlmOoPpQRSWw", operandLimit: 1}
+// sshSyntax reads every word of an ssh command line as an option or operand.
+var sshSyntax = optSpec{abbrev: true, short: "BbcDEeFIiJLlmOoPpQRSWw"}
+
+// sshCommandSyntax stops reading options at the second operand: the host is
+// the first, and the remote command starts at the second.
+var sshCommandSyntax = func() optSpec {
+	s := sshSyntax
+	s.operandLimit = 1
+	return s
+}()
 
 // sshChannelConfigKeys are ssh_config keywords that open a forward or tunnel
 // or hand the remote side the local agent or display.
@@ -673,8 +550,8 @@ var sshChannelConfigKeys = fieldSet("remoteforward localforward dynamicforward t
 
 func sshTransfer(args []string, stdin bool) transferVerdict {
 	v := transferVerdict{upload: stdin}
-	opts, _ := sshSyntax.parse(args)
-	for _, o := range opts {
+	r := sshCommandSyntax.parse(args)
+	for _, o := range r.opts {
 		switch {
 		case o.is("-L", "-R", "-D", "-w", "-W", "-N", "-A", "-X", "-Y"):
 			v.upload = true
@@ -693,8 +570,9 @@ func sshTransfer(args []string, stdin bool) transferVerdict {
 	return v
 }
 
-var netcatSyntax = cliSyntax{
-	shortValue: "pswiIOPqTXxecmV",
+var netcatSyntax = optSpec{
+	abbrev: true,
+	short:  "pswiIOPqTXxecmV",
 	long: longTable(
 		"exec sh-exec lua-exec source-port source wait delay proxy proxy-type proxy-auth ssl-cert ssl-key "+
 			"ssl-trustfile ssl-ciphers ssl-servername ssl-alpn allow allowfile deny denyfile max-conns "+
@@ -705,8 +583,8 @@ var netcatSyntax = cliSyntax{
 
 func netcatTransfer(args []string, stdin bool) transferVerdict {
 	v := transferVerdict{upload: stdin}
-	opts, _ := netcatSyntax.parse(args)
-	for _, o := range opts {
+	r := netcatSyntax.parse(args)
+	for _, o := range r.opts {
 		switch {
 		case o.is("-l", "--listen", "--broker", "--chat"):
 			v.upload = true
@@ -768,8 +646,9 @@ func opensslTransfer(args []string, stdin bool) transferVerdict {
 
 // ── gh and cloud CLIs ───────────────────────────────────────────────
 
-var ghSyntax = cliSyntax{
-	shortValue: "RFfXHt",
+var ghSyntax = optSpec{
+	abbrev: true,
+	short:  "RFfXHt",
 	long: longTable(
 		"repo field raw-field method header input jq template hostname preview cache paginate-limit",
 		"paginate silent include slurp",
@@ -778,7 +657,8 @@ var ghSyntax = cliSyntax{
 }
 
 func ghTransfer(args []string, stdin bool) transferVerdict {
-	opts, operands := ghSyntax.parse(args)
+	r := ghSyntax.parse(args)
+	operands := r.args()
 	if len(operands) == 0 {
 		return transferVerdict{}
 	}
@@ -791,7 +671,7 @@ func ghTransfer(args []string, stdin bool) transferVerdict {
 	case sub == "gist" && second == "create", sub == "release" && second == "upload":
 		return transferVerdict{upload: true}
 	case sub == "api":
-		for _, o := range opts {
+		for _, o := range r.opts {
 			switch {
 			case o.is("--input"):
 				return transferVerdict{upload: true}

@@ -1977,19 +1977,18 @@ func argvComposerInnerCommand(tokens []string) (inner []string, ok bool) {
 					i++
 					continue
 				}
+				if t == "--" {
+					return tokens[i+1:], true
+				}
 				if !strings.HasPrefix(t, "-") || t == "-" {
 					return tokens[i:], true
 				}
-				// Option flags. Value-taking flags consume the next token so
-				// the value is not mistaken for the inner command.
-				// `--replace` without `=` does NOT take a value (`xargs
-				// --replace rm` means replace-str defaults to `{}` and `rm`
-				// is the command); `--replace=foo` is a single token.
-				if xargsValueFlags[t] && i+1 < len(tokens) {
-					i += 2
-					continue
-				}
-				i++
+				// Option flags. A value-taking option consumes its value so
+				// the value is not mistaken for the inner command. `--replace`
+				// without `=` does NOT take a value (`xargs --replace rm`
+				// means replace-str defaults to `{}` and `rm` is the command);
+				// `--replace=foo` carries its value in the word.
+				_, i = wrapperSpecs[name].option(tokens, i)
 			}
 			return nil, true
 		}
@@ -2000,23 +1999,6 @@ func argvComposerInnerCommand(tokens []string) (inner []string, ok bool) {
 		i = step.next
 	}
 	return nil, false
-}
-
-// xargsValueFlags are xargs options that take a separate value token
-// (short and long forms). `--flag=value` spellings need no entry — they are
-// a single token and are skipped like any other flag.
-var xargsValueFlags = map[string]bool{
-	"-I": true, "-L": true, "-n": true, "-P": true, "-s": true,
-	"-E": true, "-d": true, "-a": true,
-	"--max-lines": true, "--max-args": true,
-	"--max-procs": true, "--max-chars": true,
-	"--delimiter": true, "--arg-file": true,
-	// GNU `--replace` / `--eof` / `-e` take an *optional* value.
-	// Only the `--flag=value` spelling carries it in-token; treating
-	// the bare form as value-taking swallowed the inner verb
-	// (`xargs --eof rm` → empty inner → local_write allow).
-	// GNU parallel value-taking flags (union with xargs).
-	"-j": true, "--jobs": true, "-N": true,
 }
 
 // staticPipePayload returns the literal tokens an upstream pipeline feeds
@@ -2521,8 +2503,8 @@ func isEnvironmentDump(tokens []string) bool {
 			i++
 			continue
 		}
-		if next, _, split, ok := envOptionValue(tokens, i); ok {
-			if split {
+		if o, next, ok := wrapperSpecs["env"].valueOption(tokens, i); ok {
+			if o.is("--split-string") {
 				// -S STRING supplies the command env runs; it is not a
 				// flag-only invocation, and unwrapWrappers classifies it.
 				return false
@@ -3180,50 +3162,6 @@ var execWrappers = map[string]bool{
 func unwrapWrappers(tokens []string) ([]string, RiskClass) {
 	inner, floor, _ := unwrapWrappersTracked(tokens)
 	return inner, floor
-}
-
-// envOptionValue recognises a value-taking option of env at tokens[i]:
-// -u NAME, -C DIR, -S STRING, -a NAME, -P PATH (value fused into the cluster
-// or in the next token) and their long spellings --unset, --chdir,
-// --split-string, --argv0 (value after `=` or in the next token, unambiguous
-// prefixes accepted as getopt_long does). It returns the index after the
-// option and its value, and whether the option is the split-string one.
-func envOptionValue(tokens []string, i int) (next int, value string, split bool, ok bool) {
-	t := tokens[i]
-	take := func(fused string, fusedOK bool, after int) (int, string) {
-		if fusedOK {
-			return after, fused
-		}
-		if after < len(tokens) {
-			return after + 1, tokens[after]
-		}
-		return after, ""
-	}
-	if strings.HasPrefix(t, "--") {
-		name, val, hasEq := strings.Cut(t[2:], "=")
-		if name == "" {
-			return 0, "", false, false
-		}
-		for _, long := range []string{"unset", "chdir", "split-string", "argv0"} {
-			if strings.HasPrefix(long, name) {
-				next, value = take(val, hasEq, i+1)
-				return next, value, long == "split-string", true
-			}
-		}
-		return 0, "", false, false
-	}
-	if len(t) < 2 || t[0] != '-' {
-		return 0, "", false, false
-	}
-	for k := 1; k < len(t); k++ {
-		switch t[k] {
-		case 'u', 'C', 'S', 'a', 'P':
-			rest := t[k+1:]
-			next, value = take(rest, rest != "", i+1)
-			return next, value, t[k] == 'S', true
-		}
-	}
-	return 0, "", false, false
 }
 
 // unwrapWrappersTracked is unwrapWrappers that also returns, for every `env`
@@ -4880,11 +4818,15 @@ func isSystemWrite(first string, tokens []string) bool {
 // tokens are filenames and must not trigger on an incidental "+...s" or octal
 // shape (e.g. a file named build+gen.s).
 func chmodSetsSUIDGID(tokens []string) bool {
-	for _, tok := range tokens[1:] {
-		// chmod --reference copies mode bits including setuid/setgid.
-		if tok == "--reference" || strings.HasPrefix(tok, "--reference=") {
+	args := tokens[1:]
+	// chmod --reference copies mode bits including setuid/setgid.
+	for _, o := range chmodOptions.parse(args).opts {
+		if o.unique() && o.is("--reference") {
 			return true
 		}
+	}
+	for i := 0; i < len(args); {
+		tok := args[i]
 		if strings.HasPrefix(tok, "-") {
 			// GNU chmod takes a symbolic mode that begins with '-' (`-x,u+s`,
 			// `-w,g+s`) as the mode operand, not as an option. Anything built
@@ -4892,24 +4834,33 @@ func chmodSetsSUIDGID(tokens []string) bool {
 			// set a special bit the scan continues, since the real mode (or a
 			// file) may follow.
 			if !symbolicModeLike(tok) {
-				continue // flag (e.g. -R, --recursive)
+				// A flag (e.g. -R, --recursive); --reference takes a file name
+				// that is not the mode.
+				_, i = chmodOptions.option(args, i)
+				continue
 			}
 			if modeSetsSUIDGID(tok) {
 				return true
 			}
+			i++
 			continue
 		}
 		// Symbolic clauses that set the 's' permission (u+s, g+s, a+s, +s,
 		// ug+rs, u=rws, a=rwxs, …) and octal modes whose special-permission
 		// digits (everything but the last three) include 2 or 4: 04755 and
 		// 4755 set setuid; 0755 / 1755 (sticky only) and 3-digit modes do not.
-		if modeSetsSUIDGID(tok) {
-			return true
-		}
 		// First non-flag operand is the mode; everything after is a filename.
-		return false
+		return modeSetsSUIDGID(tok)
 	}
 	return false
+}
+
+// chmodOptions is the grammar of chmod's own options: --reference is the only
+// one that takes a value.
+var chmodOptions = optSpec{
+	long:           longTable("reference", "changes silent quiet verbose recursive preserve-root no-preserve-root help version"),
+	abbrev:         true,
+	ignoreDashDash: true,
 }
 
 // symbolicModeLike reports whether a dash-leading chmod word is spelled only
@@ -4950,45 +4901,29 @@ func modeSetsSUIDGID(mode string) bool {
 // passes a -m/--mode value that sets the setuid or setgid bit, in any
 // spelling: `-m 4755`, `-m4755`, `-Dm4755`, `--mode=u+s`, `--mode u+s`.
 func modeOptionSetsSUIDGID(first string, tokens []string) bool {
-	for i := 1; i < len(tokens); i++ {
-		tok := tokens[i]
-		if tok == "--" {
-			break
-		}
-		var value string
-		switch {
-		case strings.HasPrefix(tok, "--"):
-			name, v, hasValue := strings.Cut(tok, "=")
-			if len(name) < 4 || !strings.HasPrefix("--mode", name) {
-				continue
-			}
-			if hasValue {
-				value = v
-			} else if i+1 < len(tokens) {
-				i++
-				value = tokens[i]
-			}
-		case isShortFlagToken(tok):
-			for j := 1; j < len(tok); j++ {
-				if tok[j] == 'm' {
-					if j+1 < len(tok) {
-						value = tok[j+1:]
-					} else if i+1 < len(tokens) {
-						i++
-						value = tokens[i]
-					}
-					break
-				}
-				if strings.IndexByte("ogStZ", tok[j]) >= 0 {
-					break // value-taking option: the rest of the word is its value
-				}
-			}
-		}
-		if value != "" && chmodSetsSUIDGID([]string{"chmod", value}) {
+	if len(tokens) == 0 {
+		return false
+	}
+	for _, mode := range modeOptions[first].parse(tokens[1:]).values("-m", "--mode") {
+		if mode != "" && chmodSetsSUIDGID([]string{"chmod", mode}) {
 			return true
 		}
 	}
 	return false
+}
+
+// modeOptions are the option grammars of the coreutils that take a creation
+// mode. -Z (SELinux context) is a flag in all of them, so `-Zm4755` still
+// carries a mode.
+var modeOptions = map[string]optSpec{
+	"install": {
+		short: "gmotS",
+		long: longTable("mode owner group target-directory suffix strip-program",
+			"backup compare directory create-leading-dirs no-target-directory preserve-timestamps strip verbose debug context preserve-context"),
+		abbrev: true,
+	},
+	"mkdir": {short: "m", long: longTable("mode", "parents verbose context"), abbrev: true},
+	"mknod": {short: "m", long: longTable("mode", "context"), abbrev: true},
 }
 
 // isOctalMode reports whether s is composed entirely of octal digits (0-7).
@@ -5251,34 +5186,30 @@ func isGitCodeExecution(tokens []string) bool {
 	return gitRunsProgramOption(sub, args)
 }
 
+// gitGlobalOptions is the grammar of the options git accepts before the
+// subcommand: -C and -c take the next word, and the long ones take it too
+// unless spelled --opt=value. git reads them exactly (no abbreviations) and
+// the first operand is the subcommand.
+var gitGlobalOptions = optSpec{
+	short: "Cc",
+	long:  valueOpts("git-dir work-tree namespace exec-path super-prefix config-env attr-source"),
+	posix: true,
+}
+
 // gitSubcommandAndArgs returns the git subcommand and the tokens that follow
 // it, skipping global options. Options that take a separate value token
 // (-C, -c, --git-dir, …) consume that token so it is not mistaken for the
 // subcommand.
 func gitSubcommandAndArgs(tokens []string) (sub string, args []string) {
-	seenGit := false
-	skipNext := false
 	for i, tok := range tokens {
-		if !seenGit {
-			if commandName(tok) == "git" {
-				seenGit = true
-			}
+		if commandName(tok) != "git" {
 			continue
 		}
-		if skipNext {
-			skipNext = false
-			continue
+		words := gitGlobalOptions.parse(tokens[i+1:]).args()
+		if len(words) == 0 {
+			return "", nil
 		}
-		if strings.HasPrefix(tok, "-") {
-			switch tok {
-			case "-C", "-c", "--git-dir", "--work-tree", "--namespace",
-				"--exec-path", "--super-prefix", "--config-env":
-				// These consume the following token as their value.
-				skipNext = true
-			}
-			continue
-		}
-		return tok, tokens[i+1:]
+		return words[0], words[1:]
 	}
 	return "", nil
 }
@@ -5791,55 +5722,41 @@ func isAllDigits(s string) bool {
 // script that calls system() or pipes to a command. Plain field
 // printing (`awk '{print $1}' file`) is not code execution.
 func awkRunsShellCode(tokens []string) bool {
-	skipNext := false
-	for i := 1; i < len(tokens); i++ {
-		if skipNext {
-			skipNext = false
-			continue
-		}
-		tok := tokens[i]
-		if tok == "-f" || tok == "--file" {
+	if len(tokens) == 0 {
+		return false
+	}
+	r := awkOptions.parse(tokens[1:])
+	for _, o := range r.opts {
+		switch {
+		// A program loaded from file is uninspectable (-f/--file, and gawk's
+		// -E/--exec, which reads the program the same way).
+		case o.is("-f", "--file", "-E", "--exec"):
+			return true
+		// Inline program text reaches awk through -e/--source, fused into the
+		// option word or as the next word.
+		case o.has && o.is("-e", "--source") && awkScriptHasShellExec(o.value):
 			return true
 		}
-		if strings.HasPrefix(tok, "--file=") {
-			return true
-		}
-		if strings.HasPrefix(tok, "--source=") {
-			return awkScriptHasShellExec(tok[len("--source="):])
-		}
-		if tok == "-e" || tok == "--source" || tok == "--exec" {
-			if i+1 < len(tokens) && awkScriptHasShellExec(tokens[i+1]) {
-				return true
-			}
-			skipNext = true
-			continue
-		}
-		if tok == "-F" || tok == "-v" || tok == "-W" {
-			skipNext = true
-			continue
-		}
-		if isShortFlagToken(tok) {
-			rest := tok[1:]
-			for j := 0; j < len(rest); j++ {
-				switch rest[j] {
-				case 'f':
-					return true
-				case 'F', 'v':
-					j = len(rest)
-				case 'e':
-					if awkScriptHasShellExec(rest[j+1:]) {
-						return true
-					}
-					j = len(rest)
-				}
-			}
-			continue
-		}
-		if !strings.HasPrefix(tok, "-") && awkScriptHasShellExec(tok) {
+	}
+	// Bare program argument; every operand is checked because which one is the
+	// program depends on whether -e/--source was given.
+	for _, tok := range r.args() {
+		if awkScriptHasShellExec(tok) {
 			return true
 		}
 	}
 	return false
+}
+
+// awkOptions is the grammar of awk/gawk options: -F (field separator), -v
+// (assignment), -W, -f, -e, -E, -i and -l take a value. Long options may be
+// abbreviated, and `--` ends nothing, so no word is hidden from the predicate.
+var awkOptions = optSpec{
+	short: "FvWfeEil",
+	long: longTable("file source exec include load assign field-separator",
+		"lint traditional posix re-interval sandbox dump-variables profile pretty-print version help"),
+	abbrev:         true,
+	ignoreDashDash: true,
 }
 
 func awkScriptHasShellExec(tok string) bool {
@@ -5861,60 +5778,22 @@ func awkScriptHasShellExec(tok string) bool {
 // sedRunsShellCode reports whether a sed invocation uses the 'e' command or
 // loads a script file, either of which lets sed execute arbitrary shell code.
 func sedRunsShellCode(tokens []string) bool {
-	for i, tok := range tokens[1:] {
+	r := sedOptions.parse(tokens[1:])
+	for _, o := range r.opts {
+		switch {
 		// A script loaded from file is uninspectable — treat as code execution.
-		if tok == "-f" || tok == "--file" {
+		case o.is("-f", "--file"):
+			return true
+		// Inline scripts reach sed through -e/--expression, fused into the
+		// option word (-es/…/e, --expression=s/…/e) or as the next word.
+		case o.has && o.is("-e", "--expression") && sedScriptHasShellExec(o.value):
 			return true
 		}
-		// `=`-attached long forms: --expression=<script> and --file=<path>
-		// carry their payload inside the flag token itself, and previously
-		// matched none of the checks below (audit: --expression='s/…/e'
-		// classified as plain local_write).
-		if strings.HasPrefix(tok, "--expression=") {
-			if sedScriptHasShellExec(tok[len("--expression="):]) {
-				return true
-			}
-			continue
-		}
-		if strings.HasPrefix(tok, "--file=") {
-			return true
-		}
-		// Fused short flags: -es/…/…/e / -fscript / -nE are single-dash
-		// clusters where 'e' or 'f' takes the remainder of the token as
-		// its argument (getopt reordering). Scan the cluster; the first
-		// e/f flag's tail is a script/file operand.
-		if isShortFlagToken(tok) {
-			cluster := tok[1:]
-			for j := 0; j < len(cluster); j++ {
-				switch cluster[j] {
-				case 'f':
-					return true // -f<file>: uninspectable script
-				case 'e':
-					if sedScriptHasShellExec(cluster[j+1:]) {
-						return true
-					}
-					j = len(cluster) // consumed as -e's script
-				}
-			}
-			continue
-		}
-		// -e/--expression introduce inline scripts; the flag token itself is not
-		// a script, so look at the next token.
-		if tok == "-e" || tok == "--expression" || tok == "-E" {
-			continue
-		}
-		// The argument following -e/--expression is a script.
-		if i > 0 {
-			prev := tokens[i]
-			if prev == "-e" || prev == "--expression" {
-				if sedScriptHasShellExec(tok) {
-					return true
-				}
-				continue
-			}
-		}
-		// Bare script argument (e.g. sed 's/foo/bar/e').
-		if !strings.HasPrefix(tok, "-") && sedScriptHasShellExec(tok) {
+	}
+	// Bare script argument (e.g. sed 's/foo/bar/e'); every operand is checked
+	// because which one is the script depends on whether -e was given.
+	for _, tok := range r.args() {
+		if sedScriptHasShellExec(tok) {
 			return true
 		}
 	}
@@ -6173,34 +6052,21 @@ func printenvDumpsAll(tokens []string) bool {
 	return true
 }
 
-// hugoFlagsWithValue are hugo's value-taking flags (lower-cased) that may
-// precede the subcommand; their value must not be read as the verb.
-var hugoFlagsWithValue = map[string]bool{
-	"-s": true, "--source": true, "-d": true, "--destination": true,
-	"-b": true, "--baseurl": true, "-c": true, "--contentdir": true,
-	"-e": true, "--environment": true, "-l": true, "--layoutdir": true,
-	"-t": true, "--theme": true, "--themesdir": true, "--config": true,
-	"--configdir": true, "--cachedir": true, "--loglevel": true,
-	"--poll": true, "-p": true, "--port": true, "--bind": true,
-	"--ignorevendorpaths": true, "--timeout": true, "--tlscertfile": true,
-	"--tlskeyfile": true, "--cpuprofile": true, "--memprofile": true,
-	"--mutexprofile": true, "--trace": true,
+// hugoOptions is the grammar of hugo's options, which may precede the
+// subcommand: their values must not be read as the verb. hugo (cobra) folds
+// long option names to lower case but keeps short letters case-sensitive (-d
+// takes the destination, -D builds drafts).
+var hugoOptions = optSpec{
+	short: "sdbcelpt",
+	long: valueOpts("source destination baseurl contentdir environment layoutdir theme themesdir config configdir cachedir " +
+		"loglevel poll port bind ignorevendorpaths timeout tlscertfile tlskeyfile cpuprofile memprofile mutexprofile trace"),
+	foldLong: true,
+	posix:    true,
 }
 
 func classifyHugo(tokens []string) RiskClass {
-	skipNext := false
-	for _, tok := range tokens[1:] {
-		if skipNext {
-			skipNext = false
-			continue
-		}
-		if strings.HasPrefix(tok, "-") {
-			if !strings.Contains(tok, "=") && hugoFlagsWithValue[strings.ToLower(tok)] {
-				skipNext = true
-			}
-			continue
-		}
-		switch tok {
+	if words := hugoOptions.parse(tokens[1:]).args(); len(words) > 0 {
+		switch words[0] {
 		case "server", "serve":
 			return CodeExecution
 		case "version", "help", "config", "list", "mod":
@@ -6216,48 +6082,34 @@ func classifyHugo(tokens []string) RiskClass {
 	return LocalWrite
 }
 
-// infraFlagsWithValue are the value-taking global flags of each infra CLI that
-// may precede the verb; the value (a namespace, context, ...) is not the verb.
-var infraFlagsWithValue = map[string]map[string]bool{
+// infraOptions are the global options of each infra CLI that may precede the
+// verb; the value (a namespace, context, ...) is not the verb. Both are pflag
+// programs: exact long names, clustering short letters.
+var infraOptions = map[string]optSpec{
 	"kubectl": {
-		"-n": true, "--namespace": true, "--context": true, "--kubeconfig": true,
-		"--cluster": true, "--user": true, "-s": true, "--server": true,
-		"--as": true, "--as-group": true, "--as-uid": true, "--cache-dir": true,
-		"--certificate-authority": true, "--client-certificate": true,
-		"--client-key": true, "--log-flush-frequency": true, "--password": true,
-		"--username": true, "--profile": true, "--profile-output": true,
-		"--request-timeout": true, "--tls-server-name": true, "--token": true,
-		"-v": true, "--v": true, "--vmodule": true,
+		short: "nsv",
+		long: valueOpts("namespace context kubeconfig cluster user server as as-group as-uid cache-dir " +
+			"certificate-authority client-certificate client-key log-flush-frequency password username profile " +
+			"profile-output request-timeout tls-server-name token v vmodule"),
 	},
 	"helm": {
-		"-n": true, "--namespace": true, "--kube-context": true, "--kubeconfig": true,
-		"--burst-limit": true, "--kube-apiserver": true, "--kube-as-group": true,
-		"--kube-as-user": true, "--kube-ca-file": true, "--kube-tls-server-name": true,
-		"--kube-token": true, "--qps": true, "--registry-config": true,
-		"--repository-cache": true, "--repository-config": true,
+		short: "n",
+		long: valueOpts("namespace kube-context kubeconfig burst-limit kube-apiserver kube-as-group kube-as-user " +
+			"kube-ca-file kube-tls-server-name kube-token qps registry-config repository-cache repository-config"),
 	},
+}
+
+// infraFlagsWithValue lists the value-taking spellings of each infra CLI's
+// global options, for callers that compare whole words.
+var infraFlagsWithValue = map[string]map[string]bool{
+	"kubectl": infraOptions["kubectl"].valueFlags(),
+	"helm":    infraOptions["helm"].valueFlags(),
 }
 
 // infraVerbs returns the non-flag tokens after the command, skipping the value
 // of value-taking global flags.
 func infraVerbs(first string, tokens []string) []string {
-	withValue := infraFlagsWithValue[first]
-	var verbs []string
-	skipNext := false
-	for _, tok := range tokens[1:] {
-		if skipNext {
-			skipNext = false
-			continue
-		}
-		if strings.HasPrefix(tok, "-") {
-			if !strings.Contains(tok, "=") && withValue[tok] {
-				skipNext = true
-			}
-			continue
-		}
-		verbs = append(verbs, tok)
-	}
-	return verbs
+	return infraOptions[first].parse(tokens[1:]).args()
 }
 
 func classifyInfraCLI(first string, tokens []string) RiskClass {
@@ -6460,12 +6312,22 @@ func uvIsInstall(tokens []string) bool {
 // tar executes (compression filter, per-member pipe, volume-change script,
 // checkpoint action, remote shell / rmt helpers).
 var tarCommandLongOptions = []string{
-	"use-compress-program", "to-command", "info-script", "new-volume-script",
-	"checkpoint-action", "rsh-command", "rmt-command",
+	"--use-compress-program", "--to-command", "--info-script", "--new-volume-script",
+	"--checkpoint-action", "--rsh-command", "--rmt-command",
 }
 
-// tarShortOptionsWithArg are the GNU tar short options that take a value.
-const tarShortOptionsWithArg = "gCTXfFLbHVIKN"
+// tarOptions is the GNU tar option grammar the classifier reads: the short
+// letters that take a value (-f, -C, -I, -F, ...) and the long options it
+// needs to recognise. Abbreviations are accepted as getopt_long does, and `--`
+// is not an end of options for the predicates built on it, so a program option
+// cannot hide behind one.
+var tarOptions = optSpec{
+	short: "gCTXfFLbHVIKN",
+	long: longTable("use-compress-program to-command info-script new-volume-script checkpoint-action "+
+		"rsh-command rmt-command directory", "checkpoint list"),
+	abbrev:         true,
+	ignoreDashDash: true,
+}
 
 // tarRunsCommand reports whether a tar invocation names a program for tar to
 // execute. GNU tar accepts any unambiguous prefix of a long option, so a token
@@ -6474,52 +6336,22 @@ const tarShortOptionsWithArg = "gCTXfFLbHVIKN"
 // (-xIf prog) and in the old-style first operand (tar xIf prog a.tar), where
 // the option values arrive as later words.
 func tarRunsCommand(tokens []string) bool {
-	for i, tok := range tokens[1:] {
-		if strings.HasPrefix(tok, "--") {
-			name, value, hasValue := strings.Cut(tok[2:], "=")
-			// An exact option name wins over the longer one it prefixes.
-			if name == "" || name == "checkpoint" {
+	r := tarOptions.parse(tokens[1:])
+	for _, o := range r.opts {
+		switch {
+		case o.is("-I", "-F"):
+			return true
+		case o.is(tarCommandLongOptions...):
+			// A checkpoint action other than exec runs nothing.
+			if o.is("--checkpoint-action") && o.has && o.end == o.at && !strings.HasPrefix(o.value, "exec") {
 				continue
 			}
-			for _, opt := range tarCommandLongOptions {
-				if !strings.HasPrefix(opt, name) {
-					continue
-				}
-				if opt == "checkpoint-action" && hasValue && !strings.HasPrefix(value, "exec") {
-					break
-				}
-				return true
-			}
-			continue
-		}
-		if strings.HasPrefix(tok, "-") && len(tok) > 1 {
-			if tarClusterRunsCommand(tok[1:], false) {
-				return true
-			}
-			continue
-		}
-		if i == 0 && tarClusterRunsCommand(tok, true) {
 			return true
 		}
 	}
-	return false
-}
-
-// tarClusterRunsCommand scans a run of short option letters for -I or -F. In a
-// dash-prefixed cluster the first value-taking letter swallows the rest of the
-// word; in an old-style cluster every value comes from a later word, so every
-// letter is a real option.
-func tarClusterRunsCommand(letters string, oldStyle bool) bool {
-	for j := 0; j < len(letters); j++ {
-		c := letters[j]
-		if c == 'I' || c == 'F' {
-			return true
-		}
-		if !oldStyle && strings.IndexByte(tarShortOptionsWithArg, c) >= 0 {
-			return false
-		}
-	}
-	return false
+	// Old-style first operand: every letter is an option, its values come from
+	// later words.
+	return r.operandAt == 0 && strings.ContainsAny(r.operands[0], "IF")
 }
 
 func killTargetsInitOrBroadcast(tokens []string) bool {
@@ -6583,60 +6415,36 @@ func classifyContainerCLI(first string, tokens []string) RiskClass {
 	return Unknown
 }
 
-var containerGlobalFlagsWithArg = map[string]bool{
-	"-H": true, "--host": true,
-	"-c": true, "--context": true,
-	"-l": true, "--log-level": true,
-	"--config":    true,
-	"--tlscacert": true, "--tlscert": true, "--tlskey": true,
+// containerGlobalOptions are the docker-style options that may precede the
+// verb. The verb is the first operand.
+var containerGlobalOptions = optSpec{
+	short: "Hcl",
+	long:  valueOpts("host context log-level config tlscacert tlscert tlskey"),
+	posix: true,
 }
 
-var containerComposeFlagsWithArg = map[string]bool{
-	"-f": true, "--file": true,
-	"-p": true, "--project-name": true,
-	"--profile": true, "--env-file": true,
-	"--project-directory": true,
-	"--ansi":              true, "--parallel": true,
-	"--progress": true, "-H": true, "--host": true, "--context": true,
-	"--log-level": true, "--tlscacert": true, "--tlscert": true, "--tlskey": true,
+// containerComposeOptions are the options that may precede a compose verb or
+// the sub-verb of a container group.
+var containerComposeOptions = optSpec{
+	short: "fpH",
+	long: valueOpts("file project-name profile env-file project-directory ansi parallel progress " +
+		"host context log-level tlscacert tlscert tlskey"),
+	posix: true,
 }
 
-func skipContainerFlags(tokens []string, withArg map[string]bool) []string {
-	skipNext := false
-	for i := 0; i < len(tokens); i++ {
-		if skipNext {
-			skipNext = false
-			continue
-		}
-		tok := tokens[i]
-		if tok == "--" {
-			if i+1 < len(tokens) {
-				return tokens[i+1:]
-			}
-			return nil
-		}
-		if !strings.HasPrefix(tok, "-") {
-			return tokens[i:]
-		}
-		if strings.Contains(tok, "=") {
-			continue
-		}
-		if withArg[tok] {
-			skipNext = true
-		}
-	}
-	return nil
-}
+// containerGlobalFlagsWithArg lists the value-taking spellings of the global
+// options, for callers that compare whole words.
+var containerGlobalFlagsWithArg = containerGlobalOptions.valueFlags()
 
 func containerVerbPath(first string, tokens []string) []string {
 	if first == "docker-compose" {
-		rest := skipContainerFlags(tokens[1:], containerComposeFlagsWithArg)
+		rest := containerComposeOptions.parse(tokens[1:]).args()
 		if len(rest) == 0 {
 			return []string{"compose"}
 		}
 		return []string{"compose", rest[0]}
 	}
-	rest := skipContainerFlags(tokens[1:], containerGlobalFlagsWithArg)
+	rest := containerGlobalOptions.parse(tokens[1:]).args()
 	if len(rest) == 0 {
 		return nil
 	}
@@ -6645,7 +6453,7 @@ func containerVerbPath(first string, tokens []string) []string {
 	case "compose", "container", "image", "volume", "network",
 		"system", "builder", "buildx", "plugin", "context",
 		"manifest", "secret", "config":
-		sub := skipContainerFlags(rest[1:], containerComposeFlagsWithArg)
+		sub := containerComposeOptions.parse(rest[1:]).args()
 		if len(sub) == 0 {
 			return []string{cmd}
 		}

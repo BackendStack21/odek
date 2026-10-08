@@ -279,20 +279,29 @@ func findExecutionFiles(tokens []string, cwd string, written map[string]bool) []
 // every word after the option up to a `;` terminator, so the interpreter's
 // script operand is examined and not only the first word.
 func fdExecutionFiles(tokens []string, cwd string, written map[string]bool) []string {
-	options := []string{"--exec", "--exec-batch", "-x", "-X"}
+	if len(tokens) == 0 {
+		return nil
+	}
+	spec := valueOptionSpec([]string{"--exec", "--exec-batch", "-x", "-X"}, "")
+	args := tokens[1:]
 	var out []string
 	seen := map[string]bool{}
-	for i := 1; i < len(tokens); i++ {
-		for _, option := range options {
-			first, last, ok := optionValue(tokens, i, option, options)
-			if !ok {
+	for i := 0; i < len(args); {
+		if len(args[i]) < 2 || args[i][0] != '-' {
+			i++
+			continue
+		}
+		opts, next := spec.option(args, i)
+		i = next
+		for _, o := range opts {
+			if !o.has || !o.unique() {
 				continue
 			}
-			end := last + 1
-			for end < len(tokens) && tokens[end] != ";" && tokens[end] != `\;` {
+			end := o.end + 1
+			for end < len(args) && args[end] != ";" && args[end] != `\;` {
 				end++
 			}
-			command := append([]string{first}, tokens[last+1:end]...)
+			command := append([]string{o.value}, args[o.end+1:end]...)
 			for _, p := range stageExecutionFilesWritten(command, cwd, written) {
 				if !seen[p] {
 					seen[p] = true
