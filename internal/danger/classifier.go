@@ -836,7 +836,10 @@ type DangerousConfig struct {
 	Allowlist []string `json:"allowlist,omitempty"`
 
 	// Denylist is a list of command strings that are always denied,
-	// regardless of their risk classification. Prefix match (after trimming).
+	// regardless of their risk classification. Each entry is matched as a
+	// token prefix against every command the line would run (chain segments,
+	// pipe stages, wrapper-stripped commands, git without global options,
+	// shell -c payloads and substitution bodies).
 	Denylist []string `json:"denylist,omitempty"`
 
 	// DefaultAction is the global default action applied to ALL risk classes
@@ -1002,13 +1005,11 @@ func (c *DangerousConfig) ActionForCommand(cmd string) Action {
 			return Allow
 		}
 	}
-	// Denylist is checked before classification — prefix match after
-	// collapsing internal whitespace runs on both sides, so 'git  push'
-	// (double space or tab) cannot bypass a 'git push' denylist entry.
-	for _, pattern := range c.Denylist {
-		if strings.HasPrefix(normalizeCommandSpacing(cmd), normalizeCommandSpacing(strings.TrimSpace(pattern))) {
-			return Deny
-		}
+	// Denylist is checked before classification — a token-prefix match against
+	// every command position (see denylistMatch), so neither extra whitespace
+	// nor a chain, wrapper, git global option or -c payload hides a match.
+	if denylistMatch(cmd, c.Denylist) {
+		return Deny
 	}
 	// Classify and use class-based action
 	action := Allow
