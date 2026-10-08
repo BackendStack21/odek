@@ -370,3 +370,64 @@ func TestLeftover_ReadLedgerIndirectFormsDoNotOverGate(t *testing.T) {
 		}
 	}
 }
+
+// Variables bound by the declaration builtins keep their literal value for
+// later words, like a plain NAME=value assignment does.
+func TestLeftover_DeclarationBuiltinsBindVariables(t *testing.T) {
+	for _, assign := range []string{
+		"export S=x.sh", "export -n S=x.sh", "declare S=x.sh", "declare -x S=x.sh", "declare -r S=x.sh",
+		"declare -g S=x.sh", "typeset S=x.sh", "typeset -x S=x.sh", "readonly S=x.sh",
+		"local S=x.sh", "export A=1 S=x.sh", "S=x.sh",
+	} {
+		ledgerSandbox(t)
+		ledgerWrite(t, "x.sh", "echo hi\n", 0o644)
+		cmd := assign + "; bash $S"
+		if got := UnreadScriptTargets(cmd); !targetsContainBase(got, "x.sh") {
+			t.Errorf("UnreadScriptTargets(%q) = %v, want x.sh gated", cmd, got)
+		}
+		RecordRead("x.sh")
+		if got := UnreadScriptTargets(cmd); len(got) != 0 {
+			t.Errorf("UnreadScriptTargets(%q) = %v after read, want licensed", cmd, got)
+		}
+	}
+	// the known value also resolves write targets
+	for _, c := range []string{"export T=/tmp/leftover-x; rm -f $T", "declare T=/tmp/leftover-x; rm -f $T", "readonly T=/tmp/leftover-x && rm -f $T"} {
+		if got := Classify(c); got != LocalWrite {
+			t.Errorf("Classify(%q) = %s, want local_write", c, got)
+		}
+	}
+	if got := Classify("export D=/; rm -rf $D"); got != Destructive {
+		t.Errorf("Classify(export D=/; rm -rf $D) = %s, want destructive", got)
+	}
+	// a bare export keeps the earlier value
+	ledgerSandbox(t)
+	ledgerWrite(t, "x.sh", "echo hi\n", 0o644)
+	if got := UnreadScriptTargets("S=x.sh; export S; bash $S"); !targetsContainBase(got, "x.sh") {
+		t.Errorf("bare export dropped the value: %v", got)
+	}
+}
+
+// Values the shell computes or transforms are not recorded.
+func TestLeftover_DeclarationBuiltinsDropDynamicValues(t *testing.T) {
+	ledgerSandbox(t)
+	ledgerWrite(t, "x.sh", "echo hi\n", 0o644)
+	for _, cmd := range []string{
+		"export S=$(cat names.txt); bash $S",
+		"export S=`cat names.txt`; bash $S",
+		"declare -u S=x.sh; bash $S",
+		"declare -l S=X.SH; bash $S",
+		"declare -i S=x.sh; bash $S",
+		"declare -n S=x.sh; bash $S",
+		"export S=x.sh || true; bash $S",
+		"export S=x.sh & bash $S",
+		"S=x.sh; export S=$(cat names.txt); bash $S",
+		"S=x.sh; local S; bash $S",
+	} {
+		if got := UnreadScriptTargets(cmd); targetsContainBase(got, "x.sh") {
+			t.Errorf("UnreadScriptTargets(%q) = %v: the value is not statically x.sh", cmd, got)
+		}
+		if wrAction(cmd) == Allow {
+			t.Errorf("ActionForCommand(%q) = allow, want the unresolved $S to stay gated", cmd)
+		}
+	}
+}

@@ -240,7 +240,11 @@ func analyzeWithState(cmd string, depth int, inherited *shellAnalysisState) Anal
 				continue
 			}
 			name := commandName(inner[0])
-			state.rebind(name, inner)
+			for _, assigned := range state.rebind(name, inner, len(stages) == 1 && !ambiguous) {
+				if afterAnd {
+					chainVars[assigned] = true
+				}
+			}
 			if isCodeExecution(name, inner) || explicitUntrustedExecutable(inner[0]) || (i > 0 && (pipedShells[name] || isStdinExecInterpreter(name) || embeddedShellInterpreters[name])) {
 				result.add(CodeExecution)
 			}
@@ -554,7 +558,9 @@ func (s *shellAnalysisState) forget(names ...string) {
 // rebind drops the known value of every variable a builtin binds or removes
 // at run time (read, printf -v, getopts, unset, export/declare, ...). The
 // value is only known to the shell, so the earlier static value is stale.
-func (s *shellAnalysisState) rebind(name string, inner []string) {
+// The declaring builtins (export, declare, typeset, local, readonly) record
+// a literal NAME=value when bind is set, and return the names they bound.
+func (s *shellAnalysisState) rebind(name string, inner []string, bind bool) (names []string) {
 	operandName := func(tok string) string {
 		tok, _, _ = strings.Cut(tok, "=")
 		tok, _, _ = strings.Cut(tok, "[")
@@ -585,15 +591,96 @@ func (s *shellAnalysisState) rebind(name string, inner []string) {
 			}
 		}
 	case "unset", "export", "declare", "typeset", "local", "readonly", "let":
+		bound := declarationBindings(name, inner)
 		for _, tok := range inner[1:] {
-			if isShortFlagToken(tok) && strings.Contains(tok, "n") && name != "unset" && name != "let" {
+			if isShortFlagToken(tok) && strings.Contains(tok, "n") && name != "unset" && name != "let" && name != "export" {
 				// declare -n makes a name an alias of another variable.
 				clear(s.vars)
-				return
+				return nil
 			}
-			s.forget(operandName(tok))
+			op := operandName(tok)
+			if !bound.keep[op] {
+				s.forget(op)
+			}
+		}
+		if bind {
+			for op, value := range bound.values {
+				s.vars[op] = value
+				names = append(names, op)
+			}
 		}
 	}
+	return names
+}
+
+// declarationBinding is the static outcome of an export/declare/readonly
+// operand list: the literal NAME=value pairs that bind a known value, and the
+// names whose existing value the builtin leaves alone.
+type declarationBinding struct {
+	values map[string]string
+	keep   map[string]bool
+}
+
+// declarationBindings reads the operands of a variable-declaring builtin. A
+// literal NAME=value records the value; a bare NAME keeps whatever value is
+// known (`export S` does not change S). Attribute flags that transform or
+// retype the value (-i, -l, -u, -c, -a, -A), values built by substitutions
+// and array literals are not recorded, so those names are dropped.
+func declarationBindings(name string, inner []string) declarationBinding {
+	out := declarationBinding{values: map[string]string{}, keep: map[string]bool{}}
+	transparent := "xrgpn"
+	if name == "unset" || name == "let" {
+		return out
+	}
+	plain := true
+	for _, tok := range inner[1:] {
+		if isShortFlagToken(tok) && strings.Trim(tok[1:], transparent) != "" {
+			plain = false
+		}
+		if tok == "--" || strings.HasPrefix(tok, "+") {
+			plain = false
+		}
+	}
+	if !plain {
+		return out
+	}
+	for i := 1; i < len(inner); i++ {
+		tok := inner[i]
+		if strings.HasPrefix(tok, "-") {
+			continue
+		}
+		varName, value, assigned := strings.Cut(tok, "=")
+		// A substitution glued to the value is split off into its own word
+		// by normalization, leaving a truncated value behind.
+		if assigned && i+1 < len(inner) && strings.Contains(inner[i+1], dynamicSubstToken) {
+			continue
+		}
+		if !isValidVarName(varName) {
+			continue
+		}
+		switch {
+		case !assigned:
+			if name != "local" {
+				out.keep[varName] = true
+			}
+		case strings.Contains(value, dynamicSubstToken) || strings.HasPrefix(value, "("):
+		default:
+			out.values[varName] = expandEnvVars(value)
+		}
+	}
+	return out
+}
+
+func isValidVarName(name string) bool {
+	if name == "" || (name[0] >= '0' && name[0] <= '9') {
+		return false
+	}
+	for i := 0; i < len(name); i++ {
+		if !isShellVarByte(name[i]) {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *shellAnalysisState) assign(tokens []string) {
