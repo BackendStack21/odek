@@ -334,6 +334,11 @@ func analyzeWithState(cmd string, depth int, inherited *shellAnalysisState) Anal
 					}
 				}
 			}
+			if i > 0 && stdinProgramStage(name, inner) && stagesDecodeContent(prepared[:i]) {
+				// Decoded or decompressed bytes cannot be fingerprinted, so
+				// no read licence can describe the program that runs.
+				result.add(Unknown)
+			}
 			if cwdKnown && !state.uncertain {
 				files, rewritten := stageLedgerFiles(stage, stageCwd, state.written)
 				// An interpreter fed by a pipe executes what the upstream
@@ -423,6 +428,9 @@ func analyzeWithState(cmd string, depth int, inherited *shellAnalysisState) Anal
 	endChain()
 	for _, sub := range subs {
 		result.merge(analyzeWithState(sub, depth+1, &state))
+		if substExecutes && substitutionDecodes(sub) {
+			result.add(Unknown)
+		}
 		if substExecutes && !state.uncertain {
 			files, rewritten := substitutionReaderFiles(sub, state.cwd, state.written)
 			for _, path := range files {

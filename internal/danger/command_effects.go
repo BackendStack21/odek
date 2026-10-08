@@ -420,8 +420,6 @@ func executionFileTargets(name string, tokens []string) []string {
 		commandOptions = []string{"-o", "--one-line", "-O", "--one-line-before-file"}
 	case "rg":
 		options = []string{"--pre"}
-	case "fd", "fdfind":
-		options = []string{"--exec", "--exec-batch", "-x", "-X"}
 	case "tar":
 		options = []string{"-I", "--use-compress-program", "--to-command", "--checkpoint-action"}
 	case "node":

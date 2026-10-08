@@ -837,6 +837,9 @@ func stageExecutionFilesWritten(stage []string, cwd string, written map[string]b
 	if name == "find" {
 		return findExecutionFiles(cmdTokens, cwd, written)
 	}
+	if name == "fd" || name == "fdfind" {
+		return fdExecutionFiles(cmdTokens, cwd, written)
+	}
 	helperTargets := executionFileTargets(name, cmdTokens)
 	if interpreterIsSyntaxCheck(name, cmdTokens) {
 		return nil
@@ -935,6 +938,12 @@ scan:
 			continue
 		}
 		if strings.Contains(tok, "://") {
+			prevFlag = false
+			continue
+		}
+		if interpreterStage && isStdinDevice(tok) {
+			// The program arrives on stdin; a `< file` redirect that follows
+			// names it.
 			prevFlag = false
 			continue
 		}

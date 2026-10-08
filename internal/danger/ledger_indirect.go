@@ -76,7 +76,7 @@ func stdinProgramStage(name string, inner []string) bool {
 			i++
 		case inlinePayloadFlag(name, t):
 			return false
-		case t == "-":
+		case t == "-" || isStdinDevice(t):
 		case t == "--":
 		case strings.HasPrefix(t, "-"):
 			switch t {
@@ -109,7 +109,10 @@ func substFeedsProgram(name string, inner []string) bool {
 			}
 		}
 	case name == "source" || name == ".":
-		for _, t := range inner[1:] {
+		for i, t := range inner[1:] {
+			if isStdinDevice(t) {
+				return stdinSubstFeed(inner[i+2:])
+			}
 			if !strings.HasPrefix(t, "-") {
 				return hasSubst(t)
 			}
@@ -123,9 +126,105 @@ func substFeedsProgram(name string, inner []string) bool {
 			case inlinePayloadFlag(name, t):
 				return i+1 < len(inner) && hasSubst(inner[i+1])
 			case strings.HasPrefix(t, "-"):
+			case isStdinDevice(t):
+				return stdinSubstFeed(inner[i+1:])
 			default:
 				return hasSubst(t)
 			}
+		}
+	}
+	return false
+}
+
+// decompressors always decode their input; compressors only do with a
+// decode option.
+var (
+	decompressors = map[string]bool{
+		"gunzip": true, "bunzip2": true, "unxz": true, "unlzma": true, "unzstd": true,
+		"uncompress": true, "unlz4": true, "zcat": true, "gzcat": true, "bzcat": true,
+		"xzcat": true, "lzcat": true, "zstdcat": true, "lz4cat": true,
+	}
+	compressors = map[string]bool{
+		"gzip": true, "bzip2": true, "xz": true, "lzma": true, "zstd": true,
+		"lz4": true, "pigz": true, "pbzip2": true,
+	}
+)
+
+// decodesContent reports whether a stage turns its input (or file operands)
+// into different bytes that a later interpreter would run: base64 and
+// friends, decompressors, and decrypting tools.
+func decodesContent(stage []string) bool {
+	inner, _ := unwrapWrappers(stage)
+	if len(inner) == 0 {
+		return false
+	}
+	name := commandName(inner[0])
+	hasFlag := func(short byte, longs ...string) bool {
+		for _, t := range inner[1:] {
+			if t == "--" {
+				return false
+			}
+			if strings.HasPrefix(t, "--") {
+				for _, l := range longs {
+					if t == l || strings.HasPrefix(t, l+"=") {
+						return true
+					}
+				}
+			} else if isShortFlagToken(t) && strings.IndexByte(t, short) > 0 {
+				return true
+			}
+		}
+		return false
+	}
+	switch {
+	case decompressors[name]:
+		return true
+	case compressors[name]:
+		return hasFlag('d', "--decompress", "--uncompress", "--decode")
+	case name == "base64" || name == "basenc":
+		return hasFlag('d', "--decode") || hasAny(inner[1:], "-D")
+	case name == "openssl":
+		return hasAny(inner[1:], "-d", "-decrypt", "-dec")
+	case name == "xxd":
+		return hasFlag('r', "--revert")
+	case name == "gpg" || name == "gpg2":
+		return hasFlag('d', "--decrypt")
+	case name == "age":
+		return hasFlag('d', "--decrypt")
+	case name == "uudecode" || name == "b64decode":
+		return true
+	}
+	return false
+}
+
+// stagesDecodeContent reports whether any of the pipeline stages decodes.
+func stagesDecodeContent(stages [][]string) bool {
+	for _, stage := range stages {
+		if decodesContent(stage) {
+			return true
+		}
+	}
+	return false
+}
+
+// substitutionDecodes reports whether a command-substitution body decodes
+// content in any of its stages.
+func substitutionDecodes(body string) bool {
+	main, _ := normalize(body)
+	for _, segment := range splitSegments(tokenize(main)) {
+		if stagesDecodeContent(splitPipes(segment)) {
+			return true
+		}
+	}
+	return false
+}
+
+// stdinSubstFeed reports whether the redirects among rest feed a command
+// substitution to standard input (`source /dev/stdin <<< "$(cat x.sh)"`).
+func stdinSubstFeed(rest []string) bool {
+	for i, t := range rest {
+		if (t == "<" || t == "<<<") && i+1 < len(rest) && strings.Contains(rest[i+1], dynamicSubstToken) {
+			return true
 		}
 	}
 	return false
@@ -167,6 +266,48 @@ func findExecutionFiles(tokens []string, cwd string, written map[string]bool) []
 		i = end
 	}
 	return out
+}
+
+// fdExecutionFiles returns the program files named by the command that fd's
+// -x/--exec and -X/--exec-batch options run for each match. The command is
+// every word after the option up to a `;` terminator, so the interpreter's
+// script operand is examined and not only the first word.
+func fdExecutionFiles(tokens []string, cwd string, written map[string]bool) []string {
+	options := []string{"--exec", "--exec-batch", "-x", "-X"}
+	var out []string
+	seen := map[string]bool{}
+	for i := 1; i < len(tokens); i++ {
+		for _, option := range options {
+			first, last, ok := optionValue(tokens, i, option, options)
+			if !ok {
+				continue
+			}
+			end := last + 1
+			for end < len(tokens) && tokens[end] != ";" && tokens[end] != `\;` {
+				end++
+			}
+			command := append([]string{first}, tokens[last+1:end]...)
+			for _, p := range stageExecutionFilesWritten(command, cwd, written) {
+				if !seen[p] {
+					seen[p] = true
+					out = append(out, p)
+				}
+			}
+			i = end
+			break
+		}
+	}
+	return out
+}
+
+// isStdinDevice reports whether tok names the process's standard input as a
+// file, so an interpreter given it as its script reads the program from stdin.
+func isStdinDevice(tok string) bool {
+	switch tok {
+	case "/dev/stdin", "/dev/fd/0", "/proc/self/fd/0", "/proc/thread-self/fd/0":
+		return true
+	}
+	return false
 }
 
 // sourceCommandFiles extracts the script files that a debugger or editor
