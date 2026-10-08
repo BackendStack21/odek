@@ -161,6 +161,9 @@ func analyzeWithState(cmd string, depth int, inherited *shellAnalysisState) Anal
 	// is unknown.
 	chainVars := make(map[string]bool)
 	chainCwd := false
+	// substExecutes marks a stage that executes the output of a command or
+	// process substitution (eval "$(…)", bash <(…)).
+	substExecutes := false
 	endChain := func() {
 		for name := range chainVars {
 			delete(state.vars, name)
@@ -189,7 +192,11 @@ func analyzeWithState(cmd string, depth int, inherited *shellAnalysisState) Anal
 			payloadState := state
 			payloadState.cwd = stageCwd
 			payloadState.uncertain = state.uncertain || !cwdKnown
-			inner, floor := unwrapWrappers(stage)
+			unwrappedStage := unwrapWrappersFull(stage)
+			inner, floor := unwrappedStage.inner, unwrappedStage.floor
+			for _, payload := range unwrappedStage.payloads {
+				result.merge(analyzeWithState(payload, depth+1, &payloadState))
+			}
 			if len(inner) > 0 {
 				name := commandName(inner[0])
 				if pipedShells[name] {
@@ -238,7 +245,11 @@ func analyzeWithState(cmd string, depth int, inherited *shellAnalysisState) Anal
 				continue
 			}
 			name := commandName(inner[0])
-			state.rebind(name, inner)
+			for _, assigned := range state.rebind(name, inner, len(stages) == 1 && !ambiguous) {
+				if afterAnd {
+					chainVars[assigned] = true
+				}
+			}
 			if isCodeExecution(name, inner) || explicitUntrustedExecutable(inner[0]) || (i > 0 && (pipedShells[name] || isStdinExecInterpreter(name) || embeddedShellInterpreters[name])) {
 				result.add(CodeExecution)
 			}
@@ -276,12 +287,24 @@ func analyzeWithState(cmd string, depth int, inherited *shellAnalysisState) Anal
 			}
 			if cwdKnown && !state.uncertain {
 				files, rewritten := stageLedgerFiles(stage, stageCwd, state.written)
+				// An interpreter fed by a pipe executes what the upstream
+				// readers emit, so their file operands are the program.
+				if i > 0 && stdinProgramStage(name, inner) {
+					for _, upstream := range prepared[:i] {
+						f, r := readerFeedFiles(upstream, stageCwd, state.written)
+						files = append(files, f...)
+						rewritten = append(rewritten, r...)
+					}
+				}
 				for _, path := range files {
 					result.addFile(path)
 				}
 				for _, path := range rewritten {
 					result.addRewritten(path)
 				}
+			}
+			if substFeedsProgram(name, inner) {
+				substExecutes = true
 			}
 			for _, target := range semanticWriteTargets(name, inner) {
 				if target == "-" {
@@ -351,6 +374,15 @@ func analyzeWithState(cmd string, depth int, inherited *shellAnalysisState) Anal
 	endChain()
 	for _, sub := range subs {
 		result.merge(analyzeWithState(sub, depth+1, &state))
+		if substExecutes && !state.uncertain {
+			files, rewritten := substitutionReaderFiles(sub, state.cwd, state.written)
+			for _, path := range files {
+				result.addFile(path)
+			}
+			for _, path := range rewritten {
+				result.addRewritten(path)
+			}
+		}
 	}
 	if len(result.Effects) == 0 {
 		result.add(Safe)
@@ -538,7 +570,9 @@ func (s *shellAnalysisState) forget(names ...string) {
 // rebind drops the known value of every variable a builtin binds or removes
 // at run time (read, printf -v, getopts, unset, export/declare, ...). The
 // value is only known to the shell, so the earlier static value is stale.
-func (s *shellAnalysisState) rebind(name string, inner []string) {
+// The declaring builtins (export, declare, typeset, local, readonly) record
+// a literal NAME=value when bind is set, and return the names they bound.
+func (s *shellAnalysisState) rebind(name string, inner []string, bind bool) (names []string) {
 	operandName := func(tok string) string {
 		tok, _, _ = strings.Cut(tok, "=")
 		tok, _, _ = strings.Cut(tok, "[")
@@ -569,15 +603,96 @@ func (s *shellAnalysisState) rebind(name string, inner []string) {
 			}
 		}
 	case "unset", "export", "declare", "typeset", "local", "readonly", "let":
+		bound := declarationBindings(name, inner)
 		for _, tok := range inner[1:] {
-			if isShortFlagToken(tok) && strings.Contains(tok, "n") && name != "unset" && name != "let" {
+			if isShortFlagToken(tok) && strings.Contains(tok, "n") && name != "unset" && name != "let" && name != "export" {
 				// declare -n makes a name an alias of another variable.
 				clear(s.vars)
-				return
+				return nil
 			}
-			s.forget(operandName(tok))
+			op := operandName(tok)
+			if !bound.keep[op] {
+				s.forget(op)
+			}
+		}
+		if bind {
+			for op, value := range bound.values {
+				s.vars[op] = value
+				names = append(names, op)
+			}
 		}
 	}
+	return names
+}
+
+// declarationBinding is the static outcome of an export/declare/readonly
+// operand list: the literal NAME=value pairs that bind a known value, and the
+// names whose existing value the builtin leaves alone.
+type declarationBinding struct {
+	values map[string]string
+	keep   map[string]bool
+}
+
+// declarationBindings reads the operands of a variable-declaring builtin. A
+// literal NAME=value records the value; a bare NAME keeps whatever value is
+// known (`export S` does not change S). Attribute flags that transform or
+// retype the value (-i, -l, -u, -c, -a, -A), values built by substitutions
+// and array literals are not recorded, so those names are dropped.
+func declarationBindings(name string, inner []string) declarationBinding {
+	out := declarationBinding{values: map[string]string{}, keep: map[string]bool{}}
+	transparent := "xrgpn"
+	if name == "unset" || name == "let" {
+		return out
+	}
+	plain := true
+	for _, tok := range inner[1:] {
+		if isShortFlagToken(tok) && strings.Trim(tok[1:], transparent) != "" {
+			plain = false
+		}
+		if tok == "--" || strings.HasPrefix(tok, "+") {
+			plain = false
+		}
+	}
+	if !plain {
+		return out
+	}
+	for i := 1; i < len(inner); i++ {
+		tok := inner[i]
+		if strings.HasPrefix(tok, "-") {
+			continue
+		}
+		varName, value, assigned := strings.Cut(tok, "=")
+		// A substitution glued to the value is split off into its own word
+		// by normalization, leaving a truncated value behind.
+		if assigned && i+1 < len(inner) && strings.Contains(inner[i+1], dynamicSubstToken) {
+			continue
+		}
+		if !isValidVarName(varName) {
+			continue
+		}
+		switch {
+		case !assigned:
+			if name != "local" {
+				out.keep[varName] = true
+			}
+		case strings.Contains(value, dynamicSubstToken) || strings.HasPrefix(value, "("):
+		default:
+			out.values[varName] = expandEnvVars(value)
+		}
+	}
+	return out
+}
+
+func isValidVarName(name string) bool {
+	if name == "" || (name[0] >= '0' && name[0] <= '9') {
+		return false
+	}
+	for i := 0; i < len(name); i++ {
+		if !isShellVarByte(name[i]) {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *shellAnalysisState) assign(tokens []string) {
@@ -678,50 +793,6 @@ func directoryOperand(name string, args []string) (path string, known bool) {
 	return "", false
 }
 
-// skipWrapperArguments returns the index just past the options and numeric
-// operands that the wrapper name takes after position from, mirroring how
-// unwrapWrappers walks them, so a following wrapper such as env is seen.
-func skipWrapperArguments(name string, tokens []string, from int) int {
-	i := from
-	for i < len(tokens) {
-		t := tokens[i]
-		switch {
-		case t == "--":
-			return i + 1
-		case strings.HasPrefix(t, "-") && t != "-":
-			if wrapperOptionTakesValue(name, t) && i+1 < len(tokens) {
-				i += 2
-				continue
-			}
-			i++
-		case (name == "timeout" || name == "nice" || name == "ionice") && isNumericish(t):
-			i++
-		default:
-			return i
-		}
-	}
-	return i
-}
-
-// wrapperOptionTakesValue reports whether the wrapper's option consumes the
-// following token as its value.
-func wrapperOptionTakesValue(name, option string) bool {
-	if argvComposers[name] {
-		return xargsValueFlags[option]
-	}
-	switch name {
-	case "watch":
-		return option == "-n" || option == "--interval"
-	case "strace":
-		return hasAny([]string{"-e", "-p", "-o", "--output", "-s"}, option)
-	case "timeout":
-		return hasAny([]string{"-s", "--signal", "-k", "--kill-after"}, option)
-	case "stdbuf":
-		return hasAny([]string{"-i", "-o", "-e", "--input", "--output", "--error"}, option)
-	}
-	return false
-}
-
 func wrapperDirectory(tokens []string, cwd string) (string, bool) {
 	for i := 0; i < len(tokens); i++ {
 		tok := tokens[i]
@@ -729,11 +800,12 @@ func wrapperDirectory(tokens []string, cwd string) (string, bool) {
 			continue
 		}
 		name := commandName(tok)
-		if !execWrappers[name] && !privilegedWrappers[name] {
+		step, isWrapper := wrapperAt(tokens, i)
+		if !isWrapper {
 			break
 		}
 		if name != "env" {
-			i = skipWrapperArguments(name, tokens, i+1) - 1
+			i = step.next - 1
 			continue
 		}
 		for j := i + 1; j < len(tokens); j++ {

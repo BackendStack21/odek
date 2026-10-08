@@ -2,6 +2,7 @@ package danger
 
 import (
 	"regexp"
+	"strings"
 )
 
 // InjectionPattern groups a compiled regex with a human-readable label
@@ -58,7 +59,6 @@ var injectionPatterns = []InjectionPattern{
 	{regexp.MustCompile(`act as (dan|developer mode|jailbreak)\b`), "jailbreak persona"},
 	{regexp.MustCompile(`override (your |the )?(safety|security) (guidelines|rules|restrictions|policies)`), "safety override"},
 	{regexp.MustCompile(`(from now on|henceforth|starting now),? (you (are|will|must|shall))`), "permanent override"},
-	{regexp.MustCompile(`^\s*#+ (new|updated|revised|corrected) (system prompt|instructions?)`), "markdown header injection"},
 
 	// ── Concealment instructions ───────────────────────────────────
 	// Untrusted content that tells the agent to hide its actions from the user
@@ -110,6 +110,43 @@ var injectionPatterns = []InjectionPattern{
 	{regexp.MustCompile(`ignore? (todas )?(as )?instru(ç|c)(õ|o)es? (anteriores|anterior)`), "non-english: ignore previous instructions"},
 }
 
+// markdownHeaderRe matches a heading that introduces replacement instructions.
+// It is anchored to the start of a line, so it is applied line by line to the
+// original text (NormalizeForScan flattens newlines).
+var markdownHeaderRe = regexp.MustCompile(`^\s*#+ (new|updated|revised|corrected) (system prompt|instructions?)`)
+
+const markdownHeaderLabel = "markdown header injection"
+
+func isLineBreak(r rune) bool {
+	switch r {
+	case '\n', '\r', '\v', '\f', '\u0085', '\u2028', '\u2029':
+		return true
+	}
+	return false
+}
+
+// scanMarkdownHeaders reports whether any line of content is an instruction
+// heading, after the same normalization and homoglyph folding the other
+// patterns get.
+func scanMarkdownHeaders(content string) bool {
+	if !strings.ContainsAny(content, "#＃") {
+		return false
+	}
+	for _, line := range strings.FieldsFunc(content, isLineBreak) {
+		if !strings.ContainsAny(line, "#＃") {
+			continue
+		}
+		normalized := NormalizeForScan(line)
+		if markdownHeaderRe.MatchString(normalized) || markdownHeaderRe.MatchString(FoldHomoglyphs(normalized)) {
+			return true
+		}
+		if strings.Contains(normalized, "ν") && markdownHeaderRe.MatchString(FoldHomoglyphs(strings.ReplaceAll(normalized, "ν", "n"))) {
+			return true
+		}
+	}
+	return false
+}
+
 // ScanResult describes a single detected injection threat.
 type ScanResult struct {
 	Label   string // human-readable threat label
@@ -147,13 +184,23 @@ func ScanInjection(content string) []ScanResult {
 	normalized := NormalizeForScan(content)
 	folded := FoldHomoglyphs(normalized)
 	foldDistinct := folded != normalized
+	// Greek nu looks like v in lower case but like N as a capital, which
+	// NormalizeForScan has already lower-cased: scan the n reading too.
+	var foldedNu string
+	if strings.Contains(normalized, "ν") {
+		foldedNu = FoldHomoglyphs(strings.ReplaceAll(normalized, "ν", "n"))
+	}
 	for _, p := range injectionPatterns {
-		if p.Re.MatchString(normalized) || (foldDistinct && p.Re.MatchString(folded)) {
+		if p.Re.MatchString(normalized) || (foldDistinct && p.Re.MatchString(folded)) ||
+			(foldedNu != "" && p.Re.MatchString(foldedNu)) {
 			results = append(results, ScanResult{
 				Label:   p.Label,
 				Pattern: p.Re.String(),
 			})
 		}
+	}
+	if scanMarkdownHeaders(content) {
+		results = append(results, ScanResult{Label: markdownHeaderLabel, Pattern: markdownHeaderRe.String()})
 	}
 	return results
 }
