@@ -60,7 +60,7 @@ func handleWorkspace(resolved config.ResolvedConfig) http.HandlerFunc {
 			return
 		}
 		classes := map[string]string{}
-		for _, cls := range []danger.RiskClass{danger.Persistence, danger.UnreadExec, danger.Blocked, danger.Safe, danger.LocalWrite, danger.SystemWrite, danger.Destructive, danger.NetworkEgress, danger.CodeExecution, danger.Install, danger.Unknown} {
+		for _, cls := range []danger.RiskClass{danger.Persistence, danger.UnreadExec, danger.Blocked, danger.Safe, danger.LocalWrite, danger.SystemWrite, danger.Destructive, danger.NetworkEgress, danger.NetworkUpload, danger.CodeExecution, danger.Install, danger.Unknown} {
 			classes[string(cls)] = string(resolved.Dangerous.ActionFor(cls))
 		}
 		writeAPIJSON(w, http.StatusOK, map[string]any{"workspace": cwd, "sandbox": resolved.Sandbox, "policy": classes, "limits": resolved.Limits, "model": resolved.Model, "features": map[string]bool{"run_limits": true, "recovery": true, "turn_settled": true, "permissions": true}})

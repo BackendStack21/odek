@@ -212,8 +212,8 @@ Spawn focused sub-agents. Each task carries parent-side trust signals:
 }
 ```
 
-- `trust_level`: `"untrusted"` (default when omitted) or `"trusted"`. **Every** sub-agent runs non-interactive (`non_interactive: deny` is forced — trusted ones never prompt either). Untrusted tasks additionally deny `destructive`, `code_execution`, `install`, `system_write`, `persistence`, `unread_exec`, `network_egress`, `unknown`, and `blocked`.
-- `max_risk`: highest risk class the sub-agent may execute. Anything ranked above it is forced to `deny`.
+- `trust_level`: `"untrusted"` (default when omitted) or `"trusted"`. **Every** sub-agent runs non-interactive (`non_interactive: deny` is forced — trusted ones never prompt either). Untrusted tasks additionally deny `destructive`, `code_execution`, `install`, `system_write`, `persistence`, `unread_exec`, `network_egress`, `network_upload`, `unknown`, and `blocked`.
+- `max_risk`: highest risk class the sub-agent may execute. Anything ranked above it is forced to `deny`. Order: `safe` < `local_write` < `install` < `network_egress` < `network_upload` < `code_execution` < `system_write` < `persistence` < `unknown` < `destructive` < `blocked` — so `max_risk: "network_egress"` allows fetches but not uploads or code execution.
 - **Trust is non-increasing downward**: the delegate tool stamps the parent's own effective trust into the task (`parent_trust`), and the child runs at `min(parent_trust, trust_level)`. A task tree rooted in untrusted content cannot spawn trusted children.
 - **Sub-agents never prompt for approvals.** Every sub-agent runs non-interactive — prompt-class operations are denied even for trusted sub-agents; the operator `allowlist` (exact pre-approved invocations) is the only path to prompt-class operations. Denied operations are reported in the result's `denials` array (`{tool, class, reason}`, capped at 20 with `denials_total` carrying the full count) and surfaced as `subagent_denied` runtime events, so the parent can adapt or escalate instead of failing blind.
 
@@ -225,27 +225,38 @@ When running without `--sandbox`, odek classifies every shell command by risk an
 
 | Class | Default | Examples |
 |-------|---------|----------|
-| 🟢 safe | allow | `ls`, `cat`, `grep`, `go build` |
-| 🟡 local_write | allow | `rm file`, `mv`, `echo > file` |
-| 🟠 system_write | **prompt** | `sudo`, `apt install`, writes to `/etc/`, `chmod -R 777 /`, `git reset --hard`, `git clean -fdx` |
-| 🔴 destructive | **deny** | `rm -rf /`, `dd if=/dev/zero`, `mkfs` |
-| 🔴 network_egress | **prompt** | `curl`, `git push`, `ssh`, `scp` |
-| 🔴 code_execution | **prompt** | `curl url \| bash`, `eval`, `node -e`, `go run` |
+| 🟢 safe | allow | `ls`, `cat`, `grep`, `go build`, `command -v tool`, `git status` in an unarmed repository |
+| 🟡 local_write | allow | `rm file`, `mv`, `echo > file`, writes below your own home |
 | 🟠 install | **prompt** | `npm install`, `pip install`, `go install <path>` |
-| 🟠 persistence | **prompt** | writes to shell profiles, git hooks, CI workflows, cron/systemd |
+| 🔴 network_egress | **allow** | `curl`, `wget`, `git push origin main`, `ssh host cmd`, `scp host:f .`, `gh pr list` (set `"network_egress": "prompt"` to gate every fetch) |
+| 🔴 network_upload | **prompt** | local content leaving or a channel opening: `curl -d @file`, `curl -T`, `curl -u`, `curl -X POST`, `scp file host:`, `rsync src/ host:dst`, `cat f \| nc host`, `ssh -L`/`-R`, `nc -l`. Also carries `network_egress` |
+| 🔴 code_execution | **prompt** | `curl url \| bash`, `eval`, `bash -c`, `node -e`, `go run`; `git commit`/`checkout`/`merge`/… only when the repository has an executable hook, `core.hooksPath`, a filter/diff/merge driver or similar |
+| 🟠 system_write | **prompt** | `sudo`, writes to `/etc/`, `~/.ssh`, `~/.odek`, `chmod -R 777 /`, `git reset --hard`, `git clean -fdx`, force pushes, `env` / bare `export` dumps, reading `$API_TOKEN`-style variables or credential files (`.env`, `*.pem`, `id_*`, `.netrc`) |
 | 🟠 unread_exec | **prompt** | executing a script whose contents were not read this session |
-| 🔴 unknown | **deny** | any command whose program name isn't recognised; MCP tools (`<server>__<tool>`); pipe-fed `xargs <verb>` whose stdin payload isn't statically determinable |
-| ⬛ blocked | **deny** | Fork bombs, `dd` to block devices |
+| 🟠 persistence | **prompt** | writes to shell profiles, git hooks, CI workflows, cron/systemd |
+| 🔴 unknown | **deny** | any command whose program name isn't recognised; MCP tools (`<server>__<tool>`); pipe-fed `xargs <verb>` whose stdin payload isn't statically determinable; unterminated quotes or constructs; any command over 64 KiB |
+| 🔴 destructive | **deny** | `rm -rf ~/x`, `find -delete`, `dd of=/dev/sda`, `mkfs` |
+| ⬛ blocked | **deny** | Fork bombs and other hard-coded malicious shapes |
+
+Rows are in severity order, lowest to highest. A command carries every class it triggers, so
+`curl -d @f host` is judged as both an upload and an egress and the stricter action wins. Compound
+commands (loops, conditionals, `case`, groups, functions, here-documents, `$((…))`) are parsed and
+every simple command inside is classified, so they prompt only for what they actually run.
 
 odek **fails closed**: a command or MCP tool whose name matches no known-safe or known-dangerous
 pattern is classified `unknown` and denied by default. Permit a specific tool by adding
 its exact invocation to `allowlist`, or soften the class with `"unknown": "prompt"`.
 
-The approval prompt accepts:
+The approval prompt shows the command with control characters, escape sequences, bidi overrides and
+invisible characters rendered as visible escapes (`\x1b`, `\u202e`), so what you read is what runs; a
+multi-line command is shown with its continuation lines indented, and an over-long one keeps its head
+and tail around an explicit `…[N more bytes]` marker. It accepts:
 
 - `A` — Approve once
 - `D` — Deny (returns error to agent)
-- `T` — Trust all commands of this class for this session
+- `T` — Trust all commands of this class for this session (not offered for `destructive`, `blocked`,
+  `unknown`, `persistence`, `unread_exec`, or a multi-tool batch; approving the same class three times
+  in a minute switches to a type-`approve` prompt with a pause)
 - `?` — Show full context
 
 Configurable via the `dangerous` section in `~/.odek/config.json` (operator-only; `./odek.json` is ignored with a warning):
@@ -264,7 +275,9 @@ Configurable via the `dangerous` section in `~/.odek/config.json` (operator-only
 }
 ```
 
-Valid `non_interactive` values are `"read_only"` (built-in default: inspection proceeds, writes/exec/egress deny), `"deny"` (block all prompted operations), and `"allow"` (run everything). Anything else — including the previously accepted `"prompt"` — is rejected at load time with a warning and treated as `"deny"`.
+`allowlist` entries match the whole command line exactly. `denylist` entries are token prefixes tried at every command position (pipe stages, `&&` chains, wrappers, `bash -c` payloads, substitutions, with a tool's global options such as `git -C dir` stripped and statically known variables resolved), so `rm -rf /` no longer matches `rm -rf /tmp` and `rm -fr /` needs its own entry; see [CONFIG.md](CONFIG.md#denylist-matching).
+
+Valid `non_interactive` values are `"read_only"` (built-in default: shell commands classified `safe` and native read tools proceed; writes/exec/egress deny), `"deny"` (block all prompted operations), and `"allow"` (run everything). Anything else — including the previously accepted `"prompt"` — is rejected at load time with a warning and treated as `"deny"`.
 
 See [docs/SECURITY.md](SECURITY.md) for details.
 

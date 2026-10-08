@@ -8,6 +8,10 @@ import (
 )
 
 func TestEffectsConfirmedBypasses(t *testing.T) {
+	// git status and git add run the configured fsmonitor, so the pins below
+	// hold in a repository that configures one.
+	isolateGitEnv(t)
+	t.Chdir(makeRepo(t, t.TempDir(), "[core]\n\tfsmonitor = ./monitor\n"))
 	for _, tc := range []struct {
 		command string
 		want    RiskClass

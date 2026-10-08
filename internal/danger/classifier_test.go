@@ -3,6 +3,7 @@ package danger
 import (
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -189,8 +190,8 @@ func TestClassify_NetworkEgress_Commands(t *testing.T) {
 		{"git -c http.proxy=http://evil fetch origin", NetworkEgress},
 		{"git --git-dir /repo/.git push origin", SystemWrite},
 		{"git -C /repo -c key=val pull", NetworkEgress},
-		{"scp file user@remote:/path", NetworkEgress},
-		{"rsync -avz ./ user@remote:/backup", NetworkEgress},
+		{"scp file user@remote:/path", NetworkUpload},
+		{"rsync -avz ./ user@remote:/backup", NetworkUpload},
 		{"nc example.com 80", NetworkEgress},
 		{"ncat -v example.com 443", NetworkEgress},
 		{"ssh user@server", NetworkEgress},
@@ -208,28 +209,29 @@ func TestClassify_NetworkEgress_Commands(t *testing.T) {
 	}
 }
 
-func TestClassify_NetworkEgress_GitPushNeedsRemote(t *testing.T) {
-	// git push without args is safe (just prints upstream info)
+func TestClassify_NetworkEgress_BareGitPush(t *testing.T) {
+	// git push without args pushes the current branch to its upstream.
 	got := Classify("git push")
-	if got != Safe {
-		t.Errorf("Classify(\"git push\") = %s, want safe", got)
+	if got != NetworkEgress {
+		t.Errorf("Classify(\"git push\") = %s, want network_egress", got)
 	}
 }
 
 func TestClassify_NetworkEgress_Gh(t *testing.T) {
-	// gh gets the same classification as git: every real subcommand contacts
-	// the GitHub API (network egress); meta invocations stay local (safe).
+	// gh reads of the GitHub API are network egress; mutation, deletion and
+	// credential verbs are classified by verb (see gh_adapter_test.go); meta
+	// invocations stay local (safe).
 	tests := []struct {
 		cmd string
 		cls RiskClass
 	}{
 		{"gh pr view 123", NetworkEgress},
-		{"gh pr merge 125 --squash", NetworkEgress},
+		{"gh pr merge 125 --squash", SystemWrite},
 		{"gh repo clone owner/repo", NetworkEgress},
-		{"gh repo delete owner/repo --yes", NetworkEgress},
+		{"gh repo delete owner/repo --yes", Destructive},
 		{"gh api /user", NetworkEgress},
-		{"gh auth login", NetworkEgress},
-		{"gh release delete v1.0.0 --yes", NetworkEgress},
+		{"gh auth login", SystemWrite},
+		{"gh release delete v1.0.0 --yes", Destructive},
 		{"/usr/local/bin/gh pr checks", NetworkEgress},
 		// -R/--repo consumes the following token as its value; it must not be
 		// mistaken for the subcommand (parity with git -C).
@@ -535,7 +537,7 @@ func TestClassify_EdgeCases(t *testing.T) {
 		{"compound_or_fallback", "false || echo ok", Safe},
 		{"go_install_no_arg", "go install", CodeExecution},
 		{"go_install_remote", "go install github.com/foo/bar@latest", CodeExecution},
-		{"git_push_no_arg", "git push", Safe},
+		{"git_push_no_arg", "git push", NetworkEgress},
 		{"git_push_remote", "git push origin main", NetworkEgress},
 		{"sudo_ls_is_system_write", "sudo ls /root", SystemWrite},
 	}
@@ -766,16 +768,26 @@ func TestClassify_GitClone(t *testing.T) {
 }
 
 func TestClassify_GitStatusRunsConfiguredMonitor(t *testing.T) {
-	got := Classify("git status")
-	if got != CodeExecution {
-		t.Errorf("Classify(git status) = %s, want code_execution", got)
+	isolateGitEnv(t)
+	repo := makeRepo(t, t.TempDir(), "")
+	t.Chdir(repo)
+	if got := Classify("git status"); got != Safe {
+		t.Errorf("Classify(git status) in an unarmed repository = %s, want safe", got)
+	}
+	writeTestFile(t, filepath.Join(repo, ".git", "config"), "[core]\n\tfsmonitor = ./monitor\n", 0o644)
+	if got := Classify("git status"); got != CodeExecution {
+		t.Errorf("Classify(git status) with core.fsmonitor = %s, want code_execution", got)
 	}
 }
 
 func TestClassify_Scp(t *testing.T) {
 	got := Classify("scp file user@host:/path")
-	if got != NetworkEgress {
-		t.Errorf("Classify(scp) = %s, want network_egress", got)
+	if got != NetworkUpload {
+		t.Errorf("Classify(scp) = %s, want network_upload", got)
+	}
+	// The download direction stays plain egress.
+	if got := Classify("scp user@host:/path file"); got != NetworkEgress {
+		t.Errorf("Classify(scp download) = %s, want network_egress", got)
 	}
 }
 
@@ -789,8 +801,11 @@ func TestClassify_RsyncLocal(t *testing.T) {
 
 func TestClassify_RsyncRemote(t *testing.T) {
 	got := Classify("rsync -av /src/ user@host:/dst/")
-	if got != NetworkEgress {
-		t.Errorf("Classify(rsync remote) = %s, want network_egress", got)
+	if got != NetworkUpload {
+		t.Errorf("Classify(rsync remote) = %s, want network_upload", got)
+	}
+	if got := Classify("rsync -av user@host:/src/ /dst/"); got != NetworkEgress {
+		t.Errorf("Classify(rsync download) = %s, want network_egress", got)
 	}
 }
 
@@ -798,6 +813,7 @@ func TestClassify_RsyncRemote(t *testing.T) {
 // git config can inject arbitrary shell commands through aliases, pager, and
 // credential helpers, so they must classify as code_execution.
 func TestClassify_GitConfigCodeExecution(t *testing.T) {
+	chdirUnarmedRepo(t)
 	tests := []struct {
 		cmd  string
 		want RiskClass
@@ -812,8 +828,10 @@ func TestClassify_GitConfigCodeExecution(t *testing.T) {
 		{`git config user.email x`, CodeExecution},
 		// Benign config overrides stay in their normal class.
 		{`git -c http.proxy=http://evil fetch origin`, NetworkEgress},
+		// An unresolvable repository fails closed; a resolvable unarmed one
+		// is routine.
 		{`git -C /repo status`, CodeExecution},
-		{`git status`, CodeExecution},
+		{`git status`, Safe},
 	}
 	for _, tt := range tests {
 		t.Run(tt.cmd, func(t *testing.T) {
@@ -841,7 +859,7 @@ func TestClassify_FindRsyncDestructive(t *testing.T) {
 		{"rsync -av --remove-source-files /a /b", Destructive},
 		{"rsync -av --del /a /b", Destructive},
 		{"rsync -av /src/ /dst/", Safe},
-		{"rsync -av /src/ user@host:/dst/", NetworkEgress},
+		{"rsync -av /src/ user@host:/dst/", NetworkUpload},
 	}
 	for _, tt := range tests {
 		t.Run(tt.cmd, func(t *testing.T) {
@@ -1197,12 +1215,13 @@ func TestRank(t *testing.T) {
 		{"local_write", LocalWrite, 2},
 		{"install", Install, 3},
 		{"network_egress", NetworkEgress, 4},
-		{"code_execution", CodeExecution, 5},
-		{"system_write", SystemWrite, 6},
-		{"persistence", Persistence, 7},
-		{"unknown", Unknown, 8},
-		{"destructive", Destructive, 9},
-		{"blocked", Blocked, 10},
+		{"network_upload", NetworkUpload, 5},
+		{"code_execution", CodeExecution, 6},
+		{"system_write", SystemWrite, 7},
+		{"persistence", Persistence, 8},
+		{"unknown", Unknown, 9},
+		{"destructive", Destructive, 10},
+		{"blocked", Blocked, 11},
 		{"unrecognized_class", RiskClass("bogus"), 0},
 	}
 	for _, tt := range tests {

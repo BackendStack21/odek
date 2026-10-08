@@ -328,7 +328,7 @@ func (t *shellTool) checkApproval(cmd, description string) error {
 	case danger.Allow:
 		return nil
 	case danger.Deny:
-		return fmt.Errorf("operation denied by configuration: %s", cmd)
+		return fmt.Errorf("operation denied by configuration: %s", danger.SanitizeInline(cmd))
 	case danger.Prompt:
 		return t.promptUser(cmd, description)
 	default:

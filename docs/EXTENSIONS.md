@@ -213,7 +213,10 @@ tool-call ID when present, else a deterministic `it<iteration>-call<index>`
 synthetic ID. Batched parallel calls MUST be paired via `call_id` — never
 by positional order. `args_summary` is structured, low-cardinality audit
 metadata extracted from the arguments — for shell tools the program name
-(`argv0`, leading env assignments skipped) plus the danger `class`; for
+(`argv0`, leading env assignments skipped) plus the danger `class` (the
+summary class of the command: the highest-ranked of its effects, one of `safe`,
+`local_write`, `system_write`, `persistence`, `destructive`, `network_egress`,
+`network_upload`, `code_execution`, `install`, `blocked`, `unknown`); for
 path tools the target `path`/`path` list and `class`; for browser/http
 tools the URL `host` only (full URLs can embed credentials). It is always
 present for recognized tools; values pass through secret redaction like

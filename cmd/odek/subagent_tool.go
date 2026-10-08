@@ -245,7 +245,7 @@ func (t *delegateTasksTool) Schema() any {
 						},
 						"max_risk": map[string]any{
 							"type":        "string",
-							"enum":        []string{"safe", "local_write", "system_write", "destructive", "code_execution", "network_egress", "install", "blocked"},
+							"enum":        []string{"safe", "local_write", "system_write", "destructive", "code_execution", "network_egress", "network_upload", "install", "blocked"},
 							"description": "Optional cap on the sub-agent's allowed risk class; calls above it are denied without prompting.",
 						},
 						"profile": map[string]any{

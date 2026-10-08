@@ -45,6 +45,7 @@ func TestRED_GitDaemonInstawebFetchPackAreNetworkEgress(t *testing.T) {
 // History rewrite, ref deletion, and object import that is not in
 // the existing data-loss list classifies as safe.
 func TestRED_GitFilterRepoReplaceAndBundleAreDataLoss(t *testing.T) {
+	chdirUnarmedRepo(t)
 	cmds := []string{
 		"git filter-repo --force",
 		"git replace -d HEAD",
@@ -57,15 +58,12 @@ func TestRED_GitFilterRepoReplaceAndBundleAreDataLoss(t *testing.T) {
 			t.Errorf("Classify(%q) = %s, want system_write", c, got)
 		}
 	}
-	// Hook/filter/fsmonitor operations retain execution; metadata listing
-	// and non-executing local forms retain their existing classification.
+	// Hook/filter/fsmonitor operations execute only where the repository is
+	// armed (see git_hooks_aware_test.go); in an unarmed one these local Git
+	// verbs are routine.
 	for _, c := range []string{"git status", "git tag -l", "git rm -r tracked-dir/", "git gc --prune=now --aggressive", "git add .", "git commit -m x"} {
-		want := Safe
-		if c == "git commit -m x" || c == "git status" || c == "git gc --prune=now --aggressive" || c == "git add ." {
-			want = CodeExecution
-		}
-		if got := Classify(c); got != want {
-			t.Errorf("Classify(%q) = %s, want %s (local Git effects)", c, got, want)
+		if got := Classify(c); got != Safe {
+			t.Errorf("Classify(%q) = %s, want safe (local Git effects)", c, got)
 		}
 	}
 }

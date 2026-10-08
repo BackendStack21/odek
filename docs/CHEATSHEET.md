@@ -94,18 +94,25 @@ Every shell command and file write is danger-classified; per-class action is all
 
 | Class | Default | Covers |
 |-------|---------|--------|
-| `safe` | allow | reads, `ls`, `cat`, `grep` |
-| `local_write` | allow | workspace writes |
+| `safe` | allow | reads, `ls`, `cat`, `grep`, `command -v`, ordinary git verbs in an unarmed repo |
+| `local_write` | allow | workspace writes, writes below your own home |
 | `install` | prompt | `pip install`, `npm install`, … |
-| `network_egress` | prompt | `curl`, `git push`, browser |
-| `code_execution` | prompt | `bash -c`, `source`, pipe-to-shell |
-| `system_write` | prompt | `/etc`, `~/.ssh`, `~/.odek` trust anchors |
-| `persistence` | prompt | deferred-execution writes: shell profiles, `.envrc`, git hooks, CI workflows, cron/systemd/launchd, lifecycle scripts |
+| `network_egress` | **allow** | `curl`, `wget`, `git push origin main`, browser (set `prompt` to gate every fetch) |
+| `network_upload` | prompt | local content leaving or a channel opening: `curl -d @f`/`-T`/`-u`/`-X POST`, `scp f host:`, `rsync src/ host:`, `cat f \| nc`, `ssh -L`/`-R`, `nc -l` (also carries `network_egress`) |
+| `code_execution` | prompt | `bash -c`, `source`, pipe-to-shell, `go run`; `git commit`/`checkout`/… only in a repo armed with hooks, drivers or `core.hooksPath` |
+| `system_write` | prompt | `/etc`, `~/.ssh`, `~/.odek` trust anchors, `git reset --hard`, env dumps, secret reads |
 | `unread_exec` | prompt | executing a script whose contents were not read this session |
-| `destructive` / `blocked` / `unknown` | deny | `rm -rf /`, wipe verbs, unrecognised verbs |
+| `persistence` | prompt | deferred-execution writes: shell profiles, `.envrc`, git hooks, CI workflows, cron/systemd/launchd, lifecycle scripts |
+| `unknown` / `destructive` / `blocked` | deny | unrecognised verbs and anything over 64 KiB; `rm -rf ~/x`, wipe verbs; fork bombs |
 
-- **Headless default is `non_interactive: "read_only"`** — inspection proceeds without a TTY, writes/exec/egress fail closed. `"deny"` blocks everything prompted; `"allow"` runs everything. An invalid explicit value fails closed to `deny`.
-- **Trust shortcuts never apply** to `persistence`, `unread_exec`, `destructive`, `blocked`, or `unknown` — each write/script is reviewed individually.
+Rows are in severity order; the strictest class a command triggers wins. Sub-agent `max_risk` uses the same order (`safe` < `local_write` < `install` < `network_egress` < `network_upload` < `code_execution` < `system_write` < `persistence` < `unknown` < `destructive` < `blocked`).
+
+- **Now prompts** (used to pass): uploads and listeners (`curl -d @f`, `scp f host:`, `nc -l`), reading secrets (`$API_TOKEN`, `${!v}`, `cat .env`, `*.pem`, `id_*`, `.netrc`), env dumps incl. bare `export`/`declare`, `export PATH=…`/`LD_PRELOAD=…`, and unread scripts fed through pipes or `-f` options.
+- **No longer prompts**: ordinary git verbs (`status`, `add`, `commit`, `checkout`, `merge`) in an unarmed repo, `command -v tool`, loops and conditionals, here-documents, `$((…))` arithmetic.
+- **Denylist** entries are token prefixes tried at every command position (chains, pipes, wrappers, `-c` payloads, substitutions; `git -C dir` global options stripped; known variables resolved). `rm -rf /` no longer matches `rm -rf /tmp`, and `rm -fr /` is a separate entry.
+- **Headless default is `non_interactive: "read_only"`** — `safe` shell commands and native read tools proceed without a TTY; writes/exec/egress fail closed. `"deny"` blocks everything prompted; `"allow"` runs everything. An invalid explicit value fails closed to `deny`.
+- **Approval prompts** show the command with control, escape and bidi characters escaped; continuation lines are indented.
+- **Trust shortcuts never apply** to `persistence`, `unread_exec`, `destructive`, `blocked`, `unknown`, or a multi-tool batch — each write/script is reviewed individually.
 - Reads of CI workflows / hook files stay frictionless; only **writes** escalate to `persistence`. A full-file `read_file` (or authoring the content yourself) satisfies the `unread_exec` gate; a partial or failed read licenses nothing.
 
 ### Audio Transcription
@@ -153,7 +160,7 @@ Settings: `auto_describe` (Telegram photo → description before the agent answe
 - Returns ranked results (title, url, snippet, engine) + direct answers; results are wrapped as untrusted content
 - The agent then fetches page content with `browser`; `http_request` checks status and size only
 - **Registered only when `web_search.base_url` is set.** The Docker compose setup runs a SearXNG sidecar and sets it automatically; outside Docker, run SearXNG yourself and point `base_url` at it
-- Gated as `network_egress` (prompts in restricted, allowed in godmode) — the backend URL is fixed config, so there is no SSRF surface
+- Gated as `network_egress` (allowed by default; prompts only if you set `network_egress` to `prompt`) — the backend URL is fixed config, so there is no SSRF surface
 - Configure via `web_search` section:
 
 ```json

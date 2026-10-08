@@ -249,6 +249,21 @@ odek's sandbox follows the principle of **least privilege with progressive opt-i
 | **Isolated process** | Detached `sleep infinity` — agent commands run via `docker exec` |
 | **Ephemeral** | Container destroyed when agent finishes or is interrupted |
 
+### Home directory and risk classification
+
+The danger classifier treats the current user's own home as ordinary workspace
+territory, whatever its path. When odek itself runs as root inside a container
+(`HOME=/root`, as in the odek image), `/root` is therefore not classified as a
+system path: `echo x > ~/notes.txt` is a `local_write`, not a `system_write`
+prompt. The protected targets under that home still escalate — shell rc files,
+`~/.ssh`, `~/.aws` and other credential directories, and the `~/.odek` trust
+anchors — and other users' homes (including `/root` seen from a non-root user)
+keep their system-path rules. A service account whose `HOME` is a system-looking
+path gets the same treatment; a degenerate `HOME` such as `/` or `/etc` never does.
+The classifier decides which commands prompt; it does not change what the
+container can reach. Isolation still comes from the mounts, capabilities and
+network settings above.
+
 ### With `--sandbox-network none`
 
 | Hardening | How it's enforced |

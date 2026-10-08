@@ -16,6 +16,7 @@ import (
 	"strings"
 
 	"github.com/BackendStack21/odek/internal/config"
+	"github.com/BackendStack21/odek/internal/danger"
 	"github.com/BackendStack21/odek/internal/fsatomic"
 	"github.com/BackendStack21/odek/internal/guard"
 	"github.com/BackendStack21/odek/internal/mcpclient"
@@ -117,21 +118,21 @@ func approveMCPServersWithTTY(resolved config.ResolvedConfig, stdin io.Reader, s
 
 		if cfg.URL != "" {
 			fmt.Fprintf(stdout, "\nProject-level MCP server %q wants to connect:\n", name)
-			fmt.Fprintf(stdout, "  url: %s\n", cfg.URL)
+			fmt.Fprintf(stdout, "  url: %s\n", danger.SanitizeInline(cfg.URL))
 			if cfg.TokenEnv != "" {
-				fmt.Fprintf(stdout, "  token_env: %s\n", cfg.TokenEnv)
+				fmt.Fprintf(stdout, "  token_env: %s\n", danger.SanitizeInline(cfg.TokenEnv))
 			}
 		} else {
 			fmt.Fprintf(stdout, "\nProject-level MCP server %q wants to run:\n", name)
-			fmt.Fprintf(stdout, "  command: %s\n", cfg.Command)
+			fmt.Fprintf(stdout, "  command: %s\n", danger.SanitizeInline(cfg.Command))
 			if len(cfg.Args) > 0 {
-				fmt.Fprintf(stdout, "  args:    %s\n", strings.Join(cfg.Args, " "))
+				fmt.Fprintf(stdout, "  args:    %s\n", danger.SanitizeInline(strings.Join(cfg.Args, " ")))
 			}
 			if len(cfg.Env) > 0 {
 				envKeys := sortedEnvKeys(cfg.Env)
 				fmt.Fprintf(stdout, "  env:\n")
 				for _, k := range envKeys {
-					fmt.Fprintf(stdout, "    %s=%s\n", k, cfg.Env[k])
+					fmt.Fprintf(stdout, "    %s=%s\n", danger.SanitizeInline(k), danger.SanitizeInline(cfg.Env[k]))
 				}
 			}
 		}
@@ -145,7 +146,7 @@ func approveMCPServersWithTTY(resolved config.ResolvedConfig, stdin io.Reader, s
 			fmt.Fprintf(stdout, "  max_result_chars: %d\n", cfg.MaxResultChars)
 		}
 		if len(cfg.ArtifactRoots) > 0 {
-			fmt.Fprintf(stdout, "  artifact_roots: %s\n", strings.Join(cfg.ArtifactRoots, ", "))
+			fmt.Fprintf(stdout, "  artifact_roots: %s\n", danger.SanitizeInline(strings.Join(cfg.ArtifactRoots, ", ")))
 		}
 		fmt.Fprintf(stdout, "Approve? [y/N] ")
 
@@ -293,7 +294,7 @@ func approveMCPToolsWithTTY(projectDir, serverName string, cfg mcpclient.ServerC
 
 		fmt.Fprintf(stdout, "\nMCP server %q wants to register tool %q\n", serverName, def.Name)
 		if def.Description != "" {
-			fmt.Fprintf(stdout, "  description: %s\n", sanitizeTerminal(truncateDescription(def.Description, 200)))
+			fmt.Fprintf(stdout, "  description: %s\n", danger.SanitizeInline(sanitizeTerminal(truncateDescription(def.Description, 200))))
 		}
 		fmt.Fprintf(stdout, "  schema: sha256:%s (%d bytes)\n", schemaHash[:16], schemaSize)
 		fmt.Fprintf(stdout, "Approve? [y/N] ")

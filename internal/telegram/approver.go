@@ -284,12 +284,12 @@ func (a *TelegramApprover) PromptCommand(cls danger.RiskClass, cmd, description 
 			a.mu.Unlock()
 			return nil
 		case "deny":
-			return fmt.Errorf("operation denied by user: %s", cmd)
+			return fmt.Errorf("operation denied by user: %s", danger.SanitizeInline(cmd))
 		default:
-			return fmt.Errorf("operation denied: %s", cmd)
+			return fmt.Errorf("operation denied: %s", danger.SanitizeInline(cmd))
 		}
 	case <-a.cancel:
-		return fmt.Errorf("approval cancelled: %s", cmd)
+		return fmt.Errorf("approval cancelled: %s", danger.SanitizeInline(cmd))
 	case <-time.After(approvalTimeout):
 		// Mark the prompt visibly expired and strip the buttons so a stale
 		// keyboard can't be tapped after the wait window closed.
@@ -298,7 +298,7 @@ func (a *TelegramApprover) PromptCommand(cls danger.RiskClass, cmd, description 
 			&SendOpts{ParseMode: ParseModeMarkdownV2, ReplyMarkup: &InlineKeyboardMarkup{InlineKeyboard: [][]InlineKeyboardButton{}}}); err != nil {
 			a.log.Warn("telegram approver: expire prompt edit failed", "message_id", pr.messageID, "error", err)
 		}
-		return fmt.Errorf("approval timeout: %s", cmd)
+		return fmt.Errorf("approval timeout: %s", danger.SanitizeInline(cmd))
 	}
 }
 
@@ -383,6 +383,11 @@ const telegramMaxMsgLen = 4096
 // exceed telegramMaxMsgLen, and when it is, the cut is explicit ("… [truncated]")
 // and made on a rune boundary.
 func buildApprovalText(cls danger.RiskClass, cmd, description string) string {
+	// Control and bidi/invisible format characters in model-supplied text can
+	// make the chat show a different command from the one that runs; they are
+	// replaced by visible escapes before any Markdown handling.
+	cmd = danger.SanitizeForDisplay(cmd)
+	description = danger.SanitizeForDisplay(description)
 	var b strings.Builder
 	b.WriteString("⚠️ *Approval Required*\n\n")
 	fmt.Fprintf(&b, "Risk: `%s`\n", escapeCodeBlock(string(cls)))

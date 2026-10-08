@@ -47,15 +47,16 @@ const ToolBatchClass = RiskClass("tool_batch")
 // was granted, so a one-time "trust" must not cover every future hook,
 // profile, and CI-workflow write. UnreadExec is excluded because the
 // entire point of the gate is per-script review — trusting it once would
-// blanket-approve every unread script for the session.
+// blanket-approve every unread script for the session. NetworkUpload keeps
+// the shortcut, like SystemWrite: the friction rules cover repeated approvals.
 func TrustShortcutAllowed(cls RiskClass) bool {
 	return cls != Destructive && cls != Blocked && cls != Unknown &&
 		cls != ToolBatchClass && cls != Persistence && cls != UnreadExec
 }
 
 // readToolNames are the native tools whose entire effect on their target is
-// inspection. Used by the read_only non-interactive fallback — the
-// description parameter of PromptOperation carries the tool name.
+// inspection. Used by the read_only non-interactive fallback, keyed on the
+// operation name of PromptOperation only.
 var readToolNames = map[string]bool{
 	"read_file": true, "search_files": true, "glob": true,
 	"file_info": true, "tree": true, "diff": true,
@@ -231,26 +232,29 @@ func (a *TTYApprover) SetTrustAll(enabled bool) {
 	a.mu.Unlock()
 }
 
+// PromptCommand never treats description as a tool name: for shell commands
+// it is model-supplied free text, so the read_only carve-out for native read
+// tools cannot be reached through it.
 func (a *TTYApprover) PromptCommand(cls RiskClass, cmd, description string) error {
-	return a.prompt(cls, cmd, description)
+	return a.prompt(cls, cmd, description, false)
 }
 
 func (a *TTYApprover) PromptOperation(op ToolOperation) error {
-	return a.prompt(op.Risk, op.Resource, op.Name)
+	return a.prompt(op.Risk, op.Resource, op.Name, isReadToolName(op.Name))
 }
 
-func (a *TTYApprover) prompt(cls RiskClass, cmd, description string) error {
+func (a *TTYApprover) prompt(cls RiskClass, cmd, description string, readTool bool) error {
 	// Serialize all TTY prompts process-wide. Concurrent tool calls
 	// otherwise open /dev/tty independently and race for keystrokes.
 	ttyPromptMu.Lock()
 	defer ttyPromptMu.Unlock()
-	return a.promptLocked(cls, cmd, description)
+	return a.promptLocked(cls, cmd, description, readTool)
 }
 
 // promptLocked is the inner prompt implementation. The caller must hold
 // ttyPromptMu. It may recurse for the "context" command or after telling
 // the user that trust-session is unavailable for a high-impact class.
-func (a *TTYApprover) promptLocked(cls RiskClass, cmd, description string) error {
+func (a *TTYApprover) promptLocked(cls RiskClass, cmd, description string, readTool bool) error {
 	// Check session trust cache. Trust shortcuts only ever cover classes
 	// TrustShortcutAllowed permits — Destructive, Persistence, UnreadExec,
 	// Blocked, Unknown and ToolBatch always prompt, even with trustAll set.
@@ -280,15 +284,15 @@ func (a *TTYApprover) promptLocked(cls RiskClass, cmd, description string) error
 			case Allow:
 				return nil
 			case ReadOnly:
-				if Rank(cls) < Rank(SystemWrite) && (cls == Safe || isReadToolName(description)) {
+				if Rank(cls) < Rank(SystemWrite) && (cls == Safe || readTool) {
 					return nil
 				}
-				return fmt.Errorf("operation denied (non-interactive read_only mode): %s", cmd)
+				return fmt.Errorf("operation denied (non-interactive read_only mode): %s", SanitizeInline(cmd))
 			default:
-				return fmt.Errorf("operation denied (non-interactive mode): %s", cmd)
+				return fmt.Errorf("operation denied (non-interactive mode): %s", SanitizeInline(cmd))
 			}
 		}
-		return fmt.Errorf("operation denied (test binary, no approval fixture): %s", cmd)
+		return fmt.Errorf("operation denied (test binary, no approval fixture): %s", SanitizeInline(cmd))
 	}
 	tty, err := os.OpenFile(a.TTYPath, os.O_RDWR, 0)
 	if err != nil {
@@ -301,21 +305,21 @@ func (a *TTYApprover) promptLocked(cls RiskClass, cmd, description string) error
 				// Reads proceed, mutations do not. A read is either a
 				// Safe-classified shell command (ls, cat — the classifier
 				// already judged it non-mutating) or a native read tool
-				// (description carries the tool name) targeting anything
+				// (named by PromptOperation, never by a description) targeting anything
 				// below the system_write tier — sensitive-location reads
 				// still gate.
-				if Rank(cls) < Rank(SystemWrite) && (cls == Safe || isReadToolName(description)) {
+				if Rank(cls) < Rank(SystemWrite) && (cls == Safe || readTool) {
 					return nil
 				}
-				return fmt.Errorf("operation denied (non-interactive read_only mode): %s", cmd)
+				return fmt.Errorf("operation denied (non-interactive read_only mode): %s", SanitizeInline(cmd))
 			default: // deny
-				return fmt.Errorf("operation denied (non-interactive mode): %s", cmd)
+				return fmt.Errorf("operation denied (non-interactive mode): %s", SanitizeInline(cmd))
 			}
 		}
 		// No fallback configured and no interactive terminal: deny. The
 		// legacy path returned nil here — a fail-open default for a
 		// security gate (headless/CI runs silently approved everything).
-		return fmt.Errorf("operation denied (no approval channel configured): %s", cmd)
+		return fmt.Errorf("operation denied (no approval channel configured): %s", SanitizeInline(cmd))
 	}
 	defer tty.Close()
 
@@ -338,11 +342,7 @@ func (a *TTYApprover) promptLocked(cls RiskClass, cmd, description string) error
 	friction := a.shouldFriction(cls)
 
 	// Build the prompt
-	fmt.Fprintf(os.Stderr, "\n⚠️  \033[1mRisk:\033[0m  %s\n", cls)
-	fmt.Fprintf(os.Stderr, "   \033[1mRun:\033[0m  %s\n", cmd)
-	if description != "" {
-		fmt.Fprintf(os.Stderr, "   \033[1mWhy:\033[0m  %s\n", description)
-	}
+	fmt.Fprint(os.Stderr, formatApprovalPrompt(cls, cmd, description))
 	if friction {
 		fmt.Fprintf(os.Stderr, "\n   ⚠️  You have approved %d %s operations in the last %s.\n",
 			a.recentApprovalCount(cls), cls, a.FrictionWindow)
@@ -376,7 +376,7 @@ func (a *TTYApprover) promptLocked(cls RiskClass, cmd, description string) error
 			a.recordApproval(cls)
 			return nil
 		case "d", "deny", "n", "no":
-			return fmt.Errorf("operation denied by user (friction mode): %s", cmd)
+			return fmt.Errorf("operation denied by user (friction mode): %s", SanitizeInline(cmd))
 		default:
 			fmt.Fprint(os.Stderr, "   Friction mode: type 'approve' (full word) to proceed, or 'd' to deny: ")
 			line2, err := a.readTTYLine(tty, reader)
@@ -388,7 +388,7 @@ func (a *TTYApprover) promptLocked(cls RiskClass, cmd, description string) error
 				a.recordApproval(cls)
 				return nil
 			}
-			return fmt.Errorf("operation denied by user (friction mode): %s", cmd)
+			return fmt.Errorf("operation denied by user (friction mode): %s", SanitizeInline(cmd))
 		}
 	}
 
@@ -399,7 +399,7 @@ func (a *TTYApprover) promptLocked(cls RiskClass, cmd, description string) error
 	case "t", "trust":
 		if !allowTrust {
 			fmt.Fprintf(os.Stderr, "   trust-session not available for %s — type 'a' to approve once or 'd' to deny\n", cls)
-			return a.promptLocked(cls, cmd, description)
+			return a.promptLocked(cls, cmd, description, readTool)
 		}
 		// A trust grant is an approval: record it so rapid-fire grants
 		// engage the same approval-fatigue friction as plain approvals.
@@ -412,19 +412,19 @@ func (a *TTYApprover) promptLocked(cls RiskClass, cmd, description string) error
 		a.mu.Unlock()
 		return nil
 	case "?", "context":
-		fmt.Fprintf(tty, "\n  Command: %s\n", cmd)
+		fmt.Fprintf(tty, "\n  Command: %s\n", indentContinuation(SanitizeForDisplay(cmd)))
 		fmt.Fprintf(tty, "  Risk class: %s\n", cls)
 		if description != "" {
-			fmt.Fprintf(tty, "  Description: %s\n", description)
+			fmt.Fprintf(tty, "  Description: %s\n", indentContinuation(SanitizeInline(description)))
 		}
 		a.mu.Lock()
 		trusted := a.TrustedClasses[cls]
 		a.mu.Unlock()
 		fmt.Fprintf(tty, "  Trust this class: %v\n", trusted)
 		// Re-prompt
-		return a.promptLocked(cls, cmd, description)
+		return a.promptLocked(cls, cmd, description, readTool)
 	default:
-		return fmt.Errorf("operation denied by user: %s", cmd)
+		return fmt.Errorf("operation denied by user: %s", SanitizeInline(cmd))
 	}
 }
 

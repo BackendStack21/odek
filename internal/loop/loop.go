@@ -110,17 +110,21 @@ func evictLowestStallCount(m map[string]int) (string, bool) {
 
 // startToolHeartbeat launches a watchdog goroutine that emits a
 // "tool_running" SignalEvent every toolHeartbeatInterval until the returned
-// channel is closed or ctx is cancelled. The SignalHandler contract is
+// stop function is called or ctx is cancelled. The SignalHandler contract is
 // non-blocking, so the heartbeat never delays tool execution or the loop.
-// Callers must close the returned channel when the tool call ends (including
-// panic paths) so the watchdog goroutine cannot leak.
-func (e *Engine) startToolHeartbeat(ctx context.Context, toolName string) chan<- struct{} {
+// Callers must call stop when the tool call ends (including panic paths) so
+// the watchdog goroutine cannot leak. stop returns only once the watchdog
+// has exited, so no heartbeat is emitted after the call has returned: a tick
+// that became ready together with the stop request is dropped, not reported.
+func (e *Engine) startToolHeartbeat(ctx context.Context, toolName string) (stop func()) {
 	// Snapshot the interval on the caller's goroutine: reading the package
 	// var inside the watchdog would race with tests overriding it after the
 	// spawning test completed but before the goroutine got scheduled.
 	interval := toolHeartbeatInterval
 	done := make(chan struct{})
+	stopped := make(chan struct{})
 	go func() {
+		defer close(stopped)
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		start := time.Now()
@@ -131,6 +135,11 @@ func (e *Engine) startToolHeartbeat(ctx context.Context, toolName string) chan<-
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
+				select {
+				case <-done:
+					return
+				default:
+				}
 				e.emitSignal(SignalEvent{
 					Type:   "tool_running",
 					Tool:   toolName,
@@ -139,7 +148,10 @@ func (e *Engine) startToolHeartbeat(ctx context.Context, toolName string) chan<-
 			}
 		}
 	}()
-	return done
+	return func() {
+		close(done)
+		<-stopped
+	}
 }
 
 // insertionIndexBeforeLatestUser returns the index at which an injected
@@ -3393,7 +3405,7 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 					// Show the full resource/command. Telegram/Web UI renderers
 					// truncate responsibly; hiding part of a command is exactly
 					// what lets a hidden payload slip through a single approval.
-					sb.WriteString(fmt.Sprintf("  %d. `%s` — `%s`\n", i+1, rc.name, rc.resource))
+					sb.WriteString(batchApprovalLine(i, rc.name, rc.resource))
 				}
 				description := sb.String()
 
@@ -3561,7 +3573,7 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 						// other tool error, so the LLM sees it and the consecutive-error
 						// tracking counts it.
 						func() {
-							defer close(stopHeartbeat)
+							defer stopHeartbeat()
 							defer func() {
 								if r := recover(); r != nil {
 									output = fmt.Sprintf("error: tool %q panicked: %v", tcRef.Function.Name, r)
@@ -4430,4 +4442,12 @@ func (e *Engine) completionNudgeText() string {
 		b.WriteString(" Declared acceptance checks remain unverified. Run their declared tools through the normal approval path, then complete the step; if blocked, report the missing verification. A plan update cannot self-certify a check.")
 	}
 	return b.String()
+}
+
+// batchApprovalLine renders one numbered item of the batch approval card. The
+// tool name and resource are model-supplied, so they are shown with control
+// and bidi characters made visible and newlines escaped: a multi-line
+// resource must not be able to start a second item.
+func batchApprovalLine(i int, name, resource string) string {
+	return fmt.Sprintf("  %d. `%s` — `%s`\n", i+1, danger.SanitizeInline(name), danger.SanitizeInline(resource))
 }

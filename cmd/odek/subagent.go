@@ -527,6 +527,7 @@ var subagentRiskCapOrder = []danger.RiskClass{
 	danger.Persistence,
 	danger.SystemWrite,
 	danger.CodeExecution,
+	danger.NetworkUpload,
 	danger.NetworkEgress,
 	danger.Install,
 	danger.LocalWrite,
@@ -1594,6 +1595,7 @@ func applySubagentTrust(dc *danger.DangerousConfig, trustLevel, maxRisk string) 
 			danger.Persistence,
 			danger.UnreadExec,
 			danger.NetworkEgress,
+			danger.NetworkUpload,
 			danger.Unknown,
 			danger.Blocked,
 		} {
@@ -1627,8 +1629,10 @@ func clampClassesAboveMaxRisk(dc *danger.DangerousConfig, maxRisk string) {
 		danger.Persistence,
 		danger.Destructive,
 		danger.NetworkEgress,
+		danger.NetworkUpload,
 		danger.CodeExecution,
 		danger.Install,
+		danger.UnreadExec,
 		danger.Unknown,
 		danger.Blocked,
 	} {

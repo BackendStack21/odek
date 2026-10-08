@@ -6,8 +6,11 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"syscall"
 )
 
 // ── Read ledger + unread-script execution gate ────────────────────
@@ -46,6 +49,9 @@ type readEntry struct {
 	modNano int64
 	hash    [32]byte
 	hashed  bool
+	// seq orders entries by when they were recorded; the oldest are evicted
+	// first when a session ledger is full. Assigned by the ledger.
+	seq uint64
 }
 
 var readLedgerMu sync.RWMutex
@@ -56,7 +62,33 @@ var readLedgerMu sync.RWMutex
 // without a context — that keeps CLI-shaped tests working. Long-lived
 // surfaces (serve, telegram, schedule) stamp WithLedgerKey on the run
 // context so a read in session A cannot license execution in session B.
-var readLedgers = map[string]map[string]readEntry{}
+//
+// The ledgers are bounded: a session holds at most maxLedgerPaths paths
+// (oldest reads evicted first) and at most maxLedgerSessions session keys
+// exist at once (least recently used evicted first; the default key never).
+// Eviction only ever removes a licence, so an evicted script gates again
+// until it is re-read. Callers drop a finished session with
+// ForgetReadLedger.
+var readLedgers = map[string]*sessionLedger{}
+
+// Ledger bounds. Variables so tests can exercise eviction cheaply.
+var (
+	maxLedgerPaths    = 4096
+	maxLedgerSessions = 1024
+)
+
+// ledgerClock orders ledger activity: entry recording and session use.
+var ledgerClock atomic.Uint64
+
+// sessionLedger is one session's read receipts.
+type sessionLedger struct {
+	entries map[string]readEntry
+	// lastUsed is the ledgerClock value of the latest record or lookup; it is
+	// updated under the read lock, hence atomic.
+	lastUsed atomic.Uint64
+}
+
+func (l *sessionLedger) touch() { l.lastUsed.Store(ledgerClock.Add(1)) }
 
 type ledgerKeyCtx struct{}
 
@@ -91,7 +123,7 @@ func FinishReadDelivery(ctx context.Context, delivered bool) {
 	if delivered {
 		readLedgerMu.Lock()
 		for path, entry := range d.entries {
-			ledgerMapLocked(ledgerKeyFrom(ctx))[path] = entry
+			putLedgerLocked(ledgerKeyFrom(ctx), path, entry)
 		}
 		readLedgerMu.Unlock()
 	}
@@ -122,7 +154,7 @@ func RecordReadContentCtx(ctx context.Context, path string, size int64, digest [
 		return
 	}
 	readLedgerMu.Lock()
-	ledgerMapLocked(ledgerKeyFrom(ctx))[abs] = entry
+	putLedgerLocked(ledgerKeyFrom(ctx), abs, entry)
 	readLedgerMu.Unlock()
 }
 
@@ -146,15 +178,75 @@ func ledgerKeyFrom(ctx context.Context) string {
 	return ""
 }
 
-// ledgerMapLocked returns the path map for key. Caller must hold
-// readLedgerMu (write lock if the map may be created).
-func ledgerMapLocked(key string) map[string]readEntry {
-	m := readLedgers[key]
-	if m == nil {
-		m = make(map[string]readEntry)
-		readLedgers[key] = m
+// putLedgerLocked records entry for path in the key's ledger, creating the
+// ledger (and evicting the least recently used one when too many sessions
+// exist) and trimming the oldest paths when the ledger is full. Caller must
+// hold readLedgerMu for writing.
+func putLedgerLocked(key, path string, entry readEntry) {
+	l := readLedgers[key]
+	if l == nil {
+		evictSessionsLocked(key)
+		l = &sessionLedger{entries: make(map[string]readEntry)}
+		readLedgers[key] = l
 	}
-	return m
+	entry.seq = ledgerClock.Add(1)
+	l.entries[path] = entry
+	l.touch()
+	if len(l.entries) > maxLedgerPaths {
+		evictOldestPathsLocked(l)
+	}
+}
+
+// evictSessionsLocked makes room for a new session key by dropping the least
+// recently used ledgers. The default (empty) key and the incoming key are
+// never candidates.
+func evictSessionsLocked(incoming string) {
+	for len(readLedgers) >= maxLedgerSessions {
+		victim, oldest := "", ^uint64(0)
+		for key, l := range readLedgers {
+			if key == "" || key == incoming {
+				continue
+			}
+			if used := l.lastUsed.Load(); used < oldest {
+				victim, oldest = key, used
+			}
+		}
+		if oldest == ^uint64(0) {
+			return
+		}
+		delete(readLedgers, victim)
+	}
+}
+
+// evictOldestPathsLocked trims a full ledger to seven eighths of its cap,
+// removing the entries recorded longest ago, so a steady stream of reads
+// does not pay for a scan on every insert.
+func evictOldestPathsLocked(l *sessionLedger) {
+	keep := maxLedgerPaths - maxLedgerPaths/8
+	if keep < 1 {
+		keep = 1
+	}
+	type aged struct {
+		path string
+		seq  uint64
+	}
+	all := make([]aged, 0, len(l.entries))
+	for path, e := range l.entries {
+		all = append(all, aged{path, e.seq})
+	}
+	sort.Slice(all, func(i, j int) bool { return all[i].seq < all[j].seq })
+	for _, a := range all[:len(all)-keep] {
+		delete(l.entries, a.path)
+	}
+}
+
+// ForgetReadLedger drops every read receipt recorded under sessionKey. Call
+// it when a session ends or is reset so its licences do not outlive it; the
+// key can be used again afterwards. The empty key clears the default ledger.
+func ForgetReadLedger(sessionKey string) {
+	readLedgerMu.Lock()
+	delete(readLedgers, sessionKey)
+	readLedgerMu.Unlock()
 }
 
 // readFingerprintMaxBytes caps content hashing. Files beyond this size fail
@@ -191,7 +283,7 @@ func recordReadKey(key, path string) {
 		entry = e
 	}
 	readLedgerMu.Lock()
-	ledgerMapLocked(key)[filepath.Clean(abs)] = entry
+	putLedgerLocked(key, filepath.Clean(abs), entry)
 	readLedgerMu.Unlock()
 }
 
@@ -214,11 +306,12 @@ func wasReadKey(key, path string) bool {
 	}
 	readLedgerMu.RLock()
 	defer readLedgerMu.RUnlock()
-	m := readLedgers[key]
-	if m == nil {
+	l := readLedgers[key]
+	if l == nil {
 		return false
 	}
-	_, ok := m[filepath.Clean(abs)]
+	l.touch()
+	_, ok := l.entries[filepath.Clean(abs)]
 	return ok
 }
 
@@ -243,11 +336,12 @@ func wasReadFreshKey(key, path string) bool {
 	}
 	clean := filepath.Clean(abs)
 	readLedgerMu.RLock()
-	m := readLedgers[key]
+	l := readLedgers[key]
 	var entry readEntry
 	ok := false
-	if m != nil {
-		entry, ok = m[clean]
+	if l != nil {
+		l.touch()
+		entry, ok = l.entries[clean]
 	}
 	readLedgerMu.RUnlock()
 	if !ok || entry.size < 0 {
@@ -266,6 +360,31 @@ func wasReadFreshKey(key, path string) bool {
 	return true
 }
 
+// openRegularFile opens path for reading only when it is a regular file. The
+// type is checked with Stat BEFORE any open, because open(2) on a FIFO blocks
+// until a writer appears and a device node can block or stream forever. The
+// open itself is non-blocking and the handle is re-checked, so a path swapped
+// to a FIFO between the Stat and the open cannot stall the caller either.
+func openRegularFile(path string) (*os.File, error) {
+	st, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !st.Mode().IsRegular() {
+		return nil, os.ErrInvalid
+	}
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, err
+	}
+	hst, err := f.Stat()
+	if err != nil || !hst.Mode().IsRegular() {
+		f.Close()
+		return nil, os.ErrInvalid
+	}
+	return f, nil
+}
+
 // fingerprintFile captures the current on-disk state of abs: size, mtime,
 // and content hash when the file is within the hashing cap. The file is
 // opened FIRST and stat'd/read through that single handle: the previous
@@ -273,9 +392,10 @@ func wasReadFreshKey(key, path string) bool {
 // two calls, so a swap in that window could license a size/mtime from one
 // inode with a hash (when hashed) from another. A file that cannot be
 // opened fails closed — it can never have been displayed to the model, so
-// it must never yield a stat-only license.
+// it must never yield a stat-only license. Non-regular files (FIFOs,
+// devices) are refused before any open so they can never block the caller.
 func fingerprintFile(abs string) (readEntry, bool) {
-	f, err := os.Open(abs)
+	f, err := openRegularFile(abs)
 	if err != nil {
 		return readEntry{}, false
 	}
@@ -300,7 +420,7 @@ func fingerprintFile(abs string) (readEntry, bool) {
 // ResetReadLedgerForTest clears the session ledger.
 func ResetReadLedgerForTest() {
 	readLedgerMu.Lock()
-	readLedgers = map[string]map[string]readEntry{}
+	readLedgers = map[string]*sessionLedger{}
 	readLedgerMu.Unlock()
 }
 
@@ -321,6 +441,23 @@ var scriptInterpreters = map[string]bool{
 	"ruby": true, "perl": true, "php": true, "lua": true, "Rscript": true,
 	"osascript": true, "ts-node": true, "tsx": true, "pwsh": true, "powershell": true,
 	"java": true, "scala": true, "nushell": true, "nu": true,
+	"ash": true, "ipython": true, "luajit": true,
+}
+
+// isScriptInterpreter reports whether name executes a file operand as code.
+// Beyond the explicit set it accepts the shell and stdin-executing runtimes
+// the classifier already treats as interpreters, and versioned spellings
+// (python3.12, python2, lua5.4, ruby3.2) by dropping a trailing version
+// suffix, so a versioned name is gated exactly like its base name.
+func isScriptInterpreter(name string) bool {
+	if scriptInterpreters[name] || pipedShells[name] || isStdinExecInterpreter(name) {
+		return true
+	}
+	base := strings.TrimRight(name, "0123456789.")
+	if base == "" || base == name {
+		return false
+	}
+	return scriptInterpreters[base] || pipedShells[base] || isStdinExecInterpreter(base)
 }
 
 // looksLikeScriptFile reports whether tok names an existing regular file
@@ -375,7 +512,7 @@ func looksLikeScriptFile(tok string, interpreterOperand bool) bool {
 // ENOEXEC lets a shell execute extensionless text without a shebang. Binary
 // executables retain their code-execution classification without text provenance.
 func executableTextFile(path string) bool {
-	f, err := os.Open(path)
+	f, err := openRegularFile(path)
 	if err != nil {
 		return false
 	}
@@ -389,7 +526,7 @@ func executableTextFile(path string) bool {
 }
 
 func fileHasShebang(path string) bool {
-	f, err := os.Open(path)
+	f, err := openRegularFile(path)
 	if err != nil {
 		return false
 	}
@@ -418,15 +555,272 @@ func UnreadScriptTargetsCtx(ctx context.Context, cmd string) []string {
 
 func unreadScriptTargetsKey(key, cmd string) []string {
 	var out []string
-	for _, path := range Analyze(cmd).ExecutionFiles {
-		if !wasReadFreshKey(key, path) {
-			out = append(out, path)
+	seen := map[string]bool{}
+	collect := func(a Analysis) {
+		rewritten := map[string]bool{}
+		for _, path := range a.RewrittenFiles {
+			rewritten[path] = true
 		}
+		for _, path := range a.ExecutionFiles {
+			if seen[path] {
+				continue
+			}
+			if rewritten[path] || !wasReadFreshKey(key, path) {
+				seen[path] = true
+				out = append(out, path)
+			}
+		}
+	}
+	collect(Analyze(cmd))
+	// Brace groups distribute over their word before exec (`bash {x,y}.sh`
+	// runs x.sh). Analyze the distributed spelling as well so the operand
+	// the shell actually opens is the one that is gated.
+	if distributed := distributeBraces(cmd); distributed != cmd {
+		collect(Analyze(distributed))
 	}
 	return out
 }
 
-func stageExecutionFiles(stage []string, cwd string) []string {
+// distributeBraces rewrites each word that carries a {a,b} group into the
+// words the shell produces: pre{a,b}post becomes prea post preb post.
+// Groups without a top-level comma (${VAR}, find's {}) are left alone, and
+// the expansion is bounded so a hostile nest cannot blow up.
+func distributeBraces(cmd string) string {
+	if !strings.Contains(cmd, "{") || !strings.Contains(cmd, ",") {
+		return cmd
+	}
+	isSep := func(c byte) bool {
+		switch c {
+		case ' ', '\t', '\n', '\r', ';', '|', '&', '<', '>', '(', ')':
+			return true
+		}
+		return false
+	}
+	var b strings.Builder
+	for i := 0; i < len(cmd); {
+		if isSep(cmd[i]) {
+			b.WriteByte(cmd[i])
+			i++
+			continue
+		}
+		j := i
+		for j < len(cmd) && !isSep(cmd[j]) {
+			j++
+		}
+		word := cmd[i:j]
+		if strings.Contains(word, "{") && !strings.Contains(word, "${") {
+			b.WriteString(strings.Join(braceWords(word, 256), " "))
+		} else {
+			b.WriteString(word)
+		}
+		i = j
+	}
+	return b.String()
+}
+
+// braceWords expands the first comma-bearing brace group of word, recursively,
+// returning at most limit words.
+func braceWords(word string, limit int) []string {
+	for i := 0; i < len(word); i++ {
+		if word[i] != '{' {
+			continue
+		}
+		// Find the matching close and the top-level commas in between.
+		depth := 0
+		end := -1
+		var commas []int
+		for j := i; j < len(word) && end < 0; j++ {
+			switch word[j] {
+			case '{':
+				depth++
+			case '}':
+				depth--
+				if depth == 0 {
+					end = j
+				}
+			case ',':
+				if depth == 1 {
+					commas = append(commas, j)
+				}
+			}
+		}
+		if end < 0 || len(commas) == 0 {
+			continue
+		}
+		pre, post := word[:i], word[end+1:]
+		bounds := append(append([]int{i}, commas...), end)
+		var out []string
+		for k := 0; k+1 < len(bounds); k++ {
+			for _, w := range braceWords(pre+word[bounds[k]+1:bounds[k+1]]+post, limit) {
+				if len(out) >= limit {
+					return out
+				}
+				out = append(out, w)
+			}
+		}
+		return out
+	}
+	return []string{word}
+}
+
+// hasGlobMeta reports whether a path operand is expanded by the shell.
+func hasGlobMeta(tok string) bool { return strings.ContainsAny(tok, "*?[") }
+
+// maxGlobPatternBytes is the longest execution-path word expanded as a glob;
+// it matches the kernel's PATH_MAX.
+const maxGlobPatternBytes = 4096
+
+// executionCandidates resolves one operand to the paths the shell would hand
+// to the interpreter: the cleaned absolute path, or every glob match. A glob
+// that matches nothing is returned as its own pattern so the operand still
+// gates (fail closed) instead of silently disappearing.
+func executionCandidates(tok, cwd string) []string {
+	path := expandShellTokenPath(tok)
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(cwd, path)
+	}
+	// A pattern longer than any real path cannot match a file; matching it
+	// against directory entries is superlinear in its length.
+	if !hasGlobMeta(path) || len(path) > maxGlobPatternBytes {
+		return []string{filepath.Clean(path)}
+	}
+	matches, err := filepath.Glob(path)
+	if err != nil || len(matches) == 0 {
+		return []string{filepath.Clean(path)}
+	}
+	sort.Strings(matches)
+	out := make([]string, 0, len(matches))
+	for _, m := range matches {
+		out = append(out, filepath.Clean(m))
+	}
+	return out
+}
+
+// inlinePayloadFlag reports whether tok is a flag whose next word is code (or
+// a module name), not a file: -c / -e, including fused short clusters such as
+// -lc or -ec for shells. Everything after it is the payload or its arguments.
+func inlinePayloadFlag(name, tok string) bool {
+	if tok == "-c" || tok == "-e" {
+		return true
+	}
+	if !isShortFlagToken(tok) || len(tok) < 3 {
+		return false
+	}
+	if pipedShells[name] {
+		return strings.Contains(tok[1:], "c")
+	}
+	last := tok[len(tok)-1]
+	return last == 'c' || last == 'e'
+}
+
+// pathKey is the identity used to match an executed path against paths the
+// same command wrote earlier.
+func pathKey(path string) string {
+	if resolved, err := resolvePathTarget(path); err == nil {
+		return filepath.Clean(resolved)
+	}
+	return filepath.Clean(path)
+}
+
+// stageWrittenPaths returns the file paths a stage writes, resolved against
+// cwd: shell redirects, semantic output options (curl -o, wget -O, sed -i,
+// ...), tee operands, and the destination of cp/mv/install/ln.
+func stageWrittenPaths(stage, inner []string, name, cwd string) []string {
+	var raw []string
+	for j, tok := range stage {
+		if isRedirectToken(tok) && j+1 < len(stage) {
+			raw = append(raw, stage[j+1])
+		}
+	}
+	if len(inner) > 0 {
+		raw = append(raw, semanticWriteTargets(name, inner)...)
+		var operands []string
+		skipNext := false
+		for _, tok := range inner[1:] {
+			if skipNext {
+				skipNext = false
+				continue
+			}
+			if isRedirectToken(tok) {
+				skipNext = true
+				continue
+			}
+			if strings.HasPrefix(tok, "-") || tok == "" || tok == "<" || tok == "<<" || tok == "<<<" {
+				continue
+			}
+			operands = append(operands, tok)
+		}
+		switch name {
+		case "tee":
+			raw = append(raw, operands...)
+		case "cp", "mv", "install", "ln", "rsync":
+			if len(operands) >= 2 {
+				dest := operands[len(operands)-1]
+				raw = append(raw, dest)
+				// Copying into a directory writes dest/<base of each source>;
+				// a destination that does not exist yet may be created as one.
+				destPath := expandShellTokenPath(dest)
+				if !filepath.IsAbs(destPath) {
+					destPath = filepath.Join(cwd, destPath)
+				}
+				if st, err := os.Stat(destPath); err != nil || st.IsDir() {
+					for _, src := range operands[:len(operands)-1] {
+						raw = append(raw, filepath.Join(dest, filepath.Base(src)))
+					}
+				}
+			}
+		case "dd":
+			for _, tok := range inner[1:] {
+				if strings.HasPrefix(tok, "of=") {
+					raw = append(raw, tok)
+				}
+			}
+		}
+	}
+	var out []string
+	for _, tok := range raw {
+		if tok == "" || tok == "-" || strings.Contains(tok, dynamicSubstToken) {
+			continue
+		}
+		path := expandShellTokenPath(tok)
+		if !filepath.IsAbs(path) {
+			path = filepath.Join(cwd, path)
+		}
+		out = append(out, pathKey(path))
+	}
+	return out
+}
+
+// stageLedgerFiles reports the files a stage executes and, separately, the
+// subset that an earlier stage of the same command wrote (so any prior read
+// licence describes content that no longer exists when the shell runs it).
+// The stage's own writes are then recorded for the stages that follow.
+func stageLedgerFiles(stage []string, cwd string, written map[string]bool) (files, rewritten []string) {
+	files = stageExecutionFilesWritten(stage, cwd, written)
+	for _, path := range files {
+		if written[pathKey(path)] {
+			rewritten = append(rewritten, path)
+		}
+	}
+	if written != nil {
+		inner, _ := unwrapWrappers(stage)
+		name := ""
+		if len(inner) > 0 {
+			name = commandName(inner[0])
+		}
+		for _, path := range stageWrittenPaths(stage, inner, name, cwd) {
+			written[path] = true
+		}
+	}
+	return files, rewritten
+}
+
+// stageExecutionFilesWritten returns the files a stage executes. Only the
+// program operand (and the values of helper options that load code) execute;
+// redirect operators and their targets, and data arguments that follow the
+// program, never do. Glob operands gate every match, and a path written by an
+// earlier stage of the same command gates even when it does not exist yet.
+func stageExecutionFilesWritten(stage []string, cwd string, written map[string]bool) []string {
 	if len(stage) == 0 {
 		return nil
 	}
@@ -436,6 +830,12 @@ func stageExecutionFiles(stage []string, cwd string) []string {
 	}
 	name := commandName(cmdTokens[0])
 	operands := cmdTokens[1:]
+	if name == "find" {
+		return findExecutionFiles(cmdTokens, cwd, written)
+	}
+	if name == "fd" || name == "fdfind" {
+		return fdExecutionFiles(cmdTokens, cwd, written)
+	}
 	helperTargets := executionFileTargets(name, cmdTokens)
 	if interpreterIsSyntaxCheck(name, cmdTokens) {
 		return nil
@@ -448,7 +848,7 @@ func stageExecutionFiles(stage []string, cwd string) []string {
 	// shell regardless of shebang or extension.
 	interpreterStage := false
 	switch {
-	case scriptInterpreters[name]:
+	case isScriptInterpreter(name):
 		isExec = true
 		interpreterStage = true
 	case name == "source" || name == ".":
@@ -462,12 +862,8 @@ func stageExecutionFiles(stage []string, cwd string) []string {
 		isExec = true
 	}
 	if len(helperTargets) > 0 {
-		if name == "node" && hasAny(cmdTokens, "--check", "-c") {
-			operands = helperTargets
-		} else if isExec {
-			operands = append(append([]string(nil), operands...), helperTargets...)
-		} else {
-			operands = helperTargets
+		if !isExec || (name == "node" && hasAny(cmdTokens, "--check", "-c")) {
+			operands = nil // only the helper option values execute
 		}
 		isExec = true
 		interpreterStage = true
@@ -477,23 +873,95 @@ func stageExecutionFiles(stage []string, cwd string) []string {
 	}
 
 	var out []string
-	for _, tok := range operands {
-		if tok == "-c" || tok == "-e" || tok == "-m" || tok == "-s" {
-			continue // inline payload / module flags — not file execution
+	seen := map[string]bool{}
+	// gate reports every execution candidate for tok and whether any gated.
+	gate := func(tok string, interp bool) bool {
+		hit := false
+		for _, path := range executionCandidates(tok, cwd) {
+			if seen[path] {
+				hit = true
+				continue
+			}
+			if written[pathKey(path)] || looksLikeScriptFile(path, interp) || (hasGlobMeta(path) && !fileExists(path)) {
+				seen[path] = true
+				out = append(out, path)
+				hit = true
+			}
 		}
+		return hit
+	}
+
+	directInvocation := strings.Contains(cmdTokens[0], "/") && !isScriptInterpreter(name) && name != "source" && name != "."
+	prevFlag := false
+scan:
+	for i := 0; i < len(operands); i++ {
+		tok := operands[i]
+		if tok == "" {
+			continue
+		}
+		if directInvocation {
+			gate(tok, interpreterStage)
+			break
+		}
+		next := ""
+		if i+1 < len(operands) {
+			next = operands[i+1]
+		}
+		if isAllDigits(tok) && (isRedirectToken(next) || next == "<" || next == "<<" || next == "<<<") {
+			continue // file-descriptor prefix of a redirect
+		}
+		switch {
+		case isRedirectToken(tok), tok == "<<", tok == "<<<":
+			i++ // redirect target / here-string data is never the program
+			continue
+		case tok == "<":
+			// `bash < x.sh` feeds the file to the interpreter as its program.
+			if i+1 < len(operands) {
+				i++
+				gate(operands[i], interpreterStage)
+			}
+			break scan
+		}
+		if inlinePayloadFlag(name, tok) {
+			break // inline payload: the rest is code or its arguments
+		}
+		if tok == "-m" || tok == "-s" {
+			prevFlag = true
+			continue
+		}
+		if strings.HasPrefix(tok, "-") {
+			prevFlag = tok != "--"
+			continue
+		}
+		if strings.Contains(tok, "://") {
+			prevFlag = false
+			continue
+		}
+		if interpreterStage && isStdinDevice(tok) {
+			// The program arrives on stdin; a `< file` redirect that follows
+			// names it.
+			prevFlag = false
+			continue
+		}
+		hit := gate(tok, interpreterStage)
+		wasFlagValue := prevFlag
+		prevFlag = false
+		if hit && !wasFlagValue {
+			break // program found; what follows is data
+		}
+	}
+	for _, tok := range helperTargets {
 		if strings.HasPrefix(tok, "-") || strings.Contains(tok, "://") {
 			continue
 		}
-		path := expandShellTokenPath(tok)
-		if !filepath.IsAbs(path) {
-			path = filepath.Join(cwd, path)
-		}
-		if looksLikeScriptFile(path, interpreterStage) {
-			out = append(out, filepath.Clean(path))
-		}
-
+		gate(tok, true)
 	}
 	return out
+}
+
+func fileExists(path string) bool {
+	_, err := os.Lstat(path)
+	return err == nil
 }
 
 // ClassifyScriptGate classifies cmd with the unread-script rule layered on
@@ -518,4 +986,94 @@ func classifyScriptGateKey(key, cmd string) (RiskClass, []string) {
 		return UnreadExec, targets
 	}
 	return cls, targets
+}
+
+// programOperandUnresolvable reports whether an interpreter stage names the
+// program it runs through a value that only exists at run time: a command
+// substitution, an unexpanded variable, or an argv placeholder (`{}` from
+// xargs -I or find -exec). The read ledger cannot license such a program, so
+// the caller fails closed. Inline -c payloads are analyzed on their own and
+// are not operands here.
+func programOperandUnresolvable(name string, inner []string) bool {
+	if name == "find" {
+		return findExecProgramUnresolvable(inner)
+	}
+	if !isScriptInterpreter(name) && name != "source" && name != "." {
+		return false
+	}
+	if pipedShells[name] && shellInlineScriptIndex(inner) >= 0 {
+		return false
+	}
+	for i := 1; i < len(inner); i++ {
+		tok := inner[i]
+		if tok == "" || isRedirectToken(tok) {
+			if isRedirectToken(tok) {
+				i++
+			}
+			continue
+		}
+		if tok == "--" {
+			continue
+		}
+		if strings.HasPrefix(tok, "-") {
+			if interpreterCodeFlags[tok] {
+				i++ // the flag's value is code or a module name, not a file
+			}
+			continue
+		}
+		return operandUnresolvable(tok)
+	}
+	return false
+}
+
+// interpreterCodeFlags take a value that is inline code, a module or a
+// loader name rather than the program file.
+var interpreterCodeFlags = map[string]bool{
+	"-c": true, "-e": true, "--eval": true, "-p": true, "--print": true,
+	"-m": true, "-r": true, "--require": true, "--import": true, "--loader": true,
+	"-W": true, "-X": true, "-I": true, "-M": true, "-l": true, "--load": true,
+}
+
+// findExecProgramUnresolvable applies programOperandUnresolvable to the
+// command run by find's -exec/-execdir/-ok/-okdir actions.
+func findExecProgramUnresolvable(inner []string) bool {
+	for i := 1; i < len(inner); i++ {
+		switch inner[i] {
+		case "-exec", "-execdir", "-ok", "-okdir":
+		default:
+			continue
+		}
+		end := len(inner)
+		for j := i + 1; j < len(inner); j++ {
+			if inner[j] == ";" || inner[j] == `\;` || inner[j] == "+" {
+				end = j
+				break
+			}
+		}
+		cmd, _ := unwrapWrappers(inner[i+1 : end])
+		if len(cmd) == 0 {
+			continue
+		}
+		if programOperandUnresolvable(commandName(cmd[0]), cmd) {
+			return true
+		}
+		i = end
+	}
+	return false
+}
+
+func operandUnresolvable(tok string) bool {
+	// A process substitution is a stream, never a local file to license;
+	// its body is analyzed and gated on its own.
+	if strings.Contains(tok, procSubstToken) {
+		return false
+	}
+	if strings.Contains(tok, dynamicSubstToken) {
+		return true
+	}
+	// An argv placeholder from xargs -I or find -exec.
+	if tok == "{}" || strings.HasPrefix(tok, "{}/") || strings.HasSuffix(tok, "/{}") || strings.Contains(tok, "/{}/") {
+		return true
+	}
+	return strings.Contains(expandShellTokenPath(tok), "$")
 }

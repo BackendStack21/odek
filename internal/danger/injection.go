@@ -2,6 +2,7 @@ package danger
 
 import (
 	"regexp"
+	"strings"
 )
 
 // InjectionPattern groups a compiled regex with a human-readable label
@@ -19,11 +20,11 @@ type InjectionPattern struct {
 // paraphrased exfiltration, and non-English injection markers.
 var injectionPatterns = []InjectionPattern{
 	// ── Identity override ──────────────────────────────────────────
-	{regexp.MustCompile(`ignore (all )?(previous|prior|above|earlier) (instructions?|directives?|rules?|messages?)`), "ignore previous instructions"},
-	{regexp.MustCompile(`disregard (all )?(previous|prior|above|earlier) (instructions?|directives?|rules?)`), "disregard instructions"},
+	{regexp.MustCompile(`ignore (all |any )?(of )?(your |the |my )?(all )?(previous|prior|above|earlier) (instructions?|directives?|rules?|messages?)`), "ignore previous instructions"},
+	{regexp.MustCompile(`disregard (all |any )?(of )?(your |the |my )?(all )?(previous|prior|above|earlier) (instructions?|directives?|rules?)`), "disregard instructions"},
 	{regexp.MustCompile(`disregard everything`), "disregard everything"},
 	{regexp.MustCompile(`follow these new instructions`), "follow new instructions"},
-	{regexp.MustCompile(`you (are )?(now|no longer) .*?\b(ai|assistant|agent|model)\b`), "identity replacement"},
+	{regexp.MustCompile(`you (are )?(now|no longer) [^.!?;\n]{0,40}?\b(ai|assistant|agent|model)\b`), "identity replacement"},
 	{regexp.MustCompile(`(new|updated|revised) system (prompt|instructions?|message)`), "new system prompt"},
 	{regexp.MustCompile(`(your|the) (new|primary|overriding) (directive|goal|purpose) (is|shall be)`), "overriding directive"},
 	{regexp.MustCompile(`treat this as (your|the) (primary|highest|top|main|only) (instruction|directive|rule|priority|goal)`), "authority override"},
@@ -58,7 +59,6 @@ var injectionPatterns = []InjectionPattern{
 	{regexp.MustCompile(`act as (dan|developer mode|jailbreak)\b`), "jailbreak persona"},
 	{regexp.MustCompile(`override (your |the )?(safety|security) (guidelines|rules|restrictions|policies)`), "safety override"},
 	{regexp.MustCompile(`(from now on|henceforth|starting now),? (you (are|will|must|shall))`), "permanent override"},
-	{regexp.MustCompile(`^\s*#+ (new|updated|revised|corrected) (system prompt|instructions?)`), "markdown header injection"},
 
 	// ── Concealment instructions ───────────────────────────────────
 	// Untrusted content that tells the agent to hide its actions from the user
@@ -90,14 +90,14 @@ var injectionPatterns = []InjectionPattern{
 
 	// ── Non-English injection markers ──────────────────────────────
 	// French
-	{regexp.MustCompile(`ignor(er|ez|e|ons|ent)? (toutes? )?(les? )?instructions? (précédentes?|antérieures?)`), "non-english: ignore previous instructions"},
-	{regexp.MustCompile(`oubli(er|ez|e|ons|ent)? (toutes? )?(les? )?instructions? (précédentes?|antérieures?)`), "non-english: disregard instructions"},
+	{regexp.MustCompile(`ignor(er|ez|e|ons|ent)? (toutes? )?(les? )?instructions? (pr(é|e)c(é|e)dentes?|ant(é|e)rieures?)`), "non-english: ignore previous instructions"},
+	{regexp.MustCompile(`oubli(er|ez|e|ons|ent)? (toutes? )?(les? )?instructions? (pr(é|e)c(é|e)dentes?|ant(é|e)rieures?)`), "non-english: disregard instructions"},
 	// Spanish
 	{regexp.MustCompile(`ignora(r|d|is|mos|n)? (todas? )?(las? )?instrucciones? (previas?|anteriores?)`), "non-english: ignore previous instructions"},
 	{regexp.MustCompile(`olvida(r|d|is|mos|n)? (todas? )?(las? )?instrucciones? (previas?|anteriores?)`), "non-english: disregard instructions"},
 	// German
-	{regexp.MustCompile(`ignoriere(n|s|t)? (alle )?(vorherigen|früheren) anweisungen`), "non-english: ignore previous instructions"},
-	{regexp.MustCompile(`vergiss(e|en|t)? (alle )?(vorherigen|früheren) anweisungen`), "non-english: disregard instructions"},
+	{regexp.MustCompile(`ignoriere(n|s|t)? (alle )?(vorherigen|fr(ü|u)heren) anweisungen`), "non-english: ignore previous instructions"},
+	{regexp.MustCompile(`vergiss(e|en|t)? (alle )?(vorherigen|fr(ü|u)heren) anweisungen`), "non-english: disregard instructions"},
 	// Russian
 	{regexp.MustCompile(`игнорировать (все )?предыдущие инструкции`), "non-english: ignore previous instructions"},
 	{regexp.MustCompile(`забудь(те)? (все )?предыдущие инструкции`), "non-english: disregard instructions"},
@@ -108,6 +108,43 @@ var injectionPatterns = []InjectionPattern{
 	{regexp.MustCompile(`ignora(re|no|te)? (tutte )?(le )?istruzioni (precedenti|precedente)`), "non-english: ignore previous instructions"},
 	// Portuguese
 	{regexp.MustCompile(`ignore? (todas )?(as )?instru(ç|c)(õ|o)es? (anteriores|anterior)`), "non-english: ignore previous instructions"},
+}
+
+// markdownHeaderRe matches a heading that introduces replacement instructions.
+// It is anchored to the start of a line, so it is applied line by line to the
+// original text (NormalizeForScan flattens newlines).
+var markdownHeaderRe = regexp.MustCompile(`^\s*#+ (new|updated|revised|corrected) (system prompt|instructions?)`)
+
+const markdownHeaderLabel = "markdown header injection"
+
+func isLineBreak(r rune) bool {
+	switch r {
+	case '\n', '\r', '\v', '\f', '\u0085', '\u2028', '\u2029':
+		return true
+	}
+	return false
+}
+
+// scanMarkdownHeaders reports whether any line of content is an instruction
+// heading, after the same normalization and homoglyph folding the other
+// patterns get.
+func scanMarkdownHeaders(content string) bool {
+	if !strings.ContainsAny(content, "#＃") {
+		return false
+	}
+	for _, line := range strings.FieldsFunc(content, isLineBreak) {
+		if !strings.ContainsAny(line, "#＃") {
+			continue
+		}
+		normalized := NormalizeForScan(line)
+		if markdownHeaderRe.MatchString(normalized) || markdownHeaderRe.MatchString(FoldHomoglyphs(normalized)) {
+			return true
+		}
+		if strings.Contains(normalized, "ν") && markdownHeaderRe.MatchString(FoldHomoglyphs(strings.ReplaceAll(normalized, "ν", "n"))) {
+			return true
+		}
+	}
+	return false
 }
 
 // ScanResult describes a single detected injection threat.
@@ -147,13 +184,23 @@ func ScanInjection(content string) []ScanResult {
 	normalized := NormalizeForScan(content)
 	folded := FoldHomoglyphs(normalized)
 	foldDistinct := folded != normalized
+	// Greek nu looks like v in lower case but like N as a capital, which
+	// NormalizeForScan has already lower-cased: scan the n reading too.
+	var foldedNu string
+	if strings.Contains(normalized, "ν") {
+		foldedNu = FoldHomoglyphs(strings.ReplaceAll(normalized, "ν", "n"))
+	}
 	for _, p := range injectionPatterns {
-		if p.Re.MatchString(normalized) || (foldDistinct && p.Re.MatchString(folded)) {
+		if p.Re.MatchString(normalized) || (foldDistinct && p.Re.MatchString(folded)) ||
+			(foldedNu != "" && p.Re.MatchString(foldedNu)) {
 			results = append(results, ScanResult{
 				Label:   p.Label,
 				Pattern: p.Re.String(),
 			})
 		}
+	}
+	if scanMarkdownHeaders(content) {
+		results = append(results, ScanResult{Label: markdownHeaderLabel, Pattern: markdownHeaderRe.String()})
 	}
 	return results
 }

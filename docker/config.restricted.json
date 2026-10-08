@@ -76,6 +76,7 @@
       "local_write": "allow",
       "install": "prompt",
       "network_egress": "allow",
+      "network_upload": "prompt",
       "code_execution": "prompt",
       "persistence": "prompt",
       "unread_exec": "prompt",

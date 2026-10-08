@@ -350,30 +350,62 @@ The `dangerous` section is the operator's safety policy for tool calls. Every sh
 | Field | Default | Description |
 |-------|---------|-------------|
 | `classes` | see below | Map of risk class → action. Only non-default overrides need to be set |
-| `allowlist` | `[]` | Command strings that are **always allowed** regardless of classification. **Exact match**; takes priority over `denylist` |
-| `denylist` | `[]` | Command strings that are **always denied** regardless of classification. **Prefix match** (after trimming) |
+| `allowlist` | `[]` | Command strings that are **always allowed** regardless of classification. **Exact match** of the whole command line (after trimming), so `go test ./...` does not allow `go test ./... && make deploy`; takes priority over `denylist`. It cannot authorize a `blocked` operation, and a command over 64 KiB is denied before the list is consulted |
+| `denylist` | `[]` | Command strings that are **always denied** regardless of classification. **Token-prefix match** at every command position the line would run — see [Denylist matching](#denylist-matching) below. Entry tokens must equal the leading tokens of the command, so `git push` matches `git push origin` but not `git push-notes`; it is no longer a raw string prefix |
 | `action` | *(per-class defaults)* | Global default action for **all** classes — `"allow"` (everything runs unprompted) or `"deny"` (lockdown: nothing runs unless explicitly allowed). Per-class `classes` entries still win |
-| `non_interactive` | `"read_only"` | What happens to prompt-class operations when no TTY is available (CI, headless, piped input): `"read_only"` (safe inspection proceeds; writes/exec/egress denied), `"deny"` (block all prompted operations), `"allow"` (run everything — not recommended) |
+| `non_interactive` | `"read_only"` | What happens to prompt-class operations when no TTY is available (CI, headless, piped input): `"read_only"` (inspection proceeds; writes/exec/egress denied), `"deny"` (block all prompted operations), `"allow"` (run everything — not recommended). Under `read_only` a shell command proceeds only when it classifies `safe`; a native read tool (`read_file`, `search_files`, `glob`, `file_info`, `tree`, `diff`, `json_query`, `checksum`, `head_tail`, `base64`, `session_search`, …) proceeds when its target ranks below `system_write`. The carve-out is keyed on the native tool name only — never on the free-text description the model supplies for a shell command. An invalid explicit value fails closed to `deny` |
 | `strip_secrets_env_children` | `false` | Remove `secrets.env` names from the environment of **host-mode** child processes spawned by `shell` and background jobs. Default `false`: children inherit, so workflows that legitimately need credentials in shell children (`gh`, `curl`) keep working. Sub-agent and MCP stdio spawns strip unconditionally regardless of this knob; sandbox-mode containers never see host secrets |
 | `rest_approval_friction` | `false` | Server-side friction for the headless **REST approval bridge** (`POST /api/runs/{id}/approvals/{aid}`): `approve` and `trust` decisions must repeat the action in a typed `confirm` field, mirroring the TTY friction. Default `false`: auto-approving clients keep the single-field contract. `deny` stays single-field — friction guards accidental approvals, not denials |
 
-Risk classes and their built-in default actions:
+Risk classes and their built-in default actions. In severity order, lowest to highest: `safe` < `local_write` < `install` < `network_egress` < `network_upload` < `code_execution` < `system_write` = `unread_exec` < `persistence` < `unknown` < `destructive` < `blocked`. A command carries every class it triggers and the strictest action wins (deny > prompt > allow), so an allowed class cannot hide a denied one. The ordering is what a sub-agent `max_risk` cap uses.
 
 | Class | Default | Covers |
 |-------|---------|--------|
 | `safe` | `allow` | Read-only inspection (`ls`, `cat`, `tree`, …) |
 | `local_write` | `allow` | Writes inside the working directory |
-| `system_write` | `prompt` | Writes outside the workspace: shell rc files, `~/.ssh`, `~/.odek`, system paths |
+| `system_write` | `prompt` | Writes outside the workspace: shell rc files, `~/.ssh`, `~/.odek`, system paths; git data-loss verbs (`reset --hard`, `clean -fdx`, force pushes, `push --mirror`/`--delete`); environment dumps (`env`, `printenv`, and bare `export`/`declare`/`typeset`); `export` of exec-controlling variables (`PATH`, `LD_PRELOAD`, `GIT_CONFIG_*`, `JAVA_TOOL_OPTIONS`, …); and **secret reads** — a reference to a secret-shaped environment variable (`$API_TOKEN`, `${DB_PASSWORD}`, indirect `${!v}`, `printenv NAME`, `os.environ[...]`, `process.env.X`) or a read or write of a credential file (`.env` other than examples, `credentials.json`, `*.pem`, `*.key`, `id_*`, `.netrc`, `.npmrc`, kubeconfig, `terraform.tfstate`, anything under `secrets/`, `credentials/`, `.aws/`, `.ssh/`). The current user's own home is not a system path: ordinary files below it (including `/root` when odek runs as root) are `local_write`, while rc files, credential directories and `~/.odek` trust anchors still escalate |
 | `persistence` | `prompt` | Deferred-execution writes: shell profiles, git hooks, CI workflows, cron, systemd/launchd, package lifecycle scripts |
-| `unread_exec` | `prompt` | Executing a script whose contents were not read in the session |
-| `destructive` | `deny` | Irreversible operations (recursive deletes, force-pushes, data-loss verbs) |
+| `unread_exec` | `prompt` | Executing a repo-supplied script whose contents were not read in this session — directly, through an interpreter, by `source`, or fed in through a pipe, substitution, `find -exec` or a program-file option (`awk -f`, `make -f`, …). A full-file `read_file`, or authoring the file yourself, satisfies it; a partial or failed read does not. Never offered a session-trust shortcut |
+| `destructive` | `deny` | Irreversible operations: recursive deletes of broad targets, `find -delete`, raw-device writes (`dd of=/dev/…`), filesystem creation and wipe verbs |
 | `network_egress` | `allow` | Outbound network operations (`curl`, `wget`, package fetches). Allowed by default for a friction-free start; set `"prompt"` to gate every egress |
-| `code_execution` | `prompt` | Arbitrary code execution paths |
+| `network_upload` | `prompt` | Network operations that send local content out or let a remote party in: request bodies read from a file, stdin or a runtime substitution (`curl -d @f`, `-T`, `-F f=@x`, `cat x \| nc`), credentials or client certificates on the command line (`curl -u`/`-n`/`--cert`, `wget --http-password`), mutating methods (`curl -X POST`), local-to-remote transfers (`scp f host:`, `rsync src/ host:dst`, `rclone copy`, `aws s3 cp f s3://`, `gsutil cp`, `gh gist create`), listeners and tunnels (`nc -l`, `ssh -L`/`-R`/`-D`), and DNS lookups whose name is built at run time. Also carries `network_egress`, so denying either class denies the command. Inline literal bodies (`curl -d '{"a":1}' URL`), downloads, and running a remote command (`ssh host ls`) stay plain egress |
+| `code_execution` | `prompt` | Arbitrary code execution paths: `bash -c`, `eval`, `source`, pipe-to-shell, interpreter one-liners, `go run`, `nc -e`/`socat EXEC:`, `man -P`, tool options that name a program to run. Ordinary git verbs (`status`, `add`, `commit`, `merge`, `checkout`, `rebase`, `stash`, …) only count when the targeted repository is armed — an executable hook, `core.hooksPath`, `core.fsmonitor`, a filter/diff/merge driver, textconv or an editor config; an unresolvable repository fails closed |
 | `install` | `prompt` | Package/tool installation |
 | `blocked` | `deny` | Hard-coded malicious patterns |
-| `unknown` | `deny` | Unrecognizable commands fail closed |
+| `unknown` | `deny` | Unrecognizable commands fail closed: unknown program names, MCP tools, unterminated quotes or constructs, run-time-built program operands, and any command over 64 KiB (`danger.MaxCommandBytes`) |
 
 Valid actions: `allow` (run without prompting) · `prompt` (ask the approver) · `deny` (refuse). `read_only` is a `non_interactive`-only action.
+
+A few `classes` examples:
+
+```json
+{ "dangerous": { "classes": { "network_egress": "prompt" } } }
+```
+Gate every shell-level fetch (the default allows `network_egress`).
+
+```json
+{ "dangerous": { "classes": { "network_upload": "deny" } } }
+```
+Refuse every upload, listener and tunnel outright. Because an upload also carries `network_egress`, denying either class denies the command.
+
+```json
+{ "dangerous": { "classes": { "unknown": "prompt", "install": "deny" } } }
+```
+Soften the fail-closed catch-all to a prompt and forbid installs. `blocked` can never be changed from `deny`; a contradictory or unknown class name is rejected at load time.
+
+Operators who already override classes individually should decide an action for `network_upload`: it is new, defaults to `prompt`, and is not covered by a `network_egress` override.
+
+### Denylist matching
+
+A `denylist` entry is a token sequence, not a string. It matches when its tokens equal the leading tokens of a command the line would run, tried at every command position:
+
+- each `;`/`&&`/`||`/`&` segment and pipe stage, and commands inside loops, conditionals, groups and function bodies;
+- the command left after leading `VAR=value` assignments and wrappers (`env`, `command`, `nohup`, `timeout`, `sudo`, `xargs`, `env -S '…'`, `watch '…'`, …), with the program compared by basename (`/usr/bin/git` matches `git`);
+- shell `-c` payloads, `eval` operands, `find -exec`/`fd -x` commands, and `$(…)`, backtick and process-substitution bodies;
+- the tool's global options stripped before the subcommand for `git`, `docker`/`podman`/`nerdctl`, `kubectl`, `helm`, `gh`, `npm`, `cargo` and `terraform`/`tofu`, so `git -C dir push` matches `git push` and `docker -H host push` matches `docker push`;
+- shell variables with a statically known value resolved (`g=git; $g push` matches `git push`); a value built at run time (command output, `read`) is not known and is not matched.
+
+Consequences for writing entries: `rm -rf /` no longer matches `rm -rf /tmp` (the old raw string prefix did); flag spellings are distinct entries, so `rm -fr /` and `rm -r -f /` need entries of their own if you want them blocked; and an entry cannot match across a command separator. The denylist is a backstop for commands you never want run, not a substitute for the risk classes.
 
 ```json
 {
@@ -856,7 +888,7 @@ The top-level `profiles` section defines named permission envelopes. When a task
 | Field | Description |
 |-------|-------------|
 | `description` | Short summary of what the profile is FOR — surfaced by the `list_subagent_profiles` tool so the delegating model can pick by intent, not by guessing at names |
-| `max_risk` | Clamps every higher-ranked class to `deny` for profiled sub-agents |
+| `max_risk` | Clamps every class ranked above it to `deny` for profiled sub-agents. Order: `safe` < `local_write` < `install` < `network_egress` < `network_upload` < `code_execution` < `system_write` < `persistence` < `unknown` < `destructive` < `blocked`. So `network_egress` does not admit uploads, `code_execution` does, and `local_write` (the default) admits neither; `unread_exec` is not capped here — sub-agents never prompt, so the unread-script gate denies it. `max_risk` can only lower what the policy allows, never raise it |
 | `allowlist` | **Replaces** the global allowlist for profiled sub-agents |
 | `tools` | **Replaces** the global `tools` enabled/disabled filter for profiled sub-agents |
 
@@ -1025,7 +1057,7 @@ engine. Every field has an `ODEK_SCHEDULES_*` environment override.
 
 ### Schedule-specific dangerous policy
 
-Scheduled jobs run unattended, so by default the scheduler denies any class that would require an approval prompt (`system_write`, `code_execution`, `install`, `unknown`, `persistence`, `unread_exec`). Note: since `network_egress` now defaults to `allow` globally, scheduled jobs also egress unprompted — unattended egress from a cron context is a higher-risk surface, so gate it explicitly via `schedules.dangerous.classes: {"network_egress": "deny"}` (or set it back to `prompt` globally) if that matters to you. You can override the scheduler policy without widening the policy for interactive CLI/REPL/WebUI use.
+Scheduled jobs run unattended, so by default the scheduler denies any class that would require an approval prompt (`system_write`, `code_execution`, `install`, `network_upload`, `unknown`, `persistence`, `unread_exec`). A scheduled job that must upload (a webhook `POST`, an `rsync` or `scp` to a backup host) needs `schedules.dangerous.classes: {"network_upload": "allow"}`. Note: since `network_egress` now defaults to `allow` globally, scheduled jobs also egress unprompted — unattended egress from a cron context is a higher-risk surface, so gate it explicitly via `schedules.dangerous.classes: {"network_egress": "deny"}` (or set it back to `prompt` globally) if that matters to you. You can override the scheduler policy without widening the policy for interactive CLI/REPL/WebUI use.
 
 ```json
 {
@@ -1436,7 +1468,7 @@ Deliberately **not** set, because the defaults are the recommendation:
 
 - `sandbox` — on by default for `run`/`repl`/`serve`; `continue` pins the session bit; never turn it off on a host that runs untrusted code.
 - `memory.extract_facts: false` and `memory.auto_approve_episodes: false` — the secure defaults; flip only with the trade-offs understood (see [`extract_facts`](#extract_facts--automatic-fact-learning-opt-in-off-by-default)).
-- `dangerous` — the built-in class defaults (destructive/blocked/unknown denied, writes and egress prompted) are the right posture; tighten per-project with an `allowlist`/`denylist` only when needed.
+- `dangerous` — the built-in class defaults (destructive/blocked/unknown denied; system writes, uploads, code execution and installs prompted; egress allowed) are the right posture; tighten per-project with an `allowlist`/`denylist` only when needed.
 - `web_search.base_url` — empty hides the tool; set it only if you run a SearXNG instance.
 - `mcp_servers` — none; each entry is arbitrary-code execution by design, add them deliberately.
 

@@ -53,6 +53,14 @@ odek session show 20260518-abc123
 odek session delete 20260518-abc123
 ```
 
+The unread-script gate keeps per-session read receipts in process memory (a
+script the agent read this session may run without the extra prompt; an
+unread one prompts). They are never written to the session file. The Web UI
+drops a session's receipts when the session is deleted, `/new` in Telegram
+drops the chat's, and a scheduled run drops its own when it ends; a session
+resumed later starts with an empty ledger, so a script read in an earlier
+turn of a previous process gates again until it is re-read.
+
 ### Trimming a session
 
 Keeps only the `n` most recent messages, always preserving the system prompt:

@@ -186,9 +186,17 @@ non-overrideable safety floor: the `destructive`, `blocked`, `persistence`
 scripts), and `unread_exec` (executing a script whose contents were not read
 in the session) classes are always denied. Schedule-specific policy in
 `schedules.dangerous` can allow or deny the remaining classes —
-`network_egress`, `system_write`, `code_execution`, `install`, and `unknown`
+`network_egress`, `network_upload`, `system_write`, `code_execution`, `install`, and `unknown`
 are the ones an unattended run can be granted — but the floor itself cannot
-be lifted. This prevents a compromised task definition from erasing files,
+be lifted. Every class that prompts by default is therefore denied in a
+scheduled run until `schedules.dangerous` allows it. `network_egress` is allowed
+by default, but `network_upload` (a webhook `POST`, `curl -d @file`, an `rsync`
+or `scp` to a backup host, a listener or tunnel) is not: a job that must upload
+needs `schedules.dangerous.classes: {"network_upload": "allow"}`. An upload also
+carries `network_egress`, so denying either class denies it. The same command
+analysis as interactive runs applies, including secret-read gating (a
+reference to a token-shaped environment variable or a credential file is a
+`system_write`, denied unless granted). This prevents a compromised task definition from erasing files,
 installing persistence, or running unreviewed scripts while unattended.
 
 Read/summarise/deliver tasks work as usual. If you truly need a scheduled job
@@ -241,12 +249,16 @@ applied. It is operator-only: project-level `./odek.json` cannot set it.
 {
   "schedules": {
     "dangerous": {
-      "classes": { "network_egress": "allow", "system_write": "deny" },
+      "classes": { "network_upload": "allow", "system_write": "deny" },
       "allowlist": ["go test ./...", "go build ./..."]
     }
   }
 }
 ```
+
+`denylist` entries use the same token-prefix matching as the global policy (see
+[Denylist matching](CONFIG.md#denylist-matching)), and each run's read ledger
+is dropped when the run ends.
 
 Every field also has an `ODEK_SCHEDULES_DANGEROUS_*` environment override:
 

@@ -13,6 +13,13 @@ from another agent's tool loop, or on a schedule.
   Memory atom store (see [MEMORY.md](MEMORY.md)).
 - **Native cron**: `odek schedule` for recurring jobs with delivery
   (see [SCHEDULES.md](SCHEDULES.md)).
+- **Fail-closed approvals without a human**: with no TTY, `dangerous.non_interactive`
+  defaults to `read_only` — `safe` shell commands and native read tools run;
+  writes, code execution, uploads (`curl -d @file`, `scp file host:`), reads of
+  secret-shaped variables or credential files, and installs are denied. Scheduled
+  jobs additionally deny `destructive`, `blocked`, `persistence` and
+  `unread_exec`, and need `schedules.dangerous.classes` to grant `network_upload`
+  (see [CONFIG.md](CONFIG.md#dangerous-operations-policy-dangerous)).
 - **Browser, vision, and audio tools**: `browser`, `vision`, and `transcribe`
   are available to headless runs like any other tool.
 
