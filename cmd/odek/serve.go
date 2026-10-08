@@ -981,6 +981,9 @@ func newServeAgent(resolved config.ResolvedConfig, system string, runKey string,
 		SetToolOutputGuard(injectionGuard, resolved.Guard)
 	}
 
+	// built is bound once odek.New returns; the answer-event handler only
+	// fires during runs, which start after that.
+	var built *odek.Agent
 	serveCfg := odek.Config{
 		Model:            resolved.Model,
 		BaseURL:          resolved.BaseURL,
@@ -1032,6 +1035,15 @@ func newServeAgent(resolved config.ResolvedConfig, system string, runKey string,
 				sendFn(map[string]any{"type": "runtime_event", "event": ev})
 			}
 		},
+		// Final-answer lifecycle, delivered synchronously so it stays in
+		// order with token_delta frames and lands before done (the event
+		// stream above is asynchronous).
+		AnswerEventHandler: serveAnswerEventHandler(sendFn, func() string {
+			if built == nil {
+				return ""
+			}
+			return built.RunID()
+		}),
 		ToolDetailHandler: func(event loop.ToolDetailEvent) {
 			sendFn(map[string]any{"type": event.Type, "name": event.Name, "data": event.Data, "call_id": event.CallID, "outcome": event.Outcome})
 		},
@@ -1084,6 +1096,7 @@ func newServeAgent(resolved config.ResolvedConfig, system string, runKey string,
 	applyResolvedProvider(&serveCfg, resolved)
 	serveCfg.RuntimeLogSurface = "serve"
 	agent, err := odek.New(serveCfg)
+	built = agent
 	if err != nil {
 		// Container was started but agent construction failed — clean up now
 		// so the container doesn't outlive this call.
@@ -1103,6 +1116,41 @@ func newServeAgent(resolved config.ResolvedConfig, system string, runKey string,
 	}
 
 	return agent, bgRT, sandboxCleanup, mcpCleanup, guardCleanup, injectionGuard, approver, nil
+}
+
+// serveAnswerEventHandler forwards final-answer lifecycle events to a
+// WebSocket connection as frames (see answerEventFrame).
+func serveAnswerEventHandler(sendFn func(v any) error, runID func() string) func(loop.AnswerEvent) {
+	return func(event loop.AnswerEvent) {
+		if frame, ok := answerEventFrame(event, runID()); ok {
+			sendFn(frame)
+		}
+	}
+}
+
+// answerEventFrame renders a final-answer lifecycle event as a WebSocket
+// frame. answer_superseded goes out only for a draft that was streamed live
+// (a buffered draft never reached the client, and the post-run bulk send
+// skips it). Verification events become runtime_event frames shaped like
+// odek.event/v1; verifier prose is never part of an AnswerEvent.
+func answerEventFrame(ev loop.AnswerEvent, runID string) (map[string]any, bool) {
+	switch ev.Type {
+	case "answer_superseded":
+		if !ev.Streamed {
+			return nil, false
+		}
+		return map[string]any{"type": "answer_superseded", "reason": ev.Reason, "cycle": ev.Cycle}, true
+	case events.TypeVerificationStarted, events.TypeVerificationCompleted:
+		out := events.Event{Schema: events.Schema, Type: ev.Type, RunID: runID, Timestamp: time.Now().UTC()}
+		if ev.Type == events.TypeVerificationCompleted {
+			out.Data = map[string]any{"verdict": ev.Verdict, "cycles_used": ev.CyclesUsed}
+			if ev.SkippedReason != "" {
+				out.Data["skipped_reason"] = ev.SkippedReason
+			}
+		}
+		return map[string]any{"type": "runtime_event", "event": out}, true
+	}
+	return nil, false
 }
 
 // serveDeltaHandler builds the loop DeltaHandler for a serve connection:
@@ -1278,14 +1326,15 @@ func newTurnID() string {
 // is active (R3). Lifecycle and sub-agent frames stay untouched so old
 // clients see byte-identical shapes for them.
 var turnTaggedFrames = map[string]bool{
-	"thinking":      true,
-	"token":         true,
-	"tool_call":     true,
-	"tool_result":   true,
-	"runtime_event": true,
-	"artifact":      true,
-	"done":          true,
-	"error":         true,
+	"thinking":          true,
+	"token":             true,
+	"tool_call":         true,
+	"tool_result":       true,
+	"runtime_event":     true,
+	"answer_superseded": true,
+	"artifact":          true,
+	"done":              true,
+	"error":             true,
 }
 
 // wsTurnAnnotator tags outbound frames with the active turn id (R3) so a
@@ -2477,6 +2526,13 @@ func handlePrompt(
 		}
 		isFinalAnswer := len(msg.ToolCalls) == 0
 
+		if msg.Superseded {
+			// A draft replaced by a re-ask. When it streamed live the
+			// client already has it, followed by answer_superseded; when
+			// it did not, the client never saw it and only the
+			// replacement is sent.
+			continue
+		}
 		if !isFinalAnswer {
 			// Intermediate turn — tool_call/tool_result events already streamed.
 			// Skip Content to avoid duplicating the narrative after tool blocks.
@@ -2497,13 +2553,11 @@ func handlePrompt(
 		}
 	}
 
-	// Find the assistant response for buffer
+	// Buffer the turn's answer: the last assistant reply, never a draft the
+	// loop superseded.
 	if mm := agent.Memory(); mm != nil {
-		for _, msg := range newMsgs {
-			if msg.Role == "assistant" && msg.Content != "" {
-				mm.AppendBuffer("agent", msg.Content)
-				break
-			}
+		if answer, ok := turnAnswer(newMsgs); ok {
+			mm.AppendBuffer("agent", answer)
 		}
 	}
 
@@ -2556,6 +2610,9 @@ func handlePrompt(
 		if ms := agent.TotalLLMDurationMs(); ms > 0 {
 			m["llmDurationMs"] = ms
 		}
+		if v := agent.VerifyOutcome(); v != "" {
+			m["verified"] = v // omitted when verification did not run
+		}
 		return m
 	}())
 
@@ -2564,6 +2621,18 @@ func handlePrompt(
 		return sess
 	}
 	return currSess
+}
+
+// turnAnswer returns the turn's answer text: the last assistant message
+// with content that was not superseded by a re-ask.
+func turnAnswer(msgs []session.Message) (string, bool) {
+	for i := len(msgs) - 1; i >= 0; i-- {
+		m := msgs[i]
+		if m.Role == "assistant" && m.Content != "" && !m.Superseded {
+			return m.Content, true
+		}
+	}
+	return "", false
 }
 
 // ── WebSocket Stream Writer ─────────────────────────────────────────────

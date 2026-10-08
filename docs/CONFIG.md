@@ -440,6 +440,7 @@ Before the loop returns a final answer, an optional verification stage checks it
 - **strict** mode: no corrective re-try; a failing answer is returned immediately with the same fixed marker prefix. Verifier prose is never concatenated into the answer.
 - Verification calls are budget-accounted like any LLM call; when the remaining budget cannot cover one, the stage is skipped (`skipped: budget`) and the run proceeds normally. A failed verifier call never fails the run — the answer ships unverified.
 - Events: `verification_started` / `verification_completed` (data: `verdict`, `cycles_used`, `skipped_reason?`) on the `odek.event/v1` stream.
+- WebUI / WebSocket clients get the same events as `runtime_event` frames, an `answer_superseded` frame before a hint-mode retry, and `verified` on the `done` frame (see docs/WEBUI.md, "Superseded drafts and verification").
 
 Disabled by default — an absent `verify` section changes nothing. **Operator-only**: the section is ignored (with a warning) in project-level `./odek.json`.
 

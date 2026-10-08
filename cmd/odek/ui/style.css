@@ -1578,6 +1578,25 @@ body.light .msg.user .sender { color: var(--amber-hi); }
 /* Mid-turn reply sealed when a tool starts so the next tokens open a new
    row. Slightly quieter than the live/final answer. */
 .msg.partial { opacity: .88; }
+/* Superseded draft: the loop re-asked the model after this reply. Collapsed
+   to a toggle row; the revised answer follows it. */
+.msg.draft > .bubble { display: none; }
+.msg.draft.open > .bubble { display: block; opacity: .6; }
+.draft-toggle {
+  padding: 2px 0;
+  font-size: var(--fs-xs);
+  color: var(--text-3);
+  letter-spacing: .04em;
+  cursor: pointer;
+  user-select: none;
+}
+.draft-toggle:hover { color: var(--text-2); }
+.verify-chip {
+  margin-left: var(--space-2);
+  font-weight: 600;
+  letter-spacing: .04em;
+}
+.verify-chip.fail { color: var(--red); }
 
 /* ── Thinking / reasoning (legacy collapsed block + stream rows) ────── */
 .thinking-block {

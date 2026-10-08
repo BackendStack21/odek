@@ -483,6 +483,12 @@ func (r *serveRun) record(v any) error {
 		if c, _ := m["content"].(string); c != "" && !runStatusTerminal(r.Status) {
 			r.Result += c
 		}
+	case "answer_superseded":
+		// The text streamed since the last tool call was a draft the loop
+		// is replacing; the result must hold only the revised answer.
+		if !runStatusTerminal(r.Status) {
+			r.Result = ""
+		}
 	case "tool_call":
 		// Notes remain in the event timeline. A tool ends their text burst,
 		// so the final result contains the eventual answer instead of every

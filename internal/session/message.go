@@ -21,7 +21,14 @@ type Message struct {
 	// It is persistence metadata and never sent to providers; nil denotes older records.
 	PrincipalPrompt *string `json:"principal_prompt,omitempty"`
 	// ToolOutcome is execution metadata; it is never sent to the model.
-	ToolOutcome       string        `json:"tool_outcome,omitempty"`
+	ToolOutcome string `json:"tool_outcome,omitempty"`
+	// Superseded marks an assistant reply produced as a final answer and then
+	// replaced when the loop asked the model again (completion nudge or
+	// verification retry), whether or not it was streamed live.
+	// SupersededReason names which. Replay clients fold these drafts; the
+	// fields are never sent to providers.
+	Superseded        bool          `json:"superseded,omitempty"`
+	SupersededReason  string        `json:"superseded_reason,omitempty"`
 	Role              string        `json:"role"`
 	Content           string        `json:"content"`
 	Name              string        `json:"name,omitempty"`

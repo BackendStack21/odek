@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/BackendStack21/odek/internal/events"
 	"github.com/BackendStack21/odek/internal/llmclient"
 	"github.com/BackendStack21/odek/internal/session"
 )
@@ -223,17 +222,14 @@ func (e *Engine) runVerifyStage(ctx context.Context, messages []session.Message,
 		return verifyVerdict{}, false
 	}
 	if e.client == nil || !e.budgetAllowsSideCall() {
-		e.emitEvent(events.Event{
-			Type: events.TypeVerificationCompleted,
-			Data: map[string]any{"verdict": "skipped", "skipped_reason": "budget"},
-		})
+		e.emitVerificationCompleted(VerifyOutcomeSkipped, "budget")
 		return verifyVerdict{}, false
 	}
 	client := e.client
 	if e.verifyClient != nil {
 		client = e.verifyClient
 	}
-	e.emitEvent(events.Event{Type: events.TypeVerificationStarted})
+	e.emitVerificationStarted()
 	callCtx, cancel := context.WithTimeout(ctx, e.sideTimeout())
 	defer cancel()
 	res, err := client.SideCall(callCtx, []session.Message{
@@ -243,22 +239,13 @@ func (e *Engine) runVerifyStage(ctx context.Context, messages []session.Message,
 		if res != nil {
 			e.recordSideCallUsage("verify", res)
 		}
-		e.emitEvent(events.Event{
-			Type: events.TypeVerificationCompleted,
-			Data: map[string]any{"verdict": "skipped", "skipped_reason": "error"},
-		})
+		e.emitVerificationCompleted(VerifyOutcomeSkipped, "error")
 		// A failed verification is never a fail verdict — the answer ships.
 		return verifyVerdict{}, false
 	}
 	e.recordSideCallUsage("verify", res)
 	v := parseVerifyVerdict(res.Content)
-	e.emitEvent(events.Event{
-		Type: events.TypeVerificationCompleted,
-		Data: map[string]any{
-			"verdict":     v.Verdict,
-			"cycles_used": e.verifyCyclesUsed,
-		},
-	})
+	e.emitVerificationCompleted(v.Verdict, "")
 	return v, true
 }
 

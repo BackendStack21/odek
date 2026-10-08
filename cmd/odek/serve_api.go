@@ -341,7 +341,7 @@ func exportSessionMarkdown(sess *session.Session) string {
 			if m.Content != "" {
 				body := stripUntrustedEnvelopes(m.Content)
 				fence := codeFence(body)
-				b.WriteString("## assistant\n\n" + fence + "markdown\n")
+				b.WriteString("## " + assistantExportHeading(m) + "\n\n" + fence + "markdown\n")
 				b.WriteString(body)
 				b.WriteString("\n" + fence + "\n\n")
 			}
@@ -354,6 +354,22 @@ func exportSessionMarkdown(sess *session.Session) string {
 		}
 	}
 	return b.String()
+}
+
+// assistantExportHeading labels a superseded draft so the export does not
+// read as two consecutive answers. The reason maps through a fixed table:
+// session files are not trusted to supply heading text.
+func assistantExportHeading(m session.Message) string {
+	if !m.Superseded {
+		return "assistant"
+	}
+	switch m.SupersededReason {
+	case loop.SupersededVerifyRetry:
+		return "assistant (draft, revised after verification)"
+	case loop.SupersededCompletionNudge:
+		return "assistant (draft, revised after completion check)"
+	}
+	return "assistant (draft, revised)"
 }
 
 // codeFence returns a backtick fence strictly longer than any backtick run
