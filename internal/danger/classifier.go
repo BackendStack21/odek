@@ -25,10 +25,14 @@
 //
 //  1. Normalisation (see normalize) rewrites the command so token-level
 //     analysis can see through shell tricks before classification runs:
+//     - \<newline> continuations   joinLineContinuations (joined before anything else)
+//     - here-document bodies       consumeHeredocs (data for cat/tee/…, else classified)
+//     - comments                   stripComments
 //     - $'…' ANSI-C escapes        decodeANSIC   ($'\x72\x6d' → rm)
 //     - $IFS word-splitting        expandIFS     (rm$IFS-rf$IFS/ → rm -rf /)
-//     - {a,b,c} brace expansion    expandBraces  ({rm,-rf,/} → rm -rf /)
-//     - $(…)/`…`/<(…)/>(…) subst.  extractSubstitutions (bodies classified too)
+//     - {a,b,c} brace expansion    expandBraces  ({rm,-rf,/} → rm -rf /, /et{c,c}/x → /etc/x)
+//     - $(…)/`…`/<(…)/>(…) subst.  extractSubstitutions (bodies classified too;
+//     also skips $((…)) arithmetic and strips empty $N/$@ inside words)
 //     - command/exec/builtin       stripCommandWrappers
 //     - \-escapes (r\m, \rm)       collapseUnquotedBackslashes
 //     - absolute paths (/bin/rm)   commandName (identity preserved)
@@ -1046,6 +1050,15 @@ func tokenize(input string) []string {
 			continue
 		}
 
+		// Outside quotes an escaped quote or backslash is the literal
+		// character, never a quote opener or the start of another escape.
+		if ch == '\\' && !inSingle && !inDouble && i+1 < len(input) &&
+			(input[i+1] == '\'' || input[i+1] == '"' || input[i+1] == '\\') {
+			current.WriteByte(input[i+1])
+			i++
+			continue
+		}
+
 		if ch == '\\' && inDouble {
 			// In double quotes, \ escapes \, ", $, `, and newline
 			next := i + 1
@@ -1924,6 +1937,9 @@ func isEnvironmentDump(tokens []string) bool {
 // shell behaviour that is well-defined and not affected by the surrounding
 // quoting style we already track.
 func normalize(cmd string) (string, []string) {
+	cmd = joinLineContinuations(cmd)
+	cmd = consumeHeredocs(cmd)
+	cmd = stripComments(cmd)
 	cmd = decodeANSIC(cmd)
 	cmd = expandIFS(cmd)
 	cmd = expandBraces(cmd)
@@ -1931,97 +1947,6 @@ func normalize(cmd string) (string, []string) {
 	cmd = stripCommandWrappers(cmd)
 	cmd = collapseUnquotedBackslashes(cmd)
 	return cmd, subs
-}
-
-// decodeANSIC rewrites $'...' ANSI-C quoted strings to their literal value,
-// so `$'\x72\x6d' -rf /` and `$'\162m'` reduce to `rm`. Without this an
-// attacker hides a command name in hex/octal escapes the tokenizer can't see.
-// Only the common escapes are decoded; anything unrecognised is left as-is.
-func decodeANSIC(cmd string) string {
-	var out strings.Builder
-	for i := 0; i < len(cmd); {
-		if i+1 < len(cmd) && cmd[i] == '$' && cmd[i+1] == '\'' {
-			j := i + 2
-			var body strings.Builder
-			for j < len(cmd) && cmd[j] != '\'' {
-				if cmd[j] == '\\' && j+1 < len(cmd) {
-					n := decodeEscape(cmd[j:], &body)
-					j += n
-					continue
-				}
-				body.WriteByte(cmd[j])
-				j++
-			}
-			if j < len(cmd) { // closing quote found
-				out.WriteString(body.String())
-				i = j + 1
-				continue
-			}
-		}
-		out.WriteByte(cmd[i])
-		i++
-	}
-	return out.String()
-}
-
-// decodeEscape decodes one backslash escape at the start of s into b and
-// returns how many bytes of s were consumed.
-func decodeEscape(s string, b *strings.Builder) int {
-	if len(s) < 2 {
-		b.WriteByte('\\')
-		return 1
-	}
-	switch s[1] {
-	case 'n':
-		b.WriteByte('\n')
-		return 2
-	case 't':
-		b.WriteByte('\t')
-		return 2
-	case 'r':
-		b.WriteByte('\r')
-		return 2
-	case '\\', '\'', '"':
-		b.WriteByte(s[1])
-		return 2
-	case 'x': // \xHH
-		if len(s) >= 4 {
-			if v, err := strconv.ParseUint(s[2:4], 16, 8); err == nil {
-				b.WriteByte(byte(v))
-				return 4
-			}
-		}
-	default:
-		if s[1] >= '0' && s[1] <= '7' { // \NNN octal (1–3 digits, like bash)
-			// end starts after the backslash+first digit; cap at end<4 so at
-			// most 3 octal digits (s[1:4]) are consumed. A wider bound would
-			// swallow a following literal octal digit and diverge from the
-			// shell (bash: $'\1551' → "m1", not one byte).
-			end := 2
-			for end < len(s) && end < 4 && s[end] >= '0' && s[end] <= '7' {
-				end++
-			}
-			if v, err := strconv.ParseUint(s[1:end], 8, 8); err == nil {
-				b.WriteByte(byte(v)) // bash takes octal escapes mod 256
-				return end
-			}
-		}
-	}
-	b.WriteByte(s[1])
-	return 2
-}
-
-// expandBraces approximates brace expansion for the classifier: a {a,b,c}
-// group is rewritten to space-separated alternatives, so the evasion
-// `{rm,-rf,/}` (which the shell runs as `rm -rf /`) is seen as those words.
-// Only comma-bearing groups are touched, leaving ${VAR} and find's {} alone.
-var reBraceGroup = regexp.MustCompile(`\{[^{}]*,[^{}]*\}`)
-
-func expandBraces(cmd string) string {
-	return reBraceGroup.ReplaceAllStringFunc(cmd, func(m string) string {
-		inner := m[1 : len(m)-1]
-		return " " + strings.ReplaceAll(inner, ",", " ") + " "
-	})
 }
 
 // expandIFS replaces $IFS / ${IFS} with a literal space. The shell expands
@@ -2101,6 +2026,16 @@ func extractSubstitutions(cmd string) (string, []string) {
 			i += 2
 			continue
 		}
+		// Positional parameters and $@ / $* are empty in a one-shot command
+		// line, so glued into a word (`/e${9}tc/shadow`) they vanish and the
+		// shell sees the plain path. A parameter that is a whole word of its
+		// own is left as the dynamic operand it is.
+		if cmd[i] == '$' {
+			if n := emptyPositionalLen(cmd[i:]); n > 0 && (i > 0 && wordGlue(cmd[i-1]) || i+n < len(cmd) && wordGlue(cmd[i+n])) {
+				i += n
+				continue
+			}
+		}
 		// $(...) command substitution and <(...) / >(...) process
 		// substitution all run their body as a command. Treat them alike.
 		if i+1 < len(cmd) && (cmd[i] == '$' || cmd[i] == '<' || cmd[i] == '>') && cmd[i+1] == '(' {
@@ -2123,10 +2058,23 @@ func extractSubstitutions(cmd string) (string, []string) {
 			}
 			if depth == 0 && j < len(cmd) {
 				body := cmd[i+2 : j]
+				if cmd[i] == '$' {
+					if inner, ok := arithmeticBody(body); ok {
+						// $(( … )) is arithmetic and runs nothing itself;
+						// only a substitution nested in it can execute.
+						_, nested := extractSubstitutions(inner)
+						subs = append(subs, nested...)
+						out.WriteByte('0')
+						i = j + 1
+						continue
+					}
+				}
 				subs = append(subs, body)
-				out.WriteByte(' ')
-				out.WriteString(substValue(body))
-				out.WriteByte(' ')
+				if value := substValue(body); value != "" {
+					out.WriteByte(' ')
+					out.WriteString(value)
+					out.WriteByte(' ')
+				}
 				i = j + 1
 				continue
 			}
@@ -2147,11 +2095,13 @@ func extractSubstitutions(cmd string) (string, []string) {
 				}
 			}
 			if end > 0 {
-				body := cmd[i+1 : end]
+				body := unescapeBacktickBody(cmd[i+1:end], inDouble)
 				subs = append(subs, body)
-				out.WriteByte(' ')
-				out.WriteString(substValue(body))
-				out.WriteByte(' ')
+				if value := substValue(body); value != "" {
+					out.WriteByte(' ')
+					out.WriteString(value)
+					out.WriteByte(' ')
+				}
 				i = end + 1
 				continue
 			}
@@ -2188,6 +2138,100 @@ func substValue(body string) string {
 	return dynamicSubstToken
 }
 
+// unescapeBacktickBody applies the shell's own processing of a backtick
+// body before it is parsed: a backslash before `$`, a backtick or another
+// backslash (and before a double quote when the substitution sits inside
+// double quotes) is removed. This is what turns an escaped inner backtick
+// pair into a real nested substitution.
+func unescapeBacktickBody(body string, inDouble bool) string {
+	if !strings.Contains(body, "\\") {
+		return body
+	}
+	var b strings.Builder
+	for i := 0; i < len(body); i++ {
+		if body[i] == '\\' && i+1 < len(body) {
+			switch body[i+1] {
+			case '$', '`', '\\':
+				i++
+			case '"':
+				if inDouble {
+					i++
+				}
+			}
+		}
+		b.WriteByte(body[i])
+	}
+	return b.String()
+}
+
+// arithmeticBody reports whether the text between `$(` and its matching `)`
+// is an arithmetic expansion `((expr))` and returns expr. A body whose
+// leading parenthesis closes before the end (`(a) | (b)`), that contains a
+// command separator, or that has anything outside the double parentheses is
+// a command substitution and is classified as one.
+func arithmeticBody(body string) (string, bool) {
+	if len(body) < 2 || body[0] != '(' || body[len(body)-1] != ')' {
+		return "", false
+	}
+	depth := 0
+	for i := 0; i < len(body); i++ {
+		switch body[i] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 && i != len(body)-1 {
+				return "", false
+			}
+		}
+	}
+	if depth != 0 {
+		return "", false
+	}
+	inner := body[1 : len(body)-1]
+	if strings.ContainsAny(inner, ";\n") {
+		return "", false
+	}
+	return inner, true
+}
+
+// emptyPositionalLen returns the length of a positional-parameter expansion
+// ($1…$9, ${N}, $@, $*, ${@}, ${*}) at the start of s, or 0.
+func emptyPositionalLen(s string) int {
+	if len(s) < 2 || s[0] != '$' {
+		return 0
+	}
+	switch {
+	case s[1] == '@' || s[1] == '*' || s[1] >= '1' && s[1] <= '9':
+		return 2
+	case s[1] == '{':
+		end := strings.IndexByte(s, '}')
+		if end < 3 {
+			return 0
+		}
+		name := s[2:end]
+		if name == "@" || name == "*" {
+			return end + 1
+		}
+		if name[0] < '1' || name[0] > '9' {
+			return 0
+		}
+		for k := 1; k < len(name); k++ {
+			if name[k] < '0' || name[k] > '9' {
+				return 0
+			}
+		}
+		return end + 1
+	}
+	return 0
+}
+
+// wordGlue reports whether c is a byte of a shell word (as opposed to
+// whitespace, an operator or a quote delimiter).
+func wordGlue(c byte) bool {
+	return strings.IndexByte(" \t\n\r\"';|&<>()", c) < 0
+}
+
 // stripCommandWrappers removes leading shell builtins that simply invoke
 // their first argument as a command (POSIX `command`, `exec`, `builtin`).
 // Applied repeatedly so `exec command rm -rf /` is reduced to `rm -rf /`.
@@ -2209,6 +2253,39 @@ func stripCommandWrappers(cmd string) string {
 			return trimmed
 		}
 		cmd = trimmed[sp+1:]
+		if first == "command" {
+			// `command -v/-V NAME` only reports how NAME resolves; it runs
+			// nothing, so it is not a wrapper around NAME. -p and -- are
+			// options of the builtin, not the command being run.
+			rest, lookup := skipCommandOptions(cmd)
+			if lookup {
+				return trimmed
+			}
+			cmd = rest
+		}
+	}
+}
+
+// skipCommandOptions skips the leading options of the `command` builtin
+// (-p, --) in args and reports whether the invocation is a lookup (-v/-V).
+func skipCommandOptions(args string) (string, bool) {
+	for {
+		trimmed := strings.TrimLeft(args, " \t")
+		word := trimmed
+		if sp := strings.IndexAny(trimmed, " \t"); sp >= 0 {
+			word = trimmed[:sp]
+		}
+		switch {
+		case word == "--":
+			return strings.TrimLeft(trimmed[len(word):], " \t"), false
+		case len(word) > 1 && word[0] == '-' && strings.Trim(word[1:], "pvV") == "":
+			if strings.ContainsAny(word, "vV") {
+				return trimmed, true
+			}
+			args = trimmed[len(word):]
+		default:
+			return trimmed, false
+		}
 	}
 }
 
@@ -2231,8 +2308,27 @@ func collapseUnquotedBackslashes(cmd string) string {
 			inDouble = !inDouble
 			out.WriteByte(ch)
 		case ch == '\\' && !inSingle && i+1 < len(cmd):
-			// Drop the backslash, keep the next character.
-			out.WriteByte(cmd[i+1])
+			next := cmd[i+1]
+			if inDouble {
+				// Inside double quotes a backslash escapes only \ " $ `.
+				// Those pairs stay intact for tokenize, so an escaped quote
+				// or backslash cannot change the quote state seen later; any
+				// other backslash is dropped.
+				switch next {
+				case '\\', '"', '$', '`':
+					out.WriteByte(ch)
+				}
+				out.WriteByte(next)
+			} else {
+				// Unquoted: drop the backslash, except in front of a quote
+				// character or another backslash. Those stay as an escaped
+				// pair that tokenize turns into the literal character; a
+				// bare quote would open a span and hide the rest.
+				if next == '\'' || next == '"' || next == '\\' {
+					out.WriteByte(ch)
+				}
+				out.WriteByte(next)
+			}
 			i++
 		default:
 			out.WriteByte(ch)
@@ -2418,6 +2514,11 @@ func unwrapWrappers(tokens []string) ([]string, RiskClass) {
 		if !priv && !execWrappers[name] {
 			break
 		}
+		if name == "command" && commandIsLookup(tokens[i+1:]) {
+			// `command -v/-V NAME` resolves NAME without running it, so
+			// NAME is not the wrapped command.
+			break
+		}
 		if priv {
 			floor = worstOf(floor, SystemWrite)
 		}
@@ -2469,6 +2570,20 @@ func unwrapWrappers(tokens []string) ([]string, RiskClass) {
 		floor = worstOf(floor, envAssignmentRisk(assignments, inner))
 	}
 	return inner, floor
+}
+
+// commandIsLookup reports whether the arguments of the `command` builtin
+// make it a lookup (-v/-V, possibly after -p) rather than an execution.
+func commandIsLookup(args []string) bool {
+	for _, a := range args {
+		if a == "--" || len(a) < 2 || a[0] != '-' || strings.Trim(a[1:], "pvV") != "" {
+			return false
+		}
+		if strings.ContainsAny(a, "vV") {
+			return true
+		}
+	}
+	return false
 }
 
 func hasDynamicSubst(tokens []string) bool {
