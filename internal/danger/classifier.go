@@ -5635,55 +5635,38 @@ func isAllDigits(s string) bool {
 // script that calls system() or pipes to a command. Plain field
 // printing (`awk '{print $1}' file`) is not code execution.
 func awkRunsShellCode(tokens []string) bool {
-	skipNext := false
-	for i := 1; i < len(tokens); i++ {
-		if skipNext {
-			skipNext = false
-			continue
-		}
-		tok := tokens[i]
-		if tok == "-f" || tok == "--file" {
+	r := awkOptions.parse(tokens[1:])
+	for _, o := range r.opts {
+		switch {
+		// A program loaded from file is uninspectable (-f/--file, and gawk's
+		// -E/--exec, which reads the program the same way).
+		case o.is("-f", "--file", "-E", "--exec"):
+			return true
+		// Inline program text reaches awk through -e/--source, fused into the
+		// option word or as the next word.
+		case o.has && o.is("-e", "--source") && awkScriptHasShellExec(o.value):
 			return true
 		}
-		if strings.HasPrefix(tok, "--file=") {
-			return true
-		}
-		if strings.HasPrefix(tok, "--source=") {
-			return awkScriptHasShellExec(tok[len("--source="):])
-		}
-		if tok == "-e" || tok == "--source" || tok == "--exec" {
-			if i+1 < len(tokens) && awkScriptHasShellExec(tokens[i+1]) {
-				return true
-			}
-			skipNext = true
-			continue
-		}
-		if tok == "-F" || tok == "-v" || tok == "-W" {
-			skipNext = true
-			continue
-		}
-		if isShortFlagToken(tok) {
-			rest := tok[1:]
-			for j := 0; j < len(rest); j++ {
-				switch rest[j] {
-				case 'f':
-					return true
-				case 'F', 'v':
-					j = len(rest)
-				case 'e':
-					if awkScriptHasShellExec(rest[j+1:]) {
-						return true
-					}
-					j = len(rest)
-				}
-			}
-			continue
-		}
-		if !strings.HasPrefix(tok, "-") && awkScriptHasShellExec(tok) {
+	}
+	// Bare program argument; every operand is checked because which one is the
+	// program depends on whether -e/--source was given.
+	for _, tok := range r.args() {
+		if awkScriptHasShellExec(tok) {
 			return true
 		}
 	}
 	return false
+}
+
+// awkOptions is the grammar of awk/gawk options: -F (field separator), -v
+// (assignment), -W, -f, -e, -E, -i and -l take a value. Long options may be
+// abbreviated, and `--` ends nothing, so no word is hidden from the predicate.
+var awkOptions = optSpec{
+	short: "FvWfeEil",
+	long: longTable("file source exec include load assign field-separator",
+		"lint traditional posix re-interval sandbox dump-variables profile pretty-print version help"),
+	abbrev:         true,
+	ignoreDashDash: true,
 }
 
 func awkScriptHasShellExec(tok string) bool {

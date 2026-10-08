@@ -501,7 +501,7 @@ func executionFileTargets(name string, tokens []string) []string {
 // the program-loading options executionFileTargets looks for, so a cluster such
 // as `awk -vf=1` is not read as `-f`.
 var executionValueLetters = map[string]string{
-	"awk": "vF", "gawk": "vF", "mawk": "vF", "nawk": "vF",
+	"awk": "vFeEW", "gawk": "vFeEW", "mawk": "vFeEW", "nawk": "vFeEW",
 	"sed":  "el",
 	"make": "CIoW", "gmake": "CIoW",
 }

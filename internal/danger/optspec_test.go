@@ -193,6 +193,9 @@ func TestOptSpecReadsSpellingsTheOldParsersMisread(t *testing.T) {
 		{"sed --expr='s/a/b/e' f", CodeExecution, "--expr abbreviates --expression whose script runs a command"},
 		{"scp -O -F cfg a h:b", CodeExecution, "scp -O is the legacy-protocol flag, not an option with a value, so -F still names a config file"},
 		{"scp -OF cfg a h:b", CodeExecution, "-O in a cluster takes no value, so F takes cfg"},
+		{"awk --exec p.awk f", CodeExecution, "gawk --exec reads the program from a file, like -f"},
+		{"awk -E p.awk f", CodeExecution, "gawk -E is --exec"},
+		{"awk --source='BEGIN{print 1}' -f x f", CodeExecution, "a harmless --source must not end the scan before -f"},
 		{"kubectl -An ns get pods", NetworkEgress, "-A is a flag, so -An takes ns as the namespace and get is the verb"},
 		{"docker -Dl debug ps", Safe, "-D is a flag and -l takes debug: ps is the verb"},
 	} {
