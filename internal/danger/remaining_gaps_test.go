@@ -332,3 +332,37 @@ func TestRemaining_DenialErrorEscapesControlCharacters(t *testing.T) {
 	cfg := &DangerousConfig{Classes: map[RiskClass]Action{SystemWrite: Deny}}
 	check("configuration", cfg.CheckOperation(ToolOperation{Name: "write_file\x1b[1m", Resource: hostile, Risk: SystemWrite}, nil))
 }
+
+// A carriage return alone is not a command separator in a shell: outside
+// quotes it is part of the word. The tokenizer still splits at one, so a line
+// carrying an unquoted bare CR cannot be analysed faithfully and classifies
+// unknown. A CR that belongs to a CRLF line ending, a trailing one, and a CR
+// inside quotes are all ordinary.
+func TestRemaining_BareCarriageReturn(t *testing.T) {
+	for _, cmd := range []string{
+		"echo a\rls",
+		"echo a\rb",
+		"ls\rrm -rf /tmp/x",
+		"echo $(echo a\rb)",
+	} {
+		if got := Classify(cmd); got != Unknown {
+			t.Errorf("Classify(%q) = %s, want unknown (unquoted bare CR)", cmd, got)
+		}
+	}
+	for _, cmd := range []string{
+		"printf 'a\rb'",
+		"printf \"a\rb\"",
+		"echo a\r\n",
+		"echo a\r",
+		"ls\r\nls\r\n",
+		"echo ok\r\necho ok2",
+	} {
+		if got := Classify(cmd); got == Unknown {
+			t.Errorf("Classify(%q) = unknown, want it analysed normally", cmd)
+		}
+	}
+	// A quoted CR stays inside its word.
+	if toks := tokenize("printf 'a\rb'"); len(toks) != 2 {
+		t.Errorf("tokenize split a quoted CR: %q", toks)
+	}
+}

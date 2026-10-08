@@ -162,6 +162,10 @@ func analyzeWithState(cmd string, depth int, inherited *shellAnalysisState) Anal
 	if referencesSensitiveEnv(main) || (strings.Contains(cmd, "<<") && referencesSensitiveEnv(cmd)) {
 		result.add(SystemWrite)
 	}
+	if hasBareCarriageReturn(main) {
+		// The tokenizer splits at a lone CR; a shell keeps it in the word.
+		result.add(Unknown)
+	}
 	tokens, unterminated := tokenizeChecked(main)
 	if unterminated {
 		// The shell would reject this line, but an open quote has swallowed
@@ -446,6 +450,33 @@ func analyzeWithState(cmd string, depth int, inherited *shellAnalysisState) Anal
 	}
 	sort.Slice(result.Effects, func(i, j int) bool { return Rank(result.Effects[i]) > Rank(result.Effects[j]) })
 	return result
+}
+
+// hasBareCarriageReturn reports whether text holds a carriage return outside
+// quotes that is neither part of a CRLF line ending nor trailing.
+func hasBareCarriageReturn(text string) bool {
+	text = strings.TrimSpace(text)
+	if strings.IndexByte(text, '\r') < 0 {
+		return false
+	}
+	single, double := false, false
+	for i := 0; i < len(text); i++ {
+		switch c := text[i]; {
+		case single:
+			single = c != '\''
+		case c == '\\' && i+1 < len(text):
+			i++
+		case double:
+			double = c != '"'
+		case c == '\'':
+			single = true
+		case c == '"':
+			double = true
+		case c == '\r' && text[i+1] != '\n':
+			return true
+		}
+	}
+	return false
 }
 
 func environmentRunsCode(prefix []string) bool {
