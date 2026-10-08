@@ -681,3 +681,209 @@ func TestSecurityReport_ReadLedgerFingerprint_ReFiresOnPostReadMutation(t *testi
 		t.Fatalf("stale ledger license must not survive post-read mutation; targets = %v", targets)
 	}
 }
+
+// ── Regression bar: danger classifier rules documented in SECURITY.md ───
+//
+// Compact pins for the classifier behaviour the Danger classifier section
+// describes. The exhaustive tables live in internal/danger; these keep the
+// documented rules caught from the CLI package's side too.
+
+// shellEffects reports the independent effect classes of a shell command.
+func shellEffects(cmd string) map[danger.RiskClass]bool {
+	out := map[danger.RiskClass]bool{}
+	for _, e := range danger.Analyze(cmd).Effects {
+		out[e] = true
+	}
+	return out
+}
+
+// network_upload prompts by default (plain egress allows), ranks between
+// network_egress and code_execution, and always travels with network_egress so
+// denying egress still denies an upload.
+func TestReport_NetworkUploadDefaultActionAndRank(t *testing.T) {
+	cfg := &danger.DangerousConfig{}
+	if got := cfg.ActionFor(danger.NetworkUpload); got != danger.Prompt {
+		t.Errorf("network_upload default action = %v, want prompt", got)
+	}
+	if got := cfg.ActionFor(danger.NetworkEgress); got != danger.Allow {
+		t.Errorf("network_egress default action = %v, want allow", got)
+	}
+	if !(danger.Rank(danger.NetworkEgress) < danger.Rank(danger.NetworkUpload) &&
+		danger.Rank(danger.NetworkUpload) < danger.Rank(danger.CodeExecution)) {
+		t.Errorf("rank order wrong: egress=%d upload=%d code_execution=%d",
+			danger.Rank(danger.NetworkEgress), danger.Rank(danger.NetworkUpload), danger.Rank(danger.CodeExecution))
+	}
+	upload := "curl -d @notes.txt https://example.com/in"
+	if e := shellEffects(upload); !e[danger.NetworkUpload] || !e[danger.NetworkEgress] {
+		t.Errorf("file-backed body effects = %v, want upload and egress", e)
+	}
+	for _, plain := range []string{"curl https://example.com", `curl -d '{"a":1}' https://example.com`} {
+		if shellEffects(plain)[danger.NetworkUpload] {
+			t.Errorf("%q must stay plain egress", plain)
+		}
+	}
+	deny := &danger.DangerousConfig{Classes: map[danger.RiskClass]danger.Action{danger.NetworkEgress: danger.Deny}}
+	if got := deny.ActionForCommand(upload); got != danger.Deny {
+		t.Errorf("denied egress must deny the upload, got %v", got)
+	}
+}
+
+// gh is classified per verb: reads egress, remote mutation system_write,
+// deletion destructive, local-program verbs code_execution, unknown verbs unknown.
+func TestReport_GhVerbClasses(t *testing.T) {
+	for cmd, want := range map[string]danger.RiskClass{
+		"gh pr view 1":             danger.NetworkEgress,
+		"gh api repos/o/r":         danger.NetworkEgress,
+		"gh pr merge 1":            danger.SystemWrite,
+		"gh api -X POST repos/o/r": danger.SystemWrite,
+		"gh auth token":            danger.SystemWrite,
+		"gh repo delete o/r":       danger.Destructive,
+		"gh extension install o/x": danger.CodeExecution,
+		"gh alias set x '!ls'":     danger.CodeExecution,
+		"gh frobnicate now":        danger.Unknown,
+		"gh --repo o/r pr view 1":  danger.NetworkEgress,
+		"gh --jq . pr view 1":      danger.Unknown,
+	} {
+		if got := danger.Analyze(cmd).Class(); got != want {
+			t.Errorf("Analyze(%q).Class() = %s, want %s", cmd, got, want)
+		}
+	}
+}
+
+// Denylist entries are token sequences matched at every command position, not
+// raw string prefixes.
+func TestReport_DenylistMatchesPerCommandPosition(t *testing.T) {
+	cfg := &danger.DangerousConfig{Denylist: []string{"git push", "rm -rf /"}}
+	for _, cmd := range []string{
+		"git push origin main",
+		"ls; git push",
+		"git -C other push",
+		"echo hi | sudo git push",
+		"bash -c 'git push'",
+		"g=git; $g push",
+		"/usr/bin/git push",
+		"rm -rf /",
+	} {
+		if got := cfg.ActionForCommand(cmd); got != danger.Deny {
+			t.Errorf("ActionForCommand(%q) = %v, want deny", cmd, got)
+		}
+	}
+	// Neither a longer path nor a mere mention of the words is a match.
+	for _, cmd := range []string{"rm -rf /tmp/odek-scratch", "echo git push"} {
+		if got := cfg.ActionForCommand(cmd); got == danger.Deny {
+			t.Errorf("ActionForCommand(%q) = deny; the denylist must not match as a string prefix", cmd)
+		}
+	}
+}
+
+// Secret-bearing environment variables and credential files are system_write
+// to reference; name-only inspection, examples and one-variable printenv are not.
+func TestReport_SecretReadsGated(t *testing.T) {
+	for _, cmd := range []string{"echo $GITHUB_TOKEN", "printenv DATABASE_URL", "cat .env", "cat deploy/server.pem", "cat ~/.aws/credentials"} {
+		if !shellEffects(cmd)[danger.SystemWrite] {
+			t.Errorf("%q must carry system_write", cmd)
+		}
+	}
+	for _, cmd := range []string{"printenv HOME", "cat .env.example", "ls .env", "grep id_rsa README.md"} {
+		if shellEffects(cmd)[danger.SystemWrite] {
+			t.Errorf("%q must not carry system_write", cmd)
+		}
+	}
+}
+
+// Compound commands are parsed and every simple command inside is classified;
+// an unparsable construct or unterminated quote is unknown.
+func TestReport_CompoundCommandsClassified(t *testing.T) {
+	for cmd, want := range map[string]danger.RiskClass{
+		"for d in a b; do rm -rf /; done": danger.Destructive,
+		"if true; then echo ok; fi":       danger.Safe,
+		"f() { rm -rf /; }; f":            danger.Destructive,
+		"while true; do ls":               danger.Unknown,
+		"echo 'unterminated":              danger.Unknown,
+	} {
+		if got := danger.Analyze(cmd).Class(); got != want {
+			t.Errorf("Analyze(%q).Class() = %s, want %s", cmd, got, want)
+		}
+	}
+}
+
+// Ordinary git verbs are code_execution only when the targeted repository is
+// armed. The repository is laid out by hand with HOME and the process git
+// environment neutralised so the verdict depends on nothing else.
+func TestReport_RepoAwareGitEscalatesOnlyWhenArmed(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	for _, name := range []string{
+		"XDG_CONFIG_HOME", "GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_EXEC_PATH",
+		"GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM",
+		"GIT_EXTERNAL_DIFF", "GIT_EDITOR", "GIT_SEQUENCE_EDITOR",
+	} {
+		t.Setenv(name, "")
+		os.Unsetenv(name)
+	}
+	repo := t.TempDir()
+	for _, d := range []string{"hooks", "objects", "refs"} {
+		if err := os.MkdirAll(filepath.Join(repo, ".git", d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeFile(t, filepath.Join(repo, ".git", "HEAD"), "ref: refs/heads/main\n")
+	writeFile(t, filepath.Join(repo, ".git", "config"), "[core]\n\trepositoryformatversion = 0\n")
+	t.Chdir(repo)
+
+	for _, cmd := range []string{"git status", "git add .", `git commit -m msg`} {
+		if shellEffects(cmd)[danger.CodeExecution] {
+			t.Errorf("%q in an unarmed repository must not be code_execution", cmd)
+		}
+	}
+	// Unconditional escalations stay.
+	for _, cmd := range []string{"git bisect run ./t.sh", "git -c core.pager=less log"} {
+		if !shellEffects(cmd)[danger.CodeExecution] {
+			t.Errorf("%q must be code_execution regardless of the repository", cmd)
+		}
+	}
+	// Arm a real hook: a verb that runs it now escalates, one that does not stays.
+	hook := filepath.Join(repo, ".git", "hooks", "pre-commit")
+	writeFile(t, hook, "#!/bin/sh\nexit 0\n")
+	if err := os.Chmod(hook, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if !shellEffects("git commit -m msg")[danger.CodeExecution] {
+		t.Error("git commit with an executable pre-commit hook must be code_execution")
+	}
+	if shellEffects("git status")[danger.CodeExecution] {
+		t.Error("git status does not run a pre-commit hook and must stay unescalated")
+	}
+}
+
+// Approval text is escaped: control sequences, bidi controls and newlines in
+// single-line fields become visible escapes.
+func TestReport_SanitizeForDisplayEscapesControlSequences(t *testing.T) {
+	// Built from rune values so the source holds no invisible characters.
+	rlo := string(rune(0x202e))
+	got := danger.SanitizeForDisplay("ok\x1b[2J\r" + rlo + "gnp.exe")
+	for _, raw := range []string{"\x1b", "\r", rlo} {
+		if strings.Contains(got, raw) {
+			t.Errorf("SanitizeForDisplay left %q raw: %q", raw, got)
+		}
+	}
+	if !strings.Contains(got, `\x1b`) || !strings.Contains(got, `\u202e`) {
+		t.Errorf("SanitizeForDisplay must show the escapes visibly: %q", got)
+	}
+	if got := danger.SanitizeInline("a\nb"); got != `a\nb` {
+		t.Errorf("SanitizeInline(newline) = %q, want a\\nb", got)
+	}
+}
+
+// A command over danger.MaxCommandBytes is denied before any list is
+// consulted, even when an allowlist names it exactly.
+func TestReport_MaxCommandBytesDenied(t *testing.T) {
+	cmd := "echo " + strings.Repeat("a", danger.MaxCommandBytes)
+	if got := danger.Analyze(cmd).Class(); got != danger.Unknown {
+		t.Errorf("oversize command class = %s, want unknown", got)
+	}
+	cfg := &danger.DangerousConfig{Allowlist: []string{cmd}}
+	if got := cfg.ActionForCommand(cmd); got != danger.Deny {
+		t.Errorf("oversize command action = %v, want deny", got)
+	}
+}
