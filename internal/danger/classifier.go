@@ -99,6 +99,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"os/user"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -236,43 +237,9 @@ func classifyPathLexical(path string) RiskClass {
 		}
 	}
 
-	home, _ := os.UserHomeDir()
-	if home != "" {
-		// Case-fold the home-relative prefix comparisons: the filesystem may
-		// be case-insensitive (macOS APFS default, Windows NTFS), where
-		// /Users/x/.SSH and /Users/x/.ssh are the same directory and an
-		// exact-case match would let a case variant slip past the guard.
-		lowerAbs, lowerHome := strings.ToLower(abs), strings.ToLower(home)
-		for _, sub := range []string{"/.ssh", "/.config", "/.gnupg", "/.aws", "/.kube",
-			"/.docker", "/.gitconfig", "/.env",
-			"/.netrc", "/.npmrc", "/.pypirc", "/.pgpass",
-			"/.git-credentials", "/.my.cnf", "/.mylogin.cnf",
-			"/.cargo", "/.gem", "/.azure", "/.password-store",
-			"/.terraform.d", "/.vault-token"} {
-			if strings.HasPrefix(lowerAbs, lowerHome+sub) {
-				return SystemWrite
-			}
-		}
-		// odek's own trust anchors. Rewriting ~/.odek/config.json can disable
-		// the sandbox or set "action": "allow" (YOLO) for the next run; a
-		// SKILL.md dropped under ~/.odek/skills/ is auto-loaded into future
-		// prompts; secrets.env is injected into the process environment;
-		// IDENTITY.md becomes the system prompt on the next run, so writing it
-		// lets a prompt-injected agent rewrite its own trusted instructions.
-		// sessions/, audit/, plans/, schedules.json, schedule-state.json and
-		// other state files similarly grant persistence or leak secrets.
-		// Auto-allowing these as LocalWrite would let a confined agent
-		// escalate out of its own sandbox, so they classify as SystemWrite
-		// (prompt/deny). Keep in sync with the carve-out exclusions in
-		// cmd/odek/file_tool.go (isProtectedOdekPath).
-		if isOdekTrustAnchor(home, abs) {
-			return SystemWrite
-		}
-		// Shell rc/profile files execute on the user's next shell start —
-		// writing them is persistence/escalation, not a local file edit.
-		// Case-folding defends against case-insensitive filesystems (macOS APFS).
-		if filepath.Dir(abs) == home && shellRCFilesLower[strings.ToLower(filepath.Base(abs))] {
-			return SystemWrite
+	for _, home := range accountHomes(abs) {
+		if cls, ok := classifyHomeRelative(home, abs); ok {
+			return cls
 		}
 	}
 
@@ -292,6 +259,76 @@ func classifyPathLexical(path string) RiskClass {
 	}
 
 	return LocalWrite
+}
+
+// accountHomes returns the home directories whose protected-path rules apply
+// to abs: the current user's home plus the account home (/home/<name>,
+// /Users/<name>, /root) abs sits under. Agents commonly run as root, where
+// another account's shell rc files and credential directories are as live a
+// target as the caller's own.
+func accountHomes(abs string) []string {
+	var homes []string
+	if home, _ := os.UserHomeDir(); home != "" {
+		homes = append(homes, home)
+	}
+	lower := strings.ToLower(abs)
+	for _, base := range []string{"/home/", "/users/"} {
+		if !strings.HasPrefix(lower, base) {
+			continue
+		}
+		rest := abs[len(base):]
+		name, _, _ := strings.Cut(rest, "/")
+		if name == "" {
+			continue
+		}
+		homes = append(homes, abs[:len(base)]+name)
+	}
+	if lower == "/root" || strings.HasPrefix(lower, "/root/") {
+		homes = append(homes, abs[:len("/root")])
+	}
+	return homes
+}
+
+// classifyHomeRelative applies the home-directory rules to abs for one
+// account home. The boolean is false when abs is not protected by them.
+func classifyHomeRelative(home, abs string) (RiskClass, bool) {
+	// Case-fold the home-relative prefix comparisons: the filesystem may
+	// be case-insensitive (macOS APFS default, Windows NTFS), where
+	// /Users/x/.SSH and /Users/x/.ssh are the same directory and an
+	// exact-case match would let a case variant slip past the guard.
+	lowerAbs, lowerHome := strings.ToLower(abs), strings.ToLower(home)
+	for _, sub := range []string{"/.ssh", "/.config", "/.gnupg", "/.aws", "/.kube",
+		"/.docker", "/.gitconfig", "/.env",
+		"/.netrc", "/.npmrc", "/.pypirc", "/.pgpass",
+		"/.git-credentials", "/.my.cnf", "/.mylogin.cnf",
+		"/.cargo", "/.gem", "/.azure", "/.password-store",
+		"/.terraform.d", "/.vault-token"} {
+		if strings.HasPrefix(lowerAbs, lowerHome+sub) {
+			return SystemWrite, true
+		}
+	}
+	// odek's own trust anchors. Rewriting ~/.odek/config.json can disable
+	// the sandbox or set "action": "allow" (YOLO) for the next run; a
+	// SKILL.md dropped under ~/.odek/skills/ is auto-loaded into future
+	// prompts; secrets.env is injected into the process environment;
+	// IDENTITY.md becomes the system prompt on the next run, so writing it
+	// lets a prompt-injected agent rewrite its own trusted instructions.
+	// sessions/, audit/, plans/, schedules.json, schedule-state.json and
+	// other state files similarly grant persistence or leak secrets.
+	// Auto-allowing these as LocalWrite would let a confined agent
+	// escalate out of its own sandbox, so they classify as SystemWrite
+	// (prompt/deny). Keep in sync with the carve-out exclusions in
+	// cmd/odek/file_tool.go (isProtectedOdekPath).
+	if isOdekTrustAnchor(home, abs) {
+		return SystemWrite, true
+	}
+	// Shell rc/profile files execute on the user's next shell start —
+	// writing them is persistence/escalation, not a local file edit.
+	// Case-folding defends against case-insensitive filesystems (macOS APFS).
+	if filepath.Dir(abs) == home && shellRCFilesLower[strings.ToLower(filepath.Base(abs))] {
+		return SystemWrite, true
+	}
+	return LocalWrite, false
 }
 
 // isBenignCharDevice reports whether abs is a character pseudo-device used
@@ -324,6 +361,10 @@ var shellRCFiles = map[string]bool{
 	".zshrc": true, ".zprofile": true, ".zshenv": true, ".zlogin": true,
 	".zlogout": true, ".kshrc": true, ".cshrc": true, ".tcshrc": true,
 	".login": true, ".logout": true,
+	// X session / mksh startup scripts run automatically at login or shell
+	// start just like the shells' own rc files.
+	".xinitrc": true, ".xprofile": true, ".xsession": true, ".xsessionrc": true,
+	".mkshrc": true, ".pdkshrc": true,
 }
 
 // ClassifyPath uses shellRCFiles with case-folding because macOS APFS is
@@ -349,8 +390,13 @@ var shellRCFilesLower = func() map[string]bool {
 // leading slash) keeps relative paths like .github/workflows/x.yml working
 // after filepath.Abs without reimplementing git/CI layout resolution.
 var persistenceDirMarkers = []string{
-	"/.git/hooks/",         // runs on commit, push, checkout
-	"/.github/workflows/",  // runs on the next push, with CI credentials
+	"/.git/hooks/",        // runs on commit, push, checkout
+	"/.github/workflows/", // runs on the next push, with CI credentials
+	"/.gitea/workflows/",  // Gitea / Forgejo Actions: same trigger model
+	"/.forgejo/workflows/",
+	"/.circleci/",          // CircleCI pipeline definitions
+	"/.buildkite/",         // Buildkite pipeline definitions
+	"/.woodpecker/",        // Woodpecker CI pipeline definitions
 	"/etc/cron.d/",         // runs on a schedule
 	"/etc/crontab",         // runs on a schedule
 	"/etc/cron.daily/",     // runs daily (Debian run-parts)
@@ -371,13 +417,20 @@ var persistenceDirMarkers = []string{
 // persistenceBaseNames are exact (lowercased) file names that defer
 // execution wherever they appear in a tree.
 var persistenceBaseNames = map[string]bool{
-	".envrc":         true, // direnv: executes on cd
-	".gitlab-ci.yml": true, // runs on the next push, with CI credentials
-	".travis.yml":    true,
-	".drone.yml":     true,
-	"jenkinsfile":    true,
-	"config.fish":    true, // fish shell config (also under ~/.config)
-	"crontab":        true,
+	".envrc":                  true, // direnv: executes on cd
+	".gitlab-ci.yml":          true, // runs on the next push, with CI credentials
+	".travis.yml":             true,
+	".drone.yml":              true,
+	".cirrus.yml":             true,
+	"azure-pipelines.yml":     true,
+	"azure-pipelines.yaml":    true,
+	"bitbucket-pipelines.yml": true,
+	"appveyor.yml":            true,
+	".appveyor.yml":           true,
+	".woodpecker.yml":         true,
+	"jenkinsfile":             true,
+	"config.fish":             true, // fish shell config (also under ~/.config)
+	"crontab":                 true,
 }
 
 // IsPersistencePath reports whether path names a deferred-execution target.
@@ -410,24 +463,55 @@ func isPersistencePathLexical(path string) bool {
 		abs = strings.TrimPrefix(abs, "/private")
 	}
 	lower := strings.ToLower(abs)
+	// A directory destination reaches its marker only with the trailing
+	// slash that Clean removed: writing INTO .git/hooks lands a hook.
+	dirLower := lower + "/"
 
-	if home, _ := os.UserHomeDir(); home != "" {
+	for _, home := range accountHomes(abs) {
 		lowerHome := strings.ToLower(home)
 		// Shell rc/profile files: run in every future shell.
 		if filepath.Dir(lower) == lowerHome && shellRCFilesLower[filepath.Base(lower)] {
 			return true
 		}
 		// User systemd units: run at login / on timer.
-		if strings.HasPrefix(lower, lowerHome+"/.config/systemd/user/") {
-			return true
+		for _, unitDir := range []string{"/.config/systemd/user/", "/.local/share/systemd/user/"} {
+			if strings.HasPrefix(dirLower, lowerHome+unitDir) {
+				return true
+			}
 		}
 	}
 	for _, marker := range persistenceDirMarkers {
-		if strings.Contains(lower, marker) {
+		if strings.Contains(dirLower, marker) {
 			return true
 		}
 	}
+	if isGitExecConfig(dirLower) {
+		return true
+	}
 	return persistenceBaseNames[filepath.Base(lower)]
+}
+
+// isGitExecConfig reports whether dirLower (a lowercased absolute path with a
+// trailing slash) names repository configuration git executes commands from
+// (core.fsmonitor, core.hooksPath, alias.*=!cmd, credential.helper, ...) or a
+// submodule's hook directory.
+func isGitExecConfig(dirLower string) bool {
+	trimmed := strings.TrimSuffix(dirLower, "/")
+	if strings.HasSuffix(trimmed, "/.git/config") || strings.HasSuffix(trimmed, "/.git/config.worktree") {
+		return true
+	}
+	if _, rest, ok := strings.Cut(dirLower, "/.git/modules/"); ok {
+		if strings.Contains(rest, "/hooks/") || strings.HasSuffix(strings.TrimSuffix(rest, "/"), "/config") ||
+			strings.HasSuffix(strings.TrimSuffix(rest, "/"), "/config.worktree") {
+			return true
+		}
+	}
+	if _, rest, ok := strings.Cut(dirLower, "/.git/worktrees/"); ok {
+		if strings.Contains(rest, "/hooks/") || strings.HasSuffix(strings.TrimSuffix(rest, "/"), "/config.worktree") {
+			return true
+		}
+	}
+	return false
 }
 
 // ClassifyPathWrite classifies a filesystem WRITE target. It wraps
@@ -3134,10 +3218,7 @@ func isSensitiveOdekPath(tok string) bool {
 	if err != nil || home == "" {
 		return false
 	}
-	path := tok
-	if strings.HasPrefix(path, "~") {
-		path = home + path[1:]
-	}
+	path := expandTilde(tok)
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		return false
@@ -3188,13 +3269,8 @@ func expandShellTokenPath(tok string) string {
 		return path
 	}
 
-	// Expand ~ and simple $HOME/${HOME} forms that appear in shell commands.
-	home, _ := os.UserHomeDir()
-	if home != "" {
-		if strings.HasPrefix(path, "~") {
-			path = home + path[1:]
-		}
-	}
+	// Expand the leading tilde the way a shell does.
+	path = expandTilde(path)
 	// Expand $VAR / ${VAR} from the process environment — the classifier
 	// runs in the same environment the shell would resolve these from, and
 	// `bash $PWD/evil.sh` must gate exactly like `bash ./evil.sh`
@@ -3202,6 +3278,65 @@ func expandShellTokenPath(tok string) string {
 	// stay verbatim and fail the caller's stat.
 	path = expandEnvVars(path)
 	return path
+}
+
+// expandTilde expands a leading tilde-prefix as a shell does: `~` and `~/` are
+// the caller's home, `~+` and `~-` the current and previous working
+// directory, and `~name` is name's home directory. A name that does not
+// resolve keeps failing closed: it is mapped to /home/<name>, so a startup
+// file under it still matches the other-account home rules instead of
+// silently becoming a path under the caller's own home. Anything else (a
+// tilde-prefix with quoting or expansion characters) is returned unchanged.
+func expandTilde(path string) string {
+	if !strings.HasPrefix(path, "~") {
+		return path
+	}
+	prefix, rest, _ := strings.Cut(path[1:], "/")
+	if rest != "" || strings.HasSuffix(path, "/") {
+		rest = "/" + rest
+	}
+	switch prefix {
+	case "":
+		if home, _ := os.UserHomeDir(); home != "" {
+			return home + rest
+		}
+		return path
+	case "+":
+		if cwd, err := os.Getwd(); err == nil {
+			return cwd + rest
+		}
+		return path
+	case "-":
+		if old := os.Getenv("OLDPWD"); old != "" {
+			return old + rest
+		}
+		return path
+	}
+	if !isLoginName(prefix) {
+		return path
+	}
+	if u, err := user.Lookup(prefix); err == nil && u.HomeDir != "" {
+		return u.HomeDir + rest
+	}
+	return "/home/" + prefix + rest
+}
+
+// isLoginName reports whether s is shaped like an account name, the only
+// tilde-prefix a shell resolves to a home directory.
+func isLoginName(s string) bool {
+	if s == "" || strings.Contains(s, "..") {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '_':
+		case (c == '.' || c == '-') && i > 0:
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // expandEnvVars replaces $VAR and ${VAR} occurrences with their values from
@@ -3255,6 +3390,236 @@ func isShellVarByte(c byte) bool {
 	return c == '_' || (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
 }
 
+// destinationCommands copy or link their source operands to a destination;
+// when that destination is a directory each source lands as <dir>/<basename>.
+var destinationCommands = map[string]bool{
+	"cp": true, "mv": true, "install": true, "ln": true, "rsync": true,
+}
+
+// destValueShortOpts lists, per command, the short options that consume a
+// value (the rest of their word, or the next word).
+var destValueShortOpts = map[string]string{
+	"cp": "St", "mv": "St", "ln": "St", "install": "mogSt",
+	"rsync": "efBMT@",
+}
+
+// destValueLongOpts lists the long options (without the leading dashes) that
+// consume a value.
+var destValueLongOpts = map[string][]string{
+	"cp":      {"suffix", "target-directory", "sparse"},
+	"mv":      {"suffix", "target-directory"},
+	"ln":      {"suffix", "target-directory"},
+	"install": {"mode", "owner", "group", "suffix", "target-directory", "strip-program", "context"},
+	"rsync": {"rsh", "rsync-path", "exclude", "exclude-from", "include", "include-from", "filter",
+		"files-from", "log-file", "log-file-format", "backup-dir", "suffix", "partial-dir", "temp-dir",
+		"compare-dest", "copy-dest", "link-dest", "port", "bwlimit", "timeout", "contimeout", "max-size",
+		"min-size", "chmod", "chown", "usermap", "groupmap", "out-format", "info", "debug", "remote-option",
+		"config", "address", "sockopts", "password-file", "read-batch", "write-batch", "only-write-batch",
+		"block-size", "max-delete", "modify-window", "checksum-seed", "iconv", "protocol", "stop-after",
+		"stop-at", "early-input", "outbuf", "compress-level", "compress-choice", "skip-compress"},
+}
+
+// maxDestSourceEntries bounds how many directory entries a source directory
+// contributes when its contents (not the directory itself) land at the
+// destination.
+const maxDestSourceEntries = 1024
+
+// writeDestinations returns the filesystem paths a cp/mv/install/ln/rsync
+// invocation writes to: the destination operand (or -t/--target-directory
+// value) and, when the destination is a directory, <dir>/<basename> for every
+// source -- the file that actually lands. Paths are tilde/variable expanded.
+// For rsync only the final local operand is a destination. Classification
+// that looked only at the literal operands would see `cp x .git/hooks/` or
+// `mv .bashrc ~/` as plain writes into a directory.
+func writeDestinations(first string, tokens []string) []string {
+	if !destinationCommands[first] || len(tokens) < 2 {
+		return nil
+	}
+	shortVal := destValueShortOpts[first]
+	longVal := destValueLongOpts[first]
+	targetShort := first != "rsync"
+	var targetDir string
+	hasTarget, noTarget := false, false
+	var operands []string
+	endOpts := false
+	for i := 1; i < len(tokens); i++ {
+		tok := tokens[i]
+		if endOpts || tok == "" || tok == "-" || !strings.HasPrefix(tok, "-") {
+			operands = append(operands, tok)
+			continue
+		}
+		if tok == "--" {
+			endOpts = true
+			continue
+		}
+		if strings.HasPrefix(tok, "--") {
+			name, val, hasVal := strings.Cut(tok, "=")
+			if first != "rsync" && len(name) >= 3 && strings.HasPrefix("--no-target-directory", name) && len(name) >= 5 {
+				noTarget = true
+				continue
+			}
+			full := ""
+			for _, opt := range longVal {
+				if name == "--"+opt || (first != "rsync" && len(name) >= 4 && strings.HasPrefix("--"+opt, name)) ||
+					(opt == "target-directory" && first != "rsync" && len(name) >= 3 && strings.HasPrefix("--"+opt, name)) {
+					full = opt
+					break
+				}
+			}
+			if full == "" {
+				continue
+			}
+			if !hasVal && i+1 < len(tokens) {
+				i++
+				val = tokens[i]
+			}
+			if full == "target-directory" {
+				targetDir, hasTarget = val, true
+			}
+			continue
+		}
+		for j := 1; j < len(tok); j++ {
+			c := tok[j]
+			if targetShort && c == 'T' {
+				noTarget = true
+			}
+			if strings.IndexByte(shortVal, c) < 0 {
+				continue
+			}
+			val := tok[j+1:]
+			if val == "" && i+1 < len(tokens) {
+				i++
+				val = tokens[i]
+			}
+			if c == 't' && targetShort {
+				targetDir, hasTarget = val, true
+			}
+			break
+		}
+	}
+
+	var dests, sources []string
+	dirDest := false
+	switch {
+	case hasTarget:
+		dests, sources, dirDest = []string{targetDir}, operands, true
+	case first == "rsync":
+		// The last non-flag word is the destination; also consider the last
+		// word overall, in case an option value was mistaken for an operand.
+		if len(operands) < 2 {
+			return nil
+		}
+		dests = []string{operands[len(operands)-1]}
+		sources = operands[:len(operands)-1]
+		for k := len(tokens) - 1; k >= 1; k-- {
+			if last := tokens[k]; last != "" && !strings.HasPrefix(last, "-") {
+				if last != dests[0] {
+					dests = append(dests, last)
+				}
+				break
+			}
+		}
+	case len(operands) >= 2:
+		dests, sources = []string{operands[len(operands)-1]}, operands[:len(operands)-1]
+	default:
+		return nil
+	}
+
+	var out []string
+	for _, dest := range dests {
+		if first == "rsync" && isRemoteRsyncOperand(dest) {
+			continue
+		}
+		expanded := expandShellTokenPath(dest)
+		out = append(out, expanded)
+		if !dirDest && !noTarget {
+			dirDest = isDirectoryDestination(dest, expanded)
+		}
+		if !dirDest {
+			continue
+		}
+		for _, src := range sources {
+			for _, name := range destinationEntryNames(first, src) {
+				out = append(out, filepath.Join(expanded, name))
+			}
+		}
+	}
+	return out
+}
+
+// isRemoteRsyncOperand reports whether an rsync operand names a remote host
+// (host:path, host::module, rsync://...) rather than a local path.
+func isRemoteRsyncOperand(op string) bool {
+	if strings.HasPrefix(op, "rsync://") || strings.Contains(op, "::") {
+		return true
+	}
+	colon := strings.IndexByte(op, ':')
+	return colon > 0 && !strings.Contains(op[:colon], "/")
+}
+
+// isDirectoryDestination reports whether a destination operand denotes a
+// directory: spelled with a trailing slash, `.`/`..`, the caller's home, or
+// an existing directory.
+func isDirectoryDestination(raw, expanded string) bool {
+	if strings.HasSuffix(raw, "/") || strings.HasSuffix(expanded, "/") {
+		return true
+	}
+	switch filepath.Base(expanded) {
+	case ".", "..":
+		return true
+	}
+	if st, err := os.Stat(expanded); err == nil && st.IsDir() {
+		return true
+	}
+	return false
+}
+
+// destinationEntryNames returns the names a source operand contributes inside
+// a destination directory: its basename, or -- when the operand means "the
+// contents" (`dir/.`, an rsync `dir/`) -- the names of the entries it holds.
+// A dot-glob such as `.b*` contributes the startup-file names it can match.
+func destinationEntryNames(first, src string) []string {
+	if first == "rsync" && isRemoteRsyncOperand(src) {
+		_, src, _ = strings.Cut(src, ":")
+	}
+	expanded := expandShellTokenPath(src)
+	contents := strings.HasSuffix(expanded, "/.") || (first == "rsync" && strings.HasSuffix(expanded, "/"))
+	trimmed := strings.TrimRight(expanded, "/")
+	if contents || filepath.Base(trimmed) == "." || filepath.Base(trimmed) == ".." {
+		entries, err := os.ReadDir(strings.TrimSuffix(trimmed, "/."))
+		if err != nil {
+			return nil
+		}
+		var names []string
+		for _, e := range entries {
+			if len(names) >= maxDestSourceEntries {
+				break
+			}
+			names = append(names, e.Name())
+		}
+		return names
+	}
+	base := filepath.Base(trimmed)
+	if base == "" || base == "/" {
+		return nil
+	}
+	if strings.HasPrefix(base, ".") && strings.ContainsAny(base, "*?[") {
+		var names []string
+		for name := range shellRCFiles {
+			if ok, _ := filepath.Match(base, name); ok {
+				names = append(names, name)
+			}
+		}
+		for name := range persistenceBaseNames {
+			if ok, _ := filepath.Match(base, name); ok {
+				names = append(names, name)
+			}
+		}
+		return names
+	}
+	return []string{base}
+}
+
 // isPersistenceWrite reports whether a shell command writes to a
 // deferred-execution target or mutates a package-manager lifecycle hook
 // . Checked before isSystemWrite so persistence targets keep their
@@ -3291,6 +3656,12 @@ func isPersistenceWrite(first string, tokens []string) bool {
 			if IsPersistencePath(expandShellTokenPath(tok)) {
 				return true
 			}
+		}
+	}
+	// Directory destinations: the file that lands is <dir>/<basename(src)>.
+	for _, dest := range writeDestinations(first, tokens) {
+		if IsPersistencePath(dest) {
+			return true
 		}
 	}
 	// dd of= writes its output to an arbitrary path.
@@ -3356,7 +3727,7 @@ func shellPathIsHomeSensitive(tok string) bool {
 		return false
 	}
 	if strings.HasPrefix(path, "~") {
-		path = home + path[1:]
+		path = expandTilde(path)
 	} else if path == "$HOME" || strings.HasPrefix(path, "$HOME/") {
 		path = home + path[len("$HOME"):]
 	} else if path == "${HOME}" || strings.HasPrefix(path, "${HOME}/") {
@@ -3716,13 +4087,55 @@ func classifyKnownCommand(tokens []string) RiskClass {
 var blockDevicePrefixes = []string{
 	"/dev/sd", "/dev/nvme", "/dev/vd", "/dev/hd", "/dev/xvd",
 	"/dev/mmcblk", "/dev/disk", "/dev/loop", "/dev/dm-",
+	"/dev/md", "/dev/mapper/", "/dev/rdisk", "/dev/rsd", "/dev/nbd",
+	"/dev/zram", "/dev/pmem", "/dev/sr", "/dev/mem", "/dev/kmem", "/dev/port",
+}
+
+// devicePathForms returns the spellings of a path value the kernel could end
+// up opening: the value with `.`/`//` components cleaned (and `..` resolved
+// the way the kernel does, after symlinks) so `/dev/./sda`, `/dev//sda` and
+// `/dev/../dev/sda` name /dev/sda. An unresolvable value yields its lexical
+// clean form only.
+func devicePathForms(value string) []string {
+	value = expandShellTokenPath(value)
+	if !filepath.IsAbs(value) {
+		return nil
+	}
+	forms := []string{filepath.Clean(value)}
+	if resolved, err := resolvePathTarget(value); err == nil && resolved != forms[0] {
+		forms = append(forms, resolved)
+	}
+	return forms
 }
 
 func isBlockDevice(path string) bool {
-	for _, p := range blockDevicePrefixes {
-		if strings.HasPrefix(path, p) {
-			return true
+	for _, form := range devicePathForms(path) {
+		for _, p := range blockDevicePrefixes {
+			if strings.HasPrefix(form, p) {
+				return true
+			}
 		}
+	}
+	return false
+}
+
+// isRawDevicePath reports whether a path value names anything under /dev that
+// is not a stdio alias or discard device. Writing through such a node reaches
+// a driver or a disk, so it is never a plain file write, whatever the node's
+// name or spelling (`/dev/md0`, `/dev/./sda`, `/dev/s?a`).
+func isRawDevicePath(path string) bool {
+	value := expandShellTokenPath(path)
+	if !filepath.IsAbs(value) {
+		return false
+	}
+	if isDirectBenignDevice(value) {
+		return false
+	}
+	for _, form := range devicePathForms(path) {
+		if !strings.HasPrefix(form, "/dev/") || isBenignCharDevice(form) {
+			continue
+		}
+		return true
 	}
 	return false
 }
@@ -3819,6 +4232,12 @@ func isWipeTarget(tok string) bool {
 			return true
 		}
 	}
+	// A trailing slash names the same directory ("$PWD/", "${HOME}/",
+	// "~root/"), and residual quote characters do not change the target.
+	tok = strings.Trim(tok, "\"'")
+	if trimmed := strings.TrimRight(tok, "/"); trimmed != "" {
+		tok = trimmed
+	}
 	switch tok {
 	case "*", ".", "..", "~", "$HOME", "$PWD", "${HOME}", "${PWD}":
 		return true
@@ -3827,6 +4246,21 @@ func isWipeTarget(tok string) bool {
 	for _, p := range []string{"~/", "$HOME", "${HOME}", "../", "./*"} {
 		if strings.HasPrefix(tok, p) {
 			return true
+		}
+	}
+	// `~name` is that account's home directory (`~root`, `~nobody`), `~+` and
+	// `~-` the current and previous directory: every one is a home-level wipe.
+	if strings.HasPrefix(tok, "~") {
+		return true
+	}
+	// $PWD / ${PWD} followed by a path that cleans to the directory itself,
+	// its parent, or a glob over it.
+	for _, p := range []string{"$PWD/", "${PWD}/"} {
+		if rest, ok := strings.CutPrefix(tok, p); ok {
+			rest = filepath.Clean(rest)
+			if rest == "." || rest == ".." || rest == "*" || strings.HasPrefix(rest, "../") {
+				return true
+			}
 		}
 	}
 	return false
@@ -3884,6 +4318,13 @@ func isDestructive(first string, tokens []string) bool {
 	if first == "rsync" && hasAnyRsyncDelete(tokens) {
 		return true
 	}
+	if first == "rsync" {
+		for _, dest := range writeDestinations(first, tokens) {
+			if ClassifyPath(dest) == Destructive {
+				return true
+			}
+		}
+	}
 
 	if !destructivePrefixes[first] || len(tokens) < 2 {
 		return false
@@ -3899,7 +4340,7 @@ func isDestructive(first string, tokens []string) bool {
 	// NOT any "/dev/" substring, so benign discards like of=/dev/null and
 	// of=/dev/stdout are not misclassified.
 	for _, tok := range tokens {
-		if strings.HasPrefix(tok, "of=") && containsBlockDevice(tok) {
+		if strings.HasPrefix(tok, "of=") && (containsBlockDevice(tok) || isRawDevicePath(tok)) {
 			return true
 		}
 		if tok == "of=" && len(tokens) > 1 {
@@ -3938,6 +4379,10 @@ func isSystemWrite(first string, tokens []string) bool {
 	if first == "chmod" && chmodSetsSUIDGID(tokens) {
 		return true
 	}
+	// install -m / mkdir -m / mknod -m set the same mode bits at creation.
+	if (first == "install" || first == "mkdir" || first == "mknod") && modeOptionSetsSUIDGID(first, tokens) {
+		return true
+	}
 	// A filesystem-mutating command (cp/mv/tee/ln/install/touch/mkdir/chmod/…)
 	// whose operand is a system path writes outside the workspace — classic
 	// persistence/escalation (e.g. `cp x /etc/cron.d/job`, `tee /usr/bin/foo`,
@@ -3950,6 +4395,13 @@ func isSystemWrite(first string, tokens []string) bool {
 			if shellPathIsSensitive(tok) {
 				return true
 			}
+		}
+	}
+	// Directory destinations and rsync's final operand: the file that lands
+	// is <dir>/<basename(src)>, so a rc file moved into $HOME is a rc write.
+	for _, dest := range writeDestinations(first, tokens) {
+		if shellPathIsSensitive(dest) {
+			return true
 		}
 	}
 	// Check redirect targets for sensitive paths
@@ -3994,33 +4446,107 @@ func chmodSetsSUIDGID(tokens []string) bool {
 			return true
 		}
 		if strings.HasPrefix(tok, "-") {
-			continue // flag (e.g. -R, --recursive)
-		}
-		// Symbolic: any clause that sets the 's' permission (u+s, g+s, a+s, +s,
-		// ug+rs, u=rws, a=rwxs, …). Both '+' (add) and '=' (set exactly) can
-		// introduce the setuid/setgid bit.
-		if plus := strings.IndexByte(tok, '+'); plus >= 0 {
-			if strings.ContainsRune(tok[plus+1:], 's') {
+			// GNU chmod takes a symbolic mode that begins with '-' (`-x,u+s`,
+			// `-w,g+s`) as the mode operand, not as an option. Anything built
+			// only from mode characters is inspected as a mode; if it does not
+			// set a special bit the scan continues, since the real mode (or a
+			// file) may follow.
+			if !symbolicModeLike(tok) {
+				continue // flag (e.g. -R, --recursive)
+			}
+			if modeSetsSUIDGID(tok) {
 				return true
 			}
+			continue
 		}
-		if eq := strings.IndexByte(tok, '='); eq >= 0 {
-			if strings.ContainsRune(tok[eq+1:], 's') {
-				return true
-			}
-		}
-		// Octal: special-permission digits are everything but the last
-		// three. 04755 and 4755 both set setuid; 0755 / 1755 (sticky only)
-		// do not. 3-digit modes have no special-permission digit.
-		if isOctalMode(tok) && len(tok) >= 4 {
-			for _, d := range tok[:len(tok)-3] {
-				if d >= '2' && d <= '7' {
-					return true
-				}
-			}
+		// Symbolic clauses that set the 's' permission (u+s, g+s, a+s, +s,
+		// ug+rs, u=rws, a=rwxs, …) and octal modes whose special-permission
+		// digits (everything but the last three) include 2 or 4: 04755 and
+		// 4755 set setuid; 0755 / 1755 (sticky only) and 3-digit modes do not.
+		if modeSetsSUIDGID(tok) {
+			return true
 		}
 		// First non-flag operand is the mode; everything after is a filename.
 		return false
+	}
+	return false
+}
+
+// symbolicModeLike reports whether a dash-leading chmod word is spelled only
+// with symbolic-mode characters, so it can be the mode operand rather than an
+// option (`-x`, `-w,g+s`, `-rwx,u+s`; `-R`, `-v` and long options are not).
+func symbolicModeLike(tok string) bool {
+	if len(tok) < 2 || strings.HasPrefix(tok, "--") {
+		return false
+	}
+	for i := 1; i < len(tok); i++ {
+		if !strings.ContainsRune("rwxXstugoa,+=-", rune(tok[i])) {
+			return false
+		}
+	}
+	return true
+}
+
+// modeSetsSUIDGID reports whether a single mode word (symbolic or octal) sets
+// the setuid or setgid bit.
+func modeSetsSUIDGID(mode string) bool {
+	if plus := strings.IndexByte(mode, '+'); plus >= 0 && strings.ContainsRune(mode[plus+1:], 's') {
+		return true
+	}
+	if eq := strings.IndexByte(mode, '='); eq >= 0 && strings.ContainsRune(mode[eq+1:], 's') {
+		return true
+	}
+	if isOctalMode(mode) && len(mode) >= 4 {
+		for _, d := range mode[:len(mode)-3] {
+			if d >= '2' && d <= '7' {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// modeOptionSetsSUIDGID reports whether an install/mkdir/mknod invocation
+// passes a -m/--mode value that sets the setuid or setgid bit, in any
+// spelling: `-m 4755`, `-m4755`, `-Dm4755`, `--mode=u+s`, `--mode u+s`.
+func modeOptionSetsSUIDGID(first string, tokens []string) bool {
+	for i := 1; i < len(tokens); i++ {
+		tok := tokens[i]
+		if tok == "--" {
+			break
+		}
+		var value string
+		switch {
+		case strings.HasPrefix(tok, "--"):
+			name, v, hasValue := strings.Cut(tok, "=")
+			if len(name) < 4 || !strings.HasPrefix("--mode", name) {
+				continue
+			}
+			if hasValue {
+				value = v
+			} else if i+1 < len(tokens) {
+				i++
+				value = tokens[i]
+			}
+		case isShortFlagToken(tok):
+			for j := 1; j < len(tok); j++ {
+				if tok[j] == 'm' {
+					if j+1 < len(tok) {
+						value = tok[j+1:]
+					} else if i+1 < len(tokens) {
+						i++
+						value = tokens[i]
+					}
+					break
+				}
+				if strings.IndexByte("ogStZ", tok[j]) >= 0 {
+					break // value-taking option: the rest of the word is its value
+				}
+			}
+		}
+		if value != "" && chmodSetsSUIDGID([]string{"chmod", value}) {
+			return true
+		}
 	}
 	return false
 }
@@ -5586,13 +6112,16 @@ func killTargetsInitOrBroadcast(tokens []string) bool {
 			if strings.HasPrefix(tok, "--signal=") {
 				continue
 			}
-			// -TERM / -9 / -HUP are signals. -1 is left for the pid
-			// check so `kill -- -1` and a bare `-1` operand escalate.
-			if strings.HasPrefix(tok, "-") && tok != "-1" {
-				continue
+			// -TERM / -9 / -HUP are signals. -1 (in any numeric spelling,
+			// -01 included) is left for the pid check so `kill -- -1` and a
+			// bare `-1` operand escalate.
+			if strings.HasPrefix(tok, "-") {
+				if n, err := strconv.Atoi(tok); err != nil || n != -1 {
+					continue
+				}
 			}
 		}
-		if tok == "1" || tok == "-1" {
+		if n, err := strconv.Atoi(tok); err == nil && (n == 1 || n == -1) {
 			return true
 		}
 	}
