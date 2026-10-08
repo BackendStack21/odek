@@ -153,3 +153,35 @@ func TestOptSpecFoldAndMinAbbrev(t *testing.T) {
 		t.Errorf("ignoreDashDash kept scanning as %q", optNames(r))
 	}
 }
+
+func analysisHas(cmd string, want RiskClass) bool {
+	for _, e := range Analyze(cmd).Effects {
+		if e == want {
+			return true
+		}
+	}
+	return false
+}
+
+// TestOptSpecReadsSpellingsTheOldParsersMisread covers spellings that the real
+// tools accept and that the per-adapter parsers used to misread: a fused
+// cluster ending in a value-taking letter, or an abbreviated long option,
+// whose value was taken for the command or the subcommand. The -i case guards
+// the optional-value rule that keeps a cluster's last letter from swallowing
+// the wrapped command.
+func TestOptSpecReadsSpellingsTheOldParsersMisread(t *testing.T) {
+	for _, tc := range []struct {
+		cmd  string
+		want RiskClass
+		why  string
+	}{
+		{"xargs -0n 1 rm -rf /", Destructive, "-0n is a cluster whose n takes the next word; the command is rm"},
+		{"xargs -0I {} rm -rf /", Destructive, "-0I is a cluster whose I takes {}; the command is rm"},
+		{"xargs --max-a 1 rm -rf /", Destructive, "--max-a abbreviates --max-args, which takes 1"},
+		{"xargs -iE rm -rf /", Destructive, "-i takes only a fused value, so E is its replace string and rm is the command"},
+	} {
+		if !analysisHas(tc.cmd, tc.want) {
+			t.Errorf("Analyze(%q) = %v, want %s: %s", tc.cmd, Analyze(tc.cmd).Effects, tc.want, tc.why)
+		}
+	}
+}

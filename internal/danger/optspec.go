@@ -21,6 +21,10 @@ type optSpec struct {
 	// short lists the short option letters that take a value: the rest of
 	// the cluster when there is one, otherwise the next word.
 	short string
+	// shortOptional lists short option letters whose value, when there is
+	// one, is only the rest of the word (`xargs -iFOO`, `sed -i.bak`): they
+	// never take the next word.
+	shortOptional string
 	// exact lists multi-letter single-dash options that take a value (`-arch
 	// x86_64`, `-fprint file`), also spelled `-name=value`.
 	exact []string
@@ -65,6 +69,9 @@ type optArg struct {
 	names []string
 	// value is the option's value, when has is set.
 	value string
+	// takes reports that the option is one that takes a value, whether or not
+	// the arguments supplied it.
+	takes bool
 	// has reports that a value was supplied: fused, after `=`, or as the
 	// next word. A value-taking option at the end of the arguments has none.
 	has bool
@@ -209,7 +216,7 @@ func (s optSpec) option(args []string, i int) (opts []optArg, next int) {
 		}
 		name, val, hasEq := strings.Cut(tok[2:], "=")
 		names, takes := s.resolveLong(name)
-		o := optArg{names: names, at: i, end: i}
+		o := optArg{names: names, takes: takes, at: i, end: i}
 		switch {
 		case hasEq:
 			o.value, o.has = val, true
@@ -222,11 +229,11 @@ func (s optSpec) option(args []string, i int) (opts []optArg, next int) {
 	}
 	for _, ex := range s.exact {
 		if tok == ex {
-			o, next := take(optArg{names: []string{ex}, at: i}, "", false)
+			o, next := take(optArg{names: []string{ex}, takes: true, at: i}, "", false)
 			return []optArg{o}, next
 		}
 		if v, ok := strings.CutPrefix(tok, ex+"="); ok {
-			return []optArg{{names: []string{ex}, value: v, has: true, at: i, end: i}}, i + 1
+			return []optArg{{names: []string{ex}, takes: true, value: v, has: true, at: i, end: i}}, i + 1
 		}
 	}
 	for j := 1; j < len(tok); j++ {
@@ -236,7 +243,15 @@ func (s optSpec) option(args []string, i int) (opts []optArg, next int) {
 			name = long
 		}
 		o := optArg{names: []string{name}, at: i, end: i}
+		if strings.IndexByte(s.shortOptional, c) >= 0 {
+			if fused := tok[j+1:]; fused != "" {
+				o.value, o.has = fused, true
+			}
+			o.takes = true
+			return append(opts, o), i + 1
+		}
 		if strings.IndexByte(s.short, c) >= 0 {
+			o.takes = true
 			fused := tok[j+1:]
 			hasFused := fused != ""
 			if s.shortEq && strings.HasPrefix(fused, "=") {
@@ -248,6 +263,20 @@ func (s optSpec) option(args []string, i int) (opts []optArg, next int) {
 		opts = append(opts, o)
 	}
 	return opts, i + 1
+}
+
+// valueOption reads the option at args[i] and returns its value-taking part:
+// the option that consumed a value (or would have, at the end of the
+// arguments). ok is false for a word that is not an option or whose options
+// take no value. next is the index of the next unread word either way.
+func (s optSpec) valueOption(args []string, i int) (opt optArg, next int, ok bool) {
+	opts, next := s.option(args, i)
+	for _, o := range opts {
+		if o.takes {
+			return o, next, true
+		}
+	}
+	return optArg{}, next, false
 }
 
 // parse reads a whole argument list (the words after the program name, with

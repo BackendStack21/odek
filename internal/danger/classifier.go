@@ -1925,19 +1925,18 @@ func argvComposerInnerCommand(tokens []string) (inner []string, ok bool) {
 					i++
 					continue
 				}
+				if t == "--" {
+					return tokens[i+1:], true
+				}
 				if !strings.HasPrefix(t, "-") || t == "-" {
 					return tokens[i:], true
 				}
-				// Option flags. Value-taking flags consume the next token so
-				// the value is not mistaken for the inner command.
-				// `--replace` without `=` does NOT take a value (`xargs
-				// --replace rm` means replace-str defaults to `{}` and `rm`
-				// is the command); `--replace=foo` is a single token.
-				if xargsValueFlags[t] && i+1 < len(tokens) {
-					i += 2
-					continue
-				}
-				i++
+				// Option flags. A value-taking option consumes its value so
+				// the value is not mistaken for the inner command. `--replace`
+				// without `=` does NOT take a value (`xargs --replace rm`
+				// means replace-str defaults to `{}` and `rm` is the command);
+				// `--replace=foo` carries its value in the word.
+				_, i = wrapperSpecs[name].option(tokens, i)
 			}
 			return nil, true
 		}
@@ -1948,23 +1947,6 @@ func argvComposerInnerCommand(tokens []string) (inner []string, ok bool) {
 		i = step.next
 	}
 	return nil, false
-}
-
-// xargsValueFlags are xargs options that take a separate value token
-// (short and long forms). `--flag=value` spellings need no entry — they are
-// a single token and are skipped like any other flag.
-var xargsValueFlags = map[string]bool{
-	"-I": true, "-L": true, "-n": true, "-P": true, "-s": true,
-	"-E": true, "-d": true, "-a": true,
-	"--max-lines": true, "--max-args": true,
-	"--max-procs": true, "--max-chars": true,
-	"--delimiter": true, "--arg-file": true,
-	// GNU `--replace` / `--eof` / `-e` take an *optional* value.
-	// Only the `--flag=value` spelling carries it in-token; treating
-	// the bare form as value-taking swallowed the inner verb
-	// (`xargs --eof rm` → empty inner → local_write allow).
-	// GNU parallel value-taking flags (union with xargs).
-	"-j": true, "--jobs": true, "-N": true,
 }
 
 // staticPipePayload returns the literal tokens an upstream pipeline feeds
@@ -2469,8 +2451,8 @@ func isEnvironmentDump(tokens []string) bool {
 			i++
 			continue
 		}
-		if next, _, split, ok := envOptionValue(tokens, i); ok {
-			if split {
+		if o, next, ok := wrapperSpecs["env"].valueOption(tokens, i); ok {
+			if o.is("--split-string") {
 				// -S STRING supplies the command env runs; it is not a
 				// flag-only invocation, and unwrapWrappers classifies it.
 				return false
@@ -3097,50 +3079,6 @@ var execWrappers = map[string]bool{
 func unwrapWrappers(tokens []string) ([]string, RiskClass) {
 	inner, floor, _ := unwrapWrappersTracked(tokens)
 	return inner, floor
-}
-
-// envOptionValue recognises a value-taking option of env at tokens[i]:
-// -u NAME, -C DIR, -S STRING, -a NAME, -P PATH (value fused into the cluster
-// or in the next token) and their long spellings --unset, --chdir,
-// --split-string, --argv0 (value after `=` or in the next token, unambiguous
-// prefixes accepted as getopt_long does). It returns the index after the
-// option and its value, and whether the option is the split-string one.
-func envOptionValue(tokens []string, i int) (next int, value string, split bool, ok bool) {
-	t := tokens[i]
-	take := func(fused string, fusedOK bool, after int) (int, string) {
-		if fusedOK {
-			return after, fused
-		}
-		if after < len(tokens) {
-			return after + 1, tokens[after]
-		}
-		return after, ""
-	}
-	if strings.HasPrefix(t, "--") {
-		name, val, hasEq := strings.Cut(t[2:], "=")
-		if name == "" {
-			return 0, "", false, false
-		}
-		for _, long := range []string{"unset", "chdir", "split-string", "argv0"} {
-			if strings.HasPrefix(long, name) {
-				next, value = take(val, hasEq, i+1)
-				return next, value, long == "split-string", true
-			}
-		}
-		return 0, "", false, false
-	}
-	if len(t) < 2 || t[0] != '-' {
-		return 0, "", false, false
-	}
-	for k := 1; k < len(t); k++ {
-		switch t[k] {
-		case 'u', 'C', 'S', 'a', 'P':
-			rest := t[k+1:]
-			next, value = take(rest, rest != "", i+1)
-			return next, value, t[k] == 'S', true
-		}
-	}
-	return 0, "", false, false
 }
 
 // unwrapWrappersTracked is unwrapWrappers that also returns, for every `env`
