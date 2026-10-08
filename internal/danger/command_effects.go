@@ -134,10 +134,8 @@ func commandOnlyReads(name string, tokens []string) bool {
 	case "sed":
 		return !sedInPlace(tokens) && !sedRunsShellCode(tokens) && !sedHasFileIO(tokens)
 	case "tar":
-		for _, tok := range tokens[1:] {
-			if tok == "--list" || (strings.HasPrefix(tok, "-") && !strings.HasPrefix(tok, "--") && strings.Contains(tok, "t")) {
-				return !tarRunsCommand(tokens)
-			}
+		if tarListsOnly(tokens) {
+			return !tarRunsCommand(tokens)
 		}
 	case "unzip":
 		return hasAny(tokens, "-l", "-v", "-Z")
@@ -145,6 +143,36 @@ func commandOnlyReads(name string, tokens []string) bool {
 		return len(tokens) > 1 && tokens[1] == "l"
 	}
 	return false
+}
+
+// tarListsOnly reports whether a tar invocation only lists an archive: a
+// `--list` long option, or a short cluster whose mode letters (the letters
+// before the first value-taking one) include `t` and no creating, extracting
+// or modifying mode. Letters after a value-taking letter are that option's
+// attached value (`-C/etc`, `-cftest.tar`), not further flags.
+func tarListsOnly(tokens []string) bool {
+	list := false
+	for _, tok := range tokens[1:] {
+		if tok == "--list" {
+			list = true
+			continue
+		}
+		if !isShortFlagToken(tok) {
+			continue
+		}
+	cluster:
+		for _, c := range tok[1:] {
+			switch {
+			case c == 't':
+				list = true
+			case strings.ContainsRune("cxruAd", c):
+				return false
+			case strings.ContainsRune("fCITXLbHNgVFK", c):
+				break cluster
+			}
+		}
+	}
+	return list
 }
 
 func sedInPlace(tokens []string) bool {
@@ -318,6 +346,27 @@ func semanticWriteTargets(name string, tokens []string) []string {
 		flags = map[string]bool{"-fprint": true, "-fprint0": true, "-fprintf": true}
 	case "cp", "mv", "install":
 		flags = map[string]bool{"-t": true, "--target-directory": true}
+	case "tar":
+		flags = map[string]bool{"-C": true, "--directory": true}
+	case "unzip":
+		flags = map[string]bool{"-d": true}
+	case "7z", "7za", "7zz":
+		flags = map[string]bool{"-o": true}
+	case "pandoc":
+		flags = map[string]bool{"-o": true, "--output": true}
+	case "git":
+		if sub, _ := gitSubcommandAndArgs(tokens); sub == "archive" {
+			flags = map[string]bool{"-o": true, "--output": true}
+		}
+	case "dd":
+		for _, tok := range tokens[1:] {
+			if value, ok := strings.CutPrefix(tok, "of="); ok {
+				if value == "" {
+					value = dynamicSubstToken
+				}
+				targets = append(targets, value)
+			}
+		}
 	case "gofmt", "goimports", "gofumpt", "shfmt":
 		if formattingMutates(name, tokens) {
 			for _, tok := range tokens[1:] {
@@ -466,6 +515,8 @@ func shortOptionTakesValue(name string, flag byte) bool {
 		return strings.ContainsRune("rpu", rune(flag))
 	case "install":
 		return strings.ContainsRune("mog", rune(flag))
+	case "tar":
+		return strings.ContainsRune("fITXLbHNgVFK", rune(flag))
 	}
 	return false
 }
