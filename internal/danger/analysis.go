@@ -94,7 +94,10 @@ func (c *DangerousConfig) PromptClassForCommand(cmd string) RiskClass {
 
 // Analyze uses the same analysis as Classify, preserving effects across
 // substitutions, compound commands, pipelines and command wrappers.
-func Analyze(cmd string) Analysis { return analyzeAtDepth(cmd, 0) }
+func Analyze(cmd string) Analysis {
+	defer beginPathMemo()()
+	return analyzeAtDepth(cmd, 0)
+}
 
 type shellAnalysisState struct {
 	cwd       string
@@ -106,16 +109,40 @@ type shellAnalysisState struct {
 	// unquoted names the variables the analyzed text references outside any
 	// quoting, where the shell word-splits and globs their values.
 	unquoted map[string]bool
+	// work is shared by an analysis and every nested payload analysis it
+	// spawns, so recursion cannot multiply the per-command token bound.
+	work *analysisWork
 }
+
+// maxAnalysisTokens bounds the tokens one Analyze call examines across the
+// command and every nested payload (substitutions, shell -c strings, eval).
+// Each token costs filesystem resolution, so an unbounded count turns a
+// 64 KiB command into seconds of work; an exceeded budget fails closed as
+// Unknown. Real commands, including long scripts passed to a shell, use a
+// small fraction of it.
+const maxAnalysisTokens = 4096
+
+type analysisWork struct{ tokens int }
 
 // Bound static expansion independently of recursion: repeated assignments
 // can otherwise double a value at each stage without nesting a command.
 const maxStaticWordBytes = 64 << 10
 
+// MaxCommandBytes is the longest command the classifier analyses. A longer
+// command classifies Unknown before any normalization runs and
+// ActionForCommand denies it regardless of policy: no legitimate tool call
+// needs a single 64 KiB shell string, and every analysis phase is allowed to
+// assume bounded input.
+const MaxCommandBytes = 64 << 10
+
 func analyzeAtDepth(cmd string, depth int) Analysis { return analyzeWithState(cmd, depth, nil) }
 
 func analyzeWithState(cmd string, depth int, inherited *shellAnalysisState) Analysis {
 	var result Analysis
+	if len(cmd) > MaxCommandBytes {
+		result.add(Unknown)
+		return result
+	}
 	if isRawBlocked(cmd) {
 		result.add(Blocked)
 		return result
@@ -125,9 +152,23 @@ func analyzeWithState(cmd string, depth int, inherited *shellAnalysisState) Anal
 		return result
 	}
 	main, subs := normalize(cmd)
-	tokens := tokenize(main)
+	tokens, unterminated := tokenizeChecked(main)
+	if unterminated {
+		// The shell would reject this line, but an open quote has swallowed
+		// the rest of it into one word; whatever followed cannot be judged.
+		result.add(Unknown)
+	}
+	work := &analysisWork{}
+	if inherited != nil && inherited.work != nil {
+		work = inherited.work
+	}
+	work.tokens += len(tokens)
+	if work.tokens > maxAnalysisTokens {
+		result.add(Unknown)
+		return result
+	}
 	cwd, err := os.Getwd()
-	state := shellAnalysisState{cwd: cwd, vars: make(map[string]string), uncertain: err != nil, written: make(map[string]bool)}
+	state := shellAnalysisState{cwd: cwd, vars: make(map[string]string), uncertain: err != nil, written: make(map[string]bool), work: work}
 	if st, statErr := os.Stat(cwd); statErr != nil || !st.IsDir() {
 		state.uncertain = true
 	}
