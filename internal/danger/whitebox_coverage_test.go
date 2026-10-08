@@ -283,12 +283,12 @@ func TestDecodeANSIC(t *testing.T) {
 	tests := []struct{ in, want string }{
 		{`$'\x72\x6d'`, "rm"},                // hex
 		{`$'\162\155'`, "rm"},                // octal
-		{`$'a\nb'`, "a\nb"},                  // \n
-		{`$'a\tb'`, "a\tb"},                  // \t
-		{`$'a\rb'`, "a\rb"},                  // \r
-		{`$'a\\b'`, `a\b`},                   // escaped backslash
-		{`$'a\'b'`, "a'b"},                   // escaped single quote
-		{`$'a\"b'`, `a"b`},                   // escaped double quote
+		{`$'a\nb'`, "'a\nb'"},                // \n (non-plain value stays one quoted word)
+		{`$'a\tb'`, "'a\tb'"},                // \t
+		{`$'a\rb'`, "'a\rb'"},                // \r
+		{`$'a\\b'`, `'a\b'`},                 // escaped backslash
+		{`$'a\'b'`, `'a'\''b'`},              // escaped single quote, re-escaped
+		{`$'a\"b'`, `'a"b'`},                 // escaped double quote
 		{`$'\q'`, "q"},                       // unknown escape → literal char
 		{`plain text`, "plain text"},         // no ANSI-C span untouched
 		{`$'unterminated`, `$'unterminated`}, // no closing quote → literal
@@ -629,10 +629,10 @@ func TestIsSensitiveOdekPath_SyntheticHome(t *testing.T) {
 
 func TestDecodeANSIC_EscapeEdgeCases(t *testing.T) {
 	tests := []struct{ in, want string }{
-		{`$'\x'`, `x`},     // incomplete \x → literal x
-		{`$'\xZZ'`, `xZZ`}, // bad hex digits → literal
-		{`$'\8'`, `8`},     // 8 is not octal → literal
-		{`$'\a\b'`, `ab`},  // unrecognised escapes → literal chars
+		{`$'\x'`, `x`},        // incomplete \x → literal x
+		{`$'\xZZ'`, `xZZ`},    // bad hex digits → literal
+		{`$'\8'`, `8`},        // 8 is not octal → literal
+		{`$'\a\b'`, "'\a\b'"}, // bell and backspace control characters
 	}
 	for _, tt := range tests {
 		if got := decodeANSIC(tt.in); got != tt.want {
