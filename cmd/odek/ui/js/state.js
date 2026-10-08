@@ -124,6 +124,7 @@ export const S = {
   // ── Live turn / wake / jobs ──
   currentTurnId: null,
   currentTurnInitiated: 'operator',
+  turnUnverified: false, // bulk answer carried the verification-failed marker
   jobs: [],          // latest /api/jobs or bg_job upserts
   plan: null,        // last adopted GET /api/sessions/{id}/plan snapshot
   planDirty: false,  // optimistic tool_call patch awaiting REST confirm

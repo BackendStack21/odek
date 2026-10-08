@@ -10,7 +10,7 @@ import {
   streamToken, streamThinking, streamFlush, endThinking, endStream,
   addToolCall, addToolResult, addSubagentGroup, completeSubagents,
   appendSubagentLog, addSystemMessage, updateSubagentState,
-  lastAssistantBubble,
+  lastAssistantBubble, supersedeStream, markTurnUnverified, stripVerifyMarker,
 } from './render.js';
 import { queueApproval, dismissApproval, clearApprovals, expireApproval } from './approvals.js';
 import { queueClarify, dismissClarify, clearClarify, expireClarify } from './clarify.js';
@@ -160,6 +160,7 @@ export function connect() {
       case 'turn_started':
         S.currentTurnId = event.turn_id || null;
         S.currentTurnInitiated = event.initiated || 'operator';
+        S.turnUnverified = false;
         metricsResetSpeed();
         metricsBeginTurn();
         openTurn(event);
@@ -236,10 +237,20 @@ export function connect() {
         streamThinking(event.content);
         break;
 
-      case 'token':
+      case 'token': {
         if (!sameTurn) break;
         setIntent('composing');
-        streamToken(event.content);
+        const [text, marked] = stripVerifyMarker(event.content);
+        if (marked) S.turnUnverified = true;
+        streamToken(text);
+        break;
+      }
+
+      // The reply streamed since the last tool call was a draft; the
+      // next reply replaces it. Fold it instead of showing two answers.
+      case 'answer_superseded':
+        if (!sameTurn) break;
+        supersedeStream(event.reason);
         break;
 
       case 'thinking':
@@ -366,6 +377,10 @@ export function connect() {
             lastAssistant.appendChild(stats);
           }
         }
+        // The answer shipped despite a failing verification verdict. The
+        // unverified marker is only in the persisted text, never streamed.
+        if (event.verified === 'fail' || S.turnUnverified) markTurnUnverified(event.turn_id || S.currentTurnId);
+        S.turnUnverified = false;
         // Consolidated metrics (context gauge + session tokens + cost).
         metricsDone(event);
         if (S.sessionId) loadSessions();

@@ -1169,3 +1169,124 @@ test('recovery rechecks active work after the saved-session request resolves', a
     assert.equal(S.promptQueue.length,0);
   } finally {globalThis.fetch=oldFetch;S.resetSupervision();}
 });
+
+// answer_superseded: the reply streamed before the re-ask folds into a
+// collapsed draft row; the revised reply is the answer.
+test('answer_superseded folds the streamed draft and the next reply is the answer', () => {
+  deliver({ type: 'turn_started', turn_id: 't-draft' });
+  deliver({ type: 'token_delta', turn_id: 't-draft', content: 'Branch has 15 commits.' });
+  deliver({ type: 'answer_superseded', turn_id: 't-draft', reason: 'verify_retry', cycle: 1 });
+  deliver({ type: 'token_delta', turn_id: 't-draft', content: 'Branch has 15 commits ahead of main.' });
+  render.streamFlush();
+  const answers = byId.messages.querySelectorAll('.msg.assistant');
+  assert.equal(answers.length, 2);
+  assert.ok(answers[0].classList.contains('draft'), 'the superseded reply is a draft');
+  assert.equal(answers[1].classList.contains('draft'), false, 'the revised reply is not');
+  assert.match(collectText(answers[1]).join(' '), /ahead of main/);
+  assert.equal(collectText(answers[1]).join(' ').includes('15 commits.'), false, 'revision does not concatenate onto the draft');
+  const toggle = answers[0].querySelector('.draft-toggle');
+  assert.equal(toggle.textContent, '⋯ draft revised (verification)');
+  assert.equal(answers[0].classList.contains('open'), false, 'draft starts collapsed');
+  toggle.dispatch('click');
+  assert.ok(answers[0].classList.contains('open'), 'click expands the draft');
+  assert.equal(toggle.getAttribute('aria-expanded'), 'true');
+});
+
+test('answer_superseded without a streamed draft is a no-op', () => {
+  deliver({ type: 'turn_started', turn_id: 't-draft-none' });
+  deliver({ type: 'answer_superseded', turn_id: 't-draft-none', reason: 'completion_nudge', cycle: 1 });
+  assert.equal(byId.messages.querySelectorAll('.msg.assistant').length, 0);
+});
+
+test('done.verified fail marks the answer unverified', () => {
+  deliver({ type: 'turn_started', turn_id: 't-unverified' });
+  deliver({ type: 'token_delta', turn_id: 't-unverified', content: 'Answer.' });
+  deliver({ type: 'done', turn_id: 't-unverified', verified: 'fail' });
+  const chip = byId.messages.querySelector('.verify-chip');
+  assert.ok(chip, 'unverified chip rendered');
+  assert.equal(chip.textContent, '✗ unverified');
+});
+
+test('done.verified pass adds no chip', () => {
+  deliver({ type: 'turn_started', turn_id: 't-verified' });
+  deliver({ type: 'token_delta', turn_id: 't-verified', content: 'Answer.' });
+  deliver({ type: 'done', turn_id: 't-verified', verified: 'pass' });
+  assert.equal(byId.messages.querySelector('.verify-chip'), null);
+});
+
+test('session history folds superseded drafts and flags unverified answers', () => {
+  render.renderSessionHistory([
+    { role: 'user', content: 'describe' },
+    { role: 'assistant', content: 'Draft answer.', superseded: true, superseded_reason: 'completion_nudge' },
+    { role: 'assistant', content: render.VERIFY_FAILED_MARKER + '\n\nFinal answer.' },
+  ]);
+  const answers = byId.messages.querySelectorAll('.msg.assistant');
+  assert.equal(answers.length, 2);
+  assert.ok(answers[0].classList.contains('draft'));
+  assert.equal(answers[0].querySelector('.draft-toggle').textContent, '⋯ draft revised (completion check)');
+  assert.ok(answers[1].querySelector('.verify-chip'), 'unverified answer flagged');
+  assert.equal(collectText(answers[1]).join(' ').includes('Verification failed'), false, 'marker text replaced by the chip');
+});
+
+test('markUnverified tolerates a missing bubble, is idempotent, and works without a sender line', () => {
+  render.markUnverified(null);
+  const bubble = new FakeEl('div');
+  bubble.className = 'bubble';
+  const content = new FakeEl('div');
+  content.className = 'content';
+  bubble.appendChild(content);
+  render.markUnverified(bubble);
+  render.markUnverified(bubble);
+  const chips = bubble.querySelectorAll('.verify-chip');
+  assert.equal(chips.length, 1, 'one chip however often it is marked');
+  assert.equal(bubble.children[0], chips[0], 'chip leads the bubble when there is no sender line');
+});
+
+test('done.verified fail without any answer bubble is a no-op', () => {
+  deliver({ type: 'turn_started', turn_id: 't-unverified-empty' });
+  deliver({ type: 'done', turn_id: 't-unverified-empty', verified: 'fail' });
+  assert.equal(byId.messages.querySelector('.verify-chip'), null);
+});
+
+test('a draft with an unknown reason still folds with a generic label', () => {
+  render.renderSessionHistory([
+    { role: 'user', content: 'q' },
+    { role: 'assistant', content: 'Draft.', superseded: true, superseded_reason: '<img src=x onerror=alert(1)>' },
+    { role: 'assistant', content: 'Final.' },
+  ]);
+  const toggle = byId.messages.querySelector('.draft-toggle');
+  assert.equal(toggle.textContent, '⋯ draft revised (revised)', 'unknown reasons never reach the label');
+});
+
+// A bulk (non-streamed) answer carries the marker text; it is stripped and
+// replaced by the chip so there is a single indication, even from a server
+// that predates done.verified.
+test('bulk token with the verification-failed marker renders as a chip, not text', () => {
+  deliver({ type: 'turn_started', turn_id: 't-bulk-marker' });
+  deliver({ type: 'token', turn_id: 't-bulk-marker', content: render.VERIFY_FAILED_MARKER + '\n\nThe answer.' });
+  deliver({ type: 'done', turn_id: 't-bulk-marker' });
+  const answer = byId.messages.querySelector('.msg.assistant');
+  assert.ok(answer.querySelector('.verify-chip'), 'chip rendered');
+  assert.equal(collectText(answer).join(' ').includes('Verification failed'), false, 'marker text stripped');
+  assert.equal(S.turnUnverified, false, 'flag reset after done');
+});
+
+test('unverified chip never lands on an earlier turn or on a draft', () => {
+  deliver({ type: 'turn_started', turn_id: 't-prev' });
+  deliver({ type: 'token_delta', turn_id: 't-prev', content: 'Earlier answer.' });
+  deliver({ type: 'done', turn_id: 't-prev' });
+  deliver({ type: 'turn_started', turn_id: 't-empty' });
+  deliver({ type: 'done', turn_id: 't-empty', verified: 'fail' });
+  assert.equal(byId.messages.querySelector('.verify-chip'), null, 'no answer this turn: nothing flagged');
+
+  deliver({ type: 'turn_started', turn_id: 't-draft-chip' });
+  deliver({ type: 'token_delta', turn_id: 't-draft-chip', content: 'Draft.' });
+  deliver({ type: 'answer_superseded', turn_id: 't-draft-chip', reason: 'completion_nudge', cycle: 1 });
+  deliver({ type: 'token_delta', turn_id: 't-draft-chip', content: 'Final.' });
+  deliver({ type: 'done', turn_id: 't-draft-chip', verified: 'fail' });
+  const chips = byId.messages.querySelectorAll('.verify-chip');
+  assert.equal(chips.length, 1);
+  const owner = chips[0].closest('.msg');
+  assert.equal(owner.classList.contains('draft'), false, 'chip sits on the revised answer');
+  assert.match(collectText(owner).join(' '), /Final\./);
+});

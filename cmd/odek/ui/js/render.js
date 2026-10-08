@@ -512,6 +512,84 @@ function sealPartialResponse() {
   S.streamCursorEl = null;
 }
 
+// ── Superseded drafts and verification ──
+// The loop can re-ask the model after a final-looking reply (completion
+// nudge, verification retry). The server sends answer_superseded after the
+// draft's last fragment; the draft folds into a collapsed row and the next
+// reply streams as the answer. History replays drafts the same way from
+// the record's `superseded` flag.
+const DRAFT_REASONS = { verify_retry: 'verification', completion_nudge: 'completion check' };
+
+// VERIFY_FAILED_MARKER mirrors loop.VerifyFailedMarker: persisted answers
+// that failed verification start with it.
+export const VERIFY_FAILED_MARKER = '[Verification failed — answer returned unverified]';
+
+function foldDraft(msg, reason) {
+  if (!msg || !msg.classList) return;
+  msg.classList.remove('partial');
+  msg.classList.add('draft');
+  const toggle = document.createElement('div');
+  toggle.className = 'draft-toggle';
+  toggle.setAttribute('role', 'button');
+  toggle.setAttribute('tabindex', '0');
+  toggle.setAttribute('aria-expanded', 'false');
+  toggle.textContent = '⋯ draft revised (' + (DRAFT_REASONS[reason] || 'revised') + ')';
+  msg.insertBefore(toggle, (msg.children && msg.children[0]) || null);
+}
+
+function toggleDraft(toggle) {
+  const msg = toggle.closest('.msg');
+  if (!msg) return;
+  const open = msg.classList.toggle('open');
+  toggle.setAttribute('aria-expanded', String(open));
+}
+
+// supersedeStream folds the reply streamed so far into a collapsed draft.
+// A no-op when nothing is streaming (the draft never reached this client).
+export function supersedeStream(reason) {
+  streamFlush();
+  const msg = S.streamBubbleEl;
+  if (!msg) return;
+  sealPartialResponse();
+  foldDraft(msg, reason);
+}
+
+// stripVerifyMarker removes a leading verification-failed marker from
+// answer text (bulk token frames carry it when the answer was not streamed)
+// so the chip is the single indication. Returns [text, wasMarked].
+export function stripVerifyMarker(text) {
+  const s = String(text || '');
+  if (!s.startsWith(VERIFY_FAILED_MARKER)) return [s, false];
+  return [s.slice(VERIFY_FAILED_MARKER.length).replace(/^\s+/, ''), true];
+}
+
+// markTurnUnverified flags the turn's answer: the last non-draft assistant
+// bubble opened for turnId. A turn with no answer bubble flags nothing —
+// never an earlier turn's answer.
+export function markTurnUnverified(turnId) {
+  const all = messagesEl.querySelectorAll('.msg.assistant') || [];
+  for (let i = all.length - 1; i >= 0; i--) {
+    const msg = all[i];
+    if (msg.classList.contains('draft')) continue;
+    if (turnId && msg.dataset.turnId !== turnId) continue;
+    markUnverified(msg.querySelector('.bubble'));
+    return;
+  }
+}
+
+// markUnverified tags an answer bubble that shipped despite a failing
+// verification verdict.
+export function markUnverified(bubble) {
+  if (!bubble || bubble.querySelector('.verify-chip')) return;
+  const chip = document.createElement('span');
+  chip.className = 'verify-chip fail';
+  chip.title = 'This answer failed verification and was returned unverified';
+  chip.textContent = '✗ unverified';
+  const sender = bubble.querySelector('.sender');
+  if (sender) sender.appendChild(chip);
+  else bubble.insertBefore(chip, (bubble.children && bubble.children[0]) || null);
+}
+
 function appendStreamText(text) {
   ensureStreamBubble();
   // Accumulate and re-render the WHOLE answer so far. Fragments must never
@@ -1353,7 +1431,10 @@ export function renderSessionHistory(messages) {
 
     // Content before tools: the model streams the visible reply first,
     // then acts. Putting tools first parked every partial after the log.
-    if (msg.content) renderHistoricalAssistant(msg.content);
+    if (msg.content) {
+      const wrapper = renderHistoricalAssistant(msg.content);
+      if (msg.superseded) foldDraft(wrapper, msg.superseded_reason);
+    }
 
     const toolCalls = Array.isArray(msg.tool_calls) ? msg.tool_calls : [];
     if (toolCalls.length > 0) {
@@ -1372,7 +1453,8 @@ export function renderSessionHistory(messages) {
   });
 }
 
-function renderHistoricalAssistant(content) {
+function renderHistoricalAssistant(raw) {
+  const [content, unverified] = stripVerifyMarker(raw);
   const wrapper = document.createElement('div');
   wrapper.className = 'msg assistant';
   wrapper.innerHTML =
@@ -1384,7 +1466,9 @@ function renderHistoricalAssistant(content) {
   ensureHistoryStream().appendChild(wrapper);
   const bubble = wrapper.querySelector('.bubble');
   if (bubble) addCopyButton(bubble);
+  if (bubble && unverified) markUnverified(bubble);
   compactOlderAnswers(wrapper);
+  return wrapper;
 }
 
 // renderHistoricalThinking appends reasoning rows into the current turn
@@ -1626,6 +1710,9 @@ messagesEl.addEventListener('click', (e) => {
 
   const thinkingToggle = t.closest('.thinking-toggle');
   if (thinkingToggle) { toggleThinking(thinkingToggle); return; }
+
+  const draftToggle = t.closest('.draft-toggle');
+  if (draftToggle) { toggleDraft(draftToggle); return; }
 
   const sgHeader = t.closest('.sg-header');
   if (sgHeader) { toggleSubagentGroup(sgHeader); return; }
