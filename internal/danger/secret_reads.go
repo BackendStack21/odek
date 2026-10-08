@@ -36,7 +36,7 @@ func sensitiveEnvName(name string) bool {
 	}
 	for i := 0; i < len(name); i++ {
 		c := name[i]
-		if !(c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_') {
+		if (c < 'A' || c > 'Z') && (c < '0' || c > '9') && c != '_' {
 			return false
 		}
 	}

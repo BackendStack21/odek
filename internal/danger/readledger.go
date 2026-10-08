@@ -815,10 +815,6 @@ func stageLedgerFiles(stage []string, cwd string, written map[string]bool) (file
 	return files, rewritten
 }
 
-func stageExecutionFiles(stage []string, cwd string) []string {
-	return stageExecutionFilesWritten(stage, cwd, nil)
-}
-
 // stageExecutionFilesWritten returns the files a stage executes. Only the
 // program operand (and the values of helper options that load code) execute;
 // redirect operators and their targets, and data arguments that follow the
@@ -1002,7 +998,7 @@ func programOperandUnresolvable(name string, inner []string) bool {
 	if name == "find" {
 		return findExecProgramUnresolvable(inner)
 	}
-	if !(isScriptInterpreter(name) || name == "source" || name == ".") {
+	if !isScriptInterpreter(name) && name != "source" && name != "." {
 		return false
 	}
 	if pipedShells[name] && shellInlineScriptIndex(inner) >= 0 {

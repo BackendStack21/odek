@@ -1413,7 +1413,7 @@ func tokenizeMarked(input string) ([]string, []bool, bool) {
 		// character hides everything after it from classification. The
 		// redirection spellings (fd duplication and bash's both-stream
 		// forms) stay single tokens so they are not mistaken for separators.
-		if i+2 < len(input) && !(ch == ';' && (lineBreak[i] || lineBreak[i+1] || lineBreak[i+2])) {
+		if i+2 < len(input) && (ch != ';' || !lineBreak[i] && !lineBreak[i+1] && !lineBreak[i+2]) {
 			switch op3 := input[i : i+3]; op3 {
 			case ">>&", "&>>", "<<<", ";;&":
 				flush()
@@ -1422,7 +1422,7 @@ func tokenizeMarked(input string) ([]string, []bool, bool) {
 				continue
 			}
 		}
-		if i+1 < len(input) && !(ch == ';' && (lineBreak[i] || lineBreak[i+1])) {
+		if i+1 < len(input) && (ch != ';' || !lineBreak[i] && !lineBreak[i+1]) {
 			op2 := string(input[i]) + string(input[i+1])
 			switch op2 {
 			case "&&", "||", ">>", ">&", "&>", "|&", "<<", ">|", "<&", ";;", ";&":
@@ -1783,18 +1783,13 @@ func Classify(cmd string) RiskClass {
 	return Analyze(cmd).Class()
 }
 
-// classifyPipeline classifies one command segment that may contain pipes.
+// classifyPipelineIn classifies one command segment that may contain pipes.
 // Each pipe stage is classified independently — so `true | dd of=/dev/sda`
 // is seen as the dd, not just the harmless `true` at the head — and a stage
 // that pipes INTO a shell interpreter is treated as code execution
-// (`curl … | bash`). The worst stage wins.
-func classifyPipeline(tokens []string) RiskClass {
-	return classifyPipelineIn(tokens, nil)
-}
-
-// classifyPipelineIn is classifyPipeline with the git working-directory
-// context of each stage. repos must line up with the pipe stages; any other
-// length is treated as unknown for every stage.
+// (`curl … | bash`). The worst stage wins. repos carries the git
+// working-directory context of each stage and must line up with the pipe
+// stages; any other length is treated as unknown for every stage.
 func classifyPipelineIn(tokens []string, repos []*gitRepoCtx) RiskClass {
 	stages := splitPipes(tokens)
 	if len(repos) != len(stages) {
@@ -2137,9 +2132,10 @@ func decodeEchoEscape(s string, i int, inFormat bool) (out []byte, n int, stop b
 		return []byte{c}, 2, false
 	case c == 'x' || c == 'u' || c == 'U':
 		limit := 2
-		if c == 'u' {
+		switch c {
+		case 'u':
 			limit = 4
-		} else if c == 'U' {
+		case 'U':
 			limit = 8
 		}
 		v, digits := 0, 0
@@ -4153,16 +4149,6 @@ func shellHasOperand(tokens []string) bool {
 		}
 	}
 	return false
-}
-
-// flagArg returns the token immediately following flag, or "" if absent.
-func flagArg(tokens []string, flag string) string {
-	for i, t := range tokens {
-		if t == flag && i+1 < len(tokens) {
-			return tokens[i+1]
-		}
-	}
-	return ""
 }
 
 // shellInlineScriptIndex returns the index of the inline script of a shell

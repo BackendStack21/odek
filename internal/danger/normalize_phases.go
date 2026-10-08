@@ -502,7 +502,7 @@ func quoteDecodedWord(word string) string {
 	plain := true
 	for i := 0; i < len(word); i++ {
 		c := word[i]
-		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || strings.IndexByte("_-./:=@%+", c) >= 0) {
+		if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && (c < '0' || c > '9') && strings.IndexByte("_-./:=@%+", c) < 0 {
 			plain = false
 			break
 		}
@@ -651,7 +651,7 @@ func isBraceBoundary(c byte) bool {
 // `/et{c..c}/shadow` is `/etc/shadow`. Output size is capped; see
 // braceOverflowToken.
 func expandBraces(cmd string) string {
-	if !strings.Contains(cmd, "{") || !(strings.Contains(cmd, ",") || strings.Contains(cmd, "..")) {
+	if !strings.Contains(cmd, "{") || (!strings.Contains(cmd, ",") && !strings.Contains(cmd, "..")) {
 		return cmd
 	}
 	var out strings.Builder
@@ -674,7 +674,7 @@ func expandBraces(cmd string) string {
 		}
 		var lex shellLex
 		end := i
-		for end < len(cmd) && !(lex.top() && isBraceBoundary(cmd[end])) {
+		for end < len(cmd) && (!lex.top() || !isBraceBoundary(cmd[end])) {
 			end += lex.advance(cmd, end)
 		}
 		word := cmd[i:end]
