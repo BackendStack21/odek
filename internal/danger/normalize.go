@@ -70,7 +70,7 @@ var homoglyphMap = map[rune]rune{
 	'κ': 'k', // U+03BA
 	'λ': 'l', // U+03BB
 	'μ': 'm', // U+03BC
-	'ν': 'n', // U+03BD
+	'ν': 'v', // U+03BD (nu looks like v; a capital Nu lowercases to it, see ScanInjection)
 	'π': 'n', // U+03C0
 	'σ': 'o', // U+03C3
 	'τ': 't', // U+03C4
@@ -78,6 +78,35 @@ var homoglyphMap = map[rune]rune{
 	'χ': 'x', // U+03C7
 	'ω': 'w', // U+03C9
 	'ς': 's', // U+03C2
+
+	// Further Cyrillic / Latin extension look-alikes
+	'һ': 'h', // U+04BB Cyrillic shha
+	'ѵ': 'v', // U+0475 Cyrillic izhitsa
+	'ԁ': 'd', // U+0501 Cyrillic komi de
+	'ԛ': 'q', // U+051B Cyrillic qa
+	'ԝ': 'w', // U+051D Cyrillic we
+	'ɡ': 'g', // U+0261 Latin script g
+	'ı': 'i', // U+0131 dotless i
+	'ȷ': 'j', // U+0237 dotless j
+	'ɑ': 'a', // U+0251 Latin alpha
+
+	// Letterlike symbols (the holes in the mathematical alphanumerics)
+	'ℂ': 'c', 'ℊ': 'g', 'ℋ': 'h', 'ℌ': 'h', 'ℍ': 'h', 'ℎ': 'h', 'ℐ': 'i',
+	'ℑ': 'i', 'ℒ': 'l', 'ℓ': 'l', 'ℕ': 'n', 'ℙ': 'p', 'ℚ': 'q', 'ℛ': 'r',
+	'ℜ': 'r', 'ℝ': 'r', 'ℤ': 'z', 'ℨ': 'z', 'ℬ': 'b', 'ℭ': 'c', 'ℯ': 'e',
+	'ℰ': 'e', 'ℱ': 'f', 'ℳ': 'm', 'ℴ': 'o', 'ℹ': 'i',
+
+	// Roman numeral and superscript / subscript letters
+	'ⅰ': 'i', 'ⅴ': 'v', 'ⅹ': 'x', 'ⅼ': 'l', 'ⅽ': 'c', 'ⅾ': 'd', 'ⅿ': 'm',
+	'ⁱ': 'i', 'ⁿ': 'n', 'ʰ': 'h', 'ʲ': 'j', 'ʳ': 'r', 'ʷ': 'w', 'ʸ': 'y',
+	'ˡ': 'l', 'ˢ': 's', 'ˣ': 'x',
+	'ᵃ': 'a', 'ᵇ': 'b', 'ᶜ': 'c', 'ᵈ': 'd', 'ᵉ': 'e', 'ᶠ': 'f', 'ᵍ': 'g',
+	'ᵏ': 'k', 'ᵐ': 'm', 'ᵒ': 'o', 'ᵖ': 'p', 'ᵗ': 't', 'ᵘ': 'u', 'ᵛ': 'v',
+	'ᶻ': 'z',
+	'ₐ': 'a', 'ₑ': 'e', 'ₒ': 'o', 'ₓ': 'x', 'ₕ': 'h', 'ₖ': 'k', 'ₗ': 'l',
+	'ₘ': 'm', 'ₙ': 'n', 'ₚ': 'p', 'ₛ': 's', 'ₜ': 't', 'ᵢ': 'i', 'ᵣ': 'r',
+	'ᵤ': 'u', 'ᵥ': 'v', 'ⱼ': 'j',
+	'＃': '#', // U+FF03 fullwidth number sign
 
 	// Fullwidth ASCII (common in IDN/phishing)
 	'Ａ': 'A', 'Ｂ': 'B', 'Ｃ': 'C', 'Ｄ': 'D', 'Ｅ': 'E', 'Ｆ': 'F',
@@ -164,8 +193,11 @@ func NormalizeForScan(text string) string {
 }
 
 // FoldHomoglyphs returns text with common Unicode confusables (Cyrillic/Greek
-// look-alikes) replaced by their ASCII equivalents. It is used as an extra
-// scan surface to catch mixed-script homoglyph attacks.
+// look-alikes, enclosed and mathematical alphanumerics, fullwidth, superscript
+// and subscript letters) replaced by their ASCII equivalents. It is used as an
+// extra scan surface to catch mixed-script homoglyph attacks. The styled
+// alphanumeric ranges fold to lower case, which is the case the scan patterns
+// are written in.
 func FoldHomoglyphs(text string) string {
 	var b strings.Builder
 	b.Grow(len(text))
@@ -174,9 +206,43 @@ func FoldHomoglyphs(text string) string {
 			b.WriteRune(rep)
 			continue
 		}
+		if rep, ok := foldStyledRune(r); ok {
+			b.WriteRune(rep)
+			continue
+		}
 		b.WriteRune(r)
 	}
 	return b.String()
+}
+
+// foldStyledRune folds the letter and digit blocks that Unicode lays out as
+// contiguous runs of the Latin alphabet: parenthesized, circled and
+// mathematical alphanumerics. The mapping is arithmetic on the offset into
+// each run.
+func foldStyledRune(r rune) (rune, bool) {
+	switch {
+	case r >= 0x1D400 && r <= 0x1D6A3:
+		// Thirteen styles (bold, italic, script, fraktur, double-struck,
+		// sans, monospace, ...) of 26 capitals followed by 26 small letters.
+		n := rune(int(r-0x1D400) % 52)
+		if n >= 26 {
+			n -= 26
+		}
+		return 'a' + n, true
+	case r >= 0x1D7CE && r <= 0x1D7FF:
+		return '0' + rune(int(r-0x1D7CE)%10), true
+	case r >= 0x249C && r <= 0x24B5: // parenthesized small letters
+		return 'a' + (r - 0x249C), true
+	case r >= 0x24B6 && r <= 0x24CF: // circled capitals
+		return 'a' + (r - 0x24B6), true
+	case r >= 0x24D0 && r <= 0x24E9: // circled small letters
+		return 'a' + (r - 0x24D0), true
+	case r >= 0x2460 && r <= 0x2468: // circled digits 1-9
+		return '1' + (r - 0x2460), true
+	case r == 0x24EA:
+		return '0', true
+	}
+	return 0, false
 }
 
 // HasConfusableScript reports whether s mixes Latin script with characters
