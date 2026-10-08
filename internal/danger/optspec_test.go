@@ -196,6 +196,8 @@ func TestOptSpecReadsSpellingsTheOldParsersMisread(t *testing.T) {
 		{"awk --exec p.awk f", CodeExecution, "gawk --exec reads the program from a file, like -f"},
 		{"awk -E p.awk f", CodeExecution, "gawk -E is --exec"},
 		{"awk --source='BEGIN{print 1}' -f x f", CodeExecution, "a harmless --source must not end the scan before -f"},
+		{"git --attr-source HEAD push --force origin main", NetworkEgress, "--attr-source takes the next word, so HEAD is not the subcommand"},
+		{"git --attr-source HEAD reset --hard", SystemWrite, "--attr-source takes the next word, so reset is the subcommand"},
 		{"kubectl -An ns get pods", NetworkEgress, "-A is a flag, so -An takes ns as the namespace and get is the verb"},
 		{"docker -Dl debug ps", Safe, "-D is a flag and -l takes debug: ps is the verb"},
 	} {

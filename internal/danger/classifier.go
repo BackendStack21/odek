@@ -5106,7 +5106,7 @@ func isGitCodeExecution(tokens []string) bool {
 // the first operand is the subcommand.
 var gitGlobalOptions = optSpec{
 	short: "Cc",
-	long:  valueOpts("git-dir work-tree namespace exec-path super-prefix config-env"),
+	long:  valueOpts("git-dir work-tree namespace exec-path super-prefix config-env attr-source"),
 	posix: true,
 }
 
