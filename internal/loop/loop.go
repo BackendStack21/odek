@@ -1990,6 +1990,13 @@ func (e *Engine) protectDerivedContext(ctx context.Context, source, content stri
 	if e.wrapUntrusted != nil {
 		return e.wrapUntrusted(source, content)
 	}
+	return defaultUntrustedWrap(source, content)
+}
+
+// defaultUntrustedWrap is the engine's own untrusted-content boundary, used
+// when no surface-level wrapper is installed: a per-call nonce'd tag whose
+// name the content cannot forge.
+func defaultUntrustedWrap(source, content string) string {
 	nonce := newToolResultNonce()
 	source = strings.NewReplacer(`"`, "″", "<", "‹", ">", "›", "\n", " ", "\r", " ").Replace(source)
 	content = strings.ReplaceAll(content, "untrusted_content", "untrusted·content")
