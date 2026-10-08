@@ -37,11 +37,19 @@ func denyScan(cmd string, entries [][]string, depth int) bool {
 		return false
 	}
 	main, subs := normalize(cmd)
-	for _, segment := range splitSegments(tokenize(main)) {
+	tokens, ops, _ := tokenizeMarked(main)
+	for _, segment := range splitSegments(tokens) {
 		for _, stage := range splitPipes(segment) {
 			if denyStage(stage, entries, depth) {
 				return true
 			}
+		}
+	}
+	// Commands inside loops, conditionals, case arms, groups and function
+	// bodies are command positions of their own.
+	for _, stage := range commandStages(tokens, ops) {
+		if denyStage(stage, entries, depth) {
+			return true
 		}
 	}
 	for _, sub := range subs {

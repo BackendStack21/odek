@@ -34,7 +34,10 @@ const monoMaxPrefix = 400
 var monoCurated = []string{
 	"echo hi", "ls -la", "cd /tmp", "true", "export A=1", "A=/ ", "echo 'x", `echo "x`, "echo $(", "echo `",
 	`echo "\\"`, `echo "a\"b"`, "echo 'a'\\''b'", "echo $'x", "cat <(", "(", "{ echo", "ls |", "ls &", "echo x >",
-	"if true; then echo", "for i in 1; do", "case x in x) echo y;;", "sudo", "env", "nohup", "xargs", "bash -c 'echo",
+	"if true; then echo", "for i in 1; do", "case x in x) echo y;;", "while true; do", "until false; do", "f() {", "function f {",
+	"for i in a b; do echo $i; done; ", "case $x in a) echo;; esac; ", "[[ -f x ]] && ", "(( i++ ))", "for ((i=0;i<3;i++)); do", "select x in a; do",
+	"coproc {", "time {", "! ", "{ echo a; } >| ", "cat <&3 ", "echo a >| ", "f() { echo $1; }; f ", "while read l; do ", "esac", "fi", "done", "}", ")",
+	"sudo", "env", "nohup", "xargs", "bash -c 'echo",
 	`bash -c "echo`, "echo $((1+", "echo ${A:-", "echo {a,b", "echo r\"\"m", "$IFS", "echo\\\n", "cd /; ", "exec",
 	"git commit -m 'msg", "ssh host '", "awk '{print}'", "export IFS=:", "alias x=", "set -e", "\t", "  ", "",
 }
@@ -221,30 +224,37 @@ func monoDoubleQuote(s string) string {
 	return `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`, "$", `\$`, "`", "\\`").Replace(s) + `"`
 }
 
+// monoHarmlessWrappers are {prefix, suffix} pairs that put a command behind
+// something harmless: a separator, a wrapper, or a compound command whose
+// own syntax is closed around it.
+var monoHarmlessWrappers = [][2]string{
+	{"true; ", ""}, {"echo x && ", ""}, {": || ", ""}, {"VAR=1 ", ""}, {"true | ", ""}, {"echo FILLER; ", ""}, {"FILLER=1 ", ""},
+	{"echo FILLER && ", ""}, {"false || ", ""}, {"echo x\n", ""}, {"true & ", ""}, {"{ true; } && ", ""}, {"if true; then ", "; fi"},
+	{"! ", ""}, {"time ", ""}, {"nohup ", ""}, {"command ", ""}, {"exec ", ""}, {"nice ", ""}, {"timeout 5 ", ""}, {"env ", ""},
+	{"FOO=bar BAZ=1 ", ""},
+	{"for FILLER in a b; do ", "; done"}, {"for FILLER in *.go; do ", "; done"}, {"for ((i=0;i<2;i++)); do ", "; done"},
+	{"while true; do ", "; done"}, {"until false; do ", "; done"}, {"if true; then echo FILLER; else ", "; fi"},
+	{"if false; then echo a; elif true; then ", "; fi"}, {"if ", "; then echo FILLER; fi"}, {"while ", "; do echo FILLER; done"},
+	{"case FILLER in *) ", ";; esac"}, {"case x in a) echo a;; x) ", ";& b) echo b;; esac"}, {"( ", " )"}, {"(", ")"}, {"{ ", "; }"},
+	{"FILLER() { ", "; }; FILLER"}, {"function FILLER { ", "; }; FILLER"}, {"FILLER() { ", "; }"}, {"time { ", "; }"},
+	{"select FILLER in a; do ", "; done"}, {"coproc { ", "; }"}, {"[[ -n FILLER ]] && ", ""}, {"[[ -n FILLER ]] || ", ""},
+	{"(( 1 )) && ", ""}, {"true | { ", "; }"}, {"echo FILLER | while read l; do ", "; done"}, {"{ { ( ", " ); }; }"},
+}
+
 // FuzzHarmlessPrefixKeepsRank: a known-dangerous command behind a benign
 // prefix or wrapper never ranks lower, never gets a weaker action, and a shell
 // -c wrapper keeps the payload's own effects.
 func FuzzHarmlessPrefixKeepsRank(f *testing.F) {
 	for i := range monoDangerous {
-		for p := 0; p < 24; p += 5 {
-			f.Add(uint8(i), uint8(p), "x")
+		for p := 0; p < len(monoHarmlessWrappers); p += 4 {
+			f.Add(uint8(i), uint8((p+i)%len(monoHarmlessWrappers)), "x")
 		}
 	}
 	f.Fuzz(func(t *testing.T, ci, pi uint8, filler string) {
 		c := monoDangerous[int(ci)%len(monoDangerous)]
 		w := monoFiller(filler)
-		prefixes := []string{
-			"true; ", "echo x && ", ": || ", "VAR=1 ", "true | ", "echo " + w + "; ", w + "=1 ", "echo " + w + " && ", "false || ", "echo x\n",
-			"true & ", "{ true; } && ", "if true; then ", "! ", "time ", "nohup ", "command ", "exec ", "nice ", "timeout 5 ", "env ", "FOO=bar BAZ=1 ",
-		}
-		prefix := prefixes[int(pi)%len(prefixes)]
-		suffix := ""
-		if prefix == "if true; then " {
-			suffix = "; fi"
-		}
-		if prefix == "{ true; } && " {
-			suffix = ""
-		}
+		wrapper := monoHarmlessWrappers[int(pi)%len(monoHarmlessWrappers)]
+		prefix, suffix := strings.ReplaceAll(wrapper[0], "FILLER", w), strings.ReplaceAll(wrapper[1], "FILLER", w)
 		cmd := prefix + c + suffix
 		base, wrapped := Classify(c), Classify(cmd)
 		if monoRankDropped(base, wrapped) {
