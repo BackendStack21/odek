@@ -4818,6 +4818,9 @@ func modeSetsSUIDGID(mode string) bool {
 // passes a -m/--mode value that sets the setuid or setgid bit, in any
 // spelling: `-m 4755`, `-m4755`, `-Dm4755`, `--mode=u+s`, `--mode u+s`.
 func modeOptionSetsSUIDGID(first string, tokens []string) bool {
+	if len(tokens) == 0 {
+		return false
+	}
 	for _, mode := range modeOptions[first].parse(tokens[1:]).values("-m", "--mode") {
 		if mode != "" && chmodSetsSUIDGID([]string{"chmod", mode}) {
 			return true
@@ -5635,6 +5638,9 @@ func isAllDigits(s string) bool {
 // script that calls system() or pipes to a command. Plain field
 // printing (`awk '{print $1}' file`) is not code execution.
 func awkRunsShellCode(tokens []string) bool {
+	if len(tokens) == 0 {
+		return false
+	}
 	r := awkOptions.parse(tokens[1:])
 	for _, o := range r.opts {
 		switch {

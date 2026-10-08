@@ -171,6 +171,9 @@ func sshConfigOptionRunsProgram(opt string) bool {
 // through bundled clusters, where the first value-taking letter takes the rest
 // of the word (or the next word) as its value.
 func transferClientRunsProgram(name string, tokens []string) bool {
+	if len(tokens) == 0 {
+		return false
+	}
 	spec := map[string]optSpec{"ssh": sshSyntax, "scp": scpSyntax, "sftp": sftpSyntax, "rsync": rsyncSyntax}[name]
 	for _, o := range spec.parse(tokens[1:]).opts {
 		switch {
@@ -392,6 +395,9 @@ func sedScriptTexts(tokens []string) []string {
 }
 
 func executionFileTargets(name string, tokens []string) []string {
+	if len(tokens) == 0 {
+		return nil
+	}
 	var options []string
 	// commandOptions take a debugger/editor command string whose `source`
 	// style commands load a script file.
@@ -534,6 +540,9 @@ var commandOptionOwners = []string{"vi", "vim", "view", "ex", "rvim", "gvim", "n
 // Uninspectable destination construction uses the dynamic marker and fails closed.
 func semanticWriteTargets(name string, tokens []string) []string {
 	var targets []string
+	if len(tokens) == 0 {
+		return targets
+	}
 	if networkInfoQuery(tokens) {
 		return targets
 	}

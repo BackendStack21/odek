@@ -279,6 +279,9 @@ func findExecutionFiles(tokens []string, cwd string, written map[string]bool) []
 // every word after the option up to a `;` terminator, so the interpreter's
 // script operand is examined and not only the first word.
 func fdExecutionFiles(tokens []string, cwd string, written map[string]bool) []string {
+	if len(tokens) == 0 {
+		return nil
+	}
 	spec := valueOptionSpec([]string{"--exec", "--exec-batch", "-x", "-X"}, "")
 	args := tokens[1:]
 	var out []string
