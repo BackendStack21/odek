@@ -1,6 +1,7 @@
 package danger
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 )
@@ -626,9 +627,11 @@ func isBraceBoundary(c byte) bool {
 // expanded to a fixed point, so `/et{c,c}/shadow` is seen as
 // `/etc/shadow /etc/shadow` and `{rm,-rf,/}` as `rm -rf /`. Quoted braces,
 // ${…} parameter expansions, find's {} and groups without a comma are left
-// alone. Output size is capped; see braceOverflowToken.
+// alone. Sequence groups ({1..3}, {a..e}, {01..10}, {1..10..2}) expand too:
+// `/et{c..c}/shadow` is `/etc/shadow`. Output size is capped; see
+// braceOverflowToken.
 func expandBraces(cmd string) string {
-	if !strings.Contains(cmd, "{") || !strings.Contains(cmd, ",") {
+	if !strings.Contains(cmd, "{") || !(strings.Contains(cmd, ",") || strings.Contains(cmd, "..")) {
 		return cmd
 	}
 	var out strings.Builder
@@ -693,7 +696,7 @@ func braceExpandWord(w string, b *braceBudget) ([]string, bool) {
 	if b.work > maxBraceWork {
 		return nil, false
 	}
-	start, end, commas := firstBraceGroup(w, b)
+	start, end, commas, seq := firstBraceGroup(w, b)
 	if b.work > maxBraceWork {
 		return nil, false
 	}
@@ -705,13 +708,15 @@ func braceExpandWord(w string, b *braceBudget) ([]string, bool) {
 	if !ok {
 		return nil, false
 	}
-	var alts []string
-	prev := start + 1
-	for _, c := range commas {
-		alts = append(alts, w[prev:c])
-		prev = c + 1
+	alts := seq
+	if alts == nil {
+		prev := start + 1
+		for _, c := range commas {
+			alts = append(alts, w[prev:c])
+			prev = c + 1
+		}
+		alts = append(alts, w[prev:end])
 	}
-	alts = append(alts, w[prev:end])
 	var res []string
 	size := 0
 	for _, alt := range alts {
@@ -735,25 +740,145 @@ func braceExpandWord(w string, b *braceBudget) ([]string, bool) {
 
 // firstBraceGroup finds the leftmost {…} group in w that the shell would
 // expand: an unquoted brace not introducing ${…} whose matching close has
-// at least one top-level comma. It returns the index of the open brace, the
-// index of its close and the indexes of the top-level commas, or -1.
-func firstBraceGroup(w string, b *braceBudget) (int, int, []int) {
+// at least one top-level comma, or whose body is a sequence expression. It
+// returns the index of the open brace, the index of its close and the
+// indexes of the top-level commas; a sequence group returns its elements
+// instead. The open index is -1 when there is no such group.
+func firstBraceGroup(w string, b *braceBudget) (int, int, []int, []string) {
 	var lex shellLex
 	for i := 0; i < len(w); {
 		if w[i] == '{' && lex.top() && (i == 0 || w[i-1] != '$') {
 			end, commas := matchBrace(w, i)
 			if end >= 0 && len(commas) > 0 {
-				return i, end, commas
+				return i, end, commas, nil
+			}
+			if end >= 0 {
+				if seq := braceSequence(w[i+1 : end]); seq != nil {
+					return i, end, nil, seq
+				}
 			}
 			// Each failed match rescans the rest of the word; charge it so
 			// a word of unclosed braces cannot cost quadratic time.
 			if b.work += len(w) - i; b.work > maxBraceWork {
-				return -1, -1, nil
+				return -1, -1, nil, nil
 			}
 		}
 		i += lex.advance(w, i)
 	}
-	return -1, -1, nil
+	return -1, -1, nil, nil
+}
+
+// maxBraceSequenceFull is the largest sequence listed element by element.
+// A longer numeric sequence differs between elements only in digits, which
+// cannot change how a word classifies, so it is represented by its leading
+// elements and its last one.
+const (
+	maxBraceSequenceFull   = 64
+	maxBraceSequenceSample = 32
+)
+
+// braceSequence expands the body of a {x..y[..incr]} group: integers
+// (zero-padded to a common width when either end has a leading zero) or
+// single characters, ascending or descending by |incr|. It returns nil when
+// body is not a valid sequence, in which case the shell leaves the braces
+// alone.
+func braceSequence(body string) []string {
+	parts := strings.Split(body, "..")
+	if len(parts) < 2 || len(parts) > 3 {
+		return nil
+	}
+	step := 1
+	if len(parts) == 3 {
+		n, ok := parseBraceInt(parts[2])
+		if !ok {
+			return nil
+		}
+		if n < 0 {
+			n = -n
+		}
+		if n == 0 {
+			n = 1
+		}
+		step = n
+	}
+	from, fromInt := parseBraceInt(parts[0])
+	to, toInt := parseBraceInt(parts[1])
+	if fromInt && toInt {
+		width := 0
+		if braceLeadingZero(parts[0]) || braceLeadingZero(parts[1]) {
+			width = max(len(parts[0]), len(parts[1]))
+		}
+		count := (abs(to-from))/step + 1
+		var seq []string
+		emit := func(n int) {
+			if width > 0 {
+				seq = append(seq, fmt.Sprintf("%0*d", width, n))
+			} else {
+				seq = append(seq, strconv.Itoa(n))
+			}
+		}
+		dir := step
+		if to < from {
+			dir = -step
+		}
+		if count <= maxBraceSequenceFull {
+			for k := 0; k < count; k++ {
+				emit(from + k*dir)
+			}
+			return seq
+		}
+		for k := 0; k < maxBraceSequenceSample; k++ {
+			emit(from + k*dir)
+		}
+		emit(from + (count-1)*dir)
+		return seq
+	}
+	if fromInt || toInt || len(parts[0]) != 1 || len(parts[1]) != 1 || !braceSequenceChar(parts[0][0]) || !braceSequenceChar(parts[1][0]) {
+		return nil
+	}
+	a, z := int(parts[0][0]), int(parts[1][0])
+	dir := step
+	if z < a {
+		dir = -step
+	}
+	var seq []string
+	for c := a; (dir > 0 && c <= z) || (dir < 0 && c >= z); c += dir {
+		seq = append(seq, string(rune(c)))
+	}
+	return seq
+}
+
+func braceSequenceChar(c byte) bool {
+	return c > ' ' && c < 0x7f && !strings.ContainsRune("{}\\\"'`$,", rune(c))
+}
+
+func abs(n int) int {
+	if n < 0 {
+		return -n
+	}
+	return n
+}
+
+// parseBraceInt parses an optionally signed decimal integer of bounded size.
+func parseBraceInt(s string) (int, bool) {
+	digits := strings.TrimLeft(s, "+-")
+	if len(s)-len(digits) > 1 || digits == "" || len(digits) > 9 {
+		return 0, false
+	}
+	for i := 0; i < len(digits); i++ {
+		if digits[i] < '0' || digits[i] > '9' {
+			return 0, false
+		}
+	}
+	n, err := strconv.Atoi(s)
+	return n, err == nil
+}
+
+// braceLeadingZero reports whether the integer text has a leading zero that
+// asks for zero-padded output ("01", "-01"; a lone "0" does not).
+func braceLeadingZero(s string) bool {
+	s = strings.TrimLeft(s, "+-")
+	return len(s) > 1 && s[0] == '0'
 }
 
 // matchBrace returns the close of the group opened at w[open] and its

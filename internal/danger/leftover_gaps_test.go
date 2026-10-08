@@ -1,6 +1,9 @@
 package danger
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func lgHas(cmd string, cls RiskClass) bool {
 	for _, e := range Analyze(cmd).Effects {
@@ -211,5 +214,66 @@ func TestLeftover_ChainedWrapperAfterOptionValue(t *testing.T) {
 	}
 	if got := Classify("timeout -s KILL 60 env -C /tmp ls"); got != Safe {
 		t.Errorf("Classify(timeout -s KILL 60 env -C /tmp ls) = %s, want safe", got)
+	}
+}
+
+// Brace sequences expand in bash, so words assembled from them name real
+// paths: `/et{c..c}/shadow` is /etc/shadow.
+func TestLeftover_BraceSequenceExpansion(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"echo {1..3}", "echo 1 2 3"},
+		{"echo {a..c}", "echo a b c"},
+		{"echo {01..10}", "echo 01 02 03 04 05 06 07 08 09 10"},
+		{"echo {1..10..2}", "echo 1 3 5 7 9"},
+		{"echo {c..c}", "echo c"},
+		{"echo {3..1}", "echo 3 2 1"},
+		{"echo {c..a}", "echo c b a"},
+		{"echo {a..e..2}", "echo a c e"},
+		{"echo x{1..3}y", "echo x1y x2y x3y"},
+		{"echo {-1..1}", "echo -1 0 1"},
+		{"echo {08..10}", "echo 08 09 10"},
+		{"echo {1..3}{a,b}", "echo 1a 1b 2a 2b 3a 3b"},
+		{"echo {a,{1..2}}", "echo a 1 2"},
+		// not sequences: left alone
+		{"echo {1..}", "echo {1..}"},
+		{"echo {a..bb}", "echo {a..bb}"},
+		{"echo {1..b}", "echo {1..b}"},
+		{"echo '{1..3}'", "echo '{1..3}'"},
+		{"echo ${x}{1..2}", "echo ${x}1 ${x}2"},
+		{"echo ${1..3}", "echo ${1..3}"},
+	}
+	for _, c := range cases {
+		got := strings.Join(strings.Fields(expandBraces(c.in)), " ")
+		if got != c.want {
+			t.Errorf("expandBraces(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+	// a huge numeric range stays bounded and is not an overflow denial
+	if out := expandBraces("for i in {1..100000}; do echo $i; done"); strings.Contains(out, braceOverflowToken) || len(out) > 2000 {
+		t.Errorf("large numeric sequence not bounded: %d bytes, overflow=%v", len(out), strings.Contains(out, braceOverflowToken))
+	}
+}
+
+func TestLeftover_BraceSequenceClassification(t *testing.T) {
+	deny := []string{
+		"cat /et{c..c}/shadow",
+		"cat /e{t..t}c/shadow",
+		"cat /etc/sha{d..d}ow",
+		"rm -rf /{e..e}tc",
+		"cat ~/.s{s..s}h/id_rsa",
+	}
+	for _, c := range deny {
+		if wrAction(c) == Allow {
+			t.Errorf("ActionForCommand(%q) = allow (class %s)", c, Classify(c))
+		}
+	}
+	// local deletes through a sequence stay local, and plain use stays safe
+	if got := Classify("rm -rf /tmp/x{1..3}"); got != LocalWrite {
+		t.Errorf("Classify(rm -rf /tmp/x{1..3}) = %s, want local_write", got)
+	}
+	for _, c := range []string{"echo {1..3}", "ls /tmp/{a..c}"} {
+		if wrAction(c) == Deny {
+			t.Errorf("ActionForCommand(%q) = deny", c)
+		}
 	}
 }
