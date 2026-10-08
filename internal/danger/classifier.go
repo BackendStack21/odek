@@ -2983,6 +2983,9 @@ type unwrapped struct {
 	// `flock -c`, `nix-shell --run`, `watch 'a; b'`); the caller analyzes
 	// each as a command line.
 	payloads []string
+	// splits are the `env -S` strings, each a command line env splits into
+	// the command it runs.
+	splits []string
 }
 
 func unwrapWrappersFull(tokens []string) unwrapped {
@@ -3013,6 +3016,7 @@ func unwrapWrappersFull(tokens []string) unwrapped {
 		i = step.next
 	}
 	out.inner = tokens[i:]
+	out.splits = splitValues
 	if len(assignments) > 0 {
 		// Evaluate after wrappers are stripped so ENV=/tmp/x env sh
 		// sees inner `sh`, not the `env` wrapper. Names like GIT_PAGER

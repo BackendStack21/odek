@@ -105,6 +105,13 @@ func denyStage(stage []string, entries [][]string, depth int) bool {
 			return true
 		}
 	}
+	// `env -S 'git push'` runs the split string as the command, ahead of any
+	// remaining operands.
+	for _, split := range un.splits {
+		if denyStage(append(tokenize(split), un.inner...), entries, depth+1) {
+			return true
+		}
+	}
 	inner := denyPeel(un.inner)
 	if len(inner) == 0 || len(inner) == len(stage) {
 		return false
@@ -172,9 +179,69 @@ func denyMatchesAny(cand []string, entries [][]string) bool {
 	return false
 }
 
+// denyGlobalFlags are the value-taking options of each tool that may precede
+// its subcommand. docker-style and kubectl-style tables are shared with the
+// classifier; the rest are the few other tools whose subcommand follows
+// options.
+var denyGlobalFlags = map[string]map[string]bool{
+	"docker":    containerGlobalFlagsWithArg,
+	"podman":    containerGlobalFlagsWithArg,
+	"nerdctl":   containerGlobalFlagsWithArg,
+	"kubectl":   infraFlagsWithValue["kubectl"],
+	"helm":      infraFlagsWithValue["helm"],
+	"npm":       {"--prefix": true, "-w": true, "--workspace": true, "--registry": true, "--userconfig": true, "--globalconfig": true, "--cache": true, "--loglevel": true},
+	"cargo":     {"--config": true, "-C": true, "-Z": true, "--color": true},
+	"terraform": {"-chdir": true},
+	"tofu":      {"-chdir": true},
+}
+
+// denyStripGlobals removes a tool's global options (and the values they
+// consume) from between the program and its subcommand, so `docker -H h push`
+// compares as `docker push`. A rustup toolchain selector (`cargo +nightly`)
+// is dropped as well.
+func denyStripGlobals(name string, toks []string) []string {
+	if name == "gh" {
+		return denyStripGH(toks)
+	}
+	withValue, known := denyGlobalFlags[name]
+	if !known {
+		return toks
+	}
+	out := []string{toks[0]}
+	i := 1
+	for ; i < len(toks); i++ {
+		t := toks[i]
+		switch {
+		case name == "cargo" && strings.HasPrefix(t, "+"):
+		case t == "--" || !strings.HasPrefix(t, "-") || t == "-":
+			return append(out, toks[i:]...)
+		case strings.Contains(t, "="):
+		case withValue[t]:
+			i++
+		}
+	}
+	return out
+}
+
+// denyStripGH removes gh's repository and host options ahead of the command.
+func denyStripGH(toks []string) []string {
+	out := []string{toks[0]}
+	for i := 1; i < len(toks); i++ {
+		t := toks[i]
+		if !strings.HasPrefix(t, "-") || t == "-" || t == "--" {
+			return append(out, toks[i:]...)
+		}
+		if takesNext, _ := ghTakesValue(t); takesNext {
+			i++
+		}
+	}
+	return out
+}
+
 // canonicalDenyTokens reduces a command word sequence to the form entries are
 // compared in: the program by basename, and for git the subcommand directly
-// after the program with global options removed.
+// after the program with global options removed; other tools lose their global
+// options the same way.
 func canonicalDenyTokens(toks []string) []string {
 	if len(toks) == 0 {
 		return nil
@@ -185,6 +252,7 @@ func canonicalDenyTokens(toks []string) []string {
 		if sub, args := gitSubcommandAndArgs(out); sub != "" {
 			out = append([]string{"git", sub}, args...)
 		}
+		return out
 	}
-	return out
+	return denyStripGlobals(out[0], out)
 }
