@@ -431,6 +431,92 @@ type runFlags struct {
 	MaxCostUSD      float64 // --max-cost-usd
 }
 
+// cliFlagsFromRun maps parsed run flags onto the config CLI layer. Shared by
+// `odek run` and `odek continue`; continue overrides the session-pinned
+// fields afterwards.
+func cliFlagsFromRun(f runFlags) config.CLIFlags {
+	return config.CLIFlags{
+		Provider:       f.Provider,
+		Model:          f.Model,
+		BaseURL:        f.BaseURL,
+		Thinking:       f.Thinking,
+		MaxIter:        f.MaxIter,
+		Sandbox:        f.Sandbox,
+		NoColor:        f.NoColor,
+		NoAgents:       f.NoAgents,
+		PromptCaching:  f.PromptCaching,
+		Stream:         f.Stream,
+		Compaction:     f.Compaction,
+		AnnounceBudget: f.AnnounceBudget,
+		Planning:       f.Planning,
+		System:         f.System,
+		Task:           f.Task,
+		ToolsEnabled:   f.ToolsEnabled,
+		ToolsDisabled:  f.ToolsDisabled,
+
+		SandboxImage:    f.SandboxImage,
+		SandboxNetwork:  f.SandboxNetwork,
+		SandboxReadonly: f.SandboxReadonly,
+		SandboxMemory:   f.SandboxMemory,
+		SandboxCPUs:     f.SandboxCPUs,
+		SandboxUser:     f.SandboxUser,
+
+		MemoryExtendedEnabled:                     f.MemoryExtendedEnabled,
+		MemoryExtendedMaxSizeMB:                   f.MemoryExtendedMaxSizeMB,
+		MemoryExtendedAtomMaxChars:                f.MemoryExtendedAtomMaxChars,
+		MemoryExtendedMemoryBudgetChars:           f.MemoryExtendedMemoryBudgetChars,
+		MemoryExtendedUserStateTurnInterval:       f.MemoryExtendedUserStateTurnInterval,
+		MemoryExtendedUserStateMaxPending:         f.MemoryExtendedUserStateMaxPending,
+		MemoryExtendedAssociationsEnabled:         f.MemoryExtendedAssociationsEnabled,
+		MemoryExtendedAssociationSemanticTopK:     f.MemoryExtendedAssociationSemanticTopK,
+		MemoryExtendedProactiveReturnAfterBreak:   f.MemoryExtendedProactiveReturnAfterBreak,
+		MemoryExtendedStyleMirroringEnabled:       f.MemoryExtendedStyleMirroringEnabled,
+		MemoryExtendedAnaphoraResolutionEnabled:   f.MemoryExtendedAnaphoraResolutionEnabled,
+		MemoryExtendedFollowUpAnticipationEnabled: f.MemoryExtendedFollowUpAnticipationEnabled,
+
+		GuardProvider:         f.GuardProvider,
+		GuardURL:              f.GuardURL,
+		GuardBatchURL:         f.GuardBatchURL,
+		GuardLongURL:          f.GuardLongURL,
+		GuardSocketPath:       f.GuardSocketPath,
+		GuardThreshold:        f.GuardThreshold,
+		GuardTimeoutSeconds:   f.GuardTimeoutSeconds,
+		GuardFallbackToLocal:  f.GuardFallbackToLocal,
+		GuardScanMemory:       f.GuardScanMemory,
+		GuardScanSystemPrompt: f.GuardScanSystemPrompt,
+		GuardScanMCP:          f.GuardScanMCP,
+		GuardScanSkills:       f.GuardScanSkills,
+		GuardScanToolOutputs:  f.GuardScanToolOutputs,
+		GuardScanTelegram:     f.GuardScanTelegram,
+
+		MaxRuntimeSeconds: f.MaxRuntime,
+		MaxToolCalls:      f.MaxToolCalls,
+		MaxInputTokens:    f.MaxInputTokens,
+		MaxOutputTokens:   f.MaxOutputTokens,
+		MaxCostUSD:        f.MaxCostUSD,
+	}
+}
+
+// openEventStream opens the --events-jsonl sink and returns the event
+// handler plus a close function. Open failures are fatal — the operator
+// explicitly asked for the stream, so silently dropping it would violate
+// least surprise. An empty path returns a nil handler and a no-op close.
+func openEventStream(path string) (func(events.Event), func(), error) {
+	if path == "" {
+		return nil, func() {}, nil
+	}
+	sink, err := events.OpenJSONLSink(path)
+	if err != nil {
+		return nil, nil, fmt.Errorf("events-jsonl: %w", err)
+	}
+	handler := func(ev events.Event) {
+		if err := sink.Write(ev); err != nil {
+			fmt.Fprintf(os.Stderr, "odek: events-jsonl write failed: %v\n", err)
+		}
+	}
+	return handler, func() { _ = sink.Close() }, nil
+}
+
 // parseRunFlags parses `odek run` arguments and returns the parsed flags.
 // Exported for testing.
 // isFlagLike reports whether an argument should be treated as a CLI flag
@@ -1193,7 +1279,7 @@ func printUsage() {
 	fmt.Println(`Usage:
   odek run [flags] <task>
   odek run --session [flags] <task>
-  odek continue [--id <id>] [--external-ref <ref>] <task>
+  odek continue [--id <id>] [flags] <task>
   odek session <list|show [id]|trim <id> <n>|delete <id>|cleanup <days>>
   odek repl [flags]
   odek serve [--addr :8080] [--open]
@@ -1213,6 +1299,12 @@ Commands:
   run                 Execute a task with the agent loop
   run --session       Execute and save conversation as a session
   continue            Continue the most recent session (or by --id)
+                       Accepts the run flags that shape one turn (--max-iter,
+                       --thinking, --tool / --no-tool, --ctx, --no-color,
+                       --stream / --no-stream, --events-jsonl, --external-ref,
+                       budget caps, …). The session keeps its provider, model,
+                       system prompt and sandbox posture: --model, --provider,
+                       --base-url, --system, --sandbox* and --session are rejected.
   repl                Interactive REPL mode (multi-turn session)
                        Accepts --model, --thinking, --sandbox, --prompt-caching /
                        --no-prompt-caching, --stream / --no-stream,
@@ -1772,66 +1864,7 @@ func run(args []string) (outcome error) {
 	}
 
 	// Load config from all sources (file → env → CLI)
-	resolved := config.LoadConfig(config.CLIFlags{
-		Provider:       f.Provider,
-		Model:          f.Model,
-		BaseURL:        f.BaseURL,
-		Thinking:       f.Thinking,
-		MaxIter:        f.MaxIter,
-		Sandbox:        f.Sandbox,
-		NoColor:        f.NoColor,
-		NoAgents:       f.NoAgents,
-		PromptCaching:  f.PromptCaching,
-		Stream:         f.Stream,
-		Compaction:     f.Compaction,
-		AnnounceBudget: f.AnnounceBudget,
-		Planning:       f.Planning,
-		System:         f.System,
-		Task:           f.Task,
-		ToolsEnabled:   f.ToolsEnabled,
-		ToolsDisabled:  f.ToolsDisabled,
-
-		SandboxImage:    f.SandboxImage,
-		SandboxNetwork:  f.SandboxNetwork,
-		SandboxReadonly: f.SandboxReadonly,
-		SandboxMemory:   f.SandboxMemory,
-		SandboxCPUs:     f.SandboxCPUs,
-		SandboxUser:     f.SandboxUser,
-
-		MemoryExtendedEnabled:                     f.MemoryExtendedEnabled,
-		MemoryExtendedMaxSizeMB:                   f.MemoryExtendedMaxSizeMB,
-		MemoryExtendedAtomMaxChars:                f.MemoryExtendedAtomMaxChars,
-		MemoryExtendedMemoryBudgetChars:           f.MemoryExtendedMemoryBudgetChars,
-		MemoryExtendedUserStateTurnInterval:       f.MemoryExtendedUserStateTurnInterval,
-		MemoryExtendedUserStateMaxPending:         f.MemoryExtendedUserStateMaxPending,
-		MemoryExtendedAssociationsEnabled:         f.MemoryExtendedAssociationsEnabled,
-		MemoryExtendedAssociationSemanticTopK:     f.MemoryExtendedAssociationSemanticTopK,
-		MemoryExtendedProactiveReturnAfterBreak:   f.MemoryExtendedProactiveReturnAfterBreak,
-		MemoryExtendedStyleMirroringEnabled:       f.MemoryExtendedStyleMirroringEnabled,
-		MemoryExtendedAnaphoraResolutionEnabled:   f.MemoryExtendedAnaphoraResolutionEnabled,
-		MemoryExtendedFollowUpAnticipationEnabled: f.MemoryExtendedFollowUpAnticipationEnabled,
-
-		GuardProvider:         f.GuardProvider,
-		GuardURL:              f.GuardURL,
-		GuardBatchURL:         f.GuardBatchURL,
-		GuardLongURL:          f.GuardLongURL,
-		GuardSocketPath:       f.GuardSocketPath,
-		GuardThreshold:        f.GuardThreshold,
-		GuardTimeoutSeconds:   f.GuardTimeoutSeconds,
-		GuardFallbackToLocal:  f.GuardFallbackToLocal,
-		GuardScanMemory:       f.GuardScanMemory,
-		GuardScanSystemPrompt: f.GuardScanSystemPrompt,
-		GuardScanMCP:          f.GuardScanMCP,
-		GuardScanSkills:       f.GuardScanSkills,
-		GuardScanToolOutputs:  f.GuardScanToolOutputs,
-		GuardScanTelegram:     f.GuardScanTelegram,
-
-		MaxRuntimeSeconds: f.MaxRuntime,
-		MaxToolCalls:      f.MaxToolCalls,
-		MaxInputTokens:    f.MaxInputTokens,
-		MaxOutputTokens:   f.MaxOutputTokens,
-		MaxCostUSD:        f.MaxCostUSD,
-	})
+	resolved := config.LoadConfig(cliFlagsFromRun(f))
 	if err := approveProjectSandbox(resolved, os.Stdin, os.Stdout); err != nil {
 		return err
 	}
@@ -1949,24 +1982,12 @@ func run(args []string) (outcome error) {
 	}
 
 	// Structured runtime event stream (--events-jsonl): append one JSON
-	// object per line (schema odek.event/v1). Open failures are fatal — the
-	// operator explicitly asked for the stream, so silently dropping it
-	// would violate least surprise.
-	var eventSink *events.JSONLSink
-	var eventHandler func(events.Event)
-	if f.EventsJSONL != "" {
-		eventSink, err = events.OpenJSONLSink(f.EventsJSONL)
-		if err != nil {
-			return fmt.Errorf("events-jsonl: %w", err)
-		}
-		defer eventSink.Close()
-		sink := eventSink
-		eventHandler = func(ev events.Event) {
-			if err := sink.Write(ev); err != nil {
-				fmt.Fprintf(os.Stderr, "odek: events-jsonl write failed: %v\n", err)
-			}
-		}
+	// object per line (schema odek.event/v1).
+	eventHandler, closeEvents, err := openEventStream(f.EventsJSONL)
+	if err != nil {
+		return err
 	}
+	defer closeEvents()
 
 	runCfg := odek.Config{
 		Model:             resolved.Model,
@@ -3226,7 +3247,7 @@ func auditTurnDelta(allMessages []session.Message, histLen int) []session.Messag
 	return allMessages[histLen:]
 }
 
-// continueCmd handles `odek continue [--id <id>] [--external-ref <ref>] <task>`.
+// continueCmd handles `odek continue [--id <id>] [flags] <task>`.
 // It loads an existing session (latest or by ID), appends the new task,
 // runs the agent with full history, and saves the updated session.
 // buildContinueTools constructs the builtin tool set for `odek continue`.
@@ -3239,26 +3260,34 @@ func buildContinueTools(resolved config.ResolvedConfig, sm *skills.SkillManager,
 		toolConfigFromResolved(resolved), store)
 }
 
-// continueCLIFlags restores the session's provider+model so resume does
-// not pair a stored model id with the operator's current default provider.
-// Empty Provider (pre-v2 session files) leaves the config default in place.
-func continueCLIFlags(sess *session.Session) config.CLIFlags {
-	if sess == nil {
-		return config.CLIFlags{}
+// continueCLIFlags maps the per-turn flags onto the config CLI layer and
+// restores the session's provider+model so resume does not pair a stored
+// model id with the operator's current default provider. Empty Provider
+// (pre-v2 session files) leaves the config default in place. The fields a
+// resumed session pins (provider, model, endpoint, system prompt, sandbox
+// posture) never come from the flags: parseContinueArgs rejects them.
+func continueCLIFlags(sess *session.Session, f runFlags) config.CLIFlags {
+	cf := cliFlagsFromRun(f)
+	cf.Provider, cf.Model, cf.BaseURL, cf.System, cf.Sandbox = "", "", "", "", nil
+	cf.SandboxImage, cf.SandboxNetwork, cf.SandboxReadonly = "", "", nil
+	cf.SandboxMemory, cf.SandboxCPUs, cf.SandboxUser = "", "", ""
+	if sess != nil {
+		cf.Model, cf.Provider = sess.Model, sess.Provider
 	}
-	return config.CLIFlags{Model: sess.Model, Provider: sess.Provider}
+	return cf
 }
 
 func continueCmd(args []string) (outcome error) {
-	sessionID, refSpecs, task, err := parseContinueArgs(args)
+	sessionID, f, err := parseContinueArgs(args)
 	if err != nil {
 		return err
 	}
+	task := f.Task
 	originalTask := task
 
 	// Parse and validate --external-ref values up front; a malformed ref is
 	// a fatal startup error. Continue may ADD refs — it never removes any.
-	externalRefs, err := parseExternalRefFlags(refSpecs)
+	externalRefs, err := parseExternalRefFlags(f.ExternalRefs)
 	if err != nil {
 		return err
 	}
@@ -3292,7 +3321,7 @@ func continueCmd(args []string) (outcome error) {
 
 	// Resolve config from the session's provider+model so resume does not
 	// pair a stored model id with the operator's current default provider.
-	resolved := config.LoadConfig(continueCLIFlags(sess))
+	resolved := config.LoadConfig(continueCLIFlags(sess, f))
 
 	// Initialize semantic search index (non-fatal on failure). Sessions use the
 	// shared embedding backend (or a sessions.embedding override).
@@ -3370,9 +3399,22 @@ func continueCmd(args []string) (outcome error) {
 		Env:      resolved.SandboxEnv,
 		Volumes:  resolved.SandboxVolumes,
 	}
-	_, sandboxCleanup, _, err = ensureSandbox(resolved, tools, sbCfg)
+	var contContainerName string
+	var contSandboxed bool
+	contContainerName, sandboxCleanup, contSandboxed, err = ensureSandbox(resolved, tools, sbCfg)
 	if err != nil {
 		return err
+	}
+	cwd, _ := os.Getwd()
+	if contSandboxed && len(f.Ctx) > 0 {
+		// Inject --ctx files into the sandbox container, as run does.
+		injected, injectErr := sandbox.InjectFiles(contContainerName, f.Ctx, cwd)
+		if injectErr != nil {
+			return fmt.Errorf("sandbox: inject ctx files: %w", injectErr)
+		}
+		if injected > 0 {
+			fmt.Fprintf(os.Stderr, "odek: copied %d file(s) into sandbox\n", injected)
+		}
 	}
 
 	// Renderer
@@ -3395,34 +3437,46 @@ func continueCmd(args []string) (outcome error) {
 		SetToolOutputGuard(injectionGuard, resolved.Guard)
 	}
 
+	// Structured runtime event stream (--events-jsonl), same as run.
+	eventHandler, closeEvents, err := openEventStream(f.EventsJSONL)
+	if err != nil {
+		return err
+	}
+	defer closeEvents()
+
 	contCfg := odek.Config{
-		Model:            resolved.Model,
-		BaseURL:          resolved.BaseURL,
-		APIKey:           resolved.APIKey,
-		MaxIterations:    resolved.MaxIter,
-		MaxToolParallel:  resolved.MaxToolParallel,
-		SystemMessage:    systemMessage,
-		UntrustedWrapper: func(source, content string) string { return wrapUntrusted(context.Background(), source, content) },
-		NoProjectFile:    resolved.NoAgents,
-		Thinking:         resolved.Thinking,
-		Temperature:      0, // deterministic by default; continue takes no CLI flags
-		Tools:            tools,
-		ToolFilter:       odek.ToolFilterConfig{Enabled: resolved.Tools.Enabled, Disabled: resolved.Tools.Disabled},
-		SandboxCleanup:   sandboxCleanup,
-		Renderer:         rend,
-		Skills:           skillsCfg,
-		SkillManager:     sm,
-		PromptCaching:    resolved.PromptCaching,
-		Stream:           resolved.Stream,
-		Compaction:       resolved.Compaction,
-		Verify:           verifyEngineCfg(resolved),
-		VerifyModel:      resolved.Verify.Model,
-		AnnounceBudget:   &resolved.AnnounceBudget,
-		MemoryDir:        expandHome("~/.odek/memory"),
-		MemoryConfig:     resolved.Memory,
-		DangerousConfig:  &resolved.Dangerous,
-		Guard:            injectionGuard,
-		GuardConfig:      resolved.Guard,
+		Model:             resolved.Model,
+		BaseURL:           resolved.BaseURL,
+		APIKey:            resolved.APIKey,
+		MaxIterations:     resolved.MaxIter,
+		MaxToolParallel:   resolved.MaxToolParallel,
+		SystemMessage:     systemMessage,
+		UntrustedWrapper:  func(source, content string) string { return wrapUntrusted(context.Background(), source, content) },
+		NoProjectFile:     resolved.NoAgents,
+		Thinking:          resolved.Thinking,
+		ThinkingBudget:    f.ThinkingBudget,
+		Temperature:       f.Temp, // 0 = deterministic default; negative = omit from request
+		Tools:             tools,
+		ToolFilter:        odek.ToolFilterConfig{Enabled: resolved.Tools.Enabled, Disabled: resolved.Tools.Disabled},
+		SandboxCleanup:    sandboxCleanup,
+		Renderer:          rend,
+		Skills:            skillsCfg,
+		SkillManager:      sm,
+		PromptCaching:     resolved.PromptCaching,
+		Stream:            resolved.Stream,
+		DeltaHandler:      streamDeltaPrinter(resolved.Stream, rend),
+		Compaction:        resolved.Compaction,
+		Verify:            verifyEngineCfg(resolved),
+		VerifyModel:       resolved.Verify.Model,
+		AnnounceBudget:    &resolved.AnnounceBudget,
+		MemoryDir:         expandHome("~/.odek/memory"),
+		MemoryConfig:      resolved.Memory,
+		DangerousConfig:   &resolved.Dangerous,
+		Guard:             injectionGuard,
+		GuardConfig:       resolved.Guard,
+		EventHandler:      eventHandler,
+		EventsIncludeArgs: f.EventsIncludeArgs != nil && *f.EventsIncludeArgs,
+		Limits:            resolved.Limits,
 	}
 	contCfg.EventContext.SessionID = sess.ID
 	applyResolvedProvider(&contCfg, resolved)
@@ -3445,7 +3499,6 @@ func continueCmd(args []string) (outcome error) {
 
 	// Propagate session context to Extended Memory so extracted atoms are
 	// tagged with the session they came from.
-	cwd, _ := os.Getwd()
 	if mm := agent.Memory(); mm != nil {
 		mm.SetSessionContext(sess.ID, cwd)
 	}
@@ -3472,7 +3525,7 @@ func continueCmd(args []string) (outcome error) {
 
 	// Resolve @references in the continue task now that the audit recorder
 	// is attached, so attached file content is logged as ingested input.
-	enriched, err := enrichTask(ctx, originalTask, nil, cwd)
+	enriched, err := enrichTask(ctx, originalTask, f.Ctx, cwd)
 	if err == nil {
 		task = enriched
 	}

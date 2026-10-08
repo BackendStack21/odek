@@ -404,13 +404,30 @@ func TestBuiltinTools_PlanRegistration(t *testing.T) {
 }
 
 func TestContinueCLIFlags_UsesSessionProvider(t *testing.T) {
-	f := continueCLIFlags(&session.Session{Model: "claude-sonnet-4-5", Provider: "anthropic"})
+	f := continueCLIFlags(&session.Session{Model: "claude-sonnet-4-5", Provider: "anthropic"}, runFlags{})
 	if f.Provider != "anthropic" || f.Model != "claude-sonnet-4-5" {
 		t.Fatalf("continueCLIFlags = %+v, want session provider+model", f)
 	}
-	empty := continueCLIFlags(&session.Session{Model: "deepseek-v4-flash"})
+	empty := continueCLIFlags(&session.Session{Model: "deepseek-v4-flash"}, runFlags{})
 	if empty.Provider != "" {
 		t.Fatalf("pre-v2 session must not invent a provider, got %q", empty.Provider)
+	}
+}
+
+// Per-turn flags reach the config layer; the session-pinned fields never
+// come from the flags even if a caller hands them in.
+func TestContinueCLIFlags_TurnFlagsAndPins(t *testing.T) {
+	on := true
+	f := continueCLIFlags(&session.Session{Model: "m", Provider: "p"}, runFlags{
+		Model: "other", Provider: "other", BaseURL: "http://x", System: "sys", Sandbox: &on, SandboxImage: "img",
+		MaxIter: 7, NoColor: &on, Stream: &on, ToolsDisabled: []string{"browser"}, MaxToolCalls: 3,
+	})
+	if f.Model != "m" || f.Provider != "p" || f.BaseURL != "" || f.System != "" || f.Sandbox != nil || f.SandboxImage != "" {
+		t.Fatalf("pinned fields leaked from flags: %+v", f)
+	}
+	if f.MaxIter != 7 || f.NoColor == nil || !*f.NoColor || f.Stream == nil || !*f.Stream ||
+		len(f.ToolsDisabled) != 1 || f.MaxToolCalls != 3 {
+		t.Fatalf("turn flags not mapped: %+v", f)
 	}
 }
 

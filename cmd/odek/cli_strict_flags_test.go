@@ -82,7 +82,7 @@ func TestParseRunFlags_TaskStartingWithDashRequiresSeparator(t *testing.T) {
 }
 
 func TestParseContinueArgs_UnknownFlagErrors(t *testing.T) {
-	_, _, _, err := parseContinueArgs([]string{"--interaction-mode", "verbose", "fix it"})
+	_, _, err := parseContinueArgs([]string{"--interaction-mode", "verbose", "fix it"})
 	if err == nil {
 		t.Fatal("expected error for unknown flag in continue, got nil")
 	}
@@ -93,21 +93,93 @@ func TestParseContinueArgs_UnknownFlagErrors(t *testing.T) {
 
 func TestParseContinueArgs_DanglingValueFlagErrors(t *testing.T) {
 	// A dangling --id used to fall through and become task text.
-	if _, _, _, err := parseContinueArgs([]string{"--id"}); err == nil {
+	if _, _, err := parseContinueArgs([]string{"--id"}); err == nil {
 		t.Fatal("expected error for dangling --id, got nil")
 	}
-	if _, _, _, err := parseContinueArgs([]string{"--external-ref"}); err == nil {
+	if _, _, err := parseContinueArgs([]string{"--external-ref"}); err == nil {
 		t.Fatal("expected error for dangling --external-ref, got nil")
 	}
 }
 
 func TestParseContinueArgs_DoubleDashPassthrough(t *testing.T) {
-	_, _, task, err := parseContinueArgs([]string{"--id", "abc", "--", "--weird", "task text"})
+	_, f, err := parseContinueArgs([]string{"--id", "abc", "--", "--weird", "task text"})
 	if err != nil {
 		t.Fatalf("parseContinueArgs error: %v", err)
 	}
-	if task != "--weird task text" {
-		t.Errorf("task = %q, want %q", task, "--weird task text")
+	if f.Task != "--weird task text" {
+		t.Errorf("task = %q, want %q", f.Task, "--weird task text")
+	}
+	// After "--" even a pinned-flag name is task text.
+	_, f, err = parseContinueArgs([]string{"--", "--model", "is the question"})
+	if err != nil || f.Task != "--model is the question" {
+		t.Fatalf("task = %q, err = %v", f.Task, err)
+	}
+}
+
+// continue accepts the run flags that shape one turn, in any order before
+// the task, with --id anywhere among them.
+func TestParseContinueArgs_AcceptsTurnFlags(t *testing.T) {
+	id, f, err := parseContinueArgs([]string{
+		"--no-color", "--no-stream", "--events-jsonl", "/tmp/ev.jsonl", "--events-include-args",
+		"--max-iter", "5", "--id", "abc", "--thinking", "low", "--ctx", "a.go,b.go",
+		"--tool", "shell", "--no-tool", "browser", "--max-tool-calls", "3", "--max-cost-usd", "0.5",
+		"--no-compaction", "--no-planning", "Describe branch changes?",
+	})
+	if err != nil {
+		t.Fatalf("parseContinueArgs error: %v", err)
+	}
+	if id != "abc" || f.Task != "Describe branch changes?" {
+		t.Fatalf("id = %q, task = %q", id, f.Task)
+	}
+	if f.NoColor == nil || !*f.NoColor || f.Stream == nil || *f.Stream {
+		t.Fatalf("presentation flags not parsed: NoColor=%v Stream=%v", f.NoColor, f.Stream)
+	}
+	if f.EventsJSONL != "/tmp/ev.jsonl" || f.EventsIncludeArgs == nil || !*f.EventsIncludeArgs {
+		t.Fatalf("event flags not parsed: %q %v", f.EventsJSONL, f.EventsIncludeArgs)
+	}
+	if f.MaxIter != 5 || f.Thinking != "low" || f.MaxToolCalls != 3 || f.MaxCostUSD != 0.5 {
+		t.Fatalf("turn flags not parsed: %+v", f)
+	}
+	if len(f.Ctx) != 2 || len(f.ToolsEnabled) != 1 || len(f.ToolsDisabled) != 1 {
+		t.Fatalf("ctx/tool flags not parsed: ctx=%v on=%v off=%v", f.Ctx, f.ToolsEnabled, f.ToolsDisabled)
+	}
+	if f.Compaction == nil || *f.Compaction || f.Planning == nil || *f.Planning {
+		t.Fatalf("compaction/planning flags not parsed: %v %v", f.Compaction, f.Planning)
+	}
+}
+
+// Flags that would change what the session pins are refused by name, never
+// silently ignored and never folded into the task text.
+func TestParseContinueArgs_RejectsPinnedFlags(t *testing.T) {
+	cases := [][]string{
+		{"--model", "x", "task"},
+		{"--provider", "x", "task"},
+		{"--base-url", "http://x", "task"},
+		{"--system", "be nice", "task"},
+		{"--sandbox", "task"},
+		{"--no-sandbox", "task"},
+		{"--sandbox-image", "alpine", "task"},
+		{"--sandbox-network", "none", "task"},
+		{"--sandbox-readonly", "task"},
+		{"--sandbox-memory", "1g", "task"},
+		{"--sandbox-cpus", "1", "task"},
+		{"--sandbox-user", "1000", "task"},
+		{"--session", "task"},
+		{"--id", "abc", "--no-color", "--model", "x", "task"},
+	}
+	for _, args := range cases {
+		_, _, err := parseContinueArgs(args)
+		if err == nil {
+			t.Errorf("%v: expected rejection, got nil", args)
+			continue
+		}
+		flag := args[0]
+		if args[0] == "--id" {
+			flag = "--model"
+		}
+		if !strings.Contains(err.Error(), flag) || !strings.Contains(err.Error(), "odek continue") {
+			t.Errorf("%v: error must name the flag and the command, got: %v", args, err)
+		}
 	}
 }
 

@@ -70,44 +70,57 @@ func parseExternalRefFlags(specs []string) ([]session.ExternalRef, error) {
 	return refs, nil
 }
 
+// continueRejectedFlags are run flags odek continue refuses. A resumed
+// session keeps the provider, model, endpoint, system prompt and sandbox
+// posture it was created with, so flags that would change them are an
+// error rather than a silent no-op; --session is implied by continue.
+var continueRejectedFlags = map[string]bool{
+	"--provider": true, "--model": true, "--base-url": true, "--system": true,
+	"--sandbox": true, "--no-sandbox": true,
+	"--sandbox-image": true, "--sandbox-network": true, "--sandbox-readonly": true,
+	"--sandbox-memory": true, "--sandbox-cpus": true, "--sandbox-user": true,
+	"--session": true,
+}
+
 // parseContinueArgs splits `odek continue` arguments into the optional
-// --id / --external-ref flags (front-positioned, repeatable for the
-// latter) and the trailing task text.
+// --id, the per-turn run flags and the trailing task text. Every run flag
+// that shapes a single turn (--max-iter, --thinking, --tool/--no-tool,
+// --ctx, --no-color, --stream/--no-stream, --events-jsonl, budget caps,
+// --external-ref, …) is accepted with the same syntax as `odek run`; the
+// flags in continueRejectedFlags are refused with an explanation.
 //
 // Unknown flags are a hard error: they must never be folded into
 // the task text, where a typo'd or version-drifted flag silently corrupts
 // the prompt. An explicit "--" separator passes everything after it
 // through verbatim.
-func parseContinueArgs(args []string) (sessionID string, refSpecs []string, task string, err error) {
-	i := 0
-loop:
-	for i < len(args) {
+func parseContinueArgs(args []string) (sessionID string, f runFlags, err error) {
+	rest := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
 		if args[i] == "--" {
-			i++
+			rest = append(rest, args[i:]...)
 			break
 		}
-		switch args[i] {
-		case "--id":
+		switch {
+		case args[i] == "--id":
 			if i+1 >= len(args) {
-				return "", nil, "", fmt.Errorf("--id requires a value")
+				return "", runFlags{}, fmt.Errorf("--id requires a value")
 			}
 			sessionID = args[i+1]
-			i += 2
-		case "--external-ref":
-			if i+1 >= len(args) {
-				return "", nil, "", fmt.Errorf("--external-ref requires a value")
-			}
-			refSpecs = append(refSpecs, args[i+1])
-			i += 2
+			i++
+		case continueRejectedFlags[args[i]]:
+			return "", runFlags{}, fmt.Errorf("flag %s is not accepted by odek continue — a resumed session keeps "+
+				"its provider, model, endpoint, system prompt and sandbox posture; start a new session "+
+				"with odek run --session to change them", args[i])
 		default:
-			if isFlagLike(args[i]) {
-				return "", nil, "", unknownFlagError(args[i])
-			}
-			break loop
+			rest = append(rest, args[i])
 		}
 	}
-	if i >= len(args) {
-		return "", nil, "", fmt.Errorf("no task provided for continue")
+	f, err = parseRunFlags(rest)
+	if err != nil {
+		if err.Error() == "no task provided" {
+			return "", runFlags{}, fmt.Errorf("no task provided for continue")
+		}
+		return "", runFlags{}, err
 	}
-	return sessionID, refSpecs, strings.Join(args[i:], " "), nil
+	return sessionID, f, nil
 }

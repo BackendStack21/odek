@@ -131,7 +131,7 @@ odek run "@README.md what does this project do?"
 |---------|-------------|
 | `odek run <task>` | Single-shot task |
 | `odek run --session <task>` | Save conversation as session |
-| `odek continue [--id <id>] <task>` | Resume a saved session |
+| `odek continue [--id <id>] [flags] <task>` | Resume a saved session (per-turn run flags accepted; provider, model, system prompt and sandbox stay pinned) |
 | `odek repl` | Interactive multi-turn REPL |
 | `odek session list` | List recent sessions |
 | `odek session show [id]` | View session transcript |
