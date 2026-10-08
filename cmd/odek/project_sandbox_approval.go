@@ -14,6 +14,7 @@ import (
 	"sync"
 
 	"github.com/BackendStack21/odek/internal/config"
+	"github.com/BackendStack21/odek/internal/danger"
 	"github.com/BackendStack21/odek/internal/fsatomic"
 	"github.com/BackendStack21/odek/internal/sandbox"
 	"golang.org/x/term"
@@ -110,28 +111,28 @@ func approveProjectSandboxWithTTY(resolved config.ResolvedConfig, stdin io.Reade
 	if hasOverride {
 		fmt.Fprintf(stdout, "WARNING: project config (%s) requests sandbox overrides:\n", config.ProjectConfigPath())
 		if o.HasImage {
-			fmt.Fprintf(stdout, "  image:   %s\n", o.Image)
+			fmt.Fprintf(stdout, "  image:   %s\n", danger.SanitizeInline(o.Image))
 		}
 		if o.HasNetwork {
-			fmt.Fprintf(stdout, "  network: %s\n", o.Network)
+			fmt.Fprintf(stdout, "  network: %s\n", danger.SanitizeInline(o.Network))
 		}
 		if o.HasEnv {
-			fmt.Fprintf(stdout, "  env:     %s\n", strings.Join(o.EnvKeys, ", "))
+			fmt.Fprintf(stdout, "  env:     %s\n", danger.SanitizeInline(strings.Join(o.EnvKeys, ", ")))
 			if o.EnvHasInterpolation {
 				fmt.Fprintln(stdout, "  ⚠️  sandbox_env values contain ${...} interpolation against host environment variables")
 			}
 		}
 		if o.HasVolumes {
-			fmt.Fprintf(stdout, "  volumes: %s\n", strings.Join(o.Volumes, ", "))
+			fmt.Fprintf(stdout, "  volumes: %s\n", danger.SanitizeInline(strings.Join(o.Volumes, ", ")))
 		}
 		if o.HasUser {
-			fmt.Fprintf(stdout, "  user:    %s\n", o.User)
+			fmt.Fprintf(stdout, "  user:    %s\n", danger.SanitizeInline(o.User))
 		}
 		if o.HasMemory {
-			fmt.Fprintf(stdout, "  memory:  %s\n", o.Memory)
+			fmt.Fprintf(stdout, "  memory:  %s\n", danger.SanitizeInline(o.Memory))
 		}
 		if o.HasCPUs {
-			fmt.Fprintf(stdout, "  cpus:    %s\n", o.CPUs)
+			fmt.Fprintf(stdout, "  cpus:    %s\n", danger.SanitizeInline(o.CPUs))
 		}
 		fmt.Fprintln(stdout)
 		fmt.Fprintln(stdout, "Allowing this means code in the sandbox can read workspace files and,")

@@ -341,11 +341,7 @@ func (a *TTYApprover) promptLocked(cls RiskClass, cmd, description string, readT
 	friction := a.shouldFriction(cls)
 
 	// Build the prompt
-	fmt.Fprintf(os.Stderr, "\n⚠️  \033[1mRisk:\033[0m  %s\n", cls)
-	fmt.Fprintf(os.Stderr, "   \033[1mRun:\033[0m  %s\n", cmd)
-	if description != "" {
-		fmt.Fprintf(os.Stderr, "   \033[1mWhy:\033[0m  %s\n", description)
-	}
+	fmt.Fprint(os.Stderr, formatApprovalPrompt(cls, cmd, description))
 	if friction {
 		fmt.Fprintf(os.Stderr, "\n   ⚠️  You have approved %d %s operations in the last %s.\n",
 			a.recentApprovalCount(cls), cls, a.FrictionWindow)
@@ -415,10 +411,10 @@ func (a *TTYApprover) promptLocked(cls RiskClass, cmd, description string, readT
 		a.mu.Unlock()
 		return nil
 	case "?", "context":
-		fmt.Fprintf(tty, "\n  Command: %s\n", cmd)
+		fmt.Fprintf(tty, "\n  Command: %s\n", indentContinuation(SanitizeForDisplay(cmd)))
 		fmt.Fprintf(tty, "  Risk class: %s\n", cls)
 		if description != "" {
-			fmt.Fprintf(tty, "  Description: %s\n", description)
+			fmt.Fprintf(tty, "  Description: %s\n", indentContinuation(SanitizeInline(description)))
 		}
 		a.mu.Lock()
 		trusted := a.TrustedClasses[cls]

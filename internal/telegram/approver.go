@@ -383,6 +383,11 @@ const telegramMaxMsgLen = 4096
 // exceed telegramMaxMsgLen, and when it is, the cut is explicit ("… [truncated]")
 // and made on a rune boundary.
 func buildApprovalText(cls danger.RiskClass, cmd, description string) string {
+	// Control and bidi/invisible format characters in model-supplied text can
+	// make the chat show a different command from the one that runs; they are
+	// replaced by visible escapes before any Markdown handling.
+	cmd = danger.SanitizeForDisplay(cmd)
+	description = danger.SanitizeForDisplay(description)
 	var b strings.Builder
 	b.WriteString("⚠️ *Approval Required*\n\n")
 	fmt.Fprintf(&b, "Risk: `%s`\n", escapeCodeBlock(string(cls)))

@@ -1,6 +1,11 @@
 package danger
 
-import "testing"
+import (
+	"fmt"
+	"strings"
+	"testing"
+	"unicode/utf8"
+)
 
 func denylistCfg(entries ...string) *DangerousConfig {
 	// Every class is allowed so only the denylist can produce a Deny.
@@ -397,4 +402,136 @@ func TestHomePrecedence_ServiceHomesAndDegenerateHomes(t *testing.T) {
 			}
 		}
 	}
+}
+
+const hostileCommand = "echo ok\x1b[2K\r\x1b]0;rm -rf /\x07\x08\x08safe \u202egnirts\u202c \u2066x\u2069 \u200bz\u00a0q \x7f \u0085"
+
+func hasRawControl(s string) bool {
+	for _, r := range s {
+		if r == '\n' || r == '\t' {
+			continue
+		}
+		if r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f) {
+			return true
+		}
+		if r == 0x202a || r == 0x202b || r == 0x202c || r == 0x202d || r == 0x202e ||
+			(r >= 0x2066 && r <= 0x2069) || r == 0x200b || r == 0x00a0 || r == 0x2028 || r == 0x2029 {
+			return true
+		}
+	}
+	return false
+}
+
+func TestSanitizeForDisplay_NeutralizesControlsAndBidi(t *testing.T) {
+	for name, fn := range map[string]func(string) string{
+		"layout": SanitizeForDisplay,
+		"inline": SanitizeInline,
+	} {
+		got := fn(hostileCommand)
+		if hasRawControl(got) {
+			t.Errorf("%s: output still holds raw control/bidi bytes: %q", name, got)
+		}
+		for _, want := range []string{`\x1b`, `\r`, `\x07`, `\x08`, `\u202e`, `\u202c`, `\u2066`, `\u2069`, `\u200b`, `\u00a0`, `\x7f`, `\u0085`} {
+			if !strings.Contains(got, want) {
+				t.Errorf("%s: output %q does not visibly mark %s", name, got, want)
+			}
+		}
+		// Visible text survives untouched.
+		for _, want := range []string{"echo ok", "[2K", "rm -rf /", "safe", "gnirts"} {
+			if !strings.Contains(got, want) {
+				t.Errorf("%s: output %q lost %q", name, got, want)
+			}
+		}
+	}
+}
+
+func TestSanitizeForDisplay_PlainTextAndLayout(t *testing.T) {
+	plain := "git commit -m 'fix: ünïcode ✓ 日本語' && echo \"done\""
+	if got := SanitizeForDisplay(plain); got != plain {
+		t.Errorf("plain text changed: %q", got)
+	}
+	multi := "cat <<EOF\n\tbody\nEOF"
+	if got := SanitizeForDisplay(multi); got != multi {
+		t.Errorf("layout form should keep newline and tab: %q", got)
+	}
+	if got := SanitizeInline(multi); got != `cat <<EOF\n\tbody\nEOF` {
+		t.Errorf("inline form should escape newline and tab: %q", got)
+	}
+	if got := SanitizeForDisplay(""); got != "" {
+		t.Errorf("empty = %q", got)
+	}
+}
+
+func TestSanitizeForDisplay_InvalidUTF8(t *testing.T) {
+	got := SanitizeForDisplay("a\xffb\xc3")
+	if !utf8.ValidString(got) || strings.ContainsRune(got, utf8.RuneError) {
+		t.Errorf("invalid UTF-8 not escaped: %q", got)
+	}
+	if !strings.Contains(got, `\xff`) || !strings.Contains(got, `\xc3`) {
+		t.Errorf("invalid bytes not marked: %q", got)
+	}
+}
+
+func TestSanitizeForDisplay_CapKeepsHeadAndTailWithMarker(t *testing.T) {
+	long := strings.Repeat("a", DisplayMaxBytes) + "MIDDLE" + strings.Repeat("b", DisplayMaxBytes) + "rm -rf /tail"
+	got := SanitizeForDisplay(long)
+	if !strings.Contains(got, "more bytes]") || !strings.Contains(got, "…[") {
+		t.Fatalf("no explicit truncation marker: %q", got[:80])
+	}
+	if !strings.HasSuffix(got, "rm -rf /tail") {
+		t.Errorf("the tail of the command must stay visible: ...%q", got[len(got)-40:])
+	}
+	if !strings.HasPrefix(got, "aaaa") {
+		t.Errorf("the head must stay visible")
+	}
+	if len(got) > DisplayMaxBytes+64 {
+		t.Errorf("output not capped: %d bytes", len(got))
+	}
+	omitted := len(long) - (DisplayMaxBytes - displayTailBytes) - displayTailBytes
+	if !strings.Contains(got, fmt.Sprintf("…[%d more bytes]", omitted)) {
+		t.Errorf("marker should report %d omitted bytes, got %q", omitted, got[DisplayMaxBytes-displayTailBytes:DisplayMaxBytes-displayTailBytes+40])
+	}
+	// Multi-byte runes are never split by the cap.
+	runes := strings.Repeat("日", DisplayMaxBytes)
+	if out := SanitizeForDisplay(runes); !utf8.ValidString(out) || strings.Contains(out, `\x`) {
+		t.Errorf("cap split a rune")
+	}
+	// Under the cap nothing is dropped.
+	short := strings.Repeat("x", DisplayMaxBytes)
+	if SanitizeForDisplay(short) != short {
+		t.Errorf("a command at the cap must not be truncated")
+	}
+}
+
+// The TTY prompt body carries no raw control bytes, and a multi-line command
+// cannot forge a second prompt field.
+func TestFormatApprovalPrompt_NoRawControlBytes(t *testing.T) {
+	out := formatApprovalPrompt(NetworkEgress, hostileCommand, "why\x1b[31m red \u202e")
+	if hasRawControlExceptStyle(out) {
+		t.Errorf("prompt holds raw control bytes: %q", out)
+	}
+	if !strings.Contains(out, `\x1b`) {
+		t.Errorf("escape not visibly marked: %q", out)
+	}
+	forged := formatApprovalPrompt(Destructive, "ls\n   \x1b[1mRisk:\x1b[0m  safe\n   Why:  harmless", "")
+	fields := 0
+	for _, line := range strings.Split(forged, "\n") {
+		if strings.Contains(line, "\x1b[1m") {
+			fields++
+		} else if strings.Contains(line, "Risk:") || strings.Contains(line, "Why:") {
+			if !strings.HasPrefix(line, "         ") {
+				t.Errorf("command text starts a line that looks like a prompt field: %q", line)
+			}
+		}
+	}
+	if fields != 2 {
+		t.Errorf("expected exactly the Risk and Run field lines, found %d in %q", fields, forged)
+	}
+}
+
+// hasRawControlExceptStyle ignores the prompt's own ANSI bold sequences.
+func hasRawControlExceptStyle(s string) bool {
+	s = strings.ReplaceAll(s, "\x1b[1m", "")
+	s = strings.ReplaceAll(s, "\x1b[0m", "")
+	return hasRawControl(s)
 }
