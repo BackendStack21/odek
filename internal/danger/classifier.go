@@ -1702,24 +1702,11 @@ func argvComposerInnerCommand(tokens []string) (inner []string, ok bool) {
 			}
 			return nil, true
 		}
-		if !privilegedWrappers[name] && !execWrappers[name] {
+		step, isWrapper := wrapperAt(tokens, i)
+		if !isWrapper {
 			return nil, false
 		}
-		i++ // consume the wrapper itself
-		for i < len(tokens) {
-			t := tokens[i]
-			switch {
-			case strings.HasPrefix(t, "-") && t != "-":
-				i++ // wrapper option flag
-			case name == "env" && isAssignment(t):
-				i++ // env VAR=VALUE
-			case (name == "timeout" || name == "nice" || name == "ionice") && isNumericish(t):
-				i++ // timeout 5s / nice 10
-			default:
-				goto nextWrapper
-			}
-		}
-	nextWrapper:
+		i = step.next
 	}
 	return nil, false
 }
@@ -2825,6 +2812,7 @@ var execWrappers = map[string]bool{
 	"command": true, "exec": true, "builtin": true, "watch": true,
 	"busybox": true, "unbuffer": true,
 	"parallel": true, "xe": true,
+	"chrt": true, "taskset": true, "flock": true, "script": true, "arch": true,
 }
 
 // unwrapWrappers strips leading shell assignments and execution wrappers and
@@ -2888,8 +2876,23 @@ func envOptionValue(tokens []string, i int) (next int, value string, split bool,
 // when a wrapper chain ends in a bare `env` (an environment dump) that no
 // inner command is left to represent.
 func unwrapWrappersTracked(tokens []string) ([]string, RiskClass, [][]string) {
-	floor := Safe
-	var envTails [][]string
+	u := unwrapWrappersFull(tokens)
+	return u.inner, u.floor, u.envTails
+}
+
+// unwrapped is the outcome of stripping a wrapper chain.
+type unwrapped struct {
+	inner    []string
+	floor    RiskClass
+	envTails [][]string
+	// payloads are command strings wrappers hand to a shell (`script -c`,
+	// `flock -c`, `nix-shell --run`, `watch 'a; b'`); the caller analyzes
+	// each as a command line.
+	payloads []string
+}
+
+func unwrapWrappersFull(tokens []string) unwrapped {
+	out := unwrapped{floor: Safe}
 	var splitValues []string
 	var assignments []string
 	i := 0
@@ -2898,76 +2901,29 @@ func unwrapWrappersTracked(tokens []string) ([]string, RiskClass, [][]string) {
 		i++ // leading VAR=value assignment prefix
 	}
 	tokens = tokens[i:]
-	var envAssignments []string
 	i = 0
 	for i < len(tokens) {
-		name := commandName(tokens[i])
-		priv := privilegedWrappers[name]
-		if !priv && !execWrappers[name] {
+		step, ok := wrapperAt(tokens, i)
+		if !ok {
 			break
 		}
-		if name == "command" && commandIsLookup(tokens[i+1:]) {
-			// `command -v/-V NAME` resolves NAME without running it, so
-			// NAME is not the wrapped command.
-			break
+		out.floor = worstOf(out.floor, step.floor)
+		if step.name == "env" {
+			out.envTails = append(out.envTails, tokens[i:])
 		}
-		if priv {
-			floor = worstOf(floor, SystemWrite)
+		splitValues = append(splitValues, step.splits...)
+		assignments = append(assignments, step.assigns...)
+		if step.payload != "" {
+			out.payloads = append(out.payloads, step.payload)
 		}
-		if name == "env" {
-			envTails = append(envTails, tokens[i:])
-		}
-		i++ // consume the wrapper itself
-		for i < len(tokens) {
-			t := tokens[i]
-			switch {
-			case t == "--":
-				i++
-				goto nextWrapper
-			case strings.HasPrefix(t, "-") && t != "-":
-				// Value-taking flags (xargs -I P, timeout --signal X)
-				// must consume the next token so it is not mistaken for
-				// the inner command (`xargs -I P echo P` is echo, not P).
-				if argvComposers[name] && xargsValueFlags[t] && i+1 < len(tokens) {
-					i += 2
-					continue
-				}
-				if name == "watch" && (t == "-n" || t == "--interval") && i+1 < len(tokens) {
-					i += 2
-					continue
-				}
-				if name == "env" {
-					if next, val, split, ok := envOptionValue(tokens, i); ok {
-						if split {
-							splitValues = append(splitValues, val)
-						}
-						i = next
-						continue
-					}
-				}
-				if name == "strace" && (t == "-e" || t == "-p" || t == "-o" || t == "--output" || t == "-s") && i+1 < len(tokens) {
-					i += 2
-					continue
-				}
-				i++
-			case name == "env" && isAssignment(t):
-				envAssignments = append(envAssignments, t)
-				i++ // env VAR=VALUE
-			case (name == "timeout" || name == "nice" || name == "ionice") && isNumericish(t):
-				i++ // timeout 5s / nice 10
-			default:
-				goto nextWrapper
-			}
-		}
-	nextWrapper:
+		i = step.next
 	}
-	inner := tokens[i:]
-	assignments = append(assignments, envAssignments...)
+	out.inner = tokens[i:]
 	if len(assignments) > 0 {
 		// Evaluate after wrappers are stripped so ENV=/tmp/x env sh
 		// sees inner `sh`, not the `env` wrapper. Names like GIT_PAGER
 		// and LD_PRELOAD do not depend on the inner verb.
-		floor = worstOf(floor, envAssignmentRisk(assignments, inner))
+		out.floor = worstOf(out.floor, envAssignmentRisk(assignments, out.inner))
 	}
 	if len(splitValues) > 0 {
 		// `env -S STRING` splits STRING into the command (and arguments)
@@ -2977,10 +2933,10 @@ func unwrapWrappersTracked(tokens []string) ([]string, RiskClass, [][]string) {
 		for _, v := range splitValues {
 			composed = append(composed, tokenize(v)...)
 		}
-		composed = append(composed, inner...)
-		floor = worstOf(floor, classifyStage(composed, false))
+		composed = append(composed, out.inner...)
+		out.floor = worstOf(out.floor, classifyStage(composed, false))
 	}
-	return inner, floor, envTails
+	return out
 }
 
 // commandIsLookup reports whether the arguments of the `command` builtin

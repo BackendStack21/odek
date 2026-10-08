@@ -184,7 +184,11 @@ func analyzeWithState(cmd string, depth int, inherited *shellAnalysisState) Anal
 			payloadState := state
 			payloadState.cwd = stageCwd
 			payloadState.uncertain = state.uncertain || !cwdKnown
-			inner, floor := unwrapWrappers(stage)
+			unwrappedStage := unwrapWrappersFull(stage)
+			inner, floor := unwrappedStage.inner, unwrappedStage.floor
+			for _, payload := range unwrappedStage.payloads {
+				result.merge(analyzeWithState(payload, depth+1, &payloadState))
+			}
 			if len(inner) > 0 {
 				name := commandName(inner[0])
 				if pipedShells[name] {
@@ -666,50 +670,6 @@ func directoryOperand(name string, args []string) (path string, known bool) {
 	return "", false
 }
 
-// skipWrapperArguments returns the index just past the options and numeric
-// operands that the wrapper name takes after position from, mirroring how
-// unwrapWrappers walks them, so a following wrapper such as env is seen.
-func skipWrapperArguments(name string, tokens []string, from int) int {
-	i := from
-	for i < len(tokens) {
-		t := tokens[i]
-		switch {
-		case t == "--":
-			return i + 1
-		case strings.HasPrefix(t, "-") && t != "-":
-			if wrapperOptionTakesValue(name, t) && i+1 < len(tokens) {
-				i += 2
-				continue
-			}
-			i++
-		case (name == "timeout" || name == "nice" || name == "ionice") && isNumericish(t):
-			i++
-		default:
-			return i
-		}
-	}
-	return i
-}
-
-// wrapperOptionTakesValue reports whether the wrapper's option consumes the
-// following token as its value.
-func wrapperOptionTakesValue(name, option string) bool {
-	if argvComposers[name] {
-		return xargsValueFlags[option]
-	}
-	switch name {
-	case "watch":
-		return option == "-n" || option == "--interval"
-	case "strace":
-		return hasAny([]string{"-e", "-p", "-o", "--output", "-s"}, option)
-	case "timeout":
-		return hasAny([]string{"-s", "--signal", "-k", "--kill-after"}, option)
-	case "stdbuf":
-		return hasAny([]string{"-i", "-o", "-e", "--input", "--output", "--error"}, option)
-	}
-	return false
-}
-
 func wrapperDirectory(tokens []string, cwd string) (string, bool) {
 	for i := 0; i < len(tokens); i++ {
 		tok := tokens[i]
@@ -717,11 +677,12 @@ func wrapperDirectory(tokens []string, cwd string) (string, bool) {
 			continue
 		}
 		name := commandName(tok)
-		if !execWrappers[name] && !privilegedWrappers[name] {
+		step, isWrapper := wrapperAt(tokens, i)
+		if !isWrapper {
 			break
 		}
 		if name != "env" {
-			i = skipWrapperArguments(name, tokens, i+1) - 1
+			i = step.next - 1
 			continue
 		}
 		for j := i + 1; j < len(tokens); j++ {
