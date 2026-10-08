@@ -1632,6 +1632,7 @@ func clampClassesAboveMaxRisk(dc *danger.DangerousConfig, maxRisk string) {
 		danger.NetworkUpload,
 		danger.CodeExecution,
 		danger.Install,
+		danger.UnreadExec,
 		danger.Unknown,
 		danger.Blocked,
 	} {
