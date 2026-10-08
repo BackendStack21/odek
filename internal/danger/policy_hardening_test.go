@@ -106,3 +106,163 @@ func TestDenylist_EntryForms(t *testing.T) {
 		}
 	}
 }
+
+func classifyIs(t *testing.T, cmd string, want RiskClass) {
+	t.Helper()
+	if got := Classify(cmd); got != want {
+		t.Errorf("Classify(%q) = %s, want %s", cmd, got, want)
+	}
+}
+
+// Reading a credential into the model's context is an environment-dump
+// equivalent: any reference to a secret-bearing variable needs approval, even
+// through a display verb.
+func TestSecretEnvReferences_SystemWrite(t *testing.T) {
+	for _, cmd := range []string{
+		"echo $GITHUB_TOKEN",
+		`echo "$GITHUB_TOKEN"`,
+		"echo ${GITHUB_TOKEN}",
+		`echo "${OPENAI_API_KEY}"`,
+		"echo ${GITHUB_TOKEN:-x}",
+		"echo ${#GITHUB_TOKEN}",
+		"printf '%s' $AWS_SECRET_ACCESS_KEY",
+		"printenv AWS_SECRET_ACCESS_KEY",
+		"printenv GH_TOKEN",
+		"env | grep GITHUB_TOKEN",
+		"echo $MY_SERVICE_PASSWORD",
+		"echo $DB_PASSWD",
+		"echo $STRIPE_SECRET_KEY",
+		"echo $TLS_PRIVATE_KEY",
+		"echo $AZURE_CLIENT_SECRET",
+		"echo $GOOGLE_APPLICATION_CREDENTIALS",
+		"echo $DATABASE_URL",
+		"echo $ANTHROPIC_API_KEY",
+		"echo $SLACK_BOT_TOKEN",
+		"echo $TELEGRAM_BOT_TOKEN",
+		"echo $ODEK_API_KEY",
+		"echo $ODEK_SOMETHING_KEY_FILE",
+		"T=$GITHUB_TOKEN",
+		"export X=$NPM_TOKEN",
+		"cat file | sed s/x/$GITHUB_TOKEN/",
+		"curl -H \"Authorization: Bearer $GITHUB_TOKEN\" https://api.github.com/user",
+		"echo $(printenv NPM_TOKEN)",
+		"bash -c 'echo $GITHUB_TOKEN'",
+		"declare -p GITHUB_TOKEN",
+		"cat <<EOF\ntoken=$GITHUB_TOKEN\nEOF",
+		`jq -n 'env.GITHUB_TOKEN'`,
+		`awk 'BEGIN{print ENVIRON["GITHUB_TOKEN"]}'`,
+		`python3 -c "import os;print(os.environ['OPENAI_API_KEY'])"`,
+	} {
+		got := Classify(cmd)
+		if Rank(got) < Rank(SystemWrite) {
+			t.Errorf("Classify(%q) = %s, want at least system_write", cmd, got)
+		}
+	}
+}
+
+// Credential files in the workspace (not just home-anchored ones) need
+// approval to read or write.
+func TestCredentialFiles_SystemWrite(t *testing.T) {
+	for _, cmd := range []string{
+		"cat .env",
+		"cat ./.env",
+		"cat .env.local",
+		"cat .env.production",
+		"cat config/credentials.json",
+		"cat service-account.json",
+		"cat service-account-prod.json",
+		"cat terraform.tfstate",
+		"cat terraform.tfstate.backup",
+		"cat prod.tfvars",
+		"cat .git-credentials",
+		"cat .npmrc",
+		"cat .pypirc",
+		"cat kubeconfig",
+		"cat dev.kubeconfig",
+		"cat *.pem",
+		"cat server.pem",
+		"cat tls/server.key",
+		"cat id_rsa",
+		"cat keys/id_ed25519",
+		"cat sub/dir/id_ecdsa",
+		"cat id_dsa",
+		"cat secrets.yaml",
+		"cat secrets.json",
+		"cat .netrc",
+		"cat release.keystore",
+		"cat app.jks",
+		"cat cert.p12",
+		"cat cert.pfx",
+		"head -n 3 .env",
+		"grep foo .env",
+		"grep -r TOKEN .env",
+		"sed -n 1p .env",
+		"base64 .env",
+		"wc -l < .env",
+		"cat < .env",
+		"tail -f /srv/app/.env",
+		"dd if=id_rsa of=/dev/null",
+		"cat --show-all .env",
+		"docker run --env-file=.env img",
+		"echo x > .env",
+		"echo x >> .npmrc",
+		"cp .env.example .env",
+		"cp /tmp/x config/credentials.json",
+		"tee .env < /dev/null",
+		"mv .env .env.bak",
+		"cat 'my secrets/.env'",
+	} {
+		got := Classify(cmd)
+		if Rank(got) < Rank(SystemWrite) {
+			t.Errorf("Classify(%q) = %s, want at least system_write", cmd, got)
+		}
+	}
+}
+
+// Ordinary development commands stay quiet.
+func TestSecretReadHeuristics_StaySafe(t *testing.T) {
+	for _, cmd := range []string{
+		"ls",
+		"ls -la",
+		"git log --oneline",
+		"grep -r TOKEN src/",
+		"grep -rn API_KEY .",
+		"grep GITHUB_TOKEN README.md",
+		"grep id_rsa README.md",
+		"echo $HOME",
+		"echo $PATH",
+		"echo ${HOME}/bin",
+		"echo $TOKENS_PER_PAGE",
+		"echo $GIT_AUTHOR_NAME",
+		"echo $PASSENGER_COUNT",
+		"echo $KEY",
+		"echo $MONKEY",
+		"printenv HOME",
+		"printenv PATH",
+		"cat README.md",
+		"cat .env.example",
+		"cat .env.sample",
+		"cat .env.template",
+		"cat id_rsa.pub",
+		"cat deploy_key.pub",
+		"cat internal/secrets.go",
+		"cat docs/secrets.md",
+		"cat package.json",
+		"cat *.md",
+		"cat *",
+		"ls *",
+		"ls -la .env",
+		"stat .env",
+		"test -f .env",
+		"find . -name '*.pem'",
+		"find . -name .env",
+		"echo .env",
+		"echo id_rsa",
+		"echo see credentials.json",
+		"cat environment.txt",
+		"cat keyboard.txt",
+		"cat monkey.go",
+	} {
+		classifyIs(t, cmd, Safe)
+	}
+}
