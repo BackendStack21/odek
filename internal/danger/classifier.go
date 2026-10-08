@@ -4735,11 +4735,15 @@ func isSystemWrite(first string, tokens []string) bool {
 // tokens are filenames and must not trigger on an incidental "+...s" or octal
 // shape (e.g. a file named build+gen.s).
 func chmodSetsSUIDGID(tokens []string) bool {
-	for _, tok := range tokens[1:] {
-		// chmod --reference copies mode bits including setuid/setgid.
-		if tok == "--reference" || strings.HasPrefix(tok, "--reference=") {
+	args := tokens[1:]
+	// chmod --reference copies mode bits including setuid/setgid.
+	for _, o := range chmodOptions.parse(args).opts {
+		if o.unique() && o.is("--reference") {
 			return true
 		}
+	}
+	for i := 0; i < len(args); {
+		tok := args[i]
 		if strings.HasPrefix(tok, "-") {
 			// GNU chmod takes a symbolic mode that begins with '-' (`-x,u+s`,
 			// `-w,g+s`) as the mode operand, not as an option. Anything built
@@ -4747,24 +4751,33 @@ func chmodSetsSUIDGID(tokens []string) bool {
 			// set a special bit the scan continues, since the real mode (or a
 			// file) may follow.
 			if !symbolicModeLike(tok) {
-				continue // flag (e.g. -R, --recursive)
+				// A flag (e.g. -R, --recursive); --reference takes a file name
+				// that is not the mode.
+				_, i = chmodOptions.option(args, i)
+				continue
 			}
 			if modeSetsSUIDGID(tok) {
 				return true
 			}
+			i++
 			continue
 		}
 		// Symbolic clauses that set the 's' permission (u+s, g+s, a+s, +s,
 		// ug+rs, u=rws, a=rwxs, …) and octal modes whose special-permission
 		// digits (everything but the last three) include 2 or 4: 04755 and
 		// 4755 set setuid; 0755 / 1755 (sticky only) and 3-digit modes do not.
-		if modeSetsSUIDGID(tok) {
-			return true
-		}
 		// First non-flag operand is the mode; everything after is a filename.
-		return false
+		return modeSetsSUIDGID(tok)
 	}
 	return false
+}
+
+// chmodOptions is the grammar of chmod's own options: --reference is the only
+// one that takes a value.
+var chmodOptions = optSpec{
+	long:           longTable("reference", "changes silent quiet verbose recursive preserve-root no-preserve-root help version"),
+	abbrev:         true,
+	ignoreDashDash: true,
 }
 
 // symbolicModeLike reports whether a dash-leading chmod word is spelled only
@@ -4805,45 +4818,26 @@ func modeSetsSUIDGID(mode string) bool {
 // passes a -m/--mode value that sets the setuid or setgid bit, in any
 // spelling: `-m 4755`, `-m4755`, `-Dm4755`, `--mode=u+s`, `--mode u+s`.
 func modeOptionSetsSUIDGID(first string, tokens []string) bool {
-	for i := 1; i < len(tokens); i++ {
-		tok := tokens[i]
-		if tok == "--" {
-			break
-		}
-		var value string
-		switch {
-		case strings.HasPrefix(tok, "--"):
-			name, v, hasValue := strings.Cut(tok, "=")
-			if len(name) < 4 || !strings.HasPrefix("--mode", name) {
-				continue
-			}
-			if hasValue {
-				value = v
-			} else if i+1 < len(tokens) {
-				i++
-				value = tokens[i]
-			}
-		case isShortFlagToken(tok):
-			for j := 1; j < len(tok); j++ {
-				if tok[j] == 'm' {
-					if j+1 < len(tok) {
-						value = tok[j+1:]
-					} else if i+1 < len(tokens) {
-						i++
-						value = tokens[i]
-					}
-					break
-				}
-				if strings.IndexByte("ogStZ", tok[j]) >= 0 {
-					break // value-taking option: the rest of the word is its value
-				}
-			}
-		}
-		if value != "" && chmodSetsSUIDGID([]string{"chmod", value}) {
+	for _, mode := range modeOptions[first].parse(tokens[1:]).values("-m", "--mode") {
+		if mode != "" && chmodSetsSUIDGID([]string{"chmod", mode}) {
 			return true
 		}
 	}
 	return false
+}
+
+// modeOptions are the option grammars of the coreutils that take a creation
+// mode. -Z (SELinux context) is a flag in all of them, so `-Zm4755` still
+// carries a mode.
+var modeOptions = map[string]optSpec{
+	"install": {
+		short: "gmotS",
+		long: longTable("mode owner group target-directory suffix strip-program",
+			"backup compare directory create-leading-dirs no-target-directory preserve-timestamps strip verbose debug context preserve-context"),
+		abbrev: true,
+	},
+	"mkdir": {short: "m", long: longTable("mode", "parents verbose context"), abbrev: true},
+	"mknod": {short: "m", long: longTable("mode", "context"), abbrev: true},
 }
 
 // isOctalMode reports whether s is composed entirely of octal digits (0-7).
@@ -5711,60 +5705,22 @@ func awkScriptHasShellExec(tok string) bool {
 // sedRunsShellCode reports whether a sed invocation uses the 'e' command or
 // loads a script file, either of which lets sed execute arbitrary shell code.
 func sedRunsShellCode(tokens []string) bool {
-	for i, tok := range tokens[1:] {
+	r := sedOptions.parse(tokens[1:])
+	for _, o := range r.opts {
+		switch {
 		// A script loaded from file is uninspectable — treat as code execution.
-		if tok == "-f" || tok == "--file" {
+		case o.is("-f", "--file"):
+			return true
+		// Inline scripts reach sed through -e/--expression, fused into the
+		// option word (-es/…/e, --expression=s/…/e) or as the next word.
+		case o.has && o.is("-e", "--expression") && sedScriptHasShellExec(o.value):
 			return true
 		}
-		// `=`-attached long forms: --expression=<script> and --file=<path>
-		// carry their payload inside the flag token itself, and previously
-		// matched none of the checks below (audit: --expression='s/…/e'
-		// classified as plain local_write).
-		if strings.HasPrefix(tok, "--expression=") {
-			if sedScriptHasShellExec(tok[len("--expression="):]) {
-				return true
-			}
-			continue
-		}
-		if strings.HasPrefix(tok, "--file=") {
-			return true
-		}
-		// Fused short flags: -es/…/…/e / -fscript / -nE are single-dash
-		// clusters where 'e' or 'f' takes the remainder of the token as
-		// its argument (getopt reordering). Scan the cluster; the first
-		// e/f flag's tail is a script/file operand.
-		if isShortFlagToken(tok) {
-			cluster := tok[1:]
-			for j := 0; j < len(cluster); j++ {
-				switch cluster[j] {
-				case 'f':
-					return true // -f<file>: uninspectable script
-				case 'e':
-					if sedScriptHasShellExec(cluster[j+1:]) {
-						return true
-					}
-					j = len(cluster) // consumed as -e's script
-				}
-			}
-			continue
-		}
-		// -e/--expression introduce inline scripts; the flag token itself is not
-		// a script, so look at the next token.
-		if tok == "-e" || tok == "--expression" || tok == "-E" {
-			continue
-		}
-		// The argument following -e/--expression is a script.
-		if i > 0 {
-			prev := tokens[i]
-			if prev == "-e" || prev == "--expression" {
-				if sedScriptHasShellExec(tok) {
-					return true
-				}
-				continue
-			}
-		}
-		// Bare script argument (e.g. sed 's/foo/bar/e').
-		if !strings.HasPrefix(tok, "-") && sedScriptHasShellExec(tok) {
+	}
+	// Bare script argument (e.g. sed 's/foo/bar/e'); every operand is checked
+	// because which one is the script depends on whether -e was given.
+	for _, tok := range r.args() {
+		if sedScriptHasShellExec(tok) {
 			return true
 		}
 	}
@@ -6283,12 +6239,22 @@ func uvIsInstall(tokens []string) bool {
 // tar executes (compression filter, per-member pipe, volume-change script,
 // checkpoint action, remote shell / rmt helpers).
 var tarCommandLongOptions = []string{
-	"use-compress-program", "to-command", "info-script", "new-volume-script",
-	"checkpoint-action", "rsh-command", "rmt-command",
+	"--use-compress-program", "--to-command", "--info-script", "--new-volume-script",
+	"--checkpoint-action", "--rsh-command", "--rmt-command",
 }
 
-// tarShortOptionsWithArg are the GNU tar short options that take a value.
-const tarShortOptionsWithArg = "gCTXfFLbHVIKN"
+// tarOptions is the GNU tar option grammar the classifier reads: the short
+// letters that take a value (-f, -C, -I, -F, ...) and the long options it
+// needs to recognise. Abbreviations are accepted as getopt_long does, and `--`
+// is not an end of options for the predicates built on it, so a program option
+// cannot hide behind one.
+var tarOptions = optSpec{
+	short: "gCTXfFLbHVIKN",
+	long: longTable("use-compress-program to-command info-script new-volume-script checkpoint-action "+
+		"rsh-command rmt-command directory", "checkpoint list"),
+	abbrev:         true,
+	ignoreDashDash: true,
+}
 
 // tarRunsCommand reports whether a tar invocation names a program for tar to
 // execute. GNU tar accepts any unambiguous prefix of a long option, so a token
@@ -6297,52 +6263,22 @@ const tarShortOptionsWithArg = "gCTXfFLbHVIKN"
 // (-xIf prog) and in the old-style first operand (tar xIf prog a.tar), where
 // the option values arrive as later words.
 func tarRunsCommand(tokens []string) bool {
-	for i, tok := range tokens[1:] {
-		if strings.HasPrefix(tok, "--") {
-			name, value, hasValue := strings.Cut(tok[2:], "=")
-			// An exact option name wins over the longer one it prefixes.
-			if name == "" || name == "checkpoint" {
+	r := tarOptions.parse(tokens[1:])
+	for _, o := range r.opts {
+		switch {
+		case o.is("-I", "-F"):
+			return true
+		case o.is(tarCommandLongOptions...):
+			// A checkpoint action other than exec runs nothing.
+			if o.is("--checkpoint-action") && o.has && o.end == o.at && !strings.HasPrefix(o.value, "exec") {
 				continue
 			}
-			for _, opt := range tarCommandLongOptions {
-				if !strings.HasPrefix(opt, name) {
-					continue
-				}
-				if opt == "checkpoint-action" && hasValue && !strings.HasPrefix(value, "exec") {
-					break
-				}
-				return true
-			}
-			continue
-		}
-		if strings.HasPrefix(tok, "-") && len(tok) > 1 {
-			if tarClusterRunsCommand(tok[1:], false) {
-				return true
-			}
-			continue
-		}
-		if i == 0 && tarClusterRunsCommand(tok, true) {
 			return true
 		}
 	}
-	return false
-}
-
-// tarClusterRunsCommand scans a run of short option letters for -I or -F. In a
-// dash-prefixed cluster the first value-taking letter swallows the rest of the
-// word; in an old-style cluster every value comes from a later word, so every
-// letter is a real option.
-func tarClusterRunsCommand(letters string, oldStyle bool) bool {
-	for j := 0; j < len(letters); j++ {
-		c := letters[j]
-		if c == 'I' || c == 'F' {
-			return true
-		}
-		if !oldStyle && strings.IndexByte(tarShortOptionsWithArg, c) >= 0 {
-			return false
-		}
-	}
-	return false
+	// Old-style first operand: every letter is an option, its values come from
+	// later words.
+	return r.operandAt == 0 && strings.ContainsAny(r.operands[0], "IF")
 }
 
 func killTargetsInitOrBroadcast(tokens []string) bool {

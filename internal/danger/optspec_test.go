@@ -182,11 +182,37 @@ func TestOptSpecReadsSpellingsTheOldParsersMisread(t *testing.T) {
 		{"hugo -D server", CodeExecution, "hugo -D is --buildDrafts, not -d (destination): server is the subcommand"},
 		{"hugo -E server", CodeExecution, "hugo -E is --buildExpired, not -e (environment): server is the subcommand"},
 		{"hugo -Dd out server", CodeExecution, "-D takes no value, -d takes out"},
+		{"chmod --ref=r f", SystemWrite, "chmod accepts --ref for --reference, which copies the mode bits including setuid"},
+		{"chmod 755 f --refer r", SystemWrite, "options may follow operands, so --reference is not a file name"},
+		{"install -Zm4755 a b", SystemWrite, "-Z is a flag, so m in the cluster still carries the mode"},
+		{"install --m=4755 a b", SystemWrite, "--m is the only install option that starts with m"},
+		{"mkdir --m=4755 d", SystemWrite, "--m abbreviates --mode"},
+		{"sed --in s/a/b/ f", LocalWrite, "--in abbreviates --in-place"},
+		{"sed --in-pl s/a/b/ f", LocalWrite, "--in-pl abbreviates --in-place"},
+		{"sed --fil=x.sed f", CodeExecution, "--fil abbreviates --file: the script file cannot be inspected"},
+		{"sed --expr='s/a/b/e' f", CodeExecution, "--expr abbreviates --expression whose script runs a command"},
 		{"kubectl -An ns get pods", NetworkEgress, "-A is a flag, so -An takes ns as the namespace and get is the verb"},
 		{"docker -Dl debug ps", Safe, "-D is a flag and -l takes debug: ps is the verb"},
 	} {
 		if !analysisHas(tc.cmd, tc.want) {
 			t.Errorf("Analyze(%q) = %v, want %s: %s", tc.cmd, Analyze(tc.cmd).Effects, tc.want, tc.why)
+		}
+	}
+}
+
+// TestOptSpecTarOptionValuesAreNotModes pins that a value-taking tar option
+// consumes the next word even when it looks like a mode flag: `-f -x` names an
+// archive called "-x", so the invocation still only lists.
+func TestOptSpecTarOptionValuesAreNotModes(t *testing.T) {
+	for _, cmd := range []string{"tar -tf -x", "tar -t -f -x"} {
+		if got := Analyze(cmd).Class(); got != Safe {
+			t.Errorf("Analyze(%q).Class() = %s, want safe", cmd, got)
+		}
+	}
+	// A real extraction mode is still not a listing.
+	for _, cmd := range []string{"tar -t -x -f a.tar", "tar -txf a.tar", "tar -tf a.tar -x"} {
+		if got := Analyze(cmd).Class(); got == Safe {
+			t.Errorf("Analyze(%q).Class() = safe, want a write", cmd)
 		}
 	}
 }

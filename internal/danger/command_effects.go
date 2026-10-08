@@ -332,48 +332,36 @@ func commandOnlyReads(name string, tokens []string) bool {
 // or modifying mode. Letters after a value-taking letter are that option's
 // attached value (`-C/etc`, `-cftest.tar`), not further flags.
 func tarListsOnly(tokens []string) bool {
+	args := tokens[1:]
 	list := false
-	for _, tok := range tokens[1:] {
-		if tok == "--list" {
+	for _, o := range tarOptions.parse(args).opts {
+		switch {
+		case o.is("-t"):
 			list = true
-			continue
-		}
-		if !isShortFlagToken(tok) {
-			continue
-		}
-	cluster:
-		for _, c := range tok[1:] {
-			switch {
-			case c == 't':
-				list = true
-			case strings.ContainsRune("cxruAd", c):
-				return false
-			case strings.ContainsRune("fCITXLbHNgVFK", c):
-				break cluster
-			}
+		case o.is("-c", "-x", "-r", "-u", "-A", "-d"):
+			return false
+		case o.is("--list") && args[o.at] == "--list":
+			list = true
 		}
 	}
 	return list
 }
 
+// sedOptions is the GNU sed option grammar: -e, -f and -l take a value, -i
+// takes only a fused suffix, and long options may be abbreviated (`--in` is
+// `--in-place`). `--` is not an end of options here, so nothing after it hides
+// from the predicates built on it.
+var sedOptions = optSpec{
+	short:         "efl",
+	shortOptional: "i",
+	long: longTable("expression file line-length", "in-place binary debug follow-symlinks help null-data posix quiet "+
+		"regexp-extended sandbox separate silent unbuffered version zero-terminated"),
+	abbrev:         true,
+	ignoreDashDash: true,
+}
+
 func sedInPlace(tokens []string) bool {
-	for _, tok := range tokens[1:] {
-		if tok == "--in-place" || strings.HasPrefix(tok, "--in-place=") {
-			return true
-		}
-		if !isShortFlagToken(tok) {
-			continue
-		}
-		for _, flag := range tok[1:] {
-			if flag == 'i' {
-				return true
-			}
-			if flag == 'e' || flag == 'f' {
-				break
-			}
-		}
-	}
-	return false
+	return sedOptions.parse(tokens[1:]).has("-i", "--in-place")
 }
 
 var sedFileIOPattern = regexp.MustCompile(`(?:^|[;{}\n])\s*(?:[0-9$]+(?:,[0-9$]+)?\s*|/[^/]+/\s*)?([rwRW])\s+([^;}\n]+)`)
@@ -409,8 +397,7 @@ func sedSubstitutionFlags(script string) []string {
 }
 
 func sedHasFileIO(tokens []string) bool {
-	for _, tok := range tokens[1:] {
-		tok = sedInlineProgram(tok)
+	for _, tok := range sedScriptTexts(tokens) {
 		if sedFileIOPattern.MatchString(tok) {
 			return true
 		}
@@ -423,21 +410,19 @@ func sedHasFileIO(tokens []string) bool {
 	return false
 }
 
-func sedInlineProgram(tok string) string {
-	if strings.HasPrefix(tok, "--expression=") {
-		return strings.TrimPrefix(tok, "--expression=")
-	}
-	if isShortFlagToken(tok) {
-		for i := 1; i < len(tok); i++ {
-			if tok[i] == 'e' {
-				return tok[i+1:]
-			}
-			if tok[i] == 'f' {
-				break
-			}
+// sedScriptTexts returns every word of a sed command line that may hold script
+// text. Any word can (the script is usually the first operand, and the
+// predicates are cautious about the rest), so it returns them all; a script
+// fused into the option that introduces it (`-es/a/b/w`, `--expression=p`)
+// is returned without the option.
+func sedScriptTexts(tokens []string) []string {
+	words := append([]string(nil), tokens[1:]...)
+	for _, o := range sedOptions.parse(tokens[1:]).opts {
+		if o.has && o.end == o.at && o.is("-e", "--expression") {
+			words[o.at] = o.value
 		}
 	}
-	return tok
+	return words
 }
 
 func executionFileTargets(name string, tokens []string) []string {
@@ -660,8 +645,7 @@ func semanticWriteTargets(name string, tokens []string) []string {
 			}
 		}
 	case "sed":
-		for _, tok := range tokens[1:] {
-			tok = sedInlineProgram(tok)
+		for _, tok := range sedScriptTexts(tokens) {
 			for _, match := range sedFileIOPattern.FindAllStringSubmatch(tok, -1) {
 				if strings.EqualFold(match[1], "w") {
 					targets = append(targets, strings.TrimSpace(match[2]))
