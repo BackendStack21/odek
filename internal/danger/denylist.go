@@ -33,23 +33,140 @@ func denylistMatch(cmd string, denylist []string) bool {
 }
 
 func denyScan(cmd string, entries [][]string, depth int) bool {
+	return denyScanVars(cmd, entries, depth, nil)
+}
+
+// denyScanVars is denyScan with the shell variables earlier commands of the
+// enclosing line assigned a statically known value, so `g=git; $g push` and
+// `c=push; git $c` are matched as the commands they run. A variable whose
+// value is built at run time is not known and its references stay opaque.
+func denyScanVars(cmd string, entries [][]string, depth int, inherited map[string]string) bool {
 	if depth > maxSubstDepth {
 		return false
 	}
+	vars := make(map[string]string, len(inherited))
+	for k, v := range inherited {
+		vars[k] = v
+	}
 	main, subs := normalize(cmd)
+	unquoted := unquotedVariableRefs(main)
 	for _, segment := range splitSegments(tokenize(main)) {
-		for _, stage := range splitPipes(segment) {
-			if denyStage(stage, entries, depth) {
+		stages := splitPipes(segment)
+		for _, stage := range stages {
+			if denyStage(denyExpand(stage, vars, unquoted), entries, depth) {
 				return true
 			}
 		}
+		if len(stages) == 1 {
+			denyAssign(stages[0], vars)
+		}
 	}
 	for _, sub := range subs {
-		if denyScan(sub, entries, depth+1) {
+		if denyScanVars(sub, entries, depth+1, vars) {
 			return true
 		}
 	}
 	return false
+}
+
+// denyExpand substitutes known variables into a stage. An unquoted reference
+// that is a whole word and whose value holds several words splits into those
+// words, as the shell would, so `$cmd` with cmd="git push" is two tokens.
+func denyExpand(stage []string, vars map[string]string, unquoted map[string]bool) []string {
+	if len(vars) == 0 {
+		return stage
+	}
+	out := make([]string, 0, len(stage))
+	for _, tok := range stage {
+		if strings.IndexByte(tok, '$') < 0 || isAssignment(tok) {
+			out = append(out, tok)
+			continue
+		}
+		if name, end := variableReference(tok, 0); name != "" && end == len(tok) && tok[0] == '$' {
+			if value, ok := vars[name]; ok && unquoted[name] && strings.ContainsAny(value, " \t\n") {
+				out = append(out, tokenize(value)...)
+				continue
+			}
+		}
+		out = append(out, denySubstitute(tok, vars))
+	}
+	return out
+}
+
+// denySubstitute replaces each reference to a known variable inside one word.
+func denySubstitute(tok string, vars map[string]string) string {
+	var b strings.Builder
+	for pos := 0; pos < len(tok); {
+		dollar := strings.IndexByte(tok[pos:], '$')
+		if dollar < 0 {
+			b.WriteString(tok[pos:])
+			break
+		}
+		dollar += pos
+		b.WriteString(tok[pos:dollar])
+		name, end := variableReference(tok, dollar)
+		value, ok := vars[name]
+		if name == "" || !ok {
+			b.WriteByte('$')
+			pos = dollar + 1
+			continue
+		}
+		b.WriteString(value)
+		pos = end
+	}
+	return b.String()
+}
+
+// denyAssign records the assignments of a stage that only assigns (also
+// through export/declare/readonly/local). A value that still holds a
+// reference or a command-output marker is unknown, and so is any earlier
+// value of that name.
+func denyAssign(stage []string, vars map[string]string) {
+	if len(stage) > 0 {
+		switch stage[0] {
+		case "export", "declare", "typeset", "readonly", "local":
+			stage = stage[1:]
+		}
+	}
+	if len(stage) > 0 {
+		switch stage[0] {
+		case "read", "mapfile", "readarray", "getopts", "unset":
+			// These rebind or remove the named variables at run time.
+			for _, name := range stage[1:] {
+				delete(vars, name)
+			}
+			return
+		}
+	}
+	for _, tok := range stage {
+		if !isAssignment(tok) {
+			if tok == dynamicSubstToken {
+				// `name=$(cmd)` leaves the marker as a word after `name=`.
+				for _, t := range stage {
+					if isAssignment(t) {
+						name, _, _ := strings.Cut(t, "=")
+						delete(vars, name)
+					}
+				}
+			}
+			if strings.HasPrefix(tok, "-") {
+				continue
+			}
+			return
+		}
+	}
+	for _, tok := range stage {
+		if !isAssignment(tok) {
+			continue
+		}
+		name, value, _ := strings.Cut(tok, "=")
+		value = denySubstitute(value, vars)
+		if strings.ContainsAny(value, "$`") || strings.Contains(value, dynamicSubstToken) || len(value) > maxStaticWordBytes {
+			delete(vars, name)
+			continue
+		}
+		vars[name] = value
+	}
 }
 
 // denyGroupWords are shell grammar words that may precede a command in the

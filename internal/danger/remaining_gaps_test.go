@@ -64,3 +64,40 @@ func TestRemaining_DenylistToolGlobalOptions(t *testing.T) {
 		}
 	}
 }
+
+func TestRemaining_DenylistStaticVariables(t *testing.T) {
+	entries := []string{"git push"}
+	for _, cmd := range []string{
+		`g=git; $g push origin main`,
+		`g=git; ${g} push origin main`,
+		`cmd="git push"; $cmd`,
+		`cmd='git push origin'; $cmd main`,
+		`c=push; git $c`,
+		`c=push; git $c origin main`,
+		`g=git c=push; $g $c`,
+		`c=push && git $c`,
+		`export c=push; git $c`,
+		`c=push; (git $c)`,
+		`c=push; sh -c "git $c"`,
+		`c=push; echo $(git $c)`,
+		`cmd="git push"; "$cmd"`,
+	} {
+		if !denylistMatch(cmd, entries) {
+			t.Errorf("denylist `git push` must match statically resolved %q", cmd)
+		}
+	}
+	for _, cmd := range []string{
+		`g=git; $g push-notes`,
+		`c=push-notes; git $c`,
+		`c=status; git $c`,
+		`c=$(whoami); git $c`,
+		`git $c`,
+		`$cmd`,
+		`c=push; c=$(whoami); git $c`,
+		`c=push; read c; git $c`,
+	} {
+		if denylistMatch(cmd, entries) {
+			t.Errorf("denylist `git push` must not match %q (value not statically push)", cmd)
+		}
+	}
+}
