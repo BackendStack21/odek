@@ -95,9 +95,17 @@ func denyStage(stage []string, entries [][]string, depth int) bool {
 	if denyMatchesAny(stage, entries) || denyPayloads(stage, entries, depth) {
 		return true
 	}
-	// unwrapWrappers strips every stacked wrapper and leading assignment.
-	inner, _ := unwrapWrappers(stage)
-	inner = denyPeel(inner)
+	// unwrapWrappersFull strips every stacked wrapper and leading assignment
+	// and surfaces the command strings a wrapper hands to a shell
+	// (`watch 'git push'`, `script -c`, `nix-shell --run`), which must be
+	// matched as command lines of their own.
+	un := unwrapWrappersFull(stage)
+	for _, payload := range un.payloads {
+		if denyScan(payload, entries, depth+1) {
+			return true
+		}
+	}
+	inner := denyPeel(un.inner)
 	if len(inner) == 0 || len(inner) == len(stage) {
 		return false
 	}

