@@ -28,7 +28,16 @@ func adapterRunsCode(name string, tokens []string) bool {
 		return hasAny(tokens, "build", "test", "vet", "run", "generate", "tool", "install")
 	}
 	if name == "rg" {
-		return optionPresent(tokens, "--pre")
+		return optionPresent(tokens, "--pre", "--hostname-bin")
+	}
+	if name == "sort" {
+		return longOptionAbbreviated(tokens, "compress-program")
+	}
+	if name == "sdiff" {
+		return longOptionAbbreviated(tokens, "diff-program")
+	}
+	if name == "ssh" || name == "scp" || name == "sftp" || name == "rsync" {
+		return transferClientRunsProgram(name, tokens)
 	}
 	if name == "fd" || name == "fdfind" {
 		return optionPresent(tokens, "--exec", "--exec-batch", "-x", "-X")
@@ -48,6 +57,10 @@ func adapterRunsCode(name string, tokens []string) bool {
 			return !hasAny(args, "list", "status")
 		case "rebase":
 			return !hasAny(args, "--abort", "--quit")
+		case "bisect", "hook":
+			// `bisect run <cmd>` executes <cmd> per step; `hook run` runs the
+			// repository hook script.
+			return len(args) > 0 && args[0] == "run"
 		case "diff", "show", "log":
 			return hasAny(tokens, "--ext-diff", "--textconv") || (sub == "diff" && (!hasAny(tokens, "--no-ext-diff") || !hasAny(tokens, "--no-textconv")))
 		}
@@ -57,6 +70,98 @@ func adapterRunsCode(name string, tokens []string) bool {
 	}
 	if name == "wget" && optionPresent(tokens, "--config", "-i", "--input-file") {
 		return true
+	}
+	return false
+}
+
+// longOptionAbbreviated reports whether any token is the GNU long option full
+// (or an unambiguous-prefix abbreviation of it, which getopt_long accepts),
+// with or without an =value. An ambiguous prefix is a tool error, so flagging
+// it costs nothing.
+func longOptionAbbreviated(tokens []string, full string) bool {
+	for _, tok := range tokens[1:] {
+		if tok == "--" {
+			break
+		}
+		if !strings.HasPrefix(tok, "--") {
+			continue
+		}
+		name, _, _ := strings.Cut(tok[2:], "=")
+		if name != "" && strings.HasPrefix(full, name) {
+			return true
+		}
+	}
+	return false
+}
+
+// sshConfigOptionRunsProgram reports whether an ssh_config keyword given via
+// -o (as "Key=value" or "Key value") makes the client run a program or load a
+// library.
+func sshConfigOptionRunsProgram(opt string) bool {
+	key := strings.ToLower(strings.TrimLeft(opt, " \t"))
+	if end := strings.IndexAny(key, "= \t"); end >= 0 {
+		key = key[:end]
+	}
+	switch key {
+	case "proxycommand", "localcommand", "knownhostscommand", "pkcs11provider",
+		"securitykeyprovider", "xauthlocation", "include":
+		return true
+	}
+	return false
+}
+
+// transferClientRunsProgram reports whether an ssh / scp / sftp / rsync
+// invocation makes the client execute a local program or an attacker-chosen
+// config file: -F config, -o ProxyCommand/LocalCommand/..., scp/sftp -S and -D
+// program, rsync -e / --rsh remote-shell command. Short options are scanned
+// through bundled clusters, where the first value-taking letter takes the rest
+// of the word (or the next word) as its value.
+func transferClientRunsProgram(name string, tokens []string) bool {
+	valueLetters := map[string]string{
+		"ssh":   "BbcDEeFIiJLlmOoPpQRSWw",
+		"scp":   "cDFiJlOoPSX",
+		"sftp":  "BbcDFiJlOoPRsSX",
+		"rsync": "efBTM@",
+	}[name]
+	for i := 1; i < len(tokens); i++ {
+		tok := tokens[i]
+		if tok == "--" {
+			break
+		}
+		if strings.HasPrefix(tok, "--") {
+			if name == "rsync" {
+				opt, _, _ := strings.Cut(tok[2:], "=")
+				if opt == "rsh" {
+					return true
+				}
+			}
+			continue
+		}
+		if !strings.HasPrefix(tok, "-") || len(tok) < 2 {
+			continue
+		}
+		for j := 1; j < len(tok); j++ {
+			c := tok[j]
+			if strings.IndexByte(valueLetters, c) < 0 {
+				continue
+			}
+			val := tok[j+1:]
+			if val == "" && i+1 < len(tokens) {
+				val = tokens[i+1]
+				i++
+			}
+			switch {
+			case c == 'F' && name != "rsync":
+				return true
+			case c == 'o' && name != "rsync" && sshConfigOptionRunsProgram(val):
+				return true
+			case (c == 'S' || c == 'D') && (name == "scp" || name == "sftp"):
+				return true
+			case c == 'e' && name == "rsync":
+				return true
+			}
+			break
+		}
 	}
 	return false
 }
@@ -323,6 +428,33 @@ func semanticWriteTargets(name string, tokens []string) []string {
 			for _, tok := range tokens[1:] {
 				if !strings.HasPrefix(tok, "-") {
 					targets = append(targets, tok)
+				}
+			}
+		}
+	case "git":
+		// --output=FILE on the history/diff viewers and archive writes FILE.
+		switch sub, args := gitSubcommandAndArgs(tokens); sub {
+		case "log", "show", "diff", "archive", "whatchanged", "format-patch", "range-diff", "shortlog":
+			for i := 0; i < len(args); i++ {
+				a := args[i]
+				if a == "--" {
+					break
+				}
+				if !strings.HasPrefix(a, "--") {
+					continue
+				}
+				opt, value, hasValue := strings.Cut(a[2:], "=")
+				if len(opt) < 4 || !strings.HasPrefix("output", opt) {
+					continue
+				}
+				switch {
+				case hasValue:
+					targets = append(targets, value)
+				case i+1 < len(args):
+					i++
+					targets = append(targets, args[i])
+				default:
+					targets = append(targets, dynamicSubstToken)
 				}
 			}
 		}
