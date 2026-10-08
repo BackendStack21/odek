@@ -4437,7 +4437,7 @@ func (e *Engine) completionNudgeText() string {
 	default:
 		b.WriteString("Uncaught mutations remain. ")
 	}
-	b.WriteString("Either call the check, update the plan, or tell the principal what remains. Do not claim done.")
+	b.WriteString("Either call the check, update the plan, or tell the principal what remains. Do not claim done. Your next reply replaces your previous answer, so restate it in full rather than only commenting on this notice.")
 	if pending := e.pendingPlanChecks(); len(pending) > 0 {
 		b.WriteString(" Declared acceptance checks remain unverified. Run their declared tools through the normal approval path, then complete the step; if blocked, report the missing verification. A plan update cannot self-certify a check.")
 	}

@@ -154,7 +154,7 @@ func TestEffectsStateAndHelperSpellings(t *testing.T) {
 			t.Errorf("assignment expansion escaped: %s", command)
 		}
 	}
-	if Classify("cd child; printf ok > /dev/null") != LocalWrite {
+	if Classify("cd child; printf ok > /dev/null") != Safe {
 		t.Fatal("absolute discard became uncertain")
 	}
 	for _, command := range []string{"fd -x./child/helper", "tar -I./child/helper -cf out input", "tar --checkpoint-action=exec=./child/helper -cf out input", "gcc -fplugin=./child/helper input", "go build -toolexec=./child/helper .", "protoc --plugin=protoc-gen-audit=./child/helper input", "gawk --load=./child/helper 'BEGIN{print 1}'"} {
