@@ -352,7 +352,7 @@ func analyzeWithState(cmd string, depth int, inherited *shellAnalysisState) Anal
 			pipeline = append(pipeline, legacyStage...)
 			// Preserve findings from each stage before pipeline summaries can
 			// replace them with a differently configured higher-ranked class.
-			repo := newGitRepoCtx(stageCwd, cwdKnown && !state.uncertain, stage[:len(stage)-len(inner)], state.vars)
+			repo := newGitRepoCtx(stageCwd, cwdKnown && !state.uncertain, stage[:len(stage)-len(inner)], state.vars, state.written)
 			repos = append(repos, repo)
 			result.add(classifyStageIn(legacyStage, piped, repo))
 			if floor != Safe {
@@ -382,8 +382,13 @@ func analyzeWithState(cmd string, depth int, inherited *shellAnalysisState) Anal
 					chain.vars[assigned] = true
 				}
 			}
-			if secretNameOperand(name, inner[1:]) || stageTouchesCredentialFile(stage, inner, displayVerbs[name]) {
+			if secretNameOperand(name, inner[1:]) || stageTouchesCredentialFile(stage, inner, displayVerbs[name]) || indirectSensitiveRef(stage, state.vars) {
 				result.add(SystemWrite)
+			}
+			if programOperandUnresolvable(name, inner) {
+				// The interpreter runs a file whose path only exists at run
+				// time, so no read licence can be checked against it.
+				result.add(Unknown)
 			}
 			if isCodeExecution(name, inner, repo) || explicitUntrustedExecutable(inner[0]) || (piped && (pipedShells[name] || isStdinExecInterpreter(name) || embeddedShellInterpreters[name])) {
 				result.add(CodeExecution)
@@ -694,21 +699,26 @@ func analyzeWithState(cmd string, depth int, inherited *shellAnalysisState) Anal
 				// Words that only glob can still name files: judge the body
 				// once per word with the variable bound to the pattern, so a
 				// script the loop runs through a glob is gated like the glob.
+				// A pattern bound as the value expands exactly like the same
+				// glob written literally, so the per-pattern passes judge the
+				// body completely; only a list the shell builds at run time
+				// (substitution, variable, "$@") needs the dynamic marker.
 				if patterns, ok := n.globElements(&state); ok {
-					for _, pattern := range patterns {
-						if !charge(n.size) {
-							break
+					bindLoop(n.size, func() {
+						for _, pattern := range patterns {
+							if !charge(n.size) {
+								return
+							}
+							bindLoopVariable(n.name, pattern)
+							runList(n.body, nested)
 						}
-						before := state.snapshot()
-						bindLoopVariable(n.name, pattern)
+					})
+				} else {
+					bindLoop(n.size, func() {
+						bindLoopVariable(n.name, dynamicSubstToken)
 						runList(n.body, nested)
-						state.restore(before)
-					}
+					})
 				}
-				bindLoop(n.size, func() {
-					bindLoopVariable(n.name, dynamicSubstToken)
-					runList(n.body, nested)
-				})
 			}
 			if ambiguous && n.name != "" {
 				// The loop may not have run at all: its variable is unknown.
@@ -897,7 +907,11 @@ func environmentRunsCode(prefix []string) bool {
 // variables are known. Substituted values are not rescanned.
 func (s *shellAnalysisState) expand(tokens []string) []string {
 	out := make([]string, 0, len(tokens))
-	separators := " \t\n\r*?["
+	// Whitespace (and any assigned IFS characters) splits an unquoted value
+	// into several operands, which cannot be judged as one path. A glob in
+	// the value expands exactly as the same glob written literally would, so
+	// it is kept and judged as that spelling.
+	separators := " \t\n\r"
 	if ifs, ok := s.vars["IFS"]; ok {
 		separators += ifs
 	}

@@ -332,3 +332,28 @@ func stageTouchesCredentialFile(stage, inner []string, display bool) bool {
 	}
 	return false
 }
+
+// indirectSensitiveRef reports whether a token expands a variable indirectly
+// (`${!name}`) where name's statically known value is itself the name of a
+// secret-bearing variable, so `v=GITHUB_TOKEN; echo ${!v}` prints the token.
+func indirectSensitiveRef(tokens []string, vars map[string]string) bool {
+	for _, tok := range tokens {
+		for i := 0; i+3 < len(tok); i++ {
+			if tok[i] != '$' || tok[i+1] != '{' || tok[i+2] != '!' {
+				continue
+			}
+			j := i + 3
+			for j < len(tok) && isShellVarByte(tok[j]) {
+				j++
+			}
+			name := tok[i+3 : j]
+			if name == "" {
+				continue
+			}
+			if value, ok := vars[name]; ok && sensitiveEnvName(strings.TrimSpace(value)) {
+				return true
+			}
+		}
+	}
+	return false
+}

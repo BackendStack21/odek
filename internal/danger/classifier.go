@@ -1677,7 +1677,7 @@ var safeCommands = map[string]bool{
 	"return": true, "exit": true, "trap": true, "umask": true, "getopts": true,
 	"local": true, "declare": true, "typeset": true, "readonly": true,
 	"alias": true, "unalias": true, "jobs": true, "bg": true, "fg": true,
-	"disown": true, "let": true, "ulimit": true, "times": true,
+	"disown": true, "let": true, "ulimit": true, "times": true, "history": true,
 	"break": true, "continue": true,
 	// crontab listing/help is Safe; isPersistenceWrite escalates installs
 	// (`crontab file`, `crontab -`) before this set is consulted.
@@ -2663,11 +2663,11 @@ func extractSubstitutionsBounded(cmd string, budget *int, arith int) (string, []
 					}
 				}
 				subs = append(subs, body)
-				if value := substValue(body); value != "" {
-					out.WriteByte(' ')
-					out.WriteString(value)
-					out.WriteByte(' ')
+				value := substValue(body)
+				if cmd[i] != '$' {
+					value = procSubstToken
 				}
+				spliceSubstitution(&out, value, cmd, j+1)
 				i = j + 1
 				continue
 			}
@@ -2693,11 +2693,7 @@ func extractSubstitutionsBounded(cmd string, budget *int, arith int) (string, []
 			if end > 0 {
 				body := unescapeBacktickBody(cmd[i+1:end], inDouble)
 				subs = append(subs, body)
-				if value := substValue(body); value != "" {
-					out.WriteByte(' ')
-					out.WriteString(value)
-					out.WriteByte(' ')
-				}
+				spliceSubstitution(&out, substValue(body), cmd, end+1)
 				i = end + 1
 				continue
 			}
@@ -2721,6 +2717,12 @@ func extractSubstitutionsBounded(cmd string, budget *int, arith int) (string, []
 // (`rm -rf $(cat paths)` → `rm -rf cat`) made a wipe look like a local
 // filename and auto-allowed it.
 const dynamicSubstToken = "odek.dynamic-subst"
+
+// procSubstToken stands in for a <(…) or >(…) process substitution: the shell
+// passes the running body's stream as a file path. It contains
+// dynamicSubstToken so every "is this dynamic" check matches it, while the
+// read-ledger gate can tell it apart from a value that names a local file.
+const procSubstToken = dynamicSubstToken + ".proc"
 
 func substValue(body string) string {
 	body = strings.TrimSpace(body)
@@ -2824,6 +2826,35 @@ func emptyPositionalLen(s string) int {
 
 // wordGlue reports whether c is a byte of a shell word (as opposed to
 // whitespace, an operator or a quote delimiter).
+// spliceSubstitution writes the static value of a substitution into the
+// rewritten command. A substitution glued to surrounding word characters
+// joins them into one shell word (`git p$(echo ush)` runs `git push`), so the
+// value is written without a separating space on any glued side; a value of
+// several words still splits into separate words in between. A standalone
+// substitution stays a word of its own.
+func spliceSubstitution(out *strings.Builder, value, cmd string, next int) {
+	if value == "" {
+		return
+	}
+	gluedBefore := out.Len() > 0 && spliceGlue(out.String()[out.Len()-1])
+	gluedAfter := next < len(cmd) && spliceGlue(cmd[next])
+	if !gluedBefore {
+		out.WriteByte(' ')
+	}
+	out.WriteString(value)
+	if !gluedAfter {
+		out.WriteByte(' ')
+	}
+}
+
+// spliceGlue reports whether a byte next to a substitution keeps the
+// substituted value in the same shell word. Unlike wordGlue, a quote
+// character glues: `"$(echo rm)"` is the single word rm, and a quoted
+// multi-word value stays one word, exactly as the shell treats it.
+func spliceGlue(c byte) bool {
+	return strings.IndexByte(" \t\n\r;|&<>()", c) < 0
+}
+
 func wordGlue(c byte) bool {
 	return strings.IndexByte(" \t\n\r\"';|&<>()", c) < 0
 }
@@ -3231,7 +3262,7 @@ func commandIsLookup(args []string) bool {
 
 func hasDynamicSubst(tokens []string) bool {
 	for _, t := range tokens {
-		if t == dynamicSubstToken {
+		if t == dynamicSubstToken || t == procSubstToken {
 			return true
 		}
 	}

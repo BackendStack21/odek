@@ -603,8 +603,10 @@ func ghAPIClass(args []string) RiskClass {
 			if key != "query" {
 				continue
 			}
-			// A query read from a file or stdin cannot be inspected.
-			if strings.HasPrefix(val, "@") || strings.Contains(strings.ToLower(val), "mutation") {
+			// A query read from a file or stdin, or built at run time from
+			// a substitution or variable, cannot be inspected.
+			if strings.HasPrefix(val, "@") || strings.Contains(strings.ToLower(val), "mutation") ||
+				strings.Contains(val, dynamicSubstToken) || strings.Contains(val, "$") {
 				return SystemWrite
 			}
 		}

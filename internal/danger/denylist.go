@@ -148,7 +148,7 @@ func denyAssign(stage []string, vars map[string]string) {
 	}
 	for _, tok := range stage {
 		if !isAssignment(tok) {
-			if tok == dynamicSubstToken {
+			if tok == dynamicSubstToken || tok == procSubstToken {
 				// `name=$(cmd)` leaves the marker as a word after `name=`.
 				for _, t := range stage {
 					if isAssignment(t) {

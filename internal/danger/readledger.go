@@ -991,3 +991,93 @@ func classifyScriptGateKey(key, cmd string) (RiskClass, []string) {
 	}
 	return cls, targets
 }
+
+// programOperandUnresolvable reports whether an interpreter stage names the
+// program it runs through a value that only exists at run time: a command
+// substitution, an unexpanded variable, or an argv placeholder (`{}` from
+// xargs -I or find -exec). The read ledger cannot license such a program, so
+// the caller fails closed. Inline -c payloads are analyzed on their own and
+// are not operands here.
+func programOperandUnresolvable(name string, inner []string) bool {
+	if name == "find" {
+		return findExecProgramUnresolvable(inner)
+	}
+	if !(isScriptInterpreter(name) || name == "source" || name == ".") {
+		return false
+	}
+	if pipedShells[name] && shellInlineScriptIndex(inner) >= 0 {
+		return false
+	}
+	for i := 1; i < len(inner); i++ {
+		tok := inner[i]
+		if tok == "" || isRedirectToken(tok) {
+			if isRedirectToken(tok) {
+				i++
+			}
+			continue
+		}
+		if tok == "--" {
+			continue
+		}
+		if strings.HasPrefix(tok, "-") {
+			if interpreterCodeFlags[tok] {
+				i++ // the flag's value is code or a module name, not a file
+			}
+			continue
+		}
+		return operandUnresolvable(tok)
+	}
+	return false
+}
+
+// interpreterCodeFlags take a value that is inline code, a module or a
+// loader name rather than the program file.
+var interpreterCodeFlags = map[string]bool{
+	"-c": true, "-e": true, "--eval": true, "-p": true, "--print": true,
+	"-m": true, "-r": true, "--require": true, "--import": true, "--loader": true,
+	"-W": true, "-X": true, "-I": true, "-M": true, "-l": true, "--load": true,
+}
+
+// findExecProgramUnresolvable applies programOperandUnresolvable to the
+// command run by find's -exec/-execdir/-ok/-okdir actions.
+func findExecProgramUnresolvable(inner []string) bool {
+	for i := 1; i < len(inner); i++ {
+		switch inner[i] {
+		case "-exec", "-execdir", "-ok", "-okdir":
+		default:
+			continue
+		}
+		end := len(inner)
+		for j := i + 1; j < len(inner); j++ {
+			if inner[j] == ";" || inner[j] == `\;` || inner[j] == "+" {
+				end = j
+				break
+			}
+		}
+		cmd, _ := unwrapWrappers(inner[i+1 : end])
+		if len(cmd) == 0 {
+			continue
+		}
+		if programOperandUnresolvable(commandName(cmd[0]), cmd) {
+			return true
+		}
+		i = end
+	}
+	return false
+}
+
+func operandUnresolvable(tok string) bool {
+	// A process substitution is a stream, never a local file to license;
+	// its body is analyzed and gated on its own.
+	if strings.Contains(tok, procSubstToken) {
+		return false
+	}
+	if strings.Contains(tok, dynamicSubstToken) {
+		return true
+	}
+	// An argv placeholder from xargs -I or find -exec.
+	if tok == "{}" || strings.HasPrefix(tok, "{}/") || strings.HasSuffix(tok, "/{}") || strings.Contains(tok, "/{}/") {
+		return true
+	}
+	return strings.Contains(expandShellTokenPath(tok), "$")
+}

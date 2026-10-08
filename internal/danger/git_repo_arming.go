@@ -98,8 +98,17 @@ type gitRepoCtx struct {
 // config or a program git runs (see gitEnvNameRedirects), or a
 // privilege-switching wrapper, makes the target repository and its config
 // unknowable.
-func newGitRepoCtx(cwd string, known bool, prefix []string, vars map[string]string) *gitRepoCtx {
+func newGitRepoCtx(cwd string, known bool, prefix []string, vars map[string]string, written map[string]bool) *gitRepoCtx {
 	ctx := &gitRepoCtx{cwd: cwd, known: known}
+	// A hook, config or attributes file written earlier in the same command
+	// line is not on disk yet when the repository is scanned, so the scan
+	// would judge the state before the write; the repository is unknowable.
+	for path := range written {
+		if writtenPathArmsGit(path) {
+			ctx.known = false
+			break
+		}
+	}
 	for _, tok := range prefix {
 		if isAssignment(tok) {
 			if name, _, _ := strings.Cut(tok, "="); gitEnvNameRedirects(name) {
@@ -118,6 +127,23 @@ func newGitRepoCtx(cwd string, known bool, prefix []string, vars map[string]stri
 		}
 	}
 	return ctx
+}
+
+// writtenPathArmsGit reports whether a resolved path written by the command
+// line could change what git runs: anything under a .git directory (hooks,
+// config, info/attributes, modules), a git config file, or .gitattributes.
+func writtenPathArmsGit(path string) bool {
+	slashed := filepath.ToSlash(path)
+	lower := strings.ToLower(slashed)
+	if strings.Contains(lower, "/.git/") || strings.HasSuffix(lower, "/.git") {
+		return true
+	}
+	base := strings.ToLower(filepath.Base(slashed))
+	switch base {
+	case ".gitconfig", ".gitattributes", ".gitmodules", "gitconfig":
+		return true
+	}
+	return strings.Contains(lower, "/.config/git/")
 }
 
 // gitEnvNameRedirects reports whether an environment variable name changes
