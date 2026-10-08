@@ -24,7 +24,7 @@ cmd/odek/
   dispatch.go                 CLI subcommand dispatch (+ budget.Error → exit code 4 mapping)
   shell.go                    Built-in shell tool (local or docker exec; danger-gated; optional timeout_seconds)
   serve.go                    Web UI server (HTTP + WebSocket; @-resource completion; protocol v2: delta
-                              streaming, ping/pong, WS cancel, session_switch)
+                              streaming, ping/pong, WS cancel, session_switch, answer_superseded + done.verified)
   serve_api.go                REST management API (/api/health, sessions search/pagination/pin/export,
                               memory facts + episode promote/discard + consolidate, skills + promote, tools,
                               profiles, sanitized config view, MCP listing, shutdown)

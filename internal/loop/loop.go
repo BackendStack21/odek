@@ -654,6 +654,12 @@ type Engine struct {
 	// verifyLastFailed records that a corrective cycle was taken (or
 	// exhausted) this run, so the post-correction answer ships marked.
 	verifyLastFailed bool
+	// verifyOutcome is the last verification verdict this run (see
+	// VerifyOutcome); empty when the stage never ran.
+	verifyOutcome string
+	// answerHandler receives synchronous final-answer lifecycle events
+	// (draft superseded, verification started/completed).
+	answerHandler AnswerEventHandler
 
 	// budgetLimits holds the hard execution budgets for a run
 	// (odek-extension/v1 — see docs/EXTENSIONS.md). Zero value = no budgets.
@@ -2658,6 +2664,7 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 	// Telegram) must not carry burned corrective cycles into later turns.
 	e.verifyCyclesUsed = 0
 	e.verifyLastFailed = false
+	e.verifyOutcome = ""
 	// Finalization requests never carry across runs.
 	e.finalizeReq.Store(false)
 	e.blockedHintPending.Store(false)
@@ -3063,11 +3070,9 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 				if i+1 >= e.maxIter {
 					e.maxIter = i + 2
 				}
-				messages = append(messages, session.Message{
-					Role:             "assistant",
-					Content:          result.Content,
-					ReasoningContent: result.ReasoningContent,
-				})
+				// The draft was already streamed; tell the client the
+				// next reply replaces it, and mark the record for replay.
+				messages = append(messages, e.supersedeDraft(result, SupersededCompletionNudge, 1))
 				messages = append(messages, session.Message{
 					Role:    "system",
 					Content: e.completionNudgeText(),
@@ -3092,11 +3097,7 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 						// continues instead of returning. The verdict
 						// prose is untrusted-wrapped in the system hint.
 						e.verifyCyclesUsed++
-						messages = append(messages, session.Message{
-							Role:             "assistant",
-							Content:          result.Content,
-							ReasoningContent: result.ReasoningContent,
-						})
+						messages = append(messages, e.supersedeDraft(result, SupersededVerifyRetry, e.verifyCyclesUsed))
 						messages = append(messages, session.Message{
 							Role:    "system",
 							Content: e.verifyCorrectiveText(v),
@@ -3114,10 +3115,9 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 				// corrective re-try): ship the post-correction answer
 				// marked rather than silently unverified.
 				result.Content = VerifyFailedMarker + "\n\n" + result.Content
-				e.emitEvent(events.Event{
-					Type: events.TypeVerificationCompleted,
-					Data: map[string]any{"verdict": "skipped", "skipped_reason": "exhausted"},
-				})
+				e.emitVerificationCompleted(VerifyOutcomeSkipped, "exhausted")
+				// The answer ships marked unverified: report it as such.
+				e.verifyOutcome = VerifyOutcomeFail
 			}
 
 			if e.renderer != nil && e.interactionMode != "off" {

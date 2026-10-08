@@ -244,6 +244,13 @@ type Config struct {
 	// handled silently. Used for observability across all surfaces.
 	AgentSignalHandler func(event loop.SignalEvent)
 
+	// AnswerEventHandler, if set, is invoked synchronously on final-answer
+	// lifecycle events: a streamed draft superseded by a re-ask (completion
+	// nudge or verification retry) and verification started/completed. It
+	// runs on the loop goroutine, in order with DeltaHandler fragments, and
+	// must not block.
+	AnswerEventHandler func(event loop.AnswerEvent)
+
 	// EventHandler, if set, receives the structured runtime event stream
 	// (schema odek.event/v1 — see docs/EXTENSIONS.md): run_started,
 	// iteration_completed, tool_call_started/completed/failed,
@@ -778,6 +785,7 @@ func New(cfg Config) (_ *Agent, setupErr error) {
 		engine.SetToolEventHandler(cfg.ToolEventHandler)
 	}
 	engine.SetToolDetailHandler(cfg.ToolDetailHandler)
+	engine.SetAnswerEventHandler(cfg.AnswerEventHandler)
 
 	// Wire agent-loop signal observability (context trim, tool recovery): fan
 	// out to the programmatic handler and the terminal renderer.
@@ -1169,6 +1177,12 @@ func (a *Agent) TotalLLMDurationMs() int64 {
 // ChargeExternalUsage never affects it.
 func (a *Agent) LastPromptTokens() int {
 	return a.engine.LastPromptTokens()
+}
+
+// VerifyOutcome reports the last run's final-answer verification outcome:
+// pass, fail, uncertain or skipped; empty when the stage did not run.
+func (a *Agent) VerifyOutcome() string {
+	return a.engine.VerifyOutcome()
 }
 
 // MaxContextTokens returns the resolved model context limit (0 = unknown).

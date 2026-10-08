@@ -187,6 +187,7 @@ User-requested action confirmations and actionable errors remain visible.
 - **Markdown** — hand-written tokenizer (zero deps, no CDN): headings, lists, task lists, quotes, GFM tables, fenced code with copy, emphasis, strikethrough, allowlisted links/autolinks. Images are caption links, never `<img>` (CSP + no remote fetch). Streaming-safe: an open fence still renders; an open `**` stays literal.
 - **Live streaming** *(on by default; `--no-stream` / `stream: false` / `ODEK_STREAM=false`)* — answer and reasoning fragments arrive as they are generated (`token_delta` / `thinking_delta`) and render through the same rAF-batched pipeline; streaming state is in the health popover. Providers that reject SSE fall back silently to the bulk path.
 - **Reasoning, partial replies, and tools** — one sequential log per turn. Reasoning is collapsed behind a **▶ thinking** toggle (hidden by default; click to expand). Visible assistant text (`token_delta` / `token`, including DeepSeek/GLM mid-turn “Let me look…” replies) is a timeline row sealed when a tool starts so the next tokens open a new row instead of concatenating the turn. Tool heads sit in that same stream in arrival order. Tool args and results stay collapsed until the head is opened; long results truncate behind “show all”. History replays the same interleaved log.
+- **Revised drafts and unverified answers** — when the loop re-asks the model after a final-looking reply (`answer_superseded`), the draft folds into a collapsed `⋯ draft revised (verification|completion check)` row (click to expand) and the revised reply renders as the answer. `done.verified == "fail"` adds a `✗ unverified` chip to the answer's sender line. History replays both: `superseded` records fold the same way, and answers persisted with the verification-failed marker show the chip instead of the marker text.
 - **Sub-agent swarm** — `delegate_tasks` uses the same spine as a tool step (`▶ ▸ ⑂ delegate_tasks · 1/2 agents`) plus an always-on chip strip (`⟳ SA1 <goal|tool>`). Click a chip (or the head) for the `⎿` log and summary; the inspector Now tab still lists every agent.
 - **Inline approvals** — dangerous operations block the run and show a decision card (risk class, plain-language explanation, verbatim command). Friction mode (after 3 same-class approvals in 60s) requires typing the literal word `approve`; `trust session` is hidden for destructive, blocked, unknown, persistence, unread_exec and multi-tool batch cards. Class badges: `network_upload` shows 📤 (warn: sends local files or data out, uses credentials, or opens a listener or tunnel) beside `network_egress` 🌐, `destructive`/`unknown`/`blocked`/`persistence` (🪝)/`unread_exec` (📜) are danger-level, and a class without its own badge falls back to the generic 🛡️ warn card with the class name in the header. The command and description are shown with control, escape, bidi and invisible characters replaced by visible escapes, and an over-long command keeps its head and tail around a `…[N more bytes]` marker. Keyboard: `A` approve, `D` deny, `T` trust
 - **Clarify** — when the agent needs a decision, a question card waits for a typed answer (5 minute wait). Bound to that WebSocket session; headless REST runs do not register the tool.
@@ -740,12 +741,14 @@ The UI communicates entirely over a single WebSocket at `/ws`. Messages are newl
 | `permissions` | Connection grants after `permissions_get` or `permissions_revoke` | `classes`, `scope` |
 | `subagent_cancelled` | Ack for a `subagent_cancel` message | `session_id`, `task_id`, `accepted` (false is a benign race — the task already finished) |
 | `token` | Final answer text (bulk; **suppressed when streamed via `token_delta`**) | `content` (markdown) |
+| `answer_superseded` | The reply text streamed since the last tool call or reasoning block was a **draft**: the loop is about to ask the model again and the next streamed reply replaces it. Sent after the draft's last fragment and before the first fragment of the replacement. Only sent for drafts that were streamed live; a buffered draft is never delivered. See [Superseded drafts and verification](#superseded-drafts-and-verification) | `reason` (`completion_nudge` — open plan steps, unverified mutations or pending plan checks; `verify_retry` — hint-mode verification failed), `cycle` (1-based count of re-asks of that reason in this turn) |
+| `runtime_event` | Selected `odek.event/v1` runtime events: `iteration_completed`, `budget_exceeded`, `verification_started`, `verification_completed` | `event` (the event envelope; `verification_completed` carries `data.verdict` = `pass`/`fail`/`uncertain`/`skipped`, `data.cycles_used`, and `data.skipped_reason` = `budget`/`error`/`exhausted` when skipped — never verifier prose) |
 | `thinking` | Reasoning content (bulk; suppressed when `thinking_delta` streamed it) | `content` |
 | `tool_call` | Agent invokes a tool | `name`, `data` (raw tool-arguments JSON) |
 | `tool_result` | Tool returns output | `name`, `data` (full, untruncated output) |
 | `subagent_log` | Sub-agent progress within `delegate_tasks` | `task_idx`, `task_id`, `name`, `event`, `data` (redacted, capped 8 KiB) |
 | `subagent_state` | Per-task sub-agent lifecycle transition (`started`/`active`/`finished`); child emits `subagent_started`/`subagent_progress`/`subagent_finished` records over the same protocol. A sub-agent killed without reporting (user stop, turn cancel, timeout, flood-kill, crash) gets its terminal `finished` transition emitted by the parent instead, so cards never stay `running` | `task_idx`, `task_id`, `run_key`, `phase`, `status`, `step`, `iterations`, `tool`, `duration_seconds`, `tokens_used` |
-| `done` | Agent finishes — **emitted only after the session is persisted**, so refreshing session state on `done` is race-free | `latency` (seconds), `windowTokens` (final parent conversation window), `maxContextTokens` (resolved model limit; omitted when unknown), `inputTokens` (run-cumulative input across all calls, incl. sub-agent spend — billing), `outputTokens`, `cacheCreationTokens`, `cacheReadTokens`, `cachedTokens`, `sessionContextTokens`, `sessionOutputTokens`, plus optional last-call speed fields (see [Generation speed](#generation-speed-external-clients)) and `llmDurationMs` (sum of main think-step LLM calls this run) |
+| `done` | Agent finishes — **emitted only after the session is persisted**, so refreshing session state on `done` is race-free | `latency` (seconds), `windowTokens` (final parent conversation window), `maxContextTokens` (resolved model limit; omitted when unknown), `inputTokens` (run-cumulative input across all calls, incl. sub-agent spend — billing), `outputTokens`, `cacheCreationTokens`, `cacheReadTokens`, `cachedTokens`, `sessionContextTokens`, `sessionOutputTokens`, plus optional last-call speed fields (see [Generation speed](#generation-speed-external-clients)), `llmDurationMs` (sum of main think-step LLM calls this run) and `verified` (`pass`/`fail`/`uncertain`/`skipped`; omitted when verification did not run) |
 | `usage` | After each LLM iteration of a running turn | `windowTokens`, `maxContextTokens` (omitted when the model limit is unknown), `inputTokens` (run-cumulative billing input), `outputTokens` (run-cumulative) (camelCase — `windowTokens` is the parent-only window size that drives the metrics gauge; child rounds and side-call summaries never move it), plus optional this-call speed fields (see [Generation speed](#generation-speed-external-clients)) |
 | `error` | Agent or server error | `message` |
 | `approval_request` | Agent needs user approval for dangerous operation; blocks the run up to `timeout_seconds` (60s default) | `id`, `risk` (class name), `command` (or resource), `description`, `is_operation`, `allow_trust`, `friction`, `friction_approvals`, `timeout_seconds` (the effective server-enforced wait in seconds — render the card's countdown from it) |
@@ -761,7 +764,8 @@ The UI communicates entirely over a single WebSocket at `/ws`. Messages are newl
 | `bg_wake` | Server is starting a system-initiated wake turn after an idle job completes | `session_id` |
 
 Every frame of an active turn — `token`, `thinking`, `tool_call`,
-`tool_result`, `done`, `error` — also carries `turn_id`, matching the
+`tool_result`, `runtime_event`, `answer_superseded`, `artifact`, `done`,
+`error` — also carries `turn_id`, matching the
 turn's `turn_started.turn_id`, so a client that attached mid-turn (after a
 reconnect) can attribute stray frames and reconcile card state without
 heuristic idle detection. Lifecycle frames (`session`, `server_info`,
@@ -796,6 +800,43 @@ answer arrives as `token_delta` / `thinking_delta` fragments as the provider
 generates them, and the bulk `token` / final-answer `thinking` re-sends are
 suppressed. Providers that reject SSE transparently fall back to the buffered
 path — no deltas fire and the bulk events return. See docs/STREAMING.md.
+
+### Superseded drafts and verification
+
+The loop can ask the model again after it has already produced a
+final-looking answer: the **completion nudge** (open plan steps, a mutation
+not followed by a check, or pending plan checks) and the hint-mode
+**verification retry** (see `verify` in docs/CONFIG.md). With streaming on,
+the first answer has already reached the client, so the server sends
+`answer_superseded` before the next call starts. Clients fold the text
+streamed since the last tool call or reasoning block into a collapsed draft
+and render the following reply as the answer.
+
+```jsonc
+{"type":"token_delta","content":"**Branch `feat/x`** — 15 commits…"}
+{"type":"runtime_event","event":{"type":"verification_started",…},"turn_id":"t_…"}
+{"type":"runtime_event","event":{"type":"verification_completed","data":{"verdict":"fail","cycles_used":0},…},"turn_id":"t_…"}
+{"type":"answer_superseded","reason":"verify_retry","cycle":1,"turn_id":"t_…"}
+{"type":"token_delta","content":"**Branch `feat/x`** — 15 commits ahead…"}
+{"type":"runtime_event","event":{"type":"verification_completed","data":{"verdict":"pass","cycles_used":1},…},"turn_id":"t_…"}
+{"type":"done","verified":"pass",…,"turn_id":"t_…"}
+```
+
+Verification frames and `answer_superseded` are delivered synchronously
+with the token stream, so they always arrive before `done`. In strict mode
+(or hint mode out of cycles) a failing answer is persisted and returned with
+the `[Verification failed — answer returned unverified]` prefix, but that
+prefix is added after the answer streamed and is never sent as a late
+token; live clients read `done.verified == "fail"` instead.
+
+Session history marks each draft: the superseded assistant record carries
+`"superseded": true` and `"superseded_reason"` (`completion_nudge` or
+`verify_retry`), so `/api/sessions/{id}` replay can fold drafts the same way.
+The system message that prompted the re-ask is not persisted.
+
+All of this is additive: a turn with no re-ask and verification off sends
+the same frames as before, and old clients ignore the new frame type and
+fields.
 
 ### Generation speed
 
