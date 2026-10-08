@@ -537,30 +537,7 @@ func semanticWriteTargets(name string, tokens []string) []string {
 	if networkInfoQuery(tokens) {
 		return targets
 	}
-	var flags map[string]bool
 	switch name {
-	case "curl":
-		flags = map[string]bool{"-o": true, "--output": true, "-D": true, "--dump-header": true, "-c": true, "--cookie-jar": true, "--trace": true, "--trace-ascii": true}
-	case "wget":
-		flags = map[string]bool{"-O": true, "--output-document": true, "-o": true, "--output-file": true, "-a": true, "--append-output": true}
-	case "sort":
-		flags = map[string]bool{"-o": true, "--output": true}
-	case "gcc", "g++", "cc", "c++", "clang", "clang++":
-		flags = map[string]bool{"-o": true}
-	case "gpg", "gpg2":
-		flags = map[string]bool{"-o": true, "--output": true}
-	case "find":
-		flags = map[string]bool{"-fprint": true, "-fprint0": true, "-fprintf": true}
-	case "cp", "mv", "install":
-		flags = map[string]bool{"-t": true, "--target-directory": true}
-	case "tar":
-		flags = map[string]bool{"-C": true, "--directory": true}
-	case "unzip":
-		flags = map[string]bool{"-d": true}
-	case "7z", "7za", "7zz":
-		flags = map[string]bool{"-o": true}
-	case "pandoc":
-		flags = map[string]bool{"-o": true, "--output": true}
 	case "dd":
 		for _, tok := range tokens[1:] {
 			if value, ok := strings.CutPrefix(tok, "of="); ok {
@@ -589,31 +566,9 @@ func semanticWriteTargets(name string, tokens []string) []string {
 			// `worktree move SRC DST` relocates one; PATH is a write target.
 			targets = append(targets, gitWorktreeWriteTargets(args)...)
 		case "archive":
-			flags = map[string]bool{"-o": true, "--output": true}
-			fallthrough
+			targets = append(targets, writeOption{spec: gitArchiveOptions, names: []string{"-o", "--output"}}.targets(args)...)
 		case "log", "show", "diff", "whatchanged", "format-patch", "range-diff", "shortlog":
-			for i := 0; i < len(args); i++ {
-				a := args[i]
-				if a == "--" {
-					break
-				}
-				if !strings.HasPrefix(a, "--") {
-					continue
-				}
-				opt, value, hasValue := strings.Cut(a[2:], "=")
-				if len(opt) < 4 || !strings.HasPrefix("output", opt) {
-					continue
-				}
-				switch {
-				case hasValue:
-					targets = append(targets, value)
-				case i+1 < len(args):
-					i++
-					targets = append(targets, args[i])
-				default:
-					targets = append(targets, dynamicSubstToken)
-				}
-			}
+			targets = append(targets, writeOption{spec: gitOutputOptions, names: []string{"--output"}, endsAtDashDash: true}.targets(args)...)
 		}
 	case "sed":
 		for _, tok := range sedScriptTexts(tokens) {
@@ -663,92 +618,19 @@ func semanticWriteTargets(name string, tokens []string) []string {
 			}
 		}
 	}
-	for i := 1; i < len(tokens); i++ {
-		tok := tokens[i]
-		if isShortFlagToken(tok) && len(tok) > 2 && !flags[tok] {
-			for j := 1; j < len(tok); j++ {
-				flag := "-" + tok[j:j+1]
-				if flags[flag] {
-					if j+1 < len(tok) {
-						targets = append(targets, tok[j+1:])
-					} else if i+1 < len(tokens) {
-						i++
-						targets = append(targets, tokens[i])
-					} else {
-						targets = append(targets, dynamicSubstToken)
-					}
-					break
-				}
-				// A value-taking flag consumes the rest of its word; its value
-				// cannot be reinterpreted as another output option.
-				if shortOptionTakesValue(name, tok[j]) {
-					break
-				}
-			}
-			continue
-		}
-		for flag := range flags {
-			if tok == flag {
-				if i+1 < len(tokens) {
-					i++
-					targets = append(targets, tokens[i])
-				} else {
-					targets = append(targets, dynamicSubstToken)
-				}
-				break
-			}
-			if strings.HasPrefix(tok, flag+"=") {
-				targets = append(targets, strings.TrimPrefix(tok, flag+"="))
-				break
-			}
-			// GNU getopt_long accepts any unambiguous prefix of a long
-			// option; an abbreviation is treated as the option it could be.
-			if inline, hasInline, ok := longOptionAbbreviation(tok, flag); ok {
-				if hasInline {
-					targets = append(targets, inline)
-				} else if i+1 < len(tokens) {
-					i++
-					targets = append(targets, tokens[i])
-				} else {
-					targets = append(targets, dynamicSubstToken)
-				}
-				break
-			}
-		}
+	if wo, ok := writeOptions[name]; ok {
+		targets = append(targets, wo.targets(tokens[1:])...)
 	}
 	if name == "curl" || name == "wget" {
+		r := writeOptions[name].spec.parse(tokens[1:])
 		dir := "."
-		for i, tok := range tokens {
-			if hasAny([]string{"--output-dir", "-P", "--directory-prefix"}, tok) && i+1 < len(tokens) {
-				dir = tokens[i+1]
-			}
-			if strings.HasPrefix(tok, "--output-dir=") || strings.HasPrefix(tok, "--directory-prefix=") {
-				_, dir, _ = strings.Cut(tok, "=")
-			}
-			if name == "wget" && strings.HasPrefix(tok, "-P") && len(tok) > 2 {
-				dir = tok[2:]
-			}
-			// Abbreviated long spellings of the directory options and -P
-			// fused behind other short flags (-qP dir, -qP/dir).
-			if !flags[strings.SplitN(tok, "=", 2)[0]] {
-				for _, full := range []string{"--output-dir", "--directory-prefix"} {
-					if inline, hasInline, ok := longOptionAbbreviation(tok, full); ok {
-						if hasInline {
-							dir = inline
-						} else if i+1 < len(tokens) {
-							dir = tokens[i+1]
-						}
-					}
-				}
-			}
-			if name == "wget" && i > 0 {
-				next := ""
-				if i+1 < len(tokens) {
-					next = tokens[i+1]
-				}
-				if value, ok := shortClusterValue(name, flags, tok, next, 'P'); ok && value != "" {
-					dir = value
-				}
+		dirOptions := []string{"--output-dir"}
+		if name == "wget" {
+			dirOptions = []string{"-P", "--directory-prefix"}
+		}
+		for _, o := range r.opts {
+			if o.has && o.is(dirOptions...) {
+				dir = o.value
 			}
 		}
 		for i, target := range targets {
@@ -756,7 +638,8 @@ func semanticWriteTargets(name string, tokens []string) []string {
 				targets[i] = filepath.Join(dir, target)
 			}
 		}
-		if (name == "wget" && !optionPresent(tokens, "-O", "--output-document")) || (name == "curl" && curlRemoteName(tokens)) {
+		// Without an explicit name the file is named after the URL.
+		if (name == "wget" && !r.has("--output-document")) || (name == "curl" && r.has("-O", "--remote-name", "--remote-name-all")) {
 			found := false
 			for _, tok := range tokens[1:] {
 				u, err := url.Parse(tok)
@@ -777,77 +660,76 @@ func semanticWriteTargets(name string, tokens []string) []string {
 	return targets
 }
 
-func shortOptionTakesValue(name string, flag byte) bool {
-	switch name {
-	case "curl":
-		return strings.ContainsRune("XHduxAemTbKFwQrz", rune(flag))
-	case "wget":
-		return strings.ContainsRune("itTUP", rune(flag))
-	case "sort":
-		return strings.ContainsRune("ktTS", rune(flag))
-	case "gpg", "gpg2":
-		return strings.ContainsRune("rpu", rune(flag))
-	case "install":
-		return strings.ContainsRune("mog", rune(flag))
-	case "tar":
-		return strings.ContainsRune("fITXLbHNgVFK", rune(flag))
-	}
-	return false
+// writeOption describes where a tool puts files it is told about: its option
+// grammar and the canonical names of the options whose value is a path the
+// tool writes.
+type writeOption struct {
+	spec  optSpec
+	names []string
+	// endsAtDashDash stops the scan at `--`. By default the scan reads every
+	// word, so an option cannot hide behind a terminator.
+	endsAtDashDash bool
 }
 
-// longOptionAbbreviation reports whether tok spells the GNU long option full
-// (for example "--target-directory") as a strict prefix of it, with an
-// optional inline "=value". Exact spellings are matched by the callers.
-func longOptionAbbreviation(tok, full string) (inline string, hasInline, ok bool) {
-	if !strings.HasPrefix(tok, "--") || !strings.HasPrefix(full, "--") {
-		return "", false, false
+// targets returns the paths the named options of args write. An option that
+// should carry a path but has none (the arguments end first) writes somewhere
+// unknown.
+func (w writeOption) targets(args []string) []string {
+	spec := w.spec
+	spec.ignoreDashDash = !w.endsAtDashDash
+	var out []string
+	for _, o := range spec.parse(args).opts {
+		switch {
+		case !o.is(w.names...):
+		case o.has:
+			out = append(out, o.value)
+		case o.takes:
+			out = append(out, dynamicSubstToken)
+		}
 	}
-	spelled, inline, hasInline := strings.Cut(tok, "=")
-	if len(spelled) <= 2 || len(spelled) >= len(full) || !strings.HasPrefix(full, spelled) {
-		return "", false, false
-	}
-	return inline, hasInline, true
+	return out
 }
 
-// shortClusterValue looks for the short option want inside one fused cluster
-// token (-qP, -sSLO, -qP/dir). A value-taking option consumes the rest of its
-// word, so scanning stops there. The value of want, when it takes one, is the
-// rest of the word or else the next token.
-func shortClusterValue(name string, flags map[string]bool, tok, next string, want byte) (value string, ok bool) {
-	if !isShortFlagToken(tok) {
-		return "", false
-	}
-	for j := 1; j < len(tok); j++ {
-		if tok[j] == want {
-			if j+1 < len(tok) {
-				return tok[j+1:], true
-			}
-			return next, true
-		}
-		if shortOptionTakesValue(name, tok[j]) || flags["-"+tok[j:j+1]] {
-			break
-		}
-	}
-	return "", false
+// writeOptions are the tools whose options name an output file or directory.
+var writeOptions = map[string]writeOption{
+	"curl":    {spec: curlSyntax, names: []string{"-o", "--output", "-D", "--dump-header", "-c", "--cookie-jar", "--trace", "--trace-ascii"}},
+	"wget":    {spec: wgetSyntax, names: []string{"--output-document", "-o", "--output-file", "-a", "--append-output"}},
+	"sort":    {spec: sortOptions, names: []string{"-o", "--output"}},
+	"gcc":     {spec: gccOptions, names: []string{"-o"}},
+	"g++":     {spec: gccOptions, names: []string{"-o"}},
+	"cc":      {spec: gccOptions, names: []string{"-o"}},
+	"c++":     {spec: gccOptions, names: []string{"-o"}},
+	"clang":   {spec: gccOptions, names: []string{"-o"}},
+	"clang++": {spec: gccOptions, names: []string{"-o"}},
+	"gpg":     {spec: gpgOptions, names: []string{"-o", "--output"}},
+	"gpg2":    {spec: gpgOptions, names: []string{"-o", "--output"}},
+	"find":    {spec: findOptions, names: []string{"-fprint", "-fprint0", "-fprintf"}},
+	"cp":      {spec: cpOptions, names: []string{"-t", "--target-directory"}},
+	"mv":      {spec: cpOptions, names: []string{"-t", "--target-directory"}},
+	"install": {spec: modeOptions["install"], names: []string{"-t", "--target-directory"}},
+	"tar":     {spec: tarOptions, names: []string{"-C", "--directory"}},
+	"unzip":   {spec: optSpec{short: "d"}, names: []string{"-d"}},
+	"7z":      {spec: optSpec{short: "o"}, names: []string{"-o"}},
+	"7za":     {spec: optSpec{short: "o"}, names: []string{"-o"}},
+	"7zz":     {spec: optSpec{short: "o"}, names: []string{"-o"}},
+	"pandoc":  {spec: optSpec{short: "o", long: valueOpts("output"), abbrev: true}, names: []string{"-o", "--output"}},
 }
 
-// curlRemoteName reports whether curl names its output after the URL (-O,
-// --remote-name, --remote-name-all), including -O fused into a short cluster
-// and abbreviated long spellings.
-func curlRemoteName(tokens []string) bool {
-	if optionPresent(tokens, "-O", "--remote-name", "--remote-name-all") {
-		return true
+var (
+	sortOptions = optSpec{
+		short: "ktTSo",
+		long: valueOpts("output key field-separator temporary-directory buffer-size parallel compress-program " +
+			"files0-from random-source batch-size sort"),
+		abbrev: true,
 	}
-	flags := map[string]bool{"-o": true, "-D": true, "-c": true}
-	for _, tok := range tokens[1:] {
-		if _, ok := shortClusterValue("curl", flags, tok, "", 'O'); ok {
-			return true
-		}
-		for _, full := range []string{"--remote-name", "--remote-name-all"} {
-			if _, _, ok := longOptionAbbreviation(tok, full); ok {
-				return true
-			}
-		}
-	}
-	return false
-}
+	gccOptions  = optSpec{short: "o"}
+	gpgOptions  = optSpec{short: "rpuo", long: valueOpts("output recipient local-user"), abbrev: true}
+	findOptions = optSpec{exact: []string{"-fprint", "-fprint0", "-fprintf"}}
+	cpOptions   = optSpec{short: "tS", long: valueOpts("target-directory suffix"), abbrev: true}
+
+	// git archive writes the file named by -o/--output; the history and diff
+	// viewers write --output only, and git reads their abbreviation from four
+	// characters on.
+	gitArchiveOptions = optSpec{short: "o", long: valueOpts("output"), abbrev: true}
+	gitOutputOptions  = optSpec{long: valueOpts("output"), abbrev: true, minAbbrev: 4}
+)

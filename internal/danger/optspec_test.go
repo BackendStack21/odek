@@ -244,3 +244,42 @@ func TestOptSpecExecutionFileOptions(t *testing.T) {
 		}
 	}
 }
+
+// TestOptSpecWriteTargets covers where the output-file options of curl, wget
+// and git put their files, including spellings the old scans misread.
+func TestOptSpecWriteTargets(t *testing.T) {
+	for _, tc := range []struct {
+		cmd  string
+		want []string
+	}{
+		{"curl -o /tmp/x http://h", []string{"/tmp/x"}},
+		{"curl -sSLo /tmp/x http://h", []string{"/tmp/x"}},
+		{"curl --output-dir /tmp -o x http://h", []string{"/tmp/x"}},
+		// curl -P is --ftp-port, not a download directory.
+		{"curl -P eth0 -o x http://h", []string{"x"}},
+		// -H takes "-o" as the header, so there is no output file.
+		{"curl -H -o x http://h", nil},
+		{"curl -sEo out http://h", nil},
+		{"wget -qO /tmp/x http://h/x", []string{"/tmp/x"}},
+		// -O- writes to stdout: no file is named after the URL.
+		{"wget -qO- http://h/x", []string{"-"}},
+		{"wget --output-doc=/tmp/x http://h", []string{"/tmp/x"}},
+		{"wget -qP /tmp http://h/x", []string{"/tmp/x"}},
+		{"git archive --output=/tmp/a.tar HEAD", []string{"/tmp/a.tar"}},
+		{"git archive -o/tmp/a.tar HEAD", []string{"/tmp/a.tar"}},
+		{"git log --output=/tmp/a", []string{"/tmp/a"}},
+		{"git log -- --output=/tmp/a", nil},
+		{"git log --out /tmp/a", nil},
+		{"tar --dir /etc -xf a", []string{"/etc"}},
+		{"sort -ro /tmp/x f", []string{"/tmp/x"}},
+		{"find . -fprint /tmp/x", []string{"/tmp/x"}},
+		{"cp -rt /tmp a b", []string{"/tmp"}},
+		{"unzip -qd /tmp/x f.zip", []string{"/tmp/x"}},
+	} {
+		toks := tokenize(tc.cmd)
+		got := semanticWriteTargets(commandName(toks[0]), toks)
+		if strings.Join(got, "|") != strings.Join(tc.want, "|") {
+			t.Errorf("semanticWriteTargets(%q) = %q, want %q", tc.cmd, got, tc.want)
+		}
+	}
+}
