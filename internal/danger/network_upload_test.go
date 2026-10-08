@@ -540,12 +540,25 @@ func TestNetworkUpload_NetcatExecIsCodeExecution(t *testing.T) {
 // ── gh and cloud CLIs ───────────────────────────────────────────────
 
 func TestNetworkUpload_GhAndCloudUploadForms(t *testing.T) {
-	nuUpload(t,
+	// gh forms that push local content are remote mutations too, so the gh
+	// verb adapter's system_write wins the summary; the upload effect must
+	// still be carried for independent policy.
+	for _, cmd := range []string{
 		"gh gist create f",
 		"gh gist create -p f",
 		"gh gist create -d desc f1 f2",
 		"gh release upload v1 dist/app.tgz",
 		"gh api --input f repos/x/y/issues",
+	} {
+		eff := nuEffects(cmd)
+		if !eff[NetworkUpload] || !eff[NetworkEgress] {
+			t.Errorf("Analyze(%q).Effects = %v, want network_upload beside network_egress", cmd, Analyze(cmd).Effects)
+		}
+		if got := Classify(cmd); Rank(got) < Rank(NetworkUpload) {
+			t.Errorf("Classify(%q) = %s, want network_upload or worse", cmd, got)
+		}
+	}
+	nuUpload(t,
 		"aws s3 cp f s3://b/k",
 		"aws s3 cp --recursive dir s3://b/p",
 		"aws s3 sync dir s3://b/p",
@@ -564,8 +577,12 @@ func TestNetworkUpload_GhAndCloudUploadForms(t *testing.T) {
 		"gh gist list",
 		"gh gist view abc",
 		"gh api repos/x/y",
-		"gh issue create --title t --body b",
 	)
+	// A remote mutation without local content is the gh adapter's
+	// system_write, never an upload.
+	if eff := nuEffects("gh issue create --title t --body b"); eff[NetworkUpload] || !eff[SystemWrite] {
+		t.Errorf("gh issue create effects = %v, want system_write without network_upload", Analyze("gh issue create --title t --body b").Effects)
+	}
 	// Everything else on these CLIs keeps today's classification.
 	for _, cmd := range []string{
 		"aws s3 cp s3://b/k .",
