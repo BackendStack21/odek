@@ -156,6 +156,9 @@ func analyzeWithState(cmd string, depth int, inherited *shellAnalysisState) Anal
 	// is unknown.
 	chainVars := make(map[string]bool)
 	chainCwd := false
+	// substExecutes marks a stage that executes the output of a command or
+	// process substitution (eval "$(…)", bash <(…)).
+	substExecutes := false
 	endChain := func() {
 		for name := range chainVars {
 			delete(state.vars, name)
@@ -268,12 +271,24 @@ func analyzeWithState(cmd string, depth int, inherited *shellAnalysisState) Anal
 			}
 			if cwdKnown && !state.uncertain {
 				files, rewritten := stageLedgerFiles(stage, stageCwd, state.written)
+				// An interpreter fed by a pipe executes what the upstream
+				// readers emit, so their file operands are the program.
+				if i > 0 && stdinProgramStage(name, inner) {
+					for _, upstream := range prepared[:i] {
+						f, r := readerFeedFiles(upstream, stageCwd, state.written)
+						files = append(files, f...)
+						rewritten = append(rewritten, r...)
+					}
+				}
 				for _, path := range files {
 					result.addFile(path)
 				}
 				for _, path := range rewritten {
 					result.addRewritten(path)
 				}
+			}
+			if substFeedsProgram(name, inner) {
+				substExecutes = true
 			}
 			for _, target := range semanticWriteTargets(name, inner) {
 				if target == "-" {
@@ -343,6 +358,15 @@ func analyzeWithState(cmd string, depth int, inherited *shellAnalysisState) Anal
 	endChain()
 	for _, sub := range subs {
 		result.merge(analyzeWithState(sub, depth+1, &state))
+		if substExecutes && !state.uncertain {
+			files, rewritten := substitutionReaderFiles(sub, state.cwd, state.written)
+			for _, path := range files {
+				result.addFile(path)
+			}
+			for _, path := range rewritten {
+				result.addRewritten(path)
+			}
+		}
 	}
 	if len(result.Effects) == 0 {
 		result.add(Safe)

@@ -388,9 +388,36 @@ func sedInlineProgram(tok string) string {
 
 func executionFileTargets(name string, tokens []string) []string {
 	var options []string
+	// commandOptions take a debugger/editor command string whose `source`
+	// style commands load a script file.
+	var commandOptions []string
 	switch name {
 	case "awk", "gawk", "mawk", "nawk":
-		options = []string{"-l", "--load"}
+		// -f/--file name the awk program; -i/--include and -l/--load pull
+		// in more awk source or extension libraries.
+		options = []string{"-l", "--load", "-f", "--file", "-i", "--include"}
+	case "sed":
+		options = []string{"-f", "--file"}
+	case "emacs":
+		options = []string{"--script", "-l", "--load", "-x"}
+	case "vi", "vim", "view", "ex", "rvim", "gvim", "nvim":
+		// -S sources a session script, -u a vimrc, -s a keystroke script; nvim
+		// -l runs a Lua file. -c/--cmd and +cmd run ex commands.
+		options = []string{"-S", "-u", "-U", "-s"}
+		if name == "nvim" {
+			options = append(options, "-l")
+		}
+		commandOptions = []string{"-c", "--cmd"}
+	case "make", "gmake":
+		options = []string{"-f", "--file", "--makefile"}
+	case "just":
+		options = []string{"-f", "--justfile"}
+	case "gdb":
+		options = []string{"-x", "--command", "-ix", "--init-command"}
+		commandOptions = []string{"-ex", "--eval-command", "-iex", "--init-eval-command"}
+	case "lldb":
+		options = []string{"-s", "--source", "-S", "--source-before-file", "-k", "--source-on-crash", "-K", "--source-on-crash-before-file"}
+		commandOptions = []string{"-o", "--one-line", "-O", "--one-line-before-file"}
 	case "rg":
 		options = []string{"--pre"}
 	case "fd", "fdfind":
@@ -415,23 +442,25 @@ func executionFileTargets(name string, tokens []string) []string {
 		}
 		return out
 	}
+	all := append(append([]string(nil), commandOptions...), options...)
 	var out []string
 	for i := 1; i < len(tokens); i++ {
-		for _, option := range options {
-			var value string
-			tok := tokens[i]
-			if tok == option {
-				if i+1 < len(tokens) {
-					i++
-					value = tokens[i]
-				}
-			} else if strings.HasPrefix(tok, option+"=") {
-				value = strings.TrimPrefix(tok, option+"=")
-			} else if len(option) == 2 && strings.HasPrefix(tok, option) && len(tok) > 2 {
-				value = tok[2:]
-			}
-			if value == "" {
+		if tok := tokens[i]; len(tok) > 1 && tok[0] == '+' && hasAny(commandOptionOwners, name) {
+			out = append(out, sourceCommandFiles(tok[1:])...)
+			continue
+		}
+		for _, option := range all {
+			value, last, ok := optionValue(tokens, i, option, all)
+			if !ok {
 				continue
+			}
+			i = last
+			if value == "" {
+				break
+			}
+			if hasAny(commandOptions, option) {
+				out = append(out, sourceCommandFiles(value)...)
+				break
 			}
 			if name == "tar" {
 				value = strings.TrimPrefix(value, "exec=")
@@ -448,6 +477,49 @@ func executionFileTargets(name string, tokens []string) []string {
 		}
 	}
 	return out
+}
+
+// commandOptionOwners are the editors whose +CMD arguments run ex commands.
+var commandOptionOwners = []string{"vi", "vim", "view", "ex", "rvim", "gvim", "nvim"}
+
+// optionValue matches the option at tokens[i] against option and returns its
+// value and the index of the last token consumed. It accepts the separate
+// (`-f FILE`), `=`-joined, fused (`-fFILE`), short-cluster (`-nf FILE`) and
+// unambiguous long-prefix (`--fil FILE`) spellings getopt allows.
+func optionValue(tokens []string, i int, option string, all []string) (value string, last int, ok bool) {
+	tok := tokens[i]
+	next := func() (string, int, bool) {
+		if i+1 < len(tokens) {
+			return tokens[i+1], i + 1, true
+		}
+		return "", i, false
+	}
+	switch {
+	case tok == option:
+		return next()
+	case strings.HasPrefix(tok, option+"="):
+		return tok[len(option)+1:], i, true
+	case len(option) == 2 && strings.HasPrefix(tok, option) && len(tok) > 2:
+		return tok[2:], i, true
+	case len(option) == 2 && option[1] != '-' && isShortFlagToken(tok) && len(tok) > 2 &&
+		tok[len(tok)-1] == option[1] && strings.Trim(tok[1:], "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ") == "":
+		return next()
+	case strings.HasPrefix(option, "--") && strings.HasPrefix(tok, "--") && len(tok) > 3:
+		name, val, hasEq := strings.Cut(tok, "=")
+		if name == option || !strings.HasPrefix(option, name) {
+			return "", i, false
+		}
+		for _, other := range all {
+			if other != option && strings.HasPrefix(other, name) {
+				return "", i, false // ambiguous prefix
+			}
+		}
+		if hasEq {
+			return val, i, true
+		}
+		return next()
+	}
+	return "", i, false
 }
 
 // semanticWriteTargets extracts destinations that are not shell redirects.

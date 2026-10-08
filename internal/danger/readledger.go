@@ -736,6 +736,9 @@ func stageExecutionFilesWritten(stage []string, cwd string, written map[string]b
 	}
 	name := commandName(cmdTokens[0])
 	operands := cmdTokens[1:]
+	if name == "find" {
+		return findExecutionFiles(cmdTokens, cwd, written)
+	}
 	helperTargets := executionFileTargets(name, cmdTokens)
 	if interpreterIsSyntaxCheck(name, cmdTokens) {
 		return nil

@@ -277,3 +277,96 @@ func TestLeftover_BraceSequenceClassification(t *testing.T) {
 		}
 	}
 }
+
+// A script reaches an interpreter without being a path operand: piped in,
+// fed through a substitution, redirected to stdin, or named by an option of
+// a tool that loads a program file. Each form executes the file's content,
+// so an unread file must gate exactly like `bash x.sh`.
+func TestLeftover_ReadLedgerGatesIndirectScriptForms(t *testing.T) {
+	cases := []struct{ cmd, file string }{
+		{"cat x.sh | bash", "x.sh"},
+		{"cat x.sh | sh -s", "x.sh"},
+		{"cat x.sh | sudo bash", "x.sh"},
+		{"cat ./x.sh | bash -s -- arg", "x.sh"},
+		{"cat x.py | python3", "x.py"},
+		{"cat x.js | node", "x.js"},
+		{"bash <(cat x.sh)", "x.sh"},
+		{"source <(cat x.sh)", "x.sh"},
+		{". <(cat x.sh)", "x.sh"},
+		{`sh <<< "$(cat x.sh)"`, "x.sh"},
+		{"bash < <(cat x.sh)", "x.sh"},
+		{`eval "$(cat x.sh)"`, "x.sh"},
+		{"eval `cat x.sh`", "x.sh"},
+		{"python3 < x.py", "x.py"},
+		{"node < x.js", "x.js"},
+		{"awk -f x.awk", "x.awk"},
+		{"gawk -f x.awk data", "x.awk"},
+		{"awk --file=x.awk data", "x.awk"},
+		{"awk --file x.awk data", "x.awk"},
+		{"sed -f x.sed in", "x.sed"},
+		{"sed --file=x.sed in", "x.sed"},
+		{"sed -n -f x.sed in", "x.sed"},
+		{"emacs --script x.el", "x.el"},
+		{"emacs -Q --batch -l x.el", "x.el"},
+		{"emacs --batch --load x.el", "x.el"},
+		{"emacs --batch --load=x.el", "x.el"},
+		{"vim -S x.vim", "x.vim"},
+		{"vim -u x.vim -c q", "x.vim"},
+		{"nvim -l x.lua", "x.lua"},
+		{"nvim --headless -S x.vim", "x.vim"},
+		{"find . -exec ./x.sh {} +", "x.sh"},
+		{`find . -execdir bash x.sh {} \;`, "x.sh"},
+		{"find . -name '*.c' -exec sh x.sh {} +", "x.sh"},
+		{"xargs -I{} bash x.sh {}", "x.sh"},
+		{"ls | xargs bash x.sh", "x.sh"},
+		{"parallel bash x.sh ::: a", "x.sh"},
+		{"make -f x.mk", "x.mk"},
+		{"make --file=x.mk all", "x.mk"},
+		{"make --makefile x.mk", "x.mk"},
+		{"gdb -x x.gdb prog", "x.gdb"},
+		{"gdb -batch -x x.gdb prog", "x.gdb"},
+		{"gdb --command=x.gdb prog", "x.gdb"},
+		{"gdb -batch -ex 'source x.py' prog", "x.py"},
+		{"lldb -s x.lldb", "x.lldb"},
+		{"lldb --source x.lldb", "x.lldb"},
+		{"sqlite3 db '.read x.sql'", "x.sql"},
+	}
+	for _, c := range cases {
+		ledgerSandbox(t)
+		ledgerWrite(t, c.file, "echo hi\n", 0o644)
+		if got := UnreadScriptTargets(c.cmd); !targetsContainBase(got, c.file) {
+			t.Errorf("UnreadScriptTargets(%q) = %v, want %s gated while unread", c.cmd, got, c.file)
+		}
+		RecordRead(c.file)
+		if got := UnreadScriptTargets(c.cmd); targetsContainBase(got, c.file) {
+			t.Errorf("UnreadScriptTargets(%q) = %v after read, want %s licensed", c.cmd, got, c.file)
+		}
+	}
+}
+
+// Plain data uses of the same tools stay ungated.
+func TestLeftover_ReadLedgerIndirectFormsDoNotOverGate(t *testing.T) {
+	ledgerSandbox(t)
+	ledgerWrite(t, "x.sh", "echo hi\n", 0o644)
+	ledgerWrite(t, "data.txt", "hi\n", 0o644)
+	for _, cmd := range []string{
+		"cat x.sh | grep echo",
+		"cat x.sh | wc -l",
+		"grep -f x.sh data.txt",
+		"diff <(cat x.sh) data.txt",
+		"echo \"$(cat x.sh)\"",
+		"cat x.sh | head -1",
+		"make -n all",
+		"find . -name x.sh",
+		"find . -exec cat x.sh {} +",
+		"xargs cat x.sh",
+		"vim x.sh",
+		"awk '{print $1}' x.sh",
+		"sed -n 1p x.sh",
+		"emacs x.sh",
+	} {
+		if got := UnreadScriptTargets(cmd); len(got) != 0 {
+			t.Errorf("UnreadScriptTargets(%q) = %v, want no gate (the file is data)", cmd, got)
+		}
+	}
+}
