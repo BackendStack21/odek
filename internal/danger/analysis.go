@@ -13,6 +13,9 @@ import (
 type Analysis struct {
 	Effects        []RiskClass
 	ExecutionFiles []string
+	// RewrittenFiles are execution files that an earlier stage of the same
+	// command writes: no prior read describes the content that will run.
+	RewrittenFiles []string
 }
 
 func (a Analysis) Class() RiskClass {
@@ -48,6 +51,18 @@ func (a *Analysis) merge(other Analysis) {
 	for _, path := range other.ExecutionFiles {
 		a.addFile(path)
 	}
+	for _, path := range other.RewrittenFiles {
+		a.addRewritten(path)
+	}
+}
+
+func (a *Analysis) addRewritten(path string) {
+	for _, existing := range a.RewrittenFiles {
+		if path == existing {
+			return
+		}
+	}
+	a.RewrittenFiles = append(a.RewrittenFiles, path)
 }
 
 func stricterAction(a, b Action) Action {
@@ -85,6 +100,9 @@ type shellAnalysisState struct {
 	cwd       string
 	vars      map[string]string
 	uncertain bool
+	// written holds the resolved paths earlier stages of the command write;
+	// it is shared with nested payload analyses.
+	written map[string]bool
 }
 
 // Bound static expansion independently of recursion: repeated assignments
@@ -106,13 +124,16 @@ func analyzeWithState(cmd string, depth int, inherited *shellAnalysisState) Anal
 	main, subs := normalize(cmd)
 	tokens := tokenize(main)
 	cwd, err := os.Getwd()
-	state := shellAnalysisState{cwd: cwd, vars: make(map[string]string), uncertain: err != nil}
+	state := shellAnalysisState{cwd: cwd, vars: make(map[string]string), uncertain: err != nil, written: make(map[string]bool)}
 	if st, statErr := os.Stat(cwd); statErr != nil || !st.IsDir() {
 		state.uncertain = true
 	}
 	if inherited != nil {
 		state.cwd = inherited.cwd
 		state.uncertain = inherited.uncertain
+		if inherited.written != nil {
+			state.written = inherited.written
+		}
 		for name, value := range inherited.vars {
 			state.vars[name] = value
 		}
@@ -210,8 +231,12 @@ func analyzeWithState(cmd string, depth int, inherited *shellAnalysisState) Anal
 				}
 			}
 			if cwdKnown && !state.uncertain {
-				for _, path := range stageExecutionFiles(stage, stageCwd) {
+				files, rewritten := stageLedgerFiles(stage, stageCwd, state.written)
+				for _, path := range files {
 					result.addFile(path)
+				}
+				for _, path := range rewritten {
+					result.addRewritten(path)
 				}
 			}
 			for _, target := range semanticWriteTargets(name, inner) {

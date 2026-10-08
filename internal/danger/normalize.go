@@ -100,31 +100,20 @@ func normalizeCommandSpacing(s string) string {
 }
 
 // isInvisible reports whether r is a zero-width or otherwise invisible
-// character commonly used to evade text scanners.
+// character commonly used to evade text scanners. Every Unicode format
+// character (category Cf: bidi controls and isolates, the Arabic letter mark,
+// invisible operators, tag characters, BOM) is invisible, as are the Hangul
+// fillers, which are letters by category but render as blank space.
 func isInvisible(r rune) bool {
 	switch r {
-	case '\u00AD', // soft hyphen
-		'\u034F', // combining grapheme joiner
+	case '\u034F', // combining grapheme joiner
+		'\u115F', '\u1160', // Hangul choseong / jungseong fillers
 		'\u180E', // Mongolian vowel separator
-		'\u200B', // zero-width space
-		'\u200C', // zero-width non-joiner
-		'\u200D', // zero-width joiner
-		'\u200E', // left-to-right mark
-		'\u200F', // right-to-left mark
-		'\u202A', // left-to-right embedding
-		'\u202B', // right-to-left embedding
-		'\u202C', // pop directional formatting
-		'\u202D', // left-to-right override
-		'\u202E', // right-to-left override
-		'\u2060', // word joiner
-		'\u2061', // function application
-		'\u2062', // invisible times
-		'\u2063', // invisible separator
-		'\u2064', // invisible plus
-		'\uFEFF': // byte order mark
+		'\u3164', // Hangul filler
+		'\uFFA0': // halfwidth Hangul filler
 		return true
 	}
-	return false
+	return unicode.Is(unicode.Cf, r)
 }
 
 // ContainsInvisible reports whether s contains any invisible character that

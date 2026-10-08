@@ -19,11 +19,11 @@ type InjectionPattern struct {
 // paraphrased exfiltration, and non-English injection markers.
 var injectionPatterns = []InjectionPattern{
 	// ── Identity override ──────────────────────────────────────────
-	{regexp.MustCompile(`ignore (all )?(previous|prior|above|earlier) (instructions?|directives?|rules?|messages?)`), "ignore previous instructions"},
-	{regexp.MustCompile(`disregard (all )?(previous|prior|above|earlier) (instructions?|directives?|rules?)`), "disregard instructions"},
+	{regexp.MustCompile(`ignore (all |any )?(of )?(your |the |my )?(all )?(previous|prior|above|earlier) (instructions?|directives?|rules?|messages?)`), "ignore previous instructions"},
+	{regexp.MustCompile(`disregard (all |any )?(of )?(your |the |my )?(all )?(previous|prior|above|earlier) (instructions?|directives?|rules?)`), "disregard instructions"},
 	{regexp.MustCompile(`disregard everything`), "disregard everything"},
 	{regexp.MustCompile(`follow these new instructions`), "follow new instructions"},
-	{regexp.MustCompile(`you (are )?(now|no longer) .*?\b(ai|assistant|agent|model)\b`), "identity replacement"},
+	{regexp.MustCompile(`you (are )?(now|no longer) [^.!?;\n]{0,40}?\b(ai|assistant|agent|model)\b`), "identity replacement"},
 	{regexp.MustCompile(`(new|updated|revised) system (prompt|instructions?|message)`), "new system prompt"},
 	{regexp.MustCompile(`(your|the) (new|primary|overriding) (directive|goal|purpose) (is|shall be)`), "overriding directive"},
 	{regexp.MustCompile(`treat this as (your|the) (primary|highest|top|main|only) (instruction|directive|rule|priority|goal)`), "authority override"},
@@ -90,14 +90,14 @@ var injectionPatterns = []InjectionPattern{
 
 	// ── Non-English injection markers ──────────────────────────────
 	// French
-	{regexp.MustCompile(`ignor(er|ez|e|ons|ent)? (toutes? )?(les? )?instructions? (précédentes?|antérieures?)`), "non-english: ignore previous instructions"},
-	{regexp.MustCompile(`oubli(er|ez|e|ons|ent)? (toutes? )?(les? )?instructions? (précédentes?|antérieures?)`), "non-english: disregard instructions"},
+	{regexp.MustCompile(`ignor(er|ez|e|ons|ent)? (toutes? )?(les? )?instructions? (pr(é|e)c(é|e)dentes?|ant(é|e)rieures?)`), "non-english: ignore previous instructions"},
+	{regexp.MustCompile(`oubli(er|ez|e|ons|ent)? (toutes? )?(les? )?instructions? (pr(é|e)c(é|e)dentes?|ant(é|e)rieures?)`), "non-english: disregard instructions"},
 	// Spanish
 	{regexp.MustCompile(`ignora(r|d|is|mos|n)? (todas? )?(las? )?instrucciones? (previas?|anteriores?)`), "non-english: ignore previous instructions"},
 	{regexp.MustCompile(`olvida(r|d|is|mos|n)? (todas? )?(las? )?instrucciones? (previas?|anteriores?)`), "non-english: disregard instructions"},
 	// German
-	{regexp.MustCompile(`ignoriere(n|s|t)? (alle )?(vorherigen|früheren) anweisungen`), "non-english: ignore previous instructions"},
-	{regexp.MustCompile(`vergiss(e|en|t)? (alle )?(vorherigen|früheren) anweisungen`), "non-english: disregard instructions"},
+	{regexp.MustCompile(`ignoriere(n|s|t)? (alle )?(vorherigen|fr(ü|u)heren) anweisungen`), "non-english: ignore previous instructions"},
+	{regexp.MustCompile(`vergiss(e|en|t)? (alle )?(vorherigen|fr(ü|u)heren) anweisungen`), "non-english: disregard instructions"},
 	// Russian
 	{regexp.MustCompile(`игнорировать (все )?предыдущие инструкции`), "non-english: ignore previous instructions"},
 	{regexp.MustCompile(`забудь(те)? (все )?предыдущие инструкции`), "non-english: disregard instructions"},
