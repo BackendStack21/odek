@@ -54,8 +54,8 @@ func TrustShortcutAllowed(cls RiskClass) bool {
 }
 
 // readToolNames are the native tools whose entire effect on their target is
-// inspection. Used by the read_only non-interactive fallback — the
-// description parameter of PromptOperation carries the tool name.
+// inspection. Used by the read_only non-interactive fallback, keyed on the
+// operation name of PromptOperation only.
 var readToolNames = map[string]bool{
 	"read_file": true, "search_files": true, "glob": true,
 	"file_info": true, "tree": true, "diff": true,
@@ -231,26 +231,29 @@ func (a *TTYApprover) SetTrustAll(enabled bool) {
 	a.mu.Unlock()
 }
 
+// PromptCommand never treats description as a tool name: for shell commands
+// it is model-supplied free text, so the read_only carve-out for native read
+// tools cannot be reached through it.
 func (a *TTYApprover) PromptCommand(cls RiskClass, cmd, description string) error {
-	return a.prompt(cls, cmd, description)
+	return a.prompt(cls, cmd, description, false)
 }
 
 func (a *TTYApprover) PromptOperation(op ToolOperation) error {
-	return a.prompt(op.Risk, op.Resource, op.Name)
+	return a.prompt(op.Risk, op.Resource, op.Name, isReadToolName(op.Name))
 }
 
-func (a *TTYApprover) prompt(cls RiskClass, cmd, description string) error {
+func (a *TTYApprover) prompt(cls RiskClass, cmd, description string, readTool bool) error {
 	// Serialize all TTY prompts process-wide. Concurrent tool calls
 	// otherwise open /dev/tty independently and race for keystrokes.
 	ttyPromptMu.Lock()
 	defer ttyPromptMu.Unlock()
-	return a.promptLocked(cls, cmd, description)
+	return a.promptLocked(cls, cmd, description, readTool)
 }
 
 // promptLocked is the inner prompt implementation. The caller must hold
 // ttyPromptMu. It may recurse for the "context" command or after telling
 // the user that trust-session is unavailable for a high-impact class.
-func (a *TTYApprover) promptLocked(cls RiskClass, cmd, description string) error {
+func (a *TTYApprover) promptLocked(cls RiskClass, cmd, description string, readTool bool) error {
 	// Check session trust cache. Trust shortcuts only ever cover classes
 	// TrustShortcutAllowed permits — Destructive, Persistence, UnreadExec,
 	// Blocked, Unknown and ToolBatch always prompt, even with trustAll set.
@@ -280,7 +283,7 @@ func (a *TTYApprover) promptLocked(cls RiskClass, cmd, description string) error
 			case Allow:
 				return nil
 			case ReadOnly:
-				if Rank(cls) < Rank(SystemWrite) && (cls == Safe || isReadToolName(description)) {
+				if Rank(cls) < Rank(SystemWrite) && (cls == Safe || readTool) {
 					return nil
 				}
 				return fmt.Errorf("operation denied (non-interactive read_only mode): %s", cmd)
@@ -301,10 +304,10 @@ func (a *TTYApprover) promptLocked(cls RiskClass, cmd, description string) error
 				// Reads proceed, mutations do not. A read is either a
 				// Safe-classified shell command (ls, cat — the classifier
 				// already judged it non-mutating) or a native read tool
-				// (description carries the tool name) targeting anything
+				// (named by PromptOperation, never by a description) targeting anything
 				// below the system_write tier — sensitive-location reads
 				// still gate.
-				if Rank(cls) < Rank(SystemWrite) && (cls == Safe || isReadToolName(description)) {
+				if Rank(cls) < Rank(SystemWrite) && (cls == Safe || readTool) {
 					return nil
 				}
 				return fmt.Errorf("operation denied (non-interactive read_only mode): %s", cmd)
@@ -399,7 +402,7 @@ func (a *TTYApprover) promptLocked(cls RiskClass, cmd, description string) error
 	case "t", "trust":
 		if !allowTrust {
 			fmt.Fprintf(os.Stderr, "   trust-session not available for %s — type 'a' to approve once or 'd' to deny\n", cls)
-			return a.promptLocked(cls, cmd, description)
+			return a.promptLocked(cls, cmd, description, readTool)
 		}
 		// A trust grant is an approval: record it so rapid-fire grants
 		// engage the same approval-fatigue friction as plain approvals.
@@ -422,7 +425,7 @@ func (a *TTYApprover) promptLocked(cls RiskClass, cmd, description string) error
 		a.mu.Unlock()
 		fmt.Fprintf(tty, "  Trust this class: %v\n", trusted)
 		// Re-prompt
-		return a.promptLocked(cls, cmd, description)
+		return a.promptLocked(cls, cmd, description, readTool)
 	default:
 		return fmt.Errorf("operation denied by user: %s", cmd)
 	}
