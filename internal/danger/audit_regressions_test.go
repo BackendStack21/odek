@@ -102,6 +102,7 @@ func TestAudit_UnterminatedQuoteExtraction(t *testing.T) {
 // (GIT_PAGER/LD_PRELOAD/MANPAGER/NODE_OPTIONS) redefined how the "safe"
 // wrapped command executed with zero prompting.
 func TestAudit_EnvPrefixAssignmentValues(t *testing.T) {
+	chdirUnarmedRepo(t)
 	tests := []struct {
 		cmd  string
 		want RiskClass
@@ -131,7 +132,7 @@ func TestAudit_EnvPrefixAssignmentValues(t *testing.T) {
 		{"ENV=production ls", Safe},
 		{"SHELL=/bin/bash echo hi", Safe},
 		{"SHELL=/bin/sh echo hi", Safe},
-		{"GIT_TRACE2=1 git status", CodeExecution},
+		{"GIT_TRACE2=1 git status", Safe},
 	}
 	// Inert values must not escalate beyond what the bare verb already
 	// classifies as (node app.js is code_execution on its own; make is
@@ -214,6 +215,7 @@ func TestAudit_RsyncRemoteWithoutUser(t *testing.T) {
 // deletes an entire working tree (all uncommitted work under --force) but
 // was missing from the data-loss verbs, so it classified safe.
 func TestAudit_GitWorktreeRemove(t *testing.T) {
+	chdirUnarmedRepo(t)
 	tests := []struct {
 		cmd  string
 		want RiskClass
@@ -222,7 +224,9 @@ func TestAudit_GitWorktreeRemove(t *testing.T) {
 		{"git worktree remove ../other", SystemWrite},
 		{"git worktree prune", SystemWrite},
 		{"git worktree list", Safe},
-		{"git worktree add ../x", CodeExecution},
+		// An unarmed repository makes `worktree add` a plain directory
+		// creation at the destination path.
+		{"git worktree add ../x", LocalWrite},
 	}
 	for _, tt := range tests {
 		t.Run(tt.cmd, func(t *testing.T) {

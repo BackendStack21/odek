@@ -14,7 +14,7 @@ var projectCodeTools = map[string]bool{
 	"golangci-lint": true, "gdb": true, "lldb": true,
 }
 
-func adapterRunsCode(name string, tokens []string) bool {
+func adapterRunsCode(name string, tokens []string, repo *gitRepoCtx) bool {
 	if hasAny([]string{"awk", "gawk", "mawk", "nawk"}, name) && optionPresent(tokens, "-l", "--load") {
 		return true
 	}
@@ -51,18 +51,24 @@ func adapterRunsCode(name string, tokens []string) bool {
 	if name == "git" {
 		sub, args := gitSubcommandAndArgs(tokens)
 		switch sub {
-		case "commit", "merge", "checkout", "switch", "cherry-pick", "am", "difftool", "mergetool", "add", "status", "restore", "stash", "gc":
+		case "difftool", "mergetool":
+			// These launch the configured diff/merge tool by design.
 			return true
+		case "commit", "merge", "checkout", "switch", "cherry-pick", "am", "add", "status", "restore", "stash", "gc":
+			return gitVerbRunsRepoCode(sub, args, tokens, repo)
 		case "worktree", "submodule":
-			return !hasAny(args, "list", "status")
+			return !hasAny(args, "list", "status") && gitVerbRunsRepoCode(sub, args, tokens, repo)
 		case "rebase":
-			return !hasAny(args, "--abort", "--quit")
+			return !hasAny(args, "--abort", "--quit") && gitVerbRunsRepoCode(sub, args, tokens, repo)
 		case "bisect", "hook":
 			// `bisect run <cmd>` executes <cmd> per step; `hook run` runs the
 			// repository hook script.
 			return len(args) > 0 && args[0] == "run"
 		case "diff", "show", "log":
-			return hasAny(tokens, "--ext-diff", "--textconv") || (sub == "diff" && (!hasAny(tokens, "--no-ext-diff") || !hasAny(tokens, "--no-textconv")))
+			if gitExplicitDiffProgram(tokens) {
+				return true
+			}
+			return gitVerbRunsRepoCode(sub, args, tokens, repo)
 		}
 	}
 	if name == "curl" && optionPresent(tokens, "-K", "--config") {
@@ -70,6 +76,54 @@ func adapterRunsCode(name string, tokens []string) bool {
 	}
 	if name == "wget" && optionPresent(tokens, "--config", "-i", "--input-file") {
 		return true
+	}
+	return false
+}
+
+// gitWorktreeWriteTargets returns the destination path operands of
+// `git worktree add` (the path) and `git worktree move` (the destination).
+func gitWorktreeWriteTargets(args []string) []string {
+	if len(args) == 0 || (args[0] != "add" && args[0] != "move") {
+		return nil
+	}
+	var operands []string
+	for i := 1; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--":
+			operands = append(operands, args[i+1:]...)
+			i = len(args)
+		case a == "-b" || a == "-B" || a == "--reason":
+			i++
+		case strings.HasPrefix(a, "-"):
+		default:
+			operands = append(operands, a)
+		}
+	}
+	if args[0] == "add" {
+		if len(operands) == 0 {
+			return []string{dynamicSubstToken}
+		}
+		return operands[:1]
+	}
+	if len(operands) < 2 {
+		return []string{dynamicSubstToken}
+	}
+	return operands[1:2]
+}
+
+// gitExplicitDiffProgram reports whether a diff-producing invocation asks for
+// an external diff driver or textconv filter on the command line (including
+// unambiguous abbreviations of --ext-diff and --textconv), which runs a
+// configured program whatever the repository state.
+func gitExplicitDiffProgram(tokens []string) bool {
+	for _, tok := range tokens[1:] {
+		if tok == "--" {
+			break
+		}
+		if gitLongOpt(tok, "ext-diff", 3) || gitLongOpt(tok, "textconv", 3) {
+			return true
+		}
 	}
 	return false
 }
@@ -576,6 +630,10 @@ func semanticWriteTargets(name string, tokens []string) []string {
 		// --output=FILE on the history/diff viewers and archive writes FILE;
 		// archive also takes the short -o FILE / -oFILE spelling.
 		switch sub, args := gitSubcommandAndArgs(tokens); sub {
+		case "worktree":
+			// `worktree add PATH` creates a directory tree at PATH and
+			// `worktree move SRC DST` relocates one; PATH is a write target.
+			targets = append(targets, gitWorktreeWriteTargets(args)...)
 		case "archive":
 			flags = map[string]bool{"-o": true, "--output": true}
 			fallthrough
