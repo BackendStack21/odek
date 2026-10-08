@@ -191,6 +191,8 @@ func TestOptSpecReadsSpellingsTheOldParsersMisread(t *testing.T) {
 		{"sed --in-pl s/a/b/ f", LocalWrite, "--in-pl abbreviates --in-place"},
 		{"sed --fil=x.sed f", CodeExecution, "--fil abbreviates --file: the script file cannot be inspected"},
 		{"sed --expr='s/a/b/e' f", CodeExecution, "--expr abbreviates --expression whose script runs a command"},
+		{"scp -O -F cfg a h:b", CodeExecution, "scp -O is the legacy-protocol flag, not an option with a value, so -F still names a config file"},
+		{"scp -OF cfg a h:b", CodeExecution, "-O in a cluster takes no value, so F takes cfg"},
 		{"kubectl -An ns get pods", NetworkEgress, "-A is a flag, so -An takes ns as the namespace and get is the verb"},
 		{"docker -Dl debug ps", Safe, "-D is a flag and -l takes debug: ps is the verb"},
 	} {
@@ -213,6 +215,32 @@ func TestOptSpecTarOptionValuesAreNotModes(t *testing.T) {
 	for _, cmd := range []string{"tar -t -x -f a.tar", "tar -txf a.tar", "tar -tf a.tar -x"} {
 		if got := Analyze(cmd).Class(); got == Safe {
 			t.Errorf("Analyze(%q).Class() = safe, want a write", cmd)
+		}
+	}
+}
+
+// TestOptSpecExecutionFileOptions covers script-file options that arrive fused
+// into a short cluster, which the option scan used to miss.
+func TestOptSpecExecutionFileOptions(t *testing.T) {
+	for _, tc := range []struct {
+		cmd  string
+		want []string
+	}{
+		{"sed -nfscript.sed f", []string{"script.sed"}},
+		{"sed -nf script.sed f", []string{"script.sed"}},
+		{"awk -vf=1 BEGIN{}", nil},
+		{"awk -v f=1 -f prog.awk x", []string{"prog.awk"}},
+		{"make -j4 -f mk", []string{"mk"}},
+		{"vim -Nu rc.vim", []string{"rc.vim"}},
+		{"vim -c 'source x.vim' +'so y.vim' f", []string{"x.vim", "y.vim"}},
+		// getopt gives -I the rest of the word, so f is the program here.
+		{"tar -xIf ./prog a.tar", []string{"f"}},
+		{"tar -xf a.tar -I ./prog", []string{"./prog"}},
+	} {
+		toks := tokenize(tc.cmd)
+		got := executionFileTargets(commandName(toks[0]), toks)
+		if strings.Join(got, "|") != strings.Join(tc.want, "|") {
+			t.Errorf("executionFileTargets(%q) = %q, want %q", tc.cmd, got, tc.want)
 		}
 	}
 }

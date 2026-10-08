@@ -171,56 +171,22 @@ func sshConfigOptionRunsProgram(opt string) bool {
 // through bundled clusters, where the first value-taking letter takes the rest
 // of the word (or the next word) as its value.
 func transferClientRunsProgram(name string, tokens []string) bool {
-	valueLetters := map[string]string{
-		"ssh":   "BbcDEeFIiJLlmOoPpQRSWw",
-		"scp":   "cDFiJlOoPSX",
-		"sftp":  "BbcDFiJlOoPRsSX",
-		"rsync": "efBTM@",
-	}[name]
-	for i := 1; i < len(tokens); i++ {
-		tok := tokens[i]
-		if tok == "--" {
-			break
-		}
-		if strings.HasPrefix(tok, "--") {
-			if name == "rsync" {
-				opt, val, hasValue := strings.Cut(tok[2:], "=")
-				if opt == "rsh" {
-					if !hasValue && i+1 < len(tokens) {
-						val = tokens[i+1]
-						i++
-					}
-					if rsyncTransportRunsProgram(val) {
-						return true
-					}
-				}
-			}
-			continue
-		}
-		if !strings.HasPrefix(tok, "-") || len(tok) < 2 {
-			continue
-		}
-		for j := 1; j < len(tok); j++ {
-			c := tok[j]
-			if strings.IndexByte(valueLetters, c) < 0 {
-				continue
-			}
-			val := tok[j+1:]
-			if val == "" && i+1 < len(tokens) {
-				val = tokens[i+1]
-				i++
-			}
-			switch {
-			case c == 'F' && name != "rsync":
-				return true
-			case c == 'o' && name != "rsync" && sshConfigOptionRunsProgram(val):
-				return true
-			case (c == 'S' || c == 'D') && (name == "scp" || name == "sftp"):
-				return true
-			case c == 'e' && name == "rsync" && rsyncTransportRunsProgram(val):
+	spec := map[string]optSpec{"ssh": sshSyntax, "scp": scpSyntax, "sftp": sftpSyntax, "rsync": rsyncSyntax}[name]
+	for _, o := range spec.parse(tokens[1:]).opts {
+		switch {
+		case name == "rsync":
+			// -e is --rsh; a missing value leaves no program named, which is
+			// read as one that cannot be vouched for. An ambiguous prefix is
+			// an rsync error and runs nothing.
+			if o.unique() && o.is("--rsh") && rsyncTransportRunsProgram(o.value) {
 				return true
 			}
-			break
+		case o.is("-F"):
+			return true
+		case o.is("-o") && sshConfigOptionRunsProgram(o.value):
+			return true
+		case (name == "scp" || name == "sftp") && o.is("-S", "-D"):
+			return true
 		}
 	}
 	return false
@@ -480,84 +446,89 @@ func executionFileTargets(name string, tokens []string) []string {
 		return out
 	}
 	all := append(append([]string(nil), commandOptions...), options...)
+	spec := valueOptionSpec(all, executionValueLetters[name])
+	args := tokens[1:]
 	var out []string
-	for i := 1; i < len(tokens); i++ {
-		if tok := tokens[i]; len(tok) > 1 && tok[0] == '+' && hasAny(commandOptionOwners, name) {
+	for i := 0; i < len(args); {
+		tok := args[i]
+		if len(tok) > 1 && tok[0] == '+' && hasAny(commandOptionOwners, name) {
 			out = append(out, sourceCommandFiles(tok[1:])...)
+			i++
 			continue
 		}
-		for _, option := range all {
-			value, last, ok := optionValue(tokens, i, option, all)
-			if !ok {
+		if len(tok) < 2 || tok[0] != '-' {
+			i++
+			continue
+		}
+		opts, next := spec.option(args, i)
+		i = next
+	options:
+		for _, o := range opts {
+			if !o.has || !o.unique() {
 				continue
 			}
-			i = last
-			if value == "" {
-				break
-			}
-			if hasAny(commandOptions, option) {
-				out = append(out, sourceCommandFiles(value)...)
-				break
-			}
-			if name == "tar" {
-				value = strings.TrimPrefix(value, "exec=")
-			}
-			if name == "protoc" {
-				if _, path, ok := strings.Cut(value, "="); ok {
-					value = path
+			for _, option := range all {
+				if !o.is(option) {
+					continue
 				}
+				if o.value == "" {
+					break options
+				}
+				if hasAny(commandOptions, option) {
+					out = append(out, sourceCommandFiles(o.value)...)
+					break options
+				}
+				value := o.value
+				if name == "tar" {
+					value = strings.TrimPrefix(value, "exec=")
+				}
+				if name == "protoc" {
+					if _, path, ok := strings.Cut(value, "="); ok {
+						value = path
+					}
+				}
+				if words := tokenize(value); len(words) > 0 {
+					out = append(out, words[0])
+				}
+				break options
 			}
-			if words := tokenize(value); len(words) > 0 {
-				out = append(out, words[0])
-			}
-			break
 		}
 	}
 	return out
 }
 
+// executionValueLetters are the value-taking short letters of a tool beyond
+// the program-loading options executionFileTargets looks for, so a cluster such
+// as `awk -vf=1` is not read as `-f`.
+var executionValueLetters = map[string]string{
+	"awk": "vF", "gawk": "vF", "mawk": "vF", "nawk": "vF",
+	"sed":  "el",
+	"make": "CIoW", "gmake": "CIoW",
+}
+
+// valueOptionSpec builds the grammar of a tool from the options that take a
+// value and that a caller looks for: two-character options are short letters,
+// `--name` options are long ones, and longer single-dash options are exact
+// words. extraShort adds value-taking letters the caller does not look for.
+// Long options may be abbreviated to two characters, and `--` ends nothing, so
+// the scan sees every word.
+func valueOptionSpec(options []string, extraShort string) optSpec {
+	spec := optSpec{short: extraShort, long: make(map[string]bool), abbrev: true, minAbbrev: 2, ignoreDashDash: true}
+	for _, o := range options {
+		switch {
+		case strings.HasPrefix(o, "--"):
+			spec.long[o[2:]] = true
+		case len(o) == 2:
+			spec.short += o[1:]
+		default:
+			spec.exact = append(spec.exact, o)
+		}
+	}
+	return spec
+}
+
 // commandOptionOwners are the editors whose +CMD arguments run ex commands.
 var commandOptionOwners = []string{"vi", "vim", "view", "ex", "rvim", "gvim", "nvim"}
-
-// optionValue matches the option at tokens[i] against option and returns its
-// value and the index of the last token consumed. It accepts the separate
-// (`-f FILE`), `=`-joined, fused (`-fFILE`), short-cluster (`-nf FILE`) and
-// unambiguous long-prefix (`--fil FILE`) spellings getopt allows.
-func optionValue(tokens []string, i int, option string, all []string) (value string, last int, ok bool) {
-	tok := tokens[i]
-	next := func() (string, int, bool) {
-		if i+1 < len(tokens) {
-			return tokens[i+1], i + 1, true
-		}
-		return "", i, false
-	}
-	switch {
-	case tok == option:
-		return next()
-	case strings.HasPrefix(tok, option+"="):
-		return tok[len(option)+1:], i, true
-	case len(option) == 2 && strings.HasPrefix(tok, option) && len(tok) > 2:
-		return tok[2:], i, true
-	case len(option) == 2 && option[1] != '-' && isShortFlagToken(tok) && len(tok) > 2 &&
-		tok[len(tok)-1] == option[1] && strings.Trim(tok[1:], "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ") == "":
-		return next()
-	case strings.HasPrefix(option, "--") && strings.HasPrefix(tok, "--") && len(tok) > 3:
-		name, val, hasEq := strings.Cut(tok, "=")
-		if name == option || !strings.HasPrefix(option, name) {
-			return "", i, false
-		}
-		for _, other := range all {
-			if other != option && strings.HasPrefix(other, name) {
-				return "", i, false // ambiguous prefix
-			}
-		}
-		if hasEq {
-			return val, i, true
-		}
-		return next()
-	}
-	return "", i, false
-}
 
 // semanticWriteTargets extracts destinations that are not shell redirects.
 // Uninspectable destination construction uses the dynamic marker and fails closed.

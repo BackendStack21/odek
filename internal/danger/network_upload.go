@@ -533,7 +533,16 @@ func rcloneTransfer(args []string) transferVerdict {
 
 // ── ssh and socket tools ────────────────────────────────────────────
 
-var sshSyntax = optSpec{abbrev: true, short: "BbcDEeFIiJLlmOoPpQRSWw", operandLimit: 1}
+// sshSyntax reads every word of an ssh command line as an option or operand.
+var sshSyntax = optSpec{abbrev: true, short: "BbcDEeFIiJLlmOoPpQRSWw"}
+
+// sshCommandSyntax stops reading options at the second operand: the host is
+// the first, and the remote command starts at the second.
+var sshCommandSyntax = func() optSpec {
+	s := sshSyntax
+	s.operandLimit = 1
+	return s
+}()
 
 // sshChannelConfigKeys are ssh_config keywords that open a forward or tunnel
 // or hand the remote side the local agent or display.
@@ -541,7 +550,7 @@ var sshChannelConfigKeys = fieldSet("remoteforward localforward dynamicforward t
 
 func sshTransfer(args []string, stdin bool) transferVerdict {
 	v := transferVerdict{upload: stdin}
-	r := sshSyntax.parse(args)
+	r := sshCommandSyntax.parse(args)
 	for _, o := range r.opts {
 		switch {
 		case o.is("-L", "-R", "-D", "-w", "-W", "-N", "-A", "-X", "-Y"):
