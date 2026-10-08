@@ -324,8 +324,8 @@ func networkTransferEffects(name string, inner []string, feed stdinFeed) []RiskC
 		v = ghTransfer(args, stdin)
 	case "aws", "gsutil", "gcloud", "az":
 		v.upload = cloudUploadForm(name, args)
-	case "dig", "nslookup", "host", "drill":
-		v.unknown = dnsQueryCarriesRuntimeData(args)
+	case "dig", "nslookup", "host", "drill", "ping", "ping6", "traceroute", "traceroute6":
+		v.unknown = dnsQueryCarriesRuntimeData(name, args)
 	}
 	return v.effects()
 }
@@ -899,12 +899,41 @@ func cloudUploadForm(name string, args []string) bool {
 // dnsQueryCarriesRuntimeData reports whether a lookup's name (or server)
 // holds a command substitution or an unresolved variable: the queried name
 // then carries data chosen at run time, which is a DNS exfiltration channel.
-// Literal names stay plain egress.
-func dnsQueryCarriesRuntimeData(args []string) bool {
-	for _, a := range args {
-		if hasDynamicSubstitution(a) || hasVariableReference(a) {
+// dig -f takes its queries from a file, which cannot be inspected. The same
+// holds for the reachability probes (ping, traceroute), whose destination name
+// is a DNS query too. Literal names stay plain egress.
+func dnsQueryCarriesRuntimeData(name string, args []string) bool {
+	numeric := probeNumericOptions[name]
+	for i, a := range args {
+		if name == "dig" && digReadsQueryFile(a) {
 			return true
 		}
+		if !hasDynamicSubstitution(a) && !hasVariableReference(a) {
+			continue
+		}
+		// A count, timeout or hop limit is not a destination or payload.
+		if i > 0 && numeric != "" && isShortFlagToken(args[i-1]) && len(args[i-1]) == 2 && strings.IndexByte(numeric, args[i-1][1]) >= 0 {
+			continue
+		}
+		if len(a) > 2 && isShortFlagToken(a) && numeric != "" && strings.IndexByte(numeric, a[1]) >= 0 && !hasDynamicSubstitution(a) {
+			continue
+		}
+		return true
 	}
 	return false
+}
+
+// probeNumericOptions lists, per tool, the short options whose value is a
+// number (count, interval, timeout, size, TTL), so a variable there does not
+// make the destination unknown. ping's -p pattern and the address options are
+// absent: their values reach the wire.
+var probeNumericOptions = map[string]string{
+	"ping": "cwWistmQ", "ping6": "cwWistmQ",
+	"traceroute": "mqwft", "traceroute6": "mqwft",
+}
+
+// digReadsQueryFile reports whether a dig argument is the -f batch option,
+// which takes its queries from a file.
+func digReadsQueryFile(arg string) bool {
+	return strings.HasPrefix(arg, "-f") && !strings.HasPrefix(arg, "--")
 }
