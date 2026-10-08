@@ -157,6 +157,7 @@
 package danger
 
 import (
+	"encoding/binary"
 	"fmt"
 	"net"
 	"net/url"
@@ -904,20 +905,26 @@ func parseBrowserIP(host string) net.IP {
 		}
 	}
 
+	// Assemble the 32-bit address from the bounded parts, then split it
+	// into octets without narrowing conversions: a single number is the
+	// whole address, a.b puts b in the low 24 bits, a.b.c puts c in the low
+	// 16 bits, and a.b.c.d is one octet per part.
+	var addr uint32
 	switch len(nums) {
 	case 1:
-		// Single number: full 32-bit address
-		return net.IPv4(byte(nums[0]>>24), byte(nums[0]>>16), byte(nums[0]>>8), byte(nums[0]))
+		addr = nums[0]
 	case 2:
-		// a.b: a = high byte, b = remaining 24 bits
-		return net.IPv4(byte(nums[0]), byte(nums[1]>>16), byte(nums[1]>>8), byte(nums[1]))
+		addr = nums[0]<<24 | nums[1]
 	case 3:
-		// a.b.c: a, b = high bytes, c = remaining 16 bits
-		return net.IPv4(byte(nums[0]), byte(nums[1]), byte(nums[2]>>8), byte(nums[2]))
+		addr = nums[0]<<24 | nums[1]<<16 | nums[2]
 	case 4:
-		return net.IPv4(byte(nums[0]), byte(nums[1]), byte(nums[2]), byte(nums[3]))
+		addr = nums[0]<<24 | nums[1]<<16 | nums[2]<<8 | nums[3]
+	default:
+		return nil
 	}
-	return nil
+	octets := make([]byte, 4)
+	binary.BigEndian.PutUint32(octets, addr)
+	return net.IPv4(octets[0], octets[1], octets[2], octets[3])
 }
 
 // ── Config ─────────────────────────────────────────────────────────────
