@@ -462,6 +462,9 @@ func analyzeWithState(cmd string, depth int, inherited *shellAnalysisState) Anal
 					if (tok == ">&" || tok == ">>&") && (isAllDigits(stage[j+1]) || stage[j+1] == "-") {
 						continue
 					}
+					if !redirectWritesFile(stage, j) {
+						continue
+					}
 					result.add(state.targetRisk(stage[j+1], stageCwd, cwdKnown))
 				}
 			}

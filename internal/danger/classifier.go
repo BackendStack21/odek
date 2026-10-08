@@ -2376,13 +2376,32 @@ func classifyStageIn(tokens []string, pipedInto bool, repo *gitRepoCtx) RiskClas
 	return cls
 }
 
+// stageHasOutputRedirect reports whether tokens hold an output redirect that
+// can create or modify a file (see redirectWritesFile).
 func stageHasOutputRedirect(tokens []string) bool {
-	for _, t := range tokens {
-		if isRedirectToken(t) {
+	for i, t := range tokens {
+		if isRedirectToken(t) && redirectWritesFile(tokens, i) {
 			return true
 		}
 	}
 	return false
+}
+
+// redirectWritesFile reports whether the output redirect operator at
+// tokens[i] can create or modify a file. Duplicating or closing a descriptor
+// (`2>&1`, `>&2`, `2>&-`) opens nothing, and a stdio alias or discard device
+// (`2>/dev/null`, `>/dev/stderr`) is not a file the command changes. A
+// missing target, a digit operand of any other operator (`&>2` writes a file
+// named 2), and every other target fail closed as a write.
+func redirectWritesFile(tokens []string, i int) bool {
+	if i+1 >= len(tokens) {
+		return true
+	}
+	target := tokens[i+1]
+	if tokens[i] == ">&" && (isAllDigits(target) || target == "-") {
+		return false
+	}
+	return !isDirectBenignDevice(target)
 }
 
 // isStdinExecInterpreter reports whether name is a program that executes
@@ -4941,12 +4960,7 @@ func isLocalWrite(first string, tokens []string) bool {
 	}
 	// echo without redirect is safe (just displaying text)
 	if first == "echo" {
-		for _, tok := range tokens {
-			if isRedirectToken(tok) {
-				return true
-			}
-		}
-		return false
+		return stageHasOutputRedirect(tokens)
 	}
 	if writePrefixes[first] {
 		return true
@@ -4959,13 +4973,8 @@ func isLocalWrite(first string, tokens []string) bool {
 	if first == "find" && hasAny(tokens, "-fprint", "-fprintf") {
 		return true
 	}
-	// Any command with an output redirect is a write
-	for _, tok := range tokens {
-		if isRedirectToken(tok) {
-			return true
-		}
-	}
-	return false
+	// Any command with an output redirect to a file is a write
+	return stageHasOutputRedirect(tokens)
 }
 
 func isNetworkEgress(first string, tokens []string) bool {

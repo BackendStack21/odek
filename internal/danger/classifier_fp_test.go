@@ -55,6 +55,56 @@ func TestClassify_FP_DevNullDiscard(t *testing.T) {
 	}
 }
 
+// A redirect is a write only when it can create or modify a file:
+// descriptor duplication/close and stdio or discard devices open nothing the
+// command changes, so read-only commands that silence a stream stay safe.
+func TestClassify_FP_RedirectOpensNoFile(t *testing.T) {
+	cases := []struct {
+		cmd string
+		cls RiskClass
+	}{
+		{"git log --oneline main..HEAD", Safe},
+		{"git log --oneline main..HEAD 2>/dev/null", Safe},
+		{"git log --oneline main..HEAD 2>/dev/null | head -30", Safe},
+		{"ls 2>/dev/null", Safe},
+		{"ls 2> /dev/null", Safe},
+		{"ls 2>>/dev/null", Safe},
+		{"ls >/dev/null", Safe},
+		{"ls 1>/dev/null", Safe},
+		{"ls &>/dev/null", Safe},
+		{"ls >& /dev/null", Safe},
+		{"ls >/dev/null 2>&1", Safe},
+		{"ls 2>&1", Safe},
+		{"ls >&2", Safe},
+		{"ls 2>&-", Safe},
+		{"ls 2>/dev/stderr", Safe},
+		{"cat x 2>/dev/null | head", Safe},
+		{"grep -r foo . 2>/dev/null", Safe},
+		{"echo x 2>/dev/null", Safe},
+		{"echo x >/dev/null", Safe},
+		{"sed -n 1p f 2>/dev/null", Safe},
+		{"tar -tf a.tar 2>/dev/null", Safe},
+
+		{"ls > out.txt", LocalWrite},
+		{"ls 2>err.log", LocalWrite},
+		{"ls | tee out.txt", LocalWrite},
+		{"ls 2>&1 | tee out.txt", LocalWrite},
+		{"ls >&out.txt", LocalWrite},
+		{"ls &>2", LocalWrite},
+		{"ls >", LocalWrite},
+		{"echo x 2>/dev/null > out.txt", LocalWrite},
+		{"ls 2>/dev/null/../x", Destructive},
+		{"ls 2>/dev/sda", Destructive},
+		{"ls 2>$X", Unknown},
+		{"ls >~/.bashrc", Persistence},
+	}
+	for _, c := range cases {
+		if got := Classify(c.cmd); got != c.cls {
+			t.Errorf("Classify(%q) = %s, want %s", c.cmd, got, c.cls)
+		}
+	}
+}
+
 func TestClassify_FP_ProjectExecAndSafeTools(t *testing.T) {
 	cases := []struct {
 		cmd string

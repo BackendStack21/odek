@@ -324,3 +324,21 @@ func TestAnswerSuperseded_NoHandler(t *testing.T) {
 		t.Fatalf("answer=%q err=%v", answer, err)
 	}
 }
+
+// A read-only shell call that discards stderr is not a mutation: the turn's
+// answer stands without a completion nudge.
+func TestAnswerSuperseded_NoNudgeForDiscardedStderr(t *testing.T) {
+	read := scriptedReply{json: `{"choices":[{"message":{"tool_calls":[{"id":"r","type":"function","function":{"name":"shell","arguments":"{\"command\":\"git log --oneline main..HEAD 2>/dev/null | head -30\"}"}}]},"finish_reason":"tool_calls"}]}`}
+	srv := answerScriptServer(t, read, textReply("summary"))
+	sh := &contractTool{name: "shell", run: func(string) (string, error) { return "abc123 commit", nil }}
+	e := New(testChatClient(t, srv.URL), tool.NewRegistry([]tool.Tool{sh}), 8, "sys", nil, 0)
+	var got []AnswerEvent
+	e.SetAnswerEventHandler(func(ev AnswerEvent) { got = append(got, ev) })
+	answer, _, err := e.RunWithMessages(context.Background(), []session.Message{{Role: "user", Content: "describe branch changes"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if answer != "summary" || len(got) != 0 || len(e.runMutations) != 0 {
+		t.Fatalf("answer = %q, events = %v, mutations = %v", answer, eventTypes(got), e.runMutations)
+	}
+}
