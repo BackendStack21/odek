@@ -110,6 +110,44 @@ func TestVerifyCyclesLeftBound(t *testing.T) {
 	}
 }
 
+// Regression: a follow-up turn that restates what an earlier turn found
+// makes no tool calls; the verifier must still see that earlier turn. The
+// stub passes only when the earlier assistant answer is in its prompt.
+func TestVerifyStage_FollowUpTurnSeesEarlierAnswer(t *testing.T) {
+	srv := answerScriptServer(t, textReply("fix/verify-tool-results"))
+	var verifyBody string
+	vsrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		verifyBody = string(body)
+		verdict := "fail"
+		if strings.Contains(verifyBody, "assistant: fix/verify-tool-results") {
+			verdict = "pass"
+		}
+		fmt.Fprint(w, verdictReply(verdict).json)
+	}))
+	t.Cleanup(vsrv.Close)
+	e := New(testChatClient(t, srv.URL), tool.NewRegistry(nil), 8, "sys", nil, 0)
+	e.SetVerify(VerifyConfig{Enabled: true, Mode: VerifyModeStrict})
+	e.SetVerifyClient(testChatClient(t, vsrv.URL))
+	history := []session.Message{
+		{Role: "user", Content: "Which branch is checked out?"},
+		{Role: "assistant", ToolCalls: []session.ToolCall{verifyTC("c1", "shell", `{"command":"git branch --show-current"}`)}},
+		{Role: "tool", ToolCallID: "c1", Name: "shell", Content: "fix/verify-tool-results"},
+		{Role: "assistant", Content: "fix/verify-tool-results"},
+		{Role: "user", Content: "Reply with exactly one word: the branch name from our earlier turn."},
+	}
+	answer, _, err := e.RunWithMessages(context.Background(), history)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.HasPrefix(answer, VerifyFailedMarker) || e.VerifyOutcome() != VerifyOutcomePass {
+		t.Fatalf("follow-up answer failed verification: %q (outcome %q)\nverifier prompt: %s", answer, e.VerifyOutcome(), verifyBody)
+	}
+	if strings.Contains(verifyBody, "git branch --show-current") {
+		t.Fatalf("earlier turn's tool calls must not enter the trace: %s", verifyBody)
+	}
+}
+
 func verifyTC(id, name, args string) session.ToolCall {
 	tc := session.ToolCall{ID: id, Type: "function"}
 	tc.Function.Name = name
@@ -244,6 +282,58 @@ func TestVerifyOriginalTask(t *testing.T) {
 	}
 	if got := verifyOriginalTask(nil); got != "(no user task found)" {
 		t.Fatalf("empty task = %q", got)
+	}
+}
+
+// Earlier turns reach the verifier as user/assistant text only: no tool
+// results, no superseded drafts, nothing from the current turn, wrapped as
+// untrusted and most recent last.
+func TestVerifyPriorContext(t *testing.T) {
+	msgs := verifyTurnHistory()
+	msgs = append(msgs[:5], append([]session.Message{
+		{Role: "assistant", Content: "draft that was replaced", Superseded: true},
+	}, msgs[5:]...)...)
+	var sources []string
+	got := verifyPriorContext(msgs, func(source, content string) string {
+		sources = append(sources, source)
+		return "<P>" + content + "</P>"
+	})
+	if len(sources) != 1 || sources[0] != "verify_prior_turns" {
+		t.Fatalf("wrapper sources = %v", sources)
+	}
+	want := "<P>user: first prompt\nassistant: first answer</P>"
+	if got != want {
+		t.Fatalf("prior context = %q\nwant %q", got, want)
+	}
+	if first := verifyPriorContext(msgs[:2], nil); !strings.HasPrefix(first, "(first turn") {
+		t.Fatalf("single-turn history = %q", first)
+	}
+	if none := verifyPriorContext(nil, nil); !strings.HasPrefix(none, "(first turn") {
+		t.Fatalf("empty history = %q", none)
+	}
+}
+
+func TestVerifyPriorContext_Bounded(t *testing.T) {
+	var msgs []session.Message
+	for i := 0; i < 20; i++ {
+		msgs = append(msgs,
+			session.Message{Role: "user", Content: fmt.Sprintf("q%d %s", i, strings.Repeat("u", 1500))},
+			session.Message{Role: "assistant", Content: fmt.Sprintf("a%d %s", i, strings.Repeat("a", 1500))},
+		)
+	}
+	msgs = append(msgs, session.Message{Role: "user", Content: "current"})
+	got := verifyPriorContext(msgs, func(_, c string) string { return c })
+	if len(got) > verifyPriorBudgetBytes+256 {
+		t.Fatalf("prior context not bounded: %d bytes", len(got))
+	}
+	if !strings.Contains(got, "bytes omitted]") || !strings.Contains(got, "earlier messages omitted") {
+		t.Fatalf("cuts must be marked: %q", got[:200])
+	}
+	if !strings.Contains(got, "a19 ") || strings.Contains(got, "a0 ") {
+		t.Fatalf("most recent turns must win the budget: %q", got[:200])
+	}
+	if !strings.HasSuffix(strings.TrimSpace(got), strings.Repeat("a", verifyPriorMessageBytes/4)) {
+		t.Fatalf("most recent message must come last: %q", got[len(got)-100:])
 	}
 }
 
