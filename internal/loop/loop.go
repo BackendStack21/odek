@@ -578,6 +578,11 @@ type Engine struct {
 	trimGroupsTotal  int            // total turn groups dropped by trimming
 	trimTruncTotal   int            // total tool results truncated by trimming
 	trimDroppedTools map[string]int // tool names seen in dropped groups
+	// trimDroppedTurnTools counts only the dropped groups that belong to
+	// the current turn (at or after the latest principal user message), so
+	// the verifier can be told about this turn's missing calls without
+	// earlier turns' drops excusing phantom tool runs.
+	trimDroppedTurnTools map[string]int
 
 	// Self-calibrating context margin: when the provider reports substantially
 	// more input tokens than the local estimate, the margin tightens once.
@@ -1429,6 +1434,10 @@ func (e *Engine) trimContext(ctx context.Context, messages []session.Message, to
 	if e.trimDroppedTools == nil {
 		e.trimDroppedTools = make(map[string]int)
 	}
+	if e.trimDroppedTurnTools == nil {
+		e.trimDroppedTurnTools = make(map[string]int)
+	}
+	turnStart := verifyTurnStart(messages)
 	droppedGroups := 0
 	var droppedForDigest []session.Message
 	// Principal messages retain their role and precedence. Completed tail
@@ -1455,6 +1464,9 @@ func (e *Engine) trimContext(ctx context.Context, messages []session.Message, to
 			// Track which tools were called in dropped groups
 			for _, tc := range messages[start].ToolCalls {
 				e.trimDroppedTools[tc.Function.Name]++
+				if start > turnStart {
+					e.trimDroppedTurnTools[tc.Function.Name]++
+				}
 			}
 			// Include all following tool result messages
 			for groupEnd < len(messages) && messages[groupEnd].Role == "tool" {
@@ -1474,6 +1486,11 @@ func (e *Engine) trimContext(ctx context.Context, messages []session.Message, to
 
 		// Drop the entire group atomically
 		messages = append(messages[:start], messages[groupEnd:]...)
+		if turnStart >= groupEnd {
+			// The turn boundary sits after the dropped group: shift its
+			// index with the slice so later drops classify correctly.
+			turnStart -= groupEnd - start
+		}
 		nextProtected := make(map[int]struct{}, len(protected))
 		for idx := range protected {
 			if idx < start {
@@ -1990,6 +2007,13 @@ func (e *Engine) protectDerivedContext(ctx context.Context, source, content stri
 	if e.wrapUntrusted != nil {
 		return e.wrapUntrusted(source, content)
 	}
+	return defaultUntrustedWrap(source, content)
+}
+
+// defaultUntrustedWrap is the engine's own untrusted-content boundary, used
+// when no surface-level wrapper is installed: a per-call nonce'd tag whose
+// name the content cannot forge.
+func defaultUntrustedWrap(source, content string) string {
 	nonce := newToolResultNonce()
 	source = strings.NewReplacer(`"`, "″", "<", "‹", ">", "›", "\n", " ", "\r", " ").Replace(source)
 	content = strings.ReplaceAll(content, "untrusted_content", "untrusted·content")
@@ -2690,6 +2714,7 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 	e.trimGroupsTotal = 0
 	e.trimTruncTotal = 0
 	e.trimDroppedTools = nil
+	e.trimDroppedTurnTools = nil
 	e.digestInstalled = false
 	e.lastDigestRaw = ""
 	e.lastDigestWrapped = ""
