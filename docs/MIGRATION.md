@@ -70,6 +70,64 @@ renderers for these five tools, including old session transcripts. Generic
 raw/JSON rendering remains available. Stored historical tool names retain
 their memory-provenance classification to prevent unsafe replay.
 
+## Danger-classifier hardening
+
+The shell classifier was rewritten to judge what a command line actually runs.
+Operator-visible changes:
+
+1. **New risk class `network_upload`** (default `prompt`, ranked between
+   `network_egress` and `code_execution`). It covers request bodies read from a
+   file, stdin or a runtime substitution (`curl -d @f`, `-T`), credentials or
+   client certificates on the command line, mutating HTTP methods, local-to-remote
+   transfers (`scp f host:`, `rsync src/ host:`, cloud upload forms), and
+   listeners and tunnels. An upload also carries `network_egress`, so denying
+   either class denies it. If you override classes individually, decide an action
+   for `network_upload`: a `network_egress: "allow"` override does not cover it.
+   Scheduled jobs deny it until `schedules.dangerous.classes` allows it,
+   untrusted sub-agents deny it, and a sub-agent `max_risk: "network_egress"` no
+   longer admits upload-shaped commands (it admits fetches only). Older releases
+   reject the unknown class key, so remove it before downgrading.
+2. **`denylist` matching changed.** Entries are token prefixes tried at every
+   command position (pipe stages, chains, wrappers, `-c` payloads, `eval`,
+   substitutions, loop bodies), with a tool's global options stripped and
+   statically known variables resolved. They no longer match as raw string
+   prefixes: `rm -rf /` stops matching `rm -rf /tmp`, and a different flag
+   spelling (`rm -fr /`) is a separate entry. Review entries that relied on a
+   string prefix; `allowlist` is unchanged (whole-line exact match).
+3. **Ordinary git verbs no longer always prompt.** `status`, `add`, `commit`,
+   `merge`, `checkout`, `rebase`, `stash` and similar escalate to
+   `code_execution` only when the targeted repository is armed (an executable
+   hook, `core.hooksPath`, a non-boolean `core.fsmonitor`, filter/diff/merge
+   drivers, textconv, editor config, includes). An unresolvable repository, `GIT_*`
+   overrides, or a hook written earlier in the same command fail closed. Explicit
+   code-execution forms (`git -c` exec keys, `submodule foreach`, `bisect run`)
+   still escalate. `gh` is classified by verb instead of blanket egress: reads
+   are egress, remote mutations (`gh pr merge`) are `system_write`, deletes are
+   `destructive`.
+4. **New prompts** (`system_write`): referencing a secret-shaped environment
+   variable (`$API_TOKEN`, `${!v}`, `printenv NAME`) or reading/writing a
+   credential file (`.env`, `*.pem`, `id_*`, `.netrc`, kubeconfig, `secrets/`);
+   environment dumps, now including bare `export`/`declare`/`typeset` and dumps
+   behind wrappers; and `export` of exec-controlling names (`PATH`,
+   `LD_PRELOAD`, `GIT_CONFIG_*`, ...). More unread-script delivery routes (pipes,
+   substitutions, `find -exec`, `awk -f`/`make -f`/`gdb -x`) gate as
+   `unread_exec`; a run-time-built program operand is `unknown`.
+5. **No longer prompts:** loops, conditionals, `case`, groups, functions,
+   here-documents and `$((...))` arithmetic (each command inside is classified
+   on its own), `command -v tool`, and writes below your own home even when it
+   is `/root`.
+6. **Over-long and malformed input fails closed.** A command over 64 KiB, or one
+   with an unterminated quote or construct, classifies `unknown` (denied by
+   default). An oversized command is denied even when an `allowlist` entry equals
+   it.
+7. **Approval text is sanitized.** The command and description shown in TTY,
+   Web UI, Telegram, MCP and sandbox approval prompts, batch cards, and denial
+   errors returned to the model have control characters, escape sequences, bidi
+   and invisible characters replaced by visible escapes (`\x1b`, `\u202e`);
+   multi-line commands are indented; very long ones keep head and tail around a
+   `…[N more bytes]` marker. Under `non_interactive: "read_only"` a native read
+   tool proceeds by tool name only, never because of a description the model wrote.
+
 ## Danger-policy defaults (v2.15.1)
 
 Two default changes, aimed at the out-of-box experience:

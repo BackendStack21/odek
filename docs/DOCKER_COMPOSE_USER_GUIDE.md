@@ -219,11 +219,13 @@ inspection proceeds without a human channel, and anything that would prompt is d
 | `safe` | `ls`, `cat`, `grep`, `git status` | allow | allow |
 | `local_write` | write files in the working dir | allow | allow |
 | `install` | `npm install`, `pip install`, `apk add` | prompt | prompt |
-| `network_egress` | `curl`, `wget`, `ssh`, DNS lookups | prompt | allow |
+| `network_egress` | `curl`, `wget`, `ssh`, DNS lookups | allow | allow |
 | `network_upload` | `curl -d @file`, `curl -T`, `curl -X POST`, `scp file host:`, `rsync src/ host:`, `nc -l`, `ssh -L` | prompt | prompt |
-| `code_execution` | `curl … \| sh`, `bash -c`, `python -c`, `go run` | prompt | prompt |
-| `system_write` | `sudo`, writes to `/etc`, reads of `~/.ssh` | prompt | prompt |
-| `unknown` | any command whose program name Odek does **not** recognise | deny | deny |
+| `code_execution` | `curl … \| sh`, `bash -c`, `python -c`, `go run`; `git commit`/`checkout`/… only when the repository has hooks or drivers armed | prompt | prompt |
+| `system_write` | `sudo`, writes to `/etc`, reads of `~/.ssh`, `env` / bare `export`, reading `$API_TOKEN`-style variables or credential files (`.env`, `*.pem`, `id_*`, `.netrc`), `git reset --hard` | prompt | prompt |
+| `unread_exec` | running a script whose contents were not read this session | prompt | prompt |
+| `persistence` | writes to shell profiles, git hooks, CI workflows, cron/systemd | prompt | prompt |
+| `unknown` | any command whose program name Odek does **not** recognise; unterminated quotes; anything over 64 KiB | deny | deny |
 | `destructive` | `rm -rf /`, `dd … of=/dev/sda`, `mkfs` | deny | **deny** |
 | `blocked` | fork bombs, fully‑specified `dd` to a block device | **always deny** | **always deny** (cannot be overridden) |
 
@@ -239,8 +241,9 @@ or relax the class with `"unknown": "prompt"`.
 
 #### How an action is resolved (precedence, first match wins)
 
-1. Command exactly matches an **`allowlist`** entry → **allow**.
-2. Any command in the line starts with a **`denylist`** entry → **deny**.
+0. A `blocked` operation, or a command over 64 KiB → **deny** (no list can override it).
+1. The whole command exactly matches an **`allowlist`** entry → **allow**.
+2. Any command in the line starts with a **`denylist`** entry (token prefix; `rm -rf /` does not match `rm -rf /tmp`, and `rm -fr /` is its own entry) → **deny**.
 3. Otherwise classify it, then: explicit **`classes`** entry → `blocked` is **always deny** → global **`action`** (if set) → built‑in class default.
 4. If the result is **prompt** and there's no human channel, **`non_interactive`** decides.
 
@@ -466,11 +469,11 @@ docker compose --profile restricted run --rm --entrypoint cat \
 The `dangerous` block is flexible. A few common adjustments to
 `config.restricted.json`:
 
-- **Pre‑approve specific commands** (exact match bypasses all checks):
+- **Pre‑approve specific commands** (a whole-line exact match bypasses classification, but never the `blocked` class):
   ```json
   "allowlist": ["npm test", "go build ./..."]
   ```
-- **Always block specific commands** (prefix match, wins even in Godmode):
+- **Always block specific commands** (token-prefix match at every command position, wins even in Godmode; list each flag spelling you care about):
   ```json
   "denylist": ["rm -rf /", "git push --force"]
   ```

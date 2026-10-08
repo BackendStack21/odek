@@ -219,7 +219,17 @@ shortcut is hidden for the highest-impact classes (`destructive`, `blocked`,
 `unknown`, `persistence`, `unread_exec`, and the synthetic `tool_batch` class)
 so they must be approved per-call. After three approvals of the same class
 within 60 seconds, friction mode hides the Trust Session shortcut and adds a
-warning, breaking reflexive tap-through.
+warning, breaking reflexive tap-through. The shortcut stays available for
+`network_upload` (uploads, credentials on the command line, local-to-remote
+copies, listeners and tunnels), `system_write` (which now includes reading
+secret-shaped environment variables and credential files), `code_execution`
+and `install`, subject to the friction rule above. The command and description
+shown in the prompt, and in denial messages returned to the model, have control
+characters, escape sequences, bidi overrides and invisible characters replaced
+by visible escapes (`\x1b`, `\u202e`), and an over-long command keeps its head
+and tail around a `…[N more bytes]` marker, so the chat shows the command that
+will run. Starting a fresh conversation with `/new` also drops that chat's
+unread-script read ledger, so a script read in the archived session gates again.
 
 Every approval prompt states its deadline ("expires in 2m0s"). When the wait
 window closes without a response, the prompt message is edited in place to an
