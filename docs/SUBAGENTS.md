@@ -90,7 +90,12 @@ The `delegate_tasks` tool is available in CLI, REPL, Web UI, Telegram, and headl
                                    "code_execution", "network_egress", "network_upload", "install", "blocked"] },
                                                // Optional cap on the allowed risk class. Calls above the
                                                //   cap are denied without prompting — use for read-only
-                                               //   fan-out tasks. Operator profiles.*.max_risk also
+                                               //   fan-out tasks. Rank, low to high: safe, local_write,
+                                               //   install, network_egress, network_upload,
+                                               //   code_execution, system_write, persistence, unknown,
+                                               //   destructive, blocked — so network_egress allows
+                                               //   fetches but not uploads or code execution.
+                                               //   Operator profiles.*.max_risk also
                                                //   accepts persistence, unknown, and unread_exec
                                                //   (validated at load; unread_exec is enforced by the
                                                //   trust lockdown, not this clamp).
@@ -324,7 +329,11 @@ the fixed SAFETY block tells the model to treat as data.
 Sub-agents are autonomous by design and **never prompt for approvals** —
 not even trusted ones. Prompt-class operations are denied (`non_interactive:
 deny` is forced for every sub-agent); the operator `allowlist` (exact
-pre-approved invocations) is the only path to prompt-class operations.
+pre-approved invocations) is the only path to prompt-class operations. That
+includes the `network_upload` class (file-backed request bodies, credentials on
+the command line, mutating HTTP methods, local-to-remote copies, listeners and
+tunnels): `network_egress` stays inside a `network_egress` cap, an upload does
+not, and untrusted tasks deny both.
 Untrusted sub-agents never load `mcp_servers` (MCP adapters do not
 danger-classify). Trusted and capped children do, under the child's
 `DangerousConfig` cap. See [MCP.md](MCP.md#where-it-loads).

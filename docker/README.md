@@ -353,8 +353,12 @@ docker compose --profile restricted run --rm --entrypoint cat \
 ## Tuning
 
 Edit `config.restricted.json`. Precedence (highest first): `allowlist` (exact
-match) → `denylist` (prefix) → per-class `classes` → global `action` → built-in
-defaults. The `blocked` class (fork bombs, etc.) is always denied. Recreate the
+match of the whole command line) → `denylist` (token-prefix match at every
+command position: chain segments, pipe stages, wrappers, `-c` payloads,
+substitutions; `rm -rf /` does not match `rm -rf /tmp`, and `rm -fr /` is its own
+entry) → per-class `classes` → global `action` → built-in defaults. The
+`blocked` class (fork bombs, etc.) is always denied, even for an allowlisted
+command, and so is any command over 64 KiB. Recreate the
 container after editing (`... up` again) since the config is mounted at startup.
 
 ```jsonc
@@ -380,7 +384,13 @@ are never eligible for session-trust shortcuts, and stay denied for scheduled
 jobs (the scheduler's non-overrideable floor). Godmode's blanket
 `"action": "allow"` already covers them — per-class entries beat `action`, so
 to re-enable those two gates inside godmode, add explicit
-`"persistence": "prompt"` / `"unread_exec": "prompt"` to its `classes`.
+`"persistence": "prompt"` / `"unread_exec": "prompt"` to its `classes`. The same
+applies to `network_upload` (uploads, credentials on the command line, mutating
+HTTP methods, local-to-remote copies, listeners and tunnels): it defaults to
+`prompt`, is not covered by a `network_egress` override, and godmode's blanket
+`allow` lets it through unless you add `"network_upload": "prompt"`. Reading a
+secret-shaped environment variable or a credential file (`.env`, `*.pem`,
+`id_*`, `.netrc`) is a `system_write` and prompts under restricted.
 
 ## Security notes
 
