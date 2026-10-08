@@ -130,9 +130,15 @@ func transferClientRunsProgram(name string, tokens []string) bool {
 		}
 		if strings.HasPrefix(tok, "--") {
 			if name == "rsync" {
-				opt, _, _ := strings.Cut(tok[2:], "=")
+				opt, val, hasValue := strings.Cut(tok[2:], "=")
 				if opt == "rsh" {
-					return true
+					if !hasValue && i+1 < len(tokens) {
+						val = tokens[i+1]
+						i++
+					}
+					if rsyncTransportRunsProgram(val) {
+						return true
+					}
 				}
 			}
 			continue
@@ -157,13 +163,29 @@ func transferClientRunsProgram(name string, tokens []string) bool {
 				return true
 			case (c == 'S' || c == 'D') && (name == "scp" || name == "sftp"):
 				return true
-			case c == 'e' && name == "rsync":
+			case c == 'e' && name == "rsync" && rsyncTransportRunsProgram(val):
 				return true
 			}
 			break
 		}
 	}
 	return false
+}
+
+// rsyncTransportRunsProgram reports whether an rsync -e/--rsh value runs
+// something other than a plain ssh transport. `-e ssh` and `-e 'ssh -p 2222'`
+// are the everyday remote-shell spelling and stay network egress; a path, a
+// different program, or an ssh invocation that itself loads a program
+// (ProxyCommand, -F, …) is local code execution.
+func rsyncTransportRunsProgram(val string) bool {
+	words := tokenize(val)
+	if len(words) == 0 {
+		return true
+	}
+	if words[0] != "ssh" {
+		return true
+	}
+	return transferClientRunsProgram("ssh", words)
 }
 
 func optionPresent(tokens []string, options ...string) bool {

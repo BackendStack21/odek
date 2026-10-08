@@ -99,3 +99,29 @@ func TestClassify_FP_AwkPlainPrint(t *testing.T) {
 		t.Errorf("Classify(awk -f) = %s, want code_execution", got)
 	}
 }
+
+// rsync's -e/--rsh option names the remote shell. A plain ssh transport,
+// with or without ssh's own connection flags, is the everyday spelling and
+// must not prompt; a path or a program-loading ssh option is code execution.
+func TestClassify_RsyncSshTransportStaysEgress(t *testing.T) {
+	for _, c := range []string{
+		"rsync -e ssh a host:b",
+		"rsync -av -e 'ssh -p 2222' src/ host:dst/",
+		"rsync --rsh=ssh a host:b",
+		"rsync --rsh 'ssh -p 22 -C' a host:b",
+	} {
+		if got := Classify(c); got != NetworkEgress {
+			t.Errorf("Classify(%q) = %s, want network_egress", c, got)
+		}
+	}
+	for _, c := range []string{
+		"rsync -e /tmp/p.sh a host:b",
+		"rsync -e 'ssh -o ProxyCommand=/tmp/p' a host:b",
+		"rsync --rsh='ssh -F /tmp/cfg' a host:b",
+		"rsync -e './ssh' a host:b",
+	} {
+		if got := Classify(c); got != CodeExecution {
+			t.Errorf("Classify(%q) = %s, want code_execution", c, got)
+		}
+	}
+}
