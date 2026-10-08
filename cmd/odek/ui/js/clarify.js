@@ -109,7 +109,6 @@ function renderCard(event) {
 
   const input = document.createElement('textarea');input.rows=3;input.maxLength=32000;
   input.className = 'ac-friction-input';
-  input.type = 'text';
   input.placeholder = 'type your answer';
   input.setAttribute('aria-label', 'Answer the agent');
 
