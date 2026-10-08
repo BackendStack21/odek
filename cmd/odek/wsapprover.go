@@ -264,7 +264,7 @@ func (a *wsApprover) PromptCommand(cls danger.RiskClass, cmd, description string
 		// would silently wave the approve through.
 		select {
 		case <-cancelCh:
-			return fmt.Errorf("approval cancelled: %s", cmd)
+			return fmt.Errorf("approval cancelled: %s", danger.SanitizeInline(cmd))
 		default:
 		}
 		if action == "trust" && !allowTrust {
@@ -303,10 +303,10 @@ func (a *wsApprover) PromptCommand(cls danger.RiskClass, cmd, description string
 			a.recordApproval(cls)
 			return nil
 		default:
-			return fmt.Errorf("operation denied by user: %s", cmd)
+			return fmt.Errorf("operation denied by user: %s", danger.SanitizeInline(cmd))
 		}
 	case <-cancelCh:
-		return fmt.Errorf("approval cancelled: %s", cmd)
+		return fmt.Errorf("approval cancelled: %s", danger.SanitizeInline(cmd))
 	case <-time.After(timeout):
 		decision.State = "expired"
 		// Tell the browser this card is dead BEFORE the timeout error
@@ -318,7 +318,7 @@ func (a *wsApprover) PromptCommand(cls danger.RiskClass, cmd, description string
 			"type": "approval_expired",
 			"id":   id,
 		})
-		return fmt.Errorf("approval timeout: %s", cmd)
+		return fmt.Errorf("approval timeout: %s", danger.SanitizeInline(cmd))
 	}
 }
 

@@ -287,12 +287,12 @@ func (a *TTYApprover) promptLocked(cls RiskClass, cmd, description string, readT
 				if Rank(cls) < Rank(SystemWrite) && (cls == Safe || readTool) {
 					return nil
 				}
-				return fmt.Errorf("operation denied (non-interactive read_only mode): %s", cmd)
+				return fmt.Errorf("operation denied (non-interactive read_only mode): %s", SanitizeInline(cmd))
 			default:
-				return fmt.Errorf("operation denied (non-interactive mode): %s", cmd)
+				return fmt.Errorf("operation denied (non-interactive mode): %s", SanitizeInline(cmd))
 			}
 		}
-		return fmt.Errorf("operation denied (test binary, no approval fixture): %s", cmd)
+		return fmt.Errorf("operation denied (test binary, no approval fixture): %s", SanitizeInline(cmd))
 	}
 	tty, err := os.OpenFile(a.TTYPath, os.O_RDWR, 0)
 	if err != nil {
@@ -311,15 +311,15 @@ func (a *TTYApprover) promptLocked(cls RiskClass, cmd, description string, readT
 				if Rank(cls) < Rank(SystemWrite) && (cls == Safe || readTool) {
 					return nil
 				}
-				return fmt.Errorf("operation denied (non-interactive read_only mode): %s", cmd)
+				return fmt.Errorf("operation denied (non-interactive read_only mode): %s", SanitizeInline(cmd))
 			default: // deny
-				return fmt.Errorf("operation denied (non-interactive mode): %s", cmd)
+				return fmt.Errorf("operation denied (non-interactive mode): %s", SanitizeInline(cmd))
 			}
 		}
 		// No fallback configured and no interactive terminal: deny. The
 		// legacy path returned nil here — a fail-open default for a
 		// security gate (headless/CI runs silently approved everything).
-		return fmt.Errorf("operation denied (no approval channel configured): %s", cmd)
+		return fmt.Errorf("operation denied (no approval channel configured): %s", SanitizeInline(cmd))
 	}
 	defer tty.Close()
 
@@ -376,7 +376,7 @@ func (a *TTYApprover) promptLocked(cls RiskClass, cmd, description string, readT
 			a.recordApproval(cls)
 			return nil
 		case "d", "deny", "n", "no":
-			return fmt.Errorf("operation denied by user (friction mode): %s", cmd)
+			return fmt.Errorf("operation denied by user (friction mode): %s", SanitizeInline(cmd))
 		default:
 			fmt.Fprint(os.Stderr, "   Friction mode: type 'approve' (full word) to proceed, or 'd' to deny: ")
 			line2, err := a.readTTYLine(tty, reader)
@@ -388,7 +388,7 @@ func (a *TTYApprover) promptLocked(cls RiskClass, cmd, description string, readT
 				a.recordApproval(cls)
 				return nil
 			}
-			return fmt.Errorf("operation denied by user (friction mode): %s", cmd)
+			return fmt.Errorf("operation denied by user (friction mode): %s", SanitizeInline(cmd))
 		}
 	}
 
@@ -424,7 +424,7 @@ func (a *TTYApprover) promptLocked(cls RiskClass, cmd, description string, readT
 		// Re-prompt
 		return a.promptLocked(cls, cmd, description, readTool)
 	default:
-		return fmt.Errorf("operation denied by user: %s", cmd)
+		return fmt.Errorf("operation denied by user: %s", SanitizeInline(cmd))
 	}
 }
 

@@ -284,12 +284,12 @@ func (a *TelegramApprover) PromptCommand(cls danger.RiskClass, cmd, description 
 			a.mu.Unlock()
 			return nil
 		case "deny":
-			return fmt.Errorf("operation denied by user: %s", cmd)
+			return fmt.Errorf("operation denied by user: %s", danger.SanitizeInline(cmd))
 		default:
-			return fmt.Errorf("operation denied: %s", cmd)
+			return fmt.Errorf("operation denied: %s", danger.SanitizeInline(cmd))
 		}
 	case <-a.cancel:
-		return fmt.Errorf("approval cancelled: %s", cmd)
+		return fmt.Errorf("approval cancelled: %s", danger.SanitizeInline(cmd))
 	case <-time.After(approvalTimeout):
 		// Mark the prompt visibly expired and strip the buttons so a stale
 		// keyboard can't be tapped after the wait window closed.
@@ -298,7 +298,7 @@ func (a *TelegramApprover) PromptCommand(cls danger.RiskClass, cmd, description 
 			&SendOpts{ParseMode: ParseModeMarkdownV2, ReplyMarkup: &InlineKeyboardMarkup{InlineKeyboard: [][]InlineKeyboardButton{}}}); err != nil {
 			a.log.Warn("telegram approver: expire prompt edit failed", "message_id", pr.messageID, "error", err)
 		}
-		return fmt.Errorf("approval timeout: %s", cmd)
+		return fmt.Errorf("approval timeout: %s", danger.SanitizeInline(cmd))
 	}
 }
 

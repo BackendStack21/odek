@@ -1122,7 +1122,7 @@ func (c *DangerousConfig) CheckOperation(op ToolOperation, trustedClasses map[Ri
 		return nil
 	case Deny:
 		return fmt.Errorf("operation denied by configuration: %s %s (risk: %s)",
-			op.Name, op.Resource, op.Risk)
+			SanitizeInline(op.Name), SanitizeInline(op.Resource), op.Risk)
 	case Prompt:
 		// Use configured approver, or fall back to TTY
 		var approver Approver
