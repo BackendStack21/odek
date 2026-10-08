@@ -209,11 +209,11 @@ func TestClassify_NetworkEgress_Commands(t *testing.T) {
 	}
 }
 
-func TestClassify_NetworkEgress_GitPushNeedsRemote(t *testing.T) {
-	// git push without args is safe (just prints upstream info)
+func TestClassify_NetworkEgress_BareGitPush(t *testing.T) {
+	// git push without args pushes the current branch to its upstream.
 	got := Classify("git push")
-	if got != Safe {
-		t.Errorf("Classify(\"git push\") = %s, want safe", got)
+	if got != NetworkEgress {
+		t.Errorf("Classify(\"git push\") = %s, want network_egress", got)
 	}
 }
 
@@ -537,7 +537,7 @@ func TestClassify_EdgeCases(t *testing.T) {
 		{"compound_or_fallback", "false || echo ok", Safe},
 		{"go_install_no_arg", "go install", CodeExecution},
 		{"go_install_remote", "go install github.com/foo/bar@latest", CodeExecution},
-		{"git_push_no_arg", "git push", Safe},
+		{"git_push_no_arg", "git push", NetworkEgress},
 		{"git_push_remote", "git push origin main", NetworkEgress},
 		{"sudo_ls_is_system_write", "sudo ls /root", SystemWrite},
 	}

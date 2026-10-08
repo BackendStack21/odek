@@ -277,7 +277,7 @@ CI (`.github/workflows/test.yml`) runs the unit suite under `-race` on every pus
 | `internal/ws` | WebSocket constant verification |
 | `internal/resource` | @-reference parsing, file resolution, session resolution, security |
 | `internal/render` | Terminal output, no-color mode, nil safety, tool call/result rendering |
-| `internal/danger` | Command classification across 11 risk classes (incl. `network_upload` and fail-closed `unknown`), compound commands, wrapper grammar, repo-aware git rule, read ledger, secret reads, allow/denylist position matching, display sanitization, classifier-bypass attempts, fuzz invariants, approver friction |
+| `internal/danger` | Command classification across 12 risk classes (incl. `network_upload` and fail-closed `unknown`), compound commands, wrapper grammar, repo-aware git rule, read ledger, secret reads, allow/denylist position matching, display sanitization, classifier-bypass attempts, fuzz invariants, approver friction |
 | `internal/memory` | Facts CRUD, buffer ring, episodes, merge detector (go-vector), ReplaceEntry/AppendEntry, memory tool, security scan, LLM ranking, episode provenance |
 | `internal/skills` | Loading, triggers, import, agent tools (skill_load/skill_list), ValidateSkillName, isPrivateHost |
 | `internal/telegram` | Bot client, long-polling, command handlers, session management, plan CRUD, voice/photo download, health server, retry/backoff |

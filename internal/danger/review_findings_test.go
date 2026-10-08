@@ -152,3 +152,14 @@ func TestReview_UnresolvableProgramOperandFailsClosed(t *testing.T) {
 		t.Errorf("unquoted glob loop ExecutionFiles = %v, want both scripts", files)
 	}
 }
+
+// Bare git push pushes the current branch to its upstream; it is egress like
+// the explicit forms, not a local no-op.
+func TestReview_BareGitPushIsEgress(t *testing.T) {
+	chdirUnarmedRepo(t)
+	for _, c := range []string{"git push", "git push -u", "git push origin main", "git -C . push"} {
+		if got := Classify(c); got != NetworkEgress {
+			t.Errorf("Classify(%q) = %s, want network_egress", c, got)
+		}
+	}
+}

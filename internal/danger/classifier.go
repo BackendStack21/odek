@@ -5304,8 +5304,9 @@ func gitContactsRemote(sub string, tokens, args []string) bool {
 		"send-pack", "receive-pack":
 		return true
 	case "push":
-		// "git push" with no remote is harmless (prints upstream info).
-		return hasArgAfter(tokens, "push", "")
+		// Bare "git push" pushes the current branch to its configured
+		// upstream, so every push form contacts a remote.
+		return true
 	case "remote":
 		return len(args) > 0 && (args[0] == "update" || args[0] == "prune")
 	case "submodule":
