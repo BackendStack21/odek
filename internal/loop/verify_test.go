@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/BackendStack21/odek/internal/session"
 	"github.com/BackendStack21/odek/internal/tool"
@@ -172,7 +173,7 @@ func verifyTurnHistory() []session.Message {
 }
 
 func TestVerifyToolTrace_CurrentTurnWithResults(t *testing.T) {
-	trace := verifyToolTrace(verifyTurnHistory(), nil)
+	trace := verifyToolTrace(verifyTurnHistory(), nil, nil)
 	if !strings.Contains(trace, "1. shell(") || !strings.Contains(trace, "git log --oneline") {
 		t.Fatalf("trace missing the current turn's call: %q", trace)
 	}
@@ -188,7 +189,7 @@ func TestVerifyToolTrace_CurrentTurnWithResults(t *testing.T) {
 	if strings.Contains(trace, "2. ") {
 		t.Fatalf("numbering must restart at the turn boundary: %q", trace)
 	}
-	if got := verifyToolTrace(nil, nil); got != "(no tool calls were executed this turn)" {
+	if got := verifyToolTrace(nil, nil, nil); got != "(no tool calls were executed this turn)" {
 		t.Fatalf("empty trace = %q", got)
 	}
 }
@@ -198,7 +199,7 @@ func TestVerifyToolTrace_UnmatchedResult(t *testing.T) {
 		{Role: "user", Content: "task"},
 		{Role: "assistant", ToolCalls: []session.ToolCall{verifyTC("x", "shell", `{"command":"ls"}`)}},
 	}
-	trace := verifyToolTrace(msgs, nil)
+	trace := verifyToolTrace(msgs, nil, nil)
 	if !strings.Contains(trace, "(no result recorded)") {
 		t.Fatalf("missing result must be stated, not invented: %q", trace)
 	}
@@ -211,7 +212,7 @@ func TestVerifyToolTrace_TruncationMarkers(t *testing.T) {
 		{Role: "assistant", ToolCalls: []session.ToolCall{verifyTC("c", "shell", "{}")}},
 		{Role: "tool", ToolCallID: "c", Content: big},
 	}
-	trace := verifyToolTrace(msgs, nil)
+	trace := verifyToolTrace(msgs, nil, nil)
 	if !strings.Contains(trace, "bytes omitted]") {
 		t.Fatalf("per-result cut must be marked: %q", trace)
 	}
@@ -232,7 +233,7 @@ func TestVerifyToolTrace_TruncationMarkers(t *testing.T) {
 			session.Message{Role: "tool", ToolCallID: id, Content: strings.Repeat("x", 1000)},
 		)
 	}
-	trace = verifyToolTrace(many, nil)
+	trace = verifyToolTrace(many, nil, nil)
 	if len(trace) > verifyTraceBudgetBytes+256 {
 		t.Fatalf("trace not bounded: %d bytes", len(trace))
 	}
@@ -248,7 +249,7 @@ func TestVerifyToolTrace_WrapsUntrustedAndRedacts(t *testing.T) {
 		{Role: "tool", ToolCallID: "c", Content: "token=sk-ant-api03-abcdefghijklmnopqrstuvwxyz_1234567890 done"},
 	}
 	var sources []string
-	trace := verifyToolTrace(msgs, func(source, content string) string {
+	trace := verifyToolTrace(msgs, nil, func(source, content string) string {
 		sources = append(sources, source)
 		return "<W>" + content + "</W>"
 	})
@@ -262,7 +263,7 @@ func TestVerifyToolTrace_WrapsUntrustedAndRedacts(t *testing.T) {
 		t.Fatalf("secret reached the verifier trace: %q", trace)
 	}
 	// Without a surface wrapper the engine's own nonce'd boundary applies.
-	def := verifyToolTrace(msgs, nil)
+	def := verifyToolTrace(msgs, nil, nil)
 	if !strings.Contains(def, "<untrusted_content_") || !strings.Contains(def, `source="verify_tool_result"`) {
 		t.Fatalf("default untrusted boundary missing: %q", def)
 	}
@@ -417,4 +418,132 @@ func contains(s, sub string) bool {
 		}
 		return false
 	})()
+}
+
+// A system-initiated wake turn ("bg-wake") is verified as its own turn, with
+// its own task, while drained bg-notice messages never open a turn.
+func TestVerifyTurnStart_WakeTurnIsOwnTurn(t *testing.T) {
+	msgs := []session.Message{
+		{Role: "user", Content: "weather in Lisbon?"},
+		{Role: "assistant", ToolCalls: []session.ToolCall{verifyTC("w", "browser", "{}")}},
+		{Role: "tool", ToolCallID: "w", Content: "sunny"},
+		{Role: "assistant", Content: "Sunny."},
+		{Role: "user", Name: "bg-wake", Content: "[background job finished] report it"},
+		{Role: "assistant", ToolCalls: []session.ToolCall{verifyTC("b", "bg_output", "{}")}},
+		{Role: "tool", ToolCallID: "b", Content: "0 failures"},
+		{Role: "user", Name: "bg-notice", Content: "[notice]"},
+	}
+	if got := verifyOriginalTask(msgs); got != "[background job finished] report it" {
+		t.Fatalf("task = %q, want the wake turn's task", got)
+	}
+	trace := verifyToolTrace(msgs, nil, nil)
+	if !strings.Contains(trace, "bg_output") || strings.Contains(trace, "browser") {
+		t.Fatalf("wake turn trace = %q", trace)
+	}
+	if prior := verifyPriorContext(msgs, func(_, c string) string { return c }); !strings.Contains(prior, "assistant: Sunny.") {
+		t.Fatalf("prior context must carry the earlier answer: %q", prior)
+	}
+}
+
+// Providers that omit tool_call ids still get their results paired, by
+// position inside the call group; ids win when both sides carry them.
+func TestVerifyTurnCalls_PositionalPairing(t *testing.T) {
+	msgs := []session.Message{
+		{Role: "user", Content: "task"},
+		{Role: "assistant", ToolCalls: []session.ToolCall{verifyTC("", "shell", `{"command":"a"}`), verifyTC("", "shell", `{"command":"b"}`)}},
+		{Role: "tool", Content: "RESULT_A"},
+		{Role: "tool", Content: "RESULT_B"},
+		{Role: "assistant", ToolCalls: []session.ToolCall{verifyTC("x1", "read_file", "{}"), verifyTC("x2", "read_file", "{}")}},
+		{Role: "tool", ToolCallID: "x2", Content: "RESULT_X2"},
+		{Role: "tool", ToolCallID: "x1", Content: "RESULT_X1"},
+	}
+	calls := verifyTurnCalls(msgs)
+	if len(calls) != 4 {
+		t.Fatalf("calls = %d, want 4", len(calls))
+	}
+	want := []string{"RESULT_A", "RESULT_B", "RESULT_X1", "RESULT_X2"}
+	for i, w := range want {
+		if !calls[i].found || calls[i].result != w {
+			t.Fatalf("call %d = %+v, want result %q", i, calls[i], w)
+		}
+	}
+}
+
+// Calls of this turn dropped by context trimming are stated in the trace so
+// their absence is not read as phantom runs.
+func TestVerifyToolTrace_TrimmedNotice(t *testing.T) {
+	msgs := []session.Message{{Role: "user", Content: "task"}}
+	trace := verifyToolTrace(msgs, map[string]int{"read_file": 3, "search_files": 1}, nil)
+	if !strings.Contains(trace, "4 earlier tool call(s) of this turn were trimmed") || !strings.Contains(trace, "read_file, search_files") {
+		t.Fatalf("trimmed notice missing: %q", trace)
+	}
+	if !strings.Contains(trace, "(no tool calls were executed this turn)") {
+		t.Fatalf("empty-turn marker missing after notice: %q", trace)
+	}
+	if got := verifyToolTrace(msgs, nil, nil); strings.Contains(got, "trimmed") {
+		t.Fatalf("no notice without trimming: %q", got)
+	}
+}
+
+// A secret straddling the head/tail cut must be redacted before the cut so
+// no fragment of it reaches the verifier.
+func TestVerifyToolTrace_RedactsBeforeCut(t *testing.T) {
+	key := "sk-ant-api03-abcdefghijklmnopqrstuvwxyz_1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefgh"
+	head := verifyResultExcerptBytes * 3 / 4
+	body := strings.Repeat("x", head-20) + "ANTHROPIC_API_KEY=" + key + "\n" + strings.Repeat("y", 3000)
+	msgs := []session.Message{
+		{Role: "user", Content: "task"},
+		{Role: "assistant", ToolCalls: []session.ToolCall{verifyTC("c", "shell", "{}")}},
+		{Role: "tool", ToolCallID: "c", Content: body},
+	}
+	trace := verifyToolTrace(msgs, nil, func(_, c string) string { return c })
+	if strings.Contains(trace, "sk-ant-api03-abc") {
+		t.Fatalf("secret fragment reached the trace: %q", trace[:head+100])
+	}
+	if !strings.Contains(trace, "bytes omitted]") {
+		t.Fatalf("expected a cut: %q", trace)
+	}
+}
+
+// Cuts never split a multibyte rune: task clamp, args clamp, result excerpt
+// and prior-context excerpt all stay valid UTF-8.
+func TestVerify_CutsAreUTF8Safe(t *testing.T) {
+	cjk := strings.Repeat("漢字と絵文字😀", 600) // 3- and 4-byte runes
+	msgs := []session.Message{
+		{Role: "user", Content: cjk},
+		{Role: "assistant", Content: cjk},
+		{Role: "user", Content: cjk},
+		{Role: "assistant", ToolCalls: []session.ToolCall{verifyTC("c", "shell", `{"command":"`+cjk+`"}`)}},
+		{Role: "tool", ToolCallID: "c", Content: cjk},
+	}
+	for name, got := range map[string]string{
+		"task":  verifyOriginalTask(msgs),
+		"trace": verifyToolTrace(msgs, nil, func(_, c string) string { return c }),
+		"prior": verifyPriorContext(msgs, func(_, c string) string { return c }),
+	} {
+		if !utf8.ValidString(got) {
+			t.Fatalf("%s is not valid UTF-8", name)
+		}
+		if !strings.Contains(got, "…") && !strings.Contains(got, "omitted]") {
+			t.Fatalf("%s was not cut: %d bytes", name, len(got))
+		}
+	}
+}
+
+// The verifier sees what the user typed, not the resource-expanded prompt.
+func TestVerify_UsesPrincipalPrompt(t *testing.T) {
+	typed := "Summarize @README.md"
+	expanded := typed + "\n<untrusted_content_x>" + strings.Repeat("readme ", 3000) + "</untrusted_content_x>"
+	msgs := []session.Message{
+		{Role: "user", Content: expanded, PrincipalPrompt: &typed},
+		{Role: "assistant", Content: "It is a Go agent runtime."},
+		{Role: "user", Content: expanded, PrincipalPrompt: &typed},
+	}
+	if got := verifyOriginalTask(msgs); got != typed {
+		t.Fatalf("task = %q, want the typed prompt", got)
+	}
+	prior := verifyPriorContext(msgs, func(_, c string) string { return c })
+	if prior != "user: "+typed+"\nassistant: It is a Go agent runtime." {
+		t.Fatalf("prior = %q", prior)
+	}
 }
