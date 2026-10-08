@@ -266,3 +266,135 @@ func TestSecretReadHeuristics_StaySafe(t *testing.T) {
 		classifyIs(t, cmd, Safe)
 	}
 }
+
+// An agent running as root (the sandbox user) has HOME=/root. /root is a
+// system path for every other account, but the current user's own home must
+// follow the home rules: ordinary files are local writes, rc files,
+// credential directories and odek anchors still escalate.
+func TestHomeIsRoot_OrdinaryWritesAreLocal(t *testing.T) {
+	t.Setenv("HOME", "/root")
+	for _, cmd := range []string{
+		"echo x > ~/notes.txt",
+		"echo x > /root/notes.txt",
+		"echo x > $HOME/notes.txt",
+		"echo x >> ${HOME}/notes.txt",
+		"mv evil ~/.local/bin/git",
+		"touch ~/a",
+		"mkdir -p ~/proj/src",
+		"cp a ~/b",
+		"tee ~/x.log < /dev/null",
+	} {
+		classifyIs(t, cmd, LocalWrite)
+	}
+	for _, cmd := range []string{
+		"cat ~/a", "cat /root/a", "ls /root", "ls ~", "head ~/notes.txt", "cat $HOME/notes.txt",
+	} {
+		classifyIs(t, cmd, Safe)
+	}
+	if got := ClassifyPath("/root/notes.txt"); got != LocalWrite {
+		t.Errorf("ClassifyPath(/root/notes.txt) = %s, want local_write", got)
+	}
+	if got := ClassifyPath("/root"); got != LocalWrite {
+		t.Errorf("ClassifyPath(/root) = %s, want local_write", got)
+	}
+}
+
+func TestHomeIsRoot_ProtectedHomePathsStillEscalate(t *testing.T) {
+	t.Setenv("HOME", "/root")
+	for _, cmd := range []string{
+		"echo x > ~/.bashrc",
+		"echo x >> /root/.bashrc",
+		"echo x > ~/.profile",
+		"echo x > ~/.zshenv",
+		"echo x > ~/.ssh/authorized_keys",
+		"echo x > ~/.ssh/id_rsa",
+		"cat ~/.ssh/id_rsa",
+		"cat /root/.ssh/id_rsa",
+		"echo x > ~/.odek/config.json",
+		"cat ~/.odek/config.json",
+		"cat ~/.odek/secrets.env",
+		"echo x > ~/.aws/credentials",
+		"cat ~/.aws/credentials",
+		"echo x > ~/.config/git/config",
+		"echo x > ~/.gitconfig",
+		"echo x > ~/.netrc",
+	} {
+		got := Classify(cmd)
+		if Rank(got) < Rank(SystemWrite) {
+			t.Errorf("Classify(%q) = %s, want at least system_write", cmd, got)
+		}
+	}
+	for _, p := range []string{"/root/.bashrc", "/root/.ssh/id_rsa", "/root/.odek/config.json", "/root/.aws/credentials"} {
+		if got := ClassifyPath(p); Rank(got) < Rank(SystemWrite) {
+			t.Errorf("ClassifyPath(%q) = %s, want at least system_write", p, got)
+		}
+	}
+	// System directories and other accounts' homes keep their rules.
+	for _, p := range []string{"/etc/hosts", "/usr/local/bin/x", "/var/lib/x", "/home/alice/.bashrc", "/home/alice/.ssh/id_rsa"} {
+		if got := ClassifyPath(p); Rank(got) < Rank(SystemWrite) {
+			t.Errorf("ClassifyPath(%q) = %s, want at least system_write", p, got)
+		}
+	}
+	classifyIs(t, "echo x > /home/alice/notes.txt", LocalWrite)
+}
+
+// `rm -rf /root/x` and `rm -rf ~/x` name the same directory when HOME=/root,
+// so they carry the same effects.
+func TestHomeIsRoot_WipeTargetParity(t *testing.T) {
+	t.Setenv("HOME", "/root")
+	for _, pair := range [][2]string{
+		{"rm -rf /root/x", "rm -rf ~/x"},
+		{"rm -rf /root/x/y", "rm -rf $HOME/x/y"},
+		{"rm /root/x", "rm ~/x"},
+	} {
+		abs, tilde := Analyze(pair[0]).Effects, Analyze(pair[1]).Effects
+		if len(abs) != len(tilde) {
+			t.Errorf("effects of %q = %v, of %q = %v, want equal", pair[0], abs, pair[1], tilde)
+			continue
+		}
+		for i := range abs {
+			if abs[i] != tilde[i] {
+				t.Errorf("effects of %q = %v, of %q = %v, want equal", pair[0], abs, pair[1], tilde)
+				break
+			}
+		}
+	}
+	classifyIs(t, "rm /root/x", LocalWrite)
+	classifyIs(t, "rm -rf /root/x", Destructive)
+	classifyIs(t, "rm -rf ~/x", Destructive)
+	if isSystemPath("/root/x") {
+		t.Errorf("isSystemPath(/root/x) = true with HOME=/root")
+	}
+}
+
+// With a different current user, /root is another account's home and keeps
+// the system-path rules.
+func TestHomeNotRoot_RootStaysSystem(t *testing.T) {
+	t.Setenv("HOME", "/home/user")
+	classifyIs(t, "echo x > /root/notes.txt", SystemWrite)
+	classifyIs(t, "echo x > /root/.bashrc", Persistence)
+	classifyIs(t, "echo x > ~/notes.txt", LocalWrite)
+}
+
+// A home outside /home that sits under another system prefix still gets the
+// home rules, but a degenerate home (/, a bare system directory) never turns
+// the system tree into local writes.
+func TestHomePrecedence_ServiceHomesAndDegenerateHomes(t *testing.T) {
+	t.Setenv("HOME", "/var/lib/svc")
+	classifyIs(t, "echo x > /var/lib/svc/data.txt", LocalWrite)
+	classifyIs(t, "echo x > ~/data.txt", LocalWrite)
+	classifyIs(t, "cat /var/lib/svc/data.txt", Safe)
+	classifyIs(t, "echo x > /var/lib/other/data.txt", SystemWrite)
+	if got := Classify("echo x > ~/.bashrc"); Rank(got) < Rank(SystemWrite) {
+		t.Errorf("service-home rc file = %s, want at least system_write", got)
+	}
+
+	for _, home := range []string{"/", "/usr", "/etc", "/var"} {
+		t.Setenv("HOME", home)
+		for _, p := range []string{"/etc/hosts", "/usr/local/bin/x", "/var/lib/x"} {
+			if got := ClassifyPath(p); Rank(got) < Rank(SystemWrite) {
+				t.Errorf("HOME=%s: ClassifyPath(%q) = %s, want at least system_write", home, p, got)
+			}
+		}
+	}
+}
