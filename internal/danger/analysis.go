@@ -163,13 +163,10 @@ func analyzeWithState(cmd string, depth int, inherited *shellAnalysisState) Anal
 			if len(inner) > 0 {
 				name := commandName(inner[0])
 				if pipedShells[name] {
-					if payload := flagArg(inner, "-c"); payload != "" {
-						result.merge(analyzeWithState(payload, depth+1, &payloadState))
-						for j := range legacyStage {
-							if legacyStage[j] == "-c" && j+1 < len(legacyStage) {
-								legacyStage[j+1] = "echo"
-								break
-							}
+					if idx := shellInlineScriptIndex(inner); idx >= 0 && inner[idx] != "" {
+						result.merge(analyzeWithState(inner[idx], depth+1, &payloadState))
+						if at := len(stage) - len(inner) + idx; at < len(legacyStage) {
+							legacyStage[at] = "echo"
 						}
 					}
 				}
