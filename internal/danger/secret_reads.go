@@ -120,7 +120,7 @@ var credentialDataExts = map[string]bool{
 func credentialFileBase(base string) bool {
 	b := strings.ToLower(base)
 	switch b {
-	case ".env", "credentials.json", ".netrc", "_netrc", ".npmrc", ".pypirc",
+	case ".env", "credentials", "credentials.json", "credentials.toml", ".netrc", "_netrc", ".npmrc", ".pypirc",
 		".git-credentials", "kubeconfig", "terraform.tfstate", ".htpasswd",
 		".pgpass", ".vault-token":
 		return true
@@ -152,6 +152,39 @@ func credentialFileBase(base string) bool {
 	}
 	if b == "secrets" {
 		return true
+	}
+	return false
+}
+
+// credentialDirs are directory names whose contents are credentials: the
+// per-tool dot-directories always, and the plain secrets/credentials folders
+// for files that are not source code or documentation.
+var (
+	credentialDotDirs   = fieldSet(".aws .ssh .kube .docker .gnupg .azure .gcloud .secrets")
+	credentialPlainDirs = fieldSet("secrets credentials")
+	credentialDirPairs  = map[string]bool{".config/gcloud": true, ".config/gh": true}
+	// credentialCodeExts are extensions of source and documentation files,
+	// which live in packages and folders that merely carry a secrets-like name
+	// (internal/secrets/store.go, docs/credentials/README.md).
+	credentialCodeExts = fieldSet("go rs py js mjs cjs ts tsx jsx rb java kt scala c h cc cpp hpp cs swift php lua " +
+		"md rst adoc html css scss vue svelte sh bash zsh test snap proto sql lock mod sum")
+)
+
+// credentialDirectory reports whether a file sits under a directory that
+// holds credentials. dir is the path before the file name; every component is
+// examined, not only the last.
+func credentialDirectory(dir, base string) bool {
+	parts := strings.Split(strings.ToLower(dir), "/")
+	ext := strings.TrimPrefix(strings.ToLower(filepath.Ext(base)), ".")
+	for i, p := range parts {
+		switch {
+		case credentialDotDirs[p]:
+			return true
+		case i+1 < len(parts) && credentialDirPairs[p+"/"+parts[i+1]]:
+			return true
+		case credentialPlainDirs[p] && !credentialCodeExts[ext] && base != "...":
+			return true
+		}
 	}
 	return false
 }
@@ -188,6 +221,9 @@ func credentialPathToken(tok string) bool {
 		return false
 	}
 	if credentialFileBase(base) {
+		return true
+	}
+	if i := strings.LastIndexByte(tok, '/'); i > 0 && credentialDirectory(tok[:i], base) {
 		return true
 	}
 	if strings.ContainsAny(base, "*?[") {

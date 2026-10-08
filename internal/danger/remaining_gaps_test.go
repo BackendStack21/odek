@@ -248,3 +248,55 @@ func TestRemaining_CurlRuntimeURLPolicyPinned(t *testing.T) {
 		}
 	}
 }
+
+// A credential is recognised by the directory it lives in as well as by its
+// file name: secrets/, credentials/, and the per-tool dot-directories hold
+// credentials whatever the files inside are called.
+func TestRemaining_CredentialDirectoriesAreSystemWrite(t *testing.T) {
+	for _, cmd := range []string{
+		`cat secrets/foo`,
+		`cat ./secrets/foo`,
+		`cat .secrets/x`,
+		`cat credentials/aws`,
+		`cat app/credentials/db`,
+		`cat .aws/credentials`,
+		`cat .aws/config`,
+		`cat .ssh/id_rsa`,
+		`cat .ssh/config`,
+		`cat config/secrets.yml`,
+		`cat .kube/config`,
+		`cat .docker/config.json`,
+		`cat private/keys/x.pem`,
+		`cat .gnupg/trustdb.gpg`,
+		`cat .config/gcloud/credentials.db`,
+		`cat .config/gh/hosts.yml`,
+		`cat .gem/credentials`,
+		`cat .cargo/credentials.toml`,
+		`head -c 100 deploy/SECRETS/prod`,
+		`cp secrets/prod.txt /tmp/x`,
+		`base64 .kube/config`,
+		`cat < .kube/config`,
+	} {
+		if got := Classify(cmd); got != SystemWrite {
+			t.Errorf("Classify(%q) = %s, want system_write (credential file)", cmd, got)
+		}
+	}
+	for _, cmd := range []string{
+		`ls secrets/`,
+		`ls -la .aws/`,
+		`cat docs/secrets-policy.md`,
+		`cat docs/credentials/README.md`,
+		`cat internal/secrets/store.go`,
+		`cat src/credentials/index.ts`,
+		`go test ./internal/secrets/...`,
+		`wc -l secrets/foo`,
+		`grep -r token src/`,
+		`cat .gitignore`,
+		`cat docker/config.json`,
+		`cat kube/deployment.yaml`,
+	} {
+		if got := Classify(cmd); got == SystemWrite {
+			t.Errorf("Classify(%q) = %s, want it below system_write", cmd, got)
+		}
+	}
+}
