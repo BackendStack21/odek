@@ -3,6 +3,7 @@ package danger
 import (
 	"bufio"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -46,5 +47,109 @@ func TestOptSpecGoldenEffects(t *testing.T) {
 	}
 	if n < 200 {
 		t.Fatalf("golden corpus has only %d commands", n)
+	}
+}
+
+func optNames(r optResult) string {
+	var parts []string
+	for _, o := range r.opts {
+		p := strings.Join(o.names, "|")
+		if o.has {
+			p += "=" + o.value
+		}
+		parts = append(parts, p)
+	}
+	return strings.Join(parts, " ")
+}
+
+func TestOptSpecParseGrammar(t *testing.T) {
+	gnu := optSpec{
+		short:  "Cf",
+		long:   longTable("file filter directory", "verbose force"),
+		alias:  map[byte]string{'f': "--file"},
+		abbrev: true,
+	}
+	exact := optSpec{short: "n", long: longTable("name", "verbose"), shortEq: true}
+	posix := optSpec{short: "C", long: longTable("git-dir", ""), posix: true}
+	limited := optSpec{short: "p", operandLimit: 1}
+	for _, tc := range []struct {
+		name     string
+		spec     optSpec
+		args     []string
+		opts     string
+		operands string
+		rest     string
+	}{
+		{"fused cluster takes rest as value", gnu, []string{"-xvfarchive", "a"}, "-x -v --file=archive", "a", ""},
+		{"cluster value from next word", gnu, []string{"-xvf", "archive", "a"}, "-x -v --file=archive", "a", ""},
+		{"value letter swallows later letters", gnu, []string{"-Cvf", "a"}, "-C=vf", "a", ""},
+		{"fused directory", gnu, []string{"-C/etc", "a"}, "-C=/etc", "a", ""},
+		{"long equals", gnu, []string{"--file=x", "a"}, "--file=x", "a", ""},
+		{"long separate", gnu, []string{"--file", "x", "a"}, "--file=x", "a", ""},
+		{"long abbreviation", gnu, []string{"--dir", "x", "a"}, "--directory=x", "a", ""},
+		{"ambiguous abbreviation lists candidates", gnu, []string{"--fi", "x", "a"}, "--file|--filter=x", "a", ""},
+		{"boolean long takes no value", gnu, []string{"--verbose", "a"}, "--verbose", "a", ""},
+		{"unknown long takes no value", gnu, []string{"--nope", "a"}, "--nope", "a", ""},
+		{"unknown long with equals", gnu, []string{"--nope=1", "a"}, "--nope=1", "a", ""},
+		{"terminator", gnu, []string{"-x", "--", "-f", "a"}, "-x", "", "-f a"},
+		{"options after operands", gnu, []string{"a", "-x", "b"}, "-x", "a b", ""},
+		{"missing value at end", gnu, []string{"--file"}, "--file", "", ""},
+		{"lone dash is an operand", gnu, []string{"-", "a"}, "", "- a", ""},
+		{"exact table has no abbreviation", exact, []string{"--na", "x", "a"}, "--na", "x a", ""},
+		{"pflag short equals", exact, []string{"-n=5", "a"}, "-n=5", "a", ""},
+		{"pflag cluster", exact, []string{"-xn", "5", "a"}, "-x -n=5", "a", ""},
+		{"posix stops at first operand", posix, []string{"-C", "dir", "sub", "-C", "x"}, "-C=dir", "sub -C x", ""},
+		{"posix long equals", posix, []string{"--git-dir=/x", "sub"}, "--git-dir=/x", "sub", ""},
+		{"operand limit passes the tail through", limited, []string{"-p", "22", "host", "-p", "23", "cmd", "-p", "x"}, "-p=22 -p=23", "host cmd -p x", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := tc.spec.parse(tc.args)
+			if got := optNames(r); got != tc.opts {
+				t.Errorf("options = %q, want %q", got, tc.opts)
+			}
+			if got := strings.Join(r.operands, " "); got != tc.operands {
+				t.Errorf("operands = %q, want %q", got, tc.operands)
+			}
+			if got := strings.Join(r.rest, " "); got != tc.rest {
+				t.Errorf("rest = %q, want %q", got, tc.rest)
+			}
+		})
+	}
+}
+
+func TestOptSpecOptionIndices(t *testing.T) {
+	spec := optSpec{short: "f", exact: []string{"-arch"}, long: longTable("file", "")}
+	args := []string{"-nf", "x", "--file", "y", "-arch", "z", "-arch=w", "op"}
+	var got []string
+	for i := 0; i < len(args); {
+		if !strings.HasPrefix(args[i], "-") {
+			i++
+			continue
+		}
+		opts, next := spec.option(args, i)
+		last := opts[len(opts)-1]
+		got = append(got, strings.Join(last.names, "|")+"@"+strconv.Itoa(last.at)+"-"+strconv.Itoa(last.end)+"="+last.value)
+		i = next
+	}
+	want := "-f@0-1=x --file@2-3=y -arch@4-5=z -arch@6-6=w"
+	if g := strings.Join(got, " "); g != want {
+		t.Errorf("option spans = %q, want %q", g, want)
+	}
+}
+
+func TestOptSpecFoldAndMinAbbrev(t *testing.T) {
+	folded := optSpec{long: longTable("baseurl", ""), foldLong: true}
+	if r := folded.parse([]string{"--baseURL", "x", "op"}); optNames(r) != "--baseurl=x" || len(r.operands) != 1 {
+		t.Errorf("case-folded long option read as %q, operands %v", optNames(r), r.operands)
+	}
+	min := optSpec{long: longTable("output", ""), abbrev: true, minAbbrev: 4}
+	if r := min.parse([]string{"--out", "x"}); optNames(r) != "--out" || len(r.operands) != 1 {
+		t.Errorf("abbreviation shorter than the minimum was accepted: %q %v", optNames(r), r.operands)
+	}
+	if r := min.parse([]string{"--outp", "x"}); optNames(r) != "--output=x" {
+		t.Errorf("abbreviation at the minimum read as %q", optNames(r))
+	}
+	if r := (optSpec{long: longTable("a", ""), ignoreDashDash: true, short: "f"}).parse([]string{"--", "-fx"}); optNames(r) != "-f=x" {
+		t.Errorf("ignoreDashDash kept scanning as %q", optNames(r))
 	}
 }
