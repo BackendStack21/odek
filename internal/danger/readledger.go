@@ -666,6 +666,10 @@ func braceWords(word string, limit int) []string {
 // hasGlobMeta reports whether a path operand is expanded by the shell.
 func hasGlobMeta(tok string) bool { return strings.ContainsAny(tok, "*?[") }
 
+// maxGlobPatternBytes is the longest execution-path word expanded as a glob;
+// it matches the kernel's PATH_MAX.
+const maxGlobPatternBytes = 4096
+
 // executionCandidates resolves one operand to the paths the shell would hand
 // to the interpreter: the cleaned absolute path, or every glob match. A glob
 // that matches nothing is returned as its own pattern so the operand still
@@ -675,7 +679,9 @@ func executionCandidates(tok, cwd string) []string {
 	if !filepath.IsAbs(path) {
 		path = filepath.Join(cwd, path)
 	}
-	if !hasGlobMeta(path) {
+	// A pattern longer than any real path cannot match a file; matching it
+	// against directory entries is superlinear in its length.
+	if !hasGlobMeta(path) || len(path) > maxGlobPatternBytes {
 		return []string{filepath.Clean(path)}
 	}
 	matches, err := filepath.Glob(path)

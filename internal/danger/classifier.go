@@ -219,7 +219,7 @@ func ClassifyPath(path string) RiskClass {
 }
 
 func classifyPathLexical(path string) RiskClass {
-	abs, err := filepath.Abs(path)
+	abs, err := absPath(path)
 	if err != nil {
 		return SystemWrite
 	}
@@ -510,7 +510,7 @@ func isPersistencePathLexical(path string) bool {
 	if path == "" {
 		return false
 	}
-	abs, err := filepath.Abs(path)
+	abs, err := absPath(path)
 	if err != nil {
 		return false
 	}
@@ -1040,6 +1040,9 @@ func (c *DangerousConfig) ActionForCommand(cmd string) Action {
 	if c.Validate() != nil {
 		return Deny
 	}
+	if len(cmd) > MaxCommandBytes {
+		return Deny
+	}
 	trimmed := strings.TrimSpace(cmd)
 	if trimmed == "" {
 		return Allow
@@ -1164,9 +1167,19 @@ func parseAction(s string) Action {
 //
 // Output: flattened token slice including operators as tokens.
 func tokenize(input string) []string {
+	tokens, _ := tokenizeChecked(input)
+	return tokens
+}
+
+// tokenizeChecked is tokenize that also reports whether a quote was still
+// open at the end of the input. A real shell rejects such a line outright, so
+// nothing in it runs; the tokenizer, however, folds the rest of the line into
+// one quoted word, which hides every operator and command after the opening
+// quote. Callers that gate execution treat the report as unanalysable.
+func tokenizeChecked(input string) ([]string, bool) {
 	input = strings.TrimSpace(input)
 	if input == "" {
-		return nil
+		return nil, false
 	}
 
 	// Normalize newlines to semicolons
@@ -1289,7 +1302,7 @@ func tokenize(input string) []string {
 	}
 
 	flush()
-	return tokens
+	return tokens, inSingle || inDouble
 }
 
 // ── Write command prefixes ─────────────────────────────────────────────
@@ -2347,6 +2360,26 @@ func expandIFS(cmd string) string {
 // inner and outer bodies. Backticks do not nest in POSIX shells, so we
 // just pair the next two unescaped backticks.
 func extractSubstitutions(cmd string) (string, []string) {
+	budget := 8*len(cmd) + 4096
+	return extractSubstitutionsBounded(cmd, &budget, 0)
+}
+
+// unanalysableSubstitution is the extra body recorded when substitution
+// scanning exceeds its work bound. No such program exists, so the analysis of
+// the body classifies Unknown and the command is denied by default.
+const unanalysableSubstitution = "odek-unanalysable-substitution"
+
+// maxArithNesting bounds how many nested $(( … )) levels are unwrapped in
+// place; deeper arithmetic is treated as a command substitution, which the
+// recursion-depth bound then fails closed.
+const maxArithNesting = 8
+
+// extractSubstitutionsBounded is extractSubstitutions with an explicit scan
+// budget shared across nested arithmetic bodies. Matching a substitution
+// costs its length and the scan then jumps past it, so well-formed input
+// stays linear; unterminated openers that re-scan the tail are what exhaust
+// the budget, and exhausting it records unanalysableSubstitution.
+func extractSubstitutionsBounded(cmd string, budget *int, arith int) (string, []string) {
 	var out strings.Builder
 	var subs []string
 	inDouble := false
@@ -2421,6 +2454,9 @@ func extractSubstitutions(cmd string) (string, []string) {
 			depth := 1
 			j := i + 2
 			for j < len(cmd) && depth > 0 {
+				if *budget--; *budget < 0 {
+					return out.String(), append(subs, unanalysableSubstitution)
+				}
 				switch cmd[j] {
 				case '(':
 					depth++
@@ -2438,10 +2474,10 @@ func extractSubstitutions(cmd string) (string, []string) {
 			if depth == 0 && j < len(cmd) {
 				body := cmd[i+2 : j]
 				if cmd[i] == '$' {
-					if inner, ok := arithmeticBody(body); ok {
+					if inner, ok := arithmeticBody(body); ok && arith < maxArithNesting {
 						// $(( … )) is arithmetic and runs nothing itself;
 						// only a substitution nested in it can execute.
-						_, nested := extractSubstitutions(inner)
+						_, nested := extractSubstitutionsBounded(inner, budget, arith+1)
 						subs = append(subs, nested...)
 						out.WriteByte('0')
 						i = j + 1
@@ -2464,6 +2500,9 @@ func extractSubstitutions(cmd string) (string, []string) {
 		if cmd[i] == '`' {
 			end := -1
 			for k := i + 1; k < len(cmd); k++ {
+				if *budget--; *budget < 0 {
+					return out.String(), append(subs, unanalysableSubstitution)
+				}
 				if cmd[k] == '\\' && k+1 < len(cmd) {
 					k++
 					continue
@@ -3347,7 +3386,7 @@ func isSensitiveOdekPath(tok string) bool {
 		return false
 	}
 	path := expandTilde(tok)
-	abs, err := filepath.Abs(path)
+	abs, err := absPath(path)
 	if err != nil {
 		return false
 	}
@@ -3861,7 +3900,7 @@ func shellPathIsHomeSensitive(tok string) bool {
 	} else if path == "${HOME}" || strings.HasPrefix(path, "${HOME}/") {
 		path = home + path[len("${HOME}"):]
 	}
-	abs, err := filepath.Abs(path)
+	abs, err := absPath(path)
 	if err != nil {
 		return false
 	}

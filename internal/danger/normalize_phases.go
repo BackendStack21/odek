@@ -209,6 +209,10 @@ var heredocDataConsumers = map[string]bool{
 	"tac": true, "base64": true, "sha256sum": true, "md5sum": true,
 }
 
+// maxHeredocOperators is the most `<<` sequences consumeHeredocs will resolve
+// in one command.
+const maxHeredocOperators = 64
+
 type pendingHeredoc struct {
 	delim    string
 	quoted   bool
@@ -224,6 +228,12 @@ type pendingHeredoc struct {
 // leaves the whole command unchanged so the body keeps being classified.
 func consumeHeredocs(cmd string) string {
 	if !strings.Contains(cmd, "<<") {
+		return cmd
+	}
+	// Deciding each operator re-reads the text around it, so the work grows
+	// with operators times length. No real command carries this many
+	// here-documents; leaving the text unconsumed keeps every body classified.
+	if strings.Count(cmd, "<<") > maxHeredocOperators {
 		return cmd
 	}
 	var out strings.Builder
