@@ -921,4 +921,4 @@ separate from the model transcript; the `command` of an approval decision is
 the sanitized text the human was shown (control, bidi and invisible characters
 escaped, long values shortened), not the raw bytes. Run list/detail includes a redacted `task`
 label. See [WEBUI.md](WEBUI.md#task-supervision-api-additions) for the complete
-wire contract and [v2.29.0 notes](RELEASE_v2.29.0.md) for the cumulative UI changes.
+wire contract and [v2.29.0 release notes](https://github.com/BackendStack21/odek/releases/tag/v2.29.0) for the cumulative UI changes.
