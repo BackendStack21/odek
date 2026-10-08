@@ -3393,7 +3393,7 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 					// Show the full resource/command. Telegram/Web UI renderers
 					// truncate responsibly; hiding part of a command is exactly
 					// what lets a hidden payload slip through a single approval.
-					sb.WriteString(fmt.Sprintf("  %d. `%s` — `%s`\n", i+1, rc.name, rc.resource))
+					sb.WriteString(batchApprovalLine(i, rc.name, rc.resource))
 				}
 				description := sb.String()
 
@@ -4430,4 +4430,12 @@ func (e *Engine) completionNudgeText() string {
 		b.WriteString(" Declared acceptance checks remain unverified. Run their declared tools through the normal approval path, then complete the step; if blocked, report the missing verification. A plan update cannot self-certify a check.")
 	}
 	return b.String()
+}
+
+// batchApprovalLine renders one numbered item of the batch approval card. The
+// tool name and resource are model-supplied, so they are shown with control
+// and bidi characters made visible and newlines escaped: a multi-line
+// resource must not be able to start a second item.
+func batchApprovalLine(i int, name, resource string) string {
+	return fmt.Sprintf("  %d. `%s` — `%s`\n", i+1, danger.SanitizeInline(name), danger.SanitizeInline(resource))
 }

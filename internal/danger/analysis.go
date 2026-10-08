@@ -130,6 +130,11 @@ func analyzeWithState(cmd string, depth int, inherited *shellAnalysisState) Anal
 		return result
 	}
 	main, subs := normalize(cmd)
+	// Here-document bodies are consumed by normalize but still expand
+	// variables when their delimiter is unquoted, so the raw text is scanned too.
+	if referencesSensitiveEnv(main) || (strings.Contains(cmd, "<<") && referencesSensitiveEnv(cmd)) {
+		result.add(SystemWrite)
+	}
 	tokens := tokenize(main)
 	cwd, err := os.Getwd()
 	state := shellAnalysisState{cwd: cwd, vars: make(map[string]string), uncertain: err != nil, written: make(map[string]bool)}
@@ -249,6 +254,9 @@ func analyzeWithState(cmd string, depth int, inherited *shellAnalysisState) Anal
 				if afterAnd {
 					chainVars[assigned] = true
 				}
+			}
+			if secretNameOperand(name, inner[1:]) || stageTouchesCredentialFile(stage, inner, displayVerbs[name]) {
+				result.add(SystemWrite)
 			}
 			if isCodeExecution(name, inner) || explicitUntrustedExecutable(inner[0]) || (i > 0 && (pipedShells[name] || isStdinExecInterpreter(name) || embeddedShellInterpreters[name])) {
 				result.add(CodeExecution)
@@ -734,7 +742,11 @@ func (s *shellAnalysisState) targetRisk(target, cwd string, known bool) RiskClas
 		return LocalWrite
 	}
 	path := resolveInDirectory(target, cwd)
-	return worstOf(ClassifyPathWrite(path), classifyResourceToken(path))
+	risk := worstOf(ClassifyPathWrite(path), classifyResourceToken(path))
+	if credentialPathToken(path) {
+		risk = worstOf(risk, SystemWrite)
+	}
+	return risk
 }
 
 // isInputOutputRedirect reports whether tok is a redirection operator whose

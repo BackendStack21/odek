@@ -210,7 +210,7 @@ inspection proceeds without a human channel, and anything that would prompt is d
 | `non_interactive` | What to do with a **prompt**‑level command when there is no human channel (no TTY, no Web UI). `"deny"` blocks it; `"allow"` runs it; `"read_only"` (the shipped Restricted value) lets read‑only/inspection commands proceed and denies the rest. |
 | `classes` | Per‑class action overrides. The most specific setting — it wins over `action` and the built‑in defaults. Only list the classes you want to pin. |
 | `allowlist` | Commands that always run, **exact string match**, no classification. Highest priority of all. Use for a handful of trusted exact commands (e.g. `"npm run deploy"`). |
-| `denylist` | Commands that are always denied, **prefix match** after trimming. Beats classification and even godmode — but **not** the allowlist. |
+| `denylist` | Commands that are always denied, **token-prefix match** against every command the line runs (chain segments, pipe stages, wrapper-stripped commands, `bash -c` payloads, substitutions). Beats classification and even godmode — but **not** the allowlist. |
 
 #### How the classes map (built‑in risk model)
 
@@ -240,7 +240,7 @@ or relax the class with `"unknown": "prompt"`.
 #### How an action is resolved (precedence, first match wins)
 
 1. Command exactly matches an **`allowlist`** entry → **allow**.
-2. Command starts with a **`denylist`** entry → **deny**.
+2. Any command in the line starts with a **`denylist`** entry → **deny**.
 3. Otherwise classify it, then: explicit **`classes`** entry → `blocked` is **always deny** → global **`action`** (if set) → built‑in class default.
 4. If the result is **prompt** and there's no human channel, **`non_interactive`** decides.
 

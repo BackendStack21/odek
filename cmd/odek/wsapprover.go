@@ -196,7 +196,12 @@ func (a *wsApprover) PromptCommand(cls danger.RiskClass, cmd, description string
 	}
 
 	id := a.newID()
-	decision := session.Decision{ID: id, Kind: "approval", Command: cmd, Risk: string(cls), State: "interrupted"}
+	// The UI renders these fields as text, so the human must see what the
+	// bytes are: control characters and bidi/invisible format characters
+	// arrive as visible escapes, never raw.
+	shownCmd := danger.SanitizeForDisplay(cmd)
+	shownDescription := danger.SanitizeForDisplay(description)
+	decision := session.Decision{ID: id, Kind: "approval", Command: shownCmd, Risk: string(cls), State: "interrupted"}
 	defer func() { a.recordDecision(decision) }()
 	resp := make(chan string, 1)
 
@@ -236,8 +241,8 @@ func (a *wsApprover) PromptCommand(cls danger.RiskClass, cmd, description string
 		Type:              "approval_request",
 		ID:                id,
 		Risk:              string(cls),
-		Command:           cmd,
-		Description:       description,
+		Command:           shownCmd,
+		Description:       shownDescription,
 		IsOperation:       false,
 		AllowTrust:        allowTrust,
 		Friction:          friction,

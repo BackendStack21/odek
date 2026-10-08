@@ -186,6 +186,9 @@ type ToolOperation struct {
 // Classification rules (highest wins):
 //   - /boot, /dev, /proc, /sys, /mnt, /media → destructive
 //   - / (the filesystem root itself) → system_write
+//   - the current user's own home (even when it is /root or sits under a
+//     system prefix) follows the $HOME rules below; everything else under it
+//     → local_write, ahead of the system-prefix rule
 //   - /tmp, $TMPDIR → local_write
 //   - /etc, /root, /var, /run, /lib, /usr, /bin, /sbin, /opt, /srv → system_write
 //   - $HOME/.ssh, .config, .gnupg, .aws, .kube, .docker, .gitconfig, .env → system_write
@@ -257,6 +260,15 @@ func classifyPathLexical(path string) RiskClass {
 		}
 	}
 
+	// The current user's own home takes precedence over the system-path
+	// prefixes below. An agent running as root has HOME=/root, which is a
+	// system path for every other account; without this every ordinary
+	// write to its own home would prompt. The protected home paths (rc files,
+	// credential directories, odek anchors) were already decided above.
+	if home := currentHomeDir(); home != "" && pathWithin(abs, home) {
+		return LocalWrite
+	}
+
 	// Ordinary temp paths are local after home-sensitive checks. This handles
 	// macOS where temp dirs live under /var/folders/, preventing false
 	// SystemWrite classification (matching Linux /tmp behavior).
@@ -273,6 +285,37 @@ func classifyPathLexical(path string) RiskClass {
 	}
 
 	return LocalWrite
+}
+
+// degenerateHomes are directories that cannot serve as a user's home for
+// precedence purposes: treating the filesystem root or a bare system
+// directory as "home" would turn the whole system tree into local writes.
+var degenerateHomes = map[string]bool{
+	"/": true, "/etc": true, "/var": true, "/run": true, "/lib": true, "/lib64": true,
+	"/usr": true, "/bin": true, "/sbin": true, "/opt": true, "/srv": true,
+	"/boot": true, "/dev": true, "/proc": true, "/sys": true, "/mnt": true, "/media": true,
+}
+
+// currentHomeDir returns the cleaned absolute home directory of the current
+// user, or "" when it is unknown or degenerate.
+func currentHomeDir() string {
+	home, _ := os.UserHomeDir()
+	if home == "" || !filepath.IsAbs(home) {
+		return ""
+	}
+	home = filepath.Clean(home)
+	if strings.HasPrefix(home, "/private/") {
+		home = strings.TrimPrefix(home, "/private")
+	}
+	if degenerateHomes[home] {
+		return ""
+	}
+	return home
+}
+
+// pathWithin reports whether abs is dir itself or lies under it.
+func pathWithin(abs, dir string) bool {
+	return abs == dir || strings.HasPrefix(abs, dir+string(filepath.Separator))
 }
 
 // accountHomes returns the home directories whose protected-path rules apply
@@ -846,7 +889,10 @@ type DangerousConfig struct {
 	Allowlist []string `json:"allowlist,omitempty"`
 
 	// Denylist is a list of command strings that are always denied,
-	// regardless of their risk classification. Prefix match (after trimming).
+	// regardless of their risk classification. Each entry is matched as a
+	// token prefix against every command the line would run (chain segments,
+	// pipe stages, wrapper-stripped commands, git without global options,
+	// shell -c payloads and substitution bodies).
 	Denylist []string `json:"denylist,omitempty"`
 
 	// DefaultAction is the global default action applied to ALL risk classes
@@ -1013,13 +1059,11 @@ func (c *DangerousConfig) ActionForCommand(cmd string) Action {
 			return Allow
 		}
 	}
-	// Denylist is checked before classification — prefix match after
-	// collapsing internal whitespace runs on both sides, so 'git  push'
-	// (double space or tab) cannot bypass a 'git push' denylist entry.
-	for _, pattern := range c.Denylist {
-		if strings.HasPrefix(normalizeCommandSpacing(cmd), normalizeCommandSpacing(strings.TrimSpace(pattern))) {
-			return Deny
-		}
+	// Denylist is checked before classification — a token-prefix match against
+	// every command position (see denylistMatch), so neither extra whitespace
+	// nor a chain, wrapper, git global option or -c payload hides a match.
+	if denylistMatch(cmd, c.Denylist) {
+		return Deny
 	}
 	// Classify and use class-based action
 	action := Allow
@@ -6445,6 +6489,12 @@ func touchesSystemPath(tokens []string) bool {
 var systemPathPrefixes = []string{"/etc/", "/usr/", "/bin/", "/lib/", "/var/", "/opt/", "/boot/", "/sbin/"}
 
 func isSystemPath(path string) bool {
+	// The current user's home is theirs even when it sits under a system
+	// prefix (a service account with HOME=/var/lib/svc); the protected paths
+	// inside it are caught by shellPathIsHomeSensitive.
+	if home := currentHomeDir(); home != "" && pathWithin(filepath.Clean(path), home) {
+		return false
+	}
 	for _, p := range systemPathPrefixes {
 		if strings.HasPrefix(path, p) {
 			return true
