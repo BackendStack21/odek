@@ -108,7 +108,8 @@ internal/
                               (context_trimmed, tool_recovery, tool_running heartbeat); budget enforcement
                               (budget.Checker) + odek.event/v1 emission.
   tool/                       Thread-safe tool registry, clarify.go, send_message.go
-  danger/                     Command/URL classification + bypass-resistant tokenizer. Approver interface +
+  danger/                     Command/URL classification + bypass-resistant tokenizer + shell compound-command parser
+                              (compound.go: loops/if/case/groups/functions classified through their simple commands). Approver interface +
                               TTYApprover with friction mode (interactive approval system lives here).
   bgproc/                     Session-scoped background process manager (bg_* tools): bounded output rings,
                               spawn-time danger classification parity, group-signal stop

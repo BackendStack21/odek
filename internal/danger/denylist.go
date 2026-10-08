@@ -50,7 +50,8 @@ func denyScanVars(cmd string, entries [][]string, depth int, inherited map[strin
 	}
 	main, subs := normalize(cmd)
 	unquoted := unquotedVariableRefs(main)
-	for _, segment := range splitSegments(tokenize(main)) {
+	tokens, ops, _ := tokenizeMarked(main)
+	for _, segment := range splitSegments(tokens) {
 		stages := splitPipes(segment)
 		for _, stage := range stages {
 			if denyStage(denyExpand(stage, vars, unquoted), entries, depth) {
@@ -59,6 +60,13 @@ func denyScanVars(cmd string, entries [][]string, depth int, inherited map[strin
 		}
 		if len(stages) == 1 {
 			denyAssign(stages[0], vars)
+		}
+	}
+	// Commands inside loops, conditionals, case arms, groups and function
+	// bodies are command positions of their own.
+	for _, stage := range commandStages(tokens, ops) {
+		if denyStage(denyExpand(stage, vars, unquoted), entries, depth) {
+			return true
 		}
 	}
 	for _, sub := range subs {

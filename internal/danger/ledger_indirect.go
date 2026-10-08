@@ -234,12 +234,18 @@ func stdinSubstFeed(rest []string) bool {
 // command-substitution body emit.
 func substitutionReaderFiles(body, cwd string, written map[string]bool) (files, rewritten []string) {
 	main, _ := normalize(body)
-	for _, segment := range splitSegments(tokenize(main)) {
+	tokens, ops, _ := tokenizeMarked(main)
+	for _, segment := range splitSegments(tokens) {
 		for _, stage := range splitPipes(segment) {
 			f, r := readerFeedFiles(stage, cwd, written)
 			files = append(files, f...)
 			rewritten = append(rewritten, r...)
 		}
+	}
+	for _, stage := range commandStages(tokens, ops) {
+		f, r := readerFeedFiles(stage, cwd, written)
+		files = append(files, f...)
+		rewritten = append(rewritten, r...)
 	}
 	return files, rewritten
 }

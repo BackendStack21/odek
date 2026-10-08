@@ -53,6 +53,13 @@
 //     | sh` classifies like `rm -rf /`) so the real effect, not just
 //     code_execution, wins. All independent effects survive policy evaluation;
 //     rank chooses only the legacy display summary.
+//     Compound commands (loops, if/case, groups, subshells, functions, [[ ]]
+//     and (( ))) are parsed by parseShell (compound.go): the simple commands
+//     inside are classified one by one, a static for list is unrolled with
+//     the loop variable bound per element, branch and loop state is joined
+//     so nothing a branch may not have run is trusted afterwards, and a
+//     construct that cannot be paired classifies Unknown while its contents
+//     are still judged.
 //
 //  3. Wrapper unwrapping (unwrapWrappers). Leading execution wrappers
 //     (env, xargs, nohup, nice, setsid, timeout, …) are stripped so the
@@ -1177,25 +1184,67 @@ func tokenize(input string) []string {
 // one quoted word, which hides every operator and command after the opening
 // quote. Callers that gate execution treat the report as unanalysable.
 func tokenizeChecked(input string) ([]string, bool) {
+	tokens, _, unterminated := tokenizeMarked(input)
+	return tokens, unterminated
+}
+
+// tokenizeMarked is tokenizeChecked that also reports, for each token,
+// whether it is an operator written outside quotes. A quoted ")" is a word
+// that happens to look like the closing parenthesis of a subshell.
+func tokenizeMarked(input string) ([]string, []bool, bool) {
 	input = strings.TrimSpace(input)
 	if input == "" {
-		return nil, false
+		return nil, nil, false
 	}
 
-	// Normalize newlines to semicolons
-	input = strings.NewReplacer("\r\n", ";", "\n", ";", "\r", ";").Replace(input)
+	// Normalize newlines to semicolons. lineBreak remembers which semicolons
+	// stand for a line break: a blank line must stay two separators and never
+	// merge into the case terminator ";;".
+	lineBreak := make([]bool, 0, len(input))
+	{
+		var b strings.Builder
+		b.Grow(len(input))
+		for i := 0; i < len(input); i++ {
+			c := input[i]
+			if c == '\r' && i+1 < len(input) && input[i+1] == '\n' {
+				i++
+				c = '\n'
+			}
+			if c == '\n' || c == '\r' {
+				b.WriteByte(';')
+				lineBreak = append(lineBreak, true)
+				continue
+			}
+			b.WriteByte(c)
+			lineBreak = append(lineBreak, false)
+		}
+		input = b.String()
+	}
 
 	var tokens []string
+	var ops []bool
 	var current strings.Builder
 	inSingle := false
 	inDouble := false
 	escapeNext := false
+	// parenLit counts parentheses kept inside a word (array literals,
+	// extended globs, an unterminated $( ), and paramDepth the open ${ }
+	// expansions; neither kind of parenthesis is a shell operator.
+	parenLit, paramDepth := 0, 0
+	// arithBudget bounds the characters examined looking for the end of
+	// "((" openers, so a run of them cannot make the scan quadratic.
+	arithBudget := 4*len(input) + 1024
 
 	flush := func() {
 		if current.Len() > 0 {
 			tokens = append(tokens, current.String())
+			ops = append(ops, false)
 			current.Reset()
 		}
+	}
+	emit := func(op string) {
+		tokens = append(tokens, op)
+		ops = append(ops, true)
 	}
 
 	for i := 0; i < len(input); i++ {
@@ -1259,6 +1308,52 @@ func tokenizeChecked(input string) ([]string, bool) {
 			continue
 		}
 
+		// An escaped parenthesis is a literal character of the word.
+		if ch == '\\' && i+1 < len(input) && (input[i+1] == '(' || input[i+1] == ')') {
+			current.WriteByte(ch)
+			current.WriteByte(input[i+1])
+			i++
+			continue
+		}
+
+		// Parentheses delimit subshells, function definitions and case
+		// patterns. Inside a word they belong to it: an array literal
+		// (a=(1 2)), an extended glob (!(x), @(x|y)) or a ${ } expansion.
+		if ch == '$' && i+1 < len(input) && input[i+1] == '{' {
+			paramDepth++
+			current.WriteString("${")
+			i++
+			continue
+		}
+		if paramDepth > 0 && ch == '}' {
+			paramDepth--
+			current.WriteByte(ch)
+			continue
+		}
+		if ch == '(' || ch == ')' {
+			if paramDepth > 0 || parenLit > 0 || (ch == '(' && current.Len() > 0 && i > 0 && strings.IndexByte("=!+@*?$", input[i-1]) >= 0) {
+				if paramDepth == 0 {
+					if ch == '(' {
+						parenLit++
+					} else {
+						parenLit--
+					}
+				}
+				current.WriteByte(ch)
+				continue
+			}
+			flush()
+			if ch == '(' && i+1 < len(input) && input[i+1] == '(' && commandPosition(tokens) {
+				if end, ok := arithmeticEnd(input, i+2, &arithBudget); ok {
+					emit("((" + input[i+2:end] + "))")
+					i = end + 1
+					continue
+				}
+			}
+			emit(string(ch))
+			continue
+		}
+
 		// Multi-char operators. Every form containing a bare `&` must be
 		// matched before the single-char `&` case below, and `&` itself must
 		// be an operator: a lone ampersand backgrounds the preceding command
@@ -1266,21 +1361,21 @@ func tokenizeChecked(input string) ([]string, bool) {
 		// character hides everything after it from classification. The
 		// redirection spellings (fd duplication and bash's both-stream
 		// forms) stay single tokens so they are not mistaken for separators.
-		if i+2 < len(input) {
+		if i+2 < len(input) && !(ch == ';' && (lineBreak[i] || lineBreak[i+1] || lineBreak[i+2])) {
 			switch op3 := input[i : i+3]; op3 {
-			case ">>&", "&>>", "<<<":
+			case ">>&", "&>>", "<<<", ";;&":
 				flush()
-				tokens = append(tokens, op3)
+				emit(op3)
 				i += 2
 				continue
 			}
 		}
-		if i+1 < len(input) {
+		if i+1 < len(input) && !(ch == ';' && (lineBreak[i] || lineBreak[i+1])) {
 			op2 := string(input[i]) + string(input[i+1])
 			switch op2 {
-			case "&&", "||", ">>", ">&", "&>", "|&", "<<":
+			case "&&", "||", ">>", ">&", "&>", "|&", "<<", ">|", "<&", ";;", ";&":
 				flush()
-				tokens = append(tokens, op2)
+				emit(op2)
 				i++
 				continue
 			}
@@ -1293,7 +1388,7 @@ func tokenizeChecked(input string) ([]string, bool) {
 		switch ch {
 		case '|', '>', ';', '&', '<':
 			flush()
-			tokens = append(tokens, string(ch))
+			emit(string(ch))
 			continue
 		}
 
@@ -1302,7 +1397,72 @@ func tokenizeChecked(input string) ([]string, bool) {
 	}
 
 	flush()
-	return tokens, inSingle || inDouble
+	return tokens, ops, inSingle || inDouble
+}
+
+// commandPosition reports whether the next word of a token stream would start
+// a command: at the beginning, after a separator, after an opening bracket or
+// after a keyword that introduces a command list.
+func commandPosition(tokens []string) bool {
+	if len(tokens) == 0 {
+		return true
+	}
+	switch tokens[len(tokens)-1] {
+	case ";", "&&", "||", "&", "|", "|&", "(", ")", "{", "!", ";;", ";&", ";;&",
+		"then", "do", "else", "elif", "if", "while", "until", "for", "time", "coproc":
+		return true
+	}
+	return false
+}
+
+// arithmeticEnd finds the "))" that closes an arithmetic command whose body
+// starts at input[start:], returning the index of the first closing
+// parenthesis. Like the shell it balances nested parentheses and skips quoted
+// text; a ")" that closes at depth zero without a second ")" right behind it
+// means the "((" was really two nested subshells, so it reports false.
+func arithmeticEnd(input string, start int, budget *int) (int, bool) {
+	depth := 0
+	for j := start; j < len(input); j++ {
+		if *budget--; *budget < 0 {
+			return 0, false
+		}
+		switch input[j] {
+		case '\\':
+			j++
+		case '\'':
+			k := strings.IndexByte(input[j+1:], '\'')
+			if k < 0 {
+				return 0, false
+			}
+			if *budget -= k; *budget < 0 {
+				return 0, false
+			}
+			j += k + 1
+		case '"':
+			j++
+			for j < len(input) && input[j] != '"' {
+				if *budget--; *budget < 0 {
+					return 0, false
+				}
+				if input[j] == '\\' {
+					j++
+				}
+				j++
+			}
+		case '(':
+			depth++
+		case ')':
+			if depth > 0 {
+				depth--
+				continue
+			}
+			if j+1 < len(input) && input[j+1] == ')' {
+				return j, true
+			}
+			return 0, false
+		}
+	}
+	return 0, false
 }
 
 // ── Write command prefixes ─────────────────────────────────────────────
@@ -1518,6 +1678,7 @@ var safeCommands = map[string]bool{
 	"local": true, "declare": true, "typeset": true, "readonly": true,
 	"alias": true, "unalias": true, "jobs": true, "bg": true, "fg": true,
 	"disown": true, "let": true, "ulimit": true, "times": true,
+	"break": true, "continue": true,
 	// crontab listing/help is Safe; isPersistenceWrite escalates installs
 	// (`crontab file`, `crontab -`) before this set is consulted.
 	"crontab": true,
@@ -2858,7 +3019,7 @@ func splitSegments(tokens []string) [][]string {
 
 	for _, tok := range tokens {
 		switch tok {
-		case ";", "&&", "||", "&":
+		case ";", "&&", "||", "&", ";;", ";&", ";;&":
 			if len(current) > 0 {
 				segments = append(segments, current)
 				current = nil
@@ -2896,7 +3057,7 @@ func splitPipes(tokens []string) [][]string {
 // bash both-stream forms &>, &>>. Redirect-target scans key off these.
 func isRedirectToken(tok string) bool {
 	switch tok {
-	case ">", ">>", ">&", ">>&", "&>", "&>>":
+	case ">", ">>", ">&", ">>&", "&>", "&>>", ">|":
 		return true
 	}
 	return false

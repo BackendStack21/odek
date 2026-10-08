@@ -4,7 +4,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -117,6 +119,10 @@ type shellAnalysisState struct {
 	// work is shared by an analysis and every nested payload analysis it
 	// spawns, so recursion cannot multiply the per-command token bound.
 	work *analysisWork
+	// args are the positional parameters of the function call being
+	// analysed, when they are statically known; "$@" and "$*" expand to them.
+	args      []string
+	argsKnown bool
 }
 
 // maxAnalysisTokens bounds the tokens one Analyze call examines across the
@@ -166,7 +172,7 @@ func analyzeWithState(cmd string, depth int, inherited *shellAnalysisState) Anal
 		// The tokenizer splits at a lone CR; a shell keeps it in the word.
 		result.add(Unknown)
 	}
-	tokens, unterminated := tokenizeChecked(main)
+	tokens, ops, unterminated := tokenizeMarked(main)
 	if unterminated {
 		// The shell would reject this line, but an open quote has swallowed
 		// the rest of it into one word; whatever followed cannot be judged.
@@ -197,47 +203,120 @@ func analyzeWithState(cmd string, depth int, inherited *shellAnalysisState) Anal
 		}
 	}
 	state.unquoted = unquotedVariableRefs(main)
-	segments := splitSegments(tokens)
-	operators := segmentOperators(tokens)
+	prog := parseShell(tokens, ops)
+	if prog.bad {
+		// A construct that cannot be paired (unterminated, a stray keyword,
+		// an operator a real one cannot hold) is judged by the commands it
+		// contains, but is itself unanalysable.
+		result.add(Unknown)
+	}
 	if len(subs) > 0 && hasAny(tokens, "cd", "pushd", "popd") {
 		result.add(Unknown)
 	}
 	// Conditional alternatives and background state cannot be carried as one
 	// deterministic cwd/variable snapshot. Stateful stages below fail closed.
-	ambiguous := hasAny(tokens, "||", "&")
+	ambiguous := hasAny(tokens, "||", "&") || prog.async
 	// Mutations made behind `&&` only happen when every earlier operand
 	// succeeded. Inside the chain they are carried (the rest of the chain only
 	// runs once they happened); when the chain ends, the state they touched
 	// is unknown.
-	chainVars := make(map[string]bool)
-	chainCwd := false
+	chain := &chainState{vars: make(map[string]bool)}
 	// substExecutes marks a stage that executes the output of a command or
 	// process substitution (eval "$(…)", bash <(…)).
 	substExecutes := false
-	endChain := func() {
-		for name := range chainVars {
-			delete(state.vars, name)
-			delete(chainVars, name)
+	// bailed is set when the repeated analysis of loop bodies and function
+	// calls exhausts the shared work budget; nothing further is analysed.
+	bailed := false
+	charge := func(n int) bool {
+		work.tokens += n
+		if work.tokens > maxAnalysisTokens && !bailed {
+			bailed = true
+			result.add(Unknown)
 		}
-		if chainCwd {
+		return !bailed
+	}
+	endChain := func() {
+		for name := range chain.vars {
+			delete(state.vars, name)
+			delete(chain.vars, name)
+		}
+		if chain.cwd {
 			state.uncertain = true
-			chainCwd = false
+			chain.cwd = false
 		}
 	}
-	for segmentIndex, segment := range segments {
-		afterAnd := operators[segmentIndex] == "&&"
+	// volatile names the variables an unrolled loop binds or changes: their
+	// value differs from one iteration to the next.
+	volatile := make(map[string]bool)
+	funcs := make(map[string]*shNode)
+	var funcDefs []*shNode
+	funcCalled := make(map[*shNode]bool)
+	funcRunning := make(map[string]bool)
+	var (
+		runList     func(shList, pipeCtx)
+		runNode     func(*shNode, pipeCtx)
+		runStages   func([]shStage, bool, pipeCtx)
+		runFunction func(string, []string, pipeCtx)
+	)
+	runItem := func(item shItem, ctx pipeCtx) {
+		afterAnd := item.op == "&&"
 		if !afterAnd {
 			endChain()
 		}
-		stages := splitPipes(segment)
+		runStages(item.stages, afterAnd, ctx)
+	}
+	runList = func(list shList, ctx pipeCtx) {
+		outer := chain
+		chain = &chainState{vars: make(map[string]bool)}
+		for _, item := range list.items {
+			if bailed {
+				break
+			}
+			runItem(item, ctx)
+		}
+		endChain()
+		chain = outer
+	}
+	runStages = func(stages []shStage, afterAnd bool, ctx pipeCtx) {
 		prepared := make([][]string, 0, len(stages))
-		for _, stage := range stages {
-			stage = state.expand(stage)
-			prepared = append(prepared, stage)
+		for _, st := range stages {
+			if st.comp != nil {
+				prepared = append(prepared, []string{"cat"})
+				continue
+			}
+			prepared = append(prepared, state.expand(st.words))
 		}
 		var pipeline []string
 		var repos []*gitRepoCtx
 		for i, stage := range prepared {
+			if stages[i].comp != nil {
+				if i > 0 {
+					pipeline = append(pipeline, "|")
+				}
+				pipeline = append(pipeline, "cat")
+				var before stateSnap
+				if afterAnd {
+					before = state.snapshot()
+				}
+				runNode(stages[i].comp, pipeCtx{piped: ctx.piped || i > 0, upstream: stageUpstream(ctx, prepared, i), subshell: len(stages) > 1})
+				if afterAnd {
+					chain.record(&state, before)
+				}
+				continue
+			}
+			piped := i > 0 || ctx.piped
+			upstream := stageUpstream(ctx, prepared, i)
+			if call := functionCallAt(stage, funcs); call >= 0 {
+				args := redirectFreeArguments(stage[call+1:])
+				runFunction(stage[call], args, pipeCtx{piped: piped, upstream: upstream})
+				for _, arg := range args {
+					result.add(classifyResourceToken(arg))
+				}
+				rewritten := append([]string(nil), stage[:call]...)
+				rewritten = append(rewritten, ":")
+				stage = append(rewritten, stage[call+1:]...)
+				prepared[i] = stage
+			}
 			legacyStage := append([]string(nil), stage...)
 			stageCwd, cwdKnown := wrapperDirectory(stage, state.cwd)
 			payloadState := state
@@ -275,7 +354,7 @@ func analyzeWithState(cmd string, depth int, inherited *shellAnalysisState) Anal
 			// replace them with a differently configured higher-ranked class.
 			repo := newGitRepoCtx(stageCwd, cwdKnown && !state.uncertain, stage[:len(stage)-len(inner)], state.vars)
 			repos = append(repos, repo)
-			result.add(classifyStageIn(legacyStage, i > 0, repo))
+			result.add(classifyStageIn(legacyStage, piped, repo))
 			if floor != Safe {
 				result.add(floor)
 				if environmentRunsCode(stage[:len(stage)-len(inner)]) {
@@ -290,7 +369,7 @@ func analyzeWithState(cmd string, depth int, inherited *shellAnalysisState) Anal
 						state.assign(stage)
 						if afterAnd {
 							for _, assigned := range assignedNames(stage) {
-								chainVars[assigned] = true
+								chain.vars[assigned] = true
 							}
 						}
 					}
@@ -300,21 +379,21 @@ func analyzeWithState(cmd string, depth int, inherited *shellAnalysisState) Anal
 			name := commandName(inner[0])
 			for _, assigned := range state.rebind(name, inner, len(stages) == 1 && !ambiguous) {
 				if afterAnd {
-					chainVars[assigned] = true
+					chain.vars[assigned] = true
 				}
 			}
 			if secretNameOperand(name, inner[1:]) || stageTouchesCredentialFile(stage, inner, displayVerbs[name]) {
 				result.add(SystemWrite)
 			}
-			if isCodeExecution(name, inner, repo) || explicitUntrustedExecutable(inner[0]) || (i > 0 && (pipedShells[name] || isStdinExecInterpreter(name) || embeddedShellInterpreters[name])) {
+			if isCodeExecution(name, inner, repo) || explicitUntrustedExecutable(inner[0]) || (piped && (pipedShells[name] || isStdinExecInterpreter(name) || embeddedShellInterpreters[name])) {
 				result.add(CodeExecution)
 			}
 			if isNetworkEgress(name, inner) {
 				result.add(NetworkEgress)
 			}
-			feed := stdinFeed{piped: i > 0}
+			feed := stdinFeed{piped: piped}
 			if feed.piped {
-				_, feed.static = staticPipePayload(prepared[:i])
+				_, feed.static = staticPipePayload(upstream)
 			}
 			for _, effect := range networkTransferEffects(name, inner, feed) {
 				result.add(effect)
@@ -350,9 +429,9 @@ func analyzeWithState(cmd string, depth int, inherited *shellAnalysisState) Anal
 				files, rewritten := stageLedgerFiles(stage, stageCwd, state.written)
 				// An interpreter fed by a pipe executes what the upstream
 				// readers emit, so their file operands are the program.
-				if i > 0 && stdinProgramStage(name, inner) {
-					for _, upstream := range prepared[:i] {
-						f, r := readerFeedFiles(upstream, stageCwd, state.written)
+				if piped && stdinProgramStage(name, inner) {
+					for _, producer := range upstream {
+						f, r := readerFeedFiles(producer, stageCwd, state.written)
 						files = append(files, f...)
 						rewritten = append(rewritten, r...)
 					}
@@ -375,7 +454,7 @@ func analyzeWithState(cmd string, depth int, inherited *shellAnalysisState) Anal
 			}
 			for j, tok := range stage {
 				if isRedirectToken(tok) && j+1 < len(stage) {
-					if (tok == ">&" || tok == ">>&") && isAllDigits(stage[j+1]) {
+					if (tok == ">&" || tok == ">>&") && (isAllDigits(stage[j+1]) || stage[j+1] == "-") {
 						continue
 					}
 					result.add(state.targetRisk(stage[j+1], stageCwd, cwdKnown))
@@ -410,7 +489,7 @@ func analyzeWithState(cmd string, depth int, inherited *shellAnalysisState) Anal
 				wasUncertain := state.uncertain
 				state.uncertain = ambiguous || name == "popd"
 				if afterAnd {
-					chainCwd = true
+					chain.cwd = true
 				}
 				path, known := directoryOperand(name, inner[1:])
 				if !known || strings.ContainsAny(path, "$*?[]") || path == "-" {
@@ -432,9 +511,325 @@ func analyzeWithState(cmd string, depth int, inherited *shellAnalysisState) Anal
 		}
 		result.add(classifyPipelineIn(pipeline, repos))
 	}
-	endChain()
+	// scanData classifies the words of a data region (a for list, a case word
+	// or pattern, a test expression): each is a resource token, never a command.
+	scanData := func(words []string) {
+		for _, w := range state.expand(words) {
+			if w == "" {
+				continue
+			}
+			if resource := classifyResourceToken(w); resource != Safe {
+				result.add(resource)
+			}
+		}
+	}
+	// shadow judges a clause of a test or arithmetic expression as the command
+	// the shell would run if the bracket were not a keyword (an escaped or
+	// brace-built `[[` is only a command name). Clauses that read as operands
+	// of a real expression are left alone.
+	shadow := func(clause []string, expression bool) {
+		if bailed {
+			return
+		}
+		clause = state.expand(clause)
+		k := 0
+		for k < len(clause) && isAssignment(clause[k]) {
+			k++
+		}
+		if k >= len(clause) {
+			return
+		}
+		clause = clause[k:]
+		if head := clause[0]; strings.Contains(head, "$") || strings.Contains(head, dynamicSubstToken) {
+			return
+		}
+		if (expression || testShaped(clause)) && !testClauseRunsCommand(clause) {
+			return
+		}
+		saved := result
+		result = Analysis{}
+		before := state.snapshot()
+		runStages([]shStage{{words: clause}}, false, pipeCtx{})
+		state.restore(before)
+		inner := result
+		result = saved
+		result.merge(inner)
+	}
+	runClauses := func(expression bool, words []string, separators ...string) {
+		var clause []string
+		flush := func() {
+			if len(clause) > 0 {
+				shadow(clause, expression)
+			}
+			clause = nil
+		}
+		for _, w := range words {
+			if slices.Contains(separators, w) {
+				flush()
+				continue
+			}
+			clause = append(clause, w)
+		}
+		flush()
+	}
+	// bindLoop runs a loop body until the state entering it is stable: values
+	// the body changes are forgotten before the next pass, so a later
+	// iteration cannot see a value the first one did not.
+	bindLoop := func(size int, pass func()) {
+		for passes := 0; ; passes++ {
+			entry := state.snapshot()
+			pass()
+			next := joinSnapshots(entry, state.snapshot())
+			if next.equal(entry) {
+				state.restore(next)
+				return
+			}
+			if passes+1 >= maxLoopPasses {
+				// No convergence: forget everything and take a last pass.
+				state.vars = make(map[string]string)
+				state.uncertain = true
+				pass()
+				state.vars = make(map[string]string)
+				state.uncertain = true
+				return
+			}
+			state.restore(next)
+			if !charge(size) {
+				return
+			}
+		}
+	}
+	// bindLoopVariable gives a for/select variable the word it takes. The
+	// binding is an assignment like any other, so a variable the shell reads
+	// at run time (PATH, LD_PRELOAD, GIT_PAGER, …) is judged as such, and it
+	// holds even when the command's other assignments are not tracked.
+	bindLoopVariable := func(name, value string) {
+		runStages([]shStage{{words: []string{name + "=" + value}}}, false, pipeCtx{})
+		state.vars[name] = value
+	}
+	runNode = func(n *shNode, ctx pipeCtx) {
+		if bailed {
+			return
+		}
+		nested := pipeCtx{piped: ctx.piped, upstream: ctx.upstream}
+		var scope stateSnap
+		scoped := ctx.subshell || n.kind == nodeSubshell || n.kind == nodeCoproc
+		if scoped {
+			scope = state.snapshot()
+		}
+		switch n.kind {
+		case nodeGroup, nodeSubshell, nodeCoproc:
+			runList(n.body, nested)
+		case nodeIf:
+			runList(n.arms[0].cond, nested)
+			condEnd := state.snapshot()
+			var ends []stateSnap
+			for k, arm := range n.arms {
+				if k > 0 {
+					state.restore(condEnd)
+					runList(arm.cond, nested)
+					condEnd = state.snapshot()
+				}
+				runList(arm.body, nested)
+				ends = append(ends, state.snapshot())
+			}
+			if n.els != nil {
+				state.restore(condEnd)
+				runList(*n.els, nested)
+				ends = append(ends, state.snapshot())
+				// With an else branch one of the branches always runs.
+				state.restore(joinSnapshots(ends[0], ends[1:]...))
+			} else {
+				state.restore(joinSnapshots(condEnd, ends...))
+			}
+		case nodeWhile:
+			bindLoop(n.size, func() {
+				runList(n.cond, nested)
+				runList(n.body, nested)
+			})
+		case nodeFor:
+			scanData(n.words)
+			if n.arith {
+				runClauses(true, tokenize(n.header[2:len(n.header)-2]), ";", "&&", "||", "|", "&", "(", ")")
+			}
+			elements, static := n.staticElements(&state)
+			switch {
+			case n.arith || n.name == "":
+				bindLoop(n.size, func() { runList(n.body, nested) })
+			case static && !n.body.containsJump():
+				if len(elements) == 0 {
+					base := state.snapshot()
+					delete(state.vars, n.name)
+					runList(n.body, nested)
+					state.restore(joinSnapshots(base, state.snapshot()))
+					break
+				}
+				volatile[n.name] = true
+				for k, element := range elements {
+					if k > 0 && !charge(n.size) {
+						break
+					}
+					bindLoopVariable(n.name, element)
+					start := state.snapshot()
+					runList(n.body, nested)
+					for name, value := range state.vars {
+						if old, ok := start.vars[name]; !ok || old != value {
+							volatile[name] = true
+						}
+					}
+				}
+			case static:
+				bindLoop(n.size, func() {
+					base := state.snapshot()
+					var ends []stateSnap
+					for _, element := range elements {
+						state.restore(base)
+						bindLoopVariable(n.name, element)
+						runList(n.body, nested)
+						ends = append(ends, state.snapshot())
+					}
+					state.restore(joinSnapshots(base, ends...))
+				})
+			default:
+				// Words that only glob can still name files: judge the body
+				// once per word with the variable bound to the pattern, so a
+				// script the loop runs through a glob is gated like the glob.
+				if patterns, ok := n.globElements(&state); ok {
+					for _, pattern := range patterns {
+						if !charge(n.size) {
+							break
+						}
+						before := state.snapshot()
+						bindLoopVariable(n.name, pattern)
+						runList(n.body, nested)
+						state.restore(before)
+					}
+				}
+				bindLoop(n.size, func() {
+					bindLoopVariable(n.name, dynamicSubstToken)
+					runList(n.body, nested)
+				})
+			}
+			if ambiguous && n.name != "" {
+				// The loop may not have run at all: its variable is unknown.
+				delete(state.vars, n.name)
+			}
+		case nodeCase:
+			scanData(n.words)
+			entry := state.snapshot()
+			var ends []stateSnap
+			var previous stateSnap
+			fell := false
+			for _, arm := range n.arms {
+				scanData(arm.pats)
+				start := entry
+				if fell {
+					start = joinSnapshots(entry, previous)
+				}
+				state.restore(start)
+				runList(arm.body, nested)
+				previous = state.snapshot()
+				ends = append(ends, previous)
+				fell = arm.term == ";&" || arm.term == ";;&"
+			}
+			state.restore(joinSnapshots(entry, ends...))
+		case nodeFunc:
+			funcs[n.name] = n.fn
+			funcDefs = append(funcDefs, n.fn)
+		case nodeTest:
+			scanData(n.words)
+			exp := state.expand(n.words)
+			for k := 0; k+1 < len(exp); k++ {
+				if isRedirectToken(exp[k]) {
+					if risk := state.targetRisk(exp[k+1], state.cwd, !state.uncertain); Rank(risk) >= Rank(SystemWrite) && risk != Unknown {
+						result.add(risk)
+					}
+				}
+			}
+			runClauses(false, n.words, "&&", "||", "|", "|&", "(", ")", "!")
+		case nodeArith:
+			for _, w := range n.words {
+				for _, name := range variableNames(w) {
+					state.forget(name)
+				}
+			}
+			runClauses(true, n.words, ";", "&&", "||", "|", "&", "(", ")")
+		}
+		if scoped {
+			state.restore(scope)
+		}
+		if len(n.redirs) > 0 {
+			runStages([]shStage{{words: append([]string{":"}, n.redirs...)}}, false, nested)
+		}
+	}
+	runFunction = func(name string, args []string, ctx pipeCtx) {
+		body := funcs[name]
+		funcCalled[body] = true
+		if funcRunning[name] {
+			// A function that calls itself, directly or through another, has
+			// no bounded analysis.
+			result.add(Unknown)
+			return
+		}
+		if !charge(body.size + 1) {
+			return
+		}
+		funcRunning[name] = true
+		before := state.snapshot()
+		outerArgs, outerKnown := state.args, state.argsKnown
+		state.args, state.argsKnown = args, true
+		for k := 1; k <= 9; k++ {
+			key := strconv.Itoa(k)
+			if k <= len(args) {
+				state.vars[key] = args[k-1]
+			} else {
+				delete(state.vars, key)
+			}
+		}
+		runNode(body, pipeCtx{piped: ctx.piped, upstream: ctx.upstream})
+		for k := 1; k <= 9; k++ {
+			key := strconv.Itoa(k)
+			if value, ok := before.vars[key]; ok {
+				state.vars[key] = value
+			} else {
+				delete(state.vars, key)
+			}
+		}
+		state.args, state.argsKnown = outerArgs, outerKnown
+		state.restore(joinSnapshots(before, state.snapshot()))
+		funcRunning[name] = false
+	}
+	runList(prog.list, pipeCtx{})
+	// A function that is defined and never called is still judged: its body
+	// runs whenever a later command line calls it. Its arguments are unknown.
+	for k := 0; k < len(funcDefs); k++ {
+		body := funcDefs[k]
+		if funcCalled[body] {
+			continue
+		}
+		funcCalled[body] = true
+		before := state.snapshot()
+		outerArgs, outerKnown := state.args, state.argsKnown
+		state.args, state.argsKnown = nil, false
+		for j := 1; j <= 9; j++ {
+			delete(state.vars, strconv.Itoa(j))
+		}
+		runNode(body, pipeCtx{})
+		state.args, state.argsKnown = outerArgs, outerKnown
+		state.restore(before)
+	}
+	// Substitution bodies are judged against the state the command ends in.
+	// A variable an unrolled loop rebinds on each iteration has no single
+	// value there, so it is dropped and the body treats it as unknown.
+	subState := state
+	subState.vars = make(map[string]string, len(state.vars))
+	for name, value := range state.vars {
+		if !volatile[name] {
+			subState.vars[name] = value
+		}
+	}
 	for _, sub := range subs {
-		result.merge(analyzeWithState(sub, depth+1, &state))
+		result.merge(analyzeWithState(sub, depth+1, &subState))
 		if substExecutes && substitutionDecodes(sub) {
 			result.add(Unknown)
 		}
@@ -501,12 +896,17 @@ func environmentRunsCode(prefix []string) bool {
 // so the cost is linear in the command length regardless of how many
 // variables are known. Substituted values are not rescanned.
 func (s *shellAnalysisState) expand(tokens []string) []string {
-	out := append([]string(nil), tokens...)
+	out := make([]string, 0, len(tokens))
 	separators := " \t\n\r*?["
 	if ifs, ok := s.vars["IFS"]; ok {
 		separators += ifs
 	}
-	for i, token := range out {
+	for i := range tokens {
+		token := tokens[i]
+		if s.argsKnown && (token == "$@" || token == "$*" || token == "${@}" || token == "${*}") {
+			out = append(out, s.args...)
+			continue
+		}
 		if strings.IndexByte(token, '$') >= 0 {
 			token = s.expandToken(token, isAssignment(tokens[i]), separators)
 		}
@@ -517,7 +917,7 @@ func (s *shellAnalysisState) expand(tokens []string) []string {
 			name, _, _ := strings.Cut(tokens[i], "=")
 			token = name + "=" + dynamicSubstToken
 		}
-		out[i] = token
+		out = append(out, token)
 	}
 	return out
 }
@@ -617,7 +1017,7 @@ func segmentOperators(tokens []string) []string {
 	inSegment := false
 	for _, tok := range tokens {
 		switch tok {
-		case ";", "&&", "||", "&":
+		case ";", "&&", "||", "&", ";;", ";&", ";;&":
 			if inSegment {
 				ops = append(ops, current)
 				inSegment = false
@@ -675,6 +1075,12 @@ func (s *shellAnalysisState) rebind(name string, inner []string, bind bool) (nam
 		for _, tok := range inner[1:] {
 			s.forget(operandName(tok))
 		}
+	case "shift", "set":
+		// The positional parameters change meaning.
+		for k := 1; k <= 9; k++ {
+			s.forget(strconv.Itoa(k))
+		}
+		s.argsKnown = false
 	case "mapfile", "readarray":
 		s.forget("MAPFILE")
 		for _, tok := range inner[1:] {
