@@ -56,7 +56,9 @@ func dispatch(args []string) int {
 	case "init":
 		return cliExit(initConfig(rest))
 	case "continue":
-		return cliExit(continueCmd(rest))
+		// continue enforces execution budgets like run: a typed budget
+		// error maps to exit code 4 (docs/EXTENSIONS.md).
+		return runExit(continueCmd(rest))
 	case "session":
 		return cliExit(sessionCmd(rest))
 	case "audit":

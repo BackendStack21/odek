@@ -96,17 +96,17 @@ func TestParseRunFlagsExternalRef(t *testing.T) {
 
 func TestParseContinueArgs(t *testing.T) {
 	t.Run("plain task", func(t *testing.T) {
-		id, refs, task, err := parseContinueArgs([]string{"fix", "the", "bug"})
+		id, f, err := parseContinueArgs([]string{"fix", "the", "bug"})
 		if err != nil {
 			t.Fatalf("parse: %v", err)
 		}
-		if id != "" || len(refs) != 0 || task != "fix the bug" {
-			t.Fatalf("unexpected: id=%q refs=%v task=%q", id, refs, task)
+		if id != "" || len(f.ExternalRefs) != 0 || f.Task != "fix the bug" {
+			t.Fatalf("unexpected: id=%q refs=%v task=%q", id, f.ExternalRefs, f.Task)
 		}
 	})
 
 	t.Run("id and refs", func(t *testing.T) {
-		id, refs, task, err := parseContinueArgs([]string{
+		id, f, err := parseContinueArgs([]string{
 			"--id", "abc",
 			"--external-ref", "ci-run=https://ci.example.test/runs/1",
 			"--external-ref", "kind=d,uri=app://x,created_by=c",
@@ -115,16 +115,16 @@ func TestParseContinueArgs(t *testing.T) {
 		if err != nil {
 			t.Fatalf("parse: %v", err)
 		}
-		if id != "abc" || len(refs) != 2 || task != "next step" {
-			t.Fatalf("unexpected: id=%q refs=%v task=%q", id, refs, task)
+		if id != "abc" || len(f.ExternalRefs) != 2 || f.Task != "next step" {
+			t.Fatalf("unexpected: id=%q refs=%v task=%q", id, f.ExternalRefs, f.Task)
 		}
 	})
 
 	t.Run("no task", func(t *testing.T) {
-		if _, _, _, err := parseContinueArgs([]string{"--id", "abc"}); err == nil {
+		if _, _, err := parseContinueArgs([]string{"--id", "abc"}); err == nil {
 			t.Fatal("expected error when only flags given")
 		}
-		if _, _, _, err := parseContinueArgs(nil); err == nil {
+		if _, _, err := parseContinueArgs(nil); err == nil {
 			t.Fatal("expected error for empty args")
 		}
 	})
