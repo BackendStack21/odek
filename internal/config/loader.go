@@ -1676,7 +1676,7 @@ type ProfileConfig struct {
 func validRiskClass(s string) bool {
 	switch danger.RiskClass(s) {
 	case danger.Safe, danger.LocalWrite, danger.SystemWrite, danger.Persistence,
-		danger.Destructive, danger.NetworkEgress, danger.CodeExecution,
+		danger.Destructive, danger.NetworkEgress, danger.NetworkUpload, danger.CodeExecution,
 		danger.Install, danger.Blocked, danger.Unknown, danger.UnreadExec:
 		return true
 	}
@@ -3563,7 +3563,7 @@ type SchedulesConfig struct {
 	// config, then a non-overrideable safety floor is applied by the scheduler
 	// itself: destructive and blocked classes are always denied, and
 	// non_interactive is always deny because no human is present to approve.
-	// This lets operators allow network_egress/system_write/etc. for cron jobs
+	// This lets operators allow network_egress/network_upload/system_write/etc. for cron jobs
 	// without widening the policy for interactive CLI/REPL/WebUI use.
 	Dangerous *danger.DangerousConfig `json:"dangerous,omitempty"`
 }

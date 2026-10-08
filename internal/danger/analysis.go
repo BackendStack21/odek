@@ -27,6 +27,11 @@ func (a Analysis) Class() RiskClass {
 }
 
 func (a *Analysis) add(cls RiskClass) {
+	// An upload is always also egress: the two stay independent policy
+	// keys, and a policy that denies egress must still deny the upload.
+	if cls == NetworkUpload {
+		a.add(NetworkEgress)
+	}
 	for _, existing := range a.Effects {
 		if existing == cls {
 			return
@@ -239,6 +244,13 @@ func analyzeWithState(cmd string, depth int, inherited *shellAnalysisState) Anal
 			}
 			if isNetworkEgress(name, inner) {
 				result.add(NetworkEgress)
+			}
+			feed := stdinFeed{piped: i > 0}
+			if feed.piped {
+				_, feed.static = staticPipePayload(prepared[:i])
+			}
+			for _, effect := range networkTransferEffects(name, inner, feed) {
+				result.add(effect)
 			}
 			if isInstall(name, inner) {
 				result.add(Install)
@@ -769,7 +781,7 @@ var specialCommandNames = map[string]bool{
 	"init": true, "telinit": true, "source": true, ".": true,
 	"docker": true, "docker-compose": true, "podman": true, "nerdctl": true,
 	"direnv": true, "hugo": true, "aws": true, "gcloud": true, "az": true,
-	"kubectl": true, "helm": true, "terraform": true,
+	"kubectl": true, "helm": true, "terraform": true, "gsutil": true,
 }
 
 func explicitUntrustedExecutable(path string) bool {

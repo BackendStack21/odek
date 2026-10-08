@@ -186,6 +186,7 @@ inspection proceeds without a human channel, and anything that would prompt is d
       "local_write": "allow",
       "install": "prompt",
       "network_egress": "allow",
+      "network_upload": "prompt",
       "code_execution": "prompt",
       "persistence": "prompt",
       "unread_exec": "prompt",
@@ -219,6 +220,7 @@ inspection proceeds without a human channel, and anything that would prompt is d
 | `local_write` | write files in the working dir | allow | allow |
 | `install` | `npm install`, `pip install`, `apk add` | prompt | prompt |
 | `network_egress` | `curl`, `wget`, `ssh`, DNS lookups | prompt | allow |
+| `network_upload` | `curl -d @file`, `curl -T`, `curl -X POST`, `scp file host:`, `rsync src/ host:`, `nc -l`, `ssh -L` | prompt | prompt |
 | `code_execution` | `curl … \| sh`, `bash -c`, `python -c`, `go run` | prompt | prompt |
 | `system_write` | `sudo`, writes to `/etc`, reads of `~/.ssh` | prompt | prompt |
 | `unknown` | any command whose program name Odek does **not** recognise | deny | deny |
@@ -226,7 +228,7 @@ inspection proceeds without a human channel, and anything that would prompt is d
 | `blocked` | fork bombs, fully‑specified `dd` to a block device | **always deny** | **always deny** (cannot be overridden) |
 
 > The shipped Restricted file pins the classes explicitly: `safe`, `local_write`, and
-> `network_egress` are allowed; `install`, `code_execution`, `persistence`, `unread_exec`,
+> `network_egress` are allowed; `install`, `code_execution`, `network_upload`, `persistence`, `unread_exec`,
 > and `system_write` prompt; `unknown`, `destructive`, and `blocked` are denied. See the
 > gotcha below before adding a global `action`.
 

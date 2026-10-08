@@ -189,8 +189,8 @@ func TestClassify_NetworkEgress_Commands(t *testing.T) {
 		{"git -c http.proxy=http://evil fetch origin", NetworkEgress},
 		{"git --git-dir /repo/.git push origin", SystemWrite},
 		{"git -C /repo -c key=val pull", NetworkEgress},
-		{"scp file user@remote:/path", NetworkEgress},
-		{"rsync -avz ./ user@remote:/backup", NetworkEgress},
+		{"scp file user@remote:/path", NetworkUpload},
+		{"rsync -avz ./ user@remote:/backup", NetworkUpload},
 		{"nc example.com 80", NetworkEgress},
 		{"ncat -v example.com 443", NetworkEgress},
 		{"ssh user@server", NetworkEgress},
@@ -774,8 +774,12 @@ func TestClassify_GitStatusRunsConfiguredMonitor(t *testing.T) {
 
 func TestClassify_Scp(t *testing.T) {
 	got := Classify("scp file user@host:/path")
-	if got != NetworkEgress {
-		t.Errorf("Classify(scp) = %s, want network_egress", got)
+	if got != NetworkUpload {
+		t.Errorf("Classify(scp) = %s, want network_upload", got)
+	}
+	// The download direction stays plain egress.
+	if got := Classify("scp user@host:/path file"); got != NetworkEgress {
+		t.Errorf("Classify(scp download) = %s, want network_egress", got)
 	}
 }
 
@@ -789,8 +793,11 @@ func TestClassify_RsyncLocal(t *testing.T) {
 
 func TestClassify_RsyncRemote(t *testing.T) {
 	got := Classify("rsync -av /src/ user@host:/dst/")
-	if got != NetworkEgress {
-		t.Errorf("Classify(rsync remote) = %s, want network_egress", got)
+	if got != NetworkUpload {
+		t.Errorf("Classify(rsync remote) = %s, want network_upload", got)
+	}
+	if got := Classify("rsync -av user@host:/src/ /dst/"); got != NetworkEgress {
+		t.Errorf("Classify(rsync download) = %s, want network_egress", got)
 	}
 }
 
@@ -841,7 +848,7 @@ func TestClassify_FindRsyncDestructive(t *testing.T) {
 		{"rsync -av --remove-source-files /a /b", Destructive},
 		{"rsync -av --del /a /b", Destructive},
 		{"rsync -av /src/ /dst/", Safe},
-		{"rsync -av /src/ user@host:/dst/", NetworkEgress},
+		{"rsync -av /src/ user@host:/dst/", NetworkUpload},
 	}
 	for _, tt := range tests {
 		t.Run(tt.cmd, func(t *testing.T) {
@@ -1197,12 +1204,13 @@ func TestRank(t *testing.T) {
 		{"local_write", LocalWrite, 2},
 		{"install", Install, 3},
 		{"network_egress", NetworkEgress, 4},
-		{"code_execution", CodeExecution, 5},
-		{"system_write", SystemWrite, 6},
-		{"persistence", Persistence, 7},
-		{"unknown", Unknown, 8},
-		{"destructive", Destructive, 9},
-		{"blocked", Blocked, 10},
+		{"network_upload", NetworkUpload, 5},
+		{"code_execution", CodeExecution, 6},
+		{"system_write", SystemWrite, 7},
+		{"persistence", Persistence, 8},
+		{"unknown", Unknown, 9},
+		{"destructive", Destructive, 10},
+		{"blocked", Blocked, 11},
 		{"unrecognized_class", RiskClass("bogus"), 0},
 	}
 	for _, tt := range tests {

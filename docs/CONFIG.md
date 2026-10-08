@@ -368,6 +368,7 @@ Risk classes and their built-in default actions:
 | `unread_exec` | `prompt` | Executing a script whose contents were not read in the session |
 | `destructive` | `deny` | Irreversible operations (recursive deletes, force-pushes, data-loss verbs) |
 | `network_egress` | `allow` | Outbound network operations (`curl`, `wget`, package fetches). Allowed by default for a friction-free start; set `"prompt"` to gate every egress |
+| `network_upload` | `prompt` | Network operations that send local content out or let a remote party in: request bodies read from a file, stdin or a runtime substitution (`curl -d @f`, `-T`, `-F f=@x`, `cat x \| nc`), credentials or client certificates on the command line (`curl -u`/`-n`/`--cert`, `wget --http-password`), mutating methods (`curl -X POST`), local-to-remote transfers (`scp f host:`, `rsync src/ host:dst`, `rclone copy`, `aws s3 cp f s3://`, `gsutil cp`, `gh gist create`), listeners and tunnels (`nc -l`, `ssh -L`/`-R`/`-D`), and DNS lookups whose name is built at run time. Also carries `network_egress`, so denying either class denies the command. Inline literal bodies (`curl -d '{"a":1}' URL`), downloads, and running a remote command (`ssh host ls`) stay plain egress |
 | `code_execution` | `prompt` | Arbitrary code execution paths |
 | `install` | `prompt` | Package/tool installation |
 | `blocked` | `deny` | Hard-coded malicious patterns |
@@ -1025,7 +1026,7 @@ engine. Every field has an `ODEK_SCHEDULES_*` environment override.
 
 ### Schedule-specific dangerous policy
 
-Scheduled jobs run unattended, so by default the scheduler denies any class that would require an approval prompt (`system_write`, `code_execution`, `install`, `unknown`, `persistence`, `unread_exec`). Note: since `network_egress` now defaults to `allow` globally, scheduled jobs also egress unprompted — unattended egress from a cron context is a higher-risk surface, so gate it explicitly via `schedules.dangerous.classes: {"network_egress": "deny"}` (or set it back to `prompt` globally) if that matters to you. You can override the scheduler policy without widening the policy for interactive CLI/REPL/WebUI use.
+Scheduled jobs run unattended, so by default the scheduler denies any class that would require an approval prompt (`system_write`, `code_execution`, `install`, `network_upload`, `unknown`, `persistence`, `unread_exec`). A scheduled job that must upload (a webhook `POST`, an `rsync` or `scp` to a backup host) needs `schedules.dangerous.classes: {"network_upload": "allow"}`. Note: since `network_egress` now defaults to `allow` globally, scheduled jobs also egress unprompted — unattended egress from a cron context is a higher-risk surface, so gate it explicitly via `schedules.dangerous.classes: {"network_egress": "deny"}` (or set it back to `prompt` globally) if that matters to you. You can override the scheduler policy without widening the policy for interactive CLI/REPL/WebUI use.
 
 ```json
 {

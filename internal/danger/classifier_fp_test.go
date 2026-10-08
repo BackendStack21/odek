@@ -110,8 +110,13 @@ func TestClassify_RsyncSshTransportStaysEgress(t *testing.T) {
 		"rsync --rsh=ssh a host:b",
 		"rsync --rsh 'ssh -p 22 -C' a host:b",
 	} {
-		if got := Classify(c); got != NetworkEgress {
-			t.Errorf("Classify(%q) = %s, want network_egress", c, got)
+		// A local source copied to a remote host is an upload; the point is
+		// that a plain ssh transport adds no code_execution.
+		if got := Classify(c); got != NetworkUpload {
+			t.Errorf("Classify(%q) = %s, want network_upload", c, got)
+		}
+		if nuEffects(c)[CodeExecution] {
+			t.Errorf("Analyze(%q) carries code_execution for a plain ssh transport", c)
 		}
 	}
 	for _, c := range []string{
