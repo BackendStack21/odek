@@ -163,3 +163,20 @@ func TestReview_BareGitPushIsEgress(t *testing.T) {
 		}
 	}
 }
+
+// GNU sed accepts the w/r command's filename with no separating space.
+func TestReview_SedWriteCommandWithoutSpace(t *testing.T) {
+	for _, c := range []string{"sed -e w/tmp/x f", "sed -n w/tmp/x f", "sed -n 'w /tmp/x' f"} {
+		if got := Classify(c); got != LocalWrite {
+			t.Errorf("Classify(%q) = %s, want local_write", c, got)
+		}
+	}
+	for _, c := range []string{"sed -e w/etc/cron.d/x f", "sed -n 'w/root/.bashrc' f"} {
+		if got := Classify(c); Rank(got) < Rank(SystemWrite) {
+			t.Errorf("Classify(%q) = %s, want at least system_write", c, got)
+		}
+	}
+	if got := Classify("sed -n '/^w/p' f"); got != Safe {
+		t.Errorf("Classify(sed -n '/^w/p' f) = %s, want safe", got)
+	}
+}

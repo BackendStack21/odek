@@ -257,10 +257,10 @@ sed -f x.sed f	code_execution,local_write
 sed -nf x.sed f	code_execution,local_write
 sed --file=x.sed f	code_execution,local_write
 sed --file x.sed f	code_execution,local_write
-sed --expression=w/tmp/x f	safe
-sed -e w/tmp/x f	safe
-sed -ew/tmp/x f	safe
-sed -n w/tmp/x f	safe
+sed --expression=w/tmp/x f	local_write
+sed -e w/tmp/x f	local_write
+sed -ew/tmp/x f	local_write
+sed -n w/tmp/x f	local_write
 sed 's/a/b/w /tmp/x' f	local_write
 sed -s p f	safe
 sed -E s/a/b/ f	safe
@@ -800,7 +800,7 @@ unzip x.zip -d/etc/cron.d	persistence,local_write
 vim -S x.vim	code_execution
 vim -u x.vim -c q	code_execution
 vim x.sh	code_execution
-watch 'git push'	code_execution,safe
+watch 'git push'	code_execution,network_egress
 watch 'ls; df'	code_execution,safe
 watch --interval 5 'ls && rm -rf /'	destructive,system_write,code_execution,local_write,safe
 watch -n 1 'ls | head'	code_execution,safe
@@ -822,7 +822,7 @@ xargs -a paths env rm -rf	unknown,local_write
 xargs -a paths nohup rm -rf	unknown,local_write
 xargs -apaths rm -rf	unknown,local_write
 xargs cat x.sh	safe
-xargs git push	safe
+xargs git push	network_egress
 xargs rm -rf	local_write
 xargs rm -rf /etc	destructive,system_write,local_write
 xargs rm -rf < /tmp/paths	unknown,local_write

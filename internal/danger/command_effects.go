@@ -333,7 +333,10 @@ func sedInPlace(tokens []string) bool {
 	return sedOptions.parse(tokens[1:]).has("-i", "--in-place")
 }
 
-var sedFileIOPattern = regexp.MustCompile(`(?:^|[;{}\n])\s*(?:[0-9$]+(?:,[0-9$]+)?\s*|/[^/]+/\s*)?([rwRW])\s+([^;}\n]+)`)
+// The filename may follow the command letter without a space when it is
+// path-shaped (`w/tmp/x`, `w./out`), which GNU sed treats like `w /tmp/x`;
+// a plain word starting with r or w (README.md) is not a file command.
+var sedFileIOPattern = regexp.MustCompile(`(?:^|[;{}\n])\s*(?:[0-9$]+(?:,[0-9$]+)?\s*|/[^/]+/\s*)?([rwRW])(?:\s+([^;}\n]+)|([/.~][^;}\n]*))`)
 var sedSubstitutionPrefix = regexp.MustCompile(`^(?:[0-9$]+(?:,[0-9$]+)?\s*|/[^/]+/\s*)?s`)
 
 // Walk escaped delimiters rather than using the last slash: an s///w
@@ -583,7 +586,7 @@ func semanticWriteTargets(name string, tokens []string) []string {
 		for _, tok := range sedScriptTexts(tokens) {
 			for _, match := range sedFileIOPattern.FindAllStringSubmatch(tok, -1) {
 				if strings.EqualFold(match[1], "w") {
-					targets = append(targets, strings.TrimSpace(match[2]))
+					targets = append(targets, strings.TrimSpace(match[2]+match[3]))
 				} else {
 					targets = append(targets, dynamicSubstToken)
 				}
