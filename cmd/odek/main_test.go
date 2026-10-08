@@ -414,16 +414,16 @@ func TestContinueCLIFlags_UsesSessionProvider(t *testing.T) {
 	}
 }
 
-// Per-turn flags reach the config layer; the session-pinned fields never
-// come from the flags even if a caller hands them in.
+// Per-turn flags reach the config layer; provider and model always come
+// from the session.
 func TestContinueCLIFlags_TurnFlagsAndPins(t *testing.T) {
 	on := true
 	f := continueCLIFlags(&session.Session{Model: "m", Provider: "p"}, runFlags{
-		Model: "other", Provider: "other", BaseURL: "http://x", System: "sys", Sandbox: &on, SandboxImage: "img",
+		Model: "other", Provider: "other",
 		MaxIter: 7, NoColor: &on, Stream: &on, ToolsDisabled: []string{"browser"}, MaxToolCalls: 3,
 	})
-	if f.Model != "m" || f.Provider != "p" || f.BaseURL != "" || f.System != "" || f.Sandbox != nil || f.SandboxImage != "" {
-		t.Fatalf("pinned fields leaked from flags: %+v", f)
+	if f.Model != "m" || f.Provider != "p" {
+		t.Fatalf("session provider/model must win: %+v", f)
 	}
 	if f.MaxIter != 7 || f.NoColor == nil || !*f.NoColor || f.Stream == nil || !*f.Stream ||
 		len(f.ToolsDisabled) != 1 || f.MaxToolCalls != 3 {

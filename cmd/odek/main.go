@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -360,7 +361,9 @@ type runFlags struct {
 	AnnounceBudget *bool   // nil = not set; false disables parent budget hints
 	Planning       *bool   // nil = not set; false disables the plan tool
 	Session        *bool   // nil = not set; true = save session after run
-	Task           string
+	// SessionID is the --id value; only `odek continue` accepts it.
+	SessionID string
+	Task      string
 
 	// ToolsEnabled and ToolsDisabled control which tools are exposed to the LLM.
 	// Repeated --tool/--no-tool flags accumulate. They are the highest priority
@@ -497,6 +500,26 @@ func cliFlagsFromRun(f runFlags) config.CLIFlags {
 	}
 }
 
+// injectCtxFiles copies --ctx files into a sandbox container before the
+// agent starts. Nothing owns the container yet at this point, so a failure
+// tears it down here instead of leaking it until the next stale sweep.
+func injectCtxFiles(container string, sandboxed bool, cleanup func() error, ctxFiles []string, cwd string) error {
+	if !sandboxed || len(ctxFiles) == 0 {
+		return nil
+	}
+	injected, err := sandbox.InjectFiles(container, ctxFiles, cwd)
+	if err != nil {
+		if cleanup != nil {
+			_ = cleanup()
+		}
+		return fmt.Errorf("sandbox: inject ctx files: %w", err)
+	}
+	if injected > 0 {
+		fmt.Fprintf(os.Stderr, "odek: copied %d file(s) into sandbox\n", injected)
+	}
+	return nil
+}
+
 // openEventStream opens the --events-jsonl sink and returns the event
 // handler plus a close function. Open failures are fatal — the operator
 // explicitly asked for the stream, so silently dropping it would violate
@@ -516,6 +539,9 @@ func openEventStream(path string) (func(events.Event), func(), error) {
 	}
 	return handler, func() { _ = sink.Close() }, nil
 }
+
+// errNoTask is returned by the run-flag parser when no task text remains.
+var errNoTask = errors.New("no task provided")
 
 // parseRunFlags parses `odek run` arguments and returns the parsed flags.
 // Exported for testing.
@@ -682,6 +708,12 @@ func parseRunFlags(args []string) (runFlags, error) {
 		case "--session":
 			f.Session = boolPtr(true)
 			i++
+		case "--id":
+			if i+1 >= len(args) {
+				return f, fmt.Errorf("--id requires a value")
+			}
+			f.SessionID = args[i+1]
+			i += 2
 		case "--events-jsonl":
 			if i+1 >= len(args) {
 				return f, fmt.Errorf("--events-jsonl requires a value")
@@ -1104,7 +1136,7 @@ done:
 	}
 	f.Task = strings.Join(taskArgs, " ")
 	if f.Task == "" {
-		return f, fmt.Errorf("no task provided")
+		return f, errNoTask
 	}
 	return f, nil
 }
@@ -1302,8 +1334,8 @@ Commands:
                        Accepts the run flags that shape one turn (--max-iter,
                        --thinking, --tool / --no-tool, --ctx, --no-color,
                        --stream / --no-stream, --events-jsonl, --external-ref,
-                       budget caps, …). The session keeps its provider, model,
-                       system prompt and sandbox posture: --model, --provider,
+                       --deliver, budget caps, …). The session keeps its provider,
+                       model, system prompt and sandbox posture: --model, --provider,
                        --base-url, --system, --sandbox* and --session are rejected.
   repl                Interactive REPL mode (multi-turn session)
                        Accepts --model, --thinking, --sandbox, --prompt-caching /
@@ -1859,6 +1891,9 @@ func run(args []string) (outcome error) {
 	if err != nil {
 		return err
 	}
+	if f.SessionID != "" {
+		return fmt.Errorf("--id is only valid for odek continue; odek run starts a new session (use --session to save it)")
+	}
 	if len(externalRefs) > 0 && (f.Session == nil || !*f.Session) {
 		fmt.Fprintf(os.Stderr, "odek: warning: --external-ref given without --session — refs will not be persisted\n")
 	}
@@ -1938,15 +1973,8 @@ func run(args []string) (outcome error) {
 	if err != nil {
 		return err
 	}
-	if runSandboxed && len(f.Ctx) > 0 {
-		// Inject --ctx files into the sandbox container
-		injected, injectErr := sandbox.InjectFiles(runContainerName, f.Ctx, cwd)
-		if injectErr != nil {
-			return fmt.Errorf("sandbox: inject ctx files: %w", injectErr)
-		}
-		if injected > 0 {
-			fmt.Fprintf(os.Stderr, "odek: copied %d file(s) into sandbox\n", injected)
-		}
+	if err := injectCtxFiles(runContainerName, runSandboxed, sandboxCleanup, f.Ctx, cwd); err != nil {
+		return err
 	}
 
 	// Create terminal renderer for colored step-by-step output.
@@ -3263,14 +3291,12 @@ func buildContinueTools(resolved config.ResolvedConfig, sm *skills.SkillManager,
 // continueCLIFlags maps the per-turn flags onto the config CLI layer and
 // restores the session's provider+model so resume does not pair a stored
 // model id with the operator's current default provider. Empty Provider
-// (pre-v2 session files) leaves the config default in place. The fields a
-// resumed session pins (provider, model, endpoint, system prompt, sandbox
-// posture) never come from the flags: parseContinueArgs rejects them.
+// (pre-v2 session files) leaves the config default in place. The other
+// fields a resumed session pins (endpoint, system prompt, sandbox posture)
+// never come from the flags: parseContinueArgs rejects them.
 func continueCLIFlags(sess *session.Session, f runFlags) config.CLIFlags {
 	cf := cliFlagsFromRun(f)
-	cf.Provider, cf.Model, cf.BaseURL, cf.System, cf.Sandbox = "", "", "", "", nil
-	cf.SandboxImage, cf.SandboxNetwork, cf.SandboxReadonly = "", "", nil
-	cf.SandboxMemory, cf.SandboxCPUs, cf.SandboxUser = "", "", ""
+	cf.Provider, cf.Model = "", ""
 	if sess != nil {
 		cf.Model, cf.Provider = sess.Model, sess.Provider
 	}
@@ -3406,15 +3432,8 @@ func continueCmd(args []string) (outcome error) {
 		return err
 	}
 	cwd, _ := os.Getwd()
-	if contSandboxed && len(f.Ctx) > 0 {
-		// Inject --ctx files into the sandbox container, as run does.
-		injected, injectErr := sandbox.InjectFiles(contContainerName, f.Ctx, cwd)
-		if injectErr != nil {
-			return fmt.Errorf("sandbox: inject ctx files: %w", injectErr)
-		}
-		if injected > 0 {
-			fmt.Fprintf(os.Stderr, "odek: copied %d file(s) into sandbox\n", injected)
-		}
+	if err := injectCtxFiles(contContainerName, contSandboxed, sandboxCleanup, f.Ctx, cwd); err != nil {
+		return err
 	}
 
 	// Renderer
@@ -3569,7 +3588,16 @@ func continueCmd(args []string) (outcome error) {
 		persistPartialMessages(store, sess, allMessages)
 		return err
 	}
-	_ = result
+
+	// Delivery and off-mode output behave as they do for run.
+	if f.Deliver != nil && *f.Deliver && result != "" {
+		if err := deliverToTelegram(result, resolved); err != nil {
+			fmt.Fprintf(os.Stderr, "odek: delivery failed: %v\n", err)
+		}
+	}
+	if resolved.InteractionMode == "off" && result != "" {
+		fmt.Println(result)
+	}
 
 	// Record per-turn divergence assessment after the turn completes.
 	// Use the original prompt so injected resources from @-refs/--ctx do

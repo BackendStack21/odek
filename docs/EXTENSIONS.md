@@ -307,7 +307,8 @@ file's `budget` block carries the parent's remaining `max_runtime_seconds`,
 wire-ambiguous with an unconfigured limit, the flags are not. An exhausted
 parent dimension is a hard cap of 0 for the child: the spawn fails fast
 with the typed budget error and exit code 4 instead of starting an
-unbounded child. `continue`, REPL, `serve`, and
+unbounded child. `continue` enforces limits like `run` (config section plus
+the `--max-*` flags, exit code 4); REPL, `serve`, and
 Telegram do not yet enforce limits, and there is no `ODEK_*` env-var layer
 for limits — sources are the `limits` config section (project configs may
 only *lower* global values, and project-set prices — flat or per-model — are

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -70,57 +71,67 @@ func parseExternalRefFlags(specs []string) ([]session.ExternalRef, error) {
 	return refs, nil
 }
 
-// continueRejectedFlags are run flags odek continue refuses. A resumed
-// session keeps the provider, model, endpoint, system prompt and sandbox
-// posture it was created with, so flags that would change them are an
-// error rather than a silent no-op; --session is implied by continue.
-var continueRejectedFlags = map[string]bool{
-	"--provider": true, "--model": true, "--base-url": true, "--system": true,
-	"--sandbox": true, "--no-sandbox": true,
-	"--sandbox-image": true, "--sandbox-network": true, "--sandbox-readonly": true,
-	"--sandbox-memory": true, "--sandbox-cpus": true, "--sandbox-user": true,
-	"--session": true,
+// continuePinnedFlag names the first parsed flag that a resumed session
+// refuses: anything that would change the provider, model, endpoint, system
+// prompt or sandbox posture the session was created with, and --session,
+// which continue implies. Checking the parsed flags (not a name list) means
+// a new pinning flag added to parseRunFlags cannot slip through unnoticed.
+func continuePinnedFlag(f runFlags) string {
+	switch {
+	case f.Provider != "":
+		return "--provider"
+	case f.Model != "":
+		return "--model"
+	case f.BaseURL != "":
+		return "--base-url"
+	case f.System != "":
+		return "--system"
+	case f.Sandbox != nil && *f.Sandbox:
+		return "--sandbox"
+	case f.Sandbox != nil:
+		return "--no-sandbox"
+	case f.SandboxImage != "":
+		return "--sandbox-image"
+	case f.SandboxNetwork != "":
+		return "--sandbox-network"
+	case f.SandboxReadonly != nil:
+		return "--sandbox-readonly"
+	case f.SandboxMemory != "":
+		return "--sandbox-memory"
+	case f.SandboxCPUs != "":
+		return "--sandbox-cpus"
+	case f.SandboxUser != "":
+		return "--sandbox-user"
+	case f.Session != nil:
+		return "--session"
+	}
+	return ""
 }
 
-// parseContinueArgs splits `odek continue` arguments into the optional
-// --id, the per-turn run flags and the trailing task text. Every run flag
-// that shapes a single turn (--max-iter, --thinking, --tool/--no-tool,
-// --ctx, --no-color, --stream/--no-stream, --events-jsonl, budget caps,
-// --external-ref, …) is accepted with the same syntax as `odek run`; the
-// flags in continueRejectedFlags are refused with an explanation.
+// parseContinueArgs parses `odek continue` arguments with the run-flag
+// parser: --id plus every run flag that shapes a single turn (--max-iter,
+// --thinking, --tool/--no-tool, --ctx, --no-color, --stream/--no-stream,
+// --events-jsonl, --deliver, budget caps, --external-ref, …) with the same
+// syntax as `odek run`, then the task text. Flags that would change what the
+// session pins are refused by name (continuePinnedFlag).
 //
 // Unknown flags are a hard error: they must never be folded into
 // the task text, where a typo'd or version-drifted flag silently corrupts
 // the prompt. An explicit "--" separator passes everything after it
 // through verbatim.
 func parseContinueArgs(args []string) (sessionID string, f runFlags, err error) {
-	rest := make([]string, 0, len(args))
-	for i := 0; i < len(args); i++ {
-		if args[i] == "--" {
-			rest = append(rest, args[i:]...)
-			break
-		}
-		switch {
-		case args[i] == "--id":
-			if i+1 >= len(args) {
-				return "", runFlags{}, fmt.Errorf("--id requires a value")
-			}
-			sessionID = args[i+1]
-			i++
-		case continueRejectedFlags[args[i]]:
-			return "", runFlags{}, fmt.Errorf("flag %s is not accepted by odek continue — a resumed session keeps "+
-				"its provider, model, endpoint, system prompt and sandbox posture; start a new session "+
-				"with odek run --session to change them", args[i])
-		default:
-			rest = append(rest, args[i])
-		}
-	}
-	f, err = parseRunFlags(rest)
+	f, err = parseRunFlags(args)
 	if err != nil {
-		if err.Error() == "no task provided" {
+		if errors.Is(err, errNoTask) {
 			return "", runFlags{}, fmt.Errorf("no task provided for continue")
 		}
 		return "", runFlags{}, err
 	}
+	if flag := continuePinnedFlag(f); flag != "" {
+		return "", runFlags{}, fmt.Errorf("flag %s is not accepted by odek continue — a resumed session keeps "+
+			"its provider, model, endpoint, system prompt and sandbox posture; start a new session "+
+			"with odek run --session to change them", flag)
+	}
+	sessionID, f.SessionID = f.SessionID, ""
 	return sessionID, f, nil
 }

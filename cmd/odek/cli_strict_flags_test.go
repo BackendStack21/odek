@@ -181,6 +181,30 @@ func TestParseContinueArgs_RejectsPinnedFlags(t *testing.T) {
 			t.Errorf("%v: error must name the flag and the command, got: %v", args, err)
 		}
 	}
+	// --deliver is a per-turn flag and continue implements it.
+	if _, f, err := parseContinueArgs([]string{"--deliver", "task"}); err != nil || f.Deliver == nil || !*f.Deliver {
+		t.Fatalf("--deliver must be accepted: err=%v f=%+v", err, f.Deliver)
+	}
+}
+
+// --id belongs to continue; the run parser accepts the token so continue
+// can share it, and parseContinueArgs lifts it out of the flags.
+func TestParseRunFlags_IDIsLifted(t *testing.T) {
+	f, err := parseRunFlags([]string{"--id", "abc", "task"})
+	if err != nil || f.SessionID != "abc" || f.Task != "task" {
+		t.Fatalf("run parser: err=%v id=%q task=%q", err, f.SessionID, f.Task)
+	}
+	id, cf, err := parseContinueArgs([]string{"--id", "abc", "task"})
+	if err != nil || id != "abc" || cf.SessionID != "" {
+		t.Fatalf("continue parser: err=%v id=%q leftover=%q", err, id, cf.SessionID)
+	}
+	if _, _, err := parseContinueArgs([]string{"--id"}); err == nil {
+		t.Fatal("dangling --id must error")
+	}
+	// A dangling task-less continue reports its own message.
+	if _, _, err := parseContinueArgs([]string{"--id", "abc"}); err == nil || !strings.Contains(err.Error(), "for continue") {
+		t.Fatalf("task-less continue error = %v", err)
+	}
 }
 
 func TestParseReplFlags_UnknownFlagErrors(t *testing.T) {
