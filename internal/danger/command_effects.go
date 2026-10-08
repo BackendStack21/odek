@@ -459,10 +459,6 @@ func semanticWriteTargets(name string, tokens []string) []string {
 		flags = map[string]bool{"-o": true}
 	case "pandoc":
 		flags = map[string]bool{"-o": true, "--output": true}
-	case "git":
-		if sub, _ := gitSubcommandAndArgs(tokens); sub == "archive" {
-			flags = map[string]bool{"-o": true, "--output": true}
-		}
 	case "dd":
 		for _, tok := range tokens[1:] {
 			if value, ok := strings.CutPrefix(tok, "of="); ok {
@@ -481,9 +477,13 @@ func semanticWriteTargets(name string, tokens []string) []string {
 			}
 		}
 	case "git":
-		// --output=FILE on the history/diff viewers and archive writes FILE.
+		// --output=FILE on the history/diff viewers and archive writes FILE;
+		// archive also takes the short -o FILE / -oFILE spelling.
 		switch sub, args := gitSubcommandAndArgs(tokens); sub {
-		case "log", "show", "diff", "archive", "whatchanged", "format-patch", "range-diff", "shortlog":
+		case "archive":
+			flags = map[string]bool{"-o": true, "--output": true}
+			fallthrough
+		case "log", "show", "diff", "whatchanged", "format-patch", "range-diff", "shortlog":
 			for i := 0; i < len(args); i++ {
 				a := args[i]
 				if a == "--" {
