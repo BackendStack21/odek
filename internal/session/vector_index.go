@@ -74,6 +74,7 @@ type VectorIndex struct {
 	dir      string
 	ready    bool
 	failedAt time.Time // last failed rebuild; zero = never failed
+	saves    int       // persisted store writes (test observability)
 }
 
 // ── Init ──────────────────────────────────────────────────────────────────
@@ -276,6 +277,24 @@ func (vi *VectorIndex) Remove(sessionID string) error {
 	return vi.saveLocked()
 }
 
+// RemoveMany deletes several sessions from the index and persists the store
+// once, instead of rewriting it per id. Idempotent.
+func (vi *VectorIndex) RemoveMany(sessionIDs []string) error {
+	if len(sessionIDs) == 0 {
+		return nil
+	}
+	vi.mu.Lock()
+	defer vi.mu.Unlock()
+
+	if !vi.ready {
+		return nil
+	}
+	for _, id := range sessionIDs {
+		vi.store.Remove(id)
+	}
+	return vi.saveLocked()
+}
+
 // ── Search ────────────────────────────────────────────────────────────────
 
 // SearchResult holds a single session search result.
@@ -363,6 +382,7 @@ func (vi *VectorIndex) saveLocked() error {
 	if !vi.ready || vi.dir == "" {
 		return nil
 	}
+	vi.saves++
 
 	// Save vector store.
 	storePath := filepath.Join(vi.dir, vectorFile)

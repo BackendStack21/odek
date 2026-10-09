@@ -1400,6 +1400,20 @@ func (s *Store) Delete(id string) error {
 // removeLocked deletes the session FILE and its vector-index entry. The
 // store mutex must be held. A missing file is nil (idempotent).
 func (s *Store) removeLocked(id string) error {
+	if err := s.removeFilesLocked(id); err != nil {
+		return err
+	}
+	// Remove from vector index to prevent stale entries.
+	if s.Vec != nil {
+		_ = s.Vec.Remove(id) // best-effort
+	}
+	return nil
+}
+
+// removeFilesLocked deletes the session file and its audit log, leaving the
+// vector index to the caller (Cleanup batches it outside the locks). A
+// missing file is nil (idempotent).
+func (s *Store) removeFilesLocked(id string) error {
 	delete(s.revStamps, id)
 	err := os.Remove(s.path(id))
 	if err == nil || os.IsNotExist(err) {
@@ -1410,14 +1424,15 @@ func (s *Store) removeLocked(id string) error {
 	if os.IsNotExist(err) {
 		return nil
 	}
-	if err != nil {
-		return err
+	return err
+}
+
+// removeVectors drops ids from the vector index with a single store write.
+// Best-effort, like every other vector-index removal.
+func (s *Store) removeVectors(ids []string) {
+	if s.Vec != nil && len(ids) > 0 {
+		_ = s.Vec.RemoveMany(ids)
 	}
-	// Remove from vector index to prevent stale entries.
-	if s.Vec != nil {
-		_ = s.Vec.Remove(id) // best-effort
-	}
-	return nil
 }
 
 // Cleanup deletes all unpinned sessions whose UpdatedAt is before the given
@@ -1450,9 +1465,10 @@ func (s *Store) Cleanup(before time.Time) (int, error) {
 				if e.Pinned {
 					continue
 				}
-				if err := s.removeLocked(id); err != nil {
+				if err := s.removeFilesLocked(id); err != nil {
 					unlock()
 					s.mu.Unlock()
+					s.removeVectors(cascaded)
 					return deleted, fmt.Errorf("session: delete %q: %w", id, err)
 				}
 				delete(idx, id)
@@ -1464,11 +1480,16 @@ func (s *Store) Cleanup(before time.Time) (int, error) {
 			if err := s.saveIndexLocked(idx); err != nil {
 				unlock()
 				s.mu.Unlock()
+				s.removeVectors(cascaded)
 				return deleted, err
 			}
 		}
 		unlock()
 		s.mu.Unlock()
+		// Embedding-store rewrites run outside the store mutex and the
+		// cross-process lock, in one write, so a large sweep never stalls
+		// concurrent saves.
+		s.removeVectors(cascaded)
 		if s.OnDelete != nil {
 			for _, id := range cascaded {
 				s.OnDelete(id)
