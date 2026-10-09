@@ -534,7 +534,7 @@ func isSensitiveEnvVar(key string) bool {
 	norm := strings.NewReplacer("-", "", "_", "").Replace(strings.ToUpper(key))
 	for _, pat := range []string{
 		"APIKEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL", "CREDS",
-		"PRIVATEKEY", "ACCESSKEY",
+		"PRIVATEKEY", "ACCESSKEY", "PASSWD", "PASSPHRASE", "COOKIE", "AUTHORIZATION",
 	} {
 		if strings.Contains(norm, pat) {
 			return true
