@@ -65,8 +65,10 @@ function parseBlocks(lines) {
   const isFenceClose = (l) => /^```\s*$/.test(l);
   const headerMatch = (l) => /^(#{1,4})\s+(.+)$/.exec(l);
   const isHr = (l) => THEMATIC_BREAK.test(l);
-  const ulItem = (l) => /^\s*[-*+]\s+(.+)$/.exec(l);
-  const olItem = (l) => /^\s*\d+[.)]\s+(.+)$/.exec(l);
+  // Detection and parsing share listMarker, so a line that starts a list
+  // is always one parseList can read.
+  const ulItem = (l) => { const m = listMarker(l); return m && !m.ordered ? m : null; };
+  const olItem = (l) => { const m = listMarker(l); return m && m.ordered ? m : null; };
   const isQuote = (l) => /^>\s?/.test(l);
   const isTableAt = (idx) =>
     idx + 1 < lines.length && isTableRow(lines[idx]) && isTableSep(lines[idx + 1]);
@@ -198,13 +200,15 @@ function parseList(lines, start, isBlockStart, depth = 0, parentIndent = -1) {
           buf.push(lines[i].slice(Math.min(indent, lead)));
           i++;
         }
-        if (i < lines.length) i++; // closing fence; EOF closes while streaming
+        if (i < lines.length) i++; // closing fence
+        else while (buf.length && buf[buf.length - 1].trim() === '') buf.pop(); // EOF closes while streaming
         items[items.length - 1].children += codeBlockHtml(fence[2] || 'code', buf.length ? buf.join('\n') + '\n' : '');
         continue;
       }
-      // A non-blank line straight after an item that does not open another
-      // block continues that item (indented or lazy continuation).
-      if (lines[i].trim() !== '' && items.length && lines[i - 1].trim() !== '' && !isBlockStart(lines[i], i)) {
+      // An indented non-blank line straight after an item that opens no other
+      // block continues that item. Unindented text ends the list: models
+      // write it meaning a new paragraph.
+      if (/^[ \t]+\S/.test(lines[i]) && items.length && lines[i - 1].trim() !== '' && !isBlockStart(lines[i], i)) {
         items[items.length - 1].body += '<br>' + inlineHtml(lines[i].trim());
         i++;
         continue;

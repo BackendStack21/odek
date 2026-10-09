@@ -327,7 +327,7 @@ test('very deep list nesting is capped instead of overflowing the stack', () => 
 
 test('list continuation lines join their item', () => {
   assert.equal(markdownToHtml('- a\n  more\n- b'), '<ul><li>a<br>more</li><li>b</li></ul>');
-  assert.equal(markdownToHtml('1. a\nlazy\n2. b'), '<ol><li>a<br>lazy</li><li>b</li></ol>');
+  assert.equal(markdownToHtml('- b\nAfter list text'), '<ul><li>b</li></ul>\n<p>After list text</p>');
   assert.equal(markdownToHtml('- a\n\npara'), '<ul><li>a</li></ul>\n<p>para</p>');
   assert.equal(markdownToHtml('- a\n# H'), '<ul><li>a</li></ul>\n<h1>H</h1>');
 });
@@ -345,4 +345,15 @@ test('an indented fence under a list item stays inside the item', () => {
   assert.ok(html.includes('<pre><code>go build ./...\n</code></pre>'), html);
   assert.ok(html.endsWith('<li>Test</li></ol>'), html);
   assert.equal((html.match(/<ol/g) || []).length, 1);
+});
+
+test('list-looking lines the parser cannot read stay text instead of throwing', () => {
+  for (const md of ['1234567890. x', '\u00a0- item', '\ufeff- item', '\u3000- b', '- a\n  1234567890. b', '> 1234567890. q']) {
+    assert.doesNotThrow(() => markdownToHtml(md), md);
+    assert.ok(markdownToHtml(md).length > 0, md);
+  }
+});
+
+test('a fence still streaming drops its trailing blank lines', () => {
+  assert.ok(markdownToHtml('1. a\n   ```py\n   x = 1\n\n').includes('<code>x = 1\n</code>'));
 });
