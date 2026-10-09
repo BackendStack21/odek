@@ -699,8 +699,9 @@ func executionCandidates(tok, cwd string) []string {
 // inlinePayloadFlag reports whether tok is a flag whose next word is code (or
 // a module name), not a file: -c / -e, including fused short clusters such as
 // -lc or -ec for shells. Everything after it is the payload or its arguments.
+// For a shell -e is errexit, not code: `bash -e script.sh` runs script.sh.
 func inlinePayloadFlag(name, tok string) bool {
-	if tok == "-c" || tok == "-e" {
+	if tok == "-c" || (tok == "-e" && !pipedShells[name]) {
 		return true
 	}
 	if !isShortFlagToken(tok) || len(tok) < 3 {
