@@ -755,15 +755,46 @@ func isBlank(s string) bool {
 // byte cap stays authoritative — the ring is bounded unconditionally.
 type outputRing struct {
 	mu      sync.Mutex
-	buf     []byte
+	buf     []byte // live window, a subslice of store
+	store   []byte // backing array (capacity only) reused across writes
 	limit   int
 	dropped int64
+}
+
+// appendLocked appends p to the live window r.buf. The window is a slice of a
+// larger backing array whose front is released as old bytes are dropped; when
+// the tail is exhausted the window is compacted to the front of the array
+// instead of reallocating, so a full ring reuses one array (amortised
+// O(1) per byte, no allocation in steady state).
+func (r *outputRing) appendLocked(p []byte) {
+	n := len(r.buf)
+	need := n + len(p)
+	// room is the free space behind the window inside the backing array.
+	room := cap(r.buf) - n
+	if len(p) <= room {
+		r.buf = append(r.buf, p...)
+		return
+	}
+	if need <= cap(r.store) {
+		// Compact: the window slides to the start of the backing array.
+		copy(r.store[:n], r.buf)
+		r.buf = r.store[:n]
+		r.buf = append(r.buf, p...)
+		return
+	}
+	size := 2 * r.limit
+	if size < need {
+		size = need
+	}
+	r.store = make([]byte, 0, size)
+	r.store = append(r.store, r.buf...)
+	r.buf = append(r.store, p...)
 }
 
 func (r *outputRing) Write(p []byte) (int, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.buf = append(r.buf, p...)
+	r.appendLocked(p)
 	if len(r.buf) > r.limit {
 		cut := len(r.buf) - r.limit
 		// Walk back at most utf8.UTFMax-1 bytes to a rune boundary so a
