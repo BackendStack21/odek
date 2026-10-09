@@ -195,13 +195,16 @@ func redactMCPServersView(in []mcpEntry) []mcpEntry {
 }
 
 // credentialEnvName matches NAME in a NAME=value pair that names a secret.
-var credentialEnvName = regexp.MustCompile(`(?i)(key|token|secret|password|passwd|credential|auth|cookie|bearer|dsn|pat)`)
+// It keys on whole underscore-separated components, so PATH, AUTHOR,
+// PATTERN or KEYBOARD stay readable while GITHUB_PAT, DB_PASSWORD, API_KEY
+// or AUTH_HEADER are masked.
+var credentialEnvName = regexp.MustCompile(`(?i)(?:^|_)(?:api_?key|key|token|secret|password|passwd|pass|credentials?|creds|auth|cookie|bearer|dsn|pat)(?:_|$)`)
 
 // envPairRe matches a leading NAME= of an environment assignment.
 var envPairRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*=`)
 
 // urlUserinfoRe matches the userinfo of a URL (scheme://user:pw@host).
-var urlUserinfoRe = regexp.MustCompile(`([A-Za-z][A-Za-z0-9+.-]*://)[^/\s@]*@`)
+var urlUserinfoRe = regexp.MustCompile(`([A-Za-z][A-Za-z0-9+.-]*://)[^/\s@?#]*@`)
 
 // credentialHeaderRe matches an HTTP header line that carries a credential
 // (Authorization, X-Api-Key, Cookie, ...), keeping the header name.

@@ -585,25 +585,30 @@ func (t *jsonQueryTool) Call(argsJSON string) (result string, err error) {
 // exceed the tool output bound.
 var errJSONQueryTooLarge = errors.New("result too large once wrapped as untrusted content; narrow the query to a smaller subtree")
 
-// jsonWrapOverhead is the budgeted per-string cost of the untrusted wrapper
-// (tags, nonce, source attribute), deliberately a little above the real size.
-const jsonWrapOverhead = 192
+// jsonWrapBaseOverhead is the budgeted per-string cost of the untrusted
+// wrapper beyond the source attribute: the two tags with their nonce, as
+// they measure once JSON-encoded (angle brackets and quotes escape to
+// several bytes each). The source path is charged on top, per string. The
+// estimate is a pre-check so a tiny file cannot explode into gigabytes of
+// wrapped output; the rendered result is still measured against the bound.
+const jsonWrapBaseOverhead = 128
 
 // jsonWrapper wraps every string in decoded JSON — values and object keys,
 // both file content — as untrusted, charging each against a shared output
 // budget so per-string wrapper overhead cannot amplify a small file past the
 // tool bound.
 type jsonWrapper struct {
-	ctx    context.Context
-	source string
-	budget int
+	ctx      context.Context
+	source   string
+	budget   int
+	overhead int
 }
 
 func (w *jsonWrapper) wrap(s string) (string, error) {
 	if s == "" {
 		return s, nil
 	}
-	w.budget -= len(s) + jsonWrapOverhead
+	w.budget -= len(s) + w.overhead
 	if w.budget < 0 {
 		return "", errJSONQueryTooLarge
 	}
@@ -645,7 +650,7 @@ func (w *jsonWrapper) walk(v interface{}) (interface{}, error) {
 // decoded JSON so that file content returned by json_query is treated as
 // untrusted. The wrapped result is bounded by maxFileReadBytes.
 func wrapJSONStrings(ctx context.Context, source string, v interface{}) (interface{}, error) {
-	w := &jsonWrapper{ctx: ctx, source: source, budget: maxFileReadBytes * 3 / 4}
+	w := &jsonWrapper{ctx: ctx, source: source, budget: maxFileReadBytes, overhead: jsonWrapBaseOverhead + len(source)}
 	return w.walk(v)
 }
 
