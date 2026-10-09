@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
@@ -562,6 +563,18 @@ func unknownFlagError(flag string) error {
 		"(e.g. odek run -- \"-dash-prefixed task\")", flag)
 }
 
+// parseNonNegativeIntFlag parses a whole-number flag value strictly: no
+// trailing text, no unit suffix, no sign other than a leading digit run.
+// Sscanf-style parsing accepted "5m" as 5 and silently kept the default on
+// garbage.
+func parseNonNegativeIntFlag(name, raw string) (int, error) {
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 0 {
+		return 0, fmt.Errorf("%s requires a non-negative integer, got %q", name, raw)
+	}
+	return n, nil
+}
+
 func parseThinkingArg(raw string) (string, error) {
 	canon, ok := config.NormalizeThinking(raw)
 	if !ok {
@@ -733,9 +746,9 @@ func parseRunFlags(args []string) (runFlags, error) {
 			if i+1 >= len(args) {
 				return f, fmt.Errorf("--max-runtime requires a value")
 			}
-			var n int64
-			if _, err := fmt.Sscanf(args[i+1], "%d", &n); err != nil || n <= 0 {
-				return f, fmt.Errorf("--max-runtime requires a positive integer (seconds), got %q", args[i+1])
+			n, err := strconv.ParseInt(args[i+1], 10, 64)
+			if err != nil || n <= 0 {
+				return f, fmt.Errorf("--max-runtime requires a positive integer, got %q", args[i+1])
 			}
 			f.MaxRuntime = n
 			i += 2
@@ -743,8 +756,8 @@ func parseRunFlags(args []string) (runFlags, error) {
 			if i+1 >= len(args) {
 				return f, fmt.Errorf("--max-tool-calls requires a value")
 			}
-			var n int64
-			if _, err := fmt.Sscanf(args[i+1], "%d", &n); err != nil || n <= 0 {
+			n, err := strconv.ParseInt(args[i+1], 10, 64)
+			if err != nil || n <= 0 {
 				return f, fmt.Errorf("--max-tool-calls requires a positive integer, got %q", args[i+1])
 			}
 			f.MaxToolCalls = n
@@ -753,8 +766,8 @@ func parseRunFlags(args []string) (runFlags, error) {
 			if i+1 >= len(args) {
 				return f, fmt.Errorf("--max-input-tokens requires a value")
 			}
-			var n int64
-			if _, err := fmt.Sscanf(args[i+1], "%d", &n); err != nil || n <= 0 {
+			n, err := strconv.ParseInt(args[i+1], 10, 64)
+			if err != nil || n <= 0 {
 				return f, fmt.Errorf("--max-input-tokens requires a positive integer, got %q", args[i+1])
 			}
 			f.MaxInputTokens = n
@@ -763,8 +776,8 @@ func parseRunFlags(args []string) (runFlags, error) {
 			if i+1 >= len(args) {
 				return f, fmt.Errorf("--max-output-tokens requires a value")
 			}
-			var n int64
-			if _, err := fmt.Sscanf(args[i+1], "%d", &n); err != nil || n <= 0 {
+			n, err := strconv.ParseInt(args[i+1], 10, 64)
+			if err != nil || n <= 0 {
 				return f, fmt.Errorf("--max-output-tokens requires a positive integer, got %q", args[i+1])
 			}
 			f.MaxOutputTokens = n
@@ -773,9 +786,9 @@ func parseRunFlags(args []string) (runFlags, error) {
 			if i+1 >= len(args) {
 				return f, fmt.Errorf("--max-cost-usd requires a value")
 			}
-			var v float64
-			if _, err := fmt.Sscanf(args[i+1], "%f", &v); err != nil || v <= 0 {
-				return f, fmt.Errorf("--max-cost-usd requires a positive number, got %q", args[i+1])
+			v, err := strconv.ParseFloat(args[i+1], 64)
+			if err != nil || v <= 0 || math.IsInf(v, 0) || math.IsNaN(v) {
+				return f, fmt.Errorf("--max-cost-usd requires a positive number (USD, no unit suffix), got %q", args[i+1])
 			}
 			f.MaxCostUSD = v
 			i += 2
@@ -827,31 +840,51 @@ func parseRunFlags(args []string) (runFlags, error) {
 			if i+1 >= len(args) {
 				return f, fmt.Errorf("--memory-extended-max-size-mb requires a value")
 			}
-			fmt.Sscanf(args[i+1], "%d", &f.MemoryExtendedMaxSizeMB)
+			n, err := parseNonNegativeIntFlag("--memory-extended-max-size-mb", args[i+1])
+			if err != nil {
+				return f, err
+			}
+			f.MemoryExtendedMaxSizeMB = n
 			i += 2
 		case "--memory-extended-atom-max-chars":
 			if i+1 >= len(args) {
 				return f, fmt.Errorf("--memory-extended-atom-max-chars requires a value")
 			}
-			fmt.Sscanf(args[i+1], "%d", &f.MemoryExtendedAtomMaxChars)
+			n, err := parseNonNegativeIntFlag("--memory-extended-atom-max-chars", args[i+1])
+			if err != nil {
+				return f, err
+			}
+			f.MemoryExtendedAtomMaxChars = n
 			i += 2
 		case "--memory-extended-memory-budget-chars":
 			if i+1 >= len(args) {
 				return f, fmt.Errorf("--memory-extended-memory-budget-chars requires a value")
 			}
-			fmt.Sscanf(args[i+1], "%d", &f.MemoryExtendedMemoryBudgetChars)
+			n, err := parseNonNegativeIntFlag("--memory-extended-memory-budget-chars", args[i+1])
+			if err != nil {
+				return f, err
+			}
+			f.MemoryExtendedMemoryBudgetChars = n
 			i += 2
 		case "--memory-extended-user-state-turn-interval":
 			if i+1 >= len(args) {
 				return f, fmt.Errorf("--memory-extended-user-state-turn-interval requires a value")
 			}
-			fmt.Sscanf(args[i+1], "%d", &f.MemoryExtendedUserStateTurnInterval)
+			n, err := parseNonNegativeIntFlag("--memory-extended-user-state-turn-interval", args[i+1])
+			if err != nil {
+				return f, err
+			}
+			f.MemoryExtendedUserStateTurnInterval = n
 			i += 2
 		case "--memory-extended-user-state-max-pending":
 			if i+1 >= len(args) {
 				return f, fmt.Errorf("--memory-extended-user-state-max-pending requires a value")
 			}
-			fmt.Sscanf(args[i+1], "%d", &f.MemoryExtendedUserStateMaxPending)
+			n, err := parseNonNegativeIntFlag("--memory-extended-user-state-max-pending", args[i+1])
+			if err != nil {
+				return f, err
+			}
+			f.MemoryExtendedUserStateMaxPending = n
 			i += 2
 		case "--memory-extended-associations-enabled":
 			f.MemoryExtendedAssociationsEnabled = boolPtr(true)
@@ -863,7 +896,11 @@ func parseRunFlags(args []string) (runFlags, error) {
 			if i+1 >= len(args) {
 				return f, fmt.Errorf("--memory-extended-association-semantic-top-k requires a value")
 			}
-			fmt.Sscanf(args[i+1], "%d", &f.MemoryExtendedAssociationSemanticTopK)
+			n, err := parseNonNegativeIntFlag("--memory-extended-association-semantic-top-k", args[i+1])
+			if err != nil {
+				return f, err
+			}
+			f.MemoryExtendedAssociationSemanticTopK = n
 			i += 2
 		case "--memory-extended-proactive-return-after-break":
 			f.MemoryExtendedProactiveReturnAfterBreak = boolPtr(true)
@@ -923,13 +960,21 @@ func parseRunFlags(args []string) (runFlags, error) {
 			if i+1 >= len(args) {
 				return f, fmt.Errorf("--guard-threshold requires a value")
 			}
-			fmt.Sscanf(args[i+1], "%f", &f.GuardThreshold)
+			v, err := strconv.ParseFloat(args[i+1], 64)
+			if err != nil || v < 0 || math.IsInf(v, 0) || math.IsNaN(v) {
+				return f, fmt.Errorf("--guard-threshold requires a non-negative number, got %q", args[i+1])
+			}
+			f.GuardThreshold = v
 			i += 2
 		case "--guard-timeout":
 			if i+1 >= len(args) {
 				return f, fmt.Errorf("--guard-timeout requires a value")
 			}
-			fmt.Sscanf(args[i+1], "%d", &f.GuardTimeoutSeconds)
+			n, err := parseNonNegativeIntFlag("--guard-timeout", args[i+1])
+			if err != nil {
+				return f, err
+			}
+			f.GuardTimeoutSeconds = n
 			i += 2
 		case "--guard-fallback":
 			f.GuardFallbackToLocal = boolPtr(true)
@@ -1235,7 +1280,14 @@ func parseReplFlags(args []string) (replFlags, error) {
 			f.Thinking = level
 			i += 2
 		case "--thinking-budget":
-			fmt.Sscanf(args[i+1], "%d", &f.ThinkingBudget)
+			if i+1 >= len(args) {
+				return f, fmt.Errorf("--thinking-budget requires a value")
+			}
+			n, err := parseNonNegativeIntFlag("--thinking-budget", args[i+1])
+			if err != nil {
+				return f, err
+			}
+			f.ThinkingBudget = n
 			i += 2
 		case "--sandbox":
 			f.Sandbox = boolPtr(true)
