@@ -1,5 +1,5 @@
 // Tool-specific presentation models. Never infer success from optimistic prose.
-import { unwrapForDisplay } from './untrusted.js';
+import { unwrapForDisplay, displayLabel } from './untrusted.js';
 
 const object = value => value && typeof value === 'object' && !Array.isArray(value);
 const list = value => Array.isArray(value) ? value : [];
@@ -12,6 +12,8 @@ function parse(value) {
   if (object(value)) return value;
   try { const data = JSON.parse(value); return object(data) ? data : {}; } catch { return {}; }
 }
+// File names and paths are untrusted single-line labels.
+const pathLabel = value => displayLabel(displayValue(value));
 function byteSize(n) {
   const v = Number(n);
   if (!Number.isFinite(v) || v < 0) return '';
@@ -72,12 +74,12 @@ export function toolView(name, raw, input = '') {
   switch (name) {
     case 'search_files':
       if (!Array.isArray(data.matches)) return null;
-      kind = 'matches'; items = list(data.matches).map(r => entry(r.path, '', r.line ? `Line ${r.line}` : '', [section('Match','text',r.content)])); break;
+      kind = 'matches'; items = list(data.matches).map(r => entry(pathLabel(r.path), '', r.line ? `Line ${r.line}` : '', [section('Match','text',r.content)])); break;
     case 'glob':
       // {"matches":[{path,size,is_dir}]}; null matches means zero, not an error.
       if (data.error) { kind = 'files'; items = [entry(args.pattern || 'glob','failed','',[section('Error','text',data.error)])]; break; }
       if (data.matches !== null && !Array.isArray(data.matches)) return null;
-      kind = 'files'; items = list(data.matches).map(m => entry(m.path, '', m.is_dir ? 'directory' : byteSize(m.size))); break;
+      kind = 'files'; items = list(data.matches).map(m => entry(pathLabel(m.path), '', m.is_dir ? 'directory' : byteSize(m.size))); break;
     case 'read_file':
       if (typeof data.content !== 'string' && !data.error) return null;
       kind = 'file'; items = [entry(args.path || 'File content',data.error ? 'failed' : '',data.total_lines != null ? `${data.total_lines} lines` : '',[section(data.error ? 'Error' : 'Content',data.error ? 'text' : 'code',data.error || data.content)])]; break;
@@ -156,7 +158,9 @@ export function toolArguments(name, input) {
 export function treeText(raw) {
   const data = parse(raw);
   if (!object(data.tree)) return data.error ? 'error: ' + displayValue(data.error) : null;
-  const base = path => displayValue(path).replace(/\/+$/, '').split('/').pop() || displayValue(path);
+  const trim = path => displayValue(path).replace(/[\\/]+$/, '');
+  // Split on separators before escaping: escapes contain backslashes.
+  const base = path => displayLabel(trim(path).split(/[\\/]/).pop() || displayValue(path)) || '?';
   const meta = e => {
     if (e.error) return '  — ' + displayValue(e.error);
     if (e.is_dir) {
@@ -167,8 +171,11 @@ export function treeText(raw) {
     }
     return e.total_size ? '  ' + byteSize(e.total_size) : '';
   };
-  const lines = [displayValue(data.tree.path || '.') + (data.tree.is_dir ? '/' : '') + meta(data.tree)];
+  const rootPath = displayValue(data.tree.path) || '.';
+  const rootLabel = displayLabel(trim(rootPath) ? trim(rootPath) + (data.tree.is_dir ? '/' : '') : rootPath); // a bare '/' stays '/'
+  const lines = [rootLabel + meta(data.tree)];
   const walk = (children, prefix) => {
+    if (prefix.length > 4 * 64) return; // the tree tool caps depth at 10; bound hostile payloads
     const kids = list(children).filter(object);
     kids.forEach((c, i) => {
       const last = i === kids.length - 1;

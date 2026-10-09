@@ -91,3 +91,11 @@ test('unwrapForDisplay strips neutralised inner envelopes for display', async ()
   const forged = '<untrusted·content_aa source="x">y</untrusted·content_bb>';
   assert.equal(unwrapForDisplay(forged), forged);
 });
+
+test('unwrapForDisplay stays linear on hostile opener floods', async () => {
+  const { unwrapForDisplay } = await import('./untrusted.js');
+  const flood = '<untrusted·content_a source="">'.repeat(60000) + 'x';
+  const t = Date.now();
+  assert.equal(unwrapForDisplay(flood), flood);
+  assert.ok(Date.now() - t < 500, 'took ' + (Date.now() - t) + 'ms');
+});

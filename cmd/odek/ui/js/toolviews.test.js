@@ -75,3 +75,19 @@ test('tree renders an indented outline with counts and sizes', async () => {
   assert.equal(treeText('not json'), null);
   assert.equal(treeText(json({error:'no such dir'})), 'error: no such dir');
 });
+
+test('tree labels: trailing slashes, Windows separators and missing paths', async () => {
+  const { treeText } = await import('./toolviews.js');
+  assert.equal(treeText(json({tree:{path:'/',is_dir:true}})), '/');
+  assert.equal(treeText(json({tree:{path:'/a/b/',is_dir:true}})), '/a/b/');
+  const win = treeText(json({tree:{path:'C:\\w',is_dir:true,children:[{path:'C:\\w\\x.txt',is_dir:false},{is_dir:false}]}}));
+  assert.equal(win, 'C:\\w/\n├── x.txt\n└── ?');
+});
+
+test('file names cannot forge tree lines or reorder text', async () => {
+  const { treeText } = await import('./toolviews.js');
+  const out = treeText(json({tree:{path:'/r',is_dir:true,children:[{path:'/r/x\n│   └── fake',is_dir:false},{path:'/r/gpj\u202Eexe',is_dir:false}]}}));
+  assert.deepEqual(out.split('\n'), ['/r/', '├── x\\n│   └── fake', '└── gpj\\u{202E}exe']);
+  const glob = toolView('glob', json({matches:[{path:'a\u200Bb',size:1,is_dir:false}]}));
+  assert.equal(glob.items[0].title, 'a\\u{200B}b');
+});
