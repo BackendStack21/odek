@@ -159,14 +159,7 @@ func confinedGlob(root, pattern string, limit int, includeDirs bool) ([]string, 
 	}
 	// Newest first (Lstat so entry metadata, not a symlink target, is used —
 	// the walk already excludes symlinks, but stay defensive), then truncate.
-	sort.Slice(matches, func(i, j int) bool {
-		fi, _ := os.Lstat(matches[i])
-		fj, _ := os.Lstat(matches[j])
-		if fi == nil || fj == nil {
-			return matches[i] < matches[j]
-		}
-		return fi.ModTime().After(fj.ModTime())
-	})
+	sortNewestFirst(matches, func(p string) string { return p }, os.Lstat)
 	if len(matches) > limit {
 		matches = matches[:limit]
 	}
@@ -599,6 +592,42 @@ type searchFilesArgs struct {
 	Limit    int    `json:"limit"`
 }
 
+// sortStat and sortLstat fetch the modification times used to order glob and
+// search_files results. Variables so tests can count the calls.
+var (
+	sortStat  = os.Stat
+	sortLstat = os.Lstat
+)
+
+// sortNewestFirst orders items by the modification time of their path, newest
+// first, fetching each time once (the comparator runs O(n log n) times). Items
+// whose path cannot be stat'ed fall back to path order against any other item.
+func sortNewestFirst[T any](items []T, pathOf func(T) string, stat func(string) (os.FileInfo, error)) {
+	type keyed struct {
+		item T
+		path string
+		mt   time.Time
+		ok   bool
+	}
+	keys := make([]keyed, len(items))
+	for i, it := range items {
+		k := keyed{item: it, path: pathOf(it)}
+		if fi, _ := stat(k.path); fi != nil {
+			k.mt, k.ok = fi.ModTime(), true
+		}
+		keys[i] = k
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if !keys[i].ok || !keys[j].ok {
+			return keys[i].path < keys[j].path
+		}
+		return keys[i].mt.After(keys[j].mt)
+	})
+	for i := range keys {
+		items[i] = keys[i].item
+	}
+}
+
 type searchMatch struct {
 	Path    string `json:"path"`
 	Line    int    `json:"line,omitempty"`
@@ -682,6 +711,9 @@ func (t *searchFilesTool) searchContent(args searchFilesArgs) (string, error) {
 	var skipped []string
 	limit := args.Limit
 	resultBytes := 0
+	// One initial line buffer shared by the sequential per-file scans; the
+	// scanner still grows it up to the 1 MiB line cap on demand.
+	scanBuf := make([]byte, 64*1024)
 
 	err = filepath.Walk(args.Path, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -715,19 +747,20 @@ func (t *searchFilesTool) searchContent(args searchFilesArgs) (string, error) {
 			return nil
 		}
 
-		// Security: classify each file before reading. This prevents a broad
-		// search from silently returning files that read_file would gate.
-		if skip, reason := t.checkSearchPath(path); skip {
-			skipped = append(skipped, path+": "+reason)
-			return nil
-		}
-
-		// Apply file_glob filter
+		// Apply file_glob filter first: a file the glob excludes is never
+		// read or returned, so it needs no classification.
 		if args.FileGlob != "" {
 			match, _ := filepath.Match(args.FileGlob, info.Name())
 			if !match {
 				return nil
 			}
+		}
+
+		// Security: classify each file before reading. This prevents a broad
+		// search from silently returning files that read_file would gate.
+		if skip, reason := t.checkSearchPath(path); skip {
+			skipped = append(skipped, path+": "+reason)
+			return nil
 		}
 
 		// Skip binary files — single open for check then search
@@ -758,7 +791,7 @@ func (t *searchFilesTool) searchContent(args searchFilesArgs) (string, error) {
 		// Search line by line
 
 		scanner := bufio.NewScanner(f)
-		scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
+		scanner.Buffer(scanBuf, 1024*1024)
 		lineNum := 0
 		for scanner.Scan() {
 			lineNum++
@@ -844,14 +877,7 @@ func (t *searchFilesTool) searchFiles(args searchFilesArgs) (string, error) {
 
 	// Sort by modification time (newest first). Use Lstat so symlinks are not
 	// followed and their own metadata is used for sorting.
-	sort.Slice(matches, func(i, j int) bool {
-		fi, _ := os.Lstat(matches[i].Path)
-		fj, _ := os.Lstat(matches[j].Path)
-		if fi == nil || fj == nil {
-			return matches[i].Path < matches[j].Path
-		}
-		return fi.ModTime().After(fj.ModTime())
-	})
+	sortNewestFirst(matches, func(m searchMatch) string { return m.Path }, sortLstat)
 
 	if len(matches) > 0 {
 		sources := make([]string, len(matches))
@@ -1596,14 +1622,7 @@ func (t *globTool) Call(argsJSON string) (result string, err error) {
 	}
 
 	// Sort by modification time (newest first)
-	sort.Slice(matches, func(i, j int) bool {
-		fi, _ := os.Stat(matches[i].Path)
-		fj, _ := os.Stat(matches[j].Path)
-		if fi == nil || fj == nil {
-			return matches[i].Path < matches[j].Path
-		}
-		return fi.ModTime().After(fj.ModTime())
-	})
+	sortNewestFirst(matches, func(m globMatch) string { return m.Path }, sortStat)
 
 	if len(matches) > 0 {
 		contents := make([]string, len(matches))
