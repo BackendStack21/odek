@@ -131,10 +131,17 @@ export function removeMemoryFact(target, oldText) {
   });
 }
 
-export function promoteEpisode(sessionId) {
+// promoteEpisode promotes a pending episode and resolves to the server's
+// {session_id, summary, sources}. summarySha256 (from the pending listing) is
+// required: it pins the promotion to the summary the operator reviewed, and
+// the server refuses with 409 when the stored text has changed since.
+export async function promoteEpisode(sessionId, summarySha256) {
+  if (!summarySha256) {
+    throw new Error('promote needs the reviewed summary hash (summary_sha256); reload the memory panel');
+  }
   return apiFetch('/api/memory/episodes/promote', {
     method: 'POST',
-    body: JSON.stringify({ session_id: sessionId }),
+    body: JSON.stringify({ session_id: sessionId, summary_sha256: summarySha256 }),
   });
 }
 

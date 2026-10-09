@@ -904,7 +904,7 @@ body.workspace-wide #session-rail { box-shadow: none; animation: none; }
 .mf-episode { display: flex; flex-direction: column; gap: 8px; margin-bottom: 8px; padding: 12px; border-left: 2px solid var(--amber); }
 .mf-episode-body { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .mf-episode-meta, .mf-episode-sources { font-size: var(--fs-2xs); color: var(--text-3); overflow-wrap: anywhere; }
-.mf-episode-summary { font-size: var(--fs-sm); line-height: 1.55; color: var(--text-2); overflow-wrap: anywhere; }
+.mf-episode-summary { font-size: var(--fs-sm); line-height: 1.55; color: var(--text-2); overflow-wrap: anywhere; white-space: pre-wrap; max-height: 16em; overflow-y: auto; }
 .mf-promote, .mf-discard, .sk-promote {
   align-self: flex-start; min-height: 26px; padding: 0 10px; border-radius: var(--r-pill); font-size: var(--fs-xs); font-weight: 500;
 }

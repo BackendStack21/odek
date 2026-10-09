@@ -10,6 +10,8 @@ package main
 //         bulk-re-send suppression and the buffered fallback path).
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -383,10 +385,12 @@ func TestHandleMemoryEpisodePromote_OKAndBadID(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	req := httptest.NewRequest(http.MethodPost, "/api/memory/episodes/promote", strings.NewReader(`{"session_id":"20260102-bbbb"}`))
+	sum := sha256.Sum256([]byte("did a thing"))
+	req := httptest.NewRequest(http.MethodPost, "/api/memory/episodes/promote",
+		strings.NewReader(`{"session_id":"20260102-bbbb","summary_sha256":"`+hex.EncodeToString(sum[:])+`"}`))
 	w := httptest.NewRecorder()
 	handleMemoryEpisodePromote(dir)(w, req)
-	if w.Code != http.StatusNoContent {
+	if w.Code != http.StatusOK {
 		t.Fatalf("promote status = %d (body: %s)", w.Code, w.Body.String())
 	}
 
@@ -401,7 +405,7 @@ func TestHandleMemoryEpisodePromote_OKAndBadID(t *testing.T) {
 	}
 
 	// Traversal-shaped id must be rejected by ValidateSessionID inside Promote.
-	req = httptest.NewRequest(http.MethodPost, "/api/memory/episodes/promote", strings.NewReader(`{"session_id":"../../etc"}`))
+	req = httptest.NewRequest(http.MethodPost, "/api/memory/episodes/promote", strings.NewReader(`{"session_id":"../../etc","summary_sha256":"00"}`))
 	w = httptest.NewRecorder()
 	handleMemoryEpisodePromote(dir)(w, req)
 	if w.Code != http.StatusBadRequest {

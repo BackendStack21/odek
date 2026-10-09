@@ -25,7 +25,10 @@ package main
 // edits) human.
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"sort"
@@ -460,9 +463,13 @@ func handleMemoryGet(memoryDir string, cfg memory.MemoryConfig) http.HandlerFunc
 		}
 
 		episodes := memory.NewEpisodeStore(memoryDir, nil)
-		pending, err := episodes.PendingReview()
+		pendingMeta, err := episodes.PendingReview()
 		if err != nil {
-			pending = nil
+			pendingMeta = nil
+		}
+		pending := make([]pendingEpisodeView, 0, len(pendingMeta))
+		for _, ep := range pendingMeta {
+			pending = append(pending, newPendingEpisodeView(episodes, ep))
 		}
 		total := 0
 		if idx, err := episodes.ReadIndex(); err == nil {
@@ -560,10 +567,46 @@ func handleMemoryFactsRemove(memoryDir string, cfg memory.MemoryConfig) http.Han
 	}
 }
 
+// pendingEpisodeView is a pending-review episode as the operator reviews it.
+// The index entry's summary is cut at 120 characters, but recall replays the
+// whole episode file, so Summary carries the full stored text (sanitised for
+// display) and SummarySHA256 the hash of the raw text, which a promote request
+// can pin so the operator promotes exactly what was shown.
+type pendingEpisodeView struct {
+	memory.EpisodeMeta
+	Summary       string `json:"summary"`
+	SummarySHA256 string `json:"summary_sha256,omitempty"`
+}
+
+// newPendingEpisodeView reads the full episode text for review. When the
+// episode file cannot be read, the (sanitised) index summary is shown and no
+// hash is offered.
+func newPendingEpisodeView(store *memory.EpisodeStore, ep memory.EpisodeMeta) pendingEpisodeView {
+	v := pendingEpisodeView{EpisodeMeta: ep, Summary: danger.SanitizeForDisplay(ep.Summary)}
+	if full, err := store.Read(ep.SessionID); err == nil {
+		v.Summary = danger.SanitizeForDisplay(full)
+		v.SummarySHA256 = episodeSummaryHash(full)
+	}
+	return v
+}
+
+func episodeSummaryHash(s string) string {
+	sum := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(sum[:])
+}
+
 // handleMemoryEpisodePromote promotes a tainted episode to recallable state.
 // This is the same human gate as `odek memory promote <id>` — reachable only
 // with the operator instance token, never by the agent.
-// POST {session_id}
+//
+// POST {session_id, summary_sha256} → 200 {session_id, summary, sources}
+//
+// summary_sha256 is required: it is the hash of the episode text the operator
+// reviewed (the pending listing provides it). The store compares it with the
+// stored text under the episode lock and promotes only on a match, so what
+// becomes recallable is exactly what was shown; a mismatch is a 409 and
+// nothing is promoted. The response carries the promoted text (sanitised)
+// and its taint sources.
 func handleMemoryEpisodePromote(memoryDir string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -571,7 +614,8 @@ func handleMemoryEpisodePromote(memoryDir string) http.HandlerFunc {
 			return
 		}
 		var body struct {
-			SessionID string `json:"session_id"`
+			SessionID     string `json:"session_id"`
+			SummarySHA256 string `json:"summary_sha256"`
 		}
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&body); err != nil {
 			http.Error(w, "invalid JSON", http.StatusBadRequest)
@@ -581,11 +625,37 @@ func handleMemoryEpisodePromote(memoryDir string) http.HandlerFunc {
 			http.Error(w, "session_id required", http.StatusBadRequest)
 			return
 		}
-		if err := memory.NewEpisodeStore(memoryDir, nil).Promote(body.SessionID); err != nil {
+		if strings.TrimSpace(body.SummarySHA256) == "" {
+			http.Error(w, "summary_sha256 required: promote the summary you reviewed (see GET /api/memory)", http.StatusBadRequest)
+			return
+		}
+		store := memory.NewEpisodeStore(memoryDir, nil)
+		var sources []string
+		if idx, err := store.ReadIndex(); err == nil {
+			for _, ep := range idx {
+				if ep.SessionID == body.SessionID {
+					sources = ep.Provenance.Sources
+				}
+			}
+		}
+		promoted, err := store.PromoteIfHash(body.SessionID, body.SummarySHA256)
+		if errors.Is(err, memory.ErrEpisodeSummaryChanged) {
+			http.Error(w, "episode summary changed since it was reviewed; reload and review it again", http.StatusConflict)
+			return
+		}
+		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		w.WriteHeader(http.StatusNoContent)
+		summary := danger.SanitizeForDisplay(promoted)
+		if sources == nil {
+			sources = []string{}
+		}
+		writeAPIJSON(w, http.StatusOK, map[string]any{
+			"session_id": body.SessionID,
+			"summary":    summary,
+			"sources":    sources,
+		})
 	}
 }
 
