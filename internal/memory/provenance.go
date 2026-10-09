@@ -2,10 +2,12 @@ package memory
 
 import (
 	"encoding/json"
-	"github.com/BackendStack21/odek/internal/session"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/BackendStack21/odek/internal/danger"
+	"github.com/BackendStack21/odek/internal/session"
 )
 
 // EpisodeProvenance carries the trust signals of the session that
@@ -42,9 +44,10 @@ type EpisodeProvenance struct {
 // reads of sub-agent result artifacts (the model supplies an id, never a
 // path; bytes still originated in a child run).
 //
-// `shell` is deliberately NOT in this set even though its output can carry
-// untrusted bytes: it is the agent's primary work tool and tainting it would
-// taint nearly every session, making the provenance gate useless.
+// `shell` is deliberately NOT in this set: it is the agent's primary work
+// tool and tainting every call would taint nearly every session, making the
+// provenance gate useless. Shell commands are classified per call instead
+// (see ShellCommandTools and shellCommandTaints).
 // Retired names remain here only to classify persisted historical transcripts.
 var AlwaysExternalTools = map[string]bool{
 	"browser":        true,
@@ -56,6 +59,16 @@ var AlwaysExternalTools = map[string]bool{
 	"vision":         true,
 	"delegate_tasks": true,
 	"artifact_read":  true,
+}
+
+// ShellCommandTools run a shell command given in their "command" argument.
+// They taint the episode only when the danger classifier gives the command a
+// network effect (network_egress or network_upload) or cannot classify it
+// (unknown): `curl https://evil.example | cat` pulls remote text into the
+// transcript, while local builds, tests and file inspection stay trusted.
+var ShellCommandTools = map[string]bool{
+	"shell":    true,
+	"bg_start": true,
 }
 
 // PathReadingTools are tools that read filesystem content (or structure) into
@@ -115,7 +128,9 @@ var UntrustedToolNames = func() map[string]bool {
 //     mount, or ~/.odek). Symlinks are resolved so e.g. /etc → /private/etc on
 //     macOS cannot disguise an escape. A malformed argument string taints
 //     conservatively; absent/empty paths default to the workspace (trusted).
-//   - Everything else (shell, patch, write_file, …) is trusted.
+//   - ShellCommandTools taint when the command has a network or unknown
+//     effect (see shellCommandTaints); local commands stay trusted.
+//   - Everything else (patch, write_file, …) is trusted.
 func ToolCallTaints(name, argsJSON string) bool {
 	if strings.Contains(name, "__") {
 		return true
@@ -125,6 +140,35 @@ func ToolCallTaints(name, argsJSON string) bool {
 	}
 	if PathReadingTools[name] {
 		return pathReadEscapes(argsJSON)
+	}
+	if ShellCommandTools[name] {
+		return shellCommandTaints(argsJSON)
+	}
+	return false
+}
+
+// shellCommandTaints reports whether a recorded shell command may have pulled
+// content from outside the trust boundary: any network_egress,
+// network_upload or unknown effect in danger.Analyze. Arguments that do not
+// parse taint conservatively; an absent or empty command ran nothing.
+func shellCommandTaints(argsJSON string) bool {
+	if strings.TrimSpace(argsJSON) == "" {
+		return false
+	}
+	var a struct {
+		Command string `json:"command"`
+	}
+	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
+		return true
+	}
+	if strings.TrimSpace(a.Command) == "" {
+		return false
+	}
+	for _, effect := range danger.Analyze(a.Command).Effects {
+		switch effect {
+		case danger.NetworkEgress, danger.NetworkUpload, danger.Unknown:
+			return true
+		}
 	}
 	return false
 }
