@@ -64,8 +64,9 @@ type AuditStore struct {
 	dir string
 	// validated remembers, per session id, the file state the last
 	// successful append left behind. While the file still matches (same
-	// inode, regular file, same size) the JSONL form and a clean tail are
-	// already known, so the next append skips the full-file validation.
+	// inode, regular file, same size and mtime) the JSONL form and a clean
+	// tail are already known, so the next append skips the full-file
+	// validation.
 	validated map[string]auditFileState
 }
 
@@ -304,7 +305,7 @@ func (s *AuditStore) appendRecord(sessionID string, rec auditRecord) error {
 // behind for sessionID.
 func (s *AuditStore) stillValidated(sessionID string, fi os.FileInfo) bool {
 	v, ok := s.validated[sessionID]
-	return ok && fi.Mode().IsRegular() && fi.Size() == v.size && os.SameFile(fi, v.info)
+	return ok && fi.Mode().IsRegular() && fi.Size() == v.size && fi.ModTime().Equal(v.info.ModTime()) && os.SameFile(fi, v.info)
 }
 
 // appendLine writes rec as one JSONL line. With checkTail it first repairs a
@@ -319,12 +320,11 @@ func (s *AuditStore) appendLine(sessionID, path string, preSize int64, rec audit
 	}
 	line = append(line, '\n')
 	if checkTail {
+		// Any tail without a final newline gets one first: a torn fragment
+		// then stays its own (skipped) line, and a complete record that merely
+		// lost its terminator is not merged with the new one.
 		if tail, err := auditReadFile(path); err == nil && len(tail) > 0 && tail[len(tail)-1] != '\n' {
-			last := bytes.TrimSpace(tail[bytes.LastIndexByte(tail, '\n')+1:])
-			var probe auditRecord
-			if json.Unmarshal(last, &probe) != nil {
-				line = append([]byte{'\n'}, line...)
-			}
+			line = append([]byte{'\n'}, line...)
 		}
 	}
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)

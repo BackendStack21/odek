@@ -106,15 +106,27 @@ func TestRED_Session_RevisionCheckAvoidsReloadOnOwnWrites(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// A stamp younger than the settle window is not trusted: a coarse file
+	// clock could hide a foreign rewrite inside it.
 	before := store.revisionLoads
+	sess.Messages = append(sess.Messages, Message{Role: "assistant", Content: "fast"})
+	if err := store.SaveNoIndex(sess); err != nil {
+		t.Fatal(err)
+	}
+	if got := store.revisionLoads - before; got != 1 {
+		t.Fatalf("%d full loads for a write inside the settle window, want 1", got)
+	}
+	time.Sleep(revStampSettle + 10*time.Millisecond)
+	before = store.revisionLoads
 	for i := 0; i < 5; i++ {
 		sess.Messages = append(sess.Messages, Message{Role: "assistant", Content: "step"})
 		if err := store.SaveNoIndex(sess); err != nil {
 			t.Fatal(err)
 		}
+		time.Sleep(revStampSettle + 10*time.Millisecond)
 	}
 	if got := store.revisionLoads - before; got != 0 {
-		t.Fatalf("%d full loads for 5 self-writes, want 0", got)
+		t.Fatalf("%d full loads for 5 settled self-writes, want 0", got)
 	}
 
 	// A second store (another process) advancing the session is still detected.

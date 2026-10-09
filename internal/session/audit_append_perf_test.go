@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // countAuditReads swaps the audit read hook for a counter.
@@ -96,5 +97,38 @@ func TestAudit_MemoDroppedByRemove(t *testing.T) {
 	log, _ := s.Load("sess1")
 	if len(log.Ingests) != 1 || !strings.Contains(log.Ingests[0].Source, "b") {
 		t.Fatalf("unexpected log after remove: %+v", log.Ingests)
+	}
+}
+
+// A same-size rewrite by another writer changes the mtime; the memo must notice
+// and revalidate instead of appending blind behind foreign bytes.
+func TestAudit_MemoRevalidatesAfterSameSizeRewrite(t *testing.T) {
+	dir := t.TempDir()
+	s := NewAuditStore(dir)
+	for i := 0; i < 2; i++ {
+		if err := s.RecordIngest("sess1", 1, "a", "x"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	path := filepath.Join(dir, "audit", "sess1.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(20 * time.Millisecond) // a distinct mtime even on coarse clocks
+	data[len(data)-1] = ' '           // same size, torn tail
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	reads := countAuditReads(t)
+	if err := s.RecordIngest("sess1", 1, "a", "y"); err != nil {
+		t.Fatal(err)
+	}
+	if *reads == 0 {
+		t.Fatal("append after a same-size rewrite skipped validation")
+	}
+	log, err := s.Load("sess1")
+	if err != nil || len(log.Ingests) != 3 {
+		t.Fatalf("ingests=%d err=%v (the torn tail must be repaired, not merged)", len(log.Ingests), err)
 	}
 }

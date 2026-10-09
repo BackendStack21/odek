@@ -720,6 +720,11 @@ func redactMessageFP(m Message) string {
 // maxRevStamps bounds the revision stamp memo.
 const maxRevStamps = 1024
 
+// revStampSettle is how old a stamp must be before it is trusted without a
+// full Load. Kernel file clocks tick coarsely (ext4, tmpfs: up to ~10 ms), so
+// two writes inside one tick can share size and mtime.
+const revStampSettle = 50 * time.Millisecond
+
 // revStamp is a persisted (generation, revision) pair plus the identity of the
 // file it was written to.
 type revStamp struct {
@@ -734,13 +739,15 @@ type revStamp struct {
 // the file on disk is provably the one it wrote (same inode, size and
 // nanosecond mtime), else nil so the caller falls back to a full Load. A
 // filesystem with whole-second mtimes can not distinguish two writes in one
-// tick, so it never takes the fast path.
+// tick, so it never takes the fast path; neither does a platform without
+// inode numbers, nor a stamp younger than revStampSettle, inside which a
+// coarse kernel clock could still make a foreign rewrite look identical.
 func (s *Store) cachedRevision(id string, info os.FileInfo, statErr error) *Session {
 	if statErr != nil || info == nil || !info.Mode().IsRegular() {
 		return nil
 	}
 	st, ok := s.revStamps[id]
-	if !ok || st.mod.Nanosecond() == 0 {
+	if !ok || st.mod.Nanosecond() == 0 || st.ino == 0 || time.Since(st.mod) < revStampSettle {
 		return nil
 	}
 	if info.Size() != st.size || !info.ModTime().Equal(st.mod) || fileInode(info) != st.ino {
@@ -808,12 +815,13 @@ func (s *Store) promptsUnchanged(id string, msgs []Message, n int) bool {
 	return ok && d.n == n && n <= len(msgs) && d.gen == redact.Generation() && d.hash == promptsHash(msgs, n)
 }
 
-// rememberPrompts records the digest of the redacted prompts just persisted.
-func (s *Store) rememberPrompts(id string, msgs []Message) {
+// rememberPrompts records the digest of the redacted prompts just persisted,
+// under the registry generation gen that was current before they were scanned.
+func (s *Store) rememberPrompts(id string, msgs []Message, gen uint64) {
 	if s.promptDigests == nil || len(s.promptDigests) >= maxPromptDigests {
 		s.promptDigests = make(map[string]promptDigest)
 	}
-	s.promptDigests[id] = promptDigest{n: len(msgs), hash: promptsHash(msgs, len(msgs)), gen: redact.Generation()}
+	s.promptDigests[id] = promptDigest{n: len(msgs), hash: promptsHash(msgs, len(msgs)), gen: gen}
 }
 
 func (s *Store) saveLocked(sess *Session) error {
@@ -953,6 +961,9 @@ func (s *Store) saveLockedMode(sess *Session, lazyIndex bool) (err error) {
 	// while a keyed digest of every one of them still matches the digest
 	// recorded after the previous save; any in-place edit, replacement,
 	// reordering or trim changes the digest and redacts them all again.
+	// The registry generation is read before the scan: a secret registered
+	// while this save runs must not be stamped as already applied.
+	promptGen := redact.Generation()
 	promptStart := 0
 	if boundary > 0 && s.promptsUnchanged(sess.ID, sess.Messages, boundary) {
 		promptStart = boundary
@@ -1035,7 +1046,7 @@ func (s *Store) saveLockedMode(sess *Session, lazyIndex bool) (err error) {
 	sess.persistedID = sess.ID
 	committed = true
 	s.rememberRevision(sess)
-	s.rememberPrompts(sess.ID, sess.Messages)
+	s.rememberPrompts(sess.ID, sess.Messages, promptGen)
 
 	// Update the index atomically.
 	entry := indexEntry(sess)
