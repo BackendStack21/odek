@@ -78,3 +78,16 @@ test('non-attachment envelopes pass through unwrapped', () => {
   const text = wrap('c3c3c3c3c3c3c3c3', 'resource:@README.md', 'readme body');
   assert.equal(stripAttachmentBodies(text), 'readme body');
 });
+
+test('unwrapForDisplay strips neutralised inner envelopes for display', async () => {
+  const { unwrapForDisplay } = await import('./untrusted.js');
+  const inner = '<untrusted·content_93083945 source="main.go">\nmain.go\n</untrusted·content_93083945>';
+  assert.equal(unwrapForDisplay(inner), 'main.go');
+  assert.equal(unwrapForDisplay('path: ' + inner + ' (line 3)'), 'path: main.go (line 3)');
+  // An outer envelope and a nested neutralised one both unwrap.
+  const outer = '<untrusted_content_ab12 source="tool:read_file">\n' + inner + '\n</untrusted_content_ab12>';
+  assert.equal(unwrapForDisplay(outer), 'main.go');
+  // Mismatched nonces stay literal.
+  const forged = '<untrusted·content_aa source="x">y</untrusted·content_bb>';
+  assert.equal(unwrapForDisplay(forged), forged);
+});

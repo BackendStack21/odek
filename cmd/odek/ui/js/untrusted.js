@@ -42,6 +42,20 @@ export function parseUntrusted(text) {
   return segments;
 }
 
+// Envelopes nested inside an outer envelope reach the client neutralised:
+// the server rewrites their "untrusted_content" to "untrusted·content" so an
+// inner tag can never close the outer one. Tool fields (a search match path,
+// a read_file body) carry such inner envelopes. For display only, the
+// neutralised framing is removed too — the body is still shown as escaped
+// untrusted text, so stripping the tags grants it nothing.
+const RE_NEUTRALISED =
+  /<untrusted·content_([0-9a-f]+) source="[^"]*">\n?([\s\S]*?)\n?<\/untrusted·content_\1>/g;
+
+export function unwrapForDisplay(text) {
+  if (!text) return '';
+  return unwrapUntrusted(text).replace(RE_NEUTRALISED, (_, _nonce, body) => body);
+}
+
 // unwrapUntrusted returns the concatenated bodies of every envelope in text
 // (plus any non-wrapped text), with all envelope tags removed.
 export function unwrapUntrusted(text) {
