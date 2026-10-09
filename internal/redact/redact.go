@@ -65,12 +65,14 @@ var patterns = []*regexp.Regexp{
 	regexp.MustCompile(`A[SK]IA[0-9A-Z]{16}`),
 
 	// Private keys (RSA, EC, OpenSSH, DSA, ED25519, PKCS#8)
+	// The body is matched lazily up to the first END marker so legacy
+	// Proc-Type/DEK-Info headers (which contain dashes) stay inside the match.
 	// PKCS#8 format (default openssl genpkey output) — with optional
 	// ENCRYPTED prefix and optional algorithm label.
-	regexp.MustCompile(`-----BEGIN (RSA |EC |OPENSSH |DSA |ED25519 |ENCRYPTED )?PRIVATE KEY-----[^-]*-----END (RSA |EC |OPENSSH |DSA |ED25519 |ENCRYPTED )?PRIVATE KEY-----`),
+	regexp.MustCompile(`-----BEGIN (RSA |EC |OPENSSH |DSA |ED25519 |ENCRYPTED )?PRIVATE KEY-----[\s\S]*?-----END (RSA |EC |OPENSSH |DSA |ED25519 |ENCRYPTED )?PRIVATE KEY-----`),
 	// PGP armored private keys (gpg --export-secret-keys output) — the
 	// PEM alternation above deliberately does not cover them.
-	regexp.MustCompile(`-----BEGIN PGP PRIVATE KEY BLOCK-----[^-]*-----END PGP PRIVATE KEY BLOCK-----`),
+	regexp.MustCompile(`-----BEGIN PGP PRIVATE KEY BLOCK-----[\s\S]*?-----END PGP PRIVATE KEY BLOCK-----`),
 
 	// JWT tokens (three base64url segments separated by dots)
 	// Minimum ~40 chars to avoid matching short dotted strings
