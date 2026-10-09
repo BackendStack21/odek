@@ -8,13 +8,79 @@
 // the server always sends raw content.
 //
 // Server-side neutraliseWrapperLiterals guarantees bodies contain no literal
-// "untrusted_content" substring, so non-greedy matching cannot terminate
-// early inside a body.
+// "untrusted_content" substring, so a real closer can never appear early
+// inside a body.
+//
+// Envelopes are read by a linear scanner rather than a backtracking regex:
+// a lazy body pattern rescans to the end for every unclosed opener, which is
+// quadratic on hostile floods. Closers are indexed once per nonce, and the
+// pointers that find each opener's '">' terminator only move forward.
+// Nonce-matched: the closer must repeat the opener's nonce, so a forged or
+// mismatched envelope stays plain text.
+const MAX_NONCE = 64;
 
-// Nonce-backreferenced: the closing tag must repeat the opening nonce, so a
-// forged/mismatched envelope is treated as plain text rather than parsed.
-const RE_UNTRUSTED =
-  /<untrusted_content_([0-9a-f]+) source="([^"]*)">\n?([\s\S]*?)\n?<\/untrusted_content_\1>/g;
+function readNonce(text, at) {
+  let e = at;
+  while (e < text.length && e - at < MAX_NONCE && /[0-9a-f]/.test(text[e])) e++;
+  return e > at ? text.slice(at, e) : '';
+}
+
+function scanEnvelopes(text, tag) {
+  const open = '<' + tag + '_';
+  const close = '</' + tag + '_';
+  if (!text.includes(close)) return [{ source: null, body: text }];
+
+  const closers = new Map(); // nonce -> ascending closer offsets
+  for (let c = text.indexOf(close); c >= 0; c = text.indexOf(close, c + 1)) {
+    const nonce = readNonce(text, c + close.length);
+    if (nonce && text[c + close.length + nonce.length] === '>') {
+      if (!closers.has(nonce)) closers.set(nonce, []);
+      closers.get(nonce).push(c);
+    }
+  }
+
+  const segments = [];
+  const cursor = new Map(); // nonce -> next unused closer index
+  let plainFrom = 0; // start of pending plain text
+  let from = 0;      // where to look for the next opener
+  let term = -1;     // next '">' at or after the current source start
+  let stop = -1;     // next '<' or newline, which a source never contains
+  for (;;) {
+    const j = text.indexOf(open, from);
+    if (j < 0) break;
+    from = j + open.length;
+    const nonce = readNonce(text, from);
+    const attr = from + nonce.length;
+    const list = nonce && closers.get(nonce);
+    if (!list || !text.startsWith(' source="', attr)) continue;
+    const srcStart = attr + 9;
+    if (term < srcStart) term = text.indexOf('">', srcStart);
+    if (term < 0) break; // no terminator anywhere ahead: no envelope can follow
+    if (stop < srcStart) {
+      const lt = text.indexOf('<', srcStart);
+      const nl = text.indexOf('\n', srcStart);
+      stop = lt < 0 ? nl : nl < 0 ? lt : Math.min(lt, nl);
+      if (stop < 0) stop = text.length;
+    }
+    if (stop < term) continue; // the would-be source crosses a tag or line
+    let bodyStart = term + 2;
+    if (text[bodyStart] === '\n') bodyStart++;
+    let c = cursor.get(nonce) || 0;
+    while (c < list.length && list[c] < bodyStart) c++;
+    cursor.set(nonce, c);
+    if (c >= list.length) continue;
+    const closeAt = list[c];
+    cursor.set(nonce, c + 1);
+    let body = text.slice(bodyStart, closeAt);
+    if (body.endsWith('\n')) body = body.slice(0, -1);
+    if (j > plainFrom) segments.push({ source: null, body: text.slice(plainFrom, j) });
+    segments.push({ source: text.slice(srcStart, term), body });
+    plainFrom = from = closeAt + close.length + nonce.length + 1;
+  }
+  if (plainFrom < text.length) segments.push({ source: null, body: text.slice(plainFrom) });
+  if (segments.length === 0) segments.push({ source: null, body: text });
+  return segments;
+}
 
 // parseUntrusted splits text into segments: wrapped envelopes become
 // { source, body } (body trimmed of the envelope's framing newlines) and any
@@ -22,24 +88,7 @@ const RE_UNTRUSTED =
 // gaps between envelopes are omitted.
 export function parseUntrusted(text) {
   if (!text) return [];
-  const segments = [];
-  let last = 0;
-  RE_UNTRUSTED.lastIndex = 0;
-  let m;
-  while ((m = RE_UNTRUSTED.exec(text)) !== null) {
-    if (m.index > last) {
-      segments.push({ source: null, body: text.slice(last, m.index) });
-    }
-    segments.push({ source: m[2], body: m[3] });
-    last = m.index + m[0].length;
-  }
-  if (last < text.length) {
-    segments.push({ source: null, body: text.slice(last) });
-  }
-  if (segments.length === 0) {
-    segments.push({ source: null, body: text });
-  }
-  return segments;
+  return scanEnvelopes(String(text), 'untrusted_content');
 }
 
 // Envelopes nested inside an outer envelope reach the client neutralised:
@@ -47,55 +96,11 @@ export function parseUntrusted(text) {
 // inner tag can never close the outer one. Tool fields (a search match path,
 // a read_file body) carry such inner envelopes. For display only, the
 // neutralised framing is removed too — the body is still shown as escaped
-// untrusted text, so stripping the tags grants it nothing.
-//
-// Hostile bodies can carry the neutralised form themselves, so this is a
-// linear scan, not a backtracking regex: closers are indexed once, and each
-// opener takes the first matching closer after it or stays literal. Nonces
-// and source attributes are length-bounded so no step rescans the input.
-const NEUTRAL_OPEN = '<untrusted·content_';
-const RE_NEUTRAL_OPENER = /<untrusted·content_([0-9a-f]{1,64}) source="[^"\n]{0,512}">\n?/y;
-const RE_NEUTRAL_CLOSER = /<\/untrusted·content_([0-9a-f]{1,64})>/g;
-
-function stripNeutralised(text) {
-  if (!text.includes('</untrusted·content_')) return text;
-  const closers = new Map(); // nonce -> ascending closer offsets
-  RE_NEUTRAL_CLOSER.lastIndex = 0;
-  for (let m; (m = RE_NEUTRAL_CLOSER.exec(text)) !== null;) {
-    if (!closers.has(m[1])) closers.set(m[1], []);
-    closers.get(m[1]).push(m.index);
-  }
-  const cursor = new Map(); // nonce -> next unused index into closers
-  let out = '';
-  let i = 0;
-  for (;;) {
-    const j = text.indexOf(NEUTRAL_OPEN, i);
-    if (j < 0) { out += text.slice(i); break; }
-    RE_NEUTRAL_OPENER.lastIndex = j;
-    const m = RE_NEUTRAL_OPENER.exec(text);
-    const list = m && closers.get(m[1]);
-    let k = -1;
-    if (list) {
-      let c = cursor.get(m[1]) || 0;
-      while (c < list.length && list[c] < RE_NEUTRAL_OPENER.lastIndex) c++;
-      cursor.set(m[1], c);
-      if (c < list.length) k = list[c];
-    }
-    if (k < 0) { // no envelope here: keep the opener text literally
-      out += text.slice(i, j + NEUTRAL_OPEN.length);
-      i = j + NEUTRAL_OPEN.length;
-      continue;
-    }
-    out += text.slice(i, j) + text.slice(RE_NEUTRAL_OPENER.lastIndex, k).replace(/\n$/, '');
-    i = k + ('</untrusted·content_' + m[1] + '>').length;
-    cursor.set(m[1], (cursor.get(m[1]) || 0) + 1);
-  }
-  return out;
-}
-
+// untrusted text, so stripping the tags grants it nothing. Hostile bodies can
+// carry this form themselves, which is why it shares the linear scanner.
 export function unwrapForDisplay(text) {
   if (!text) return '';
-  return stripNeutralised(unwrapUntrusted(text));
+  return scanEnvelopes(unwrapUntrusted(text), 'untrusted·content').map((seg) => seg.body).join('');
 }
 
 // displayLabel renders an untrusted single-line label (a file name or path)
@@ -119,8 +124,7 @@ export function unwrapUntrusted(text) {
 // nonce-matched envelope.
 export function hasUntrustedWrapper(text) {
   if (!text) return false;
-  RE_UNTRUSTED.lastIndex = 0;
-  return RE_UNTRUSTED.test(text);
+  return parseUntrusted(text).some((seg) => seg.source !== null);
 }
 
 // stripAttachmentBodies collapses attachment envelopes in reloaded user

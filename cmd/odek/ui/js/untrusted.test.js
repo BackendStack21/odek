@@ -99,3 +99,12 @@ test('unwrapForDisplay stays linear on hostile opener floods', async () => {
   assert.equal(unwrapForDisplay(flood), flood);
   assert.ok(Date.now() - t < 500, 'took ' + (Date.now() - t) + 'ms');
 });
+
+test('parseUntrusted stays linear when openers never close', () => {
+  const flood = '<untrusted_content_a source="x">'.repeat(60000) + '</untrusted_content_b>';
+  const t = Date.now();
+  const segs = parseUntrusted(flood);
+  assert.ok(Date.now() - t < 500, 'took ' + (Date.now() - t) + 'ms');
+  assert.deepEqual(segs, [{ source: null, body: flood }]);
+  assert.equal(hasUntrustedWrapper(flood), false);
+});
