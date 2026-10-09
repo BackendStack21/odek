@@ -4804,6 +4804,10 @@ func isDestructive(first string, tokens []string) bool {
 	if first == "rsync" && hasAnyRsyncDelete(tokens) {
 		return true
 	}
+	// tar --remove-files deletes every archived source once it is written.
+	if first == "tar" && tarOptions.parse(tokens[1:]).has("--remove-files") {
+		return true
+	}
 	if first == "rsync" {
 		for _, dest := range writeDestinations(first, tokens) {
 			if ClassifyPath(dest) == Destructive {
@@ -6485,7 +6489,7 @@ var tarCommandLongOptions = []string{
 var tarOptions = optSpec{
 	short: "gCTXfFLbHVIKN",
 	long: longTable("use-compress-program to-command info-script new-volume-script checkpoint-action "+
-		"rsh-command rmt-command directory", "checkpoint list"),
+		"rsh-command rmt-command directory file", "checkpoint list remove-files create append update catenate concatenate"),
 	abbrev:         true,
 	ignoreDashDash: true,
 }

@@ -667,6 +667,17 @@ func semanticWriteTargets(name string, tokens []string) []string {
 		}
 	case "perl", "ruby":
 		targets = append(targets, scriptInPlaceFiles(tokens)...)
+	case "tar":
+		// -f / --file names the archive; creating, appending or updating
+		// writes it (extracting and listing only read it).
+		r := tarOptions.parse(tokens[1:])
+		if r.has("-c", "-r", "-u", "-A", "--create", "--append", "--update", "--catenate", "--concatenate") {
+			for _, o := range r.opts {
+				if o.has && o.is("-f", "--file") {
+					targets = append(targets, o.value)
+				}
+			}
+		}
 	case "awk", "gawk", "mawk", "nawk":
 		for _, tok := range tokens[1:] {
 			if strings.ContainsAny(tok, "<>") || strings.Contains(tok, "getline") {
