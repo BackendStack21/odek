@@ -26,6 +26,12 @@ func MergeCheckpoint(durable, snapshot []Message) []Message {
 		if i, ok := seen[m.ID]; ok && m.ID != "" {
 			if m.Role == "system" {
 				merged[i] = m
+			} else if m.Superseded && !merged[i].Superseded {
+				// A draft checkpointed earlier can be marked superseded later
+				// (completion nudge, verification retry); replay clients must
+				// not show it as a final answer.
+				merged[i].Superseded = true
+				merged[i].SupersededReason = m.SupersededReason
 			}
 			continue
 		}
