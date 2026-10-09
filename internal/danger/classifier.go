@@ -3627,7 +3627,7 @@ func classifyResourceToken(tok string) RiskClass {
 		return SystemWrite
 	}
 	path := expandShellTokenPath(tok)
-	if _, err := os.Stat(path); err == nil {
+	if memoPathExists(path) {
 		if resolved, err := resolvePathTarget(path); err == nil {
 			if isSensitivePath(resolved) || isSensitiveOdekPath(resolved) {
 				return SystemWrite
@@ -4224,7 +4224,7 @@ func isPersistenceWrite(first string, tokens []string) bool {
 	// jq rewriting package.json scripts: `jq '.scripts.preinstall=…' package.json`.
 	if first == "jq" {
 		joined := strings.ToLower(strings.Join(tokens, " "))
-		if strings.Contains(joined, ".scripts") && strings.Contains(joined, "package.json") && regexp.MustCompile(`(?:\|=|[+*/-]?=)`).MatchString(joined) {
+		if strings.Contains(joined, ".scripts") && strings.Contains(joined, "package.json") && jqAssignRe.MatchString(joined) {
 			return true
 		}
 	}
@@ -5980,6 +5980,12 @@ var awkOptions = optSpec{
 	ignoreDashDash: true,
 }
 
+// awkShellExecRe matches awk constructs that run or pipe to a shell.
+var awkShellExecRe = regexp.MustCompile(`\bsystem\b|@[A-Za-z_]`)
+
+// jqAssignRe matches a jq assignment operator.
+var jqAssignRe = regexp.MustCompile(`(?:\|=|[+*/-]?=)`)
+
 func awkScriptHasShellExec(tok string) bool {
 	if len(tok) >= 2 {
 		if (tok[0] == '\'' && tok[len(tok)-1] == '\'') || (tok[0] == '"' && tok[len(tok)-1] == '"') {
@@ -5990,7 +5996,7 @@ func awkScriptHasShellExec(tok string) bool {
 		return false
 	}
 	lower := strings.ToLower(tok)
-	if regexp.MustCompile(`\bsystem\b|@[A-Za-z_]`).MatchString(lower) {
+	if awkShellExecRe.MatchString(lower) {
 		return true
 	}
 	return strings.Contains(tok, "|")
