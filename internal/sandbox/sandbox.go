@@ -346,8 +346,10 @@ func isPathUnder(path, root string) bool {
 	if rel == "." {
 		return true
 	}
-	// filepath.Rel returns paths starting with ".." when path is outside root.
-	return !strings.HasPrefix(rel, "..") && !strings.Contains(filepath.ToSlash(rel), "/../")
+	// Outside root means the first component is exactly "..", not merely a
+	// name that begins with two dots.
+	slash := filepath.ToSlash(rel)
+	return slash != ".." && !strings.HasPrefix(slash, "../")
 }
 
 // InjectFiles copies each file under cwd into a running container via
