@@ -154,3 +154,16 @@ func TestRED_AliasSaveKeepsTaintFailClosed(t *testing.T) {
 		t.Fatal("save over a symlink alias cleared the session taint")
 	}
 }
+
+func TestPureToolSourceIsEngineDerived(t *testing.T) {
+	if !EngineDerivedSource(PureToolSourcePrefix + "math_eval") {
+		t.Fatal("pure-tool label is not engine-derived")
+	}
+	if EngineDerivedSource("tool:math_eval") || EngineDerivedSource("external:"+PureToolSourcePrefix+"x") {
+		t.Fatal("non-pure tool label treated as engine-derived")
+	}
+	pure := "<untrusted_content_0123abcd source=\"" + PureToolSourcePrefix + "math_eval\">\n42\n</untrusted_content_0123abcd>"
+	if ContentCarriesUntrusted(pure) {
+		t.Fatal("pure-tool wrapper flagged as untrusted")
+	}
+}

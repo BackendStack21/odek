@@ -44,10 +44,19 @@ var engineDerivedSources = map[string]bool{
 // ("tool:<name>", paths, "$ <cmd>", URLs), MCP ("mcp:…"), @-refs, attachments,
 // --ctx, session_search, sub-agent results, background notices, Telegram
 // media and forwards, and project instructions ("project:AGENTS.md") — is
-// external content and taints.
+// external content and taints. Labels starting with PureToolSourcePrefix are
+// engine-derived too.
 func EngineDerivedSource(source string) bool {
-	return engineDerivedSources[source]
+	return engineDerivedSources[source] || strings.HasPrefix(source, PureToolSourcePrefix)
 }
+
+// PureToolSourcePrefix labels the loop's wrapper around the output of a
+// first-party tool call whose output is derived only from the model's own
+// arguments or operator-controlled state (tool.OutputIsPure), e.g.
+// "pure_tool:math_eval". The output keeps its untrusted boundary, but the
+// label is engine-derived: it records no ingest and does not taint. Like the
+// other engine labels, tool-side code cannot mint it (cmd/odek re-labels it).
+const PureToolSourcePrefix = "pure_tool:"
 
 // WrapperSources returns the source label of every real untrusted-content
 // wrapper in s, in order (engine-derived labels included). Prose naming the

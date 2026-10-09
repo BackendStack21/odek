@@ -55,6 +55,7 @@ cmd/odek/
   browser_tool.go             Built-in browser tool (HTTP fetch + headless navigation)
   file_tool.go                Built-in file tools (read_file, write_file, search_files, patch, glob, file_info)
   perf_tools.go               Native utilities (math_eval, diff, json_query, tree, checksum, head_tail, base64)
+  pure_tools.go               Pure-output audit + markers: first-party calls that never taint the run
   http_request_tool.go        Single-URL HTTP status/size checks with SSRF and redirect guards
   introspect.go               config_view + list_tools tools and shared sanitized view builders
                               (structural sanitization: secrets never enter the view map)
@@ -107,7 +108,8 @@ internal/
                               post-batch reconciliation; signal.go — SignalEvent observability
                               (context_trimmed, tool_recovery, tool_running heartbeat); budget enforcement
                               (budget.Checker) + odek.event/v1 emission.
-  tool/                       Thread-safe tool registry, clarify.go, send_message.go
+  tool/                       Thread-safe tool registry, clarify.go, send_message.go, purity.go (first-party-only
+                              pure-output registry: a registered type's pure calls skip the ingest taint)
   danger/                     Command/URL classification + bypass-resistant tokenizer. Approver interface +
                               TTYApprover with friction mode (interactive approval system lives here).
     classifier.go               normalize entry point, RiskClass set (11 classes), DangerousConfig, ActionForCommand, verb/path classification,

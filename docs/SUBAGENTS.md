@@ -355,8 +355,10 @@ The `trust_level` a model requests is honoured only on a clean run.
 `delegate_tasks` clamps every requested child to `untrusted` when the parent
 run is tainted. **What taints** (external content only):
 
-- any tool result — the engine wraps every tool's output (`tool:<name>`), so
-  the first tool call of a run taints it, whatever the tool;
+- any tool result that can carry external content — the engine wraps each
+  tool's output as `tool:<name>` and records an ingest, so the first such call
+  taints the run (file, shell, network, search, session, memory, skill,
+  background and MCP tools, and every embedder tool);
 - `@`-refs, `--ctx` files, attachments, Telegram forwards/voice/captions/media,
   `session_search` results, sub-agent results, background-job notices;
 - project instructions: a loaded `AGENTS.md` is repository content, so a run
@@ -373,9 +375,28 @@ extended-memory recall, and the return-after-break summary. (Episode recall
 *does* taint: an episode summarises another session and is admitted by the
 memory gate's per-tool rule, which is weaker than this taint.) These blocks are
 wrapped too, but they derive from history that was already taint-tracked when
-it entered; a tool can never produce their labels. So trusted delegation is
-available when a run delegates before any tool call, in a session that has
-never ingested external content, with no MCP server and no `AGENTS.md` loaded. MCP tool names, descriptions and schemas are third-party text in
+it entered; a tool can never produce their labels.
+
+**Pure built-in calls do not taint either.** A first-party call whose output
+comes only from the model's own arguments or from operator-only config keeps
+its untrusted boundary, under the engine-derived label `pure_tool:<name>`, but
+records no ingest and does not taint. The pure calls are: `math_eval`;
+`base64` inline encoding (`content` without `decode`/`string`; file mode and
+decoding taint); `list_subagent_profiles`; `list_tools` unless the listing
+shows an MCP server introduced by the project `./odek.json`; and `plan`.
+For `list_tools`, purity covers the operator-written MCP command and argument
+strings only, not what those commands resolve to: the tool never runs them.
+`config_view` is not pure, because the resolved view includes values a project
+`./odek.json` may set, and neither are `diff`, `json_query`, `tree`,
+`checksum`, `head_tail` (each reads the filesystem), `clarify`, `send_message`
+and `speak`. Purity is honoured only for registered first-party types
+(`tool.RegisterPureOutputType`, in an internal package): an embedder or MCP
+tool that implements `PureOutputFor`, a type that embeds a built-in, and any
+tool behind `untrustedToolWrapper` all still taint.
+
+So trusted delegation is available when a run delegates before any tainting
+tool call, in a session that has never ingested external content, with no MCP
+server and no `AGENTS.md` loaded. MCP tool names, descriptions and schemas are third-party text in
 the tool catalogue — no ingest is ever recorded for them, yet a poisoned
 description can steer a `delegate_tasks` call. The secure default wins: while
 any MCP server is loaded, trusted delegation is unavailable and every child

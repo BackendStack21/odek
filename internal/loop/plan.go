@@ -23,6 +23,8 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/BackendStack21/odek/internal/tool"
+
 	"github.com/BackendStack21/odek/internal/session"
 )
 
@@ -1446,6 +1448,13 @@ func (t *PlanTool) Schema() any {
 		"required": []string{"verb"},
 	}
 }
+
+// PureOutputFor marks plan output as pure (tool.PureOutput): it renders the
+// model-authored plan and reads no external content, so a plan call never
+// taints the run.
+func (t *PlanTool) PureOutputFor(string) bool { return true }
+
+func init() { tool.RegisterPureOutputType((*PlanTool)(nil)) }
 
 func (t *PlanTool) Call(argsJSON string) (string, error) {
 	if t.Store == nil {

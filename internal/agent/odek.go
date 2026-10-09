@@ -1499,6 +1499,19 @@ func (a *toolAdapter) CallContext(ctx context.Context, args string) (string, err
 // the tool did not already return one.
 func (a *toolAdapter) RequiresUntrustedOutputBoundary() bool { return true }
 
+// PureOutputFor forwards the pure-output question (tool.PureOutput) to the
+// wrapped tool. tool.OutputIsPure honours the answer only for registered
+// first-party types, so an embedder tool that implements the method still
+// reports external output.
+func (a *toolAdapter) PureOutputFor(args string) bool {
+	return tool.OutputIsPure(a.t, args)
+}
+
+func init() {
+	// The adapter only forwards; the wrapped tool's own registration decides.
+	tool.RegisterPureOutputType((*toolAdapter)(nil))
+}
+
 // SetSessionID propagates the active session id to tools that implement the
 // session-binder interface (delegate_tasks files its artifact dirs under the
 // session so deletion cascades), same forward-on-assertion shape as

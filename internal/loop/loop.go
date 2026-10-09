@@ -3796,7 +3796,17 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 							// an engine boundary, so the engine always adds
 							// its own (nested wrapping is fine: the inner
 							// tag is neutralised by the outer wrap).
-							output = e.protectDerivedContext(ctx, "tool:"+tcRef.Function.Name, output)
+							if tool.OutputIsPure(t, tcRef.Function.Arguments) {
+								// A first-party call whose output derives only
+								// from the model's own arguments or operator
+								// state: keep the boundary, but under an
+								// engine-derived label with no ingest, so it
+								// neither audits as external nor taints the
+								// run (delegation trust stays available).
+								output = e.wrapContext(session.PureToolSourcePrefix+tcRef.Function.Name, output)
+							} else {
+								output = e.protectDerivedContext(ctx, "tool:"+tcRef.Function.Name, output)
+							}
 						}
 					}
 					results[idx] = execResult{output: output, errored: errored, durationMs: time.Since(callStart).Milliseconds(), outcome: outcome, deliveryCtx: callCtx, intact: intact}
