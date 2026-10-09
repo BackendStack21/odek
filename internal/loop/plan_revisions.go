@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
-	"unicode"
 )
 
 const (
@@ -272,7 +271,7 @@ func validateRevisionFinalSteps(steps []PlanStep, max int) error {
 	}
 	seen := map[string]bool{}
 	for _, step := range steps {
-		if step.ID == "" || len(step.ID) > maxPlanIDChars || seen[step.ID] || strings.ContainsAny(step.ID, "[]") || strings.ContainsFunc(step.ID, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) {
+		if step.ID == "" || len(step.ID) > maxPlanIDChars || seen[step.ID] || !isPlanIDToken(step.ID) {
 			return fmt.Errorf("plan: revise: invalid or duplicate step id %q", step.ID)
 		}
 		seen[step.ID] = true
