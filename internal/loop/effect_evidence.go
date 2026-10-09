@@ -13,13 +13,32 @@ func isEffectEvidence(m session.Message) bool {
 	return m.Role == "system" && strings.HasPrefix(m.Content, effectEvidencePrefix)
 }
 
+// effectBodyCache memoizes the redacted ledger text. The ledger is append-only
+// within a run, so its length and newest entry identify the cached body.
+type effectBodyCache struct {
+	n    int
+	last string
+	body string
+}
+
+func (e *Engine) effectEvidenceBody() string {
+	n := len(e.runMutations)
+	last := e.runMutations[n-1]
+	if c := e.effectBody; c.n == n && c.last == last && c.body != "" {
+		return c.body
+	}
+	body := redact.RedactSecrets(strings.Join(e.runMutations, "\n"))
+	e.effectBody = effectBodyCache{n: n, last: last, body: body}
+	return body
+}
+
 // Completion evidence is state, not optional conversation context. Its
 // untrusted body cannot promote resource names or command text to authority.
 func (e *Engine) refreshEffectEvidence(ctx context.Context, messages []session.Message) []session.Message {
 	if len(e.runMutations) == 0 {
 		return messages
 	}
-	body := redact.RedactSecrets(strings.Join(e.runMutations, "\n"))
+	body := e.effectEvidenceBody()
 	for i, m := range messages {
 		if isEffectEvidence(m) {
 			if strings.Contains(m.Content, body) {

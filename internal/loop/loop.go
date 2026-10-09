@@ -408,6 +408,7 @@ type Engine struct {
 	// happened. Reset at runLoop entry; only touched from the loop
 	// goroutine.
 	runMutations        []string
+	effectBody          effectBodyCache
 	durableTranscript   []session.Message
 	activeTurnID        string
 	invocationTurnID    string
@@ -2761,6 +2762,7 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 	e.externalGrants = nil
 	e.externalChargeMu.Unlock()
 	e.runMutations = nil
+	e.effectBody = effectBodyCache{}
 	e.pendingVerification = nil
 	e.completionNudged = false
 	e.sawReadAfterMutation = false
