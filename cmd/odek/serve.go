@@ -210,6 +210,8 @@ type rateLimiter struct {
 	max     int
 	window  time.Duration
 	lastGC  time.Time
+	gcSize  int // map size right after the last sweep
+	gcRuns  int // completed sweeps (test observable)
 }
 
 func newRateLimiter(max int, window time.Duration) *rateLimiter {
@@ -239,12 +241,16 @@ func (rl *rateLimiter) allow(key string) bool {
 
 	now := time.Now().UTC()
 	cutoff := now.Add(-rl.window)
-	var times []time.Time
-	for _, t := range rl.windows[key] {
+	// Prune in place: the slice is owned by the map entry.
+	times := rl.windows[key]
+	n := 0
+	for _, t := range times {
 		if t.After(cutoff) {
-			times = append(times, t)
+			times[n] = t
+			n++
 		}
 	}
+	times = times[:n]
 	if len(times) == 0 {
 		delete(rl.windows, key)
 	}
@@ -262,12 +268,16 @@ func (rl *rateLimiter) allow(key string) bool {
 }
 
 // gcLocked drops keys whose timestamps all fall outside the window.
-// Throttled to at most once per window so a busy limiter does not scan
-// the whole map on every request.
+// Throttled to once per window, or earlier only when the map has doubled
+// since the last sweep (and holds at least 64 keys), so the full rescan is
+// amortised O(1) per call even under a flood of distinct keys.
 func (rl *rateLimiter) gcLocked(now time.Time) {
-	if !rl.lastGC.IsZero() && now.Sub(rl.lastGC) < rl.window && len(rl.windows) < 64 {
+	if !rl.lastGC.IsZero() && now.Sub(rl.lastGC) < rl.window &&
+		(len(rl.windows) < 64 || len(rl.windows) < 2*rl.gcSize) {
 		return
 	}
+	rl.gcRuns++
+	defer func() { rl.gcSize = len(rl.windows) }()
 	rl.lastGC = now
 	cutoff := now.Add(-rl.window)
 	for k, ts := range rl.windows {
