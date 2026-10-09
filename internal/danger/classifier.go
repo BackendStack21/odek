@@ -789,8 +789,10 @@ func init() {
 // must never reach: loopback (127/8, ::1), RFC1918 / RFC4193 private (incl.
 // IPv6 ULA fc00::/7), link-local (169.254/16 — which covers the
 // 169.254.169.254 cloud-metadata endpoint — and fe80::/10), RFC 6598 CGNAT
-// (100.64/10), RFC 2544 benchmark testing (198.18/15), or the unspecified
-// address (0.0.0.0, ::). It is the single source of truth shared by both
+// (100.64/10), RFC 2544 benchmark testing (198.18/15), "this network"
+// (0.0.0.0/8), the unspecified address (::), or an IPv6 form that embeds a
+// blocked IPv4 address (NAT64 64:ff9b::/96, 6to4 2002::/16, local-use NAT64
+// 64:ff9b:1::/48). It is the single source of truth shared by both
 // ClassifyURL's literal-host gate and the dial-time SSRF guard, so the two
 // cannot drift apart. A nil IP is treated as blocked (fail closed).
 func IsBlockedIP(ip net.IP) bool {
@@ -807,7 +809,39 @@ func IsBlockedIP(ip net.IP) bool {
 			return true
 		}
 	}
+	if v4 := ip.To4(); v4 != nil {
+		// 0.0.0.0/8 ("this network"): Linux routes 0.x.y.z to the local host.
+		return v4[0] == 0
+	}
+	if len(ip) == net.IPv6len {
+		switch {
+		case ip[0] == 0x00 && ip[1] == 0x64 && ip[2] == 0xff && ip[3] == 0x9b &&
+			ipBytesAllZero(ip[4:12]):
+			// NAT64 well-known prefix 64:ff9b::/96: the low 32 bits are an
+			// IPv4 address the gateway connects to, so the embedded address
+			// decides.
+			return IsBlockedIP(net.IP(append([]byte(nil), ip[12:16]...)))
+		case ip[0] == 0x00 && ip[1] == 0x64 && ip[2] == 0xff && ip[3] == 0x9b && ip[4] == 0x00 && ip[5] == 0x01:
+			// 64:ff9b:1::/48 local-use NAT64 (RFC 8215) embeds the IPv4
+			// address at a prefix-length-dependent offset; refuse the range.
+			return true
+		case ip[0] == 0x20 && ip[1] == 0x02:
+			// 6to4 2002::/16: bits 16..47 are the IPv4 address of the
+			// tunnel endpoint the packet is delivered to.
+			return IsBlockedIP(net.IP(append([]byte(nil), ip[2:6]...)))
+		}
+	}
 	return false
+}
+
+// ipBytesAllZero reports whether every byte of b is zero.
+func ipBytesAllZero(b []byte) bool {
+	for _, c := range b {
+		if c != 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // hostnameIsInternal reports whether a non-IP hostname denotes a well-known
