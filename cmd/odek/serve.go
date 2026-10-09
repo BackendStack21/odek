@@ -3042,9 +3042,30 @@ func startWSKeepalive(conn *golangws.Conn, stop <-chan struct{}) {
 // stall writes to other clients, which the old process-wide mutex did.
 var wsConnWriters sync.Map // *golangws.Conn → *connWriteState
 
+// wsQueueCap bounds the per-connection frame queue; wsDeltaMergeMax bounds
+// the content of one coalesced delta frame.
+const (
+	wsQueueCap      = 256
+	wsDeltaMergeMax = 64 << 10
+)
+
+// wsQueued is one frame awaiting the connection's writer. Non-delta frames
+// are pre-encoded and carry a done channel their sender waits on; delta
+// frames are encoded at write time so queued neighbours can be merged.
+type wsQueued struct {
+	payload string
+	delta   string // "token_delta" / "thinking_delta", empty otherwise
+	content string
+	done    chan struct{}
+}
+
 type connWriteState struct {
-	mu   sync.Mutex
-	dead bool // write timed out: fast-fail all later sends on this conn
+	mu           sync.Mutex
+	dead         bool // write timed out: fast-fail all later sends on this conn
+	queue        []*wsQueued
+	running      bool          // writer goroutine active (possibly parked in Send)
+	sendingSince time.Time     // zero unless a Send is in flight
+	space        chan struct{} // closed and replaced whenever the writer pops
 }
 
 func connWriter(conn *golangws.Conn) *connWriteState {
@@ -3072,7 +3093,7 @@ func releaseConnWriter(conn *golangws.Conn) {
 	if v, ok := wsConnWriters.Load(conn); ok {
 		w := v.(*connWriteState)
 		w.mu.Lock()
-		w.dead = true
+		w.markDeadLocked()
 		w.mu.Unlock()
 	}
 	sweepConnWriters()
@@ -3087,7 +3108,9 @@ func sweepConnWriters() {
 	wsConnWriters.Range(func(k, v any) bool {
 		w := v.(*connWriteState)
 		if w.mu.TryLock() {
-			if w.dead {
+			// A dead state whose writer is still parked in Send must stay:
+			// dropping it would let a fresh state issue a concurrent Send.
+			if w.dead && !w.running {
 				wsConnWriters.Delete(k)
 			}
 			w.mu.Unlock()
@@ -3097,36 +3120,178 @@ func sweepConnWriters() {
 }
 
 func writeWSJSON(conn *golangws.Conn, data any) {
-	payload, err := json.Marshal(data)
-	if err != nil {
-		return
+	f := &wsQueued{}
+	if typ, content, ok := wsDeltaFrame(data); ok {
+		f.delta, f.content = typ, content
+	} else {
+		payload, err := json.Marshal(data)
+		if err != nil {
+			return
+		}
+		f.payload = string(payload)
+		f.done = make(chan struct{})
 	}
 	w := connWriter(conn)
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	if w.dead {
+	timeout := time.Duration(wsWriteTimeout.Load())
+	if !w.enqueue(conn, f, timeout) || f.done == nil {
 		return
 	}
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		golangws.Message.Send(conn, string(payload))
-	}()
+	// Non-delta frames keep the synchronous contract: return once written,
+	// or abandon the write after the timeout.
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
 	select {
-	case <-done:
-	case <-time.After(time.Duration(wsWriteTimeout.Load())):
-		// The client stopped reading: its TCP receive window is full and
-		// Send is wedged. Abandon the write (bounded caller, per-conn
-		// lock released, later sends on this conn fast-fail) and tear the
-		// connection down best-effort. The Close is asynchronous because
-		// x/net/websocket's Close writes a close frame through the same
-		// internal write lock the stuck sender holds — a synchronous call
-		// would deadlock the watchdog. If the client never drains, the
-		// parked sender and Close goroutines leak — bounded by
-		// maxWSConnections and cleaned up when the socket eventually
-		// errors out.
-		w.dead = true
+	case <-f.done:
+	case <-timer.C:
+		w.timeout(conn)
+	}
+}
+
+// wsDeltaFrame recognises the high-rate streaming frames
+// ({"type":"token_delta"|"thinking_delta","content":string} and nothing
+// else), which may be coalesced under backpressure.
+func wsDeltaFrame(data any) (typ, content string, ok bool) {
+	m, isMap := data.(map[string]any)
+	if !isMap || len(m) != 2 {
+		return "", "", false
+	}
+	typ, _ = m["type"].(string)
+	content, cok := m["content"].(string)
+	if !cok || (typ != "token_delta" && typ != "thinking_delta") {
+		return "", "", false
+	}
+	return typ, content, true
+}
+
+// enqueue appends f to the connection's bounded queue. It returns false when
+// the frame was not appended (dead connection, merged into a queued delta, or
+// not queued within the write timeout). A full queue first tries to merge a
+// delta into an unsent delta of the same type at the tail; only otherwise
+// does the producer wait for room.
+func (w *connWriteState) enqueue(conn *golangws.Conn, f *wsQueued, timeout time.Duration) bool {
+	var timer *time.Timer
+	defer func() {
+		if timer != nil {
+			timer.Stop()
+		}
+	}()
+	w.mu.Lock()
+	for {
+		if w.dead {
+			w.mu.Unlock()
+			return false
+		}
+		if !w.sendingSince.IsZero() && time.Since(w.sendingSince) > timeout {
+			w.stuckLocked(conn)
+			w.mu.Unlock()
+			return false
+		}
+		if len(w.queue) < wsQueueCap {
+			break
+		}
+		if f.delta != "" {
+			if tail := w.queue[len(w.queue)-1]; tail.delta == f.delta && len(tail.content)+len(f.content) <= wsDeltaMergeMax {
+				tail.content += f.content
+				w.mu.Unlock()
+				return false
+			}
+		}
+		space := w.space
+		w.mu.Unlock()
+		if timer == nil {
+			timer = time.NewTimer(timeout)
+		}
+		select {
+		case <-space:
+			w.mu.Lock()
+		case <-timer.C:
+			w.timeout(conn)
+			return false
+		}
+	}
+	w.queue = append(w.queue, f)
+	if !w.running {
+		w.running = true
+		go w.run(conn)
+	}
+	w.mu.Unlock()
+	return true
+}
+
+// timeout abandons a connection whose client stopped reading: it is latched
+// dead (later sends fast-fail) and torn down best-effort. The Close is
+// asynchronous because x/net/websocket's Close writes a close frame through
+// the same internal write lock a stuck sender holds — a synchronous call
+// would deadlock the watchdog. If the client never drains, the parked sender
+// and Close goroutines leak — bounded by maxWSConnections and cleaned up
+// when the socket eventually errors out.
+func (w *connWriteState) timeout(conn *golangws.Conn) {
+	w.mu.Lock()
+	w.stuckLocked(conn)
+	w.mu.Unlock()
+}
+
+func (w *connWriteState) stuckLocked(conn *golangws.Conn) {
+	if w.markDeadLocked() {
 		go func() { _ = conn.Close() }()
+	}
+}
+
+// markDeadLocked latches the connection dead, releasing every queued writer.
+// It reports whether this call made the transition.
+func (w *connWriteState) markDeadLocked() bool {
+	if w.dead {
+		return false
+	}
+	w.dead = true
+	for _, q := range w.queue {
+		if q.done != nil {
+			close(q.done)
+		}
+	}
+	w.queue = nil
+	w.broadcastSpaceLocked()
+	return true
+}
+
+func (w *connWriteState) broadcastSpaceLocked() {
+	if w.space != nil {
+		close(w.space)
+	}
+	w.space = make(chan struct{})
+}
+
+// run is the single writer for a connection: it drains the queue in order
+// and exits when the queue is empty or the connection is dead, so an idle
+// connection holds no goroutine.
+func (w *connWriteState) run(conn *golangws.Conn) {
+	for {
+		w.mu.Lock()
+		if w.dead || len(w.queue) == 0 {
+			w.running = false
+			w.mu.Unlock()
+			return
+		}
+		f := w.queue[0]
+		w.queue[0] = nil
+		w.queue = w.queue[1:]
+		w.broadcastSpaceLocked()
+		w.sendingSince = time.Now()
+		payload := f.payload
+		if f.delta != "" {
+			b, _ := json.Marshal(map[string]any{"type": f.delta, "content": f.content})
+			payload = string(b)
+		}
+		w.mu.Unlock()
+
+		_ = golangws.Message.Send(conn, payload)
+
+		w.mu.Lock()
+		w.sendingSince = time.Time{}
+		w.mu.Unlock()
+		if f.done != nil {
+			close(f.done)
+		}
 	}
 }
 
