@@ -727,6 +727,14 @@ func (s *Store) saveLocked(sess *Session) (err error) {
 			sess.Decisions[i].Command = sess.Decisions[i].Command[:4096] + "…"
 		}
 	}
+	// External ref URIs commonly carry tokens in query strings.
+	if len(sess.ExternalRefs) > 0 {
+		refs := append([]ExternalRef(nil), sess.ExternalRefs...)
+		for i := range refs {
+			refs[i].URI = redact.RedactSecrets(refs[i].URI)
+		}
+		sess.ExternalRefs = refs
+	}
 	boundary := sess.RedactBoundary
 	if boundary < 0 {
 		boundary = 0
