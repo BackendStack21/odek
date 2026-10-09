@@ -1865,6 +1865,24 @@ func (e *Engine) extractiveDigest(dropped []session.Message) string {
 	return strings.TrimSpace(b.String())
 }
 
+// capPersistedDigest bounds a digest body read back from a persisted
+// session with the budget installDigest applies, or the absolute digest
+// ceiling when no context limit is configured. The digest sits in the
+// undroppable head, so an oversized persisted body would otherwise brick
+// every later turn of the session.
+func (e *Engine) capPersistedDigest(body string) string {
+	capBytes := e.digestBodyCapBytes()
+	if capBytes <= 0 {
+		capBytes = digestMaxTokens*4 - len(digestMsgHeader) - digestWrapperBytes
+	}
+	if len(body) <= capBytes {
+		return body
+	}
+	// Leave room for the omission marker so the result stays within the
+	// cap and capping a capped body is a no-op on the next resume.
+	return excerptBytes(body, capBytes-64)
+}
+
 // installDigest inserts or updates the rolling compaction digest system
 // message. The body is wrapped and audit-ingested as derived untrusted
 // context. compactDigest is NOT updated here — that happens when an LLM
@@ -2609,7 +2627,7 @@ func (e *Engine) sanitizePersistedSystemMessages(ctx context.Context, messages [
 		if strings.HasPrefix(content, digestMsgHeader) {
 			body := strings.TrimPrefix(content, digestMsgHeader)
 			if !isEngineMinted(body) {
-				messages[i].Content = digestMsgHeader + e.protectPersistedContext(ctx, "compaction", unwrapForeignBoundary(body))
+				messages[i].Content = digestMsgHeader + e.protectPersistedContext(ctx, "compaction", e.capPersistedDigest(unwrapForeignBoundary(body)))
 			}
 			continue
 		}

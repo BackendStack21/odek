@@ -122,6 +122,16 @@ const (
 	maxPlanTitleChars = 200
 )
 
+// Bounds on persisted plans read back on resume. A legitimate render never
+// exceeds the config ceiling for max_render_chars (8000, mirrored here
+// because internal/loop must not import internal/config), so a note or a
+// whole message beyond these bounds can only come from a modified session
+// file and is rejected rather than restored into the protected head.
+const (
+	maxPersistedPlanNoteChars = 8000
+	maxPersistedPlanBytes     = 32 * 1024
+)
+
 // Fallback caps for NewPlanStore when the caller passes degenerate values.
 // Mirrors the config-layer defaults (internal/config DefaultPlanningConfig);
 // duplicated here because internal/loop must not import internal/config.
@@ -1004,6 +1014,9 @@ func allStepsDone(p PlanState) bool {
 // approximated. Bodies wrapped by the untrusted-content wrapper are
 // unwrapped first.
 func parsePlanState(content string, maxSteps int) (PlanState, error) {
+	if len(content) > maxPersistedPlanBytes {
+		return PlanState{}, fmt.Errorf("plan: message is %d bytes, max %d", len(content), maxPersistedPlanBytes)
+	}
 	lines := strings.Split(strings.TrimSpace(content), "\n")
 	if len(lines) == 0 {
 		return PlanState{}, errors.New("plan: empty message")
@@ -1264,6 +1277,12 @@ func parsePlanStepLineMode(line string, allowChecks bool) (PlanStep, error) {
 	}
 	if title == "" {
 		return PlanStep{}, errors.New("missing title")
+	}
+	if len(title) > maxPlanTitleChars {
+		return PlanStep{}, fmt.Errorf("title is too long (%d > %d chars)", len(title), maxPlanTitleChars)
+	}
+	if len(note) > maxPersistedPlanNoteChars {
+		return PlanStep{}, fmt.Errorf("note is too long (%d > %d chars)", len(note), maxPersistedPlanNoteChars)
 	}
 	return PlanStep{ID: id, Title: title, Status: status, Note: note, Checks: checks}, nil
 }
