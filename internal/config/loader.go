@@ -3764,13 +3764,6 @@ func clampProjectPlanning(global, project *PlanningFileConfig) {
 	}
 }
 
-// clampProjectBackground enforces the background-section merge rule, the same
-// philosophy as planning: the untrusted project ./odek.json may disable the
-// feature, silence notices, and LOWER the numeric caps, but cannot re-enable
-// a globally-disabled feature, re-enable globally-silenced notices, or raise
-// an operator-set cap. When the global config carries no background section,
-// project values apply freely — they can only deviate from the defaults, not
-// override an operator decision.
 // clampProjectSkillsImport narrows the project's skills.import against the
 // effective global policy (the compiled defaults where the operator set
 // nothing). The result is always the stricter of the two: caps are lowered
@@ -3806,6 +3799,13 @@ func clampProjectSkillsImport(global, project *SkillsConfig) {
 	project.Import = &eff
 }
 
+// clampProjectBackground enforces the background-section merge rule, the same
+// philosophy as planning: the untrusted project ./odek.json may disable the
+// feature, silence notices, and LOWER the numeric caps, but cannot re-enable
+// a globally-disabled feature, re-enable globally-silenced notices, or raise
+// an operator-set cap. When the global config carries no background section,
+// project values apply freely — they can only deviate from the defaults, not
+// override an operator decision.
 func clampProjectBackground(global, project *BackgroundFileConfig) {
 	// wake_coalesce_ms is global-only in v1: drop any project value before
 	// the early return below (it must be dropped even when the operator
