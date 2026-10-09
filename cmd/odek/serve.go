@@ -3442,7 +3442,13 @@ func handleSessionByID(store *session.Store, trustedProxies []string, wsToken st
 			if body.Pinned != nil {
 				sess.Pinned = *body.Pinned
 			}
-			store.Save(sess)
+			// A failed save (disk full, permissions, revision conflict with a
+			// concurrent per-step persist) must not be reported as success:
+			// the client would show a rename or pin that is lost on reload.
+			if err := store.Save(sess); err != nil {
+				http.Error(w, "failed to save session", http.StatusInternalServerError)
+				return
+			}
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(sess)
 
