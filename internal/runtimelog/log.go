@@ -631,13 +631,37 @@ func (l *Logger) run() {
 				queue = nil
 				continue
 			}
-			if err := l.flushBatch(append([]byte(nil), b...)); err != nil {
-				l.failures.Add(1)
+			batch, n := drainBatch(append([]byte(nil), b...), queue)
+			if err := l.flushBatch(batch); err != nil {
+				l.failures.Add(uint64(n))
 			}
 		case <-ticker.C:
 			report()
 		}
 	}
+}
+
+// maxBatchBytes bounds how much already-queued output one write combines.
+const maxBatchBytes = 64 << 10
+
+// drainBatch appends records that are already queued to first, without
+// blocking, until maxBatchBytes is reached. Order is preserved. It returns the
+// combined bytes and the number of records in them.
+func drainBatch(first []byte, queue <-chan []byte) ([]byte, int) {
+	n := 1
+	for len(first) < maxBatchBytes {
+		select {
+		case b, ok := <-queue:
+			if !ok {
+				return first, n
+			}
+			first = append(first, b...)
+			n++
+		default:
+			return first, n
+		}
+	}
+	return first, n
 }
 
 func (l *Logger) flushBatch(batch []byte) error {
