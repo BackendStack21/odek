@@ -105,10 +105,11 @@ type Renderer struct {
 	streamLastKind int // 0 = none, 1 = reasoning, 2 = content
 
 	// streamCarry holds a multibyte character split across stream fragments
-	// until the next fragment completes it; streamPrev is the last rune
-	// escaped, so emoji joiners are judged across fragments.
+	// until the next fragment completes it; streamPrev is the escaping state
+	// after the last rune, so emoji joiners and flag tag sequences are judged
+	// across fragments.
 	streamCarry string
-	streamPrev  rune
+	streamPrev  escState
 }
 
 // SetStreamedOutput marks that this iteration's reasoning and content were
@@ -128,7 +129,7 @@ func (r *Renderer) SetStreamedKinds(reasoning, content bool) {
 		if !r.disable() {
 			r.flushStreamCarry()
 		}
-		r.streamPrev = 0
+		r.streamPrev = escState{}
 		r.streamedOutput = reasoning || content
 		r.streamedReasoning, r.streamedContent = reasoning, content
 		r.streamLastKind = 0

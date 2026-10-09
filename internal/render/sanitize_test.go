@@ -3,6 +3,7 @@ package render
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -116,5 +117,101 @@ func BenchmarkEscapeTerminal(b *testing.B) {
 	b.SetBytes(int64(len(s)))
 	for i := 0; i < b.N; i++ {
 		_ = escapeTerminal(s, true)
+	}
+}
+
+// Subdivision flags are emoji tag sequences: U+1F3F4, lowercase/digit tag
+// characters and a cancel tag. They print unchanged; tag characters anywhere
+// else are an invisible-text channel and stay escaped.
+func TestRED_EscapeTerminalKeepsEmojiTagSequences(t *testing.T) {
+	england := "\U0001F3F4\U000E0067\U000E0062\U000E0065\U000E006E\U000E0067\U000E007F"
+	scotland := "\U0001F3F4\U000E0067\U000E0062\U000E0073\U000E0063\U000E0074\U000E007F"
+	in := "go " + england + " and " + scotland + "!"
+	if got := escapeTerminal(in, true); got != in {
+		t.Fatalf("flag tag sequence escaped: %+q", got)
+	}
+	// Streaming rune by rune gives the same result.
+	var buf bytes.Buffer
+	r := New(&buf, false)
+	for _, c := range in {
+		r.StreamContent(string(c))
+	}
+	if buf.String() != in {
+		t.Fatalf("streamed flag escaped: %+q", buf.String())
+	}
+
+	cases := map[string]string{
+		// Bare tag characters smuggle invisible ASCII.
+		"hi\U000E0069\U000E0067\U000E006E": `hi\U000e0069\U000e0067\U000e006e`,
+		// A cancel tag with no spec, and after a closed sequence.
+		"\U0001F3F4\U000E007F": "\U0001F3F4" + `\U000e007f`,
+		england + "\U000E0061": england + `\U000e0061`,
+		// Uppercase and space tags are not subdivision codes.
+		"\U0001F3F4\U000E0041\U000E0020": "\U0001F3F4" + `\U000e0041\U000e0020`,
+		// After another emoji the tags do not continue a flag.
+		"✅\U000E0067\U000E0062": "✅" + `\U000e0067\U000e0062`,
+		// A spec longer than any subdivision code is escaped in full.
+		"\U0001F3F4" + strings.Repeat("\U000E0061", 9): "\U0001F3F4" + strings.Repeat(`\U000e0061`, 9),
+	}
+	for in, want := range cases {
+		if got := escapeTerminal(in, true); got != want {
+			t.Errorf("escapeTerminal(%+q) = %+q, want %+q", in, got, want)
+		}
+	}
+}
+
+// tagged spells ascii in tag characters.
+func tagged(ascii string) string {
+	var b strings.Builder
+	for _, c := range ascii {
+		b.WriteRune(0xE0000 + c)
+	}
+	return b.String()
+}
+
+// escapedTags is what escapeTerminal prints for tagged(ascii).
+func escapedTags(ascii string) string {
+	var b strings.Builder
+	for _, c := range ascii {
+		fmt.Fprintf(&b, `\U%08x`, 0xE0000+c)
+	}
+	return b.String()
+}
+
+// Only the RGI subdivision flags (England, Scotland, Wales) print raw. Any
+// other tag run after a black flag — terminated or not — is escaped whole, so
+// repeated flags cannot carry hidden text a few characters at a time.
+func TestRED_EscapeTerminalTagRunsOutsideRGIEscaped(t *testing.T) {
+	const flag = "\U0001F3F4"
+	cancel := "\U000E007F"
+	cases := map[string]string{
+		flag + tagged("abc") + cancel:                                    flag + escapedTags("abc") + `\U000e007f`,
+		flag + tagged("hidden") + cancel + flag + tagged("txt") + cancel: flag + escapedTags("hidden") + `\U000e007f` + flag + escapedTags("txt") + `\U000e007f`,
+		flag + tagged("gbeng") + "x":                                     flag + escapedTags("gbeng") + "x",
+		flag + tagged("gbeng"):                                           flag + escapedTags("gbeng"),
+		flag + tagged("gbsct") + cancel + "!":                            flag + tagged("gbsct") + cancel + "!",
+		flag + tagged("gbwls") + cancel:                                  flag + tagged("gbwls") + cancel,
+	}
+	for in, want := range cases {
+		if got := escapeTerminal(in, true); got != want {
+			t.Errorf("escapeTerminal(%+q) = %+q, want %+q", in, got, want)
+		}
+	}
+	// Streamed rune by rune: a held run is flushed escaped at the boundary,
+	// and a valid flag still arrives raw.
+	for in, want := range map[string]string{
+		flag + tagged("gbeng"):          flag + escapedTags("gbeng"),
+		flag + tagged("gbeng") + cancel: flag + tagged("gbeng") + cancel,
+		flag + tagged("usca") + cancel:  flag + escapedTags("usca") + `\U000e007f`,
+	} {
+		var buf bytes.Buffer
+		r := New(&buf, false)
+		for _, c := range in {
+			r.StreamContent(string(c))
+		}
+		r.SetStreamedOutput(false)
+		if buf.String() != want {
+			t.Errorf("streamed %+q = %+q, want %+q", in, buf.String(), want)
+		}
 	}
 }
