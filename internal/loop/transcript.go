@@ -24,6 +24,7 @@ func (e *Engine) startTranscript(messages []session.Message) {
 	}
 	e.invocationTurnID = ""
 	e.durableTranscript = session.CloneMessages(messages)
+	e.durableIndex = session.NewCheckpointIndex(e.durableTranscript)
 }
 
 func (e *Engine) checkpointTranscript(messages []session.Message) {
@@ -36,5 +37,8 @@ func (e *Engine) checkpointTranscript(messages []session.Message) {
 		}
 	}
 	session.EnsureMessageIDs(messages)
-	e.durableTranscript = session.MergeCheckpoint(e.durableTranscript, messages)
+	if e.durableIndex == nil {
+		e.durableIndex = session.NewCheckpointIndex(e.durableTranscript)
+	}
+	e.durableTranscript = session.MergeCheckpointInPlace(e.durableTranscript, e.durableIndex, messages)
 }

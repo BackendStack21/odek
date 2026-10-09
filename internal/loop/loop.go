@@ -410,6 +410,7 @@ type Engine struct {
 	runMutations        []string
 	effectBody          effectBodyCache
 	durableTranscript   []session.Message
+	durableIndex        session.CheckpointIndex // ID -> position in durableTranscript
 	activeTurnID        string
 	invocationTurnID    string
 	pendingVerification map[string]bool

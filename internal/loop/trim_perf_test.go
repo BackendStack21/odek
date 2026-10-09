@@ -108,3 +108,43 @@ func TestRED_Loop_RefreshDigestDoesNotCopyQueue(t *testing.T) {
 		t.Fatalf("queue length = %d, want 20001", len(e.pendingDropped))
 	}
 }
+
+// Checkpointing an unchanged snapshot must not clone the durable transcript.
+func TestRED_Loop_CheckpointDoesNotCloneTranscript(t *testing.T) {
+	msgs := longTrimHistory(500)
+	e := &Engine{}
+	e.startTranscript(msgs)
+	e.checkpointTranscript(msgs)
+	allocs := testing.AllocsPerRun(20, func() { e.checkpointTranscript(msgs) })
+	if allocs > 10 {
+		t.Fatalf("unchanged checkpoint made %.0f allocations over %d records; want no per-record work", allocs, len(msgs))
+	}
+	if len(e.durableTranscript) != len(msgs) {
+		t.Fatalf("durable length = %d, want %d", len(e.durableTranscript), len(msgs))
+	}
+}
+
+// New records and refreshed system rows reach the durable transcript, and
+// the handed-out persist snapshot never aliases it.
+func TestCheckpointPersistSnapshotIsIsolated(t *testing.T) {
+	msgs := longTrimHistory(3)
+	e := &Engine{}
+	e.startTranscript(msgs)
+	var got []session.Message
+	e.SetMessagesPersistCallback(func(m []session.Message) { got = m })
+	msgs = append(msgs, session.Message{Role: "assistant", Content: "done"})
+	e.emitMessagesPersist(msgs)
+	if len(got) != len(msgs) || got[len(got)-1].Content != "done" {
+		t.Fatalf("persist snapshot missing the new record: %d", len(got))
+	}
+	first := got
+	first[0].Content = "mutated by caller"
+	if e.durableTranscript[0].Content == "mutated by caller" {
+		t.Fatal("persist snapshot aliases the durable transcript")
+	}
+	msgs = append(msgs, session.Message{Role: "user", Content: "later"})
+	e.emitMessagesPersist(msgs)
+	if first[0].Content != "mutated by caller" || got[0].Content == "mutated by caller" {
+		t.Fatal("later checkpoint rewrote an earlier snapshot")
+	}
+}
