@@ -21,9 +21,12 @@ package main
 // Deliberate limits:
 //   - The wake preamble is generic; job details arrive via the loop's
 //     notice drain, same as the WebUI path.
-//   - Wake turns run with userID 0: the TelegramApprover already treats a
-//     zero originating user as "no user binding", so approvals stay
-//     available without hijacking a user.
+//   - No chat member sent a wake turn, so its approvals and clarify prompts
+//     are bound to the user who last started a turn in the chat, or to the
+//     single allowed user. With neither, they fail closed (denied, never
+//     answerable by any chat member). The wake message is persisted with
+//     Name "bg-wake", as on the WebUI, so audit and verification never treat
+//     it as an operator task.
 //   - Idle detection uses the same per-chat slot the turn pipeline holds
 //     (pinChat), checked with a bounded wait (idleWait) so a wake never
 //     queues behind a long turn.

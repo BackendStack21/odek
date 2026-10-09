@@ -75,8 +75,15 @@ func TestResetChatForNew_ResetsApproverTrust(t *testing.T) {
 	approver := telegram.NewTelegramApprover(bot, chatID, 0)
 	handler.SetApprover(chatID, approver)
 
+	rememberTelegramTurnUser(chatID, 4242)
+	t.Cleanup(func() { telegramTurnUsers.Delete(chatID) })
+
 	// Should not panic and should reach the approver reset path.
 	resetChatForNew(chatID, sm, handler, telegram.NewNopLogger())
+
+	if _, ok := telegramTurnUsers.Load(chatID); ok {
+		t.Fatal("/new kept the previous conversation's wake-turn user binding")
+	}
 
 	if handler.GetApprover(chatID) != approver {
 		t.Fatal("approver unexpectedly replaced by resetChatForNew")

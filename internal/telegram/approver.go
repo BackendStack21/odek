@@ -76,6 +76,11 @@ type TelegramApprover struct {
 	// group-chat approval hijacking. Zero means unknown (legacy allow-all).
 	userID int64
 
+	// requireUser makes a zero userID mean "nobody may answer" instead of
+	// "anyone may answer". Set on system-initiated turns (background-job
+	// wake turns), which have no originating message to bind to.
+	requireUser bool
+
 	// FrictionThreshold is the number of approvals of the same class within
 	// FrictionWindow that triggers high-friction mode. In friction mode the
 	// Trust Session shortcut is hidden for that class, forcing a per-call
@@ -103,6 +108,23 @@ func NewTelegramApprover(bot *Bot, chatID, userID int64) *TelegramApprover {
 		FrictionWindow:    60 * time.Second,
 		approvalLog:       make(map[danger.RiskClass][]time.Time),
 	}
+}
+
+// UserID returns the user whose callbacks this approver accepts (0 = none
+// bound).
+func (a *TelegramApprover) UserID() int64 {
+	return a.userID
+}
+
+// RequireBoundUser makes the approver fail closed when it has no bound user:
+// PromptCommand denies without sending a prompt, and no callback is accepted
+// for a request with no originating user. Without it a zero user is the
+// legacy "any chat member may answer" mode, which must never apply to a turn
+// no chat member started.
+func (a *TelegramApprover) RequireBoundUser() {
+	a.mu.Lock()
+	a.requireUser = true
+	a.mu.Unlock()
 }
 
 // SetLogger sets the logger for this approver. If nil, a NopLogger is used.
@@ -173,6 +195,10 @@ func (a *TelegramApprover) PromptCommand(cls danger.RiskClass, cmd, description 
 	// as the per-class trust shortcut: destructive/blocked/unknown prompts
 	// always require an explicit user decision.
 	a.mu.Lock()
+	if a.requireUser && a.userID == 0 {
+		a.mu.Unlock()
+		return fmt.Errorf("operation denied: approval unavailable on a system-initiated turn with no bound user: %s", danger.SanitizeInline(cmd))
+	}
 	if a.trusted[cls] || (a.trustAll && danger.TrustShortcutAllowed(cls)) {
 		a.mu.Unlock()
 		return nil
@@ -346,11 +372,16 @@ func (a *TelegramApprover) HandleCallback(data string, userID int64) bool {
 
 	a.mu.Lock()
 	pr, ok := a.pending[id]
+	requireUser := a.requireUser
 	a.mu.Unlock()
 
 	if ok {
 		// Reject callbacks from users other than the one who initiated the
-		// operation, unless no originating user was recorded (userID == 0).
+		// operation, unless no originating user was recorded (userID == 0)
+		// and the approver does not require one.
+		if pr.userID == 0 && requireUser {
+			return true
+		}
 		if pr.userID != 0 && pr.userID != userID {
 			return true
 		}

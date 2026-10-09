@@ -295,7 +295,18 @@ When a background job started from a chat finishes while the chat is idle,
 the bot starts a **system-initiated wake turn**: the model reads the job's
 output (`bg_output`) and reports the results to the chat unprompted. Wake
 turns are marked as system messages — they never appear as if the user had
-sent something.
+sent something. The wake message is persisted with `Name: "bg-wake"` (as on the
+WebUI), so audit and final-answer verification never treat it as an operator
+task.
+
+**Who may answer a wake turn's prompts.** No chat member sent a wake turn, so
+its approval and clarify prompts are bound to the user who last started a turn
+in that chat, or, if nobody has yet, to the only entry of `allowed_users` when
+exactly one is configured. When neither identifies a user, approvals on the
+wake turn are denied without being shown and clarify returns an error to the
+model: a background-job output that provokes an approval can never be approved
+by an arbitrary group member. The binding is resolved when the wake turn
+actually starts (after any turn it queued behind), and `/new` clears it.
 
 Routing per job exit:
 
