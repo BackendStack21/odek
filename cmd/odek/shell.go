@@ -187,9 +187,12 @@ func (t *shellTool) Call(args string) (string, error) {
 	}
 
 	// Check approval before executing
-	approvedRisk, _ := danger.ClassifyScriptGateCtx(t.toolCtx(), input.Command)
+	// The gate classification taken here is both the revalidation snapshot
+	// and the input to the approval decision, so the command is classified
+	// once up front instead of again by every approval step.
+	approvedRisk, unreadTargets := shellScriptGate(t.toolCtx(), input.Command)
 	approvedEffects := danger.Analyze(input.Command).Effects
-	if err := t.checkApproval(input.Command, input.Description); err != nil {
+	if err := t.checkApprovalGated(input.Command, input.Description, unreadTargets); err != nil {
 		return "", err
 	}
 
@@ -293,6 +296,13 @@ func (t *shellTool) Call(args string) (string, error) {
 
 // checkApproval classifies the command and prompts the user if needed.
 func (t *shellTool) checkApproval(cmd, description string) error {
+	_, targets := shellScriptGate(t.toolCtx(), cmd)
+	return t.checkApprovalGated(cmd, description, targets)
+}
+
+// checkApprovalGated is checkApproval with the unread-script targets already
+// classified by the caller.
+func (t *shellTool) checkApprovalGated(cmd, description string, targets []string) error {
 	// Check allowlist/denylist + risk class via dangerous config
 	action := t.dangerousConfig.ActionForCommand(cmd)
 
@@ -303,7 +313,7 @@ func (t *shellTool) checkApproval(cmd, description string) error {
 	// fix and fired on the verification run. An explicit unread_exec action
 	// participates in the decision: deny wins outright; allow alone does
 	// not bypass a prompting base class — both must allow.
-	if _, targets := danger.ClassifyScriptGateCtx(t.toolCtx(), cmd); len(targets) > 0 {
+	if len(targets) > 0 {
 		unreadAction := t.dangerousConfig.ActionFor(danger.UnreadExec)
 		switch {
 		case action == danger.Deny || unreadAction == danger.Deny:
@@ -330,7 +340,7 @@ func (t *shellTool) checkApproval(cmd, description string) error {
 	case danger.Deny:
 		return fmt.Errorf("operation denied by configuration: %s", danger.SanitizeInline(cmd))
 	case danger.Prompt:
-		return t.promptUser(cmd, description)
+		return t.promptUserGated(cmd, description, targets)
 	default:
 		return fmt.Errorf("invalid policy action %q: command denied", action)
 	}
@@ -341,7 +351,7 @@ func (t *shellTool) checkApproval(cmd, description string) error {
 // a new invocation/approval. Shell-side changes after dispatch require an OS
 // filesystem boundary and cannot be excluded by this snapshot check.
 func revalidateShellRisk(ctx context.Context, command string, approved danger.RiskClass, effects ...[]danger.RiskClass) error {
-	current, _ := danger.ClassifyScriptGateCtx(ctx, command)
+	current, _ := shellScriptGate(ctx, command)
 	if current != approved {
 		return fmt.Errorf("command target risk changed from %s to %s before execution; retry for fresh approval", approved, current)
 	}
@@ -354,7 +364,13 @@ func revalidateShellRisk(ctx context.Context, command string, approved danger.Ri
 // promptUser classifies the command and asks the user to approve it.
 // Delegates to the configured Approver, or falls back to TTYApprover.
 func (t *shellTool) promptUser(cmd, description string) error {
-	_, targets := danger.ClassifyScriptGateCtx(t.toolCtx(), cmd)
+	_, targets := shellScriptGate(t.toolCtx(), cmd)
+	return t.promptUserGated(cmd, description, targets)
+}
+
+// promptUserGated is promptUser with the unread-script targets already
+// classified by the caller.
+func (t *shellTool) promptUserGated(cmd, description string, targets []string) error {
 	var cls danger.RiskClass
 	if len(targets) == 0 || t.dangerousConfig.ActionFor(danger.UnreadExec) == danger.Allow {
 		cls = t.dangerousConfig.PromptClassForCommand(cmd)
@@ -508,3 +524,7 @@ func buildSandboxWrapper(containerName, command string, removePidfileOnExit bool
 	}
 	return argv, followUp
 }
+
+// shellScriptGate classifies a command for the unread-script gate. A variable
+// so tests can count how often the approval path re-classifies.
+var shellScriptGate = danger.ClassifyScriptGateCtx
