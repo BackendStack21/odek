@@ -444,18 +444,43 @@ func TestApproveMCPTools_OversizeSchemaSkipped(t *testing.T) {
 	}
 }
 
-func TestSanitizeTerminal_StripsANSIAndControlChars(t *testing.T) {
+func TestWriteMCPToolContract_EscapesControlChars(t *testing.T) {
 	// ANSI red colour + cursor-up sequence, then a bell and normal text.
-	input := "\x1b[31m\x1b[2A\x07normal"
-	got := sanitizeTerminal(input)
-	if strings.Contains(got, "\x1b") {
-		t.Errorf("ANSI escapes should be stripped, got: %q", got)
+	var out bytes.Buffer
+	writeMCPToolContract(&out, mcpclient.ToolDef{
+		Name:        "t",
+		Description: "\x1b[31m\x1b[2A\x07normal",
+		InputSchema: map[string]any{"type": "object", "properties": map[string]any{"p": true}, "required": []any{"p"}},
+	}, strings.Repeat("a", 64), 10)
+	got := out.String()
+	if strings.ContainsAny(got, "\x1b\x07") {
+		t.Errorf("raw control characters reached the prompt: %q", got)
 	}
-	if strings.Contains(got, "\x07") {
-		t.Errorf("control characters should be removed, got: %q", got)
+	if !strings.Contains(got, "normal") || !strings.Contains(got, `\x1b[31m`) {
+		t.Errorf("description not shown escaped: %q", got)
 	}
-	if !strings.Contains(got, "normal") {
-		t.Errorf("normal text should be preserved, got: %q", got)
+	if !strings.Contains(got, "p (required)") {
+		t.Errorf("boolean-schema parameter not summarised: %q", got)
+	}
+}
+
+func TestWriteMCPToolContract_BoundsParameterList(t *testing.T) {
+	props := map[string]any{}
+	for i := 0; i < mcpPromptMaxParams+5; i++ {
+		props[fmt.Sprintf("p%02d", i)] = map[string]any{"type": []any{"string", "null"}}
+	}
+	var out bytes.Buffer
+	writeMCPToolContract(&out, mcpclient.ToolDef{Name: "t", InputSchema: map[string]any{"type": "object", "properties": props}},
+		strings.Repeat("a", 64), 10)
+	got := out.String()
+	if !strings.Contains(got, "(+5 more)") || !strings.Contains(got, "p00 (string|null)") {
+		t.Errorf("parameter list not bounded/summarised: %q", got)
+	}
+	if strings.Contains(got, "description:") {
+		t.Errorf("empty description printed: %q", got)
+	}
+	if mcpParamSummary("x") != nil || mcpParamSummary(map[string]any{}) != nil {
+		t.Error("summary of non-object schema should be nil")
 	}
 }
 
