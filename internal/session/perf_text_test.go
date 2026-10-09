@@ -250,3 +250,43 @@ func TestIndexMayLag(t *testing.T) {
 		}
 	}
 }
+
+func TestRED_Session_ListStatsOnlyThePage(t *testing.T) {
+	store, err := NewStoreWithDir(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for i := 0; i < 50; i++ {
+		sess, err := store.Create([]Message{{Role: "user", Content: "q"}}, "m", "task")
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, sess.ID)
+	}
+	before := store.listStats.Load()
+	list, err := store.List(5)
+	if err != nil || len(list) != 5 {
+		t.Fatalf("List(5) = %d, %v", len(list), err)
+	}
+	if got := store.listStats.Load() - before; got > 5 {
+		t.Fatalf("List(5) statted %d entries, want <= 5", got)
+	}
+	// A stale newest entry is skipped and replaced by the next live one.
+	if err := os.Remove(store.path(list[0].ID)); err != nil {
+		t.Fatal(err)
+	}
+	list2, err := store.List(5)
+	if err != nil || len(list2) != 5 {
+		t.Fatalf("List(5) after removal = %d, %v", len(list2), err)
+	}
+	for _, e := range list2 {
+		if e.ID == list[0].ID {
+			t.Fatal("stale entry listed")
+		}
+	}
+	all, _ := store.List(0)
+	if len(all) != len(ids)-1 {
+		t.Fatalf("List(0) = %d, want %d", len(all), len(ids)-1)
+	}
+}

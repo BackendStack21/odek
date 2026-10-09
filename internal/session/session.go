@@ -30,6 +30,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"unicode"
@@ -236,6 +237,10 @@ type Store struct {
 	// next save can verify the on-disk file is untouched with an lstat instead
 	// of a full parse. Guarded by mu.
 	revStamps map[string]revStamp
+
+	// listStats counts per-entry existence stats made by List. Test
+	// observability only.
+	listStats atomic.Int64
 
 	// indexWrites counts index.json rewrites. Test observability only;
 	// guarded by mu.
@@ -1302,19 +1307,19 @@ func (s *Store) List(limit int) ([]Session, error) {
 		// must not show phantom sessions, and the ID is echoed to callers.
 		live := entries[:0]
 		for _, e := range entries {
+			if limit > 0 && len(live) >= limit {
+				break // entries are newest-first: the page is full, stop statting
+			}
 			if ValidateSessionID(e.ID) != nil {
 				continue
 			}
+			s.listStats.Add(1)
 			if _, err := os.Stat(s.path(e.ID)); err != nil {
 				continue
 			}
 			live = append(live, e)
 		}
 		entries = live
-
-		if limit > 0 && len(entries) > limit {
-			entries = entries[:limit]
-		}
 
 		sessions := make([]Session, len(entries))
 		for i, e := range entries {
