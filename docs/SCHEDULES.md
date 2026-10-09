@@ -290,5 +290,7 @@ If the scheduler was down when a job was due, on startup it either **skips**
 (default — reschedules forward and records a `skipped` status) or **runs once**
 (when the job's `--catchup` or `schedules.catchup` is set). A burst of missed
 ticks never stampedes: at most one catch-up fire per job. A skipped fire does
-not touch the job's recorded last run: `last_run`, `last_result` and
-`last_error` keep describing the last time the job actually ran.
+not touch the job's recorded last run: `last_run` and `last_result` keep
+describing the last time the job actually ran. `last_error` is cleared (it is
+set only with an `error` status) and `skipped_at` records when the skip
+happened; the Telegram job view shows it. The next real run clears `skipped_at`.

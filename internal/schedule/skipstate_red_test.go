@@ -29,7 +29,7 @@ func TestRED_SkipRecordClobbersLastRun(t *testing.T) {
 	}
 }
 
-func TestSkipRecordKeepsLastErrorAndStatusSkipped(t *testing.T) {
+func TestRED_SkipRecordClearsLastErrorAndStampsSkippedAt(t *testing.T) {
 	st := newTestStore(t)
 	job := addJob(t, st, Job{Name: "j", Cron: "0 9 * * *", Task: "x",
 		Deliver: Delivery{Kind: DeliverStdout}, Enabled: true})
@@ -38,11 +38,15 @@ func TestSkipRecordKeepsLastErrorAndStatusSkipped(t *testing.T) {
 		LastError: "boom", NextRun: time.Date(2026, 6, 3, 9, 0, 0, 0, time.UTC), Sig: jobSig(job), Runs: 3})
 
 	s := New(st, &fakeRunner{}, &fakeDeliverer{}, Options{})
-	s.reconcile(time.Date(2026, 6, 4, 10, 0, 0, 0, time.UTC))
+	skipAt := time.Date(2026, 6, 4, 10, 0, 0, 0, time.UTC)
+	s.reconcile(skipAt)
 
 	state, _ := st.LoadState()
 	got := state[job.ID]
-	if got.LastStatus != StatusSkipped || got.LastError != "boom" || !got.LastRun.Equal(realRun) || got.Runs != 3 {
+	if !got.SkippedAt.Equal(skipAt) {
+		t.Fatalf("SkippedAt = %v, want %v", got.SkippedAt, skipAt)
+	}
+	if got.LastStatus != StatusSkipped || got.LastError != "" || !got.LastRun.Equal(realRun) || got.Runs != 3 {
 		t.Fatalf("unexpected state after skip: %+v", got)
 	}
 	if !got.NextRun.After(time.Date(2026, 6, 4, 10, 0, 0, 0, time.UTC)) {

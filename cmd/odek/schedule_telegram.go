@@ -175,11 +175,20 @@ func scheduleTelegramView(st *schedule.Store, id string) string {
 	fmt.Fprintf(&b, "*Task:* %s\n", job.Task)
 	if rs, ok := state[job.ID]; ok {
 		if rs.LastStatus != "" {
+			when := rs.LastRun
+			if rs.LastStatus == schedule.StatusSkipped && !rs.SkippedAt.IsZero() {
+				// A skip leaves LastRun at the last real run; show when the
+				// skip happened and the real run on its own line.
+				when = rs.SkippedAt
+			}
 			fmt.Fprintf(&b, "*Last:* %s", rs.LastStatus)
-			if !rs.LastRun.IsZero() {
-				fmt.Fprintf(&b, " (%s)", rs.LastRun.Local().Format("Mon 02 Jan 15:04"))
+			if !when.IsZero() {
+				fmt.Fprintf(&b, " (%s)", when.Local().Format("Mon 02 Jan 15:04"))
 			}
 			b.WriteString("\n")
+			if when != rs.LastRun && !rs.LastRun.IsZero() {
+				fmt.Fprintf(&b, "*Last run:* %s\n", rs.LastRun.Local().Format("Mon 02 Jan 15:04"))
+			}
 		}
 		if rs.LastError != "" {
 			fmt.Fprintf(&b, "*Error:* %s\n", rs.LastError)
