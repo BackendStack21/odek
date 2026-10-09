@@ -85,3 +85,26 @@ func BenchmarkTrimDeep(b *testing.B) {
 		e.trimContext(context.Background(), msgs, nil)
 	}
 }
+
+// Refreshing the digest must not copy the whole pending-dropped queue: the
+// sketch only reads a bounded prefix of it.
+func TestRED_Loop_RefreshDigestDoesNotCopyQueue(t *testing.T) {
+	e := &Engine{compaction: true}
+	e.pendingDropped = make([]session.Message, 0, 40000)
+	for i := 0; i < 20000; i++ {
+		e.pendingDropped = append(e.pendingDropped, session.Message{Role: "user", Content: "old turn"})
+	}
+	msgs := []session.Message{{Role: "system", Content: "sys"}, {Role: "user", Content: "task"}}
+	dropped := []session.Message{{Role: "assistant", Content: "recent drop"}}
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	e.refreshDigest(context.Background(), msgs, dropped)
+	runtime.ReadMemStats(&after)
+	if got := after.TotalAlloc - before.TotalAlloc; got > 512<<10 {
+		t.Fatalf("refreshDigest allocated %d KiB with a 20000-message queue; want it independent of queue size", got>>10)
+	}
+	if len(e.pendingDropped) != 20001 {
+		t.Fatalf("queue length = %d, want 20001", len(e.pendingDropped))
+	}
+}
