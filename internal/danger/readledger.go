@@ -802,28 +802,54 @@ func stageWrittenPaths(stage, inner []string, name, cwd string) []string {
 
 // targetDirectoryOption returns the DIR of a -t DIR, -tDIR, --target-directory
 // DIR or --target-directory=DIR option of cp, mv, install and ln, and whether
-// one was given.
+// one was given. -t may close a short-flag cluster (-at DIR, -Dt DIR) and the
+// long spelling may be any unambiguous prefix (--target=DIR).
 func targetDirectoryOption(name string, args []string) (string, bool) {
 	if name == "rsync" {
 		return "", false
 	}
 	for i := 0; i < len(args); i++ {
 		a := args[i]
-		switch {
-		case a == "--":
+		if a == "--" {
 			return "", false
-		case a == "-t" || a == "--target-directory":
-			if i+1 < len(args) {
-				return args[i+1], true
+		}
+		if strings.HasPrefix(a, "--") {
+			if _, value, hasValue, ok := resolveLongOption(a, targetDirectoryLongOptions); ok {
+				if hasValue {
+					return value, true
+				}
+				if i+1 < len(args) {
+					return args[i+1], true
+				}
 			}
-		case strings.HasPrefix(a, "--target-directory="):
-			return strings.TrimPrefix(a, "--target-directory="), true
-		case isShortFlagToken(a) && strings.HasPrefix(a, "-t") && len(a) > 2:
-			return a[2:], true
+			continue
+		}
+		if !isShortFlagToken(a) {
+			continue
+		}
+		for j := 1; j < len(a); j++ {
+			c := a[j]
+			if c == 't' {
+				if j+1 < len(a) {
+					return a[j+1:], true
+				}
+				if i+1 < len(args) {
+					return args[i+1], true
+				}
+				break
+			}
+			// These options consume the rest of the cluster as their value.
+			if c == 'S' || c == 'm' || c == 'o' || c == 'g' || c == 'Z' {
+				break
+			}
 		}
 	}
 	return "", false
 }
+
+// targetDirectoryLongOptions lists the long options of cp, mv, install and ln
+// that start with "t"; a prefix beginning with "t" can only be this one.
+var targetDirectoryLongOptions = []string{"target-directory"}
 
 // stageLedgerFiles reports the files a stage executes and, separately, the
 // subset that an earlier stage of the same command wrote (so any prior read

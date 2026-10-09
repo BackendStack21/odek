@@ -5683,6 +5683,35 @@ func isShortFlagToken(tok string) bool {
 	return strings.HasPrefix(tok, "-") && !strings.HasPrefix(tok, "--") && len(tok) > 1
 }
 
+// resolveLongOption resolves a GNU-style long option token (--name or
+// --name=value) against the tool's full option list: an exact name wins,
+// otherwise a prefix that matches exactly one option does. Ambiguous or unknown
+// prefixes do not resolve, matching getopt_long.
+func resolveLongOption(tok string, names []string) (name, value string, hasValue, ok bool) {
+	if !strings.HasPrefix(tok, "--") {
+		return "", "", false, false
+	}
+	given, value, hasValue := strings.Cut(tok[2:], "=")
+	if given == "" {
+		return "", "", false, false
+	}
+	var match string
+	count := 0
+	for _, n := range names {
+		if n == given {
+			return n, value, hasValue, true
+		}
+		if strings.HasPrefix(n, given) {
+			match = n
+			count++
+		}
+	}
+	if count == 1 {
+		return match, value, hasValue, true
+	}
+	return "", "", false, false
+}
+
 func hasShortFlag(args []string, flag rune) bool {
 	for _, a := range args {
 		if isShortFlagToken(a) && strings.ContainsRune(a[1:], flag) {
