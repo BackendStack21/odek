@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/BackendStack21/odek/internal/config"
@@ -176,9 +177,14 @@ func approveMCPServersWithTTY(resolved config.ResolvedConfig, stdin io.Reader, s
 // hand back to the agent, so editing them must re-prompt.
 func mcpApprovalKey(projectDir, name string, cfg mcpclient.ServerConfig) string {
 	h := sha256.New()
-	fmt.Fprintf(h, "%s\x00%s\x00%s", projectDir, name, cfg.Command)
+	// Length-prefixed fields: a NUL (or any byte) inside the command or an
+	// argument cannot shift a boundary and make two launch vectors collide.
+	hashField(h, "dir", projectDir)
+	hashField(h, "name", name)
+	hashField(h, "cmd", cfg.Command)
+	hashField(h, "argc", strconv.Itoa(len(cfg.Args)))
 	for _, a := range cfg.Args {
-		fmt.Fprintf(h, "\x00%s", a)
+		hashField(h, "arg", a)
 	}
 	hashEnv(h, cfg.Env)
 	hashServerLimits(h, cfg)
