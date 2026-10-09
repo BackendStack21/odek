@@ -54,8 +54,10 @@ func TestRED_Tools_DiffRecordsOneIngestPerResult(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(l.sources) > 2 {
-		t.Fatalf("diff recorded %d audit ingests for one result; want at most 2", len(l.sources))
+	// 200 changed lines (100 removed, 100 added) are recorded in chunks of
+	// auditIngestChunk elements instead of one record per line.
+	if want := (200 + auditIngestChunk - 1) / auditIngestChunk; len(l.sources) > want {
+		t.Fatalf("diff recorded %d audit ingests for one result; want at most %d", len(l.sources), want)
 	}
 	if n := strings.Count(out, "untrusted_content_"); n < 400 {
 		t.Fatalf("every line must stay wrapped; found %d wrappers", n)
@@ -261,14 +263,30 @@ func TestWrapUntrustedBatch_GroupsRespectGuardTextLimit(t *testing.T) {
 	}
 }
 
-func TestWrapUntrustedBatch_JoinOnlyFlagBannersWholeGroup(t *testing.T) {
-	// A guard that flags the joined text but no single element.
+func TestWrapUntrustedBatch_JoinOnlyFlagLeavesElementsClean(t *testing.T) {
+	// A guard that flags the joined text but no single element: parity with
+	// per-element scanning, which never saw the neighbours.
 	withBatchGuard(t, joinOnlyGuard{}, 0)
 	out := wrapUntrustedBatch(context.Background(), "s", nil, []string{"part-a", "part-b"})
 	for i, o := range out {
-		if !strings.Contains(o, "SECURITY NOTICE") {
-			t.Fatalf("element %d must carry the banner when only the join is flagged", i)
+		if strings.Contains(o, "SECURITY NOTICE") {
+			t.Fatalf("element %d carries a banner although no element is flagged on its own", i)
 		}
+	}
+}
+
+// Large listings are recorded in chunks so every element's resources stay on
+// an audit record (the store caps resources per record at 64).
+func TestWrapUntrustedBatch_IngestsChunkedForLargeResults(t *testing.T) {
+	withBatchGuard(t, &fakeBatchGuard{}, 0)
+	contents := make([]string, 300)
+	for i := range contents {
+		contents[i] = fmt.Sprintf("/work/dir/file-%d.go", i)
+	}
+	l := &ingestLog{}
+	wrapUntrustedBatch(l.ctx(), "tree:/work", nil, contents)
+	if want := (300 + auditIngestChunk - 1) / auditIngestChunk; len(l.sources) != want {
+		t.Fatalf("got %d ingest records for 300 elements, want %d", len(l.sources), want)
 	}
 }
 

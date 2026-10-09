@@ -3213,6 +3213,9 @@ func (w *connWriteState) enqueue(conn *golangws.Conn, f *wsQueued, timeout time.
 		}
 		select {
 		case <-space:
+			// The writer made progress: a slow but reading client is not
+			// dead, so the deadline measures stalls, not queue depth.
+			timer.Reset(timeout)
 			w.mu.Lock()
 		case <-timer.C:
 			w.timeout(conn)

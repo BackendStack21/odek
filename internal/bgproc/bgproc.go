@@ -31,6 +31,7 @@ import (
 	"math"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -785,25 +786,19 @@ func (r *outputRing) appendLocked(p []byte) {
 		r.buf = append(r.buf, p...)
 		return
 	}
-	// Grow to what is needed plus one window of headroom so the next
-	// compaction, not the next write, is the common case. Write already
-	// keeps the window and every write within maxRingBytes; the clamps
-	// restate that bound where the size is computed, so the sum is
-	// provably free of overflow (and append would still regrow safely if
-	// a clamp ever did bite).
-	window, incoming, headroom := n, len(p), r.limit
-	if window > maxRingBytes {
-		window = maxRingBytes
-	}
-	if incoming > maxRingBytes {
-		incoming = maxRingBytes
-	}
+	// Reserve two windows of capacity so the next compaction, not the next
+	// write, is the common case. Capacity is requested as one bounded size
+	// and then grown by that same size, never computed as a sum, so no size
+	// arithmetic can overflow; a write larger than a window simply lets
+	// append regrow the array once.
+	headroom := r.limit
 	if headroom > maxRingBytes {
 		headroom = maxRingBytes
 	}
-	r.store = make([]byte, 0, window+incoming+headroom)
-	r.store = append(r.store, r.buf...)
-	r.buf = append(r.store, p...)
+	store := slices.Grow(make([]byte, headroom), headroom)[:0]
+	store = append(store, r.buf...)
+	r.buf = append(store, p...)
+	r.store = r.buf[:0]
 }
 
 func (r *outputRing) Write(p []byte) (int, error) {

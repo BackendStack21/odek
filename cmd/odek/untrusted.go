@@ -205,7 +205,19 @@ func wrapUntrustedBatch(ctx context.Context, recordSource string, sources, conte
 		}
 		flush(len(contents))
 	}
+	// Audit ingests are recorded per chunk of elements rather than per
+	// element: the audit store keeps at most 64 resources per record, so a
+	// chunk of 64 elements keeps every discovered path on the record while
+	// a 1000-path listing costs 16 appends instead of 1000.
 	var joined strings.Builder
+	inChunk := 0
+	flush := func() {
+		if joined.Len() > 0 {
+			recordIngest(ctx, recordSource, joined.String())
+		}
+		joined.Reset()
+		inChunk = 0
+	}
 	for i, c := range contents {
 		if c == "" {
 			out[i] = c
@@ -214,21 +226,27 @@ func wrapUntrustedBatch(ctx context.Context, recordSource string, sources, conte
 		if flagged[i] {
 			c = toolOutputBanner + c
 		}
+		if inChunk == auditIngestChunk {
+			flush()
+		}
 		if joined.Len() > 0 {
 			joined.WriteByte('\n')
 		}
 		joined.WriteString(c)
+		inChunk++
 		src := recordSource
 		if sources != nil {
 			src = sources[i]
 		}
 		out[i] = wrapBody(src, c)
 	}
-	if joined.Len() > 0 {
-		recordIngest(ctx, recordSource, joined.String())
-	}
+	flush()
 	return out
 }
+
+// auditIngestChunk is how many batch elements share one audit ingest record;
+// it matches the audit store's per-record resource cap.
+const auditIngestChunk = 64
 
 // scanBatchGroup scans contents[start:end] as one joined value and marks the
 // flagged elements.
@@ -240,16 +258,14 @@ func scanBatchGroup(ctx context.Context, contents []string, flagged []bool, star
 	if !toolOutputFlagged(ctx, strings.Join(contents[start:end], "\n")) {
 		return
 	}
-	found := false
+	// Only elements that are flagged on their own carry the banner. A hit
+	// on the joined text alone comes from neighbours (mixed scripts across
+	// a bilingual page, a phrase split over two lines) that the per-element
+	// scan never flagged before batching either; bannering the whole group
+	// would bury benign results under hundreds of notices.
 	for i := start; i < end; i++ {
 		if contents[i] != "" && toolOutputFlagged(ctx, contents[i]) {
 			flagged[i] = true
-			found = true
-		}
-	}
-	if !found {
-		for i := start; i < end; i++ {
-			flagged[i] = contents[i] != ""
 		}
 	}
 }

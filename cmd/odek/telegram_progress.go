@@ -108,6 +108,12 @@ func (p *progressBubble) submit(text, line string) {
 const progressFinishWait = 3 * time.Second
 
 func (p *progressBubble) finish(flush bool) {
+	p.mu.Lock()
+	abandoned := p.abandoned
+	p.mu.Unlock()
+	if abandoned {
+		return // an earlier finish already gave up on this worker
+	}
 	p.stopOnce.Do(func() {
 		p.mu.Lock()
 		p.flush = flush

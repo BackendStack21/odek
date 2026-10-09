@@ -19,7 +19,7 @@ func TestOutputRing_WriteLargerThanLimit(t *testing.T) {
 	if r.dropped != int64(len(big)-64) {
 		t.Fatalf("dropped = %d, want %d", r.dropped, len(big)-64)
 	}
-	if cap(r.store) > len(big)+r.limit {
-		t.Fatalf("backing array cap %d exceeds write+limit %d", cap(r.store), len(big)+r.limit)
+	if cap(r.store) > 4*len(big) {
+		t.Fatalf("backing array cap %d is out of proportion to a %d-byte write", cap(r.store), len(big))
 	}
 }

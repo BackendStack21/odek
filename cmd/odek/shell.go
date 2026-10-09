@@ -361,15 +361,9 @@ func revalidateShellRisk(ctx context.Context, command string, approved danger.Ri
 	return nil
 }
 
-// promptUser classifies the command and asks the user to approve it.
-// Delegates to the configured Approver, or falls back to TTYApprover.
-func (t *shellTool) promptUser(cmd, description string) error {
-	_, targets := shellScriptGate(t.toolCtx(), cmd)
-	return t.promptUserGated(cmd, description, targets)
-}
-
-// promptUserGated is promptUser with the unread-script targets already
-// classified by the caller.
+// promptUserGated asks the user to approve cmd, with the unread-script
+// targets already classified by the caller. Delegates to the configured
+// Approver, or falls back to TTYApprover.
 func (t *shellTool) promptUserGated(cmd, description string, targets []string) error {
 	var cls danger.RiskClass
 	if len(targets) == 0 || t.dangerousConfig.ActionFor(danger.UnreadExec) == danger.Allow {

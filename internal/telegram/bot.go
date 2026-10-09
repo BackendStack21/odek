@@ -115,6 +115,7 @@ func (b *Bot) doJSONContext(ctx context.Context, method string, body any, dest a
 			case <-time.After(backoff):
 			}
 		}
+		retryAfter = 0 // a server hint applies to the attempt right after it
 
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(reqBody))
 		if err != nil {
@@ -266,6 +267,7 @@ func (b *Bot) doJSON(method string, body any, dest any) (requestErr error) {
 				return &TelegramError{Method: method, Description: "cancelled", Code: 0}
 			}
 		}
+		retryAfter = 0 // a server hint applies to the attempt right after it
 
 		resp, err := b.Client.Post(url, "application/json", bytes.NewReader(reqBody))
 		if err != nil {
@@ -397,6 +399,7 @@ func (b *Bot) doUpload(method string, field string, path string, params map[stri
 				return &TelegramError{Method: method, Description: "cancelled", Code: 0}
 			}
 		}
+		retryAfter = 0 // a server hint applies to the attempt right after it
 
 		req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(bodyBytes))
 		if err != nil {

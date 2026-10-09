@@ -876,10 +876,8 @@ func (t *searchFilesTool) searchFiles(args searchFilesArgs) (string, error) {
 		matches = append(matches, searchMatch{Path: p})
 	}
 
-	// Sort by modification time (newest first). Use Lstat so symlinks are not
-	// followed and their own metadata is used for sorting.
-	sortNewestFirst(matches, func(m searchMatch) string { return m.Path }, sortLstat)
-
+	// confinedGlob already returned the paths newest first (Lstat, so a
+	// symlink's own metadata counts) and the filter above kept that order.
 	if len(matches) > 0 {
 		sources := make([]string, len(matches))
 		contents := make([]string, len(matches))
