@@ -3872,7 +3872,7 @@ func trimSession(store *session.Store, args []string) error {
 	// Recompute turn count
 	sess.Turns = 0
 	for _, m := range sess.Messages {
-		if m.Role == "user" {
+		if m.Role == "user" && !session.IsSyntheticUserName(m.Name) {
 			sess.Turns++
 		}
 	}
@@ -3914,7 +3914,7 @@ func cleanupSessions(store *session.Store, args []string) error {
 func countUserTurnsUpTo(messages []session.Message, n int) int {
 	count := 0
 	for i := 0; i < n && i < len(messages); i++ {
-		if messages[i].Role == "user" {
+		if messages[i].Role == "user" && !session.IsSyntheticUserName(messages[i].Name) {
 			count++
 		}
 	}

@@ -370,7 +370,7 @@ func (t *sessionSearchTool) deepSearch(tokens []string, candidates []session.Ses
 		matchedTokens := make(map[string]bool, len(tokens))
 		var snippet string
 		for _, msg := range full.Messages {
-			if msg.Role != "user" && msg.Role != "assistant" {
+			if (msg.Role != "user" && msg.Role != "assistant") || (msg.Role == "user" && session.IsSyntheticUserName(msg.Name)) {
 				continue
 			}
 			if len(matchedTokens) == maxDeep {
@@ -423,7 +423,7 @@ func (t *sessionSearchTool) handleGet(id string) (string, error) {
 	const maxSessionGetMessages = 100
 	var sessionMessages []sessionMessage
 	for _, m := range sess.Messages {
-		if m.Role == "user" || m.Role == "assistant" {
+		if (m.Role == "user" && !session.IsSyntheticUserName(m.Name)) || m.Role == "assistant" {
 			sessionMessages = append(sessionMessages, sessionMessage{
 				Role:    m.Role,
 				Content: m.Content,

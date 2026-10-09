@@ -971,7 +971,7 @@ func (a *Agent) RunWithMessages(ctx context.Context, messages []session.Message)
 	if owned {
 		turnID := ""
 		for i := len(messages) - 1; i >= 0; i-- {
-			if messages[i].Role == "user" && messages[i].Name != "bg-notice" {
+			if messages[i].Role == "user" && !session.IsNoticeUserName(messages[i].Name) {
 				turnID = messages[i].TurnID
 				break
 			}

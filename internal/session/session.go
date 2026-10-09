@@ -824,6 +824,28 @@ func (s *Store) rememberPrompts(id string, msgs []Message, gen uint64) {
 	s.promptDigests[id] = promptDigest{n: len(msgs), hash: promptsHash(msgs, len(msgs)), gen: gen}
 }
 
+// stripReturnAfterBreak drops return-after-break summaries before a save:
+// the summary is run-only presentation, so persisting it would add a copy on
+// every resume. The input slice is never modified.
+func stripReturnAfterBreak(msgs []Message) []Message {
+	n := 0
+	for _, m := range msgs {
+		if m.Name == ReturnAfterBreakName {
+			n++
+		}
+	}
+	if n == 0 {
+		return msgs
+	}
+	out := make([]Message, 0, len(msgs)-n)
+	for _, m := range msgs {
+		if m.Name != ReturnAfterBreakName {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
 func (s *Store) saveLocked(sess *Session) error {
 	return s.saveLockedMode(sess, false)
 }
@@ -840,6 +862,7 @@ func (s *Store) saveLockedMode(sess *Session, lazyIndex bool) (err error) {
 	if err := ValidateSessionID(sess.ID); err != nil {
 		return fmt.Errorf("session: refusing unsafe save: %w", err)
 	}
+	sess.Messages = stripReturnAfterBreak(sess.Messages)
 	unlock, err := s.fileLock()
 	if err != nil {
 		return err
@@ -1074,7 +1097,7 @@ func (s *Store) saveLockedMode(sess *Session, lazyIndex bool) (err error) {
 // message is protected.
 func protectedHeadLen(msgs []Message) int {
 	for i, m := range msgs {
-		if m.Role == "user" {
+		if m.Role == "user" && m.Name != ReturnAfterBreakName {
 			return i + 1
 		}
 	}
@@ -1544,12 +1567,13 @@ func (s *Store) Cleanup(before time.Time) (int, error) {
 
 // ── Helpers ────────────────────────────────────────────────────────────
 
-// countUserTurns returns the number of user messages in a slice.
-// This excludes the system message (which is always first in odek sessions).
+// countUserTurns returns the number of principal user messages in a slice.
+// Runtime-injected user messages (background notices and wakes, the
+// return-after-break summary) are not principal turns.
 func countUserTurns(messages []Message) int {
 	count := 0
 	for _, m := range messages {
-		if m.Role == "user" {
+		if m.Role == "user" && !IsSyntheticUserName(m.Name) {
 			count++
 		}
 	}

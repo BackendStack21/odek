@@ -524,7 +524,7 @@ The `odek memory promote <session-id>` command that already exists promotes **ep
 
 Once Extended Memory is enabled, the following proactive behaviors are active by default (each can be disabled via its config flag):
 
-- **Return after break**: on session resume, a concise summary of where the user left off and the next likely step is injected as a system message (config: `proactive_return_after_break`).
+- **Return after break**: on session resume, a concise summary of where the user left off and the next likely step is appended to the resumed history as an untrusted-wrapped user-role message named `return-after-break` — never a system message — which the loop, verifier, transcript, session turn counting and session indexing skip like background notices. It is run-only: the session store drops it on every save, so resumes never accumulate copies (config: `proactive_return_after_break`).
 - **Anaphora resolution**: the first pronoun in a user message (e.g. "that" or "it") is resolved against recent trusted atoms when the top atom's semantic similarity is above `semantic_search_min_score`; otherwise the message is passed through unchanged. Only the first pronoun occurrence is replaced (config: `anaphora_resolution_enabled`).
 - **Follow-up anticipation**: the agent pre-loads related conventions, file references, and error patterns by generating predicted follow-up intents and recalling atoms for them (config: `follow_up_anticipation_enabled`).
 - **Style mirroring**: tone, verbosity, formality, humor, and explanation depth inferred from the user model are injected as a style-guidance directive into the system prompt (config: `style_mirroring_enabled`).

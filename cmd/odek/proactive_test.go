@@ -199,7 +199,12 @@ func TestInjectReturnAfterBreak_ExtendedDisabled(t *testing.T) {
 	}
 }
 
-func TestInjectReturnAfterBreak_InsertsAfterLastSystem(t *testing.T) {
+// The return-after-break summary is derived from memory, not the principal or
+// the runtime: it enters as a user-role message flagged with the
+// return-after-break name (like bg-wake/bg-notice), never with system role,
+// and sits at the end of the resumed history so it never displaces the
+// original task from the protected head.
+func TestRED_InjectReturnAfterBreak_NamedUserAtEnd(t *testing.T) {
 	srv := simpleLLMServer(t, "You were reviewing the auth refactor.")
 	mm := newExtendedBackedManager(t, srv)
 
@@ -212,9 +217,9 @@ func TestInjectReturnAfterBreak_InsertsAfterLastSystem(t *testing.T) {
 	if len(out) != len(msgs)+1 {
 		t.Fatalf("expected %d messages, got %d", len(msgs)+1, len(out))
 	}
-	rb := out[1]
-	if rb.Role != "system" {
-		t.Errorf("injected message role = %q, want system", rb.Role)
+	rb := out[len(out)-1]
+	if rb.Role != "user" || rb.Name != session.ReturnAfterBreakName {
+		t.Errorf("injected message role/name = %q/%q, want user/%q", rb.Role, rb.Name, session.ReturnAfterBreakName)
 	}
 	if !strings.Contains(rb.Content, `source="return_after_break"`) {
 		t.Errorf("injected message should be wrapped as untrusted return_after_break, got %q", rb.Content)
@@ -223,19 +228,22 @@ func TestInjectReturnAfterBreak_InsertsAfterLastSystem(t *testing.T) {
 		t.Errorf("injected message should contain the summary, got %q", rb.Content)
 	}
 	// Original order otherwise preserved.
-	if out[0].Content != "identity" || out[2].Content != "first" || out[3].Content != "answer" {
+	if out[0].Content != "identity" || out[1].Content != "first" || out[2].Content != "answer" {
 		t.Errorf("message order not preserved: %+v", out)
+	}
+	if !session.IsSyntheticUserName(rb.Name) {
+		t.Error("return-after-break name is not recognised as synthetic user input")
 	}
 }
 
-func TestInjectReturnAfterBreak_NoSystemMessagePrepends(t *testing.T) {
+func TestInjectReturnAfterBreak_NoSystemMessage(t *testing.T) {
 	srv := simpleLLMServer(t, "You were reviewing the auth refactor.")
 	mm := newExtendedBackedManager(t, srv)
 
 	msgs := []session.Message{{Role: "user", Content: "first"}}
 	out := injectReturnAfterBreak(context.Background(), mm, msgs)
-	if len(out) != 2 || out[0].Role != "system" {
-		t.Fatalf("expected injected system message at index 0, got %+v", out)
+	if len(out) != 2 || out[0].Content != "first" || out[1].Name != session.ReturnAfterBreakName {
+		t.Fatalf("expected the summary appended after the history, got %+v", out)
 	}
 }
 

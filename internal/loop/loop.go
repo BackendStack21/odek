@@ -166,7 +166,7 @@ func insertionIndexBeforeLatestUser(messages []session.Message) int {
 		// bg-notice user messages are synthetic (drained notices/wakes) and
 		// may trail the real task; injections belong before the REAL input —
 		// same skip as lastUserMessage.
-		if messages[i].Role == "user" && !strings.HasPrefix(messages[i].Name, "bg-") {
+		if messages[i].Role == "user" && !session.IsSyntheticUserName(messages[i].Name) {
 			return i
 		}
 	}
@@ -1442,7 +1442,7 @@ func (e *Engine) trimContext(ctx context.Context, messages []session.Message, to
 	// batches remain intact even when the model rejects an oversized context.
 	protected := protectRecentActBatches(messages, 2)
 	for i, m := range messages {
-		if (m.Role == "user" && !strings.HasPrefix(m.Name, "bg-")) || isEffectEvidence(m) {
+		if (m.Role == "user" && !session.IsSyntheticUserName(m.Name)) || isEffectEvidence(m) {
 			protected[i] = struct{}{}
 		}
 	}
@@ -1649,7 +1649,7 @@ func upsertTrimWarning(messages []session.Message, warning string) []session.Mes
 	for i := len(messages) - 1; i >= 0; i-- {
 		// Skip synthetic bg-notice user messages: the warning belongs
 		// before the user's real input, not before a trailing notice.
-		if messages[i].Role == "user" && !strings.HasPrefix(messages[i].Name, "bg-") {
+		if messages[i].Role == "user" && !session.IsSyntheticUserName(messages[i].Name) {
 			insertIdx = i
 			break
 		}
@@ -1711,7 +1711,7 @@ func trimToSurvival(msgs []session.Message) []session.Message {
 	keep := protectRecentActBatches(msgs, 2)
 	for i, m := range msgs {
 		if (i == 0 && m.Role == "system") ||
-			(m.Role == "user" && !strings.HasPrefix(m.Name, "bg-")) ||
+			(m.Role == "user" && !session.IsSyntheticUserName(m.Name)) ||
 			isDigestMessage(m) || isPlanMessage(m) || isEffectEvidence(m) {
 			keep[i] = struct{}{}
 		}
@@ -4348,7 +4348,7 @@ func lastUserMessage(messages []session.Message) string {
 	for i := len(messages) - 1; i >= 0; i-- {
 		// Background-notice injections are user-role messages flagged at
 		// append time; user-input hooks must never key on them.
-		if messages[i].Role == "user" && !strings.HasPrefix(messages[i].Name, "bg-") {
+		if messages[i].Role == "user" && !session.IsSyntheticUserName(messages[i].Name) {
 			return messages[i].Content
 		}
 	}
