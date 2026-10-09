@@ -167,7 +167,7 @@ Two layers, both fail closed when no TTY and nothing else grants trust.
 Ways to approve:
 
 1. Interactive `Approve? [y/N]` on a TTY.
-2. `ODEK_APPROVE_MCP=1` for that invocation (all project servers **and** all tools).
+2. `ODEK_APPROVE_MCP=1` for that invocation (all project servers **and** all tools). Like `auto_approve`, it removes the prompt only: the schema guard scan and the 256 KiB schema cap still run, and a tool that fails either is skipped.
 3. A matching persisted key (any hashed field change re-prompts; older odek keys that omitted the limit fields re-prompt once after upgrade).
 4. `auto_approve: true` in the **global** config (see below).
 

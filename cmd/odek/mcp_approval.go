@@ -236,7 +236,9 @@ const mcpToolApprovalsFile = "mcp_tool_approvals.json"
 // cannot silently register a spoofed or unwanted tool.
 //
 // Approval can be granted via ODEK_APPROVE_MCP=1, an interactive y/N prompt,
-// or a prior persisted approval in ~/.odek/mcp_tool_approvals.json. A
+// or a prior persisted approval in ~/.odek/mcp_tool_approvals.json. Every
+// path, including the env var and auto_approve, still runs the schema guard
+// scan and the schema size cap. A
 // persisted approval is keyed to the tool's input schema and description as
 // well as the server identity, so a server that changes either must
 // re-prompt instead of reusing the old approval.
@@ -251,9 +253,9 @@ func approveMCPToolsWithTTY(projectDir, serverName string, cfg mcpclient.ServerC
 		return nil, nil
 	}
 
-	if mcpApprovalEnv() {
-		return defs, nil
-	}
+	// ODEK_APPROVE_MCP=1 grants the approval, not an exemption from the
+	// schema guard scan and size cap below: every approval path runs them.
+	envApproved := mcpApprovalEnv()
 
 	approved, err := loadMCPToolApprovals()
 	if err != nil {
@@ -284,8 +286,9 @@ func approveMCPToolsWithTTY(projectDir, serverName string, cfg mcpclient.ServerC
 
 		key := mcpToolApprovalKey(projectDir, serverName, def.Name, cfg, schemaHash, def.Description)
 		// Schema guard scans and size caps above still ran — auto_approve
-		// removes the prompt friction, not the safety checks.
-		if cfg.AutoApprove || approved[key] {
+		// and ODEK_APPROVE_MCP remove the prompt friction, not the safety
+		// checks.
+		if envApproved || cfg.AutoApprove || approved[key] {
 			out = append(out, def)
 			continue
 		}
