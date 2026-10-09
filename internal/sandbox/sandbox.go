@@ -302,17 +302,14 @@ func sanitizeVolumeMount(vol, workdir string) (string, bool) {
 	// genuinely escape into a forbidden area are still caught — either by the
 	// confinement check above or by a forbidden prefix the workdir is not under.
 	//
-	// The forbidden-prefix check uses the symlink-resolved host path so it is
-	// composed on the same canonical path as the confinement check above.
-	sep := string(filepath.Separator)
-	for _, forbidden := range ForbiddenMountPrefixes {
-		if absWorkdir == forbidden || strings.HasPrefix(absWorkdir, forbidden+sep) {
-			continue
-		}
-		if resolvedHost == forbidden || strings.HasPrefix(resolvedHost, forbidden+sep) {
-			fmt.Fprintf(os.Stderr, "odek: WARNING: rejecting forbidden volume mount %q (host path %s)\n", vol, resolvedHost)
-			return "", false
-		}
+	// Every comparison runs on both the raw and the symlink-resolved spelling
+	// of the host path, the working directory and the prefix itself: on macOS
+	// /etc and /var are symlinks into /private, so a resolved host path never
+	// starts with the literal prefix, and a raw host path never starts with
+	// the resolved one.
+	if underForbiddenPrefix(absWorkdir, absHost, resolvedHost) {
+		fmt.Fprintf(os.Stderr, "odek: WARNING: rejecting forbidden volume mount %q (host path %s)\n", vol, resolvedHost)
+		return "", false
 	}
 
 	// Rebuild the mount with the canonical absolute host path.
@@ -321,6 +318,52 @@ func sanitizeVolumeMount(vol, workdir string) (string, bool) {
 		rest = ":" + parts[1]
 	}
 	return absHost + rest, true
+}
+
+// underForbiddenPrefix reports whether the requested host path (raw or
+// symlink-resolved) sits at or under a ForbiddenMountPrefixes entry (raw or
+// symlink-resolved), unless the working directory itself sits at or under
+// that entry in either spelling.
+func underForbiddenPrefix(absWorkdir, absHost, resolvedHost string) bool {
+	resolvedWorkdir := pathutil.ResolveDirSymlinks(absWorkdir)
+	for _, forbidden := range ForbiddenMountPrefixes {
+		prefixes := []string{forbidden}
+		// The prefix itself may be a symlink (macOS: /etc -> /private/etc),
+		// so it is fully evaluated, not only its parent chain.
+		if r, err := filepath.EvalSymlinks(forbidden); err == nil && r != forbidden {
+			prefixes = append(prefixes, r)
+		} else if r := pathutil.ResolveDirSymlinks(forbidden); r != forbidden {
+			prefixes = append(prefixes, r)
+		}
+		exempt := false
+		for _, f := range prefixes {
+			if pathAtOrUnder(absWorkdir, f) || pathAtOrUnder(resolvedWorkdir, f) {
+				exempt = true
+				break
+			}
+		}
+		if exempt {
+			continue
+		}
+		for _, f := range prefixes {
+			if pathAtOrUnder(absHost, f) || pathAtOrUnder(resolvedHost, f) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// pathAtOrUnder reports whether p equals prefix or lies beneath it.
+func pathAtOrUnder(p, prefix string) bool {
+	if p == prefix {
+		return true
+	}
+	sep := string(filepath.Separator)
+	if !strings.HasSuffix(prefix, sep) {
+		prefix += sep
+	}
+	return strings.HasPrefix(p, prefix)
 }
 
 // hasDotDotComponent reports whether p contains a ".." path component after
