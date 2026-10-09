@@ -137,7 +137,7 @@ func Render(env *Envelope) string {
 		if b.Len() > 0 {
 			b.WriteString("\n")
 		}
-		fmt.Fprintf(&b, "%s%q (%s", renderedArtifactPrefix, boundField(oneLine(a.ID)), boundField(oneLine(a.MediaType)))
+		fmt.Fprintf(&b, "%s%q (%s", renderedArtifactPrefix, boundOneLine(a.ID), boundOneLine(a.MediaType))
 		if a.SizeBytes != nil {
 			fmt.Fprintf(&b, ", %d bytes", *a.SizeBytes)
 		}
@@ -147,7 +147,7 @@ func Render(env *Envelope) string {
 		b.WriteString(")")
 		if a.Summary != "" {
 			b.WriteString(": ")
-			b.WriteString(boundField(oneLine(a.Summary)))
+			b.WriteString(boundOneLine(a.Summary))
 		}
 	}
 	return b.String()
@@ -161,6 +161,18 @@ func boundField(s string) string {
 		return s
 	}
 	return t + "…"
+}
+
+// boundOneLine is boundField(oneLine(s)) without mapping the discarded tail:
+// oneLine is rune-for-rune, so bounding first yields the same result while
+// touching at most MaxFieldRunes runes of a hostile multi-megabyte field.
+func boundOneLine(s string) string {
+	t, cut := truncateRunes(s, MaxFieldRunes)
+	t = oneLine(t)
+	if cut {
+		return t + "…"
+	}
+	return t
 }
 
 // TruncateRunes returns s cut to at most n runes without splitting a
