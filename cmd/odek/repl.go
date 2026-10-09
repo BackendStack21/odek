@@ -422,7 +422,7 @@ func replCmd(args []string) error {
 			for _, m := range messages {
 				msgStrs = append(msgStrs, m.Role+": "+m.Content)
 			}
-			prov := memory.DeriveProvenance(messages)
+			prov := memory.DeriveSessionProvenance(sess)
 			mm.OnSessionEndWithProvenance(sess.ID, sess.Turns, msgStrs, prov)
 		})
 	}

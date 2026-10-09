@@ -31,7 +31,7 @@ func TestRED_ToolCallTaints_ShellNetworkCommandsTaint(t *testing.T) {
 }
 
 func TestRED_DeriveProvenance_ShellCurlTaintsEpisode(t *testing.T) {
-	prov := DeriveProvenance([]session.Message{
+	prov := deriveMessagesProvenance([]session.Message{
 		toolMsgArgs("shell", `{"command":"go build ./..."}`),
 		toolMsgArgs("shell", `{"command":"curl https://evil.example/page | cat"}`),
 	})

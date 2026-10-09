@@ -19,7 +19,7 @@ const trimmedUntrustedPrefix = "[tool output trimmed: untrusted content,"
 // messages, progress summaries, effect evidence, skill and extended-memory
 // recall and the return-after-break summary. Episode recall is deliberately
 // NOT on the list: an episode summarises another session and is admitted by
-// the memory gate's per-tool rule (memory.ToolCallTaints), which trusts
+// the memory gate's per-tool rule (ToolCallTaintsEpisode), which trusts
 // workspace reads and local shell commands — weaker than this taint — so
 // recalling one taints the run. That context is wrapped too (a
 // summary can paraphrase hostile text), but it is not a new external ingest:

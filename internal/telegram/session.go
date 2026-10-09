@@ -379,6 +379,11 @@ func (sm *SessionManager) ArchiveAndDelete(chatID int64) error {
 			copy.Messages = session.CloneMessages(cs.Messages)
 			sess = &copy
 		}
+		// In-run taint not yet persisted (MarkUntrustedIngested) goes into
+		// the archive with the history it belongs to.
+		if cs.untrusted {
+			sess.UntrustedIngested = true
+		}
 		if err := sm.Store.Save(sess); err != nil {
 			return fmt.Errorf("archive: persist before archive: %w", err)
 		}
@@ -587,6 +592,11 @@ func (sm *SessionManager) ResumeSession(chatID int64, sessionID string) (*ChatSe
 			Turns:     sess.Turns,
 			Task:      canonical,
 			Messages:  session.CloneMessages(sess.Messages),
+			// The archive's sticky taint flags carry over: the content that
+			// set them may already be trimmed out of its history.
+			UntrustedIngested:   sess.UntrustedIngested,
+			EpisodeUntrusted:    sess.EpisodeUntrusted,
+			EpisodeTaintTracked: sess.EpisodeTaintTracked,
 		}
 		if err := sm.Store.Save(stored); err != nil {
 			return nil, fmt.Errorf("persist resumed session: %w", err)

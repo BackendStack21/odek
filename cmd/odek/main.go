@@ -2357,7 +2357,7 @@ func run(args []string) (outcome error) {
 				latest, err := store.Load(sessionID)
 				if err == nil {
 					msgStrs := makeSessionMessageStrings(latest)
-					prov := memory.DeriveProvenance(latest.Messages)
+					prov := memory.DeriveSessionProvenance(latest)
 					mm.OnSessionEndWithProvenance(latest.ID, latest.Turns, msgStrs, prov)
 				}
 			}
@@ -3685,7 +3685,7 @@ func continueCmd(args []string) (outcome error) {
 	if mm := agent.Memory(); mm != nil {
 		mm.RunBackground(func() {
 			msgStrs := makeSessionMessageStrings(sess)
-			prov := memory.DeriveProvenance(sess.Messages)
+			prov := memory.DeriveSessionProvenance(updated)
 			mm.OnSessionEndWithProvenance(sess.ID, sess.Turns+1, msgStrs, prov)
 		})
 	}

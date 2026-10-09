@@ -1205,7 +1205,7 @@ func (m *MemoryManager) OnSessionEnd(sessionID string, turns int, messages []str
 }
 
 // OnSessionEndWithProvenance is the provenance-carrying counterpart of
-// OnSessionEnd. Callers derive the provenance with DeriveProvenance and
+// OnSessionEnd. Callers derive the provenance with DeriveSessionProvenance and
 // pass it through so the resulting episode inherits the trust signal.
 func (m *MemoryManager) OnSessionEndWithProvenance(sessionID string, turns int, messages []string, prov EpisodeProvenance) {
 	if err := session.ValidateSessionID(sessionID); err != nil {

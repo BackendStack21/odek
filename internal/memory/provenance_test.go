@@ -29,21 +29,21 @@ func toolMsgArgs(name, argsJSON string) session.Message {
 }
 
 func TestDeriveProvenance_Empty(t *testing.T) {
-	prov := DeriveProvenance(nil)
+	prov := deriveMessagesProvenance(nil)
 	if prov.Untrusted {
 		t.Errorf("empty input should be trusted, got %+v", prov)
 	}
 }
 
 func TestDeriveProvenance_PureShellIsTrusted(t *testing.T) {
-	prov := DeriveProvenance([]session.Message{toolMsg("shell"), toolMsg("patch")})
+	prov := deriveMessagesProvenance([]session.Message{toolMsg("shell"), toolMsg("patch")})
 	if prov.Untrusted {
 		t.Errorf("shell+patch is internal, should be trusted, got %+v", prov)
 	}
 }
 
 func TestDeriveProvenance_BrowserTaints(t *testing.T) {
-	prov := DeriveProvenance([]session.Message{toolMsg("shell"), toolMsg("browser")})
+	prov := deriveMessagesProvenance([]session.Message{toolMsg("shell"), toolMsg("browser")})
 	if !prov.Untrusted {
 		t.Fatalf("browser should taint, got %+v", prov)
 	}
@@ -53,7 +53,7 @@ func TestDeriveProvenance_BrowserTaints(t *testing.T) {
 }
 
 func TestDeriveProvenance_MCPAdapterTaints(t *testing.T) {
-	prov := DeriveProvenance([]session.Message{toolMsg("github__list_issues")})
+	prov := deriveMessagesProvenance([]session.Message{toolMsg("github__list_issues")})
 	if !prov.Untrusted {
 		t.Fatalf("MCP tool should taint, got %+v", prov)
 	}
@@ -66,7 +66,7 @@ func TestDeriveProvenance_MCPAdapterTaints(t *testing.T) {
 // sessions recallable again.
 func TestDeriveProvenance_ReadFileWorkspaceTrusted(t *testing.T) {
 	for _, p := range []string{"internal/x.go", "./README.md", "cmd/odek/main.go"} {
-		prov := DeriveProvenance([]session.Message{
+		prov := deriveMessagesProvenance([]session.Message{
 			toolMsg("shell"),
 			toolMsgArgs("read_file", `{"path":"`+p+`"}`),
 		})
@@ -82,7 +82,7 @@ func TestDeriveProvenance_SearchDefaultPathTrusted(t *testing.T) {
 		toolMsgArgs("search_files", `{"pattern":"TODO","file_glob":"*.go"}`),
 		toolMsgArgs("multi_grep", `{"patterns":["a","b"]}`),
 	}
-	prov := DeriveProvenance(msgs)
+	prov := deriveMessagesProvenance(msgs)
 	if prov.Untrusted {
 		t.Errorf("workspace-default search should be trusted, got %+v", prov)
 	}
@@ -91,7 +91,7 @@ func TestDeriveProvenance_SearchDefaultPathTrusted(t *testing.T) {
 // A read of a sensitive system path still taints — the original concern the
 // provenance control exists for.
 func TestDeriveProvenance_ReadFileSensitivePathTaints(t *testing.T) {
-	prov := DeriveProvenance([]session.Message{
+	prov := deriveMessagesProvenance([]session.Message{
 		toolMsgArgs("read_file", `{"path":"/etc/passwd"}`),
 	})
 	if !prov.Untrusted {
@@ -109,7 +109,7 @@ func TestDeriveProvenance_ReadFileHomeSecretTaints(t *testing.T) {
 		t.Skip("no home dir")
 	}
 	secret := filepath.Join(home, ".ssh", "id_rsa")
-	prov := DeriveProvenance([]session.Message{
+	prov := deriveMessagesProvenance([]session.Message{
 		toolMsgArgs("read_file", `{"path":"`+secret+`"}`),
 	})
 	if !prov.Untrusted {
@@ -121,7 +121,7 @@ func TestDeriveProvenance_ReadFileHomeSecretTaints(t *testing.T) {
 // since we cannot tell what path was touched.
 func TestDeriveProvenance_ReadFileMalformedArgsTaints(t *testing.T) {
 	for _, args := range []string{"", "not json", "{"} {
-		prov := DeriveProvenance([]session.Message{toolMsgArgs("read_file", args)})
+		prov := deriveMessagesProvenance([]session.Message{toolMsgArgs("read_file", args)})
 		if !prov.Untrusted {
 			t.Errorf("malformed read_file args %q should conservatively taint, got %+v", args, prov)
 		}
@@ -131,7 +131,7 @@ func TestDeriveProvenance_ReadFileMalformedArgsTaints(t *testing.T) {
 // Network / audio tools always taint regardless of arguments.
 func TestDeriveProvenance_AlwaysExternalToolsTaint(t *testing.T) {
 	for _, name := range []string{"http_request", "http_batch", "transcribe", "web_search", "vision", "delegate_tasks", "artifact_read"} {
-		prov := DeriveProvenance([]session.Message{toolMsgArgs(name, `{"path":"internal/x.go"}`)})
+		prov := deriveMessagesProvenance([]session.Message{toolMsgArgs(name, `{"path":"internal/x.go"}`)})
 		if !prov.Untrusted {
 			t.Errorf("%s must always taint, got %+v", name, prov)
 		}

@@ -49,6 +49,8 @@ After sessions with ≥3 turns, the MemoryManager extracts a session summary. Wh
 
 Episode extraction runs **asynchronously** — it does not block the agent loop. Session-end work is tracked by the MemoryManager and drained with a bounded wait (~15s) in `Agent.Close`, so episodes survive CLI exit without hanging the process.
 
+Every episode carries the provenance of its session (`memory.DeriveSessionProvenance`). A session that read a file outside the workspace, called a network, MCP or sub-agent tool, ran a shell command with a network or unknown effect, or received wrapped external content (attachments, `@`-refs, forwards) yields an **untrusted** episode: it is stored for audit but not recalled until a human promotes it (`odek memory promote`), and no durable facts are auto-extracted from it. Workspace reads and local commands stay trusted, so ordinary coding sessions remain recallable. The decision does not depend only on the history left at session end: every session save records the sticky `episode_untrusted` flag from the messages it writes, before write-time size trimming can drop them, and the flag is never cleared (see [SESSIONS.md](SESSIONS.md)). A tool call later trimmed or compacted out of the history therefore still makes the episode untrusted (taint source `trimmed_history`). The flag is narrower than the delegation taint `untrusted_ingested`, which also counts workspace reads. Plain `OnSessionEnd`, without the structured session, stores the episode untrusted (`unknown_provenance`).
+
 ## Memory Tool — Unified API
 
 ```json

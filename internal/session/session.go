@@ -133,6 +133,22 @@ type Session struct {
 	// the content itself never clears it. Resumed runs seed their ingest
 	// taint from it (delegate_tasks then clamps children to untrusted).
 	UntrustedIngested bool `json:"untrusted_ingested,omitempty"`
+
+	// EpisodeUntrusted records that this conversation crossed the memory
+	// gate's trust boundary (EpisodeTaintSources: a read outside the
+	// workspace, an MCP or network call, a network shell command, a wrapped
+	// external ingest). It is narrower than UntrustedIngested, which also
+	// counts workspace reads, so ordinary coding sessions stay recallable.
+	// Like UntrustedIngested it is sticky: every save ORs in the flag already
+	// on disk and the taint of the messages being written, before write-time
+	// trimming can drop them, so an episode written from a trimmed or
+	// compacted history is still stored untrusted.
+	EpisodeUntrusted bool `json:"episode_untrusted,omitempty"`
+
+	// EpisodeTaintTracked marks a session whose EpisodeUntrusted flag has
+	// been derived over its whole history. Files written before the flag
+	// existed lack it; Load derives the flag from their history once.
+	EpisodeTaintTracked bool `json:"episode_taint_tracked,omitempty"`
 }
 
 // ErrConflict reports that another writer committed after this snapshot was
@@ -245,6 +261,14 @@ type Store struct {
 	// next save can verify the on-disk file is untouched with an lstat instead
 	// of a full parse. Guarded by mu.
 	revStamps map[string]revStamp
+
+	// taintMemos remembers, per session id, the message prefix the last
+	// committed save scanned for taint (taint_anchor.go). Guarded by mu.
+	taintMemos map[string]taintMemo
+
+	// taintScannedMsgs counts messages the taint scans examined. Test
+	// observability only; guarded by mu.
+	taintScannedMsgs int
 
 	// listStats counts per-entry existence stats made by List. Test
 	// observability only.
@@ -739,6 +763,7 @@ type revStamp struct {
 	generation string
 	revision   uint64
 	untrusted  bool
+	episode    bool
 	size       int64
 	mod        time.Time
 	ino        uint64
@@ -762,7 +787,7 @@ func (s *Store) cachedRevision(id string, info os.FileInfo, statErr error) *Sess
 	if info.Size() != st.size || !info.ModTime().Equal(st.mod) || fileInode(info) != st.ino {
 		return nil
 	}
-	return &Session{ID: id, Generation: st.generation, Revision: st.revision, persistedID: id, UntrustedIngested: st.untrusted}
+	return &Session{ID: id, Generation: st.generation, Revision: st.revision, persistedID: id, UntrustedIngested: st.untrusted, EpisodeUntrusted: st.episode}
 }
 
 // rememberRevision stamps the file just written for sess.
@@ -779,6 +804,7 @@ func (s *Store) rememberRevision(sess *Session) {
 		generation: sess.Generation,
 		revision:   sess.Revision,
 		untrusted:  sess.UntrustedIngested,
+		episode:    sess.EpisodeUntrusted,
 		size:       info.Size(),
 		mod:        info.ModTime(),
 		ino:        fileInode(info),
@@ -896,6 +922,7 @@ func (s *Store) saveLockedMode(sess *Session, lazyIndex bool) (err error) {
 		// The previous revision's taint is therefore unknowable: assume it
 		// (fail closed) rather than let this snapshot clear it.
 		sess.UntrustedIngested = true
+		sess.EpisodeUntrusted = true
 	} else if loadErr == nil {
 		if sess.persistedID != "" && sess.persistedID != sess.ID {
 			return fmt.Errorf("%w: destination session already exists", ErrConflict)
@@ -908,6 +935,9 @@ func (s *Store) saveLockedMode(sess *Session, lazyIndex bool) (err error) {
 		// clear what an earlier revision recorded.
 		if current.UntrustedIngested {
 			sess.UntrustedIngested = true
+		}
+		if current.EpisodeUntrusted {
+			sess.EpisodeUntrusted = true
 		}
 	} else if !errors.Is(loadErr, os.ErrNotExist) {
 		return loadErr
@@ -1017,12 +1047,23 @@ func (s *Store) saveLockedMode(sess *Session, lazyIndex bool) (err error) {
 			sess.Messages[i].PrincipalPrompt = &prompt
 		}
 	}
-	// Messages below the boundary were scanned for untrusted content by the
-	// save that set it; a stale boundary resets to 0 and rescans everything.
-	// This runs before the write-time size trim, which can drop the content.
-	if !sess.UntrustedIngested && MessagesCarryUntrusted(sess.Messages[boundary:]) {
-		sess.UntrustedIngested = true
+	// Both taint flags are scanned independently of the redaction boundary,
+	// whose anchor covers only one message: a snapshot can rewrite earlier
+	// messages and keep it. The scan skips only a prefix the last committed
+	// save of this exact revision scanned, verified by a digest over every
+	// message in it (taintScanFrom). This runs before the write-time size
+	// trim, which can drop the content and the tool calls.
+	if !sess.UntrustedIngested || !sess.EpisodeUntrusted {
+		from := s.taintScanFrom(sess.ID, current, sess.Messages)
+		s.taintScannedMsgs += len(sess.Messages) - from
+		if !sess.UntrustedIngested && MessagesCarryUntrusted(sess.Messages[from:]) {
+			sess.UntrustedIngested = true
+		}
+		if !sess.EpisodeUntrusted && messagesTaintEpisode(sess.Messages[from:]) {
+			sess.EpisodeUntrusted = true
+		}
 	}
+	sess.EpisodeTaintTracked = true
 	for i := boundary; i < len(sess.Messages); i++ {
 		sess.Messages[i].Content = redact.RedactSecrets(sess.Messages[i].Content)
 		sess.Messages[i].ReasoningContent = redact.RedactSecrets(sess.Messages[i].ReasoningContent)
@@ -1094,6 +1135,7 @@ func (s *Store) saveLockedMode(sess *Session, lazyIndex bool) (err error) {
 	sess.persistedID = sess.ID
 	committed = true
 	s.rememberRevision(sess)
+	s.rememberTaintScan(sess, snapshotMessages)
 	s.rememberPrompts(sess.ID, sess.Messages, promptGen)
 
 	// Update the index atomically.
@@ -1281,6 +1323,12 @@ func (s *Store) Load(id string) (_ *Session, loadErr error) {
 	// history; derive it so the next save persists it.
 	if !sess.UntrustedIngested && MessagesCarryUntrusted(sess.Messages) {
 		sess.UntrustedIngested = true
+	}
+	if !sess.EpisodeTaintTracked {
+		if !sess.EpisodeUntrusted && messagesTaintEpisode(sess.Messages) {
+			sess.EpisodeUntrusted = true
+		}
+		sess.EpisodeTaintTracked = true
 	}
 	sess.persistedID = sess.ID
 	return &sess, nil

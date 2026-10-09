@@ -1904,7 +1904,7 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 	if currentSession != nil {
 		if mm := agent.Memory(); mm != nil {
 			msgStrs := makeSessionMessageStrings(currentSession)
-			prov := memory.DeriveProvenance(currentSession.Messages)
+			prov := memory.DeriveSessionProvenance(currentSession)
 			mm.OnSessionEndWithProvenance(currentSession.ID, currentSession.Turns, msgStrs, prov)
 		}
 	}
