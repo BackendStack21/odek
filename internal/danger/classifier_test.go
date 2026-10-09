@@ -173,6 +173,7 @@ func TestClassify_Destructive_Commands(t *testing.T) {
 }
 
 func TestClassify_NetworkEgress_Commands(t *testing.T) {
+	chdirUnarmedRepo(t)
 	tests := []struct {
 		cmd string
 		cls RiskClass
@@ -186,10 +187,10 @@ func TestClassify_NetworkEgress_Commands(t *testing.T) {
 		{"git pull origin main", NetworkEgress},
 		// Global options that take a separate value token must not be mistaken
 		// for the subcommand (regression: these were misclassified as safe).
-		{"git -C /repo push origin main", NetworkEgress},
+		{"git -C . push origin main", NetworkEgress},
 		{"git -c http.proxy=http://evil fetch origin", NetworkEgress},
 		{"git --git-dir /repo/.git push origin", SystemWrite},
-		{"git -C /repo -c key=val pull", NetworkEgress},
+		{"git -C . -c key=val pull", NetworkEgress},
 		{"scp file user@remote:/path", NetworkUpload},
 		{"rsync -avz ./ user@remote:/backup", NetworkUpload},
 		{"nc example.com 80", NetworkEgress},
@@ -210,6 +211,7 @@ func TestClassify_NetworkEgress_Commands(t *testing.T) {
 }
 
 func TestClassify_NetworkEgress_BareGitPush(t *testing.T) {
+	chdirUnarmedRepo(t)
 	// git push without args pushes the current branch to its upstream.
 	got := Classify("git push")
 	if got != NetworkEgress {
@@ -523,6 +525,7 @@ func TestClassify_Priority_Wins(t *testing.T) {
 }
 
 func TestClassify_EdgeCases(t *testing.T) {
+	chdirUnarmedRepo(t)
 	tests := []struct {
 		name string
 		cmd  string
@@ -616,6 +619,7 @@ func TestClassify_Config_OverrideClass(t *testing.T) {
 }
 
 func TestClassify_Config_Allowlist(t *testing.T) {
+	chdirUnarmedRepo(t)
 	cfg := DangerousConfig{
 		Allowlist: []string{"git push origin main", "npm run deploy"},
 	}

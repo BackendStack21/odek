@@ -70,6 +70,25 @@ var gitVerbArmMask = map[string]gitArmKind{
 	"submodule":   armHooks | armFsmonitor | armFilter | armSubmoduleExec,
 	"log":         armTextconv,
 	"show":        armTextconv,
+
+	// Verbs that refresh the index or compare the work tree consult the
+	// fsmonitor hook; the ones that move history or objects also run hooks.
+	"revert":         armHooks | armFsmonitor | armFilter | armMergeDriver,
+	"reset":          armFsmonitor | armFilter,
+	"clean":          armFsmonitor,
+	"rm":             armFsmonitor,
+	"mv":             armFsmonitor,
+	"update-index":   armFsmonitor | armFilter,
+	"diff-files":     armFsmonitor | armFilter | armDiffExternal | armTextconv,
+	"diff-index":     armFsmonitor | armFilter | armDiffExternal | armTextconv,
+	"ls-files":       armFsmonitor,
+	"grep":           armFsmonitor | armTextconv,
+	"blame":          armFsmonitor | armTextconv,
+	"describe":       armFsmonitor,
+	"checkout-index": armFilter,
+	"pull":           armHooks | armFsmonitor | armFilter | armMergeDriver,
+	"fetch":          armHooks | armFsmonitor,
+	"push":           armHooks,
 }
 
 // gitRepoArms is what scanning a repository and its configuration found.
@@ -904,6 +923,11 @@ func gitOpensEditor(sub string, args []string) (editor, sequence bool) {
 			anyGitLongOpt(args, "edit-todo", 3) || anyGitLongOpt(args, "continue", 3) {
 			return true, true
 		}
+	case "revert":
+		if shortClusterHas(args, "e") || anyGitLongOpt(args, "edit", 3) {
+			return true, false
+		}
+		return !anyGitLongOpt(args, "no-edit", 5) && !anyGitLongOpt(args, "no-commit", 5), false
 	case "cherry-pick":
 		if shortClusterHas(args, "e") || anyGitLongOpt(args, "edit", 3) || anyGitLongOpt(args, "continue", 3) {
 			return true, false
@@ -958,6 +982,15 @@ func commitOpensEditor(args []string) bool {
 	return force || !given
 }
 
+// gitReadOnlyArmVerbs are the verbs that cannot do anything without a
+// repository (history and work-tree readers, and the remote transfer verbs,
+// which fail outside one); with no repository found there is nothing to run.
+var gitReadOnlyArmVerbs = map[string]bool{
+	"log": true, "show": true, "diff-files": true, "diff-index": true,
+	"ls-files": true, "grep": true, "blame": true, "describe": true,
+	"pull": true, "fetch": true, "push": true,
+}
+
 // gitVerbRunsRepoCode decides, for one of the verbs in gitVerbArmMask, whether
 // the repository the command targets can make git spawn a program.
 func gitVerbRunsRepoCode(sub string, args, tokens []string, ctx *gitRepoCtx) bool {
@@ -969,7 +1002,7 @@ func gitVerbRunsRepoCode(sub string, args, tokens []string, ctx *gitRepoCtx) boo
 	if o.forced {
 		return true
 	}
-	readOnly := sub == "log" || sub == "show"
+	readOnly := gitReadOnlyArmVerbs[sub]
 	switch sub {
 	case "merge", "rebase", "cherry-pick":
 		if gitStrategyRunsProgram(sub, args) {
@@ -985,7 +1018,7 @@ func gitVerbRunsRepoCode(sub string, args, tokens []string, ctx *gitRepoCtx) boo
 			mask |= armSeqEditor
 		}
 	}
-	if sub == "diff" || readOnly || sub == "stash" {
+	if sub == "diff" || readOnly || sub == "stash" || sub == "diff-files" || sub == "diff-index" {
 		if hasAny(args, "--no-ext-diff") {
 			mask &^= armDiffExternal
 		}

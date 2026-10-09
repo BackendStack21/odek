@@ -21,6 +21,11 @@ func TestOptSpecGoldenEffects(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer f.Close()
+	// The corpus pins home-relative classifications, so keep the caller's
+	// HOME while running from a repository that arms nothing.
+	home := os.Getenv("HOME")
+	chdirUnarmedRepo(t)
+	t.Setenv("HOME", home)
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	n := 0

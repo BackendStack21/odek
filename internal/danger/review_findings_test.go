@@ -11,6 +11,7 @@ import (
 // runs rm. The rewritten command must keep that word intact instead of
 // splitting the value into words of its own.
 func TestReview_GluedSubstitutionKeepsWord(t *testing.T) {
+	chdirUnarmedRepo(t)
 	cfg := DangerousConfig{Denylist: []string{"git push"}}
 	for _, c := range []string{
 		"git p$(echo ush) origin main",

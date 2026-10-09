@@ -54,7 +54,9 @@ func adapterRunsCode(name string, tokens []string, repo *gitRepoCtx) bool {
 		case "difftool", "mergetool":
 			// These launch the configured diff/merge tool by design.
 			return true
-		case "commit", "merge", "checkout", "switch", "cherry-pick", "am", "add", "status", "restore", "stash", "gc":
+		case "commit", "merge", "checkout", "switch", "cherry-pick", "am", "add", "status", "restore", "stash", "gc",
+			"revert", "reset", "clean", "rm", "mv", "update-index", "diff-files", "diff-index", "ls-files", "grep",
+			"blame", "describe", "checkout-index", "pull", "fetch", "push":
 			return gitVerbRunsRepoCode(sub, args, tokens, repo)
 		case "worktree", "submodule":
 			return !hasAny(args, "list", "status") && gitVerbRunsRepoCode(sub, args, tokens, repo)
