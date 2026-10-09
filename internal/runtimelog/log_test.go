@@ -161,16 +161,19 @@ func TestPruneRetentionAndPreview(t *testing.T) {
 		}
 	}
 }
-func TestPruneFailurePreservesOriginal(t *testing.T) {
+
+// An oversized line is one malformed record: Prune neither fails nor rewrites
+// a file that has nothing expired.
+func TestPruneOversizedOnlyRecordPreservesOriginal(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "runtime.log")
 	raw := strings.Repeat("x", 2<<20)
 	_ = os.WriteFile(path, []byte(raw), 0600)
-	if _, err := Prune(context.Background(), path, time.Now(), false); err == nil {
-		t.Fatal("expected oversized record failure")
+	if n, err := Prune(context.Background(), path, time.Now(), false); err != nil || n != 0 {
+		t.Fatalf("n=%d err=%v", n, err)
 	}
 	b, _ := os.ReadFile(path)
 	if string(b) != raw {
-		t.Fatal("scan failure replaced log")
+		t.Fatal("prune replaced a log with nothing expired")
 	}
 }
 

@@ -2,9 +2,11 @@ package runtimelog
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"syscall"
@@ -134,13 +136,22 @@ func pruneFile(ctx context.Context, path string, cutoff time.Time, preview bool)
 		defer func() { _ = tmp.Close(); _ = os.Remove(tmp.Name()) }()
 	}
 	removed := 0
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 64<<10), 1<<20)
-	for scanner.Scan() {
+	reader := bufio.NewReaderSize(f, 64<<10)
+	for {
 		if err := ctx.Err(); err != nil {
 			return 0, err
 		}
-		line := scanner.Bytes()
+		line, oversized, done, err := readPruneLine(reader, tmp)
+		if err != nil {
+			return 0, err
+		}
+		if done {
+			break
+		}
+		if oversized {
+			// Already streamed to the temp file verbatim: one malformed record.
+			continue
+		}
 		var rec struct {
 			Timestamp time.Time `json:"timestamp"`
 		}
@@ -154,9 +165,6 @@ func pruneFile(ctx context.Context, path string, cutoff time.Time, preview bool)
 			}
 		}
 	}
-	if err := scanner.Err(); err != nil {
-		return 0, err
-	}
 	if tmp != nil && removed > 0 {
 		if err := tmp.Sync(); err != nil {
 			return 0, err
@@ -169,4 +177,56 @@ func pruneFile(ctx context.Context, path string, cutoff time.Time, preview bool)
 		}
 	}
 	return removed, nil
+}
+
+// maxPruneLine bounds the bytes held in memory for one record.
+const maxPruneLine = 1 << 20
+
+// readPruneLine reads one newline-terminated record. A record longer than
+// maxPruneLine is treated as a single malformed record: it is never buffered,
+// and when tmp is non-nil it is streamed through unchanged so it is kept like
+// any other unparseable line. done reports end of input with no further record.
+func readPruneLine(r *bufio.Reader, tmp *os.File) (line []byte, oversized, done bool, err error) {
+	var buf []byte
+	total := 0
+	for {
+		part, rerr := r.ReadSlice('\n')
+		if rerr != nil && rerr != bufio.ErrBufferFull && rerr != io.EOF {
+			return nil, false, false, rerr
+		}
+		total += len(part)
+		if !oversized && total > maxPruneLine {
+			oversized = true
+			if tmp != nil {
+				if _, werr := tmp.Write(buf); werr != nil {
+					return nil, false, false, werr
+				}
+			}
+			buf = nil
+		}
+		if oversized {
+			if tmp != nil {
+				if _, werr := tmp.Write(part); werr != nil {
+					return nil, false, false, werr
+				}
+			}
+		} else {
+			buf = append(buf, part...)
+		}
+		if rerr == bufio.ErrBufferFull {
+			continue
+		}
+		if rerr == io.EOF && total == 0 {
+			return nil, false, true, nil
+		}
+		if oversized {
+			if tmp != nil && (len(part) == 0 || part[len(part)-1] != '\n') {
+				if _, werr := tmp.Write([]byte{'\n'}); werr != nil {
+					return nil, false, false, werr
+				}
+			}
+			return nil, true, false, nil
+		}
+		return bytes.TrimSuffix(buf, []byte{'\n'}), false, false, nil
+	}
 }
