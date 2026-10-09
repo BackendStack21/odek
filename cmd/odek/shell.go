@@ -471,18 +471,33 @@ func recordViewerReads(ctx context.Context, cmd, stdout string) {
 // a positional argument ($1), never interpolated into the wrapper, so
 // quoting cannot break out of it.
 //
-// The wrapper leaves the pidfile in place on a natural exit: background jobs
-// run the follow-up after every exit to reap descendants that outlived the
-// command, and the follow-up removes the pidfile itself.
+// A foreground command removes its pidfile when it exits on its own; the
+// follow-up only runs on timeout or cancel, so nothing accumulates in the
+// container. Background jobs use wrapSandboxCommandKeepPidfile instead.
+func wrapSandboxCommand(containerName, command string) (argv []string, followUp func()) {
+	return buildSandboxWrapper(containerName, command, true)
+}
+
+// wrapSandboxCommandKeepPidfile is the background-job variant: the pidfile
+// stays in place on a natural exit because the job runner calls the
+// follow-up after every exit to reap descendants that outlived the command,
+// and the follow-up removes the pidfile itself.
+func wrapSandboxCommandKeepPidfile(containerName, command string) (argv []string, followUp func()) {
+	return buildSandboxWrapper(containerName, command, false)
+}
+
 // sandboxKillFollowupTimeout bounds the in-container kill follow-up. It
 // runs synchronously after the command's own timeout/cancel already fired;
 // without a deadline a hung Docker daemon would wedge the tool call forever
 // after its timeout — exactly what the timeout exists to prevent.
 const sandboxKillFollowupTimeout = 10 * time.Second
 
-func wrapSandboxCommand(containerName, command string) (argv []string, followUp func()) {
+func buildSandboxWrapper(containerName, command string, removePidfileOnExit bool) (argv []string, followUp func()) {
 	pidFile := fmt.Sprintf("/tmp/.odek-cmd-%d-%d.pid", os.Getpid(), sandboxCmdSeq.Add(1))
 	wrapper := "echo $$ > " + pidFile + "; sh -c \"$1\"; exit $?"
+	if removePidfileOnExit {
+		wrapper = "echo $$ > " + pidFile + "; sh -c \"$1\"; rc=$?; rm -f " + pidFile + "; exit $rc"
+	}
 	argv = []string{"exec", "-w", "/workspace", containerName, "sh", "-c", wrapper, "odek-cmd", command}
 	followUp = func() {
 		// Best-effort: the container may already be gone (session cleanup).

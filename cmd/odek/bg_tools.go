@@ -571,7 +571,7 @@ func jobRuntimeSeconds(j bgproc.Job) float64 {
 // leader and does not fork away from docker exec. This also supports BusyBox
 // setsid, which has no --wait option.
 func wrapBackgroundSandboxCommand(name, command string) ([]string, func()) {
-	argv, followUp := wrapSandboxCommand(name, command)
+	argv, followUp := wrapSandboxCommandKeepPidfile(name, command)
 	argv = append(append(append([]string{}, argv[:4]...), "sh", "-c", `setsid "$@" & wait $!`, "odek-bg"), argv[4:]...)
 	return argv, followUp
 }
