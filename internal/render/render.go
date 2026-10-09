@@ -103,6 +103,12 @@ type Renderer struct {
 	// transitions can insert separation (reasoning block → answer body).
 	// Reset by SetStreamedOutput at iteration boundaries.
 	streamLastKind int // 0 = none, 1 = reasoning, 2 = content
+
+	// streamCarry holds a multibyte character split across stream fragments
+	// until the next fragment completes it; streamPrev is the last rune
+	// escaped, so emoji joiners are judged across fragments.
+	streamCarry string
+	streamPrev  rune
 }
 
 // SetStreamedOutput marks that this iteration's reasoning and content were
@@ -119,6 +125,10 @@ func (r *Renderer) SetStreamedOutput(v bool) {
 // iteration. A reasoning-only stream must not hide buffered assistant text.
 func (r *Renderer) SetStreamedKinds(reasoning, content bool) {
 	if r != nil {
+		if !r.disable() {
+			r.flushStreamCarry()
+		}
+		r.streamPrev = 0
 		r.streamedOutput = reasoning || content
 		r.streamedReasoning, r.streamedContent = reasoning, content
 		r.streamLastKind = 0
@@ -136,12 +146,15 @@ func (r *Renderer) StreamReasoning(text string) {
 		// Entering (or re-entering) the reasoning block: cue + separation
 		// from any previously streamed answer text.
 		if r.streamLastKind == 2 {
+			r.flushStreamCarry()
 			fmt.Fprintln(r.w)
 		}
 		fmt.Fprint(r.w, r.style(dim+italic, "🧠 "))
 		r.streamLastKind = 1
 	}
-	fmt.Fprint(r.w, r.style(dim+italic, text))
+	if out := r.streamEscape(text); out != "" {
+		fmt.Fprint(r.w, r.style(dim+italic, out))
+	}
 }
 
 // StreamContent prints one answer fragment as it arrives, plainly. The
@@ -152,11 +165,12 @@ func (r *Renderer) StreamContent(text string) {
 		return
 	}
 	if r.streamLastKind == 1 {
+		r.flushStreamCarry()
 		fmt.Fprintln(r.w)
 		fmt.Fprintln(r.w)
 	}
 	r.streamLastKind = 2
-	fmt.Fprint(r.w, text)
+	fmt.Fprint(r.w, r.streamEscape(text))
 }
 
 // New creates a Renderer that writes to w. If color is false, ANSI escape
@@ -248,7 +262,7 @@ func (r *Renderer) Thinking(text string) {
 	if r.disable() || text == "" || r.streamedReasoning {
 		return
 	}
-	fmt.Fprintln(r.w, r.style(dim+italic, "🧠 "+text))
+	fmt.Fprintln(r.w, r.style(dim+italic, "🧠 "+escapeTerminal(text, true)))
 }
 
 // Note prints user-facing assistant text before tool execution.
@@ -256,7 +270,7 @@ func (r *Renderer) Note(text string) {
 	if r.disable() || text == "" || r.streamedContent {
 		return
 	}
-	fmt.Fprintln(r.w, text)
+	fmt.Fprintln(r.w, escapeTerminal(text, true))
 }
 
 // NarratorMessage prints an engaging, human-friendly narration line.
@@ -265,7 +279,7 @@ func (r *Renderer) NarratorMessage(msg string) {
 	if r.disable() || msg == "" {
 		return
 	}
-	fmt.Fprintf(r.w, "%s\n", r.style(magenta, "💬 "+msg))
+	fmt.Fprintf(r.w, "%s\n", r.style(magenta, "💬 "+escapeTerminal(msg, true)))
 }
 
 // toolEmoji returns an emoji that visually signals the tool category.
@@ -504,8 +518,8 @@ func (r *Renderer) ToolCall(name, args string) {
 	if r.disable() {
 		return
 	}
-	header := r.style(cyan, toolEmoji(name)+" "+name)
-	argStr := r.style(gray, "─── "+r.truncate(args, 100))
+	header := r.style(cyan, toolEmoji(name)+" "+escapeTerminal(name, false))
+	argStr := r.style(gray, "─── "+escapeTerminal(r.truncate(args, 100), false))
 	fmt.Fprintf(r.w, "%s %s\n", header, argStr)
 }
 
@@ -522,7 +536,7 @@ func (r *Renderer) ToolResult(output string) {
 	// byte-count gate double-marked every >120-rune line and spuriously
 	// marked short multibyte lines).
 	line, _, _ := strings.Cut(output, "\n")
-	summary := r.truncate(line, 120)
+	summary := escapeTerminal(r.truncate(line, 120), false)
 	if len(output) > len(line) {
 		summary += " …"
 	}
@@ -540,7 +554,7 @@ func (r *Renderer) FinalAnswer(text string) {
 		fmt.Fprintln(r.w)
 		return
 	}
-	fmt.Fprintln(r.w, r.style(green, "✅ "+text))
+	fmt.Fprintln(r.w, r.style(green, "✅ "+escapeTerminal(text, true)))
 }
 
 // Summary prints a run summary line with total token and cache statistics.
@@ -575,7 +589,7 @@ func (r *Renderer) Error(err error) {
 	if r.disable() || err == nil {
 		return
 	}
-	fmt.Fprintln(r.w, r.style(red, "❌ "+err.Error()))
+	fmt.Fprintln(r.w, r.style(red, "❌ "+escapeTerminal(err.Error(), true)))
 }
 
 // ── Skill Events ──────────────────────────────────────────────────────
@@ -585,7 +599,7 @@ func (r *Renderer) SkillLoaded(names []string) {
 	if r.disable() || len(names) == 0 || !r.skillVerbose {
 		return
 	}
-	joined := strings.Join(names, ", ")
+	joined := escapeTerminal(strings.Join(names, ", "), false)
 	fmt.Fprintln(r.w, r.style(cyan, "📚 Loaded skill: "+joined))
 }
 
@@ -594,7 +608,7 @@ func (r *Renderer) SkillAutoLoaded(names []string) {
 	if r.disable() || len(names) == 0 || !r.skillVerbose {
 		return
 	}
-	joined := strings.Join(names, ", ")
+	joined := escapeTerminal(strings.Join(names, ", "), false)
 	fmt.Fprintln(r.w, r.style(dim, fmt.Sprintf("📚 Auto-loaded %d skill(s): %s", len(names), joined)))
 }
 
@@ -603,7 +617,7 @@ func (r *Renderer) SkillSuggested(name, heuristic string) {
 	if r.disable() || name == "" || !r.skillVerbose {
 		return
 	}
-	fmt.Fprintln(r.w, r.style(yellow, "🔍 Skill suggestion: "+name+" ("+heuristic+")"))
+	fmt.Fprintln(r.w, r.style(yellow, "🔍 Skill suggestion: "+escapeTerminal(name+" ("+heuristic+")", false)))
 }
 
 // SkillSaved prints confirmation of a saved skill.
@@ -611,7 +625,7 @@ func (r *Renderer) SkillSaved(name string) {
 	if r.disable() || name == "" || !r.skillVerbose {
 		return
 	}
-	fmt.Fprintln(r.w, r.style(green, "✓ Saved skill \""+name+"\""))
+	fmt.Fprintln(r.w, r.style(green, "✓ Saved skill \""+escapeTerminal(name, false)+"\""))
 }
 
 // SkillDeleted prints confirmation of a deleted skill.
@@ -619,7 +633,7 @@ func (r *Renderer) SkillDeleted(name string) {
 	if r.disable() || name == "" || !r.skillVerbose {
 		return
 	}
-	fmt.Fprintln(r.w, r.style(red, "✗ Deleted skill \""+name+"\""))
+	fmt.Fprintln(r.w, r.style(red, "✗ Deleted skill \""+escapeTerminal(name, false)+"\""))
 }
 
 // ── Memory lifecycle notifications ────────────────────────────────────
@@ -643,7 +657,7 @@ func (r *Renderer) MemoryFact(action, target, content string) {
 	default:
 		icon, color = "🧠", dim
 	}
-	fmt.Fprintln(r.w, r.style(color, fmt.Sprintf("%s memory[%s] %s: %s", icon, target, action, r.truncate(content, 70))))
+	fmt.Fprintln(r.w, r.style(color, fmt.Sprintf("%s memory[%s] %s: %s", icon, escapeTerminal(target, false), action, escapeTerminal(r.truncate(content, 70), false))))
 }
 
 // MemoryConsolidated prints a fact-consolidation notification (before → after).
@@ -675,7 +689,7 @@ func (r *Renderer) MemoryEpisode(action, detail string) {
 	default:
 		icon, color = "💾", dim
 	}
-	fmt.Fprintln(r.w, r.style(color, fmt.Sprintf("%s episode %s: %s", icon, action, detail)))
+	fmt.Fprintln(r.w, r.style(color, fmt.Sprintf("%s episode %s: %s", icon, action, escapeTerminal(detail, false))))
 }
 
 // ── Agent-loop signal notifications ───────────────────────────────────
@@ -696,7 +710,7 @@ func (r *Renderer) ToolRecovery(tool, detail string) {
 	if r.disable() || !r.memoryVerbose {
 		return
 	}
-	fmt.Fprintln(r.w, r.style(yellow, fmt.Sprintf("🔁 tool recovery [%s]: %s", tool, r.truncate(detail, 80))))
+	fmt.Fprintln(r.w, r.style(yellow, fmt.Sprintf("🔁 tool recovery [%s]: %s", escapeTerminal(tool, false), escapeTerminal(r.truncate(detail, 80), false))))
 }
 
 // ToolRunning reports that a single tool call is still executing after the
@@ -707,7 +721,7 @@ func (r *Renderer) ToolRunning(tool, elapsed string) {
 	if r.disable() {
 		return
 	}
-	fmt.Fprintln(r.w, r.style(yellow, fmt.Sprintf("⏳ %s still running (%s)", tool, elapsed)))
+	fmt.Fprintln(r.w, r.style(yellow, fmt.Sprintf("⏳ %s still running (%s)", escapeTerminal(tool, false), elapsed)))
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────
