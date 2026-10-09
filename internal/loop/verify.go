@@ -167,6 +167,8 @@ const (
 	// verifyTraceBudgetBytes bounds the whole rendered trace; calls past the
 	// budget are counted, not rendered.
 	verifyTraceBudgetBytes = 14 * 1024
+	// verifyAnswerMaxBytes bounds the candidate answer (head + tail).
+	verifyAnswerMaxBytes = 16 * 1024
 	// verifyPriorMessageBytes clamps each earlier-turn message rendered as
 	// conversational context.
 	verifyPriorMessageBytes = 1024
@@ -199,7 +201,7 @@ func verifyPrompt(task string, priorContext string, toolTrace string, answer str
 	b.WriteString("## Tool calls this turn (arguments and result excerpts)\n")
 	b.WriteString(toolTrace + "\n\n")
 	b.WriteString("## Final answer to verify\n")
-	b.WriteString(redact.RedactSecrets(answer) + "\n")
+	b.WriteString(boundedRedact(answer, verifyAnswerMaxBytes) + "\n")
 	return b.String()
 }
 
