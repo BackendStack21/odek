@@ -87,10 +87,17 @@ func denyScanVars(cmd string, dc *denyCtx, depth int, inherited map[string]strin
 	tokens, ops, _ := tokenizeMarked(main)
 	for _, segment := range splitSegments(markLiteralOperators(tokens, ops)) {
 		stages := splitPipes(segment)
-		for _, stage := range stages {
-			if denyStage(denyExpand(stage, vars, unquoted), dc, depth) {
+		var previous []string
+		for i, stage := range stages {
+			expanded := denyExpand(stage, vars, unquoted)
+			if denyStage(expanded, dc, depth) {
 				return true
 			}
+			// A shell fed by a static echo/printf runs that text as a script.
+			if i > 0 && denyStaticPipeFeed(previous, expanded, dc, depth) {
+				return true
+			}
+			previous = expanded
 		}
 		if len(stages) == 1 {
 			denyAssign(stages[0], vars)
@@ -301,6 +308,21 @@ func denyStage(stage []string, dc *denyCtx, depth int) bool {
 	return denyMatchesAny(inner, dc.entries) || denyPayloads(inner, dc, depth)
 }
 
+// denyStaticPipeFeed scans the text a static echo/printf producer pipes into a
+// shell, which the shell executes as commands.
+func denyStaticPipeFeed(producer, sink []string, dc *denyCtx, depth int) bool {
+	cmd, _ := unwrapWrappers(sink)
+	if len(cmd) == 0 || !pipedShells[commandName(cmd[0])] || shellInlineScriptIndex(cmd) >= 0 {
+		return false
+	}
+	text, ok := staticPipeText([][]string{producer})
+	if !ok {
+		return false
+	}
+	text = strings.TrimSpace(strings.ReplaceAll(text, "\x00", " "))
+	return text != "" && denyScan(text, dc, depth+1)
+}
+
 // denyPayloads matches commands carried inside a command's arguments.
 func denyPayloads(inner []string, dc *denyCtx, depth int) bool {
 	name := commandName(inner[0])
@@ -308,6 +330,12 @@ func denyPayloads(inner []string, dc *denyCtx, depth int) bool {
 	case pipedShells[name]:
 		if idx := shellInlineScriptIndex(inner); idx >= 0 && inner[idx] != "" {
 			return denyScan(inner[idx], dc, depth+1)
+		}
+		// A here-string is the script the shell reads from standard input.
+		for i := 1; i+1 < len(inner); i++ {
+			if inner[i] == "<<<" && inner[i+1] != "" && denyScan(inner[i+1], dc, depth+1) {
+				return true
+			}
 		}
 	case name == "eval" && len(inner) > 1:
 		return denyScan(strings.Join(inner[1:], " "), dc, depth+1)
