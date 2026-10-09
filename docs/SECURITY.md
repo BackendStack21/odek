@@ -651,7 +651,8 @@ Background jobs inherit the shell tool's security model with no downgrade:
   entering the model context, where all job output crosses the
   untrusted-content boundary with audit ingest records.
 - **Kill-on-exit** — jobs die with their session (SIGTERM → SIGKILL to the
-  process group; sandbox mode reuses the pidfile group-kill follow-up). There
+  process group; sandbox mode reuses the pidfile group-kill follow-up, which also runs after a
+  natural exit so container-side children a job left behind are reaped). There
   is no detach mode; pattern-based kills (`pkill`) are not used.
 
 ## Attack-vector matrix

@@ -470,6 +470,10 @@ func recordViewerReads(ctx context.Context, cmd, stdout string) {
 // this is best-effort, not a hard guarantee. The command string travels as
 // a positional argument ($1), never interpolated into the wrapper, so
 // quoting cannot break out of it.
+//
+// The wrapper leaves the pidfile in place on a natural exit: background jobs
+// run the follow-up after every exit to reap descendants that outlived the
+// command, and the follow-up removes the pidfile itself.
 // sandboxKillFollowupTimeout bounds the in-container kill follow-up. It
 // runs synchronously after the command's own timeout/cancel already fired;
 // without a deadline a hung Docker daemon would wedge the tool call forever
@@ -478,7 +482,7 @@ const sandboxKillFollowupTimeout = 10 * time.Second
 
 func wrapSandboxCommand(containerName, command string) (argv []string, followUp func()) {
 	pidFile := fmt.Sprintf("/tmp/.odek-cmd-%d-%d.pid", os.Getpid(), sandboxCmdSeq.Add(1))
-	wrapper := "echo $$ > " + pidFile + "; sh -c \"$1\"; rc=$?; rm -f " + pidFile + "; exit $rc"
+	wrapper := "echo $$ > " + pidFile + "; sh -c \"$1\"; exit $?"
 	argv = []string{"exec", "-w", "/workspace", containerName, "sh", "-c", wrapper, "odek-cmd", command}
 	followUp = func() {
 		// Best-effort: the container may already be gone (session cleanup).

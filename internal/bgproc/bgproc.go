@@ -393,9 +393,10 @@ func (m *Manager) wait(sessionID string, e *jobEntry) {
 	obs := m.obs
 	m.mu.Unlock()
 
-	if e.reason == StatusKilled || e.reason == StatusTimeout {
-		m.runFollowUp(e)
-	}
+	// Sandbox mode: the group signal only reaches the host-side docker-exec
+	// client, so container-side descendants (including those left behind by a
+	// naturally exiting job) are reaped only by the pidfile follow-up.
+	m.runFollowUp(e)
 	if e.release != nil {
 		e.release()
 	}
