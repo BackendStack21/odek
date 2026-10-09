@@ -202,6 +202,8 @@ odek subagent --goal "Continue refactoring" --parent-session "20260519-abc123"
 | `2` | Timeout | Context deadline exceeded (controlled by `--timeout`) |
 | `3` | Setup failure | Invalid flags, missing config, or internal panic |
 
+Every value-taking flag (`--goal`, `--context`, `--task`, `--parent-session`, `--profile`, `--timeout`, `--max-iter`) is a setup failure when its value is missing, so a wrapper with an empty variable cannot silently drop a requested capability profile.
+
 ### Flags
 
 | Flag | Default | Description |
