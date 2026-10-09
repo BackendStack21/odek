@@ -9,7 +9,7 @@ import {
   pruneMessages, scrollBottom, forceScrollBottom, stripAttachmentBodies,
   showCancel, hideCancel, teach,
 } from './utils.js';
-import { markdownToHtml } from './markdown.js';
+import { markdownToHtml, CODE_COPY_LABEL, CODE_COPIED_LABEL } from './markdown.js';
 import { parseUntrusted } from './untrusted.js';
 import { classifyToolResult, chipsHtml, prettyToolBody, collectReceipt, formatReceipt } from './tools.js';
 import { toolIcon } from './icons.js';
@@ -722,7 +722,7 @@ export function endStream(reason = "interrupted") {
   hideCancel();
   sendBtn.disabled = S.uploading || !S.ws || S.ws.readyState !== WebSocket.OPEN;
   promptEl.disabled = false;
-  sendBtn.textContent='↑';sendBtn.setAttribute('aria-label','Send message');
+  setSendMode(sendBtn, 'send');
   S.refreshSupervision?.();
 }
 
@@ -1669,13 +1669,25 @@ function copyCode(el) {
   const code = block.querySelector('pre code');
   if (!code) return;
   copyTextToClipboard(code.textContent).then(() => {
-    el.textContent = '✓ copied';
+    el.innerHTML = CODE_COPIED_LABEL;
     el.classList.add('copied');
     setTimeout(() => {
-      el.textContent = '📋 copy';
+      el.innerHTML = CODE_COPY_LABEL;
       el.classList.remove('copied');
     }, 2000);
   });
+}
+
+// The composer's primary button: an arrow while idle, a labelled "Queue"
+// pill while a turn runs (Enter queues the next prompt).
+const SEND_ARROW = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5M6 11l6-6 6 6"/></svg>';
+export function setSendMode(btn, mode) {
+  if (!btn) return;
+  const queue = mode === 'queue';
+  btn.classList.toggle('queue-mode', queue);
+  btn.innerHTML = queue ? '<span>Queue</span>' : SEND_ARROW;
+  btn.setAttribute('aria-label', queue ? 'Queue next message' : 'Send message');
+  btn.title = queue ? 'Queue next message (Enter)' : 'Send (Enter)';
 }
 
 function addCopyButton(bubble) {

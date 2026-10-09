@@ -66,10 +66,11 @@ export function copyTextToClipboard(text) {
 }
 
 // ── Toast ──
-export function showToast(msg, ms) {
+export function showToast(msg, ms, variant) {
   const el = document.getElementById('toast');
   if (!el) return;
   el.textContent = msg;
+  el.classList.toggle('tip', variant === 'tip');
   el.classList.add('show');
   clearTimeout(S.toastTimer);
   S.toastTimer = setTimeout(() => el.classList.remove('show'), ms || 3000);
@@ -85,7 +86,7 @@ export function teach(key, text) {
   if (S.hintsShown[key]) return;
   S.hintsShown[key] = true;
   try { sessionStorage.setItem('odek_hints', JSON.stringify(S.hintsShown)); } catch { /* ignore */ }
-  showToast('💡 ' + text, HINT_TTL_MS);
+  showToast(String(text).replace(/^tip:\s*/i, ''), HINT_TTL_MS, 'tip');
 }
 
 // ── Smart Scroll ──
@@ -93,8 +94,39 @@ export const SCROLL_THRESHOLD = 100;
 export function isNearBottom() {
   return messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight < SCROLL_THRESHOLD;
 }
+// Whether the view follows new content. Decided from scroll events — which
+// fire for user scrolls, programmatic scrolls and height clamps, but never
+// for content growth — so one large append (a tool batch, a table) cannot
+// push the view past the threshold and silently stop the follow.
+S.stickBottom = true;
+messagesEl?.addEventListener?.('scroll', () => {
+  // A smooth jump to the bottom passes through positions above it; keep
+  // following until it lands (or the user scrolls away after it settles).
+  if (S.smoothToBottomUntil && Date.now() < S.smoothToBottomUntil) {
+    if (isNearBottom()) S.smoothToBottomUntil = 0;
+    return;
+  }
+  S.stickBottom = isNearBottom();
+}, { passive: true });
+// Direct operator input ends the smooth-jump window at once, so a scroll up
+// right after pressing the button is honoured.
+for (const type of ['wheel', 'touchstart', 'keydown']) {
+  messagesEl?.addEventListener?.(type, () => { S.smoothToBottomUntil = 0; }, { passive: true });
+}
+// Expanding something in the transcript grows content without a scroll
+// event; following would then yank the view away from what was opened.
+// The next scroll that reaches the bottom re-arms the follow.
+const EXPANDERS = '.tb-header, .thinking-toggle, .collapse-toggle, .draft-toggle, .sg-header, .sa-top, summary, .result-more';
+// Only when the transcript already scrolls past the follow threshold: below
+// it the view is effectively at the bottom, and no scroll event could
+// re-arm the follow.
+messagesEl?.addEventListener?.('click', (e) => {
+  if (!e.target?.closest?.(EXPANDERS)) return;
+  if (messagesEl.scrollHeight - messagesEl.clientHeight > SCROLL_THRESHOLD) S.stickBottom = false;
+}, { capture: true });
+
 export function scrollBottom() {
-  if (!isNearBottom()) return; // user is reading up — don't steal scroll
+  if (!S.stickBottom) return; // user is reading up — don't steal scroll
   if (S.scrollRAF) return;
   S.scrollRAF = requestAnimationFrame(() => {
     messagesEl.scrollTop = messagesEl.scrollHeight;
@@ -106,12 +138,15 @@ export function forceScrollBottom() {
     cancelAnimationFrame(S.scrollRAF);
     S.scrollRAF = null;
   }
+  S.stickBottom = true;
   messagesEl.scrollTop = messagesEl.scrollHeight;
 }
 
 // Scroll-to-bottom button handler: smooth jump (user-initiated — the CSS
 // default is auto so streaming autoscroll never animates), then hide.
 export function scrollToBottom() {
+  S.stickBottom = true;
+  S.smoothToBottomUntil = Date.now() + 1000;
   if (messagesEl.scrollTo) messagesEl.scrollTo({ top: messagesEl.scrollHeight, behavior: 'smooth' });
   else messagesEl.scrollTop = messagesEl.scrollHeight;
   if (scrollBottomBtn) scrollBottomBtn.classList.remove('visible');

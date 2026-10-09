@@ -1,16 +1,25 @@
 // Tool-specific presentation models. Never infer success from optimistic prose.
-import { parseUntrusted } from './untrusted.js';
+import { unwrapForDisplay, displayLabel } from './untrusted.js';
 
 const object = value => value && typeof value === 'object' && !Array.isArray(value);
 const list = value => Array.isArray(value) ? value : [];
 export function displayValue(value) {
   if (value == null) return '';
   const text = typeof value === 'string' ? value : JSON.stringify(value);
-  return parseUntrusted(text).map(part => part.body).join('');
+  return unwrapForDisplay(text);
 }
 function parse(value) {
   if (object(value)) return value;
   try { const data = JSON.parse(value); return object(data) ? data : {}; } catch { return {}; }
+}
+// File names and paths are untrusted single-line labels.
+const pathLabel = value => displayLabel(displayValue(value));
+function byteSize(n) {
+  const v = Number(n);
+  if (!Number.isFinite(v) || v < 0) return '';
+  if (v < 1024) return v + ' B';
+  if (v < 1024 * 1024) return (v / 1024).toFixed(1) + ' KB';
+  return (v / (1024 * 1024)).toFixed(1) + ' MB';
 }
 function quantity(items, label) { return `${items.length} ${label}${items.length === 1 ? '' : 's'}`; }
 export function toolPreview(name, input) {
@@ -65,7 +74,12 @@ export function toolView(name, raw, input = '') {
   switch (name) {
     case 'search_files':
       if (!Array.isArray(data.matches)) return null;
-      kind = 'matches'; items = list(data.matches).map(r => entry(r.path, '', r.line ? `Line ${r.line}` : '', [section('Match','text',r.content)])); break;
+      kind = 'matches'; items = list(data.matches).map(r => entry(pathLabel(r.path), '', r.line ? `Line ${r.line}` : '', [section('Match','text',r.content)])); break;
+    case 'glob':
+      // {"matches":[{path,size,is_dir}]}; null matches means zero, not an error.
+      if (data.error) { kind = 'files'; items = [entry(args.pattern || 'glob','failed','',[section('Error','text',data.error)])]; break; }
+      if (data.matches !== null && !Array.isArray(data.matches)) return null;
+      kind = 'files'; items = list(data.matches).map(m => entry(pathLabel(m.path), '', m.is_dir ? 'directory' : byteSize(m.size))); break;
     case 'read_file':
       if (typeof data.content !== 'string' && !data.error) return null;
       kind = 'file'; items = [entry(args.path || 'File content',data.error ? 'failed' : '',data.total_lines != null ? `${data.total_lines} lines` : '',[section(data.error ? 'Error' : 'Content',data.error ? 'text' : 'code',data.error || data.content)])]; break;
@@ -136,4 +150,40 @@ export function toolArguments(name, input) {
   const args = parse(input);
   if (name === 'plan') return planView('',args);
   return null;
+}
+
+// treeText formats the tree tool's {tree:{path,is_dir,children…}} payload as
+// an indented outline (├── / └──) with directory file counts and sizes.
+// Returns null when the payload is not a tree, so callers fall back to raw.
+export function treeText(raw) {
+  const data = parse(raw);
+  if (!object(data.tree)) return data.error ? 'error: ' + displayValue(data.error) : null;
+  const trim = path => displayValue(path).replace(/[\\/]+$/, '');
+  // Split on separators before escaping: escapes contain backslashes.
+  const base = path => displayLabel(trim(path).split(/[\\/]/).pop() || displayValue(path)) || '?';
+  const meta = e => {
+    if (e.error) return '  — ' + displayValue(e.error);
+    if (e.is_dir) {
+      const bits = [];
+      if (e.file_count) bits.push(e.file_count + (e.file_count === 1 ? ' file' : ' files'));
+      if (e.total_size) bits.push(byteSize(e.total_size));
+      return bits.length ? '  (' + bits.join(', ') + ')' : '';
+    }
+    return e.total_size ? '  ' + byteSize(e.total_size) : '';
+  };
+  const rootPath = displayValue(data.tree.path) || '.';
+  const rootLabel = displayLabel(trim(rootPath) ? trim(rootPath) + (data.tree.is_dir ? '/' : '') : rootPath); // a bare '/' stays '/'
+  const lines = [rootLabel + meta(data.tree)];
+  const walk = (children, prefix) => {
+    if (prefix.length > 4 * 64) return; // the tree tool caps depth at 10; bound hostile payloads
+    const kids = list(children).filter(object);
+    kids.forEach((c, i) => {
+      const last = i === kids.length - 1;
+      lines.push(prefix + (last ? '└── ' : '├── ') + base(c.path) + (c.is_dir ? '/' : '') + meta(c));
+      walk(c.children, prefix + (last ? '    ' : '│   '));
+    });
+  };
+  walk(data.tree.children, '');
+  if (data.error) lines.push('error: ' + displayValue(data.error));
+  return lines.join('\n');
 }

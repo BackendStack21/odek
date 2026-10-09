@@ -48,3 +48,46 @@ test('retired batch tools use generic output and argument fallback', () => {
     assert.equal(toolArguments(name,json({files:[{path:'a'}],commands:[{command:'false'}]})),null);
   }
 });
+
+test('glob renders matched paths with sizes, unwrapping nested envelopes', () => {
+  const wrapped = '<untrusted·content_9a0f source="glob:.">\nmain.go\n</untrusted·content_9a0f>';
+  const view = toolView('glob', json({matches:[{path:wrapped,size:2048,is_dir:false},{path:'cmd',size:0,is_dir:true}]}), json({pattern:'*'}));
+  assert.equal(view.kind, 'files');
+  assert.equal(view.summary, '2 files');
+  assert.deepEqual(view.items.map(i => [i.title, i.meta]), [['main.go','2.0 KB'],['cmd','directory']]);
+  assert.equal(toolView('glob', json({matches:null})).summary, '0 files');
+  const failed = toolView('glob', json({matches:null,error:'bad pattern'}), json({pattern:'['}));
+  assert.equal(failed.items[0].status, 'failed');
+});
+
+test('tree renders an indented outline with counts and sizes', async () => {
+  const { treeText } = await import('./toolviews.js');
+  const raw = json({tree:{path:'/w',is_dir:true,file_count:3,total_size:3072,depth:0,children:[
+    {path:'/w/cmd',is_dir:true,file_count:1,total_size:1024,depth:1,children:[{path:'/w/cmd/main.go',is_dir:false,total_size:1024,depth:2}]},
+    {path:'/w/go.mod',is_dir:false,total_size:2048,depth:1},
+  ]}});
+  assert.equal(treeText(raw), [
+    '/w/  (3 files, 3.0 KB)',
+    '├── cmd/  (1 file, 1.0 KB)',
+    '│   └── main.go  1.0 KB',
+    '└── go.mod  2.0 KB',
+  ].join('\n'));
+  assert.equal(treeText('not json'), null);
+  assert.equal(treeText(json({error:'no such dir'})), 'error: no such dir');
+});
+
+test('tree labels: trailing slashes, Windows separators and missing paths', async () => {
+  const { treeText } = await import('./toolviews.js');
+  assert.equal(treeText(json({tree:{path:'/',is_dir:true}})), '/');
+  assert.equal(treeText(json({tree:{path:'/a/b/',is_dir:true}})), '/a/b/');
+  const win = treeText(json({tree:{path:'C:\\w',is_dir:true,children:[{path:'C:\\w\\x.txt',is_dir:false},{is_dir:false}]}}));
+  assert.equal(win, 'C:\\w/\n├── x.txt\n└── ?');
+});
+
+test('file names cannot forge tree lines or reorder text', async () => {
+  const { treeText } = await import('./toolviews.js');
+  const out = treeText(json({tree:{path:'/r',is_dir:true,children:[{path:'/r/x\n│   └── fake',is_dir:false},{path:'/r/gpj\u202Eexe',is_dir:false}]}}));
+  assert.deepEqual(out.split('\n'), ['/r/', '├── x\\n│   └── fake', '└── gpj\\u{202E}exe']);
+  const glob = toolView('glob', json({matches:[{path:'a\u200Bb',size:1,is_dir:false}]}));
+  assert.equal(glob.items[0].title, 'a\\u{200B}b');
+});

@@ -10,8 +10,11 @@ const paths = {
  pin:'<path d="m8 3 8 0-1 6 4 4v2H5v-2l4-4-1-6M12 15v6"/>',
  download:'<path d="M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5"/>',
  close:'<path d="m6 6 12 12M6 18 18 6"/>',
+ copy:'<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h8"/>',
+ check:'<path d="m5 12 5 5 9-10"/>',
+ tree:'<rect x="3" y="4" width="6" height="5" rx="1"/><rect x="14" y="10" width="7" height="4" rx="1"/><rect x="14" y="17" width="7" height="4" rx="1"/><path d="M6 9v10h8M6 12h8"/>',
 };
 export function icon(name) { return '<svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'+(paths[name]||paths.grid)+'</svg>'; }
 export function toolIcon(name) {
- const kind=/shell|exec|bg_/.test(name)?'terminal':/write|patch|edit|diff/.test(name)?'edit':/read|file/.test(name)?'file':/search|grep|find/.test(name)?'search':/browser|http|web/.test(name)?'globe':/delegate|subagent/.test(name)?'branch':'grid';return icon(kind);
+ const kind=name==='tree'?'tree':/shell|exec|bg_/.test(name)?'terminal':/write|patch|edit|diff/.test(name)?'edit':/read|file/.test(name)?'file':/search|grep|find|glob/.test(name)?'search':/browser|http|web/.test(name)?'globe':/delegate|subagent/.test(name)?'branch':'grid';return icon(kind);
 }

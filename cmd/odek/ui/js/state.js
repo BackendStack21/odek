@@ -30,8 +30,8 @@ function migrateTheme(raw) {
   if (raw === 'light') return 'ember-light';
   if (raw === 'dark') return 'ember-dark';
   if (raw === 'classic') return 'ember-dark';
-  if (raw === 'ember-dark' || raw === 'ember-light' || raw === 'high-contrast') return raw;
-  return 'ember-dark';
+  if (raw === 'ember-dark' || raw === 'ember-light' || raw === 'midnight' || raw === 'high-contrast') return raw;
+  return 'system';
 }
 
 export const S = {
@@ -107,13 +107,12 @@ export const S = {
 
   // ── Saved nodes for restoring the empty state after clearing ──
   savedEmptyStateNode: null,
-  savedScrollBtnNode: null,
 
   // ── Prompt queue (prompts held while a turn is running) ──
   promptQueue: [], // {id, text, attachments, model}
 
-  // ── Theme: ember-dark | ember-light | high-contrast ──
-  theme: migrateTheme(localStorage.getItem('odek_theme')),
+  // ── Theme: system (follows the OS) | ember-dark | ember-light | midnight | high-contrast ──
+  theme: migrateTheme((() => { try { return localStorage.getItem('odek_theme'); } catch { return null; } })()),
 
   // ── Wake provenance (chip on the next assistant turn, not a system bubble) ──
   pendingWakeChip: null,

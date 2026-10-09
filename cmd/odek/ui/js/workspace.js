@@ -104,6 +104,8 @@ function syncSessionRail() {
   if (button) { button.setAttribute('aria-expanded', String(open)); button.setAttribute('aria-controls','session-rail'); }
 }
 S.toggleSessionRail = () => { S.sessionRailOpen = !S.sessionRailOpen; syncSessionRail(); };
+// Below the three-column width the rail is a drawer: its scrim closes it.
+byId('sidebar-overlay')?.addEventListener('click', () => { if (S.sessionRailOpen) S.toggleSessionRail(); });
 
 // Keep the workspace-wide marker for CSS/behavior branches; the rail hosts
 // the single session list on every width.

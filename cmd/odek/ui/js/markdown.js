@@ -11,6 +11,11 @@
 // no inline handler — clicks are delegated on #messages in render.js.
 // Images never become <img> (CSP + tracking): a safe URL is a caption link.
 import { escapeHtml, escapeAttr } from './escape.js';
+import { icon } from './icons.js';
+
+// Code-block copy button label; render.js restores it after a copy.
+export const CODE_COPY_LABEL = icon('copy') + '<span>Copy</span>';
+export const CODE_COPIED_LABEL = icon('check') + '<span>Copied</span>';
 
 // Link allowlist: http(s), mailto, #, ./, ../, and same-origin paths.
 // Protocol-relative (//evil), javascript:/data:/blob:/vbscript:,
@@ -52,16 +57,22 @@ export function markdownToHtml(text) {
   return parseBlocks(text.split('\n'));
 }
 
-function parseBlocks(lines) {
+// Quote nesting beyond this depth renders its remaining '>' markers as
+// text instead of recursing, so hostile input cannot exhaust the stack.
+const MAX_QUOTE_DEPTH = 32;
+
+function parseBlocks(lines, depth = 0) {
   const out = [];
   let i = 0;
 
   const fenceOpen = (l) => /^```(\w*)\s*$/.exec(l);
   const isFenceClose = (l) => /^```\s*$/.test(l);
   const headerMatch = (l) => /^(#{1,4})\s+(.+)$/.exec(l);
-  const isHr = (l) => /^(---|\*\*\*|___)$/.test(l.trim());
-  const ulItem = (l) => /^\s*[-*+]\s+(.+)$/.exec(l);
-  const olItem = (l) => /^\s*\d+\.\s+(.+)$/.exec(l);
+  const isHr = (l) => THEMATIC_BREAK.test(l);
+  // Detection and parsing share listMarker, so a line that starts a list
+  // is always one parseList can read.
+  const ulItem = (l) => { const m = listMarker(l); return m && !m.ordered ? m : null; };
+  const olItem = (l) => { const m = listMarker(l); return m && m.ordered ? m : null; };
   const isQuote = (l) => /^>\s?/.test(l);
   const isTableAt = (idx) =>
     idx + 1 < lines.length && isTableRow(lines[idx]) && isTableSep(lines[idx + 1]);
@@ -113,7 +124,9 @@ function parseBlocks(lines) {
         }
         break;
       }
-      out.push('<blockquote>' + parseBlocks(inner) + '</blockquote>');
+      out.push('<blockquote>' + (depth < MAX_QUOTE_DEPTH
+        ? parseBlocks(inner, depth + 1)
+        : '<p>' + inner.map(inlineHtml).join('<br>') + '</p>') + '</blockquote>');
       continue;
     }
 
@@ -124,39 +137,10 @@ function parseBlocks(lines) {
       continue;
     }
 
-    if (ulItem(line)) {
-      const items = [];
-      let tasks = 0;
-      while (i < lines.length) {
-        const m = ulItem(lines[i]);
-        if (!m) break;
-        const task = TASK_ITEM.exec(m[1]);
-        if (task) {
-          tasks++;
-          const on = task[1] !== ' ';
-          items.push(
-            '<li class="task">' +
-            '<span class="task-mark' + (on ? ' on' : '') + '" aria-hidden="true">' +
-            (on ? '☑' : '☐') + '</span>' + inlineHtml(task[2]) + '</li>'
-          );
-        } else {
-          items.push('<li>' + inlineHtml(m[1]) + '</li>');
-        }
-        i++;
-      }
-      out.push('<' + (tasks ? 'ul class="task-list"' : 'ul') + '>' + items.join('') + '</ul>');
-      continue;
-    }
-
-    if (olItem(line)) {
-      const items = [];
-      while (i < lines.length) {
-        const m = olItem(lines[i]);
-        if (!m) break;
-        items.push('<li>' + inlineHtml(m[1]) + '</li>');
-        i++;
-      }
-      out.push('<ol>' + items.join('') + '</ol>');
+    if (ulItem(line) || olItem(line)) {
+      const list = parseList(lines, i, isBlockStart);
+      out.push(list.html);
+      i = list.next;
       continue;
     }
 
@@ -170,6 +154,102 @@ function parseBlocks(lines) {
   }
 
   return out.join('\n');
+}
+
+// List item marker: indentation width (tabs count as 4), ordered flag, the
+// ordinal for ordered items, and the item text.
+function listMarker(line) {
+  if (THEMATIC_BREAK.test(line || '')) return null; // '* * *' is a rule, not an item
+  const m = /^([ \t]*)(?:([-*+])|(\d{1,9})[.)])\s+(.+)$/.exec(line || '');
+  if (!m) return null;
+  const indent = m[1].replace(/\t/g, '    ').length;
+  return { indent, ordered: !m[2], start: m[3] ? Number(m[3]) : 1, text: m[4] };
+}
+
+// A thematic break: three or more of the same -, * or _ with optional
+// spaces between them (CommonMark), e.g. '---' or '* * *'.
+const THEMATIC_BREAK = /^ {0,3}([-*_])(?:[ \t]*\1){2,}[ \t]*$/;
+
+const INDENTED_FENCE = /^([ \t]+)```(\w*)\s*$/;
+
+// Nesting beyond this depth continues at the deepest level instead of
+// recursing, so hostile input cannot exhaust the stack.
+const MAX_LIST_DEPTH = 32;
+
+// One list level starting at lines[start]. Deeper-indented markers open a
+// nested list inside the previous item; a marker of the other kind at the
+// same depth, a marker at or above the parent's indent, or any non-list line
+// ends the level. A marker indented between the parent and this level joins
+// this level, so uneven indentation never splits one list in two. A single
+// blank line between items keeps the list going.
+function parseList(lines, start, isBlockStart, depth = 0, parentIndent = -1) {
+  const first = listMarker(lines[start]);
+  const base = first.indent;
+  const items = [];
+  let tasks = 0;
+  let i = start;
+  while (i < lines.length) {
+    const m = listMarker(lines[i]);
+    if (!m) {
+      const next = listMarker(lines[i + 1]);
+      if (lines[i].trim() === '' && next && next.indent > parentIndent && items.length) { i++; continue; }
+      // An indented fence belongs to the item above it (a blank line may
+      // separate them); its lines are dedented by the fence's indent.
+      if (items.length && lines[i].trim() === '' && INDENTED_FENCE.test(lines[i + 1] || '')) { i++; continue; }
+      const fence = items.length && INDENTED_FENCE.exec(lines[i]);
+      if (fence) {
+        const indent = fence[1].length;
+        const buf = [];
+        i++;
+        while (i < lines.length && !/^\s*```\s*$/.test(lines[i])) {
+          const lead = /^[ \t]*/.exec(lines[i])[0].length;
+          buf.push(lines[i].slice(Math.min(indent, lead)));
+          i++;
+        }
+        if (i < lines.length) i++; // closing fence
+        else while (buf.length && buf[buf.length - 1].trim() === '') buf.pop(); // EOF closes while streaming
+        items[items.length - 1].children += codeBlockHtml(fence[2] || 'code', buf.length ? buf.join('\n') + '\n' : '');
+        continue;
+      }
+      // An indented non-blank line straight after an item that opens no other
+      // block continues that item. Unindented text ends the list: models
+      // write it meaning a new paragraph.
+      if (/^[ \t]+\S/.test(lines[i]) && items.length && lines[i - 1].trim() !== '' && !isBlockStart(lines[i], i)) {
+        items[items.length - 1].body += '<br>' + inlineHtml(lines[i].trim());
+        i++;
+        continue;
+      }
+      break;
+    }
+    if (m.indent <= parentIndent) break;
+    if (m.indent > base && items.length && depth < MAX_LIST_DEPTH) {
+      const sub = parseList(lines, i, isBlockStart, depth + 1, base);
+      items[items.length - 1].children += sub.html;
+      i = sub.next;
+      continue;
+    }
+    if (m.ordered !== first.ordered) break;
+    const task = !m.ordered && TASK_ITEM.exec(m.text);
+    if (task) {
+      tasks++;
+      const on = task[1] !== ' ';
+      items.push({
+        open: '<li class="task">',
+        body: '<span class="task-mark' + (on ? ' on' : '') + '" aria-hidden="true">' +
+          (on ? '☑' : '☐') + '</span>' + inlineHtml(task[2]),
+        children: '',
+      });
+    } else {
+      items.push({ open: '<li>', body: inlineHtml(m.text), children: '' });
+    }
+    i++;
+  }
+  const lis = items.map((it) => it.open + it.body + it.children + '</li>').join('');
+  if (first.ordered) {
+    const startAttr = first.start !== 1 ? ' start="' + first.start + '"' : '';
+    return { html: '<ol' + startAttr + '>' + lis + '</ol>', next: i };
+  }
+  return { html: '<' + (tasks ? 'ul class="task-list"' : 'ul') + '>' + lis + '</ul>', next: i };
 }
 
 function splitRow(line) {
@@ -240,7 +320,7 @@ function codeBlockHtml(lang, code) {
   return '<div class="code-block">' +
     '<div class="cb-header">' +
       '<span class="cb-lang">' + escapeHtml(lang) + '</span>' +
-      '<button class="cb-copy">📋 copy</button>' +
+      '<button class="cb-copy" type="button" aria-label="Copy code">' + CODE_COPY_LABEL + '</button>' +
     '</div>' +
     '<pre><code>' + escapeHtml(code) + '</code></pre>' +
   '</div>';

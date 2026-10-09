@@ -11,6 +11,15 @@ test('diff output earns a +/− chip and never treats prose as a pass', () => {
   assert.equal(prose.find((c) => c.kind === 'test'), undefined);
 });
 
+test('ls -l permission columns and bullet lists are not diffs', () => {
+  const ls = classifyToolResult('shell', 'total 8\ndrwxr-xr-x  3 me wheel  96 .\n-rw-r--r--  1 me wheel  51 main.go\n');
+  assert.equal(ls.find((c) => c.kind === 'diff'), undefined);
+  const bullets = classifyToolResult('shell', '- first\n- second\n+ third\n');
+  assert.equal(bullets.find((c) => c.kind === 'diff'), undefined);
+  const hunk = classifyToolResult('shell', '@@ -1,2 +1,2 @@\n-old\n+new\n');
+  assert.equal(hunk.find((c) => c.kind === 'diff').label, '+1 −1');
+});
+
 test('HTTP status and JSON pretty-print stay text-safe', () => {
   const http = classifyToolResult('shell', 'HTTP/1.1 404 Not Found');
   assert.equal(http.find((c) => c.kind === 'http').label, '404');

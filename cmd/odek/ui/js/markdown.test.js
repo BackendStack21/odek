@@ -2,7 +2,7 @@
 // Run: node --test cmd/odek/ui/js/
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { markdownToHtml, isSafeHref } from './markdown.js';
+import { markdownToHtml, isSafeHref, CODE_COPY_LABEL } from './markdown.js';
 
 // ── Blocks ──
 
@@ -25,7 +25,7 @@ test('fenced code block with language', () => {
   assert.equal(
     markdownToHtml('```go\nfmt.Println("hi")\n```'),
     '<div class="code-block"><div class="cb-header"><span class="cb-lang">go</span>' +
-    '<button class="cb-copy">📋 copy</button></div>' +
+    '<button class="cb-copy" type="button" aria-label="Copy code">' + CODE_COPY_LABEL + '</button></div>' +
     '<pre><code>fmt.Println("hi")\n</code></pre></div>'
   );
 });
@@ -41,7 +41,7 @@ test('unterminated fence renders collected lines as a code block', () => {
   assert.equal(
     html,
     '<div class="code-block"><div class="cb-header"><span class="cb-lang">js</span>' +
-    '<button class="cb-copy">📋 copy</button></div>' +
+    '<button class="cb-copy" type="button" aria-label="Copy code">' + CODE_COPY_LABEL + '</button></div>' +
     '<pre><code>console.log(1)\nconsole.log(2)\n</code></pre></div>'
   );
 });
@@ -289,10 +289,77 @@ test('golden document', () => {
     '<p>Some <strong>bold</strong> and <em>italic</em> text with <code>code</code>.</p>',
     '<ul><li>one</li><li>two</li></ul>',
     '<div class="code-block"><div class="cb-header"><span class="cb-lang">js</span>' +
-      '<button class="cb-copy">📋 copy</button></div>' +
+      '<button class="cb-copy" type="button" aria-label="Copy code">' + CODE_COPY_LABEL + '</button></div>' +
       '<pre><code>console.log("hi");\n</code></pre></div>',
     '<p>Check <a href="https://example.com" target="_blank" rel="noopener noreferrer">link</a> out.</p>',
   ].join('\n');
 
   assert.equal(markdownToHtml(doc), expected);
+});
+
+test('nested and mixed lists keep their structure', () => {
+  assert.equal(
+    markdownToHtml('- a\n  - a1\n  - a2\n- b'),
+    '<ul><li>a<ul><li>a1</li><li>a2</li></ul></li><li>b</li></ul>'
+  );
+  assert.equal(
+    markdownToHtml('1. one\n   - detail\n2. two'),
+    '<ol><li>one<ul><li>detail</li></ul></li><li>two</li></ol>'
+  );
+  assert.equal(markdownToHtml('3. three\n4. four'), '<ol start="3"><li>three</li><li>four</li></ol>');
+  assert.equal(markdownToHtml('- a\n\n- b'), '<ul><li>a</li><li>b</li></ul>');
+});
+
+test('a bullet list followed by an ordered list stays two lists', () => {
+  assert.equal(markdownToHtml('- a\n1. b'), '<ul><li>a</li></ul>\n<ol><li>b</li></ol>');
+});
+
+test('uneven indentation stays one nested list', () => {
+  assert.equal(markdownToHtml('- a\n   - b\n  - c\n- d'), '<ul><li>a<ul><li>b</li><li>c</li></ul></li><li>d</li></ul>');
+});
+
+test('very deep list nesting is capped instead of overflowing the stack', () => {
+  const deep = Array.from({ length: 6000 }, (_, i) => ' '.repeat(i) + '- x').join('\n');
+  const html = markdownToHtml(deep);
+  assert.ok(html.startsWith('<ul>'));
+  assert.ok((html.match(/<ul>/g) || []).length <= 34);
+});
+
+test('list continuation lines join their item', () => {
+  assert.equal(markdownToHtml('- a\n  more\n- b'), '<ul><li>a<br>more</li><li>b</li></ul>');
+  assert.equal(markdownToHtml('- b\nAfter list text'), '<ul><li>b</li></ul>\n<p>After list text</p>');
+  assert.equal(markdownToHtml('- a\n\npara'), '<ul><li>a</li></ul>\n<p>para</p>');
+  assert.equal(markdownToHtml('- a\n# H'), '<ul><li>a</li></ul>\n<h1>H</h1>');
+});
+
+test('parenthesis ordered markers and spaced thematic breaks', () => {
+  assert.equal(markdownToHtml('1) one\n2) two'), '<ol><li>one</li><li>two</li></ol>');
+  assert.equal(markdownToHtml('* * *'), '<hr>');
+  assert.equal(markdownToHtml('- - -'), '<hr>');
+  assert.equal(markdownToHtml('a\n\n___\n\nb'), '<p>a</p>\n<hr>\n<p>b</p>');
+});
+
+test('an indented fence under a list item stays inside the item', () => {
+  const html = markdownToHtml('1. Build:\n\n   ```bash\n   go build ./...\n   ```\n2. Test');
+  assert.ok(html.startsWith('<ol><li>Build:<div class="code-block">'), html);
+  assert.ok(html.includes('<pre><code>go build ./...\n</code></pre>'), html);
+  assert.ok(html.endsWith('<li>Test</li></ol>'), html);
+  assert.equal((html.match(/<ol/g) || []).length, 1);
+});
+
+test('list-looking lines the parser cannot read stay text instead of throwing', () => {
+  for (const md of ['1234567890. x', '\u00a0- item', '\ufeff- item', '\u3000- b', '- a\n  1234567890. b', '> 1234567890. q']) {
+    assert.doesNotThrow(() => markdownToHtml(md), md);
+    assert.ok(markdownToHtml(md).length > 0, md);
+  }
+});
+
+test('a fence still streaming drops its trailing blank lines', () => {
+  assert.ok(markdownToHtml('1. a\n   ```py\n   x = 1\n\n').includes('<code>x = 1\n</code>'));
+});
+
+test('very deep quote nesting is capped instead of overflowing the stack', () => {
+  assert.doesNotThrow(() => markdownToHtml('>'.repeat(6000) + ' x'));
+  assert.ok((markdownToHtml('>'.repeat(6000) + ' x').match(/<blockquote>/g) || []).length <= 34);
+  assert.equal(markdownToHtml('> > a'), '<blockquote><blockquote><p>a</p></blockquote></blockquote>');
 });

@@ -3910,9 +3910,6 @@ var staticFiles = map[string][2]string{
 	"/fonts/geist.woff2":               {"ui/fonts/geist.woff2", "font/woff2"},
 	"/fonts/geist-mono.woff2":          {"ui/fonts/geist-mono.woff2", "font/woff2"},
 	"/fonts/geist-LICENSE.txt":         {"ui/fonts/geist-LICENSE.txt", "text/plain; charset=utf-8"},
-	"/fonts/manrope.ttf":               {"ui/fonts/manrope.ttf", "font/ttf"},
-	"/fonts/manrope-LICENSE.txt":       {"ui/fonts/manrope-LICENSE.txt", "text/plain; charset=utf-8"},
-	"/fonts/azeret-mono.woff2":         {"ui/fonts/azeret-mono.woff2", "font/woff2"},
 }
 
 // staticETagComputes counts SHA-256 ETag computations (observable in tests:

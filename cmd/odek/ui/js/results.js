@@ -1,7 +1,7 @@
 // Bounded, text-safe result renderers shared by live, historical and detail views.
 import { parseUntrusted } from './untrusted.js';
 import { escapeHtml } from './escape.js';
-import { toolView, renderToolItems } from './toolviews.js';
+import { toolView, renderToolItems, treeText } from './toolviews.js';
 
 export const RESULT_PAGE = 200;
 export function resultText(output) {
@@ -67,8 +67,10 @@ function node(tag, cls, text) {
 export function renderResult(host, { name = '', output = '', args = '', compact = false, structured = true } = {}) {
   const raw = resultText(output);
   const view = structured ? toolView(name, raw, args) : null;
-  const kind = view ? view.kind : resultKind(name, raw);
+  let kind = view ? view.kind : resultKind(name, raw);
   let text = raw;
+  const outline = !view && name === 'tree' ? treeText(raw) : null;
+  if (outline != null) { kind = 'tree'; text = outline; }
   if (kind === 'json') { try { text = JSON.stringify(JSON.parse(raw), null, 2); } catch { /* raw fallback */ } }
   const root = node('section', 'result-view result-' + kind);
   const bar = node('div', 'result-toolbar');
@@ -108,7 +110,7 @@ export function renderResult(host, { name = '', output = '', args = '', compact 
       body.classList.remove('result-split');
       count.textContent = query ? `${items.length} matches` : view.summary;
       renderToolItems(body, items.slice(0, limit), renderResult);
-      if (!items.length && query) body.appendChild(node('p','result-empty','No matching items'));
+      if (!items.length) body.appendChild(node('p','result-empty',query ? 'No matching items' : 'Nothing returned'));
       more.hidden = items.length <= limit;
       more.textContent = 'Show more items';
       return;
