@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"mime/multipart"
 	"net"
 	"net/http"
@@ -148,7 +149,7 @@ func (b *Bot) doJSONContext(ctx context.Context, method string, body any, dest a
 			Description string          `json:"description"`
 			ErrorCode   int             `json:"error_code"`
 			Parameters  struct {
-				RetryAfter int `json:"retry_after"`
+				RetryAfter json.Number `json:"retry_after"`
 			} `json:"parameters"`
 		}
 		if err := json.Unmarshal(respBody, &apiResp); err != nil {
@@ -161,7 +162,7 @@ func (b *Bot) doJSONContext(ctx context.Context, method string, body any, dest a
 			// 429 (rate limit) — retry
 			if apiResp.ErrorCode == 429 {
 				b.log.Warn("rate limited", "method", method, "description", apiResp.Description)
-				retryAfter = time.Duration(apiResp.Parameters.RetryAfter) * time.Second
+				retryAfter = parseRetryAfter(apiResp.Parameters.RetryAfter)
 				lastErr = &TelegramError{Method: method, Description: apiResp.Description, Code: apiResp.ErrorCode}
 				continue
 			}
@@ -192,6 +193,24 @@ func (b *Bot) doJSONContext(ctx context.Context, method string, body any, dest a
 // maxRetryBackoff is the longest wait between attempts, whether it comes from
 // the exponential schedule or from the server's retry_after hint.
 const maxRetryBackoff = 8 * time.Second
+
+// parseRetryAfter converts Telegram's retry_after hint (seconds, normally an
+// integer but tolerated as any number) into a wait. Non-numeric, negative or
+// absurd values yield 0 so the exponential schedule applies; the result is
+// already clamped to maxRetryBackoff so no caller can overflow a Duration.
+func parseRetryAfter(n json.Number) time.Duration {
+	if n == "" {
+		return 0
+	}
+	secs, err := n.Float64()
+	if err != nil || secs <= 0 || math.IsNaN(secs) || math.IsInf(secs, 0) {
+		return 0
+	}
+	if secs > maxRetryBackoff.Seconds() {
+		return maxRetryBackoff
+	}
+	return time.Duration(secs * float64(time.Second))
+}
 
 // retryBackoff returns the wait before the given retry attempt (attempt >= 1).
 // A positive retryAfter from Telegram's rate-limit response is honoured, bounded

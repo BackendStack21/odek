@@ -100,6 +100,12 @@ func (p *progressBubble) submit(text, line string) {
 
 // finish stops the worker and waits for it. With flush, a still-pending
 // update is applied first (ignoring the throttle); otherwise it is discarded.
+// progressFinishWait bounds how long finish waits for the worker's final
+// edit. The bubble is cosmetic: a rate-limited edit must not hold back the
+// answer, so past this bound the answer is sent and any late edit is
+// abandoned to the worker.
+const progressFinishWait = 3 * time.Second
+
 func (p *progressBubble) finish(flush bool) {
 	p.stopOnce.Do(func() {
 		p.mu.Lock()
@@ -107,7 +113,10 @@ func (p *progressBubble) finish(flush bool) {
 		p.mu.Unlock()
 		close(p.stop)
 	})
-	<-p.done
+	select {
+	case <-p.done:
+	case <-time.After(progressFinishWait):
+	}
 }
 
 func (p *progressBubble) run() {

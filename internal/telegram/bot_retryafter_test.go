@@ -1,12 +1,31 @@
 package telegram
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
 	"time"
 )
+
+func TestParseRetryAfter(t *testing.T) {
+	cases := map[string]time.Duration{
+		"":            0,
+		"3":           3 * time.Second,
+		"2.5":         2500 * time.Millisecond,
+		"0":           0,
+		"-7":          0,
+		"abc":         0,
+		"1e300":       maxRetryBackoff,
+		"99999999999": maxRetryBackoff,
+	}
+	for in, want := range cases {
+		if got := parseRetryAfter(json.Number(in)); got != want {
+			t.Errorf("parseRetryAfter(%q)=%v want %v", in, got, want)
+		}
+	}
+}
 
 func TestRetryBackoff(t *testing.T) {
 	cases := []struct {

@@ -113,3 +113,18 @@ func TestProgressResetAndNoMessage(t *testing.T) {
 	}
 	p.finish(true) // idempotent
 }
+
+// The bubble is cosmetic: a final edit stuck behind Telegram rate limiting
+// must not hold back the answer beyond the finish bound.
+func TestRED_Telegram_ProgressFinishBoundedWhenEditStalls(t *testing.T) {
+	api := &fakeProgressAPI{block: make(chan struct{})}
+	t.Cleanup(func() { close(api.block) })
+	p := newProgressBubble(api, 1, 2, 0)
+	p.setMessageID(7)
+	p.submit("text", "line")
+	start := time.Now()
+	p.finish(true)
+	if d := time.Since(start); d > progressFinishWait+time.Second {
+		t.Fatalf("finish waited %v on a stalled edit, want at most about %v", d, progressFinishWait)
+	}
+}
