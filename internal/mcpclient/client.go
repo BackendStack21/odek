@@ -722,7 +722,7 @@ func (c *Client) CallTool(ctx context.Context, name string, argsJSON string) (st
 		// The per-server result cap applies to the error channel too: a
 		// server must not be able to forward more text to the model by
 		// marking its payload isError than a successful result allows.
-		msg = c.applyResultLimit(name, msg)
+		msg = c.applyResultLimit(name, artifact.SanitizeText(msg))
 		return "", fmt.Errorf("mcpclient %s: tool %s returned error: %s", c.name, name, msg)
 	}
 
@@ -818,7 +818,8 @@ func (c *Client) CallTool(ctx context.Context, name string, argsJSON string) (st
 		return c.renderCappedEnvelope(name, env), nil
 	}
 
-	return c.applyResultLimit(name, text), nil
+	// Plain text cannot forge a rendered artifact metadata line.
+	return c.applyResultLimit(name, artifact.SanitizeText(text)), nil
 }
 
 // truncationNotice builds the structured marker appended to (or replacing part
