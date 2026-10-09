@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/BackendStack21/odek/internal/redact"
+	"github.com/BackendStack21/odek/internal/session"
 )
 
 // ── Sub-agent registry (telemetry) ────────────────────────────────
@@ -550,13 +551,66 @@ func subagentStatsSnapshot() map[string]any {
 // handleSubagentRegistry serves GET /api/subagents — the registry snapshot
 // (optionally filtered by ?key=<run_key>). Auth is enforced by the apiAuth
 // wrapper at mux registration, same as /api/events.
-func handleSubagentRegistry() http.Handler {
+func handleSubagentRegistry(store *session.Store) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		entries := subagentRegistrySnapshot(r.URL.Query().Get("key"))
+		// Session-scoped like /api/jobs: the caller must hold the session's
+		// auth token, and only tasks owned by that session's connections or
+		// headless runs are listed.
+		sess, code, msg := authenticateJobsRequest(store, r)
+		if code != 0 {
+			http.Error(w, msg, code)
+			return
+		}
+		owned := subagentRunKeysForSession(sess.ID)
+		key := r.URL.Query().Get("key")
+		all := subagentRegistrySnapshot("")
+		entries := make([]subagentEntry, 0, len(all))
+		for _, e := range all {
+			if owned[e.RunKey] && (key == "" || e.RunKey == key) {
+				entries = append(entries, e)
+			}
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"entries": entries,
 			"count":   len(entries),
 		})
 	})
+}
+
+// subagentRunKeysForSession returns the registry run keys that belong to a
+// session: the ids of live WebSocket connections currently bound to it and
+// the ids of headless runs started for it.
+func subagentRunKeysForSession(sessionID string) map[string]bool {
+	keys := map[string]bool{}
+	if sessionID == "" {
+		return keys
+	}
+	for _, c := range wsConnsForSession(sessionID) {
+		keys[c.ID] = true
+	}
+	serveRuns.mu.Lock()
+	for id, run := range serveRuns.runs {
+		if run.SessionID == sessionID {
+			keys[id] = true
+		}
+	}
+	serveRuns.mu.Unlock()
+	return keys
+}
+
+// subagentTaskOwnedBySession reports whether taskID was spawned by a run that
+// belongs to sessionID. Unknown tasks are not owned by anyone.
+func subagentTaskOwnedBySession(taskID, sessionID string) bool {
+	subagentReg.mu.Lock()
+	e, ok := subagentReg.byID[taskID]
+	runKey := ""
+	if ok {
+		runKey = e.RunKey
+	}
+	subagentReg.mu.Unlock()
+	if !ok || runKey == "" {
+		return false
+	}
+	return subagentRunKeysForSession(sessionID)[runKey]
 }

@@ -894,7 +894,7 @@ async function refreshAgents() {
   if (!workspaceOpen('now')) { stopAgentsPolling(); return; }
   if (!sid) { list.textContent = 'No sub-agents in this new session.'; return; }
   try {
-    const data = await listSubagents();
+    const data = await listSubagents(sid, getSessionToken(sid) || undefined);
     if (!current()) return;
     const entries = (data && data.entries) || [];
     list.textContent = '';

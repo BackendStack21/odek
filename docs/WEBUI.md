@@ -592,14 +592,14 @@ rollup `plans_created` / `plans_updated` / `plans_blocked` (counts only).
 Sessions also carry cumulative `input_tokens`/`output_tokens` (shown in
 list/detail).
 
-### `GET /api/subagents?key=`
+### `GET /api/subagents?session_id=&key=`
 
-Sub-agent lifecycle registry snapshot (ring of 256, oldest evicted): one
+Sub-agent lifecycle registry snapshot (session-scoped like `/api/jobs`: `session_id` plus that session's `X-Session-Token`; only tasks spawned by connections or headless runs bound to that session are listed) (ring of 256, oldest evicted): one
 entry per delegated task — `task_id`, `run_key` (connection id for WS runs,
 run id for headless runs), redacted + truncated `goal`, `phase`
 (`started`/`active`/`finished`), `status`, `pid`, timestamps, `iterations`,
-`step`, `last_tool`, `duration_seconds`, `tokens_used`. Filter by
-`?key=<run_key>`; unfiltered returns all recent entries.
+`step`, `last_tool`, `duration_seconds`, `tokens_used`. Narrow further with
+`?key=<run_key>`. The WebSocket `subagent_cancel` message likewise only stops tasks owned by the authenticated session (a foreign task id replies `accepted:false`).
 
 ### `GET /api/connections` · `DELETE /api/connections/{id}`
 

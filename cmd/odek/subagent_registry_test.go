@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/BackendStack21/odek/internal/session"
 )
 
 // ── Registry: record / update / snapshot / bounds ────────────────────
@@ -195,25 +197,99 @@ func TestSubagentTelemetryRelay_LogOnlyForToolEvents(t *testing.T) {
 
 // ── REST snapshot handler ────────────────────────────────────────────
 
-func TestHandleSubagentRegistry_SnapshotJSON(t *testing.T) {
+func subagentTestSession(t *testing.T, store *session.Store, task string) *session.Session {
+	t.Helper()
+	sess, err := store.Create(nil, "m", task)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sess.AuthToken == "" {
+		sess.AuthToken = session.GenerateAuthToken()
+		if err := store.Save(sess); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return sess
+}
+
+func TestHandleSubagentRegistry_ScopedToSession(t *testing.T) {
 	resetSubagentRegistry()
-	subagentRegistryRecord(&subagentEntry{TaskID: "task-9", RunKey: "run-9", Phase: "active", Status: "running", Goal: "audit docs"})
+	store, err := session.NewStoreWithDir(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessA := subagentTestSession(t, store, "A")
+	sessB := subagentTestSession(t, store, "B")
 
-	req := httptest.NewRequest("GET", "/api/subagents?key=run-9", nil)
-	rec := httptest.NewRecorder()
-	handleSubagentRegistry().ServeHTTP(rec, req)
+	conn := &wsConnInfo{ID: "conn-scope-a"}
+	conn.setLive(sessA.ID, true)
+	wsConnRegister(conn)
+	defer wsConnUnregister(conn.ID)
 
-	if rec.Code != 200 {
-		t.Fatalf("status = %d, want 200", rec.Code)
+	subagentRegistryRecord(&subagentEntry{TaskID: "task-a", RunKey: "conn-scope-a", Phase: "active", Status: "running", Goal: "audit docs"})
+	subagentRegistryRecord(&subagentEntry{TaskID: "task-other", RunKey: "someone-else", Phase: "active", Status: "running"})
+
+	get := func(url, token string) (int, []subagentEntry) {
+		req := httptest.NewRequest("GET", url, nil)
+		if token != "" {
+			req.Header.Set("X-Session-Token", token)
+		}
+		rec := httptest.NewRecorder()
+		handleSubagentRegistry(store).ServeHTTP(rec, req)
+		var out struct {
+			Entries []subagentEntry `json:"entries"`
+		}
+		_ = json.Unmarshal(rec.Body.Bytes(), &out)
+		return rec.Code, out.Entries
 	}
-	var out struct {
-		Entries []subagentEntry `json:"entries"`
-		Count   int             `json:"count"`
+
+	code, entries := get("/api/subagents?session_id="+sessA.ID, sessA.AuthToken)
+	if code != 200 || len(entries) != 1 || entries[0].TaskID != "task-a" {
+		t.Fatalf("owner view = %d %+v, want only task-a", code, entries)
 	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
-		t.Fatalf("response not JSON: %v", err)
+	if code, entries = get("/api/subagents?session_id="+sessA.ID+"&key=conn-scope-a", sessA.AuthToken); code != 200 || len(entries) != 1 {
+		t.Fatalf("key filter = %d %+v", code, entries)
 	}
-	if out.Count != 1 || len(out.Entries) != 1 || out.Entries[0].TaskID != "task-9" {
-		t.Errorf("bad snapshot: %+v", out)
+	if code, entries = get("/api/subagents?session_id="+sessB.ID, sessB.AuthToken); code != 200 || len(entries) != 0 {
+		t.Fatalf("foreign session must see nothing, got %d %+v", code, entries)
+	}
+	if code, _ = get("/api/subagents?session_id="+sessA.ID, sessB.AuthToken); code != 401 {
+		t.Fatalf("wrong token = %d, want 401", code)
+	}
+	if code, _ = get("/api/subagents", ""); code != 400 {
+		t.Fatalf("missing session_id = %d, want 400", code)
+	}
+}
+
+func TestSubagentTaskOwnedBySession(t *testing.T) {
+	resetSubagentRegistry()
+	conn := &wsConnInfo{ID: "conn-own-1"}
+	conn.setLive("sess-own", true)
+	wsConnRegister(conn)
+	defer wsConnUnregister(conn.ID)
+	run := &serveRun{ID: "run-own-1", SessionID: "sess-run"}
+	registerRun(run)
+	defer func() {
+		serveRuns.mu.Lock()
+		delete(serveRuns.runs, run.ID)
+		serveRuns.mu.Unlock()
+	}()
+	subagentRegistryRecord(&subagentEntry{TaskID: "t-ws", RunKey: "conn-own-1"})
+	subagentRegistryRecord(&subagentEntry{TaskID: "t-run", RunKey: "run-own-1"})
+
+	for _, tc := range []struct {
+		task, sess string
+		want       bool
+	}{
+		{"t-ws", "sess-own", true},
+		{"t-ws", "sess-run", false},
+		{"t-run", "sess-run", true},
+		{"t-run", "sess-own", false},
+		{"missing", "sess-own", false},
+		{"t-ws", "", false},
+	} {
+		if got := subagentTaskOwnedBySession(tc.task, tc.sess); got != tc.want {
+			t.Errorf("owned(%s,%s) = %v, want %v", tc.task, tc.sess, got, tc.want)
+		}
 	}
 }

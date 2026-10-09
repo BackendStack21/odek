@@ -633,7 +633,7 @@ func newServeMux(d serveMuxDeps) *http.ServeMux {
 
 	// Observability + lifecycle.
 	mux.Handle("/api/events", apiAuth(handleEvents()))
-	mux.Handle("/api/subagents", apiAuth(handleSubagentRegistry()))
+	mux.Handle("/api/subagents", apiAuth(handleSubagentRegistry(store)))
 	mux.Handle("/api/usage", apiAuth(handleUsage(resolved)))
 	mux.Handle("/api/connections", apiAuth(handleConnections()))
 	mux.Handle("/api/connections/", apiAuth(handleConnectionKick()))
@@ -1951,7 +1951,10 @@ func handleWSSubagentCancel(store *session.Store, conn *golangws.Conn, msg wsCli
 		writeWSError(conn, "subagent_cancel: invalid session token")
 		return
 	}
-	accepted := cancelSubagentTask(msg.TaskID)
+	// The token proves access to msg.SessionID only; the task must have been
+	// spawned by a run of that same session. A foreign or unknown id is
+	// reported exactly like a task that already finished.
+	accepted := subagentTaskOwnedBySession(msg.TaskID, msg.SessionID) && cancelSubagentTask(msg.TaskID)
 	writeWSJSON(conn, map[string]any{
 		"type":       "subagent_cancelled",
 		"session_id": msg.SessionID,
