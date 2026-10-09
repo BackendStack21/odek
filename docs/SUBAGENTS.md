@@ -655,6 +655,20 @@ finished in the stats.
 The framed result envelope adds `cost_usd` (final) and `artifacts`
 (the full `odek.artifact-ref/v1` refs — a superset of the frame metadata).
 
+**Result authentication.** Commands a child runs can write lines to the
+child's stdout, so the parent does not trust any line that merely looks like a
+result. For every spawn the parent mints a random nonce and hands it to the
+child over a private inherited descriptor (`ODEK_SUBAGENT_FRAME_FD` names the
+descriptor, never the value); the child reads and closes it at startup, before
+any tool runs, and stamps it as `auth` on its framed result. The parent takes
+the **first** framed result carrying the nonce as the task result and ignores
+every later result line, forged or duplicate. Only that authenticated frame may
+report `usage` for budget accounting: without one, the shared-budget grant is
+settled as unreported (never refunded), and an unauthenticated result line is
+kept for display only: its status becomes `unverified` (the claimed status is
+kept as `claimed_status`), the completion event and registry report
+`unverified`, and the parent announces the terminal state itself.
+
 **Cost semantics (authoritative — do not re-derive).** `cost_usd` values are
 computed server-side with the exact `/api/usage` math (per-million prices
 resolved for the child's model over provider-reported token totals). Zero or

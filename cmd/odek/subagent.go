@@ -778,6 +778,9 @@ func resolveProfileName(cliFlag, taskFile string) string {
 }
 
 func subagentCmd(args []string) error {
+	// Read the result-frame nonce first: the inherited descriptor must be
+	// closed before anything else (MCP servers, tools) can be spawned.
+	frameNonce := readFrameNonceFromInheritedFD()
 	cfg, err := parseSubagentFlags(args)
 	if err != nil {
 		return err
@@ -1347,7 +1350,13 @@ func subagentCmd(args []string) error {
 		if merr == nil {
 			var inner map[string]any
 			_ = json.Unmarshal(raw, &inner)
-			telemetry.emit(map[string]any{"type": "result", "result": inner})
+			frame := map[string]any{"type": "result", "result": inner}
+			if frameNonce != "" {
+				// Authenticates this frame to the parent; commands the
+				// child ran can write to stdout but never saw the nonce.
+				frame["auth"] = frameNonce
+			}
+			telemetry.emit(frame)
 		} else {
 			enc := json.NewEncoder(os.Stdout)
 			enc.Encode(result)
