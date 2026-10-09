@@ -67,7 +67,15 @@ func (cs *ChatSession) UntrustedIngested() bool {
 // MarkUntrustedIngested records that the chat's current run is tainted (an
 // ingest, or a third-party tool catalogue that never reaches the history).
 // The next save persists it on the session's sticky UntrustedIngested flag.
+//
+// It holds the chat's save lock: swapping the cache entry while a save is in
+// flight would make that save skip its cache update, leaving a stale stored
+// revision that fails every later save with a conflict.
 func (sm *SessionManager) MarkUntrustedIngested(chatID int64) {
+	lock, _ := sm.saveLocks.LoadOrStore(chatID, new(sync.Mutex))
+	saveMu := lock.(*sync.Mutex)
+	saveMu.Lock()
+	defer saveMu.Unlock()
 	sm.Mu.Lock()
 	defer sm.Mu.Unlock()
 	if cs := sm.Cache[chatID]; cs != nil && !cs.untrusted {
