@@ -382,6 +382,8 @@ Files attached through the Web UI are sourced from the browser trust boundary an
 
 Authorization is **fail-closed**: if neither allowlist is configured, the bot refuses to start (`ValidateConfig` returns an error), and at runtime `isAllowed` denies every update. The bot is the only internet-exposed surface and the agent it drives has full host access, so an empty allowlist must never silently mean "allow everyone". To intentionally run an open bot you must explicitly set `ODEK_TELEGRAM_ALLOW_ALL=true`, which logs a loud warning at startup.
 
+The two allowlists are combined with AND, and an empty `allowed_users` means any user of an allowed chat. A group or supergroup (negative id) in `allowed_chats` with no `allowed_users` therefore makes every member of that group a principal who can drive the agent and start turns whose approvals they answer; `odek telegram` prints a startup warning naming those chats, and docs/TELEGRAM.md recommends always setting `allowed_users` for group deployments. The authorization semantics are unchanged.
+
 The `/restart` command is restricted to operator chats/users (`schedules.telegram_admin_chats` / `telegram_admin_users`, falling back to `telegram.default_chat_id`) and rate-limited to once per 60 seconds, so a compromised allowed account cannot restart-loop the bot and interrupt scheduled work.
 
 **Forwarded messages are never commands.** A forwarded message crosses a trust boundary, so its text is never routed to the command handler even when it starts with `/`; it reaches the text handler flagged as forwarded. Only a `bot_command` entity at offset 0 (or a leading slash) marks a command, so `/path` fragments inside running text are ordinary text.

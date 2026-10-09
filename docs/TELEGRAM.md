@@ -229,6 +229,17 @@ All callbacks return a response string (may be empty) and an error. The `Handle`
 > `odek telegram` refuses to start with an error naming the variable and the
 > first bad entry.
 
+> **Warning: `allowed_chats` alone makes every group member a principal.**
+> The two allowlists are combined with AND, and an empty `allowed_users` means
+> "any user in an allowed chat". If `allowed_chats` lists a group or supergroup
+> (negative id) and `allowed_users` is empty, every current and future member
+> of that group can drive the agent, run tools, and answer approval and clarify
+> prompts (each prompt is bound to the member who started the turn, but any
+> member can start one). `odek telegram` prints a startup warning naming such
+> chats. Set `allowed_users` (or `ODEK_TELEGRAM_ALLOWED_USERS`) to the people
+> who should be principals; listing a group without users is only safe for a
+> group whose membership you fully control.
+
 ### Inline Keyboards
 
 The handler uses `sync.Map` for `TelegramApprover` instances, keyed by `chatID`. This allows the agent to send inline keyboard approval requests (yes/no) and receive responses via callback queries. The handler intercepts callback queries matching pending approval requests before dispatching to `OnCallbackQuery`.

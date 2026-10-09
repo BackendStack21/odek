@@ -206,6 +206,41 @@ func (c TelegramConfig) HasAllowlist() bool {
 	return len(c.AllowedChats) > 0 || len(c.AllowedUsers) > 0
 }
 
+// GroupChatsWithoutUserAllowlist returns the allowed_chats entries that are
+// groups or supergroups (Telegram gives those negative ids) when no
+// allowed_users list is configured. Authorization then rests on the chat
+// alone, so every member of such a group may drive the agent and answer its
+// approval prompts.
+func (c TelegramConfig) GroupChatsWithoutUserAllowlist() []int64 {
+	if len(c.AllowedUsers) > 0 {
+		return nil
+	}
+	var ids []int64
+	for _, id := range c.AllowedChats {
+		if id < 0 {
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
+// GroupAllowlistWarning renders the startup warning for
+// GroupChatsWithoutUserAllowlist, or "" when there is nothing to warn about.
+func GroupAllowlistWarning(c TelegramConfig) string {
+	ids := c.GroupChatsWithoutUserAllowlist()
+	if len(ids) == 0 {
+		return ""
+	}
+	parts := make([]string, len(ids))
+	for i, id := range ids {
+		parts[i] = strconv.FormatInt(id, 10)
+	}
+	return fmt.Sprintf("allowed_chats includes group chat(s) %s but allowed_users is empty: "+
+		"every member of those groups can drive the agent and answer its approval prompts; "+
+		"set allowed_users (ODEK_TELEGRAM_ALLOWED_USERS) to restrict who is a principal",
+		strings.Join(parts, ", "))
+}
+
 // parseInt64List parses a comma-separated string of integers into a slice of
 // int64. ok is false when any non-empty entry is not an integer; callers must
 // then discard the result rather than use a partial list.

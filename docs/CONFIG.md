@@ -996,7 +996,7 @@ The `telegram` section configures the Telegram bot integration and the `--delive
 |-------|---------|---------|-------------|
 | `bot_token` | `ODEK_TELEGRAM_BOT_TOKEN` | — (required) | Telegram bot API token from @BotFather |
 | `allowed_users` | — | all | Restrict bot to specific user IDs |
-| `allowed_chats` | — | all | Restrict bot to specific chat IDs |
+| `allowed_chats` | — | all | Restrict bot to specific chat IDs. Combined with `allowed_users` by AND: a group chat (negative id) listed without `allowed_users` makes every member of that group a principal, and `odek telegram` warns about it at startup |
 | `allow_all_users` | `ODEK_TELEGRAM_ALLOW_ALL` | false | Explicitly run the bot with **no allowlist** (any user may drive the agent). Without this, an empty allowlist is a fatal misconfiguration — an open bot can never be deployed by accident |
 | `bot_username` | `ODEK_TELEGRAM_BOT_USERNAME` | — | Bot username (used to strip `@bot` mentions) |
 | `poll_interval` | — | 1 | Seconds between poll cycles |

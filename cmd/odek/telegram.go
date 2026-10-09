@@ -432,6 +432,10 @@ func telegramCmd(args []string) error {
 	if cfg.AllowAllUsers && !cfg.HasAllowlist() {
 		handlerLog.Warn("telegram bot is running with NO allowlist — ANY user can drive the agent (ODEK_TELEGRAM_ALLOW_ALL=true)")
 	}
+	if msg := telegram.GroupAllowlistWarning(cfg); msg != "" {
+		fmt.Fprintf(os.Stderr, "odek telegram: WARNING: %s\n", msg)
+		handlerLog.Warn(msg)
+	}
 
 	// Build the shared prompt-injection guard once for the whole bot process.
 	// Provider "local" is zero-dependency; "piguard" requires a reachable
