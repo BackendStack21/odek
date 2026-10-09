@@ -557,7 +557,7 @@ func New(cfg Config) (_ *Agent, setupErr error) {
 	if !cfg.NoProjectFile {
 		if projectContent := LoadProjectFile(); projectContent != "" {
 			if err := scanProjectFile(projectContent, &cfg); err != nil {
-				log.Printf("skipping AGENTS.md: guard rejected: %v", err)
+				fmt.Fprintf(os.Stderr, "odek: warning: %s rejected by guard (%v) — skipping project instructions\n", ProjectFileName, err)
 			} else {
 				block := formatProjectInstructions(projectContent, cfg.UntrustedWrapper)
 				if cfg.SystemMessage != "" {
