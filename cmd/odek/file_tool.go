@@ -688,13 +688,17 @@ func (t *searchFilesTool) searchContent(args searchFilesArgs) (string, error) {
 			return nil // skip inaccessible files
 		}
 		if info.IsDir() {
-			// Skip hidden directories
-			if strings.HasPrefix(info.Name(), ".") && info.Name() != "." {
-				return filepath.SkipDir
-			}
-			// Skip known-large build/artifact directories
-			if skipDir(info.Name()) {
-				return filepath.SkipDir
+			// The explicit search root is never skipped for its own name:
+			// searching ".github" or "node_modules" on purpose must work.
+			if path != args.Path {
+				// Skip hidden directories
+				if strings.HasPrefix(info.Name(), ".") && info.Name() != "." {
+					return filepath.SkipDir
+				}
+				// Skip known-large build/artifact directories
+				if skipDir(info.Name()) {
+					return filepath.SkipDir
+				}
 			}
 			// Security: a broad search root may contain a sensitive subtree
 			// (e.g. ~/.odek under $HOME). Classify the directory before
