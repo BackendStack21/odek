@@ -237,6 +237,10 @@ type Store struct {
 	// of a full parse. Guarded by mu.
 	revStamps map[string]revStamp
 
+	// indexWrites counts index.json rewrites. Test observability only;
+	// guarded by mu.
+	indexWrites int
+
 	// revisionLoads counts full session loads performed by saveLocked for the
 	// revision check. Test observability only; guarded by mu.
 	revisionLoads int
@@ -517,6 +521,7 @@ func (s *Store) fileLock() (func(), error) {
 // in-memory cache. Caller must hold s.mu. idx is owned by the caller; the
 // store keeps its own copy.
 func (s *Store) saveIndexLocked(idx map[string]*IndexEntry) error {
+	s.indexWrites++
 	entries := make([]*IndexEntry, 0, len(idx))
 	for _, e := range idx {
 		entries = append(entries, e)
@@ -537,6 +542,46 @@ func (s *Store) saveIndexLocked(idx map[string]*IndexEntry) error {
 		s.idxMu.Unlock()
 	}
 	return nil
+}
+
+// indexLagWindow bounds how far a per-step checkpoint lets the indexed
+// UpdatedAt trail the session file. The end-of-turn Save always rewrites the
+// index, so listings are exact whenever a turn is not in flight.
+const indexLagWindow = 2 * time.Second
+
+// indexMayLag reports whether rewriting index.json for next can be skipped:
+// only the volatile fields (UpdatedAt, token counters) moved, and UpdatedAt by
+// less than indexLagWindow.
+func indexMayLag(old, next IndexEntry) bool {
+	d := next.UpdatedAt.Sub(old.UpdatedAt)
+	return d >= 0 && d < indexLagWindow &&
+		old.Title == next.Title &&
+		old.Model == next.Model &&
+		old.Pinned == next.Pinned &&
+		old.Turns == next.Turns &&
+		old.CreatedAt.Equal(next.CreatedAt)
+}
+
+// peekIndexEntry returns one entry of the current index without copying the
+// whole map when the in-memory cache is fresh.
+func (s *Store) peekIndexEntry(id string) (IndexEntry, bool) {
+	s.idxMu.Lock()
+	if s.idxLoaded {
+		if info, err := os.Stat(s.indexPath()); err == nil &&
+			info.ModTime().Equal(s.idxMod) && info.Size() == s.idxSize && fileInode(info) == s.idxIno {
+			e, ok := s.idxCache[id]
+			s.idxMu.Unlock()
+			if !ok {
+				return IndexEntry{}, false
+			}
+			return *e, true
+		}
+	}
+	s.idxMu.Unlock()
+	if e, ok := s.loadIndex()[id]; ok {
+		return *e, true
+	}
+	return IndexEntry{}, false
 }
 
 // indexEntry builds an IndexEntry from a Session.
@@ -620,8 +665,9 @@ func (s *Store) Save(sess *Session) error {
 }
 
 // SaveNoIndex persists a session exactly like Save — redaction, file-cap
-// trimming, atomic write, and index.json metadata update all still happen —
-// but skips the vector-index update. It also refreshes UpdatedAt and Turns
+// trimming and atomic write all still happen, and index.json is refreshed
+// unless the indexed summary would trail by under indexLagWindow (only
+// UpdatedAt and token counters moved) — but it skips the vector-index update. It also refreshes UpdatedAt and Turns
 // like Append does, so per-turn saves keep session metadata current.
 // Used by the loop's per-turn persistence callback: embedding can be a
 // remote HTTP call and must not fire on every loop iteration; the final
@@ -630,7 +676,7 @@ func (s *Store) SaveNoIndex(sess *Session) error {
 	s.mu.Lock()
 	sess.UpdatedAt = time.Now().UTC()
 	sess.Turns = countUserTurns(sess.Messages)
-	err := s.saveLocked(sess)
+	err := s.saveLockedMode(sess, true)
 	s.mu.Unlock()
 	return err
 }
@@ -762,7 +808,14 @@ func (s *Store) rememberPrompts(id string, msgs []Message) {
 	s.promptDigests[id] = promptDigest{n: len(msgs), hash: promptsHash(msgs, len(msgs))}
 }
 
-func (s *Store) saveLocked(sess *Session) (err error) {
+func (s *Store) saveLocked(sess *Session) error {
+	return s.saveLockedMode(sess, false)
+}
+
+// saveLockedMode is saveLocked; lazyIndex lets a per-step checkpoint leave
+// index.json untouched when the indexed summary would only move forward by
+// less than indexLagWindow (see indexMayLag).
+func (s *Store) saveLockedMode(sess *Session, lazyIndex bool) (err error) {
 	defer func() { diagnostics.Report("session", "save", sess.ID, err) }()
 	// Reject malformed or traversal-bearing session IDs before the ID is used
 	// to build a filesystem path. A planted session file with an embedded
@@ -977,8 +1030,14 @@ func (s *Store) saveLocked(sess *Session) (err error) {
 	s.rememberPrompts(sess.ID, sess.Messages)
 
 	// Update the index atomically.
+	entry := indexEntry(sess)
+	if lazyIndex {
+		if old, ok := s.peekIndexEntry(sess.ID); ok && indexMayLag(old, *entry) {
+			return nil
+		}
+	}
 	idx := s.loadIndex()
-	idx[sess.ID] = indexEntry(sess)
+	idx[sess.ID] = entry
 	if err := s.saveIndexLocked(idx); err != nil {
 		return err
 	}

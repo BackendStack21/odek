@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/BackendStack21/odek/internal/redact"
 )
@@ -180,5 +181,72 @@ func TestRED_Session_RevisionCheckRemovedFileStillDetected(t *testing.T) {
 	}
 	if err := store.SaveNoIndex(sess); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("err = %v, want not-exist", err)
+	}
+}
+
+func TestRED_Session_StepCheckpointsDoNotRewriteIndex(t *testing.T) {
+	store, err := NewStoreWithDir(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := store.Create([]Message{{Role: "user", Content: "q"}}, "m", "task")
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := store.indexWrites
+	for i := 0; i < 5; i++ {
+		sess.Messages = append(sess.Messages, Message{Role: "assistant", Content: "step"})
+		if err := store.SaveNoIndex(sess); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := store.indexWrites - before; got != 0 {
+		t.Fatalf("%d index rewrites for 5 step checkpoints, want 0", got)
+	}
+	// The end-of-turn full save always refreshes the index.
+	if err := store.Save(sess); err != nil {
+		t.Fatal(err)
+	}
+	if got := store.indexWrites - before; got != 1 {
+		t.Fatalf("full save wrote the index %d times, want 1", got)
+	}
+	list, err := store.List(0)
+	if err != nil || len(list) != 1 || !list[0].UpdatedAt.Equal(sess.UpdatedAt) {
+		t.Fatalf("list after full save = %v, %v", list, err)
+	}
+	// A new user turn changes Turns: checkpoint must write it.
+	sess.Messages = append(sess.Messages, Message{Role: "user", Content: "next"})
+	before = store.indexWrites
+	if err := store.SaveNoIndex(sess); err != nil {
+		t.Fatal(err)
+	}
+	if store.indexWrites-before != 1 {
+		t.Fatal("turn-count change must rewrite the index")
+	}
+}
+
+func TestIndexMayLag(t *testing.T) {
+	base := time.Now()
+	old := IndexEntry{ID: "a", Title: "t", Model: "m", Turns: 1, CreatedAt: base, UpdatedAt: base}
+	next := old
+	next.UpdatedAt = base.Add(time.Second)
+	next.InputTokens = 9
+	if !indexMayLag(old, next) {
+		t.Fatal("volatile-only change within window should lag")
+	}
+	for name, mut := range map[string]func(*IndexEntry){
+		"window":    func(e *IndexEntry) { e.UpdatedAt = base.Add(3 * time.Second) },
+		"backwards": func(e *IndexEntry) { e.UpdatedAt = base.Add(-time.Second) },
+		"title":     func(e *IndexEntry) { e.Title = "x" },
+		"model":     func(e *IndexEntry) { e.Model = "x" },
+		"pinned":    func(e *IndexEntry) { e.Pinned = true },
+		"turns":     func(e *IndexEntry) { e.Turns = 2 },
+		"created":   func(e *IndexEntry) { e.CreatedAt = base.Add(time.Hour) },
+	} {
+		n := next
+		mut(&n)
+		if indexMayLag(old, n) {
+			t.Fatalf("%s change must not lag", name)
+		}
 	}
 }
