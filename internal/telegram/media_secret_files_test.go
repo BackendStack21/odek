@@ -37,13 +37,16 @@ func TestRED_MediaSecretFilesInHome(t *testing.T) {
 	}
 }
 
-// Ordinary files that merely share a directory or name stem stay uploadable.
+// Ordinary files that merely share a name stem stay uploadable. A file
+// under a home credential directory such as ~/.docker is not ordinary: the
+// danger classifier rejects the whole directory on every platform where the
+// home is not a temp dir, so it is not in this list.
 func TestMediaCredentialCheck_AllowsOrdinaryFiles(t *testing.T) {
 	home := t.TempDir()
 	home, _ = filepath.EvalSymlinks(home)
 	t.Setenv("HOME", home)
 	t.Chdir(home)
-	for _, rel := range []string{"notes.txt", "config.json", ".docker/other.json", "kube/config"} {
+	for _, rel := range []string{"notes.txt", "config.json", "dockerfiles/other.json", "kube/config"} {
 		p := filepath.Join(home, rel)
 		os.MkdirAll(filepath.Dir(p), 0o700)
 		if err := os.WriteFile(p, []byte("ok"), 0o600); err != nil {
