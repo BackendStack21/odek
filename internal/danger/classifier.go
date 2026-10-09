@@ -426,6 +426,11 @@ func accountHomes(abs string) []string {
 	if lower == "/root" || strings.HasPrefix(lower, "/root/") {
 		homes = append(homes, abs[:len("/root")])
 	}
+	// macOS keeps the superuser's home at /var/root (/private/var/root before
+	// the /private prefix is stripped).
+	if lower == "/var/root" || strings.HasPrefix(lower, "/var/root/") {
+		homes = append(homes, abs[:len("/var/root")])
+	}
 	return homes
 }
 
