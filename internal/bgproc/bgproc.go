@@ -768,6 +768,11 @@ type outputRing struct {
 // O(1) per byte, no allocation in steady state).
 func (r *outputRing) appendLocked(p []byte) {
 	n := len(r.buf)
+	if len(p) > math.MaxInt-n {
+		// Cannot be represented; the window is bounded by limit anyway, so
+		// keep only the tail of p that can ever be retained.
+		p = p[len(p)-r.limit:]
+	}
 	need := n + len(p)
 	// room is the free space behind the window inside the backing array.
 	room := cap(r.buf) - n
@@ -782,9 +787,12 @@ func (r *outputRing) appendLocked(p []byte) {
 		r.buf = append(r.buf, p...)
 		return
 	}
-	size := 2 * r.limit
-	if size < need {
-		size = need
+	// Grow to what is needed plus one window of headroom so the next
+	// compaction, not the next write, is the common case. Both sums saturate:
+	// limit and the write length are caller-controlled.
+	size := need
+	if headroom := r.limit; size <= math.MaxInt-headroom {
+		size += headroom
 	}
 	r.store = make([]byte, 0, size)
 	r.store = append(r.store, r.buf...)
