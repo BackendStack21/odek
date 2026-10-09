@@ -40,27 +40,43 @@ func denylistMatch(cmd string, denylist []string) bool {
 	if len(entries) == 0 {
 		return false
 	}
-	return denyScan(cmd, &denyCtx{entries: entries, seen: map[string]struct{}{}}, 0)
+	return denyScan(cmd, &denyCtx{entries: entries, seen: map[string]int{}}, 0)
 }
 
 // denyCtx carries the compiled entries and the set of command lines and
 // stages already examined during one denylistMatch call. Scanning is a pure
-// function of its input, so a repeat can only reproduce a miss (a hit would
-// have ended the scan); skipping repeats keeps nested eval operands and
-// repeated find -exec operands linear in the command size instead of
-// re-scanning the same text once per path that reaches it.
+// function of its input and, where the depth limit cuts nested payloads off,
+// of the depth it is reached at. A repeat can only reproduce a miss (a hit
+// would have ended the scan) unless the earlier visit was cut short by the
+// depth limit and the repeat is shallower. Skipping the other repeats keeps
+// nested eval operands and repeated find -exec operands linear in the command
+// size instead of re-scanning the same text once per path that reaches it.
 type denyCtx struct {
 	entries [][]string
-	seen    map[string]struct{}
+	// seen maps a visited key to the depth of its visit; complete visits are
+	// recorded as 0 so no later visit can be shallower.
+	seen map[string]int
+	// cuts counts the scans the depth limit has refused so far.
+	cuts int
 }
 
-// firstVisit records key and reports whether it was new.
-func (dc *denyCtx) firstVisit(key string) bool {
-	if _, dup := dc.seen[key]; dup {
-		return false
+// firstVisit records key at depth and reports whether it must be scanned: it
+// was never visited, or only at a greater depth by a visit the depth limit cut
+// short. The returned mark is passed to settle once the scan has missed.
+func (dc *denyCtx) firstVisit(key string, depth int) (scan bool, mark int) {
+	if prior, dup := dc.seen[key]; dup && prior <= depth {
+		return false, 0
 	}
-	dc.seen[key] = struct{}{}
-	return true
+	dc.seen[key] = depth
+	return true, dc.cuts
+}
+
+// settle marks key's visit complete when the depth limit refused nothing while
+// it ran, so a shallower repeat could not reach anything new.
+func (dc *denyCtx) settle(key string, mark int) {
+	if dc.cuts == mark {
+		dc.seen[key] = 0
+	}
 }
 
 func denyScan(cmd string, dc *denyCtx, depth int) bool {
@@ -73,15 +89,19 @@ func denyScan(cmd string, dc *denyCtx, depth int) bool {
 // value is built at run time is not known and its references stay opaque.
 func denyScanVars(cmd string, dc *denyCtx, depth int, inherited map[string]string) bool {
 	if depth > maxSubstDepth {
+		dc.cuts++
 		return false
 	}
 	vars := make(map[string]string, len(inherited))
 	for k, v := range inherited {
 		vars[k] = v
 	}
-	if !dc.firstVisit("scan\x00" + cmd + "\x00" + denyVarsKey(inherited)) {
+	scanKey := "scan\x00" + cmd + "\x00" + denyVarsKey(inherited)
+	scan, mark := dc.firstVisit(scanKey, depth)
+	if !scan {
 		return false
 	}
+	defer dc.settle(scanKey, mark)
 	main, subs := normalize(cmd)
 	unquoted := unquotedVariableRefs(main)
 	tokens, ops, _ := tokenizeMarked(main)
@@ -278,9 +298,12 @@ func denyStage(stage []string, dc *denyCtx, depth int) bool {
 	if len(stage) == 0 {
 		return false
 	}
-	if !dc.firstVisit("stage\x00" + strings.Join(stage, "\x00")) {
+	stageKey := "stage\x00" + strings.Join(stage, "\x00")
+	scan, mark := dc.firstVisit(stageKey, depth)
+	if !scan {
 		return false
 	}
+	defer dc.settle(stageKey, mark)
 	if denyMatchesAny(stage, dc.entries) || denyPayloads(stage, dc, depth) {
 		return true
 	}
