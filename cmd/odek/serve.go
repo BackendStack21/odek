@@ -3912,7 +3912,36 @@ var staticFiles = map[string][2]string{
 	"/fonts/azeret-mono.woff2":         {"ui/fonts/azeret-mono.woff2", "font/woff2"},
 }
 
+// staticETagComputes counts SHA-256 ETag computations (observable in tests:
+// each asset variant is hashed once per handler, not once per request).
+var staticETagComputes atomic.Int64
+
+// staticETags memoises strong ETags per asset variant. The embedded UI is
+// immutable at runtime, and the only per-request variation of an asset's
+// bytes is the index.html token substitution, which has a fixed number of
+// outcomes per handler (token present, or empty).
+type staticETags struct {
+	mu sync.Mutex
+	m  map[string]string
+}
+
+func (c *staticETags) get(key string, data []byte) string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if e, ok := c.m[key]; ok {
+		return e
+	}
+	staticETagComputes.Add(1)
+	e := `"` + fmt.Sprintf("%x", sha256.Sum256(data)) + `"`
+	if c.m == nil {
+		c.m = make(map[string]string)
+	}
+	c.m[key] = e
+	return e
+}
+
 func handleStatic(wsToken string) http.HandlerFunc {
+	etags := &staticETags{}
 	return func(w http.ResponseWriter, r *http.Request) {
 		// Browsers auto-request favicon.ico — serve a minimal SVG inline.
 		if r.URL.Path == "/favicon.ico" {
@@ -3948,7 +3977,9 @@ func handleStatic(wsToken string) http.HandlerFunc {
 		// `GET /`. The token is delivered both as a SameSite=Strict HttpOnly
 		// cookie (sent automatically on same-site WebSocket upgrades) and as a
 		// meta tag (read by app.js and sent as a WebSocket subprotocol).
+		variant := ""
 		if r.URL.Path == "/" && wsToken != "" {
+			variant = "#empty"
 			authed := false
 			// Constant-time, like every other comparison in this file: this
 			// is the one endpoint that mints the authenticated cookie.
@@ -3971,6 +4002,7 @@ func handleStatic(wsToken string) http.HandlerFunc {
 				data = []byte(strings.Replace(string(data), "{{ODEK_WS_TOKEN}}", wsToken, 1))
 				w.Header().Set("Cache-Control", "no-store")
 				authed = true
+				variant = "#token"
 			} else if c, err := r.Cookie(wsTokenCookieName); err == nil &&
 				subtle.ConstantTimeCompare([]byte(c.Value), []byte(wsToken)) == 1 {
 				// Returning browser: the HttpOnly cookie minted by an earlier
@@ -3981,6 +4013,7 @@ func handleStatic(wsToken string) http.HandlerFunc {
 				data = []byte(strings.Replace(string(data), "{{ODEK_WS_TOKEN}}", wsToken, 1))
 				w.Header().Set("Cache-Control", "no-store")
 				authed = true
+				variant = "#token"
 			}
 			if !authed {
 				// No valid token in the URL or cookie: serve the UI but leave
@@ -3999,7 +4032,7 @@ func handleStatic(wsToken string) http.HandlerFunc {
 		// odek upgrade revalidates, gets a 304 when the file is unchanged,
 		// and picks up the new UI the moment it differs — no heuristic
 		// caching serving a stale frontend after `odek upgrade`.
-		etag := `"` + fmt.Sprintf("%x", sha256.Sum256(data)) + `"`
+		etag := etags.get(entry[0]+variant, data)
 		w.Header().Set("ETag", etag)
 		// The token-bearing index.html keeps its stricter no-store policy
 		// (set above) — only plain assets get the revalidate contract.
