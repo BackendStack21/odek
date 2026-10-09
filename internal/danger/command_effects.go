@@ -783,6 +783,7 @@ var writeOptions = map[string]writeOption{
 	"mv":      {spec: cpOptions, names: []string{"-t", "--target-directory"}},
 	"install": {spec: modeOptions["install"], names: []string{"-t", "--target-directory"}},
 	"tar":     {spec: tarOptions, names: []string{"-C", "--directory"}},
+	"rsync":   {spec: rsyncOptions, names: []string{"--write-batch", "--only-write-batch", "--log-file"}},
 	"unzip":   {spec: optSpec{short: "d"}, names: []string{"-d"}},
 	"7z":      {spec: optSpec{short: "o"}, names: []string{"-o"}},
 	"7za":     {spec: optSpec{short: "o"}, names: []string{"-o"}},
@@ -801,6 +802,10 @@ var (
 	gpgOptions  = optSpec{short: "rpuo", long: valueOpts("output recipient local-user"), abbrev: true}
 	findOptions = optSpec{exact: []string{"-fprint", "-fprint0", "-fprintf"}}
 	cpOptions   = optSpec{short: "tS", long: valueOpts("target-directory suffix"), abbrev: true}
+
+	// rsync writes the batch and log files named by these options on the
+	// local side.
+	rsyncOptions = optSpec{long: valueOpts("write-batch only-write-batch log-file"), abbrev: true, minAbbrev: 3}
 
 	// git archive writes the file named by -o/--output; the history and diff
 	// viewers write --output only, and git reads their abbreviation from four

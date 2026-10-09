@@ -4346,7 +4346,7 @@ func hasAnyRsyncDelete(tokens []string) bool {
 			return true
 		}
 		switch t {
-		case "--del", "--remove-source-files":
+		case "--del", "--remove-source-files", "--remove-sent-files":
 			return true
 		}
 	}
