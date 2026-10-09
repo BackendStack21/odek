@@ -22,8 +22,8 @@ func TestFormatCatalog_PromotedAndNeedsReview(t *testing.T) {
 	if !strings.Contains(got, "- alpha — First line") {
 		t.Errorf("promoted skill missing flattened description:\n%s", got)
 	}
-	if !strings.Contains(got, "- tainted — [needs review]") {
-		t.Errorf("NeedsReview skill should list name only:\n%s", got)
+	if strings.Contains(got, "tainted") || !strings.Contains(got, "1 skill(s) pending review") {
+		t.Errorf("NeedsReview skill must be counted, not named:\n%s", got)
 	}
 	if strings.Contains(got, "SECRET-BODY-MUST-NOT-APPEAR") || strings.Contains(got, "do not leak this") {
 		t.Errorf("NeedsReview catalog line leaked a body:\n%s", got)

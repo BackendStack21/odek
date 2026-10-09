@@ -2,12 +2,15 @@ package skills
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"unicode"
 
+	"github.com/BackendStack21/odek/internal/danger"
 	"github.com/BackendStack21/odek/internal/redact"
 )
 
@@ -40,6 +43,21 @@ func parseSkillFile(path string) *Skill {
 		return nil
 	}
 	return parseSkillContent(string(data), path)
+}
+
+// invalidNameWarned remembers the SKILL.md paths already reported for an
+// invalid name, so rescans do not repeat the warning.
+var invalidNameWarned sync.Map
+
+func warnInvalidSkillName(path string, err error) {
+	if _, seen := invalidNameWarned.LoadOrStore(path, true); seen {
+		return
+	}
+	where := path
+	if where == "" {
+		where = "(inline content)"
+	}
+	log.Printf("skills: not loading %s: %s", danger.SanitizeInline(where), danger.SanitizeInline(err.Error()))
 }
 
 // parseSkillContent parses SKILL.md content from a string.
@@ -78,7 +96,10 @@ func parseSkillContent(content, sourcePath string) *Skill {
 		return nil
 	}
 	if err := ValidateSkillName(name); err != nil {
-		return nil // reject names with path traversal at load time
+		// Reject unsafe names at load time. The operator sees why the skill
+		// is missing, once per file, instead of it vanishing silently.
+		warnInvalidSkillName(sourcePath, err)
+		return nil
 	}
 
 	desc := fmString(fm, "description")

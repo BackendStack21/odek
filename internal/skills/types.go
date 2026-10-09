@@ -19,6 +19,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/BackendStack21/odek/internal/embedding"
 )
@@ -60,6 +62,11 @@ type Skill struct {
 	Source      SkillSource     `json:"source"`         // where the skill came from
 	Provenance  SkillProvenance `json:"provenance"`     // trust signals for the originating session
 	Meta        map[string]any  `json:"meta,omitempty"` // arbitrary extra frontmatter fields
+
+	// NameFlagged is set at load time when the injection scanner flags the
+	// skill name. A flagged name is withheld from the system-prompt catalog.
+	// Recomputed on every reload, never persisted.
+	NameFlagged bool `json:"-"`
 }
 
 // SkillSource identifies where a skill was loaded from.
@@ -136,9 +143,34 @@ func ProjectSkillsDir() string { return "./.odek/skills" }
 
 // ── Helpers ────────────────────────────────────────────────────────────
 
-// ValidateSkillName checks that a skill name is safe for filesystem use.
-// Returns an error if the name contains path separators, relative components,
-// or hidden-file prefixes.
+// MaxSkillNameRunes caps a skill name. Names are listed in the system-prompt
+// skills catalog, so they are kept to short identifiers rather than prose.
+const MaxSkillNameRunes = 64
+
+// skillNameRuneAllowed reports whether r may appear in a skill name: Unicode
+// letters, combining marks and digits, a plain space, and the punctuation
+// - _ . : + # @ ( ) ' & (none of which can break a path, and MarshalSkill
+// quotes the name in frontmatter when needed). Characters that render as
+// nothing are refused even when Unicode files them as letters or marks:
+// Hangul fillers, the combining grapheme joiner and variation selectors.
+func skillNameRuneAllowed(r rune) bool {
+	switch r {
+	case '-', '_', '.', ':', ' ', '+', '#', '@', '(', ')', '\'', '&':
+		return true
+	case 0x115F, 0x1160, 0x3164, 0xFFA0, 0x034F:
+		return false
+	}
+	if (r >= 0xFE00 && r <= 0xFE0F) || (r >= 0xE0100 && r <= 0xE01EF) || (r >= 0x180B && r <= 0x180F) {
+		return false
+	}
+	return unicode.IsLetter(r) || unicode.IsMark(r) || unicode.IsDigit(r)
+}
+
+// ValidateSkillName checks that a skill name is safe for filesystem use and
+// for listing in the system-prompt catalog. Returns an error if the name
+// contains path separators, relative components, or hidden-file prefixes, is
+// longer than MaxSkillNameRunes, or uses characters outside letters, marks,
+// digits, single spaces and - _ . : + # @ ( ) ' &.
 func ValidateSkillName(name string) error {
 	if name == "" {
 		return fmt.Errorf("skill name is empty")
@@ -162,6 +194,14 @@ func ValidateSkillName(name string) error {
 	for _, r := range name {
 		if r < 0x20 || r == 0x7f {
 			return fmt.Errorf("skill name %q contains control characters", name)
+		}
+	}
+	if utf8.RuneCountInString(name) > MaxSkillNameRunes {
+		return fmt.Errorf("skill name is longer than %d characters", MaxSkillNameRunes)
+	}
+	for _, r := range name {
+		if !skillNameRuneAllowed(r) {
+			return fmt.Errorf("skill name %q contains disallowed character %q (letters, digits, spaces and - _ . : + # @ ( ) ' & only)", name, r)
 		}
 	}
 	// The name must survive yamlSafeScalar's whitespace collapse intact:
