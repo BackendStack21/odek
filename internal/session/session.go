@@ -223,7 +223,7 @@ type Store struct {
 	// stamping the on-disk file it was built from. Any observable change to
 	// index.json (mtime or size) triggers a reload, so an index rewritten by
 	// another odek process is picked up on the next load.
-	idxCache map[string]*IndexEntry
+	idxCache  map[string]*IndexEntry
 	idxLoaded bool
 	idxMod    time.Time
 	idxSize   int64
@@ -758,6 +758,16 @@ func (s *Store) saveLocked(sess *Session) (err error) {
 	for i := boundary; i < len(sess.Messages); i++ {
 		sess.Messages[i].Content = redact.RedactSecrets(sess.Messages[i].Content)
 		sess.Messages[i].ReasoningContent = redact.RedactSecrets(sess.Messages[i].ReasoningContent)
+		// Tool-call arguments are model-authored (shell commands, headers,
+		// file contents) and reach disk verbatim otherwise.
+		if len(sess.Messages[i].ToolCalls) > 0 {
+			// Copy first: the slice may be shared with the caller's live history.
+			calls := append([]ToolCall(nil), sess.Messages[i].ToolCalls...)
+			for j := range calls {
+				calls[j].Function.Arguments = redact.RedactSecrets(calls[j].Function.Arguments)
+			}
+			sess.Messages[i].ToolCalls = calls
+		}
 	}
 
 	// Set the redact boundary (and its fingerprint anchor) BEFORE the

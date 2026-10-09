@@ -121,8 +121,8 @@ func (s *AuditStore) RecordTurn(sessionID string, turn AuditTurn) error {
 // auditRecord is one JSONL line: a typed envelope around the per-record
 // payloads. Exactly one payload field is set per record.
 type auditRecord struct {
-	Type   string      `json:"type"`
-	Turn   *AuditTurn  `json:"turn,omitempty"`
+	Type   string       `json:"type"`
+	Turn   *AuditTurn   `json:"turn,omitempty"`
 	Ingest *AuditIngest `json:"ingest,omitempty"`
 }
 
