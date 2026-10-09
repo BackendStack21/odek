@@ -2090,7 +2090,9 @@ func handleChatMessage(
 			if len(updatedMessages) > 0 {
 				cs.Messages = dropDanglingToolCalls(updatedMessages)
 			}
-			if saveErr := sessionManager.Save(chatID, cs.Messages); saveErr != nil {
+			if saveErr := sessionManager.SaveAt(chatID, turnGen, cs.Messages); errors.Is(saveErr, telegram.ErrStaleGeneration) {
+				log.Warn("dropped cancel-path save: conversation changed during the turn", "chat_id", chatID)
+			} else if saveErr != nil {
 				log.Error("save session after cancel", "chat_id", chatID, "error", saveErr)
 			}
 			// Send a cancellation summary so the user knows what happened.
@@ -2128,7 +2130,9 @@ func handleChatMessage(
 	// Save the updated session messages.
 	cs.Messages = updatedMessages
 	cs.TurnCount++
-	if err := sessionManager.Save(chatID, cs.Messages); err != nil {
+	if err := sessionManager.SaveAt(chatID, turnGen, cs.Messages); errors.Is(err, telegram.ErrStaleGeneration) {
+		log.Warn("dropped final save: conversation changed during the turn", "chat_id", chatID)
+	} else if err != nil {
 		outcome = err
 		reportError(bot, chatID, messageID, "Failed to save completed turn: "+err.Error())
 		return

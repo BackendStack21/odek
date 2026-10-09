@@ -157,14 +157,37 @@ func (sm *SessionManager) Generation(chatID int64) uint64 {
 // chat switched conversations since (a /resume), the save is dropped so the
 // pre-switch turn cannot overwrite the resumed session.
 func (sm *SessionManager) SaveNoIndexAt(chatID int64, gen uint64, messages []session.Message) error {
+	if err := sm.saveAt(chatID, gen, messages, true, true); err != nil && !errors.Is(err, ErrStaleGeneration) {
+		return err
+	}
+	return nil
+}
+
+// ErrStaleGeneration is returned by SaveAt and SaveCheckpointAt when the chat
+// switched conversations (a /resume) after the saving turn began; the save was
+// dropped.
+var ErrStaleGeneration = errors.New("telegram: save dropped, conversation changed since the turn began")
+
+// SaveAt is Save for a turn that began at generation gen. It returns
+// ErrStaleGeneration, writing nothing, when the chat has since been resumed.
+func (sm *SessionManager) SaveAt(chatID int64, gen uint64, messages []session.Message) error {
+	return sm.saveAt(chatID, gen, messages, false, false)
+}
+
+// SaveCheckpointAt is SaveCheckpoint with the same generation check as SaveAt.
+func (sm *SessionManager) SaveCheckpointAt(chatID int64, gen uint64, messages []session.Message) error {
+	return sm.saveAt(chatID, gen, messages, true, false)
+}
+
+func (sm *SessionManager) saveAt(chatID int64, gen uint64, messages []session.Message, checkpoint, skipIndex bool) error {
 	lock, _ := sm.saveLocks.LoadOrStore(chatID, new(sync.Mutex))
 	mu := lock.(*sync.Mutex)
 	mu.Lock()
 	defer mu.Unlock()
 	if sm.Generation(chatID) != gen {
-		return nil
+		return ErrStaleGeneration
 	}
-	return sm.saveLocked(chatID, messages, true, true)
+	return sm.saveLocked(chatID, messages, checkpoint, skipIndex)
 }
 
 // SaveCheckpoint persists an indexed checkpoint without counting a completed
