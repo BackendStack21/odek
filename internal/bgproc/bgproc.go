@@ -773,14 +773,12 @@ type outputRing struct {
 // O(1) per byte, no allocation in steady state).
 func (r *outputRing) appendLocked(p []byte) {
 	n := len(r.buf)
-	need := n + len(p)
 	// room is the free space behind the window inside the backing array.
-	room := cap(r.buf) - n
-	if len(p) <= room {
+	if len(p) <= cap(r.buf)-n {
 		r.buf = append(r.buf, p...)
 		return
 	}
-	if need <= cap(r.store) {
+	if len(p) <= cap(r.store)-n {
 		// Compact: the window slides to the start of the backing array.
 		copy(r.store[:n], r.buf)
 		r.buf = r.store[:n]
@@ -788,10 +786,22 @@ func (r *outputRing) appendLocked(p []byte) {
 		return
 	}
 	// Grow to what is needed plus one window of headroom so the next
-	// compaction, not the next write, is the common case. n, len(p) and
-	// limit are each at most maxRingBytes (see Write), so the sum fits.
-	size := need + r.limit
-	r.store = make([]byte, 0, size)
+	// compaction, not the next write, is the common case. Write already
+	// keeps the window and every write within maxRingBytes; the clamps
+	// restate that bound where the size is computed, so the sum is
+	// provably free of overflow (and append would still regrow safely if
+	// a clamp ever did bite).
+	window, incoming, headroom := n, len(p), r.limit
+	if window > maxRingBytes {
+		window = maxRingBytes
+	}
+	if incoming > maxRingBytes {
+		incoming = maxRingBytes
+	}
+	if headroom > maxRingBytes {
+		headroom = maxRingBytes
+	}
+	r.store = make([]byte, 0, window+incoming+headroom)
 	r.store = append(r.store, r.buf...)
 	r.buf = append(r.store, p...)
 }
