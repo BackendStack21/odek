@@ -1,6 +1,7 @@
 package session
 
 import (
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -91,5 +92,93 @@ func TestRED_Session_PrincipalPromptMutatedInPlaceStillRedacted(t *testing.T) {
 	raw, _ = os.ReadFile(store.path(sess.ID))
 	if strings.Contains(string(raw), secret) {
 		t.Fatal("mutated prompt leaked after append")
+	}
+}
+
+func TestRED_Session_RevisionCheckAvoidsReloadOnOwnWrites(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewStoreWithDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := store.Create(promptMessages(3), "m", "task")
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := store.revisionLoads
+	for i := 0; i < 5; i++ {
+		sess.Messages = append(sess.Messages, Message{Role: "assistant", Content: "step"})
+		if err := store.SaveNoIndex(sess); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := store.revisionLoads - before; got != 0 {
+		t.Fatalf("%d full loads for 5 self-writes, want 0", got)
+	}
+
+	// A second store (another process) advancing the session is still detected.
+	other, err := NewStoreWithDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	theirs, err := other.Load(sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	theirs.Messages = append(theirs.Messages, Message{Role: "assistant", Content: "other"})
+	if err := other.SaveNoIndex(theirs); err != nil {
+		t.Fatal(err)
+	}
+	sess.Messages = append(sess.Messages, Message{Role: "assistant", Content: "mine"})
+	if err := store.SaveNoIndex(sess); !errors.Is(err, ErrConflict) {
+		t.Fatalf("stale writer: err = %v, want ErrConflict", err)
+	}
+}
+
+func TestRED_Session_RevisionCheckSameSizeExternalRewriteDetected(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewStoreWithDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := store.Create([]Message{{Role: "user", Content: "aaaa"}}, "m", "task")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveNoIndex(sess); err != nil {
+		t.Fatal(err)
+	}
+	other, _ := NewStoreWithDir(dir)
+	theirs, err := other.Load(sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	theirs.Messages[0].Content = "bbbb"
+	if err := other.SaveNoIndex(theirs); err != nil {
+		t.Fatal(err)
+	}
+	sess.Messages[0].Content = "cccc"
+	if err := store.SaveNoIndex(sess); !errors.Is(err, ErrConflict) {
+		t.Fatalf("err = %v, want ErrConflict", err)
+	}
+}
+
+func TestRED_Session_RevisionCheckRemovedFileStillDetected(t *testing.T) {
+	store, err := NewStoreWithDir(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := store.Create([]Message{{Role: "user", Content: "a"}}, "m", "task")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveNoIndex(sess); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(store.path(sess.ID)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveNoIndex(sess); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("err = %v, want not-exist", err)
 	}
 }

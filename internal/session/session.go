@@ -231,6 +231,16 @@ type Store struct {
 	// principal prompts written by the last save. Guarded by mu.
 	promptDigests map[string]promptDigest
 
+	// revStamps remembers, per session id, the (generation, revision) this
+	// store last persisted together with the file stamp it produced, so the
+	// next save can verify the on-disk file is untouched with an lstat instead
+	// of a full parse. Guarded by mu.
+	revStamps map[string]revStamp
+
+	// revisionLoads counts full session loads performed by saveLocked for the
+	// revision check. Test observability only; guarded by mu.
+	revisionLoads int
+
 	// promptRedactions counts RedactSecrets calls made on principal prompts
 	// by saveLocked. Test observability only; guarded by mu.
 	promptRedactions int
@@ -656,6 +666,57 @@ func redactMessageFP(m Message) string {
 	return hex.EncodeToString(h[:8])
 }
 
+// maxRevStamps bounds the revision stamp memo.
+const maxRevStamps = 1024
+
+// revStamp is a persisted (generation, revision) pair plus the identity of the
+// file it was written to.
+type revStamp struct {
+	generation string
+	revision   uint64
+	size       int64
+	mod        time.Time
+	ino        uint64
+}
+
+// cachedRevision returns the revision this store last persisted for id when
+// the file on disk is provably the one it wrote (same inode, size and
+// nanosecond mtime), else nil so the caller falls back to a full Load. A
+// filesystem with whole-second mtimes can not distinguish two writes in one
+// tick, so it never takes the fast path.
+func (s *Store) cachedRevision(id string, info os.FileInfo, statErr error) *Session {
+	if statErr != nil || info == nil || !info.Mode().IsRegular() {
+		return nil
+	}
+	st, ok := s.revStamps[id]
+	if !ok || st.mod.Nanosecond() == 0 {
+		return nil
+	}
+	if info.Size() != st.size || !info.ModTime().Equal(st.mod) || fileInode(info) != st.ino {
+		return nil
+	}
+	return &Session{ID: id, Generation: st.generation, Revision: st.revision, persistedID: id}
+}
+
+// rememberRevision stamps the file just written for sess.
+func (s *Store) rememberRevision(sess *Session) {
+	info, err := os.Lstat(s.path(sess.ID))
+	if err != nil || !info.Mode().IsRegular() {
+		delete(s.revStamps, sess.ID)
+		return
+	}
+	if s.revStamps == nil || len(s.revStamps) >= maxRevStamps {
+		s.revStamps = make(map[string]revStamp)
+	}
+	s.revStamps[sess.ID] = revStamp{
+		generation: sess.Generation,
+		revision:   sess.Revision,
+		size:       info.Size(),
+		mod:        info.ModTime(),
+		ino:        fileInode(info),
+	}
+}
+
 // maxPromptDigests bounds the per-session prompt digest memo.
 const maxPromptDigests = 256
 
@@ -720,7 +781,12 @@ func (s *Store) saveLocked(sess *Session) (err error) {
 	var current *Session
 	var loadErr error
 	if !alias {
-		current, loadErr = s.Load(sess.ID)
+		if c := s.cachedRevision(sess.ID, info, statErr); c != nil {
+			current = c
+		} else {
+			s.revisionLoads++
+			current, loadErr = s.Load(sess.ID)
+		}
 	}
 	if alias {
 		// Atomic replacement owns this directory entry, never the alias's
@@ -907,6 +973,7 @@ func (s *Store) saveLocked(sess *Session) (err error) {
 
 	sess.persistedID = sess.ID
 	committed = true
+	s.rememberRevision(sess)
 	s.rememberPrompts(sess.ID, sess.Messages)
 
 	// Update the index atomically.
@@ -1269,6 +1336,7 @@ func (s *Store) Delete(id string) error {
 // removeLocked deletes the session FILE and its vector-index entry. The
 // store mutex must be held. A missing file is nil (idempotent).
 func (s *Store) removeLocked(id string) error {
+	delete(s.revStamps, id)
 	err := os.Remove(s.path(id))
 	if err == nil || os.IsNotExist(err) {
 		// The audit log records ingest sources and resources of the session;
