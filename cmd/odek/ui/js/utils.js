@@ -108,6 +108,11 @@ messagesEl?.addEventListener?.('scroll', () => {
   }
   S.stickBottom = isNearBottom();
 }, { passive: true });
+// Direct operator input ends the smooth-jump window at once, so a scroll up
+// right after pressing the button is honoured.
+for (const type of ['wheel', 'touchstart', 'keydown']) {
+  messagesEl?.addEventListener?.(type, () => { S.smoothToBottomUntil = 0; }, { passive: true });
+}
 // Expanding something in the transcript grows content without a scroll
 // event; following would then yank the view away from what was opened.
 // The next scroll that reaches the bottom re-arms the follow.

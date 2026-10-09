@@ -357,3 +357,9 @@ test('list-looking lines the parser cannot read stay text instead of throwing', 
 test('a fence still streaming drops its trailing blank lines', () => {
   assert.ok(markdownToHtml('1. a\n   ```py\n   x = 1\n\n').includes('<code>x = 1\n</code>'));
 });
+
+test('very deep quote nesting is capped instead of overflowing the stack', () => {
+  assert.doesNotThrow(() => markdownToHtml('>'.repeat(6000) + ' x'));
+  assert.ok((markdownToHtml('>'.repeat(6000) + ' x').match(/<blockquote>/g) || []).length <= 34);
+  assert.equal(markdownToHtml('> > a'), '<blockquote><blockquote><p>a</p></blockquote></blockquote>');
+});

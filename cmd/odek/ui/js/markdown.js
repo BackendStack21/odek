@@ -57,7 +57,11 @@ export function markdownToHtml(text) {
   return parseBlocks(text.split('\n'));
 }
 
-function parseBlocks(lines) {
+// Quote nesting beyond this depth renders its remaining '>' markers as
+// text instead of recursing, so hostile input cannot exhaust the stack.
+const MAX_QUOTE_DEPTH = 32;
+
+function parseBlocks(lines, depth = 0) {
   const out = [];
   let i = 0;
 
@@ -120,7 +124,9 @@ function parseBlocks(lines) {
         }
         break;
       }
-      out.push('<blockquote>' + parseBlocks(inner) + '</blockquote>');
+      out.push('<blockquote>' + (depth < MAX_QUOTE_DEPTH
+        ? parseBlocks(inner, depth + 1)
+        : '<p>' + inner.map(inlineHtml).join('<br>') + '</p>') + '</blockquote>');
       continue;
     }
 
