@@ -1448,7 +1448,17 @@ func (e *Engine) trimContext(ctx context.Context, messages []session.Message, to
 			protected[i] = struct{}{}
 		}
 	}
-	for totalTokens > budget {
+	// The digest and trim warning installed after the drops are part of the
+	// request, so their (capped) size is reserved up front: trimming stops
+	// early enough that the final history still fits the budget.
+	dropLimit := budget
+	if totalTokens > budget {
+		dropLimit = budget - e.trimInstallReserve(messages)
+		if dropLimit < budget/2 {
+			dropLimit = budget / 2
+		}
+	}
+	for totalTokens > dropLimit {
 		start := head
 		for start < len(messages) {
 			if _, keep := protected[start]; !keep {
@@ -1534,6 +1544,64 @@ func (e *Engine) trimContext(ctx context.Context, messages []session.Message, to
 	e.lastEstimatedTotal = estimateMessages(messages) + defTokens
 
 	return messages
+}
+
+// Digest and trim-warning sizing. The digest body is capped at a share of the
+// context budget so it can never outgrow the room trimming freed.
+const (
+	digestMinTokens = 256
+	digestMaxTokens = 8192
+	// digestWrapperBytes covers the untrusted-content wrapper around the body.
+	digestWrapperBytes = 256
+	// trimWarningTokens is the reserve for the cumulative trim warning.
+	trimWarningTokens = 200
+)
+
+// digestBodyCapBytes bounds the digest body: an eighth of the context budget
+// (between digestMinTokens and digestMaxTokens), less the fixed header and
+// wrapper. 0 means no cap (no context limit configured).
+func (e *Engine) digestBodyCapBytes() int {
+	budget := contextBudget(e.maxContext)
+	if budget <= 0 {
+		return 0
+	}
+	t := budget / 8
+	if t < digestMinTokens {
+		t = digestMinTokens
+	}
+	if t > digestMaxTokens {
+		t = digestMaxTokens
+	}
+	capBytes := t*4 - len(digestMsgHeader) - digestWrapperBytes
+	if capBytes < 256 {
+		capBytes = 256
+	}
+	return capBytes
+}
+
+// trimInstallReserve is the extra token cost of the digest and trim warning
+// trimming is about to install, beyond what messages already carries.
+func (e *Engine) trimInstallReserve(messages []session.Message) int {
+	existingDigest, existingWarning := 0, 0
+	for _, m := range messages {
+		switch {
+		case isDigestMessage(m):
+			existingDigest = messageOverhead + estimateTokens(m.Content)
+		case m.Role == "system" && strings.HasPrefix(m.Content, "[Context trimmed:"):
+			existingWarning = messageOverhead + estimateTokens(m.Content)
+		}
+	}
+	reserve := 0
+	if r := messageOverhead + trimWarningTokens - existingWarning; r > 0 {
+		reserve += r
+	}
+	if e.compaction {
+		digest := messageOverhead + (e.digestBodyCapBytes()+len(digestMsgHeader)+digestWrapperBytes+3)/4
+		if r := digest - existingDigest; r > 0 {
+			reserve += r
+		}
+	}
+	return reserve
 }
 
 // buildTrimWarning renders the cumulative trim warning text, including how
@@ -1801,6 +1869,9 @@ func (e *Engine) extractiveDigest(dropped []session.Message) string {
 func (e *Engine) installDigest(ctx context.Context, messages []session.Message, summary string) []session.Message {
 	if summary == "" {
 		return messages
+	}
+	if capBytes := e.digestBodyCapBytes(); capBytes > 0 {
+		summary = excerptBytes(summary, capBytes)
 	}
 	e.digestInstalled = true
 	// Reuse the cached wrapper while the summary is unchanged: a fresh nonce
