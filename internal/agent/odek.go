@@ -703,6 +703,9 @@ func New(cfg Config) (_ *Agent, setupErr error) {
 		if cfg.VerifyModel != "" {
 			if vc, err := llmclient.New(sdkInst, cfg.Provider, cfg.VerifyModel); err == nil {
 				vc.Thinking = "disabled"
+				// Same temperature polarity as the main client: a negative
+				// value means "omit", which a verify-only gateway must see too.
+				vc.Temperature = cfg.Temperature
 				engine.SetVerifyClient(vc)
 			} else {
 				log.Printf("odek: warning: verify model %q unavailable (%v); verification uses the main model", cfg.VerifyModel, err)
