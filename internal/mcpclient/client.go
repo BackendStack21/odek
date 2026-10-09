@@ -919,8 +919,10 @@ func (c *Client) call(ctx context.Context, method string, params json.RawMessage
 	respCh := make(chan callResponse, 1)
 
 	c.mu.Lock()
-	id := c.nextID
+	// Ids start at 1 so a frame with a missing or null id (decoded as 0)
+	// can never collide with a live call.
 	c.nextID++
+	id := c.nextID
 	req := request{
 		JSONRPC: "2.0",
 		ID:      id,
@@ -1046,6 +1048,15 @@ func (c *Client) readLoop() {
 		// Routing it by id would deliver {result:null} to a waiting caller
 		// whose id collides — and drop the real response when it arrives.
 		if resp.Method != "" {
+			continue
+		}
+		// A missing or null id (e.g. a JSON-RPC parse-error reply) answers no
+		// call of ours; it must not be routed as id 0.
+		var idProbe struct {
+			ID json.RawMessage `json:"id"`
+		}
+		if err := json.Unmarshal([]byte(line), &idProbe); err != nil ||
+			len(idProbe.ID) == 0 || string(idProbe.ID) == "null" {
 			continue
 		}
 
