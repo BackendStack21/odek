@@ -2508,6 +2508,7 @@ func (e *Engine) Run(ctx context.Context, task string) (string, error) {
 	// Reset per-run state — same contract as RunWithMessages ("Reset on each
 	// Run/RunWithMessages call"): totals are per-run and feed budget
 	// enforcement, so they must not accumulate across runs.
+	e.lastPartialReason = "" // per-run: no stale partial classification from a previous run
 	e.memMsgIdx = -1
 	e.skillMsgIdx = -1
 	e.lastSkillBlock = ""
