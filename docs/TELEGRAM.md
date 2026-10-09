@@ -208,7 +208,10 @@ All callbacks return a response string (may be empty) and an error. The `Handle`
 > tools — can never be deployed by accident. To intentionally run an open bot,
 > set `ODEK_TELEGRAM_ALLOW_ALL=true` (logged as a loud warning at startup). At
 > runtime, with both allowlists empty and `AllowAllUsers` unset, every update is
-> denied.
+> denied. A malformed `ODEK_TELEGRAM_ALLOWED_CHATS` or `ODEK_TELEGRAM_ALLOWED_USERS`
+> value (a non-integer entry, or no entries) is ignored as a whole, keeping the
+> allowlist from config, and a warning naming the variable and the bad entry is
+> written to stderr.
 
 ### Inline Keyboards
 

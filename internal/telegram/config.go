@@ -2,6 +2,7 @@ package telegram
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"strings"
@@ -62,11 +63,15 @@ func ConfigFromEnv(base TelegramConfig) TelegramConfig {
 		// leave an empty (wider) allowlist.
 		if list, ok := parseInt64List(v); ok && len(list) > 0 {
 			cfg.AllowedChats = list
+		} else {
+			warnBadAllowlist("ODEK_TELEGRAM_ALLOWED_CHATS", v)
 		}
 	}
 	if v := os.Getenv("ODEK_TELEGRAM_ALLOWED_USERS"); v != "" {
 		if list, ok := parseInt64List(v); ok && len(list) > 0 {
 			cfg.AllowedUsers = list
+		} else {
+			warnBadAllowlist("ODEK_TELEGRAM_ALLOWED_USERS", v)
 		}
 	}
 	if v := os.Getenv("ODEK_TELEGRAM_ALLOW_ALL"); v != "" {
@@ -187,6 +192,22 @@ func parseInt64List(s string) (result []int64, ok bool) {
 		result = append(result, n)
 	}
 	return result, true
+}
+
+// warnWriter receives configuration warnings; tests replace it.
+var warnWriter io.Writer = os.Stderr
+
+// warnBadAllowlist reports an allowlist variable that was ignored, so an
+// operator who mistyped an id sees why the base list is still in force.
+func warnBadAllowlist(name, value string) {
+	bad := "no entries"
+	for _, p := range splitAndTrim(value) {
+		if _, err := strconv.ParseInt(p, 10, 64); err != nil {
+			bad = fmt.Sprintf("invalid entry %q", p)
+			break
+		}
+	}
+	fmt.Fprintf(warnWriter, "telegram: warning: %s ignored (%s); keeping the configured allowlist\n", name, bad)
 }
 
 // splitAndTrim splits a string on commas and trims whitespace from each part.
