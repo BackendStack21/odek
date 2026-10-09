@@ -2708,6 +2708,10 @@ type trustAllSetter interface{ SetTrustAll(bool) }
 // answer plus the complete updated message history.
 func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer string, messages []session.Message, err error) {
 	startTime := time.Now()
+	// The completion nudge may extend the cap for this run only; restore the
+	// configured value so a reused engine does not ratchet its iteration cap.
+	configuredMaxIter := e.maxIter
+	defer func() { e.maxIter = configuredMaxIter }()
 	if max := e.budgetLimits.MaxRuntimeSeconds; max > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithDeadlineCause(ctx, startTime.Add(time.Duration(max)*time.Second), &budget.Error{Limit: budget.LimitRuntime, Observed: max, Maximum: max})
