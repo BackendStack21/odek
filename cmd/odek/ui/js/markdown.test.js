@@ -324,3 +324,25 @@ test('very deep list nesting is capped instead of overflowing the stack', () => 
   assert.ok(html.startsWith('<ul>'));
   assert.ok((html.match(/<ul>/g) || []).length <= 34);
 });
+
+test('list continuation lines join their item', () => {
+  assert.equal(markdownToHtml('- a\n  more\n- b'), '<ul><li>a<br>more</li><li>b</li></ul>');
+  assert.equal(markdownToHtml('1. a\nlazy\n2. b'), '<ol><li>a<br>lazy</li><li>b</li></ol>');
+  assert.equal(markdownToHtml('- a\n\npara'), '<ul><li>a</li></ul>\n<p>para</p>');
+  assert.equal(markdownToHtml('- a\n# H'), '<ul><li>a</li></ul>\n<h1>H</h1>');
+});
+
+test('parenthesis ordered markers and spaced thematic breaks', () => {
+  assert.equal(markdownToHtml('1) one\n2) two'), '<ol><li>one</li><li>two</li></ol>');
+  assert.equal(markdownToHtml('* * *'), '<hr>');
+  assert.equal(markdownToHtml('- - -'), '<hr>');
+  assert.equal(markdownToHtml('a\n\n___\n\nb'), '<p>a</p>\n<hr>\n<p>b</p>');
+});
+
+test('an indented fence under a list item stays inside the item', () => {
+  const html = markdownToHtml('1. Build:\n\n   ```bash\n   go build ./...\n   ```\n2. Test');
+  assert.ok(html.startsWith('<ol><li>Build:<div class="code-block">'), html);
+  assert.ok(html.includes('<pre><code>go build ./...\n</code></pre>'), html);
+  assert.ok(html.endsWith('<li>Test</li></ol>'), html);
+  assert.equal((html.match(/<ol/g) || []).length, 1);
+});

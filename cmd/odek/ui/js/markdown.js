@@ -64,9 +64,9 @@ function parseBlocks(lines) {
   const fenceOpen = (l) => /^```(\w*)\s*$/.exec(l);
   const isFenceClose = (l) => /^```\s*$/.test(l);
   const headerMatch = (l) => /^(#{1,4})\s+(.+)$/.exec(l);
-  const isHr = (l) => /^(---|\*\*\*|___)$/.test(l.trim());
+  const isHr = (l) => THEMATIC_BREAK.test(l);
   const ulItem = (l) => /^\s*[-*+]\s+(.+)$/.exec(l);
-  const olItem = (l) => /^\s*\d+\.\s+(.+)$/.exec(l);
+  const olItem = (l) => /^\s*\d+[.)]\s+(.+)$/.exec(l);
   const isQuote = (l) => /^>\s?/.test(l);
   const isTableAt = (idx) =>
     idx + 1 < lines.length && isTableRow(lines[idx]) && isTableSep(lines[idx + 1]);
@@ -130,7 +130,7 @@ function parseBlocks(lines) {
     }
 
     if (ulItem(line) || olItem(line)) {
-      const list = parseList(lines, i);
+      const list = parseList(lines, i, isBlockStart);
       out.push(list.html);
       i = list.next;
       continue;
@@ -151,11 +151,18 @@ function parseBlocks(lines) {
 // List item marker: indentation width (tabs count as 4), ordered flag, the
 // ordinal for ordered items, and the item text.
 function listMarker(line) {
-  const m = /^([ \t]*)(?:([-*+])|(\d{1,9})\.)\s+(.+)$/.exec(line || '');
+  if (THEMATIC_BREAK.test(line || '')) return null; // '* * *' is a rule, not an item
+  const m = /^([ \t]*)(?:([-*+])|(\d{1,9})[.)])\s+(.+)$/.exec(line || '');
   if (!m) return null;
   const indent = m[1].replace(/\t/g, '    ').length;
   return { indent, ordered: !m[2], start: m[3] ? Number(m[3]) : 1, text: m[4] };
 }
+
+// A thematic break: three or more of the same -, * or _ with optional
+// spaces between them (CommonMark), e.g. '---' or '* * *'.
+const THEMATIC_BREAK = /^ {0,3}([-*_])(?:[ \t]*\1){2,}[ \t]*$/;
+
+const INDENTED_FENCE = /^([ \t]+)```(\w*)\s*$/;
 
 // Nesting beyond this depth continues at the deepest level instead of
 // recursing, so hostile input cannot exhaust the stack.
@@ -167,7 +174,7 @@ const MAX_LIST_DEPTH = 32;
 // ends the level. A marker indented between the parent and this level joins
 // this level, so uneven indentation never splits one list in two. A single
 // blank line between items keeps the list going.
-function parseList(lines, start, depth = 0, parentIndent = -1) {
+function parseList(lines, start, isBlockStart, depth = 0, parentIndent = -1) {
   const first = listMarker(lines[start]);
   const base = first.indent;
   const items = [];
@@ -178,11 +185,35 @@ function parseList(lines, start, depth = 0, parentIndent = -1) {
     if (!m) {
       const next = listMarker(lines[i + 1]);
       if (lines[i].trim() === '' && next && next.indent > parentIndent && items.length) { i++; continue; }
+      // An indented fence belongs to the item above it (a blank line may
+      // separate them); its lines are dedented by the fence's indent.
+      if (items.length && lines[i].trim() === '' && INDENTED_FENCE.test(lines[i + 1] || '')) { i++; continue; }
+      const fence = items.length && INDENTED_FENCE.exec(lines[i]);
+      if (fence) {
+        const indent = fence[1].length;
+        const buf = [];
+        i++;
+        while (i < lines.length && !/^\s*```\s*$/.test(lines[i])) {
+          const lead = /^[ \t]*/.exec(lines[i])[0].length;
+          buf.push(lines[i].slice(Math.min(indent, lead)));
+          i++;
+        }
+        if (i < lines.length) i++; // closing fence; EOF closes while streaming
+        items[items.length - 1].children += codeBlockHtml(fence[2] || 'code', buf.length ? buf.join('\n') + '\n' : '');
+        continue;
+      }
+      // A non-blank line straight after an item that does not open another
+      // block continues that item (indented or lazy continuation).
+      if (lines[i].trim() !== '' && items.length && lines[i - 1].trim() !== '' && !isBlockStart(lines[i], i)) {
+        items[items.length - 1].body += '<br>' + inlineHtml(lines[i].trim());
+        i++;
+        continue;
+      }
       break;
     }
     if (m.indent <= parentIndent) break;
     if (m.indent > base && items.length && depth < MAX_LIST_DEPTH) {
-      const sub = parseList(lines, i, depth + 1, base);
+      const sub = parseList(lines, i, isBlockStart, depth + 1, base);
       items[items.length - 1].children += sub.html;
       i = sub.next;
       continue;
