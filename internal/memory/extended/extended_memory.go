@@ -256,10 +256,19 @@ func (em *ExtendedMemory) addAtoms(ctx context.Context, atoms []MemoryAtom, skip
 			atom.ID = id
 		}
 
-		em.mu.RLock()
-		atom.Context.SessionID = em.session
-		atom.Context.Project = em.project
-		em.mu.RUnlock()
+		// Keep the caller-supplied context: extraction runs in the background
+		// and the shared session fields may have moved on by the time atoms
+		// are stored. Only fill in what the caller left empty.
+		if atom.Context.SessionID == "" || atom.Context.Project == "" {
+			em.mu.RLock()
+			if atom.Context.SessionID == "" {
+				atom.Context.SessionID = em.session
+			}
+			if atom.Context.Project == "" {
+				atom.Context.Project = em.project
+			}
+			em.mu.RUnlock()
+		}
 
 		// Security scan before persistence, regardless of trust boundary.
 		if !skipScan {
