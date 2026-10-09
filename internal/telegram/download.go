@@ -279,7 +279,7 @@ func sanitizeDocName(fileName, fileID, filePath string) string {
 			safe = append(safe, '_')
 		}
 	}
-	base = string(safe)
+	base = neutralizeChatTag(string(safe))
 	if base == "" || base == "." {
 		return fallbackDocName(fileID, filePath)
 	}
@@ -302,6 +302,19 @@ func sanitizeDocName(fileName, fileID, filePath string) string {
 		}
 	}
 	return base
+}
+
+// neutralizeChatTag removes every "_chat" sequence from an attacker-chosen
+// name. Chat scoping and the per-chat quota key on a "_chat<ID>_" substring of
+// the stored basename, so a document name must not be able to carry another
+// chat's tag. A leading underscore is prepended while rewriting so a name that
+// starts with "chat" cannot fuse with the "doc_chat<N>_" prefix either.
+func neutralizeChatTag(name string) string {
+	s := "_" + name
+	for strings.Contains(s, "_chat") {
+		s = strings.ReplaceAll(s, "_chat", "_cht")
+	}
+	return s[1:]
 }
 
 // fallbackDocName returns a deterministic filename derived from the Telegram
