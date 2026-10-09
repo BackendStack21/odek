@@ -19,6 +19,15 @@ import (
 type sessionSearchTool struct {
 	ctxTool
 	store *session.Store
+	// loadSession, when set, replaces store.Load (tests count the loads).
+	loadSession func(id string) (*session.Session, error)
+}
+
+func (t *sessionSearchTool) load(id string) (*session.Session, error) {
+	if t.loadSession != nil {
+		return t.loadSession(id)
+	}
+	return t.store.Load(id)
 }
 
 func newSessionSearchTool(store *session.Store) *sessionSearchTool {
@@ -233,7 +242,7 @@ func (t *sessionSearchTool) handleSearch(query string, limit int) (string, error
 
 	// Phase 2b: if not enough results, load full sessions and search messages
 	if len(matches) < limit {
-		matches = t.deepSearch(tokens, sessions, matches)
+		matches = t.deepSearch(tokens, sessions, matches, limit)
 	}
 
 	// Sort by score desc, then recency
@@ -295,20 +304,62 @@ func (t *sessionSearchTool) scoreSession(tokens []string, s session.Session) ses
 }
 
 // deepSearch loads full sessions and searches within their messages.
-// Callers truncate the merged result list to the user-requested limit after
-// re-sorting, so deepSearch returns everything it can find.
-func (t *sessionSearchTool) deepSearch(tokens []string, candidates []session.Session, existing []sessionMatch) []sessionMatch {
+// Callers sort the merged list and truncate it to the user-requested limit, so
+// deepSearch returns everything that can still reach that top-limit slice: it
+// stops loading once limit matches already outrank anything the remaining
+// candidates could score (a deep score never exceeds the number of distinct
+// query tokens, and ties go to the more recently updated session).
+func (t *sessionSearchTool) deepSearch(tokens []string, candidates []session.Session, existing []sessionMatch, limit int) []sessionMatch {
 	existingIDs := make(map[string]bool, len(existing))
 	for _, e := range existing {
 		existingIDs[e.session.ID] = true
 	}
 
-	for _, s := range candidates {
+	// Distinct tokens that can match a message at all; also the highest score
+	// a deep match can reach.
+	usable := make(map[string]bool, len(tokens))
+	for _, tok := range tokens {
+		if len(tok) >= 2 {
+			usable[tok] = true
+		}
+	}
+	maxDeep := len(usable)
+
+	// suffixNewest[i] is the latest UpdatedAt among candidates[i:].
+	suffixNewest := make([]time.Time, len(candidates)+1)
+	for i := len(candidates) - 1; i >= 0; i-- {
+		suffixNewest[i] = suffixNewest[i+1]
+		if candidates[i].UpdatedAt.After(suffixNewest[i]) {
+			suffixNewest[i] = candidates[i].UpdatedAt
+		}
+	}
+	// outranking reports whether at least limit matches are guaranteed to sort
+	// ahead of every candidate from index i on.
+	outranking := func(i int) bool {
+		if limit <= 0 || maxDeep == 0 {
+			return false
+		}
+		n := 0
+		for _, m := range existing {
+			if m.score >= maxDeep && m.session.UpdatedAt.After(suffixNewest[i]) {
+				n++
+				if n >= limit {
+					return true
+				}
+			}
+		}
+		return false
+	}
+
+	for i, s := range candidates {
 		if existingIDs[s.ID] {
 			continue // already scored from task/buffer
 		}
+		if outranking(i) {
+			break
+		}
 
-		full, err := t.store.Load(s.ID)
+		full, err := t.load(s.ID)
 		if err != nil || full == nil {
 			continue
 		}
@@ -321,6 +372,9 @@ func (t *sessionSearchTool) deepSearch(tokens []string, candidates []session.Ses
 		for _, msg := range full.Messages {
 			if msg.Role != "user" && msg.Role != "assistant" {
 				continue
+			}
+			if len(matchedTokens) == maxDeep {
+				break // every token matched; later messages change nothing
 			}
 			lower := strings.ToLower(msg.Content)
 			for _, tok := range tokens {
