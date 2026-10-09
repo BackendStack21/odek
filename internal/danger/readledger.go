@@ -755,7 +755,15 @@ func stageWrittenPaths(stage, inner []string, name, cwd string) []string {
 		case "tee":
 			raw = append(raw, operands...)
 		case "cp", "mv", "install", "ln", "rsync":
-			if len(operands) >= 2 {
+			if target, ok := targetDirectoryOption(name, inner[1:]); ok {
+				// -t DIR / --target-directory=DIR names the destination;
+				// every operand is a source copied to DIR/<base>.
+				for _, src := range operands {
+					if src != target {
+						raw = append(raw, filepath.Join(target, filepath.Base(src)))
+					}
+				}
+			} else if len(operands) >= 2 {
 				dest := operands[len(operands)-1]
 				raw = append(raw, dest)
 				// Copying into a directory writes dest/<base of each source>;
@@ -790,6 +798,31 @@ func stageWrittenPaths(stage, inner []string, name, cwd string) []string {
 		out = append(out, pathKey(path))
 	}
 	return out
+}
+
+// targetDirectoryOption returns the DIR of a -t DIR, -tDIR, --target-directory
+// DIR or --target-directory=DIR option of cp, mv, install and ln, and whether
+// one was given.
+func targetDirectoryOption(name string, args []string) (string, bool) {
+	if name == "rsync" {
+		return "", false
+	}
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--":
+			return "", false
+		case a == "-t" || a == "--target-directory":
+			if i+1 < len(args) {
+				return args[i+1], true
+			}
+		case strings.HasPrefix(a, "--target-directory="):
+			return strings.TrimPrefix(a, "--target-directory="), true
+		case isShortFlagToken(a) && strings.HasPrefix(a, "-t") && len(a) > 2:
+			return a[2:], true
+		}
+	}
+	return "", false
 }
 
 // stageLedgerFiles reports the files a stage executes and, separately, the
