@@ -379,10 +379,12 @@ covering manual `--task` invocation).
 
 ### Untrusted tasks are fenced
 
-When the parent sets `trust_level: "untrusted"`, the entire request body is wrapped in an
-`<untrusted_input>` fence with a preamble telling the model to treat it as data, not
-instructions — in addition to the permission clamp applied by `applySubagentTrust` (see
-[SECURITY.md](SECURITY.md)).
+Whenever the child's **effective** trust is untrusted — the parent set
+`trust_level: "untrusted"`, omitted `trust_level`, or is itself untrusted (trust never
+increases downward) — the entire request body is wrapped in an `<untrusted_input>` fence
+with a preamble telling the model to treat it as data, not instructions — in addition to
+the permission clamp applied by `applySubagentTrust` (see [SECURITY.md](SECURITY.md)).
+The fence keys on the effective trust, not on the label the parent's model declared.
 
 ### Steering the approach
 

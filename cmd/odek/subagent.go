@@ -104,6 +104,15 @@ func buildSubagentRequest(goal, guidance, context string, untrusted bool) string
 	return body
 }
 
+// subagentRequestFenced reports whether the parent-supplied task text must be
+// delivered inside the untrusted-input fence. It keys on the child's
+// EFFECTIVE trust, not on the label the parent's model declared: a task from
+// an untrusted parent, or one that declared no trust level, runs untrusted and
+// its goal/guidance/context are attacker-reachable text.
+func subagentRequestFenced(declared, effective string) bool {
+	return declared == "untrusted" || effective != "trusted"
+}
+
 // wrapUntrustedSubagentInput wraps body in a per-call nonce'd
 // <untrusted_input_<nonce>> boundary and neutralises any literal occurrence
 // of "untrusted_input" inside body so a crafted close tag cannot escape the
@@ -974,7 +983,7 @@ func subagentCmd(args []string) error {
 	// exclusively from code-computed numeric limits; no parent-supplied
 	// string ever enters the system prompt.
 	systemMsg := subagentSystem + "\n\n" + buildLifespanBlock(cfg.timeout, cfg.maxIter, resolved.Limits)
-	prompt := buildSubagentRequest(cfg.goal, taskGuidance, cfg.context, taskTrust == "untrusted")
+	prompt := buildSubagentRequest(cfg.goal, taskGuidance, cfg.context, subagentRequestFenced(taskTrust, effectiveTrustLevel))
 	if taskArtifactRoot != "" {
 		// Trusted runner text OUTSIDE any untrusted fence: the staging dir
 		// is workspace-relative infrastructure (an ordinary local_write for
