@@ -25,7 +25,6 @@ import './supervision.js';
 // ── Init ──
 // Save references so newSession() can restore the empty state after clearing.
 S.savedEmptyStateNode = document.getElementById('empty-state');
-S.savedScrollBtnNode = document.getElementById('scroll-bottom-btn');
 
 // Empty-state hint actions (the saved node is re-appended on session
 // switches, so direct listeners persist). The hints are role="button"
@@ -51,27 +50,39 @@ if (S.savedEmptyStateNode) {
   });
 }
 
-const THEMES = ['ember-dark', 'ember-light', 'midnight', 'high-contrast'];
-const THEME_GLYPH = { 'ember-dark': '◐', 'ember-light': '☀', 'midnight': '☾', 'high-contrast': '▣' };
+const THEMES = ['system', 'ember-dark', 'ember-light', 'midnight', 'high-contrast'];
+const THEME_GLYPH = { system: '◑', 'ember-dark': '◐', 'ember-light': '☀', 'midnight': '☾', 'high-contrast': '▣' };
 
-const THEME_NAME = { 'ember-dark': 'Ember', 'ember-light': 'Porcelain', midnight: 'Midnight', 'high-contrast': 'High contrast' };
+const THEME_NAME = { system: 'Match system', 'ember-dark': 'Ember', 'ember-light': 'Porcelain', midnight: 'Midnight', 'high-contrast': 'High contrast' };
+
+// 'system' resolves to Ember or Porcelain from the OS colour scheme and
+// follows it live; every other theme is an explicit choice.
+const prefersLight = typeof matchMedia === 'function' ? matchMedia('(prefers-color-scheme: light)') : null;
+
+function resolveTheme(theme) {
+  if (theme !== 'system') return theme;
+  return prefersLight && prefersLight.matches ? 'ember-light' : 'ember-dark';
+}
 
 function applyTheme(name) {
-  const theme = THEMES.includes(name) ? name : 'ember-dark';
+  const theme = THEMES.includes(name) ? name : 'system';
+  const effective = resolveTheme(theme);
   S.theme = theme;
   document.body.classList.remove('light', 'theme-ember-dark', 'theme-ember-light', 'theme-high-contrast', 'theme-classic', 'theme-midnight');
-  document.body.classList.add('theme-' + theme);
-  if (theme === 'ember-light') document.body.classList.add('light');
+  document.body.classList.add('theme-' + effective);
+  if (effective === 'ember-light') document.body.classList.add('light');
   const root = document.documentElement;
-  if (root && root.style) root.style.colorScheme = theme === 'ember-light' ? 'light' : 'dark';
-  localStorage.setItem('odek_theme', theme);
+  if (root && root.style) root.style.colorScheme = effective === 'ember-light' ? 'light' : 'dark';
+  try { localStorage.setItem('odek_theme', theme); } catch { /* optional preference */ }
   const btn = document.getElementById('theme-btn');
   if (btn) {
-    btn.textContent = THEME_GLYPH[theme] || '◐';
+    btn.textContent = (THEME_GLYPH[theme] || '◐') + ' ' + THEME_NAME[theme];
     btn.title = 'Theme: ' + THEME_NAME[theme] + ' (click to cycle)';
     btn.setAttribute('aria-label', btn.title);
   }
 }
+
+prefersLight?.addEventListener?.('change', () => { if (S.theme === 'system') applyTheme('system'); });
 
 function cycleTheme(want) {
   if (want && THEMES.includes(want)) { applyTheme(want); return; }

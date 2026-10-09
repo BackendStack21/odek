@@ -226,7 +226,7 @@ export function syncNotifyBtn() {
   if (!btn) return;
   btn.classList.toggle('active', S.notifyEnabled);
   btn.setAttribute('aria-pressed', String(!!S.notifyEnabled));
-  btn.textContent = S.notifyEnabled ? '●' : '◌';
+  btn.textContent = S.notifyEnabled ? '● Notifications on' : '◌ Notifications off';
 }
 
 const statusGroup = document.getElementById('status-group');
