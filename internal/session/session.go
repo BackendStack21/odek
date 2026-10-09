@@ -18,10 +18,12 @@ package session
 import (
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/maphash"
 	"io"
 	"os"
 	"path/filepath"
@@ -224,6 +226,14 @@ type Store struct {
 	// exists to let tests assert the single-marshal-per-save contract;
 	// reads/writes happen under mu.
 	marshalCount int
+
+	// promptDigests remembers, per session id, a keyed digest of the redacted
+	// principal prompts written by the last save. Guarded by mu.
+	promptDigests map[string]promptDigest
+
+	// promptRedactions counts RedactSecrets calls made on principal prompts
+	// by saveLocked. Test observability only; guarded by mu.
+	promptRedactions int
 
 	// indexDiskReads counts how many times loadIndex actually read
 	// index.json from disk (cache misses). Test observability only;
@@ -646,6 +656,51 @@ func redactMessageFP(m Message) string {
 	return hex.EncodeToString(h[:8])
 }
 
+// maxPromptDigests bounds the per-session prompt digest memo.
+const maxPromptDigests = 256
+
+type promptDigest struct {
+	n    int
+	hash uint64
+}
+
+var promptSeed = maphash.MakeSeed()
+
+// promptsHash digests the principal prompts of msgs[:n] (presence, length and
+// bytes) with a process-keyed hash.
+func promptsHash(msgs []Message, n int) uint64 {
+	var h maphash.Hash
+	h.SetSeed(promptSeed)
+	var lenBuf [8]byte
+	for i := 0; i < n; i++ {
+		p := msgs[i].PrincipalPrompt
+		if p == nil {
+			h.WriteByte(0)
+			continue
+		}
+		h.WriteByte(1)
+		binary.LittleEndian.PutUint64(lenBuf[:], uint64(len(*p)))
+		h.Write(lenBuf[:])
+		h.WriteString(*p)
+	}
+	return h.Sum64()
+}
+
+// promptsUnchanged reports whether the first n prompts are byte-identical to
+// what the previous save of this session persisted (already redacted).
+func (s *Store) promptsUnchanged(id string, msgs []Message, n int) bool {
+	d, ok := s.promptDigests[id]
+	return ok && d.n == n && n <= len(msgs) && d.hash == promptsHash(msgs, n)
+}
+
+// rememberPrompts records the digest of the redacted prompts just persisted.
+func (s *Store) rememberPrompts(id string, msgs []Message) {
+	if s.promptDigests == nil || len(s.promptDigests) >= maxPromptDigests {
+		s.promptDigests = make(map[string]promptDigest)
+	}
+	s.promptDigests[id] = promptDigest{n: len(msgs), hash: promptsHash(msgs, len(msgs))}
+}
+
 func (s *Store) saveLocked(sess *Session) (err error) {
 	defer func() { diagnostics.Report("session", "save", sess.ID, err) }()
 	// Reject malformed or traversal-bearing session IDs before the ID is used
@@ -766,10 +821,18 @@ func (s *Store) saveLocked(sess *Session) (err error) {
 			boundary = 0
 		}
 	}
-	// Authored-input metadata is independently mutable and always redacted;
-	// it does not rely on the model transcript's incremental scan boundary.
-	for i := range sess.Messages {
+	// Authored-input metadata is a mutable pointer, so it is not covered by
+	// the message fingerprint. Prompts below the boundary are skipped only
+	// while a keyed digest of every one of them still matches the digest
+	// recorded after the previous save; any in-place edit, replacement,
+	// reordering or trim changes the digest and redacts them all again.
+	promptStart := 0
+	if boundary > 0 && s.promptsUnchanged(sess.ID, sess.Messages, boundary) {
+		promptStart = boundary
+	}
+	for i := promptStart; i < len(sess.Messages); i++ {
 		if sess.Messages[i].PrincipalPrompt != nil {
+			s.promptRedactions++
 			prompt := redact.RedactSecrets(*sess.Messages[i].PrincipalPrompt)
 			sess.Messages[i].PrincipalPrompt = &prompt
 		}
@@ -844,6 +907,7 @@ func (s *Store) saveLocked(sess *Session) (err error) {
 
 	sess.persistedID = sess.ID
 	committed = true
+	s.rememberPrompts(sess.ID, sess.Messages)
 
 	// Update the index atomically.
 	idx := s.loadIndex()
