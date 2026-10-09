@@ -5780,6 +5780,9 @@ func isCodeExecution(first string, tokens []string, repo *gitRepoCtx) bool {
 		if first == "sqlite3" && sqliteRunsShell(tokens) {
 			return true
 		}
+		if dbClientRunsShell(first, tokens) {
+			return true
+		}
 		if first == "buf" && hasAny(tokens, "generate") {
 			return true
 		}
@@ -6326,6 +6329,29 @@ func sqliteRunsShell(tokens []string) bool {
 	for _, tok := range tokens[1:] {
 		low := strings.ToLower(tok)
 		if strings.Contains(low, ".shell") || strings.Contains(low, ".system") || strings.Contains(low, ".read") || strings.Contains(low, ".load") || strings.Contains(low, "load_extension") || strings.Contains(low, "-init") {
+			return true
+		}
+	}
+	return false
+}
+
+// dbClientShellPattern matches the client-side commands of the PostgreSQL and
+// MySQL command-line clients that run a local program: psql's \! and the
+// \g/\gx/\o/\w/\copy forms that pipe into one, and mysql's \! / system and
+// pager commands.
+var dbClientShellPattern = regexp.MustCompile(`(?i)\\!|(^|[;\s=])system\s|(^|[;\s=])pager\s|\\P\s|\\(?:g|gx|o|w|copy|watch)\b[^|]*\|`)
+
+// dbClientRunsShell reports whether a database client invocation carries a
+// command that executes a local program. The network class stays for plain
+// queries; only these escapes are code execution.
+func dbClientRunsShell(name string, tokens []string) bool {
+	switch name {
+	case "psql", "mysql", "mariadb", "pgcli", "mycli":
+	default:
+		return false
+	}
+	for _, tok := range tokens[1:] {
+		if dbClientShellPattern.MatchString(tok) || strings.HasPrefix(tok, "--pager") {
 			return true
 		}
 	}
