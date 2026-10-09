@@ -509,6 +509,10 @@ func executionFileTargets(name string, tokens []string) []string {
 		options = []string{"-toolexec"}
 	case "protoc":
 		options = []string{"--plugin"}
+	case "psql":
+		// -f/--file name a script whose \! and \copy ... program
+		// meta-commands run local programs.
+		options = []string{"-f", "--file"}
 	case "sqlite3":
 		var out []string
 		for _, tok := range tokens[1:] {

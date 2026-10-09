@@ -404,6 +404,9 @@ func analyzeWithState(cmd string, depth int, inherited *shellAnalysisState) Anal
 			if isCodeExecution(name, inner, repo) || explicitUntrustedExecutable(inner[0]) || (piped && (pipedShells[name] || isStdinExecInterpreter(name) || embeddedShellInterpreters[name])) {
 				result.add(CodeExecution)
 			}
+			if piped && dbClientStdinRunsShell(name, upstream) {
+				result.add(CodeExecution)
+			}
 			if isNetworkEgress(name, inner) {
 				result.add(NetworkEgress)
 			}

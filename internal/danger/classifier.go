@@ -6418,15 +6418,26 @@ func sqliteRunsShell(tokens []string) bool {
 // MySQL command-line clients that run a local program: psql's \! and the
 // \g/\gx/\o/\w/\copy forms that pipe into one, and mysql's \! / system and
 // pager commands.
-var dbClientShellPattern = regexp.MustCompile(`(?i)\\!|(^|[;\s=])system\s|(^|[;\s=])pager\s|\\P\s|\\(?:g|gx|o|w|copy|watch)\b[^|]*\|`)
+// \copy ... program 'cmd' runs cmd locally without any pipe character. The
+// backslash is optional because normalization folds it away inside double
+// quotes; a server-side COPY ... PROGRAM executes on the database host, which
+// is no safer to wave through.
+var dbClientShellPattern = regexp.MustCompile(`(?i)\\!|(^|[;\s=])system\s|(^|[;\s=])pager\s|\\P\s|\\(?:g|gx|o|w|copy|watch)\b[^|]*\||(^|[\s;\\])copy\b[^\n]*\bprogram\b`)
+
+// isDBClient reports whether name is a PostgreSQL or MySQL command-line client.
+func isDBClient(name string) bool {
+	switch name {
+	case "psql", "mysql", "mariadb", "pgcli", "mycli":
+		return true
+	}
+	return false
+}
 
 // dbClientRunsShell reports whether a database client invocation carries a
 // command that executes a local program. The network class stays for plain
 // queries; only these escapes are code execution.
 func dbClientRunsShell(name string, tokens []string) bool {
-	switch name {
-	case "psql", "mysql", "mariadb", "pgcli", "mycli":
-	default:
+	if !isDBClient(name) {
 		return false
 	}
 	for _, tok := range tokens[1:] {
@@ -6435,6 +6446,16 @@ func dbClientRunsShell(name string, tokens []string) bool {
 		}
 	}
 	return false
+}
+
+// dbClientStdinRunsShell reports whether the static text an echo/printf
+// producer pipes into a database client carries a local-program escape.
+func dbClientStdinRunsShell(name string, upstream [][]string) bool {
+	if !isDBClient(name) {
+		return false
+	}
+	text, ok := staticPipeText(upstream)
+	return ok && dbClientShellPattern.MatchString(text)
 }
 
 func classifyDirenv(tokens []string) RiskClass {
