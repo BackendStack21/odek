@@ -185,13 +185,16 @@ func (a *wsApprover) PromptCommand(cls danger.RiskClass, cmd, description string
 	// SetTrustAll write these same fields. An unsynchronised read here against
 	// the map write below (or SetTrustAll) is a data race that can fatally
 	// crash serve with "concurrent map read and map write".
+	friction, approvalCount := a.shouldFriction(cls)
 	a.mu.Lock()
 	// Trust-all honors the same class gate as the per-class trust shortcut:
 	// destructive/blocked/unknown prompts always need a real user decision,
 	// even after a blanket trust grant from an earlier benign batch.
+	// Friction overrides every cached grant: a class that is being approved
+	// at a fatigue-inducing rate must get a deliberate decision each time.
 	trusted := a.approveAll[cls] || (a.trustAll && danger.TrustShortcutAllowed(cls))
 	a.mu.Unlock()
-	if trusted {
+	if trusted && !friction {
 		return nil
 	}
 
@@ -215,8 +218,9 @@ func (a *wsApprover) PromptCommand(cls danger.RiskClass, cmd, description string
 		a.mu.Unlock()
 	}()
 
-	allowTrust := allowTrustForClass(cls)
-	friction, approvalCount := a.shouldFriction(cls)
+	// While friction is engaged the trust shortcut is withheld, and a "trust"
+	// response is treated as a plain one-shot approve below.
+	allowTrust := allowTrustForClass(cls) && !friction
 
 	// Capture THIS waiter's cancel channel before sending the request. A
 	// Cancel landing between sendFn returning and the select below would
