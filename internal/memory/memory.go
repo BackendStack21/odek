@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1021,24 +1022,10 @@ func (m *MemoryManager) Consolidate(target string) error {
 		return nil // nothing to consolidate
 	}
 
-	// Hold the per-dir lock across the whole consolidation (read → LLM merge →
-	// write) so it is atomic vs concurrent AddFact on the same dir. Rare,
-	// agent-triggered, and off the user's hot path, so the LLM call under the
-	// lock is acceptable.
-	unlock, err := lockFactsDir(m.facts.dir)
-	if err != nil {
-		return err
-	}
-	var pending []MemoryEvent
-	defer m.fireAfterUnlock(unlock, &pending)
-
-	entries, err = m.facts.Entries(target)
-	if err != nil {
-		return err
-	}
-	if len(entries) <= 1 {
-		return nil
-	}
+	// Snapshot, call the LLM with no lock held, then lock and apply only if
+	// the file is unchanged since the snapshot. Holding the facts lock across
+	// the LLM latency would stall every AddFact/ReplaceFact/RemoveFact on any
+	// session (and process) sharing the directory.
 
 	// Use LLM to merge
 	prompt := fmt.Sprintf(`Consolidate the following memory entries into a concise set of facts. Merge related entries, remove redundancy. Output as a JSON array of strings, for example: ["fact one", "fact two", "fact three"]
@@ -1113,7 +1100,21 @@ Entries for %s:
 		return fmt.Errorf("memory: consolidated entries (%d chars) would exceed cap (%d chars); keeping existing entries", size, m.facts.cap(target))
 	}
 
-	// Write back
+	// Write back under the lock, conflict-checked against the snapshot so a
+	// concurrent write is never overwritten by a merge of stale entries.
+	unlock, err := lockFactsDir(m.facts.dir)
+	if err != nil {
+		return err
+	}
+	var pending []MemoryEvent
+	defer m.fireAfterUnlock(unlock, &pending)
+	current, err := m.facts.Entries(target)
+	if err != nil {
+		return err
+	}
+	if !slices.Equal(current, entries) {
+		return fmt.Errorf("memory: consolidate: %s facts changed during consolidation; skipped", target)
+	}
 	before := len(entries)
 	if err := m.facts.writeEntries(target, newEntries); err != nil {
 		return err

@@ -73,7 +73,7 @@ Episode extraction runs **asynchronously** — it does not block the agent loop.
 | `replace` | user/env | ✅ replacement | ✅ substring | Finds entry by substring, replaces it |
 | `remove` | user/env | — | ✅ substring | Finds entry by substring, removes it |
 | `stats` | user/env | — | — | Per-entry sizes + fill (used/cap) — pre-flight check before writes |
-| `consolidate` | user/env | — | — | SimpleCall: merge related entries for density |
+| `consolidate` | user/env | — | — | SimpleCall: merge related entries for density. The LLM call runs without the facts lock; the merge is written only if the file is unchanged since the snapshot (a concurrent write skips the merge) |
 | `read` | — | — | — | Returns full content of both user.md + env.md |
 | `search` | — | — | ✅ query | LLM ranker by default (relevance-oriented); `llm_search: false` switches to RP cosine ranking (zero LLM calls) |
 
