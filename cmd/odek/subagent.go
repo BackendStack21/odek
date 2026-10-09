@@ -778,6 +778,12 @@ func resolveProfileName(cliFlag, taskFile string) string {
 }
 
 func subagentCmd(args []string) error {
+	// Become non-dumpable before touching the inherited descriptors, so a
+	// same-uid process cannot reopen them (or stdout) through /proc. A
+	// failure is reported but not fatal: the frame nonce still applies.
+	if err := hardenSubagentProcess(); err != nil {
+		fmt.Fprintf(os.Stderr, "odek subagent: warning: %v\n", err)
+	}
 	// Read the result-frame nonce first: the inherited descriptor must be
 	// closed before anything else (MCP servers, tools) can be spawned.
 	frameNonce := readFrameNonceFromInheritedFD()

@@ -690,6 +690,14 @@ kept for display only: its status becomes `unverified` (the claimed status is
 kept as `claimed_status`), the completion event and registry report
 `unverified`, and the parent announces the terminal state itself.
 
+On Linux the child also makes itself non-dumpable (`prctl(PR_SET_DUMPABLE,
+0)`) before reading its inherited descriptors, so a background command it
+left running cannot reopen its stdout, frame or key descriptor through
+`/proc/<pid>/fd` to steal the frame and replay the nonce. As a consequence
+sub-agent processes write no core dumps and cannot be attached to by same-uid
+debuggers or tracers (`gdb`, `strace -p`); root or `CAP_SYS_PTRACE` still can.
+Commands the child runs are not affected (the flag resets on `execve`).
+
 **Cost semantics (authoritative — do not re-derive).** `cost_usd` values are
 computed server-side with the exact `/api/usage` math (per-million prices
 resolved for the child's model over provider-reported token totals). Zero or
