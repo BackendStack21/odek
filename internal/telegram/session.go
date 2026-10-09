@@ -448,13 +448,18 @@ func (sm *SessionManager) ResumeSession(chatID int64, sessionID string) (*ChatSe
 		if listErr != nil {
 			return nil, fmt.Errorf("list sessions: %w", listErr)
 		}
-		for i, s := range all {
+		for _, s := range all {
 			if !sessionIDBelongsToChat(s.ID, chatID) {
 				continue
 			}
 			if strings.HasPrefix(s.ID, sessionID) ||
 				strings.Contains(strings.ToLower(s.Task), strings.ToLower(sessionID)) {
-				sess = &all[i]
+				// The listing carries metadata only; load the full transcript.
+				full, loadErr := sm.Store.Load(s.ID)
+				if loadErr != nil {
+					return nil, fmt.Errorf("load session %s: %w", s.ID, loadErr)
+				}
+				sess = full
 				break
 			}
 		}
