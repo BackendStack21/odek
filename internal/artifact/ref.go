@@ -198,13 +198,20 @@ func CountRendered(s string) int {
 	return n
 }
 
-// oneLine flattens a server-controlled field onto a single plain line: CR/LF,
-// other control characters, Unicode format characters (bidi overrides,
-// zero-width) and the Unicode line/paragraph separators all become spaces, so
-// they can neither start a forged metadata line nor reach a terminal or UI.
+// oneLine flattens a server-controlled field onto a single plain line: C0/C1
+// controls (CR/LF and tab included), bidi controls (U+061C, U+200E/F,
+// U+202A-E, U+2066-9), the Unicode line/paragraph separators and the BOM
+// become spaces, so they can neither start a forged metadata line nor reorder
+// text on a terminal or UI. Joiners (ZWJ, ZWNJ) and the soft hyphen are kept:
+// Persian and Indic shaping and emoji sequences depend on them.
 func oneLine(s string) string {
 	return strings.Map(func(r rune) rune {
-		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || r == '\u2028' || r == '\u2029' {
+		switch {
+		case unicode.IsControl(r),
+			r == '\u061C', r == '\u200E', r == '\u200F',
+			r >= '\u202A' && r <= '\u202E',
+			r >= '\u2066' && r <= '\u2069',
+			r == '\u2028', r == '\u2029', r == '\uFEFF':
 			return ' '
 		}
 		return r

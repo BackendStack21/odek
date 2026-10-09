@@ -153,6 +153,12 @@ files are all rejected. Artifact **content is never auto-read into the model
 context** — the model sees only the compact text plus per-artifact metadata
 lines (id, media type, size, short hash, summary).
 
+Each metadata field is flattened onto one line: control characters (including
+tab, CR and LF), bidi controls (U+061C, U+200E/F, U+202A-E, U+2066-9), the line
+and paragraph separators and the BOM become spaces. Joiners (ZWJ, ZWNJ) and the
+soft hyphen are kept so Persian and Indic text and emoji sequences render
+intact.
+
 ## Event schema (`odek.event/v1`)
 
 odek can emit a structured runtime event stream: **one JSON object per line
