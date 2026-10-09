@@ -3304,7 +3304,7 @@ var execWrappers = map[string]bool{
 	"setsid": true, "stdbuf": true, "time": true, "timeout": true,
 	"command": true, "exec": true, "builtin": true, "watch": true,
 	"busybox": true, "unbuffer": true,
-	"parallel": true, "xe": true,
+	"parallel": true, "xe": true, "sem": true,
 	"chrt": true, "taskset": true, "flock": true, "script": true, "arch": true,
 }
 
