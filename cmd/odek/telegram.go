@@ -1445,6 +1445,9 @@ func handleChatMessage(
 		reportError(bot, chatID, messageID, "Failed to create session: "+err.Error())
 		return
 	}
+	// A /resume while this turn runs advances the generation; the turn's
+	// per-step saves then drop instead of overwriting the resumed session.
+	turnGen := sessionManager.Generation(chatID)
 
 	// Ensure the system prompt is messages[0] before the agent runs.
 	cs.Messages = seedSystemMessage(cs.Messages, systemMessage)
@@ -2051,7 +2054,7 @@ func handleChatMessage(
 			return
 		}
 		trimmed := dropDanglingToolCalls(snapshot)
-		if err := sessionManager.SaveNoIndex(chatID, trimmed); err != nil {
+		if err := sessionManager.SaveNoIndexAt(chatID, turnGen, trimmed); err != nil {
 			checkpointErr = fmt.Errorf("persist Telegram checkpoint: %w", err)
 			agentCancel()
 			log.Error("per-turn session persist", "chat_id", chatID, "error", err)

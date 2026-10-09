@@ -35,6 +35,11 @@ type SessionManager struct {
 	// old "tg-<chatID>" ID. Cleared by GetOrCreate when the chat starts a
 	// new session.
 	archived map[int64]bool
+
+	// gens counts conversation switches per chat (/resume). A turn captures
+	// the generation when it starts; its per-step saves are dropped once the
+	// chat has moved to a different conversation. Guarded by Mu.
+	gens map[int64]uint64
 }
 
 // ChatSession represents a single Telegram chat's agent conversation.
@@ -64,6 +69,7 @@ func NewSessionManager(store *session.Store, ttl time.Duration) *SessionManager 
 		Cache:      make(map[int64]*ChatSession),
 		SessionTTL: ttl,
 		archived:   make(map[int64]bool),
+		gens:       make(map[int64]uint64),
 	}
 }
 
@@ -139,6 +145,28 @@ func (sm *SessionManager) SaveNoIndex(chatID int64, messages []session.Message) 
 	return sm.save(chatID, messages, true, true)
 }
 
+// Generation returns the chat's current conversation generation. A running
+// turn captures it at start and persists through SaveNoIndexAt.
+func (sm *SessionManager) Generation(chatID int64) uint64 {
+	sm.Mu.RLock()
+	defer sm.Mu.RUnlock()
+	return sm.gens[chatID]
+}
+
+// SaveNoIndexAt is SaveNoIndex for a turn that began at generation gen. If the
+// chat switched conversations since (a /resume), the save is dropped so the
+// pre-switch turn cannot overwrite the resumed session.
+func (sm *SessionManager) SaveNoIndexAt(chatID int64, gen uint64, messages []session.Message) error {
+	lock, _ := sm.saveLocks.LoadOrStore(chatID, new(sync.Mutex))
+	mu := lock.(*sync.Mutex)
+	mu.Lock()
+	defer mu.Unlock()
+	if sm.Generation(chatID) != gen {
+		return nil
+	}
+	return sm.saveLocked(chatID, messages, true, true)
+}
+
 // SaveCheckpoint persists an indexed checkpoint without counting a completed
 // turn. The prompt is searchable during the run; per-step saves use SaveNoIndex.
 func (sm *SessionManager) SaveCheckpoint(chatID int64, messages []session.Message) error {
@@ -150,6 +178,11 @@ func (sm *SessionManager) save(chatID int64, messages []session.Message, checkpo
 	mu := lock.(*sync.Mutex)
 	mu.Lock()
 	defer mu.Unlock()
+	return sm.saveLocked(chatID, messages, checkpoint, skipIndex)
+}
+
+// saveLocked persists a chat session; the caller holds the chat's save lock.
+func (sm *SessionManager) saveLocked(chatID int64, messages []session.Message, checkpoint, skipIndex bool) error {
 	sm.Mu.RLock()
 	cs := sm.Cache[chatID]
 	archived := sm.archived[chatID]
@@ -468,6 +501,20 @@ func (sm *SessionManager) ResumeSession(chatID int64, sessionID string) (*ChatSe
 	if sess == nil {
 		return nil, fmt.Errorf("no session found matching %q", sessionID)
 	}
+
+	// Hold the chat's save lock while switching so a per-step save from the
+	// outgoing turn cannot interleave, and advance the generation so its later
+	// saves are dropped.
+	lock, _ := sm.saveLocks.LoadOrStore(chatID, new(sync.Mutex))
+	saveMu := lock.(*sync.Mutex)
+	saveMu.Lock()
+	defer saveMu.Unlock()
+	sm.Mu.Lock()
+	if sm.gens == nil {
+		sm.gens = make(map[int64]uint64)
+	}
+	sm.gens[chatID]++
+	sm.Mu.Unlock()
 
 	// The resumed conversation becomes the chat's live session. Persisting
 	// it under the canonical ID (after archiving whatever was live) carries a
