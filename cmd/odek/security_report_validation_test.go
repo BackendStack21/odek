@@ -503,7 +503,10 @@ func TestReport_PlanMessageWrappedUntrusted(t *testing.T) {
 		// compactionDigestPrefix in serve.go).
 		if m.Role == "system" && strings.HasPrefix(m.Content, "[Current plan:") {
 			found = true
-			if !strings.Contains(m.Content, "<untrusted source=plan>") {
+			// The plan body is persisted and resume-parsed, so it takes the
+			// engine's stable boundary rather than the surface wrapper (a
+			// surface guard banner would break the strict plan parser).
+			if !strings.Contains(m.Content, "\n<untrusted_content_") || !strings.Contains(m.Content, `source="plan">`) {
 				t.Errorf("plan message body not wrapped as untrusted:\n%s", m.Content)
 			}
 			if !strings.Contains(m.Content, "s1 [pending] Step one") {

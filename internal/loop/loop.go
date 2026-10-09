@@ -1272,12 +1272,13 @@ func (e *Engine) injectSkillContext(ctx context.Context, messages []session.Mess
 			return messages
 		}
 	}
-	wrapped := e.wrapContext("skill", skillContext)
+	wrapped := e.wrapSystemContext("skill", skillContext)
 	if fn := IngestRecorderFrom(ctx); fn != nil {
 		fn("skill", skillContext)
 	}
 	if e.skillVerbose {
 		wrapped = "═══ SKILL LOADED (reference) ═══\n" + wrapped + "\n═══ END SKILL ═══"
+		recordMintedBoundary(wrapped)
 	}
 	if e.skillMsgIdx >= 0 {
 		messages[e.skillMsgIdx].Content = wrapped
@@ -1296,7 +1297,7 @@ func (e *Engine) injectSkillContext(ctx context.Context, messages []session.Mess
 // injectEpisodeContext inserts wrapped episode recall before the latest user
 // message. Provenance filtering happens in the recall callback.
 func (e *Engine) injectEpisodeContext(ctx context.Context, messages []session.Message, episodeContext string) []session.Message {
-	wrapped := e.wrapContext("episode", episodeContext)
+	wrapped := e.wrapSystemContext("episode", episodeContext)
 	if fn := IngestRecorderFrom(ctx); fn != nil {
 		fn("episode", episodeContext)
 	}
@@ -1884,7 +1885,7 @@ func (e *Engine) installDigest(ctx context.Context, messages []session.Message, 
 	if summary == e.lastDigestRaw && e.lastDigestWrapped != "" {
 		body = e.lastDigestWrapped
 	} else {
-		body = e.protectDerivedContext(ctx, "compaction", summary)
+		body = e.protectSystemContext(ctx, "compaction", summary)
 		e.lastDigestRaw = summary
 		e.lastDigestWrapped = body
 	}
@@ -2080,10 +2081,7 @@ func (e *Engine) protectDerivedContext(ctx context.Context, source, content stri
 	if fn := IngestRecorderFrom(ctx); fn != nil {
 		fn(source, content)
 	}
-	if e.wrapUntrusted != nil {
-		return e.wrapUntrusted(source, content)
-	}
-	return defaultUntrustedWrap(source, content)
+	return e.wrapContext(source, content)
 }
 
 // wrapContext puts injected context behind the installed surface wrapper,
@@ -2095,6 +2093,25 @@ func (e *Engine) wrapContext(source, content string) string {
 		return e.wrapUntrusted(source, content)
 	}
 	return defaultUntrustedWrap(source, content)
+}
+
+// wrapSystemContext is wrapContext for a block injected as its own system
+// message; the result is registered as engine-minted so later runs in this
+// process keep it byte-stable. Only system-role injections are registered:
+// tool output and other roles never pass the persisted-system check.
+func (e *Engine) wrapSystemContext(source, content string) string {
+	wrapped := e.wrapContext(source, content)
+	recordMintedBoundary(wrapped)
+	return wrapped
+}
+
+// protectSystemContext is protectDerivedContext for a block injected as its
+// own system message (digest, memory block, remaining plan), registered as
+// engine-minted like wrapSystemContext.
+func (e *Engine) protectSystemContext(ctx context.Context, source, content string) string {
+	wrapped := e.protectDerivedContext(ctx, source, content)
+	recordMintedBoundary(wrapped)
+	return wrapped
 }
 
 // defaultUntrustedWrap is the engine's own untrusted-content boundary, used
@@ -2253,8 +2270,9 @@ func (e *Engine) syncPlanFromMessages(messages []session.Message) []session.Mess
 // (position fixed for session life — prompt-cache stability); otherwise the
 // message is inserted immediately after the protected head, i.e. right after
 // the compaction digest when one sits at that boundary. The step-line body
-// is wrapped by the untrusted-content wrapper when one is configured,
-// exactly like the compaction digest: plan content is model-generated but
+// is wrapped in the engine's stable untrusted-content boundary (never the
+// surface wrapper, whose guard banner would break resume parsing): plan
+// content is model-generated but
 // derived from untrusted inputs (task text, tool results). Fresh renders are
 // recorded via the audit ingest recorder when one is active (the engine-side
 // wrapper runs on a background context, so it cannot do this itself).
@@ -2313,7 +2331,7 @@ func (e *Engine) planMessageContent(ctx context.Context, state PlanState) string
 		// Header stays outside the wrapper (prefix recognition depends on
 		// it); the model-derived step lines are the wrapped payload.
 		header, body := rendered[:idx], rendered[idx+1:]
-		body = e.protectDerivedContext(ctx, "plan", body)
+		body = e.protectPersistedContext(ctx, "plan", body)
 		content = header + "\n" + body
 	}
 	e.planRenderedVersion = state.Version
@@ -2569,9 +2587,12 @@ func (e *Engine) ensureRuntimeSystem(messages []session.Message) []session.Messa
 
 // sanitizePersistedSystemMessages prevents a modified session file from
 // smuggling additional trusted system-role instructions after the runtime
-// head. Engine-owned digest/plan records retain their strict parsers and
-// already-wrapped adjuncts are left intact; every other persisted system
-// message is provenance-wrapped before reaching the provider.
+// head. A syntactically valid wrapper proves nothing — a session-file writer
+// can mint one with any source and an un-neutralised body — so only content
+// byte-identical to a boundary this process minted passes unchanged. Every
+// other persisted system message, digest body and plan body is re-wrapped
+// by the engine: a foreign outer wrapper is discarded and its body wrapped
+// afresh. Digest/plan records keep their strict parsers.
 func (e *Engine) sanitizePersistedSystemMessages(ctx context.Context, messages []session.Message) []session.Message {
 	planMaxSteps := defaultPlanMaxSteps
 	if e.planStore != nil {
@@ -2587,8 +2608,8 @@ func (e *Engine) sanitizePersistedSystemMessages(ctx context.Context, messages [
 		content := messages[i].Content
 		if strings.HasPrefix(content, digestMsgHeader) {
 			body := strings.TrimPrefix(content, digestMsgHeader)
-			if !isFullyWrappedUntrusted(body) {
-				messages[i].Content = digestMsgHeader + e.protectDerivedContext(ctx, "compaction", body)
+			if !isEngineMinted(body) {
+				messages[i].Content = digestMsgHeader + e.protectPersistedContext(ctx, "compaction", unwrapForeignBoundary(body))
 			}
 			continue
 		}
@@ -2596,18 +2617,20 @@ func (e *Engine) sanitizePersistedSystemMessages(ctx context.Context, messages [
 			if headerEnd := strings.IndexByte(content, '\n'); headerEnd >= 0 {
 				if _, err := parsePlanState(content, planMaxSteps); err == nil {
 					body := content[headerEnd+1:]
-					if !isFullyWrappedUntrusted(body) {
-						messages[i].Content = content[:headerEnd+1] +
-							e.protectDerivedContext(ctx, "plan", body)
+					if !isEngineMinted(body) {
+						if lines, err := unwrapPlanBody(strings.Split(strings.TrimSpace(body), "\n")); err == nil {
+							messages[i].Content = content[:headerEnd+1] +
+								e.protectPersistedContext(ctx, "plan", strings.Join(lines, "\n"))
+						}
 					}
 					continue
 				}
 			}
 		}
-		if isFullyWrappedUntrusted(content) {
+		if isEngineMinted(content) {
 			continue
 		}
-		messages[i].Content = e.protectDerivedContext(ctx, "persisted_system", messages[i].Content)
+		messages[i].Content = e.protectPersistedContext(ctx, "persisted_system", unwrapForeignBoundary(content))
 	}
 	return messages
 }
@@ -2946,7 +2969,7 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 				if rawMemBlock == e.lastMemRaw && e.lastMemBlock != "" {
 					memBlock = e.lastMemBlock
 				} else {
-					memBlock = e.protectDerivedContext(ctx, "memory", rawMemBlock)
+					memBlock = e.protectSystemContext(ctx, "memory", rawMemBlock)
 				}
 				// Keep messages[0] as the stable baseSystem (never modified).
 				if len(messages) > 0 && messages[0].Role == "system" {
@@ -3015,7 +3038,7 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 		if e.extendedCtx != nil {
 			if userMsg := lastUserMessage(messages); userMsg != "" && userMsg != e.lastExtMsg {
 				if extContext := e.extendedCtx(ctx, userMsg); extContext != "" {
-					wrapped := e.wrapContext("extended_memory", extContext)
+					wrapped := e.wrapSystemContext("extended_memory", extContext)
 					if fn := IngestRecorderFrom(ctx); fn != nil {
 						fn("extended_memory", extContext)
 					}
@@ -3743,17 +3766,12 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 						if ext, ok := t.(interface {
 							RequiresUntrustedOutputBoundary() bool
 						}); ok && ext.RequiresUntrustedOutputBoundary() {
-							source := "tool:" + tcRef.Function.Name
-							if isFullyWrappedUntrusted(output) {
-								// A public tool controls these bytes; even a
-								// syntactically valid wrapper is not evidence
-								// that the loop recorded the boundary.
-								if fn := IngestRecorderFrom(ctx); fn != nil {
-									fn(source, output)
-								}
-							} else {
-								output = e.protectDerivedContext(ctx, source, output)
-							}
+							// A public tool controls these bytes; a
+							// syntactically valid wrapper in them is not
+							// an engine boundary, so the engine always adds
+							// its own (nested wrapping is fine: the inner
+							// tag is neutralised by the outer wrap).
+							output = e.protectDerivedContext(ctx, "tool:"+tcRef.Function.Name, output)
 						}
 					}
 					results[idx] = execResult{output: output, errored: errored, durationMs: time.Since(callStart).Milliseconds(), outcome: outcome, deliveryCtx: callCtx, intact: intact}
@@ -4279,7 +4297,7 @@ func (e *Engine) appendRemainingPlan(ctx context.Context, messages []session.Mes
 	}
 	return append(messages, session.Message{
 		Role:    "system",
-		Content: e.protectDerivedContext(ctx, "plan_remaining", body),
+		Content: e.protectSystemContext(ctx, "plan_remaining", body),
 	})
 }
 

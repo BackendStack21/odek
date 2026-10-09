@@ -431,3 +431,11 @@ func TestToolOutputGuard_ConcurrentSetAndScan(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// The loop's plan parser drops guard banners by this prefix (internal/loop
+// guardBannerPrefix); keep the banner text in sync with it.
+func TestToolOutputBanner_PrefixMatchesLoopPlanParser(t *testing.T) {
+	if !strings.HasPrefix(toolOutputBanner, "⚠️ SECURITY NOTICE:") {
+		t.Fatalf("toolOutputBanner prefix changed; update internal/loop guardBannerPrefix: %q", toolOutputBanner)
+	}
+}

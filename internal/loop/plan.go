@@ -1166,6 +1166,10 @@ func parsePlanOmission(line string) (int, bool) {
 	return n, true
 }
 
+// guardBannerPrefix starts the warning banner the CLI's tool-output guard
+// prepends to flagged content (cmd/odek toolOutputBanner).
+const guardBannerPrefix = "⚠️ SECURITY NOTICE:"
+
 // unwrapPlanBody strips the nonce'd untrusted-content wrapper the engine
 // applies around the step lines. Both tags must be present and the close
 // tag must be the LAST line — anything after it is corruption.
@@ -1199,8 +1203,10 @@ func unwrapPlanBody(lines []string) ([]string, error) {
 		inner = append(inner, first)
 	}
 	inner = append(inner, lines[1:closeIdx]...)
-	// Drop empty leading/trailing artifacts of the wrapper newlines.
-	for len(inner) > 0 && strings.TrimSpace(inner[0]) == "" {
+	// Drop empty leading/trailing artifacts of the wrapper newlines, and
+	// any guard warning banners a surface wrapper prepended to the body
+	// (plans rendered by older builds went through the surface wrapper).
+	for len(inner) > 0 && (strings.TrimSpace(inner[0]) == "" || strings.HasPrefix(inner[0], guardBannerPrefix)) {
 		inner = inner[1:]
 	}
 	for len(inner) > 0 && strings.TrimSpace(inner[len(inner)-1]) == "" {
