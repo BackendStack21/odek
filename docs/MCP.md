@@ -105,6 +105,8 @@ odek spawns each configured server as a subprocess, sends `initialize` with prot
 | `odek telegram` chat agent | **No.** |
 | Scheduler embedded in `odek telegram` | Yes, but a connect failure is non-fatal (the bot keeps running without those tools). |
 
+A run with any MCP tool registered is treated as tainted for delegation: `delegate_tasks` clamps every child to `untrusted`, because server-supplied tool descriptions and schemas are third-party text the model reads. Trusted delegation needs a run without MCP servers (see [SUBAGENTS.md](SUBAGENTS.md)).
+
 ### Configuration
 
 Put `mcp_servers` in `~/.odek/config.json` (operator-trusted) or `./odek.json` (project; extra approval). The `command` / `args` / `env` shape matches Claude Code's `mcpServers` object. odek does **not** expand `${VAR}` in `mcp_servers.*.env`.

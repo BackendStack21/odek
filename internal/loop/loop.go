@@ -223,8 +223,10 @@ func WithUntrustedIngest(ctx context.Context) context.Context {
 }
 
 // UntrustedIngested reports whether the current run has crossed an untrusted
-// content boundary. Tools use it to prevent the model from laundering tainted
-// input into a more-trusted delegated execution context.
+// content boundary — ingested wrapped content, resumed a history or session
+// that had, or runs with a third-party tool catalogue (see markCatalogueTaint).
+// Tools use it to prevent the model from laundering tainted input into a
+// more-trusted delegated execution context.
 func UntrustedIngested(ctx context.Context) bool {
 	if ctx == nil {
 		return false
@@ -2788,6 +2790,7 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 		}
 	}()
 	ctx = withRunIngestTaint(ctx, messages)
+	e.markCatalogueTaint(ctx)
 	messages = e.ensureRuntimeSystem(messages)
 	messages = e.sanitizePersistedSystemMessages(ctx, messages)
 	e.startTranscript(messages)

@@ -1438,6 +1438,13 @@ type toolAdapter struct {
 func (a *toolAdapter) Name() string        { return a.t.Name() }
 func (a *toolAdapter) Description() string { return a.t.Description() }
 func (a *toolAdapter) Schema() any         { return a.t.Schema() }
+
+// ThirdPartyCatalogue forwards catalogue provenance (loop.ThirdPartyCatalogueTool)
+// so the loop can see that a tool's metadata came from a third party.
+func (a *toolAdapter) ThirdPartyCatalogue() bool {
+	tp, ok := a.t.(interface{ ThirdPartyCatalogue() bool })
+	return ok && tp.ThirdPartyCatalogue()
+}
 func (a *toolAdapter) Call(args string) (string, error) {
 	return a.t.Call(args)
 }

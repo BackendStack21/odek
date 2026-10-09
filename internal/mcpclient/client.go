@@ -1205,6 +1205,11 @@ func (a *ToolAdapter) Name() string {
 // Description returns the tool's description.
 func (a *ToolAdapter) Description() string { return a.Desc }
 
+// ThirdPartyCatalogue reports that the tool's name, description and schema
+// were supplied by an external MCP server. The loop treats a run with such a
+// tool registered as carrying untrusted text for delegation-trust purposes.
+func (a *ToolAdapter) ThirdPartyCatalogue() bool { return true }
+
 // Schema returns the tool's input JSON schema.
 func (a *ToolAdapter) Schema() any {
 	if a.ParamSchema != nil {

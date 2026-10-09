@@ -351,6 +351,19 @@ effective trust into the task file (`parent_trust`), and the child runs at
 `min(parent_trust, trust_level)`. A task tree rooted in untrusted content
 cannot launder itself into trusted children.
 
+The `trust_level` a model requests is honoured only on a clean run.
+`delegate_tasks` clamps every requested child to `untrusted` when the parent
+run is tainted: it ingested untrusted content (a wrapped tool result, `@`-ref,
+attachment, …), it resumed a session that ever did, or **any MCP tool is
+registered**. MCP tool names, descriptions and schemas are third-party text in
+the tool catalogue — no ingest is ever recorded for them, yet a poisoned
+description can steer a `delegate_tasks` call. The secure default wins: while
+any MCP server is loaded, trusted delegation is unavailable and every child
+runs untrusted (no MCP, no `bg_*`, dangerous classes denied). To delegate
+trusted work, run without MCP servers (set `"enabled": false` on each server,
+or use a config without `mcp_servers`). Sub-agents that load MCP servers
+themselves clamp their own children the same way.
+
 Capability profiles let the operator define named permission envelopes
 in the top-level `profiles` config (see [CONFIG.md](CONFIG.md)): a task
 selects one via `profile: "name"` and the profile's `max_risk`/`allowlist`/

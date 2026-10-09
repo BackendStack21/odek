@@ -584,6 +584,13 @@ type untrustedToolWrapper struct {
 func (w *untrustedToolWrapper) Name() string        { return w.inner.Name() }
 func (w *untrustedToolWrapper) Description() string { return w.inner.Description() }
 func (w *untrustedToolWrapper) Schema() any         { return w.inner.Schema() }
+
+// ThirdPartyCatalogue forwards the inner tool's catalogue provenance, so an
+// MCP tool stays recognisable to the loop through this wrapper.
+func (w *untrustedToolWrapper) ThirdPartyCatalogue() bool {
+	tp, ok := w.inner.(interface{ ThirdPartyCatalogue() bool })
+	return ok && tp.ThirdPartyCatalogue()
+}
 func (w *untrustedToolWrapper) SetContext(ctx context.Context) {
 	w.ctxTool.SetContext(ctx)
 	if contextTool, ok := w.inner.(interface{ SetContext(context.Context) }); ok {
