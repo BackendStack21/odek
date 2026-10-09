@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/BackendStack21/odek/internal/guard"
@@ -42,10 +43,47 @@ func TestProjectFileScanRescansChangedContentAndConfig(t *testing.T) {
 	_ = scanProjectFile("one", cfg)
 	_ = scanProjectFile("two", cfg)
 	cfg2 := &Config{}
-	cfg2.GuardConfig.Threshold = 0.5
+	off := false
+	cfg2.GuardConfig.Scan = &guard.ScanConfig{SystemPrompt: &off}
 	_ = scanProjectFile("one", cfg2)
 	if *n != 3 {
-		t.Fatalf("scans=%d, want 3 (content change and guard-config change must rescan)", *n)
+		t.Fatalf("scans=%d, want 3 (content change and scope change must rescan)", *n)
+	}
+}
+
+type fakeSidecarGuard struct{ guard.Guard }
+
+// A model-backed sidecar verdict may depend on sidecar availability (a
+// timeout falls back to the local rules), so it is never remembered.
+func TestProjectFileScanSidecarNeverCached(t *testing.T) {
+	n := withScanCounter(t, nil)
+	cfg := &Config{Guard: fakeSidecarGuard{}}
+	cfg.GuardConfig.Provider = guard.ProviderPiguard
+	for i := 0; i < 3; i++ {
+		_ = scanProjectFile("same content", cfg)
+	}
+	if *n != 3 {
+		t.Fatalf("scans=%d, want 3 (sidecar verdicts must not be cached)", *n)
+	}
+}
+
+// Two configurations with equal values but distinct pointers must share a
+// key: the cache must never depend on addresses that a later allocation
+// could reuse.
+func TestProjectScanKeyIsValueBased(t *testing.T) {
+	on := true
+	a := &Config{}
+	a.GuardConfig.Scan = &guard.ScanConfig{SystemPrompt: &on}
+	on2 := true
+	b := &Config{}
+	b.GuardConfig.Scan = &guard.ScanConfig{SystemPrompt: &on2}
+	ka, oka := projectScanKey("x", a)
+	kb, okb := projectScanKey("x", b)
+	if !oka || !okb || ka != kb {
+		t.Fatalf("keys differ for equal configs: %q vs %q", ka, kb)
+	}
+	if strings.Contains(ka, "0x") {
+		t.Fatalf("key carries a pointer: %q", ka)
 	}
 }
 

@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
-	"strings"
 	"sync"
 
 	"github.com/BackendStack21/odek/internal/guard"
@@ -52,14 +51,17 @@ func scanProjectFile(content string, cfg *Config) error {
 	return nil
 }
 
+// projectScanKey derives the cache key. Only the local rule scanner is
+// cacheable: its verdict depends on the text and the scope switch alone. A
+// sidecar provider is never cached, so a sidecar outage that fell back to the
+// local rules cannot be remembered as a lasting acceptance, and the key is
+// built from values, never from pointer addresses that a later allocation
+// could reuse.
 func projectScanKey(content string, cfg *Config) (string, bool) {
-	guardID := "none"
-	if cfg.Guard != nil {
-		guardID = fmt.Sprintf("%p", cfg.Guard)
-		if strings.HasPrefix(guardID, "%!") {
-			return "", false // not an identifiable instance: never share a verdict
-		}
+	// A nil guard means ScanContent runs the local rules alone.
+	if p := cfg.GuardConfig.Provider; cfg.Guard != nil && p != "" && p != guard.ProviderLocal {
+		return "", false
 	}
 	sum := sha256.Sum256([]byte(content))
-	return fmt.Sprintf("%x|%s|%+v", sum, guardID, cfg.GuardConfig), true
+	return fmt.Sprintf("%x|%t", sum, guard.IsEnabled(cfg.GuardConfig.Scan, "system_prompt")), true
 }
