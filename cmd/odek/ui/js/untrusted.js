@@ -43,8 +43,18 @@ function scanEnvelopes(text, tag) {
   const cursor = new Map(); // nonce -> next unused closer index
   let plainFrom = 0; // start of pending plain text
   let from = 0;      // where to look for the next opener
-  let term = -1;     // next '">' at or after the current source start
-  let stop = -1;     // next '<' or newline, which a source never contains
+  // Forward-only pointers, each recomputed only once it falls behind the
+  // current source start, so every one scans the text at most once overall.
+  // A source runs to the first '">' and may contain no '"', '<' or newline
+  // (the server maps all three away).
+  const ahead = { term: -1, quote: -1, lt: -1, nl: -1 };
+  const next = (key, needle, at) => {
+    if (ahead[key] < at) {
+      const k = text.indexOf(needle, at);
+      ahead[key] = k < 0 ? text.length : k;
+    }
+    return ahead[key];
+  };
   for (;;) {
     const j = text.indexOf(open, from);
     if (j < 0) break;
@@ -54,15 +64,9 @@ function scanEnvelopes(text, tag) {
     const list = nonce && closers.get(nonce);
     if (!list || !text.startsWith(' source="', attr)) continue;
     const srcStart = attr + 9;
-    if (term < srcStart) term = text.indexOf('">', srcStart);
-    if (term < 0) break; // no terminator anywhere ahead: no envelope can follow
-    if (stop < srcStart) {
-      const lt = text.indexOf('<', srcStart);
-      const nl = text.indexOf('\n', srcStart);
-      stop = lt < 0 ? nl : nl < 0 ? lt : Math.min(lt, nl);
-      if (stop < 0) stop = text.length;
-    }
-    if (stop < term) continue; // the would-be source crosses a tag or line
+    const term = next('term', '">', srcStart);
+    if (term >= text.length) break; // no terminator ahead: no envelope can follow
+    if (next('quote', '"', srcStart) !== term || next('lt', '<', srcStart) < term || next('nl', '\n', srcStart) < term) continue;
     let bodyStart = term + 2;
     if (text[bodyStart] === '\n') bodyStart++;
     let c = cursor.get(nonce) || 0;
@@ -109,7 +113,7 @@ export function unwrapForDisplay(text) {
 // outline nor visually reorder or hide text.
 export function displayLabel(text) {
   return String(text == null ? '' : text).replace(
-    /[\u0000-\u001f\u007f-\u009f\u061c\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff]/g,
+    /[\p{Cc}\p{Cf}\u2028\u2029]/gu, // controls, every format character (as the server's SanitizeForDisplay), line/paragraph separators
     (ch) => (ch === '\n' ? '\\n' : ch === '\r' ? '\\r' : ch === '\t' ? '\\t' : '\\u{' + ch.codePointAt(0).toString(16).toUpperCase().padStart(4, '0') + '}'),
   );
 }

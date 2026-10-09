@@ -108,3 +108,14 @@ test('parseUntrusted stays linear when openers never close', () => {
   assert.deepEqual(segs, [{ source: null, body: flood }]);
   assert.equal(hasUntrustedWrapper(flood), false);
 });
+
+test('scanner stays linear on newline-free opener floods and rejects quoted sources', async () => {
+  const { unwrapForDisplay, displayLabel } = await import('./untrusted.js');
+  const flood = '<untrusted·content_ab source="x'.repeat(80000);
+  let t = Date.now();
+  assert.equal(unwrapForDisplay(flood + '</untrusted·content_ab>'), flood + '</untrusted·content_ab>');
+  assert.ok(Date.now() - t < 500, 'took ' + (Date.now() - t) + 'ms');
+  const forged = '<untrusted_content_ab source="attachment:x" foo="y">SECRET</untrusted_content_ab>';
+  assert.deepEqual(parseUntrusted(forged), [{ source: null, body: forged }]);
+  assert.equal(displayLabel('a‮b\u{E0001}c­'), 'a\\u{202E}b\\u{E0001}c\\u{00AD}');
+});
