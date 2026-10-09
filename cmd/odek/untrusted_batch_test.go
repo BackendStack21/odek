@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -163,12 +164,51 @@ func (g *fakeBatchGuard) Detect(_ context.Context, text string) (guard.Result, e
 	return guard.Result{Injected: strings.Contains(text, "EVIL")}, nil
 }
 
+// withBatchGuard installs g as the local-provider scanner: the local rule
+// scan is what batching applies to, so the scan hook routes every scan to g.
 func withBatchGuard(t *testing.T, g guard.Guard, maxText int) {
+	t.Helper()
+	withBatchGuardProvider(t, g, guard.ProviderLocal, maxText)
+	orig := scanToolOutputContent
+	t.Cleanup(func() { scanToolOutputContent = orig })
+	scanToolOutputContent = func(ctx context.Context, content string, g guard.Guard, _ *guard.Config) error {
+		res, err := g.Detect(ctx, content)
+		if err != nil {
+			return err
+		}
+		if res.Injected {
+			return errors.New("content contains injection")
+		}
+		return nil
+	}
+}
+
+func withBatchGuardProvider(t *testing.T, g guard.Guard, provider string, maxText int) {
 	t.Helper()
 	og, oc := toolOutputGuard, toolOutputGuardCfg
 	t.Cleanup(func() { toolOutputGuard, toolOutputGuardCfg = og, oc })
 	toolOutputGuard = g
-	toolOutputGuardCfg = guard.Config{Provider: guard.ProviderPiguard, MaxTextLength: maxText}
+	toolOutputGuardCfg = guard.Config{Provider: provider, MaxTextLength: maxText}
+}
+
+// A model-backed sidecar judges one window at a time; batching would let a
+// single injected element be diluted by its neighbours, so a sidecar provider
+// keeps the per-element scan the old code performed.
+func TestRED_WrapUntrustedBatch_SidecarScansPerElement(t *testing.T) {
+	fg := &fakeBatchGuard{}
+	withBatchGuardProvider(t, fg, guard.ProviderPiguard, 0)
+	contents := []string{"alpha", "", "beta beta", "gamma"}
+	wrapUntrustedBatch(context.Background(), "src", nil, contents)
+	elems := []string{"alpha", "beta beta", "gamma"}
+	if len(fg.sizes) != len(elems) {
+		t.Fatalf("sidecar saw %d scans %v, want one per non-empty element", len(fg.sizes), fg.sizes)
+	}
+	for i, sz := range fg.sizes {
+		// The sidecar may see a normalized form, never two elements joined.
+		if sz > len(elems[i])+8 {
+			t.Fatalf("scan %d covered %d bytes for a %d-byte element: elements were joined", i, sz, len(elems[i]))
+		}
+	}
 }
 
 func TestWrapUntrustedBatch_ScansEveryByteAndBannersOnlyOffenders(t *testing.T) {

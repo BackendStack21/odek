@@ -124,12 +124,16 @@ const toolOutputBanner = "⚠️ SECURITY NOTICE: This external output contains 
 // scan is warning-only: flagged content is still delivered, behind a banner.
 // Each producer already bounds its output, so the complete value is scanned:
 // sampling would leave a deterministic gap for buried directives.
+// scanToolOutputContent is the guard scan applied to tool output; a variable
+// so tests can observe what text each scan covers.
+var scanToolOutputContent = guard.ScanContent
+
 func toolOutputFlagged(ctx context.Context, content string) bool {
 	g := toolOutputGuard
 	if g == nil || !guard.IsEnabled(toolOutputGuardCfg.Scan, "tool_outputs") {
 		return false
 	}
-	return guard.ScanContent(ctx, content, g, &toolOutputGuardCfg) != nil
+	return scanToolOutputContent(ctx, content, g, &toolOutputGuardCfg) != nil
 }
 
 func scanToolOutput(ctx context.Context, content string) string {
@@ -175,7 +179,14 @@ func wrapUntrustedBatch(ctx context.Context, recordSource string, sources, conte
 	out := make([]string, len(contents))
 	flagged := make([]bool, len(contents))
 	if g := toolOutputGuard; g != nil && guard.IsEnabled(toolOutputGuardCfg.Scan, "tool_outputs") {
+		// Only the local rule scanner is linear in the input and sees every
+		// byte regardless of grouping. A model-backed sidecar judges one
+		// window at a time, where a single injected element could be diluted
+		// by its neighbours, so it keeps the per-element scan.
 		limit := toolOutputGuardCfg.MaxTextLength
+		if p := toolOutputGuardCfg.Provider; p != "" && p != guard.ProviderLocal {
+			limit = 1
+		}
 		start, size := 0, 0
 		flush := func(end int) {
 			if end > start {
@@ -187,7 +198,7 @@ func wrapUntrustedBatch(ctx context.Context, recordSource string, sources, conte
 			if c == "" {
 				continue
 			}
-			if limit > 0 && size > 0 && size+len(c)+1 > limit {
+			if limit > 0 && size > 0 && (limit == 1 || size+len(c)+1 > limit) {
 				flush(i)
 			}
 			size += len(c) + 1
