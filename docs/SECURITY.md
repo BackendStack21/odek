@@ -378,7 +378,7 @@ Files attached through the Web UI are sourced from the browser trust boundary an
 
 ### Telegram bot
 
-`AllowedChats` and `AllowedUsers` are loaded from `[telegram]` config or `ODEK_TELEGRAM_ALLOWED_CHATS` / `…_USERS` env vars. When non-empty, the handler rejects any update whose `chat.id` / `user.id` is not in the list **before** any tool call is reached. A malformed environment entry (for example `12345x`) rejects the whole env list and keeps the configured base list, so a typo can never leave an empty, wider allowlist. Denied attempts are logged so you can notice scanning.
+`AllowedChats` and `AllowedUsers` are loaded from `[telegram]` config or `ODEK_TELEGRAM_ALLOWED_CHATS` / `…_USERS` env vars. When non-empty, the handler rejects any update whose `chat.id` / `user.id` is not in the list **before** any tool call is reached. A malformed environment entry never widens access: the valid entries replace the configured list (`111, 222x` over a configured `[111,222,333]` allows only `111`, with a warning naming the bad entry), and a non-empty value with no valid entry (for example `12345x`) makes `odek telegram` refuse to start, so a typo can never leave an empty or wider allowlist. Denied attempts are logged so you can notice scanning.
 
 Authorization is **fail-closed**: if neither allowlist is configured, the bot refuses to start (`ValidateConfig` returns an error), and at runtime `isAllowed` denies every update. The bot is the only internet-exposed surface and the agent it drives has full host access, so an empty allowlist must never silently mean "allow everyone". To intentionally run an open bot you must explicitly set `ODEK_TELEGRAM_ALLOW_ALL=true`, which logs a loud warning at startup.
 

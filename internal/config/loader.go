@@ -2415,7 +2415,9 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	if cfg.Telegram != nil {
 		baseTelegram = *cfg.Telegram
 	}
-	mergedTelegram := telegram.ConfigFromEnv(baseTelegram)
+	// A malformed allowlist env value keeps the base list here; `odek
+	// telegram` re-checks the environment and refuses to start (fail closed).
+	mergedTelegram, _ := telegram.ConfigFromEnv(baseTelegram)
 	cfg.Telegram = &mergedTelegram
 
 	if v := envStringList("TOOLS_ENABLED"); v != nil {

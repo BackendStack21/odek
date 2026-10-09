@@ -32,7 +32,7 @@ All configuration flows through `TelegramConfig` and can be set via environment 
 |---|---|---|
 | `ODEK_TELEGRAM_BOT_TOKEN` | Token | — (required) |
 | `ODEK_TELEGRAM_ALLOWED_CHATS` | AllowedChats | — (see below) |
-| `ODEK_TELEGRAM_ALLOWED_USERS` | AllowedUsers | — (see below). A list with any non-integer entry is ignored as a whole (the configured list stays), never partially applied |
+| `ODEK_TELEGRAM_ALLOWED_USERS` | AllowedUsers | — (see below). The valid entries replace the configured list (a typo can only narrow access, with a warning naming the bad entry); a value with no valid entry makes the bot refuse to start |
 | `ODEK_TELEGRAM_ALLOW_ALL` | AllowAllUsers | false |
 | `ODEK_TELEGRAM_BOT_USERNAME` | BotUsername | — |
 | `ODEK_TELEGRAM_POLL_INTERVAL` | PollInterval | 1s |
@@ -209,9 +209,12 @@ All callbacks return a response string (may be empty) and an error. The `Handle`
 > set `ODEK_TELEGRAM_ALLOW_ALL=true` (logged as a loud warning at startup). At
 > runtime, with both allowlists empty and `AllowAllUsers` unset, every update is
 > denied. A malformed `ODEK_TELEGRAM_ALLOWED_CHATS` or `ODEK_TELEGRAM_ALLOWED_USERS`
-> value (a non-integer entry, or no entries) is ignored as a whole, keeping the
-> allowlist from config, and a warning naming the variable and the bad entry is
-> written to stderr.
+> value is never allowed to widen access: the valid entries replace the allowlist
+> from config (so `111, 222x` over a configured `[111,222,333]` allows only
+> `111`) and a warning naming the variable and the bad entry is written to
+> stderr. A non-empty value with no valid entry (`12345x`, `,`) fails closed:
+> `odek telegram` refuses to start with an error naming the variable and the
+> first bad entry.
 
 ### Inline Keyboards
 

@@ -52,26 +52,40 @@ func DefaultConfig() TelegramConfig {
 
 // ConfigFromEnv reads configuration from environment variables, starting with
 // the given base config and overriding any values that are set in the environment.
-func ConfigFromEnv(base TelegramConfig) TelegramConfig {
+//
+// An allowlist variable replaces the base list with its valid entries, so a
+// typo can only narrow access; invalid entries are reported as a warning. A
+// non-empty value with no valid entry fails closed: the error names the
+// variable and the first bad entry, and the returned config keeps the base
+// list. Callers must refuse to start on a non-nil error.
+func ConfigFromEnv(base TelegramConfig) (TelegramConfig, error) {
 	cfg := base
 
 	if v := os.Getenv("ODEK_TELEGRAM_BOT_TOKEN"); v != "" {
 		cfg.Token = v
 	}
-	if v := os.Getenv("ODEK_TELEGRAM_ALLOWED_CHATS"); v != "" {
-		// A malformed entry keeps the base list: dropping it silently could
-		// leave an empty (wider) allowlist.
-		if list, ok := parseInt64List(v); ok && len(list) > 0 {
-			cfg.AllowedChats = list
-		} else {
-			warnBadAllowlist("ODEK_TELEGRAM_ALLOWED_CHATS", v)
+	var envErr error
+	for _, al := range []struct {
+		name string
+		dst  *[]int64
+	}{
+		{"ODEK_TELEGRAM_ALLOWED_CHATS", &cfg.AllowedChats},
+		{"ODEK_TELEGRAM_ALLOWED_USERS", &cfg.AllowedUsers},
+	} {
+		v := os.Getenv(al.name)
+		if v == "" {
+			continue
 		}
-	}
-	if v := os.Getenv("ODEK_TELEGRAM_ALLOWED_USERS"); v != "" {
-		if list, ok := parseInt64List(v); ok && len(list) > 0 {
-			cfg.AllowedUsers = list
-		} else {
-			warnBadAllowlist("ODEK_TELEGRAM_ALLOWED_USERS", v)
+		list, bad := parseAllowlistEntries(v)
+		if len(list) == 0 {
+			if envErr == nil {
+				envErr = fmt.Errorf("telegram: %s has no valid entry (%s)", al.name, bad)
+			}
+			continue
+		}
+		*al.dst = list
+		if bad != "" {
+			warnBadAllowlist(al.name, bad)
 		}
 	}
 	if v := os.Getenv("ODEK_TELEGRAM_ALLOW_ALL"); v != "" {
@@ -135,7 +149,7 @@ func ConfigFromEnv(base TelegramConfig) TelegramConfig {
 		}
 	}
 
-	return cfg
+	return cfg, envErr
 }
 
 // ValidateConfig checks that the configuration values are within acceptable
@@ -197,17 +211,31 @@ func parseInt64List(s string) (result []int64, ok bool) {
 // warnWriter receives configuration warnings; tests replace it.
 var warnWriter io.Writer = os.Stderr
 
-// warnBadAllowlist reports an allowlist variable that was ignored, so an
-// operator who mistyped an id sees why the base list is still in force.
-func warnBadAllowlist(name, value string) {
-	bad := "no entries"
-	for _, p := range splitAndTrim(value) {
-		if _, err := strconv.ParseInt(p, 10, 64); err != nil {
-			bad = fmt.Sprintf("invalid entry %q", p)
-			break
-		}
+// parseAllowlistEntries returns the valid integer entries of a comma-separated
+// list and a description of the first invalid entry ("" when none; "no
+// entries" when the value held nothing at all).
+func parseAllowlistEntries(s string) (valid []int64, bad string) {
+	parts := splitAndTrim(s)
+	if len(parts) == 0 {
+		return nil, "no entries"
 	}
-	fmt.Fprintf(warnWriter, "telegram: warning: %s ignored (%s); keeping the configured allowlist\n", name, bad)
+	for _, p := range parts {
+		n, err := strconv.ParseInt(p, 10, 64)
+		if err != nil {
+			if bad == "" {
+				bad = fmt.Sprintf("invalid entry %q", p)
+			}
+			continue
+		}
+		valid = append(valid, n)
+	}
+	return valid, bad
+}
+
+// warnBadAllowlist reports an allowlist variable with an ignored entry, so an
+// operator who mistyped an id sees why it is not in force.
+func warnBadAllowlist(name, bad string) {
+	fmt.Fprintf(warnWriter, "telegram: warning: %s: %s ignored; using the valid entries only\n", name, bad)
 }
 
 // splitAndTrim splits a string on commas and trims whitespace from each part.

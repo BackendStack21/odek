@@ -349,6 +349,10 @@ func telegramCmd(args []string) error {
 
 	// 3. Load and validate Telegram config.
 	cfg := resolved.Telegram
+	if _, err := telegram.ConfigFromEnv(cfg); err != nil {
+		fmt.Fprintf(os.Stderr, "odek telegram: %v\n", err)
+		return err
+	}
 	if err := telegram.ValidateConfig(cfg); err != nil {
 		fmt.Fprintf(os.Stderr, "odek telegram: %v\n", err)
 		return err
