@@ -3796,6 +3796,12 @@ func clampProjectBackground(global, project *BackgroundFileConfig) {
 		switch {
 		case g == nil || p == nil:
 			return p // nothing to clamp against / nothing requested
+		case *p <= 0:
+			// Zero and negative values resolve to "uncapped" or to the shipped
+			// default, either of which can exceed the operator's cap; keep the
+			// global value, as clampProjectLimits does.
+			fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring background.%s=%d from project config (%s) — non-positive values would remove the global cap %d\n", name, *p, ProjectConfigPath(), *g)
+			return g
 		case *p > *g:
 			fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring background.%s=%d from project config (%s) — it would raise the global cap %d\n", name, *p, ProjectConfigPath(), *g)
 			return g

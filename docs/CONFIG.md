@@ -1378,7 +1378,8 @@ ends — there is no detach mode in v1.
 | `max_wakes_per_hour` | `30` | Per-session ceiling on system-initiated wake turns (spend control). `0` disables waking; values above `240` clamp to `240` regardless of config source. Project configs may only lower an operator-set value. |
 
 A project `odek.json` may only LOWER the numeric caps (same clamp philosophy
-as `limits`). Headless `odek run` and scheduled runs are single-session
+as `limits`); a project value of `0` or a negative number does not count as lower and
+keeps the operator's value. Headless `odek run` and scheduled runs are single-session
 processes: background jobs end when the run ends. `/jobs` (REPL and Telegram)
 lists live jobs. On `odek serve`, `bg_*` tools are available in sandbox mode. Each job is
 pinned to the launching agent’s container; disconnecting or completing a REST
