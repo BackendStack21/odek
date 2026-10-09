@@ -337,7 +337,7 @@ func classifyPathLexical(path string) RiskClass {
 		return LocalWrite
 	}
 
-	for _, prefix := range []string{"/etc", "/root", "/var", "/run", "/lib", "/usr", "/bin", "/sbin", "/opt", "/srv"} {
+	for _, prefix := range []string{"/etc", "/root", "/var", "/run", "/lib", "/lib32", "/lib64", "/libx32", "/usr", "/bin", "/sbin", "/opt", "/srv"} {
 		if abs == prefix || strings.HasPrefix(abs, prefix+"/") {
 			return SystemWrite
 		}
@@ -6814,7 +6814,7 @@ func touchesSystemPath(tokens []string) bool {
 }
 
 // isSystemPath returns true if the path targets a system directory.
-var systemPathPrefixes = []string{"/etc/", "/usr/", "/bin/", "/lib/", "/var/", "/opt/", "/boot/", "/sbin/"}
+var systemPathPrefixes = []string{"/etc/", "/usr/", "/bin/", "/lib/", "/lib32/", "/lib64/", "/libx32/", "/var/", "/opt/", "/boot/", "/sbin/"}
 
 func isSystemPath(path string) bool {
 	// The current user's home is theirs even when it sits under a system
