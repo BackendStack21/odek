@@ -126,14 +126,26 @@ func TestRED_Injection_EveryPatternHasRequiredLiterals(t *testing.T) {
 	}
 }
 
+// The prefiltered scan must beat running every pattern unconditionally by a
+// wide margin. The comparison is relative so it holds under -race and on a
+// loaded CI runner, where absolute wall-clock bounds do not.
 func TestRED_Injection_LargeCleanScanIsFast(t *testing.T) {
 	text := strings.Repeat("The quick brown fox jumps over the lazy dog. func main() { return 42 }\n", 256*1024/64)
+	normalized := NormalizeForScan(text)
 	start := time.Now()
+	for _, p := range injectionPatterns {
+		if p.Re.MatchString(normalized) {
+			t.Fatalf("pattern %q matched clean text", p.Label)
+		}
+	}
+	unfiltered := time.Since(start)
+	start = time.Now()
 	if r := ScanInjection(text); r != nil {
 		t.Fatalf("unexpected results: %v", r)
 	}
-	if d := time.Since(start); d > 100*time.Millisecond {
-		t.Fatalf("256 KiB clean scan took %v, want < 100ms", d)
+	filtered := time.Since(start)
+	if filtered*3 > unfiltered {
+		t.Fatalf("prefiltered scan took %v vs %v unfiltered, want at least 3x faster", filtered, unfiltered)
 	}
 }
 
