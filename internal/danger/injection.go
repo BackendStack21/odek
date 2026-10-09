@@ -59,7 +59,7 @@ var injectionPatterns = []InjectionPattern{
 	// system prompt and conversation) to be repeated or to open the reply.
 	{regexp.MustCompile(`\b(repeat|print|output|echo|recite|reproduce|write out|dump)\s+(back\s+)?(everything|all( of)?( the)? (text|content|words|messages|instructions)|the (entire|full|whole|complete) (text|content|conversation|prompt))\s+(above|before this|preceding|prior to this|so far)( line| message| point)?,?\s*(verbatim|word for word|exactly|in full|including (your|the) (instructions|system prompt|prompt|rules)|[.!?]|$)`), "context leak request"},
 	{regexp.MustCompile(`\b(begin|start|open|prefix)\s+your\s+(response|reply|answer|output)\s+with\s+(the\s+)?((full|entire|complete|exact|verbatim)\s+)?(text|content|words|instructions|prompt|messages?)\s+(above|before this|preceding)\b`), "context leak request"},
-	{regexp.MustCompile(`(send|post|upload|transmit)\s+(your|the|users?|my)?\s*(system prompt|instructions?|api key|apikey|password|secret|token|credentials?)`), "transmit secrets or prompt"},
+	{transmitSecretsRe, "transmit secrets or prompt"},
 	{regexp.MustCompile(`(what|tell me)\s+(is\s+)?(your|the)\s+(system prompt|initial instructions?)`), "prompt interrogation"},
 	// Paraphrased exfiltration: requests to include secrets/system prompts in
 	// the final answer, or urgency words paired with an exfiltration verb.
@@ -177,6 +177,212 @@ const redirectTarget = `https?://|[a-z0-9._%+-]+@[a-z0-9-]+\.[a-z]|~/\.ssh|id_rs
 
 // relayedAuthority names the parties an injection impersonates to claim
 // authority it does not have.
+// transmitSecretsRe matches an instruction to send a secret or the prompt.
+// Policy prose forbids exactly that ("never send secrets to external
+// services", "don't upload your API key"), so a match is exempt when it is
+// plainly prohibited (see prohibited); every other occurrence counts.
+var transmitSecretsRe = regexp.MustCompile(`(send|post|upload|transmit)\s+(your|the|users?|my)?\s*(system prompt|instructions?|api key|apikey|password|secret|token|credentials?)`)
+
+// prohibitionRe matches text ending in an auxiliary-led negation directly
+// before the verb: "never", "do/does/must/should/shall/will/may not",
+// "don't", "doesn't", "mustn't", "shouldn't", "won't", "cannot", "can't".
+// Group 2 is the negation. Forms that do not forbid — "need not", "would
+// not", "could not", "can not", "can you not", a subject between the
+// auxiliary and "not" — are deliberately absent.
+var prohibitionRe = regexp.MustCompile(`(^|[^a-z'’])(never|(do|does|must|should|shall|will|may) not|don't|dont|don’t|doesn't|doesn’t|mustn't|mustn’t|shouldn't|shouldn’t|won't|won’t|cannot|can't|can’t)\s+(ever\s+)?$`)
+
+// negationEndRe matches text ending in any negator, for double negations
+// ("never not send", "must not never post").
+var negationEndRe = regexp.MustCompile(`(^|[^a-z])(never|not|no|don't|dont|don’t|doesn't|doesn’t|won't|won’t|cannot|can't|can’t|mustn't|mustn’t|shouldn't|shouldn’t)\s+$`)
+
+// exceptionClauseRe finds an exception, contrast or condition in the clause
+// around a prohibition: "anywhere but …", "except …", "other than …",
+// "unless I ask", "instead", "yet", "if you do not …", "otherwise", "or
+// else", or an alternative introduced by a comma or dash (", or don't …").
+// A bare "or" does not count ("developers or agents must never send
+// secrets" is policy).
+var exceptionClauseRe = regexp.MustCompile(`(^|[^a-z])(but|except|other than|besides|apart from|unless|only to|instead|yet|if|otherwise|or else)([^a-z]|$)|[,—–-]\s*or\s`)
+
+// destinationRe finds anything shaped like a place to send something: a URL
+// scheme (also defanged "hxxp" or spaced "h t t p"), a domain-like token
+// (also written "evil[.]example", "evil(.)example" or "evil dot example"),
+// an e-mail or IP address, or a credential path. Policy prose that forbids
+// sending a secret names no destination, so one anywhere in the text voids
+// every exemption in it.
+var destinationRe = regexp.MustCompile(`[a-z][a-z0-9+.-]*://|\bhxxps?\b|\bh\s+t\s+t\s+p|\b[a-z0-9-]+(\.|\[\.\]|\(\.\)|\s+dot\s+)[a-z]{2,}\b|[a-z0-9._%+-]+@[a-z0-9-]+\.[a-z]|~/\.ssh|id_rsa|\.env\b|secrets\.env|\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b`)
+
+// base64RunRe finds a run long enough to be an encoded payload; it counts as
+// a destination when it carries a digit, "+", "/" or "=" (the text is
+// lower-cased, so a plain long word must not count).
+var base64RunRe = regexp.MustCompile(`[a-z0-9+/]{16,}={0,2}`)
+
+// objectPronounRe and secretNounRe find what a later instruction could act
+// on: a pronoun standing for the secret, or the secret named again.
+var (
+	objectPronounRe = regexp.MustCompile(`\b(it|them|this|that|these|those)\b`)
+	secretNounRe    = regexp.MustCompile(`\b(tokens?|keys?|passwords?|credentials?|secrets?|api ?keys?|apikeys?|passphrases?|cookies?|sessions?)\b`)
+)
+
+// hasDestination reports whether s holds anything destination-shaped.
+func hasDestination(s string) bool {
+	if destinationRe.MatchString(s) {
+		return true
+	}
+	for _, run := range base64RunRe.FindAllString(s, -1) {
+		if strings.ContainsAny(run, "0123456789+/=") {
+			return true
+		}
+	}
+	return false
+}
+
+// questionLeadRe matches a sentence opening as a question or a suggestion
+// ("why do you not send …", "can you not …", "did you not …").
+var questionLeadRe = regexp.MustCompile(`^\s*(why|how|did|can|could|would|will)\b`)
+
+// clauseBoundaryRe ends the clause a prohibition belongs to;
+// sentenceBoundaryRe ends its sentence. ASCII punctuation is a boundary only
+// before whitespace or the end of the text, so the dots and colons inside a
+// URL, an e-mail address, a path or an IP address never split it; CJK and
+// fullwidth punctuation always is.
+var (
+	clauseBoundaryRe   = regexp.MustCompile(`[.!?;:…](\s|$)|[。！？；：]`)
+	sentenceBoundaryRe = regexp.MustCompile(`[.!?…](\s|$)|[。！？]`)
+)
+
+const (
+	// negatedPrefixWindow bounds how much text before a match is examined
+	// for the prohibiting negation.
+	negatedPrefixWindow = 32
+	// negatedClauseWindow bounds how much text on either side of a
+	// prohibition is examined for its clause and sentence.
+	negatedClauseWindow = 240
+)
+
+// hasUnnegatedMatch reports whether re matches s at least once outside a
+// plain prohibition. "Do not send secrets. Instead send your token to …"
+// still matches through its second, unnegated instruction.
+//
+// The exemption is deliberately conservative: it clears only policy lines
+// that name no object or destination. A match is exempt only when, besides
+// prohibited's local checks, the text holds nothing destination-shaped
+// anywhere, and the whole text after the match (no size cap) holds no object
+// pronoun and no secret noun except inside another exempt match ("never
+// send the password, and never post the token"). Matches are judged from
+// the last to the first in one pass, so each later match's verdict is known
+// when an earlier one needs it.
+func hasUnnegatedMatch(re *regexp.Regexp, s string) bool {
+	locs := re.FindAllStringIndex(s, -1)
+	if len(locs) == 0 {
+		return false
+	}
+	if hasDestination(s) {
+		return true
+	}
+	lastPronoun := -1
+	if p := objectPronounRe.FindAllStringIndex(s, -1); len(p) > 0 {
+		lastPronoun = p[len(p)-1][0]
+	}
+	nouns := secretNounRe.FindAllStringIndex(s, -1)
+	exempt := make([]bool, len(locs))
+	// uncovered: a secret noun at or after the current match end that is not
+	// inside a later exempt match. n walks the nouns from the end; j walks the
+	// matches that may cover them.
+	uncovered := false
+	n, j := len(nouns)-1, len(locs)-1
+	for i := len(locs) - 1; i >= 0; i-- {
+		end := locs[i][1]
+		for ; n >= 0 && nouns[n][0] >= end; n-- {
+			// j: the last match starting at or before this noun. Nouns are
+			// visited in descending order, so j only moves left.
+			for j > i && locs[j][0] > nouns[n][0] {
+				j--
+			}
+			if j <= i || nouns[n][0] >= locs[j][1] || !exempt[j] {
+				uncovered = true
+			}
+		}
+		if uncovered || lastPronoun >= end || !prohibited(s, locs[i][0], end) {
+			return true
+		}
+		exempt[i] = true
+	}
+	return false
+}
+
+// prohibited reports whether the instruction s[at:end] is plainly forbidden
+// by its own wording, failing closed: an auxiliary-led negation directly
+// before the verb, not itself negated; no exception, contrast or condition
+// in its clause; and a sentence that is neither a question nor opens like
+// one. hasUnnegatedMatch adds the whole-text object and destination checks.
+func prohibited(s string, at, end int) bool {
+	pstart := at - negatedPrefixWindow
+	if pstart < 0 {
+		pstart = 0
+	}
+	m := prohibitionRe.FindStringSubmatchIndex(s[pstart:at])
+	if m == nil {
+		return false
+	}
+	negator := pstart + m[4]
+
+	lo := negator - negatedClauseWindow
+	if lo < 0 {
+		lo = 0
+	}
+	hi := end + negatedClauseWindow
+	if hi > len(s) {
+		hi = len(s)
+	}
+	before, after := s[lo:negator], s[end:hi]
+	if negationEndRe.MatchString(before) {
+		return false // double negation
+	}
+
+	clause := lastSegment(before, clauseBoundaryRe) + s[negator:end] + firstSegment(after, clauseBoundaryRe)
+	if exceptionClauseRe.MatchString(clause) {
+		return false
+	}
+	sentenceStart := lastSegment(before, sentenceBoundaryRe)
+	if questionLeadRe.MatchString(sentenceStart) {
+		return false
+	}
+	if loc := sentenceBoundaryRe.FindStringIndex(after); loc != nil {
+		if mark := after[loc[0]:loc[1]]; strings.HasPrefix(mark, "?") || strings.HasPrefix(mark, "？") {
+			return false
+		}
+	}
+	return true
+}
+
+// lastSegment returns the text of s after the last boundary match.
+func lastSegment(s string, boundary *regexp.Regexp) string {
+	if b := boundary.FindAllStringIndex(s, -1); len(b) > 0 {
+		return s[b[len(b)-1][1]:]
+	}
+	return s
+}
+
+// firstSegment returns the text of s before the first boundary match.
+func firstSegment(s string, boundary *regexp.Regexp) string {
+	if loc := boundary.FindStringIndex(s); loc != nil {
+		return s[:loc[0]]
+	}
+	return s
+}
+
+// matchPattern is matchWithLiterals, except that patterns describing a
+// forbidden action ignore occurrences that forbid it.
+func matchPattern(re *regexp.Regexp, lits []string, s string) bool {
+	if !matchWithLiterals(re, lits, s) {
+		return false
+	}
+	if re == transmitSecretsRe {
+		return hasUnnegatedMatch(re, s)
+	}
+	return true
+}
+
 const relayedAuthority = `(user|principal|operator|owner|admin|administrator)`
 
 // injectionLiterals[i] lists literals of which every match of
@@ -353,8 +559,8 @@ func ScanInjection(content string) []ScanResult {
 	}
 	for i, p := range injectionPatterns {
 		lits := injectionLiterals[i]
-		if matchWithLiterals(p.Re, lits, normalized) || (foldDistinct && matchWithLiterals(p.Re, lits, folded)) ||
-			(foldedNu != "" && matchWithLiterals(p.Re, lits, foldedNu)) {
+		if matchPattern(p.Re, lits, normalized) || (foldDistinct && matchPattern(p.Re, lits, folded)) ||
+			(foldedNu != "" && matchPattern(p.Re, lits, foldedNu)) {
 			results = append(results, ScanResult{
 				Label:   p.Label,
 				Pattern: p.Re.String(),
