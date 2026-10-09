@@ -28,7 +28,7 @@
 
   --text:   #ecedf1;
   --text-2: #a9adb9;
-  --text-3: #80848f;   /* ≥4.5:1 on bg-0/1/2 */
+  --text-3: #868a95;   /* ≥4.5:1 on bg-0 through bg-3 */
 
   --amber:      #ffb547;
   --amber-hi:   #ffcd7a;
@@ -73,14 +73,19 @@
 
   --shadow-1: 0 1px 2px rgba(0, 0, 0, .3), 0 1px 1px rgba(0, 0, 0, .2);
   --shadow-2: 0 6px 18px rgba(0, 0, 0, .32), 0 2px 6px rgba(0, 0, 0, .2);
-  --shadow-pop: 0 16px 48px rgba(0, 0, 0, .5), 0 4px 12px rgba(0, 0, 0, .3), 0 0 0 1px var(--line-2);
-  --ring: 0 0 0 2px var(--bg-0), 0 0 0 4px color-mix(in srgb, var(--amber) 70%, transparent);
 
   --control: 32px;
   --topbar-h: 52px;
   --rail-w: 264px;
   --content-w: 760px;
   --inspector-width: 420px;
+}
+
+/* Tokens derived from other tokens are declared on body, where every theme
+   class lives, so each theme resolves them against its own palette. */
+body {
+  --shadow-pop: 0 16px 48px rgba(0, 0, 0, .5), 0 4px 12px rgba(0, 0, 0, .3), 0 0 0 1px var(--line-2);
+  --ring: 0 0 0 2px var(--bg-0), 0 0 0 4px color-mix(in srgb, var(--amber) 70%, transparent);
 }
 
 /* ── Porcelain (light) ─────────────────────────────────────────────── */
@@ -105,7 +110,7 @@ body.theme-ember-light, body.light {
   --amber-ink:  #ffffff;
   --amber-dim:  rgba(194, 87, 12, .075);
   --amber-glow: rgba(194, 87, 12, .16);
-  --ember-grad: linear-gradient(135deg, #d9701f 0%, #c2570c 60%, #ad4a08 100%);
+  --ember-grad: linear-gradient(135deg, #b8520c 0%, #ad4a08 60%, #9e4207 100%); /* white ink ≥4.9:1 */
   --code-ink:   #a3460a;
   --green: #0b7a52;
   --red:   #c23434;
@@ -123,10 +128,36 @@ body.theme-ember-light, body.light {
 @media (prefers-color-scheme: light) {
   body:not([class*="theme-"]) {
     color-scheme: light;
-    --bg-0: #f8f7f4; --bg-1: #f1efeb; --bg-2: #ffffff; --bg-3: #efede8; --bg-4: #e5e2dc; --field: #ffffff;
-    --line: rgba(32, 28, 20, .075); --line-2: rgba(32, 28, 20, .12); --line-3: rgba(32, 28, 20, .2);
-    --text: #1c1d21; --text-2: #4d5059; --text-3: #686b75;
-    --amber: #c2570c; --amber-hi: #9a4108; --amber-ink: #ffffff;
+    --bg-0: #f8f7f4;
+    --bg-1: #f1efeb;
+    --bg-2: #ffffff;
+    --bg-3: #efede8;
+    --bg-4: #e5e2dc;
+    --field: #ffffff;
+    --scrim: rgba(30, 28, 24, .32);
+    --line:   rgba(32, 28, 20, .075);
+    --line-2: rgba(32, 28, 20, .12);
+    --line-3: rgba(32, 28, 20, .2);
+    --text:   #1c1d21;
+    --text-2: #4d5059;
+    --text-3: #686b75;
+    --amber:      #c2570c;
+    --amber-hi:   #9a4108;
+    --amber-lo:   #c2570c;
+    --amber-ink:  #ffffff;
+    --amber-dim:  rgba(194, 87, 12, .075);
+    --amber-glow: rgba(194, 87, 12, .16);
+    --ember-grad: linear-gradient(135deg, #b8520c 0%, #ad4a08 60%, #9e4207 100%); /* white ink ≥4.9:1 */
+    --code-ink:   #a3460a;
+    --green: #0b7a52;
+    --red:   #c23434;
+    --blue:  #1f5fc4;
+    --green-dim: rgba(11, 122, 82, .08);
+    --red-dim:   rgba(194, 52, 52, .07);
+    --blue-dim:  rgba(31, 95, 196, .07);
+    --shadow-1: 0 1px 2px rgba(40, 32, 20, .06), 0 1px 1px rgba(40, 32, 20, .04);
+    --shadow-2: 0 8px 24px rgba(40, 32, 20, .08), 0 2px 6px rgba(40, 32, 20, .05);
+    --shadow-pop: 0 18px 50px rgba(40, 32, 20, .14), 0 4px 12px rgba(40, 32, 20, .06), 0 0 0 1px var(--line-2);
   }
 }
 
@@ -1589,7 +1620,7 @@ input.result-search { flex: 1 1 110px; width: 110px; max-width: 200px; min-heigh
   position: fixed;
   top: calc(var(--topbar-h) + 4px);
   left: 50%;
-  z-index: 60;
+  z-index: 255; /* above the inspector and its scrim, below popovers */
   width: min(688px, 100vw);
   max-height: calc(100dvh - var(--topbar-h) - 8px);
   padding: 8px 24px 40px; /* room for the card shadow inside the scroll box */
@@ -1599,6 +1630,12 @@ input.result-search { flex: 1 1 110px; width: 110px; max-width: 200px; min-heigh
 }
 #approval-overlay:not([hidden]) { pointer-events: auto; }
 #approval-overlay .approval-card { margin-bottom: 10px; box-shadow: var(--shadow-pop); }
+/* Docked columns: centre the card over the conversation, clear of both. */
+@media (min-width: 1100px) {
+  body.inspector-open #approval-overlay { left: calc((100vw - var(--inspector-width)) / 2); width: min(688px, calc(100vw - var(--inspector-width))); }
+  body.sessions-open #approval-overlay { left: calc(var(--rail-w) + (100vw - var(--rail-w)) / 2); width: min(688px, calc(100vw - var(--rail-w))); }
+  body.sessions-open.inspector-open #approval-overlay { left: calc(var(--rail-w) + (100vw - var(--rail-w) - var(--inspector-width)) / 2); width: min(688px, calc(100vw - var(--rail-w) - var(--inspector-width))); }
+}
 
 /* ═══════════════════════════════════════════════════════════════════════
    COMPOSER
