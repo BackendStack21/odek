@@ -113,7 +113,7 @@ The scanner normalizes invisible Unicode (zero-width, bidi and other format char
 - `tool_outputs` — external tool outputs (warning-only; the untrusted wrapper remains the primary boundary).
 - `telegram` — photo captions, voice transcripts and forwarded messages before they are injected into the user message stream.
 
-If the sidecar flags content, the behavior mirrors a local scan flag: writes are rejected, system-prompt sources fall back to the default identity, MCP descriptions are withheld, and tainted skill/Telegram inputs are dropped or wrapped with a warning. The `guard` section is operator-controlled: project-level `./odek.json` cannot set it, so a malicious repository cannot disable the local scan or redirect memory/system-prompt content to an attacker-controlled endpoint.
+Content longer than `guard.max_text_length` is not truncated for the sidecar: it is judged in full as overlapping windows within the limit, so a payload placed past the limit still reaches the second opinion. Content that would need more than 1024 windows is rejected (fail closed, regardless of `fallback_to_local`), so padding cannot buy a local-only acceptance. If the sidecar flags content, the behavior mirrors a local scan flag: writes are rejected, system-prompt sources fall back to the default identity, MCP descriptions are withheld, and tainted skill/Telegram inputs are dropped or wrapped with a warning. The `guard` section is operator-controlled: project-level `./odek.json` cannot set it, so a malicious repository cannot disable the local scan or redirect memory/system-prompt content to an attacker-controlled endpoint.
 
 ### Danger classifier
 

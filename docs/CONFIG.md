@@ -252,7 +252,7 @@ The guard is **off by default** in the sense that no sidecar is needed; the loca
 | `threshold` | `0.9` | Confidence above which an `INJECTION` verdict is treated as injected. The sidecar score is the confidence of the predicted label, so the threshold never applies to `BENIGN` results |
 | `timeout_seconds` | `5` | Per-request timeout |
 | `fallback_to_local` | `true` | If the sidecar fails, fall back to the local rule scan |
-| `max_text_length` | `0` | Truncate text sent to the sidecar; `0` means no limit. The local scan still sees the full text |
+| `max_text_length` | `0` | Largest text sent to the sidecar in one request; `0` means no limit. Longer content is judged in full as overlapping windows of at most this many bytes (batched, at most 1024 windows — content needing more is rejected as too large for the sidecar scan, whatever `fallback_to_local` says). The local scan always sees the full text |
 
 ### Scan scopes
 
