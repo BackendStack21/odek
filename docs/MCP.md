@@ -144,7 +144,7 @@ A server entry may instead set `url` to use the **Streamable HTTP transport** â€
 | `env` | `{}` | Overrides; empty string unsets. Secret-looking keys are stripped even here. |
 | `timeout_seconds` | `30` | Per-request; clamped to 3600 (warning). |
 | `max_response_bytes` | 10 MiB | One JSON-RPC response line. Config above 64 MiB is rejected and the server is not started. Oversized line: drop it and close the connection. |
-| `max_result_chars` | `200000` | Model-facing result text; clamped to 1_000_000 (warning). Oversized valid results get a structured truncation notice, never a silent cut. |
+| `max_result_chars` | `200000` | Model-facing result text; clamped to 1_000_000 (warning); values below the floor (truncation notice length + 64 chars) are raised to it (warning). Oversized valid results get a structured truncation notice, never a silent cut. |
 | `artifact_roots` | `[]` | Directories that may host `file://` artifact refs. **Empty rejects every ref.** |
 | `auto_approve` | `false` | Skip server and per-tool prompts. Honored only from `~/.odek/config.json`. |
 

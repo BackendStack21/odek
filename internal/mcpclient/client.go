@@ -34,6 +34,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"os/exec"
@@ -317,6 +318,20 @@ type Client struct {
 	httpc *http.Client
 }
 
+// resultCharsFloorMargin is the room, in runes, a result cap must leave beyond
+// the truncation notice so a truncated result still carries some content.
+const resultCharsFloorMargin = 64
+
+// ResultCharsFloor is the smallest effective max_result_chars for a server:
+// the longest possible truncation notice (longest tool name, widest counts)
+// plus resultCharsFloorMargin runes. Smaller configured values are raised to
+// it with a warning, so a tiny cap cannot produce an empty or notice-only
+// result.
+func ResultCharsFloor(server string) int {
+	notice := truncationNotice(server, strings.Repeat("t", 64), MaxResultCharsCap, math.MaxInt32)
+	return utf8.RuneCountInString(notice) + resultCharsFloorMargin
+}
+
 // normalizeLimits resolves the effective per-server limits from cfg, applying
 // defaults, rejecting values that may not be exceeded, and clamping values
 // above their hard caps (recording a warning for each clamp).
@@ -360,6 +375,10 @@ func normalizeLimits(name string, cfg ServerConfig) (timeout time.Duration, maxR
 			maxChars = MaxResultCharsCap
 			warnings = append(warnings, fmt.Sprintf("mcp server %q: max_result_chars %d exceeds the hard cap; clamped to %d", name, cfg.MaxResultChars, MaxResultCharsCap))
 		}
+	}
+	if floor := ResultCharsFloor(name); maxChars < floor {
+		warnings = append(warnings, fmt.Sprintf("mcp server %q: max_result_chars %d is below the minimum of %d (the truncation notice plus %d chars); raised to %d", name, maxChars, floor, resultCharsFloorMargin, floor))
+		maxChars = floor
 	}
 	return timeout, maxResp, maxChars, warnings, nil
 }
