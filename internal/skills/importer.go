@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/BackendStack21/odek/internal/redact"
 	"io"
 	"net"
 	"net/http"
@@ -413,9 +414,12 @@ func ImportSkill(opts ImportOptions, confirmFn func(assessment *ImportAssessment
 }
 
 // importSourceMarker renders the import URI as a single provenance source
-// token: whitespace removed (sources are stored whitespace-separated) and
-// bounded in length.
+// token: secrets redacted (an import URL may carry a token in its query
+// string, and the marker is written to SKILL.md and shown by promote),
+// whitespace removed (sources are stored whitespace-separated) and bounded
+// in length.
 func importSourceMarker(uri string) string {
+	uri = redact.RedactSecrets(uri)
 	uri = strings.Join(strings.Fields(uri), "")
 	if len(uri) > 512 {
 		uri = uri[:512]
