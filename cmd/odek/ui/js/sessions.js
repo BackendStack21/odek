@@ -257,7 +257,6 @@ export function newSession() {
 
   // Clear messages and restore empty state.
   messagesEl.innerHTML = '';
-  if (S.savedScrollBtnNode) messagesEl.appendChild(S.savedScrollBtnNode);
   if (S.savedEmptyStateNode) messagesEl.appendChild(S.savedEmptyStateNode);
 
   sessionListEl.querySelectorAll('.session-item').forEach(s => s.classList.remove('active'));
@@ -329,7 +328,6 @@ export async function loadAndRenderSession(sid) {
     promptEl.disabled = false;
 
     messagesEl.innerHTML = '';
-    if (S.savedScrollBtnNode) messagesEl.appendChild(S.savedScrollBtnNode);
 
     const messages = sess.messages || [];
     // The full transcript renders now (tool calls, thinking, sub-agents);
