@@ -324,8 +324,10 @@ func classifyPathLexical(path string) RiskClass {
 	// system path for every other account; without this every ordinary
 	// write to its own home would prompt. The protected home paths (rc files,
 	// credential directories, odek anchors) were already decided above.
-	if home := currentHomeDir(); home != "" && pathWithin(abs, home) {
-		return LocalWrite
+	for _, home := range currentHomeDirs() {
+		if pathWithin(abs, home) {
+			return LocalWrite
+		}
 	}
 
 	// Ordinary temp paths are local after home-sensitive checks. This handles
@@ -372,6 +374,25 @@ func currentHomeDir() string {
 	return home
 }
 
+// currentHomeDirs returns the current user's home as spelled in $HOME and, when
+// the home is reached through a symlink (macOS keeps /home under /System, a
+// server may link /home/user into a data volume), the physical directory that
+// symlink-resolved targets sit under. Both spellings name the same home.
+func currentHomeDirs() []string {
+	home := currentHomeDir()
+	if home == "" {
+		return nil
+	}
+	homes := []string{home}
+	if resolved, err := resolvePathTarget(home); err == nil {
+		resolved = strings.TrimPrefix(filepath.Clean(resolved), "/private")
+		if resolved != home && !degenerateHomes[resolved] && filepath.IsAbs(resolved) {
+			homes = append(homes, resolved)
+		}
+	}
+	return homes
+}
+
 // pathWithin reports whether abs is dir itself or lies under it.
 func pathWithin(abs, dir string) bool {
 	return abs == dir || strings.HasPrefix(abs, dir+string(filepath.Separator))
@@ -386,6 +407,9 @@ func accountHomes(abs string) []string {
 	var homes []string
 	if home, _ := os.UserHomeDir(); home != "" {
 		homes = append(homes, home)
+	}
+	if physical := currentHomeDirs(); len(physical) > 1 {
+		homes = append(homes, physical[1:]...)
 	}
 	lower := strings.ToLower(abs)
 	for _, base := range []string{"/home/", "/users/"} {
@@ -6820,8 +6844,10 @@ func isSystemPath(path string) bool {
 	// The current user's home is theirs even when it sits under a system
 	// prefix (a service account with HOME=/var/lib/svc); the protected paths
 	// inside it are caught by shellPathIsHomeSensitive.
-	if home := currentHomeDir(); home != "" && pathWithin(filepath.Clean(path), home) {
-		return false
+	for _, home := range currentHomeDirs() {
+		if pathWithin(filepath.Clean(path), home) {
+			return false
+		}
 	}
 	for _, p := range systemPathPrefixes {
 		if strings.HasPrefix(path, p) {
