@@ -1680,11 +1680,12 @@ func isContextLengthError(err error) bool {
 	if err == nil {
 		return false
 	}
-	msg := err.Error()
-	// Common error patterns across providers:
-	// DeepSeek: "context_length_exceeded", "maximum context length"
-	// OpenAI:   "maximum context length", "token limit"
-	// Anthropic: "input is too long", "context window"
+	msg := strings.ToLower(err.Error())
+	// Common error patterns across providers (matched case-insensitively):
+	// DeepSeek:  "context_length_exceeded", "maximum context length"
+	// OpenAI:    "maximum context length", "token limit"
+	// Anthropic: "input is too long", "prompt is too long", "context window"
+	// Gemini:    "input token count (N) exceeds the maximum number of tokens allowed"
 	return strings.Contains(msg, "context_length_exceeded") ||
 		strings.Contains(msg, "maximum context length") ||
 		strings.Contains(msg, "context length") ||
@@ -1694,6 +1695,9 @@ func isContextLengthError(err error) bool {
 		strings.Contains(msg, "input length") ||
 		strings.Contains(msg, "too many tokens") ||
 		strings.Contains(msg, "input is too long") ||
+		strings.Contains(msg, "prompt is too long") ||
+		strings.Contains(msg, "input token count") ||
+		strings.Contains(msg, "exceeds the maximum number of tokens") ||
 		strings.Contains(msg, "reduce the length")
 }
 
