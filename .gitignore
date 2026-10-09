@@ -44,3 +44,5 @@ go.work
 go.work.sum
 
 .docs-review/
+# build artifact from `go build ./cmd/odek` run inside the package dir
+/cmd/odek/odek
