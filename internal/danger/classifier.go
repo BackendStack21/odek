@@ -3152,7 +3152,66 @@ func splitSegments(tokens []string) [][]string {
 	if len(current) > 0 {
 		segments = append(segments, current)
 	}
+	for i := range segments {
+		segments[i] = unmarkLiteralOperators(segments[i])
+	}
 	return segments
+}
+
+// operatorLookalikes are the separator and pipe spellings that a quoted word
+// can also have (`grep ';' x`, `cut -d $'\n'`).
+var operatorLookalikes = map[string]bool{
+	";": true, "&&": true, "||": true, "&": true, ";;": true, ";&": true, ";;&": true,
+	"|": true, "|&": true,
+}
+
+// markLiteralOperators prefixes every token that is spelled like a separator
+// or pipe but was written as a word (ops reports operators written outside
+// quotes), so the splitters below read it as an argument. The splitters strip
+// the mark again from the stages they return. A nil ops means every token is
+// an operator.
+func markLiteralOperators(tokens []string, ops []bool) []string {
+	if ops == nil {
+		return tokens
+	}
+	var out []string
+	for i, tok := range tokens {
+		if !ops[i] && operatorLookalikes[tok] {
+			if out == nil {
+				out = append([]string(nil), tokens...)
+			}
+			out[i] = literalMark + tok
+		}
+	}
+	if out == nil {
+		return tokens
+	}
+	return out
+}
+
+// markWordOperators marks every operator-shaped token in words, which are
+// already known to be plain command words.
+func markWordOperators(words []string) []string {
+	flags := make([]bool, len(words))
+	return markLiteralOperators(words, flags)
+}
+
+// unmarkLiteralOperators removes the literal mark from a token sequence,
+// copying only when a mark is present.
+func unmarkLiteralOperators(tokens []string) []string {
+	var out []string
+	for i, tok := range tokens {
+		if strings.HasPrefix(tok, literalMark) {
+			if out == nil {
+				out = append([]string(nil), tokens...)
+			}
+			out[i] = unmark(tok)
+		}
+	}
+	if out == nil {
+		return tokens
+	}
+	return out
 }
 
 // splitPipes splits a segment's tokens into pipe stages. Each stage is a
@@ -3170,6 +3229,9 @@ func splitPipes(tokens []string) [][]string {
 		current = append(current, tok)
 	}
 	stages = append(stages, current)
+	for i := range stages {
+		stages[i] = unmarkLiteralOperators(stages[i])
+	}
 	return stages
 }
 

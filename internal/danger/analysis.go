@@ -349,7 +349,7 @@ func analyzeWithState(cmd string, depth int, inherited *shellAnalysisState) Anal
 			if i > 0 {
 				pipeline = append(pipeline, "|")
 			}
-			pipeline = append(pipeline, legacyStage...)
+			pipeline = append(pipeline, markWordOperators(legacyStage)...)
 			// Preserve findings from each stage before pipeline summaries can
 			// replace them with a differently configured higher-ranked class.
 			repo := newGitRepoCtx(stageCwd, cwdKnown && !state.uncertain, stage[:len(stage)-len(inner)], state.vars, state.written)

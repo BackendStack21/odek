@@ -85,7 +85,7 @@ func denyScanVars(cmd string, dc *denyCtx, depth int, inherited map[string]strin
 	main, subs := normalize(cmd)
 	unquoted := unquotedVariableRefs(main)
 	tokens, ops, _ := tokenizeMarked(main)
-	for _, segment := range splitSegments(tokens) {
+	for _, segment := range splitSegments(markLiteralOperators(tokens, ops)) {
 		stages := splitPipes(segment)
 		for _, stage := range stages {
 			if denyStage(denyExpand(stage, vars, unquoted), dc, depth) {
