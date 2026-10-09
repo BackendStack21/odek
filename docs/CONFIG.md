@@ -562,6 +562,8 @@ The `skills` section controls the skill system:
 | `import.max_size_bytes` | — | 1048576 (1MB) | Max size for fetched skill content |
 | `import.timeout_seconds` | — | 5 | HTTP timeout for skill URI fetch |
 | `import.require_https` | — | false | Reject http:// URIs when true |
+
+A project `odek.json` may only narrow `skills.import`: it can lower `max_size_bytes` and `timeout_seconds` and turn `require_https` on, but never raise a cap or turn `require_https` off relative to the operator's (or the compiled default) policy.
 | `embedding` | — | *(inherits top-level `embedding`)* | Optional override of the shared embedding backend for semantic skill matching. When unset, skills inherit the top-level `embedding` default with the per-turn query timeout bounded to 2s. See [Shared embedding backend](#shared-embedding-backend-embedding--memory-sessions--skills). |
 
 ## Memory configuration

@@ -1963,6 +1963,10 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	// feature, raise an operator cap, or re-enable notices.
 	clampProjectBackground(global.Background, project.Background)
 
+	// Skill import policy: a repo may tighten it (smaller size cap, shorter
+	// timeout, require_https) but never relax what the operator configured.
+	clampProjectSkillsImport(global.Skills, project.Skills)
+
 	// Capture which sandbox knobs the project requested, before the overlay
 	// hides them behind CLI/env values. This drives the approval gate in cmd/odek.
 	var projectSandboxOverride ProjectSandboxOverride
@@ -3767,6 +3771,41 @@ func clampProjectPlanning(global, project *PlanningFileConfig) {
 // an operator-set cap. When the global config carries no background section,
 // project values apply freely — they can only deviate from the defaults, not
 // override an operator decision.
+// clampProjectSkillsImport narrows the project's skills.import against the
+// effective global policy (the compiled defaults where the operator set
+// nothing). The result is always the stricter of the two: caps are lowered
+// only, require_https can be turned on but never off.
+func clampProjectSkillsImport(global, project *SkillsConfig) {
+	if project == nil || project.Import == nil {
+		return
+	}
+	eff := skills.DefaultSkillsConfig().Import
+	if global != nil && global.Import != nil {
+		if global.Import.MaxSizeBytes > 0 {
+			eff.MaxSizeBytes = global.Import.MaxSizeBytes
+		}
+		if global.Import.TimeoutSecs > 0 {
+			eff.TimeoutSecs = global.Import.TimeoutSecs
+		}
+		eff.RequireHTTPS = global.Import.RequireHTTPS
+	}
+	req := *project.Import
+	if req.MaxSizeBytes > 0 && req.MaxSizeBytes < eff.MaxSizeBytes {
+		eff.MaxSizeBytes = req.MaxSizeBytes
+	} else if req.MaxSizeBytes != 0 {
+		fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring skills.import.max_size_bytes=%d from project config (%s) — it would raise the cap %d\n", req.MaxSizeBytes, ProjectConfigPath(), eff.MaxSizeBytes)
+	}
+	if req.TimeoutSecs > 0 && req.TimeoutSecs < eff.TimeoutSecs {
+		eff.TimeoutSecs = req.TimeoutSecs
+	} else if req.TimeoutSecs != 0 {
+		fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring skills.import.timeout_seconds=%d from project config (%s) — it would raise the cap %d\n", req.TimeoutSecs, ProjectConfigPath(), eff.TimeoutSecs)
+	}
+	if req.RequireHTTPS {
+		eff.RequireHTTPS = true
+	}
+	project.Import = &eff
+}
+
 func clampProjectBackground(global, project *BackgroundFileConfig) {
 	// wake_coalesce_ms is global-only in v1: drop any project value before
 	// the early return below (it must be dropped even when the operator
