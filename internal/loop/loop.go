@@ -3203,6 +3203,13 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 			return result.Content, messages, nil
 		}
 
+		// Providers commonly send an empty arguments string for a tool that
+		// takes no parameters; that is a complete call, equal to "{}".
+		for ti := range result.ToolCalls {
+			if strings.TrimSpace(result.ToolCalls[ti].Function.Arguments) == "" {
+				result.ToolCalls[ti].Function.Arguments = "{}"
+			}
+		}
 		for _, tc := range result.ToolCalls {
 			if !json.Valid([]byte(tc.Function.Arguments)) {
 				partial := "[Partial response: interrupted] Model returned incomplete tool arguments; no tools in this batch executed."
