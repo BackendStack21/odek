@@ -129,3 +129,13 @@ func TestParseContinueArgs(t *testing.T) {
 		}
 	})
 }
+
+func TestRED_ExternalRef_MistypedLongFormRejected(t *testing.T) {
+	_, err := parseExternalRefFlag("knd=opaque,uri=app://x,created_by=me")
+	if err == nil || !strings.Contains(err.Error(), "knd") {
+		t.Fatalf("err = %v, want rejection naming the unknown leading key knd", err)
+	}
+	if ref, err := parseExternalRefFlag("ci=https://ci.example.test/r?ids=1,2"); err != nil || ref.URI != "https://ci.example.test/r?ids=1,2" {
+		t.Fatalf("ordinary commas must pass: %+v %v", ref, err)
+	}
+}

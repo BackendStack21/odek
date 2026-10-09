@@ -27,6 +27,13 @@ func parseExternalRefFlag(spec string) (session.ExternalRef, error) {
 		if !ok {
 			return ref, fmt.Errorf("invalid --external-ref %q: want the kind=uri shorthand or comma-separated key=value pairs", spec)
 		}
+		// A long form whose first key is mistyped lands here with the rest
+		// of the pairs inside the "URI"; refuse it instead of storing junk.
+		for _, k := range []string{"kind", "uri", "created_by", "read_only"} {
+			if strings.Contains(uri, ","+k+"=") {
+				return ref, fmt.Errorf("invalid --external-ref %q: unknown key %q (want kind, uri, created_by, read_only); a URI containing ,%s= must use the long key=value form", spec, kind, k)
+			}
+		}
 		ref.Kind, ref.URI = kind, uri
 	} else {
 		for _, pair := range strings.Split(spec, ",") {
