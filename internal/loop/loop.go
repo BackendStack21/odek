@@ -3112,10 +3112,12 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 
 		// Feed the margin calibration in trimContext: provider-reported input
 		// tokens are ground truth for how accurate the local estimate is.
-		e.lastReportedInputTokens = result.InputTokens
+		// The estimate covers the whole request, so compare it with the full
+		// prompt window; InputTokens alone excludes cache reads and writes.
 		// Parent conversation window for the ctx gauge (wire v3): the last
 		// parent call's provider-normalized prompt size.
 		e.lastPromptTokens = promptWindowTokens(result)
+		e.lastReportedInputTokens = e.lastPromptTokens
 
 		// Accumulate cache metrics
 		// Accumulate cache metrics across iterations
