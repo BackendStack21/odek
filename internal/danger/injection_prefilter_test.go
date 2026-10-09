@@ -39,10 +39,7 @@ func scanInjectionReference(content string) []ScanResult {
 			results = append(results, ScanResult{Label: p.Label, Pattern: p.Re.String()})
 		}
 	}
-	if scanMarkdownHeaders(content) {
-		results = append(results, ScanResult{Label: markdownHeaderLabel, Pattern: markdownHeaderRe.String()})
-	}
-	return results
+	return append(results, scanStructural(content, normalized, folded)...)
 }
 
 func sameResults(a, b []ScanResult) bool {
