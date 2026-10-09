@@ -145,7 +145,19 @@ func scheduleAdd(st *schedule.Store, args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	task := strings.TrimSpace(strings.Join(fs.Args(), " "))
+	rest := fs.Args()
+	// The flag package stops at the first non-flag, so a flag placed after the
+	// task text would be stored inside the job's task and never applied.
+	// Refuse it unless an explicit "--" separated the task.
+	if consumed := len(args) - len(rest); consumed == 0 || args[consumed-1] != "--" {
+		for _, a := range rest {
+			if isFlagLike(a) {
+				return fmt.Errorf("flag %q after the task text — flags must come before the task; "+
+					"to schedule a task that starts with \"-\", separate it with \"--\"", a)
+			}
+		}
+	}
+	task := strings.TrimSpace(strings.Join(rest, " "))
 	if *cron == "" || task == "" {
 		return fmt.Errorf(`usage: odek schedule add --cron "<expr>" [flags] <task>`)
 	}
