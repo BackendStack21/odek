@@ -181,12 +181,22 @@ func splitFenceLine(line string, opening bool) (fence, rest string) {
 
 func isFenceTag(s string) bool {
 	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_' || c == '+' || c == '-') {
+		if !isFenceTagByte(s[i]) {
 			return false
 		}
 	}
 	return true
+}
+
+// isFenceTagByte reports whether c may appear in a fence language tag.
+func isFenceTagByte(c byte) bool {
+	switch {
+	case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+		return true
+	case c == '_', c == '+', c == '-':
+		return true
+	}
+	return false
 }
 
 func escapeCodeLine(line string) string {
