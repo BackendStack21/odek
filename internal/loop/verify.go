@@ -78,14 +78,10 @@ func parseVerifyVerdict(content string) verifyVerdict {
 	}
 	// Reasons/missing are advisory only; clamp their combined rendering.
 	for i, s := range v.Reasons {
-		if len(s) > 200 {
-			v.Reasons[i] = s[:200] + "…"
-		}
+		v.Reasons[i] = clampUTF8(s, 200)
 	}
 	for i, s := range v.Missing {
-		if len(s) > 200 {
-			v.Missing[i] = s[:200] + "…"
-		}
+		v.Missing[i] = clampUTF8(s, 200)
 	}
 	return v
 }
