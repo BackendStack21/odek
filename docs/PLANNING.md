@@ -300,6 +300,10 @@ standard built-in interface (`Name`/`Description`/`Schema`/`Call`).
 | `check_replace` | `step_id`, `check_id`, `justification`, plus `replacement` or `evidence_note` | Replaces one dead/stale/environment-denied check with a fresh pending one, or marks it satisfied by equivalent verification that ran via other tools. Justification is mandatory and audit-trailed in the revision block. |
 | `get` | — | Returns the current plan (or `"No active plan."`). |
 
+A check becomes `blocked` only when the engine itself observed the approval
+gate refuse the call; text inside a tool's output (for example a test log
+that says "approval denied") never blocks a check.
+
 Note on wire compatibility: a check whose tool call was denied by the
 approval gate renders with status `blocked`. Sessions persisted by builds
 that know `blocked` fail to parse on older odek binaries (which reject the

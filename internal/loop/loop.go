@@ -3479,7 +3479,11 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 			// failure recovery) must use this instead of sniffing output
 			// text: a successful read/grep result can legitimately
 			// contain the literal `"error":` as data.
-			errored     bool
+			errored bool
+			// denied is set only where the engine itself observed the
+			// approval gate refusing the call (batch denial); it is never
+			// derived from output text.
+			denied      bool
 			durationMs  int64
 			outcome     tool.Outcome
 			deliveryCtx context.Context
@@ -3509,7 +3513,7 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 
 		if batchDenied {
 			for i := range results {
-				results[i] = execResult{output: "error: batch approval denied", errored: true}
+				results[i] = execResult{output: "error: batch approval denied", errored: true, denied: true}
 			}
 		} else {
 			for i, tc := range result.ToolCalls {
@@ -3688,9 +3692,12 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 		for i, tc := range result.ToolCalls {
 			output := results[i].output
 			fullOutput := output
-			e.recordPlanCheckResult(checkEpoch, tc, callIDs[i], results[i].errored)
-			if results[i].errored {
-				e.recordPlanCheckDenied(checkEpoch, tc, callIDs[i], results[i].output)
+			if results[i].denied {
+				// A refused call never ran: it leaves no effects to
+				// invalidate earlier evidence, and its check is blocked.
+				e.recordPlanCheckDenied(checkEpoch, tc, callIDs[i])
+			} else {
+				e.recordPlanCheckResult(checkEpoch, tc, callIDs[i], results[i].errored)
 			}
 
 			// ledger the mutating calls that completed this run so the
