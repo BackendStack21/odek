@@ -69,7 +69,12 @@ odek schedule daemon                        Run the scheduler in the foreground
 | `--catchup` | If a fire was missed while the process was down, run once on startup |
 | `--disabled` | Add without enabling |
 
-Flags must come before the task text; a flag-shaped token after it is an error (as with `odek run`) instead of becoming part of the stored task. Separate a task that starts with `-` using `--`.
+Flags must come before the task text. `odek schedule add` rejects any flag-shaped token (one starting with `-`) after the task unless the task is quoted as a single argument or placed after `--`, as with `odek run`; otherwise the token would silently become part of the stored task. Both of these work:
+
+```bash
+odek schedule add --cron "0 9 * * 1" "Summarize the --verbose flag changes"
+odek schedule add --cron "0 9 * * 1" -- Summarize the --verbose flag changes
+```
 
 Definitions are stored in `~/.odek/schedules.json` (mode `0600`); runtime state
 (last run, status, next fire) lives in `~/.odek/schedule-state.json`. A running

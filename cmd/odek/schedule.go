@@ -153,7 +153,8 @@ func scheduleAdd(st *schedule.Store, args []string) error {
 		for _, a := range rest {
 			if isFlagLike(a) {
 				return fmt.Errorf("flag %q after the task text — flags must come before the task; "+
-					"to schedule a task that starts with \"-\", separate it with \"--\"", a)
+					"quote the whole task as a single argument, or put it after \"--\" "+
+					"(e.g. odek schedule add --cron \"...\" -- <task>)", a)
 			}
 		}
 	}
