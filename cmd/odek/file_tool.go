@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"hash"
 	"io"
 	"io/fs"
 	"os"
@@ -159,14 +160,7 @@ func confinedGlob(root, pattern string, limit int, includeDirs bool) ([]string, 
 	}
 	// Newest first (Lstat so entry metadata, not a symlink target, is used —
 	// the walk already excludes symlinks, but stay defensive), then truncate.
-	sort.Slice(matches, func(i, j int) bool {
-		fi, _ := os.Lstat(matches[i])
-		fj, _ := os.Lstat(matches[j])
-		if fi == nil || fj == nil {
-			return matches[i] < matches[j]
-		}
-		return fi.ModTime().After(fj.ModTime())
-	})
+	sortNewestFirst(matches, func(p string) string { return p }, os.Lstat)
 	if len(matches) > limit {
 		matches = matches[:limit]
 	}
@@ -599,6 +593,42 @@ type searchFilesArgs struct {
 	Limit    int    `json:"limit"`
 }
 
+// sortStat and sortLstat fetch the modification times used to order glob and
+// search_files results. Variables so tests can count the calls.
+var (
+	sortStat  = os.Stat
+	sortLstat = os.Lstat
+)
+
+// sortNewestFirst orders items by the modification time of their path, newest
+// first, fetching each time once (the comparator runs O(n log n) times). Items
+// whose path cannot be stat'ed fall back to path order against any other item.
+func sortNewestFirst[T any](items []T, pathOf func(T) string, stat func(string) (os.FileInfo, error)) {
+	type keyed struct {
+		item T
+		path string
+		mt   time.Time
+		ok   bool
+	}
+	keys := make([]keyed, len(items))
+	for i, it := range items {
+		k := keyed{item: it, path: pathOf(it)}
+		if fi, _ := stat(k.path); fi != nil {
+			k.mt, k.ok = fi.ModTime(), true
+		}
+		keys[i] = k
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if !keys[i].ok || !keys[j].ok {
+			return keys[i].path < keys[j].path
+		}
+		return keys[i].mt.After(keys[j].mt)
+	})
+	for i := range keys {
+		items[i] = keys[i].item
+	}
+}
+
 type searchMatch struct {
 	Path    string `json:"path"`
 	Line    int    `json:"line,omitempty"`
@@ -682,6 +712,9 @@ func (t *searchFilesTool) searchContent(args searchFilesArgs) (string, error) {
 	var skipped []string
 	limit := args.Limit
 	resultBytes := 0
+	// One initial line buffer shared by the sequential per-file scans; the
+	// scanner still grows it up to the 1 MiB line cap on demand.
+	scanBuf := make([]byte, 64*1024)
 
 	err = filepath.Walk(args.Path, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -715,19 +748,20 @@ func (t *searchFilesTool) searchContent(args searchFilesArgs) (string, error) {
 			return nil
 		}
 
-		// Security: classify each file before reading. This prevents a broad
-		// search from silently returning files that read_file would gate.
-		if skip, reason := t.checkSearchPath(path); skip {
-			skipped = append(skipped, path+": "+reason)
-			return nil
-		}
-
-		// Apply file_glob filter
+		// Apply file_glob filter first: a file the glob excludes is never
+		// read or returned, so it needs no classification.
 		if args.FileGlob != "" {
 			match, _ := filepath.Match(args.FileGlob, info.Name())
 			if !match {
 				return nil
 			}
+		}
+
+		// Security: classify each file before reading. This prevents a broad
+		// search from silently returning files that read_file would gate.
+		if skip, reason := t.checkSearchPath(path); skip {
+			skipped = append(skipped, path+": "+reason)
+			return nil
 		}
 
 		// Skip binary files — single open for check then search
@@ -758,7 +792,7 @@ func (t *searchFilesTool) searchContent(args searchFilesArgs) (string, error) {
 		// Search line by line
 
 		scanner := bufio.NewScanner(f)
-		scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
+		scanner.Buffer(scanBuf, 1024*1024)
 		lineNum := 0
 		for scanner.Scan() {
 			lineNum++
@@ -771,9 +805,9 @@ func (t *searchFilesTool) searchContent(args searchFilesArgs) (string, error) {
 				}
 				resultBytes += len(trimmed)
 				matches = append(matches, searchMatch{
-					Path:    wrapUntrusted(t.toolCtx(), path, path),
+					Path:    path,
 					Line:    lineNum,
-					Content: wrapUntrusted(t.toolCtx(), fmt.Sprintf("%s:%d", path, lineNum), trimmed),
+					Content: trimmed,
 				})
 				if len(matches) >= limit {
 					break
@@ -795,7 +829,28 @@ func (t *searchFilesTool) searchContent(args searchFilesArgs) (string, error) {
 		return jsonError(fmt.Sprintf("search failed: %v", err))
 	}
 
+	t.wrapContentMatches(matches)
 	return jsonResult(searchFilesResult{Matches: matches, Skipped: skipped})
+}
+
+// wrapContentMatches marks every matched path and line as untrusted. All
+// elements are scanned and audit-recorded as one batch; each keeps its own
+// wrapper labelled with its file (and line).
+func (t *searchFilesTool) wrapContentMatches(matches []searchMatch) {
+	if len(matches) == 0 {
+		return
+	}
+	sources := make([]string, 0, 2*len(matches))
+	contents := make([]string, 0, 2*len(matches))
+	for _, m := range matches {
+		sources = append(sources, m.Path, fmt.Sprintf("%s:%d", m.Path, m.Line))
+		contents = append(contents, m.Path, m.Content)
+	}
+	wrapped := wrapUntrustedBatch(t.toolCtx(), "search_files:content", sources, contents)
+	for i := range matches {
+		matches[i].Path = wrapped[2*i]
+		matches[i].Content = wrapped[2*i+1]
+	}
 }
 
 func (t *searchFilesTool) searchFiles(args searchFilesArgs) (string, error) {
@@ -818,19 +873,23 @@ func (t *searchFilesTool) searchFiles(args searchFilesArgs) (string, error) {
 			skipped = append(skipped, p+": "+reason)
 			continue
 		}
-		matches = append(matches, searchMatch{Path: wrapUntrusted(t.toolCtx(), "search_files:"+p, p)})
+		matches = append(matches, searchMatch{Path: p})
 	}
 
-	// Sort by modification time (newest first). Use Lstat so symlinks are not
-	// followed and their own metadata is used for sorting.
-	sort.Slice(matches, func(i, j int) bool {
-		fi, _ := os.Lstat(unwrapUntrusted(matches[i].Path))
-		fj, _ := os.Lstat(unwrapUntrusted(matches[j].Path))
-		if fi == nil || fj == nil {
-			return unwrapUntrusted(matches[i].Path) < unwrapUntrusted(matches[j].Path)
+	// confinedGlob already returned the paths newest first (Lstat, so a
+	// symlink's own metadata counts) and the filter above kept that order.
+	if len(matches) > 0 {
+		sources := make([]string, len(matches))
+		contents := make([]string, len(matches))
+		for i, m := range matches {
+			sources[i] = "search_files:" + m.Path
+			contents[i] = m.Path
 		}
-		return fi.ModTime().After(fj.ModTime())
-	})
+		wrapped := wrapUntrustedBatch(t.toolCtx(), "search_files:"+searchDir, sources, contents)
+		for i := range matches {
+			matches[i].Path = wrapped[i]
+		}
+	}
 
 	return jsonResult(searchFilesResult{Matches: matches, Skipped: skipped})
 }
@@ -1141,10 +1200,12 @@ type fileReadReceipt struct {
 
 func readLinesWithReceipt(r io.Reader, offset, limit int) (string, int, fileReadReceipt, error) {
 	var out strings.Builder
-	digest := sha256.New()
+	// Only a read that starts at the top and covers the whole file yields a
+	// receipt, so the digest is computed only while that is still possible.
+	digest := &gatedHash{h: sha256.New(), on: offset <= 1}
 	count := &countingReader{reader: io.TeeReader(r, digest)}
 	scanner := bufio.NewScanner(count)
-	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
+	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
 	lineNum := 0
 	start := offset
 	end := offset + limit - 1
@@ -1156,13 +1217,15 @@ func readLinesWithReceipt(r io.Reader, offset, limit int) (string, int, fileRead
 			continue
 		}
 		if lineNum > end {
-			continue // count total even beyond limit
+			digest.on = false // the window ended: this read can no longer be complete
+			continue          // count total even beyond limit
 		}
 		line := scanner.Text()
 		formatted := fmt.Sprintf("%d|%s\n", lineNum, line)
 		if !truncated && out.Len()+len(formatted) > maxReadBytes {
 			out.WriteString("... [truncated]\n")
 			truncated = true
+			digest.on = false
 			// Continue scanning only to count total lines.
 			continue
 		}
@@ -1171,16 +1234,24 @@ func readLinesWithReceipt(r io.Reader, offset, limit int) (string, int, fileRead
 		}
 	}
 
-	// If no limit was set (limit=0), continue counting past start
-	if limit > 0 {
-		for scanner.Scan() {
-			lineNum++
-		}
-	}
-
 	receipt := fileReadReceipt{complete: !truncated && scanner.Err() == nil && offset <= 1 && limit >= lineNum, size: count.size}
-	copy(receipt.digest[:], digest.Sum(nil))
+	if receipt.complete {
+		copy(receipt.digest[:], digest.h.Sum(nil))
+	}
 	return strings.TrimSuffix(out.String(), "\n"), lineNum, receipt, scanner.Err()
+}
+
+// gatedHash hashes writes only while on is set.
+type gatedHash struct {
+	h  hash.Hash
+	on bool
+}
+
+func (g *gatedHash) Write(p []byte) (int, error) {
+	if g.on {
+		g.h.Write(p)
+	}
+	return len(p), nil
 }
 
 type countingReader struct {
@@ -1562,17 +1633,17 @@ func (t *globTool) Call(argsJSON string) (result string, err error) {
 	}
 
 	// Sort by modification time (newest first)
-	sort.Slice(matches, func(i, j int) bool {
-		fi, _ := os.Stat(matches[i].Path)
-		fj, _ := os.Stat(matches[j].Path)
-		if fi == nil || fj == nil {
-			return matches[i].Path < matches[j].Path
-		}
-		return fi.ModTime().After(fj.ModTime())
-	})
+	sortNewestFirst(matches, func(m globMatch) string { return m.Path }, sortStat)
 
-	for i := range matches {
-		matches[i].Path = wrapUntrusted(t.toolCtx(), "glob:"+args.Path, matches[i].Path)
+	if len(matches) > 0 {
+		contents := make([]string, len(matches))
+		for i, m := range matches {
+			contents[i] = m.Path
+		}
+		wrapped := wrapUntrustedBatch(t.toolCtx(), "glob:"+args.Path, nil, contents)
+		for i := range matches {
+			matches[i].Path = wrapped[i]
+		}
 	}
 
 	return jsonResult(globResult{Matches: matches})

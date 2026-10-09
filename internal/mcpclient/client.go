@@ -30,6 +30,7 @@ package mcpclient
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -38,6 +39,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -101,6 +103,15 @@ type response struct {
 	Method  string          `json:"method,omitempty"`
 	Result  json.RawMessage `json:"result,omitempty"`
 	Error   *rpcError       `json:"error,omitempty"`
+}
+
+// wireResponse is the readLoop decode target: the id stays raw so a single
+// decode distinguishes missing/null/non-integer ids from a real integer id.
+type wireResponse struct {
+	ID     json.RawMessage `json:"id"`
+	Method string          `json:"method,omitempty"`
+	Result json.RawMessage `json:"result,omitempty"`
+	Error  *rpcError       `json:"error,omitempty"`
 }
 
 // rpcError represents a JSON-RPC error object.
@@ -914,11 +925,7 @@ func (c *Client) renderCappedEnvelope(tool string, env *artifact.Envelope) strin
 // truncateRunes returns s cut to at most n runes (never splitting a multi-byte
 // character).
 func truncateRunes(s string, n int) string {
-	r := []rune(s)
-	if len(r) <= n {
-		return s
-	}
-	return string(r[:n])
+	return artifact.TruncateRunes(s, n)
 }
 
 // call sends a JSON-RPC request and waits for the matching response.
@@ -1057,13 +1064,15 @@ func (c *Client) readLoop() {
 	scanner.Buffer(make([]byte, 0, 64*1024), int(maxResp))
 
 	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
+		// scanner.Bytes is valid only until the next Scan; the only retained
+		// slice is Result, which json copies out of the line.
+		line := bytes.TrimSpace(scanner.Bytes())
+		if len(line) == 0 {
 			continue
 		}
 
-		var resp response
-		if err := json.Unmarshal([]byte(line), &resp); err != nil {
+		var resp wireResponse
+		if err := json.Unmarshal(line, &resp); err != nil {
 			continue // skip malformed lines
 		}
 		// A line carrying a "method" field is a server→client request or
@@ -1074,20 +1083,21 @@ func (c *Client) readLoop() {
 			continue
 		}
 		// A missing or null id (e.g. a JSON-RPC parse-error reply) answers no
-		// call of ours; it must not be routed as id 0.
-		var idProbe struct {
-			ID json.RawMessage `json:"id"`
+		// call of ours; it must not be routed as id 0. A non-integer id
+		// answers none of our (integer-id) calls either.
+		if len(resp.ID) == 0 || string(resp.ID) == "null" {
+			continue
 		}
-		if err := json.Unmarshal([]byte(line), &idProbe); err != nil ||
-			len(idProbe.ID) == 0 || string(idProbe.ID) == "null" {
+		id, err := strconv.Atoi(string(resp.ID))
+		if err != nil {
 			continue
 		}
 
 		// Route to the waiting caller, if any.
 		c.mu.Lock()
-		ch, ok := c.pending[resp.ID]
+		ch, ok := c.pending[id]
 		if ok {
-			delete(c.pending, resp.ID)
+			delete(c.pending, id)
 		}
 		c.mu.Unlock()
 

@@ -31,6 +31,7 @@ import (
 	"math"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -249,7 +250,7 @@ func (m *Manager) StartWithOptions(sessionID, command, cwd string, timeout time.
 		followUp:      followUp,
 		release:       opts.Release,
 	}
-	e.ring.limit = m.cfg.MaxOutputBytes
+	e.ring.limit = min(m.cfg.MaxOutputBytes, maxRingBytes)
 	cmd.Stdout = &e.ring
 	cmd.Stderr = &e.ring // interleaved, matching shell tool semantics
 	if err := cmd.Start(); err != nil {
@@ -753,17 +754,63 @@ func isBlank(s string) bool {
 // utf8.UTFMax-1 bytes to a rune boundary, so valid multibyte characters
 // are never split; binary (invalid UTF-8) output has no boundary, and the
 // byte cap stays authoritative — the ring is bounded unconditionally.
+// maxRingBytes bounds both the configured window and any single write the
+// ring will consider, so every size computation below stays far from
+// overflowing.
+const maxRingBytes = 1 << 30
+
 type outputRing struct {
 	mu      sync.Mutex
-	buf     []byte
+	buf     []byte // live window, a subslice of store
+	store   []byte // backing array (capacity only) reused across writes
 	limit   int
 	dropped int64
+}
+
+// appendLocked appends p to the live window r.buf. The window is a slice of a
+// larger backing array whose front is released as old bytes are dropped; when
+// the tail is exhausted the window is compacted to the front of the array
+// instead of reallocating, so a full ring reuses one array (amortised
+// O(1) per byte, no allocation in steady state).
+func (r *outputRing) appendLocked(p []byte) {
+	n := len(r.buf)
+	// room is the free space behind the window inside the backing array.
+	if len(p) <= cap(r.buf)-n {
+		r.buf = append(r.buf, p...)
+		return
+	}
+	if len(p) <= cap(r.store)-n {
+		// Compact: the window slides to the start of the backing array.
+		copy(r.store[:n], r.buf)
+		r.buf = r.store[:n]
+		r.buf = append(r.buf, p...)
+		return
+	}
+	// Reserve two windows of capacity so the next compaction, not the next
+	// write, is the common case. Capacity is requested as one bounded size
+	// and then grown by that same size, never computed as a sum, so no size
+	// arithmetic can overflow; a write larger than a window simply lets
+	// append regrow the array once.
+	headroom := r.limit
+	if headroom > maxRingBytes {
+		headroom = maxRingBytes
+	}
+	store := slices.Grow(make([]byte, headroom), headroom)[:0]
+	store = append(store, r.buf...)
+	r.buf = append(store, p...)
+	r.store = r.buf[:0]
 }
 
 func (r *outputRing) Write(p []byte) (int, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.buf = append(r.buf, p...)
+	if len(p) > maxRingBytes {
+		// Only the tail can ever be retained (limit <= maxRingBytes); the
+		// rest is dropped output like any other front cut below.
+		r.dropped += int64(len(p) - maxRingBytes)
+		p = p[len(p)-maxRingBytes:]
+	}
+	r.appendLocked(p)
 	if len(r.buf) > r.limit {
 		cut := len(r.buf) - r.limit
 		// Walk back at most utf8.UTFMax-1 bytes to a rune boundary so a

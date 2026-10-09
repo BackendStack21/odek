@@ -227,6 +227,10 @@ func (e *Emitter) Emit(ev Event) {
 		ev.Timestamp = time.Now().UTC()
 	}
 
+	// Redaction only touches the event's own Tool/Data, so it runs before the
+	// lock: concurrent emitters do not serialize on regex scanning.
+	redactEvent(&ev)
+
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.closed {
@@ -259,7 +263,6 @@ func (e *Emitter) Emit(ev Event) {
 	if ev.SessionID == "" {
 		ev.SessionID = e.sessionID
 	}
-	redactEvent(&ev)
 
 	select {
 	case e.ch <- ev:

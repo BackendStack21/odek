@@ -127,21 +127,62 @@ func pruneFile(ctx context.Context, path string, cutoff time.Time, preview bool)
 	if !st.Mode().IsRegular() {
 		return 0, fmt.Errorf("runtime log must be a regular file")
 	}
-	var tmp *os.File
 	if !preview {
-		tmp, err = os.CreateTemp(filepath.Dir(path), ".runtime-prune-*")
-		if err != nil {
+		// Nothing expired is the common case: find that out read-only so the
+		// retained log is never rewritten for no reason.
+		first, err := pruneStream(ctx, f, nil, cutoff, true)
+		if err != nil || first == 0 {
 			return 0, err
 		}
-		defer func() { _ = tmp.Close(); _ = os.Remove(tmp.Name()) }()
+		if _, err := f.Seek(0, io.SeekStart); err != nil {
+			return 0, err
+		}
+		return rewritePruned(ctx, f, path, cutoff)
 	}
+	return pruneStream(ctx, f, nil, cutoff, false)
+}
+
+// rewritePruned streams src into a temp file without the expired records and
+// atomically replaces path with it.
+func rewritePruned(ctx context.Context, src *os.File, path string, cutoff time.Time) (int, error) {
+	tmp, err := createPruneTemp(filepath.Dir(path), ".runtime-prune-*")
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = tmp.Close(); _ = os.Remove(tmp.Name()) }()
+	bw := bufio.NewWriterSize(tmp, 64<<10)
+	removed, err := pruneStream(ctx, src, bw, cutoff, false)
+	if err != nil {
+		return 0, err
+	}
+	if removed == 0 {
+		return 0, nil
+	}
+	if err := bw.Flush(); err != nil {
+		return 0, err
+	}
+	if err := tmp.Sync(); err != nil {
+		return 0, err
+	}
+	if err := tmp.Close(); err != nil {
+		return 0, err
+	}
+	if err := os.Rename(tmp.Name(), path); err != nil {
+		return 0, err
+	}
+	return removed, nil
+}
+
+// pruneStream counts expired records in src, copying retained ones to out when
+// non-nil. With stopAtFirst it returns as soon as one expired record is seen.
+func pruneStream(ctx context.Context, src io.Reader, out io.Writer, cutoff time.Time, stopAtFirst bool) (int, error) {
 	removed := 0
-	reader := bufio.NewReaderSize(f, 64<<10)
+	reader := bufio.NewReaderSize(src, 64<<10)
 	for {
 		if err := ctx.Err(); err != nil {
 			return 0, err
 		}
-		line, oversized, done, err := readPruneLine(reader, tmp)
+		line, oversized, done, err := readPruneLine(reader, out)
 		if err != nil {
 			return 0, err
 		}
@@ -149,7 +190,7 @@ func pruneFile(ctx context.Context, path string, cutoff time.Time, preview bool)
 			break
 		}
 		if oversized {
-			// Already streamed to the temp file verbatim: one malformed record.
+			// Already streamed to out verbatim: one malformed record.
 			continue
 		}
 		var rec struct {
@@ -157,27 +198,26 @@ func pruneFile(ctx context.Context, path string, cutoff time.Time, preview bool)
 		}
 		if json.Unmarshal(line, &rec) == nil && !rec.Timestamp.IsZero() && rec.Timestamp.Before(cutoff) {
 			removed++
+			if stopAtFirst {
+				return removed, nil
+			}
 			continue
 		}
-		if tmp != nil {
-			if _, err := tmp.Write(append(line, '\n')); err != nil {
+		if out != nil {
+			if _, err := out.Write(line); err != nil {
+				return 0, err
+			}
+			if _, err := out.Write([]byte{'\n'}); err != nil {
 				return 0, err
 			}
 		}
 	}
-	if tmp != nil && removed > 0 {
-		if err := tmp.Sync(); err != nil {
-			return 0, err
-		}
-		if err := tmp.Close(); err != nil {
-			return 0, err
-		}
-		if err := os.Rename(tmp.Name(), path); err != nil {
-			return 0, err
-		}
-	}
 	return removed, nil
 }
+
+// createPruneTemp creates the replacement file; a variable so tests can observe
+// whether a rewrite was started.
+var createPruneTemp = os.CreateTemp
 
 // maxPruneLine bounds the bytes held in memory for one record.
 const maxPruneLine = 1 << 20
@@ -186,7 +226,7 @@ const maxPruneLine = 1 << 20
 // maxPruneLine is treated as a single malformed record: it is never buffered,
 // and when tmp is non-nil it is streamed through unchanged so it is kept like
 // any other unparseable line. done reports end of input with no further record.
-func readPruneLine(r *bufio.Reader, tmp *os.File) (line []byte, oversized, done bool, err error) {
+func readPruneLine(r *bufio.Reader, tmp io.Writer) (line []byte, oversized, done bool, err error) {
 	var buf []byte
 	total := 0
 	for {

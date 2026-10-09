@@ -113,7 +113,7 @@ Non-HTTPS, non-loopback, or non-Telegram URLs are rejected to prevent the bot to
 - **Up to 4 retries** (5 total attempts), with 1s → 2s → 4s → 8s backoff
 - **Transient errors that get retried:**
   - Network errors with `net.Error.Timeout()` or `net.Error.Temporary()` (timeouts, connection refused). Non-transient network errors (DNS failures) are returned immediately.
-  - HTTP 429 (rate limit) — server indicates client should slow down
+  - HTTP 429 (rate limit) — server indicates client should slow down. When the response carries `parameters.retry_after`, that wait replaces the exponential delay for the next attempt, bounded by the 8s maximum
   - HTTP 5xx (server error) — may be temporary backend issues
 - **Fatal errors that are NOT retried:** HTTP 401, 403, 409, and other 4xx client errors (except 429)
 
@@ -493,7 +493,7 @@ Tool progress shows what the agent is doing in real time. Controlled by the `too
 - **Reasoning-first progress** — the first sentence of the LLM's internal reasoning (under 20 words) appears at the top of the progress bubble, followed by individual tool previews. The LLM is prompted to make this sentence user-facing, specific, and engaging
 - **Language matching** — the bot always replies in the same language the user writes in, including the thinking message and progress indicator
 - **Smart previews** — extracts meaningful context: filename for file tools, command for shell, URL for browser, query for memory, filename for transcribe, file path for vision, query for web_search
-- **Edit throttling** — 1.5s minimum between edits prevents Telegram flood control (429 errors)
+- **Edit throttling** — 1.5s minimum between edits prevents Telegram flood control (429 errors). Edits run on a per-turn background goroutine with a latest-wins slot, so a slow or rate-limited edit never stalls the agent loop; the bubble is drained when the run returns, before the final answer or any error reply is sent, so no progress edit can land after (or race with) the answer
 - **Tool dedup** — if the same tool runs N times in a row (common with parallel batches), shows `📝 read_file: "main.go" (×5)` instead of 5 identical lines
 - **Flood fallback** — if an edit fails with "flood" or "retry after", automatically switches to sending new messages
 - **Content reset** — when `send_message` fires mid-run, the progress bubble resets below the sent content

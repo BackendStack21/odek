@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -34,8 +35,13 @@ type replEditor struct {
 	// full rune arrives.
 	pending []byte
 
-	// Paste detection
-	bracketed bool
+	// Paste detection. While bracketed is set, redraws are deferred
+	// (pasteDirty) and drawn once when the paste ends.
+	bracketed  bool
+	pasteDirty bool
+
+	// out receives terminal output; nil means os.Stderr.
+	out io.Writer
 
 	// draft preserves the typed-but-unsent line while navigating history,
 	// restored when historyNext moves past the newest entry.
@@ -259,11 +265,13 @@ func (e *replEditor) readTildeOrBracketed(_ string) {
 	if more[0] == '0' {
 		// \x1b[200~ or \x1b[201~
 		end := make([]byte, 2)
-		os.Stdin.Read(end)
+		if _, err := io.ReadFull(os.Stdin, end); err != nil {
+			return
+		}
 		if end[0] == '0' && end[1] == '~' {
 			e.bracketed = true // start paste
 		} else if end[0] == '1' && end[1] == '~' {
-			e.bracketed = false // end paste
+			e.endPaste()
 		}
 		return
 	}
@@ -436,13 +444,39 @@ func (e *replEditor) handleEnter() (bool, error) {
 
 // ── Screen Drawing ──────────────────────────────────────────────────────
 
+// endPaste leaves bracketed-paste mode and draws the pasted content once.
+func (e *replEditor) endPaste() {
+	e.bracketed = false
+	if e.pasteDirty {
+		e.pasteDirty = false
+		e.drawLine()
+	}
+}
+
+func (e *replEditor) writer() io.Writer {
+	if e.out != nil {
+		return e.out
+	}
+	return os.Stderr
+}
+
+// drawLine redraws prompt and line with a single write. During a bracketed
+// paste the redraw is deferred to endPaste so a large paste is not quadratic.
 func (e *replEditor) drawLine() {
-	fmt.Fprint(os.Stderr, "\r", e.prompt, string(e.line))
+	if e.bracketed {
+		e.pasteDirty = true
+		return
+	}
+	var b strings.Builder
+	b.WriteString("\r")
+	b.WriteString(e.prompt)
+	b.WriteString(string(e.line))
 	// Clear to end of line
-	fmt.Fprint(os.Stderr, "\x1b[K")
+	b.WriteString("\x1b[K")
 	// Position cursor (display columns, wide runes count twice)
 	offset := utf8.RuneCountInString(e.prompt) + displayWidth(e.line[:e.pos])
-	fmt.Fprintf(os.Stderr, "\r\x1b[%dC", offset)
+	fmt.Fprintf(&b, "\r\x1b[%dC", offset)
+	_, _ = io.WriteString(e.writer(), b.String())
 }
 
 // redrawFromCursor redraws the full line from scratch.
@@ -487,6 +521,7 @@ type replHistory struct {
 	pos     int // current position (len(entries) = newest + 1)
 	max     int
 	loaded  bool
+	synced  bool // the history file holds exactly entries
 }
 
 func newReplHistory() *replHistory {
@@ -507,11 +542,13 @@ func (h *replHistory) Add(line string) {
 	}
 
 	h.entries = append(h.entries, line)
+	trimmed := false
 	if len(h.entries) > h.max {
 		h.entries = h.entries[len(h.entries)-h.max:]
+		trimmed = true
 	}
 	h.pos = len(h.entries) // reset position to end
-	h.persist()
+	h.persist(trimmed)
 }
 
 func (h *replHistory) Prev() *string {
@@ -568,7 +605,13 @@ func (h *replHistory) Load(path string) {
 	h.loaded = true
 }
 
-func (h *replHistory) persist() {
+// historyFullRewrites counts whole-file history rewrites (observed by tests).
+var historyFullRewrites int
+
+// persist saves the history. After one full rewrite the file mirrors
+// h.entries, so a plain Add only appends its line; a rewrite happens again
+// only when the oldest entries were trimmed or the file is not yet in sync.
+func (h *replHistory) persist(trimmed bool) {
 	if !h.loaded {
 		return // don't write until at least one Load
 	}
@@ -578,14 +621,36 @@ func (h *replHistory) persist() {
 	}
 	// Harden any existing history file created with looser permissions.
 	_ = os.Chmod(path, 0600)
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
-	if err != nil {
+	if h.synced && !trimmed {
+		f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0600)
+		if err != nil {
+			h.synced = false
+			return
+		}
+		_, err = fmt.Fprintln(f, h.entries[len(h.entries)-1])
+		if cerr := f.Close(); err == nil {
+			err = cerr
+		}
+		if err != nil {
+			h.synced = false
+		}
 		return
 	}
-	defer f.Close()
-	for _, entry := range h.entries {
-		fmt.Fprintln(f, entry)
+	historyFullRewrites++
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	if err != nil {
+		h.synced = false
+		return
 	}
+	w := bufio.NewWriter(f)
+	for _, entry := range h.entries {
+		fmt.Fprintln(w, entry)
+	}
+	err = w.Flush()
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	h.synced = err == nil
 }
 
 // odekDir returns the ~/.odek directory path.

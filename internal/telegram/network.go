@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -16,6 +17,9 @@ type FallbackTransport struct {
 	FallbackURLs []string
 	Timeout      time.Duration
 	Client       *http.Client
+
+	directOnce   sync.Once
+	directClient *http.Client
 }
 
 // validateFallbackURL checks that a fallback URL is a trusted Telegram API
@@ -105,6 +109,24 @@ func (ft *FallbackTransport) Do(req *http.Request) (*http.Response, error) {
 	return ft.tryURLs(req)
 }
 
+// direct returns the one HTTP client used to reach each endpoint. It has its
+// own transport, which is never this FallbackTransport, so a request cannot
+// recurse back into tryURLs. The transport keeps connections alive across
+// calls and honours the proxy environment like the default transport.
+func (ft *FallbackTransport) direct() *http.Client {
+	ft.directOnce.Do(func() {
+		ft.directClient = &http.Client{
+			Timeout: ft.Timeout,
+			Transport: &http.Transport{
+				Proxy:               http.ProxyFromEnvironment,
+				MaxIdleConnsPerHost: 4,
+				IdleConnTimeout:     90 * time.Second,
+			},
+		}
+	})
+	return ft.directClient
+}
+
 // tryURLs is the shared implementation for both RoundTrip and Do.
 func (ft *FallbackTransport) tryURLs(req *http.Request) (*http.Response, error) {
 	basePath := req.URL.Path
@@ -114,14 +136,7 @@ func (ft *FallbackTransport) tryURLs(req *http.Request) (*http.Response, error) 
 	// Include query parameters in the attempt.
 	rawQuery := req.URL.RawQuery
 
-	// Use a dedicated HTTP client that does NOT use this transport
-	// to prevent infinite recursion when RoundTrip calls tryURLs.
-	directClient := &http.Client{
-		Timeout: ft.Timeout,
-		Transport: &http.Transport{
-			DisableKeepAlives: true,
-		},
-	}
+	directClient := ft.direct()
 
 	firstErr := error(nil)
 	for _, base := range ft.allURLs() {

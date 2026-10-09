@@ -198,18 +198,20 @@ func dirPriority(dir string) int {
 	return 2
 }
 
+// punctuationReplacer turns common punctuation into spaces; built once since a
+// strings.Replacer is safe for concurrent use.
+var punctuationReplacer = strings.NewReplacer(
+	".", " ", ",", " ", "!", " ", "?", " ", ";", " ", ":", " ",
+	"'", " ", "\"", " ", "(", " ", ")", " ", "[", " ", "]", " ",
+	"{", " ", "}", " ", "/", " ", "\\", " ", "`", " ",
+	"\n", " ", "\t", " ",
+)
+
 // tokenize splits input into lowercase words, removing common punctuation.
 func tokenize(input string) []string {
 	input = strings.ToLower(input)
 
-	// Replace punctuation with spaces
-	replacer := strings.NewReplacer(
-		".", " ", ",", " ", "!", " ", "?", " ", ";", " ", ":", " ",
-		"'", " ", "\"", " ", "(", " ", ")", " ", "[", " ", "]", " ",
-		"{", " ", "}", " ", "/", " ", "\\", " ", "`", " ",
-		"\n", " ", "\t", " ",
-	)
-	cleaned := replacer.Replace(input)
+	cleaned := punctuationReplacer.Replace(input)
 
 	words := strings.Fields(cleaned)
 

@@ -81,6 +81,17 @@ func unpinChat(chatID int64, s *chatSlot) {
 	chatMetaMu.Unlock()
 }
 
+// dropChatPin drops a waiter recorded by pinChat when the caller gave up
+// without locking s.mu (so there is nothing to unlock).
+func dropChatPin(chatID int64, s *chatSlot) {
+	chatMetaMu.Lock()
+	s.waiters--
+	if s.waiters <= 0 {
+		delete(chatSlots, chatID)
+	}
+	chatMetaMu.Unlock()
+}
+
 // getChatMutex returns the per-chat mutex for tests and diagnostics without
 // pinning a waiter. Production lock sites use pinChat/unpinChat so idle
 // slots are reaped.
@@ -1586,26 +1597,29 @@ func handleChatMessage(
 		toolProgress = "enhance"
 	}
 
-	var progressMsgID int
 	var progressLines []string
 	var lastProgressMsg string
 	var repeatCount int
-	var canEdit = true
-	var lastEditTime time.Time
 	const editThrottle = 1500 * time.Millisecond
+	// The bubble's network calls run on a background goroutine so a slow or
+	// rate-limited edit never stalls the agent loop.
+	progress := newProgressBubble(bot, chatID, messageID, editThrottle)
+	defer progress.finish(false)
 
 	// Send an initial "working on it" message for all modes except "off".
 	if toolProgress != "off" {
 		msg, err := bot.SendMessage(chatID, "🤔 Looking into that...",
 			&telegram.SendOpts{ReplyToMessageID: messageID})
 		if err == nil {
-			progressMsgID = msg.ID
+			progress.setMessageID(msg.ID)
 		}
 	}
-	// Cleanup progress messages when the task finishes.
+	// Cleanup progress messages when the task finishes. finish waits for any
+	// in-flight edit so the deletion can never be overtaken by one.
 	defer func() {
-		if progressMsgID != 0 && resolved.ToolProgressCleanup {
-			bot.DeleteMessage(chatID, progressMsgID)
+		progress.finish(false)
+		if id := progress.messageID(); id != 0 && resolved.ToolProgressCleanup {
+			bot.DeleteMessage(chatID, id)
 		}
 	}()
 
@@ -1648,7 +1662,7 @@ func handleChatMessage(
 
 	// Helper: send or edit the progress bubble.
 	sendProgress := func(line string) {
-		if toolProgress == "off" || progressMsgID == 0 {
+		if toolProgress == "off" || progress.messageID() == 0 {
 			return
 		}
 
@@ -1671,34 +1685,9 @@ func handleChatMessage(
 
 		fullText := strings.Join(progressLines, "\n")
 
-		// Throttle edits to avoid Telegram flood control.
-		if time.Since(lastEditTime) < editThrottle {
-			return // will be flushed on next non-throttled tick
-		}
-
-		if canEdit {
-			err := bot.EditMessageText(chatID, progressMsgID, fullText, nil)
-			if err != nil {
-				errStr := err.Error()
-				if strings.Contains(errStr, "flood") || strings.Contains(errStr, "retry after") {
-					canEdit = false
-					// Fallback: send as new message
-					msg, err2 := bot.SendMessage(chatID, line,
-						&telegram.SendOpts{ReplyToMessageID: messageID})
-					if err2 == nil {
-						progressMsgID = msg.ID
-					}
-				}
-			}
-			lastEditTime = time.Now()
-		} else {
-			// Editing failed previously — send new messages
-			msg, err := bot.SendMessage(chatID, line,
-				&telegram.SendOpts{ReplyToMessageID: messageID})
-			if err == nil {
-				progressMsgID = msg.ID
-			}
-		}
+		// Edits are throttled and coalesced by the progress bubble worker to
+		// avoid Telegram flood control; only the newest state is applied.
+		progress.submit(fullText, line)
 	}
 
 	// reasoningProgressLine captures the first sentence of LLM reasoning
@@ -1823,7 +1812,7 @@ func handleChatMessage(
 			if isEnhance {
 				// Content reset: interim messages reset the progress bubble.
 				if event == "tool_call" && name == "send_message" {
-					progressMsgID = 0
+					progress.reset()
 					progressLines = nil
 					lastProgressMsg = ""
 					repeatCount = 0
@@ -1844,7 +1833,7 @@ func handleChatMessage(
 				// Content reset: if send_message fires mid-run, reset the
 				// progress bubble so it appears below the sent message.
 				if name == "send_message" {
-					progressMsgID = 0
+					progress.reset()
 					progressLines = nil
 					lastProgressMsg = ""
 					repeatCount = 0
@@ -2074,6 +2063,9 @@ func handleChatMessage(
 	var outcome error
 	defer finishAgentInvocation(agent, &outcome)
 	response, updatedMessages, err := agent.RunWithMessages(agentCtx, cs.Messages)
+	// Drain the progress bubble before anything else is sent: every progress
+	// edit completes before the final answer (or error reply) goes out.
+	progress.finish(!resolved.ToolProgressCleanup)
 	if checkpointErr != nil {
 		err = checkpointErr
 	}

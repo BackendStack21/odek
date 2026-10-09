@@ -18,16 +18,19 @@ package session
 import (
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/maphash"
 	"io"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"unicode"
@@ -224,6 +227,32 @@ type Store struct {
 	// exists to let tests assert the single-marshal-per-save contract;
 	// reads/writes happen under mu.
 	marshalCount int
+
+	// promptDigests remembers, per session id, a keyed digest of the redacted
+	// principal prompts written by the last save. Guarded by mu.
+	promptDigests map[string]promptDigest
+
+	// revStamps remembers, per session id, the (generation, revision) this
+	// store last persisted together with the file stamp it produced, so the
+	// next save can verify the on-disk file is untouched with an lstat instead
+	// of a full parse. Guarded by mu.
+	revStamps map[string]revStamp
+
+	// listStats counts per-entry existence stats made by List. Test
+	// observability only.
+	listStats atomic.Int64
+
+	// indexWrites counts index.json rewrites. Test observability only;
+	// guarded by mu.
+	indexWrites int
+
+	// revisionLoads counts full session loads performed by saveLocked for the
+	// revision check. Test observability only; guarded by mu.
+	revisionLoads int
+
+	// promptRedactions counts RedactSecrets calls made on principal prompts
+	// by saveLocked. Test observability only; guarded by mu.
+	promptRedactions int
 
 	// indexDiskReads counts how many times loadIndex actually read
 	// index.json from disk (cache misses). Test observability only;
@@ -497,6 +526,7 @@ func (s *Store) fileLock() (func(), error) {
 // in-memory cache. Caller must hold s.mu. idx is owned by the caller; the
 // store keeps its own copy.
 func (s *Store) saveIndexLocked(idx map[string]*IndexEntry) error {
+	s.indexWrites++
 	entries := make([]*IndexEntry, 0, len(idx))
 	for _, e := range idx {
 		entries = append(entries, e)
@@ -517,6 +547,46 @@ func (s *Store) saveIndexLocked(idx map[string]*IndexEntry) error {
 		s.idxMu.Unlock()
 	}
 	return nil
+}
+
+// indexLagWindow bounds how far a per-step checkpoint lets the indexed
+// UpdatedAt trail the session file. The end-of-turn Save always rewrites the
+// index, so listings are exact whenever a turn is not in flight.
+const indexLagWindow = 2 * time.Second
+
+// indexMayLag reports whether rewriting index.json for next can be skipped:
+// only the volatile fields (UpdatedAt, token counters) moved, and UpdatedAt by
+// less than indexLagWindow.
+func indexMayLag(old, next IndexEntry) bool {
+	d := next.UpdatedAt.Sub(old.UpdatedAt)
+	return d >= 0 && d < indexLagWindow &&
+		old.Title == next.Title &&
+		old.Model == next.Model &&
+		old.Pinned == next.Pinned &&
+		old.Turns == next.Turns &&
+		old.CreatedAt.Equal(next.CreatedAt)
+}
+
+// peekIndexEntry returns one entry of the current index without copying the
+// whole map when the in-memory cache is fresh.
+func (s *Store) peekIndexEntry(id string) (IndexEntry, bool) {
+	s.idxMu.Lock()
+	if s.idxLoaded {
+		if info, err := os.Stat(s.indexPath()); err == nil &&
+			info.ModTime().Equal(s.idxMod) && info.Size() == s.idxSize && fileInode(info) == s.idxIno {
+			e, ok := s.idxCache[id]
+			s.idxMu.Unlock()
+			if !ok {
+				return IndexEntry{}, false
+			}
+			return *e, true
+		}
+	}
+	s.idxMu.Unlock()
+	if e, ok := s.loadIndex()[id]; ok {
+		return *e, true
+	}
+	return IndexEntry{}, false
 }
 
 // indexEntry builds an IndexEntry from a Session.
@@ -600,8 +670,9 @@ func (s *Store) Save(sess *Session) error {
 }
 
 // SaveNoIndex persists a session exactly like Save — redaction, file-cap
-// trimming, atomic write, and index.json metadata update all still happen —
-// but skips the vector-index update. It also refreshes UpdatedAt and Turns
+// trimming and atomic write all still happen, and index.json is refreshed
+// unless the indexed summary would trail by under indexLagWindow (only
+// UpdatedAt and token counters moved) — but it skips the vector-index update. It also refreshes UpdatedAt and Turns
 // like Append does, so per-turn saves keep session metadata current.
 // Used by the loop's per-turn persistence callback: embedding can be a
 // remote HTTP call and must not fire on every loop iteration; the final
@@ -610,7 +681,7 @@ func (s *Store) SaveNoIndex(sess *Session) error {
 	s.mu.Lock()
 	sess.UpdatedAt = time.Now().UTC()
 	sess.Turns = countUserTurns(sess.Messages)
-	err := s.saveLocked(sess)
+	err := s.saveLockedMode(sess, true)
 	s.mu.Unlock()
 	return err
 }
@@ -646,7 +717,121 @@ func redactMessageFP(m Message) string {
 	return hex.EncodeToString(h[:8])
 }
 
-func (s *Store) saveLocked(sess *Session) (err error) {
+// maxRevStamps bounds the revision stamp memo.
+const maxRevStamps = 1024
+
+// revStampSettle is how old a stamp must be before it is trusted without a
+// full Load. Kernel file clocks tick coarsely (ext4, tmpfs: up to ~10 ms), so
+// two writes inside one tick can share size and mtime.
+const revStampSettle = 50 * time.Millisecond
+
+// revStamp is a persisted (generation, revision) pair plus the identity of the
+// file it was written to.
+type revStamp struct {
+	generation string
+	revision   uint64
+	size       int64
+	mod        time.Time
+	ino        uint64
+}
+
+// cachedRevision returns the revision this store last persisted for id when
+// the file on disk is provably the one it wrote (same inode, size and
+// nanosecond mtime), else nil so the caller falls back to a full Load. A
+// filesystem with whole-second mtimes can not distinguish two writes in one
+// tick, so it never takes the fast path; neither does a platform without
+// inode numbers, nor a stamp younger than revStampSettle, inside which a
+// coarse kernel clock could still make a foreign rewrite look identical.
+func (s *Store) cachedRevision(id string, info os.FileInfo, statErr error) *Session {
+	if statErr != nil || info == nil || !info.Mode().IsRegular() {
+		return nil
+	}
+	st, ok := s.revStamps[id]
+	if !ok || st.mod.Nanosecond() == 0 || st.ino == 0 || time.Since(st.mod) < revStampSettle {
+		return nil
+	}
+	if info.Size() != st.size || !info.ModTime().Equal(st.mod) || fileInode(info) != st.ino {
+		return nil
+	}
+	return &Session{ID: id, Generation: st.generation, Revision: st.revision, persistedID: id}
+}
+
+// rememberRevision stamps the file just written for sess.
+func (s *Store) rememberRevision(sess *Session) {
+	info, err := os.Lstat(s.path(sess.ID))
+	if err != nil || !info.Mode().IsRegular() {
+		delete(s.revStamps, sess.ID)
+		return
+	}
+	if s.revStamps == nil || len(s.revStamps) >= maxRevStamps {
+		s.revStamps = make(map[string]revStamp)
+	}
+	s.revStamps[sess.ID] = revStamp{
+		generation: sess.Generation,
+		revision:   sess.Revision,
+		size:       info.Size(),
+		mod:        info.ModTime(),
+		ino:        fileInode(info),
+	}
+}
+
+// maxPromptDigests bounds the per-session prompt digest memo.
+const maxPromptDigests = 256
+
+type promptDigest struct {
+	n    int
+	hash uint64
+	// gen is the redaction registry generation the prompts were scanned
+	// under; a secret registered later invalidates the memo.
+	gen uint64
+}
+
+var promptSeed = maphash.MakeSeed()
+
+// promptsHash digests the principal prompts of msgs[:n] (presence, length and
+// bytes) with a process-keyed hash.
+func promptsHash(msgs []Message, n int) uint64 {
+	var h maphash.Hash
+	h.SetSeed(promptSeed)
+	var lenBuf [8]byte
+	for i := 0; i < n; i++ {
+		p := msgs[i].PrincipalPrompt
+		if p == nil {
+			h.WriteByte(0)
+			continue
+		}
+		h.WriteByte(1)
+		binary.LittleEndian.PutUint64(lenBuf[:], uint64(len(*p)))
+		h.Write(lenBuf[:])
+		h.WriteString(*p)
+	}
+	return h.Sum64()
+}
+
+// promptsUnchanged reports whether the first n prompts are byte-identical to
+// what the previous save of this session persisted (already redacted).
+func (s *Store) promptsUnchanged(id string, msgs []Message, n int) bool {
+	d, ok := s.promptDigests[id]
+	return ok && d.n == n && n <= len(msgs) && d.gen == redact.Generation() && d.hash == promptsHash(msgs, n)
+}
+
+// rememberPrompts records the digest of the redacted prompts just persisted,
+// under the registry generation gen that was current before they were scanned.
+func (s *Store) rememberPrompts(id string, msgs []Message, gen uint64) {
+	if s.promptDigests == nil || len(s.promptDigests) >= maxPromptDigests {
+		s.promptDigests = make(map[string]promptDigest)
+	}
+	s.promptDigests[id] = promptDigest{n: len(msgs), hash: promptsHash(msgs, len(msgs)), gen: gen}
+}
+
+func (s *Store) saveLocked(sess *Session) error {
+	return s.saveLockedMode(sess, false)
+}
+
+// saveLockedMode is saveLocked; lazyIndex lets a per-step checkpoint leave
+// index.json untouched when the indexed summary would only move forward by
+// less than indexLagWindow (see indexMayLag).
+func (s *Store) saveLockedMode(sess *Session, lazyIndex bool) (err error) {
 	defer func() { diagnostics.Report("session", "save", sess.ID, err) }()
 	// Reject malformed or traversal-bearing session IDs before the ID is used
 	// to build a filesystem path. A planted session file with an embedded
@@ -665,7 +850,12 @@ func (s *Store) saveLocked(sess *Session) (err error) {
 	var current *Session
 	var loadErr error
 	if !alias {
-		current, loadErr = s.Load(sess.ID)
+		if c := s.cachedRevision(sess.ID, info, statErr); c != nil {
+			current = c
+		} else {
+			s.revisionLoads++
+			current, loadErr = s.Load(sess.ID)
+		}
 	}
 	if alias {
 		// Atomic replacement owns this directory entry, never the alias's
@@ -766,10 +956,21 @@ func (s *Store) saveLocked(sess *Session) (err error) {
 			boundary = 0
 		}
 	}
-	// Authored-input metadata is independently mutable and always redacted;
-	// it does not rely on the model transcript's incremental scan boundary.
-	for i := range sess.Messages {
+	// Authored-input metadata is a mutable pointer, so it is not covered by
+	// the message fingerprint. Prompts below the boundary are skipped only
+	// while a keyed digest of every one of them still matches the digest
+	// recorded after the previous save; any in-place edit, replacement,
+	// reordering or trim changes the digest and redacts them all again.
+	// The registry generation is read before the scan: a secret registered
+	// while this save runs must not be stamped as already applied.
+	promptGen := redact.Generation()
+	promptStart := 0
+	if boundary > 0 && s.promptsUnchanged(sess.ID, sess.Messages, boundary) {
+		promptStart = boundary
+	}
+	for i := promptStart; i < len(sess.Messages); i++ {
 		if sess.Messages[i].PrincipalPrompt != nil {
+			s.promptRedactions++
 			prompt := redact.RedactSecrets(*sess.Messages[i].PrincipalPrompt)
 			sess.Messages[i].PrincipalPrompt = &prompt
 		}
@@ -844,10 +1045,18 @@ func (s *Store) saveLocked(sess *Session) (err error) {
 
 	sess.persistedID = sess.ID
 	committed = true
+	s.rememberRevision(sess)
+	s.rememberPrompts(sess.ID, sess.Messages, promptGen)
 
 	// Update the index atomically.
+	entry := indexEntry(sess)
+	if lazyIndex {
+		if old, ok := s.peekIndexEntry(sess.ID); ok && indexMayLag(old, *entry) {
+			return nil
+		}
+	}
 	idx := s.loadIndex()
-	idx[sess.ID] = indexEntry(sess)
+	idx[sess.ID] = entry
 	if err := s.saveIndexLocked(idx); err != nil {
 		return err
 	}
@@ -1112,19 +1321,19 @@ func (s *Store) List(limit int) ([]Session, error) {
 		// must not show phantom sessions, and the ID is echoed to callers.
 		live := entries[:0]
 		for _, e := range entries {
+			if limit > 0 && len(live) >= limit {
+				break // entries are newest-first: the page is full, stop statting
+			}
 			if ValidateSessionID(e.ID) != nil {
 				continue
 			}
+			s.listStats.Add(1)
 			if _, err := os.Stat(s.path(e.ID)); err != nil {
 				continue
 			}
 			live = append(live, e)
 		}
 		entries = live
-
-		if limit > 0 && len(entries) > limit {
-			entries = entries[:limit]
-		}
 
 		sessions := make([]Session, len(entries))
 		for i, e := range entries {
@@ -1205,6 +1414,21 @@ func (s *Store) Delete(id string) error {
 // removeLocked deletes the session FILE and its vector-index entry. The
 // store mutex must be held. A missing file is nil (idempotent).
 func (s *Store) removeLocked(id string) error {
+	if err := s.removeFilesLocked(id); err != nil {
+		return err
+	}
+	// Remove from vector index to prevent stale entries.
+	if s.Vec != nil {
+		_ = s.Vec.Remove(id) // best-effort
+	}
+	return nil
+}
+
+// removeFilesLocked deletes the session file and its audit log, leaving the
+// vector index to the caller (Cleanup batches it outside the locks). A
+// missing file is nil (idempotent).
+func (s *Store) removeFilesLocked(id string) error {
+	delete(s.revStamps, id)
 	err := os.Remove(s.path(id))
 	if err == nil || os.IsNotExist(err) {
 		// The audit log records ingest sources and resources of the session;
@@ -1214,14 +1438,15 @@ func (s *Store) removeLocked(id string) error {
 	if os.IsNotExist(err) {
 		return nil
 	}
-	if err != nil {
-		return err
+	return err
+}
+
+// removeVectors drops ids from the vector index with a single store write.
+// Best-effort, like every other vector-index removal.
+func (s *Store) removeVectors(ids []string) {
+	if s.Vec != nil && len(ids) > 0 {
+		_ = s.Vec.RemoveMany(ids)
 	}
-	// Remove from vector index to prevent stale entries.
-	if s.Vec != nil {
-		_ = s.Vec.Remove(id) // best-effort
-	}
-	return nil
 }
 
 // Cleanup deletes all unpinned sessions whose UpdatedAt is before the given
@@ -1254,9 +1479,10 @@ func (s *Store) Cleanup(before time.Time) (int, error) {
 				if e.Pinned {
 					continue
 				}
-				if err := s.removeLocked(id); err != nil {
+				if err := s.removeFilesLocked(id); err != nil {
 					unlock()
 					s.mu.Unlock()
+					s.removeVectors(cascaded)
 					return deleted, fmt.Errorf("session: delete %q: %w", id, err)
 				}
 				delete(idx, id)
@@ -1268,11 +1494,16 @@ func (s *Store) Cleanup(before time.Time) (int, error) {
 			if err := s.saveIndexLocked(idx); err != nil {
 				unlock()
 				s.mu.Unlock()
+				s.removeVectors(cascaded)
 				return deleted, err
 			}
 		}
 		unlock()
 		s.mu.Unlock()
+		// Embedding-store rewrites run outside the store mutex and the
+		// cross-process lock, in one write, so a large sweep never stalls
+		// concurrent saves.
+		s.removeVectors(cascaded)
 		if s.OnDelete != nil {
 			for _, id := range cascaded {
 				s.OnDelete(id)

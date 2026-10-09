@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -73,6 +74,7 @@ type VectorIndex struct {
 	dir      string
 	ready    bool
 	failedAt time.Time // last failed rebuild; zero = never failed
+	saves    int       // persisted store writes (test observability)
 }
 
 // ── Init ──────────────────────────────────────────────────────────────────
@@ -275,6 +277,24 @@ func (vi *VectorIndex) Remove(sessionID string) error {
 	return vi.saveLocked()
 }
 
+// RemoveMany deletes several sessions from the index and persists the store
+// once, instead of rewriting it per id. Idempotent.
+func (vi *VectorIndex) RemoveMany(sessionIDs []string) error {
+	if len(sessionIDs) == 0 {
+		return nil
+	}
+	vi.mu.Lock()
+	defer vi.mu.Unlock()
+
+	if !vi.ready {
+		return nil
+	}
+	for _, id := range sessionIDs {
+		vi.store.Remove(id)
+	}
+	return vi.saveLocked()
+}
+
 // ── Search ────────────────────────────────────────────────────────────────
 
 // SearchResult holds a single session search result.
@@ -362,6 +382,7 @@ func (vi *VectorIndex) saveLocked() error {
 	if !vi.ready || vi.dir == "" {
 		return nil
 	}
+	vi.saves++
 
 	// Save vector store.
 	storePath := filepath.Join(vi.dir, vectorFile)
@@ -397,20 +418,36 @@ func (vi *VectorIndex) saveLocked() error {
 // BuildConversationText extracts user and assistant text from messages
 // for embedding. Tool calls and results are excluded — they add noise.
 func BuildConversationText(messages []Message) string {
-	var out string
+	size := 0
 	for _, m := range messages {
-		switch m.Role {
-		case "user":
-			if m.Content != "" {
-				out += "[User] " + m.Content + "\n"
-			}
-		case "assistant":
-			if m.Content != "" {
-				out += "[Assistant] " + m.Content + "\n"
-			}
+		if (m.Role == "user" || m.Role == "assistant") && m.Content != "" {
+			size += len(m.Content) + 16
 		}
 	}
-	return out
+	var out strings.Builder
+	out.Grow(size)
+	for _, m := range messages {
+		appendConversationLine(&out, m.Role, m.Content)
+	}
+	return out.String()
+}
+
+// appendConversationLine writes one labelled line for user and assistant
+// messages with content and ignores every other role.
+func appendConversationLine(out *strings.Builder, role, content string) {
+	if content == "" {
+		return
+	}
+	switch role {
+	case "user":
+		out.WriteString("[User] ")
+	case "assistant":
+		out.WriteString("[Assistant] ")
+	default:
+		return
+	}
+	out.WriteString(content)
+	out.WriteByte('\n')
 }
 
 // extractConversationText parses raw JSON session bytes and extracts
@@ -426,18 +463,14 @@ func extractConversationText(data []byte) string {
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return ""
 	}
-	var out string
+	size := 0
 	for _, m := range raw.Messages {
-		switch m.Role {
-		case "user":
-			if m.Content != "" {
-				out += "[User] " + m.Content + "\n"
-			}
-		case "assistant":
-			if m.Content != "" {
-				out += "[Assistant] " + m.Content + "\n"
-			}
-		}
+		size += len(m.Content) + 16
 	}
-	return out
+	var out strings.Builder
+	out.Grow(size)
+	for _, m := range raw.Messages {
+		appendConversationLine(&out, m.Role, m.Content)
+	}
+	return out.String()
 }

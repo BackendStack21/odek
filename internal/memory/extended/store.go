@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -41,6 +42,19 @@ type AtomStore struct {
 	// Mirrors the mtime-keyed index cache used by the episode store.
 	chunkCache   map[string]chunkCacheEntry
 	chunkCacheMu sync.Mutex
+
+	// metaCache holds the parsed atoms.json used by List, keyed by the file's
+	// stamp (size, nanosecond mtime); every rewrite changes the stamp and
+	// saveAtomsLocked drops it explicitly. atomsParses counts parses (tests).
+	metaCache   *metaCacheEntry
+	metaCacheMu sync.Mutex
+	atomsParses atomic.Int64
+}
+
+type metaCacheEntry struct {
+	size  int64
+	mod   time.Time
+	metas []atomMeta
 }
 
 type chunkCacheEntry struct {
@@ -214,7 +228,7 @@ func (s *AtomStore) List() ([]MemoryAtom, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	metas, err := s.loadAtomsLocked()
+	metas, err := s.loadAtomsCachedLocked()
 	if err != nil {
 		return nil, err
 	}
@@ -335,8 +349,34 @@ func (s *AtomStore) Refresh() error {
 	return nil
 }
 
+// loadAtomsCachedLocked is loadAtomsLocked for read-only callers: the parsed
+// result is reused while atoms.json is unchanged on disk. The returned slice
+// is shared and must not be modified. Caller must hold s.mu (read or write).
+// A filesystem with whole-second mtimes never serves from the cache.
+func (s *AtomStore) loadAtomsCachedLocked() ([]atomMeta, error) {
+	info, err := os.Stat(s.atomsFile)
+	if err != nil {
+		return s.loadAtomsLocked()
+	}
+	s.metaCacheMu.Lock()
+	c := s.metaCache
+	s.metaCacheMu.Unlock()
+	if c != nil && c.size == info.Size() && c.mod.Equal(info.ModTime()) && c.mod.Nanosecond() != 0 {
+		return c.metas, nil
+	}
+	metas, err := s.loadAtomsLocked()
+	if err != nil {
+		return nil, err
+	}
+	s.metaCacheMu.Lock()
+	s.metaCache = &metaCacheEntry{size: info.Size(), mod: info.ModTime(), metas: metas}
+	s.metaCacheMu.Unlock()
+	return metas, nil
+}
+
 // loadAtomsLocked reads atoms.json. Caller must hold s.mu (read or write).
 func (s *AtomStore) loadAtomsLocked() ([]atomMeta, error) {
+	s.atomsParses.Add(1)
 	data, err := os.ReadFile(s.atomsFile)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -364,6 +404,9 @@ func (s *AtomStore) saveAtomsLocked(metas []atomMeta) error {
 	if err != nil {
 		return fmt.Errorf("extended store: marshal atoms.json: %w", err)
 	}
+	s.metaCacheMu.Lock()
+	s.metaCache = nil
+	s.metaCacheMu.Unlock()
 	if err := fsatomic.WriteFile(s.atomsFile, data, 0600); err != nil {
 		return fmt.Errorf("extended store: write atoms.json: %w", err)
 	}

@@ -509,7 +509,7 @@ func TestShellTool_PromptUser_ReusesTTYApprover(t *testing.T) {
 	}
 
 	cmd := "curl http://example.com"
-	if err := st.promptUser(cmd, "test"); err != nil {
+	if err := st.promptUserGated(cmd, "test", nil); err != nil {
 		t.Fatalf("first prompt failed: %v", err)
 	}
 	first := st.approver
@@ -517,11 +517,11 @@ func TestShellTool_PromptUser_ReusesTTYApprover(t *testing.T) {
 		t.Fatal("first prompt did not create an approver")
 	}
 
-	if err := st.promptUser(cmd, "test"); err != nil {
+	if err := st.promptUserGated(cmd, "test", nil); err != nil {
 		t.Fatalf("second prompt failed: %v", err)
 	}
 	if st.approver != first {
-		t.Error("promptUser created a new TTYApprover instead of reusing the existing one")
+		t.Error("promptUserGated created a new TTYApprover instead of reusing the existing one")
 	}
 }
 

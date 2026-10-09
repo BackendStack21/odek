@@ -305,7 +305,7 @@ func (f *FileResolver) Search(ctx context.Context, query string, limit int) ([]R
 
 	// If no match, try recursive by walking the directory tree
 	if len(matches) == 0 {
-		matches = f.walkAndMatch(safeQuery)
+		matches = f.walkAndMatch(ctx, safeQuery, limit)
 	}
 
 	// Resolve the root once so every match can be confined to it.
@@ -420,15 +420,25 @@ func (f *FileResolver) Load(ctx context.Context, id string) (string, error) {
 	return content, nil
 }
 
-func (f *FileResolver) walkAndMatch(searchTerm string) []string {
+func (f *FileResolver) walkAndMatch(ctx context.Context, searchTerm string, limit int) []string {
 	base := f.root
 
 	// The searchTerm has already been validated as a safe literal prefix, but
 	// unescape the glob backslashes so the substring match works on real paths.
 	literalTerm := strings.ReplaceAll(searchTerm, "\\", "")
 
-	var results []string
+	// Only the shortest paths can be returned, so keep a bounded, ordered
+	// window instead of collecting and sorting every match. Slack covers
+	// matches the caller later drops (vanished files).
+	keep := limit * 2
+	if keep < 16 {
+		keep = 16
+	}
+	results := make([]string, 0, keep)
 	_ = filepath.WalkDir(base, func(path string, d os.DirEntry, err error) error {
+		if ctx != nil && ctx.Err() != nil {
+			return filepath.SkipAll
+		}
 		if err != nil {
 			return nil
 		}
@@ -447,18 +457,41 @@ func (f *FileResolver) walkAndMatch(searchTerm string) []string {
 			}
 			return nil
 		}
-		rel, _ := filepath.Rel(base, path)
-		if strings.HasPrefix(rel, literalTerm) || strings.Contains(rel, literalTerm) {
-			results = append(results, path)
+		if !strings.Contains(relSuffix(base, path), literalTerm) {
+			return nil
 		}
+		// Insert keeping ascending length order; ties keep walk order.
+		if len(results) == keep && len(path) >= len(results[keep-1]) {
+			return nil
+		}
+		i := sort.Search(len(results), func(i int) bool { return len(results[i]) > len(path) })
+		if len(results) < keep {
+			results = append(results, "")
+		}
+		copy(results[i+1:], results[i:])
+		results[i] = path
 		return nil
 	})
-
-	// Sort by shortest path first (most relevant)
-	sort.Slice(results, func(i, j int) bool {
-		return len(results[i]) < len(results[j])
-	})
 	return results
+}
+
+// relSuffix returns path relative to base without allocating when path was
+// produced by walking base, falling back to filepath.Rel otherwise.
+func relSuffix(base, path string) string {
+	if base != "." && strings.HasPrefix(path, base) {
+		rest := path[len(base):]
+		if rest == "" {
+			return ""
+		}
+		if rest[0] == filepath.Separator {
+			return rest[1:]
+		}
+		if strings.HasSuffix(base, string(filepath.Separator)) {
+			return rest
+		}
+	}
+	rel, _ := filepath.Rel(base, path)
+	return rel
 }
 
 // skipDir returns true for directories that should be excluded from
@@ -519,9 +552,6 @@ func (s *SessionResolver) Search(ctx context.Context, query string, limit int) (
 		if err := session.ValidateSessionID(id); err != nil {
 			continue
 		}
-		var probe struct {
-			ID string `json:"id"`
-		}
 		if query != "" && !strings.Contains(id, query) {
 			continue
 		}
@@ -535,9 +565,9 @@ func (s *SessionResolver) Search(ctx context.Context, query string, limit int) (
 			fd.Close()
 			continue
 		}
-		data, readErr := io.ReadAll(io.LimitReader(fd, maxResourceFileBytes+1))
+		gotID, probeOK := probeSessionID(io.LimitReader(fd, maxResourceFileBytes+1))
 		fd.Close()
-		if readErr != nil || len(data) > maxResourceFileBytes || json.Unmarshal(data, &probe) != nil || probe.ID != id {
+		if !probeOK || gotID != id {
 			continue
 		}
 		if query == "" || strings.Contains(id, query) {
@@ -555,6 +585,35 @@ func (s *SessionResolver) Search(ctx context.Context, query string, limit int) (
 		}
 	}
 	return resources, nil
+}
+
+// probeSessionID streams the top-level object of a session file and returns
+// its "id" field without decoding the (potentially huge) message history that
+// follows it.
+func probeSessionID(r io.Reader) (string, bool) {
+	dec := json.NewDecoder(r)
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
+		return "", false
+	}
+	for dec.More() {
+		tok, err := dec.Token()
+		key, ok := tok.(string)
+		if err != nil || !ok {
+			return "", false
+		}
+		if key == "id" {
+			var id string
+			if dec.Decode(&id) != nil {
+				return "", false
+			}
+			return id, true
+		}
+		var skip json.RawMessage
+		if dec.Decode(&skip) != nil {
+			return "", false
+		}
+	}
+	return "", false
 }
 
 func (s *SessionResolver) Load(ctx context.Context, id string) (string, error) {

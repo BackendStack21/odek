@@ -408,7 +408,9 @@ type Engine struct {
 	// happened. Reset at runLoop entry; only touched from the loop
 	// goroutine.
 	runMutations        []string
+	effectBody          effectBodyCache
 	durableTranscript   []session.Message
+	durableIndex        session.CheckpointIndex // ID -> position in durableTranscript
 	activeTurnID        string
 	invocationTurnID    string
 	pendingVerification map[string]bool
@@ -1458,23 +1460,28 @@ func (e *Engine) trimContext(ctx context.Context, messages []session.Message, to
 			dropLimit = budget / 2
 		}
 	}
-	for totalTokens > dropLimit {
-		start := head
-		for start < len(messages) {
-			if _, keep := protected[start]; !keep {
-				break
-			}
-			start++
+	// One forward scan drops the oldest unprotected groups and compacts the
+	// survivors in place; protected indexes stay in original coordinates.
+	// Nothing before the write cursor is read again, so a drop never moves
+	// the tail.
+	write, read := head, head
+	removed := 0
+	for read < len(messages) && totalTokens > dropLimit {
+		if _, keep := protected[read]; keep {
+			messages[write] = messages[read]
+			write++
+			read++
+			continue
 		}
-		if start >= len(messages) {
-			break
-		}
-		groupEnd := start + 1
+		start, groupEnd := read, read+1
+		// start and groupEnd in the coordinates of the already compacted
+		// history, which is what turnStart tracks.
+		curStart := start - removed
 		if messages[start].Role == "assistant" && len(messages[start].ToolCalls) > 0 {
 			// Track which tools were called in dropped groups
 			for _, tc := range messages[start].ToolCalls {
 				e.trimDroppedTools[tc.Function.Name]++
-				if start > turnStart {
+				if curStart > turnStart {
 					e.trimDroppedTurnTools[tc.Function.Name]++
 				}
 			}
@@ -1487,29 +1494,21 @@ func (e *Engine) trimContext(ctx context.Context, messages []session.Message, to
 		if e.compaction {
 			droppedForDigest = append(droppedForDigest, messages[start:groupEnd]...)
 		}
-
-		// Subtract the dropped group's tokens from the running total.
-		// This avoids O(n²) behavior: we only scan the N messages being
-		// dropped, not the entire M-message list each iteration.
+		// Subtract the dropped group's tokens from the running total; only
+		// the dropped messages are scanned. Tool defs are never dropped.
 		totalTokens -= estimateMessages(messages[start:groupEnd])
-		// (defTokens remains unchanged — tool defs don't get dropped)
-
-		// Drop the entire group atomically
-		messages = append(messages[:start], messages[groupEnd:]...)
-		if turnStart >= groupEnd {
+		if turnStart >= groupEnd-removed {
 			// The turn boundary sits after the dropped group: shift its
-			// index with the slice so later drops classify correctly.
+			// index with the history so later drops classify correctly.
 			turnStart -= groupEnd - start
 		}
-		nextProtected := make(map[int]struct{}, len(protected))
-		for idx := range protected {
-			if idx < start {
-				nextProtected[idx] = struct{}{}
-			} else if idx >= groupEnd {
-				nextProtected[idx-(groupEnd-start)] = struct{}{}
-			}
-		}
-		protected = nextProtected
+		removed += groupEnd - start
+		read = groupEnd
+	}
+	if removed > 0 {
+		n := write + copy(messages[write:], messages[read:])
+		clear(messages[n:])
+		messages = messages[:n]
 	}
 
 	// Rolling compaction: install an extractive digest immediately so the
@@ -1817,7 +1816,11 @@ func (e *Engine) refreshDigest(ctx context.Context, messages []session.Message, 
 
 	e.compactMu.Lock()
 	e.pendingDropped = append(e.pendingDropped, dropped...)
-	all := append([]session.Message(nil), e.pendingDropped...)
+	// A read-only view of the queue. Every later write to pendingDropped is
+	// an append past this length, a reslice, or a reset to nil; no queued
+	// record is ever rewritten in place, so the view stays valid for the
+	// side call. The capacity clamp keeps the view itself append-safe.
+	all := e.pendingDropped[:len(e.pendingDropped):len(e.pendingDropped)]
 	startIdx := len(e.pendingDropped) - len(dropped)
 	// digestDirty means an earlier drop was debounced behind an in-flight
 	// call that no side call has seen. applyPendingDigest (above) trimmed
@@ -2764,6 +2767,7 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 	e.externalGrants = nil
 	e.externalChargeMu.Unlock()
 	e.runMutations = nil
+	e.effectBody = effectBodyCache{}
 	e.pendingVerification = nil
 	e.completionNudged = false
 	e.sawReadAfterMutation = false

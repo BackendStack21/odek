@@ -722,12 +722,21 @@ func (r *Renderer) style(code, text string) string {
 
 // truncate limits s to n characters (not bytes), adding "…" if truncated.
 func (r *Renderer) truncate(s string, n int) string {
-	// Convert to runes once, check length on the slice
-	runes := []rune(s)
-	if len(runes) <= n {
-		return s
+	if n < 0 {
+		n = 0
 	}
-	return string(runes[:n]) + "…"
+	count := 0
+	for i := range s {
+		if count == n {
+			prefix := s[:i]
+			if !utf8.ValidString(prefix) {
+				prefix = string([]rune(prefix))
+			}
+			return prefix + "…"
+		}
+		count++
+	}
+	return s
 }
 
 // ── Auto-detection ────────────────────────────────────────────────────

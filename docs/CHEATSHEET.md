@@ -385,7 +385,7 @@ odek mcp --sandbox
 | `glob` | Find files by glob pattern |
 | `file_info` | Stat metadata (size, mod_time, mode, type) |
 | `head_tail` | First/last N lines of one file; bounded scan reports total lines |
-| `search_files` | Regex content search or glob file find; sensitive discovered paths are returned in `skipped` |
+| `search_files` | Regex content search or glob file find; sensitive discovered paths are returned in `skipped` (files excluded by `file_glob` are filtered before classification and never listed) |
 
 ### Data Processing (in-process, no shell fork)
 | Tool | Description |

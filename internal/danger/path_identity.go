@@ -92,6 +92,7 @@ var pathMemo struct {
 	active int
 	dirs   map[string]struct{}
 	paths  map[string]string
+	exists map[string]bool
 	cwd    string
 	cwdErr error
 	hasCwd bool
@@ -108,6 +109,7 @@ func beginPathMemo() func() {
 		if pathMemo.active == 0 {
 			pathMemo.dirs = nil
 			pathMemo.paths = nil
+			pathMemo.exists = nil
 			pathMemo.hasCwd = false
 			pathMemo.cwd, pathMemo.cwdErr = "", nil
 		}
@@ -154,6 +156,35 @@ func memoRememberResolved(path, resolved string) {
 	if len(pathMemo.paths) < 1<<16 {
 		pathMemo.paths[path] = resolved
 	}
+}
+
+// statPath is os.Stat; a variable so tests can count lookups.
+var statPath = os.Stat
+
+// memoPathExists reports whether path can be statted (following symlinks),
+// remembering the answer for the duration of running analyses.
+func memoPathExists(path string) bool {
+	pathMemo.mu.Lock()
+	if pathMemo.active > 0 {
+		if ok, seen := pathMemo.exists[path]; seen {
+			pathMemo.mu.Unlock()
+			return ok
+		}
+	}
+	pathMemo.mu.Unlock()
+	_, err := statPath(path)
+	ok := err == nil
+	pathMemo.mu.Lock()
+	if pathMemo.active > 0 {
+		if pathMemo.exists == nil {
+			pathMemo.exists = make(map[string]bool)
+		}
+		if len(pathMemo.exists) < 1<<16 {
+			pathMemo.exists[path] = ok
+		}
+	}
+	pathMemo.mu.Unlock()
+	return ok
 }
 
 // absPath is filepath.Abs using the memoized working directory.

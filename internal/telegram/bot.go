@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"mime/multipart"
 	"net"
 	"net/http"
@@ -101,10 +102,11 @@ func (b *Bot) doJSONContext(ctx context.Context, method string, body any, dest a
 
 	url := b.url(method)
 	var lastErr error
+	var retryAfter time.Duration // server-requested wait from the last 429
 
 	for attempt := 0; attempt < 5; attempt++ {
 		if attempt > 0 {
-			backoff := time.Duration(1<<(attempt-1)) * time.Second // 1s, 2s, 4s, 8s
+			backoff := retryBackoff(attempt, retryAfter) // 1s, 2s, 4s, 8s, or the server hint
 			b.log.Warn("retrying request", "method", method, "attempt", attempt, "backoff", backoff)
 			// Check context cancellation during backoff sleep.
 			select {
@@ -113,6 +115,7 @@ func (b *Bot) doJSONContext(ctx context.Context, method string, body any, dest a
 			case <-time.After(backoff):
 			}
 		}
+		retryAfter = 0 // a server hint applies to the attempt right after it
 
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(reqBody))
 		if err != nil {
@@ -146,16 +149,21 @@ func (b *Bot) doJSONContext(ctx context.Context, method string, body any, dest a
 			Result      json.RawMessage `json:"result"`
 			Description string          `json:"description"`
 			ErrorCode   int             `json:"error_code"`
+			Parameters  struct {
+				RetryAfter json.Number `json:"retry_after"`
+			} `json:"parameters"`
 		}
 		if err := json.Unmarshal(respBody, &apiResp); err != nil {
 			b.log.Error("unmarshal response failed", "method", method, "error", err)
 			return fmt.Errorf("telegram: unmarshal response: %w", err) // parse error — don't retry
 		}
 
+		retryAfter = 0
 		if !apiResp.OK {
 			// 429 (rate limit) — retry
 			if apiResp.ErrorCode == 429 {
 				b.log.Warn("rate limited", "method", method, "description", apiResp.Description)
+				retryAfter = parseRetryAfter(apiResp.Parameters.RetryAfter)
 				lastErr = &TelegramError{Method: method, Description: apiResp.Description, Code: apiResp.ErrorCode}
 				continue
 			}
@@ -181,6 +189,41 @@ func (b *Bot) doJSONContext(ctx context.Context, method string, body any, dest a
 	}
 
 	return lastErr
+}
+
+// maxRetryBackoff is the longest wait between attempts, whether it comes from
+// the exponential schedule or from the server's retry_after hint.
+const maxRetryBackoff = 8 * time.Second
+
+// parseRetryAfter converts Telegram's retry_after hint (seconds, normally an
+// integer but tolerated as any number) into a wait. Non-numeric, negative or
+// absurd values yield 0 so the exponential schedule applies; the result is
+// already clamped to maxRetryBackoff so no caller can overflow a Duration.
+func parseRetryAfter(n json.Number) time.Duration {
+	if n == "" {
+		return 0
+	}
+	secs, err := n.Float64()
+	if err != nil || secs <= 0 || math.IsNaN(secs) || math.IsInf(secs, 0) {
+		return 0
+	}
+	if secs > maxRetryBackoff.Seconds() {
+		return maxRetryBackoff
+	}
+	return time.Duration(secs * float64(time.Second))
+}
+
+// retryBackoff returns the wait before the given retry attempt (attempt >= 1).
+// A positive retryAfter from Telegram's rate-limit response is honoured, bounded
+// by maxRetryBackoff; otherwise the schedule is 1s, 2s, 4s, 8s.
+func retryBackoff(attempt int, retryAfter time.Duration) time.Duration {
+	if retryAfter > 0 {
+		if retryAfter > maxRetryBackoff {
+			return maxRetryBackoff
+		}
+		return retryAfter
+	}
+	return time.Duration(1<<(attempt-1)) * time.Second
 }
 
 // StopRetries signals any in-flight doJSON retry loops to abort.
@@ -211,10 +254,11 @@ func (b *Bot) doJSON(method string, body any, dest any) (requestErr error) {
 
 	url := b.url(method)
 	var lastErr error
+	var retryAfter time.Duration // server-requested wait from the last 429
 
 	for attempt := 0; attempt < 5; attempt++ {
 		if attempt > 0 {
-			backoff := time.Duration(1<<(attempt-1)) * time.Second // 1s, 2s, 4s, 8s
+			backoff := retryBackoff(attempt, retryAfter) // 1s, 2s, 4s, 8s, or the server hint
 			b.log.Warn("retrying request", "method", method, "attempt", attempt, "backoff", backoff)
 			// Check stop signal during backoff sleep so shutdown isn't delayed.
 			select {
@@ -223,6 +267,7 @@ func (b *Bot) doJSON(method string, body any, dest any) (requestErr error) {
 				return &TelegramError{Method: method, Description: "cancelled", Code: 0}
 			}
 		}
+		retryAfter = 0 // a server hint applies to the attempt right after it
 
 		resp, err := b.Client.Post(url, "application/json", bytes.NewReader(reqBody))
 		if err != nil {
@@ -248,16 +293,21 @@ func (b *Bot) doJSON(method string, body any, dest any) (requestErr error) {
 			Result      json.RawMessage `json:"result"`
 			Description string          `json:"description"`
 			ErrorCode   int             `json:"error_code"`
+			Parameters  struct {
+				RetryAfter json.Number `json:"retry_after"`
+			} `json:"parameters"`
 		}
 		if err := json.Unmarshal(respBody, &apiResp); err != nil {
 			b.log.Error("unmarshal response failed", "method", method, "error", err)
 			return fmt.Errorf("telegram: unmarshal response: %w", err) // parse error — don't retry
 		}
 
+		retryAfter = 0
 		if !apiResp.OK {
 			// 429 (rate limit) — retry
 			if apiResp.ErrorCode == 429 {
 				b.log.Warn("rate limited", "method", method, "description", apiResp.Description)
+				retryAfter = parseRetryAfter(apiResp.Parameters.RetryAfter)
 				lastErr = &TelegramError{Method: method, Description: apiResp.Description, Code: apiResp.ErrorCode}
 				continue
 			}
@@ -336,10 +386,11 @@ func (b *Bot) doUpload(method string, field string, path string, params map[stri
 	contentType := writer.FormDataContentType()
 	url := b.url(method)
 	var lastErr error
+	var retryAfter time.Duration // server-requested wait from the last 429
 
 	for attempt := 0; attempt < 5; attempt++ {
 		if attempt > 0 {
-			backoff := time.Duration(1<<(attempt-1)) * time.Second
+			backoff := retryBackoff(attempt, retryAfter)
 			b.log.Warn("retrying upload", "method", method, "attempt", attempt, "backoff", backoff)
 			// Check stop signal during backoff so shutdown isn't delayed.
 			select {
@@ -348,6 +399,7 @@ func (b *Bot) doUpload(method string, field string, path string, params map[stri
 				return &TelegramError{Method: method, Description: "cancelled", Code: 0}
 			}
 		}
+		retryAfter = 0 // a server hint applies to the attempt right after it
 
 		req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(bodyBytes))
 		if err != nil {
@@ -381,15 +433,20 @@ func (b *Bot) doUpload(method string, field string, path string, params map[stri
 			Result      json.RawMessage `json:"result"`
 			Description string          `json:"description"`
 			ErrorCode   int             `json:"error_code"`
+			Parameters  struct {
+				RetryAfter json.Number `json:"retry_after"`
+			} `json:"parameters"`
 		}
 		if err := json.Unmarshal(respBody, &apiResp); err != nil {
 			b.log.Error("unmarshal response failed", "method", method, "error", err)
 			return fmt.Errorf("telegram: unmarshal response: %w", err)
 		}
 
+		retryAfter = 0
 		if !apiResp.OK {
 			if apiResp.ErrorCode == 429 {
 				b.log.Warn("rate limited", "method", method, "description", apiResp.Description)
+				retryAfter = parseRetryAfter(apiResp.Parameters.RetryAfter)
 				lastErr = &TelegramError{Method: method, Description: apiResp.Description, Code: apiResp.ErrorCode}
 				continue
 			}

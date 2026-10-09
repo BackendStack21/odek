@@ -492,12 +492,21 @@ func parseHTML(ctx context.Context, html, pageURL string, status int) browserSna
 
 	// Title, element text, and link URLs come from the page — wrap them as
 	// untrusted content so a hostile `href` cannot inject instructions.
-	snap.Title = wrapUntrusted(ctx, pageURL, snap.Title)
+	// The title, element texts and link URLs are scanned and audit-recorded
+	// as one batch; each still gets its own wrapper.
+	fields := []*string{&snap.Title}
 	for i := range snap.Elements {
-		snap.Elements[i].Text = wrapUntrusted(ctx, pageURL, snap.Elements[i].Text)
+		fields = append(fields, &snap.Elements[i].Text)
 		if snap.Elements[i].Type == "link" && snap.Elements[i].URL != "" {
-			snap.Elements[i].URL = wrapUntrusted(ctx, pageURL, snap.Elements[i].URL)
+			fields = append(fields, &snap.Elements[i].URL)
 		}
+	}
+	contents := make([]string, len(fields))
+	for i, f := range fields {
+		contents[i] = *f
+	}
+	for i, w := range wrapUntrustedBatch(ctx, pageURL, nil, contents) {
+		*fields[i] = w
 	}
 	// Keep the raw page URL itself unwrapped for internal navigation; it is
 	// wrapped at the result-output boundary in doNavigate/doSnapshot.

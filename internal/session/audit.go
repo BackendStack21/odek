@@ -62,6 +62,18 @@ type AuditLog struct {
 type AuditStore struct {
 	mu  sync.Mutex
 	dir string
+	// validated remembers, per session id, the file state the last
+	// successful append left behind. While the file still matches (same
+	// inode, regular file, same size and mtime) the JSONL form and a clean
+	// tail are already known, so the next append skips the full-file
+	// validation.
+	validated map[string]auditFileState
+}
+
+// auditFileState is the identity of an audit file right after an append.
+type auditFileState struct {
+	info os.FileInfo
+	size int64
 }
 
 // NewAuditStore returns a store rooted at dir; the audit subdir is
@@ -79,6 +91,7 @@ func (s *AuditStore) Remove(sessionID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	base := filepath.Join(s.dir, sessionID+".json")
+	delete(s.validated, sessionID)
 	var firstErr error
 	if err := os.Remove(base); err != nil && !os.IsNotExist(err) {
 		firstErr = err
@@ -191,9 +204,17 @@ func (s *AuditStore) appendRecord(sessionID string, rec auditRecord) error {
 	}
 	path := filepath.Join(s.dir, sessionID+".json")
 
+	// Steady state: the file is exactly as our previous append left it, so
+	// it is already known to be JSONL with a clean tail. Append directly.
+	if fi, err := os.Lstat(path); err == nil && s.stillValidated(sessionID, fi) {
+		return s.appendLine(sessionID, path, fi.Size(), rec, false)
+	}
+	delete(s.validated, sessionID)
+
 	// Probe the existing file. A read failure other than NotExist must
 	// surface so a transient error cannot cause history loss.
 	legacy := false
+	var preSize int64
 	if fi, err := os.Lstat(path); err != nil {
 		if !os.IsNotExist(err) {
 			err := auditReadError{err}
@@ -217,7 +238,8 @@ func (s *AuditStore) appendRecord(sessionID string, rec auditRecord) error {
 		err := auditReadError{errAuditUnreadableTarget}
 		diagnostics.Report("audit", "read", sessionID, err)
 		return err
-	} else if data, err := os.ReadFile(path); err == nil {
+	} else if data, err := auditReadFile(path); err == nil {
+		preSize = int64(len(data))
 		legacy = isLegacyAuditJSON(data)
 		if !legacy {
 			// Validate the JSONL tail. A torn LAST line (crash mid-append)
@@ -227,6 +249,7 @@ func (s *AuditStore) appendRecord(sessionID string, rec auditRecord) error {
 			// aside and start a fresh log rather than append behind it.
 			if corrupted := corruptJSONLIndex(data); corrupted {
 				s.preserveCorruptLocked(sessionID)
+				preSize = 0
 			}
 		}
 	} else {
@@ -240,13 +263,14 @@ func (s *AuditStore) appendRecord(sessionID string, rec auditRecord) error {
 	if legacy {
 		// Legacy pretty-printed file: migrate by decoding and re-emitting
 		// every record as JSONL (atomic replace), then append the new one.
-		data, err := os.ReadFile(path)
+		data, err := auditReadFile(path)
 		if err != nil {
 			return err
 		}
 		var old AuditLog
 		if err := json.Unmarshal(data, &old); err != nil {
 			s.preserveCorruptLocked(sessionID)
+			preSize = 0
 		} else {
 			var buf bytes.Buffer
 			enc := json.NewEncoder(&buf)
@@ -274,17 +298,32 @@ func (s *AuditStore) appendRecord(sessionID string, rec auditRecord) error {
 		}
 	}
 
+	return s.appendLine(sessionID, path, preSize, rec, true)
+}
+
+// stillValidated reports whether fi is the regular file the last append left
+// behind for sessionID.
+func (s *AuditStore) stillValidated(sessionID string, fi os.FileInfo) bool {
+	v, ok := s.validated[sessionID]
+	return ok && fi.Mode().IsRegular() && fi.Size() == v.size && fi.ModTime().Equal(v.info.ModTime()) && os.SameFile(fi, v.info)
+}
+
+// appendLine writes rec as one JSONL line. With checkTail it first repairs a
+// torn tail (a crash mid-append left a fragment with no final newline) so the
+// new record starts on a fresh line. preSize is the file size before the
+// write; a successful append that grew the file by exactly the line length is
+// remembered so the next append can skip validation.
+func (s *AuditStore) appendLine(sessionID, path string, preSize int64, rec auditRecord, checkTail bool) error {
 	line, err := json.Marshal(rec)
 	if err != nil {
 		return err
 	}
 	line = append(line, '\n')
-	// Repair a torn tail (crash mid-append left a fragment with no final
-	// newline): start the new record on a fresh line so it stays parseable.
-	if tail, err := os.ReadFile(path); err == nil && len(tail) > 0 && tail[len(tail)-1] != '\n' {
-		last := bytes.TrimSpace(bytes.Split(tail, []byte("\n"))[len(bytes.Split(tail, []byte("\n")))-1])
-		var probe auditRecord
-		if json.Unmarshal(last, &probe) != nil {
+	if checkTail {
+		// Any tail without a final newline gets one first: a torn fragment
+		// then stays its own (skipped) line, and a complete record that merely
+		// lost its terminator is not merged with the new one.
+		if tail, err := auditReadFile(path); err == nil && len(tail) > 0 && tail[len(tail)-1] != '\n' {
 			line = append([]byte{'\n'}, line...)
 		}
 	}
@@ -298,9 +337,16 @@ func (s *AuditStore) appendRecord(sessionID string, rec auditRecord) error {
 		diagnostics.Report("audit", "append", sessionID, err)
 		return err
 	}
+	st, statErr := f.Stat()
 	if err := f.Close(); err != nil {
 		diagnostics.Report("audit", "append", sessionID, err)
 		return err
+	}
+	if statErr == nil && st.Mode().IsRegular() && st.Size() == preSize+int64(len(line)) {
+		if s.validated == nil {
+			s.validated = make(map[string]auditFileState)
+		}
+		s.validated[sessionID] = auditFileState{info: st, size: st.Size()}
 	}
 	return nil
 }
@@ -371,7 +417,7 @@ func isLegacyAuditJSON(data []byte) bool {
 
 func (s *AuditStore) loadLocked(sessionID string) (AuditLog, error) {
 	path := filepath.Join(s.dir, sessionID+".json")
-	data, err := os.ReadFile(path)
+	data, err := auditReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return AuditLog{SessionID: sessionID}, nil
@@ -471,3 +517,7 @@ func NovelResources(userText string, toolText string) []string {
 	}
 	return novel
 }
+
+// auditReadFile reads a whole audit file for validation. A variable so tests
+// can count how often an append re-reads the log.
+var auditReadFile = os.ReadFile
