@@ -171,6 +171,11 @@ func RedactSecrets(text string) string {
 		result = r.Replace(result)
 	}
 	for _, p := range patterns {
+		// ReplaceAllString copies its input even when nothing matches, so
+		// only patterns that match pay for a rewrite.
+		if p.FindStringIndex(result) == nil {
+			continue
+		}
 		result = p.ReplaceAllString(result, "[REDACTED]")
 	}
 	return result
