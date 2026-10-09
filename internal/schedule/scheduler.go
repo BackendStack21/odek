@@ -269,8 +269,12 @@ func (s *Scheduler) reconcile(now time.Time) {
 			// Missed but no catchup → record the skip (persisted after unlock).
 			s.next[job.ID] = sched.Next(now)
 			s.log.Info("scheduler: skipping missed fire", "id", job.ID, "name", job.Name)
+			// LastRun/LastResult/LastError keep describing the last time the
+			// job actually ran; only the status and next fire change.
+			prev := state[job.ID]
 			skips = append(skips, RunState{
-				JobID: job.ID, LastStatus: StatusSkipped, LastRun: now,
+				JobID: job.ID, LastStatus: StatusSkipped, LastRun: prev.LastRun,
+				LastResult: prev.LastResult, LastError: prev.LastError,
 				NextRun: s.next[job.ID], Runs: s.runs[job.ID], Sig: newSig,
 			})
 		case !prevNext.IsZero() && !prevNext.Before(now):
