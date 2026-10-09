@@ -202,7 +202,7 @@ Most config knobs have a `ODEK_*` counterpart:
 
 ## API key fallback order
 
-Selected provider, then leftovers. After resolution, provider key env vars are **unset** from the process environment (the SDK keeps the key in memory; `printenv` from tools does not see it).
+Selected provider, then leftovers. After resolution, provider key env vars are **unset** from the process environment (the SDK keeps the key in memory; `printenv` from tools does not see it). The scrubbed values are remembered in-process (bound to the `HOME` they were captured under), so a second `LoadConfig` in the same process, such as the logging pre-load that runs before the command's own load, still resolves a key supplied only through the real environment.
 
 1. Explicit `api_key` / `providers.<id>.api_key` (after `${VAR}` expansion)
 2. `ODEK_API_KEY`

@@ -3058,13 +3058,13 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 		}
 	}
 	if resolved.APIKey == "" {
-		resolved.APIKey = os.Getenv("ODEK_API_KEY")
+		resolved.APIKey = providerEnv("ODEK_API_KEY")
 	}
 	if resolved.APIKey == "" {
 		resolved.APIKey = firstNonEmptyEnv(providerAPIKeyEnv(resolved.Provider)...)
 	}
 	if resolved.APIKey == "" && resolved.Provider == "deepseek" {
-		resolved.APIKey = os.Getenv("OPENAI_API_KEY")
+		resolved.APIKey = providerEnv("OPENAI_API_KEY")
 	}
 
 	// Clear provider key env vars so they are not visible in /proc/.../environ.
@@ -3075,6 +3075,7 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	} {
 		if v := os.Getenv(k); v != "" {
 			redact.RegisterSecret(v)
+			rememberScrubbedEnv(k, v)
 		}
 		os.Unsetenv(k)
 	}
@@ -3150,9 +3151,47 @@ func providerAPIKeyEnv(id string) []string {
 	}
 }
 
+// scrubbedProviderEnv remembers the provider key variables LoadConfig removed
+// from the process environment, so a later LoadConfig in the same process (the
+// logging pre-load runs before the command's own load) still resolves a key
+// supplied only through the real environment. The memory is bound to the HOME
+// it was captured under: a process that moves to another home resolves
+// provider keys from that environment alone.
+var (
+	scrubbedProviderEnvMu   sync.Mutex
+	scrubbedProviderEnvHome string
+	scrubbedProviderEnv     = map[string]string{}
+)
+
+func rememberScrubbedEnv(name, value string) {
+	home := os.Getenv("HOME")
+	scrubbedProviderEnvMu.Lock()
+	defer scrubbedProviderEnvMu.Unlock()
+	if home != scrubbedProviderEnvHome {
+		scrubbedProviderEnvHome = home
+		scrubbedProviderEnv = map[string]string{}
+	}
+	scrubbedProviderEnv[name] = value
+}
+
+// providerEnv reads a provider key variable: the live environment when it is
+// set, otherwise the value an earlier LoadConfig scrubbed from it.
+func providerEnv(name string) string {
+	if v, ok := os.LookupEnv(name); ok {
+		return v
+	}
+	home := os.Getenv("HOME")
+	scrubbedProviderEnvMu.Lock()
+	defer scrubbedProviderEnvMu.Unlock()
+	if home != scrubbedProviderEnvHome {
+		return ""
+	}
+	return scrubbedProviderEnv[name]
+}
+
 func firstNonEmptyEnv(keys ...string) string {
 	for _, k := range keys {
-		if v := os.Getenv(k); v != "" {
+		if v := providerEnv(k); v != "" {
 			return v
 		}
 	}
