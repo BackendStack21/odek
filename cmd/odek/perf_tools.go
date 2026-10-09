@@ -423,66 +423,92 @@ func (t *diffTool) Call(argsJSON string) (result string, err error) {
 	return jsonResult(diffResult{Hunks: hunks, PathA: pathA, PathB: pathB})
 }
 
+// computeDiff returns the line diff of a and b as hunks in document order.
+//
+// The LCS table is built only over the lines between the common prefix and
+// the common suffix. Outside that window its values are known in closed form
+// (inside the shared prefix LCS(a[:i], b[:j]) is min(i, j)), so the backtrack
+// walks the full coordinate space exactly as a dense table would and produces
+// the same hunks while allocating only for the changed region. Lines are
+// collected in backtrack order and reversed once per hunk.
 func computeDiff(a, b []string) []diffHunk {
 	m, n := len(a), len(b)
-	lcs := make([][]int, m+1)
-	for i := range lcs {
-		lcs[i] = make([]int, n+1)
+	p := 0
+	for p < m && p < n && a[p] == b[p] {
+		p++
 	}
-	for i := 1; i <= m; i++ {
-		for j := 1; j <= n; j++ {
-			if a[i-1] == b[j-1] {
-				lcs[i][j] = lcs[i-1][j-1] + 1
-			} else if lcs[i-1][j] >= lcs[i][j-1] {
-				lcs[i][j] = lcs[i-1][j]
-			} else {
-				lcs[i][j] = lcs[i][j-1]
+	s := 0
+	for s < m-p && s < n-p && a[m-1-s] == b[n-1-s] {
+		s++
+	}
+	rows, cols := m-p-s, n-p-s
+	w := cols + 1
+	mid := make([]int, (rows+1)*w)
+	for i := 1; i <= rows; i++ {
+		for j := 1; j <= cols; j++ {
+			switch {
+			case a[p+i-1] == b[p+j-1]:
+				mid[i*w+j] = mid[(i-1)*w+j-1] + 1
+			case mid[(i-1)*w+j] >= mid[i*w+j-1]:
+				mid[i*w+j] = mid[(i-1)*w+j]
+			default:
+				mid[i*w+j] = mid[i*w+j-1]
 			}
 		}
 	}
+	// lcs(i, j) is LCS(a[:i], b[:j]) for any i <= m-s, j <= n-s.
+	lcs := func(i, j int) int {
+		if i < p || j < p {
+			return min(i, j)
+		}
+		return p + mid[(i-p)*w+(j-p)]
+	}
 
-	// Backtrack
 	var hunks []diffHunk
-	i, j := m, n
-
 	var equalLines, addedLines, removedLines []diffLine
-
+	emit := func(typ string, lines []diffLine) {
+		for x, y := 0, len(lines)-1; x < y; x, y = x+1, y-1 {
+			lines[x], lines[y] = lines[y], lines[x]
+		}
+		hunks = append(hunks, diffHunk{Type: typ, Lines: lines})
+	}
 	flushHunk := func() {
 		if len(equalLines) > 0 {
-			hunks = append(hunks, diffHunk{Type: "equal", Lines: equalLines})
+			emit("equal", equalLines)
 			equalLines = nil
 		}
 		if len(removedLines) > 0 {
-			hunks = append(hunks, diffHunk{Type: "removed", Lines: removedLines})
+			emit("removed", removedLines)
 			removedLines = nil
 		}
 		if len(addedLines) > 0 {
-			hunks = append(hunks, diffHunk{Type: "added", Lines: addedLines})
+			emit("added", addedLines)
 			addedLines = nil
 		}
 	}
 
+	i, j := m, n
 	for i > 0 || j > 0 {
+		// The common suffix is matched greedily from the end, as the dense
+		// backtrack does; past it the table decides.
 		if i > 0 && j > 0 && a[i-1] == b[j-1] {
 			flushHunk()
-			equalLines = append([]diffLine{{OldLine: i, NewLine: j, Content: a[i-1]}}, equalLines...)
+			equalLines = append(equalLines, diffLine{OldLine: i, NewLine: j, Content: a[i-1]})
 			i--
 			j--
-		} else if j > 0 && (i == 0 || lcs[i][j-1] >= lcs[i-1][j]) {
-			addedLines = append([]diffLine{{NewLine: j, Content: b[j-1]}}, addedLines...)
+		} else if j > 0 && (i == 0 || lcs(i, j-1) >= lcs(i-1, j)) {
+			addedLines = append(addedLines, diffLine{NewLine: j, Content: b[j-1]})
 			j--
 		} else if i > 0 {
-			removedLines = append([]diffLine{{OldLine: i, Content: a[i-1]}}, removedLines...)
+			removedLines = append(removedLines, diffLine{OldLine: i, Content: a[i-1]})
 			i--
 		}
 	}
 	flushHunk()
 
-	// Reverse hunks
-	for i, k := 0, len(hunks)-1; i < k; i, k = i+1, k-1 {
-		hunks[i], hunks[k] = hunks[k], hunks[i]
+	for x, y := 0, len(hunks)-1; x < y; x, y = x+1, y-1 {
+		hunks[x], hunks[y] = hunks[y], hunks[x]
 	}
-
 	return hunks
 }
 
