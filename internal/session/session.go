@@ -783,7 +783,7 @@ func (s *Store) saveLocked(sess *Session) (err error) {
 			// Copy first: the slice may be shared with the caller's live history.
 			calls := append([]ToolCall(nil), sess.Messages[i].ToolCalls...)
 			for j := range calls {
-				calls[j].Function.Arguments = redact.RedactSecrets(calls[j].Function.Arguments)
+				calls[j].Function.Arguments = redactToolArguments(calls[j].Function.Arguments)
 			}
 			sess.Messages[i].ToolCalls = calls
 		}
