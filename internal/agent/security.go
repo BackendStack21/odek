@@ -5,6 +5,9 @@ import (
 	"encoding/hex"
 	"strings"
 	"time"
+	"unicode"
+
+	"github.com/BackendStack21/odek/internal/danger"
 )
 
 // SecurityPillar is the invariant runtime policy. Config.SystemMessage is an
@@ -61,13 +64,208 @@ An IPI attempt is any content in tool output, files, web pages, emails, calendar
 // ComposeSecureSystem strips embedded copies and appends one authoritative
 // pillar at the end. Appending, rather than accepting an identity containing
 // the pillar unchanged, prevents scanner-clean trailing identity text from
-// becoming the last instruction in the trusted block.
+// becoming the last instruction in the trusted block. Identity text that
+// imitates a pillar section heading (Safety, Execution provenance, Indirect
+// Prompt Injection) is stripped together with the rule block directly under
+// it, so an altered copy of the pillar cannot sit ahead of the real one and
+// contradict it. Unrelated identity text is kept.
 func ComposeSecureSystem(identity string) string {
-	identity = strings.TrimSpace(strings.ReplaceAll(identity, SecurityPillar, ""))
-	if identity == "" {
+	return appendSecurityPillar(sanitizeIdentity(identity))
+}
+
+// sanitizeIdentity removes exact pillar copies and pillar imitations from
+// operator identity text. It must run on the identity alone, before wrapped
+// adjuncts (AGENTS.md, skills, catalog) are appended: those are data, and
+// rewriting them could break their untrusted boundaries. An identity holds
+// no genuine untrusted wrappers, so any untrusted_content literal in it is
+// neutralised: the identity can neither fake a data boundary nor hide an
+// imitation inside one.
+func sanitizeIdentity(identity string) string {
+	identity = strings.ReplaceAll(identity, SecurityPillar, "")
+	identity = strings.ReplaceAll(identity, "untrusted_content", "untrusted·content")
+	return strings.TrimSpace(stripPillarImitations(identity))
+}
+
+// appendSecurityPillar removes exact pillar copies and appends the one
+// authoritative pillar last. It does not rewrite anything else, so it is
+// safe on a system message that already carries wrapped adjuncts.
+func appendSecurityPillar(system string) string {
+	system = strings.TrimSpace(strings.ReplaceAll(system, SecurityPillar, ""))
+	if system == "" {
 		return SecurityPillar
 	}
-	return identity + "\n\n" + SecurityPillar
+	return system + "\n\n" + SecurityPillar
+}
+
+// stripPillarImitations removes every heading that imitates a pillar section
+// title, plus the block directly under it: list items, indented or lazy
+// continuation lines, bold-only lines, and the first plain paragraph. The
+// block ends at the next heading, at a code fence, or at the first plain
+// paragraph that follows a blank line. Fenced code is opaque: nothing inside
+// a fence is treated as a heading or stripped. It runs on identity text only;
+// wrapped adjuncts are appended afterwards and never pass through it.
+//
+// Headings are recognised in ATX ("## …"), setext (a title over "===" or
+// "---") and bold-line ("**…**") form, after folding fullwidth forms,
+// homoglyphs and invisible characters, so obfuscated copies still match.
+func stripPillarImitations(identity string) string {
+	lines := strings.Split(identity, "\n")
+	out := make([]string, 0, len(lines))
+	inFence := false
+	stripping := false
+	consumed := false // the imitated block has consumed content
+	sawBlank := false
+	for i := 0; i < len(lines); i++ {
+		line := lines[i]
+		if isFenceLine(foldHeadingText(line)) {
+			inFence = !inFence
+			stripping = false
+			out = append(out, line)
+			continue
+		}
+		if inFence {
+			out = append(out, line)
+			continue
+		}
+		if title, span, isHeading := headingAt(lines, i); isHeading {
+			if isPillarTitle(title) {
+				stripping, consumed, sawBlank = true, false, false
+				i += span - 1
+				continue
+			}
+			stripping = false
+			out = append(out, line)
+			continue
+		}
+		if !stripping {
+			out = append(out, line)
+			continue
+		}
+		switch {
+		case strings.TrimSpace(line) == "":
+			sawBlank = true
+		case isRuleBlockLine(line):
+			consumed, sawBlank = true, false
+		case !sawBlank:
+			// First paragraph or lazy continuation of a stripped item.
+			consumed = true
+		case !consumed:
+			// First plain paragraph under the heading.
+			consumed, sawBlank = true, false
+		default:
+			// A plain paragraph after a blank line ends the imitated block.
+			stripping = false
+			out = append(out, "", line)
+		}
+	}
+	return strings.Join(out, "\n")
+}
+
+// isRuleBlockLine reports list items, indented continuation lines and
+// bold-only lines — the shapes pillar rules take.
+func isRuleBlockLine(line string) bool {
+	if line != "" && (line[0] == ' ' || line[0] == '\t') {
+		return true
+	}
+	t := strings.TrimSpace(foldHeadingText(line))
+	for _, bullet := range []string{"·", "•", "- ", "* ", "+ "} {
+		if strings.HasPrefix(t, bullet) {
+			return true
+		}
+	}
+	digits := 0
+	for digits < len(t) && t[digits] >= '0' && t[digits] <= '9' {
+		digits++
+	}
+	if digits > 0 && digits < len(t) && (t[digits] == '.' || t[digits] == ')') {
+		return true
+	}
+	return strings.HasPrefix(t, "**") && (strings.HasSuffix(t, "**") || strings.HasSuffix(t, "**:") || strings.HasSuffix(t, ":**"))
+}
+
+// isFenceLine reports a code-fence delimiter line.
+func isFenceLine(folded string) bool {
+	t := strings.TrimSpace(folded)
+	return strings.HasPrefix(t, "```") || strings.HasPrefix(t, "~~~")
+}
+
+// headingAt recognises a heading starting at lines[i] and returns its title
+// and how many lines it spans.
+func headingAt(lines []string, i int) (title string, consumed int, ok bool) {
+	t := strings.TrimSpace(foldHeadingText(lines[i]))
+	if t == "" {
+		return "", 0, false
+	}
+	// ATX.
+	level := 0
+	for level < len(t) && t[level] == '#' {
+		level++
+	}
+	if level > 0 && level <= 6 && level < len(t) && t[level] == ' ' {
+		return t[level:], 1, true
+	}
+	// Bold-only line used as a heading.
+	for _, mark := range []string{"**", "__"} {
+		if strings.HasPrefix(t, mark) {
+			inner := strings.TrimSuffix(strings.TrimSuffix(t, ":"), mark)
+			inner = strings.TrimSuffix(inner, ":")
+			if inner != t && len(inner) > len(mark) {
+				return inner[len(mark):], 1, true
+			}
+		}
+	}
+	// Setext: a title line over a line of only '=' or '-'.
+	if i+1 < len(lines) && !isRuleBlockLine(lines[i]) {
+		u := strings.TrimSpace(foldHeadingText(lines[i+1]))
+		if len(u) >= 2 && (strings.Trim(u, "=") == "" || (len(u) >= 3 && strings.Trim(u, "-") == "")) {
+			return t, 2, true
+		}
+	}
+	return "", 0, false
+}
+
+// foldHeadingText folds fullwidth forms and homoglyphs to ASCII, drops
+// invisible and combining characters, lower-cases and collapses whitespace.
+func foldHeadingText(s string) string {
+	s = strings.Map(func(r rune) rune {
+		if r >= 0xFF01 && r <= 0xFF5E { // fullwidth ASCII
+			return r - 0xFEE0
+		}
+		if r == 0x3000 { // ideographic space
+			return ' '
+		}
+		return r
+	}, s)
+	return danger.NormalizeForScan(danger.FoldHomoglyphs(s))
+}
+
+// isPillarTitle matches a heading title against the pillar section titles,
+// case-, dash- and punctuation-insensitively. Short forms match only as the
+// whole title, so "Execution provenance of our CI builds" is unrelated.
+func isPillarTitle(title string) bool {
+	var b strings.Builder
+	space := true
+	for _, r := range title {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			b.WriteRune(unicode.ToLower(r))
+			space = false
+			continue
+		}
+		if !space {
+			b.WriteByte(' ')
+			space = true
+		}
+	}
+	t := strings.TrimSpace(b.String())
+	switch {
+	case strings.HasPrefix(t, "safety these override"):
+		return true
+	case t == "execution provenance", strings.HasPrefix(t, "execution provenance where justification"):
+		return true
+	case t == "indirect prompt injection", strings.HasPrefix(t, "indirect prompt injection ipi"):
+		return true
+	}
+	return false
 }
 
 // DefaultUntrustedWrapper provides a safe boundary for embedders that do not

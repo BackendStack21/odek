@@ -548,6 +548,10 @@ func New(cfg Config) (_ *Agent, setupErr error) {
 		tools[i] = &toolAdapter{t: t}
 	}
 
+	// Pillar imitations are stripped from the operator identity alone,
+	// before any wrapped adjunct is appended (see sanitizeIdentity).
+	cfg.SystemMessage = sanitizeIdentity(cfg.SystemMessage)
+
 	// Load AGENTS.md from the working directory and append to system message.
 	// Content is scanned for prompt injection before being trusted.
 	if !cfg.NoProjectFile {
@@ -633,9 +637,9 @@ func New(cfg Config) (_ *Agent, setupErr error) {
 	}
 
 	// Config.SystemMessage is identity/persona, not a way to remove runtime
-	// policy. Canonicalize after all wrapped adjuncts are appended so one
-	// authoritative pillar is always the final trusted block.
-	cfg.SystemMessage = ComposeSecureSystem(cfg.SystemMessage)
+	// policy. Append after all wrapped adjuncts so one authoritative pillar
+	// is always the final trusted block; the adjuncts are not rewritten.
+	cfg.SystemMessage = appendSecurityPillar(cfg.SystemMessage)
 
 	// Create memory manager
 	memoryDir := cfg.MemoryDir

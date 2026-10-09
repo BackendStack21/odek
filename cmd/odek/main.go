@@ -218,8 +218,9 @@ const defaultSystem = defaultIdentity + "\n\n" + securityPillar
 // file or an attacker-controlled system prompt falls back to the compiled-in
 // default rather than being trusted as system instructions. Accepted operator
 // prompts are IDENTITY: the invariant securityPillar is always composed on
-// top (idempotently — an identity already carrying the pillar is kept as-is),
-// so no operator surface can drop the security rules.
+// top (embedded copies and blocks under imitated pillar headings are stripped,
+// then one authoritative pillar is appended last), so no operator surface can
+// drop or contradict the security rules.
 func buildSystemPrompt(resolved config.ResolvedConfig) string {
 	g, err := guard.New(&resolved.Guard)
 	if err != nil {
@@ -262,8 +263,10 @@ func buildSystemPrompt(resolved config.ResolvedConfig) string {
 // composeSystem attaches the invariant security pillar to an accepted
 // identity. Operator surfaces (--system, ODEK_SYSTEM, the config `system`
 // field, IDENTITY.md) define who the agent is — name, mission, persona; the
-// security pillar is not theirs to drop. Idempotent: an identity that already
-// carries the pillar verbatim is returned unchanged.
+// security pillar is not theirs to drop. Idempotent: composing an already
+// composed prompt yields the same prompt — embedded pillar copies and the
+// blocks under imitated pillar headings are stripped and the pillar appended
+// last.
 func composeSystem(identity string) string {
 	return odek.ComposeSecureSystem(identity)
 }
