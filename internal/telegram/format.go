@@ -43,7 +43,7 @@ func FormatResponse(text string) ([]string, error) {
 		}
 
 		if inCodeBlock {
-			resultLines = append(resultLines, line)
+			resultLines = append(resultLines, escapeCodeLine(line))
 			continue
 		}
 
@@ -67,7 +67,7 @@ func FormatResponse(text string) ([]string, error) {
 				inTable = true
 				tableLines = nil
 			}
-			tableLines = append(tableLines, line)
+			tableLines = append(tableLines, escapeCodeLine(line))
 			continue
 		}
 
@@ -149,6 +149,24 @@ func isReserved(r rune) bool {
 		return true
 	}
 	return false
+}
+
+// escapeCodeLine escapes a line that is emitted inside a ``` fence. MarkdownV2
+// requires "`" and "\" to be backslash-escaped inside pre blocks; without it a
+// mid-line ``` in untrusted text closes the fence and the rest of the line is
+// parsed as live, unescaped MarkdownV2 (links, formatting).
+func escapeCodeLine(line string) string {
+	if !strings.ContainsAny(line, "`\\") {
+		return line
+	}
+	var b strings.Builder
+	for i := 0; i < len(line); i++ {
+		if line[i] == '`' || line[i] == '\\' {
+			b.WriteByte('\\')
+		}
+		b.WriteByte(line[i])
+	}
+	return b.String()
 }
 
 // isSeparator reports whether a line is a horizontal rule made of ─ characters.
