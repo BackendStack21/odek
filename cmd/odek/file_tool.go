@@ -964,10 +964,21 @@ func (t *patchTool) Call(argsJSON string) (string, error) {
 	if !strings.Contains(original, args.OldString) {
 		return jsonError(fmt.Sprintf("old_string not found in %q. Use search_files to find the correct string.", args.Path))
 	}
-	if !args.ReplaceAll {
-		if n := strings.Count(original, args.OldString); n > 1 {
-			return jsonError(fmt.Sprintf("old_string is not unique in %q (%d occurrences). Provide a larger unique snippet or set replace_all=true.", args.Path, n))
-		}
+	n := strings.Count(original, args.OldString)
+	if !args.ReplaceAll && n > 1 {
+		return jsonError(fmt.Sprintf("old_string is not unique in %q (%d occurrences). Provide a larger unique snippet or set replace_all=true.", args.Path, n))
+	}
+
+	// Bound the result before building it: replace_all over many matches
+	// with a long replacement would otherwise allocate the full expansion
+	// just to reject it.
+	replacements := 1
+	if args.ReplaceAll {
+		replacements = n
+	}
+	resultSize := int64(len(original)) + int64(replacements)*(int64(len(args.NewString))-int64(len(args.OldString)))
+	if resultSize > maxFileReadBytes {
+		return jsonError(fmt.Sprintf("patch result too large (%d bytes, max %d)", resultSize, maxFileReadBytes))
 	}
 
 	var modified string
@@ -975,9 +986,6 @@ func (t *patchTool) Call(argsJSON string) (string, error) {
 		modified = strings.ReplaceAll(original, args.OldString, args.NewString)
 	} else {
 		modified = strings.Replace(original, args.OldString, args.NewString, 1)
-	}
-	if len(modified) > maxFileReadBytes {
-		return jsonError(fmt.Sprintf("patch result too large (%d bytes, max %d)", len(modified), maxFileReadBytes))
 	}
 
 	// Generate a simple diff
