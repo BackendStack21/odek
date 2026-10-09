@@ -1296,7 +1296,19 @@ func (m *MemoryManager) writeEpisode(sessionID, extraction string, turns int, pr
 	// recalled without a manual `odek memory promote`. Off by default; the
 	// audit record keeps Untrusted + Sources so it stays clear the content was
 	// external and the approval was automatic (AutoApproved, not UserApproved).
-	if prov.Untrusted && m.cfg.AutoApproveEpisodes != nil && *m.cfg.AutoApproveEpisodes {
+	//
+	// The summary is LLM output over the whole transcript (injected text
+	// included) and is replayed into later system prompts, so it goes through
+	// the injection guard first. A rejected summary is still stored for audit
+	// but tainted, and never auto-approved: only a human promote recalls it.
+	guardRejected := false
+	if err := m.scanContent(context.Background(), extraction); err != nil {
+		log.Printf("memory: episode summary rejected: %v", err)
+		guardRejected = true
+		prov.Untrusted = true
+		prov.Sources = append(append([]string(nil), prov.Sources...), "guard:episode-summary")
+	}
+	if prov.Untrusted && !guardRejected && m.cfg.AutoApproveEpisodes != nil && *m.cfg.AutoApproveEpisodes {
 		prov.AutoApproved = true
 	}
 

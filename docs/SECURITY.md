@@ -218,7 +218,7 @@ Detection that lands *after* a side effect is reporting, not prevention — but 
 
 ### Memory taint tracking
 
-`internal/memory` tracks `EpisodeProvenance{Untrusted, Sources, UserApproved}` for every episode. An episode derived from a session that ingested untrusted content is **stored on disk for audit but never auto-replayed** into future sessions. This stops a single successful injection from becoming a persistent backdoor through the episode pipeline.
+`internal/memory` tracks `EpisodeProvenance{Untrusted, Sources, UserApproved}` for every episode. An episode derived from a session that ingested untrusted content is **stored on disk for audit but never auto-replayed** into future sessions. This stops a single successful injection from becoming a persistent backdoor through the episode pipeline. The LLM-written episode summary itself is also run through the injection guard before it is stored: a rejected summary is kept for audit but stamped `Untrusted` (source `guard:episode-summary`) and never auto-approved, so it is recalled only after a human promote.
 
 These families are additionally pinned by dedicated per-module suites beyond the central regression bar (`cmd/odek/security_report_validation_test.go`):
 
