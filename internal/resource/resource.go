@@ -18,6 +18,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"github.com/BackendStack21/odek/internal/pathutil"
 	"github.com/BackendStack21/odek/internal/session"
@@ -395,7 +396,13 @@ func (f *FileResolver) Load(ctx context.Context, id string) (string, error) {
 	maxSize := 50 * 1024
 	content := string(data)
 	if len(content) > maxSize {
-		content = content[:maxSize] + "\n... [truncated at 50KB]"
+		// Back up to a rune boundary so a multi-byte sequence straddling the
+		// limit is dropped whole instead of leaving invalid UTF-8.
+		cut := maxSize
+		for cut > 0 && !utf8.RuneStart(content[cut]) {
+			cut--
+		}
+		content = content[:cut] + "\n... [truncated at 50KB]"
 	}
 
 	return content, nil
