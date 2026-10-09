@@ -265,7 +265,9 @@ func (e *replEditor) readTildeOrBracketed(_ string) {
 	if more[0] == '0' {
 		// \x1b[200~ or \x1b[201~
 		end := make([]byte, 2)
-		os.Stdin.Read(end)
+		if _, err := io.ReadFull(os.Stdin, end); err != nil {
+			return
+		}
 		if end[0] == '0' && end[1] == '~' {
 			e.bracketed = true // start paste
 		} else if end[0] == '1' && end[1] == '~' {
