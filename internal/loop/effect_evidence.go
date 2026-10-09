@@ -14,21 +14,25 @@ func isEffectEvidence(m session.Message) bool {
 }
 
 // effectBodyCache memoizes the redacted ledger text. The ledger is append-only
-// within a run, so its length and newest entry identify the cached body.
+// within a run, so its length and newest entry identify the input; the
+// redaction registry generation identifies the policy, so a secret registered
+// after the body was built forces a fresh redaction.
 type effectBodyCache struct {
 	n    int
 	last string
+	gen  uint64
 	body string
 }
 
 func (e *Engine) effectEvidenceBody() string {
 	n := len(e.runMutations)
 	last := e.runMutations[n-1]
-	if c := e.effectBody; c.n == n && c.last == last && c.body != "" {
+	gen := redact.Generation()
+	if c := e.effectBody; c.n == n && c.last == last && c.gen == gen && c.body != "" {
 		return c.body
 	}
 	body := redact.RedactSecrets(strings.Join(e.runMutations, "\n"))
-	e.effectBody = effectBodyCache{n: n, last: last, body: body}
+	e.effectBody = effectBodyCache{n: n, last: last, gen: gen, body: body}
 	return body
 }
 

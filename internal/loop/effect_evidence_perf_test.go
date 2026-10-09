@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/BackendStack21/odek/internal/redact"
 	"github.com/BackendStack21/odek/internal/session"
 )
 
@@ -44,5 +45,21 @@ func TestEffectEvidenceBodyTracksLedger(t *testing.T) {
 	e.effectBody = effectBodyCache{}
 	if got := e.effectEvidenceBody(); strings.Contains(got, "echo a") || !strings.Contains(got, "echo d") {
 		t.Fatalf("stale body after reset: %q", got)
+	}
+}
+
+// A secret registered after the body was memoized must be redacted on the
+// next refresh even though the ledger itself did not change.
+func TestRED_Loop_EffectEvidenceRescannedAfterSecretRegistered(t *testing.T) {
+	redact.ResetSecrets()
+	t.Cleanup(redact.ResetSecrets)
+	secret := "late-registered-secret-value-0123456789"
+	e := &Engine{runMutations: []string{"shell: curl -H 'X-Token: " + secret + "'"}}
+	if body := e.effectEvidenceBody(); !strings.Contains(body, secret) {
+		t.Fatalf("precondition: unregistered value should be visible, got %q", body)
+	}
+	redact.RegisterSecret(secret)
+	if body := e.effectEvidenceBody(); strings.Contains(body, secret) {
+		t.Fatalf("memo served a body redacted under the old registry: %q", body)
 	}
 }

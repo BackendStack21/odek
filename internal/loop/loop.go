@@ -1816,9 +1816,10 @@ func (e *Engine) refreshDigest(ctx context.Context, messages []session.Message, 
 
 	e.compactMu.Lock()
 	e.pendingDropped = append(e.pendingDropped, dropped...)
-	// A read-only view of the queue, capacity-clamped so a later append
-	// reallocates instead of writing into it. Queued records are never
-	// rewritten in place, so the view stays valid for the side call.
+	// A read-only view of the queue. Every later write to pendingDropped is
+	// an append past this length, a reslice, or a reset to nil; no queued
+	// record is ever rewritten in place, so the view stays valid for the
+	// side call. The capacity clamp keeps the view itself append-safe.
 	all := e.pendingDropped[:len(e.pendingDropped):len(e.pendingDropped)]
 	startIdx := len(e.pendingDropped) - len(dropped)
 	// digestDirty means an earlier drop was debounced behind an in-flight
