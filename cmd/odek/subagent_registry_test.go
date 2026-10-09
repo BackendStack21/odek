@@ -235,7 +235,7 @@ func TestHandleSubagentRegistry_ScopedToSession(t *testing.T) {
 			req.Header.Set("X-Session-Token", token)
 		}
 		rec := httptest.NewRecorder()
-		handleSubagentRegistry(store).ServeHTTP(rec, req)
+		handleSubagentRegistry(store, "").ServeHTTP(rec, req)
 		var out struct {
 			Entries []subagentEntry `json:"entries"`
 		}

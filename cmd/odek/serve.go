@@ -633,7 +633,7 @@ func newServeMux(d serveMuxDeps) *http.ServeMux {
 
 	// Observability + lifecycle.
 	mux.Handle("/api/events", apiAuth(handleEvents()))
-	mux.Handle("/api/subagents", apiAuth(handleSubagentRegistry(store)))
+	mux.Handle("/api/subagents", apiAuth(handleSubagentRegistry(store, wsToken)))
 	mux.Handle("/api/usage", apiAuth(handleUsage(resolved)))
 	mux.Handle("/api/connections", apiAuth(handleConnections()))
 	mux.Handle("/api/connections/", apiAuth(handleConnectionKick()))
@@ -868,7 +868,7 @@ func serveIterationProgress(sendFn func(any) error, info loop.IterationInfo) {
 	}
 }
 
-func newServeAgent(resolved config.ResolvedConfig, system string, runKey string, sendFn func(v any) error, deltas *wsDeltaCounters, principalClarify bool) (*odek.Agent, *bgRuntime, func() error, func(), func() error, guard.Guard, *wsApprover, error) {
+func newServeAgent(resolved config.ResolvedConfig, system string, runKey string, sendFn func(v any) error, deltas *wsDeltaCounters, principalClarify bool, subagentOwner func() string) (*odek.Agent, *bgRuntime, func() error, func(), func() error, guard.Guard, *wsApprover, error) {
 	sm := skills.NewSkillManagerWithEmbedding(
 		expandHome("~/.odek/skills"),
 		"./.odek/skills",
@@ -912,8 +912,8 @@ func newServeAgent(resolved config.ResolvedConfig, system string, runKey string,
 		}
 	}
 	if subagentTool != nil {
-		subagentTool.OnSubagentLog = newSubagentTelemetryRelay(sendFn, runKey)
-		subagentTool.OnSubagentDone = newSubagentDoneRelay(sendFn, runKey)
+		subagentTool.OnSubagentLog = newSubagentTelemetryRelayOwned(sendFn, runKey, subagentOwner)
+		subagentTool.OnSubagentDone = newSubagentDoneRelayOwned(sendFn, runKey, subagentOwner)
 	}
 	var sandboxCleanup func() error
 
@@ -1449,7 +1449,7 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 		}
 		writeWSJSON(conn, v)
 		return nil
-	}, &deltas, true)
+	}, &deltas, true, connInfo.currentSessionID)
 	if err != nil {
 		writeWSError(conn, fmt.Sprintf("agent: %v", err))
 		return

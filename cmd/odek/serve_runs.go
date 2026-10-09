@@ -234,6 +234,13 @@ func (c *wsConnInfo) setLive(session string, busy bool) {
 	c.mu.Unlock()
 }
 
+// currentSessionID returns the session the connection is bound to right now.
+func (c *wsConnInfo) currentSessionID() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.SessionID
+}
+
 func (c *wsConnInfo) setModel(model string) {
 	c.mu.Lock()
 	c.Model = model
@@ -891,7 +898,11 @@ func startServeRun(
 			return nil
 		}
 		return run.record(v)
-	}, &deltas, false)
+	}, &deltas, false, func() string {
+		run.mu.Lock()
+		defer run.mu.Unlock()
+		return run.SessionID
+	})
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("agent: %w", err)

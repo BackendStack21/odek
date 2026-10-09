@@ -596,12 +596,14 @@ list/detail).
 
 ### `GET /api/subagents?session_id=&key=`
 
-Sub-agent lifecycle registry snapshot (session-scoped like `/api/jobs`: `session_id` plus that session's `X-Session-Token`; only tasks spawned by connections or headless runs bound to that session are listed) (ring of 256, oldest evicted): one
+Sub-agent lifecycle registry snapshot (session-scoped like `/api/jobs`: `session_id` plus that session's `X-Session-Token`; only tasks spawned by that session are listed; the owning session id is recorded on each entry at spawn, so entries survive a page reload, reconnect or `session_switch`, and entries with no recorded owner fall back to the connections or headless runs currently bound to the session) (ring of 256, oldest evicted): one
 entry per delegated task — `task_id`, `run_key` (connection id for WS runs,
 run id for headless runs), redacted + truncated `goal`, `phase`
 (`started`/`active`/`finished`), `status`, `pid`, timestamps, `iterations`,
 `step`, `last_tool`, `duration_seconds`, `tokens_used`. Narrow further with
 `?key=<run_key>`. The WebSocket `subagent_cancel` message likewise only stops tasks owned by the authenticated session (a foreign task id replies `accepted:false`).
+
+Operator view: `GET /api/subagents` without `session_id` lists every run's tasks, but only when the caller presents the instance token in the `X-Odek-Ws-Token` header (the ambient cookie is not enough) and any `Origin` header is local; otherwise it answers 400/403. Each entry carries the owning `session_id` when known.
 
 ### `GET /api/connections` · `DELETE /api/connections/{id}`
 

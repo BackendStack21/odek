@@ -44,6 +44,7 @@ type subagentArtifact struct {
 type subagentEntry struct {
 	TaskID           string             `json:"task_id"`
 	RunKey           string             `json:"run_key"`
+	OwnerSession     string             `json:"session_id,omitempty"` // session that spawned the task; recorded at spawn so it survives reconnects
 	Goal             string             `json:"goal,omitempty"`
 	Status           string             `json:"status,omitempty"`
 	Phase            string             `json:"phase"` // queued | started | active | finished
@@ -122,6 +123,9 @@ func mergeEntry(dst, src *subagentEntry) {
 	}
 	if src.RunKey != "" {
 		dst.RunKey = src.RunKey
+	}
+	if dst.OwnerSession == "" {
+		dst.OwnerSession = src.OwnerSession
 	}
 	if src.Status != "" {
 		dst.Status = src.Status
@@ -210,9 +214,21 @@ func subagentRegistrySnapshot(runKey string) []subagentEntry {
 // as a (redacted, capped) subagent_log message; lifecycle records
 // additionally update the registry and emit a subagent_state WS message.
 func newSubagentTelemetryRelay(send func(v any) error, runKey string) func(taskIdx int, taskID string, line string) {
+	return newSubagentTelemetryRelayOwned(send, runKey, nil)
+}
+
+// newSubagentTelemetryRelayOwned is newSubagentTelemetryRelay with an owner
+// resolver: every entry it creates is stamped with the owning session id at
+// record time, so ownership no longer depends on the spawning connection
+// still being live. owner may be nil (no recorded owner).
+func newSubagentTelemetryRelayOwned(send func(v any) error, runKey string, owner func() string) func(taskIdx int, taskID string, line string) {
 	logRelay := newSubagentLogRelay(send)
 	return func(taskIdx int, taskID string, line string) {
 		logRelay(taskIdx, taskID, line)
+		ownerID := ""
+		if owner != nil {
+			ownerID = owner()
+		}
 
 		var rec struct {
 			Type             string             `json:"type"`
@@ -251,19 +267,21 @@ func newSubagentTelemetryRelay(send func(v any) error, runKey string) func(taskI
 			// values; the child's started record overwrites them with the
 			// effective post-clamp values.
 			subagentRegistryRecord(&subagentEntry{
-				TaskID:    taskID,
-				RunKey:    runKey,
-				Goal:      redactGoal(rec.Goal),
-				Profile:   rec.Profile,
-				MaxRisk:   rec.MaxRisk,
-				Phase:     "queued",
-				Status:    "queued",
-				StartedAt: time.Now(),
+				TaskID:       taskID,
+				RunKey:       runKey,
+				OwnerSession: ownerID,
+				Goal:         redactGoal(rec.Goal),
+				Profile:      rec.Profile,
+				MaxRisk:      rec.MaxRisk,
+				Phase:        "queued",
+				Status:       "queued",
+				StartedAt:    time.Now(),
 			})
 		case "subagent_started":
 			subagentRegistryRecord(&subagentEntry{
 				TaskID:           taskID,
 				RunKey:           runKey,
+				OwnerSession:     ownerID,
 				Goal:             redactGoal(rec.Goal),
 				Phase:            "started",
 				Status:           "running",
@@ -278,6 +296,7 @@ func newSubagentTelemetryRelay(send func(v any) error, runKey string) func(taskI
 			})
 		case "subagent_progress":
 			subagentRegistryUpdate(taskID, runKey, func(e *subagentEntry) {
+				stampOwner(e, ownerID)
 				e.Phase = "active"
 				e.Step = rec.Step
 				e.LastTool = rec.Tool
@@ -304,6 +323,7 @@ func newSubagentTelemetryRelay(send func(v any) error, runKey string) func(taskI
 			})
 		case "subagent_finished":
 			subagentRegistryUpdate(taskID, runKey, func(e *subagentEntry) {
+				stampOwner(e, ownerID)
 				e.Phase = "finished"
 				e.Status = rec.Status
 				e.Iterations = rec.Iterations
@@ -336,6 +356,7 @@ func newSubagentTelemetryRelay(send func(v any) error, runKey string) func(taskI
 			// status, and lifetime counters stay owned by the
 			// subagent_finished / done-relay paths.
 			subagentRegistryUpdate(taskID, runKey, func(e *subagentEntry) {
+				stampOwner(e, ownerID)
 				if rec.CostUSD > 0 {
 					e.CostUSD = rec.CostUSD
 				}
@@ -352,6 +373,14 @@ func newSubagentTelemetryRelay(send func(v any) error, runKey string) func(taskI
 
 		// Fan the state transition out to the UI.
 		subagentRegistryEmitState(send, taskID, taskIdx)
+	}
+}
+
+// stampOwner records the owning session on an entry that has none yet; the
+// first recorded owner is kept.
+func stampOwner(e *subagentEntry, owner string) {
+	if e.OwnerSession == "" {
+		e.OwnerSession = owner
 	}
 }
 
@@ -482,6 +511,12 @@ func cancelSubagentTask(taskID string) bool {
 // counted twice in the failure counter — a counter-only inaccuracy on a
 // malformed-output path.
 func newSubagentDoneRelay(send func(v any) error, runKey string) func(taskIdx int, taskID, status string) {
+	return newSubagentDoneRelayOwned(send, runKey, nil)
+}
+
+// newSubagentDoneRelayOwned is newSubagentDoneRelay with an owner resolver
+// (see newSubagentTelemetryRelayOwned).
+func newSubagentDoneRelayOwned(send func(v any) error, runKey string, owner func() string) func(taskIdx int, taskID, status string) {
 	return func(taskIdx int, taskID, status string) {
 		if taskID == "" {
 			return
@@ -496,7 +531,12 @@ func newSubagentDoneRelay(send func(v any) error, runKey string) func(taskIdx in
 		// "failed" on the card AND double-counted the task in the lifetime
 		// counters.
 		alreadyTerminal := false
+		ownerID := ""
+		if owner != nil {
+			ownerID = owner()
+		}
 		subagentRegistryUpdate(taskID, runKey, func(e *subagentEntry) {
+			stampOwner(e, ownerID)
 			if e.Phase == "finished" && (e.Status == "success" || e.Status == "partial") {
 				alreadyTerminal = true
 				return
@@ -549,26 +589,41 @@ func subagentStatsSnapshot() map[string]any {
 }
 
 // handleSubagentRegistry serves GET /api/subagents — the registry snapshot
-// (optionally filtered by ?key=<run_key>). Auth is enforced by the apiAuth
-// wrapper at mux registration, same as /api/events.
-func handleSubagentRegistry(store *session.Store) http.Handler {
+// (optionally filtered by ?key=<run_key>). With session_id it is scoped to
+// that session (session token required, like /api/jobs). Without session_id
+// it is the operator view of every run, available only to a caller that
+// presents the instance token in its header and a local (or absent) Origin.
+func handleSubagentRegistry(store *session.Store, instanceToken string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Session-scoped like /api/jobs: the caller must hold the session's
-		// auth token, and only tasks owned by that session's connections or
-		// headless runs are listed.
-		sess, code, msg := authenticateJobsRequest(store, r)
-		if code != 0 {
-			http.Error(w, msg, code)
-			return
-		}
-		owned := subagentRunKeysForSession(sess.ID)
 		key := r.URL.Query().Get("key")
-		all := subagentRegistrySnapshot("")
-		entries := make([]subagentEntry, 0, len(all))
-		for _, e := range all {
-			if owned[e.RunKey] && (key == "" || e.RunKey == key) {
-				entries = append(entries, e)
+		var entries []subagentEntry
+		if r.URL.Query().Get("session_id") == "" {
+			if !presentsInstanceTokenHeader(r, instanceToken) {
+				http.Error(w, "missing session_id", http.StatusBadRequest)
+				return
 			}
+			if err := exactLocalOrigin(r.Header.Get("Origin"), r.Host); err != nil {
+				http.Error(w, "Origin not allowed", http.StatusForbidden)
+				return
+			}
+			entries = subagentRegistrySnapshot(key)
+		} else {
+			sess, code, msg := authenticateJobsRequest(store, r)
+			if code != 0 {
+				http.Error(w, msg, code)
+				return
+			}
+			live := subagentRunKeysForSession(sess.ID)
+			all := subagentRegistrySnapshot("")
+			entries = make([]subagentEntry, 0, len(all))
+			for _, e := range all {
+				if subagentEntryOwnedBy(e, sess.ID, live) && (key == "" || e.RunKey == key) {
+					entries = append(entries, e)
+				}
+			}
+		}
+		if entries == nil {
+			entries = []subagentEntry{}
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
@@ -576,6 +631,16 @@ func handleSubagentRegistry(store *session.Store) http.Handler {
 			"count":   len(entries),
 		})
 	})
+}
+
+// subagentEntryOwnedBy reports whether an entry belongs to sessionID: by the
+// owner recorded at spawn, or — for entries with no recorded owner — by the
+// live run keys currently bound to the session.
+func subagentEntryOwnedBy(e subagentEntry, sessionID string, liveRunKeys map[string]bool) bool {
+	if e.OwnerSession != "" {
+		return e.OwnerSession == sessionID
+	}
+	return e.RunKey != "" && liveRunKeys[e.RunKey]
 }
 
 // subagentRunKeysForSession returns the registry run keys that belong to a
@@ -599,18 +664,24 @@ func subagentRunKeysForSession(sessionID string) map[string]bool {
 	return keys
 }
 
-// subagentTaskOwnedBySession reports whether taskID was spawned by a run that
-// belongs to sessionID. Unknown tasks are not owned by anyone.
+// subagentTaskOwnedBySession reports whether taskID was spawned by sessionID.
+// Unknown tasks are not owned by anyone.
 func subagentTaskOwnedBySession(taskID, sessionID string) bool {
-	subagentReg.mu.Lock()
-	e, ok := subagentReg.byID[taskID]
-	runKey := ""
-	if ok {
-		runKey = e.RunKey
-	}
-	subagentReg.mu.Unlock()
-	if !ok || runKey == "" {
+	if sessionID == "" {
 		return false
 	}
-	return subagentRunKeysForSession(sessionID)[runKey]
+	subagentReg.mu.Lock()
+	e, ok := subagentReg.byID[taskID]
+	var snap subagentEntry
+	if ok {
+		snap = *e
+	}
+	subagentReg.mu.Unlock()
+	if !ok {
+		return false
+	}
+	if snap.OwnerSession != "" {
+		return snap.OwnerSession == sessionID
+	}
+	return snap.RunKey != "" && subagentRunKeysForSession(sessionID)[snap.RunKey]
 }
