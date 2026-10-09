@@ -12,7 +12,7 @@ import {
   escapeHtml, escapeAttr, formatFileSize,   scrollToBottom,
   showCancel, toggleShortcuts, SCROLL_THRESHOLD, teach, showToast, announce,
 } from './utils.js';
-import { addMessage, resetTurnState, showLoading, paintIntent } from './render.js';
+import { addMessage, resetTurnState, showLoading, paintIntent, setSendMode } from './render.js';
 import { maybeHandleComposerEnter, paletteItems, isComposerSlashInput } from './commands.js';
 
 function queueId() {
@@ -155,7 +155,7 @@ function sendPayload(text, attachments, display, model, thinking, limits, recove
   S.busy = true;
   S.runStartedAt = Date.now();
   S.runIterations = 0;
-  sendBtn.disabled = false; sendBtn.textContent='Queue'; sendBtn.setAttribute('aria-label','Queue next message');
+  sendBtn.disabled = false; setSendMode(sendBtn, 'queue');
   showLoading();
   showCancel();
 

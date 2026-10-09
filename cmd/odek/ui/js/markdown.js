@@ -11,6 +11,11 @@
 // no inline handler — clicks are delegated on #messages in render.js.
 // Images never become <img> (CSP + tracking): a safe URL is a caption link.
 import { escapeHtml, escapeAttr } from './escape.js';
+import { icon } from './icons.js';
+
+// Code-block copy button label; render.js restores it after a copy.
+export const CODE_COPY_LABEL = icon('copy') + '<span>Copy</span>';
+export const CODE_COPIED_LABEL = icon('check') + '<span>Copied</span>';
 
 // Link allowlist: http(s), mailto, #, ./, ../, and same-origin paths.
 // Protocol-relative (//evil), javascript:/data:/blob:/vbscript:,
@@ -124,39 +129,10 @@ function parseBlocks(lines) {
       continue;
     }
 
-    if (ulItem(line)) {
-      const items = [];
-      let tasks = 0;
-      while (i < lines.length) {
-        const m = ulItem(lines[i]);
-        if (!m) break;
-        const task = TASK_ITEM.exec(m[1]);
-        if (task) {
-          tasks++;
-          const on = task[1] !== ' ';
-          items.push(
-            '<li class="task">' +
-            '<span class="task-mark' + (on ? ' on' : '') + '" aria-hidden="true">' +
-            (on ? '☑' : '☐') + '</span>' + inlineHtml(task[2]) + '</li>'
-          );
-        } else {
-          items.push('<li>' + inlineHtml(m[1]) + '</li>');
-        }
-        i++;
-      }
-      out.push('<' + (tasks ? 'ul class="task-list"' : 'ul') + '>' + items.join('') + '</ul>');
-      continue;
-    }
-
-    if (olItem(line)) {
-      const items = [];
-      while (i < lines.length) {
-        const m = olItem(lines[i]);
-        if (!m) break;
-        items.push('<li>' + inlineHtml(m[1]) + '</li>');
-        i++;
-      }
-      out.push('<ol>' + items.join('') + '</ol>');
+    if (ulItem(line) || olItem(line)) {
+      const list = parseList(lines, i);
+      out.push(list.html);
+      i = list.next;
       continue;
     }
 
@@ -170,6 +146,63 @@ function parseBlocks(lines) {
   }
 
   return out.join('\n');
+}
+
+// List item marker: indentation width (tabs count as 4), ordered flag, the
+// ordinal for ordered items, and the item text.
+function listMarker(line) {
+  const m = /^([ \t]*)(?:([-*+])|(\d{1,9})\.)\s+(.+)$/.exec(line || '');
+  if (!m) return null;
+  const indent = m[1].replace(/\t/g, '    ').length;
+  return { indent, ordered: !m[2], start: m[3] ? Number(m[3]) : 1, text: m[4] };
+}
+
+// One list level starting at lines[start]. Deeper-indented markers open a
+// nested list inside the previous item; a marker of the other kind at the
+// same depth, a shallower marker, or any non-list line ends the level. A
+// single blank line between items keeps the list going.
+function parseList(lines, start) {
+  const first = listMarker(lines[start]);
+  const base = first.indent;
+  const items = [];
+  let tasks = 0;
+  let i = start;
+  while (i < lines.length) {
+    const m = listMarker(lines[i]);
+    if (!m) {
+      const next = listMarker(lines[i + 1]);
+      if (lines[i].trim() === '' && next && next.indent >= base && items.length) { i++; continue; }
+      break;
+    }
+    if (m.indent < base) break;
+    if (m.indent > base && items.length) {
+      const sub = parseList(lines, i);
+      items[items.length - 1].children += sub.html;
+      i = sub.next;
+      continue;
+    }
+    if (m.ordered !== first.ordered) break;
+    const task = !m.ordered && TASK_ITEM.exec(m.text);
+    if (task) {
+      tasks++;
+      const on = task[1] !== ' ';
+      items.push({
+        open: '<li class="task">',
+        body: '<span class="task-mark' + (on ? ' on' : '') + '" aria-hidden="true">' +
+          (on ? '☑' : '☐') + '</span>' + inlineHtml(task[2]),
+        children: '',
+      });
+    } else {
+      items.push({ open: '<li>', body: inlineHtml(m.text), children: '' });
+    }
+    i++;
+  }
+  const lis = items.map((it) => it.open + it.body + it.children + '</li>').join('');
+  if (first.ordered) {
+    const startAttr = first.start !== 1 ? ' start="' + first.start + '"' : '';
+    return { html: '<ol' + startAttr + '>' + lis + '</ol>', next: i };
+  }
+  return { html: '<' + (tasks ? 'ul class="task-list"' : 'ul') + '>' + lis + '</ul>', next: i };
 }
 
 function splitRow(line) {
@@ -240,7 +273,7 @@ function codeBlockHtml(lang, code) {
   return '<div class="code-block">' +
     '<div class="cb-header">' +
       '<span class="cb-lang">' + escapeHtml(lang) + '</span>' +
-      '<button class="cb-copy">📋 copy</button>' +
+      '<button class="cb-copy" type="button" aria-label="Copy code">' + CODE_COPY_LABEL + '</button>' +
     '</div>' +
     '<pre><code>' + escapeHtml(code) + '</code></pre>' +
   '</div>';

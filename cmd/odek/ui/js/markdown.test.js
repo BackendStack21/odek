@@ -2,7 +2,7 @@
 // Run: node --test cmd/odek/ui/js/
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { markdownToHtml, isSafeHref } from './markdown.js';
+import { markdownToHtml, isSafeHref, CODE_COPY_LABEL } from './markdown.js';
 
 // ── Blocks ──
 
@@ -25,7 +25,7 @@ test('fenced code block with language', () => {
   assert.equal(
     markdownToHtml('```go\nfmt.Println("hi")\n```'),
     '<div class="code-block"><div class="cb-header"><span class="cb-lang">go</span>' +
-    '<button class="cb-copy">📋 copy</button></div>' +
+    '<button class="cb-copy" type="button" aria-label="Copy code">' + CODE_COPY_LABEL + '</button></div>' +
     '<pre><code>fmt.Println("hi")\n</code></pre></div>'
   );
 });
@@ -41,7 +41,7 @@ test('unterminated fence renders collected lines as a code block', () => {
   assert.equal(
     html,
     '<div class="code-block"><div class="cb-header"><span class="cb-lang">js</span>' +
-    '<button class="cb-copy">📋 copy</button></div>' +
+    '<button class="cb-copy" type="button" aria-label="Copy code">' + CODE_COPY_LABEL + '</button></div>' +
     '<pre><code>console.log(1)\nconsole.log(2)\n</code></pre></div>'
   );
 });
@@ -289,10 +289,27 @@ test('golden document', () => {
     '<p>Some <strong>bold</strong> and <em>italic</em> text with <code>code</code>.</p>',
     '<ul><li>one</li><li>two</li></ul>',
     '<div class="code-block"><div class="cb-header"><span class="cb-lang">js</span>' +
-      '<button class="cb-copy">📋 copy</button></div>' +
+      '<button class="cb-copy" type="button" aria-label="Copy code">' + CODE_COPY_LABEL + '</button></div>' +
       '<pre><code>console.log("hi");\n</code></pre></div>',
     '<p>Check <a href="https://example.com" target="_blank" rel="noopener noreferrer">link</a> out.</p>',
   ].join('\n');
 
   assert.equal(markdownToHtml(doc), expected);
+});
+
+test('nested and mixed lists keep their structure', () => {
+  assert.equal(
+    markdownToHtml('- a\n  - a1\n  - a2\n- b'),
+    '<ul><li>a<ul><li>a1</li><li>a2</li></ul></li><li>b</li></ul>'
+  );
+  assert.equal(
+    markdownToHtml('1. one\n   - detail\n2. two'),
+    '<ol><li>one<ul><li>detail</li></ul></li><li>two</li></ol>'
+  );
+  assert.equal(markdownToHtml('3. three\n4. four'), '<ol start="3"><li>three</li><li>four</li></ol>');
+  assert.equal(markdownToHtml('- a\n\n- b'), '<ul><li>a</li><li>b</li></ul>');
+});
+
+test('a bullet list followed by an ordered list stays two lists', () => {
+  assert.equal(markdownToHtml('- a\n1. b'), '<ul><li>a</li></ul>\n<ol><li>b</li></ol>');
 });
