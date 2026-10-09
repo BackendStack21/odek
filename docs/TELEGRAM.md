@@ -299,7 +299,7 @@ Wake is controlled by the shared `background.wake_on_complete` setting
 | `/plan_delete <slug>` | Delete a saved plan for this chat |
 | `/plan_status` | Show the agent's current structured task plan (loop `plan` tool state) for this chat's session — distinct from the markdown-file plan commands above |
 | `/sessions` | List recent conversation sessions for this chat |
-| `/resume <session_id>` | Resume a previous session owned by this chat |
+| `/resume <session_id>` | Resume a previous session owned by this chat. The live conversation is archived first and the resumed one becomes the chat's live session, so it keeps saving and survives a restart |
 | `/prune [days]` | Clean up old sessions and plans for this chat (default: 30 days) |
 | `/schedules` | List scheduled tasks (id, on/off, cron, next fire, last status) |
 | `/schedule <subcommand>` | Manage scheduled tasks — `add`, `rm`, `enable`, `disable`, `run`, `next`, `view`. Mutating commands are restricted to configured operator chats/users. See [Managing schedules from Telegram](SCHEDULES.md#managing-from-telegram) |

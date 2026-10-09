@@ -177,7 +177,9 @@ func (sm *SessionManager) save(chatID int64, messages []session.Message, checkpo
 	if !checkpoint {
 		updated.TurnCount++
 	}
-	stored := &session.Session{ID: updated.SessionID, CreatedAt: updated.CreatedAt, Task: fmt.Sprintf("tg-%d", chatID)}
+	// A resumed chat keeps its archive ID for display, but progress always
+	// persists under the chat's canonical ID so a restart finds it.
+	stored := &session.Session{ID: fmt.Sprintf("tg-%d", chatID), CreatedAt: updated.CreatedAt, Task: fmt.Sprintf("tg-%d", chatID)}
 	if cs.stored != nil {
 		copy := *cs.stored
 		stored = &copy
@@ -312,8 +314,17 @@ func (sm *SessionManager) ArchiveAndDelete(chatID int64) error {
 
 	// Save as archive with timestamped ID
 	archiveID := fmt.Sprintf("tg-%d-%s", chatID, time.Now().UTC().Format("20060102-150405"))
+	// Two archives within the same second must not collide on the ID.
+	base := archiveID
+	for n := 2; n < 100; n++ {
+		if _, lerr := sm.Store.Load(archiveID); lerr != nil {
+			break
+		}
+		archiveID = fmt.Sprintf("%s-%d", base, n)
+	}
 	archived := *sess
 	archived.ID = archiveID
+	archived.Revision = 0
 	if err := sm.Store.Save(&archived); err != nil {
 		return fmt.Errorf("archive: save archive: %w", err)
 	}
@@ -453,8 +464,36 @@ func (sm *SessionManager) ResumeSession(chatID int64, sessionID string) (*ChatSe
 		return nil, fmt.Errorf("no session found matching %q", sessionID)
 	}
 
-	// Build ChatSession and cache it.
+	// The resumed conversation becomes the chat's live session. Persisting
+	// it under the canonical ID (after archiving whatever was live) carries a
+	// valid revision for later saves and lets a restart find it again.
+	canonical := fmt.Sprintf("tg-%d", chatID)
+	var stored *session.Session
+	if sess.ID == canonical {
+		fresh, err := sm.Store.Load(canonical)
+		if err != nil {
+			return nil, fmt.Errorf("load session %s: %w", canonical, err)
+		}
+		stored = fresh
+	} else {
+		if err := sm.ArchiveAndDelete(chatID); err != nil {
+			return nil, err
+		}
+		stored = &session.Session{
+			ID:        canonical,
+			CreatedAt: sess.CreatedAt,
+			UpdatedAt: time.Now(),
+			Turns:     sess.Turns,
+			Task:      canonical,
+			Messages:  session.CloneMessages(sess.Messages),
+		}
+		if err := sm.Store.Save(stored); err != nil {
+			return nil, fmt.Errorf("persist resumed session: %w", err)
+		}
+	}
+
 	cs := &ChatSession{
+		stored:     stored,
 		ChatID:     chatID,
 		SessionID:  sess.ID,
 		Messages:   sess.Messages,
@@ -465,6 +504,7 @@ func (sm *SessionManager) ResumeSession(chatID int64, sessionID string) (*ChatSe
 
 	sm.Mu.Lock()
 	sm.Cache[chatID] = cs
+	delete(sm.archived, chatID)
 	sm.Mu.Unlock()
 
 	return cs, nil
