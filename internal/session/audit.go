@@ -70,6 +70,28 @@ func NewAuditStore(dir string) *AuditStore {
 	return &AuditStore{dir: filepath.Join(dir, "audit")}
 }
 
+// Remove deletes the audit log for a session, including the legacy JSON file
+// and any quarantined corrupt copies. A missing log is not an error.
+func (s *AuditStore) Remove(sessionID string) error {
+	if err := ValidateSessionID(sessionID); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	base := filepath.Join(s.dir, sessionID+".json")
+	var firstErr error
+	if err := os.Remove(base); err != nil && !os.IsNotExist(err) {
+		firstErr = err
+	}
+	side, _ := filepath.Glob(base + ".corrupt-*")
+	for _, p := range side {
+		if err := os.Remove(p); err != nil && !os.IsNotExist(err) && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
 func boundedAuditResources(content string) []string {
 	resources := ResourcesIn(content)
 	if len(resources) > 64 {

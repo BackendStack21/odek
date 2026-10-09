@@ -71,6 +71,12 @@ odek session trim 20260518-abc123 10
 # → Trimmed session 20260518-abc123: 50 → 10 messages (40 dropped)
 ```
 
+### Size cap and the original task
+
+Session files are capped at `MaxSessionFileBytes` (32 MiB). When a save would exceed the cap, the oldest message groups are dropped first, but the protected head is kept: the system prompt and the first user message (the original task). A marker system message follows that head to record how many groups were removed. Only when the head alone exceeds the cap is the task dropped, so the file always stays loadable.
+
+Saving also redacts secrets from assistant tool-call arguments and external-ref URIs, and deleting a session (or sweeping it with `cleanup`) removes its audit log as well.
+
 ### Cleaning up old sessions
 
 Deletes all sessions whose `UpdatedAt` timestamp is older than N days:

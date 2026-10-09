@@ -1195,6 +1195,11 @@ func (s *Store) Delete(id string) error {
 // store mutex must be held. A missing file is nil (idempotent).
 func (s *Store) removeLocked(id string) error {
 	err := os.Remove(s.path(id))
+	if err == nil || os.IsNotExist(err) {
+		// The audit log records ingest sources and resources of the session;
+		// it must not outlive a session the operator deleted.
+		_ = NewAuditStore(s.dir).Remove(id)
+	}
 	if os.IsNotExist(err) {
 		return nil
 	}
