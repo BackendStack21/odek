@@ -5581,11 +5581,48 @@ func isGitDataLoss(tokens []string) bool {
 				}
 			}
 		}
-		return del && force
+		if del && force {
+			return true
+		}
+		// -f without a delete moves an existing branch ref, orphaning the
+		// commits only it reached; -M force-renames over an existing branch.
+		for _, a := range args {
+			if isShortFlagToken(a) && strings.ContainsRune(a[1:], 'M') {
+				return true
+			}
+		}
+		return force
+	case "tag":
+		// Deleting or force-moving a tag removes the only name of its commit.
+		for _, a := range args {
+			if a == "--delete" || a == "--force" ||
+				(isShortFlagToken(a) && (strings.ContainsRune(a[1:], 'd') || strings.ContainsRune(a[1:], 'f'))) {
+				return true
+			}
+		}
+		return false
+	case "rm":
+		// Without -f git refuses to remove files with local modifications; -f
+		// deletes the work tree files and discards those modifications.
+		for _, a := range args {
+			if a == "--force" || (isShortFlagToken(a) && strings.ContainsRune(a[1:], 'f')) {
+				return true
+			}
+		}
+		return false
+	case "prune":
+		// --expire permanently deletes unreachable objects younger than the
+		// default grace period.
+		for _, a := range args {
+			if a == "--expire" || strings.HasPrefix(a, "--expire=") {
+				return true
+			}
+		}
+		return false
 	case "stash":
 		return hasAny(args, "drop", "clear")
 	case "reflog":
-		return hasAny(args, "expire")
+		return hasAny(args, "expire", "delete")
 	case "worktree":
 		// `worktree remove` deletes an entire working tree — including all
 		// uncommitted work under --force, with no undo; `worktree prune`
