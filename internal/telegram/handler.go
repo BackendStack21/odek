@@ -626,8 +626,10 @@ func (m *Message) IsCommand() bool {
 	if m == nil {
 		return false
 	}
+	// Telegram emits a bot_command entity for any "/word" in running text;
+	// only one at the very start of the message makes it a command.
 	for _, e := range m.Entities {
-		if e.Type == "bot_command" {
+		if e.Type == "bot_command" && e.Offset == 0 {
 			return true
 		}
 	}
