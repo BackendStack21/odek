@@ -2,6 +2,7 @@ package danger
 
 import (
 	"regexp"
+	"regexp/syntax"
 	"strings"
 )
 
@@ -110,6 +111,98 @@ var injectionPatterns = []InjectionPattern{
 	{regexp.MustCompile(`ignore? (todas )?(as )?instru(ç|c)(õ|o)es? (anteriores|anterior)`), "non-english: ignore previous instructions"},
 }
 
+// injectionLiterals[i] lists literals of which every match of
+// injectionPatterns[i] must contain at least one (nil when none could be
+// derived). Patterns that begin with an alternation cannot use the regexp
+// engine's own literal-prefix skip, so a cheap substring check gates the
+// automaton. The literals are derived from the compiled pattern, so they can
+// never drift from it.
+var injectionLiterals = func() [][]string {
+	out := make([][]string, len(injectionPatterns))
+	for i, p := range injectionPatterns {
+		out[i] = requiredLiterals(p.Re.String())
+	}
+	return out
+}()
+
+// matchWithLiterals is re.MatchString(s), skipping the automaton when s holds
+// none of the literals every match must contain.
+func matchWithLiterals(re *regexp.Regexp, lits []string, s string) bool {
+	if len(lits) > 0 {
+		found := false
+		for _, l := range lits {
+			if strings.Contains(s, l) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return re.MatchString(s)
+}
+
+// requiredLiterals returns a set of literals such that every string matching
+// expr contains at least one of them, or nil when no such set is known.
+func requiredLiterals(expr string) []string {
+	re, err := syntax.Parse(expr, syntax.Perl)
+	if err != nil {
+		return nil
+	}
+	return requiredSet(re.Simplify())
+}
+
+// litScore ranks a literal set: the shortest member bounds how selective the
+// set is. Sets with an empty member are useless and score zero.
+func litScore(set []string) int {
+	if len(set) == 0 {
+		return 0
+	}
+	m := len(set[0])
+	for _, l := range set {
+		if len(l) < m {
+			m = len(l)
+		}
+	}
+	return m
+}
+
+func requiredSet(re *syntax.Regexp) []string {
+	switch re.Op {
+	case syntax.OpLiteral:
+		if re.Flags&syntax.FoldCase != 0 || len(re.Rune) == 0 {
+			return nil
+		}
+		return []string{string(re.Rune)}
+	case syntax.OpCapture, syntax.OpPlus:
+		return requiredSet(re.Sub[0])
+	case syntax.OpRepeat:
+		if re.Min >= 1 {
+			return requiredSet(re.Sub[0])
+		}
+	case syntax.OpConcat:
+		var best []string
+		for _, sub := range re.Sub {
+			if s := requiredSet(sub); litScore(s) > litScore(best) {
+				best = s
+			}
+		}
+		return best
+	case syntax.OpAlternate:
+		var all []string
+		for _, sub := range re.Sub {
+			s := requiredSet(sub)
+			if litScore(s) == 0 {
+				return nil
+			}
+			all = append(all, s...)
+		}
+		return all
+	}
+	return nil
+}
+
 // markdownHeaderRe matches a heading that introduces replacement instructions.
 // It is anchored to the start of a line, so it is applied line by line to the
 // original text (NormalizeForScan flattens newlines).
@@ -190,9 +283,10 @@ func ScanInjection(content string) []ScanResult {
 	if strings.Contains(normalized, "ν") {
 		foldedNu = FoldHomoglyphs(strings.ReplaceAll(normalized, "ν", "n"))
 	}
-	for _, p := range injectionPatterns {
-		if p.Re.MatchString(normalized) || (foldDistinct && p.Re.MatchString(folded)) ||
-			(foldedNu != "" && p.Re.MatchString(foldedNu)) {
+	for i, p := range injectionPatterns {
+		lits := injectionLiterals[i]
+		if matchWithLiterals(p.Re, lits, normalized) || (foldDistinct && matchWithLiterals(p.Re, lits, folded)) ||
+			(foldedNu != "" && matchWithLiterals(p.Re, lits, foldedNu)) {
 			results = append(results, ScanResult{
 				Label:   p.Label,
 				Pattern: p.Re.String(),
