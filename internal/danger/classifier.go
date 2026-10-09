@@ -3068,6 +3068,10 @@ func collapseUnquotedBackslashes(cmd string) string {
 				switch next {
 				case '\\', '"', '$', '`':
 					out.WriteByte(ch)
+				case '!':
+					// The shell keeps this backslash, and a database
+					// client's \! meta-command is spelled with it.
+					out.WriteByte(ch)
 				}
 				out.WriteByte(next)
 			} else {
@@ -6414,16 +6418,6 @@ func sqliteRunsShell(tokens []string) bool {
 	return false
 }
 
-// dbClientShellPattern matches the client-side commands of the PostgreSQL and
-// MySQL command-line clients that run a local program: psql's \! and the
-// \g/\gx/\o/\w/\copy forms that pipe into one, and mysql's \! / system and
-// pager commands.
-// \copy ... program 'cmd' runs cmd locally without any pipe character. The
-// backslash is optional because normalization folds it away inside double
-// quotes; a server-side COPY ... PROGRAM executes on the database host, which
-// is no safer to wave through.
-var dbClientShellPattern = regexp.MustCompile(`(?i)\\!|(^|[;\s=])system\s|(^|[;\s=])pager\s|\\P\s|\\(?:g|gx|o|w|copy|watch)\b[^|]*\||(^|[\s;\\])copy\b[^\n]*\bprogram\b`)
-
 // isDBClient reports whether name is a PostgreSQL or MySQL command-line client.
 func isDBClient(name string) bool {
 	switch name {
@@ -6441,7 +6435,7 @@ func dbClientRunsShell(name string, tokens []string) bool {
 		return false
 	}
 	for _, tok := range tokens[1:] {
-		if dbClientShellPattern.MatchString(tok) || strings.HasPrefix(tok, "--pager") {
+		if dbClientShellText(tok) || strings.HasPrefix(tok, "--pager") {
 			return true
 		}
 	}
@@ -6455,7 +6449,7 @@ func dbClientStdinRunsShell(name string, upstream [][]string) bool {
 		return false
 	}
 	text, ok := staticPipeText(upstream)
-	return ok && dbClientShellPattern.MatchString(text)
+	return ok && dbClientShellText(text)
 }
 
 func classifyDirenv(tokens []string) RiskClass {
