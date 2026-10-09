@@ -111,7 +111,7 @@ The scanner normalizes invisible Unicode (zero-width, bidi and other format char
 - `mcp_descriptions` — MCP server tool descriptions.
 - `skills` — skill bodies at load time and import.
 - `tool_outputs` — external tool outputs (warning-only; the untrusted wrapper remains the primary boundary).
-- `telegram` — photo captions and voice transcripts before they are injected into the user message stream.
+- `telegram` — photo captions, voice transcripts and forwarded messages before they are injected into the user message stream.
 
 If the sidecar flags content, the behavior mirrors a local scan flag: writes are rejected, system-prompt sources fall back to the default identity, MCP descriptions are withheld, and tainted skill/Telegram inputs are dropped or wrapped with a warning. The `guard` section is operator-controlled: project-level `./odek.json` cannot set it, so a malicious repository cannot disable the local scan or redirect memory/system-prompt content to an attacker-controlled endpoint.
 
@@ -386,7 +386,7 @@ The two allowlists are combined with AND, and an empty `allowed_users` means any
 
 The `/restart` command is restricted to operator chats/users (`schedules.telegram_admin_chats` / `telegram_admin_users`, falling back to `telegram.default_chat_id`) and rate-limited to once per 60 seconds, so a compromised allowed account cannot restart-loop the bot and interrupt scheduled work.
 
-**Forwarded messages are never commands.** A forwarded message crosses a trust boundary, so its text is never routed to the command handler even when it starts with `/`; it reaches the text handler flagged as forwarded. Only a `bot_command` entity at offset 0 (or a leading slash) marks a command, so `/path` fragments inside running text are ordinary text.
+**Forwarded messages are never commands.** A forwarded message crosses a trust boundary, so its text is never routed to the command handler even when it starts with `/`; it reaches the text handler flagged as forwarded, is scanned under the `telegram` guard scope, and is wrapped as untrusted content. The wrappers built for forwarded text, voice transcripts, captions and documents are recorded as ingests on the turn's audit log when the turn starts, so the divergence heuristic sees that the turn crossed the boundary. Only a `bot_command` entity at offset 0 (or a leading slash) marks a command, so `/path` fragments inside running text are ordinary text.
 
 A single polling instance is enforced with an advisory `flock` on `~/.odek/telegram.lock`: a second instance blocks until the first releases, and the OS releases the lock automatically if the holder crashes.
 

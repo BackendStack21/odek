@@ -2141,6 +2141,10 @@ func runChatTurn(
 	}
 	agentCtx = withAuditRecorder(agentCtx, auditStore, cs.SessionID, auditTurn)
 	agentCtx = withReadLedger(agentCtx, cs.SessionID)
+	// Forwarded text, voice transcripts, captions and documents were wrapped
+	// by the update callbacks before this turn's recorder existed; record
+	// those ingests on it now so the audit sees the turn crossed the boundary.
+	recordOpeningIngests(agentCtx, text)
 	chatCancels.Store(chatID, agentCancel)
 	defer func() {
 		agentCancel()
@@ -2759,13 +2763,44 @@ func photoVisionMessage(caption, description string) string {
 
 // telegramTextMessage builds the user-role content for an incoming Telegram
 // text message. Direct messages are kept as-is so the operator's typed intent
-// is treated normally; forwarded messages are wrapped as untrusted because
-// they cross an external trust boundary.
+// is treated normally; forwarded messages cross an external trust boundary, so
+// they are scanned under the telegram guard scope and wrapped as untrusted.
+// The wrapper's ingest is recorded on the turn's audit recorder when the turn
+// starts (recordOpeningIngests).
 func telegramTextMessage(chatID int64, text string, forwarded bool) string {
 	if forwarded {
-		return wrapUntrusted(context.Background(), fmt.Sprintf("telegram:chat:%d:forwarded", chatID), text)
+		source := fmt.Sprintf("telegram:chat:%d:forwarded", chatID)
+		if scanned := telegramGuardScan(context.Background(), text, "forwarded message"); scanned != text {
+			// Already flagged under the telegram scope: wrap without the
+			// tool-output scan so the content carries a single banner.
+			recordIngest(context.Background(), source, scanned)
+			return wrapBody(source, scanned)
+		}
+		return wrapUntrusted(context.Background(), source, text)
 	}
 	return text
+}
+
+// recordOpeningIngests records each untrusted wrapper in a turn's opening
+// message on the turn's audit recorder. The Telegram callbacks wrap forwarded
+// text, transcripts, captions and documents before the turn (and its audit
+// recorder) exists, so the ingest is recorded here once the turn runs.
+func recordOpeningIngests(ctx context.Context, text string) {
+	if !hasUntrustedWrapper(text) {
+		return
+	}
+	bodies, sources := extractUntrustedAll(text)
+	if len(sources) != len(bodies) {
+		// A wrapper with an empty source was skipped; keep the pairing by
+		// recording under a generic Telegram source.
+		sources = make([]string, len(bodies))
+		for i := range sources {
+			sources[i] = "telegram"
+		}
+	}
+	for i, body := range bodies {
+		recordIngest(ctx, sources[i], body)
+	}
 }
 
 // telegramVoiceMessage builds the user-role content for an auto-transcribed

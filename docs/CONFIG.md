@@ -263,7 +263,7 @@ The guard is **off by default** in the sense that no sidecar is needed; the loca
 | `mcp_descriptions` | `true` | MCP server tool descriptions supplied via `tools/list` |
 | `skills` | `true` | Skill bodies at load time and import |
 | `tool_outputs` | `false` | External tool outputs wrapped as `<untrusted_content_*>` (warning-only scan) |
-| `telegram` | `false` | Telegram photo captions and voice transcripts before injection |
+| `telegram` | `false` | Telegram photo captions, voice transcripts and forwarded messages before injection |
 
 When a scope is not explicitly set, the core surfaces (`memory`, `system_prompt`, `mcp_descriptions`, `skills`) default to `true`; the optional expansion surfaces default to `false`. Regardless of scope, the fast local rule scan always runs on every guarded surface — the scope only toggles the sidecar second opinion.
 
