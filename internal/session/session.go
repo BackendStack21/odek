@@ -178,9 +178,14 @@ func (s *Session) AddExternalRefs(refs ...ExternalRef) (int, error) {
 		if err := r.Validate(); err != nil {
 			return added, err
 		}
+		// Persistence stores the redacted URI, so a re-added reference whose
+		// URI carries a secret must be compared in redacted form on both
+		// sides or every save-then-add cycle would append a duplicate.
+		redactedURI := redact.RedactSecrets(r.URI)
 		duplicate := false
 		for _, e := range s.ExternalRefs {
-			if e.Kind == r.Kind && e.URI == r.URI && e.CreatedBy == r.CreatedBy {
+			if e.Kind == r.Kind && e.CreatedBy == r.CreatedBy &&
+				(e.URI == r.URI || redact.RedactSecrets(e.URI) == redactedURI) {
 				duplicate = true
 				break
 			}
@@ -195,6 +200,16 @@ func (s *Session) AddExternalRefs(refs ...ExternalRef) (int, error) {
 		added++
 	}
 	return added, nil
+}
+
+// redactExternalRefs returns a copy of refs with every URI passed through
+// the secret redactor; the caller's slice is left untouched.
+func redactExternalRefs(in []ExternalRef) []ExternalRef {
+	refs := append([]ExternalRef(nil), in...)
+	for i := range refs {
+		refs[i].URI = redact.RedactSecrets(refs[i].URI)
+	}
+	return refs
 }
 
 // ── Store ──────────────────────────────────────────────────────────────
@@ -729,11 +744,7 @@ func (s *Store) saveLocked(sess *Session) (err error) {
 	}
 	// External ref URIs commonly carry tokens in query strings.
 	if len(sess.ExternalRefs) > 0 {
-		refs := append([]ExternalRef(nil), sess.ExternalRefs...)
-		for i := range refs {
-			refs[i].URI = redact.RedactSecrets(refs[i].URI)
-		}
-		sess.ExternalRefs = refs
+		sess.ExternalRefs = redactExternalRefs(sess.ExternalRefs)
 	}
 	boundary := sess.RedactBoundary
 	if boundary < 0 {
