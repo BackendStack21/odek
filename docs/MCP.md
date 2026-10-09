@@ -150,7 +150,7 @@ A server entry may instead set `url` to use the **Streamable HTTP transport** �
 
 The four limit fields are **odek-extension/v1**; semantics live in [EXTENSIONS.md](EXTENSIONS.md).
 
-**Environment.** Children get a small allowlist (`PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `TMPDIR`, `LANG`, the listed `LC_*` locale variables, `TZ`, `TERM`) plus `env` overrides. Names matching secret patterns (`APIKEY`, `TOKEN`, `SECRET`, `PASSWORD`, `CREDENTIAL`, `CREDS`, `PRIVATEKEY`, `ACCESSKEY` after uppercasing and stripping `-`/`_`) are removed even from `env`. Pass auth via the server's own config file or argv, not the parent environment. Child stderr is inherited, so server crashes show up in odek's log. Details: [SECURITY.md — MCP hardening](SECURITY.md#mcp-hardening).
+**Environment.** Children get a small allowlist (`PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `TMPDIR`, `LANG`, the listed `LC_*` locale variables, `TZ`, `TERM`) plus `env` overrides. Names matching secret patterns (`APIKEY`, `TOKEN`, `SECRET`, `PASSWORD`, `PASSWD`, `PASSPHRASE`, `CREDENTIAL`, `CREDS`, `PRIVATEKEY`, `ACCESSKEY`, `COOKIE`, `AUTHORIZATION` after uppercasing and stripping `-`/`_`) are removed even from `env`. Pass auth via the server's own config file or argv, not the parent environment. Child stderr is inherited, so server crashes show up in odek's log. Details: [SECURITY.md — MCP hardening](SECURITY.md#mcp-hardening).
 
 ### Naming
 
@@ -195,6 +195,6 @@ Stderr from MCP children is shown on odek's stderr. There is no `odek: connected
 
 ### Artifacts
 
-A server can return an `odek.tool-result/v1` envelope with `file://` refs instead of bulk content. Validation is fail-closed (schema, absolute path, symlink-resolved containment in `artifact_roots`, hash/size, 64 MiB / 64 refs). The model sees metadata only — never the path or file bytes. Empty `artifact_roots` rejects every ref. See [EXTENSIONS.md](EXTENSIONS.md).
+A server can return an `odek.tool-result/v1` envelope with `file://` refs instead of bulk content. Validation is fail-closed (schema, absolute path, symlink-resolved containment in `artifact_roots`, hash/size, 64 MiB / 64 refs). The model sees metadata only — never the path or file bytes. Empty `artifact_roots` (or one holding only blank strings) rejects every ref. Rendered metadata (`media_type`, `summary`) has control, bidi and line-separator characters flattened to spaces. See [EXTENSIONS.md](EXTENSIONS.md).
 
 Any stdio MCP server that implements `tools/list` and `tools/call` works (Playwright, Fetch, GitHub, filesystem, …).
