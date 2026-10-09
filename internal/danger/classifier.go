@@ -5723,6 +5723,11 @@ func isCodeExecution(first string, tokens []string, repo *gitRepoCtx) bool {
 	if first == "tar" && tarRunsCommand(tokens) {
 		return true
 	}
+	// zip -TT CMD runs CMD to test the archive; cpio --rsh-command / --rmt-command
+	// name the program that carries the archive to a remote host.
+	if (first == "zip" && zipRunsCommand(tokens)) || (first == "cpio" && cpioRunsCommand(tokens)) {
+		return true
+	}
 
 	// Embedded-shell interpreters: awk, ed/ex, vi/vim, emacs, etc. Their
 	// payload (script expression or file operand) can invoke arbitrary shell
@@ -6517,6 +6522,38 @@ func tarRunsCommand(tokens []string) bool {
 	// Old-style first operand: every letter is an option, its values come from
 	// later words.
 	return r.operandAt == 0 && strings.ContainsAny(r.operands[0], "IF")
+}
+
+// zipRunsCommand reports whether zip is given a test command (-TT CMD, also
+// fused as -TTCMD) or its long spelling.
+func zipRunsCommand(tokens []string) bool {
+	for _, tok := range tokens[1:] {
+		if tok == "--" {
+			break
+		}
+		if strings.HasPrefix(tok, "-TT") || tok == "--unzip-command" || strings.HasPrefix(tok, "--unzip-command=") {
+			return true
+		}
+	}
+	return false
+}
+
+// cpioRunsCommand reports whether cpio names a remote-shell or remote-tape
+// program. GNU cpio accepts any unambiguous long-option prefix.
+func cpioRunsCommand(tokens []string) bool {
+	for _, tok := range tokens[1:] {
+		if tok == "--" {
+			break
+		}
+		if !strings.HasPrefix(tok, "--") {
+			continue
+		}
+		name, _, _ := strings.Cut(tok[2:], "=")
+		if len(name) >= 3 && (strings.HasPrefix("rsh-command", name) || strings.HasPrefix("rmt-command", name)) {
+			return true
+		}
+	}
+	return false
 }
 
 func killTargetsInitOrBroadcast(tokens []string) bool {
