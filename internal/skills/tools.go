@@ -2,7 +2,9 @@ package skills
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -150,19 +152,80 @@ func (sm *SkillManager) scanSkill(ctx context.Context, s *Skill) bool {
 		ctx = context.Background()
 	}
 	flagged := false
-	if err := guard.ScanContentWithScope(ctx, s.Body, sm.guard, &sm.guardCfg, "skills"); err != nil {
+	if err := sm.scanField(ctx, s.Body); err != nil {
 		log.Printf("guard: skill %q body flagged: %v", s.Name, err)
 		s.Provenance.NeedsReview = true
 		flagged = true
 	}
 	if strings.TrimSpace(s.Description) != "" {
-		if err := guard.ScanContentWithScope(ctx, s.Description, sm.guard, &sm.guardCfg, "skills"); err != nil {
+		if err := sm.scanField(ctx, s.Description); err != nil {
 			log.Printf("guard: skill %q description flagged: %v", s.Name, err)
 			s.Provenance.NeedsReview = true
 			flagged = true
 		}
 	}
 	return flagged
+}
+
+// scanText is the guarded scan used for skill text; a variable so tests can
+// count scans.
+var scanText = guard.ScanContentWithScope
+
+// localScanMemoMax bounds the number of remembered local-scan verdicts.
+const localScanMemoMax = 8192
+
+// localScanMemo remembers, for the life of the process, the verdict of the
+// local rule scan by content hash. NewSkillManager and Reload run once per
+// agent construction, and almost every skill is unchanged between them.
+var localScanMemo struct {
+	mu sync.Mutex
+	m  map[[sha256.Size]byte]string // content hash -> flag message ("" = clean)
+}
+
+func resetScanMemo() {
+	localScanMemo.mu.Lock()
+	localScanMemo.m = nil
+	localScanMemo.mu.Unlock()
+}
+
+// localOnlyScan reports whether scanning with the manager's guard config runs
+// the local rule scan alone (no sidecar second opinion). Only then is the
+// verdict a pure function of the text.
+func (sm *SkillManager) localOnlyScan() bool {
+	return !guard.IsEnabled(sm.guardCfg.Scan, "skills") || sm.guard == nil || sm.guardCfg.Provider == guard.ProviderLocal
+}
+
+// scanField scans one skill field. When only the local rule scan applies, the
+// verdict is memoized by content hash; a sidecar guard is consulted on every
+// call so its verdicts and availability are never cached.
+func (sm *SkillManager) scanField(ctx context.Context, text string) error {
+	if text == "" || !sm.localOnlyScan() {
+		return scanText(ctx, text, sm.guard, &sm.guardCfg, "skills")
+	}
+	key := sha256.Sum256([]byte(text))
+	localScanMemo.mu.Lock()
+	msg, ok := localScanMemo.m[key]
+	localScanMemo.mu.Unlock()
+	if ok {
+		if msg == "" {
+			return nil
+		}
+		return errors.New(msg)
+	}
+	err := scanText(ctx, text, sm.guard, &sm.guardCfg, "skills")
+	if err == nil || strings.HasPrefix(err.Error(), "content contains ") {
+		msg := ""
+		if err != nil {
+			msg = err.Error()
+		}
+		localScanMemo.mu.Lock()
+		if localScanMemo.m == nil || len(localScanMemo.m) >= localScanMemoMax {
+			localScanMemo.m = make(map[[sha256.Size]byte]string)
+		}
+		localScanMemo.m[key] = msg
+		localScanMemo.mu.Unlock()
+	}
+	return err
 }
 
 // applyGuardToSkills scans loaded skills and moves flagged auto-load skills to

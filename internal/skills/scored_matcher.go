@@ -50,8 +50,32 @@ func DefaultScoredConfig() ScoredMatcherConfig {
 // ScoredMatcher matches skills using a scoring system instead of AND-lock.
 type ScoredMatcher struct {
 	skills []Skill
+	prep   []skillTerms // parallel to skills
 	cfg    ScoredMatcherConfig
 	syn    *synonymMap
+}
+
+// skillTerms holds the per-skill lookup sets derived once from a skill's
+// trigger keywords and description, so scoring a message does not rebuild them.
+type skillTerms struct {
+	topic  map[string]bool
+	action map[string]bool
+	desc   map[string]bool
+}
+
+func prepareSkillTerms(s Skill) skillTerms {
+	t := skillTerms{
+		topic:  toLowerSet(s.Trigger.TopicKeywords),
+		action: toLowerSet(s.Trigger.ActionKeywords),
+	}
+	if s.Description != "" {
+		toks := tokenize(s.Description)
+		t.desc = make(map[string]bool, len(toks))
+		for _, dt := range toks {
+			t.desc[strings.ToLower(dt)] = true
+		}
+	}
+	return t
 }
 
 // NewScoredMatcher builds a scored matcher from a list of lazy skills.
@@ -72,8 +96,13 @@ func NewScoredMatcher(skills []Skill, cfg ScoredMatcherConfig) *ScoredMatcher {
 		cfg.PrefixWeight = DefaultScoredConfig().PrefixWeight
 	}
 
+	prep := make([]skillTerms, len(skills))
+	for i, sk := range skills {
+		prep[i] = prepareSkillTerms(sk)
+	}
 	return &ScoredMatcher{
 		skills: skills,
+		prep:   prep,
 		cfg:    cfg,
 		syn:    newSynonymMap(),
 	}
@@ -104,8 +133,8 @@ func (sm *ScoredMatcher) MatchSkills(input string, maxSlots int) []Skill {
 
 	var results []scoredSkill
 
-	for _, s := range sm.skills {
-		score := sm.scoreSkill(s, tokens)
+	for i, s := range sm.skills {
+		score := sm.scoreSkillWith(s, sm.terms(i, s), tokens)
 		if score >= sm.cfg.MinScore {
 			results = append(results, scoredSkill{skill: s, score: score})
 		}
@@ -136,11 +165,22 @@ func (sm *ScoredMatcher) MatchSkills(input string, maxSlots int) []Skill {
 
 // scoreSkill computes a match score for a single skill against user tokens.
 func (sm *ScoredMatcher) scoreSkill(s Skill, userTokens []string) int {
-	score := 0
+	return sm.scoreSkillWith(s, prepareSkillTerms(s), userTokens)
+}
 
-	// Precompute normalized keyword sets for matching
-	topicSet := toLowerSet(s.Trigger.TopicKeywords)
-	actionSet := toLowerSet(s.Trigger.ActionKeywords)
+// terms returns the prepared lookup sets for sm.skills[i], deriving them on
+// the fly for a matcher whose skills were set without NewScoredMatcher.
+func (sm *ScoredMatcher) terms(i int, s Skill) skillTerms {
+	if i < len(sm.prep) {
+		return sm.prep[i]
+	}
+	return prepareSkillTerms(s)
+}
+
+// scoreSkillWith scores a skill using its prepared keyword and description sets.
+func (sm *ScoredMatcher) scoreSkillWith(s Skill, terms skillTerms, userTokens []string) int {
+	score := 0
+	topicSet, actionSet := terms.topic, terms.action
 
 	for _, tok := range userTokens {
 		// 1. Exact topic match → +TopicWeight
@@ -192,14 +232,8 @@ func (sm *ScoredMatcher) scoreSkill(s Skill, userTokens []string) int {
 			}
 		}
 		// 5. Description token match → +DescWeight
-		if sm.cfg.DescWeight > 0 && s.Description != "" {
-			descTokens := tokenize(s.Description)
-			for _, dt := range descTokens {
-				if strings.ToLower(dt) == tok {
-					score += sm.cfg.DescWeight
-					break
-				}
-			}
+		if sm.cfg.DescWeight > 0 && terms.desc[tok] {
+			score += sm.cfg.DescWeight
 		}
 	}
 
@@ -349,8 +383,8 @@ func (sm *ScoredMatcher) ExplainMatch(input string) string {
 	b.WriteString(strings.Join(tokens, ", "))
 	b.WriteString("\n\n")
 
-	for _, s := range sm.skills {
-		score := sm.scoreSkill(s, tokens)
+	for i, s := range sm.skills {
+		score := sm.scoreSkillWith(s, sm.terms(i, s), tokens)
 		status := "❌"
 		if score >= sm.cfg.MinScore {
 			status = "✅"
