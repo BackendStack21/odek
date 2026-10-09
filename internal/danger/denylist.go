@@ -8,7 +8,10 @@
 
 package danger
 
-import "strings"
+import (
+	"sort"
+	"strings"
+)
 
 // denylistMatch reports whether any denylist entry matches a command that cmd
 // would run. An entry matches when its tokens equal the leading tokens of a
@@ -37,18 +40,38 @@ func denylistMatch(cmd string, denylist []string) bool {
 	if len(entries) == 0 {
 		return false
 	}
-	return denyScan(cmd, entries, 0)
+	return denyScan(cmd, &denyCtx{entries: entries, seen: map[string]struct{}{}}, 0)
 }
 
-func denyScan(cmd string, entries [][]string, depth int) bool {
-	return denyScanVars(cmd, entries, depth, nil)
+// denyCtx carries the compiled entries and the set of command lines and
+// stages already examined during one denylistMatch call. Scanning is a pure
+// function of its input, so a repeat can only reproduce a miss (a hit would
+// have ended the scan); skipping repeats keeps nested eval operands and
+// repeated find -exec operands linear in the command size instead of
+// re-scanning the same text once per path that reaches it.
+type denyCtx struct {
+	entries [][]string
+	seen    map[string]struct{}
+}
+
+// firstVisit records key and reports whether it was new.
+func (dc *denyCtx) firstVisit(key string) bool {
+	if _, dup := dc.seen[key]; dup {
+		return false
+	}
+	dc.seen[key] = struct{}{}
+	return true
+}
+
+func denyScan(cmd string, dc *denyCtx, depth int) bool {
+	return denyScanVars(cmd, dc, depth, nil)
 }
 
 // denyScanVars is denyScan with the shell variables earlier commands of the
 // enclosing line assigned a statically known value, so `g=git; $g push` and
 // `c=push; git $c` are matched as the commands they run. A variable whose
 // value is built at run time is not known and its references stay opaque.
-func denyScanVars(cmd string, entries [][]string, depth int, inherited map[string]string) bool {
+func denyScanVars(cmd string, dc *denyCtx, depth int, inherited map[string]string) bool {
 	if depth > maxSubstDepth {
 		return false
 	}
@@ -56,13 +79,16 @@ func denyScanVars(cmd string, entries [][]string, depth int, inherited map[strin
 	for k, v := range inherited {
 		vars[k] = v
 	}
+	if !dc.firstVisit("scan\x00" + cmd + "\x00" + denyVarsKey(inherited)) {
+		return false
+	}
 	main, subs := normalize(cmd)
 	unquoted := unquotedVariableRefs(main)
 	tokens, ops, _ := tokenizeMarked(main)
 	for _, segment := range splitSegments(tokens) {
 		stages := splitPipes(segment)
 		for _, stage := range stages {
-			if denyStage(denyExpand(stage, vars, unquoted), entries, depth) {
+			if denyStage(denyExpand(stage, vars, unquoted), dc, depth) {
 				return true
 			}
 		}
@@ -73,16 +99,36 @@ func denyScanVars(cmd string, entries [][]string, depth int, inherited map[strin
 	// Commands inside loops, conditionals, case arms, groups and function
 	// bodies are command positions of their own.
 	for _, stage := range commandStages(tokens, ops) {
-		if denyStage(denyExpand(stage, vars, unquoted), entries, depth) {
+		if denyStage(denyExpand(stage, vars, unquoted), dc, depth) {
 			return true
 		}
 	}
 	for _, sub := range subs {
-		if denyScanVars(sub, entries, depth+1, vars) {
+		if denyScanVars(sub, dc, depth+1, vars) {
 			return true
 		}
 	}
 	return false
+}
+
+// denyVarsKey renders a variable map in a stable order.
+func denyVarsKey(vars map[string]string) string {
+	if len(vars) == 0 {
+		return ""
+	}
+	names := make([]string, 0, len(vars))
+	for k := range vars {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+	var b strings.Builder
+	for _, k := range names {
+		b.WriteString(k)
+		b.WriteByte('=')
+		b.WriteString(vars[k])
+		b.WriteByte(0)
+	}
+	return b.String()
 }
 
 // denyExpand substitutes known variables into a stage. An unquoted reference
@@ -220,12 +266,15 @@ func denyPeel(stage []string) []string {
 	return out
 }
 
-func denyStage(stage []string, entries [][]string, depth int) bool {
+func denyStage(stage []string, dc *denyCtx, depth int) bool {
 	stage = denyPeel(stage)
 	if len(stage) == 0 {
 		return false
 	}
-	if denyMatchesAny(stage, entries) || denyPayloads(stage, entries, depth) {
+	if !dc.firstVisit("stage\x00" + strings.Join(stage, "\x00")) {
+		return false
+	}
+	if denyMatchesAny(stage, dc.entries) || denyPayloads(stage, dc, depth) {
 		return true
 	}
 	// unwrapWrappersFull strips every stacked wrapper and leading assignment
@@ -234,14 +283,14 @@ func denyStage(stage []string, entries [][]string, depth int) bool {
 	// matched as command lines of their own.
 	un := unwrapWrappersFull(stage)
 	for _, payload := range un.payloads {
-		if denyScan(payload, entries, depth+1) {
+		if denyScan(payload, dc, depth+1) {
 			return true
 		}
 	}
 	// `env -S 'git push'` runs the split string as the command, ahead of any
 	// remaining operands.
 	for _, split := range un.splits {
-		if denyStage(append(tokenize(split), un.inner...), entries, depth+1) {
+		if denyStage(append(tokenize(split), un.inner...), dc, depth+1) {
 			return true
 		}
 	}
@@ -249,22 +298,22 @@ func denyStage(stage []string, entries [][]string, depth int) bool {
 	if len(inner) == 0 || len(inner) == len(stage) {
 		return false
 	}
-	return denyMatchesAny(inner, entries) || denyPayloads(inner, entries, depth)
+	return denyMatchesAny(inner, dc.entries) || denyPayloads(inner, dc, depth)
 }
 
 // denyPayloads matches commands carried inside a command's arguments.
-func denyPayloads(inner []string, entries [][]string, depth int) bool {
+func denyPayloads(inner []string, dc *denyCtx, depth int) bool {
 	name := commandName(inner[0])
 	switch {
 	case pipedShells[name]:
 		if idx := shellInlineScriptIndex(inner); idx >= 0 && inner[idx] != "" {
-			return denyScan(inner[idx], entries, depth+1)
+			return denyScan(inner[idx], dc, depth+1)
 		}
 	case name == "eval" && len(inner) > 1:
-		return denyScan(strings.Join(inner[1:], " "), entries, depth+1)
+		return denyScan(strings.Join(inner[1:], " "), dc, depth+1)
 	case name == "git":
 		if payload := gitSubmoduleForeachInner(inner); payload != "" {
-			return denyScan(payload, entries, depth+1)
+			return denyScan(payload, dc, depth+1)
 		}
 	case name == "find" || name == "fd" || name == "fdfind":
 		for i := 1; i < len(inner); i++ {
@@ -277,7 +326,7 @@ func denyPayloads(inner []string, entries [][]string, depth int) bool {
 						break
 					}
 				}
-				if denyStage(inner[i+1:end], entries, depth+1) {
+				if denyStage(inner[i+1:end], dc, depth+1) {
 					return true
 				}
 			}
@@ -285,7 +334,7 @@ func denyPayloads(inner []string, entries [][]string, depth int) bool {
 	}
 	// A wrapper operand that is itself a whole command line (`watch 'git push'`).
 	if len(inner) > 0 && strings.ContainsAny(inner[0], " \t") {
-		return denyScan(inner[0], entries, depth+1)
+		return denyScan(inner[0], dc, depth+1)
 	}
 	return false
 }
