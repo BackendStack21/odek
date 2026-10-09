@@ -19,7 +19,11 @@
 // access files outside its working directory.
 package odek
 
-import "github.com/BackendStack21/odek/internal/agent"
+import (
+	"context"
+
+	"github.com/BackendStack21/odek/internal/agent"
+)
 
 // Public types retain their identity and methods through aliases. Runtime
 // implementation and tests live together in internal/agent.
@@ -61,3 +65,9 @@ func ComposeSecureSystem(identity string) string { return agent.ComposeSecureSys
 func DefaultUntrustedWrapper(source, content string) string {
 	return agent.DefaultUntrustedWrapper(source, content)
 }
+
+// WithUntrustedIngest marks ctx as already tainted by untrusted content. Pass
+// it to RunWithMessages when resuming a session whose UntrustedIngested flag
+// is set; persist Agent.UntrustedIngested() back onto the session before
+// saving.
+func WithUntrustedIngest(ctx context.Context) context.Context { return agent.WithUntrustedIngest(ctx) }

@@ -353,9 +353,29 @@ cannot launder itself into trusted children.
 
 The `trust_level` a model requests is honoured only on a clean run.
 `delegate_tasks` clamps every requested child to `untrusted` when the parent
-run is tainted: it ingested untrusted content (a wrapped tool result, `@`-ref,
-attachment, …), it resumed a session that ever did, or **any MCP tool is
-registered**. MCP tool names, descriptions and schemas are third-party text in
+run is tainted. **What taints** (external content only):
+
+- any tool result — the engine wraps every tool's output (`tool:<name>`), so
+  the first tool call of a run taints it, whatever the tool;
+- `@`-refs, `--ctx` files, attachments, Telegram forwards/voice/captions/media,
+  `session_search` results, sub-agent results, background-job notices;
+- project instructions: a loaded `AGENTS.md` is repository content, so a run
+  in a repository with an `AGENTS.md` (and `no_agents_md` off) is tainted from
+  its first iteration;
+- **any registered MCP tool** (see below);
+- resuming a session that was ever tainted (the session's sticky
+  `untrusted_ingested` flag survives context and write-time trimming).
+
+**What does not taint:** the engine's own derived context — the plan, the
+rolling digest (compaction), the memory block, re-wrapped persisted system
+messages, progress summaries, effect evidence, reviewed skills,
+extended-memory recall, and the return-after-break summary. (Episode recall
+*does* taint: an episode summarises another session and is admitted by the
+memory gate's per-tool rule, which is weaker than this taint.) These blocks are
+wrapped too, but they derive from history that was already taint-tracked when
+it entered; a tool can never produce their labels. So trusted delegation is
+available when a run delegates before any tool call, in a session that has
+never ingested external content, with no MCP server and no `AGENTS.md` loaded. MCP tool names, descriptions and schemas are third-party text in
 the tool catalogue — no ingest is ever recorded for them, yet a poisoned
 description can steer a `delegate_tasks` call. The secure default wins: while
 any MCP server is loaded, trusted delegation is unavailable and every child

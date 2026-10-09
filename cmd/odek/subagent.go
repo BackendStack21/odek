@@ -1116,7 +1116,7 @@ func subagentCmd(args []string) error {
 		MaxIterations:    cfg.maxIter,
 		AnnounceBudget:   &resolved.Subagent.AnnounceBudget,
 		SystemMessage:    systemMsg,
-		UntrustedWrapper: func(source, content string) string { return wrapUntrusted(context.Background(), source, content) },
+		UntrustedWrapper: wrapEngineContext,
 		RuntimeContext:   odek.BuildRuntimeContext("terminal"),
 		NoProjectFile:    resolved.NoAgents,
 		Thinking:         resolved.Thinking,

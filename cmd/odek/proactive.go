@@ -41,7 +41,9 @@ func injectReturnAfterBreak(ctx context.Context, mm *memory.MemoryManager, messa
 	if rb == "" {
 		return messages
 	}
-	wrapped := wrapUntrusted(rbCtx, "return_after_break", rb)
+	// Derived from extended memory, not a fresh external ingest: wrapped
+	// under the engine-derived label so it does not taint the session.
+	wrapped := wrapEngineContext("return_after_break", rb)
 	return append(messages, session.Message{Role: "user", Name: session.ReturnAfterBreakName, Content: wrapped})
 }
 

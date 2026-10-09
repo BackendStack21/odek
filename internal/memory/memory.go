@@ -1196,13 +1196,12 @@ func (m *MemoryManager) markPromptDirty() {
 // extracts a narrative session summary using the LLM and stores it as an episode.
 // sessionID is validated for path traversal before any file I/O.
 //
-// Equivalent to OnSessionEndWithProvenance with a zero-value (trusted)
-// provenance. Prefer the With-Provenance variant from callers that have
-// access to the structured session.Message slice — that lets us mark
-// episodes derived from sessions that touched untrusted content, so they
-// are never auto-replayed.
+// Without the structured session it cannot know the provenance, so the
+// episode is stored untrusted (fail closed: never auto-replayed until a human
+// promotes it). Callers that hold the session use OnSessionEndWithProvenance
+// with DeriveSessionProvenance.
 func (m *MemoryManager) OnSessionEnd(sessionID string, turns int, messages []string) {
-	m.OnSessionEndWithProvenance(sessionID, turns, messages, EpisodeProvenance{})
+	m.OnSessionEndWithProvenance(sessionID, turns, messages, EpisodeProvenance{Untrusted: true, Sources: []string{"unknown_provenance"}})
 }
 
 // OnSessionEndWithProvenance is the provenance-carrying counterpart of

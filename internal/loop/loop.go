@@ -255,15 +255,16 @@ func withRunIngestTaint(ctx context.Context, messages []session.Message) context
 		state = &ingestTaint{}
 		ctx = context.WithValue(ctx, ingestTaintKey{}, state)
 	}
-	for _, m := range messages {
-		if strings.Contains(m.Content, "<untrusted_content_") {
-			state.seen.Store(true)
-			break
-		}
+	if session.MessagesCarryUntrusted(messages) {
+		state.seen.Store(true)
 	}
 	prior := IngestRecorderFrom(ctx)
 	return WithIngestRecorder(ctx, func(source, content string) {
-		state.seen.Store(true)
+		// The engine records its own derived context (plan, digest, memory
+		// block, …) for the audit log; only external content taints.
+		if !session.EngineDerivedSource(source) {
+			state.seen.Store(true)
+		}
 		if prior != nil {
 			prior(source, content)
 		}
@@ -412,6 +413,7 @@ type Engine struct {
 	// goroutine.
 	runMutations        []string
 	effectBody          effectBodyCache
+	runTaint            atomic.Pointer[ingestTaint] // current/last run's ingest state (taint.go)
 	durableTranscript   []session.Message
 	durableIndex        session.CheckpointIndex // ID -> position in durableTranscript
 	activeTurnID        string
@@ -1419,10 +1421,12 @@ func (e *Engine) trimContext(ctx context.Context, messages []session.Message, to
 				continue
 			}
 			oldEst := estimateTokens(messages[i].Content)
-			messages[i].Content = fmt.Sprintf(
-				"[tool output trimmed: %d bytes dropped to fit context budget]",
-				len(messages[i].Content),
-			)
+			marker := "[tool output trimmed: %d bytes dropped to fit context budget]"
+			if session.ContentCarriesUntrusted(messages[i].Content) {
+				// Keep the history recognisably tainted once the body is gone.
+				marker = session.TrimmedUntrustedMarker
+			}
+			messages[i].Content = fmt.Sprintf(marker, len(messages[i].Content))
 			truncated++
 			totalTokens -= oldEst - estimateTokens(messages[i].Content)
 		}
@@ -2790,7 +2794,7 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 		}
 	}()
 	ctx = withRunIngestTaint(ctx, messages)
-	e.markCatalogueTaint(ctx)
+	e.bindRunTaint(ctx)
 	messages = e.ensureRuntimeSystem(messages)
 	messages = e.sanitizePersistedSystemMessages(ctx, messages)
 	e.startTranscript(messages)

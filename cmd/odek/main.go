@@ -2079,7 +2079,7 @@ func run(args []string) (outcome error) {
 		MaxIterations:     resolved.MaxIter,
 		MaxToolParallel:   resolved.MaxToolParallel,
 		SystemMessage:     systemMessage,
-		UntrustedWrapper:  func(source, content string) string { return wrapUntrusted(context.Background(), source, content) },
+		UntrustedWrapper:  wrapEngineContext,
 		NoProjectFile:     resolved.NoAgents,
 		Thinking:          resolved.Thinking,
 		ThinkingBudget:    f.ThinkingBudget,
@@ -2273,6 +2273,7 @@ func run(args []string) (outcome error) {
 					return
 				}
 				runSess.Messages = dropDanglingToolCalls(snapshot)
+				markRunTaint(agent, runSess)
 				if err := sessionStore.SaveNoIndex(runSess); err != nil {
 					checkpointErr = fmt.Errorf("persist run checkpoint: %w", err)
 					cancel()
@@ -2308,6 +2309,7 @@ func run(args []string) (outcome error) {
 				return fmt.Errorf("session was not created")
 			}
 			runSess.Messages = allMessages
+			markRunTaint(agent, runSess)
 			runSess.Sandbox = resolved.Sandbox
 			if mm := agent.Memory(); mm != nil {
 				runSess.Buffer = mm.GetBuffer()
@@ -3511,7 +3513,7 @@ func continueCmd(args []string) (outcome error) {
 		MaxIterations:     resolved.MaxIter,
 		MaxToolParallel:   resolved.MaxToolParallel,
 		SystemMessage:     systemMessage,
-		UntrustedWrapper:  func(source, content string) string { return wrapUntrusted(context.Background(), source, content) },
+		UntrustedWrapper:  wrapEngineContext,
 		NoProjectFile:     resolved.NoAgents,
 		Thinking:          resolved.Thinking,
 		ThinkingBudget:    f.ThinkingBudget,
@@ -3612,12 +3614,14 @@ func continueCmd(args []string) (outcome error) {
 			return
 		}
 		sess.Messages = dropDanglingToolCalls(snapshot)
+		markRunTaint(agent, sess)
 		if err := store.SaveNoIndex(sess); err != nil {
 			checkpointErr = fmt.Errorf("persist continuation checkpoint: %w", err)
 			cancel()
 		}
 	})
 
+	ctx = withSessionTaint(ctx, sess)
 	result, allMessages, err := agent.RunWithMessages(ctx, messages)
 	if checkpointErr != nil {
 		err = checkpointErr
@@ -3667,6 +3671,7 @@ func continueCmd(args []string) (outcome error) {
 	if mm := agent.Memory(); mm != nil {
 		updated.Buffer = mm.GetBuffer()
 	}
+	markRunTaint(agent, updated)
 	if err := store.Save(updated); err != nil {
 		return fmt.Errorf("save session: %w", err)
 	}

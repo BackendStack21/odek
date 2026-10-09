@@ -1165,6 +1165,21 @@ func (a *Agent) LastPartialReason() (string, bool) {
 	return a.engine.LastPartialReason()
 }
 
+// WithUntrustedIngest marks ctx as already tainted. Embedders resuming a
+// stored session whose UntrustedIngested flag is set pass the returned
+// context to RunWithMessages, so delegate_tasks clamps children even when the
+// untrusted content itself was trimmed out of the history.
+func WithUntrustedIngest(ctx context.Context) context.Context {
+	return loop.WithUntrustedIngest(ctx)
+}
+
+// UntrustedIngested reports whether the current or most recent run is tainted
+// (see loop.Engine.UntrustedIngested). Persist it on the session with
+// session.Session.UntrustedIngested so a resumed run starts tainted.
+func (a *Agent) UntrustedIngested() bool {
+	return a.engine.UntrustedIngested()
+}
+
 // TotalInputTokens returns the cumulative prompt tokens consumed across all
 // iterations of the most recent RunWithMessages call.
 func (a *Agent) TotalInputTokens() int {

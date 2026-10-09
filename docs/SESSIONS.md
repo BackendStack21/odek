@@ -162,6 +162,23 @@ Sessions are stored as compact JSON at `~/.odek/sessions/<id>.json` (no indentat
 }
 ```
 
+A session whose transcript has ever carried external untrusted content (an `<untrusted_content_…>` wrapper whose `source` is not one of the engine's own context labels — `compaction`, `plan`, `plan_remaining`, `memory`, `persisted_system`, `progress_summary`, `completed_effects`, `skill`, `extended_memory`, `return_after_break`; see `session.EngineDerivedSource`) is saved with `"untrusted_ingested": true`. A plan, digest or memory block alone never flags a session; any tool result, `@`-ref, attachment, MCP output, `session_search` result, sub-agent result, background notice or project `AGENTS.md` does. The flag is sticky — a save never clears it once it is on disk, and files written before it existed derive it from their history on load — so trimming or compacting the content away does not make a resumed run look clean; resumed runs start tainted and `delegate_tasks` clamps their children to `untrusted` (see [SECURITY.md](SECURITY.md)). Before each save the CLI surfaces also set the flag when the run itself was tainted (`agent.UntrustedIngested()`, e.g. an MCP tool catalogue that never reaches the history).
+
+Embedders resuming a stored session with `RunWithMessages` should do the same:
+
+```go
+ctx := context.Background()
+if sess.UntrustedIngested {
+    ctx = odek.WithUntrustedIngest(ctx)
+}
+_, history, err := agent.RunWithMessages(ctx, append(sess.Messages, userMsg))
+sess.Messages = history
+if agent.UntrustedIngested() {
+    sess.UntrustedIngested = true
+}
+_ = store.Save(sess)
+```
+
 The `Session` struct has all public fields, enabling direct manipulation. This makes advanced operations (editing, truncating, merging) trivial — load, mutate, save.
 
 ## External state references

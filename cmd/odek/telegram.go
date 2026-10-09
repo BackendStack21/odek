@@ -1903,7 +1903,7 @@ func runChatTurn(
 		MaxIterations:    resolved.MaxIter,
 		MaxToolParallel:  resolved.MaxToolParallel,
 		SystemMessage:    systemMessage,
-		UntrustedWrapper: func(source, content string) string { return wrapUntrusted(context.Background(), source, content) },
+		UntrustedWrapper: wrapEngineContext,
 		RuntimeContext:   odek.BuildRuntimeContext("telegram"),
 		InteractionMode:  resolved.InteractionMode,
 		NoProjectFile:    resolved.NoAgents,
@@ -2163,6 +2163,9 @@ func runChatTurn(
 			return
 		}
 		trimmed := dropDanglingToolCalls(snapshot)
+		if agent.UntrustedIngested() {
+			sessionManager.MarkUntrustedIngested(chatID)
+		}
 		if err := sessionManager.SaveNoIndexAt(chatID, turnGen, trimmed); err != nil {
 			checkpointErr = fmt.Errorf("persist Telegram checkpoint: %w", err)
 			agentCancel()
@@ -2178,7 +2181,14 @@ func runChatTurn(
 	agent.BeginRun("", "")
 	var outcome error
 	defer finishAgentInvocation(agent, &outcome)
+	if cs.UntrustedIngested() {
+		agentCtx = loop.WithUntrustedIngest(agentCtx)
+	}
 	response, updatedMessages, err := agent.RunWithMessages(agentCtx, cs.Messages)
+	if agent.UntrustedIngested() {
+		// Before the cancel-path and final saves below.
+		sessionManager.MarkUntrustedIngested(chatID)
+	}
 	// Drain the progress bubble before anything else is sent: every progress
 	// edit completes before the final answer (or error reply) goes out.
 	progress.finish(!resolved.ToolProgressCleanup)

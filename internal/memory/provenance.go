@@ -264,22 +264,52 @@ func pathOutsideRoots(p string, roots []string) bool {
 // DeriveProvenance walks a session's structured messages and returns
 // the provenance an episode derived from those messages should carry.
 // A message taints the episode if it contains a tool call that crossed
-// the trust boundary per ToolCallTaints.
+// the trust boundary per ToolCallTaints, or if a non-tool message carries
+// wrapped external content that no tool call accounts for (see
+// externalNonToolIngest).
 func DeriveProvenance(messages []session.Message) EpisodeProvenance {
 	prov := EpisodeProvenance{}
 	seen := make(map[string]bool)
+	mark := func(source string) {
+		prov.Untrusted = true
+		if !seen[source] {
+			seen[source] = true
+			prov.Sources = append(prov.Sources, source)
+		}
+	}
 	for _, m := range messages {
 		for _, tc := range m.ToolCalls {
-			if !ToolCallTaints(tc.Function.Name, tc.Function.Arguments) {
-				continue
+			if ToolCallTaints(tc.Function.Name, tc.Function.Arguments) {
+				mark(tc.Function.Name)
 			}
-			prov.Untrusted = true
-			name := tc.Function.Name
-			if !seen[name] {
-				seen[name] = true
-				prov.Sources = append(prov.Sources, name)
+		}
+		if m.Role == "tool" {
+			continue // tool output is judged by its call above
+		}
+		for _, src := range session.WrapperSources(m.Content) {
+			if externalNonToolIngest(src) {
+				mark(src)
 			}
 		}
 	}
 	return prov
+}
+
+// externalNonToolIngest reports whether a wrapper label in a non-tool message
+// is external content that reached the session without a tool call the
+// per-tool rule could judge: attachments, @-refs, --ctx files, Telegram
+// forwards/voice/captions/media, and anything re-labelled "external:".
+// Excluded: engine-derived context (session.EngineDerivedSource), recalled
+// episodes (already gated when they were stored), tool output re-wrapped by
+// the engine ("tool:<name>", judged by its call), workspace project
+// instructions ("project:…", inside the workspace trust zone like a
+// workspace read) and background-job notices ("bg", judged by the bg_start
+// call that started the job).
+func externalNonToolIngest(src string) bool {
+	switch {
+	case session.EngineDerivedSource(src), src == "episode", src == "bg",
+		strings.HasPrefix(src, "tool:"), strings.HasPrefix(src, "project:"):
+		return false
+	}
+	return true
 }

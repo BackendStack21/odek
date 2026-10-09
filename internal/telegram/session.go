@@ -52,6 +52,29 @@ type ChatSession struct {
 	CreatedAt  time.Time
 	LastActive time.Time
 	TurnCount  int
+
+	// untrusted carries in-run taint (MarkUntrustedIngested) into the next
+	// save, which ORs it into the stored session's sticky flag.
+	untrusted bool
+}
+
+// UntrustedIngested reports whether the chat's persisted session has ever
+// carried untrusted content (session.Session.UntrustedIngested).
+func (cs *ChatSession) UntrustedIngested() bool {
+	return cs != nil && (cs.untrusted || (cs.stored != nil && cs.stored.UntrustedIngested))
+}
+
+// MarkUntrustedIngested records that the chat's current run is tainted (an
+// ingest, or a third-party tool catalogue that never reaches the history).
+// The next save persists it on the session's sticky UntrustedIngested flag.
+func (sm *SessionManager) MarkUntrustedIngested(chatID int64) {
+	sm.Mu.Lock()
+	defer sm.Mu.Unlock()
+	if cs := sm.Cache[chatID]; cs != nil && !cs.untrusted {
+		marked := *cs
+		marked.untrusted = true
+		sm.Cache[chatID] = &marked
+	}
 }
 
 // ── Constructor ────────────────────────────────────────────────────────
@@ -241,6 +264,9 @@ func (sm *SessionManager) saveLocked(chatID int64, messages []session.Message, c
 		stored = &copy
 	}
 	stored.Messages = session.CloneMessages(messages)
+	if cs.untrusted {
+		stored.UntrustedIngested = true
+	}
 	stored.UpdatedAt = updated.LastActive
 	stored.Turns = updated.TurnCount
 	var err error

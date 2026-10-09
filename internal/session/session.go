@@ -125,6 +125,14 @@ type Session struct {
 	// odek-extension/v1, see docs/EXTENSIONS.md). odek stores and returns
 	// these refs verbatim; it NEVER resolves or dereferences their URIs.
 	ExternalRefs []ExternalRef `json:"external_refs,omitempty"`
+
+	// UntrustedIngested records that this conversation has carried untrusted
+	// content at some point. It is sticky: every save ORs in the flag already
+	// on disk and any untrusted wrapper in the messages being written, so
+	// context trimming, write-time size trimming or compaction that removes
+	// the content itself never clears it. Resumed runs seed their ingest
+	// taint from it (delegate_tasks then clamps children to untrusted).
+	UntrustedIngested bool `json:"untrusted_ingested,omitempty"`
 }
 
 // ErrConflict reports that another writer committed after this snapshot was
@@ -730,6 +738,7 @@ const revStampSettle = 50 * time.Millisecond
 type revStamp struct {
 	generation string
 	revision   uint64
+	untrusted  bool
 	size       int64
 	mod        time.Time
 	ino        uint64
@@ -753,7 +762,7 @@ func (s *Store) cachedRevision(id string, info os.FileInfo, statErr error) *Sess
 	if info.Size() != st.size || !info.ModTime().Equal(st.mod) || fileInode(info) != st.ino {
 		return nil
 	}
-	return &Session{ID: id, Generation: st.generation, Revision: st.revision, persistedID: id}
+	return &Session{ID: id, Generation: st.generation, Revision: st.revision, persistedID: id, UntrustedIngested: st.untrusted}
 }
 
 // rememberRevision stamps the file just written for sess.
@@ -769,6 +778,7 @@ func (s *Store) rememberRevision(sess *Session) {
 	s.revStamps[sess.ID] = revStamp{
 		generation: sess.Generation,
 		revision:   sess.Revision,
+		untrusted:  sess.UntrustedIngested,
 		size:       info.Size(),
 		mod:        info.ModTime(),
 		ino:        fileInode(info),
@@ -883,12 +893,21 @@ func (s *Store) saveLockedMode(sess *Session, lazyIndex bool) (err error) {
 	if alias {
 		// Atomic replacement owns this directory entry, never the alias's
 		// target. Do not read the target to check its unrelated revision.
+		// The previous revision's taint is therefore unknowable: assume it
+		// (fail closed) rather than let this snapshot clear it.
+		sess.UntrustedIngested = true
 	} else if loadErr == nil {
 		if sess.persistedID != "" && sess.persistedID != sess.ID {
 			return fmt.Errorf("%w: destination session already exists", ErrConflict)
 		}
 		if current.Generation != sess.Generation || current.Revision != sess.Revision {
 			return fmt.Errorf("%w: have %d, current %d", ErrConflict, sess.Revision, current.Revision)
+		}
+		// The taint is sticky across saves: a snapshot whose history no
+		// longer shows the untrusted content (trimmed, compacted) must not
+		// clear what an earlier revision recorded.
+		if current.UntrustedIngested {
+			sess.UntrustedIngested = true
 		}
 	} else if !errors.Is(loadErr, os.ErrNotExist) {
 		return loadErr
@@ -997,6 +1016,12 @@ func (s *Store) saveLockedMode(sess *Session, lazyIndex bool) (err error) {
 			prompt := redact.RedactSecrets(*sess.Messages[i].PrincipalPrompt)
 			sess.Messages[i].PrincipalPrompt = &prompt
 		}
+	}
+	// Messages below the boundary were scanned for untrusted content by the
+	// save that set it; a stale boundary resets to 0 and rescans everything.
+	// This runs before the write-time size trim, which can drop the content.
+	if !sess.UntrustedIngested && MessagesCarryUntrusted(sess.Messages[boundary:]) {
+		sess.UntrustedIngested = true
 	}
 	for i := boundary; i < len(sess.Messages); i++ {
 		sess.Messages[i].Content = redact.RedactSecrets(sess.Messages[i].Content)
@@ -1251,6 +1276,11 @@ func (s *Store) Load(id string) (_ *Session, loadErr error) {
 	// derived from an attacker-controlled embedded ID.
 	if sess.ID != id {
 		return nil, fmt.Errorf("session: load %q: ID mismatch (file contains %q)", id, sess.ID)
+	}
+	// Files written before the flag existed carry the taint only in their
+	// history; derive it so the next save persists it.
+	if !sess.UntrustedIngested && MessagesCarryUntrusted(sess.Messages) {
+		sess.UntrustedIngested = true
 	}
 	sess.persistedID = sess.ID
 	return &sess, nil
