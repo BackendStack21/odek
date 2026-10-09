@@ -151,6 +151,14 @@ and comma-separated lists. Macros: `@hourly`, `@daily` (`@midnight`),
 Granularity is **one minute** (no seconds field). Times are in the job's `--tz`
 or, failing that, the scheduler's default timezone (UTC unless configured).
 
+**Daylight-saving changes** follow Vixie/cronie behavior. A job with a fixed
+time of day (neither the minute nor the hour field is a wildcard, e.g.
+`30 1 * * *`) fires **once** on a fall-back day, at the first occurrence of the
+repeated wall time, and a wall time that does not exist on a spring-forward day
+(e.g. `30 2 * * *` on the gap day) fires at the first minute after the gap
+instead of being skipped. Wildcard jobs (`*/5 * * * *`, `0 * * * *`) step real
+minutes and keep firing every matching minute, including the repeated hour.
+
 **Day-of-month / day-of-week coupling** follows Vixie semantics: when *both*
 fields are restricted, a day matches if *either* matches. So `0 0 13 * 5` fires
 on the 13th **or** any Friday — not only Friday the 13th.
@@ -279,4 +287,6 @@ See [CONFIG.md](CONFIG.md) for the full field reference.
 If the scheduler was down when a job was due, on startup it either **skips**
 (default — reschedules forward and records a `skipped` status) or **runs once**
 (when the job's `--catchup` or `schedules.catchup` is set). A burst of missed
-ticks never stampedes: at most one catch-up fire per job.
+ticks never stampedes: at most one catch-up fire per job. A skipped fire does
+not touch the job's recorded last run: `last_run`, `last_result` and
+`last_error` keep describing the last time the job actually ran.

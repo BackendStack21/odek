@@ -40,6 +40,11 @@ type Schedule struct {
 	domStar bool // dom field was a wildcard ("*" or "*/n")
 	dowStar bool // dow field was a wildcard
 
+	// fixedTime is true when neither the minute nor the hour field is a
+	// wildcard. Such jobs follow wall-clock semantics across DST changes
+	// (see nextFixed) instead of stepping real minutes.
+	fixedTime bool
+
 	loc  *time.Location
 	expr string // original expression, for String()
 }
@@ -91,6 +96,7 @@ func ParseInLocation(expr string, loc *time.Location) (*Schedule, error) {
 	}
 
 	s := &Schedule{loc: loc, expr: strings.TrimSpace(expr)}
+	s.fixedTime = !strings.HasPrefix(fields[0], "*") && !strings.HasPrefix(fields[1], "*")
 	var err error
 
 	if s.minute, _, err = parseField(fields[0], 0, 59, nil); err != nil {
@@ -273,8 +279,18 @@ func (s *Schedule) dayMatches(t time.Time) bool {
 // It advances by the coarsest non-matching unit (month → day → hour → minute)
 // so even rare expressions converge in a handful of iterations rather than
 // stepping minute-by-minute across years.
+//
+// Jobs with a fixed time of day (neither minute nor hour is a wildcard) follow
+// the behavior of Vixie/cronie across daylight-saving changes: a wall time
+// that occurs twice on a fall-back day fires once (at its first occurrence),
+// and a wall time that does not exist on a spring-forward day fires at the
+// first minute after the gap instead of being skipped. Wildcard jobs such as
+// "*/5 * * * *" or "0 * * * *" keep stepping real minutes.
 func (s *Schedule) Next(after time.Time) time.Time {
 	after = after.In(s.loc)
+	if s.fixedTime {
+		return s.nextFixed(after)
+	}
 	limit := after.Add(matchHorizon)
 
 	// Start at the next local minute by flooring the actual instant before
@@ -326,3 +342,68 @@ func (s *Schedule) Next(after time.Time) time.Time {
 
 // String returns the original expression the schedule was parsed from.
 func (s *Schedule) String() string { return s.expr }
+
+// nextFixed finds the next firing of a fixed-time-of-day schedule by walking
+// civil days and resolving each wall-clock (hour, minute) pair to a real
+// instant, so DST transitions neither duplicate nor drop a day's run.
+func (s *Schedule) nextFixed(after time.Time) time.Time {
+	limit := after.Add(matchHorizon)
+	y, m, d := after.Date()
+	for i := 0; ; i++ {
+		// Noon is never inside a transition gap, so dayMatches sees the
+		// right civil date.
+		noon := time.Date(y, m, d+i, 12, 0, 0, 0, s.loc)
+		if noon.After(limit.Add(24 * time.Hour)) {
+			return time.Time{}
+		}
+		if s.month&(1<<uint(int(noon.Month()))) == 0 || !s.dayMatches(noon) {
+			continue
+		}
+		var best time.Time
+		for h := 0; h < 24; h++ {
+			if s.hour&(1<<uint(h)) == 0 {
+				continue
+			}
+			for min := 0; min < 60; min++ {
+				if s.minute&(1<<uint(min)) == 0 {
+					continue
+				}
+				fire := resolveWall(noon.Year(), noon.Month(), noon.Day(), h, min, s.loc)
+				if fire.After(after) && (best.IsZero() || fire.Before(best)) {
+					best = fire
+				}
+			}
+		}
+		if !best.IsZero() {
+			return best
+		}
+	}
+}
+
+// resolveWall maps a civil wall-clock time to one instant: the first
+// occurrence when the time is repeated by a fall-back, and the first minute
+// after the gap when the time does not exist because of a spring-forward.
+func resolveWall(y int, mo time.Month, d, h, min int, loc *time.Location) time.Time {
+	t := time.Date(y, mo, d, h, min, 0, 0, loc)
+	if t.Hour() != h || t.Minute() != min || t.Day() != d {
+		// Nonexistent wall time: find the first instant after the gap, the
+		// first minute whose zone offset differs from the one before it.
+		_, off := t.Add(-6 * time.Hour).Zone()
+		for c := t.Add(-6 * time.Hour); c.Before(t.Add(6 * time.Hour)); c = c.Add(time.Minute) {
+			if _, o := c.Zone(); o != off {
+				return c
+			}
+		}
+		return t
+	}
+	// time.Date may pick either occurrence of a repeated wall time; return
+	// the earlier one.
+	_, off := t.Zone()
+	for _, back := range []time.Duration{30 * time.Minute, time.Hour, 2 * time.Hour} {
+		e := t.Add(-back)
+		if _, o := e.Zone(); o != off && e.Hour() == h && e.Minute() == min && e.Day() == d {
+			return e
+		}
+	}
+	return t
+}
