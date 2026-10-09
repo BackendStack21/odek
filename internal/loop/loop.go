@@ -2735,6 +2735,8 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 	// post-loop summary path picks the matching marker from it.
 	finalizeReason := ""
 
+	// survivalIter is the iteration that already used its one survival retry.
+	survivalIter := -1
 	for i := 0; i < e.maxIter; i++ {
 		select {
 		case <-ctx.Done():
@@ -2974,7 +2976,8 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 			// the actual model limit.
 			if isContextLengthError(err) {
 				trimmed := trimToSurvival(messages)
-				if len(trimmed) < len(messages) {
+				if len(trimmed) < len(messages) && survivalIter != i {
+					survivalIter = i
 					e.emitSignal(SignalEvent{
 						Type:   "context_trimmed",
 						Detail: "survival",
@@ -3002,9 +3005,10 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 					// maxIter == 1 (or on the final iteration) this fully
 					// recoverable error would fall through to the
 					// iteration-exhausted partial summary instead of retrying.
-					// Bounded: the retry only fires when trimToSurvival actually
-					// dropped messages, so repeated retries strictly shrink the
-					// history and cannot loop forever.
+					// Bounded: each iteration gets one survival retry. The retry
+					// itself re-adds a warning, so history length cannot serve
+					// as the termination argument; a second rejection in the
+					// same iteration fails the run.
 					i--
 					continue // retry this iteration
 				}
