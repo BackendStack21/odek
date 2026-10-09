@@ -774,6 +774,9 @@ const maxPromptDigests = 256
 type promptDigest struct {
 	n    int
 	hash uint64
+	// gen is the redaction registry generation the prompts were scanned
+	// under; a secret registered later invalidates the memo.
+	gen uint64
 }
 
 var promptSeed = maphash.MakeSeed()
@@ -802,7 +805,7 @@ func promptsHash(msgs []Message, n int) uint64 {
 // what the previous save of this session persisted (already redacted).
 func (s *Store) promptsUnchanged(id string, msgs []Message, n int) bool {
 	d, ok := s.promptDigests[id]
-	return ok && d.n == n && n <= len(msgs) && d.hash == promptsHash(msgs, n)
+	return ok && d.n == n && n <= len(msgs) && d.gen == redact.Generation() && d.hash == promptsHash(msgs, n)
 }
 
 // rememberPrompts records the digest of the redacted prompts just persisted.
@@ -810,7 +813,7 @@ func (s *Store) rememberPrompts(id string, msgs []Message) {
 	if s.promptDigests == nil || len(s.promptDigests) >= maxPromptDigests {
 		s.promptDigests = make(map[string]promptDigest)
 	}
-	s.promptDigests[id] = promptDigest{n: len(msgs), hash: promptsHash(msgs, len(msgs))}
+	s.promptDigests[id] = promptDigest{n: len(msgs), hash: promptsHash(msgs, len(msgs)), gen: redact.Generation()}
 }
 
 func (s *Store) saveLocked(sess *Session) error {

@@ -290,3 +290,32 @@ func TestRED_Session_ListStatsOnlyThePage(t *testing.T) {
 		t.Fatalf("List(0) = %d, want %d", len(all), len(ids)-1)
 	}
 }
+
+func TestRED_Session_PrincipalPromptsRescannedAfterSecretRegistered(t *testing.T) {
+	redact.ResetSecrets()
+	t.Cleanup(redact.ResetSecrets)
+	store, err := NewStoreWithDir(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	secret := "late-registered-secret-value-0123456789"
+	p := "please use " + secret
+	sess, err := store.Create([]Message{{Role: "user", Content: "c", PrincipalPrompt: &p}}, "m", "task")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The value becomes a known secret only after the first save persisted
+	// the prompt verbatim. The next save must scan the unchanged prompt again.
+	redact.RegisterSecret(secret)
+	sess.Messages = append(sess.Messages, Message{Role: "assistant", Content: "a"})
+	if err := store.SaveNoIndex(sess); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.Load(sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Messages[0].PrincipalPrompt == nil || strings.Contains(*got.Messages[0].PrincipalPrompt, secret) {
+		t.Fatalf("prompt still carries a secret registered after the previous save: %q", *got.Messages[0].PrincipalPrompt)
+	}
+}

@@ -249,10 +249,11 @@ func CountSecrets(text string) int {
 const minSecretLen = 8
 
 var (
-	secretsMu       sync.RWMutex
-	secretSet       = map[string]struct{}{} // every literal form to redact
-	secretReplacer  *strings.Replacer
-	secretFormsList []string
+	secretGeneration uint64
+	secretsMu        sync.RWMutex
+	secretSet        = map[string]struct{}{} // every literal form to redact
+	secretReplacer   *strings.Replacer
+	secretFormsList  []string
 )
 
 // osEnviron is os.Environ, swapped in tests.
@@ -309,6 +310,17 @@ func ResetSecrets() {
 	secretSet = map[string]struct{}{}
 	secretReplacer = nil
 	secretFormsList = nil
+	secretGeneration++
+}
+
+// Generation identifies the current known-value registry. It changes whenever
+// a secret is registered or the registry is reset, so a caller that memoizes
+// "already redacted" verdicts can tie them to the registry that produced them
+// and rescan after a late registration.
+func Generation() uint64 {
+	secretsMu.RLock()
+	defer secretsMu.RUnlock()
+	return secretGeneration
 }
 
 // sensitiveName reports whether an env var name has a segment that marks it
@@ -372,6 +384,7 @@ func reverseString(s string) string {
 // rebuildReplacerLocked recomputes the replacer and form list from secretSet.
 // Caller must hold secretsMu for writing.
 func rebuildReplacerLocked() {
+	secretGeneration++
 	forms := make([]string, 0, len(secretSet))
 	pairs := make([]string, 0, len(secretSet)*2)
 	for f := range secretSet {
