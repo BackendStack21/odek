@@ -1747,6 +1747,12 @@ func (e *Engine) refreshDigest(ctx context.Context, messages []session.Message, 
 	e.pendingDropped = append(e.pendingDropped, dropped...)
 	all := append([]session.Message(nil), e.pendingDropped...)
 	startIdx := len(e.pendingDropped) - len(dropped)
+	// digestDirty means an earlier drop was debounced behind an in-flight
+	// call that no side call has seen. applyPendingDigest (above) trimmed
+	// only the prefix that call covered, so the queue now starts with that
+	// uncovered suffix: summarize the whole queue, not just this drop, or
+	// the earlier drops would be marked covered unseen.
+	wasDirty := e.digestDirty
 	e.compactMu.Unlock()
 
 	extractive := e.extractiveDigest(all)
@@ -1754,19 +1760,14 @@ func (e *Engine) refreshDigest(ctx context.Context, messages []session.Message, 
 		return messages
 	}
 	messages = e.installDigest(ctx, messages, extractive)
-	e.startDigestSideCall(ctx, startIdx, dropped)
-	// Delta refetch: drops arrived while the previous side call was in
-	// flight. applyPendingDigest (called at the top) has already trimmed the
-	// covered prefix, so anything still queued is exactly the uncovered
-	// suffix — fetch it with start 0. Spawning here on the loop goroutine
-	// (not from the completing side-call goroutine) keeps queue indices and
-	// flight state on one thread of control: no cross-generation races.
-	e.compactMu.Lock()
-	dirty := e.digestDirty && !e.digestInFlight
-	e.digestDirty = false
-	e.compactMu.Unlock()
-	if dirty && len(e.pendingDropped) > 0 {
-		e.startDigestSideCall(ctx, 0, append([]session.Message(nil), e.pendingDropped...))
+	callStart, callDropped := startIdx, dropped
+	if wasDirty {
+		callStart, callDropped = 0, all
+	}
+	if e.startDigestSideCall(ctx, callStart, callDropped) && wasDirty {
+		e.compactMu.Lock()
+		e.digestDirty = false
+		e.compactMu.Unlock()
 	}
 	return messages
 }
@@ -1885,16 +1886,17 @@ func (e *Engine) applyPendingDigest(ctx context.Context, messages []session.Mess
 // issue time, computed under the same lock) so nothing stays unsummarized.
 // Refetch only after a successful call — a failed call leaves drops queued
 // for the next natural trim, bounding retries. Skipped when over budget.
-func (e *Engine) startDigestSideCall(parent context.Context, start int, dropped []session.Message) {
+// Reports whether a call was started (false when debounced or skipped).
+func (e *Engine) startDigestSideCall(parent context.Context, start int, dropped []session.Message) bool {
 	if e.client == nil || !e.budgetAllowsSideCall() {
-		return
+		return false
 	}
 	prev := e.compactDigest
 	e.compactMu.Lock()
 	if e.digestInFlight {
 		e.digestDirty = true
 		e.compactMu.Unlock()
-		return
+		return false
 	}
 	e.digestGen++
 	gen := e.digestGen
@@ -1929,6 +1931,7 @@ func (e *Engine) startDigestSideCall(parent context.Context, start int, dropped 
 		// applyPendingDigest's queue rebase and desync the covered indices.
 		e.compactMu.Unlock()
 	}()
+	return true
 }
 
 // cancelDigestSideCall aborts an in-flight digest HTTP request and
