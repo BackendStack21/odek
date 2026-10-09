@@ -4085,6 +4085,13 @@ func isDirectoryDestination(raw, expanded string) bool {
 	case ".", "..":
 		return true
 	}
+	// The caller's home is a directory whether or not it can be statted (a
+	// service account's HOME may be absent or sit behind a symlink).
+	for _, home := range currentHomeDirs() {
+		if filepath.Clean(expanded) == home {
+			return true
+		}
+	}
 	if st, err := os.Stat(expanded); err == nil && st.IsDir() {
 		return true
 	}
