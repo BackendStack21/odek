@@ -3082,7 +3082,7 @@ func connWriter(conn *golangws.Conn) *connWriteState {
 	if v, ok := wsConnWriters.Load(conn); ok {
 		return v.(*connWriteState)
 	}
-	w := &connWriteState{}
+	w := &connWriteState{space: make(chan struct{})}
 	actual, _ := wsConnWriters.LoadOrStore(conn, w)
 	return actual.(*connWriteState)
 }
