@@ -552,7 +552,7 @@ func New(cfg Config) (_ *Agent, setupErr error) {
 	// Content is scanned for prompt injection before being trusted.
 	if !cfg.NoProjectFile {
 		if projectContent := LoadProjectFile(); projectContent != "" {
-			if err := guard.ScanContentWithScope(context.Background(), projectContent, cfg.Guard, &cfg.GuardConfig, "system_prompt"); err != nil {
+			if err := scanProjectFile(projectContent, &cfg); err != nil {
 				log.Printf("skipping AGENTS.md: guard rejected: %v", err)
 			} else {
 				block := formatProjectInstructions(projectContent, cfg.UntrustedWrapper)
