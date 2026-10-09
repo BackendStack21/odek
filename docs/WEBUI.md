@@ -134,6 +134,12 @@ Two token layers:
   `done`) is the run-cumulative billing total across ALL LLM calls
   including charged sub-agent spend — never render it as a gauge. Sub-agent
   spend lives on `subagent_state` (`tokens_used`, `cost_usd`).
+- **Cache fields are provider-normalized**: `cacheReadTokens` and
+  `cacheCreationTokens` are exclusive of `inputTokens`, so the three always
+  sum to the prompt window. Only providers that bill cache writes report
+  `cacheCreationTokens` (Anthropic). DeepSeek cache misses are ordinary
+  input, so its `cacheCreationTokens` is 0 (go-llm-sdk v1.0.0 and later;
+  older builds reported the miss count there).
 
 ## Features
 

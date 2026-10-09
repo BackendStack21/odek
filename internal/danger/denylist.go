@@ -58,6 +58,12 @@ type denyCtx struct {
 	seen map[string]int
 	// cuts counts the scans the depth limit has refused so far.
 	cuts int
+	// stageEntries counts every denyStage call and stageScans the ones the
+	// memo let through; both must stay linear in the number of command
+	// stages on hostile input, since even a deduplicated entry builds an
+	// O(n) memo key.
+	stageEntries int
+	stageScans   int
 }
 
 // firstVisit records key at depth and reports whether it must be scanned: it
@@ -298,11 +304,13 @@ func denyStage(stage []string, dc *denyCtx, depth int) bool {
 	if len(stage) == 0 {
 		return false
 	}
+	dc.stageEntries++
 	stageKey := "stage\x00" + strings.Join(stage, "\x00")
 	scan, mark := dc.firstVisit(stageKey, depth)
 	if !scan {
 		return false
 	}
+	dc.stageScans++
 	defer dc.settle(stageKey, mark)
 	if denyMatchesAny(stage, dc.entries) || denyPayloads(stage, dc, depth) {
 		return true
@@ -434,6 +442,11 @@ func denyPayloads(inner []string, dc *denyCtx, depth int) bool {
 				if denyStage(inner[i+1:end], dc, depth+1) {
 					return true
 				}
+				// The payload just scanned carries every -exec nested
+				// inside it, so the outer loop resumes after it; re-entering
+				// each inner position would build a memo key per position
+				// and make a long chain quadratic.
+				i = end
 			}
 		}
 	}
