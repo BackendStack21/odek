@@ -552,9 +552,6 @@ func (s *SessionResolver) Search(ctx context.Context, query string, limit int) (
 		if err := session.ValidateSessionID(id); err != nil {
 			continue
 		}
-		var probe struct {
-			ID string `json:"id"`
-		}
 		if query != "" && !strings.Contains(id, query) {
 			continue
 		}
@@ -568,9 +565,9 @@ func (s *SessionResolver) Search(ctx context.Context, query string, limit int) (
 			fd.Close()
 			continue
 		}
-		data, readErr := io.ReadAll(io.LimitReader(fd, maxResourceFileBytes+1))
+		gotID, probeOK := probeSessionID(io.LimitReader(fd, maxResourceFileBytes+1))
 		fd.Close()
-		if readErr != nil || len(data) > maxResourceFileBytes || json.Unmarshal(data, &probe) != nil || probe.ID != id {
+		if !probeOK || gotID != id {
 			continue
 		}
 		if query == "" || strings.Contains(id, query) {
@@ -588,6 +585,35 @@ func (s *SessionResolver) Search(ctx context.Context, query string, limit int) (
 		}
 	}
 	return resources, nil
+}
+
+// probeSessionID streams the top-level object of a session file and returns
+// its "id" field without decoding the (potentially huge) message history that
+// follows it.
+func probeSessionID(r io.Reader) (string, bool) {
+	dec := json.NewDecoder(r)
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
+		return "", false
+	}
+	for dec.More() {
+		tok, err := dec.Token()
+		key, ok := tok.(string)
+		if err != nil || !ok {
+			return "", false
+		}
+		if key == "id" {
+			var id string
+			if dec.Decode(&id) != nil {
+				return "", false
+			}
+			return id, true
+		}
+		var skip json.RawMessage
+		if dec.Decode(&skip) != nil {
+			return "", false
+		}
+	}
+	return "", false
 }
 
 func (s *SessionResolver) Load(ctx context.Context, id string) (string, error) {
