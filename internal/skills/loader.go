@@ -400,6 +400,11 @@ func scanDir(dir string) []Skill {
 			continue
 		}
 		skillPath := filepath.Join(dir, e.Name(), "SKILL.md")
+		// Refuse a symlinked SKILL.md like scanDirCached does: parseSkillFile
+		// follows links and would load content from outside the skills dir.
+		if info, err := os.Lstat(skillPath); err != nil || info.Mode()&os.ModeSymlink != 0 {
+			continue
+		}
 		s := parseSkillFile(skillPath)
 		if s == nil {
 			continue
