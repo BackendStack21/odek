@@ -1272,10 +1272,7 @@ func (e *Engine) injectSkillContext(ctx context.Context, messages []session.Mess
 			return messages
 		}
 	}
-	wrapped := skillContext
-	if e.wrapUntrusted != nil {
-		wrapped = e.wrapUntrusted("skill", skillContext)
-	}
+	wrapped := e.wrapContext("skill", skillContext)
 	if fn := IngestRecorderFrom(ctx); fn != nil {
 		fn("skill", skillContext)
 	}
@@ -1299,10 +1296,7 @@ func (e *Engine) injectSkillContext(ctx context.Context, messages []session.Mess
 // injectEpisodeContext inserts wrapped episode recall before the latest user
 // message. Provenance filtering happens in the recall callback.
 func (e *Engine) injectEpisodeContext(ctx context.Context, messages []session.Message, episodeContext string) []session.Message {
-	wrapped := episodeContext
-	if e.wrapUntrusted != nil {
-		wrapped = e.wrapUntrusted("episode", episodeContext)
-	}
+	wrapped := e.wrapContext("episode", episodeContext)
 	if fn := IngestRecorderFrom(ctx); fn != nil {
 		fn("episode", episodeContext)
 	}
@@ -2092,6 +2086,17 @@ func (e *Engine) protectDerivedContext(ctx context.Context, source, content stri
 	return defaultUntrustedWrap(source, content)
 }
 
+// wrapContext puts injected context behind the installed surface wrapper,
+// or the engine's own boundary when none is installed, so a bare loop.New
+// embedder never delivers skill, episode or memory text unwrapped. Unlike
+// protectDerivedContext it records no ingest: callers record the raw text.
+func (e *Engine) wrapContext(source, content string) string {
+	if e.wrapUntrusted != nil {
+		return e.wrapUntrusted(source, content)
+	}
+	return defaultUntrustedWrap(source, content)
+}
+
 // defaultUntrustedWrap is the engine's own untrusted-content boundary, used
 // when no surface-level wrapper is installed: a per-call nonce'd tag whose
 // name the content cannot forge.
@@ -2848,7 +2853,13 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 		// like any other content when the window is tight.
 		if e.bgNoticeProvider != nil {
 			if notice := e.bgNoticeProvider(); notice != "" {
-				messages = append(messages, session.Message{Role: "user", Content: notice, Name: "bg-notice"})
+				// A surface that installs a wrapper also wraps its
+				// notices; a bare embedder gets the engine boundary.
+				content := notice
+				if e.wrapUntrusted == nil {
+					content = defaultUntrustedWrap("bg", notice)
+				}
+				messages = append(messages, session.Message{Role: "user", Content: content, Name: "bg-notice"})
 				// Audit: the notice carries job output (untrusted);
 				// record the ingest like every other external content.
 				if fn := IngestRecorderFrom(ctx); fn != nil {
@@ -3004,10 +3015,7 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 		if e.extendedCtx != nil {
 			if userMsg := lastUserMessage(messages); userMsg != "" && userMsg != e.lastExtMsg {
 				if extContext := e.extendedCtx(ctx, userMsg); extContext != "" {
-					wrapped := extContext
-					if e.wrapUntrusted != nil {
-						wrapped = e.wrapUntrusted("extended_memory", extContext)
-					}
+					wrapped := e.wrapContext("extended_memory", extContext)
 					if fn := IngestRecorderFrom(ctx); fn != nil {
 						fn("extended_memory", extContext)
 					}

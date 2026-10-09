@@ -542,11 +542,7 @@ func (e *Engine) verifyCorrectiveText(v verifyVerdict) string {
 		missing = "(none listed)"
 	}
 	body := fmt.Sprintf("reasons: %s\nmissing: %s", reasons, missing)
-	if e.wrapUntrusted != nil {
-		body = e.wrapUntrusted("verify_verdict", body)
-	} else {
-		body = defaultUntrustedWrap("verify_verdict", body)
-	}
+	body = e.wrapContext("verify_verdict", body)
 	b.WriteString(body)
 	return b.String()
 }
