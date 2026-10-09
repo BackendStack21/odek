@@ -527,8 +527,12 @@ func (s *PlanStore) create(steps []planStepArg) (string, error) {
 	}
 	candidate := PlanState{Version: s.nextVersion(), Steps: out}
 	if s.plan != nil && hasPlanChecks(*s.plan) {
-		preserveErr := preserveCheckedPlan(*s.plan, &candidate)
-		if preserveErr != nil {
+		// Carry evidence over on a copy: a failure part-way through must not
+		// leave the candidate with a partial, order-dependent carry-over.
+		carried := clonePlanState(candidate)
+		if preserveErr := preserveCheckedPlan(*s.plan, &carried); preserveErr == nil {
+			candidate = carried
+		} else {
 			// create may always reset: incompatible checked plans are
 			// superseded, not refused. The supersession is audit-trailed
 			// in the revision block so no verification history silently
