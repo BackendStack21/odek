@@ -18,49 +18,15 @@ type fileCache map[string]time.Time
 
 // scanDirsCached is the multi-directory equivalent of ScanDirs that uses
 // file modification time + content hash caching to skip unchanged files.
-// Dirs are scanned in project → user → extras priority order.
+// Dirs are scanned in project → user → extras order and name collisions are
+// resolved exactly as in ScanDirs (selectSkills): a promoted project skill
+// stays trusted (the cached path used to re-pin unconditionally, making
+// `odek skill promote` a persistent no-op across SkillManager reloads), and
+// a trusted copy wins over a same-named copy pending review.
 func scanDirsCached(projectDir, userDir string, extraDirs []string, fc fileCache, prev skillCache) *ScanResult {
-	var dirs []string
-	if projectDir != "" {
-		dirs = append(dirs, projectDir)
-	}
-	if userDir != "" {
-		dirs = append(dirs, userDir)
-	}
-	dirs = append(dirs, extraDirs...)
-
-	seen := make(map[string]bool)
-	autoLoad := make([]Skill, 0, 10)
-	lazy := make([]Skill, 0, 20)
-
-	for _, dir := range dirs {
-		skills := scanDirCached(dir, fc, prev)
-		for _, s := range skills {
-			if seen[s.Name] {
-				continue
-			}
-			seen[s.Name] = true
-			if projectDir != "" && dir == projectDir {
-				// Mirror ScanDirs: project skills stay distrusted UNLESS
-				// the operator promoted this exact content (hash anchored
-				// in the trusted user-dir registry, not the attacker-
-				// controllable project frontmatter). The cached path used
-				// to re-pin unconditionally, making `odek skill promote`
-				// a persistent no-op across SkillManager reloads.
-				if data, err := os.ReadFile(s.Source.Path); err != nil || !isPromotedContent(userDir, s.Name, data) {
-					markProjectSkill(&s)
-				}
-			}
-			// Provenance gate — see loader.go ScanDirs for rationale.
-			if s.AutoLoad && !s.Provenance.NeedsReview {
-				autoLoad = append(autoLoad, s)
-			} else {
-				lazy = append(lazy, s)
-			}
-		}
-	}
-
-	return &ScanResult{AutoLoad: autoLoad, Lazy: lazy}
+	return selectSkills(projectDir, userDir, skillDirs(projectDir, userDir, extraDirs), func(dir string) []Skill {
+		return scanDirCached(dir, fc, prev)
+	})
 }
 
 // scanDirCached reads all SKILL.md files in a skill directory, skipping

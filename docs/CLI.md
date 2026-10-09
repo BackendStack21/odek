@@ -290,8 +290,8 @@ with YAML frontmatter that define trigger keywords, quality metadata, and markdo
 
 ### How skills work
 
-1. Skills are stored in `~/.odek/skills/<name>/SKILL.md` (user-global) or `./.odek/skills/<name>/SKILL.md` (project)
-2. A names-only catalog (promoted: name + one-line description; NeedsReview: name + `[needs review]`, no body) is appended to the first system block so the model can see what exists without busting the prompt-cache prefix
+1. Skills are stored in `~/.odek/skills/<name>/SKILL.md` (user-global) or `./.odek/skills/<name>/SKILL.md` (project). Names are at most 64 characters of letters, combining marks, digits, single spaces and `- _ . : + # @ ( ) ' &`; a SKILL.md with another name is skipped with a logged warning. When two directories hold a skill of the same name, a trusted copy wins over one pending review (an unpromoted project skill, or an imported or flagged one); otherwise the project copy is scanned first and wins
+2. A names-only catalog (promoted: name + one-line description; skills pending review are only counted, never named) is appended to the first system block so the model can see what exists without busting the prompt-cache prefix
 3. Skills with `auto_load: true` are injected into the system prompt on start
 4. Lazy skills are loaded on demand when the user's input matches their trigger keywords (topic × action), and rematched against remaining plan step titles after `plan(create)` — titles only, not notes. Load a body with `skill_load`.
 

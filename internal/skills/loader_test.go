@@ -246,7 +246,8 @@ func TestScanDirs_ProjectPriority(t *testing.T) {
 
 	result := ScanDirs(projectDir, userDir, nil)
 
-	// Should find 1 skill (project wins)
+	// Should find 1 skill: the unpromoted project copy is pinned NeedsReview,
+	// so the trusted user copy wins.
 	total := len(result.AutoLoad) + len(result.Lazy)
 	if total != 1 {
 		t.Fatalf("expected 1 skill, got %d", total)
@@ -258,8 +259,8 @@ func TestScanDirs_ProjectPriority(t *testing.T) {
 	} else {
 		s = result.Lazy[0]
 	}
-	if !strings.Contains(s.Body, "Project body") {
-		t.Errorf("expected project body, got %q", s.Body[:20])
+	if !strings.Contains(s.Body, "User body") || s.Provenance.NeedsReview {
+		t.Errorf("expected the trusted user copy, got %q (needs_review=%v)", s.Body, s.Provenance.NeedsReview)
 	}
 }
 

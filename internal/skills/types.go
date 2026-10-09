@@ -4,10 +4,13 @@
 // provide domain knowledge. They load on demand when the user's input matches
 // topic/action keywords, keeping the agent's context focused.
 //
-// Storage layers (lowest → highest priority):
+// Storage layers (scanned project first, then user-global, then extra dirs):
 //
 //	~/.odek/skills/<name>/SKILL.md      ← user-global (self-improvement writes here)
 //	./.odek/skills/<name>/SKILL.md      ← project (committed, shared)
+//
+// On a name collision a trusted copy wins over one pending review, so an
+// unpromoted project skill never shadows the operator's skill of that name.
 //
 // Skills can also be imported from URIs (file:// or https://) via odek skill import.
 // The import flow includes an LLM risk assessment and user approval before saving.
