@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 )
 
 // maxPlanBytes caps the size of a plan file that odek will read into memory
@@ -346,7 +347,12 @@ func firstLine(text string, maxLen int) string {
 	// Skip markdown headings prefix.
 	first = strings.TrimLeft(first, "# ")
 	if len(first) > maxLen {
-		return first[:maxLen] + "…"
+		// Back off to a rune boundary so the cut never splits a character.
+		cut := maxLen
+		for cut > 0 && !utf8.RuneStart(first[cut]) {
+			cut--
+		}
+		return first[:cut] + "…"
 	}
 	return first
 }
