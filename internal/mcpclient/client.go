@@ -830,11 +830,12 @@ func (c *Client) applyResultLimit(tool, text string) string {
 	}
 
 	notice := truncationNotice(c.name, tool, limit, observed)
-	budget := limit - utf8.RuneCountInString(notice)
-	if budget < 0 {
-		budget = 0
+	noticeLen := utf8.RuneCountInString(notice)
+	if noticeLen > limit {
+		// The cap is smaller than the notice itself: the cap still holds.
+		return truncateRunes(notice, limit)
 	}
-	return truncateRunes(text, budget) + notice
+	return truncateRunes(text, limit-noticeLen) + notice
 }
 
 // renderCappedEnvelope renders a validated envelope and enforces the
