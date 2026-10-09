@@ -32,7 +32,7 @@ All configuration flows through `TelegramConfig` and can be set via environment 
 |---|---|---|
 | `ODEK_TELEGRAM_BOT_TOKEN` | Token | — (required) |
 | `ODEK_TELEGRAM_ALLOWED_CHATS` | AllowedChats | — (see below) |
-| `ODEK_TELEGRAM_ALLOWED_USERS` | AllowedUsers | — (see below) |
+| `ODEK_TELEGRAM_ALLOWED_USERS` | AllowedUsers | — (see below). A list with any non-integer entry is ignored as a whole (the configured list stays), never partially applied |
 | `ODEK_TELEGRAM_ALLOW_ALL` | AllowAllUsers | false |
 | `ODEK_TELEGRAM_BOT_USERNAME` | BotUsername | — |
 | `ODEK_TELEGRAM_POLL_INTERVAL` | PollInterval | 1s |

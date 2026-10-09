@@ -58,10 +58,16 @@ func ConfigFromEnv(base TelegramConfig) TelegramConfig {
 		cfg.Token = v
 	}
 	if v := os.Getenv("ODEK_TELEGRAM_ALLOWED_CHATS"); v != "" {
-		cfg.AllowedChats = parseInt64List(v)
+		// A malformed entry keeps the base list: dropping it silently could
+		// leave an empty (wider) allowlist.
+		if list, ok := parseInt64List(v); ok && len(list) > 0 {
+			cfg.AllowedChats = list
+		}
 	}
 	if v := os.Getenv("ODEK_TELEGRAM_ALLOWED_USERS"); v != "" {
-		cfg.AllowedUsers = parseInt64List(v)
+		if list, ok := parseInt64List(v); ok && len(list) > 0 {
+			cfg.AllowedUsers = list
+		}
 	}
 	if v := os.Getenv("ODEK_TELEGRAM_ALLOW_ALL"); v != "" {
 		// strconv.ParseBool keeps the truthy grammar consistent with the rest
@@ -167,18 +173,20 @@ func (c TelegramConfig) HasAllowlist() bool {
 	return len(c.AllowedChats) > 0 || len(c.AllowedUsers) > 0
 }
 
-// parseInt64List parses a comma-separated string of integers into a slice of int64.
-func parseInt64List(s string) []int64 {
+// parseInt64List parses a comma-separated string of integers into a slice of
+// int64. ok is false when any non-empty entry is not an integer; callers must
+// then discard the result rather than use a partial list.
+func parseInt64List(s string) (result []int64, ok bool) {
 	parts := splitAndTrim(s)
-	result := make([]int64, 0, len(parts))
+	result = make([]int64, 0, len(parts))
 	for _, p := range parts {
 		n, err := strconv.ParseInt(p, 10, 64)
 		if err != nil {
-			continue
+			return nil, false
 		}
 		result = append(result, n)
 	}
-	return result
+	return result, true
 }
 
 // splitAndTrim splits a string on commas and trims whitespace from each part.

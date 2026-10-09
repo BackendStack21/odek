@@ -130,12 +130,13 @@ func TestConfigFromEnv_allowedChatsEmpty(t *testing.T) {
 	}
 }
 
-func TestConfigFromEnv_allowedChatsInvalidSkips(t *testing.T) {
+func TestConfigFromEnv_allowedChatsInvalidKeepsBase(t *testing.T) {
 	t.Setenv("ODEK_TELEGRAM_ALLOWED_CHATS", "abc,  -100123, 12.5, 99,")
-	cfg := ConfigFromEnv(DefaultConfig())
-	want := []int64{-100123, 99}
-	if !equalInt64Slice(cfg.AllowedChats, want) {
-		t.Errorf("AllowedChats = %v, want %v", cfg.AllowedChats, want)
+	base := DefaultConfig()
+	base.AllowedChats = []int64{5}
+	cfg := ConfigFromEnv(base)
+	if !equalInt64Slice(cfg.AllowedChats, []int64{5}) {
+		t.Errorf("AllowedChats = %v, want base list [5]", cfg.AllowedChats)
 	}
 }
 
@@ -696,13 +697,16 @@ func TestParseInt64List(t *testing.T) {
 		{"multiple", "1,2,3", []int64{1, 2, 3}},
 		{"with whitespace", "  -100,  5 , 99 ", []int64{-100, 5, 99}},
 		{"trailing comma", "10,20,", []int64{10, 20}},
-		{"invalid entries skipped", "abc, 42, 12.5, 99, xyz-", []int64{42, 99}},
-		{"all invalid", "abc, def", []int64{}},
+		{"invalid entries reject the list", "abc, 42, 12.5, 99, xyz-", nil},
+		{"all invalid", "abc, def", nil},
 		{"mixed valid and empty", " , 42, , 99 ", []int64{42, 99}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := parseInt64List(tt.input)
+			got, ok := parseInt64List(tt.input)
+			if ok != (tt.want != nil) {
+				t.Errorf("parseInt64List(%q) ok = %v", tt.input, ok)
+			}
 			if !equalInt64Slice(got, tt.want) {
 				t.Errorf("parseInt64List(%q) = %v, want %v", tt.input, got, tt.want)
 			}
