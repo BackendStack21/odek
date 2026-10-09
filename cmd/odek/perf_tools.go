@@ -182,7 +182,21 @@ func evalMath(expr string) (float64, error) {
 	return evalNode(node)
 }
 
+// evalNode evaluates one node and rejects any non-finite intermediate or
+// final value (overflow to Inf, NaN) with an in-band error: a non-finite
+// float cannot be encoded as a JSON result.
 func evalNode(node ast.Expr) (float64, error) {
+	v, err := evalNodeRaw(node)
+	if err != nil {
+		return 0, err
+	}
+	if math.IsInf(v, 0) || math.IsNaN(v) {
+		return 0, fmt.Errorf("result is not finite (overflow or undefined)")
+	}
+	return v, nil
+}
+
+func evalNodeRaw(node ast.Expr) (float64, error) {
 	switch n := node.(type) {
 	case *ast.BasicLit:
 		if n.Kind == token.INT || n.Kind == token.FLOAT {
@@ -216,6 +230,12 @@ func evalNode(node ast.Expr) (float64, error) {
 			// wrong answer (0.5 % 2 → 0). Reject them cleanly instead.
 			if x != math.Trunc(x) || y != math.Trunc(y) {
 				return 0, fmt.Errorf("modulo requires integer operands (got %v %% %v)", x, y)
+			}
+			// Outside int64 the conversion is implementation-defined and
+			// would return a silently wrong remainder.
+			const twoPow63 = 1 << 63
+			if x >= twoPow63 || x < -twoPow63 || y >= twoPow63 || y < -twoPow63 {
+				return 0, fmt.Errorf("modulo operands must fit in int64 (got %v %% %v)", x, y)
 			}
 			if y == 0 {
 				return 0, fmt.Errorf("modulo by zero")
