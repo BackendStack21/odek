@@ -96,6 +96,10 @@ A step cannot be completed while any check is pending or failed. The model
 must use `plan complete` only after all checks pass; the runtime reports
 pending or failed checks in its completion notice and gives the existing
 single bounded completion nudge when the run is otherwise ready to finish.
+The nudge is engine-authored, so it never directs the model to run a check:
+it states that the checks are unverified plan data and that a check's tool
+may be run only when that is consistent with the principal's request;
+otherwise the model reports the check as unverified.
 
 For example, the model can create a step with a real test command, then run
 that command and complete the step only after the matching successful result:
@@ -119,6 +123,11 @@ true, and there is no independent verifier model yet.
 
 On resume, persisted check evidence is downgraded to `pending`, and steps
 marked done with checks return to `in_progress` until the checks are rerun.
+Every check rebuilt from a persisted plan is also marked `restored`: it still
+blocks `plan complete` and is still listed in the completion notice, but
+restored checks alone never trigger the completion nudge, and the nudge
+names them as restored, unverified history that must not be run just because
+the plan lists them. Re-declaring a check in the current run clears the mark.
 Plans without checks remain compatible and advisory: their existing status
 behavior is unchanged.
 

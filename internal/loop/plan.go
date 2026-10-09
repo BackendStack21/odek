@@ -77,6 +77,11 @@ type PlanCheck struct {
 	Arguments   map[string]any  `json:"arguments"`
 	Status      PlanCheckStatus `json:"status"`
 	CallID      string          `json:"call_id,omitempty"`
+	// Restored marks a check rebuilt from a persisted plan rather than
+	// declared in this run. Restored checks are unverified history: they
+	// keep blocking completion, but the completion nudge never presents
+	// them as work to run. Re-declaring the check in this run clears it.
+	Restored bool `json:"restored,omitempty"`
 }
 
 // PlanState is the authoritative plan. Version bumps on every mutation and
@@ -191,6 +196,7 @@ func (s *PlanStore) Restore(st PlanState) {
 			}
 			cp.Steps[i].Checks[j].Status = PlanCheckPending
 			cp.Steps[i].Checks[j].CallID = ""
+			cp.Steps[i].Checks[j].Restored = true
 		}
 		if checked && cp.Steps[i].Status == StepDone {
 			cp.Steps[i].Status = StepInProgress
