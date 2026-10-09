@@ -161,6 +161,11 @@ func validate(ref Ref, roots []string, verifyHash bool) (string, error) {
 // confine anything.
 func insideRoots(resolved string, roots []string) (bool, error) {
 	for _, root := range roots {
+		if strings.TrimSpace(root) == "" {
+			// filepath.Abs("") is the process cwd; a blank entry must confine
+			// nothing rather than silently allow the working directory.
+			continue
+		}
 		absRoot, err := filepath.Abs(root)
 		if err != nil {
 			return false, fmt.Errorf("resolve artifact root %q: %w", root, err)
