@@ -355,6 +355,10 @@ func (t *bgStartTool) Schema() any {
 	}
 }
 
+// maxBGTimeoutSeconds is the largest timeout_seconds bg_start accepts (one
+// year); larger requests are clamped, then the operator cap applies.
+const maxBGTimeoutSeconds = 365 * 24 * 3600
+
 func (t *bgStartTool) Call(args string) (string, error) {
 	var p struct {
 		Command        string `json:"command"`
@@ -365,6 +369,15 @@ func (t *bgStartTool) Call(args string) (string, error) {
 	}
 	if strings.TrimSpace(p.Command) == "" {
 		return "", fmt.Errorf("bg_start requires a non-empty \"command\"")
+	}
+	if p.TimeoutSeconds < 0 {
+		return "", fmt.Errorf("bg_start: timeout_seconds must be >= 0, got %d", p.TimeoutSeconds)
+	}
+	// Clamp before converting to a Duration: seconds * time.Second wraps
+	// negative past ~292 years, which the manager reads as "no timeout" and
+	// would skip the operator's background.max_timeout_seconds cap.
+	if p.TimeoutSeconds > maxBGTimeoutSeconds {
+		p.TimeoutSeconds = maxBGTimeoutSeconds
 	}
 	// Spawn-time approval, shell parity: the loop's batch gate only covers
 	// multi-call batches, so — exactly like shellTool — bg_start gates
