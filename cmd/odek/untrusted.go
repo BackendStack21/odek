@@ -53,12 +53,24 @@ func warnSandboxDisabled() {
 // scanning wrapped tool outputs. Set with SetToolOutputGuard before the
 // agent loop starts.
 var (
+	toolOutputGuardMu  sync.RWMutex
 	toolOutputGuard    guard.Guard
 	toolOutputGuardCfg guard.Config
 )
 
+// toolOutputGuardSnapshot returns the installed guard and its config under
+// the read lock; serve installs a guard per connection while other sessions
+// are mid-turn.
+func toolOutputGuardSnapshot() (guard.Guard, guard.Config) {
+	toolOutputGuardMu.RLock()
+	defer toolOutputGuardMu.RUnlock()
+	return toolOutputGuard, toolOutputGuardCfg
+}
+
 // SetToolOutputGuard installs a guard for optional tool-output scanning.
 func SetToolOutputGuard(g guard.Guard, cfg guard.Config) {
+	toolOutputGuardMu.Lock()
+	defer toolOutputGuardMu.Unlock()
 	toolOutputGuard = g
 	toolOutputGuardCfg = cfg
 }
@@ -129,11 +141,11 @@ const toolOutputBanner = "⚠️ SECURITY NOTICE: This external output contains 
 var scanToolOutputContent = guard.ScanContent
 
 func toolOutputFlagged(ctx context.Context, content string) bool {
-	g := toolOutputGuard
-	if g == nil || !guard.IsEnabled(toolOutputGuardCfg.Scan, "tool_outputs") {
+	g, cfg := toolOutputGuardSnapshot()
+	if g == nil || !guard.IsEnabled(cfg.Scan, "tool_outputs") {
 		return false
 	}
-	return scanToolOutputContent(ctx, content, g, &toolOutputGuardCfg) != nil
+	return scanToolOutputContent(ctx, content, g, &cfg) != nil
 }
 
 func scanToolOutput(ctx context.Context, content string) string {
@@ -178,12 +190,12 @@ func wrapBody(source, content string) string {
 func wrapUntrustedBatch(ctx context.Context, recordSource string, sources, contents []string) []string {
 	out := make([]string, len(contents))
 	flagged := make([]bool, len(contents))
-	if g := toolOutputGuard; g != nil && guard.IsEnabled(toolOutputGuardCfg.Scan, "tool_outputs") {
+	if g, gcfg := toolOutputGuardSnapshot(); g != nil && guard.IsEnabled(gcfg.Scan, "tool_outputs") {
 		// Only the local rule scanner is linear in the input and sees every
 		// byte regardless of grouping. A model-backed sidecar judges one
 		// window at a time, where a single injected element could be diluted
 		// by its neighbours, so it keeps the per-element scan.
-		limit := toolOutputGuardCfg.MaxTextLength
+		limit := gcfg.MaxTextLength
 		if !guard.IsLocal(g) {
 			limit = 1
 		}

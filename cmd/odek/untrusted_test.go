@@ -409,3 +409,25 @@ func (f *fakeErrorTool) Call(args string) (string, error) {
 type errorString string
 
 func (e errorString) Error() string { return string(e) }
+
+func TestToolOutputGuard_ConcurrentSetAndScan(t *testing.T) {
+	oldGuard, oldCfg := toolOutputGuardSnapshot()
+	t.Cleanup(func() { SetToolOutputGuard(oldGuard, oldCfg) })
+	var wg sync.WaitGroup
+	for i := 0; i < 4; i++ {
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 200; j++ {
+				SetToolOutputGuard(nil, guard.Config{})
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 200; j++ {
+				_ = wrapUntrusted(context.Background(), "src", "content")
+			}
+		}()
+	}
+	wg.Wait()
+}
