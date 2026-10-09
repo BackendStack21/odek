@@ -6609,14 +6609,29 @@ func tarRunsCommand(tokens []string) bool {
 	return r.operandAt == 0 && strings.ContainsAny(r.operands[0], "IF")
 }
 
+// zipLongOptions are the long options of zip that share a prefix with
+// --unzip-command, so an abbreviation resolves only when it is unambiguous.
+var zipLongOptions = []string{"unzip-command", "unicode", "update"}
+
+// cpioLongOptions are the long options of GNU cpio that share a prefix with
+// the remote-shell and remote-tape options (`--re` is ambiguous, `--rs` is not).
+var cpioLongOptions = []string{
+	"rsh-command", "rmt-command", "rename", "rename-batch-file",
+	"renumber-inodes", "reset-access-time",
+}
+
 // zipRunsCommand reports whether zip is given a test command (-TT CMD, also
-// fused as -TTCMD) or its long spelling.
+// fused as -TTCMD) or its long spelling, which GNU-style parsing accepts as any
+// unambiguous prefix.
 func zipRunsCommand(tokens []string) bool {
 	for _, tok := range tokens[1:] {
 		if tok == "--" {
 			break
 		}
-		if strings.HasPrefix(tok, "-TT") || tok == "--unzip-command" || strings.HasPrefix(tok, "--unzip-command=") {
+		if strings.HasPrefix(tok, "-TT") {
+			return true
+		}
+		if name, _, _, ok := resolveLongOption(tok, zipLongOptions); ok && name == "unzip-command" {
 			return true
 		}
 	}
@@ -6630,11 +6645,7 @@ func cpioRunsCommand(tokens []string) bool {
 		if tok == "--" {
 			break
 		}
-		if !strings.HasPrefix(tok, "--") {
-			continue
-		}
-		name, _, _ := strings.Cut(tok[2:], "=")
-		if len(name) >= 3 && (strings.HasPrefix("rsh-command", name) || strings.HasPrefix("rmt-command", name)) {
+		if name, _, _, ok := resolveLongOption(tok, cpioLongOptions); ok && (name == "rsh-command" || name == "rmt-command") {
 			return true
 		}
 	}
