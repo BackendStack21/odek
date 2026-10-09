@@ -148,7 +148,7 @@ type WebhookInfo struct {
 type SendOpts struct {
 	ParseMode             string                `json:"parse_mode,omitempty"`
 	ReplyMarkup           *InlineKeyboardMarkup `json:"reply_markup,omitempty"`
-	DisableWebPagePreview bool                  `json:"disable_web_page_preview,omitempty"`
+	DisableWebPagePreview bool                  `json:"disable_web_page_preview,omitempty"` // forces previews off even when Bot.LinkPreview is true
 	ReplyToMessageID      int                   `json:"reply_to_message_id,omitempty"`
 }
 

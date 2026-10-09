@@ -2393,7 +2393,7 @@ func deliverToTelegram(text string, resolved config.ResolvedConfig) error {
 	if chatID == 0 {
 		return fmt.Errorf("telegram default_chat_id not configured")
 	}
-	bot := telegram.NewBot(resolved.Telegram.Token)
+	bot := telegram.NewBotFromConfig(resolved.Telegram)
 	_, err := bot.SendMessage(chatID, text, nil)
 	if err != nil {
 		return fmt.Errorf("send telegram message: %w", err)

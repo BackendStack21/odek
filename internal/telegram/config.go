@@ -36,6 +36,12 @@ type TelegramConfig struct {
 	// AllowedChats + AllowedUsers is a fatal misconfiguration (fail-closed) so
 	// an open bot can never be deployed by accident. Env: ODEK_TELEGRAM_ALLOW_ALL.
 	AllowAllUsers bool `json:"allow_all_users"`
+	// LinkPreview enables Telegram link previews on outbound text. Default
+	// false: previews are disabled because Telegram fetches every previewed
+	// URL server-side, a zero-click exfiltration channel for any secret an
+	// injected answer embeds in a link. Operator-only (the project
+	// odek.json telegram section is ignored). Env: ODEK_TELEGRAM_LINK_PREVIEW.
+	LinkPreview bool `json:"link_preview,omitempty"`
 }
 
 // DefaultConfig returns a TelegramConfig with sensible defaults.
@@ -93,6 +99,14 @@ func ConfigFromEnv(base TelegramConfig) (TelegramConfig, error) {
 		// of the config surface; a malformed value fails closed (false).
 		b, err := strconv.ParseBool(strings.TrimSpace(v))
 		cfg.AllowAllUsers = err == nil && b
+	}
+	if v := os.Getenv("ODEK_TELEGRAM_LINK_PREVIEW"); v != "" {
+		// A malformed value fails closed (previews disabled) and is reported.
+		b, err := strconv.ParseBool(strings.TrimSpace(v))
+		if err != nil {
+			fmt.Fprintf(warnWriter, "telegram: warning: ODEK_TELEGRAM_LINK_PREVIEW: invalid value %q ignored; link previews stay disabled (use true/false, 1/0, t/f)\n", v)
+		}
+		cfg.LinkPreview = err == nil && b
 	}
 	if v := os.Getenv("ODEK_TELEGRAM_BOT_USERNAME"); v != "" {
 		cfg.BotUsername = v

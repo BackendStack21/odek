@@ -266,8 +266,8 @@ func TestSendMessage_WithOpts(t *testing.T) {
 	if gotBody["parse_mode"] != "MarkdownV2" {
 		t.Errorf("parse_mode = %v, want MarkdownV2", gotBody["parse_mode"])
 	}
-	if gotBody["disable_web_page_preview"] != true {
-		t.Errorf("disable_web_page_preview = %v, want true", gotBody["disable_web_page_preview"])
+	if lpo, ok := gotBody["link_preview_options"].(map[string]any); !ok || lpo["is_disabled"] != true {
+		t.Errorf("link_preview_options = %v, want {is_disabled:true}", gotBody["link_preview_options"])
 	}
 	if gotBody["reply_to_message_id"] != float64(7) {
 		t.Errorf("reply_to_message_id = %v, want 7", gotBody["reply_to_message_id"])

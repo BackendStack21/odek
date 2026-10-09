@@ -370,9 +370,7 @@ func telegramCmd(args []string) error {
 	}
 
 	// 4. Create bot client.
-	bot := telegram.NewBot(cfg.Token)
-	bot.MaxDownloadSize = cfg.MaxDownloadSize
-	bot.MediaQuotaPerChat = cfg.MediaQuotaPerChat
+	bot := telegram.NewBotFromConfig(cfg)
 
 	// 4b. Create logger.
 	rootLog := newOperationalSurfaceLogger("telegram")

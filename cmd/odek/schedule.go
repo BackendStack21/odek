@@ -410,7 +410,7 @@ func (d cliDeliverer) deliverTelegram(ctx context.Context, job schedule.Job, res
 	if chatID == 0 {
 		return fmt.Errorf("no chat id (set the job's telegram:<chatID> or telegram.default_chat_id)")
 	}
-	bot := telegram.NewBot(d.resolved.Telegram.Token)
+	bot := telegram.NewBotFromConfig(d.resolved.Telegram)
 	return sendTelegramResult(ctx, bot, chatID, result)
 }
 

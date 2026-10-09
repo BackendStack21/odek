@@ -3471,6 +3471,8 @@ func resolveTelegram(cfg *telegram.TelegramConfig) telegram.TelegramConfig {
 	if cfg.MediaQuotaPerChat > 0 {
 		base.MediaQuotaPerChat = cfg.MediaQuotaPerChat
 	}
+	// LinkPreview: false (default) keeps previews disabled.
+	base.LinkPreview = cfg.LinkPreview
 	return base
 }
 
