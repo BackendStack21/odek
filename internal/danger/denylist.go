@@ -107,17 +107,17 @@ func denyScanVars(cmd string, dc *denyCtx, depth int, inherited map[string]strin
 	tokens, ops, _ := tokenizeMarked(main)
 	for _, segment := range splitSegments(markLiteralOperators(tokens, ops)) {
 		stages := splitPipes(segment)
-		var previous []string
+		var earlier [][]string
 		for i, stage := range stages {
 			expanded := denyExpand(stage, vars, unquoted)
 			if denyStage(expanded, dc, depth) {
 				return true
 			}
 			// A shell fed by a static echo/printf runs that text as a script.
-			if i > 0 && denyStaticPipeFeed(previous, expanded, dc, depth) {
+			if i > 0 && denyStaticPipeFeed(earlier, expanded, dc, depth) {
 				return true
 			}
-			previous = expanded
+			earlier = append(earlier, expanded)
 		}
 		if len(stages) == 1 {
 			denyAssign(stages[0], vars)
@@ -331,19 +331,73 @@ func denyStage(stage []string, dc *denyCtx, depth int) bool {
 	return denyMatchesAny(inner, dc.entries) || denyPayloads(inner, dc, depth)
 }
 
-// denyStaticPipeFeed scans the text a static echo/printf producer pipes into a
-// shell, which the shell executes as commands.
-func denyStaticPipeFeed(producer, sink []string, dc *denyCtx, depth int) bool {
+// denyStaticPipeFeed scans the text a static producer pipes into a shell, which
+// the shell executes as commands. The producer is an echo/printf stage, or a
+// pass-through stage carrying a here-string, reached by walking back from the
+// shell through pass-through stages that hand their input on unchanged.
+func denyStaticPipeFeed(upstream [][]string, sink []string, dc *denyCtx, depth int) bool {
 	cmd, _ := unwrapWrappers(sink)
 	if len(cmd) == 0 || !pipedShells[commandName(cmd[0])] || shellInlineScriptIndex(cmd) >= 0 {
 		return false
 	}
-	text, ok := staticPipeText([][]string{producer})
-	if !ok {
+	for j := len(upstream) - 1; j >= 0; j-- {
+		stage := upstream[j]
+		var text string
+		var ok bool
+		if passThroughStage(stage) {
+			// A here-string replaces the piped input of its stage.
+			if text, ok = hereStringText(stage); !ok {
+				continue
+			}
+		} else if text, ok = staticPipeText([][]string{stage}); !ok {
+			return false
+		}
+		text = strings.TrimSpace(strings.ReplaceAll(text, "\x00", " "))
+		return text != "" && denyScan(text, dc, depth+1)
+	}
+	return false
+}
+
+// hereStringText returns the word a stage reads as its here-string.
+func hereStringText(stage []string) (string, bool) {
+	for i := 0; i+1 < len(stage); i++ {
+		if stage[i] == "<<<" {
+			return stage[i+1], true
+		}
+	}
+	return "", false
+}
+
+// passThroughStage reports whether a pipe stage writes the data it reads (or
+// its here-string) to standard output unchanged, or a line-subset of it: cat
+// and tee, and the line filters sort, uniq, tac, head and tail. A file operand
+// makes the stage read that file instead of standard input, so only flags (and
+// the numeric counts of head/tail) are allowed; tee's operands are output files.
+// Anything that rewrites the bytes (tr, sed, awk, base64, ...) is not listed.
+func passThroughStage(stage []string) bool {
+	cmd, _ := unwrapWrappers(stage)
+	if len(cmd) == 0 {
 		return false
 	}
-	text = strings.TrimSpace(strings.ReplaceAll(text, "\x00", " "))
-	return text != "" && denyScan(text, dc, depth+1)
+	name := commandName(cmd[0])
+	switch name {
+	case "cat", "tee", "sort", "uniq", "tac", "head", "tail":
+	default:
+		return false
+	}
+	for i := 1; i < len(cmd); i++ {
+		tok := cmd[i]
+		switch {
+		case tok == "<<<":
+			i++ // the here-string word
+		case strings.HasPrefix(tok, "-"):
+		case name == "tee":
+		case (name == "head" || name == "tail") && isAllDigits(tok):
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // denyPayloads matches commands carried inside a command's arguments.
