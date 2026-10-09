@@ -1012,8 +1012,10 @@ func (m *MemoryManager) Consolidate(target string) error {
 	// Cheap unlocked peek: skip the flock (and the facts.lock file it creates)
 	// when there is nothing to merge. Session-end consolidation runs in a
 	// background goroutine; creating that lock file after a test's TempDir
-	// cleanup has started races RemoveAll ("directory not empty"). Re-check
-	// under the lock below so a concurrent AddFact cannot sneak past.
+	// cleanup has started races RemoveAll ("directory not empty"). The
+	// entries read here are the snapshot the LLM merges; a concurrent write
+	// is detected under the lock after the call by comparing the file
+	// against this snapshot, and the merge is then skipped.
 	entries, err := m.facts.Entries(target)
 	if err != nil {
 		return err
