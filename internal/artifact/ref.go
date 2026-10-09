@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"unicode"
 )
 
 // Schema names carried in the "schema" field of structured payloads. These
@@ -197,10 +198,17 @@ func CountRendered(s string) int {
 	return n
 }
 
-// oneLine flattens CR/LF so a server-controlled field stays on its own
-// metadata line.
+// oneLine flattens a server-controlled field onto a single plain line: CR/LF,
+// other control characters, Unicode format characters (bidi overrides,
+// zero-width) and the Unicode line/paragraph separators all become spaces, so
+// they can neither start a forged metadata line nor reach a terminal or UI.
 func oneLine(s string) string {
-	return strings.NewReplacer("\r", " ", "\n", " ").Replace(s)
+	return strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || r == '\u2028' || r == '\u2029' {
+			return ' '
+		}
+		return r
+	}, s)
 }
 
 // shortHash returns the first 12 hex characters of a digest, enough to
