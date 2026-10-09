@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -54,6 +55,12 @@ func factsDirLock(dir string) *sync.Mutex {
 func lockFactsDir(dir string) (func(), error) {
 	mu := factsDirLock(dir)
 	mu.Lock()
+	// A fresh install has no memory directory yet; the first write must create
+	// it (owner-only) instead of failing on the lock file.
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		mu.Unlock()
+		return nil, fmt.Errorf("memory: facts lock: %w", err)
+	}
 	rel, err := flock.Lock(filepath.Join(dir, "facts.lock"))
 	if err != nil {
 		mu.Unlock()
