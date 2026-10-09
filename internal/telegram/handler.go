@@ -264,7 +264,10 @@ func (h *Handler) handleMessage(msg *Message) {
 	}
 
 	switch {
-	case msg.IsCommand():
+	// A forwarded message crosses a trust boundary: its text is never an
+	// operator command, it falls through to the text handler flagged as
+	// forwarded.
+	case msg.IsCommand() && !msg.isForwarded():
 		h.handleCommand(msg, userID)
 	case msg.Voice != nil:
 		if h.OnVoiceMessage != nil {
@@ -314,8 +317,7 @@ func (h *Handler) handleMessage(msg *Message) {
 		}
 	case msg.Text != "":
 		if h.OnTextMessage != nil {
-			forwarded := msg.ForwardOrigin != nil || msg.ForwardFrom != nil || msg.ForwardDate != 0
-			resp, err := h.OnTextMessage(msg.Chat.ID, msg.ID, msg.Text, forwarded, userID)
+			resp, err := h.OnTextMessage(msg.Chat.ID, msg.ID, msg.Text, msg.isForwarded(), userID)
 			if err != nil {
 				h.log.Error("text message handler failed", "chat_id", msg.Chat.ID, "error", err)
 				if h.OnError != nil {
@@ -619,6 +621,11 @@ func (h *Handler) isAllowed(chatID int64, userID int64) bool {
 }
 
 // ─── Message Helpers ──────────────────────────────────────────────────────
+
+// isForwarded reports whether the message was forwarded from elsewhere.
+func (m *Message) isForwarded() bool {
+	return m.ForwardOrigin != nil || m.ForwardFrom != nil || m.ForwardDate != 0
+}
 
 // IsCommand reports whether the message is a bot command.
 // It checks the entities for type "bot_command".

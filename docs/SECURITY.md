@@ -380,6 +380,8 @@ Authorization is **fail-closed**: if neither allowlist is configured, the bot re
 
 The `/restart` command is restricted to operator chats/users (`schedules.telegram_admin_chats` / `telegram_admin_users`, falling back to `telegram.default_chat_id`) and rate-limited to once per 60 seconds, so a compromised allowed account cannot restart-loop the bot and interrupt scheduled work.
 
+**Forwarded messages are never commands.** A forwarded message crosses a trust boundary, so its text is never routed to the command handler even when it starts with `/`; it reaches the text handler flagged as forwarded. Only a `bot_command` entity at offset 0 (or a leading slash) marks a command, so `/path` fragments inside running text are ordinary text.
+
 A single polling instance is enforced with an advisory `flock` on `~/.odek/telegram.lock`: a second instance blocks until the first releases, and the OS releases the lock automatically if the holder crashes.
 
 **Message hygiene.** Outbound text via the `send_message` tool is escaped with `telegram.EscapeMarkdown` (ParseModeMarkdownV2), so prompt-injected content cannot abuse Markdown syntax to hide malicious links, fake buttons, or instruction-like formatting. Inline-keyboard `callback_data` is validated by the tool and again by the sender closure: values starting with a reserved internal prefix (`apr:`, `den:`, `trs:`, `clarify:`, `skill_save:`, `skill_skip:`) are rejected — only user-facing `cb:` callbacks are allowed — so a compromised agent cannot present a button that forges an approval decision or triggers a skill action. Clarify prompts bind a random request ID into the callback data, reject callbacks from a different user than the one who triggered the prompt, and ignore expired or already-answered prompts.
