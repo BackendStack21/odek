@@ -440,6 +440,9 @@ func executionFileTargets(name string, tokens []string) []string {
 		options = []string{"-I", "--use-compress-program", "--to-command", "--checkpoint-action"}
 	case "node":
 		options = []string{"--require", "-r", "--import", "--loader", "--experimental-loader"}
+	case "ruby":
+		// -rlibrary (fused or separate) loads and runs a Ruby file.
+		options = []string{"-r"}
 	case "gcc", "cc", "g++", "c++", "clang", "clang++":
 		options = []string{"-fplugin", "-specs", "--specs", "-wrapper", "-load"}
 	case "go":
