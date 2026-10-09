@@ -157,11 +157,17 @@ function listMarker(line) {
   return { indent, ordered: !m[2], start: m[3] ? Number(m[3]) : 1, text: m[4] };
 }
 
+// Nesting beyond this depth continues at the deepest level instead of
+// recursing, so hostile input cannot exhaust the stack.
+const MAX_LIST_DEPTH = 32;
+
 // One list level starting at lines[start]. Deeper-indented markers open a
 // nested list inside the previous item; a marker of the other kind at the
-// same depth, a shallower marker, or any non-list line ends the level. A
-// single blank line between items keeps the list going.
-function parseList(lines, start) {
+// same depth, a marker at or above the parent's indent, or any non-list line
+// ends the level. A marker indented between the parent and this level joins
+// this level, so uneven indentation never splits one list in two. A single
+// blank line between items keeps the list going.
+function parseList(lines, start, depth = 0, parentIndent = -1) {
   const first = listMarker(lines[start]);
   const base = first.indent;
   const items = [];
@@ -171,12 +177,12 @@ function parseList(lines, start) {
     const m = listMarker(lines[i]);
     if (!m) {
       const next = listMarker(lines[i + 1]);
-      if (lines[i].trim() === '' && next && next.indent >= base && items.length) { i++; continue; }
+      if (lines[i].trim() === '' && next && next.indent > parentIndent && items.length) { i++; continue; }
       break;
     }
-    if (m.indent < base) break;
-    if (m.indent > base && items.length) {
-      const sub = parseList(lines, i);
+    if (m.indent <= parentIndent) break;
+    if (m.indent > base && items.length && depth < MAX_LIST_DEPTH) {
+      const sub = parseList(lines, i, depth + 1, base);
       items[items.length - 1].children += sub.html;
       i = sub.next;
       continue;

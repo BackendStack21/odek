@@ -313,3 +313,14 @@ test('nested and mixed lists keep their structure', () => {
 test('a bullet list followed by an ordered list stays two lists', () => {
   assert.equal(markdownToHtml('- a\n1. b'), '<ul><li>a</li></ul>\n<ol><li>b</li></ol>');
 });
+
+test('uneven indentation stays one nested list', () => {
+  assert.equal(markdownToHtml('- a\n   - b\n  - c\n- d'), '<ul><li>a<ul><li>b</li><li>c</li></ul></li><li>d</li></ul>');
+});
+
+test('very deep list nesting is capped instead of overflowing the stack', () => {
+  const deep = Array.from({ length: 6000 }, (_, i) => ' '.repeat(i) + '- x').join('\n');
+  const html = markdownToHtml(deep);
+  assert.ok(html.startsWith('<ul>'));
+  assert.ok((html.match(/<ul>/g) || []).length <= 34);
+});
