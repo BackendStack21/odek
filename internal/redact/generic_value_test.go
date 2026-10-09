@@ -33,3 +33,16 @@ func TestGenericCredential_ProseKept(t *testing.T) {
 		}
 	}
 }
+
+func TestGenericCredential_QuotedKeys(t *testing.T) {
+	for _, in := range []string{
+		`{"api_key": "Zx9qLm2RvT7wPk4nYb8sHd3J", "x": 1}`,
+		`{'client_secret':'Zx9qLm2RvT7wPk4nYb8sHd3J'}`,
+		`{"password":"Zx9qLm2R vT7wPk4nYb8s$Hd3J"}`,
+	} {
+		out := RedactSecrets(in)
+		if strings.Contains(out, "Hd3J") {
+			t.Errorf("quoted key leaked: %q -> %q", in, out)
+		}
+	}
+}

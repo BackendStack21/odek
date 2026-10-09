@@ -82,7 +82,7 @@ var patterns = []*regexp.Regexp{
 	// separator, so passwords containing specials are covered whole. The
 	// 20-char floor filters out UUIDs, hex hashes in code, and other
 	// false-positive-heavy text.
-	regexp.MustCompile(`(?i)(?:api[_-]?key|api[_-]?secret|auth[_-]?token|access[_-]?token|bearer[_-]?token|client[_-]?secret|private[_-]?key|secret[_-]?key|password|passwd)\s*[:=]\s*(?:"[^"\n]{20,}"|'[^'\n]{20,}'|\x60[^\x60\n]{20,}\x60|['\x60"]?[^\s'\x60",;]{20,})`),
+	regexp.MustCompile(`(?i)(?:api[_-]?key|api[_-]?secret|auth[_-]?token|access[_-]?token|bearer[_-]?token|client[_-]?secret|private[_-]?key|secret[_-]?key|password|passwd)["'\x60]?\s*[:=]\s*(?:"[^"\n]{20,}"|'[^'\n]{20,}'|\x60[^\x60\n]{20,}\x60|['\x60"]?[^\s'\x60",;]{20,})`),
 
 	// Bearer tokens in Authorization headers
 	regexp.MustCompile(`(?i)Authorization:\s*Bearer\s+([a-zA-Z0-9+/=._-]{20,})`),
