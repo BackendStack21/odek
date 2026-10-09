@@ -149,6 +149,8 @@ var credentialBasenames = map[string]bool{
 	".npmrc":           true,
 	".pypirc":          true,
 	".pgpass":          true,
+	".boto":            true,
+	".s3cfg":           true,
 }
 
 // credentialPathSuffixes are credential files identified by their trailing
@@ -162,6 +164,8 @@ var credentialPathSuffixes = [][]string{
 	{".config", "gh", "hosts.yml"},
 	{".azure", "accessTokens.json"},
 	{".azure", "msal_token_cache.json"},
+	{".composer", "auth.json"},
+	{".config", "composer", "auth.json"},
 }
 
 // isCredentialFile reports whether resolved names a common credential file in
