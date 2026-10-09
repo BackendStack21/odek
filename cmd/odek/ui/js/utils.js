@@ -66,10 +66,11 @@ export function copyTextToClipboard(text) {
 }
 
 // ── Toast ──
-export function showToast(msg, ms) {
+export function showToast(msg, ms, variant) {
   const el = document.getElementById('toast');
   if (!el) return;
   el.textContent = msg;
+  el.classList.toggle('tip', variant === 'tip');
   el.classList.add('show');
   clearTimeout(S.toastTimer);
   S.toastTimer = setTimeout(() => el.classList.remove('show'), ms || 3000);
@@ -85,7 +86,7 @@ export function teach(key, text) {
   if (S.hintsShown[key]) return;
   S.hintsShown[key] = true;
   try { sessionStorage.setItem('odek_hints', JSON.stringify(S.hintsShown)); } catch { /* ignore */ }
-  showToast('💡 ' + text, HINT_TTL_MS);
+  showToast(String(text).replace(/^tip:\s*/i, ''), HINT_TTL_MS, 'tip');
 }
 
 // ── Smart Scroll ──
@@ -93,8 +94,15 @@ export const SCROLL_THRESHOLD = 100;
 export function isNearBottom() {
   return messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight < SCROLL_THRESHOLD;
 }
+// Whether the view follows new content. Decided from scroll events — which
+// fire for user scrolls, programmatic scrolls and height clamps, but never
+// for content growth — so one large append (a tool batch, a table) cannot
+// push the view past the threshold and silently stop the follow.
+S.stickBottom = true;
+messagesEl?.addEventListener?.('scroll', () => { S.stickBottom = isNearBottom(); }, { passive: true });
+
 export function scrollBottom() {
-  if (!isNearBottom()) return; // user is reading up — don't steal scroll
+  if (!S.stickBottom) return; // user is reading up — don't steal scroll
   if (S.scrollRAF) return;
   S.scrollRAF = requestAnimationFrame(() => {
     messagesEl.scrollTop = messagesEl.scrollHeight;
@@ -106,6 +114,7 @@ export function forceScrollBottom() {
     cancelAnimationFrame(S.scrollRAF);
     S.scrollRAF = null;
   }
+  S.stickBottom = true;
   messagesEl.scrollTop = messagesEl.scrollHeight;
 }
 
