@@ -304,7 +304,7 @@ func (t *diffTool) Call(argsJSON string) (result string, err error) {
 		return jsonError("invalid arguments: " + err.Error())
 	}
 
-	var linesA, linesB []string
+	var textA, textB string
 	var pathA, pathB string
 
 	if args.PathA != "" && args.PathB != "" {
@@ -323,12 +323,12 @@ func (t *diffTool) Call(argsJSON string) (result string, err error) {
 		if err != nil {
 			return jsonResult(diffResult{Error: err.Error(), PathA: pathA, PathB: pathB})
 		}
-		linesA = strings.Split(string(data), "\n")
+		textA = string(data)
 		data, err = readFileNoFollow(args.PathB)
 		if err != nil {
 			return jsonResult(diffResult{Error: err.Error(), PathA: pathA, PathB: pathB})
 		}
-		linesB = strings.Split(string(data), "\n")
+		textB = string(data)
 	} else if args.Path != "" {
 		pathA, pathB = args.Path, "<inline>"
 		if err := confineIfRestricted(t.restrictToCWD, args.Path); err != nil {
@@ -349,8 +349,8 @@ func (t *diffTool) Call(argsJSON string) (result string, err error) {
 		if err != nil {
 			return jsonResult(diffResult{Error: err.Error(), PathA: pathA, PathB: pathB})
 		}
-		linesA = strings.Split(string(data), "\n")
-		linesB = strings.Split(args.Content, "\n")
+		textA = string(data)
+		textB = args.Content
 	} else {
 		return jsonError("provide either path_a+path_b or path+content")
 	}
@@ -362,14 +362,19 @@ func (t *diffTool) Call(argsJSON string) (result string, err error) {
 		maxDiffLines = 10000
 		maxDiffCells = 4_000_000
 	)
-	if len(linesA) > maxDiffLines || len(linesB) > maxDiffLines ||
-		(len(linesA)+1)*(len(linesB)+1) > maxDiffCells {
+	// Count lines before splitting: strings.Split on a newline-only 10 MiB
+	// file would allocate ~10M strings just to be rejected.
+	countA, countB := strings.Count(textA, "\n")+1, strings.Count(textB, "\n")+1
+	if countA > maxDiffLines || countB > maxDiffLines ||
+		(countA+1)*(countB+1) > maxDiffCells {
 		return jsonResult(diffResult{
 			Error: fmt.Sprintf("files too large for in-process diff (%d vs %d lines; max %d lines per side and %d LCS cells).",
-				len(linesA), len(linesB), maxDiffLines, maxDiffCells),
+				countA, countB, maxDiffLines, maxDiffCells),
 			PathA: pathA, PathB: pathB,
 		})
 	}
+
+	linesA, linesB := strings.Split(textA, "\n"), strings.Split(textB, "\n")
 
 	// Trim trailing empty from final newline
 	if len(linesA) > 0 && linesA[len(linesA)-1] == "" {
