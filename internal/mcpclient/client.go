@@ -769,7 +769,9 @@ func (c *Client) CallTool(ctx context.Context, name string, argsJSON string) (st
 			}
 			suffix := ""
 			if len(extras) > 0 {
-				suffix = "\n" + strings.Join(extras, "\n")
+				// Trailing items are server text: neutralize any line that
+				// would read as a rendered artifact metadata entry.
+				suffix = "\n" + artifact.SanitizeText(strings.Join(extras, "\n"))
 			}
 			for i := range env.Artifacts {
 				if _, err := artifact.Validate(env.Artifacts[i], c.artifactRoots); err != nil {

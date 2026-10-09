@@ -167,6 +167,10 @@ func boundField(s string) string {
 // the rendered output and inflates the loop-side artifact_count
 // (CountRendered). Line content is preserved — only the one-space indent
 // is added.
+// SanitizeText neutralizes lines of server-supplied text that would otherwise
+// read as rendered artifact metadata entries.
+func SanitizeText(text string) string { return sanitizeText(text) }
+
 func sanitizeText(text string) string {
 	if !strings.HasPrefix(text, renderedArtifactPrefix) && !strings.Contains(text, "\n"+renderedArtifactPrefix) {
 		return text
