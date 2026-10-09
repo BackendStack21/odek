@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"hash"
 	"io"
 	"io/fs"
 	"os"
@@ -1201,10 +1202,12 @@ type fileReadReceipt struct {
 
 func readLinesWithReceipt(r io.Reader, offset, limit int) (string, int, fileReadReceipt, error) {
 	var out strings.Builder
-	digest := sha256.New()
+	// Only a read that starts at the top and covers the whole file yields a
+	// receipt, so the digest is computed only while that is still possible.
+	digest := &gatedHash{h: sha256.New(), on: offset <= 1}
 	count := &countingReader{reader: io.TeeReader(r, digest)}
 	scanner := bufio.NewScanner(count)
-	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
+	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
 	lineNum := 0
 	start := offset
 	end := offset + limit - 1
@@ -1216,13 +1219,15 @@ func readLinesWithReceipt(r io.Reader, offset, limit int) (string, int, fileRead
 			continue
 		}
 		if lineNum > end {
-			continue // count total even beyond limit
+			digest.on = false // the window ended: this read can no longer be complete
+			continue          // count total even beyond limit
 		}
 		line := scanner.Text()
 		formatted := fmt.Sprintf("%d|%s\n", lineNum, line)
 		if !truncated && out.Len()+len(formatted) > maxReadBytes {
 			out.WriteString("... [truncated]\n")
 			truncated = true
+			digest.on = false
 			// Continue scanning only to count total lines.
 			continue
 		}
@@ -1231,16 +1236,24 @@ func readLinesWithReceipt(r io.Reader, offset, limit int) (string, int, fileRead
 		}
 	}
 
-	// If no limit was set (limit=0), continue counting past start
-	if limit > 0 {
-		for scanner.Scan() {
-			lineNum++
-		}
-	}
-
 	receipt := fileReadReceipt{complete: !truncated && scanner.Err() == nil && offset <= 1 && limit >= lineNum, size: count.size}
-	copy(receipt.digest[:], digest.Sum(nil))
+	if receipt.complete {
+		copy(receipt.digest[:], digest.h.Sum(nil))
+	}
 	return strings.TrimSuffix(out.String(), "\n"), lineNum, receipt, scanner.Err()
+}
+
+// gatedHash hashes writes only while on is set.
+type gatedHash struct {
+	h  hash.Hash
+	on bool
+}
+
+func (g *gatedHash) Write(p []byte) (int, error) {
+	if g.on {
+		g.h.Write(p)
+	}
+	return len(p), nil
 }
 
 type countingReader struct {
