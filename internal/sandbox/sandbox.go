@@ -395,6 +395,17 @@ func InjectFiles(containerName string, files []string, cwd string) (int, error) 
 			continue
 		}
 
+		// Lstat covers only the final component. A directory symlink inside
+		// cwd that points elsewhere would otherwise let a lexically in-cwd
+		// path name a file outside it, so resolve directory components first.
+		if isPathUnder(absPath, absCwd) {
+			resolvedCwd := pathutil.ResolveDirSymlinks(absCwd)
+			if !isPathUnder(pathutil.ResolveDirSymlinks(absPath), resolvedCwd) {
+				fmt.Fprintf(os.Stderr, "odek: warning: ctx file %q resolves outside the working directory, skipping sandbox injection\n", f)
+				continue
+			}
+		}
+
 		dest := filepath.Base(absPath)
 		if isPathUnder(absPath, absCwd) {
 			if rel, err := filepath.Rel(absCwd, absPath); err == nil {
