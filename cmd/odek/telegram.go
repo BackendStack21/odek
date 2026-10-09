@@ -81,6 +81,17 @@ func unpinChat(chatID int64, s *chatSlot) {
 	chatMetaMu.Unlock()
 }
 
+// dropChatPin drops a waiter recorded by pinChat when the caller gave up
+// without locking s.mu (so there is nothing to unlock).
+func dropChatPin(chatID int64, s *chatSlot) {
+	chatMetaMu.Lock()
+	s.waiters--
+	if s.waiters <= 0 {
+		delete(chatSlots, chatID)
+	}
+	chatMetaMu.Unlock()
+}
+
 // getChatMutex returns the per-chat mutex for tests and diagnostics without
 // pinning a waiter. Production lock sites use pinChat/unpinChat so idle
 // slots are reaped.

@@ -237,17 +237,17 @@ func (c *tgWakeController) wakeSpend() int {
 // chatIsIdle reports whether the chat's turn slot can be taken within wait
 // (i.e. no agent turn is running). The probe releases the slot immediately.
 func chatIsIdle(chatID int64, wait time.Duration) bool {
-	acquired := make(chan struct{}, 1)
-	go func() {
-		slot := pinChat(chatID)
-		slot.mu.Lock()
-		acquired <- struct{}{}
-		unpinChat(chatID, slot)
-	}()
-	select {
-	case <-acquired:
-		return true
-	case <-time.After(wait):
-		return false
+	slot := pinChat(chatID)
+	deadline := time.Now().Add(wait)
+	for {
+		if slot.mu.TryLock() {
+			unpinChat(chatID, slot)
+			return true
+		}
+		if !time.Now().Before(deadline) {
+			dropChatPin(chatID, slot)
+			return false
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }
