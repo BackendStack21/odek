@@ -32,7 +32,7 @@ func TestResumeSession_ArchivesLiveSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cs.SessionID != oldID || len(cs.Messages) != 1 || cs.Messages[0].Content != "first" {
+	if cs.SessionID != "tg-77" || len(cs.Messages) != 1 || cs.Messages[0].Content != "first" {
 		t.Fatalf("unexpected resumed session: %+v", cs)
 	}
 	infos, _ = sm.ListSessions(chat, 0)

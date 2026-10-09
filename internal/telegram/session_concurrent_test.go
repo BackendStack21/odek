@@ -167,7 +167,7 @@ func TestResumeSession_LoopVariableBug(t *testing.T) {
 			CreatedAt: time.Now(),
 			UpdatedAt: time.Now(),
 			Task:      s.task,
-			Messages:  nil,
+			Messages:  []session.Message{{Role: "user", Content: s.id}},
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -181,8 +181,8 @@ func TestResumeSession_LoopVariableBug(t *testing.T) {
 	if cs == nil {
 		t.Fatal("ResumeSession returned nil")
 	}
-	if cs.SessionID != prefix+"-beta" {
-		t.Errorf("SessionID = %q, want %q", cs.SessionID, prefix+"-beta")
+	if len(cs.Messages) != 1 || cs.Messages[0].Content != prefix+"-beta" {
+		t.Errorf("resumed the wrong session: %+v", cs.Messages)
 	}
 	if cs.TurnCount != 0 {
 		t.Errorf("TurnCount = %d, want 0", cs.TurnCount)

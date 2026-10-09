@@ -500,7 +500,7 @@ func (sm *SessionManager) ResumeSession(chatID int64, sessionID string) (*ChatSe
 	cs := &ChatSession{
 		stored:     stored,
 		ChatID:     chatID,
-		SessionID:  sess.ID,
+		SessionID:  canonical,
 		Messages:   sess.Messages,
 		CreatedAt:  sess.CreatedAt,
 		LastActive: time.Now(),
