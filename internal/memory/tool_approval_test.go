@@ -47,6 +47,9 @@ func TestRED_MemoryToolApproval_ShowsPersistedContent(t *testing.T) {
 	for _, tc := range cases {
 		rec := &recordingApprover{}
 		mm := NewMemoryManager(t.TempDir(), &dummyLLM{}, extendedEnabledCfg())
+		// replace/remove resolve old_text to a stored entry before prompting.
+		_ = mm.facts.Add("env", "old fact")
+		_ = mm.facts.Add("user", "the target entry")
 		tool := NewMemoryTool(mm)
 		tool.SetDangerousConfig(&danger.DangerousConfig{
 			Classes:  map[danger.RiskClass]danger.Action{danger.Persistence: danger.Prompt},

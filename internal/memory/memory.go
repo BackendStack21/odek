@@ -933,6 +933,12 @@ func (m *MemoryManager) AddFact(target, content string) error {
 
 // ReplaceFact replaces an existing fact entry.
 func (m *MemoryManager) ReplaceFact(target, oldText, content string) error {
+	return m.ReplaceFactApproved(target, oldText, "", content)
+}
+
+// ReplaceFactApproved is ReplaceFact bound to the approved entry text (see
+// FactStore.ReplaceApproved); an empty expected disables the binding.
+func (m *MemoryManager) ReplaceFactApproved(target, oldText, expected, content string) error {
 	if m.cfg.Enabled == nil || !*m.cfg.Enabled {
 		return fmt.Errorf("memory: disabled")
 	}
@@ -948,7 +954,7 @@ func (m *MemoryManager) ReplaceFact(target, oldText, content string) error {
 	if FactLooksUnsafe(content) {
 		return fmt.Errorf("memory: fact looks unsafe (remote fetch piped to shell)")
 	}
-	if err := m.facts.Replace(target, oldText, content); err != nil {
+	if err := m.facts.ReplaceApproved(target, oldText, expected, content); err != nil {
 		return err
 	}
 	m.markPromptDirty()
@@ -963,6 +969,11 @@ func (m *MemoryManager) ReplaceFact(target, oldText, content string) error {
 
 // RemoveFact removes a fact entry by substring.
 func (m *MemoryManager) RemoveFact(target, oldText string) error {
+	return m.RemoveFactApproved(target, oldText, "")
+}
+
+// RemoveFactApproved is RemoveFact bound to the approved entry text.
+func (m *MemoryManager) RemoveFactApproved(target, oldText, expected string) error {
 	if m.cfg.Enabled == nil || !*m.cfg.Enabled {
 		return fmt.Errorf("memory: disabled")
 	}
@@ -972,7 +983,7 @@ func (m *MemoryManager) RemoveFact(target, oldText string) error {
 	}
 	var pending []MemoryEvent
 	defer m.fireAfterUnlock(unlock, &pending)
-	if err := m.facts.Remove(target, oldText); err != nil {
+	if err := m.facts.RemoveApproved(target, oldText, expected); err != nil {
 		return err
 	}
 	m.markPromptDirty()

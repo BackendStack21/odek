@@ -46,3 +46,32 @@ func TestOversizedFieldIsRefusedNotElided(t *testing.T) {
 		t.Error("a field at the bound must be shown in full")
 	}
 }
+
+func TestResourceWithEntry(t *testing.T) {
+	rep := Args{Action: "replace", Target: "user", OldText: "dark", Content: "light mode"}
+	if got := ResourceWithEntry(rep, "prefers dark mode"); got != `memory replace user: entry "prefers dark mode" (selected by "dark") → "light mode"` {
+		t.Errorf("replace = %q", got)
+	}
+	rem := Args{Action: "remove", Target: "env", OldText: "dark"}
+	if got := ResourceWithEntry(rem, "prefers dark\x1b[2K mode"); got != `memory remove env: entry "prefers dark\x1b[2K mode" (selected by "dark")` {
+		t.Errorf("remove = %q", got)
+	}
+	// Other actions and refused calls fall back to Resource.
+	add := Args{Action: "add", Target: "user", Content: "x"}
+	if got := ResourceWithEntry(add, "ignored"); got != Resource(add) {
+		t.Errorf("add = %q", got)
+	}
+	big := Args{Action: "remove", Target: "user", OldText: strings.Repeat("o", MaxTextBytes+1)}
+	if got := ResourceWithEntry(big, "e"); !strings.Contains(got, "refused") {
+		t.Errorf("oversized = %q", got)
+	}
+	// A long entry is cut on a rune boundary inside the excerpt.
+	long := strings.Repeat("a", EntryExcerptBytes-1) + "é" + strings.Repeat("z", MaxTextBytes)
+	got := ResourceWithEntry(rem, long)
+	if !strings.Contains(got, "truncated") || strings.Contains(got, "é") || strings.Contains(got, "zzz") {
+		t.Errorf("long entry = %q", got)
+	}
+	if !strings.Contains(got, "only the first 511 bytes") {
+		t.Errorf("excerpt not cut on a rune boundary: %q", got)
+	}
+}

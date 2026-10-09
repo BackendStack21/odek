@@ -8,8 +8,11 @@
 package approval
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"unicode/utf8"
 
 	"github.com/BackendStack21/odek/internal/danger"
 )
@@ -22,7 +25,8 @@ import (
 // danger.InlineMaxBytes, so the display sanitiser never truncates either.
 // old_text is a unique substring of the entry it targets, not the whole
 // entry, so a stored fact longer than the bound (written before it existed)
-// stays replaceable and removable through a short, unique old_text.
+// stays replaceable and removable through a short, unique old_text; the
+// memory tool's confirmation shows the entry itself (ResourceWithEntry).
 const MaxTextBytes = 2048
 
 // CheckBounds refuses a mutating memory call whose fields exceed
@@ -90,9 +94,9 @@ func Resource(a Args) string {
 	case "add":
 		return fmt.Sprintf("memory add %s: %s", field(a.Target), quoted(a.Content))
 	case "replace":
-		return fmt.Sprintf("memory replace %s: %s → %s", field(a.Target), quoted(a.OldText), quoted(a.Content))
+		return fmt.Sprintf("memory replace %s: %s → %s (matched entry shown at confirmation)", field(a.Target), quoted(a.OldText), quoted(a.Content))
 	case "remove":
-		return fmt.Sprintf("memory remove %s: %s", field(a.Target), quoted(a.OldText))
+		return fmt.Sprintf("memory remove %s: %s (matched entry shown at confirmation)", field(a.Target), quoted(a.OldText))
 	case "consolidate":
 		return fmt.Sprintf("memory consolidate %s", field(a.Target))
 	case "add_atom":
@@ -108,6 +112,45 @@ func Resource(a Args) string {
 	default:
 		return "memory " + action
 	}
+}
+
+// EntryExcerptBytes is how much of an existing entry longer than
+// MaxTextBytes the approval shows, after its length and SHA-256.
+const EntryExcerptBytes = 512
+
+// ResourceWithEntry is Resource for a replace or remove whose old_text has
+// been resolved to the stored entry it selects. The approval shows that
+// whole entry (old_text may be a short substring of it), sanitised. An entry
+// longer than MaxTextBytes — stored before the bound existed — is identified
+// by its length and SHA-256 with a leading excerpt marked as truncated. The
+// new content of a replace is always shown in full; CheckBounds bounds it.
+func ResourceWithEntry(a Args, entry string) string {
+	if err := CheckBounds(a); err != nil {
+		return Resource(a)
+	}
+	switch a.Action {
+	case "replace":
+		return fmt.Sprintf("memory replace %s: entry %s (selected by %s) → %s", field(a.Target), entryText(entry), quoted(a.OldText), quoted(a.Content))
+	case "remove":
+		return fmt.Sprintf("memory remove %s: entry %s (selected by %s)", field(a.Target), entryText(entry), quoted(a.OldText))
+	default:
+		return Resource(a)
+	}
+}
+
+// entryText renders a stored entry for an approval: in full when it fits the
+// display bound, otherwise as length, SHA-256 and a marked leading excerpt.
+func entryText(entry string) string {
+	if len(entry) <= MaxTextBytes {
+		return quoted(entry)
+	}
+	cut := EntryExcerptBytes
+	for cut > 0 && !utf8.RuneStart(entry[cut]) {
+		cut--
+	}
+	sum := sha256.Sum256([]byte(entry))
+	return fmt.Sprintf("[%d bytes, sha256:%s — longer than the %d-byte display bound, truncated: only the first %d bytes are shown] %s…",
+		len(entry), hex.EncodeToString(sum[:]), MaxTextBytes, cut, quoted(entry[:cut]))
 }
 
 // field sanitises a short identifier-like value (target, id, type).

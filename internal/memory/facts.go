@@ -22,6 +22,7 @@
 package memory
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -244,6 +245,13 @@ func (f *FactStore) Add(target, content string) error {
 // Replace finds an entry by substring match and replaces it with new content.
 // Returns error if the substring doesn't match exactly one entry.
 func (f *FactStore) Replace(target, oldText, content string) error {
+	return f.ReplaceApproved(target, oldText, "", content)
+}
+
+// ReplaceApproved is Replace bound to the entry a human approved: when
+// expected is non-empty, the entry old_text selects must still equal it, so
+// an entry rewritten while the approval prompt was open is not replaced.
+func (f *FactStore) ReplaceApproved(target, oldText, expected, content string) error {
 	if _, err := f.validateTarget(target); err != nil {
 		return err
 	}
@@ -261,21 +269,9 @@ func (f *FactStore) Replace(target, oldText, content string) error {
 	oldText = strings.TrimSpace(oldText)
 
 	return f.readModifyWrite(target, func(entries []string) ([]string, error) {
-		// Find matching entries
-		var matchIdx int
-		matchCount := 0
-		for i, e := range entries {
-			if strings.Contains(e, oldText) {
-				matchIdx = i
-				matchCount++
-			}
-		}
-
-		if matchCount == 0 {
-			return nil, fmt.Errorf("memory: no entry contains %q", oldText)
-		}
-		if matchCount > 1 {
-			return nil, fmt.Errorf("memory: %d entries contain %q — use a more specific old_text", matchCount, oldText)
+		matchIdx, err := matchEntry(entries, oldText, expected)
+		if err != nil {
+			return nil, err
 		}
 
 		// Calculate new size
@@ -331,6 +327,12 @@ func (f *FactStore) ReplaceAt(target string, idx int, content string) error {
 // Remove finds an entry by substring match and removes it. Returns error if
 // the substring doesn't match exactly one entry.
 func (f *FactStore) Remove(target, oldText string) error {
+	return f.RemoveApproved(target, oldText, "")
+}
+
+// RemoveApproved is Remove bound to the entry a human approved (see
+// ReplaceApproved).
+func (f *FactStore) RemoveApproved(target, oldText, expected string) error {
 	if _, err := f.validateTarget(target); err != nil {
 		return err
 	}
@@ -341,20 +343,9 @@ func (f *FactStore) Remove(target, oldText string) error {
 	oldText = strings.TrimSpace(oldText)
 
 	return f.readModifyWrite(target, func(entries []string) ([]string, error) {
-		var matchIdx int
-		matchCount := 0
-		for i, e := range entries {
-			if strings.Contains(e, oldText) {
-				matchIdx = i
-				matchCount++
-			}
-		}
-
-		if matchCount == 0 {
-			return nil, fmt.Errorf("memory: no entry contains %q", oldText)
-		}
-		if matchCount > 1 {
-			return nil, fmt.Errorf("memory: %d entries contain %q — use a more specific old_text", matchCount, oldText)
+		matchIdx, err := matchEntry(entries, oldText, expected)
+		if err != nil {
+			return nil, err
 		}
 
 		// Order-preserving removal: entries are user-visible (injected into
@@ -363,6 +354,53 @@ func (f *FactStore) Remove(target, oldText string) error {
 		entries = append(entries[:matchIdx], entries[matchIdx+1:]...)
 		return entries, nil
 	})
+}
+
+// ErrEntryChanged reports that the entry an approval showed was rewritten
+// before the approved mutation ran.
+var ErrEntryChanged = errors.New("memory: the entry changed after it was approved; nothing was modified — retry")
+
+// matchEntry returns the index of the one entry containing oldText (already
+// trimmed). With expected set, that entry must also equal expected.
+func matchEntry(entries []string, oldText, expected string) (int, error) {
+	matchIdx, matchCount := 0, 0
+	for i, e := range entries {
+		if strings.Contains(e, oldText) {
+			matchIdx = i
+			matchCount++
+		}
+	}
+	if matchCount == 0 {
+		if expected != "" {
+			return 0, ErrEntryChanged
+		}
+		return 0, fmt.Errorf("memory: no entry contains %q", oldText)
+	}
+	if matchCount > 1 {
+		return 0, fmt.Errorf("memory: %d entries contain %q — use a more specific old_text", matchCount, oldText)
+	}
+	if expected != "" && entries[matchIdx] != expected {
+		return 0, ErrEntryChanged
+	}
+	return matchIdx, nil
+}
+
+// MatchEntry returns the one entry of target that oldText selects: the entry
+// a replace or remove with that old_text would modify.
+func (f *FactStore) MatchEntry(target, oldText string) (string, error) {
+	entries, err := f.Entries(target)
+	if err != nil {
+		return "", err
+	}
+	oldText = strings.TrimSpace(oldText)
+	if oldText == "" {
+		return "", fmt.Errorf("memory: empty old_text")
+	}
+	idx, err := matchEntry(entries, oldText, "")
+	if err != nil {
+		return "", err
+	}
+	return entries[idx], nil
 }
 
 // Entries returns the individual entries as a string slice.

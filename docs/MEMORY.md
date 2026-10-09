@@ -79,7 +79,7 @@ Every episode carries the provenance of its session (`memory.DeriveSessionProven
 | `read` | — | — | — | Returns full content of both user.md + env.md |
 | `search` | — | — | ✅ query | LLM ranker by default (relevance-oriented); `llm_search: false` switches to RP cosine ranking (zero LLM calls) |
 
-Every field of a mutating call (`content`, `old_text`, …) is limited to 2048 bytes so its approval can show it in full. `old_text` only has to be a unique substring of the entry, so a fact stored before the limit existed and longer than it is still replaced or removed by naming a short part of it that no other entry contains.
+Every field of a mutating call (`content`, `old_text`, …) is limited to 2048 bytes so its approval can show it in full. `old_text` only has to be a unique substring of the entry, so a fact stored before the limit existed and longer than it is still replaced or removed by naming a short part of it that no other entry contains. The approval shows the whole entry that `old_text` selects (a legacy entry over the bound as length, SHA-256 and a marked 512-byte excerpt), and the change applies only if that entry is unchanged when the approval returns.
 
 ## Automatic Cap Maintenance (LLM-driven eviction)
 
