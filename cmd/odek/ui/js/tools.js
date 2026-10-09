@@ -3,7 +3,10 @@
 // (go test, git, HTTP status lines). Prose like "Build passed" stays quiet.
 import { escapeHtml, escapeAttr } from './escape.js';
 
-const DIFF_LINE = /^(?:diff --git |@@ |[+-](?![+-]{2}))/m;
+// Unified-diff evidence only: a git header, a hunk header, or a file header
+// pair. A bare leading '-' is not enough — `ls -l` permission columns
+// ("-rw-r--r--") and Markdown bullets start with one too.
+const DIFF_LINE = /^(?:diff --git |@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@|--- \S.*\n\+\+\+ \S)/m;
 const HTTP_STATUS = /\bHTTP\/\d(?:\.\d)?\s+(\d{3})\b/;
 const GIT_COMMIT = /(?:^|\s)([0-9a-f]{7,40})\s+(?:commit|ok)|\[(?:main|master|[a-z0-9._/-]+)(?:\s+[0-9a-f]{7})?\]/i;
 const GIT_PUSH = /^\s*To\s+\S+|^\s*\d+\s+\w+\s+->\s+\w+/m;
