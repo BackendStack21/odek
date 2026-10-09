@@ -134,7 +134,63 @@ func checkMediaPathSensitivity(resolved string) error {
 		return fmt.Errorf("media path: rejected .env file: %s", resolved)
 	}
 
+	if isCredentialFile(resolved) {
+		return fmt.Errorf("media path: rejected credential file: %s", resolved)
+	}
+
 	return nil
+}
+
+// credentialBasenames are well-known credential files identified by name alone.
+var credentialBasenames = map[string]bool{
+	".netrc":           true,
+	"_netrc":           true,
+	".git-credentials": true,
+	".npmrc":           true,
+	".pypirc":          true,
+	".pgpass":          true,
+}
+
+// credentialPathSuffixes are credential files identified by their trailing
+// path components (matched case-insensitively on whole components).
+var credentialPathSuffixes = [][]string{
+	{".docker", "config.json"},
+	{".kube", "config"},
+	{".config", "gcloud", "application_default_credentials.json"},
+	{".config", "gcloud", "credentials.db"},
+	{".config", "gcloud", "access_tokens.db"},
+	{".config", "gh", "hosts.yml"},
+	{".azure", "accessTokens.json"},
+	{".azure", "msal_token_cache.json"},
+}
+
+// isCredentialFile reports whether resolved names a common credential file in
+// a user's home, independent of how the danger classifier ranks the path.
+func isCredentialFile(resolved string) bool {
+	parts := strings.Split(filepath.ToSlash(resolved), "/")
+	if len(parts) == 0 {
+		return false
+	}
+	if credentialBasenames[strings.ToLower(parts[len(parts)-1])] {
+		return true
+	}
+	for _, suffix := range credentialPathSuffixes {
+		if len(parts) < len(suffix) {
+			continue
+		}
+		tail := parts[len(parts)-len(suffix):]
+		match := true
+		for i, want := range suffix {
+			if !strings.EqualFold(tail[i], want) {
+				match = false
+				break
+			}
+		}
+		if match {
+			return true
+		}
+	}
+	return false
 }
 
 // BroadBaseWarning returns a non-empty warning when the current working
