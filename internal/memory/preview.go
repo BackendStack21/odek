@@ -63,6 +63,9 @@ func (m *MemoryManager) ApplyConsolidation(target string, preview ConsolidationP
 		if err := m.scanContent(context.Background(), entry); err != nil {
 			return err
 		}
+		if FactLooksUnsafe(entry) {
+			return fmt.Errorf("consolidated fact rejected: download-and-execute instruction")
+		}
 	}
 	unlock, err := lockFactsDir(m.facts.dir)
 	if err != nil {
