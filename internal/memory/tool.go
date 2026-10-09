@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/BackendStack21/odek/internal/danger"
+	"github.com/BackendStack21/odek/internal/memory/approval"
 	"github.com/BackendStack21/odek/internal/memory/extended"
 	"github.com/BackendStack21/odek/internal/session"
 )
@@ -76,22 +77,18 @@ func (t *MemoryTool) SetDangerousConfig(dc *danger.DangerousConfig) {
 }
 
 func memoryActionMutates(action string) bool {
-	switch action {
-	case "add", "replace", "remove", "consolidate",
-		"add_atom", "forget_atom", "pin_atom",
-		"confirm_pending_review", "reject_pending_review":
-		return true
-	default:
-		return false
-	}
+	return approval.Mutates(action)
 }
 
-func (t *MemoryTool) checkPersistence(action string) error {
+// checkPersistence gates a mutating call. The approval resource carries the
+// text being stored (or the entry being removed or pinned), sanitised and
+// bounded, so the human approves the content rather than a bare action name.
+func (t *MemoryTool) checkPersistence(a approval.Args) error {
 	if t.dc == nil {
 		return nil
 	}
 	return t.dc.CheckOperation(danger.ToolOperation{
-		Name: "memory", Resource: action, Risk: danger.Persistence,
+		Name: "memory", Resource: approval.Resource(a), Risk: danger.Persistence,
 	}, nil)
 }
 
@@ -122,7 +119,15 @@ func (t *MemoryTool) Call(args string) (string, error) {
 	}
 
 	if memoryActionMutates(params.Action) {
-		if err := t.checkPersistence(params.Action); err != nil {
+		a := approval.Args{
+			Action: params.Action, Target: params.Target, Content: params.Content,
+			OldText: params.OldText, AtomID: params.AtomID, PendingID: params.PendingID,
+			AtomType: params.AtomType,
+		}
+		if err := approval.CheckBounds(a); err != nil {
+			return errorJSON(err.Error()), nil
+		}
+		if err := t.checkPersistence(a); err != nil {
 			return errorJSON(err.Error()), nil
 		}
 	}

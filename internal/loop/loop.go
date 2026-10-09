@@ -18,6 +18,7 @@ import (
 	"github.com/BackendStack21/odek/internal/danger"
 	"github.com/BackendStack21/odek/internal/events"
 	"github.com/BackendStack21/odek/internal/llmclient"
+	memapproval "github.com/BackendStack21/odek/internal/memory/approval"
 	"github.com/BackendStack21/odek/internal/narrate"
 	"github.com/BackendStack21/odek/internal/redact"
 	"github.com/BackendStack21/odek/internal/render"
@@ -4465,20 +4466,12 @@ func classifyToolCallCtx(ctx context.Context, name, args string) (danger.RiskCla
 		// no filesystem, network, or subprocess surface.
 		return "", ""
 	case "memory":
-		var p struct {
-			Action string `json:"action"`
+		// The card shows the text being persisted (or the entry removed or
+		// pinned), sanitised and bounded, not just the action name.
+		if res, ok := memapproval.ResourceFromArgs(args); ok {
+			return danger.Persistence, res
 		}
-		if err := json.Unmarshal([]byte(args), &p); err != nil || p.Action == "" {
-			return "", ""
-		}
-		switch p.Action {
-		case "add", "replace", "remove", "consolidate",
-			"add_atom", "forget_atom", "pin_atom",
-			"confirm_pending_review", "reject_pending_review":
-			return danger.Persistence, "memory " + p.Action
-		default:
-			return "", ""
-		}
+		return "", ""
 	default:
 		// MCP tools are registered with names of the form <server>__<tool>.
 		// They bypass the built-in danger classifier because the server, not
