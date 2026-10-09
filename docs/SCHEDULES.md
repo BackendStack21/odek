@@ -105,8 +105,8 @@ rest of the line is the task. Options come after a literal `|`:
 | `deliver=<dest>` | `stdout`, `log`, `telegram`, or `telegram:<chatID>`. **Default: this chat.** |
 | `tz=<IANA>` | Per-job timezone, e.g. `Europe/Berlin` |
 | `name=<label>` | Human label (single token; default: first words of the task) |
-| `catchup` | Run a missed fire once on startup |
-| `disabled` | Add without enabling |
+| `catchup` | Run a missed fire once on startup. Bare flag or `catchup=true`; `catchup=false` leaves it off |
+| `disabled` | Add without enabling. Bare flag or `disabled=true`; `disabled=false` keeps the job enabled |
 
 Notes:
 

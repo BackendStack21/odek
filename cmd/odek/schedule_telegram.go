@@ -102,7 +102,7 @@ func scheduleTelegramUsage() string {
 		"`/schedule run <id>` — run once now, here\n" +
 		"`/schedule enable|disable <id>` — toggle a job\n" +
 		"`/schedule rm <id>` — remove a job\n\n" +
-		"*opts* (after ` | `): `deliver=stdout|log|telegram|telegram:<id>` `tz=<IANA>` `name=<label>` `catchup` `disabled`\n\n" +
+		"*opts* (after ` | `): `deliver=stdout|log|telegram|telegram:<id>` `tz=<IANA>` `name=<label>` `catchup[=true|false]` `disabled[=true|false]`\n\n" +
 		"Example:\n`/schedule add 0 9 * * 1-5 Summarize my unread emails | tz=Europe/Berlin`"
 }
 
@@ -300,15 +300,40 @@ func parseTelegramScheduleAdd(chatID int64, args string) (schedule.Job, string) 
 	if name == "" {
 		name = firstWords(task, 6)
 	}
+	catchup, err := scheduleBoolOpt(opts, "catchup")
+	if err != nil {
+		return schedule.Job{}, "❗ " + err.Error()
+	}
+	disabled, err := scheduleBoolOpt(opts, "disabled")
+	if err != nil {
+		return schedule.Job{}, "❗ " + err.Error()
+	}
 	return schedule.Job{
 		Name:     name,
 		Cron:     cron,
 		Task:     task,
 		Deliver:  del,
 		Timezone: opts["tz"],
-		Catchup:  opts["catchup"] != "",
-		Enabled:  opts["disabled"] == "",
+		Catchup:  catchup,
+		Enabled:  !disabled,
 	}, ""
+}
+
+// scheduleBoolOpt reads a boolean option: absent is false, a bare flag or
+// true/1/yes/on is true, and false/0/no/off is false. Anything else is an
+// error so a typo cannot silently flip the setting.
+func scheduleBoolOpt(opts map[string]string, key string) (bool, error) {
+	v, ok := opts[key]
+	if !ok {
+		return false, nil
+	}
+	switch strings.ToLower(v) {
+	case "", "true", "1", "yes", "on":
+		return true, nil
+	case "false", "0", "no", "off":
+		return false, nil
+	}
+	return false, fmt.Errorf("option %s must be true or false, got %q", key, v)
 }
 
 // splitCronTask separates a cron expression (a single @macro or exactly five
