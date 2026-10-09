@@ -1079,6 +1079,12 @@ Entries for %s:
 			log.Printf("memory: consolidated entry rejected: %v", err)
 			continue
 		}
+		// An entry carrying the on-disk separator would split into extra
+		// entries on write; Add/Replace reject it, so consolidation does too.
+		if strings.Contains(entry, entrySep) {
+			log.Printf("memory: consolidated entry rejected: contains entry separator")
+			continue
+		}
 		// Same download-and-run filter AddFact/ReplaceFact apply: the merged
 		// entries land in the always-injected fact files too.
 		if FactLooksUnsafe(entry) {
