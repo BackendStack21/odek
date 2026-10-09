@@ -278,7 +278,12 @@ func TestJSONQuery_EmptyQueryReturnsAll(t *testing.T) {
 	if r.Error != "" {
 		t.Fatalf("error: %s", r.Error)
 	}
-	if r.Value["a"].(float64) != 1 || r.Value["b"].(float64) != 2 {
+	// Object keys are file content and arrive wrapped as untrusted.
+	got := map[string]float64{}
+	for k, v := range r.Value {
+		got[unwrapUntrusted(k)] = v.(float64)
+	}
+	if got["a"] != 1 || got["b"] != 2 || len(got) != 2 {
 		t.Errorf("unexpected value: %v", r.Value)
 	}
 }

@@ -520,7 +520,7 @@ Hostile or accidental input is bounded everywhere it is sized, to keep it from O
 | `shell` output | 1 MiB per stream |
 | `shell` timeout | 30 minutes (per command, capped) |
 | `read_file` content / full-file scan | 1 MiB returned / 10 MiB scanned (line count stops at the byte cap) |
-| Perf-tool file reads (`checksum`, `head_tail`, `diff`, `base64`, `json_query`) | 10 MiB per file (enforced on the read, not only the pre-read size) |
+| Perf-tool file reads (`checksum`, `head_tail`, `diff`, `base64`, `json_query`) | 10 MiB per file (enforced on the read, not only the pre-read size); `json_query` additionally wraps every string value and object key as untrusted and caps the wrapped result at the same bound, returning an in-band "narrow the query" error beyond it |
 | Inline `base64` / `tr` content arguments | 10 MiB |
 | `browser` body / snapshot / history / elements | 10 MiB / 1 MiB per snapshot / 50 snapshots / 500 per page |
 | `vision` / `transcribe` input file | 10 MiB |

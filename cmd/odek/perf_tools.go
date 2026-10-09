@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"go/ast"
 	"go/parser"
@@ -544,8 +545,7 @@ func (t *jsonQueryTool) Call(argsJSON string) (result string, err error) {
 	}
 
 	if args.Query == "" {
-		vt := fmt.Sprintf("%T", data)
-		return jsonResult(jsonQueryResult{Path: args.Path, Query: "", Value: wrapJSONStrings(t.toolCtx(), args.Path, data), ValueType: vt})
+		return t.valueResult(args.Path, "", data)
 	}
 
 	value, err := jsonPathQuery(data, args.Query)
@@ -553,28 +553,90 @@ func (t *jsonQueryTool) Call(argsJSON string) (result string, err error) {
 		return jsonResult(jsonQueryResult{Path: args.Path, Query: args.Query, Error: err.Error()})
 	}
 
-	vt := fmt.Sprintf("%T", value)
-	return jsonResult(jsonQueryResult{Path: args.Path, Query: args.Query, Value: wrapJSONStrings(t.toolCtx(), args.Path, value), ValueType: vt})
+	return t.valueResult(args.Path, args.Query, value)
 }
 
-// wrapJSONStrings recursively wraps string values inside decoded JSON so that
-// file content returned by json_query is treated as untrusted.
-func wrapJSONStrings(ctx context.Context, source string, v interface{}) interface{} {
+// errJSONQueryTooLarge reports a result whose untrusted-wrapped form would
+// exceed the tool output bound.
+var errJSONQueryTooLarge = errors.New("result too large once wrapped as untrusted content; narrow the query to a smaller subtree")
+
+// jsonWrapOverhead is the budgeted per-string cost of the untrusted wrapper
+// (tags, nonce, source attribute), deliberately a little above the real size.
+const jsonWrapOverhead = 192
+
+// jsonWrapper wraps every string in decoded JSON — values and object keys,
+// both file content — as untrusted, charging each against a shared output
+// budget so per-string wrapper overhead cannot amplify a small file past the
+// tool bound.
+type jsonWrapper struct {
+	ctx    context.Context
+	source string
+	budget int
+}
+
+func (w *jsonWrapper) wrap(s string) (string, error) {
+	if s == "" {
+		return s, nil
+	}
+	w.budget -= len(s) + jsonWrapOverhead
+	if w.budget < 0 {
+		return "", errJSONQueryTooLarge
+	}
+	return wrapUntrusted(w.ctx, w.source, s), nil
+}
+
+func (w *jsonWrapper) walk(v interface{}) (interface{}, error) {
 	switch x := v.(type) {
 	case string:
-		return wrapUntrusted(ctx, source, x)
+		return w.wrap(x)
 	case map[string]interface{}:
+		out := make(map[string]interface{}, len(x))
 		for k, val := range x {
-			x[k] = wrapJSONStrings(ctx, source, val)
+			wk, err := w.wrap(k)
+			if err != nil {
+				return nil, err
+			}
+			wv, err := w.walk(val)
+			if err != nil {
+				return nil, err
+			}
+			out[wk] = wv
 		}
-		return x
+		return out, nil
 	case []interface{}:
 		for i, val := range x {
-			x[i] = wrapJSONStrings(ctx, source, val)
+			wv, err := w.walk(val)
+			if err != nil {
+				return nil, err
+			}
+			x[i] = wv
 		}
-		return x
+		return x, nil
 	}
-	return v
+	return v, nil
+}
+
+// wrapJSONStrings recursively wraps string values and object keys inside
+// decoded JSON so that file content returned by json_query is treated as
+// untrusted. The wrapped result is bounded by maxFileReadBytes.
+func wrapJSONStrings(ctx context.Context, source string, v interface{}) (interface{}, error) {
+	w := &jsonWrapper{ctx: ctx, source: source, budget: maxFileReadBytes * 3 / 4}
+	return w.walk(v)
+}
+
+// valueResult wraps value and renders the tool result, turning an
+// over-budget wrap or an over-bound rendering into an in-band error.
+func (t *jsonQueryTool) valueResult(path, query string, value interface{}) (string, error) {
+	vt := fmt.Sprintf("%T", value)
+	wrapped, err := wrapJSONStrings(t.toolCtx(), path, value)
+	if err != nil {
+		return jsonResult(jsonQueryResult{Path: path, Query: query, Error: err.Error()})
+	}
+	out, rerr := jsonResult(jsonQueryResult{Path: path, Query: query, Value: wrapped, ValueType: vt})
+	if len(out) > maxFileReadBytes {
+		return jsonResult(jsonQueryResult{Path: path, Query: query, Error: errJSONQueryTooLarge.Error()})
+	}
+	return out, rerr
 }
 
 func jsonPathQuery(data interface{}, query string) (interface{}, error) {
