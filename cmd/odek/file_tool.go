@@ -771,9 +771,9 @@ func (t *searchFilesTool) searchContent(args searchFilesArgs) (string, error) {
 				}
 				resultBytes += len(trimmed)
 				matches = append(matches, searchMatch{
-					Path:    wrapUntrusted(t.toolCtx(), path, path),
+					Path:    path,
 					Line:    lineNum,
-					Content: wrapUntrusted(t.toolCtx(), fmt.Sprintf("%s:%d", path, lineNum), trimmed),
+					Content: trimmed,
 				})
 				if len(matches) >= limit {
 					break
@@ -795,7 +795,28 @@ func (t *searchFilesTool) searchContent(args searchFilesArgs) (string, error) {
 		return jsonError(fmt.Sprintf("search failed: %v", err))
 	}
 
+	t.wrapContentMatches(matches)
 	return jsonResult(searchFilesResult{Matches: matches, Skipped: skipped})
+}
+
+// wrapContentMatches marks every matched path and line as untrusted. All
+// elements are scanned and audit-recorded as one batch; each keeps its own
+// wrapper labelled with its file (and line).
+func (t *searchFilesTool) wrapContentMatches(matches []searchMatch) {
+	if len(matches) == 0 {
+		return
+	}
+	sources := make([]string, 0, 2*len(matches))
+	contents := make([]string, 0, 2*len(matches))
+	for _, m := range matches {
+		sources = append(sources, m.Path, fmt.Sprintf("%s:%d", m.Path, m.Line))
+		contents = append(contents, m.Path, m.Content)
+	}
+	wrapped := wrapUntrustedBatch(t.toolCtx(), "search_files:content", sources, contents)
+	for i := range matches {
+		matches[i].Path = wrapped[2*i]
+		matches[i].Content = wrapped[2*i+1]
+	}
 }
 
 func (t *searchFilesTool) searchFiles(args searchFilesArgs) (string, error) {
@@ -818,19 +839,32 @@ func (t *searchFilesTool) searchFiles(args searchFilesArgs) (string, error) {
 			skipped = append(skipped, p+": "+reason)
 			continue
 		}
-		matches = append(matches, searchMatch{Path: wrapUntrusted(t.toolCtx(), "search_files:"+p, p)})
+		matches = append(matches, searchMatch{Path: p})
 	}
 
 	// Sort by modification time (newest first). Use Lstat so symlinks are not
 	// followed and their own metadata is used for sorting.
 	sort.Slice(matches, func(i, j int) bool {
-		fi, _ := os.Lstat(unwrapUntrusted(matches[i].Path))
-		fj, _ := os.Lstat(unwrapUntrusted(matches[j].Path))
+		fi, _ := os.Lstat(matches[i].Path)
+		fj, _ := os.Lstat(matches[j].Path)
 		if fi == nil || fj == nil {
-			return unwrapUntrusted(matches[i].Path) < unwrapUntrusted(matches[j].Path)
+			return matches[i].Path < matches[j].Path
 		}
 		return fi.ModTime().After(fj.ModTime())
 	})
+
+	if len(matches) > 0 {
+		sources := make([]string, len(matches))
+		contents := make([]string, len(matches))
+		for i, m := range matches {
+			sources[i] = "search_files:" + m.Path
+			contents[i] = m.Path
+		}
+		wrapped := wrapUntrustedBatch(t.toolCtx(), "search_files:"+searchDir, sources, contents)
+		for i := range matches {
+			matches[i].Path = wrapped[i]
+		}
+	}
 
 	return jsonResult(searchFilesResult{Matches: matches, Skipped: skipped})
 }
@@ -1571,8 +1605,15 @@ func (t *globTool) Call(argsJSON string) (result string, err error) {
 		return fi.ModTime().After(fj.ModTime())
 	})
 
-	for i := range matches {
-		matches[i].Path = wrapUntrusted(t.toolCtx(), "glob:"+args.Path, matches[i].Path)
+	if len(matches) > 0 {
+		contents := make([]string, len(matches))
+		for i, m := range matches {
+			contents[i] = m.Path
+		}
+		wrapped := wrapUntrustedBatch(t.toolCtx(), "glob:"+args.Path, nil, contents)
+		for i := range matches {
+			matches[i].Path = wrapped[i]
+		}
 	}
 
 	return jsonResult(globResult{Matches: matches})

@@ -406,9 +406,18 @@ func (t *diffTool) Call(argsJSON string) (result string, err error) {
 
 	hunks := computeDiff(linesA, linesB)
 	src := fmt.Sprintf("diff:%s|%s", pathA, pathB)
+	var contents []string
 	for i := range hunks {
 		for j := range hunks[i].Lines {
-			hunks[i].Lines[j].Content = wrapUntrusted(t.toolCtx(), src, hunks[i].Lines[j].Content)
+			contents = append(contents, hunks[i].Lines[j].Content)
+		}
+	}
+	wrapped := wrapUntrustedBatch(t.toolCtx(), src, nil, contents)
+	k := 0
+	for i := range hunks {
+		for j := range hunks[i].Lines {
+			hunks[i].Lines[j].Content = wrapped[k]
+			k++
 		}
 	}
 	return jsonResult(diffResult{Hunks: hunks, PathA: pathA, PathB: pathB})
@@ -658,7 +667,11 @@ func wrapJSONStrings(ctx context.Context, source string, v interface{}) (interfa
 // over-budget wrap or an over-bound rendering into an in-band error.
 func (t *jsonQueryTool) valueResult(path, query string, value interface{}) (string, error) {
 	vt := fmt.Sprintf("%T", value)
-	wrapped, err := wrapJSONStrings(t.toolCtx(), path, value)
+	// Every string is wrapped individually; the audit log gets one ingest
+	// per source for the whole result instead of one per string.
+	ctx, flush := coalesceIngests(t.toolCtx())
+	defer flush()
+	wrapped, err := wrapJSONStrings(ctx, path, value)
 	if err != nil {
 		return jsonResult(jsonQueryResult{Path: path, Query: query, Error: err.Error()})
 	}
@@ -817,9 +830,21 @@ func (t *treeTool) Call(argsJSON string) (result string, err error) {
 		}, nil) != nil
 	}
 
-	entry, err := buildTree(t.toolCtx(), args.Path, args.Path, 0, args.MaxDepth, args.IncludeHidden, checkTreePath)
+	entry, err := buildTree(args.Path, 0, args.MaxDepth, args.IncludeHidden, checkTreePath)
 	if err != nil {
 		return jsonResult(treeResult{Error: err.Error()})
+	}
+
+	// Tree paths come from the filesystem trust boundary, so mark them as
+	// untrusted before returning them to the model.
+	var paths []*string
+	collectTreePaths(&entry, &paths)
+	contents := make([]string, len(paths))
+	for i, p := range paths {
+		contents[i] = *p
+	}
+	for i, w := range wrapUntrustedBatch(t.toolCtx(), "tree:"+args.Path, nil, contents) {
+		*paths[i] = w
 	}
 
 	return jsonResult(treeResult{Tree: entry})
@@ -828,7 +853,7 @@ func (t *treeTool) Call(argsJSON string) (result string, err error) {
 // skipPath, when non-nil, is consulted for every discovered child path;
 // paths it rejects are omitted (search tools apply the identical rule via
 // checkSearchPath).
-func buildTree(ctx context.Context, root, path string, depth, maxDepth int, includeHidden bool, skipPath func(path string) bool) (treeEntry, error) {
+func buildTree(path string, depth, maxDepth int, includeHidden bool, skipPath func(path string) bool) (treeEntry, error) {
 	var info os.FileInfo
 	var err error
 	if depth == 0 {
@@ -843,7 +868,7 @@ func buildTree(ctx context.Context, root, path string, depth, maxDepth int, incl
 		info, err = os.Lstat(path)
 	}
 	if err != nil {
-		return treeEntry{Path: wrapUntrusted(ctx, "tree:"+root, path), ErrMsg: err.Error()}, nil
+		return treeEntry{Path: path, ErrMsg: err.Error()}, nil
 	}
 
 	entry := treeEntry{
@@ -855,10 +880,6 @@ func buildTree(ctx context.Context, root, path string, depth, maxDepth int, incl
 	if depth == 0 {
 		entry.Path = path
 	}
-
-	// Tree paths come from the filesystem trust boundary, so mark them as
-	// untrusted before returning them to the model.
-	entry.Path = wrapUntrusted(ctx, "tree:"+root, entry.Path)
 
 	if !info.IsDir() || depth >= maxDepth {
 		if !info.IsDir() {
@@ -909,7 +930,7 @@ func buildTree(ctx context.Context, root, path string, depth, maxDepth int, incl
 		if skipPath != nil && skipPath(childPath) {
 			continue
 		}
-		child, err := buildTree(ctx, root, childPath, depth+1, maxDepth, includeHidden, skipPath)
+		child, err := buildTree(childPath, depth+1, maxDepth, includeHidden, skipPath)
 		if err != nil {
 			continue
 		}
@@ -919,6 +940,14 @@ func buildTree(ctx context.Context, root, path string, depth, maxDepth int, incl
 	}
 
 	return entry, nil
+}
+
+// collectTreePaths gathers a pointer to every Path in the tree, root first.
+func collectTreePaths(e *treeEntry, out *[]*string) {
+	*out = append(*out, &e.Path)
+	for i := range e.Children {
+		collectTreePaths(&e.Children[i], out)
+	}
 }
 
 // ═════════════════════════════════════════════════════════════════════════
@@ -1153,10 +1182,7 @@ func (t *headTailTool) readHead(f *os.File, path string, n int) headTailFileResu
 		}
 	}
 	rawLines = truncateHeadTailLines(rawLines)
-	lines := make([]string, len(rawLines))
-	for i, l := range rawLines {
-		lines[i] = wrapUntrusted(t.toolCtx(), path, l)
-	}
+	lines := wrapUntrustedBatch(t.toolCtx(), path, nil, rawLines)
 	res := headTailFileResult{Path: path, Lines: lines, Count: len(lines), Total: total}
 	if err := scanner.Err(); err != nil {
 		res.Error = fmt.Sprintf("cannot read %q fully (line over 1 MiB or read error): %v", path, err)
@@ -1186,10 +1212,7 @@ func (t *headTailTool) readTail(f *os.File, path string, n int) headTailFileResu
 		rawLines = append(rawLines, buf[(start+i)%n])
 	}
 	rawLines = truncateHeadTailLines(rawLines)
-	lines := make([]string, len(rawLines))
-	for i, l := range rawLines {
-		lines[i] = wrapUntrusted(t.toolCtx(), path, l)
-	}
+	lines := wrapUntrustedBatch(t.toolCtx(), path, nil, rawLines)
 	res := headTailFileResult{Path: path, Lines: lines, Count: len(lines), Total: total}
 	if err := scanner.Err(); err != nil {
 		res.Error = fmt.Sprintf("cannot read %q fully (line over 1 MiB or read error): %v", path, err)

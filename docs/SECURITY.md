@@ -561,6 +561,8 @@ Every time the agent ingests externally-sourced content — any `wrapUntrusted` 
 - a 16-hex SHA-256 prefix of the content
 - the turn it landed on
 
+List-shaped results (`diff`, `head_tail`, `tree`, `glob`, `search_files`, browser snapshots, `json_query`) wrap every element in its own nonce'd wrapper but are guard-scanned over their full joined content and recorded as **one** ingest per result: the hash and resource list cover every element, and the per-element wrapper sources remain in the tool message that divergence detection reads. Appends to the audit log validate the file (legacy JSON, symlink, directory, torn tail, corruption) on the first append of a process and whenever the file is no longer exactly as the previous append left it (inode or size changed); steady-state appends are a single `O_APPEND` write.
+
 After each turn, odek records the tools called and runs a divergence heuristic: a turn is flagged `suspicious_divergence` when the agent ingested untrusted content **and** the agent's actions or final response reference resources that either (a) did not appear in the user's preceding message, or (b) were introduced by the untrusted content itself. The check receives the original, pre-enrichment user prompt, so resources injected during prompt enrichment count as novel when the agent acts on them. This catches both classic prompt injection (steering the agent toward an attacker-chosen resource) and "reused-resource" injection where the attacker reuses a user-mentioned resource to evade a simple novelty check.
 
 The log is local-only, stored under `<sessions>/audit/<id>.json`. Review via:
