@@ -500,12 +500,28 @@ const maxMCPDescriptionRunes = 8 * 1024
 // untrusted-data boundary (see wrapMCPDescription) so the model treats it as
 // documentation rather than as instructions to follow.
 func sanitizeMCPDescription(serverName, toolName, desc string, g guard.Guard, guardCfg guard.Config) string {
+	return sanitizeMCPToolDoc(serverName, toolName, desc, "", g, guardCfg)
+}
+
+// sanitizeMCPToolDoc is sanitizeMCPDescription plus the parameter
+// documentation lifted out of the tool's input schema (renderMCPParamDocs,
+// already bounded). The description is truncated on its own, then the
+// parameter docs are appended, and the combined text is scanned and wrapped
+// as one untrusted block — so schema free text reaches the model only inside
+// the wrapper, and a scanner hit in either part withholds both.
+func sanitizeMCPToolDoc(serverName, toolName, desc, paramDocs string, g guard.Guard, guardCfg guard.Config) string {
 	if utf8.RuneCountInString(desc) > maxMCPDescriptionRunes {
 		runes := []rune(desc)
 		desc = string(runes[:maxMCPDescriptionRunes]) +
 			"\n[odek: description truncated — the MCP server supplied more than the maximum allowed length]"
 		fmt.Fprintf(os.Stderr, "odek: warning: mcp server %q tool %q: description truncated to %d runes\n",
 			serverName, toolName, maxMCPDescriptionRunes)
+	}
+	if paramDocs != "" {
+		if strings.TrimSpace(desc) != "" {
+			desc = strings.TrimRight(desc, "\n") + "\n\n"
+		}
+		desc += paramDocs
 	}
 	if err := guard.ScanContentWithScope(context.Background(), desc, g, &guardCfg, "mcp_descriptions"); err != nil {
 		fmt.Fprintf(os.Stderr, "odek: warning: mcp server %q tool %q: description withheld — guard detected injection: %v\n",

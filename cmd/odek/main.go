@@ -3006,24 +3006,10 @@ func loadMCPTools(resolved config.ResolvedConfig, tools *[]odek.Tool) (func(), e
 		}
 
 		for _, def := range defs {
-			// A malicious MCP server controls the tool name, description,
-			// and parameter schema — all of which flow into the model's
-			// tool catalogue as effectively trusted instructions ("tool
-			// poisoning"). The untrusted wrapper only guards the tool's
-			// runtime *output*, so sanitizeMCPDescription both scans the
-			// server-supplied description for injection patterns (withholding
-			// it on a hit) and wraps whatever passes in an untrusted-data
-			// boundary so the model never treats it as instructions.
-			inner := &mcpclient.ToolAdapter{
-				Client:      client,
-				ToolName:    def.Name,
-				Desc:        sanitizeMCPDescription(name, def.Name, def.Description, injectionGuard, resolved.Guard),
-				ParamSchema: def.InputSchema,
-			}
-			*tools = append(*tools, &untrustedToolWrapper{
-				inner:  inner,
-				source: "mcp:" + name + ":" + def.Name,
-			})
+			// Server-controlled description and schema text is made
+			// non-authoritative before it enters the tool catalogue (see
+			// newMCPModelTool).
+			*tools = append(*tools, newMCPModelTool(client, name, def, injectionGuard, resolved.Guard))
 		}
 
 		cleaners = append(cleaners, func() {

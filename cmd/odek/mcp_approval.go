@@ -503,7 +503,12 @@ func walkMCPSchema(v any, fn func(string) error) error {
 	case string:
 		return fn(x)
 	case map[string]any:
-		for _, val := range x {
+		for key, val := range x {
+			// Keys are server text too (property names, $defs names,
+			// object-valued defaults), so they are scanned like values.
+			if err := fn(key); err != nil {
+				return err
+			}
 			if err := walkMCPSchema(val, fn); err != nil {
 				return err
 			}
