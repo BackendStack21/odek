@@ -349,7 +349,7 @@ func analyzeWithState(cmd string, depth int, inherited *shellAnalysisState) Anal
 			if i > 0 {
 				pipeline = append(pipeline, "|")
 			}
-			pipeline = append(pipeline, legacyStage...)
+			pipeline = append(pipeline, markWordOperators(legacyStage)...)
 			// Preserve findings from each stage before pipeline summaries can
 			// replace them with a differently configured higher-ranked class.
 			repo := newGitRepoCtx(stageCwd, cwdKnown && !state.uncertain, stage[:len(stage)-len(inner)], state.vars, state.written)
@@ -362,6 +362,17 @@ func analyzeWithState(cmd string, depth int, inherited *shellAnalysisState) Anal
 				}
 			}
 			if len(inner) == 0 {
+				if len(unwrappedStage.splits) > 0 && cwdKnown && !state.uncertain {
+					// `env -S 'bash script'` leaves nothing behind the
+					// wrapper, yet the split string is the command that runs.
+					files, rewritten := stageLedgerFiles(stage, stageCwd, state.written)
+					for _, path := range files {
+						result.addFile(path)
+					}
+					for _, path := range rewritten {
+						result.addRewritten(path)
+					}
+				}
 				if len(stages) == 1 {
 					if ambiguous {
 						state.forget(assignedNames(stage)...)
@@ -391,6 +402,9 @@ func analyzeWithState(cmd string, depth int, inherited *shellAnalysisState) Anal
 				result.add(Unknown)
 			}
 			if isCodeExecution(name, inner, repo) || explicitUntrustedExecutable(inner[0]) || (piped && (pipedShells[name] || isStdinExecInterpreter(name) || embeddedShellInterpreters[name])) {
+				result.add(CodeExecution)
+			}
+			if piped && dbClientStdinRunsShell(name, upstream) {
 				result.add(CodeExecution)
 			}
 			if isNetworkEgress(name, inner) {

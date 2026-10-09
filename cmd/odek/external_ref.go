@@ -21,11 +21,18 @@ import (
 // the ref, so silently dropping it would violate least surprise.
 func parseExternalRefFlag(spec string) (session.ExternalRef, error) {
 	ref := session.ExternalRef{CreatedBy: "cli"}
-	if !strings.Contains(spec, ",") {
-		// Shorthand: kind=uri (the URI may itself contain '=').
+	if !isLongExternalRefForm(spec) {
+		// Shorthand: kind=uri (the URI may itself contain '=' and ',').
 		kind, uri, ok := strings.Cut(spec, "=")
 		if !ok {
 			return ref, fmt.Errorf("invalid --external-ref %q: want the kind=uri shorthand or comma-separated key=value pairs", spec)
+		}
+		// A long form whose first key is mistyped lands here with the rest
+		// of the pairs inside the "URI"; refuse it instead of storing junk.
+		for _, k := range []string{"kind", "uri", "created_by", "read_only"} {
+			if strings.Contains(uri, ","+k+"=") {
+				return ref, fmt.Errorf("invalid --external-ref %q: unknown key %q (want kind, uri, created_by, read_only); a URI containing ,%s= must use the long key=value form", spec, kind, k)
+			}
 		}
 		ref.Kind, ref.URI = kind, uri
 	} else {
@@ -56,6 +63,21 @@ func parseExternalRefFlag(spec string) (session.ExternalRef, error) {
 		return ref, fmt.Errorf("invalid --external-ref %q: %w", spec, err)
 	}
 	return ref, nil
+}
+
+// isLongExternalRefForm reports whether spec is the comma-separated
+// key=value form: it contains a comma and starts with one of the long-form
+// keys, so a malformed long form still gets a precise error. Anything else
+// is the kind=uri shorthand, whose URI may contain commas (a query string
+// such as ?ids=1,2).
+func isLongExternalRefForm(spec string) bool {
+	first, _, _ := strings.Cut(spec, ",")
+	key, _, _ := strings.Cut(first, "=")
+	switch key {
+	case "kind", "uri", "created_by", "read_only":
+		return strings.Contains(spec, ",")
+	}
+	return false
 }
 
 // parseExternalRefFlags parses every repeatable --external-ref value.

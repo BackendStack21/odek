@@ -658,6 +658,7 @@ func TestNetworkUpload_DNSQueryCarryingRuntimeData(t *testing.T) {
 // ── ordinary git and transfers stay allowed ─────────────────────────
 
 func TestNetworkUpload_GitAndPlainTransfersStayEgress(t *testing.T) {
+	chdirUnarmedRepo(t)
 	nuEgress(t,
 		"git clone https://example.com/r.git",
 		"git fetch",

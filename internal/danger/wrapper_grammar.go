@@ -40,10 +40,21 @@ var wrapperSpecs = map[string]optSpec{
 	"xargs":    xargsGrammar,
 	"parallel": xargsGrammar,
 	"xe":       xargsGrammar,
+	"sem":      semGrammar,
 	// env: -u NAME, -C DIR, -S STRING, -a NAME, -P PATH and their long
 	// spellings.
 	"env": withAlias(withAlias(wrapperGrammar("uCSaP", nil, "unset chdir split-string argv0", ""),
 		'S', "--split-string"), 'u', "--unset"),
+}
+
+// semGrammar is the xargs grammar plus sem's own --id NAME option and its
+// semaphore flags.
+var semGrammar = optSpec{
+	short:         xargsGrammar.short,
+	shortOptional: xargsGrammar.shortOptional,
+	long: longTable("max-lines max-args max-procs max-chars delimiter arg-file jobs id",
+		"replace eof null exit interactive open-tty no-run-if-empty process-slot-var show-limits verbose fg wait semaphore"),
+	abbrev: true,
 }
 
 var xargsGrammar = optSpec{
@@ -169,6 +180,13 @@ loop:
 	case "watch":
 		step.watchPayload(tokens, from, i)
 		return
+	case "parallel", "sem":
+		if name == "sem" {
+			// sem was an unknown verb before; keep that floor so unwrapping
+			// it exposes the inner command without lowering a verdict.
+			step.floor = worstOf(step.floor, Unknown)
+		}
+		step.parallelPayload(tokens, from, i)
 	}
 	if step.payload != "" {
 		step.floor = worstOf(step.floor, CodeExecution)
@@ -197,6 +215,34 @@ func (step *wrapperStep) watchPayload(tokens []string, from, i int) {
 			step.payload = strings.Join(tokens[i:], " ")
 			step.floor = worstOf(step.floor, CodeExecution)
 			step.next = len(tokens)
+			return
+		}
+	}
+}
+
+// parallelPayload handles GNU parallel and sem. Unless -q/--quote is given
+// they join their command words with spaces and run the line through a shell,
+// so a word spelled like a separator (`parallel echo ';' rm -rf ~`) is a real
+// separator there. The joined words, up to the first input-source marker
+// (`:::`, `::::`), are analyzed as a command line. With -q/--quote the words
+// stay literal.
+func (step *wrapperStep) parallelPayload(tokens []string, from, i int) {
+	for _, t := range tokens[from:i] {
+		if t == "--quote" || (strings.HasPrefix(t, "--q") && strings.HasPrefix("--quote", t)) ||
+			(strings.HasPrefix(t, "-") && !strings.HasPrefix(t, "--") && strings.ContainsRune(t, 'q')) {
+			return
+		}
+	}
+	words := tokens[i:]
+	for k, t := range words {
+		if strings.HasPrefix(t, ":::") {
+			words = words[:k]
+			break
+		}
+	}
+	for _, t := range words {
+		if operatorLookalikes[t] || strings.Contains(t, "\n") {
+			step.payload = strings.Join(words, " ")
 			return
 		}
 	}

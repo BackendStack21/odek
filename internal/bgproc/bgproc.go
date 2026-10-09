@@ -341,12 +341,18 @@ func (m *Manager) wait(sessionID string, e *jobEntry) {
 	// exec.ErrWaitDelay — a grandchild kept the output pipes open and the
 	// WaitDelay drain timed out: output truncation, not process failure
 	// (B3-TOOLS-2). It also outranks a pending killed/timeout reason
-	// recorded by a Stop that raced a self-completing process.
+	// recorded by a Stop that raced a self-completing process. The exception
+	// is a clean exit 0 while a forced stop was pending: that is a process
+	// that handled the termination signal, so report the forced reason.
 	exitCode := -1
 	if e.cmd.ProcessState != nil {
 		exitCode = e.cmd.ProcessState.ExitCode()
 	}
+	forced := e.reason == StatusKilled || e.reason == StatusTimeout
 	switch {
+	case exitCode == 0 && forced:
+		e.job.ExitCode = 0
+		e.job.Status = e.reason
 	case exitCode >= 0:
 		e.job.ExitCode = exitCode
 		if exitCode == 0 {
@@ -393,9 +399,10 @@ func (m *Manager) wait(sessionID string, e *jobEntry) {
 	obs := m.obs
 	m.mu.Unlock()
 
-	if e.reason == StatusKilled || e.reason == StatusTimeout {
-		m.runFollowUp(e)
-	}
+	// Sandbox mode: the group signal only reaches the host-side docker-exec
+	// client, so container-side descendants (including those left behind by a
+	// naturally exiting job) are reaped only by the pidfile follow-up.
+	m.runFollowUp(e)
 	if e.release != nil {
 		e.release()
 	}

@@ -3,6 +3,7 @@ package main
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/BackendStack21/odek/internal/schedule"
 )
@@ -262,5 +263,22 @@ func TestTelegramSchedule_HelpAndUnknownAndNilStore(t *testing.T) {
 	}
 	if reply, _ := telegramScheduleReply(1, 0, "list", nil, nil, true, []int64{1}, nil); !strings.Contains(reply, "unavailable") {
 		t.Errorf("nil store should report unavailable, got %q", reply)
+	}
+}
+
+func TestTelegramScheduleView_ShowsSkipTime(t *testing.T) {
+	st := newTGStore(t)
+	a, _ := st.Add(schedule.Job{Name: "morning", Cron: "0 9 * * *", Task: "x",
+		Deliver: schedule.Delivery{Kind: schedule.DeliverStdout}, Enabled: true})
+	run := time.Date(2026, 6, 2, 9, 0, 0, 0, time.Local)
+	skip := time.Date(2026, 6, 4, 10, 30, 0, 0, time.Local)
+	_ = st.SaveState(schedule.RunState{JobID: a.ID, LastStatus: schedule.StatusSkipped,
+		LastRun: run, SkippedAt: skip})
+	reply := scheduleTelegramView(st, a.ID)
+	if !strings.Contains(reply, "*Last:* skipped (Thu 04 Jun 10:30)") || !strings.Contains(reply, "*Last run:* Tue 02 Jun 09:00") {
+		t.Errorf("skip not shown with its time and the real last run: %q", reply)
+	}
+	if strings.Contains(reply, "*Error:*") {
+		t.Errorf("skipped job must not show an error: %q", reply)
 	}
 }

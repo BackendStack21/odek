@@ -178,9 +178,14 @@ func (s *Session) AddExternalRefs(refs ...ExternalRef) (int, error) {
 		if err := r.Validate(); err != nil {
 			return added, err
 		}
+		// Persistence stores the redacted URI, so a re-added reference whose
+		// URI carries a secret must be compared in redacted form on both
+		// sides or every save-then-add cycle would append a duplicate.
+		redactedURI := redact.RedactSecrets(r.URI)
 		duplicate := false
 		for _, e := range s.ExternalRefs {
-			if e.Kind == r.Kind && e.URI == r.URI && e.CreatedBy == r.CreatedBy {
+			if e.Kind == r.Kind && e.CreatedBy == r.CreatedBy &&
+				(e.URI == r.URI || redact.RedactSecrets(e.URI) == redactedURI) {
 				duplicate = true
 				break
 			}
@@ -195,6 +200,16 @@ func (s *Session) AddExternalRefs(refs ...ExternalRef) (int, error) {
 		added++
 	}
 	return added, nil
+}
+
+// redactExternalRefs returns a copy of refs with every URI passed through
+// the secret redactor; the caller's slice is left untouched.
+func redactExternalRefs(in []ExternalRef) []ExternalRef {
+	refs := append([]ExternalRef(nil), in...)
+	for i := range refs {
+		refs[i].URI = redact.RedactSecrets(refs[i].URI)
+	}
+	return refs
 }
 
 // ── Store ──────────────────────────────────────────────────────────────
@@ -223,7 +238,7 @@ type Store struct {
 	// stamping the on-disk file it was built from. Any observable change to
 	// index.json (mtime or size) triggers a reload, so an index rewritten by
 	// another odek process is picked up on the next load.
-	idxCache map[string]*IndexEntry
+	idxCache  map[string]*IndexEntry
 	idxLoaded bool
 	idxMod    time.Time
 	idxSize   int64
@@ -727,6 +742,10 @@ func (s *Store) saveLocked(sess *Session) (err error) {
 			sess.Decisions[i].Command = sess.Decisions[i].Command[:4096] + "…"
 		}
 	}
+	// External ref URIs commonly carry tokens in query strings.
+	if len(sess.ExternalRefs) > 0 {
+		sess.ExternalRefs = redactExternalRefs(sess.ExternalRefs)
+	}
 	boundary := sess.RedactBoundary
 	if boundary < 0 {
 		boundary = 0
@@ -758,6 +777,16 @@ func (s *Store) saveLocked(sess *Session) (err error) {
 	for i := boundary; i < len(sess.Messages); i++ {
 		sess.Messages[i].Content = redact.RedactSecrets(sess.Messages[i].Content)
 		sess.Messages[i].ReasoningContent = redact.RedactSecrets(sess.Messages[i].ReasoningContent)
+		// Tool-call arguments are model-authored (shell commands, headers,
+		// file contents) and reach disk verbatim otherwise.
+		if len(sess.Messages[i].ToolCalls) > 0 {
+			// Copy first: the slice may be shared with the caller's live history.
+			calls := append([]ToolCall(nil), sess.Messages[i].ToolCalls...)
+			for j := range calls {
+				calls[j].Function.Arguments = redactToolArguments(calls[j].Function.Arguments)
+			}
+			sess.Messages[i].ToolCalls = calls
+		}
 	}
 
 	// Set the redact boundary (and its fingerprint anchor) BEFORE the
@@ -830,26 +859,50 @@ func (s *Store) saveLocked(sess *Session) (err error) {
 	return nil
 }
 
+// protectedHeadLen returns how many leading messages the write-time trim
+// keeps: everything up to and including the first user message (the system
+// prompt and the original task). Without a user message only a leading system
+// message is protected.
+func protectedHeadLen(msgs []Message) int {
+	for i, m := range msgs {
+		if m.Role == "user" {
+			return i + 1
+		}
+	}
+	if len(msgs) > 0 && msgs[0].Role == "system" {
+		return 1
+	}
+	return 0
+}
+
 // trimToFileCapLocked drops the oldest message groups from sess until its
 // serialized form fits within MaxSessionFileBytes, returning the trimmed
 // JSON. Caller must hold s.mu.
 //
-// Group semantics mirror the loop's context trimming: the system message at
-// index 0 is always kept, and an assistant tool_calls message is dropped
-// together with its following tool-result messages so a stored transcript
+// Group semantics mirror the loop's context trimming: the protected head (the
+// system message at index 0 and the first principal user message, which holds
+// the original task) is kept while anything else can be dropped, and an
+// assistant tool_calls message is dropped together with its following tool-result messages so a stored transcript
 // never contains orphaned tool messages (which strict providers reject).
 // The turn count is recounted to match the surviving messages. When any
-// groups were dropped, a marker system message is inserted after the system
-// prompt so a resumed session can see that earlier history was removed.
+// groups were dropped, a marker system message is inserted after the protected
+// head so a resumed session can see that earlier history was removed.
 // If nothing droppable remains (a degenerate case, e.g. a single oversized
 // system message), the session is written as-is — failing the save would
 // lose data.
 func (s *Store) trimToFileCapLocked(sess *Session, data []byte) ([]byte, error) {
 	droppedGroups := 0
+	headFallback := false
 	for len(data) > MaxSessionFileBytes {
-		start := 0
-		if len(sess.Messages) > 0 && sess.Messages[0].Role == "system" {
-			start = 1 // keep system
+		start := protectedHeadLen(sess.Messages)
+		if start >= len(sess.Messages) {
+			// Only the protected head remains; the original task goes
+			// before the file becomes unloadable.
+			start = 0
+			if len(sess.Messages) > 0 && sess.Messages[0].Role == "system" {
+				start = 1
+			}
+			headFallback = true
 		}
 		if start >= len(sess.Messages) {
 			break // nothing left to drop
@@ -897,9 +950,12 @@ func (s *Store) trimToFileCapLocked(sess *Session, data []byte) ([]byte, error) 
 				droppedGroups, MaxSessionFileBytes,
 			),
 		}
-		insertAt := 0
-		if len(sess.Messages) > 0 && sess.Messages[0].Role == "system" {
-			insertAt = 1
+		insertAt := protectedHeadLen(sess.Messages)
+		if headFallback || insertAt > len(sess.Messages) {
+			insertAt = 0
+			if len(sess.Messages) > 0 && sess.Messages[0].Role == "system" {
+				insertAt = 1
+			}
 		}
 		withMarker := make([]Message, 0, len(sess.Messages)+1)
 		withMarker = append(withMarker, sess.Messages[:insertAt]...)
@@ -1150,6 +1206,11 @@ func (s *Store) Delete(id string) error {
 // store mutex must be held. A missing file is nil (idempotent).
 func (s *Store) removeLocked(id string) error {
 	err := os.Remove(s.path(id))
+	if err == nil || os.IsNotExist(err) {
+		// The audit log records ingest sources and resources of the session;
+		// it must not outlive a session the operator deleted.
+		_ = NewAuditStore(s.dir).Remove(id)
+	}
 	if os.IsNotExist(err) {
 		return nil
 	}

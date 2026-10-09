@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"unicode"
 )
 
 // Schema names carried in the "schema" field of structured payloads. These
@@ -167,6 +168,10 @@ func boundField(s string) string {
 // the rendered output and inflates the loop-side artifact_count
 // (CountRendered). Line content is preserved — only the one-space indent
 // is added.
+// SanitizeText neutralizes lines of server-supplied text that would otherwise
+// read as rendered artifact metadata entries.
+func SanitizeText(text string) string { return sanitizeText(text) }
+
 func sanitizeText(text string) string {
 	if !strings.HasPrefix(text, renderedArtifactPrefix) && !strings.Contains(text, "\n"+renderedArtifactPrefix) {
 		return text
@@ -193,10 +198,24 @@ func CountRendered(s string) int {
 	return n
 }
 
-// oneLine flattens CR/LF so a server-controlled field stays on its own
-// metadata line.
+// oneLine flattens a server-controlled field onto a single plain line: C0/C1
+// controls (CR/LF and tab included), bidi controls (U+061C, U+200E/F,
+// U+202A-E, U+2066-9), the Unicode line/paragraph separators and the BOM
+// become spaces, so they can neither start a forged metadata line nor reorder
+// text on a terminal or UI. Joiners (ZWJ, ZWNJ) and the soft hyphen are kept:
+// Persian and Indic shaping and emoji sequences depend on them.
 func oneLine(s string) string {
-	return strings.NewReplacer("\r", " ", "\n", " ").Replace(s)
+	return strings.Map(func(r rune) rune {
+		switch {
+		case unicode.IsControl(r),
+			r == '\u061C', r == '\u200E', r == '\u200F',
+			r >= '\u202A' && r <= '\u202E',
+			r >= '\u2066' && r <= '\u2069',
+			r == '\u2028', r == '\u2029', r == '\uFEFF':
+			return ' '
+		}
+		return r
+	}, s)
 }
 
 // shortHash returns the first 12 hex characters of a digest, enough to

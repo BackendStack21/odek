@@ -8,6 +8,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"syscall"
 
 	"github.com/BackendStack21/odek/internal/danger"
 )
@@ -34,6 +35,12 @@ const (
 // garbage cannot match injection patterns, so a finding requires the
 // decoded bytes to actually carry an injection phrase.
 var encodedTokenRe = regexp.MustCompile(`[A-Za-z0-9+/=]{24,}|[A-Fa-f0-9]{40,}`)
+
+// urlSafeTokenRe matches runs in the URL-safe base64 alphabet ('-' and '_'
+// in place of '+' and '/'). It is a second pass rather than a wider
+// alphabet in encodedTokenRe so a standard blob glued to a hyphenated word
+// is still extracted on its own by the first pass.
+var urlSafeTokenRe = regexp.MustCompile(`[A-Za-z0-9_=-]{24,}`)
 
 // scanUnreadScripts is the audit-then-exec companion to the
 // unread-script gate. For each target it reads the leading
@@ -76,7 +83,9 @@ func scanUnreadScripts(targets []string) []string {
 // readScriptHead returns up to limit bytes from the start of a regular
 // file, for audit purposes only.
 func readScriptHead(path string, limit int64) ([]byte, error) {
-	f, err := os.Open(path)
+	// O_NONBLOCK: opening a FIFO must not hang the approval prompt; the
+	// regular-file check below refuses it after the open.
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -96,7 +105,14 @@ func decodeEncodedTokens(data []byte) string {
 		b      strings.Builder
 		budget = maxDecodedTotalBytes
 	)
-	for _, tok := range encodedTokenRe.FindAllString(string(data), maxEncodedTokens) {
+	text := string(data)
+	toks := encodedTokenRe.FindAllString(text, maxEncodedTokens)
+	for _, tok := range urlSafeTokenRe.FindAllString(text, maxEncodedTokens) {
+		if strings.ContainsAny(tok, "-_") {
+			toks = append(toks, tok)
+		}
+	}
+	for _, tok := range toks {
 		if len(tok) > maxEncodedTokenBytes {
 			continue
 		}

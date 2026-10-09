@@ -68,6 +68,7 @@ type RunState struct {
 	LastRun    time.Time `json:"last_run,omitzero"`     // omitzero (not omitempty) — time.Time is a struct
 	LastStatus string    `json:"last_status,omitempty"` // one of the Status* constants
 	LastError  string    `json:"last_error,omitempty"`  // populated when LastStatus == StatusError
+	SkippedAt  time.Time `json:"skipped_at,omitzero"`   // when the latest missed fire was skipped; set with StatusSkipped
 	LastResult string    `json:"last_result,omitempty"` // truncated preview of the delivered text
 	NextRun    time.Time `json:"next_run,omitzero"`     // computed projected next fire
 	Runs       int       `json:"runs,omitempty"`        // total successful + failed fires

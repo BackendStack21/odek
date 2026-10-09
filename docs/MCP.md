@@ -144,13 +144,13 @@ A server entry may instead set `url` to use the **Streamable HTTP transport** �
 | `env` | `{}` | Overrides; empty string unsets. Secret-looking keys are stripped even here. |
 | `timeout_seconds` | `30` | Per-request; clamped to 3600 (warning). |
 | `max_response_bytes` | 10 MiB | One JSON-RPC response line. Config above 64 MiB is rejected and the server is not started. Oversized line: drop it and close the connection. |
-| `max_result_chars` | `200000` | Model-facing result text; clamped to 1_000_000 (warning). Oversized valid results get a structured truncation notice, never a silent cut. |
+| `max_result_chars` | `200000` | Model-facing result text; clamped to 1_000_000 (warning); values below the floor (truncation notice length + 64 chars) are raised to it (warning). Oversized valid results get a structured truncation notice, never a silent cut. |
 | `artifact_roots` | `[]` | Directories that may host `file://` artifact refs. **Empty rejects every ref.** |
 | `auto_approve` | `false` | Skip server and per-tool prompts. Honored only from `~/.odek/config.json`. |
 
 The four limit fields are **odek-extension/v1**; semantics live in [EXTENSIONS.md](EXTENSIONS.md).
 
-**Environment.** Children get a small allowlist (`PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `TMPDIR`, `LANG`, the listed `LC_*` locale variables, `TZ`, `TERM`) plus `env` overrides. Names matching secret patterns (`APIKEY`, `TOKEN`, `SECRET`, `PASSWORD`, `CREDENTIAL`, `CREDS`, `PRIVATEKEY`, `ACCESSKEY` after uppercasing and stripping `-`/`_`) are removed even from `env`. Pass auth via the server's own config file or argv, not the parent environment. Child stderr is inherited, so server crashes show up in odek's log. Details: [SECURITY.md — MCP hardening](SECURITY.md#mcp-hardening).
+**Environment.** Children get a small allowlist (`PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `TMPDIR`, `LANG`, the listed `LC_*` locale variables, `TZ`, `TERM`) plus `env` overrides. Names matching secret patterns (`APIKEY`, `TOKEN`, `SECRET`, `PASSWORD`, `PASSWD`, `PASSPHRASE`, `CREDENTIAL`, `CREDS`, `PRIVATEKEY`, `ACCESSKEY`, `COOKIE`, `AUTHORIZATION` after uppercasing and stripping `-`/`_`) are removed even from `env`. Pass auth via the server's own config file or argv, not the parent environment. Child stderr is inherited, so server crashes show up in odek's log. Details: [SECURITY.md — MCP hardening](SECURITY.md#mcp-hardening).
 
 ### Naming
 
@@ -160,7 +160,7 @@ Registered name is `<server>__<tool>` (`playwright__navigate`). Server and tool 
 
 Two layers, both fail closed when no TTY and nothing else grants trust.
 
-**1. Server spawn** — project-level servers only (`./odek.json`). Global servers in `~/.odek/config.json` skip this. Stored in `~/.odek/mcp_approvals.json` (0600). The key hashes project directory, server name, command, args, env, and the four extension limit fields (`timeout_seconds`, `max_response_bytes`, `max_result_chars`, `artifact_roots`); for URL-configured servers it hashes `url` and `token_env` instead of command/args/env. Schema and description are **not** in this key.
+**1. Server spawn** — project-level servers only (`./odek.json`). Global servers in `~/.odek/config.json` skip this. Stored in `~/.odek/mcp_approvals.json` (0600). The key hashes project directory, server name, command, args, env, and the four extension limit fields (`timeout_seconds`, `max_response_bytes`, `max_result_chars`, `artifact_roots`); for URL-configured servers it hashes `url` and `token_env` instead of command/args/env. Schema and description are **not** in this key. Fields are length-prefixed, so no byte sequence in a command or argument (including NUL) can make two different launch vectors share a key. Upgrading from a release that used the older key layout asks once to re-approve each persisted project server.
 
 **2. Per-tool register** — **every** server, including global. Stored in `~/.odek/mcp_tool_approvals.json` (0600). The key hashes project directory, server name, tool name, command, args, env, the four limit fields (or `url`/`token_env` for HTTP servers), the canonical-JSON SHA-256 of `inputSchema`, and the full description. The TTY prompt shows the (sanitized) description plus `schema: sha256:… (N bytes)` — not the env map. Env values are shown on the **server** prompt.
 
@@ -195,6 +195,6 @@ Stderr from MCP children is shown on odek's stderr. There is no `odek: connected
 
 ### Artifacts
 
-A server can return an `odek.tool-result/v1` envelope with `file://` refs instead of bulk content. Validation is fail-closed (schema, absolute path, symlink-resolved containment in `artifact_roots`, hash/size, 64 MiB / 64 refs). The model sees metadata only — never the path or file bytes. Empty `artifact_roots` rejects every ref. See [EXTENSIONS.md](EXTENSIONS.md).
+A server can return an `odek.tool-result/v1` envelope with `file://` refs instead of bulk content. Validation is fail-closed (schema, absolute path, symlink-resolved containment in `artifact_roots`, hash/size, 64 MiB / 64 refs). The model sees metadata only — never the path or file bytes. Empty `artifact_roots` (or one holding only blank strings) rejects every ref. Rendered metadata (`media_type`, `summary`) has control, bidi and line-separator characters flattened to spaces. See [EXTENSIONS.md](EXTENSIONS.md).
 
 Any stdio MCP server that implements `tools/list` and `tools/call` works (Playwright, Fetch, GitHub, filesystem, …).

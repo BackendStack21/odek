@@ -32,7 +32,7 @@ All configuration flows through `TelegramConfig` and can be set via environment 
 |---|---|---|
 | `ODEK_TELEGRAM_BOT_TOKEN` | Token | — (required) |
 | `ODEK_TELEGRAM_ALLOWED_CHATS` | AllowedChats | — (see below) |
-| `ODEK_TELEGRAM_ALLOWED_USERS` | AllowedUsers | — (see below) |
+| `ODEK_TELEGRAM_ALLOWED_USERS` | AllowedUsers | — (see below). The valid entries replace the configured list (a typo can only narrow access, with a warning naming the bad entry); a value with no valid entry makes the bot refuse to start |
 | `ODEK_TELEGRAM_ALLOW_ALL` | AllowAllUsers | false |
 | `ODEK_TELEGRAM_BOT_USERNAME` | BotUsername | — |
 | `ODEK_TELEGRAM_POLL_INTERVAL` | PollInterval | 1s |
@@ -208,7 +208,13 @@ All callbacks return a response string (may be empty) and an error. The `Handle`
 > tools — can never be deployed by accident. To intentionally run an open bot,
 > set `ODEK_TELEGRAM_ALLOW_ALL=true` (logged as a loud warning at startup). At
 > runtime, with both allowlists empty and `AllowAllUsers` unset, every update is
-> denied.
+> denied. A malformed `ODEK_TELEGRAM_ALLOWED_CHATS` or `ODEK_TELEGRAM_ALLOWED_USERS`
+> value is never allowed to widen access: the valid entries replace the allowlist
+> from config (so `111, 222x` over a configured `[111,222,333]` allows only
+> `111`) and a warning naming the variable and the bad entry is written to
+> stderr. A non-empty value with no valid entry (`12345x`, `,`) fails closed:
+> `odek telegram` refuses to start with an error naming the variable and the
+> first bad entry.
 
 ### Inline Keyboards
 
@@ -299,7 +305,7 @@ Wake is controlled by the shared `background.wake_on_complete` setting
 | `/plan_delete <slug>` | Delete a saved plan for this chat |
 | `/plan_status` | Show the agent's current structured task plan (loop `plan` tool state) for this chat's session — distinct from the markdown-file plan commands above |
 | `/sessions` | List recent conversation sessions for this chat |
-| `/resume <session_id>` | Resume a previous session owned by this chat |
+| `/resume <session_id>` | Resume a previous session owned by this chat. The live conversation is archived first and the resumed one becomes the chat's live session, so it keeps saving and survives a restart. A turn that was still running when /resume was issued stops persisting (its later per-step, cancel-path and final saves are all dropped, and the drop is logged), so it cannot overwrite the resumed conversation. The resumed session is bound under the chat's canonical `tg-<chatID>` id; the archive it was copied from stays as a separate snapshot |
 | `/prune [days]` | Clean up old sessions and plans for this chat (default: 30 days) |
 | `/schedules` | List scheduled tasks (id, on/off, cron, next fire, last status) |
 | `/schedule <subcommand>` | Manage scheduled tasks — `add`, `rm`, `enable`, `disable`, `run`, `next`, `view`. Mutating commands are restricted to configured operator chats/users. See [Managing schedules from Telegram](SCHEDULES.md#managing-from-telegram) |

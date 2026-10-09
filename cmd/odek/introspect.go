@@ -28,6 +28,7 @@ import (
 
 	"github.com/BackendStack21/odek/internal/budget"
 	"github.com/BackendStack21/odek/internal/config"
+	"github.com/BackendStack21/odek/internal/redact"
 )
 
 // ── shared view builders (REST + tools) ──────────────────────────────────
@@ -193,17 +194,58 @@ func redactMCPServersView(in []mcpEntry) []mcpEntry {
 	return out
 }
 
+// credentialEnvName matches NAME in a NAME=value pair that names a secret.
+// It keys on whole underscore-separated components, so PATH, AUTHOR,
+// PATTERN or KEYBOARD stay readable while GITHUB_PAT, DB_PASSWORD, API_KEY
+// or AUTH_HEADER are masked.
+var credentialEnvName = regexp.MustCompile(`(?i)(?:^|_)(?:api_?key|key|token|secret|password|passwd|pass|credentials?|creds|auth|cookie|bearer|dsn|pat)(?:_|$)`)
+
+// envPairRe matches a leading NAME= of an environment assignment.
+var envPairRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*=`)
+
+// urlUserinfoRe matches the userinfo of a URL (scheme://user:pw@host).
+var urlUserinfoRe = regexp.MustCompile(`([A-Za-z][A-Za-z0-9+.-]*://)[^/\s@?#]*@`)
+
+// credentialHeaderRe matches an HTTP header line that carries a credential
+// (Authorization, X-Api-Key, Cookie, ...), keeping the header name.
+var credentialHeaderRe = regexp.MustCompile(`(?i)^(\s*[a-z0-9_-]*(authorization|auth|api-?key|token|secret|cookie|password)[a-z0-9_-]*\s*:\s*).+$`)
+
+// bearerValueRe matches an inline "Bearer x" / "Basic x" credential.
+var bearerValueRe = regexp.MustCompile(`(?i)\b(bearer|basic)\s+[^\s'"]+`)
+
+// envFlag reports flags whose following argument is a NAME=value assignment.
+func envFlag(a string) bool {
+	switch a {
+	case "-e", "--env", "-env":
+		return true
+	}
+	return false
+}
+
+// redactCredentialArgs masks credentials in argv: values following (or
+// attached to) credential-named flags, URL userinfo, NAME=value assignments
+// (every value after -e/--env, otherwise those with a secret-looking NAME),
+// credential headers and inline bearer/basic tokens. A final pass applies
+// the shared secret-pattern redactor to anything still recognisable.
 func redactCredentialArgs(args []string) []string {
 	if len(args) == 0 {
 		return nil
 	}
 	out := make([]string, len(args))
 	redactNext := false
+	envNext := false
 	for i, a := range args {
 		if redactNext {
 			out[i] = redactedArgPlaceholder
 			redactNext = false
 			continue
+		}
+		if envNext {
+			envNext = false
+			if eq := strings.IndexByte(a, '='); eq > 0 {
+				out[i] = a[:eq+1] + redactedArgPlaceholder
+				continue
+			}
 		}
 		if eq := strings.IndexByte(a, '='); eq > 0 && credentialArgFlag.MatchString(a[:eq]) {
 			out[i] = a[:eq+1] + redactedArgPlaceholder
@@ -211,10 +253,31 @@ func redactCredentialArgs(args []string) []string {
 		}
 		if credentialArgFlag.MatchString(a) {
 			redactNext = true
+			out[i] = a
+			continue
 		}
-		out[i] = a
+		if envFlag(a) {
+			envNext = true
+			out[i] = a
+			continue
+		}
+		out[i] = redactPositionalArg(a)
 	}
 	return out
+}
+
+// redactPositionalArg masks a credential embedded in a single argument that
+// no preceding flag identified.
+func redactPositionalArg(a string) string {
+	if m := credentialHeaderRe.FindStringSubmatch(a); m != nil {
+		return m[1] + redactedArgPlaceholder
+	}
+	if loc := envPairRe.FindStringIndex(a); loc != nil && credentialEnvName.MatchString(a[:loc[1]-1]) {
+		return a[:loc[1]] + redactedArgPlaceholder
+	}
+	a = urlUserinfoRe.ReplaceAllString(a, "${1}"+redactedArgPlaceholder+"@")
+	a = bearerValueRe.ReplaceAllString(a, "${1} "+redactedArgPlaceholder)
+	return redact.RedactSecrets(a)
 }
 
 // ── config_view tool ─────────────────────────────────────────────────────

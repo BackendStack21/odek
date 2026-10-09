@@ -425,6 +425,30 @@ const (
 
 // ── Constructor ───────────────────────────────────────────────────────
 
+// providerKeyEnv lists the environment variables that authenticate a built-in
+// provider, in priority order. The default deepseek provider also accepts the
+// OPENAI_API_KEY leftover for OpenAI-compatible setups.
+func providerKeyEnv(provider string) []string {
+	switch provider {
+	case "deepseek":
+		return []string{"DEEPSEEK_API_KEY", "OPENAI_API_KEY"}
+	case "openai":
+		return []string{"OPENAI_API_KEY"}
+	case "anthropic":
+		return []string{"ANTHROPIC_API_KEY"}
+	case "gemini":
+		return []string{"GEMINI_API_KEY", "GOOGLE_API_KEY"}
+	case "zai":
+		return []string{"ZAI_API_KEY"}
+	case "kimi":
+		return []string{"KIMI_API_KEY", "MOONSHOT_API_KEY"}
+	case "legacy":
+		return []string{"DEEPSEEK_API_KEY", "OPENAI_API_KEY"}
+	default:
+		return nil
+	}
+}
+
 // New creates a new Agent with the given configuration.
 //
 // If Config.SandboxCleanup is set, the cleanup function is called when
@@ -445,10 +469,12 @@ func New(cfg Config) (_ *Agent, setupErr error) {
 	}
 	if cfg.APIKey == "" {
 		cfg.APIKey = os.Getenv("ODEK_API_KEY")
-		if cfg.APIKey == "" && cfg.Provider == "deepseek" {
-			cfg.APIKey = os.Getenv("DEEPSEEK_API_KEY")
-			if cfg.APIKey == "" {
-				cfg.APIKey = os.Getenv("OPENAI_API_KEY")
+		if cfg.APIKey == "" {
+			for _, k := range providerKeyEnv(cfg.Provider) {
+				if v := os.Getenv(k); v != "" {
+					cfg.APIKey = v
+					break
+				}
 			}
 		}
 	}
@@ -677,6 +703,9 @@ func New(cfg Config) (_ *Agent, setupErr error) {
 		if cfg.VerifyModel != "" {
 			if vc, err := llmclient.New(sdkInst, cfg.Provider, cfg.VerifyModel); err == nil {
 				vc.Thinking = "disabled"
+				// Same temperature polarity as the main client: a negative
+				// value means "omit", which a verify-only gateway must see too.
+				vc.Temperature = cfg.Temperature
 				engine.SetVerifyClient(vc)
 			} else {
 				log.Printf("odek: warning: verify model %q unavailable (%v); verification uses the main model", cfg.VerifyModel, err)

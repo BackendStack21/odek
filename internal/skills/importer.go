@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/BackendStack21/odek/internal/redact"
 	"io"
 	"net"
 	"net/http"
@@ -394,6 +395,12 @@ func ImportSkill(opts ImportOptions, confirmFn func(assessment *ImportAssessment
 	// with DeriveKeywords building triggers from the attacker's own body
 	// vocabulary).
 	skill.Provenance.NeedsReview = true
+	// Record the origin so plain `odek skill promote` (which refuses skills
+	// carrying Untrusted or Sources) cannot clear the pin without --force.
+	// Remote frontmatter provenance is discarded: the fetch URI is the only
+	// source this import vouches for.
+	skill.Provenance.Untrusted = true
+	skill.Provenance.Sources = []string{importSourceMarker(opts.URI)}
 
 	if err := WriteSkill(opts.UserDir, *skill); err != nil {
 		return nil, fmt.Errorf("save: %w", err)
@@ -404,6 +411,23 @@ func ImportSkill(opts ImportOptions, confirmFn func(assessment *ImportAssessment
 		Assessment: assessment,
 		Path:       filepath.Join(opts.UserDir, skill.Name, "SKILL.md"),
 	}, nil
+}
+
+// importSourceMarker renders the import URI as a single provenance source
+// token: secrets redacted (an import URL may carry a token in its query
+// string, and the marker is written to SKILL.md and shown by promote),
+// whitespace removed (sources are stored whitespace-separated) and bounded
+// in length.
+func importSourceMarker(uri string) string {
+	uri = redact.RedactSecrets(uri)
+	uri = strings.Join(strings.Fields(uri), "")
+	if len(uri) > 512 {
+		uri = uri[:512]
+	}
+	if uri == "" {
+		return "import"
+	}
+	return uri
 }
 
 // isPrivateHost returns true if the hostname is a private/internal IP

@@ -114,7 +114,7 @@ func parseShell(tokens []string, ops []bool) shProgram {
 	p.budget += 1024
 	if ops != nil {
 		for i, tok := range p.toks {
-			if !ops[i] && (tok == "(" || tok == ")" || isArithToken(tok)) {
+			if !ops[i] && (tok == "(" || tok == ")" || isArithToken(tok) || operatorLookalikes[tok]) {
 				p.toks[i] = literalMark + tok
 			}
 		}
@@ -129,7 +129,7 @@ func parseShell(tokens []string, ops []bool) shProgram {
 		list.items = append(list.items, more.items...)
 	}
 	if p.deep {
-		return shProgram{list: flatList(tokens), bad: true, deep: true}
+		return shProgram{list: flatList(p.toks), bad: true, deep: true}
 	}
 	return shProgram{list: list, bad: p.bad, async: p.async}
 }

@@ -1448,7 +1448,17 @@ func (e *Engine) trimContext(ctx context.Context, messages []session.Message, to
 			protected[i] = struct{}{}
 		}
 	}
-	for totalTokens > budget {
+	// The digest and trim warning installed after the drops are part of the
+	// request, so their (capped) size is reserved up front: trimming stops
+	// early enough that the final history still fits the budget.
+	dropLimit := budget
+	if totalTokens > budget {
+		dropLimit = budget - e.trimInstallReserve(messages)
+		if dropLimit < budget/2 {
+			dropLimit = budget / 2
+		}
+	}
+	for totalTokens > dropLimit {
 		start := head
 		for start < len(messages) {
 			if _, keep := protected[start]; !keep {
@@ -1536,6 +1546,64 @@ func (e *Engine) trimContext(ctx context.Context, messages []session.Message, to
 	return messages
 }
 
+// Digest and trim-warning sizing. The digest body is capped at a share of the
+// context budget so it can never outgrow the room trimming freed.
+const (
+	digestMinTokens = 256
+	digestMaxTokens = 8192
+	// digestWrapperBytes covers the untrusted-content wrapper around the body.
+	digestWrapperBytes = 256
+	// trimWarningTokens is the reserve for the cumulative trim warning.
+	trimWarningTokens = 200
+)
+
+// digestBodyCapBytes bounds the digest body: an eighth of the context budget
+// (between digestMinTokens and digestMaxTokens), less the fixed header and
+// wrapper. 0 means no cap (no context limit configured).
+func (e *Engine) digestBodyCapBytes() int {
+	budget := contextBudget(e.maxContext)
+	if budget <= 0 {
+		return 0
+	}
+	t := budget / 8
+	if t < digestMinTokens {
+		t = digestMinTokens
+	}
+	if t > digestMaxTokens {
+		t = digestMaxTokens
+	}
+	capBytes := t*4 - len(digestMsgHeader) - digestWrapperBytes
+	if capBytes < 256 {
+		capBytes = 256
+	}
+	return capBytes
+}
+
+// trimInstallReserve is the extra token cost of the digest and trim warning
+// trimming is about to install, beyond what messages already carries.
+func (e *Engine) trimInstallReserve(messages []session.Message) int {
+	existingDigest, existingWarning := 0, 0
+	for _, m := range messages {
+		switch {
+		case isDigestMessage(m):
+			existingDigest = messageOverhead + estimateTokens(m.Content)
+		case m.Role == "system" && strings.HasPrefix(m.Content, "[Context trimmed:"):
+			existingWarning = messageOverhead + estimateTokens(m.Content)
+		}
+	}
+	reserve := 0
+	if r := messageOverhead + trimWarningTokens - existingWarning; r > 0 {
+		reserve += r
+	}
+	if e.compaction {
+		digest := messageOverhead + (e.digestBodyCapBytes()+len(digestMsgHeader)+digestWrapperBytes+3)/4
+		if r := digest - existingDigest; r > 0 {
+			reserve += r
+		}
+	}
+	return reserve
+}
+
 // buildTrimWarning renders the cumulative trim warning text, including how
 // much was truncated/dropped and which tools lost their earlier results.
 func (e *Engine) buildTrimWarning() string {
@@ -1612,11 +1680,12 @@ func isContextLengthError(err error) bool {
 	if err == nil {
 		return false
 	}
-	msg := err.Error()
-	// Common error patterns across providers:
-	// DeepSeek: "context_length_exceeded", "maximum context length"
-	// OpenAI:   "maximum context length", "token limit"
-	// Anthropic: "input is too long", "context window"
+	msg := strings.ToLower(err.Error())
+	// Common error patterns across providers (matched case-insensitively):
+	// DeepSeek:  "context_length_exceeded", "maximum context length"
+	// OpenAI:    "maximum context length", "token limit"
+	// Anthropic: "input is too long", "prompt is too long", "context window"
+	// Gemini:    "input token count (N) exceeds the maximum number of tokens allowed"
 	return strings.Contains(msg, "context_length_exceeded") ||
 		strings.Contains(msg, "maximum context length") ||
 		strings.Contains(msg, "context length") ||
@@ -1626,6 +1695,9 @@ func isContextLengthError(err error) bool {
 		strings.Contains(msg, "input length") ||
 		strings.Contains(msg, "too many tokens") ||
 		strings.Contains(msg, "input is too long") ||
+		strings.Contains(msg, "prompt is too long") ||
+		strings.Contains(msg, "input token count") ||
+		strings.Contains(msg, "exceeds the maximum number of tokens") ||
 		strings.Contains(msg, "reduce the length")
 }
 
@@ -1747,6 +1819,12 @@ func (e *Engine) refreshDigest(ctx context.Context, messages []session.Message, 
 	e.pendingDropped = append(e.pendingDropped, dropped...)
 	all := append([]session.Message(nil), e.pendingDropped...)
 	startIdx := len(e.pendingDropped) - len(dropped)
+	// digestDirty means an earlier drop was debounced behind an in-flight
+	// call that no side call has seen. applyPendingDigest (above) trimmed
+	// only the prefix that call covered, so the queue now starts with that
+	// uncovered suffix: summarize the whole queue, not just this drop, or
+	// the earlier drops would be marked covered unseen.
+	wasDirty := e.digestDirty
 	e.compactMu.Unlock()
 
 	extractive := e.extractiveDigest(all)
@@ -1754,19 +1832,14 @@ func (e *Engine) refreshDigest(ctx context.Context, messages []session.Message, 
 		return messages
 	}
 	messages = e.installDigest(ctx, messages, extractive)
-	e.startDigestSideCall(ctx, startIdx, dropped)
-	// Delta refetch: drops arrived while the previous side call was in
-	// flight. applyPendingDigest (called at the top) has already trimmed the
-	// covered prefix, so anything still queued is exactly the uncovered
-	// suffix — fetch it with start 0. Spawning here on the loop goroutine
-	// (not from the completing side-call goroutine) keeps queue indices and
-	// flight state on one thread of control: no cross-generation races.
-	e.compactMu.Lock()
-	dirty := e.digestDirty && !e.digestInFlight
-	e.digestDirty = false
-	e.compactMu.Unlock()
-	if dirty && len(e.pendingDropped) > 0 {
-		e.startDigestSideCall(ctx, 0, append([]session.Message(nil), e.pendingDropped...))
+	callStart, callDropped := startIdx, dropped
+	if wasDirty {
+		callStart, callDropped = 0, all
+	}
+	if e.startDigestSideCall(ctx, callStart, callDropped) && wasDirty {
+		e.compactMu.Lock()
+		e.digestDirty = false
+		e.compactMu.Unlock()
 	}
 	return messages
 }
@@ -1800,6 +1873,9 @@ func (e *Engine) extractiveDigest(dropped []session.Message) string {
 func (e *Engine) installDigest(ctx context.Context, messages []session.Message, summary string) []session.Message {
 	if summary == "" {
 		return messages
+	}
+	if capBytes := e.digestBodyCapBytes(); capBytes > 0 {
+		summary = excerptBytes(summary, capBytes)
 	}
 	e.digestInstalled = true
 	// Reuse the cached wrapper while the summary is unchanged: a fresh nonce
@@ -1885,16 +1961,17 @@ func (e *Engine) applyPendingDigest(ctx context.Context, messages []session.Mess
 // issue time, computed under the same lock) so nothing stays unsummarized.
 // Refetch only after a successful call — a failed call leaves drops queued
 // for the next natural trim, bounding retries. Skipped when over budget.
-func (e *Engine) startDigestSideCall(parent context.Context, start int, dropped []session.Message) {
+// Reports whether a call was started (false when debounced or skipped).
+func (e *Engine) startDigestSideCall(parent context.Context, start int, dropped []session.Message) bool {
 	if e.client == nil || !e.budgetAllowsSideCall() {
-		return
+		return false
 	}
 	prev := e.compactDigest
 	e.compactMu.Lock()
 	if e.digestInFlight {
 		e.digestDirty = true
 		e.compactMu.Unlock()
-		return
+		return false
 	}
 	e.digestGen++
 	gen := e.digestGen
@@ -1929,6 +2006,7 @@ func (e *Engine) startDigestSideCall(parent context.Context, start int, dropped 
 		// applyPendingDigest's queue rebase and desync the covered indices.
 		e.compactMu.Unlock()
 	}()
+	return true
 }
 
 // cancelDigestSideCall aborts an in-flight digest HTTP request and
@@ -2430,6 +2508,7 @@ func (e *Engine) Run(ctx context.Context, task string) (string, error) {
 	// Reset per-run state — same contract as RunWithMessages ("Reset on each
 	// Run/RunWithMessages call"): totals are per-run and feed budget
 	// enforcement, so they must not accumulate across runs.
+	e.lastPartialReason = "" // per-run: no stale partial classification from a previous run
 	e.memMsgIdx = -1
 	e.skillMsgIdx = -1
 	e.lastSkillBlock = ""
@@ -2630,6 +2709,10 @@ type trustAllSetter interface{ SetTrustAll(bool) }
 // answer plus the complete updated message history.
 func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer string, messages []session.Message, err error) {
 	startTime := time.Now()
+	// The completion nudge may extend the cap for this run only; restore the
+	// configured value so a reused engine does not ratchet its iteration cap.
+	configuredMaxIter := e.maxIter
+	defer func() { e.maxIter = configuredMaxIter }()
 	if max := e.budgetLimits.MaxRuntimeSeconds; max > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithDeadlineCause(ctx, startTime.Add(time.Duration(max)*time.Second), &budget.Error{Limit: budget.LimitRuntime, Observed: max, Maximum: max})
@@ -2735,6 +2818,8 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 	// post-loop summary path picks the matching marker from it.
 	finalizeReason := ""
 
+	// survivalIter is the iteration that already used its one survival retry.
+	survivalIter := -1
 	for i := 0; i < e.maxIter; i++ {
 		select {
 		case <-ctx.Done():
@@ -2974,7 +3059,8 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 			// the actual model limit.
 			if isContextLengthError(err) {
 				trimmed := trimToSurvival(messages)
-				if len(trimmed) < len(messages) {
+				if len(trimmed) < len(messages) && survivalIter != i {
+					survivalIter = i
 					e.emitSignal(SignalEvent{
 						Type:   "context_trimmed",
 						Detail: "survival",
@@ -3002,9 +3088,10 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 					// maxIter == 1 (or on the final iteration) this fully
 					// recoverable error would fall through to the
 					// iteration-exhausted partial summary instead of retrying.
-					// Bounded: the retry only fires when trimToSurvival actually
-					// dropped messages, so repeated retries strictly shrink the
-					// history and cannot loop forever.
+					// Bounded: each iteration gets one survival retry. The retry
+					// itself re-adds a warning, so history length cannot serve
+					// as the termination argument; a second rejection in the
+					// same iteration fails the run.
 					i--
 					continue // retry this iteration
 				}
@@ -3034,10 +3121,12 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 
 		// Feed the margin calibration in trimContext: provider-reported input
 		// tokens are ground truth for how accurate the local estimate is.
-		e.lastReportedInputTokens = result.InputTokens
+		// The estimate covers the whole request, so compare it with the full
+		// prompt window; InputTokens alone excludes cache reads and writes.
 		// Parent conversation window for the ctx gauge (wire v3): the last
 		// parent call's provider-normalized prompt size.
 		e.lastPromptTokens = promptWindowTokens(result)
+		e.lastReportedInputTokens = e.lastPromptTokens
 
 		// Accumulate cache metrics
 		// Accumulate cache metrics across iterations
@@ -3196,6 +3285,13 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 			return result.Content, messages, nil
 		}
 
+		// Providers commonly send an empty arguments string for a tool that
+		// takes no parameters; that is a complete call, equal to "{}".
+		for ti := range result.ToolCalls {
+			if strings.TrimSpace(result.ToolCalls[ti].Function.Arguments) == "" {
+				result.ToolCalls[ti].Function.Arguments = "{}"
+			}
+		}
 		for _, tc := range result.ToolCalls {
 			if !json.Valid([]byte(tc.Function.Arguments)) {
 				partial := "[Partial response: interrupted] Model returned incomplete tool arguments; no tools in this batch executed."
@@ -3475,7 +3571,11 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 			// failure recovery) must use this instead of sniffing output
 			// text: a successful read/grep result can legitimately
 			// contain the literal `"error":` as data.
-			errored     bool
+			errored bool
+			// denied is set only where the engine itself observed the
+			// approval gate refusing the call (batch denial); it is never
+			// derived from output text.
+			denied      bool
 			durationMs  int64
 			outcome     tool.Outcome
 			deliveryCtx context.Context
@@ -3505,7 +3605,7 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 
 		if batchDenied {
 			for i := range results {
-				results[i] = execResult{output: "error: batch approval denied", errored: true}
+				results[i] = execResult{output: "error: batch approval denied", errored: true, denied: true}
 			}
 		} else {
 			for i, tc := range result.ToolCalls {
@@ -3684,9 +3784,12 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 		for i, tc := range result.ToolCalls {
 			output := results[i].output
 			fullOutput := output
-			e.recordPlanCheckResult(checkEpoch, tc, callIDs[i], results[i].errored)
-			if results[i].errored {
-				e.recordPlanCheckDenied(checkEpoch, tc, callIDs[i], results[i].output)
+			if results[i].denied {
+				// A refused call never ran: it leaves no effects to
+				// invalidate earlier evidence, and its check is blocked.
+				e.recordPlanCheckDenied(checkEpoch, tc, callIDs[i])
+			} else {
+				e.recordPlanCheckResult(checkEpoch, tc, callIDs[i], results[i].errored)
 			}
 
 			// ledger the mutating calls that completed this run so the

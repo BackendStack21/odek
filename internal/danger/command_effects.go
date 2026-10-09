@@ -54,7 +54,9 @@ func adapterRunsCode(name string, tokens []string, repo *gitRepoCtx) bool {
 		case "difftool", "mergetool":
 			// These launch the configured diff/merge tool by design.
 			return true
-		case "commit", "merge", "checkout", "switch", "cherry-pick", "am", "add", "status", "restore", "stash", "gc":
+		case "commit", "merge", "checkout", "switch", "cherry-pick", "am", "add", "status", "restore", "stash", "gc",
+			"revert", "reset", "clean", "rm", "mv", "update-index", "diff-files", "diff-index", "ls-files", "grep",
+			"blame", "describe", "checkout-index", "pull", "fetch", "push":
 			return gitVerbRunsRepoCode(sub, args, tokens, repo)
 		case "worktree", "submodule":
 			return !hasAny(args, "list", "status") && gitVerbRunsRepoCode(sub, args, tokens, repo)
@@ -333,6 +335,66 @@ func sedInPlace(tokens []string) bool {
 	return sedOptions.parse(tokens[1:]).has("-i", "--in-place")
 }
 
+// sedInPlaceFiles returns the files `sed -i` edits: every operand except the
+// script, which is the first operand unless -e/--expression/-f/--file gave
+// one. A file name may hold spaces or other script-looking characters.
+func sedInPlaceFiles(tokens []string) []string {
+	r := sedOptions.parse(tokens[1:])
+	files := r.args()
+	if !r.has("-e", "--expression", "-f", "--file") && len(files) > 0 {
+		files = files[1:]
+	}
+	return files
+}
+
+// scriptInPlaceFiles returns the files `perl -i` / `ruby -i` edit in place:
+// the operands after the program text. The program is the -e/-E text, or the
+// first operand when none was given. Without -i nothing is written.
+func scriptInPlaceFiles(tokens []string) []string {
+	inPlace, haveProgram := false, false
+	var operands []string
+	for i := 1; i < len(tokens); i++ {
+		tok := tokens[i]
+		switch {
+		case tok == "--":
+			operands = append(operands, tokens[i+1:]...)
+			i = len(tokens)
+		case isShortFlagToken(tok):
+			cluster := tok[1:]
+		letters:
+			for k, c := range cluster {
+				last := k == len(cluster)-1
+				switch {
+				case c == 'i':
+					inPlace = true // the rest of the cluster is the backup suffix
+					break letters
+				case c == 'e' || c == 'E':
+					haveProgram = true
+					if last {
+						i++ // the program text is the next word
+					}
+					break letters
+				case strings.ContainsRune("IrMmxVCDdF", c):
+					if last && strings.ContainsRune("Ir", c) {
+						i++ // separated include path / library
+					}
+					break letters // the rest of the cluster is this option's value
+				}
+			}
+		case strings.HasPrefix(tok, "-"):
+		default:
+			operands = append(operands, tok)
+		}
+	}
+	if !inPlace {
+		return nil
+	}
+	if !haveProgram && len(operands) > 0 {
+		operands = operands[1:]
+	}
+	return operands
+}
+
 // The filename may follow the command letter without a space when it is
 // path-shaped (`w/tmp/x`, `w./out`), which GNU sed treats like `w /tmp/x`;
 // a plain word starting with r or w (README.md) is not a file command.
@@ -438,12 +500,19 @@ func executionFileTargets(name string, tokens []string) []string {
 		options = []string{"-I", "--use-compress-program", "--to-command", "--checkpoint-action"}
 	case "node":
 		options = []string{"--require", "-r", "--import", "--loader", "--experimental-loader"}
+	case "ruby":
+		// -rlibrary (fused or separate) loads and runs a Ruby file.
+		options = []string{"-r"}
 	case "gcc", "cc", "g++", "c++", "clang", "clang++":
 		options = []string{"-fplugin", "-specs", "--specs", "-wrapper", "-load"}
 	case "go":
 		options = []string{"-toolexec"}
 	case "protoc":
 		options = []string{"--plugin"}
+	case "psql":
+		// -f/--file name a script whose \! and \copy ... program
+		// meta-commands run local programs.
+		options = []string{"-f", "--file"}
 	case "sqlite3":
 		var out []string
 		for _, tok := range tokens[1:] {
@@ -598,9 +667,18 @@ func semanticWriteTargets(name string, tokens []string) []string {
 			}
 		}
 		if sedInPlace(tokens) {
-			for _, tok := range tokens[2:] {
-				if !strings.HasPrefix(tok, "-") && !strings.ContainsAny(tok, "; {}") {
-					targets = append(targets, tok)
+			targets = append(targets, sedInPlaceFiles(tokens)...)
+		}
+	case "perl", "ruby":
+		targets = append(targets, scriptInPlaceFiles(tokens)...)
+	case "tar":
+		// -f / --file names the archive; creating, appending or updating
+		// writes it (extracting and listing only read it).
+		r := tarOptions.parse(tokens[1:])
+		if r.has("-c", "-r", "-u", "-A", "--create", "--append", "--update", "--catenate", "--concatenate") {
+			for _, o := range r.opts {
+				if o.has && o.is("-f", "--file") {
+					targets = append(targets, o.value)
 				}
 			}
 		}
@@ -720,6 +798,7 @@ var writeOptions = map[string]writeOption{
 	"mv":      {spec: cpOptions, names: []string{"-t", "--target-directory"}},
 	"install": {spec: modeOptions["install"], names: []string{"-t", "--target-directory"}},
 	"tar":     {spec: tarOptions, names: []string{"-C", "--directory"}},
+	"rsync":   {spec: rsyncOptions, names: []string{"--write-batch", "--only-write-batch", "--log-file"}},
 	"unzip":   {spec: optSpec{short: "d"}, names: []string{"-d"}},
 	"7z":      {spec: optSpec{short: "o"}, names: []string{"-o"}},
 	"7za":     {spec: optSpec{short: "o"}, names: []string{"-o"}},
@@ -738,6 +817,10 @@ var (
 	gpgOptions  = optSpec{short: "rpuo", long: valueOpts("output recipient local-user"), abbrev: true}
 	findOptions = optSpec{exact: []string{"-fprint", "-fprint0", "-fprintf"}}
 	cpOptions   = optSpec{short: "tS", long: valueOpts("target-directory suffix"), abbrev: true}
+
+	// rsync writes the batch and log files named by these options on the
+	// local side.
+	rsyncOptions = optSpec{long: valueOpts("write-batch only-write-batch log-file"), abbrev: true, minAbbrev: 3}
 
 	// git archive writes the file named by -o/--output; the history and diff
 	// viewers write --output only, and git reads their abbreviation from four

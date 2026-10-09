@@ -37,13 +37,23 @@ func FormatResponse(text string) ([]string, error) {
 		// ── Track code blocks ──
 		if strings.HasPrefix(line, "```") {
 			flushTable()
-			inCodeBlock = !inCodeBlock
-			resultLines = append(resultLines, line)
+			opening := !inCodeBlock
+			inCodeBlock = opening
+			fence, rest := splitFenceLine(line, opening)
+			resultLines = append(resultLines, fence)
+			if rest != "" {
+				// Text sharing the fence line is content, never live markup.
+				if opening {
+					resultLines = append(resultLines, escapeCodeLine(rest))
+				} else {
+					resultLines = append(resultLines, convertItalicAndEscape(strings.ReplaceAll(rest, "`", "")))
+				}
+			}
 			continue
 		}
 
 		if inCodeBlock {
-			resultLines = append(resultLines, line)
+			resultLines = append(resultLines, escapeCodeLine(line))
 			continue
 		}
 
@@ -67,7 +77,7 @@ func FormatResponse(text string) ([]string, error) {
 				inTable = true
 				tableLines = nil
 			}
-			tableLines = append(tableLines, line)
+			tableLines = append(tableLines, escapeCodeLine(line))
 			continue
 		}
 
@@ -149,6 +159,58 @@ func isReserved(r rune) bool {
 		return true
 	}
 	return false
+}
+
+// escapeCodeLine escapes a line that is emitted inside a ``` fence. MarkdownV2
+// requires "`" and "\" to be backslash-escaped inside pre blocks; without it a
+// mid-line ``` in untrusted text closes the fence and the rest of the line is
+// parsed as live, unescaped MarkdownV2 (links, formatting).
+// splitFenceLine splits a line that starts with a code fence into the fence line
+// to emit and any leftover text. An opening fence keeps only a plain language
+// tag ([A-Za-z0-9_+-]+); a closing fence is always bare.
+func splitFenceLine(line string, opening bool) (fence, rest string) {
+	rest = strings.TrimSpace(strings.TrimLeft(line, "`"))
+	if !opening {
+		return "```", rest
+	}
+	if rest != "" && isFenceTag(rest) {
+		return "```" + rest, ""
+	}
+	return "```", rest
+}
+
+func isFenceTag(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if !isFenceTagByte(s[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+// isFenceTagByte reports whether c may appear in a fence language tag.
+func isFenceTagByte(c byte) bool {
+	switch {
+	case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+		return true
+	case c == '_', c == '+', c == '-':
+		return true
+	}
+	return false
+}
+
+func escapeCodeLine(line string) string {
+	if !strings.ContainsAny(line, "`\\") {
+		return line
+	}
+	var b strings.Builder
+	for i := 0; i < len(line); i++ {
+		if line[i] == '`' || line[i] == '\\' {
+			b.WriteByte('\\')
+		}
+		b.WriteByte(line[i])
+	}
+	return b.String()
 }
 
 // isSeparator reports whether a line is a horizontal rule made of ─ characters.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 	"unicode/utf8"
@@ -77,14 +78,10 @@ func parseVerifyVerdict(content string) verifyVerdict {
 	}
 	// Reasons/missing are advisory only; clamp their combined rendering.
 	for i, s := range v.Reasons {
-		if len(s) > 200 {
-			v.Reasons[i] = s[:200] + "…"
-		}
+		v.Reasons[i] = clampUTF8(s, 200)
 	}
 	for i, s := range v.Missing {
-		if len(s) > 200 {
-			v.Missing[i] = s[:200] + "…"
-		}
+		v.Missing[i] = clampUTF8(s, 200)
 	}
 	return v
 }
@@ -167,6 +164,8 @@ const (
 	// verifyTraceBudgetBytes bounds the whole rendered trace; calls past the
 	// budget are counted, not rendered.
 	verifyTraceBudgetBytes = 14 * 1024
+	// verifyAnswerMaxBytes bounds the candidate answer (head + tail).
+	verifyAnswerMaxBytes = 16 * 1024
 	// verifyPriorMessageBytes clamps each earlier-turn message rendered as
 	// conversational context.
 	verifyPriorMessageBytes = 1024
@@ -199,7 +198,7 @@ func verifyPrompt(task string, priorContext string, toolTrace string, answer str
 	b.WriteString("## Tool calls this turn (arguments and result excerpts)\n")
 	b.WriteString(toolTrace + "\n\n")
 	b.WriteString("## Final answer to verify\n")
-	b.WriteString(redact.RedactSecrets(answer) + "\n")
+	b.WriteString(boundedRedact(answer, verifyAnswerMaxBytes) + "\n")
 	return b.String()
 }
 
@@ -363,7 +362,7 @@ func verifyToolTrace(messages []session.Message, trimmed map[string]int) string 
 		switch {
 		case !c.found:
 			entry.WriteString("   result: (no result recorded)")
-		case strings.HasPrefix(strings.TrimSpace(body), trimmedResultMarkerPrefix):
+		case trimmedResultMarker.MatchString(strings.TrimSpace(body)):
 			// Context trimming replaced the stored result; say so instead
 			// of presenting the marker as a 60-byte tool output.
 			fmt.Fprintf(&entry, "   result trimmed from context: %s", strings.TrimSpace(body))
@@ -381,9 +380,11 @@ func verifyToolTrace(messages []session.Message, trimmed map[string]int) string 
 	return b.String()
 }
 
-// trimmedResultMarkerPrefix opens the marker context trimming stores in
-// place of a large tool result (trimContext pass 1).
-const trimmedResultMarkerPrefix = "[tool output trimmed:"
+// trimmedResultMarker matches exactly the marker context trimming stores in
+// place of a large tool result (trimContext pass 1). A tool result that only
+// starts with the same words is ordinary untrusted output and takes the
+// redacted, excerpted, wrapped path.
+var trimmedResultMarker = regexp.MustCompile(`^\[tool output trimmed: [0-9]+ bytes dropped to fit context budget\]$`)
 
 // summarizeTrimmed renders the trimmed-tool bookkeeping as a count and a
 // sorted, bounded name list.

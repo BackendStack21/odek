@@ -8,7 +8,10 @@
 
 package danger
 
-import "strings"
+import (
+	"sort"
+	"strings"
+)
 
 // denylistMatch reports whether any denylist entry matches a command that cmd
 // would run. An entry matches when its tokens equal the leading tokens of a
@@ -37,34 +40,84 @@ func denylistMatch(cmd string, denylist []string) bool {
 	if len(entries) == 0 {
 		return false
 	}
-	return denyScan(cmd, entries, 0)
+	return denyScan(cmd, &denyCtx{entries: entries, seen: map[string]int{}}, 0)
 }
 
-func denyScan(cmd string, entries [][]string, depth int) bool {
-	return denyScanVars(cmd, entries, depth, nil)
+// denyCtx carries the compiled entries and the set of command lines and
+// stages already examined during one denylistMatch call. Scanning is a pure
+// function of its input and, where the depth limit cuts nested payloads off,
+// of the depth it is reached at. A repeat can only reproduce a miss (a hit
+// would have ended the scan) unless the earlier visit was cut short by the
+// depth limit and the repeat is shallower. Skipping the other repeats keeps
+// nested eval operands and repeated find -exec operands linear in the command
+// size instead of re-scanning the same text once per path that reaches it.
+type denyCtx struct {
+	entries [][]string
+	// seen maps a visited key to the depth of its visit; complete visits are
+	// recorded as 0 so no later visit can be shallower.
+	seen map[string]int
+	// cuts counts the scans the depth limit has refused so far.
+	cuts int
+}
+
+// firstVisit records key at depth and reports whether it must be scanned: it
+// was never visited, or only at a greater depth by a visit the depth limit cut
+// short. The returned mark is passed to settle once the scan has missed.
+func (dc *denyCtx) firstVisit(key string, depth int) (scan bool, mark int) {
+	if prior, dup := dc.seen[key]; dup && prior <= depth {
+		return false, 0
+	}
+	dc.seen[key] = depth
+	return true, dc.cuts
+}
+
+// settle marks key's visit complete when the depth limit refused nothing while
+// it ran, so a shallower repeat could not reach anything new.
+func (dc *denyCtx) settle(key string, mark int) {
+	if dc.cuts == mark {
+		dc.seen[key] = 0
+	}
+}
+
+func denyScan(cmd string, dc *denyCtx, depth int) bool {
+	return denyScanVars(cmd, dc, depth, nil)
 }
 
 // denyScanVars is denyScan with the shell variables earlier commands of the
 // enclosing line assigned a statically known value, so `g=git; $g push` and
 // `c=push; git $c` are matched as the commands they run. A variable whose
 // value is built at run time is not known and its references stay opaque.
-func denyScanVars(cmd string, entries [][]string, depth int, inherited map[string]string) bool {
+func denyScanVars(cmd string, dc *denyCtx, depth int, inherited map[string]string) bool {
 	if depth > maxSubstDepth {
+		dc.cuts++
 		return false
 	}
 	vars := make(map[string]string, len(inherited))
 	for k, v := range inherited {
 		vars[k] = v
 	}
+	scanKey := "scan\x00" + cmd + "\x00" + denyVarsKey(inherited)
+	scan, mark := dc.firstVisit(scanKey, depth)
+	if !scan {
+		return false
+	}
+	defer dc.settle(scanKey, mark)
 	main, subs := normalize(cmd)
 	unquoted := unquotedVariableRefs(main)
 	tokens, ops, _ := tokenizeMarked(main)
-	for _, segment := range splitSegments(tokens) {
+	for _, segment := range splitSegments(markLiteralOperators(tokens, ops)) {
 		stages := splitPipes(segment)
-		for _, stage := range stages {
-			if denyStage(denyExpand(stage, vars, unquoted), entries, depth) {
+		var earlier [][]string
+		for i, stage := range stages {
+			expanded := denyExpand(stage, vars, unquoted)
+			if denyStage(expanded, dc, depth) {
 				return true
 			}
+			// A shell fed by a static echo/printf runs that text as a script.
+			if i > 0 && denyStaticPipeFeed(earlier, expanded, dc, depth) {
+				return true
+			}
+			earlier = append(earlier, expanded)
 		}
 		if len(stages) == 1 {
 			denyAssign(stages[0], vars)
@@ -73,16 +126,36 @@ func denyScanVars(cmd string, entries [][]string, depth int, inherited map[strin
 	// Commands inside loops, conditionals, case arms, groups and function
 	// bodies are command positions of their own.
 	for _, stage := range commandStages(tokens, ops) {
-		if denyStage(denyExpand(stage, vars, unquoted), entries, depth) {
+		if denyStage(denyExpand(stage, vars, unquoted), dc, depth) {
 			return true
 		}
 	}
 	for _, sub := range subs {
-		if denyScanVars(sub, entries, depth+1, vars) {
+		if denyScanVars(sub, dc, depth+1, vars) {
 			return true
 		}
 	}
 	return false
+}
+
+// denyVarsKey renders a variable map in a stable order.
+func denyVarsKey(vars map[string]string) string {
+	if len(vars) == 0 {
+		return ""
+	}
+	names := make([]string, 0, len(vars))
+	for k := range vars {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+	var b strings.Builder
+	for _, k := range names {
+		b.WriteString(k)
+		b.WriteByte('=')
+		b.WriteString(vars[k])
+		b.WriteByte(0)
+	}
+	return b.String()
 }
 
 // denyExpand substitutes known variables into a stage. An unquoted reference
@@ -220,12 +293,18 @@ func denyPeel(stage []string) []string {
 	return out
 }
 
-func denyStage(stage []string, entries [][]string, depth int) bool {
+func denyStage(stage []string, dc *denyCtx, depth int) bool {
 	stage = denyPeel(stage)
 	if len(stage) == 0 {
 		return false
 	}
-	if denyMatchesAny(stage, entries) || denyPayloads(stage, entries, depth) {
+	stageKey := "stage\x00" + strings.Join(stage, "\x00")
+	scan, mark := dc.firstVisit(stageKey, depth)
+	if !scan {
+		return false
+	}
+	defer dc.settle(stageKey, mark)
+	if denyMatchesAny(stage, dc.entries) || denyPayloads(stage, dc, depth) {
 		return true
 	}
 	// unwrapWrappersFull strips every stacked wrapper and leading assignment
@@ -234,14 +313,14 @@ func denyStage(stage []string, entries [][]string, depth int) bool {
 	// matched as command lines of their own.
 	un := unwrapWrappersFull(stage)
 	for _, payload := range un.payloads {
-		if denyScan(payload, entries, depth+1) {
+		if denyScan(payload, dc, depth+1) {
 			return true
 		}
 	}
 	// `env -S 'git push'` runs the split string as the command, ahead of any
 	// remaining operands.
 	for _, split := range un.splits {
-		if denyStage(append(tokenize(split), un.inner...), entries, depth+1) {
+		if denyStage(append(tokenize(split), un.inner...), dc, depth+1) {
 			return true
 		}
 	}
@@ -249,22 +328,97 @@ func denyStage(stage []string, entries [][]string, depth int) bool {
 	if len(inner) == 0 || len(inner) == len(stage) {
 		return false
 	}
-	return denyMatchesAny(inner, entries) || denyPayloads(inner, entries, depth)
+	return denyMatchesAny(inner, dc.entries) || denyPayloads(inner, dc, depth)
+}
+
+// denyStaticPipeFeed scans the text a static producer pipes into a shell, which
+// the shell executes as commands. The producer is an echo/printf stage, or a
+// pass-through stage carrying a here-string, reached by walking back from the
+// shell through pass-through stages that hand their input on unchanged.
+func denyStaticPipeFeed(upstream [][]string, sink []string, dc *denyCtx, depth int) bool {
+	cmd, _ := unwrapWrappers(sink)
+	if len(cmd) == 0 || !pipedShells[commandName(cmd[0])] || shellInlineScriptIndex(cmd) >= 0 {
+		return false
+	}
+	for j := len(upstream) - 1; j >= 0; j-- {
+		stage := upstream[j]
+		var text string
+		var ok bool
+		if passThroughStage(stage) {
+			// A here-string replaces the piped input of its stage.
+			if text, ok = hereStringText(stage); !ok {
+				continue
+			}
+		} else if text, ok = staticPipeText([][]string{stage}); !ok {
+			return false
+		}
+		text = strings.TrimSpace(strings.ReplaceAll(text, "\x00", " "))
+		return text != "" && denyScan(text, dc, depth+1)
+	}
+	return false
+}
+
+// hereStringText returns the word a stage reads as its here-string.
+func hereStringText(stage []string) (string, bool) {
+	for i := 0; i+1 < len(stage); i++ {
+		if stage[i] == "<<<" {
+			return stage[i+1], true
+		}
+	}
+	return "", false
+}
+
+// passThroughStage reports whether a pipe stage writes the data it reads (or
+// its here-string) to standard output unchanged, or a line-subset of it: cat
+// and tee, and the line filters sort, uniq, tac, head and tail. A file operand
+// makes the stage read that file instead of standard input, so only flags (and
+// the numeric counts of head/tail) are allowed; tee's operands are output files.
+// Anything that rewrites the bytes (tr, sed, awk, base64, ...) is not listed.
+func passThroughStage(stage []string) bool {
+	cmd, _ := unwrapWrappers(stage)
+	if len(cmd) == 0 {
+		return false
+	}
+	name := commandName(cmd[0])
+	switch name {
+	case "cat", "tee", "sort", "uniq", "tac", "head", "tail":
+	default:
+		return false
+	}
+	for i := 1; i < len(cmd); i++ {
+		tok := cmd[i]
+		switch {
+		case tok == "<<<":
+			i++ // the here-string word
+		case strings.HasPrefix(tok, "-"):
+		case name == "tee":
+		case (name == "head" || name == "tail") && isAllDigits(tok):
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // denyPayloads matches commands carried inside a command's arguments.
-func denyPayloads(inner []string, entries [][]string, depth int) bool {
+func denyPayloads(inner []string, dc *denyCtx, depth int) bool {
 	name := commandName(inner[0])
 	switch {
 	case pipedShells[name]:
 		if idx := shellInlineScriptIndex(inner); idx >= 0 && inner[idx] != "" {
-			return denyScan(inner[idx], entries, depth+1)
+			return denyScan(inner[idx], dc, depth+1)
+		}
+		// A here-string is the script the shell reads from standard input.
+		for i := 1; i+1 < len(inner); i++ {
+			if inner[i] == "<<<" && inner[i+1] != "" && denyScan(inner[i+1], dc, depth+1) {
+				return true
+			}
 		}
 	case name == "eval" && len(inner) > 1:
-		return denyScan(strings.Join(inner[1:], " "), entries, depth+1)
+		return denyScan(strings.Join(inner[1:], " "), dc, depth+1)
 	case name == "git":
 		if payload := gitSubmoduleForeachInner(inner); payload != "" {
-			return denyScan(payload, entries, depth+1)
+			return denyScan(payload, dc, depth+1)
 		}
 	case name == "find" || name == "fd" || name == "fdfind":
 		for i := 1; i < len(inner); i++ {
@@ -277,7 +431,7 @@ func denyPayloads(inner []string, entries [][]string, depth int) bool {
 						break
 					}
 				}
-				if denyStage(inner[i+1:end], entries, depth+1) {
+				if denyStage(inner[i+1:end], dc, depth+1) {
 					return true
 				}
 			}
@@ -285,7 +439,7 @@ func denyPayloads(inner []string, entries [][]string, depth int) bool {
 	}
 	// A wrapper operand that is itself a whole command line (`watch 'git push'`).
 	if len(inner) > 0 && strings.ContainsAny(inner[0], " \t") {
-		return denyScan(inner[0], entries, depth+1)
+		return denyScan(inner[0], dc, depth+1)
 	}
 	return false
 }

@@ -70,6 +70,43 @@ func NewAuditStore(dir string) *AuditStore {
 	return &AuditStore{dir: filepath.Join(dir, "audit")}
 }
 
+// Remove deletes the audit log for a session, including the legacy JSON file
+// and any quarantined corrupt copies. A missing log is not an error.
+func (s *AuditStore) Remove(sessionID string) error {
+	if err := ValidateSessionID(sessionID); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	base := filepath.Join(s.dir, sessionID+".json")
+	var firstErr error
+	if err := os.Remove(base); err != nil && !os.IsNotExist(err) {
+		firstErr = err
+	}
+	// Quarantined sidecars are matched by exact name prefix, never by a
+	// glob built from the id: a session id may contain glob metacharacters.
+	prefix := sessionID + ".json.corrupt-"
+	entries, err := os.ReadDir(s.dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return firstErr
+		}
+		if firstErr == nil {
+			firstErr = err
+		}
+		return firstErr
+	}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasPrefix(e.Name(), prefix) {
+			continue
+		}
+		if err := os.Remove(filepath.Join(s.dir, e.Name())); err != nil && !os.IsNotExist(err) && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
 func boundedAuditResources(content string) []string {
 	resources := ResourcesIn(content)
 	if len(resources) > 64 {
@@ -121,8 +158,8 @@ func (s *AuditStore) RecordTurn(sessionID string, turn AuditTurn) error {
 // auditRecord is one JSONL line: a typed envelope around the per-record
 // payloads. Exactly one payload field is set per record.
 type auditRecord struct {
-	Type   string      `json:"type"`
-	Turn   *AuditTurn  `json:"turn,omitempty"`
+	Type   string       `json:"type"`
+	Turn   *AuditTurn   `json:"turn,omitempty"`
 	Ingest *AuditIngest `json:"ingest,omitempty"`
 }
 

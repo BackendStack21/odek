@@ -18,6 +18,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"github.com/BackendStack21/odek/internal/pathutil"
 	"github.com/BackendStack21/odek/internal/session"
@@ -149,9 +150,14 @@ type Ref struct {
 	Path  string // Content after "@" (e.g. "src/main.go")
 }
 
+// refTrailingPunct lists sentence punctuation that is dropped from the end of
+// a reference token.
+const refTrailingPunct = ".,?!:;"
+
 // ParseRefs extracts all @references from text. A reference starts with
 // @ and continues until whitespace, end-of-string, or a closing
-// bracket/paren.
+// bracket/paren. Sentence punctuation at the end of that token (. , ? ! : ;)
+// is not part of the reference.
 func ParseRefs(text string) []Ref {
 	var refs []Ref
 	for i := 0; i < len(text); i++ {
@@ -176,6 +182,13 @@ func ParseRefs(text string) []Ref {
 			i++
 		}
 		end := i
+		// Trailing sentence punctuation ends the sentence, not the path:
+		// "review @main.go." references main.go. Only the run at the end of the
+		// token is dropped, and the path keeps at least one character.
+		for end-start > 1 && strings.IndexByte(refTrailingPunct, text[end-1]) >= 0 {
+			end--
+		}
+		i = end
 		raw := text[start:end]
 		if len(raw) <= 1 {
 			continue
@@ -395,7 +408,13 @@ func (f *FileResolver) Load(ctx context.Context, id string) (string, error) {
 	maxSize := 50 * 1024
 	content := string(data)
 	if len(content) > maxSize {
-		content = content[:maxSize] + "\n... [truncated at 50KB]"
+		// Back up to a rune boundary so a multi-byte sequence straddling the
+		// limit is dropped whole instead of leaving invalid UTF-8.
+		cut := maxSize
+		for cut > 0 && !utf8.RuneStart(content[cut]) {
+			cut--
+		}
+		content = content[:cut] + "\n... [truncated at 50KB]"
 	}
 
 	return content, nil

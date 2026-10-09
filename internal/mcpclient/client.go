@@ -34,6 +34,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"os/exec"
@@ -317,6 +318,20 @@ type Client struct {
 	httpc *http.Client
 }
 
+// resultCharsFloorMargin is the room, in runes, a result cap must leave beyond
+// the truncation notice so a truncated result still carries some content.
+const resultCharsFloorMargin = 64
+
+// ResultCharsFloor is the smallest effective max_result_chars for a server:
+// the longest possible truncation notice (longest tool name, widest counts)
+// plus resultCharsFloorMargin runes. Smaller configured values are raised to
+// it with a warning, so a tiny cap cannot produce an empty or notice-only
+// result.
+func ResultCharsFloor(server string) int {
+	notice := truncationNotice(server, strings.Repeat("t", 64), MaxResultCharsCap, math.MaxInt32)
+	return utf8.RuneCountInString(notice) + resultCharsFloorMargin
+}
+
 // normalizeLimits resolves the effective per-server limits from cfg, applying
 // defaults, rejecting values that may not be exceeded, and clamping values
 // above their hard caps (recording a warning for each clamp).
@@ -360,6 +375,10 @@ func normalizeLimits(name string, cfg ServerConfig) (timeout time.Duration, maxR
 			maxChars = MaxResultCharsCap
 			warnings = append(warnings, fmt.Sprintf("mcp server %q: max_result_chars %d exceeds the hard cap; clamped to %d", name, cfg.MaxResultChars, MaxResultCharsCap))
 		}
+	}
+	if floor := ResultCharsFloor(name); maxChars < floor {
+		warnings = append(warnings, fmt.Sprintf("mcp server %q: max_result_chars %d is below the minimum of %d (the truncation notice plus %d chars); raised to %d", name, maxChars, floor, resultCharsFloorMargin, floor))
+		maxChars = floor
 	}
 	return timeout, maxResp, maxChars, warnings, nil
 }
@@ -534,7 +553,7 @@ func isSensitiveEnvVar(key string) bool {
 	norm := strings.NewReplacer("-", "", "_", "").Replace(strings.ToUpper(key))
 	for _, pat := range []string{
 		"APIKEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL", "CREDS",
-		"PRIVATEKEY", "ACCESSKEY",
+		"PRIVATEKEY", "ACCESSKEY", "PASSWD", "PASSPHRASE", "COOKIE", "AUTHORIZATION",
 	} {
 		if strings.Contains(norm, pat) {
 			return true
@@ -703,7 +722,7 @@ func (c *Client) CallTool(ctx context.Context, name string, argsJSON string) (st
 		// The per-server result cap applies to the error channel too: a
 		// server must not be able to forward more text to the model by
 		// marking its payload isError than a successful result allows.
-		msg = c.applyResultLimit(name, msg)
+		msg = c.applyResultLimit(name, artifact.SanitizeText(msg))
 		return "", fmt.Errorf("mcpclient %s: tool %s returned error: %s", c.name, name, msg)
 	}
 
@@ -769,7 +788,9 @@ func (c *Client) CallTool(ctx context.Context, name string, argsJSON string) (st
 			}
 			suffix := ""
 			if len(extras) > 0 {
-				suffix = "\n" + strings.Join(extras, "\n")
+				// Trailing items are server text: neutralize any line that
+				// would read as a rendered artifact metadata entry.
+				suffix = "\n" + artifact.SanitizeText(strings.Join(extras, "\n"))
 			}
 			for i := range env.Artifacts {
 				if _, err := artifact.Validate(env.Artifacts[i], c.artifactRoots); err != nil {
@@ -797,7 +818,8 @@ func (c *Client) CallTool(ctx context.Context, name string, argsJSON string) (st
 		return c.renderCappedEnvelope(name, env), nil
 	}
 
-	return c.applyResultLimit(name, text), nil
+	// Plain text cannot forge a rendered artifact metadata line.
+	return c.applyResultLimit(name, artifact.SanitizeText(text)), nil
 }
 
 // truncationNotice builds the structured marker appended to (or replacing part
@@ -830,11 +852,12 @@ func (c *Client) applyResultLimit(tool, text string) string {
 	}
 
 	notice := truncationNotice(c.name, tool, limit, observed)
-	budget := limit - utf8.RuneCountInString(notice)
-	if budget < 0 {
-		budget = 0
+	noticeLen := utf8.RuneCountInString(notice)
+	if noticeLen > limit {
+		// The cap is smaller than the notice itself: the cap still holds.
+		return truncateRunes(notice, limit)
 	}
-	return truncateRunes(text, budget) + notice
+	return truncateRunes(text, limit-noticeLen) + notice
 }
 
 // renderCappedEnvelope renders a validated envelope and enforces the
@@ -919,8 +942,10 @@ func (c *Client) call(ctx context.Context, method string, params json.RawMessage
 	respCh := make(chan callResponse, 1)
 
 	c.mu.Lock()
-	id := c.nextID
+	// Ids start at 1 so a frame with a missing or null id (decoded as 0)
+	// can never collide with a live call.
 	c.nextID++
+	id := c.nextID
 	req := request{
 		JSONRPC: "2.0",
 		ID:      id,
@@ -1046,6 +1071,15 @@ func (c *Client) readLoop() {
 		// Routing it by id would deliver {result:null} to a waiting caller
 		// whose id collides — and drop the real response when it arrives.
 		if resp.Method != "" {
+			continue
+		}
+		// A missing or null id (e.g. a JSON-RPC parse-error reply) answers no
+		// call of ours; it must not be routed as id 0.
+		var idProbe struct {
+			ID json.RawMessage `json:"id"`
+		}
+		if err := json.Unmarshal([]byte(line), &idProbe); err != nil ||
+			len(idProbe.ID) == 0 || string(idProbe.ID) == "null" {
 			continue
 		}
 

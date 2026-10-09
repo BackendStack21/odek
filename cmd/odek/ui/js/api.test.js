@@ -147,8 +147,10 @@ test('jobs and subagents hit their endpoints', async () => {
   assert.equal(last().url, '/api/jobs?session_id=');
   await api.listJobs('tok sess', 'tok');
   assert.equal(last().url, '/api/jobs?session_id=tok%20sess');
-  await api.listSubagents('rk');
-  assert.equal(last().url, '/api/subagents?key=rk');
+  await api.listSubagents('sess-9', 'tok', 'rk');
+  assert.equal(last().url, '/api/subagents?session_id=sess-9&key=rk');
+  await api.listSubagents('sess-9', 'tok');
+  assert.equal(last().url, '/api/subagents?session_id=sess-9');
 });
 
 test('promote, consolidate, kick, shutdown hit their endpoints', async () => {

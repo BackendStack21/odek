@@ -898,7 +898,7 @@ func (e *EpisodeStore) writeIndex(idx []EpisodeMeta) error {
 // truncateForIndex shortens the summary for the index entry (first 120 chars).
 func truncateForIndex(summary string) string {
 	if len(summary) > 120 {
-		return summary[:117] + "..."
+		return truncateAtRune(summary, 117) + "..."
 	}
 	return summary
 }

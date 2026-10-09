@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/BackendStack21/odek/internal/session"
@@ -278,10 +279,10 @@ type planArgs struct {
 	// or mark it satisfied by equivalent evidence. Justification is
 	// mandatory — the replacement is audit-trailed via the revision
 	// mechanism.
-	CheckID       string         `json:"check_id,omitempty"`
-	Justification string         `json:"justification,omitempty"`
+	CheckID       string        `json:"check_id,omitempty"`
+	Justification string        `json:"justification,omitempty"`
 	Replacement   *planCheckArg `json:"replacement,omitempty"`
-	EvidenceNote  string         `json:"evidence_note,omitempty"`
+	EvidenceNote  string        `json:"evidence_note,omitempty"`
 }
 
 // Execute runs one plan tool call (the full argument envelope) and returns
@@ -482,6 +483,15 @@ func (s *PlanStore) renderLocked() string {
 	return renderPlan(*s.plan, s.maxRenderChars)
 }
 
+// isPlanIDToken reports whether id is a short token without brackets, Unicode
+// whitespace or control characters. create and revise share it so a plan that
+// create accepted can always be revised later.
+func isPlanIDToken(id string) bool {
+	return !strings.ContainsAny(id, "[]") && !strings.ContainsFunc(id, func(r rune) bool {
+		return unicode.IsSpace(r) || unicode.IsControl(r)
+	})
+}
+
 func (s *PlanStore) create(steps []planStepArg) (string, error) {
 	steps = fillAutoStepIDs(steps, nil)
 	if len(steps) < 1 || len(steps) > s.maxSteps {
@@ -496,7 +506,7 @@ func (s *PlanStore) create(steps []planStepArg) (string, error) {
 			return "", fmt.Errorf("plan: step[%d]: id is required", i)
 		case len(id) > maxPlanIDChars:
 			return "", fmt.Errorf("plan: step[%d]: id is too long (%d > %d chars)", i, len(id), maxPlanIDChars)
-		case strings.ContainsAny(id, " \t\n\r[]"):
+		case !isPlanIDToken(id):
 			return "", fmt.Errorf("plan: step[%d]: id %q must be a short token without whitespace or brackets", i, id)
 		case seen[id]:
 			return "", fmt.Errorf("plan: step[%d]: duplicate step id %q", i, id)
@@ -517,8 +527,12 @@ func (s *PlanStore) create(steps []planStepArg) (string, error) {
 	}
 	candidate := PlanState{Version: s.nextVersion(), Steps: out}
 	if s.plan != nil && hasPlanChecks(*s.plan) {
-		preserveErr := preserveCheckedPlan(*s.plan, &candidate)
-		if preserveErr != nil {
+		// Carry evidence over on a copy: a failure part-way through must not
+		// leave the candidate with a partial, order-dependent carry-over.
+		carried := clonePlanState(candidate)
+		if preserveErr := preserveCheckedPlan(*s.plan, &carried); preserveErr == nil {
+			candidate = carried
+		} else {
 			// create may always reset: incompatible checked plans are
 			// superseded, not refused. The supersession is audit-trailed
 			// in the revision block so no verification history silently
@@ -1378,10 +1392,10 @@ func (t *PlanTool) Schema() any {
 				"type":        "string",
 				"description": "complete/check_replace only: the step to mark done (complete) or whose check is replaced (check_replace). Also accepted as a single-step alias on update (see verb description).",
 			},
-			"check_id":          map[string]any{"type": "string", "maxLength": maxPlanCheckIDChars, "description": "check_replace only: the check being replaced."},
-			"justification":     map[string]any{"type": "string", "maxLength": maxPlanCheckDescChars, "description": "check_replace only: mandatory why the check is dead/stale; audit-trailed."},
-			"evidence_note":     map[string]any{"type": "string", "maxLength": maxPlanCheckDescChars, "description": "check_replace only: mark the check satisfied by equivalent verification that ran via other tools."},
-			"reason": map[string]any{"type": "string", "maxLength": maxRevisionReason, "description": "revise only: bounded reason for the change."},
+			"check_id":      map[string]any{"type": "string", "maxLength": maxPlanCheckIDChars, "description": "check_replace only: the check being replaced."},
+			"justification": map[string]any{"type": "string", "maxLength": maxPlanCheckDescChars, "description": "check_replace only: mandatory why the check is dead/stale; audit-trailed."},
+			"evidence_note": map[string]any{"type": "string", "maxLength": maxPlanCheckDescChars, "description": "check_replace only: mark the check satisfied by equivalent verification that ran via other tools."},
+			"reason":        map[string]any{"type": "string", "maxLength": maxRevisionReason, "description": "revise only: bounded reason for the change."},
 			"operations": map[string]any{
 				"type": "array", "minItems": 1, "maxItems": maxRevisionOps,
 				"description": "revise only: ordered atomic operations. Existing checks cannot be removed or changed. New checks require a later tool batch.",

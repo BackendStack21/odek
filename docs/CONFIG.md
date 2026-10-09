@@ -202,7 +202,7 @@ Most config knobs have a `ODEK_*` counterpart:
 
 ## API key fallback order
 
-Selected provider, then leftovers. After resolution, provider key env vars are **unset** from the process environment (the SDK keeps the key in memory; `printenv` from tools does not see it).
+Selected provider, then leftovers. After resolution, provider key env vars are **unset** from the process environment (the SDK keeps the key in memory; `printenv` from tools does not see it). The scrubbed values are remembered in-process (bound to the `HOME` they were captured under), so a second `LoadConfig` in the same process, such as the logging pre-load that runs before the command's own load, still resolves a key supplied only through the real environment.
 
 1. Explicit `api_key` / `providers.<id>.api_key` (after `${VAR}` expansion)
 2. `ODEK_API_KEY`
@@ -562,6 +562,8 @@ The `skills` section controls the skill system:
 | `import.max_size_bytes` | — | 1048576 (1MB) | Max size for fetched skill content |
 | `import.timeout_seconds` | — | 5 | HTTP timeout for skill URI fetch |
 | `import.require_https` | — | false | Reject http:// URIs when true |
+
+A project `odek.json` may only narrow `skills.import`: it can lower `max_size_bytes` and `timeout_seconds` and turn `require_https` on, but never raise a cap or turn `require_https` off relative to the operator's (or the compiled default) policy.
 | `embedding` | — | *(inherits top-level `embedding`)* | Optional override of the shared embedding backend for semantic skill matching. When unset, skills inherit the top-level `embedding` default with the per-turn query timeout bounded to 2s. See [Shared embedding backend](#shared-embedding-backend-embedding--memory-sessions--skills). |
 
 ## Memory configuration
@@ -1370,7 +1372,7 @@ ends — there is no detach mode in v1.
 | `enabled` | `true` | Master switch; `false` removes the tools from every surface. |
 | `max_jobs` | `8` | Concurrent running jobs per session; further `bg_start` calls fail. |
 | `max_output_bytes` | `1048576` | In-memory output ring per job (oldest bytes drop first). Output is never written to disk. |
-| `max_timeout_seconds` | `0` | Cap for explicit `timeout_seconds` on `bg_start`; `0` = uncapped (session lifetime is the bound). |
+| `max_timeout_seconds` | `0` | Cap for explicit `timeout_seconds` on `bg_start`; `0` = uncapped (session lifetime is the bound). Negative requests are rejected and requests above one year are clamped before the cap applies. |
 | `notify` | `"observe"` | `"observe"` injects a drained completion summary at the agent's next iteration; `"off"` requires polling with `bg_status`. |
 | `on_session_end` | `"kill"` | Job fate at session end. Only `"kill"` is supported; there is no detach. |
 | `wake_on_complete` | `true` | Serve surface: when a job finishes while its session is idle **and** a WebUI connection is attached, start a system-initiated turn so the model reads `bg_output` and reports unprompted. Telegram surface: the same setting wakes idle chats with a system-initiated turn (exits within `wake_coalesce_ms` coalesce into one; busy chats keep the raw exit line). Wake turns are system messages. Forced off by `notify: "off"` (a wake would point at notices that are never delivered); bounded per chat/session by `max_wakes_per_hour`. |
@@ -1378,7 +1380,10 @@ ends — there is no detach mode in v1.
 | `max_wakes_per_hour` | `30` | Per-session ceiling on system-initiated wake turns (spend control). `0` disables waking; values above `240` clamp to `240` regardless of config source. Project configs may only lower an operator-set value. |
 
 A project `odek.json` may only LOWER the numeric caps (same clamp philosophy
-as `limits`). Headless `odek run` and scheduled runs are single-session
+as `limits`); a project value of `0` or a negative number does not count as lower and
+keeps the operator's value for `max_jobs`, `max_output_bytes` and
+`max_timeout_seconds`. For `max_wakes_per_hour`, `0` (wakes disabled, the strictest
+setting) is accepted from a project; only negative values keep the operator's value. Headless `odek run` and scheduled runs are single-session
 processes: background jobs end when the run ends. `/jobs` (REPL and Telegram)
 lists live jobs. On `odek serve`, `bg_*` tools are available in sandbox mode. Each job is
 pinned to the launching agent’s container; disconnecting or completing a REST

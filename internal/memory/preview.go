@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"slices"
+	"strings"
 )
 
 // ConsolidationPreview is a proposed replacement, never applied implicitly.
@@ -62,6 +63,12 @@ func (m *MemoryManager) ApplyConsolidation(target string, preview ConsolidationP
 	for _, entry := range preview.After {
 		if err := m.scanContent(context.Background(), entry); err != nil {
 			return err
+		}
+		if strings.Contains(entry, entrySep) {
+			return fmt.Errorf("consolidated fact rejected: contains entry separator")
+		}
+		if FactLooksUnsafe(entry) {
+			return fmt.Errorf("consolidated fact rejected: download-and-execute instruction")
 		}
 	}
 	unlock, err := lockFactsDir(m.facts.dir)

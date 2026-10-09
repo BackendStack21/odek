@@ -14,7 +14,6 @@ import (
 	"regexp"
 	"sort"
 	"strings"
-	"syscall"
 	"time"
 	"unicode/utf8"
 
@@ -316,7 +315,7 @@ func (t *readFileTool) Call(argsJSON string) (string, error) {
 	// in a single syscall — eliminating the TOCTOU window between
 	// os.Stat (check) and os.Open (use). If the path is a symlink, the
 	// open fails with ELOOP.
-	f, err := os.OpenFile(resolvedPath, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	f, err := openRegularNoFollow(resolvedPath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return jsonError(fmt.Sprintf("file not found: %s", args.Path))
@@ -689,13 +688,17 @@ func (t *searchFilesTool) searchContent(args searchFilesArgs) (string, error) {
 			return nil // skip inaccessible files
 		}
 		if info.IsDir() {
-			// Skip hidden directories
-			if strings.HasPrefix(info.Name(), ".") && info.Name() != "." {
-				return filepath.SkipDir
-			}
-			// Skip known-large build/artifact directories
-			if skipDir(info.Name()) {
-				return filepath.SkipDir
+			// The explicit search root is never skipped for its own name:
+			// searching ".github" or "node_modules" on purpose must work.
+			if path != args.Path {
+				// Skip hidden directories
+				if strings.HasPrefix(info.Name(), ".") && info.Name() != "." {
+					return filepath.SkipDir
+				}
+				// Skip known-large build/artifact directories
+				if skipDir(info.Name()) {
+					return filepath.SkipDir
+				}
 			}
 			// Security: a broad search root may contain a sensitive subtree
 			// (e.g. ~/.odek under $HOME). Classify the directory before
@@ -728,7 +731,7 @@ func (t *searchFilesTool) searchContent(args searchFilesArgs) (string, error) {
 		}
 
 		// Skip binary files — single open for check then search
-		f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+		f, err := openRegularNoFollow(path)
 		if err != nil {
 			// Surface the miss instead of silently dropping the file —
 			// under fd pressure (or a permissions change) silent drops
@@ -935,7 +938,7 @@ func (t *patchTool) Call(argsJSON string) (string, error) {
 	}
 
 	// Read the file without following symlinks
-	f, err := os.OpenFile(args.Path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	f, err := openRegularNoFollow(args.Path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return jsonError(fmt.Sprintf("file not found: %s", args.Path))
@@ -965,10 +968,21 @@ func (t *patchTool) Call(argsJSON string) (string, error) {
 	if !strings.Contains(original, args.OldString) {
 		return jsonError(fmt.Sprintf("old_string not found in %q. Use search_files to find the correct string.", args.Path))
 	}
-	if !args.ReplaceAll {
-		if n := strings.Count(original, args.OldString); n > 1 {
-			return jsonError(fmt.Sprintf("old_string is not unique in %q (%d occurrences). Provide a larger unique snippet or set replace_all=true.", args.Path, n))
-		}
+	n := strings.Count(original, args.OldString)
+	if !args.ReplaceAll && n > 1 {
+		return jsonError(fmt.Sprintf("old_string is not unique in %q (%d occurrences). Provide a larger unique snippet or set replace_all=true.", args.Path, n))
+	}
+
+	// Bound the result before building it: replace_all over many matches
+	// with a long replacement would otherwise allocate the full expansion
+	// just to reject it.
+	replacements := 1
+	if args.ReplaceAll {
+		replacements = n
+	}
+	resultSize := int64(len(original)) + int64(replacements)*(int64(len(args.NewString))-int64(len(args.OldString)))
+	if resultSize > maxFileReadBytes {
+		return jsonError(fmt.Sprintf("patch result too large (%d bytes, max %d)", resultSize, maxFileReadBytes))
 	}
 
 	var modified string
@@ -976,9 +990,6 @@ func (t *patchTool) Call(argsJSON string) (string, error) {
 		modified = strings.ReplaceAll(original, args.OldString, args.NewString)
 	} else {
 		modified = strings.Replace(original, args.OldString, args.NewString, 1)
-	}
-	if len(modified) > maxFileReadBytes {
-		return jsonError(fmt.Sprintf("patch result too large (%d bytes, max %d)", len(modified), maxFileReadBytes))
 	}
 
 	// Generate a simple diff

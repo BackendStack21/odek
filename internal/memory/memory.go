@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -54,6 +56,12 @@ func factsDirLock(dir string) *sync.Mutex {
 func lockFactsDir(dir string) (func(), error) {
 	mu := factsDirLock(dir)
 	mu.Lock()
+	// A fresh install has no memory directory yet; the first write must create
+	// it (owner-only) instead of failing on the lock file.
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		mu.Unlock()
+		return nil, fmt.Errorf("memory: facts lock: %w", err)
+	}
 	rel, err := flock.Lock(filepath.Join(dir, "facts.lock"))
 	if err != nil {
 		mu.Unlock()
@@ -1004,8 +1012,10 @@ func (m *MemoryManager) Consolidate(target string) error {
 	// Cheap unlocked peek: skip the flock (and the facts.lock file it creates)
 	// when there is nothing to merge. Session-end consolidation runs in a
 	// background goroutine; creating that lock file after a test's TempDir
-	// cleanup has started races RemoveAll ("directory not empty"). Re-check
-	// under the lock below so a concurrent AddFact cannot sneak past.
+	// cleanup has started races RemoveAll ("directory not empty"). The
+	// entries read here are the snapshot the LLM merges; a concurrent write
+	// is detected under the lock after the call by comparing the file
+	// against this snapshot, and the merge is then skipped.
 	entries, err := m.facts.Entries(target)
 	if err != nil {
 		return err
@@ -1014,24 +1024,10 @@ func (m *MemoryManager) Consolidate(target string) error {
 		return nil // nothing to consolidate
 	}
 
-	// Hold the per-dir lock across the whole consolidation (read → LLM merge →
-	// write) so it is atomic vs concurrent AddFact on the same dir. Rare,
-	// agent-triggered, and off the user's hot path, so the LLM call under the
-	// lock is acceptable.
-	unlock, err := lockFactsDir(m.facts.dir)
-	if err != nil {
-		return err
-	}
-	var pending []MemoryEvent
-	defer m.fireAfterUnlock(unlock, &pending)
-
-	entries, err = m.facts.Entries(target)
-	if err != nil {
-		return err
-	}
-	if len(entries) <= 1 {
-		return nil
-	}
+	// Snapshot, call the LLM with no lock held, then lock and apply only if
+	// the file is unchanged since the snapshot. Holding the facts lock across
+	// the LLM latency would stall every AddFact/ReplaceFact/RemoveFact on any
+	// session (and process) sharing the directory.
 
 	// Use LLM to merge
 	prompt := fmt.Sprintf(`Consolidate the following memory entries into a concise set of facts. Merge related entries, remove redundancy. Output as a JSON array of strings, for example: ["fact one", "fact two", "fact three"]
@@ -1079,6 +1075,18 @@ Entries for %s:
 			log.Printf("memory: consolidated entry rejected: %v", err)
 			continue
 		}
+		// An entry carrying the on-disk separator would split into extra
+		// entries on write; Add/Replace reject it, so consolidation does too.
+		if strings.Contains(entry, entrySep) {
+			log.Printf("memory: consolidated entry rejected: contains entry separator")
+			continue
+		}
+		// Same download-and-run filter AddFact/ReplaceFact apply: the merged
+		// entries land in the always-injected fact files too.
+		if FactLooksUnsafe(entry) {
+			log.Printf("memory: consolidated entry rejected: download-and-execute instruction")
+			continue
+		}
 		kept = append(kept, entry)
 	}
 	newEntries = kept
@@ -1094,7 +1102,21 @@ Entries for %s:
 		return fmt.Errorf("memory: consolidated entries (%d chars) would exceed cap (%d chars); keeping existing entries", size, m.facts.cap(target))
 	}
 
-	// Write back
+	// Write back under the lock, conflict-checked against the snapshot so a
+	// concurrent write is never overwritten by a merge of stale entries.
+	unlock, err := lockFactsDir(m.facts.dir)
+	if err != nil {
+		return err
+	}
+	var pending []MemoryEvent
+	defer m.fireAfterUnlock(unlock, &pending)
+	current, err := m.facts.Entries(target)
+	if err != nil {
+		return err
+	}
+	if !slices.Equal(current, entries) {
+		return fmt.Errorf("memory: consolidate: %s facts changed during consolidation; skipped", target)
+	}
 	before := len(entries)
 	if err := m.facts.writeEntries(target, newEntries); err != nil {
 		return err
@@ -1276,7 +1298,19 @@ func (m *MemoryManager) writeEpisode(sessionID, extraction string, turns int, pr
 	// recalled without a manual `odek memory promote`. Off by default; the
 	// audit record keeps Untrusted + Sources so it stays clear the content was
 	// external and the approval was automatic (AutoApproved, not UserApproved).
-	if prov.Untrusted && m.cfg.AutoApproveEpisodes != nil && *m.cfg.AutoApproveEpisodes {
+	//
+	// The summary is LLM output over the whole transcript (injected text
+	// included) and is replayed into later system prompts, so it goes through
+	// the injection guard first. A rejected summary is still stored for audit
+	// but tainted, and never auto-approved: only a human promote recalls it.
+	guardRejected := false
+	if err := m.scanContent(context.Background(), extraction); err != nil {
+		log.Printf("memory: episode summary rejected: %v", err)
+		guardRejected = true
+		prov.Untrusted = true
+		prov.Sources = append(append([]string(nil), prov.Sources...), "guard:episode-summary")
+	}
+	if prov.Untrusted && !guardRejected && m.cfg.AutoApproveEpisodes != nil && *m.cfg.AutoApproveEpisodes {
 		prov.AutoApproved = true
 	}
 

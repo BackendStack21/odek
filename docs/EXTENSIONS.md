@@ -91,6 +91,7 @@ Unknown fields in the server config are ignored (additive rule).
 - A single response line larger than `max_response_bytes` **fails closed**:
   the response is dropped and the connection is closed. odek never buffers an
   unbounded line in memory.
+- `max_result_chars` is an absolute cap on the model-facing result. Values below the floor (the longest possible truncation notice, about 250 chars, plus 64) are raised to the floor with a startup warning naming the server, so a truncated result always carries content beyond the notice. Stdio responses without an `id` (or `id: null`) answer no call and are dropped. No text result (single item, multi-item, envelope text, trailing items or `isError` text) can forge `- artifact` metadata lines: such lines are indented by one space.
 - Result text longer than `max_result_chars` is not silently mangled: malformed
   JSON is rejected outright, and valid-but-oversized structured results get a
   structured truncation notice that retains any artifact references. The notice
@@ -151,6 +152,12 @@ evaluation) must lie inside a configured `artifact_roots` entry; traversal
 files are all rejected. Artifact **content is never auto-read into the model
 context** — the model sees only the compact text plus per-artifact metadata
 lines (id, media type, size, short hash, summary).
+
+Each metadata field is flattened onto one line: control characters (including
+tab, CR and LF), bidi controls (U+061C, U+200E/F, U+202A-E, U+2066-9), the line
+and paragraph separators and the BOM become spaces. Joiners (ZWJ, ZWNJ) and the
+soft hyphen are kept so Persian and Indic text and emoji sequences render
+intact.
 
 ## Event schema (`odek.event/v1`)
 

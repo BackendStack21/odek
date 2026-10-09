@@ -54,6 +54,7 @@ process startup; the janitor repeats that policy on its interval, and
 `odek cleanup` uses the same policy on demand. If logging is disabled, an
 ordinary CLI command does not prune the log. The active file and numbered
 backups are age-pruned and rotated to the configured total file count.
+A single oversized line in the runtime log (over 1 MiB) is treated as one malformed record: it is kept verbatim, like any other unparseable line, and does not stop retention for the rest of the file.
 Downloaded Telegram media is transient and expires after a fixed 1 hour.
 
 ## What is NEVER touched

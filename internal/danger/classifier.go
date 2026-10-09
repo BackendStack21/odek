@@ -324,8 +324,10 @@ func classifyPathLexical(path string) RiskClass {
 	// system path for every other account; without this every ordinary
 	// write to its own home would prompt. The protected home paths (rc files,
 	// credential directories, odek anchors) were already decided above.
-	if home := currentHomeDir(); home != "" && pathWithin(abs, home) {
-		return LocalWrite
+	for _, home := range currentHomeDirs() {
+		if pathWithin(abs, home) {
+			return LocalWrite
+		}
 	}
 
 	// Ordinary temp paths are local after home-sensitive checks. This handles
@@ -337,7 +339,7 @@ func classifyPathLexical(path string) RiskClass {
 		return LocalWrite
 	}
 
-	for _, prefix := range []string{"/etc", "/root", "/var", "/run", "/lib", "/usr", "/bin", "/sbin", "/opt", "/srv"} {
+	for _, prefix := range []string{"/etc", "/root", "/var", "/run", "/lib", "/lib32", "/lib64", "/libx32", "/usr", "/bin", "/sbin", "/opt", "/srv"} {
 		if abs == prefix || strings.HasPrefix(abs, prefix+"/") {
 			return SystemWrite
 		}
@@ -372,6 +374,25 @@ func currentHomeDir() string {
 	return home
 }
 
+// currentHomeDirs returns the current user's home as spelled in $HOME and, when
+// the home is reached through a symlink (macOS keeps /home under /System, a
+// server may link /home/user into a data volume), the physical directory that
+// symlink-resolved targets sit under. Both spellings name the same home.
+func currentHomeDirs() []string {
+	home := currentHomeDir()
+	if home == "" {
+		return nil
+	}
+	homes := []string{home}
+	if resolved, err := resolvePathTarget(home); err == nil {
+		resolved = strings.TrimPrefix(filepath.Clean(resolved), "/private")
+		if resolved != home && !degenerateHomes[resolved] && filepath.IsAbs(resolved) {
+			homes = append(homes, resolved)
+		}
+	}
+	return homes
+}
+
 // pathWithin reports whether abs is dir itself or lies under it.
 func pathWithin(abs, dir string) bool {
 	return abs == dir || strings.HasPrefix(abs, dir+string(filepath.Separator))
@@ -387,6 +408,9 @@ func accountHomes(abs string) []string {
 	if home, _ := os.UserHomeDir(); home != "" {
 		homes = append(homes, home)
 	}
+	if physical := currentHomeDirs(); len(physical) > 1 {
+		homes = append(homes, physical[1:]...)
+	}
 	lower := strings.ToLower(abs)
 	for _, base := range []string{"/home/", "/users/"} {
 		if !strings.HasPrefix(lower, base) {
@@ -401,6 +425,11 @@ func accountHomes(abs string) []string {
 	}
 	if lower == "/root" || strings.HasPrefix(lower, "/root/") {
 		homes = append(homes, abs[:len("/root")])
+	}
+	// macOS keeps the superuser's home at /var/root (/private/var/root before
+	// the /private prefix is stripped).
+	if lower == "/var/root" || strings.HasPrefix(lower, "/var/root/") {
+		homes = append(homes, abs[:len("/var/root")])
 	}
 	return homes
 }
@@ -789,8 +818,10 @@ func init() {
 // must never reach: loopback (127/8, ::1), RFC1918 / RFC4193 private (incl.
 // IPv6 ULA fc00::/7), link-local (169.254/16 — which covers the
 // 169.254.169.254 cloud-metadata endpoint — and fe80::/10), RFC 6598 CGNAT
-// (100.64/10), RFC 2544 benchmark testing (198.18/15), or the unspecified
-// address (0.0.0.0, ::). It is the single source of truth shared by both
+// (100.64/10), RFC 2544 benchmark testing (198.18/15), "this network"
+// (0.0.0.0/8), the unspecified address (::), or an IPv6 form that embeds a
+// blocked IPv4 address (NAT64 64:ff9b::/96, 6to4 2002::/16, local-use NAT64
+// 64:ff9b:1::/48). It is the single source of truth shared by both
 // ClassifyURL's literal-host gate and the dial-time SSRF guard, so the two
 // cannot drift apart. A nil IP is treated as blocked (fail closed).
 func IsBlockedIP(ip net.IP) bool {
@@ -807,14 +838,51 @@ func IsBlockedIP(ip net.IP) bool {
 			return true
 		}
 	}
+	if v4 := ip.To4(); v4 != nil {
+		// 0.0.0.0/8 ("this network"): Linux routes 0.x.y.z to the local host.
+		return v4[0] == 0
+	}
+	if len(ip) == net.IPv6len {
+		switch {
+		case ip[0] == 0x00 && ip[1] == 0x64 && ip[2] == 0xff && ip[3] == 0x9b &&
+			ipBytesAllZero(ip[4:12]):
+			// NAT64 well-known prefix 64:ff9b::/96: the low 32 bits are an
+			// IPv4 address the gateway connects to, so the embedded address
+			// decides.
+			return IsBlockedIP(net.IP(append([]byte(nil), ip[12:16]...)))
+		case ip[0] == 0x00 && ip[1] == 0x64 && ip[2] == 0xff && ip[3] == 0x9b && ip[4] == 0x00 && ip[5] == 0x01:
+			// 64:ff9b:1::/48 local-use NAT64 (RFC 8215) embeds the IPv4
+			// address at a prefix-length-dependent offset; refuse the range.
+			return true
+		case ip[0] == 0x20 && ip[1] == 0x02:
+			// 6to4 2002::/16: bits 16..47 are the IPv4 address of the
+			// tunnel endpoint the packet is delivered to.
+			return IsBlockedIP(net.IP(append([]byte(nil), ip[2:6]...)))
+		}
+	}
 	return false
+}
+
+// ipBytesAllZero reports whether every byte of b is zero.
+func ipBytesAllZero(b []byte) bool {
+	for _, c := range b {
+		if c != 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // hostnameIsInternal reports whether a non-IP hostname denotes a well-known
 // loopback/internal name or a private suffix that must classify as SystemWrite.
 // Matching is case-insensitive.
 func hostnameIsInternal(host string) bool {
-	hostLower := strings.ToLower(host)
+	// A trailing dot is the absolute spelling of the same name.
+	hostLower := strings.TrimSuffix(strings.ToLower(host), ".")
+	// RFC 6761: every name under .localhost resolves to loopback.
+	if strings.HasSuffix(hostLower, ".localhost") {
+		return true
+	}
 	switch hostLower {
 	case "localhost", "localhost.localdomain", "localhost6", "localhost6.localdomain6",
 		"ip6-localhost", "ip6-loopback":
@@ -3000,6 +3068,10 @@ func collapseUnquotedBackslashes(cmd string) string {
 				switch next {
 				case '\\', '"', '$', '`':
 					out.WriteByte(ch)
+				case '!':
+					// The shell keeps this backslash, and a database
+					// client's \! meta-command is spelled with it.
+					out.WriteByte(ch)
 				}
 				out.WriteByte(next)
 			} else {
@@ -3118,7 +3190,66 @@ func splitSegments(tokens []string) [][]string {
 	if len(current) > 0 {
 		segments = append(segments, current)
 	}
+	for i := range segments {
+		segments[i] = unmarkLiteralOperators(segments[i])
+	}
 	return segments
+}
+
+// operatorLookalikes are the separator and pipe spellings that a quoted word
+// can also have (`grep ';' x`, `cut -d $'\n'`).
+var operatorLookalikes = map[string]bool{
+	";": true, "&&": true, "||": true, "&": true, ";;": true, ";&": true, ";;&": true,
+	"|": true, "|&": true,
+}
+
+// markLiteralOperators prefixes every token that is spelled like a separator
+// or pipe but was written as a word (ops reports operators written outside
+// quotes), so the splitters below read it as an argument. The splitters strip
+// the mark again from the stages they return. A nil ops means every token is
+// an operator.
+func markLiteralOperators(tokens []string, ops []bool) []string {
+	if ops == nil {
+		return tokens
+	}
+	var out []string
+	for i, tok := range tokens {
+		if !ops[i] && operatorLookalikes[tok] {
+			if out == nil {
+				out = append([]string(nil), tokens...)
+			}
+			out[i] = literalMark + tok
+		}
+	}
+	if out == nil {
+		return tokens
+	}
+	return out
+}
+
+// markWordOperators marks every operator-shaped token in words, which are
+// already known to be plain command words.
+func markWordOperators(words []string) []string {
+	flags := make([]bool, len(words))
+	return markLiteralOperators(words, flags)
+}
+
+// unmarkLiteralOperators removes the literal mark from a token sequence,
+// copying only when a mark is present.
+func unmarkLiteralOperators(tokens []string) []string {
+	var out []string
+	for i, tok := range tokens {
+		if strings.HasPrefix(tok, literalMark) {
+			if out == nil {
+				out = append([]string(nil), tokens...)
+			}
+			out[i] = unmark(tok)
+		}
+	}
+	if out == nil {
+		return tokens
+	}
+	return out
 }
 
 // splitPipes splits a segment's tokens into pipe stages. Each stage is a
@@ -3136,6 +3267,9 @@ func splitPipes(tokens []string) [][]string {
 		current = append(current, tok)
 	}
 	stages = append(stages, current)
+	for i := range stages {
+		stages[i] = unmarkLiteralOperators(stages[i])
+	}
 	return stages
 }
 
@@ -3170,7 +3304,7 @@ var execWrappers = map[string]bool{
 	"setsid": true, "stdbuf": true, "time": true, "timeout": true,
 	"command": true, "exec": true, "builtin": true, "watch": true,
 	"busybox": true, "unbuffer": true,
-	"parallel": true, "xe": true,
+	"parallel": true, "xe": true, "sem": true,
 	"chrt": true, "taskset": true, "flock": true, "script": true, "arch": true,
 }
 
@@ -3960,6 +4094,13 @@ func isDirectoryDestination(raw, expanded string) bool {
 	case ".", "..":
 		return true
 	}
+	// The caller's home is a directory whether or not it can be statted (a
+	// service account's HOME may be absent or sit behind a symlink).
+	for _, home := range currentHomeDirs() {
+		if filepath.Clean(expanded) == home {
+			return true
+		}
+	}
 	if st, err := os.Stat(expanded); err == nil && st.IsDir() {
 		return true
 	}
@@ -4250,7 +4391,7 @@ func hasAnyRsyncDelete(tokens []string) bool {
 			return true
 		}
 		switch t {
-		case "--del", "--remove-source-files":
+		case "--del", "--remove-source-files", "--remove-sent-files":
 			return true
 		}
 	}
@@ -4706,6 +4847,10 @@ func isDestructive(first string, tokens []string) bool {
 		return true
 	}
 	if first == "rsync" && hasAnyRsyncDelete(tokens) {
+		return true
+	}
+	// tar --remove-files deletes every archived source once it is written.
+	if first == "tar" && tarOptions.parse(tokens[1:]).has("--remove-files") {
 		return true
 	}
 	if first == "rsync" {
@@ -5485,11 +5630,48 @@ func isGitDataLoss(tokens []string) bool {
 				}
 			}
 		}
-		return del && force
+		if del && force {
+			return true
+		}
+		// -f without a delete moves an existing branch ref, orphaning the
+		// commits only it reached; -M force-renames over an existing branch.
+		for _, a := range args {
+			if isShortFlagToken(a) && strings.ContainsRune(a[1:], 'M') {
+				return true
+			}
+		}
+		return force
+	case "tag":
+		// Deleting or force-moving a tag removes the only name of its commit.
+		for _, a := range args {
+			if a == "--delete" || a == "--force" ||
+				(isShortFlagToken(a) && (strings.ContainsRune(a[1:], 'd') || strings.ContainsRune(a[1:], 'f'))) {
+				return true
+			}
+		}
+		return false
+	case "rm":
+		// Without -f git refuses to remove files with local modifications; -f
+		// deletes the work tree files and discards those modifications.
+		for _, a := range args {
+			if a == "--force" || (isShortFlagToken(a) && strings.ContainsRune(a[1:], 'f')) {
+				return true
+			}
+		}
+		return false
+	case "prune":
+		// --expire permanently deletes unreachable objects younger than the
+		// default grace period.
+		for _, a := range args {
+			if a == "--expire" || strings.HasPrefix(a, "--expire=") {
+				return true
+			}
+		}
+		return false
 	case "stash":
 		return hasAny(args, "drop", "clear")
 	case "reflog":
-		return hasAny(args, "expire")
+		return hasAny(args, "expire", "delete")
 	case "worktree":
 		// `worktree remove` deletes an entire working tree — including all
 		// uncommitted work under --force, with no undo; `worktree prune`
@@ -5503,6 +5685,35 @@ func isGitDataLoss(tokens []string) bool {
 // like -f, -fdx, -Df (as opposed to a --long flag or an operand).
 func isShortFlagToken(tok string) bool {
 	return strings.HasPrefix(tok, "-") && !strings.HasPrefix(tok, "--") && len(tok) > 1
+}
+
+// resolveLongOption resolves a GNU-style long option token (--name or
+// --name=value) against the tool's full option list: an exact name wins,
+// otherwise a prefix that matches exactly one option does. Ambiguous or unknown
+// prefixes do not resolve, matching getopt_long.
+func resolveLongOption(tok string, names []string) (name, value string, hasValue, ok bool) {
+	if !strings.HasPrefix(tok, "--") {
+		return "", "", false, false
+	}
+	given, value, hasValue := strings.Cut(tok[2:], "=")
+	if given == "" {
+		return "", "", false, false
+	}
+	var match string
+	count := 0
+	for _, n := range names {
+		if n == given {
+			return n, value, hasValue, true
+		}
+		if strings.HasPrefix(n, given) {
+			match = n
+			count++
+		}
+	}
+	if count == 1 {
+		return match, value, hasValue, true
+	}
+	return "", "", false, false
 }
 
 func hasShortFlag(args []string, flag rune) bool {
@@ -5586,6 +5797,11 @@ func isCodeExecution(first string, tokens []string, repo *gitRepoCtx) bool {
 	if first == "tar" && tarRunsCommand(tokens) {
 		return true
 	}
+	// zip -TT CMD runs CMD to test the archive; cpio --rsh-command / --rmt-command
+	// name the program that carries the archive to a remote host.
+	if (first == "zip" && zipRunsCommand(tokens)) || (first == "cpio" && cpioRunsCommand(tokens)) {
+		return true
+	}
 
 	// Embedded-shell interpreters: awk, ed/ex, vi/vim, emacs, etc. Their
 	// payload (script expression or file operand) can invoke arbitrary shell
@@ -5645,6 +5861,9 @@ func isCodeExecution(first string, tokens []string, repo *gitRepoCtx) bool {
 			return true
 		}
 		if first == "sqlite3" && sqliteRunsShell(tokens) {
+			return true
+		}
+		if dbClientRunsShell(first, tokens) {
 			return true
 		}
 		if first == "buf" && hasAny(tokens, "generate") {
@@ -6199,6 +6418,40 @@ func sqliteRunsShell(tokens []string) bool {
 	return false
 }
 
+// isDBClient reports whether name is a PostgreSQL or MySQL command-line client.
+func isDBClient(name string) bool {
+	switch name {
+	case "psql", "mysql", "mariadb", "pgcli", "mycli":
+		return true
+	}
+	return false
+}
+
+// dbClientRunsShell reports whether a database client invocation carries a
+// command that executes a local program. The network class stays for plain
+// queries; only these escapes are code execution.
+func dbClientRunsShell(name string, tokens []string) bool {
+	if !isDBClient(name) {
+		return false
+	}
+	for _, tok := range tokens[1:] {
+		if dbClientShellText(tok) || strings.HasPrefix(tok, "--pager") {
+			return true
+		}
+	}
+	return false
+}
+
+// dbClientStdinRunsShell reports whether the static text an echo/printf
+// producer pipes into a database client carries a local-program escape.
+func dbClientStdinRunsShell(name string, upstream [][]string) bool {
+	if !isDBClient(name) {
+		return false
+	}
+	text, ok := staticPipeText(upstream)
+	return ok && dbClientShellText(text)
+}
+
 func classifyDirenv(tokens []string) RiskClass {
 	for _, tok := range tokens[1:] {
 		if strings.HasPrefix(tok, "-") {
@@ -6326,7 +6579,7 @@ var tarCommandLongOptions = []string{
 var tarOptions = optSpec{
 	short: "gCTXfFLbHVIKN",
 	long: longTable("use-compress-program to-command info-script new-volume-script checkpoint-action "+
-		"rsh-command rmt-command directory", "checkpoint list"),
+		"rsh-command rmt-command directory file", "checkpoint list remove-files create append update catenate concatenate"),
 	abbrev:         true,
 	ignoreDashDash: true,
 }
@@ -6354,6 +6607,49 @@ func tarRunsCommand(tokens []string) bool {
 	// Old-style first operand: every letter is an option, its values come from
 	// later words.
 	return r.operandAt == 0 && strings.ContainsAny(r.operands[0], "IF")
+}
+
+// zipLongOptions are the long options of zip that share a prefix with
+// --unzip-command, so an abbreviation resolves only when it is unambiguous.
+var zipLongOptions = []string{"unzip-command", "unicode", "update"}
+
+// cpioLongOptions are the long options of GNU cpio that share a prefix with
+// the remote-shell and remote-tape options (`--re` is ambiguous, `--rs` is not).
+var cpioLongOptions = []string{
+	"rsh-command", "rmt-command", "rename", "rename-batch-file",
+	"renumber-inodes", "reset-access-time",
+}
+
+// zipRunsCommand reports whether zip is given a test command (-TT CMD, also
+// fused as -TTCMD) or its long spelling, which GNU-style parsing accepts as any
+// unambiguous prefix.
+func zipRunsCommand(tokens []string) bool {
+	for _, tok := range tokens[1:] {
+		if tok == "--" {
+			break
+		}
+		if strings.HasPrefix(tok, "-TT") {
+			return true
+		}
+		if name, _, _, ok := resolveLongOption(tok, zipLongOptions); ok && name == "unzip-command" {
+			return true
+		}
+	}
+	return false
+}
+
+// cpioRunsCommand reports whether cpio names a remote-shell or remote-tape
+// program. GNU cpio accepts any unambiguous long-option prefix.
+func cpioRunsCommand(tokens []string) bool {
+	for _, tok := range tokens[1:] {
+		if tok == "--" {
+			break
+		}
+		if name, _, _, ok := resolveLongOption(tok, cpioLongOptions); ok && (name == "rsh-command" || name == "rmt-command") {
+			return true
+		}
+	}
+	return false
 }
 
 func killTargetsInitOrBroadcast(tokens []string) bool {
@@ -6609,14 +6905,16 @@ func touchesSystemPath(tokens []string) bool {
 }
 
 // isSystemPath returns true if the path targets a system directory.
-var systemPathPrefixes = []string{"/etc/", "/usr/", "/bin/", "/lib/", "/var/", "/opt/", "/boot/", "/sbin/"}
+var systemPathPrefixes = []string{"/etc/", "/usr/", "/bin/", "/lib/", "/lib32/", "/lib64/", "/libx32/", "/var/", "/opt/", "/boot/", "/sbin/"}
 
 func isSystemPath(path string) bool {
 	// The current user's home is theirs even when it sits under a system
 	// prefix (a service account with HOME=/var/lib/svc); the protected paths
 	// inside it are caught by shellPathIsHomeSensitive.
-	if home := currentHomeDir(); home != "" && pathWithin(filepath.Clean(path), home) {
-		return false
+	for _, home := range currentHomeDirs() {
+		if pathWithin(filepath.Clean(path), home) {
+			return false
+		}
 	}
 	for _, p := range systemPathPrefixes {
 		if strings.HasPrefix(path, p) {

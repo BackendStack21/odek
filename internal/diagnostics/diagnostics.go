@@ -9,25 +9,45 @@ import (
 	"github.com/BackendStack21/odek/internal/events"
 )
 
-var observer struct {
-	sync.RWMutex
+// installed is one registered observer. Installs form a chain through prev, so
+// the observer that was active before this one can be found again on removal.
+type installed struct {
 	handler func(events.Event)
+	prev    *installed
+	removed bool
 }
 
-// Install registers a non-blocking observer and returns a function restoring
-// the previous observer. The process owner installs it before loading config
-// and removes it after its services stop. Library use is opt-in.
+var observer struct {
+	sync.RWMutex
+	top *installed
+}
+
+// Install registers a non-blocking observer and returns a function removing
+// it. Removal restores the most recent observer that is still installed, so
+// observers may be removed in any order: removing an observer that is not the
+// active one only marks it, and it is never reactivated later. The process
+// owner installs it before loading config and removes it after its services
+// stop. Library use is opt-in.
 func Install(handler func(events.Event)) func() {
+	entry := &installed{handler: handler}
 	observer.Lock()
-	previous := observer.handler
-	observer.handler = handler
+	entry.prev = observer.top
+	observer.top = entry
 	observer.Unlock()
 	var once sync.Once
 	return func() {
 		once.Do(func() {
 			observer.Lock()
-			observer.handler = previous
-			observer.Unlock()
+			defer observer.Unlock()
+			entry.removed = true
+			if observer.top != entry {
+				return
+			}
+			prev := entry.prev
+			for prev != nil && prev.removed {
+				prev = prev.prev
+			}
+			observer.top = prev
 		})
 	}
 }
@@ -60,7 +80,10 @@ func Emit(ev events.Event) {
 		ev.Timestamp = time.Now().UTC()
 	}
 	observer.RLock()
-	handler := observer.handler
+	var handler func(events.Event)
+	if observer.top != nil {
+		handler = observer.top.handler
+	}
 	observer.RUnlock()
 	if handler != nil {
 		defer func() { _ = recover() }()

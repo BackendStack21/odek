@@ -256,9 +256,10 @@ export function stopJob(id, sessionId, sessionToken) {
   });
 }
 
-export function listSubagents(key) {
-  const q = key ? '?key=' + encodeURIComponent(key) : '';
-  return apiFetch('/api/subagents' + q);
+export function listSubagents(sessionId, sessionToken, key) {
+  let q = '?session_id=' + encodeURIComponent(sessionId || '');
+  if (key) q += '&key=' + encodeURIComponent(key);
+  return apiFetch('/api/subagents' + q, { sessionToken });
 }
 
 export function getCapabilities() { return apiFetch('/api/capabilities'); }

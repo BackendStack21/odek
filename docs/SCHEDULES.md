@@ -69,6 +69,13 @@ odek schedule daemon                        Run the scheduler in the foreground
 | `--catchup` | If a fire was missed while the process was down, run once on startup |
 | `--disabled` | Add without enabling |
 
+Flags must come before the task text. `odek schedule add` rejects any flag-shaped token (one starting with `-`) after the task unless the task is quoted as a single argument or placed after `--`, as with `odek run`; otherwise the token would silently become part of the stored task. Both of these work:
+
+```bash
+odek schedule add --cron "0 9 * * 1" "Summarize the --verbose flag changes"
+odek schedule add --cron "0 9 * * 1" -- Summarize the --verbose flag changes
+```
+
 Definitions are stored in `~/.odek/schedules.json` (mode `0600`); runtime state
 (last run, status, next fire) lives in `~/.odek/schedule-state.json`. A running
 scheduler picks up edits to the definitions file automatically (no restart).
@@ -105,8 +112,8 @@ rest of the line is the task. Options come after a literal `|`:
 | `deliver=<dest>` | `stdout`, `log`, `telegram`, or `telegram:<chatID>`. **Default: this chat.** |
 | `tz=<IANA>` | Per-job timezone, e.g. `Europe/Berlin` |
 | `name=<label>` | Human label (single token; default: first words of the task) |
-| `catchup` | Run a missed fire once on startup |
-| `disabled` | Add without enabling |
+| `catchup` | Run a missed fire once on startup. Bare flag or `catchup=true`; `catchup=false` leaves it off |
+| `disabled` | Add without enabling. Bare flag or `disabled=true`; `disabled=false` keeps the job enabled |
 
 Notes:
 
@@ -150,6 +157,14 @@ and comma-separated lists. Macros: `@hourly`, `@daily` (`@midnight`),
 
 Granularity is **one minute** (no seconds field). Times are in the job's `--tz`
 or, failing that, the scheduler's default timezone (UTC unless configured).
+
+**Daylight-saving changes** follow Vixie/cronie behavior. A job with a fixed
+time of day (neither the minute nor the hour field is a wildcard, e.g.
+`30 1 * * *`) fires **once** on a fall-back day, at the first occurrence of the
+repeated wall time, and a wall time that does not exist on a spring-forward day
+(e.g. `30 2 * * *` on the gap day) fires at the first minute after the gap
+instead of being skipped. Wildcard jobs (`*/5 * * * *`, `0 * * * *`) step real
+minutes and keep firing every matching minute, including the repeated hour.
 
 **Day-of-month / day-of-week coupling** follows Vixie semantics: when *both*
 fields are restricted, a day matches if *either* matches. So `0 0 13 * 5` fires
@@ -279,4 +294,8 @@ See [CONFIG.md](CONFIG.md) for the full field reference.
 If the scheduler was down when a job was due, on startup it either **skips**
 (default — reschedules forward and records a `skipped` status) or **runs once**
 (when the job's `--catchup` or `schedules.catchup` is set). A burst of missed
-ticks never stampedes: at most one catch-up fire per job.
+ticks never stampedes: at most one catch-up fire per job. A skipped fire does
+not touch the job's recorded last run: `last_run` and `last_result` keep
+describing the last time the job actually ran. `last_error` is cleared (it is
+set only with an `error` status) and `skipped_at` records when the skip
+happened; the Telegram job view shows it. The next real run clears `skipped_at`.

@@ -102,7 +102,7 @@ func scheduleTelegramUsage() string {
 		"`/schedule run <id>` — run once now, here\n" +
 		"`/schedule enable|disable <id>` — toggle a job\n" +
 		"`/schedule rm <id>` — remove a job\n\n" +
-		"*opts* (after ` | `): `deliver=stdout|log|telegram|telegram:<id>` `tz=<IANA>` `name=<label>` `catchup` `disabled`\n\n" +
+		"*opts* (after ` | `): `deliver=stdout|log|telegram|telegram:<id>` `tz=<IANA>` `name=<label>` `catchup[=true|false]` `disabled[=true|false]`\n\n" +
 		"Example:\n`/schedule add 0 9 * * 1-5 Summarize my unread emails | tz=Europe/Berlin`"
 }
 
@@ -175,11 +175,20 @@ func scheduleTelegramView(st *schedule.Store, id string) string {
 	fmt.Fprintf(&b, "*Task:* %s\n", job.Task)
 	if rs, ok := state[job.ID]; ok {
 		if rs.LastStatus != "" {
+			when := rs.LastRun
+			if rs.LastStatus == schedule.StatusSkipped && !rs.SkippedAt.IsZero() {
+				// A skip leaves LastRun at the last real run; show when the
+				// skip happened and the real run on its own line.
+				when = rs.SkippedAt
+			}
 			fmt.Fprintf(&b, "*Last:* %s", rs.LastStatus)
-			if !rs.LastRun.IsZero() {
-				fmt.Fprintf(&b, " (%s)", rs.LastRun.Local().Format("Mon 02 Jan 15:04"))
+			if !when.IsZero() {
+				fmt.Fprintf(&b, " (%s)", when.Local().Format("Mon 02 Jan 15:04"))
 			}
 			b.WriteString("\n")
+			if when != rs.LastRun && !rs.LastRun.IsZero() {
+				fmt.Fprintf(&b, "*Last run:* %s\n", rs.LastRun.Local().Format("Mon 02 Jan 15:04"))
+			}
 		}
 		if rs.LastError != "" {
 			fmt.Fprintf(&b, "*Error:* %s\n", rs.LastError)
@@ -300,15 +309,40 @@ func parseTelegramScheduleAdd(chatID int64, args string) (schedule.Job, string) 
 	if name == "" {
 		name = firstWords(task, 6)
 	}
+	catchup, err := scheduleBoolOpt(opts, "catchup")
+	if err != nil {
+		return schedule.Job{}, "❗ " + err.Error()
+	}
+	disabled, err := scheduleBoolOpt(opts, "disabled")
+	if err != nil {
+		return schedule.Job{}, "❗ " + err.Error()
+	}
 	return schedule.Job{
 		Name:     name,
 		Cron:     cron,
 		Task:     task,
 		Deliver:  del,
 		Timezone: opts["tz"],
-		Catchup:  opts["catchup"] != "",
-		Enabled:  opts["disabled"] == "",
+		Catchup:  catchup,
+		Enabled:  !disabled,
 	}, ""
+}
+
+// scheduleBoolOpt reads a boolean option: absent is false, a bare flag or
+// true/1/yes/on is true, and false/0/no/off is false. Anything else is an
+// error so a typo cannot silently flip the setting.
+func scheduleBoolOpt(opts map[string]string, key string) (bool, error) {
+	v, ok := opts[key]
+	if !ok {
+		return false, nil
+	}
+	switch strings.ToLower(v) {
+	case "", "true", "1", "yes", "on":
+		return true, nil
+	case "false", "0", "no", "off":
+		return false, nil
+	}
+	return false, fmt.Errorf("option %s must be true or false, got %q", key, v)
 }
 
 // splitCronTask separates a cron expression (a single @macro or exactly five

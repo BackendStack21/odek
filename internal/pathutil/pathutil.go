@@ -79,5 +79,11 @@ func WithinRoot(root, candidate string) bool {
 	if resolved == resolvedRoot {
 		return true
 	}
-	return strings.HasPrefix(resolved, resolvedRoot+string(os.PathSeparator))
+	// The filesystem root already ends in a separator; appending another one
+	// would make the prefix "//" and reject every candidate.
+	prefix := resolvedRoot
+	if !strings.HasSuffix(prefix, string(os.PathSeparator)) {
+		prefix += string(os.PathSeparator)
+	}
+	return strings.HasPrefix(resolved, prefix)
 }

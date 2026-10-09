@@ -10,9 +10,11 @@ import (
 	"mime/multipart"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -114,6 +116,7 @@ func (b *Bot) doJSONContext(ctx context.Context, method string, body any, dest a
 
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(reqBody))
 		if err != nil {
+			err = b.scrubErr(err)
 			b.log.Error("create request failed", "method", method, "error", err)
 			return fmt.Errorf("telegram: create request: %w", err)
 		}
@@ -121,6 +124,7 @@ func (b *Bot) doJSONContext(ctx context.Context, method string, body any, dest a
 
 		resp, err := b.Client.Do(req)
 		if err != nil {
+			err = b.scrubErr(err)
 			b.log.Error("http post failed", "method", method, "error", err)
 			lastErr = fmt.Errorf("telegram: post %s: %w", method, err)
 			if isRetryableNetworkError(err) {
@@ -222,6 +226,7 @@ func (b *Bot) doJSON(method string, body any, dest any) (requestErr error) {
 
 		resp, err := b.Client.Post(url, "application/json", bytes.NewReader(reqBody))
 		if err != nil {
+			err = b.scrubErr(err)
 			b.log.Error("http post failed", "method", method, "error", err)
 			lastErr = fmt.Errorf("telegram: post %s: %w", method, err)
 			if isRetryableNetworkError(err) {
@@ -346,6 +351,7 @@ func (b *Bot) doUpload(method string, field string, path string, params map[stri
 
 		req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(bodyBytes))
 		if err != nil {
+			err = b.scrubErr(err)
 			b.log.Error("create request failed", "method", method, "error", err)
 			return fmt.Errorf("telegram: create request: %w", err)
 		}
@@ -353,6 +359,7 @@ func (b *Bot) doUpload(method string, field string, path string, params map[stri
 
 		resp, err := b.Client.Do(req)
 		if err != nil {
+			err = b.scrubErr(err)
 			b.log.Error("http post failed", "method", method, "error", err)
 			lastErr = fmt.Errorf("telegram: post %s: %w", method, err)
 			if isRetryableNetworkError(err) {
@@ -598,6 +605,24 @@ func (b *Bot) GetFile(fileID string) (*File, error) {
 	return &file, nil
 }
 
+// scrubErr returns err with the bot token removed. Transport errors wrap the
+// full request URL, which embeds the token (/bot<TOKEN>/...), and are logged
+// and propagated to callers. A *url.Error stays a *url.Error so errors.Is/As
+// keep working.
+func (b *Bot) scrubErr(err error) error {
+	if err == nil || b.Token == "" || !strings.Contains(err.Error(), b.Token) {
+		return err
+	}
+	const mask = "<token>"
+	if ue, ok := err.(*url.Error); ok {
+		scrubbed := &url.Error{Op: ue.Op, URL: strings.ReplaceAll(ue.URL, b.Token, mask), Err: ue.Err}
+		if !strings.Contains(scrubbed.Error(), b.Token) {
+			return scrubbed
+		}
+	}
+	return errors.New(strings.ReplaceAll(err.Error(), b.Token, mask))
+}
+
 // DownloadFile downloads a file from Telegram's file server and returns its raw bytes.
 // If MaxDownloadSize is set (>0), the read is capped and an error is returned
 // when the file exceeds the limit.
@@ -606,7 +631,7 @@ func (b *Bot) DownloadFile(filePath string) ([]byte, error) {
 
 	resp, err := b.Client.Get(url)
 	if err != nil {
-		return nil, fmt.Errorf("telegram: download file: %w", err)
+		return nil, fmt.Errorf("telegram: download file: %w", b.scrubErr(err))
 	}
 	defer resp.Body.Close()
 
@@ -708,7 +733,7 @@ func (b *Bot) CheckDailyBudget(tokens int64) error {
 
 	// Ensure the parent .odek directory exists.
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("telegram: create budget dir: %w", err)
 	}
 

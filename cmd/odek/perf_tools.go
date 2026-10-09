@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"go/ast"
 	"go/parser"
@@ -42,6 +43,29 @@ const maxInlineContentBytes = 10 << 20 // 10 MiB
 // by the tree tool, preventing OOM from directories with millions of entries.
 const maxTreeEntries = 1000
 
+// openRegularNoFollow opens path read-only without following a final symlink
+// and without ever blocking: O_NONBLOCK keeps open(2) on a FIFO with no
+// writer from hanging the agent turn, and anything that is neither a regular
+// file nor a directory (FIFO, socket, device) is refused after the open so
+// no reader can block on it later. Directories are returned so callers can
+// keep their own directory messages.
+func openRegularNoFollow(path string) (*os.File, error) {
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, err
+	}
+	info, err := f.Stat()
+	if err != nil {
+		f.Close()
+		return nil, err
+	}
+	if m := info.Mode(); !m.IsRegular() && !m.IsDir() {
+		f.Close()
+		return nil, fmt.Errorf("not a regular file")
+	}
+	return f, nil
+}
+
 // readFileNoFollow reads a file with O_NOFOLLOW (anti-symlink), rejecting files
 // larger than maxFileReadBytes to avoid unbounded memory consumption.
 // Directory symlinks in the path are resolved first so risk classification
@@ -51,7 +75,7 @@ func readFileNoFollow(path string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	f, err := os.OpenFile(resolvedPath, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	f, err := openRegularNoFollow(resolvedPath)
 	if err != nil {
 		return nil, err
 	}
@@ -158,7 +182,21 @@ func evalMath(expr string) (float64, error) {
 	return evalNode(node)
 }
 
+// evalNode evaluates one node and rejects any non-finite intermediate or
+// final value (overflow to Inf, NaN) with an in-band error: a non-finite
+// float cannot be encoded as a JSON result.
 func evalNode(node ast.Expr) (float64, error) {
+	v, err := evalNodeRaw(node)
+	if err != nil {
+		return 0, err
+	}
+	if math.IsInf(v, 0) || math.IsNaN(v) {
+		return 0, fmt.Errorf("result is not finite (overflow or undefined)")
+	}
+	return v, nil
+}
+
+func evalNodeRaw(node ast.Expr) (float64, error) {
 	switch n := node.(type) {
 	case *ast.BasicLit:
 		if n.Kind == token.INT || n.Kind == token.FLOAT {
@@ -192,6 +230,12 @@ func evalNode(node ast.Expr) (float64, error) {
 			// wrong answer (0.5 % 2 → 0). Reject them cleanly instead.
 			if x != math.Trunc(x) || y != math.Trunc(y) {
 				return 0, fmt.Errorf("modulo requires integer operands (got %v %% %v)", x, y)
+			}
+			// Outside int64 the conversion is implementation-defined and
+			// would return a silently wrong remainder.
+			const twoPow63 = 1 << 63
+			if x >= twoPow63 || x < -twoPow63 || y >= twoPow63 || y < -twoPow63 {
+				return 0, fmt.Errorf("modulo operands must fit in int64 (got %v %% %v)", x, y)
 			}
 			if y == 0 {
 				return 0, fmt.Errorf("modulo by zero")
@@ -280,7 +324,7 @@ func (t *diffTool) Call(argsJSON string) (result string, err error) {
 		return jsonError("invalid arguments: " + err.Error())
 	}
 
-	var linesA, linesB []string
+	var textA, textB string
 	var pathA, pathB string
 
 	if args.PathA != "" && args.PathB != "" {
@@ -299,12 +343,12 @@ func (t *diffTool) Call(argsJSON string) (result string, err error) {
 		if err != nil {
 			return jsonResult(diffResult{Error: err.Error(), PathA: pathA, PathB: pathB})
 		}
-		linesA = strings.Split(string(data), "\n")
+		textA = string(data)
 		data, err = readFileNoFollow(args.PathB)
 		if err != nil {
 			return jsonResult(diffResult{Error: err.Error(), PathA: pathA, PathB: pathB})
 		}
-		linesB = strings.Split(string(data), "\n")
+		textB = string(data)
 	} else if args.Path != "" {
 		pathA, pathB = args.Path, "<inline>"
 		if err := confineIfRestricted(t.restrictToCWD, args.Path); err != nil {
@@ -325,8 +369,8 @@ func (t *diffTool) Call(argsJSON string) (result string, err error) {
 		if err != nil {
 			return jsonResult(diffResult{Error: err.Error(), PathA: pathA, PathB: pathB})
 		}
-		linesA = strings.Split(string(data), "\n")
-		linesB = strings.Split(args.Content, "\n")
+		textA = string(data)
+		textB = args.Content
 	} else {
 		return jsonError("provide either path_a+path_b or path+content")
 	}
@@ -338,14 +382,19 @@ func (t *diffTool) Call(argsJSON string) (result string, err error) {
 		maxDiffLines = 10000
 		maxDiffCells = 4_000_000
 	)
-	if len(linesA) > maxDiffLines || len(linesB) > maxDiffLines ||
-		(len(linesA)+1)*(len(linesB)+1) > maxDiffCells {
+	// Count lines before splitting: strings.Split on a newline-only 10 MiB
+	// file would allocate ~10M strings just to be rejected.
+	countA, countB := strings.Count(textA, "\n")+1, strings.Count(textB, "\n")+1
+	if countA > maxDiffLines || countB > maxDiffLines ||
+		(countA+1)*(countB+1) > maxDiffCells {
 		return jsonResult(diffResult{
 			Error: fmt.Sprintf("files too large for in-process diff (%d vs %d lines; max %d lines per side and %d LCS cells).",
-				len(linesA), len(linesB), maxDiffLines, maxDiffCells),
+				countA, countB, maxDiffLines, maxDiffCells),
 			PathA: pathA, PathB: pathB,
 		})
 	}
+
+	linesA, linesB := strings.Split(textA, "\n"), strings.Split(textB, "\n")
 
 	// Trim trailing empty from final newline
 	if len(linesA) > 0 && linesA[len(linesA)-1] == "" {
@@ -521,8 +570,7 @@ func (t *jsonQueryTool) Call(argsJSON string) (result string, err error) {
 	}
 
 	if args.Query == "" {
-		vt := fmt.Sprintf("%T", data)
-		return jsonResult(jsonQueryResult{Path: args.Path, Query: "", Value: wrapJSONStrings(t.toolCtx(), args.Path, data), ValueType: vt})
+		return t.valueResult(args.Path, "", data)
 	}
 
 	value, err := jsonPathQuery(data, args.Query)
@@ -530,28 +578,95 @@ func (t *jsonQueryTool) Call(argsJSON string) (result string, err error) {
 		return jsonResult(jsonQueryResult{Path: args.Path, Query: args.Query, Error: err.Error()})
 	}
 
-	vt := fmt.Sprintf("%T", value)
-	return jsonResult(jsonQueryResult{Path: args.Path, Query: args.Query, Value: wrapJSONStrings(t.toolCtx(), args.Path, value), ValueType: vt})
+	return t.valueResult(args.Path, args.Query, value)
 }
 
-// wrapJSONStrings recursively wraps string values inside decoded JSON so that
-// file content returned by json_query is treated as untrusted.
-func wrapJSONStrings(ctx context.Context, source string, v interface{}) interface{} {
+// errJSONQueryTooLarge reports a result whose untrusted-wrapped form would
+// exceed the tool output bound.
+var errJSONQueryTooLarge = errors.New("result too large once wrapped as untrusted content; narrow the query to a smaller subtree")
+
+// jsonWrapBaseOverhead is the budgeted per-string cost of the untrusted
+// wrapper beyond the source attribute: the two tags with their nonce, as
+// they measure once JSON-encoded (angle brackets and quotes escape to
+// several bytes each). The source path is charged on top, per string. The
+// estimate is a pre-check so a tiny file cannot explode into gigabytes of
+// wrapped output; the rendered result is still measured against the bound.
+const jsonWrapBaseOverhead = 128
+
+// jsonWrapper wraps every string in decoded JSON — values and object keys,
+// both file content — as untrusted, charging each against a shared output
+// budget so per-string wrapper overhead cannot amplify a small file past the
+// tool bound.
+type jsonWrapper struct {
+	ctx      context.Context
+	source   string
+	budget   int
+	overhead int
+}
+
+func (w *jsonWrapper) wrap(s string) (string, error) {
+	if s == "" {
+		return s, nil
+	}
+	w.budget -= len(s) + w.overhead
+	if w.budget < 0 {
+		return "", errJSONQueryTooLarge
+	}
+	return wrapUntrusted(w.ctx, w.source, s), nil
+}
+
+func (w *jsonWrapper) walk(v interface{}) (interface{}, error) {
 	switch x := v.(type) {
 	case string:
-		return wrapUntrusted(ctx, source, x)
+		return w.wrap(x)
 	case map[string]interface{}:
+		out := make(map[string]interface{}, len(x))
 		for k, val := range x {
-			x[k] = wrapJSONStrings(ctx, source, val)
+			wk, err := w.wrap(k)
+			if err != nil {
+				return nil, err
+			}
+			wv, err := w.walk(val)
+			if err != nil {
+				return nil, err
+			}
+			out[wk] = wv
 		}
-		return x
+		return out, nil
 	case []interface{}:
 		for i, val := range x {
-			x[i] = wrapJSONStrings(ctx, source, val)
+			wv, err := w.walk(val)
+			if err != nil {
+				return nil, err
+			}
+			x[i] = wv
 		}
-		return x
+		return x, nil
 	}
-	return v
+	return v, nil
+}
+
+// wrapJSONStrings recursively wraps string values and object keys inside
+// decoded JSON so that file content returned by json_query is treated as
+// untrusted. The wrapped result is bounded by maxFileReadBytes.
+func wrapJSONStrings(ctx context.Context, source string, v interface{}) (interface{}, error) {
+	w := &jsonWrapper{ctx: ctx, source: source, budget: maxFileReadBytes, overhead: jsonWrapBaseOverhead + len(source)}
+	return w.walk(v)
+}
+
+// valueResult wraps value and renders the tool result, turning an
+// over-budget wrap or an over-bound rendering into an in-band error.
+func (t *jsonQueryTool) valueResult(path, query string, value interface{}) (string, error) {
+	vt := fmt.Sprintf("%T", value)
+	wrapped, err := wrapJSONStrings(t.toolCtx(), path, value)
+	if err != nil {
+		return jsonResult(jsonQueryResult{Path: path, Query: query, Error: err.Error()})
+	}
+	out, rerr := jsonResult(jsonQueryResult{Path: path, Query: query, Value: wrapped, ValueType: vt})
+	if len(out) > maxFileReadBytes {
+		return jsonResult(jsonQueryResult{Path: path, Query: query, Error: errJSONQueryTooLarge.Error()})
+	}
+	return out, rerr
 }
 
 func jsonPathQuery(data interface{}, query string) (interface{}, error) {
@@ -877,7 +992,7 @@ func (t *checksumTool) hashFile(arg checksumFileArg) (entry checksumEntry) {
 		return checksumEntry{Path: arg.Path, Algorithm: algo, Error: err.Error()}
 	}
 
-	f, err := os.OpenFile(arg.Path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	f, err := openRegularNoFollow(arg.Path)
 	if err != nil {
 		return checksumEntry{Path: arg.Path, Algorithm: algo, Error: fmt.Sprintf("cannot open %q: %v", arg.Path, err)}
 	}
@@ -1003,7 +1118,7 @@ func (t *headTailTool) readPreview(path string, n int, mode string) (result head
 		return headTailFileResult{Path: path, Error: err.Error()}
 	}
 
-	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	f, err := openRegularNoFollow(path)
 	if err != nil {
 		return headTailFileResult{Path: path, Error: fmt.Sprintf("cannot open %q: %v", path, err)}
 	}

@@ -35,6 +35,11 @@ type SessionManager struct {
 	// old "tg-<chatID>" ID. Cleared by GetOrCreate when the chat starts a
 	// new session.
 	archived map[int64]bool
+
+	// gens counts conversation switches per chat (/resume). A turn captures
+	// the generation when it starts; its per-step saves are dropped once the
+	// chat has moved to a different conversation. Guarded by Mu.
+	gens map[int64]uint64
 }
 
 // ChatSession represents a single Telegram chat's agent conversation.
@@ -64,6 +69,7 @@ func NewSessionManager(store *session.Store, ttl time.Duration) *SessionManager 
 		Cache:      make(map[int64]*ChatSession),
 		SessionTTL: ttl,
 		archived:   make(map[int64]bool),
+		gens:       make(map[int64]uint64),
 	}
 }
 
@@ -139,6 +145,51 @@ func (sm *SessionManager) SaveNoIndex(chatID int64, messages []session.Message) 
 	return sm.save(chatID, messages, true, true)
 }
 
+// Generation returns the chat's current conversation generation. A running
+// turn captures it at start and persists through SaveNoIndexAt.
+func (sm *SessionManager) Generation(chatID int64) uint64 {
+	sm.Mu.RLock()
+	defer sm.Mu.RUnlock()
+	return sm.gens[chatID]
+}
+
+// SaveNoIndexAt is SaveNoIndex for a turn that began at generation gen. If the
+// chat switched conversations since (a /resume), the save is dropped so the
+// pre-switch turn cannot overwrite the resumed session.
+func (sm *SessionManager) SaveNoIndexAt(chatID int64, gen uint64, messages []session.Message) error {
+	if err := sm.saveAt(chatID, gen, messages, true, true); err != nil && !errors.Is(err, ErrStaleGeneration) {
+		return err
+	}
+	return nil
+}
+
+// ErrStaleGeneration is returned by SaveAt and SaveCheckpointAt when the chat
+// switched conversations (a /resume) after the saving turn began; the save was
+// dropped.
+var ErrStaleGeneration = errors.New("telegram: save dropped, conversation changed since the turn began")
+
+// SaveAt is Save for a turn that began at generation gen. It returns
+// ErrStaleGeneration, writing nothing, when the chat has since been resumed.
+func (sm *SessionManager) SaveAt(chatID int64, gen uint64, messages []session.Message) error {
+	return sm.saveAt(chatID, gen, messages, false, false)
+}
+
+// SaveCheckpointAt is SaveCheckpoint with the same generation check as SaveAt.
+func (sm *SessionManager) SaveCheckpointAt(chatID int64, gen uint64, messages []session.Message) error {
+	return sm.saveAt(chatID, gen, messages, true, false)
+}
+
+func (sm *SessionManager) saveAt(chatID int64, gen uint64, messages []session.Message, checkpoint, skipIndex bool) error {
+	lock, _ := sm.saveLocks.LoadOrStore(chatID, new(sync.Mutex))
+	mu := lock.(*sync.Mutex)
+	mu.Lock()
+	defer mu.Unlock()
+	if sm.Generation(chatID) != gen {
+		return ErrStaleGeneration
+	}
+	return sm.saveLocked(chatID, messages, checkpoint, skipIndex)
+}
+
 // SaveCheckpoint persists an indexed checkpoint without counting a completed
 // turn. The prompt is searchable during the run; per-step saves use SaveNoIndex.
 func (sm *SessionManager) SaveCheckpoint(chatID int64, messages []session.Message) error {
@@ -150,6 +201,11 @@ func (sm *SessionManager) save(chatID int64, messages []session.Message, checkpo
 	mu := lock.(*sync.Mutex)
 	mu.Lock()
 	defer mu.Unlock()
+	return sm.saveLocked(chatID, messages, checkpoint, skipIndex)
+}
+
+// saveLocked persists a chat session; the caller holds the chat's save lock.
+func (sm *SessionManager) saveLocked(chatID int64, messages []session.Message, checkpoint, skipIndex bool) error {
 	sm.Mu.RLock()
 	cs := sm.Cache[chatID]
 	archived := sm.archived[chatID]
@@ -177,7 +233,9 @@ func (sm *SessionManager) save(chatID int64, messages []session.Message, checkpo
 	if !checkpoint {
 		updated.TurnCount++
 	}
-	stored := &session.Session{ID: updated.SessionID, CreatedAt: updated.CreatedAt, Task: fmt.Sprintf("tg-%d", chatID)}
+	// A resumed chat keeps its archive ID for display, but progress always
+	// persists under the chat's canonical ID so a restart finds it.
+	stored := &session.Session{ID: fmt.Sprintf("tg-%d", chatID), CreatedAt: updated.CreatedAt, Task: fmt.Sprintf("tg-%d", chatID)}
 	if cs.stored != nil {
 		copy := *cs.stored
 		stored = &copy
@@ -312,8 +370,17 @@ func (sm *SessionManager) ArchiveAndDelete(chatID int64) error {
 
 	// Save as archive with timestamped ID
 	archiveID := fmt.Sprintf("tg-%d-%s", chatID, time.Now().UTC().Format("20060102-150405"))
+	// Two archives within the same second must not collide on the ID.
+	base := archiveID
+	for n := 2; n < 100; n++ {
+		if _, lerr := sm.Store.Load(archiveID); lerr != nil {
+			break
+		}
+		archiveID = fmt.Sprintf("%s-%d", base, n)
+	}
 	archived := *sess
 	archived.ID = archiveID
+	archived.Revision = 0
 	if err := sm.Store.Save(&archived); err != nil {
 		return fmt.Errorf("archive: save archive: %w", err)
 	}
@@ -437,13 +504,18 @@ func (sm *SessionManager) ResumeSession(chatID int64, sessionID string) (*ChatSe
 		if listErr != nil {
 			return nil, fmt.Errorf("list sessions: %w", listErr)
 		}
-		for i, s := range all {
+		for _, s := range all {
 			if !sessionIDBelongsToChat(s.ID, chatID) {
 				continue
 			}
 			if strings.HasPrefix(s.ID, sessionID) ||
 				strings.Contains(strings.ToLower(s.Task), strings.ToLower(sessionID)) {
-				sess = &all[i]
+				// The listing carries metadata only; load the full transcript.
+				full, loadErr := sm.Store.Load(s.ID)
+				if loadErr != nil {
+					return nil, fmt.Errorf("load session %s: %w", s.ID, loadErr)
+				}
+				sess = full
 				break
 			}
 		}
@@ -453,10 +525,52 @@ func (sm *SessionManager) ResumeSession(chatID int64, sessionID string) (*ChatSe
 		return nil, fmt.Errorf("no session found matching %q", sessionID)
 	}
 
-	// Build ChatSession and cache it.
+	// Hold the chat's save lock while switching so a per-step save from the
+	// outgoing turn cannot interleave, and advance the generation so its later
+	// saves are dropped.
+	lock, _ := sm.saveLocks.LoadOrStore(chatID, new(sync.Mutex))
+	saveMu := lock.(*sync.Mutex)
+	saveMu.Lock()
+	defer saveMu.Unlock()
+	sm.Mu.Lock()
+	if sm.gens == nil {
+		sm.gens = make(map[int64]uint64)
+	}
+	sm.gens[chatID]++
+	sm.Mu.Unlock()
+
+	// The resumed conversation becomes the chat's live session. Persisting
+	// it under the canonical ID (after archiving whatever was live) carries a
+	// valid revision for later saves and lets a restart find it again.
+	canonical := fmt.Sprintf("tg-%d", chatID)
+	var stored *session.Session
+	if sess.ID == canonical {
+		fresh, err := sm.Store.Load(canonical)
+		if err != nil {
+			return nil, fmt.Errorf("load session %s: %w", canonical, err)
+		}
+		stored = fresh
+	} else {
+		if err := sm.ArchiveAndDelete(chatID); err != nil {
+			return nil, err
+		}
+		stored = &session.Session{
+			ID:        canonical,
+			CreatedAt: sess.CreatedAt,
+			UpdatedAt: time.Now(),
+			Turns:     sess.Turns,
+			Task:      canonical,
+			Messages:  session.CloneMessages(sess.Messages),
+		}
+		if err := sm.Store.Save(stored); err != nil {
+			return nil, fmt.Errorf("persist resumed session: %w", err)
+		}
+	}
+
 	cs := &ChatSession{
+		stored:     stored,
 		ChatID:     chatID,
-		SessionID:  sess.ID,
+		SessionID:  canonical,
 		Messages:   sess.Messages,
 		CreatedAt:  sess.CreatedAt,
 		LastActive: time.Now(),
@@ -465,6 +579,7 @@ func (sm *SessionManager) ResumeSession(chatID int64, sessionID string) (*ChatSe
 
 	sm.Mu.Lock()
 	sm.Cache[chatID] = cs
+	delete(sm.archived, chatID)
 	sm.Mu.Unlock()
 
 	return cs, nil

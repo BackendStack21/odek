@@ -699,8 +699,9 @@ func executionCandidates(tok, cwd string) []string {
 // inlinePayloadFlag reports whether tok is a flag whose next word is code (or
 // a module name), not a file: -c / -e, including fused short clusters such as
 // -lc or -ec for shells. Everything after it is the payload or its arguments.
+// For a shell -e is errexit, not code: `bash -e script.sh` runs script.sh.
 func inlinePayloadFlag(name, tok string) bool {
-	if tok == "-c" || tok == "-e" {
+	if tok == "-c" || (tok == "-e" && !pipedShells[name]) {
 		return true
 	}
 	if !isShortFlagToken(tok) || len(tok) < 3 {
@@ -754,7 +755,15 @@ func stageWrittenPaths(stage, inner []string, name, cwd string) []string {
 		case "tee":
 			raw = append(raw, operands...)
 		case "cp", "mv", "install", "ln", "rsync":
-			if len(operands) >= 2 {
+			if target, ok := targetDirectoryOption(name, inner[1:]); ok {
+				// -t DIR / --target-directory=DIR names the destination;
+				// every operand is a source copied to DIR/<base>.
+				for _, src := range operands {
+					if src != target {
+						raw = append(raw, filepath.Join(target, filepath.Base(src)))
+					}
+				}
+			} else if len(operands) >= 2 {
 				dest := operands[len(operands)-1]
 				raw = append(raw, dest)
 				// Copying into a directory writes dest/<base of each source>;
@@ -791,6 +800,57 @@ func stageWrittenPaths(stage, inner []string, name, cwd string) []string {
 	return out
 }
 
+// targetDirectoryOption returns the DIR of a -t DIR, -tDIR, --target-directory
+// DIR or --target-directory=DIR option of cp, mv, install and ln, and whether
+// one was given. -t may close a short-flag cluster (-at DIR, -Dt DIR) and the
+// long spelling may be any unambiguous prefix (--target=DIR).
+func targetDirectoryOption(name string, args []string) (string, bool) {
+	if name == "rsync" {
+		return "", false
+	}
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "--" {
+			return "", false
+		}
+		if strings.HasPrefix(a, "--") {
+			if _, value, hasValue, ok := resolveLongOption(a, targetDirectoryLongOptions); ok {
+				if hasValue {
+					return value, true
+				}
+				if i+1 < len(args) {
+					return args[i+1], true
+				}
+			}
+			continue
+		}
+		if !isShortFlagToken(a) {
+			continue
+		}
+		for j := 1; j < len(a); j++ {
+			c := a[j]
+			if c == 't' {
+				if j+1 < len(a) {
+					return a[j+1:], true
+				}
+				if i+1 < len(args) {
+					return args[i+1], true
+				}
+				break
+			}
+			// These options consume the rest of the cluster as their value.
+			if c == 'S' || c == 'm' || c == 'o' || c == 'g' || c == 'Z' {
+				break
+			}
+		}
+	}
+	return "", false
+}
+
+// targetDirectoryLongOptions lists the long options of cp, mv, install and ln
+// that start with "t"; a prefix beginning with "t" can only be this one.
+var targetDirectoryLongOptions = []string{"target-directory"}
+
 // stageLedgerFiles reports the files a stage executes and, separately, the
 // subset that an earlier stage of the same command wrote (so any prior read
 // licence describes content that no longer exists when the shell runs it).
@@ -824,7 +884,20 @@ func stageExecutionFilesWritten(stage []string, cwd string, written map[string]b
 	if len(stage) == 0 {
 		return nil
 	}
-	cmdTokens, _ := unwrapWrappers(stage)
+	unwrapped := unwrapWrappersFull(stage)
+	cmdTokens := unwrapped.inner
+	if len(unwrapped.splits) > 0 {
+		// `env -S 'bash script'` runs the split string as the command, ahead
+		// of any remaining operands: gate the command it names.
+		var composed []string
+		for _, split := range unwrapped.splits {
+			composed = append(composed, tokenize(split)...)
+		}
+		composed = append(composed, cmdTokens...)
+		if len(composed) > 0 {
+			return stageExecutionFilesWritten(composed, cwd, written)
+		}
+	}
 	if len(cmdTokens) == 0 {
 		return nil
 	}

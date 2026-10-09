@@ -583,7 +583,14 @@ func (t *delegateTasksTool) runTaskWithModel(taskIdx int, taskID, goal, taskCont
 	// as it has read the key. Everything injected from ~/.odek/secrets.env
 	// is stripped from the inherited environment too (2026-08 audit — the
 	// handoff previously covered only the primary API key).
-	cmd.Env = append(childEnvWithout(config.SecretsEnvNames()),
+	// Every provider key variable config knows about is stripped as well when
+	// a key is handed off, so a key supplied through the real process
+	// environment does not reach the child a second way.
+	stripNames := config.SecretsEnvNames()
+	if t.apiKey != "" {
+		stripNames = append(stripNames, providerKeyEnvNames...)
+	}
+	cmd.Env = append(childEnvWithout(stripNames),
 		subagentDepthEnvVar+"="+strconv.Itoa(subagentDepth()+1))
 	var keyFile *os.File
 	var keyCleanup func()
@@ -1357,6 +1364,16 @@ func subagentDepth() int {
 		n = 0
 	}
 	return n
+}
+
+// providerKeyEnvNames lists every environment variable odek reads a provider
+// API key from. Config clears these from the live environment after
+// resolving the key; delegate_tasks strips them from the child environment
+// too so the FD handoff stays the only path.
+var providerKeyEnvNames = []string{
+	"ODEK_API_KEY", "DEEPSEEK_API_KEY", "OPENAI_API_KEY",
+	"ZAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY",
+	"KIMI_API_KEY", "MOONSHOT_API_KEY",
 }
 
 // childEnvWithout returns the current environment minus the named

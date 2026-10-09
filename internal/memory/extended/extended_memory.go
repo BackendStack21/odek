@@ -256,10 +256,19 @@ func (em *ExtendedMemory) addAtoms(ctx context.Context, atoms []MemoryAtom, skip
 			atom.ID = id
 		}
 
-		em.mu.RLock()
-		atom.Context.SessionID = em.session
-		atom.Context.Project = em.project
-		em.mu.RUnlock()
+		// Keep the caller-supplied context: extraction runs in the background
+		// and the shared session fields may have moved on by the time atoms
+		// are stored. Only fill in what the caller left empty.
+		if atom.Context.SessionID == "" || atom.Context.Project == "" {
+			em.mu.RLock()
+			if atom.Context.SessionID == "" {
+				atom.Context.SessionID = em.session
+			}
+			if atom.Context.Project == "" {
+				atom.Context.Project = em.project
+			}
+			em.mu.RUnlock()
+		}
 
 		// Security scan before persistence, regardless of trust boundary.
 		if !skipScan {
@@ -632,6 +641,12 @@ User model: %s`, recentJSON, stateJSON)
 	}
 	resp = strings.TrimSpace(resp)
 	if resp == "" {
+		return ""
+	}
+	// The summary is injected into the system prompt; like AnaphoraResolve,
+	// drop LLM output the injection guard rejects.
+	if err := em.scanContent(ctx, resp); err != nil {
+		log.Printf("extended memory: return after break output rejected: %v", err)
 		return ""
 	}
 	return "\n═══ WHERE YOU LEFT OFF ═══\n" + resp + "\n─────────────────────────\n"

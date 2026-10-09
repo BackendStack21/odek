@@ -646,19 +646,22 @@ func parseSubagentFlags(args []string) (subagentFlags, error) {
 		switch args[i] {
 		case "--goal":
 			i++
-			if i < len(args) {
-				cfg.goal = args[i]
+			if i >= len(args) {
+				return cfg, fmt.Errorf("--goal requires a value")
 			}
+			cfg.goal = args[i]
 		case "--context":
 			i++
-			if i < len(args) {
-				cfg.context = args[i]
+			if i >= len(args) {
+				return cfg, fmt.Errorf("--context requires a value")
 			}
+			cfg.context = args[i]
 		case "--task":
 			i++
-			if i < len(args) {
-				cfg.taskFile = args[i]
+			if i >= len(args) {
+				return cfg, fmt.Errorf("--task requires a value")
 			}
+			cfg.taskFile = args[i]
 		case "--timeout":
 			i++
 			if i >= len(args) {
@@ -685,14 +688,16 @@ func parseSubagentFlags(args []string) (subagentFlags, error) {
 			cfg.stream = true
 		case "--parent-session":
 			i++
-			if i < len(args) {
-				cfg.parentSession = args[i]
+			if i >= len(args) {
+				return cfg, fmt.Errorf("--parent-session requires a value")
 			}
+			cfg.parentSession = args[i]
 		case "--profile":
 			i++
-			if i < len(args) {
-				cfg.profile = args[i]
+			if i >= len(args) {
+				return cfg, fmt.Errorf("--profile requires a value")
 			}
+			cfg.profile = args[i]
 		default:
 			return cfg, fmt.Errorf("unknown flag %q", args[i])
 		}

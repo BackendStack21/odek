@@ -235,7 +235,7 @@ func stdinSubstFeed(rest []string) bool {
 func substitutionReaderFiles(body, cwd string, written map[string]bool) (files, rewritten []string) {
 	main, _ := normalize(body)
 	tokens, ops, _ := tokenizeMarked(main)
-	for _, segment := range splitSegments(tokens) {
+	for _, segment := range splitSegments(markLiteralOperators(tokens, ops)) {
 		for _, stage := range splitPipes(segment) {
 			f, r := readerFeedFiles(stage, cwd, written)
 			files = append(files, f...)

@@ -189,7 +189,7 @@ User-requested action confirmations and actionable errors remain visible.
 - **Reasoning, partial replies, and tools** — one sequential log per turn. Reasoning is collapsed behind a **▶ thinking** toggle (hidden by default; click to expand). Visible assistant text (`token_delta` / `token`, including DeepSeek/GLM mid-turn “Let me look…” replies) is a timeline row sealed when a tool starts so the next tokens open a new row instead of concatenating the turn. Tool heads sit in that same stream in arrival order. Tool args and results stay collapsed until the head is opened; long results truncate behind “show all”. History replays the same interleaved log.
 - **Revised drafts and unverified answers** — when the loop re-asks the model after a final-looking reply (`answer_superseded`), the draft folds into a collapsed `⋯ draft revised (verification|completion check)` row (click to expand) and the revised reply renders as the answer. `done.verified == "fail"` adds a `✗ unverified` chip to the answer's sender line. History replays both: `superseded` records fold the same way, and answers persisted with the verification-failed marker show the chip instead of the marker text.
 - **Sub-agent swarm** — `delegate_tasks` uses the same spine as a tool step (`▶ ▸ ⑂ delegate_tasks · 1/2 agents`) plus an always-on chip strip (`⟳ SA1 <goal|tool>`). Click a chip (or the head) for the `⎿` log and summary; the inspector Now tab still lists every agent.
-- **Inline approvals** — dangerous operations block the run and show a decision card (risk class, plain-language explanation, verbatim command). Friction mode (after 3 same-class approvals in 60s) requires typing the literal word `approve`; `trust session` is hidden for destructive, blocked, unknown, persistence, unread_exec and multi-tool batch cards. Class badges: `network_upload` shows 📤 (warn: sends local files or data out, uses credentials, or opens a listener or tunnel) beside `network_egress` 🌐, `destructive`/`unknown`/`blocked`/`persistence` (🪝)/`unread_exec` (📜) are danger-level, and a class without its own badge falls back to the generic 🛡️ warn card with the class name in the header. The command and description are shown with control, escape, bidi and invisible characters replaced by visible escapes, and an over-long command keeps its head and tail around a `…[N more bytes]` marker. Keyboard: `A` approve, `D` deny, `T` trust
+- **Inline approvals** — dangerous operations block the run and show a decision card (risk class, plain-language explanation, verbatim command). Friction mode (after 3 same-class approvals in 60s) requires typing the literal word `approve`; a Trust click counts as an approval toward that window, so trust granted on the third approval within 60s is overridden by friction (the next prompt of that class still asks) until the window expires; `trust session` is hidden for destructive, blocked, unknown, persistence, unread_exec and multi-tool batch cards. Class badges: `network_upload` shows 📤 (warn: sends local files or data out, uses credentials, or opens a listener or tunnel) beside `network_egress` 🌐, `destructive`/`unknown`/`blocked`/`persistence` (🪝)/`unread_exec` (📜) are danger-level, and a class without its own badge falls back to the generic 🛡️ warn card with the class name in the header. The command and description are shown with control, escape, bidi and invisible characters replaced by visible escapes, and an over-long command keeps its head and tail around a `…[N more bytes]` marker. Keyboard: `A` approve, `D` deny, `T` trust
 - **Clarify** — when the agent needs a decision, a question card waits for a typed answer (5 minute wait). Bound to that WebSocket session; headless REST runs do not register the tool.
 - **Cancel** — the ✕ button cancels the running prompt over the WebSocket (`cancel` message), with the REST endpoint as fallback
 - **Model switching** — the picker lists `GET /api/models` (provider `ListModels` catalog, configured model marked current, with context sizes) plus an "Other…" free-text entry; switches apply from the next prompt
@@ -357,7 +357,9 @@ The core session CRUD (session-token gated):
   instance token bootstraps and returns it for sessions you didn't create.
   Rate-limited to 60 lookups/min per IP (**429** beyond that).
 - **POST** `{"name"?: string, "pinned"?: bool}` — rename and/or pin;
-  at least one field required (**400** otherwise).
+  at least one field required (**400** otherwise). A failed save (disk,
+  permissions, revision conflict) returns **500** instead of echoing an
+  unpersisted change.
 - **DELETE** — removes the session and its index entry; **204**.
 
 ### `GET /api/sessions/{id}/plan`
@@ -592,14 +594,16 @@ rollup `plans_created` / `plans_updated` / `plans_blocked` (counts only).
 Sessions also carry cumulative `input_tokens`/`output_tokens` (shown in
 list/detail).
 
-### `GET /api/subagents?key=`
+### `GET /api/subagents?session_id=&key=`
 
-Sub-agent lifecycle registry snapshot (ring of 256, oldest evicted): one
+Sub-agent lifecycle registry snapshot (session-scoped like `/api/jobs`: `session_id` plus that session's `X-Session-Token`; only tasks spawned by that session are listed; the owning session id is recorded on each entry at spawn, so entries survive a page reload, reconnect or `session_switch`, and entries with no recorded owner fall back to the connections or headless runs currently bound to the session) (ring of 256, oldest evicted): one
 entry per delegated task — `task_id`, `run_key` (connection id for WS runs,
 run id for headless runs), redacted + truncated `goal`, `phase`
 (`started`/`active`/`finished`), `status`, `pid`, timestamps, `iterations`,
-`step`, `last_tool`, `duration_seconds`, `tokens_used`. Filter by
-`?key=<run_key>`; unfiltered returns all recent entries.
+`step`, `last_tool`, `duration_seconds`, `tokens_used`. Narrow further with
+`?key=<run_key>`. The WebSocket `subagent_cancel` message likewise only stops tasks owned by the authenticated session (a foreign task id replies `accepted:false`).
+
+Operator view: `GET /api/subagents` without `session_id` lists every run's tasks, but only when the caller presents the instance token in the `X-Odek-Ws-Token` header (the ambient cookie is not enough) and any `Origin` header is local; otherwise it answers 400/403. Each entry carries the owning `session_id` when known.
 
 ### `GET /api/connections` · `DELETE /api/connections/{id}`
 

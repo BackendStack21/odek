@@ -191,7 +191,7 @@ func truncateForGuard(text string, cfg *Config) string {
 // fallback returns a local guard when cfg.FallbackToLocal is true, otherwise
 // it returns the original error wrapped with msg.
 func fallback(cfg *Config, err error) (Guard, error) {
-	if cfg != nil && cfg.FallbackToLocal != nil && *cfg.FallbackToLocal {
+	if isFallbackEnabled(cfg) {
 		log.Printf("guard: sidecar unavailable, falling back to local guard: %v", err)
 		return NewLocalGuard(), nil
 	}

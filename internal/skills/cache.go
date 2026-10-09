@@ -47,7 +47,7 @@ func scanDirsCached(projectDir, userDir string, extraDirs []string, fc fileCache
 				// controllable project frontmatter). The cached path used
 				// to re-pin unconditionally, making `odek skill promote`
 				// a persistent no-op across SkillManager reloads.
-				if data, err := os.ReadFile(filepath.Join(dir, s.Name, "SKILL.md")); err != nil || !isPromotedContent(userDir, s.Name, data) {
+				if data, err := os.ReadFile(s.Source.Path); err != nil || !isPromotedContent(userDir, s.Name, data) {
 					markProjectSkill(&s)
 				}
 			}

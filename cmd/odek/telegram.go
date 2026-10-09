@@ -349,6 +349,10 @@ func telegramCmd(args []string) error {
 
 	// 3. Load and validate Telegram config.
 	cfg := resolved.Telegram
+	if _, err := telegram.ConfigFromEnv(cfg); err != nil {
+		fmt.Fprintf(os.Stderr, "odek telegram: %v\n", err)
+		return err
+	}
 	if err := telegram.ValidateConfig(cfg); err != nil {
 		fmt.Fprintf(os.Stderr, "odek telegram: %v\n", err)
 		return err
@@ -1445,6 +1449,9 @@ func handleChatMessage(
 		reportError(bot, chatID, messageID, "Failed to create session: "+err.Error())
 		return
 	}
+	// A /resume while this turn runs advances the generation; the turn's
+	// per-step saves then drop instead of overwriting the resumed session.
+	turnGen := sessionManager.Generation(chatID)
 
 	// Ensure the system prompt is messages[0] before the agent runs.
 	cs.Messages = seedSystemMessage(cs.Messages, systemMessage)
@@ -2051,7 +2058,7 @@ func handleChatMessage(
 			return
 		}
 		trimmed := dropDanglingToolCalls(snapshot)
-		if err := sessionManager.SaveNoIndex(chatID, trimmed); err != nil {
+		if err := sessionManager.SaveNoIndexAt(chatID, turnGen, trimmed); err != nil {
 			checkpointErr = fmt.Errorf("persist Telegram checkpoint: %w", err)
 			agentCancel()
 			log.Error("per-turn session persist", "chat_id", chatID, "error", err)
@@ -2087,7 +2094,9 @@ func handleChatMessage(
 			if len(updatedMessages) > 0 {
 				cs.Messages = dropDanglingToolCalls(updatedMessages)
 			}
-			if saveErr := sessionManager.Save(chatID, cs.Messages); saveErr != nil {
+			if saveErr := sessionManager.SaveAt(chatID, turnGen, cs.Messages); errors.Is(saveErr, telegram.ErrStaleGeneration) {
+				log.Warn("dropped cancel-path save: conversation changed during the turn", "chat_id", chatID)
+			} else if saveErr != nil {
 				log.Error("save session after cancel", "chat_id", chatID, "error", saveErr)
 			}
 			// Send a cancellation summary so the user knows what happened.
@@ -2125,7 +2134,9 @@ func handleChatMessage(
 	// Save the updated session messages.
 	cs.Messages = updatedMessages
 	cs.TurnCount++
-	if err := sessionManager.Save(chatID, cs.Messages); err != nil {
+	if err := sessionManager.SaveAt(chatID, turnGen, cs.Messages); errors.Is(err, telegram.ErrStaleGeneration) {
+		log.Warn("dropped final save: conversation changed during the turn", "chat_id", chatID)
+	} else if err != nil {
 		outcome = err
 		reportError(bot, chatID, messageID, "Failed to save completed turn: "+err.Error())
 		return

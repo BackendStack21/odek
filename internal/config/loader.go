@@ -1963,6 +1963,10 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	// feature, raise an operator cap, or re-enable notices.
 	clampProjectBackground(global.Background, project.Background)
 
+	// Skill import policy: a repo may tighten it (smaller size cap, shorter
+	// timeout, require_https) but never relax what the operator configured.
+	clampProjectSkillsImport(global.Skills, project.Skills)
+
 	// Capture which sandbox knobs the project requested, before the overlay
 	// hides them behind CLI/env values. This drives the approval gate in cmd/odek.
 	var projectSandboxOverride ProjectSandboxOverride
@@ -2411,7 +2415,9 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	if cfg.Telegram != nil {
 		baseTelegram = *cfg.Telegram
 	}
-	mergedTelegram := telegram.ConfigFromEnv(baseTelegram)
+	// A malformed allowlist env value keeps the base list here; `odek
+	// telegram` re-checks the environment and refuses to start (fail closed).
+	mergedTelegram, _ := telegram.ConfigFromEnv(baseTelegram)
 	cfg.Telegram = &mergedTelegram
 
 	if v := envStringList("TOOLS_ENABLED"); v != nil {
@@ -3058,13 +3064,13 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 		}
 	}
 	if resolved.APIKey == "" {
-		resolved.APIKey = os.Getenv("ODEK_API_KEY")
+		resolved.APIKey = providerEnv("ODEK_API_KEY")
 	}
 	if resolved.APIKey == "" {
 		resolved.APIKey = firstNonEmptyEnv(providerAPIKeyEnv(resolved.Provider)...)
 	}
 	if resolved.APIKey == "" && resolved.Provider == "deepseek" {
-		resolved.APIKey = os.Getenv("OPENAI_API_KEY")
+		resolved.APIKey = providerEnv("OPENAI_API_KEY")
 	}
 
 	// Clear provider key env vars so they are not visible in /proc/.../environ.
@@ -3075,6 +3081,7 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	} {
 		if v := os.Getenv(k); v != "" {
 			redact.RegisterSecret(v)
+			rememberScrubbedEnv(k, v)
 		}
 		os.Unsetenv(k)
 	}
@@ -3150,9 +3157,47 @@ func providerAPIKeyEnv(id string) []string {
 	}
 }
 
+// scrubbedProviderEnv remembers the provider key variables LoadConfig removed
+// from the process environment, so a later LoadConfig in the same process (the
+// logging pre-load runs before the command's own load) still resolves a key
+// supplied only through the real environment. The memory is bound to the HOME
+// it was captured under: a process that moves to another home resolves
+// provider keys from that environment alone.
+var (
+	scrubbedProviderEnvMu   sync.Mutex
+	scrubbedProviderEnvHome string
+	scrubbedProviderEnv     = map[string]string{}
+)
+
+func rememberScrubbedEnv(name, value string) {
+	home := os.Getenv("HOME")
+	scrubbedProviderEnvMu.Lock()
+	defer scrubbedProviderEnvMu.Unlock()
+	if home != scrubbedProviderEnvHome {
+		scrubbedProviderEnvHome = home
+		scrubbedProviderEnv = map[string]string{}
+	}
+	scrubbedProviderEnv[name] = value
+}
+
+// providerEnv reads a provider key variable: the live environment when it is
+// set, otherwise the value an earlier LoadConfig scrubbed from it.
+func providerEnv(name string) string {
+	if v, ok := os.LookupEnv(name); ok {
+		return v
+	}
+	home := os.Getenv("HOME")
+	scrubbedProviderEnvMu.Lock()
+	defer scrubbedProviderEnvMu.Unlock()
+	if home != scrubbedProviderEnvHome {
+		return ""
+	}
+	return scrubbedProviderEnv[name]
+}
+
 func firstNonEmptyEnv(keys ...string) string {
 	for _, k := range keys {
-		if v := os.Getenv(k); v != "" {
+		if v := providerEnv(k); v != "" {
 			return v
 		}
 	}
@@ -3721,6 +3766,41 @@ func clampProjectPlanning(global, project *PlanningFileConfig) {
 	}
 }
 
+// clampProjectSkillsImport narrows the project's skills.import against the
+// effective global policy (the compiled defaults where the operator set
+// nothing). The result is always the stricter of the two: caps are lowered
+// only, require_https can be turned on but never off.
+func clampProjectSkillsImport(global, project *SkillsConfig) {
+	if project == nil || project.Import == nil {
+		return
+	}
+	eff := skills.DefaultSkillsConfig().Import
+	if global != nil && global.Import != nil {
+		if global.Import.MaxSizeBytes > 0 {
+			eff.MaxSizeBytes = global.Import.MaxSizeBytes
+		}
+		if global.Import.TimeoutSecs > 0 {
+			eff.TimeoutSecs = global.Import.TimeoutSecs
+		}
+		eff.RequireHTTPS = global.Import.RequireHTTPS
+	}
+	req := *project.Import
+	if req.MaxSizeBytes > 0 && req.MaxSizeBytes < eff.MaxSizeBytes {
+		eff.MaxSizeBytes = req.MaxSizeBytes
+	} else if req.MaxSizeBytes != 0 {
+		fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring skills.import.max_size_bytes=%d from project config (%s) — it would raise the cap %d\n", req.MaxSizeBytes, ProjectConfigPath(), eff.MaxSizeBytes)
+	}
+	if req.TimeoutSecs > 0 && req.TimeoutSecs < eff.TimeoutSecs {
+		eff.TimeoutSecs = req.TimeoutSecs
+	} else if req.TimeoutSecs != 0 {
+		fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring skills.import.timeout_seconds=%d from project config (%s) — it would raise the cap %d\n", req.TimeoutSecs, ProjectConfigPath(), eff.TimeoutSecs)
+	}
+	if req.RequireHTTPS {
+		eff.RequireHTTPS = true
+	}
+	project.Import = &eff
+}
+
 // clampProjectBackground enforces the background-section merge rule, the same
 // philosophy as planning: the untrusted project ./odek.json may disable the
 // feature, silence notices, and LOWER the numeric caps, but cannot re-enable
@@ -3753,10 +3833,17 @@ func clampProjectBackground(global, project *BackgroundFileConfig) {
 		fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring background.wake_on_complete=true from project config (%s) — wake-on-complete is disabled in ~/.odek/config.json\n", ProjectConfigPath())
 		project.WakeOnComplete = nil // global-off wins
 	}
-	clampInt := func(name string, g, p *int) *int {
+	clampInt := func(name string, minAllowed int, g, p *int) *int {
 		switch {
 		case g == nil || p == nil:
 			return p // nothing to clamp against / nothing requested
+		case *p < minAllowed:
+			// Values below the minimum resolve to "uncapped" or to the shipped
+			// default, either of which can exceed the operator's cap; keep the
+			// global value, as clampProjectLimits does. Zero is below the
+			// minimum for every cap except max_wakes_per_hour (0 = disabled).
+			fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring background.%s=%d from project config (%s) — values below %d would remove the global cap %d\n", name, *p, ProjectConfigPath(), minAllowed, *g)
+			return g
 		case *p > *g:
 			fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring background.%s=%d from project config (%s) — it would raise the global cap %d\n", name, *p, ProjectConfigPath(), *g)
 			return g
@@ -3764,10 +3851,11 @@ func clampProjectBackground(global, project *BackgroundFileConfig) {
 			return p // lowered or equal — allowed
 		}
 	}
-	project.MaxJobs = clampInt("max_jobs", global.MaxJobs, project.MaxJobs)
-	project.MaxOutputBytes = clampInt("max_output_bytes", global.MaxOutputBytes, project.MaxOutputBytes)
-	project.MaxTimeoutSeconds = clampInt("max_timeout_seconds", global.MaxTimeoutSeconds, project.MaxTimeoutSeconds)
-	project.MaxWakesPerHour = clampInt("max_wakes_per_hour", global.MaxWakesPerHour, project.MaxWakesPerHour)
+	project.MaxJobs = clampInt("max_jobs", 1, global.MaxJobs, project.MaxJobs)
+	project.MaxOutputBytes = clampInt("max_output_bytes", 1, global.MaxOutputBytes, project.MaxOutputBytes)
+	project.MaxTimeoutSeconds = clampInt("max_timeout_seconds", 1, global.MaxTimeoutSeconds, project.MaxTimeoutSeconds)
+	// 0 means wakes disabled (the strictest setting), so a project may set it.
+	project.MaxWakesPerHour = clampInt("max_wakes_per_hour", 0, global.MaxWakesPerHour, project.MaxWakesPerHour)
 }
 
 func overlayFile(base, override FileConfig) FileConfig {
