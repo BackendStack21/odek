@@ -100,6 +100,11 @@ export function isNearBottom() {
 // push the view past the threshold and silently stop the follow.
 S.stickBottom = true;
 messagesEl?.addEventListener?.('scroll', () => { S.stickBottom = isNearBottom(); }, { passive: true });
+// Expanding something in the transcript grows content without a scroll
+// event; following would then yank the view away from what was opened.
+// The next scroll that reaches the bottom re-arms the follow.
+const EXPANDERS = '.tb-header, .thinking-toggle, .collapse-toggle, .draft-toggle, .sg-header, .sa-top, summary, .result-more';
+messagesEl?.addEventListener?.('click', (e) => { if (e.target?.closest?.(EXPANDERS)) S.stickBottom = false; }, { capture: true });
 
 export function scrollBottom() {
   if (!S.stickBottom) return; // user is reading up — don't steal scroll

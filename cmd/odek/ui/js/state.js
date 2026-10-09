@@ -112,7 +112,7 @@ export const S = {
   promptQueue: [], // {id, text, attachments, model}
 
   // ── Theme: system (follows the OS) | ember-dark | ember-light | midnight | high-contrast ──
-  theme: migrateTheme(localStorage.getItem('odek_theme')),
+  theme: migrateTheme((() => { try { return localStorage.getItem('odek_theme'); } catch { return null; } })()),
 
   // ── Wake provenance (chip on the next assistant turn, not a system bubble) ──
   pendingWakeChip: null,
