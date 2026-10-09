@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/BackendStack21/odek/internal/memory/approval"
 )
 
 func TestFactStore_ReadMissing(t *testing.T) {
@@ -446,5 +448,40 @@ func TestFactStore_ReplaceAtCapExceeded(t *testing.T) {
 	}
 	if err := fs.ReplaceAt("user", 0, strings.Repeat("x", 100)); err == nil {
 		t.Error("ReplaceAt beyond the cap should fail")
+	}
+}
+
+// Mutating memory calls cap every field at approval.MaxTextBytes, but
+// old_text is a unique substring, not the whole entry: a legacy fact longer
+// than the cap stays replaceable and removable through a short old_text.
+func TestFactStore_LongLegacyFactTargetedBySubstring(t *testing.T) {
+	dir := t.TempDir()
+	fs := NewFactStore(dir, 20000, 20000)
+	legacy := "legacy deploy notes: " + strings.Repeat("x", 2*approval.MaxTextBytes)
+	if err := fs.Add("user", legacy); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.Add("user", "prefers tabs"); err != nil {
+		t.Fatal(err)
+	}
+	args := approval.Args{Action: "replace", Target: "user", OldText: "legacy deploy notes:", Content: "deploy notes moved to docs/DEPLOY.md"}
+	if err := approval.CheckBounds(args); err != nil {
+		t.Fatalf("short old_text refused: %v", err)
+	}
+	if err := fs.Replace("user", args.OldText, args.Content); err != nil {
+		t.Fatalf("replace long legacy fact: %v", err)
+	}
+	if err := fs.Add("user", "legacy cache notes: "+strings.Repeat("y", 2*approval.MaxTextBytes)); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.Remove("user", "legacy cache notes:"); err != nil {
+		t.Fatalf("remove long legacy fact: %v", err)
+	}
+	entries, err := fs.Entries("user")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 || entries[0] != args.Content || entries[1] != "prefers tabs" {
+		t.Fatalf("entries = %q", entries)
 	}
 }

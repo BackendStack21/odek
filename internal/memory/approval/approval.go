@@ -20,6 +20,9 @@ import (
 // it — and a call with a longer field is refused (see CheckBounds) so the
 // model splits it into smaller entries. The bound sits well under
 // danger.InlineMaxBytes, so the display sanitiser never truncates either.
+// old_text is a unique substring of the entry it targets, not the whole
+// entry, so a stored fact longer than the bound (written before it existed)
+// stays replaceable and removable through a short, unique old_text.
 const MaxTextBytes = 2048
 
 // CheckBounds refuses a mutating memory call whose fields exceed

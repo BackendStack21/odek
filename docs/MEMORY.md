@@ -79,6 +79,8 @@ Every episode carries the provenance of its session (`memory.DeriveSessionProven
 | `read` | — | — | — | Returns full content of both user.md + env.md |
 | `search` | — | — | ✅ query | LLM ranker by default (relevance-oriented); `llm_search: false` switches to RP cosine ranking (zero LLM calls) |
 
+Every field of a mutating call (`content`, `old_text`, …) is limited to 2048 bytes so its approval can show it in full. `old_text` only has to be a unique substring of the entry, so a fact stored before the limit existed and longer than it is still replaced or removed by naming a short part of it that no other entry contains.
+
 ## Automatic Cap Maintenance (LLM-driven eviction)
 
 The agent maintains its own fact files. When a fact file fills up, the **agent itself** evicts older entries — every eviction is an explicit, auditable `remove`/`replace` call inside the normal agent loop. The one automatic quality pass is cap-triggered consolidation (below): it merges redundant entries via LLM but never silently deletes — the applied snapshot is re-scanned and verified against the file state at snapshot time.

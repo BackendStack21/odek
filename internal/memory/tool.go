@@ -33,7 +33,7 @@ var memoryToolSchema = map[string]any{
 		},
 		"old_text": map[string]any{
 			"type":        "string",
-			"description": "Unique substring to identify an existing entry (for replace/remove/search)",
+			"description": "Unique substring to identify an existing entry (for replace/remove/search). It need not be the whole entry: target a long entry by a short unique part of it",
 		},
 		"query": map[string]any{
 			"type":        "string",
