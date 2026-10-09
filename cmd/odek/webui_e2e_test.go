@@ -844,10 +844,23 @@ promptDone:
 		t.Error("socket still readable after kick")
 	}
 
-	// 13. Events + usage saw the run.
-	_, eb := env.do(t, http.MethodGet, "/api/events?limit=50&session_id="+sessionID, "", nil)
-	if !strings.Contains(eb, "run_started") && !strings.Contains(eb, "run_completed") && !strings.Contains(eb, "iteration_completed") {
-		t.Errorf("no run events for session: %.200s", eb)
+	// 13. Events + usage saw the run. Runtime events reach the ring through
+	// the non-blocking asynchronous emitter, so under -race and parallel
+	// package load they can land after the run's frames; wait for delivery
+	// instead of asserting a single snapshot.
+	var eb string
+	sawRun := func(s string) bool {
+		return strings.Contains(s, "run_started") || strings.Contains(s, "run_completed") || strings.Contains(s, "iteration_completed")
+	}
+	for deadline := time.Now().Add(10 * time.Second); ; {
+		_, eb = env.do(t, http.MethodGet, "/api/events?limit=50&session_id="+sessionID, "", nil)
+		if sawRun(eb) || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if !sawRun(eb) {
+		t.Errorf("no run events for session: %.400s", eb)
 	}
 	_, ub := env.do(t, http.MethodGet, "/api/usage", "", nil)
 	if !strings.Contains(ub, `"prompts_completed":1`) || !strings.Contains(ub, `"tokens_in":120`) {
