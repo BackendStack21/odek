@@ -9,7 +9,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
 
 	"github.com/BackendStack21/odek"
 	"github.com/BackendStack21/odek/internal/config"
@@ -182,7 +181,7 @@ func (t *transcribeTool) transcribeProvider(args transcribeArgs, source string) 
 	if maxBytes <= 0 {
 		maxBytes = int64(config.DefaultSTTMaxAudioMB) << 20
 	}
-	f, err := os.OpenFile(args.Path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	f, err := openRegularNoFollow(args.Path)
 	if err != nil {
 		return jsonResult(transcribeResult{Error: fmt.Sprintf("cannot open audio file %q: %v", args.Path, err)})
 	}
@@ -384,7 +383,7 @@ func (t *transcribeTool) Call(argsJSON string) (result string, err error) {
 
 	// Check the audio file exists (O_NOFOLLOW to prevent symlink attacks) and
 	// reject inputs that would exhaust memory during conversion / transcription.
-	f, err := os.OpenFile(args.Path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	f, err := openRegularNoFollow(args.Path)
 	if err != nil {
 		return jsonResult(transcribeResult{
 			Error: fmt.Sprintf("cannot open audio file %q: %v", args.Path, err),

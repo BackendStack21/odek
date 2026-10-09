@@ -14,7 +14,6 @@ import (
 	"regexp"
 	"sort"
 	"strings"
-	"syscall"
 	"time"
 	"unicode/utf8"
 
@@ -316,7 +315,7 @@ func (t *readFileTool) Call(argsJSON string) (string, error) {
 	// in a single syscall — eliminating the TOCTOU window between
 	// os.Stat (check) and os.Open (use). If the path is a symlink, the
 	// open fails with ELOOP.
-	f, err := os.OpenFile(resolvedPath, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	f, err := openRegularNoFollow(resolvedPath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return jsonError(fmt.Sprintf("file not found: %s", args.Path))
@@ -728,7 +727,7 @@ func (t *searchFilesTool) searchContent(args searchFilesArgs) (string, error) {
 		}
 
 		// Skip binary files — single open for check then search
-		f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+		f, err := openRegularNoFollow(path)
 		if err != nil {
 			// Surface the miss instead of silently dropping the file —
 			// under fd pressure (or a permissions change) silent drops
@@ -935,7 +934,7 @@ func (t *patchTool) Call(argsJSON string) (string, error) {
 	}
 
 	// Read the file without following symlinks
-	f, err := os.OpenFile(args.Path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	f, err := openRegularNoFollow(args.Path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return jsonError(fmt.Sprintf("file not found: %s", args.Path))

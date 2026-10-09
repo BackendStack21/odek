@@ -42,6 +42,29 @@ const maxInlineContentBytes = 10 << 20 // 10 MiB
 // by the tree tool, preventing OOM from directories with millions of entries.
 const maxTreeEntries = 1000
 
+// openRegularNoFollow opens path read-only without following a final symlink
+// and without ever blocking: O_NONBLOCK keeps open(2) on a FIFO with no
+// writer from hanging the agent turn, and anything that is neither a regular
+// file nor a directory (FIFO, socket, device) is refused after the open so
+// no reader can block on it later. Directories are returned so callers can
+// keep their own directory messages.
+func openRegularNoFollow(path string) (*os.File, error) {
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, err
+	}
+	info, err := f.Stat()
+	if err != nil {
+		f.Close()
+		return nil, err
+	}
+	if m := info.Mode(); !m.IsRegular() && !m.IsDir() {
+		f.Close()
+		return nil, fmt.Errorf("not a regular file")
+	}
+	return f, nil
+}
+
 // readFileNoFollow reads a file with O_NOFOLLOW (anti-symlink), rejecting files
 // larger than maxFileReadBytes to avoid unbounded memory consumption.
 // Directory symlinks in the path are resolved first so risk classification
@@ -51,7 +74,7 @@ func readFileNoFollow(path string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	f, err := os.OpenFile(resolvedPath, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	f, err := openRegularNoFollow(resolvedPath)
 	if err != nil {
 		return nil, err
 	}
@@ -877,7 +900,7 @@ func (t *checksumTool) hashFile(arg checksumFileArg) (entry checksumEntry) {
 		return checksumEntry{Path: arg.Path, Algorithm: algo, Error: err.Error()}
 	}
 
-	f, err := os.OpenFile(arg.Path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	f, err := openRegularNoFollow(arg.Path)
 	if err != nil {
 		return checksumEntry{Path: arg.Path, Algorithm: algo, Error: fmt.Sprintf("cannot open %q: %v", arg.Path, err)}
 	}
@@ -1003,7 +1026,7 @@ func (t *headTailTool) readPreview(path string, n int, mode string) (result head
 		return headTailFileResult{Path: path, Error: err.Error()}
 	}
 
-	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	f, err := openRegularNoFollow(path)
 	if err != nil {
 		return headTailFileResult{Path: path, Error: fmt.Sprintf("cannot open %q: %v", path, err)}
 	}
