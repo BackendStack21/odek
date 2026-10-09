@@ -643,6 +643,12 @@ User model: %s`, recentJSON, stateJSON)
 	if resp == "" {
 		return ""
 	}
+	// The summary is injected into the system prompt; like AnaphoraResolve,
+	// drop LLM output the injection guard rejects.
+	if err := em.scanContent(ctx, resp); err != nil {
+		log.Printf("extended memory: return after break output rejected: %v", err)
+		return ""
+	}
 	return "\n═══ WHERE YOU LEFT OFF ═══\n" + resp + "\n─────────────────────────\n"
 }
 
