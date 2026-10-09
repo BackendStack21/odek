@@ -362,6 +362,17 @@ func analyzeWithState(cmd string, depth int, inherited *shellAnalysisState) Anal
 				}
 			}
 			if len(inner) == 0 {
+				if len(unwrappedStage.splits) > 0 && cwdKnown && !state.uncertain {
+					// `env -S 'bash script'` leaves nothing behind the
+					// wrapper, yet the split string is the command that runs.
+					files, rewritten := stageLedgerFiles(stage, stageCwd, state.written)
+					for _, path := range files {
+						result.addFile(path)
+					}
+					for _, path := range rewritten {
+						result.addRewritten(path)
+					}
+				}
 				if len(stages) == 1 {
 					if ambiguous {
 						state.forget(assignedNames(stage)...)

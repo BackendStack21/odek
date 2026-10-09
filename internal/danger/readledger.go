@@ -825,7 +825,20 @@ func stageExecutionFilesWritten(stage []string, cwd string, written map[string]b
 	if len(stage) == 0 {
 		return nil
 	}
-	cmdTokens, _ := unwrapWrappers(stage)
+	unwrapped := unwrapWrappersFull(stage)
+	cmdTokens := unwrapped.inner
+	if len(unwrapped.splits) > 0 {
+		// `env -S 'bash script'` runs the split string as the command, ahead
+		// of any remaining operands: gate the command it names.
+		var composed []string
+		for _, split := range unwrapped.splits {
+			composed = append(composed, tokenize(split)...)
+		}
+		composed = append(composed, cmdTokens...)
+		if len(composed) > 0 {
+			return stageExecutionFilesWritten(composed, cwd, written)
+		}
+	}
 	if len(cmdTokens) == 0 {
 		return nil
 	}
