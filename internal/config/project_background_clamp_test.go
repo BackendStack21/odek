@@ -26,6 +26,24 @@ func TestRED_ProjectBackgroundZeroCannotRaiseMaxJobs(t *testing.T) {
 	}
 }
 
+func TestRED_ProjectBackgroundZeroWakesDisablesWakes(t *testing.T) {
+	dir := redIsolate(t)
+	writeGlobalConfig(t, dir, `{"background":{"max_wakes_per_hour":30}}`)
+	writeProjectConfig(t, dir, `{"background":{"max_wakes_per_hour":0}}`)
+	cfg := LoadConfig(CLIFlags{})
+	if cfg.Background.MaxWakesPerHour != 0 {
+		t.Errorf("project could not disable wakes: %d", cfg.Background.MaxWakesPerHour)
+	}
+
+	dir = redIsolate(t)
+	writeGlobalConfig(t, dir, `{"background":{"max_wakes_per_hour":30}}`)
+	writeProjectConfig(t, dir, `{"background":{"max_wakes_per_hour":-1}}`)
+	cfg = LoadConfig(CLIFlags{})
+	if cfg.Background.MaxWakesPerHour != 30 {
+		t.Errorf("negative wake cap not re-inherited: %d", cfg.Background.MaxWakesPerHour)
+	}
+}
+
 func TestProjectBackgroundLowerValuesStillApply(t *testing.T) {
 	dir := redIsolate(t)
 	writeGlobalConfig(t, dir, `{"background":{"max_jobs":4,"max_timeout_seconds":600,"max_wakes_per_hour":10}}`)

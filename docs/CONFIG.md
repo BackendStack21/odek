@@ -1381,7 +1381,9 @@ ends — there is no detach mode in v1.
 
 A project `odek.json` may only LOWER the numeric caps (same clamp philosophy
 as `limits`); a project value of `0` or a negative number does not count as lower and
-keeps the operator's value. Headless `odek run` and scheduled runs are single-session
+keeps the operator's value for `max_jobs`, `max_output_bytes` and
+`max_timeout_seconds`. For `max_wakes_per_hour`, `0` (wakes disabled, the strictest
+setting) is accepted from a project; only negative values keep the operator's value. Headless `odek run` and scheduled runs are single-session
 processes: background jobs end when the run ends. `/jobs` (REPL and Telegram)
 lists live jobs. On `odek serve`, `bg_*` tools are available in sandbox mode. Each job is
 pinned to the launching agent’s container; disconnecting or completing a REST

@@ -3831,15 +3831,16 @@ func clampProjectBackground(global, project *BackgroundFileConfig) {
 		fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring background.wake_on_complete=true from project config (%s) — wake-on-complete is disabled in ~/.odek/config.json\n", ProjectConfigPath())
 		project.WakeOnComplete = nil // global-off wins
 	}
-	clampInt := func(name string, g, p *int) *int {
+	clampInt := func(name string, minAllowed int, g, p *int) *int {
 		switch {
 		case g == nil || p == nil:
 			return p // nothing to clamp against / nothing requested
-		case *p <= 0:
-			// Zero and negative values resolve to "uncapped" or to the shipped
+		case *p < minAllowed:
+			// Values below the minimum resolve to "uncapped" or to the shipped
 			// default, either of which can exceed the operator's cap; keep the
-			// global value, as clampProjectLimits does.
-			fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring background.%s=%d from project config (%s) — non-positive values would remove the global cap %d\n", name, *p, ProjectConfigPath(), *g)
+			// global value, as clampProjectLimits does. Zero is below the
+			// minimum for every cap except max_wakes_per_hour (0 = disabled).
+			fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring background.%s=%d from project config (%s) — values below %d would remove the global cap %d\n", name, *p, ProjectConfigPath(), minAllowed, *g)
 			return g
 		case *p > *g:
 			fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring background.%s=%d from project config (%s) — it would raise the global cap %d\n", name, *p, ProjectConfigPath(), *g)
@@ -3848,10 +3849,11 @@ func clampProjectBackground(global, project *BackgroundFileConfig) {
 			return p // lowered or equal — allowed
 		}
 	}
-	project.MaxJobs = clampInt("max_jobs", global.MaxJobs, project.MaxJobs)
-	project.MaxOutputBytes = clampInt("max_output_bytes", global.MaxOutputBytes, project.MaxOutputBytes)
-	project.MaxTimeoutSeconds = clampInt("max_timeout_seconds", global.MaxTimeoutSeconds, project.MaxTimeoutSeconds)
-	project.MaxWakesPerHour = clampInt("max_wakes_per_hour", global.MaxWakesPerHour, project.MaxWakesPerHour)
+	project.MaxJobs = clampInt("max_jobs", 1, global.MaxJobs, project.MaxJobs)
+	project.MaxOutputBytes = clampInt("max_output_bytes", 1, global.MaxOutputBytes, project.MaxOutputBytes)
+	project.MaxTimeoutSeconds = clampInt("max_timeout_seconds", 1, global.MaxTimeoutSeconds, project.MaxTimeoutSeconds)
+	// 0 means wakes disabled (the strictest setting), so a project may set it.
+	project.MaxWakesPerHour = clampInt("max_wakes_per_hour", 0, global.MaxWakesPerHour, project.MaxWakesPerHour)
 }
 
 func overlayFile(base, override FileConfig) FileConfig {
