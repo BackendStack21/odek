@@ -848,7 +848,12 @@ func ipBytesAllZero(b []byte) bool {
 // loopback/internal name or a private suffix that must classify as SystemWrite.
 // Matching is case-insensitive.
 func hostnameIsInternal(host string) bool {
-	hostLower := strings.ToLower(host)
+	// A trailing dot is the absolute spelling of the same name.
+	hostLower := strings.TrimSuffix(strings.ToLower(host), ".")
+	// RFC 6761: every name under .localhost resolves to loopback.
+	if strings.HasSuffix(hostLower, ".localhost") {
+		return true
+	}
 	switch hostLower {
 	case "localhost", "localhost.localdomain", "localhost6", "localhost6.localdomain6",
 		"ip6-localhost", "ip6-loopback":
