@@ -914,11 +914,7 @@ func (c *Client) renderCappedEnvelope(tool string, env *artifact.Envelope) strin
 // truncateRunes returns s cut to at most n runes (never splitting a multi-byte
 // character).
 func truncateRunes(s string, n int) string {
-	r := []rune(s)
-	if len(r) <= n {
-		return s
-	}
-	return string(r[:n])
+	return artifact.TruncateRunes(s, n)
 }
 
 // call sends a JSON-RPC request and waits for the matching response.
