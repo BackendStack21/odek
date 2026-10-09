@@ -128,3 +128,20 @@ func TestRED_Telegram_ProgressFinishBoundedWhenEditStalls(t *testing.T) {
 		t.Fatalf("finish waited %v on a stalled edit, want at most about %v", d, progressFinishWait)
 	}
 }
+
+// Once finish has given up on a stalled edit, the worker must not post a new
+// progress message: it would land after the answer and after bubble cleanup.
+func TestProgressAbandonedFinishPostsNothing(t *testing.T) {
+	api := &fakeProgressAPI{block: make(chan struct{}), editErr: errors.New("Too Many Requests: retry after 5")}
+	p := newProgressBubble(api, 1, 2, 0)
+	p.setMessageID(7)
+	p.submit("text", "line")
+	p.finish(true) // returns after progressFinishWait while the edit is stuck
+	close(api.block)
+	<-p.done
+	api.mu.Lock()
+	defer api.mu.Unlock()
+	if len(api.sends) != 0 {
+		t.Fatalf("worker posted %d fallback messages after finish gave up: %v", len(api.sends), api.sends)
+	}
+}

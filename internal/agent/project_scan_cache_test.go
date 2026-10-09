@@ -65,6 +65,25 @@ func TestProjectFileScanSidecarNeverCached(t *testing.T) {
 	if *n != 3 {
 		t.Fatalf("scans=%d, want 3 (sidecar verdicts must not be cached)", *n)
 	}
+	// The provider string is not what decides: an attached non-local guard
+	// with an empty provider is still consulted by ScanContent.
+	n = withScanCounter(t, nil)
+	cfg = &Config{Guard: fakeSidecarGuard{}}
+	for i := 0; i < 3; i++ {
+		_ = scanProjectFile("same content", cfg)
+	}
+	if *n != 3 {
+		t.Fatalf("scans=%d, want 3 (empty provider with a non-local guard must not be cached)", *n)
+	}
+	// The real local scanner is cacheable whatever the provider string.
+	n = withScanCounter(t, nil)
+	cfg = &Config{Guard: guard.NewLocalGuard()}
+	for i := 0; i < 3; i++ {
+		_ = scanProjectFile("same content", cfg)
+	}
+	if *n != 1 {
+		t.Fatalf("scans=%d, want 1 (local guard verdict cached)", *n)
+	}
 }
 
 // Two configurations with equal values but distinct pointers must share a

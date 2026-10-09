@@ -17,6 +17,14 @@ type localGuard struct{}
 var localGuardInstance = &localGuard{}
 
 // NewLocalGuard creates a guard backed by danger.ScanInjection.
+// IsLocal reports whether g is the built-in rule scanner. Its verdict depends
+// on the text alone, which is what lets callers batch or memoize scans; a
+// model-backed sidecar never qualifies, whatever the configured provider says.
+func IsLocal(g Guard) bool {
+	_, ok := g.(*localGuard)
+	return ok
+}
+
 func NewLocalGuard() Guard {
 	return localGuardInstance
 }

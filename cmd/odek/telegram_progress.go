@@ -31,10 +31,11 @@ type progressUpdate struct {
 // before sending the final answer, so no progress edit can land after (or
 // race with) the answer, and a pending bubble deletion never overtakes an edit.
 type progressBubble struct {
-	api      progressAPI
-	chatID   int64
-	replyTo  int
-	throttle time.Duration
+	abandoned bool // finish gave up waiting: never post new messages
+	api       progressAPI
+	chatID    int64
+	replyTo   int
+	throttle  time.Duration
 
 	mu       sync.Mutex
 	msgID    int
@@ -116,6 +117,12 @@ func (p *progressBubble) finish(flush bool) {
 	select {
 	case <-p.done:
 	case <-time.After(progressFinishWait):
+		// The answer goes out now; whatever the worker still manages to
+		// edit is harmless, but it must not post a new message that would
+		// land after the answer and the bubble cleanup.
+		p.mu.Lock()
+		p.abandoned = true
+		p.mu.Unlock()
 	}
 }
 
@@ -171,10 +178,17 @@ func (p *progressBubble) apply() {
 		if err != nil {
 			es := err.Error()
 			if strings.Contains(es, "flood") || strings.Contains(es, "retry after") {
-				// Editing is rate limited: continue with new messages.
-				msg, err2 := p.api.SendMessage(p.chatID, u.line, opts)
+				// Editing is rate limited: continue with new messages, unless
+				// the turn already moved on without us.
 				p.mu.Lock()
 				p.canEdit = false
+				abandoned := p.abandoned
+				p.mu.Unlock()
+				if abandoned {
+					return
+				}
+				msg, err2 := p.api.SendMessage(p.chatID, u.line, opts)
+				p.mu.Lock()
 				if err2 == nil && p.msgID == msgID {
 					p.msgID = msg.ID
 				}
@@ -184,6 +198,12 @@ func (p *progressBubble) apply() {
 		p.mu.Lock()
 		p.lastEdit = time.Now()
 		p.mu.Unlock()
+		return
+	}
+	p.mu.Lock()
+	abandoned := p.abandoned
+	p.mu.Unlock()
+	if abandoned {
 		return
 	}
 	msg, err := p.api.SendMessage(p.chatID, u.line, opts)

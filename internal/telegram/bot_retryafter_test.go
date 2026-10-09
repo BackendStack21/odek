@@ -73,3 +73,30 @@ func TestRED_Telegram_RetryAfterHonoured(t *testing.T) {
 		t.Fatalf("calls=%d", calls.Load())
 	}
 }
+
+// Telegram documents retry_after as an integer, but the decode must not fail
+// the whole response on a fractional value: every API path retries it.
+func TestRED_Telegram_FractionalRetryAfterStillRetried(t *testing.T) {
+	var calls atomic.Int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if calls.Add(1) <= 2 {
+			_, _ = w.Write([]byte(`{"ok":false,"error_code":429,"description":"Too Many Requests","parameters":{"retry_after":0.2}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"ok":true,"result":true}`))
+	}))
+	defer ts.Close()
+	bot := NewBot("x")
+	bot.BaseURL = ts.URL
+	start := time.Now()
+	if err := bot.doJSON("sendMessage", map[string]any{"a": 1}, nil); err != nil {
+		t.Fatalf("fractional retry_after broke the retry: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("two retry_after=0.2 responses took %v, want well under the 1s+2s schedule", elapsed)
+	}
+	if calls.Load() != 3 {
+		t.Fatalf("calls=%d, want 3", calls.Load())
+	}
+}

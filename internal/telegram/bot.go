@@ -292,7 +292,7 @@ func (b *Bot) doJSON(method string, body any, dest any) (requestErr error) {
 			Description string          `json:"description"`
 			ErrorCode   int             `json:"error_code"`
 			Parameters  struct {
-				RetryAfter int `json:"retry_after"`
+				RetryAfter json.Number `json:"retry_after"`
 			} `json:"parameters"`
 		}
 		if err := json.Unmarshal(respBody, &apiResp); err != nil {
@@ -305,7 +305,7 @@ func (b *Bot) doJSON(method string, body any, dest any) (requestErr error) {
 			// 429 (rate limit) — retry
 			if apiResp.ErrorCode == 429 {
 				b.log.Warn("rate limited", "method", method, "description", apiResp.Description)
-				retryAfter = time.Duration(apiResp.Parameters.RetryAfter) * time.Second
+				retryAfter = parseRetryAfter(apiResp.Parameters.RetryAfter)
 				lastErr = &TelegramError{Method: method, Description: apiResp.Description, Code: apiResp.ErrorCode}
 				continue
 			}
@@ -431,7 +431,7 @@ func (b *Bot) doUpload(method string, field string, path string, params map[stri
 			Description string          `json:"description"`
 			ErrorCode   int             `json:"error_code"`
 			Parameters  struct {
-				RetryAfter int `json:"retry_after"`
+				RetryAfter json.Number `json:"retry_after"`
 			} `json:"parameters"`
 		}
 		if err := json.Unmarshal(respBody, &apiResp); err != nil {
@@ -443,7 +443,7 @@ func (b *Bot) doUpload(method string, field string, path string, params map[stri
 		if !apiResp.OK {
 			if apiResp.ErrorCode == 429 {
 				b.log.Warn("rate limited", "method", method, "description", apiResp.Description)
-				retryAfter = time.Duration(apiResp.Parameters.RetryAfter) * time.Second
+				retryAfter = parseRetryAfter(apiResp.Parameters.RetryAfter)
 				lastErr = &TelegramError{Method: method, Description: apiResp.Description, Code: apiResp.ErrorCode}
 				continue
 			}

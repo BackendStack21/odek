@@ -184,7 +184,7 @@ func wrapUntrustedBatch(ctx context.Context, recordSource string, sources, conte
 		// window at a time, where a single injected element could be diluted
 		// by its neighbours, so it keeps the per-element scan.
 		limit := toolOutputGuardCfg.MaxTextLength
-		if p := toolOutputGuardCfg.Provider; p != "" && p != guard.ProviderLocal {
+		if !guard.IsLocal(g) {
 			limit = 1
 		}
 		start, size := 0, 0

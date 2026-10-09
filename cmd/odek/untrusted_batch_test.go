@@ -168,10 +168,10 @@ func (g *fakeBatchGuard) Detect(_ context.Context, text string) (guard.Result, e
 // scan is what batching applies to, so the scan hook routes every scan to g.
 func withBatchGuard(t *testing.T, g guard.Guard, maxText int) {
 	t.Helper()
-	withBatchGuardProvider(t, g, guard.ProviderLocal, maxText)
+	withBatchGuardProvider(t, guard.NewLocalGuard(), guard.ProviderLocal, maxText)
 	orig := scanToolOutputContent
 	t.Cleanup(func() { scanToolOutputContent = orig })
-	scanToolOutputContent = func(ctx context.Context, content string, g guard.Guard, _ *guard.Config) error {
+	scanToolOutputContent = func(ctx context.Context, content string, _ guard.Guard, _ *guard.Config) error {
 		res, err := g.Detect(ctx, content)
 		if err != nil {
 			return err

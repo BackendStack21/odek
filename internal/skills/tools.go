@@ -192,7 +192,7 @@ func resetScanMemo() {
 // the local rule scan alone (no sidecar second opinion). Only then is the
 // verdict a pure function of the text.
 func (sm *SkillManager) localOnlyScan() bool {
-	return !guard.IsEnabled(sm.guardCfg.Scan, "skills") || sm.guard == nil || sm.guardCfg.Provider == guard.ProviderLocal
+	return !guard.IsEnabled(sm.guardCfg.Scan, "skills") || sm.guard == nil || guard.IsLocal(sm.guard)
 }
 
 // scanField scans one skill field. When only the local rule scan applies, the

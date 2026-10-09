@@ -58,8 +58,9 @@ func scanProjectFile(content string, cfg *Config) error {
 // built from values, never from pointer addresses that a later allocation
 // could reuse.
 func projectScanKey(content string, cfg *Config) (string, bool) {
-	// A nil guard means ScanContent runs the local rules alone.
-	if p := cfg.GuardConfig.Provider; cfg.Guard != nil && p != "" && p != guard.ProviderLocal {
+	// A nil guard means ScanContent runs the local rules alone; any other
+	// guard must be the local rule scanner itself, never a sidecar.
+	if cfg.Guard != nil && !guard.IsLocal(cfg.Guard) {
 		return "", false
 	}
 	sum := sha256.Sum256([]byte(content))
