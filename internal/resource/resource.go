@@ -150,9 +150,14 @@ type Ref struct {
 	Path  string // Content after "@" (e.g. "src/main.go")
 }
 
+// refTrailingPunct lists sentence punctuation that is dropped from the end of
+// a reference token.
+const refTrailingPunct = ".,?!:;"
+
 // ParseRefs extracts all @references from text. A reference starts with
 // @ and continues until whitespace, end-of-string, or a closing
-// bracket/paren.
+// bracket/paren. Sentence punctuation at the end of that token (. , ? ! : ;)
+// is not part of the reference.
 func ParseRefs(text string) []Ref {
 	var refs []Ref
 	for i := 0; i < len(text); i++ {
@@ -177,6 +182,13 @@ func ParseRefs(text string) []Ref {
 			i++
 		}
 		end := i
+		// Trailing sentence punctuation ends the sentence, not the path:
+		// "review @main.go." references main.go. Only the run at the end of the
+		// token is dropped, and the path keeps at least one character.
+		for end-start > 1 && strings.IndexByte(refTrailingPunct, text[end-1]) >= 0 {
+			end--
+		}
+		i = end
 		raw := text[start:end]
 		if len(raw) <= 1 {
 			continue

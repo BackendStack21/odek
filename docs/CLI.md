@@ -166,6 +166,8 @@ odek run --session "@auth.go review the security"
 odek continue --id 20260518-abc123 "@auth.go now add rate limiting"
 ```
 
+A reference ends at whitespace, a closing `)`, `]` or `}`, or a `,` or `;`. Sentence punctuation at the end of the token (`.`, `?`, `!`, `:`) is not part of the path, so `review @main.go.` references `main.go`.
+
 When `@ref` resolution fails (file not found), the reference is left as-is in the prompt.
 
 ### Web UI
