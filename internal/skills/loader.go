@@ -341,8 +341,10 @@ func ScanDirs(projectDir, userDir string, extraDirs []string) *ScanResult {
 				// Project-dir skills are distrusted (markProjectSkill) UNLESS
 				// the operator promoted this exact content: the promotion is
 				// anchored in the trusted user-dir registry, not the
-				// attacker-controllable project frontmatter.
-				if data, err := os.ReadFile(filepath.Join(dir, s.Name, "SKILL.md")); err != nil || !isPromotedContent(userDir, s.Name, data) {
+				// attacker-controllable project frontmatter. The hash is
+				// taken from the file actually loaded, never from a path
+				// derived from the (attacker-chosen) frontmatter name.
+				if data, err := os.ReadFile(s.Source.Path); err != nil || !isPromotedContent(userDir, s.Name, data) {
 					markProjectSkill(&s)
 				}
 			}

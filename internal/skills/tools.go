@@ -44,9 +44,9 @@ type SkillManager struct {
 
 	// Skills file cache — tracks mod times and pre-parsed, hash-anchored
 	// skills to avoid re-parsing unchanged SKILL.md files on Reload().
-	fileTimes  fileCache   // path → last-known mod time
-	prevSkills skillCache  // path → cached parsed skill (content-hash anchored)
-	dirty      bool             // true after explicit mutation — bypasses cache on Reload
+	fileTimes  fileCache  // path → last-known mod time
+	prevSkills skillCache // path → cached parsed skill (content-hash anchored)
+	dirty      bool       // true after explicit mutation — bypasses cache on Reload
 
 	// embeddingCfg optionally selects a remote (HTTP) embedding backend for
 	// semantic skill matching. nil (default) = local RandomProjections. Set via
