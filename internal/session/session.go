@@ -848,26 +848,50 @@ func (s *Store) saveLocked(sess *Session) (err error) {
 	return nil
 }
 
+// protectedHeadLen returns how many leading messages the write-time trim
+// keeps: everything up to and including the first user message (the system
+// prompt and the original task). Without a user message only a leading system
+// message is protected.
+func protectedHeadLen(msgs []Message) int {
+	for i, m := range msgs {
+		if m.Role == "user" {
+			return i + 1
+		}
+	}
+	if len(msgs) > 0 && msgs[0].Role == "system" {
+		return 1
+	}
+	return 0
+}
+
 // trimToFileCapLocked drops the oldest message groups from sess until its
 // serialized form fits within MaxSessionFileBytes, returning the trimmed
 // JSON. Caller must hold s.mu.
 //
-// Group semantics mirror the loop's context trimming: the system message at
-// index 0 is always kept, and an assistant tool_calls message is dropped
-// together with its following tool-result messages so a stored transcript
+// Group semantics mirror the loop's context trimming: the protected head (the
+// system message at index 0 and the first principal user message, which holds
+// the original task) is kept while anything else can be dropped, and an
+// assistant tool_calls message is dropped together with its following tool-result messages so a stored transcript
 // never contains orphaned tool messages (which strict providers reject).
 // The turn count is recounted to match the surviving messages. When any
-// groups were dropped, a marker system message is inserted after the system
-// prompt so a resumed session can see that earlier history was removed.
+// groups were dropped, a marker system message is inserted after the protected
+// head so a resumed session can see that earlier history was removed.
 // If nothing droppable remains (a degenerate case, e.g. a single oversized
 // system message), the session is written as-is — failing the save would
 // lose data.
 func (s *Store) trimToFileCapLocked(sess *Session, data []byte) ([]byte, error) {
 	droppedGroups := 0
+	headFallback := false
 	for len(data) > MaxSessionFileBytes {
-		start := 0
-		if len(sess.Messages) > 0 && sess.Messages[0].Role == "system" {
-			start = 1 // keep system
+		start := protectedHeadLen(sess.Messages)
+		if start >= len(sess.Messages) {
+			// Only the protected head remains; the original task goes
+			// before the file becomes unloadable.
+			start = 0
+			if len(sess.Messages) > 0 && sess.Messages[0].Role == "system" {
+				start = 1
+			}
+			headFallback = true
 		}
 		if start >= len(sess.Messages) {
 			break // nothing left to drop
@@ -915,9 +939,12 @@ func (s *Store) trimToFileCapLocked(sess *Session, data []byte) ([]byte, error) 
 				droppedGroups, MaxSessionFileBytes,
 			),
 		}
-		insertAt := 0
-		if len(sess.Messages) > 0 && sess.Messages[0].Role == "system" {
-			insertAt = 1
+		insertAt := protectedHeadLen(sess.Messages)
+		if headFallback || insertAt > len(sess.Messages) {
+			insertAt = 0
+			if len(sess.Messages) > 0 && sess.Messages[0].Role == "system" {
+				insertAt = 1
+			}
 		}
 		withMarker := make([]Message, 0, len(sess.Messages)+1)
 		withMarker = append(withMarker, sess.Messages[:insertAt]...)
