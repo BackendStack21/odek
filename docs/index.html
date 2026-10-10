@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#030304">
   <meta name="color-scheme" content="dark">
-  <title>odek · Move fast. Stay in control.</title>
-  <meta name="description" content="An autonomous agent workspace in one &lt;15 MB Go binary. Plan, build, inspect results, and keep working across sessions. Your models, your machine, zero frameworks.">
+  <title>odek · Go agent runtime in one binary</title>
+  <meta name="description" content="A ReAct agent runtime in one &lt;15 MB Go binary. Seven modules in the whole dependency graph, 30+ built-in tools, Docker sandbox on by default, unrecognized shell commands denied. MIT.">
   <link rel="canonical" href="https://odek.21no.de/">
   <link rel="robots" href="/robots.txt">
   <link rel="sitemap" href="/sitemap.xml">
@@ -61,7 +61,7 @@
       "name": "What is odek?",
       "acceptedAnswer": {
         "@type": "Answer",
-        "text": "odek is a <15 MB static Go binary that runs an autonomous ReAct agent loop. It is provider-agnostic and ships parallel tool execution, persistent memory, an MCP server and client, a Docker sandbox (on by default), a Web UI, and a Telegram bot — with no frameworks and no Python venv."
+        "text": "odek is a <15 MB static Go binary that runs an autonomous ReAct agent loop. Its entire dependency graph is seven Go modules. It is provider-agnostic and ships 30+ built-in tools, parallel tool execution, persistent memory, an MCP server and client, a Docker sandbox (on by default), a Web UI, a Telegram bot, and cron schedules — with no frameworks and no Python venv."
       }
     },
     {
@@ -121,97 +121,107 @@
   <main id="main" class="wrap">
 
     <header class="hero">
-      <p class="eyebrow">GO SMALL. BUILD BIG.</p>
-      <h1>Move fast.<br><span>Stay in control.</span></h1>
-      <p class="lede">An autonomous agent with a small footprint and a clear set of boundaries. Odek plans, runs tools, and follows through—in one <span class="size">&lt;15 MB</span> Go binary you can inspect from the inside out.</p>
+      <p class="eyebrow">AGENT RUNTIME · GO · MIT</p>
+      <h1>One binary.<br><span>Seven modules.</span></h1>
+      <p class="lede">Odek is a ReAct agent: it plans, calls tools in parallel, and asks before risky commands. The release binary is <span class="size">&lt;15 MB</span>, the Web UI is embedded in it, and its entire <code>go.sum</code> lists seven modules.</p>
       <div class="hero-actions">
         <a class="button primary" href="#install">Get started <span aria-hidden="true">↗</span></a>
         <a class="button secondary" href="#gallery">Explore the Web UI <span aria-hidden="true">↓</span></a>
       </div>
-      <p class="hero-note">MIT licensed · Open to inspection · Zero frameworks</p>
+      <p class="hero-note">Linux &amp; macOS · amd64 &amp; arm64 · CLI, REPL, Web UI, Telegram, cron</p>
     </header>
 
-    <div class="posture-strip" aria-label="Odek engineering principles">
-      <p><strong>Travel light.</strong><span>Compiled Go. Zero frameworks. Focused dependencies.</span></p>
-      <p><strong>Work in parallel.</strong><span>Independent tools run together. Your task moves forward.</span></p>
-      <p><strong>Keep the keys.</strong><span>You choose the model, approve the risks, and set the limits.</span></p>
+    <div class="posture-strip" aria-label="Odek by the numbers">
+      <p><strong>7 modules.</strong><span>The full dependency graph: three odek libraries (LLM, MCP, vectors) and four golang.org/x packages.</span></p>
+      <p><strong>12 risk classes.</strong><span>Every shell command is tokenized and classified. Unrecognized commands are denied, not guessed.</span></p>
+      <p><strong>6,000+ tests.</strong><span>Plus 17 fuzz targets. CI runs staticcheck and govulncheck on every push.</span></p>
     </div>
 
     <section class="gallery" id="gallery" aria-labelledby="gallery-h">
       <div class="gallery-heading">
-        <div><p class="eyebrow">ONE BINARY. A WHOLE WORKSPACE.</p><h2 id="gallery-h">See the work take shape.</h2></div>
+        <div><p class="eyebrow">WEB UI · EMBEDDED IN THE BINARY</p><h2 id="gallery-h">No Node.<br>No build step.</h2></div>
         <a href="/WEBUI.md">Explore Web UI docs ↗</a>
       </div>
       <div class="gallery-controls" aria-label="Choose a Web UI view" hidden>
-        <button type="button" aria-pressed="true" aria-controls="view-results" data-view="results">01 <span>Rich results</span></button>
-        <button type="button" aria-pressed="false" aria-controls="view-plan" data-view="plan">02 <span>Plans &amp; progress</span></button>
-        <button type="button" aria-pressed="false" aria-controls="view-workspace" data-view="workspace">03 <span>Your workspace</span></button>
-        <button type="button" aria-pressed="false" aria-controls="view-commands" data-view="commands">04 <span>Command palette</span></button>
+        <button type="button" aria-pressed="true" aria-controls="view-results" data-view="results">01 <span>Tool output</span></button>
+        <button type="button" aria-pressed="false" aria-controls="view-plan" data-view="plan">02 <span>Plan &amp; checks</span></button>
+        <button type="button" aria-pressed="false" aria-controls="view-approval" data-view="approval">03 <span>Approvals</span></button>
+        <button type="button" aria-pressed="false" aria-controls="view-agents" data-view="agents">04 <span>Sub-agents</span></button>
+        <button type="button" aria-pressed="false" aria-controls="view-workspace" data-view="workspace">05 <span>New session</span></button>
+        <button type="button" aria-pressed="false" aria-controls="view-commands" data-view="commands">06 <span>Command palette</span></button>
       </div>
       <div class="gallery-stage">
         <figure id="view-results" data-gallery-view="results">
-          <a href="/gallery/results.png" target="_blank" rel="noopener" aria-label="Open full-size rich results screenshot"><img src="/gallery/results.png" width="1280" height="720" fetchpriority="high" alt="Odek Web UI with session navigation, a conversation, and a diff inspector showing added and removed CSS lines."></a>
-          <figcaption><div><h3>Every result, ready to inspect.</h3><p>Explore code, diffs, and terminal output alongside the conversation. Search the output, switch to raw, or save it for later.</p></div><a href="/gallery/results.png" target="_blank" rel="noopener">View full size ↗</a></figcaption>
+          <a href="/gallery/results.png" target="_blank" rel="noopener" aria-label="Open full-size tool output screenshot"><img src="/gallery/results.png" width="1280" height="720" fetchpriority="high" alt="Odek Web UI with the session rail, a conversation, and the Deliverables inspector showing a diff with removed and added CSS lines."></a>
+          <figcaption><div><h3>Tool output, rendered.</h3><p>Every tool return is listed with its recorded outcome. Diffs, code, and terminal output open in the inspector: search, raw view, copy, save, split diff.</p></div><a href="/gallery/results.png" target="_blank" rel="noopener">View full size ↗</a></figcaption>
         </figure>
         <figure id="view-plan" data-gallery-view="plan">
-          <a href="/gallery/plan.png" target="_blank" rel="noopener" aria-label="Open full-size plans screenshot"><img src="/gallery/plan.png" width="1280" height="720" loading="lazy" alt="The Now inspector shows a three-step plan with two steps done and verification in progress, beside the session transcript."></a>
-          <figcaption><div><h3>Keep the bigger picture in view.</h3><p>Follow the plan, check background jobs, and track sub-agents from the Now inspector without leaving your session.</p></div><a href="/gallery/plan.png" target="_blank" rel="noopener">View full size ↗</a></figcaption>
+          <a href="/gallery/plan.png" target="_blank" rel="noopener" aria-label="Open full-size plan screenshot"><img src="/gallery/plan.png" width="1280" height="720" loading="lazy" alt="The Overview inspector shows a three-step plan: two steps marked complete, verification in progress, each with Request verification and Related results actions."></a>
+          <figcaption><div><h3>Plan status is not proof.</h3><p>The Overview shows plan steps the agent marked complete, labelled “verification requires evidence,” with links to the tool results behind each step.</p></div><a href="/gallery/plan.png" target="_blank" rel="noopener">View full size ↗</a></figcaption>
+        </figure>
+        <figure id="view-approval" data-gallery-view="approval">
+          <a href="/gallery/approval.png" target="_blank" rel="noopener" aria-label="Open full-size approval screenshot"><img src="/gallery/approval.png" width="1280" height="720" loading="lazy" alt="An approval card for a network_upload operation showing the full curl command, the risk class explanation, deny, allow-until-disconnect, and approve buttons, and a 300-second expiry."></a>
+          <figcaption><div><h3>The command, verbatim, before it runs.</h3><p>A risky command stops the run until you answer. The card shows the exact command, its risk class, and what that class means. Unanswered requests expire.</p></div><a href="/gallery/approval.png" target="_blank" rel="noopener">View full size ↗</a></figcaption>
+        </figure>
+        <figure id="view-agents" data-gallery-view="agents">
+          <a href="/gallery/agents.png" target="_blank" rel="noopener" aria-label="Open full-size sub-agents screenshot"><img src="/gallery/agents.png" width="1280" height="720" loading="lazy" alt="Three delegated sub-agents: two running and one finished, shown as cards in the conversation and as rows in the inspector with step, iteration, token, and last-tool details and stop buttons."></a>
+          <figcaption><div><h3>Sub-agents, one row each.</h3><p>Delegated tasks run in parallel. Each one reports phase, step, tokens, and last tool. Running agents can be stopped one at a time; each has its own conversation trace.</p></div><a href="/gallery/agents.png" target="_blank" rel="noopener">View full size ↗</a></figcaption>
         </figure>
         <figure id="view-workspace" data-gallery-view="workspace">
-          <a href="/gallery/workspace.png" target="_blank" rel="noopener" aria-label="Open full-size workspace screenshot"><img src="/gallery/workspace.png" width="1280" height="720" loading="lazy" alt="Odek’s new-session workspace with model and reasoning pickers, keyboard hints, file attachments, and a message composer."></a>
-          <figcaption><div><h3>A little space for your next big idea.</h3><p>Choose a model and reasoning depth. Attach files, reference a past session, and start with what you want to accomplish.</p></div><a href="/gallery/workspace.png" target="_blank" rel="noopener">View full size ↗</a></figcaption>
+          <a href="/gallery/workspace.png" target="_blank" rel="noopener" aria-label="Open full-size new session screenshot"><img src="/gallery/workspace.png" width="1280" height="720" loading="lazy" alt="The new-session workspace with the session rail, suggested starting tasks, and a composer containing a task that references a docs file with @."></a>
+          <figcaption><div><h3>Start with a task.</h3><p>Type the task, reference files or past sessions with <code>@</code>, attach files, and pick the model and limits under Run settings.</p></div><a href="/gallery/workspace.png" target="_blank" rel="noopener">View full size ↗</a></figcaption>
         </figure>
         <figure id="view-commands" data-gallery-view="commands">
-          <a href="/gallery/commands.png" target="_blank" rel="noopener" aria-label="Open full-size command palette screenshot"><img src="/gallery/commands.png" width="1280" height="720" loading="lazy" alt="The command palette lists sessions, commands, model selection, and inspector shortcuts above the workspace."></a>
-          <figcaption><div><h3>Stay in your flow.</h3><p>Jump between sessions, models, and commands with the command palette. Your next action is a few keystrokes away.</p></div><a href="/gallery/commands.png" target="_blank" rel="noopener">View full size ↗</a></figcaption>
+          <a href="/gallery/commands.png" target="_blank" rel="noopener" aria-label="Open full-size command palette screenshot"><img src="/gallery/commands.png" width="1280" height="720" loading="lazy" alt="The command palette over the workspace, listing sessions and commands such as export, theme, and keyboard shortcuts."></a>
+          <figcaption><div><h3>Command palette.</h3><p><code>⌘K</code> searches sessions, commands, models, and inspector views from one prompt.</p></div><a href="/gallery/commands.png" target="_blank" rel="noopener">View full size ↗</a></figcaption>
         </figure>
       </div>
-      <p class="gallery-note">Actual odek Web UI · Example sessions from the bundled fixture · Select an image to explore it at full size.</p>
-      <div class="serve-launch"><div><strong>Already have odek?</strong><span>Your workspace is built in. Start the server and open the token URL it prints.</span></div><div class="code-block"><div class="cb-header"><span class="cb-lang">terminal</span><button type="button" class="cb-copy" data-copy>copy</button></div><pre><code>odek serve</code></pre></div></div>
+      <p class="gallery-note">Actual odek Web UI, captured from the bundled fixture with synthetic sessions — not a recorded agent run. Select an image for full size.</p>
+      <div class="serve-launch"><div><strong>Already have odek?</strong><span>The Web UI ships in the binary. Start the server and open the token URL it prints.</span></div><div class="code-block"><div class="cb-header"><span class="cb-lang">terminal</span><button type="button" class="cb-copy" data-copy>copy</button></div><pre><code>odek serve</code></pre></div></div>
     </section>
 
     <section class="five-whys" id="why-odek" aria-labelledby="why-h">
       <div class="why-intro">
-        <p class="eyebrow">FIVE WHYS / THE ODEK PHILOSOPHY</p>
-        <h2 id="why-h">Small by choice.<br><span>Capable by design.</span></h2>
-        <p>Every dependency is code you inherit. Every permission is reach you grant. Every extra layer is something to understand.</p>
-        <p>Odek keeps those decisions close to you.</p>
-        <a href="#install">Make it yours ↗</a>
+        <p class="eyebrow">FIVE DESIGN DECISIONS</p>
+        <h2 id="why-h">Each claim<br><span>links to its source.</span></h2>
+        <p>Every dependency is code you inherit. Every permission is reach you grant.</p>
+        <p>Each section below points at the file or doc that backs it.</p>
+        <a href="#install">Install ↗</a>
       </div>
       <ol class="why-list">
         <li>
           <span class="why-number" aria-hidden="true">01</span>
-          <div><p class="eyebrow">WHY FEWER DEPENDENCIES?</p><h3>Ship ideas.<br><span>Travel light.</span></h3>
-          <p>Your agent should earn its place on your machine. Odek uses Go’s standard library and a focused set of packages. One compiled binary, with the Web UI built in. Fewer moving parts to install, update, and investigate when something breaks.</p>
-          <p class="why-detail">A smaller dependency graph means fewer external components to review and maintain. Each one still deserves scrutiny.</p>
+          <div><p class="eyebrow">WHY FEWER DEPENDENCIES?</p><h3>Seven modules.<br><span>That is all of go.sum.</span></h3>
+          <p>No web framework, no CLI framework, no indirect dependencies. The HTTP server, WebSocket framing, cron parser, and terminal line editor are the standard library plus odek’s own code. The Web UI is embedded with <code>go:embed</code>. Install is one file.</p>
+          <p class="why-detail">Three of the seven modules (go-llm-sdk, go-mcp, go-vector) come from the same organization as odek. Fewer modules to review is not the same as no review.</p>
           <a href="https://github.com/BackendStack21/odek/blob/main/go.mod" target="_blank" rel="noopener noreferrer">Count the dependencies yourself ↗</a></div>
         </li>
         <li>
           <span class="why-number" aria-hidden="true">02</span>
-          <div><p class="eyebrow">WHY A LEAN RUNTIME?</p><h3>Give the work<br><span>a head start.</span></h3>
-          <p>Start a binary. Get to work. Independent tool calls run concurrently, while built-in file and text tools do their work without spawning a process for every operation. Less setup. Less orchestration overhead. More room for the task.</p>
-          <p class="why-detail">Task speed still depends on your model and workload. The runtime’s job is to keep its own overhead down.</p>
+          <div><p class="eyebrow">WHY A LEAN RUNTIME?</p><h3>Parallel tool calls.<br><span>No process per read.</span></h3>
+          <p>Independent tool calls in one turn run concurrently (4 by default, <code>max_tool_parallel</code>). File reads, search, patch, diff, JSON queries, checksums, and math run in-process instead of shelling out. Near the context limit, old tool output is trimmed and dropped turns are compacted into a digest. At the 90-iteration cap the run ends with a partial-progress summary.</p>
+          <p class="why-detail">Wall-clock time is dominated by the model. The runtime only controls its own overhead.</p>
           <a href="/TOOL_SELECTION.md">Look under the hood ↗</a></div>
         </li>
         <li>
           <span class="why-number" aria-hidden="true">03</span>
-          <div><p class="eyebrow">WHY SECURITY GUARDRAILS?</p><h3>Ambitious tasks.<br><span>Explicit boundaries.</span></h3>
-          <p>Give your agent room to work with Docker sandboxing on by default, approval gates for risky actions, and hard execution budgets. Untrusted content stays behind a trust boundary. Injection scanning, secret redaction, and MCP limits add layers of defense.</p>
-          <p class="why-detail">You define its reach through configuration, connected tools, and approvals. Guardrails reduce risk; they do not make every action safe.</p>
+          <div><p class="eyebrow">WHY SECURITY GUARDRAILS?</p><h3>Unrecognized commands<br><span>are denied.</span></h3>
+          <p>By default, reads, local writes, and plain fetches run; installs, uploads, code execution, and system writes prompt; destructive, blocked, and unrecognized commands are denied. Tools run in a Docker container by default. Web pages, files, and MCP results reach the model inside a per-call nonce tag that marks them untrusted. After three same-class approvals in 60 seconds, the trust shortcut disappears and you type <code>approve</code>.</p>
+          <p class="why-detail">The classifier and injection scanner are rule sets; a novel evasion can get past them. The sandbox is what contains it.</p>
           <a href="/SECURITY.md">Inspect the guardrails ↗</a></div>
         </li>
         <li>
           <span class="why-number" aria-hidden="true">04</span>
-          <div><p class="eyebrow">WHY OPEN SOURCE?</p><h3>Trust has<br><span>source code.</span></h3>
-          <p>Follow a tool call from decision to execution. Trace an approval. Read the redaction logic and the tests behind the defenses. Odek’s MIT-licensed Go source puts the implementation within reach: read it, audit it, change it, build it.</p>
-          <p class="why-detail">Auditable means you can examine the implementation. It is not a claim of independent security certification.</p>
+          <div><p class="eyebrow">WHY OPEN SOURCE?</p><h3>Every documented defense<br><span>has a regression test.</span></h3>
+          <p>MIT-licensed Go. <code>security_report_validation_test.go</code> pins each mitigation listed in SECURITY.md, and the classifier is fuzzed for invariants such as “a harmless prefix never lowers a verdict.” Releases ship <code>checksums.txt</code>; the installer and <code>odek upgrade</code> refuse a binary that does not match it.</p>
+          <p class="why-detail">Tested is not certified. Auditable means you can read the implementation, not that someone else already has.</p>
           <a href="https://github.com/BackendStack21/odek" target="_blank" rel="noopener noreferrer">Read what you run ↗</a></div>
         </li>
         <li>
           <span class="why-number" aria-hidden="true">05</span>
-          <div><p class="eyebrow">WHY OWN YOUR AGENT WORKFLOW?</p><h3>Your machine.<br><span>Your call.</span></h3>
-          <p>Choose the model. Bring your tools through MCP. Move between the terminal, Web UI, and Telegram. Sessions, memory, and skills carry the work forward. Set time, tool-call, and token limits; add cost caps when model prices are configured.</p>
-          <p class="why-detail">The runtime lives on your machine. Model requests go to your configured provider.</p>
+          <div><p class="eyebrow">WHY OWN YOUR AGENT WORKFLOW?</p><h3>Hard budgets.<br><span>Exit code 4.</span></h3>
+          <p>Cap a run’s wall-clock time, tool calls, input and output tokens, and cost (<code>--max-runtime</code>, <code>--max-tool-calls</code>, <code>--max-cost-usd</code>, …). A breach stops the run, saves the session, and exits 4. Six built-in providers plus any OpenAI-compatible endpoint; external tools over MCP. Sessions, memory, and skills stay in <code>~/.odek</code>.</p>
+          <p class="why-detail">The runtime is local. Prompts and tool results go to the model provider you configure. Cost caps apply only when model prices are configured.</p>
           <a href="/EXTENSIONS.md">Build on your terms ↗</a></div>
         </li>
       </ol>
@@ -219,7 +229,7 @@
 
     <div class="provider-strip"><p class="eyebrow">BRING YOUR MODEL</p><p class="prov"><a href="/PROVIDERS.md">DeepSeek</a><a href="/PROVIDERS.md">OpenAI</a><a href="/PROVIDERS.md">Anthropic</a><a href="/PROVIDERS.md">Gemini</a><a href="/PROVIDERS.md">z.ai</a><a href="/PROVIDERS.md">Kimi</a><span class="prov-more">+ OpenAI-compatible endpoints</span></p></div>
 
-    <div class="setup-heading"><p class="eyebrow">FROM DOWNLOAD TO FIRST TASK</p><h2>A small install.<br>A running start.</h2><p>macOS and Linux · amd64 and arm64 · No Python, Node, or venv.</p><ol class="toc"><li><a href="#install">01 install</a></li><li><a href="#configure">02 configure</a></li><li><a href="#sandbox">03 sandbox</a></li><li><a href="#run">04 first run</a></li><li><a href="#breaks">05 troubleshooting</a></li></ol></div>
+    <div class="setup-heading"><p class="eyebrow">FROM DOWNLOAD TO FIRST TASK</p><h2>Four steps<br>to a first task.</h2><p>macOS and Linux · amd64 and arm64 · No Python, Node, or venv.</p><ol class="toc"><li><a href="#install">01 install</a></li><li><a href="#configure">02 configure</a></li><li><a href="#sandbox">03 sandbox</a></li><li><a href="#run">04 first run</a></li><li><a href="#breaks">05 troubleshooting</a></li></ol></div>
 
     <section class="need" aria-labelledby="need-h">
       <h2 id="need-h" class="sr-only">What you need</h2>
