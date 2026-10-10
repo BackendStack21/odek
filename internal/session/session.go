@@ -755,7 +755,7 @@ const maxRevStamps = 1024
 // revStampSettle is how old a stamp must be before it is trusted without a
 // full Load. Kernel file clocks tick coarsely (ext4, tmpfs: up to ~10 ms), so
 // two writes inside one tick can share size and mtime.
-const revStampSettle = 50 * time.Millisecond
+var revStampSettle = 50 * time.Millisecond // a var only so tests can pin the window
 
 // revStamp is a persisted (generation, revision) pair plus the identity of the
 // file it was written to.
