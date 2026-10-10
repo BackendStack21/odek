@@ -367,11 +367,11 @@ func TestMemoryManagerOnSessionEnd(t *testing.T) {
 	mm := NewMemoryManager(dir, llm, DefaultMemoryConfig())
 	drainBackground(t, mm)
 
-	mm.OnSessionEnd("sess-001", 5, []string{
+	mm.OnSessionEndWithProvenance("sess-001", 5, []string{
 		"user: fix the parser",
 		"assistant: found the bug in the tokenizer",
 		"user: great, now add tests",
-	})
+	}, EpisodeProvenance{})
 
 	// Should have written episode
 	episodes, err := mm.SearchEpisodes("test", 5)
@@ -382,6 +382,13 @@ func TestMemoryManagerOnSessionEnd(t *testing.T) {
 		t.Fatal("expected at least 1 episode")
 	}
 	t.Logf("episode summary: %s", episodes[0].Summary)
+
+	// Without the structured session the provenance is unknown: the
+	// episode is stored untrusted and never auto-recalled.
+	mm.OnSessionEnd("sess-002", 5, []string{"user: a", "assistant: b", "user: c"})
+	if !mm.episodes.EpisodePendingReview("sess-002") {
+		t.Fatal("OnSessionEnd stored a trusted episode")
+	}
 }
 
 // ── Extraction prompt structure ──────────────────────────────────

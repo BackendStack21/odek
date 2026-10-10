@@ -125,6 +125,30 @@ type Session struct {
 	// odek-extension/v1, see docs/EXTENSIONS.md). odek stores and returns
 	// these refs verbatim; it NEVER resolves or dereferences their URIs.
 	ExternalRefs []ExternalRef `json:"external_refs,omitempty"`
+
+	// UntrustedIngested records that this conversation has carried untrusted
+	// content at some point. It is sticky: every save ORs in the flag already
+	// on disk and any untrusted wrapper in the messages being written, so
+	// context trimming, write-time size trimming or compaction that removes
+	// the content itself never clears it. Resumed runs seed their ingest
+	// taint from it (delegate_tasks then clamps children to untrusted).
+	UntrustedIngested bool `json:"untrusted_ingested,omitempty"`
+
+	// EpisodeUntrusted records that this conversation crossed the memory
+	// gate's trust boundary (EpisodeTaintSources: a read outside the
+	// workspace, an MCP or network call, a network shell command, a wrapped
+	// external ingest). It is narrower than UntrustedIngested, which also
+	// counts workspace reads, so ordinary coding sessions stay recallable.
+	// Like UntrustedIngested it is sticky: every save ORs in the flag already
+	// on disk and the taint of the messages being written, before write-time
+	// trimming can drop them, so an episode written from a trimmed or
+	// compacted history is still stored untrusted.
+	EpisodeUntrusted bool `json:"episode_untrusted,omitempty"`
+
+	// EpisodeTaintTracked marks a session whose EpisodeUntrusted flag has
+	// been derived over its whole history. Files written before the flag
+	// existed lack it; Load derives the flag from their history once.
+	EpisodeTaintTracked bool `json:"episode_taint_tracked,omitempty"`
 }
 
 // ErrConflict reports that another writer committed after this snapshot was
@@ -237,6 +261,14 @@ type Store struct {
 	// next save can verify the on-disk file is untouched with an lstat instead
 	// of a full parse. Guarded by mu.
 	revStamps map[string]revStamp
+
+	// taintMemos remembers, per session id, the message prefix the last
+	// committed save scanned for taint (taint_anchor.go). Guarded by mu.
+	taintMemos map[string]taintMemo
+
+	// taintScannedMsgs counts messages the taint scans examined. Test
+	// observability only; guarded by mu.
+	taintScannedMsgs int
 
 	// listStats counts per-entry existence stats made by List. Test
 	// observability only.
@@ -723,13 +755,15 @@ const maxRevStamps = 1024
 // revStampSettle is how old a stamp must be before it is trusted without a
 // full Load. Kernel file clocks tick coarsely (ext4, tmpfs: up to ~10 ms), so
 // two writes inside one tick can share size and mtime.
-const revStampSettle = 50 * time.Millisecond
+var revStampSettle = 50 * time.Millisecond // a var only so tests can pin the window
 
 // revStamp is a persisted (generation, revision) pair plus the identity of the
 // file it was written to.
 type revStamp struct {
 	generation string
 	revision   uint64
+	untrusted  bool
+	episode    bool
 	size       int64
 	mod        time.Time
 	ino        uint64
@@ -753,7 +787,7 @@ func (s *Store) cachedRevision(id string, info os.FileInfo, statErr error) *Sess
 	if info.Size() != st.size || !info.ModTime().Equal(st.mod) || fileInode(info) != st.ino {
 		return nil
 	}
-	return &Session{ID: id, Generation: st.generation, Revision: st.revision, persistedID: id}
+	return &Session{ID: id, Generation: st.generation, Revision: st.revision, persistedID: id, UntrustedIngested: st.untrusted, EpisodeUntrusted: st.episode}
 }
 
 // rememberRevision stamps the file just written for sess.
@@ -769,6 +803,8 @@ func (s *Store) rememberRevision(sess *Session) {
 	s.revStamps[sess.ID] = revStamp{
 		generation: sess.Generation,
 		revision:   sess.Revision,
+		untrusted:  sess.UntrustedIngested,
+		episode:    sess.EpisodeUntrusted,
 		size:       info.Size(),
 		mod:        info.ModTime(),
 		ino:        fileInode(info),
@@ -824,6 +860,28 @@ func (s *Store) rememberPrompts(id string, msgs []Message, gen uint64) {
 	s.promptDigests[id] = promptDigest{n: len(msgs), hash: promptsHash(msgs, len(msgs)), gen: gen}
 }
 
+// stripReturnAfterBreak drops return-after-break summaries before a save:
+// the summary is run-only presentation, so persisting it would add a copy on
+// every resume. The input slice is never modified.
+func stripReturnAfterBreak(msgs []Message) []Message {
+	n := 0
+	for _, m := range msgs {
+		if m.Name == ReturnAfterBreakName {
+			n++
+		}
+	}
+	if n == 0 {
+		return msgs
+	}
+	out := make([]Message, 0, len(msgs)-n)
+	for _, m := range msgs {
+		if m.Name != ReturnAfterBreakName {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
 func (s *Store) saveLocked(sess *Session) error {
 	return s.saveLockedMode(sess, false)
 }
@@ -840,6 +898,7 @@ func (s *Store) saveLockedMode(sess *Session, lazyIndex bool) (err error) {
 	if err := ValidateSessionID(sess.ID); err != nil {
 		return fmt.Errorf("session: refusing unsafe save: %w", err)
 	}
+	sess.Messages = stripReturnAfterBreak(sess.Messages)
 	unlock, err := s.fileLock()
 	if err != nil {
 		return err
@@ -860,12 +919,25 @@ func (s *Store) saveLockedMode(sess *Session, lazyIndex bool) (err error) {
 	if alias {
 		// Atomic replacement owns this directory entry, never the alias's
 		// target. Do not read the target to check its unrelated revision.
+		// The previous revision's taint is therefore unknowable: assume it
+		// (fail closed) rather than let this snapshot clear it.
+		sess.UntrustedIngested = true
+		sess.EpisodeUntrusted = true
 	} else if loadErr == nil {
 		if sess.persistedID != "" && sess.persistedID != sess.ID {
 			return fmt.Errorf("%w: destination session already exists", ErrConflict)
 		}
 		if current.Generation != sess.Generation || current.Revision != sess.Revision {
 			return fmt.Errorf("%w: have %d, current %d", ErrConflict, sess.Revision, current.Revision)
+		}
+		// The taint is sticky across saves: a snapshot whose history no
+		// longer shows the untrusted content (trimmed, compacted) must not
+		// clear what an earlier revision recorded.
+		if current.UntrustedIngested {
+			sess.UntrustedIngested = true
+		}
+		if current.EpisodeUntrusted {
+			sess.EpisodeUntrusted = true
 		}
 	} else if !errors.Is(loadErr, os.ErrNotExist) {
 		return loadErr
@@ -975,6 +1047,23 @@ func (s *Store) saveLockedMode(sess *Session, lazyIndex bool) (err error) {
 			sess.Messages[i].PrincipalPrompt = &prompt
 		}
 	}
+	// Both taint flags are scanned independently of the redaction boundary,
+	// whose anchor covers only one message: a snapshot can rewrite earlier
+	// messages and keep it. The scan skips only a prefix the last committed
+	// save of this exact revision scanned, verified by a digest over every
+	// message in it (taintScanFrom). This runs before the write-time size
+	// trim, which can drop the content and the tool calls.
+	if !sess.UntrustedIngested || !sess.EpisodeUntrusted {
+		from := s.taintScanFrom(sess.ID, current, sess.Messages)
+		s.taintScannedMsgs += len(sess.Messages) - from
+		if !sess.UntrustedIngested && MessagesCarryUntrusted(sess.Messages[from:]) {
+			sess.UntrustedIngested = true
+		}
+		if !sess.EpisodeUntrusted && messagesTaintEpisode(sess.Messages[from:]) {
+			sess.EpisodeUntrusted = true
+		}
+	}
+	sess.EpisodeTaintTracked = true
 	for i := boundary; i < len(sess.Messages); i++ {
 		sess.Messages[i].Content = redact.RedactSecrets(sess.Messages[i].Content)
 		sess.Messages[i].ReasoningContent = redact.RedactSecrets(sess.Messages[i].ReasoningContent)
@@ -1046,6 +1135,7 @@ func (s *Store) saveLockedMode(sess *Session, lazyIndex bool) (err error) {
 	sess.persistedID = sess.ID
 	committed = true
 	s.rememberRevision(sess)
+	s.rememberTaintScan(sess, snapshotMessages)
 	s.rememberPrompts(sess.ID, sess.Messages, promptGen)
 
 	// Update the index atomically.
@@ -1074,7 +1164,7 @@ func (s *Store) saveLockedMode(sess *Session, lazyIndex bool) (err error) {
 // message is protected.
 func protectedHeadLen(msgs []Message) int {
 	for i, m := range msgs {
-		if m.Role == "user" {
+		if m.Role == "user" && m.Name != ReturnAfterBreakName {
 			return i + 1
 		}
 	}
@@ -1228,6 +1318,17 @@ func (s *Store) Load(id string) (_ *Session, loadErr error) {
 	// derived from an attacker-controlled embedded ID.
 	if sess.ID != id {
 		return nil, fmt.Errorf("session: load %q: ID mismatch (file contains %q)", id, sess.ID)
+	}
+	// Files written before the flag existed carry the taint only in their
+	// history; derive it so the next save persists it.
+	if !sess.UntrustedIngested && MessagesCarryUntrusted(sess.Messages) {
+		sess.UntrustedIngested = true
+	}
+	if !sess.EpisodeTaintTracked {
+		if !sess.EpisodeUntrusted && messagesTaintEpisode(sess.Messages) {
+			sess.EpisodeUntrusted = true
+		}
+		sess.EpisodeTaintTracked = true
 	}
 	sess.persistedID = sess.ID
 	return &sess, nil
@@ -1544,12 +1645,13 @@ func (s *Store) Cleanup(before time.Time) (int, error) {
 
 // ── Helpers ────────────────────────────────────────────────────────────
 
-// countUserTurns returns the number of user messages in a slice.
-// This excludes the system message (which is always first in odek sessions).
+// countUserTurns returns the number of principal user messages in a slice.
+// Runtime-injected user messages (background notices and wakes, the
+// return-after-break summary) are not principal turns.
 func countUserTurns(messages []Message) int {
 	count := 0
 	for _, m := range messages {
-		if m.Role == "user" {
+		if m.Role == "user" && !IsSyntheticUserName(m.Name) {
 			count++
 		}
 	}

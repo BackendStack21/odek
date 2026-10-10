@@ -36,6 +36,12 @@ type TelegramConfig struct {
 	// AllowedChats + AllowedUsers is a fatal misconfiguration (fail-closed) so
 	// an open bot can never be deployed by accident. Env: ODEK_TELEGRAM_ALLOW_ALL.
 	AllowAllUsers bool `json:"allow_all_users"`
+	// LinkPreview enables Telegram link previews on outbound text. Default
+	// false: previews are disabled because Telegram fetches every previewed
+	// URL server-side, a zero-click exfiltration channel for any secret an
+	// injected answer embeds in a link. Operator-only (the project
+	// odek.json telegram section is ignored). Env: ODEK_TELEGRAM_LINK_PREVIEW.
+	LinkPreview bool `json:"link_preview,omitempty"`
 }
 
 // DefaultConfig returns a TelegramConfig with sensible defaults.
@@ -93,6 +99,14 @@ func ConfigFromEnv(base TelegramConfig) (TelegramConfig, error) {
 		// of the config surface; a malformed value fails closed (false).
 		b, err := strconv.ParseBool(strings.TrimSpace(v))
 		cfg.AllowAllUsers = err == nil && b
+	}
+	if v := os.Getenv("ODEK_TELEGRAM_LINK_PREVIEW"); v != "" {
+		// A malformed value fails closed (previews disabled) and is reported.
+		b, err := strconv.ParseBool(strings.TrimSpace(v))
+		if err != nil {
+			fmt.Fprintf(warnWriter, "telegram: warning: ODEK_TELEGRAM_LINK_PREVIEW: invalid value %q ignored; link previews stay disabled (use true/false, 1/0, t/f)\n", v)
+		}
+		cfg.LinkPreview = err == nil && b
 	}
 	if v := os.Getenv("ODEK_TELEGRAM_BOT_USERNAME"); v != "" {
 		cfg.BotUsername = v
@@ -190,6 +204,41 @@ func ValidateConfig(cfg TelegramConfig) error {
 // requires the explicit AllowAllUsers opt-in (see ValidateConfig).
 func (c TelegramConfig) HasAllowlist() bool {
 	return len(c.AllowedChats) > 0 || len(c.AllowedUsers) > 0
+}
+
+// GroupChatsWithoutUserAllowlist returns the allowed_chats entries that are
+// groups or supergroups (Telegram gives those negative ids) when no
+// allowed_users list is configured. Authorization then rests on the chat
+// alone, so every member of such a group may drive the agent and answer its
+// approval prompts.
+func (c TelegramConfig) GroupChatsWithoutUserAllowlist() []int64 {
+	if len(c.AllowedUsers) > 0 {
+		return nil
+	}
+	var ids []int64
+	for _, id := range c.AllowedChats {
+		if id < 0 {
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
+// GroupAllowlistWarning renders the startup warning for
+// GroupChatsWithoutUserAllowlist, or "" when there is nothing to warn about.
+func GroupAllowlistWarning(c TelegramConfig) string {
+	ids := c.GroupChatsWithoutUserAllowlist()
+	if len(ids) == 0 {
+		return ""
+	}
+	parts := make([]string, len(ids))
+	for i, id := range ids {
+		parts[i] = strconv.FormatInt(id, 10)
+	}
+	return fmt.Sprintf("allowed_chats includes group chat(s) %s but allowed_users is empty: "+
+		"every member of those groups can drive the agent and answer its approval prompts; "+
+		"set allowed_users (ODEK_TELEGRAM_ALLOWED_USERS) to restrict who is a principal",
+		strings.Join(parts, ", "))
 }
 
 // parseInt64List parses a comma-separated string of integers into a slice of

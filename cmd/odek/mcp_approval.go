@@ -11,7 +11,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -236,7 +235,9 @@ const mcpToolApprovalsFile = "mcp_tool_approvals.json"
 // cannot silently register a spoofed or unwanted tool.
 //
 // Approval can be granted via ODEK_APPROVE_MCP=1, an interactive y/N prompt,
-// or a prior persisted approval in ~/.odek/mcp_tool_approvals.json. A
+// or a prior persisted approval in ~/.odek/mcp_tool_approvals.json. Every
+// path, including the env var and auto_approve, still runs the schema guard
+// scan and the schema size cap. A
 // persisted approval is keyed to the tool's input schema and description as
 // well as the server identity, so a server that changes either must
 // re-prompt instead of reusing the old approval.
@@ -251,9 +252,9 @@ func approveMCPToolsWithTTY(projectDir, serverName string, cfg mcpclient.ServerC
 		return nil, nil
 	}
 
-	if mcpApprovalEnv() {
-		return defs, nil
-	}
+	// ODEK_APPROVE_MCP=1 grants the approval, not an exemption from the
+	// schema guard scan and size cap below: every approval path runs them.
+	envApproved := mcpApprovalEnv()
 
 	approved, err := loadMCPToolApprovals()
 	if err != nil {
@@ -284,8 +285,9 @@ func approveMCPToolsWithTTY(projectDir, serverName string, cfg mcpclient.ServerC
 
 		key := mcpToolApprovalKey(projectDir, serverName, def.Name, cfg, schemaHash, def.Description)
 		// Schema guard scans and size caps above still ran — auto_approve
-		// removes the prompt friction, not the safety checks.
-		if cfg.AutoApprove || approved[key] {
+		// and ODEK_APPROVE_MCP remove the prompt friction, not the safety
+		// checks.
+		if envApproved || cfg.AutoApprove || approved[key] {
 			out = append(out, def)
 			continue
 		}
@@ -299,10 +301,7 @@ func approveMCPToolsWithTTY(projectDir, serverName string, cfg mcpclient.ServerC
 		}
 
 		fmt.Fprintf(stdout, "\nMCP server %q wants to register tool %q\n", serverName, def.Name)
-		if def.Description != "" {
-			fmt.Fprintf(stdout, "  description: %s\n", danger.SanitizeInline(sanitizeTerminal(truncateDescription(def.Description, 200))))
-		}
-		fmt.Fprintf(stdout, "  schema: sha256:%s (%d bytes)\n", schemaHash[:16], schemaSize)
+		writeMCPToolContract(stdout, def, schemaHash, schemaSize)
 		fmt.Fprintf(stdout, "Approve? [y/N] ")
 
 		line, err := reader.ReadString('\n')
@@ -439,26 +438,109 @@ func truncateDescription(desc string, max int) string {
 	return desc[:max-3] + "..."
 }
 
-// sanitizeTerminal removes ANSI escape sequences and replaces other terminal
-// control characters with a replacement character so a malicious MCP server
-// cannot disguise an approval prompt with cursor movement or colour codes.
-func sanitizeTerminal(s string) string {
-	// Strip ANSI escape sequences: ESC [ ... m (and similar).
-	ansi := regexp.MustCompile("\x1b\\[[0-9;]*[a-zA-Z]")
-	s = ansi.ReplaceAllString(s, "")
-	// Replace remaining control characters (except tab/newline) with �.
-	var b strings.Builder
-	for _, r := range s {
-		switch {
-		case r == '\t' || r == '\n' || r == '\r':
-			b.WriteRune(r)
-		case r < 0x20 || r == 0x7f:
-			b.WriteRune('�')
-		default:
-			b.WriteRune(r)
+const (
+	// mcpPromptDescriptionBytes bounds the description shown in the per-tool
+	// approval prompt. It exceeds the old 200-byte excerpt by far, so a
+	// payload appended after a benign opening is visible when a server
+	// rewrites an approved tool.
+	mcpPromptDescriptionBytes = 2048
+	// mcpPromptMaxParams bounds the parameter summary lines.
+	mcpPromptMaxParams = 32
+	// mcpPromptIndent prefixes continuation lines of multi-line fields so
+	// server text can never open a line that reads as a prompt field.
+	mcpPromptIndent = "      "
+)
+
+// writeMCPToolContract prints the model-facing contract of an MCP tool in the
+// per-tool approval prompt: the description, the schema fingerprint, a
+// compact parameter summary and the parameter documentation lifted out of
+// the schema. The prompt is shown for a new tool and whenever the approval
+// key changed (the server rewrote the description or schema), so the
+// operator approves the text the model will read, not just a hash. Every
+// server-supplied string goes through danger.SanitizeForDisplay or
+// danger.SanitizeInline.
+func writeMCPToolContract(w io.Writer, def mcpclient.ToolDef, schemaHash string, schemaSize int) {
+	if strings.TrimSpace(def.Description) != "" {
+		desc := danger.SanitizeForDisplay(truncateDescription(def.Description, mcpPromptDescriptionBytes))
+		fmt.Fprintf(w, "  description:\n%s%s\n", mcpPromptIndent, indentMCPPrompt(desc))
+	}
+	fmt.Fprintf(w, "  schema: sha256:%s (%d bytes)\n", schemaHash[:16], schemaSize)
+
+	model, docs := mcpModelSchema(def.InputSchema)
+	if params := mcpParamSummary(model); len(params) > 0 {
+		fmt.Fprintf(w, "  parameters:\n")
+		for i, p := range params {
+			if i == mcpPromptMaxParams {
+				fmt.Fprintf(w, "%s… (+%d more)\n", mcpPromptIndent, len(params)-i)
+				break
+			}
+			fmt.Fprintf(w, "%s%s\n", mcpPromptIndent, danger.SanitizeInline(p))
 		}
 	}
-	return b.String()
+	if rendered := renderMCPParamDocs(docs); rendered != "" {
+		fmt.Fprintf(w, "  parameter docs:\n%s%s\n", mcpPromptIndent,
+			indentMCPPrompt(danger.SanitizeForDisplay(strings.TrimRight(rendered, "\n"))))
+	}
+}
+
+// indentMCPPrompt indents every line after the first of a sanitised value.
+func indentMCPPrompt(s string) string {
+	return strings.ReplaceAll(s, "\n", "\n"+mcpPromptIndent)
+}
+
+// mcpParamSummary renders one line per top-level property of a structural
+// schema (as returned by mcpModelSchema): name, type, required flag, enum.
+func mcpParamSummary(schema any) []string {
+	root, ok := schema.(map[string]any)
+	if !ok {
+		return nil
+	}
+	props, ok := root["properties"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	required := map[string]bool{}
+	if req, ok := root["required"].([]any); ok {
+		for _, r := range req {
+			if s, ok := r.(string); ok {
+				required[s] = true
+			}
+		}
+	}
+	out := make([]string, 0, len(props))
+	for _, name := range sortedSchemaKeys(props) {
+		var attrs []string
+		if sub, ok := props[name].(map[string]any); ok {
+			switch t := sub["type"].(type) {
+			case string:
+				attrs = append(attrs, t)
+			case []any:
+				parts := make([]string, 0, len(t))
+				for _, x := range t {
+					parts = append(parts, fmt.Sprint(x))
+				}
+				attrs = append(attrs, strings.Join(parts, "|"))
+			}
+		}
+		if required[name] {
+			attrs = append(attrs, "required")
+		}
+		if sub, ok := props[name].(map[string]any); ok {
+			if enum, ok := sub["enum"].([]any); ok {
+				parts := make([]string, 0, len(enum))
+				for _, x := range enum {
+					parts = append(parts, fmt.Sprint(x))
+				}
+				attrs = append(attrs, "enum: "+strings.Join(parts, "|"))
+			}
+		}
+		line := name
+		if len(attrs) > 0 {
+			line += " (" + strings.Join(attrs, ", ") + ")"
+		}
+		out = append(out, line)
+	}
+	return out
 }
 
 // maxMCPSchemaBytes caps the serialized JSON schema size for a single MCP tool.
@@ -500,7 +582,12 @@ func walkMCPSchema(v any, fn func(string) error) error {
 	case string:
 		return fn(x)
 	case map[string]any:
-		for _, val := range x {
+		for key, val := range x {
+			// Keys are server text too (property names, $defs names,
+			// object-valued defaults), so they are scanned like values.
+			if err := fn(key); err != nil {
+				return err
+			}
 			if err := walkMCPSchema(val, fn); err != nil {
 				return err
 			}

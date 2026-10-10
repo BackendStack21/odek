@@ -2,12 +2,15 @@ package skills
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"unicode"
 
+	"github.com/BackendStack21/odek/internal/danger"
 	"github.com/BackendStack21/odek/internal/redact"
 )
 
@@ -40,6 +43,21 @@ func parseSkillFile(path string) *Skill {
 		return nil
 	}
 	return parseSkillContent(string(data), path)
+}
+
+// invalidNameWarned remembers the SKILL.md paths already reported for an
+// invalid name, so rescans do not repeat the warning.
+var invalidNameWarned sync.Map
+
+func warnInvalidSkillName(path string, err error) {
+	if _, seen := invalidNameWarned.LoadOrStore(path, true); seen {
+		return
+	}
+	where := path
+	if where == "" {
+		where = "(inline content)"
+	}
+	log.Printf("skills: not loading %s: %s", danger.SanitizeInline(where), danger.SanitizeInline(err.Error()))
 }
 
 // parseSkillContent parses SKILL.md content from a string.
@@ -78,7 +96,10 @@ func parseSkillContent(content, sourcePath string) *Skill {
 		return nil
 	}
 	if err := ValidateSkillName(name); err != nil {
-		return nil // reject names with path traversal at load time
+		// Reject unsafe names at load time. The operator sees why the skill
+		// is missing, once per file, instead of it vanishing silently.
+		warnInvalidSkillName(sourcePath, err)
+		return nil
 	}
 
 	desc := fmString(fm, "description")
@@ -315,9 +336,16 @@ type ScanResult struct {
 
 // ScanDirs scans the project-local and user-global skill directories,
 // plus any additional dirs, and returns categorized skills.
-// Dirs are scanned in order: project → user → extras.
-// If a skill name exists in multiple dirs, the first (higher-priority) wins.
+// Dirs are scanned in order: project → user → extras. When a name exists in
+// several dirs, a trusted copy (not NeedsReview after the project-dir pin)
+// wins over a distrusted one; among equally trusted copies the first in scan
+// order wins. See selectSkills.
 func ScanDirs(projectDir, userDir string, extraDirs []string) *ScanResult {
+	return selectSkills(projectDir, userDir, skillDirs(projectDir, userDir, extraDirs), scanDir)
+}
+
+// skillDirs lists the skill directories in scan order: project → user → extras.
+func skillDirs(projectDir, userDir string, extraDirs []string) []string {
 	var dirs []string
 	if projectDir != "" {
 		dirs = append(dirs, projectDir)
@@ -325,19 +353,23 @@ func ScanDirs(projectDir, userDir string, extraDirs []string) *ScanResult {
 	if userDir != "" {
 		dirs = append(dirs, userDir)
 	}
-	dirs = append(dirs, extraDirs...)
+	return append(dirs, extraDirs...)
+}
 
-	seen := make(map[string]bool)
-	autoLoad := make([]Skill, 0, 10)
-	lazy := make([]Skill, 0, 20)
-
+// selectSkills scans dirs with scan, applies the project-dir distrust pin,
+// resolves name collisions and splits the result into auto-load and lazy.
+//
+// A repository can ship a project skill named like one of the operator's
+// trusted skills; with plain first-wins resolution the pinned project copy
+// would hide the trusted one. A trusted copy therefore always wins over a
+// NeedsReview copy (a project skill, or an imported or flagged one in an
+// operator dir); the shadowed copy is skipped with a warning. Among copies of
+// equal trust the first in scan order wins.
+func selectSkills(projectDir, userDir string, dirs []string, scan func(string) []Skill) *ScanResult {
+	var ordered []string
+	chosen := make(map[string]Skill)
 	for _, dir := range dirs {
-		skills := scanDir(dir)
-		for _, s := range skills {
-			if seen[s.Name] {
-				continue
-			}
-			seen[s.Name] = true
+		for _, s := range scan(dir) {
 			if projectDir != "" && dir == projectDir {
 				// Project-dir skills are distrusted (markProjectSkill) UNLESS
 				// the operator promoted this exact content: the promotion is
@@ -349,20 +381,41 @@ func ScanDirs(projectDir, userDir string, extraDirs []string) *ScanResult {
 					markProjectSkill(&s)
 				}
 			}
-			// Provenance gate: a skill whose originating session
-			// ingested untrusted content (browser, MCP, etc.) is
-			// pinned to lazy regardless of its auto_load flag. The
-			// user must explicitly promote it (clear NeedsReview)
-			// before it can ever load without intent. This is the
-			// enforcement counterpart of SkillProvenance.NeedsReview.
-			if s.AutoLoad && !s.Provenance.NeedsReview {
-				autoLoad = append(autoLoad, s)
-			} else {
-				lazy = append(lazy, s)
+			prev, seen := chosen[s.Name]
+			if !seen {
+				ordered = append(ordered, s.Name)
+				chosen[s.Name] = s
+				continue
+			}
+			if prev.Provenance.NeedsReview && !s.Provenance.NeedsReview {
+				log.Printf("skills: %s skill %s is shadowed by trusted %s; ignoring the copy pending review",
+					danger.SanitizeInline(prev.Name), danger.SanitizeInline(prev.Source.Path), danger.SanitizeInline(s.Source.Path))
+				chosen[s.Name] = s
+				continue
+			}
+			if s.Provenance.NeedsReview && !prev.Provenance.NeedsReview {
+				log.Printf("skills: ignoring %s skill %s pending review: a trusted skill of that name is loaded from %s",
+					danger.SanitizeInline(s.Name), danger.SanitizeInline(s.Source.Path), danger.SanitizeInline(prev.Source.Path))
 			}
 		}
 	}
 
+	autoLoad := make([]Skill, 0, 10)
+	lazy := make([]Skill, 0, 20)
+	for _, name := range ordered {
+		s := chosen[name]
+		// Provenance gate: a skill whose originating session
+		// ingested untrusted content (browser, MCP, etc.) is
+		// pinned to lazy regardless of its auto_load flag. The
+		// user must explicitly promote it (clear NeedsReview)
+		// before it can ever load without intent. This is the
+		// enforcement counterpart of SkillProvenance.NeedsReview.
+		if s.AutoLoad && !s.Provenance.NeedsReview {
+			autoLoad = append(autoLoad, s)
+		} else {
+			lazy = append(lazy, s)
+		}
+	}
 	return &ScanResult{AutoLoad: autoLoad, Lazy: lazy}
 }
 

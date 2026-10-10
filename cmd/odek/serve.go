@@ -1001,7 +1001,7 @@ func newServeAgent(resolved config.ResolvedConfig, system string, runKey string,
 		MaxIterations:    resolved.MaxIter,
 		MaxToolParallel:  resolved.MaxToolParallel,
 		SystemMessage:    system,
-		UntrustedWrapper: func(source, content string) string { return wrapUntrusted(context.Background(), source, content) },
+		UntrustedWrapper: wrapEngineContext,
 		RuntimeContext:   runtimeCtx,
 		NoProjectFile:    resolved.NoAgents,
 		Thinking:         resolved.Thinking,
@@ -1904,7 +1904,7 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 	if currentSession != nil {
 		if mm := agent.Memory(); mm != nil {
 			msgStrs := makeSessionMessageStrings(currentSession)
-			prov := memory.DeriveProvenance(currentSession.Messages)
+			prov := memory.DeriveSessionProvenance(currentSession)
 			mm.OnSessionEndWithProvenance(currentSession.ID, currentSession.Turns, msgStrs, prov)
 		}
 	}
@@ -2421,6 +2421,7 @@ func handlePrompt(
 			}
 			collectDecisions()
 			sess.Messages = dropDanglingToolCalls(filterPersistSnapshot(head, snapshot))
+			markRunTaint(agent, sess)
 			if err := store.SaveNoIndex(sess); err != nil {
 				persistErr = fmt.Errorf("failed to persist session: %w", err)
 				cancelRun()
@@ -2464,6 +2465,7 @@ func handlePrompt(
 			send(map[string]any{"type": "artifact", "artifact": item})
 		}
 	})
+	ctx = withSessionTaint(ctx, sess)
 	_, allMessages, err := agent.RunWithMessages(ctx, messages)
 	collectDecisions()
 	if persistErr != nil {
@@ -2504,6 +2506,7 @@ func handlePrompt(
 		// and in-memory session pointer in sync with the persisted state.
 		note := fmt.Sprintf("[Turn aborted: %s. The prompt above was preserved — send another message to retry or continue.]", providerFailureSummary(err))
 		sess.Messages = append(sess.Messages, session.Message{Role: "assistant", TurnID: turnID, Content: note})
+		markRunTaint(agent, sess)
 		if err := store.SaveNoIndex(sess); err != nil {
 			fmt.Fprintf(os.Stderr, "odek: warning: failed to persist session: %v\n", err)
 		}
@@ -2588,6 +2591,7 @@ func handlePrompt(
 		if mm := agent.Memory(); mm != nil {
 			sess.Buffer = mm.GetBuffer()
 		}
+		markRunTaint(agent, sess)
 		if err := store.Save(sess); err != nil {
 			sendError(send, "failed to save completed turn: "+err.Error())
 			outcomeErr = err

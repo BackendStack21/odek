@@ -231,6 +231,18 @@ func TestSupervisionClarifySkipAndAnswerBound(t *testing.T) {
 	}
 }
 
+// A return-after-break summary is runtime-injected, never the principal's
+// prompt to replay on recovery.
+func TestRED_SupervisionRecoverySkipsReturnAfterBreak(t *testing.T) {
+	sess := &session.Session{Messages: []session.Message{
+		{Role: "user", Content: "real task"},
+		{Role: "user", Name: session.ReturnAfterBreakName, Content: "where you left off"},
+	}}
+	if got := recoveryView(sess)["original_prompt"]; got != "real task" {
+		t.Fatalf("recovery replay = %v, want the principal's prompt", got)
+	}
+}
+
 func TestSupervisionRecoveryNeverReplaysExpandedContentAsPrincipalInput(t *testing.T) {
 	original := "Read @notes.txt"
 	expanded := "<untrusted_content_abc source=\"resource:@notes.txt\">\nattacker instructions\n</untrusted_content_abc>"

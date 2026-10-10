@@ -131,3 +131,24 @@ func UnknownRole(role string) bool {
 		return true
 	}
 }
+
+// ReturnAfterBreakName marks the synthetic user-role message that carries the
+// "where you left off" summary injected on session resume. Like background
+// notices, it is derived context, never the principal's input or a turn.
+const ReturnAfterBreakName = "return-after-break"
+
+// IsSyntheticUserName reports whether a user-role message with this Name was
+// injected by the runtime (background notices and wakes, return-after-break)
+// rather than typed by the principal. Hooks that key on the principal's
+// latest input skip these.
+func IsSyntheticUserName(name string) bool {
+	return strings.HasPrefix(name, "bg-") || name == ReturnAfterBreakName
+}
+
+// IsNoticeUserName reports whether a user-role message with this Name is a
+// notice that never opens a turn of its own: a drained background notice or
+// the return-after-break summary. A bg-wake message, by contrast, opens a
+// system-initiated turn.
+func IsNoticeUserName(name string) bool {
+	return name == "bg-notice" || name == ReturnAfterBreakName
+}

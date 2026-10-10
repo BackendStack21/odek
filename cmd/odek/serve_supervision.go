@@ -76,14 +76,14 @@ type recoveryAction struct {
 func recoveryView(sess *session.Session) map[string]any {
 	start := 0
 	for i, m := range sess.Messages {
-		if m.Role == "user" && m.Name != "bg-wake" && m.Name != "bg-notice" {
+		if m.Role == "user" && !session.IsSyntheticUserName(m.Name) {
 			start = i
 		}
 	}
 	original := ""
 	if len(sess.Messages) > start {
 		m := sess.Messages[start]
-		if m.Role == "user" && m.Name != "bg-wake" && m.Name != "bg-notice" {
+		if m.Role == "user" && !session.IsSyntheticUserName(m.Name) {
 			if m.PrincipalPrompt != nil {
 				original = *m.PrincipalPrompt
 			} else if !strings.Contains(m.Content, "<untrusted_content_") {

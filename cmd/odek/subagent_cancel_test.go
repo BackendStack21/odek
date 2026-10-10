@@ -168,8 +168,10 @@ func TestDelegateTasksTool_OnSubagentDone_NotFiredWhenChildReports(t *testing.T)
 	dir := t.TempDir()
 	script := filepath.Join(dir, "mock-ok-subagent.sh")
 	body := "#!/bin/sh\n" +
+		"eval \"read -r n <&$ODEK_SUBAGENT_FRAME_FD\"\n" +
 		"echo '{\"type\":\"subagent_started\",\"task_id\":\"child-tid\",\"status\":\"running\"}'\n" +
-		"echo '{\"status\":\"success\",\"summary\":\"done\"}'\n"
+		// Only a nonce-authenticated result counts as the child's own report.
+		"printf '{\"type\":\"result\",\"auth\":\"%s\",\"result\":{\"status\":\"success\",\"summary\":\"done\"}}\\n' \"$n\"\n"
 	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
 		t.Fatalf("write mock script: %v", err)
 	}

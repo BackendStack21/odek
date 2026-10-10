@@ -106,7 +106,7 @@ func TestSkillManager_DescriptionScanPinsNeedsReview(t *testing.T) {
 	if strings.Contains(catalog, "ignore previous instructions") {
 		t.Fatalf("NeedsReview catalog line leaked the description:\n%s", catalog)
 	}
-	if !strings.Contains(catalog, "- desc-flagged — [needs review]") {
-		t.Fatalf("catalog must name the skill only:\n%s", catalog)
+	if strings.Contains(catalog, "desc-flagged") || !strings.Contains(catalog, "1 skill(s) pending review") {
+		t.Fatalf("flagged skill must be counted, not named:\n%s", catalog)
 	}
 }

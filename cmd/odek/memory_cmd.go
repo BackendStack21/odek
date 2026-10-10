@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/BackendStack21/odek/internal/config"
+	"github.com/BackendStack21/odek/internal/danger"
 	"github.com/BackendStack21/odek/internal/llmclient"
 	"github.com/BackendStack21/odek/internal/memory"
 	"github.com/BackendStack21/odek/internal/memory/extended"
@@ -51,7 +52,13 @@ func memoryCmd(args []string) error {
 			if len(ep.Provenance.Sources) > 0 {
 				fmt.Printf("    sources: %s\n", strings.Join(ep.Provenance.Sources, ", "))
 			}
-			fmt.Printf("    %s\n\n", ep.Summary)
+			// Show the full stored text — what recall would replay — not
+			// the 120-character index cut, escaped for the terminal.
+			text := ep.Summary
+			if full, err := store.Read(ep.SessionID); err == nil {
+				text = full
+			}
+			fmt.Printf("    %s\n\n", strings.ReplaceAll(danger.SanitizeForDisplay(strings.TrimSpace(text)), "\n", "\n    "))
 		}
 		fmt.Println("Review the summary above, then promote with:  odek memory promote <session_id>")
 		return nil
@@ -61,10 +68,12 @@ func memoryCmd(args []string) error {
 			return fmt.Errorf("usage: odek memory promote <session_id>")
 		}
 		id := subArgs[0]
-		if err := store.Promote(id); err != nil {
+		promoted, err := store.PromoteIfHash(id, "")
+		if err != nil {
 			return err
 		}
-		fmt.Printf("odek: promoted episode %q — it can now be recalled into future sessions\n", id)
+		fmt.Printf("odek: promoted episode %q — it can now be recalled into future sessions:\n\n    %s\n",
+			danger.SanitizeInline(id), strings.ReplaceAll(danger.SanitizeForDisplay(strings.TrimSpace(promoted)), "\n", "\n    "))
 		return nil
 
 	case "discard", "reject":

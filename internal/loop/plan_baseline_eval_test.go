@@ -239,10 +239,10 @@ func TestPlanBaselineEval(t *testing.T) {
 	}
 
 	type result struct {
-		name    string
-		firstOK bool
+		name     string
+		firstOK  bool
 		firstErr string
-		class   string
+		class    string
 	}
 	results := make([]result, 0, len(scenarios))
 	classCounts := map[string]int{}

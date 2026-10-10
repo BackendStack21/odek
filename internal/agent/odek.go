@@ -548,12 +548,16 @@ func New(cfg Config) (_ *Agent, setupErr error) {
 		tools[i] = &toolAdapter{t: t}
 	}
 
+	// Pillar imitations are stripped from the operator identity alone,
+	// before any wrapped adjunct is appended (see sanitizeIdentity).
+	cfg.SystemMessage = sanitizeIdentity(cfg.SystemMessage)
+
 	// Load AGENTS.md from the working directory and append to system message.
 	// Content is scanned for prompt injection before being trusted.
 	if !cfg.NoProjectFile {
 		if projectContent := LoadProjectFile(); projectContent != "" {
 			if err := scanProjectFile(projectContent, &cfg); err != nil {
-				log.Printf("skipping AGENTS.md: guard rejected: %v", err)
+				fmt.Fprintf(os.Stderr, "odek: warning: %s rejected by guard (%v) — skipping project instructions\n", ProjectFileName, err)
 			} else {
 				block := formatProjectInstructions(projectContent, cfg.UntrustedWrapper)
 				if cfg.SystemMessage != "" {
@@ -633,9 +637,9 @@ func New(cfg Config) (_ *Agent, setupErr error) {
 	}
 
 	// Config.SystemMessage is identity/persona, not a way to remove runtime
-	// policy. Canonicalize after all wrapped adjuncts are appended so one
-	// authoritative pillar is always the final trusted block.
-	cfg.SystemMessage = ComposeSecureSystem(cfg.SystemMessage)
+	// policy. Append after all wrapped adjuncts so one authoritative pillar
+	// is always the final trusted block; the adjuncts are not rewritten.
+	cfg.SystemMessage = appendSecurityPillar(cfg.SystemMessage)
 
 	// Create memory manager
 	memoryDir := cfg.MemoryDir
@@ -967,7 +971,7 @@ func (a *Agent) RunWithMessages(ctx context.Context, messages []session.Message)
 	if owned {
 		turnID := ""
 		for i := len(messages) - 1; i >= 0; i-- {
-			if messages[i].Role == "user" && messages[i].Name != "bg-notice" {
+			if messages[i].Role == "user" && !session.IsNoticeUserName(messages[i].Name) {
 				turnID = messages[i].TurnID
 				break
 			}
@@ -1159,6 +1163,21 @@ func (a *Agent) LastPartialReason() (string, bool) {
 		return "", false
 	}
 	return a.engine.LastPartialReason()
+}
+
+// WithUntrustedIngest marks ctx as already tainted. Embedders resuming a
+// stored session whose UntrustedIngested flag is set pass the returned
+// context to RunWithMessages, so delegate_tasks clamps children even when the
+// untrusted content itself was trimmed out of the history.
+func WithUntrustedIngest(ctx context.Context) context.Context {
+	return loop.WithUntrustedIngest(ctx)
+}
+
+// UntrustedIngested reports whether the current or most recent run is tainted
+// (see loop.Engine.UntrustedIngested). Persist it on the session with
+// session.Session.UntrustedIngested so a resumed run starts tainted.
+func (a *Agent) UntrustedIngested() bool {
+	return a.engine.UntrustedIngested()
 }
 
 // TotalInputTokens returns the cumulative prompt tokens consumed across all
@@ -1434,6 +1453,13 @@ type toolAdapter struct {
 func (a *toolAdapter) Name() string        { return a.t.Name() }
 func (a *toolAdapter) Description() string { return a.t.Description() }
 func (a *toolAdapter) Schema() any         { return a.t.Schema() }
+
+// ThirdPartyCatalogue forwards catalogue provenance (loop.ThirdPartyCatalogueTool)
+// so the loop can see that a tool's metadata came from a third party.
+func (a *toolAdapter) ThirdPartyCatalogue() bool {
+	tp, ok := a.t.(interface{ ThirdPartyCatalogue() bool })
+	return ok && tp.ThirdPartyCatalogue()
+}
 func (a *toolAdapter) Call(args string) (string, error) {
 	return a.t.Call(args)
 }
@@ -1472,6 +1498,19 @@ func (a *toolAdapter) CallContext(ctx context.Context, args string) (string, err
 // external data. The loop applies the configured/default nonce wrapper when
 // the tool did not already return one.
 func (a *toolAdapter) RequiresUntrustedOutputBoundary() bool { return true }
+
+// PureOutputFor forwards the pure-output question (tool.PureOutput) to the
+// wrapped tool. tool.OutputIsPure honours the answer only for registered
+// first-party types, so an embedder tool that implements the method still
+// reports external output.
+func (a *toolAdapter) PureOutputFor(args string) bool {
+	return tool.OutputIsPure(a.t, args)
+}
+
+func init() {
+	// The adapter only forwards; the wrapped tool's own registration decides.
+	tool.RegisterPureOutputType((*toolAdapter)(nil))
+}
 
 // SetSessionID propagates the active session id to tools that implement the
 // session-binder interface (delegate_tasks files its artifact dirs under the

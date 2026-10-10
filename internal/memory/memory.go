@@ -933,6 +933,12 @@ func (m *MemoryManager) AddFact(target, content string) error {
 
 // ReplaceFact replaces an existing fact entry.
 func (m *MemoryManager) ReplaceFact(target, oldText, content string) error {
+	return m.ReplaceFactApproved(target, oldText, "", content)
+}
+
+// ReplaceFactApproved is ReplaceFact bound to the approved entry text (see
+// FactStore.ReplaceApproved); an empty expected disables the binding.
+func (m *MemoryManager) ReplaceFactApproved(target, oldText, expected, content string) error {
 	if m.cfg.Enabled == nil || !*m.cfg.Enabled {
 		return fmt.Errorf("memory: disabled")
 	}
@@ -948,7 +954,7 @@ func (m *MemoryManager) ReplaceFact(target, oldText, content string) error {
 	if FactLooksUnsafe(content) {
 		return fmt.Errorf("memory: fact looks unsafe (remote fetch piped to shell)")
 	}
-	if err := m.facts.Replace(target, oldText, content); err != nil {
+	if err := m.facts.ReplaceApproved(target, oldText, expected, content); err != nil {
 		return err
 	}
 	m.markPromptDirty()
@@ -963,6 +969,11 @@ func (m *MemoryManager) ReplaceFact(target, oldText, content string) error {
 
 // RemoveFact removes a fact entry by substring.
 func (m *MemoryManager) RemoveFact(target, oldText string) error {
+	return m.RemoveFactApproved(target, oldText, "")
+}
+
+// RemoveFactApproved is RemoveFact bound to the approved entry text.
+func (m *MemoryManager) RemoveFactApproved(target, oldText, expected string) error {
 	if m.cfg.Enabled == nil || !*m.cfg.Enabled {
 		return fmt.Errorf("memory: disabled")
 	}
@@ -972,7 +983,7 @@ func (m *MemoryManager) RemoveFact(target, oldText string) error {
 	}
 	var pending []MemoryEvent
 	defer m.fireAfterUnlock(unlock, &pending)
-	if err := m.facts.Remove(target, oldText); err != nil {
+	if err := m.facts.RemoveApproved(target, oldText, expected); err != nil {
 		return err
 	}
 	m.markPromptDirty()
@@ -1196,17 +1207,16 @@ func (m *MemoryManager) markPromptDirty() {
 // extracts a narrative session summary using the LLM and stores it as an episode.
 // sessionID is validated for path traversal before any file I/O.
 //
-// Equivalent to OnSessionEndWithProvenance with a zero-value (trusted)
-// provenance. Prefer the With-Provenance variant from callers that have
-// access to the structured session.Message slice — that lets us mark
-// episodes derived from sessions that touched untrusted content, so they
-// are never auto-replayed.
+// Without the structured session it cannot know the provenance, so the
+// episode is stored untrusted (fail closed: never auto-replayed until a human
+// promotes it). Callers that hold the session use OnSessionEndWithProvenance
+// with DeriveSessionProvenance.
 func (m *MemoryManager) OnSessionEnd(sessionID string, turns int, messages []string) {
-	m.OnSessionEndWithProvenance(sessionID, turns, messages, EpisodeProvenance{})
+	m.OnSessionEndWithProvenance(sessionID, turns, messages, EpisodeProvenance{Untrusted: true, Sources: []string{"unknown_provenance"}})
 }
 
 // OnSessionEndWithProvenance is the provenance-carrying counterpart of
-// OnSessionEnd. Callers derive the provenance with DeriveProvenance and
+// OnSessionEnd. Callers derive the provenance with DeriveSessionProvenance and
 // pass it through so the resulting episode inherits the trust signal.
 func (m *MemoryManager) OnSessionEndWithProvenance(sessionID string, turns int, messages []string, prov EpisodeProvenance) {
 	if err := session.ValidateSessionID(sessionID); err != nil {

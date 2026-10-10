@@ -52,6 +52,37 @@ type ChatSession struct {
 	CreatedAt  time.Time
 	LastActive time.Time
 	TurnCount  int
+
+	// untrusted carries in-run taint (MarkUntrustedIngested) into the next
+	// save, which ORs it into the stored session's sticky flag.
+	untrusted bool
+}
+
+// UntrustedIngested reports whether the chat's persisted session has ever
+// carried untrusted content (session.Session.UntrustedIngested).
+func (cs *ChatSession) UntrustedIngested() bool {
+	return cs != nil && (cs.untrusted || (cs.stored != nil && cs.stored.UntrustedIngested))
+}
+
+// MarkUntrustedIngested records that the chat's current run is tainted (an
+// ingest, or a third-party tool catalogue that never reaches the history).
+// The next save persists it on the session's sticky UntrustedIngested flag.
+//
+// It holds the chat's save lock: swapping the cache entry while a save is in
+// flight would make that save skip its cache update, leaving a stale stored
+// revision that fails every later save with a conflict.
+func (sm *SessionManager) MarkUntrustedIngested(chatID int64) {
+	lock, _ := sm.saveLocks.LoadOrStore(chatID, new(sync.Mutex))
+	saveMu := lock.(*sync.Mutex)
+	saveMu.Lock()
+	defer saveMu.Unlock()
+	sm.Mu.Lock()
+	defer sm.Mu.Unlock()
+	if cs := sm.Cache[chatID]; cs != nil && !cs.untrusted {
+		marked := *cs
+		marked.untrusted = true
+		sm.Cache[chatID] = &marked
+	}
 }
 
 // ── Constructor ────────────────────────────────────────────────────────
@@ -241,6 +272,9 @@ func (sm *SessionManager) saveLocked(chatID int64, messages []session.Message, c
 		stored = &copy
 	}
 	stored.Messages = session.CloneMessages(messages)
+	if cs.untrusted {
+		stored.UntrustedIngested = true
+	}
 	stored.UpdatedAt = updated.LastActive
 	stored.Turns = updated.TurnCount
 	var err error
@@ -352,6 +386,11 @@ func (sm *SessionManager) ArchiveAndDelete(chatID int64) error {
 			copy := *cs.stored
 			copy.Messages = session.CloneMessages(cs.Messages)
 			sess = &copy
+		}
+		// In-run taint not yet persisted (MarkUntrustedIngested) goes into
+		// the archive with the history it belongs to.
+		if cs.untrusted {
+			sess.UntrustedIngested = true
 		}
 		if err := sm.Store.Save(sess); err != nil {
 			return fmt.Errorf("archive: persist before archive: %w", err)
@@ -561,6 +600,11 @@ func (sm *SessionManager) ResumeSession(chatID int64, sessionID string) (*ChatSe
 			Turns:     sess.Turns,
 			Task:      canonical,
 			Messages:  session.CloneMessages(sess.Messages),
+			// The archive's sticky taint flags carry over: the content that
+			// set them may already be trimmed out of its history.
+			UntrustedIngested:   sess.UntrustedIngested,
+			EpisodeUntrusted:    sess.EpisodeUntrusted,
+			EpisodeTaintTracked: sess.EpisodeTaintTracked,
 		}
 		if err := sm.Store.Save(stored); err != nil {
 			return nil, fmt.Errorf("persist resumed session: %w", err)

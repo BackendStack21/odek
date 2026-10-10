@@ -99,7 +99,8 @@ func TestScanDirsCached_PriorityOrder(t *testing.T) {
 	fc := make(fileCache)
 	prev := make(skillCache)
 
-	// Project comes first — should win on shared-skill
+	// Project is scanned first, but its unpromoted copy is pinned
+	// NeedsReview, so the trusted user copy wins on shared-skill.
 	result := scanDirsCached(projectDir, userDir, nil, fc, prev)
 
 	if len(result.Lazy) != 2 {
@@ -118,8 +119,8 @@ func TestScanDirsCached_PriorityOrder(t *testing.T) {
 	if shared == nil {
 		t.Fatal("shared-skill not found")
 	}
-	if shared.Description != "project version" {
-		t.Fatalf("project should have priority: got %q, want 'project version'", shared.Description)
+	if shared.Description != "user version" {
+		t.Fatalf("trusted user copy should win: got %q, want 'user version'", shared.Description)
 	}
 	if userOnly == nil {
 		t.Fatal("user-only not found")

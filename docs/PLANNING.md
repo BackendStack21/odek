@@ -96,6 +96,10 @@ A step cannot be completed while any check is pending or failed. The model
 must use `plan complete` only after all checks pass; the runtime reports
 pending or failed checks in its completion notice and gives the existing
 single bounded completion nudge when the run is otherwise ready to finish.
+The nudge is engine-authored, so it never directs the model to run a check:
+it states that the checks are unverified plan data and that a check's tool
+may be run only when that is consistent with the principal's request;
+otherwise the model reports the check as unverified.
 
 For example, the model can create a step with a real test command, then run
 that command and complete the step only after the matching successful result:
@@ -119,6 +123,11 @@ true, and there is no independent verifier model yet.
 
 On resume, persisted check evidence is downgraded to `pending`, and steps
 marked done with checks return to `in_progress` until the checks are rerun.
+Every check rebuilt from a persisted plan is also marked `restored`: it still
+blocks `plan complete` and is still listed in the completion notice, but
+restored checks alone never trigger the completion nudge, and the nudge
+names them as restored, unverified history that must not be run just because
+the plan lists them. Re-declaring a check in the current run clears the mark.
 Plans without checks remain compatible and advisory: their existing status
 behavior is unchanged.
 
@@ -828,7 +837,7 @@ such a relay lands; responses are tiny, so the cadence is cheap.
 | Untrusted-content boundary | Step-line bodies derive from task/tool content and are re-injected as system context every iteration. Wrapped via the engine's `SetUntrustedWrapper` with source `"plan"`, matching the compaction-digest precedent; header stays outside the wrapper so recognition survives. Audit ingest recorder records the injection where active. |
 | Forgery via tool output | A hostile tool result containing a literal `[Current plan:` line cannot become *the* plan message: recognition requires role `system`, and only `refreshPlanMessage` writes that role/content pair. Rendered plan text inside a tool result stays inside the nonce'd tool-result delimiters. Rejection of tool/assistant roles and mid-text mentions is enforced in `refreshPlanMessage`; the classification pin is `TestClassifyToolCall_PlanSafe`. |
 | Secret leakage | Plan titles/notes can echo secrets from task context. Sessions redact every message at save time (`internal/redact`) — the plan message is covered because it *is* a message riding the normal session save. |
-| Resume parsing | Strict and total: bad header, over-cap steps, unknown status token, count mismatch, duplicate ids, omission marker in any position (overflowed plans are not resumable), unterminated wrapper, content after the wrapper close tag — any deviation drops the whole plan (and removes the failed message from the history) instead of approximating. 19 rejection cases pinned by `TestPlan_ParseStrictRejections`. |
+| Resume parsing | Strict and total: bad header, over-cap steps, unknown status token, count mismatch, duplicate ids, omission marker in any position (overflowed plans are not resumable), unterminated wrapper, content after the wrapper close tag, a message over 32 KiB, a step title over 200 chars, or a note over 8000 chars (the `max_render_chars` ceiling, so no legitimate render exceeds it) — any deviation drops the whole plan (and removes the failed message from the history) instead of approximating. 19 rejection cases pinned by `TestPlan_ParseStrictRejections`. |
 | Config trust split | See project clamp rules above: project config cannot raise caps or flip a globally-disabled feature on. The tool reads resolved values only. |
 | Provenance | Completed plans are not promoted to memory facts and carry no new provenance class: episode extraction reads them as ordinary transcript content, so existing taint rules apply unchanged. |
 

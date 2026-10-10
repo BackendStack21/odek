@@ -216,13 +216,14 @@ func boundedRedact(s string, budget int) string {
 
 // verifyTurnStart returns the index of the message that opens the turn under
 // verification, using the transcript's own rule (startTranscript): the
-// latest user message that is not a drained bg-notice. A system-initiated
+// latest user message that is not a drained bg-notice or a return-after-break
+// summary. A system-initiated
 // wake turn ("bg-wake") is a turn of its own and is verified as such. -1
 // when the history has no such message, in which case the whole history is
 // the turn.
 func verifyTurnStart(messages []session.Message) int {
 	for i := len(messages) - 1; i >= 0; i-- {
-		if messages[i].Role == "user" && messages[i].Name != "bg-notice" {
+		if messages[i].Role == "user" && !session.IsNoticeUserName(messages[i].Name) {
 			return i
 		}
 	}
@@ -431,7 +432,7 @@ func verifyPriorContext(messages []session.Message) string {
 		m := messages[i]
 		var label, text string
 		switch {
-		case m.Role == "user" && m.Name != "bg-notice":
+		case m.Role == "user" && !session.IsNoticeUserName(m.Name):
 			label, text = "user", principalText(m)
 		case m.Role == "assistant" && len(m.ToolCalls) == 0 && !m.Superseded:
 			label, text = "assistant", m.Content
@@ -542,11 +543,7 @@ func (e *Engine) verifyCorrectiveText(v verifyVerdict) string {
 		missing = "(none listed)"
 	}
 	body := fmt.Sprintf("reasons: %s\nmissing: %s", reasons, missing)
-	if e.wrapUntrusted != nil {
-		body = e.wrapUntrusted("verify_verdict", body)
-	} else {
-		body = defaultUntrustedWrap("verify_verdict", body)
-	}
+	body = e.wrapContext("verify_verdict", body)
 	b.WriteString(body)
 	return b.String()
 }

@@ -2,6 +2,8 @@ package memory
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -574,21 +576,60 @@ func (e *EpisodeStore) recallByVector(query string, k int) ([]EpisodeMeta, error
 //
 // Returns an error if the session is unknown or already approved.
 func (e *EpisodeStore) Promote(sessionID string) error {
+	_, err := e.promote(sessionID, false, "")
+	return err
+}
+
+// ErrEpisodeSummaryChanged reports that the stored episode text no longer
+// matches the hash the reviewer saw; nothing was promoted.
+var ErrEpisodeSummaryChanged = errors.New("memory: episode summary changed since it was reviewed")
+
+// PromoteIfHash promotes an episode only when the SHA-256 (hex) of its stored
+// text equals wantSHA256, and returns the text it promoted. The text is read
+// and compared under the episode lock, in the same critical section as the
+// index update, so what was reviewed is exactly what becomes recallable. An
+// empty wantSHA256 skips the comparison but still requires the text to be
+// readable and returns it (the CLI prints it). A mismatch returns
+// ErrEpisodeSummaryChanged.
+func (e *EpisodeStore) PromoteIfHash(sessionID, wantSHA256 string) (string, error) {
+	return e.promote(sessionID, true, wantSHA256)
+}
+
+func (e *EpisodeStore) promote(sessionID string, readText bool, wantSHA256 string) (string, error) {
 	if err := session.ValidateSessionID(sessionID); err != nil {
-		return fmt.Errorf("memory: episodes promote: %w", err)
+		return "", fmt.Errorf("memory: episodes promote: %w", err)
 	}
 	unlock, err := lockEpisodes(e.dir)
 	if err != nil {
-		return err
+		return "", err
 	}
 	e.invalidateIndexCache()
 	e.mu.Lock()
+
+	text := ""
+	if readText {
+		data, err := os.ReadFile(filepath.Join(e.dir, sessionID+".md"))
+		if err != nil {
+			e.mu.Unlock()
+			unlock()
+			return "", fmt.Errorf("memory: read episode %s: %w", sessionID, err)
+		}
+		text = string(data)
+		if wantSHA256 != "" {
+			sum := sha256.Sum256(data)
+			if !strings.EqualFold(wantSHA256, hex.EncodeToString(sum[:])) {
+				e.mu.Unlock()
+				unlock()
+				return "", ErrEpisodeSummaryChanged
+			}
+		}
+	}
 
 	idx, err := e.ReadIndex()
 	if err != nil {
 		e.mu.Unlock()
 		unlock()
-		return err
+		return "", err
 	}
 	found := false
 	for i := range idx {
@@ -597,7 +638,7 @@ func (e *EpisodeStore) Promote(sessionID string) error {
 			if idx[i].Provenance.UserApproved {
 				e.mu.Unlock()
 				unlock()
-				return fmt.Errorf("memory: episode %q is already approved", sessionID)
+				return "", fmt.Errorf("memory: episode %q is already approved", sessionID)
 			}
 			idx[i].Provenance.UserApproved = true
 		}
@@ -605,18 +646,18 @@ func (e *EpisodeStore) Promote(sessionID string) error {
 	if !found {
 		e.mu.Unlock()
 		unlock()
-		return fmt.Errorf("memory: episode %q not found", sessionID)
+		return "", fmt.Errorf("memory: episode %q not found", sessionID)
 	}
 	if err := e.writeIndex(idx); err != nil {
 		e.mu.Unlock()
 		unlock()
-		return err
+		return "", err
 	}
 	e.mu.Unlock()
 	unlock()
 	// Fired after releasing the lock (see notifyAll).
 	e.notifyAll([]MemoryEvent{{Type: "episode_promoted", SessionID: sessionID}})
-	return nil
+	return text, nil
 }
 
 // Discard removes a pending (untrusted, unapproved) episode from the index

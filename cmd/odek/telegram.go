@@ -319,6 +319,8 @@ func resetChatForNew(chatID int64, sessionManager *telegram.SessionManager, hand
 	// The next session of this chat reuses the "tg-<chat>" ledger key, so
 	// reads from the archived conversation must not license its executions.
 	danger.ForgetReadLedger(fmt.Sprintf("tg-%d", chatID))
+	// A fresh conversation starts with no wake-turn user binding.
+	telegramTurnUsers.Delete(chatID)
 	if a := handler.GetApprover(chatID); a != nil {
 		a.ResetTrust()
 	}
@@ -370,9 +372,7 @@ func telegramCmd(args []string) error {
 	}
 
 	// 4. Create bot client.
-	bot := telegram.NewBot(cfg.Token)
-	bot.MaxDownloadSize = cfg.MaxDownloadSize
-	bot.MediaQuotaPerChat = cfg.MediaQuotaPerChat
+	bot := telegram.NewBotFromConfig(cfg)
 
 	// 4b. Create logger.
 	rootLog := newOperationalSurfaceLogger("telegram")
@@ -431,6 +431,10 @@ func telegramCmd(args []string) error {
 	// the accidental case).
 	if cfg.AllowAllUsers && !cfg.HasAllowlist() {
 		handlerLog.Warn("telegram bot is running with NO allowlist — ANY user can drive the agent (ODEK_TELEGRAM_ALLOW_ALL=true)")
+	}
+	if msg := telegram.GroupAllowlistWarning(cfg); msg != "" {
+		fmt.Fprintf(os.Stderr, "odek telegram: WARNING: %s\n", msg)
+		handlerLog.Warn(msg)
 	}
 
 	// Build the shared prompt-injection guard once for the whole bot process.
@@ -1391,6 +1395,104 @@ func handleChatMessage(
 	log telegram.Logger,
 	photos ...*telegramPhotoInput,
 ) {
+	runChatTurn(false, chatID, messageID, userID, text, bot, handler, sessionManager,
+		resolved, systemMessage, log, photos...)
+}
+
+// handleWakeTurn runs a system-initiated background-job wake turn. No chat
+// member sent it, so approvals and clarify prompts are bound to the user who
+// last started a turn in the chat (or the single allowed user); with neither,
+// they fail closed instead of accepting any chat member.
+func handleWakeTurn(
+	chatID int64,
+	text string,
+	bot *telegram.Bot,
+	handler *telegram.Handler,
+	sessionManager *telegram.SessionManager,
+	resolved config.ResolvedConfig,
+	systemMessage string,
+	log telegram.Logger,
+) {
+	// The bound user is resolved inside runChatTurn once the chat slot is
+	// held, so a wake queued behind another user's turn binds to that user.
+	runChatTurn(true, chatID, 0, 0, text, bot, handler,
+		sessionManager, resolved, systemMessage, log)
+}
+
+// telegramTurnUsers records, per chat, the user who last started an agent
+// turn. Wake turns bind their approvals to that user.
+var telegramTurnUsers sync.Map // map[int64]int64
+
+// rememberTelegramTurnUser records the originating user of an operator turn.
+func rememberTelegramTurnUser(chatID, userID int64) {
+	if userID != 0 {
+		telegramTurnUsers.Store(chatID, userID)
+	}
+}
+
+// telegramWakeUser returns the user a wake turn's approvals are bound to: the
+// user who last started a turn in the chat, else the only allowed user when
+// exactly one is configured, else 0 (no binding: prompts fail closed).
+func telegramWakeUser(chatID int64, cfg telegram.TelegramConfig) int64 {
+	if v, ok := telegramTurnUsers.Load(chatID); ok {
+		if id, _ := v.(int64); id != 0 {
+			return id
+		}
+	}
+	if len(cfg.AllowedUsers) == 1 {
+		return cfg.AllowedUsers[0]
+	}
+	return 0
+}
+
+// newTelegramTurnApprover builds the per-turn approver. Wake turns require a
+// bound user: with userID 0 every prompt is denied rather than answerable by
+// anyone in the chat.
+func newTelegramTurnApprover(bot *telegram.Bot, chatID, userID int64, wake bool) *telegram.TelegramApprover {
+	a := telegram.NewTelegramApprover(bot, chatID, userID)
+	if wake {
+		a.RequireBoundUser()
+	}
+	if onTelegramTurnApprover != nil {
+		onTelegramTurnApprover(a)
+	}
+	return a
+}
+
+// onTelegramTurnApprover observes each per-turn approver (tests only).
+var onTelegramTurnApprover func(*telegram.TelegramApprover)
+
+// telegramTurnUserMessage is the persisted user message that opens a turn.
+// Wake turns carry Name "bg-wake" (as on the WebUI) so the loop's user-input
+// hooks, audit and verification treat them as system-initiated rather than
+// as an operator task.
+func telegramTurnUserMessage(text string, wake bool) session.Message {
+	m := session.Message{Role: "user", Content: text}
+	if wake {
+		m.Name = "bg-wake"
+	}
+	return m
+}
+
+// errClarifyUnbound is returned by clarify on a wake turn with no bound user.
+var errClarifyUnbound = errors.New("clarify: unavailable on a system-initiated turn with no bound user; report the question in the final answer instead")
+
+// runChatTurn is the shared turn pipeline for operator messages and
+// system-initiated wake turns (wake=true).
+func runChatTurn(
+	wake bool,
+	chatID int64,
+	messageID int,
+	userID int64,
+	text string,
+	bot *telegram.Bot,
+	handler *telegram.Handler,
+	sessionManager *telegram.SessionManager,
+	resolved config.ResolvedConfig,
+	systemMessage string,
+	log telegram.Logger,
+	photos ...*telegramPhotoInput,
+) {
 	// Serialize per chat: only one agent loop runs per chat at a time.
 	// Prevents same-chat message racing that would corrupt session history.
 	slot := pinChat(chatID)
@@ -1400,6 +1502,9 @@ func handleChatMessage(
 		slot.mu.Lock()
 	}
 	defer unpinChat(chatID, slot)
+	if wake {
+		userID = telegramWakeUser(chatID, resolved.Telegram)
+	}
 
 	// Recover from panics so a single bad agent run doesn't deadlock the chat.
 	defer func() {
@@ -1430,10 +1535,14 @@ func handleChatMessage(
 	activeTaskWG.Add(1)
 	defer activeTaskWG.Done()
 
+	if !wake {
+		rememberTelegramTurnUser(chatID, userID)
+	}
+
 	// Create a per-chat TelegramApprover for inline keyboard approval.
 	// Bind approvals to the originating user so group members cannot hijack
 	// each other's approval prompts.
-	approver := telegram.NewTelegramApprover(bot, chatID, userID)
+	approver := newTelegramTurnApprover(bot, chatID, userID, wake)
 	handler.SetApprover(chatID, approver)
 	defer handler.DeleteApprover(chatID)
 
@@ -1471,13 +1580,13 @@ func handleChatMessage(
 	auditHistLen := len(cs.Messages)
 	auditTurn := cs.TurnCount + 1
 	auditUserText := text
-	if hasUntrustedWrapper(auditUserText) {
+	if wake || hasUntrustedWrapper(auditUserText) {
 		// Forwarded/media content is external data, not principal-authored
 		// justification. Do not let its resources count as user-mentioned.
 		auditUserText = ""
 	}
 	auditStore := session.NewAuditStore(sessionManager.Store.Dir())
-	cs.Messages = append(cs.Messages, session.Message{Role: "user", Content: text})
+	cs.Messages = append(cs.Messages, telegramTurnUserMessage(text, wake))
 	cs.LastActive = time.Now()
 
 	// Persist the prompt through the revision-aware manager before execution.
@@ -1494,7 +1603,7 @@ func handleChatMessage(
 	// Build the agent with Telegram approver.
 	bgRT := bgRuntimeForChat(chatID, resolved, sess.ID, bot,
 		func(wakeChatID int64, wakeText string) {
-			go handleChatMessage(wakeChatID, 0, 0, wakeText, bot, handler,
+			go handleWakeTurn(wakeChatID, wakeText, bot, handler,
 				sessionManager, resolved, systemMessage, log)
 		})
 	tools := builtinTools(resolved.Dangerous, nil, approver, resolved.MaxConcurrency, resolved.APIKey, toolConfigFromResolved(resolved), sessionManager.Store)
@@ -1705,6 +1814,9 @@ func handleChatMessage(
 	// keyboard message and blocks until the user responds.
 	agentTools := append([]odek.Tool{}, tools...)
 	agentTools = append(agentTools, toolpkg.NewClarifyTool(func(question string) (string, error) {
+		if wake && userID == 0 {
+			return "", errClarifyUnbound
+		}
 		reqID := generateClarifyReqID()
 		ch := make(chan string, 1)
 		req := &pendingClarifyReq{userID: userID, ch: ch}
@@ -1791,7 +1903,7 @@ func handleChatMessage(
 		MaxIterations:    resolved.MaxIter,
 		MaxToolParallel:  resolved.MaxToolParallel,
 		SystemMessage:    systemMessage,
-		UntrustedWrapper: func(source, content string) string { return wrapUntrusted(context.Background(), source, content) },
+		UntrustedWrapper: wrapEngineContext,
 		RuntimeContext:   odek.BuildRuntimeContext("telegram"),
 		InteractionMode:  resolved.InteractionMode,
 		NoProjectFile:    resolved.NoAgents,
@@ -2029,6 +2141,10 @@ func handleChatMessage(
 	}
 	agentCtx = withAuditRecorder(agentCtx, auditStore, cs.SessionID, auditTurn)
 	agentCtx = withReadLedger(agentCtx, cs.SessionID)
+	// Forwarded text, voice transcripts, captions and documents were wrapped
+	// by the update callbacks before this turn's recorder existed; record
+	// those ingests on it now so the audit sees the turn crossed the boundary.
+	recordOpeningIngests(agentCtx, text)
 	chatCancels.Store(chatID, agentCancel)
 	defer func() {
 		agentCancel()
@@ -2047,6 +2163,9 @@ func handleChatMessage(
 			return
 		}
 		trimmed := dropDanglingToolCalls(snapshot)
+		if agent.UntrustedIngested() {
+			sessionManager.MarkUntrustedIngested(chatID)
+		}
 		if err := sessionManager.SaveNoIndexAt(chatID, turnGen, trimmed); err != nil {
 			checkpointErr = fmt.Errorf("persist Telegram checkpoint: %w", err)
 			agentCancel()
@@ -2062,7 +2181,14 @@ func handleChatMessage(
 	agent.BeginRun("", "")
 	var outcome error
 	defer finishAgentInvocation(agent, &outcome)
+	if cs.UntrustedIngested() {
+		agentCtx = loop.WithUntrustedIngest(agentCtx)
+	}
 	response, updatedMessages, err := agent.RunWithMessages(agentCtx, cs.Messages)
+	if agent.UntrustedIngested() {
+		// Before the cancel-path and final saves below.
+		sessionManager.MarkUntrustedIngested(chatID)
+	}
 	// Drain the progress bubble before anything else is sent: every progress
 	// edit completes before the final answer (or error reply) goes out.
 	progress.finish(!resolved.ToolProgressCleanup)
@@ -2647,13 +2773,44 @@ func photoVisionMessage(caption, description string) string {
 
 // telegramTextMessage builds the user-role content for an incoming Telegram
 // text message. Direct messages are kept as-is so the operator's typed intent
-// is treated normally; forwarded messages are wrapped as untrusted because
-// they cross an external trust boundary.
+// is treated normally; forwarded messages cross an external trust boundary, so
+// they are scanned under the telegram guard scope and wrapped as untrusted.
+// The wrapper's ingest is recorded on the turn's audit recorder when the turn
+// starts (recordOpeningIngests).
 func telegramTextMessage(chatID int64, text string, forwarded bool) string {
 	if forwarded {
-		return wrapUntrusted(context.Background(), fmt.Sprintf("telegram:chat:%d:forwarded", chatID), text)
+		source := fmt.Sprintf("telegram:chat:%d:forwarded", chatID)
+		if scanned := telegramGuardScan(context.Background(), text, "forwarded message"); scanned != text {
+			// Already flagged under the telegram scope: wrap without the
+			// tool-output scan so the content carries a single banner.
+			recordIngest(context.Background(), source, scanned)
+			return wrapBody(source, scanned)
+		}
+		return wrapUntrusted(context.Background(), source, text)
 	}
 	return text
+}
+
+// recordOpeningIngests records each untrusted wrapper in a turn's opening
+// message on the turn's audit recorder. The Telegram callbacks wrap forwarded
+// text, transcripts, captions and documents before the turn (and its audit
+// recorder) exists, so the ingest is recorded here once the turn runs.
+func recordOpeningIngests(ctx context.Context, text string) {
+	if !hasUntrustedWrapper(text) {
+		return
+	}
+	bodies, sources := extractUntrustedAll(text)
+	if len(sources) != len(bodies) {
+		// A wrapper with an empty source was skipped; keep the pairing by
+		// recording under a generic Telegram source.
+		sources = make([]string, len(bodies))
+		for i := range sources {
+			sources[i] = "telegram"
+		}
+	}
+	for i, body := range bodies {
+		recordIngest(ctx, sources[i], body)
+	}
 }
 
 // telegramVoiceMessage builds the user-role content for an auto-transcribed

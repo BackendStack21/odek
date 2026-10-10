@@ -351,6 +351,60 @@ effective trust into the task file (`parent_trust`), and the child runs at
 `min(parent_trust, trust_level)`. A task tree rooted in untrusted content
 cannot launder itself into trusted children.
 
+The `trust_level` a model requests is honoured only on a clean run.
+`delegate_tasks` clamps every requested child to `untrusted` when the parent
+run is tainted. **What taints** (external content only):
+
+- any tool result that can carry external content — the engine wraps each
+  tool's output as `tool:<name>` and records an ingest, so the first such call
+  taints the run (file, shell, network, search, session, memory, skill,
+  background and MCP tools, and every embedder tool);
+- `@`-refs, `--ctx` files, attachments, Telegram forwards/voice/captions/media,
+  `session_search` results, sub-agent results, background-job notices;
+- project instructions: a loaded `AGENTS.md` is repository content, so a run
+  in a repository with an `AGENTS.md` (and `no_agents_md` off) is tainted from
+  its first iteration;
+- **any registered MCP tool** (see below);
+- resuming a session that was ever tainted (the session's sticky
+  `untrusted_ingested` flag survives context and write-time trimming).
+
+**What does not taint:** the engine's own derived context — the plan, the
+rolling digest (compaction), the memory block, re-wrapped persisted system
+messages, progress summaries, effect evidence, reviewed skills,
+extended-memory recall, and the return-after-break summary. (Episode recall
+*does* taint: an episode summarises another session and is admitted by the
+memory gate's per-tool rule, which is weaker than this taint.) These blocks are
+wrapped too, but they derive from history that was already taint-tracked when
+it entered; a tool can never produce their labels.
+
+**Pure built-in calls do not taint either.** A first-party call whose output
+comes only from the model's own arguments or from operator-only config keeps
+its untrusted boundary, under the engine-derived label `pure_tool:<name>`, but
+records no ingest and does not taint. The pure calls are: `math_eval`;
+`base64` inline encoding (`content` without `decode`/`string`; file mode and
+decoding taint); `list_subagent_profiles`; `list_tools` unless the listing
+shows an MCP server introduced by the project `./odek.json`; and `plan`.
+For `list_tools`, purity covers the operator-written MCP command and argument
+strings only, not what those commands resolve to: the tool never runs them.
+`config_view` is not pure, because the resolved view includes values a project
+`./odek.json` may set, and neither are `diff`, `json_query`, `tree`,
+`checksum`, `head_tail` (each reads the filesystem), `clarify`, `send_message`
+and `speak`. Purity is honoured only for registered first-party types
+(`tool.RegisterPureOutputType`, in an internal package): an embedder or MCP
+tool that implements `PureOutputFor`, a type that embeds a built-in, and any
+tool behind `untrustedToolWrapper` all still taint.
+
+So trusted delegation is available when a run delegates before any tainting
+tool call, in a session that has never ingested external content, with no MCP
+server and no `AGENTS.md` loaded. MCP tool names, descriptions and schemas are third-party text in
+the tool catalogue — no ingest is ever recorded for them, yet a poisoned
+description can steer a `delegate_tasks` call. The secure default wins: while
+any MCP server is loaded, trusted delegation is unavailable and every child
+runs untrusted (no MCP, no `bg_*`, dangerous classes denied). To delegate
+trusted work, run without MCP servers (set `"enabled": false` on each server,
+or use a config without `mcp_servers`). Sub-agents that load MCP servers
+themselves clamp their own children the same way.
+
 Capability profiles let the operator define named permission envelopes
 in the top-level `profiles` config (see [CONFIG.md](CONFIG.md)): a task
 selects one via `profile: "name"` and the profile's `max_risk`/`allowlist`/
@@ -379,10 +433,12 @@ covering manual `--task` invocation).
 
 ### Untrusted tasks are fenced
 
-When the parent sets `trust_level: "untrusted"`, the entire request body is wrapped in an
-`<untrusted_input>` fence with a preamble telling the model to treat it as data, not
-instructions — in addition to the permission clamp applied by `applySubagentTrust` (see
-[SECURITY.md](SECURITY.md)).
+Whenever the child's **effective** trust is untrusted — the parent set
+`trust_level: "untrusted"`, omitted `trust_level`, or is itself untrusted (trust never
+increases downward) — the entire request body is wrapped in an `<untrusted_input>` fence
+with a preamble telling the model to treat it as data, not instructions — in addition to
+the permission clamp applied by `applySubagentTrust` (see [SECURITY.md](SECURITY.md)).
+The fence keys on the effective trust, not on the label the parent's model declared.
 
 ### Steering the approach
 
@@ -619,6 +675,28 @@ finished in the stats.
 
 The framed result envelope adds `cost_usd` (final) and `artifacts`
 (the full `odek.artifact-ref/v1` refs — a superset of the frame metadata).
+
+**Result authentication.** Commands a child runs can write lines to the
+child's stdout, so the parent does not trust any line that merely looks like a
+result. For every spawn the parent mints a random nonce and hands it to the
+child over a private inherited descriptor (`ODEK_SUBAGENT_FRAME_FD` names the
+descriptor, never the value); the child reads and closes it at startup, before
+any tool runs, and stamps it as `auth` on its framed result. The parent takes
+the **first** framed result carrying the nonce as the task result and ignores
+every later result line, forged or duplicate. Only that authenticated frame may
+report `usage` for budget accounting: without one, the shared-budget grant is
+settled as unreported (never refunded), and an unauthenticated result line is
+kept for display only: its status becomes `unverified` (the claimed status is
+kept as `claimed_status`), the completion event and registry report
+`unverified`, and the parent announces the terminal state itself.
+
+On Linux the child also makes itself non-dumpable (`prctl(PR_SET_DUMPABLE,
+0)`) before reading its inherited descriptors, so a background command it
+left running cannot reopen its stdout, frame or key descriptor through
+`/proc/<pid>/fd` to steal the frame and replay the nonce. As a consequence
+sub-agent processes write no core dumps and cannot be attached to by same-uid
+debuggers or tracers (`gdb`, `strace -p`); root or `CAP_SYS_PTRACE` still can.
+Commands the child runs are not affected (the flag resets on `execve`).
 
 **Cost semantics (authoritative — do not re-derive).** `cost_usd` values are
 computed server-side with the exact `/api/usage` math (per-million prices

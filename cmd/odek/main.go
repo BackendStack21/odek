@@ -113,7 +113,7 @@ Think of the best Chief of Staff a founder could have, fused with a Principal-gr
 · Run tests with -race and -count=1 where applicable, other languages: follow project test conventions. Verify after every change; never claim a success you didn't observe.
 · Keep docs (README) in sync with code in the same commit.
 · Emit separate tool calls for independent operations in the same response; the runtime schedules them with max_tool_parallel. Dependent edits that must stop on failure belong in successive responses. Shell calls remain conservatively ordered.
-· The skills catalog lists names and one-line descriptions for promoted skills; skills that need review are named only. Load a body with skill_load when you need the instructions.
+· The skills catalog lists names and one-line descriptions for promoted skills; skills pending review are counted, not named. Load a body with skill_load when you need the instructions.
 · For complex work (3+ file changes): decompose with delegate_tasks — each sub-agent gets a focused goal + context — then synthesize the results. Sub-agents follow the same identity and rules.
 
 ## Verification discipline
@@ -218,8 +218,9 @@ const defaultSystem = defaultIdentity + "\n\n" + securityPillar
 // file or an attacker-controlled system prompt falls back to the compiled-in
 // default rather than being trusted as system instructions. Accepted operator
 // prompts are IDENTITY: the invariant securityPillar is always composed on
-// top (idempotently — an identity already carrying the pillar is kept as-is),
-// so no operator surface can drop the security rules.
+// top (embedded copies and blocks under imitated pillar headings are stripped,
+// then one authoritative pillar is appended last), so no operator surface can
+// drop or contradict the security rules.
 func buildSystemPrompt(resolved config.ResolvedConfig) string {
 	g, err := guard.New(&resolved.Guard)
 	if err != nil {
@@ -262,8 +263,10 @@ func buildSystemPrompt(resolved config.ResolvedConfig) string {
 // composeSystem attaches the invariant security pillar to an accepted
 // identity. Operator surfaces (--system, ODEK_SYSTEM, the config `system`
 // field, IDENTITY.md) define who the agent is — name, mission, persona; the
-// security pillar is not theirs to drop. Idempotent: an identity that already
-// carries the pillar verbatim is returned unchanged.
+// security pillar is not theirs to drop. Idempotent: composing an already
+// composed prompt yields the same prompt — embedded pillar copies and the
+// blocks under imitated pillar headings are stripped and the pillar appended
+// last.
 func composeSystem(identity string) string {
 	return odek.ComposeSecureSystem(identity)
 }
@@ -2076,7 +2079,7 @@ func run(args []string) (outcome error) {
 		MaxIterations:     resolved.MaxIter,
 		MaxToolParallel:   resolved.MaxToolParallel,
 		SystemMessage:     systemMessage,
-		UntrustedWrapper:  func(source, content string) string { return wrapUntrusted(context.Background(), source, content) },
+		UntrustedWrapper:  wrapEngineContext,
 		NoProjectFile:     resolved.NoAgents,
 		Thinking:          resolved.Thinking,
 		ThinkingBudget:    f.ThinkingBudget,
@@ -2270,6 +2273,7 @@ func run(args []string) (outcome error) {
 					return
 				}
 				runSess.Messages = dropDanglingToolCalls(snapshot)
+				markRunTaint(agent, runSess)
 				if err := sessionStore.SaveNoIndex(runSess); err != nil {
 					checkpointErr = fmt.Errorf("persist run checkpoint: %w", err)
 					cancel()
@@ -2305,6 +2309,7 @@ func run(args []string) (outcome error) {
 				return fmt.Errorf("session was not created")
 			}
 			runSess.Messages = allMessages
+			markRunTaint(agent, runSess)
 			runSess.Sandbox = resolved.Sandbox
 			if mm := agent.Memory(); mm != nil {
 				runSess.Buffer = mm.GetBuffer()
@@ -2352,7 +2357,7 @@ func run(args []string) (outcome error) {
 				latest, err := store.Load(sessionID)
 				if err == nil {
 					msgStrs := makeSessionMessageStrings(latest)
-					prov := memory.DeriveProvenance(latest.Messages)
+					prov := memory.DeriveSessionProvenance(latest)
 					mm.OnSessionEndWithProvenance(latest.ID, latest.Turns, msgStrs, prov)
 				}
 			}
@@ -2393,7 +2398,7 @@ func deliverToTelegram(text string, resolved config.ResolvedConfig) error {
 	if chatID == 0 {
 		return fmt.Errorf("telegram default_chat_id not configured")
 	}
-	bot := telegram.NewBot(resolved.Telegram.Token)
+	bot := telegram.NewBotFromConfig(resolved.Telegram)
 	_, err := bot.SendMessage(chatID, text, nil)
 	if err != nil {
 		return fmt.Errorf("send telegram message: %w", err)
@@ -3006,24 +3011,10 @@ func loadMCPTools(resolved config.ResolvedConfig, tools *[]odek.Tool) (func(), e
 		}
 
 		for _, def := range defs {
-			// A malicious MCP server controls the tool name, description,
-			// and parameter schema — all of which flow into the model's
-			// tool catalogue as effectively trusted instructions ("tool
-			// poisoning"). The untrusted wrapper only guards the tool's
-			// runtime *output*, so sanitizeMCPDescription both scans the
-			// server-supplied description for injection patterns (withholding
-			// it on a hit) and wraps whatever passes in an untrusted-data
-			// boundary so the model never treats it as instructions.
-			inner := &mcpclient.ToolAdapter{
-				Client:      client,
-				ToolName:    def.Name,
-				Desc:        sanitizeMCPDescription(name, def.Name, def.Description, injectionGuard, resolved.Guard),
-				ParamSchema: def.InputSchema,
-			}
-			*tools = append(*tools, &untrustedToolWrapper{
-				inner:  inner,
-				source: "mcp:" + name + ":" + def.Name,
-			})
+			// Server-controlled description and schema text is made
+			// non-authoritative before it enters the tool catalogue (see
+			// newMCPModelTool).
+			*tools = append(*tools, newMCPModelTool(client, name, def, injectionGuard, resolved.Guard))
 		}
 
 		cleaners = append(cleaners, func() {
@@ -3522,7 +3513,7 @@ func continueCmd(args []string) (outcome error) {
 		MaxIterations:     resolved.MaxIter,
 		MaxToolParallel:   resolved.MaxToolParallel,
 		SystemMessage:     systemMessage,
-		UntrustedWrapper:  func(source, content string) string { return wrapUntrusted(context.Background(), source, content) },
+		UntrustedWrapper:  wrapEngineContext,
 		NoProjectFile:     resolved.NoAgents,
 		Thinking:          resolved.Thinking,
 		ThinkingBudget:    f.ThinkingBudget,
@@ -3623,12 +3614,14 @@ func continueCmd(args []string) (outcome error) {
 			return
 		}
 		sess.Messages = dropDanglingToolCalls(snapshot)
+		markRunTaint(agent, sess)
 		if err := store.SaveNoIndex(sess); err != nil {
 			checkpointErr = fmt.Errorf("persist continuation checkpoint: %w", err)
 			cancel()
 		}
 	})
 
+	ctx = withSessionTaint(ctx, sess)
 	result, allMessages, err := agent.RunWithMessages(ctx, messages)
 	if checkpointErr != nil {
 		err = checkpointErr
@@ -3678,6 +3671,7 @@ func continueCmd(args []string) (outcome error) {
 	if mm := agent.Memory(); mm != nil {
 		updated.Buffer = mm.GetBuffer()
 	}
+	markRunTaint(agent, updated)
 	if err := store.Save(updated); err != nil {
 		return fmt.Errorf("save session: %w", err)
 	}
@@ -3691,7 +3685,7 @@ func continueCmd(args []string) (outcome error) {
 	if mm := agent.Memory(); mm != nil {
 		mm.RunBackground(func() {
 			msgStrs := makeSessionMessageStrings(sess)
-			prov := memory.DeriveProvenance(sess.Messages)
+			prov := memory.DeriveSessionProvenance(updated)
 			mm.OnSessionEndWithProvenance(sess.ID, sess.Turns+1, msgStrs, prov)
 		})
 	}
@@ -3883,7 +3877,7 @@ func trimSession(store *session.Store, args []string) error {
 	// Recompute turn count
 	sess.Turns = 0
 	for _, m := range sess.Messages {
-		if m.Role == "user" {
+		if m.Role == "user" && !session.IsSyntheticUserName(m.Name) {
 			sess.Turns++
 		}
 	}
@@ -3925,7 +3919,7 @@ func cleanupSessions(store *session.Store, args []string) error {
 func countUserTurnsUpTo(messages []session.Message, n int) int {
 	count := 0
 	for i := 0; i < n && i < len(messages); i++ {
-		if messages[i].Role == "user" {
+		if messages[i].Role == "user" && !session.IsSyntheticUserName(messages[i].Name) {
 			count++
 		}
 	}

@@ -7,6 +7,7 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -33,16 +34,19 @@ func scanInjectionReference(content string) []ScanResult {
 	if strings.Contains(normalized, "ν") {
 		foldedNu = FoldHomoglyphs(strings.ReplaceAll(normalized, "ν", "n"))
 	}
+	match := func(re *regexp.Regexp, s string) bool {
+		if re == transmitSecretsRe {
+			return hasUnnegatedMatch(re, s)
+		}
+		return re.MatchString(s)
+	}
 	for _, p := range injectionPatterns {
-		if p.Re.MatchString(normalized) || (foldDistinct && p.Re.MatchString(folded)) ||
-			(foldedNu != "" && p.Re.MatchString(foldedNu)) {
+		if match(p.Re, normalized) || (foldDistinct && match(p.Re, folded)) ||
+			(foldedNu != "" && match(p.Re, foldedNu)) {
 			results = append(results, ScanResult{Label: p.Label, Pattern: p.Re.String()})
 		}
 	}
-	if scanMarkdownHeaders(content) {
-		results = append(results, ScanResult{Label: markdownHeaderLabel, Pattern: markdownHeaderRe.String()})
-	}
-	return results
+	return append(results, scanStructural(content, normalized, folded)...)
 }
 
 func sameResults(a, b []ScanResult) bool {

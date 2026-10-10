@@ -104,6 +104,15 @@ func buildSubagentRequest(goal, guidance, context string, untrusted bool) string
 	return body
 }
 
+// subagentRequestFenced reports whether the parent-supplied task text must be
+// delivered inside the untrusted-input fence. It keys on the child's
+// EFFECTIVE trust, not on the label the parent's model declared: a task from
+// an untrusted parent, or one that declared no trust level, runs untrusted and
+// its goal/guidance/context are attacker-reachable text.
+func subagentRequestFenced(declared, effective string) bool {
+	return declared == "untrusted" || effective != "trusted"
+}
+
 // wrapUntrustedSubagentInput wraps body in a per-call nonce'd
 // <untrusted_input_<nonce>> boundary and neutralises any literal occurrence
 // of "untrusted_input" inside body so a crafted close tag cannot escape the
@@ -769,6 +778,15 @@ func resolveProfileName(cliFlag, taskFile string) string {
 }
 
 func subagentCmd(args []string) error {
+	// Become non-dumpable before touching the inherited descriptors, so a
+	// same-uid process cannot reopen them (or stdout) through /proc. A
+	// failure is reported but not fatal: the frame nonce still applies.
+	if err := hardenSubagentProcess(); err != nil {
+		fmt.Fprintf(os.Stderr, "odek subagent: warning: %v\n", err)
+	}
+	// Read the result-frame nonce first: the inherited descriptor must be
+	// closed before anything else (MCP servers, tools) can be spawned.
+	frameNonce := readFrameNonceFromInheritedFD()
 	cfg, err := parseSubagentFlags(args)
 	if err != nil {
 		return err
@@ -974,7 +992,7 @@ func subagentCmd(args []string) error {
 	// exclusively from code-computed numeric limits; no parent-supplied
 	// string ever enters the system prompt.
 	systemMsg := subagentSystem + "\n\n" + buildLifespanBlock(cfg.timeout, cfg.maxIter, resolved.Limits)
-	prompt := buildSubagentRequest(cfg.goal, taskGuidance, cfg.context, taskTrust == "untrusted")
+	prompt := buildSubagentRequest(cfg.goal, taskGuidance, cfg.context, subagentRequestFenced(taskTrust, effectiveTrustLevel))
 	if taskArtifactRoot != "" {
 		// Trusted runner text OUTSIDE any untrusted fence: the staging dir
 		// is workspace-relative infrastructure (an ordinary local_write for
@@ -1107,7 +1125,7 @@ func subagentCmd(args []string) error {
 		MaxIterations:    cfg.maxIter,
 		AnnounceBudget:   &resolved.Subagent.AnnounceBudget,
 		SystemMessage:    systemMsg,
-		UntrustedWrapper: func(source, content string) string { return wrapUntrusted(context.Background(), source, content) },
+		UntrustedWrapper: wrapEngineContext,
 		RuntimeContext:   odek.BuildRuntimeContext("terminal"),
 		NoProjectFile:    resolved.NoAgents,
 		Thinking:         resolved.Thinking,
@@ -1338,7 +1356,13 @@ func subagentCmd(args []string) error {
 		if merr == nil {
 			var inner map[string]any
 			_ = json.Unmarshal(raw, &inner)
-			telemetry.emit(map[string]any{"type": "result", "result": inner})
+			frame := map[string]any{"type": "result", "result": inner}
+			if frameNonce != "" {
+				// Authenticates this frame to the parent; commands the
+				// child ran can write to stdout but never saw the nonce.
+				frame["auth"] = frameNonce
+			}
+			telemetry.emit(frame)
 		} else {
 			enc := json.NewEncoder(os.Stdout)
 			enc.Encode(result)

@@ -105,6 +105,8 @@ odek spawns each configured server as a subprocess, sends `initialize` with prot
 | `odek telegram` chat agent | **No.** |
 | Scheduler embedded in `odek telegram` | Yes, but a connect failure is non-fatal (the bot keeps running without those tools). |
 
+A run with any MCP tool registered is treated as tainted for delegation: `delegate_tasks` clamps every child to `untrusted`, because server-supplied tool descriptions and schemas are third-party text the model reads. Trusted delegation needs a run without MCP servers (see [SUBAGENTS.md](SUBAGENTS.md)).
+
 ### Configuration
 
 Put `mcp_servers` in `~/.odek/config.json` (operator-trusted) or `./odek.json` (project; extra approval). The `command` / `args` / `env` shape matches Claude Code's `mcpServers` object. odek does **not** expand `${VAR}` in `mcp_servers.*.env`.
@@ -162,12 +164,12 @@ Two layers, both fail closed when no TTY and nothing else grants trust.
 
 **1. Server spawn** — project-level servers only (`./odek.json`). Global servers in `~/.odek/config.json` skip this. Stored in `~/.odek/mcp_approvals.json` (0600). The key hashes project directory, server name, command, args, env, and the four extension limit fields (`timeout_seconds`, `max_response_bytes`, `max_result_chars`, `artifact_roots`); for URL-configured servers it hashes `url` and `token_env` instead of command/args/env. Schema and description are **not** in this key. Fields are length-prefixed, so no byte sequence in a command or argument (including NUL) can make two different launch vectors share a key. Upgrading from a release that used the older key layout asks once to re-approve each persisted project server.
 
-**2. Per-tool register** — **every** server, including global. Stored in `~/.odek/mcp_tool_approvals.json` (0600). The key hashes project directory, server name, tool name, command, args, env, the four limit fields (or `url`/`token_env` for HTTP servers), the canonical-JSON SHA-256 of `inputSchema`, and the full description. The TTY prompt shows the (sanitized) description plus `schema: sha256:… (N bytes)` — not the env map. Env values are shown on the **server** prompt.
+**2. Per-tool register** — **every** server, including global. Stored in `~/.odek/mcp_tool_approvals.json` (0600). The key hashes project directory, server name, tool name, command, args, env, the four limit fields (or `url`/`token_env` for HTTP servers), the canonical-JSON SHA-256 of `inputSchema`, and the full description. The TTY prompt shows what the model will read — the description (up to 2 KiB), `schema: sha256:… (N bytes)`, a one-line-per-parameter summary (name, type, required, enum) and the parameter documentation lifted out of the schema — with every server string escaped by `danger.SanitizeForDisplay`/`SanitizeInline` (control, bidi and invisible characters shown as visible escapes). Because the key covers the description and schema, a server that rewrites either re-prompts with the new text, not just a new hash. The env map is not shown here. Env values are shown on the **server** prompt.
 
 Ways to approve:
 
 1. Interactive `Approve? [y/N]` on a TTY.
-2. `ODEK_APPROVE_MCP=1` for that invocation (all project servers **and** all tools).
+2. `ODEK_APPROVE_MCP=1` for that invocation (all project servers **and** all tools). Like `auto_approve`, it removes the prompt only: the schema guard scan and the 256 KiB schema cap still run, and a tool that fails either is skipped.
 3. A matching persisted key (any hashed field change re-prompts; older odek keys that omitted the limit fields re-prompt once after upgrade).
 4. `auto_approve: true` in the **global** config (see below).
 
@@ -183,7 +185,9 @@ Removes both prompts. Schema scans, size caps, name checks, env sanitization, an
 
 ### Tool schemas
 
-Before a tool is registered, every string in `inputSchema` is injection-scanned (`mcp_schema` scope). A hit skips the tool (stderr warning). Serialized schemas over 256 KiB are skipped. Description hits withhold the description (placeholder) but keep the tool callable by name. Passing descriptions are still wrapped as untrusted data.
+Before a tool is registered, every string and map key in `inputSchema` is injection-scanned (`mcp_schema` scope). A hit skips the tool (stderr warning). Serialized schemas over 256 KiB are skipped. Description hits withhold the description (placeholder) but keep the tool callable by name. Passing descriptions are still wrapped as untrusted data.
+
+The schema the provider receives is a structural copy: only JSON-Schema keywords that shape the call (`type`, `properties`, `required`, `items`, `prefixItems`, `anyOf`/`oneOf`/`allOf`/`not`, `additionalProperties`, `patternProperties`, local `#`/`#/…` `$ref`s with `$defs`/`definitions`, numeric and boolean bounds, `format`, `pattern`, number/boolean/null `default`s, and short scalar `enum`/`const` values) are kept. Every free-text field — `description`, `title`, `examples`, string, object and array `default`s, `$comment`, `$schema`/`$id`, vendor or unknown keys, enum/const strings over 64 runes, with a newline, or with more than three spaces, patterns over 512 runes — is removed at every nesting level and rendered as bounded parameter documentation (512 runes per value, 64-rune labels, 4 KiB total, newlines flattened) appended inside the tool's wrapped untrusted description block. Map keys are server text too: property names, `$defs`/`definitions`/`dependentSchemas` names, `dependentRequired` keys and `required` entries must match `[A-Za-z0-9_.$@:-]{1,64}`; a non-matching property name is lifted into the wrapped docs and dropped from the schema, and `required` only names properties that survived. `patternProperties` regex keys must be ≤ 128 runes with no whitespace. The approval-time scan covers map keys as well as values. The approval key still hashes the original, unmodified schema.
 
 ### Lifecycle
 

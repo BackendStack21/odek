@@ -427,15 +427,16 @@ func BuildConversationText(messages []Message) string {
 	var out strings.Builder
 	out.Grow(size)
 	for _, m := range messages {
-		appendConversationLine(&out, m.Role, m.Content)
+		appendConversationLine(&out, m.Role, m.Name, m.Content)
 	}
 	return out.String()
 }
 
 // appendConversationLine writes one labelled line for user and assistant
-// messages with content and ignores every other role.
-func appendConversationLine(out *strings.Builder, role, content string) {
-	if content == "" {
+// messages with content and ignores every other role and runtime-injected
+// user messages (background notices, return-after-break summaries).
+func appendConversationLine(out *strings.Builder, role, name, content string) {
+	if content == "" || (role == "user" && IsSyntheticUserName(name)) {
 		return
 	}
 	switch role {
@@ -457,6 +458,7 @@ func extractConversationText(data []byte) string {
 	var raw struct {
 		Messages []struct {
 			Role    string `json:"role"`
+			Name    string `json:"name"`
 			Content string `json:"content"`
 		} `json:"messages"`
 	}
@@ -470,7 +472,7 @@ func extractConversationText(data []byte) string {
 	var out strings.Builder
 	out.Grow(size)
 	for _, m := range raw.Messages {
-		appendConversationLine(&out, m.Role, m.Content)
+		appendConversationLine(&out, m.Role, m.Name, m.Content)
 	}
 	return out.String()
 }

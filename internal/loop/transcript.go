@@ -11,7 +11,7 @@ func (e *Engine) startTranscript(messages []session.Message) {
 	session.EnsureMessageIDs(messages)
 	e.activeTurnID = ""
 	for i := len(messages) - 1; i >= 0; i-- {
-		if messages[i].Role == "user" && messages[i].Name != "bg-notice" {
+		if messages[i].Role == "user" && !session.IsNoticeUserName(messages[i].Name) {
 			if e.invocationTurnID != "" {
 				messages[i].TurnID = e.invocationTurnID
 			}

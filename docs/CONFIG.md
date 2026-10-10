@@ -252,7 +252,7 @@ The guard is **off by default** in the sense that no sidecar is needed; the loca
 | `threshold` | `0.9` | Confidence above which an `INJECTION` verdict is treated as injected. The sidecar score is the confidence of the predicted label, so the threshold never applies to `BENIGN` results |
 | `timeout_seconds` | `5` | Per-request timeout |
 | `fallback_to_local` | `true` | If the sidecar fails, fall back to the local rule scan |
-| `max_text_length` | `0` | Truncate text sent to the sidecar; `0` means no limit. The local scan still sees the full text |
+| `max_text_length` | `0` | Largest text sent to the sidecar in one request; `0` means no limit. Longer content is judged in full as overlapping windows of at most this many bytes (batched, at most 1024 windows — content needing more is rejected as too large for the sidecar scan, whatever `fallback_to_local` says). The local scan always sees the full text |
 
 ### Scan scopes
 
@@ -263,7 +263,7 @@ The guard is **off by default** in the sense that no sidecar is needed; the loca
 | `mcp_descriptions` | `true` | MCP server tool descriptions supplied via `tools/list` |
 | `skills` | `true` | Skill bodies at load time and import |
 | `tool_outputs` | `false` | External tool outputs wrapped as `<untrusted_content_*>` (warning-only scan) |
-| `telegram` | `false` | Telegram photo captions and voice transcripts before injection |
+| `telegram` | `false` | Telegram photo captions, voice transcripts and forwarded messages before injection |
 
 When a scope is not explicitly set, the core surfaces (`memory`, `system_prompt`, `mcp_descriptions`, `skills`) default to `true`; the optional expansion surfaces default to `false`. Regardless of scope, the fast local rule scan always runs on every guarded surface — the scope only toggles the sidecar second opinion.
 
@@ -996,7 +996,7 @@ The `telegram` section configures the Telegram bot integration and the `--delive
 |-------|---------|---------|-------------|
 | `bot_token` | `ODEK_TELEGRAM_BOT_TOKEN` | — (required) | Telegram bot API token from @BotFather |
 | `allowed_users` | — | all | Restrict bot to specific user IDs |
-| `allowed_chats` | — | all | Restrict bot to specific chat IDs |
+| `allowed_chats` | — | all | Restrict bot to specific chat IDs. Combined with `allowed_users` by AND: a group chat (negative id) listed without `allowed_users` makes every member of that group a principal, and `odek telegram` warns about it at startup |
 | `allow_all_users` | `ODEK_TELEGRAM_ALLOW_ALL` | false | Explicitly run the bot with **no allowlist** (any user may drive the agent). Without this, an empty allowlist is a fatal misconfiguration — an open bot can never be deployed by accident |
 | `bot_username` | `ODEK_TELEGRAM_BOT_USERNAME` | — | Bot username (used to strip `@bot` mentions) |
 | `poll_interval` | — | 1 | Seconds between poll cycles |
@@ -1009,6 +1009,7 @@ The `telegram` section configures the Telegram bot integration and the `--delive
 | `health_addr` | `ODEK_TELEGRAM_HEALTH_ADDR` | — (disabled) | Listen address for the bot's health endpoint (e.g. `127.0.0.1:9090`) |
 | `max_download_size` | `ODEK_TELEGRAM_MAX_DOWNLOAD_SIZE` | 5242880 (5 MiB) | Per-file byte cap for Telegram voice/photo/document downloads. Set to `-1` to disable. |
 | `media_quota_per_chat` | `ODEK_TELEGRAM_MEDIA_QUOTA_PER_CHAT` | 0 (disabled) | Total bytes of downloaded media allowed per chat. `0` disables the quota. |
+| `link_preview` | `ODEK_TELEGRAM_LINK_PREVIEW` | false (previews disabled) | Let Telegram render link previews for bot messages. Off by default: Telegram's servers fetch every previewed URL with no user click, so an answer that embeds a secret in a link would leak it on delivery. When false, every outbound text send and edit (replies, chunks, plain-text fallbacks, approvals, notices, schedule and `--deliver` results, `send_message`, wake output) carries `link_preview_options: {"is_disabled": true}`. Operator-only: the `telegram` section of a project `./odek.json` is ignored, so a cloned repository cannot turn previews on. The env var accepts Go `strconv.ParseBool` spellings: `1`, `t`, `T`, `TRUE`, `true`, `True` enable; `0`, `f`, `F`, `FALSE`, `false`, `False` disable; any other value (for example `yes`) keeps previews disabled and logs a warning. |
 | `default_chat_id` | — | 0 | **Required for `--deliver`** — numeric chat ID where `odek run --deliver` sends results. Get this from your bot's update or use a tool like `@userinfobot`. |
 
 ### --deliver flag

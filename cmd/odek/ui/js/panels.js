@@ -16,6 +16,7 @@ import {
 import { refreshPlanPanel, startPlanPolling, stopPlanPolling } from './plan.js';
 import { trustLabel } from './approvals.js';
 import { renderResult } from './results.js';
+import { promoteAvailability, promoteConfirmText, promoteErrorOutcome, promoteSuccessText, shortHash } from './episodes.js';
 import { paintIntent } from './render.js';
 
 const drawer = document.getElementById('panels');
@@ -243,7 +244,8 @@ function renderPending(container, pending) {
     const meta = document.createElement('div');
     meta.className = 'mf-episode-meta';
     meta.textContent = (ep.session_id || '').slice(0, 12) + ' · ' + (ep.turns || 0) + ' turns' +
-      (ep.created_at ? ' · ' + new Date(ep.created_at).toLocaleString() : '');
+      (ep.created_at ? ' · ' + new Date(ep.created_at).toLocaleString() : '') +
+      (ep.summary_sha256 ? ' · sha256 ' + shortHash(ep.summary_sha256) : '');
     const summary = document.createElement('div');
     summary.className = 'mf-episode-summary';
     summary.textContent = ep.summary || '';
@@ -257,17 +259,45 @@ function renderPending(container, pending) {
     const promote = document.createElement('button');
     promote.className = 'mf-promote';
     promote.textContent = 'promote';
-    promote.title = 'Mark this episode as trusted — it becomes recallable in future sessions';
+    const avail = promoteAvailability(ep);
+    promote.title = avail.ok
+      ? 'Mark this episode as trusted — it becomes recallable in future sessions'
+      : 'Cannot promote: ' + avail.reason;
+    promote.disabled = !avail.ok;
+    if (!avail.ok) {
+      // Disabled buttons show no tooltip on touch devices and some browsers;
+      // the reason is visible text tied to the button for screen readers.
+      const why = document.createElement('div');
+      why.className = 'mf-episode-sources';
+      why.id = 'mf-promote-why-' + Math.random().toString(36).slice(2);
+      why.textContent = 'cannot promote here: ' + avail.reason;
+      body.appendChild(why);
+      promote.setAttribute('aria-describedby', why.id);
+    }
     promote.addEventListener('click', async () => {
+      if (!promoteAvailability(ep).ok) return;
       promote.disabled = true;
+      if (!window.confirm(promoteConfirmText(ep))) {
+        promote.disabled = false;
+        return;
+      }
       try {
-        await promoteEpisode(ep.session_id);
-        showToast('episode promoted');
+        const result = await promoteEpisode(ep.session_id, ep.summary_sha256);
+        showToast(promoteSuccessText(result));
         announce('Episode promoted');
         loadMemory();
       } catch (err) {
-        promote.disabled = false;
-        showToast('promote failed: ' + err.message);
+        const outcome = promoteErrorOutcome(err);
+        showToast(outcome.message);
+        announce(outcome.message);
+        if (outcome.reload) {
+          await loadMemory();
+          // A successful reload re-renders the list and detaches this row;
+          // if it is still attached the reload failed, so keep it usable.
+          if (promote.isConnected) promote.disabled = false;
+        } else {
+          promote.disabled = false;
+        }
       }
     });
     const discard = document.createElement('button');

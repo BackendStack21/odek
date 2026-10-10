@@ -72,6 +72,9 @@ func TestBackgroundNotice_InjectedAsStandaloneUserMessage(t *testing.T) {
 	client := testChatClient(t, server.URL)
 	registry := tool.NewRegistry([]tool.Tool{&noopTool{}})
 	engine := New(client, registry, 10, "", nil, 0)
+	// A surface with an installed wrapper owns the notice's boundary; the
+	// pass-through keeps the byte-level standalone assertion below readable.
+	engine.SetUntrustedWrapper(func(_, content string) string { return content })
 
 	calls := 0
 	engine.SetBackgroundNoticeProvider(func() string {

@@ -13,7 +13,10 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
+	"github.com/BackendStack21/odek/internal/danger"
 	"github.com/BackendStack21/odek/internal/embedding"
 	"github.com/BackendStack21/odek/internal/guard"
 )
@@ -141,7 +144,7 @@ func (sm *SkillManager) SetGuard(g guard.Guard, cfg guard.Config) {
 	sm.guardCfg = cfg
 }
 
-// scanSkill checks a skill body and description for prompt-injection
+// scanSkill checks a skill name, body and description for prompt-injection
 // patterns. The fast local rule scan always runs (even when the skills
 // scope or the guard itself is disabled); the sidecar second opinion
 // only runs when the "skills" scope is enabled. If either field is
@@ -152,6 +155,15 @@ func (sm *SkillManager) scanSkill(ctx context.Context, s *Skill) bool {
 		ctx = context.Background()
 	}
 	flagged := false
+	// The name is listed in the unwrapped system-prompt catalog, so it is
+	// scanned like the description; a flagged name is withheld from it.
+	s.NameFlagged = false
+	if err := sm.scanField(ctx, s.Name); err != nil {
+		log.Printf("guard: skill name flagged: %v", err)
+		s.Provenance.NeedsReview = true
+		s.NameFlagged = true
+		flagged = true
+	}
 	if err := sm.scanField(ctx, s.Body); err != nil {
 		log.Printf("guard: skill %q body flagged: %v", s.Name, err)
 		s.Provenance.NeedsReview = true
@@ -387,10 +399,19 @@ func (sm *SkillManager) AllSkills() []Skill {
 // catalogMaxBytes caps the stable skills catalog in the system head.
 const catalogMaxBytes = 4 * 1024
 
+// catalogDescMaxRunes caps each promoted skill's description in the catalog.
+const catalogDescMaxRunes = 200
+
 // FormatCatalog renders a cache-stable skills list for the system prompt:
-// name plus one-line description for promoted skills; NeedsReview skills
-// appear as a name with "[needs review]" and no body. Empty when there are
-// no skills. Truncates at maxBytes (default 4 KiB).
+// name plus one-line description for promoted skills. Skills pending review
+// are not named — only counted in one closing line pointing at
+// `odek skill list` — because the catalog sits in the unwrapped system head
+// and a skill name chosen by an untrusted repository (even a 64-character
+// hyphenated one) must not reach it. A name that fails ValidateSkillName or
+// that the injection scanner flagged is counted the same way. Descriptions
+// are flattened to one line, bounded, and passed through
+// danger.SanitizeInline so control, bidi and invisible characters are escaped.
+// Empty when there are no skills. Truncates at maxBytes (default 4 KiB).
 func FormatCatalog(list []Skill, maxBytes int) string {
 	if maxBytes <= 0 {
 		maxBytes = catalogMaxBytes
@@ -400,28 +421,47 @@ func FormatCatalog(list []Skill, maxBytes int) string {
 	var b strings.Builder
 	header := "# Skills catalog\nNames and one-line descriptions only. Load a body with skill_load when you need the instructions.\n"
 	b.WriteString(header)
-	n := 0
+	n, pending := 0, 0
 	for _, s := range sorted {
-		var line string
-		if s.Provenance.NeedsReview {
-			line = fmt.Sprintf("- %s — [needs review]\n", s.Name)
-		} else {
-			desc := strings.TrimSpace(strings.ReplaceAll(s.Description, "\n", " "))
-			if desc == "" {
-				desc = "(no description)"
-			}
-			line = fmt.Sprintf("- %s — %s\n", s.Name, desc)
+		if s.Provenance.NeedsReview || s.NameFlagged || ValidateSkillName(s.Name) != nil {
+			pending++
+			continue
 		}
+		desc := catalogText(s.Description, catalogDescMaxRunes)
+		if desc == "" {
+			desc = "(no description)"
+		}
+		line := fmt.Sprintf("- %s — %s\n", catalogText(s.Name, MaxSkillNameRunes), desc)
 		if b.Len()+len(line) > maxBytes {
 			break
 		}
 		b.WriteString(line)
 		n++
 	}
-	if n == 0 {
+	if pending > 0 {
+		line := fmt.Sprintf("- (%d skill(s) pending review, not listed — the operator can run `odek skill list`)\n", pending)
+		if b.Len()+len(line) <= maxBytes {
+			b.WriteString(line)
+		} else if n == 0 {
+			pending = 0
+		}
+	}
+	if n == 0 && pending == 0 {
 		return ""
 	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+// catalogText flattens s to a single line (every Unicode space, line or
+// paragraph separator, carriage return and tab becomes one space), bounds it
+// to maxRunes with an ellipsis, and escapes control, bidi and invisible
+// characters with danger.SanitizeInline.
+func catalogText(s string, maxRunes int) string {
+	s = strings.Join(strings.FieldsFunc(s, unicode.IsSpace), " ")
+	if utf8.RuneCountInString(s) > maxRunes {
+		s = string([]rune(s)[:maxRunes]) + "…"
+	}
+	return danger.SanitizeInline(s)
 }
 
 // ── skill_load ─────────────────────────────────────────────────────────

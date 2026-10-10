@@ -35,7 +35,9 @@ func TestChildBudgetSettlementAcrossProcessOutcomes(t *testing.T) {
 		{"start failure", "", false, false},
 		{"crash", "#!/bin/sh\nexit 1\n", true, false},
 		{"legacy result", "#!/bin/sh\nprintf '%s\\n' '{" + `"status":"success","summary":"ok","tokens_used":7` + "}'\n", true, false},
-		{"provider usage", "#!/bin/sh\nprintf '%s\\n' '{" + `"status":"success","summary":"ok","tokens_used":999,"usage":{"input_tokens":20,"output_tokens":10,"cache_read_tokens":3,"cache_creation_tokens":2,"tool_calls":4,"cost_usd":0.2,"cost_known":true}` + "}'\n", true, true},
+		// Usage counts only on the nonce-authenticated result frame.
+		{"provider usage", "#!/bin/sh\neval \"read -r n <&$ODEK_SUBAGENT_FRAME_FD\"\nprintf '{\"type\":\"result\",\"auth\":\"%s\",\"result\":{" + `"status":"success","summary":"ok","tokens_used":999,"usage":{"input_tokens":20,"output_tokens":10,"cache_read_tokens":3,"cache_creation_tokens":2,"tool_calls":4,"cost_usd":0.2,"cost_known":true}` + "}}\\n' \"$n\"\n", true, true},
+		{"unauthenticated usage", "#!/bin/sh\nprintf '%s\\n' '{" + `"status":"success","summary":"ok","tokens_used":999,"usage":{"input_tokens":20,"output_tokens":10,"cache_read_tokens":3,"cache_creation_tokens":2,"tool_calls":4,"cost_usd":0.2,"cost_known":true}` + "}'\n", true, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "child")

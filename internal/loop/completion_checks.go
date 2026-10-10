@@ -54,6 +54,25 @@ func (e *Engine) pendingPlanChecks() []string {
 	return e.planStore.PendingChecks()
 }
 
+// pendingDeclaredChecks returns unpassed checks declared in this run.
+func (e *Engine) pendingDeclaredChecks() []string {
+	if e == nil || e.planStore == nil {
+		return nil
+	}
+	declared, _ := e.planStore.pendingChecksByProvenance()
+	return declared
+}
+
+// pendingRestoredChecks returns unpassed checks restored from a persisted
+// plan.
+func (e *Engine) pendingRestoredChecks() []string {
+	if e == nil || e.planStore == nil {
+		return nil
+	}
+	_, restored := e.planStore.pendingChecksByProvenance()
+	return restored
+}
+
 // appendCheckNotice keeps the bounded completion nudge from becoming an
 // endless retry loop while making missing evidence explicit in the final
 // persisted answer. Only bounded identifiers are included, never commands.

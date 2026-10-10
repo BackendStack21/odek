@@ -162,6 +162,25 @@ Sessions are stored as compact JSON at `~/.odek/sessions/<id>.json` (no indentat
 }
 ```
 
+A session whose transcript has ever carried external untrusted content (an `<untrusted_content_…>` wrapper whose `source` is not one of the engine's own context labels — `compaction`, `plan`, `plan_remaining`, `memory`, `persisted_system`, `progress_summary`, `completed_effects`, `skill`, `extended_memory`, `return_after_break`; see `session.EngineDerivedSource`) is saved with `"untrusted_ingested": true`. A plan, digest or memory block alone never flags a session; any tool result, `@`-ref, attachment, MCP output, `session_search` result, sub-agent result, background notice or project `AGENTS.md` does. The flag is sticky — a save never clears it once it is on disk, and files written before it existed derive it from their history on load — so trimming or compacting the content away does not make a resumed run look clean; resumed runs start tainted and `delegate_tasks` clamps their children to `untrusted` (see [SECURITY.md](SECURITY.md)). Before each save the CLI surfaces also set the flag when the run itself was tainted (`agent.UntrustedIngested()`, e.g. an MCP tool catalogue that never reaches the history).
+
+A second sticky flag, `"episode_untrusted": true`, records the memory gate's narrower taint: a tool call that crossed the episode trust boundary (`session.ToolCallTaintsEpisode` — a read outside the workspace, an MCP, network or sub-agent tool, a shell command with a network or unknown effect) or wrapped external content in a non-tool message (`session.EpisodeTaintSources`). Workspace reads and local commands do not set it, so a session can carry `untrusted_ingested` and still produce a recallable episode. Each save ORs in the flag already on disk (including on the cached-revision fast path) and the taint of the messages it writes, before write-time size trimming drops the oldest groups. Both flags are scanned independently of the redaction boundary: a save skips only a message prefix that this process's last committed save of the same revision already scanned, verified by a digest over every message in that prefix, so a snapshot that rewrites any earlier message is scanned whole. A save over a symlinked session entry never reads the previous revision, so it sets both flags; an alias-backed session is therefore permanently untrusted for delegation and for episodes. Whether a read is outside the workspace is judged against the saving process's working directory (plus the sandbox `/workspace` mount and `~/.odek`), so run odek from the workspace root. Telegram `/resume` carries an archive's flags into the chat's rebuilt session, and archiving keeps a chat's in-run taint. In-loop context trimming and compaction only shorten the model's view; the persisted transcript keeps every completed tool call until a save has judged it. `"episode_taint_tracked": true` marks a file whose flag covers its whole history; files written before these fields existed derive the flag from their history once on load. Episode writers read it through `memory.DeriveSessionProvenance(sess)`, so an episode written from a trimmed history is still untrusted.
+
+Embedders resuming a stored session with `RunWithMessages` should do the same:
+
+```go
+ctx := context.Background()
+if sess.UntrustedIngested {
+    ctx = odek.WithUntrustedIngest(ctx)
+}
+_, history, err := agent.RunWithMessages(ctx, append(sess.Messages, userMsg))
+sess.Messages = history
+if agent.UntrustedIngested() {
+    sess.UntrustedIngested = true
+}
+_ = store.Save(sess)
+```
+
 The `Session` struct has all public fields, enabling direct manipulation. This makes advanced operations (editing, truncating, merging) trivial — load, mutate, save.
 
 ## External state references

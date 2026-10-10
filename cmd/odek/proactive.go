@@ -20,10 +20,17 @@ import (
 // transcripts.
 
 // injectReturnAfterBreak loads a concise "where you left off" summary from
-// Extended Memory and inserts it — wrapped as untrusted content — into the
-// message history immediately after the last system message. When there is
-// no summary (extended memory disabled, no atoms, LLM failure) the messages
-// are returned unchanged.
+// Extended Memory and appends it — wrapped as untrusted content — to the
+// resumed history as a user-role message named session.ReturnAfterBreakName.
+// The summary is derived from memory, not the principal or the runtime, so it
+// never takes the system role; like bg-notice/bg-wake messages it is flagged
+// by name, and every consumer that keys on the principal's input (loop hooks,
+// verifier, transcript turns, session turn counting and protected head)
+// skips it. Appending, rather than inserting after the system head, keeps the
+// original task in the protected head. The session store drops the message
+// on save, so it lives for the resumed run only and never accumulates. When there is no summary (extended
+// memory disabled, no atoms, LLM failure) the messages are returned
+// unchanged.
 func injectReturnAfterBreak(ctx context.Context, mm *memory.MemoryManager, messages []session.Message) []session.Message {
 	if mm == nil {
 		return messages
@@ -34,21 +41,10 @@ func injectReturnAfterBreak(ctx context.Context, mm *memory.MemoryManager, messa
 	if rb == "" {
 		return messages
 	}
-	insertIdx := -1
-	for i := len(messages) - 1; i >= 0; i-- {
-		if messages[i].Role == "system" {
-			insertIdx = i
-			break
-		}
-	}
-	wrapped := wrapUntrusted(rbCtx, "return_after_break", rb)
-	rbMsg := session.Message{Role: "system", Content: wrapped}
-	if insertIdx >= 0 {
-		messages = append(messages[:insertIdx+1], append([]session.Message{rbMsg}, messages[insertIdx+1:]...)...)
-	} else {
-		messages = append([]session.Message{rbMsg}, messages...)
-	}
-	return messages
+	// Derived from extended memory, not a fresh external ingest: wrapped
+	// under the engine-derived label so it does not taint the session.
+	wrapped := wrapEngineContext("return_after_break", rb)
+	return append(messages, session.Message{Role: "user", Name: session.ReturnAfterBreakName, Content: wrapped})
 }
 
 // resumeTaskPreview renders the first-message preview for the Telegram

@@ -33,6 +33,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -717,6 +718,14 @@ func (c *Client) CallTool(ctx context.Context, name string, argsJSON string) (st
 
 	raw, err := c.call(ctx, "tools/call", paramsRaw)
 	if err != nil {
+		// A JSON-RPC error object's message is server-controlled text that
+		// reaches the model through the tool error, so it gets the same
+		// sanitisation and per-server max_result_chars cap as a result.
+		var rpcErr *rpcError
+		if errors.As(err, &rpcErr) {
+			capped := &rpcError{Code: rpcErr.Code, Message: c.applyResultLimit(name, artifact.SanitizeText(rpcErr.Message))}
+			return "", fmt.Errorf("mcpclient %s: tools/call: %w", c.name, capped)
+		}
 		return "", fmt.Errorf("mcpclient %s: tools/call: %w", c.name, err)
 	}
 
@@ -1195,6 +1204,11 @@ func (a *ToolAdapter) Name() string {
 
 // Description returns the tool's description.
 func (a *ToolAdapter) Description() string { return a.Desc }
+
+// ThirdPartyCatalogue reports that the tool's name, description and schema
+// were supplied by an external MCP server. The loop treats a run with such a
+// tool registered as carrying untrusted text for delegation-trust purposes.
+func (a *ToolAdapter) ThirdPartyCatalogue() bool { return true }
 
 // Schema returns the tool's input JSON schema.
 func (a *ToolAdapter) Schema() any {

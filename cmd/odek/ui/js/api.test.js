@@ -173,9 +173,14 @@ test('memory mutations hit their endpoints', async () => {
   assert.equal(req.init.method, 'DELETE');
   assert.equal(req.url, '/api/memory/facts');
   assert.equal(req.init.body, JSON.stringify({ target: 'env', old_text: 'old' }));
-  await api.promoteEpisode('2026-x');
+  await api.promoteEpisode('2026-x', 'abc123');
   assert.equal(last().url, '/api/memory/episodes/promote');
-  assert.equal(last().init.body, JSON.stringify({ session_id: '2026-x' }));
+  assert.equal(last().init.body, JSON.stringify({ session_id: '2026-x', summary_sha256: 'abc123' }));
+  // The server requires the reviewed-summary hash; the client never sends
+  // an unpinned promotion.
+  const before = captured.length;
+  await assert.rejects(() => api.promoteEpisode('2026-x'), /summary hash/);
+  assert.equal(captured.length, before, 'no request without the hash');
   await api.discardEpisode('2026-x');
   assert.equal(last().url, '/api/memory/episodes/discard');
   assert.equal(last().init.body, JSON.stringify({ session_id: '2026-x' }));

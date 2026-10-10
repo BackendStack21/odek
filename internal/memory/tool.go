@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/BackendStack21/odek/internal/danger"
+	"github.com/BackendStack21/odek/internal/memory/approval"
 	"github.com/BackendStack21/odek/internal/memory/extended"
 	"github.com/BackendStack21/odek/internal/session"
 )
@@ -32,7 +33,7 @@ var memoryToolSchema = map[string]any{
 		},
 		"old_text": map[string]any{
 			"type":        "string",
-			"description": "Unique substring to identify an existing entry (for replace/remove/search)",
+			"description": "Unique substring to identify an existing entry (for replace/remove/search). It need not be the whole entry: target a long entry by a short unique part of it",
 		},
 		"query": map[string]any{
 			"type":        "string",
@@ -76,22 +77,32 @@ func (t *MemoryTool) SetDangerousConfig(dc *danger.DangerousConfig) {
 }
 
 func memoryActionMutates(action string) bool {
-	switch action {
-	case "add", "replace", "remove", "consolidate",
-		"add_atom", "forget_atom", "pin_atom",
-		"confirm_pending_review", "reject_pending_review":
-		return true
-	default:
-		return false
-	}
+	return approval.Mutates(action)
 }
 
-func (t *MemoryTool) checkPersistence(action string) error {
+// checkPersistence gates a mutating call. The approval resource carries the
+// text being stored (or the entry being removed or pinned), sanitised and
+// bounded, so the human approves the content rather than a bare action name.
+// For replace and remove, old_text is resolved to the stored entry it
+// selects first, and the approval shows that entry; the entry is returned so
+// the mutation can be bound to it. A call that cannot apply (no entry or
+// several entries match) fails here without a prompt. Persistence is never
+// trust-shortcut, so this prompt runs even after a batch-card approval.
+func (t *MemoryTool) checkPersistence(a approval.Args) (approvedEntry string, err error) {
 	if t.dc == nil {
-		return nil
+		return "", nil
 	}
-	return t.dc.CheckOperation(danger.ToolOperation{
-		Name: "memory", Resource: action, Risk: danger.Persistence,
+	resource := approval.Resource(a)
+	if (a.Action == "replace" || a.Action == "remove") && t.manager != nil && strings.TrimSpace(a.OldText) != "" {
+		entry, err := t.manager.facts.MatchEntry(a.Target, a.OldText)
+		if err != nil {
+			return "", err
+		}
+		approvedEntry = entry
+		resource = approval.ResourceWithEntry(a, entry)
+	}
+	return approvedEntry, t.dc.CheckOperation(danger.ToolOperation{
+		Name: "memory", Resource: resource, Risk: danger.Persistence,
 	}, nil)
 }
 
@@ -121,19 +132,30 @@ func (t *MemoryTool) Call(args string) (string, error) {
 		return errorJSON("invalid arguments: " + err.Error()), nil
 	}
 
+	var approvedEntry string
 	if memoryActionMutates(params.Action) {
-		if err := t.checkPersistence(params.Action); err != nil {
+		a := approval.Args{
+			Action: params.Action, Target: params.Target, Content: params.Content,
+			OldText: params.OldText, AtomID: params.AtomID, PendingID: params.PendingID,
+			AtomType: params.AtomType,
+		}
+		if err := approval.CheckBounds(a); err != nil {
 			return errorJSON(err.Error()), nil
 		}
+		entry, err := t.checkPersistence(a)
+		if err != nil {
+			return errorJSON(err.Error()), nil
+		}
+		approvedEntry = entry
 	}
 
 	switch params.Action {
 	case "add":
 		return t.handleAdd(params.Target, params.Content)
 	case "replace":
-		return t.handleReplace(params.Target, params.OldText, params.Content)
+		return t.handleReplace(params.Target, params.OldText, approvedEntry, params.Content)
 	case "remove":
-		return t.handleRemove(params.Target, params.OldText)
+		return t.handleRemove(params.Target, params.OldText, approvedEntry)
 	case "stats":
 		return t.handleStats(params.Target)
 	case "consolidate":
@@ -176,22 +198,22 @@ func (t *MemoryTool) handleAdd(target, content string) (string, error) {
 	return successJSONWithEntries(fmt.Sprintf("added to %s: %s", target, truncate(content, 60)), entries), nil
 }
 
-func (t *MemoryTool) handleReplace(target, oldText, content string) (string, error) {
+func (t *MemoryTool) handleReplace(target, oldText, approvedEntry, content string) (string, error) {
 	if oldText == "" || content == "" {
 		return errorJSON("old_text and content are required for replace"), nil
 	}
-	if err := t.manager.ReplaceFact(target, oldText, content); err != nil {
+	if err := t.manager.ReplaceFactApproved(target, oldText, approvedEntry, content); err != nil {
 		return errorJSON(err.Error()), nil
 	}
 	entries, _ := t.manager.facts.Entries(target)
 	return successJSONWithEntries(fmt.Sprintf("replaced in %s: %s", target, truncate(content, 60)), entries), nil
 }
 
-func (t *MemoryTool) handleRemove(target, oldText string) (string, error) {
+func (t *MemoryTool) handleRemove(target, oldText, approvedEntry string) (string, error) {
 	if oldText == "" {
 		return errorJSON("old_text is required for remove"), nil
 	}
-	if err := t.manager.RemoveFact(target, oldText); err != nil {
+	if err := t.manager.RemoveFactApproved(target, oldText, approvedEntry); err != nil {
 		return errorJSON(err.Error()), nil
 	}
 	entries, _ := t.manager.facts.Entries(target)

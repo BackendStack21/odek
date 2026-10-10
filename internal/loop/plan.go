@@ -23,6 +23,8 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/BackendStack21/odek/internal/tool"
+
 	"github.com/BackendStack21/odek/internal/session"
 )
 
@@ -77,6 +79,11 @@ type PlanCheck struct {
 	Arguments   map[string]any  `json:"arguments"`
 	Status      PlanCheckStatus `json:"status"`
 	CallID      string          `json:"call_id,omitempty"`
+	// Restored marks a check rebuilt from a persisted plan rather than
+	// declared in this run. Restored checks are unverified history: they
+	// keep blocking completion, but the completion nudge never presents
+	// them as work to run. Re-declaring the check in this run clears it.
+	Restored bool `json:"restored,omitempty"`
 }
 
 // PlanState is the authoritative plan. Version bumps on every mutation and
@@ -115,6 +122,16 @@ type PlanChange struct {
 const (
 	maxPlanIDChars    = 32
 	maxPlanTitleChars = 200
+)
+
+// Bounds on persisted plans read back on resume. A legitimate render never
+// exceeds the config ceiling for max_render_chars (8000, mirrored here
+// because internal/loop must not import internal/config), so a note or a
+// whole message beyond these bounds can only come from a modified session
+// file and is rejected rather than restored into the protected head.
+const (
+	maxPersistedPlanNoteChars = 8000
+	maxPersistedPlanBytes     = 32 * 1024
 )
 
 // Fallback caps for NewPlanStore when the caller passes degenerate values.
@@ -191,6 +208,7 @@ func (s *PlanStore) Restore(st PlanState) {
 			}
 			cp.Steps[i].Checks[j].Status = PlanCheckPending
 			cp.Steps[i].Checks[j].CallID = ""
+			cp.Steps[i].Checks[j].Restored = true
 		}
 		if checked && cp.Steps[i].Status == StepDone {
 			cp.Steps[i].Status = StepInProgress
@@ -998,6 +1016,9 @@ func allStepsDone(p PlanState) bool {
 // approximated. Bodies wrapped by the untrusted-content wrapper are
 // unwrapped first.
 func parsePlanState(content string, maxSteps int) (PlanState, error) {
+	if len(content) > maxPersistedPlanBytes {
+		return PlanState{}, fmt.Errorf("plan: message is %d bytes, max %d", len(content), maxPersistedPlanBytes)
+	}
 	lines := strings.Split(strings.TrimSpace(content), "\n")
 	if len(lines) == 0 {
 		return PlanState{}, errors.New("plan: empty message")
@@ -1160,6 +1181,10 @@ func parsePlanOmission(line string) (int, bool) {
 	return n, true
 }
 
+// guardBannerPrefix starts the warning banner the CLI's tool-output guard
+// prepends to flagged content (cmd/odek toolOutputBanner).
+const guardBannerPrefix = "⚠️ SECURITY NOTICE:"
+
 // unwrapPlanBody strips the nonce'd untrusted-content wrapper the engine
 // applies around the step lines. Both tags must be present and the close
 // tag must be the LAST line — anything after it is corruption.
@@ -1193,8 +1218,10 @@ func unwrapPlanBody(lines []string) ([]string, error) {
 		inner = append(inner, first)
 	}
 	inner = append(inner, lines[1:closeIdx]...)
-	// Drop empty leading/trailing artifacts of the wrapper newlines.
-	for len(inner) > 0 && strings.TrimSpace(inner[0]) == "" {
+	// Drop empty leading/trailing artifacts of the wrapper newlines, and
+	// any guard warning banners a surface wrapper prepended to the body
+	// (plans rendered by older builds went through the surface wrapper).
+	for len(inner) > 0 && (strings.TrimSpace(inner[0]) == "" || strings.HasPrefix(inner[0], guardBannerPrefix)) {
 		inner = inner[1:]
 	}
 	for len(inner) > 0 && strings.TrimSpace(inner[len(inner)-1]) == "" {
@@ -1252,6 +1279,12 @@ func parsePlanStepLineMode(line string, allowChecks bool) (PlanStep, error) {
 	}
 	if title == "" {
 		return PlanStep{}, errors.New("missing title")
+	}
+	if len(title) > maxPlanTitleChars {
+		return PlanStep{}, fmt.Errorf("title is too long (%d > %d chars)", len(title), maxPlanTitleChars)
+	}
+	if len(note) > maxPersistedPlanNoteChars {
+		return PlanStep{}, fmt.Errorf("note is too long (%d > %d chars)", len(note), maxPersistedPlanNoteChars)
 	}
 	return PlanStep{ID: id, Title: title, Status: status, Note: note, Checks: checks}, nil
 }
@@ -1415,6 +1448,13 @@ func (t *PlanTool) Schema() any {
 		"required": []string{"verb"},
 	}
 }
+
+// PureOutputFor marks plan output as pure (tool.PureOutput): it renders the
+// model-authored plan and reads no external content, so a plan call never
+// taints the run.
+func (t *PlanTool) PureOutputFor(string) bool { return true }
+
+func init() { tool.RegisterPureOutputType((*PlanTool)(nil)) }
 
 func (t *PlanTool) Call(argsJSON string) (string, error) {
 	if t.Store == nil {

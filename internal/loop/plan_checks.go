@@ -413,18 +413,32 @@ func (s *PlanStore) InvalidateChecks() {
 }
 
 func (s *PlanStore) PendingChecks() []string {
+	declared, restored := s.pendingChecksByProvenance()
+	out := append(declared, restored...)
+	sort.Strings(out)
+	return out
+}
+
+// pendingChecksByProvenance splits unpassed checks into those declared in
+// this run and those restored from a persisted plan.
+func (s *PlanStore) pendingChecksByProvenance() (declared, restored []string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	var out []string
 	for _, step := range s.planStepsLocked() {
 		for _, check := range step.Checks {
-			if check.Status != PlanCheckPassed && check.Status != PlanCheckBlocked {
-				out = append(out, step.ID+"/"+check.ID)
+			if check.Status == PlanCheckPassed || check.Status == PlanCheckBlocked {
+				continue
+			}
+			if check.Restored {
+				restored = append(restored, step.ID+"/"+check.ID)
+			} else {
+				declared = append(declared, step.ID+"/"+check.ID)
 			}
 		}
 	}
-	sort.Strings(out)
-	return out
+	sort.Strings(declared)
+	sort.Strings(restored)
+	return declared, restored
 }
 
 // HasPlan reports whether a plan exists.

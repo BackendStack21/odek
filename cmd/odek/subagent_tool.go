@@ -613,12 +613,28 @@ func (t *delegateTasksTool) runTaskWithModel(taskIdx int, taskID, goal, taskCont
 		}()
 	}
 
+	// Per-spawn result-frame nonce over a private descriptor: only frames
+	// carrying it may drive budget accounting (see scanSubagentStreamAuth).
+	setupClass = "frame_auth_error"
+	frameNonce, frameFile, err := newSubagentFrameChannel()
+	if err != nil {
+		_ = stdoutW.Close()
+		_ = stdout.Close()
+		return fmt.Sprintf(`{"error":"frame handoff: %v"}`, err)
+	}
+	defer frameFile.Close()
+	cmd.ExtraFiles = append(cmd.ExtraFiles, frameFile)
+	// ExtraFiles[i] is descriptor 3+i in the child.
+	cmd.Env = append(cmd.Env, frameFDEnvVar+"="+strconv.Itoa(2+len(cmd.ExtraFiles)))
+
 	setupClass = "spawn_error"
 	if err := cmd.Start(); err != nil {
 		_ = stdoutW.Close()
 		_ = stdout.Close()
 		return fmt.Sprintf(`{"error":"start: %v"}`, err)
 	}
+	// The child holds its own copy of the nonce descriptor now.
+	_ = frameFile.Close()
 	reservation.started = true
 	// Close the parent write end so we see EOF when the child (and any
 	// inherited writers) close theirs.
@@ -647,13 +663,14 @@ func (t *delegateTasksTool) runTaskWithModel(taskIdx int, taskID, goal, taskCont
 	// a grace period to observe EOF, then we force-close the parent read
 	// end if it is still blocked.
 	type scanResult struct {
-		result   map[string]any
-		lastLine string
-		err      error
+		result        map[string]any
+		authenticated bool
+		lastLine      string
+		err           error
 	}
 	scanCh := make(chan scanResult, 1)
 	go func() {
-		result, lastLine, err := scanSubagentStream(stdout, onLog)
+		result, authenticated, lastLine, err := scanSubagentStreamAuth(stdout, onLog, frameNonce)
 		// If the scanner hit its safety limits, cancel the sub-agent
 		// context so the child process is killed instead of continuing
 		// to flood stdout. Runs in the goroutine: Wait must not gate the
@@ -661,7 +678,7 @@ func (t *delegateTasksTool) runTaskWithModel(taskIdx int, taskID, goal, taskCont
 		if err != nil && progressLimitExceeded(err) {
 			cancel()
 		}
-		scanCh <- scanResult{result, lastLine, err}
+		scanCh <- scanResult{result, authenticated, lastLine, err}
 	}()
 
 	waitErr := cmd.Wait()
@@ -678,6 +695,12 @@ func (t *delegateTasksTool) runTaskWithModel(taskIdx int, taskID, goal, taskCont
 	}
 	_ = stdout.Close()
 	result, lastLine, scannerErr := scan.result, scan.lastLine, scan.err
+	if result != nil && !scan.authenticated {
+		// A nonce was issued but no frame carried it: the line may have
+		// been forged by a command the child ran. Keep it for display only
+		// and never let its claimed status stand.
+		result = unverifiedSubagentResult(result)
+	}
 
 	status := subagentExitStatus(result, waitErr, ctx, scannerErr)
 	stopMonitor()
@@ -696,18 +719,26 @@ func (t *delegateTasksTool) runTaskWithModel(taskIdx int, taskID, goal, taskCont
 	}
 	t.emitSubagentEvent(completed)
 	terminalEmitted = true
-	if result == nil && t.OnSubagentDone != nil {
+	if (result == nil || !scan.authenticated) && t.OnSubagentDone != nil {
 		// The child died without reporting (user cancel, turn cancel,
 		// timeout, flood-kill, crash): it cannot emit its own
 		// subagent_finished record, so the parent announces the terminal
-		// state to the registry/WS relay.
+		// state to the registry/WS relay. The same holds when only an
+		// unauthenticated result arrived: the child's own records may be
+		// forged too.
 		t.OnSubagentDone(taskIdx, taskID, status)
 	}
 
 	// Process exited — result may still be valid (parseable final line
 	// before a non-zero exit).
 	if result != nil {
-		reservation.record(result)
+		// Only the nonce-authenticated frame may report usage. Anything
+		// else may be a line forged by a command the child ran; without
+		// an authenticated report the grant is settled as unreported
+		// (never refunded).
+		if scan.authenticated {
+			reservation.record(result)
+		}
 		summary, _ := json.MarshalIndent(result, "", "  ")
 		return string(summary)
 	}
@@ -729,11 +760,11 @@ func (t *delegateTasksTool) runTaskWithModel(taskIdx int, taskID, goal, taskCont
 		return fmt.Sprintf(`{"error":"exit: %v"}`, waitErr)
 	}
 
-	// Last resort: try parsing the last line as JSON
+	// Last resort: try parsing the last line as JSON (display only).
 	if lastLine != "" {
 		var r map[string]any
 		if err := json.Unmarshal([]byte(lastLine), &r); err == nil {
-			summary, _ := json.MarshalIndent(r, "", "  ")
+			summary, _ := json.MarshalIndent(unverifiedSubagentResult(r), "", "  ")
 			return string(summary)
 		}
 	}
@@ -1001,6 +1032,17 @@ const maxSubagentProgressBytes = 100 << 20 // 100 MiB
 // any scanner error. The scan buffer is sized to maxSubagentLine so large
 // streamed events do not truncate the stream.
 func scanSubagentStream(r io.Reader, onLog func(line string)) (result map[string]any, lastLine string, err error) {
+	result, _, lastLine, err = scanSubagentStreamAuth(r, onLog, "")
+	return result, lastLine, err
+}
+
+// scanSubagentStreamAuth is scanSubagentStream with result-frame
+// authentication. When nonce is set, the first framed result whose "auth"
+// field matches it is THE result: it reports authenticated=true and every
+// later result line (framed or legacy, forged or duplicate) is ignored.
+// Before such a frame arrives, unauthenticated results are kept as a
+// display-only fallback; callers must not trust their usage figures.
+func scanSubagentStreamAuth(r io.Reader, onLog func(line string), nonce string) (result map[string]any, authenticated bool, lastLine string, err error) {
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64*1024), maxSubagentLine)
 
@@ -1021,9 +1063,11 @@ func scanSubagentStream(r io.Reader, onLog func(line string)) (result map[string
 				// Protocol-2 framed result: the inner object is the task result.
 				var framed struct {
 					Result map[string]any `json:"result"`
+					Auth   string         `json:"auth"`
 				}
-				if ferr := json.Unmarshal([]byte(line), &framed); ferr == nil && framed.Result != nil {
+				if ferr := json.Unmarshal([]byte(line), &framed); ferr == nil && framed.Result != nil && !authenticated {
 					result = framed.Result
+					authenticated = frameAuthentic(framed.Auth, nonce)
 				}
 			case "tool_call", "tool_result",
 				"subagent_started", "subagent_progress", "subagent_finished":
@@ -1040,14 +1084,14 @@ func scanSubagentStream(r io.Reader, onLog func(line string)) (result map[string
 			progressLines++
 			progressBytes += int64(len(line))
 			if progressLines > maxSubagentProgressLines || progressBytes > maxSubagentProgressBytes {
-				return result, lastLine, fmt.Errorf("sub-agent progress stream exceeded safety limits (%d lines / %d bytes)", progressLines, progressBytes)
+				return result, authenticated, lastLine, fmt.Errorf("sub-agent progress stream exceeded safety limits (%d lines / %d bytes)", progressLines, progressBytes)
 			}
 			continue
 		}
 
 		// Untyped parseable JSON — legacy (protocol-less) result line.
 		var rmap map[string]any
-		if uerr := json.Unmarshal([]byte(line), &rmap); uerr == nil {
+		if uerr := json.Unmarshal([]byte(line), &rmap); uerr == nil && !authenticated {
 			result = rmap
 		}
 	}
@@ -1055,7 +1099,7 @@ func scanSubagentStream(r io.Reader, onLog func(line string)) (result map[string
 	if closedPipeErr(err) {
 		err = nil
 	}
-	return result, lastLine, err
+	return result, authenticated, lastLine, err
 }
 
 // closedPipeErr reports a read from a parent pipe whose read end was
@@ -1325,6 +1369,27 @@ func subagentCompletedEvent(taskID string, result map[string]any, fallbackStatus
 // the kill/timeout cause. Flood-kill is checked before the context state
 // because the flood path cancels the context itself; user/turn cancels
 // surface as "cancelled", only the per-task deadline as "timeout".
+// unverifiedSubagentStatus is the status of a result line that did not carry
+// the spawn's frame nonce.
+const unverifiedSubagentStatus = "unverified"
+
+// unverifiedSubagentResult returns a copy of an unauthenticated result with
+// its status replaced by "unverified" and the claimed status kept only as a
+// labelled field, so neither the parent model nor the event stream reads a
+// possibly forged "success".
+func unverifiedSubagentResult(r map[string]any) map[string]any {
+	out := make(map[string]any, len(r)+2)
+	for k, v := range r {
+		out[k] = v
+	}
+	if s, ok := r["status"]; ok {
+		out["claimed_status"] = s
+	}
+	out["status"] = unverifiedSubagentStatus
+	out["verification"] = "result not authenticated by the sub-agent; status and figures may be forged"
+	return out
+}
+
 func subagentExitStatus(result map[string]any, waitErr error, ctx context.Context, scannerErr error) string {
 	if result != nil {
 		if s, ok := result["status"].(string); ok && s != "" {

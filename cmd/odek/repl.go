@@ -189,7 +189,7 @@ func replCmd(args []string) error {
 		APIKey:           resolved.APIKey,
 		MaxIterations:    resolved.MaxIter,
 		SystemMessage:    systemMessage,
-		UntrustedWrapper: func(source, content string) string { return wrapUntrusted(context.Background(), source, content) },
+		UntrustedWrapper: wrapEngineContext,
 		NoProjectFile:    resolved.NoAgents,
 		Thinking:         resolved.Thinking,
 		ThinkingBudget:   f.ThinkingBudget,
@@ -251,6 +251,7 @@ func replCmd(args []string) error {
 			return
 		}
 		sess.Messages = dropDanglingToolCalls(snapshot)
+		markRunTaint(agent, sess)
 		if err := store.SaveNoIndex(sess); err != nil {
 			checkpointErr = fmt.Errorf("persist REPL checkpoint: %w", err)
 			if checkpointCancel != nil {
@@ -352,6 +353,7 @@ func replCmd(args []string) error {
 			agent.BeginRun("", "")
 			var outcome error
 			defer finishAgentInvocation(agent, &outcome)
+			runCtx = withSessionTaint(runCtx, sess)
 			_, allMessages, err := agent.RunWithMessages(runCtx, messages)
 			turnCancel()
 			if checkpointErr != nil {
@@ -388,6 +390,7 @@ func replCmd(args []string) error {
 				if mm := agent.Memory(); mm != nil {
 					sess.Buffer = mm.GetBuffer()
 				}
+				markRunTaint(agent, sess)
 				if err := store.Save(sess); err != nil {
 					outcome = err
 					fmt.Fprintf(os.Stderr, "odek: save error: %v\n", err)
@@ -419,7 +422,7 @@ func replCmd(args []string) error {
 			for _, m := range messages {
 				msgStrs = append(msgStrs, m.Role+": "+m.Content)
 			}
-			prov := memory.DeriveProvenance(messages)
+			prov := memory.DeriveSessionProvenance(sess)
 			mm.OnSessionEndWithProvenance(sess.ID, sess.Turns, msgStrs, prov)
 		})
 	}

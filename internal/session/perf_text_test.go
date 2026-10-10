@@ -107,10 +107,16 @@ func TestRED_Session_RevisionCheckAvoidsReloadOnOwnWrites(t *testing.T) {
 		t.Fatal(err)
 	}
 	// A stamp younger than the settle window is not trusted: a coarse file
-	// clock could hide a foreign rewrite inside it.
+	// clock could hide a foreign rewrite inside it. The window is widened for
+	// this phase so a slow runner cannot let the stamp settle between Create
+	// and the save, which would make the check depend on wall-clock speed.
+	settle := revStampSettle
+	revStampSettle = time.Hour
 	before := store.revisionLoads
 	sess.Messages = append(sess.Messages, Message{Role: "assistant", Content: "fast"})
-	if err := store.SaveNoIndex(sess); err != nil {
+	err = store.SaveNoIndex(sess)
+	revStampSettle = settle
+	if err != nil {
 		t.Fatal(err)
 	}
 	if got := store.revisionLoads - before; got != 1 {
