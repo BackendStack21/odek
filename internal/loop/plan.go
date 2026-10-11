@@ -686,8 +686,16 @@ func (s *PlanStore) checkReplace(args planArgs) (string, error) {
 		return "", fmt.Errorf("plan: check_replace requires replacement {id,description,tool,arguments} or evidence_note — example: {\"verb\":\"check_replace\",\"step_id\":\"s1\",\"check_id\":\"c1\",\"justification\":\"why\",\"evidence_note\":\"diff confirmed expected output\"}")
 	}
 	wStep.Checks[ci].CallID = ""
+	// The revision reason shares the revise cap the resume parser enforces
+	// (maxRevisionReason); the justification is clamped to fit it so a
+	// plan check_replace accepts always resumes. Step and check ids are
+	// bounded, so the fixed prefix always leaves room for the text.
+	reasonPrefix := "check " + stepID + "/" + checkID + " replaced: "
+	if room := maxRevisionReason - len([]rune(reasonPrefix)); len([]rune(justification)) > room {
+		justification = strings.TrimSpace(string([]rune(justification)[:room]))
+	}
 	candidate := PlanState{Version: s.nextVersion(), Steps: working, Revision: &PlanRevision{
-		Reason:  "check " + stepID + "/" + checkID + " replaced: " + justification,
+		Reason:  reasonPrefix + justification,
 		Summary: []string{"replaced " + stepID + "/" + checkID},
 	}}
 	if !checkedPlanFits(candidate, s.maxRenderChars) {

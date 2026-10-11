@@ -233,6 +233,18 @@ func TestRED_CheckReplaceEvidenceNoteBreaksResume(t *testing.T) {
 	}
 }
 
+func TestRED_CheckReplaceLongJustificationBreaksResume(t *testing.T) {
+	store := redhuntCheckedStore(t, "builds")
+	redhuntExec(t, store, map[string]any{
+		"verb": "check_replace", "step_id": "s1", "check_id": "c1",
+		"justification": strings.Repeat("j", 239),
+		"replacement":   map[string]any{"id": "c3", "description": "build passes", "tool": "shell", "arguments": map[string]any{"command": "make all"}},
+	})
+	if err := redhuntResume(t, store); err != nil {
+		t.Fatalf("plan accepted by check_replace(justification within the revise reason cap) cannot be resumed: %v", err)
+	}
+}
+
 // Both parts at their own caps still produce a description the resume
 // parser accepts, and a short description keeps the whole note.
 func TestRED_CheckReplaceEvidenceNoteBoundedAtCaps(t *testing.T) {
@@ -291,5 +303,26 @@ func TestRED_CheckReplaceDuplicateIDRejected(t *testing.T) {
 	})
 	if err := redhuntResume(t, store); err != nil {
 		t.Fatalf("resume failed: %v", err)
+	}
+}
+
+// Maximum-length step and check ids with an oversized justification still
+// yield a revision reason within the resume cap.
+func TestRED_CheckReplaceJustificationClampedWithMaxIDs(t *testing.T) {
+	sid, cid := strings.Repeat("s", maxPlanIDChars), strings.Repeat("c", maxPlanCheckIDChars)
+	store := NewPlanStore(12, 16000)
+	redhuntExec(t, store, map[string]any{"verb": "create", "steps": []any{map[string]any{
+		"id": sid, "title": "Build", "checks": []any{map[string]any{"id": cid, "description": "builds", "tool": "shell", "arguments": map[string]any{"command": "make"}}},
+	}}})
+	redhuntExec(t, store, map[string]any{
+		"verb": "check_replace", "step_id": sid, "check_id": cid,
+		"justification": strings.Repeat("j", 1000), "evidence_note": "verified in CI",
+	})
+	if err := redhuntResume(t, store); err != nil {
+		t.Fatalf("resume failed: %v", err)
+	}
+	st, _ := store.Snapshot()
+	if n := len([]rune(st.Revision.Reason)); n != maxRevisionReason {
+		t.Fatalf("revision reason is %d runes; want clamped to %d", n, maxRevisionReason)
 	}
 }
