@@ -1,11 +1,17 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/BackendStack21/odek/internal/danger"
+	"github.com/BackendStack21/odek/internal/mcpclient"
 )
 
 // serveFixNewRun builds a REST run wired to a wsApprover exactly like
@@ -82,4 +88,57 @@ func TestRED_WakeRateLimitDoubleCountsAfterWindowSlides(t *testing.T) {
 	if n := router.postCount(); n != 2 {
 		t.Fatalf("second dispatch: posts=%d, want 2 (only 2 of 3 hourly wakes were used)", n)
 	}
+}
+
+// newServeAgent must stop the MCP subprocesses it already started when a
+// later construction step fails. With sandbox enabled and Docker
+// unavailable, setupSandbox fails AFTER loadMCPTools spawned the servers,
+// and the error return drops mcpCleanup — every WebUI (re)connect leaks one
+// set of MCP server processes.
+func TestRED_ServeAgentSandboxFailureLeaksMCPServers(t *testing.T) {
+	fake := fakeMCPPath(t) // build before PATH is emptied
+	dir := t.TempDir()
+	pidFile := filepath.Join(dir, "mcp.pid")
+	script := filepath.Join(dir, "mcp.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\necho $$ > "+pidFile+"\nexec "+fake+"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("HOME", t.TempDir())
+	resolved := loadJSONMockResolved()
+	resolved.Sandbox = true
+	resolved.SandboxImage = "alpine:latest" // skip the Dockerfile approval path
+	resolved.MCPServers = map[string]mcpclient.ServerConfig{
+		"leaky": {Command: script, AutoApprove: true},
+	}
+	// No docker binary reachable: the sandbox step fails deterministically.
+	t.Setenv("PATH", t.TempDir())
+
+	agent, _, _, _, _, _, _, err := newServeAgent(resolved, "sys", "run-leak", func(any) error { return nil }, &wsDeltaCounters{}, false, nil)
+	if err == nil {
+		agent.Close()
+		t.Skip("sandbox setup unexpectedly succeeded")
+	}
+	if !strings.Contains(err.Error(), "sandbox") {
+		t.Fatalf("newServeAgent error = %v, want a sandbox failure", err)
+	}
+
+	raw, rerr := os.ReadFile(pidFile)
+	if rerr != nil {
+		t.Fatalf("MCP server never started (no pidfile): %v", rerr)
+	}
+	pid, _ := strconv.Atoi(strings.TrimSpace(string(raw)))
+	if pid <= 0 {
+		t.Fatalf("bad pid %q", raw)
+	}
+	t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if syscall.Kill(pid, 0) != nil {
+			return // process gone: cleaned up
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("MCP server pid %d still running 3s after newServeAgent returned %q: subprocess leaked", pid, err)
 }

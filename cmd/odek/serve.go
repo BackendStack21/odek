@@ -896,12 +896,33 @@ func newServeAgent(resolved config.ResolvedConfig, system string, runKey string,
 	bgRT := newServeBGRuntime(serveBG.Load(), backgroundSettingsFrom(resolved).Notify)
 	tools := builtinTools(resolved.Dangerous, sm, approver, resolved.MaxConcurrency, resolved.APIKey, toolConfigFromResolved(resolved), nil, bgRT)
 
+	// Every resource acquired below is released by fail when a later
+	// construction step errors: the callers only receive nil cleanups on
+	// error, so anything left running here would leak (MCP subprocesses,
+	// the sandbox container, the guard sidecar connection).
+	var (
+		mcpCleanup     func()
+		sandboxCleanup func() error
+		guardCleanup   func() error
+	)
+	fail := func(err error) (*odek.Agent, *bgRuntime, func() error, func(), func() error, guard.Guard, *wsApprover, error) {
+		if guardCleanup != nil {
+			_ = guardCleanup()
+		}
+		if sandboxCleanup != nil {
+			_ = sandboxCleanup()
+		}
+		if mcpCleanup != nil {
+			mcpCleanup()
+		}
+		return nil, nil, nil, nil, nil, nil, approver, err
+	}
+
 	// MCP server tools
-	var mcpCleanup func()
 	if len(resolved.MCPServers) > 0 {
 		cl, err := loadMCPTools(resolved, &tools)
 		if err != nil {
-			return nil, nil, nil, nil, nil, nil, approver, fmt.Errorf("mcp: %w", err)
+			return fail(fmt.Errorf("mcp: %w", err))
 		}
 		mcpCleanup = cl
 	}
@@ -925,8 +946,6 @@ func newServeAgent(resolved config.ResolvedConfig, system string, runKey string,
 		subagentTool.OnSubagentLog = newSubagentTelemetryRelayOwned(sendFn, runKey, subagentOwner)
 		subagentTool.OnSubagentDone = newSubagentDoneRelayOwned(sendFn, runKey, subagentOwner)
 	}
-	var sandboxCleanup func() error
-
 	if resolved.Sandbox {
 		cfg := sandboxConfig{
 			Image:    resolved.SandboxImage,
@@ -942,7 +961,8 @@ func newServeAgent(resolved config.ResolvedConfig, system string, runKey string,
 		var sandboxErr error
 		sbContainerName, sandboxCleanup, sandboxErr = setupSandbox(tools, cfg)
 		if sandboxErr != nil {
-			return nil, nil, nil, nil, nil, nil, approver, fmt.Errorf("sandbox: %w", sandboxErr)
+			sandboxCleanup = nil
+			return fail(fmt.Errorf("sandbox: %w", sandboxErr))
 		}
 		if bgRT != nil {
 			bgRT.SetContainer(sbContainerName)
@@ -973,15 +993,9 @@ func newServeAgent(resolved config.ResolvedConfig, system string, runKey string,
 	// Build the shared prompt-injection guard for this connection.
 	injectionGuard, err := guard.New(&resolved.Guard)
 	if err != nil {
-		if sandboxCleanup != nil {
-			_ = sandboxCleanup()
-		}
-		if mcpCleanup != nil {
-			mcpCleanup()
-		}
-		return nil, nil, nil, nil, nil, nil, approver, fmt.Errorf("guard: %w", err)
+		return fail(fmt.Errorf("guard: %w", err))
 	}
-	guardCleanup := func() error {
+	guardCleanup = func() error {
 		if injectionGuard != nil {
 			return injectionGuard.Close()
 		}
@@ -1108,15 +1122,9 @@ func newServeAgent(resolved config.ResolvedConfig, system string, runKey string,
 	agent, err := odek.New(serveCfg)
 	built = agent
 	if err != nil {
-		// Container was started but agent construction failed — clean up now
-		// so the container doesn't outlive this call.
-		if sandboxCleanup != nil {
-			sandboxCleanup() //nolint:errcheck
-		}
-		if mcpCleanup != nil {
-			mcpCleanup()
-		}
-		return nil, nil, nil, nil, nil, nil, approver, err
+		// Container, MCP servers and guard were started but agent
+		// construction failed — release them so nothing outlives this call.
+		return fail(err)
 	}
 
 	// Background-job completion notices are drained at iteration start
