@@ -173,7 +173,8 @@ func TestVectorIndexCosine(t *testing.T) {
 
 // TestVectorIndexReusesEmbedderAcrossRebuilds verifies that index rebuilds
 // reuse a single embedder instance (preserving backend caches) instead of
-// constructing a fresh one per rebuild.
+// constructing a fresh one per rebuild, when the embedder is safe to refit
+// while shared (the mock, like the HTTP backend, is).
 func TestVectorIndexReusesEmbedderAcrossRebuilds(t *testing.T) {
 	dir := t.TempDir()
 	store := NewAtomStore(dir)

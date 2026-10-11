@@ -65,6 +65,10 @@ func newMockEmbedder(dims int) *mockEmbedder {
 
 func (e *mockEmbedder) Fit(corpus []string) error { return nil }
 
+// SharedRefitSafe: Fit is a no-op and the cache is mutex-guarded, so the
+// index may refit the live instance while queries embed with it.
+func (e *mockEmbedder) SharedRefitSafe() bool { return true }
+
 func (e *mockEmbedder) Embed(text string) (vector.Vector, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()

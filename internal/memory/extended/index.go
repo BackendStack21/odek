@@ -185,13 +185,35 @@ func (vi *atomVectorIndex) stats() (vectors int, dirty bool) {
 	return vectors, vi.dirty || !vi.ready
 }
 
+// sharedRefitSafe is implemented by embedders whose Fit and LoadState may run
+// while other goroutines embed with the same instance: stateless, internally
+// locked backends such as the HTTP embedder, whose vectors do not depend on
+// the fit.
+type sharedRefitSafe interface{ SharedRefitSafe() bool }
+
+// rebuildEmbedder returns the embedder instance a rebuild or load should fit:
+// the live instance when it is safe to refit while shared (so the HTTP
+// embedder keeps its text→vector cache and a re-fit of a mostly-unchanged
+// corpus stays cheap), otherwise a fresh one. The local RandomProjections
+// embedder has no internal locking and refits its vocabulary in place, so
+// fitting the live instance would race with queries that embed with it
+// (searchCurrent under the read lock, similarity and embedTexts unlocked)
+// and embed them against a half-fitted vocabulary. Caller must hold vi.mu.
+func (vi *atomVectorIndex) rebuildEmbedder() textEmbedder {
+	if vi.emb == nil {
+		return vi.newEmb()
+	}
+	if s, ok := vi.emb.(sharedRefitSafe); ok && s.SharedRefitSafe() {
+		return vi.emb
+	}
+	return vi.newEmb()
+}
+
 // ensureFresh rebuilds the index if needed. The expensive embedding work runs
-// off-lock on the shared embedder instance, which is reused across rebuilds so
-// stateful backends keep their caches (the HTTP embedder's per-instance
-// text→vector cache makes a re-fit of a mostly-unchanged corpus cheap; the
-// local RandomProjections embedder resets its vocabulary on every Fit, so
-// re-fitting a reused instance is safe). Concurrent callers wait for the
-// first rebuild rather than starting redundant work.
+// off-lock on the instance rebuildEmbedder picks, and the fitted embedder is
+// swapped in together with the store it produced, so readers always embed
+// with the embedder that built the live vectors. Concurrent callers wait for
+// the first rebuild rather than starting redundant work.
 func (vi *atomVectorIndex) ensureFresh() {
 	vi.mu.RLock()
 	ready := vi.ready && !vi.dirty
@@ -226,11 +248,7 @@ func (vi *atomVectorIndex) ensureFresh() {
 
 	vi.rebuilding = true
 	seq := vi.dirtySeq
-	emb := vi.emb
-	if emb == nil {
-		emb = vi.newEmb()
-		vi.emb = emb
-	}
+	emb := vi.rebuildEmbedder()
 	listFn := vi.listAtoms
 	vi.mu.Unlock()
 
@@ -245,6 +263,7 @@ func (vi *atomVectorIndex) ensureFresh() {
 		return
 	}
 	vi.store = store
+	vi.emb = emb
 	vi.ready = true
 	vi.failedAt = time.Time{}
 	if vi.dirtySeq == seq {
@@ -333,10 +352,14 @@ func (vi *atomVectorIndex) tryLoadLocked() bool {
 	if err := store.Load(filepath.Join(vi.dir, vectorFile)); err != nil {
 		return false
 	}
-	if !vi.emb.LoadState(filepath.Join(vi.dir, vectorFile+".emb")) {
+	// Load into the instance rebuildEmbedder picks so a reader embedding
+	// with the live instance off-lock never sees its state replaced.
+	emb := vi.rebuildEmbedder()
+	if !emb.LoadState(filepath.Join(vi.dir, vectorFile+".emb")) {
 		return false
 	}
 	vi.store = store
+	vi.emb = emb
 	vi.ready = true
 	return true
 }
