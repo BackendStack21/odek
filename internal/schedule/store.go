@@ -208,7 +208,13 @@ func (s *Store) Put(job Job) error {
 				job.CreatedAt = doc.Jobs[i].CreatedAt
 			}
 			doc.Jobs[i] = job
-			return s.saveDoc(doc)
+			if err := s.saveDoc(doc); err != nil {
+				return err
+			}
+			if !job.Enabled {
+				s.clearProjectedNextLocked(job.ID)
+			}
+			return nil
 		}
 	}
 	if job.CreatedAt.IsZero() {
@@ -273,10 +279,49 @@ func (s *Store) SetEnabled(id string, enabled bool) error {
 	for i := range doc.Jobs {
 		if doc.Jobs[i].ID == id {
 			doc.Jobs[i].Enabled = enabled
-			return s.saveDoc(doc)
+			if err := s.saveDoc(doc); err != nil {
+				return err
+			}
+			if !enabled {
+				s.clearProjectedNextLocked(id)
+			}
+			return nil
 		}
 	}
 	return fmt.Errorf("schedule: no job with ID %q", id)
+}
+
+// clearProjectedNext is clearProjectedNextLocked with the locks taken, for
+// the scheduler when it notices a job disabled by a direct file edit.
+func (s *Store) clearProjectedNext(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	release, err := s.fileLock()
+	if err != nil {
+		return err
+	}
+	defer release()
+	s.clearProjectedNextLocked(id)
+	return nil
+}
+
+// clearProjectedNextLocked drops a disabled job's persisted next-fire slot.
+// A disabled job has no upcoming fire; keeping the old slot would make a
+// later re-enable look like a fire missed while the scheduler was down, and
+// catchup would run it immediately. Best-effort, like Remove's state cleanup.
+// Caller holds s.mu and the file lock.
+func (s *Store) clearProjectedNextLocked(id string) {
+	sd, err := s.loadState()
+	if err != nil {
+		return
+	}
+	st, ok := sd.States[id]
+	if !ok || st.NextRun.IsZero() {
+		return
+	}
+	st.NextRun = time.Time{}
+	sd.States[id] = st
+	_ = s.saveState(sd)
 }
 
 // ModTime returns the last-modified time of the schedules file, or the zero

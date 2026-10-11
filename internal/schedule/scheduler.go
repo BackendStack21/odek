@@ -203,10 +203,18 @@ func (s *Scheduler) reconcile(now time.Time) {
 	// released — SaveState does disk I/O and must not run under s.mu.
 	var skips []RunState
 	var projected []RunState
+	var disabledWithSlot []string
 
 	seen := make(map[string]bool, len(jobs))
 	for _, job := range jobs {
 		if !job.Enabled {
+			// A disabled job has no upcoming fire. Drop any persisted slot
+			// (left by a direct file edit, or by a run that finished before
+			// this reconcile saw the disable) so a later re-enable is not
+			// mistaken for a fire missed while the scheduler was down.
+			if !state[job.ID].NextRun.IsZero() && !s.running[job.ID] {
+				disabledWithSlot = append(disabledWithSlot, job.ID)
+			}
 			continue
 		}
 		newSig := jobSig(job)
@@ -311,6 +319,11 @@ func (s *Scheduler) reconcile(now time.Time) {
 	}
 	s.mu.Unlock()
 
+	for _, id := range disabledWithSlot {
+		if err := s.store.clearProjectedNext(id); err != nil {
+			s.log.Error("scheduler: clear disabled job's next fire failed", "id", id, "error", err)
+		}
+	}
 	// Persist skip records outside the lock; log failures (don't swallow them).
 	for _, st := range skips {
 		if err := s.store.SaveState(st); err != nil {
