@@ -91,8 +91,11 @@ var patterns = []*regexp.Regexp{
 	// colon form the `NAME=value` env-var matcher below does not reach.
 	regexp.MustCompile(`(?i)(?:api[_-]?key|api[_-]?secret|auth[_-]?token|access[_-]?token|bearer[_-]?token|client[_-]?secret|private[_-]?key|secret[_-]?key|secret[_-]?access[_-]?key|session[_-]?token|password|passwd)["'\x60]?\s*[:=]\s*(?:"[^"\n]{20,}"|'[^'\n]{20,}'|\x60[^\x60\n]{20,}\x60|[^\s]{20,})`),
 
-	// Bearer tokens in Authorization headers
-	regexp.MustCompile(`(?i)Authorization:\s*Bearer\s+([a-zA-Z0-9+/=._-]{20,})`),
+	// Bearer tokens in Authorization headers: the header-line form
+	// (Authorization: Bearer …) and the JSON/JS header-object form
+	// ("Authorization": "Bearer …"), where a closing quote precedes the
+	// colon and an opening quote precedes the scheme.
+	regexp.MustCompile(`(?i)Authorization["'\x60]?\s*[:=]\s*["'\x60]?Bearer\s+([a-zA-Z0-9+/=._-]{20,})`),
 
 	// Slack bot tokens: xoxb-, xoxp-
 	regexp.MustCompile(`xox[abpose]-[0-9]{10,}-[0-9]{10,}-[a-zA-Z0-9]{24,}`),

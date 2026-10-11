@@ -81,6 +81,32 @@ func TestRED_AuthorizationBasicProseUntouched(t *testing.T) {
 	}
 }
 
+// The Bearer pattern requires "Authorization:" immediately followed by
+// optional whitespace, so the JSON/JS header-object form
+// ("Authorization": "Bearer ...") used in fetch() code, HTTP tool
+// arguments and MCP configs is never matched.
+func TestRED_AuthorizationBearerJSONHeaderNotRedacted(t *testing.T) {
+	const tok = "abcdefghijklmnopqrstuvwxyz0123456789ABCD"
+	for _, in := range []string{
+		`fetch(url, {headers: {"Authorization": "Bearer ` + tok + `"}})`,
+		`headers: {'Authorization': 'Bearer ` + tok + `'}`,
+		"Authorization = `Bearer " + tok + "`",
+	} {
+		if out := RedactSecrets(in); strings.Contains(out, tok) {
+			t.Errorf("bearer token in JSON header leaked: %q", out)
+		}
+	}
+	// Prose naming the scheme stays readable.
+	for _, in := range []string{
+		`Set "Authorization": "Bearer <token>" on every request.`,
+		"The Authorization header uses the Bearer scheme described in RFC 6750.",
+	} {
+		if out := RedactSecrets(in); out != in {
+			t.Errorf("prose over-redacted:\n in: %s\nout: %s", in, out)
+		}
+	}
+}
+
 func TestRED_BasicCredentialShape(t *testing.T) {
 	cases := map[string]bool{
 		"dXNlcjpwYXNz":     true,  // user:pass
