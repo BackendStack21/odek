@@ -8,7 +8,10 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
+
+	"github.com/BackendStack21/odek/internal/danger"
 )
 
 // patch documents "Returns a unified diff showing changes". Editing a line
@@ -231,6 +234,53 @@ func TestRED_BrowserRedirectURLWrapped(t *testing.T) {
 	check("snapshot", callJSON(t, b, `{"action":"snapshot"}`))
 	callJSON(t, b, `{"action":"navigate","url":"`+ts.URL+`/other"}`)
 	check("back", callJSON(t, b, `{"action":"back"}`))
+}
+
+// http_request accepts any method plus arbitrary headers. A mutating or
+// credentialed request is network_upload for the shell (curl -X DELETE),
+// which defaults to prompt. The same request via http_request must not
+// bypass that class.
+func TestRED_HTTPRequestMutatingMethodGatedAsUpload(t *testing.T) {
+	var hits atomic.Int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer ts.Close()
+
+	dc := danger.DangerousConfig{Classes: map[danger.RiskClass]danger.Action{
+		danger.NetworkEgress: danger.Allow,
+		danger.SystemWrite:   danger.Allow, // loopback httptest classifies system_write
+		danger.NetworkUpload: danger.Deny,
+	}}
+	tool := newHTTPRequestTool(dc)
+	for _, args := range []string{
+		fmt.Sprintf(`{"url":%q,"method":"DELETE","headers":{"Authorization":"Bearer ghp_example"}}`, ts.URL+"/repos/o/r"),
+		fmt.Sprintf(`{"url":%q,"method":"post"}`, ts.URL),
+		fmt.Sprintf(`{"url":%q,"headers":{"Cookie":"sid=1"}}`, ts.URL),
+		fmt.Sprintf(`{"url":%q,"method":"GET","headers":{"X-Api-Key":"k"}}`, ts.URL),
+	} {
+		out, _ := tool.Call(args)
+		if n := hits.Load(); n != 0 {
+			t.Fatalf("%s reached the server (%d hits) although network_upload is denied", args, n)
+		}
+		if !strings.Contains(out, "network_upload") {
+			t.Fatalf("%s: denial must name network_upload: %s", args, out)
+		}
+	}
+	// Plain GET/HEAD with ordinary headers stays network_egress.
+	for _, args := range []string{
+		fmt.Sprintf(`{"url":%q}`, ts.URL),
+		fmt.Sprintf(`{"url":%q,"method":"HEAD","headers":{"Accept":"*/*"}}`, ts.URL),
+	} {
+		out, _ := tool.Call(args)
+		if strings.Contains(out, "denied") {
+			t.Fatalf("%s: plain egress denied: %s", args, out)
+		}
+	}
+	if hits.Load() != 2 {
+		t.Fatalf("plain requests: hits = %d, want 2", hits.Load())
+	}
 }
 
 func TestGlobClassToRegexToolsCases(t *testing.T) {

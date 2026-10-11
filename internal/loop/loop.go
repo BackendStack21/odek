@@ -4562,7 +4562,16 @@ func classifyToolCallCtx(ctx context.Context, name, args string) (danger.RiskCla
 			return danger.NetworkEgress, args
 		}
 	case "http_request":
-		return danger.NetworkEgress, args
+		// A mutating method or a credential-bearing header is an upload,
+		// as for the curl equivalent; unreadable arguments fail closed.
+		var p struct {
+			Method  string            `json:"method"`
+			Headers map[string]string `json:"headers"`
+		}
+		if err := json.Unmarshal([]byte(args), &p); err != nil {
+			return danger.NetworkUpload, args
+		}
+		return danger.HTTPRequestClass(p.Method, p.Headers), args
 	case "delegate_tasks":
 		// Spawning sub-agents is a trust-mutating operation: a compromised or
 		// prompt-injected parent can use it to escape its own approval gate by
