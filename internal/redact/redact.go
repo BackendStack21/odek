@@ -25,6 +25,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"unicode/utf8"
 )
 
 // ── Patterns ───────────────────────────────────────────────────────────
@@ -151,6 +152,82 @@ var patterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqps?|mssql|clickhouse)://[^:\s/]+:[^@\s/]{6,}@[^\s'\x60"]+`),
 }
 
+// basicAuthPattern matches an HTTP Basic credential in a header line
+// (`Authorization: Basic <b64>`, also Proxy-Authorization) or a JSON/JS
+// header object (`"Authorization": "Basic <b64>"`). The word "Basic" alone
+// is common prose ("Authorization: Basic authentication…"), so a match only
+// counts when its token decodes to a printable user:password pair; see
+// basicCredential.
+var basicAuthPattern = regexp.MustCompile(`(?i)(authorization["'\x60]?\s*[:=]\s*["'\x60]?basic\s+)([A-Za-z0-9+/_-]{4,}={0,2})`)
+
+// basicCredential reports whether tok is base64 (standard or URL alphabet,
+// padded or not) of printable text containing a ':' — the user:password
+// shape of an HTTP Basic credential.
+func basicCredential(tok string) bool {
+	for _, enc := range []*base64.Encoding{base64.StdEncoding, base64.RawStdEncoding, base64.URLEncoding, base64.RawURLEncoding} {
+		b, err := enc.DecodeString(tok)
+		if err != nil {
+			continue
+		}
+		// Decodes of ordinary words are almost never valid control-free
+		// UTF-8 containing ':'; real credentials always are.
+		if !strings.Contains(string(b), ":") || !utf8.Valid(b) {
+			return false
+		}
+		for _, c := range b {
+			if c < 0x20 || c == 0x7f {
+				return false
+			}
+		}
+		return true
+	}
+	return false
+}
+
+// basicAuthMatches returns the [start,end) offsets of every Basic credential
+// token in text (the token only, not the header name).
+func basicAuthMatches(text string) [][2]int {
+	if !containsFoldASCII(text, "basic") {
+		return nil
+	}
+	var out [][2]int
+	for _, m := range basicAuthPattern.FindAllStringSubmatchIndex(text, -1) {
+		if basicCredential(text[m[4]:m[5]]) {
+			out = append(out, [2]int{m[4], m[5]})
+		}
+	}
+	return out
+}
+
+// containsFoldASCII reports whether text contains the lower-case ASCII word
+// in any letter case, without copying text.
+func containsFoldASCII(text, word string) bool {
+	for i := 0; i+len(word) <= len(text); i++ {
+		if text[i]|0x20 == word[0] && strings.EqualFold(text[i:i+len(word)], word) {
+			return true
+		}
+	}
+	return false
+}
+
+// redactBasicAuth replaces each Basic credential token with [REDACTED],
+// keeping the header name so the redacted text still reads as a header.
+func redactBasicAuth(text string) string {
+	ms := basicAuthMatches(text)
+	if len(ms) == 0 {
+		return text
+	}
+	var b strings.Builder
+	last := 0
+	for _, m := range ms {
+		b.WriteString(text[last:m[0]])
+		b.WriteString("[REDACTED]")
+		last = m[1]
+	}
+	b.WriteString(text[last:])
+	return b.String()
+}
+
 // ── Public API ─────────────────────────────────────────────────────────
 
 // RedactSecrets scans text for known secret patterns and replaces matched
@@ -181,7 +258,7 @@ func RedactSecrets(text string) string {
 		}
 		result = p.ReplaceAllString(result, "[REDACTED]")
 	}
-	return result
+	return redactBasicAuth(result)
 }
 
 // HasSecrets returns true if the text contains any recognized secret pattern
@@ -201,7 +278,7 @@ func HasSecrets(text string) bool {
 			return true
 		}
 	}
-	return false
+	return len(basicAuthMatches(text)) > 0
 }
 
 // IsSafe returns true if the text contains no recognized secrets.
@@ -226,6 +303,7 @@ func CountSecrets(text string) int {
 		matches := p.FindAllString(text, -1)
 		count += len(matches)
 	}
+	count += len(basicAuthMatches(text))
 	return count
 }
 
