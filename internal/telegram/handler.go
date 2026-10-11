@@ -392,9 +392,22 @@ func (h *Handler) handleCallback(cq *CallbackQuery) {
 	}
 
 	// Route approval callbacks to the per-chat TelegramApprover.
-	if a := h.GetApprover(cq.Message.Chat.ID); a != nil && a.HandleCallback(cq.Data, userID) {
-		// Show a toast acknowledging the user's choice.
-		ack := approvalToast(cq.Data)
+	outcome := callbackNotApproval
+	if a := h.GetApprover(cq.Message.Chat.ID); a != nil {
+		outcome = a.resolveCallback(cq.Data, userID)
+	}
+	if outcome != callbackNotApproval {
+		// Acknowledge what actually happened: the chosen action only when
+		// the press was delivered to the waiting request.
+		var ack string
+		switch outcome {
+		case callbackAccepted:
+			ack = approvalToast(cq.Data)
+		case callbackWrongUser:
+			ack = "⛔ Not applied: only the user who started this operation can answer"
+		default:
+			ack = "⌛ Not applied: this request is no longer pending"
+		}
 		if err := h.Bot.AnswerCallbackQuery(cq.ID, ack, false); err != nil {
 			h.log.Error("answer callback query (approval) failed", "chat_id", cq.Message.Chat.ID, "error", err)
 			if h.OnError != nil {

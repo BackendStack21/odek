@@ -267,6 +267,12 @@ window closes without a response, the prompt message is edited in place to an
 never be tapped after the request is dead. An expired request is denied — the
 operation is not executed.
 
+Only the user who started the operation can answer its approval prompt. The
+button toast reports what actually happened: the chosen action ("Approved",
+"Denied", "Trusted") only when the press reached the waiting request; a press
+by another group member, a duplicate tap, or a tap on a request that is no
+longer pending gets a "Not applied" toast instead.
+
 ### Outbound Media
 
 The agent can send files back to the chat either by emitting a `MEDIA:` prefix in its final answer (`MEDIA:photo:/path`, `MEDIA:voice:/path`, `MEDIA:document:/path`) or by calling `send_message` with the `file` parameter. Before any upload, the user must explicitly approve the operation, and the path is validated by `internal/telegram.ResolveMediaPathForChat`:
