@@ -49,3 +49,45 @@ func TestRED_HasCommonStemShortPrefix(t *testing.T) {
 		}
 	}
 }
+
+// Short keywords still match their plurals and simple inflections (the old
+// prefix rule was their only match, since stripSuffix leaves short words
+// alone), while contraction fragments match nothing longer than themselves.
+func TestRED_HasCommonStemShortKeywordInflections(t *testing.T) {
+	for _, tc := range []struct {
+		a, b string
+		want bool
+	}{
+		{"db", "dbs", true},
+		{"dbs", "db", true},
+		{"pr", "prs", true},
+		{"ci", "cis", true},
+		{"ui", "uis", true},
+		{"k8", "k8s", true},
+		{"go", "going", true},
+		{"go", "goes", true},
+		{"pr", "prd", false},
+		{"go", "golang", false},
+		// Contraction fragments.
+		{"s", "ss", false},
+		{"t", "ts", false},
+		{"d", "ds", false},
+		{"m", "ms", false},
+		{"re", "res", false},
+		{"re", "reing", false},
+		{"ve", "ves", false},
+		{"ll", "lls", false},
+		{"s", "security", false},
+	} {
+		if got := hasCommonStem(tc.a, tc.b); got != tc.want {
+			t.Errorf("hasCommonStem(%q, %q) = %v, want %v", tc.a, tc.b, got, tc.want)
+		}
+	}
+	// End to end: a short topic keyword matches its plural in a message.
+	db := Skill{Name: "db-ops", Description: "Database operations",
+		Trigger: SkillTrigger{TopicKeywords: []string{"db"}, ActionKeywords: []string{"migrate"}}, Body: "x"}
+	m := NewScoredMatcher([]Skill{db}, DefaultScoredConfig())
+	if got := m.MatchSkills("migrate all dbs tonight", 5); len(got) != 1 {
+		t.Errorf("\"migrate all dbs tonight\" did not load db-ops (score %d)", m.scoreSkill(db, tokenize("migrate all dbs tonight")))
+	}
+}
