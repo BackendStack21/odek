@@ -4978,14 +4978,30 @@ func isSystemWrite(first string, tokens []string) bool {
 	return false
 }
 
-// mutatesHomeRoot reports whether a command moves a home directory away: an
-// mv source operand that names a home directory or one of its ancestors.
-// Moving files into the home directory (the destination) is not covered.
+// homeRootInPlaceMutators change their operands in place, recursively with
+// -R/-r: on a home directory that reaches ~/.ssh, the shell rc files and the
+// odek trust anchors (chmod -R 777 ~ makes them world-writable, gzip -r ~
+// replaces each of them).
+var homeRootInPlaceMutators = map[string]bool{
+	"chmod": true, "chown": true, "chgrp": true, "chattr": true, "setfacl": true,
+	"gzip": true, "pigz": true, "xz": true, "bzip2": true, "zstd": true, "lz4": true,
+}
+
+// mutatesHomeRoot reports whether a command moves or rewrites a home
+// directory as a whole: an mv source operand, or an operand of an in-place
+// mutator, that names a home directory or one of its ancestors. Moving files
+// into the home directory (an mv destination) is not covered.
 func mutatesHomeRoot(first string, tokens []string) bool {
-	if first != "mv" {
+	var operands []string
+	switch {
+	case first == "mv":
+		operands = mvSourceOperands(tokens)
+	case homeRootInPlaceMutators[first]:
+		operands = tokens[1:]
+	default:
 		return false
 	}
-	for _, tok := range mvSourceOperands(tokens) {
+	for _, tok := range operands {
 		if namesHomeOrAncestor(tok) {
 			return true
 		}

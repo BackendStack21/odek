@@ -222,3 +222,25 @@ func TestRED_MvHomeDirectoryAutoAllowed(t *testing.T) {
 	)
 	redhuntExactly(t, LocalWrite, `mv notes.txt ~`, `mv ~/notes.txt ~/old.txt`)
 }
+
+// Recursive mutations rooted at $HOME reach ~/.ssh, ~/.bashrc and the odek
+// trust anchors, yet classified local_write because only the operand "~" was
+// checked, and "~" itself is not sensitive.
+func TestRED_RecursiveMutationOfHomeAutoAllowed(t *testing.T) {
+	redhuntAtLeast(t, SystemWrite,
+		`chmod -R 777 ~`,
+		`chmod -R 000 ~`,
+		`chmod 777 "$HOME"`,
+		`chown -R nobody ~/`,
+		`chgrp -R staff /home/user`,
+		`gzip -r ~`,
+		`xz -r ~`,
+		`zstd --rm -r ~`,
+		`bzip2 -r ~`,
+	)
+	redhuntExactly(t, LocalWrite,
+		`chmod -R 755 ~/project`,
+		`gzip -r ./build`,
+		`chmod +x ~/bin/tool`,
+	)
+}
