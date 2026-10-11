@@ -107,6 +107,32 @@ func TestRED_AuthorizationBearerJSONHeaderNotRedacted(t *testing.T) {
 	}
 }
 
+// OAuth token-endpoint responses carry opaque refresh tokens under
+// "refresh_token"; the generic matcher lists access_token/auth_token but
+// not refresh_token, so the long-lived credential is persisted verbatim.
+func TestRED_OAuthRefreshTokenNotRedacted(t *testing.T) {
+	const tok = "def50200a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8"
+	for _, in := range []string{
+		`{"token_type":"Bearer","expires_in":3600,"refresh_token":"` + tok + `"}`,
+		"refreshToken: " + tok,
+		"REFRESH_TOKEN=" + tok,
+	} {
+		if out := RedactSecrets(in); strings.Contains(out, tok) {
+			t.Errorf("refresh token leaked: %q", out)
+		}
+	}
+	// Docs text that names the field without a value stays readable.
+	for _, in := range []string{
+		"Store the refresh_token securely and rotate it on every use.",
+		"The response includes a refresh_token field; see the OAuth guide.",
+		`"refresh_token": "string"`,
+	} {
+		if out := RedactSecrets(in); out != in {
+			t.Errorf("prose over-redacted:\n in: %s\nout: %s", in, out)
+		}
+	}
+}
+
 func TestRED_BasicCredentialShape(t *testing.T) {
 	cases := map[string]bool{
 		"dXNlcjpwYXNz":     true,  // user:pass
