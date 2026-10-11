@@ -15,7 +15,7 @@ When caching is enabled **and** the bound client is Anthropic-format (`Client.Is
 1. Marks the first system block (`SystemBlock.Cache`)
 2. Marks the memory system block when it carries `cache_control` (unchanged memory snapshots reuse the same wrapper, so this breakpoint stays stable)
 3. Marks the first user message (`Message.Cache`)
-4. Marks the last tool definition (`ToolDef.Cache`) so the tool-list prefix is a further Anthropic breakpoint. The run's tool catalog is copied before the marker is set — the live registry is not mutated.
+4. Marks the last tool definition (`ToolDef.Cache`) so the tool-list prefix is a further Anthropic breakpoint. The run's tool catalog is copied before the marker is set — the live registry is not mutated. The catalog is sorted by tool name, so the tool prefix is byte-stable across runs of a reused engine (every REPL, serve and Telegram turn) and on every provider.
 
 System messages are always sent as separate `SystemBlock`s (one per system row) via `internal/llmclient.toSDKMessages`. OpenAI-format providers never receive `cache_control` markers; they still benefit from prefix-stable system blocks. go-llm-sdk owns Anthropic request headers.
 

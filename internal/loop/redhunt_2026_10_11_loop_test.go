@@ -142,3 +142,36 @@ func TestRED_BudgetSkippedCheckRecordedFailed(t *testing.T) {
 		t.Fatalf("check status = %q although the check call was skipped by the budget and never executed; want pending", got)
 	}
 }
+
+type redhuntNamedTool struct{ name string }
+
+func (t redhuntNamedTool) Name() string                { return t.name }
+func (t redhuntNamedTool) Description() string         { return "fixture " + t.name }
+func (t redhuntNamedTool) Schema() any                 { return map[string]any{"type": "object"} }
+func (t redhuntNamedTool) Call(string) (string, error) { return "", nil }
+
+// buildToolDefs is called once per run and its order is the request's tool
+// order. Ranging over the registry map makes it differ between runs of a
+// reused engine (every REPL/serve/Telegram turn), which changes the cached
+// prompt prefix (tools are the first cached block; markLastToolCache puts a
+// breakpoint on the last tool) and busts the provider prompt cache.
+func TestRED_ToolDefsOrderUnstableAcrossRuns(t *testing.T) {
+	var tools []tool.Tool
+	for _, n := range []string{"a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p"} {
+		tools = append(tools, redhuntNamedTool{name: "tool_" + n})
+	}
+	e := New(nil, tool.NewRegistry(tools), 3, "sys", nil, 0)
+	order := func() string {
+		var names []string
+		for _, d := range e.buildToolDefs() {
+			names = append(names, d.Name)
+		}
+		return strings.Join(names, ",")
+	}
+	first := order()
+	for i := 0; i < 50; i++ {
+		if got := order(); got != first {
+			t.Fatalf("tool definition order changed between runs:\n first: %s\n later: %s", first, got)
+		}
+	}
+}

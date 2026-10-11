@@ -4437,6 +4437,11 @@ func (e *Engine) buildToolDefs() []llmclient.ToolDef {
 		}
 		defs = append(defs, def)
 	}
+	// The registry iterates a map, so its order changes between calls.
+	// Tools lead the cached prompt prefix, so the catalog is sorted by name
+	// to keep the request bytes, and the provider prompt cache, stable
+	// across runs of a reused engine.
+	sort.Slice(defs, func(i, j int) bool { return defs[i].Name < defs[j].Name })
 	return defs
 }
 
