@@ -1,15 +1,80 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 	"unicode/utf8"
 
 	"github.com/BackendStack21/odek/internal/bgproc"
 	"github.com/BackendStack21/odek/internal/config"
+	"github.com/BackendStack21/odek/internal/telegram"
 )
+
+// telegramFixCaptureBot records every sendMessage request body.
+func telegramFixCaptureBot(t *testing.T) (*telegram.Bot, func() []map[string]any) {
+	t.Helper()
+	var mu sync.Mutex
+	var sent []map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/sendMessage") {
+			body, _ := io.ReadAll(r.Body)
+			var p map[string]any
+			_ = json.Unmarshal(body, &p)
+			mu.Lock()
+			sent = append(sent, p)
+			mu.Unlock()
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": map[string]any{"message_id": 1}})
+	}))
+	t.Cleanup(srv.Close)
+	bot := telegram.NewBot("test:token")
+	bot.BaseURL = srv.URL
+	return bot, func() []map[string]any {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]map[string]any(nil), sent...)
+	}
+}
+
+// The overshoot warning must actually reach the chat: it was sent as
+// MarkdownV2 with an unescaped error string ('.', '+', '=') and a literal
+// "\n", which Telegram rejects, so the warning never arrived.
+func TestRED_BudgetOvershootWarningDelivered(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	bot, sent := telegramFixCaptureBot(t)
+	bot.SetDailyTokenBudget(100)
+
+	billTelegramChatTurn(bot, telegram.NewNopLogger(), 42, 7, 60) // under the budget: billed, no warning
+	if n := len(sent()); n != 0 {
+		t.Fatalf("warning sent under the budget (%d messages)", n)
+	}
+	billTelegramChatTurn(bot, telegram.NewNopLogger(), 42, 7, 60) // 120 > 100: billed and warned
+	msgs := sent()
+	if len(msgs) != 1 {
+		t.Fatalf("overshoot warnings sent = %d, want 1", len(msgs))
+	}
+	if pm, _ := msgs[0]["parse_mode"].(string); pm != "" {
+		t.Errorf("warning sent with parse_mode %q; the raw error text is not MarkdownV2-safe", pm)
+	}
+	text, _ := msgs[0]["text"].(string)
+	if strings.Contains(text, `\n`) || !strings.Contains(text, "\n") {
+		t.Errorf("warning must use real newlines, got %q", text)
+	}
+	if !strings.Contains(text, "120 total") {
+		t.Errorf("warning lacks the budget error: %q", text)
+	}
+	if used, _ := bot.DailyTokenUsage(); used != 120 {
+		t.Errorf("recorded usage = %d, want 120", used)
+	}
+}
 
 // A background job that exits in a chat without wake-on-complete must be
 // announced to the chat exactly once. Both the runtime's exit observer

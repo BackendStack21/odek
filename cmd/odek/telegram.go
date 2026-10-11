@@ -2236,20 +2236,7 @@ func runChatTurn(
 	}
 
 	// Bill actual token usage against daily budget (if configured).
-	tokensUsed := int64(runInfo.InputTokens + runInfo.OutputTokens)
-	if tokensUsed > 0 {
-		if err := bot.CheckDailyBudget(tokensUsed); err != nil {
-			// Budget exceeded — report it but still deliver the response.
-			log.Warn("daily token budget exceeded",
-				"chat_id", chatID, "tokens", tokensUsed, "error", err)
-			bot.SendMessage(chatID, fmt.Sprintf(
-				"⚠️ *Token budget warning*\\n\\n%v\\n\\n"+
-					"Further agent runs may be blocked until the daily budget resets. "+
-					"Use `/stats` to check current usage.",
-				err,
-			), &telegram.SendOpts{ParseMode: telegram.ParseModeMarkdownV2, ReplyToMessageID: messageID})
-		}
-	}
+	billTelegramChatTurn(bot, log, chatID, messageID, int64(runInfo.InputTokens+runInfo.OutputTokens))
 
 	// Save the updated session messages.
 	cs.Messages = updatedMessages
@@ -2619,6 +2606,27 @@ func sendAsync(bot *telegram.Bot, chatID int64, text string, opts *telegram.Send
 			fmt.Fprintf(os.Stderr, "odek telegram: async send failed: %v\n", err)
 		}
 	}()
+}
+
+// billTelegramChatTurn bills a chat turn's token usage against the daily
+// budget and warns the chat when the budget is exceeded.
+func billTelegramChatTurn(bot *telegram.Bot, log telegram.Logger, chatID int64, replyTo int, tokensUsed int64) {
+	if tokensUsed <= 0 {
+		return
+	}
+	if err := bot.CheckDailyBudget(tokensUsed); err != nil {
+		// Budget exceeded — report it but still deliver the response.
+		log.Warn("daily token budget exceeded",
+			"chat_id", chatID, "tokens", tokensUsed, "error", err)
+		// Plain text: the error string carries MarkdownV2-reserved characters
+		// ('.', '+', '=') and would make a MarkdownV2 send fail outright.
+		bot.SendMessage(chatID, fmt.Sprintf(
+			"⚠️ Token budget warning\n\n%v\n\n"+
+				"Further agent runs will be refused until the daily budget resets. "+
+				"Use /stats to check current usage.",
+			err,
+		), &telegram.SendOpts{ReplyToMessageID: replyTo})
+	}
 }
 
 // truncateToolArgs truncates tool call arguments to at most maxLen bytes
