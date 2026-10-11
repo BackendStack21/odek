@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 	"unsafe"
+
+	"github.com/BackendStack21/odek/internal/danger"
 )
 
 // replConfigOpenPTYSlave opens a pseudo-terminal pair and returns the slave
@@ -151,5 +153,29 @@ func TestRED_PromoteProjectSkillWithoutProvenanceRequiresForce(t *testing.T) {
 	}
 	if !bytes.Contains(data, []byte("project")) {
 		t.Errorf("promoted project skill lost its project source:\n%s", data)
+	}
+}
+
+// Only the exact label "trusted" yields a trusted child. Any other declared
+// or parent trust label — a casing variant, trailing space, or a value
+// outside the schema enum (providers do not enforce enums) — must fail
+// closed: untrusted lockdown, no MCP tools.
+func TestRED_SubagentUnknownTrustLevelFailsClosed(t *testing.T) {
+	for _, declared := range []string{"Untrusted", "UNTRUSTED", "untrusted ", "low", "semi-trusted", "Trusted", " trusted"} {
+		got := effectiveTrust("trusted", declared)
+		if got != "untrusted" {
+			t.Errorf("effectiveTrust(parent=trusted, declared=%q) = %q, want \"untrusted\" (unknown labels must fail closed)", declared, got)
+		}
+		if subagentAllowsMCP(declared) {
+			t.Errorf("trust label %q grants the child MCP tools", declared)
+		}
+		dc := danger.DangerousConfig{}
+		applySubagentTrust(&dc, declared, "")
+		if dc.Classes[danger.CodeExecution] != danger.Deny || dc.Classes[danger.NetworkEgress] != danger.Deny {
+			t.Errorf("trust label %q skipped the untrusted lockdown: %v", declared, dc.Classes)
+		}
+	}
+	if got := effectiveTrust("bogus", "trusted"); got != "untrusted" {
+		t.Errorf("effectiveTrust(parent=bogus, declared=trusted) = %q, want untrusted", got)
 	}
 }

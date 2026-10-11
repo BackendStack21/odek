@@ -352,7 +352,9 @@ in its result (`denials: [{tool, class, reason}]`, capped at 20 with
 Trust is **non-increasing downward**: the delegate tool stamps the parent's
 effective trust into the task file (`parent_trust`), and the child runs at
 `min(parent_trust, trust_level)`. A task tree rooted in untrusted content
-cannot launder itself into trusted children.
+cannot launder itself into trusted children. Only the exact label `trusted`
+counts as trusted; an empty or unrecognised `trust_level` or `parent_trust`
+(`Untrusted`, `trusted `, `low`, ...) fails closed to `untrusted`.
 
 The `trust_level` a model requests is honoured only on a clean run.
 `delegate_tasks` clamps every requested child to `untrusted` when the parent

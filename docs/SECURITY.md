@@ -286,7 +286,7 @@ Plain `odek skill promote my-skill` refuses to clear `NeedsReview` when `Untrust
 
 `delegate_tasks` accepts two parent-side trust signals on each task:
 
-- `trust_level: "untrusted"` — the goal / guidance / context strings may contain attacker-controllable text. A missing `trust_level` is treated as `untrusted`.
+- `trust_level: "untrusted"` — the goal / guidance / context strings may contain attacker-controllable text. A missing `trust_level` is treated as `untrusted`, and so is any label other than the exact string `trusted` (a casing variant, stray whitespace, or a value outside the schema enum, which providers do not enforce): the lockdown applies and MCP tools are withheld.
 - `max_risk: "<class>"` — the highest risk class the sub-agent may execute.
 - `profile: "<name>"` — select an operator-defined capability profile; its settings override the corresponding operator permissions for this sub-agent. When omitted, the **built-in default envelope** applies (see [Capability profiles](#capability-profiles)).
 

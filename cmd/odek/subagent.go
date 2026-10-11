@@ -361,18 +361,18 @@ func extractDenials(messages []session.Message) ([]SubagentDenial, int) {
 // trust_level). The parent stamps its own effective trust into the task
 // file; an empty parent trust means a top-level operator run (trusted).
 // An empty declared trust normalizes to untrusted, so omitted trust_level
-// can never inherit the parent's TTY/approval context.
+// can never inherit the parent's TTY/approval context. Only the exact label
+// "trusted" counts as trusted: any other value (a casing variant, stray
+// whitespace, a label outside the schema enum, which providers do not
+// enforce) fails closed to untrusted.
 func effectiveTrust(parentTrust, declared string) string {
-	if declared == "" {
-		declared = "untrusted"
-	}
 	if parentTrust == "" {
 		parentTrust = "trusted"
 	}
-	if parentTrust == "untrusted" || declared == "untrusted" {
-		return "untrusted"
+	if parentTrust == "trusted" && declared == "trusted" {
+		return "trusted"
 	}
-	return "trusted"
+	return "untrusted"
 }
 
 // subagentTelemetryWriter emits protocol-2 lifecycle records as compact
@@ -1571,12 +1571,9 @@ func truncate(s string, n int) string {
 // the DangerousConfig passed to the engine forces Deny for any class above
 // the configured cap.
 func subagentAllowsMCP(trustLevel string) bool {
-	// An empty trust_level is normalized to "untrusted" by applySubagentTrust,
-	// so we use the same default here to stay consistent.
-	if trustLevel == "" {
-		trustLevel = "untrusted"
-	}
-	return trustLevel != "untrusted"
+	// Only the exact label "trusted" loads MCP servers; empty or any
+	// unrecognised label is treated as untrusted, like applySubagentTrust.
+	return trustLevel == "trusted"
 }
 
 // applySubagentTrust narrows a sub-agent's danger config based on the
@@ -1603,8 +1600,9 @@ func applySubagentTrust(dc *danger.DangerousConfig, trustLevel, maxRisk string) 
 
 	// Default to untrusted: if a parent agent omits trust_level, the sub-agent
 	// must not inherit the parent's TTY/approval context. This closes the path
-	// where a prompt-injected parent silently spawns a full-trust child.
-	if trustLevel == "" {
+	// where a prompt-injected parent silently spawns a full-trust child. Any
+	// label other than the exact "trusted" fails closed the same way.
+	if trustLevel != "trusted" {
 		trustLevel = "untrusted"
 	}
 

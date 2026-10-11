@@ -125,7 +125,7 @@ func TestSubagentAllowsMCP_UntrustedDeniesLoading(t *testing.T) {
 		{"untrusted", false},
 		{"", false}, // empty defaults to untrusted
 		{"trusted", true},
-		{"destructive", true},
+		{"destructive", false}, // unrecognised labels fail closed
 	} {
 		t.Run(tc.trust, func(t *testing.T) {
 			if got := subagentAllowsMCP(tc.trust); got != tc.want {
