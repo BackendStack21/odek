@@ -115,3 +115,15 @@ func TestRED_GitCredentialFillDisclosesSecrets(t *testing.T) {
 		`printf 'protocol=https\nhost=x\n' | git credential-cache get`,
 	)
 }
+
+// gpg --export-secret-keys writes the private key material to stdout.
+func TestRED_GpgExportSecretKeysDisclosesSecrets(t *testing.T) {
+	redhuntAtLeast(t, SystemWrite,
+		`gpg --export-secret-keys`,
+		`gpg -a --export-secret-subkeys`,
+		`gpg2 --armor --export-secret-keys me@example.com`,
+		`gpg --export-secret-k`,
+		`/usr/bin/gpg --batch --export-secret-subkeys=x`,
+	)
+	redhuntExactly(t, Safe, `gpg --list-secret-keys`, `gpg --export me@example.com`, `gpg -- --export-secret-keys`)
+}

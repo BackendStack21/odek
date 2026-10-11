@@ -96,11 +96,27 @@ func referencesSensitiveEnv(text string) bool {
 // `git credential fill|approve|reject` and the helpers git dispatches to
 // (`git credential-store get`, `git credential-osxkeychain get`, …) print or
 // rewrite plaintext credentials, the same disclosure as reading
-// ~/.git-credentials.
+// ~/.git-credentials. gpg --export-secret-keys / --export-secret-subkeys
+// (and their unambiguous abbreviations) print private key material, the same
+// disclosure as reading ~/.gnupg/private-keys-v1.d.
 func credentialStoreAccess(name string, tokens []string) bool {
-	if name == "git" {
+	switch name {
+	case "git":
 		sub, _ := gitSubcommandAndArgs(tokens)
 		return sub == "credential" || strings.HasPrefix(sub, "credential-")
+	case "gpg", "gpg2":
+		for _, a := range tokens[1:] {
+			if a == "--" {
+				return false
+			}
+			opt, _, _ := strings.Cut(strings.TrimPrefix(a, "--"), "=")
+			if !strings.HasPrefix(a, "--") || !strings.HasPrefix(opt, "export-s") {
+				continue
+			}
+			if strings.HasPrefix("export-secret-keys", opt) || strings.HasPrefix("export-secret-subkeys", opt) {
+				return true
+			}
+		}
 	}
 	return false
 }
