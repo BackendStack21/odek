@@ -328,6 +328,10 @@ type Client struct {
 	url   string
 	token string
 	httpc *http.Client
+	// sessionID is the Mcp-Session-Id the server assigned in its initialize
+	// response (empty when the server is stateless). Guarded by mu; sent on
+	// every later request and notification.
+	sessionID string
 }
 
 // resultCharsFloorMargin is the room, in runes, a result cap must leave beyond
