@@ -36,8 +36,8 @@ commands (`odek run`, `odek repl`, …) do not run the janitor — use
 
 | Category | Location | Retention key | Default |
 |---|---|---|---|
-| Sessions | `~/.odek/sessions/*.json` (by `updated_at`) | `sessions_max_age_days` | 30 days |
-| Audit records | `~/.odek/sessions/audit/*.json` (by mtime) | `audit_max_age_days` | 14 days |
+| Sessions | `~/.odek/sessions/*.json` (by `updated_at`; pinned sessions are kept) | `sessions_max_age_days` | 30 days |
+| Audit records | `~/.odek/sessions/audit/*.json` and quarantined `*.json.corrupt-<timestamp>` copies (by mtime) | `audit_max_age_days` | 14 days |
 | Plans | `~/.odek/plans/**/*.md` (by mtime) | `plans_max_age_days` | 30 days |
 | Sub-agent artifacts | `~/.odek/artifacts/<session>/<task>/` and `~/.odek/artifacts/unfiled/<task>/` (task dirs by their own mtime; aged session dirs also go wholesale) | `artifacts_max_age_hours` | 24 hours (backstop — live removal happens on session delete) |
 | Telegram media | `~/.odek/media/` (by mtime) | fixed: 1 hour | freed bytes reported |
@@ -123,7 +123,9 @@ Storage is clean — nothing to remove.
 ```
 
 `odek cleanup --dry-run` removes nothing and reports what a sweep would
-remove:
+remove. The preview applies the sweep's own selection rules (pinned sessions
+are never listed; runtime-log records are counted with the sweep's own
+clamped `logging.max_age_hours` cutoff):
 
 ```
 $ odek cleanup --dry-run

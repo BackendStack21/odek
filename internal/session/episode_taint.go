@@ -279,24 +279,51 @@ func trustedRoots() []string {
 }
 
 // pathOutsideRoots reports whether p resolves outside every trusted root.
-// The path is checked both as filepath.Abs(p) and symlink-resolved, so a
-// symlinked sensitive path (e.g. /etc → /private/etc) cannot evade detection.
+// The verdict is taken on the symlink-resolved path: a symlink inside the
+// workspace that points outside it (a cloned repo shipping `docs -> /`) is an
+// escape, and a symlinked sensitive path (e.g. /etc → /private/etc) cannot
+// evade detection. When the path does not exist, its deepest existing
+// ancestor is resolved and the remainder joined onto it.
 func pathOutsideRoots(p string, roots []string) bool {
 	abs, err := filepath.Abs(p)
 	if err != nil {
 		return true // unresolvable → conservative
 	}
-	abs = filepath.Clean(abs)
-	cands := []string{abs}
-	if r, err := filepath.EvalSymlinks(abs); err == nil && r != abs {
-		cands = append(cands, r)
+	resolved, ok := resolveExistingPrefix(filepath.Clean(abs))
+	if !ok {
+		return true
 	}
-	for _, c := range cands {
-		for _, root := range roots {
-			if c == root || strings.HasPrefix(c, root+string(filepath.Separator)) {
-				return false // inside a trusted root
-			}
+	for _, root := range roots {
+		if resolved == root || strings.HasPrefix(resolved, root+string(filepath.Separator)) {
+			return false // inside a trusted root
 		}
 	}
 	return true
+}
+
+// resolveExistingPrefix resolves symlinks in abs. When abs itself cannot be
+// resolved (it does not exist yet), the deepest ancestor that can be is
+// resolved and the unresolved tail is joined back on. ok is false only when
+// no ancestor resolves at all.
+func resolveExistingPrefix(abs string) (string, bool) {
+	tail := ""
+	cur := abs
+	for {
+		if r, err := filepath.EvalSymlinks(cur); err == nil {
+			if tail == "" {
+				return r, true
+			}
+			return filepath.Join(r, tail), true
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			return "", false
+		}
+		if tail == "" {
+			tail = filepath.Base(cur)
+		} else {
+			tail = filepath.Join(filepath.Base(cur), tail)
+		}
+		cur = parent
+	}
 }

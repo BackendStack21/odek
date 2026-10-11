@@ -91,6 +91,38 @@ func referencesSensitiveEnv(text string) bool {
 	return false
 }
 
+// credentialStoreAccess reports whether a command reads or changes a
+// credential store through its own tooling rather than by opening the file:
+// `git credential fill|approve|reject` and the helpers git dispatches to
+// (`git credential-store get`, `git credential-osxkeychain get`, …) print or
+// rewrite plaintext credentials, the same disclosure as reading
+// ~/.git-credentials. gpg --export-secret-keys / --export-secret-subkeys /
+// --export-secret-ssh-key (and abbreviations) print private key material, the same
+// disclosure as reading ~/.gnupg/private-keys-v1.d.
+func credentialStoreAccess(name string, tokens []string) bool {
+	switch name {
+	case "git":
+		sub, _ := gitSubcommandAndArgs(tokens)
+		return sub == "credential" || strings.HasPrefix(sub, "credential-")
+	case "gpg", "gpg2":
+		for _, a := range tokens[1:] {
+			if a == "--" {
+				return false
+			}
+			opt, _, _ := strings.Cut(strings.TrimPrefix(a, "--"), "=")
+			if !strings.HasPrefix(a, "--") || !strings.HasPrefix(opt, "export-s") {
+				continue
+			}
+			// Any --export-secret-* option (and an abbreviation that could
+			// name one) writes secret key material.
+			if strings.HasPrefix(opt, "export-secret") || strings.HasPrefix("export-secret", opt) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // secretNameOperand reports whether a command that prints variables by name
 // (printenv NAME, declare -p NAME) names a secret-bearing one.
 func secretNameOperand(name string, args []string) bool {

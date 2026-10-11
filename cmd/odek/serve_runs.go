@@ -431,6 +431,7 @@ const (
 var (
 	errInvalidSessionToken = errors.New("invalid session token")
 	errTooManyActiveRuns   = errors.New("too many active runs")
+	errServeShuttingDown   = errors.New("server is shutting down")
 )
 
 // serveRun is one headless agent execution started via POST /api/prompt.
@@ -476,7 +477,10 @@ func (r *serveRun) record(v any) error {
 			r.pending[req.ID] = req
 			r.Status = "waiting_approval"
 		}
-	case "approval_ack":
+	case "approval_ack", "approval_expired":
+		// An expired approval is gone from the approver (the tool was
+		// denied by timeout and the loop moved on); keeping it listed would
+		// leave pollers answering a phantom request that now returns 404.
 		if id, _ := m["id"].(string); id != "" {
 			delete(r.pending, id)
 		}
@@ -688,6 +692,10 @@ func newRunID() string {
 var serveRuns struct {
 	mu   sync.Mutex
 	runs map[string]*serveRun
+	// shuttingDown is set (under mu) by the shutdown sweep. From then on
+	// admitServeRun refuses new runs, so the sweep sees every run that
+	// will ever exist and serveRunsWG.Add never races the drain's Wait.
+	shuttingDown bool
 }
 
 // serveRunsWG tracks headless run goroutines so shutdown can wait (bounded,
@@ -697,11 +705,46 @@ var serveRunsWG sync.WaitGroup
 
 func init() { serveRuns.runs = map[string]*serveRun{} }
 
+// admitServeRun registers a run and tracks its goroutine in serveRunsWG,
+// atomically with the shutdown check: once shutdown has begun the run is
+// refused (errServeShuttingDown) and nothing is registered or tracked. On
+// success the caller must start the run goroutine, which calls
+// serveRunsWG.Done.
+func admitServeRun(r *serveRun) error {
+	serveRuns.mu.Lock()
+	defer serveRuns.mu.Unlock()
+	if serveRuns.shuttingDown {
+		return errServeShuttingDown
+	}
+	registerRunLocked(r)
+	serveRunsWG.Add(1)
+	return nil
+}
+
+// serveRunsShuttingDown reports whether shutdown has stopped admitting runs.
+func serveRunsShuttingDown() bool {
+	serveRuns.mu.Lock()
+	defer serveRuns.mu.Unlock()
+	return serveRuns.shuttingDown
+}
+
+// openServeRunAdmission starts a server lifetime that admits runs.
+func openServeRunAdmission() {
+	serveRuns.mu.Lock()
+	serveRuns.shuttingDown = false
+	serveRuns.mu.Unlock()
+}
+
 // registerRun adds the run to the registry, evicting the oldest completed
 // runs when over the cap. Running runs are never evicted.
 func registerRun(r *serveRun) {
 	serveRuns.mu.Lock()
 	defer serveRuns.mu.Unlock()
+	registerRunLocked(r)
+}
+
+// registerRunLocked is registerRun with serveRuns.mu already held.
+func registerRunLocked(r *serveRun) {
 	serveRuns.runs[r.ID] = r
 	if len(serveRuns.runs) <= serveRunsCap {
 		return
@@ -788,10 +831,40 @@ func listRunsWire(limit int) []map[string]any {
 	return out
 }
 
+// cancelActiveServeRuns cancels every headless run that has not reached a
+// terminal status (serve shutdown). Cancelling interrupts pending approvals
+// and the run context, so the run goroutines unwind and their deferred
+// cleanup (agent close, sandbox removal, MCP teardown) runs inside the
+// shutdown drain instead of being cut off at process exit. Returns the
+// number of runs cancelled.
+func cancelActiveServeRuns() int {
+	serveRuns.mu.Lock()
+	serveRuns.shuttingDown = true // no run can be admitted after this sweep
+	runs := make([]*serveRun, 0, len(serveRuns.runs))
+	for _, rr := range serveRuns.runs {
+		runs = append(runs, rr)
+	}
+	serveRuns.mu.Unlock()
+
+	n := 0
+	for _, rr := range runs {
+		rr.mu.Lock()
+		terminal := runStatusTerminal(rr.Status)
+		rr.mu.Unlock()
+		if terminal {
+			continue
+		}
+		cancelRun(rr)
+		n++
+	}
+	return n
+}
+
 // resetServeRuns clears the registry (tests).
 func resetServeRuns() {
 	serveRuns.mu.Lock()
 	serveRuns.runs = map[string]*serveRun{}
+	serveRuns.shuttingDown = false
 	serveRuns.mu.Unlock()
 }
 
@@ -841,6 +914,11 @@ func startServeRun(
 	// or a sandbox container. Count-then-register has a benign race — the
 	// cap defends a local management surface against runaway scripts, not
 	// a concurrent adversary holding the instance token.
+	// Shutdown in progress: refuse before building anything. admitServeRun
+	// re-checks under the registry lock for runs that get past this point.
+	if serveRunsShuttingDown() {
+		return nil, errServeShuttingDown
+	}
 	if activeRunCount() >= maxActiveServeRuns {
 		return nil, fmt.Errorf("%w: cap is %d", errTooManyActiveRuns, maxActiveServeRuns)
 	}
@@ -913,7 +991,7 @@ func startServeRun(
 	// (agent.Close alone does not destroy the sandbox).
 	cleanup := func() {
 		if approver != nil {
-			approver.Cancel()
+			approver.Close()
 		}
 		agent.Close() //nolint:errcheck
 		if guardCleanup != nil {
@@ -944,7 +1022,14 @@ func startServeRun(
 	run.approver = approver
 	run.cleanup = cleanup
 	run.mu.Unlock()
-	registerRun(run)
+	// Registration and goroutine tracking are one step under the registry
+	// lock: a run that reaches this point after the shutdown sweep is
+	// refused and its agent, sandbox and MCP servers are released here.
+	if err := admitServeRun(run); err != nil {
+		cancel()
+		cleanup()
+		return nil, err
+	}
 
 	msg := wsClientMsg{
 		Limits: req.Limits, RecoveryRevision: req.RecoveryRevision, RecoveryGeneration: req.RecoveryGeneration,
@@ -962,18 +1047,18 @@ func startServeRun(
 	// run's session goes through the prompt-cancel registry and would fire
 	// only the context, leaving the loop blocked until the approval ceiling.
 	// Compose the approver interrupt into what handlePrompt registers.
-	// run.cancel stays plain — cancelRun interrupts the approver itself, and
-	// double-Cancel is safe now that Cancel re-arms.
+	// run.cancel stays plain — cancelRun interrupts the approver itself. The
+	// run ends with its context, so Close (repeat-safe) rather than Cancel:
+	// later prompts from the unwinding loop must not wait for an answer.
 	cancelWithApproval := func() {
 		cancel()
 		if approver != nil {
-			approver.Cancel()
+			approver.Close()
 		}
 	}
 
-	serveRunsWG.Add(1)
 	go func() {
-		defer serveRunsWG.Done()
+		defer serveRunsWG.Done() // Add happened in admitServeRun
 		defer func() {
 			if recovered := recover(); recovered != nil {
 				diagnostics.Emit(events.Event{Type: "panic_recovered", Data: map[string]any{"component": "serve", "operation": "headless_run", "error_class": "panic"}})
@@ -1029,6 +1114,8 @@ func handlePromptStart(st *serveState, store *session.Store, resources *resource
 			switch {
 			case errors.Is(err, errInvalidSessionToken):
 				http.Error(w, err.Error(), http.StatusUnauthorized)
+			case errors.Is(err, errServeShuttingDown):
+				http.Error(w, err.Error(), http.StatusServiceUnavailable)
 			case errors.Is(err, errTooManyActiveRuns):
 				w.Header().Set("Retry-After", "30")
 				http.Error(w, err.Error(), http.StatusTooManyRequests)
@@ -1223,9 +1310,11 @@ func cancelRun(run *serveRun) {
 	// leaves the loop blocked in PromptCommand until the approval ceiling
 	// (up to maxRunApprovalWait). Interrupt the approver NOW instead of
 	// waiting for the deferred cleanup, which only runs after handlePrompt
-	// unblocks.
+	// unblocks. Close (not Cancel) so a late prompt from the draining loop
+	// fails at once instead of waiting out the approval timeout unseen:
+	// a cancelled run never lists or answers another approval.
 	if approver != nil {
-		approver.Cancel()
+		approver.Close()
 	}
 	run.finish("cancelled", "")
 }

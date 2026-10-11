@@ -242,15 +242,48 @@ func (sm *ScoredMatcher) scoreSkillWith(s Skill, terms skillTerms, userTokens []
 
 // ── Stemming ────────────────────────────────────────────────────────────
 
+// minStemPrefixLen is the shortest word that counts as a prefix of another.
+// Shorter tokens are mostly contraction fragments ("let's" → "s", "we're" →
+// "re") that would otherwise prefix-match every keyword starting with them.
+const minStemPrefixLen = 3
+
+// contractionFragments are the two-letter tokens English contractions leave
+// behind once tokenize turns the apostrophe into a space ("we're", "I've",
+// "we'll"). Single-letter fragments ("let's", "don't", "I'd", "I'm") are
+// excluded by length.
+var contractionFragments = map[string]bool{"re": true, "ve": true, "ll": true}
+
+// isShortInflectable reports whether a word shorter than minStemPrefixLen may
+// still match its own plural or inflection: at least two letters and not a
+// contraction fragment.
+func isShortInflectable(w string) bool {
+	return len(w) >= 2 && !contractionFragments[w]
+}
+
 // hasCommonStem returns true if two words share a common stem via simple
 // suffix stripping. Handles common English morphological variants.
 func hasCommonStem(a, b string) bool {
 	if a == b {
 		return true
 	}
-	// Check prefix overlap: if one is the prefix of the other (trie-like)
-	if strings.HasPrefix(a, b) || strings.HasPrefix(b, a) {
+	// Check prefix overlap: if one is the prefix of the other (trie-like),
+	// and the shorter one is long enough to be a meaningful stem.
+	if min(len(a), len(b)) >= minStemPrefixLen && (strings.HasPrefix(a, b) || strings.HasPrefix(b, a)) {
 		return true
+	}
+	// A shorter word (a short keyword such as "db", "pr", "go") still
+	// matches its plural or a simple inflection of itself: "dbs", "goes",
+	// "going". stripSuffix leaves words this short alone, so this is their
+	// only stem match. Contraction fragments never qualify.
+	short, long := a, b
+	if len(short) > len(long) {
+		short, long = long, short
+	}
+	if len(short) < minStemPrefixLen && isShortInflectable(short) && strings.HasPrefix(long, short) {
+		switch long[len(short):] {
+		case "s", "es", "ing", "ed":
+			return true
+		}
 	}
 	return stripSuffix(a) == stripSuffix(b)
 }

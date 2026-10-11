@@ -105,30 +105,43 @@ func FormatResponse(text string) ([]string, error) {
 	return chunks, nil
 }
 
-// EscapeMarkdown escapes all reserved MarkdownV2 characters.
-// Characters inside code spans (`...`) and code blocks (```...```) are NOT escaped.
+// EscapeMarkdown escapes all reserved MarkdownV2 characters, including the
+// backslash itself. Inside code spans (`...`) and code blocks (```...```)
+// only "`" and "\" are escaped, as MarkdownV2 requires there.
 func EscapeMarkdown(text string) string {
 	var result strings.Builder
 	i := 0
 	for i < len(text) {
 		// Code blocks: ```...```
+		// An unpaired fence or backtick is escaped: it must never open an
+		// entity Telegram cannot find the end of.
 		if i <= len(text)-3 && text[i:i+3] == "```" {
-			result.WriteString("```")
-			i += 3
-			end := strings.Index(text[i:], "```")
-			if end >= 0 {
-				result.WriteString(text[i : i+end])
-				result.WriteString("```")
-				i += end + 3
+			end := strings.Index(text[i+3:], "```")
+			if end < 0 {
+				result.WriteString("\\`\\`\\`")
+				i += 3
+				continue
 			}
+			result.WriteString("```")
+			result.WriteString(escapeCodeLine(text[i+3 : i+3+end]))
+			result.WriteString("```")
+			i += 3 + end + 3
 			continue
 		}
 
 		// Inline code: `...`
+		if text[i] == '`' && strings.IndexByte(text[i+1:], '`') < 0 {
+			result.WriteString("\\`")
+			i++
+			continue
+		}
 		if text[i] == '`' {
 			result.WriteByte('`')
 			i++
 			for i < len(text) && text[i] != '`' {
+				if text[i] == '\\' {
+					result.WriteByte('\\')
+				}
 				result.WriteByte(text[i])
 				i++
 			}
@@ -151,11 +164,13 @@ func EscapeMarkdown(text string) string {
 
 // ─── Helpers ───
 
-// isReserved returns true if r is a reserved MarkdownV2 character.
+// isReserved returns true if r must be backslash-escaped in MarkdownV2 text
+// outside code: the reserved punctuation plus the backslash itself (an
+// unescaped "\" would escape whatever follows it).
 func isReserved(r rune) bool {
 	switch r {
 	case '_', '*', '[', ']', '(', ')', '~', '`', '>', '#',
-		'+', '-', '=', '|', '{', '}', '.', '!':
+		'+', '-', '=', '|', '{', '}', '.', '!', '\\':
 		return true
 	}
 	return false
@@ -264,47 +279,88 @@ func isInsideCode(text string, pos int) bool {
 func convertItalicAndEscape(line string) string {
 	var result strings.Builder
 	inCodeSpan := false
+	var closers map[int]bool // positions of "*"/"**" runs that close an emphasis
 	i := 0
 
 	for i < len(line) {
 		// ── Handle code spans ──
+		// A backtick opens code only when its partner exists on the line; an
+		// unpaired one is escaped, since an unclosed entity makes Telegram
+		// reject the whole message.
 		if line[i] == '`' {
+			if inCodeSpan {
+				inCodeSpan = false
+				result.WriteByte('`')
+				i++
+				continue
+			}
 			// Triple backtick code block (on one line)
 			if i <= len(line)-3 && line[i:i+3] == "```" {
-				result.WriteString("```")
-				i += 3
-				end := strings.Index(line[i:], "```")
-				if end >= 0 {
-					result.WriteString(line[i : i+end])
-					result.WriteString("```")
-					i += end + 3
+				end := strings.Index(line[i+3:], "```")
+				if end < 0 {
+					result.WriteString("\\`\\`\\`")
+					i += 3
+					continue
 				}
+				result.WriteString("```")
+				result.WriteString(escapeCodeLine(line[i+3 : i+3+end]))
+				result.WriteString("```")
+				i += 3 + end + 3
 				continue
 			}
 			// Single backtick
-			inCodeSpan = !inCodeSpan
-			result.WriteByte('`')
+			if strings.IndexByte(line[i+1:], '`') < 0 {
+				result.WriteString("\\`")
+			} else {
+				inCodeSpan = true
+				result.WriteByte('`')
+			}
 			i++
 			continue
 		}
 
 		if inCodeSpan {
+			// Inside code MarkdownV2 requires "\" to be escaped ("`" ends
+			// the span, so it never reaches here).
+			if line[i] == '\\' {
+				result.WriteByte('\\')
+			}
 			result.WriteByte(line[i])
 			i++
 			continue
 		}
 
-		// ── **bold** → keep as-is ──
-		if i <= len(line)-2 && line[i:i+2] == "**" {
-			result.WriteString("**")
-			i += 2
-			continue
-		}
-
-		// ── *italic* → _italic_ ──
+		// ── **bold** → kept, *italic* → _italic_ ──
+		// Only a marker with a matching partner on the line becomes
+		// markup; a lone "*" (arithmetic, globs) or "**" is escaped, since
+		// an unclosed entity makes Telegram reject the whole message.
 		if line[i] == '*' {
-			result.WriteByte('_')
-			i++
+			run := starRunLen(line, i)
+			if run <= 2 {
+				paired := closers[i]
+				if !paired {
+					if j := findEmphasisCloser(line, i, run, closers); j >= 0 {
+						if closers == nil {
+							closers = map[int]bool{}
+						}
+						closers[j] = true
+						paired = true
+					}
+				}
+				if paired {
+					if run == 2 {
+						result.WriteString("**")
+					} else {
+						result.WriteByte('_')
+					}
+					i += run
+					continue
+				}
+			}
+			for k := 0; k < run; k++ {
+				result.WriteString(`\*`)
+			}
+			i += run
 			continue
 		}
 
@@ -317,6 +373,60 @@ func convertItalicAndEscape(line string) string {
 	}
 
 	return result.String()
+}
+
+// starRunLen returns the length of the run of '*' starting at i.
+func starRunLen(line string, i int) int {
+	n := 0
+	for i+n < len(line) && line[i+n] == '*' {
+		n++
+	}
+	return n
+}
+
+// findEmphasisCloser returns the position of the "*" run of exactly n stars
+// that closes an emphasis opened at i, or -1. As in CommonMark, the opener
+// must be followed by a non-space character and the closer preceded by
+// one, so spaced operators ("5 * 3 * 2") never pair. Code spans are skipped
+// and runs already claimed as closers are not reused.
+func findEmphasisCloser(line string, i, n int, closers map[int]bool) int {
+	k := i + n
+	if k >= len(line) || isASCIISpace(line[k]) {
+		return -1
+	}
+	for k < len(line) {
+		switch line[k] {
+		case '`':
+			if strings.HasPrefix(line[k:], "```") {
+				end := strings.Index(line[k+3:], "```")
+				if end < 0 {
+					k += 3
+				} else {
+					k += 3 + end + 3
+				}
+				continue
+			}
+			end := strings.IndexByte(line[k+1:], '`')
+			if end < 0 {
+				k++ // an unpaired backtick is escaped literal text
+				continue
+			}
+			k += 1 + end + 1
+		case '*':
+			r := starRunLen(line, k)
+			if r == n && k > i+n && !isASCIISpace(line[k-1]) && !closers[k] {
+				return k
+			}
+			k += r
+		default:
+			k++
+		}
+	}
+	return -1
+}
+
+func isASCIISpace(c byte) bool {
+	return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\v' || c == '\f'
 }
 
 // splitChunks splits text into chunks no larger than maxBytes bytes.
@@ -421,6 +531,10 @@ func splitChunks(text string, maxBytes int) []string {
 				for splitAt > 0 && !utf8.RuneStart(remaining[splitAt]) {
 					splitAt--
 				}
+				splitAt = keepEscapePair(remaining, splitAt)
+				if splitAt == 0 {
+					splitAt = maxBytes // degenerate tiny maxBytes: never emit an empty chunk
+				}
 				chunks = append(chunks, remaining[:splitAt])
 				remaining = remaining[splitAt:]
 				// Trim leading spaces from remaining
@@ -492,6 +606,22 @@ func splitMarkdownParagraph(p string, maxBytes int) []string {
 	return chunks
 }
 
+// keepEscapePair moves a cut in already-escaped MarkdownV2 text back by one
+// byte when it would land between an escaping backslash and the character
+// it escapes (an odd run of backslashes right before the cut). Cutting there
+// leaves a dangling "\" at the end of one chunk and a bare reserved character
+// at the start of the next, and Telegram rejects both.
+func keepEscapePair(text string, cut int) int {
+	slashes := 0
+	for j := cut - 1; j >= 0 && text[j] == '\\'; j-- {
+		slashes++
+	}
+	if slashes%2 == 1 {
+		cut--
+	}
+	return cut
+}
+
 func splitPlainSegment(text string, maxBytes int) []string {
 	var out []string
 	for len(text) > maxBytes {
@@ -502,9 +632,7 @@ func splitPlainSegment(text string, maxBytes int) []string {
 		for cut > 0 && !utf8.RuneStart(text[cut]) {
 			cut--
 		}
-		if cut > 0 && text[cut-1] == '\\' {
-			cut--
-		}
+		cut = keepEscapePair(text, cut)
 		if cut == 0 {
 			return nil
 		}
@@ -540,15 +668,7 @@ func splitSingleFencedBlock(p string, maxBytes int) []string {
 		if cut == 0 {
 			return nil
 		}
-		// Keep an odd run of backslashes with the escaped character that
-		// follows it; otherwise a chunk boundary changes Markdown meaning.
-		slashes := 0
-		for j := cut - 1; j >= 0 && body[j] == '\\'; j-- {
-			slashes++
-		}
-		if slashes%2 == 1 {
-			cut--
-		}
+		cut = keepEscapePair(body, cut)
 		if cut == 0 {
 			return nil
 		}

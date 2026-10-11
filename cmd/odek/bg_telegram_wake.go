@@ -132,7 +132,10 @@ func (c *tgWakeController) reserve(jobID string) bool {
 		}
 	}
 	c.wakes = kept
-	if len(c.wakes) >= c.maxPerHour {
+	// The spend cap only gates opening a new coalesce window: an open
+	// window already spent its wake and its turn drains every queued
+	// completion, so an exit joining it costs nothing.
+	if c.timer == nil && len(c.wakes) >= c.maxPerHour {
 		c.mu.Unlock()
 		return false
 	}
@@ -167,6 +170,14 @@ func (c *tgWakeController) reserve(jobID string) bool {
 	case <-c.done:
 		return false
 	default:
+	}
+	if c.timer == nil && len(c.wakes) >= c.maxPerHour {
+		// The window this exit was joining fired during the busy probe and
+		// the cap leaves no wake for a new one: fall back to the raw push.
+		if jobID != "" {
+			delete(c.routed, jobID)
+		}
+		return false
 	}
 	c.pending++
 	if c.timer == nil {

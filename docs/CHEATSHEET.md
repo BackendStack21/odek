@@ -392,7 +392,7 @@ odek mcp --sandbox
 |------|-------------|
 | `math_eval` | Arithmetic via go/parser AST (`42*17+256/10 = 97`) |
 | `diff` | LCS structured line diff |
-| `json_query` | Dot-path query with array indexing (`users[0].name`) |
+| `json_query` | Dot-path query with array indexing (`users[0].name`, nested `matrix[0][1]`) |
 | `base64` | Encode files/strings, decode base64 |
 | `checksum` | SHA-256, SHA-1, MD5 hashing of one file |
 | `tree` | Structured directory tree listing |

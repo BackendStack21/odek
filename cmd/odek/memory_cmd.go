@@ -50,7 +50,7 @@ func memoryCmd(args []string) error {
 		for _, ep := range pending {
 			fmt.Printf("• %s  (%d turns, %s)\n", ep.SessionID, ep.Turns, ep.CreatedAt.Format("2006-01-02 15:04"))
 			if len(ep.Provenance.Sources) > 0 {
-				fmt.Printf("    sources: %s\n", strings.Join(ep.Provenance.Sources, ", "))
+				fmt.Printf("    sources: %s\n", danger.SanitizeInline(strings.Join(ep.Provenance.Sources, ", ")))
 			}
 			// Show the full stored text — what recall would replay — not
 			// the 120-character index cut, escaped for the terminal.
@@ -155,10 +155,14 @@ func extendedMemoryCmd(dir string, args []string) error {
 			return nil
 		}
 		fmt.Printf("%d atom(s) in quarantine (excluded from recall):\n\n", len(entries))
+		// This listing is the review step before promote and the atoms
+		// come from web/MCP/tool output: show the whole text (what recall
+		// would replay) with control, bidi and invisible characters escaped,
+		// so an escape sequence cannot erase or overwrite what is shown.
 		for _, e := range entries {
-			fmt.Printf("• %s [%s] %s\n", e.ID, e.SourceClass, truncate(e.Text, 120))
+			fmt.Printf("• %s [%s] %s\n", danger.SanitizeInline(e.ID), danger.SanitizeInline(e.SourceClass), danger.SanitizeInline(e.Text))
 			if e.Reason != "" {
-				fmt.Printf("  reason: %s\n", truncate(e.Reason, 120))
+				fmt.Printf("  reason: %s\n", danger.SanitizeInline(truncate(e.Reason, 120)))
 			}
 		}
 		fmt.Println("\nReview and restore with: odek memory extended promote <atom_id>")
@@ -238,7 +242,7 @@ func extendedMemoryCmd(dir string, args []string) error {
 		}
 		fmt.Println("Proactive nudges (preview — does not consume the daily cap):")
 		for _, n := range nudges {
-			fmt.Printf("• [%s] %s\n", n.Kind, n.Text)
+			fmt.Printf("• [%s] %s\n", danger.SanitizeInline(n.Kind), danger.SanitizeInline(n.Text))
 			if len(n.SourceAtomIDs) > 0 {
 				fmt.Printf("    atoms: %s\n", strings.Join(n.SourceAtomIDs, ", "))
 			}
@@ -258,7 +262,7 @@ func extendedMemoryCmd(dir string, args []string) error {
 		for _, p := range pending {
 			fmt.Printf("• %s | %s = %q (confidence %.2f)\n", p.ID, p.Field, truncate(p.Value, 120), p.Confidence)
 			if p.Evidence != "" {
-				fmt.Printf("  evidence: %s\n", truncate(p.Evidence, 120))
+				fmt.Printf("  evidence: %s\n", danger.SanitizeInline(truncate(p.Evidence, 120)))
 			}
 		}
 		fmt.Println("\nConfirm with: odek memory extended confirm <id>")

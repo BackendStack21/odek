@@ -302,7 +302,12 @@ type Client struct {
 	// permanently wedge serve/telegram instances that share one Client per
 	// server for the process lifetime). Enqueueing under ctx keeps every
 	// caller bounded by the per-server timeout.
-	writeCh   chan *queuedRequest
+	writeCh chan *queuedRequest
+	// replyCh carries replies to server-to-client requests (ping, ...) on
+	// a separate bounded queue. The writer always drains writeCh first, so
+	// a server flooding requests cannot delay odek's own calls; replies
+	// that do not fit are dropped.
+	replyCh   chan []byte
 	writeDone chan struct{} // closed when the writer goroutine exits
 	closed    chan struct{} // closed by Close to unblock an idle writer
 
@@ -328,7 +333,14 @@ type Client struct {
 	url   string
 	token string
 	httpc *http.Client
+	// sessionID is the Mcp-Session-Id the server assigned in its initialize
+	// response (empty when the server is stateless). Guarded by mu; sent on
+	// every later request and notification.
+	sessionID string
 }
+
+// serverReplyQueue bounds the queue of replies to server-to-client requests.
+const serverReplyQueue = 8
 
 // resultCharsFloorMargin is the room, in runes, a result cap must leave beyond
 // the truncation notice so a truncated result still carries some content.
@@ -500,6 +512,7 @@ func New(name string, cfg ServerConfig, opts ...Option) (_ *Client, setupErr err
 		lineCh:           make(chan lineResult, 10),
 		done:             make(chan struct{}),
 		writeCh:          make(chan *queuedRequest, 32),
+		replyCh:          make(chan []byte, serverReplyQueue),
 		writeDone:        make(chan struct{}),
 		closed:           make(chan struct{}),
 		pending:          make(map[int]chan callResponse),
@@ -672,12 +685,11 @@ func (c *Client) Discover(ctx context.Context) (_ []ToolDef, setupErr error) {
 	}
 
 	// Step 1b: MCP requires a notifications/initialized notice after the
-	// initialize response. Over HTTP this is best-effort: a lenient server
-	// that rejects notifications outright still works for requests, while
-	// a strict spec-compliant server requires it before tools/list.
-	if c.url != "" {
-		_ = c.httpNotify(ctx, "notifications/initialized")
-	}
+	// initialize response, before any other request, on every transport.
+	// It is best-effort: a lenient server that rejects notifications
+	// outright still works for requests, while a strict spec-compliant
+	// server requires it before tools/list.
+	_ = c.notify(ctx, "notifications/initialized")
 
 	// Step 2: List tools
 	raw, err := c.call(ctx, "tools/list", nil)
@@ -1021,6 +1033,86 @@ func (c *Client) call(ctx context.Context, method string, params json.RawMessage
 	}
 }
 
+// notify sends a JSON-RPC notification (no id, no response). On stdio it is
+// queued to the single writer, so it reaches the server before any request
+// queued after it.
+func (c *Client) notify(ctx context.Context, method string) error {
+	if c.url != "" {
+		return c.httpNotify(ctx, method)
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	timeout := c.timeout
+	if timeout <= 0 {
+		timeout = DefaultTimeout
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	payload, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "method": method})
+	if err != nil {
+		return fmt.Errorf("marshal notification: %w", err)
+	}
+	// The writer checks the request ctx only when it dequeues; a
+	// notification must not be dropped because this function returned and
+	// cancelled its enqueue deadline, so the queued item carries a
+	// background context.
+	queued := &queuedRequest{ctx: context.Background(), data: append(payload, '\n')}
+	select {
+	case c.writeCh <- queued:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-c.closed:
+		return fmt.Errorf("connection closed before dispatch")
+	}
+}
+
+// serverRequestReply builds the JSON-RPC reply line for a server-to-client
+// request: an empty result for ping, method-not-found for any other method.
+// It returns nil for a notification (missing or null id) and for an id that
+// is neither a string nor a number, which JSON-RPC does not allow. The id is
+// raw JSON from an already-decoded frame and is echoed verbatim.
+func serverRequestReply(id json.RawMessage, method string) []byte {
+	id = bytes.TrimSpace(id)
+	if len(id) == 0 {
+		return nil
+	}
+	switch c := id[0]; {
+	case c == '"', c == '-', c >= '0' && c <= '9':
+	default:
+		return nil // null, object, array, or boolean id
+	}
+	msg := struct {
+		JSONRPC string          `json:"jsonrpc"`
+		ID      json.RawMessage `json:"id"`
+		Result  *struct{}       `json:"result,omitempty"`
+		Error   *rpcError       `json:"error,omitempty"`
+	}{JSONRPC: "2.0", ID: id}
+	if method == "ping" {
+		msg.Result = &struct{}{}
+	} else {
+		msg.Error = &rpcError{Code: -32601, Message: "Method not found"}
+	}
+	b, err := json.Marshal(msg)
+	if err != nil {
+		return nil
+	}
+	return append(b, '\n')
+}
+
+// sendServerReply queues a reply to a server request without blocking the
+// read loop, on the bounded reply queue (never the client request queue):
+// when it is full the reply is dropped, so a server flooding requests can
+// neither wedge response routing nor crowd out odek's own calls.
+func (c *Client) sendServerReply(reply []byte) {
+	select {
+	case c.replyCh <- reply:
+	case <-c.closed:
+	default:
+	}
+}
+
 // writeLoop is the single writer goroutine owning c.stdin. It keeps write
 // ordering (one syscall per request) while ensuring no caller can block on
 // a full pipe — callers enqueue under their own ctx deadline instead (see
@@ -1029,34 +1121,67 @@ func (c *Client) call(ctx context.Context, method string, params json.RawMessage
 // pending waiters unblock ("connection closed before response received").
 // Senders that are still blocked on a full channel unblock via their own
 // ctx deadline or the sticky writeErr fast path in call().
+//
+// Client requests always go out before queued replies to server requests
+// (replyCh): a server flooding pings cannot delay odek's own calls.
 func (c *Client) writeLoop() {
 	defer close(c.writeDone)
 	for {
+		// Priority pass: a queued client request is written first.
 		select {
 		case req := <-c.writeCh:
-			select {
-			case <-c.closed:
+			if !c.writeRequest(req) {
 				return
-			default:
 			}
-			if !req.begin() {
-				continue
+			continue
+		case <-c.closed:
+			return
+		default:
+		}
+		select {
+		case req := <-c.writeCh:
+			if !c.writeRequest(req) {
+				return
 			}
-			if _, err := c.stdin.Write(req.data); err != nil {
-				c.mu.Lock()
-				if c.writeErr == nil {
-					c.writeErr = err
-				}
-				c.mu.Unlock()
-				// EOF to the server → readLoop exits → pending waiters
-				// unblock. A second Close error is irrelevant here.
-				c.stdin.Close()
+		case reply := <-c.replyCh:
+			if !c.writeLine(reply) {
 				return
 			}
 		case <-c.closed:
 			return
 		}
 	}
+}
+
+// writeRequest writes one queued client request unless it was cancelled
+// before dispatch. It reports false when the writer must stop.
+func (c *Client) writeRequest(req *queuedRequest) bool {
+	select {
+	case <-c.closed:
+		return false
+	default:
+	}
+	if !req.begin() {
+		return true
+	}
+	return c.writeLine(req.data)
+}
+
+// writeLine writes data to the server's stdin. On error it records the
+// sticky failure, closes stdin and reports false.
+func (c *Client) writeLine(data []byte) bool {
+	if _, err := c.stdin.Write(data); err != nil {
+		c.mu.Lock()
+		if c.writeErr == nil {
+			c.writeErr = err
+		}
+		c.mu.Unlock()
+		// EOF to the server → readLoop exits → pending waiters
+		// unblock. A second Close error is irrelevant here.
+		c.stdin.Close()
+		return false
+	}
+	return true
 }
 
 // readLoop is a single reader goroutine that reads lines from stdout and
@@ -1088,7 +1213,13 @@ func (c *Client) readLoop() {
 		// notification (JSON-RPC 2.0), never a response to one of our calls.
 		// Routing it by id would deliver {result:null} to a waiting caller
 		// whose id collides — and drop the real response when it arrives.
+		// A request (it carries an id) is answered: ping with an empty
+		// result, anything else with method-not-found, so a server waiting
+		// on the reply is never stalled. Notifications get no reply.
 		if resp.Method != "" {
+			if reply := serverRequestReply(resp.ID, resp.Method); reply != nil {
+				c.sendServerReply(reply)
+			}
 			continue
 		}
 		// A missing or null id (e.g. a JSON-RPC parse-error reply) answers no

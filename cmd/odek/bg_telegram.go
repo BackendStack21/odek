@@ -18,9 +18,43 @@ import (
 // chats and wake-disabled setups keep the legacy push. BGStarted is
 // deliberately silent: the chat already saw the request.
 type bgChatNotifier struct {
-	chatID int64
-	bot    *telegram.Bot
-	wake   *tgWakeController
+	chatID    int64
+	bot       *telegram.Bot
+	wake      *tgWakeController
+	announced *bgExitAnnouncer // shared with the chat's exit watcher; nil = no dedup
+}
+
+// bgExitAnnouncer is the single dedup point for a chat runtime's job-exit
+// announcements. The exit observer (BGExited) and the polling watcher
+// (watchBGNotices) both report exits; whichever claims a job first owns its
+// announcement, so each exit reaches the chat at most once. A nil announcer
+// claims everything.
+type bgExitAnnouncer struct {
+	mu   sync.Mutex
+	seen map[string]bool
+}
+
+func newBGExitAnnouncer() *bgExitAnnouncer {
+	return &bgExitAnnouncer{seen: map[string]bool{}}
+}
+
+// claim reports whether the caller is the first to announce jobID.
+func (a *bgExitAnnouncer) claim(jobID string) bool {
+	if a == nil || jobID == "" {
+		return true
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.seen[jobID] {
+		return false
+	}
+	// Bounded: job ids are unique per runtime, so a reset only forgets
+	// long-since-announced exits.
+	if len(a.seen) >= 4096 {
+		a.seen = map[string]bool{}
+	}
+	a.seen[jobID] = true
+	return true
 }
 
 func (n *bgChatNotifier) BGStarted(j bgproc.Job) {}
@@ -31,6 +65,10 @@ func (n *bgChatNotifier) BGExited(ex bgproc.Notice) {
 	}
 	text := formatOneNotice(ex)
 	if text == "" {
+		return
+	}
+	// The watcher may have announced this exit already (it polls job state).
+	if !n.announced.claim(ex.JobID) {
 		return
 	}
 	// Wake path: idle chat + wake enabled + under the spend cap → dispatch
@@ -51,6 +89,10 @@ func (n *bgChatNotifier) BGExited(ex bgproc.Notice) {
 var bgChatRuntimes sync.Map // chatID int64 -> *bgRuntime
 
 var bgWatchers sync.Map // chatID int64 -> bool (watcher running)
+
+// bgChatAnnouncers holds each chat runtime's exit announcer, shared by the
+// runtime's exit observer and the chat's watcher.
+var bgChatAnnouncers sync.Map // chatID int64 -> *bgExitAnnouncer
 
 // wakeControllers tracks the per-chat wake controller so /new and shutdown
 // can stop pending coalesce timers.
@@ -81,11 +123,13 @@ func bgRuntimeForChat(chatID int64, resolved config.ResolvedConfig, sessID strin
 			resolved.Background.MaxWakesPerHour, 2*time.Second, wakeDispatch)
 		wakeControllers.Store(chatID, wake)
 	}
+	announced := newBGExitAnnouncer()
 	rt := newBackgroundRuntime(backgroundSettingsFromResolved(resolved), sessID, "", nil, nil,
-		&bgChatNotifier{chatID: chatID, bot: bot, wake: wake})
+		&bgChatNotifier{chatID: chatID, bot: bot, wake: wake, announced: announced})
 	if rt == nil {
 		return nil
 	}
+	bgChatAnnouncers.Store(chatID, announced)
 	bgChatRuntimes.Store(chatID, rt)
 	ensureBGWatcher(chatID, rt, bot)
 	return rt
@@ -111,6 +155,7 @@ func dropBGRuntimeForChat(chatID int64) {
 		cached.(*bgRuntime).Shutdown()
 	}
 	bgWatchers.Delete(chatID)
+	bgChatAnnouncers.Delete(chatID)
 	stopWakeControllerForChat(chatID)
 }
 
@@ -125,7 +170,11 @@ func ensureBGWatcher(chatID int64, rt *bgRuntime, bot *telegram.Bot) {
 	}
 	go func() {
 		defer bgWatchers.Delete(chatID)
-		watchBGNotices(chatID, rt, bot, wakeControllerForChat(chatID))
+		var announced *bgExitAnnouncer
+		if a, ok := bgChatAnnouncers.Load(chatID); ok {
+			announced = a.(*bgExitAnnouncer)
+		}
+		watchBGNotices(chatID, rt, bot, wakeControllerForChat(chatID), announced)
 	}()
 }
 
@@ -141,24 +190,30 @@ func wakeControllerForChat(chatID int64) *tgWakeController {
 // so the user hears about completions between messages. The agent still gets
 // the full observe-phase notice from its own drain — this watcher never
 // touches the agent's notice queue. It stops after ~30s with nothing running.
-func watchBGNotices(chatID int64, rt *bgRuntime, bot *telegram.Bot, wake *tgWakeController) {
+func watchBGNotices(chatID int64, rt *bgRuntime, bot *telegram.Bot, wake *tgWakeController, announced *bgExitAnnouncer) {
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
-	// Snapshot the exit states the watcher has already announced so a job is
-	// pushed exactly once (the queue belongs to the agent; this polls state).
-	announced := map[string]bool{}
+	// Snapshot the exit states the watcher has already inspected so a job is
+	// considered once (the queue belongs to the agent; this polls state).
+	// Whether it is pushed is decided by the shared announcer, which the
+	// runtime's exit observer also claims from.
+	inspected := map[string]bool{}
 	idle := 0
 	for range ticker.C {
 		pushed := false
 		for _, j := range rt.mgr.List(rt.session) {
-			if j.Status == bgproc.StatusRunning || announced[j.ID] {
+			if j.Status == bgproc.StatusRunning || inspected[j.ID] {
 				continue
 			}
-			announced[j.ID] = true
+			inspected[j.ID] = true
 			// Jobs routed to a wake turn are covered: the wake turn's
 			// notice drain delivers the facts to the model and the wake
 			// reply reaches the chat — a raw line here would duplicate it.
 			if wake != nil && wake.wakeRouted(j.ID) {
+				continue
+			}
+			// The exit observer usually announced it already.
+			if !announced.claim(j.ID) {
 				continue
 			}
 			end := j.EndedAt

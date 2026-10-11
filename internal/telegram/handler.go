@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"unicode"
+	"unicode/utf8"
 )
 
 // utf16Len returns the number of UTF-16 code units in s, which is what
@@ -344,8 +346,7 @@ func (h *Handler) handleCommand(msg *Message, userID int64) {
 	// Check if command was targeted at a specific bot via @username.
 	// Only respond if the username matches our BotUsername.
 	if h.Config.BotUsername != "" {
-		parts := strings.SplitN(msg.Text, " ", 2)
-		cmdPart := parts[0]
+		cmdPart, _ := SplitCommandToken(strings.TrimSpace(msg.Text))
 		if atIdx := strings.Index(cmdPart, "@"); atIdx >= 0 {
 			mentioned := cmdPart[atIdx+1:]
 			if mentioned != "" && !strings.EqualFold(mentioned, h.Config.BotUsername) {
@@ -391,9 +392,22 @@ func (h *Handler) handleCallback(cq *CallbackQuery) {
 	}
 
 	// Route approval callbacks to the per-chat TelegramApprover.
-	if a := h.GetApprover(cq.Message.Chat.ID); a != nil && a.HandleCallback(cq.Data, userID) {
-		// Show a toast acknowledging the user's choice.
-		ack := approvalToast(cq.Data)
+	outcome := callbackNotApproval
+	if a := h.GetApprover(cq.Message.Chat.ID); a != nil {
+		outcome = a.resolveCallback(cq.Data, userID)
+	}
+	if outcome != callbackNotApproval {
+		// Acknowledge what actually happened: the chosen action only when
+		// the press was delivered to the waiting request.
+		var ack string
+		switch outcome {
+		case callbackAccepted:
+			ack = approvalToast(cq.Data)
+		case callbackWrongUser:
+			ack = "⛔ Not applied: only the user who started this operation can answer"
+		default:
+			ack = "⌛ Not applied: this request is no longer pending"
+		}
 		if err := h.Bot.AnswerCallbackQuery(cq.ID, ack, false); err != nil {
 			h.log.Error("answer callback query (approval) failed", "chat_id", cq.Message.Chat.ID, "error", err)
 			if h.OnError != nil {
@@ -656,8 +670,7 @@ func extractCommand(text string) (cmd string, args string) {
 	}
 
 	// Split into command token and the rest.
-	parts := strings.SplitN(text, " ", 2)
-	cmdPart := parts[0]
+	cmdPart, args := SplitCommandToken(text)
 
 	// Strip the leading "/".
 	cmdPart = cmdPart[1:]
@@ -667,12 +680,20 @@ func extractCommand(text string) (cmd string, args string) {
 		cmdPart = cmdPart[:atIdx]
 	}
 
-	args = ""
-	if len(parts) > 1 {
-		args = parts[1]
-	}
-
 	return cmdPart, args
+}
+
+// SplitCommandToken splits text at its first whitespace character (space,
+// newline, tab, …) into the leading token and the remainder after that
+// separator. A command typed on its own line ("/plan\nAdd login") or
+// followed by a tab is therefore separated from its arguments.
+func SplitCommandToken(text string) (token, rest string) {
+	idx := strings.IndexFunc(text, unicode.IsSpace)
+	if idx < 0 {
+		return text, ""
+	}
+	_, size := utf8.DecodeRuneInString(text[idx:])
+	return text[:idx], text[idx+size:]
 }
 
 // approvalToast returns a toast message for an approval callback action.

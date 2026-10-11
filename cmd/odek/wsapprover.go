@@ -103,6 +103,10 @@ type wsApprover struct {
 	// the active channel via cancelChan.
 	cancelMu sync.Mutex
 	cancel   chan struct{}
+	// closed is set by Close for a one-shot owner (a headless REST run)
+	// that will never answer another prompt: the current generation is
+	// closed and not re-armed, and every later prompt fails immediately.
+	closed bool
 
 	// Approval-fatigue mitigation. Parallel to the TTYApprover policy.
 	frictionThreshold int
@@ -128,6 +132,13 @@ func newWSApprover(sendFn func(v any) error) *wsApprover {
 		approvalLog:       make(map[danger.RiskClass][]time.Time),
 		approvalTimeout:   60 * time.Second,
 	}
+}
+
+// isClosed reports whether Close was called.
+func (a *wsApprover) isClosed() bool {
+	a.cancelMu.Lock()
+	defer a.cancelMu.Unlock()
+	return a.closed
 }
 
 // cancelChan returns the channel closed by the current Cancel generation.
@@ -180,6 +191,12 @@ func (a *wsApprover) shouldFriction(cls danger.RiskClass) (bool, int) {
 }
 
 func (a *wsApprover) PromptCommand(cls danger.RiskClass, cmd, description string) error {
+	// A closed approver belongs to a run that already ended: nobody can
+	// answer, so deny at once (even trusted classes) instead of waiting
+	// out the approval timeout on a request no client can see.
+	if a.isClosed() {
+		return fmt.Errorf("approval cancelled: %s", danger.SanitizeInline(cmd))
+	}
 	// Read the trust caches under the lock: PromptCommand runs concurrently
 	// across parallel tool calls, while HandleResponse's "trust" path and
 	// SetTrustAll write these same fields. An unsynchronised read here against
@@ -373,6 +390,9 @@ func (a *wsApprover) newPrefixedID(prefix string) string {
 // session and blocks until the user answers, the wait expires, or the run
 // is cancelled. A failed send returns immediately so the loop can continue.
 func (a *wsApprover) PromptClarify(question string) (string, error) {
+	if a.isClosed() {
+		return "", fmt.Errorf("cancelled")
+	}
 	id := a.newClarifyID()
 	decision := session.Decision{ID: id, Kind: "question", Command: question, State: "interrupted"}
 	defer func() { a.recordDecision(decision) }()
@@ -466,8 +486,32 @@ func (a *wsApprover) HandleClarifyResponse(id, answer string) bool {
 // call multiple times, including concurrently.
 func (a *wsApprover) Cancel() {
 	a.cancelMu.Lock()
+	if a.closed {
+		a.cancelMu.Unlock()
+		return
+	}
 	ch := a.cancel
 	a.cancel = make(chan struct{})
+	a.cancelMu.Unlock()
+	if ch != nil {
+		close(ch)
+	}
+}
+
+// Close interrupts any pending prompt like Cancel but does not re-arm:
+// every later PromptCommand or PromptClarify fails immediately. Used when
+// the approver's owner is finished for good (a cancelled headless run),
+// where a fresh generation would let a late prompt from the draining loop
+// block for the full approval timeout with nobody able to answer it. Safe
+// to call multiple times and together with Cancel.
+func (a *wsApprover) Close() {
+	a.cancelMu.Lock()
+	if a.closed {
+		a.cancelMu.Unlock()
+		return
+	}
+	a.closed = true
+	ch := a.cancel
 	a.cancelMu.Unlock()
 	if ch != nil {
 		close(ch)

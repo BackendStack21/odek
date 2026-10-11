@@ -80,8 +80,11 @@ func (l *localGuard) DetectLong(ctx context.Context, text string) (Result, error
 func (l *localGuard) Close() error { return nil }
 
 var (
-	reSKKey       = regexp.MustCompile(`\bsk-[a-zA-Z0-9_-]{20,}\b`)
-	rePrivateKey  = regexp.MustCompile(`-----BEGIN\s+(?:RSA|DSA|EC|OPENSSH|PGP)\s+PRIVATE\s+KEY`)
+	reSKKey = regexp.MustCompile(`\bsk-[a-zA-Z0-9_-]{20,}\b`)
+	// rePrivateKey matches algorithm-labelled PEM headers, the unlabelled
+	// PKCS#8 header (openssl genpkey, x509.MarshalPKCS8PrivateKey, GCP
+	// service-account JSON) and its ENCRYPTED variant.
+	rePrivateKey  = regexp.MustCompile(`-----BEGIN\s+(?:(?:RSA|DSA|EC|ED25519|OPENSSH|PGP|ENCRYPTED)\s+)?PRIVATE\s+KEY`)
 	reBearerToken = regexp.MustCompile(`(?i)\bbearer\s+[a-zA-Z0-9._-]{20,}\b`)
 )
 

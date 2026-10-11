@@ -352,6 +352,23 @@ func (a *TelegramApprover) PromptMedia(path string) error {
 // was handled (was an approval callback), false if it should fall through to
 // OnCallbackQuery.
 func (a *TelegramApprover) HandleCallback(data string, userID int64) bool {
+	return a.resolveCallback(data, userID) != callbackNotApproval
+}
+
+// callbackOutcome is what happened to an approval-button press.
+type callbackOutcome int
+
+const (
+	callbackNotApproval callbackOutcome = iota // not an approval callback
+	callbackAccepted                           // delivered to the waiting request
+	callbackWrongUser                          // pressed by someone who may not answer
+	callbackStale                              // request no longer pending, or already answered
+)
+
+// resolveCallback is HandleCallback with the outcome kept, so the caller can
+// acknowledge a rejected or stale press truthfully instead of with the
+// toast for the chosen action.
+func (a *TelegramApprover) resolveCallback(data string, userID int64) callbackOutcome {
 	// Parse callback data: "apr:<id>", "den:<id>", "trs:<id>"
 	var action string
 	var id string
@@ -367,7 +384,7 @@ func (a *TelegramApprover) HandleCallback(data string, userID int64) bool {
 		action = "trust"
 		id = strings.TrimPrefix(data, cbPrefixTrust)
 	default:
-		return false // not an approval callback
+		return callbackNotApproval
 	}
 
 	a.mu.Lock()
@@ -375,28 +392,29 @@ func (a *TelegramApprover) HandleCallback(data string, userID int64) bool {
 	requireUser := a.requireUser
 	a.mu.Unlock()
 
-	if ok {
-		// Reject callbacks from users other than the one who initiated the
-		// operation, unless no originating user was recorded (userID == 0)
-		// and the approver does not require one.
-		if pr.userID == 0 && requireUser {
-			return true
-		}
-		if pr.userID != 0 && pr.userID != userID {
-			return true
-		}
-		// Non-blocking send: the buffered channel has a single-shot reader.
-		// A duplicate callback (double-tap, Telegram retry) arriving after
-		// the reader consumed the action must not block HandleCallback —
-		// it runs on the serialized update loop, so a blocking send would
-		// freeze the whole bot for every chat.
-		select {
-		case pr.resp <- action:
-		default:
-		}
+	if !ok {
+		return callbackStale
 	}
-
-	return true
+	// Reject callbacks from users other than the one who initiated the
+	// operation, unless no originating user was recorded (userID == 0)
+	// and the approver does not require one.
+	if pr.userID == 0 && requireUser {
+		return callbackWrongUser
+	}
+	if pr.userID != 0 && pr.userID != userID {
+		return callbackWrongUser
+	}
+	// Non-blocking send: the buffered channel has a single-shot reader.
+	// A duplicate callback (double-tap, Telegram retry) arriving after
+	// the reader consumed the action must not block HandleCallback —
+	// it runs on the serialized update loop, so a blocking send would
+	// freeze the whole bot for every chat.
+	select {
+	case pr.resp <- action:
+		return callbackAccepted
+	default:
+		return callbackStale
+	}
 }
 
 // telegramMaxMsgLen is Telegram's hard per-message character limit. The

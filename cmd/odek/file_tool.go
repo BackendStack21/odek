@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -80,9 +81,16 @@ func confinedGlob(root, pattern string, limit int, includeDirs bool) ([]string, 
 	if err != nil {
 		return nil, fmt.Errorf("resolve root: %w", err)
 	}
-	// Ensure absRoot ends with a separator so strings.HasPrefix cannot be
+	// A root that is itself a symlink to a directory (macOS /tmp, a user's
+	// linked project dir) is walked at its target; matches are reported
+	// under the root as given. Symlinks below the root are still skipped.
+	walkRoot := absRoot
+	if target, ok := fileToolSymlinkDirRoot(absRoot); ok {
+		walkRoot = target
+	}
+	// Ensure walkRoot ends with a separator so strings.HasPrefix cannot be
 	// tricked by a sibling directory with a matching prefix.
-	rootPrefix := absRoot + string(filepath.Separator)
+	rootPrefix := walkRoot + string(filepath.Separator)
 
 	// Build the matcher based on pattern syntax.
 	var matcher func(rel string, isDir bool) bool
@@ -108,12 +116,12 @@ func confinedGlob(root, pattern string, limit int, includeDirs bool) ([]string, 
 	}
 
 	var matches []string
-	walkErr := filepath.WalkDir(absRoot, func(path string, d fs.DirEntry, err error) error {
+	walkErr := filepath.WalkDir(walkRoot, func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d == nil {
 			return nil
 		}
 		// Skip the root itself.
-		if path == absRoot {
+		if path == walkRoot {
 			return nil
 		}
 		// Skip every symlink, including symlinked directories. WalkDir uses
@@ -138,15 +146,15 @@ func confinedGlob(root, pattern string, limit int, includeDirs bool) ([]string, 
 		if err != nil {
 			return nil
 		}
-		if absPath != absRoot && !strings.HasPrefix(absPath, rootPrefix) {
+		if absPath != walkRoot && !strings.HasPrefix(absPath, rootPrefix) {
 			return nil
 		}
-		rel, err := filepath.Rel(absRoot, absPath)
+		rel, err := filepath.Rel(walkRoot, absPath)
 		if err != nil {
 			return nil
 		}
 		if matcher(rel, d.IsDir()) {
-			matches = append(matches, absPath)
+			matches = append(matches, filepath.Join(absRoot, rel))
 			if len(matches) >= maxGlobWalkMatches {
 				// Memory bound only — the caller-visible limit is applied
 				// after the newest-first sort below.
@@ -165,6 +173,28 @@ func confinedGlob(root, pattern string, limit int, includeDirs bool) ([]string, 
 		matches = matches[:limit]
 	}
 	return matches, nil
+}
+
+// fileToolSymlinkDirRoot reports the resolved target when root itself is a
+// symlink to a directory. Walkers Lstat their root, so without this such a
+// root is never descended and the search silently finds nothing.
+func fileToolSymlinkDirRoot(root string) (string, bool) {
+	li, err := os.Lstat(root)
+	if err != nil || li.Mode()&os.ModeSymlink == 0 {
+		return "", false
+	}
+	si, err := os.Stat(root)
+	if err != nil || !si.IsDir() {
+		return "", false
+	}
+	target, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return "", false
+	}
+	if abs, err := filepath.Abs(target); err == nil {
+		target = abs
+	}
+	return target, true
 }
 
 // globToRegex converts a glob pattern with ** to a regex. A trailing
@@ -194,7 +224,19 @@ func globToRegex(pattern string) (*regexp.Regexp, error) {
 			reStr.WriteString("[^/]*")
 		case ch == '?':
 			reStr.WriteString("[^/]")
-		case ch == '.' || ch == '+' || ch == '^' || ch == '$' || ch == '|' || ch == '(' || ch == ')' || ch == '[' || ch == ']' || ch == '{' || ch == '}' || ch == '\\':
+		case ch == '[':
+			class, next, err := globClassToRegex(pattern, i)
+			if err != nil {
+				return nil, err
+			}
+			reStr.WriteString(class)
+			i = next - 1
+		case ch == '\\' && i+1 < len(pattern):
+			// Backslash escapes the next character, as in filepath.Match.
+			r, size := utf8.DecodeRuneInString(pattern[i+1:])
+			reStr.WriteString(regexp.QuoteMeta(string(r)))
+			i += size
+		case ch == '.' || ch == '+' || ch == '^' || ch == '$' || ch == '|' || ch == '(' || ch == ')' || ch == ']' || ch == '{' || ch == '}' || ch == '\\':
 			reStr.WriteByte('\\')
 			reStr.WriteByte(ch)
 		default:
@@ -203,6 +245,99 @@ func globToRegex(pattern string) (*regexp.Regexp, error) {
 	}
 	reStr.WriteString("$")
 	return regexp.Compile(reStr.String())
+}
+
+// globClassToRegex translates the filepath.Match character class starting
+// at pattern[start] ('[') into a regex class and returns the index just past
+// its closing ']'. Syntax follows filepath.Match: optional leading '^' for
+// negation, 'lo-hi' ranges, '\' escapes. Like '*' and '?', a class never
+// matches the path separator. A malformed class is an error.
+func globClassToRegex(pattern string, start int) (string, int, error) {
+	i := start + 1
+	negated := false
+	if i < len(pattern) && pattern[i] == '^' {
+		negated = true
+		i++
+	}
+	readChar := func() (rune, error) {
+		if i >= len(pattern) {
+			return 0, fmt.Errorf("unterminated character class")
+		}
+		if pattern[i] == '-' || pattern[i] == ']' {
+			return 0, fmt.Errorf("malformed character class")
+		}
+		if pattern[i] == '\\' {
+			i++
+			if i >= len(pattern) {
+				return 0, fmt.Errorf("unterminated character class")
+			}
+		}
+		r, size := utf8.DecodeRuneInString(pattern[i:])
+		i += size
+		return r, nil
+	}
+	type runeRange struct{ lo, hi rune }
+	var ranges []runeRange
+	for {
+		if i >= len(pattern) {
+			return "", 0, fmt.Errorf("unterminated character class")
+		}
+		if pattern[i] == ']' && len(ranges) > 0 {
+			i++
+			break
+		}
+		lo, err := readChar()
+		if err != nil {
+			return "", 0, err
+		}
+		hi := lo
+		if i < len(pattern) && pattern[i] == '-' {
+			i++
+			if hi, err = readChar(); err != nil {
+				return "", 0, err
+			}
+			if hi < lo {
+				return "", 0, fmt.Errorf("malformed character class range")
+			}
+		}
+		ranges = append(ranges, runeRange{lo, hi})
+	}
+
+	var sb strings.Builder
+	sb.WriteByte('[')
+	if negated {
+		sb.WriteString(`^/`)
+	}
+	members := 0
+	writeRange := func(lo, hi rune) {
+		if lo > hi {
+			return
+		}
+		members++
+		fmt.Fprintf(&sb, `\x{%x}`, lo)
+		if hi != lo {
+			fmt.Fprintf(&sb, `-\x{%x}`, hi)
+		}
+	}
+	for _, r := range ranges {
+		if negated {
+			writeRange(r.lo, r.hi)
+			continue
+		}
+		// Carve the separator out of a positive class.
+		if r.lo <= '/' && '/' <= r.hi {
+			writeRange(r.lo, '/'-1)
+			writeRange('/'+1, r.hi)
+			continue
+		}
+		writeRange(r.lo, r.hi)
+	}
+	sb.WriteByte(']')
+	if !negated && members == 0 {
+		// A class that could only match the separator matches nothing.
+		return `[^\x00-\x{10FFFF}]`, i, nil
+	}
+	return sb.String(), i, nil
 }
 
 type readFileTool struct {
@@ -716,9 +851,26 @@ func (t *searchFilesTool) searchContent(args searchFilesArgs) (string, error) {
 	// scanner still grows it up to the 1 MiB line cap on demand.
 	scanBuf := make([]byte, 64*1024)
 
-	err = filepath.Walk(args.Path, func(path string, info os.FileInfo, err error) error {
+	// A root that is itself a symlink to a directory is walked at its
+	// target, with discovered paths reported under the root as given.
+	walkRoot := args.Path
+	if target, ok := fileToolSymlinkDirRoot(args.Path); ok {
+		walkRoot = target
+	}
+	err = filepath.Walk(walkRoot, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return nil // skip inaccessible files
+		}
+		if walkRoot != args.Path {
+			rel, relErr := filepath.Rel(walkRoot, path)
+			if relErr != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+				return nil
+			}
+			if rel == "." {
+				path = args.Path
+			} else {
+				path = filepath.Join(args.Path, rel)
+			}
 		}
 		if info.IsDir() {
 			// The explicit search root is never skipped for its own name:
@@ -1023,6 +1175,17 @@ func (t *patchTool) Call(argsJSON string) (string, error) {
 	}
 	original := string(originalBytes)
 
+	// read_file and search_files show CRLF lines without their '\r', so a
+	// multi-line old_string built from them uses bare '\n'. When such a
+	// string is not found verbatim in a CRLF file, match it (and write the
+	// replacement) with CRLF line endings instead.
+	if !strings.Contains(original, args.OldString) && strings.Contains(original, "\r\n") {
+		if crlfOld := patchToCRLF(args.OldString); crlfOld != args.OldString && strings.Contains(original, crlfOld) {
+			args.OldString = crlfOld
+			args.NewString = patchToCRLF(args.NewString)
+		}
+	}
+
 	// Check that old_string exists
 	if !strings.Contains(original, args.OldString) {
 		return jsonError(fmt.Sprintf("old_string not found in %q. Use search_files to find the correct string.", args.Path))
@@ -1051,12 +1214,7 @@ func (t *patchTool) Call(argsJSON string) (string, error) {
 		modified = strings.Replace(original, args.OldString, args.NewString, 1)
 	}
 
-	// Generate a simple diff
-	diff := fmt.Sprintf("--- a/%s\n+++ b/%s\n@@ -1 +1 @@\n-%s\n+%s\n",
-		args.Path, args.Path,
-		truncateDiff(original, 100),
-		truncateDiff(modified, 100),
-	)
+	diff := patchUnifiedDiff(args.Path, original, modified)
 
 	// When sandbox mode is active, route the write through the container so a
 	// read-only workspace mount is actually enforced.
@@ -1497,6 +1655,95 @@ func isProtectedOdekPath(rel string) bool {
 		}
 	}
 	return false
+}
+
+// patchToCRLF turns every bare '\n' in s into "\r\n", leaving existing
+// "\r\n" pairs alone.
+func patchToCRLF(s string) string {
+	if !strings.Contains(s, "\n") {
+		return s
+	}
+	return strings.ReplaceAll(strings.ReplaceAll(s, "\r\n", "\n"), "\n", "\r\n")
+}
+
+// Bounds for the patch result diff: lines of context around the edited
+// region, lines shown per side, and characters shown per line.
+const (
+	patchDiffContext   = 1
+	patchDiffMaxLines  = 40
+	patchDiffLineChars = 200
+)
+
+// patchUnifiedDiff renders one unified-diff hunk covering the region where
+// original and modified differ (the span between their common leading and
+// trailing lines), with real line numbers. Output is bounded: at most
+// patchDiffMaxLines lines per side, each cut to patchDiffLineChars.
+func patchUnifiedDiff(path, original, modified string) string {
+	a := patchDiffLines(original)
+	b := patchDiffLines(modified)
+
+	prefix := 0
+	for prefix < len(a) && prefix < len(b) && a[prefix] == b[prefix] {
+		prefix++
+	}
+	suffix := 0
+	for suffix < len(a)-prefix && suffix < len(b)-prefix && a[len(a)-1-suffix] == b[len(b)-1-suffix] {
+		suffix++
+	}
+
+	start := prefix - patchDiffContext
+	if start < 0 {
+		start = 0
+	}
+	trail := suffix
+	if trail > patchDiffContext {
+		trail = patchDiffContext
+	}
+	endA := len(a) - suffix + trail
+	endB := len(b) - suffix + trail
+
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "--- a/%s\n+++ b/%s\n@@ -%s +%s @@\n", path, path,
+		patchHunkRange(start, endA-start), patchHunkRange(start, endB-start))
+
+	writeLines := func(lines []string, mark byte) {
+		for i, line := range lines {
+			if i == patchDiffMaxLines {
+				fmt.Fprintf(&sb, "%c... (%d more lines)\n", mark, len(lines)-i)
+				return
+			}
+			sb.WriteByte(mark)
+			sb.WriteString(truncateDiff(line, patchDiffLineChars))
+			sb.WriteByte('\n')
+		}
+	}
+	writeLines(a[start:prefix], ' ')
+	writeLines(a[prefix:len(a)-suffix], '-')
+	writeLines(b[prefix:len(b)-suffix], '+')
+	writeLines(a[len(a)-suffix:endA], ' ')
+	return sb.String()
+}
+
+// patchDiffLines splits text into lines; a final newline terminates the
+// last line rather than starting an empty one.
+func patchDiffLines(s string) []string {
+	if s == "" {
+		return nil
+	}
+	return strings.Split(strings.TrimSuffix(s, "\n"), "\n")
+}
+
+// patchHunkRange formats a unified-diff range from a 0-based start and a
+// line count ("3" for one line, "2,4" otherwise, "1,0" for an empty side
+// that follows line 1).
+func patchHunkRange(start, count int) string {
+	if count == 1 {
+		return strconv.Itoa(start + 1)
+	}
+	if count == 0 {
+		return strconv.Itoa(start) + ",0"
+	}
+	return strconv.Itoa(start+1) + "," + strconv.Itoa(count)
 }
 
 func truncateDiff(s string, maxLen int) string {

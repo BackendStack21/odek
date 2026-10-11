@@ -183,6 +183,11 @@ func networkTransferEffects(name string, inner []string, feed stdinFeed) []RiskC
 		v = rcloneTransfer(args)
 	case "gh":
 		v = ghTransfer(args, stdin)
+	case "git":
+		// send-email mails local files (patches or anything else) and
+		// imap-send stores an mbox read from stdin on a remote server.
+		sub, _ := gitSubcommandAndArgs(inner)
+		v.upload = sub == "send-email" || sub == "imap-send"
 	case "aws", "gsutil", "gcloud", "az":
 		v.upload = cloudUploadForm(name, args)
 	case "dig", "nslookup", "host", "drill", "ping", "ping6", "traceroute", "traceroute6":

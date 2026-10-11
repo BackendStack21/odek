@@ -113,8 +113,8 @@ Non-HTTPS, non-loopback, or non-Telegram URLs are rejected to prevent the bot to
 `SetDailyTokenBudget` and `CheckDailyBudget` implement a simple daily token usage tracker:
 - Usage is persisted to `~/.odek/telegram_token_usage_<YYYY-MM-DD>`
 - Budget resets automatically each calendar day
-- **Pre-flight check**: before each agent run, a lightweight check verifies the budget isn't already exhausted, avoiding wasted API calls
-- **Post-run billing**: after each agent run, actual token usage (`input + output`) is deducted from the daily budget
+- **Pre-flight check**: before each agent run (chat turns and scheduled jobs), a read-only check refuses the run when the recorded usage has reached the budget, avoiding wasted API calls
+- **Post-run billing**: after each agent run, actual token usage (`input + output`) is deducted from the daily budget — also for failed or cancelled chat turns and scheduled jobs that return an error, since those tokens were spent too. The usage is recorded even when it pushes the total past the budget, so the overshooting run exhausts the budget and later runs are refused
 - Returns a warning message to the chat if the budget is exceeded, but still delivers the response
 - No-op when budget is 0 (unlimited, the default)
 - Configurable via `ODEK_TELEGRAM_DAILY_TOKEN_BUDGET` env var or `daily_token_budget` in `odek.json`
@@ -267,6 +267,12 @@ window closes without a response, the prompt message is edited in place to an
 never be tapped after the request is dead. An expired request is denied — the
 operation is not executed.
 
+Only the user who started the operation can answer its approval prompt. The
+button toast reports what actually happened: the chosen action ("Approved",
+"Denied", "Trusted") only when the press reached the waiting request; a press
+by another group member, a duplicate tap, or a tap on a request that is no
+longer pending gets a "Not applied" toast instead.
+
 ### Outbound Media
 
 The agent can send files back to the chat either by emitting a `MEDIA:` prefix in its final answer (`MEDIA:photo:/path`, `MEDIA:voice:/path`, `MEDIA:document:/path`) or by calling `send_message` with the `file` parameter. Before any upload, the user must explicitly approve the operation, and the path is validated by `internal/telegram.ResolveMediaPathForChat`:
@@ -325,7 +331,11 @@ Routing per job exit:
 |---|---|
 | Chat idle, wake enabled | One coalesced wake turn (exits within `wake_coalesce_ms` share one turn); the raw exit line is suppressed — the notice is delivered to the model inside the wake turn |
 | Chat busy (a turn is running) | Legacy raw 📋 exit line only — the running turn's notice drain already reaches the model |
-| Wake disabled / spend cap hit | Legacy raw 📋 exit line only |
+| Wake disabled / spend cap hit | Legacy raw 📋 exit line only (an exit that joins an already-open coalesce window rides on that window's wake turn, even at the cap) |
+
+Each job exit is posted at most once: the exit observer and the chat's
+polling watcher share one per-chat dedup record, so whichever sees the exit
+first announces it.
 
 Wake is controlled by the shared `background.wake_on_complete` setting
 (default `true`), forced off when `background.notify: "off"`, and bounded by

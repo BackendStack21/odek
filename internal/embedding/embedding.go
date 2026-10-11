@@ -348,3 +348,9 @@ func (e *httpTextEmbedder) Fingerprint() string { return e.fp }
 func (e *httpTextEmbedder) SaveState(string) {}
 
 func (e *httpTextEmbedder) LoadState(string) bool { return true }
+
+// SharedRefitSafe reports that Fit and LoadState may run while other
+// goroutines embed with this instance: the backend is stateless (vectors do
+// not depend on the fit) and the cache is mutex-guarded. Indexes use it to
+// keep refitting the live instance, and its cache, instead of a fresh one.
+func (e *httpTextEmbedder) SharedRefitSafe() bool { return true }

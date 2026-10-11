@@ -126,6 +126,7 @@ GITHUB_TOKEN=ghp_...
 Rules:
 - **File format:** `KEY=VALUE` — one per line, no `export` keyword needed
 - **Blank lines and `#` comments** are skipped
+- **Inline comments:** in an unquoted value, a `#` preceded by a space or tab starts a comment that is dropped (`KEY=abc # note` → `abc`); a `#` with no whitespace before it stays part of the value, and a quoted value keeps everything inside the quotes
 - **Existing env vars are NOT overwritten** — if `DEEPSEEK_API_KEY` is already in the environment, the file is ignored for that key
 - **Missing/unreadable file** is silently ignored (not an error)
 - **Permissions:** keep `0600` (`chmod 600 ~/.odek/secrets.env`)

@@ -148,7 +148,8 @@ func collectCleanupCandidates(home string, cfg maintenance.Config) cleanupCandid
 		c.sessions = sessionCandidates(home, maintenance.DaysAgo(now, cfg.SessionsMaxAgeDays))
 	}
 	if cfg.AuditMaxAgeDays > 0 {
-		c.audit = filesOlderThan(filepath.Join(home, "sessions", "audit"), maintenance.DaysAgo(now, cfg.AuditMaxAgeDays), false)
+		// The sweep's own selection, quarantined .corrupt-* copies included.
+		c.audit = maintenance.AuditSweepCandidates(home, cfg.AuditMaxAgeDays)
 	}
 	if cfg.PlansMaxAgeDays > 0 {
 		// Plans may be nested per chat (plans/chat<id>/), so walk recursively.
@@ -165,10 +166,11 @@ func collectCleanupCandidates(home string, cfg maintenance.Config) cleanupCandid
 	return c
 }
 
-// sessionCandidates lists session files whose UpdatedAt is before cutoff,
-// using the session store's own listing so the dry-run preview matches what
-// Store.Cleanup (and therefore the sweep) would delete. Unreadable sessions
-// are skipped, mirroring Cleanup.
+// sessionCandidates lists the session files Store.Cleanup (and therefore the
+// sweep) would delete for cutoff: the store's own listing filtered by the
+// same session.CleanupExpired rule, so pinned sessions are kept out of the
+// preview exactly as the sweep keeps them. Unreadable sessions are skipped,
+// mirroring Cleanup.
 func sessionCandidates(home string, cutoff time.Time) []string {
 	store, err := session.NewStoreWithDir(filepath.Join(home, "sessions"))
 	if err != nil {
@@ -180,7 +182,7 @@ func sessionCandidates(home string, cutoff time.Time) []string {
 	}
 	var out []string
 	for _, s := range sessions {
-		if s.UpdatedAt.Before(cutoff) {
+		if session.CleanupExpired(s.UpdatedAt, s.Pinned, cutoff) {
 			out = append(out, store.Path(s.ID))
 		}
 	}
@@ -227,7 +229,8 @@ func printCleanupDryRun(home string, cfg maintenance.Config) {
 	expired := 0
 	rotateRuntimeLog := false
 	if cfg.RuntimeLog.Path != "" && cfg.RuntimeLog.MaxAgeHours > 0 {
-		n, err := runtimelog.PruneWithOptions(context.Background(), cfg.RuntimeLog.Path, time.Now().Add(-time.Duration(maintenance.ClampRetentionHours(cfg.RuntimeLog.MaxAgeHours))*time.Hour), true, cfg.RuntimeLog.MaxFiles)
+		// Same policy, clamp and cutoff as the sweep's runtime-log prune.
+		n, err := maintenance.RuntimeLogExpiredPreview(context.Background(), home, cfg)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "runtime log preview failed: %v\n", err)
 		} else {

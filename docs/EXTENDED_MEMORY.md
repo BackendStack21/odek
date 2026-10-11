@@ -103,7 +103,7 @@ The current extraction prompt and tool schema accept all nine primary types. Unk
     └── associations.json        # bidirectional atom association links
 ```
 
-All files are written atomically and use `0600` permissions. The vector store and metadata are rebuilt from the chunk files if they are ever corrupted. `vectors_meta.json` records both the embedding-space fingerprint (which embedding backend produced the vectors) and a corpus fingerprint (atom count plus a hash of the sorted atom IDs); a mismatch on either — including a missing corpus fingerprint in files written before it was tracked — marks the persisted index stale so it is rebuilt once instead of silently serving an outdated corpus. The user model and associations are loaded at startup and persisted on every change.
+All files are written atomically and use `0600` permissions. The vector store and metadata are rebuilt from the chunk files if they are ever corrupted. `vectors_meta.json` records both the embedding-space fingerprint (which embedding backend produced the vectors) and a corpus fingerprint (atom count plus a hash of the sorted atom IDs); a mismatch on either — including a missing corpus fingerprint in files written before it was tracked — marks the persisted index stale so it is rebuilt once instead of silently serving an outdated corpus. A rebuild or load fits the local RandomProjections embedder on a fresh instance and swaps it in together with the vectors it produced, so recall and semantic-dedup queries that overlap a rebuild never embed against a half-fitted vocabulary; the HTTP embedder, which is stateless and internally locked, keeps its live instance and its text→vector cache across rebuilds. The user model and associations are loaded at startup and persisted on every change.
 
 ## Dedicated Memory LLM
 
@@ -302,6 +302,8 @@ A quarantined atom has the same schema as a trusted atom but:
 - It is subject to `quarantine_ttl_days` and may be auto-deleted.
 
 Per-turn extraction only produces `user_said` atoms, so normal user messages do not land in quarantine. Quarantine is used when an atom is explicitly added (via the tool/API or programmatically) with a tainted source class, when the guard scan rejects an atom, or when an `inferred` atom is produced by a future flow.
+
+`odek memory extended quarantine` is the review step before promotion. It prints each atom's whole text (what recall would replay, not a truncated preview) with control, bidi and invisible characters escaped by `danger.SanitizeInline`, so an escape sequence in web- or MCP-sourced text cannot erase or overwrite what the reviewer sees. Reasons, pending user-model evidence and proactive nudge text are escaped the same way.
 
 Promotion from quarantine to the live store is implemented and human-gated:
 

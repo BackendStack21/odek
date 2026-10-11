@@ -123,6 +123,8 @@ RP.embed(newEntry) → cos similarity vs each existing entry
 
 This saves ~80% of LLM calls on memory writes.
 
+An auto-merge result is new text, so it goes through the same pipe-to-shell filter (`FactLooksUnsafe`) and content scan as a fresh fact. If the combination fails them, the merge is skipped: the existing entry stays untouched and the new fact, which passed those checks on its own, is stored as a separate entry. A new fact that is unsafe by itself is still rejected.
+
 **Implementation:** `internal/memory/merge.go` imports `github.com/BackendStack21/go-vector/pkg/vector` for `RandomProjections` and `Cosine`. The embedder is fit on existing facts when the detector is created, and re-fit whenever facts change. With `memory.embedding` configured (see *Pluggable Embeddings* below), the same classification runs over real semantic vectors from an OpenAI-compatible API instead of RP.
 
 ### Durability & Statefulness
@@ -336,9 +338,13 @@ package-local aliases in `internal/memory/embedder.go`):
   endpoint config gives consistent embedding-space semantics across subsystems
   (see `docs/CONFIG.md` → *Shared embedding backend*).
 - The persisted episode vector index records its embedding space in
-  `episodes_index_meta.json`; changing provider/model/dims invalidates and
-  rebuilds it automatically. Pre-existing RP indexes (no meta file) keep
-  loading without a rebuild.
+  `episodes_index_meta.json`, together with a corpus fingerprint (episode
+  count plus a hash of every session ID and summary). Changing
+  provider/model/dims, or any episode added, removed or rewritten since the
+  vectors were persisted (e.g. one written at the end of the previous
+  process), invalidates the persisted vectors so a new process rebuilds
+  instead of recalling from a stale corpus. Indexes written without a corpus
+  fingerprint (including pre-meta RP indexes) rebuild once.
 - The HTTP embedder caches text→vector within an instance, so per-turn query
   embeds are not re-sent. An index rebuild (after a new episode) runs on a
   fresh client *off the index lock* — one batch call over the corpus — so a

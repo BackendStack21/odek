@@ -123,6 +123,14 @@ type shellAnalysisState struct {
 	// analysed, when they are statically known; "$@" and "$*" expand to them.
 	args      []string
 	argsKnown bool
+	// aliases is shared by an analysis and every nested payload analysis,
+	// so a definition made inside eval is seen by later commands.
+	aliases *aliasTable
+	// aliasSkip, set only on the state handed to the analysis of an alias
+	// expansion, names the aliases that expansion is under. It applies to
+	// that text alone: the analysis takes it out of its own state, so
+	// payloads it parses afresh (eval, sh -c) do not inherit it.
+	aliasSkip []string
 }
 
 // maxAnalysisTokens bounds the tokens one Analyze call examines across the
@@ -187,6 +195,7 @@ func analyzeWithState(cmd string, depth int, inherited *shellAnalysisState) Anal
 		result.add(Unknown)
 		return result
 	}
+	var aliasSkip []string
 	cwd, err := os.Getwd()
 	state := shellAnalysisState{cwd: cwd, vars: make(map[string]string), uncertain: err != nil, written: make(map[string]bool), work: work}
 	if st, statErr := os.Stat(cwd); statErr != nil || !st.IsDir() {
@@ -201,6 +210,11 @@ func analyzeWithState(cmd string, depth int, inherited *shellAnalysisState) Anal
 		for name, value := range inherited.vars {
 			state.vars[name] = value
 		}
+		state.aliases = inherited.aliases
+		aliasSkip = inherited.aliasSkip
+	}
+	if state.aliases == nil {
+		state.aliases = newAliasTable()
 	}
 	state.unquoted = unquotedVariableRefs(main)
 	prog := parseShell(tokens, ops)
@@ -306,6 +320,18 @@ func analyzeWithState(cmd string, depth int, inherited *shellAnalysisState) Anal
 			}
 			piped := i > 0 || ctx.piped
 			upstream := stageUpstream(ctx, prepared, i)
+			// sh expands an alias defined earlier when its name is the
+			// command word: the expansion is analysed in addition to the
+			// literal stage (a definition may sit on a branch that never ran).
+			expansions, unresolved := state.aliases.expansions(stage, aliasSkip)
+			if unresolved {
+				result.add(Unknown)
+			}
+			for _, exp := range expansions {
+				payload := state
+				payload.aliasSkip = append(append([]string(nil), aliasSkip...), exp.names...)
+				result.merge(analyzeWithState(exp.text, depth+1, &payload))
+			}
 			if call := functionCallAt(stage, funcs); call >= 0 {
 				args := redirectFreeArguments(stage[call+1:])
 				runFunction(stage[call], args, pipeCtx{piped: piped, upstream: upstream})
@@ -344,6 +370,11 @@ func analyzeWithState(cmd string, depth int, inherited *shellAnalysisState) Anal
 				}
 				if name == "eval" && len(inner) > 1 {
 					result.merge(analyzeWithState(strings.Join(inner[1:], " "), depth+1, &payloadState))
+				}
+				// Record alias definitions; a later use is analysed as its
+				// expansion. A definition alone runs nothing.
+				if name == "alias" && !state.aliases.define(inner[1:]) {
+					result.add(Unknown)
 				}
 			}
 			if i > 0 {
@@ -406,6 +437,18 @@ func analyzeWithState(cmd string, depth int, inherited *shellAnalysisState) Anal
 			}
 			if piped && dbClientStdinRunsShell(name, upstream) {
 				result.add(CodeExecution)
+			}
+			if piped && name == "sqlite3" {
+				if sqliteStdinRunsProgram(upstream) {
+					result.add(CodeExecution)
+				}
+				// A static script still writes files through writefile()
+				// and VACUUM INTO.
+				if text, ok := staticPipeText(upstream); ok {
+					for _, target := range append(sqliteDotWriteTargets(text), sqliteSQLWriteTargets(text)...) {
+						result.add(state.targetRisk(target, stageCwd, cwdKnown))
+					}
+				}
 			}
 			if isNetworkEgress(name, inner) {
 				result.add(NetworkEgress)

@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 
@@ -91,6 +92,26 @@ func (t *httpRequestTool) checkURL(target string) error {
 	return t.dangerousConfig.CheckOperation(danger.ToolOperation{Name: t.Name(), Resource: target, Risk: danger.ClassifyURL(target)}, nil)
 }
 
+// toolsHTTPRequestResource renders the request for an approval prompt:
+// method, URL and header names. Header values are left out so a credential
+// is never echoed into a prompt or denial message.
+func toolsHTTPRequestResource(args httpRequestArgs) string {
+	method := strings.ToUpper(strings.TrimSpace(args.Method))
+	if method == "" {
+		method = http.MethodGet
+	}
+	s := method + " " + args.URL
+	if len(args.Headers) > 0 {
+		names := make([]string, 0, len(args.Headers))
+		for k := range args.Headers {
+			names = append(names, k)
+		}
+		sort.Strings(names)
+		s += " (headers: " + strings.Join(names, ", ") + ")"
+	}
+	return s
+}
+
 func (t *httpRequestTool) Call(argsJSON string) (string, error) {
 	var args httpRequestArgs
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
@@ -103,6 +124,16 @@ func (t *httpRequestTool) Call(argsJSON string) (string, error) {
 	if err := t.checkURL(args.URL); err != nil {
 		result.Error = err.Error()
 		return jsonResult(result)
+	}
+	// A mutating method or a credential-bearing header is network_upload,
+	// matching the curl equivalent; the destination check above still applies.
+	if risk := danger.HTTPRequestClass(args.Method, args.Headers); risk != danger.NetworkEgress {
+		if err := t.dangerousConfig.CheckOperation(danger.ToolOperation{
+			Name: t.Name(), Resource: toolsHTTPRequestResource(args), Risk: risk,
+		}, nil); err != nil {
+			result.Error = err.Error()
+			return jsonResult(result)
+		}
 	}
 	method := strings.ToUpper(args.Method)
 	if method == "" {

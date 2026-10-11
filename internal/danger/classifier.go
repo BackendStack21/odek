@@ -4528,7 +4528,7 @@ func classifyKnownCommand(tokens []string, repo *gitRepoCtx) RiskClass {
 	// fell through every check — a prompt-injection payload could wipe a
 	// working tree with zero friction. They now require explicit approval
 	// (system_write → prompt by default), like other irreversible mutations.
-	if first == "git" && (isGitDataLoss(tokens) || gitRetargetsFilesystem(tokens)) {
+	if first == "git" && (isGitDataLoss(tokens) || gitRetargetsFilesystem(tokens) || gitApplyWritesOutsideWorkTree(tokens)) {
 		return SystemWrite
 	}
 
@@ -4853,6 +4853,10 @@ func isDestructive(first string, tokens []string) bool {
 	if first == "tar" && tarOptions.parse(tokens[1:]).has("--remove-files") {
 		return true
 	}
+	// zip -m/--move and 7z -sdel delete the sources once they are archived.
+	if (first == "zip" && zipMovesSources(tokens)) || (sevenZipNames[first] && sevenZipDeletesSources(tokens)) {
+		return true
+	}
 	if first == "rsync" {
 		for _, dest := range writeDestinations(first, tokens) {
 			if ClassifyPath(dest) == Destructive {
@@ -4904,6 +4908,9 @@ func isSystemWrite(first string, tokens []string) bool {
 	if hostInspectorMutates(first, tokens) {
 		return true
 	}
+	if credentialStoreAccess(first, tokens) {
+		return true
+	}
 	if first == "sysctl" && hasAny(tokens, "-w", "--write") {
 		return true
 	}
@@ -4931,6 +4938,12 @@ func isSystemWrite(first string, tokens []string) bool {
 				return true
 			}
 		}
+	}
+	// An operand naming a home directory itself (or a directory above one)
+	// takes ~/.ssh, the shell rc files and the odek trust anchors with it,
+	// although "~" on its own is not a sensitive path.
+	if mutatesHomeRoot(first, tokens) {
+		return true
 	}
 	// Directory destinations and rsync's final operand: the file that lands
 	// is <dir>/<basename(src)>, so a rc file moved into $HOME is a rc write.
@@ -4960,6 +4973,101 @@ func isSystemWrite(first string, tokens []string) bool {
 			if strings.HasPrefix(strings.ToLower(tok), "of=") && shellPathIsSensitive(tok) {
 				return true
 			}
+		}
+	}
+	return false
+}
+
+// homeRootInPlaceMutators change their operands in place, recursively with
+// -R/-r: on a home directory that reaches ~/.ssh, the shell rc files and the
+// odek trust anchors (chmod -R 777 ~ makes them world-writable, gzip -r ~
+// replaces each of them).
+var homeRootInPlaceMutators = map[string]bool{
+	"chmod": true, "chown": true, "chgrp": true, "chattr": true, "setfacl": true,
+	"gzip": true, "pigz": true, "xz": true, "bzip2": true, "zstd": true, "lz4": true,
+}
+
+// mutatesHomeRoot reports whether a command moves or rewrites a home
+// directory as a whole: an mv source operand, or an operand of an in-place
+// mutator, that names a home directory or one of its ancestors. Moving files
+// into the home directory (an mv destination) is not covered.
+func mutatesHomeRoot(first string, tokens []string) bool {
+	var operands []string
+	switch {
+	case first == "mv":
+		operands = mvSourceOperands(tokens)
+	case homeRootInPlaceMutators[first]:
+		operands = tokens[1:]
+	default:
+		return false
+	}
+	for _, tok := range operands {
+		if namesHomeOrAncestor(tok) {
+			return true
+		}
+	}
+	return false
+}
+
+// mvSourceOperands returns the source operands of an mv invocation: every
+// operand when -t/--target-directory names the destination, otherwise all but
+// the last one.
+func mvSourceOperands(tokens []string) []string {
+	var operands []string
+	target := false
+	endOpts := false
+	for i := 1; i < len(tokens); i++ {
+		tok := tokens[i]
+		switch {
+		case endOpts || tok == "-" || !strings.HasPrefix(tok, "-"):
+			operands = append(operands, tok)
+		case tok == "--":
+			endOpts = true
+		case strings.HasPrefix(tok, "--"):
+			name, _, hasVal := strings.Cut(tok[2:], "=")
+			switch {
+			case len(name) >= 2 && strings.HasPrefix("target-directory", name):
+				target = true
+				if !hasVal {
+					i++
+				}
+			case len(name) >= 2 && strings.HasPrefix("suffix", name) && !hasVal:
+				i++
+			}
+		default:
+			for j := 1; j < len(tok); j++ {
+				if tok[j] == 't' || tok[j] == 'S' {
+					target = target || tok[j] == 't'
+					if j == len(tok)-1 {
+						i++ // the value is the next word
+					}
+					break
+				}
+			}
+		}
+	}
+	if target || len(operands) == 0 {
+		return operands
+	}
+	return operands[:len(operands)-1]
+}
+
+// namesHomeOrAncestor reports whether a shell token names an account's home
+// directory itself (`~`, `$HOME`, `~user`, /home/user, with or without a
+// trailing slash) or a directory above one, such as /home or /Users.
+func namesHomeOrAncestor(tok string) bool {
+	p := expandShellTokenPath(strings.Trim(tok, `"'`))
+	if !filepath.IsAbs(p) {
+		return false
+	}
+	p = filepath.Clean(p)
+	lowerP := strings.ToLower(p)
+	for _, home := range append(currentHomeDirs(), accountHomes(p)...) {
+		if home == "" {
+			continue
+		}
+		if pathWithin(strings.ToLower(filepath.Clean(home)), lowerP) {
+			return true
 		}
 	}
 	return false
@@ -5224,6 +5332,8 @@ var gitProgramOptions = []string{"upload-pack", "receive-pack", "exec", "templat
 // --template).
 func gitRunsProgramOption(sub string, args []string) bool {
 	switch sub {
+	case "send-email":
+		return gitSendEmailRunsProgram(args)
 	case "clone", "fetch", "pull", "ls-remote", "push", "fetch-pack",
 		"send-pack", "archive", "init":
 	default:
@@ -5258,6 +5368,54 @@ func gitRunsProgramOption(sub string, args []string) bool {
 		}
 	}
 	return false
+}
+
+// gitSendEmailCommandOptions are the send-email options whose value is a
+// command git runs (Getopt::Long accepts unambiguous prefixes, so a prefix of
+// at least four characters counts).
+var gitSendEmailCommandOptions = []string{"sendmail-cmd", "to-cmd", "cc-cmd", "header-cmd"}
+
+// gitSendEmailRunsProgram reports whether git send-email arguments name a
+// program to run: a *-cmd option, or an --smtp-server value that is a path
+// (git runs a path-valued SMTP server as a sendmail-like program; a host name
+// carries no slash).
+func gitSendEmailRunsProgram(args []string) bool {
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "--" {
+			return false
+		}
+		if !strings.HasPrefix(a, "--") {
+			continue
+		}
+		name, value, hasValue := strings.Cut(a[2:], "=")
+		for _, opt := range gitSendEmailCommandOptions {
+			if len(name) >= 4 && strings.HasPrefix(opt, name) {
+				return true
+			}
+		}
+		if name != "smtp-server" {
+			continue
+		}
+		if !hasValue {
+			if i+1 >= len(args) {
+				return true
+			}
+			i++
+			value = args[i]
+		}
+		if gitSMTPServerIsProgram(value) {
+			return true
+		}
+	}
+	return false
+}
+
+// gitSMTPServerIsProgram reports whether an smtp-server value names a program
+// rather than a host: anything path-shaped, empty, or only known at run time.
+func gitSMTPServerIsProgram(value string) bool {
+	return value == "" || strings.ContainsAny(value, "/~$`\\") || strings.HasPrefix(value, ".") ||
+		hasDynamicSubstitution(value)
 }
 
 // isGitCodeExecution reports whether a git invocation carries a config override
@@ -5325,6 +5483,12 @@ func isGitCodeExecution(tokens []string) bool {
 		if strings.HasPrefix(key, "submodule.") && strings.HasSuffix(key, ".update") && strings.HasPrefix(value, "!") {
 			return true
 		}
+		// send-email's sendmailcmd/tocmd/cccmd/headercmd (also per identity)
+		// are commands, and a path-valued smtpserver is a program.
+		if strings.HasPrefix(key, "sendemail.") &&
+			(strings.HasSuffix(key, "cmd") || strings.HasSuffix(key, ".smtpserver") && gitSMTPServerIsProgram(value)) {
+			return true
+		}
 		if gitConfigKeyRunsProgram(key) || strings.HasPrefix(key, "filter.") || strings.HasPrefix(key, "diff.") || strings.HasPrefix(key, "merge.") {
 			return true
 		}
@@ -5374,12 +5538,25 @@ func gitRetargetsFilesystem(tokens []string) bool {
 	return false
 }
 
+// gitApplyWritesOutsideWorkTree reports whether git apply runs with
+// --unsafe-paths: the patch's own paths (absolute, or `..` past any
+// --directory) then decide where files are written, so the write fails
+// closed to system_write whatever directory is given.
+func gitApplyWritesOutsideWorkTree(tokens []string) bool {
+	sub, args := gitSubcommandAndArgs(tokens)
+	if sub != "apply" {
+		return false
+	}
+	unsafe, _ := gitApplyUnsafeDirectories(args)
+	return unsafe
+}
+
 // gitContactsRemote reports whether a parsed git subcommand talks to a remote.
 func gitContactsRemote(sub string, tokens, args []string) bool {
 	switch sub {
 	case "clone", "fetch", "pull", "ls-remote",
 		"daemon", "instaweb", "fetch-pack", "upload-pack",
-		"send-pack", "receive-pack":
+		"send-pack", "receive-pack", "send-email", "imap-send":
 		return true
 	case "push":
 		// Bare "git push" pushes the current branch to its configured
@@ -6420,6 +6597,77 @@ func sqliteRunsShell(tokens []string) bool {
 		if strings.Contains(low, ".shell") || strings.Contains(low, ".system") || strings.Contains(low, ".read") || strings.Contains(low, ".load") || strings.Contains(low, "load_extension") || strings.Contains(low, "-init") {
 			return true
 		}
+		if sqliteScriptRunsProgram(tok) {
+			return true
+		}
+	}
+	// sqlite3 executes dot-commands read from stdin, so a script fed by an
+	// input redirect runs like `sh < script`. Here-strings and here-documents
+	// carry their text on the command line and are scanned as tokens above.
+	for i := 1; i+1 < len(tokens); i++ {
+		switch tokens[i] {
+		case "<", "<>":
+			if tokens[i+1] != "/dev/null" {
+				return true
+			}
+		case "<&":
+			if tokens[i+1] != "-" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// sqliteStdinRunsProgram reports whether the input a pipeline feeds sqlite3
+// can run a program: a static echo/printf payload is scanned for program
+// launchers; any other producer's output is unknown and fails closed.
+func sqliteStdinRunsProgram(upstream [][]string) bool {
+	text, ok := staticPipeText(upstream)
+	return !ok || sqliteScriptRunsProgram(text)
+}
+
+// sqliteEditCall matches the sqlite3 shell's edit() SQL function, which runs
+// an editor (or the program named by its second argument) on a value.
+var sqliteEditCall = regexp.MustCompile(`(?i)\bedit\s*\(`)
+
+// sqliteProgramDotCommands are the dot-commands that run a program outright.
+// The shell accepts any prefix of a dot-command name (`.sh`, `.sy`), so a
+// prefix of one of these counts.
+var sqliteProgramDotCommands = []string{"shell", "system", "read", "load"}
+
+// sqliteScriptRunsProgram reports whether text holding sqlite3 shell input (an
+// argument, a -cmd value, or a script fed on stdin) runs a program: a
+// dot-command line naming .shell/.system/.read/.load in any abbreviation, a
+// dot-command with a `|cmd` argument (.import, .once, .output and .read pipe
+// through a program), or the edit() SQL function. Lines are split on
+// newlines and on `;` (the tokenizer folds a quoted newline into `;`), which
+// may flag a dot that only follows a statement on the same line: failing
+// closed there costs a prompt.
+func sqliteScriptRunsProgram(text string) bool {
+	if sqliteEditCall.MatchString(text) {
+		return true
+	}
+	for _, line := range strings.FieldsFunc(text, func(r rune) bool { return r == '\n' || r == ';' }) {
+		line = strings.TrimLeft(line, " \t\r")
+		if !strings.HasPrefix(line, ".") {
+			continue
+		}
+		fields := strings.Fields(line[1:])
+		if len(fields) == 0 {
+			continue
+		}
+		name := strings.ToLower(fields[0])
+		for _, cmd := range sqliteProgramDotCommands {
+			if strings.HasPrefix(cmd, name) {
+				return true
+			}
+		}
+		for _, arg := range fields[1:] {
+			if strings.HasPrefix(strings.TrimLeft(arg, `'"`), "|") {
+				return true
+			}
+		}
 	}
 	return false
 }
@@ -6638,6 +6886,53 @@ func zipRunsCommand(tokens []string) bool {
 			return true
 		}
 		if name, _, _, ok := resolveLongOption(tok, zipLongOptions); ok && name == "unzip-command" {
+			return true
+		}
+	}
+	return false
+}
+
+// zipValueShorts are the zip short options that take a value (fused or as the
+// next word), so letters after them in a cluster are not options.
+const zipValueShorts = "bnPZsOxit"
+
+// zipMovesSources reports whether zip runs in move mode (-m, also inside a
+// cluster such as -rm, or --move and its prefixes), which deletes every
+// source file after adding it to the archive.
+func zipMovesSources(tokens []string) bool {
+	for _, tok := range tokens[1:] {
+		switch {
+		case tok == "--":
+			return false
+		case strings.HasPrefix(tok, "--"):
+			if name, _, _ := strings.Cut(tok[2:], "="); len(name) >= 2 && strings.HasPrefix("move", name) {
+				return true
+			}
+		case isShortFlagToken(tok):
+			for _, c := range tok[1:] {
+				if c == 'm' {
+					return true
+				}
+				if strings.ContainsRune(zipValueShorts, c) {
+					break
+				}
+			}
+		}
+	}
+	return false
+}
+
+// sevenZipNames are the 7-Zip command-line front ends.
+var sevenZipNames = map[string]bool{"7z": true, "7za": true, "7zz": true, "7zr": true}
+
+// sevenZipDeletesSources reports whether a 7-Zip invocation carries -sdel
+// (switches are case-insensitive), which deletes the files after archiving.
+func sevenZipDeletesSources(tokens []string) bool {
+	for _, tok := range tokens[1:] {
+		if tok == "--" {
+			return false
+		}
+		if strings.EqualFold(tok, "-sdel") {
 			return true
 		}
 	}

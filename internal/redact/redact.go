@@ -23,8 +23,10 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
+	"unicode/utf8"
 )
 
 // ── Patterns ───────────────────────────────────────────────────────────
@@ -84,11 +86,20 @@ var patterns = []*regexp.Regexp{
 	// password containing commas, semicolons or quotes is covered whole (the
 	// safe direction: text glued to a secret is redacted with it). The 20-char
 	// floor filters out UUIDs, hex hashes in code, and other
-	// false-positive-heavy text.
-	regexp.MustCompile(`(?i)(?:api[_-]?key|api[_-]?secret|auth[_-]?token|access[_-]?token|bearer[_-]?token|client[_-]?secret|private[_-]?key|secret[_-]?key|password|passwd)["'\x60]?\s*[:=]\s*(?:"[^"\n]{20,}"|'[^'\n]{20,}'|\x60[^\x60\n]{20,}\x60|[^\s]{20,})`),
+	// false-positive-heavy text. secret_access_key / session_token cover the
+	// AWS secret and session token in STS JSON (SecretAccessKey,
+	// SessionToken) and YAML env blocks (AWS_SECRET_ACCESS_KEY: value), whose
+	// colon form the `NAME=value` env-var matcher below does not reach.
+	// security_token covers the same AWS session token as the
+	// X-Amz-Security-Token header and presigned-URL query parameter.
+	// refresh_token is the long-lived credential in OAuth token responses.
+	regexp.MustCompile(`(?i)(?:api[_-]?key|api[_-]?secret|auth[_-]?token|access[_-]?token|refresh[_-]?token|bearer[_-]?token|client[_-]?secret|private[_-]?key|secret[_-]?key|secret[_-]?access[_-]?key|session[_-]?token|security[_-]?token|password|passwd)["'\x60]?\s*[:=]\s*(?:"[^"\n]{20,}"|'[^'\n]{20,}'|\x60[^\x60\n]{20,}\x60|[^\s]{20,})`),
 
-	// Bearer tokens in Authorization headers
-	regexp.MustCompile(`(?i)Authorization:\s*Bearer\s+([a-zA-Z0-9+/=._-]{20,})`),
+	// Bearer tokens in Authorization headers: the header-line form
+	// (Authorization: Bearer …) and the JSON/JS header-object form
+	// ("Authorization": "Bearer …"), where a closing quote precedes the
+	// colon and an opening quote precedes the scheme.
+	regexp.MustCompile(`(?i)Authorization["'\x60]?\s*[:=]\s*["'\x60]?Bearer\s+([a-zA-Z0-9+/=._-]{20,})`),
 
 	// Slack bot tokens: xoxb-, xoxp-
 	regexp.MustCompile(`xox[abpose]-[0-9]{10,}-[0-9]{10,}-[a-zA-Z0-9]{24,}`),
@@ -148,6 +159,131 @@ var patterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqps?|mssql|clickhouse)://[^:\s/]+:[^@\s/]{6,}@[^\s'\x60"]+`),
 }
 
+// basicAuthPattern matches an HTTP Basic credential in a header line
+// (`Authorization: Basic <b64>`, also Proxy-Authorization) or a JSON/JS
+// header object (`"Authorization": "Basic <b64>"`). The word "Basic" alone
+// is common prose ("Authorization: Basic authentication…"), so a match only
+// counts when its token decodes to a printable user:password pair; see
+// basicCredential.
+// The token is capped at basicTokenMax bytes so the regex never consumes an
+// unbounded run; a longer run is handled in basicAuthMatches.
+var basicAuthPattern = regexp.MustCompile(`(?i)(authorization["'\x60]?\s*[:=]\s*["'\x60]?basic\s+)([A-Za-z0-9+/_-]{4,1000}={0,2})`)
+
+// basicTokenMax is the token cap in basicAuthPattern.
+const basicTokenMax = 1000
+
+// basicCredential reports whether tok is base64 (standard or URL alphabet,
+// padded or not) of printable text containing a ':' — the user:password
+// shape of an HTTP Basic credential.
+func basicCredential(tok string) bool {
+	for _, enc := range []*base64.Encoding{base64.StdEncoding, base64.RawStdEncoding, base64.URLEncoding, base64.RawURLEncoding} {
+		b, err := enc.DecodeString(tok)
+		if err != nil {
+			continue
+		}
+		// Decodes of ordinary words are almost never valid control-free
+		// UTF-8 containing ':'; real credentials always are.
+		if !strings.Contains(string(b), ":") || !utf8.Valid(b) {
+			return false
+		}
+		for _, c := range b {
+			if c < 0x20 || c == 0x7f {
+				return false
+			}
+		}
+		return true
+	}
+	return false
+}
+
+// basicAuthMatches returns the [start,end) offsets of every Basic credential
+// token in text (the token only, not the header name).
+// basicAuthCandidate is the cheap prefilter for the Basic-auth pass: the
+// regex only runs on text that contains both "authorization" and "basic"
+// (any case), so prose or data merely containing "basic" costs one scan.
+func basicAuthCandidate(text string) bool {
+	i := indexFoldASCII(text, "authorization")
+	return i >= 0 && indexFoldASCII(text[i:], "basic") >= 0
+}
+
+func basicAuthMatches(text string) [][2]int {
+	if !basicAuthCandidate(text) {
+		return nil
+	}
+	var out [][2]int
+	// Locate whole matches with the fast unanchored matcher, then take the
+	// token submatch on each short match only: submatch extraction over the
+	// full text falls back to a much slower engine on large inputs.
+	for _, m := range basicAuthPattern.FindAllStringIndex(text, -1) {
+		sm := basicAuthPattern.FindStringSubmatchIndex(text[m[0]:m[1]])
+		if sm == nil {
+			continue
+		}
+		start, end := m[0]+sm[4], m[0]+sm[5]
+		if end-start >= basicTokenMax && end < len(text) && isBasicTokenByte(text[end]) {
+			// The token runs past the cap: no Basic credential is this
+			// long, but it sits where one belongs, so redact the whole run
+			// without decoding it.
+			for end < len(text) && isBasicTokenByte(text[end]) {
+				end++
+			}
+			out = append(out, [2]int{start, end})
+			continue
+		}
+		if basicCredential(text[start:end]) {
+			out = append(out, [2]int{start, end})
+		}
+	}
+	return out
+}
+
+// isBasicTokenByte reports whether c can continue a base64 Basic token.
+func isBasicTokenByte(c byte) bool {
+	return c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9' ||
+		c == '+' || c == '/' || c == '_' || c == '-' || c == '='
+}
+
+// indexFoldASCII returns the index of the first occurrence of the
+// lower-case ASCII word in text in any letter case, or -1, without copying
+// text. It jumps between candidate first bytes with IndexByte.
+func indexFoldASCII(text, word string) int {
+	lo, up := word[0], word[0]-('a'-'A')
+	for i := 0; i+len(word) <= len(text); {
+		rest := text[i : len(text)-len(word)+1]
+		j := strings.IndexByte(rest, lo)
+		if k := strings.IndexByte(rest, up); k >= 0 && (j < 0 || k < j) {
+			j = k
+		}
+		if j < 0 {
+			return -1
+		}
+		i += j
+		if strings.EqualFold(text[i:i+len(word)], word) {
+			return i
+		}
+		i++
+	}
+	return -1
+}
+
+// redactBasicAuth replaces each Basic credential token with [REDACTED],
+// keeping the header name so the redacted text still reads as a header.
+func redactBasicAuth(text string) string {
+	ms := basicAuthMatches(text)
+	if len(ms) == 0 {
+		return text
+	}
+	var b strings.Builder
+	last := 0
+	for _, m := range ms {
+		b.WriteString(text[last:m[0]])
+		b.WriteString("[REDACTED]")
+		last = m[1]
+	}
+	b.WriteString(text[last:])
+	return b.String()
+}
+
 // ── Public API ─────────────────────────────────────────────────────────
 
 // RedactSecrets scans text for known secret patterns and replaces matched
@@ -178,7 +314,7 @@ func RedactSecrets(text string) string {
 		}
 		result = p.ReplaceAllString(result, "[REDACTED]")
 	}
-	return result
+	return redactBasicAuth(result)
 }
 
 // HasSecrets returns true if the text contains any recognized secret pattern
@@ -198,7 +334,7 @@ func HasSecrets(text string) bool {
 			return true
 		}
 	}
-	return false
+	return len(basicAuthMatches(text)) > 0
 }
 
 // IsSafe returns true if the text contains no recognized secrets.
@@ -223,6 +359,7 @@ func CountSecrets(text string) int {
 		matches := p.FindAllString(text, -1)
 		count += len(matches)
 	}
+	count += len(basicAuthMatches(text))
 	return count
 }
 
@@ -382,13 +519,25 @@ func reverseString(s string) string {
 }
 
 // rebuildReplacerLocked recomputes the replacer and form list from secretSet.
+// strings.Replacer takes, at each position, the first argument that matches
+// rather than the longest, so forms are ordered longest first (ties broken
+// lexically for a deterministic build): a registered secret that is a prefix
+// of another can then never win and leave the longer secret's tail in clear.
 // Caller must hold secretsMu for writing.
 func rebuildReplacerLocked() {
 	secretGeneration++
 	forms := make([]string, 0, len(secretSet))
-	pairs := make([]string, 0, len(secretSet)*2)
 	for f := range secretSet {
 		forms = append(forms, f)
+	}
+	sort.Slice(forms, func(i, j int) bool {
+		if len(forms[i]) != len(forms[j]) {
+			return len(forms[i]) > len(forms[j])
+		}
+		return forms[i] < forms[j]
+	})
+	pairs := make([]string, 0, len(forms)*2)
+	for _, f := range forms {
 		pairs = append(pairs, f, "[REDACTED]")
 	}
 	secretFormsList = forms

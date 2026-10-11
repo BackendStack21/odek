@@ -299,3 +299,7 @@ not touch the job's recorded last run: `last_run` and `last_result` keep
 describing the last time the job actually ran. `last_error` is cleared (it is
 set only with an `error` status) and `skipped_at` records when the skip
 happened; the Telegram job view shows it. The next real run clears `skipped_at`.
+
+Time a job spends disabled is never a missed run: disabling a job drops its
+projected next fire, so re-enabling it resumes at the next regular slot
+without a catch-up fire or a `skipped` record.

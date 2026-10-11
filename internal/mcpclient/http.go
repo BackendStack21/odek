@@ -79,7 +79,8 @@ func tokenEnvAllowed(name string) bool {
 // newHTTPClient builds the URL-transport branch of New: no subprocess, no
 // read/write goroutines; every call() round-trips one HTTP request.
 func newHTTPClient(name string, cfg ServerConfig, opts httpOptions) (*Client, error) {
-	if _, err := validateServerURL(cfg.URL); err != nil {
+	serverURL, err := validateServerURL(cfg.URL)
+	if err != nil {
 		return nil, fmt.Errorf("mcpclient %s: %w", name, err)
 	}
 
@@ -95,6 +96,7 @@ func newHTTPClient(name string, cfg ServerConfig, opts httpOptions) (*Client, er
 	if httpc == nil {
 		httpc = &http.Client{}
 	}
+	httpc = withSessionRedirectGuard(httpc, serverURL)
 
 	return &Client{
 		name:   name,
@@ -103,6 +105,34 @@ func newHTTPClient(name string, cfg ServerConfig, opts httpOptions) (*Client, er
 		httpc:  httpc,
 		closed: make(chan struct{}),
 	}, nil
+}
+
+// maxHTTPRedirects mirrors net/http's default redirect limit, applied when
+// the supplied client has no CheckRedirect of its own.
+const maxHTTPRedirects = 10
+
+// withSessionRedirectGuard returns a shallow copy of base (which may be
+// shared, so it is never mutated) whose redirect policy removes the
+// Mcp-Session-Id header when a redirect leaves the configured server's
+// scheme and host. net/http strips only Authorization, Cookie and
+// WWW-Authenticate on its own. The base client's own CheckRedirect, if any,
+// still runs afterwards.
+func withSessionRedirectGuard(base *http.Client, server *url.URL) *http.Client {
+	c := *base
+	prev := base.CheckRedirect
+	c.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if !strings.EqualFold(req.URL.Scheme, server.Scheme) || !strings.EqualFold(req.URL.Host, server.Host) {
+			req.Header.Del(mcpSessionIDHeader)
+		}
+		if prev != nil {
+			return prev(req, via)
+		}
+		if len(via) >= maxHTTPRedirects {
+			return fmt.Errorf("stopped after %d redirects", maxHTTPRedirects)
+		}
+		return nil
+	}
+	return &c
 }
 
 // httpCall performs one JSON-RPC request over HTTP and returns the raw result.
@@ -135,17 +165,16 @@ func (c *Client) httpCall(ctx context.Context, method string, params json.RawMes
 	if err != nil {
 		return nil, err
 	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Accept", "application/json, text/event-stream")
-	if c.token != "" {
-		httpReq.Header.Set("Authorization", "Bearer "+c.token)
-	}
+	c.setHTTPHeaders(httpReq)
 
 	resp, err := c.httpc.Do(httpReq)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
+	if method == "initialize" && resp.StatusCode == http.StatusOK {
+		c.captureSessionID(resp)
+	}
 
 	maxResp := c.maxResponseBytes
 	if maxResp <= 0 {
@@ -173,6 +202,59 @@ func (c *Client) httpCall(ctx context.Context, method string, params json.RawMes
 	// frame carrying an error object must not be accepted as this call's
 	// answer (the error text could otherwise be spoofed by the server).
 	return c.matchedResult(r, id)
+}
+
+// mcpSessionIDHeader is the Streamable HTTP session header: a server may
+// assign a session id in its initialize response, and the client must then
+// send it on every subsequent request.
+const mcpSessionIDHeader = "Mcp-Session-Id"
+
+// maxMCPSessionIDLen bounds a stored session id so a hostile server cannot
+// make every later request carry an oversized header.
+const maxMCPSessionIDLen = 1024
+
+// setHTTPHeaders sets the headers shared by every request and notification:
+// content negotiation, the bearer token, and the server-assigned session id.
+func (c *Client) setHTTPHeaders(httpReq *http.Request) {
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "application/json, text/event-stream")
+	if c.token != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	c.mu.Lock()
+	sid := c.sessionID
+	c.mu.Unlock()
+	if sid != "" {
+		httpReq.Header.Set(mcpSessionIDHeader, sid)
+	}
+}
+
+// captureSessionID records the session id from a successful initialize
+// response. An initialize without the header leaves the client stateless
+// (and clears any id from an earlier initialize); an id that is not visible
+// ASCII, as the transport requires, is ignored.
+func (c *Client) captureSessionID(resp *http.Response) {
+	sid := resp.Header.Get(mcpSessionIDHeader)
+	if !validMCPSessionID(sid) {
+		sid = ""
+	}
+	c.mu.Lock()
+	c.sessionID = sid
+	c.mu.Unlock()
+}
+
+// validMCPSessionID reports whether sid is a non-empty, bounded string of
+// visible ASCII characters (0x21-0x7E).
+func validMCPSessionID(sid string) bool {
+	if sid == "" || len(sid) > maxMCPSessionIDLen {
+		return false
+	}
+	for i := 0; i < len(sid); i++ {
+		if sid[i] < 0x21 || sid[i] > 0x7e {
+			return false
+		}
+	}
+	return true
 }
 
 // matchSSEFrame parses an SSE body into complete event payloads and returns
@@ -238,11 +320,7 @@ func (c *Client) httpNotify(ctx context.Context, method string) error {
 	if err != nil {
 		return err
 	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Accept", "application/json, text/event-stream")
-	if c.token != "" {
-		httpReq.Header.Set("Authorization", "Bearer "+c.token)
-	}
+	c.setHTTPHeaders(httpReq)
 	resp, err := c.httpc.Do(httpReq)
 	if err != nil {
 		return err

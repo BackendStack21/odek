@@ -17,6 +17,7 @@ func (l failedServeListener) Close() error              { return nil }
 func (l failedServeListener) Addr() net.Addr            { return &net.TCPAddr{} }
 
 func TestServeListenerFailureDrainsBackgroundJobs(t *testing.T) {
+	t.Cleanup(openServeRunAdmission) // shutdown closes run admission process-wide
 	mgr := bgproc.NewManager(bgproc.Config{}, nil)
 	previous := serveBG.Swap(mgr)
 	defer serveBG.Store(previous)

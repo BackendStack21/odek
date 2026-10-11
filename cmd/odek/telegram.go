@@ -1635,17 +1635,19 @@ func runChatTurn(
 	// Use a 5% buffer: if >95% of budget is consumed, refuse new runs
 	// to leave headroom for the response delivery (which uses tokens too).
 	if resolved.Telegram.DailyTokenBudget > 0 {
-		if err := bot.CheckDailyBudget(1); err != nil {
+		// Read-only probe: CheckDailyBudget bills what it is given, so it is
+		// reserved for actual post-run usage.
+		used, limit := bot.DailyTokenUsage()
+		if limit > 0 && used >= limit {
 			reportError(bot, chatID, messageID, fmt.Sprintf(
-				"Daily token budget exhausted: %v. "+
+				"Daily token budget exhausted: %d/%d tokens used. "+
 					"The budget resets at midnight UTC. "+
 					"Set daily_token_budget to 0 in config for unlimited usage.",
-				err,
+				used, limit,
 			))
 			return
 		}
 		// Warn if budget is running low (>80% consumed).
-		used, limit := bot.DailyTokenUsage()
 		if limit > 0 && used > 0 {
 			pct := used * 100 / limit
 			if pct >= 80 {
@@ -2197,6 +2199,9 @@ func runChatTurn(
 	}
 	outcome = err
 	recordTurnAudit(auditStore, cs.SessionID, auditTurn, auditUserText, auditTurnDelta(updatedMessages, auditHistLen))
+	// Bill actual token usage against the daily budget (if configured) on
+	// every outcome: failed and cancelled turns spent their tokens too.
+	billTelegramChatTurn(bot, log, chatID, messageID, int64(runInfo.InputTokens+runInfo.OutputTokens))
 	if err != nil {
 		// Clean up any tool trace messages on error.
 		deleteToolTraceMessages(bot, chatID, &toolMsgIDs)
@@ -2231,22 +2236,6 @@ func runChatTurn(
 
 		reportError(bot, chatID, messageID, friendlyRunError(err))
 		return
-	}
-
-	// Bill actual token usage against daily budget (if configured).
-	tokensUsed := int64(runInfo.InputTokens + runInfo.OutputTokens)
-	if tokensUsed > 0 {
-		if err := bot.CheckDailyBudget(tokensUsed); err != nil {
-			// Budget exceeded — report it but still deliver the response.
-			log.Warn("daily token budget exceeded",
-				"chat_id", chatID, "tokens", tokensUsed, "error", err)
-			bot.SendMessage(chatID, fmt.Sprintf(
-				"⚠️ *Token budget warning*\\n\\n%v\\n\\n"+
-					"Further agent runs may be blocked until the daily budget resets. "+
-					"Use `/stats` to check current usage.",
-				err,
-			), &telegram.SendOpts{ParseMode: telegram.ParseModeMarkdownV2, ReplyToMessageID: messageID})
-		}
 	}
 
 	// Save the updated session messages.
@@ -2619,15 +2608,41 @@ func sendAsync(bot *telegram.Bot, chatID int64, text string, opts *telegram.Send
 	}()
 }
 
-// truncateToolArgs truncates tool call arguments to at most maxLen characters
+// billTelegramChatTurn bills a chat turn's token usage against the daily
+// budget and warns the chat when the budget is exceeded.
+func billTelegramChatTurn(bot *telegram.Bot, log telegram.Logger, chatID int64, replyTo int, tokensUsed int64) {
+	if tokensUsed <= 0 {
+		return
+	}
+	if err := bot.CheckDailyBudget(tokensUsed); err != nil {
+		// Budget exceeded — report it but still deliver the response.
+		log.Warn("daily token budget exceeded",
+			"chat_id", chatID, "tokens", tokensUsed, "error", err)
+		// Plain text: the error string carries MarkdownV2-reserved characters
+		// ('.', '+', '=') and would make a MarkdownV2 send fail outright.
+		bot.SendMessage(chatID, fmt.Sprintf(
+			"⚠️ Token budget warning\n\n%v\n\n"+
+				"Further agent runs will be refused until the daily budget resets. "+
+				"Use /stats to check current usage.",
+			err,
+		), &telegram.SendOpts{ReplyToMessageID: replyTo})
+	}
+}
+
+// truncateToolArgs truncates tool call arguments to at most maxLen bytes
 // for Telegram progress display. This prevents the "message is too long" error
 // (Telegram's 4096 character limit) when sending verbose progress messages for
-// calls like write_file that include large content payloads.
+// calls like write_file that include large content payloads. The cut backs
+// off to a rune boundary so multi-byte arguments never produce invalid UTF-8.
 func truncateToolArgs(data string, maxLen int) string {
 	if len(data) <= maxLen {
 		return data
 	}
-	return data[:maxLen] + fmt.Sprintf("… [%d more bytes]", len(data)-maxLen)
+	cut := max(maxLen, 0)
+	for cut > 0 && !utf8.RuneStart(data[cut]) {
+		cut--
+	}
+	return data[:cut] + fmt.Sprintf("… [%d more bytes]", len(data)-cut)
 }
 
 // ── Proactive Nudge Push ───────────────────────────────────────────────

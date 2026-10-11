@@ -291,7 +291,7 @@ func handleBrowserUpload(store *session.Store, model, workspace string) http.Han
 		browserUploads.entries[id] = browserUpload{sessionID: sess.ID, path: full, name: name, size: len(data), workspace: workspace, created: time.Now().UTC()}
 		digest := sha256.Sum256(data)
 		size := int64(len(data))
-		ref := artifact.Ref{Schema: artifact.SchemaArtifactRef, ID: id, URI: "file://" + full, MediaType: media, SHA256: hex.EncodeToString(digest[:]), SizeBytes: &size}
+		ref := artifact.Ref{Schema: artifact.SchemaArtifactRef, ID: id, URI: artifact.FileURI(full), MediaType: media, SHA256: hex.EncodeToString(digest[:]), SizeBytes: &size}
 		if item, e := browserArtifacts.capture(sess.ID, ref, []string{filepath.Dir(full)}); e == nil {
 			browserArtifacts.Lock()
 			saved := browserArtifacts.entries[item.ID]

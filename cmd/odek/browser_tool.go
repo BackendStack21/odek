@@ -272,11 +272,18 @@ func (t *browserTool) doNavigate(rawURL string) (string, error) {
 
 	return jsonResult(browserResult{
 		Title:    snap.Title,
-		URL:      snap.URL,
+		URL:      t.wrapPageURL(snap.URL),
 		Content:  wrapUntrusted(t.toolCtx(), snap.URL, snap.Content),
 		Status:   snap.Status,
 		Elements: snap.Elements,
 	})
+}
+
+// wrapPageURL wraps a page URL for the model. After a redirect the URL is
+// the server-chosen Location target, so it crosses the untrusted boundary
+// like every other page-derived field.
+func (t *browserTool) wrapPageURL(u string) string {
+	return wrapUntrusted(t.toolCtx(), u, u)
 }
 
 func (t *browserTool) doSnaPshot() (string, error) {
@@ -289,7 +296,7 @@ func (t *browserTool) doSnaPshot() (string, error) {
 
 	return jsonResult(browserResult{
 		Title:    t.state.current.Title,
-		URL:      t.state.current.URL,
+		URL:      t.wrapPageURL(t.state.current.URL),
 		Content:  wrapUntrusted(t.toolCtx(), t.state.current.URL, t.state.current.Content),
 		Elements: t.state.current.Elements,
 	})
@@ -357,7 +364,7 @@ func (t *browserTool) doBack() (string, error) {
 
 	return jsonResult(browserResult{
 		Title:   t.state.current.Title,
-		URL:     t.state.current.URL,
+		URL:     t.wrapPageURL(t.state.current.URL),
 		Content: wrapUntrusted(t.toolCtx(), t.state.current.URL, t.state.current.Content),
 	})
 }
@@ -509,7 +516,8 @@ func parseHTML(ctx context.Context, html, pageURL string, status int) browserSna
 		*fields[i] = w
 	}
 	// Keep the raw page URL itself unwrapped for internal navigation; it is
-	// wrapped at the result-output boundary in doNavigate/doSnapshot.
+	// wrapped at the result-output boundary (wrapPageURL) in
+	// doNavigate/doSnaPshot/doBack.
 
 	return snap
 }

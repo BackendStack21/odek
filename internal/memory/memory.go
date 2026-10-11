@@ -850,6 +850,20 @@ func (m *MemoryManager) AddFact(target, content string) error {
 				// >30-char common prefix would make the substring match
 				// ambiguous and silently drop the merged fact.
 				merged := mergeEntries(nil, entries[similarIdx], content)
+				// The merged text is new content: two individually safe facts
+				// can compose a remote-fetch-piped-to-shell instruction or an
+				// injection pattern, so it passes the same filters as an add.
+				// When it fails them, skip the merge: the existing entry stays
+				// untouched and the new fact, which passed those filters on its
+				// own, is stored as a separate entry by the standard add below.
+				if FactLooksUnsafe(merged) {
+					log.Printf("memory: merge-on-write skipped: merged fact looks unsafe (remote fetch piped to shell)")
+					break
+				}
+				if err := m.scanContent(context.Background(), merged); err != nil {
+					log.Printf("memory: merge-on-write skipped: merged fact rejected by scan: %v", err)
+					break
+				}
 				if err := m.facts.ReplaceAt(target, similarIdx, merged); err != nil {
 					return err
 				}
@@ -1088,7 +1102,7 @@ Entries for %s:
 		}
 		// An entry carrying the on-disk separator would split into extra
 		// entries on write; Add/Replace reject it, so consolidation does too.
-		if strings.Contains(entry, entrySep) {
+		if breaksEntrySep(entry) {
 			log.Printf("memory: consolidated entry rejected: contains entry separator")
 			continue
 		}

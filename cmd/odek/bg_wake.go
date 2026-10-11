@@ -152,8 +152,15 @@ func (d *wakeDispatcher) dispatch(session string) {
 			recent = append(recent, ts)
 		}
 	}
-	if len(recent) >= d.maxPerHour {
+	// The filter reuses the slice's backing array, so the filtered window
+	// must always be stored back: keeping the old length would leave a
+	// duplicate of a live timestamp where an expired one was.
+	if len(recent) == 0 {
+		delete(d.wakes, session)
+	} else {
 		d.wakes[session] = recent
+	}
+	if len(recent) >= d.maxPerHour {
 		d.mu.Unlock()
 		return // spend ceiling hit: payload path covers it
 	}
@@ -305,11 +312,19 @@ func turnInitiatedLabel(msg wsClientMsg) string {
 
 // ── serve wiring ─────────────────────────────────────────────────────────
 
+// bgClientCommandHead is the command echo every client surface shows (the
+// bg_job frame and GET /api/jobs): secrets are redacted from the whole
+// command first and only then clamped to bgCommandHead, because a key cut
+// by the clamp is too short for the redaction patterns to recognise.
+func bgClientCommandHead(cmd string) string {
+	return headString(redact.RedactSecrets(cmd), bgCommandHead)
+}
+
 // bgJobFrame builds the `bg_job` wire frame for a job transition.
 // Model/operator-borne text is server-clamped and secret-redacted:
-// command_head runs through the same headString clamp as notices plus
-// redact.RedactSecrets — a command like `curl -H "Authorization: Bearer
-// sk-..."` must not leak its secret into any client. Optional facts are
+// command_head goes through bgClientCommandHead — a command like
+// `curl -H "Authorization: Bearer sk-..."` must not leak its secret into
+// any client. Optional facts are
 // represented by absent keys, not zero values, so old clients and future
 // statuses degrade cleanly.
 func bgJobFrame(n bgproc.Notice, started bool) map[string]any {
@@ -321,7 +336,7 @@ func bgJobFrame(n bgproc.Notice, started bool) map[string]any {
 		"t":          time.Now().UnixMilli(),
 	}
 	if n.Command != "" {
-		f["command_head"] = redact.RedactSecrets(headString(n.Command, bgCommandHead))
+		f["command_head"] = bgClientCommandHead(n.Command)
 	}
 	if !started {
 		f["exit_code"] = n.ExitCode

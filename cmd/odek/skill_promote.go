@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/BackendStack21/odek/internal/skills"
@@ -22,7 +23,9 @@ import (
 // If the skill's provenance shows it originated from untrusted content
 // (Untrusted=true or non-empty Sources), promotion is refused unless
 // force is true. This prevents a prompt-injection-derived skill from
-// being accidentally auto-loaded after a cursory review.
+// being accidentally auto-loaded after a cursory review. A project-dir
+// skill always counts as sourced ("project"), whatever its frontmatter
+// says, so it too requires force.
 func promoteSkill(userDir, name string, force bool) error {
 	// Skill names are directory components; reject anything with path
 	// structure so the joins below can never escape userDir or the
@@ -50,6 +53,16 @@ func promoteSkill(userDir, name string, force bool) error {
 	loaded := scanSingleSkill(skillDir, path)
 	if loaded == nil {
 		return fmt.Errorf("promote: could not parse skill %q", name)
+	}
+	if fromProject {
+		// scanSingleSkill parses a copy outside the project dir, so the
+		// scan-time project pin is not applied; apply it here. Otherwise a
+		// project SKILL.md that simply omits provenance frontmatter would
+		// carry no Sources and skip the --force gate below.
+		loaded.Provenance.NeedsReview = true
+		if !slices.Contains(loaded.Provenance.Sources, "project") {
+			loaded.Provenance.Sources = append(slices.Clone(loaded.Provenance.Sources), "project")
+		}
 	}
 	if !loaded.Provenance.NeedsReview && !fromProject {
 		fmt.Fprintf(os.Stderr, "odek: skill %q is already trusted (NeedsReview=false)\n", name)

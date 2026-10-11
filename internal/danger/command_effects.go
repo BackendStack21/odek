@@ -54,8 +54,12 @@ func adapterRunsCode(name string, tokens []string, repo *gitRepoCtx) bool {
 		case "difftool", "mergetool":
 			// These launch the configured diff/merge tool by design.
 			return true
+		case "grep":
+			// -O[<pager>] / --open-files-in-pager[=<pager>] runs the pager
+			// through the shell with the matching file names.
+			return gitGrepOpensPager(args) || gitVerbRunsRepoCode(sub, args, tokens, repo)
 		case "commit", "merge", "checkout", "switch", "cherry-pick", "am", "add", "status", "restore", "stash", "gc",
-			"revert", "reset", "clean", "rm", "mv", "update-index", "diff-files", "diff-index", "ls-files", "grep",
+			"revert", "reset", "clean", "rm", "mv", "update-index", "diff-files", "diff-index", "ls-files",
 			"blame", "describe", "checkout-index", "pull", "fetch", "push":
 			return gitVerbRunsRepoCode(sub, args, tokens, repo)
 		case "worktree", "submodule":
@@ -78,6 +82,264 @@ func adapterRunsCode(name string, tokens []string, repo *gitRepoCtx) bool {
 	}
 	if name == "wget" && optionPresent(tokens, "--config", "-i", "--input-file") {
 		return true
+	}
+	return false
+}
+
+// sqliteWritefileCall and sqliteVacuumInto locate the SQL forms of the sqlite3
+// shell that write a file at a path the statement names: writefile(PATH, …)
+// and VACUUM [schema] INTO PATH, the schema name bare or quoted in any SQL
+// style. They match comment-free text in which `;` also stands for a line
+// break (the tokenizer folds quoted newlines into it).
+var (
+	sqliteWritefileCall = regexp.MustCompile(`(?i)\bwritefile[\s;]*\([\s;]*`)
+	sqliteVacuumInto    = regexp.MustCompile(`(?i)\bvacuum(?:[\s;]+(\w+|'(?:[^']|'')*'|"(?:[^"]|"")*"|\x60[^\x60]*\x60|\[[^\]]*\]))?[\s;]+into\b[\s;]*`)
+	// The loose forms count every place a statement may name a write
+	// target; one the strict forms cannot read fails closed.
+	sqliteWritefileLoose = regexp.MustCompile(`(?i)\bwritefile\b`)
+	sqliteVacuumLoose    = regexp.MustCompile(`(?i)\bvacuum\b[\s;]*(\S*?)[\s;]*\binto\b`)
+)
+
+// sqliteInsertVerbs start a statement whose INTO names a table, not a file.
+var sqliteInsertVerbs = map[string]bool{"insert": true, "replace": true}
+
+// sqliteSeparateInsert reports whether a VACUUM … INTO match (group 1 the word
+// between) is really `vacuum; insert into t …`: a statement break followed by
+// an INSERT/REPLACE verb, whose INTO names a table. A break the tokenizer
+// made from a newline reads the same, which only skips an INSERT statement.
+func sqliteSeparateInsert(text string, m []int) bool {
+	if len(m) < 4 || m[2] < 0 {
+		return false
+	}
+	return sqliteInsertVerbs[strings.ToLower(text[m[2]:m[3]])] && strings.Contains(text[m[0]:m[2]], ";")
+}
+
+// sqliteSQLWriteTargets returns the paths SQL text writes through writefile()
+// and VACUUM INTO. Only an argument that is exactly one string literal names
+// a path; anything else (a column, a parameter, a literal concatenated with
+// || or another expression) is only known at run time and is reported as the
+// dynamic marker, which fails closed.
+func sqliteSQLWriteTargets(text string) []string {
+	text = sqlCommentsBlanked(text)
+	var out []string
+	for _, form := range []struct {
+		re, loose *regexp.Regexp
+		end       string // characters that may follow a whole-literal argument
+	}{{sqliteWritefileCall, sqliteWritefileLoose, ",)"}, {sqliteVacuumInto, sqliteVacuumLoose, ";"}} {
+		var matches [][]int
+		for _, m := range form.re.FindAllStringSubmatchIndex(text, -1) {
+			if sqliteSeparateInsert(text, m) {
+				continue
+			}
+			matches = append(matches, m)
+		}
+		loose := 0
+		for _, m := range form.loose.FindAllStringSubmatchIndex(text, -1) {
+			if !sqliteSeparateInsert(text, m) {
+				loose++
+			}
+		}
+		if len(matches) < loose {
+			out = append(out, dynamicSubstToken)
+		}
+		for _, m := range matches {
+			value, rest, ok := sqlLeadingLiteral(text[m[1]:])
+			rest = strings.TrimLeft(rest, " \t\r\n")
+			if ok && (rest == "" || strings.ContainsRune(form.end, rune(rest[0]))) {
+				out = append(out, value)
+				continue
+			}
+			out = append(out, dynamicSubstToken)
+		}
+	}
+	return out
+}
+
+// sqliteWriteDotCommands are the sqlite3 shell dot-commands whose operands
+// name a file the shell writes (or creates): output redirection, backups,
+// the query and trace logs, a database clone, the database it opens and an
+// archive it creates or extracts into.
+var sqliteWriteDotCommands = []string{"output", "once", "save", "backup", "log", "trace", "clone", "open", "archive"}
+
+// sqliteStreamDotCommands accept a stream or switch keyword in place of a file.
+var sqliteStreamDotCommands = map[string]bool{"log": true, "trace": true}
+
+// sqliteDotKeywords are .log / .trace operands that name a stream or a switch
+// rather than a file.
+var sqliteDotKeywords = map[string]bool{"stdout": true, "stderr": true, "off": true, "on": true}
+
+// sqliteDotWriteTargets returns the files that sqlite3 shell input (an
+// argument, a -cmd value or a script read on stdin) writes through write
+// dot-commands, in any abbreviation (the shell resolves one letter too: `.o`
+// writes like .output, `.t` like .trace). Every operand but a .log / .trace
+// stream keyword counts, so `.backup main FILE` reports both words and an
+// option word (`--readonly`, `-x`) is judged as a workspace path.
+func sqliteDotWriteTargets(text string) []string {
+	var out []string
+	for _, line := range strings.FieldsFunc(text, func(r rune) bool { return r == '\n' || r == ';' }) {
+		line = strings.TrimLeft(line, " \t\r")
+		if !strings.HasPrefix(line, ".") {
+			continue
+		}
+		fields := strings.Fields(line[1:])
+		if len(fields) < 2 {
+			continue
+		}
+		name := strings.ToLower(fields[0])
+		writes, onlyLog := false, true
+		for _, cmd := range sqliteWriteDotCommands {
+			if strings.HasPrefix(cmd, name) {
+				writes = true
+				onlyLog = onlyLog && sqliteStreamDotCommands[cmd]
+			}
+		}
+		if !writes {
+			continue
+		}
+		for _, arg := range fields[1:] {
+			arg = strings.Trim(arg, `'"`)
+			if arg == "" || (onlyLog && sqliteDotKeywords[strings.ToLower(arg)]) {
+				continue
+			}
+			out = append(out, arg)
+		}
+	}
+	return out
+}
+
+// sqlLeadingLiteral decodes the string literal ('…' or "…", the quote
+// doubled to escape it) that text starts with and returns what follows it.
+func sqlLeadingLiteral(text string) (value, rest string, ok bool) {
+	if text == "" || (text[0] != '\'' && text[0] != '"') {
+		return "", text, false
+	}
+	q := text[0]
+	var b strings.Builder
+	for i := 1; i < len(text); i++ {
+		if text[i] != q {
+			b.WriteByte(text[i])
+			continue
+		}
+		if i+1 < len(text) && text[i+1] == q {
+			b.WriteByte(q)
+			i++
+			continue
+		}
+		return b.String(), text[i+1:], true
+	}
+	return "", "", false
+}
+
+// sqlCommentsBlanked replaces SQL comments (/* … */ and -- up to a line break
+// or the `;` the tokenizer leaves for one) outside string literals with a
+// space, so keywords split by a comment still match. An unterminated comment
+// runs to the end.
+func sqlCommentsBlanked(text string) string {
+	var b strings.Builder
+	for i := 0; i < len(text); {
+		c := text[i]
+		switch {
+		case c == '\'' || c == '"':
+			j := i + 1
+			for j < len(text) {
+				if text[j] == c {
+					if j+1 < len(text) && text[j+1] == c {
+						j += 2
+						continue
+					}
+					break
+				}
+				j++
+			}
+			if j < len(text) {
+				j++
+			}
+			b.WriteString(text[i:j])
+			i = j
+		case strings.HasPrefix(text[i:], "/*"):
+			end := strings.Index(text[i+2:], "*/")
+			b.WriteByte(' ')
+			if end < 0 {
+				return b.String()
+			}
+			i += end + 4
+		case strings.HasPrefix(text[i:], "--"):
+			end := strings.IndexAny(text[i:], "\n;")
+			b.WriteByte(' ')
+			if end < 0 {
+				return b.String()
+			}
+			i += end
+		default:
+			b.WriteByte(c)
+			i++
+		}
+	}
+	return b.String()
+}
+
+// gitApplyUnsafeDirectories reports whether git apply arguments carry
+// --unsafe-paths (any unambiguous prefix, --uns…), which lets the patch write
+// outside the work tree, and returns the --directory values (--dir… with
+// =value or the next word). A directory option without a value is the
+// dynamic marker.
+func gitApplyUnsafeDirectories(args []string) (unsafe bool, dirs []string) {
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "--" {
+			break
+		}
+		switch {
+		case gitLongOpt(a, "unsafe-paths", 3):
+			unsafe = true
+		case gitLongOpt(a, "no-unsafe-paths", 6):
+			unsafe = false
+		case gitLongOpt(a, "directory", 3):
+			if _, v, ok := strings.Cut(a, "="); ok {
+				dirs = append(dirs, v)
+			} else if i+1 < len(args) {
+				i++
+				dirs = append(dirs, args[i])
+			} else {
+				dirs = append(dirs, dynamicSubstToken)
+			}
+		}
+	}
+	return unsafe, dirs
+}
+
+// gitGrepValueShorts are the git grep short options that consume the rest of
+// their cluster (or the next word) as a value, so letters after them are not
+// options.
+const gitGrepValueShorts = "efABCm"
+
+// gitGrepOpensPager reports whether git grep arguments ask for the matching
+// files to be opened in a pager: -O with an optional fused program (also
+// inside a cluster such as -nO), or --open-files-in-pager and its
+// unambiguous abbreviations (--op…).
+func gitGrepOpensPager(args []string) bool {
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--":
+			return false
+		case strings.HasPrefix(a, "--"):
+			if gitLongOpt(a, "open-files-in-pager", 2) {
+				return true
+			}
+		case isShortFlagToken(a):
+			for j, c := range a[1:] {
+				if c == 'O' {
+					return true
+				}
+				if strings.ContainsRune(gitGrepValueShorts, c) {
+					if j == len(a)-2 {
+						i++ // value is the next word
+					}
+					break
+				}
+			}
+		}
 	}
 	return false
 }
@@ -648,7 +910,17 @@ func semanticWriteTargets(name string, tokens []string) []string {
 			targets = append(targets, gitWorktreeWriteTargets(args)...)
 		case "archive":
 			targets = append(targets, writeOption{spec: gitArchiveOptions, names: []string{"-o", "--output"}}.targets(args)...)
-		case "log", "show", "diff", "whatchanged", "format-patch", "range-diff", "shortlog":
+		case "apply":
+			// With --unsafe-paths, --directory=DIR roots the patch outside
+			// the work tree.
+			if unsafe, dirs := gitApplyUnsafeDirectories(args); unsafe {
+				targets = append(targets, dirs...)
+			}
+		case "format-patch":
+			// -o/--output-directory names the directory the patch files are
+			// written into; --output names a single file.
+			targets = append(targets, writeOption{spec: gitFormatPatchOptions, names: []string{"-o", "--output", "--output-directory"}, endsAtDashDash: true}.targets(args)...)
+		case "log", "show", "diff", "whatchanged", "range-diff", "shortlog":
 			targets = append(targets, writeOption{spec: gitOutputOptions, names: []string{"--output"}, endsAtDashDash: true}.targets(args)...)
 		}
 	case "sed":
@@ -690,10 +962,8 @@ func semanticWriteTargets(name string, tokens []string) []string {
 		}
 	case "sqlite3":
 		for _, tok := range tokens[1:] {
-			parts := strings.Fields(tok)
-			if len(parts) > 1 && hasAny([]string{".output", ".once", ".save", ".backup"}, parts[0]) {
-				targets = append(targets, parts[1])
-			}
+			targets = append(targets, sqliteDotWriteTargets(tok)...)
+			targets = append(targets, sqliteSQLWriteTargets(tok)...)
 		}
 	case "xxd":
 		if hasAny(tokens, "-r", "-revert") {
@@ -827,4 +1097,7 @@ var (
 	// characters on.
 	gitArchiveOptions = optSpec{short: "o", long: valueOpts("output"), abbrev: true}
 	gitOutputOptions  = optSpec{long: valueOpts("output"), abbrev: true, minAbbrev: 4}
+	// gitFormatPatchOptions: an ambiguous prefix such as --outp resolves to
+	// both output options, so it is a write target either way.
+	gitFormatPatchOptions = optSpec{short: "o", long: valueOpts("output output-directory"), abbrev: true, minAbbrev: 4}
 )

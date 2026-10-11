@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/BackendStack21/odek/internal/schedule"
+	"github.com/BackendStack21/odek/internal/telegram"
 )
 
 // This file implements the Telegram `/schedule` and `/schedules` slash commands,
@@ -54,7 +55,7 @@ func telegramScheduleReply(chatID int64, userID int64, argsStr string, st *sched
 	if st == nil {
 		return "❌ Schedule store is unavailable.", ""
 	}
-	sub, rest, _ := strings.Cut(strings.TrimSpace(argsStr), " ")
+	sub, rest := telegram.SplitCommandToken(strings.TrimSpace(argsStr))
 	sub = strings.ToLower(strings.TrimSpace(sub))
 	rest = strings.TrimSpace(rest)
 

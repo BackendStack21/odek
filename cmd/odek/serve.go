@@ -305,6 +305,23 @@ func (rl *rateLimiter) reset() {
 
 // ── Serve Command ───────────────────────────────────────────────────────
 
+// serveSandboxPolicy decides whether serve runs sandboxed, using the same
+// intent rules as `run` (sandboxIntent): an explicit setting from any
+// trusted layer wins, then ODEK_NO_SANDBOX=1, otherwise the default is on
+// (forced reports that the default switched it on). An opt-out combined
+// with ODEK_REQUIRE_SANDBOX=1 is an error, as for `run`.
+func serveSandboxPolicy(resolved config.ResolvedConfig) (sandbox, forced bool, err error) {
+	want, _ := sandboxIntent(resolved)
+	if !want {
+		if os.Getenv("ODEK_REQUIRE_SANDBOX") == "1" {
+			// The operator's hard constraint outranks every opt-out.
+			return false, false, fmt.Errorf("sandbox required (ODEK_REQUIRE_SANDBOX=1) but sandboxing is disabled by flag/config")
+		}
+		return false, false, nil
+	}
+	return true, !resolved.Sandbox, nil
+}
+
 func serveCmd(args []string) error {
 	addr := "127.0.0.1:8080"
 	openBrowser := false
@@ -432,13 +449,20 @@ func serveCmd(args []string) error {
 	}
 	// Serve mode default-on for sandbox: the Web UI surface is the
 	// largest blast radius (browser-driven tool calls, untrusted-page
-	// fetches), and the user opted into a long-running process. If no
-	// explicit opt-out was passed via --no-sandbox or config, force on.
-	// To disable, run `odek serve --no-sandbox` (and accept the warning).
-	if sandbox == nil && !resolved.Sandbox {
-		resolved.Sandbox = true
+	// fetches), and the user opted into a long-running process. The opt-outs
+	// are the same as for `run`: --no-sandbox, ODEK_NO_SANDBOX=1, or
+	// "sandbox": false in trusted config / ODEK_SANDBOX=false (a project
+	// odek.json cannot disable it — the loader drops that). Without one,
+	// force on. Unlike `run`, serve never degrades to unsandboxed when
+	// Docker is missing: every agent construction hard-fails instead.
+	sandboxOn, forced, err := serveSandboxPolicy(resolved)
+	if err != nil {
+		return err
+	}
+	if forced {
 		fmt.Fprintln(os.Stderr, "odek serve: sandbox enabled by default (run with --no-sandbox to disable)")
 	}
+	resolved.Sandbox = sandboxOn
 	systemMessage := buildSystemPrompt(resolved)
 
 	// Build sandbox config from resolved settings (serve)
@@ -717,6 +741,7 @@ func newServeHTTPServer(mux *http.ServeMux) *http.Server {
 // and gives in-flight requests up to 5 seconds to finish.
 func serveOnListener(listener net.Listener, mux *http.ServeMux) error {
 	srv := newServeHTTPServer(mux)
+	openServeRunAdmission()
 	diagnostics.Emit(events.Event{Type: "service_started", Data: map[string]any{"component": "serve"}})
 	defer diagnostics.Emit(events.Event{Type: "service_stopped", Data: map[string]any{"component": "serve"}})
 
@@ -762,6 +787,16 @@ func serveOnListener(listener net.Listener, mux *http.ServeMux) error {
 		key.(*golangws.Conn).Close()
 		return true
 	})
+
+	// Phase 2.25: cancel in-flight headless REST runs. Nothing else ends
+	// them: a run blocked on an approval or a long model call would outlive
+	// the drain below and exit without its sandbox/MCP cleanup. The sweep
+	// also closes admission: a POST /api/prompt still building its agent
+	// (the HTTP shutdown above may time out on it) is refused at
+	// registration and releases what it acquired.
+	if n := cancelActiveServeRuns(); n > 0 {
+		fmt.Fprintf(os.Stderr, "odek serve: cancelled %d headless run(s)\n", n)
+	}
 
 	// Phase 2.5: kill every background job across all sessions — the
 	// process-exit contract (no detach). Done before the drain so the job
@@ -896,12 +931,33 @@ func newServeAgent(resolved config.ResolvedConfig, system string, runKey string,
 	bgRT := newServeBGRuntime(serveBG.Load(), backgroundSettingsFrom(resolved).Notify)
 	tools := builtinTools(resolved.Dangerous, sm, approver, resolved.MaxConcurrency, resolved.APIKey, toolConfigFromResolved(resolved), nil, bgRT)
 
+	// Every resource acquired below is released by fail when a later
+	// construction step errors: the callers only receive nil cleanups on
+	// error, so anything left running here would leak (MCP subprocesses,
+	// the sandbox container, the guard sidecar connection).
+	var (
+		mcpCleanup     func()
+		sandboxCleanup func() error
+		guardCleanup   func() error
+	)
+	fail := func(err error) (*odek.Agent, *bgRuntime, func() error, func(), func() error, guard.Guard, *wsApprover, error) {
+		if guardCleanup != nil {
+			_ = guardCleanup()
+		}
+		if sandboxCleanup != nil {
+			_ = sandboxCleanup()
+		}
+		if mcpCleanup != nil {
+			mcpCleanup()
+		}
+		return nil, nil, nil, nil, nil, nil, approver, err
+	}
+
 	// MCP server tools
-	var mcpCleanup func()
 	if len(resolved.MCPServers) > 0 {
 		cl, err := loadMCPTools(resolved, &tools)
 		if err != nil {
-			return nil, nil, nil, nil, nil, nil, approver, fmt.Errorf("mcp: %w", err)
+			return fail(fmt.Errorf("mcp: %w", err))
 		}
 		mcpCleanup = cl
 	}
@@ -925,8 +981,6 @@ func newServeAgent(resolved config.ResolvedConfig, system string, runKey string,
 		subagentTool.OnSubagentLog = newSubagentTelemetryRelayOwned(sendFn, runKey, subagentOwner)
 		subagentTool.OnSubagentDone = newSubagentDoneRelayOwned(sendFn, runKey, subagentOwner)
 	}
-	var sandboxCleanup func() error
-
 	if resolved.Sandbox {
 		cfg := sandboxConfig{
 			Image:    resolved.SandboxImage,
@@ -942,7 +996,8 @@ func newServeAgent(resolved config.ResolvedConfig, system string, runKey string,
 		var sandboxErr error
 		sbContainerName, sandboxCleanup, sandboxErr = setupSandbox(tools, cfg)
 		if sandboxErr != nil {
-			return nil, nil, nil, nil, nil, nil, approver, fmt.Errorf("sandbox: %w", sandboxErr)
+			sandboxCleanup = nil
+			return fail(fmt.Errorf("sandbox: %w", sandboxErr))
 		}
 		if bgRT != nil {
 			bgRT.SetContainer(sbContainerName)
@@ -973,15 +1028,9 @@ func newServeAgent(resolved config.ResolvedConfig, system string, runKey string,
 	// Build the shared prompt-injection guard for this connection.
 	injectionGuard, err := guard.New(&resolved.Guard)
 	if err != nil {
-		if sandboxCleanup != nil {
-			_ = sandboxCleanup()
-		}
-		if mcpCleanup != nil {
-			mcpCleanup()
-		}
-		return nil, nil, nil, nil, nil, nil, approver, fmt.Errorf("guard: %w", err)
+		return fail(fmt.Errorf("guard: %w", err))
 	}
-	guardCleanup := func() error {
+	guardCleanup = func() error {
 		if injectionGuard != nil {
 			return injectionGuard.Close()
 		}
@@ -1108,15 +1157,9 @@ func newServeAgent(resolved config.ResolvedConfig, system string, runKey string,
 	agent, err := odek.New(serveCfg)
 	built = agent
 	if err != nil {
-		// Container was started but agent construction failed — clean up now
-		// so the container doesn't outlive this call.
-		if sandboxCleanup != nil {
-			sandboxCleanup() //nolint:errcheck
-		}
-		if mcpCleanup != nil {
-			mcpCleanup()
-		}
-		return nil, nil, nil, nil, nil, nil, approver, err
+		// Container, MCP servers and guard were started but agent
+		// construction failed — release them so nothing outlives this call.
+		return fail(err)
 	}
 
 	// Background-job completion notices are drained at iteration start
@@ -2314,7 +2357,7 @@ func handlePrompt(
 		newSess, err := store.Create(
 			[]session.Message{{Role: "system", Content: ""}},
 			resolved.Model,
-			shorten(prompt, 60),
+			shorten(redact.RedactSecrets(prompt), 60), // redact before the cut: a truncated key is too short for the save-time redaction patterns
 		)
 		if err != nil {
 			sendError(send, "failed to create session: "+err.Error())

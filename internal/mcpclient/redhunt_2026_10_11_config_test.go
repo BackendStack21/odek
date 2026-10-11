@@ -1,0 +1,490 @@
+package mcpclient
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"sync"
+	"testing"
+	"time"
+)
+
+// Streamable HTTP: when the server returns an Mcp-Session-Id header on the
+// initialize response, the client must send it on every subsequent request
+// (notifications included); stateful servers answer 400 otherwise.
+func TestRED_HTTPTransportEchoesMcpSessionID(t *testing.T) {
+	const sid = "sess-7f3a"
+	var mu sync.Mutex
+	var sawInitializedWithSID bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			ID     *int   `json:"id"`
+			Method string `json:"method"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if req.Method == "initialize" && r.Header.Get("Mcp-Session-Id") != "" {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if req.Method != "initialize" && r.Header.Get("Mcp-Session-Id") != sid {
+			w.WriteHeader(http.StatusBadRequest)
+			fmt.Fprint(w, `{"jsonrpc":"2.0","id":null,"error":{"code":-32000,"message":"Bad Request: No valid session ID provided"}}`)
+			return
+		}
+		if req.ID == nil { // notification
+			if req.Method == "notifications/initialized" {
+				mu.Lock()
+				sawInitializedWithSID = true
+				mu.Unlock()
+			}
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch req.Method {
+		case "initialize":
+			w.Header().Set("Mcp-Session-Id", sid)
+			fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%d,"result":{"protocolVersion":"2025-03-26","capabilities":{},"serverInfo":{"name":"s","version":"1"}}}`, *req.ID)
+		case "tools/list":
+			fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%d,"result":{"tools":[{"name":"echo","description":"Echo","inputSchema":{"type":"object"}}]}}`, *req.ID)
+		default:
+			fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%d,"result":{"content":[{"type":"text","text":"ok"}]}}`, *req.ID)
+		}
+	}))
+	defer srv.Close()
+
+	c, err := New("stateful", ServerConfig{URL: srv.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	tools, err := c.Discover(ctx)
+	if err != nil {
+		t.Fatalf("Discover against a stateful Streamable HTTP server failed: %v", err)
+	}
+	if len(tools) != 1 || tools[0].Name != "echo" {
+		t.Fatalf("tools = %+v", tools)
+	}
+	mu.Lock()
+	ok := sawInitializedWithSID
+	mu.Unlock()
+	if !ok {
+		t.Error("notifications/initialized was not sent with the session id")
+	}
+	out, err := c.CallTool(ctx, "echo", `{}`)
+	if err != nil || out != "ok" {
+		t.Fatalf("CallTool = %q, %v", out, err)
+	}
+}
+
+// A session id that is not visible ASCII (header-injection shaped or empty)
+// is never stored or echoed.
+func TestRED_HTTPTransportIgnoresInvalidMcpSessionID(t *testing.T) {
+	for _, bad := range []string{"has space", "tab\there", "été"} {
+		if validMCPSessionID(bad) {
+			t.Errorf("validMCPSessionID(%q) = true", bad)
+		}
+	}
+	if validMCPSessionID("") {
+		t.Error("empty session id accepted")
+	}
+	if !validMCPSessionID("abc-123_~!") {
+		t.Error("visible-ASCII session id rejected")
+	}
+}
+
+// The session id belongs to the configured server: a redirect to another
+// host must not carry it (Go strips only Authorization/Cookie on its own),
+// while a same-host redirect keeps it.
+func TestRED_HTTPTransportDropsSessionIDOnCrossHostRedirect(t *testing.T) {
+	const sid = "sess-secret"
+	var mu sync.Mutex
+	var leaked, sameHostKept bool
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			ID *int `json:"id"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		mu.Lock()
+		if r.Header.Get("Mcp-Session-Id") != "" {
+			leaked = true
+		}
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%d,"result":{"tools":[]}}`, *req.ID)
+	}))
+	defer other.Close()
+	var srvURL string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			ID     *int   `json:"id"`
+			Method string `json:"method"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		switch {
+		case req.ID == nil:
+			w.WriteHeader(http.StatusAccepted)
+		case req.Method == "initialize":
+			w.Header().Set("Mcp-Session-Id", sid)
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%d,"result":{"protocolVersion":"2025-03-26","capabilities":{},"serverInfo":{"name":"s","version":"1"}}}`, *req.ID)
+		case r.URL.Path == "/moved":
+			mu.Lock()
+			sameHostKept = r.Header.Get("Mcp-Session-Id") == sid
+			mu.Unlock()
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%d,"result":{"content":[{"type":"text","text":"ok"}]}}`, *req.ID)
+		case req.Method == "tools/call":
+			http.Redirect(w, r, srvURL+"/moved", http.StatusTemporaryRedirect)
+		default: // tools/list
+			http.Redirect(w, r, other.URL, http.StatusTemporaryRedirect)
+		}
+	}))
+	defer srv.Close()
+	srvURL = srv.URL
+
+	c, err := New("redir", ServerConfig{URL: srv.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := c.Discover(ctx); err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	if _, err := c.CallTool(ctx, "x", `{}`); err != nil {
+		t.Fatalf("CallTool: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if leaked {
+		t.Error("Mcp-Session-Id forwarded to a different host on redirect")
+	}
+	if !sameHostKept {
+		t.Error("Mcp-Session-Id dropped on a same-host redirect")
+	}
+}
+
+// The guard keeps the caller's own redirect policy and, without one, the
+// standard 10-hop limit; a scheme change also drops the session id.
+func TestRED_SessionRedirectGuardPolicy(t *testing.T) {
+	server, _ := url.Parse("https://mcp.example.com/rpc")
+	mk := func(raw string) *http.Request {
+		r, _ := http.NewRequest(http.MethodPost, raw, nil)
+		r.Header.Set("Mcp-Session-Id", "s")
+		return r
+	}
+	g := withSessionRedirectGuard(&http.Client{}, server)
+	if r := mk("http://mcp.example.com/rpc"); g.CheckRedirect(r, nil) != nil || r.Header.Get("Mcp-Session-Id") != "" {
+		t.Error("scheme downgrade kept the session id")
+	}
+	if r := mk("https://MCP.example.com/other"); g.CheckRedirect(r, nil) != nil || r.Header.Get("Mcp-Session-Id") != "s" {
+		t.Error("same-host redirect dropped the session id")
+	}
+	if g.CheckRedirect(mk("https://mcp.example.com/"), make([]*http.Request, 10)) == nil {
+		t.Error("11th redirect allowed")
+	}
+	sentinel := fmt.Errorf("no redirects")
+	g2 := withSessionRedirectGuard(&http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return sentinel }}, server)
+	if r := mk("https://evil.example/"); g2.CheckRedirect(r, nil) != sentinel || r.Header.Get("Mcp-Session-Id") != "" {
+		t.Error("caller's CheckRedirect not honoured, or session id kept")
+	}
+}
+
+// redHuntConfigPipeClient builds a stdio Client wired to in-memory pipes and
+// returns the server's read/write ends.
+func redHuntConfigPipeClient(t *testing.T, name string, timeout time.Duration) (*Client, *bufio.Scanner, io.Writer) {
+	t.Helper()
+	clientRead, serverWrite := io.Pipe()
+	serverRead, clientWrite := io.Pipe()
+	c := &Client{
+		name: name, stdin: clientWrite, stdout: bufio.NewReader(clientRead),
+		lineCh: make(chan lineResult, 10), done: make(chan struct{}),
+		writeCh: make(chan *queuedRequest, 4), writeDone: make(chan struct{}),
+		replyCh: make(chan []byte, serverReplyQueue),
+		closed:  make(chan struct{}), pending: make(map[int]chan callResponse),
+		timeout: timeout,
+	}
+	go c.readLoop()
+	go c.writeLoop()
+	t.Cleanup(func() {
+		c.closeOnce.Do(func() { close(c.closed) })
+		clientWrite.Close()
+		clientRead.Close()
+		serverWrite.Close()
+		serverRead.Close()
+	})
+	return c, bufio.NewScanner(serverRead), serverWrite
+}
+
+// MCP lifecycle: after the initialize response the client must send the
+// notifications/initialized notification before any other request — on the
+// stdio transport too.
+func TestRED_StdioDiscoverSendsInitializedNotification(t *testing.T) {
+	c, sc, serverWrite := redHuntConfigPipeClient(t, "strict", 3*time.Second)
+	go func() {
+		initialized := false
+		for sc.Scan() {
+			var req struct {
+				ID     *int   `json:"id"`
+				Method string `json:"method"`
+			}
+			if json.Unmarshal(sc.Bytes(), &req) != nil {
+				continue
+			}
+			switch {
+			case req.Method == "notifications/initialized" && req.ID == nil:
+				initialized = true
+			case req.ID == nil:
+			case req.Method == "initialize":
+				fmt.Fprintf(serverWrite, `{"jsonrpc":"2.0","id":%d,"result":{"protocolVersion":"2024-11-05","capabilities":{},"serverInfo":{"name":"s","version":"1"}}}`+"\n", *req.ID)
+			case !initialized:
+				fmt.Fprintf(serverWrite, `{"jsonrpc":"2.0","id":%d,"error":{"code":-32602,"message":"Received request before initialization was complete"}}`+"\n", *req.ID)
+			default:
+				fmt.Fprintf(serverWrite, `{"jsonrpc":"2.0","id":%d,"result":{"tools":[{"name":"echo","description":"Echo"}]}}`+"\n", *req.ID)
+			}
+		}
+	}()
+
+	tools, err := c.Discover(context.Background())
+	if err != nil {
+		t.Fatalf("Discover against a lifecycle-strict stdio server: %v", err)
+	}
+	if len(tools) != 1 {
+		t.Fatalf("tools = %+v", tools)
+	}
+}
+
+// MCP basic utilities: the receiver of a "ping" must respond promptly with an
+// empty result. A server that pings before finishing a tools/call must not
+// stall the call; any other server request gets method-not-found, and
+// notifications get no reply.
+func TestRED_StdioClientAnswersServerPing(t *testing.T) {
+	c, sc, serverWrite := redHuntConfigPipeClient(t, "pinger", 2*time.Second)
+	replies := make(chan string, 8)
+	go func() {
+		callID := -1
+		for sc.Scan() {
+			line := sc.Text()
+			var msg struct {
+				ID     *json.RawMessage `json:"id"`
+				Method string           `json:"method"`
+			}
+			if json.Unmarshal([]byte(line), &msg) != nil {
+				continue
+			}
+			switch {
+			case msg.Method == "tools/call" && msg.ID != nil:
+				_ = json.Unmarshal(*msg.ID, &callID)
+				// A notification (no reply expected), an unsupported request,
+				// then a liveness check before doing the work.
+				fmt.Fprint(serverWrite, `{"jsonrpc":"2.0","method":"notifications/message","params":{}}`+"\n")
+				fmt.Fprint(serverWrite, `{"jsonrpc":"2.0","id":7,"method":"sampling/createMessage","params":{}}`+"\n")
+				fmt.Fprint(serverWrite, `{"jsonrpc":"2.0","id":"ping1","method":"ping"}`+"\n")
+			case msg.Method == "" && msg.ID != nil:
+				replies <- line
+				if string(*msg.ID) == `"ping1"` {
+					fmt.Fprintf(serverWrite, `{"jsonrpc":"2.0","id":%d,"result":{"content":[{"type":"text","text":"done"}]}}`+"\n", callID)
+				}
+			}
+		}
+	}()
+
+	out, err := c.CallTool(context.Background(), "work", `{}`)
+	if err != nil {
+		t.Fatalf("CallTool against a server that pings first: %v", err)
+	}
+	if out != "done" {
+		t.Fatalf("out = %q", out)
+	}
+	var got []string
+	for len(got) < 2 {
+		select {
+		case r := <-replies:
+			got = append(got, r)
+		case <-time.After(2 * time.Second):
+			t.Fatalf("replies = %v, want two", got)
+		}
+	}
+	var mnf, pong map[string]any
+	_ = json.Unmarshal([]byte(got[0]), &mnf)
+	_ = json.Unmarshal([]byte(got[1]), &pong)
+	if errObj, _ := mnf["error"].(map[string]any); mnf["id"] != float64(7) || errObj == nil || errObj["code"] != float64(-32601) {
+		t.Errorf("reply to an unsupported server request = %s, want method-not-found for id 7", got[0])
+	}
+	if res, ok := pong["result"].(map[string]any); pong["id"] != "ping1" || !ok || len(res) != 0 {
+		t.Errorf("reply to ping = %s, want an empty result for id \"ping1\"", got[1])
+	}
+	select {
+	case r := <-replies:
+		t.Errorf("unexpected extra reply %s (notifications must not be answered)", r)
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+// A server request whose id is neither a string nor a number is malformed and
+// gets no reply.
+func TestRED_ServerRequestReplyRejectsNonScalarID(t *testing.T) {
+	for _, id := range []string{`{"a":1}`, `[1]`, `true`, `null`, ``} {
+		if b := serverRequestReply(json.RawMessage(id), "ping"); b != nil {
+			t.Errorf("id %s: reply %s, want none", id, b)
+		}
+	}
+	if b := serverRequestReply(json.RawMessage(`12`), "ping"); string(b) != `{"jsonrpc":"2.0","id":12,"result":{}}`+"\n" {
+		t.Errorf("ping reply = %q", b)
+	}
+	// Not valid JSON (cannot come from a decoded frame): no reply.
+	if b := serverRequestReply(json.RawMessage(`"unterminated`), "ping"); b != nil {
+		t.Errorf("malformed id: reply %s, want none", b)
+	}
+}
+
+// notify on stdio: a nil ctx and an unset timeout use the defaults; a closed
+// connection or a full writer queue past the deadline fail instead of
+// blocking.
+func TestRED_StdioNotifyBoundedAndClosed(t *testing.T) {
+	c := &Client{writeCh: make(chan *queuedRequest, 1), closed: make(chan struct{})}
+	//nolint:staticcheck // a nil ctx is the case under test
+	if err := c.notify(nil, "notifications/initialized"); err != nil {
+		t.Fatalf("notify into an empty queue: %v", err)
+	}
+	if q := <-c.writeCh; !bytes.HasSuffix(q.data, []byte("\n")) || !bytes.Contains(q.data, []byte(`"method":"notifications/initialized"`)) || bytes.Contains(q.data, []byte(`"id"`)) {
+		t.Fatalf("queued notification = %s", q.data)
+	}
+
+	c.writeCh <- &queuedRequest{ctx: context.Background()} // queue full
+	c.timeout = 50 * time.Millisecond
+	if err := c.notify(context.Background(), "x"); err == nil {
+		t.Fatal("notify into a full queue past the deadline returned nil")
+	}
+	close(c.closed)
+	if err := c.notify(context.Background(), "x"); err == nil {
+		t.Fatal("notify on a closed connection returned nil")
+	}
+	// A reply to a server request is dropped, never blocking, when the
+	// reply queue is full (open connection) or the connection is closed;
+	// it never lands on the client request queue.
+	open := &Client{writeCh: make(chan *queuedRequest, 1), replyCh: make(chan []byte, 1), closed: make(chan struct{})}
+	open.sendServerReply([]byte("a\n"))
+	for _, cl := range []*Client{open, c} {
+		done := make(chan struct{})
+		go func() { cl.sendServerReply([]byte("b\n")); close(done) }()
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Fatal("sendServerReply blocked")
+		}
+	}
+	if len(open.writeCh) != 0 || len(open.replyCh) != 1 || string(<-open.replyCh) != "a\n" {
+		t.Error("server reply routed to the wrong queue or not dropped when full")
+	}
+}
+
+// An initialize response without a valid session id leaves the client
+// stateless, and clears an id from an earlier initialize.
+func TestRED_CaptureSessionIDRejectsInvalid(t *testing.T) {
+	c := &Client{sessionID: "old"}
+	resp := &http.Response{Header: http.Header{}}
+	resp.Header.Set("Mcp-Session-Id", "bad id")
+	c.captureSessionID(resp)
+	if c.sessionID != "" {
+		t.Errorf("sessionID = %q after an invalid header, want empty", c.sessionID)
+	}
+	req, _ := http.NewRequest(http.MethodPost, "http://x", nil)
+	c.setHTTPHeaders(req)
+	if req.Header.Get("Mcp-Session-Id") != "" {
+		t.Error("session header sent without a stored id")
+	}
+}
+
+// Small accessors used by the registry and the loop.
+func TestRED_ConfigAccessorsCovered(t *testing.T) {
+	off := false
+	if !(ServerConfig{Enabled: &off}).IsDisabled() || (ServerConfig{}).IsDisabled() {
+		t.Error("IsDisabled")
+	}
+	a := &ToolAdapter{}
+	if s, ok := a.Schema().(map[string]any); !ok || s["type"] != "object" {
+		t.Errorf("default schema = %v", a.Schema())
+	}
+	c := &Client{lineCh: make(chan lineResult, 1)}
+	c.lineCh <- lineResult{line: "l"}
+	if l, err := c.readLine(context.Background()); l != "l" || err != nil {
+		t.Errorf("readLine = %q, %v", l, err)
+	}
+	close(c.lineCh)
+	if _, err := c.readLine(context.Background()); err != io.EOF {
+		t.Errorf("readLine after close = %v, want EOF", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := (&Client{lineCh: make(chan lineResult)}).readLine(ctx); err == nil {
+		t.Error("readLine with a cancelled ctx returned nil error")
+	}
+}
+
+// A ping flood must not delay the client's own requests: replies to server
+// requests may be dropped under pressure, but a queued call goes out ahead
+// of them. The server floods pings while not reading stdin, then reads
+// slowly; with replies queued ahead of the call (32 × 60ms) the call would
+// miss its 1s deadline.
+func TestRED_PingFloodDoesNotStarveClientRequests(t *testing.T) {
+	clientRead, serverWrite := io.Pipe()
+	serverRead, clientWrite := io.Pipe()
+	c := &Client{
+		name: "flood", stdin: clientWrite, stdout: bufio.NewReader(clientRead),
+		lineCh: make(chan lineResult, 10), done: make(chan struct{}),
+		writeCh: make(chan *queuedRequest, 32), writeDone: make(chan struct{}),
+		replyCh: make(chan []byte, serverReplyQueue),
+		closed:  make(chan struct{}), pending: make(map[int]chan callResponse),
+		timeout: time.Second,
+	}
+	go c.readLoop()
+	go c.writeLoop()
+	t.Cleanup(func() {
+		c.closeOnce.Do(func() { close(c.closed) })
+		clientWrite.Close()
+		clientRead.Close()
+		serverWrite.Close()
+		serverRead.Close()
+	})
+
+	for i := 0; i < 60; i++ {
+		fmt.Fprintf(serverWrite, `{"jsonrpc":"2.0","id":"p%d","method":"ping"}`+"\n", i)
+	}
+	go func() {
+		time.Sleep(300 * time.Millisecond) // let the call queue up behind the replies
+		sc := bufio.NewScanner(serverRead)
+		for sc.Scan() {
+			var msg struct {
+				ID     *json.RawMessage `json:"id"`
+				Method string           `json:"method"`
+			}
+			if json.Unmarshal(sc.Bytes(), &msg) != nil {
+				continue
+			}
+			if msg.Method == "tools/call" && msg.ID != nil {
+				fmt.Fprintf(serverWrite, `{"jsonrpc":"2.0","id":%s,"result":{"content":[{"type":"text","text":"done"}]}}`+"\n", *msg.ID)
+				continue
+			}
+			time.Sleep(60 * time.Millisecond) // slow server
+		}
+	}()
+	time.Sleep(100 * time.Millisecond) // pings are read and their replies queued
+	out, err := c.CallTool(context.Background(), "work", `{}`)
+	if err != nil || out != "done" {
+		t.Fatalf("CallTool behind a ping flood = %q, %v", out, err)
+	}
+}

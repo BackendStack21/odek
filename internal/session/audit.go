@@ -28,6 +28,7 @@ import (
 
 	"github.com/BackendStack21/odek/internal/diagnostics"
 	"github.com/BackendStack21/odek/internal/fsatomic"
+	"github.com/BackendStack21/odek/internal/redact"
 )
 
 // AuditIngest records that the agent ingested an untrusted-source
@@ -126,6 +127,7 @@ func boundedAuditResources(content string) []string {
 		resources = resources[:64]
 	}
 	for i := range resources {
+		resources[i] = redact.RedactSecrets(resources[i])
 		if len(resources[i]) > 512 {
 			resources[i] = resources[i][:512]
 		}
@@ -144,7 +146,8 @@ func (e auditReadError) Unwrap() error { return e.err }
 // RecordIngest appends an ingest entry for a session. The log is stored
 // as append-only JSONL (one record per line) so an ingest never rewrites
 // existing history; legacy whole-file JSON logs are migrated on first
-// write.
+// write. The source and resource indicators are redacted with the same
+// secret patterns session saves use; the content hash covers the raw body.
 func (s *AuditStore) RecordIngest(sessionID string, turn int, source, content string) error {
 	if err := ValidateSessionID(sessionID); err != nil {
 		return err
@@ -152,7 +155,7 @@ func (s *AuditStore) RecordIngest(sessionID string, turn int, source, content st
 	sum := sha256.Sum256([]byte(content))
 	rec := AuditIngest{
 		Turn:        turn,
-		Source:      source,
+		Source:      redact.RedactSecrets(source),
 		ContentHash: hex.EncodeToString(sum[:8]),
 		Resources:   boundedAuditResources(content),
 		At:          time.Now().UTC(),
@@ -160,12 +163,30 @@ func (s *AuditStore) RecordIngest(sessionID string, turn int, source, content st
 	return s.appendRecord(sessionID, auditRecord{Type: "ingest", Ingest: &rec})
 }
 
-// RecordTurn appends a turn assessment for a session.
+// RecordTurn appends a turn assessment for a session. The user message and
+// the resource lists are redacted before they are written, as session saves
+// redact the task and message content.
 func (s *AuditStore) RecordTurn(sessionID string, turn AuditTurn) error {
 	if err := ValidateSessionID(sessionID); err != nil {
 		return err
 	}
+	turn.UserMessage = redact.RedactSecrets(turn.UserMessage)
+	turn.NovelResources = redactAuditList(turn.NovelResources)
+	turn.UntrustedResources = redactAuditList(turn.UntrustedResources)
 	return s.appendRecord(sessionID, auditRecord{Type: "turn", Turn: &turn})
+}
+
+// redactAuditList returns a redacted copy of list; the caller's slice is
+// never modified.
+func redactAuditList(list []string) []string {
+	if len(list) == 0 {
+		return list
+	}
+	out := make([]string, len(list))
+	for i, v := range list {
+		out[i] = redact.RedactSecrets(v)
+	}
+	return out
 }
 
 // auditRecord is one JSONL line: a typed envelope around the per-record

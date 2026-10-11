@@ -666,15 +666,18 @@ func (s *PlanStore) checkReplace(args planArgs) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("plan: check_replace: replacement: %w", err)
 		}
+		// Check ids are unique within a step (the resume parser rejects a
+		// duplicate); the replacement may reuse only the id it replaces.
+		for j, sibling := range wStep.Checks {
+			if j != ci && sibling.ID == fresh[0].ID {
+				return "", fmt.Errorf("plan: check_replace: replacement id %q duplicates another check on step %q — retryable: true; choose a fresh id", fresh[0].ID, stepID)
+			}
+		}
 		wStep.Checks[ci] = fresh[0]
 	case args.EvidenceNote != "":
-		note := normalizePlanText(args.EvidenceNote)
-		if runes := []rune(note); len(runes) > maxPlanCheckDescChars {
-			note = string(runes[:maxPlanCheckDescChars])
-		}
 		wStep.Checks[ci] = PlanCheck{
 			ID:          old.ID,
-			Description: old.Description + " (evidence: " + note + ")",
+			Description: evidenceCheckDescription(old.Description, normalizePlanText(args.EvidenceNote)),
 			Tool:        old.Tool,
 			Arguments:   old.Arguments,
 			Status:      PlanCheckPassed,
@@ -683,8 +686,22 @@ func (s *PlanStore) checkReplace(args planArgs) (string, error) {
 		return "", fmt.Errorf("plan: check_replace requires replacement {id,description,tool,arguments} or evidence_note — example: {\"verb\":\"check_replace\",\"step_id\":\"s1\",\"check_id\":\"c1\",\"justification\":\"why\",\"evidence_note\":\"diff confirmed expected output\"}")
 	}
 	wStep.Checks[ci].CallID = ""
+	// A done step holds only passed or blocked checks. A fresh pending
+	// replacement has no evidence yet, so the step reopens like every other
+	// evidence-resetting path.
+	if wStep.Status == StepDone && !allPlanChecksPassed(*wStep) {
+		wStep.Status = StepInProgress
+	}
+	// The revision reason shares the revise cap the resume parser enforces
+	// (maxRevisionReason); the justification is clamped to fit it so a
+	// plan check_replace accepts always resumes. Step and check ids are
+	// bounded, so the fixed prefix always leaves room for the text.
+	reasonPrefix := "check " + stepID + "/" + checkID + " replaced: "
+	if room := maxRevisionReason - len([]rune(reasonPrefix)); len([]rune(justification)) > room {
+		justification = strings.TrimSpace(string([]rune(justification)[:room]))
+	}
 	candidate := PlanState{Version: s.nextVersion(), Steps: working, Revision: &PlanRevision{
-		Reason:  "check " + stepID + "/" + checkID + " replaced: " + justification,
+		Reason:  reasonPrefix + justification,
 		Summary: []string{"replaced " + stepID + "/" + checkID},
 	}}
 	if !checkedPlanFits(candidate, s.maxRenderChars) {
@@ -697,6 +714,25 @@ func (s *PlanStore) checkReplace(args planArgs) (string, error) {
 	// downstream change events carry Revised (same contract as revise).
 	s.revisionNotify = true
 	return s.renderLocked(), nil
+}
+
+// evidenceCheckDescription appends an evidence note to a check description
+// while keeping the result within maxPlanCheckDescChars, the cap the resume
+// parser enforces, so a plan check_replace accepts always resumes. When both
+// parts do not fit, the note keeps at least half of the room and the old
+// description is shortened first.
+func evidenceCheckDescription(desc, note string) string {
+	const prefix, suffix = " (evidence: ", ")"
+	room := maxPlanCheckDescChars - len([]rune(prefix)) - len([]rune(suffix))
+	descR, noteR := []rune(desc), []rune(note)
+	if len(descR)+len(noteR) > room {
+		keepNote := min(len(noteR), room/2)
+		keepDesc := min(len(descR), room-keepNote)
+		keepNote = min(len(noteR), room-keepDesc)
+		descR = []rune(strings.TrimSpace(string(descR[:keepDesc])))
+		noteR = []rune(strings.TrimSpace(string(noteR[:keepNote])))
+	}
+	return string(descR) + prefix + string(noteR) + suffix
 }
 
 func (s *PlanStore) complete(stepID string) (string, error) {

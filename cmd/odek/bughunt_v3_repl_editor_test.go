@@ -18,37 +18,38 @@ func swapStdin(t *testing.T, r io.Reader) {
 }
 
 // Parameterized CSI escapes (e.g. \x1b[3;5~ ctrl+Delete) leak their
-// parameter tail ('5', '~') into the edit buffer as printable text.
+// parameter tail ('5', '~') into the edit buffer as printable text. Every
+// byte is fed through the editor's own input path — the ESC byte read from
+// the same stream as its tail, exactly as ReadLine does — so the keys typed
+// around each sequence must survive and nothing of the sequence may appear.
 func TestEditorCSIParamTailNotInserted(t *testing.T) {
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer r.Close()
-	swapStdin(t, r)
-	go func() {
-		w.Write([]byte("\x1b[3;5~"))
-		w.Close()
-	}()
-	e := newReplEditor("> ", nil)
-	// handleByte(0x1b) triggers handleEscape, which pulls the rest of the
-	// sequence from stdin itself.
-	e.handleByte(0x1b)
-	if len(e.line) != 0 {
-		t.Fatalf("expected empty line after \\x1b[3;5~, got %q", string(e.line))
-	}
-	// also the ctrl+Right form \x1b[1;5C
-	r2, w2, _ := os.Pipe()
-	defer r2.Close()
-	swapStdin(t, r2)
-	go func() {
-		w2.Write([]byte("\x1b[1;5C"))
-		w2.Close()
-	}()
-	e2 := newReplEditor("> ", nil)
-	e2.handleByte(0x1b)
-	if len(e2.line) != 0 {
-		t.Fatalf("expected empty line after \\x1b[1;5C, got %q", string(e2.line))
+	for _, tc := range []struct{ in, want string }{
+		{"a\x1b[3;5~b", "ab"}, // ctrl+Delete at end of line deletes nothing
+		{"a\x1b[1;5Cb", "ab"}, // ctrl+Right
+		{"x\x1b[3;5~\x1b[1;5Cy", "xy"},
+	} {
+		r, w, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		swapStdin(t, r)
+		go func() {
+			w.Write([]byte(tc.in))
+			w.Close()
+		}()
+		e := newReplEditor("> ", nil)
+		in := e.input()
+		for {
+			b, err := in.ReadByte()
+			if err != nil {
+				break
+			}
+			e.handleByte(b)
+		}
+		r.Close()
+		if got := string(e.line); got != tc.want {
+			t.Errorf("input %q: line = %q, want %q (sequence tail leaked or keys lost)", tc.in, got, tc.want)
+		}
 	}
 }
 

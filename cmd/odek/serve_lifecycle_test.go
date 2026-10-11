@@ -13,6 +13,7 @@ import (
 // before opening clients, so shutdown precedes environment and temp-dir cleanup.
 func startServeTest(t *testing.T, ln net.Listener, mux *http.ServeMux) func() {
 	t.Helper()
+	t.Cleanup(openServeRunAdmission) // shutdown closes run admission process-wide
 	done := make(chan error, 1)
 	go func() { done <- serveOnListener(ln, mux) }()
 	return func() {

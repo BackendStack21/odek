@@ -9,6 +9,7 @@ import (
 
 	"github.com/BackendStack21/odek/internal/danger"
 	"github.com/BackendStack21/odek/internal/loop"
+	"github.com/BackendStack21/odek/internal/redact"
 	"github.com/BackendStack21/odek/internal/session"
 )
 
@@ -59,6 +60,8 @@ func recordTurnAudit(store *session.AuditStore, sessionID string, turn int, user
 	var actionText strings.Builder // agent actions: tool calls + final response
 	var untrustedBodies strings.Builder
 	var untrustedSources []string
+	// Sources read back from the audit store were persisted redacted.
+	var persistedSources []string
 	var recordedResources []string
 	ingestedUntrusted := false
 	lastAssistantContent := ""
@@ -70,7 +73,7 @@ func recordTurnAudit(store *session.AuditStore, sessionID string, turn int, user
 		for _, ingest := range prior.Ingests {
 			if ingest.Turn == turn {
 				ingestedUntrusted = true
-				untrustedSources = append(untrustedSources, ingest.Source)
+				persistedSources = append(persistedSources, ingest.Source)
 				recordedResources = append(recordedResources, ingest.Resources...)
 			}
 		}
@@ -118,11 +121,36 @@ func recordTurnAudit(store *session.AuditStore, sessionID string, turn int, user
 	// We exclude resources that match the source of the untrusted content
 	// (e.g. a fetched page mentioning its own URL) to avoid false positives
 	// for legitimate user-requested fetches.
-	isSource := func(r string) bool {
-		lr := strings.ToLower(r)
+	// The audit store persists resources redacted, so resource keys use the
+	// redacted, lower-cased form of both sides. The source exclusion compares
+	// each resource in the form it was captured: raw resources from this
+	// turn's messages against raw sources, never their redacted forms, since
+	// redaction swallows the rest of a URL after a token and two different
+	// URLs on one host can redact to the same text. Persisted resources are
+	// already redacted, so they are matched against the redacted sources.
+	auditKey := func(r string) string { return strings.ToLower(redact.RedactSecrets(r)) }
+	isRawSource := func(r string) bool {
 		for _, s := range untrustedSources {
-			ls := strings.ToLower(s)
-			if lr == ls || strings.HasPrefix(lr, ls) || strings.HasPrefix(ls, lr) {
+			if auditOpsResourceMatchesSource(r, s) {
+				return true
+			}
+		}
+		for _, s := range persistedSources {
+			if !strings.Contains(s, "[REDACTED]") && auditOpsResourceMatchesSource(r, s) {
+				return true
+			}
+		}
+		return false
+	}
+	isRedactedSource := func(r string) bool {
+		lr := auditKey(r)
+		for _, s := range untrustedSources {
+			if auditOpsResourceMatchesSource(lr, auditKey(s)) {
+				return true
+			}
+		}
+		for _, s := range persistedSources {
+			if auditOpsResourceMatchesSource(lr, auditKey(s)) {
 				return true
 			}
 		}
@@ -130,19 +158,19 @@ func recordTurnAudit(store *session.AuditStore, sessionID string, turn int, user
 	}
 	untrustedResSet := make(map[string]bool)
 	for _, r := range session.ResourcesIn(untrustedBodies.String()) {
-		if !isSource(r) {
-			untrustedResSet[strings.ToLower(r)] = true
+		if !isRawSource(r) {
+			untrustedResSet[auditKey(r)] = true
 		}
 	}
 	for _, r := range recordedResources {
-		if !isSource(r) {
-			untrustedResSet[strings.ToLower(r)] = true
+		if !isRedactedSource(r) {
+			untrustedResSet[auditKey(r)] = true
 		}
 	}
 	var untrustedResources []string
 	seen := make(map[string]bool)
 	for _, r := range session.ResourcesIn(actionText.String()) {
-		lr := strings.ToLower(r)
+		lr := auditKey(r)
 		if untrustedResSet[lr] && !seen[lr] {
 			seen[lr] = true
 			untrustedResources = append(untrustedResources, r)
@@ -163,6 +191,37 @@ func recordTurnAudit(store *session.AuditStore, sessionID string, turn int, user
 		SuspiciousDivergence: suspicious,
 	}
 	_ = store.RecordTurn(sessionID, at)
+}
+
+// auditOpsResourceMatchesSource reports whether resource r is the untrusted
+// content's own source s (case-insensitive): equal, or one lies under the
+// other on a path boundary — the longer continues with '/', '?' or '#', or
+// the shorter ends with '/'. A raw string prefix is not enough: the
+// look-alike host https://news.example.com.collector.net extends the source
+// https://news.example.com without being part of it.
+func auditOpsResourceMatchesSource(r, s string) bool {
+	lr, ls := strings.ToLower(r), strings.ToLower(s)
+	if lr == "" || ls == "" {
+		return false
+	}
+	if lr == ls {
+		return true
+	}
+	short, long := ls, lr
+	if len(lr) < len(ls) {
+		short, long = lr, ls
+	}
+	if !strings.HasPrefix(long, short) {
+		return false
+	}
+	if strings.HasSuffix(short, "/") {
+		return true
+	}
+	switch long[len(short)] {
+	case '/', '?', '#':
+		return true
+	}
+	return false
 }
 
 // auditCmd handles `odek audit <session-id>` and `odek audit --list`.

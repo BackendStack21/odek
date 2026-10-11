@@ -75,7 +75,7 @@ odek session trim 20260518-abc123 10
 
 Session files are capped at `MaxSessionFileBytes` (32 MiB). When a save would exceed the cap, the oldest message groups are dropped first, but the protected head is kept: the system prompt and the first user message (the original task). A marker system message follows that head to record how many groups were removed. Only when the head alone exceeds the cap is the task dropped, so the file always stays loadable.
 
-Saving also redacts secrets from assistant tool-call arguments (structurally: every string value and key of the JSON is redacted and re-marshalled so the arguments stay valid JSON; non-JSON arguments are redacted as text, falling back to `{"redacted":true}`) and external-ref URIs, and deleting a session (or sweeping it with `cleanup`) removes its audit log as well.
+Saving also redacts secrets from assistant tool-call arguments (structurally: every string value and key of the JSON is redacted and re-marshalled so the arguments stay valid JSON; non-JSON arguments are redacted as text, falling back to `{"redacted":true}`) and external-ref URIs (the per-session audit log redacts its user messages, ingest sources and resource lists the same way), and deleting a session (or sweeping it with `cleanup`) removes its audit log as well.
 
 ### Cleaning up old sessions
 
@@ -92,6 +92,8 @@ odek session cleanup 0
 ```
 
 **Vector index maintenance:** `odek session cleanup` also removes stale entries from the vector index — orphaned vectors no longer accumulate in `vectors.gob`. This was a bug fix in v0.58.2: the primary cleanup path previously bypassed `Vec.Remove()`, leaving orphaned vectors that silently accumulated.
+
+**Listing index recovery:** listings, `odek continue` and cleanup read the session metadata index (`index.json`). If that file cannot be parsed, odek rebuilds the index from the session files instead of treating it as empty, so the next save rewrites a complete index rather than one that lists only the session being saved.
 
 ## Session Search Tool
 

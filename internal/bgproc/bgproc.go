@@ -343,16 +343,18 @@ func (m *Manager) wait(sessionID string, e *jobEntry) {
 	// WaitDelay drain timed out: output truncation, not process failure
 	// (B3-TOOLS-2). It also outranks a pending killed/timeout reason
 	// recorded by a Stop that raced a self-completing process. The exception
-	// is a clean exit 0 while a forced stop was pending: that is a process
-	// that handled the termination signal, so report the forced reason.
+	// is a clean exit 0, or the conventional 128+SIGTERM / 128+SIGKILL exit
+	// (143 / 137), while a forced stop was pending: that is a process that
+	// handled the termination signal, so report the forced reason with the
+	// real exit code.
 	exitCode := -1
 	if e.cmd.ProcessState != nil {
 		exitCode = e.cmd.ProcessState.ExitCode()
 	}
 	forced := e.reason == StatusKilled || e.reason == StatusTimeout
 	switch {
-	case exitCode == 0 && forced:
-		e.job.ExitCode = 0
+	case forced && (exitCode == 0 || exitCode == 128+15 || exitCode == 128+9):
+		e.job.ExitCode = exitCode
 		e.job.Status = e.reason
 	case exitCode >= 0:
 		e.job.ExitCode = exitCode

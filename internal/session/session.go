@@ -513,24 +513,71 @@ func (s *Store) loadIndex() map[string]*IndexEntry {
 	s.indexDiskReads++
 	data, err := os.ReadFile(s.indexPath())
 	if err != nil {
-		return make(map[string]*IndexEntry)
+		// An index path that is not a regular file (a directory planted in
+		// its place) is not a transient error: report it empty, so listings
+		// scan the directory and the next save's attempt to replace it
+		// fails loudly instead of being skipped as an up-to-date index.
+		if !info.Mode().IsRegular() {
+			return make(map[string]*IndexEntry)
+		}
+		// Transient read error: serve the last known-good copy like the
+		// stat branch does. With nothing cached, rebuild from the session
+		// files so a save cannot replace the index with a single entry.
+		if s.idxLoaded {
+			return copyIndex(s.idxCache)
+		}
+		return s.rebuildIndexFromFiles()
 	}
 	var entries []*IndexEntry
-	m := make(map[string]*IndexEntry)
-	if err := json.Unmarshal(data, &entries); err == nil {
-		for _, e := range entries {
-			m[e.ID] = e
-		}
-	}
-	// Parse failures keep the previous stamp uncached so a later, valid
-	// rewrite is always re-read.
-	if err == nil {
+	if err := json.Unmarshal(data, &entries); err != nil {
+		// A corrupt index must not read as "no sessions": the next save
+		// would rewrite it holding only the saved session and hide every
+		// other session from listings and cleanup. Rebuild from the session
+		// files instead, and cache the result against the corrupt file's
+		// stamp so repeated reads do not rescan until a save rewrites it.
+		diagnostics.Report("session", "index", "", fmt.Errorf("session: corrupt index rebuilt from session files: %w", err))
+		m := s.rebuildIndexFromFiles()
 		s.idxCache = m
 		s.idxLoaded = true
 		s.idxMod, s.idxSize = info.ModTime(), info.Size()
 		s.idxIno = fileInode(info)
+		return copyIndex(m)
 	}
+	m := make(map[string]*IndexEntry, len(entries))
+	for _, e := range entries {
+		if e == nil {
+			continue
+		}
+		m[e.ID] = e
+	}
+	s.idxCache = m
+	s.idxLoaded = true
+	s.idxMod, s.idxSize = info.ModTime(), info.Size()
+	s.idxIno = fileInode(info)
 	return copyIndex(m)
+}
+
+// rebuildIndexFromFiles derives index entries from the session files in the
+// store directory. Files that fail to load (unsafe names, symlinks, parse
+// errors, ID mismatches) are skipped, exactly as the directory-scan listing
+// skips them. Load takes no store locks, so this is safe under idxMu.
+func (s *Store) rebuildIndexFromFiles() map[string]*IndexEntry {
+	m := make(map[string]*IndexEntry)
+	dirents, err := os.ReadDir(s.dir)
+	if err != nil {
+		return m
+	}
+	for _, d := range dirents {
+		if d.IsDir() || !isSessionFile(d.Name()) {
+			continue
+		}
+		sess, err := s.Load(idFromPath(d.Name()))
+		if err != nil {
+			continue
+		}
+		m[sess.ID] = indexEntry(sess)
+	}
+	return m
 }
 
 func copyIndex(m map[string]*IndexEntry) map[string]*IndexEntry {
@@ -1550,6 +1597,13 @@ func (s *Store) removeVectors(ids []string) {
 	}
 }
 
+// CleanupExpired is the retention rule Cleanup applies to one session: it is
+// removed when it was last updated before the cutoff and is not pinned.
+// Exported so a dry-run preview selects exactly what Cleanup deletes.
+func CleanupExpired(updatedAt time.Time, pinned bool, before time.Time) bool {
+	return updatedAt.Before(before) && !pinned
+}
+
 // Cleanup deletes all unpinned sessions whose UpdatedAt is before the given
 // time. Pinned (favorited) sessions are skipped so operator bookmarks
 // survive retention sweeps. Returns the count of deleted sessions.
@@ -1576,10 +1630,7 @@ func (s *Store) Cleanup(before time.Time) (int, error) {
 				purged++
 				continue
 			}
-			if e.UpdatedAt.Before(before) {
-				if e.Pinned {
-					continue
-				}
+			if CleanupExpired(e.UpdatedAt, e.Pinned, before) {
 				if err := s.removeFilesLocked(id); err != nil {
 					unlock()
 					s.mu.Unlock()
@@ -1630,10 +1681,7 @@ func (s *Store) Cleanup(before time.Time) (int, error) {
 		if err != nil {
 			continue // skip unreadable files
 		}
-		if sess.UpdatedAt.Before(before) {
-			if sess.Pinned {
-				continue
-			}
+		if CleanupExpired(sess.UpdatedAt, sess.Pinned, before) {
 			if err := s.Delete(sess.ID); err != nil {
 				return deleted, fmt.Errorf("session: delete %q: %w", sess.ID, err)
 			}

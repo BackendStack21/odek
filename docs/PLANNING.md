@@ -306,12 +306,18 @@ standard built-in interface (`Name`/`Description`/`Schema`/`Call`).
 | `revise` | `reason`, `operations` (≤8) | Applies bounded add/edit/move/split/supersede operations while preserving unaffected progress and evidence. `reason` is required and capped at 240 runes. |
 | `update` | `updates`: array of `{id, status?, note?}` | Batch status/note changes, applied in array order. Atomic: any invalid entry rejects the whole call. |
 | `complete` | `step_id` | Shorthand to mark one step `done`. Highest-frequency operation, one-field cheap. |
-| `check_replace` | `step_id`, `check_id`, `justification`, plus `replacement` or `evidence_note` | Replaces one dead/stale/environment-denied check with a fresh pending one, or marks it satisfied by equivalent verification that ran via other tools. Justification is mandatory and audit-trailed in the revision block. |
+| `check_replace` | `step_id`, `check_id`, `justification`, plus `replacement` or `evidence_note` | Replaces one dead/stale/environment-denied check with a fresh pending one, or marks it satisfied by equivalent verification that ran via other tools. Justification is mandatory and audit-trailed in the revision block; it is clamped so the recorded revision reason stays within the 240-rune revision cap. An `evidence_note` is appended to the check description and the result is held within the 200-rune description cap (the old description is shortened first), so the plan always resumes. A `replacement` may reuse the replaced check's id but never a sibling check's id; a `done` step whose replacement check is pending reopens to `in_progress`. |
 | `get` | — | Returns the current plan (or `"No active plan."`). |
 
 A check becomes `blocked` only when the engine itself observed the approval
 gate refuse the call; text inside a tool's output (for example a test log
 that says "approval denied") never blocks a check.
+When a batch approval card is refused, only the calls listed on that card
+are refused; siblings the dangerous-action policy auto-allows were never shown
+and simply did not run, so their checks stay `pending`. Calls that never
+start — skipped by the tool-call budget, cancelled before execution, or
+unlisted siblings of a refused card — leave check state untouched: they
+neither invalidate earlier evidence nor record a failure.
 
 Note on wire compatibility: a check whose tool call was denied by the
 approval gate renders with status `blocked`. Sessions persisted by builds

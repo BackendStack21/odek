@@ -54,6 +54,15 @@ func TestRecallRerank(t *testing.T) {
 	_ = em.AddAtom(context.Background(), makeSearchableAtom("User prefers Go for backend services"))
 	_ = em.AddAtom(context.Background(), makeSearchableAtom("User prefers Python for data science"))
 
+	// Without rerank the vector ranking puts Python first; the LLM answer
+	// "1,0" reverses the candidates, and that order must reach the caller.
+	em.recall.cfg.SemanticSearchRerank = boolPtr(false)
+	base, err := em.recall.queryAtoms(context.Background(), "Python data science")
+	if err != nil || len(base) != 2 || !strings.Contains(base[0].Text, "Python") {
+		t.Fatalf("unreranked order = %v (err %v), want Python first", base, err)
+	}
+	em.recall.cfg.SemanticSearchRerank = boolPtr(true)
+
 	atoms, err := em.recall.queryAtoms(context.Background(), "Python data science")
 	if err != nil {
 		t.Fatalf("queryAtoms failed: %v", err)
@@ -61,8 +70,8 @@ func TestRecallRerank(t *testing.T) {
 	if len(atoms) != 2 {
 		t.Fatalf("expected 2 atoms, got %d", len(atoms))
 	}
-	if !strings.Contains(atoms[0].Text, "Python") {
-		t.Errorf("expected Python first after rerank, got %q", atoms[0].Text)
+	if !strings.Contains(atoms[0].Text, "Go") {
+		t.Errorf("expected the LLM's first pick (Go) first after rerank, got %q", atoms[0].Text)
 	}
 }
 

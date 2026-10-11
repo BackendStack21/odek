@@ -3534,6 +3534,11 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 		// anything. If approved, the approver's trustAll flag is set so
 		// individual tool-level PromptCommand calls auto-pass.
 		batchDenied := false
+		// refusedByCard marks the calls listed on a refused batch approval
+		// card. Only those were refused by the approval gate; siblings the
+		// DangerousConfig auto-allows (or that cannot be classified) were
+		// never shown, so a batch denial means they simply did not run.
+		var refusedByCard []bool
 		// trustAllApprover holds the approver whose trustAll flag was set by an
 		// approved batch this iteration, so it can be reset once this
 		// iteration's tools have executed. It MUST be reset per-iteration
@@ -3612,6 +3617,10 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 
 				if err := e.approver.PromptCommand(danger.ToolBatchClass, description, ""); err != nil {
 					batchDenied = true
+					refusedByCard = make([]bool, len(result.ToolCalls))
+					for _, rc := range risky {
+						refusedByCard[rc.idx] = true
+					}
 				}
 
 				// Approved: set trustAll on the approver if supported, so
@@ -3655,7 +3664,12 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 			// denied is set only where the engine itself observed the
 			// approval gate refusing the call (batch denial); it is never
 			// derived from output text.
-			denied      bool
+			denied bool
+			// notRun is set where the engine knows the call never started
+			// (budget skip, cancellation before execution, an unlisted
+			// sibling of a refused batch). Such a call has no effects and
+			// produced no evidence, so it leaves plan checks untouched.
+			notRun      bool
 			durationMs  int64
 			outcome     tool.Outcome
 			deliveryCtx context.Context
@@ -3685,7 +3699,11 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 
 		if batchDenied {
 			for i := range results {
-				results[i] = execResult{output: "error: batch approval denied", errored: true, denied: true}
+				if refusedByCard[i] {
+					results[i] = execResult{output: "error: batch approval denied", errored: true, denied: true}
+				} else {
+					results[i] = execResult{output: "error: not run — another action in this batch was denied approval", errored: true, notRun: true}
+				}
 			}
 		} else {
 			for i, tc := range result.ToolCalls {
@@ -3696,6 +3714,7 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 							execN, len(result.ToolCalls),
 						),
 						errored: true,
+						notRun:  true,
 					}
 					close(done[i])
 					continue
@@ -3723,7 +3742,7 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 							select {
 							case <-done[prior]:
 							case <-toolCtx.Done():
-								results[idx] = execResult{output: "error: cancelled before execution", errored: true, outcome: tool.OutcomeFor(toolCtx.Err())}
+								results[idx] = execResult{output: "error: cancelled before execution", errored: true, notRun: true, outcome: tool.OutcomeFor(toolCtx.Err())}
 								return
 							}
 						}
@@ -3731,7 +3750,7 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 					select {
 					case sem <- struct{}{}:
 					case <-toolCtx.Done():
-						results[idx] = execResult{output: "error: cancelled before execution", errored: true, outcome: tool.OutcomeFor(toolCtx.Err())}
+						results[idx] = execResult{output: "error: cancelled before execution", errored: true, notRun: true, outcome: tool.OutcomeFor(toolCtx.Err())}
 						return
 					}
 					defer func() { <-sem }() // release
@@ -3873,6 +3892,10 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 				// A refused call never ran: it leaves no effects to
 				// invalidate earlier evidence, and its check is blocked.
 				e.recordPlanCheckDenied(checkEpoch, tc, callIDs[i])
+			} else if results[i].notRun {
+				// A call that never started leaves no effects and no
+				// evidence: its check stays pending and earlier evidence
+				// stands.
 			} else {
 				e.recordPlanCheckResult(checkEpoch, tc, callIDs[i], results[i].errored)
 			}
@@ -4414,6 +4437,11 @@ func (e *Engine) buildToolDefs() []llmclient.ToolDef {
 		}
 		defs = append(defs, def)
 	}
+	// The registry iterates a map, so its order changes between calls.
+	// Tools lead the cached prompt prefix, so the catalog is sorted by name
+	// to keep the request bytes, and the provider prompt cache, stable
+	// across runs of a reused engine.
+	sort.Slice(defs, func(i, j int) bool { return defs[i].Name < defs[j].Name })
 	return defs
 }
 
@@ -4534,7 +4562,16 @@ func classifyToolCallCtx(ctx context.Context, name, args string) (danger.RiskCla
 			return danger.NetworkEgress, args
 		}
 	case "http_request":
-		return danger.NetworkEgress, args
+		// A mutating method or a credential-bearing header is an upload,
+		// as for the curl equivalent; unreadable arguments fail closed.
+		var p struct {
+			Method  string            `json:"method"`
+			Headers map[string]string `json:"headers"`
+		}
+		if err := json.Unmarshal([]byte(args), &p); err != nil {
+			return danger.NetworkUpload, args
+		}
+		return danger.HTTPRequestClass(p.Method, p.Headers), args
 	case "delegate_tasks":
 		// Spawning sub-agents is a trust-mutating operation: a compromised or
 		// prompt-injected parent can use it to escape its own approval gate by

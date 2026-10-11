@@ -92,7 +92,7 @@ A stateless modern `tools/call` must send protocol `2026-07-28` **and** client c
 
 ## Client (`mcp_servers`)
 
-odek spawns each configured server as a subprocess, sends `initialize` with protocol `2025-03-26`, then `tools/list`, and registers each tool as `<server>__<tool>`.
+odek spawns each configured server as a subprocess, sends `initialize` with protocol `2025-03-26`, then the `notifications/initialized` notification (best-effort, on stdio and HTTP alike), then `tools/list`, and registers each tool as `<server>__<tool>`. On stdio, a server-to-client `ping` request is answered with an empty result and any other server request with JSON-RPC method-not-found (`-32601`), so a server that waits on such a reply never stalls a call; server notifications get no reply. Replies use their own small bounded queue and odek's own requests are always written first, so a server flooding requests cannot delay a call; replies that do not fit are dropped.
 
 ### Where it loads
 
@@ -111,7 +111,7 @@ A run with any MCP tool registered is treated as tainted for delegation: `delega
 
 Put `mcp_servers` in `~/.odek/config.json` (operator-trusted) or `./odek.json` (project; extra approval). The `command` / `args` / `env` shape matches Claude Code's `mcpServers` object. odek does **not** expand `${VAR}` in `mcp_servers.*.env`.
 
-A server entry may instead set `url` to use the **Streamable HTTP transport** — no subprocess. JSON-RPC messages are posted to the endpoint; responses arrive as plain JSON or as an SSE stream (multi-event streams are handled: notification frames are skipped, and the frame whose id matches the request is used). The `notifications/initialized` handshake notice is sent after `initialize` (best-effort). Per-server limits, tool-name validation, and per-tool approvals apply identically. Set `token_env` to the name of an environment variable (resolved from the operator environment, e.g. `~/.odek/secrets.env`) holding the Bearer token; the variable must be uppercase `MCP_`-prefixed (e.g. `MCP_REMOTE_TOKEN`) — no other secret can be reached through this field — and the token itself never enters config files. Project-level servers get no SSRF host exemption: their URLs may only target public addresses and always require the operator approval prompt, which displays the URL.
+A server entry may instead set `url` to use the **Streamable HTTP transport** — no subprocess. JSON-RPC messages are posted to the endpoint; responses arrive as plain JSON or as an SSE stream (multi-event streams are handled: notification frames are skipped, and the frame whose id matches the request is used). When the server assigns a session in its `initialize` response (`Mcp-Session-Id` header, visible ASCII, at most 1 KiB), that id is sent on every later request and notification, so stateful servers work; an invalid id is ignored. The id is removed from a request that a redirect sends to a different scheme or host than the configured `url`. Per-server limits, tool-name validation, and per-tool approvals apply identically. Set `token_env` to the name of an environment variable (resolved from the operator environment, e.g. `~/.odek/secrets.env`) holding the Bearer token; the variable must be uppercase `MCP_`-prefixed (e.g. `MCP_REMOTE_TOKEN`) — no other secret can be reached through this field — and the token itself never enters config files. Project-level servers get no SSRF host exemption: their URLs may only target public addresses and always require the operator approval prompt, which displays the URL.
 
 ```json
 {

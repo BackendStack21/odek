@@ -140,7 +140,7 @@ A plain (non-envelope) text result is always valid and needs no schema field.
 |-------|----------|---------|
 | `schema` | yes | Exactly `odek.artifact-ref/v1` |
 | `id` | yes | Ref identifier, unique within the envelope |
-| `uri` | yes | `file://` URI only; absolute, clean path |
+| `uri` | yes | `file://` URI only; absolute, clean path. The path is percent-decoded, so reserved characters in a filename must be encoded (`#` → `%23`, `?` → `%3F`, `%` → `%25`, space → `%20`); refs odek builds itself (sub-agent artifacts, WebUI uploads) are encoded this way |
 | `media_type` | yes | MIME type of the artifact |
 | `sha256` | optional | Lowercase hex digest; verified when present |
 | `size_bytes` | optional | Verified against the real file when present |
@@ -220,7 +220,7 @@ tool-call ID when present, else a deterministic `it<iteration>-call<index>`
 synthetic ID. Batched parallel calls MUST be paired via `call_id` — never
 by positional order. `args_summary` is structured, low-cardinality audit
 metadata extracted from the arguments — for shell tools the program name
-(`argv0`, leading env assignments skipped) plus the danger `class` (the
+(`argv0`: words split quote-aware, leading env assignments skipped, empty when a quote is left open, so no part of an assignment value appears) plus the danger `class` (the
 summary class of the command: the highest-ranked of its effects, one of `safe`,
 `local_write`, `system_write`, `persistence`, `destructive`, `network_egress`,
 `network_upload`, `code_execution`, `install`, `blocked`, `unknown`); for

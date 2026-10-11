@@ -111,7 +111,12 @@ Two token layers:
    bounded `events` tail.
 3. While `status` is `waiting_approval`: `GET /api/runs/{id}/approvals`,
    answer with `POST /api/runs/{id}/approvals/{aid}` `{"action":"approve"}`.
+   An approval nobody answers within `approval_timeout_seconds` is denied,
+   leaves the pending list, and the run returns to `running`.
 4. Cancel with `DELETE /api/runs/{id}` or `POST /api/runs/{id}/cancel`.
+   A cancelled run denies any approval its unwinding loop still requests,
+   immediately, so it releases its resources without waiting out the
+   approval timeout.
 
 ### Cross-cutting contracts
 
@@ -298,7 +303,7 @@ The dropdown fetches from `GET /api/resources?q=<query>&limit=8`. Results includ
 
 ### Background jobs
 
-- `GET /api/jobs` — the authenticated session's background jobs (id, command head, status, runtime, exit code).
+- `GET /api/jobs` — the authenticated session's background jobs (id, command head, status, runtime, exit code). The command head is secret-redacted before it is clamped, like the `bg_job` frame's `command_head`.
 - `GET /api/jobs/{id}/output?since=N&limit=N` — output window with `next_cursor` for continuation.
 - `POST /api/jobs/{id}/stop` — kill a running job.
 
@@ -638,7 +643,8 @@ withheld (they may carry credentials).
 ### `POST /api/skills/promote`
 
 `{name, force?}` — the REST face of `odek skill promote`: clears
-NeedsReview so a skill can auto-load. Tainted skills still require `force`.
+NeedsReview so a skill can auto-load. Tainted skills and every project-dir
+(`./.odek/skills/`) skill still require `force`.
 
 ### `POST /api/memory/consolidate`
 
@@ -647,8 +653,10 @@ NeedsReview so a skill can auto-load. Tainted skills still require `force`.
 
 ### `POST /api/shutdown`
 
-Triggers the graceful drain (stop accepting → close WebSockets → wait for
-sandbox cleanup). For remote-restart management flows.
+Triggers the graceful drain (stop accepting → close WebSockets → cancel
+in-flight headless REST runs, which end with status `cancelled` → wait for
+sandbox cleanup). Once runs are cancelled, a `POST /api/prompt` still in
+progress is refused with `503` and releases its sandbox and MCP servers. For remote-restart management flows.
 
 ### Session pinning
 

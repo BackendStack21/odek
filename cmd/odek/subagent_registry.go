@@ -654,13 +654,23 @@ func subagentRunKeysForSession(sessionID string) map[string]bool {
 	for _, c := range wsConnsForSession(sessionID) {
 		keys[c.ID] = true
 	}
+	// run.SessionID is written under run.mu (session frame, turn end), so
+	// collect the runs under the registry lock and read each one under its
+	// own lock afterwards, without nesting the two.
 	serveRuns.mu.Lock()
+	runs := make(map[string]*serveRun, len(serveRuns.runs))
 	for id, run := range serveRuns.runs {
-		if run.SessionID == sessionID {
+		runs[id] = run
+	}
+	serveRuns.mu.Unlock()
+	for id, run := range runs {
+		run.mu.Lock()
+		match := run.SessionID == sessionID
+		run.mu.Unlock()
+		if match {
 			keys[id] = true
 		}
 	}
-	serveRuns.mu.Unlock()
 	return keys
 }
 

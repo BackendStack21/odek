@@ -73,13 +73,13 @@ func PruneWithOptions(ctx context.Context, path string, cutoff time.Time, previe
 	return total, nil
 }
 
-// PruneAtStartup exposes synchronous startup retention to the process owner.
-// The caller decides whether a pruning error is fatal and can report the
-// removed-record count without coupling logger construction to maintenance.
-func PruneAtStartup(ctx context.Context, opts Options) (int, error) {
-	if opts.Path == "" {
-		return 0, nil
-	}
+// MaxRetentionAgeHours caps max_age_hours (ten years). Startup pruning,
+// the maintenance sweep and the cleanup dry run all clamp with it.
+const MaxRetentionAgeHours = 87600
+
+// retentionPolicy bounds the retention fields PruneAtStartup consumes:
+// MaxFiles to [1, 32] and MaxAgeHours to [0, MaxRetentionAgeHours].
+func retentionPolicy(opts Options) Options {
 	if opts.MaxFiles < 1 {
 		opts.MaxFiles = 1
 	}
@@ -89,9 +89,34 @@ func PruneAtStartup(ctx context.Context, opts Options) (int, error) {
 	if opts.MaxAgeHours < 0 {
 		opts.MaxAgeHours = 0
 	}
-	if opts.MaxAgeHours > 87600 {
-		opts.MaxAgeHours = 87600
+	if opts.MaxAgeHours > MaxRetentionAgeHours {
+		opts.MaxAgeHours = MaxRetentionAgeHours
 	}
+	return opts
+}
+
+// PreviewAtStartup counts the timestamp-expired records PruneAtStartup would
+// remove for opts, without changing any file. It applies the same policy
+// bounds and cutoff, so a dry run and the real prune agree.
+func PreviewAtStartup(ctx context.Context, opts Options) (int, error) {
+	if opts.Path == "" {
+		return 0, nil
+	}
+	opts = retentionPolicy(opts)
+	if opts.MaxAgeHours == 0 {
+		return 0, nil
+	}
+	return PruneWithOptions(ctx, opts.Path, time.Now().Add(-time.Duration(opts.MaxAgeHours)*time.Hour), true, opts.MaxFiles)
+}
+
+// PruneAtStartup exposes synchronous startup retention to the process owner.
+// The caller decides whether a pruning error is fatal and can report the
+// removed-record count without coupling logger construction to maintenance.
+func PruneAtStartup(ctx context.Context, opts Options) (int, error) {
+	if opts.Path == "" {
+		return 0, nil
+	}
+	opts = retentionPolicy(opts)
 	removed := 0
 	if opts.MaxAgeHours > 0 {
 		n, err := PruneWithOptions(ctx, opts.Path, time.Now().Add(-time.Duration(opts.MaxAgeHours)*time.Hour), false, opts.MaxFiles)
