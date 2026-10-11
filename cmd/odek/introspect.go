@@ -331,7 +331,20 @@ func (t *configViewTool) Schema() any {
 	}
 }
 
-func (t *configViewTool) Call(section string) (string, error) {
+// Call accepts the tool-call arguments JSON the loop passes to every tool
+// ({"section":"security"}, or {} for the full view). A bare section word
+// ("security", "all", "") is still accepted for direct callers.
+func (t *configViewTool) Call(args string) (string, error) {
+	section := strings.TrimSpace(args)
+	if strings.HasPrefix(section, "{") {
+		var parsed struct {
+			Section string `json:"section"`
+		}
+		if err := json.Unmarshal([]byte(section), &parsed); err != nil {
+			return "", fmt.Errorf("config_view: invalid arguments: %w", err)
+		}
+		section = strings.TrimSpace(parsed.Section)
+	}
 	view := t.view
 	if view == nil {
 		view = map[string]any{}
