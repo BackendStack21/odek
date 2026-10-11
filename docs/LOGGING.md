@@ -51,7 +51,7 @@ policy takes effect for the next process or cleanup sweep.
 | `logging.file` | `~/.odek/runtime.log` | `ODEK_LOGGING_FILE` | Active JSONL path; numbered backups use the same path plus `.1`, `.2`, and so on. |
 | `logging.max_file_mb` | `25` | `ODEK_LOGGING_MAX_FILE_MB` | Rotate the active file after it grows beyond this size. `0` disables size rotation. |
 | `logging.max_files` | `4` | `ODEK_LOGGING_MAX_FILES` | Maximum total files, including the active file; allowed range is 1–32. |
-| `logging.max_age_hours` | `168` | `ODEK_LOGGING_MAX_AGE_HOURS` | Remove records older than this many hours from configured generations. `0` disables age-based pruning. |
+| `logging.max_age_hours` | `168` | `ODEK_LOGGING_MAX_AGE_HOURS` | Remove records older than this many hours from configured generations. `0` disables age-based pruning; values above `87600` (ten years) are clamped to it, by startup pruning, the maintenance sweep and `odek cleanup --dry-run` alike. |
 
 ## Querying records
 

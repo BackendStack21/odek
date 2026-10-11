@@ -124,7 +124,8 @@ Storage is clean — nothing to remove.
 
 `odek cleanup --dry-run` removes nothing and reports what a sweep would
 remove. The preview applies the sweep's own selection rules (pinned sessions
-are never listed):
+are never listed; runtime-log records are counted with the sweep's own
+clamped `logging.max_age_hours` cutoff):
 
 ```
 $ odek cleanup --dry-run

@@ -100,12 +100,8 @@ func Sweep(ctx context.Context, home string, cfg Config) (Report, error) {
 	}
 
 	if cfg.RuntimeLog.Path != "" {
-		path := cfg.RuntimeLog.Path
-		if path == "~/.odek/runtime.log" {
-			path = filepath.Join(home, "runtime.log")
-		}
-		policy := cfg.RuntimeLog
-		policy.Path = path
+		policy := runtimeLogPolicy(home, cfg)
+		path := policy.Path
 		n, err := runtimelog.PruneAtStartup(ctx, policy)
 		rep.RuntimeLogRecordsRemoved = n
 		fail("runtime_log_retention", err)
@@ -152,6 +148,27 @@ func Sweep(ctx context.Context, home string, cfg Config) (Report, error) {
 	fail("media", err)
 
 	return rep, firstErr
+}
+
+// runtimeLogPolicy returns the runtime-log retention options a sweep applies,
+// resolving the unexpanded default path against home.
+func runtimeLogPolicy(home string, cfg Config) runtimelog.Options {
+	policy := cfg.RuntimeLog
+	if policy.Path == "~/.odek/runtime.log" {
+		policy.Path = filepath.Join(home, "runtime.log")
+	}
+	return policy
+}
+
+// RuntimeLogExpiredPreview counts the runtime-log records a Sweep with cfg
+// would remove by age, without changing any file. It resolves the same
+// policy and delegates to runtimelog.PreviewAtStartup, which shares the
+// clamp and cutoff with the PruneAtStartup call Sweep makes.
+func RuntimeLogExpiredPreview(ctx context.Context, home string, cfg Config) (int, error) {
+	if cfg.RuntimeLog.Path == "" {
+		return 0, nil
+	}
+	return runtimelog.PreviewAtStartup(ctx, runtimeLogPolicy(home, cfg))
 }
 
 // UnfiledArtifactsDir is the shared bucket for delegate_tasks artifacts

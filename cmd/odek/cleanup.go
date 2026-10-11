@@ -228,7 +228,8 @@ func printCleanupDryRun(home string, cfg maintenance.Config) {
 	expired := 0
 	rotateRuntimeLog := false
 	if cfg.RuntimeLog.Path != "" && cfg.RuntimeLog.MaxAgeHours > 0 {
-		n, err := runtimelog.PruneWithOptions(context.Background(), cfg.RuntimeLog.Path, time.Now().Add(-time.Duration(maintenance.ClampRetentionHours(cfg.RuntimeLog.MaxAgeHours))*time.Hour), true, cfg.RuntimeLog.MaxFiles)
+		// Same policy, clamp and cutoff as the sweep's runtime-log prune.
+		n, err := maintenance.RuntimeLogExpiredPreview(context.Background(), home, cfg)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "runtime log preview failed: %v\n", err)
 		} else {
