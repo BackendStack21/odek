@@ -799,10 +799,12 @@ func budgetFilePath() string {
 	return filepath.Join(home, ".odek", "telegram_token_usage_"+date)
 }
 
-// CheckDailyBudget reads the current daily token usage tracking file,
-// adds the given number of tokens, and returns an error if the total
-// exceeds the configured DailyTokenBudget. If the budget is zero (unset),
-// no check is performed and nil is returned.
+// CheckDailyBudget bills tokens that were already spent: it reads the
+// current daily token usage tracking file, records current+tokens, and
+// returns an error if that total exceeds the configured DailyTokenBudget.
+// The total is recorded even when it overshoots, so later pre-flight
+// checks (DailyTokenUsage) refuse further runs. If the budget is zero
+// (unset), no check is performed and nil is returned.
 //
 // The read-modify-write cycle is protected by an advisory file lock so
 // concurrent odek processes and goroutines cannot clobber the counter.
@@ -840,19 +842,21 @@ func (b *Bot) CheckDailyBudget(tokens int64) error {
 		return fmt.Errorf("telegram: read budget file: %w", err)
 	}
 
+	// The tokens are already spent at the provider, so the new total is
+	// always recorded — also when it overshoots the limit. Dropping an
+	// overshooting bill would keep the counter below the limit and let every
+	// later pre-flight check through.
 	total := current + tokens
+	if err := os.WriteFile(path, []byte(strconv.FormatInt(total, 10)), 0600); err != nil {
+		return fmt.Errorf("telegram: write budget file: %w", err)
+	}
+
 	if total > b.DailyTokenBudget {
 		return fmt.Errorf(
 			"daily token budget exceeded: %d used + %d new = %d total, limit is %d",
 			current, tokens, total, b.DailyTokenBudget,
 		)
 	}
-
-	// Write the updated count with owner-only permissions.
-	if err := os.WriteFile(path, []byte(strconv.FormatInt(total, 10)), 0600); err != nil {
-		return fmt.Errorf("telegram: write budget file: %w", err)
-	}
-
 	return nil
 }
 

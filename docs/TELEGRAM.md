@@ -113,8 +113,8 @@ Non-HTTPS, non-loopback, or non-Telegram URLs are rejected to prevent the bot to
 `SetDailyTokenBudget` and `CheckDailyBudget` implement a simple daily token usage tracker:
 - Usage is persisted to `~/.odek/telegram_token_usage_<YYYY-MM-DD>`
 - Budget resets automatically each calendar day
-- **Pre-flight check**: before each agent run, a lightweight check verifies the budget isn't already exhausted, avoiding wasted API calls
-- **Post-run billing**: after each agent run, actual token usage (`input + output`) is deducted from the daily budget
+- **Pre-flight check**: before each agent run (chat turns and scheduled jobs), a read-only check refuses the run when the recorded usage has reached the budget, avoiding wasted API calls
+- **Post-run billing**: after each agent run, actual token usage (`input + output`) is deducted from the daily budget. The usage is recorded even when it pushes the total past the budget, so the overshooting run exhausts the budget and later runs are refused
 - Returns a warning message to the chat if the budget is exceeded, but still delivers the response
 - No-op when budget is 0 (unlimited, the default)
 - Configurable via `ODEK_TELEGRAM_DAILY_TOKEN_BUDGET` env var or `daily_token_budget` in `odek.json`

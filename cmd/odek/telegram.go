@@ -1635,17 +1635,19 @@ func runChatTurn(
 	// Use a 5% buffer: if >95% of budget is consumed, refuse new runs
 	// to leave headroom for the response delivery (which uses tokens too).
 	if resolved.Telegram.DailyTokenBudget > 0 {
-		if err := bot.CheckDailyBudget(1); err != nil {
+		// Read-only probe: CheckDailyBudget bills what it is given, so it is
+		// reserved for actual post-run usage.
+		used, limit := bot.DailyTokenUsage()
+		if limit > 0 && used >= limit {
 			reportError(bot, chatID, messageID, fmt.Sprintf(
-				"Daily token budget exhausted: %v. "+
+				"Daily token budget exhausted: %d/%d tokens used. "+
 					"The budget resets at midnight UTC. "+
 					"Set daily_token_budget to 0 in config for unlimited usage.",
-				err,
+				used, limit,
 			))
 			return
 		}
 		// Warn if budget is running low (>80% consumed).
-		used, limit := bot.DailyTokenUsage()
 		if limit > 0 && used > 0 {
 			pct := used * 100 / limit
 			if pct >= 80 {
