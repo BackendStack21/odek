@@ -850,6 +850,15 @@ func (m *MemoryManager) AddFact(target, content string) error {
 				// >30-char common prefix would make the substring match
 				// ambiguous and silently drop the merged fact.
 				merged := mergeEntries(nil, entries[similarIdx], content)
+				// The merged text is new content: two individually safe facts
+				// can compose a remote-fetch-piped-to-shell instruction or an
+				// injection pattern, so it passes the same filters as an add.
+				if FactLooksUnsafe(merged) {
+					return fmt.Errorf("memory: merged fact looks unsafe (remote fetch piped to shell)")
+				}
+				if err := m.scanContent(context.Background(), merged); err != nil {
+					return err
+				}
 				if err := m.facts.ReplaceAt(target, similarIdx, merged); err != nil {
 					return err
 				}
