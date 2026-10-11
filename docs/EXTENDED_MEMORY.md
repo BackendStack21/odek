@@ -303,6 +303,8 @@ A quarantined atom has the same schema as a trusted atom but:
 
 Per-turn extraction only produces `user_said` atoms, so normal user messages do not land in quarantine. Quarantine is used when an atom is explicitly added (via the tool/API or programmatically) with a tainted source class, when the guard scan rejects an atom, or when an `inferred` atom is produced by a future flow.
 
+`odek memory extended quarantine` is the review step before promotion. It prints each atom's whole text (what recall would replay, not a truncated preview) with control, bidi and invisible characters escaped by `danger.SanitizeInline`, so an escape sequence in web- or MCP-sourced text cannot erase or overwrite what the reviewer sees. Reasons, pending user-model evidence and proactive nudge text are escaped the same way.
+
 Promotion from quarantine to the live store is implemented and human-gated:
 
 - `odek memory extended promote <atom-id>` moves the atom to the live store with `source_class: user_approved`. The guard rescan is skipped on promote — the human review is the approval, and a rescan would reject guard false positives again.
