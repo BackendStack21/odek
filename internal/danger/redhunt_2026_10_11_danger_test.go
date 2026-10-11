@@ -298,3 +298,46 @@ func TestRED_GitApplyUnsafePathsWritesAnywhere(t *testing.T) {
 	// The directory is a write target judged by the path rules.
 	redhuntAtLeast(t, Persistence, `git apply --unsafe-paths --directory=/etc/cron.d x.patch`)
 }
+
+// Edge spellings of the adapters above: option terminators, negations and
+// options whose value is the next word.
+func TestRedhuntDangerEdgeSpellings(t *testing.T) {
+	t.Setenv("HOME", "/home/user")
+	for _, tc := range []struct {
+		args       []string
+		wantUnsafe bool
+		wantDirs   int
+	}{
+		{[]string{"--unsafe-paths", "--no-unsafe-paths", "x.patch"}, false, 0},
+		{[]string{"--unsafe-paths", "--directory"}, true, 1},
+		{[]string{"--", "--unsafe-paths"}, false, 0},
+	} {
+		unsafe, dirs := gitApplyUnsafeDirectories(tc.args)
+		if unsafe != tc.wantUnsafe || len(dirs) != tc.wantDirs {
+			t.Errorf("gitApplyUnsafeDirectories(%q) = %v, %q", tc.args, unsafe, dirs)
+		}
+	}
+	redhuntAtLeast(t, SystemWrite,
+		`mv -t /tmp/x ~`,
+		`mv --target-directory=/tmp/x a ~`,
+		`mv -S .bak ~ /tmp/x`,
+		`mv --suffix .bak ~ /tmp/x`,
+		`mv -- ~ /tmp/x`,
+	)
+	redhuntAtLeast(t, CodeExecution,
+		`sqlite3 x.db <& 3`,
+		`git send-email --smtp-server`,
+	)
+	redhuntAtLeast(t, Destructive, `zip --mo x.zip f`)
+	redhuntExactly(t, LocalWrite,
+		`zip x.zip -- -m`,
+		`7z a x.7z -- -sdel`,
+		`mv a -- b`,
+	)
+	if len(mvSourceOperands([]string{"mv"})) != 0 {
+		t.Error("mv without operands has no sources")
+	}
+	if namesHomeOrAncestor("relative/dir") {
+		t.Error("a relative path is not a home directory")
+	}
+}
