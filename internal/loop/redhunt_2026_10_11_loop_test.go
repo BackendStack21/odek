@@ -245,6 +245,26 @@ func TestRED_CheckReplaceLongJustificationBreaksResume(t *testing.T) {
 	}
 }
 
+// Every other path keeps the invariant "a done step has no unpassed
+// checks" (complete/update refuse, failed checks and invalidation reopen).
+// check_replace with a fresh pending replacement leaves the step done.
+func TestRED_CheckReplaceLeavesDoneStepWithPendingCheck(t *testing.T) {
+	store := redhuntCheckedStore(t, "builds")
+	epoch := store.CheckEpoch()
+	store.RecordCheckOutcome(epoch, "shell", `{"command":"make"}`, "call1", false)
+	store.RecordCheckOutcome(epoch, "shell", `{"command":"make test"}`, "call2", false)
+	redhuntExec(t, store, map[string]any{"verb": "complete", "step_id": "s1"})
+	redhuntExec(t, store, map[string]any{
+		"verb": "check_replace", "step_id": "s1", "check_id": "c1",
+		"justification": "stricter build",
+		"replacement":   map[string]any{"id": "c3", "description": "strict build passes", "tool": "shell", "arguments": map[string]any{"command": "make strict"}},
+	})
+	st, _ := store.Snapshot()
+	if st.Steps[0].Status == StepDone && !allPlanChecksPassed(st.Steps[0]) {
+		t.Fatalf("step s1 is %q while its replacement check is %q", st.Steps[0].Status, st.Steps[0].Checks[0].Status)
+	}
+}
+
 // Both parts at their own caps still produce a description the resume
 // parser accepts, and a short description keeps the whole note.
 func TestRED_CheckReplaceEvidenceNoteBoundedAtCaps(t *testing.T) {

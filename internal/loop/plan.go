@@ -686,6 +686,12 @@ func (s *PlanStore) checkReplace(args planArgs) (string, error) {
 		return "", fmt.Errorf("plan: check_replace requires replacement {id,description,tool,arguments} or evidence_note — example: {\"verb\":\"check_replace\",\"step_id\":\"s1\",\"check_id\":\"c1\",\"justification\":\"why\",\"evidence_note\":\"diff confirmed expected output\"}")
 	}
 	wStep.Checks[ci].CallID = ""
+	// A done step holds only passed or blocked checks. A fresh pending
+	// replacement has no evidence yet, so the step reopens like every other
+	// evidence-resetting path.
+	if wStep.Status == StepDone && !allPlanChecksPassed(*wStep) {
+		wStep.Status = StepInProgress
+	}
 	// The revision reason shares the revise cap the resume parser enforces
 	// (maxRevisionReason); the justification is clamped to fit it so a
 	// plan check_replace accepts always resumes. Step and check ids are
