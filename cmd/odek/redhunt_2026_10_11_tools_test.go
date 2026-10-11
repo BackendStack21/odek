@@ -283,6 +283,57 @@ func TestRED_HTTPRequestMutatingMethodGatedAsUpload(t *testing.T) {
 	}
 }
 
+// read_file strips the '\r' of CRLF lines, so the model can only build a
+// multi-line old_string with bare '\n'. patch must still find that text in
+// a CRLF file (and keep the file's line endings).
+func TestRED_PatchCRLFMultiline(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "win.txt")
+	if err := os.WriteFile(path, []byte("alpha\r\nbeta\r\ngamma\r\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rf := &readFileTool{}
+	out, _ := rf.Call(fmt.Sprintf(`{"path":%q}`, path))
+	var rr readFileResult
+	mustUnmarshal(t, out, &rr)
+	if strings.Contains(unwrapUntrusted(rr.Content), "\r") {
+		t.Skip("read_file preserves CR; precondition changed")
+	}
+
+	p := &patchTool{}
+	res, _ := p.Call(fmt.Sprintf(`{"path":%q,"old_string":"alpha\nbeta","new_string":"alpha\nBETA\nnew"}`, path))
+	var pr patchResult
+	mustUnmarshal(t, res, &pr)
+	if !pr.Success {
+		t.Fatalf("patch of text shown by read_file failed on a CRLF file: %s", res)
+	}
+	data, _ := os.ReadFile(path)
+	if string(data) != "alpha\r\nBETA\r\nnew\r\ngamma\r\n" {
+		t.Fatalf("content = %q", data)
+	}
+
+	// An exact match (CRs included) is still used as given.
+	res, _ = p.Call(fmt.Sprintf(`{"path":%q,"old_string":"new\r\n","new_string":""}`, path))
+	mustUnmarshal(t, res, &pr)
+	if !pr.Success {
+		t.Fatalf("exact CRLF old_string failed: %s", res)
+	}
+	data, _ = os.ReadFile(path)
+	if string(data) != "alpha\r\nBETA\r\ngamma\r\n" {
+		t.Fatalf("content = %q", data)
+	}
+
+	// LF files are untouched by the fallback.
+	lf := filepath.Join(dir, "unix.txt")
+	os.WriteFile(lf, []byte("a\nb\n"), 0o644)
+	res, _ = p.Call(fmt.Sprintf(`{"path":%q,"old_string":"a\nb","new_string":"a\nB"}`, lf))
+	mustUnmarshal(t, res, &pr)
+	data, _ = os.ReadFile(lf)
+	if !pr.Success || string(data) != "a\nB\n" {
+		t.Fatalf("LF patch: %s %q", res, data)
+	}
+}
+
 func TestGlobClassToRegexToolsCases(t *testing.T) {
 	for _, bad := range []string{"**/[]", "**/[a-]", "**/[z-a]", `**/[\`, `**/[a\`, "**/[-a]", "**/[^"} {
 		if _, err := globToRegex(bad); err == nil {

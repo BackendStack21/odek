@@ -1175,6 +1175,17 @@ func (t *patchTool) Call(argsJSON string) (string, error) {
 	}
 	original := string(originalBytes)
 
+	// read_file and search_files show CRLF lines without their '\r', so a
+	// multi-line old_string built from them uses bare '\n'. When such a
+	// string is not found verbatim in a CRLF file, match it (and write the
+	// replacement) with CRLF line endings instead.
+	if !strings.Contains(original, args.OldString) && strings.Contains(original, "\r\n") {
+		if crlfOld := patchToCRLF(args.OldString); crlfOld != args.OldString && strings.Contains(original, crlfOld) {
+			args.OldString = crlfOld
+			args.NewString = patchToCRLF(args.NewString)
+		}
+	}
+
 	// Check that old_string exists
 	if !strings.Contains(original, args.OldString) {
 		return jsonError(fmt.Sprintf("old_string not found in %q. Use search_files to find the correct string.", args.Path))
@@ -1644,6 +1655,15 @@ func isProtectedOdekPath(rel string) bool {
 		}
 	}
 	return false
+}
+
+// patchToCRLF turns every bare '\n' in s into "\r\n", leaving existing
+// "\r\n" pairs alone.
+func patchToCRLF(s string) string {
+	if !strings.Contains(s, "\n") {
+		return s
+	}
+	return strings.ReplaceAll(strings.ReplaceAll(s, "\r\n", "\n"), "\n", "\r\n")
 }
 
 // Bounds for the patch result diff: lines of context around the edited
