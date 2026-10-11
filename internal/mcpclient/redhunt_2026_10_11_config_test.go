@@ -2,6 +2,7 @@ package mcpclient
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -242,5 +243,85 @@ func TestRED_ServerRequestReplyRejectsNonScalarID(t *testing.T) {
 	}
 	if b := serverRequestReply(json.RawMessage(`12`), "ping"); string(b) != `{"jsonrpc":"2.0","id":12,"result":{}}`+"\n" {
 		t.Errorf("ping reply = %q", b)
+	}
+	// Not valid JSON (cannot come from a decoded frame): no reply.
+	if b := serverRequestReply(json.RawMessage(`"unterminated`), "ping"); b != nil {
+		t.Errorf("malformed id: reply %s, want none", b)
+	}
+}
+
+// notify on stdio: a nil ctx and an unset timeout use the defaults; a closed
+// connection or a full writer queue past the deadline fail instead of
+// blocking.
+func TestRED_StdioNotifyBoundedAndClosed(t *testing.T) {
+	c := &Client{writeCh: make(chan *queuedRequest, 1), closed: make(chan struct{})}
+	//nolint:staticcheck // a nil ctx is the case under test
+	if err := c.notify(nil, "notifications/initialized"); err != nil {
+		t.Fatalf("notify into an empty queue: %v", err)
+	}
+	if q := <-c.writeCh; !bytes.HasSuffix(q.data, []byte("\n")) || !bytes.Contains(q.data, []byte(`"method":"notifications/initialized"`)) || bytes.Contains(q.data, []byte(`"id"`)) {
+		t.Fatalf("queued notification = %s", q.data)
+	}
+
+	c.writeCh <- &queuedRequest{ctx: context.Background()} // queue full
+	c.timeout = 50 * time.Millisecond
+	if err := c.notify(context.Background(), "x"); err == nil {
+		t.Fatal("notify into a full queue past the deadline returned nil")
+	}
+	close(c.closed)
+	if err := c.notify(context.Background(), "x"); err == nil {
+		t.Fatal("notify on a closed connection returned nil")
+	}
+	// A reply to a server request is dropped, never blocking, when the
+	// queue is full or the connection is closed.
+	done := make(chan struct{})
+	go func() { c.sendServerReply([]byte("{}\n")); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("sendServerReply blocked on a full queue")
+	}
+}
+
+// An initialize response without a valid session id leaves the client
+// stateless, and clears an id from an earlier initialize.
+func TestRED_CaptureSessionIDRejectsInvalid(t *testing.T) {
+	c := &Client{sessionID: "old"}
+	resp := &http.Response{Header: http.Header{}}
+	resp.Header.Set("Mcp-Session-Id", "bad id")
+	c.captureSessionID(resp)
+	if c.sessionID != "" {
+		t.Errorf("sessionID = %q after an invalid header, want empty", c.sessionID)
+	}
+	req, _ := http.NewRequest(http.MethodPost, "http://x", nil)
+	c.setHTTPHeaders(req)
+	if req.Header.Get("Mcp-Session-Id") != "" {
+		t.Error("session header sent without a stored id")
+	}
+}
+
+// Small accessors used by the registry and the loop.
+func TestRED_ConfigAccessorsCovered(t *testing.T) {
+	off := false
+	if !(ServerConfig{Enabled: &off}).IsDisabled() || (ServerConfig{}).IsDisabled() {
+		t.Error("IsDisabled")
+	}
+	a := &ToolAdapter{}
+	if s, ok := a.Schema().(map[string]any); !ok || s["type"] != "object" {
+		t.Errorf("default schema = %v", a.Schema())
+	}
+	c := &Client{lineCh: make(chan lineResult, 1)}
+	c.lineCh <- lineResult{line: "l"}
+	if l, err := c.readLine(context.Background()); l != "l" || err != nil {
+		t.Errorf("readLine = %q, %v", l, err)
+	}
+	close(c.lineCh)
+	if _, err := c.readLine(context.Background()); err != io.EOF {
+		t.Errorf("readLine after close = %v, want EOF", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := (&Client{lineCh: make(chan lineResult)}).readLine(ctx); err == nil {
+		t.Error("readLine with a cancelled ctx returned nil error")
 	}
 }
