@@ -123,12 +123,13 @@ func recordTurnAudit(store *session.AuditStore, sessionID string, turn int, user
 	// for legitimate user-requested fetches.
 	// The audit store persists resources redacted, so resource keys use the
 	// redacted, lower-cased form of both sides. The source exclusion compares
-	// raw strings instead: redaction swallows the rest of a URL after a
-	// token, so two different URLs on one host can redact to the same text.
-	// A persisted source that lost text to redaction excludes nothing; the
-	// same source seen raw in this turn's messages still does.
+	// each resource in the form it was captured: raw resources from this
+	// turn's messages against raw sources, never their redacted forms, since
+	// redaction swallows the rest of a URL after a token and two different
+	// URLs on one host can redact to the same text. Persisted resources are
+	// already redacted, so they are matched against the redacted sources.
 	auditKey := func(r string) string { return strings.ToLower(redact.RedactSecrets(r)) }
-	isSource := func(r string) bool {
+	isRawSource := func(r string) bool {
 		for _, s := range untrustedSources {
 			if auditOpsResourceMatchesSource(r, s) {
 				return true
@@ -141,14 +142,28 @@ func recordTurnAudit(store *session.AuditStore, sessionID string, turn int, user
 		}
 		return false
 	}
+	isRedactedSource := func(r string) bool {
+		lr := auditKey(r)
+		for _, s := range untrustedSources {
+			if auditOpsResourceMatchesSource(lr, auditKey(s)) {
+				return true
+			}
+		}
+		for _, s := range persistedSources {
+			if auditOpsResourceMatchesSource(lr, auditKey(s)) {
+				return true
+			}
+		}
+		return false
+	}
 	untrustedResSet := make(map[string]bool)
 	for _, r := range session.ResourcesIn(untrustedBodies.String()) {
-		if !isSource(r) {
+		if !isRawSource(r) {
 			untrustedResSet[auditKey(r)] = true
 		}
 	}
 	for _, r := range recordedResources {
-		if !isSource(r) {
+		if !isRedactedSource(r) {
 			untrustedResSet[auditKey(r)] = true
 		}
 	}
