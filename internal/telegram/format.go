@@ -105,8 +105,9 @@ func FormatResponse(text string) ([]string, error) {
 	return chunks, nil
 }
 
-// EscapeMarkdown escapes all reserved MarkdownV2 characters.
-// Characters inside code spans (`...`) and code blocks (```...```) are NOT escaped.
+// EscapeMarkdown escapes all reserved MarkdownV2 characters, including the
+// backslash itself. Inside code spans (`...`) and code blocks (```...```)
+// only "`" and "\" are escaped, as MarkdownV2 requires there.
 func EscapeMarkdown(text string) string {
 	var result strings.Builder
 	i := 0
@@ -117,7 +118,7 @@ func EscapeMarkdown(text string) string {
 			i += 3
 			end := strings.Index(text[i:], "```")
 			if end >= 0 {
-				result.WriteString(text[i : i+end])
+				result.WriteString(escapeCodeLine(text[i : i+end]))
 				result.WriteString("```")
 				i += end + 3
 			}
@@ -129,6 +130,9 @@ func EscapeMarkdown(text string) string {
 			result.WriteByte('`')
 			i++
 			for i < len(text) && text[i] != '`' {
+				if text[i] == '\\' {
+					result.WriteByte('\\')
+				}
 				result.WriteByte(text[i])
 				i++
 			}
@@ -151,11 +155,13 @@ func EscapeMarkdown(text string) string {
 
 // ─── Helpers ───
 
-// isReserved returns true if r is a reserved MarkdownV2 character.
+// isReserved returns true if r must be backslash-escaped in MarkdownV2 text
+// outside code: the reserved punctuation plus the backslash itself (an
+// unescaped "\" would escape whatever follows it).
 func isReserved(r rune) bool {
 	switch r {
 	case '_', '*', '[', ']', '(', ')', '~', '`', '>', '#',
-		'+', '-', '=', '|', '{', '}', '.', '!':
+		'+', '-', '=', '|', '{', '}', '.', '!', '\\':
 		return true
 	}
 	return false
@@ -275,7 +281,7 @@ func convertItalicAndEscape(line string) string {
 				i += 3
 				end := strings.Index(line[i:], "```")
 				if end >= 0 {
-					result.WriteString(line[i : i+end])
+					result.WriteString(escapeCodeLine(line[i : i+end]))
 					result.WriteString("```")
 					i += end + 3
 				}
@@ -289,6 +295,11 @@ func convertItalicAndEscape(line string) string {
 		}
 
 		if inCodeSpan {
+			// Inside code MarkdownV2 requires "\" to be escaped ("`" ends
+			// the span, so it never reaches here).
+			if line[i] == '\\' {
+				result.WriteByte('\\')
+			}
 			result.WriteByte(line[i])
 			i++
 			continue

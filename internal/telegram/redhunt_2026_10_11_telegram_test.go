@@ -115,6 +115,59 @@ func TestRED_ExtractCommandNewlineSeparator(t *testing.T) {
 	}
 }
 
+// Backslashes in the model's answer are never escaped. MarkdownV2 treats
+// "\" as an escape for the next character everywhere (and requires "\\"
+// inside code spans), so:
+//   - in prose, `\.` becomes `\\.`: an escaped backslash followed by a bare
+//     reserved "." — Telegram rejects the MarkdownV2 send and the chunk is
+//     re-sent as plain text littered with escape backslashes;
+//   - inside an inline code span, `\d+` is sent as-is and Telegram renders
+//     it as "d+", silently corrupting regexes/paths in code.
+func TestRED_BackslashNeverEscaped(t *testing.T) {
+	// Prose: every reserved character must end up escaped.
+	chunks, err := FormatResponse(`Versions match \d+\.\d+ here`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := strings.Join(chunks, "")
+	for i := 0; i < len(out); i++ {
+		if out[i] == '\\' {
+			i++ // escape consumes the next byte
+			continue
+		}
+		if isReserved(rune(out[i])) {
+			t.Errorf("prose: bare reserved %q at %d in %q (Telegram rejects the message)", out[i], i, out)
+			break
+		}
+	}
+
+	// Inline code: a literal backslash must be sent as "\\".
+	chunks, err = FormatResponse("Use `\\d+` to match digits")
+	if err != nil {
+		t.Fatal(err)
+	}
+	out = strings.Join(chunks, "")
+	if !strings.Contains(out, "`\\\\d+`") {
+		t.Errorf("inline code: backslash not escaped, Telegram renders `d+`: %q", out)
+	}
+
+	// Single-line ``` span inside a prose line.
+	if got := convertItalicAndEscape("see ```C:\\dir``` now"); got != "see ```C:\\\\dir``` now" {
+		t.Errorf("one-line fence: got %q", got)
+	}
+
+	// EscapeMarkdown (send_message, verbose progress) follows the same rules.
+	for in, want := range map[string]string{
+		`a\.b`:                `a\\\.b`,
+		"code `C:\\x` end":    "code `C:\\\\x` end",
+		"```\nC:\\x `y`\n```": "```\nC:\\\\x \\`y\\`\n```",
+	} {
+		if got := EscapeMarkdown(in); got != want {
+			t.Errorf("EscapeMarkdown(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 // A run whose billing pushes the day's usage past daily_token_budget must
 // leave the budget exhausted. CheckDailyBudget rejects the overshooting
 // amount without recording it, so usage stays below the limit and every
