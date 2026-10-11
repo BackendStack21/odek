@@ -336,9 +336,13 @@ package-local aliases in `internal/memory/embedder.go`):
   endpoint config gives consistent embedding-space semantics across subsystems
   (see `docs/CONFIG.md` → *Shared embedding backend*).
 - The persisted episode vector index records its embedding space in
-  `episodes_index_meta.json`; changing provider/model/dims invalidates and
-  rebuilds it automatically. Pre-existing RP indexes (no meta file) keep
-  loading without a rebuild.
+  `episodes_index_meta.json`, together with a corpus fingerprint (episode
+  count plus a hash of every session ID and summary). Changing
+  provider/model/dims, or any episode added, removed or rewritten since the
+  vectors were persisted (e.g. one written at the end of the previous
+  process), invalidates the persisted vectors so a new process rebuilds
+  instead of recalling from a stale corpus. Indexes written without a corpus
+  fingerprint (including pre-meta RP indexes) rebuild once.
 - The HTTP embedder caches text→vector within an instance, so per-turn query
   embeds are not re-sent. An index rebuild (after a new episode) runs on a
   fresh client *off the index lock* — one batch call over the corpus — so a

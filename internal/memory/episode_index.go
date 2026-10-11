@@ -1,10 +1,13 @@
 package memory
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -68,11 +71,36 @@ type episodeVectorIndex struct {
 	rebuilding bool      // single-flight guard: a rebuild is embedding off-lock
 	dirtySeq   uint64    // bumped by markDirty; reconciled after an off-lock rebuild
 	failedAt   time.Time // last failed rebuild; zero = never failed
+	// corpusFP fingerprints the episode corpus the live store was built
+	// from; it is persisted with the vectors so a later process can tell
+	// whether they still cover episodes/index.json.
+	corpusFP string
 }
 
-// indexMeta is the persisted embedding-space identity (episodeIndexMetaFile).
+// indexMeta is the persisted embedding-space identity (episodeIndexMetaFile)
+// plus a fingerprint of the episode corpus the vectors were built from. An
+// empty Corpus (files written before it was tracked) is a mismatch, so such
+// an index rebuilds once.
 type indexMeta struct {
 	Fingerprint string `json:"fingerprint"`
+	Corpus      string `json:"corpus,omitempty"`
+}
+
+// episodeCorpusFingerprint returns the episode count plus a SHA-256 over the
+// sorted (session ID, summary text) pairs, so an added, removed or rewritten
+// episode changes it.
+func episodeCorpusFingerprint(texts []idText) string {
+	sorted := make([]idText, len(texts))
+	copy(sorted, texts)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].id < sorted[j].id })
+	h := sha256.New()
+	for _, t := range sorted {
+		h.Write([]byte(t.id))
+		h.Write([]byte{0})
+		h.Write([]byte(t.text))
+		h.Write([]byte{0})
+	}
+	return fmt.Sprintf("%d:%s", len(sorted), hex.EncodeToString(h.Sum(nil)[:16]))
 }
 
 // ── Per-directory singleton ───────────────────────────────────────────────────
@@ -213,7 +241,8 @@ func (vi *episodeVectorIndex) ensureFresh() {
 	emb := vi.newEmb()
 	vi.mu.Unlock()
 
-	store := buildEpisodeStore(vi.readAllSummaries(), emb)
+	texts := vi.readAllSummaries()
+	store := buildEpisodeStore(texts, emb)
 
 	vi.mu.Lock()
 	defer vi.mu.Unlock()
@@ -226,6 +255,7 @@ func (vi *episodeVectorIndex) ensureFresh() {
 	}
 	vi.store = store
 	vi.emb = emb
+	vi.corpusFP = episodeCorpusFingerprint(texts)
 	vi.ready = true
 	vi.failedAt = time.Time{}
 	// Only clear dirty if no write landed while we were rebuilding off-lock;
@@ -238,23 +268,26 @@ func (vi *episodeVectorIndex) ensureFresh() {
 
 // tryLoadLocked attempts to load persisted state. Returns true on success.
 // The persisted vectors are only valid for the embedding space they were
-// built in: the meta fingerprint must match the current embedder. A missing
-// meta file is treated as the legacy RandomProjections layout and accepted
-// only when the current embedder IS that legacy space, so pre-existing
-// installs keep their index without a rebuild. Caller must hold vi.mu (write).
+// built in (the meta fingerprint must match the current embedder) and only
+// while they cover the current episode corpus: an episode written after the
+// last persist (the usual shape — recall at turn start, episode written at
+// session end, exit) changes the corpus fingerprint and forces a rebuild
+// instead of serving stale vectors. A missing meta file (legacy layout)
+// carries no corpus fingerprint, so it rebuilds once. Caller must hold vi.mu
+// (write).
 func (vi *episodeVectorIndex) tryLoadLocked() bool {
 	fp := vi.emb.Fingerprint()
 	data, err := os.ReadFile(filepath.Join(vi.dir, episodeIndexMetaFile))
 	if err != nil {
-		// Legacy layout (no meta): only the original rp/256 space can own it.
-		if fp != legacyRPFingerprint() {
-			return false
-		}
-	} else {
-		var meta indexMeta
-		if json.Unmarshal(data, &meta) != nil || meta.Fingerprint != fp {
-			return false
-		}
+		return false
+	}
+	var meta indexMeta
+	if json.Unmarshal(data, &meta) != nil || meta.Fingerprint != fp || meta.Corpus == "" {
+		return false
+	}
+	corpusFP := episodeCorpusFingerprint(vi.readAllSummaries())
+	if meta.Corpus != corpusFP {
+		return false
 	}
 
 	store := vector.NewStore(vector.CosineDistance)
@@ -265,14 +298,9 @@ func (vi *episodeVectorIndex) tryLoadLocked() bool {
 		return false
 	}
 	vi.store = store
+	vi.corpusFP = corpusFP
 	vi.ready = true
 	return true
-}
-
-// legacyRPFingerprint is the embedding space of indexes persisted before the
-// meta file existed (RandomProjections at episodeVectorDim).
-func legacyRPFingerprint() string {
-	return newRPTextEmbedder(episodeVectorDim).Fingerprint()
 }
 
 // buildEpisodeStore fits emb on the full corpus and returns a populated vector
@@ -373,7 +401,7 @@ func (vi *episodeVectorIndex) saveLocked() {
 	vi.emb.SaveState(filepath.Join(vi.dir, episodeEmbedFile))
 
 	metaPath := filepath.Join(vi.dir, episodeIndexMetaFile)
-	if data, err := json.Marshal(indexMeta{Fingerprint: vi.emb.Fingerprint()}); err == nil {
+	if data, err := json.Marshal(indexMeta{Fingerprint: vi.emb.Fingerprint(), Corpus: vi.corpusFP}); err == nil {
 		tmp := metaPath + ".tmp"
 		if os.WriteFile(tmp, data, 0600) == nil {
 			if err := os.Rename(tmp, metaPath); err != nil {
