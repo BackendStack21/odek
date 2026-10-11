@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -1051,12 +1052,7 @@ func (t *patchTool) Call(argsJSON string) (string, error) {
 		modified = strings.Replace(original, args.OldString, args.NewString, 1)
 	}
 
-	// Generate a simple diff
-	diff := fmt.Sprintf("--- a/%s\n+++ b/%s\n@@ -1 +1 @@\n-%s\n+%s\n",
-		args.Path, args.Path,
-		truncateDiff(original, 100),
-		truncateDiff(modified, 100),
-	)
+	diff := patchUnifiedDiff(args.Path, original, modified)
 
 	// When sandbox mode is active, route the write through the container so a
 	// read-only workspace mount is actually enforced.
@@ -1497,6 +1493,86 @@ func isProtectedOdekPath(rel string) bool {
 		}
 	}
 	return false
+}
+
+// Bounds for the patch result diff: lines of context around the edited
+// region, lines shown per side, and characters shown per line.
+const (
+	patchDiffContext   = 1
+	patchDiffMaxLines  = 40
+	patchDiffLineChars = 200
+)
+
+// patchUnifiedDiff renders one unified-diff hunk covering the region where
+// original and modified differ (the span between their common leading and
+// trailing lines), with real line numbers. Output is bounded: at most
+// patchDiffMaxLines lines per side, each cut to patchDiffLineChars.
+func patchUnifiedDiff(path, original, modified string) string {
+	a := patchDiffLines(original)
+	b := patchDiffLines(modified)
+
+	prefix := 0
+	for prefix < len(a) && prefix < len(b) && a[prefix] == b[prefix] {
+		prefix++
+	}
+	suffix := 0
+	for suffix < len(a)-prefix && suffix < len(b)-prefix && a[len(a)-1-suffix] == b[len(b)-1-suffix] {
+		suffix++
+	}
+
+	start := prefix - patchDiffContext
+	if start < 0 {
+		start = 0
+	}
+	trail := suffix
+	if trail > patchDiffContext {
+		trail = patchDiffContext
+	}
+	endA := len(a) - suffix + trail
+	endB := len(b) - suffix + trail
+
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "--- a/%s\n+++ b/%s\n@@ -%s +%s @@\n", path, path,
+		patchHunkRange(start, endA-start), patchHunkRange(start, endB-start))
+
+	writeLines := func(lines []string, mark byte) {
+		for i, line := range lines {
+			if i == patchDiffMaxLines {
+				fmt.Fprintf(&sb, "%c... (%d more lines)\n", mark, len(lines)-i)
+				return
+			}
+			sb.WriteByte(mark)
+			sb.WriteString(truncateDiff(line, patchDiffLineChars))
+			sb.WriteByte('\n')
+		}
+	}
+	writeLines(a[start:prefix], ' ')
+	writeLines(a[prefix:len(a)-suffix], '-')
+	writeLines(b[prefix:len(b)-suffix], '+')
+	writeLines(a[len(a)-suffix:endA], ' ')
+	return sb.String()
+}
+
+// patchDiffLines splits text into lines; a final newline terminates the
+// last line rather than starting an empty one.
+func patchDiffLines(s string) []string {
+	if s == "" {
+		return nil
+	}
+	return strings.Split(strings.TrimSuffix(s, "\n"), "\n")
+}
+
+// patchHunkRange formats a unified-diff range from a 0-based start and a
+// line count ("3" for one line, "2,4" otherwise, "1,0" for an empty side
+// that follows line 1).
+func patchHunkRange(start, count int) string {
+	if count == 1 {
+		return strconv.Itoa(start + 1)
+	}
+	if count == 0 {
+		return strconv.Itoa(start) + ",0"
+	}
+	return strconv.Itoa(start+1) + "," + strconv.Itoa(count)
 }
 
 func truncateDiff(s string, maxLen int) string {
