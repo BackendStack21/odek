@@ -4528,7 +4528,7 @@ func classifyKnownCommand(tokens []string, repo *gitRepoCtx) RiskClass {
 	// fell through every check — a prompt-injection payload could wipe a
 	// working tree with zero friction. They now require explicit approval
 	// (system_write → prompt by default), like other irreversible mutations.
-	if first == "git" && (isGitDataLoss(tokens) || gitRetargetsFilesystem(tokens)) {
+	if first == "git" && (isGitDataLoss(tokens) || gitRetargetsFilesystem(tokens) || gitApplyWritesOutsideWorkTree(tokens)) {
 		return SystemWrite
 	}
 
@@ -5536,6 +5536,19 @@ func gitRetargetsFilesystem(tokens []string) bool {
 		}
 	}
 	return false
+}
+
+// gitApplyWritesOutsideWorkTree reports whether git apply runs with
+// --unsafe-paths: the patch's own paths (absolute, or `..` past any
+// --directory) then decide where files are written, so the write fails
+// closed to system_write whatever directory is given.
+func gitApplyWritesOutsideWorkTree(tokens []string) bool {
+	sub, args := gitSubcommandAndArgs(tokens)
+	if sub != "apply" {
+		return false
+	}
+	unsafe, _ := gitApplyUnsafeDirectories(args)
+	return unsafe
 }
 
 // gitContactsRemote reports whether a parsed git subcommand talks to a remote.

@@ -284,3 +284,17 @@ func TestRED_GitFormatPatchOutputDirNotClassified(t *testing.T) {
 		`git format-patch -o ~/.ssh HEAD~1`,
 	)
 }
+
+// git apply --unsafe-paths --directory=DIR applies a patch outside the
+// repository (verified to write there); classified safe.
+func TestRED_GitApplyUnsafePathsWritesAnywhere(t *testing.T) {
+	redhuntAtLeast(t, SystemWrite,
+		`git apply --unsafe-paths --directory=/etc x.patch`,
+		`git apply --unsafe-paths --directory="$HOME" x.patch`,
+		`git apply --directory /tmp/x --unsafe-paths x.patch`,
+		`git apply --unsafe x.patch`,
+		`git -C /tmp apply --unsafe-paths x.patch`,
+	)
+	// The directory is a write target judged by the path rules.
+	redhuntAtLeast(t, Persistence, `git apply --unsafe-paths --directory=/etc/cron.d x.patch`)
+}

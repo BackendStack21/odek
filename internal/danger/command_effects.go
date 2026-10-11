@@ -119,6 +119,36 @@ func sqliteSQLWriteTargets(text string) []string {
 	return out
 }
 
+// gitApplyUnsafeDirectories reports whether git apply arguments carry
+// --unsafe-paths (any unambiguous prefix, --uns…), which lets the patch write
+// outside the work tree, and returns the --directory values (--dir… with
+// =value or the next word). A directory option without a value is the
+// dynamic marker.
+func gitApplyUnsafeDirectories(args []string) (unsafe bool, dirs []string) {
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "--" {
+			break
+		}
+		switch {
+		case gitLongOpt(a, "unsafe-paths", 3):
+			unsafe = true
+		case gitLongOpt(a, "no-unsafe-paths", 6):
+			unsafe = false
+		case gitLongOpt(a, "directory", 3):
+			if _, v, ok := strings.Cut(a, "="); ok {
+				dirs = append(dirs, v)
+			} else if i+1 < len(args) {
+				i++
+				dirs = append(dirs, args[i])
+			} else {
+				dirs = append(dirs, dynamicSubstToken)
+			}
+		}
+	}
+	return unsafe, dirs
+}
+
 // gitGrepValueShorts are the git grep short options that consume the rest of
 // their cluster (or the next word) as a value, so letters after them are not
 // options.
@@ -721,6 +751,12 @@ func semanticWriteTargets(name string, tokens []string) []string {
 			targets = append(targets, gitWorktreeWriteTargets(args)...)
 		case "archive":
 			targets = append(targets, writeOption{spec: gitArchiveOptions, names: []string{"-o", "--output"}}.targets(args)...)
+		case "apply":
+			// With --unsafe-paths, --directory=DIR roots the patch outside
+			// the work tree.
+			if unsafe, dirs := gitApplyUnsafeDirectories(args); unsafe {
+				targets = append(targets, dirs...)
+			}
 		case "format-patch":
 			// -o/--output-directory names the directory the patch files are
 			// written into; --output names a single file.
