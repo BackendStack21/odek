@@ -14,10 +14,9 @@ import (
 )
 
 // TestRED_MemoryBlock_EndsWithAuthorityReminder: the memory block is a
-// system message that follows the base prompt and its security pillar, so
-// it is the latest system text the model reads. It ends with a fixed
-// reminder placed after the untrusted wrapper — inside the wrapper it
-// would read as data.
+// system message that follows the base prompt and its security pillar. It
+// ends with a fixed reminder placed after the untrusted wrapper — inside
+// the wrapper it would read as data.
 func TestRED_MemoryBlock_EndsWithAuthorityReminder(t *testing.T) {
 	var providerMessages []session.Message
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -50,11 +49,11 @@ func TestRED_MemoryBlock_EndsWithAuthorityReminder(t *testing.T) {
 	}
 }
 
-// TestRED_MemoryBlock_ReminderSurvivesFedBackTurns: a fed-back history
+// TestMemoryBlock_ReminderSurvivesFedBackTurns (regression guard): a fed-back history
 // carries last turn's memory block. The reminder must not stop the
 // sanitizer from recognising it as engine-minted, or the block would be
 // re-wrapped as persisted context and a second memory slot inserted.
-func TestRED_MemoryBlock_ReminderSurvivesFedBackTurns(t *testing.T) {
+func TestMemoryBlock_ReminderSurvivesFedBackTurns(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, `{"choices":[{"message":{"content":"ok"}}]}`)
 	}))
@@ -135,5 +134,19 @@ func TestRED_MemoryBlock_ResumeInNewProcessUnwrapsCleanly(t *testing.T) {
 		if strings.Contains(m.Content, memoryAuthorityReminder) {
 			t.Errorf("authority reminder re-wrapped as data: %q", m.Content)
 		}
+	}
+}
+
+// TestRED_PersistedReminderOnly_NotEmptied: a persisted system message that
+// is nothing but the reminder must not be trimmed to an empty system
+// message, which some providers reject on resume.
+func TestRED_PersistedReminderOnly_NotEmptied(t *testing.T) {
+	engine := New(nil, tool.NewRegistry(nil), 10, "sys", nil, 0)
+	msgs := engine.sanitizePersistedSystemMessages(context.Background(), []session.Message{
+		{Role: "system", Content: "sys"},
+		{Role: "system", Content: "\n\n" + memoryAuthorityReminder},
+	})
+	if strings.TrimSpace(msgs[1].Content) == "" {
+		t.Fatal("persisted reminder-only system message was emptied")
 	}
 }

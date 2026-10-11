@@ -2664,8 +2664,11 @@ func (e *Engine) sanitizePersistedSystemMessages(ctx context.Context, messages [
 		}
 		// A memory block from another process ends with the authority
 		// reminder after its wrapper; drop it so the wrapper is recognised
-		// and unwrapped, and the reminder is not re-wrapped as data.
-		content = strings.TrimSuffix(content, "\n\n"+memoryAuthorityReminder)
+		// and unwrapped, and the reminder is not re-wrapped as data. A
+		// message that is only the reminder is kept, so it is never emptied.
+		if trimmed := strings.TrimSuffix(content, "\n\n"+memoryAuthorityReminder); strings.TrimSpace(trimmed) != "" {
+			content = trimmed
+		}
 		messages[i].Content = e.protectPersistedContext(ctx, "persisted_system", unwrapForeignBoundary(content))
 	}
 	return messages

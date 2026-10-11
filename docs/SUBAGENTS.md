@@ -305,7 +305,8 @@ Safety, Execution provenance, and Indirect Prompt Injection sections), and sub-a
 amendments that adapt principal-facing rules to a child with no principal channel —
 skip-and-report replaces confirmation, scope is the declared task, a value taken from
 untrusted content is used only when the declared task calls for it, a denied operation
-is never retried another way, and injection
+is never retried another way (nor one the request says was denied), the declared task
+stands in for the principal in the pillar's precedence order, and injection
 findings go into the final report. **Nothing the parent supplies is ever spliced into
 it** — not the parent's system prompt, not `--system`, not `IDENTITY.md`.
 

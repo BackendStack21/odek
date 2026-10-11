@@ -95,3 +95,18 @@ func TestRED_SecurityPillar_BoundsReportedPayload(t *testing.T) {
 		"links defanged (hxxp://, example[.]com)",
 	)
 }
+
+// TestRED_SecurityPillar_CarveOutsStayBounded: each carve-out added for
+// usability must not reopen a rule it sits next to — a link that carries
+// local data, an implied step that leaves the project or touches ~/.odek,
+// or a denied effect re-expressed through another command.
+func TestRED_SecurityPillar_CarveOutsStayBounded(t *testing.T) {
+	requirePillarFragments(t,
+		"Reading a link is fine when its URL carries no local data the principal did not ask to send",
+		"These steps still follow every other rule here",
+		"The same operation means the same effect on the same target, whatever command or tool expresses it",
+	)
+	if strings.Contains(SecurityPillar, "Reading a link is fine when the request carries no private data") {
+		t.Error("link carve-out still licenses URLs that carry non-private local data")
+	}
+}
