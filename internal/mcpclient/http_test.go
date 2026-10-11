@@ -245,14 +245,20 @@ func TestWithHTTPClientInjectsTransport(t *testing.T) {
 	ts := httptest.NewServer((&httpMCPServer{}).handler())
 	defer ts.Close()
 
-	injected := &http.Client{}
+	// The client is copied (its redirect policy gains the session-id guard,
+	// and the caller's client may be shared), so the injected transport and
+	// timeout are what must carry over.
+	injected := &http.Client{Transport: &http.Transport{}, Timeout: 7 * time.Second}
 	c, err := New("remote", ServerConfig{URL: ts.URL}, WithHTTPClient(injected))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer c.Close()
-	if c.httpc != injected {
+	if c.httpc.Transport != injected.Transport || c.httpc.Timeout != injected.Timeout {
 		t.Fatal("WithHTTPClient client not used")
+	}
+	if injected.CheckRedirect != nil {
+		t.Fatal("the caller's client was mutated")
 	}
 	ctx := context.Background()
 	if _, err := c.Discover(ctx); err != nil {

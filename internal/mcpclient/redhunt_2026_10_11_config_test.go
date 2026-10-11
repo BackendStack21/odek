@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"sync"
 	"testing"
 	"time"
@@ -100,6 +101,105 @@ func TestRED_HTTPTransportIgnoresInvalidMcpSessionID(t *testing.T) {
 	}
 	if !validMCPSessionID("abc-123_~!") {
 		t.Error("visible-ASCII session id rejected")
+	}
+}
+
+// The session id belongs to the configured server: a redirect to another
+// host must not carry it (Go strips only Authorization/Cookie on its own),
+// while a same-host redirect keeps it.
+func TestRED_HTTPTransportDropsSessionIDOnCrossHostRedirect(t *testing.T) {
+	const sid = "sess-secret"
+	var mu sync.Mutex
+	var leaked, sameHostKept bool
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			ID *int `json:"id"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		mu.Lock()
+		if r.Header.Get("Mcp-Session-Id") != "" {
+			leaked = true
+		}
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%d,"result":{"tools":[]}}`, *req.ID)
+	}))
+	defer other.Close()
+	var srvURL string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			ID     *int   `json:"id"`
+			Method string `json:"method"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		switch {
+		case req.ID == nil:
+			w.WriteHeader(http.StatusAccepted)
+		case req.Method == "initialize":
+			w.Header().Set("Mcp-Session-Id", sid)
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%d,"result":{"protocolVersion":"2025-03-26","capabilities":{},"serverInfo":{"name":"s","version":"1"}}}`, *req.ID)
+		case r.URL.Path == "/moved":
+			mu.Lock()
+			sameHostKept = r.Header.Get("Mcp-Session-Id") == sid
+			mu.Unlock()
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%d,"result":{"content":[{"type":"text","text":"ok"}]}}`, *req.ID)
+		case req.Method == "tools/call":
+			http.Redirect(w, r, srvURL+"/moved", http.StatusTemporaryRedirect)
+		default: // tools/list
+			http.Redirect(w, r, other.URL, http.StatusTemporaryRedirect)
+		}
+	}))
+	defer srv.Close()
+	srvURL = srv.URL
+
+	c, err := New("redir", ServerConfig{URL: srv.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := c.Discover(ctx); err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	if _, err := c.CallTool(ctx, "x", `{}`); err != nil {
+		t.Fatalf("CallTool: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if leaked {
+		t.Error("Mcp-Session-Id forwarded to a different host on redirect")
+	}
+	if !sameHostKept {
+		t.Error("Mcp-Session-Id dropped on a same-host redirect")
+	}
+}
+
+// The guard keeps the caller's own redirect policy and, without one, the
+// standard 10-hop limit; a scheme change also drops the session id.
+func TestRED_SessionRedirectGuardPolicy(t *testing.T) {
+	server, _ := url.Parse("https://mcp.example.com/rpc")
+	mk := func(raw string) *http.Request {
+		r, _ := http.NewRequest(http.MethodPost, raw, nil)
+		r.Header.Set("Mcp-Session-Id", "s")
+		return r
+	}
+	g := withSessionRedirectGuard(&http.Client{}, server)
+	if r := mk("http://mcp.example.com/rpc"); g.CheckRedirect(r, nil) != nil || r.Header.Get("Mcp-Session-Id") != "" {
+		t.Error("scheme downgrade kept the session id")
+	}
+	if r := mk("https://MCP.example.com/other"); g.CheckRedirect(r, nil) != nil || r.Header.Get("Mcp-Session-Id") != "s" {
+		t.Error("same-host redirect dropped the session id")
+	}
+	if g.CheckRedirect(mk("https://mcp.example.com/"), make([]*http.Request, 10)) == nil {
+		t.Error("11th redirect allowed")
+	}
+	sentinel := fmt.Errorf("no redirects")
+	g2 := withSessionRedirectGuard(&http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return sentinel }}, server)
+	if r := mk("https://evil.example/"); g2.CheckRedirect(r, nil) != sentinel || r.Header.Get("Mcp-Session-Id") != "" {
+		t.Error("caller's CheckRedirect not honoured, or session id kept")
 	}
 }
 

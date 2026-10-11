@@ -79,7 +79,8 @@ func tokenEnvAllowed(name string) bool {
 // newHTTPClient builds the URL-transport branch of New: no subprocess, no
 // read/write goroutines; every call() round-trips one HTTP request.
 func newHTTPClient(name string, cfg ServerConfig, opts httpOptions) (*Client, error) {
-	if _, err := validateServerURL(cfg.URL); err != nil {
+	serverURL, err := validateServerURL(cfg.URL)
+	if err != nil {
 		return nil, fmt.Errorf("mcpclient %s: %w", name, err)
 	}
 
@@ -95,6 +96,7 @@ func newHTTPClient(name string, cfg ServerConfig, opts httpOptions) (*Client, er
 	if httpc == nil {
 		httpc = &http.Client{}
 	}
+	httpc = withSessionRedirectGuard(httpc, serverURL)
 
 	return &Client{
 		name:   name,
@@ -103,6 +105,34 @@ func newHTTPClient(name string, cfg ServerConfig, opts httpOptions) (*Client, er
 		httpc:  httpc,
 		closed: make(chan struct{}),
 	}, nil
+}
+
+// maxHTTPRedirects mirrors net/http's default redirect limit, applied when
+// the supplied client has no CheckRedirect of its own.
+const maxHTTPRedirects = 10
+
+// withSessionRedirectGuard returns a shallow copy of base (which may be
+// shared, so it is never mutated) whose redirect policy removes the
+// Mcp-Session-Id header when a redirect leaves the configured server's
+// scheme and host. net/http strips only Authorization, Cookie and
+// WWW-Authenticate on its own. The base client's own CheckRedirect, if any,
+// still runs afterwards.
+func withSessionRedirectGuard(base *http.Client, server *url.URL) *http.Client {
+	c := *base
+	prev := base.CheckRedirect
+	c.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if !strings.EqualFold(req.URL.Scheme, server.Scheme) || !strings.EqualFold(req.URL.Host, server.Host) {
+			req.Header.Del(mcpSessionIDHeader)
+		}
+		if prev != nil {
+			return prev(req, via)
+		}
+		if len(via) >= maxHTTPRedirects {
+			return fmt.Errorf("stopped after %d redirects", maxHTTPRedirects)
+		}
+		return nil
+	}
+	return &c
 }
 
 // httpCall performs one JSON-RPC request over HTTP and returns the raw result.
