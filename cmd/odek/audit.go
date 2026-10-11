@@ -119,10 +119,8 @@ func recordTurnAudit(store *session.AuditStore, sessionID string, turn int, user
 	// (e.g. a fetched page mentioning its own URL) to avoid false positives
 	// for legitimate user-requested fetches.
 	isSource := func(r string) bool {
-		lr := strings.ToLower(r)
 		for _, s := range untrustedSources {
-			ls := strings.ToLower(s)
-			if lr == ls || strings.HasPrefix(lr, ls) || strings.HasPrefix(ls, lr) {
+			if auditOpsResourceMatchesSource(r, s) {
 				return true
 			}
 		}
@@ -163,6 +161,37 @@ func recordTurnAudit(store *session.AuditStore, sessionID string, turn int, user
 		SuspiciousDivergence: suspicious,
 	}
 	_ = store.RecordTurn(sessionID, at)
+}
+
+// auditOpsResourceMatchesSource reports whether resource r is the untrusted
+// content's own source s (case-insensitive): equal, or one lies under the
+// other on a path boundary — the longer continues with '/', '?' or '#', or
+// the shorter ends with '/'. A raw string prefix is not enough: the
+// look-alike host https://news.example.com.collector.net extends the source
+// https://news.example.com without being part of it.
+func auditOpsResourceMatchesSource(r, s string) bool {
+	lr, ls := strings.ToLower(r), strings.ToLower(s)
+	if lr == "" || ls == "" {
+		return false
+	}
+	if lr == ls {
+		return true
+	}
+	short, long := ls, lr
+	if len(lr) < len(ls) {
+		short, long = lr, ls
+	}
+	if !strings.HasPrefix(long, short) {
+		return false
+	}
+	if strings.HasSuffix(short, "/") {
+		return true
+	}
+	switch long[len(short)] {
+	case '/', '?', '#':
+		return true
+	}
+	return false
 }
 
 // auditCmd handles `odek audit <session-id>` and `odek audit --list`.
