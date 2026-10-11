@@ -142,3 +142,32 @@ func TestRED_ServeAgentSandboxFailureLeaksMCPServers(t *testing.T) {
 	}
 	t.Fatalf("MCP server pid %d still running 3s after newServeAgent returned %q: subprocess leaked", pid, err)
 }
+
+// GET /api/subagents?session_id= resolves live run keys by reading every
+// registered run's SessionID. serveRun.SessionID is written under run.mu by
+// record() ("session" frame) and by the run goroutine at turn end, but
+// subagentRunKeysForSession reads it holding only serveRuns.mu: a data race
+// between a live headless run and any subagent-registry poll. Run with -race.
+func TestRED_SubagentRunKeysRaceOnRunSessionID(t *testing.T) {
+	resetServeRuns()
+	t.Cleanup(resetServeRuns)
+	run := &serveRun{ID: "run-race-redhunt", Status: "running", pending: map[string]*approvalRequest{}}
+	run.cond = sync.NewCond(&run.mu)
+	registerRun(run)
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 200; i++ {
+			_ = run.record(map[string]any{"type": "session", "session_id": "sess-" + strconv.Itoa(i)})
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 200; i++ {
+			_ = subagentRunKeysForSession("sess-" + strconv.Itoa(i))
+		}
+	}()
+	wg.Wait()
+}
