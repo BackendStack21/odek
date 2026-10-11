@@ -87,3 +87,53 @@ func TestRED_MemoryBlock_ReminderSurvivesFedBackTurns(t *testing.T) {
 		t.Fatalf("authority reminders after 3 fed-back turns = %d, want 1 (history: %v)", reminders, summarize(msgs))
 	}
 }
+
+// TestRED_MemoryBlock_ResumeInNewProcessUnwrapsCleanly: `odek continue`
+// starts a new process whose minted registry is empty, so last run's memory
+// block is foreign and gets re-wrapped as persisted context. The trailing
+// reminder must not stop the foreign wrapper from being unwrapped first —
+// otherwise the history gains a nested, neutralised tag and a second copy
+// of the reminder sitting inside a data wrapper.
+func TestRED_MemoryBlock_ResumeInNewProcessUnwrapsCleanly(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"choices":[{"message":{"content":"ok"}}]}`)
+	}))
+	defer server.Close()
+
+	first := New(testChatClient(t, server.URL), tool.NewRegistry(nil), 10, "sys", nil, 0)
+	first.SetMemoryPromptFunc(func() string { return "MEM" })
+	_, msgs, err := first.RunWithMessages(context.Background(),
+		[]session.Message{{Role: "system", Content: "sys"}, {Role: "user", Content: "turn 1"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A new process: nothing this history carries was minted here.
+	mintedBoundaries.Lock()
+	saved := mintedBoundaries.m
+	mintedBoundaries.m = make(map[[32]byte]uint64)
+	mintedBoundaries.Unlock()
+	t.Cleanup(func() {
+		mintedBoundaries.Lock()
+		mintedBoundaries.m = saved
+		mintedBoundaries.Unlock()
+	})
+
+	second := New(testChatClient(t, server.URL), tool.NewRegistry(nil), 10, "sys", nil, 0)
+	second.SetMemoryPromptFunc(func() string { return "MEM" })
+	msgs = append(msgs, session.Message{Role: "user", Content: "turn 2"})
+	if _, msgs, err = second.RunWithMessages(context.Background(), msgs); err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range msgs {
+		if m.Role != "system" || !strings.Contains(m.Content, `source="persisted_system"`) {
+			continue
+		}
+		if strings.Contains(m.Content, "untrusted·content") {
+			t.Errorf("persisted memory block kept its foreign wrapper nested inside: %q", m.Content)
+		}
+		if strings.Contains(m.Content, memoryAuthorityReminder) {
+			t.Errorf("authority reminder re-wrapped as data: %q", m.Content)
+		}
+	}
+}
