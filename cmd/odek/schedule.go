@@ -495,12 +495,17 @@ func (r telegramRunner) Run(ctx context.Context, job schedule.Job) (string, int6
 			return "", 0, fmt.Errorf("daily token budget exhausted (%d/%d tokens)", used, limit)
 		}
 	}
-	result, tokens, err := runTaskHeadless(ctx, r.resolved, r.system, job.Task, r.mcpTools)
-	if err == nil && budgeted && tokens > 0 {
-		_ = r.bot.CheckDailyBudget(tokens) // bill the run (best-effort)
+	result, tokens, err := telegramScheduledHeadlessRun(ctx, r.resolved, r.system, job.Task, r.mcpTools)
+	// Bill whatever the run consumed, also when it failed: the tokens were
+	// spent at the provider either way.
+	if budgeted && tokens > 0 {
+		_ = r.bot.CheckDailyBudget(tokens) // best-effort
 	}
 	return result, tokens, err
 }
+
+// telegramScheduledHeadlessRun runs a Telegram-scheduled job (a seam for tests).
+var telegramScheduledHeadlessRun = runTaskHeadless
 
 // telegramDeliverer delivers via the live bot for telegram jobs (sharing its
 // client and rate limiting) and falls back to the CLI deliverer for stdout/log.

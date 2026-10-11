@@ -1,8 +1,9 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
-	"fmt"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -12,8 +13,12 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"fmt"
+
+	"github.com/BackendStack21/odek"
 	"github.com/BackendStack21/odek/internal/bgproc"
 	"github.com/BackendStack21/odek/internal/config"
+	"github.com/BackendStack21/odek/internal/schedule"
 	"github.com/BackendStack21/odek/internal/telegram"
 )
 
@@ -73,6 +78,29 @@ func TestRED_BudgetOvershootWarningDelivered(t *testing.T) {
 	}
 	if used, _ := bot.DailyTokenUsage(); used != 120 {
 		t.Errorf("recorded usage = %d, want 120", used)
+	}
+}
+
+// A scheduled job that consumed tokens and then failed must still be billed,
+// otherwise failing runs spend past the daily cap unrecorded.
+func TestRED_FailedScheduledRunIsBilled(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	orig := telegramScheduledHeadlessRun
+	t.Cleanup(func() { telegramScheduledHeadlessRun = orig })
+	telegramScheduledHeadlessRun = func(context.Context, config.ResolvedConfig, string, string, []odek.Tool) (string, int64, error) {
+		return "", 500, errors.New("provider failed mid-run")
+	}
+	bot := telegram.NewBot("test:token")
+	bot.SetDailyTokenBudget(10_000)
+	r := telegramRunner{
+		resolved: config.ResolvedConfig{Telegram: telegram.TelegramConfig{DailyTokenBudget: 10_000}},
+		bot:      bot,
+	}
+	if _, _, err := r.Run(context.Background(), schedule.Job{Task: "x"}); err == nil {
+		t.Fatal("expected the run error to be returned")
+	}
+	if used, _ := bot.DailyTokenUsage(); used != 500 {
+		t.Fatalf("failed scheduled run billed %d tokens, want 500", used)
 	}
 }
 

@@ -2199,6 +2199,9 @@ func runChatTurn(
 	}
 	outcome = err
 	recordTurnAudit(auditStore, cs.SessionID, auditTurn, auditUserText, auditTurnDelta(updatedMessages, auditHistLen))
+	// Bill actual token usage against the daily budget (if configured) on
+	// every outcome: failed and cancelled turns spent their tokens too.
+	billTelegramChatTurn(bot, log, chatID, messageID, int64(runInfo.InputTokens+runInfo.OutputTokens))
 	if err != nil {
 		// Clean up any tool trace messages on error.
 		deleteToolTraceMessages(bot, chatID, &toolMsgIDs)
@@ -2234,9 +2237,6 @@ func runChatTurn(
 		reportError(bot, chatID, messageID, friendlyRunError(err))
 		return
 	}
-
-	// Bill actual token usage against daily budget (if configured).
-	billTelegramChatTurn(bot, log, chatID, messageID, int64(runInfo.InputTokens+runInfo.OutputTokens))
 
 	// Save the updated session messages.
 	cs.Messages = updatedMessages
