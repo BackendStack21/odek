@@ -164,3 +164,83 @@ func TestRED_StdioDiscoverSendsInitializedNotification(t *testing.T) {
 		t.Fatalf("tools = %+v", tools)
 	}
 }
+
+// MCP basic utilities: the receiver of a "ping" must respond promptly with an
+// empty result. A server that pings before finishing a tools/call must not
+// stall the call; any other server request gets method-not-found, and
+// notifications get no reply.
+func TestRED_StdioClientAnswersServerPing(t *testing.T) {
+	c, sc, serverWrite := redHuntConfigPipeClient(t, "pinger", 2*time.Second)
+	replies := make(chan string, 8)
+	go func() {
+		callID := -1
+		for sc.Scan() {
+			line := sc.Text()
+			var msg struct {
+				ID     *json.RawMessage `json:"id"`
+				Method string           `json:"method"`
+			}
+			if json.Unmarshal([]byte(line), &msg) != nil {
+				continue
+			}
+			switch {
+			case msg.Method == "tools/call" && msg.ID != nil:
+				_ = json.Unmarshal(*msg.ID, &callID)
+				// A notification (no reply expected), an unsupported request,
+				// then a liveness check before doing the work.
+				fmt.Fprint(serverWrite, `{"jsonrpc":"2.0","method":"notifications/message","params":{}}`+"\n")
+				fmt.Fprint(serverWrite, `{"jsonrpc":"2.0","id":7,"method":"sampling/createMessage","params":{}}`+"\n")
+				fmt.Fprint(serverWrite, `{"jsonrpc":"2.0","id":"ping1","method":"ping"}`+"\n")
+			case msg.Method == "" && msg.ID != nil:
+				replies <- line
+				if string(*msg.ID) == `"ping1"` {
+					fmt.Fprintf(serverWrite, `{"jsonrpc":"2.0","id":%d,"result":{"content":[{"type":"text","text":"done"}]}}`+"\n", callID)
+				}
+			}
+		}
+	}()
+
+	out, err := c.CallTool(context.Background(), "work", `{}`)
+	if err != nil {
+		t.Fatalf("CallTool against a server that pings first: %v", err)
+	}
+	if out != "done" {
+		t.Fatalf("out = %q", out)
+	}
+	var got []string
+	for len(got) < 2 {
+		select {
+		case r := <-replies:
+			got = append(got, r)
+		case <-time.After(2 * time.Second):
+			t.Fatalf("replies = %v, want two", got)
+		}
+	}
+	var mnf, pong map[string]any
+	_ = json.Unmarshal([]byte(got[0]), &mnf)
+	_ = json.Unmarshal([]byte(got[1]), &pong)
+	if errObj, _ := mnf["error"].(map[string]any); mnf["id"] != float64(7) || errObj == nil || errObj["code"] != float64(-32601) {
+		t.Errorf("reply to an unsupported server request = %s, want method-not-found for id 7", got[0])
+	}
+	if res, ok := pong["result"].(map[string]any); pong["id"] != "ping1" || !ok || len(res) != 0 {
+		t.Errorf("reply to ping = %s, want an empty result for id \"ping1\"", got[1])
+	}
+	select {
+	case r := <-replies:
+		t.Errorf("unexpected extra reply %s (notifications must not be answered)", r)
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+// A server request whose id is neither a string nor a number is malformed and
+// gets no reply.
+func TestRED_ServerRequestReplyRejectsNonScalarID(t *testing.T) {
+	for _, id := range []string{`{"a":1}`, `[1]`, `true`, `null`, ``} {
+		if b := serverRequestReply(json.RawMessage(id), "ping"); b != nil {
+			t.Errorf("id %s: reply %s, want none", id, b)
+		}
+	}
+	if b := serverRequestReply(json.RawMessage(`12`), "ping"); string(b) != `{"jsonrpc":"2.0","id":12,"result":{}}`+"\n" {
+		t.Errorf("ping reply = %q", b)
+	}
+}

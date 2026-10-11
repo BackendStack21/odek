@@ -1059,6 +1059,50 @@ func (c *Client) notify(ctx context.Context, method string) error {
 	}
 }
 
+// serverRequestReply builds the JSON-RPC reply line for a server-to-client
+// request: an empty result for ping, method-not-found for any other method.
+// It returns nil for a notification (missing or null id) and for an id that
+// is neither a string nor a number, which JSON-RPC does not allow. The id is
+// raw JSON from an already-decoded frame and is echoed verbatim.
+func serverRequestReply(id json.RawMessage, method string) []byte {
+	id = bytes.TrimSpace(id)
+	if len(id) == 0 {
+		return nil
+	}
+	switch c := id[0]; {
+	case c == '"', c == '-', c >= '0' && c <= '9':
+	default:
+		return nil // null, object, array, or boolean id
+	}
+	msg := struct {
+		JSONRPC string          `json:"jsonrpc"`
+		ID      json.RawMessage `json:"id"`
+		Result  *struct{}       `json:"result,omitempty"`
+		Error   *rpcError       `json:"error,omitempty"`
+	}{JSONRPC: "2.0", ID: id}
+	if method == "ping" {
+		msg.Result = &struct{}{}
+	} else {
+		msg.Error = &rpcError{Code: -32601, Message: "Method not found"}
+	}
+	b, err := json.Marshal(msg)
+	if err != nil {
+		return nil
+	}
+	return append(b, '\n')
+}
+
+// sendServerReply queues a reply to a server request without blocking the
+// read loop: when the writer queue is full the reply is dropped, so a server
+// flooding requests cannot wedge response routing.
+func (c *Client) sendServerReply(reply []byte) {
+	select {
+	case c.writeCh <- &queuedRequest{ctx: context.Background(), data: reply}:
+	case <-c.closed:
+	default:
+	}
+}
+
 // writeLoop is the single writer goroutine owning c.stdin. It keeps write
 // ordering (one syscall per request) while ensuring no caller can block on
 // a full pipe — callers enqueue under their own ctx deadline instead (see
@@ -1126,7 +1170,13 @@ func (c *Client) readLoop() {
 		// notification (JSON-RPC 2.0), never a response to one of our calls.
 		// Routing it by id would deliver {result:null} to a waiting caller
 		// whose id collides — and drop the real response when it arrives.
+		// A request (it carries an id) is answered: ping with an empty
+		// result, anything else with method-not-found, so a server waiting
+		// on the reply is never stalled. Notifications get no reply.
 		if resp.Method != "" {
+			if reply := serverRequestReply(resp.ID, resp.Method); reply != nil {
+				c.sendServerReply(reply)
+			}
 			continue
 		}
 		// A missing or null id (e.g. a JSON-RPC parse-error reply) answers no

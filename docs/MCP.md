@@ -92,7 +92,7 @@ A stateless modern `tools/call` must send protocol `2026-07-28` **and** client c
 
 ## Client (`mcp_servers`)
 
-odek spawns each configured server as a subprocess, sends `initialize` with protocol `2025-03-26`, then the `notifications/initialized` notification (best-effort, on stdio and HTTP alike), then `tools/list`, and registers each tool as `<server>__<tool>`.
+odek spawns each configured server as a subprocess, sends `initialize` with protocol `2025-03-26`, then the `notifications/initialized` notification (best-effort, on stdio and HTTP alike), then `tools/list`, and registers each tool as `<server>__<tool>`. On stdio, a server-to-client `ping` request is answered with an empty result and any other server request with JSON-RPC method-not-found (`-32601`), so a server that waits on such a reply never stalls a call; server notifications get no reply.
 
 ### Where it loads
 
