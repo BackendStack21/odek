@@ -320,7 +320,9 @@ type scoredAtomMeta struct {
 	score float32
 }
 
-// rerank asks the memory LLM to order the candidate atoms by relevance.
+// rerank asks the memory LLM to order the candidate atoms by relevance and
+// rewrites their scores so that order survives a later sort by score. On an
+// LLM failure or a "none" answer the candidates are returned unchanged.
 func (r *Recall) rerank(ctx context.Context, query string, scored []scoredAtomMeta) []scoredAtomMeta {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Rank these memory atoms by relevance to: %s\n\n", query)
@@ -365,6 +367,19 @@ func (r *Recall) rerank(ctx context.Context, query string, scored []scoredAtomMe
 		if !seen[i] {
 			ordered = append(ordered, s)
 		}
+	}
+	// Callers rank by score (the top-k sort here, and the union with
+	// predicted-intent matches), so the LLM order must live in the scores.
+	// Hand the candidates' original scores, highest first, to the reranked
+	// order: the score range stays comparable with unreranked results while
+	// the ranking follows the LLM.
+	scores := make([]float32, len(scored))
+	for i, s := range scored {
+		scores[i] = s.score
+	}
+	sort.Slice(scores, func(i, j int) bool { return scores[i] > scores[j] })
+	for i := range ordered {
+		ordered[i].score = scores[i]
 	}
 	return ordered
 }
