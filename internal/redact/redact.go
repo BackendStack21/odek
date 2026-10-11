@@ -84,8 +84,11 @@ var patterns = []*regexp.Regexp{
 	// password containing commas, semicolons or quotes is covered whole (the
 	// safe direction: text glued to a secret is redacted with it). The 20-char
 	// floor filters out UUIDs, hex hashes in code, and other
-	// false-positive-heavy text.
-	regexp.MustCompile(`(?i)(?:api[_-]?key|api[_-]?secret|auth[_-]?token|access[_-]?token|bearer[_-]?token|client[_-]?secret|private[_-]?key|secret[_-]?key|password|passwd)["'\x60]?\s*[:=]\s*(?:"[^"\n]{20,}"|'[^'\n]{20,}'|\x60[^\x60\n]{20,}\x60|[^\s]{20,})`),
+	// false-positive-heavy text. secret_access_key / session_token cover the
+	// AWS secret and session token in STS JSON (SecretAccessKey,
+	// SessionToken) and YAML env blocks (AWS_SECRET_ACCESS_KEY: value), whose
+	// colon form the `NAME=value` env-var matcher below does not reach.
+	regexp.MustCompile(`(?i)(?:api[_-]?key|api[_-]?secret|auth[_-]?token|access[_-]?token|bearer[_-]?token|client[_-]?secret|private[_-]?key|secret[_-]?key|secret[_-]?access[_-]?key|session[_-]?token|password|passwd)["'\x60]?\s*[:=]\s*(?:"[^"\n]{20,}"|'[^'\n]{20,}'|\x60[^\x60\n]{20,}\x60|[^\s]{20,})`),
 
 	// Bearer tokens in Authorization headers
 	regexp.MustCompile(`(?i)Authorization:\s*Bearer\s+([a-zA-Z0-9+/=._-]{20,})`),
