@@ -197,6 +197,16 @@ func (t *aliasTable) expansions(stage, skip []string) (out []aliasExpansion, unr
 	return out, false
 }
 
+// aliasPlainRune reports whether r can appear unquoted in an expansion word
+// without changing how the shell splits or reads it back.
+func aliasPlainRune(r rune) bool {
+	switch {
+	case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		return true
+	}
+	return strings.ContainsRune("_-./~:=,+@%^*?[]{}$!#", r)
+}
+
 // aliasQuoteWord renders an already split and expanded word so the shell text
 // of an expansion reads it back as the same single word. Operators and
 // redirections stay bare so they keep their meaning.
@@ -209,7 +219,7 @@ func aliasQuoteWord(w string) string {
 	}
 	plain := true
 	for _, r := range w {
-		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune("_-./~:=,+@%^*?[]{}$!#", r)) {
+		if !aliasPlainRune(r) {
 			plain = false
 			break
 		}
