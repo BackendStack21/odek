@@ -3714,6 +3714,7 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 							execN, len(result.ToolCalls),
 						),
 						errored: true,
+						notRun:  true,
 					}
 					close(done[i])
 					continue
@@ -3741,7 +3742,7 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 							select {
 							case <-done[prior]:
 							case <-toolCtx.Done():
-								results[idx] = execResult{output: "error: cancelled before execution", errored: true, outcome: tool.OutcomeFor(toolCtx.Err())}
+								results[idx] = execResult{output: "error: cancelled before execution", errored: true, notRun: true, outcome: tool.OutcomeFor(toolCtx.Err())}
 								return
 							}
 						}
@@ -3749,7 +3750,7 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 					select {
 					case sem <- struct{}{}:
 					case <-toolCtx.Done():
-						results[idx] = execResult{output: "error: cancelled before execution", errored: true, outcome: tool.OutcomeFor(toolCtx.Err())}
+						results[idx] = execResult{output: "error: cancelled before execution", errored: true, notRun: true, outcome: tool.OutcomeFor(toolCtx.Err())}
 						return
 					}
 					defer func() { <-sem }() // release
