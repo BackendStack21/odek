@@ -327,6 +327,10 @@ Routing per job exit:
 | Chat busy (a turn is running) | Legacy raw 📋 exit line only — the running turn's notice drain already reaches the model |
 | Wake disabled / spend cap hit | Legacy raw 📋 exit line only |
 
+Each job exit is posted at most once: the exit observer and the chat's
+polling watcher share one per-chat dedup record, so whichever sees the exit
+first announces it.
+
 Wake is controlled by the shared `background.wake_on_complete` setting
 (default `true`), forced off when `background.notify: "off"`, and bounded by
 `background.max_wakes_per_hour` per chat (spend control). See
