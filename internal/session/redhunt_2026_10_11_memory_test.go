@@ -83,6 +83,46 @@ func TestRED_CorruptIndexCollapsesListing(t *testing.T) {
 	}
 }
 
+// TestRED_EpisodeTaintWorkspaceSymlinkEscape: pathOutsideRoots returns
+// "inside" as soon as ANY candidate (the lexical path or its resolved
+// target) sits under a trusted root. A symlink inside the workspace that
+// points outside it (a cloned repo shipping `docs -> /`, or `cfg -> ~/.aws`)
+// therefore reads files outside the trust zone while the episode stays
+// trusted and auto-recallable — exactly the escape the symlink resolution
+// was meant to catch.
+func TestRED_EpisodeTaintWorkspaceSymlinkEscape(t *testing.T) {
+	ws := t.TempDir()
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "secret.txt"), []byte("s3cr3t"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ws, "plain.txt"), []byte("ok"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(ws, "link")); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(ws)
+
+	// Control: the same file named directly is (correctly) an escape.
+	if !ToolCallTaintsEpisode("read_file", `{"path":"`+filepath.Join(outside, "secret.txt")+`"}`) {
+		t.Fatal("setup: direct read outside the workspace should taint")
+	}
+	if !ToolCallTaintsEpisode("read_file", `{"path":"link/secret.txt"}`) {
+		t.Fatal("read through a workspace symlink pointing outside the workspace did not taint the episode")
+	}
+	// A not-yet-existing file behind the link is judged by its resolved parent.
+	if !ToolCallTaintsEpisode("read_file", `{"path":"link/missing/deeper.txt"}`) {
+		t.Fatal("missing path behind an escaping symlink did not taint the episode")
+	}
+	// Ordinary workspace reads, existing or not, stay trusted.
+	for _, p := range []string{"plain.txt", "not/there.txt", filepath.Join(ws, "plain.txt")} {
+		if ToolCallTaintsEpisode("read_file", `{"path":"`+p+`"}`) {
+			t.Fatalf("workspace read %q tainted the episode", p)
+		}
+	}
+}
+
 // TestRED_IndexNullEntryDoesNotPanic: a null element in index.json is
 // skipped rather than dereferenced.
 func TestRED_IndexNullEntryDoesNotPanic(t *testing.T) {
