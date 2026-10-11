@@ -31,3 +31,18 @@ func TestRED_PlanningRemindProjectMergeAndClamp(t *testing.T) {
 		t.Errorf("project planning.remind=true overrode a global remind=false")
 	}
 }
+
+// A tab before an inline comment is whitespace exactly like a space; the
+// comment text must not become part of the secret.
+func TestRED_SecretsEnvTabInlineCommentStripped(t *testing.T) {
+	t.Setenv("SE_RED_TABCOMMENT", "")
+	writeSecretsAndLoad(t, "SE_RED_TABCOMMENT=sk-live-123\t# rotated 2026-10\n")
+	if got := os.Getenv("SE_RED_TABCOMMENT"); got != "sk-live-123" {
+		t.Errorf("SE_RED_TABCOMMENT = %q, want %q", got, "sk-live-123")
+	}
+	t.Setenv("SE_RED_HASHINVALUE", "")
+	writeSecretsAndLoad(t, "SE_RED_HASHINVALUE=abc#def\n")
+	if got := os.Getenv("SE_RED_HASHINVALUE"); got != "abc#def" {
+		t.Errorf("SE_RED_HASHINVALUE = %q, want %q ('#' without preceding whitespace is part of the value)", got, "abc#def")
+	}
+}

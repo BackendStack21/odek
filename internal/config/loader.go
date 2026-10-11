@@ -4284,12 +4284,12 @@ func loadSecretsEnv() {
 			// '#' inside the quotes stays part of the value.
 			if end := strings.IndexByte(v[1:], v[0]); end >= 0 {
 				v = v[1 : 1+end]
-			} else if i := strings.Index(v, " #"); i >= 0 {
+			} else if i := secretsInlineCommentIndex(v); i >= 0 {
 				// Unterminated quote: fall back to comment stripping
 				// (legacy behavior) rather than keeping the quote char.
 				v = strings.TrimSpace(v[:i])
 			}
-		} else if i := strings.Index(v, " #"); i >= 0 {
+		} else if i := secretsInlineCommentIndex(v); i >= 0 {
 			v = strings.TrimSpace(v[:i])
 		}
 		if os.Getenv(k) == "" {
@@ -4307,6 +4307,18 @@ func loadSecretsEnv() {
 		diagnostics.Warning("config", "secrets_read", err)
 		fmt.Fprintf(os.Stderr, "odek: WARNING: %s: %v — remaining secrets were NOT loaded\n", path, err)
 	}
+}
+
+// secretsInlineCommentIndex returns the index of the whitespace (space or
+// tab) that starts an inline "# comment" in a bare secrets.env value, or -1.
+// A '#' not preceded by whitespace is part of the value.
+func secretsInlineCommentIndex(v string) int {
+	for i := 1; i < len(v); i++ {
+		if v[i] == '#' && (v[i-1] == ' ' || v[i-1] == '\t') {
+			return i - 1
+		}
+	}
+	return -1
 }
 
 var (
