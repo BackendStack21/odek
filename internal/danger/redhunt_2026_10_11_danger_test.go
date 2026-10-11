@@ -270,3 +270,17 @@ func TestRED_AliasBodyNotClassified(t *testing.T) {
 		t.Error("benign alias matched an unrelated denylist entry")
 	}
 }
+
+// git format-patch -o/--output-directory writes patch files into an arbitrary
+// directory, but only --output was path-classified.
+func TestRED_GitFormatPatchOutputDirNotClassified(t *testing.T) {
+	redhuntAtLeast(t, SystemWrite,
+		`git format-patch --output-directory=/etc HEAD~1`,
+		`git format-patch --output-directory /etc HEAD~1`,
+		`git format-patch --output-dir=/etc HEAD~1`,
+		`git format-patch -o /etc HEAD~1`,
+		`git format-patch -o/etc HEAD~1`,
+		`git format-patch -ko /etc HEAD~1`,
+		`git format-patch -o ~/.ssh HEAD~1`,
+	)
+}

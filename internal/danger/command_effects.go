@@ -721,7 +721,11 @@ func semanticWriteTargets(name string, tokens []string) []string {
 			targets = append(targets, gitWorktreeWriteTargets(args)...)
 		case "archive":
 			targets = append(targets, writeOption{spec: gitArchiveOptions, names: []string{"-o", "--output"}}.targets(args)...)
-		case "log", "show", "diff", "whatchanged", "format-patch", "range-diff", "shortlog":
+		case "format-patch":
+			// -o/--output-directory names the directory the patch files are
+			// written into; --output names a single file.
+			targets = append(targets, writeOption{spec: gitFormatPatchOptions, names: []string{"-o", "--output", "--output-directory"}, endsAtDashDash: true}.targets(args)...)
+		case "log", "show", "diff", "whatchanged", "range-diff", "shortlog":
 			targets = append(targets, writeOption{spec: gitOutputOptions, names: []string{"--output"}, endsAtDashDash: true}.targets(args)...)
 		}
 	case "sed":
@@ -901,4 +905,7 @@ var (
 	// characters on.
 	gitArchiveOptions = optSpec{short: "o", long: valueOpts("output"), abbrev: true}
 	gitOutputOptions  = optSpec{long: valueOpts("output"), abbrev: true, minAbbrev: 4}
+	// gitFormatPatchOptions: an ambiguous prefix such as --outp resolves to
+	// both output options, so it is a write target either way.
+	gitFormatPatchOptions = optSpec{short: "o", long: valueOpts("output output-directory"), abbrev: true, minAbbrev: 4}
 )
