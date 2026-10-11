@@ -3995,6 +3995,9 @@ func overlayFile(base, override FileConfig) FileConfig {
 		if o.Enabled != nil {
 			b.Enabled = o.Enabled
 		}
+		if o.Remind != nil {
+			b.Remind = o.Remind
+		}
 		if o.MaxSteps != nil {
 			b.MaxSteps = o.MaxSteps
 		}
