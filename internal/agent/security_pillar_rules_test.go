@@ -63,3 +63,13 @@ func TestRED_SecurityPillar_ApprovalIntegrity(t *testing.T) {
 		"A denial is final for that operation",
 	)
 }
+
+// TestRED_SecurityPillar_SelfConfigurationNeedsExplicitRequest: memory was
+// the only trust state the pillar protected by name. File tools already
+// refuse ~/.odek and shell writes there need approval; the rule tells the
+// model why, so it does not seek another route.
+func TestRED_SecurityPillar_SelfConfigurationNeedsExplicitRequest(t *testing.T) {
+	requirePillarFragments(t,
+		"Never change odek's own configuration, identity, skills, schedules, MCP server entries, or approvals",
+	)
+}
