@@ -305,6 +305,23 @@ func (rl *rateLimiter) reset() {
 
 // ── Serve Command ───────────────────────────────────────────────────────
 
+// serveSandboxPolicy decides whether serve runs sandboxed, using the same
+// intent rules as `run` (sandboxIntent): an explicit setting from any
+// trusted layer wins, then ODEK_NO_SANDBOX=1, otherwise the default is on
+// (forced reports that the default switched it on). An opt-out combined
+// with ODEK_REQUIRE_SANDBOX=1 is an error, as for `run`.
+func serveSandboxPolicy(resolved config.ResolvedConfig) (sandbox, forced bool, err error) {
+	want, _ := sandboxIntent(resolved)
+	if !want {
+		if os.Getenv("ODEK_REQUIRE_SANDBOX") == "1" {
+			// The operator's hard constraint outranks every opt-out.
+			return false, false, fmt.Errorf("sandbox required (ODEK_REQUIRE_SANDBOX=1) but sandboxing is disabled by flag/config")
+		}
+		return false, false, nil
+	}
+	return true, !resolved.Sandbox, nil
+}
+
 func serveCmd(args []string) error {
 	addr := "127.0.0.1:8080"
 	openBrowser := false
@@ -432,13 +449,20 @@ func serveCmd(args []string) error {
 	}
 	// Serve mode default-on for sandbox: the Web UI surface is the
 	// largest blast radius (browser-driven tool calls, untrusted-page
-	// fetches), and the user opted into a long-running process. If no
-	// explicit opt-out was passed via --no-sandbox or config, force on.
-	// To disable, run `odek serve --no-sandbox` (and accept the warning).
-	if sandbox == nil && !resolved.Sandbox {
-		resolved.Sandbox = true
+	// fetches), and the user opted into a long-running process. The opt-outs
+	// are the same as for `run`: --no-sandbox, ODEK_NO_SANDBOX=1, or
+	// "sandbox": false in trusted config / ODEK_SANDBOX=false (a project
+	// odek.json cannot disable it — the loader drops that). Without one,
+	// force on. Unlike `run`, serve never degrades to unsandboxed when
+	// Docker is missing: every agent construction hard-fails instead.
+	sandboxOn, forced, err := serveSandboxPolicy(resolved)
+	if err != nil {
+		return err
+	}
+	if forced {
 		fmt.Fprintln(os.Stderr, "odek serve: sandbox enabled by default (run with --no-sandbox to disable)")
 	}
+	resolved.Sandbox = sandboxOn
 	systemMessage := buildSystemPrompt(resolved)
 
 	// Build sandbox config from resolved settings (serve)

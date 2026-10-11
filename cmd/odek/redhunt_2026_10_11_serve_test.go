@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	odek "github.com/BackendStack21/odek"
+	"github.com/BackendStack21/odek/internal/config"
 	"github.com/BackendStack21/odek/internal/danger"
 	"github.com/BackendStack21/odek/internal/mcpclient"
 	"github.com/BackendStack21/odek/internal/resource"
@@ -272,5 +274,136 @@ func TestRED_NewSessionTitleLeaksTruncatedSecret(t *testing.T) {
 	}
 	if strings.Contains(saved.Task, keyBody[:8]) {
 		t.Fatalf("persisted session title %q contains a fragment of the API key", saved.Task)
+	}
+}
+
+// `"sandbox": false` in trusted config (and ODEK_NO_SANDBOX=1) is a
+// documented serve opt-out (docs/CONFIG.md "Opt out explicitly with
+// --no-sandbox, ODEK_NO_SANDBOX=1, or "sandbox": false in trusted config").
+// serveCmd only looks at the --no-sandbox flag pointer and !resolved.Sandbox,
+// so the explicit config opt-out is overridden and serve runs sandboxed
+// (hard-failing every connection when Docker is absent).
+func TestRED_ServeIgnoresConfigSandboxOptOut(t *testing.T) {
+	t.Cleanup(func() {
+		serveShutdownOnce = sync.Once{}
+		serveShutdownCh = make(chan struct{})
+	})
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, ".odek"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".odek", "config.json"), []byte(`{"sandbox": false}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if pre := config.LoadConfig(config.CLIFlags{}); pre.Sandbox || !pre.SandboxExplicit {
+		t.Fatalf("precondition: config loader should resolve an explicit sandbox=false, got Sandbox=%v Explicit=%v", pre.Sandbox, pre.SandboxExplicit)
+	}
+
+	origStderr := os.Stderr
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stderr = pw
+	urlCh := make(chan string, 1)
+	go func() {
+		buf := make([]byte, 0, 4096)
+		tmp := make([]byte, 1024)
+		sent := false
+		for {
+			n, rerr := pr.Read(tmp)
+			buf = append(buf, tmp[:n]...)
+			if !sent {
+				if i := strings.Index(string(buf), "http://127.0.0.1:"); i >= 0 {
+					rest := string(buf[i:])
+					if j := strings.IndexByte(rest, '\n'); j >= 0 {
+						urlCh <- strings.TrimSpace(rest[:j])
+						sent = true
+					}
+				}
+			}
+			if rerr != nil {
+				return
+			}
+		}
+	}()
+	done := make(chan error, 1)
+	go func() { done <- serveCmd([]string{"--addr", "127.0.0.1:0"}) }()
+
+	var tokenURL string
+	select {
+	case tokenURL = <-urlCh:
+	case err := <-done:
+		os.Stderr = origStderr
+		t.Fatalf("serveCmd returned early: %v", err)
+	case <-time.After(15 * time.Second):
+		os.Stderr = origStderr
+		t.Fatal("serve did not print its URL")
+	}
+	defer func() {
+		requestServeShutdown()
+		select {
+		case <-done:
+		case <-time.After(20 * time.Second):
+		}
+		os.Stderr = origStderr
+		pw.Close()
+	}()
+
+	i := strings.Index(tokenURL, "/?token=")
+	base, token := tokenURL[:i], tokenURL[i+len("/?token="):]
+	req, _ := http.NewRequest(http.MethodGet, base+"/api/health", nil)
+	req.Header.Set("X-Odek-Ws-Token", token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var health map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&health); err != nil {
+		t.Fatal(err)
+	}
+	if health["sandbox"] != false {
+		t.Fatalf(`/api/health sandbox = %v with "sandbox": false in ~/.odek/config.json; the documented explicit opt-out was overridden`, health["sandbox"])
+	}
+}
+
+// serveSandboxPolicy applies the same opt-out rules as `run`: an explicit
+// trusted setting wins, ODEK_NO_SANDBOX=1 opts out when nothing is set, the
+// default is on, and ODEK_REQUIRE_SANDBOX=1 turns any opt-out into an error.
+func TestRED_ServeSandboxPolicyMatchesRun(t *testing.T) {
+	cases := []struct {
+		name         string
+		resolved     config.ResolvedConfig
+		noSandbox    string
+		require      string
+		want, forced bool
+		wantErr      bool
+	}{
+		{name: "default on", resolved: config.ResolvedConfig{}, want: true, forced: true},
+		{name: "explicit on", resolved: config.ResolvedConfig{Sandbox: true, SandboxExplicit: true}, want: true},
+		{name: "explicit off", resolved: config.ResolvedConfig{SandboxExplicit: true}, want: false},
+		{name: "env opt-out", resolved: config.ResolvedConfig{}, noSandbox: "1", want: false},
+		{name: "explicit on beats env opt-out", resolved: config.ResolvedConfig{Sandbox: true, SandboxExplicit: true}, noSandbox: "1", want: true},
+		{name: "require beats explicit off", resolved: config.ResolvedConfig{SandboxExplicit: true}, require: "1", wantErr: true},
+		{name: "require beats env opt-out", resolved: config.ResolvedConfig{}, noSandbox: "1", require: "1", wantErr: true},
+		{name: "require with default", resolved: config.ResolvedConfig{}, require: "1", want: true, forced: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("ODEK_NO_SANDBOX", tc.noSandbox)
+			t.Setenv("ODEK_REQUIRE_SANDBOX", tc.require)
+			got, forced, err := serveSandboxPolicy(tc.resolved)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("serveSandboxPolicy = (%v, %v, nil), want an error", got, forced)
+				}
+				return
+			}
+			if err != nil || got != tc.want || forced != tc.forced {
+				t.Fatalf("serveSandboxPolicy = (%v, %v, %v), want (%v, %v, nil)", got, forced, err, tc.want, tc.forced)
+			}
+		})
 	}
 }
