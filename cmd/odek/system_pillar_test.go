@@ -180,3 +180,26 @@ func TestRED_DefaultIdentity_SubagentsDoNotShareIdentity(t *testing.T) {
 		t.Error("defaultIdentity does not state what sub-agents share")
 	}
 }
+
+// TestBuildSystemPrompt_EditedDefaultCopyAccepted: an operator who copies
+// the compiled default into IDENTITY.md and edits the persona gets the
+// whole file scanned (only a byte-exact copy skips the scan). The pillar's
+// own wording — defanged example links, prohibitions about secrets — must
+// not get that identity rejected and silently replaced.
+func TestBuildSystemPrompt_EditedDefaultCopyAccepted(t *testing.T) {
+	homeDir := setupTestHome(t)
+	if err := os.MkdirAll(filepath.Join(homeDir, ".odek"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	edited := "You are Vesper, the principal's research aide.\n\n" + defaultSystem
+	if err := os.WriteFile(filepath.Join(homeDir, ".odek", "IDENTITY.md"), []byte(edited), 0644); err != nil {
+		t.Fatal(err)
+	}
+	got := buildSystemPrompt(config.ResolvedConfig{})
+	if !strings.Contains(got, "You are Vesper") {
+		t.Fatal("edited copy of the default prompt was rejected by the scan")
+	}
+	if strings.Count(got, pillarHeadingMarker) != 1 {
+		t.Errorf("pillar must appear exactly once, got %d", strings.Count(got, pillarHeadingMarker))
+	}
+}
