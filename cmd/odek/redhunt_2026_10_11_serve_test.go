@@ -44,3 +44,42 @@ func TestRED_RunApprovalExpiryLeavesStaleWaitingApproval(t *testing.T) {
 		t.Fatalf("after approval expiry: status=%v pending=%d; want status=running and no pending approvals (the approval is gone: answering it returns 404)", snap["status"], len(pending))
 	}
 }
+
+// The per-session wake rate limit must count each wake once. dispatch
+// filters the timestamp window in place into the same backing array but
+// does not store the filtered slice back, so an expired entry is replaced
+// by a duplicate of a live one and the next successful wake keeps it.
+func TestRED_WakeRateLimitDoubleCountsAfterWindowSlides(t *testing.T) {
+	router := newFakeWakeRouter(wakeIdle)
+	d := newTestDispatcher(router, time.Millisecond, 3)
+	defer d.Stop()
+
+	now := time.Now()
+	d.mu.Lock()
+	// One wake outside the trailing hour, one inside it.
+	d.wakes["sess-1"] = []time.Time{now.Add(-61 * time.Minute), now.Add(-30 * time.Minute)}
+	d.pending["sess-1"] = 1
+	d.mu.Unlock()
+
+	d.dispatch("sess-1")
+	if n := router.postCount(); n != 1 {
+		t.Fatalf("first dispatch posted %d wakes, want 1", n)
+	}
+
+	d.mu.Lock()
+	got := len(d.wakes["sess-1"])
+	d.mu.Unlock()
+	// Real wakes inside the trailing hour: the -30m one and the one just sent.
+	if got != 2 {
+		t.Fatalf("recorded wakes in the trailing hour = %d, want 2 (a live timestamp was duplicated)", got)
+	}
+
+	// With max 3/h and only 2 real wakes in the window, the next wake must go out.
+	d.mu.Lock()
+	d.pending["sess-1"] = 1
+	d.mu.Unlock()
+	d.dispatch("sess-1")
+	if n := router.postCount(); n != 2 {
+		t.Fatalf("second dispatch: posts=%d, want 2 (only 2 of 3 hourly wakes were used)", n)
+	}
+}

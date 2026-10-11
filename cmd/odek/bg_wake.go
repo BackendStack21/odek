@@ -152,8 +152,15 @@ func (d *wakeDispatcher) dispatch(session string) {
 			recent = append(recent, ts)
 		}
 	}
-	if len(recent) >= d.maxPerHour {
+	// The filter reuses the slice's backing array, so the filtered window
+	// must always be stored back: keeping the old length would leave a
+	// duplicate of a live timestamp where an expired one was.
+	if len(recent) == 0 {
+		delete(d.wakes, session)
+	} else {
 		d.wakes[session] = recent
+	}
+	if len(recent) >= d.maxPerHour {
 		d.mu.Unlock()
 		return // spend ceiling hit: payload path covers it
 	}
