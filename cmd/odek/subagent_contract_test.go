@@ -663,11 +663,14 @@ func TestDefaultSystem_IncludesDelegation(t *testing.T) {
 
 // TestSubagentSystemPrompt_Minimal keeps the child prompt bounded. The
 // 2026-08-30 pillar-parity change composed the shared securityPillar into
-// subagentSystem (~5 KB), so the cap was raised from 1400 to 8192 — still
-// far below any context window, but tight enough to catch unbounded growth.
+// subagentSystem (~5 KB), so the cap was raised from 1400 to 8192. The
+// 2026-10-11 pillar rules (leak channels, untrusted-chosen values, approval
+// integrity, self-configuration, precedence) and their sub-agent
+// amendments moved it to 10240 — still far below any context window, but
+// tight enough to catch unbounded growth.
 func TestSubagentSystemPrompt_Minimal(t *testing.T) {
-	if len(subagentSystem) > 8192 {
-		t.Errorf("subagent system prompt too long: %d chars (max 8192)", len(subagentSystem))
+	if len(subagentSystem) > 10240 {
+		t.Errorf("subagent system prompt too long: %d chars (max 10240)", len(subagentSystem))
 	}
 	if subagentSystem == "" {
 		t.Fatal("subagent system prompt must not be empty")
