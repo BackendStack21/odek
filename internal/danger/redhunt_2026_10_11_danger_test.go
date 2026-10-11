@@ -220,6 +220,23 @@ func TestRED_SqliteWritefileIsUnclassified(t *testing.T) {
 		`printf '.trace /etc/x\nselect 1;\n.o /etc/y\n' | sqlite3 :memory:`,
 		`sqlite3 db ".ar -cf /etc/x.zip a"`,
 	)
+	// writefile with a line break before the paren, quoted schema names.
+	redhuntAtLeast(t, SystemWrite,
+		"sqlite3 db \"select writefile\n('/etc/x','a')\"",
+		"sqlite3 db \"select writefile(\n'/etc/x','a')\"",
+		`sqlite3 db "vacuum 'main' into '/etc/x'"`,
+		`sqlite3 db "vacuum [main] into '/etc/x'"`,
+		"sqlite3 db \"vacuum `main` into '/etc/x'\"",
+		`sqlite3 db "vacuum \"main\" into '/etc/x'"`,
+		"echo \"select writefile\n('/etc/x','a');\" | sqlite3 db",
+		`sqlite3 db "vacuum insert into '/etc/x'"`,
+	)
+	// A form the extractor cannot read fails closed.
+	redhuntAtLeast(t, Unknown,
+		`sqlite3 db "vacuum main.x into '/etc/x'"`,
+		`sqlite3 db "select writefile"`,
+	)
+	redhuntExactly(t, Safe, `sqlite3 db "vacuum"`, `sqlite3 db "select 1"`, `sqlite3 db "vacuum; insert into t values(1)"`)
 	// A comment-like sequence inside the literal is part of the path.
 	redhuntExactly(t, LocalWrite, `sqlite3 db "select writefile('a--b', 'y')"`, `sqlite3 db "select writefile('it''s', 'y')"`)
 	redhuntExactly(t, LocalWrite,

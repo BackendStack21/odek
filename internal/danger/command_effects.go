@@ -88,12 +88,31 @@ func adapterRunsCode(name string, tokens []string, repo *gitRepoCtx) bool {
 
 // sqliteWritefileCall and sqliteVacuumInto locate the SQL forms of the sqlite3
 // shell that write a file at a path the statement names: writefile(PATH, …)
-// and VACUUM [schema] INTO PATH. They match comment-free text in which `;`
-// also stands for a line break (the tokenizer folds quoted newlines into it).
+// and VACUUM [schema] INTO PATH, the schema name bare or quoted in any SQL
+// style. They match comment-free text in which `;` also stands for a line
+// break (the tokenizer folds quoted newlines into it).
 var (
-	sqliteWritefileCall = regexp.MustCompile(`(?i)\bwritefile\s*\(\s*`)
-	sqliteVacuumInto    = regexp.MustCompile(`(?i)\bvacuum(?:[\s;]+[\w"\x60\[\]]+)?[\s;]+into\b\s*`)
+	sqliteWritefileCall = regexp.MustCompile(`(?i)\bwritefile[\s;]*\([\s;]*`)
+	sqliteVacuumInto    = regexp.MustCompile(`(?i)\bvacuum(?:[\s;]+(\w+|'(?:[^']|'')*'|"(?:[^"]|"")*"|\x60[^\x60]*\x60|\[[^\]]*\]))?[\s;]+into\b[\s;]*`)
+	// The loose forms count every place a statement may name a write
+	// target; one the strict forms cannot read fails closed.
+	sqliteWritefileLoose = regexp.MustCompile(`(?i)\bwritefile\b`)
+	sqliteVacuumLoose    = regexp.MustCompile(`(?i)\bvacuum\b[\s;]*(\S*?)[\s;]*\binto\b`)
 )
+
+// sqliteInsertVerbs start a statement whose INTO names a table, not a file.
+var sqliteInsertVerbs = map[string]bool{"insert": true, "replace": true}
+
+// sqliteSeparateInsert reports whether a VACUUM … INTO match (group 1 the word
+// between) is really `vacuum; insert into t …`: a statement break followed by
+// an INSERT/REPLACE verb, whose INTO names a table. A break the tokenizer
+// made from a newline reads the same, which only skips an INSERT statement.
+func sqliteSeparateInsert(text string, m []int) bool {
+	if len(m) < 4 || m[2] < 0 {
+		return false
+	}
+	return sqliteInsertVerbs[strings.ToLower(text[m[2]:m[3]])] && strings.Contains(text[m[0]:m[2]], ";")
+}
 
 // sqliteSQLWriteTargets returns the paths SQL text writes through writefile()
 // and VACUUM INTO. Only an argument that is exactly one string literal names
@@ -104,10 +123,26 @@ func sqliteSQLWriteTargets(text string) []string {
 	text = sqlCommentsBlanked(text)
 	var out []string
 	for _, form := range []struct {
-		re  *regexp.Regexp
-		end string // characters that may follow a whole-literal argument
-	}{{sqliteWritefileCall, ",)"}, {sqliteVacuumInto, ";"}} {
-		for _, m := range form.re.FindAllStringIndex(text, -1) {
+		re, loose *regexp.Regexp
+		end       string // characters that may follow a whole-literal argument
+	}{{sqliteWritefileCall, sqliteWritefileLoose, ",)"}, {sqliteVacuumInto, sqliteVacuumLoose, ";"}} {
+		var matches [][]int
+		for _, m := range form.re.FindAllStringSubmatchIndex(text, -1) {
+			if sqliteSeparateInsert(text, m) {
+				continue
+			}
+			matches = append(matches, m)
+		}
+		loose := 0
+		for _, m := range form.loose.FindAllStringSubmatchIndex(text, -1) {
+			if !sqliteSeparateInsert(text, m) {
+				loose++
+			}
+		}
+		if len(matches) < loose {
+			out = append(out, dynamicSubstToken)
+		}
+		for _, m := range matches {
 			value, rest, ok := sqlLeadingLiteral(text[m[1]:])
 			rest = strings.TrimLeft(rest, " \t\r\n")
 			if ok && (rest == "" || strings.ContainsRune(form.end, rune(rest[0]))) {
