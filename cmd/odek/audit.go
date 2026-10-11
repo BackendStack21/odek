@@ -60,6 +60,8 @@ func recordTurnAudit(store *session.AuditStore, sessionID string, turn int, user
 	var actionText strings.Builder // agent actions: tool calls + final response
 	var untrustedBodies strings.Builder
 	var untrustedSources []string
+	// Sources read back from the audit store were persisted redacted.
+	var persistedSources []string
 	var recordedResources []string
 	ingestedUntrusted := false
 	lastAssistantContent := ""
@@ -71,7 +73,7 @@ func recordTurnAudit(store *session.AuditStore, sessionID string, turn int, user
 		for _, ingest := range prior.Ingests {
 			if ingest.Turn == turn {
 				ingestedUntrusted = true
-				untrustedSources = append(untrustedSources, ingest.Source)
+				persistedSources = append(persistedSources, ingest.Source)
 				recordedResources = append(recordedResources, ingest.Resources...)
 			}
 		}
@@ -119,13 +121,21 @@ func recordTurnAudit(store *session.AuditStore, sessionID string, turn int, user
 	// We exclude resources that match the source of the untrusted content
 	// (e.g. a fetched page mentioning its own URL) to avoid false positives
 	// for legitimate user-requested fetches.
-	// The audit store persists sources and resources redacted, so every
-	// comparison runs on the redacted, lower-cased form of both sides.
+	// The audit store persists resources redacted, so resource keys use the
+	// redacted, lower-cased form of both sides. The source exclusion compares
+	// raw strings instead: redaction swallows the rest of a URL after a
+	// token, so two different URLs on one host can redact to the same text.
+	// A persisted source that lost text to redaction excludes nothing; the
+	// same source seen raw in this turn's messages still does.
 	auditKey := func(r string) string { return strings.ToLower(redact.RedactSecrets(r)) }
 	isSource := func(r string) bool {
-		lr := auditKey(r)
 		for _, s := range untrustedSources {
-			if auditOpsResourceMatchesSource(lr, auditKey(s)) {
+			if auditOpsResourceMatchesSource(r, s) {
+				return true
+			}
+		}
+		for _, s := range persistedSources {
+			if !strings.Contains(s, "[REDACTED]") && auditOpsResourceMatchesSource(r, s) {
 				return true
 			}
 		}
