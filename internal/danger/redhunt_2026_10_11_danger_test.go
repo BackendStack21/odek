@@ -190,3 +190,22 @@ func TestRED_SqliteWritefileIsUnclassified(t *testing.T) {
 		`sqlite3 x.db "vacuum into 'backup.db'"`,
 	)
 }
+
+// zip -m / --move and 7z -sdel delete every archived source, the analogue of
+// tar --remove-files (destructive) - over $HOME they wipe it.
+func TestRED_ArchiverMoveDeletesSources(t *testing.T) {
+	redhuntAtLeast(t, Destructive,
+		`zip -rm /tmp/x.zip ~`,
+		`zip --move -r /tmp/x.zip ~`,
+		`zip -m x.zip notes.txt`,
+		`zip -9qrm /tmp/x.zip ~`,
+		`7z a -sdel /tmp/x.7z ~`,
+		`7za a -SDEL x.7z dir`,
+	)
+	redhuntExactly(t, LocalWrite,
+		`zip -r x.zip dir`,
+		`zip -Pmypass x.zip f`,
+		`zip -b mtmp x.zip f`,
+		`7z a x.7z dir`,
+	)
+}

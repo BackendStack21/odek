@@ -4853,6 +4853,10 @@ func isDestructive(first string, tokens []string) bool {
 	if first == "tar" && tarOptions.parse(tokens[1:]).has("--remove-files") {
 		return true
 	}
+	// zip -m/--move and 7z -sdel delete the sources once they are archived.
+	if (first == "zip" && zipMovesSources(tokens)) || (sevenZipNames[first] && sevenZipDeletesSources(tokens)) {
+		return true
+	}
 	if first == "rsync" {
 		for _, dest := range writeDestinations(first, tokens) {
 			if ClassifyPath(dest) == Destructive {
@@ -6768,6 +6772,53 @@ func zipRunsCommand(tokens []string) bool {
 			return true
 		}
 		if name, _, _, ok := resolveLongOption(tok, zipLongOptions); ok && name == "unzip-command" {
+			return true
+		}
+	}
+	return false
+}
+
+// zipValueShorts are the zip short options that take a value (fused or as the
+// next word), so letters after them in a cluster are not options.
+const zipValueShorts = "bnPZsOxit"
+
+// zipMovesSources reports whether zip runs in move mode (-m, also inside a
+// cluster such as -rm, or --move and its prefixes), which deletes every
+// source file after adding it to the archive.
+func zipMovesSources(tokens []string) bool {
+	for _, tok := range tokens[1:] {
+		switch {
+		case tok == "--":
+			return false
+		case strings.HasPrefix(tok, "--"):
+			if name, _, _ := strings.Cut(tok[2:], "="); len(name) >= 2 && strings.HasPrefix("move", name) {
+				return true
+			}
+		case isShortFlagToken(tok):
+			for _, c := range tok[1:] {
+				if c == 'm' {
+					return true
+				}
+				if strings.ContainsRune(zipValueShorts, c) {
+					break
+				}
+			}
+		}
+	}
+	return false
+}
+
+// sevenZipNames are the 7-Zip command-line front ends.
+var sevenZipNames = map[string]bool{"7z": true, "7za": true, "7zz": true, "7zr": true}
+
+// sevenZipDeletesSources reports whether a 7-Zip invocation carries -sdel
+// (switches are case-insensitive), which deletes the files after archiving.
+func sevenZipDeletesSources(tokens []string) bool {
+	for _, tok := range tokens[1:] {
+		if tok == "--" {
+			return false
+		}
+		if strings.EqualFold(tok, "-sdel") {
 			return true
 		}
 	}
