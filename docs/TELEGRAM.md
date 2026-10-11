@@ -325,7 +325,7 @@ Routing per job exit:
 |---|---|
 | Chat idle, wake enabled | One coalesced wake turn (exits within `wake_coalesce_ms` share one turn); the raw exit line is suppressed — the notice is delivered to the model inside the wake turn |
 | Chat busy (a turn is running) | Legacy raw 📋 exit line only — the running turn's notice drain already reaches the model |
-| Wake disabled / spend cap hit | Legacy raw 📋 exit line only |
+| Wake disabled / spend cap hit | Legacy raw 📋 exit line only (an exit that joins an already-open coalesce window rides on that window's wake turn, even at the cap) |
 
 Each job exit is posted at most once: the exit observer and the chat's
 polling watcher share one per-chat dedup record, so whichever sees the exit
