@@ -407,6 +407,9 @@ func analyzeWithState(cmd string, depth int, inherited *shellAnalysisState) Anal
 			if piped && dbClientStdinRunsShell(name, upstream) {
 				result.add(CodeExecution)
 			}
+			if piped && name == "sqlite3" && sqliteStdinRunsProgram(upstream) {
+				result.add(CodeExecution)
+			}
 			if isNetworkEgress(name, inner) {
 				result.add(NetworkEgress)
 			}

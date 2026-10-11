@@ -6483,7 +6483,30 @@ func sqliteRunsShell(tokens []string) bool {
 			return true
 		}
 	}
+	// sqlite3 executes dot-commands read from stdin, so a script fed by an
+	// input redirect runs like `sh < script`. Here-strings and here-documents
+	// carry their text on the command line and are scanned as tokens above.
+	for i := 1; i+1 < len(tokens); i++ {
+		switch tokens[i] {
+		case "<", "<>":
+			if tokens[i+1] != "/dev/null" {
+				return true
+			}
+		case "<&":
+			if tokens[i+1] != "-" {
+				return true
+			}
+		}
+	}
 	return false
+}
+
+// sqliteStdinRunsProgram reports whether the input a pipeline feeds sqlite3
+// can run a program: a static echo/printf payload is scanned for program
+// launchers; any other producer's output is unknown and fails closed.
+func sqliteStdinRunsProgram(upstream [][]string) bool {
+	text, ok := staticPipeText(upstream)
+	return !ok || sqliteScriptRunsProgram(text)
 }
 
 // sqliteEditCall matches the sqlite3 shell's edit() SQL function, which runs

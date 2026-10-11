@@ -151,3 +151,23 @@ func TestRED_SqlitePipeDotCommandsRunPrograms(t *testing.T) {
 		`sqlite3 x.db "select edited from t"`,
 	)
 }
+
+// sqlite3 reads dot-commands from stdin: a piped or redirected script is
+// executed like `sh < script`.
+func TestRED_SqliteStdinScriptRunsShell(t *testing.T) {
+	redhuntAtLeast(t, CodeExecution,
+		`echo '.shell rm -rf ~' | sqlite3`,
+		`printf '.system id\n' | sqlite3 x.db`,
+		`printf 'select 1;\n.sy id\n' | sqlite3 x.db`,
+		`sqlite3 x.db <<< '.shell id'`,
+		`sqlite3 x.db < cmds.sql`,
+		`sqlite3 x.db 0< cmds.sql`,
+		`cat cmds.sql | sqlite3 x.db`,
+		"sqlite3 x.db <<EOF\n.sy id\nEOF",
+	)
+	redhuntExactly(t, Safe,
+		`echo 'select 1' | sqlite3 x.db`,
+		`sqlite3 x.db < /dev/null`,
+		`sqlite3 x.db <<< 'select 1'`,
+	)
+}
