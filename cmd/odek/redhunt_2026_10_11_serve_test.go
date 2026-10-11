@@ -407,3 +407,76 @@ func TestRED_ServeSandboxPolicyMatchesRun(t *testing.T) {
 		})
 	}
 }
+
+// After a REST run is cancelled, a late approval request from the draining
+// loop (the case recordApprovalRequest explicitly handles by refusing to
+// list it) must fail fast. Instead wsApprover.Cancel re-armed a fresh
+// cancel generation, the request is hidden from GET .../approvals, and
+// PromptCommand blocks for the full approval timeout (up to 10 minutes),
+// keeping the run goroutine, its sandbox/MCP resources and an active-run
+// slot alive with nothing able to answer or cancel it.
+func TestRED_CancelledRunLateApprovalBlocksUntilTimeout(t *testing.T) {
+	run, approver := serveFixNewRun()
+	approver.SetApprovalTimeout(3 * time.Second)
+	_, cancel := context.WithCancel(context.Background())
+	run.cancel = cancel
+
+	cancelRun(run)
+	if st := run.snapshot(false)["status"]; st != "cancelled" {
+		t.Fatalf("precondition: status = %v, want cancelled", st)
+	}
+
+	start := time.Now()
+	err := approver.PromptCommand(danger.SystemWrite, "touch /etc/x", "")
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("late approval on a cancelled run was approved")
+	}
+	pending, _ := run.snapshot(false)["pending_approvals"].([]map[string]any)
+	if elapsed > 500*time.Millisecond {
+		t.Fatalf("late approval on a cancelled run blocked %v (pending visible to operator: %d) — it waited out the approval timeout instead of failing fast", elapsed.Round(time.Millisecond), len(pending))
+	}
+}
+
+// A closed approver denies every later prompt at once — trusted classes
+// included — and stays safe to Cancel/Close again. A pending prompt is
+// released by Close.
+func TestRED_ClosedApproverDeniesLatePrompts(t *testing.T) {
+	approver := newWSApprover(func(any) error { return nil })
+	approver.SetApprovalTimeout(5 * time.Second)
+
+	released := make(chan error, 1)
+	go func() { released <- approver.PromptCommand(danger.SystemWrite, "touch /etc/x", "") }()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		approver.mu.Lock()
+		n := len(approver.pending)
+		approver.mu.Unlock()
+		if n > 0 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	approver.Close()
+	select {
+	case err := <-released:
+		if err == nil {
+			t.Fatal("pending prompt was approved by Close")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Close did not release the pending prompt")
+	}
+
+	approver.Cancel() // must not panic on the already-closed generation
+	approver.Close()
+	approver.SetTrustAll(true)
+	approver.mu.Lock()
+	approver.approveAll[danger.LocalWrite] = true
+	approver.mu.Unlock()
+	if err := approver.PromptCommand(danger.LocalWrite, "touch x", ""); err == nil {
+		t.Fatal("trusted class approved on a closed approver")
+	}
+	if _, err := approver.PromptClarify("which?"); err == nil {
+		t.Fatal("clarify answered on a closed approver")
+	}
+}

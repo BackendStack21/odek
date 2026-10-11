@@ -944,7 +944,7 @@ func startServeRun(
 	// (agent.Close alone does not destroy the sandbox).
 	cleanup := func() {
 		if approver != nil {
-			approver.Cancel()
+			approver.Close()
 		}
 		agent.Close() //nolint:errcheck
 		if guardCleanup != nil {
@@ -993,12 +993,13 @@ func startServeRun(
 	// run's session goes through the prompt-cancel registry and would fire
 	// only the context, leaving the loop blocked until the approval ceiling.
 	// Compose the approver interrupt into what handlePrompt registers.
-	// run.cancel stays plain — cancelRun interrupts the approver itself, and
-	// double-Cancel is safe now that Cancel re-arms.
+	// run.cancel stays plain — cancelRun interrupts the approver itself. The
+	// run ends with its context, so Close (repeat-safe) rather than Cancel:
+	// later prompts from the unwinding loop must not wait for an answer.
 	cancelWithApproval := func() {
 		cancel()
 		if approver != nil {
-			approver.Cancel()
+			approver.Close()
 		}
 	}
 
@@ -1254,9 +1255,11 @@ func cancelRun(run *serveRun) {
 	// leaves the loop blocked in PromptCommand until the approval ceiling
 	// (up to maxRunApprovalWait). Interrupt the approver NOW instead of
 	// waiting for the deferred cleanup, which only runs after handlePrompt
-	// unblocks.
+	// unblocks. Close (not Cancel) so a late prompt from the draining loop
+	// fails at once instead of waiting out the approval timeout unseen:
+	// a cancelled run never lists or answers another approval.
 	if approver != nil {
-		approver.Cancel()
+		approver.Close()
 	}
 	run.finish("cancelled", "")
 }

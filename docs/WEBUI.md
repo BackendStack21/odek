@@ -114,6 +114,9 @@ Two token layers:
    An approval nobody answers within `approval_timeout_seconds` is denied,
    leaves the pending list, and the run returns to `running`.
 4. Cancel with `DELETE /api/runs/{id}` or `POST /api/runs/{id}/cancel`.
+   A cancelled run denies any approval its unwinding loop still requests,
+   immediately, so it releases its resources without waiting out the
+   approval timeout.
 
 ### Cross-cutting contracts
 
