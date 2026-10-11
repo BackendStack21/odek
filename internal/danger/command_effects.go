@@ -122,19 +122,23 @@ func sqliteSQLWriteTargets(text string) []string {
 
 // sqliteWriteDotCommands are the sqlite3 shell dot-commands whose operands
 // name a file the shell writes (or creates): output redirection, backups,
-// the query log, a database clone and the database it opens.
-var sqliteWriteDotCommands = []string{"output", "once", "save", "backup", "log", "clone", "open"}
+// the query and trace logs, a database clone, the database it opens and an
+// archive it creates or extracts into.
+var sqliteWriteDotCommands = []string{"output", "once", "save", "backup", "log", "trace", "clone", "open", "archive"}
 
-// sqliteDotKeywords are .log operands that name a stream or a switch rather
-// than a file.
+// sqliteStreamDotCommands accept a stream or switch keyword in place of a file.
+var sqliteStreamDotCommands = map[string]bool{"log": true, "trace": true}
+
+// sqliteDotKeywords are .log / .trace operands that name a stream or a switch
+// rather than a file.
 var sqliteDotKeywords = map[string]bool{"stdout": true, "stderr": true, "off": true, "on": true}
 
 // sqliteDotWriteTargets returns the files that sqlite3 shell input (an
 // argument, a -cmd value or a script read on stdin) writes through write
-// dot-commands, in any abbreviation of at least two letters the shell
-// accepts (`.ou`, `.ba`). Every operand but a .log stream keyword counts, so
-// `.backup main FILE` reports both words and an option word (`--readonly`,
-// `-x`) is judged as a workspace path.
+// dot-commands, in any abbreviation (the shell resolves one letter too: `.o`
+// writes like .output, `.t` like .trace). Every operand but a .log / .trace
+// stream keyword counts, so `.backup main FILE` reports both words and an
+// option word (`--readonly`, `-x`) is judged as a workspace path.
 func sqliteDotWriteTargets(text string) []string {
 	var out []string
 	for _, line := range strings.FieldsFunc(text, func(r rune) bool { return r == '\n' || r == ';' }) {
@@ -149,9 +153,9 @@ func sqliteDotWriteTargets(text string) []string {
 		name := strings.ToLower(fields[0])
 		writes, onlyLog := false, true
 		for _, cmd := range sqliteWriteDotCommands {
-			if len(name) >= 2 && strings.HasPrefix(cmd, name) {
+			if strings.HasPrefix(cmd, name) {
 				writes = true
-				onlyLog = onlyLog && cmd == "log"
+				onlyLog = onlyLog && sqliteStreamDotCommands[cmd]
 			}
 		}
 		if !writes {

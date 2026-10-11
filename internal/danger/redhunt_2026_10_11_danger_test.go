@@ -211,8 +211,15 @@ func TestRED_SqliteWritefileIsUnclassified(t *testing.T) {
 		`sqlite3 db ".save '/etc/x'"`,
 		`sqlite3 db ".ou /etc/x" "select 1"`,
 	)
-	redhuntExactly(t, Safe, `sqlite3 db ".log off"`, `sqlite3 db ".log stderr"`, `sqlite3 db ".output"`)
-	//SQLITE_ROUND2_PLACEHOLDER
+	redhuntExactly(t, Safe, `sqlite3 db ".log off"`, `sqlite3 db ".log stderr"`, `sqlite3 db ".output"`, `sqlite3 db ".trace off"`)
+	// One-letter abbreviations, .trace and .archive also write files.
+	redhuntAtLeast(t, SystemWrite,
+		`sqlite3 db ".o /etc/x"`,
+		`sqlite3 db ".trace /etc/x"`,
+		`sqlite3 db ".tr /etc/x"`,
+		`printf '.trace /etc/x\nselect 1;\n.o /etc/y\n' | sqlite3 :memory:`,
+		`sqlite3 db ".ar -cf /etc/x.zip a"`,
+	)
 	// A comment-like sequence inside the literal is part of the path.
 	redhuntExactly(t, LocalWrite, `sqlite3 db "select writefile('a--b', 'y')"`, `sqlite3 db "select writefile('it''s', 'y')"`)
 	redhuntExactly(t, LocalWrite,
