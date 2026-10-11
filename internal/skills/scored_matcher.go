@@ -242,14 +242,20 @@ func (sm *ScoredMatcher) scoreSkillWith(s Skill, terms skillTerms, userTokens []
 
 // ── Stemming ────────────────────────────────────────────────────────────
 
+// minStemPrefixLen is the shortest word that counts as a prefix of another.
+// Shorter tokens are mostly contraction fragments ("let's" → "s", "we're" →
+// "re") that would otherwise prefix-match every keyword starting with them.
+const minStemPrefixLen = 3
+
 // hasCommonStem returns true if two words share a common stem via simple
 // suffix stripping. Handles common English morphological variants.
 func hasCommonStem(a, b string) bool {
 	if a == b {
 		return true
 	}
-	// Check prefix overlap: if one is the prefix of the other (trie-like)
-	if strings.HasPrefix(a, b) || strings.HasPrefix(b, a) {
+	// Check prefix overlap: if one is the prefix of the other (trie-like),
+	// and the shorter one is long enough to be a meaningful stem.
+	if min(len(a), len(b)) >= minStemPrefixLen && (strings.HasPrefix(a, b) || strings.HasPrefix(b, a)) {
 		return true
 	}
 	return stripSuffix(a) == stripSuffix(b)
