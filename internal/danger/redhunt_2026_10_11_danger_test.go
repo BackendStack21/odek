@@ -199,6 +199,19 @@ func TestRED_SqliteWritefileIsUnclassified(t *testing.T) {
 		"sqlite3 db \"VACUUM -- c\nINTO '/etc/x'\"",
 		`sqlite3 db "select writefile( /* c */ '/etc/x', 'y')"`,
 	)
+	// Write dot-commands, in arguments and in static scripts on stdin.
+	redhuntAtLeast(t, SystemWrite,
+		`echo ".output /etc/x" | sqlite3 db`,
+		`echo ".backup /etc/cron.d/x" | sqlite3 db`,
+		`printf '.once /etc/x\nselect 1;\n' | sqlite3 db`,
+		`sqlite3 db ".log /etc/x"`,
+		`sqlite3 db ".clone /etc/x"`,
+		`sqlite3 db ".open /etc/x"`,
+		`sqlite3 db ".backup main /etc/x"`,
+		`sqlite3 db ".save '/etc/x'"`,
+		`sqlite3 db ".ou /etc/x" "select 1"`,
+	)
+	redhuntExactly(t, Safe, `sqlite3 db ".log off"`, `sqlite3 db ".log stderr"`, `sqlite3 db ".output"`)
 	// A comment-like sequence inside the literal is part of the path.
 	redhuntExactly(t, LocalWrite, `sqlite3 db "select writefile('a--b', 'y')"`, `sqlite3 db "select writefile('it''s', 'y')"`)
 	redhuntExactly(t, LocalWrite,

@@ -439,7 +439,7 @@ func analyzeWithState(cmd string, depth int, inherited *shellAnalysisState) Anal
 				// A static script still writes files through writefile()
 				// and VACUUM INTO.
 				if text, ok := staticPipeText(upstream); ok {
-					for _, target := range sqliteSQLWriteTargets(text) {
+					for _, target := range append(sqliteDotWriteTargets(text), sqliteSQLWriteTargets(text)...) {
 						result.add(state.targetRisk(target, stageCwd, cwdKnown))
 					}
 				}

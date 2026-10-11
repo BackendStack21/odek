@@ -120,6 +120,54 @@ func sqliteSQLWriteTargets(text string) []string {
 	return out
 }
 
+// sqliteWriteDotCommands are the sqlite3 shell dot-commands whose operands
+// name a file the shell writes (or creates): output redirection, backups,
+// the query log, a database clone and the database it opens.
+var sqliteWriteDotCommands = []string{"output", "once", "save", "backup", "log", "clone", "open"}
+
+// sqliteDotKeywords are .log operands that name a stream or a switch rather
+// than a file.
+var sqliteDotKeywords = map[string]bool{"stdout": true, "stderr": true, "off": true, "on": true}
+
+// sqliteDotWriteTargets returns the files that sqlite3 shell input (an
+// argument, a -cmd value or a script read on stdin) writes through write
+// dot-commands, in any abbreviation of at least two letters the shell
+// accepts (`.ou`, `.ba`). Every operand but a .log stream keyword counts, so
+// `.backup main FILE` reports both words and an option word (`--readonly`,
+// `-x`) is judged as a workspace path.
+func sqliteDotWriteTargets(text string) []string {
+	var out []string
+	for _, line := range strings.FieldsFunc(text, func(r rune) bool { return r == '\n' || r == ';' }) {
+		line = strings.TrimLeft(line, " \t\r")
+		if !strings.HasPrefix(line, ".") {
+			continue
+		}
+		fields := strings.Fields(line[1:])
+		if len(fields) < 2 {
+			continue
+		}
+		name := strings.ToLower(fields[0])
+		writes, onlyLog := false, true
+		for _, cmd := range sqliteWriteDotCommands {
+			if len(name) >= 2 && strings.HasPrefix(cmd, name) {
+				writes = true
+				onlyLog = onlyLog && cmd == "log"
+			}
+		}
+		if !writes {
+			continue
+		}
+		for _, arg := range fields[1:] {
+			arg = strings.Trim(arg, `'"`)
+			if arg == "" || (onlyLog && sqliteDotKeywords[strings.ToLower(arg)]) {
+				continue
+			}
+			out = append(out, arg)
+		}
+	}
+	return out
+}
+
 // sqlLeadingLiteral decodes the string literal ('…' or "…", the quote
 // doubled to escape it) that text starts with and returns what follows it.
 func sqlLeadingLiteral(text string) (value, rest string, ok bool) {
@@ -875,10 +923,7 @@ func semanticWriteTargets(name string, tokens []string) []string {
 		}
 	case "sqlite3":
 		for _, tok := range tokens[1:] {
-			parts := strings.Fields(tok)
-			if len(parts) > 1 && hasAny([]string{".output", ".once", ".save", ".backup"}, parts[0]) {
-				targets = append(targets, parts[1])
-			}
+			targets = append(targets, sqliteDotWriteTargets(tok)...)
 			targets = append(targets, sqliteSQLWriteTargets(tok)...)
 		}
 	case "xxd":
