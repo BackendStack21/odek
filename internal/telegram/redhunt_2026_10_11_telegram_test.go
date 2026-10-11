@@ -195,3 +195,48 @@ func TestRED_DailyBudgetOvershootIsNeverRecorded(t *testing.T) {
 		t.Fatalf("pre-flight after overshoot passed: recorded usage %d/%d, real spend 12000 — budget never blocks further runs", used, limit)
 	}
 }
+
+// telegramFixDanglingEscape reports whether s ends with an odd run of
+// backslashes (an escape whose escaped character was cut off).
+func telegramFixDanglingEscape(s string) bool {
+	n := 0
+	for j := len(s) - 1; j >= 0 && s[j] == '\\'; j-- {
+		n++
+	}
+	return n%2 == 1
+}
+
+// When a long spaceless paragraph is split, a chunk must never end on the
+// escaping backslash of a MarkdownV2 escape pair: the next chunk would begin
+// with a bare reserved character and Telegram rejects the MarkdownV2 send,
+// so the chunk is re-sent as plain text full of literal backslashes.
+func TestRED_SplitChunksCutsEscapePair(t *testing.T) {
+	for _, text := range []string{
+		"a" + strings.Repeat(".", 3000),  // escapes to "a" + `\.`*3000
+		"ab" + strings.Repeat(".", 3000), // other parity
+		strings.Repeat(`\`, 2500) + "x",  // escaped backslashes: `\\`*2500
+		"a" + strings.Repeat(`\`, 2500),
+	} {
+		chunks, err := FormatResponse(text)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(chunks) < 2 {
+			t.Fatalf("expected a split, got %d chunk(s)", len(chunks))
+		}
+		for i, c := range chunks {
+			if len(c) > 4096 {
+				t.Errorf("chunk %d is %d bytes", i, len(c))
+			}
+			if telegramFixDanglingEscape(c) {
+				t.Errorf("chunk %d ends with a dangling escape backslash; chunk %d starts with %q", i, i+1, chunks[min(i+1, len(chunks)-1)][:1])
+			}
+		}
+	}
+	// The fenced-paragraph splitter keeps escaped backslash pairs together too.
+	for _, c := range splitPlainSegment(strings.Repeat(`\\`, 10)+"x", 4) {
+		if telegramFixDanglingEscape(c) {
+			t.Errorf("splitPlainSegment chunk %q ends with a dangling escape", c)
+		}
+	}
+}

@@ -432,6 +432,10 @@ func splitChunks(text string, maxBytes int) []string {
 				for splitAt > 0 && !utf8.RuneStart(remaining[splitAt]) {
 					splitAt--
 				}
+				splitAt = keepEscapePair(remaining, splitAt)
+				if splitAt == 0 {
+					splitAt = maxBytes // degenerate tiny maxBytes: never emit an empty chunk
+				}
 				chunks = append(chunks, remaining[:splitAt])
 				remaining = remaining[splitAt:]
 				// Trim leading spaces from remaining
@@ -503,6 +507,22 @@ func splitMarkdownParagraph(p string, maxBytes int) []string {
 	return chunks
 }
 
+// keepEscapePair moves a cut in already-escaped MarkdownV2 text back by one
+// byte when it would land between an escaping backslash and the character
+// it escapes (an odd run of backslashes right before the cut). Cutting there
+// leaves a dangling "\" at the end of one chunk and a bare reserved character
+// at the start of the next, and Telegram rejects both.
+func keepEscapePair(text string, cut int) int {
+	slashes := 0
+	for j := cut - 1; j >= 0 && text[j] == '\\'; j-- {
+		slashes++
+	}
+	if slashes%2 == 1 {
+		cut--
+	}
+	return cut
+}
+
 func splitPlainSegment(text string, maxBytes int) []string {
 	var out []string
 	for len(text) > maxBytes {
@@ -513,9 +533,7 @@ func splitPlainSegment(text string, maxBytes int) []string {
 		for cut > 0 && !utf8.RuneStart(text[cut]) {
 			cut--
 		}
-		if cut > 0 && text[cut-1] == '\\' {
-			cut--
-		}
+		cut = keepEscapePair(text, cut)
 		if cut == 0 {
 			return nil
 		}
@@ -551,15 +569,7 @@ func splitSingleFencedBlock(p string, maxBytes int) []string {
 		if cut == 0 {
 			return nil
 		}
-		// Keep an odd run of backslashes with the escaped character that
-		// follows it; otherwise a chunk boundary changes Markdown meaning.
-		slashes := 0
-		for j := cut - 1; j >= 0 && body[j] == '\\'; j-- {
-			slashes++
-		}
-		if slashes%2 == 1 {
-			cut--
-		}
+		cut = keepEscapePair(body, cut)
 		if cut == 0 {
 			return nil
 		}
