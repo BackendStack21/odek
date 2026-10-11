@@ -312,6 +312,12 @@ standard built-in interface (`Name`/`Description`/`Schema`/`Call`).
 A check becomes `blocked` only when the engine itself observed the approval
 gate refuse the call; text inside a tool's output (for example a test log
 that says "approval denied") never blocks a check.
+When a batch approval card is refused, only the calls listed on that card
+are refused; siblings the dangerous-action policy auto-allows were never shown
+and simply did not run, so their checks stay `pending`. Calls that never
+start — skipped by the tool-call budget, cancelled before execution, or
+unlisted siblings of a refused card — leave check state untouched: they
+neither invalidate earlier evidence nor record a failure.
 
 Note on wire compatibility: a check whose tool call was denied by the
 approval gate renders with status `blocked`. Sessions persisted by builds
