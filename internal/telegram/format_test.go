@@ -20,8 +20,9 @@ func TestEscapeMarkdown_SafeText(t *testing.T) {
 func TestEscapeMarkdown_AllReservedChars(t *testing.T) {
 	input := "_*[]()~`>#+-=|{}.!"
 	got := EscapeMarkdown(input)
-	// Backtick starts an (unclosed) code span, so everything after it passes through unescaped.
-	want := "\\_\\*\\[\\]\\(\\)\\~`>#+-=|{}.!"
+	// An unpaired backtick is escaped like every other reserved character
+	// (an unclosed code span would make Telegram reject the message).
+	want := "\\_\\*\\[\\]\\(\\)\\~\\`\\>\\#\\+\\-\\=\\|\\{\\}\\.\\!"
 	if got != want {
 		t.Errorf("EscapeMarkdown(%q) = %q, want %q", input, got, want)
 	}

@@ -113,19 +113,28 @@ func EscapeMarkdown(text string) string {
 	i := 0
 	for i < len(text) {
 		// Code blocks: ```...```
+		// An unpaired fence or backtick is escaped: it must never open an
+		// entity Telegram cannot find the end of.
 		if i <= len(text)-3 && text[i:i+3] == "```" {
-			result.WriteString("```")
-			i += 3
-			end := strings.Index(text[i:], "```")
-			if end >= 0 {
-				result.WriteString(escapeCodeLine(text[i : i+end]))
-				result.WriteString("```")
-				i += end + 3
+			end := strings.Index(text[i+3:], "```")
+			if end < 0 {
+				result.WriteString("\\`\\`\\`")
+				i += 3
+				continue
 			}
+			result.WriteString("```")
+			result.WriteString(escapeCodeLine(text[i+3 : i+3+end]))
+			result.WriteString("```")
+			i += 3 + end + 3
 			continue
 		}
 
 		// Inline code: `...`
+		if text[i] == '`' && strings.IndexByte(text[i+1:], '`') < 0 {
+			result.WriteString("\\`")
+			i++
+			continue
+		}
 		if text[i] == '`' {
 			result.WriteByte('`')
 			i++
@@ -275,22 +284,37 @@ func convertItalicAndEscape(line string) string {
 
 	for i < len(line) {
 		// ── Handle code spans ──
+		// A backtick opens code only when its partner exists on the line; an
+		// unpaired one is escaped, since an unclosed entity makes Telegram
+		// reject the whole message.
 		if line[i] == '`' {
+			if inCodeSpan {
+				inCodeSpan = false
+				result.WriteByte('`')
+				i++
+				continue
+			}
 			// Triple backtick code block (on one line)
 			if i <= len(line)-3 && line[i:i+3] == "```" {
-				result.WriteString("```")
-				i += 3
-				end := strings.Index(line[i:], "```")
-				if end >= 0 {
-					result.WriteString(escapeCodeLine(line[i : i+end]))
-					result.WriteString("```")
-					i += end + 3
+				end := strings.Index(line[i+3:], "```")
+				if end < 0 {
+					result.WriteString("\\`\\`\\`")
+					i += 3
+					continue
 				}
+				result.WriteString("```")
+				result.WriteString(escapeCodeLine(line[i+3 : i+3+end]))
+				result.WriteString("```")
+				i += 3 + end + 3
 				continue
 			}
 			// Single backtick
-			inCodeSpan = !inCodeSpan
-			result.WriteByte('`')
+			if strings.IndexByte(line[i+1:], '`') < 0 {
+				result.WriteString("\\`")
+			} else {
+				inCodeSpan = true
+				result.WriteByte('`')
+			}
 			i++
 			continue
 		}
@@ -384,7 +408,8 @@ func findEmphasisCloser(line string, i, n int, closers map[int]bool) int {
 			}
 			end := strings.IndexByte(line[k+1:], '`')
 			if end < 0 {
-				return -1 // the rest of the line is an (unclosed) code span
+				k++ // an unpaired backtick is escaped literal text
+				continue
 			}
 			k += 1 + end + 1
 		case '*':

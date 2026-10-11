@@ -10,6 +10,35 @@ import (
 	"testing"
 )
 
+// A backtick without a closing partner on its line must be escaped, never
+// open a code span: an unclosed entity makes Telegram reject the message.
+// Paired spans keep working.
+func TestRED_UnpairedBacktickNeverOpensEntity(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"\\`", "\\\\\\`"},                   // backslash + lone backtick
+		{"a ` b", "a \\` b"},                 // lone backtick
+		{"use `x` and `", "use `x` and \\`"}, // pair, then a lone one
+		{"run ```oops", "run \\`\\`\\`oops"}, // unclosed one-line fence
+		{"`a\\b` ok", "`a\\\\b` ok"},         // paired span still code
+		{"*it ` x*", "_it \\` x_"},           // lone backtick never hides a closer
+	}
+	for _, c := range cases {
+		if got := convertItalicAndEscape(c.in); got != c.want {
+			t.Errorf("convertItalicAndEscape(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+	for in, want := range map[string]string{
+		"\\`":         "\\\\\\`",
+		"a ` b":       "a \\` b",
+		"x ```y":      "x \\`\\`\\`y",
+		"`ok` then `": "`ok` then \\`",
+	} {
+		if got := EscapeMarkdown(in); got != want {
+			t.Errorf("EscapeMarkdown(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 // A callback rejected by the approver (pressed by a group member who did not
 // start the operation, or on a request that is no longer pending) must not be
 // acknowledged with an "Approved" toast.
