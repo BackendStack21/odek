@@ -54,8 +54,12 @@ func adapterRunsCode(name string, tokens []string, repo *gitRepoCtx) bool {
 		case "difftool", "mergetool":
 			// These launch the configured diff/merge tool by design.
 			return true
+		case "grep":
+			// -O[<pager>] / --open-files-in-pager[=<pager>] runs the pager
+			// through the shell with the matching file names.
+			return gitGrepOpensPager(args) || gitVerbRunsRepoCode(sub, args, tokens, repo)
 		case "commit", "merge", "checkout", "switch", "cherry-pick", "am", "add", "status", "restore", "stash", "gc",
-			"revert", "reset", "clean", "rm", "mv", "update-index", "diff-files", "diff-index", "ls-files", "grep",
+			"revert", "reset", "clean", "rm", "mv", "update-index", "diff-files", "diff-index", "ls-files",
 			"blame", "describe", "checkout-index", "pull", "fetch", "push":
 			return gitVerbRunsRepoCode(sub, args, tokens, repo)
 		case "worktree", "submodule":
@@ -78,6 +82,42 @@ func adapterRunsCode(name string, tokens []string, repo *gitRepoCtx) bool {
 	}
 	if name == "wget" && optionPresent(tokens, "--config", "-i", "--input-file") {
 		return true
+	}
+	return false
+}
+
+// gitGrepValueShorts are the git grep short options that consume the rest of
+// their cluster (or the next word) as a value, so letters after them are not
+// options.
+const gitGrepValueShorts = "efABCm"
+
+// gitGrepOpensPager reports whether git grep arguments ask for the matching
+// files to be opened in a pager: -O with an optional fused program (also
+// inside a cluster such as -nO), or --open-files-in-pager and its
+// unambiguous abbreviations (--op…).
+func gitGrepOpensPager(args []string) bool {
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--":
+			return false
+		case strings.HasPrefix(a, "--"):
+			if gitLongOpt(a, "open-files-in-pager", 2) {
+				return true
+			}
+		case isShortFlagToken(a):
+			for j, c := range a[1:] {
+				if c == 'O' {
+					return true
+				}
+				if strings.ContainsRune(gitGrepValueShorts, c) {
+					if j == len(a)-2 {
+						i++ // value is the next word
+					}
+					break
+				}
+			}
+		}
 	}
 	return false
 }
