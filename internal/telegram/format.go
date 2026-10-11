@@ -270,6 +270,7 @@ func isInsideCode(text string, pos int) bool {
 func convertItalicAndEscape(line string) string {
 	var result strings.Builder
 	inCodeSpan := false
+	var closers map[int]bool // positions of "*"/"**" runs that close an emphasis
 	i := 0
 
 	for i < len(line) {
@@ -305,17 +306,37 @@ func convertItalicAndEscape(line string) string {
 			continue
 		}
 
-		// ── **bold** → keep as-is ──
-		if i <= len(line)-2 && line[i:i+2] == "**" {
-			result.WriteString("**")
-			i += 2
-			continue
-		}
-
-		// ── *italic* → _italic_ ──
+		// ── **bold** → kept, *italic* → _italic_ ──
+		// Only a marker with a matching partner on the line becomes
+		// markup; a lone "*" (arithmetic, globs) or "**" is escaped, since
+		// an unclosed entity makes Telegram reject the whole message.
 		if line[i] == '*' {
-			result.WriteByte('_')
-			i++
+			run := starRunLen(line, i)
+			if run <= 2 {
+				paired := closers[i]
+				if !paired {
+					if j := findEmphasisCloser(line, i, run, closers); j >= 0 {
+						if closers == nil {
+							closers = map[int]bool{}
+						}
+						closers[j] = true
+						paired = true
+					}
+				}
+				if paired {
+					if run == 2 {
+						result.WriteString("**")
+					} else {
+						result.WriteByte('_')
+					}
+					i += run
+					continue
+				}
+			}
+			for k := 0; k < run; k++ {
+				result.WriteString(`\*`)
+			}
+			i += run
 			continue
 		}
 
@@ -328,6 +349,59 @@ func convertItalicAndEscape(line string) string {
 	}
 
 	return result.String()
+}
+
+// starRunLen returns the length of the run of '*' starting at i.
+func starRunLen(line string, i int) int {
+	n := 0
+	for i+n < len(line) && line[i+n] == '*' {
+		n++
+	}
+	return n
+}
+
+// findEmphasisCloser returns the position of the "*" run of exactly n stars
+// that closes an emphasis opened at i, or -1. As in CommonMark, the opener
+// must be followed by a non-space character and the closer preceded by
+// one, so spaced operators ("5 * 3 * 2") never pair. Code spans are skipped
+// and runs already claimed as closers are not reused.
+func findEmphasisCloser(line string, i, n int, closers map[int]bool) int {
+	k := i + n
+	if k >= len(line) || isASCIISpace(line[k]) {
+		return -1
+	}
+	for k < len(line) {
+		switch line[k] {
+		case '`':
+			if strings.HasPrefix(line[k:], "```") {
+				end := strings.Index(line[k+3:], "```")
+				if end < 0 {
+					k += 3
+				} else {
+					k += 3 + end + 3
+				}
+				continue
+			}
+			end := strings.IndexByte(line[k+1:], '`')
+			if end < 0 {
+				return -1 // the rest of the line is an (unclosed) code span
+			}
+			k += 1 + end + 1
+		case '*':
+			r := starRunLen(line, k)
+			if r == n && k > i+n && !isASCIISpace(line[k-1]) && !closers[k] {
+				return k
+			}
+			k += r
+		default:
+			k++
+		}
+	}
+	return -1
+}
+
+func isASCIISpace(c byte) bool {
+	return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\v' || c == '\f'
 }
 
 // splitChunks splits text into chunks no larger than maxBytes bytes.

@@ -196,6 +196,53 @@ func TestRED_DailyBudgetOvershootIsNeverRecorded(t *testing.T) {
 	}
 }
 
+// telegramFixUnescapedCount counts unescaped occurrences of c in a MarkdownV2
+// string (a backslash consumes the byte after it).
+func telegramFixUnescapedCount(out string, c byte) int {
+	n := 0
+	for i := 0; i < len(out); i++ {
+		if out[i] == '\\' {
+			i++
+			continue
+		}
+		if out[i] == c {
+			n++
+		}
+	}
+	return n
+}
+
+// A lone "*" (arithmetic, globs) must be escaped, not turned into an
+// unclosed italic marker that makes Telegram reject the whole message.
+func TestRED_LoneAsteriskBecomesUnclosedItalic(t *testing.T) {
+	chunks, err := FormatResponse("Total: 5 * 3 = 15")
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := strings.Join(chunks, "")
+	if telegramFixUnescapedCount(out, '_')%2 == 1 {
+		t.Fatalf("FormatResponse emitted an unbalanced italic marker: %q", out)
+	}
+
+	cases := []struct{ in, want string }{
+		{"Total: 5 * 3 = 15", `Total: 5 \* 3 \= 15`},
+		{"5 * 3 * 2", `5 \* 3 \* 2`},             // spaced operators are not emphasis
+		{"ls *.go", `ls \*\.go`},                 // glob
+		{"2**10", `2\*\*10`},                     // unpaired bold marker
+		{"an *italic* word", "an _italic_ word"}, // real emphasis still converts
+		{"a **bold** word", "a **bold** word"},
+		{"*a **b** c*", "_a **b** c_"},
+		{"*x* and *", `_x_ and \*`},
+		{"*`a*b`*", "_`a*b`_"}, // a "*" inside a code span never pairs
+		{"***", `\*\*\*`},
+	}
+	for _, c := range cases {
+		if got := convertItalicAndEscape(c.in); got != c.want {
+			t.Errorf("convertItalicAndEscape(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
 // telegramFixDanglingEscape reports whether s ends with an odd run of
 // backslashes (an escape whose escaped character was cut off).
 func telegramFixDanglingEscape(s string) bool {
