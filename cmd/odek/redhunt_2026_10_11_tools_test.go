@@ -359,6 +359,60 @@ func TestRED_JSONQueryNestedIndex(t *testing.T) {
 	}
 }
 
+// diff must not report two files as identical when one lacks the final
+// newline: "a\n" and "a" are different files.
+func TestRED_DiffTrailingNewlineDifference(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, s string) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte(s), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	tool := &diffTool{}
+	run := func(a, b string) diffResult {
+		t.Helper()
+		out, _ := tool.Call(fmt.Sprintf(`{"path_a":%q,"path_b":%q}`, write("a", a), write("b", b)))
+		var r diffResult
+		mustUnmarshal(t, out, &r)
+		if r.Error != "" {
+			t.Fatalf("diff error: %s", r.Error)
+		}
+		return r
+	}
+	identical := func(r diffResult) bool {
+		for _, h := range r.Hunks {
+			if h.Type != "equal" {
+				return false
+			}
+		}
+		return true
+	}
+	for _, c := range [][2]string{{"x\ny\n", "x\ny"}, {"x\ny", "x\ny\n"}, {"", "\n"}} {
+		if identical(run(c[0], c[1])) {
+			t.Errorf("diff reports %q and %q as identical", c[0], c[1])
+		}
+	}
+	r := run("x\ny\n", "x\ny")
+	found := false
+	for _, h := range r.Hunks {
+		for _, l := range h.Lines {
+			if h.Type == "added" && strings.Contains(unwrapUntrusted(l.Content), `\ No newline at end of file`) {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Errorf("missing no-newline marker on the side lacking it: %+v", r.Hunks)
+	}
+	for _, c := range [][2]string{{"x\ny\n", "x\ny\n"}, {"x\ny", "x\ny"}, {"", ""}} {
+		if !identical(run(c[0], c[1])) {
+			t.Errorf("diff reports identical %q as different", c[0])
+		}
+	}
+}
+
 func TestGlobClassToRegexToolsCases(t *testing.T) {
 	for _, bad := range []string{"**/[]", "**/[a-]", "**/[z-a]", `**/[\`, `**/[a\`, "**/[-a]", "**/[^"} {
 		if _, err := globToRegex(bad); err == nil {

@@ -394,14 +394,20 @@ func (t *diffTool) Call(argsJSON string) (result string, err error) {
 		})
 	}
 
-	linesA, linesB := strings.Split(textA, "\n"), strings.Split(textB, "\n")
+	linesA, linesB := diffSplitLines(textA), diffSplitLines(textB)
 
-	// Trim trailing empty from final newline
-	if len(linesA) > 0 && linesA[len(linesA)-1] == "" {
-		linesA = linesA[:len(linesA)-1]
-	}
-	if len(linesB) > 0 && linesB[len(linesB)-1] == "" {
-		linesB = linesB[:len(linesB)-1]
+	// A final newline terminates the last line. When only one side has it,
+	// mark that side's last line the way unified diff does, so a change
+	// that only adds or drops the final newline is not reported as equal.
+	nlA, nlB := strings.HasSuffix(textA, "\n"), strings.HasSuffix(textB, "\n")
+	if nlA != nlB {
+		lacking := linesA
+		if nlA {
+			lacking = linesB
+		}
+		if len(lacking) > 0 {
+			lacking[len(lacking)-1] += "\n" + diffNoNewlineMarker
+		}
 	}
 
 	hunks := computeDiff(linesA, linesB)
@@ -421,6 +427,19 @@ func (t *diffTool) Call(argsJSON string) (result string, err error) {
 		}
 	}
 	return jsonResult(diffResult{Hunks: hunks, PathA: pathA, PathB: pathB})
+}
+
+// diffNoNewlineMarker is appended to the last line of a side that lacks the
+// final newline the other side has.
+const diffNoNewlineMarker = `\ No newline at end of file`
+
+// diffSplitLines splits text into lines; a final newline terminates the last
+// line rather than starting an empty one, and empty text has no lines.
+func diffSplitLines(text string) []string {
+	if text == "" {
+		return nil
+	}
+	return strings.Split(strings.TrimSuffix(text, "\n"), "\n")
 }
 
 // computeDiff returns the line diff of a and b as hunks in document order.
