@@ -4,6 +4,56 @@ import (
 	"testing"
 )
 
+// TestRED_FactTrailingSeparatorFragmentCorruptsNeighbour: Add rejects
+// content containing the full entry separator "\n§\n", but an entry that
+// merely ENDS with "\n§" passes. Joined with the next entry it forms
+// "\n§\n§\n", which parseEntries splits at the first separator: the stored
+// entry loses its tail and the following entry gains a "§\n" prefix, so the
+// read-back fact list differs from what was written (and dedup/remove by
+// exact text stop matching).
+func TestRED_FactTrailingSeparatorFragmentCorruptsNeighbour(t *testing.T) {
+	for _, frag := range []string{"first fact\n§", "§\nfirst fact"} {
+		fs := NewFactStore(t.TempDir(), 0, 0)
+		if err := fs.Add("user", "zero fact"); err != nil {
+			t.Fatal(err)
+		}
+		if err := fs.Add("user", frag); err != nil {
+			// Rejecting the fragment outright is also acceptable.
+			continue
+		}
+		if err := fs.Add("user", "second fact"); err != nil {
+			t.Fatal(err)
+		}
+		entries, err := fs.Entries("user")
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := []string{"zero fact", frag, "second fact"}
+		if len(entries) != len(want) || entries[0] != want[0] || entries[1] != want[1] || entries[2] != want[2] {
+			t.Fatalf("entries read back = %q, want %q", entries, want)
+		}
+	}
+	// The replace paths apply the same rule.
+	fs := NewFactStore(t.TempDir(), 0, 0)
+	if err := fs.Add("user", "alpha fact"); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.ReplaceAt("user", 0, "alpha fact\n§"); err == nil {
+		t.Fatal("ReplaceAt accepted a trailing separator fragment")
+	}
+	// A lone "§" or one embedded mid-line is ordinary text.
+	if err := fs.Add("user", "§"); err != nil {
+		t.Fatalf("lone § rejected: %v", err)
+	}
+	if err := fs.Add("user", "section § sign"); err != nil {
+		t.Fatalf("embedded § rejected: %v", err)
+	}
+	entries, _ := fs.Entries("user")
+	if len(entries) != 3 || entries[1] != "§" || entries[2] != "section § sign" {
+		t.Fatalf("entries = %q", entries)
+	}
+}
+
 // TestRED_EpisodeIndexColdStartServesStaleGob: a new process cold-starts the
 // per-turn recall index from the persisted gob (tryLoadLocked) without
 // checking it against episodes/index.json. An episode written at the end of

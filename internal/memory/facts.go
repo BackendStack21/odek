@@ -47,6 +47,16 @@ const (
 // entrySep is the delimiter between entries in a fact file.
 const entrySep = "\n§\n"
 
+// breaksEntrySep reports whether content cannot be stored as one entry: it
+// contains entrySep, or it ends with "\n§" / starts with "§\n", which joined
+// with a neighbour forms "\n§\n§\n" and splits at the wrong separator on
+// read-back, shifting the fragment onto the next entry.
+func breaksEntrySep(content string) bool {
+	return strings.Contains(content, entrySep) ||
+		strings.HasSuffix(content, "\n§") ||
+		strings.HasPrefix(content, "§\n")
+}
+
 // FactStore manages typed fact files (user.md and env.md) with character caps,
 // duplicate prevention, and entry-level CRUD via substring matching.
 //
@@ -206,7 +216,7 @@ func (f *FactStore) Add(target, content string) error {
 	// The on-disk format joins entries with entrySep; content carrying that
 	// sequence would explode into multiple entries on read-back and let
 	// injected text reshape the fact file structure.
-	if strings.Contains(content, entrySep) {
+	if breaksEntrySep(content) {
 		return fmt.Errorf("memory: content contains the internal entry separator")
 	}
 
@@ -263,7 +273,7 @@ func (f *FactStore) ReplaceApproved(target, oldText, expected, content string) e
 	}
 
 	content = strings.TrimSpace(content)
-	if strings.Contains(content, entrySep) {
+	if breaksEntrySep(content) {
 		return fmt.Errorf("memory: content contains the internal entry separator")
 	}
 	oldText = strings.TrimSpace(oldText)
@@ -302,7 +312,7 @@ func (f *FactStore) ReplaceAt(target string, idx int, content string) error {
 	}
 
 	content = strings.TrimSpace(content)
-	if strings.Contains(content, entrySep) {
+	if breaksEntrySep(content) {
 		return fmt.Errorf("memory: content contains the internal entry separator")
 	}
 

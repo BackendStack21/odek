@@ -1088,7 +1088,7 @@ Entries for %s:
 		}
 		// An entry carrying the on-disk separator would split into extra
 		// entries on write; Add/Replace reject it, so consolidation does too.
-		if strings.Contains(entry, entrySep) {
+		if breaksEntrySep(entry) {
 			log.Printf("memory: consolidated entry rejected: contains entry separator")
 			continue
 		}
