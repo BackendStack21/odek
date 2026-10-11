@@ -9,6 +9,7 @@ import (
 
 	"github.com/BackendStack21/odek/internal/danger"
 	"github.com/BackendStack21/odek/internal/loop"
+	"github.com/BackendStack21/odek/internal/redact"
 	"github.com/BackendStack21/odek/internal/session"
 )
 
@@ -118,9 +119,13 @@ func recordTurnAudit(store *session.AuditStore, sessionID string, turn int, user
 	// We exclude resources that match the source of the untrusted content
 	// (e.g. a fetched page mentioning its own URL) to avoid false positives
 	// for legitimate user-requested fetches.
+	// The audit store persists sources and resources redacted, so every
+	// comparison runs on the redacted, lower-cased form of both sides.
+	auditKey := func(r string) string { return strings.ToLower(redact.RedactSecrets(r)) }
 	isSource := func(r string) bool {
+		lr := auditKey(r)
 		for _, s := range untrustedSources {
-			if auditOpsResourceMatchesSource(r, s) {
+			if auditOpsResourceMatchesSource(lr, auditKey(s)) {
 				return true
 			}
 		}
@@ -129,18 +134,18 @@ func recordTurnAudit(store *session.AuditStore, sessionID string, turn int, user
 	untrustedResSet := make(map[string]bool)
 	for _, r := range session.ResourcesIn(untrustedBodies.String()) {
 		if !isSource(r) {
-			untrustedResSet[strings.ToLower(r)] = true
+			untrustedResSet[auditKey(r)] = true
 		}
 	}
 	for _, r := range recordedResources {
 		if !isSource(r) {
-			untrustedResSet[strings.ToLower(r)] = true
+			untrustedResSet[auditKey(r)] = true
 		}
 	}
 	var untrustedResources []string
 	seen := make(map[string]bool)
 	for _, r := range session.ResourcesIn(actionText.String()) {
-		lr := strings.ToLower(r)
+		lr := auditKey(r)
 		if untrustedResSet[lr] && !seen[lr] {
 			seen[lr] = true
 			untrustedResources = append(untrustedResources, r)
