@@ -156,3 +156,76 @@ func TestRED_GlobAndSearchSymlinkedRoot(t *testing.T) {
 		t.Errorf("search_files(files) on symlinked root: got %d matches, want 1 (%s)", len(sr.Matches), out)
 	}
 }
+
+// A "**" glob must keep bracket character classes, which the non-"**" path
+// (filepath.Match) supports: "**/*.[ch]" must find C sources and headers.
+func TestRED_GlobDoublestarCharClass(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "src"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range []string{"src/a.c", "src/a.h", "src/a.o", "src/b.x", "src/[c].z"} {
+		if err := os.WriteFile(filepath.Join(dir, n), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := confinedGlob(dir, "**/*.[ch]", 100, false)
+	if err != nil {
+		t.Fatalf("confinedGlob: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("**/*.[ch] matched %d files (%v), want 2 (a.c, a.h)", len(got), got)
+	}
+	// Negated class, as filepath.Match spells it.
+	got, err = confinedGlob(dir, "**/a.[^ch]", 100, false)
+	if err != nil || len(got) != 1 || !strings.HasSuffix(got[0], "a.o") {
+		t.Fatalf("**/a.[^ch] = %v, %v; want a.o", got, err)
+	}
+	// Escaped bracket is a literal.
+	got, err = confinedGlob(dir, `**/\[c\].z`, 100, false)
+	if err != nil || len(got) != 1 {
+		t.Fatalf(`**/\[c\].z = %v, %v; want [c].z`, got, err)
+	}
+	// A "**" class, like "*" and "?", never matches the path separator.
+	got, err = confinedGlob(dir, "**src[/]a.c", 100, false)
+	if err == nil && len(got) != 0 {
+		t.Fatalf("** class must not match a separator: %v", got)
+	}
+	// An unterminated class is rejected, as filepath.Match rejects it.
+	if _, err := confinedGlob(dir, "**/*.[ch", 100, false); err == nil {
+		t.Fatalf("unterminated class must error")
+	}
+}
+
+func TestGlobClassToRegexToolsCases(t *testing.T) {
+	for _, bad := range []string{"**/[]", "**/[a-]", "**/[z-a]", `**/[\`, `**/[a\`, "**/[-a]", "**/[^"} {
+		if _, err := globToRegex(bad); err == nil {
+			t.Errorf("%q: want error", bad)
+		}
+	}
+	cases := []struct {
+		pattern, path string
+		want          bool
+	}{
+		{"**/[a-c].go", "x/b.go", true},
+		{"**/[a-c].go", "x/d.go", false},
+		{"**/[^a-c].go", "x/d.go", true},
+		{"**/[^a-c].go", "x/b.go", false},
+		{"**a[!-0]b", "a/b", false}, // range spanning '/' never matches it
+		{"**a[!-0]b", "a.b", true},
+		{"**a[/]b", "a/b", false},
+		{`**/[\]x].go`, "d/].go", true},
+		{"**/[é].txt", "d/é.txt", true},
+		{`**/a\*b`, "d/a*b", true},
+		{`**/a\*b`, "d/axb", false},
+	}
+	for _, c := range cases {
+		re, err := globToRegex(c.pattern)
+		if err != nil {
+			t.Fatalf("%q: %v", c.pattern, err)
+		}
+		if got := re.MatchString(c.path); got != c.want {
+			t.Errorf("%q vs %q = %v, want %v (re %s)", c.pattern, c.path, got, c.want, re)
+		}
+	}
+}

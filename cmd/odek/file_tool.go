@@ -224,7 +224,19 @@ func globToRegex(pattern string) (*regexp.Regexp, error) {
 			reStr.WriteString("[^/]*")
 		case ch == '?':
 			reStr.WriteString("[^/]")
-		case ch == '.' || ch == '+' || ch == '^' || ch == '$' || ch == '|' || ch == '(' || ch == ')' || ch == '[' || ch == ']' || ch == '{' || ch == '}' || ch == '\\':
+		case ch == '[':
+			class, next, err := globClassToRegex(pattern, i)
+			if err != nil {
+				return nil, err
+			}
+			reStr.WriteString(class)
+			i = next - 1
+		case ch == '\\' && i+1 < len(pattern):
+			// Backslash escapes the next character, as in filepath.Match.
+			r, size := utf8.DecodeRuneInString(pattern[i+1:])
+			reStr.WriteString(regexp.QuoteMeta(string(r)))
+			i += size
+		case ch == '.' || ch == '+' || ch == '^' || ch == '$' || ch == '|' || ch == '(' || ch == ')' || ch == ']' || ch == '{' || ch == '}' || ch == '\\':
 			reStr.WriteByte('\\')
 			reStr.WriteByte(ch)
 		default:
@@ -233,6 +245,99 @@ func globToRegex(pattern string) (*regexp.Regexp, error) {
 	}
 	reStr.WriteString("$")
 	return regexp.Compile(reStr.String())
+}
+
+// globClassToRegex translates the filepath.Match character class starting
+// at pattern[start] ('[') into a regex class and returns the index just past
+// its closing ']'. Syntax follows filepath.Match: optional leading '^' for
+// negation, 'lo-hi' ranges, '\' escapes. Like '*' and '?', a class never
+// matches the path separator. A malformed class is an error.
+func globClassToRegex(pattern string, start int) (string, int, error) {
+	i := start + 1
+	negated := false
+	if i < len(pattern) && pattern[i] == '^' {
+		negated = true
+		i++
+	}
+	readChar := func() (rune, error) {
+		if i >= len(pattern) {
+			return 0, fmt.Errorf("unterminated character class")
+		}
+		if pattern[i] == '-' || pattern[i] == ']' {
+			return 0, fmt.Errorf("malformed character class")
+		}
+		if pattern[i] == '\\' {
+			i++
+			if i >= len(pattern) {
+				return 0, fmt.Errorf("unterminated character class")
+			}
+		}
+		r, size := utf8.DecodeRuneInString(pattern[i:])
+		i += size
+		return r, nil
+	}
+	type runeRange struct{ lo, hi rune }
+	var ranges []runeRange
+	for {
+		if i >= len(pattern) {
+			return "", 0, fmt.Errorf("unterminated character class")
+		}
+		if pattern[i] == ']' && len(ranges) > 0 {
+			i++
+			break
+		}
+		lo, err := readChar()
+		if err != nil {
+			return "", 0, err
+		}
+		hi := lo
+		if i < len(pattern) && pattern[i] == '-' {
+			i++
+			if hi, err = readChar(); err != nil {
+				return "", 0, err
+			}
+			if hi < lo {
+				return "", 0, fmt.Errorf("malformed character class range")
+			}
+		}
+		ranges = append(ranges, runeRange{lo, hi})
+	}
+
+	var sb strings.Builder
+	sb.WriteByte('[')
+	if negated {
+		sb.WriteString(`^/`)
+	}
+	members := 0
+	writeRange := func(lo, hi rune) {
+		if lo > hi {
+			return
+		}
+		members++
+		fmt.Fprintf(&sb, `\x{%x}`, lo)
+		if hi != lo {
+			fmt.Fprintf(&sb, `-\x{%x}`, hi)
+		}
+	}
+	for _, r := range ranges {
+		if negated {
+			writeRange(r.lo, r.hi)
+			continue
+		}
+		// Carve the separator out of a positive class.
+		if r.lo <= '/' && '/' <= r.hi {
+			writeRange(r.lo, '/'-1)
+			writeRange('/'+1, r.hi)
+			continue
+		}
+		writeRange(r.lo, r.hi)
+	}
+	sb.WriteByte(']')
+	if !negated && members == 0 {
+		// A class that could only match the separator matches nothing.
+		return `[^\x00-\x{10FFFF}]`, i, nil
+	}
+	return sb.String(), i, nil
 }
 
 type readFileTool struct {
