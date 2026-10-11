@@ -345,6 +345,14 @@ func analyzeWithState(cmd string, depth int, inherited *shellAnalysisState) Anal
 				if name == "eval" && len(inner) > 1 {
 					result.merge(analyzeWithState(strings.Join(inner[1:], " "), depth+1, &payloadState))
 				}
+				// sh expands aliases on later lines, so an alias body runs
+				// under the alias name: classify each definition as the
+				// command it would run.
+				if name == "alias" {
+					for _, body := range aliasBodies(inner[1:]) {
+						result.merge(analyzeWithState(body, depth+1, &payloadState))
+					}
+				}
 			}
 			if i > 0 {
 				pipeline = append(pipeline, "|")
@@ -1254,6 +1262,22 @@ func resolveInDirectory(path, cwd string) string {
 		return resolved
 	}
 	return path
+}
+
+// aliasBodies returns the bodies of the NAME=BODY definitions among alias
+// arguments. Options (-p, --) and bare names (which print a definition) carry
+// no body.
+func aliasBodies(args []string) []string {
+	var bodies []string
+	for _, a := range args {
+		if strings.HasPrefix(a, "-") {
+			continue
+		}
+		if _, body, ok := strings.Cut(a, "="); ok && strings.TrimSpace(body) != "" {
+			bodies = append(bodies, body)
+		}
+	}
+	return bodies
 }
 
 func (s *shellAnalysisState) targetRisk(target, cwd string, known bool) RiskClass {
