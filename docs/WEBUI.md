@@ -649,7 +649,8 @@ NeedsReview so a skill can auto-load. Tainted skills still require `force`.
 
 ### `POST /api/shutdown`
 
-Triggers the graceful drain (stop accepting → close WebSockets → wait for
+Triggers the graceful drain (stop accepting → close WebSockets → cancel
+in-flight headless REST runs, which end with status `cancelled` → wait for
 sandbox cleanup). For remote-restart management flows.
 
 ### Session pinning

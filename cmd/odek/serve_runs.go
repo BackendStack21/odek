@@ -791,6 +791,34 @@ func listRunsWire(limit int) []map[string]any {
 	return out
 }
 
+// cancelActiveServeRuns cancels every headless run that has not reached a
+// terminal status (serve shutdown). Cancelling interrupts pending approvals
+// and the run context, so the run goroutines unwind and their deferred
+// cleanup (agent close, sandbox removal, MCP teardown) runs inside the
+// shutdown drain instead of being cut off at process exit. Returns the
+// number of runs cancelled.
+func cancelActiveServeRuns() int {
+	serveRuns.mu.Lock()
+	runs := make([]*serveRun, 0, len(serveRuns.runs))
+	for _, rr := range serveRuns.runs {
+		runs = append(runs, rr)
+	}
+	serveRuns.mu.Unlock()
+
+	n := 0
+	for _, rr := range runs {
+		rr.mu.Lock()
+		terminal := runStatusTerminal(rr.Status)
+		rr.mu.Unlock()
+		if terminal {
+			continue
+		}
+		cancelRun(rr)
+		n++
+	}
+	return n
+}
+
 // resetServeRuns clears the registry (tests).
 func resetServeRuns() {
 	serveRuns.mu.Lock()

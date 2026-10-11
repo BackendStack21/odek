@@ -1,6 +1,9 @@
 package main
 
 import (
+	"context"
+	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -170,4 +173,65 @@ func TestRED_SubagentRunKeysRaceOnRunSessionID(t *testing.T) {
 		}
 	}()
 	wg.Wait()
+}
+
+// Graceful shutdown must make in-flight headless runs finish so their
+// cleanup (agent.Close, sandbox docker rm -f, MCP teardown) runs before the
+// process exits. serveOnListener closes WebSockets (which cancels WS
+// prompts) but never cancels REST runs: a run blocked on an approval (up to
+// 10 minutes) or a long LLM call outlives the 10s drain and its deferred
+// cleanup never runs.
+func TestRED_ShutdownDoesNotCancelHeadlessRuns(t *testing.T) {
+	resetServeRuns()
+	t.Cleanup(resetServeRuns)
+	// requestServeShutdown is a process-wide once; re-arm it for later tests.
+	t.Cleanup(func() {
+		serveShutdownOnce = sync.Once{}
+		serveShutdownCh = make(chan struct{})
+	})
+
+	run, approver := serveFixNewRun()
+	approver.SetApprovalTimeout(10 * time.Minute)
+	ctx, cancel := context.WithCancel(context.Background())
+	run.cancel = cancel
+	run.resourcesActive = true
+	registerRun(run)
+
+	cleanedUp := make(chan struct{})
+	serveRunsWG.Add(1)
+	go func() { // mirrors startServeRun's run goroutine blocked in an approval
+		defer serveRunsWG.Done()
+		defer close(cleanedUp) // stands in for run.releaseResources()
+		_ = approver.PromptCommand(danger.SystemWrite, "touch /etc/x", "")
+		_ = ctx
+	}()
+	// Wait until the approval is actually pending.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && run.snapshot(false)["status"] != "waiting_approval" {
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() {
+		_ = serveOnListener(ln, http.NewServeMux())
+		close(done)
+	}()
+	time.Sleep(50 * time.Millisecond)
+	requestServeShutdown()
+
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("serveOnListener did not return")
+	}
+	select {
+	case <-cleanedUp:
+	default:
+		approver.Cancel() // release the goroutine so the test process is clean
+		t.Fatal("serveOnListener returned while a headless run was still blocked: shutdown never cancels REST runs, so their cleanup (sandbox/MCP teardown) never runs")
+	}
 }

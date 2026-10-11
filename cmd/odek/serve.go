@@ -763,6 +763,13 @@ func serveOnListener(listener net.Listener, mux *http.ServeMux) error {
 		return true
 	})
 
+	// Phase 2.25: cancel in-flight headless REST runs. Nothing else ends
+	// them: a run blocked on an approval or a long model call would outlive
+	// the drain below and exit without its sandbox/MCP cleanup.
+	if n := cancelActiveServeRuns(); n > 0 {
+		fmt.Fprintf(os.Stderr, "odek serve: cancelled %d headless run(s)\n", n)
+	}
+
 	// Phase 2.5: kill every background job across all sessions — the
 	// process-exit contract (no detach). Done before the drain so the job
 	// reapers finish inside the drain window.
