@@ -133,6 +133,35 @@ func TestRED_OAuthRefreshTokenNotRedacted(t *testing.T) {
 	}
 }
 
+// The known-value replacer is built from map iteration order. Go's
+// strings.Replacer picks, at each position, the FIRST argument (not the
+// longest) that matches, so when one registered secret is a prefix of
+// another the shorter one can win and the tail of the longer secret is
+// printed in clear. The outcome changes from process to process.
+func TestRED_KnownValueReplacerPrefixLeaksTail(t *testing.T) {
+	defer ResetSecrets()
+	const short = "Pr0dPassw0rd"
+	const long = "Pr0dPassw0rd-ROTATED-TAIL-Zq9x"
+	for i := 0; i < 50; i++ {
+		ResetSecrets()
+		RegisterSecret(short)
+		RegisterSecret(long)
+		out := RedactSecrets("value=" + long)
+		if strings.Contains(out, "ROTATED-TAIL-Zq9x") {
+			t.Fatalf("iteration %d: tail of a registered secret leaked: %q", i, out)
+		}
+		if out != "value=[REDACTED]" {
+			t.Fatalf("iteration %d: want one whole-secret replacement, got %q", i, out)
+		}
+		forms := currentForms()
+		for j := 1; j < len(forms); j++ {
+			if len(forms[j]) > len(forms[j-1]) {
+				t.Fatalf("forms not ordered longest first: %q before %q", forms[j-1], forms[j])
+			}
+		}
+	}
+}
+
 func TestRED_BasicCredentialShape(t *testing.T) {
 	cases := map[string]bool{
 		"dXNlcjpwYXNz":     true,  // user:pass

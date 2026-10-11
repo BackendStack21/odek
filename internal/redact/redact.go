@@ -23,6 +23,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"unicode/utf8"
@@ -467,13 +468,25 @@ func reverseString(s string) string {
 }
 
 // rebuildReplacerLocked recomputes the replacer and form list from secretSet.
+// strings.Replacer takes, at each position, the first argument that matches
+// rather than the longest, so forms are ordered longest first (ties broken
+// lexically for a deterministic build): a registered secret that is a prefix
+// of another can then never win and leave the longer secret's tail in clear.
 // Caller must hold secretsMu for writing.
 func rebuildReplacerLocked() {
 	secretGeneration++
 	forms := make([]string, 0, len(secretSet))
-	pairs := make([]string, 0, len(secretSet)*2)
 	for f := range secretSet {
 		forms = append(forms, f)
+	}
+	sort.Slice(forms, func(i, j int) bool {
+		if len(forms[i]) != len(forms[j]) {
+			return len(forms[i]) > len(forms[j])
+		}
+		return forms[i] < forms[j]
+	})
+	pairs := make([]string, 0, len(forms)*2)
+	for _, f := range forms {
 		pairs = append(pairs, f, "[REDACTED]")
 	}
 	secretFormsList = forms
