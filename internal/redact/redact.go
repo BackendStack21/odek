@@ -90,8 +90,10 @@ var patterns = []*regexp.Regexp{
 	// AWS secret and session token in STS JSON (SecretAccessKey,
 	// SessionToken) and YAML env blocks (AWS_SECRET_ACCESS_KEY: value), whose
 	// colon form the `NAME=value` env-var matcher below does not reach.
+	// security_token covers the same AWS session token as the
+	// X-Amz-Security-Token header and presigned-URL query parameter.
 	// refresh_token is the long-lived credential in OAuth token responses.
-	regexp.MustCompile(`(?i)(?:api[_-]?key|api[_-]?secret|auth[_-]?token|access[_-]?token|refresh[_-]?token|bearer[_-]?token|client[_-]?secret|private[_-]?key|secret[_-]?key|secret[_-]?access[_-]?key|session[_-]?token|password|passwd)["'\x60]?\s*[:=]\s*(?:"[^"\n]{20,}"|'[^'\n]{20,}'|\x60[^\x60\n]{20,}\x60|[^\s]{20,})`),
+	regexp.MustCompile(`(?i)(?:api[_-]?key|api[_-]?secret|auth[_-]?token|access[_-]?token|refresh[_-]?token|bearer[_-]?token|client[_-]?secret|private[_-]?key|secret[_-]?key|secret[_-]?access[_-]?key|session[_-]?token|security[_-]?token|password|passwd)["'\x60]?\s*[:=]\s*(?:"[^"\n]{20,}"|'[^'\n]{20,}'|\x60[^\x60\n]{20,}\x60|[^\s]{20,})`),
 
 	// Bearer tokens in Authorization headers: the header-line form
 	// (Authorization: Bearer …) and the JSON/JS header-object form

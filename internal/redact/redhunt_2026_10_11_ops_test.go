@@ -27,6 +27,32 @@ func TestRED_AWSSecretAccessKeyJSONAndYAML(t *testing.T) {
 	}
 }
 
+// The AWS session token also travels as the X-Amz-Security-Token request
+// header and as the x-amz-security-token query parameter of presigned URLs.
+func TestRED_AWSSecurityTokenHeaderAndQuery(t *testing.T) {
+	const tok = "FwoGZXIvYXdzEJr//////////wEaDOexampletokenvalue1234567890abcdef"
+	const tokURL = "FwoGZXIvYXdzEJr%2F%2F%2F%2F%2F%2F%2F%2F%2F%2FwEaDOexampletokenvalue1234567890abcdef"
+	for _, in := range []string{
+		"> X-Amz-Security-Token: " + tok + "\n",
+		`{"headers": {"X-Amz-Security-Token": "` + tok + `"}}`,
+		"https://bucket.s3.amazonaws.com/key?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Security-Token=" + tokURL + "&X-Amz-Signature=abc",
+		"https://bucket.s3.amazonaws.com/key?x-amz-security-token=" + tokURL,
+	} {
+		out := RedactSecrets(in)
+		if strings.Contains(out, "exampletokenvalue1234567890abcdef") {
+			t.Errorf("AWS security token leaked:\n in: %s\nout: %s", in, out)
+		}
+	}
+	for _, in := range []string{
+		"Send the X-Amz-Security-Token header when using temporary credentials.",
+		"x-amz-security-token: required",
+	} {
+		if out := RedactSecrets(in); out != in {
+			t.Errorf("prose over-redacted:\n in: %s\nout: %s", in, out)
+		}
+	}
+}
+
 // The AWS key names must not redact prose that mentions them without a value.
 func TestRED_AWSSecretAccessKeyProseUntouched(t *testing.T) {
 	for _, in := range []string{
