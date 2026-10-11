@@ -666,6 +666,13 @@ func (s *PlanStore) checkReplace(args planArgs) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("plan: check_replace: replacement: %w", err)
 		}
+		// Check ids are unique within a step (the resume parser rejects a
+		// duplicate); the replacement may reuse only the id it replaces.
+		for j, sibling := range wStep.Checks {
+			if j != ci && sibling.ID == fresh[0].ID {
+				return "", fmt.Errorf("plan: check_replace: replacement id %q duplicates another check on step %q — retryable: true; choose a fresh id", fresh[0].ID, stepID)
+			}
+		}
 		wStep.Checks[ci] = fresh[0]
 	case args.EvidenceNote != "":
 		wStep.Checks[ci] = PlanCheck{

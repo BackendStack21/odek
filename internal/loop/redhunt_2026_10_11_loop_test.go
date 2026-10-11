@@ -256,3 +256,40 @@ func TestRED_CheckReplaceEvidenceNoteBoundedAtCaps(t *testing.T) {
 		t.Fatalf("short note not kept whole: %q", d)
 	}
 }
+
+// A replacement whose id collides with a sibling check must either be
+// rejected or leave a plan the resume parser accepts.
+func TestRED_CheckReplaceDuplicateIDBreaksResume(t *testing.T) {
+	store := redhuntCheckedStore(t, "builds")
+	raw, _ := json.Marshal(map[string]any{
+		"verb": "check_replace", "step_id": "s1", "check_id": "c1",
+		"justification": "make target renamed",
+		"replacement":   map[string]any{"id": "c2", "description": "build passes", "tool": "shell", "arguments": map[string]any{"command": "make all"}},
+	})
+	_, _ = store.Execute(string(raw))
+	if err := redhuntResume(t, store); err != nil {
+		t.Fatalf("plan accepted by check_replace(replacement id colliding with a sibling) cannot be resumed: %v", err)
+	}
+}
+
+// A replacement reusing a sibling's id is rejected with an actionable error
+// and leaves the plan unchanged; reusing the replaced check's own id is fine.
+func TestRED_CheckReplaceDuplicateIDRejected(t *testing.T) {
+	store := redhuntCheckedStore(t, "builds")
+	before, _ := store.Snapshot()
+	_, err := store.Execute(`{"verb":"check_replace","step_id":"s1","check_id":"c1","justification":"renamed","replacement":{"id":"c2","description":"build passes","tool":"shell","arguments":{"command":"make all"}}}`)
+	if err == nil || !strings.Contains(err.Error(), "duplicates another check") {
+		t.Fatalf("err = %v; want duplicate-id rejection", err)
+	}
+	after, _ := store.Snapshot()
+	if after.Version != before.Version || after.Steps[0].Checks[0].ID != "c1" {
+		t.Fatalf("rejected replacement mutated the plan: %+v", after.Steps[0].Checks)
+	}
+	redhuntExec(t, store, map[string]any{
+		"verb": "check_replace", "step_id": "s1", "check_id": "c1", "justification": "same id, new command",
+		"replacement": map[string]any{"id": "c1", "description": "build passes", "tool": "shell", "arguments": map[string]any{"command": "make all"}},
+	})
+	if err := redhuntResume(t, store); err != nil {
+		t.Fatalf("resume failed: %v", err)
+	}
+}
