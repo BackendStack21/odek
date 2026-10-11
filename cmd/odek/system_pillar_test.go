@@ -15,7 +15,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/BackendStack21/odek"
 	"github.com/BackendStack21/odek/internal/config"
 )
 
@@ -138,12 +137,6 @@ func TestRED_SecurityPillar_CarriesRuntimeAuthorityRules(t *testing.T) {
 	}
 }
 
-func TestSecurityPillar_PublicRuntimeParity(t *testing.T) {
-	if securityPillar != odek.SecurityPillar {
-		t.Fatal("CLI and public runtime security pillars diverged")
-	}
-}
-
 func TestComposeSystem_MovesEmbeddedPillarAfterTrailingIdentity(t *testing.T) {
 	got := composeSystem("Identity\n\n" + securityPillar + "\n\nTrailing persona text")
 	if strings.Count(got, securityPillar) != 1 {
@@ -151,5 +144,27 @@ func TestComposeSystem_MovesEmbeddedPillarAfterTrailingIdentity(t *testing.T) {
 	}
 	if !strings.HasSuffix(got, securityPillar) {
 		t.Fatal("canonical pillar is not the final trusted block")
+	}
+}
+
+// TestRED_SecurityPillar_SingleSource: the CLI pillar is an alias of the
+// public runtime constant, never a second copy of the text — a copy can
+// drift from the runtime that every embedder composes.
+func TestRED_SecurityPillar_SingleSource(t *testing.T) {
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range files {
+		if strings.HasSuffix(f, "_test.go") {
+			continue
+		}
+		src, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(src), pillarHeadingMarker) {
+			t.Errorf("%s carries its own copy of the security pillar; alias odek.SecurityPillar instead", f)
+		}
 	}
 }
