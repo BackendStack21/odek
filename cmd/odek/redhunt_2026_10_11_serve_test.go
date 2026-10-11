@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -13,8 +15,10 @@ import (
 	"testing"
 	"time"
 
+	odek "github.com/BackendStack21/odek"
 	"github.com/BackendStack21/odek/internal/danger"
 	"github.com/BackendStack21/odek/internal/mcpclient"
+	"github.com/BackendStack21/odek/internal/resource"
 )
 
 // serveFixNewRun builds a REST run wired to a wsApprover exactly like
@@ -233,5 +237,40 @@ func TestRED_ShutdownDoesNotCancelHeadlessRuns(t *testing.T) {
 	default:
 		approver.Cancel() // release the goroutine so the test process is clean
 		t.Fatal("serveOnListener returned while a headless run was still blocked: shutdown never cancels REST runs, so their cleanup (sandbox/MCP teardown) never runs")
+	}
+}
+
+// A new serve session's title is shorten(prompt, 60) — truncated BEFORE the
+// store's save-time redaction. A key that straddles the 60-byte cut keeps
+// fewer characters than the redaction patterns require, so a fragment of
+// the secret is persisted as the session title and served by
+// GET /api/sessions. (The REST run Task does it in the safe order:
+// shorten(redact.RedactSecrets(content), 160).)
+func TestRED_NewSessionTitleLeaksTruncatedSecret(t *testing.T) {
+	llm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"choices":[{"message":{"content":"ok"}}]}`)
+	}))
+	defer llm.Close()
+	store := newTestSessionStore(t)
+	a, err := odek.New(odek.Config{Provider: "deepseek", BaseURL: llm.URL, APIKey: "test-key", Model: "test-model", SystemMessage: "Help", NoProjectFile: true, MemoryDir: t.TempDir(), MaxIterations: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+
+	const keyBody = "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789wxyz" // 40 chars
+	prompt := "Please deploy the staging cluster using sk-proj-" + keyBody + " today"
+	msg := wsClientMsg{Type: "prompt", Content: prompt}
+	sess := handlePrompt(context.Background(), func(map[string]any) {}, store, resource.NewRegistry(), loadJSONMockResolved(), a, nil, nil, msg, new(int), new(int), nil, nil, nil, nil)
+	if sess == nil {
+		t.Fatal("handlePrompt created no session")
+	}
+	saved, err := store.Load(sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(saved.Task, keyBody[:8]) {
+		t.Fatalf("persisted session title %q contains a fragment of the API key", saved.Task)
 	}
 }

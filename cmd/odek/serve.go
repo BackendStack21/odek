@@ -2329,7 +2329,7 @@ func handlePrompt(
 		newSess, err := store.Create(
 			[]session.Message{{Role: "system", Content: ""}},
 			resolved.Model,
-			shorten(prompt, 60),
+			shorten(redact.RedactSecrets(prompt), 60), // redact before the cut: a truncated key is too short for the save-time redaction patterns
 		)
 		if err != nil {
 			sendError(send, "failed to create session: "+err.Error())
