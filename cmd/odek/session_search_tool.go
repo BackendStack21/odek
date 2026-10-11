@@ -390,9 +390,11 @@ func (t *sessionSearchTool) deepSearch(tokens []string, candidates []session.Ses
 			}
 		}
 
-		// Require at least 2 distinct tokens to match (or all if query has only 1 token).
-		// A single common word hitting one of 107 messages is noise, not signal.
-		if len(matchedTokens) >= 2 || (len(tokens) == 1 && len(matchedTokens) == 1) {
+		// Require at least 2 distinct tokens to match (or the only one when the
+		// query has a single usable token: short words and repeats do not
+		// count). A single common word hitting one of 107 messages is noise,
+		// not signal.
+		if len(matchedTokens) >= 2 || (maxDeep == 1 && len(matchedTokens) == 1) {
 			existing = append(existing, sessionMatch{
 				session: *full,
 				score:   len(matchedTokens),

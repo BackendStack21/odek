@@ -5,10 +5,41 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/BackendStack21/odek/internal/memory/extended"
 	"github.com/BackendStack21/odek/internal/session"
 )
+
+// TestRED_SessionSearchDeepIgnoresShortOrRepeatedTokens: deepSearch accepts a
+// session when it matched >= 2 distinct tokens, or when len(tokens) == 1.
+// tokens is the raw strings.Fields split, but tokens shorter than 2 bytes
+// are never matched and repeats collapse in matchedTokens. A query with one
+// usable token plus a short or repeated word ("a websocket", "C parser",
+// "websocket websocket") can therefore never qualify any session by
+// message content, even one whose messages contain the token verbatim —
+// while the bare query "websocket" finds it.
+func TestRED_SessionSearchDeepIgnoresShortOrRepeatedTokens(t *testing.T) {
+	store, err := session.NewStoreWithDir(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	saveDeepSession(t, store, "s01", time.Minute, "we debugged the websocket reconnect handshake")
+	tool := newSessionSearchTool(store)
+
+	if got := deepSearchIDs(t, tool, "websocket", 5); len(got) != 1 {
+		t.Fatalf("setup: single-token query should find the session, got %v", got)
+	}
+	for _, q := range []string{"a websocket", "websocket websocket"} {
+		if got := deepSearchIDs(t, tool, q, 5); len(got) != 1 || got[0] != "s01" {
+			t.Errorf("query %q found %v, want [s01] (same single usable token as %q)", q, got, "websocket")
+		}
+	}
+	// Two usable tokens still need two matches.
+	if got := deepSearchIDs(t, tool, "websocket kubernetes", 5); len(got) != 0 {
+		t.Errorf("two-token query with one match found %v, want none", got)
+	}
+}
 
 // TestRED_MemoryQuarantineListingEmitsRawTerminalEscapes: `odek memory
 // extended quarantine` is the human review surface for tainted atoms (web,
