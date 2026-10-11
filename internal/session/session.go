@@ -1550,6 +1550,13 @@ func (s *Store) removeVectors(ids []string) {
 	}
 }
 
+// CleanupExpired is the retention rule Cleanup applies to one session: it is
+// removed when it was last updated before the cutoff and is not pinned.
+// Exported so a dry-run preview selects exactly what Cleanup deletes.
+func CleanupExpired(updatedAt time.Time, pinned bool, before time.Time) bool {
+	return updatedAt.Before(before) && !pinned
+}
+
 // Cleanup deletes all unpinned sessions whose UpdatedAt is before the given
 // time. Pinned (favorited) sessions are skipped so operator bookmarks
 // survive retention sweeps. Returns the count of deleted sessions.
@@ -1576,10 +1583,7 @@ func (s *Store) Cleanup(before time.Time) (int, error) {
 				purged++
 				continue
 			}
-			if e.UpdatedAt.Before(before) {
-				if e.Pinned {
-					continue
-				}
+			if CleanupExpired(e.UpdatedAt, e.Pinned, before) {
 				if err := s.removeFilesLocked(id); err != nil {
 					unlock()
 					s.mu.Unlock()
@@ -1630,10 +1634,7 @@ func (s *Store) Cleanup(before time.Time) (int, error) {
 		if err != nil {
 			continue // skip unreadable files
 		}
-		if sess.UpdatedAt.Before(before) {
-			if sess.Pinned {
-				continue
-			}
+		if CleanupExpired(sess.UpdatedAt, sess.Pinned, before) {
 			if err := s.Delete(sess.ID); err != nil {
 				return deleted, fmt.Errorf("session: delete %q: %w", sess.ID, err)
 			}
