@@ -1,9 +1,11 @@
 package mcpclient
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -97,5 +99,68 @@ func TestRED_HTTPTransportIgnoresInvalidMcpSessionID(t *testing.T) {
 	}
 	if !validMCPSessionID("abc-123_~!") {
 		t.Error("visible-ASCII session id rejected")
+	}
+}
+
+// redHuntConfigPipeClient builds a stdio Client wired to in-memory pipes and
+// returns the server's read/write ends.
+func redHuntConfigPipeClient(t *testing.T, name string, timeout time.Duration) (*Client, *bufio.Scanner, io.Writer) {
+	t.Helper()
+	clientRead, serverWrite := io.Pipe()
+	serverRead, clientWrite := io.Pipe()
+	c := &Client{
+		name: name, stdin: clientWrite, stdout: bufio.NewReader(clientRead),
+		lineCh: make(chan lineResult, 10), done: make(chan struct{}),
+		writeCh: make(chan *queuedRequest, 4), writeDone: make(chan struct{}),
+		closed: make(chan struct{}), pending: make(map[int]chan callResponse),
+		timeout: timeout,
+	}
+	go c.readLoop()
+	go c.writeLoop()
+	t.Cleanup(func() {
+		c.closeOnce.Do(func() { close(c.closed) })
+		clientWrite.Close()
+		clientRead.Close()
+		serverWrite.Close()
+		serverRead.Close()
+	})
+	return c, bufio.NewScanner(serverRead), serverWrite
+}
+
+// MCP lifecycle: after the initialize response the client must send the
+// notifications/initialized notification before any other request — on the
+// stdio transport too.
+func TestRED_StdioDiscoverSendsInitializedNotification(t *testing.T) {
+	c, sc, serverWrite := redHuntConfigPipeClient(t, "strict", 3*time.Second)
+	go func() {
+		initialized := false
+		for sc.Scan() {
+			var req struct {
+				ID     *int   `json:"id"`
+				Method string `json:"method"`
+			}
+			if json.Unmarshal(sc.Bytes(), &req) != nil {
+				continue
+			}
+			switch {
+			case req.Method == "notifications/initialized" && req.ID == nil:
+				initialized = true
+			case req.ID == nil:
+			case req.Method == "initialize":
+				fmt.Fprintf(serverWrite, `{"jsonrpc":"2.0","id":%d,"result":{"protocolVersion":"2024-11-05","capabilities":{},"serverInfo":{"name":"s","version":"1"}}}`+"\n", *req.ID)
+			case !initialized:
+				fmt.Fprintf(serverWrite, `{"jsonrpc":"2.0","id":%d,"error":{"code":-32602,"message":"Received request before initialization was complete"}}`+"\n", *req.ID)
+			default:
+				fmt.Fprintf(serverWrite, `{"jsonrpc":"2.0","id":%d,"result":{"tools":[{"name":"echo","description":"Echo"}]}}`+"\n", *req.ID)
+			}
+		}
+	}()
+
+	tools, err := c.Discover(context.Background())
+	if err != nil {
+		t.Fatalf("Discover against a lifecycle-strict stdio server: %v", err)
+	}
+	if len(tools) != 1 {
+		t.Fatalf("tools = %+v", tools)
 	}
 }

@@ -676,12 +676,11 @@ func (c *Client) Discover(ctx context.Context) (_ []ToolDef, setupErr error) {
 	}
 
 	// Step 1b: MCP requires a notifications/initialized notice after the
-	// initialize response. Over HTTP this is best-effort: a lenient server
-	// that rejects notifications outright still works for requests, while
-	// a strict spec-compliant server requires it before tools/list.
-	if c.url != "" {
-		_ = c.httpNotify(ctx, "notifications/initialized")
-	}
+	// initialize response, before any other request, on every transport.
+	// It is best-effort: a lenient server that rejects notifications
+	// outright still works for requests, while a strict spec-compliant
+	// server requires it before tools/list.
+	_ = c.notify(ctx, "notifications/initialized")
 
 	// Step 2: List tools
 	raw, err := c.call(ctx, "tools/list", nil)
@@ -1022,6 +1021,41 @@ func (c *Client) call(ctx context.Context, method string, params json.RawMessage
 			return nil, cr.err
 		}
 		return cr.result, nil
+	}
+}
+
+// notify sends a JSON-RPC notification (no id, no response). On stdio it is
+// queued to the single writer, so it reaches the server before any request
+// queued after it.
+func (c *Client) notify(ctx context.Context, method string) error {
+	if c.url != "" {
+		return c.httpNotify(ctx, method)
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	timeout := c.timeout
+	if timeout <= 0 {
+		timeout = DefaultTimeout
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	payload, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "method": method})
+	if err != nil {
+		return fmt.Errorf("marshal notification: %w", err)
+	}
+	// The writer checks the request ctx only when it dequeues; a
+	// notification must not be dropped because this function returned and
+	// cancelled its enqueue deadline, so the queued item carries a
+	// background context.
+	queued := &queuedRequest{ctx: context.Background(), data: append(payload, '\n')}
+	select {
+	case c.writeCh <- queued:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-c.closed:
+		return fmt.Errorf("connection closed before dispatch")
 	}
 }
 
