@@ -426,9 +426,12 @@ func denyPayloads(inner []string, dc *denyCtx, depth int) bool {
 		return denyScan(strings.Join(inner[1:], " "), dc, depth+1)
 	case name == "alias":
 		// A body runs under the alias name on later lines.
-		for _, body := range aliasBodies(inner[1:]) {
-			if denyScan(body, dc, depth+1) {
-				return true
+		defs, _ := aliasDefinitions(inner[1:])
+		for _, d := range defs {
+			for _, body := range d.bodies {
+				if denyScan(body, dc, depth+1) {
+					return true
+				}
 			}
 		}
 	case name == "git":

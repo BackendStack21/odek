@@ -123,6 +123,9 @@ type shellAnalysisState struct {
 	// analysed, when they are statically known; "$@" and "$*" expand to them.
 	args      []string
 	argsKnown bool
+	// aliases is shared by an analysis and every nested payload analysis,
+	// so a definition made inside eval is seen by later commands.
+	aliases *aliasTable
 }
 
 // maxAnalysisTokens bounds the tokens one Analyze call examines across the
@@ -201,6 +204,10 @@ func analyzeWithState(cmd string, depth int, inherited *shellAnalysisState) Anal
 		for name, value := range inherited.vars {
 			state.vars[name] = value
 		}
+		state.aliases = inherited.aliases
+	}
+	if state.aliases == nil {
+		state.aliases = newAliasTable()
 	}
 	state.unquoted = unquotedVariableRefs(main)
 	prog := parseShell(tokens, ops)
@@ -306,6 +313,19 @@ func analyzeWithState(cmd string, depth int, inherited *shellAnalysisState) Anal
 			}
 			piped := i > 0 || ctx.piped
 			upstream := stageUpstream(ctx, prepared, i)
+			// sh expands an alias defined earlier when its name is the
+			// command word: the expansion is analysed in addition to the
+			// literal stage (a definition may sit on a branch that never ran).
+			expansions, unresolved := state.aliases.expansions(stage)
+			if unresolved {
+				result.add(Unknown)
+			}
+			for _, exp := range expansions {
+				payload := state
+				state.aliases.enter(exp.names)
+				result.merge(analyzeWithState(exp.text, depth+1, &payload))
+				state.aliases.leave(exp.names)
+			}
 			if call := functionCallAt(stage, funcs); call >= 0 {
 				args := redirectFreeArguments(stage[call+1:])
 				runFunction(stage[call], args, pipeCtx{piped: piped, upstream: upstream})
@@ -345,13 +365,10 @@ func analyzeWithState(cmd string, depth int, inherited *shellAnalysisState) Anal
 				if name == "eval" && len(inner) > 1 {
 					result.merge(analyzeWithState(strings.Join(inner[1:], " "), depth+1, &payloadState))
 				}
-				// sh expands aliases on later lines, so an alias body runs
-				// under the alias name: classify each definition as the
-				// command it would run.
-				if name == "alias" {
-					for _, body := range aliasBodies(inner[1:]) {
-						result.merge(analyzeWithState(body, depth+1, &payloadState))
-					}
+				// Record alias definitions; a later use is analysed as its
+				// expansion. A definition alone runs nothing.
+				if name == "alias" && !state.aliases.define(inner[1:]) {
+					result.add(Unknown)
 				}
 			}
 			if i > 0 {
@@ -1262,22 +1279,6 @@ func resolveInDirectory(path, cwd string) string {
 		return resolved
 	}
 	return path
-}
-
-// aliasBodies returns the bodies of the NAME=BODY definitions among alias
-// arguments. Options (-p, --) and bare names (which print a definition) carry
-// no body.
-func aliasBodies(args []string) []string {
-	var bodies []string
-	for _, a := range args {
-		if strings.HasPrefix(a, "-") {
-			continue
-		}
-		if _, body, ok := strings.Cut(a, "="); ok && strings.TrimSpace(body) != "" {
-			bodies = append(bodies, body)
-		}
-	}
-	return bodies
 }
 
 func (s *shellAnalysisState) targetRisk(target, cwd string, known bool) RiskClass {
