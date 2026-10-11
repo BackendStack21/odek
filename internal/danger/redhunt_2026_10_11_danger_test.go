@@ -127,3 +127,27 @@ func TestRED_GpgExportSecretKeysDisclosesSecrets(t *testing.T) {
 	)
 	redhuntExactly(t, Safe, `gpg --list-secret-keys`, `gpg --export me@example.com`, `gpg -- --export-secret-keys`)
 }
+
+// sqlite3 shell dot-commands with a '|cmd' argument, abbreviated .shell /
+// .system spellings, and the edit() SQL function run programs.
+func TestRED_SqlitePipeDotCommandsRunPrograms(t *testing.T) {
+	redhuntAtLeast(t, CodeExecution,
+		`sqlite3 :memory: ".import '|sh -c id' t"`,
+		`sqlite3 x.db '.import --csv |id t'`,
+		`sqlite3 :memory: '.once |id' 'select 1'`,
+		`sqlite3 :memory: '.output |id' 'select 1'`,
+		`sqlite3 :memory: '.o |id' 'select 1'`,
+		`sqlite3 -cmd ".import '|id' t" x.db`,
+		`sqlite3 :memory: "select edit('x','sh -c id')"`,
+		`sqlite3 :memory: "SELECT EDIT ('x','id')"`,
+		`sqlite3 :memory: '.sh id'`,
+		`sqlite3 :memory: '.sy id'`,
+		"sqlite3 :memory: 'select 1;\n.sy id'",
+	)
+	redhuntExactly(t, Safe,
+		`sqlite3 x.db .tables`,
+		`sqlite3 x.db "select a || b from t"`,
+		`sqlite3 x.db '.mode csv' 'select 1'`,
+		`sqlite3 x.db "select edited from t"`,
+	)
+}

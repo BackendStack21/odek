@@ -6479,6 +6479,54 @@ func sqliteRunsShell(tokens []string) bool {
 		if strings.Contains(low, ".shell") || strings.Contains(low, ".system") || strings.Contains(low, ".read") || strings.Contains(low, ".load") || strings.Contains(low, "load_extension") || strings.Contains(low, "-init") {
 			return true
 		}
+		if sqliteScriptRunsProgram(tok) {
+			return true
+		}
+	}
+	return false
+}
+
+// sqliteEditCall matches the sqlite3 shell's edit() SQL function, which runs
+// an editor (or the program named by its second argument) on a value.
+var sqliteEditCall = regexp.MustCompile(`(?i)\bedit\s*\(`)
+
+// sqliteProgramDotCommands are the dot-commands that run a program outright.
+// The shell accepts any prefix of a dot-command name (`.sh`, `.sy`), so a
+// prefix of one of these counts.
+var sqliteProgramDotCommands = []string{"shell", "system", "read", "load"}
+
+// sqliteScriptRunsProgram reports whether text holding sqlite3 shell input (an
+// argument, a -cmd value, or a script fed on stdin) runs a program: a
+// dot-command line naming .shell/.system/.read/.load in any abbreviation, a
+// dot-command with a `|cmd` argument (.import, .once, .output and .read pipe
+// through a program), or the edit() SQL function. Lines are split on
+// newlines and on `;` (the tokenizer folds a quoted newline into `;`), which
+// may flag a dot that only follows a statement on the same line: failing
+// closed there costs a prompt.
+func sqliteScriptRunsProgram(text string) bool {
+	if sqliteEditCall.MatchString(text) {
+		return true
+	}
+	for _, line := range strings.FieldsFunc(text, func(r rune) bool { return r == '\n' || r == ';' }) {
+		line = strings.TrimLeft(line, " \t\r")
+		if !strings.HasPrefix(line, ".") {
+			continue
+		}
+		fields := strings.Fields(line[1:])
+		if len(fields) == 0 {
+			continue
+		}
+		name := strings.ToLower(fields[0])
+		for _, cmd := range sqliteProgramDotCommands {
+			if strings.HasPrefix(cmd, name) {
+				return true
+			}
+		}
+		for _, arg := range fields[1:] {
+			if strings.HasPrefix(strings.TrimLeft(arg, `'"`), "|") {
+				return true
+			}
+		}
 	}
 	return false
 }
