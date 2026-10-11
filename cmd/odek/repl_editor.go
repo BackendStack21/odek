@@ -46,6 +46,22 @@ type replEditor struct {
 	// draft preserves the typed-but-unsent line while navigating history,
 	// restored when historyNext moves past the newest entry.
 	draft *string
+
+	// in buffers stdin. Every byte — plain keys and escape-sequence tails
+	// alike — is read through it, so a sequence the terminal delivered in
+	// one read (e.g. "\x1b[D") is decoded from the buffer instead of by a
+	// fresh read that would block for the next keystroke. Created lazily
+	// from os.Stdin and kept across ReadLine calls so typed-ahead input is
+	// not lost.
+	in *bufio.Reader
+}
+
+// input returns the editor's buffered stdin reader.
+func (e *replEditor) input() *bufio.Reader {
+	if e.in == nil {
+		e.in = bufio.NewReader(os.Stdin)
+	}
+	return e.in
 }
 
 // newReplEditor creates a line editor reading from stdin.
@@ -82,29 +98,25 @@ func (e *replEditor) ReadLine() (string, error) {
 	// Draw prompt + empty line
 	e.drawLine()
 
-	buf := make([]byte, 64)
+	in := e.input()
 	for {
-		n, err := os.Stdin.Read(buf)
+		b, err := in.ReadByte()
 		if err != nil {
 			return "", err
 		}
-		data := buf[:n]
-
-		for _, b := range data {
-			done, err := e.handleByte(b)
-			if err != nil {
-				return "", err
+		done, err := e.handleByte(b)
+		if err != nil {
+			return "", err
+		}
+		if done {
+			result := strings.TrimSpace(string(e.line))
+			if result != "" {
+				e.history.Add(result)
 			}
-			if done {
-				result := strings.TrimSpace(string(e.line))
-				if result != "" {
-					e.history.Add(result)
-				}
-				// Disable bracketed paste
-				fmt.Fprint(os.Stderr, "\x1b[?2004l")
-				fmt.Fprint(os.Stderr, "\r\n")
-				return result, nil
-			}
+			// Disable bracketed paste
+			fmt.Fprint(os.Stderr, "\x1b[?2004l")
+			fmt.Fprint(os.Stderr, "\r\n")
+			return result, nil
 		}
 	}
 }
@@ -161,21 +173,23 @@ func (e *replEditor) handleByte(b byte) (bool, error) {
 }
 
 // handleEscape processes escape sequences (arrow keys, home, end, etc.).
+// The rest of the sequence is read from the same buffered reader as the ESC
+// byte.
 func (e *replEditor) handleEscape() (bool, error) {
-	buf := make([]byte, 2)
-	n, err := os.Stdin.Read(buf)
-	if err != nil || n < 1 {
+	in := e.input()
+	b, err := in.ReadByte()
+	if err != nil {
 		return false, err
 	}
 
-	switch buf[0] {
+	switch b {
 	case '[':
 		// CSI sequence
-		n, err = os.Stdin.Read(buf[:1])
-		if err != nil || n < 1 {
+		b, err = in.ReadByte()
+		if err != nil {
 			return false, err
 		}
-		switch buf[0] {
+		switch b {
 		case 'A': // Up
 			e.historyPrev()
 		case 'B': // Down
@@ -197,11 +211,11 @@ func (e *replEditor) handleEscape() (bool, error) {
 			e.readTildeOrBracketed("")
 		}
 	case 'O': // Old-style home/end
-		n, err = os.Stdin.Read(buf[:1])
-		if err != nil || n < 1 {
+		b, err = in.ReadByte()
+		if err != nil {
 			return false, err
 		}
-		switch buf[0] {
+		switch b {
 		case 'H': // Home
 			e.home()
 		case 'F': // End
@@ -252,20 +266,20 @@ func runeWidth(r rune) int {
 // \x1b[2 and determines if it's a tilde sequence (\x1b[2~) or bracketed
 // paste (\x1b[200~ / \x1b[201~).
 func (e *replEditor) readTildeOrBracketed(_ string) {
+	in := e.input()
 	// Read next byte — could be '~' or '0'
-	more := make([]byte, 1)
-	n, _ := os.Stdin.Read(more)
-	if n < 1 {
+	b, err := in.ReadByte()
+	if err != nil {
 		return
 	}
-	if more[0] == '~' {
+	if b == '~' {
 		// Simple tilde sequence like [2~, [3~
 		return
 	}
-	if more[0] == '0' {
+	if b == '0' {
 		// \x1b[200~ or \x1b[201~
 		end := make([]byte, 2)
-		if _, err := io.ReadFull(os.Stdin, end); err != nil {
+		if _, err := io.ReadFull(in, end); err != nil {
 			return
 		}
 		if end[0] == '0' && end[1] == '~' {
@@ -278,9 +292,8 @@ func (e *replEditor) readTildeOrBracketed(_ string) {
 	// Parameterized sequence (e.g. \x1b[3;5~ ctrl+Delete, \x1b[1;5C
 	// ctrl+Right): consume parameter bytes ('0'-'9', ';') until a final
 	// byte ('~' or a letter) so the tail never leaks into the edit buffer.
-	for (more[0] >= '0' && more[0] <= '9') || more[0] == ';' {
-		n, _ := os.Stdin.Read(more)
-		if n < 1 {
+	for (b >= '0' && b <= '9') || b == ';' {
+		if b, err = in.ReadByte(); err != nil {
 			return
 		}
 	}
