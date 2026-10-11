@@ -168,3 +168,15 @@ func TestRED_SecurityPillar_SingleSource(t *testing.T) {
 		}
 	}
 }
+
+// TestRED_DefaultIdentity_SubagentsDoNotShareIdentity: children get their
+// own focused-task identity plus the pillar, never the parent persona, so
+// the default identity must not claim they share it.
+func TestRED_DefaultIdentity_SubagentsDoNotShareIdentity(t *testing.T) {
+	if strings.Contains(defaultIdentity, "Sub-agents follow the same identity") {
+		t.Error("defaultIdentity claims sub-agents share its identity")
+	}
+	if !strings.Contains(defaultIdentity, "Sub-agents carry the same security rules, not this persona") {
+		t.Error("defaultIdentity does not state what sub-agents share")
+	}
+}
