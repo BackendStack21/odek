@@ -15,6 +15,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/BackendStack21/odek/internal/diagnostics"
@@ -432,21 +433,29 @@ func sweepSessions(home string, maxAgeDays int) (int, error) {
 	return store.Cleanup(daysAgo(maxAgeDays))
 }
 
-// sweepAudit deletes audit records (<home>/sessions/audit/*.json) whose
-// modtime is older than maxAgeDays. Contents are never parsed.
-func sweepAudit(home string, maxAgeDays int) (int, error) {
+// isAuditRecordName reports whether name is an audit record the retention
+// sweep owns: a live log (<id>.json) or a copy the audit store quarantined
+// after a read failure (<id>.json.corrupt-<timestamp>), which carries the
+// same user messages and ingest data as the live log.
+func isAuditRecordName(name string) bool {
+	return filepath.Ext(name) == ".json" || strings.Contains(name, ".json.corrupt-")
+}
+
+// auditSweepPlan lists the audit records under <home>/sessions/audit whose
+// modtime is before cutoff — the single selection shared by sweepAudit and
+// the dry-run preview (AuditSweepCandidates). Contents are never parsed.
+func auditSweepPlan(home string, cutoff time.Time) ([]string, error) {
 	dir := filepath.Join(home, "sessions", "audit")
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return 0, nil
+			return nil, nil
 		}
-		return 0, fmt.Errorf("maintenance: read audit dir: %w", err)
+		return nil, fmt.Errorf("maintenance: read audit dir: %w", err)
 	}
-	cutoff := daysAgo(maxAgeDays)
-	var removed int
+	var out []string
 	for _, e := range entries {
-		if e.IsDir() || filepath.Ext(e.Name()) != ".json" {
+		if e.IsDir() || !isAuditRecordName(e.Name()) {
 			continue
 		}
 		info, err := e.Info()
@@ -454,11 +463,35 @@ func sweepAudit(home string, maxAgeDays int) (int, error) {
 			continue // skip unreadable entries
 		}
 		if info.ModTime().Before(cutoff) {
-			if err := os.Remove(filepath.Join(dir, e.Name())); err != nil {
-				continue // one bad file shouldn't block the sweep
-			}
-			removed++
+			out = append(out, filepath.Join(dir, e.Name()))
 		}
+	}
+	return out, nil
+}
+
+// AuditSweepCandidates lists the audit records a Sweep with
+// audit_max_age_days = maxAgeDays would remove, without removing anything.
+func AuditSweepCandidates(home string, maxAgeDays int) []string {
+	if maxAgeDays <= 0 {
+		return nil
+	}
+	out, _ := auditSweepPlan(home, daysAgo(maxAgeDays))
+	return out
+}
+
+// sweepAudit deletes audit records (live logs and quarantined copies) whose
+// modtime is older than maxAgeDays.
+func sweepAudit(home string, maxAgeDays int) (int, error) {
+	plan, err := auditSweepPlan(home, daysAgo(maxAgeDays))
+	if err != nil {
+		return 0, err
+	}
+	var removed int
+	for _, p := range plan {
+		if err := os.Remove(p); err != nil {
+			continue // one bad file shouldn't block the sweep
+		}
+		removed++
 	}
 	return removed, nil
 }

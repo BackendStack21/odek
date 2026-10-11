@@ -148,7 +148,8 @@ func collectCleanupCandidates(home string, cfg maintenance.Config) cleanupCandid
 		c.sessions = sessionCandidates(home, maintenance.DaysAgo(now, cfg.SessionsMaxAgeDays))
 	}
 	if cfg.AuditMaxAgeDays > 0 {
-		c.audit = filesOlderThan(filepath.Join(home, "sessions", "audit"), maintenance.DaysAgo(now, cfg.AuditMaxAgeDays), false)
+		// The sweep's own selection, quarantined .corrupt-* copies included.
+		c.audit = maintenance.AuditSweepCandidates(home, cfg.AuditMaxAgeDays)
 	}
 	if cfg.PlansMaxAgeDays > 0 {
 		// Plans may be nested per chat (plans/chat<id>/), so walk recursively.
