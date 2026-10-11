@@ -102,3 +102,16 @@ func TestRED_GitSendEmailRunsProgramAndUploads(t *testing.T) {
 		t.Error("a host-name SMTP server is not a program")
 	}
 }
+
+// git credential fill / credential-<helper> get print stored plaintext
+// credentials; secret reads are system_write elsewhere (cat ~/.git-credentials).
+func TestRED_GitCredentialFillDisclosesSecrets(t *testing.T) {
+	redhuntAtLeast(t, SystemWrite,
+		`echo url=https://github.com | git credential fill`,
+		`git credential fill`,
+		`git credential-store get`,
+		`git credential-osxkeychain get`,
+		`git -C /tmp credential fill`,
+		`printf 'protocol=https\nhost=x\n' | git credential-cache get`,
+	)
+}

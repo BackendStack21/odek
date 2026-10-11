@@ -4904,6 +4904,9 @@ func isSystemWrite(first string, tokens []string) bool {
 	if hostInspectorMutates(first, tokens) {
 		return true
 	}
+	if credentialStoreAccess(first, tokens) {
+		return true
+	}
 	if first == "sysctl" && hasAny(tokens, "-w", "--write") {
 		return true
 	}

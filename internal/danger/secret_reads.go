@@ -91,6 +91,20 @@ func referencesSensitiveEnv(text string) bool {
 	return false
 }
 
+// credentialStoreAccess reports whether a command reads or changes a
+// credential store through its own tooling rather than by opening the file:
+// `git credential fill|approve|reject` and the helpers git dispatches to
+// (`git credential-store get`, `git credential-osxkeychain get`, …) print or
+// rewrite plaintext credentials, the same disclosure as reading
+// ~/.git-credentials.
+func credentialStoreAccess(name string, tokens []string) bool {
+	if name == "git" {
+		sub, _ := gitSubcommandAndArgs(tokens)
+		return sub == "credential" || strings.HasPrefix(sub, "credential-")
+	}
+	return false
+}
+
 // secretNameOperand reports whether a command that prints variables by name
 // (printenv NAME, declare -p NAME) names a secret-bearing one.
 func secretNameOperand(name string, args []string) bool {
