@@ -126,6 +126,11 @@ type shellAnalysisState struct {
 	// aliases is shared by an analysis and every nested payload analysis,
 	// so a definition made inside eval is seen by later commands.
 	aliases *aliasTable
+	// aliasSkip, set only on the state handed to the analysis of an alias
+	// expansion, names the aliases that expansion is under. It applies to
+	// that text alone: the analysis takes it out of its own state, so
+	// payloads it parses afresh (eval, sh -c) do not inherit it.
+	aliasSkip []string
 }
 
 // maxAnalysisTokens bounds the tokens one Analyze call examines across the
@@ -190,6 +195,7 @@ func analyzeWithState(cmd string, depth int, inherited *shellAnalysisState) Anal
 		result.add(Unknown)
 		return result
 	}
+	var aliasSkip []string
 	cwd, err := os.Getwd()
 	state := shellAnalysisState{cwd: cwd, vars: make(map[string]string), uncertain: err != nil, written: make(map[string]bool), work: work}
 	if st, statErr := os.Stat(cwd); statErr != nil || !st.IsDir() {
@@ -205,6 +211,7 @@ func analyzeWithState(cmd string, depth int, inherited *shellAnalysisState) Anal
 			state.vars[name] = value
 		}
 		state.aliases = inherited.aliases
+		aliasSkip = inherited.aliasSkip
 	}
 	if state.aliases == nil {
 		state.aliases = newAliasTable()
@@ -316,15 +323,14 @@ func analyzeWithState(cmd string, depth int, inherited *shellAnalysisState) Anal
 			// sh expands an alias defined earlier when its name is the
 			// command word: the expansion is analysed in addition to the
 			// literal stage (a definition may sit on a branch that never ran).
-			expansions, unresolved := state.aliases.expansions(stage)
+			expansions, unresolved := state.aliases.expansions(stage, aliasSkip)
 			if unresolved {
 				result.add(Unknown)
 			}
 			for _, exp := range expansions {
 				payload := state
-				state.aliases.enter(exp.names)
+				payload.aliasSkip = append(append([]string(nil), aliasSkip...), exp.names...)
 				result.merge(analyzeWithState(exp.text, depth+1, &payload))
-				state.aliases.leave(exp.names)
 			}
 			if call := functionCallAt(stage, funcs); call >= 0 {
 				args := redirectFreeArguments(stage[call+1:])

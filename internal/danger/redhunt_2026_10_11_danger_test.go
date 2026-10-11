@@ -212,6 +212,7 @@ func TestRED_SqliteWritefileIsUnclassified(t *testing.T) {
 		`sqlite3 db ".ou /etc/x" "select 1"`,
 	)
 	redhuntExactly(t, Safe, `sqlite3 db ".log off"`, `sqlite3 db ".log stderr"`, `sqlite3 db ".output"`)
+	//SQLITE_ROUND2_PLACEHOLDER
 	// A comment-like sequence inside the literal is part of the path.
 	redhuntExactly(t, LocalWrite, `sqlite3 db "select writefile('a--b', 'y')"`, `sqlite3 db "select writefile('it''s', 'y')"`)
 	redhuntExactly(t, LocalWrite,
@@ -296,6 +297,16 @@ func TestRED_AliasBodyNotClassified(t *testing.T) {
 // words), so neither the body nor the use has to look dangerous on its own.
 func TestRED_AliasUseIsExpanded(t *testing.T) {
 	redhuntAtLeast(t, Destructive,
+		// The shell still expands an alias after `time` and `!`.
+		"alias ls='rm -rf ~'; time ls",
+		"alias ls='rm -rf ~'; time -p ls",
+		"alias ls='rm -rf ~'; time -p -- ls",
+		"alias ls='rm -rf ~'; ! ls",
+		"alias ls='rm -rf ~'; ! time ls",
+		// A payload parsed afresh (eval, sh -c) is not under the guard of
+		// the expansion that contains it.
+		"alias ls='eval \"alias ls=\\\"rm -rf ~\\\"\nls\"'; ls",
+		"alias ls='sh -c \"alias ls=\\\"rm -rf ~\\\"\nls\"'; ls",
 		"alias ls=rm\nls -rf ~",
 		"alias ls='rm -rf'; ls ~",
 		"alias ls=sh; ls -c 'rm -rf ~'",

@@ -21,13 +21,10 @@ const maxAliasBodies = 16
 
 type aliasTable struct {
 	defs map[string][]string
-	// expanding names the aliases whose expansion is being analysed: the
-	// shell does not expand a word that names an alias it is expanding.
-	expanding map[string]int
 }
 
 func newAliasTable() *aliasTable {
-	return &aliasTable{defs: make(map[string][]string), expanding: make(map[string]int)}
+	return &aliasTable{defs: make(map[string][]string)}
 }
 
 // aliasExpansion is one reading of an aliased command: the shell text it
@@ -108,42 +105,48 @@ func hasString(list []string, s string) bool {
 	return false
 }
 
-func (t *aliasTable) enter(names []string) {
-	for _, n := range names {
-		t.expanding[n]++
-	}
-}
-
-func (t *aliasTable) leave(names []string) {
-	for _, n := range names {
-		if t.expanding[n]--; t.expanding[n] <= 0 {
-			delete(t.expanding, n)
-		}
-	}
-}
-
 // lookup returns the bodies of name when it is an alias the shell would
-// expand here.
-func (t *aliasTable) lookup(name string) []string {
-	if t == nil || t.expanding[name] > 0 {
+// expand here. skip names the aliases whose expansion text is being read: the
+// shell does not expand a word naming an alias it is expanding (a payload that
+// is parsed afresh, such as eval or sh -c, is not under that rule).
+func (t *aliasTable) lookup(name string, skip []string) []string {
+	if t == nil || hasString(skip, name) {
 		return nil
 	}
 	return t.defs[name]
 }
 
-// expansions returns the readings of a simple command whose command word (the
-// first word after any assignments) is an alias. A body ending in a blank
+// aliasCommandWord returns the index of the word the shell checks for an
+// alias: the first word after assignments and the `time` (with its -p / --
+// options) and `!` prefixes, after which alias expansion still applies.
+func aliasCommandWord(stage []string) int {
+	idx := 0
+	for idx < len(stage) {
+		switch w := stage[idx]; {
+		case isAssignment(w), w == "!":
+			idx++
+		case w == "time":
+			idx++
+			for idx < len(stage) && strings.HasPrefix(stage[idx], "-") {
+				idx++
+			}
+		default:
+			return idx
+		}
+	}
+	return idx
+}
+
+// expansions returns the readings of a simple command whose command word (see
+// aliasCommandWord) is an alias. A body ending in a blank
 // makes the shell check the next word for an alias too. unresolved reports a
 // command whose readings exceed the bound.
-func (t *aliasTable) expansions(stage []string) (out []aliasExpansion, unresolved bool) {
+func (t *aliasTable) expansions(stage, skip []string) (out []aliasExpansion, unresolved bool) {
 	if t == nil || len(t.defs) == 0 {
 		return nil, false
 	}
-	idx := 0
-	for idx < len(stage) && isAssignment(stage[idx]) {
-		idx++
-	}
-	if idx >= len(stage) || len(t.lookup(stage[idx])) == 0 {
+	idx := aliasCommandWord(stage)
+	if idx >= len(stage) || len(t.lookup(stage[idx], skip)) == 0 {
 		return nil, false
 	}
 	prefix := make([]string, 0, idx)
@@ -162,7 +165,7 @@ func (t *aliasTable) expansions(stage []string) (out []aliasExpansion, unresolve
 		work = work[:len(work)-1]
 		var bodies []string
 		if p.chain && p.next < len(stage) && !hasString(p.names, stage[p.next]) {
-			bodies = t.lookup(stage[p.next])
+			bodies = t.lookup(stage[p.next], skip)
 		}
 		if len(bodies) == 0 {
 			if len(p.names) == 0 {
