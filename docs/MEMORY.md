@@ -123,6 +123,8 @@ RP.embed(newEntry) → cos similarity vs each existing entry
 
 This saves ~80% of LLM calls on memory writes.
 
+An auto-merge result is new text, so it goes through the same pipe-to-shell filter (`FactLooksUnsafe`) and content scan as a fresh fact. If the combination fails them, the merge is skipped: the existing entry stays untouched and the new fact, which passed those checks on its own, is stored as a separate entry. A new fact that is unsafe by itself is still rejected.
+
 **Implementation:** `internal/memory/merge.go` imports `github.com/BackendStack21/go-vector/pkg/vector` for `RandomProjections` and `Cosine`. The embedder is fit on existing facts when the detector is created, and re-fit whenever facts change. With `memory.embedding` configured (see *Pluggable Embeddings* below), the same classification runs over real semantic vectors from an OpenAI-compatible API instead of RP.
 
 ### Durability & Statefulness
