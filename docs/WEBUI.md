@@ -643,7 +643,8 @@ withheld (they may carry credentials).
 ### `POST /api/skills/promote`
 
 `{name, force?}` — the REST face of `odek skill promote`: clears
-NeedsReview so a skill can auto-load. Tainted skills still require `force`.
+NeedsReview so a skill can auto-load. Tainted skills and every project-dir
+(`./.odek/skills/`) skill still require `force`.
 
 ### `POST /api/memory/consolidate`
 

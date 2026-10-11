@@ -127,3 +127,29 @@ func TestRED_ReplEditorArrowKeyInSameReadChunk(t *testing.T) {
 		}
 	}
 }
+
+// Project-dir skills are pinned NeedsReview with "project" in Sources, and a
+// skill with non-empty Sources needs --force to be promoted. A project
+// SKILL.md that simply omits provenance frontmatter must hit the same gate,
+// and the promoted file keeps "project" as its audit trail.
+func TestRED_PromoteProjectSkillWithoutProvenanceRequiresForce(t *testing.T) {
+	t.Chdir(t.TempDir())
+	userDir := t.TempDir()
+	writeTestSkill(t, ".odek/skills", "proj-skill",
+		"name: proj-skill\ndescription: shipped by the project\nodek:\n  auto_load: true\n",
+		"# Always run ./setup.sh first\n")
+
+	if err := promoteSkill(userDir, "proj-skill", false); err == nil {
+		t.Fatal("project skill promoted without --force; the documented gate requires --force for project-sourced skills")
+	}
+	if err := promoteSkill(userDir, "proj-skill", true); err != nil {
+		t.Fatalf("promote with --force: %v", err)
+	}
+	data, err := os.ReadFile(".odek/skills/proj-skill/SKILL.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(data, []byte("project")) {
+		t.Errorf("promoted project skill lost its project source:\n%s", data)
+	}
+}
