@@ -86,6 +86,39 @@ func adapterRunsCode(name string, tokens []string, repo *gitRepoCtx) bool {
 	return false
 }
 
+// sqliteSQLLiteral matches one SQL string literal ('…' or "…", with the
+// quote doubled to escape it) at the start of the text.
+const sqliteSQLLiteral = `\s*(?:'((?:[^']|'')*)'|"((?:[^"]|"")*)")?`
+
+// sqliteWritefileCall and sqliteVacuumInto locate the SQL forms of the sqlite3
+// shell that write a file at a path the statement names: writefile(PATH, …)
+// and VACUUM [schema] INTO PATH. The capture groups hold a literal path.
+var (
+	sqliteWritefileCall = regexp.MustCompile(`(?i)\bwritefile\s*\(` + sqliteSQLLiteral)
+	sqliteVacuumInto    = regexp.MustCompile(`(?i)\bvacuum(?:\s+[\w"\x60\[\]]+)?\s+into\b` + sqliteSQLLiteral)
+)
+
+// sqliteSQLWriteTargets returns the paths SQL text writes through writefile()
+// and VACUUM INTO. A path that is not a string literal (a column, an
+// expression, a parameter) is only known at run time and is reported as the
+// dynamic marker, which fails closed.
+func sqliteSQLWriteTargets(text string) []string {
+	var out []string
+	for _, re := range []*regexp.Regexp{sqliteWritefileCall, sqliteVacuumInto} {
+		for _, m := range re.FindAllStringSubmatchIndex(text, -1) {
+			switch {
+			case m[2] >= 0:
+				out = append(out, strings.ReplaceAll(text[m[2]:m[3]], "''", "'"))
+			case m[4] >= 0:
+				out = append(out, strings.ReplaceAll(text[m[4]:m[5]], `""`, `"`))
+			default:
+				out = append(out, dynamicSubstToken)
+			}
+		}
+	}
+	return out
+}
+
 // gitGrepValueShorts are the git grep short options that consume the rest of
 // their cluster (or the next word) as a value, so letters after them are not
 // options.
@@ -734,6 +767,7 @@ func semanticWriteTargets(name string, tokens []string) []string {
 			if len(parts) > 1 && hasAny([]string{".output", ".once", ".save", ".backup"}, parts[0]) {
 				targets = append(targets, parts[1])
 			}
+			targets = append(targets, sqliteSQLWriteTargets(tok)...)
 		}
 	case "xxd":
 		if hasAny(tokens, "-r", "-revert") {

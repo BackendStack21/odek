@@ -171,3 +171,22 @@ func TestRED_SqliteStdinScriptRunsShell(t *testing.T) {
 		`sqlite3 x.db <<< 'select 1'`,
 	)
 }
+
+// sqlite3 writefile() and VACUUM INTO write arbitrary content to any path.
+func TestRED_SqliteWritefileIsUnclassified(t *testing.T) {
+	redhuntAtLeast(t, SystemWrite,
+		`sqlite3 :memory: "select writefile('/etc/cron.d/x','* * * * * root id')"`,
+		`sqlite3 :memory: "select writefile('/home/user/.ssh/authorized_keys','ssh-ed25519 AAAA')"`,
+		`sqlite3 :memory: "SELECT WriteFile ( \"/etc/x\", 'y')"`,
+		`sqlite3 :memory: "vacuum into '/etc/x'"`,
+		`sqlite3 x.db "VACUUM main INTO '/home/user/.bashrc'"`,
+		`echo "select writefile('/etc/x','y');" | sqlite3`,
+		`sqlite3 x.db <<< "select writefile('/etc/x','y')"`,
+	)
+	// A name computed at run time cannot be checked: fail closed.
+	redhuntAtLeast(t, Unknown, `sqlite3 x.db "select writefile(name, data) from t"`)
+	redhuntExactly(t, LocalWrite,
+		`sqlite3 :memory: "select writefile('out.bin', x'00')"`,
+		`sqlite3 x.db "vacuum into 'backup.db'"`,
+	)
+}
