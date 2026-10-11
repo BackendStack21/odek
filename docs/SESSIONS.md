@@ -93,6 +93,8 @@ odek session cleanup 0
 
 **Vector index maintenance:** `odek session cleanup` also removes stale entries from the vector index — orphaned vectors no longer accumulate in `vectors.gob`. This was a bug fix in v0.58.2: the primary cleanup path previously bypassed `Vec.Remove()`, leaving orphaned vectors that silently accumulated.
 
+**Listing index recovery:** listings, `odek continue` and cleanup read the session metadata index (`index.json`). If that file cannot be parsed, odek rebuilds the index from the session files instead of treating it as empty, so the next save rewrites a complete index rather than one that lists only the session being saved.
+
 ## Session Search Tool
 
 The `session_search` tool (available inside the agent loop, not as a CLI command) lets the agent browse, search, and recall past sessions by semantic content. This is the primary mechanism for revisiting historical conversations.

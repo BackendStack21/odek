@@ -513,24 +513,64 @@ func (s *Store) loadIndex() map[string]*IndexEntry {
 	s.indexDiskReads++
 	data, err := os.ReadFile(s.indexPath())
 	if err != nil {
-		return make(map[string]*IndexEntry)
+		// Transient read error: serve the last known-good copy like the
+		// stat branch does. With nothing cached, rebuild from the session
+		// files so a save cannot replace the index with a single entry.
+		if s.idxLoaded {
+			return copyIndex(s.idxCache)
+		}
+		return s.rebuildIndexFromFiles()
 	}
 	var entries []*IndexEntry
-	m := make(map[string]*IndexEntry)
-	if err := json.Unmarshal(data, &entries); err == nil {
-		for _, e := range entries {
-			m[e.ID] = e
-		}
-	}
-	// Parse failures keep the previous stamp uncached so a later, valid
-	// rewrite is always re-read.
-	if err == nil {
+	if err := json.Unmarshal(data, &entries); err != nil {
+		// A corrupt index must not read as "no sessions": the next save
+		// would rewrite it holding only the saved session and hide every
+		// other session from listings and cleanup. Rebuild from the session
+		// files instead, and cache the result against the corrupt file's
+		// stamp so repeated reads do not rescan until a save rewrites it.
+		diagnostics.Report("session", "index", "", fmt.Errorf("session: corrupt index rebuilt from session files: %w", err))
+		m := s.rebuildIndexFromFiles()
 		s.idxCache = m
 		s.idxLoaded = true
 		s.idxMod, s.idxSize = info.ModTime(), info.Size()
 		s.idxIno = fileInode(info)
+		return copyIndex(m)
 	}
+	m := make(map[string]*IndexEntry, len(entries))
+	for _, e := range entries {
+		if e == nil {
+			continue
+		}
+		m[e.ID] = e
+	}
+	s.idxCache = m
+	s.idxLoaded = true
+	s.idxMod, s.idxSize = info.ModTime(), info.Size()
+	s.idxIno = fileInode(info)
 	return copyIndex(m)
+}
+
+// rebuildIndexFromFiles derives index entries from the session files in the
+// store directory. Files that fail to load (unsafe names, symlinks, parse
+// errors, ID mismatches) are skipped, exactly as the directory-scan listing
+// skips them. Load takes no store locks, so this is safe under idxMu.
+func (s *Store) rebuildIndexFromFiles() map[string]*IndexEntry {
+	m := make(map[string]*IndexEntry)
+	dirents, err := os.ReadDir(s.dir)
+	if err != nil {
+		return m
+	}
+	for _, d := range dirents {
+		if d.IsDir() || !isSessionFile(d.Name()) {
+			continue
+		}
+		sess, err := s.Load(idFromPath(d.Name()))
+		if err != nil {
+			continue
+		}
+		m[sess.ID] = indexEntry(sess)
+	}
+	return m
 }
 
 func copyIndex(m map[string]*IndexEntry) map[string]*IndexEntry {
