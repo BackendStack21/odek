@@ -60,7 +60,7 @@ func TestBrowser_Navigate(t *testing.T) {
 	if !strings.Contains(r.Content, "Page 2") {
 		t.Errorf("content missing link 'Page 2': %q", r.Content)
 	}
-	if r.URL != ts.URL {
+	if unwrapUntrusted(r.URL) != ts.URL {
 		t.Errorf("url = %q, want %q", r.URL, ts.URL)
 	}
 }
@@ -102,7 +102,7 @@ func TestBrowser_Navigate_FollowsRedirect(t *testing.T) {
 	if r.Error != "" {
 		t.Fatalf("navigate error: %s", r.Error)
 	}
-	if r.URL != ts.URL+"/target" {
+	if unwrapUntrusted(r.URL) != ts.URL+"/target" {
 		t.Errorf("url = %q, want %q (post-redirect)", r.URL, ts.URL+"/target")
 	}
 	if !strings.Contains(r.Content, "Target Page") {
@@ -123,7 +123,7 @@ func TestBrowser_Navigate_FollowsRedirect(t *testing.T) {
 	if click.Error != "" {
 		t.Fatalf("click error: %s", click.Error)
 	}
-	if click.URL != ts.URL+"/final" {
+	if unwrapUntrusted(click.URL) != ts.URL+"/final" {
 		t.Errorf("click resolved to %q, want %q", click.URL, ts.URL+"/final")
 	}
 }
