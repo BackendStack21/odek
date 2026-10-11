@@ -1,8 +1,11 @@
 package main
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/BackendStack21/odek/internal/bgproc"
 	"github.com/BackendStack21/odek/internal/config"
@@ -35,6 +38,24 @@ func TestRED_BGExitPushedTwiceToTelegramChat(t *testing.T) {
 
 	if n := sentCount(calls); n != 1 {
 		t.Fatalf("job exit announced %d times to the chat, want exactly 1", n)
+	}
+}
+
+// Verbose tool-progress lines truncate tool arguments at a raw byte offset;
+// multi-byte arguments (non-ASCII file content, CJK prompts) are cut
+// mid-rune and Telegram receives U+FFFD mojibake.
+func TestRED_TruncateToolArgsSplitsRune(t *testing.T) {
+	data := `{"content": "` + strings.Repeat("é", 1500) + `"}`
+	got := truncateToolArgs(data, 2000)
+	if !utf8.ValidString(got) {
+		t.Fatalf("truncateToolArgs produced invalid UTF-8 at the cut: %q", got[1990:2010])
+	}
+	kept, _, _ := strings.Cut(got, "…")
+	if len(kept) > 2000 {
+		t.Errorf("kept %d bytes, want at most 2000", len(kept))
+	}
+	if want := fmt.Sprintf("… [%d more bytes]", len(data)-len(kept)); !strings.HasSuffix(got, want) {
+		t.Errorf("suffix = %q, want %q", got[len(kept):], want)
 	}
 }
 

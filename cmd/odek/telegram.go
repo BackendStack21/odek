@@ -2621,15 +2621,20 @@ func sendAsync(bot *telegram.Bot, chatID int64, text string, opts *telegram.Send
 	}()
 }
 
-// truncateToolArgs truncates tool call arguments to at most maxLen characters
+// truncateToolArgs truncates tool call arguments to at most maxLen bytes
 // for Telegram progress display. This prevents the "message is too long" error
 // (Telegram's 4096 character limit) when sending verbose progress messages for
-// calls like write_file that include large content payloads.
+// calls like write_file that include large content payloads. The cut backs
+// off to a rune boundary so multi-byte arguments never produce invalid UTF-8.
 func truncateToolArgs(data string, maxLen int) string {
 	if len(data) <= maxLen {
 		return data
 	}
-	return data[:maxLen] + fmt.Sprintf("… [%d more bytes]", len(data)-maxLen)
+	cut := max(maxLen, 0)
+	for cut > 0 && !utf8.RuneStart(data[cut]) {
+		cut--
+	}
+	return data[:cut] + fmt.Sprintf("… [%d more bytes]", len(data)-cut)
 }
 
 // ── Proactive Nudge Push ───────────────────────────────────────────────
