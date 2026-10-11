@@ -63,6 +63,10 @@ var subagentAmendmentFragments = []string{
 	"declared task in your request",
 	"requires the task to name",
 	"payload class",
+	"use it only when the declared task calls for it",
+	"A denied or blocked operation stays denied",
+	"your declared task stands in for the principal's requests",
+	"an operation your request says was denied",
 }
 
 func TestSubagentSystem_CarriesSecurityPillar(t *testing.T) {

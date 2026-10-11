@@ -15,7 +15,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/BackendStack21/odek"
 	"github.com/BackendStack21/odek/internal/config"
 )
 
@@ -138,12 +137,6 @@ func TestRED_SecurityPillar_CarriesRuntimeAuthorityRules(t *testing.T) {
 	}
 }
 
-func TestSecurityPillar_PublicRuntimeParity(t *testing.T) {
-	if securityPillar != odek.SecurityPillar {
-		t.Fatal("CLI and public runtime security pillars diverged")
-	}
-}
-
 func TestComposeSystem_MovesEmbeddedPillarAfterTrailingIdentity(t *testing.T) {
 	got := composeSystem("Identity\n\n" + securityPillar + "\n\nTrailing persona text")
 	if strings.Count(got, securityPillar) != 1 {
@@ -151,5 +144,62 @@ func TestComposeSystem_MovesEmbeddedPillarAfterTrailingIdentity(t *testing.T) {
 	}
 	if !strings.HasSuffix(got, securityPillar) {
 		t.Fatal("canonical pillar is not the final trusted block")
+	}
+}
+
+// TestRED_SecurityPillar_SingleSource: the CLI pillar is an alias of the
+// public runtime constant, never a second copy of the text — a copy can
+// drift from the runtime that every embedder composes.
+func TestRED_SecurityPillar_SingleSource(t *testing.T) {
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range files {
+		if strings.HasSuffix(f, "_test.go") {
+			continue
+		}
+		src, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(src), pillarHeadingMarker) {
+			t.Errorf("%s carries its own copy of the security pillar; alias odek.SecurityPillar instead", f)
+		}
+	}
+}
+
+// TestRED_DefaultIdentity_SubagentsDoNotShareIdentity: children get their
+// own focused-task identity plus the pillar, never the parent persona, so
+// the default identity must not claim they share it.
+func TestRED_DefaultIdentity_SubagentsDoNotShareIdentity(t *testing.T) {
+	if strings.Contains(defaultIdentity, "Sub-agents follow the same identity") {
+		t.Error("defaultIdentity claims sub-agents share its identity")
+	}
+	if !strings.Contains(defaultIdentity, "Sub-agents carry the same security rules, not this persona") {
+		t.Error("defaultIdentity does not state what sub-agents share")
+	}
+}
+
+// TestBuildSystemPrompt_EditedDefaultCopyAccepted: an operator who copies
+// the compiled default into IDENTITY.md and edits the persona gets the
+// whole file scanned (only a byte-exact copy skips the scan). The pillar's
+// own wording — defanged example links, prohibitions about secrets — must
+// not get that identity rejected and silently replaced.
+func TestBuildSystemPrompt_EditedDefaultCopyAccepted(t *testing.T) {
+	homeDir := setupTestHome(t)
+	if err := os.MkdirAll(filepath.Join(homeDir, ".odek"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	edited := "You are Vesper, the principal's research aide.\n\n" + defaultSystem
+	if err := os.WriteFile(filepath.Join(homeDir, ".odek", "IDENTITY.md"), []byte(edited), 0644); err != nil {
+		t.Fatal(err)
+	}
+	got := buildSystemPrompt(config.ResolvedConfig{})
+	if !strings.Contains(got, "You are Vesper") {
+		t.Fatal("edited copy of the default prompt was rejected by the scan")
+	}
+	if strings.Count(got, pillarHeadingMarker) != 1 {
+		t.Errorf("pillar must appear exactly once, got %d", strings.Count(got, pillarHeadingMarker))
 	}
 }
