@@ -162,6 +162,62 @@ func TestRED_KnownValueReplacerPrefixLeaksTail(t *testing.T) {
 	}
 }
 
+// The Basic-auth pass must not run its submatch regex over text that merely
+// contains the word "basic": the prefilter requires "authorization" too.
+func TestRED_BasicAuthPrefilterNeedsAuthorization(t *testing.T) {
+	for _, in := range []string{
+		strings.Repeat("b", 1<<16),
+		strings.Repeat("basic ", 1<<12),
+		"Basic usage: run odek with a goal.",
+		"Authorization required", // no basic
+	} {
+		if basicAuthCandidate(in) {
+			t.Errorf("prefilter accepted text without both words: %.40q", in)
+		}
+	}
+	for _, in := range []string{
+		"Authorization: Basic YTpi",
+		`{"AUTHORIZATION": "BASIC YTpi"}`,
+	} {
+		if !basicAuthCandidate(in) {
+			t.Errorf("prefilter rejected %q", in)
+		}
+	}
+}
+
+// An over-long token after "Authorization: Basic" is consumed in bounded
+// regex steps and still redacted whole (fail closed: never decoded, never
+// left partly visible).
+func TestRED_BasicAuthLongTokenBoundedAndRedacted(t *testing.T) {
+	tok := strings.Repeat("QUFB", 1<<18) // 1 MiB of base64
+	in := "> Authorization: Basic " + tok + "\nnext line"
+	out := RedactSecrets(in)
+	if out != "> Authorization: Basic [REDACTED]\nnext line" {
+		t.Fatalf("long Basic token not redacted whole: %.80q", out)
+	}
+	if ms := basicAuthMatches(in); len(ms) != 1 || ms[0][1]-ms[0][0] != len(tok) {
+		t.Fatalf("basicAuthMatches = %v, want one span covering the token", ms)
+	}
+}
+
+func BenchmarkRedactSecretsBasicWordHeavy(b *testing.B) {
+	ResetSecrets()
+	text := strings.Repeat("b", 5<<20)
+	b.SetBytes(int64(len(text)))
+	for i := 0; i < b.N; i++ {
+		RedactSecrets(text)
+	}
+}
+
+func BenchmarkRedactSecretsLongBasicToken(b *testing.B) {
+	ResetSecrets()
+	text := "Authorization: Basic " + strings.Repeat("QUFB", 1<<20)
+	b.SetBytes(int64(len(text)))
+	for i := 0; i < b.N; i++ {
+		RedactSecrets(text)
+	}
+}
+
 func TestRED_BasicCredentialShape(t *testing.T) {
 	cases := map[string]bool{
 		"dXNlcjpwYXNz":     true,  // user:pass

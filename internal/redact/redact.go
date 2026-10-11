@@ -163,7 +163,12 @@ var patterns = []*regexp.Regexp{
 // is common prose ("Authorization: Basic authentication…"), so a match only
 // counts when its token decodes to a printable user:password pair; see
 // basicCredential.
-var basicAuthPattern = regexp.MustCompile(`(?i)(authorization["'\x60]?\s*[:=]\s*["'\x60]?basic\s+)([A-Za-z0-9+/_-]{4,}={0,2})`)
+// The token is capped at basicTokenMax bytes so the regex never consumes an
+// unbounded run; a longer run is handled in basicAuthMatches.
+var basicAuthPattern = regexp.MustCompile(`(?i)(authorization["'\x60]?\s*[:=]\s*["'\x60]?basic\s+)([A-Za-z0-9+/_-]{4,1000}={0,2})`)
+
+// basicTokenMax is the token cap in basicAuthPattern.
+const basicTokenMax = 1000
 
 // basicCredential reports whether tok is base64 (standard or URL alphabet,
 // padded or not) of printable text containing a ':' — the user:password
@@ -191,28 +196,72 @@ func basicCredential(tok string) bool {
 
 // basicAuthMatches returns the [start,end) offsets of every Basic credential
 // token in text (the token only, not the header name).
+// basicAuthCandidate is the cheap prefilter for the Basic-auth pass: the
+// regex only runs on text that contains both "authorization" and "basic"
+// (any case), so prose or data merely containing "basic" costs one scan.
+func basicAuthCandidate(text string) bool {
+	i := indexFoldASCII(text, "authorization")
+	return i >= 0 && indexFoldASCII(text[i:], "basic") >= 0
+}
+
 func basicAuthMatches(text string) [][2]int {
-	if !containsFoldASCII(text, "basic") {
+	if !basicAuthCandidate(text) {
 		return nil
 	}
 	var out [][2]int
-	for _, m := range basicAuthPattern.FindAllStringSubmatchIndex(text, -1) {
-		if basicCredential(text[m[4]:m[5]]) {
-			out = append(out, [2]int{m[4], m[5]})
+	// Locate whole matches with the fast unanchored matcher, then take the
+	// token submatch on each short match only: submatch extraction over the
+	// full text falls back to a much slower engine on large inputs.
+	for _, m := range basicAuthPattern.FindAllStringIndex(text, -1) {
+		sm := basicAuthPattern.FindStringSubmatchIndex(text[m[0]:m[1]])
+		if sm == nil {
+			continue
+		}
+		start, end := m[0]+sm[4], m[0]+sm[5]
+		if end-start >= basicTokenMax && end < len(text) && isBasicTokenByte(text[end]) {
+			// The token runs past the cap: no Basic credential is this
+			// long, but it sits where one belongs, so redact the whole run
+			// without decoding it.
+			for end < len(text) && isBasicTokenByte(text[end]) {
+				end++
+			}
+			out = append(out, [2]int{start, end})
+			continue
+		}
+		if basicCredential(text[start:end]) {
+			out = append(out, [2]int{start, end})
 		}
 	}
 	return out
 }
 
-// containsFoldASCII reports whether text contains the lower-case ASCII word
-// in any letter case, without copying text.
-func containsFoldASCII(text, word string) bool {
-	for i := 0; i+len(word) <= len(text); i++ {
-		if text[i]|0x20 == word[0] && strings.EqualFold(text[i:i+len(word)], word) {
-			return true
+// isBasicTokenByte reports whether c can continue a base64 Basic token.
+func isBasicTokenByte(c byte) bool {
+	return c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9' ||
+		c == '+' || c == '/' || c == '_' || c == '-' || c == '='
+}
+
+// indexFoldASCII returns the index of the first occurrence of the
+// lower-case ASCII word in text in any letter case, or -1, without copying
+// text. It jumps between candidate first bytes with IndexByte.
+func indexFoldASCII(text, word string) int {
+	lo, up := word[0], word[0]-('a'-'A')
+	for i := 0; i+len(word) <= len(text); {
+		rest := text[i : len(text)-len(word)+1]
+		j := strings.IndexByte(rest, lo)
+		if k := strings.IndexByte(rest, up); k >= 0 && (j < 0 || k < j) {
+			j = k
 		}
+		if j < 0 {
+			return -1
+		}
+		i += j
+		if strings.EqualFold(text[i:i+len(word)], word) {
+			return i
+		}
+		i++
 	}
-	return false
+	return -1
 }
 
 // redactBasicAuth replaces each Basic credential token with [REDACTED],
