@@ -513,6 +513,13 @@ func (s *Store) loadIndex() map[string]*IndexEntry {
 	s.indexDiskReads++
 	data, err := os.ReadFile(s.indexPath())
 	if err != nil {
+		// An index path that is not a regular file (a directory planted in
+		// its place) is not a transient error: report it empty, so listings
+		// scan the directory and the next save's attempt to replace it
+		// fails loudly instead of being skipped as an up-to-date index.
+		if !info.Mode().IsRegular() {
+			return make(map[string]*IndexEntry)
+		}
 		// Transient read error: serve the last known-good copy like the
 		// stat branch does. With nothing cached, rebuild from the session
 		// files so a save cannot replace the index with a single entry.
