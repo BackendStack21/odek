@@ -63,7 +63,7 @@ var subagentAmendmentFragments = []string{
 	"declared task in your request",
 	"requires the task to name",
 	"payload class",
-	"use it only when the declared task names it",
+	"use it only when the declared task calls for it",
 	"A denied or blocked operation stays denied",
 }
 
