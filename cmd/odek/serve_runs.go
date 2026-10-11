@@ -476,7 +476,10 @@ func (r *serveRun) record(v any) error {
 			r.pending[req.ID] = req
 			r.Status = "waiting_approval"
 		}
-	case "approval_ack":
+	case "approval_ack", "approval_expired":
+		// An expired approval is gone from the approver (the tool was
+		// denied by timeout and the loop moved on); keeping it listed would
+		// leave pollers answering a phantom request that now returns 404.
 		if id, _ := m["id"].(string); id != "" {
 			delete(r.pending, id)
 		}

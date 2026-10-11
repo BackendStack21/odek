@@ -111,6 +111,8 @@ Two token layers:
    bounded `events` tail.
 3. While `status` is `waiting_approval`: `GET /api/runs/{id}/approvals`,
    answer with `POST /api/runs/{id}/approvals/{aid}` `{"action":"approve"}`.
+   An approval nobody answers within `approval_timeout_seconds` is denied,
+   leaves the pending list, and the run returns to `running`.
 4. Cancel with `DELETE /api/runs/{id}` or `POST /api/runs/{id}/cancel`.
 
 ### Cross-cutting contracts
