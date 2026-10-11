@@ -124,6 +124,8 @@ func TestRED_GpgExportSecretKeysDisclosesSecrets(t *testing.T) {
 		`gpg2 --armor --export-secret-keys me@example.com`,
 		`gpg --export-secret-k`,
 		`/usr/bin/gpg --batch --export-secret-subkeys=x`,
+		`gpg --export-secret-ssh-key id`,
+		`gpg2 --export-secret-ssh`,
 	)
 	redhuntExactly(t, Safe, `gpg --list-secret-keys`, `gpg --export me@example.com`, `gpg -- --export-secret-keys`)
 }
