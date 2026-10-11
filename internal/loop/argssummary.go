@@ -41,20 +41,84 @@ func clampSummaryStr(s string) string {
 
 // argv0 returns the program name a shell command would execute: leading
 // VAR=value assignments are skipped, quotes are stripped, and the token is
-// reduced to its basename. Best-effort by design — this is audit metadata,
-// not a parser.
+// reduced to its basename. Words are split quote-aware, so no part of a
+// quoted assignment value (often a secret) can be mistaken for the program.
+// Best-effort by design — this is audit metadata, not a parser.
 func argv0(cmd string) string {
-	for _, field := range strings.Fields(cmd) {
-		if isEnvAssignment(field) {
+	for _, w := range shellWords(cmd) {
+		if isEnvAssignment(w.raw) {
 			continue
 		}
-		field = strings.Trim(field, `"'`)
+		field := w.value
 		if i := strings.LastIndexByte(field, '/'); i >= 0 {
 			field = field[i+1:]
 		}
 		return clampSummaryStr(field)
 	}
 	return ""
+}
+
+// shellWord is one whitespace-separated shell word: raw keeps its quoting
+// (assignment detection needs the unquoted name before '='), value has the
+// quotes and backslash escapes removed.
+type shellWord struct{ raw, value string }
+
+// shellWords splits cmd into words honouring single quotes, double quotes
+// and backslash escapes. A word left open by an unterminated quote is
+// dropped, so its contents never surface as a word of their own.
+func shellWords(cmd string) []shellWord {
+	var words []shellWord
+	var raw, val strings.Builder
+	inWord := false
+	var quote byte
+	for i := 0; i < len(cmd); i++ {
+		c := cmd[i]
+		switch {
+		case quote == '\'':
+			raw.WriteByte(c)
+			if c == '\'' {
+				quote = 0
+			} else {
+				val.WriteByte(c)
+			}
+		case quote == '"':
+			raw.WriteByte(c)
+			switch {
+			case c == '"':
+				quote = 0
+			case c == '\\' && i+1 < len(cmd):
+				i++
+				raw.WriteByte(cmd[i])
+				val.WriteByte(cmd[i])
+			default:
+				val.WriteByte(c)
+			}
+		case c == ' ' || c == '\t' || c == '\n' || c == '\r':
+			if inWord {
+				words = append(words, shellWord{raw: raw.String(), value: val.String()})
+				raw.Reset()
+				val.Reset()
+				inWord = false
+			}
+		default:
+			inWord = true
+			raw.WriteByte(c)
+			switch {
+			case c == '\'' || c == '"':
+				quote = c
+			case c == '\\' && i+1 < len(cmd):
+				i++
+				raw.WriteByte(cmd[i])
+				val.WriteByte(cmd[i])
+			default:
+				val.WriteByte(c)
+			}
+		}
+	}
+	if inWord && quote == 0 {
+		words = append(words, shellWord{raw: raw.String(), value: val.String()})
+	}
+	return words
 }
 
 func isEnvAssignment(tok string) bool {

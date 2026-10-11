@@ -265,6 +265,21 @@ func TestRED_CheckReplaceLeavesDoneStepWithPendingCheck(t *testing.T) {
 	}
 }
 
+// args_summary is the "no raw argument content" audit view of a shell call.
+// argv0 splits on whitespace without honouring quotes, so a quoted env
+// assignment value containing spaces leaks its second word as the
+// "program name" into every tool_call_started event.
+func TestRED_ArgSummaryArgv0LeaksQuotedAssignmentValue(t *testing.T) {
+	args := `{"command":"DB_PASSWORD=\"correct horse battery\" ./migrate --up"}`
+	got := argSummary(context.Background(), "shell", args)
+	if got == nil {
+		t.Fatal("no summary")
+	}
+	if argv0, _ := got["argv0"].(string); argv0 != "migrate" {
+		t.Fatalf("args_summary.argv0 = %q, want %q (a fragment of the quoted secret value leaks into the event stream)", argv0, "migrate")
+	}
+}
+
 // Both parts at their own caps still produce a description the resume
 // parser accepts, and a short description keeps the whole note.
 func TestRED_CheckReplaceEvidenceNoteBoundedAtCaps(t *testing.T) {
@@ -344,5 +359,25 @@ func TestRED_CheckReplaceJustificationClampedWithMaxIDs(t *testing.T) {
 	st, _ := store.Snapshot()
 	if n := len([]rune(st.Revision.Reason)); n != maxRevisionReason {
 		t.Fatalf("revision reason is %d runes; want clamped to %d", n, maxRevisionReason)
+	}
+}
+
+// Quote-aware argv0: assignment values never surface, quoted program names
+// still resolve, and an unterminated quote yields nothing rather than a
+// fragment of its contents.
+func TestRED_ArgSummaryArgv0QuoteAware(t *testing.T) {
+	cases := []struct{ cmd, want string }{
+		{`TOKEN='a b c' API="x \"y z\"" /usr/bin/env -i run`, "env"},
+		{`PASS="open quote never closed ./run`, ""},
+		{`"FOO=bar" baz`, "FOO=bar"},
+		{`"/opt/my tools/run me" --flag`, "run me"},
+		{`a\ b c`, "a b"},
+		{"X=1\tY=2\ncurl", "curl"},
+		{`'/bin/ls'`, "ls"},
+	}
+	for _, c := range cases {
+		if got := argv0(c.cmd); got != c.want {
+			t.Errorf("argv0(%q) = %q, want %q", c.cmd, got, c.want)
+		}
 	}
 }
