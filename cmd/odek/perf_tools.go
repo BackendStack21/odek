@@ -524,7 +524,7 @@ type jsonQueryTool struct {
 
 func (t *jsonQueryTool) Name() string { return "json_query" }
 func (t *jsonQueryTool) Description() string {
-	return `Parse a JSON file and extract a value using a dot-path query. Supports array indexing with [N]. Empty query returns the entire parsed JSON.`
+	return `Parse a JSON file and extract a value using a dot-path query. Supports array indexing with [N], chained for nested arrays (matrix[0][1]). Empty query returns the entire parsed JSON.`
 }
 
 type jsonQueryArgs struct {
@@ -728,10 +728,21 @@ func jsonPathQuery(data interface{}, query string) (interface{}, error) {
 				key = part[:bracketIdx]
 			}
 
-			idxStr := part[bracketIdx+1 : len(part)-1]
-			idx, err := strconv.Atoi(idxStr)
-			if err != nil {
-				return nil, fmt.Errorf("invalid index %q", idxStr)
+			// One or more chained indices: key[0], key[0][1], [2].
+			var indices []int
+			rest := part[bracketIdx:]
+			for rest != "" {
+				closeIdx := strings.IndexByte(rest, ']')
+				if rest[0] != '[' || closeIdx < 0 {
+					return nil, fmt.Errorf("invalid array index in %q", part)
+				}
+				idxStr := rest[1:closeIdx]
+				idx, err := strconv.Atoi(idxStr)
+				if err != nil {
+					return nil, fmt.Errorf("invalid index %q", idxStr)
+				}
+				indices = append(indices, idx)
+				rest = rest[closeIdx+1:]
 			}
 
 			if key != "" {
@@ -745,14 +756,16 @@ func jsonPathQuery(data interface{}, query string) (interface{}, error) {
 				}
 			}
 
-			arr, ok := current.([]interface{})
-			if !ok {
-				return nil, fmt.Errorf("value is not an array")
+			for _, idx := range indices {
+				arr, ok := current.([]interface{})
+				if !ok {
+					return nil, fmt.Errorf("value is not an array")
+				}
+				if idx < 0 || idx >= len(arr) {
+					return nil, fmt.Errorf("index %d out of range (len %d)", idx, len(arr))
+				}
+				current = arr[idx]
 			}
-			if idx < 0 || idx >= len(arr) {
-				return nil, fmt.Errorf("index %d out of range (len %d)", idx, len(arr))
-			}
-			current = arr[idx]
 		} else {
 			m, ok := current.(map[string]interface{})
 			if !ok {

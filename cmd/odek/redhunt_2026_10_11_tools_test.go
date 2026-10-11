@@ -334,6 +334,31 @@ func TestRED_PatchCRLFMultiline(t *testing.T) {
 	}
 }
 
+// json_query advertises array indexing with [N]; a nested array element
+// (matrix[0][1]) must be addressable.
+func TestRED_JSONQueryNestedIndex(t *testing.T) {
+	data := map[string]any{"matrix": []any{[]any{"a", "b"}, []any{[]any{"deep"}}}}
+	v, err := jsonPathQuery(data, "matrix[0][1]")
+	if err != nil {
+		t.Fatalf("matrix[0][1]: %v", err)
+	}
+	if v != "b" {
+		t.Fatalf("matrix[0][1] = %v, want b", v)
+	}
+	if v, err := jsonPathQuery(data, "matrix[1][0][0]"); err != nil || v != "deep" {
+		t.Fatalf("matrix[1][0][0] = %v, %v", v, err)
+	}
+	// The older empty-key form keeps working.
+	if v, err := jsonPathQuery(data, "matrix[0].[1]"); err != nil || v != "b" {
+		t.Fatalf("matrix[0].[1] = %v, %v", v, err)
+	}
+	for _, bad := range []string{"matrix[0]x[1]", "matrix[0][1", "matrix[0][x]", "matrix[0][5]", "matrix[0][1][0]"} {
+		if _, err := jsonPathQuery(data, bad); err == nil {
+			t.Errorf("%q: want error", bad)
+		}
+	}
+}
+
 func TestGlobClassToRegexToolsCases(t *testing.T) {
 	for _, bad := range []string{"**/[]", "**/[a-]", "**/[z-a]", `**/[\`, `**/[a\`, "**/[-a]", "**/[^"} {
 		if _, err := globToRegex(bad); err == nil {
