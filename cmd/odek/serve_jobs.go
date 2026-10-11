@@ -217,7 +217,7 @@ func handleJobsList(store *session.Store, mgr *bgproc.Manager) http.HandlerFunc 
 			for _, j := range mgr.List(sess.ID) {
 				item := map[string]any{
 					"id":        j.ID,
-					"command":   headString(j.Command, bgCommandHead),
+					"command":   bgClientCommandHead(j.Command),
 					"status":    string(j.Status),
 					"runtime_s": jobRuntimeSeconds(j),
 				}

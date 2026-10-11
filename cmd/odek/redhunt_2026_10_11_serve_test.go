@@ -17,6 +17,7 @@ import (
 	"time"
 
 	odek "github.com/BackendStack21/odek"
+	"github.com/BackendStack21/odek/internal/bgproc"
 	"github.com/BackendStack21/odek/internal/config"
 	"github.com/BackendStack21/odek/internal/danger"
 	"github.com/BackendStack21/odek/internal/mcpclient"
@@ -478,5 +479,48 @@ func TestRED_ClosedApproverDeniesLatePrompts(t *testing.T) {
 	}
 	if _, err := approver.PromptClarify("which?"); err == nil {
 		t.Fatal("clarify answered on a closed approver")
+	}
+}
+
+// GET /api/jobs must redact secrets in the command head exactly like the
+// bg_job WebSocket frame does (bgJobFrame runs redact.RedactSecrets on the
+// same headString clamp). The REST listing returns the raw head.
+func TestRED_JobsListLeaksSecretInCommandHead(t *testing.T) {
+	env := newJobsEnv(t)
+	const secret = "sk-proj-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789"
+	id := env.startJob(t, env.sessA.ID, "echo "+secret)
+	waitForExit(t, env.mgr, env.sessA.ID, id)
+
+	// Parity reference: the WS frame for the same job is redacted.
+	frame := bgJobFrame(bgproc.Notice{JobID: id, SessionID: env.sessA.ID, Command: "echo " + secret}, true)
+	if strings.Contains(frame["command_head"].(string), secret) {
+		t.Fatalf("precondition: bg_job frame is expected to redact the secret")
+	}
+
+	resp := env.do(t, http.MethodGet, "/api/jobs?session_id="+env.sessA.ID, env.sessA.AuthToken, nil, "")
+	body := decodeBody(t, resp)
+	jobs, _ := body["jobs"].([]any)
+	if len(jobs) != 1 {
+		t.Fatalf("jobs = %v, want 1 entry", body)
+	}
+	cmd, _ := jobs[0].(map[string]any)["command"].(string)
+	if strings.Contains(cmd, secret) {
+		t.Fatalf("GET /api/jobs command = %q: secret not redacted (bg_job frame shows %q)", cmd, frame["command_head"])
+	}
+}
+
+// A key that straddles the bgCommandHead clamp must not survive as a
+// fragment: the client command head redacts before it truncates.
+func TestRED_JobCommandHeadRedactsBeforeClamp(t *testing.T) {
+	const keyBody = "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789wxyz"
+	prefix := strings.Repeat("x", bgCommandHead-20)
+	cmd := "echo " + prefix + " sk-proj-" + keyBody
+	for name, head := range map[string]string{
+		"helper": bgClientCommandHead(cmd),
+		"frame":  bgJobFrame(bgproc.Notice{JobID: "j1", SessionID: "s1", Command: cmd}, true)["command_head"].(string),
+	} {
+		if strings.Contains(head, keyBody[:6]) {
+			t.Fatalf("%s command head %q keeps a fragment of the key", name, head)
+		}
 	}
 }
