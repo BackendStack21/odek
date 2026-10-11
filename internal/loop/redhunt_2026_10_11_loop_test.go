@@ -175,3 +175,84 @@ func TestRED_ToolDefsOrderUnstableAcrossRuns(t *testing.T) {
 		}
 	}
 }
+
+// redhuntResume renders the store's plan as the persisted plan message and
+// parses it back the way `odek continue` does (syncPlanFromMessages).
+func redhuntResume(t *testing.T, store *PlanStore) error {
+	t.Helper()
+	st, ok := store.Snapshot()
+	if !ok {
+		t.Fatal("no plan")
+	}
+	_, err := parsePlanState(renderPlan(st, store.maxRenderChars), store.maxSteps)
+	return err
+}
+
+func redhuntCheckedStore(t *testing.T, desc string) *PlanStore {
+	t.Helper()
+	store := NewPlanStore(12, 16000)
+	args := map[string]any{
+		"verb": "create",
+		"steps": []any{
+			map[string]any{"id": "s1", "title": "Build", "checks": []any{
+				map[string]any{"id": "c1", "description": desc, "tool": "shell", "arguments": map[string]any{"command": "make"}},
+				map[string]any{"id": "c2", "description": "tests pass", "tool": "shell", "arguments": map[string]any{"command": "make test"}},
+			}},
+			map[string]any{"id": "s2", "title": "Ship"},
+		},
+	}
+	raw, _ := json.Marshal(args)
+	if _, err := store.Execute(string(raw)); err != nil {
+		t.Fatal(err)
+	}
+	if err := redhuntResume(t, store); err != nil {
+		t.Fatalf("fixture plan does not resume: %v", err)
+	}
+	return store
+}
+
+func redhuntExec(t *testing.T, store *PlanStore, v map[string]any) {
+	t.Helper()
+	raw, _ := json.Marshal(v)
+	if _, err := store.Execute(string(raw)); err != nil {
+		t.Fatalf("plan call rejected: %v", err)
+	}
+}
+
+// check_replace accepts mutations whose result the strict resume parser
+// rejects, so the whole plan (every step, every status) is silently dropped
+// the next time the session is resumed.
+func TestRED_CheckReplaceEvidenceNoteBreaksResume(t *testing.T) {
+	store := redhuntCheckedStore(t, strings.Repeat("d", 150))
+	redhuntExec(t, store, map[string]any{
+		"verb": "check_replace", "step_id": "s1", "check_id": "c1",
+		"justification": "verified via CI", "evidence_note": strings.Repeat("e", 100),
+	})
+	if err := redhuntResume(t, store); err != nil {
+		t.Fatalf("plan accepted by check_replace(evidence_note) cannot be resumed: %v", err)
+	}
+}
+
+// Both parts at their own caps still produce a description the resume
+// parser accepts, and a short description keeps the whole note.
+func TestRED_CheckReplaceEvidenceNoteBoundedAtCaps(t *testing.T) {
+	store := redhuntCheckedStore(t, strings.Repeat("d", maxPlanCheckDescChars))
+	redhuntExec(t, store, map[string]any{
+		"verb": "check_replace", "step_id": "s1", "check_id": "c1",
+		"justification": "verified via CI", "evidence_note": strings.Repeat("e", maxPlanCheckDescChars),
+	})
+	if err := redhuntResume(t, store); err != nil {
+		t.Fatalf("resume failed: %v", err)
+	}
+	st, _ := store.Snapshot()
+	got := st.Steps[0].Checks[0]
+	if n := len([]rune(got.Description)); n > maxPlanCheckDescChars || !strings.Contains(got.Description, "(evidence: eee") || got.Status != PlanCheckPassed {
+		t.Fatalf("description = %q (%d runes), status %q", got.Description, n, got.Status)
+	}
+	if d := evidenceCheckDescription("builds", "ci green"); d != "builds (evidence: ci green)" {
+		t.Fatalf("short description changed: %q", d)
+	}
+	if d := evidenceCheckDescription(strings.Repeat("d", 190), "ok"); !strings.HasSuffix(d, " (evidence: ok)") || len([]rune(d)) != maxPlanCheckDescChars {
+		t.Fatalf("short note not kept whole: %q", d)
+	}
+}

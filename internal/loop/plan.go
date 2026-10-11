@@ -668,13 +668,9 @@ func (s *PlanStore) checkReplace(args planArgs) (string, error) {
 		}
 		wStep.Checks[ci] = fresh[0]
 	case args.EvidenceNote != "":
-		note := normalizePlanText(args.EvidenceNote)
-		if runes := []rune(note); len(runes) > maxPlanCheckDescChars {
-			note = string(runes[:maxPlanCheckDescChars])
-		}
 		wStep.Checks[ci] = PlanCheck{
 			ID:          old.ID,
-			Description: old.Description + " (evidence: " + note + ")",
+			Description: evidenceCheckDescription(old.Description, normalizePlanText(args.EvidenceNote)),
 			Tool:        old.Tool,
 			Arguments:   old.Arguments,
 			Status:      PlanCheckPassed,
@@ -697,6 +693,25 @@ func (s *PlanStore) checkReplace(args planArgs) (string, error) {
 	// downstream change events carry Revised (same contract as revise).
 	s.revisionNotify = true
 	return s.renderLocked(), nil
+}
+
+// evidenceCheckDescription appends an evidence note to a check description
+// while keeping the result within maxPlanCheckDescChars, the cap the resume
+// parser enforces, so a plan check_replace accepts always resumes. When both
+// parts do not fit, the note keeps at least half of the room and the old
+// description is shortened first.
+func evidenceCheckDescription(desc, note string) string {
+	const prefix, suffix = " (evidence: ", ")"
+	room := maxPlanCheckDescChars - len([]rune(prefix)) - len([]rune(suffix))
+	descR, noteR := []rune(desc), []rune(note)
+	if len(descR)+len(noteR) > room {
+		keepNote := min(len(noteR), room/2)
+		keepDesc := min(len(descR), room-keepNote)
+		keepNote = min(len(noteR), room-keepDesc)
+		descR = []rune(strings.TrimSpace(string(descR[:keepDesc])))
+		noteR = []rune(strings.TrimSpace(string(noteR[:keepNote])))
+	}
+	return string(descR) + prefix + string(noteR) + suffix
 }
 
 func (s *PlanStore) complete(stepID string) (string, error) {
