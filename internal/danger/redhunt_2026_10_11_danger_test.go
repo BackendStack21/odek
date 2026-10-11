@@ -209,3 +209,16 @@ func TestRED_ArchiverMoveDeletesSources(t *testing.T) {
 		`7z a x.7z dir`,
 	)
 }
+
+// Moving the entire home directory away is local_write (auto-allowed), while
+// the -t spelling of the same move and rm -rf ~ are not.
+func TestRED_MvHomeDirectoryAutoAllowed(t *testing.T) {
+	redhuntAtLeast(t, SystemWrite,
+		`mv ~ /tmp/x`,
+		`mv "$HOME" /tmp/x`,
+		`mv ~/ /tmp/x`,
+		`mv -f /home/user /tmp/x`,
+		`mv a ~ /tmp/x`,
+	)
+	redhuntExactly(t, LocalWrite, `mv notes.txt ~`, `mv ~/notes.txt ~/old.txt`)
+}

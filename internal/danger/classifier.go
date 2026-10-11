@@ -4939,6 +4939,12 @@ func isSystemWrite(first string, tokens []string) bool {
 			}
 		}
 	}
+	// An operand naming a home directory itself (or a directory above one)
+	// takes ~/.ssh, the shell rc files and the odek trust anchors with it,
+	// although "~" on its own is not a sensitive path.
+	if mutatesHomeRoot(first, tokens) {
+		return true
+	}
 	// Directory destinations and rsync's final operand: the file that lands
 	// is <dir>/<basename(src)>, so a rc file moved into $HOME is a rc write.
 	for _, dest := range writeDestinations(first, tokens) {
@@ -4967,6 +4973,85 @@ func isSystemWrite(first string, tokens []string) bool {
 			if strings.HasPrefix(strings.ToLower(tok), "of=") && shellPathIsSensitive(tok) {
 				return true
 			}
+		}
+	}
+	return false
+}
+
+// mutatesHomeRoot reports whether a command moves a home directory away: an
+// mv source operand that names a home directory or one of its ancestors.
+// Moving files into the home directory (the destination) is not covered.
+func mutatesHomeRoot(first string, tokens []string) bool {
+	if first != "mv" {
+		return false
+	}
+	for _, tok := range mvSourceOperands(tokens) {
+		if namesHomeOrAncestor(tok) {
+			return true
+		}
+	}
+	return false
+}
+
+// mvSourceOperands returns the source operands of an mv invocation: every
+// operand when -t/--target-directory names the destination, otherwise all but
+// the last one.
+func mvSourceOperands(tokens []string) []string {
+	var operands []string
+	target := false
+	endOpts := false
+	for i := 1; i < len(tokens); i++ {
+		tok := tokens[i]
+		switch {
+		case endOpts || tok == "-" || !strings.HasPrefix(tok, "-"):
+			operands = append(operands, tok)
+		case tok == "--":
+			endOpts = true
+		case strings.HasPrefix(tok, "--"):
+			name, _, hasVal := strings.Cut(tok[2:], "=")
+			switch {
+			case len(name) >= 2 && strings.HasPrefix("target-directory", name):
+				target = true
+				if !hasVal {
+					i++
+				}
+			case len(name) >= 2 && strings.HasPrefix("suffix", name) && !hasVal:
+				i++
+			}
+		default:
+			for j := 1; j < len(tok); j++ {
+				if tok[j] == 't' || tok[j] == 'S' {
+					target = target || tok[j] == 't'
+					if j == len(tok)-1 {
+						i++ // the value is the next word
+					}
+					break
+				}
+			}
+		}
+	}
+	if target || len(operands) == 0 {
+		return operands
+	}
+	return operands[:len(operands)-1]
+}
+
+// namesHomeOrAncestor reports whether a shell token names an account's home
+// directory itself (`~`, `$HOME`, `~user`, /home/user, with or without a
+// trailing slash) or a directory above one, such as /home or /Users.
+func namesHomeOrAncestor(tok string) bool {
+	p := expandShellTokenPath(strings.Trim(tok, `"'`))
+	if !filepath.IsAbs(p) {
+		return false
+	}
+	p = filepath.Clean(p)
+	lowerP := strings.ToLower(p)
+	for _, home := range append(currentHomeDirs(), accountHomes(p)...) {
+		if home == "" {
+			continue
+		}
+		if pathWithin(strings.ToLower(filepath.Clean(home)), lowerP) {
+			return true
 		}
 	}
 	return false
