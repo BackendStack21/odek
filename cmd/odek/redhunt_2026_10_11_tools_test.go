@@ -106,3 +106,53 @@ func TestRED_ConfigViewJSONArgs(t *testing.T) {
 		t.Errorf("malformed args must error")
 	}
 }
+
+// glob and search_files must walk a root that is itself a symlink to a
+// directory (macOS /tmp, /var; a user's ~/proj link) — the same rule tree
+// already applies to its root.
+func TestRED_GlobAndSearchSymlinkedRoot(t *testing.T) {
+	real := t.TempDir()
+	if err := os.WriteFile(filepath.Join(real, "hello.txt"), []byte("needle\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A symlink below the root is still never followed.
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "secret.txt"), []byte("needle\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(real, "inner")); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+
+	g := &globTool{}
+	out, _ := g.Call(fmt.Sprintf(`{"pattern":"**/*.txt","path":%q}`, link))
+	var gr globResult
+	mustUnmarshal(t, out, &gr)
+	if len(gr.Matches) != 1 {
+		t.Errorf("glob on symlinked root: got %d matches, want 1 (%s)", len(gr.Matches), out)
+	}
+	if !strings.Contains(out, "link") {
+		t.Errorf("glob matches must be reported under the requested root: %s", out)
+	}
+
+	s := &searchFilesTool{}
+	out, _ = s.Call(fmt.Sprintf(`{"pattern":"needle","path":%q}`, link))
+	var sr searchFilesResult
+	mustUnmarshal(t, out, &sr)
+	if len(sr.Matches) != 1 {
+		t.Errorf("search_files(content) on symlinked root: got %d matches, want 1 (%s)", len(sr.Matches), out)
+	}
+	if len(sr.Matches) == 1 && !strings.Contains(unwrapUntrusted(sr.Matches[0].Path), filepath.Join(link, "hello.txt")) {
+		t.Errorf("search_files path must be reported under the requested root: %s", out)
+	}
+
+	out, _ = s.Call(fmt.Sprintf(`{"pattern":"*.txt","target":"files","path":%q}`, link))
+	mustUnmarshal(t, out, &sr)
+	if len(sr.Matches) != 1 {
+		t.Errorf("search_files(files) on symlinked root: got %d matches, want 1 (%s)", len(sr.Matches), out)
+	}
+}

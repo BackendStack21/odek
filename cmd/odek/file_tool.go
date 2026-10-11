@@ -81,9 +81,16 @@ func confinedGlob(root, pattern string, limit int, includeDirs bool) ([]string, 
 	if err != nil {
 		return nil, fmt.Errorf("resolve root: %w", err)
 	}
-	// Ensure absRoot ends with a separator so strings.HasPrefix cannot be
+	// A root that is itself a symlink to a directory (macOS /tmp, a user's
+	// linked project dir) is walked at its target; matches are reported
+	// under the root as given. Symlinks below the root are still skipped.
+	walkRoot := absRoot
+	if target, ok := fileToolSymlinkDirRoot(absRoot); ok {
+		walkRoot = target
+	}
+	// Ensure walkRoot ends with a separator so strings.HasPrefix cannot be
 	// tricked by a sibling directory with a matching prefix.
-	rootPrefix := absRoot + string(filepath.Separator)
+	rootPrefix := walkRoot + string(filepath.Separator)
 
 	// Build the matcher based on pattern syntax.
 	var matcher func(rel string, isDir bool) bool
@@ -109,12 +116,12 @@ func confinedGlob(root, pattern string, limit int, includeDirs bool) ([]string, 
 	}
 
 	var matches []string
-	walkErr := filepath.WalkDir(absRoot, func(path string, d fs.DirEntry, err error) error {
+	walkErr := filepath.WalkDir(walkRoot, func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d == nil {
 			return nil
 		}
 		// Skip the root itself.
-		if path == absRoot {
+		if path == walkRoot {
 			return nil
 		}
 		// Skip every symlink, including symlinked directories. WalkDir uses
@@ -139,15 +146,15 @@ func confinedGlob(root, pattern string, limit int, includeDirs bool) ([]string, 
 		if err != nil {
 			return nil
 		}
-		if absPath != absRoot && !strings.HasPrefix(absPath, rootPrefix) {
+		if absPath != walkRoot && !strings.HasPrefix(absPath, rootPrefix) {
 			return nil
 		}
-		rel, err := filepath.Rel(absRoot, absPath)
+		rel, err := filepath.Rel(walkRoot, absPath)
 		if err != nil {
 			return nil
 		}
 		if matcher(rel, d.IsDir()) {
-			matches = append(matches, absPath)
+			matches = append(matches, filepath.Join(absRoot, rel))
 			if len(matches) >= maxGlobWalkMatches {
 				// Memory bound only — the caller-visible limit is applied
 				// after the newest-first sort below.
@@ -166,6 +173,28 @@ func confinedGlob(root, pattern string, limit int, includeDirs bool) ([]string, 
 		matches = matches[:limit]
 	}
 	return matches, nil
+}
+
+// fileToolSymlinkDirRoot reports the resolved target when root itself is a
+// symlink to a directory. Walkers Lstat their root, so without this such a
+// root is never descended and the search silently finds nothing.
+func fileToolSymlinkDirRoot(root string) (string, bool) {
+	li, err := os.Lstat(root)
+	if err != nil || li.Mode()&os.ModeSymlink == 0 {
+		return "", false
+	}
+	si, err := os.Stat(root)
+	if err != nil || !si.IsDir() {
+		return "", false
+	}
+	target, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return "", false
+	}
+	if abs, err := filepath.Abs(target); err == nil {
+		target = abs
+	}
+	return target, true
 }
 
 // globToRegex converts a glob pattern with ** to a regex. A trailing
@@ -717,9 +746,26 @@ func (t *searchFilesTool) searchContent(args searchFilesArgs) (string, error) {
 	// scanner still grows it up to the 1 MiB line cap on demand.
 	scanBuf := make([]byte, 64*1024)
 
-	err = filepath.Walk(args.Path, func(path string, info os.FileInfo, err error) error {
+	// A root that is itself a symlink to a directory is walked at its
+	// target, with discovered paths reported under the root as given.
+	walkRoot := args.Path
+	if target, ok := fileToolSymlinkDirRoot(args.Path); ok {
+		walkRoot = target
+	}
+	err = filepath.Walk(walkRoot, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return nil // skip inaccessible files
+		}
+		if walkRoot != args.Path {
+			rel, relErr := filepath.Rel(walkRoot, path)
+			if relErr != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+				return nil
+			}
+			if rel == "." {
+				path = args.Path
+			} else {
+				path = filepath.Join(args.Path, rel)
+			}
 		}
 		if info.IsDir() {
 			// The explicit search root is never skipped for its own name:
