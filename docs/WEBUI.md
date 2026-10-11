@@ -654,7 +654,8 @@ NeedsReview so a skill can auto-load. Tainted skills still require `force`.
 
 Triggers the graceful drain (stop accepting → close WebSockets → cancel
 in-flight headless REST runs, which end with status `cancelled` → wait for
-sandbox cleanup). For remote-restart management flows.
+sandbox cleanup). Once runs are cancelled, a `POST /api/prompt` still in
+progress is refused with `503` and releases its sandbox and MCP servers. For remote-restart management flows.
 
 ### Session pinning
 

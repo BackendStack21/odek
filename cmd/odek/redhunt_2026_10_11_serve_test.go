@@ -243,6 +243,56 @@ func TestRED_ShutdownDoesNotCancelHeadlessRuns(t *testing.T) {
 	}
 }
 
+// Once shutdown has swept the headless runs, a POST /api/prompt still in
+// flight must not register a new run behind the sweep: it would never be
+// cancelled and its sandbox/MCP resources would be cut off at process exit.
+// startServeRun refuses, and nothing stays registered or tracked.
+func TestRED_ShutdownRefusesRunsStartedAfterSweep(t *testing.T) {
+	resetServeRuns()
+	t.Cleanup(resetServeRuns)
+	llm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"choices":[{"message":{"content":"done"}}]}`)
+	}))
+	defer llm.Close()
+	defer setTestEnv(t, llm.URL)()
+
+	cancelActiveServeRuns() // shutdown sweep
+
+	run, err := startServeRun(loadJSONMockResolved(), "Help", newTestSessionStore(t), nil, promptRequest{Content: "hello"})
+	if err == nil {
+		t.Fatalf("startServeRun admitted run %s after the shutdown sweep; it is never cancelled", run.ID)
+	}
+	if n := len(listRunsWire(0)); n != 0 {
+		t.Fatalf("%d run(s) registered after the shutdown sweep", n)
+	}
+	if !drainServeWork(2 * time.Second) {
+		t.Fatal("a refused run is still tracked by the shutdown drain")
+	}
+}
+
+// The admission check runs under the registry lock at registration time,
+// so a run whose agent construction outlasted the sweep is refused too.
+func TestRED_ShutdownAdmissionRefusesLateRegistration(t *testing.T) {
+	resetServeRuns()
+	t.Cleanup(resetServeRuns)
+	run := &serveRun{ID: "run-late", Status: "running", pending: map[string]*approvalRequest{}}
+	run.cond = sync.NewCond(&run.mu)
+	if err := admitServeRun(run); err != nil {
+		t.Fatalf("admission before shutdown refused: %v", err)
+	}
+	serveRunsWG.Done() // balance the admission's tracking
+	cancelActiveServeRuns()
+	late := &serveRun{ID: "run-late-2", Status: "running", pending: map[string]*approvalRequest{}}
+	late.cond = sync.NewCond(&late.mu)
+	if err := admitServeRun(late); err == nil {
+		t.Fatal("run admitted after the shutdown sweep")
+	}
+	if n := len(listRunsWire(0)); n != 1 {
+		t.Fatalf("registry holds %d runs, want only the pre-shutdown one", n)
+	}
+}
+
 // A new serve session's title is shorten(prompt, 60) — truncated BEFORE the
 // store's save-time redaction. A key that straddles the 60-byte cut keeps
 // fewer characters than the redaction patterns require, so a fragment of
@@ -288,6 +338,7 @@ func TestRED_ServeIgnoresConfigSandboxOptOut(t *testing.T) {
 	t.Cleanup(func() {
 		serveShutdownOnce = sync.Once{}
 		serveShutdownCh = make(chan struct{})
+		resetServeRuns() // shutdown closed run admission for this process
 	})
 	home := t.TempDir()
 	t.Setenv("HOME", home)

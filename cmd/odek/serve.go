@@ -741,6 +741,7 @@ func newServeHTTPServer(mux *http.ServeMux) *http.Server {
 // and gives in-flight requests up to 5 seconds to finish.
 func serveOnListener(listener net.Listener, mux *http.ServeMux) error {
 	srv := newServeHTTPServer(mux)
+	openServeRunAdmission()
 	diagnostics.Emit(events.Event{Type: "service_started", Data: map[string]any{"component": "serve"}})
 	defer diagnostics.Emit(events.Event{Type: "service_stopped", Data: map[string]any{"component": "serve"}})
 
@@ -789,7 +790,10 @@ func serveOnListener(listener net.Listener, mux *http.ServeMux) error {
 
 	// Phase 2.25: cancel in-flight headless REST runs. Nothing else ends
 	// them: a run blocked on an approval or a long model call would outlive
-	// the drain below and exit without its sandbox/MCP cleanup.
+	// the drain below and exit without its sandbox/MCP cleanup. The sweep
+	// also closes admission: a POST /api/prompt still building its agent
+	// (the HTTP shutdown above may time out on it) is refused at
+	// registration and releases what it acquired.
 	if n := cancelActiveServeRuns(); n > 0 {
 		fmt.Fprintf(os.Stderr, "odek serve: cancelled %d headless run(s)\n", n)
 	}
