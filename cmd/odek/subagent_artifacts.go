@@ -196,7 +196,7 @@ func scanArtifacts(dir string, budget int64) ([]artifact.Ref, []string) {
 		ref := artifact.Ref{
 			Schema:    artifact.SchemaArtifactRef,
 			ID:        id,
-			URI:       "file://" + c.path,
+			URI:       artifact.FileURI(c.path),
 			MediaType: mediaTypeFor(c.name),
 			SHA256:    hex.EncodeToString(h.Sum(nil)),
 			SizeBytes: &c.size,

@@ -140,7 +140,7 @@ A plain (non-envelope) text result is always valid and needs no schema field.
 |-------|----------|---------|
 | `schema` | yes | Exactly `odek.artifact-ref/v1` |
 | `id` | yes | Ref identifier, unique within the envelope |
-| `uri` | yes | `file://` URI only; absolute, clean path |
+| `uri` | yes | `file://` URI only; absolute, clean path. The path is percent-decoded, so reserved characters in a filename must be encoded (`#` → `%23`, `?` → `%3F`, `%` → `%25`, space → `%20`); refs odek builds itself (sub-agent artifacts, WebUI uploads) are encoded this way |
 | `media_type` | yes | MIME type of the artifact |
 | `sha256` | optional | Lowercase hex digest; verified when present |
 | `size_bytes` | optional | Verified against the real file when present |

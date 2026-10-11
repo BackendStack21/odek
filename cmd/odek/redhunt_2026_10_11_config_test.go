@@ -10,6 +10,7 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/BackendStack21/odek/internal/artifact"
 	"github.com/BackendStack21/odek/internal/danger"
 )
 
@@ -177,5 +178,24 @@ func TestRED_SubagentUnknownTrustLevelFailsClosed(t *testing.T) {
 	}
 	if got := effectiveTrust("bogus", "trusted"); got != "untrusted" {
 		t.Errorf("effectiveTrust(parent=bogus, declared=trusted) = %q, want untrusted", got)
+	}
+}
+
+// scanArtifacts must build each ref URI with the path percent-encoded, so an
+// ordinary deliverable whose filename contains '#', '?' or '%' survives the
+// parent's artifact.Validate instead of being dropped.
+func TestRED_SubagentArtifactWithURIReservedCharsRoundTrips(t *testing.T) {
+	for _, name := range []string{"release-notes#v2.md", "coverage 100%.txt", "faq?.md"} {
+		dir := t.TempDir()
+		if err := os.WriteFile(dir+"/"+name, []byte("hello\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		refs, flags := scanArtifacts(dir, maxArtifactTaskBudget)
+		if len(refs) != 1 {
+			t.Fatalf("%q: scanArtifacts refs=%d flags=%v", name, len(refs), flags)
+		}
+		if _, err := artifact.Validate(refs[0], []string{dir}); err != nil {
+			t.Errorf("runner-built ref for %q rejected by the parent: %v", name, err)
+		}
 	}
 }
