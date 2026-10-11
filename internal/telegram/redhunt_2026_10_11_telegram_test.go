@@ -1,8 +1,49 @@
 package telegram
 
 import (
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 )
+
+// A command followed by a newline (multi-line /plan description) or a tab
+// must still be recognised as that command, and the @BotUsername check must
+// split on the same separators.
+func TestRED_ExtractCommandNewlineSeparator(t *testing.T) {
+	cases := []struct {
+		in, cmd, args string
+	}{
+		{"/plan\nAdd OAuth login\nwith Google", "plan", "Add OAuth login\nwith Google"},
+		{"/resume\ttg-42-20261011-120000", "resume", "tg-42-20261011-120000"},
+		{"/start@mybot\nhi", "start", "hi"},
+		{"/plan Add login", "plan", "Add login"},
+		{"/help", "help", ""},
+	}
+	for _, c := range cases {
+		cmd, args := extractCommand(c.in)
+		if cmd != c.cmd || strings.TrimSpace(args) != c.args {
+			t.Errorf("extractCommand(%q) = (%q, %q), want (%q, %q)", c.in, cmd, args, c.cmd, c.args)
+		}
+	}
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true,"result":{"message_id":1}}`))
+	}))
+	defer ts.Close()
+	var got []string
+	h := &Handler{Bot: testBot(t, ts), Config: HandlerConfig{AllowAllUsers: true, BotUsername: "mybot"}, log: NewNopLogger(),
+		OnCommand: func(chatID int64, msgID int, cmd, args string, userID int64) (string, error) {
+			got = append(got, cmd)
+			return "", nil
+		}}
+	h.handleCommand(&Message{ID: 1, Chat: &Chat{ID: 5}, Text: "/start@mybot\nhi"}, 1)
+	h.handleCommand(&Message{ID: 2, Chat: &Chat{ID: 5}, Text: "/start@otherbot\nhi"}, 1)
+	if len(got) != 1 || got[0] != "start" {
+		t.Errorf("handled commands = %q, want exactly [start] (addressed to this bot only)", got)
+	}
+}
 
 // A run whose billing pushes the day's usage past daily_token_budget must
 // leave the budget exhausted. CheckDailyBudget rejects the overshooting

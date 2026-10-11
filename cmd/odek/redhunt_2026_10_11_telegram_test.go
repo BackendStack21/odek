@@ -59,6 +59,18 @@ func TestRED_TruncateToolArgsSplitsRune(t *testing.T) {
 	}
 }
 
+// The /schedule subcommand must be separated from its arguments by any
+// whitespace, not only a space ("/schedule view\n<id>" typed on a phone).
+func TestRED_ScheduleSubcommandNewlineSeparator(t *testing.T) {
+	st := newTGStore(t)
+	for _, args := range []string{"help\nmore", "list\tall"} {
+		reply, _ := telegramScheduleReply(1, 0, args, st, nil, false, nil, nil)
+		if strings.Contains(reply, "Unknown subcommand") {
+			t.Errorf("telegramScheduleReply(%q) = %q, want the subcommand recognised", args, reply)
+		}
+	}
+}
+
 // An exit that arrives while a coalesce window is already open is covered by
 // the wake turn that window will dispatch (the wake turn's notice drain
 // delivers every queued completion). The spend-cap check runs before the

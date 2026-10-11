@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"unicode"
+	"unicode/utf8"
 )
 
 // utf16Len returns the number of UTF-16 code units in s, which is what
@@ -344,8 +346,7 @@ func (h *Handler) handleCommand(msg *Message, userID int64) {
 	// Check if command was targeted at a specific bot via @username.
 	// Only respond if the username matches our BotUsername.
 	if h.Config.BotUsername != "" {
-		parts := strings.SplitN(msg.Text, " ", 2)
-		cmdPart := parts[0]
+		cmdPart, _ := SplitCommandToken(strings.TrimSpace(msg.Text))
 		if atIdx := strings.Index(cmdPart, "@"); atIdx >= 0 {
 			mentioned := cmdPart[atIdx+1:]
 			if mentioned != "" && !strings.EqualFold(mentioned, h.Config.BotUsername) {
@@ -656,8 +657,7 @@ func extractCommand(text string) (cmd string, args string) {
 	}
 
 	// Split into command token and the rest.
-	parts := strings.SplitN(text, " ", 2)
-	cmdPart := parts[0]
+	cmdPart, args := SplitCommandToken(text)
 
 	// Strip the leading "/".
 	cmdPart = cmdPart[1:]
@@ -667,12 +667,20 @@ func extractCommand(text string) (cmd string, args string) {
 		cmdPart = cmdPart[:atIdx]
 	}
 
-	args = ""
-	if len(parts) > 1 {
-		args = parts[1]
-	}
-
 	return cmdPart, args
+}
+
+// SplitCommandToken splits text at its first whitespace character (space,
+// newline, tab, …) into the leading token and the remainder after that
+// separator. A command typed on its own line ("/plan\nAdd login") or
+// followed by a tab is therefore separated from its arguments.
+func SplitCommandToken(text string) (token, rest string) {
+	idx := strings.IndexFunc(text, unicode.IsSpace)
+	if idx < 0 {
+		return text, ""
+	}
+	_, size := utf8.DecodeRuneInString(text[idx:])
+	return text[:idx], text[idx+size:]
 }
 
 // approvalToast returns a toast message for an approval callback action.
