@@ -213,7 +213,8 @@ func redHuntConfigPipeClient(t *testing.T, name string, timeout time.Duration) (
 		name: name, stdin: clientWrite, stdout: bufio.NewReader(clientRead),
 		lineCh: make(chan lineResult, 10), done: make(chan struct{}),
 		writeCh: make(chan *queuedRequest, 4), writeDone: make(chan struct{}),
-		closed: make(chan struct{}), pending: make(map[int]chan callResponse),
+		replyCh: make(chan []byte, serverReplyQueue),
+		closed:  make(chan struct{}), pending: make(map[int]chan callResponse),
 		timeout: timeout,
 	}
 	go c.readLoop()
@@ -373,13 +374,21 @@ func TestRED_StdioNotifyBoundedAndClosed(t *testing.T) {
 		t.Fatal("notify on a closed connection returned nil")
 	}
 	// A reply to a server request is dropped, never blocking, when the
-	// queue is full or the connection is closed.
-	done := make(chan struct{})
-	go func() { c.sendServerReply([]byte("{}\n")); close(done) }()
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("sendServerReply blocked on a full queue")
+	// reply queue is full (open connection) or the connection is closed;
+	// it never lands on the client request queue.
+	open := &Client{writeCh: make(chan *queuedRequest, 1), replyCh: make(chan []byte, 1), closed: make(chan struct{})}
+	open.sendServerReply([]byte("a\n"))
+	for _, cl := range []*Client{open, c} {
+		done := make(chan struct{})
+		go func() { cl.sendServerReply([]byte("b\n")); close(done) }()
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Fatal("sendServerReply blocked")
+		}
+	}
+	if len(open.writeCh) != 0 || len(open.replyCh) != 1 || string(<-open.replyCh) != "a\n" {
+		t.Error("server reply routed to the wrong queue or not dropped when full")
 	}
 }
 
@@ -423,5 +432,59 @@ func TestRED_ConfigAccessorsCovered(t *testing.T) {
 	cancel()
 	if _, err := (&Client{lineCh: make(chan lineResult)}).readLine(ctx); err == nil {
 		t.Error("readLine with a cancelled ctx returned nil error")
+	}
+}
+
+// A ping flood must not delay the client's own requests: replies to server
+// requests may be dropped under pressure, but a queued call goes out ahead
+// of them. The server floods pings while not reading stdin, then reads
+// slowly; with replies queued ahead of the call (32 × 60ms) the call would
+// miss its 1s deadline.
+func TestRED_PingFloodDoesNotStarveClientRequests(t *testing.T) {
+	clientRead, serverWrite := io.Pipe()
+	serverRead, clientWrite := io.Pipe()
+	c := &Client{
+		name: "flood", stdin: clientWrite, stdout: bufio.NewReader(clientRead),
+		lineCh: make(chan lineResult, 10), done: make(chan struct{}),
+		writeCh: make(chan *queuedRequest, 32), writeDone: make(chan struct{}),
+		replyCh: make(chan []byte, serverReplyQueue),
+		closed:  make(chan struct{}), pending: make(map[int]chan callResponse),
+		timeout: time.Second,
+	}
+	go c.readLoop()
+	go c.writeLoop()
+	t.Cleanup(func() {
+		c.closeOnce.Do(func() { close(c.closed) })
+		clientWrite.Close()
+		clientRead.Close()
+		serverWrite.Close()
+		serverRead.Close()
+	})
+
+	for i := 0; i < 60; i++ {
+		fmt.Fprintf(serverWrite, `{"jsonrpc":"2.0","id":"p%d","method":"ping"}`+"\n", i)
+	}
+	go func() {
+		time.Sleep(300 * time.Millisecond) // let the call queue up behind the replies
+		sc := bufio.NewScanner(serverRead)
+		for sc.Scan() {
+			var msg struct {
+				ID     *json.RawMessage `json:"id"`
+				Method string           `json:"method"`
+			}
+			if json.Unmarshal(sc.Bytes(), &msg) != nil {
+				continue
+			}
+			if msg.Method == "tools/call" && msg.ID != nil {
+				fmt.Fprintf(serverWrite, `{"jsonrpc":"2.0","id":%s,"result":{"content":[{"type":"text","text":"done"}]}}`+"\n", *msg.ID)
+				continue
+			}
+			time.Sleep(60 * time.Millisecond) // slow server
+		}
+	}()
+	time.Sleep(100 * time.Millisecond) // pings are read and their replies queued
+	out, err := c.CallTool(context.Background(), "work", `{}`)
+	if err != nil || out != "done" {
+		t.Fatalf("CallTool behind a ping flood = %q, %v", out, err)
 	}
 }

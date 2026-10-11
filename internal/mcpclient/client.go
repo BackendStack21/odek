@@ -302,7 +302,12 @@ type Client struct {
 	// permanently wedge serve/telegram instances that share one Client per
 	// server for the process lifetime). Enqueueing under ctx keeps every
 	// caller bounded by the per-server timeout.
-	writeCh   chan *queuedRequest
+	writeCh chan *queuedRequest
+	// replyCh carries replies to server-to-client requests (ping, ...) on
+	// a separate bounded queue. The writer always drains writeCh first, so
+	// a server flooding requests cannot delay odek's own calls; replies
+	// that do not fit are dropped.
+	replyCh   chan []byte
 	writeDone chan struct{} // closed when the writer goroutine exits
 	closed    chan struct{} // closed by Close to unblock an idle writer
 
@@ -333,6 +338,9 @@ type Client struct {
 	// every later request and notification.
 	sessionID string
 }
+
+// serverReplyQueue bounds the queue of replies to server-to-client requests.
+const serverReplyQueue = 8
 
 // resultCharsFloorMargin is the room, in runes, a result cap must leave beyond
 // the truncation notice so a truncated result still carries some content.
@@ -504,6 +512,7 @@ func New(name string, cfg ServerConfig, opts ...Option) (_ *Client, setupErr err
 		lineCh:           make(chan lineResult, 10),
 		done:             make(chan struct{}),
 		writeCh:          make(chan *queuedRequest, 32),
+		replyCh:          make(chan []byte, serverReplyQueue),
 		writeDone:        make(chan struct{}),
 		closed:           make(chan struct{}),
 		pending:          make(map[int]chan callResponse),
@@ -1093,11 +1102,12 @@ func serverRequestReply(id json.RawMessage, method string) []byte {
 }
 
 // sendServerReply queues a reply to a server request without blocking the
-// read loop: when the writer queue is full the reply is dropped, so a server
-// flooding requests cannot wedge response routing.
+// read loop, on the bounded reply queue (never the client request queue):
+// when it is full the reply is dropped, so a server flooding requests can
+// neither wedge response routing nor crowd out odek's own calls.
 func (c *Client) sendServerReply(reply []byte) {
 	select {
-	case c.writeCh <- &queuedRequest{ctx: context.Background(), data: reply}:
+	case c.replyCh <- reply:
 	case <-c.closed:
 	default:
 	}
@@ -1111,34 +1121,67 @@ func (c *Client) sendServerReply(reply []byte) {
 // pending waiters unblock ("connection closed before response received").
 // Senders that are still blocked on a full channel unblock via their own
 // ctx deadline or the sticky writeErr fast path in call().
+//
+// Client requests always go out before queued replies to server requests
+// (replyCh): a server flooding pings cannot delay odek's own calls.
 func (c *Client) writeLoop() {
 	defer close(c.writeDone)
 	for {
+		// Priority pass: a queued client request is written first.
 		select {
 		case req := <-c.writeCh:
-			select {
-			case <-c.closed:
+			if !c.writeRequest(req) {
 				return
-			default:
 			}
-			if !req.begin() {
-				continue
+			continue
+		case <-c.closed:
+			return
+		default:
+		}
+		select {
+		case req := <-c.writeCh:
+			if !c.writeRequest(req) {
+				return
 			}
-			if _, err := c.stdin.Write(req.data); err != nil {
-				c.mu.Lock()
-				if c.writeErr == nil {
-					c.writeErr = err
-				}
-				c.mu.Unlock()
-				// EOF to the server → readLoop exits → pending waiters
-				// unblock. A second Close error is irrelevant here.
-				c.stdin.Close()
+		case reply := <-c.replyCh:
+			if !c.writeLine(reply) {
 				return
 			}
 		case <-c.closed:
 			return
 		}
 	}
+}
+
+// writeRequest writes one queued client request unless it was cancelled
+// before dispatch. It reports false when the writer must stop.
+func (c *Client) writeRequest(req *queuedRequest) bool {
+	select {
+	case <-c.closed:
+		return false
+	default:
+	}
+	if !req.begin() {
+		return true
+	}
+	return c.writeLine(req.data)
+}
+
+// writeLine writes data to the server's stdin. On error it records the
+// sticky failure, closes stdin and reports false.
+func (c *Client) writeLine(data []byte) bool {
+	if _, err := c.stdin.Write(data); err != nil {
+		c.mu.Lock()
+		if c.writeErr == nil {
+			c.writeErr = err
+		}
+		c.mu.Unlock()
+		// EOF to the server → readLoop exits → pending waiters
+		// unblock. A second Close error is irrelevant here.
+		c.stdin.Close()
+		return false
+	}
+	return true
 }
 
 // readLoop is a single reader goroutine that reads lines from stdout and
