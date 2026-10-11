@@ -186,7 +186,21 @@ func TestRED_SqliteWritefileIsUnclassified(t *testing.T) {
 		`sqlite3 x.db <<< "select writefile('/etc/x','y')"`,
 	)
 	// A name computed at run time cannot be checked: fail closed.
-	redhuntAtLeast(t, Unknown, `sqlite3 x.db "select writefile(name, data) from t"`)
+	redhuntAtLeast(t, Unknown,
+		`sqlite3 x.db "select writefile(name, data) from t"`,
+		`sqlite3 db "select writefile('/tmp/'||'../etc/cron.d/x','y')"`,
+		`sqlite3 db "vacuum into '/tmp/'||'../etc/x'"`,
+		`sqlite3 db "select writefile('/tmp/x' || name, 'y') from t"`,
+	)
+	// Newlines and comments between VACUUM and INTO.
+	redhuntAtLeast(t, SystemWrite,
+		"sqlite3 db \"VACUUM\nINTO '/etc/x'\"",
+		`sqlite3 db "VACUUM /*x*/ INTO '/etc/x'"`,
+		"sqlite3 db \"VACUUM -- c\nINTO '/etc/x'\"",
+		`sqlite3 db "select writefile( /* c */ '/etc/x', 'y')"`,
+	)
+	// A comment-like sequence inside the literal is part of the path.
+	redhuntExactly(t, LocalWrite, `sqlite3 db "select writefile('a--b', 'y')"`, `sqlite3 db "select writefile('it''s', 'y')"`)
 	redhuntExactly(t, LocalWrite,
 		`sqlite3 :memory: "select writefile('out.bin', x'00')"`,
 		`sqlite3 x.db "vacuum into 'backup.db'"`,

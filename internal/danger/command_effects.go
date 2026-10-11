@@ -86,37 +86,109 @@ func adapterRunsCode(name string, tokens []string, repo *gitRepoCtx) bool {
 	return false
 }
 
-// sqliteSQLLiteral matches one SQL string literal ('…' or "…", with the
-// quote doubled to escape it) at the start of the text.
-const sqliteSQLLiteral = `\s*(?:'((?:[^']|'')*)'|"((?:[^"]|"")*)")?`
-
 // sqliteWritefileCall and sqliteVacuumInto locate the SQL forms of the sqlite3
 // shell that write a file at a path the statement names: writefile(PATH, …)
-// and VACUUM [schema] INTO PATH. The capture groups hold a literal path.
+// and VACUUM [schema] INTO PATH. They match comment-free text in which `;`
+// also stands for a line break (the tokenizer folds quoted newlines into it).
 var (
-	sqliteWritefileCall = regexp.MustCompile(`(?i)\bwritefile\s*\(` + sqliteSQLLiteral)
-	sqliteVacuumInto    = regexp.MustCompile(`(?i)\bvacuum(?:\s+[\w"\x60\[\]]+)?\s+into\b` + sqliteSQLLiteral)
+	sqliteWritefileCall = regexp.MustCompile(`(?i)\bwritefile\s*\(\s*`)
+	sqliteVacuumInto    = regexp.MustCompile(`(?i)\bvacuum(?:[\s;]+[\w"\x60\[\]]+)?[\s;]+into\b\s*`)
 )
 
 // sqliteSQLWriteTargets returns the paths SQL text writes through writefile()
-// and VACUUM INTO. A path that is not a string literal (a column, an
-// expression, a parameter) is only known at run time and is reported as the
+// and VACUUM INTO. Only an argument that is exactly one string literal names
+// a path; anything else (a column, a parameter, a literal concatenated with
+// || or another expression) is only known at run time and is reported as the
 // dynamic marker, which fails closed.
 func sqliteSQLWriteTargets(text string) []string {
+	text = sqlCommentsBlanked(text)
 	var out []string
-	for _, re := range []*regexp.Regexp{sqliteWritefileCall, sqliteVacuumInto} {
-		for _, m := range re.FindAllStringSubmatchIndex(text, -1) {
-			switch {
-			case m[2] >= 0:
-				out = append(out, strings.ReplaceAll(text[m[2]:m[3]], "''", "'"))
-			case m[4] >= 0:
-				out = append(out, strings.ReplaceAll(text[m[4]:m[5]], `""`, `"`))
-			default:
-				out = append(out, dynamicSubstToken)
+	for _, form := range []struct {
+		re  *regexp.Regexp
+		end string // characters that may follow a whole-literal argument
+	}{{sqliteWritefileCall, ",)"}, {sqliteVacuumInto, ";"}} {
+		for _, m := range form.re.FindAllStringIndex(text, -1) {
+			value, rest, ok := sqlLeadingLiteral(text[m[1]:])
+			rest = strings.TrimLeft(rest, " \t\r\n")
+			if ok && (rest == "" || strings.ContainsRune(form.end, rune(rest[0]))) {
+				out = append(out, value)
+				continue
 			}
+			out = append(out, dynamicSubstToken)
 		}
 	}
 	return out
+}
+
+// sqlLeadingLiteral decodes the string literal ('…' or "…", the quote
+// doubled to escape it) that text starts with and returns what follows it.
+func sqlLeadingLiteral(text string) (value, rest string, ok bool) {
+	if text == "" || (text[0] != '\'' && text[0] != '"') {
+		return "", text, false
+	}
+	q := text[0]
+	var b strings.Builder
+	for i := 1; i < len(text); i++ {
+		if text[i] != q {
+			b.WriteByte(text[i])
+			continue
+		}
+		if i+1 < len(text) && text[i+1] == q {
+			b.WriteByte(q)
+			i++
+			continue
+		}
+		return b.String(), text[i+1:], true
+	}
+	return "", "", false
+}
+
+// sqlCommentsBlanked replaces SQL comments (/* … */ and -- up to a line break
+// or the `;` the tokenizer leaves for one) outside string literals with a
+// space, so keywords split by a comment still match. An unterminated comment
+// runs to the end.
+func sqlCommentsBlanked(text string) string {
+	var b strings.Builder
+	for i := 0; i < len(text); {
+		c := text[i]
+		switch {
+		case c == '\'' || c == '"':
+			j := i + 1
+			for j < len(text) {
+				if text[j] == c {
+					if j+1 < len(text) && text[j+1] == c {
+						j += 2
+						continue
+					}
+					break
+				}
+				j++
+			}
+			if j < len(text) {
+				j++
+			}
+			b.WriteString(text[i:j])
+			i = j
+		case strings.HasPrefix(text[i:], "/*"):
+			end := strings.Index(text[i+2:], "*/")
+			b.WriteByte(' ')
+			if end < 0 {
+				return b.String()
+			}
+			i += end + 4
+		case strings.HasPrefix(text[i:], "--"):
+			end := strings.IndexAny(text[i:], "\n;")
+			b.WriteByte(' ')
+			if end < 0 {
+				return b.String()
+			}
+			i += end
+		default:
+			b.WriteByte(c)
+			i++
+		}
+	}
+	return b.String()
 }
 
 // gitApplyUnsafeDirectories reports whether git apply arguments carry
