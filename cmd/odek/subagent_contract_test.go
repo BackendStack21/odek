@@ -666,11 +666,11 @@ func TestDefaultSystem_IncludesDelegation(t *testing.T) {
 // subagentSystem (~5 KB), so the cap was raised from 1400 to 8192. The
 // 2026-10-11 pillar rules (leak channels, untrusted-chosen values, approval
 // integrity, self-configuration, precedence) and their sub-agent
-// amendments brought it to ~9.3 KB, so the cap is 9728 — still far below
-// any context window, but tight enough to catch unbounded growth.
+// amendments brought it to ~10.1 KB, so the cap is 10752 — still far
+// below any context window, but tight enough to catch unbounded growth.
 func TestSubagentSystemPrompt_Minimal(t *testing.T) {
-	if len(subagentSystem) > 9728 {
-		t.Errorf("subagent system prompt too long: %d chars (max 9728)", len(subagentSystem))
+	if len(subagentSystem) > 10752 {
+		t.Errorf("subagent system prompt too long: %d chars (max 10752)", len(subagentSystem))
 	}
 	if subagentSystem == "" {
 		t.Fatal("subagent system prompt must not be empty")
