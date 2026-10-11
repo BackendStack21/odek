@@ -117,7 +117,7 @@ var surfaceOperations = map[string]string{
 	"server error":                                                       "server_error",
 	"set commands failed":                                                "set_commands_failed",
 	"telegram approver: expire prompt edit failed":                       "telegram_approver_expire_prompt_edit_failed",
-	"telegram bot is running with NO allowlist \u2014 ANY user can drive the agent (ODEK_TELEGRAM_ALLOW_ALL=true)": "telegram_bot_is_running_with_no_allowlist_any_user_can_drive_the_agent_odek_telegram_allow_all_true",
+	"telegram bot is running with NO allowlist \u2014 ANY user can drive the agent (ODEK_TELEGRAM_ALLOW_ALL=true)": "telegram_allow_all_no_allowlist",
 	"telegram bot started":         "telegram_bot_started",
 	"telegram voice reply skipped": "telegram_voice_reply_skipped",
 	"text message handler failed":  "text_message_handler_failed",

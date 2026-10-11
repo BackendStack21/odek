@@ -2,16 +2,75 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/BackendStack21/odek/internal/diagnostics"
+	"github.com/BackendStack21/odek/internal/events"
 	"github.com/BackendStack21/odek/internal/maintenance"
 	"github.com/BackendStack21/odek/internal/runtimelog"
 	"github.com/BackendStack21/odek/internal/session"
 )
+
+// opsSurfaceLoggedOperation writes msg through the surface logger into a
+// fresh runtime log and returns the operation the record carries, plus the
+// operation the logger emitted.
+func opsSurfaceLoggedOperation(t *testing.T, msg string) (logged, emitted string, raw []byte) {
+	t.Helper()
+	var got []events.Event
+	restore := diagnostics.Install(func(ev events.Event) { got = append(got, ev) })
+	newOperationalSurfaceLogger("telegram").Warn(msg)
+	restore()
+	if len(got) != 1 {
+		t.Fatalf("captured %d events", len(got))
+	}
+	emitted, _ = got[0].Data["operation"].(string)
+
+	path := filepath.Join(t.TempDir(), "runtime.log")
+	l, err := runtimelog.OpenWithOptions(runtimelog.Options{Path: path, Level: "debug", MaxFiles: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	emitOperationalRecord(l, got[0])
+	l.Close()
+	raw, err = os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rec runtimelog.Record
+	if err := json.Unmarshal([]byte(strings.TrimSpace(string(raw))), &rec); err != nil {
+		t.Fatalf("decode %q: %v", raw, err)
+	}
+	logged, _ = rec.Metadata["operation"].(string)
+	return logged, emitted, raw
+}
+
+// The allow-all Telegram warning maps to a 99-byte operation label, but the
+// runtime log's metadata allowlist drops any string over 96 bytes
+// (safeMetadataString). The one security-relevant startup warning is
+// written as an anonymous operation.warning with no operation field, so
+// `odek logs` cannot identify it.
+func TestRED_AllowAllTelegramWarningLosesOperation(t *testing.T) {
+	logged, want, raw := opsSurfaceLoggedOperation(t, "telegram bot is running with NO allowlist — ANY user can drive the agent (ODEK_TELEGRAM_ALLOW_ALL=true)")
+	if want == "" || want == "diagnostic" || logged != want {
+		t.Fatalf("logged operation = %q, want %q (record: %s)", logged, want, raw)
+	}
+}
+
+// Every mapped surface message must keep its operation label in the
+// runtime log.
+func TestRED_SurfaceOperationLabelsSurviveRuntimeLog(t *testing.T) {
+	for msg, op := range surfaceOperations {
+		logged, _, raw := opsSurfaceLoggedOperation(t, msg)
+		if logged != op {
+			t.Errorf("%q: logged operation = %q, want %q (record: %s)", msg, logged, op, raw)
+		}
+	}
+}
 
 // `odek cleanup --dry-run` lists pinned sessions as deletion candidates,
 // while the real sweep (Store.Cleanup) skips them. The preview claims to
