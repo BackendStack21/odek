@@ -1,6 +1,7 @@
 package telegram
 
 import (
+	"context"
 	"errors"
 	"strings"
 )
@@ -73,11 +74,17 @@ func StripMarkdown(s string) string {
 // markup (IsEntityParseError), retries once as plain text with the markup
 // stripped. Any other error is returned as is, without a second send.
 func (b *Bot) SendWithPlainFallback(chatID int64, text string, opts *SendOpts) (*Message, error) {
-	msg, err := b.SendMessage(chatID, text, opts)
+	return b.SendWithPlainFallbackContext(context.Background(), chatID, text, opts)
+}
+
+// SendWithPlainFallbackContext is SendWithPlainFallback that aborts the sends
+// (and their retry backoff) when ctx is cancelled.
+func (b *Bot) SendWithPlainFallbackContext(ctx context.Context, chatID int64, text string, opts *SendOpts) (*Message, error) {
+	msg, err := b.SendMessageContext(ctx, chatID, text, opts)
 	if err == nil || opts == nil || opts.ParseMode == "" || !IsEntityParseError(err) {
 		return msg, err
 	}
 	plain := *opts
 	plain.ParseMode = ""
-	return b.SendMessage(chatID, StripMarkdown(text), &plain)
+	return b.SendMessageContext(ctx, chatID, StripMarkdown(text), &plain)
 }
