@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/BackendStack21/odek/internal/guard"
@@ -51,6 +52,10 @@ const (
 	maxMCPEnumStringSpaces = 3
 	// maxMCPSchemaPatternRunes bounds a kept `pattern` regex.
 	maxMCPSchemaPatternRunes = 512
+	// maxMCPSchemaPatternSpaces bounds the spaces in a kept `pattern`: a
+	// real regex is nearly spaceless, while sentence-shaped text is not and
+	// is moved to the wrapped parameter documentation.
+	maxMCPSchemaPatternSpaces = 3
 	// maxMCPPatternKeyRunes bounds a kept patternProperties regex key.
 	maxMCPPatternKeyRunes = 128
 	// maxMCPDocLabelRunes bounds the keyword label of a lifted doc entry.
@@ -232,7 +237,7 @@ func stripMCPSchemaObject(obj map[string]any, path string, docs *[]mcpParamDoc) 
 				out[k] = s
 			}
 		case k == "pattern":
-			if s, ok := v.(string); ok && utf8.RuneCountInString(s) <= maxMCPSchemaPatternRunes {
+			if s, ok := v.(string); ok && utf8.RuneCountInString(s) <= maxMCPSchemaPatternRunes && isShortMCPPattern(s) {
 				out[k] = s
 			} else {
 				addDoc("pattern", v)
@@ -508,4 +513,20 @@ func truncateRunesNotice(s string, max int, notice string) string {
 		keep = 0
 	}
 	return string([]rune(s)[:keep]) + notice
+}
+
+// isShortMCPPattern reports whether a pattern keyword value is regex-shaped
+// rather than prose: single line, no control characters, and at most
+// maxMCPSchemaPatternSpaces spaces.
+func isShortMCPPattern(s string) bool {
+	spaces := 0
+	for _, r := range s {
+		switch {
+		case r == ' ':
+			spaces++
+		case unicode.IsControl(r) || unicode.IsSpace(r):
+			return false
+		}
+	}
+	return spaces <= maxMCPSchemaPatternSpaces
 }
