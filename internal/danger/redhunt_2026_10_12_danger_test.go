@@ -202,3 +202,25 @@ func TestRED_DenylistResolvesParameterDefault(t *testing.T) {
 		t.Errorf("git ${x:-status} unexpectedly denied")
 	}
 }
+
+// ATTACH DATABASE creates and writes the named file, like writefile() and
+// VACUUM INTO which are already path-classified.
+func TestRED_SqliteAttachWritesPath(t *testing.T) {
+	rh1012AtLeast(t, SystemWrite,
+		`sqlite3 x.db 'ATTACH DATABASE "/home/user/.bashrc" AS x; CREATE TABLE x.t(a)'`,
+		`sqlite3 x.db "attach '/home/user/.bashrc' as x; create table x.t(a)"`,
+		`sqlite3 x.db 'ATTACH "/home/user/.ssh/authorized_keys" AS k'`,
+		`sqlite3 x.db 'ATTACH DATABASE "file:/home/user/.bashrc?mode=rwc" AS x'`,
+		`printf '%s' "ATTACH '/home/user/.bashrc' AS x; CREATE TABLE x.t(a);" | sqlite3 x.db`,
+	)
+	// A path only known at run time fails closed.
+	rh1012AtLeast(t, Unknown,
+		`sqlite3 x.db "ATTACH DATABASE '/home/user/' || 'f' AS x"`,
+		`sqlite3 x.db 'ATTACH DATABASE ?1 AS x'`,
+	)
+	rh1012Safe(t,
+		`sqlite3 x.db 'SELECT 1'`,
+		`sqlite3 x.db 'ATTACH DATABASE ":memory:" AS m; SELECT 1'`,
+		`sqlite3 x.db 'SELECT * FROM t'`,
+	)
+}
