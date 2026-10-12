@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/BackendStack21/odek"
 	"github.com/BackendStack21/odek/internal/config"
@@ -554,6 +555,7 @@ func toolsRunCappedOutput(ctx context.Context, binary string, args []string, lim
 	errW := &toolsCapWriter{limit: 32 << 10}
 	cmd := exec.CommandContext(runCtx, binary, args...)
 	cmd.Stdout = outW
+	cmd.WaitDelay = 5 * time.Second
 	cmd.Stderr = errW
 	err = cmd.Run()
 	return outW.buf.Bytes(), errW.buf.Bytes(), outW.overflow, err

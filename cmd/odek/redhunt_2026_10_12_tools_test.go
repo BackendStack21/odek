@@ -436,7 +436,7 @@ func TestRED_TranscribeWhisperOutputBufferedBeforeCap(t *testing.T) {
 	if !strings.Contains(res, "too large") {
 		t.Fatalf("expected the output cap to fire, got %.200s", res)
 	}
-	if allocated > 64<<20 {
+	if allocated > 256<<20 { // the unbounded read allocates ~1 GiB; race instrumentation inflates the capped path
 		t.Fatalf("transcribe allocated %d MiB to reject output over a 10 MiB cap", allocated>>20)
 	}
 }
