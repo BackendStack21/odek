@@ -4124,20 +4124,15 @@ func overlayFile(base, override FileConfig) FileConfig {
 // URL-configured servers compare by their URL + token_env + limits —
 // again a name-only marker (no url, no command) matches nothing.
 func mcpExecEqual(a, b mcpclient.ServerConfig) bool {
-	if a.Command == "" && b.Command == "" {
-		if a.URL == "" || b.URL == "" {
-			return false
-		}
-		if a.URL != b.URL || a.TokenEnv != b.TokenEnv || a.TimeoutSeconds != b.TimeoutSeconds ||
-			a.MaxResponseBytes != b.MaxResponseBytes || a.MaxResultChars != b.MaxResultChars {
-			return false
-		}
-		return slices.Equal(a.ArtifactRoots, b.ArtifactRoots)
-	}
-	if a.Command == "" || b.Command == "" {
+	// A marker with neither a command nor a URL never matches.
+	if (a.Command == "" && a.URL == "") || (b.Command == "" && b.URL == "") {
 		return false
 	}
-	if a.Command != b.Command || a.TimeoutSeconds != b.TimeoutSeconds ||
+	// The transport identity is the whole of command, args, env, url and
+	// token_env: the URL transport is preferred whenever url is set, so a
+	// stdio fingerprint plus a project-supplied url is a different server.
+	if a.Command != b.Command || a.URL != b.URL || a.TokenEnv != b.TokenEnv ||
+		a.TimeoutSeconds != b.TimeoutSeconds ||
 		a.MaxResponseBytes != b.MaxResponseBytes || a.MaxResultChars != b.MaxResultChars {
 		return false
 	}
