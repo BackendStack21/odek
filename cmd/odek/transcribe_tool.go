@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -456,17 +457,16 @@ func (t *transcribeTool) Call(argsJSON string) (result string, err error) {
 	}
 
 	const maxWhisperOutputBytes = 10 << 20 // 10 MiB
-	cmd := exec.CommandContext(t.toolCtx(), binary, args2...)
-	output, err := cmd.Output()
-	if len(output) > maxWhisperOutputBytes {
+	output, stderrOut, overflow, err := toolsRunCappedOutput(t.toolCtx(), binary, args2, maxWhisperOutputBytes)
+	if overflow {
 		return jsonResult(transcribeResult{
-			Error: fmt.Sprintf("whisper output too large (%d bytes, max %d)", len(output), maxWhisperOutputBytes),
+			Error: fmt.Sprintf("whisper output too large (more than %d bytes)", maxWhisperOutputBytes),
 		})
 	}
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			return jsonResult(transcribeResult{
-				Error: fmt.Sprintf("whisper failed (exit %d): %s", exitErr.ExitCode(), wrapUntrusted(t.toolCtx(), source, string(exitErr.Stderr))),
+				Error: fmt.Sprintf("whisper failed (exit %d): %s", exitErr.ExitCode(), wrapUntrusted(t.toolCtx(), source, string(stderrOut))),
 			})
 		}
 		return jsonResult(transcribeResult{
@@ -519,3 +519,42 @@ func (t *transcribeTool) Call(argsJSON string) (result string, err error) {
 
 // Ensure transcribeTool implements odek.Tool
 var _ odek.Tool = (*transcribeTool)(nil)
+
+// toolsCapWriter accumulates up to limit bytes and, on the first byte past it,
+// discards the rest and fires cancel so the producing process is killed
+// instead of being buffered to completion.
+type toolsCapWriter struct {
+	buf      bytes.Buffer
+	limit    int
+	overflow bool
+	cancel   func()
+}
+
+func (w *toolsCapWriter) Write(p []byte) (int, error) {
+	if w.overflow {
+		return len(p), nil
+	}
+	if w.buf.Len()+len(p) > w.limit {
+		w.overflow = true
+		if w.cancel != nil {
+			w.cancel()
+		}
+		return len(p), nil
+	}
+	return w.buf.Write(p)
+}
+
+// toolsRunCappedOutput runs binary and returns its stdout and (32 KiB-capped)
+// stderr. Stdout is bounded while it is read: past limit bytes the process is
+// killed and overflow is reported, so memory never exceeds limit plus one write.
+func toolsRunCappedOutput(ctx context.Context, binary string, args []string, limit int) (stdout, stderr []byte, overflow bool, err error) {
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	outW := &toolsCapWriter{limit: limit, cancel: cancel}
+	errW := &toolsCapWriter{limit: 32 << 10}
+	cmd := exec.CommandContext(runCtx, binary, args...)
+	cmd.Stdout = outW
+	cmd.Stderr = errW
+	err = cmd.Run()
+	return outW.buf.Bytes(), errW.buf.Bytes(), outW.overflow, err
+}
