@@ -397,6 +397,35 @@ func TestRED_SensitiveReadPathHistoryAndRotatedLogs(t *testing.T) {
 	}
 }
 
+// One history table backs both the @-reference gate and ClassifyPath.
+func TestRED_HistoryTableSharedByReadGateAndClassifyPath(t *testing.T) {
+	t.Setenv("HOME", "/home/user")
+	for _, name := range []string{
+		".sh_history", ".irb_history", ".rediscli_history", ".ash_history", ".history", ".Rhistory",
+		".dbshell", ".bash_sessions", ".bash_history", ".zsh_history", ".python_history", ".viminfo",
+		".lesshst", ".zhistory", ".histfile", ".ksh_history", ".foo_history",
+	} {
+		p := "/home/user/" + name
+		if !IsSensitiveReadPath("", p) {
+			t.Errorf("IsSensitiveReadPath(%q) = false, want true", p)
+		}
+		if got := ClassifyPath(p); Rank(got) < Rank(SystemWrite) {
+			t.Errorf("ClassifyPath(%q) = %s, want at least system_write", p, got)
+		}
+	}
+	for _, p := range []string{"/home/user/.history-docs", "/home/user/history", "/home/user/proj/.sh_history"} {
+		if IsSensitiveReadPath("/home/user/proj", p) && p != "/home/user/.history-docs" {
+			// only the home-level files are history; nested copies are ordinary
+			if p == "/home/user/proj/.sh_history" {
+				t.Errorf("IsSensitiveReadPath(%q) = true, want false", p)
+			}
+		}
+		if got := ClassifyPath(p); Rank(got) >= Rank(SystemWrite) {
+			t.Errorf("ClassifyPath(%q) = %s, want below system_write", p, got)
+		}
+	}
+}
+
 func TestRED_RecursiveReadersBroaderRootsAndNegatives(t *testing.T) {
 	t.Setenv("HOME", "/home/user")
 	t.Chdir(t.TempDir())

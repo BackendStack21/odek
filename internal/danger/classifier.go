@@ -441,11 +441,24 @@ var homeSensitivePrefixes = []string{"/.ssh", "/.config", "/.gnupg", "/.aws", "/
 	"/.git-credentials", "/.my.cnf", "/.mylogin.cnf",
 	"/.cargo", "/.gem", "/.azure", "/.password-store",
 	"/.terraform.d", "/.vault-token",
-	// Shell and REPL history routinely holds pasted tokens and passwords.
-	"/.bash_history", "/.zsh_history", "/.zhistory", "/.histfile", "/.zsh_sessions",
-	"/.python_history", "/.node_repl_history", "/.psql_history", "/.mysql_history",
-	"/.sqlite_history", "/.lesshst", "/.viminfo",
-	"/.local/share/fish/fish_history", "/.local/share/zsh", "/.local/share/atuin"}
+	// History directories (single history files are in homeHistoryNames).
+	"/.zsh_sessions", "/.bash_sessions", "/.local/share/fish/fish_history",
+	"/.local/share/zsh", "/.local/share/atuin"}
+
+// homeHistoryNames are the files directly in a home directory that hold shell
+// or REPL history (pasted tokens and passwords). Any other dotfile ending in
+// _history is treated the same (isHomeHistoryFile). One table backs both the
+// @-reference gate and ClassifyPath.
+var homeHistoryNames = fieldSet(".bash_history .zsh_history .zhistory .histfile .history " +
+	".sh_history .ash_history .ksh_history .irb_history .rediscli_history .python_history " +
+	".node_repl_history .psql_history .mysql_history .sqlite_history .rhistory .dbshell " +
+	".lesshst .viminfo")
+
+// isHomeHistoryFile reports whether a home-directory file name is a history file.
+func isHomeHistoryFile(base string) bool {
+	b := FoldPathCase(base)
+	return homeHistoryNames[b] || strings.HasPrefix(b, ".") && strings.HasSuffix(b, "_history")
+}
 
 // classifyHomeRelative applies the home-directory rules to abs for one
 // account home. The boolean is false when abs is not protected by them.
@@ -479,6 +492,9 @@ func classifyHomeRelative(home, abs string) (RiskClass, bool) {
 	// writing them is persistence/escalation, not a local file edit.
 	// Case-folding defends against case-insensitive filesystems (macOS APFS).
 	if FoldPathCase(filepath.Dir(abs)) == lowerHome && shellRCFilesLower[FoldPathCase(filepath.Base(abs))] {
+		return SystemWrite, true
+	}
+	if FoldPathCase(filepath.Dir(abs)) == lowerHome && isHomeHistoryFile(filepath.Base(abs)) {
 		return SystemWrite, true
 	}
 	return LocalWrite, false

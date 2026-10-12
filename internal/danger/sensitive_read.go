@@ -88,7 +88,7 @@ func IsSensitiveReadPath(root, path string) bool {
 		}
 		if FoldPathCase(filepath.Dir(abs)) == FoldPathCase(home) {
 			b := FoldPathCase(filepath.Base(abs))
-			if shellRCFilesLower[b] || strings.HasSuffix(b, "_history") && strings.HasPrefix(b, ".") {
+			if shellRCFilesLower[b] || isHomeHistoryFile(b) {
 				return true
 			}
 		}
