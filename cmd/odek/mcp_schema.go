@@ -51,11 +51,17 @@ const (
 	maxMCPEnumStringRunes  = 64
 	maxMCPEnumStringSpaces = 3
 	// maxMCPSchemaPatternRunes bounds a kept `pattern` regex.
-	maxMCPSchemaPatternRunes = 512
+	maxMCPSchemaPatternRunes = 128
 	// maxMCPSchemaPatternSpaces bounds the spaces in a kept `pattern`: a
 	// real regex is nearly spaceless, while sentence-shaped text is not and
 	// is moved to the wrapped parameter documentation.
 	maxMCPSchemaPatternSpaces = 3
+	// maxMCPSchemaPatternWords bounds the runs of maxMCPSchemaPatternWordLen
+	// or more letters in a kept `pattern`, counted after escapes such as
+	// \x20 or \s are decoded to separators: a regex has few literal words,
+	// prose has many.
+	maxMCPSchemaPatternWords   = 2
+	maxMCPSchemaPatternWordLen = 6
 	// maxMCPPatternKeyRunes bounds a kept patternProperties regex key.
 	maxMCPPatternKeyRunes = 128
 	// maxMCPDocLabelRunes bounds the keyword label of a lifted doc entry.
@@ -516,8 +522,9 @@ func truncateRunesNotice(s string, max int, notice string) string {
 }
 
 // isShortMCPPattern reports whether a pattern keyword value is regex-shaped
-// rather than prose: single line, no control characters, and at most
-// maxMCPSchemaPatternSpaces spaces.
+// rather than prose: single line, no control characters, at most
+// maxMCPSchemaPatternSpaces spaces, and at most maxMCPSchemaPatternWords runs
+// of long literal letters once escapes are treated as separators.
 func isShortMCPPattern(s string) bool {
 	spaces := 0
 	for _, r := range s {
@@ -528,5 +535,39 @@ func isShortMCPPattern(s string) bool {
 			return false
 		}
 	}
-	return spaces <= maxMCPSchemaPatternSpaces
+	if spaces > maxMCPSchemaPatternSpaces {
+		return false
+	}
+	words, run := 0, 0
+	flush := func() {
+		if run >= maxMCPSchemaPatternWordLen {
+			words++
+		}
+		run = 0
+	}
+	rs := []rune(s)
+	for i := 0; i < len(rs); i++ {
+		r := rs[i]
+		if r == '\\' && i+1 < len(rs) {
+			// An escape (\x20, \u0020, \s, \d, \.) is never a literal
+			// letter of a word: treat it as a separator and skip its
+			// introducer and hex digits.
+			flush()
+			i++
+			switch rs[i] {
+			case 'x':
+				i += 2
+			case 'u':
+				i += 4
+			}
+			continue
+		}
+		if unicode.IsLetter(r) {
+			run++
+			continue
+		}
+		flush()
+	}
+	flush()
+	return words <= maxMCPSchemaPatternWords
 }
