@@ -122,6 +122,12 @@ func quotedReference(v string) bool {
 // maxCredentialValueCheck bytes.
 const maxCredentialValueCheck = 4096
 
+// credentialJudgeWindow is how much of an unquoted value is examined to
+// decide whether it is a secret. A longer value is judged on its first
+// credentialJudgeWindow bytes (its end is found by a separate linear scan
+// when it is accepted), so a rejected value costs a bounded, small amount.
+const credentialJudgeWindow = 256
+
 // parseCredentialValue reads the value starting at pos: a quoted literal up
 // to its closing quote on the same line (a backslash-escaped quote does not
 // close it), or an unquoted run to the next whitespace, cut at `,"` (the
@@ -159,8 +165,8 @@ func parseCredentialValue(text string, pos int, curly, square int, full bool) (v
 		pos++
 	}
 	stop := len(text)
-	if !full && stop-pos > maxCredentialValueCheck {
-		stop = pos + maxCredentialValueCheck
+	if !full && stop-pos > credentialJudgeWindow {
+		stop = pos + credentialJudgeWindow
 	}
 	lc, ls := 0, 0 // brackets opened inside the value
 	for end = pos; end < stop; end++ {
