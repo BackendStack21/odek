@@ -3119,6 +3119,7 @@ func skipCommandOptions(args string) (string, bool) {
 // not trying to be a fully accurate shell parser.
 func collapseUnquotedBackslashes(cmd string) string {
 	var out strings.Builder
+	killPattern := strings.Contains(cmd, "pkill") || strings.Contains(cmd, "killall") || strings.Contains(cmd, "pgrep")
 	inSingle := false
 	inDouble := false
 	for i := 0; i < len(cmd); i++ {
@@ -3144,6 +3145,13 @@ func collapseUnquotedBackslashes(cmd string) string {
 					// The shell keeps this backslash, and a database
 					// client's \! meta-command is spelled with it.
 					out.WriteByte(ch)
+				default:
+					// The shell keeps the backslash before any other
+					// character too. Only a process-pattern command needs
+					// it: "\w" and "\." are regular expressions there.
+					if killPattern && strings.IndexByte(`wWsSdDbB.`, next) >= 0 {
+						out.WriteByte(ch)
+					}
 				}
 				out.WriteByte(next)
 			} else {
