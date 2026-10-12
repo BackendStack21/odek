@@ -77,16 +77,31 @@ func TestRED_ArithmeticSubscriptSubstitutionRunsCommand(t *testing.T) {
 // that runs is push, but the verb word is not recognised and the command is
 // auto-allowed.
 func TestRED_GitSubcommandFromParameterDefault(t *testing.T) {
-	rhAtLeast(t, NetworkEgress,
-		`git ${x:-push}`,
-		`git ${x-push} origin main`,
-		`git "${x:-push}" --force`,
-		`x=; git ${x:-push}`,
-		`y=push; git ${y:-status}`,
-		`git ${x:=push}`,
-		`git ${x:-${z:-push}}`,
-		`y=push; git ${y:+push}`,
-	)
+	t.Run("resolves to the default word", func(t *testing.T) {
+		t.Setenv("HOME", "/home/user")
+		// Classify outside any repository so repo arming (hooks, hooksPath) of
+		// the checkout running the test cannot change the verdicts compared.
+		t.Chdir(t.TempDir())
+		push := Classify(`git push`)
+		deny := &DangerousConfig{Denylist: []string{"git push"}}
+		for _, cmd := range []string{
+			`git ${x:-push}`,
+			`git ${x-push} origin main`,
+			`git "${x:-push}" --force`,
+			`x=; git ${x:-push}`,
+			`y=push; git ${y:-status}`,
+			`git ${x:=push}`,
+			`git ${x:-${z:-push}}`,
+			`y=push; git ${y:+push}`,
+		} {
+			if got := Classify(cmd); Rank(got) < Rank(push) || Rank(got) < Rank(NetworkEgress) {
+				t.Errorf("Classify(%q) = %s, want at least %s (as git push)", cmd, got, push)
+			}
+			if act := deny.ActionForCommand(cmd); act != Deny {
+				t.Errorf("ActionForCommand(%q) with a `git push` denylist entry = %v, want deny", cmd, act)
+			}
+		}
+	})
 	rhSafe(t,
 		`git ${x:-status}`,
 		`echo ${HOME:-/tmp}`,
