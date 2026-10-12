@@ -236,52 +236,60 @@ func markEmptyKillPatterns(cmd string) string {
 	return out.String()
 }
 
-// pgrepFeedsKill reports whether a kill takes its pids from a pgrep that
-// selects every process: `kill $(pgrep .)`, `kill -9 $(pgrep -f .)`,
-// `pgrep . | xargs kill`. stages are the expanded words of one pipeline and
-// subsPgrepBroadcast whether a substitution of the command line runs such a pgrep.
-func pgrepFeedsKill(stages [][]string, subsPgrepBroadcast bool) bool {
-	pgrepBroadcast := false
-	for _, stage := range stages {
-		inner := unwrapWrappersFull(stage).inner
-		if len(inner) == 0 {
-			continue
+// pgrepFeedsKill reports whether a command line takes kill's pids from a pgrep
+// that selects every process: `kill $(pgrep .)`, `pgrep . | xargs kill`,
+// `pgrep . | while read p; do kill $p; done`, `kill $(echo $(pgrep .))`. It is
+// deliberately coarse: a catch-all pgrep anywhere (in the words or in a
+// substitution body) together with a kill anywhere in the same command line.
+// tokens are the words of the main line and subs the substitution bodies.
+func pgrepFeedsKill(tokens []string, subs []string) bool {
+	killSeen := hasKillWord(tokens)
+	broadcast := tokensRunUniversalPgrep(tokens)
+	for _, sub := range subs {
+		if killSeen && broadcast {
+			break
 		}
-		switch commandName(inner[0]) {
-		case "pgrep":
-			if selectsEveryProcess("pgrep", inner) {
-				pgrepBroadcast = true
-			}
-		case "kill":
-			if pgrepBroadcast {
-				return true // xargs is unwrapped to the kill it runs
-			}
-			for _, tok := range inner[1:] {
-				if strings.Contains(tok, dynamicSubstToken) && subsPgrepBroadcast {
-					return true
-				}
-			}
+		words := tokenize(sub)
+		killSeen = killSeen || hasKillWord(words)
+		broadcast = broadcast || tokensRunUniversalPgrep(words)
+	}
+	return killSeen && broadcast
+}
+
+// hasKillWord reports whether a word names kill, ignoring the grouping and
+// substitution punctuation glued to it.
+func hasKillWord(tokens []string) bool {
+	for _, tok := range tokens {
+		if commandName(strings.TrimLeft(tok, "$(`{")) == "kill" {
+			return true
 		}
 	}
 	return false
 }
 
-// substsContainPgrepBroadcast reports whether a substitution body runs a
-// pgrep with a match-everything selection.
-func substsContainPgrepBroadcast(subs []string) bool {
-	for _, sub := range subs {
-		tokens := tokenize(sub)
-		for i, tok := range tokens {
-			if commandName(tok) != "pgrep" {
-				continue
+// tokensRunUniversalPgrep reports whether the words run a pgrep with a
+// match-everything selection. The words may carry substitution punctuation
+// (`$(pgrep`, `.)`), which is stripped.
+func tokensRunUniversalPgrep(tokens []string) bool {
+	for i, tok := range tokens {
+		if commandName(strings.TrimLeft(tok, "$(`{<")) != "pgrep" {
+			continue
+		}
+		args := []string{"pgrep"}
+		for _, w := range tokens[i+1:] {
+			if isListSeparator(w) || w == "|" || w == "do" || w == "done" || w == "then" {
+				break
 			}
-			end := i + 1
-			for end < len(tokens) && !isListSeparator(tokens[end]) && tokens[end] != "|" {
-				end++
+			closes := strings.HasSuffix(w, ")") || strings.HasSuffix(w, "`")
+			if w = strings.TrimRight(w, ")`"); w != "" {
+				args = append(args, w)
 			}
-			if selectsEveryProcess("pgrep", tokens[i:end]) {
-				return true
+			if closes {
+				break
 			}
+		}
+		if selectsEveryProcess("pgrep", args) {
+			return true
 		}
 	}
 	return false

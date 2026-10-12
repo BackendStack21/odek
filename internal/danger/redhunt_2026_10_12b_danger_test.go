@@ -397,6 +397,30 @@ func TestRED_SensitiveReadPathHistoryAndRotatedLogs(t *testing.T) {
 	}
 }
 
+// A catch-all pgrep reaches kill through loops and nested substitutions too.
+func TestRED_PgrepFedKillThroughLoopsAndNesting(t *testing.T) {
+	t.Setenv("HOME", "/home/user")
+	t.Chdir(t.TempDir())
+	dangerHunt12bAtLeast(t, SystemWrite,
+		`pgrep . | while read p; do kill $p; done`,
+		`kill $(echo $(pgrep .))`,
+		`for p in $(pgrep -f .); do kill -9 $p; done`,
+		"kill `echo $(pgrep -f .)`",
+		`pgrep -v zzzz | xargs -n1 kill`,
+		`while read p; do kill $p; done < <(pgrep .)`,
+	)
+	cfg := &DangerousConfig{}
+	for _, cmd := range []string{
+		`pgrep node | while read p; do kill $p; done`, `kill $(echo $(pgrep -f myserver))`,
+		`pgrep . | while read p; do echo $p; done`, `for p in $(pgrep node); do kill $p; done`,
+	} {
+		if got := Classify(cmd); Rank(got) >= Rank(SystemWrite) {
+			t.Errorf("Classify(%q) = %s, want below system_write", cmd, got)
+		}
+		_ = cfg
+	}
+}
+
 // Any segment of a /proc environ path may be a glob.
 func TestRED_ProcEnvironGlobAnySegment(t *testing.T) {
 	t.Setenv("HOME", "/home/user")

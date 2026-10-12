@@ -187,7 +187,6 @@ func analyzeWithStateWork(cmd string, depth int, inherited *shellAnalysisState, 
 		return result
 	}
 	main, subs := normalize(cmd)
-	subsPgrepBroadcast := substsContainPgrepBroadcast(subs)
 	// Here-document bodies are consumed by normalize but still expand
 	// variables when their delimiter is unquoted, so the raw text is scanned too.
 	if referencesSensitiveEnv(main) || (strings.Contains(cmd, "<<") && referencesSensitiveEnv(cmd)) {
@@ -198,6 +197,9 @@ func analyzeWithStateWork(cmd string, depth int, inherited *shellAnalysisState, 
 		result.add(Unknown)
 	}
 	tokens, ops, unterminated := tokenizeMarked(main)
+	if pgrepFeedsKill(tokens, subs) {
+		result.add(SystemWrite)
+	}
 	if unterminated {
 		// The shell would reject this line, but an open quote has swallowed
 		// the rest of it into one word; whatever followed cannot be judged.
@@ -319,9 +321,6 @@ func analyzeWithStateWork(cmd string, depth int, inherited *shellAnalysisState, 
 				continue
 			}
 			prepared = append(prepared, state.expand(st.words))
-		}
-		if pgrepFeedsKill(prepared, subsPgrepBroadcast) {
-			result.add(SystemWrite)
 		}
 		var pipeline []string
 		var repos []*gitRepoCtx
