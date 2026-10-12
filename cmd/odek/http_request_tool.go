@@ -90,8 +90,10 @@ func (t *httpRequestTool) checkRedirect(req *http.Request, via []*http.Request) 
 	// every credential header and re-gate a method-preserving redirect as an
 	// upload to the new host.
 	// A scheme downgrade (https to http) on the same host sends them in the clear.
+	// Every hop is compared with the ORIGINAL request: net/http re-copies the
+	// original headers on each hop, so a strip on one hop does not carry over.
 	if len(via) > 0 && (!strings.EqualFold(via[0].URL.Host, req.URL.Host) ||
-		(via[len(via)-1].URL.Scheme == "https" && req.URL.Scheme != "https")) {
+		(via[0].URL.Scheme == "https" && req.URL.Scheme != "https")) {
 		for name := range req.Header {
 			if danger.CredentialHeaderName(name) {
 				req.Header.Del(name)
