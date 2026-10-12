@@ -2224,12 +2224,13 @@ func runChatTurn(
 				log.Error("save session after cancel", "chat_id", chatID, "error", saveErr)
 			}
 			// Send a cancellation summary so the user knows what happened.
-			cancelMsg := "⏹️ *Task cancelled.*"
+			// MarkdownV2: every literal and the dynamic summary are escaped.
+			cancelMsg := "⏹️ *Task cancelled\\.*"
 			if infoVal, ok := chatRunInfos.LoadAndDelete(chatID); ok {
 				info := infoVal.(loop.IterationInfo)
-				cancelMsg += "\n\n" + formatStopSummary(info)
+				cancelMsg += "\n\n⏹️ *Task Interrupted*\n\n" + escapeMarkdownV2Literal(formatStopSummaryDetail(info))
 			}
-			cancelMsg += "\n\n_Session state saved. Send a new message to continue._"
+			cancelMsg += "\n\n_Session state saved\\. Send a new message to continue\\._"
 			sendAsync(bot, chatID, cancelMsg,
 				&telegram.SendOpts{ParseMode: telegram.ParseModeMarkdownV2, ReplyToMessageID: messageID})
 			return
@@ -2542,6 +2543,12 @@ func formatTelegramStats(info loop.IterationInfo, toolList []string) string {
 // command response. It includes turns completed, tokens consumed, tools used,
 // and total wall-clock time before cancellation.
 func formatStopSummary(info loop.IterationInfo) string {
+	return "⏹️ *Task Interrupted*\n\n" + formatStopSummaryDetail(info)
+}
+
+// formatStopSummaryDetail is the statistics line of the stop summary (turns,
+// tokens, speed, latency, tools) as plain text, without the heading.
+func formatStopSummaryDetail(info loop.IterationInfo) string {
 	toolStr := "none"
 	if len(info.ToolNames) > 0 {
 		// Deduplicate and sort tool names for a clean display.
@@ -2564,8 +2571,7 @@ func formatStopSummary(info loop.IterationInfo) string {
 	}
 
 	return fmt.Sprintf(
-		"⏹️ *Task Interrupted*\n\n"+
-			"%s · %d in / %d out%s · %s — tools: %s",
+		"%s · %d in / %d out%s · %s — tools: %s",
 		iters, info.InputTokens, info.OutputTokens, formatTokPerSec(info), latency.String(), toolStr,
 	)
 }
@@ -2603,7 +2609,15 @@ func sendAsync(bot *telegram.Bot, chatID int64, text string, opts *telegram.Send
 				fmt.Fprintf(os.Stderr, "odek telegram: async send panic: %v\n", r)
 			}
 		}()
-		if _, err := bot.SendMessage(chatID, text, opts); err != nil {
+		_, err := bot.SendMessage(chatID, text, opts)
+		if err != nil && opts != nil && opts.ParseMode != "" {
+			// A rejected entity parse must not lose the notice: retry once
+			// as plain text.
+			plain := *opts
+			plain.ParseMode = ""
+			_, err = bot.SendMessage(chatID, text, &plain)
+		}
+		if err != nil {
 			fmt.Fprintf(os.Stderr, "odek telegram: async send failed: %v\n", err)
 		}
 	}()
