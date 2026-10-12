@@ -84,6 +84,27 @@ func TestRED_GlobEnvironSingleLetterPrefix(t *testing.T) {
 	}
 }
 
+func TestRED_GitConfigHomeOverride(t *testing.T) {
+	t.Setenv("HOME", "/home/user")
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Chdir(t.TempDir())
+	dangerHunt12bAtLeast(t, SystemWrite,
+		`HOME=/tmp/evil git status`, `XDG_CONFIG_HOME=/tmp/evil git status`,
+		`export HOME=/tmp/evil; git log`, `export XDG_CONFIG_HOME=/tmp/evil; git log`,
+		`env HOME=/tmp/evil git diff`)
+	for _, cmd := range []string{`HOME=/home/user git status`, `HOME=$HOME git status`,
+		`XDG_CONFIG_HOME=$HOME/.config git status`, `XDG_CONFIG_HOME=/home/user/.config git status`} {
+		dangerHunt12bAtMost(t, Classify(`git status`), cmd)
+	}
+}
+
+func dangerHunt12bAtMost(t *testing.T, max RiskClass, cmd string) {
+	t.Helper()
+	if got := Classify(cmd); Rank(got) > Rank(max) {
+		t.Errorf("Classify(%q) = %s, want at most %s", cmd, got, max)
+	}
+}
+
 func TestRED_GlobShellRCAndHistory(t *testing.T) {
 	t.Setenv("HOME", "/home/user")
 	t.Chdir(t.TempDir())

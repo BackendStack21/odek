@@ -3698,6 +3698,39 @@ func envAssignmentRisk(assignments []string, inner []string) RiskClass {
 	return Safe
 }
 
+// gitConfigHomeOverride reports whether a HOME or XDG_CONFIG_HOME value moves
+// the directory git reads its global configuration from away from the real
+// one. That configuration can name code to run (core.fsmonitor, core.pager,
+// aliases), exactly as GIT_CONFIG_GLOBAL does.
+func gitConfigHomeOverride(upper, val string) bool {
+	v := strings.Trim(strings.TrimSpace(val), `"'`)
+	if v == "" {
+		return false
+	}
+	home, _ := os.UserHomeDir()
+	switch upper {
+	case "HOME":
+		switch v {
+		case "~", "$HOME", "${HOME}":
+			return false
+		}
+		return home == "" || filepath.Clean(v) != filepath.Clean(home)
+	case "XDG_CONFIG_HOME":
+		switch v {
+		case "~/.config", "$HOME/.config", "${HOME}/.config":
+			return false
+		}
+		if home != "" && filepath.Clean(v) == filepath.Join(home, ".config") {
+			return false
+		}
+		if cur := os.Getenv("XDG_CONFIG_HOME"); cur != "" && filepath.Clean(v) == filepath.Clean(cur) {
+			return false
+		}
+		return true
+	}
+	return false
+}
+
 // startupHomeOverride reports whether a HOME (or, for fish, XDG_CONFIG_HOME)
 // assignment pointing away from the real home is given to a shell that reads
 // startup files from there: an interactive or login shell reads
@@ -3713,6 +3746,9 @@ func startupHomeOverride(upper, val string, inner []string) bool {
 		return false
 	}
 	name := commandName(inner[0])
+	if name == "git" {
+		return gitConfigHomeOverride(upper, val)
+	}
 	if !posixShells[name] {
 		return false
 	}
