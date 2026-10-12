@@ -26,7 +26,7 @@ func redactSecretsReference(text string) string {
 	for _, p := range patterns {
 		result = p.ReplaceAllString(result, "[REDACTED]")
 	}
-	return redactBasicAuth(result)
+	return redactBasicAuth(redactGuarded(result))
 }
 
 func packageStringLiterals(t *testing.T) []string {

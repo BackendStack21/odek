@@ -93,21 +93,13 @@ var patterns = []*regexp.Regexp{
 	// security_token covers the same AWS session token as the
 	// X-Amz-Security-Token header and presigned-URL query parameter.
 	// refresh_token is the long-lived credential in OAuth token responses.
-	regexp.MustCompile(`(?i)(?:api[_-]?key|api[_-]?secret|auth[_-]?token|access[_-]?token|refresh[_-]?token|bearer[_-]?token|client[_-]?secret|private[_-]?key|secret[_-]?key|secret[_-]?access[_-]?key|session[_-]?token|security[_-]?token|password|passwd|(?:\b|_)(?:token|secret|passphrase|pwd|pass))["'\x60]?\s*(?:=>|[:=])\s*(?:"[^"\n]{20,}"|'[^'\n]{20,}'|\x60[^\x60\n]{20,}\x60|[^\s]{20,})`),
-	// Whitespace-separated forms: CLI flags (--password VALUE, --token VALUE)
-	// and .netrc lines (password VALUE). The key must be a flag or the whole
-	// word "password"/"passwd"/"passphrase", and the value a single 20+ char
-	// word, so prose ("the password must be rotated") is left alone.
-	regexp.MustCompile(`(?i)(?:--?(?:password|passwd|passphrase|pwd|pass|token|secret|api[_-]?key)|\b(?:password|passwd|passphrase))[ \t]+(?:"[^"\n]{20,}"|'[^'\n]{20,}'|[^\s"']{20,})`),
-	// XML elements: <password>VALUE</password> (Maven settings.xml, .NET
-	// config) and the other credential element names.
-	regexp.MustCompile(`(?i)<(?:password|passwd|passphrase|pwd|secret|token|api[_-]?key|access[_-]?token|client[_-]?secret|secret[_-]?key)>[^<\n]{20,}</`),
+	regexp.MustCompile(`(?i)(?:api[_-]?key|api[_-]?secret|auth[_-]?token|access[_-]?token|refresh[_-]?token|bearer[_-]?token|client[_-]?secret|private[_-]?key|secret[_-]?key|secret[_-]?access[_-]?key|session[_-]?token|security[_-]?token|password|passwd)["'\x60]?\s*(?:=>|[:=])\s*(?:"[^"\n]{20,}"|'[^'\n]{20,}'|\x60[^\x60\n]{20,}\x60|[^\s]{20,})`),
 
 	// Bearer / token-scheme credentials in Authorization headers: the
 	// header-line form (Authorization: Bearer …, Authorization: token …) and the JSON/JS header-object form
 	// ("Authorization": "Bearer …"), where a closing quote precedes the
 	// colon and an opening quote precedes the scheme.
-	regexp.MustCompile(`(?i)Authorization["'\x60]?\s*[:=]\s*["'\x60]?(?:Bearer|Token|ApiKey|Bot|OAuth)\s+([a-zA-Z0-9+/=._-]{20,})`),
+	regexp.MustCompile(`(?i)Authorization["'\x60]?\s*[:=]\s*["'\x60]?(?:Bearer|Token|ApiKey|Bot|OAuth|Negotiate|Digest)\s+([a-zA-Z0-9+/=._-]{20,})`),
 
 	// Slack bot tokens: xoxb-, xoxp-
 	regexp.MustCompile(`xox[abpose]-[0-9]{10,}-[0-9]{10,}-[a-zA-Z0-9]{24,}`),
@@ -165,6 +157,87 @@ var patterns = []*regexp.Regexp{
 	// password segment must be at least 6 chars to avoid matching common
 	// placeholders like `:x@`.
 	regexp.MustCompile(`(?i)\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqps?|mssql|clickhouse)://[^:\s/]+:[^@\s/]{6,}@[^\s'\x60"]+`),
+}
+
+// guardedPattern is a context pattern whose value must also look like a
+// secret. The bare key names (token, secret, pass, …) are everywhere in
+// ordinary output (`--- PASS: TestX`, `token = strings.TrimSpace(h)`,
+// `secret: kubernetes-secret-name`), so a match counts only when the value
+// (capture group 1, quotes and CDATA wrappers removed) passes ok.
+type guardedPattern struct {
+	re *regexp.Regexp
+	ok func(value string) bool
+}
+
+const (
+	gSep = `["'\x60]?\s*(?:=>|[:=])\s*`
+	gVal = `("[^"\n]{20,}"|'[^'\n]{20,}'|\x60[^\x60\n]{20,}\x60|[^\s]{20,})`
+)
+
+var guardedPatterns = []guardedPattern{
+	// Bare and camelCase credential key names with :, = or => separators.
+	// Lower-case, Capitalised and UPPER spellings of token/secret/pwd, but
+	// only lower-case/Capitalised "pass" (UPPER PASS is test-runner output)
+	// unless it ends an env-style name (DB_PASS).
+	{regexp.MustCompile(`(?:\b(?:token|secret|passphrase|pwd|pass|Token|Secret|Passphrase|Pwd|Pass|TOKEN|SECRET|PASSPHRASE|PWD)|_(?i:token|secret|passphrase|pwd|pass)|\b[a-z][a-z0-9]*(?:Token|Secret|Passphrase|Password))` + gSep + gVal), looksSecret},
+	// CLI flags with a whitespace-separated value (--password VALUE,
+	// --secret-key VALUE, --private-key VALUE).
+	{regexp.MustCompile(`(?i)--?(?:password|passwd|passphrase|pwd|pass|token|secret|api[_-]?key|secret[_-]?key|private[_-]?key|access[_-]?key|client[_-]?secret)[ \t]+("[^"\n]{20,}"|'[^'\n]{20,}'|[^\s"']{20,})`), plausibleValue},
+	// .netrc lines: password VALUE.
+	{regexp.MustCompile(`(?i)\b(?:password|passwd|passphrase)[ \t]+("[^"\n]{20,}"|'[^'\n]{20,}'|[^\s"']{20,})`), looksSecret},
+	// XML elements: <password>VALUE</password>, optional attributes and
+	// CDATA (Maven settings.xml, .NET config).
+	{regexp.MustCompile(`(?i)<(?:password|passwd|passphrase|pwd|secret|token|api[_-]?key|access[_-]?token|client[_-]?secret|secret[_-]?key)(?:\s[^<>]*)?>\s*((?:<!\[CDATA\[)?[^<\n]{20,}?(?:\]\]>)?)\s*</[A-Za-z_-]+>`), looksSecret},
+}
+
+// plausibleValue rejects values that are plainly code expressions.
+func plausibleValue(v string) bool {
+	v = strings.Trim(strings.TrimSuffix(strings.TrimPrefix(v, "<![CDATA["), "]]>"), "\"'`")
+	return len(v) >= 20 && !strings.ContainsAny(v, "(){}")
+}
+
+// looksSecret additionally requires a digit: random credentials have one
+// with overwhelming probability, while identifiers, import paths, resource
+// names and test names rarely do.
+func looksSecret(v string) bool {
+	return plausibleValue(v) && strings.ContainsAny(v, "0123456789") && !strings.Contains(v, "://")
+}
+
+// guardedMatches returns the [start,end) offsets of every guarded match.
+func guardedMatches(text string) [][2]int {
+	var out [][2]int
+	for _, g := range guardedPatterns {
+		for _, m := range g.re.FindAllStringSubmatchIndex(text, -1) {
+			if m[2] >= 0 && g.ok(text[m[2]:m[3]]) {
+				out = append(out, [2]int{m[0], m[1]})
+			}
+		}
+	}
+	return out
+}
+
+// redactGuarded replaces every guarded match, merging overlaps.
+func redactGuarded(text string) string {
+	ms := guardedMatches(text)
+	if len(ms) == 0 {
+		return text
+	}
+	sort.Slice(ms, func(i, j int) bool { return ms[i][0] < ms[j][0] })
+	var b strings.Builder
+	last := 0
+	for _, m := range ms {
+		if m[0] < last {
+			if m[1] > last {
+				last = m[1]
+			}
+			continue
+		}
+		b.WriteString(text[last:m[0]])
+		b.WriteString("[REDACTED]")
+		last = m[1]
+	}
+	b.WriteString(text[last:])
+	return b.String()
 }
 
 // basicAuthPattern matches an HTTP Basic credential in a header line
@@ -345,7 +418,7 @@ func RedactSecrets(text string) string {
 		}
 		result = p.ReplaceAllString(result, "[REDACTED]")
 	}
-	return redactBasicAuth(result)
+	return redactBasicAuth(redactGuarded(result))
 }
 
 // HasSecrets returns true if the text contains any recognized secret pattern
@@ -365,7 +438,7 @@ func HasSecrets(text string) bool {
 			return true
 		}
 	}
-	return len(basicAuthMatches(text)) > 0
+	return len(guardedMatches(text)) > 0 || len(basicAuthMatches(text)) > 0
 }
 
 // IsSafe returns true if the text contains no recognized secrets.
@@ -390,7 +463,7 @@ func CountSecrets(text string) int {
 		matches := p.FindAllString(text, -1)
 		count += len(matches)
 	}
-	count += len(basicAuthMatches(text))
+	count += len(guardedMatches(text)) + len(basicAuthMatches(text))
 	return count
 }
 
