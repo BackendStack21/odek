@@ -397,6 +397,36 @@ func TestRED_SensitiveReadPathHistoryAndRotatedLogs(t *testing.T) {
 	}
 }
 
+// A HOME/XDG_CONFIG_HOME/ZDOTDIR set in an earlier segment reaches a later
+// startup-file shell; an exported HOME with no such shell afterwards runs
+// nothing (each call is a fresh shell).
+func TestRED_HomeOverrideAcrossSegments(t *testing.T) {
+	t.Setenv("HOME", "/home/user")
+	t.Chdir(t.TempDir())
+	dangerHunt12bAtLeast(t, SystemWrite,
+		`HOME=. ; bash -i`,
+		`HOME=/tmp/x; export HOME; bash -i`,
+		`export HOME=. && bash --login`,
+		`HOME=.; zsh -c true`,
+		`HOME=.; env bash -i`,
+		`XDG_CONFIG_HOME=.; fish -c true`,
+		`ZDOTDIR=.; zsh -c true`,
+		`cd /tmp; HOME=. ; sudo bash -l`,
+	)
+	cfg := &DangerousConfig{}
+	for _, cmd := range []string{
+		`export HOME=/tmp/x; make`, `export HOME=/tmp/x`, `HOME=/tmp/x; npm test`,
+		`HOME=. ; bash script.sh`, `HOME=. ; bash -c 'echo hi'`, `HOME=$HOME; bash -i`,
+		`HOME=/home/user; bash -i`,
+	} {
+		if got := Classify(cmd); Rank(got) >= Rank(SystemWrite) {
+			t.Errorf("Classify(%q) = %s, want below system_write", cmd, got)
+		}
+		_ = cfg
+	}
+	dangerHunt12bAtLeast(t, SystemWrite, `HOME=/tmp/x bash -lc make`, `HOME=/tmp/x zsh script`)
+}
+
 // One history table backs both the @-reference gate and ClassifyPath.
 func TestRED_HistoryTableSharedByReadGateAndClassifyPath(t *testing.T) {
 	t.Setenv("HOME", "/home/user")

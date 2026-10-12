@@ -453,6 +453,14 @@ func analyzeWithStateWork(cmd string, depth int, inherited *shellAnalysisState, 
 				continue
 			}
 			name := commandName(inner[0])
+			// A startup-file variable set by an earlier statement of the same
+			// command line reaches a later startup-file shell like a leading
+			// assignment does.
+			for _, v := range []string{"HOME", "XDG_CONFIG_HOME", "ZDOTDIR"} {
+				if val, ok := state.vars[v]; ok && startupHomeOverride(v, val, inner) {
+					result.add(SystemWrite)
+				}
+			}
 			if name == "gpg" || name == "gpg2" {
 				home, set := state.vars["GNUPGHOME"]
 				for _, tok := range stage[:len(stage)-len(inner)] {

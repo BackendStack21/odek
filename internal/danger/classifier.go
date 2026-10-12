@@ -3668,7 +3668,7 @@ func envAssignmentRisk(assignments []string, inner []string) RiskClass {
 // -c string or a script file with no -i/-l does not source them. Without
 // operands the shell is judged interactive.
 func startupHomeOverride(upper, val string, inner []string) bool {
-	if upper != "HOME" && upper != "XDG_CONFIG_HOME" {
+	if upper != "HOME" && upper != "XDG_CONFIG_HOME" && upper != "ZDOTDIR" {
 		return false
 	}
 	if len(inner) == 0 {
@@ -3680,6 +3680,9 @@ func startupHomeOverride(upper, val string, inner []string) bool {
 	}
 	if upper == "XDG_CONFIG_HOME" && name != "fish" {
 		return false
+	}
+	if upper == "ZDOTDIR" {
+		return name == "zsh" && strings.Trim(strings.TrimSpace(val), `"'`) != ""
 	}
 	v := strings.Trim(strings.TrimSpace(val), `"'`)
 	if v == "" {
@@ -3753,9 +3756,6 @@ func exportedAssignmentRisk(tokens []string) RiskClass {
 		assignments = append(assignments, t)
 		if name, val, _ := strings.Cut(t, "="); strings.EqualFold(name, "ENV") && strings.ContainsAny(val, "/~.") {
 			inner = []string{"sh"}
-		} else if startupHomeOverride(strings.ToUpper(name), val, []string{"bash"}) {
-			// A later shell in the same line reads its startup files from here.
-			inner = []string{"bash"}
 		}
 	}
 	return envAssignmentRisk(assignments, inner)
