@@ -17,6 +17,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/BackendStack21/odek"
 	"github.com/BackendStack21/odek/internal/budget"
@@ -3881,10 +3882,14 @@ func countUserTurnsUpTo(messages []session.Message, n int) int {
 	return count
 }
 
-// shorten truncates s to n chars, adding "…" if truncated.
+// shorten truncates s to at most n bytes, backing up to a rune boundary so a
+// multi-byte rune is never split, and adds "…" if truncated.
 func shorten(s string, n int) string {
-	if len(s) <= n {
+	if len(s) <= n || n < 0 {
 		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
 	}
 	return s[:n] + "…"
 }
