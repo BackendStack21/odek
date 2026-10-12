@@ -192,11 +192,36 @@ func globNamesHomeShellFile(pat []string, h globHome) bool {
 		return false
 	}
 	last := pat[len(pat)-1]
-	if !hasGlobMeta(last) || globLiteralRun(last) < 2 {
+	if globLiteralRun(last) < 2 {
 		return false
 	}
 	for _, n := range homeShellFileNames {
 		if globSegMatch(last, n) {
+			return true
+		}
+	}
+	return false
+}
+
+// namesAccountShellFile reports whether a literal path is a shell rc or
+// history file directly in some account home (the current user's or
+// another's under /home, /Users or /root).
+func namesAccountShellFile(tok string) bool {
+	expanded := expandShellTokenPath(tok)
+	if hasGlobMeta(expanded) {
+		return false
+	}
+	abs, err := absPath(expanded)
+	if err != nil {
+		return false
+	}
+	abs = stripPrivate(abs)
+	dir, base := FoldPathCase(path.Dir(abs)), FoldPathCase(path.Base(abs))
+	if !shellRCFilesLower[base] && !isHomeHistoryFile(base) {
+		return false
+	}
+	for _, h := range accountHomes(abs) {
+		if FoldPathCase(strings.TrimRight(h, "/")) == dir {
 			return true
 		}
 	}

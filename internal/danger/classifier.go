@@ -3901,7 +3901,7 @@ func classifyResourceToken(tok string) RiskClass {
 	if isSensitiveOdekPath(tok) {
 		return SystemWrite
 	}
-	if globNamesSensitivePath(tok) {
+	if globNamesSensitivePath(tok) || namesAccountShellFile(tok) {
 		return SystemWrite
 	}
 	path := expandShellTokenPath(tok)
