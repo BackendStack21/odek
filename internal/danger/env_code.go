@@ -15,6 +15,7 @@ func envAssignmentCodeBodies(tokens []string) []string {
 		if !ok || value == "" {
 			continue
 		}
+		key = strings.TrimSuffix(key, "+") // PROMPT_COMMAND+='; cmd' appends
 		switch {
 		case key == "PROMPT_COMMAND":
 			bodies = append(bodies, value)

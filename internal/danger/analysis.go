@@ -411,7 +411,19 @@ func analyzeWithStateWork(cmd string, depth int, inherited *shellAnalysisState, 
 					result.add(CodeExecution)
 				}
 			}
+			// An assignment is code when the value is set, whether or not it
+			// is exported or a shell starts in this segment: the variable
+			// outlives the statement. Assignments inside `env -S` strings
+			// count the same.
+			for _, split := range unwrappedStage.splits {
+				for _, body := range envAssignmentCodeBodies(tokenize(split)) {
+					result.merge(analyzeWithState(body, depth+1, &payloadState))
+				}
+			}
 			if len(inner) == 0 {
+				for _, body := range envAssignmentCodeBodies(stage) {
+					result.merge(analyzeWithState(body, depth+1, &payloadState))
+				}
 				if len(unwrappedStage.splits) > 0 && cwdKnown && !state.uncertain {
 					// `env -S 'bash script'` leaves nothing behind the
 					// wrapper, yet the split string is the command that runs.
