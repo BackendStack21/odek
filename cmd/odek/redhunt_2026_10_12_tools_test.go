@@ -530,3 +530,28 @@ func TestToolsHTTPRequestStripsCredentialHeaderOnSchemeDowngrade(t *testing.T) {
 		t.Fatalf("credential header must be dropped on https->http, others kept: %v", next.Header)
 	}
 }
+
+type toolsUsageOwner struct {
+	toolsHuntGrantOwner
+	last *budget.Usage
+}
+
+func (o *toolsUsageOwner) SettleExternalBudget(g budget.Grant, u *budget.Usage) {
+	o.toolsHuntGrantOwner.SettleExternalBudget(g, u)
+	o.last = u
+}
+
+func TestToolsSpeechSettlesEstimatedUsage(t *testing.T) {
+	c := speechTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "audio/mpeg")
+		_, _ = w.Write([]byte("synth-audio"))
+	}, "tts-1", "whisper-1")
+	owner := &toolsUsageOwner{}
+	c.SetBudgetView(owner)
+	if _, err := c.SpeakAudio(context.Background(), strings.Repeat("a", 400)); err != nil {
+		t.Fatal(err)
+	}
+	if owner.last == nil || owner.last.InputTokens != 100 {
+		t.Fatalf("TTS must be charged an input estimate (400 chars = 100 tokens), got %+v", owner.last)
+	}
+}
