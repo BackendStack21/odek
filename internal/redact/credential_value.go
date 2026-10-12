@@ -108,7 +108,8 @@ func codeExpression(v string) bool {
 // template reference ("${DB_PASSWORD}", "$DB_PASSWORD", "{{ secret }}").
 func quotedReference(v string) bool {
 	t := strings.TrimSpace(v)
-	if strings.HasPrefix(t, "${") && strings.HasSuffix(t, "}") ||
+	if strings.HasPrefix(t, "$(") && strings.HasSuffix(t, ")") ||
+		strings.HasPrefix(t, "${") && strings.HasSuffix(t, "}") ||
 		strings.HasPrefix(t, "{{") && strings.HasSuffix(t, "}}") {
 		return true
 	}

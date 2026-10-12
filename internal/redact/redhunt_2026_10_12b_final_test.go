@@ -79,6 +79,7 @@ func TestRED_SourceAndReferencesNotRedacted(t *testing.T) {
 		"Password: cfg.Password,",
 		"Password: cfg.Password1)",
 		`password = "@env:AC_PASSWORD"`,
+		`SEARXNG_SECRET="$(openssl rand -hex 32)"`,
 		"password = ~/.config/vault/pw1",
 		`"github-mcp-token": {"github-mcp-token", false, 1},`,
 		"Password: passwordFromVault,",
