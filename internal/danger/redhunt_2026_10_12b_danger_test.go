@@ -273,6 +273,23 @@ func TestRED_ClassifyURLZoneScopedIPv6Loopback(t *testing.T) {
 	}
 }
 
+func TestRED_ClassifyURLZoneBroaderAndNegatives(t *testing.T) {
+	t.Setenv("HOME", "/home/user")
+	for _, u := range []string{
+		"http://[fd00::1%25eth0]/", "http://[::ffff:127.0.0.1%25lo]/", "http://[fe80::1%25en0]:9000/x",
+		"http://[::1%2525lo0]/", "http://[FE80::1%25EN0]/",
+	} {
+		if got := ClassifyURL(u); got != SystemWrite {
+			t.Errorf("ClassifyURL(%q) = %s, want system_write", u, got)
+		}
+	}
+	for _, u := range []string{"http://[2606:4700::1111%25eth0]/", "https://example.com/%25x", "http://[2606:4700::1111]/"} {
+		if got := ClassifyURL(u); got != NetworkEgress {
+			t.Errorf("ClassifyURL(%q) = %s, want network_egress", u, got)
+		}
+	}
+}
+
 // Shell and REPL history, fish config and rotated odek logs are refused as
 // @-references and rated system_write by the path classifier.
 func TestRED_SensitiveReadPathHistoryAndRotatedLogs(t *testing.T) {

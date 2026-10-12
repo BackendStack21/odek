@@ -1001,6 +1001,11 @@ func HostIsImplicitlyInternal(host string) bool {
 //   - Integer: 2130706433
 //   - Short:  127.1
 func parseBrowserIP(host string) net.IP {
+	// A zone-scoped IPv6 literal (fe80::1%en0, ::1%lo0) is the same address
+	// the dialer connects to; net.ParseIP rejects the zone, so drop it.
+	if i := strings.IndexByte(host, '%'); i > 0 && strings.Contains(host[:i], ":") {
+		host = host[:i]
+	}
 	// Try standard parse first (handles IPv6, dotted decimal, etc.)
 	if ip := net.ParseIP(host); ip != nil {
 		return ip
