@@ -501,7 +501,7 @@ func syntaxCheckArgumentsOnly(tokens []string, flags ...string) bool {
 }
 
 func hostInspectorMutates(name string, tokens []string) bool {
-	if jqDumpsEnvironment(name, tokens) || psShowsEnvironment(name, tokens) {
+	if killByNameBroadcasts(name, tokens) || jqDumpsEnvironment(name, tokens) || psShowsEnvironment(name, tokens) {
 		return true
 	}
 	switch name {

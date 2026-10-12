@@ -135,6 +135,26 @@ func TestRED_EnvironmentDumpSpellings(t *testing.T) {
 	)
 }
 
+// pkill/killall matching every process is the broadcast `kill -1` already
+// escalates to system_write.
+func TestRED_PkillBroadcastPattern(t *testing.T) {
+	rh1012AtLeast(t, SystemWrite,
+		`pkill -9 .`,
+		`pkill -f .`,
+		`pkill -f '.*'`,
+		`pkill -9 -- .+`,
+		`pkill -P 1`,
+		`pkill --parent=1`,
+		`killall -r .`,
+		`killall -9 -r '.*'`,
+	)
+	for _, cmd := range []string{`pkill -f myserver`, `pkill -9 node`, `pkill -u alice sleep`, `killall myserver`, `killall -9 firefox`, `pgrep -f .`} {
+		if got := Classify(cmd); Rank(got) >= Rank(SystemWrite) {
+			t.Errorf("Classify(%q) = %s, want below system_write", cmd, got)
+		}
+	}
+}
+
 // The denylist sees the resolved default and the literal spelling.
 func TestRED_DenylistResolvesParameterDefault(t *testing.T) {
 	t.Setenv("HOME", "/home/user")
