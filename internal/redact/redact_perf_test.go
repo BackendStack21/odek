@@ -23,7 +23,11 @@ func redactSecretsReference(text string) string {
 	if r := currentReplacer(); r != nil {
 		result = r.Replace(result)
 	}
-	for _, p := range patterns {
+	for _, p := range patternsHead {
+		result = p.ReplaceAllString(result, "[REDACTED]")
+	}
+	result = redactCredentials(result)
+	for _, p := range patternsTail {
 		result = p.ReplaceAllString(result, "[REDACTED]")
 	}
 	return redactBasicAuth(redactGuarded(result))

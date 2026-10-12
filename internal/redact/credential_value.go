@@ -89,7 +89,7 @@ func codeExpression(v string) bool {
 	case "null", "none", "nil", "true", "false", "undefined", "nan":
 		return true
 	}
-	for _, p := range []string{"os.environ", "process.env", "os.getenv", "getenv", "system.getenv", "env[", "env.", "environ["} {
+	for _, p := range []string{"$env:", "os.environ", "process.env", "os.getenv", "getenv", "system.getenv", "env[", "env.", "environ["} {
 		if strings.HasPrefix(lower, p) {
 			return true
 		}
@@ -108,40 +108,61 @@ func quotedReference(v string) bool {
 	return strings.HasPrefix(t, "$") && envRefRe.MatchString(t) && strings.ToUpper(t) == t
 }
 
+// maxCredentialValueCheck bounds how much of a value is examined and how far
+// a closing quote is searched for. A longer value is still redacted whole
+// (its end is found with a single linear scan) but is judged on its first
+// maxCredentialValueCheck bytes.
+const maxCredentialValueCheck = 4096
+
 // parseCredentialValue reads the value starting at pos: a quoted literal up
-// to its closing quote on the same line, or an unquoted run to the next
-// whitespace (cut at `,"`, the start of the next JSON member). An opening
-// quote without a closing one starts an unquoted run. It returns the value
-// (without quotes), the end offset of the whole token, and whether it was a
-// closed quoted literal.
+// to its closing quote on the same line (a backslash-escaped quote does not
+// close it), or an unquoted run to the next whitespace, cut at `,"` (the
+// start of the next JSON member) and at a closing } or ]. An opening quote
+// without a closing one starts an unquoted run. It returns the value to
+// judge (without quotes, at most maxCredentialValueCheck bytes), the end
+// offset of the whole token, and whether it was a closed quoted literal.
 func parseCredentialValue(text string, pos int) (val string, end int, quoted bool) {
 	if pos >= len(text) {
 		return "", pos, false
 	}
 	if c := text[pos]; c == '"' || c == '\'' || c == '`' {
 		rest := text[pos+1:]
-		limit := strings.IndexByte(rest, '\n')
-		if limit < 0 {
-			limit = len(rest)
+		limit := len(rest)
+		if limit > maxCredentialValueCheck {
+			limit = maxCredentialValueCheck
 		}
-		if i := strings.IndexByte(rest[:limit], c); i >= 0 {
-			return rest[:i], pos + 1 + i + 1, true
+		if nl := strings.IndexByte(rest[:limit], '\n'); nl >= 0 {
+			limit = nl
+		}
+		for i := 0; i < limit; i++ {
+			if rest[i] == '\\' {
+				i++
+			} else if rest[i] == c {
+				return rest[:i], pos + 1 + i + 1, true
+			}
 		}
 		pos++
 	}
 	end = pos
 	for end < len(text) {
 		switch text[end] {
-		case ' ', '\t', '\n', '\r', '\f', '\v':
-			return text[pos:end], end, false
+		case ' ', '\t', '\n', '\r', '\f', '\v', '}', ']':
+			return clipCredentialValue(text[pos:end]), end, false
 		case ',':
 			if end+1 < len(text) && text[end+1] == '"' {
-				return text[pos:end], end, false
+				return clipCredentialValue(text[pos:end]), end, false
 			}
 		}
 		end++
 	}
-	return text[pos:], end, false
+	return clipCredentialValue(text[pos:]), end, false
+}
+
+func clipCredentialValue(v string) string {
+	if len(v) > maxCredentialValueCheck {
+		return v[:maxCredentialValueCheck]
+	}
+	return v
 }
 
 // credentialValueOK is the single value test for credential-named
@@ -177,7 +198,11 @@ func credentialValueOK(v string, quoted, passwordName bool) bool {
 // name, separator and value, as for the other redaction rules.
 func credentialMatches(text string) [][2]int {
 	var out [][2]int
+	covered := 0 // end of the last match; names inside its value are part of it
 	for _, m := range credentialNameRe.FindAllStringSubmatchIndex(text, -1) {
+		if m[2] < covered {
+			continue
+		}
 		name := text[m[2]:m[3]]
 		kind := classifyCredentialName(name)
 		if kind == nameNone {
@@ -190,7 +215,26 @@ func credentialMatches(text string) [][2]int {
 		if kind == nameLoose && !looksCredentialShape(val) {
 			continue
 		}
+		covered = end
 		out = append(out, [2]int{m[2], end})
 	}
 	return out
+}
+
+// redactCredentials replaces every credential-named assignment found by
+// credentialMatches (matches are ordered and never overlap).
+func redactCredentials(text string) string {
+	ms := credentialMatches(text)
+	if len(ms) == 0 {
+		return text
+	}
+	var b strings.Builder
+	last := 0
+	for _, m := range ms {
+		b.WriteString(text[last:m[0]])
+		b.WriteString("[REDACTED]")
+		last = m[1]
+	}
+	b.WriteString(text[last:])
+	return b.String()
 }

@@ -35,7 +35,7 @@ import (
 // Patterns are ordered from most specific to least specific.
 // The first matching pattern wins — subsequent patterns are skipped for
 // that portion of text.
-var patterns = []*regexp.Regexp{
+var patternsHead = []*regexp.Regexp{
 	// Provider-specific AI API keys (ordered before the generic sk- pattern).
 	// Groq: gsk_<alphanumeric>
 	regexp.MustCompile(`gsk_[a-zA-Z0-9]{32,}`),
@@ -79,7 +79,14 @@ var patterns = []*regexp.Regexp{
 	// JWT tokens (three base64url segments separated by dots)
 	// Minimum ~40 chars to avoid matching short dotted strings
 	regexp.MustCompile(`eyJ[a-zA-Z0-9_-]{20,}\.[a-zA-Z0-9_-]{20,}\.[a-zA-Z0-9_-]{20,}`),
+}
 
+// patterns is the full ordered list. Credential-named assignments are
+// redacted between patternsHead and patternsTail (see RedactSecrets), so an
+// assignment whose value is itself a known provider key is replaced whole.
+var patterns = append(append([]*regexp.Regexp{}, patternsHead...), patternsTail...)
+
+var patternsTail = []*regexp.Regexp{
 	// Bearer / token-scheme credentials in Authorization headers: the
 	// header-line form (Authorization: Bearer …, Authorization: token …) and the JSON/JS header-object form
 	// ("Authorization": "Bearer …"), where a closing quote precedes the
@@ -311,6 +318,12 @@ var goTestName = regexp.MustCompile(`^(?:Test|Benchmark|Fuzz|Example)[A-Za-z0-9]
 
 // guardedMatches returns the [start,end) offsets of every guarded match.
 func guardedMatches(text string) [][2]int {
+	return append(guardedPatternMatches(text), credentialMatches(text)...)
+}
+
+// guardedPatternMatches is guardedMatches without the credential-named
+// assignments, which RedactSecrets handles in an earlier stage.
+func guardedPatternMatches(text string) [][2]int {
 	var out [][2]int
 	for _, g := range guardedPatterns {
 		for _, m := range g.re.FindAllStringSubmatchIndex(text, -1) {
@@ -319,12 +332,12 @@ func guardedMatches(text string) [][2]int {
 			}
 		}
 	}
-	return append(out, credentialMatches(text)...)
+	return out
 }
 
 // redactGuarded replaces every guarded match, merging overlaps.
 func redactGuarded(text string) string {
-	ms := guardedMatches(text)
+	ms := guardedPatternMatches(text)
 	if len(ms) == 0 {
 		return text
 	}
@@ -458,20 +471,39 @@ func isBasicTokenByte(c byte) bool {
 // text. It jumps between candidate first bytes with IndexByte.
 func indexFoldASCII(text, word string) int {
 	lo, up := word[0], word[0]-('a'-'A')
-	for i := 0; i+len(word) <= len(text); {
-		rest := text[i : len(text)-len(word)+1]
-		j := strings.IndexByte(rest, lo)
-		if k := strings.IndexByte(rest, up); k >= 0 && (j < 0 || k < j) {
-			j = k
+	last := len(text) - len(word) // last valid start
+	// nextLo/nextUp cache the next occurrence of each case of the first
+	// letter at or after i, so a letter absent in one case is scanned for
+	// once rather than once per occurrence of the other (linear overall).
+	nextLo, nextUp := -2, -2
+	find := func(c byte, from int) int {
+		if from > last {
+			return -1
+		}
+		j := strings.IndexByte(text[from:last+1], c)
+		if j < 0 {
+			return -1
+		}
+		return from + j
+	}
+	for i := 0; i <= last; {
+		if nextLo != -1 && nextLo < i {
+			nextLo = find(lo, i)
+		}
+		if nextUp != -1 && nextUp < i {
+			nextUp = find(up, i)
+		}
+		j := nextLo
+		if nextUp >= 0 && (j < 0 || nextUp < j) {
+			j = nextUp
 		}
 		if j < 0 {
 			return -1
 		}
-		i += j
-		if strings.EqualFold(text[i:i+len(word)], word) {
-			return i
+		if strings.EqualFold(text[j:j+len(word)], word) {
+			return j
 		}
-		i++
+		i = j + 1
 	}
 	return -1
 }
@@ -516,7 +548,15 @@ func RedactSecrets(text string) string {
 	if r := currentReplacer(); r != nil {
 		result = r.Replace(result)
 	}
-	for _, p := range patterns {
+	result = redactPatterns(result, patternsHead)
+	result = redactCredentials(result)
+	result = redactPatterns(result, patternsTail)
+	return redactBasicAuth(redactGuarded(result))
+}
+
+// redactPatterns applies each pattern in order.
+func redactPatterns(result string, ps []*regexp.Regexp) string {
+	for _, p := range ps {
 		// ReplaceAllString copies its input even when nothing matches, so
 		// only patterns that match pay for a rewrite.
 		if p.FindStringIndex(result) == nil {
@@ -524,7 +564,7 @@ func RedactSecrets(text string) string {
 		}
 		result = p.ReplaceAllString(result, "[REDACTED]")
 	}
-	return redactBasicAuth(redactGuarded(result))
+	return result
 }
 
 // HasSecrets returns true if the text contains any recognized secret pattern

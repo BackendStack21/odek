@@ -3,6 +3,7 @@ package redact
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 // The secret body every leak case carries; the probe checks for its
@@ -157,5 +158,56 @@ func TestRED_RedactCredentialValueCheckKeepsCodeAndBoundsLiterals(t *testing.T) 
 	}
 	if out := RedactSecrets(`{"user":"bob","password":"Zk3qP9vX!2mN7bR4tY8wL1cH6","host":"db"}`); !strings.HasSuffix(out, `,"host":"db"}`) {
 		t.Errorf("rest of JSON damaged: %q", out)
+	}
+}
+
+func ops12bTime(in string) time.Duration {
+	best := time.Duration(1 << 62)
+	for i := 0; i < 2; i++ {
+		start := time.Now()
+		RedactSecrets(in)
+		if d := time.Since(start); d < best {
+			best = d
+		}
+	}
+	return best
+}
+
+// Adversarial inputs made of credential names must redact in linear time:
+// quadrupling the input may not grow the time more than ~9x (quadratic: 16x).
+func TestRED_RedactCredentialNamesScaleLinearly(t *testing.T) {
+	gens := map[string]func(n int) string{
+		"repeated names": func(n int) string { return strings.Repeat("password=", n/9) },
+		"open quotes":    func(n int) string { return strings.Repeat(`password="`, n/10) },
+		"long value":     func(n int) string { return "password=" + strings.Repeat("x", n) },
+	}
+	for name, gen := range gens {
+		small, large := ops12bTime(gen(64<<10)), ops12bTime(gen(256<<10))
+		if small < time.Millisecond {
+			small = time.Millisecond
+		}
+		if large > 9*small {
+			t.Errorf("%s: super-linear: 64KiB %v, 256KiB %v", name, small, large)
+		}
+		if !testing.Short() && ops12bTime(gen(1<<20)) > 10*time.Second {
+			t.Errorf("%s: 1 MiB too slow", name)
+		}
+	}
+}
+
+// Unquoted JSON values stop at } and ]; escaped quotes do not end a quoted
+// value; PowerShell $env: references are code.
+func TestRED_RedactCredentialValueBoundaries(t *testing.T) {
+	if out := RedactSecrets(`{"password":Xk9mP2vL8qR4tZ12}`); !strings.HasSuffix(out, "}") || strings.Contains(out, "Xk9m") {
+		t.Errorf("unquoted JSON value: %q", out)
+	}
+	if out := RedactSecrets(`["password=Xk9mP2vL8qR4tZ12"]`); strings.Contains(out, "Xk9m") {
+		t.Errorf("leak: %q", out)
+	}
+	if out := RedactSecrets(`{"password":"p\"ass,word!1234","host":"h"}`); strings.Contains(out, "word!1234") || !strings.HasSuffix(out, `,"host":"h"}`) {
+		t.Errorf("escaped quote: %q", out)
+	}
+	if in := `password = $env:DB_PASSWORD_FROM_VAULT_STORE`; RedactSecrets(in) != in {
+		t.Errorf("$env: reference redacted")
 	}
 }
