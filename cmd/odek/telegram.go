@@ -2634,15 +2634,9 @@ func sendAsync(bot *telegram.Bot, chatID int64, text string, opts *telegram.Send
 				fmt.Fprintf(os.Stderr, "odek telegram: async send panic: %v\n", r)
 			}
 		}()
-		_, err := bot.SendMessage(chatID, text, opts)
-		if err != nil && opts != nil && opts.ParseMode != "" {
-			// A rejected entity parse must not lose the notice: retry once
-			// as plain text.
-			plain := *opts
-			plain.ParseMode = ""
-			_, err = bot.SendMessage(chatID, text, &plain)
-		}
-		if err != nil {
+		// A rejected entity parse must not lose the notice: it is retried once
+		// as plain text. Other failures are not retried here.
+		if _, err := bot.SendWithPlainFallback(chatID, text, opts); err != nil {
 			fmt.Fprintf(os.Stderr, "odek telegram: async send failed: %v\n", err)
 		}
 	}()

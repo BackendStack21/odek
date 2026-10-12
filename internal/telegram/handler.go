@@ -574,28 +574,25 @@ func (h *Handler) sendChunk(chatID int64, chunk string, replyToMessageID int) {
 	if replyToMessageID != 0 {
 		opts.ReplyToMessageID = replyToMessageID
 	}
-	_, err := h.Bot.SendMessage(chatID, chunk, opts)
+	// Only a markup rejection is retried (as plain text with the markup
+	// stripped); transient failures are already retried inside the Bot client
+	// and permanent ones (blocked bot, missing chat) would just repeat.
+	_, err := h.Bot.SendWithPlainFallback(chatID, chunk, opts)
 	if err == nil {
 		return
 	}
-
-	// Retry with plain text — covers parse errors, 5xx errors,
-	// rate limits, and other transient failures.
 	plainOpts := &SendOpts{}
 	if replyToMessageID != 0 {
 		plainOpts.ReplyToMessageID = replyToMessageID
 	}
-	_, err = h.Bot.SendMessage(chatID, chunk, plainOpts)
 
-	if err != nil {
-		h.log.Error("send message failed", "chat_id", chatID, "error", err)
-		if h.OnError != nil {
-			h.OnError(chatID, fmt.Errorf("telegram: send message: %w", err))
-		}
-		// Send a fallback so the user knows part of the response was lost.
-		if _, fbErr := h.Bot.SendMessage(chatID, "⚠️ [part of response lost — Telegram API error]", plainOpts); fbErr != nil {
-			h.log.Error("send fallback also failed", "chat_id", chatID, "error", fbErr)
-		}
+	h.log.Error("send message failed", "chat_id", chatID, "error", err)
+	if h.OnError != nil {
+		h.OnError(chatID, fmt.Errorf("telegram: send message: %w", err))
+	}
+	// Send a fallback so the user knows part of the response was lost.
+	if _, fbErr := h.Bot.SendMessage(chatID, "⚠️ [part of response lost — Telegram API error]", plainOpts); fbErr != nil {
+		h.log.Error("send fallback also failed", "chat_id", chatID, "error", fbErr)
 	}
 }
 

@@ -1,6 +1,7 @@
 package telegram
 
 import (
+	"encoding/json"
 	"io"
 	"mime"
 	"mime/multipart"
@@ -10,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -408,3 +410,54 @@ func TestRH12TG_OpenEntitiesIgnoresEscapesAndCode(t *testing.T) {
 	}
 }
 
+func rh12tgBotWith(t *testing.T, handler http.HandlerFunc) *Bot {
+	t.Helper()
+	ts := httptest.NewServer(handler)
+	t.Cleanup(ts.Close)
+	return &Bot{Token: "t:k", BaseURL: ts.URL, FileBaseURL: ts.URL + "/file", Client: ts.Client(), log: NewNopLogger()}
+}
+
+// A non-parse failure (blocked bot) is sent once, not retried.
+func TestRH12TG_SendWithPlainFallbackSkipsNonParseErrors(t *testing.T) {
+	var n int32
+	bot := rh12tgBotWith(t, func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&n, 1)
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"ok":false,"error_code":403,"description":"Forbidden: bot was blocked by the user"}`))
+	})
+	if _, err := bot.SendWithPlainFallback(1, `hi\.`, &SendOpts{ParseMode: ParseModeMarkdownV2}); err == nil {
+		t.Fatal("expected an error")
+	}
+	if got := atomic.LoadInt32(&n); got != 1 {
+		t.Fatalf("sendMessage attempts = %d, want 1", got)
+	}
+}
+
+// A parse rejection is retried once as plain text with the escaping removed.
+func TestRH12TG_SendWithPlainFallbackStripsMarkup(t *testing.T) {
+	var mu sync.Mutex
+	var texts []string
+	bot := rh12tgBotWith(t, func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		var m map[string]any
+		_ = json.Unmarshal(b, &m)
+		mu.Lock()
+		texts = append(texts, m["text"].(string))
+		first := len(texts) == 1
+		mu.Unlock()
+		if first {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"ok":false,"error_code":400,"description":"Bad Request: can't parse entities: x"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"ok":true,"result":{"message_id":2}}`))
+	})
+	if _, err := bot.SendWithPlainFallback(1, `*Done\.* v1\.2 a\_b`, &SendOpts{ParseMode: ParseModeMarkdownV2}); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(texts) != 2 || texts[1] != "Done. v1.2 a_b" {
+		t.Fatalf("texts = %q, want a second plain send %q", texts, "Done. v1.2 a_b")
+	}
+}
