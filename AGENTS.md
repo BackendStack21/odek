@@ -107,7 +107,8 @@ internal/
                               from tool output); effects.go + reconcile.go — effect evidence and
                               post-batch reconciliation; signal.go — SignalEvent observability
                               (context_trimmed, tool_recovery, tool_running heartbeat); budget enforcement
-                              (budget.Checker) + odek.event/v1 emission.
+                              (budget.Checker) + odek.event/v1 emission; neutralise_tags.go — rewrites
+                              look-alikes of the untrusted-content boundary tag inside wrapped bodies.
   tool/                       Thread-safe tool registry, clarify.go, send_message.go, purity.go (first-party-only
                               pure-output registry: a registered type's pure calls skip the ingest taint)
   danger/                     Command/URL classification + bypass-resistant tokenizer. Approver interface +
@@ -129,6 +130,13 @@ internal/
     readledger.go               Unread-script gate: fingerprinted, bounded read ledger; ForgetReadLedger per session key
     ledger_indirect.go          Scripts delivered indirectly (pipes, substitutions, eval, find -exec, program-file options)
     path_identity.go            Symlink-resolving path targets for classification (snapshot, not an execution boundary)
+    sensitive_read.go           IsSensitiveReadPath: paths @-references refuse (shares the home credential table with ClassifyPath)
+    arith_eval.go               Arithmetic-evaluating builtins (let, declare, …): command substitutions in subscripts are classified
+    param_default.go            ${name:-word} / ${name:=word} / ${name:+word} default words classified as the commands they can run
+    env_dump_tools.go           jq/yq/ps environment disclosure → system_write
+    env_code.go                 PROMPT_COMMAND / PS0-PS4 / BASH_FUNC_ assignments: values classified as commands
+    gpg_adapter.go              gpg classified by operation (keyring mutation, photo viewer, non-default homedir)
+    kill_broadcast.go           pkill/killall broadcast detection (match-everything patterns, user selectors, -P 1)
     injection.go                Injection scanner (ScanInjection) with Unicode folding
     approver.go                 Approver interface, TTY approver, friction
     display.go                  SanitizeForDisplay/SanitizeInline: control/bidi/invisible characters escaped in every prompt
@@ -154,7 +162,8 @@ internal/
                               Config: `maintenance` section (operator-only).
   skills/                     Skill system (types, loader, triggers, import, cache). SkillProvenance gate.
   config/                     Config file loading, env vars, secrets.env, priority merge, limits clamp (project may only lower budgets)
-  telegram/                   Telegram bot: bot.go, poller.go, handler.go, commands.go, session.go, health.go, plan.go, media_path.go
+  telegram/                   Telegram bot: bot.go, poller.go, handler.go, commands.go, session.go, health.go, plan.go, media_path.go,
+                              session_scope.go (session-id → chat ownership check), send_fallback.go (plain-text resend when markup is rejected)
   render/                     Terminal output and narrator support
   narrate/                    LLM-powered emoji-rich progress messages
   redact/                     Secret redaction (20+ patterns)

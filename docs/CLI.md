@@ -170,6 +170,8 @@ A reference ends at whitespace, a closing `)`, `]` or `}`, or a `,` or `;`. Sent
 
 When `@ref` resolution fails (file not found), the reference is left as-is in the prompt.
 
+`@` references expand without an approval step, so protected paths are refused ("is a protected path and cannot be referenced") and hidden from completion: odek's trust anchors under `~/.odek`; home credential locations (`~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.kube`, `~/.azure`, `~/.docker`, `~/.config`, `~/.cargo`, `~/.gem`, `~/.terraform.d`, `~/.password-store`, `~/.gitconfig`, `~/.netrc`, `~/.npmrc`, `~/.pypirc`, `~/.pgpass`, `~/.my.cnf`, `~/.git-credentials`, `~/.vault-token`), shell rc and history files; credential-shaped file names anywhere (`.env` files other than examples, `*.pem`, key material such as `server.key`, `id_rsa`, credential files); and system secret files such as `/etc/shadow`. See [SECURITY.md](SECURITY.md).
+
 ### Web UI
 
 In `odek serve`:
