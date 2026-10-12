@@ -144,6 +144,9 @@ func globNamesSensitivePath(tok string) bool {
 				return true
 			}
 		}
+		if globNamesHomeShellFile(pat, h) {
+			return true
+		}
 	}
 	for _, frag := range sensitivePathFragments {
 		if frag == "/environ" {
@@ -160,6 +163,40 @@ func globNamesSensitivePath(tok string) bool {
 			continue
 		}
 		if globWindowMatch(pat, globSegments(strings.ToLower(frag))) {
+			return true
+		}
+	}
+	return false
+}
+
+// homeShellFileNames are the concrete shell rc and history names directly in
+// a home directory that a wildcard is matched against, including a sample of
+// the open-ended `.<name>_history` family.
+var homeShellFileNames = func() []string {
+	var names []string
+	for n := range shellRCFilesLower {
+		names = append(names, n)
+	}
+	for n := range homeHistoryNames {
+		names = append(names, n)
+	}
+	return append(names, ".bash_history", ".custom_history")
+}()
+
+// globNamesHomeShellFile reports whether the pattern is a direct child of the
+// home directory h whose last component can spell a shell rc or history file.
+// The component needs two literal bytes beyond a bare dot-wildcard so `~/.*`
+// stays an ordinary listing.
+func globNamesHomeShellFile(pat []string, h globHome) bool {
+	if len(pat) != len(h.segs)+1 || !globPrefixMatch(pat[:len(h.segs)], h.segs, h.skip) {
+		return false
+	}
+	last := pat[len(pat)-1]
+	if !hasGlobMeta(last) || globLiteralRun(last) < 2 {
+		return false
+	}
+	for _, n := range homeShellFileNames {
+		if globSegMatch(last, n) {
 			return true
 		}
 	}
@@ -186,7 +223,9 @@ func globEnvironMatch(pat []string) bool {
 		}
 		// A bare wildcard as the last component of a process directory
 		// reads every file in it, environ included.
-		if globLiteralRun(pat[i+2]) >= 2 || (i+3 == len(pat) && strings.Trim(pat[i+2], "*") == "") {
+		// A wildcard that can spell environ as the last component (`e*`,
+		// `[e]*`) reads it just the same, whatever its literal length.
+		if globLiteralRun(pat[i+2]) >= 2 || (i+3 == len(pat) && hasGlobMeta(pat[i+2])) {
 			return true
 		}
 	}

@@ -71,3 +71,28 @@ func TestRED_ArgvCompositionScalesLinearly(t *testing.T) {
 		t.Errorf("classify time grew %v -> %v", dSmall, dBig)
 	}
 }
+
+func TestRED_GlobEnvironSingleLetterPrefix(t *testing.T) {
+	t.Setenv("HOME", "/home/user")
+	t.Chdir(t.TempDir())
+	dangerHunt12bAtLeast(t, SystemWrite,
+		`cat /proc/self/e*`, `cat /proc/self/[e]*`, `cat /proc/1/e?viron`, `cat /proc/*/e*`)
+	for _, cmd := range []string{`cat /proc/self/s*`, `cat /proc/self/status`, `cat /proc/self/c*`} {
+		if got := Classify(cmd); got != Safe {
+			t.Errorf("Classify(%q) = %s, want safe", cmd, got)
+		}
+	}
+}
+
+func TestRED_GlobShellRCAndHistory(t *testing.T) {
+	t.Setenv("HOME", "/home/user")
+	t.Chdir(t.TempDir())
+	dangerHunt12bAtLeast(t, SystemWrite,
+		`cat ~/.bash*`, `cat ~/.*history`, `cat ~/.zsh*`, `cat ~/.*rc`, `cat ~/.bash_hist*`,
+		`cat ~/.zsh_h?story`, `cat ~/.bashr?`, `cat /home/user/.bash*`)
+	for _, cmd := range []string{`cat ~/*.txt`, `ls ~/Doc*`, `cat ~/notes/.bash*`} {
+		if got := Classify(cmd); Rank(got) > Rank(LocalWrite) {
+			t.Errorf("Classify(%q) = %s, want ordinary", cmd, got)
+		}
+	}
+}
