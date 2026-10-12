@@ -138,6 +138,14 @@ func checkMediaPathSensitivity(resolved string) error {
 		return fmt.Errorf("media path: rejected credential file: %s", resolved)
 	}
 
+	// Share the credential model used for file reads: private keys, PEM/key
+	// files, Terraform state, vault tokens, service-account JSON, ... Directory
+	// rules apply only below the bot's working directory.
+	cwd, _ := os.Getwd()
+	if danger.IsSensitiveReadPath(cwd, resolved) {
+		return fmt.Errorf("media path: rejected credential file: %s", resolved)
+	}
+
 	return nil
 }
 
