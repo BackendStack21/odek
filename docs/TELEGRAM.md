@@ -377,7 +377,7 @@ The `SessionManager` manages per-chat Telegram agent conversations, backed by th
 5. **Session recall** — the user message is saved to the session store *before* the agent loop runs, enabling `session_search` to find the current conversation's data during the same turn
 6. Active sessions survive bot restarts — on reconnect, the session is loaded from disk
 7. **/now archives** — using `/new` archives the current session with a timestamped ID (`tg-<chatID>-<YYYYMMDD>-<HHMMSS>`) before starting fresh. Archived sessions remain on disk and are visible via `odek session list`.
-8. **Chat-scoped listing/resume/prune** — `/sessions`, `/resume`, and `/prune` only operate on sessions belonging to the requesting chat. A chat cannot list, resume, or delete another chat's sessions.
+8. **Chat-scoped listing/resume/prune** — `/sessions`, `/resume`, and `/prune` only operate on sessions belonging to the requesting chat. A chat cannot list, resume, or delete another chat's sessions. The agent's `session_search` tool is scoped the same way on this surface: `list`, `search`, `find` and `get` only see the calling chat's sessions (`tg-<chatID>` and its archives), never other chats' or CLI/serve sessions.
 
 ### Key Methods
 

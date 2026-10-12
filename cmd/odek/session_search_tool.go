@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/BackendStack21/odek"
 	"github.com/BackendStack21/odek/internal/session"
+	"github.com/BackendStack21/odek/internal/telegram"
 )
 
 // ═════════════════════════════════════════════════════════════════════════
@@ -21,6 +23,51 @@ type sessionSearchTool struct {
 	store *session.Store
 	// loadSession, when set, replaces store.Load (tests count the loads).
 	loadSession func(id string) (*session.Session, error)
+	// allow, when set, restricts every action to sessions it accepts (the
+	// Telegram surface scopes the tool to the calling chat's sessions).
+	allow func(id string) bool
+}
+
+// permits reports whether the session id is visible to this tool instance.
+func (t *sessionSearchTool) permits(id string) bool {
+	return t.allow == nil || t.allow(id)
+}
+
+// listScoped lists sessions (0 = all) and drops those outside the scope. With
+// a scope the full list is filtered first so the limit applies to visible
+// sessions only.
+func (t *sessionSearchTool) listScoped(limit int) ([]session.Session, error) {
+	if t.allow == nil {
+		return t.store.List(limit)
+	}
+	all, err := t.store.List(0)
+	if err != nil {
+		return nil, err
+	}
+	out := all[:0:0]
+	for _, s := range all {
+		if t.allow(s.ID) {
+			out = append(out, s)
+			if limit > 0 && len(out) >= limit {
+				break
+			}
+		}
+	}
+	return out, nil
+}
+
+// scopeSessionSearchToChat restricts the session_search tool in tools to the
+// sessions of one Telegram chat (other chats and CLI/serve sessions stay
+// invisible). Tools without a session_search are returned unchanged.
+func scopeSessionSearchToChat(tools []odek.Tool, chatID int64) []odek.Tool {
+	for _, tl := range tools {
+		if w, ok := tl.(*untrustedToolWrapper); ok {
+			if st, ok := w.inner.(*sessionSearchTool); ok {
+				st.allow = func(id string) bool { return telegram.SessionIDBelongsToChat(id, chatID) }
+			}
+		}
+	}
+	return tools
 }
 
 func (t *sessionSearchTool) load(id string) (*session.Session, error) {
@@ -144,7 +191,7 @@ func (t *sessionSearchTool) Call(argsJSON string) (result string, err error) {
 // ── List ────────────────────────────────────────────────────────────────
 
 func (t *sessionSearchTool) handleList(limit int) (string, error) {
-	sessions, err := t.store.List(limit)
+	sessions, err := t.listScoped(limit)
 	if err != nil {
 		return jsonResult(sessionSearchResult{
 			Action:   "list",
@@ -194,6 +241,9 @@ func (t *sessionSearchTool) handleSearch(query string, limit int) (string, error
 				if vr.Score < 0.40 {
 					continue
 				}
+				if !t.permits(vr.SessionID) {
+					continue
+				}
 				sess, err := t.store.Load(vr.SessionID)
 				if err != nil || sess == nil {
 					continue
@@ -222,7 +272,7 @@ func (t *sessionSearchTool) handleSearch(query string, limit int) (string, error
 
 	// Phase 2: Keyword search — search ALL sessions, not just recent.
 	// "say hello" heartbeats should not drown out older substantive sessions.
-	sessions, err := t.store.List(0) // 0 = all sessions
+	sessions, err := t.listScoped(0) // 0 = all sessions
 	if err != nil {
 		return jsonResult(sessionSearchResult{
 			Action:   "search",
@@ -412,7 +462,11 @@ func (t *sessionSearchTool) handleGet(id string) (string, error) {
 		return jsonError("session ID is required for get")
 	}
 
-	sess, err := t.store.Load(id)
+	var sess *session.Session
+	err := errors.New("not found")
+	if t.permits(id) {
+		sess, err = t.store.Load(id)
+	}
 	if err != nil {
 		return jsonResult(sessionSearchResult{
 			ID:    id,
@@ -466,7 +520,7 @@ func (t *sessionSearchTool) handleFind(query string, limit int) (string, error) 
 
 	tokens := strings.Fields(strings.ToLower(query))
 
-	sessions, err := t.store.List(limit * 3)
+	sessions, err := t.listScoped(0)
 	if err != nil {
 		return jsonResult(sessionSearchResult{
 			Action:   "find",

@@ -1608,6 +1608,7 @@ func runChatTurn(
 		})
 	tools := builtinTools(resolved.Dangerous, nil, approver, resolved.MaxConcurrency, resolved.APIKey, toolConfigFromResolved(resolved), sessionManager.Store)
 	tools = appendBackgroundTools(tools, bgRT)
+	tools = scopeSessionSearchToChat(tools, chatID)
 
 	// Voice-reply speech backend: built once per turn only when the operator
 	// enabled tts.telegram_voice_replies with a provider-backed TTS backend.
