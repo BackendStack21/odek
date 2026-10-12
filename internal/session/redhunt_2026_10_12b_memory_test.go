@@ -103,3 +103,25 @@ func TestRED_StructuralToolArgRedactionLosesKeyContext(t *testing.T) {
 		}
 	}
 }
+
+func TestRED_ToolArgRedactionPrecision(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{`{"command":"export API_KEY=abcdef1234567890abcdef && make"}`, `{"command":"export [REDACTED] && make"}`},
+		{`{"token_count":"42","max_tokens":"100"}`, `{"max_tokens":"100","token_count":"42"}`},
+		{`{"q":"a&b<c>"}`, `{"q":"a&b<c>"}`},
+	}
+	for _, c := range cases {
+		got := redactToolArguments(c.in)
+		if got != c.want {
+			t.Errorf("in %s\n got  %s\n want %s", c.in, got, c.want)
+		}
+	}
+	for _, c := range []struct{ in, secret string }{
+		{`{"credentials":{"user":"bob","pw":"hunter2hunter2"}}`, "hunter2hunter2"},
+		{`{"args":["--password","hunter2hunter2"]}`, "hunter2hunter2"},
+	} {
+		if got := redactToolArguments(c.in); strings.Contains(got, c.secret) {
+			t.Errorf("secret survived: %s", got)
+		}
+	}
+}
