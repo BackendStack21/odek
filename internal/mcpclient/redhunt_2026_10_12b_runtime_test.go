@@ -214,3 +214,46 @@ func TestRED_MCPHTTPErrorBodySanitized(t *testing.T) {
 		t.Fatalf("unsanitized error: %q", msg)
 	}
 }
+
+// Every shortened name keeps the "<server>__<tool>" shape that the loop's
+// approval classification and episode taint key on, even for long server names.
+func TestRED_MCPRegisteredToolNameKeepsSeparator(t *testing.T) {
+	long := strings.Repeat("s", 64)
+	for _, c := range [][2]string{
+		{long, strings.Repeat("t", 64)},
+		{long, "x"},
+		{"srv", strings.Repeat("t", 64)},
+		{strings.Repeat("s", 55), strings.Repeat("t", 40)},
+		{"enterprise-server", "list_pull_request_review_comments_for_repository_v2"},
+	} {
+		n := RegisteredToolName(c[0], c[1])
+		if len(n) > 64 || !strings.Contains(n, "__") {
+			t.Errorf("RegisteredToolName(%d,%d) = %q (len %d): want <=64 chars containing __", len(c[0]), len(c[1]), n, len(n))
+		}
+	}
+}
+
+// A cursor cycle (A, B, A, ...) stops at the first repeat.
+func TestRED_MCPDiscoverCursorCycleStops(t *testing.T) {
+	calls := 0
+	srv := runtimeBListServer(t, func(params json.RawMessage) any {
+		calls++
+		next := "A"
+		if calls%2 == 0 {
+			next = "B"
+		}
+		return map[string]any{
+			"tools":      []any{map[string]any{"name": fmt.Sprintf("t%d", calls), "inputSchema": map[string]any{"type": "object"}}},
+			"nextCursor": next,
+		}
+	})
+	c, err := New("cyc", ServerConfig{URL: srv.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	_, _ = c.Discover(context.Background())
+	if calls > 4 {
+		t.Fatalf("cursor cycle fetched %d pages", calls)
+	}
+}

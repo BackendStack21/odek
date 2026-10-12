@@ -704,6 +704,7 @@ func (c *Client) Discover(ctx context.Context) (_ []ToolDef, setupErr error) {
 	// page count and total tool count.
 	var tools []ToolDef
 	cursor := ""
+	seenCursors := map[string]bool{}
 	for page := 0; ; page++ {
 		if page >= maxToolsListPages {
 			fmt.Fprintf(os.Stderr, "odek: warning: mcp server %q: tools/list exceeded %d pages; remaining tools ignored\n", c.name, maxToolsListPages)
@@ -731,9 +732,14 @@ func (c *Client) Discover(ctx context.Context) (_ []ToolDef, setupErr error) {
 			tools = tools[:maxDiscoveredTools]
 			break
 		}
-		if result.NextCursor == "" || result.NextCursor == cursor {
+		if result.NextCursor == "" {
 			break
 		}
+		if seenCursors[result.NextCursor] {
+			fmt.Fprintf(os.Stderr, "odek: warning: mcp server %q: tools/list repeated a cursor; remaining pages ignored\n", c.name)
+			break
+		}
+		seenCursors[result.NextCursor] = true
 		cursor = result.NextCursor
 	}
 
@@ -1418,9 +1424,11 @@ func (a *ToolAdapter) Name() string {
 const MaxRegisteredToolNameLen = 64
 
 // RegisteredToolName returns the model-facing name of an MCP tool:
-// "<server>__<tool>" when it fits the provider limit, otherwise a truncated
-// prefix of that name followed by "_" and 8 hex digits of a SHA-256 over the
-// server and tool, so distinct tools keep distinct names.
+// "<server>__<tool>" when it fits the provider limit, otherwise
+// "<server-part>__<tool-part>_<hash8>" with each part truncated separately
+// and 8 hex digits of a SHA-256 over the full server and tool. The "__"
+// separator is always present because the loop's approval classification
+// and the episode taint recognise MCP tools by it.
 func RegisteredToolName(server, tool string) string {
 	full := server + "__" + tool
 	if len(full) <= MaxRegisteredToolNameLen {
@@ -1428,7 +1436,19 @@ func RegisteredToolName(server, tool string) string {
 	}
 	sum := sha256.Sum256([]byte(server + "\x00" + tool))
 	suffix := "_" + hex.EncodeToString(sum[:4])
-	return full[:MaxRegisteredToolNameLen-len(suffix)] + suffix
+	budget := MaxRegisteredToolNameLen - len(suffix) - 2
+	sl, tl := len(server), len(tool)
+	const half = 26
+	switch {
+	case sl+tl <= budget:
+	case sl > half && tl > budget-half:
+		sl, tl = half, budget-half
+	case sl > half:
+		sl = budget - tl
+	default:
+		tl = budget - sl
+	}
+	return server[:sl] + "__" + tool[:tl] + suffix
 }
 
 // Description returns the tool's description.
