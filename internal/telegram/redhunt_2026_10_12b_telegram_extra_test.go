@@ -7,6 +7,32 @@ import (
 	"testing"
 )
 
+// Directory-name rules (a "secrets" folder) must not block ordinary media, but
+// credential-looking files are rejected wherever they live.
+func TestMediaSensitivityDirRulesOnlyForCredentialFiles(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	cwd, _ := os.Getwd()
+	if err := os.MkdirAll(filepath.Join(cwd, "secrets"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range []string{"photo.png", "clip.mp4", "voice.ogg"} {
+		if err := checkMediaPathSensitivity(filepath.Join(cwd, "secrets", n)); err != nil {
+			t.Errorf("%s in a secrets dir rejected: %v", n, err)
+		}
+	}
+	for _, n := range []string{"server.key", "id_rsa", "service-account.json", "notes.txt"} {
+		if err := checkMediaPathSensitivity(filepath.Join(cwd, "secrets", n)); err == nil {
+			t.Errorf("%s in a secrets dir accepted", n)
+		}
+	}
+	for _, n := range []string{"deploy.pem", "terraform.tfstate"} {
+		if err := checkMediaPathSensitivity(filepath.Join(cwd, n)); err == nil {
+			t.Errorf("%s accepted", n)
+		}
+	}
+}
+
 // A crash mid-write can leave an empty counter; that is no usage, while
 // non-numeric content still fails closed.
 func TestDailyBudgetEmptyCounterIsZero(t *testing.T) {
