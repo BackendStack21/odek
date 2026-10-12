@@ -982,7 +982,7 @@ func (t *searchFilesTool) searchContent(args searchFilesArgs) (string, error) {
 	}
 
 	t.wrapContentMatches(matches)
-	return jsonResult(searchFilesResult{Matches: matches, Skipped: skipped})
+	return jsonResult(searchFilesResult{Matches: matches, Skipped: t.wrapSkipped(skipped)})
 }
 
 // wrapContentMatches marks every matched path and line as untrusted. All
@@ -1043,7 +1043,20 @@ func (t *searchFilesTool) searchFiles(args searchFilesArgs) (string, error) {
 		}
 	}
 
-	return jsonResult(searchFilesResult{Matches: matches, Skipped: skipped})
+	return jsonResult(searchFilesResult{Matches: matches, Skipped: t.wrapSkipped(skipped)})
+}
+
+// wrapSkipped marks skipped entries as untrusted: they carry repository file
+// names and error text, which are as attacker-controlled as matched paths.
+func (t *searchFilesTool) wrapSkipped(skipped []string) []string {
+	if len(skipped) == 0 {
+		return skipped
+	}
+	sources := make([]string, len(skipped))
+	for i, s := range skipped {
+		sources[i] = "search_files:skipped:" + s
+	}
+	return wrapUntrustedBatch(t.toolCtx(), "search_files:skipped", sources, skipped)
 }
 
 // ── Patch Tool ─────────────────────────────────────────────────────────
