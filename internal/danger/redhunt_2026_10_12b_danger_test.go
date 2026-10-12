@@ -273,6 +273,32 @@ func TestRED_ClassifyURLZoneScopedIPv6Loopback(t *testing.T) {
 	}
 }
 
+func TestRED_HomeOverrideNegativesAndBroaderShells(t *testing.T) {
+	t.Setenv("HOME", "/home/user")
+	t.Chdir(t.TempDir())
+	dangerHunt12bAtLeast(t, CodeExecution,
+		`HOME=. bash -ic 'true'`,
+		`HOME=. bash`,
+		`HOME=. zsh -c 'true'`,
+		`HOME=. fish -c 'true'`,
+		`XDG_CONFIG_HOME=. fish -c 'true'`,
+		`env -i HOME=. bash --login`,
+		`HOME=. /bin/bash -i`,
+	)
+	for _, cmd := range []string{
+		`HOME=/tmp/x npm install`,
+		`HOME=/tmp/x bash -c 'echo hi'`,
+		`HOME=/tmp/x bash script.sh`,
+		`HOME=/home/user bash -i`,
+		`HOME=$HOME bash -i`,
+		`XDG_CONFIG_HOME=. bash -i`,
+	} {
+		if got := Classify(cmd); Rank(got) >= Rank(SystemWrite) {
+			t.Errorf("Classify(%q) = %s, want below system_write", cmd, got)
+		}
+	}
+}
+
 // Wildcards over ordinary files stay ordinary; broader spellings of secrets
 // are still caught.
 func TestRED_WildcardSecretReadsNegativesAndBroaderSpellings(t *testing.T) {

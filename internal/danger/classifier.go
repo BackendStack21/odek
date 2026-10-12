@@ -3621,6 +3621,9 @@ func envAssignmentRisk(assignments []string, inner []string) RiskClass {
 		if upper == "ENV" && posixShells[innerName] {
 			return SystemWrite
 		}
+		if startupHomeOverride(upper, val, inner) {
+			return SystemWrite
+		}
 		if upper == "SHELL" && (shellPagerCommands[innerName] || !knownSafeShellValue(val)) {
 			return SystemWrite
 		}
@@ -3632,6 +3635,66 @@ func envAssignmentRisk(assignments []string, inner []string) RiskClass {
 		}
 	}
 	return Safe
+}
+
+// startupHomeOverride reports whether a HOME (or, for fish, XDG_CONFIG_HOME)
+// assignment pointing away from the real home is given to a shell that reads
+// startup files from there: an interactive or login shell reads
+// $HOME/.bashrc, .profile and friends, zsh reads $HOME/.zshenv (and .zshrc
+// interactively) even for -c, fish reads its config. A shell that only runs a
+// -c string or a script file with no -i/-l does not source them. Without
+// operands the shell is judged interactive.
+func startupHomeOverride(upper, val string, inner []string) bool {
+	if upper != "HOME" && upper != "XDG_CONFIG_HOME" {
+		return false
+	}
+	if len(inner) == 0 {
+		return false
+	}
+	name := commandName(inner[0])
+	if !posixShells[name] {
+		return false
+	}
+	if upper == "XDG_CONFIG_HOME" && name != "fish" {
+		return false
+	}
+	v := strings.Trim(strings.TrimSpace(val), `"'`)
+	if v == "" {
+		return false
+	}
+	if upper == "HOME" {
+		switch v {
+		case "~", "$HOME", "${HOME}":
+			return false
+		}
+		if home, _ := os.UserHomeDir(); home != "" && filepath.Clean(v) == filepath.Clean(home) {
+			return false
+		}
+	}
+	if name == "zsh" || name == "fish" {
+		return true
+	}
+	for _, a := range inner[1:] {
+		switch {
+		case a == "--login" || a == "--interactive":
+			return true
+		case a == "--" || !strings.HasPrefix(a, "-") || a == "-":
+			// First operand: a script file (not sourcing the rc files).
+			return false
+		case strings.HasPrefix(a, "--"):
+			// --norc, --noprofile, --posix, … do not change the verdict.
+		case strings.ContainsAny(a[1:], "il"):
+			return true
+		}
+	}
+	// No operand at all: an interactive shell when stdin is a terminal. A -c
+	// string alone does not source them.
+	for _, a := range inner[1:] {
+		if isShortFlagToken(a) && strings.Contains(a[1:], "c") {
+			return false
+		}
+	}
+	return true
 }
 
 // exportedAssignmentRisk applies envAssignmentRisk to the NAME=value operands
@@ -3667,6 +3730,9 @@ func exportedAssignmentRisk(tokens []string) RiskClass {
 		assignments = append(assignments, t)
 		if name, val, _ := strings.Cut(t, "="); strings.EqualFold(name, "ENV") && strings.ContainsAny(val, "/~.") {
 			inner = []string{"sh"}
+		} else if startupHomeOverride(strings.ToUpper(name), val, []string{"bash"}) {
+			// A later shell in the same line reads its startup files from here.
+			inner = []string{"bash"}
 		}
 	}
 	return envAssignmentRisk(assignments, inner)
