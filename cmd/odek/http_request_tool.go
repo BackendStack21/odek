@@ -81,7 +81,27 @@ func (t *httpRequestTool) checkRedirect(req *http.Request, via []*http.Request) 
 	if len(via) >= 10 {
 		return fmt.Errorf("stopped after 10 redirects")
 	}
-	return t.checkURL(req.URL.String())
+	if err := t.checkURL(req.URL.String()); err != nil {
+		return err
+	}
+	// The approval for a credential-bearing or mutating request named the
+	// original destination only. Go forwards non-standard headers (X-Api-Key,
+	// Private-Token, ...) to any redirect target, so on a cross-host hop drop
+	// every credential header and re-gate a method-preserving redirect as an
+	// upload to the new host.
+	if len(via) > 0 && !strings.EqualFold(via[0].URL.Host, req.URL.Host) {
+		for name := range req.Header {
+			if danger.CredentialHeaderName(name) {
+				req.Header.Del(name)
+			}
+		}
+		if danger.HTTPRequestClass(req.Method, nil) != danger.NetworkEgress {
+			return t.dangerousConfig.CheckOperation(danger.ToolOperation{
+				Name: t.Name(), Resource: req.Method + " " + req.URL.String(), Risk: danger.NetworkUpload,
+			}, nil)
+		}
+	}
+	return nil
 }
 
 func (t *httpRequestTool) checkURL(target string) error {

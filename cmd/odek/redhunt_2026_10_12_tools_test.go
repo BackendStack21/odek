@@ -480,3 +480,25 @@ func TestToolsFoldPathCaseTrustAnchors(t *testing.T) {
 		t.Error("folded aliases of skills/ and config.json must be protected")
 	}
 }
+
+func TestToolsHTTPRequestStripsCredentialHeaderOnCrossHostRedirect(t *testing.T) {
+	var leaked atomic.Value
+	leaked.Store("")
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		leaked.Store(r.Header.Get("X-Api-Key"))
+	}))
+	defer other.Close()
+	ou, _ := url.Parse(other.URL)
+	approved := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "http://localhost:"+ou.Port()+"/c", http.StatusTemporaryRedirect)
+	}))
+	defer approved.Close()
+	ht := newHTTPRequestTool(danger.DangerousConfig{
+		Classes:  map[danger.RiskClass]danger.Action{danger.NetworkEgress: danger.Allow, danger.SystemWrite: danger.Allow, danger.NetworkUpload: danger.Allow},
+		Approver: &toolsHuntOpApprover{},
+	})
+	ht.Call(fmt.Sprintf(`{"url":%q,"headers":{"X-Api-Key":"k"}}`, approved.URL))
+	if got, _ := leaked.Load().(string); got != "" {
+		t.Fatalf("credential header forwarded across hosts: %q", got)
+	}
+}
