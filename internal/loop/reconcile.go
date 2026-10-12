@@ -116,7 +116,21 @@ func (e *Engine) recordMutation(name, args, output string) {
 		if mutatingShellCommand(p.Command) {
 			e.runMutations = append(e.runMutations, "shell: "+p.Command)
 		}
-
+	case name == "bg_start":
+		// A background job runs the same shell command; a failed spawn
+		// ran nothing.
+		if jsonToolFailed(output) {
+			return
+		}
+		var p struct {
+			Command string `json:"command"`
+		}
+		if err := json.Unmarshal([]byte(args), &p); err != nil || p.Command == "" {
+			return
+		}
+		if mutatingShellCommand(p.Command) {
+			e.runMutations = append(e.runMutations, "bg: "+p.Command)
+		}
 	}
 	if len(e.runMutations) > before {
 		e.sawReadAfterMutation = false
