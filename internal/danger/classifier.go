@@ -440,7 +440,12 @@ var homeSensitivePrefixes = []string{"/.ssh", "/.config", "/.gnupg", "/.aws", "/
 	"/.netrc", "/.npmrc", "/.pypirc", "/.pgpass",
 	"/.git-credentials", "/.my.cnf", "/.mylogin.cnf",
 	"/.cargo", "/.gem", "/.azure", "/.password-store",
-	"/.terraform.d", "/.vault-token"}
+	"/.terraform.d", "/.vault-token",
+	// Shell and REPL history routinely holds pasted tokens and passwords.
+	"/.bash_history", "/.zsh_history", "/.zhistory", "/.histfile", "/.zsh_sessions",
+	"/.python_history", "/.node_repl_history", "/.psql_history", "/.mysql_history",
+	"/.sqlite_history", "/.lesshst", "/.viminfo",
+	"/.local/share/fish/fish_history", "/.local/share/zsh", "/.local/share/atuin"}
 
 // classifyHomeRelative applies the home-directory rules to abs for one
 // account home. The boolean is false when abs is not protected by them.

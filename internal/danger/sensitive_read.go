@@ -35,7 +35,8 @@ var keyStrongTokens = fieldSet("server private priv privkey secret tls ssl signi
 // protected by default. Matching is on path components.
 var homeReadChildren = map[string][]string{
 	"/.config": {"/gcloud", "/gh", "/hub", "/rclone", "/github-copilot", "/op", "/glab-cli",
-		"/doctl", "/hcloud", "/heroku", "/configstore", "/helm", "/pip/pip.conf", "/git/credentials"},
+		"/doctl", "/hcloud", "/heroku", "/configstore", "/helm", "/pip/pip.conf", "/git/credentials",
+		"/fish", "/nushell/history.txt"},
 	"/.docker":      {"/config.json"},
 	"/.cargo":       {"/credentials", "/credentials.toml"},
 	"/.gem":         {"/credentials"},
