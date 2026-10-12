@@ -126,7 +126,11 @@ func sqliteAttachFollows(rest string) bool {
 	if len(rest) < 2 || !strings.EqualFold(rest[:2], "as") {
 		return false
 	}
-	return len(rest) == 2 || !(rest[2] == '_' || rest[2] >= '0' && rest[2] <= '9' || rest[2] >= 'a' && rest[2] <= 'z' || rest[2] >= 'A' && rest[2] <= 'Z')
+	if len(rest) == 2 {
+		return true
+	}
+	c := rest[2]
+	return c != '_' && (c < '0' || c > '9') && (c < 'a' || c > 'z') && (c < 'A' || c > 'Z')
 }
 
 // sqliteAttachPath returns the file an ATTACH literal names: a `file:` URI is

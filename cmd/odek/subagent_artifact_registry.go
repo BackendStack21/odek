@@ -333,9 +333,6 @@ func artifactReadEnabled(tcfg toolConfig) bool {
 	return tcfg.SelfTrust == ""
 }
 
-// artifactIDList renders the bounded available-id list for unknown-id errors.
-func artifactIDList() string { return sessionArtifactIDList("") }
-
 // sessionArtifactIDList renders the session's own bounded id list.
 func sessionArtifactIDList(session string) string {
 	ids, total := listSessionArtifactIDs(session)
