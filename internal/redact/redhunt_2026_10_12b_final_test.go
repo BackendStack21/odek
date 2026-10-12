@@ -70,18 +70,6 @@ func TestRED_BracketInsideSecretStaysRedacted(t *testing.T) {
 	}
 }
 
-// A skipped reference is consumed whole.
-func TestRED_SkippedReferenceNotRedactedFromInside(t *testing.T) {
-	for _, in := range []string{
-		`access_token = "${ACCESS_TOKEN:-default_token_value_here}"`,
-		`password: ${DB_PASSWORD:-fallback_password_value}`,
-	} {
-		if out := RedactSecrets(in); out != in {
-			t.Errorf("partly redacted: %q -> %q", in, out)
-		}
-	}
-}
-
 // Go and JS source and secret references stay readable.
 func TestRED_SourceAndReferencesNotRedacted(t *testing.T) {
 	for _, in := range []string{
@@ -97,6 +85,37 @@ func TestRED_SourceAndReferencesNotRedacted(t *testing.T) {
 	} {
 		if out := RedactSecrets(in); out != in {
 			t.Errorf("over-redacted: %q -> %q", in, out)
+		}
+	}
+}
+
+// camelCase and PascalCase names that end in a secret word carry secrets.
+func TestRED_CamelCaseNamesWithSecretValue(t *testing.T) {
+	for _, in := range []string{
+		"GithubToken=aB3xY9kL2mN8pQ4rS7tU1vW",
+		"export GithubToken=ghx_aB3xY9kL2mN8pQ4rS7tU1vW",
+		"apiKey=aB3xY9kL2mN8pQ4rS7tU1vW",
+		"clientSecret=aB3xY9kL2mN8pQ4rS7tU1vW",
+	} {
+		if out := RedactSecrets(in); strings.Contains(out, "aB3xY9") {
+			t.Errorf("leak: %q -> %q", in, out)
+		}
+	}
+	for _, in := range []string{"maxToken = computeTokenLimitFor(model)", "tokenCount=1234567890123456789012"} {
+		if out := RedactSecrets(in); out != in {
+			t.Errorf("code redacted: %q -> %q", in, out)
+		}
+	}
+}
+
+// A skipped reference is consumed whole.
+func TestRED_SkippedReferenceNotRedactedFromInside(t *testing.T) {
+	for _, in := range []string{
+		`access_token = "${ACCESS_TOKEN:-default_token_value_here}"`,
+		`password: ${DB_PASSWORD:-fallback_password_value}`,
+	} {
+		if out := RedactSecrets(in); out != in {
+			t.Errorf("partly redacted: %q -> %q", in, out)
 		}
 	}
 }

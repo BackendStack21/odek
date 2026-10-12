@@ -19,6 +19,8 @@ var credentialNameRe = regexp.MustCompile(`(?i)([A-Za-z0-9_-]*(?:token|secret|pa
 // credential, wherever the name begins: it ends with one of these words.
 var keyedNameRe = regexp.MustCompile(`(?i)(?:api[_-]?key|api[_-]?secret|auth[_-]?token|access[_-]?token|refresh[_-]?token|bearer[_-]?token|client[_-]?secret|private[_-]?key|secret[_-]?key|secret[_-]?access[_-]?key|session[_-]?token|security[_-]?token|password|passwd)$`)
 
+var camelSecretRe = regexp.MustCompile(`(?i)(?:token|secret|passw(?:or)?d|credentials?|apikey|accesskey|privatekey)$`)
+
 var passwordNameRe = regexp.MustCompile(`(?i)(?:password|passwd)$`)
 
 // Credential-name classes.
@@ -43,6 +45,11 @@ func classifyCredentialName(name string) int {
 		return nameKeyed
 	}
 	if !strings.ContainsAny(name, "_-") {
+		// camelCase / PascalCase ending in a secret word (GithubToken): a
+		// secret only when the value also has a generated-credential shape.
+		if i := camelSecretRe.FindStringIndex(name); i != nil && i[0] > 0 {
+			return nameLoose
+		}
 		return nameNone
 	}
 	if name != strings.ToUpper(name) && name != strings.ToLower(name) {
