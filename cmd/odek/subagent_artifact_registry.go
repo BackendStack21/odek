@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/BackendStack21/odek/internal/artifact"
@@ -357,7 +358,10 @@ func relocateStagingArtifacts(staging, canonical string) (int, error) {
 	}
 	moved := 0
 	for _, e := range entries {
-		if e.IsDir() {
+		// Only regular files are artifacts: a staged symlink, FIFO or
+		// device is never delivered, and the copy fallback cannot be made
+		// to follow a link out of the workspace.
+		if !e.Type().IsRegular() {
 			continue
 		}
 		src := filepath.Join(staging, e.Name())
@@ -382,11 +386,18 @@ func relocateStagingArtifacts(staging, canonical string) (int, error) {
 
 // copyFileContents copies src to dst (0600), replacing any existing dst.
 func copyFileContents(src, dst string) error {
-	in, err := os.Open(src)
+	// O_NOFOLLOW refuses a final-component symlink and O_NONBLOCK keeps a
+	// FIFO from blocking the runner; the handle is re-checked as regular.
+	in, err := os.OpenFile(src, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return err
 	}
 	defer in.Close()
+	if fi, err := in.Stat(); err != nil {
+		return err
+	} else if !fi.Mode().IsRegular() {
+		return fmt.Errorf("not a regular file")
+	}
 	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
 		return err
