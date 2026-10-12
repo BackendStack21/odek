@@ -313,17 +313,21 @@ func (c *Client) SideCall(ctx context.Context, messages []session.Message) (_ *C
 	req := c.prepareSideCall(messages)
 	res, err := c.Chat.Call(ctx, req)
 	if err != nil {
-		return mapResult(res), err
+		return c.mapResult(res), err
 	}
-	return mapResult(res), nil
+	return c.mapResult(res), nil
 }
 
 // CallResult is the loop-facing result. Cache fields come from SDK Usage
 // when the gap-fix SDK is pinned.
 type CallResult struct {
-	Content             string
-	ReasoningContent    string
-	ThinkingSignature   string
+	Content           string
+	ReasoningContent  string
+	ThinkingSignature string
+	// ThinkingBlocks are every signed reasoning segment of the response, in
+	// order; ThinkingProvider is the API format that signed them.
+	ThinkingBlocks      []session.ThinkingBlock
+	ThinkingProvider    string
 	ToolCalls           []session.ToolCall
 	InputTokens         int
 	OutputTokens        int
@@ -346,9 +350,9 @@ func (c *Client) Call(ctx context.Context, messages []session.Message, tools []T
 	req := c.buildRequest(messages, tools)
 	res, err := c.Chat.Call(ctx, req)
 	if err != nil {
-		return mapResult(res), err
+		return c.mapResult(res), err
 	}
-	return mapResult(res), nil
+	return c.mapResult(res), nil
 }
 
 // CallStream runs a streaming completion.
@@ -359,14 +363,14 @@ func (c *Client) CallStream(ctx context.Context, messages []session.Message, too
 	req := c.buildRequest(messages, tools)
 	res, err := c.Chat.CallStream(ctx, req, cb)
 	if err != nil {
-		return mapResult(res), err
+		return c.mapResult(res), err
 	}
-	return mapResult(res), nil
+	return c.mapResult(res), nil
 }
 
 func (c *Client) buildRequest(messages []session.Message, tools []ToolDef) *sdk.ChatRequest {
 	isAnthropic := c.IsAnthropic()
-	sys, msgs := toSDKMessages(messages, c.PromptCache && isAnthropic, isAnthropic)
+	sys, msgs := toSDKMessagesFor(messages, c.PromptCache && isAnthropic, isAnthropic, string(c.Format()))
 	if c.PromptCache && isAnthropic {
 		tools = markLastToolCache(tools)
 	}
@@ -423,6 +427,17 @@ func sdkTemperature(t float64) float64 {
 }
 
 func toSDKMessages(in []session.Message, cacheAnthropic, requireSignedThinking bool) ([]sdk.SystemBlock, []sdk.Message) {
+	return toSDKMessagesFor(in, cacheAnthropic, requireSignedThinking, "")
+}
+
+// toSDKMessagesFor converts history for a provider of the given API format.
+// Signed reasoning (ThinkingBlocks and the legacy signature) is replayed only
+// when the turn's recorded provider matches format: a signature is bound to
+// the provider that issued it, so a session continued on another provider
+// keeps the visible answer and tool calls and drops the signed reasoning.
+// An empty format (or a turn with no recorded provider, as in older
+// sessions) disables the check.
+func toSDKMessagesFor(in []session.Message, cacheAnthropic, requireSignedThinking bool, format string) ([]sdk.SystemBlock, []sdk.Message) {
 	var sys []sdk.SystemBlock
 	out := make([]sdk.Message, 0, len(in))
 	// Convert-at-call: drop an unknown-role row together with its
@@ -455,7 +470,12 @@ func toSDKMessages(in []session.Message, cacheAnthropic, requireSignedThinking b
 			})
 		case "assistant":
 			reasoningContent := m.ReasoningContent
-			if requireSignedThinking && m.ThinkingSignature == "" {
+			signature := m.ThinkingSignature
+			blocks := m.ThinkingBlocks
+			if format != "" && m.ThinkingProvider != "" && m.ThinkingProvider != format {
+				signature, blocks = "", nil
+			}
+			if requireSignedThinking && signature == "" && len(blocks) == 0 {
 				// Anthropic rejects replayed thinking without its opaque
 				// signature. Sessions can originate from other providers or
 				// predate signature persistence, so retain the visible answer
@@ -466,7 +486,8 @@ func toSDKMessages(in []session.Message, cacheAnthropic, requireSignedThinking b
 				Role:              sdk.RoleAssistant,
 				Content:           m.Content,
 				ReasoningContent:  reasoningContent,
-				ThinkingSignature: m.ThinkingSignature,
+				ThinkingSignature: signature,
+				ThinkingBlocks:    toSDKThinkingBlocks(blocks),
 				ToolCalls:         toSDKToolCalls(m.ToolCalls),
 			})
 		case "tool":
@@ -524,6 +545,27 @@ func toSDKToolCalls(in []session.ToolCall) []sdk.ToolCall {
 	return out
 }
 
+func toSDKThinkingBlocks(in []session.ThinkingBlock) []sdk.ThinkingBlock {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]sdk.ThinkingBlock, len(in))
+	for i, b := range in {
+		out[i] = sdk.ThinkingBlock{Text: b.Text, Signature: b.Signature, Redacted: b.Redacted}
+	}
+	return out
+}
+
+// mapResult maps an SDK result and stamps the signing provider on any signed
+// reasoning so a later replay can refuse a different provider.
+func (c *Client) mapResult(res *sdk.ChatResult) *CallResult {
+	out := mapResult(res)
+	if out != nil && (out.ThinkingSignature != "" || len(out.ThinkingBlocks) > 0) {
+		out.ThinkingProvider = string(c.Format())
+	}
+	return out
+}
+
 func mapResult(res *sdk.ChatResult) *CallResult {
 	if res == nil {
 		return nil
@@ -540,6 +582,9 @@ func mapResult(res *sdk.ChatResult) *CallResult {
 		CacheReadTokens:     res.Usage.CacheReadTokens,
 		CachedTokens:        res.Usage.CachedTokens,
 		CacheReported:       res.Usage.CacheReported,
+	}
+	for _, tb := range res.ThinkingBlocks {
+		out.ThinkingBlocks = append(out.ThinkingBlocks, session.ThinkingBlock{Text: tb.Text, Signature: tb.Signature, Redacted: tb.Redacted})
 	}
 	for _, tc := range res.ToolCalls {
 		var st session.ToolCall

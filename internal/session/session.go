@@ -1114,6 +1114,14 @@ func (s *Store) saveLockedMode(sess *Session, lazyIndex bool) (err error) {
 	for i := boundary; i < len(sess.Messages); i++ {
 		sess.Messages[i].Content = redact.RedactSecrets(sess.Messages[i].Content)
 		sess.Messages[i].ReasoningContent = redact.RedactSecrets(sess.Messages[i].ReasoningContent)
+		if blocks := sess.Messages[i].ThinkingBlocks; len(blocks) > 0 {
+			// Copy first: the slice may be shared with the caller's live history.
+			redacted := append([]ThinkingBlock(nil), blocks...)
+			for j := range redacted {
+				redacted[j].Text = redact.RedactSecrets(redacted[j].Text)
+			}
+			sess.Messages[i].ThinkingBlocks = redacted
+		}
 		// Tool-call arguments are model-authored (shell commands, headers,
 		// file contents) and reach disk verbatim otherwise.
 		if len(sess.Messages[i].ToolCalls) > 0 {

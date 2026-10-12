@@ -1115,7 +1115,7 @@ func stripOldReasoning(messages []session.Message, keep int) {
 		if messages[i].Role != "assistant" {
 			continue
 		}
-		if messages[i].ReasoningContent == "" && messages[i].ThinkingSignature == "" {
+		if messages[i].ReasoningContent == "" && messages[i].ThinkingSignature == "" && len(messages[i].ThinkingBlocks) == 0 {
 			continue
 		}
 		if kept < keep {
@@ -1124,6 +1124,8 @@ func stripOldReasoning(messages []session.Message, keep int) {
 		}
 		messages[i].ReasoningContent = ""
 		messages[i].ThinkingSignature = ""
+		messages[i].ThinkingBlocks = nil
+		messages[i].ThinkingProvider = ""
 	}
 }
 
@@ -3392,6 +3394,8 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 			Content:           result.Content,
 			ReasoningContent:  result.ReasoningContent,
 			ThinkingSignature: result.ThinkingSignature,
+			ThinkingBlocks:    result.ThinkingBlocks,
+			ThinkingProvider:  result.ThinkingProvider,
 			ToolCalls:         result.ToolCalls,
 		}
 
