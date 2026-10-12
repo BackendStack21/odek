@@ -1151,7 +1151,13 @@ func ProjectConfigPath() string {
 // loadFile reads and parses a JSON config file. Returns a zero FileConfig
 // if the file doesn't exist or can't be read. String values go through
 // expandEnv for ${VAR} substitution.
-func loadFile(path string) FileConfig {
+func loadFile(path string) FileConfig { return loadFileExpand(path, true) }
+
+// loadFileExpand is loadFile with ${VAR} substitution switchable. The
+// untrusted project config is loaded without it: expanding host environment
+// variables into repo-controlled strings (model, sandbox image, ...) would
+// let a repo ship them off to a provider or registry.
+func loadFileExpand(path string, expand bool) FileConfig {
 	if path == "" {
 		return FileConfig{}
 	}
@@ -1195,6 +1201,9 @@ func loadFile(path string) FileConfig {
 		diagnostics.Warning("config", "decode_file", err)
 		fmt.Fprintf(os.Stderr, "odek: warning: config %s: invalid JSON — ignoring file: %v\n", path, err)
 		return FileConfig{} // invalid JSON = empty
+	}
+	if !expand {
+		return cfg
 	}
 	// Expand environment variables in all string fields
 	cfg.Model = expandEnv(cfg.Model)
@@ -1785,7 +1794,7 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	global := loadFile(GlobalConfigPath())
 
 	// Layer 2: project (./odek.json)
-	project := loadFile(ProjectConfigPath())
+	project := loadFileExpand(ProjectConfigPath(), false)
 
 	// Project config is untrusted: a malicious repo must not be able to steal
 	// the API key, poison the system prompt, or disable safety policy.

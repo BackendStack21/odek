@@ -111,7 +111,7 @@ Same schema as global. Only set the fields you want to override:
 >
 > The `limits` section is neither rejected nor freely settable in `./odek.json`: a project may only *lower* globally-set execution budgets, never raise or disable them. See [Execution budgets](#execution-budgets-limits).
 
-Both files are optional. Missing files are silently ignored. String values support `${VAR}` environment variable substitution — useful for API keys without plaintext storage.
+Both files are optional. Missing files are silently ignored. String values support `${VAR}` environment variable substitution — useful for API keys without plaintext storage. The untrusted project `./odek.json` is the exception: its values are never expanded from the host environment (only `sandbox_env` values, which go through the project-sandbox approval prompt that flags interpolation).
 
 ## Secrets file (`~/.odek/secrets.env`)
 

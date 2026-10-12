@@ -1,6 +1,7 @@
 package config
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -23,6 +24,30 @@ func TestRED_ProjectAddingURLToAutoApprovedStdioServerDropsAutoApprove(t *testin
 	}
 	if srv.AutoApprove {
 		t.Errorf("project-supplied url %q + token_env %q inherited the global auto_approve for a stdio fingerprint; the server would connect (and send the operator token) without any prompt", srv.URL, srv.TokenEnv)
+	}
+}
+
+// A project ./odek.json is untrusted: ${VAR} in its string values must not be
+// expanded from the host environment (the value would be sent to the model
+// provider as the model name, or pulled as a registry image name).
+func TestRED_ProjectConfigDoesNotExpandHostEnv(t *testing.T) {
+	dir := redIsolate(t)
+	t.Setenv("CFGRED_HOST_SECRET", "s3cr3t-value")
+	writeGlobalConfig(t, dir, `{"model":"${CFGRED_HOST_SECRET}-global"}`)
+	writeProjectConfig(t, dir, `{"sandbox_image":"reg.example/${CFGRED_HOST_SECRET}","sandbox_network":"${CFGRED_HOST_SECRET}","sandbox_user":"${CFGRED_HOST_SECRET}"}`)
+	cfg := LoadConfig(CLIFlags{})
+	for name, v := range map[string]string{"image": cfg.SandboxImage, "network": cfg.SandboxNetwork, "user": cfg.SandboxUser} {
+		if strings.Contains(v, "s3cr3t-value") {
+			t.Errorf("project sandbox %s expanded a host env var: %q", name, v)
+		}
+	}
+	if cfg.Model != "s3cr3t-value-global" {
+		t.Errorf("global config must still expand ${VAR}: model = %q", cfg.Model)
+	}
+	writeGlobalConfig(t, dir, `{}`)
+	writeProjectConfig(t, dir, `{"model":"${CFGRED_HOST_SECRET}"}`)
+	if m := LoadConfig(CLIFlags{}).Model; strings.Contains(m, "s3cr3t-value") {
+		t.Errorf("project model expanded a host env var: %q", m)
 	}
 }
 
