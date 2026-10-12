@@ -224,3 +224,19 @@ func TestRED_LoopArgv0SubstitutionEdgeCases(t *testing.T) {
 		}
 	}
 }
+
+func TestRED_LoopArgv0NestedSubstitutionQuotesAndParens(t *testing.T) {
+	for cmd, want := range map[string]string{
+		`X="$(echo "a b" sk-secret)" cmd`: "cmd",
+		`X=$(f (a) sk-secret123) cmd`:     "cmd",
+		`X=$(echo $(echo a b) c d) run`:   "run",
+		`X=${Y:-"p q"} go`:                "go",
+		"X=`echo 'p q'` go":               "go",
+		`X="$(echo "a b" sk-secret) cmd`:  "",
+		`X=$(f (a sk-secret) cmd`:         "",
+	} {
+		if got := argv0(cmd); got != want {
+			t.Errorf("argv0(%q) = %q, want %q", cmd, got, want)
+		}
+	}
+}
