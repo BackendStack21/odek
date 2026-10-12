@@ -525,6 +525,16 @@ func sanitizeMCPDescription(serverName, toolName, desc string, g guard.Guard, gu
 	return sanitizeMCPToolDoc(serverName, toolName, desc, "", g, guardCfg)
 }
 
+// capMCPDescription truncates a description to maxMCPDescriptionRunes with
+// an explicit notice; shorter descriptions are returned unchanged.
+func capMCPDescription(desc string) string {
+	if utf8.RuneCountInString(desc) <= maxMCPDescriptionRunes {
+		return desc
+	}
+	return string([]rune(desc)[:maxMCPDescriptionRunes]) +
+		"\n[odek: description truncated — the MCP server supplied more than the maximum allowed length]"
+}
+
 // sanitizeMCPToolDoc is sanitizeMCPDescription plus the parameter
 // documentation lifted out of the tool's input schema (renderMCPParamDocs,
 // already bounded). The description is truncated on its own, then the
@@ -532,10 +542,8 @@ func sanitizeMCPDescription(serverName, toolName, desc string, g guard.Guard, gu
 // as one untrusted block — so schema free text reaches the model only inside
 // the wrapper, and a scanner hit in either part withholds both.
 func sanitizeMCPToolDoc(serverName, toolName, desc, paramDocs string, g guard.Guard, guardCfg guard.Config) string {
-	if utf8.RuneCountInString(desc) > maxMCPDescriptionRunes {
-		runes := []rune(desc)
-		desc = string(runes[:maxMCPDescriptionRunes]) +
-			"\n[odek: description truncated — the MCP server supplied more than the maximum allowed length]"
+	if capped := capMCPDescription(desc); capped != desc {
+		desc = capped
 		fmt.Fprintf(os.Stderr, "odek: warning: mcp server %q tool %q: description truncated to %d runes\n",
 			serverName, toolName, maxMCPDescriptionRunes)
 	}

@@ -427,23 +427,7 @@ func hashServerLimits(h hash.Hash, cfg mcpclient.ServerConfig) {
 	}
 }
 
-// truncateDescription limits a tool description for the approval prompt.
-func truncateDescription(desc string, max int) string {
-	if len(desc) <= max {
-		return desc
-	}
-	if max <= 3 {
-		return desc[:max]
-	}
-	return desc[:max-3] + "..."
-}
-
 const (
-	// mcpPromptDescriptionBytes bounds the description shown in the per-tool
-	// approval prompt. It exceeds the old 200-byte excerpt by far, so a
-	// payload appended after a benign opening is visible when a server
-	// rewrites an approved tool.
-	mcpPromptDescriptionBytes = 2048
 	// mcpPromptMaxParams bounds the parameter summary lines.
 	mcpPromptMaxParams = 32
 	// mcpPromptIndent prefixes continuation lines of multi-line fields so
@@ -461,7 +445,10 @@ const (
 // danger.SanitizeInline.
 func writeMCPToolContract(w io.Writer, def mcpclient.ToolDef, schemaHash string, schemaSize int) {
 	if strings.TrimSpace(def.Description) != "" {
-		desc := danger.SanitizeForDisplay(truncateDescription(def.Description, mcpPromptDescriptionBytes))
+		// The prompt shows exactly the description text the model receives
+		// (same rune cap as sanitizeMCPToolDoc), so a payload appended after
+		// a long benign opening is visible when a server rewrites a tool.
+		desc := danger.SanitizeForDisplay(capMCPDescription(def.Description))
 		fmt.Fprintf(w, "  description:\n%s%s\n", mcpPromptIndent, indentMCPPrompt(desc))
 	}
 	fmt.Fprintf(w, "  schema: sha256:%s (%d bytes)\n", schemaHash[:16], schemaSize)
