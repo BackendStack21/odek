@@ -496,7 +496,11 @@ func (r telegramRunner) Run(ctx context.Context, job schedule.Job) (string, int6
 			return "", 0, fmt.Errorf("daily token budget exhausted (%d/%d tokens)", used, limit)
 		}
 	}
-	result, tokens, err := telegramScheduledHeadlessRun(ctx, r.resolved, r.system, job.Task, r.mcpTools)
+	var taint scheduledRunTaint
+	result, tokens, err := telegramScheduledHeadlessRun(withScheduledRunTaint(ctx, &taint), r.resolved, r.system, job.Task, r.mcpTools)
+	// The delivery that follows writes this result into the chat's
+	// conversation; it must inherit what the run ingested.
+	rememberScheduledRunTaint(job.ID, taint.get())
 	// Bill whatever the run consumed, also when it failed: the tokens were
 	// spent at the provider either way.
 	if budgeted && tokens > 0 {
@@ -570,6 +574,17 @@ func (d telegramDeliverer) recordScheduledTurn(chatID int64, job schedule.Job, r
 		return nil // no active conversation to attach to — deliver-only
 	}
 
+	// The result is written as the assistant's own words, outside any
+	// untrusted wrapper, so the run's ingest taint has to travel with it or
+	// later turns in this chat would treat injected content as trusted.
+	taint := takeScheduledRunTaint(job.ID)
+	if taint.untrusted {
+		d.sessions.MarkUntrustedIngested(chatID)
+	}
+	if taint.episode {
+		d.sessions.MarkEpisodeUntrusted(chatID)
+	}
+
 	label := job.Name
 	if label == "" {
 		label = job.ID
@@ -599,6 +614,67 @@ func (d telegramDeliverer) recordScheduledTurn(chatID int64, job schedule.Job, r
 		)
 	}
 	return d.sessions.Save(chatID, msgs)
+}
+
+// scheduledRunTaintState is what a scheduled run's content may carry into the
+// chat it is delivered to: untrusted is the delegation taint (the run ingested
+// externally sourced content), episode the memory-gate taint.
+type scheduledRunTaintState struct {
+	untrusted bool
+	episode   bool
+}
+
+// scheduledRunTaint is a write-once-per-run sink the headless run fills in.
+type scheduledRunTaint struct {
+	mu    sync.Mutex
+	state scheduledRunTaintState
+	seen  bool
+}
+
+func (t *scheduledRunTaint) set(s scheduledRunTaintState) {
+	t.mu.Lock()
+	t.state, t.seen = s, true
+	t.mu.Unlock()
+}
+
+// get returns the recorded taint. A run that never reported (it failed before
+// finishing, or a stub) has unknown provenance and counts as tainted.
+func (t *scheduledRunTaint) get() scheduledRunTaintState {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if !t.seen {
+		return scheduledRunTaintState{untrusted: true, episode: true}
+	}
+	return t.state
+}
+
+type scheduledRunTaintKey struct{}
+
+func withScheduledRunTaint(ctx context.Context, t *scheduledRunTaint) context.Context {
+	return context.WithValue(ctx, scheduledRunTaintKey{}, t)
+}
+
+func scheduledRunTaintFrom(ctx context.Context) *scheduledRunTaint {
+	t, _ := ctx.Value(scheduledRunTaintKey{}).(*scheduledRunTaint)
+	return t
+}
+
+// scheduledRunTaints hands a run's taint to the delivery of its result, keyed
+// by job ID (a job does not overlap itself).
+var scheduledRunTaints sync.Map
+
+func rememberScheduledRunTaint(jobID string, s scheduledRunTaintState) {
+	scheduledRunTaints.Store(jobID, s)
+}
+
+// takeScheduledRunTaint returns and clears the taint recorded for the job's
+// latest run. A result with no recorded run has unknown provenance and counts
+// as tainted.
+func takeScheduledRunTaint(jobID string) scheduledRunTaintState {
+	if v, ok := scheduledRunTaints.LoadAndDelete(jobID); ok {
+		return v.(scheduledRunTaintState)
+	}
+	return scheduledRunTaintState{untrusted: true, episode: true}
 }
 
 // startSchedulerForBot starts the embedded scheduler unless an external
@@ -806,6 +882,12 @@ func runTaskHeadless(ctx context.Context, resolved config.ResolvedConfig, system
 	defer danger.ForgetReadLedger(auditID)
 	result, messages, err := agent.RunWithMessages(ctx, []session.Message{{Role: "user", Content: task}})
 	recordTurnAudit(auditStore, auditID, 1, task, messages)
+	if sink := scheduledRunTaintFrom(ctx); sink != nil {
+		sink.set(scheduledRunTaintState{
+			untrusted: agent.UntrustedIngested(),
+			episode:   len(session.EpisodeTaintSources(messages)) > 0,
+		})
+	}
 	tokens := int64(lastInfo.InputTokens + lastInfo.OutputTokens)
 	return result, tokens, err
 }
