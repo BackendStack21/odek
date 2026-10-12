@@ -461,6 +461,13 @@ func analyzeWithStateWork(cmd string, depth int, inherited *shellAnalysisState, 
 			for _, body := range envAssignmentCodeBodies(envTokens) {
 				result.merge(analyzeWithState(body, depth+1, &payloadState))
 			}
+			builtinBodies, builtinUnknown := builtinAssignedCodeBodies(name, inner[1:], stage)
+			for _, body := range builtinBodies {
+				result.merge(analyzeWithState(body, depth+1, &payloadState))
+			}
+			if builtinUnknown {
+				result.add(Unknown)
+			}
 			if name == "gpg" || name == "gpg2" {
 				home, set := state.vars["GNUPGHOME"]
 				for _, tok := range stage[:len(stage)-len(inner)] {
