@@ -406,7 +406,12 @@ func denyArgvComposerFeed(upstream [][]string, sink []string, dc *denyCtx, depth
 	if hs, ok := hereStringText(sink); ok {
 		text, static = hs, true
 	}
-	for _, composed := range argvCompositions(sink, text, static) {
+	comps, over := argvComposeBounded(sink, text, static)
+	if over {
+		// An oversized composition cannot be scanned in bounded time.
+		return true
+	}
+	for _, composed := range comps {
 		if denyStage(composed, dc, depth+1) {
 			return true
 		}

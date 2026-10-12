@@ -68,6 +68,24 @@ func splitParallelSources(inner []string) (cmd, args []string, found bool) {
 // runs each input line as a command of its own. Redirects on the stage are
 // not part of the composed command.
 func argvCompositions(stage []string, stdin string, haveStdin bool) [][]string {
+	out, _ := argvComposeBounded(stage, stdin, haveStdin)
+	return out
+}
+
+// Composition budget: the composed command lines of one composer stage may
+// hold at most maxComposedTokens tokens and maxComposedBytes bytes in total.
+// Each token costs path classification (and a denylist scan), so an
+// unbounded product of lines, placeholders and words would let a small
+// command stall the classifier; going over the budget is reported to the
+// caller, which fails closed.
+const (
+	maxComposedTokens = maxAnalysisTokens
+	maxComposedBytes  = MaxCommandBytes
+)
+
+// argvComposeBounded is argvCompositions plus an overflow flag, set when the
+// composition budget was exceeded; the returned lines are then incomplete.
+func argvComposeBounded(stage []string, stdin string, haveStdin bool) (out [][]string, over bool) {
 	idx := -1
 	for i, tok := range stage {
 		if argvComposers[commandName(tok)] {
@@ -76,12 +94,12 @@ func argvCompositions(stage []string, stdin string, haveStdin bool) [][]string {
 		}
 	}
 	if idx < 0 {
-		return nil
+		return nil, false
 	}
 	name := commandName(stage[idx])
 	inner, ok := argvComposerInnerCommand(stage)
 	if !ok {
-		return nil
+		return nil, false
 	}
 	optEnd := len(stage) - len(inner)
 	var opts []string
@@ -112,9 +130,23 @@ func argvCompositions(stage []string, stdin string, haveStdin bool) [][]string {
 		}
 		words = strings.FieldsFunc(stdin, func(r rune) bool { return r == 0 || r == ' ' || r == '\t' || r == '\n' || r == '\r' })
 	default:
-		return nil
+		return nil, false
 	}
-	var out [][]string
+	usedTokens, usedBytes := 0, 0
+	// charge reserves the budget for a composition of the given size before
+	// it is built; false means the budget is exhausted.
+	charge := func(tokens, bytes int) bool {
+		if over {
+			return false
+		}
+		if tokens > maxComposedTokens-usedTokens || bytes > maxComposedBytes-usedBytes {
+			over = true
+			return false
+		}
+		usedTokens += tokens
+		usedBytes += bytes
+		return true
+	}
 	emit := func(c []string) {
 		if len(out) < maxComposedCommands {
 			out = append(out, c)
@@ -125,11 +157,30 @@ func argvCompositions(stage []string, stdin string, haveStdin bool) [][]string {
 	case len(cmd) == 0:
 		if name == "parallel" {
 			for _, l := range lines {
+				if !charge(len(l)/2+1, len(l)) {
+					break
+				}
 				emit(tokenize(l))
 			}
 		}
 	case placeholder:
 		for _, l := range lines {
+			if len(out) >= maxComposedCommands {
+				break
+			}
+			lt := len(l)/2 + 1
+			tokens, bytes := 0, 0
+			for _, tok := range cmd {
+				if tok == ph {
+					tokens += lt
+				} else {
+					tokens++
+				}
+				bytes += len(tok) + strings.Count(tok, ph)*len(l)
+			}
+			if !charge(tokens, bytes) {
+				break
+			}
 			var c []string
 			for _, tok := range cmd {
 				switch {
@@ -147,12 +198,25 @@ func argvCompositions(stage []string, stdin string, haveStdin bool) [][]string {
 		}
 	case name == "parallel":
 		for _, l := range lines {
+			if !charge(len(cmd)+1, len(l)+composedBytes(cmd)) {
+				break
+			}
 			emit(append(append([]string(nil), cmd...), l))
 		}
 	default:
-		emit(append(append([]string(nil), cmd...), words...))
+		if charge(len(cmd)+len(words), len(stdin)+composedBytes(cmd)) {
+			emit(append(append([]string(nil), cmd...), words...))
+		}
 	}
-	return out
+	return out, over
+}
+
+func composedBytes(cmd []string) int {
+	n := 0
+	for _, t := range cmd {
+		n += len(t)
+	}
+	return n
 }
 
 func anyContains(tokens []string, sub string) bool {

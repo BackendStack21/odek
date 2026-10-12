@@ -2017,7 +2017,11 @@ func classifyArgvComposerSink(upstream [][]string, stage []string, repo *gitRepo
 	if hs, ok := hereStringText(stage); ok {
 		text, static = hs, true
 	}
-	if comps := argvCompositions(stage, text, static); len(comps) > 0 {
+	comps, over := argvComposeBounded(stage, text, static)
+	if over {
+		return Unknown
+	}
+	if len(comps) > 0 {
 		worst := Safe
 		for _, c := range comps {
 			worst = worstOf(worst, classifyStageIn(c, false, repo))
@@ -2045,8 +2049,12 @@ func classifyArgvComposerSink(upstream [][]string, stage []string, repo *gitRepo
 // and a here-string on standard input.
 func classifyArgvComposerLiteralInput(stage []string, repo *gitRepoCtx) RiskClass {
 	text, static := hereStringText(stage)
+	comps, over := argvComposeBounded(stage, text, static)
+	if over {
+		return Unknown
+	}
 	worst := Safe
-	for _, c := range argvCompositions(stage, text, static) {
+	for _, c := range comps {
 		worst = worstOf(worst, classifyStageIn(c, false, repo))
 	}
 	return worst
