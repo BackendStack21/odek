@@ -131,3 +131,24 @@ func TestRED_PillarImitationHiddenBehindIndentedFenceOpener(t *testing.T) {
 		t.Errorf("pillar imitation after a 4-space-indented ``` line survived sanitising:\n%s", got[:strings.Index(got, SecurityPillar)])
 	}
 }
+
+// Legitimate identity text with code blocks is left untouched, and
+// unclosed fences are closed with the opener's own delimiter.
+func TestRED_FenceTracker_LegitIdentityUnmangled(t *testing.T) {
+	identity := "You are Ada.\n\n```go\nfmt.Println(\"~~~\")\n```\n\n~~~~\n```\nnested\n```\n~~~~\n\nDone."
+	if got := sanitizeIdentity(identity); got != identity {
+		t.Errorf("legit identity changed:\n%q\n!=\n%q", got, identity)
+	}
+	for in, want := range map[string]string{
+		"a\n```\ncode":        "a\n```\ncode\n```",
+		"a\n~~~~\ncode":       "a\n~~~~\ncode\n~~~~",
+		"a\n````\n```\nx":     "a\n````\n```\nx\n````",
+		"a\n> ```\nq":         "a\n> ```\nq",
+		"a\n```x`y\nnotfence": "a\n```x`y\nnotfence",
+		"a\n\t```\nindented":  "a\n\t```\nindented",
+	} {
+		if got := closeOpenFence(in); got != want {
+			t.Errorf("closeOpenFence(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

@@ -98,17 +98,72 @@ func sanitizeIdentity(identity string) string {
 
 // closeOpenFence terminates a code fence the text leaves open, so whatever is
 // appended after it (the authoritative pillar) is never inside a code block.
+// The closer repeats the opener's character and length.
 func closeOpenFence(s string) string {
-	open := false
+	var ft fenceTracker
 	for _, line := range strings.Split(s, "\n") {
-		if isFenceLine(foldHeadingText(unquoteLine(line))) {
-			open = !open
-		}
+		ft.feed(line)
 	}
-	if open {
-		return s + "\n```"
+	if ft.open {
+		return s + "\n" + strings.Repeat(string(ft.ch), ft.n)
 	}
 	return s
+}
+
+// fenceTracker follows top-level Markdown fenced code blocks with CommonMark
+// rules: an opener is three or more backticks or tildes indented by at most
+// three columns (a backtick opener's info string holds no backtick); a closer
+// repeats the opener's character at least as long, indented by at most three
+// columns, with nothing but spaces after it. Any other fence-looking line
+// inside a fence is content, and a blockquoted line belongs to the quote
+// container — it neither opens nor closes a top-level fence.
+type fenceTracker struct {
+	open bool
+	ch   byte
+	n    int
+}
+
+// feed advances the tracker by one line and reports whether the line is a
+// fence delimiter (an opener or a closer). After the call, open reports
+// whether the following line is fence content.
+func (f *fenceTracker) feed(line string) (delim bool) {
+	col, i := 0, 0
+	for i < len(line) && (line[i] == ' ' || line[i] == '\t') {
+		if line[i] == '\t' {
+			col += 4 - col%4
+		} else {
+			col++
+		}
+		i++
+	}
+	if col >= 4 || i >= len(line) {
+		return false
+	}
+	t := line[i:]
+	c := t[0]
+	if c != '`' && c != '~' {
+		return false
+	}
+	k := 0
+	for k < len(t) && t[k] == c {
+		k++
+	}
+	if k < 3 {
+		return false
+	}
+	rest := t[k:]
+	if !f.open {
+		if c == '`' && strings.Contains(rest, "`") {
+			return false
+		}
+		f.open, f.ch, f.n = true, c, k
+		return true
+	}
+	if c == f.ch && k >= f.n && strings.Trim(rest, " \t") == "" {
+		f.open = false
+		return true
+	}
+	return false
 }
 
 // appendSecurityPillar removes exact pillar copies and appends the one
@@ -136,36 +191,42 @@ func appendSecurityPillar(system string) string {
 func stripPillarImitations(identity string) string {
 	lines := strings.Split(identity, "\n")
 	out := make([]string, 0, len(lines))
-	inFence := false
 	// A fence opener that is never closed must not make the rest of the
 	// identity opaque, or an imitation hides after it.
 	unclosed := -1
-	for i, open := 0, -1; i < len(lines); i++ {
-		if isFenceLine(foldHeadingText(unquoteLine(lines[i]))) {
-			if open < 0 {
+	{
+		var ft fenceTracker
+		open := -1
+		for i, line := range lines {
+			wasOpen := ft.open
+			if ft.feed(line) && !wasOpen {
 				open = i
-			} else {
-				open = -1
 			}
 		}
-		if i == len(lines)-1 {
+		if ft.open {
 			unclosed = open
 		}
 	}
+	var ft fenceTracker
+	ignoreFences := false
 	stripping := false
 	consumed := false // the imitated block has consumed content
 	sawBlank := false
 	for i := 0; i < len(lines); i++ {
 		line := lines[i]
-		if i != unclosed && isFenceLine(foldHeadingText(unquoteLine(line))) {
-			inFence = !inFence
-			stripping = false
-			out = append(out, line)
-			continue
+		if i == unclosed {
+			ignoreFences = true
 		}
-		if inFence {
-			out = append(out, line)
-			continue
+		if !ignoreFences {
+			if ft.feed(line) {
+				stripping = false
+				out = append(out, line)
+				continue
+			}
+			if ft.open {
+				out = append(out, line)
+				continue
+			}
 		}
 		if title, span, isHeading := headingAt(lines, i); isHeading {
 			if stripping && isPillarSubTitle(title) {
@@ -246,12 +307,6 @@ func unquoteLine(line string) string {
 		t = strings.TrimLeft(t[1:], " \t")
 	}
 	return t
-}
-
-// isFenceLine reports a code-fence delimiter line.
-func isFenceLine(folded string) bool {
-	t := strings.TrimSpace(folded)
-	return strings.HasPrefix(t, "```") || strings.HasPrefix(t, "~~~")
 }
 
 // headingAt recognises a heading starting at lines[i] and returns its title
