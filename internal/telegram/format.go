@@ -57,10 +57,10 @@ func FormatResponse(text string) ([]string, error) {
 			continue
 		}
 
-		// ── Separator lines: ─── or ──...── → --- ──
+		// ── Separator lines: ─── or ──...── → an escaped rule ──
 		if isSeparator(line) {
 			flushTable()
-			resultLines = append(resultLines, "---")
+			resultLines = append(resultLines, `\-\-\-`)
 			continue
 		}
 
