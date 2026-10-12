@@ -5,6 +5,8 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/BackendStack21/odek/internal/danger"
 )
 
 // Text the renderer prints comes from the model and from tools (a fetched
@@ -102,6 +104,9 @@ func needsEscape(r rune) bool {
 	case r == '͏', r == 'ᅟ', r == 'ᅠ', r == '᠎', r == 'ㅤ', r == 'ﾠ':
 		return true // invisible joiner and fillers that render as blank space
 	}
+	if danger.IsZeroWidthMark(r) {
+		return true // variation selectors, Khmer/Mongolian marks, Braille blank: same set as approval prompts
+	}
 	return unicode.Is(unicode.Cf, r) // bidi controls, zero-width, tag characters, BOM
 }
 
@@ -186,6 +191,8 @@ func escapeTerminalFrom(s string, keepLayout bool, st *escState) string {
 			fmt.Fprintf(&b, `\x%02x`, r)
 		case r == zwj && isEmojiPart(st.prev):
 			b.WriteRune(r)
+		case r == 0xFE0F && st.prev != 0xFE0F && isEmojiPart(st.prev):
+			b.WriteRune(r) // emoji presentation selector directly after its symbol
 		case needsEscape(r):
 			writeEscapedRune(&b, r)
 		default:

@@ -26,3 +26,17 @@ func TestRED_RendererPrintsInvisibleVariationSelectorsRaw(t *testing.T) {
 		}
 	}
 }
+
+// The emoji presentation selector stays when it directly follows its symbol
+// and is escaped everywhere else (chains and after plain text).
+func TestRED_RendererKeepsEmojiPresentationSelectorOnly(t *testing.T) {
+	if got := escapeTerminal("\u26a0\uFE0F ok", true); got != "\u26a0\uFE0F ok" {
+		t.Errorf("emoji presentation selector escaped: %+q", got)
+	}
+	if got := escapeTerminal("a\uFE0Fb", true); strings.ContainsRune(got, 0xFE0F) {
+		t.Errorf("stray selector printed raw: %+q", got)
+	}
+	if got := escapeTerminal("\u26a0\uFE0F\uFE0F\uFE0F", true); strings.Count(got, "\uFE0F") > 1 {
+		t.Errorf("selector chain printed raw: %+q", got)
+	}
+}
