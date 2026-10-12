@@ -139,14 +139,14 @@ func checkMediaPathSensitivity(resolved string) error {
 	}
 
 	// Share the credential model used for file reads: private keys, PEM/key
-	// files, Terraform state, vault tokens, service-account JSON, ... Directory
-	// rules apply only below the bot's working directory.
-	// Name-based rules apply everywhere; directory-name rules (a "secrets"
-	// folder) are skipped for ordinary media files so project images and
-	// recordings in such folders can still be sent.
+	// files, Terraform state, vault tokens, service-account JSON, ... Name-
+	// based rules apply everywhere. Directory-name rules (a "secrets" folder)
+	// apply only below the bot's working directory, and are skipped for
+	// ordinary media files so project images and recordings in such folders
+	// can still be sent.
 	cwd, _ := os.Getwd()
 	root := cwd
-	if mediaExtensions[strings.ToLower(filepath.Ext(resolved))] {
+	if mediaExtensions[strings.ToLower(filepath.Ext(resolved))] || cwd == "" || !isPathInside(resolved, cwd) {
 		root = filepath.Dir(resolved)
 	}
 	if danger.IsSensitiveReadPath(root, resolved) {
