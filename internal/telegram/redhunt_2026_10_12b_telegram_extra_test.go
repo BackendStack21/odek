@@ -33,6 +33,35 @@ func TestMediaSensitivityDirRulesOnlyForCredentialFiles(t *testing.T) {
 	}
 }
 
+// Crossed emphasis must never produce crossed MarkdownV2 entities.
+func TestConvertEmphasisNeverCrosses(t *testing.T) {
+	for _, in := range []string{"*a **b* c**", "**a *b** c*", "*a **b** c*", "**a *b* c**"} {
+		out := convertItalicAndEscape(in)
+		var stack []byte
+		for i := 0; i < len(out); i++ {
+			c := out[i]
+			if c == '\\' {
+				i++
+				continue
+			}
+			if c != '*' && c != '_' {
+				continue
+			}
+			if n := len(stack); n > 0 && stack[n-1] == c {
+				stack = stack[:n-1]
+			} else if strings.IndexByte(string(stack), c) >= 0 {
+				t.Errorf("%q -> %q has crossed entities", in, out)
+				break
+			} else {
+				stack = append(stack, c)
+			}
+		}
+		if len(stack) != 0 {
+			t.Errorf("%q -> %q leaves entities open", in, out)
+		}
+	}
+}
+
 // A crash mid-write can leave an empty counter; that is no usage, while
 // non-numeric content still fails closed.
 func TestDailyBudgetEmptyCounterIsZero(t *testing.T) {

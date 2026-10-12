@@ -286,6 +286,7 @@ func convertEmphasisAndEscape(line string, inBold bool) string {
 	var result strings.Builder
 	inCodeSpan := false
 	var closers map[int]bool // positions of "*"/"**" runs that close an emphasis
+	var spans [][2]int       // opener/closer positions of the pairs found so far
 	i := 0
 
 	for i < len(line) {
@@ -345,11 +346,14 @@ func convertEmphasisAndEscape(line string, inBold bool) string {
 			if run <= 2 {
 				paired := closers[i]
 				if !paired {
-					if j := findEmphasisCloser(line, i, run, closers); j >= 0 {
+					// A pair that would cross an earlier one ("*a **b* c**")
+					// is left literal: crossed entities are invalid MarkdownV2.
+					if j := findEmphasisCloser(line, i, run, closers); j >= 0 && !crossesSpan(spans, i, j) {
 						if closers == nil {
 							closers = map[int]bool{}
 						}
 						closers[j] = true
+						spans = append(spans, [2]int{i, j})
 						paired = true
 					}
 				}
@@ -383,6 +387,17 @@ func convertEmphasisAndEscape(line string, inBold bool) string {
 	}
 
 	return result.String()
+}
+
+// crossesSpan reports whether a pair opening at i and closing at j would
+// overlap, without nesting inside, one of the earlier pairs.
+func crossesSpan(spans [][2]int, i, j int) bool {
+	for _, sp := range spans {
+		if sp[0] < i && i < sp[1] && sp[1] < j {
+			return true
+		}
+	}
+	return false
 }
 
 // starRunLen returns the length of the run of '*' starting at i.
