@@ -239,8 +239,8 @@ func markEmptyKillPatterns(cmd string) string {
 // pgrepFeedsKill reports whether a kill takes its pids from a pgrep that
 // selects every process: `kill $(pgrep .)`, `kill -9 $(pgrep -f .)`,
 // `pgrep . | xargs kill`. stages are the expanded words of one pipeline and
-// subs the substitution bodies extracted from the command line.
-func pgrepFeedsKill(stages [][]string, subs []string) bool {
+// subsPgrepBroadcast whether a substitution of the command line runs such a pgrep.
+func pgrepFeedsKill(stages [][]string, subsPgrepBroadcast bool) bool {
 	pgrepBroadcast := false
 	for _, stage := range stages {
 		inner := unwrapWrappersFull(stage).inner
@@ -252,28 +252,15 @@ func pgrepFeedsKill(stages [][]string, subs []string) bool {
 			if selectsEveryProcess("pgrep", inner) {
 				pgrepBroadcast = true
 			}
-		case "xargs":
-			if pgrepBroadcast && hasCommandWord(inner[1:], "kill") {
-				return true
-			}
 		case "kill":
 			if pgrepBroadcast {
 				return true // xargs is unwrapped to the kill it runs
 			}
 			for _, tok := range inner[1:] {
-				if strings.Contains(tok, dynamicSubstToken) && substsContainPgrepBroadcast(subs) {
+				if strings.Contains(tok, dynamicSubstToken) && subsPgrepBroadcast {
 					return true
 				}
 			}
-		}
-	}
-	return false
-}
-
-func hasCommandWord(tokens []string, name string) bool {
-	for _, tok := range tokens {
-		if commandName(tok) == name {
-			return true
 		}
 	}
 	return false

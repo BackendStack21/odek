@@ -1,6 +1,9 @@
 package danger
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // dangerHunt12bAtLeast asserts every command classifies at least min and is
 // not auto-allowed under the default policy.
@@ -269,6 +272,78 @@ func TestRED_ClassifyURLZoneScopedIPv6Loopback(t *testing.T) {
 	} {
 		if got := ClassifyURL(u); got != SystemWrite {
 			t.Errorf("ClassifyURL(%q) = %s, want system_write", u, got)
+		}
+	}
+}
+
+func TestRED_MarkEmptyKillPatternsUnit(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{`pkill ''`, `pkill '.*'`},
+		{`sudo pkill -9 ""; echo ''`, `sudo pkill -9 '.*'; echo ''`},
+		{`echo '' | pkill ""`, `echo '' | pkill '.*'`},
+		{`pkill a''b`, `pkill a''b`},
+		{`pkill \'' x`, `pkill \'' x`},
+		{`pkill 'unterminated`, `pkill 'unterminated`},
+		{`grep '' f; pgrep ''`, `grep '' f; pgrep '.*'`},
+		{`echo kill ''`, `echo kill ''`},
+		{`pkill '' x`, `pkill '.*' x`},
+		{`no quotes here`, `no quotes here`},
+		{"pkill\t''\n", "pkill\t'.*'\n"},
+	} {
+		if got := markEmptyKillPatterns(tc.in); got != tc.want {
+			t.Errorf("markEmptyKillPatterns(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestRED_ArithmeticBracketAndParamUnit(t *testing.T) {
+	budget := 1000
+	if _, ok := matchingBracket("[a[b]", 0, &budget); ok {
+		t.Error("unterminated bracket reported as matched")
+	}
+	budget = 2
+	if _, ok := matchingBracket("[abcdef]", 0, &budget); ok {
+		t.Error("matchingBracket ignored an exhausted budget")
+	}
+	budget = 2
+	if _, ok := arithmeticParamBody("${a[abcdef]}", 0, &budget); ok {
+		t.Error("arithmeticParamBody ignored an exhausted budget")
+	}
+	budget = 1000
+	if _, ok := arithmeticParamBody("${a:-x", 0, &budget); ok {
+		t.Error("unterminated parameter expansion matched")
+	}
+	// An unterminated $[ and a pathological run of openers stay bounded and
+	// fail closed rather than hiding a substitution.
+	dangerHunt12bAtLeast(t, Unknown,
+		`echo `+strings.Repeat(`$[`, 200)+`'$(x)'`+strings.Repeat(`]`, 200),
+	)
+}
+
+func TestRED_StartupHomeOverrideUnit(t *testing.T) {
+	t.Setenv("HOME", "/home/user")
+	for _, tc := range []struct {
+		upper, val string
+		inner      []string
+		want       bool
+	}{
+		{"HOME", ".", nil, false},
+		{"HOME", ".", []string{"npm"}, false},
+		{"HOME", "", []string{"bash", "-i"}, false},
+		{"HOME", "~", []string{"bash", "-i"}, false},
+		{"HOME", "/home/user/", []string{"bash", "-i"}, false},
+		{"HOME", ".", []string{"bash", "--interactive"}, true},
+		{"HOME", ".", []string{"bash", "--norc", "-l"}, true},
+		{"HOME", ".", []string{"bash", "--norc", "-c", "true"}, false},
+		{"HOME", ".", []string{"bash", "-"}, false},
+		{"HOME", ".", []string{"bash", "--", "x.sh"}, false},
+		{"HOME", ".", []string{"bash", "-e"}, true},
+		{"XDG_CONFIG_HOME", ".", []string{"fish"}, true},
+		{"XDG_CONFIG_HOME", ".", []string{"zsh"}, false},
+		{"PATH", ".", []string{"bash", "-i"}, false},
+	} {
+		if got := startupHomeOverride(tc.upper, tc.val, tc.inner); got != tc.want {
+			t.Errorf("startupHomeOverride(%q, %q, %v) = %v, want %v", tc.upper, tc.val, tc.inner, got, tc.want)
 		}
 	}
 }
