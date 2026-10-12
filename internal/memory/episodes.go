@@ -265,13 +265,15 @@ func (e *EpisodeStore) WriteWithProvenance(sessionID, summary string, turns int,
 
 // writeLocked performs the full episode write under e.mu: dedup against
 // existing episodes, write the summary file, update + prune the index, and
-// mark the vector index dirty. File mutations happen before writeIndex, which
-// happens before markDirty, so a crash leaves at most a dangling index entry
-// (rebuild/recall tolerate a missing .md) rather than an orphan file in the
-// index. Caller must hold e.mu. Lifecycle events are returned (not fired) so the
+// mark the vector index dirty. The index is written before the summary file,
+// which happens before markDirty, so a crash leaves at most a dangling index
+// entry (rebuild/recall tolerate a missing .md). Caller must hold e.mu. Lifecycle events are returned (not fired) so the
 // caller can fan them out after releasing the lock (see notifyAll).
 func (e *EpisodeStore) writeLocked(sessionID, summary string, turns int, prov EpisodeProvenance) ([]MemoryEvent, error) {
 	var events []MemoryEvent
+	// Files of entries that leave the index are unlinked only after the new
+	// index is durable, so a failed index write never loses an entry's text.
+	var dedupedFile string
 	idx, err := e.ReadIndex()
 	if err != nil {
 		idx = []EpisodeMeta{}
@@ -298,7 +300,7 @@ func (e *EpisodeStore) writeLocked(sessionID, summary string, turns int, prov Ep
 				return events, nil
 			}
 			deduped := idx[dupIdx].SessionID
-			e.removeEpisodeFile(deduped)
+			dedupedFile = deduped
 			idx = append(idx[:dupIdx], idx[dupIdx+1:]...)
 			events = append(events, MemoryEvent{
 				Type:       "episode_deduped",
@@ -306,12 +308,6 @@ func (e *EpisodeStore) writeLocked(sessionID, summary string, turns int, prov Ep
 				Similarity: sim,
 			})
 		}
-	}
-
-	// Write the summary file.
-	path := filepath.Join(e.dir, sessionID+".md")
-	if err := fsatomic.WriteFile(path, []byte(summary), 0600); err != nil {
-		return events, fmt.Errorf("memory: write episode: %w", err)
 	}
 
 	idx = append(idx, EpisodeMeta{
@@ -322,14 +318,26 @@ func (e *EpisodeStore) writeLocked(sessionID, summary string, turns int, prov Ep
 		Provenance: prov,
 	})
 
-	// Evict by TTL + count cap; remove the corresponding summary files.
+	// Evict by TTL + count cap.
 	idx, removed := e.pruneLocked(idx)
-	for _, sid := range removed {
-		e.removeEpisodeFile(sid)
-	}
 
+	// The index entry (with this episode's provenance) is written before the
+	// summary file. A failed index write leaves the previous entry and text
+	// paired as they were; a failed file write leaves the new provenance over
+	// the previous text, which can only be stricter. The reverse order could
+	// pair an old trusted entry with new untrusted text.
 	if err := e.writeIndex(idx); err != nil {
 		return events, err
+	}
+	path := filepath.Join(e.dir, sessionID+".md")
+	if err := fsatomic.WriteFile(path, []byte(summary), 0600); err != nil {
+		return events, fmt.Errorf("memory: write episode: %w", err)
+	}
+	if dedupedFile != "" {
+		e.removeEpisodeFile(dedupedFile)
+	}
+	for _, sid := range removed {
+		e.removeEpisodeFile(sid)
 	}
 
 	// Mark the vector index dirty so it rebuilds on the next recall, picking up
