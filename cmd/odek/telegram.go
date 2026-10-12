@@ -143,7 +143,21 @@ var chatRunInfos sync.Map // map[int64]loop.IterationInfo
 type pendingClarifyReq struct {
 	userID int64
 	ch     chan string
-	msgID  int
+
+	mu    sync.Mutex // guards msgID: set after the prompt is sent, read by the callback
+	msgID int
+}
+
+func (r *pendingClarifyReq) setMsgID(id int) {
+	r.mu.Lock()
+	r.msgID = id
+	r.mu.Unlock()
+}
+
+func (r *pendingClarifyReq) getMsgID() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.msgID
 }
 
 var pendingClarifyReqs sync.Map // map[string]*pendingClarifyReq
@@ -226,8 +240,8 @@ func handleClarifyCallback(chatID, userID int64, data string, bot *telegram.Bot)
 		// Channel full or closed — clarify already resolved.
 	}
 	// Remove the inline keyboard and update text to show the answer.
-	if req.msgID != 0 && bot != nil {
-		bot.EditMessageText(chatID, req.msgID,
+	if id := req.getMsgID(); id != 0 && bot != nil {
+		bot.EditMessageText(chatID, id,
 			"✅ *User answered:* "+answer,
 			&telegram.SendOpts{ParseMode: telegram.ParseModeMarkdownV2, ReplyMarkup: &telegram.InlineKeyboardMarkup{InlineKeyboard: [][]telegram.InlineKeyboardButton{}}})
 	}
@@ -1825,7 +1839,7 @@ func runChatTurn(
 		if err != nil {
 			return "", fmt.Errorf("clarify: send message: %w", err)
 		}
-		req.msgID = msg.ID
+		req.setMsgID(msg.ID)
 
 		// Wait for the user to click a button (or timeout).
 		select {
