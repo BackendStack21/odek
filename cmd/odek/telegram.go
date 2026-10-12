@@ -1837,8 +1837,10 @@ func runChatTurn(
 				},
 			},
 		}
-		msg, err := bot.SendMessage(chatID, "❓ "+question,
-			&telegram.SendOpts{ReplyMarkup: replyMarkup, ParseMode: "Markdown", ReplyToMessageID: messageID})
+		// The question is model text: escape it so stray markers cannot make
+		// Telegram reject the prompt or render model-chosen links.
+		msg, err := bot.SendMessage(chatID, "❓ "+escapeMarkdownV2Literal(question),
+			&telegram.SendOpts{ReplyMarkup: replyMarkup, ParseMode: telegram.ParseModeMarkdownV2, ReplyToMessageID: messageID})
 		if err != nil {
 			return "", fmt.Errorf("clarify: send message: %w", err)
 		}
