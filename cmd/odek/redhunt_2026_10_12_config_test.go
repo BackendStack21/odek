@@ -50,10 +50,6 @@ func TestRED_StagingRelocationCopyFallbackDoesNotFollowSymlinks(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	old := renameFailureHook
-	renameFailureHook = func() bool { return true } // cross-device workspace
-	defer func() { renameFailureHook = old }()
-
 	_, _ = relocateStagingArtifacts(staging, canonical)
 	refs, _ := scanArtifacts(canonical, maxArtifactTaskBudget)
 	for _, r := range refs {

@@ -412,25 +412,21 @@ func accountHomes(abs string) []string {
 	if physical := currentHomeDirs(); len(physical) > 1 {
 		homes = append(homes, physical[1:]...)
 	}
-	lower := strings.ToLower(abs)
-	for _, base := range []string{"/home/", "/users/"} {
-		if !strings.HasPrefix(lower, base) {
-			continue
-		}
-		rest := abs[len(base):]
-		name, _, _ := strings.Cut(rest, "/")
-		if name == "" {
-			continue
-		}
-		homes = append(homes, abs[:len(base)]+name)
+	if !strings.HasPrefix(abs, "/") {
+		return homes
 	}
-	if lower == "/root" || strings.HasPrefix(lower, "/root/") {
-		homes = append(homes, abs[:len("/root")])
-	}
-	// macOS keeps the superuser's home at /var/root (/private/var/root before
-	// the /private prefix is stripped).
-	if lower == "/var/root" || strings.HasPrefix(lower, "/var/root/") {
-		homes = append(homes, abs[:len("/var/root")])
+	// Components are compared case-folded with the full path-case fold: on a
+	// case-insensitive filesystem /Uſers/alice is /Users/alice.
+	comps := strings.Split(abs[1:], "/")
+	switch first := FoldPathCase(comps[0]); {
+	case (first == "home" || first == "users") && len(comps) > 1 && comps[1] != "":
+		homes = append(homes, "/"+comps[0]+"/"+comps[1])
+	case first == "root":
+		homes = append(homes, "/"+comps[0])
+	case first == "var" && len(comps) > 1 && FoldPathCase(comps[1]) == "root":
+		// macOS keeps the superuser's home at /var/root (/private/var/root
+		// before the /private prefix is stripped).
+		homes = append(homes, "/"+comps[0]+"/"+comps[1])
 	}
 	return homes
 }
@@ -444,7 +440,25 @@ var homeSensitivePrefixes = []string{"/.ssh", "/.config", "/.gnupg", "/.aws", "/
 	"/.netrc", "/.npmrc", "/.pypirc", "/.pgpass",
 	"/.git-credentials", "/.my.cnf", "/.mylogin.cnf",
 	"/.cargo", "/.gem", "/.azure", "/.password-store",
-	"/.terraform.d", "/.vault-token"}
+	"/.terraform.d", "/.vault-token",
+	// History directories (single history files are in homeHistoryNames).
+	"/.zsh_sessions", "/.bash_sessions", "/.local/share/fish/fish_history",
+	"/.local/share/zsh", "/.local/share/atuin"}
+
+// homeHistoryNames are the files directly in a home directory that hold shell
+// or REPL history (pasted tokens and passwords). Any other dotfile ending in
+// _history is treated the same (isHomeHistoryFile). One table backs both the
+// @-reference gate and ClassifyPath.
+var homeHistoryNames = fieldSet(".bash_history .zsh_history .zhistory .histfile .history " +
+	".sh_history .ash_history .ksh_history .irb_history .rediscli_history .python_history " +
+	".node_repl_history .psql_history .mysql_history .sqlite_history .rhistory .dbshell " +
+	".lesshst .viminfo")
+
+// isHomeHistoryFile reports whether a home-directory file name is a history file.
+func isHomeHistoryFile(base string) bool {
+	b := FoldPathCase(base)
+	return homeHistoryNames[b] || strings.HasPrefix(b, ".") && strings.HasSuffix(b, "_history")
+}
 
 // classifyHomeRelative applies the home-directory rules to abs for one
 // account home. The boolean is false when abs is not protected by them.
@@ -477,7 +491,10 @@ func classifyHomeRelative(home, abs string) (RiskClass, bool) {
 	// Shell rc/profile files execute on the user's next shell start —
 	// writing them is persistence/escalation, not a local file edit.
 	// Case-folding defends against case-insensitive filesystems (macOS APFS).
-	if filepath.Dir(abs) == home && shellRCFilesLower[FoldPathCase(filepath.Base(abs))] {
+	if FoldPathCase(filepath.Dir(abs)) == lowerHome && shellRCFilesLower[FoldPathCase(filepath.Base(abs))] {
+		return SystemWrite, true
+	}
+	if FoldPathCase(filepath.Dir(abs)) == lowerHome && isHomeHistoryFile(filepath.Base(abs)) {
 		return SystemWrite, true
 	}
 	return LocalWrite, false
@@ -740,6 +757,25 @@ func FoldPathCase(s string) string {
 	}, s)
 }
 
+// odekProtectedFiles and odekProtectedDirs name the entries of ~/.odek that are
+// trust anchors (folded, relative to ~/.odek); odekRotatedLogs are logs whose
+// numbered rotations are anchors too.
+var (
+	odekProtectedFiles = []string{
+		"config.json", "secrets.env", "identity.md", "schedules.json", "schedule-state.json",
+		"schedules.lock", "mcp_approvals.json", "mcp_tool_approvals.json",
+		"project_sandbox_approvals.json", "restart.json", "telegram.lock", "telegram.pid",
+		"schedule.pid", "schedule.log", "runtime.log",
+	}
+	odekProtectedDirs = []string{"skills", "sessions", "audit", "plans", "memory"}
+	odekRotatedLogs   = []string{"runtime.log", "schedule.log"}
+)
+
+// odekAnchorSampleNames are the concrete entries a wildcard under ~/.odek is
+// matched against.
+var odekAnchorSampleNames = append(append(append([]string{}, odekProtectedFiles...), odekProtectedDirs...),
+	"runtime.log.1", "schedule.log.1")
+
 // isOdekTrustAnchor reports whether abs is a file or directory under ~/.odek
 // that must not be writable through auto-approved local_write tools. It must
 // stay in sync with cmd/odek/file_tool.go::isProtectedOdekPath.
@@ -760,36 +796,18 @@ func isOdekTrustAnchor(home, abs string) bool {
 	}
 	rel := FoldPathCase(filepath.Clean(lowerAbs[len(lowerPrefix+"/"):]))
 
-	protectedExact := []string{
-		"config.json",
-		"secrets.env",
-		"identity.md",
-		"schedules.json",
-		"schedule-state.json",
-		"schedules.lock",
-		"mcp_approvals.json",
-		"mcp_tool_approvals.json",
-		"project_sandbox_approvals.json",
-		"restart.json",
-		"telegram.lock",
-		"telegram.pid",
-		"schedule.pid",
-		"schedule.log",
-		"runtime.log",
-	}
-	for _, p := range protectedExact {
+	for _, p := range odekProtectedFiles {
 		if rel == p {
 			return true
 		}
 	}
-	protectedDirs := []string{
-		"skills",
-		"sessions",
-		"audit",
-		"plans",
-		"memory",
+	// Rotated logs (runtime.log.1, schedule.log.2, …) hold the same content.
+	for _, p := range odekRotatedLogs {
+		if strings.HasPrefix(rel, p+".") && !strings.Contains(rel, "/") {
+			return true
+		}
 	}
-	for _, d := range protectedDirs {
+	for _, d := range odekProtectedDirs {
 		if rel == d || strings.HasPrefix(rel, d+string(filepath.Separator)) {
 			return true
 		}
@@ -999,6 +1017,11 @@ func HostIsImplicitlyInternal(host string) bool {
 //   - Integer: 2130706433
 //   - Short:  127.1
 func parseBrowserIP(host string) net.IP {
+	// A zone-scoped IPv6 literal (fe80::1%en0, ::1%lo0) is the same address
+	// the dialer connects to; net.ParseIP rejects the zone, so drop it.
+	if i := strings.IndexByte(host, '%'); i > 0 && strings.Contains(host[:i], ":") {
+		host = host[:i]
+	}
 	// Try standard parse first (handles IPv6, dotted decimal, etc.)
 	if ip := net.ParseIP(host); ip != nil {
 		return ip
@@ -1946,6 +1969,9 @@ func classifyPipelineIn(tokens []string, repos []*gitRepoCtx) RiskClass {
 	for idx, stage := range stages {
 		// idx > 0 means this stage receives piped input from the previous one.
 		worst = worstOf(worst, classifyStageIn(stage, idx > 0, repos[idx]))
+		if idx == 0 {
+			worst = worstOf(worst, classifyArgvComposerLiteralInput(stage, repos[idx]))
+		}
 		if idx > 0 {
 			// A pipe-fed argv composer turns upstream stdout into command
 			// arguments, so `echo "/" | xargs rm -rf` executes `rm -rf /`
@@ -1984,19 +2010,54 @@ func classifyPipelineIn(tokens []string, repos []*gitRepoCtx) RiskClass {
 // run is unknowable at classification time.
 func classifyArgvComposerSink(upstream [][]string, stage []string, repo *gitRepoCtx) RiskClass {
 	inner, ok := argvComposerInnerCommand(stage)
-	if !ok || len(inner) == 0 {
+	if !ok {
 		return Safe
 	}
-	if payload, static := staticPipePayload(upstream); static {
-		composed := make([]string, 0, len(inner)+len(payload))
-		composed = append(composed, inner...)
-		composed = append(composed, payload...)
-		return classifyStageIn(composed, false, repo)
+	text, static := staticPipeText(upstream)
+	if hs, ok := hereStringText(stage); ok {
+		text, static = hs, true
+	}
+	comps, over := argvComposeBounded(stage, text, static)
+	if over {
+		return Unknown
+	}
+	if len(comps) > 0 {
+		worst := Safe
+		for _, c := range comps {
+			worst = worstOf(worst, classifyStageIn(c, false, repo))
+		}
+		return worst
+	}
+	if len(inner) == 0 {
+		// GNU parallel with no command runs each input line as a command.
+		if argvComposerName(stage) == "parallel" && !static && !strings.Contains(strings.Join(stage, " "), ":::") {
+			return Unknown
+		}
+		return Safe
+	}
+	if static {
+		return classifyStageIn(inner, false, repo)
 	}
 	if xargsInnerDangerous(inner) {
 		return Unknown
 	}
 	return Safe
+}
+
+// classifyArgvComposerLiteralInput classifies the commands an argv composer
+// runs from input written on its own line: parallel's `:::` argument sources
+// and a here-string on standard input.
+func classifyArgvComposerLiteralInput(stage []string, repo *gitRepoCtx) RiskClass {
+	text, static := hereStringText(stage)
+	comps, over := argvComposeBounded(stage, text, static)
+	if over {
+		return Unknown
+	}
+	worst := Safe
+	for _, c := range comps {
+		worst = worstOf(worst, classifyStageIn(c, false, repo))
+	}
+	return worst
 }
 
 // xargsInnerDangerous reports whether the command an argv composer runs is,
@@ -2706,6 +2767,7 @@ func normalize(cmd string) (string, []string) {
 	cmd = joinLineContinuations(cmd)
 	cmd = consumeHeredocs(cmd)
 	cmd = stripComments(cmd)
+	cmd = markEmptyKillPatterns(cmd)
 	cmd = decodeANSIC(cmd)
 	cmd = expandIFS(cmd)
 	cmd = expandBraces(cmd)
@@ -2822,6 +2884,35 @@ func extractSubstitutionsBounded(cmd string, budget *int, arith int) (string, []
 				continue
 			}
 		}
+		// $[ … ] is the legacy arithmetic expansion: its body is evaluated
+		// like $(( … )), so a substitution in it runs even inside quotes.
+		if cmd[i] == '$' && i+1 < len(cmd) && cmd[i+1] == '[' {
+			if j, ok := matchingBracket(cmd, i+1, budget); ok {
+				if arith >= maxArithNesting {
+					return out.String(), append(subs, unanalysableSubstitution)
+				}
+				_, nested := extractSubstitutionsBounded(strings.ReplaceAll(cmd[i+2:j], "'", ""), budget, arith+1)
+				subs = append(subs, nested...)
+				out.WriteByte('0')
+				i = j + 1
+				continue
+			}
+			if *budget < 0 {
+				return out.String(), append(subs, unanalysableSubstitution)
+			}
+		}
+		// ${name:offset:length} and ${name[subscript]} evaluate the offset,
+		// length and subscript arithmetically: a substitution there runs
+		// even when the shell word quoted it. The expansion itself stays in
+		// the stream; only the extra bodies are recorded.
+		if cmd[i] == '$' && i+1 < len(cmd) && cmd[i+1] == '{' {
+			if body, ok := arithmeticParamBody(cmd, i, budget); ok {
+				_, nested := extractSubstitutionsBounded(body, budget, arith+1)
+				subs = append(subs, nested...)
+			} else if *budget < 0 {
+				return out.String(), append(subs, unanalysableSubstitution)
+			}
+		}
 		// $(...) command substitution and <(...) / >(...) process
 		// substitution all run their body as a command. Treat them alike.
 		if i+1 < len(cmd) && (cmd[i] == '$' || cmd[i] == '<' || cmd[i] == '>') && cmd[i+1] == '(' {
@@ -2851,7 +2942,9 @@ func extractSubstitutionsBounded(cmd string, budget *int, arith int) (string, []
 					if inner, ok := arithmeticBody(body); ok && arith < maxArithNesting {
 						// $(( … )) is arithmetic and runs nothing itself;
 						// only a substitution nested in it can execute.
-						_, nested := extractSubstitutionsBounded(inner, budget, arith+1)
+						// Bash treats the body as double-quoted: a `'` is literal
+						// there and a substitution inside it still runs.
+						_, nested := extractSubstitutionsBounded(strings.ReplaceAll(inner, "'", ""), budget, arith+1)
 						subs = append(subs, nested...)
 						out.WriteByte('0')
 						i = j + 1
@@ -3589,6 +3682,9 @@ func envAssignmentRisk(assignments []string, inner []string) RiskClass {
 		if upper == "ENV" && posixShells[innerName] {
 			return SystemWrite
 		}
+		if startupHomeOverride(upper, val, inner) {
+			return SystemWrite
+		}
 		if upper == "SHELL" && (shellPagerCommands[innerName] || !knownSafeShellValue(val)) {
 			return SystemWrite
 		}
@@ -3600,6 +3696,105 @@ func envAssignmentRisk(assignments []string, inner []string) RiskClass {
 		}
 	}
 	return Safe
+}
+
+// gitConfigHomeOverride reports whether a HOME or XDG_CONFIG_HOME value moves
+// the directory git reads its global configuration from away from the real
+// one. That configuration can name code to run (core.fsmonitor, core.pager,
+// aliases), exactly as GIT_CONFIG_GLOBAL does.
+func gitConfigHomeOverride(upper, val string) bool {
+	v := strings.Trim(strings.TrimSpace(val), `"'`)
+	if v == "" {
+		return false
+	}
+	home, _ := os.UserHomeDir()
+	switch upper {
+	case "HOME":
+		switch v {
+		case "~", "$HOME", "${HOME}":
+			return false
+		}
+		return home == "" || filepath.Clean(v) != filepath.Clean(home)
+	case "XDG_CONFIG_HOME":
+		switch v {
+		case "~/.config", "$HOME/.config", "${HOME}/.config":
+			return false
+		}
+		if home != "" && filepath.Clean(v) == filepath.Join(home, ".config") {
+			return false
+		}
+		if cur := os.Getenv("XDG_CONFIG_HOME"); cur != "" && filepath.Clean(v) == filepath.Clean(cur) {
+			return false
+		}
+		return true
+	}
+	return false
+}
+
+// startupHomeOverride reports whether a HOME (or, for fish, XDG_CONFIG_HOME)
+// assignment pointing away from the real home is given to a shell that reads
+// startup files from there: an interactive or login shell reads
+// $HOME/.bashrc, .profile and friends, zsh reads $HOME/.zshenv (and .zshrc
+// interactively) even for -c, fish reads its config. A shell that only runs a
+// -c string or a script file with no -i/-l does not source them. Without
+// operands the shell is judged interactive.
+func startupHomeOverride(upper, val string, inner []string) bool {
+	if upper != "HOME" && upper != "XDG_CONFIG_HOME" && upper != "ZDOTDIR" {
+		return false
+	}
+	if len(inner) == 0 {
+		return false
+	}
+	name := commandName(inner[0])
+	if name == "git" {
+		return gitConfigHomeOverride(upper, val)
+	}
+	if !posixShells[name] {
+		return false
+	}
+	if upper == "XDG_CONFIG_HOME" && name != "fish" {
+		return false
+	}
+	if upper == "ZDOTDIR" {
+		return name == "zsh" && strings.Trim(strings.TrimSpace(val), `"'`) != ""
+	}
+	v := strings.Trim(strings.TrimSpace(val), `"'`)
+	if v == "" {
+		return false
+	}
+	if upper == "HOME" {
+		switch v {
+		case "~", "$HOME", "${HOME}":
+			return false
+		}
+		if home, _ := os.UserHomeDir(); home != "" && filepath.Clean(v) == filepath.Clean(home) {
+			return false
+		}
+	}
+	if name == "zsh" || name == "fish" {
+		return true
+	}
+	for _, a := range inner[1:] {
+		switch {
+		case a == "--login" || a == "--interactive":
+			return true
+		case a == "--" || !strings.HasPrefix(a, "-") || a == "-":
+			// First operand: a script file (not sourcing the rc files).
+			return false
+		case strings.HasPrefix(a, "--"):
+			// --norc, --noprofile, --posix, … do not change the verdict.
+		case strings.ContainsAny(a[1:], "il"):
+			return true
+		}
+	}
+	// No operand at all: an interactive shell when stdin is a terminal. A -c
+	// string alone does not source them.
+	for _, a := range inner[1:] {
+		if isShortFlagToken(a) && strings.Contains(a[1:], "c") {
+			return false
+		}
+	}
+	return true
 }
 
 // exportedAssignmentRisk applies envAssignmentRisk to the NAME=value operands
@@ -3704,6 +3899,9 @@ func classifyResourceToken(tok string) RiskClass {
 		return SystemWrite
 	}
 	if isSensitiveOdekPath(tok) {
+		return SystemWrite
+	}
+	if globNamesSensitivePath(tok) || namesAccountShellFile(tok) {
 		return SystemWrite
 	}
 	path := expandShellTokenPath(tok)

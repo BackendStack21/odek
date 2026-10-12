@@ -131,6 +131,7 @@ func TestApproveProjectSandbox_KeyChanges(t *testing.T) {
 }
 
 func TestApproveProjectSandbox_PromptHidesValues(t *testing.T) {
+	confighuntResetSessionApprovals(t)
 	resolved := config.ResolvedConfig{
 		ProjectSandboxOverride: config.ProjectSandboxOverride{
 			HasEnv:              true,

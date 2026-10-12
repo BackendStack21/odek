@@ -19,9 +19,72 @@ var yqEnvironmentRe = regexp.MustCompile(`(?:^|[^A-Za-z0-9_.\-"'$])(?:strenv|env
 // jqValueOptions take the next one (or two) words as values, not as the
 // program.
 var jqValueOptions = map[string]int{
-	"--arg": 2, "--argjson": 2, "--slurpfile": 2, "--rawfile": 2,
+	"--arg": 2, "--argjson": 2, "--slurpfile": 2, "--rawfile": 2, "--argfile": 2,
 	"--indent": 1, "-L": 1, "--seq": 0, "--args": 0, "--jsonargs": 0,
 }
+
+// yqValueOptions are the yq options that take a value word.
+var yqValueOptions = map[string]int{
+	"-p": 1, "-o": 1, "--input-format": 1, "--output-format": 1, "-I": 1, "--indent": 1,
+	"-s": 1, "--split-exp": 1, "--arg": 2, "--argjson": 2, "--slurpfile": 2,
+	"--rawfile": 2, "--argfile": 2, "-L": 1,
+}
+
+// yqSubcommands precede the expression in the Go yq (`yq e '.a' f.yaml`).
+var yqSubcommands = map[string]bool{"e": true, "eval": true, "ea": true, "eval-all": true}
+
+// jqNonFileOperands returns the indexes of the jq-family words that are the
+// filter program or an option value, never a file to open: a filter such as
+// `.env` is data, not a credential file operand.
+func jqNonFileOperands(name string, tokens []string) map[int]bool {
+	switch name {
+	case "jq", "gojq", "jaq", "yq":
+	default:
+		return nil
+	}
+	valueOpts := jqValueOptions
+	if name == "yq" {
+		valueOpts = yqValueOptions
+	}
+	skip := map[int]bool{}
+	programSeen := false
+	for _, tok := range tokens[1:] {
+		if tok == "-f" || strings.HasPrefix(tok, "--from-file") {
+			programSeen = true // the program is a file operand
+		}
+	}
+	for i := 1; i < len(tokens); i++ {
+		tok := tokens[i]
+		if tok == "--" {
+			if !programSeen && i+1 < len(tokens) {
+				skip[i+1] = true
+			}
+			break
+		}
+		if n, ok := valueOpts[tok]; ok {
+			for k := 1; k <= n && i+k < len(tokens); k++ {
+				skip[i+k] = true
+			}
+			i += n
+			continue
+		}
+		if strings.HasPrefix(tok, "-") && tok != "-" {
+			continue
+		}
+		if name == "yq" && yqSubcommands[tok] {
+			continue
+		}
+		if !programSeen {
+			programSeen = true
+			skip[i] = true
+		}
+	}
+	return skip
+}
+
+// yqDataFileRe matches an operand that names a data file rather than an
+// expression.
+var yqDataFileRe = regexp.MustCompile(`(?i)\.(ya?ml|json|toml|xml|csv|tsv|properties|env|ini)$`)
 
 // jqDumpsEnvironment reports whether a jq-family invocation's filter reads
 // the process environment, which prints every secret in it exactly like a
@@ -29,8 +92,14 @@ var jqValueOptions = map[string]int{
 func jqDumpsEnvironment(name string, tokens []string) bool {
 	switch name {
 	case "yq":
-		for _, tok := range tokens[1:] {
+		// The Go yq spells it env(NAME); the Python yq is a jq wrapper whose
+		// filter reads the environment with a bare `env` or `$ENV`.
+		skip := jqNonFileOperands(name, tokens)
+		for i, tok := range tokens[1:] {
 			if yqEnvironmentRe.MatchString(tok) {
+				return true
+			}
+			if skip[i+1] && !yqDataFileRe.MatchString(tok) && jqEnvironmentRe.MatchString(tok) {
 				return true
 			}
 		}

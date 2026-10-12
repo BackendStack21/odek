@@ -9,6 +9,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -371,77 +372,166 @@ func childArtifactNote(stagingRel string) string {
 		stagingRel + "/ (no subdirectories — nested files are discarded), then end with a short headline: status, artifact file names, key decisions. Files are delivered to the orchestrator automatically; do not repeat their contents in the final answer."
 }
 
-// renameFailureHook lets tests force the copy fallback (rename across
-// devices). Production never sets it.
-var renameFailureHook func() bool
+// realDirRoot opens path as an os.Root, refusing anything that is not a
+// real directory (a symlink is never followed, even to another directory).
+// The handle is verified to be the directory the Lstat saw, so a swap after
+// the check cannot redirect later operations.
+func realDirRoot(path string) (*os.Root, error) {
+	fi, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !fi.IsDir() {
+		return nil, fmt.Errorf("%s is not a real directory", filepath.Base(path))
+	}
+	r, err := os.OpenRoot(path)
+	if err != nil {
+		return nil, err
+	}
+	if st, err := r.Stat("."); err != nil || !os.SameFile(fi, st) {
+		r.Close()
+		return nil, fmt.Errorf("%s changed while opening", filepath.Base(path))
+	}
+	return r, nil
+}
+
+// realSubRoot is realDirRoot for a direct child of r. Everything it opens
+// stays inside r; a symlinked child is refused outright.
+func realSubRoot(r *os.Root, name string) (*os.Root, error) {
+	fi, err := r.Lstat(name)
+	if err != nil {
+		return nil, err
+	}
+	if !fi.IsDir() {
+		return nil, fmt.Errorf("%s is not a real directory", name)
+	}
+	sub, err := r.OpenRoot(name)
+	if err != nil {
+		return nil, err
+	}
+	if st, err := sub.Stat("."); err != nil || !os.SameFile(fi, st) {
+		sub.Close()
+		return nil, fmt.Errorf("%s changed while opening", name)
+	}
+	return sub, nil
+}
+
+// rootEntries lists the top-level entries of an os.Root.
+func rootEntries(r *os.Root) ([]os.DirEntry, error) {
+	f, err := r.Open(".")
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	return f.ReadDir(-1)
+}
 
 // relocateStagingArtifacts moves every top-level regular file from the
-// staging dir into the canonical dir (rename, with a copy fallback for
-// cross-device workspaces), then removes the staging subtree. Nested
-// directories are not artifacts (scanArtifacts skips them) and are
-// discarded with the staging tree. A missing staging dir is a no-op.
+// staging dir into the canonical dir (copy, then remove the staged file),
+// then removes the staging subtree. Nested directories are not artifacts
+// (scanArtifacts skips them) and are discarded with the staging tree. A
+// missing staging dir is a no-op. The staging root and the task dir must be
+// real directories, never symlinks: the staged tree is writable by the
+// (possibly sandboxed) child, so every step runs through directory handles
+// that cannot leave it.
 func relocateStagingArtifacts(staging, canonical string) (int, error) {
-	entries, err := os.ReadDir(staging)
+	parent, err := realDirRoot(filepath.Dir(staging))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return 0, nil
 		}
 		return 0, fmt.Errorf("artifact staging: %w", err)
 	}
+	defer parent.Close()
+	leaf := filepath.Base(staging)
+	sub, err := realSubRoot(parent, leaf)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("artifact staging: %w", err)
+	}
+	defer sub.Close()
+	entries, err := rootEntries(sub)
+	if err != nil {
+		return 0, fmt.Errorf("artifact staging: %w", err)
+	}
 	if err := os.MkdirAll(canonical, 0o700); err != nil {
 		return 0, fmt.Errorf("artifact canonical dir: %w", err)
 	}
 	moved := 0
+	remaining := maxArtifactTaskBudget
 	for _, e := range entries {
 		// Only regular files are artifacts: a staged symlink, FIFO or
-		// device is never delivered, and the copy fallback cannot be made
-		// to follow a link out of the workspace.
+		// device is never delivered.
 		if !e.Type().IsRegular() {
 			continue
 		}
-		src := filepath.Join(staging, e.Name())
-		dst := filepath.Join(canonical, e.Name())
-		if renameFailureHook == nil || !renameFailureHook() {
-			if err := os.Rename(src, dst); err == nil {
-				moved++
-				continue
-			}
+		n, err := copyRootFile(sub, e.Name(), filepath.Join(canonical, e.Name()), remaining)
+		if errors.Is(err, errArtifactOverBudget) {
+			continue // would exceed the task budget: discarded with the staging tree
 		}
-		if err := copyFileContents(src, dst); err != nil {
+		if err != nil {
 			return moved, fmt.Errorf("artifact relocate %q: %w", e.Name(), err)
 		}
-		os.Remove(src)
+		remaining -= n
+		_ = sub.Remove(e.Name())
 		moved++
 	}
 	// Only top-level files are artifacts; anything else staged (nested
 	// dirs) is discarded with the staging tree.
-	os.RemoveAll(staging)
+	_ = parent.RemoveAll(leaf)
 	return moved, nil
 }
 
-// copyFileContents copies src to dst (0600), replacing any existing dst.
-func copyFileContents(src, dst string) error {
-	// O_NOFOLLOW refuses a final-component symlink and O_NONBLOCK keeps a
-	// FIFO from blocking the runner; the handle is re-checked as regular.
-	in, err := os.OpenFile(src, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+// errArtifactOverBudget reports a staged file larger than the remaining
+// task artifact budget.
+var errArtifactOverBudget = errors.New("artifact exceeds the task budget")
+
+// copyRootFile copies the file name inside src to dst (0600), replacing any
+// existing dst, and returns the bytes copied. The size is checked before any
+// byte is copied and the copy itself is bounded by limit; a failed or
+// aborted copy leaves no partial dst.
+func copyRootFile(src *os.Root, name, dst string, limit int64) (n int64, err error) {
+	// The root refuses any path that escapes it; O_NONBLOCK keeps a FIFO
+	// from blocking the runner and the handle is re-checked as regular.
+	in, err := src.OpenFile(name, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	defer in.Close()
-	if fi, err := in.Stat(); err != nil {
-		return err
-	} else if !fi.Mode().IsRegular() {
-		return fmt.Errorf("not a regular file")
-	}
-	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	fi, err := in.Stat()
 	if err != nil {
-		return err
+		return 0, err
 	}
-	if _, err := io.Copy(out, in); err != nil {
-		out.Close()
-		return err
+	if !fi.Mode().IsRegular() {
+		return 0, fmt.Errorf("not a regular file")
 	}
-	return out.Close()
+	if fi.Size() > limit {
+		return 0, errArtifactOverBudget
+	}
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC|syscall.O_NOFOLLOW, 0o600)
+	if err != nil {
+		return 0, err
+	}
+	defer func() {
+		if err != nil {
+			out.Close()
+			_ = os.Remove(dst)
+		}
+	}()
+	// One extra byte detects a file that grew past the limit mid-copy.
+	n, err = io.Copy(out, io.LimitReader(in, limit+1))
+	if err != nil {
+		return 0, err
+	}
+	if n > limit {
+		return 0, errArtifactOverBudget
+	}
+	if err = out.Close(); err != nil {
+		return 0, err
+	}
+	return n, nil
 }
 
 const (
@@ -456,23 +546,50 @@ const (
 
 // ensureStagingRoot creates the staging root (0700) and drops a
 // self-gitignore so staged deliverables never land in the user's
-// repository. Idempotent; best-effort.
+// repository. Idempotent; best-effort. A staging root that is a symlink (a
+// repository can commit one) or any other non-directory is left alone.
 func ensureStagingRoot(cwd string) {
-	root := filepath.Join(cwd, stagingDirName)
-	if err := os.MkdirAll(root, 0o700); err != nil {
+	ws, err := os.OpenRoot(cwd)
+	if err != nil {
 		return
 	}
-	_ = os.WriteFile(filepath.Join(root, ".gitignore"), []byte(stagingGitignore), 0o600)
+	defer ws.Close()
+	if _, err := ws.Lstat(stagingDirName); os.IsNotExist(err) {
+		if err := ws.Mkdir(stagingDirName, 0o700); err != nil && !os.IsExist(err) {
+			return
+		}
+	}
+	root, err := realSubRoot(ws, stagingDirName)
+	if err != nil {
+		return
+	}
+	defer root.Close()
+	f, err := root.OpenFile(".gitignore", os.O_WRONLY|os.O_CREATE|os.O_TRUNC|syscall.O_NOFOLLOW, 0o600)
+	if err != nil {
+		return
+	}
+	_, _ = f.WriteString(stagingGitignore)
+	_ = f.Close()
 }
 
 // sweepStagingOrphans removes sibling staging task dirs older than maxAge —
 // crash/kill orphans the runner could not clean (the janitor only knows
 // ~/.odek, not user workspaces). The current task's dir is never touched,
 // and fresh siblings may belong to in-flight parallel tasks in the same
-// workspace. Returns the number of subtrees removed.
+// workspace. A staging root that is not a real directory is never entered.
+// Returns the number of subtrees removed.
 func sweepStagingOrphans(cwd, currentTaskID string, maxAge time.Duration) int {
-	root := filepath.Join(cwd, stagingDirName)
-	entries, err := os.ReadDir(root)
+	ws, err := os.OpenRoot(cwd)
+	if err != nil {
+		return 0
+	}
+	defer ws.Close()
+	root, err := realSubRoot(ws, stagingDirName)
+	if err != nil {
+		return 0
+	}
+	defer root.Close()
+	entries, err := rootEntries(root)
 	if err != nil {
 		return 0
 	}
@@ -482,11 +599,11 @@ func sweepStagingOrphans(cwd, currentTaskID string, maxAge time.Duration) int {
 		if !e.IsDir() || e.Name() == currentTaskID {
 			continue
 		}
-		info, err := e.Info()
-		if err != nil || info.ModTime().After(cutoff) {
+		info, err := root.Lstat(e.Name())
+		if err != nil || !info.IsDir() || info.ModTime().After(cutoff) {
 			continue
 		}
-		if os.RemoveAll(filepath.Join(root, e.Name())) == nil {
+		if root.RemoveAll(e.Name()) == nil {
 			removed++
 		}
 	}

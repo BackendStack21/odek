@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strings"
 	"syscall"
+	"unicode/utf8"
 
 	"github.com/BackendStack21/odek/internal/danger"
 )
@@ -24,9 +25,12 @@ const unreadScriptScanMaxBytes = 256 << 10
 // Decoding-pass budgets, so hostile inputs cannot turn the audit into a
 // CPU/memory sink.
 const (
-	maxEncodedTokens     = 64
-	maxEncodedTokenBytes = 128 << 10
-	maxDecodedTotalBytes = 256 << 10
+	maxEncodedCandidateBytes = 1 << 20
+	maxDecodedPerToken       = 32 << 10
+	decodedHeadBytes         = 1 << 10
+	decodedHeadOverlap       = 64
+	maxEncodedTokenBytes     = 128 << 10
+	maxDecodedTotalBytes     = 256 << 10
 )
 
 // encodedTokenRe matches candidate single-layer encoded blobs inside a
@@ -99,33 +103,145 @@ func readScriptHead(path string, limit int64) ([]byte, error) {
 	return io.ReadAll(io.LimitReader(f, limit))
 }
 
+// wrappedBase64Runs returns the base64 payloads that were wrapped over
+// several lines (the 64- and 76-column forms the base64 tools emit),
+// each joined into one candidate. A run is consecutive lines of the base64
+// alphabet of equal width, ending with a line no wider than the rest. A short
+// final line may be a here-doc terminator (EOF), so a run is returned both
+// with and without its last line.
+func wrappedBase64Runs(text string) []string {
+	lines := strings.Split(text, "\n")
+	isB64 := func(l string) bool {
+		if l == "" {
+			return false
+		}
+		body := strings.TrimRight(l, "=")
+		if len(l)-len(body) > 2 || body == "" {
+			return false
+		}
+		for i := 0; i < len(body); i++ {
+			c := body[i]
+			if (c < 'A' || c > 'Z') && (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '+' && c != '/' {
+				return false
+			}
+		}
+		return true
+	}
+	for i, l := range lines {
+		lines[i] = strings.TrimSpace(l)
+	}
+	var out []string
+	for i := 0; i < len(lines); {
+		width := len(lines[i])
+		if width < 16 || !isB64(lines[i]) || strings.HasSuffix(lines[i], "=") {
+			i++
+			continue
+		}
+		j := i + 1
+		for j < len(lines) && isB64(lines[j]) && len(lines[j]) <= width && len(lines[j-1]) == width {
+			j++
+		}
+		if j-i >= 2 {
+			out = append(out, strings.Join(lines[i:j], ""))
+			if j-i >= 3 || len(lines[j-1]) < width {
+				out = append(out, strings.Join(lines[i:j-1], ""))
+			}
+		}
+		i = j
+	}
+	return out
+}
+
+// decodedLooksTextual reports whether a decode could carry a text payload:
+// valid UTF-8, or mostly printable ASCII. Garbage decoded from ordinary
+// paths and identifiers is rejected so it cannot consume the decoded-bytes
+// budget that real payloads need.
+func decodedLooksTextual(dec string) bool {
+	if dec == "" {
+		return false
+	}
+	printable := 0
+	for i := 0; i < len(dec); i++ {
+		c := dec[i]
+		if c == '\n' || c == '\r' || c == '\t' || (c >= 0x20 && c < 0x7f) {
+			printable++
+		}
+	}
+	return printable*10 >= len(dec)*9 || (utf8.ValidString(dec) && printable*2 >= len(dec))
+}
+
 // decodeEncodedTokens extracts candidate encoded blobs and returns every
-// successful single-layer decode, concatenated with separators and bounded
-// by the decoding-pass budgets.
+// successful single-layer decode, concatenated with separators. Work is
+// bounded by bytes, not by candidate count: candidates are deduplicated and
+// tried in source order, only text-like decodes are kept, and the total
+// decoded and candidate bytes are capped. A script full of ordinary long
+// paths therefore cannot starve a real payload.
 func decodeEncodedTokens(data []byte) string {
 	var (
 		b      strings.Builder
 		budget = maxDecodedTotalBytes
 	)
 	text := string(data)
-	toks := encodedTokenRe.FindAllString(text, maxEncodedTokens)
-	for _, tok := range urlSafeTokenRe.FindAllString(text, maxEncodedTokens) {
-		if strings.ContainsAny(tok, "-_") {
+	seen := make(map[string]bool)
+	var toks []string
+	add := func(tok string) {
+		if len(tok) <= maxEncodedTokenBytes && !seen[tok] {
+			seen[tok] = true
 			toks = append(toks, tok)
 		}
 	}
+	for _, tok := range wrappedBase64Runs(text) {
+		add(tok)
+	}
+	for _, tok := range encodedTokenRe.FindAllString(text, -1) {
+		add(tok)
+	}
+	for _, tok := range urlSafeTokenRe.FindAllString(text, -1) {
+		if strings.ContainsAny(tok, "-_") {
+			add(tok)
+		}
+	}
+	// Decode in source order. Identical decodes (a +/-free token decodes the
+	// same under every alphabet) are kept once, each is clipped to
+	// maxDecodedPerToken, and the output is emitted in two rounds - the head
+	// of every decode first, the remainders after - so one large benign blob
+	// cannot use up the budget before a later, short payload is reached.
+	var decs []string
+	seenDec := make(map[string]bool)
+	work := maxEncodedCandidateBytes
 	for _, tok := range toks {
-		if len(tok) > maxEncodedTokenBytes {
-			continue
+		if work -= len(tok); work < 0 {
+			break
 		}
 		for _, dec := range tryDecodeToken(tok) {
-			if len(dec) > budget {
-				dec = dec[:budget]
+			if !decodedLooksTextual(dec) || seenDec[dec] {
+				continue
 			}
-			b.WriteByte('\n')
-			b.WriteString(dec)
-			budget -= len(dec)
-			if budget <= 0 {
+			seenDec[dec] = true
+			if len(dec) > maxDecodedPerToken {
+				dec = dec[:maxDecodedPerToken]
+			}
+			decs = append(decs, dec)
+		}
+	}
+	emit := func(part string) bool {
+		if len(part) > budget {
+			part = part[:budget]
+		}
+		b.WriteByte('\n')
+		b.WriteString(part)
+		budget -= len(part)
+		return budget <= 0
+	}
+	for _, dec := range decs {
+		if emit(dec[:min(len(dec), decodedHeadBytes)]) {
+			return b.String()
+		}
+	}
+	for _, dec := range decs {
+		if len(dec) > decodedHeadBytes {
+			// Overlap the cut so a phrase straddling it is still seen whole.
+			if emit(dec[decodedHeadBytes-decodedHeadOverlap:]) {
 				return b.String()
 			}
 		}

@@ -1,0 +1,268 @@
+package danger
+
+import (
+	"os"
+	"path"
+	"strings"
+)
+
+// A wildcard operand is expanded by the shell before the program sees it, so
+// `cat ~/.odek/secrets.en?` opens the file the literal spelling names. The
+// literal tables (sensitivePathFragments, the ~/.odek anchors) cannot see
+// that, so a wildcard path is matched here as a pattern, segment by segment,
+// against the same tables.
+
+// globSegments splits a folded absolute path into its non-empty components.
+func globSegments(p string) []string {
+	var segs []string
+	for _, s := range strings.Split(p, "/") {
+		if s != "" {
+			segs = append(segs, s)
+		}
+	}
+	return segs
+}
+
+// globSegMatch matches one pattern component against one concrete component
+// with shell semantics: a wildcard never matches a leading dot.
+func globSegMatch(pat, seg string) bool {
+	if pat == seg {
+		return true
+	}
+	if !hasGlobMeta(pat) {
+		return false
+	}
+	if strings.HasPrefix(seg, ".") && strings.ContainsAny(pat[:1], "*?[") {
+		return false
+	}
+	ok, err := path.Match(pat, seg)
+	if err != nil {
+		return false
+	}
+	return ok
+}
+
+// globLiteralRun counts the literal bytes of a pattern component.
+func globLiteralRun(pat string) int {
+	n := 0
+	for i := 0; i < len(pat); i++ {
+		if !strings.ContainsRune("*?[]", rune(pat[i])) {
+			n++
+		}
+	}
+	return n
+}
+
+// globPrefixMatch reports whether the pattern components reach the candidate
+// components or anything below them. The first skip candidate components are
+// not compared (a home directory that the pattern itself spells).
+func globPrefixMatch(pat, cand []string, skip int) bool {
+	if len(pat) < len(cand) {
+		return false
+	}
+	for i, c := range cand {
+		if i < skip {
+			continue
+		}
+		if !globSegMatch(pat[i], c) {
+			return false
+		}
+	}
+	return true
+}
+
+// globWindowMatch reports whether some run of pattern components matches the
+// fragment components, anywhere in the path. The last component of the run
+// must carry at least two literal bytes so `/etc/*` and `/tmp/??` stay
+// ordinary while `/etc/sh*` and `~/.pgpas?` do not.
+func globWindowMatch(pat, frag []string) bool {
+	for start := 0; start+len(frag) <= len(pat); start++ {
+		ok := true
+		for k, f := range frag {
+			if !globSegMatch(pat[start+k], f) {
+				ok = false
+				break
+			}
+		}
+		if ok && (!hasGlobMeta(pat[start+len(frag)-1]) || globLiteralRun(pat[start+len(frag)-1]) >= 2) {
+			return true
+		}
+	}
+	return false
+}
+
+// globHomes returns the home directories (as folded component lists) whose
+// ~/.odek tree a pattern may name, with the number of leading components that
+// came from the pattern itself and therefore match by construction.
+type globHome struct {
+	segs []string
+	skip int
+}
+
+func globHomes(abs string) []globHome {
+	var out []globHome
+	add := func(h string, skip int) {
+		if h != "" {
+			out = append(out, globHome{globSegments(FoldPathCase(h)), skip})
+		}
+	}
+	if home, _ := os.UserHomeDir(); home != "" {
+		add(home, 0)
+		if r, err := resolvePathTarget(home); err == nil {
+			add(r, 0)
+		}
+	}
+	for _, h := range accountHomes(abs) {
+		add(h, len(globSegments(h)))
+	}
+	return out
+}
+
+// globNamesSensitivePath reports whether a wildcard token can expand to a
+// credential file, an odek trust anchor or a process environment file.
+func globNamesSensitivePath(tok string) bool {
+	expanded := expandShellTokenPath(tok)
+	if !hasGlobMeta(expanded) {
+		return false
+	}
+	abs, err := absPath(expanded)
+	if err != nil {
+		return false
+	}
+	abs = stripPrivate(abs)
+	pat := globSegments(FoldPathCase(abs))
+	if len(pat) == 0 {
+		return false
+	}
+	for _, h := range globHomes(abs) {
+		cand := append(append([]string{}, h.segs...), ".odek")
+		if globPrefixMatch(pat, cand, h.skip) && len(pat) == len(cand) {
+			return true
+		}
+		for _, name := range odekAnchorSampleNames {
+			if globPrefixMatch(pat, append(append([]string{}, cand...), name), h.skip) {
+				return true
+			}
+		}
+		if globNamesHomeShellFile(pat, h) {
+			return true
+		}
+	}
+	for _, frag := range sensitivePathFragments {
+		if frag == "/environ" {
+			if globEnvironMatch(pat) {
+				return true
+			}
+			continue
+		}
+		if !strings.HasPrefix(frag, "/") {
+			// Key file names need a directory context, as the literal rule does.
+			if len(pat) > 1 && globSegMatch(pat[len(pat)-1], frag) && globLiteralRun(pat[len(pat)-1]) >= 2 {
+				return true
+			}
+			continue
+		}
+		if globWindowMatch(pat, globSegments(strings.ToLower(frag))) {
+			return true
+		}
+	}
+	return false
+}
+
+// homeShellFileNames are the concrete shell rc and history names directly in
+// a home directory that a wildcard is matched against, including a sample of
+// the open-ended `.<name>_history` family.
+var homeShellFileNames = func() []string {
+	var names []string
+	for n := range shellRCFilesLower {
+		names = append(names, n)
+	}
+	for n := range homeHistoryNames {
+		names = append(names, n)
+	}
+	return append(names, ".bash_history", ".custom_history")
+}()
+
+// globNamesHomeShellFile reports whether the pattern is a direct child of the
+// home directory h whose last component can spell a shell rc or history file.
+// The component needs two literal bytes beyond a bare dot-wildcard so `~/.*`
+// stays an ordinary listing.
+func globNamesHomeShellFile(pat []string, h globHome) bool {
+	if len(pat) != len(h.segs)+1 || !globPrefixMatch(pat[:len(h.segs)], h.segs, h.skip) {
+		return false
+	}
+	last := pat[len(pat)-1]
+	if globLiteralRun(last) < 2 {
+		return false
+	}
+	for _, n := range homeShellFileNames {
+		if globSegMatch(last, n) {
+			return true
+		}
+	}
+	return false
+}
+
+// namesAccountShellFile reports whether a literal path is a shell rc or
+// history file directly in some account home (the current user's or
+// another's under /home, /Users or /root).
+func namesAccountShellFile(tok string) bool {
+	expanded := expandShellTokenPath(tok)
+	if hasGlobMeta(expanded) {
+		return false
+	}
+	abs, err := absPath(expanded)
+	if err != nil {
+		return false
+	}
+	abs = stripPrivate(abs)
+	dir, base := FoldPathCase(path.Dir(abs)), FoldPathCase(path.Base(abs))
+	if !shellRCFilesLower[base] && !isHomeHistoryFile(base) {
+		return false
+	}
+	for _, h := range accountHomes(abs) {
+		if FoldPathCase(strings.TrimRight(h, "/")) == dir {
+			return true
+		}
+	}
+	return false
+}
+
+// procPidSamples are process directory names a pid component is matched against.
+var procPidSamples = []string{"self", "thread-self", "1", "10", "99", "12345"}
+
+// globEnvironMatch reports a /proc/<pid>/environ spelling in which any
+// component may be a glob: a component that can be "proc" (a glob only at the
+// root), a component that can name a process, then one that can be "environ".
+func globEnvironMatch(pat []string) bool {
+	for i := 0; i+2 < len(pat); i++ {
+		if !globSegMatch(pat[i], "proc") || (hasGlobMeta(pat[i]) && i != 0) {
+			continue
+		}
+		pidOK := isAllDigits(pat[i+1])
+		for _, sample := range procPidSamples {
+			pidOK = pidOK || globSegMatch(pat[i+1], sample)
+		}
+		if !pidOK {
+			continue
+		}
+		// environ sits directly in the process directory or one level down
+		// in a thread directory (task/<tid>/environ).
+		at := []int{i + 2}
+		if i+4 < len(pat) && globSegMatch(pat[i+2], "task") && (isAllDigits(pat[i+3]) || globSegMatch(pat[i+3], "1") || globSegMatch(pat[i+3], "12345")) {
+			at = append(at, i+4)
+		}
+		for _, j := range at {
+			if !globSegMatch(pat[j], "environ") {
+				continue
+			}
+			// A wildcard that can spell environ as the last component (`e*`,
+			// `[e]*`) reads it just the same, whatever its literal length; a
+			// bare wildcard reads every file in the directory.
+			if globLiteralRun(pat[j]) >= 2 || (j+1 == len(pat) && hasGlobMeta(pat[j])) {
+				return true
+			}
+		}
+	}
+	return false
+}

@@ -46,6 +46,8 @@ cmd/odek/
   subagent.go                 Sub-agent command (--goal, --context, --task) + flag parsing/limits
   subagent_tool.go            delegate_tasks built-in tool (sub-agent spawning)
   subagent_key.go             FD-based API key handoff (parent → sub-agent, never via env)
+  subagent_posture.go         Parent posture stamped into task files: configured tool allow/deny filter, container
+                              settings and granted sandbox approval keys (children never exceed the parent)
   subagent_registry.go        Parent-side registry of in-flight sub-agent tasks (cancel, status)
   subagent_artifacts.go       Sub-agent result-artifact protocol (files auto-delivered to the parent)
   subagent_artifact_registry.go  Collation-time artifact-id registry backing artifact_read
@@ -123,6 +125,9 @@ internal/
                                 command inside is classified; unpaired constructs are unknown
     wrapper_grammar.go          One option grammar for wrappers (timeout/nice/sudo/flock/script/nix/mise/…) incl. command-string options
     denylist.go                 Denylist token-prefix matching at every command position
+    argv_compose.go             Argument composition of xargs/parallel/find -exec stages (bounded; over budget ⇒ unknown)
+    secret_globs.go             Globs that can expand to credential files, shell rc/history files or /proc environ
+    secret_recursive.go         Recursive reads/greps over trees that contain secrets
     secret_reads.go             Secret-shaped env-var references and credential-file reads/writes → system_write
     network_upload.go           network_upload class: bodies from files/stdin, credentials, mutating methods, uploads, listeners
     gh_adapter.go               gh classified by command and verb (reads egress, mutations system_write, deletes destructive)
@@ -131,7 +136,10 @@ internal/
     ledger_indirect.go          Scripts delivered indirectly (pipes, substitutions, eval, find -exec, program-file options)
     path_identity.go            Symlink-resolving path targets for classification (snapshot, not an execution boundary)
     sensitive_read.go           IsSensitiveReadPath: paths @-references refuse (shares the home credential table with ClassifyPath)
-    arith_eval.go               Arithmetic-evaluating builtins (let, declare, …): command substitutions in subscripts are classified
+    arith_eval.go               Arithmetic-evaluating builtins (let, declare, …) and arithmetic expansions ($(( )), $[ ], ${s:off:len}, ${a[sub]}): command substitutions inside are classified even when single-quoted
+    secret_globs.go             Wildcard operands matched segment-wise against odek anchors, /proc/<pid>/environ and the credential path table
+    secret_recursive.go         Recursive readers (grep -r, rg, find -exec cat, tar c, cp -r, …) rooted at /proc/<pid>, /etc, / or a home
+    argv_compose.go             xargs / GNU parallel / xe composition: static stdin, here-strings, ::: sources and -I/{} placeholders expanded into commands (classifier + denylist)
     param_default.go            ${name:-word} / ${name:=word} / ${name:+word} default words classified as the commands they can run
     env_dump_tools.go           jq/yq/ps environment disclosure → system_write
     env_code.go                 PROMPT_COMMAND / PS0-PS4 / BASH_FUNC_ assignments: values classified as commands
@@ -166,7 +174,7 @@ internal/
                               session_scope.go (session-id → chat ownership check), send_fallback.go (plain-text resend when markup is rejected)
   render/                     Terminal output and narrator support
   narrate/                    LLM-powered emoji-rich progress messages
-  redact/                     Secret redaction (20+ patterns)
+  redact/                     Secret redaction (20+ patterns; credential_value.go judges unquoted credential values)
   mcp/                        MCP server handler (stdio JSON-RPC: tools/list, tools/call)
   mcpclient/                  MCP client (connect to external MCP servers); per-server limits (timeout/response bytes/result
                               chars/artifact roots) + odek-extension/v1 contract (contract.go), artifact-ref enforcement in CallTool

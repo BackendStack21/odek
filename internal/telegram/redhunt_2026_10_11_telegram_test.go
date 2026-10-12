@@ -259,8 +259,8 @@ func TestRED_LoneAsteriskBecomesUnclosedItalic(t *testing.T) {
 		{"ls *.go", `ls \*\.go`},                 // glob
 		{"2**10", `2\*\*10`},                     // unpaired bold marker
 		{"an *italic* word", "an _italic_ word"}, // real emphasis still converts
-		{"a **bold** word", "a **bold** word"},
-		{"*a **b** c*", "_a **b** c_"},
+		{"a **bold** word", "a *bold* word"},
+		{"*a **b** c*", "_a *b* c_"},
 		{"*x* and *", `_x_ and \*`},
 		{"*`a*b`*", "_`a*b`_"}, // a "*" inside a code span never pairs
 		{"***", `\*\*\*`},

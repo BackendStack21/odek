@@ -84,7 +84,7 @@ func approveProjectSandboxWithTTY(resolved config.ResolvedConfig, stdin io.Reade
 
 	overrideKey := projectSandboxApprovalKey(projectDir, o)
 	dfKey := dockerfileApprovalKey(projectDir, dfHash)
-	overrideOK := !hasOverride || approved[overrideKey]
+	overrideOK := !hasOverride || approved[overrideKey] || sessionDockerfileApproved(overrideKey)
 	dfOK := !dfRequired || approved[dfKey] || sessionDockerfileApproved(dfKey)
 	if overrideOK && dfOK {
 		return nil
@@ -119,7 +119,12 @@ func approveProjectSandboxWithTTY(resolved config.ResolvedConfig, stdin io.Reade
 		if o.HasEnv {
 			fmt.Fprintf(stdout, "  env:     %s\n", danger.SanitizeInline(strings.Join(o.EnvKeys, ", ")))
 			if o.EnvHasInterpolation {
-				fmt.Fprintln(stdout, "  ⚠️  sandbox_env values contain ${...} interpolation against host environment variables")
+				fmt.Fprintln(stdout, "  ⚠️  sandbox_env values contain ${...} or $VAR interpolation against host environment variables:")
+				for _, k := range o.EnvKeys {
+					if config.HasEnvInterpolation(o.Env[k]) {
+						fmt.Fprintf(stdout, "      %s = %s\n", danger.SanitizeInline(k), danger.SanitizeInline(o.Env[k]))
+					}
+				}
 			}
 		}
 		if o.HasVolumes {
@@ -158,6 +163,9 @@ func approveProjectSandboxWithTTY(resolved config.ResolvedConfig, stdin io.Reade
 	case "y", "yes":
 		if dfRequired {
 			recordSessionDockerfileApproval(dfKey)
+		}
+		if hasOverride {
+			recordOverrideGrant(projectDir, overrideKey)
 		}
 		return nil
 	case "t", "trust":

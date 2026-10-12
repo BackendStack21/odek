@@ -57,7 +57,7 @@ var EpisodeShellTools = map[string]bool{
 // EpisodePathTools are tools that read filesystem content (or structure) into
 // the transcript. They taint the episode only when one of their path arguments
 // resolves OUTSIDE the workspace (see pathReadEscapes) — reads confined to the
-// workspace, or to odek's own ~/.odek state, stay trusted so ordinary coding
+// workspace stay trusted so ordinary coding
 // sessions remain recallable.
 //
 // This must list every tool that surfaces file contents/structure to the
@@ -91,8 +91,8 @@ var EpisodePathTools = map[string]bool{
 //     return arbitrary text.
 //   - EpisodeExternalTools always taint, regardless of arguments.
 //   - EpisodePathTools taint only when one of their path arguments resolves
-//     OUTSIDE the workspace trust zone (workspace dir, the sandbox /workspace
-//     mount, or ~/.odek). Symlinks are resolved so e.g. /etc → /private/etc on
+//     OUTSIDE the workspace trust zone (workspace dir or the sandbox /workspace
+//     mount; ~/.odek is not trusted). Symlinks are resolved so e.g. /etc → /private/etc on
 //     macOS cannot disguise an escape. A malformed argument string taints
 //     conservatively; absent/empty paths default to the workspace (trusted).
 //   - EpisodeShellTools taint when the command has a network or unknown
@@ -280,9 +280,10 @@ func pathReadEscapes(argsJSON string) bool {
 
 // trustedRoots returns the set of directory prefixes within which a file read
 // is considered inside the trust boundary: the current workspace (process cwd
-// when the call is judged), the conventional sandbox mount "/workspace", and
-// odek's own ~/.odek state directory. Each is included both as-is and
-// symlink-resolved.
+// when the call is judged) and the conventional sandbox mount "/workspace".
+// ~/.odek is deliberately not trusted: it holds other sessions' transcripts,
+// the extended-memory quarantine, episodes and skills, which the dedicated
+// tools refuse to recall. Each root is included both as-is and symlink-resolved.
 func trustedRoots() []string {
 	var roots []string
 	add := func(p string) {
@@ -299,9 +300,6 @@ func trustedRoots() []string {
 		add(cwd)
 	}
 	add("/workspace") // sandbox mount point (see internal/sandbox)
-	if home, err := os.UserHomeDir(); err == nil {
-		add(filepath.Join(home, ".odek"))
-	}
 	return roots
 }
 

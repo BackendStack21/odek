@@ -438,17 +438,9 @@ func sendTelegramResult(ctx context.Context, bot *telegram.Bot, chatID int64, re
 		if chunk == "" {
 			continue
 		}
-		_, err := bot.SendMessageContext(ctx, chatID, chunk, &telegram.SendOpts{ParseMode: telegram.ParseModeMarkdownV2})
-		if err == nil {
-			continue
-		}
-		// Retry as plain text — covers MarkdownV2 parse errors and other
-		// transient failures — but give up if the context was cancelled.
-		if ctx.Err() != nil {
+		// Retried as stripped plain text only when Telegram rejects the markup.
+		if _, err := bot.SendWithPlainFallbackContext(ctx, chatID, chunk, &telegram.SendOpts{ParseMode: telegram.ParseModeMarkdownV2}); err != nil {
 			return err
-		}
-		if _, perr := bot.SendMessageContext(ctx, chatID, chunk, nil); perr != nil {
-			return perr
 		}
 	}
 	return nil

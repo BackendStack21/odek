@@ -226,6 +226,42 @@ func limitedLookupReject(r *http.Request, trustedProxies []string, code int, msg
 	return code, msg
 }
 
+// serveClientIPKey carries the peer address of the WebSocket that issued a
+// prompt, so handlePrompt's session/token rejections are charged to the same
+// per-IP budget as the HTTP endpoints.
+type serveClientIPKey struct{}
+
+// wsLookupRejectMsg returns the message for a WebSocket session-id or token
+// rejection: the original text while the peer's sessionLookupLimiter budget
+// lasts, "rate limit exceeded" once it is spent. Without this the socket is an
+// unthrottled not-found-vs-bad-token oracle next to the throttled HTTP routes.
+func wsLookupRejectMsg(conn *golangws.Conn, msg string) string {
+	if conn == nil {
+		return msg
+	}
+	req := conn.Request()
+	if req == nil {
+		return msg
+	}
+	if !sessionLookupLimiter.allow(clientIP(req, sessionScopedProxies)) {
+		return "rate limit exceeded"
+	}
+	return msg
+}
+
+// ctxLookupRejectMsg is wsLookupRejectMsg for code that only holds the prompt
+// context; contexts without a client address (REST runs, tests) are unlimited.
+func ctxLookupRejectMsg(ctx context.Context, msg string) string {
+	ip, _ := ctx.Value(serveClientIPKey{}).(string)
+	if ip == "" {
+		return msg
+	}
+	if !sessionLookupLimiter.allow(ip) {
+		return "rate limit exceeded"
+	}
+	return msg
+}
+
 // rejectSessionLookup writes a rejected session lookup through the limiter.
 func rejectSessionLookup(w http.ResponseWriter, r *http.Request, trustedProxies []string, code int, msg string) {
 	c, m := limitedLookupReject(r, trustedProxies, code, msg)
@@ -1578,7 +1614,7 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 		defer guardCleanup()
 	}
 	if approver != nil {
-		defer approver.Cancel() // release any pending approval on disconnect
+		defer approver.Close() // release any pending approval on disconnect; nobody can answer a later one
 	}
 	// sandboxCleanup is the primary cleanup path for the Docker container.
 	// newServeAgent does NOT pass SandboxCleanup to odek.New (to avoid a
@@ -1601,6 +1637,9 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 	// instead of making real LLM calls whose output streams to a dead socket.
 	connCtx, connCancel := context.WithCancel(ctx)
 	defer connCancel()
+	if req := conn.Request(); req != nil {
+		connCtx = context.WithValue(connCtx, serveClientIPKey{}, clientIP(req, sessionScopedProxies))
+	}
 
 	// Dedicated socket reader.
 	//
@@ -1644,7 +1683,7 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 				// instead of waiting out the 60s timeout.
 				connCancel()
 				if approver != nil {
-					approver.Cancel()
+					approver.Close()
 				}
 				return
 			}
@@ -1759,11 +1798,11 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 			if err := json.Unmarshal(data, &msg); err == nil && msg.SessionID != "" {
 				sess, err := store.Load(msg.SessionID)
 				if err != nil {
-					writeWSError(conn, "session not found")
+					writeWSError(conn, wsLookupRejectMsg(conn, "session not found"))
 					continue
 				}
 				if !validateSessionTokenStrict(store, sess, msg.AuthToken) {
-					writeWSError(conn, "invalid session token")
+					writeWSError(conn, wsLookupRejectMsg(conn, "invalid session token"))
 					continue
 				}
 				currentSession = sess
@@ -1905,11 +1944,11 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 		if msg.SessionID != "" && (currentSession == nil || currentSession.ID != msg.SessionID) {
 			sess, err := store.Load(msg.SessionID)
 			if err != nil {
-				writeWSError(conn, "session not found")
+				writeWSError(conn, wsLookupRejectMsg(conn, "session not found"))
 				continue
 			}
 			if !validateSessionTokenStrict(store, sess, msg.AuthToken) {
-				writeWSError(conn, "invalid session token")
+				writeWSError(conn, wsLookupRejectMsg(conn, "invalid session token"))
 				continue
 			}
 			currentSession = sess
@@ -1997,11 +2036,11 @@ func handleWSCancel(store *session.Store, conn *golangws.Conn, msg wsClientMsg) 
 	}
 	sess, err := store.Load(msg.SessionID)
 	if err != nil {
-		writeWSError(conn, "cancel: session not found")
+		writeWSError(conn, wsLookupRejectMsg(conn, "cancel: session not found"))
 		return
 	}
 	if !validateSessionTokenStrict(store, sess, msg.AuthToken) {
-		writeWSError(conn, "cancel: invalid session token")
+		writeWSError(conn, wsLookupRejectMsg(conn, "cancel: invalid session token"))
 		return
 	}
 	if cancelPrompt(msg.SessionID) {
@@ -2027,11 +2066,11 @@ func handleWSSubagentCancel(store *session.Store, conn *golangws.Conn, msg wsCli
 	}
 	sess, err := store.Load(msg.SessionID)
 	if err != nil {
-		writeWSError(conn, "subagent_cancel: session not found")
+		writeWSError(conn, wsLookupRejectMsg(conn, "subagent_cancel: session not found"))
 		return
 	}
 	if !validateSessionTokenStrict(store, sess, msg.AuthToken) {
-		writeWSError(conn, "subagent_cancel: invalid session token")
+		writeWSError(conn, wsLookupRejectMsg(conn, "subagent_cancel: invalid session token"))
 		return
 	}
 	// The token proves access to msg.SessionID only; the task must have been
@@ -2204,7 +2243,7 @@ func handlePrompt(
 		// must never reach it. The checks repeat under the lock below.
 		pre, preErr := store.Load(sessionID)
 		if preErr != nil {
-			sendError(send, "session not found")
+			sendError(send, ctxLookupRejectMsg(ctx, "session not found"))
 			return currSess
 		}
 		preToken := msg.AuthToken
@@ -2212,7 +2251,7 @@ func handlePrompt(
 			preToken = currSess.AuthToken
 		}
 		if !wakeInitiated(msg) && !validateSessionTokenStrict(store, pre, preToken) {
-			sendError(send, "invalid session token")
+			sendError(send, ctxLookupRejectMsg(ctx, "invalid session token"))
 			return currSess
 		}
 		release, lockErr := store.AcquireExecution(ctx, sessionID)
@@ -2223,7 +2262,7 @@ func handlePrompt(
 		releaseExecution = release
 		sess, err = store.Load(sessionID)
 		if err != nil {
-			sendError(send, "session not found")
+			sendError(send, ctxLookupRejectMsg(ctx, "session not found"))
 			return currSess
 		}
 		token := msg.AuthToken
@@ -2231,7 +2270,7 @@ func handlePrompt(
 			token = currSess.AuthToken
 		}
 		if !wakeInitiated(msg) && !validateSessionTokenStrict(store, sess, token) {
-			sendError(send, "invalid session token")
+			sendError(send, ctxLookupRejectMsg(ctx, "invalid session token"))
 			return currSess
 		}
 		if msg.RecoveryRevision != nil && (sess.Revision != *msg.RecoveryRevision || sess.Generation != msg.RecoveryGeneration) {
@@ -2250,7 +2289,7 @@ func handlePrompt(
 	// Run agent. Audit recorder wired around the loop so every
 	// wrapUntrusted call (including @-refs and attachments below) is logged
 	// to this session's audit log under <sessions>/audit/.
-	auditStore := session.NewAuditStore(store.Dir())
+	auditStore := session.NewAuditStore(store.Dir()).RequireSessionFile()
 	var auditSessID string
 	var auditTurn int
 	if sess != nil {
@@ -2260,13 +2299,14 @@ func handlePrompt(
 		auditSessID = currSess.ID
 		auditTurn = currSess.Turns + 1
 	}
-	if auditSessID != "" {
-		// Scope the ingest recorder to this prompt's context so concurrent
-		// sessions cannot overwrite each other's audit attribution.
-		ctx = loop.WithIngestRecorder(ctx, func(source, content string) {
-			_ = auditStore.RecordIngest(auditSessID, auditTurn, source, content)
-		})
-	}
+	// A brand-new conversation has no id until store.Create runs below, after
+	// @-references and attachments were wrapped. Ingests seen before then are
+	// held and flushed once the id is bound, so the first turn is audited too.
+	// Writes for a session deleted mid-turn are dropped.
+	audit := &serveAuditBinder{store: auditStore, id: auditSessID, turn: auditTurn}
+	// Scope the ingest recorder to this prompt's context so concurrent
+	// sessions cannot overwrite each other's audit attribution.
+	ctx = loop.WithIngestRecorder(ctx, audit.ingest)
 
 	// Resolve @ references (now recorded if a session is active)
 	refs := resource.ParseRefs(prompt)
@@ -2289,7 +2329,7 @@ func handlePrompt(
 			refID := strings.TrimPrefix(ref.Path, "sess:")
 			refSess, loadErr := store.Load(refID)
 			if loadErr != nil {
-				sendError(send, "referenced session not found")
+				sendError(send, ctxLookupRejectMsg(ctx, "referenced session not found"))
 				return currSess
 			}
 			token := msg.ReferenceTokens[refID]
@@ -2297,7 +2337,7 @@ func handlePrompt(
 				token = msg.AuthToken
 			}
 			if !validateSessionTokenStrict(store, refSess, token) {
-				sendError(send, "invalid token for referenced session")
+				sendError(send, ctxLookupRejectMsg(ctx, "invalid token for referenced session"))
 				return currSess
 			}
 		}
@@ -2418,6 +2458,8 @@ func handlePrompt(
 		releaseExecution = release
 		sess.Sandbox = resolved.Sandbox
 		sess.Provider = resolved.Provider
+		auditSessID, auditTurn = sess.ID, sess.Turns+1
+		audit.bind(auditSessID, auditTurn)
 	}
 
 	cwd, _ := os.Getwd()
@@ -4175,4 +4217,52 @@ func isLoopbackAddr(a net.Addr) bool {
 		return false
 	}
 	return ta.IP.IsLoopback()
+}
+
+// serveAuditBinder routes ingest records to a session's audit log. The session
+// id may be bound after the recorder is installed (new conversations), and
+// records are dropped for sessions that no longer exist.
+type serveAuditBinder struct {
+	store    *session.AuditStore
+	mu       sync.Mutex
+	id       string
+	turn     int
+	pending  [][2]string
+	pendingB int // bytes held in pending
+	dropped  int // ingests dropped because pending was full
+}
+
+// serveAuditPendingMaxBytes bounds the ingests held before a new session's id
+// exists; the rest are dropped and counted in a marker ingest.
+const serveAuditPendingMaxBytes = 4 << 20
+
+func (b *serveAuditBinder) ingest(source, content string) {
+	b.mu.Lock()
+	id, turn := b.id, b.turn
+	if id == "" {
+		if len(b.pending) < 1024 && b.pendingB+len(source)+len(content) <= serveAuditPendingMaxBytes {
+			b.pending = append(b.pending, [2]string{source, content})
+			b.pendingB += len(source) + len(content)
+		} else {
+			b.dropped++
+		}
+		b.mu.Unlock()
+		return
+	}
+	b.mu.Unlock()
+	_ = b.store.RecordIngest(id, turn, source, content)
+}
+
+func (b *serveAuditBinder) bind(id string, turn int) {
+	b.mu.Lock()
+	b.id, b.turn = id, turn
+	pending, dropped := b.pending, b.dropped
+	b.pending, b.pendingB, b.dropped = nil, 0, 0
+	b.mu.Unlock()
+	for _, p := range pending {
+		_ = b.store.RecordIngest(id, turn, p[0], p[1])
+	}
+	if dropped > 0 {
+		_ = b.store.RecordIngest(id, turn, fmt.Sprintf("audit:dropped_ingests:%d", dropped), "")
+	}
 }

@@ -175,6 +175,23 @@ func toolEnabled(name string, enabledSet, disabledSet map[string]bool, whitelist
 // --api-key, -token, --secret-file, --db-password, --credential, …
 var credentialArgFlag = regexp.MustCompile(`(?i)^-{1,2}[a-z0-9_-]*(key|token|secret|password|passwd|credential)[a-z0-9_-]*$`)
 
+// credentialArgFlagWord matches flags whose dash/underscore-separated
+// component names a credential (--auth, --pass, --pat, --cookie, --creds,
+// --dsn, --bearer, --session), the vocabulary credentialEnvName uses. Whole
+// components only, so --path or --author stay readable.
+var credentialArgFlagWord = regexp.MustCompile(`(?i)^-{1,2}(?:[a-z0-9]+[-_])*(?:auth|pass|pat|cookie|cookies|creds|dsn|bearer|session|apikey)(?:[-_][a-z0-9]+)*$`)
+
+// nonCredentialArgFlag matches switches that merely mention a credential word
+// (--no-auth, --pass-through, --auth-mode, --token-type): they take no secret.
+var nonCredentialArgFlag = regexp.MustCompile(`(?i)^-{1,2}no[-_]|[-_](mode|through|type)$`)
+
+func isCredentialArgFlag(a string) bool {
+	if nonCredentialArgFlag.MatchString(a) {
+		return false
+	}
+	return credentialArgFlag.MatchString(a) || credentialArgFlagWord.MatchString(a)
+}
+
 const redactedArgPlaceholder = "[redacted]"
 
 // redactMCPServersView is the defense-in-depth pass for the TOOL face of
@@ -236,9 +253,13 @@ func redactCredentialArgs(args []string) []string {
 	envNext := false
 	for i, a := range args {
 		if redactNext {
-			out[i] = redactedArgPlaceholder
 			redactNext = false
-			continue
+			// A following long flag (--name) means the credential flag took
+			// no value; anything else, even a dash-led token, is the value.
+			if !looksLikeLongFlag(a) {
+				out[i] = redactedArgPlaceholder
+				continue
+			}
 		}
 		if envNext {
 			envNext = false
@@ -247,11 +268,11 @@ func redactCredentialArgs(args []string) []string {
 				continue
 			}
 		}
-		if eq := strings.IndexByte(a, '='); eq > 0 && credentialArgFlag.MatchString(a[:eq]) {
+		if eq := strings.IndexByte(a, '='); eq > 0 && isCredentialArgFlag(a[:eq]) {
 			out[i] = a[:eq+1] + redactedArgPlaceholder
 			continue
 		}
-		if credentialArgFlag.MatchString(a) {
+		if isCredentialArgFlag(a) {
 			redactNext = true
 			out[i] = a
 			continue
@@ -264,6 +285,16 @@ func redactCredentialArgs(args []string) []string {
 		out[i] = redactPositionalArg(a)
 	}
 	return out
+}
+
+// looksLikeLongFlag reports whether a is shaped like `--name` or `--name=…`
+// (a letter right after the double dash).
+func looksLikeLongFlag(a string) bool {
+	if len(a) < 3 || a[0] != '-' || a[1] != '-' {
+		return false
+	}
+	c := a[2]
+	return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z'
 }
 
 // redactPositionalArg masks a credential embedded in a single argument that

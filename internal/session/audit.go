@@ -63,6 +63,9 @@ type AuditLog struct {
 type AuditStore struct {
 	mu  sync.Mutex
 	dir string
+	// requireSession makes appends conditional on the session file still
+	// existing, checked under the per-directory lock Remove also takes.
+	requireSession bool
 	// validated remembers, per session id, the file state the last
 	// successful append left behind. While the file still matches (same
 	// inode, regular file, same size and mtime) the JSONL form and a clean
@@ -77,6 +80,26 @@ type auditFileState struct {
 	size int64
 }
 
+// auditDirLocks serialises appends and removals per audit directory across
+// every AuditStore instance (Store.Delete removes logs through its own
+// instance, so the per-instance mutex alone cannot order them).
+var auditDirLocks sync.Map // audit dir -> *sync.Mutex
+
+func lockAuditDir(dir string) func() {
+	v, _ := auditDirLocks.LoadOrStore(dir, &sync.Mutex{})
+	m := v.(*sync.Mutex)
+	m.Lock()
+	return m.Unlock
+}
+
+// RequireSessionFile makes the store drop appends for sessions whose session
+// file no longer exists, so a turn unwinding after Delete cannot re-create
+// the audit log. For stores whose ids are real sessions only.
+func (s *AuditStore) RequireSessionFile() *AuditStore {
+	s.requireSession = true
+	return s
+}
+
 // NewAuditStore returns a store rooted at dir; the audit subdir is
 // created on first write.
 func NewAuditStore(dir string) *AuditStore {
@@ -89,6 +112,7 @@ func (s *AuditStore) Remove(sessionID string) error {
 	if err := ValidateSessionID(sessionID); err != nil {
 		return err
 	}
+	defer lockAuditDir(s.dir)()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	base := filepath.Join(s.dir, sessionID+".json")
@@ -221,8 +245,14 @@ func (s *AuditStore) Load(sessionID string) (AuditLog, error) {
 // preserves the full prior trail either way; this is the same trade-off
 // the events stream documents for its group-commit window.
 func (s *AuditStore) appendRecord(sessionID string, rec auditRecord) error {
+	defer lockAuditDir(s.dir)()
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.requireSession {
+		if _, err := os.Stat(filepath.Join(filepath.Dir(s.dir), sessionID+".json")); err != nil {
+			return nil // the session is gone; nothing to record
+		}
+	}
 	if err := os.MkdirAll(s.dir, 0700); err != nil {
 		return err
 	}

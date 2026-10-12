@@ -2470,6 +2470,7 @@ func setupSandbox(tools []odek.Tool, cfg sandboxConfig) (containerName string, c
 	})
 
 	applySandboxToolBindings(tools, containerName)
+	recordChildSandbox(tools, cfg)
 	return containerName, cleanup, nil
 }
 
@@ -2832,6 +2833,10 @@ func filterBuiltinTools(tools []odek.Tool, cfg config.ToolConfig, required map[s
 	for i, t := range filtered {
 		out[i] = t.(odekToolAdapter).tool
 	}
+	// delegate_tasks children inherit the filter itself (they can narrow it
+	// further, never widen it); with no filter configured they get their
+	// normal tool set.
+	recordChildToolFilter(tools, cfg)
 	return out
 }
 

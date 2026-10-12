@@ -746,4 +746,6 @@ running. Records expire according to `logging.max_age_hours`. See
 
 ## Sandbox inheritance
 
-When the parent's sandbox is active, every child spawned by `delegate_tasks` is started with `ODEK_SANDBOX=true` and sandboxes itself; if the child's sandbox cannot start the child fails instead of running on the host. A parent running without a sandbox leaves children to their own configuration.
+When the parent's sandbox is active, every child spawned by `delegate_tasks` is started with `ODEK_SANDBOX=true` and sandboxes itself; if the child's sandbox cannot start the child fails instead of running on the host. The parent's container posture (read-only workspace, image, network, memory, cpus, user) and the project-sandbox approvals it was granted this session (keys bound to the project directory and the Dockerfile.odek content hash) ride in the task file, so a child's container is never weaker than the parent's and a `y` (once) approval covers the children it spawned; a changed Dockerfile is not covered. A parent running without a sandbox leaves children to their own configuration.
+
+The parent's configured tool filter (the allow and deny sets, including `--tool` / `--no-tool`) is also written to the task file; the child applies it on top of its own config and profile filter, so delegation never regains a tool the parent was configured without. A parent with no filter writes none, and the child keeps its normal tool set.

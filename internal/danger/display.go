@@ -138,6 +138,12 @@ func formatApprovalPrompt(cls RiskClass, cmd, description string) string {
 	return b.String()
 }
 
+// IsZeroWidthMark reports whether r is a zero-width nonspacing mark (variation
+// selector, Mongolian free variation selector, Khmer inherent vowel, Braille
+// blank, object replacement) that a display must escape. Other renderers share
+// this predicate so every surface hides the same set.
+func IsZeroWidthMark(r rune) bool { return isZeroWidthMark(r) }
+
 // isZeroWidthMark reports whether r is a nonspacing mark that renders with no
 // width of its own: the variation selectors (U+FE00–FE0F, U+E0100–E01EF), the
 // Mongolian free variation selectors and the Khmer inherent vowels. Unlike an

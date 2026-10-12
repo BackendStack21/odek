@@ -21,6 +21,7 @@ import (
 
 	"github.com/BackendStack21/odek/internal/diagnostics"
 	"github.com/BackendStack21/odek/internal/flock"
+	"github.com/BackendStack21/odek/internal/fsatomic"
 	"github.com/BackendStack21/odek/internal/transport"
 )
 
@@ -65,7 +66,7 @@ func NewBot(token string) *Bot {
 		Token:       token,
 		BaseURL:     fmt.Sprintf("https://api.telegram.org/bot%s", token),
 		FileBaseURL: fmt.Sprintf("https://api.telegram.org/file/bot%s", token),
-		Client:      transport.NewPooledClient(60 * time.Second),
+		Client:      transport.NewPooledClient(botClientTimeout),
 		stopRetries: make(chan struct{}),
 		log:         NewNopLogger(),
 	}
@@ -351,12 +352,15 @@ func (b *Bot) doJSON(method string, body any, dest any) (requestErr error) {
 	return lastErr
 }
 
+// maxUploadBytes is the Bot API's upload size limit (50 MB).
+const maxUploadBytes = 50 << 20
+
 // doUpload sends a multipart/form-data POST request with a file and optional parameters.
 // Retries on transient errors with the same backoff strategy as doJSON.
 //
 // NOTE: The entire file is read into memory before sending (bodyBytes).
 // This is intentional — it allows retry without re-reading the file from disk.
-// Telegram's 50 MB upload limit makes this acceptable for bot use cases.
+// Files over maxUploadBytes are refused before any read, which bounds memory.
 func (b *Bot) doUpload(method string, field string, path string, params map[string]any, dest any) (requestErr error) {
 	defer func() { reportAPIFailure("upload", requestErr) }()
 	file, err := os.Open(path)
@@ -365,6 +369,13 @@ func (b *Bot) doUpload(method string, field string, path string, params map[stri
 		return fmt.Errorf("telegram: open file %s: %w", path, err)
 	}
 	defer file.Close()
+
+	// The Bot API refuses larger uploads; refuse before buffering anything.
+	if fi, err := file.Stat(); err != nil {
+		return fmt.Errorf("telegram: stat file %s: %w", path, err)
+	} else if fi.Size() > maxUploadBytes {
+		return fmt.Errorf("telegram: file %s is %d bytes, over the %d byte Bot API upload limit", path, fi.Size(), int64(maxUploadBytes))
+	}
 
 	var buf bytes.Buffer
 	writer := multipart.NewWriter(&buf)
@@ -375,7 +386,7 @@ func (b *Bot) doUpload(method string, field string, path string, params map[stri
 		b.log.Error("create form file failed", "method", method, "field", field, "error", err)
 		return fmt.Errorf("telegram: create form file: %w", err)
 	}
-	if _, err := io.Copy(part, file); err != nil {
+	if _, err := io.Copy(part, io.LimitReader(file, maxUploadBytes+1)); err != nil {
 		b.log.Error("copy file content failed", "method", method, "path", path, "error", err)
 		return fmt.Errorf("telegram: copy file content: %w", err)
 	}
@@ -399,6 +410,10 @@ func (b *Bot) doUpload(method string, field string, path string, params map[stri
 			b.log.Error("write field failed", "method", method, "key", key, "error", err)
 			return fmt.Errorf("telegram: write field %s: %w", key, err)
 		}
+	}
+
+	if buf.Len() > maxUploadBytes+(1<<20) {
+		return fmt.Errorf("telegram: file %s grew past the %d byte Bot API upload limit", path, int64(maxUploadBytes))
 	}
 
 	if err := writer.Close(); err != nil {
@@ -797,14 +812,29 @@ func (b *Bot) SetDailyTokenBudget(budget int64) {
 }
 
 // budgetFilePath returns the path to the daily token usage tracking file.
-// The file is scoped to the current date so budgets reset each day.
+// The file is scoped to the current UTC date so budgets reset at midnight UTC.
 func budgetFilePath() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		home = "."
 	}
-	date := time.Now().Format("2006-01-02")
+	date := time.Now().UTC().Format("2006-01-02")
 	return filepath.Join(home, ".odek", "telegram_token_usage_"+date)
+}
+
+// parseBudgetCounter reads a usage counter file. Empty content (an
+// interrupted first write) is no usage; any other unreadable content must not
+// reset the day's usage to zero, so it counts as the whole budget spent.
+func parseBudgetCounter(data []byte, budget int64) int64 {
+	text := strings.TrimSpace(string(data))
+	if text == "" {
+		return 0
+	}
+	n, err := strconv.ParseInt(text, 10, 64)
+	if err != nil || n < 0 {
+		return budget
+	}
+	return n
 }
 
 // CheckDailyBudget bills tokens that were already spent: it reads the
@@ -843,9 +873,7 @@ func (b *Bot) CheckDailyBudget(tokens int64) error {
 	var current int64
 	data, err := os.ReadFile(path)
 	if err == nil {
-		if parsed, err := strconv.ParseInt(string(data), 10, 64); err == nil {
-			current = parsed
-		}
+		current = parseBudgetCounter(data, b.DailyTokenBudget)
 	} else if !os.IsNotExist(err) {
 		return fmt.Errorf("telegram: read budget file: %w", err)
 	}
@@ -855,7 +883,7 @@ func (b *Bot) CheckDailyBudget(tokens int64) error {
 	// overshooting bill would keep the counter below the limit and let every
 	// later pre-flight check through.
 	total := current + tokens
-	if err := os.WriteFile(path, []byte(strconv.FormatInt(total, 10)), 0600); err != nil {
+	if err := fsatomic.WriteFile(path, []byte(strconv.FormatInt(total, 10)), 0o600); err != nil {
 		return fmt.Errorf("telegram: write budget file: %w", err)
 	}
 
@@ -884,9 +912,7 @@ func (b *Bot) DailyTokenUsage() (used int64, limit int64) {
 
 	data, err := os.ReadFile(path)
 	if err == nil {
-		if parsed, err := strconv.ParseInt(string(data), 10, 64); err == nil {
-			used = parsed
-		}
+		used = parseBudgetCounter(data, b.DailyTokenBudget)
 	}
 	return used, b.DailyTokenBudget
 }

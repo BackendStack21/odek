@@ -80,7 +80,7 @@ func FormatResponse(text string) ([]string, error) {
 		// ── ## headers → *bold text* ──
 		if strings.HasPrefix(line, "## ") {
 			content := strings.TrimPrefix(line, "## ")
-			content = convertItalicAndEscape(content)
+			content = convertEmphasisAndEscape(content, true)
 			resultLines = append(resultLines, "*"+content+"*")
 			continue
 		}
@@ -273,12 +273,20 @@ func isInsideCode(text string, pos int) bool {
 }
 
 // convertItalicAndEscape processes a single line of normal text.
-//   - Converts *italic* to _italic_ (but leaves **bold** unchanged)
+//   - Converts *italic* to _italic_ and **bold** to MarkdownV2 *bold*
 //   - Escapes all reserved MarkdownV2 characters outside code spans/blocks
 func convertItalicAndEscape(line string) string {
+	return convertEmphasisAndEscape(line, false)
+}
+
+// convertEmphasisAndEscape is convertItalicAndEscape; inBold marks text that is
+// already inside a bold entity (a header), where a paired **bold** run adds no
+// markers because a nested "*" would close the surrounding bold.
+func convertEmphasisAndEscape(line string, inBold bool) string {
 	var result strings.Builder
 	inCodeSpan := false
 	var closers map[int]bool // positions of "*"/"**" runs that close an emphasis
+	var spans [][2]int       // opener/closer positions of the pairs found so far
 	i := 0
 
 	for i < len(line) {
@@ -329,7 +337,7 @@ func convertItalicAndEscape(line string) string {
 			continue
 		}
 
-		// ── **bold** → kept, *italic* → _italic_ ──
+		// ── **bold** → *bold*, *italic* → _italic_ ──
 		// Only a marker with a matching partner on the line becomes
 		// markup; a lone "*" (arithmetic, globs) or "**" is escaped, since
 		// an unclosed entity makes Telegram reject the whole message.
@@ -338,17 +346,24 @@ func convertItalicAndEscape(line string) string {
 			if run <= 2 {
 				paired := closers[i]
 				if !paired {
-					if j := findEmphasisCloser(line, i, run, closers); j >= 0 {
+					// A pair that would cross an earlier one ("*a **b* c**")
+					// is left literal: crossed entities are invalid MarkdownV2.
+					if j := findEmphasisCloser(line, i, run, closers); j >= 0 && !crossesSpan(spans, i, j) {
 						if closers == nil {
 							closers = map[int]bool{}
 						}
 						closers[j] = true
+						spans = append(spans, [2]int{i, j})
 						paired = true
 					}
 				}
 				if paired {
 					if run == 2 {
-						result.WriteString("**")
+						// CommonMark **bold** is MarkdownV2 *bold*; "**" would
+						// open and close an empty entity.
+						if !inBold {
+							result.WriteByte('*')
+						}
 					} else {
 						result.WriteByte('_')
 					}
@@ -372,6 +387,17 @@ func convertItalicAndEscape(line string) string {
 	}
 
 	return result.String()
+}
+
+// crossesSpan reports whether a pair opening at i and closing at j would
+// overlap, without nesting inside, one of the earlier pairs.
+func crossesSpan(spans [][2]int, i, j int) bool {
+	for _, sp := range spans {
+		if sp[0] < i && i < sp[1] && sp[1] < j {
+			return true
+		}
+	}
+	return false
 }
 
 // starRunLen returns the length of the run of '*' starting at i.
@@ -518,37 +544,12 @@ func splitChunks(text string, maxBytes int) []string {
 					current.WriteString(remaining)
 					break
 				}
-				// Leave room to close the entities a cut leaves open and
-				// reopen them in the next piece.
-				limit := maxBytes
-				if maxBytes > 2*maxEntityDepth+8 {
-					limit = maxBytes - 2*maxEntityDepth
+				head, rest, ok := cutEntityBalanced(remaining, maxBytes)
+				if !ok {
+					head, rest = remaining[:maxBytes], remaining[maxBytes:]
 				}
-				// Find last space within the limit
-				splitAt := strings.LastIndex(remaining[:limit], " ")
-				if splitAt <= 0 {
-					splitAt = limit
-				}
-				// Never split mid-rune: spaceless text (CJK, URLs, base64)
-				// cut at a raw byte boundary ships invalid UTF-8, which the
-				// Telegram API coerces to U+FFFD — the user receives corrupted
-				// text. Back off to the nearest rune start.
-				for splitAt > 0 && !utf8.RuneStart(remaining[splitAt]) {
-					splitAt--
-				}
-				splitAt = keepEscapePair(remaining, splitAt)
-				if splitAt == 0 {
-					splitAt = maxBytes // degenerate tiny maxBytes: never emit an empty chunk
-				}
-				head := remaining[:splitAt]
-				open := openEntities(head)
-				chunks = append(chunks, head+closeEntities(open))
-				remaining = remaining[splitAt:]
-				// Trim leading spaces from remaining
-				remaining = strings.TrimLeftFunc(remaining, unicode.IsSpace)
-				if len(open) > 0 {
-					remaining = string(open) + remaining
-				}
+				chunks = append(chunks, head)
+				remaining = rest
 			}
 			continue
 		}
@@ -632,22 +633,48 @@ func keepEscapePair(text string, cut int) int {
 	return cut
 }
 
+// cutEntityBalanced cuts text (longer than maxBytes) at a space or rune
+// boundary so that head fits in maxBytes with its open bold/italic/code
+// entities closed, and rest starts with those entities reopened. ok is false
+// when no non-empty cut exists.
+func cutEntityBalanced(text string, maxBytes int) (head, rest string, ok bool) {
+	// Leave room to close the entities a cut leaves open and reopen them in
+	// the next piece.
+	limit := maxBytes
+	if maxBytes > 2*maxEntityDepth+8 {
+		limit = maxBytes - 2*maxEntityDepth
+	}
+	cut := strings.LastIndexByte(text[:limit], ' ')
+	if cut <= 0 {
+		cut = limit
+	}
+	// Never split mid-rune: spaceless text (CJK, URLs, base64) cut at a raw
+	// byte boundary ships invalid UTF-8.
+	for cut > 0 && !utf8.RuneStart(text[cut]) {
+		cut--
+	}
+	cut = keepEscapePair(text, cut)
+	if cut == 0 {
+		return "", "", false
+	}
+	open := openEntities(text[:cut])
+	head = text[:cut] + closeEntities(open)
+	rest = strings.TrimLeftFunc(text[cut:], unicode.IsSpace)
+	if len(open) > 0 {
+		rest = string(open) + rest
+	}
+	return head, rest, true
+}
+
 func splitPlainSegment(text string, maxBytes int) []string {
 	var out []string
 	for len(text) > maxBytes {
-		cut := strings.LastIndexByte(text[:maxBytes], ' ')
-		if cut <= 0 {
-			cut = maxBytes
-		}
-		for cut > 0 && !utf8.RuneStart(text[cut]) {
-			cut--
-		}
-		cut = keepEscapePair(text, cut)
-		if cut == 0 {
+		head, rest, ok := cutEntityBalanced(text, maxBytes)
+		if !ok {
 			return nil
 		}
-		out = append(out, text[:cut])
-		text = strings.TrimLeftFunc(text[cut:], unicode.IsSpace)
+		out = append(out, head)
+		text = rest
 	}
 	if text != "" {
 		out = append(out, text)

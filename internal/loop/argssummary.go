@@ -46,7 +46,11 @@ func clampSummaryStr(s string) string {
 // Best-effort by design — this is audit metadata, not a parser.
 func argv0(cmd string) string {
 	for _, w := range shellWords(cmd) {
-		if isEnvAssignment(w.raw) {
+		ok, open := assignmentWord(w.raw)
+		if open {
+			return ""
+		}
+		if ok {
 			continue
 		}
 		field := w.value
@@ -115,6 +119,16 @@ func shellWords(cmd string) []shellWord {
 				val.Reset()
 				inWord = false
 			}
+		case c == '(' && inWord && isEnvAssignment(raw.String()) && strings.HasSuffix(raw.String(), "="):
+			// Array assignment NAME=(a b): the whole parenthesised value
+			// belongs to the assignment word.
+			end, _ := scanClosing(cmd, i+1, ')')
+			if end < 0 {
+				return words
+			}
+			raw.WriteString(cmd[i : end+1])
+			val.WriteString(cmd[i : end+1])
+			i = end
 		default:
 			inWord = true
 			raw.WriteByte(c)
@@ -153,6 +167,12 @@ func substitutionEnd(cmd string, i int) (end int, ok bool) {
 	default:
 		return 0, false
 	}
+	return scanClosing(cmd, j, closer)
+}
+
+// scanClosing finds the delimiter closing a construct whose body starts at
+// cmd[j]; it returns -1 when the construct never closes.
+func scanClosing(cmd string, j int, closer byte) (end int, ok bool) {
 	parens := 0
 	for ; j < len(cmd); j++ {
 		c := cmd[j]
@@ -205,11 +225,48 @@ func substitutionEnd(cmd string, i int) (end int, ok bool) {
 }
 
 func isEnvAssignment(tok string) bool {
+	ok, _ := assignmentWord(tok)
+	return ok
+}
+
+// assignmentWord reports whether tok is a variable assignment, including
+// NAME+=value and subscripted NAME[expr]=value / NAME[expr]+=value forms.
+// open is true when the word starts like a subscripted assignment whose
+// subscript never closes: the rest of the command cannot be attributed, so
+// callers report no program name.
+func assignmentWord(tok string) (ok, open bool) {
+	i := 0
+	for i < len(tok) && (tok[i] == '_' || tok[i] >= 'a' && tok[i] <= 'z' || tok[i] >= 'A' && tok[i] <= 'Z' || tok[i] >= '0' && tok[i] <= '9') {
+		i++
+	}
+	if i > 0 && i < len(tok) && tok[i] == '[' {
+		depth := 0
+		for j := i; j < len(tok); j++ {
+			switch tok[j] {
+			case '[':
+				depth++
+			case ']':
+				depth--
+				if depth == 0 {
+					rest := strings.TrimPrefix(tok[j+1:], "+")
+					return strings.HasPrefix(rest, "="), false
+				}
+			}
+		}
+		return false, true
+	}
+	return plainAssignment(tok), false
+}
+
+func plainAssignment(tok string) bool {
 	eq := strings.IndexByte(tok, '=')
 	if eq <= 0 {
 		return false
 	}
-	head := tok[:eq]
+	head := strings.TrimSuffix(tok[:eq], "+")
+	if head == "" {
+		return false
+	}
 	if head[0] == '_' {
 		return true
 	}

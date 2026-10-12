@@ -197,6 +197,9 @@ func analyzeWithStateWork(cmd string, depth int, inherited *shellAnalysisState, 
 		result.add(Unknown)
 	}
 	tokens, ops, unterminated := tokenizeMarked(main)
+	if pgrepFeedsKill(tokens, subs) {
+		result.add(SystemWrite)
+	}
 	if unterminated {
 		// The shell would reject this line, but an open quote has swallowed
 		// the rest of it into one word; whatever followed cannot be judged.
@@ -415,15 +418,14 @@ func analyzeWithStateWork(cmd string, depth int, inherited *shellAnalysisState, 
 			// is exported or a shell starts in this segment: the variable
 			// outlives the statement. Assignments inside `env -S` strings
 			// count the same.
-			for _, split := range unwrappedStage.splits {
-				for _, body := range envAssignmentCodeBodies(tokenize(split)) {
-					result.merge(analyzeWithState(body, depth+1, &payloadState))
-				}
+			codeBodies, codeUnknown := stageCodeBodies(stage, unwrappedStage)
+			for _, body := range codeBodies {
+				result.merge(analyzeWithState(body, depth+1, &payloadState))
+			}
+			if codeUnknown {
+				result.add(Unknown)
 			}
 			if len(inner) == 0 {
-				for _, body := range envAssignmentCodeBodies(stage) {
-					result.merge(analyzeWithState(body, depth+1, &payloadState))
-				}
 				if len(unwrappedStage.splits) > 0 && cwdKnown && !state.uncertain {
 					// `env -S 'bash script'` leaves nothing behind the
 					// wrapper, yet the split string is the command that runs.
@@ -450,23 +452,13 @@ func analyzeWithStateWork(cmd string, depth int, inherited *shellAnalysisState, 
 				continue
 			}
 			name := commandName(inner[0])
-			for _, body := range arithmeticOperandSubstitutions(name, inner[1:]) {
-				result.merge(analyzeWithState(body, depth+1, &payloadState))
-			}
-			envTokens := stage[:len(stage)-len(inner)]
-			switch name {
-			case "export", "declare", "typeset", "readonly", "local":
-				envTokens = append(append([]string(nil), envTokens...), inner[1:]...)
-			}
-			for _, body := range envAssignmentCodeBodies(envTokens) {
-				result.merge(analyzeWithState(body, depth+1, &payloadState))
-			}
-			builtinBodies, builtinUnknown := builtinAssignedCodeBodies(name, inner[1:], stage)
-			for _, body := range builtinBodies {
-				result.merge(analyzeWithState(body, depth+1, &payloadState))
-			}
-			if builtinUnknown {
-				result.add(Unknown)
+			// A startup-file variable set by an earlier statement of the same
+			// command line reaches a later startup-file shell like a leading
+			// assignment does.
+			for _, v := range []string{"HOME", "XDG_CONFIG_HOME", "ZDOTDIR"} {
+				if val, ok := state.vars[v]; ok && startupHomeOverride(v, val, inner) {
+					result.add(SystemWrite)
+				}
 			}
 			if name == "gpg" || name == "gpg2" {
 				home, set := state.vars["GNUPGHOME"]
@@ -507,6 +499,36 @@ func analyzeWithStateWork(cmd string, depth int, inherited *shellAnalysisState, 
 				if text, ok := staticPipeText(upstream); ok {
 					for _, target := range append(sqliteDotWriteTargets(text), sqliteSQLWriteTargets(text)...) {
 						result.add(state.targetRisk(target, stageCwd, cwdKnown))
+					}
+				}
+			}
+			if recursiveReadsSecretTree(name, inner, stageCwd) {
+				result.add(SystemWrite)
+			}
+			if piped && pipeFedReadsSecretTree(upstream, stage, stageCwd) {
+				result.add(SystemWrite)
+			}
+			if name == "sqlite3" {
+				// readfile()/fsdir() pull a file's content into the query
+				// output: a credential or trust-anchor path is a secret read.
+				var scripts []string
+				scripts = append(scripts, inner[1:]...)
+				if piped {
+					if text, ok := staticPipeText(upstream); ok {
+						scripts = append(scripts, text)
+					}
+				}
+				for _, script := range scripts {
+					for _, target := range sqliteSQLReadTargets(script) {
+						if target == dynamicSubstToken {
+							result.add(Unknown)
+							continue
+						}
+						path := resolveInDirectory(expandShellTokenPath(target), stageCwd)
+						if credentialPathToken(path) || isSensitivePath(path) {
+							result.add(SystemWrite)
+						}
+						result.add(classifyResourceToken(path))
 					}
 				}
 			}

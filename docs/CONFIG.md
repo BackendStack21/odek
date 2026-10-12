@@ -290,7 +290,7 @@ When a model emits multiple tool calls in one response (`tool_calls` array with 
 
 | Field | Default | Env var | Description |
 |-------|---------|---------|-------------|
-| `max_tool_parallel` | `4` | — | Max concurrent tool calls per iteration. 0 = default 4. Set to 1 for sequential execution. |
+| `max_tool_parallel` | `4` | — | Max concurrent tool calls per iteration. 0 = default 4. Set to 1 for sequential execution. A project `./odek.json` may only lower it below the operator value (or the default 4). |
 
 I/O-bound tools (read_file, search_files, shell) benefit most — latency drops from `sum(latencies)` to `max(latency)`.
 
@@ -556,8 +556,8 @@ The `skills` section controls the skill system:
 
 | Field | Env var | Default | Description |
 |-------|---------|---------|-------------|
-| `max_auto_load` | — | 3 | Max skills injected into system prompt on start |
-| `max_lazy_slots` | — | 5 | Max skills loaded per user input via trigger matching |
+| `max_auto_load` | — | 3 | Max skills injected into system prompt on start. A project `./odek.json` may only lower it. |
+| `max_lazy_slots` | — | 5 | Max skills loaded per user input via trigger matching. A project `./odek.json` may only lower it. |
 | `verbose` | — | `false` | Surface skill activity details: skill-load banners in the terminal, and skill/memory activity events in the Telegram bot. Off by default — headless/CI runs stay silent |
 | `dirs` | — | [] | Extra skill directories beyond `~/.odek/skills` and `./.odek/skills` |
 | `import.max_size_bytes` | — | 1048576 (1MB) | Max size for fetched skill content |

@@ -761,6 +761,12 @@ type taskFileSpec struct {
 	Provider string `json:"provider,omitempty"`
 	Model    string `json:"model,omitempty"`
 	BaseURL  string `json:"base_url,omitempty"`
+	// Parent posture the child must not be weaker than: its effective tool
+	// allow-list and container settings, plus the approval keys the
+	// operator already granted (bound to the project directory and the
+	// Dockerfile content hash, so they cannot cover different content).
+	Tools   *taskToolsPosture   `json:"tools,omitempty"`
+	Sandbox *taskSandboxPosture `json:"sandbox,omitempty"`
 }
 
 // decodeTaskFileSpec parses task-file bytes into a taskFileSpec.
@@ -818,13 +824,15 @@ func subagentCmd(args []string) error {
 	var parentTrust string          // parent's own effective trust
 	var eventContext events.Context
 	var runtimeEvents bool
-	var taskID string                      // telemetry correlation id (protocol-2 parents)
-	var taskProtocol int                   // telemetry protocol version from the envelope
-	var taskProvider string                // parent-selected go-llm-sdk provider
-	var taskModel string                   // parent-selected model
-	var taskBaseURL string                 // parent-selected provider base URL
-	var telemetry *subagentTelemetryWriter // protocol-2 lifecycle records (nil = off)
-	protocol2 := false                     // framed result mode
+	var taskID string                       // telemetry correlation id (protocol-2 parents)
+	var taskProtocol int                    // telemetry protocol version from the envelope
+	var taskProvider string                 // parent-selected go-llm-sdk provider
+	var taskModel string                    // parent-selected model
+	var taskBaseURL string                  // parent-selected provider base URL
+	var taskToolsPost *taskToolsPosture     // parent's effective tool allow-list
+	var taskSandboxPost *taskSandboxPosture // parent's container posture + granted approvals
+	var telemetry *subagentTelemetryWriter  // protocol-2 lifecycle records (nil = off)
+	protocol2 := false                      // framed result mode
 	if hasTaskFile {
 		info, err := os.Stat(cfg.taskFile)
 		if err != nil {
@@ -862,6 +870,8 @@ func subagentCmd(args []string) error {
 		taskProvider = taskSpec.Provider
 		taskModel = taskSpec.Model
 		taskBaseURL = taskSpec.BaseURL
+		taskToolsPost = taskSpec.Tools
+		taskSandboxPost = taskSpec.Sandbox
 		// Only delete the task file if the parent wrote it into an odek temp
 		// directory. This prevents `odek subagent --task /path/to/user/file`
 		// from reading and then deleting an arbitrary file.
@@ -881,6 +891,11 @@ func subagentCmd(args []string) error {
 	if taskBaseURL != "" {
 		resolved.BaseURL = taskBaseURL
 	}
+	// The parent's container posture applies before the approval gate: the
+	// gate must judge the configuration the child will actually run, and the
+	// parent's already-granted (content-bound) approvals are honoured so a
+	// non-interactive child is not refused for a build the operator allowed.
+	applyTaskSandboxPosture(&resolved, taskSandboxPost)
 	if err := approveProjectSandbox(resolved, os.Stdin, os.Stdout); err != nil {
 		return err
 	}
@@ -1060,6 +1075,12 @@ func subagentCmd(args []string) error {
 		toolFilter = *profileTools
 	}
 	tools = filterBuiltinTools(tools, toolFilter, nil)
+	// Never more tools than the parent: intersect with its effective filter.
+	if parentFilter, ok := taskToolsPost.filter(); ok {
+		tools = filterBuiltinTools(tools, parentFilter, nil)
+		// Nested delegation carries both filters forward.
+		recordChildToolFilter(tools, mergeToolFilters(toolFilter, parentFilter))
+	}
 
 	var sandboxCleanup func() error
 

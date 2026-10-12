@@ -11,6 +11,7 @@ import (
 	"github.com/BackendStack21/odek"
 	"github.com/BackendStack21/odek/internal/config"
 	"github.com/BackendStack21/odek/internal/danger"
+	"github.com/BackendStack21/odek/internal/fsatomic"
 )
 
 // maxSpeakAudioBytes bounds the synthesized audio written to the artifacts
@@ -174,6 +175,9 @@ func (t *speakTool) Call(argsJSON string) (string, error) {
 		}
 	}
 
+	if fi, lerr := os.Lstat(root); lerr == nil && (fi.Mode()&os.ModeSymlink != 0 || !fi.IsDir()) {
+		return jsonResult(speakResult{Error: "artifacts directory is a symlink or not a directory; refusing to write"})
+	}
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		return jsonResult(speakResult{Error: fmt.Sprintf("cannot create artifacts directory: %v", err)})
 	}
@@ -197,7 +201,7 @@ func (t *speakTool) Call(argsJSON string) (string, error) {
 		}
 	}
 
-	if err := os.WriteFile(outPath, res.Audio, 0o600); err != nil {
+	if err := fsatomic.WriteFile(outPath, res.Audio, 0o600); err != nil {
 		return jsonResult(speakResult{Error: fmt.Sprintf("cannot write audio file: %v", err)})
 	}
 	return jsonResult(speakResult{

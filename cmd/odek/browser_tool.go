@@ -262,7 +262,8 @@ func (t *browserTool) doNavigate(rawURL string) (string, error) {
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024)) // 10MB cap
 	if err != nil {
-		return jsonError(fmt.Sprintf("cannot read response: %v", err))
+		msg := fmt.Sprintf("cannot read response: %v", err)
+		return jsonError(wrapUntrusted(t.toolCtx(), rawURL, msg))
 	}
 
 	html := string(body)

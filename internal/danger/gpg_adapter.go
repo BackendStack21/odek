@@ -29,6 +29,10 @@ var gpgKeyringVerbs = []string{
 	"generate-designated-revoker", "desig-revoke", "locate-keys",
 	"search-keys", "update-trustdb", "check-trustdb",
 	"rebuild-keydb-caches",
+	// Downloads keys into the keyring; the card verbs change PINs and card
+	// state; the trust verbs rewrite the trust database or key preferences.
+	"fetch-keys", "edit-card", "change-pin", "tofu-policy", "quick-update-pref",
+	"quick-add-adsk", "quick-set-ownertrust",
 }
 
 // gpgLongOptions yields the long option names of a gpg command line, up to

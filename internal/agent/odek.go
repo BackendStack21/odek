@@ -407,7 +407,7 @@ func LoadProjectFile() string {
 	}
 	// Non-blocking open so a file swapped for a FIFO after the Lstat cannot
 	// stall the open; re-check the opened handle and bound the read.
-	f, err := os.OpenFile(ProjectFileName, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	f, err := os.OpenFile(ProjectFileName, os.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOFOLLOW, 0)
 	if err != nil {
 		return ""
 	}

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 
 	"github.com/BackendStack21/odek/internal/skills"
 )
@@ -34,18 +35,35 @@ func promoteSkill(userDir, name string, force bool) error {
 	if name == "" || cleaned == "." || cleaned == ".." || cleaned != filepath.Base(cleaned) || strings.ContainsAny(name, "\\") {
 		return fmt.Errorf("promote: invalid skill name %q", name)
 	}
-	skillDir := filepath.Join(userDir, name)
-	path := filepath.Join(skillDir, "SKILL.md")
+	// Every filesystem access below goes through an os.Root anchored at the
+	// skills directory, so the name can never resolve outside it and a
+	// symlinked skill dir or SKILL.md (a repository can plant one) is refused
+	// rather than followed by the in-place rewrite.
+	baseDir := userDir
+	rel := filepath.Join(name, "SKILL.md")
 	fromProject := false
-	if _, err := os.Stat(path); err != nil {
-		projDir := filepath.Join(skills.ProjectSkillsDir(), name)
-		projPath := filepath.Join(projDir, "SKILL.md")
-		if _, perr := os.Stat(projPath); perr != nil {
-			return fmt.Errorf("promote: skill %q not found at %s", name, path)
+	if !skillFileInRoot(baseDir, rel) {
+		baseDir = skills.ProjectSkillsDir()
+		if !skillFileInRoot(baseDir, rel) {
+			return fmt.Errorf("promote: skill %q not found at %s", name, filepath.Join(userDir, rel))
 		}
-		skillDir, path = projDir, projPath
 		fromProject = true
 	}
+	root, err := os.OpenRoot(baseDir)
+	if err != nil {
+		return fmt.Errorf("promote: open skills dir: %w", err)
+	}
+	defer root.Close()
+	for _, p := range []string{name, rel} {
+		if fi, err := root.Lstat(p); err != nil || fi.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("promote: %s is a symlink or unreadable; refusing to follow it", filepath.Join(baseDir, p))
+		}
+	}
+	if fi, err := root.Lstat(rel); err != nil || !fi.Mode().IsRegular() {
+		return fmt.Errorf("promote: %s is not a regular file", filepath.Join(baseDir, rel))
+	}
+	skillDir := filepath.Join(baseDir, name)
+	path := filepath.Join(baseDir, rel)
 
 	// We re-parse via the scanner to keep all other fields intact, then
 	// write back with the provenance fields cleared. scanSingleSkill
@@ -88,8 +106,16 @@ func promoteSkill(userDir, name string, force bool) error {
 
 	// MarshalSkill drops blank Provenance entirely.
 	content := skills.MarshalSkill(*loaded)
-	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+	f, err := root.OpenFile(rel, os.O_WRONLY|os.O_TRUNC|syscall.O_NOFOLLOW, 0)
+	if err != nil {
 		return fmt.Errorf("promote: write: %w", err)
+	}
+	_, werr := f.WriteString(content)
+	if cerr := f.Close(); werr == nil {
+		werr = cerr
+	}
+	if werr != nil {
+		return fmt.Errorf("promote: write: %w", werr)
 	}
 	// Project-dir skills: trust is anchored in the trusted user-dir
 	// registry (content hash), not the project frontmatter — the project
@@ -102,6 +128,18 @@ func promoteSkill(userDir, name string, force bool) error {
 	}
 	fmt.Printf("odek: promoted skill %q — NeedsReview cleared\n", name)
 	return nil
+}
+
+// skillFileInRoot reports whether dir/rel exists, looked up
+// through an os.Root anchored at dir (no symlink is followed out of it).
+func skillFileInRoot(dir, rel string) bool {
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return false
+	}
+	defer root.Close()
+	_, err = root.Lstat(rel)
+	return err == nil
 }
 
 // joinSources formats a source list for human-readable messages.

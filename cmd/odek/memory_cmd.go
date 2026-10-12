@@ -260,7 +260,7 @@ func extendedMemoryCmd(dir string, args []string) error {
 		}
 		fmt.Printf("%d pending review(s):\n\n", len(pending))
 		for _, p := range pending {
-			fmt.Printf("• %s | %s = %q (confidence %.2f)\n", p.ID, p.Field, truncate(p.Value, 120), p.Confidence)
+			fmt.Printf("• %s | %s = %q (confidence %.2f)\n", danger.SanitizeInline(p.ID), danger.SanitizeInline(p.Field), truncate(p.Value, 120), p.Confidence)
 			if p.Evidence != "" {
 				fmt.Printf("  evidence: %s\n", danger.SanitizeInline(truncate(p.Evidence, 120)))
 			}

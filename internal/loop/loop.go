@@ -12,6 +12,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/BackendStack21/odek/internal/artifact"
 	"github.com/BackendStack21/odek/internal/budget"
@@ -2182,7 +2183,11 @@ func droppedMessageSketch(m session.Message) string {
 		content = strings.TrimSpace(content + " [called tools: " + strings.Join(names, ", ") + "]")
 	}
 	if len(content) > compactionSnippetBytes {
-		content = content[:compactionSnippetBytes] + "…"
+		cut := compactionSnippetBytes
+		for cut > 0 && !utf8.RuneStart(content[cut]) {
+			cut--
+		}
+		content = content[:cut] + "…"
 	}
 	return content
 }
@@ -3564,6 +3569,11 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 			for i, tc := range result.ToolCalls {
 				risk, resource := classifyToolCallCtx(ctx, tc.Function.Name, tc.Function.Arguments)
 				if risk == "" {
+					if neverPromptsInBatch(tc.Function.Name) {
+						// Safe by contract: the tool never reaches the approver, so
+						// it needs no card entry and must not withhold batch trust.
+						continue
+					}
 					// Tool not classifiable by this helper. It will be handled
 					// individually by the tool's own Call() method, but because we
 					// cannot show it in the batch card we must not grant blanket
@@ -4650,6 +4660,17 @@ func classifyToolCallCtx(ctx context.Context, name, args string) (danger.RiskCla
 		// will skip them (no pre-classification available).
 		return "", ""
 	}
+}
+
+// neverPromptsInBatch reports whether a tool is safe by contract: engine-held
+// plan state, a principal-channel question, or inspection of this session's
+// own background jobs. Unknown and MCP tools are not in the set.
+func neverPromptsInBatch(name string) bool {
+	switch name {
+	case "plan", "clarify", "bg_stop", "bg_list", "bg_status", "bg_output":
+		return true
+	}
+	return false
 }
 
 // worstRisk returns whichever class ranks higher.

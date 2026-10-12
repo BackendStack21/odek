@@ -138,7 +138,30 @@ func checkMediaPathSensitivity(resolved string) error {
 		return fmt.Errorf("media path: rejected credential file: %s", resolved)
 	}
 
+	// Share the credential model used for file reads: private keys, PEM/key
+	// files, Terraform state, vault tokens, service-account JSON, ... Name-
+	// based rules apply everywhere. Directory-name rules (a "secrets" folder)
+	// apply only below the bot's working directory, and are skipped for
+	// ordinary media files so project images and recordings in such folders
+	// can still be sent.
+	cwd, _ := os.Getwd()
+	root := cwd
+	if mediaExtensions[strings.ToLower(filepath.Ext(resolved))] || cwd == "" || !isPathInside(resolved, cwd) {
+		root = filepath.Dir(resolved)
+	}
+	if danger.IsSensitiveReadPath(root, resolved) {
+		return fmt.Errorf("media path: rejected credential file: %s", resolved)
+	}
+
 	return nil
+}
+
+// mediaExtensions are ordinary image, video and audio file types, which are
+// never credential material by themselves.
+var mediaExtensions = map[string]bool{
+	".png": true, ".jpg": true, ".jpeg": true, ".gif": true, ".webp": true, ".bmp": true,
+	".mp4": true, ".mov": true, ".webm": true, ".mkv": true,
+	".mp3": true, ".ogg": true, ".oga": true, ".opus": true, ".wav": true, ".m4a": true,
 }
 
 // credentialBasenames are well-known credential files identified by name alone.

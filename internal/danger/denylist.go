@@ -128,6 +128,10 @@ func denyScanVars(cmd string, dc *denyCtx, depth int, inherited map[string]strin
 			if i > 0 && denyStaticPipeFeed(earlier, expanded, dc, depth) {
 				return true
 			}
+			// An argv composer appends a static producer's output to its command.
+			if denyArgvComposerFeed(earlier, expanded, dc, depth) {
+				return true
+			}
 			earlier = append(earlier, expanded)
 		}
 		if len(stages) == 1 {
@@ -343,6 +347,14 @@ func denyStage(stage []string, dc *denyCtx, depth int) bool {
 			return true
 		}
 	}
+	// Code carried by environment assignments, printf -v / read into a code
+	// variable and arithmetic operands is a command position of its own.
+	codeBodies, _ := stageCodeBodies(stage, un)
+	for _, body := range codeBodies {
+		if denyScan(body, dc, depth+1) {
+			return true
+		}
+	}
 	// `env -S 'git push'` runs the split string as the command, ahead of any
 	// remaining operands.
 	for _, split := range un.splits {
@@ -380,6 +392,29 @@ func denyStaticPipeFeed(upstream [][]string, sink []string, dc *denyCtx, depth i
 		}
 		text = strings.TrimSpace(strings.ReplaceAll(text, "\x00", " "))
 		return text != "" && denyScan(text, dc, depth+1)
+	}
+	return false
+}
+
+// denyArgvComposerFeed scans the commands an argv composer (xargs, parallel)
+// runs once its statically known input is composed in: a static echo/printf
+// producer upstream, a here-string, or parallel's `:::` argument sources.
+// `echo push | xargs git` runs `git push`; `echo 'git push' | parallel` and
+// `parallel {} ::: 'git push'` run it too.
+func denyArgvComposerFeed(upstream [][]string, sink []string, dc *denyCtx, depth int) bool {
+	text, static := staticPipeText(upstream)
+	if hs, ok := hereStringText(sink); ok {
+		text, static = hs, true
+	}
+	comps, over := argvComposeBounded(sink, text, static)
+	if over {
+		// An oversized composition cannot be scanned in bounded time.
+		return true
+	}
+	for _, composed := range comps {
+		if denyStage(composed, dc, depth+1) {
+			return true
+		}
 	}
 	return false
 }

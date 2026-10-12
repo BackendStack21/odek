@@ -210,7 +210,7 @@ Per-type `data` fields:
 | `plan_blocked` | `steps`, `blocked`, `version` |
 | `plan_reassessment` | `reason`, `failure_batches` (always `3`) |
 | `plan_validation_failed` | `verb`, `class` (coarse failure class; never raw arguments or plan content) |
-| `subagent_denied` | `task_index`, `class`, `reason` (emitted by `delegate_tasks` for each policy denial a child reports) |
+| `subagent_denied` | `task_index`, `class`, `reason_sha256`, `reason_bytes` (the reason text can embed the denied command, so only its digest and size are emitted; emitted by `delegate_tasks` for each policy denial a child reports) |
 | `subagent_spawned` | `task_id`, `pid`, `depth`, `timeout_seconds`, `goal_sha256` (16 hex chars: first 8 bytes of SHA-256 of the goal; the goal itself is never logged) |
 | `subagent_completed` | `task_id`, `status`, plus optional `iterations`, `duration_seconds`, `tokens_used`, `artifact_count` when the child result carried them |
 | `subagent_concurrency_wait` | `task_index`, `waited_ms` |

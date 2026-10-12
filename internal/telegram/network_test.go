@@ -105,14 +105,14 @@ func TestNewFallbackTransport(t *testing.T) {
 	if len(ft.FallbackURLs) != 2 {
 		t.Errorf("len(FallbackURLs) = %d, want 2", len(ft.FallbackURLs))
 	}
-	if ft.Timeout != 30*time.Second {
-		t.Errorf("Timeout = %v, want 30s", ft.Timeout)
+	if ft.Timeout != botClientTimeout {
+		t.Errorf("Timeout = %v, want %v", ft.Timeout, botClientTimeout)
 	}
 	if ft.Client == nil {
 		t.Fatal("Client is nil")
 	}
-	if ft.Client.Timeout != 30*time.Second {
-		t.Errorf("Client.Timeout = %v, want 30s", ft.Client.Timeout)
+	if ft.Client.Timeout != botClientTimeout {
+		t.Errorf("Client.Timeout = %v, want %v", ft.Client.Timeout, botClientTimeout)
 	}
 }
 

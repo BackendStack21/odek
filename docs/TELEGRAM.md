@@ -112,7 +112,8 @@ Non-HTTPS, non-loopback, or non-Telegram URLs are rejected to prevent the bot to
 
 `SetDailyTokenBudget` and `CheckDailyBudget` implement a simple daily token usage tracker:
 - Usage is persisted to `~/.odek/telegram_token_usage_<YYYY-MM-DD>`
-- Budget resets automatically each calendar day
+- Budget resets automatically at midnight UTC (the counter file is keyed by the UTC date); an unreadable counter file counts as a fully spent budget (fail closed)
+- **Upgrade note**: the counter file is keyed by the UTC date. Operators outside UTC who upgrade from a release that keyed it by the local date see the daily usage counter reset once, at the first run after the upgrade.
 - **Pre-flight check**: before each agent run (chat turns and scheduled jobs), a read-only check refuses the run when the recorded usage has reached the budget, avoiding wasted API calls
 - **Post-run billing**: after each agent run, actual token usage (`input + output`) is deducted from the daily budget — also for failed or cancelled chat turns and scheduled jobs that return an error, since those tokens were spent too. The usage is recorded even when it pushes the total past the budget, so the overshooting run exhausts the budget and later runs are refused
 - Returns a warning message to the chat if the budget is exceeded, but still delivers the response
@@ -146,7 +147,7 @@ type TelegramError struct {
 
 ### Upload Memory Tradeoff
 
-`doUpload` buffers the entire file in memory before sending (`bytes.Buffer`). This enables retry without re-reading from disk. Telegram's 50 MB upload limit makes this acceptable for bot use cases.
+`doUpload` buffers the entire file in memory before sending (`bytes.Buffer`). This enables retry without re-reading from disk. Files over the Bot API's 50 MB upload limit are refused before anything is read, which bounds memory.
 
 ## Health Server (`health.go`)
 
@@ -162,7 +163,7 @@ The `HealthServer` provides an HTTP `/health` endpoint for monitoring systems.
 The `Poller` struct implements Telegram's long-polling update mechanism:
 
 - **Offset tracking**: updates are acknowledged by advancing the offset past the highest received update ID, preventing duplicate processing
-- **Configurable timeout**: default 30s long-poll (Telegram holds the connection open until updates arrive or the timeout expires)
+- **Configurable timeout**: default 30s long-poll (Telegram holds the connection open until updates arrive or the timeout expires). The bot's HTTP client timeout (75 s, primary and fallback clients alike) exceeds the longest allowed `poll_timeout` (60 s)
 - **Polling interval**: 1s between poll cycles (configurable via `PollInterval`)
 - **Exponential backoff**: consecutive poll errors trigger increasing delays: `interval × 2^errors`, capped at `60 × interval`. Error count clamps at 30 to prevent integer overflow in the bit-shift. A successful poll resets the error counter.
 - **Context cancellation**: `GetUpdatesContext(ctx, ...)` and `Poll(ctx)` use context-aware HTTP requests (`http.NewRequestWithContext`). When the context is cancelled (e.g. SIGINT/SIGTERM), the long-poll HTTP call is **aborted immediately** instead of blocking until the poll timeout expires. The retry loop also checks `ctx.Done()` during backoff sleeps, so cancellation during retries returns promptly.
@@ -401,7 +402,7 @@ keyboard cannot answer someone else's clarify prompt.
 
 ## Plan Management (`plan.go`)
 
-Plans are stored as markdown files in `~/.odek/plans/chat<chatID>/<slug>.md`, isolating each Telegram chat's plans. Each plan is created from a natural language description and persisted for later review. The `/plan` command instructs the agent to save plans into the caller's per-chat directory, and `/plans`, `/plan_view`, `/plan_delete`, and `/plan_resume` only see plans belonging to that chat. Plan files are agent-written and may carry untrusted content, so `/plan_resume` injects the body inside the untrusted-content wrapper and marks the chat session as having ingested untrusted content.
+Plans are stored as markdown files in `~/.odek/plans/chat<chatID>/<slug>.md`, isolating each Telegram chat's plans. Each plan is created from a natural language description and persisted for later review. The `/plan` command instructs the agent to save plans into the caller's per-chat directory, and `/plans`, `/plan_view`, `/plan_delete`, and `/plan_resume` only see plans belonging to that chat. `/plan_resume` declines while an agent run holds the chat's lock. Plan files are agent-written and may carry untrusted content, so `/plan_resume` injects the body inside the untrusted-content wrapper and marks the chat session as having ingested untrusted content.
 
 ### Size Cap
 

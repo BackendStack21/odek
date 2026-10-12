@@ -201,6 +201,37 @@ func sqliteSQLWriteTargets(text string) []string {
 	return out
 }
 
+// sqliteReadfileCall locates the SQL functions of the sqlite3 shell that read
+// a file or directory tree at a path the statement names: readfile(PATH),
+// fsdir(PATH) and lsdir(PATH).
+var (
+	sqliteReadfileCall  = regexp.MustCompile(`(?i)\b(?:readfile|fsdir|lsdir)[\s;]*\([\s;]*`)
+	sqliteReadfileLoose = regexp.MustCompile(`(?i)\b(?:readfile|fsdir|lsdir)\b`)
+)
+
+// sqliteSQLReadTargets returns the paths SQL text reads through readfile()
+// and friends. As for the write forms, only an argument that is exactly one
+// string literal names a path; anything else is reported as the dynamic
+// marker, which fails closed.
+func sqliteSQLReadTargets(text string) []string {
+	text = sqlCommentsBlanked(text)
+	matches := sqliteReadfileCall.FindAllStringSubmatchIndex(text, -1)
+	var out []string
+	if len(matches) < len(sqliteReadfileLoose.FindAllStringIndex(text, -1)) {
+		out = append(out, dynamicSubstToken)
+	}
+	for _, m := range matches {
+		value, rest, ok := sqlLeadingLiteral(text[m[1]:])
+		rest = strings.TrimLeft(rest, " \t\r\n")
+		if ok && (rest == "" || strings.ContainsRune(",)", rune(rest[0]))) {
+			out = append(out, value)
+			continue
+		}
+		out = append(out, dynamicSubstToken)
+	}
+	return out
+}
+
 // sqliteWriteDotCommands are the sqlite3 shell dot-commands whose operands
 // name a file the shell writes (or creates): output redirection, backups,
 // the query and trace logs, a database clone, the database it opens and an

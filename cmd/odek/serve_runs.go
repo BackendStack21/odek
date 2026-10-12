@@ -883,6 +883,10 @@ type promptRequest struct {
 	Thinking               string            `json:"thinking"`
 	ApprovalTimeoutSeconds int               `json:"approval_timeout_seconds"`
 	Attachments            []wsAttachment    `json:"attachments"`
+
+	// clientIP is the caller's address as handlePromptStart saw it; never
+	// decoded from the request body.
+	clientIP string
 }
 
 // startServeRun launches a headless agent run. It mirrors the WebSocket
@@ -955,6 +959,9 @@ func startServeRun(
 
 	ctx, cancel := context.WithCancel(context.Background())
 	run.cancel = cancel
+	if req.clientIP != "" {
+		ctx = context.WithValue(ctx, serveClientIPKey{}, req.clientIP)
+	}
 
 	var deltas wsDeltaCounters
 	// One annotator backs BOTH frame paths of the run: the agent's live
@@ -1109,6 +1116,7 @@ func handlePromptStart(st *serveState, store *session.Store, resources *resource
 			http.Error(w, "invalid JSON", http.StatusBadRequest)
 			return
 		}
+		req.clientIP = clientIP(r, sessionScopedProxies)
 		run, err := startServeRun(st.resolved, system, store, resources, req)
 		if err != nil {
 			switch {

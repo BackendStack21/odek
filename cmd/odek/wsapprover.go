@@ -274,9 +274,9 @@ func (a *wsApprover) PromptCommand(cls danger.RiskClass, cmd, description string
 		return fmt.Errorf("approval: send failed: %w", err)
 	}
 
-	// Wait for response, cancellation, or the approval timeout.
-	select {
-	case action := <-resp:
+	// handle applies a delivered answer; shared by the normal path and an
+	// answer that landed in the same instant as the timeout.
+	handle := func(action string) error {
 		// Approve-vs-cancel race: both cases can be ready and select picks
 		// randomly. Before honoring the action, check whether a cancel
 		// landed — against cancelCh, the captured generation, NOT the live
@@ -326,15 +326,28 @@ func (a *wsApprover) PromptCommand(cls danger.RiskClass, cmd, description string
 		default:
 			return fmt.Errorf("operation denied by user: %s", danger.SanitizeInline(cmd))
 		}
+	}
+
+	// Wait for response, cancellation, or the approval timeout.
+	select {
+	case action := <-resp:
+		return handle(action)
 	case <-cancelCh:
+		// Retire the entry first so a late answer reports not-found.
+		a.retirePending(id, resp)
 		return fmt.Errorf("approval cancelled: %s", danger.SanitizeInline(cmd))
 	case <-time.After(timeout):
+		// Retire the entry before announcing the expiry: an answer arriving
+		// after this point finds nothing (REST reports not-found) instead of
+		// being acknowledged for a command that is denied. An answer that
+		// landed in the same instant is still honored, deny included.
+		if action, ok := a.retirePending(id, resp); ok {
+			return handle(action)
+		}
 		decision.State = "expired"
 		// Tell the browser this card is dead BEFORE the timeout error
 		// surfaces to the run — otherwise the UI keeps a zombie approval
-		// card that blocks the whole approval queue. Late approval_response
-		// frames for this id are still dropped safely: the deferred delete
-		// has already removed the pending entry.
+		// card that blocks the whole approval queue.
 		a.sendFn(map[string]any{
 			"type": "approval_expired",
 			"id":   id,
@@ -345,6 +358,21 @@ func (a *wsApprover) PromptCommand(cls danger.RiskClass, cmd, description string
 
 func (a *wsApprover) PromptOperation(op danger.ToolOperation) error {
 	return a.PromptCommand(op.Risk, op.Resource, fmt.Sprintf("tool=%s", op.Name))
+}
+
+// retirePending removes a pending approval under the lock and returns an
+// answer that was already delivered but not yet consumed, if any. After it
+// returns, HandleResponse for the id reports false.
+func (a *wsApprover) retirePending(id string, resp chan string) (string, bool) {
+	a.mu.Lock()
+	delete(a.pending, id)
+	a.mu.Unlock()
+	select {
+	case v := <-resp:
+		return v, true
+	default:
+		return "", false
+	}
 }
 
 // HandleResponse processes a response from the browser.
@@ -428,8 +456,7 @@ func (a *wsApprover) PromptClarify(question string) (string, error) {
 		return "", fmt.Errorf("send failed: %w", err)
 	}
 
-	select {
-	case answer := <-resp:
+	handle := func(answer string) (string, error) {
 		select {
 		case <-cancelCh:
 			return "", fmt.Errorf("cancelled")
@@ -453,9 +480,25 @@ func (a *wsApprover) PromptClarify(question string) (string, error) {
 			"id":     id,
 		})
 		return answer, nil
+	}
+
+	select {
+	case answer := <-resp:
+		return handle(answer)
 	case <-cancelCh:
+		a.mu.Lock()
+		delete(a.pendingClarify, id)
+		a.mu.Unlock()
 		return "", fmt.Errorf("cancelled")
 	case <-time.After(timeout):
+		a.mu.Lock()
+		delete(a.pendingClarify, id)
+		a.mu.Unlock()
+		select {
+		case answer := <-resp: // delivered in the same instant as the timeout
+			return handle(answer)
+		default:
+		}
 		decision.State = "expired"
 		a.sendFn(map[string]any{
 			"type": "clarify_expired",
@@ -472,15 +515,18 @@ func (a *wsApprover) HandleClarifyResponse(id, answer string) bool {
 		return false
 	}
 	a.mu.Lock()
+	defer a.mu.Unlock()
 	resp, ok := a.pendingClarify[id]
-	a.mu.Unlock()
-	if ok {
-		select {
-		case resp <- answer:
-		default:
-		}
+	if !ok {
+		return false
 	}
-	return ok
+	select {
+	case resp <- answer:
+		delete(a.pendingClarify, id) // one-shot: a duplicate or late answer finds nothing
+		return true
+	default:
+		return false
+	}
 }
 
 // Cancel interrupts any pending PromptCommand by closing the active cancel

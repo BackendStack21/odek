@@ -96,17 +96,147 @@ func sanitizeIdentity(identity string) string {
 	return closeOpenFence(strings.TrimSpace(stripPillarImitations(identity)))
 }
 
-// closeOpenFence terminates a code fence the text leaves open, so whatever is
-// appended after it (the authoritative pillar) is never inside a code block.
-func closeOpenFence(s string) string {
-	open := false
-	for _, line := range strings.Split(s, "\n") {
-		if isFenceLine(foldHeadingText(unquoteLine(line))) {
-			open = !open
+// fenceTracker follows Markdown fenced code blocks with CommonMark rules: an
+// opener is three or more backticks or tildes indented by at most three
+// columns (a backtick opener's info string holds no backtick); a closer
+// repeats the opener's character at least as long, indented by at most three
+// columns relative to its container, with nothing but spaces after it. Any
+// other fence-looking line inside a fence is content.
+//
+// Containers: a fence opened inside a list item (after one or more list
+// markers) belongs to that item — its content column is the container
+// offset, a closer is measured from it, and a non-blank line indented less
+// than it ends the item and with it the fence. A blockquoted line belongs to
+// the quote container and neither opens nor closes a fence tracked here.
+type fenceTracker struct {
+	open bool
+	ch   byte
+	n    int
+	base int // container content column of the open fence
+	// opened reports that the last feed opened a fence.
+	opened bool
+}
+
+// listMarkerWidth returns the width of a list marker at the start of t (the
+// marker plus the spaces after it, 1-4 of them) and whether t starts a list
+// item with content.
+func listMarkerWidth(t string) (int, bool) {
+	m := 0
+	switch {
+	case t != "" && (t[0] == '-' || t[0] == '*' || t[0] == '+'):
+		m = 1
+	default:
+		d := 0
+		for d < len(t) && d < 9 && t[d] >= '0' && t[d] <= '9' {
+			d++
+		}
+		if d > 0 && d < len(t) && (t[d] == '.' || t[d] == ')') {
+			m = d + 1
 		}
 	}
-	if open {
-		return s + "\n```"
+	if m == 0 || m >= len(t) || (t[m] != ' ' && t[m] != '\t') {
+		return 0, false
+	}
+	sp := 0
+	for m+sp < len(t) && t[m+sp] == ' ' {
+		sp++
+	}
+	if m+sp < len(t) && t[m+sp] == '\t' {
+		sp = 1
+	}
+	if sp == 0 || sp > 4 || m+sp >= len(t) {
+		return 0, false // 5+ spaces: the item content is indented code; empty item: no fence
+	}
+	return m + sp, true
+}
+
+// leadingColumns returns the indentation width of line (tabs to multiples of
+// four) and the index of the first non-indent byte.
+func leadingColumns(line string) (col, i int) {
+	for i < len(line) && (line[i] == ' ' || line[i] == '\t') {
+		if line[i] == '\t' {
+			col += 4 - col%4
+		} else {
+			col++
+		}
+		i++
+	}
+	return col, i
+}
+
+// feed advances the tracker by one line and reports whether the line is a
+// fence delimiter (an opener or a closer). After the call, open reports
+// whether the following line is fence content.
+func (f *fenceTracker) feed(line string) (delim bool) {
+	f.opened = false
+	col, i := leadingColumns(line)
+	if i >= len(line) {
+		return false // blank lines never change fence state
+	}
+	t := line[i:]
+	if f.open {
+		if col < f.base {
+			f.open = false // the list item holding the fence ended
+		} else {
+			if col-f.base >= 4 || (t[0] != f.ch) {
+				return false
+			}
+			k := 0
+			for k < len(t) && t[k] == f.ch {
+				k++
+			}
+			if k >= f.n && strings.Trim(t[k:], " \t") == "" {
+				f.open = false
+				return true
+			}
+			return false
+		}
+	}
+	if col >= 4 {
+		return false
+	}
+	base := 0
+	for depth := 0; depth < 8; depth++ {
+		if t == "" || t[0] == '>' {
+			return false // quote container (or nothing to open)
+		}
+		w, ok := listMarkerWidth(t)
+		if !ok {
+			break
+		}
+		base = col + w
+		col += w
+		t = t[w:]
+	}
+	c := t[0]
+	if c != '`' && c != '~' {
+		return false
+	}
+	k := 0
+	for k < len(t) && t[k] == c {
+		k++
+	}
+	if k < 3 {
+		return false
+	}
+	if c == '`' && strings.Contains(t[k:], "`") {
+		return false
+	}
+	f.open, f.ch, f.n, f.base, f.opened = true, c, k, base, true
+	return true
+}
+
+// closeOpenFence terminates a code fence the text leaves open, so whatever is
+// appended after it (the authoritative pillar) is never inside a code block.
+// The closer repeats the opener's character and length, indented to its
+// container.
+func closeOpenFence(s string) string {
+	var ft fenceTracker
+	for _, line := range strings.Split(s, "\n") {
+		ft.feed(line)
+	}
+	if ft.open {
+		return s + "\n" + strings.Repeat(" ", ft.base) + strings.Repeat(string(ft.ch), ft.n)
 	}
 	return s
 }
@@ -136,36 +266,42 @@ func appendSecurityPillar(system string) string {
 func stripPillarImitations(identity string) string {
 	lines := strings.Split(identity, "\n")
 	out := make([]string, 0, len(lines))
-	inFence := false
 	// A fence opener that is never closed must not make the rest of the
 	// identity opaque, or an imitation hides after it.
 	unclosed := -1
-	for i, open := 0, -1; i < len(lines); i++ {
-		if isFenceLine(foldHeadingText(unquoteLine(lines[i]))) {
-			if open < 0 {
+	{
+		var ft fenceTracker
+		open := -1
+		for i, line := range lines {
+			ft.feed(line)
+			if ft.opened {
 				open = i
-			} else {
-				open = -1
 			}
 		}
-		if i == len(lines)-1 {
+		if ft.open {
 			unclosed = open
 		}
 	}
+	var ft fenceTracker
+	ignoreFences := false
 	stripping := false
 	consumed := false // the imitated block has consumed content
 	sawBlank := false
 	for i := 0; i < len(lines); i++ {
 		line := lines[i]
-		if i != unclosed && isFenceLine(foldHeadingText(unquoteLine(line))) {
-			inFence = !inFence
-			stripping = false
-			out = append(out, line)
-			continue
+		if i == unclosed {
+			ignoreFences = true
 		}
-		if inFence {
-			out = append(out, line)
-			continue
+		if !ignoreFences {
+			if ft.feed(line) {
+				stripping = false
+				out = append(out, line)
+				continue
+			}
+			if ft.open {
+				out = append(out, line)
+				continue
+			}
 		}
 		if title, span, isHeading := headingAt(lines, i); isHeading {
 			if stripping && isPillarSubTitle(title) {
@@ -246,12 +382,6 @@ func unquoteLine(line string) string {
 		t = strings.TrimLeft(t[1:], " \t")
 	}
 	return t
-}
-
-// isFenceLine reports a code-fence delimiter line.
-func isFenceLine(folded string) bool {
-	t := strings.TrimSpace(folded)
-	return strings.HasPrefix(t, "```") || strings.HasPrefix(t, "~~~")
 }
 
 // headingAt recognises a heading starting at lines[i] and returns its title
