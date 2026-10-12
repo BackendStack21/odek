@@ -15,6 +15,9 @@ var projectCodeTools = map[string]bool{
 }
 
 func adapterRunsCode(name string, tokens []string, repo *gitRepoCtx) bool {
+	if gpgRunsProgram(name, tokens) {
+		return true
+	}
 	if hasAny([]string{"awk", "gawk", "mawk", "nawk"}, name) && optionPresent(tokens, "-l", "--load") {
 		return true
 	}
@@ -501,7 +504,7 @@ func syntaxCheckArgumentsOnly(tokens []string, flags ...string) bool {
 }
 
 func hostInspectorMutates(name string, tokens []string) bool {
-	if killByNameBroadcasts(name, tokens) || jqDumpsEnvironment(name, tokens) || psShowsEnvironment(name, tokens) {
+	if gpgMutatesKeyring(name, tokens) || killByNameBroadcasts(name, tokens) || jqDumpsEnvironment(name, tokens) || psShowsEnvironment(name, tokens) {
 		return true
 	}
 	switch name {

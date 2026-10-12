@@ -155,6 +155,40 @@ func TestRED_PkillBroadcastPattern(t *testing.T) {
 	}
 }
 
+// gpg --photo-viewer runs a shell command line; deleting secret keys is
+// irreversible credential destruction. Both are auto-allowed as safe.
+func TestRED_GpgProgramAndSecretKeyDeletion(t *testing.T) {
+	rh1012AtLeast(t, CodeExecution,
+		`gpg --list-options show-photos --photo-viewer 'sh -c id' -k`,
+		`gpg --photo-viewer 'rm -rf ~' --edit-key x showphoto`,
+		`gpg --verify-options=show-photos --verify f.sig`,
+		`gpg --exec-path /tmp/evil -k`,
+		`gpg --keyserver-program /tmp/x --recv-keys ABC`,
+		`gpg --options /tmp/evil.conf -k`,
+		`gpg2 --photo-v 'sh -c id' -k`,
+	)
+	rh1012AtLeast(t, SystemWrite,
+		`gpg --batch --yes --delete-secret-and-public-key ABC`,
+		`gpg --delete-secret-keys ABC`,
+		`gpg --delete-key ABC`,
+		`gpg --import key.asc`,
+		`gpg --edit-key ABC trust`,
+		`gpg --quick-generate-key alice`,
+		`gpg --recv-keys ABC`,
+	)
+	rh1012Safe(t,
+		`gpg --list-keys`,
+		`gpg -k`,
+		`gpg --list-secret-keys`,
+		`gpg --fingerprint ABC`,
+		`gpg --verify f.sig f`,
+		`gpg --export ABC`,
+		`gpg --version`,
+		`gpg --keyserver hkps://keys.openpgp.org -k`,
+		`gpg --list-options show-uid-validity -k`,
+	)
+}
+
 // The denylist sees the resolved default and the literal spelling.
 func TestRED_DenylistResolvesParameterDefault(t *testing.T) {
 	t.Setenv("HOME", "/home/user")
