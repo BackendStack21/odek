@@ -780,8 +780,8 @@ func TestPromptMedia_Approves(t *testing.T) {
 	if !strings.Contains(body, "/tmp/photo.jpg") {
 		t.Errorf("approval prompt must show the media path, got body:\n%s", body)
 	}
-	if !strings.Contains(body, "network_egress") {
-		t.Errorf("approval prompt must show the network_egress risk class, got body:\n%s", body)
+	if !strings.Contains(body, "network_upload") {
+		t.Errorf("approval prompt must show the network_upload risk class, got body:\n%s", body)
 	}
 
 	id := extractCallbackID(body, cbPrefixApprove)

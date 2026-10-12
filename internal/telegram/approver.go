@@ -191,6 +191,15 @@ func allowTrustForClass(cls danger.RiskClass) bool {
 }
 
 func (a *TelegramApprover) PromptCommand(cls danger.RiskClass, cmd, description string) error {
+	return a.promptCommand(cls, cmd, description, false)
+}
+
+// promptCommand is PromptCommand with an optional per-call mode: when
+// perCall is set the per-class session trust cache is ignored and the prompt
+// carries no Trust Session button, so a class-level trust earned on other
+// operations never approves the call. Only the user's explicit blanket
+// trust-all still does.
+func (a *TelegramApprover) promptCommand(cls danger.RiskClass, cmd, description string, perCall bool) error {
 	// Check session trust cache. Trust-all is gated by the same class rule
 	// as the per-class trust shortcut: destructive/blocked/unknown prompts
 	// always require an explicit user decision.
@@ -199,14 +208,14 @@ func (a *TelegramApprover) PromptCommand(cls danger.RiskClass, cmd, description 
 		a.mu.Unlock()
 		return fmt.Errorf("operation denied: approval unavailable on a system-initiated turn with no bound user: %s", danger.SanitizeInline(cmd))
 	}
-	if a.trusted[cls] || (a.trustAll && danger.TrustShortcutAllowed(cls)) {
+	if (!perCall && a.trusted[cls]) || (a.trustAll && danger.TrustShortcutAllowed(cls)) {
 		a.mu.Unlock()
 		return nil
 	}
 	a.mu.Unlock()
 
 	id := a.newID()
-	allowTrust := allowTrustForClass(cls)
+	allowTrust := allowTrustForClass(cls) && !perCall
 
 	// Approval-fatigue mitigation: after FrictionThreshold approvals of the
 	// same class within FrictionWindow, force a per-call approval by hiding
@@ -335,14 +344,15 @@ func (a *TelegramApprover) PromptOperation(op danger.ToolOperation) error {
 }
 
 // PromptMedia asks the user to approve an outbound Telegram media upload.
-// The file path is shown in full and, when the bot was launched from a broad
+// It is always asked per call (class-level trust never covers it). The file
+// path is shown in full and, when the bot was launched from a broad
 // base such as $HOME or /, an explicit warning is added to the prompt.
 func (a *TelegramApprover) PromptMedia(path string) error {
 	desc := "Outbound Telegram media upload"
 	if w := BroadBaseWarning(); w != "" {
 		desc += "\n⚠️ " + w
 	}
-	return a.PromptCommand(danger.NetworkEgress, path, desc)
+	return a.promptCommand(danger.NetworkUpload, path, desc, true)
 }
 
 // HandleCallback processes a callback query from an inline keyboard approval.
