@@ -255,7 +255,8 @@ func secretPathReference(v string) bool {
 }
 
 var (
-	sourceIdentRe = regexp.MustCompile(`^[A-Za-z_]+$`)
+	sourceIdentRe     = regexp.MustCompile(`^[A-Za-z_]+$`)
+	camelTransitionRe = regexp.MustCompile(`[a-z][A-Z]`)
 )
 
 // sourceValue reports whether an unquoted value reads as source code rather
@@ -273,7 +274,10 @@ func sourceValue(v string) bool {
 		return false
 	}
 	if sourceIdentRe.MatchString(t) {
-		return true
+		// One lowercase or uppercase letter run of a dozen letters or more
+		// is a passphrase, not an identifier; code identifiers are short or
+		// carry a camelCase transition or an underscore.
+		return len(t) < 12 || strings.ContainsRune(t, '_') || camelTransitionRe.MatchString(t)
 	}
 	return memberChainRe.MatchString(t)
 }
