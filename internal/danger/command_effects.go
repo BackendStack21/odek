@@ -501,6 +501,9 @@ func syntaxCheckArgumentsOnly(tokens []string, flags ...string) bool {
 }
 
 func hostInspectorMutates(name string, tokens []string) bool {
+	if jqDumpsEnvironment(name, tokens) || psShowsEnvironment(name, tokens) {
+		return true
+	}
 	switch name {
 	case "sysctl":
 		for _, tok := range tokens[1:] {

@@ -93,6 +93,48 @@ func TestRED_GitSubcommandFromParameterDefault(t *testing.T) {
 	rh1012AtLeast(t, Unknown, `rm -rf ${x:-/}`, `${x:-rm} -rf /`)
 }
 
+// jq -n env / $ENV dumps the whole process environment as JSON, and `ps e`
+// prints every process's environment: the same secret disclosure as a bare
+// `env`, which is system_write. `export -p NAME` prints the named variable's
+// value — a targeted secret read that declare -p/typeset -p already escalate
+// but export -p does not.
+func TestRED_EnvironmentDumpSpellings(t *testing.T) {
+	rh1012AtLeast(t, SystemWrite,
+		`jq -n env`,
+		`jq -n '$ENV'`,
+		`jq -n '$ENV | .OPENAI_API_KEY'`,
+		`jq -n 'env.PATH'`,
+		`jq -rn --arg k x '$ENV[$k]'`,
+		`gojq -n env`,
+		`ps eww`,
+		`ps auxe`,
+		`ps axe`,
+		`ps -E`,
+		`ps -eo pid,command,environ`,
+		`ps -o pid,env`,
+		`ps --format env`,
+		`export -p OPENAI_API_KEY`,
+		`export -fp OPENAI_API_KEY`,
+		`readonly -p OPENAI_API_KEY`,
+		`declare -p OPENAI_API_KEY`,
+		`typeset -p OPENAI_API_KEY`,
+	)
+	rh1012Safe(t,
+		`jq . data.json`,
+		`jq '.envs' data.json`,
+		`jq '.[] | select(.name=="env")' data.json`,
+		`jq -n '[1,2]'`,
+		`jq . env.json`,
+		`ps aux`,
+		`ps -ef`,
+		`ps -p 1`,
+		`ps -u gene`,
+		`ps -o pid,comm`,
+		`export FOO=bar`,
+		`export PATH`,
+	)
+}
+
 // The denylist sees the resolved default and the literal spelling.
 func TestRED_DenylistResolvesParameterDefault(t *testing.T) {
 	t.Setenv("HOME", "/home/user")
