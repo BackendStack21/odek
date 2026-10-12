@@ -46,7 +46,14 @@ func convertToWAV(ctx context.Context, srcPath string) string {
 	dstPath := dstFile.Name()
 	dstFile.Close()
 
-	cmd := exec.CommandContext(ctx, "ffmpeg", "-y", "-i", srcPath, "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1", dstPath)
+	// ffmpeg parses "proto:..." inputs as protocols; hand it a cleaned absolute
+	// path (never protocol-shaped) and restrict nested protocols so container
+	// formats (HLS, concat) cannot pull in URLs or other schemes.
+	input := srcPath
+	if abs, aerr := filepath.Abs(srcPath); aerr == nil {
+		input = abs
+	}
+	cmd := exec.CommandContext(ctx, "ffmpeg", "-y", "-protocol_whitelist", "file,pipe", "-i", input, "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1", dstPath)
 	if err := cmd.Run(); err != nil {
 		// If ffmpeg fails (corrupt file, unsupported codec, etc.),
 		// just pass the original path — whisper will produce its own error.
