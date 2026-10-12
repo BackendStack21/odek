@@ -294,3 +294,62 @@ func TestRED_ServeAuditBinderPendingIsByteBounded(t *testing.T) {
 		t.Fatalf("no drop marker among %d ingests", len(log.Ingests))
 	}
 }
+
+// Whenever an answer was accepted (HandleResponse / HandleClarifyResponse
+// returned true) the waiter must act on it, even when it lands in the same
+// instant as the timeout: a denial is a denial, an answer is the answer.
+func TestRED_AnswerAcceptedAtTimeoutIsHonored(t *testing.T) {
+	violations := 0
+	for i := 0; i < 400; i++ {
+		idCh := make(chan string, 1)
+		a := newWSApprover(func(v any) error {
+			if ar, ok := v.(approvalRequest); ok {
+				idCh <- ar.ID
+			}
+			return nil
+		})
+		a.SetApprovalTimeout(time.Millisecond)
+		accepted := make(chan bool, 1)
+		go func() {
+			id := <-idCh
+			time.Sleep(time.Millisecond - time.Duration(i%5)*100*time.Microsecond)
+			accepted <- a.HandleResponse(id, "deny")
+		}()
+		err := a.PromptCommand(danger.SystemWrite, "touch /etc/x", "")
+		if ok := <-accepted; ok && (err == nil || !strings.Contains(err.Error(), "denied")) {
+			violations++
+		}
+	}
+	if violations > 0 {
+		t.Fatalf("%d accepted denials were reported as timeouts", violations)
+	}
+}
+
+func TestRED_ClarifyAnswerAcceptedAtTimeoutIsHonored(t *testing.T) {
+	old := clarifyTimeout
+	clarifyTimeout = time.Millisecond
+	defer func() { clarifyTimeout = old }()
+	violations := 0
+	for i := 0; i < 400; i++ {
+		idCh := make(chan string, 1)
+		a := newWSApprover(func(v any) error {
+			if cr, ok := v.(clarifyRequest); ok {
+				idCh <- cr.ID
+			}
+			return nil
+		})
+		accepted := make(chan bool, 1)
+		go func() {
+			id := <-idCh
+			time.Sleep(time.Millisecond - time.Duration(i%5)*100*time.Microsecond)
+			accepted <- a.HandleClarifyResponse(id, "yes")
+		}()
+		ans, err := a.PromptClarify("q?")
+		if ok := <-accepted; ok && (err != nil || ans != "yes") {
+			violations++
+		}
+	}
+	if violations > 0 {
+		t.Fatalf("%d accepted clarify answers were lost to the timeout", violations)
+	}
+}

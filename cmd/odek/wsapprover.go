@@ -274,9 +274,9 @@ func (a *wsApprover) PromptCommand(cls danger.RiskClass, cmd, description string
 		return fmt.Errorf("approval: send failed: %w", err)
 	}
 
-	// Wait for response, cancellation, or the approval timeout.
-	select {
-	case action := <-resp:
+	// handle applies a delivered answer; shared by the normal path and an
+	// answer that landed in the same instant as the timeout.
+	handle := func(action string) error {
 		// Approve-vs-cancel race: both cases can be ready and select picks
 		// randomly. Before honoring the action, check whether a cancel
 		// landed — against cancelCh, the captured generation, NOT the live
@@ -326,6 +326,12 @@ func (a *wsApprover) PromptCommand(cls danger.RiskClass, cmd, description string
 		default:
 			return fmt.Errorf("operation denied by user: %s", danger.SanitizeInline(cmd))
 		}
+	}
+
+	// Wait for response, cancellation, or the approval timeout.
+	select {
+	case action := <-resp:
+		return handle(action)
 	case <-cancelCh:
 		// Retire the entry first so a late answer reports not-found.
 		a.retirePending(id, resp)
@@ -334,25 +340,9 @@ func (a *wsApprover) PromptCommand(cls danger.RiskClass, cmd, description string
 		// Retire the entry before announcing the expiry: an answer arriving
 		// after this point finds nothing (REST reports not-found) instead of
 		// being acknowledged for a command that is denied. An answer that
-		// landed in the same instant is still honored.
+		// landed in the same instant is still honored, deny included.
 		if action, ok := a.retirePending(id, resp); ok {
-			if action == "approve" || action == "trust" {
-				if action == "trust" && !allowTrust {
-					action = "approve"
-				}
-				decision.Action = action
-				decision.State = "accepted"
-				a.sendFn(map[string]any{"type": "approval_ack", "id": id, "action": action})
-				if action == "approve" {
-					a.recordApproval(cls)
-					return nil
-				}
-				a.mu.Lock()
-				a.approveAll[cls] = true
-				a.mu.Unlock()
-				a.recordApproval(cls)
-				return nil
-			}
+			return handle(action)
 		}
 		decision.State = "expired"
 		// Tell the browser this card is dead BEFORE the timeout error
@@ -466,8 +456,7 @@ func (a *wsApprover) PromptClarify(question string) (string, error) {
 		return "", fmt.Errorf("send failed: %w", err)
 	}
 
-	select {
-	case answer := <-resp:
+	handle := func(answer string) (string, error) {
 		select {
 		case <-cancelCh:
 			return "", fmt.Errorf("cancelled")
@@ -491,6 +480,11 @@ func (a *wsApprover) PromptClarify(question string) (string, error) {
 			"id":     id,
 		})
 		return answer, nil
+	}
+
+	select {
+	case answer := <-resp:
+		return handle(answer)
 	case <-cancelCh:
 		a.mu.Lock()
 		delete(a.pendingClarify, id)
@@ -500,6 +494,11 @@ func (a *wsApprover) PromptClarify(question string) (string, error) {
 		a.mu.Lock()
 		delete(a.pendingClarify, id)
 		a.mu.Unlock()
+		select {
+		case answer := <-resp: // delivered in the same instant as the timeout
+			return handle(answer)
+		default:
+		}
 		decision.State = "expired"
 		a.sendFn(map[string]any{
 			"type": "clarify_expired",

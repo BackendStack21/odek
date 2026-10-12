@@ -14,7 +14,7 @@ import (
 
 // clarifyTimeout is how long a principal-channel question waits before
 // the tool returns an error and the loop continues.
-const clarifyTimeout = 5 * time.Minute
+var clarifyTimeout = 5 * time.Minute
 
 func ttyClarifyAvailable() bool {
 	f, err := os.OpenFile(danger.TTYDevicePath(), os.O_RDWR, 0)
