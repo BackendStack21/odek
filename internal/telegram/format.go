@@ -80,7 +80,7 @@ func FormatResponse(text string) ([]string, error) {
 		// ── ## headers → *bold text* ──
 		if strings.HasPrefix(line, "## ") {
 			content := strings.TrimPrefix(line, "## ")
-			content = convertItalicAndEscape(content)
+			content = convertEmphasisAndEscape(content, true)
 			resultLines = append(resultLines, "*"+content+"*")
 			continue
 		}
@@ -273,9 +273,16 @@ func isInsideCode(text string, pos int) bool {
 }
 
 // convertItalicAndEscape processes a single line of normal text.
-//   - Converts *italic* to _italic_ (but leaves **bold** unchanged)
+//   - Converts *italic* to _italic_ and **bold** to MarkdownV2 *bold*
 //   - Escapes all reserved MarkdownV2 characters outside code spans/blocks
 func convertItalicAndEscape(line string) string {
+	return convertEmphasisAndEscape(line, false)
+}
+
+// convertEmphasisAndEscape is convertItalicAndEscape; inBold marks text that is
+// already inside a bold entity (a header), where a paired **bold** run adds no
+// markers because a nested "*" would close the surrounding bold.
+func convertEmphasisAndEscape(line string, inBold bool) string {
 	var result strings.Builder
 	inCodeSpan := false
 	var closers map[int]bool // positions of "*"/"**" runs that close an emphasis
@@ -329,7 +336,7 @@ func convertItalicAndEscape(line string) string {
 			continue
 		}
 
-		// ── **bold** → kept, *italic* → _italic_ ──
+		// ── **bold** → *bold*, *italic* → _italic_ ──
 		// Only a marker with a matching partner on the line becomes
 		// markup; a lone "*" (arithmetic, globs) or "**" is escaped, since
 		// an unclosed entity makes Telegram reject the whole message.
@@ -348,7 +355,11 @@ func convertItalicAndEscape(line string) string {
 				}
 				if paired {
 					if run == 2 {
-						result.WriteString("**")
+						// CommonMark **bold** is MarkdownV2 *bold*; "**" would
+						// open and close an empty entity.
+						if !inBold {
+							result.WriteByte('*')
+						}
 					} else {
 						result.WriteByte('_')
 					}

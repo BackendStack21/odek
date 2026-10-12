@@ -368,8 +368,8 @@ func TestFormatResponse_BoldStaysBold(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("expected 1 chunk, got %d", len(got))
 	}
-	// **bold** stays as-is, '.' gets escaped
-	want := "This is **bold** text\\."
+	// **bold** becomes *bold*, '.' gets escaped
+	want := "This is *bold* text\\."
 	if got[0] != want {
 		t.Errorf("FormatResponse(%q) = %q, want %q", input, got[0], want)
 	}
@@ -384,7 +384,7 @@ func TestFormatResponse_BoldAndItalic(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("expected 1 chunk, got %d", len(got))
 	}
-	want := "**bold** and _italic_"
+	want := "*bold* and _italic_"
 	if got[0] != want {
 		t.Errorf("FormatResponse(%q) = %q, want %q", input, got[0], want)
 	}
@@ -572,7 +572,7 @@ func TestFormatResponse_MixedFormatting(t *testing.T) {
 	// Code blocks (```...```) pass through unchanged.
 	// Inline code backticks preserved, content inside preserved.
 	// '.' after "bold" gets escaped.
-	want := "*Header*\n\nThis is _italic_ and **bold**\\.\n\n```\ncode block\n```\n\nNormal `inline code` here\\."
+	want := "*Header*\n\nThis is _italic_ and *bold*\\.\n\n```\ncode block\n```\n\nNormal `inline code` here\\."
 	if got[0] != want {
 		t.Errorf("FormatResponse(%q) = %q, want %q", input, got[0], want)
 	}

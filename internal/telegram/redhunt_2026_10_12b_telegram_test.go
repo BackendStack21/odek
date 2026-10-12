@@ -153,3 +153,15 @@ func TestRED_UploadRefusesFilesOverBotAPILimit(t *testing.T) {
 		t.Errorf("oversized file was sent to the API (%d request(s))", hits.Load())
 	}
 }
+
+// A paired **bold** inside a "## " header adds no markers: a nested '*' would
+// close the header's own bold.
+func TestRED_DoubleStarBoldInHeaderAddsNoNestedMarkers(t *testing.T) {
+	chunks, err := FormatResponse("## Release **2.0** notes")
+	if err != nil || len(chunks) != 1 {
+		t.Fatalf("FormatResponse: %v (%d chunks)", err, len(chunks))
+	}
+	if got, want := chunks[0], "*Release 2\\.0 notes*"; got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
