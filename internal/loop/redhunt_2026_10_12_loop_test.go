@@ -211,3 +211,16 @@ func TestRED_LoopBatchCardPathAndURLSiblings(t *testing.T) {
 		t.Errorf("public GET = %q", cls)
 	}
 }
+
+func TestRED_LoopArgv0SubstitutionEdgeCases(t *testing.T) {
+	for cmd, want := range map[string]string{
+		`A=$(echo a b) B=${X:-c d} ls -l`: "ls",
+		"A=`echo a b` /usr/bin/env":       "env",
+		`A=$(echo "x y") make`:            "make",
+		`A=$(echo secret psql`:            "",
+	} {
+		if got := argv0(cmd); got != want {
+			t.Errorf("argv0(%q) = %q, want %q", cmd, got, want)
+		}
+	}
+}

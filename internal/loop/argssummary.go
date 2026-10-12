@@ -65,12 +65,17 @@ type shellWord struct{ raw, value string }
 
 // shellWords splits cmd into words honouring single quotes, double quotes
 // and backslash escapes. A word left open by an unterminated quote is
-// dropped, so its contents never surface as a word of their own.
+// dropped, so its contents never surface as a word of their own; the same
+// holds for an unterminated $( ... ), ${ ... } or backtick substitution.
 func shellWords(cmd string) []shellWord {
 	var words []shellWord
 	var raw, val strings.Builder
 	inWord := false
 	var quote byte
+	// depth counts open $( ... ) / ${ ... } substitutions and backtick
+	// marks an open `...` one: whitespace inside either does not end the
+	// word, so a substituted assignment value never splits into fake words.
+	depth, backtick := 0, false
 	for i := 0; i < len(cmd); i++ {
 		c := cmd[i]
 		switch {
@@ -93,6 +98,9 @@ func shellWords(cmd string) []shellWord {
 			default:
 				val.WriteByte(c)
 			}
+		case (c == ' ' || c == '\t' || c == '\n' || c == '\r') && inWord && (depth > 0 || backtick):
+			raw.WriteByte(c)
+			val.WriteByte(c)
 		case c == ' ' || c == '\t' || c == '\n' || c == '\r':
 			if inWord {
 				words = append(words, shellWord{raw: raw.String(), value: val.String()})
@@ -106,6 +114,18 @@ func shellWords(cmd string) []shellWord {
 			switch {
 			case c == '\'' || c == '"':
 				quote = c
+			case c == '`':
+				backtick = !backtick
+				val.WriteByte(c)
+			case c == '$' && i+1 < len(cmd) && (cmd[i+1] == '(' || cmd[i+1] == '{'):
+				depth++
+				i++
+				raw.WriteByte(cmd[i])
+				val.WriteByte('$')
+				val.WriteByte(cmd[i])
+			case (c == ')' || c == '}') && depth > 0:
+				depth--
+				val.WriteByte(c)
 			case c == '\\' && i+1 < len(cmd):
 				i++
 				raw.WriteByte(cmd[i])
@@ -115,7 +135,7 @@ func shellWords(cmd string) []shellWord {
 			}
 		}
 	}
-	if inWord && quote == 0 {
+	if inWord && quote == 0 && depth == 0 && !backtick {
 		words = append(words, shellWord{raw: raw.String(), value: val.String()})
 	}
 	return words
