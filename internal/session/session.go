@@ -1113,14 +1113,28 @@ func (s *Store) saveLockedMode(sess *Session, lazyIndex bool) (err error) {
 	sess.EpisodeTaintTracked = true
 	for i := boundary; i < len(sess.Messages); i++ {
 		sess.Messages[i].Content = redact.RedactSecrets(sess.Messages[i].Content)
-		sess.Messages[i].ReasoningContent = redact.RedactSecrets(sess.Messages[i].ReasoningContent)
+		origReasoning := sess.Messages[i].ReasoningContent
+		sess.Messages[i].ReasoningContent = redact.RedactSecrets(origReasoning)
+		// A signature covers the exact reasoning text. When redaction changes
+		// that text, the signed reasoning can never be replayed (the provider
+		// would reject the mismatch on every continue), so drop it with its
+		// provenance: the turn then replays without thinking.
+		changed := sess.Messages[i].ReasoningContent != origReasoning && sess.Messages[i].ThinkingSignature != ""
 		if blocks := sess.Messages[i].ThinkingBlocks; len(blocks) > 0 {
 			// Copy first: the slice may be shared with the caller's live history.
 			redacted := append([]ThinkingBlock(nil), blocks...)
 			for j := range redacted {
-				redacted[j].Text = redact.RedactSecrets(redacted[j].Text)
+				if t := redact.RedactSecrets(redacted[j].Text); t != redacted[j].Text {
+					redacted[j].Text = t
+					changed = true
+				}
 			}
 			sess.Messages[i].ThinkingBlocks = redacted
+		}
+		if changed {
+			sess.Messages[i].ThinkingBlocks = nil
+			sess.Messages[i].ThinkingSignature = ""
+			sess.Messages[i].ThinkingProvider = ""
 		}
 		// Tool-call arguments are model-authored (shell commands, headers,
 		// file contents) and reach disk verbatim otherwise.
