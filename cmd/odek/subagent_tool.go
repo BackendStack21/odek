@@ -438,7 +438,7 @@ func (t *delegateTasksTool) Call(args string) (string, error) {
 		// (aliased) ids through the registry, so an aliased duplicate must
 		// already be registered or the artifacts line advertises the plain
 		// id and artifact_read resolves it to the WRONG task's bytes.
-		notes := registerTaskArtifacts(r, dirs[i], i, taskIDs[i])
+		notes := registerSessionTaskArtifacts(t.getSessionID(), r, dirs[i], i, taskIDs[i])
 		buf.WriteString(formatTaskResultDetailed(r, i, t.artifactReadAvailable, taskIDs[i], dirs[i]))
 		// ambiguity notes render after the artifacts block, same shape as
 		// the pre-aliasing output.

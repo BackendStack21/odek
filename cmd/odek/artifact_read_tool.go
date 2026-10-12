@@ -26,6 +26,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync"
 	"syscall"
 
 	"github.com/BackendStack21/odek"
@@ -172,6 +173,23 @@ func verifyArtifactWindow(path string, ref artifact.Ref, maxBytes, offset, limit
 // artifactReadTool reads registered sub-agent result artifacts by id.
 type artifactReadTool struct {
 	ctxTool
+	sessMu    sync.Mutex
+	sessionID string
+}
+
+// SetSessionID binds the tool to the calling session: it resolves and lists
+// only artifacts that session's delegate_tasks registered. Serve rebinds it
+// between prompts, hence the lock.
+func (t *artifactReadTool) SetSessionID(id string) {
+	t.sessMu.Lock()
+	t.sessionID = id
+	t.sessMu.Unlock()
+}
+
+func (t *artifactReadTool) getSessionID() string {
+	t.sessMu.Lock()
+	defer t.sessMu.Unlock()
+	return t.sessionID
 }
 
 var _ odek.Tool = (*artifactReadTool)(nil)
@@ -234,9 +252,10 @@ func (t *artifactReadTool) Call(args string) (string, error) {
 		in.Limit = artifactReadMaxLimit
 	}
 
-	entry, ok := lookupSubagentArtifact(in.ID)
+	session := t.getSessionID()
+	entry, ok := lookupSessionArtifact(session, in.ID)
 	if !ok {
-		return fmt.Sprintf(`{"error":"unknown artifact id %q — registered artifacts: %s"}`, in.ID, artifactIDList()), nil
+		return fmt.Sprintf(`{"error":"unknown artifact id %q — registered artifacts: %s"}`, in.ID, sessionArtifactIDList(session)), nil
 	}
 
 	// Re-verify at read time (TOCTOU): the file is re-opened with symlink
