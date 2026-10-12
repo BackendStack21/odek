@@ -156,9 +156,10 @@ func parseCredentialValue(text string, pos int, curly, square int, full bool) (v
 			limit = nl
 		}
 		for i := 0; i < limit; i++ {
-			if rest[i] == '\\' {
+			switch rest[i] {
+			case '\\':
 				i++
-			} else if rest[i] == c {
+			case c:
 				return rest[:i], pos + 1 + i + 1, true, true
 			}
 		}

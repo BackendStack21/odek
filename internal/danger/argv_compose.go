@@ -59,19 +59,6 @@ func splitParallelSources(inner []string) (cmd, args []string, found bool) {
 	return inner, nil, false
 }
 
-// argvCompositions returns the command lines an argv composer (xargs, GNU
-// parallel, xe) runs given its statically known input: the standard input
-// text when haveStdin is set, and the `:::` argument sources written on the
-// parallel command line. xargs appends the input words to its command once
-// (or substitutes each input line for its -I placeholder); parallel runs its
-// command once per argument, substitutes `{}`, and with no command at all
-// runs each input line as a command of its own. Redirects on the stage are
-// not part of the composed command.
-func argvCompositions(stage []string, stdin string, haveStdin bool) [][]string {
-	out, _ := argvComposeBounded(stage, stdin, haveStdin)
-	return out
-}
-
 // Composition budget: the composed command lines of one composer stage may
 // hold at most maxComposedTokens tokens and maxComposedBytes bytes in total.
 // Each token costs path classification (and a denylist scan), so an
@@ -83,8 +70,17 @@ const (
 	maxComposedBytes  = MaxCommandBytes
 )
 
-// argvComposeBounded is argvCompositions plus an overflow flag, set when the
-// composition budget was exceeded; the returned lines are then incomplete.
+// argvComposeBounded returns the command lines an argv composer (xargs, GNU
+// parallel, xe) runs given its statically known input: the standard input
+// text when haveStdin is set, and the `:::` argument sources written on the
+// parallel command line. xargs appends the input words to its command once
+// (or substitutes each input line for its -I placeholder); parallel runs its
+// command once per argument, substitutes `{}`, and with no command at all
+// runs each input line as a command of its own. Redirects on the stage are
+// not part of the composed command.
+//
+// over is set when the composition budget was exceeded; the returned lines
+// are then incomplete.
 func argvComposeBounded(stage []string, stdin string, haveStdin bool) (out [][]string, over bool) {
 	idx := -1
 	for i, tok := range stage {
@@ -187,8 +183,8 @@ func argvComposeBounded(stage []string, stdin string, haveStdin bool) (out [][]s
 			}
 			var c []string
 			for _, tok := range cmd {
-				switch {
-				case tok == ph:
+				switch tok {
+				case ph:
 					if split := tokenize(l); len(split) > 0 {
 						c = append(c, split...)
 					} else {

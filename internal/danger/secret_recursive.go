@@ -170,12 +170,12 @@ func secretRootOperand(op, cwd string, narrow bool) bool {
 	}
 	abs = filepath.Clean(abs)
 	if hasGlobMeta(path) {
-		if matched, home := globNamesSecretRoot(abs); matched && !(narrow && home) {
+		if matched, home := globNamesSecretRoot(abs); matched && (!narrow || !home) {
 			return true
 		}
 	}
 	hit := func(p string) bool {
-		return isSecretTreeRoot(p) && !(narrow && isHomeTreeRoot(p))
+		return isSecretTreeRoot(p) && (!narrow || !isHomeTreeRoot(p))
 	}
 	if hit(abs) || hit(stripPrivate(resolveInDirectory(path, cwd))) {
 		return true
@@ -358,7 +358,7 @@ func findExecReadersNarrow(inner []string) bool {
 			continue
 		}
 		name := commandName(cmd[0])
-		if !(recursiveSearchTools[name] || recursiveGrepTools[name]) || searchBroadContent(name, cmd[1:]) {
+		if (!recursiveSearchTools[name] && !recursiveGrepTools[name]) || searchBroadContent(name, cmd[1:]) {
 			return false
 		}
 		seen = true
