@@ -218,15 +218,25 @@ func globEnvironMatch(pat []string) bool {
 		for _, sample := range procPidSamples {
 			pidOK = pidOK || globSegMatch(pat[i+1], sample)
 		}
-		if !pidOK || !globSegMatch(pat[i+2], "environ") {
+		if !pidOK {
 			continue
 		}
-		// A bare wildcard as the last component of a process directory
-		// reads every file in it, environ included.
-		// A wildcard that can spell environ as the last component (`e*`,
-		// `[e]*`) reads it just the same, whatever its literal length.
-		if globLiteralRun(pat[i+2]) >= 2 || (i+3 == len(pat) && hasGlobMeta(pat[i+2])) {
-			return true
+		// environ sits directly in the process directory or one level down
+		// in a thread directory (task/<tid>/environ).
+		at := []int{i + 2}
+		if i+4 < len(pat) && globSegMatch(pat[i+2], "task") && (isAllDigits(pat[i+3]) || globSegMatch(pat[i+3], "1") || globSegMatch(pat[i+3], "12345")) {
+			at = append(at, i+4)
+		}
+		for _, j := range at {
+			if !globSegMatch(pat[j], "environ") {
+				continue
+			}
+			// A wildcard that can spell environ as the last component (`e*`,
+			// `[e]*`) reads it just the same, whatever its literal length; a
+			// bare wildcard reads every file in the directory.
+			if globLiteralRun(pat[j]) >= 2 || (j+1 == len(pat) && hasGlobMeta(pat[j])) {
+				return true
+			}
 		}
 	}
 	return false
