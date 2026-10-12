@@ -441,7 +441,7 @@ func classifyHomeRelative(home, abs string) (RiskClass, bool) {
 	// be case-insensitive (macOS APFS default, Windows NTFS), where
 	// /Users/x/.SSH and /Users/x/.ssh are the same directory and an
 	// exact-case match would let a case variant slip past the guard.
-	lowerAbs, lowerHome := strings.ToLower(abs), strings.ToLower(home)
+	lowerAbs, lowerHome := FoldPathCase(abs), FoldPathCase(home)
 	for _, sub := range []string{"/.ssh", "/.config", "/.gnupg", "/.aws", "/.kube",
 		"/.docker", "/.gitconfig", "/.env",
 		"/.netrc", "/.npmrc", "/.pypirc", "/.pgpass",
@@ -470,7 +470,7 @@ func classifyHomeRelative(home, abs string) (RiskClass, bool) {
 	// Shell rc/profile files execute on the user's next shell start —
 	// writing them is persistence/escalation, not a local file edit.
 	// Case-folding defends against case-insensitive filesystems (macOS APFS).
-	if filepath.Dir(abs) == home && shellRCFilesLower[strings.ToLower(filepath.Base(abs))] {
+	if filepath.Dir(abs) == home && shellRCFilesLower[FoldPathCase(filepath.Base(abs))] {
 		return SystemWrite, true
 	}
 	return LocalWrite, false
@@ -518,7 +518,7 @@ var shellRCFiles = map[string]bool{
 var shellRCFilesLower = func() map[string]bool {
 	m := make(map[string]bool, len(shellRCFiles))
 	for k := range shellRCFiles {
-		m[strings.ToLower(k)] = true
+		m[FoldPathCase(k)] = true
 	}
 	return m
 }()
@@ -607,13 +607,13 @@ func isPersistencePathLexical(path string) bool {
 	if strings.HasPrefix(abs, "/private/") {
 		abs = strings.TrimPrefix(abs, "/private")
 	}
-	lower := strings.ToLower(abs)
+	lower := FoldPathCase(abs)
 	// A directory destination reaches its marker only with the trailing
 	// slash that Clean removed: writing INTO .git/hooks lands a hook.
 	dirLower := lower + "/"
 
 	for _, home := range accountHomes(abs) {
-		lowerHome := strings.ToLower(home)
+		lowerHome := FoldPathCase(home)
 		// Shell rc/profile files: run in every future shell.
 		if filepath.Dir(lower) == lowerHome && shellRCFilesLower[filepath.Base(lower)] {
 			return true
@@ -690,7 +690,7 @@ var lifecycleHookPatterns = []*regexp.Regexp{
 // deferred execution into package.json / conftest.py, else (base, false).
 // Only ever escalates — base is returned unchanged otherwise.
 func LifecycleContentClass(path, content string, base RiskClass) (RiskClass, bool) {
-	switch strings.ToLower(filepath.Base(path)) {
+	switch FoldPathCase(filepath.Base(path)) {
 	case "package.json", "conftest.py":
 	default:
 		return base, false
@@ -4303,7 +4303,7 @@ func shellPathIsHomeSensitive(tok string) bool {
 	// /Users/x/.gitconfig, and an exact-case prefix match would let a case
 	// variant slip past the guard. Mirrors the folded comparisons its peers
 	// apply in ClassifyPath and IsPersistencePath.
-	lowerAbs, lowerHome := strings.ToLower(abs), strings.ToLower(home)
+	lowerAbs, lowerHome := FoldPathCase(abs), FoldPathCase(home)
 	if lowerAbs != lowerHome && !strings.HasPrefix(lowerAbs, lowerHome+"/") {
 		return false
 	}
@@ -5088,12 +5088,12 @@ func namesHomeOrAncestor(tok string) bool {
 		return false
 	}
 	p = filepath.Clean(p)
-	lowerP := strings.ToLower(p)
+	lowerP := FoldPathCase(p)
 	for _, home := range append(currentHomeDirs(), accountHomes(p)...) {
 		if home == "" {
 			continue
 		}
-		if pathWithin(strings.ToLower(filepath.Clean(home)), lowerP) {
+		if pathWithin(FoldPathCase(filepath.Clean(home)), lowerP) {
 			return true
 		}
 	}
