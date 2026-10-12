@@ -55,7 +55,7 @@ Every tool whose output sources from outside the agent's trust boundary wraps it
 </untrusted_content_a3f8d9c1>
 ```
 
-The nonce is fresh per call, so an attacker cannot embed a literal close tag in their content to escape the wrapper. Any literal `untrusted_content` substring inside the body is neutralised (the underscore is replaced with a middle dot) so it cannot pair with a fabricated tag, and a `<` that begins a look-alike of the tag name (upper case, Cyrillic/Greek confusables, fullwidth forms, invisible characters, another separator) is replaced with `‹`, so a forged close tag cannot read as the boundary closing. The `source` attribute is sanitised too — `"`, `<`, `>`, and newlines are neutralised so an attacker-influenced source (a redirect URL, a crafted path) cannot prematurely close the opening tag.
+The nonce is fresh per call, so an attacker cannot embed a literal close tag in their content to escape the wrapper. Any literal `untrusted_content` substring inside the body is neutralised (the underscore is replaced with a middle dot) so it cannot pair with a fabricated tag, and a `<` (or a look-alike such as U+02C2, U+FE64, U+3008) that begins a look-alike of the tag name (upper case, Cyrillic/Greek confusables, small capitals, fullwidth forms, look-alike slashes, unbounded invisible padding, any non-alphanumeric separator including modifier letters such as U+02CD) is replaced with `‹`, so a forged close tag cannot read as the boundary closing. The `source` attribute is sanitised too — `"`, `<`, `>`, and newlines are neutralised so an attacker-influenced source (a redirect URL, a crafted path) cannot prematurely close the opening tag.
 
 Tools that wrap:
 

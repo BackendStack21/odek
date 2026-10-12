@@ -9,10 +9,6 @@ import (
 )
 
 const (
-	// tagSkipBudget bounds the invisible/whitespace/combining runes skipped
-	// while matching one candidate, so padding cannot hide a tag but cannot
-	// make a candidate expensive either.
-	tagSkipBudget = 64
 	// tagMaxSeparators bounds the characters accepted between the two words
 	// of the tag name.
 	tagMaxSeparators = 8
@@ -27,14 +23,16 @@ const (
 // characters between the words — becomes '‹', so a forged close tag cannot
 // read as the real boundary closing. Names that merely continue the words
 // (`<untrusted-content-policy>`, `List<Untrusted> content`) are left alone.
-// The scan is linear: a candidate is abandoned at its first mismatching rune.
+// Padding is unbounded: skipping an invisible rune is constant work, and a
+// candidate is abandoned at its first mismatching rune, so the scan stays
+// linear.
 func NeutraliseUntrustedLiterals(s string) string {
 	s = strings.ReplaceAll(s, "untrusted_content", "untrusted·content")
 	var b strings.Builder
 	last := 0
 	for i := 0; i < len(s); {
 		r, sz := utf8.DecodeRuneInString(s[i:])
-		if (r == '<' || r == '＜') && tagLookalikeAt(s[i+sz:]) {
+		if tagOpener(r) && tagLookalikeAt(s[i+sz:]) {
 			b.WriteString(s[last:i])
 			b.WriteString("‹")
 			last = i + sz
@@ -46,6 +44,16 @@ func NeutraliseUntrustedLiterals(s string) string {
 	}
 	b.WriteString(s[last:])
 	return b.String()
+}
+
+// tagOpener reports whether r is, or renders as, a left angle bracket. U+2039
+// is the neutralised form itself and is not an opener.
+func tagOpener(r rune) bool {
+	switch r {
+	case '<', '\uFF1C', '\u02C2', '\uFE64', '\u3008', '\u2329', '\u276E':
+		return true
+	}
+	return false
 }
 
 // tagSkippable reports whether r renders as nothing or as spacing.
@@ -65,11 +73,35 @@ func tagFold(r rune) rune {
 	if r >= 0xFF01 && r <= 0xFF5E {
 		r -= 0xFEE0
 	}
+	if rep, ok := tagLookalikeFold[r]; ok {
+		return rep
+	}
 	if r >= utf8.RuneSelf {
 		f, _ := utf8.DecodeRuneInString(danger.FoldHomoglyphs(string(r)))
 		r = f
 	}
 	return unicode.ToLower(r)
+}
+
+// tagLookalikeFold folds the characters the shared homoglyph table does not
+// cover that can stand in for the tag's letters (small capitals) or for its
+// hyphen (dash and minus variants).
+var tagLookalikeFold = map[rune]rune{
+	'\u1D1C': 'u', '\u0274': 'n', '\u1D1B': 't', '\u0280': 'r', '\uA731': 's',
+	'\u1D07': 'e', '\u1D05': 'd', '\u1D04': 'c', '\u1D0F': 'o',
+	'\u2215': '/', '\u2044': '/', '\u29F8': '/', '\u2571': '/',
+	'\u2010': '-', '\u2011': '-', '\u2012': '-', '\u2013': '-', '\u2014': '-',
+	'\u2015': '-', '\u2212': '-', '\uFE58': '-',
+}
+
+// tagWordRune reports whether a folded rune belongs to a word. Modifier
+// letters (Lm), such as U+02CD, render as punctuation like an underscore and
+// are separators, as is every other non-alphanumeric rune.
+func tagWordRune(r rune) bool {
+	if r < utf8.RuneSelf {
+		return r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9'
+	}
+	return (unicode.IsLetter(r) && !unicode.Is(unicode.Lm, r)) || unicode.IsDigit(r)
 }
 
 // tagLookalikeAt reports whether rest (the text after an opener) begins with
@@ -82,9 +114,7 @@ func tagLookalikeAt(rest string) bool {
 			r, sz := utf8.DecodeRuneInString(rest)
 			rest = rest[sz:]
 			if tagSkippable(r) {
-				if skips++; skips > tagSkipBudget {
-					return 0, false
-				}
+				skips++
 				continue
 			}
 			return tagFold(r), true
@@ -122,7 +152,7 @@ func tagLookalikeAt(rest string) bool {
 		if !ok {
 			return false
 		}
-		if unicode.IsLetter(r) || unicode.IsDigit(r) || r == '<' || r == '>' {
+		if tagWordRune(r) || r == '<' || r == '>' {
 			break
 		}
 		if n++; n > tagMaxSeparators {
@@ -135,5 +165,5 @@ func tagLookalikeAt(rest string) bool {
 	// A real tag continues with its nonce ('_' / digits / hex), closes, or
 	// ends; a longer hyphenated or lettered name is a different word.
 	r, ok = next()
-	return !ok || !unicode.IsLetter(r) && r != '-'
+	return !ok || (!tagWordRune(r) || unicode.IsDigit(r)) && r != '-'
 }
