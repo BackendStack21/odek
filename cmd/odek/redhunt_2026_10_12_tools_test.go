@@ -514,3 +514,19 @@ func TestToolsConfineToCWDKelvinOdekAlias(t *testing.T) {
 		t.Error("kelvin-sign spelling of ~/.odek/config.json must be a protected path")
 	}
 }
+
+func TestToolsHTTPRequestStripsCredentialHeaderOnSchemeDowngrade(t *testing.T) {
+	ht := newHTTPRequestTool(danger.DangerousConfig{Classes: map[danger.RiskClass]danger.Action{
+		danger.NetworkEgress: danger.Allow, danger.NetworkUpload: danger.Allow,
+	}})
+	first, _ := http.NewRequest("GET", "https://example.com/a", nil)
+	next, _ := http.NewRequest("GET", "http://example.com/a", nil)
+	next.Header.Set("X-Api-Key", "k")
+	next.Header.Set("Accept", "x")
+	if err := ht.checkRedirect(next, []*http.Request{first}); err != nil {
+		t.Fatal(err)
+	}
+	if next.Header.Get("X-Api-Key") != "" || next.Header.Get("Accept") == "" {
+		t.Fatalf("credential header must be dropped on https->http, others kept: %v", next.Header)
+	}
+}

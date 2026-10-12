@@ -89,7 +89,9 @@ func (t *httpRequestTool) checkRedirect(req *http.Request, via []*http.Request) 
 	// Private-Token, ...) to any redirect target, so on a cross-host hop drop
 	// every credential header and re-gate a method-preserving redirect as an
 	// upload to the new host.
-	if len(via) > 0 && !strings.EqualFold(via[0].URL.Host, req.URL.Host) {
+	// A scheme downgrade (https to http) on the same host sends them in the clear.
+	if len(via) > 0 && (!strings.EqualFold(via[0].URL.Host, req.URL.Host) ||
+		(via[len(via)-1].URL.Scheme == "https" && req.URL.Scheme != "https")) {
 		for name := range req.Header {
 			if danger.CredentialHeaderName(name) {
 				req.Header.Del(name)
