@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 
 	"github.com/BackendStack21/odek/internal/skills"
 )
@@ -37,14 +38,24 @@ func promoteSkill(userDir, name string, force bool) error {
 	skillDir := filepath.Join(userDir, name)
 	path := filepath.Join(skillDir, "SKILL.md")
 	fromProject := false
-	if _, err := os.Stat(path); err != nil {
+	if _, err := os.Lstat(path); err != nil {
 		projDir := filepath.Join(skills.ProjectSkillsDir(), name)
 		projPath := filepath.Join(projDir, "SKILL.md")
-		if _, perr := os.Stat(projPath); perr != nil {
+		if _, perr := os.Lstat(projPath); perr != nil {
 			return fmt.Errorf("promote: skill %q not found at %s", name, path)
 		}
 		skillDir, path = projDir, projPath
 		fromProject = true
+	}
+	// The rewrite below is in place: a symlinked skill dir or SKILL.md (a
+	// repository can plant one) would redirect it onto an arbitrary file.
+	for _, p := range []string{skillDir, path} {
+		if fi, err := os.Lstat(p); err != nil || fi.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("promote: %s is a symlink or unreadable; refusing to follow it", p)
+		}
+	}
+	if fi, err := os.Lstat(path); err != nil || !fi.Mode().IsRegular() {
+		return fmt.Errorf("promote: %s is not a regular file", path)
 	}
 
 	// We re-parse via the scanner to keep all other fields intact, then
@@ -88,8 +99,16 @@ func promoteSkill(userDir, name string, force bool) error {
 
 	// MarshalSkill drops blank Provenance entirely.
 	content := skills.MarshalSkill(*loaded)
-	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_TRUNC|syscall.O_NOFOLLOW, 0)
+	if err != nil {
 		return fmt.Errorf("promote: write: %w", err)
+	}
+	_, werr := f.WriteString(content)
+	if cerr := f.Close(); werr == nil {
+		werr = cerr
+	}
+	if werr != nil {
+		return fmt.Errorf("promote: write: %w", werr)
 	}
 	// Project-dir skills: trust is anchored in the trusted user-dir
 	// registry (content hash), not the project frontmatter — the project

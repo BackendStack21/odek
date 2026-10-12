@@ -450,3 +450,49 @@ func TestRED_ApprovalPromptListsInterpolatingEnv(t *testing.T) {
 		t.Errorf("non-interpolating key listed: %q", out.String())
 	}
 }
+
+// `odek skill promote` rewrites SKILL.md in place. A repository-planted
+// SKILL.md symlink (or skill dir symlink) must be refused, not followed to
+// overwrite an arbitrary file with skill content.
+func TestRED_PromoteSkill_RefusesSymlinkedSkillFile(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	work := t.TempDir()
+	t.Chdir(work)
+	victim := filepath.Join(t.TempDir(), "victim.txt")
+	const orig = "---\nname: evil\ndescription: d\n---\nbody\n"
+	if err := os.WriteFile(victim, []byte(orig), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(work, ".odek", "skills", "evil")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(victim, filepath.Join(dir, "SKILL.md")); err != nil {
+		t.Fatal(err)
+	}
+	userDir := filepath.Join(t.TempDir(), "skills")
+	if err := promoteSkill(userDir, "evil", true); err == nil {
+		t.Error("promote followed a symlinked SKILL.md")
+	}
+	if b, _ := os.ReadFile(victim); string(b) != orig {
+		t.Errorf("symlink target was overwritten: %q", b)
+	}
+
+	// A symlinked skill directory is refused too.
+	realDir := filepath.Join(t.TempDir(), "real")
+	if err := os.MkdirAll(realDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(realDir, "SKILL.md"), []byte(orig), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(realDir, filepath.Join(work, ".odek", "skills", "linked")); err != nil {
+		t.Fatal(err)
+	}
+	if err := promoteSkill(userDir, "linked", true); err == nil {
+		t.Error("promote followed a symlinked skill dir")
+	}
+	if b, _ := os.ReadFile(filepath.Join(realDir, "SKILL.md")); string(b) != orig {
+		t.Errorf("symlinked dir target was rewritten: %q", b)
+	}
+}
