@@ -18,6 +18,9 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"unicode"
+
+	"github.com/BackendStack21/odek/internal/artifact"
 )
 
 // validateServerURL accepts only absolute http(s) URLs with a host. Anything
@@ -98,12 +101,15 @@ func newHTTPClient(name string, cfg ServerConfig, opts httpOptions) (*Client, er
 	}
 	httpc = withSessionRedirectGuard(httpc, serverURL)
 
+	httpCtx, httpCancel := context.WithCancel(context.Background())
 	return &Client{
-		name:   name,
-		url:    cfg.URL,
-		token:  token,
-		httpc:  httpc,
-		closed: make(chan struct{}),
+		name:       name,
+		url:        cfg.URL,
+		token:      token,
+		httpc:      httpc,
+		closed:     make(chan struct{}),
+		httpCtx:    httpCtx,
+		httpCancel: httpCancel,
 	}, nil
 }
 
@@ -149,6 +155,13 @@ func (c *Client) httpCall(ctx context.Context, method string, params json.RawMes
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+	// Close aborts in-flight requests, and a closed client refuses new ones.
+	select {
+	case <-c.closed:
+		return nil, fmt.Errorf("connection closed")
+	default:
+	}
+	defer context.AfterFunc(c.httpCtx, cancel)()
 
 	c.mu.Lock()
 	c.nextID++
@@ -311,6 +324,13 @@ func (c *Client) httpNotify(ctx context.Context, method string) error {
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+	// Close aborts in-flight requests, and a closed client refuses new ones.
+	select {
+	case <-c.closed:
+		return fmt.Errorf("connection closed")
+	default:
+	}
+	defer context.AfterFunc(c.httpCtx, cancel)()
 
 	payload, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "method": method})
 	if err != nil {
@@ -363,9 +383,19 @@ func sseFrames(body []byte) []string {
 }
 
 func truncateForError(b []byte, n int) string {
-	s := strings.TrimSpace(string(b))
-	if len(s) > n {
-		s = s[:n] + "..."
+	s := strings.ToValidUTF8(string(b), "\uFFFD")
+	// The text is server-controlled and reaches the model through the tool
+	// error: flatten control characters (newlines included) and neutralise
+	// artifact-ref lines before capping it.
+	s = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return ' '
+		}
+		return r
+	}, s)
+	s = strings.Join(strings.Fields(artifact.SanitizeText(s)), " ")
+	if r := []rune(s); len(r) > n {
+		s = string(r[:n]) + "..."
 	}
 	return s
 }
@@ -373,5 +403,10 @@ func truncateForError(b []byte, n int) string {
 // closeHTTP is the URL-transport Close: there is no process or pipe, only the
 // closed channel so concurrent callers observe the shutdown.
 func (c *Client) closeHTTP() {
-	c.closeOnce.Do(func() { close(c.closed) })
+	c.closeOnce.Do(func() {
+		close(c.closed)
+		if c.httpCancel != nil {
+			c.httpCancel()
+		}
+	})
 }

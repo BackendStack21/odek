@@ -301,6 +301,9 @@ func approveMCPToolsWithTTY(projectDir, serverName string, cfg mcpclient.ServerC
 		}
 
 		fmt.Fprintf(stdout, "\nMCP server %q wants to register tool %q\n", serverName, def.Name)
+		if reg := mcpclient.RegisteredToolName(serverName, def.Name); reg != serverName+"__"+def.Name {
+			fmt.Fprintf(stdout, "  registered as %q (shortened to the %d-character provider limit)\n", reg, mcpclient.MaxRegisteredToolNameLen)
+		}
 		writeMCPToolContract(stdout, def, schemaHash, schemaSize)
 		fmt.Fprintf(stdout, "Approve? [y/N] ")
 

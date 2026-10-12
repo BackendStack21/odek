@@ -32,6 +32,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -148,7 +150,8 @@ type ToolDef struct {
 
 // listToolsResult is the response to tools/list.
 type listToolsResult struct {
-	Tools []ToolDef `json:"tools"`
+	Tools      []ToolDef `json:"tools"`
+	NextCursor string    `json:"nextCursor,omitempty"`
 }
 
 // validateToolName rejects server-supplied tool names that are empty, too long,
@@ -310,6 +313,11 @@ type Client struct {
 	replyCh   chan []byte
 	writeDone chan struct{} // closed when the writer goroutine exits
 	closed    chan struct{} // closed by Close to unblock an idle writer
+
+	// httpCtx is cancelled by closeHTTP so in-flight HTTP requests abort
+	// (URL transport only).
+	httpCtx    context.Context
+	httpCancel context.CancelFunc
 
 	// Per-server limits, resolved from ServerConfig at construction time.
 	// A zero timeout means "fall back to DefaultTimeout at call time" (the
@@ -692,30 +700,63 @@ func (c *Client) Discover(ctx context.Context) (_ []ToolDef, setupErr error) {
 	// server requires it before tools/list.
 	_ = c.notify(ctx, "notifications/initialized")
 
-	// Step 2: List tools
-	raw, err := c.call(ctx, "tools/list", nil)
-	if err != nil {
-		return nil, fmt.Errorf("mcpclient %s: tools/list: %w", c.name, err)
-	}
-
-	var result listToolsResult
-	if err := json.Unmarshal(raw, &result); err != nil {
-		return nil, fmt.Errorf("mcpclient %s: parse tools/list: %w", c.name, err)
-	}
-
-	seen := make(map[string]struct{}, len(result.Tools))
-	for i := range result.Tools {
-		if err := validateToolName(result.Tools[i].Name); err != nil {
+	// Step 2: List tools, following nextCursor pagination within a bounded
+	// page count and total tool count.
+	var tools []ToolDef
+	cursor := ""
+	for page := 0; ; page++ {
+		if page >= maxToolsListPages {
+			fmt.Fprintf(os.Stderr, "odek: warning: mcp server %q: tools/list exceeded %d pages; remaining tools ignored\n", c.name, maxToolsListPages)
+			break
+		}
+		var params json.RawMessage
+		if cursor != "" {
+			p, err := json.Marshal(map[string]string{"cursor": cursor})
+			if err != nil {
+				return nil, fmt.Errorf("mcpclient %s: marshal tools/list cursor: %w", c.name, err)
+			}
+			params = p
+		}
+		raw, err := c.call(ctx, "tools/list", params)
+		if err != nil {
 			return nil, fmt.Errorf("mcpclient %s: tools/list: %w", c.name, err)
 		}
-		if _, dup := seen[result.Tools[i].Name]; dup {
-			return nil, fmt.Errorf("mcpclient %s: tools/list: duplicate tool name %q", c.name, result.Tools[i].Name)
+		var result listToolsResult
+		if err := json.Unmarshal(raw, &result); err != nil {
+			return nil, fmt.Errorf("mcpclient %s: parse tools/list: %w", c.name, err)
 		}
-		seen[result.Tools[i].Name] = struct{}{}
+		tools = append(tools, result.Tools...)
+		if len(tools) > maxDiscoveredTools {
+			fmt.Fprintf(os.Stderr, "odek: warning: mcp server %q: more than %d tools; extra tools ignored\n", c.name, maxDiscoveredTools)
+			tools = tools[:maxDiscoveredTools]
+			break
+		}
+		if result.NextCursor == "" || result.NextCursor == cursor {
+			break
+		}
+		cursor = result.NextCursor
 	}
 
-	return result.Tools, nil
+	seen := make(map[string]struct{}, len(tools))
+	for i := range tools {
+		if err := validateToolName(tools[i].Name); err != nil {
+			return nil, fmt.Errorf("mcpclient %s: tools/list: %w", c.name, err)
+		}
+		if _, dup := seen[tools[i].Name]; dup {
+			return nil, fmt.Errorf("mcpclient %s: tools/list: duplicate tool name %q", c.name, tools[i].Name)
+		}
+		seen[tools[i].Name] = struct{}{}
+	}
+
+	return tools, nil
 }
+
+const (
+	// maxToolsListPages bounds tools/list pagination.
+	maxToolsListPages = 64
+	// maxDiscoveredTools bounds the tools accepted from one server.
+	maxDiscoveredTools = 2048
+)
 
 // CallTool invokes a tool on the MCP server with the given JSON arguments
 // and returns the text content of the result.
@@ -1365,8 +1406,29 @@ type ToolAdapter struct {
 
 // Name returns the tool's name, prefixed with the server name to avoid
 // collisions when multiple MCP servers expose tools with the same name.
+//
+// Providers reject tool names over MaxRegisteredToolNameLen characters, so a
+// longer combination is shortened deterministically (RegisteredToolName);
+// dispatch still uses the server's own ToolName.
 func (a *ToolAdapter) Name() string {
-	return a.Client.Name() + "__" + a.ToolName
+	return RegisteredToolName(a.Client.Name(), a.ToolName)
+}
+
+// MaxRegisteredToolNameLen is the longest tool name LLM providers accept.
+const MaxRegisteredToolNameLen = 64
+
+// RegisteredToolName returns the model-facing name of an MCP tool:
+// "<server>__<tool>" when it fits the provider limit, otherwise a truncated
+// prefix of that name followed by "_" and 8 hex digits of a SHA-256 over the
+// server and tool, so distinct tools keep distinct names.
+func RegisteredToolName(server, tool string) string {
+	full := server + "__" + tool
+	if len(full) <= MaxRegisteredToolNameLen {
+		return full
+	}
+	sum := sha256.Sum256([]byte(server + "\x00" + tool))
+	suffix := "_" + hex.EncodeToString(sum[:4])
+	return full[:MaxRegisteredToolNameLen-len(suffix)] + suffix
 }
 
 // Description returns the tool's description.
