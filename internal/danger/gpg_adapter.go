@@ -1,6 +1,9 @@
 package danger
 
-import "strings"
+import (
+	"os"
+	"strings"
+)
 
 // ── gpg ────────────────────────────────────────────────────────────────
 
@@ -24,7 +27,7 @@ var gpgKeyringVerbs = []string{
 	"quick-sign-key", "quick-lsign-key", "quick-set-expire",
 	"quick-set-primary-uid", "quick-add-key", "quick-addkey",
 	"generate-designated-revoker", "desig-revoke", "locate-keys",
-	"auto-key-locate", "search-keys", "update-trustdb", "check-trustdb",
+	"search-keys", "update-trustdb", "check-trustdb",
 	"rebuild-keydb-caches",
 }
 
@@ -67,6 +70,7 @@ func gpgOptionIs(opt, target string) bool {
 // option that runs a program or changes keys.
 var gpgPlainOptions = map[string]bool{
 	"keyserver": true, "import-options": true, "export": true,
+	"sign": true, "clearsign": true, "detach-sign": true,
 }
 
 // gpgRunsProgram reports whether a gpg invocation runs an arbitrary program:
@@ -79,6 +83,11 @@ func gpgRunsProgram(name string, tokens []string) bool {
 	}
 	opts, values := gpgLongOptions(tokens)
 	for i, opt := range opts {
+		// gpg reads gpg.conf from its home directory, and that file can name
+		// a photo viewer: a home other than the default is the --options case.
+		if opt == "homedir" && !gpgDefaultHome(values[i]) {
+			return true
+		}
 		for _, target := range gpgProgramOptions {
 			if gpgOptionIs(opt, target) {
 				return true
@@ -113,4 +122,14 @@ func gpgMutatesKeyring(name string, tokens []string) bool {
 		}
 	}
 	return false
+}
+
+// gpgDefaultHome reports whether dir is the default gnupg home.
+func gpgDefaultHome(dir string) bool {
+	dir = strings.TrimRight(dir, "/")
+	if dir == "~/.gnupg" || dir == "$HOME/.gnupg" || dir == "${HOME}/.gnupg" {
+		return true
+	}
+	home, err := os.UserHomeDir()
+	return err == nil && home != "" && dir == strings.TrimRight(home, "/")+"/.gnupg"
 }
