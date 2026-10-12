@@ -4531,8 +4531,37 @@ func classifyToolCallCtx(ctx context.Context, name, args string) (danger.RiskCla
 			return cls, p.Path
 		}
 		return cls, p.Path
+	case "diff":
+		// diff reads path_a+path_b when both are set (they take precedence
+		// over path), otherwise path. Classify exactly the paths it reads,
+		// and take the worst, so a decoy path cannot hide the real target.
+		var p struct {
+			PathA string `json:"path_a"`
+			PathB string `json:"path_b"`
+			Path  string `json:"path"`
+		}
+		if err := json.Unmarshal([]byte(args), &p); err != nil {
+			return "", ""
+		}
+		paths := []string{p.Path}
+		if p.PathA != "" && p.PathB != "" {
+			paths = []string{p.PathA, p.PathB}
+		}
+		var cls danger.RiskClass
+		var shown []string
+		for _, path := range paths {
+			if path == "" {
+				return "", ""
+			}
+			c := danger.ClassifyPath(path)
+			if cls == "" || danger.Rank(c) > danger.Rank(cls) {
+				cls = c
+			}
+			shown = append(shown, path)
+		}
+		return cls, strings.Join(shown, ", ")
 	case "read_file", "search_files", "file_info", "glob",
-		"diff", "json_query", "tree", "count_lines", "checksum",
+		"json_query", "tree", "count_lines", "checksum",
 		"sort", "head_tail", "base64", "tr", "word_count", "transcribe":
 		// Reads keep the direction-agnostic classifier — reading a CI
 		// workflow or hook file must stay frictionless.
@@ -4555,9 +4584,13 @@ func classifyToolCallCtx(ctx context.Context, name, args string) (danger.RiskCla
 		}
 		switch p.Action {
 		case "navigate":
-			return danger.NetworkEgress, p.URL
+			// The tool classifies the destination: internal, loopback and
+			// metadata hosts are system_write there, so the card must match.
+			return worstRisk(danger.NetworkEgress, danger.ClassifyURL(p.URL)), p.URL
 		case "click", "back", "snapshot":
-			return danger.NetworkEgress, fmt.Sprintf("browser %s", p.Action)
+			// The page a click or back lands on is not known at card time,
+			// so the call stays unclassifiable and withholds batch trust.
+			return "", ""
 		default:
 			return danger.NetworkEgress, args
 		}
@@ -4565,13 +4598,14 @@ func classifyToolCallCtx(ctx context.Context, name, args string) (danger.RiskCla
 		// A mutating method or a credential-bearing header is an upload,
 		// as for the curl equivalent; unreadable arguments fail closed.
 		var p struct {
+			URL     string            `json:"url"`
 			Method  string            `json:"method"`
 			Headers map[string]string `json:"headers"`
 		}
 		if err := json.Unmarshal([]byte(args), &p); err != nil {
 			return danger.NetworkUpload, args
 		}
-		return danger.HTTPRequestClass(p.Method, p.Headers), args
+		return worstRisk(danger.HTTPRequestClass(p.Method, p.Headers), danger.ClassifyURL(p.URL)), args
 	case "delegate_tasks":
 		// Spawning sub-agents is a trust-mutating operation: a compromised or
 		// prompt-injected parent can use it to escape its own approval gate by
@@ -4603,6 +4637,14 @@ func classifyToolCallCtx(ctx context.Context, name, args string) (danger.RiskCla
 		// will skip them (no pre-classification available).
 		return "", ""
 	}
+}
+
+// worstRisk returns whichever class ranks higher.
+func worstRisk(a, b danger.RiskClass) danger.RiskClass {
+	if danger.Rank(b) > danger.Rank(a) {
+		return b
+	}
+	return a
 }
 
 // SetModel updates the LLM model used by this engine at runtime.
