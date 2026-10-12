@@ -48,6 +48,8 @@ func arithmeticOperandSubstitutions(name string, args []string) []string {
 		for i, a := range args {
 			if a == "-v" && i+1 < len(args) {
 				scoped = append(scoped, args[i+1])
+			} else if strings.HasPrefix(a, "-v") && len(a) > 2 {
+				scoped = append(scoped, a[2:])
 			}
 		}
 		args = scoped
