@@ -80,19 +80,19 @@ func TestFirstWords(t *testing.T) {
 
 func TestJobSchedule(t *testing.T) {
 	// Valid, default UTC.
-	if _, err := jobSchedule(schedule.Job{Cron: "0 9 * * *"}); err != nil {
+	if _, err := jobSchedule(schedule.Job{Cron: "0 9 * * *"}, nil); err != nil {
 		t.Errorf("valid job: unexpected error %v", err)
 	}
 	// Valid with timezone.
-	if _, err := jobSchedule(schedule.Job{Cron: "0 9 * * *", Timezone: "Europe/Berlin"}); err != nil {
+	if _, err := jobSchedule(schedule.Job{Cron: "0 9 * * *", Timezone: "Europe/Berlin"}, nil); err != nil {
 		t.Errorf("tz job: unexpected error %v", err)
 	}
 	// Bad timezone.
-	if _, err := jobSchedule(schedule.Job{Cron: "0 9 * * *", Timezone: "Mars/Phobos"}); err == nil {
+	if _, err := jobSchedule(schedule.Job{Cron: "0 9 * * *", Timezone: "Mars/Phobos"}, nil); err == nil {
 		t.Error("bad timezone should error")
 	}
 	// Bad cron.
-	if _, err := jobSchedule(schedule.Job{Cron: "nope"}); err == nil {
+	if _, err := jobSchedule(schedule.Job{Cron: "nope"}, nil); err == nil {
 		t.Error("bad cron should error")
 	}
 }

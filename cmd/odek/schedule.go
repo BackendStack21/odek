@@ -110,12 +110,13 @@ func scheduleList(st *schedule.Store) error {
 	}
 	state, _ := st.LoadState()
 	now := time.Now()
+	tz := defaultScheduleTZ()
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
 	fmt.Fprintln(w, "ID\tON\tCRON\tNEXT (local)\tLAST\tNAME")
 	for _, j := range jobs {
 		next := "—"
-		if s, err := jobSchedule(j); err != nil {
+		if s, err := jobSchedule(j, tz); err != nil {
 			next = "invalid"
 		} else if nt := s.Next(now); !nt.IsZero() {
 			next = nt.Local().Format("Mon 02 Jan 15:04")
@@ -183,8 +184,9 @@ func scheduleAdd(st *schedule.Store, args []string) error {
 	if err != nil {
 		return err
 	}
+	defTZ := defaultScheduleTZ()
 	next := "—"
-	if s, err := jobSchedule(saved); err == nil {
+	if s, err := jobSchedule(saved, defTZ); err == nil {
 		if nt := s.Next(time.Now()); !nt.IsZero() {
 			next = nt.Local().Format(time.RFC1123)
 		}
@@ -236,9 +238,10 @@ func scheduleNext(st *schedule.Store, args []string) error {
 	if err != nil {
 		return err // surface a corrupt/unreadable store, not a misleading cron error
 	}
+	tz := defaultScheduleTZ()
 	var s *schedule.Schedule
 	if ok && len(args) == 1 {
-		sc, err := jobSchedule(job)
+		sc, err := jobSchedule(job, tz)
 		if err != nil {
 			return err
 		}
@@ -954,13 +957,23 @@ func schedulerOptions(sc config.ScheduleConfig, logger schedule.Logger) schedule
 	}
 }
 
+// defaultScheduleTZ resolves the scheduler's default timezone from the
+// merged configuration.
+func defaultScheduleTZ() *time.Location {
+	return schedulerOptions(config.LoadConfig(config.CLIFlags{}).Schedules, schedule.NopLogger{}).DefaultTZ
+}
+
 // jobSchedule compiles a job's cron in its timezone for display. A job
 // without its own timezone uses the scheduler's configured default (the zone
 // the engine fires it in), so shown fire times match actual ones.
-func jobSchedule(j schedule.Job) (*schedule.Schedule, error) {
+// defaultTZ is the scheduler's resolved default zone; resolve it once per
+// command or surface with defaultScheduleTZ and pass it for every job.
+func jobSchedule(j schedule.Job, defaultTZ *time.Location) (*schedule.Schedule, error) {
 	loc := time.UTC
 	if j.Timezone == "" {
-		loc = schedulerOptions(config.LoadConfig(config.CLIFlags{}).Schedules, schedule.NopLogger{}).DefaultTZ
+		if defaultTZ != nil {
+			loc = defaultTZ
+		}
 	} else {
 		l, err := time.LoadLocation(j.Timezone)
 		if err != nil {
