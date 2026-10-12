@@ -709,6 +709,9 @@ func (s *PlanStore) checkReplace(args planArgs) (string, error) {
 	}
 	s.noteStatusTransitionsLocked(s.plan.Steps, working)
 	s.plan = &candidate
+	// A replacement check is new evidence territory: outcomes from calls
+	// that ran earlier in the same batch must not satisfy it.
+	s.epoch++
 	// executeArgs fires the single notify for every effective mutation;
 	// notifying here would double-fire plan_updated. Mark the revision so
 	// downstream change events carry Revised (same contract as revise).
