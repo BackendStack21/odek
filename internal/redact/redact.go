@@ -240,7 +240,7 @@ func looksCredentialShape(v string) bool {
 	if strings.Contains(t, "::") || strings.Contains(strings.ToLower(t), "arn:") {
 		return false
 	}
-	hasUpper, hasLower, hasDigit, special, hex := false, false, false, false, true
+	hasUpper, hasLower, hasDigit, special, hex, sep := false, false, false, false, true, false
 	for i := 0; i < len(t); i++ {
 		c := t[i]
 		switch {
@@ -257,12 +257,27 @@ func looksCredentialShape(v string) bool {
 			hex = false
 		case c == '-' || c == '_' || c == '~':
 			hex = false
+			sep = true
 		default:
 			return false // '.', ':', quotes, brackets: not a credential alphabet
 		}
 	}
+	// A value with a '/' is a path unless every segment is credential-like:
+	// a word-only segment (Users/Alice/keysfolder) marks a path.
+	if strings.Contains(t, "/") {
+		for _, seg := range strings.Split(t, "/") {
+			if len(seg) >= 3 && !strings.ContainsAny(seg, "0123456789+=-_~") {
+				return false
+			}
+		}
+	}
 	switch {
 	case hasUpper && hasLower && hasDigit:
+		return true
+	case !special && !sep && len(t) >= 20 && hasDigit && (hasUpper || hasLower):
+		// One unseparated alphanumeric run (lowercase+digits or UPPER+digits).
+		// Dash- or underscore-joined groups such as UUIDs, resource names and
+		// identifiers are deliberately not matched.
 		return true
 	case hex && len(t) >= 32 && hasDigit:
 		return true
