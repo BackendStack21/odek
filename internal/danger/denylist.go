@@ -128,6 +128,10 @@ func denyScanVars(cmd string, dc *denyCtx, depth int, inherited map[string]strin
 			if i > 0 && denyStaticPipeFeed(earlier, expanded, dc, depth) {
 				return true
 			}
+			// An argv composer appends a static producer's output to its command.
+			if i > 0 && denyArgvComposerFeed(earlier, expanded, dc, depth) {
+				return true
+			}
 			earlier = append(earlier, expanded)
 		}
 		if len(stages) == 1 {
@@ -343,6 +347,14 @@ func denyStage(stage []string, dc *denyCtx, depth int) bool {
 			return true
 		}
 	}
+	// Code carried by environment assignments, printf -v / read into a code
+	// variable and arithmetic operands is a command position of its own.
+	codeBodies, _ := stageCodeBodies(stage, un)
+	for _, body := range codeBodies {
+		if denyScan(body, dc, depth+1) {
+			return true
+		}
+	}
 	// `env -S 'git push'` runs the split string as the command, ahead of any
 	// remaining operands.
 	for _, split := range un.splits {
@@ -382,6 +394,37 @@ func denyStaticPipeFeed(upstream [][]string, sink []string, dc *denyCtx, depth i
 		return text != "" && denyScan(text, dc, depth+1)
 	}
 	return false
+}
+
+// denyArgvComposerFeed scans the command an argv composer (xargs, parallel)
+// runs once a static echo/printf producer's output is appended to it:
+// `echo push | xargs git` runs `git push`. A `{}` placeholder in the command
+// is replaced by the payload instead of being appended to.
+func denyArgvComposerFeed(upstream [][]string, sink []string, dc *denyCtx, depth int) bool {
+	inner, ok := argvComposerInnerCommand(sink)
+	if !ok || len(inner) == 0 {
+		return false
+	}
+	payload, static := staticPipePayload(upstream)
+	if !static || len(payload) == 0 {
+		return false
+	}
+	var composed []string
+	placeholder := false
+	for _, tok := range inner {
+		if strings.Contains(tok, "{}") {
+			placeholder = true
+			for _, p := range payload {
+				composed = append(composed, strings.ReplaceAll(tok, "{}", p))
+			}
+			continue
+		}
+		composed = append(composed, tok)
+	}
+	if !placeholder {
+		composed = append(append([]string(nil), inner...), payload...)
+	}
+	return denyStage(composed, dc, depth+1)
 }
 
 // hereStringText returns the word a stage reads as its here-string.

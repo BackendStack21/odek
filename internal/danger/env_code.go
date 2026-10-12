@@ -103,3 +103,30 @@ func envValueBodies(name, value string) []string {
 	}
 	return envAssignmentCodeBodies([]string{name + "=" + value})
 }
+
+// stageCodeBodies returns every command text a stage makes a shell run
+// through its environment, builtin assignments and arithmetic operands:
+// code-variable assignments (leading, `env -S`, exported), printf -v / read
+// into a code variable, and substitutions bash evaluates inside arithmetic
+// and subscript operands. The classifier and the denylist both walk these
+// bodies, so they cannot drift. unknown reports a stored value that cannot be
+// known statically.
+func stageCodeBodies(stage []string, un unwrapped) (bodies []string, unknown bool) {
+	for _, split := range un.splits {
+		bodies = append(bodies, envAssignmentCodeBodies(tokenize(split))...)
+	}
+	inner := un.inner
+	if len(inner) == 0 {
+		return append(bodies, envAssignmentCodeBodies(stage)...), false
+	}
+	name := commandName(inner[0])
+	bodies = append(bodies, arithmeticOperandSubstitutions(name, inner[1:])...)
+	envTokens := stage[:len(stage)-len(inner)]
+	switch name {
+	case "export", "declare", "typeset", "readonly", "local":
+		envTokens = append(append([]string(nil), envTokens...), inner[1:]...)
+	}
+	bodies = append(bodies, envAssignmentCodeBodies(envTokens)...)
+	builtin, builtinUnknown := builtinAssignedCodeBodies(name, inner[1:], stage)
+	return append(bodies, builtin...), builtinUnknown
+}

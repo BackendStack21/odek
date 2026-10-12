@@ -273,6 +273,31 @@ func TestRED_ClassifyURLZoneScopedIPv6Loopback(t *testing.T) {
 	}
 }
 
+func TestRED_DenylistComposedAndArithmeticBodiesBroader(t *testing.T) {
+	t.Setenv("HOME", "/home/user")
+	t.Chdir(t.TempDir())
+	dangerHunt12bDenied(t,
+		`echo push | xargs -r git`,
+		`echo push | xargs -I{} git {}`,
+		`echo "push origin" | xargs git`,
+		`echo $(( a['$(git push)'] ))`,
+		`echo ${s:'$(git push)'}`,
+		`PS1='$(git push)' bash -i`,
+		`env -S 'PROMPT_COMMAND=git\ push' bash -i`,
+		`export PROMPT_COMMAND='git push'`,
+		`mapfile PROMPT_COMMAND <<< 'git push'`,
+	)
+	cfg := &DangerousConfig{Denylist: []string{"git push"}}
+	for _, cmd := range []string{
+		`echo status | xargs git`, `echo push | xargs echo`, `echo $(( 1 + 2 ))`,
+		`PROMPT_COMMAND='git status' true`, `echo pull | xargs -I{} git {}`,
+	} {
+		if act := cfg.ActionForCommand(cmd); act == Deny {
+			t.Errorf("ActionForCommand(%q) = deny with denylist [git push], want not denied", cmd)
+		}
+	}
+}
+
 func TestRED_JqYqGpgBroaderSpellingsAndNegatives(t *testing.T) {
 	t.Setenv("HOME", "/home/user")
 	t.Chdir(t.TempDir())

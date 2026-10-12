@@ -418,15 +418,14 @@ func analyzeWithStateWork(cmd string, depth int, inherited *shellAnalysisState, 
 			// is exported or a shell starts in this segment: the variable
 			// outlives the statement. Assignments inside `env -S` strings
 			// count the same.
-			for _, split := range unwrappedStage.splits {
-				for _, body := range envAssignmentCodeBodies(tokenize(split)) {
-					result.merge(analyzeWithState(body, depth+1, &payloadState))
-				}
+			codeBodies, codeUnknown := stageCodeBodies(stage, unwrappedStage)
+			for _, body := range codeBodies {
+				result.merge(analyzeWithState(body, depth+1, &payloadState))
+			}
+			if codeUnknown {
+				result.add(Unknown)
 			}
 			if len(inner) == 0 {
-				for _, body := range envAssignmentCodeBodies(stage) {
-					result.merge(analyzeWithState(body, depth+1, &payloadState))
-				}
 				if len(unwrappedStage.splits) > 0 && cwdKnown && !state.uncertain {
 					// `env -S 'bash script'` leaves nothing behind the
 					// wrapper, yet the split string is the command that runs.
@@ -453,24 +452,6 @@ func analyzeWithStateWork(cmd string, depth int, inherited *shellAnalysisState, 
 				continue
 			}
 			name := commandName(inner[0])
-			for _, body := range arithmeticOperandSubstitutions(name, inner[1:]) {
-				result.merge(analyzeWithState(body, depth+1, &payloadState))
-			}
-			envTokens := stage[:len(stage)-len(inner)]
-			switch name {
-			case "export", "declare", "typeset", "readonly", "local":
-				envTokens = append(append([]string(nil), envTokens...), inner[1:]...)
-			}
-			for _, body := range envAssignmentCodeBodies(envTokens) {
-				result.merge(analyzeWithState(body, depth+1, &payloadState))
-			}
-			builtinBodies, builtinUnknown := builtinAssignedCodeBodies(name, inner[1:], stage)
-			for _, body := range builtinBodies {
-				result.merge(analyzeWithState(body, depth+1, &payloadState))
-			}
-			if builtinUnknown {
-				result.add(Unknown)
-			}
 			if name == "gpg" || name == "gpg2" {
 				home, set := state.vars["GNUPGHOME"]
 				for _, tok := range stage[:len(stage)-len(inner)] {
