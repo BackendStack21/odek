@@ -203,13 +203,13 @@ func formatOneNotice(n bgproc.Notice) string {
 	var line string
 	switch n.Status {
 	case bgproc.StatusExited:
-		line = fmt.Sprintf("%s `%s` → exited (code %d) after %s", n.JobID, headString(n.Command, bgCommandHead), n.ExitCode, dur)
+		line = fmt.Sprintf("%s `%s` → exited (code %d) after %s", n.JobID, bgClientCommandHead(n.Command), n.ExitCode, dur)
 	case bgproc.StatusFailed:
-		line = fmt.Sprintf("%s `%s` → failed (exit %d) after %s", n.JobID, headString(n.Command, bgCommandHead), n.ExitCode, dur)
+		line = fmt.Sprintf("%s `%s` → failed (exit %d) after %s", n.JobID, bgClientCommandHead(n.Command), n.ExitCode, dur)
 	case bgproc.StatusTimeout:
-		line = fmt.Sprintf("%s `%s` → timeout after %s", n.JobID, headString(n.Command, bgCommandHead), dur)
+		line = fmt.Sprintf("%s `%s` → timeout after %s", n.JobID, bgClientCommandHead(n.Command), dur)
 	default:
-		line = fmt.Sprintf("%s `%s` → %s after %s", n.JobID, headString(n.Command, bgCommandHead), n.Status, dur)
+		line = fmt.Sprintf("%s `%s` → %s after %s", n.JobID, bgClientCommandHead(n.Command), n.Status, dur)
 	}
 	if n.Tail != "" {
 		line += "\n  tail: " + redact.RedactSecrets(n.Tail)
