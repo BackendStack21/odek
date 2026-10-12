@@ -3,6 +3,7 @@ package danger
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -270,6 +271,26 @@ func TestRED_UnreadScriptGateMissedForms(t *testing.T) {
 		if got := UnreadScriptTargets(cmd); len(got) != 0 {
 			t.Errorf("UnreadScriptTargets(%q) = %v, want none", cmd, got)
 		}
+	}
+}
+
+// Variation selectors are zero-width and render invisibly; the sanitizer
+// documents escaping zero-width characters so the reader sees the bytes
+// that run.
+func TestRED_DisplayEscapesVariationSelectors(t *testing.T) {
+	t.Setenv("HOME", "/home/user")
+	for _, r := range []rune{'️', '︀', '\U000E0100', '\U000E01EF', '឴', '឵', '᠋'} {
+		in := "cat notes" + string(r) + ".txt"
+		for _, out := range []string{SanitizeForDisplay(in), SanitizeInline(in)} {
+			if strings.ContainsRune(out, r) {
+				t.Errorf("sanitized %q still contains invisible U+%04X", out, r)
+			}
+		}
+	}
+	// Visible combining accents are still shown as written.
+	const accented = "cat café.txt"
+	if got := SanitizeInline(accented); got != accented {
+		t.Errorf("SanitizeInline(%q) = %q, want unchanged", accented, got)
 	}
 }
 
