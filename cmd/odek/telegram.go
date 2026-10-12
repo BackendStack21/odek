@@ -746,9 +746,7 @@ func telegramCmd(args []string) error {
 			if err != nil {
 				return fmt.Sprintf("❌ %v", err), nil
 			}
-			if len(content) > 3900 {
-				content = content[:3900] + "\n\n… _(truncated — plan too long for Telegram)_"
-			}
+			content = telegramPlanViewTruncate(content)
 			return fmt.Sprintf("📄 *Plan: `%s`*\n\n%s", matched, content), nil
 		}
 
@@ -2541,11 +2539,33 @@ func formatTelegramStats(info loop.IterationInfo, toolList []string) string {
 // /plan turn and can carry content from untrusted sources, so the body is
 // injected inside the untrusted wrapper (only the continuation instruction
 // stays outside) and the session is marked tainted, like any other ingest.
+// telegramPlanViewTruncate caps a plan for display, cutting on a rune
+// boundary so the message stays valid UTF-8.
+func telegramPlanViewTruncate(content string) string {
+	const limit = 3900
+	if len(content) <= limit {
+		return content
+	}
+	cut := limit
+	for cut > 0 && !utf8.RuneStart(content[cut]) {
+		cut--
+	}
+	return content[:cut] + "\n\n… _(truncated — plan too long for Telegram)_"
+}
+
 func telegramPlanResume(chatID int64, sessionManager *telegram.SessionManager) string {
 	slug, content, err := telegram.MostRecentPlan(chatID)
 	if err != nil {
 		return fmt.Sprintf("❌ %v", err)
 	}
+	// The session is mutated and saved below; an agent run in progress owns it
+	// and would overwrite the injected plan with its own end-of-turn save.
+	slot := pinChat(chatID)
+	if !slot.mu.TryLock() {
+		dropChatPin(chatID, slot)
+		return "⏳ A task is running for this chat. Send `/stop` or wait for it to finish, then run `/plan_resume` again."
+	}
+	defer unpinChat(chatID, slot)
 	cs, err := sessionManager.GetOrCreate(chatID)
 	if err != nil {
 		return fmt.Sprintf("❌ Failed to get session: %v", err)
