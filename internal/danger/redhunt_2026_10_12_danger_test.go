@@ -1,6 +1,8 @@
 package danger
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -223,6 +225,50 @@ func TestRED_DenylistMissesTrapAction(t *testing.T) {
 	for _, cmd := range []string{`trap - EXIT`, `trap -p`, `trap -l`, `trap 'echo bye' EXIT`, `trap '' INT`} {
 		if act := cfg.ActionForCommand(cmd); act == Deny {
 			t.Errorf("ActionForCommand(%q) = deny, want not denied", cmd)
+		}
+	}
+}
+
+// The unread-script gate misses scripts run through a fused value option,
+// BASH_ENV, and sqlite3's program-file option.
+func TestRED_UnreadScriptGateMissedForms(t *testing.T) {
+	t.Setenv("HOME", "/home/user")
+	ResetReadLedgerForTest()
+	dir := t.TempDir()
+	t.Chdir(dir)
+	for name, body := range map[string]string{
+		"a.py":  "print(1)\n",
+		"a.sh":  "#!/bin/sh\necho hi\n",
+		"a.sql": ".shell id\n",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, cmd := range []string{
+		`python -Wignore a.py`,
+		`python3 -Xdev a.py`,
+		`BASH_ENV=a.sh bash -c true`,
+		`env BASH_ENV=a.sh bash -c true`,
+		`ENV=./a.sh sh -i`,
+		`sqlite3 -init a.sql x.db`,
+		`sqlite3 --init a.sql x.db`,
+	} {
+		if got := UnreadScriptTargets(cmd); len(got) == 0 {
+			t.Errorf("UnreadScriptTargets(%q) = [], want the unread script gated", cmd)
+		}
+	}
+	// Inline code and unrelated assignments gate nothing.
+	for _, cmd := range []string{
+		`python -Wignore -c 'print(1)'`,
+		`python -c 'print(1)'`,
+		`perl -ne 'print' x.txt`,
+		`ENV=a.sh ls`,
+		`ENV=production npm start`,
+		`sqlite3 x.db 'select 1'`,
+	} {
+		if got := UnreadScriptTargets(cmd); len(got) != 0 {
+			t.Errorf("UnreadScriptTargets(%q) = %v, want none", cmd, got)
 		}
 	}
 }

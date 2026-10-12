@@ -822,10 +822,14 @@ func executionFileTargets(name string, tokens []string) []string {
 		options = []string{"-f", "--file"}
 	case "sqlite3":
 		var out []string
-		for _, tok := range tokens[1:] {
+		for i, tok := range tokens[1:] {
 			parts := strings.Fields(tok)
 			if len(parts) > 1 && hasAny([]string{".read", ".load"}, parts[0]) {
 				out = append(out, parts[1])
+			}
+			// -init FILE runs the file's SQL and dot-commands at startup.
+			if (tok == "-init" || tok == "--init") && i+1 < len(tokens[1:]) {
+				out = append(out, tokens[1:][i+1])
 			}
 		}
 		return out
