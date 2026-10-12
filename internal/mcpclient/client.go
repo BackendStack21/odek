@@ -703,10 +703,15 @@ func (c *Client) Discover(ctx context.Context) (_ []ToolDef, setupErr error) {
 		return nil, fmt.Errorf("mcpclient %s: parse tools/list: %w", c.name, err)
 	}
 
+	seen := make(map[string]struct{}, len(result.Tools))
 	for i := range result.Tools {
 		if err := validateToolName(result.Tools[i].Name); err != nil {
 			return nil, fmt.Errorf("mcpclient %s: tools/list: %w", c.name, err)
 		}
+		if _, dup := seen[result.Tools[i].Name]; dup {
+			return nil, fmt.Errorf("mcpclient %s: tools/list: duplicate tool name %q", c.name, result.Tools[i].Name)
+		}
+		seen[result.Tools[i].Name] = struct{}{}
 	}
 
 	return result.Tools, nil
