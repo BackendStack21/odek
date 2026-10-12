@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/BackendStack21/odek/internal/danger"
+	"github.com/BackendStack21/odek/internal/session"
 )
 
 // rh12tgUnescapedReserved returns the reserved MarkdownV2 characters that
@@ -320,5 +321,59 @@ func TestRED_FallbackTransportResendsDrainedBody(t *testing.T) {
 	defer mu.Unlock()
 	if !strings.Contains(gotBody, "hello through the fallback") {
 		t.Fatalf("fallback endpoint received body %q, want the original request body", gotBody)
+	}
+}
+
+// MarkEpisodeUntrusted persists on the chat's stored session and survives the
+// next save; marking a missing chat is a no-op.
+func TestRH12TG_MarkEpisodeUntrustedPersists(t *testing.T) {
+	sm, _ := setupTestSessionManager(t)
+	sm.MarkEpisodeUntrusted(42) // no cached session: no-op, no panic
+	if _, err := sm.GetOrCreate(42); err != nil {
+		t.Fatal(err)
+	}
+	if err := sm.Save(42, []session.Message{{Role: "user", Content: "hi"}}); err != nil {
+		t.Fatal(err)
+	}
+	cs, _ := sm.Load(42)
+	if cs.EpisodeUntrusted() {
+		t.Fatal("fresh session must not be episode-untrusted")
+	}
+	sm.MarkEpisodeUntrusted(42)
+	if err := sm.Save(42, []session.Message{{Role: "user", Content: "hi"}, {Role: "assistant", Content: "yo"}}); err != nil {
+		t.Fatal(err)
+	}
+	cs, _ = sm.Load(42)
+	if !cs.EpisodeUntrusted() || cs.UntrustedIngested() {
+		t.Fatalf("EpisodeUntrusted=%v UntrustedIngested=%v, want true/false", cs.EpisodeUntrusted(), cs.UntrustedIngested())
+	}
+	var nilCS *ChatSession
+	if nilCS.EpisodeUntrusted() {
+		t.Fatal("nil session is not episode-untrusted")
+	}
+}
+
+// mediaParams carries the reply target, parse mode and markup, and uploads
+// write non-string values as JSON.
+func TestRH12TG_MediaParams(t *testing.T) {
+	if p := mediaParams(7, "", nil); len(p) != 1 || p["chat_id"] != int64(7) {
+		t.Fatalf("nil opts params = %v", p)
+	}
+	mk := &InlineKeyboardMarkup{}
+	p := mediaParams(7, "cap", &SendOpts{ReplyToMessageID: 3, ParseMode: ParseModeMarkdownV2, ReplyMarkup: mk})
+	if p["caption"] != "cap" || p["reply_to_message_id"] != 3 || p["parse_mode"] != ParseModeMarkdownV2 || p["reply_markup"] != mk {
+		t.Fatalf("params = %v", p)
+	}
+}
+
+// An open fence after a table row is closed too.
+func TestRH12TG_FormatClosesOpenFenceAfterTable(t *testing.T) {
+	chunks, err := FormatResponse("| a | b |\n```\ncode")
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(chunks, "\n")
+	if strings.Count(joined, "```")%2 != 0 {
+		t.Fatalf("unbalanced fences: %q", joined)
 	}
 }
