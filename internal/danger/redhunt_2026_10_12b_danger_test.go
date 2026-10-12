@@ -273,6 +273,34 @@ func TestRED_ClassifyURLZoneScopedIPv6Loopback(t *testing.T) {
 	}
 }
 
+func TestRED_JqYqGpgBroaderSpellingsAndNegatives(t *testing.T) {
+	t.Setenv("HOME", "/home/user")
+	t.Chdir(t.TempDir())
+	dangerHunt12bAtLeast(t, SystemWrite,
+		`jq -n --rawfile x f env`,
+		`jq -rn '$ENV.HOME'`,
+		`jq --arg a b -n env`,
+		`yq -n '$ENV'`,
+		`yq -p json -n env`,
+		`jq . .env`,
+		`jq '.env' .env`,
+		`gpg --edit-ca`,
+		`gpg2 --quick-set-ownertrust ABCD full`,
+	)
+	cfg := &DangerousConfig{}
+	for _, cmd := range []string{
+		`jq '.a' x.json`, `jq --arg k v '.env' x.json`, `yq e '.env' x.yaml`, `yq '.["env"]' x.yaml`,
+		`jq '.foo.env' x.json`, `jq -r '.env.NAME' config.json`, `gpg --list-keys`, `gpg --verify f.sig f`,
+	} {
+		if got := Classify(cmd); got != Safe {
+			t.Errorf("Classify(%q) = %s, want safe", cmd, got)
+		}
+		if act := cfg.ActionForCommand(cmd); act != Allow {
+			t.Errorf("ActionForCommand(%q) = %s, want allow", cmd, act)
+		}
+	}
+}
+
 func TestRED_KillBroadcastBroaderSpellingsAndNegatives(t *testing.T) {
 	t.Setenv("HOME", "/home/user")
 	t.Chdir(t.TempDir())

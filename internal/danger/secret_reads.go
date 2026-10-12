@@ -344,7 +344,12 @@ func stageTouchesCredentialFile(stage, inner []string, display bool) bool {
 		}
 	}
 	innerStart := len(stage) - len(inner)
+	// A jq/yq filter such as `.env` is a program, not a file to open.
+	filterWords := jqNonFileOperands(name, inner)
 	for i, tok := range stage {
+		if i >= innerStart && filterWords[i-innerStart] && !(i > 0 && isRedirectToken(stage[i-1])) {
+			continue
+		}
 		if i > 0 && isRedirectToken(stage[i-1]) {
 			if credentialPathToken(tok) {
 				return true
