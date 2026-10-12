@@ -17,7 +17,7 @@ Each layer overrides the one below it. Unset fields inherit from the layer below
 Layer 0 is unique: it does not hold config fields directly. Instead it injects
 `KEY=VALUE` pairs into the process environment so they're available for:
 
-- **Layer 1–2** `${VAR}` substitution in config files
+- **Layer 1** `${VAR}` substitution in the global config file (the untrusted project `./odek.json` is never expanded)
 - **Layer 3** `ODEK_*` env var lookups (e.g. `ODEK_PROVIDER`, `ODEK_MODEL`)
 - **Provider key env vars** (`DEEPSEEK_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `ZAI_API_KEY`, …)
 
