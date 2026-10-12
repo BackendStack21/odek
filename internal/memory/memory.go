@@ -1173,7 +1173,9 @@ func (m *MemoryManager) AppendBuffer(role, message string) {
 	if m.cfg.BufferEnabled == nil || !*m.cfg.BufferEnabled {
 		return
 	}
-	message = redact.RedactSecrets(summarizeForBuffer(message))
+	// Redact before truncating: a cut can leave a secret prefix that no
+	// pattern matches any more.
+	message = summarizeForBuffer(redact.RedactSecrets(message))
 	line := FormatBufferLine(role, message)
 	m.buffer.Append(line)
 	m.markPromptDirty()
