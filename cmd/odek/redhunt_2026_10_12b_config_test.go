@@ -429,3 +429,24 @@ func confighuntResetSessionApprovals(t *testing.T) {
 		sessionDockerfileApprovalsMu.Unlock()
 	})
 }
+
+// The approval prompt names the interpolating keys with their templates
+// (never the expanded host values).
+func TestRED_ApprovalPromptListsInterpolatingEnv(t *testing.T) {
+	confighuntResetSessionApprovals(t)
+	resolved := config.ResolvedConfig{
+		ProjectSandboxOverride: config.ProjectSandboxOverride{
+			HasEnv: true, EnvKeys: []string{"PLAIN", "TOKEN"},
+			Env:                 map[string]string{"PLAIN": "1", "TOKEN": "$OPENAI_API_KEY"},
+			EnvHasInterpolation: true,
+		},
+	}
+	var out strings.Builder
+	_ = approveProjectSandboxWithTTY(resolved, strings.NewReader("\n"), &out, true)
+	if !strings.Contains(out.String(), "TOKEN = $OPENAI_API_KEY") {
+		t.Errorf("prompt does not show the interpolating key: %q", out.String())
+	}
+	if strings.Contains(out.String(), "PLAIN =") {
+		t.Errorf("non-interpolating key listed: %q", out.String())
+	}
+}

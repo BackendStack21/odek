@@ -1227,6 +1227,25 @@ func loadFileExpand(path string, expand bool) FileConfig {
 	return cfg
 }
 
+// HasEnvInterpolation reports whether s references a host environment
+// variable that expandEnv would substitute: ${VAR} or a bare $VAR (a literal
+// "$$" or a "$" before a non-identifier does not count).
+func HasEnvInterpolation(s string) bool {
+	for j := 0; j < len(s); j++ {
+		if s[j] != '$' {
+			continue
+		}
+		if j+1 < len(s) && s[j+1] == '$' {
+			j++
+			continue
+		}
+		if name, _ := parseVarName(s[j+1:]); name != "" {
+			return true
+		}
+	}
+	return false
+}
+
 // expandEnv replaces ${VAR} or $VAR with environment variable values.
 // Supports $$ as an escape for a literal dollar sign.
 func expandEnv(s string) string {
@@ -2000,7 +2019,7 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 		for k, v := range project.SandboxEnv {
 			projectSandboxOverride.EnvKeys = append(projectSandboxOverride.EnvKeys, k)
 			projectSandboxOverride.Env[k] = v
-			if strings.Contains(v, "${") {
+			if HasEnvInterpolation(v) {
 				projectSandboxOverride.EnvHasInterpolation = true
 			}
 		}

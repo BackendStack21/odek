@@ -119,7 +119,12 @@ func approveProjectSandboxWithTTY(resolved config.ResolvedConfig, stdin io.Reade
 		if o.HasEnv {
 			fmt.Fprintf(stdout, "  env:     %s\n", danger.SanitizeInline(strings.Join(o.EnvKeys, ", ")))
 			if o.EnvHasInterpolation {
-				fmt.Fprintln(stdout, "  ⚠️  sandbox_env values contain ${...} interpolation against host environment variables")
+				fmt.Fprintln(stdout, "  ⚠️  sandbox_env values contain ${...} or $VAR interpolation against host environment variables:")
+				for _, k := range o.EnvKeys {
+					if config.HasEnvInterpolation(o.Env[k]) {
+						fmt.Fprintf(stdout, "      %s = %s\n", danger.SanitizeInline(k), danger.SanitizeInline(o.Env[k]))
+					}
+				}
 			}
 		}
 		if o.HasVolumes {
