@@ -162,6 +162,18 @@ func tgrh12Env(t *testing.T, chatID int64) (*telegram.SessionManager, string) {
 		telegramTurnUsers.Delete(chatID)
 		dropBGRuntimeForChat(chatID)
 	})
+	// Post-turn background work (episode and memory extraction) can still be
+	// writing under ~/.odek when the test returns; this cleanup runs before
+	// t.TempDir's own removal and retries until the tree is gone, so a late
+	// write cannot fail the test with "directory not empty".
+	t.Cleanup(func() {
+		odekDir := filepath.Join(home, ".odek")
+		for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(50 * time.Millisecond) {
+			if err := os.RemoveAll(odekDir); err == nil || time.Now().After(deadline) {
+				return
+			}
+		}
+	})
 	store, err := session.NewStoreWithDir(filepath.Join(home, ".odek", "sessions"))
 	if err != nil {
 		t.Fatal(err)
