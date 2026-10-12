@@ -99,6 +99,6 @@ func TestRED_FileRefLongSAliasOfSecrets(t *testing.T) {
 	}
 	got, err := NewFileResolver(home).Load(context.Background(), ".odek/\u017fecrets.env")
 	if err == nil && strings.Contains(got, "hunt-secret") {
-		t.Skip("alias bypass is fixed by danger.FoldPathCase on the tools branch; expected to pass after merge")
+		t.Fatalf("Load(%q) returned the trust anchor's content through a case-fold alias", ".odek/\u017fecrets.env")
 	}
 }
