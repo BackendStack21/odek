@@ -753,26 +753,7 @@ func telegramCmd(args []string) error {
 
 		// Handle /plan-resume — inject most recent plan for this chat into session context.
 		if cmdName == "plan_resume" {
-			slug, content, err := telegram.MostRecentPlan(chatID)
-			if err != nil {
-				return fmt.Sprintf("❌ %v", err), nil
-			}
-			// Inject the plan as a system-level context message.
-			cs, err := sessionManager.GetOrCreate(chatID)
-			if err != nil {
-				return fmt.Sprintf("❌ Failed to get session: %v", err), nil
-			}
-			contextMsg := fmt.Sprintf(
-				"[Plan loaded: %s]\n\n%s\n\n---\nContinue working on this plan. "+
-					"Use your tools to implement the next step.",
-				slug, content,
-			)
-			cs.Messages = append(cs.Messages, session.Message{Role: "user", Content: contextMsg})
-			cs.LastActive = time.Now()
-			if err := sessionManager.Save(chatID, cs.Messages); err != nil {
-				return fmt.Sprintf("❌ Failed to save session: %v", err), nil
-			}
-			return fmt.Sprintf("📋 *Plan loaded*: `%s`\n\n_Injected into session context. Send a message to continue._", slug), nil
+			return telegramPlanResume(chatID, sessionManager), nil
 		}
 
 		// Handle /plan_status — show the agent's structured task plan for
@@ -2539,6 +2520,34 @@ func formatTelegramStats(info loop.IterationInfo, toolList []string) string {
 		"```\n✅ Done · %s · %d in / %d out%s%s · %s — tools: %s\n```",
 		iters, info.InputTokens, info.OutputTokens, cacheStr, formatTokPerSec(info), latency.String(), toolStr,
 	)
+}
+
+// telegramPlanResume loads the chat's most recent plan into its conversation
+// and returns the reply text. Plan files are written by the agent during a
+// /plan turn and can carry content from untrusted sources, so the body is
+// injected inside the untrusted wrapper (only the continuation instruction
+// stays outside) and the session is marked tainted, like any other ingest.
+func telegramPlanResume(chatID int64, sessionManager *telegram.SessionManager) string {
+	slug, content, err := telegram.MostRecentPlan(chatID)
+	if err != nil {
+		return fmt.Sprintf("❌ %v", err)
+	}
+	cs, err := sessionManager.GetOrCreate(chatID)
+	if err != nil {
+		return fmt.Sprintf("❌ Failed to get session: %v", err)
+	}
+	contextMsg := fmt.Sprintf(
+		"[Plan loaded: %s]\n\n%s\n\nContinue working on this plan. "+
+			"Use your tools to implement the next step.",
+		slug, wrapUntrusted(context.Background(), fmt.Sprintf("telegram:chat:%d:plan:%s", chatID, slug), content),
+	)
+	cs.Messages = append(cs.Messages, session.Message{Role: "user", Content: contextMsg})
+	cs.LastActive = time.Now()
+	sessionManager.MarkUntrustedIngested(chatID)
+	if err := sessionManager.Save(chatID, cs.Messages); err != nil {
+		return fmt.Sprintf("❌ Failed to save session: %v", err)
+	}
+	return fmt.Sprintf("📋 *Plan loaded*: `%s`\n\n_Injected into session context. Send a message to continue._", slug)
 }
 
 // formatStopSummary formats a summary of an interrupted task for the /stop
