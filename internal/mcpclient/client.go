@@ -819,11 +819,12 @@ func (c *Client) CallTool(ctx context.Context, name string, argsJSON string) (st
 					extras = append(extras, p)
 				}
 			}
-			suffix := ""
 			if len(extras) > 0 {
 				// Trailing items are server text: neutralize any line that
-				// would read as a rendered artifact metadata entry.
-				suffix = "\n" + artifact.SanitizeText(strings.Join(extras, "\n"))
+				// would read as a rendered artifact metadata entry, and
+				// fold it into the envelope text so the single capping pass
+				// shrinks text first and always keeps the metadata lines.
+				env.Text += "\n" + artifact.SanitizeText(strings.Join(extras, "\n"))
 			}
 			for i := range env.Artifacts {
 				if _, err := artifact.Validate(env.Artifacts[i], c.artifactRoots); err != nil {
@@ -831,7 +832,7 @@ func (c *Client) CallTool(ctx context.Context, name string, argsJSON string) (st
 				}
 			}
 			artifact.Observe(ctx, env.Artifacts, c.artifactRoots)
-			return c.applyResultLimit(name, c.renderCappedEnvelope(name, env)+suffix), nil
+			return c.renderCappedEnvelope(name, env), nil
 		}
 	}
 	if env != nil {
