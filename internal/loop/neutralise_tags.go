@@ -198,12 +198,14 @@ func tagLookalikeAt(rest string) bool {
 	}
 	// A real tag continues with its nonce ('_' / digits / hex), closes, or
 	// ends; a longer hyphenated or lettered name is a different word.
+	skipsBeforeTail := skips
 	r, ok = next()
 	if spaced {
-		// Spacing after the opener is accepted only for the joined tag
-		// shape: a real separator between the words (not just spacing) and
-		// a nonce suffix, a close or the end after the name.
-		return n > 0 && (!ok || r == '>' || r == '_' || unicode.IsDigit(r))
+		// Spacing after the opener is accepted only for the full tag shape:
+		// a nonce suffix or a close right after the name (no spacing before
+		// it), or, when the words are joined by a real separator, the end.
+		adjacent := ok && skips == skipsBeforeTail && (r == '>' || r == '_' || unicode.IsDigit(r))
+		return adjacent || (n > 0 && (!ok || r == '>' || r == '_' || unicode.IsDigit(r)))
 	}
 	return !ok || (!tagWordRune(r) || unicode.IsDigit(r)) && r != '-'
 }
