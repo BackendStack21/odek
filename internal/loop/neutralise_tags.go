@@ -134,16 +134,17 @@ func tagWordRune(r rune) bool {
 // a look-alike of an untrusted-content tag name.
 func tagLookalikeAt(rest string) bool {
 	skips := 0
-	// strict forbids spacing between the opener and the tag name (invisible
-	// padding is still skipped): "a < untrusted content" is prose.
-	strict := true
+	// spaced records whitespace between the opener and the first letter of
+	// the tag name; such a form is accepted only in the full tag shape (see
+	// the tail check), so "a < untrusted content" stays prose.
+	spaced, inName := false, false
 	// next returns the next non-skippable rune, folded.
 	next := func() (rune, bool) {
 		for len(rest) > 0 {
 			r, sz := utf8.DecodeRuneInString(rest)
 			rest = rest[sz:]
-			if strict && unicode.IsSpace(r) {
-				return 0, false
+			if !inName && unicode.IsSpace(r) {
+				spaced = true
 			}
 			if tagSkippable(r) {
 				skips++
@@ -167,16 +168,15 @@ func tagLookalikeAt(rest string) bool {
 		return false
 	}
 	if r == '/' {
-		strict = false
 		if r, ok = next(); !ok {
 			return false
 		}
 	}
-	strict = false
 	// r is the first rune of "untrusted".
 	if r != 'u' || !word("ntrusted") {
 		return false
 	}
+	inName = true
 	// Up to tagMaxSeparators separator runes (never an angle bracket or
 	// alphanumeric); spacing between the words counts as a separator.
 	skipsBefore := skips
@@ -199,5 +199,11 @@ func tagLookalikeAt(rest string) bool {
 	// A real tag continues with its nonce ('_' / digits / hex), closes, or
 	// ends; a longer hyphenated or lettered name is a different word.
 	r, ok = next()
+	if spaced {
+		// Spacing after the opener is accepted only for the joined tag
+		// shape: a real separator between the words (not just spacing) and
+		// a nonce suffix, a close or the end after the name.
+		return n > 0 && (!ok || r == '>' || r == '_' || unicode.IsDigit(r))
+	}
 	return !ok || (!tagWordRune(r) || unicode.IsDigit(r)) && r != '-'
 }
