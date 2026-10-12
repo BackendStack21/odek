@@ -186,14 +186,24 @@ func authenticateJobsRequest(store *session.Store, r *http.Request) (*session.Se
 	}
 	sess, err := store.Load(sessionID)
 	if err != nil || sess == nil {
-		code, msg := limitedLookupReject(r, sessionScopedProxies, http.StatusNotFound, "session not found")
+		code, msg := limitedJobsReject(r, http.StatusNotFound, "session not found")
 		return nil, code, msg
 	}
 	if !validateSessionTokenStrict(store, sess, sessionTokenFromRequest(r)) {
-		code, msg := limitedLookupReject(r, sessionScopedProxies, http.StatusUnauthorized, "invalid session token")
+		code, msg := limitedJobsReject(r, http.StatusUnauthorized, "invalid session token")
 		return nil, code, msg
 	}
 	return sess, 0, ""
+}
+
+// limitedJobsReject throttles rejected jobs polls on their own budget, so the
+// enumeration oracle stays bounded without the periodic UI poll spending the
+// shared session-lookup budget.
+func limitedJobsReject(r *http.Request, code int, msg string) (int, string) {
+	if !jobsLookupLimiter.allow(clientIP(r, sessionScopedProxies)) {
+		return http.StatusTooManyRequests, "rate limit exceeded"
+	}
+	return code, msg
 }
 
 // jobIDFromPath extracts the job id from /api/jobs/{id}/{action}.

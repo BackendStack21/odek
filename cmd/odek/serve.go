@@ -203,6 +203,12 @@ var wsHandlerWG sync.WaitGroup
 // lookups, raising the cost of brute-force enumeration of session IDs.
 var sessionLookupLimiter = newRateLimiter(60, time.Minute)
 
+// jobsLookupLimiter is the rejection budget of the polled /api/jobs
+// endpoints, kept apart from sessionLookupLimiter: the WebUI polls every few
+// seconds per tab, so a deleted or tokenless session in a few tabs would
+// otherwise starve session detail and token-bootstrap lookups.
+var jobsLookupLimiter = newRateLimiter(60, time.Minute)
+
 // sessionScopedProxies are the trusted proxies used to key the lookup limiter
 // for session-scoped endpoints whose handlers are not given the list
 // (/api/cancel, jobs, artifacts, subagents). Set once at serve startup.

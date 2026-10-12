@@ -135,6 +135,7 @@ func TestRED_SessionScopedEndpointsUnthrottledEnumeration(t *testing.T) {
 	store := newTestSessionStore(t)
 	sessionLookupLimiter.reset()
 	t.Cleanup(sessionLookupLimiter.reset)
+	t.Cleanup(jobsLookupLimiter.reset)
 	type probe struct {
 		name string
 		do   func(id string) int
@@ -159,6 +160,7 @@ func TestRED_SessionScopedEndpointsUnthrottledEnumeration(t *testing.T) {
 	}
 	for _, p := range probes {
 		sessionLookupLimiter.reset()
+		jobsLookupLimiter.reset()
 		limited := false
 		for i := 0; i < 80; i++ {
 			if p.do(fmt.Sprintf("20260101-%032x", i)) == http.StatusTooManyRequests {
