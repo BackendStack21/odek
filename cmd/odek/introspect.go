@@ -181,7 +181,14 @@ var credentialArgFlag = regexp.MustCompile(`(?i)^-{1,2}[a-z0-9_-]*(key|token|sec
 // components only, so --path or --author stay readable.
 var credentialArgFlagWord = regexp.MustCompile(`(?i)^-{1,2}(?:[a-z0-9]+[-_])*(?:auth|pass|pat|cookie|cookies|creds|dsn|bearer|session|apikey)(?:[-_][a-z0-9]+)*$`)
 
+// nonCredentialArgFlag matches switches that merely mention a credential word
+// (--no-auth, --pass-through, --auth-mode, --token-type): they take no secret.
+var nonCredentialArgFlag = regexp.MustCompile(`(?i)^-{1,2}no[-_]|[-_](mode|through|type)$`)
+
 func isCredentialArgFlag(a string) bool {
+	if nonCredentialArgFlag.MatchString(a) {
+		return false
+	}
 	return credentialArgFlag.MatchString(a) || credentialArgFlagWord.MatchString(a)
 }
 
@@ -246,9 +253,12 @@ func redactCredentialArgs(args []string) []string {
 	envNext := false
 	for i, a := range args {
 		if redactNext {
-			out[i] = redactedArgPlaceholder
 			redactNext = false
-			continue
+			// A following flag means the credential flag took no value.
+			if !strings.HasPrefix(a, "-") {
+				out[i] = redactedArgPlaceholder
+				continue
+			}
 		}
 		if envNext {
 			envNext = false
