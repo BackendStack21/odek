@@ -23,9 +23,8 @@ func runtimeBSchemaJSON(keyword, value string) string {
 	return string(js)
 }
 
-// The `pattern` prose heuristic (incomplete fix of the prior "pattern carries
-// sentence-shaped free text" finding) only counts spaces and runs of six or
-// more letters. An instruction written with short words joined by
+// The `pattern` prose heuristic (which detects sentence-shaped free text in a
+// pattern) only counts spaces and runs of six or more letters. An instruction written with short words joined by
 // underscores, dots or hyphens has no spaces and no long word, so it is kept
 // verbatim in the UNWRAPPED provider schema instead of being lifted into the
 // nonce'd, untrusted parameter documentation.
@@ -42,7 +41,7 @@ func TestRED_RuntimeBMCPSchemaPatternShortWordProseKept(t *testing.T) {
 	}
 }
 
-// Sibling of the pattern finding: `format` values and local `$ref` pointers
+// Like `pattern`, `format` values and local `$ref` pointers
 // are kept whenever they are <=128 runes of printable ASCII without spaces.
 // A real format is a short name (date-time, uri, email) and a real $ref a
 // short JSON pointer, but any underscore-joined sentence passes, so these

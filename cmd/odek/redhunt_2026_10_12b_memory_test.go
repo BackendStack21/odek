@@ -23,7 +23,8 @@ func (l memHunt12bLLM) SimpleCall(context.Context, string, string) (string, erro
 // p.Field with plain %s, so model output steered by conversation content can
 // put ESC/CSI sequences on the operator's terminal — erasing the line and
 // redrawing a benign-looking entry right before the operator runs `confirm`.
-// Sibling of the fixed quarantine-listing escape finding.
+// The quarantine listing already escapes its fields; this pending listing
+// must do the same.
 func TestRED_MemoryPendingListingEmitsRawTerminalEscapesFromInferredFields(t *testing.T) {
 	dir := t.TempDir()
 	cfg := extended.DefaultConfig()

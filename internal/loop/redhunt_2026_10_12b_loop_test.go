@@ -54,8 +54,8 @@ func TestRED_LoopNeutraliseUnderscoreLookalikeLetter(t *testing.T) {
 // argv0 promises that no fragment of an assignment value surfaces as the
 // program name. An array assignment value with whitespace, or an append
 // assignment (NAME+=value), still leaks its contents into
-// tool_call_started.args_summary.argv0 (sibling of the fixed quoted and
-// substitution assignment leaks).
+// tool_call_started.args_summary.argv0 (as quoted and
+// substitution assignments already must not).
 func TestRED_LoopArgv0LeaksArrayAndAppendAssignment(t *testing.T) {
 	cases := []struct{ cmd, secret string }{
 		{`KEYS=(sk-live-aaaa sk-live-SECRET2); for k in "${KEYS[@]}"; do curl -H "Authorization: $k" x; done`, "sk-live-SECRET2"},

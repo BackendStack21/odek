@@ -22,7 +22,7 @@ func TestRED_BufferTruncatesBeforeRedactingSoSecretPrefixLeaks(t *testing.T) {
 	// sentence terminator in the second half of the window.
 	msg := `{"note":"` + strings.Repeat("a", 160) + `","gh":"` + token + `"}`
 	if strings.Contains(redact.RedactSecrets(msg), "abcdefghijklmnop") {
-		t.Skip("redactor does not cover this token in full text; finding does not apply")
+		t.Skip("redactor does not cover this token in full text; case not applicable")
 	}
 	mm := NewMemoryManager(t.TempDir(), nil, DefaultMemoryConfig())
 	mm.AppendBuffer("user", msg)
