@@ -166,11 +166,22 @@ func globNamesSensitivePath(tok string) bool {
 	return false
 }
 
-// globEnvironMatch reports a /proc/<pid>/environ spelling: a "proc" component,
-// any process component, then a component that can be "environ".
+// procPidSamples are process directory names a pid component is matched against.
+var procPidSamples = []string{"self", "thread-self", "1", "10", "99", "12345"}
+
+// globEnvironMatch reports a /proc/<pid>/environ spelling in which any
+// component may be a glob: a component that can be "proc" (a glob only at the
+// root), a component that can name a process, then one that can be "environ".
 func globEnvironMatch(pat []string) bool {
 	for i := 0; i+2 < len(pat); i++ {
-		if pat[i] != "proc" || !globSegMatch(pat[i+2], "environ") {
+		if !globSegMatch(pat[i], "proc") || (hasGlobMeta(pat[i]) && i != 0) {
+			continue
+		}
+		pidOK := isAllDigits(pat[i+1])
+		for _, sample := range procPidSamples {
+			pidOK = pidOK || globSegMatch(pat[i+1], sample)
+		}
+		if !pidOK || !globSegMatch(pat[i+2], "environ") {
 			continue
 		}
 		// A bare wildcard as the last component of a process directory

@@ -397,6 +397,23 @@ func TestRED_SensitiveReadPathHistoryAndRotatedLogs(t *testing.T) {
 	}
 }
 
+// Any segment of a /proc environ path may be a glob.
+func TestRED_ProcEnvironGlobAnySegment(t *testing.T) {
+	t.Setenv("HOME", "/home/user")
+	t.Chdir(t.TempDir())
+	dangerHunt12bAtLeast(t, SystemWrite,
+		`cat /pr?c/1/environ`, `cat /p*/1/environ`, `cat /proc/*/environ`, `cat /proc/[0-9]*/environ`,
+		`cat /proc/self/../1/environ`, `cat /pro[c]/self/env?ron`, `cat /proc/1?/environ`,
+		`cat /proc/s*f/environ`, `cat /[p]roc/thread-self/environ`, `cat /proc/*/*/environ`,
+		`cat /*/self/environ`, `cat /proc/self/e*n`,
+	)
+	for _, cmd := range []string{`cat /proc/*/status`, `cat /p*/cpuinfo`, `cat /proc/self/status`, `cat ./a/*/environ.md`} {
+		if got := Classify(cmd); Rank(got) >= Rank(SystemWrite) {
+			t.Errorf("Classify(%q) = %s, want below system_write", cmd, got)
+		}
+	}
+}
+
 // A HOME/XDG_CONFIG_HOME/ZDOTDIR set in an earlier segment reaches a later
 // startup-file shell; an exported HOME with no such shell afterwards runs
 // nothing (each call is a fresh shell).
