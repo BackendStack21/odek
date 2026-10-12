@@ -54,7 +54,7 @@ func TestRED_Loop_EffectEvidenceRescannedAfterSecretRegistered(t *testing.T) {
 	redact.ResetSecrets()
 	t.Cleanup(redact.ResetSecrets)
 	secret := "late-registered-secret-value-0123456789"
-	e := &Engine{runMutations: []string{"shell: curl -H 'X-Token: " + secret + "'"}}
+	e := &Engine{runMutations: []string{"shell: curl -H 'X-Custom: " + secret + "'"}}
 	if body := e.effectEvidenceBody(); !strings.Contains(body, secret) {
 		t.Fatalf("precondition: unregistered value should be visible, got %q", body)
 	}

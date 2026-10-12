@@ -164,9 +164,9 @@ func TestRED_AuditSourceBoundaryMatch(t *testing.T) {
 	}{
 		{"https://news.example.com", "https://news.example.com", true},
 		{"https://news.example.com/article?id=1", "https://news.example.com", true},
-		{"https://news.example.com", "https://news.example.com/article", true},
+		{"https://news.example.com", "https://news.example.com/article", false},
 		{"https://NEWS.example.com/a#top", "https://news.example.com/a", true},
-		{"https://news.example.com/", "https://news.example.com/a", true},
+		{"https://news.example.com/", "https://news.example.com/a", false},
 		{"https://news.example.com.collector.net/x", "https://news.example.com", false},
 		{"https://news.example.community/x", "https://news.example.com", false},
 		{"https://news.example.com:8443/x", "https://news.example.com", false},

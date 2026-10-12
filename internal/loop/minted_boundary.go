@@ -146,7 +146,7 @@ func (e *Engine) protectPersistedContext(ctx context.Context, source, content st
 // can never contain the closing tag whatever the nonce is.
 func stableUntrustedWrap(source, content string) string {
 	source = strings.NewReplacer(`"`, "″", "<", "‹", ">", "›", "\n", " ", "\r", " ").Replace(source)
-	content = strings.ReplaceAll(content, "untrusted_content", "untrusted·content")
+	content = NeutraliseUntrustedLiterals(content)
 	f := fnv.New128a()
 	f.Write([]byte(source + "\x00" + content))
 	nonce := hex.EncodeToString(f.Sum(nil)[:8])

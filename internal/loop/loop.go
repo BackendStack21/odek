@@ -2154,7 +2154,7 @@ func (e *Engine) protectSystemContext(ctx context.Context, source, content strin
 func defaultUntrustedWrap(source, content string) string {
 	nonce := newToolResultNonce()
 	source = strings.NewReplacer(`"`, "″", "<", "‹", ">", "›", "\n", " ", "\r", " ").Replace(source)
-	content = strings.ReplaceAll(content, "untrusted_content", "untrusted·content")
+	content = NeutraliseUntrustedLiterals(content)
 	return "<untrusted_content_" + nonce + ` source="` + source + "\">" +
 		"\n" + content + "\n</untrusted_content_" + nonce + ">"
 }

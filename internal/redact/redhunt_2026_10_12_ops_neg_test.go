@@ -28,6 +28,26 @@ func TestOps12RedactLeavesProseAlone(t *testing.T) {
 	}
 }
 
+func TestOps12RedactBasicAndDockerAuthTogether(t *testing.T) {
+	in := `{"auth":"Ym9iOlprM3FQOXZYMm1ON2JSNHRZOHdMMWNINg=="} and Authorization: Basic Ym9iOlprM3FQOXZYMm1ON2JSNHRZOHdMMWNINg==`
+	out := RedactSecrets(in)
+	if out != `{"auth":"[REDACTED]"} and Authorization: Basic [REDACTED]` {
+		t.Fatalf("got %q", out)
+	}
+	if n := CountSecrets(in); n != 2 {
+		t.Fatalf("count = %d", n)
+	}
+	if got, n := RedactWithCount(""); got != "" || n != 0 {
+		t.Fatal("empty input changed")
+	}
+	if got, had := RedactChunk(""); got != "" || had {
+		t.Fatal("empty chunk changed")
+	}
+	if SanitizeForLog("") != "" || CountSecrets("") != 0 {
+		t.Fatal("empty input changed")
+	}
+}
+
 func TestOps12RedactDockerAuthCounts(t *testing.T) {
 	in := `{"auths":{"ghcr.io":{"auth":"Ym9iOlprM3FQOXZYMm1ON2JSNHRZOHdMMWNINg=="}}}`
 	if !HasSecrets(in) || CountSecrets(in) != 1 {
