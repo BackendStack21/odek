@@ -740,6 +740,25 @@ func FoldPathCase(s string) string {
 	}, s)
 }
 
+// odekProtectedFiles and odekProtectedDirs name the entries of ~/.odek that are
+// trust anchors (folded, relative to ~/.odek); odekRotatedLogs are logs whose
+// numbered rotations are anchors too.
+var (
+	odekProtectedFiles = []string{
+		"config.json", "secrets.env", "identity.md", "schedules.json", "schedule-state.json",
+		"schedules.lock", "mcp_approvals.json", "mcp_tool_approvals.json",
+		"project_sandbox_approvals.json", "restart.json", "telegram.lock", "telegram.pid",
+		"schedule.pid", "schedule.log", "runtime.log",
+	}
+	odekProtectedDirs = []string{"skills", "sessions", "audit", "plans", "memory"}
+	odekRotatedLogs   = []string{"runtime.log", "schedule.log"}
+)
+
+// odekAnchorSampleNames are the concrete entries a wildcard under ~/.odek is
+// matched against.
+var odekAnchorSampleNames = append(append(append([]string{}, odekProtectedFiles...), odekProtectedDirs...),
+	"runtime.log.1", "schedule.log.1")
+
 // isOdekTrustAnchor reports whether abs is a file or directory under ~/.odek
 // that must not be writable through auto-approved local_write tools. It must
 // stay in sync with cmd/odek/file_tool.go::isProtectedOdekPath.
@@ -760,36 +779,18 @@ func isOdekTrustAnchor(home, abs string) bool {
 	}
 	rel := FoldPathCase(filepath.Clean(lowerAbs[len(lowerPrefix+"/"):]))
 
-	protectedExact := []string{
-		"config.json",
-		"secrets.env",
-		"identity.md",
-		"schedules.json",
-		"schedule-state.json",
-		"schedules.lock",
-		"mcp_approvals.json",
-		"mcp_tool_approvals.json",
-		"project_sandbox_approvals.json",
-		"restart.json",
-		"telegram.lock",
-		"telegram.pid",
-		"schedule.pid",
-		"schedule.log",
-		"runtime.log",
-	}
-	for _, p := range protectedExact {
+	for _, p := range odekProtectedFiles {
 		if rel == p {
 			return true
 		}
 	}
-	protectedDirs := []string{
-		"skills",
-		"sessions",
-		"audit",
-		"plans",
-		"memory",
+	// Rotated logs (runtime.log.1, schedule.log.2, …) hold the same content.
+	for _, p := range odekRotatedLogs {
+		if strings.HasPrefix(rel, p+".") && !strings.Contains(rel, "/") {
+			return true
+		}
 	}
-	for _, d := range protectedDirs {
+	for _, d := range odekProtectedDirs {
 		if rel == d || strings.HasPrefix(rel, d+string(filepath.Separator)) {
 			return true
 		}
@@ -3735,6 +3736,9 @@ func classifyResourceToken(tok string) RiskClass {
 		return SystemWrite
 	}
 	if isSensitiveOdekPath(tok) {
+		return SystemWrite
+	}
+	if globNamesSensitivePath(tok) {
 		return SystemWrite
 	}
 	path := expandShellTokenPath(tok)

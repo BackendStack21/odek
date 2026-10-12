@@ -273,6 +273,33 @@ func TestRED_ClassifyURLZoneScopedIPv6Loopback(t *testing.T) {
 	}
 }
 
+// Wildcards over ordinary files stay ordinary; broader spellings of secrets
+// are still caught.
+func TestRED_WildcardSecretReadsNegativesAndBroaderSpellings(t *testing.T) {
+	t.Setenv("HOME", "/home/user")
+	t.Chdir(t.TempDir())
+	dangerHunt12bAtLeast(t, SystemWrite,
+		`cat ~/.odek/*`,
+		`cat ~/.od*/secrets.env`,
+		`cat ~/.odek/runtime.log.?`,
+		`cat /home/*/.odek/secrets.env`,
+		`cat /proc/*/environ`,
+		`cat /proc/[0-9]*/environ`,
+		`cat ~/.ss?/id_rsa`,
+		`cat /etc/shado?`,
+	)
+	cfg := &DangerousConfig{}
+	for _, cmd := range []string{
+		`cat *.go`, `ls ./*`, `cat /tmp/*.log`, `cat ~/*.txt`, `cat ~/.[a-z]*rc2`, `cat /proc/*/status`,
+		`cat src/*/main.go`, `cat docs/*.md`,
+	} {
+		if got := Classify(cmd); Rank(got) >= Rank(SystemWrite) {
+			t.Errorf("Classify(%q) = %s, want below system_write", cmd, got)
+		}
+		_ = cfg
+	}
+}
+
 // Ordinary parameter expansions and arithmetic stay safe.
 func TestRED_ArithmeticQuotedSubstitutionNegatives(t *testing.T) {
 	t.Setenv("HOME", "/home/user")
