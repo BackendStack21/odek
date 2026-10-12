@@ -113,7 +113,7 @@ func recordTurnAudit(store *session.AuditStore, sessionID string, turn int, user
 	// mention. We intentionally do not scan raw tool results here; a
 	// resource that merely appears in a fetched page is not itself a
 	// divergence unless the agent acts on it.
-	novel := session.NovelResources(userText, actionText.String())
+	novel := session.NovelResources(redact.RedactSecrets(userText), redact.RedactSecrets(actionText.String()))
 
 	// Resources introduced by untrusted content itself. Even if the user
 	// mentioned the same resource earlier, acting on it after it appears in
@@ -169,7 +169,7 @@ func recordTurnAudit(store *session.AuditStore, sessionID string, turn int, user
 	}
 	var untrustedResources []string
 	seen := make(map[string]bool)
-	for _, r := range session.ResourcesIn(actionText.String()) {
+	for _, r := range session.ResourcesIn(redact.RedactSecrets(actionText.String())) {
 		lr := auditKey(r)
 		if untrustedResSet[lr] && !seen[lr] {
 			seen[lr] = true
