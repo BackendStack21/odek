@@ -547,3 +547,38 @@ func TestRED_CopyRootFile_RemovesPartialOnFailure(t *testing.T) {
 		t.Error("partial destination left behind")
 	}
 }
+
+// Only approvals for this directory and the current Dockerfile content reach
+// the child; stale grants (other dir, edited Dockerfile) are not forwarded.
+func TestRED_ChildApprovalKeysBoundToDirAndContent(t *testing.T) {
+	confighuntResetSessionApprovals(t)
+	work := t.TempDir()
+	t.Chdir(work)
+	wd, _ := os.Getwd()
+	wd, _ = filepath.Abs(wd)
+	if err := os.WriteFile(filepath.Join(work, "Dockerfile.odek"), []byte("FROM a\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256([]byte("FROM a\n"))
+	cur := dockerfileApprovalKey(wd, hex.EncodeToString(sum[:]))
+	stale := dockerfileApprovalKey(wd, "deadbeef")
+	other := dockerfileApprovalKey("/elsewhere", hex.EncodeToString(sum[:]))
+	for _, k := range []string{cur, stale, other} {
+		recordSessionDockerfileApproval(k)
+	}
+	recordOverrideGrant(wd, "ov-here")
+	recordOverrideGrant("/elsewhere", "ov-else")
+	got := sessionSandboxApprovalKeys()
+	if len(got) != 2 || got[0] != cur || got[1] != "ov-here" {
+		t.Errorf("keys = %v, want only [%s ov-here]", got, cur)
+	}
+	// An edited Dockerfile invalidates the forwarded key.
+	if err := os.WriteFile(filepath.Join(work, "Dockerfile.odek"), []byte("FROM evil\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range sessionSandboxApprovalKeys() {
+		if k == cur {
+			t.Error("key for the old Dockerfile content was forwarded")
+		}
+	}
+}

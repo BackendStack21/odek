@@ -1,11 +1,16 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"os"
+	"path/filepath"
 	"regexp"
-	"sort"
+	"sync"
 
 	"github.com/BackendStack21/odek"
 	"github.com/BackendStack21/odek/internal/config"
+	"github.com/BackendStack21/odek/internal/sandbox"
 )
 
 // taskToolsPosture is the parent's effective tool allow-list as written into
@@ -134,20 +139,44 @@ func applyTaskSandboxPosture(resolved *config.ResolvedConfig, p *taskSandboxPost
 	}
 }
 
-// sessionSandboxApprovalKeys lists the approval keys granted in this
-// process, sorted for stable task files.
+// overrideGrants holds the project-override approval ("y" = once) granted
+// for a project directory. It is never consulted by this process's own gate;
+// it exists only so a spawned child can be handed the grant.
+var (
+	overrideGrantsMu sync.Mutex
+	overrideGrants   = map[string]string{}
+)
+
+func recordOverrideGrant(projectDir, key string) {
+	overrideGrantsMu.Lock()
+	defer overrideGrantsMu.Unlock()
+	overrideGrants[projectDir] = key
+}
+
+// sessionSandboxApprovalKeys lists the approvals to hand a child: only keys
+// for THIS working directory — the Dockerfile.odek approval for its current
+// content hash and the project-override grant for the directory — so a stale
+// grant for another directory or an edited Dockerfile is never forwarded.
 func sessionSandboxApprovalKeys() []string {
-	sessionDockerfileApprovalsMu.Lock()
-	defer sessionDockerfileApprovalsMu.Unlock()
-	keys := make([]string, 0, len(sessionDockerfileApprovals))
-	for k, ok := range sessionDockerfileApprovals {
-		if ok {
+	wd, err := os.Getwd()
+	if err != nil {
+		return nil
+	}
+	wd, err = filepath.Abs(wd)
+	if err != nil {
+		return nil
+	}
+	var keys []string
+	if data, err := os.ReadFile(sandbox.DockerfileName); err == nil {
+		sum := sha256.Sum256(data)
+		if k := dockerfileApprovalKey(wd, hex.EncodeToString(sum[:])); sessionDockerfileApproved(k) {
 			keys = append(keys, k)
 		}
 	}
-	sort.Strings(keys)
-	if len(keys) > maxTaskApprovalKeys {
-		keys = keys[:maxTaskApprovalKeys]
+	overrideGrantsMu.Lock()
+	if k, ok := overrideGrants[wd]; ok {
+		keys = append(keys, k)
 	}
+	overrideGrantsMu.Unlock()
 	return keys
 }

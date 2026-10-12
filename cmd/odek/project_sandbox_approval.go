@@ -165,7 +165,7 @@ func approveProjectSandboxWithTTY(resolved config.ResolvedConfig, stdin io.Reade
 			recordSessionDockerfileApproval(dfKey)
 		}
 		if hasOverride {
-			recordSessionDockerfileApproval(overrideKey)
+			recordOverrideGrant(projectDir, overrideKey)
 		}
 		return nil
 	case "t", "trust":
