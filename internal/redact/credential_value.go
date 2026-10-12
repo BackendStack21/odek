@@ -146,7 +146,12 @@ func parseCredentialValue(text string, pos int) (val string, end int, quoted boo
 	end = pos
 	for end < len(text) {
 		switch text[end] {
-		case ' ', '\t', '\n', '\r', '\f', '\v', '}', ']':
+		case ' ', '\t', '\n', '\r', '\f', '\v':
+			return clipCredentialValue(text[pos:end]), end, false
+		case '}', ']':
+			if end > pos && text[end-1] == '"' {
+				end-- // the quote closes an enclosing JSON string
+			}
 			return clipCredentialValue(text[pos:end]), end, false
 		case ',':
 			if end+1 < len(text) && text[end+1] == '"' {
