@@ -203,6 +203,30 @@ func TestRED_DenylistResolvesParameterDefault(t *testing.T) {
 	}
 }
 
+// The denylist matches every command position; a trap action is run by the
+// shell like an eval operand.
+func TestRED_DenylistMissesTrapAction(t *testing.T) {
+	t.Setenv("HOME", "/home/user")
+	cfg := &DangerousConfig{Denylist: []string{"git push"}}
+	for _, cmd := range []string{
+		`trap 'git push' EXIT`,
+		`trap "git push" ERR`,
+		`trap -- 'git push' INT TERM`,
+		`trap 'echo bye; git push origin main' EXIT`,
+		`x=1; trap 'git push' EXIT`,
+		`f() { trap 'git push' EXIT; }; f`,
+	} {
+		if act := cfg.ActionForCommand(cmd); act != Deny {
+			t.Errorf("ActionForCommand(%q) = %s with denylist [git push], want deny", cmd, act)
+		}
+	}
+	for _, cmd := range []string{`trap - EXIT`, `trap -p`, `trap -l`, `trap 'echo bye' EXIT`, `trap '' INT`} {
+		if act := cfg.ActionForCommand(cmd); act == Deny {
+			t.Errorf("ActionForCommand(%q) = deny, want not denied", cmd)
+		}
+	}
+}
+
 // ATTACH DATABASE creates and writes the named file, like writefile() and
 // VACUUM INTO which are already path-classified.
 func TestRED_SqliteAttachWritesPath(t *testing.T) {

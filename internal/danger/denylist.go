@@ -442,6 +442,19 @@ func denyPayloads(inner []string, dc *denyCtx, depth int) bool {
 		}
 	case name == "eval" && len(inner) > 1:
 		return denyScan(strings.Join(inner[1:], " "), dc, depth+1)
+	case name == "trap":
+		// The action string is run by the shell when the signal or
+		// condition fires, like an eval operand.
+		for i := 1; i < len(inner); i++ {
+			tok := inner[i]
+			if tok == "--" || (strings.HasPrefix(tok, "-") && tok != "-") {
+				continue
+			}
+			if tok != "-" && tok != "" && denyScan(tok, dc, depth+1) {
+				return true
+			}
+			break
+		}
 	case name == "alias":
 		// A body runs under the alias name on later lines.
 		defs, _ := aliasDefinitions(inner[1:])
