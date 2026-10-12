@@ -706,6 +706,33 @@ func LifecycleContentClass(path, content string, base RiskClass) (RiskClass, boo
 	return base, false
 }
 
+// FoldPathCase folds s the way case-insensitive filesystems match names:
+// every rune is mapped through its Unicode simple case-folding orbit, so
+// U+017F LONG S folds to 's' and U+212A KELVIN SIGN to 'k' as on APFS and
+// NTFS, which strings.ToLower alone does not do. Trust-anchor comparisons
+// must fold both sides with this function.
+func FoldPathCase(s string) string {
+	ascii := true
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 0x80 {
+			ascii = false
+			break
+		}
+	}
+	if ascii {
+		return strings.ToLower(s)
+	}
+	return strings.Map(func(r rune) rune {
+		min := r
+		for f := unicode.SimpleFold(r); f != r; f = unicode.SimpleFold(f) {
+			if f < min {
+				min = f
+			}
+		}
+		return unicode.ToLower(min)
+	}, s)
+}
+
 // isOdekTrustAnchor reports whether abs is a file or directory under ~/.odek
 // that must not be writable through auto-approved local_write tools. It must
 // stay in sync with cmd/odek/file_tool.go::isProtectedOdekPath.
@@ -716,7 +743,7 @@ func isOdekTrustAnchor(home, abs string) bool {
 	prefix := home + "/.odek"
 	// Case-folded comparison — ~/.ODEK and ~/.odek are the same directory
 	// on case-insensitive filesystems (macOS APFS default, Windows).
-	lowerAbs, lowerPrefix := strings.ToLower(abs), strings.ToLower(prefix)
+	lowerAbs, lowerPrefix := FoldPathCase(abs), FoldPathCase(prefix)
 	if lowerAbs != lowerPrefix && !strings.HasPrefix(lowerAbs, lowerPrefix+"/") {
 		return false
 	}
@@ -724,7 +751,7 @@ func isOdekTrustAnchor(home, abs string) bool {
 	if lowerAbs == lowerPrefix {
 		return true
 	}
-	rel := strings.ToLower(filepath.Clean(lowerAbs[len(lowerPrefix+"/"):]))
+	rel := FoldPathCase(filepath.Clean(lowerAbs[len(lowerPrefix+"/"):]))
 
 	protectedExact := []string{
 		"config.json",
