@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"text/tabwriter"
 	"time"
@@ -988,5 +989,17 @@ func acquireScheduleLock() (func(), error) {
 		}
 	}
 	_ = os.WriteFile(lockPath, []byte(strconv.Itoa(os.Getpid())), 0600)
-	return release, nil
+	// Release clears our PID while the lock is still held: a released lock
+	// whose pidfile names this still-living process (a graceful restart keeps
+	// the parent alive after spawning its child) would make the mixed-version
+	// gate above refuse the successor.
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			if data, rerr := os.ReadFile(lockPath); rerr == nil && strings.TrimSpace(string(data)) == strconv.Itoa(os.Getpid()) {
+				_ = os.Truncate(lockPath, 0)
+			}
+			release()
+		})
+	}, nil
 }
