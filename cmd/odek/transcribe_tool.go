@@ -19,6 +19,11 @@ import (
 
 // ── Audio Format Conversion ──────────────────────────────────────────────
 
+// ffmpegInputFormats lists the audio/video containers transcribe accepts as
+// input. Playlist and script demuxers (hls, concat, ...) are excluded so a
+// disguised playlist cannot make ffmpeg open other local files.
+const ffmpegInputFormats = "wav,mp3,ogg,flac,aac,mov,mp4,m4a,matroska,webm,caf,aiff,amr,asf,opus"
+
 // convertToWAV converts an audio file to WAV format using ffmpeg if needed.
 // Returns the path to the WAV file (may be the same as input if already WAV/MP3/FLAC
 // or if ffmpeg is unavailable/fails — in which case whisper will produce its own error).
@@ -53,7 +58,7 @@ func convertToWAV(ctx context.Context, srcPath string) string {
 	if abs, aerr := filepath.Abs(srcPath); aerr == nil {
 		input = abs
 	}
-	cmd := exec.CommandContext(ctx, "ffmpeg", "-y", "-protocol_whitelist", "file,pipe", "-i", input, "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1", dstPath)
+	cmd := exec.CommandContext(ctx, "ffmpeg", "-y", "-protocol_whitelist", "file", "-format_whitelist", ffmpegInputFormats, "-i", input, "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1", dstPath)
 	if err := cmd.Run(); err != nil {
 		// If ffmpeg fails (corrupt file, unsupported codec, etc.),
 		// just pass the original path — whisper will produce its own error.

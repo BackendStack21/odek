@@ -192,3 +192,79 @@ func TestRED_TranscribePassesProtocolShapedPathToFFmpeg(t *testing.T) {
 		t.Fatalf("ffmpeg received a protocol-shaped input %q (ffmpeg would fetch it as a URL) instead of a cleaned absolute file path", got)
 	}
 }
+
+// ffmpeg must be restricted to the file protocol and to audio/video container
+// formats so a disguised playlist cannot pull other local files.
+func TestRED_TranscribeFFmpegWhitelists(t *testing.T) {
+	bin := t.TempDir()
+	record := filepath.Join(bin, "ffmpeg-args.txt")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > " + record + "\nexit 1\n"
+	if err := os.WriteFile(filepath.Join(bin, "ffmpeg"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	ws := t.TempDir()
+	t.Chdir(ws)
+	if err := os.WriteFile("a.ogg", []byte("OggS"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	allow := "allow"
+	tt := newTranscribeTool(danger.DangerousConfig{DefaultAction: &allow}, config.TranscriptionConfig{})
+	_, _ = tt.Call(`{"path":"a.ogg"}`)
+	raw, err := os.ReadFile(record)
+	if err != nil {
+		t.Skipf("ffmpeg not invoked: %v", err)
+	}
+	args := strings.Split(strings.TrimSpace(string(raw)), "\n")
+	val := func(flag string) string {
+		for i, a := range args {
+			if a == flag && i+1 < len(args) {
+				return args[i+1]
+			}
+		}
+		return ""
+	}
+	if val("-protocol_whitelist") != "file" {
+		t.Fatalf("protocol whitelist = %q, want file only (args %v)", val("-protocol_whitelist"), args)
+	}
+	fw := val("-format_whitelist")
+	if fw == "" || strings.Contains(fw, "hls") || strings.Contains(fw, "concat") {
+		t.Fatalf("format whitelist = %q (args %v)", fw, args)
+	}
+}
+
+func TestRED_ListToolsFlagLikeNamesDoNotMaskNextFlag(t *testing.T) {
+	in := []string{"--no-auth", "--port", "80", "--pass-through", "--verbose", "--auth-mode", "basic", "--auth", "s3cr3t-value-1"}
+	got := redactCredentialArgs(in)
+	want := []string{"--no-auth", "--port", "80", "--pass-through", "--verbose", "--auth-mode", "basic", "--auth", redactedArgPlaceholder}
+	if strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Fatalf("got %v want %v", got, want)
+	}
+	// A credential flag followed by another flag masks nothing.
+	got = redactCredentialArgs([]string{"--auth", "--port", "80"})
+	if strings.Join(got, " ") != "--auth --port 80" {
+		t.Fatalf("got %v", got)
+	}
+}
+
+func TestRED_SpeakFollowsSymlinkedArtifactsDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	root, err := artifactsHome()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(root), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	outside := t.TempDir()
+	if err := os.Symlink(outside, root); err != nil {
+		t.Fatal(err)
+	}
+	allow := "allow"
+	st := newSpeakTool(danger.DangerousConfig{DefaultAction: &allow}, config.TTSConfig{}, tools12bSpeech{})
+	res, _ := st.Call(`{"text":"hello","path":"note.mp3"}`)
+	if _, err := os.Stat(filepath.Join(outside, "note.mp3")); err == nil {
+		t.Fatalf("speak wrote through a symlinked artifacts directory (result %s)", res)
+	}
+}
