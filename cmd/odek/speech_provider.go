@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	sdk "github.com/BackendStack21/go-llm-sdk"
@@ -52,14 +53,28 @@ func (p *providerSpeechClient) speakTimeout(ctx context.Context) (context.Contex
 	if timeout <= 0 {
 		timeout = llmclient.DefaultTimeout
 	}
+	var settle func()
 	if owner, ok := p.view.(visionBudgetOwner); ok {
-		if grant, err := owner.ReserveInferenceBudget(); err == nil && grant.Limits.MaxRuntimeSeconds > 0 {
-			if bound := time.Duration(grant.Limits.MaxRuntimeSeconds) * time.Second; bound < timeout {
-				timeout = bound
+		if grant, err := owner.ReserveInferenceBudget(); err == nil {
+			// The reservation only supplies the remaining runtime; release it
+			// when the call finishes so it never keeps withholding budget.
+			settle = func() { owner.SettleExternalBudget(grant, &budget.Usage{CostKnown: true}) }
+			if grant.Limits.MaxRuntimeSeconds > 0 {
+				if bound := time.Duration(grant.Limits.MaxRuntimeSeconds) * time.Second; bound < timeout {
+					timeout = bound
+				}
 			}
 		}
 	}
-	return context.WithTimeout(ctx, timeout)
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	if settle == nil {
+		return ctx, cancel
+	}
+	var once sync.Once
+	return ctx, func() {
+		cancel()
+		once.Do(settle)
+	}
 }
 
 // speechError maps SDK failures to actionable tool errors. ConfigError
