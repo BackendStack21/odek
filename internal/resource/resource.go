@@ -323,7 +323,7 @@ func (f *FileResolver) Search(ctx context.Context, query string, limit int) ([]R
 		if !pathutil.WithinRoot(absRoot, match) {
 			continue
 		}
-		if protectedTarget(pathutil.ResolveDirSymlinks(match)) {
+		if protectedTarget(f.root, pathutil.ResolveDirSymlinks(match)) {
 			continue
 		}
 		rel, _ := filepath.Rel(f.root, match)
@@ -364,8 +364,8 @@ func validateSearchQuery(query string) error {
 // protectedTarget reports whether path is one @-references must neither read
 // nor advertise: odek trust anchors, home credential directories, shell rc
 // files, credential-shaped file names and system secret files.
-func protectedTarget(path string) bool {
-	return danger.IsSensitiveReadPath(path)
+func protectedTarget(root, path string) bool {
+	return danger.IsSensitiveReadPath(pathutil.ResolveDirSymlinks(root), path)
 }
 
 func (f *FileResolver) Load(ctx context.Context, id string) (string, error) {
@@ -387,7 +387,7 @@ func (f *FileResolver) Load(ctx context.Context, id string) (string, error) {
 	// must not read what the file tools gate: odek's trust anchors under
 	// ~/.odek (secrets, config, sessions, ...), credential files and other
 	// system-sensitive paths. This matters when the workspace is $HOME.
-	if protectedTarget(resolvedTarget) {
+	if protectedTarget(f.root, resolvedTarget) {
 		return "", fmt.Errorf("resource: %q is a protected path and cannot be referenced", id)
 	}
 

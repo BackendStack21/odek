@@ -20,12 +20,12 @@ func TestFileRefOrdinaryRootOutsideHomeLoads(t *testing.T) {
 			t.Errorf("root %s: ordinary reference refused: %v", root, err)
 		}
 	}
-	if protectedTarget("/opt/app/main.go") || protectedTarget("/srv/app/main.go") ||
-		protectedTarget("/usr/local/src/proj/main.go") || protectedTarget("/var/www/site/index.php") ||
-		protectedTarget("/tmp/proj/main.go") {
+	if protectedTarget("", "/opt/app/main.go") || protectedTarget("", "/srv/app/main.go") ||
+		protectedTarget("", "/usr/local/src/proj/main.go") || protectedTarget("", "/var/www/site/index.php") ||
+		protectedTarget("", "/tmp/proj/main.go") {
 		t.Fatal("ordinary system-prefix project file treated as protected")
 	}
-	if !protectedTarget("/etc/shadow") || !protectedTarget("/etc/sudoers") {
+	if !protectedTarget("", "/etc/shadow") || !protectedTarget("", "/etc/sudoers") {
 		t.Fatal("system secrets must stay protected")
 	}
 }
