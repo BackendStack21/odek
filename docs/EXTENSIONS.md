@@ -90,7 +90,10 @@ Unknown fields in the server config are ignored (additive rule).
   process is left running and may be reused.
 - A single response line larger than `max_response_bytes` **fails closed**:
   the response is dropped and the connection is closed. odek never buffers an
-  unbounded line in memory.
+  unbounded line in memory. The cap is exact for any configured value (also
+  below 64 KiB), and once the reader has exited every later call to that
+  server fails immediately with the recorded reason instead of waiting for
+  `timeout_seconds`.
 - `max_result_chars` is an absolute cap on the model-facing result, including `isError` text and the `message` of a JSON-RPC `error` returned for `tools/call`. Values below the floor (the longest possible truncation notice, about 250 chars, plus 64) are raised to the floor with a startup warning naming the server, so a truncated result always carries content beyond the notice. Stdio responses without an `id` (or `id: null`) answer no call and are dropped. No text result (single item, multi-item, envelope text, trailing items or `isError` text) can forge `- artifact` metadata lines: such lines are indented by one space.
 - Result text longer than `max_result_chars` is not silently mangled: malformed
   JSON is rejected outright, and valid-but-oversized structured results get a

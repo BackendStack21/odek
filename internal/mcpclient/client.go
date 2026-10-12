@@ -326,6 +326,7 @@ type Client struct {
 	nextID    int
 	pending   map[int]chan callResponse // routes responses to waiting callers
 	writeErr  error                     // sticky writer failure, set once
+	readErr   error                     // sticky reader exit reason, set once when readLoop returns
 	closeOnce sync.Once
 
 	// URL transport (Streamable HTTP). Set only when ServerConfig.URL is
@@ -980,6 +981,12 @@ func (c *Client) call(ctx context.Context, method string, params json.RawMessage
 		Method:  method,
 		Params:  params,
 	}
+	if rerr := c.readErr; rerr != nil {
+		// The reader has exited: no response can ever be routed, so fail
+		// now instead of waiting for the per-server timeout.
+		c.mu.Unlock()
+		return nil, rerr
+	}
 	c.pending[id] = respCh
 	c.mu.Unlock()
 
@@ -1261,13 +1268,33 @@ func (c *Client) readLoop() {
 	// oversized token. Unblock all waiters; if the line was too long, tell
 	// them why before closing the channel.
 	oversized := scanner.Err() == bufio.ErrTooLong
+	exitErr := scanner.Err()
+	if exitErr == nil {
+		exitErr = io.EOF
+	}
 	c.mu.Lock()
+	if oversized {
+		c.readErr = fmt.Errorf("mcpclient %s: response line exceeded configured max_response_bytes limit of %d bytes; connection closed", c.name, maxResp)
+	} else {
+		c.readErr = fmt.Errorf("mcpclient %s: connection to server lost: %w", c.name, exitErr)
+	}
 	pending := make(map[int]chan callResponse, len(c.pending))
 	for id, ch := range c.pending {
 		pending[id] = ch
 		delete(c.pending, id)
 	}
 	c.mu.Unlock()
+
+	if oversized {
+		// Fail closed: the stream is desynchronised, so end the session
+		// instead of leaving a live server nobody is reading from.
+		if c.stdin != nil {
+			c.stdin.Close()
+		}
+		if c.cmd != nil && c.cmd.Process != nil {
+			_ = c.cmd.Process.Kill()
+		}
+	}
 
 	for _, ch := range pending {
 		if oversized {
