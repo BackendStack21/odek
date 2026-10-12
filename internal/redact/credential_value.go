@@ -117,13 +117,20 @@ const maxCredentialValueCheck = 4096
 // parseCredentialValue reads the value starting at pos: a quoted literal up
 // to its closing quote on the same line (a backslash-escaped quote does not
 // close it), or an unquoted run to the next whitespace, cut at `,"` (the
-// start of the next JSON member) and at a closing } or ]. An opening quote
-// without a closing one starts an unquoted run. It returns the value to
-// judge (without quotes, at most maxCredentialValueCheck bytes), the end
-// offset of the whole token, and whether it was a closed quoted literal.
-func parseCredentialValue(text string, pos int) (val string, end int, quoted bool) {
+// start of the next JSON member) and at a } or ] that closes a structure
+// opened before the name (curly and square are the open counts at the name).
+// Any other bracket belongs to the value, so a secret that contains one is
+// kept whole. An opening quote without a closing one starts an unquoted run.
+//
+// It returns the value to judge (without quotes, at most
+// maxCredentialValueCheck bytes), the end offset of the token, and whether it
+// was a closed quoted literal. Unless full is set, an unquoted run is scanned
+// only as far as judging needs; complete reports whether end is the real end
+// of the token. A rejected value therefore never costs more than the bounded
+// window, however long the rest of the line is.
+func parseCredentialValue(text string, pos int, curly, square int, full bool) (val string, end int, quoted, complete bool) {
 	if pos >= len(text) {
-		return "", pos, false
+		return "", pos, false, true
 	}
 	if c := text[pos]; c == '"' || c == '\'' || c == '`' {
 		rest := text[pos+1:]
@@ -138,29 +145,52 @@ func parseCredentialValue(text string, pos int) (val string, end int, quoted boo
 			if rest[i] == '\\' {
 				i++
 			} else if rest[i] == c {
-				return rest[:i], pos + 1 + i + 1, true
+				return rest[:i], pos + 1 + i + 1, true, true
 			}
 		}
 		pos++
 	}
-	end = pos
-	for end < len(text) {
+	stop := len(text)
+	if !full && stop-pos > maxCredentialValueCheck {
+		stop = pos + maxCredentialValueCheck
+	}
+	lc, ls := 0, 0 // brackets opened inside the value
+	for end = pos; end < stop; end++ {
 		switch text[end] {
 		case ' ', '\t', '\n', '\r', '\f', '\v':
-			return clipCredentialValue(text[pos:end]), end, false
-		case '}', ']':
-			if end > pos && text[end-1] == '"' {
-				end-- // the quote closes an enclosing JSON string
+			return clipCredentialValue(text[pos:end]), end, false, true
+		case '{':
+			lc++
+		case '[':
+			ls++
+		case '}':
+			if lc > 0 {
+				lc--
+			} else if curly > 0 {
+				return closeBracketValue(text, pos, end)
 			}
-			return clipCredentialValue(text[pos:end]), end, false
+		case ']':
+			if ls > 0 {
+				ls--
+			} else if square > 0 {
+				return closeBracketValue(text, pos, end)
+			}
 		case ',':
 			if end+1 < len(text) && text[end+1] == '"' {
-				return clipCredentialValue(text[pos:end]), end, false
+				return clipCredentialValue(text[pos:end]), end, false, true
 			}
 		}
-		end++
 	}
-	return clipCredentialValue(text[pos:]), end, false
+	return clipCredentialValue(text[pos:end]), end, false, end == len(text)
+}
+
+// closeBracketValue ends a value at the closing bracket at end; a quote just
+// before it closes an enclosing JSON string and is left out of the value.
+func closeBracketValue(text string, pos, end int) (string, int, bool, bool) {
+	if end > pos && text[end-1] == '"' {
+		end--
+	}
+	return clipCredentialValue(text[pos:end]), end, false, true
 }
 
 func clipCredentialValue(v string) string {
@@ -198,12 +228,25 @@ func credentialValueOK(v string, quoted, passwordName bool) bool {
 	return !codeExpression(v)
 }
 
+// referenceValue reports whether a rejected value is a variable, template or
+// secret-store reference that is skipped whole.
+func referenceValue(v string, quoted bool) bool {
+	if v == "" {
+		return false
+	}
+	if quoted {
+		return quotedReference(v)
+	}
+	return envRefRe.MatchString(strings.TrimRight(v, ";,"))
+}
+
 // credentialMatches returns the [start,end) offsets of every credential
 // assignment whose value is a literal secret candidate. The span covers
 // name, separator and value, as for the other redaction rules.
 func credentialMatches(text string) [][2]int {
 	var out [][2]int
-	covered := 0 // end of the last match; names inside its value are part of it
+	covered := 0 // end of the last consumed span; names inside it are part of it
+	depthPos, curly, square := 0, 0, 0
 	for _, m := range credentialNameRe.FindAllStringSubmatchIndex(text, -1) {
 		if m[2] < covered {
 			continue
@@ -213,12 +256,38 @@ func credentialMatches(text string) [][2]int {
 		if kind == nameNone {
 			continue
 		}
-		val, end, quoted := parseCredentialValue(text, m[1])
+		// Brackets still open at the name, on its line: a } or ] in an
+		// unquoted value ends it only when it closes one of these.
+		for ; depthPos < m[2]; depthPos++ {
+			switch text[depthPos] {
+			case '\n':
+				curly, square = 0, 0
+			case '{':
+				curly++
+			case '[':
+				square++
+			case '}':
+				if curly > 0 {
+					curly--
+				}
+			case ']':
+				if square > 0 {
+					square--
+				}
+			}
+		}
+		val, end, quoted, complete := parseCredentialValue(text, m[1], curly, square, false)
 		if !credentialValueOK(val, quoted, passwordNameRe.MatchString(name)) {
+			if referenceValue(val, quoted) {
+				covered = end // the reference is skipped whole, never redacted from inside
+			}
 			continue
 		}
 		if kind == nameLoose && !looksCredentialShape(val) {
 			continue
+		}
+		if !complete {
+			_, end, _, _ = parseCredentialValue(text, m[1], curly, square, true)
 		}
 		covered = end
 		out = append(out, [2]int{m[2], end})
