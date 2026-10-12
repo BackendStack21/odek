@@ -50,7 +50,8 @@ func NeutraliseUntrustedLiterals(s string) string {
 // is the neutralised form itself and is not an opener.
 func tagOpener(r rune) bool {
 	switch r {
-	case '<', '\uFF1C', '\u02C2', '\uFE64', '\u3008', '\u2329', '\u276E':
+	case '<', '\uFF1C', '\u02C2', '\uFE64', '\u3008', '\u2329', '\u276E',
+		'\u276C', '\u27E8', '\u27EA', '\u300A', '\u22B2', '\u1438':
 		return true
 	}
 	return false
@@ -76,6 +77,9 @@ func tagFold(r rune) rune {
 	if rep, ok := tagLookalikeFold[r]; ok {
 		return rep
 	}
+	if rep, ok := tagEnclosedLetter(r); ok {
+		return rep
+	}
 	if r >= utf8.RuneSelf {
 		f, _ := utf8.DecodeRuneInString(danger.FoldHomoglyphs(string(r)))
 		r = f
@@ -92,6 +96,28 @@ var tagLookalikeFold = map[rune]rune{
 	'\u2215': '/', '\u2044': '/', '\u29F8': '/', '\u2571': '/',
 	'\u2010': '-', '\u2011': '-', '\u2012': '-', '\u2013': '-', '\u2014': '-',
 	'\u2015': '-', '\u2212': '-', '\uFE58': '-',
+	// Letters from other scripts and compatibility forms that render as
+	// the tag's letters.
+	'\u057D': 'u', '\u0578': 'n', '\u0585': 'o', '\u0501': 'd', '\u03F2': 'c',
+	'\u217D': 'c', '\u217E': 'd', '\u017F': 's',
+	'\u13A2': 't', '\u13CC': 'u', '\u13DA': 's', '\u13AC': 'e', '\u13D2': 'r',
+	'\u13A0': 'd', '\u13DF': 'c', '\u13BE': 'o',
+}
+
+// tagEnclosedLetter folds squared, negative circled, negative squared and
+// regional-indicator letters to their lower-case ASCII letter.
+func tagEnclosedLetter(r rune) (rune, bool) {
+	switch {
+	case r >= 0x1F130 && r <= 0x1F149:
+		return 'a' + (r - 0x1F130), true
+	case r >= 0x1F150 && r <= 0x1F169:
+		return 'a' + (r - 0x1F150), true
+	case r >= 0x1F170 && r <= 0x1F189:
+		return 'a' + (r - 0x1F170), true
+	case r >= 0x1F1E6 && r <= 0x1F1FF:
+		return 'a' + (r - 0x1F1E6), true
+	}
+	return 0, false
 }
 
 // tagWordRune reports whether a folded rune belongs to a word. Modifier
@@ -108,11 +134,17 @@ func tagWordRune(r rune) bool {
 // a look-alike of an untrusted-content tag name.
 func tagLookalikeAt(rest string) bool {
 	skips := 0
+	// strict forbids spacing between the opener and the tag name (invisible
+	// padding is still skipped): "a < untrusted content" is prose.
+	strict := true
 	// next returns the next non-skippable rune, folded.
 	next := func() (rune, bool) {
 		for len(rest) > 0 {
 			r, sz := utf8.DecodeRuneInString(rest)
 			rest = rest[sz:]
+			if strict && unicode.IsSpace(r) {
+				return 0, false
+			}
 			if tagSkippable(r) {
 				skips++
 				continue
@@ -135,10 +167,12 @@ func tagLookalikeAt(rest string) bool {
 		return false
 	}
 	if r == '/' {
+		strict = false
 		if r, ok = next(); !ok {
 			return false
 		}
 	}
+	strict = false
 	// r is the first rune of "untrusted".
 	if r != 'u' || !word("ntrusted") {
 		return false
