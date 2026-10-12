@@ -353,3 +353,41 @@ func TestRED_ClarifyAnswerAcceptedAtTimeoutIsHonored(t *testing.T) {
 		t.Fatalf("%d accepted clarify answers were lost to the timeout", violations)
 	}
 }
+
+// Headless runs charge their @sess: rejections to the caller's lookup budget
+// (the address handlePromptStart saw), like the WebSocket transport.
+func TestRED_RunReferenceRejectionsAreRateLimited(t *testing.T) {
+	resetServeRuns()
+	t.Cleanup(resetServeRuns)
+	llm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"done"}}]}`))
+	}))
+	defer llm.Close()
+	defer setTestEnv(t, llm.URL)()
+	sessionLookupLimiter.reset()
+	t.Cleanup(sessionLookupLimiter.reset)
+	const ip = "203.0.113.77"
+	for i := 0; i < 60; i++ {
+		sessionLookupLimiter.allow(ip) // spend the budget
+	}
+	run, err := startServeRun(loadJSONMockResolved(), "Help", newTestSessionStore(t), nil, promptRequest{
+		Content:  "look at @sess:20260101-00000000000000000000000000000000",
+		clientIP: ip,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) {
+		snap, _ := json.Marshal(run.snapshot(true))
+		if strings.Contains(string(snap), "rate limit exceeded") {
+			return
+		}
+		if strings.Contains(string(snap), "referenced session not found") {
+			t.Fatalf("rejection inside a headless run was not rate limited: %s", snap)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatal("run never reported the reference rejection")
+}
