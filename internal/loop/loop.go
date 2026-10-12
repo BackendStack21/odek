@@ -4571,7 +4571,13 @@ func classifyToolCallCtx(ctx context.Context, name, args string) (danger.RiskCla
 		if err := json.Unmarshal([]byte(args), &p); err != nil || p.Path == "" {
 			return "", ""
 		}
-		return danger.ClassifyPath(p.Path), p.Path
+		cls := danger.ClassifyPath(p.Path)
+		if name == "transcribe" {
+			// A provider STT backend uploads the audio; the card cannot
+			// tell which backend is configured, so it assumes egress.
+			cls = worstRisk(cls, danger.NetworkEgress)
+		}
+		return cls, p.Path
 	case "browser":
 		// The modern browser tool is a single `browser` call with an action
 		// field. Network-bearing actions are egress; everything else is safe.

@@ -210,6 +210,12 @@ func TestRED_LoopBatchCardPathAndURLSiblings(t *testing.T) {
 	if cls, _ := classifyToolCall("browser", `{"action":"snapshot"}`); cls != danger.Safe {
 		t.Errorf("browser snapshot = %q, want safe", cls)
 	}
+	if cls, _ := classifyToolCall("transcribe", `{"path":"a.wav"}`); danger.Rank(cls) < danger.Rank(danger.NetworkEgress) {
+		t.Errorf("transcribe must include provider egress, got %q", cls)
+	}
+	if cls, _ := classifyToolCall("transcribe", `{"path":"/etc/shadow"}`); danger.Rank(cls) < danger.Rank(danger.ClassifyPath("/etc/shadow")) {
+		t.Errorf("transcribe lost the path class, got %q", cls)
+	}
 	if cls, _ := classifyToolCall("http_request", `{"url":"https://example.com"}`); cls != danger.NetworkEgress {
 		t.Errorf("public GET = %q", cls)
 	}
