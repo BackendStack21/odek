@@ -9,6 +9,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -459,15 +460,21 @@ func relocateStagingArtifacts(staging, canonical string) (int, error) {
 		return 0, fmt.Errorf("artifact canonical dir: %w", err)
 	}
 	moved := 0
+	remaining := maxArtifactTaskBudget
 	for _, e := range entries {
 		// Only regular files are artifacts: a staged symlink, FIFO or
 		// device is never delivered.
 		if !e.Type().IsRegular() {
 			continue
 		}
-		if err := copyRootFile(sub, e.Name(), filepath.Join(canonical, e.Name())); err != nil {
+		n, err := copyRootFile(sub, e.Name(), filepath.Join(canonical, e.Name()), remaining)
+		if errors.Is(err, errArtifactOverBudget) {
+			continue // would exceed the task budget: discarded with the staging tree
+		}
+		if err != nil {
 			return moved, fmt.Errorf("artifact relocate %q: %w", e.Name(), err)
 		}
+		remaining -= n
 		_ = sub.Remove(e.Name())
 		moved++
 	}
@@ -477,30 +484,54 @@ func relocateStagingArtifacts(staging, canonical string) (int, error) {
 	return moved, nil
 }
 
+// errArtifactOverBudget reports a staged file larger than the remaining
+// task artifact budget.
+var errArtifactOverBudget = errors.New("artifact exceeds the task budget")
+
 // copyRootFile copies the file name inside src to dst (0600), replacing any
-// existing dst.
-func copyRootFile(src *os.Root, name, dst string) error {
+// existing dst, and returns the bytes copied. The size is checked before any
+// byte is copied and the copy itself is bounded by limit; a failed or
+// aborted copy leaves no partial dst.
+func copyRootFile(src *os.Root, name, dst string, limit int64) (n int64, err error) {
 	// The root refuses any path that escapes it; O_NONBLOCK keeps a FIFO
 	// from blocking the runner and the handle is re-checked as regular.
 	in, err := src.OpenFile(name, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	defer in.Close()
-	if fi, err := in.Stat(); err != nil {
-		return err
-	} else if !fi.Mode().IsRegular() {
-		return fmt.Errorf("not a regular file")
+	fi, err := in.Stat()
+	if err != nil {
+		return 0, err
+	}
+	if !fi.Mode().IsRegular() {
+		return 0, fmt.Errorf("not a regular file")
+	}
+	if fi.Size() > limit {
+		return 0, errArtifactOverBudget
 	}
 	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC|syscall.O_NOFOLLOW, 0o600)
 	if err != nil {
-		return err
+		return 0, err
 	}
-	if _, err := io.Copy(out, in); err != nil {
-		out.Close()
-		return err
+	defer func() {
+		if err != nil {
+			out.Close()
+			_ = os.Remove(dst)
+		}
+	}()
+	// One extra byte detects a file that grew past the limit mid-copy.
+	n, err = io.Copy(out, io.LimitReader(in, limit+1))
+	if err != nil {
+		return 0, err
 	}
-	return out.Close()
+	if n > limit {
+		return 0, errArtifactOverBudget
+	}
+	if err = out.Close(); err != nil {
+		return 0, err
+	}
+	return n, nil
 }
 
 const (

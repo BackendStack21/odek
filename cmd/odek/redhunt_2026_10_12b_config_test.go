@@ -496,3 +496,54 @@ func TestRED_PromoteSkill_RefusesSymlinkedSkillFile(t *testing.T) {
 		t.Errorf("symlinked dir target was rewritten: %q", b)
 	}
 }
+
+// The copy is capped at the task artifact budget before any byte is copied:
+// an oversize staged file is skipped (nothing lands in the canonical dir),
+// and a failed copy leaves no partial destination.
+func TestRED_RelocateStaging_CapsCopyAtBudget(t *testing.T) {
+	root := t.TempDir()
+	staging := filepath.Join(root, stagingDirName, "t1")
+	if err := os.MkdirAll(staging, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	big := filepath.Join(staging, "huge.bin")
+	f, err := os.Create(big)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Truncate(maxArtifactTaskBudget + 1); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	writeArtifactFile(t, staging, "ok.md", "fine")
+	canonical := filepath.Join(root, "canonical")
+	n, err := relocateStagingArtifacts(staging, canonical)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Errorf("moved = %d, want 1 (oversize file skipped)", n)
+	}
+	if _, err := os.Stat(filepath.Join(canonical, "huge.bin")); err == nil {
+		t.Error("oversize file was copied into the canonical dir")
+	}
+}
+
+func TestRED_CopyRootFile_RemovesPartialOnFailure(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a.bin"), make([]byte, 100), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	dst := filepath.Join(t.TempDir(), "out.bin")
+	if _, err := copyRootFile(r, "a.bin", dst, 10); err == nil {
+		t.Fatal("copy over the limit must fail")
+	}
+	if _, err := os.Stat(dst); err == nil {
+		t.Error("partial destination left behind")
+	}
+}
