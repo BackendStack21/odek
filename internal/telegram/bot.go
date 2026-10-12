@@ -351,12 +351,15 @@ func (b *Bot) doJSON(method string, body any, dest any) (requestErr error) {
 	return lastErr
 }
 
+// maxUploadBytes is the Bot API's upload size limit (50 MB).
+const maxUploadBytes = 50 << 20
+
 // doUpload sends a multipart/form-data POST request with a file and optional parameters.
 // Retries on transient errors with the same backoff strategy as doJSON.
 //
 // NOTE: The entire file is read into memory before sending (bodyBytes).
 // This is intentional — it allows retry without re-reading the file from disk.
-// Telegram's 50 MB upload limit makes this acceptable for bot use cases.
+// Files over maxUploadBytes are refused before any read, which bounds memory.
 func (b *Bot) doUpload(method string, field string, path string, params map[string]any, dest any) (requestErr error) {
 	defer func() { reportAPIFailure("upload", requestErr) }()
 	file, err := os.Open(path)
@@ -365,6 +368,13 @@ func (b *Bot) doUpload(method string, field string, path string, params map[stri
 		return fmt.Errorf("telegram: open file %s: %w", path, err)
 	}
 	defer file.Close()
+
+	// The Bot API refuses larger uploads; refuse before buffering anything.
+	if fi, err := file.Stat(); err != nil {
+		return fmt.Errorf("telegram: stat file %s: %w", path, err)
+	} else if fi.Size() > maxUploadBytes {
+		return fmt.Errorf("telegram: file %s is %d bytes, over the %d byte Bot API upload limit", path, fi.Size(), int64(maxUploadBytes))
+	}
 
 	var buf bytes.Buffer
 	writer := multipart.NewWriter(&buf)
@@ -375,7 +385,7 @@ func (b *Bot) doUpload(method string, field string, path string, params map[stri
 		b.log.Error("create form file failed", "method", method, "field", field, "error", err)
 		return fmt.Errorf("telegram: create form file: %w", err)
 	}
-	if _, err := io.Copy(part, file); err != nil {
+	if _, err := io.Copy(part, io.LimitReader(file, maxUploadBytes+1)); err != nil {
 		b.log.Error("copy file content failed", "method", method, "path", path, "error", err)
 		return fmt.Errorf("telegram: copy file content: %w", err)
 	}
@@ -399,6 +409,10 @@ func (b *Bot) doUpload(method string, field string, path string, params map[stri
 			b.log.Error("write field failed", "method", method, "key", key, "error", err)
 			return fmt.Errorf("telegram: write field %s: %w", key, err)
 		}
+	}
+
+	if buf.Len() > maxUploadBytes+(1<<20) {
+		return fmt.Errorf("telegram: file %s grew past the %d byte Bot API upload limit", path, int64(maxUploadBytes))
 	}
 
 	if err := writer.Close(); err != nil {
