@@ -4587,7 +4587,10 @@ func classifyToolCallCtx(ctx context.Context, name, args string) (danger.RiskCla
 			// The tool classifies the destination: internal, loopback and
 			// metadata hosts are system_write there, so the card must match.
 			return worstRisk(danger.NetworkEgress, danger.ClassifyURL(p.URL)), p.URL
-		case "click", "back", "snapshot":
+		case "snapshot":
+			// Reads the already-loaded page; nothing is fetched.
+			return danger.Safe, "browser snapshot"
+		case "click", "back":
 			// The page a click or back lands on is not known at card time,
 			// so the call stays unclassifiable and withholds batch trust.
 			return "", ""
