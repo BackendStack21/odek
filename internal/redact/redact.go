@@ -176,10 +176,10 @@ const (
 
 var guardedPatterns = []guardedPattern{
 	// Bare and camelCase credential key names with :, = or => separators.
-	// Lower-case, Capitalised and UPPER spellings of token/secret/pwd, but
+	// Lower-case, Capitalised and UPPER spellings of token/secret, but
 	// only lower-case/Capitalised "pass" (UPPER PASS is test-runner output)
 	// unless it ends an env-style name (DB_PASS).
-	{regexp.MustCompile(`(?:\b(?:token|secret|passphrase|pwd|pass|Token|Secret|Passphrase|Pwd|Pass|TOKEN|SECRET|PASSPHRASE|PWD)|_(?i:token|secret|passphrase|pwd|pass)|\b[a-z][a-z0-9]*(?:Token|Secret|Passphrase|Password))` + gSep + gVal), looksSecret},
+	{regexp.MustCompile(`(?:\b(?:token|secret|passphrase|pass|Token|Secret|Passphrase|Pwd|Pass|TOKEN|SECRET|PASSPHRASE)|_(?i:token|secret|passphrase|pwd|pass)|\b[a-z][a-z0-9]*(?:Token|Secret|Passphrase|Password))` + gSep + gVal), looksSecret},
 	// CLI flags with a whitespace-separated value (--password VALUE,
 	// --secret-key VALUE, --private-key VALUE).
 	{regexp.MustCompile(`(?i)--?(?:password|passwd|passphrase|pwd|pass|token|secret|api[_-]?key|secret[_-]?key|private[_-]?key|access[_-]?key|client[_-]?secret)[ \t]+("[^"\n]{20,}"|'[^'\n]{20,}'|[^\s"']{20,})`), plausibleValue},
@@ -200,8 +200,19 @@ func plausibleValue(v string) bool {
 // with overwhelming probability, while identifiers, import paths, resource
 // names and test names rarely do.
 func looksSecret(v string) bool {
-	return plausibleValue(v) && strings.ContainsAny(v, "0123456789") && !strings.Contains(v, "://")
+	if !plausibleValue(v) || !strings.ContainsAny(v, "0123456789") || strings.Contains(v, "://") {
+		return false
+	}
+	t := strings.Trim(strings.TrimSuffix(strings.TrimPrefix(v, "<![CDATA["), "]]>"), "\"'`")
+	// Filesystem paths (a working directory in env output) and Go test
+	// names are not credentials.
+	if strings.HasPrefix(t, "/") || strings.HasPrefix(t, "~") || strings.HasPrefix(t, "./") || strings.HasPrefix(t, "../") {
+		return false
+	}
+	return !goTestName.MatchString(t)
 }
+
+var goTestName = regexp.MustCompile(`^(?:Test|Benchmark|Fuzz|Example)[A-Za-z0-9]*(?:_[A-Za-z0-9]+)*$`)
 
 // guardedMatches returns the [start,end) offsets of every guarded match.
 func guardedMatches(text string) [][2]int {
