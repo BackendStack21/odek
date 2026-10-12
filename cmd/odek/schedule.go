@@ -872,10 +872,14 @@ func schedulerOptions(sc config.ScheduleConfig, logger schedule.Logger) schedule
 	}
 }
 
-// jobSchedule compiles a job's cron in its timezone (or UTC) for display.
+// jobSchedule compiles a job's cron in its timezone for display. A job
+// without its own timezone uses the scheduler's configured default (the zone
+// the engine fires it in), so shown fire times match actual ones.
 func jobSchedule(j schedule.Job) (*schedule.Schedule, error) {
 	loc := time.UTC
-	if j.Timezone != "" {
+	if j.Timezone == "" {
+		loc = schedulerOptions(config.LoadConfig(config.CLIFlags{}).Schedules, schedule.NopLogger{}).DefaultTZ
+	} else {
 		l, err := time.LoadLocation(j.Timezone)
 		if err != nil {
 			return nil, err
