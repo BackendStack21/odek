@@ -179,15 +179,15 @@ var guardedPatterns = []guardedPattern{
 	// Lower-case, Capitalised and UPPER spellings of token/secret, but
 	// only lower-case/Capitalised "pass" (UPPER PASS is test-runner output)
 	// unless it ends an env-style name (DB_PASS).
-	{regexp.MustCompile(`(?:\b(?:token|secret|passphrase|Token|Secret|Passphrase|TOKEN|SECRET|PASSPHRASE)|_(?i:token|secret|passphrase|pwd|pass)|\b[a-z][a-z0-9]*(?:Token|Secret|Passphrase|Password))` + gSep + gVal), looksSecret},
+	{regexp.MustCompile(`(?:\b(?:token|secret|passphrase|Token|Secret|Passphrase|TOKEN|SECRET|PASSPHRASE)|_(?i:token|secret|passphrase|pwd|pass)|\b[a-z][a-z0-9]*(?:Token|Secret|Passphrase|Password))` + gSep + gVal), looksCredentialShape},
 	// Bare pwd/PWD keys (ODBC pwd=..., PWD=...): the shell's PWD variable
 	// holds a working directory, so path-shaped values are not credentials.
-	{regexp.MustCompile(`\b(?:pwd|Pwd|PWD)` + gSep + gVal), looksSecretNotPath},
+	{regexp.MustCompile(`\b(?:pwd|Pwd|PWD)` + gSep + gVal), looksCredentialShapeNotPath},
 	// Bare pass keys: test runners print `pass: TestX_Delete2`.
-	{regexp.MustCompile(`\b(?:pass|Pass)` + gSep + gVal), looksSecretNotTestName},
+	{regexp.MustCompile(`\b(?:pass|Pass)` + gSep + gVal), looksCredentialShapeNotTestName},
 	// CLI flags with a whitespace-separated value (--password VALUE,
 	// --secret-key VALUE, --private-key VALUE).
-	{regexp.MustCompile(`(?i)--?(?:password|passwd|passphrase|pwd|pass|token|secret|api[_-]?key|secret[_-]?key|private[_-]?key|access[_-]?key|client[_-]?secret)[ \t]+("[^"\n]{20,}"|'[^'\n]{20,}'|[^\s"']{20,})`), plausibleValue},
+	{regexp.MustCompile(`(?i)--?(?:password|passwd|passphrase|pwd|pass|token|secret|api[_-]?key|secret[_-]?key|private[_-]?key|access[_-]?key|client[_-]?secret)[ \t]+("[^"\n]{20,}"|'[^'\n]{20,}'|[^\s"']{20,})`), plausibleFlagValue},
 	// .netrc lines: password VALUE.
 	{regexp.MustCompile(`(?i)\b(?:password|passwd|passphrase)[ \t]+("[^"\n]{20,}"|'[^'\n]{20,}'|[^\s"']{20,})`), looksSecret},
 	// XML elements: <password>VALUE</password>, optional attributes and
@@ -201,11 +201,83 @@ func plausibleValue(v string) bool {
 	return len(v) >= 20 && !strings.ContainsAny(v, "(){}")
 }
 
+// plausibleFlagValue additionally rejects shell variable references, which
+// name a credential rather than carry one.
+func plausibleFlagValue(v string) bool {
+	t := unwrapValue(v)
+	return plausibleValue(v) && !strings.HasPrefix(t, "$") && !strings.HasPrefix(t, "%")
+}
+
 // looksSecret additionally requires a digit: random credentials have one
 // with overwhelming probability, while identifiers, import paths, resource
 // names and test names rarely do.
 func looksSecret(v string) bool {
 	return plausibleValue(v) && strings.ContainsAny(v, "0123456789") && !strings.Contains(v, "://")
+}
+
+// looksCredentialShape is the value test for the bare key names (token,
+// secret, pass, pwd). Those words head ordinary code and configuration, so
+// the value must be a single literal that is shaped like a generated
+// credential: variable and environment references, member-access chains,
+// paths, ARNs, timestamps and lowercase resource names are never secrets.
+// Keyed forms with their own dedicated patterns do not go through here.
+func looksCredentialShape(v string) bool {
+	if !looksSecret(v) {
+		return false
+	}
+	t := strings.TrimRight(unwrapValue(v), ";,")
+	if i := strings.IndexByte(t, '&'); i > 0 { // URL query: stop at the next parameter
+		t = t[:i]
+	}
+	if len(t) < 16 {
+		return false
+	}
+	for _, p := range []string{"$", "%", "process.env", "os.environ", "os.Getenv", "ENV[", "env."} {
+		if strings.HasPrefix(t, p) {
+			return false
+		}
+	}
+	if strings.Contains(t, "::") || strings.Contains(strings.ToLower(t), "arn:") {
+		return false
+	}
+	hasUpper, hasLower, hasDigit, special, hex := false, false, false, false, true
+	for i := 0; i < len(t); i++ {
+		c := t[i]
+		switch {
+		case c >= 'A' && c <= 'Z':
+			hasUpper = true
+			hex = hex && c <= 'F'
+		case c >= 'a' && c <= 'z':
+			hasLower = true
+			hex = hex && c <= 'f'
+		case c >= '0' && c <= '9':
+			hasDigit = true
+		case c == '+' || c == '/' || c == '=':
+			special = true
+			hex = false
+		case c == '-' || c == '_' || c == '~':
+			hex = false
+		default:
+			return false // '.', ':', quotes, brackets: not a credential alphabet
+		}
+	}
+	switch {
+	case hasUpper && hasLower && hasDigit:
+		return true
+	case hex && len(t) >= 32 && hasDigit:
+		return true
+	case special && hasDigit && (hasUpper || hasLower) && !strings.Contains(t, "//"):
+		return strings.ContainsAny(t, "+=") || (hasUpper && hasLower)
+	}
+	return false
+}
+
+func looksCredentialShapeNotPath(v string) bool {
+	return looksSecretNotPath(v) && looksCredentialShape(v)
+}
+
+func looksCredentialShapeNotTestName(v string) bool {
+	return looksSecretNotTestName(v) && looksCredentialShape(v)
 }
 
 func unwrapValue(v string) string {
