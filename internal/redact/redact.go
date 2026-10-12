@@ -80,26 +80,11 @@ var patterns = []*regexp.Regexp{
 	// Minimum ~40 chars to avoid matching short dotted strings
 	regexp.MustCompile(`eyJ[a-zA-Z0-9_-]{20,}\.[a-zA-Z0-9_-]{20,}\.[a-zA-Z0-9_-]{20,}`),
 
-	// Generic API keys / tokens / passwords with contextual prefixes.
-	// The key may be followed by a closing quote (JSON), and the value runs to
-	// the matching closing quote or, unquoted, to the next whitespace, so a
-	// password containing commas, semicolons or quotes is covered whole (the
-	// safe direction: text glued to a secret is redacted with it). The 20-char
-	// floor filters out UUIDs, hex hashes in code, and other
-	// false-positive-heavy text. secret_access_key / session_token cover the
-	// AWS secret and session token in STS JSON (SecretAccessKey,
-	// SessionToken) and YAML env blocks (AWS_SECRET_ACCESS_KEY: value), whose
-	// colon form the `NAME=value` env-var matcher below does not reach.
-	// security_token covers the same AWS session token as the
-	// X-Amz-Security-Token header and presigned-URL query parameter.
-	// refresh_token is the long-lived credential in OAuth token responses.
-	regexp.MustCompile(`(?i)(?:api[_-]?key|api[_-]?secret|auth[_-]?token|access[_-]?token|refresh[_-]?token|bearer[_-]?token|client[_-]?secret|private[_-]?key|secret[_-]?key|secret[_-]?access[_-]?key|session[_-]?token|security[_-]?token|password|passwd)["'\x60]?\s*(?:=>|[:=])\s*(?:"[^"\n]{20,}"|'[^'\n]{20,}'|\x60[^\x60\n]{20,}\x60|[^\s]{20,})`),
-
 	// Bearer / token-scheme credentials in Authorization headers: the
 	// header-line form (Authorization: Bearer …, Authorization: token …) and the JSON/JS header-object form
 	// ("Authorization": "Bearer …"), where a closing quote precedes the
 	// colon and an opening quote precedes the scheme.
-	regexp.MustCompile(`(?i)Authorization["'\x60]?\s*[:=]\s*["'\x60]?(?:Bearer|Token|ApiKey|Bot|OAuth|Negotiate|Digest)\s+([a-zA-Z0-9+/=._-]{20,})`),
+	regexp.MustCompile(`(?i)Authorization["'\x60]?\s*[:=]\s*["'\x60]?(?:Bearer|Token|ApiKey|Bot|OAuth|Negotiate|Digest)\s+([a-zA-Z0-9+/=._~-]{20,})`),
 
 	// Slack bot tokens: xoxb-, xoxp-
 	regexp.MustCompile(`xox[abpose]-[0-9]{10,}-[0-9]{10,}-[a-zA-Z0-9]{24,}`),
@@ -128,9 +113,6 @@ var patterns = []*regexp.Regexp{
 	// Twilio keys: SK + 32 hex
 	regexp.MustCompile(`SK[0-9a-fA-F]{32}`),
 
-	// Generic credential env vars: EXPORT/VAR=VALUE with long base64 values
-	regexp.MustCompile(`(?i)(?:export\s+)?[A-Z_]{3,}(?:API[_-]?KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)[A-Z_]{0,20}\s*=\s*['\x60"]?([^\s'\x60"]{20,})['\x60"]?`),
-
 	// HashiCorp Vault tokens — service (hvs.) and batch (hvb.).
 	regexp.MustCompile(`hv[sb]\.[A-Za-z0-9_-]{30,}`),
 
@@ -158,6 +140,12 @@ var patterns = []*regexp.Regexp{
 	// placeholders like `:x@`.
 	regexp.MustCompile(`(?i)\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqps?|mssql|clickhouse)://[^:\s/]+:[^@\s/]{6,}@[^\s'\x60"]+`),
 }
+
+// Credential-named assignments (api_key, access_token, password,
+// DB_PASSWORD, SECRET_KEY_BASE, …) are matched by credentialMatches below,
+// not by a regex alone: the value is parsed as a literal token and rejected
+// when it is a code expression (see credentialValueOK), so source code and
+// minified JSON survive redaction intact.
 
 // guardedPattern is a context pattern whose value must also look like a
 // secret. The bare key names (token, secret, pass, …) are everywhere in
@@ -229,7 +217,7 @@ func looksCredentialShape(v string) bool {
 	if i := strings.IndexByte(t, '&'); i > 0 { // URL query: stop at the next parameter
 		t = t[:i]
 	}
-	if len(t) < 16 {
+	if len(t) < 16 || codeExpression(t) {
 		return false
 	}
 	for _, p := range []string{"$", "%", "process.env", "os.environ", "os.Getenv", "ENV[", "env."} {
@@ -240,7 +228,7 @@ func looksCredentialShape(v string) bool {
 	if strings.Contains(t, "::") || strings.Contains(strings.ToLower(t), "arn:") {
 		return false
 	}
-	hasUpper, hasLower, hasDigit, special, hex, sep := false, false, false, false, true, false
+	hasUpper, hasLower, hasDigit, special, hex, sep, punct := false, false, false, false, true, false, false
 	for i := 0; i < len(t); i++ {
 		c := t[i]
 		switch {
@@ -258,6 +246,10 @@ func looksCredentialShape(v string) bool {
 		case c == '-' || c == '_' || c == '~':
 			hex = false
 			sep = true
+		case strings.IndexByte(passwordPunct, c) >= 0:
+			// Generated passwords routinely carry these.
+			hex = false
+			punct = true
 		default:
 			return false // '.', ':', quotes, brackets: not a credential alphabet
 		}
@@ -273,6 +265,8 @@ func looksCredentialShape(v string) bool {
 	}
 	switch {
 	case hasUpper && hasLower && hasDigit:
+		return true
+	case punct && hasDigit && (hasUpper || hasLower):
 		return true
 	case !special && !sep && len(t) >= 20 && hasDigit && (hasUpper || hasLower):
 		// One unseparated alphanumeric run (lowercase+digits or UPPER+digits).
@@ -325,7 +319,7 @@ func guardedMatches(text string) [][2]int {
 			}
 		}
 	}
-	return out
+	return append(out, credentialMatches(text)...)
 }
 
 // redactGuarded replaces every guarded match, merging overlaps.
