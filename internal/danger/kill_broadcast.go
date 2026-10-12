@@ -177,16 +177,14 @@ func markEmptyKillPatterns(cmd string) string {
 	if !strings.Contains(cmd, "''") && !strings.Contains(cmd, `""`) {
 		return cmd
 	}
-	if !strings.Contains(cmd, "kill") && !strings.Contains(cmd, "pgrep") {
-		return cmd
-	}
 	var out strings.Builder
 	var word strings.Builder // unquoted text of the current word
 	inWord := false
 	killSeen := false
 	endWord := func() {
-		switch commandName(word.String()) {
-		case "pkill", "killall", "pgrep":
+		switch name := commandName(word.String()); {
+		case name == "pkill", name == "killall", name == "pgrep",
+			recursiveSearchTools[name], recursiveGrepTools[name]:
 			killSeen = true
 		}
 		word.Reset()

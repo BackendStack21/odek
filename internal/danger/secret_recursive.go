@@ -243,23 +243,20 @@ var (
 var searchPatternSecretWords = []string{"key", "secret", "token", "pass", "credential", "auth", "bearer",
 	"private", "begin", "akia", "cookie", "session", "ssh", "cert", "gpg", "signature"}
 
-// broadSearchPattern reports whether a pattern (or any alternative of it)
-// matches nearly every line, or names credentials.
-func broadSearchPattern(p string) bool {
+// broadSearchPattern reports whether a pattern may match broadly: anything
+// but a literal of at least three characters (no regular-expression
+// metacharacters, or searched as a fixed string) that is not aimed at
+// credentials.
+func broadSearchPattern(p string, fixed bool) bool {
+	if len([]rune(p)) < 3 {
+		return true
+	}
+	if !fixed && strings.ContainsAny(p, `\.[](){}*+?|^$`) {
+		return true
+	}
 	lower := strings.ToLower(p)
 	for _, w := range searchPatternSecretWords {
 		if strings.Contains(lower, w) {
-			return true
-		}
-	}
-	for _, alt := range strings.Split(lower, "|") {
-		n := 0
-		for _, r := range alt {
-			if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '_' {
-				n++
-			}
-		}
-		if n < 3 {
 			return true
 		}
 	}
@@ -273,7 +270,7 @@ func searchBroadContent(name string, args []string) bool {
 	if recursiveGrepTools[name] {
 		listLetters = "lLcq"
 	}
-	listing, explicit := false, false
+	listing, explicit, fixed := false, false, false
 	var patterns, operands []string
 	afterDashDash := false
 	for i := 0; i < len(args); i++ {
@@ -300,12 +297,16 @@ func searchBroadContent(name string, args []string) bool {
 				return true
 			}
 			i++
+		case a == "--fixed-strings":
+			fixed = true
 		case searchLongSafe[a] || strings.HasPrefix(a, "--color="):
 		case searchLongListing[a]:
 			listing = true
 		case isShortFlagToken(a):
 			for _, r := range a[1:] {
 				switch {
+				case r == 'F':
+					fixed = true
 				case strings.ContainsRune(searchSafeLetters, r):
 				case strings.ContainsRune(listLetters, r):
 					listing = true
@@ -327,7 +328,7 @@ func searchBroadContent(name string, args []string) bool {
 		patterns = operands[:1]
 	}
 	for _, p := range patterns {
-		if broadSearchPattern(p) {
+		if broadSearchPattern(p, fixed) {
 			return true
 		}
 	}

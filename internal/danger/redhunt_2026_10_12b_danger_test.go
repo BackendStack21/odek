@@ -284,7 +284,7 @@ func TestRED_MarkEmptyKillPatternsUnit(t *testing.T) {
 		{`pkill a''b`, `pkill a''b`},
 		{`pkill \'' x`, `pkill \'' x`},
 		{`pkill 'unterminated`, `pkill 'unterminated`},
-		{`grep '' f; pgrep ''`, `grep '' f; pgrep '.*'`},
+		{`grep '' f; pgrep ''`, `grep '.*' f; pgrep '.*'`},
 		{`echo kill ''`, `echo kill ''`},
 		{`pkill '' x`, `pkill '.*' x`},
 		{`no quotes here`, `no quotes here`},
