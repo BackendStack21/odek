@@ -42,28 +42,27 @@ func newMCPModelTool(client *mcpclient.Client, serverName string, def mcpclient.
 }
 
 const (
-	// maxMCPSchemaWordRunes bounds format names and $ref pointers kept in
-	// the provider schema.
+	// maxMCPSchemaWordRunes bounds a patternProperties key.
 	maxMCPSchemaWordRunes = 128
 	// maxMCPEnumStringRunes and maxMCPEnumStringSpaces bound a string kept
 	// as an enum/const value or default: a short token, not a sentence.
 	// Anything longer is moved to the wrapped parameter documentation.
 	maxMCPEnumStringRunes  = 64
 	maxMCPEnumStringSpaces = 3
-	// maxMCPSchemaPatternRunes bounds a kept `pattern` regex.
-	maxMCPSchemaPatternRunes = 128
-	// maxMCPSchemaPatternSpaces bounds the spaces in a kept `pattern`: a
-	// real regex is nearly spaceless, while sentence-shaped text is not and
-	// is moved to the wrapped parameter documentation.
-	maxMCPSchemaPatternSpaces = 3
-	// maxMCPSchemaPatternWords bounds the runs of maxMCPSchemaPatternWordLen
-	// or more letters in a kept `pattern`, counted after escapes such as
-	// \x20 or \s are decoded to separators: a regex has few literal words,
-	// prose has many.
-	maxMCPSchemaPatternWords   = 2
-	maxMCPSchemaPatternWordLen = 6
+	// maxMCPSchemaPatternRunes bounds a kept `pattern` regex: a structural
+	// pattern is short, anything longer is moved to the wrapped docs.
+	maxMCPSchemaPatternRunes = 64
+	// maxMCPSchemaPatternRunLen bounds a literal run (letters, digits,
+	// '_', '.', '-') in a kept pattern, and maxMCPSchemaPatternWords bounds
+	// the runs that contain a word of maxMCPSchemaPatternWordLen or more
+	// letters. Escapes such as \x20 or \s are separators, never letters.
+	maxMCPSchemaPatternRunLen  = 16
+	maxMCPSchemaPatternWords   = 3
+	maxMCPSchemaPatternWordLen = 4
+	// maxMCPSchemaPatternSpaces bounds the spaces in a kept pattern.
+	maxMCPSchemaPatternSpaces = 2
 	// maxMCPPatternKeyRunes bounds a kept patternProperties regex key.
-	maxMCPPatternKeyRunes = 128
+	maxMCPPatternKeyRunes = 64
 	// maxMCPDocLabelRunes bounds the keyword label of a lifted doc entry.
 	maxMCPDocLabelRunes = 64
 	// maxMCPEnumValues bounds a kept enum list.
@@ -239,18 +238,22 @@ func stripMCPSchemaObject(obj map[string]any, path string, docs *[]mcpParamDoc) 
 				addDoc("default", v)
 			}
 		case k == "format":
-			if s, ok := v.(string); ok && utf8.RuneCountInString(s) <= maxMCPSchemaWordRunes && isSchemaWord(s) {
+			if s, ok := v.(string); ok && mcpKnownFormats[s] {
 				out[k] = s
+			} else {
+				addDoc("format", v)
 			}
 		case k == "pattern":
-			if s, ok := v.(string); ok && utf8.RuneCountInString(s) <= maxMCPSchemaPatternRunes && isShortMCPPattern(s) {
+			if s, ok := v.(string); ok && isShortMCPPattern(s) {
 				out[k] = s
 			} else {
 				addDoc("pattern", v)
 			}
 		case k == "$ref":
-			if s, ok := v.(string); ok && (s == "#" || strings.HasPrefix(s, "#/")) && utf8.RuneCountInString(s) <= maxMCPSchemaWordRunes && isSchemaWord(s) {
+			if s, ok := v.(string); ok && isLocalMCPRef(s) {
 				out[k] = s
+			} else {
+				addDoc("$ref", v)
 			}
 		case mcpSchemaNumericOrBoolKeys[k]:
 			if isJSONNumber(v) {
@@ -292,7 +295,7 @@ func stripMCPSchemaObject(obj map[string]any, path string, docs *[]mcpParamDoc) 
 				// whitespace. $defs/definitions/dependentSchemas keys are
 				// names and follow the property-name charset.
 				if k == "patternProperties" {
-					if utf8.RuneCountInString(name) > maxMCPPatternKeyRunes || !isSchemaWord(name) {
+					if utf8.RuneCountInString(name) > maxMCPPatternKeyRunes || !isShortMCPPattern(name) || strings.ContainsAny(name, " ") {
 						continue
 					}
 				} else if !isSchemaName(name) {
@@ -450,18 +453,28 @@ func isJSONNumber(v any) bool {
 	return false
 }
 
-// isSchemaWord reports whether s is a single token of printable ASCII
-// (format names, local $ref pointers).
-func isSchemaWord(s string) bool {
-	if s == "" {
-		return false
+// mcpKnownFormats are the JSON Schema standard format names. Any other
+// format value is server text and moves to the wrapped parameter docs.
+var mcpKnownFormats = map[string]bool{
+	"date-time": true, "date": true, "time": true, "duration": true,
+	"email": true, "idn-email": true, "hostname": true, "idn-hostname": true,
+	"ipv4": true, "ipv6": true, "uri": true, "uri-reference": true,
+	"iri": true, "iri-reference": true, "uuid": true, "uri-template": true,
+	"json-pointer": true, "relative-json-pointer": true, "regex": true,
+}
+
+// isLocalMCPRef reports whether s is "#" or "#/$defs/<name>" /
+// "#/definitions/<name>" with an identifier-shaped name.
+func isLocalMCPRef(s string) bool {
+	if s == "#" {
+		return true
 	}
-	for i := 0; i < len(s); i++ {
-		if s[i] <= ' ' || s[i] >= 0x7f {
-			return false
+	for _, prefix := range []string{"#/$defs/", "#/definitions/"} {
+		if strings.HasPrefix(s, prefix) {
+			return isSchemaName(strings.TrimPrefix(s, prefix))
 		}
 	}
-	return true
+	return false
 }
 
 // mcpDocText renders a lifted value as single-line, bounded text.
@@ -521,11 +534,16 @@ func truncateRunesNotice(s string, max int, notice string) string {
 	return string([]rune(s)[:keep]) + notice
 }
 
-// isShortMCPPattern reports whether a pattern keyword value is regex-shaped
-// rather than prose: single line, no control characters, at most
-// maxMCPSchemaPatternSpaces spaces, and at most maxMCPSchemaPatternWords runs
-// of long literal letters once escapes are treated as separators.
+// isShortMCPPattern reports whether a pattern keyword value is structural
+// regex rather than prose: at most maxMCPSchemaPatternRunes runes, single
+// line, no control characters, few spaces, no literal run (letters, digits,
+// '_', '.', '-') longer than maxMCPSchemaPatternRunLen, and at most
+// maxMCPSchemaPatternWords runs that hold a word of
+// maxMCPSchemaPatternWordLen or more letters. Escapes are separators.
 func isShortMCPPattern(s string) bool {
+	if utf8.RuneCountInString(s) > maxMCPSchemaPatternRunes {
+		return false
+	}
 	spaces := 0
 	for _, r := range s {
 		switch {
@@ -538,20 +556,28 @@ func isShortMCPPattern(s string) bool {
 	if spaces > maxMCPSchemaPatternSpaces {
 		return false
 	}
-	words, run := 0, 0
+	words, runLen, letters, wordy := 0, 0, 0, false
+	ok := true
+	endLetters := func() {
+		if letters >= maxMCPSchemaPatternWordLen {
+			wordy = true
+		}
+		letters = 0
+	}
 	flush := func() {
-		if run >= maxMCPSchemaPatternWordLen {
+		endLetters()
+		if runLen > maxMCPSchemaPatternRunLen {
+			ok = false
+		}
+		if wordy {
 			words++
 		}
-		run = 0
+		runLen, wordy = 0, false
 	}
 	rs := []rune(s)
 	for i := 0; i < len(rs); i++ {
 		r := rs[i]
 		if r == '\\' && i+1 < len(rs) {
-			// An escape (\x20, \u0020, \s, \d, \.) is never a literal
-			// letter of a word: treat it as a separator and skip its
-			// introducer and hex digits.
 			flush()
 			i++
 			switch rs[i] {
@@ -562,12 +588,17 @@ func isShortMCPPattern(s string) bool {
 			}
 			continue
 		}
-		if unicode.IsLetter(r) {
-			run++
-			continue
+		switch {
+		case unicode.IsLetter(r):
+			runLen++
+			letters++
+		case unicode.IsDigit(r) || r == '_' || r == '.' || r == '-':
+			runLen++
+			endLetters()
+		default:
+			flush()
 		}
-		flush()
 	}
 	flush()
-	return words <= maxMCPSchemaPatternWords
+	return ok && words <= maxMCPSchemaPatternWords
 }
