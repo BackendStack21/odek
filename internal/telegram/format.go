@@ -518,10 +518,16 @@ func splitChunks(text string, maxBytes int) []string {
 					current.WriteString(remaining)
 					break
 				}
-				// Find last space within maxBytes
-				splitAt := strings.LastIndex(remaining[:maxBytes], " ")
+				// Leave room to close the entities a cut leaves open and
+				// reopen them in the next piece.
+				limit := maxBytes
+				if maxBytes > 2*maxEntityDepth+8 {
+					limit = maxBytes - 2*maxEntityDepth
+				}
+				// Find last space within the limit
+				splitAt := strings.LastIndex(remaining[:limit], " ")
 				if splitAt <= 0 {
-					splitAt = maxBytes
+					splitAt = limit
 				}
 				// Never split mid-rune: spaceless text (CJK, URLs, base64)
 				// cut at a raw byte boundary ships invalid UTF-8, which the
@@ -534,10 +540,15 @@ func splitChunks(text string, maxBytes int) []string {
 				if splitAt == 0 {
 					splitAt = maxBytes // degenerate tiny maxBytes: never emit an empty chunk
 				}
-				chunks = append(chunks, remaining[:splitAt])
+				head := remaining[:splitAt]
+				open := openEntities(head)
+				chunks = append(chunks, head+closeEntities(open))
 				remaining = remaining[splitAt:]
 				// Trim leading spaces from remaining
 				remaining = strings.TrimLeftFunc(remaining, unicode.IsSpace)
+				if len(open) > 0 {
+					remaining = string(open) + remaining
+				}
 			}
 			continue
 		}
@@ -678,4 +689,55 @@ func splitSingleFencedBlock(p string, maxBytes int) []string {
 		capacity = maxBytes - len(prefix) - len(suffix)
 	}
 	return append(chunks, prefix+body+suffix)
+}
+
+// maxEntityDepth bounds how many nested entity markers a cut closes and
+// reopens; deeper nesting is not produced by FormatResponse.
+const maxEntityDepth = 4
+
+// openEntities returns the MarkdownV2 entity markers ('*', '_', '`') still
+// open at the end of s, outermost first. Escaped characters are skipped, and
+// inside a code span only its closing backtick counts.
+func openEntities(s string) []byte {
+	var stack []byte
+	inCode := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c == '\\' {
+			i++
+			continue
+		}
+		if inCode {
+			if c == '`' {
+				inCode = false
+				stack = stack[:len(stack)-1]
+			}
+			continue
+		}
+		switch c {
+		case '`':
+			inCode = true
+			stack = append(stack, c)
+		case '*', '_':
+			if n := len(stack); n > 0 && stack[n-1] == c {
+				stack = stack[:n-1]
+			} else {
+				stack = append(stack, c)
+			}
+		}
+	}
+	if len(stack) > maxEntityDepth {
+		stack = stack[len(stack)-maxEntityDepth:]
+	}
+	return stack
+}
+
+// closeEntities returns the markers that close the given open entities,
+// innermost first.
+func closeEntities(open []byte) string {
+	var b strings.Builder
+	for i := len(open) - 1; i >= 0; i-- {
+		b.WriteByte(open[i])
+	}
+	return b.String()
 }

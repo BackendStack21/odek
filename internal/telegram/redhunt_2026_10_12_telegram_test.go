@@ -377,3 +377,34 @@ func TestRH12TG_FormatClosesOpenFenceAfterTable(t *testing.T) {
 		t.Fatalf("unbalanced fences: %q", joined)
 	}
 }
+
+// A single long line with a bold span (and a code span inside it) crossing the
+// size limit: every chunk must be independently balanced and within the limit.
+func TestRH12TG_LongLineSplitKeepsEntitiesBalanced(t *testing.T) {
+	long := "*" + strings.Repeat("word ", 400) + "`" + strings.Repeat("code ", 400) + "` " + strings.Repeat("tail ", 300) + "*"
+	chunks := splitChunks(long, 4096)
+	if len(chunks) < 2 {
+		t.Fatalf("expected a split, got %d chunk(s)", len(chunks))
+	}
+	for i, c := range chunks {
+		if len(c) > 4096 {
+			t.Errorf("chunk %d is %d bytes, over the limit", i, len(c))
+		}
+		if open := openEntities(c); len(open) != 0 {
+			t.Errorf("chunk %d leaves entities open: %q (tail %q)", i, open, c[max(0, len(c)-20):])
+		}
+	}
+}
+
+func TestRH12TG_OpenEntitiesIgnoresEscapesAndCode(t *testing.T) {
+	if got := openEntities(`a\*b \_ c`); len(got) != 0 {
+		t.Errorf("escaped markers counted: %q", got)
+	}
+	if got := openEntities("`a*b_c`"); len(got) != 0 {
+		t.Errorf("markers inside code counted: %q", got)
+	}
+	if got := openEntities("*a _b"); string(got) != "*_" {
+		t.Errorf("open = %q, want *_", got)
+	}
+}
+
