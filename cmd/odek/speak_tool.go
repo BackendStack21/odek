@@ -11,6 +11,7 @@ import (
 	"github.com/BackendStack21/odek"
 	"github.com/BackendStack21/odek/internal/config"
 	"github.com/BackendStack21/odek/internal/danger"
+	"github.com/BackendStack21/odek/internal/fsatomic"
 )
 
 // maxSpeakAudioBytes bounds the synthesized audio written to the artifacts
@@ -197,7 +198,7 @@ func (t *speakTool) Call(argsJSON string) (string, error) {
 		}
 	}
 
-	if err := os.WriteFile(outPath, res.Audio, 0o600); err != nil {
+	if err := fsatomic.WriteFile(outPath, res.Audio, 0o600); err != nil {
 		return jsonResult(speakResult{Error: fmt.Sprintf("cannot write audio file: %v", err)})
 	}
 	return jsonResult(speakResult{
