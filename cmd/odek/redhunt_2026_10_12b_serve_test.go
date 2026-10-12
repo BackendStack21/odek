@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -238,5 +239,26 @@ func TestRED_WSSessionLookupRejectionsAreRateLimited(t *testing.T) {
 	}
 	if !limited {
 		t.Fatal("80 bad-token WebSocket cancel frames for one session were never rate limited (unthrottled 404/401 oracle)")
+	}
+}
+
+// The prompt-time session and referenced-session gates charge the peer's
+// lookup budget when the prompt context carries a client address.
+func TestRED_PromptLookupRejectionsShareTheLookupBudget(t *testing.T) {
+	sessionLookupLimiter.reset()
+	t.Cleanup(sessionLookupLimiter.reset)
+	ctx := context.WithValue(context.Background(), serveClientIPKey{}, "203.0.113.9")
+	limited := false
+	for i := 0; i < 80; i++ {
+		if ctxLookupRejectMsg(ctx, "invalid token for referenced session") == "rate limit exceeded" {
+			limited = true
+			break
+		}
+	}
+	if !limited {
+		t.Fatal("prompt-time rejections were never rate limited")
+	}
+	if got := ctxLookupRejectMsg(context.Background(), "session not found"); got != "session not found" {
+		t.Fatalf("context without a client address must not be limited, got %q", got)
 	}
 }
