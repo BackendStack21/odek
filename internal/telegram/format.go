@@ -518,37 +518,12 @@ func splitChunks(text string, maxBytes int) []string {
 					current.WriteString(remaining)
 					break
 				}
-				// Leave room to close the entities a cut leaves open and
-				// reopen them in the next piece.
-				limit := maxBytes
-				if maxBytes > 2*maxEntityDepth+8 {
-					limit = maxBytes - 2*maxEntityDepth
+				head, rest, ok := cutEntityBalanced(remaining, maxBytes)
+				if !ok {
+					head, rest = remaining[:maxBytes], remaining[maxBytes:]
 				}
-				// Find last space within the limit
-				splitAt := strings.LastIndex(remaining[:limit], " ")
-				if splitAt <= 0 {
-					splitAt = limit
-				}
-				// Never split mid-rune: spaceless text (CJK, URLs, base64)
-				// cut at a raw byte boundary ships invalid UTF-8, which the
-				// Telegram API coerces to U+FFFD — the user receives corrupted
-				// text. Back off to the nearest rune start.
-				for splitAt > 0 && !utf8.RuneStart(remaining[splitAt]) {
-					splitAt--
-				}
-				splitAt = keepEscapePair(remaining, splitAt)
-				if splitAt == 0 {
-					splitAt = maxBytes // degenerate tiny maxBytes: never emit an empty chunk
-				}
-				head := remaining[:splitAt]
-				open := openEntities(head)
-				chunks = append(chunks, head+closeEntities(open))
-				remaining = remaining[splitAt:]
-				// Trim leading spaces from remaining
-				remaining = strings.TrimLeftFunc(remaining, unicode.IsSpace)
-				if len(open) > 0 {
-					remaining = string(open) + remaining
-				}
+				chunks = append(chunks, head)
+				remaining = rest
 			}
 			continue
 		}
@@ -632,22 +607,48 @@ func keepEscapePair(text string, cut int) int {
 	return cut
 }
 
+// cutEntityBalanced cuts text (longer than maxBytes) at a space or rune
+// boundary so that head fits in maxBytes with its open bold/italic/code
+// entities closed, and rest starts with those entities reopened. ok is false
+// when no non-empty cut exists.
+func cutEntityBalanced(text string, maxBytes int) (head, rest string, ok bool) {
+	// Leave room to close the entities a cut leaves open and reopen them in
+	// the next piece.
+	limit := maxBytes
+	if maxBytes > 2*maxEntityDepth+8 {
+		limit = maxBytes - 2*maxEntityDepth
+	}
+	cut := strings.LastIndexByte(text[:limit], ' ')
+	if cut <= 0 {
+		cut = limit
+	}
+	// Never split mid-rune: spaceless text (CJK, URLs, base64) cut at a raw
+	// byte boundary ships invalid UTF-8.
+	for cut > 0 && !utf8.RuneStart(text[cut]) {
+		cut--
+	}
+	cut = keepEscapePair(text, cut)
+	if cut == 0 {
+		return "", "", false
+	}
+	open := openEntities(text[:cut])
+	head = text[:cut] + closeEntities(open)
+	rest = strings.TrimLeftFunc(text[cut:], unicode.IsSpace)
+	if len(open) > 0 {
+		rest = string(open) + rest
+	}
+	return head, rest, true
+}
+
 func splitPlainSegment(text string, maxBytes int) []string {
 	var out []string
 	for len(text) > maxBytes {
-		cut := strings.LastIndexByte(text[:maxBytes], ' ')
-		if cut <= 0 {
-			cut = maxBytes
-		}
-		for cut > 0 && !utf8.RuneStart(text[cut]) {
-			cut--
-		}
-		cut = keepEscapePair(text, cut)
-		if cut == 0 {
+		head, rest, ok := cutEntityBalanced(text, maxBytes)
+		if !ok {
 			return nil
 		}
-		out = append(out, text[:cut])
-		text = strings.TrimLeftFunc(text[cut:], unicode.IsSpace)
+		out = append(out, head)
+		text = rest
 	}
 	if text != "" {
 		out = append(out, text)
