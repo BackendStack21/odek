@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"unicode"
+	"unicode/utf16"
 
 	"github.com/BackendStack21/odek/internal/danger"
 	"github.com/BackendStack21/odek/internal/loop"
@@ -252,9 +254,51 @@ func auditCmd(args []string) error {
 		if err != nil {
 			return fmt.Errorf("audit: marshal: %w", err)
 		}
-		fmt.Println(string(out))
+		fmt.Println(escapeJSONForTerminal(string(out)))
 		return nil
 	}
+}
+
+// escapeJSONForTerminal rewrites the characters json.Marshal leaves raw but
+// a terminal acts on or hides (C1 controls such as the 8-bit CSI, bidi and
+// other format characters, zero-width marks, blank fillers, any non-printable
+// rune) as \uXXXX escapes. Such runes can only occur inside JSON strings, so
+// the result stays valid JSON that decodes to the same value.
+func escapeJSONForTerminal(s string) string {
+	clean := true
+	for _, r := range s {
+		if jsonRuneNeedsEscape(r) {
+			clean = false
+			break
+		}
+	}
+	if clean {
+		return s
+	}
+	var b strings.Builder
+	for _, r := range s {
+		switch {
+		case !jsonRuneNeedsEscape(r):
+			b.WriteRune(r)
+		case r > 0xFFFF:
+			hi, lo := utf16.EncodeRune(r)
+			fmt.Fprintf(&b, `\u%04x\u%04x`, hi, lo)
+		default:
+			fmt.Fprintf(&b, `\u%04x`, r)
+		}
+	}
+	return b.String()
+}
+
+func jsonRuneNeedsEscape(r rune) bool {
+	if r < 0x80 {
+		return false
+	}
+	switch r {
+	case '\u034F', '\u115F', '\u1160', '\u180E', '\u3164', '\uFFA0':
+		return true
+	}
+	return !unicode.IsPrint(r) || unicode.Is(unicode.Cf, r) || danger.IsZeroWidthMark(r)
 }
 
 func auditList(store *session.Store, auditStore *session.AuditStore) error {
