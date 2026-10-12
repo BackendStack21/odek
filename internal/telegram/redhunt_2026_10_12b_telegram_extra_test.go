@@ -1,9 +1,36 @@
 package telegram
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
+
+// A crash mid-write can leave an empty counter; that is no usage, while
+// non-numeric content still fails closed.
+func TestDailyBudgetEmptyCounterIsZero(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	if err := os.MkdirAll(filepath.Join(home, ".odek"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(budgetFilePath(), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	bot := NewBot("testtoken")
+	bot.SetDailyTokenBudget(1000)
+	if used, _ := bot.DailyTokenUsage(); used != 0 {
+		t.Errorf("empty counter reads as used=%d, want 0", used)
+	}
+	if err := bot.CheckDailyBudget(10); err != nil {
+		t.Errorf("CheckDailyBudget on an empty counter: %v", err)
+	}
+	if data, _ := os.ReadFile(budgetFilePath()); string(data) != "10" {
+		t.Errorf("counter = %q, want 10", data)
+	}
+}
 
 func TestStripMarkdownCodeAndEscapes(t *testing.T) {
 	cases := map[string]string{

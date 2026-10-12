@@ -21,6 +21,7 @@ import (
 
 	"github.com/BackendStack21/odek/internal/diagnostics"
 	"github.com/BackendStack21/odek/internal/flock"
+	"github.com/BackendStack21/odek/internal/fsatomic"
 	"github.com/BackendStack21/odek/internal/transport"
 )
 
@@ -821,6 +822,21 @@ func budgetFilePath() string {
 	return filepath.Join(home, ".odek", "telegram_token_usage_"+date)
 }
 
+// parseBudgetCounter reads a usage counter file. Empty content (an
+// interrupted first write) is no usage; any other unreadable content must not
+// reset the day's usage to zero, so it counts as the whole budget spent.
+func parseBudgetCounter(data []byte, budget int64) int64 {
+	text := strings.TrimSpace(string(data))
+	if text == "" {
+		return 0
+	}
+	n, err := strconv.ParseInt(text, 10, 64)
+	if err != nil || n < 0 {
+		return budget
+	}
+	return n
+}
+
 // CheckDailyBudget bills tokens that were already spent: it reads the
 // current daily token usage tracking file, records current+tokens, and
 // returns an error if that total exceeds the configured DailyTokenBudget.
@@ -857,13 +873,7 @@ func (b *Bot) CheckDailyBudget(tokens int64) error {
 	var current int64
 	data, err := os.ReadFile(path)
 	if err == nil {
-		parsed, perr := strconv.ParseInt(strings.TrimSpace(string(data)), 10, 64)
-		if perr != nil || parsed < 0 {
-			// An unreadable counter must not reset the day's usage to zero:
-			// treat the budget as spent (the write below heals the file).
-			parsed = b.DailyTokenBudget
-		}
-		current = parsed
+		current = parseBudgetCounter(data, b.DailyTokenBudget)
 	} else if !os.IsNotExist(err) {
 		return fmt.Errorf("telegram: read budget file: %w", err)
 	}
@@ -873,7 +883,7 @@ func (b *Bot) CheckDailyBudget(tokens int64) error {
 	// overshooting bill would keep the counter below the limit and let every
 	// later pre-flight check through.
 	total := current + tokens
-	if err := os.WriteFile(path, []byte(strconv.FormatInt(total, 10)), 0600); err != nil {
+	if err := fsatomic.WriteFile(path, []byte(strconv.FormatInt(total, 10)), 0o600); err != nil {
 		return fmt.Errorf("telegram: write budget file: %w", err)
 	}
 
@@ -902,11 +912,7 @@ func (b *Bot) DailyTokenUsage() (used int64, limit int64) {
 
 	data, err := os.ReadFile(path)
 	if err == nil {
-		parsed, perr := strconv.ParseInt(strings.TrimSpace(string(data)), 10, 64)
-		if perr != nil || parsed < 0 {
-			parsed = b.DailyTokenBudget // corrupt counter: fail closed
-		}
-		used = parsed
+		used = parseBudgetCounter(data, b.DailyTokenBudget)
 	}
 	return used, b.DailyTokenBudget
 }
