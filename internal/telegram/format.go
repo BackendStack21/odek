@@ -93,6 +93,12 @@ func FormatResponse(text string) ([]string, error) {
 	// Flush any remaining table
 	flushTable()
 
+	// A fence left open (truncated answer, odd fence count) would make the
+	// rest of the message one unterminated pre entity.
+	if inCodeBlock {
+		resultLines = append(resultLines, "```")
+	}
+
 	fullText := strings.Join(resultLines, "\n")
 	chunks := splitChunks(fullText, 4096)
 	return chunks, nil
