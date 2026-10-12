@@ -131,7 +131,9 @@ internal/
     ledger_indirect.go          Scripts delivered indirectly (pipes, substitutions, eval, find -exec, program-file options)
     path_identity.go            Symlink-resolving path targets for classification (snapshot, not an execution boundary)
     sensitive_read.go           IsSensitiveReadPath: paths @-references refuse (shares the home credential table with ClassifyPath)
-    arith_eval.go               Arithmetic-evaluating builtins (let, declare, …): command substitutions in subscripts are classified
+    arith_eval.go               Arithmetic-evaluating builtins (let, declare, …) and arithmetic expansions ($(( )), $[ ], ${s:off:len}, ${a[sub]}): command substitutions inside are classified even when single-quoted
+    secret_globs.go             Wildcard operands matched segment-wise against odek anchors, /proc/<pid>/environ and the credential path table
+    secret_recursive.go         Recursive readers (grep -r, rg, find -exec cat, tar c, cp -r, …) rooted at /proc/<pid>, /etc, / or a home
     param_default.go            ${name:-word} / ${name:=word} / ${name:+word} default words classified as the commands they can run
     env_dump_tools.go           jq/yq/ps environment disclosure → system_write
     env_code.go                 PROMPT_COMMAND / PS0-PS4 / BASH_FUNC_ assignments: values classified as commands
