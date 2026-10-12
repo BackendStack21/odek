@@ -136,9 +136,16 @@ func requireMultipartBody(t *testing.T, r *http.Request, fieldName, fileName str
 			if _, ok := params[v]; ok {
 				foundParams[v] = true
 				val, _ := io.ReadAll(part)
-				var decoded any
-				if err := json.Unmarshal(val, &decoded); err != nil {
-					t.Errorf("param %q value %q is not valid JSON: %v", v, string(val), err)
+				if want, isStr := params[v].(string); isStr {
+					// String fields are plain form values, not JSON.
+					if string(val) != want {
+						t.Errorf("param %q = %q, want %q", v, string(val), want)
+					}
+				} else {
+					var decoded any
+					if err := json.Unmarshal(val, &decoded); err != nil {
+						t.Errorf("param %q value %q is not valid JSON: %v", v, string(val), err)
+					}
 				}
 			}
 		}
