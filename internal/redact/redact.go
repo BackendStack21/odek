@@ -93,13 +93,21 @@ var patterns = []*regexp.Regexp{
 	// security_token covers the same AWS session token as the
 	// X-Amz-Security-Token header and presigned-URL query parameter.
 	// refresh_token is the long-lived credential in OAuth token responses.
-	regexp.MustCompile(`(?i)(?:api[_-]?key|api[_-]?secret|auth[_-]?token|access[_-]?token|refresh[_-]?token|bearer[_-]?token|client[_-]?secret|private[_-]?key|secret[_-]?key|secret[_-]?access[_-]?key|session[_-]?token|security[_-]?token|password|passwd)["'\x60]?\s*[:=]\s*(?:"[^"\n]{20,}"|'[^'\n]{20,}'|\x60[^\x60\n]{20,}\x60|[^\s]{20,})`),
+	regexp.MustCompile(`(?i)(?:api[_-]?key|api[_-]?secret|auth[_-]?token|access[_-]?token|refresh[_-]?token|bearer[_-]?token|client[_-]?secret|private[_-]?key|secret[_-]?key|secret[_-]?access[_-]?key|session[_-]?token|security[_-]?token|password|passwd|(?:\b|_)(?:token|secret|passphrase|pwd|pass))["'\x60]?\s*(?:=>|[:=])\s*(?:"[^"\n]{20,}"|'[^'\n]{20,}'|\x60[^\x60\n]{20,}\x60|[^\s]{20,})`),
+	// Whitespace-separated forms: CLI flags (--password VALUE, --token VALUE)
+	// and .netrc lines (password VALUE). The key must be a flag or the whole
+	// word "password"/"passwd"/"passphrase", and the value a single 20+ char
+	// word, so prose ("the password must be rotated") is left alone.
+	regexp.MustCompile(`(?i)(?:--?(?:password|passwd|passphrase|pwd|pass|token|secret|api[_-]?key)|\b(?:password|passwd|passphrase))[ \t]+(?:"[^"\n]{20,}"|'[^'\n]{20,}'|[^\s"']{20,})`),
+	// XML elements: <password>VALUE</password> (Maven settings.xml, .NET
+	// config) and the other credential element names.
+	regexp.MustCompile(`(?i)<(?:password|passwd|passphrase|pwd|secret|token|api[_-]?key|access[_-]?token|client[_-]?secret|secret[_-]?key)>[^<\n]{20,}</`),
 
-	// Bearer tokens in Authorization headers: the header-line form
-	// (Authorization: Bearer …) and the JSON/JS header-object form
+	// Bearer / token-scheme credentials in Authorization headers: the
+	// header-line form (Authorization: Bearer …, Authorization: token …) and the JSON/JS header-object form
 	// ("Authorization": "Bearer …"), where a closing quote precedes the
 	// colon and an opening quote precedes the scheme.
-	regexp.MustCompile(`(?i)Authorization["'\x60]?\s*[:=]\s*["'\x60]?Bearer\s+([a-zA-Z0-9+/=._-]{20,})`),
+	regexp.MustCompile(`(?i)Authorization["'\x60]?\s*[:=]\s*["'\x60]?(?:Bearer|Token|ApiKey|Bot|OAuth)\s+([a-zA-Z0-9+/=._-]{20,})`),
 
 	// Slack bot tokens: xoxb-, xoxp-
 	regexp.MustCompile(`xox[abpose]-[0-9]{10,}-[0-9]{10,}-[a-zA-Z0-9]{24,}`),
@@ -169,6 +177,11 @@ var patterns = []*regexp.Regexp{
 // unbounded run; a longer run is handled in basicAuthMatches.
 var basicAuthPattern = regexp.MustCompile(`(?i)(authorization["'\x60]?\s*[:=]\s*["'\x60]?basic\s+)([A-Za-z0-9+/_-]{4,1000}={0,2})`)
 
+// dockerAuthPattern matches the "auth" field of a Docker config.json
+// (base64 of user:password); like a Basic header it only counts when the
+// token decodes to a printable user:password pair.
+var dockerAuthPattern = regexp.MustCompile(`(?i)(["']auth["']\s*:\s*["'])([A-Za-z0-9+/_-]{4,1000}={0,2})`)
+
 // basicTokenMax is the token cap in basicAuthPattern.
 const basicTokenMax = 1000
 
@@ -206,16 +219,34 @@ func basicAuthCandidate(text string) bool {
 	return i >= 0 && indexFoldASCII(text[i:], "basic") >= 0
 }
 
+// dockerAuthCandidate is the prefilter for the Docker config pass.
+func dockerAuthCandidate(text string) bool {
+	return indexFoldASCII(text, "auth") >= 0
+}
+
 func basicAuthMatches(text string) [][2]int {
-	if !basicAuthCandidate(text) {
-		return nil
-	}
 	var out [][2]int
+	if basicAuthCandidate(text) {
+		out = appendCredentialMatches(out, text, basicAuthPattern)
+	}
+	if dockerAuthCandidate(text) {
+		out = appendCredentialMatches(out, text, dockerAuthPattern)
+	}
+	if len(out) > 1 {
+		sort.Slice(out, func(i, j int) bool { return out[i][0] < out[j][0] })
+	}
+	return out
+}
+
+// appendCredentialMatches appends the token offsets of each match of pat
+// (group 1: the key prefix, group 2: the base64 token) that decodes to a
+// user:password pair.
+func appendCredentialMatches(out [][2]int, text string, pat *regexp.Regexp) [][2]int {
 	// Locate whole matches with the fast unanchored matcher, then take the
 	// token submatch on each short match only: submatch extraction over the
 	// full text falls back to a much slower engine on large inputs.
-	for _, m := range basicAuthPattern.FindAllStringIndex(text, -1) {
-		sm := basicAuthPattern.FindStringSubmatchIndex(text[m[0]:m[1]])
+	for _, m := range pat.FindAllStringIndex(text, -1) {
+		sm := pat.FindStringSubmatchIndex(text[m[0]:m[1]])
 		if sm == nil {
 			continue
 		}
