@@ -258,3 +258,32 @@ func TestRED_RESTSecondApprovalAnswerAckedButDropped(t *testing.T) {
 		t.Fatalf("second (dropped) answer was acknowledged: %d %s — the command was approved, not denied", code, body)
 	}
 }
+
+// POST /api/prompt answers a known session id with a bad token as 401; that
+// rejection must burn the same per-IP lookup budget as the other
+// session-scoped endpoints.
+func TestRED_PromptStartBadTokenIsRateLimited(t *testing.T) {
+	store := newTestSessionStore(t)
+	sess, err := store.Create(nil, "test", "task")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionLookupLimiter.reset()
+	t.Cleanup(sessionLookupLimiter.reset)
+	h := handlePromptStart(&serveState{resolved: loadJSONMockResolved()}, store, resource.NewRegistry(), "system")
+	limited := false
+	for i := 0; i < 80; i++ {
+		body := `{"content":"hi","session_id":"` + sess.ID + `","auth_token":"wrong"}`
+		req := httptest.NewRequest(http.MethodPost, "/api/prompt", strings.NewReader(body))
+		req.RemoteAddr = "192.0.2.9:1111"
+		rec := httptest.NewRecorder()
+		h(rec, req)
+		if rec.Code == http.StatusTooManyRequests {
+			limited = true
+			break
+		}
+	}
+	if !limited {
+		t.Fatal("80 bad-token prompt starts from one IP were never rate limited")
+	}
+}
