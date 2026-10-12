@@ -65,7 +65,7 @@ func NewBot(token string) *Bot {
 		Token:       token,
 		BaseURL:     fmt.Sprintf("https://api.telegram.org/bot%s", token),
 		FileBaseURL: fmt.Sprintf("https://api.telegram.org/file/bot%s", token),
-		Client:      transport.NewPooledClient(60 * time.Second),
+		Client:      transport.NewPooledClient(botClientTimeout),
 		stopRetries: make(chan struct{}),
 		log:         NewNopLogger(),
 	}

@@ -64,9 +64,14 @@ func validateFallbackURL(raw string) error {
 	return nil
 }
 
+// botClientTimeout is the HTTP client timeout for Bot API calls. It must
+// exceed the longest allowed getUpdates long-poll (poll_timeout up to 60 s)
+// plus a margin, or an idle poll is cut by the client instead of returning.
+const botClientTimeout = 75 * time.Second
+
 // NewFallbackTransport creates a FallbackTransport with the given fallback
 // URLs. The primary URL defaults to https://api.telegram.org and the timeout
-// defaults to 30 seconds.
+// defaults to botClientTimeout.
 //
 // It returns an error if any fallback URL is untrusted, because the bot token
 // is sent in the request path and untrusted endpoints would receive it.
@@ -80,7 +85,7 @@ func NewFallbackTransport(fallbackURLs []string) (*FallbackTransport, error) {
 	ft := &FallbackTransport{
 		PrimaryURL:   "https://api.telegram.org",
 		FallbackURLs: fallbackURLs,
-		Timeout:      30 * time.Second,
+		Timeout:      botClientTimeout,
 	}
 	ft.Client = &http.Client{
 		Timeout:   ft.Timeout,
