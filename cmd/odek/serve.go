@@ -2169,6 +2169,22 @@ func handlePrompt(
 	// and background wakes all pass through this boundary.
 	var err error
 	if sessionID != "" {
+		// Reject unknown and unauthenticated sessions before taking the
+		// execution lock: acquiring it creates a lock file, so an unknown id
+		// must never reach it. The checks repeat under the lock below.
+		pre, preErr := store.Load(sessionID)
+		if preErr != nil {
+			sendError(send, "session not found")
+			return currSess
+		}
+		preToken := msg.AuthToken
+		if preToken == "" && currSess != nil && currSess.ID == pre.ID {
+			preToken = currSess.AuthToken
+		}
+		if !wakeInitiated(msg) && !validateSessionTokenStrict(store, pre, preToken) {
+			sendError(send, "invalid session token")
+			return currSess
+		}
 		release, lockErr := store.AcquireExecution(ctx, sessionID)
 		if lockErr != nil {
 			sendError(send, lockErr.Error())
