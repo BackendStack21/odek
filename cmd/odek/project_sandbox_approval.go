@@ -84,7 +84,7 @@ func approveProjectSandboxWithTTY(resolved config.ResolvedConfig, stdin io.Reade
 
 	overrideKey := projectSandboxApprovalKey(projectDir, o)
 	dfKey := dockerfileApprovalKey(projectDir, dfHash)
-	overrideOK := !hasOverride || approved[overrideKey]
+	overrideOK := !hasOverride || approved[overrideKey] || sessionDockerfileApproved(overrideKey)
 	dfOK := !dfRequired || approved[dfKey] || sessionDockerfileApproved(dfKey)
 	if overrideOK && dfOK {
 		return nil
@@ -158,6 +158,9 @@ func approveProjectSandboxWithTTY(resolved config.ResolvedConfig, stdin io.Reade
 	case "y", "yes":
 		if dfRequired {
 			recordSessionDockerfileApproval(dfKey)
+		}
+		if hasOverride {
+			recordSessionDockerfileApproval(overrideKey)
 		}
 		return nil
 	case "t", "trust":

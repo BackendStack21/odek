@@ -70,6 +70,16 @@ type delegateTasksTool struct {
 	sandboxed bool
 	sessMu    sync.Mutex
 
+	// childSandbox is the parent's resolved container posture, stamped into
+	// every task file so a child's container is never weaker than the
+	// parent's (read-only mount, image, network, limits, user).
+	childSandbox *taskSandboxPosture
+	// childToolAllow is the set of tool names that survived the parent's
+	// own tool filter (nil until a filter ran). A child is restricted to it
+	// and can never regain a tool the parent was configured without.
+	childToolAllow    []string
+	childToolAllowSet bool
+
 	// artifactsRoot is the artifacts home (~/.odek/artifacts in production,
 	// wired in builtinTools). When empty, no artifact dirs are created and
 	// tasks run without the artifact channel — the bare-struct tests stay
@@ -543,6 +553,7 @@ func (t *delegateTasksTool) runTaskWithModel(taskIdx int, taskID, goal, taskCont
 		task.Model = model
 	}
 	task.BaseURL = t.baseURL
+	task.Tools, task.Sandbox = t.childPosture()
 	if err := json.NewEncoder(taskFile).Encode(task); err != nil {
 		taskFile.Close()
 		os.Remove(taskPath)
@@ -1179,6 +1190,10 @@ type taskEnvelope struct {
 	Provider      string         `json:"provider,omitempty"`
 	Model         string         `json:"model,omitempty"`
 	BaseURL       string         `json:"base_url,omitempty"`
+	// Tools and Sandbox carry the parent's effective tool filter and
+	// container posture; the child enforces them on top of its own config.
+	Tools   *taskToolsPosture   `json:"tools,omitempty"`
+	Sandbox *taskSandboxPosture `json:"sandbox,omitempty"`
 }
 
 // subagentProtocolV2 is the telemetry protocol version stamped into task

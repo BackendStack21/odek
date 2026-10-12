@@ -3,6 +3,8 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -140,12 +142,13 @@ func TestRED_EnsureStagingRoot_SymlinkedRootOverwritesOutsideGitignore(t *testin
 }
 
 // confighuntWriteEnvDumpChild writes a fake odek binary that records its
-// environment and returns a successful result.
+// environment and task file and returns a successful result.
 func confighuntWriteEnvDumpChild(t *testing.T, dir string) (fake, dump string) {
 	t.Helper()
 	dump = filepath.Join(dir, "env.txt")
 	fake = filepath.Join(dir, "fake-odek")
-	script := fmt.Sprintf("#!/bin/sh\nenv > %q\nprintf '{\"status\":\"success\",\"summary\":\"ok\",\"iterations\":1,\"tokens_used\":1}\\n'\n", dump)
+	task := filepath.Join(dir, "task.json")
+	script := fmt.Sprintf("#!/bin/sh\nenv > %q\nwhile [ \"$#\" -gt 0 ]; do if [ \"$1\" = \"--task\" ]; then shift; cp \"$1\" %q; fi; shift; done\nprintf '{\"status\":\"success\",\"summary\":\"ok\",\"iterations\":1,\"tokens_used\":1}\\n'\n", dump, task)
 	if err := os.WriteFile(fake, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -169,10 +172,24 @@ func confighuntApplyEnvDump(t *testing.T, dump string) {
 	}
 }
 
+// confighuntTaskSpec decodes the task file the fake child received.
+func confighuntTaskSpec(t *testing.T, dump string) taskFileSpec {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(filepath.Dir(dump), "task.json"))
+	if err != nil {
+		t.Fatalf("fake child did not receive a task file: %v", err)
+	}
+	spec, err := decodeTaskFileSpec(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return spec
+}
+
 // A parent started with `--sandbox --sandbox-readonly` (or another CLI
-// sandbox knob) spawns sandboxed children, but only ODEK_SANDBOX=true is
-// propagated: the child's own config resolution never sees the read-only
-// constraint, so its container mounts the workspace read-write.
+// sandbox knob) spawns sandboxed children, but the CLI-only knobs never
+// reached them: the child's own config resolution never saw the read-only
+// constraint, so its container mounted the workspace read-write.
 func TestRED_SubagentChild_InheritsParentSandboxReadonly(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -187,6 +204,7 @@ func TestRED_SubagentChild_InheritsParentSandboxReadonly(t *testing.T) {
 	fake, dump := confighuntWriteEnvDumpChild(t, t.TempDir())
 	tools := builtinTools(parent.Dangerous, nil, nil, parent.MaxConcurrency, "", toolConfigFromResolved(parent), nil)
 	applySandboxToolBindings(tools, "odek-test-container")
+	recordChildSandbox(tools, sandboxConfig{Readonly: true, Image: "img:1", Network: "none", Memory: "256m", CPUs: "1", User: "1000:1000"})
 	var dt *delegateTasksTool
 	for _, tl := range tools {
 		if d, ok := tl.(*delegateTasksTool); ok {
@@ -209,16 +227,20 @@ func TestRED_SubagentChild_InheritsParentSandboxReadonly(t *testing.T) {
 	if !child.Sandbox {
 		t.Fatal("precondition: child is not sandboxed")
 	}
+	applyTaskSandboxPosture(&child, confighuntTaskSpec(t, dump).Sandbox)
 	if !child.SandboxReadonly {
 		t.Errorf("sandboxed child resolves sandbox_readonly=false although the parent ran --sandbox-readonly: the child container mounts the workspace read-write")
+	}
+	if child.SandboxImage != "img:1" || child.SandboxNetwork != "none" || child.SandboxMemory != "256m" || child.SandboxCPUs != "1" || child.SandboxUser != "1000:1000" {
+		t.Errorf("child sandbox knobs not inherited: %+v", child)
 	}
 }
 
 // `odek run --no-tool shell --no-tool write_file "review this code"`
 // (docs/CONFIG.md) removes shell and write_file from the parent, but
 // delegate_tasks children resolve their own config from env/files only: the
-// CLI tool filter never reaches them, so the model (or an injection it
-// ingested) regains the disabled tools by delegating.
+// CLI tool filter never reached them, so the model (or an injection it
+// ingested) regained the disabled tools by delegating.
 func TestRED_SubagentChild_InheritsParentCLINoToolFilter(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -250,10 +272,18 @@ func TestRED_SubagentChild_InheritsParentCLINoToolFilter(t *testing.T) {
 	confighuntApplyEnvDump(t, dump)
 	child := config.LoadConfig(config.CLIFlags{})
 	childTools := filterBuiltinTools(builtinTools(child.Dangerous, nil, nil, child.MaxConcurrency, "", toolConfigFromResolved(child), nil), child.Tools, nil)
+	pf, ok := confighuntTaskSpec(t, dump).Tools.filter()
+	if !ok {
+		t.Fatal("task file carries no parent tool filter")
+	}
+	childTools = filterBuiltinTools(childTools, pf, nil)
 	for _, tl := range childTools {
 		if tl.Name() == "shell" || tl.Name() == "write_file" {
 			t.Errorf("sub-agent of a `--no-tool shell --no-tool write_file` parent still gets the %s tool", tl.Name())
 		}
+	}
+	if len(childTools) == 0 {
+		t.Error("child lost every tool")
 	}
 }
 
@@ -308,6 +338,7 @@ func TestRED_SubagentChild_DockerfileApprovedOnceStillBuildable(t *testing.T) {
 	})
 	confighuntApplyEnvDump(t, dump)
 	child := config.LoadConfig(config.CLIFlags{})
+	applyTaskSandboxPosture(&child, confighuntTaskSpec(t, dump).Sandbox)
 	if err := approveProjectSandboxWithTTY(child, strings.NewReader(""), &strings.Builder{}, false); err != nil {
 		t.Errorf("sandboxed child of an approved parent fails its startup gate: %v", err)
 	}
@@ -346,4 +377,55 @@ func TestRED_Staging_InWorkspaceSymlinksRefused(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(real, "main.go")); err != nil {
 		t.Errorf("workspace file touched: %v", err)
 	}
+}
+
+// Approval keys handed to a child are bound to the Dockerfile content hash:
+// a different Dockerfile in the child's workspace is still refused.
+func TestRED_SubagentChild_GrantedApprovalBoundToDockerfileContent(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ODEK_APPROVE_PROJECT_SANDBOX", "")
+	work := t.TempDir()
+	t.Chdir(work)
+	if err := os.WriteFile(filepath.Join(work, "Dockerfile.odek"), []byte("FROM alpine:3.19\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sessionDockerfileApprovalsMu.Lock()
+	saved := sessionDockerfileApprovals
+	sessionDockerfileApprovals = map[string]bool{}
+	sessionDockerfileApprovalsMu.Unlock()
+	t.Cleanup(func() {
+		sessionDockerfileApprovalsMu.Lock()
+		sessionDockerfileApprovals = saved
+		sessionDockerfileApprovalsMu.Unlock()
+	})
+	cwd, _ := os.Getwd()
+	cwd, _ = filepath.Abs(cwd)
+	sum := sha256.Sum256([]byte("FROM alpine:3.19\n"))
+	key := dockerfileApprovalKey(cwd, hex.EncodeToString(sum[:]))
+	var child config.ResolvedConfig
+	applyTaskSandboxPosture(&child, &taskSandboxPosture{ApprovalKeys: []string{key, "not-a-key"}})
+	if err := requireDockerfileBuildApproval(); err != nil {
+		t.Fatalf("granted key for the same content must be honoured: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(work, "Dockerfile.odek"), []byte("FROM evil\nRUN id\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := requireDockerfileBuildApproval(); err == nil {
+		t.Error("a changed Dockerfile must not be covered by the parent's granted key")
+	}
+}
+
+// confighuntResetSessionApprovals gives a test an empty in-memory approval
+// set and restores the previous one afterwards.
+func confighuntResetSessionApprovals(t *testing.T) {
+	t.Helper()
+	sessionDockerfileApprovalsMu.Lock()
+	saved := sessionDockerfileApprovals
+	sessionDockerfileApprovals = map[string]bool{}
+	sessionDockerfileApprovalsMu.Unlock()
+	t.Cleanup(func() {
+		sessionDockerfileApprovalsMu.Lock()
+		sessionDockerfileApprovals = saved
+		sessionDockerfileApprovalsMu.Unlock()
+	})
 }

@@ -2275,6 +2275,7 @@ func setupTestHome(t *testing.T) string {
 	dir := t.TempDir()
 	os.Setenv("HOME", dir)
 	t.Cleanup(func() { os.Setenv("HOME", orig) })
+	confighuntResetSessionApprovals(t)
 	return dir
 }
 
