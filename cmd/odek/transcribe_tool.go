@@ -466,7 +466,7 @@ func (t *transcribeTool) Call(argsJSON string) (result string, err error) {
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			return jsonResult(transcribeResult{
-				Error: fmt.Sprintf("whisper failed (exit %d): %s", exitErr.ExitCode(), string(exitErr.Stderr)),
+				Error: fmt.Sprintf("whisper failed (exit %d): %s", exitErr.ExitCode(), wrapUntrusted(t.toolCtx(), source, string(exitErr.Stderr))),
 			})
 		}
 		return jsonResult(transcribeResult{
@@ -492,7 +492,7 @@ func (t *transcribeTool) Call(argsJSON string) (result string, err error) {
 		// whisper output may not be valid JSON depending on version
 		// Fallback: use raw text output
 		return jsonResult(transcribeResult{
-			Text:     strings.TrimSpace(string(output)),
+			Text:     wrapUntrusted(t.toolCtx(), source, strings.TrimSpace(string(output))),
 			Duration: 0,
 			Model:    filepath.Base(modelPathResolved),
 		})
