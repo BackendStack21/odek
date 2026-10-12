@@ -7,6 +7,7 @@ import (
 // rbPathsAtLeast fails when Classify(cmd) ranks below min.
 func rbPathsAtLeast(t *testing.T, cmd string, min RiskClass) {
 	t.Helper()
+	t.Setenv("HOME", "/home/user")
 	if got := Classify(cmd); Rank(got) < Rank(min) {
 		t.Errorf("Classify(%q) = %s; want at least %s", cmd, got, min)
 	}
