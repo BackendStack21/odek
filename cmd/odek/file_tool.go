@@ -1614,7 +1614,7 @@ func confineToCWD(path string) (string, error) {
 func isProtectedOdekPath(rel string) bool {
 	// Case-folding defends against case-insensitive filesystems (macOS APFS):
 	// ~/.odek/CONFIG.JSON and ~/.odek/config.json are the same file.
-	rel = strings.ToLower(filepath.Clean(rel))
+	rel = danger.FoldPathCase(filepath.Clean(rel))
 
 	// Exact-file trust anchors. Rewriting any of these can disable safety
 	// policy, exfiltrate secrets, or persist attacker control.

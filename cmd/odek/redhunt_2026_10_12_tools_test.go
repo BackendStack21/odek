@@ -471,3 +471,12 @@ func TestToolsSSRFClassifyURLMapsIDNHosts(t *testing.T) {
 		t.Errorf("external IDN host = %v, want network_egress", got)
 	}
 }
+
+func TestToolsFoldPathCaseTrustAnchors(t *testing.T) {
+	if got := danger.FoldPathCase("\u017fecrets.env"); got != "secrets.env" {
+		t.Errorf("long s fold = %q", got)
+	}
+	if !isProtectedOdekPath("\u017fkills/x/SKILL.md") || !isProtectedOdekPath("\u017fessions/a.json") {
+		t.Error("folded aliases of skills/ and config.json must be protected")
+	}
+}
