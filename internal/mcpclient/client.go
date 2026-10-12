@@ -1195,7 +1195,10 @@ func (c *Client) readLoop() {
 		maxResp = maxMCPResponseLine
 	}
 	scanner := bufio.NewScanner(c.stdout)
-	scanner.Buffer(make([]byte, 0, 64*1024), int(maxResp))
+	// bufio.Scanner's token limit is the larger of max and cap(buf), so the
+	// initial buffer must not exceed the configured cap or a small
+	// max_response_bytes would silently be raised to the buffer size.
+	scanner.Buffer(make([]byte, 0, min(64*1024, int(maxResp))), int(maxResp))
 
 	for scanner.Scan() {
 		// scanner.Bytes is valid only until the next Scan; the only retained
