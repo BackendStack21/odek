@@ -558,3 +558,25 @@ func TestRED_PlanResumeInjectsPlanUnwrappedAndUntainted(t *testing.T) {
 		t.Error("session not marked UntrustedIngested after injecting plan-file content")
 	}
 }
+
+// While the holder is between clearing the pidfile and unlocking, a second
+// acquirer must not be told the daemon runs with an empty PID.
+func TestScheduleLockContendedWithEmptyPidfileHasNoEmptyPID(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	rel, err := acquireScheduleLock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rel()
+	lockPath := filepath.Join(os.Getenv("HOME"), ".odek", "schedule.pid")
+	if err := os.Truncate(lockPath, 0); err != nil {
+		t.Fatal(err)
+	}
+	_, err = acquireScheduleLock()
+	if err == nil {
+		t.Fatal("second acquire must fail while the lock is held")
+	}
+	if strings.Contains(err.Error(), "PID )") || !strings.Contains(err.Error(), "already running") {
+		t.Fatalf("error = %q, want an already-running message without an empty PID", err)
+	}
+}

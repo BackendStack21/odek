@@ -1045,7 +1045,9 @@ func acquireScheduleLock() (func(), error) {
 	release, err := flock.TryLock(lockPath)
 	if err != nil {
 		if errors.Is(err, flock.ErrLocked) {
-			if data, rerr := os.ReadFile(lockPath); rerr == nil {
+			// The holder clears the pidfile just before unlocking, so it can
+			// be momentarily empty: report the daemon without a PID then.
+			if data, rerr := os.ReadFile(lockPath); rerr == nil && strings.TrimSpace(string(data)) != "" {
 				return nil, fmt.Errorf("another schedule daemon is already running (PID %s)", strings.TrimSpace(string(data)))
 			}
 			return nil, fmt.Errorf("another schedule daemon is already running")
