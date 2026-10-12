@@ -103,7 +103,14 @@ func (c *DangerousConfig) PromptClassForCommand(cmd string) RiskClass {
 // substitutions, compound commands, pipelines and command wrappers.
 func Analyze(cmd string) Analysis {
 	defer beginPathMemo()()
-	return analyzeAtDepth(cmd, 0)
+	result := analyzeAtDepth(cmd, 0)
+	if strings.Contains(cmd, "${") {
+		// A default expansion is resolved as if its variable were unset; the
+		// literal spelling is judged too, so resolving never lowers a verdict.
+		literal := analyzeWithStateWork(cmd, 0, nil, &analysisWork{literalDefaults: true})
+		result.merge(literal)
+	}
+	return result
 }
 
 type shellAnalysisState struct {
@@ -141,7 +148,12 @@ type shellAnalysisState struct {
 // small fraction of it.
 const maxAnalysisTokens = 4096
 
-type analysisWork struct{ tokens int }
+type analysisWork struct {
+	tokens int
+	// literalDefaults keeps ${name:-word}-style expansions unresolved, which
+	// is how the literal spelling is judged alongside the resolved one.
+	literalDefaults bool
+}
 
 // Bound static expansion independently of recursion: repeated assignments
 // can otherwise double a value at each stage without nesting a command.
@@ -157,6 +169,10 @@ const MaxCommandBytes = 64 << 10
 func analyzeAtDepth(cmd string, depth int) Analysis { return analyzeWithState(cmd, depth, nil) }
 
 func analyzeWithState(cmd string, depth int, inherited *shellAnalysisState) Analysis {
+	return analyzeWithStateWork(cmd, depth, inherited, nil)
+}
+
+func analyzeWithStateWork(cmd string, depth int, inherited *shellAnalysisState, sharedWork *analysisWork) Analysis {
 	var result Analysis
 	if len(cmd) > MaxCommandBytes {
 		result.add(Unknown)
@@ -186,7 +202,10 @@ func analyzeWithState(cmd string, depth int, inherited *shellAnalysisState) Anal
 		// the rest of it into one word; whatever followed cannot be judged.
 		result.add(Unknown)
 	}
-	work := &analysisWork{}
+	work := sharedWork
+	if work == nil {
+		work = &analysisWork{}
+	}
 	if inherited != nil && inherited.work != nil {
 		work = inherited.work
 	}
@@ -1020,6 +1039,14 @@ func (s *shellAnalysisState) expandToken(token string, assignment bool, separato
 		b.WriteString(token[pos:dollar])
 		name, end := variableReference(token, dollar)
 		if name == "" {
+			if text, defEnd, ok := s.expandDefaultWord(token, dollar, separators); ok {
+				if text == dynamicSubstToken || b.Len()+len(text) > maxStaticWordBytes {
+					return dynamicSubstToken
+				}
+				b.WriteString(text)
+				pos = defEnd
+				continue
+			}
 			b.WriteByte('$')
 			pos = dollar + 1
 			continue

@@ -69,3 +69,40 @@ func TestRED_ArithmeticSubscriptSubstitutionRunsCommand(t *testing.T) {
 		`let 'x[0]=1'`,
 	)
 }
+
+// ${x:-word} expands to word when x is unset or empty: the git subcommand
+// that runs is push, but the verb word is not recognised and the command is
+// auto-allowed.
+func TestRED_GitSubcommandFromParameterDefault(t *testing.T) {
+	rh1012AtLeast(t, NetworkEgress,
+		`git ${x:-push}`,
+		`git ${x-push} origin main`,
+		`git "${x:-push}" --force`,
+		`x=; git ${x:-push}`,
+		`y=push; git ${y:-status}`,
+		`git ${x:=push}`,
+		`git ${x:-${z:-push}}`,
+		`y=push; git ${y:+push}`,
+	)
+	rh1012Safe(t,
+		`git ${x:-status}`,
+		`echo ${HOME:-/tmp}`,
+		`y=status; git ${y:-push}`,
+	)
+	// A default never lowers what the literal spelling already was.
+	rh1012AtLeast(t, Unknown, `rm -rf ${x:-/}`, `${x:-rm} -rf /`)
+}
+
+// The denylist sees the resolved default and the literal spelling.
+func TestRED_DenylistResolvesParameterDefault(t *testing.T) {
+	t.Setenv("HOME", "/home/user")
+	cfg := &DangerousConfig{Denylist: []string{"git push"}}
+	for _, cmd := range []string{`git ${x:-push} --force`, `git "${x-push}"`, `${g:-git} push`} {
+		if act := cfg.ActionForCommand(cmd); act != Deny {
+			t.Errorf("ActionForCommand(%q) = %s, want deny", cmd, act)
+		}
+	}
+	if act := cfg.ActionForCommand(`git ${x:-status}`); act == Deny {
+		t.Errorf("git ${x:-status} unexpectedly denied")
+	}
+}
