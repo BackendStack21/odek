@@ -9,11 +9,16 @@ import (
 
 // patternProbes are process names and command lines a catch-all pattern
 // matches together.
-var patternProbes = []string{"a", "x y", "zsh", "1", "-", "/usr/bin/python3 -m http.server"}
+var patternProbes = []string{
+	"a", "x y", "zsh", "bash", "sshd", "systemd", "launchd", "Finder", "node",
+	"kworker/0:1", "nginx: worker process", "/usr/sbin/sshd -D",
+	"/usr/bin/python3 -m http.server",
+}
 
-// matchesEveryProcess reports whether a pgrep/pkill pattern selects any
-// process: it matches every probe. A pattern that does not compile is
-// treated as matching everything.
+// matchesEveryProcess reports whether a pgrep/pkill pattern selects every
+// process: it matches every probe, so catch-alls such as `.`, `\w`, `[a-z]`
+// and `[[:alnum:]]` are caught alongside `.*`. A pattern that does not compile
+// is treated as matching everything (the caller prompts rather than denies).
 func matchesEveryProcess(pattern string) bool {
 	re, err := regexp.Compile(pattern)
 	if err != nil {
@@ -51,6 +56,18 @@ func killByNameBroadcasts(name string, tokens []string) bool {
 			}
 			if (tok == "-P" || tok == "--parent") && i+1 < len(tokens) && tokens[i+1] == "1" {
 				return true
+			}
+			// Every process of root (or uid 0) is the system's own.
+			switch tok {
+			case "-u", "-U", "--euid", "--uid", "--user":
+				if i+1 < len(tokens) && (tokens[i+1] == "root" || tokens[i+1] == "0") {
+					return true
+				}
+			}
+			for _, prefix := range []string{"-u", "-U", "--euid=", "--uid=", "--user="} {
+				if v, ok := strings.CutPrefix(tok, prefix); ok && (v == "root" || v == "0") {
+					return true
+				}
 			}
 			if tok == "-P1" || tok == "--parent=1" {
 				return true
