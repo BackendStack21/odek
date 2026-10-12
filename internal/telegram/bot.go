@@ -811,13 +811,13 @@ func (b *Bot) SetDailyTokenBudget(budget int64) {
 }
 
 // budgetFilePath returns the path to the daily token usage tracking file.
-// The file is scoped to the current date so budgets reset each day.
+// The file is scoped to the current UTC date so budgets reset at midnight UTC.
 func budgetFilePath() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		home = "."
 	}
-	date := time.Now().Format("2006-01-02")
+	date := time.Now().UTC().Format("2006-01-02")
 	return filepath.Join(home, ".odek", "telegram_token_usage_"+date)
 }
 
@@ -857,9 +857,13 @@ func (b *Bot) CheckDailyBudget(tokens int64) error {
 	var current int64
 	data, err := os.ReadFile(path)
 	if err == nil {
-		if parsed, err := strconv.ParseInt(string(data), 10, 64); err == nil {
-			current = parsed
+		parsed, perr := strconv.ParseInt(strings.TrimSpace(string(data)), 10, 64)
+		if perr != nil || parsed < 0 {
+			// An unreadable counter must not reset the day's usage to zero:
+			// treat the budget as spent (the write below heals the file).
+			parsed = b.DailyTokenBudget
 		}
+		current = parsed
 	} else if !os.IsNotExist(err) {
 		return fmt.Errorf("telegram: read budget file: %w", err)
 	}
@@ -898,9 +902,11 @@ func (b *Bot) DailyTokenUsage() (used int64, limit int64) {
 
 	data, err := os.ReadFile(path)
 	if err == nil {
-		if parsed, err := strconv.ParseInt(string(data), 10, 64); err == nil {
-			used = parsed
+		parsed, perr := strconv.ParseInt(strings.TrimSpace(string(data)), 10, 64)
+		if perr != nil || parsed < 0 {
+			parsed = b.DailyTokenBudget // corrupt counter: fail closed
 		}
+		used = parsed
 	}
 	return used, b.DailyTokenBudget
 }

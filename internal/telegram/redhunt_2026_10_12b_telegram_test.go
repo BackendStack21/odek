@@ -165,3 +165,44 @@ func TestRED_DoubleStarBoldInHeaderAddsNoNestedMarkers(t *testing.T) {
 		t.Errorf("got %q, want %q", got, want)
 	}
 }
+
+// A corrupt counter file must not reset the day's usage to zero.
+func TestRED_DailyBudgetFailsClosedOnCorruptCounter(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	if err := os.MkdirAll(filepath.Join(home, ".odek"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(budgetFilePath(), []byte("garbage"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	bot := NewBot("testtoken")
+	bot.SetDailyTokenBudget(1000)
+	if used, limit := bot.DailyTokenUsage(); used < limit {
+		t.Errorf("corrupt counter reads as used=%d under limit %d; want exhausted", used, limit)
+	}
+	if err := bot.CheckDailyBudget(10); err == nil {
+		t.Error("CheckDailyBudget accepted usage on a corrupt counter; want fail closed")
+	}
+}
+
+// The budget file is keyed by the UTC date, matching the "resets at midnight
+// UTC" message shown to users.
+func TestRED_DailyBudgetKeyedByUTCDate(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	// Pick a local zone whose calendar date differs from the UTC date now.
+	off := 14 * 3600
+	if time.Now().UTC().Hour() < 10 {
+		off = -12 * 3600
+	}
+	oldLocal := time.Local
+	time.Local = time.FixedZone("redhunt", off)
+	t.Cleanup(func() { time.Local = oldLocal })
+	want := "telegram_token_usage_" + time.Now().UTC().Format("2006-01-02")
+	if got := filepath.Base(budgetFilePath()); got != want {
+		t.Errorf("budget file %q, want %q", got, want)
+	}
+}
