@@ -49,8 +49,9 @@ func TestWSApprover_HandleResponse_Matching(t *testing.T) {
 	id := "test-id-1"
 
 	// Manually set up a pending request
+	ch := make(chan string, 1)
 	a.mu.Lock()
-	a.pending[id] = make(chan string, 1)
+	a.pending[id] = ch
 	a.mu.Unlock()
 
 	// Handle matching response
@@ -61,7 +62,7 @@ func TestWSApprover_HandleResponse_Matching(t *testing.T) {
 
 	// Verify the action was sent to the channel
 	select {
-	case action := <-a.pending[id]:
+	case action := <-ch:
 		if action != "approve" {
 			t.Errorf("expected 'approve', got %q", action)
 		}
@@ -87,8 +88,9 @@ func TestWSApprover_HandleResponse_DoesNotBlock(t *testing.T) {
 	a := newWSApprover(func(v any) error { return nil })
 	id := "test-id-block"
 
+	ch := make(chan string, 1)
 	a.mu.Lock()
-	a.pending[id] = make(chan string, 1)
+	a.pending[id] = ch
 	a.mu.Unlock()
 
 	// First response fills the buffer-1 channel.
@@ -99,7 +101,9 @@ func TestWSApprover_HandleResponse_DoesNotBlock(t *testing.T) {
 	// Second response must return promptly even though the channel is full.
 	done := make(chan struct{})
 	go func() {
-		a.HandleResponse(id, "approve")
+		if a.HandleResponse(id, "deny") {
+			t.Error("second HandleResponse must report false: the first answer was already delivered")
+		}
 		close(done)
 	}()
 
@@ -112,7 +116,7 @@ func TestWSApprover_HandleResponse_DoesNotBlock(t *testing.T) {
 
 	// Only one value should have been delivered.
 	select {
-	case action := <-a.pending[id]:
+	case action := <-ch:
 		if action != "approve" {
 			t.Errorf("expected 'approve', got %q", action)
 		}
