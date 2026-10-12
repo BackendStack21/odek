@@ -2260,13 +2260,14 @@ func handlePrompt(
 		auditSessID = currSess.ID
 		auditTurn = currSess.Turns + 1
 	}
-	if auditSessID != "" {
-		// Scope the ingest recorder to this prompt's context so concurrent
-		// sessions cannot overwrite each other's audit attribution.
-		ctx = loop.WithIngestRecorder(ctx, func(source, content string) {
-			_ = auditStore.RecordIngest(auditSessID, auditTurn, source, content)
-		})
-	}
+	// A brand-new conversation has no id until store.Create runs below, after
+	// @-references and attachments were wrapped. Ingests seen before then are
+	// held and flushed once the id is bound, so the first turn is audited too.
+	// Writes for a session deleted mid-turn are dropped.
+	audit := &serveAuditBinder{store: auditStore, sessions: store, id: auditSessID, turn: auditTurn}
+	// Scope the ingest recorder to this prompt's context so concurrent
+	// sessions cannot overwrite each other's audit attribution.
+	ctx = loop.WithIngestRecorder(ctx, audit.ingest)
 
 	// Resolve @ references (now recorded if a session is active)
 	refs := resource.ParseRefs(prompt)
@@ -2418,6 +2419,8 @@ func handlePrompt(
 		releaseExecution = release
 		sess.Sandbox = resolved.Sandbox
 		sess.Provider = resolved.Provider
+		auditSessID, auditTurn = sess.ID, sess.Turns+1
+		audit.bind(auditSessID, auditTurn)
 	}
 
 	cwd, _ := os.Getwd()
@@ -2573,7 +2576,7 @@ func handlePrompt(
 		sess.InputTokens += int64(contextTokens)
 		sess.OutputTokens += int64(outputTokens)
 	}
-	if auditSessID != "" {
+	if auditSessID != "" && audit.sessionExists(auditSessID) {
 		recordTurnAudit(auditStore, auditSessID, auditTurn, originalPrompt, session.TurnMessages(allMessages, turnID))
 	}
 	streamedReasoning, streamedContent := 0, 0
@@ -4175,4 +4178,48 @@ func isLoopbackAddr(a net.Addr) bool {
 		return false
 	}
 	return ta.IP.IsLoopback()
+}
+
+// serveAuditBinder routes ingest records to a session's audit log. The session
+// id may be bound after the recorder is installed (new conversations), and
+// records are dropped for sessions that no longer exist.
+type serveAuditBinder struct {
+	store    *session.AuditStore
+	sessions *session.Store
+	mu       sync.Mutex
+	id       string
+	turn     int
+	pending  [][2]string
+}
+
+func (b *serveAuditBinder) sessionExists(id string) bool {
+	_, err := os.Stat(b.sessions.Path(id))
+	return err == nil
+}
+
+func (b *serveAuditBinder) ingest(source, content string) {
+	b.mu.Lock()
+	id, turn := b.id, b.turn
+	if id == "" {
+		if len(b.pending) < 1024 {
+			b.pending = append(b.pending, [2]string{source, content})
+		}
+		b.mu.Unlock()
+		return
+	}
+	b.mu.Unlock()
+	if b.sessionExists(id) {
+		_ = b.store.RecordIngest(id, turn, source, content)
+	}
+}
+
+func (b *serveAuditBinder) bind(id string, turn int) {
+	b.mu.Lock()
+	b.id, b.turn = id, turn
+	pending := b.pending
+	b.pending = nil
+	b.mu.Unlock()
+	for _, p := range pending {
+		_ = b.store.RecordIngest(id, turn, p[0], p[1])
+	}
 }
