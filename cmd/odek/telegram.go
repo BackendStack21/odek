@@ -1653,7 +1653,7 @@ func runChatTurn(
 			pct := used * 100 / limit
 			if pct >= 80 {
 				sendAsync(bot, chatID, fmt.Sprintf(
-					"⚠️ *Budget: %d%% used* (%d/%d tokens)\\. "+
+					"⚠️ *Budget: %d%% used* \\(%d/%d tokens\\)\\. "+
 						"Consider `/new` to trim conversation history or set a higher `daily_token_budget`\\.",
 					pct, used, limit,
 				), &telegram.SendOpts{ParseMode: telegram.ParseModeMarkdownV2, ReplyToMessageID: messageID})
