@@ -1078,6 +1078,8 @@ func subagentCmd(args []string) error {
 	// Never more tools than the parent: intersect with its effective filter.
 	if parentFilter, ok := taskToolsPost.filter(); ok {
 		tools = filterBuiltinTools(tools, parentFilter, nil)
+		// Nested delegation carries both filters forward.
+		recordChildToolFilter(tools, mergeToolFilters(toolFilter, parentFilter))
 	}
 
 	var sandboxCleanup func() error

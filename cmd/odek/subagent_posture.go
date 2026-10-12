@@ -13,19 +13,49 @@ import (
 	"github.com/BackendStack21/odek/internal/sandbox"
 )
 
-// taskToolsPosture is the parent's effective tool allow-list as written into
-// a task file: the names of the tools that survived the parent's own
-// filtering. A child intersects its configuration with it.
+// taskToolsPosture is the parent's configured tool filter as written into a
+// task file: the allow and deny sets the parent itself was configured with.
+// It is absent when the parent has no filter, so a child then gets its normal
+// tool set. A child applies it on top of its own configuration.
 type taskToolsPosture struct {
-	Enabled []string `json:"enabled"`
+	Enabled  []string `json:"enabled"`
+	Disabled []string `json:"disabled,omitempty"`
 }
 
 // filter returns the child-side tool filter for this posture.
 func (p *taskToolsPosture) filter() (config.ToolConfig, bool) {
-	if p == nil || p.Enabled == nil {
+	if p == nil || (p.Enabled == nil && len(p.Disabled) == 0) {
 		return config.ToolConfig{}, false
 	}
-	return config.ToolConfig{Enabled: p.Enabled}, true
+	return config.ToolConfig{Enabled: p.Enabled, Disabled: p.Disabled}, true
+}
+
+// mergeToolFilters combines two filters so the result permits only what both
+// permit: allow-lists intersect, deny-lists union.
+func mergeToolFilters(a, b config.ToolConfig) config.ToolConfig {
+	out := config.ToolConfig{}
+	switch {
+	case a.Enabled == nil:
+		out.Enabled = b.Enabled
+	case b.Enabled == nil:
+		out.Enabled = a.Enabled
+	default:
+		in := make(map[string]bool, len(b.Enabled))
+		for _, n := range b.Enabled {
+			in[n] = true
+		}
+		out.Enabled = []string{}
+		for _, n := range a.Enabled {
+			if in[n] {
+				out.Enabled = append(out.Enabled, n)
+			}
+		}
+	}
+	out.Disabled = append(append([]string{}, a.Disabled...), b.Disabled...)
+	if len(out.Disabled) == 0 {
+		out.Disabled = nil
+	}
+	return out
 }
 
 // taskSandboxPosture is the parent's container posture as written into a
@@ -46,25 +76,29 @@ var approvalKeyPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 const maxTaskApprovalKeys = 16
 
-// recordChildToolAllow stamps the names that survived the parent's tool
-// filter onto every delegate_tasks tool in the unfiltered list.
-func recordChildToolAllow(all, survivors []odek.Tool) {
-	names := make([]string, 0, len(survivors))
-	for _, t := range survivors {
-		names = append(names, t.Name())
-	}
+// recordChildToolFilter stamps the parent's configured tool filter onto every
+// delegate_tasks tool in the list. An unconfigured filter clears it, so the
+// child gets its normal tool set.
+func recordChildToolFilter(all []odek.Tool, cfg config.ToolConfig) {
 	for _, t := range all {
 		if d, ok := t.(*delegateTasksTool); ok {
-			d.setChildToolAllow(names)
+			d.setChildToolFilter(cfg)
 		}
 	}
 }
 
-func (t *delegateTasksTool) setChildToolAllow(names []string) {
+func (t *delegateTasksTool) setChildToolFilter(cfg config.ToolConfig) {
 	t.sessMu.Lock()
 	defer t.sessMu.Unlock()
-	t.childToolAllow = append([]string{}, names...)
-	t.childToolAllowSet = true
+	if cfg.Enabled == nil && len(cfg.Disabled) == 0 {
+		t.childToolFilter = nil
+		return
+	}
+	c := config.ToolConfig{Disabled: append([]string(nil), cfg.Disabled...)}
+	if cfg.Enabled != nil {
+		c.Enabled = append([]string{}, cfg.Enabled...)
+	}
+	t.childToolFilter = &c
 }
 
 // recordChildSandbox stamps the parent's container settings onto every
@@ -87,8 +121,8 @@ func (t *delegateTasksTool) childPosture() (*taskToolsPosture, *taskSandboxPostu
 	t.sessMu.Lock()
 	defer t.sessMu.Unlock()
 	var tp *taskToolsPosture
-	if t.childToolAllowSet {
-		tp = &taskToolsPosture{Enabled: append([]string{}, t.childToolAllow...)}
+	if f := t.childToolFilter; f != nil {
+		tp = &taskToolsPosture{Enabled: f.Enabled, Disabled: f.Disabled}
 	}
 	var sp *taskSandboxPosture
 	if t.childSandbox != nil {

@@ -74,11 +74,10 @@ type delegateTasksTool struct {
 	// every task file so a child's container is never weaker than the
 	// parent's (read-only mount, image, network, limits, user).
 	childSandbox *taskSandboxPosture
-	// childToolAllow is the set of tool names that survived the parent's
-	// own tool filter (nil until a filter ran). A child is restricted to it
-	// and can never regain a tool the parent was configured without.
-	childToolAllow    []string
-	childToolAllowSet bool
+	// childToolFilter is the tool filter the parent was configured with (nil
+	// when it has none). A child applies it and can never regain a tool the
+	// parent was configured without.
+	childToolFilter *config.ToolConfig
 
 	// artifactsRoot is the artifacts home (~/.odek/artifacts in production,
 	// wired in builtinTools). When empty, no artifact dirs are created and

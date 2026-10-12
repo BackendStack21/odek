@@ -2833,9 +2833,10 @@ func filterBuiltinTools(tools []odek.Tool, cfg config.ToolConfig, required map[s
 	for i, t := range filtered {
 		out[i] = t.(odekToolAdapter).tool
 	}
-	// delegate_tasks children inherit exactly the tools that survived this
-	// filter (they can narrow it further, never widen it).
-	recordChildToolAllow(tools, out)
+	// delegate_tasks children inherit the filter itself (they can narrow it
+	// further, never widen it); with no filter configured they get their
+	// normal tool set.
+	recordChildToolFilter(tools, cfg)
 	return out
 }
 
