@@ -223,9 +223,9 @@ func credentialValueOK(v string, quoted, passwordName bool) bool {
 		return false
 	}
 	if quoted {
-		return !quotedReference(v)
+		return !quotedReference(v) && !secretPathReference(v)
 	}
-	return !codeExpression(v)
+	return !codeExpression(v) && !sourceValue(v) && !secretPathReference(v)
 }
 
 // referenceValue reports whether a rejected value is a variable, template or
@@ -235,9 +235,39 @@ func referenceValue(v string, quoted bool) bool {
 		return false
 	}
 	if quoted {
-		return quotedReference(v)
+		return quotedReference(v) || secretPathReference(v)
 	}
-	return envRefRe.MatchString(strings.TrimRight(v, ";,"))
+	return envRefRe.MatchString(strings.TrimRight(v, ";,")) || secretPathReference(v)
+}
+
+// secretPathReference reports whether v points at a secret store: an
+// @env:NAME reference or a home-relative path.
+func secretPathReference(v string) bool {
+	return strings.HasPrefix(v, "@env:") || strings.HasPrefix(v, "~/")
+}
+
+var (
+	sourceIdentRe = regexp.MustCompile(`^[A-Za-z_]+$`)
+)
+
+// sourceValue reports whether an unquoted value reads as source code rather
+// than a literal secret: an address-of or dereference (&password,
+// *body.Password), an object or composite literal opening, or an identifier
+// or selector expression that ends a struct field or call (cfg.Password,
+// passwordFromVault)).
+func sourceValue(v string) bool {
+	switch v[0] {
+	case '&', '*', '{':
+		return true
+	}
+	t := strings.TrimRight(v, ",);")
+	if t == v || t == "" {
+		return false
+	}
+	if sourceIdentRe.MatchString(t) {
+		return true
+	}
+	return memberChainRe.MatchString(t)
 }
 
 // credentialMatches returns the [start,end) offsets of every credential

@@ -81,3 +81,22 @@ func TestRED_SkippedReferenceNotRedactedFromInside(t *testing.T) {
 		}
 	}
 }
+
+// Go and JS source and secret references stay readable.
+func TestRED_SourceAndReferencesNotRedacted(t *testing.T) {
+	for _, in := range []string{
+		"bbp.Password = &password1234",
+		"Password: &password1234,",
+		"Password: *body.Password,",
+		"Password: cfg.Password,",
+		"Password: cfg.Password1)",
+		`password = "@env:AC_PASSWORD"`,
+		"password = ~/.config/vault/pw1",
+		`"github-mcp-token": {"github-mcp-token", false, 1},`,
+		"Password: passwordFromVault,",
+	} {
+		if out := RedactSecrets(in); out != in {
+			t.Errorf("over-redacted: %q -> %q", in, out)
+		}
+	}
+}
