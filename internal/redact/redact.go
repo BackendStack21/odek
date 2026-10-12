@@ -179,7 +179,12 @@ var guardedPatterns = []guardedPattern{
 	// Lower-case, Capitalised and UPPER spellings of token/secret, but
 	// only lower-case/Capitalised "pass" (UPPER PASS is test-runner output)
 	// unless it ends an env-style name (DB_PASS).
-	{regexp.MustCompile(`(?:\b(?:token|secret|passphrase|pass|Token|Secret|Passphrase|Pwd|Pass|TOKEN|SECRET|PASSPHRASE)|_(?i:token|secret|passphrase|pwd|pass)|\b[a-z][a-z0-9]*(?:Token|Secret|Passphrase|Password))` + gSep + gVal), looksSecret},
+	{regexp.MustCompile(`(?:\b(?:token|secret|passphrase|Token|Secret|Passphrase|TOKEN|SECRET|PASSPHRASE)|_(?i:token|secret|passphrase|pwd|pass)|\b[a-z][a-z0-9]*(?:Token|Secret|Passphrase|Password))` + gSep + gVal), looksSecret},
+	// Bare pwd/PWD keys (ODBC pwd=..., PWD=...): the shell's PWD variable
+	// holds a working directory, so path-shaped values are not credentials.
+	{regexp.MustCompile(`\b(?:pwd|Pwd|PWD)` + gSep + gVal), looksSecretNotPath},
+	// Bare pass keys: test runners print `pass: TestX_Delete2`.
+	{regexp.MustCompile(`\b(?:pass|Pass)` + gSep + gVal), looksSecretNotTestName},
 	// CLI flags with a whitespace-separated value (--password VALUE,
 	// --secret-key VALUE, --private-key VALUE).
 	{regexp.MustCompile(`(?i)--?(?:password|passwd|passphrase|pwd|pass|token|secret|api[_-]?key|secret[_-]?key|private[_-]?key|access[_-]?key|client[_-]?secret)[ \t]+("[^"\n]{20,}"|'[^'\n]{20,}'|[^\s"']{20,})`), plausibleValue},
@@ -200,16 +205,25 @@ func plausibleValue(v string) bool {
 // with overwhelming probability, while identifiers, import paths, resource
 // names and test names rarely do.
 func looksSecret(v string) bool {
-	if !plausibleValue(v) || !strings.ContainsAny(v, "0123456789") || strings.Contains(v, "://") {
-		return false
-	}
-	t := strings.Trim(strings.TrimSuffix(strings.TrimPrefix(v, "<![CDATA["), "]]>"), "\"'`")
-	// Filesystem paths (a working directory in env output) and Go test
-	// names are not credentials.
+	return plausibleValue(v) && strings.ContainsAny(v, "0123456789") && !strings.Contains(v, "://")
+}
+
+func unwrapValue(v string) string {
+	return strings.Trim(strings.TrimSuffix(strings.TrimPrefix(v, "<![CDATA["), "]]>"), "\"'`")
+}
+
+// looksSecretNotPath additionally rejects filesystem paths.
+func looksSecretNotPath(v string) bool {
+	t := unwrapValue(v)
 	if strings.HasPrefix(t, "/") || strings.HasPrefix(t, "~") || strings.HasPrefix(t, "./") || strings.HasPrefix(t, "../") {
 		return false
 	}
-	return !goTestName.MatchString(t)
+	return looksSecret(v)
+}
+
+// looksSecretNotTestName additionally rejects Go test identifiers.
+func looksSecretNotTestName(v string) bool {
+	return looksSecret(v) && !goTestName.MatchString(unwrapValue(v))
 }
 
 var goTestName = regexp.MustCompile(`^(?:Test|Benchmark|Fuzz|Example)[A-Za-z0-9]*(?:_[A-Za-z0-9]+)*$`)
