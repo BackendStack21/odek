@@ -72,12 +72,13 @@ func IsSensitiveReadPath(root, path string) bool {
 			}
 		}
 		lh := FoldPathCase(home)
-		for _, sub := range []string{"/.ssh", "/.gnupg", "/.aws", "/.kube", "/.azure",
-			"/.password-store", "/.config/gcloud", "/.config/gh", "/.docker/config.json",
-			"/.local/share/keyrings"} {
-			if lower == lh+sub || strings.HasPrefix(lower, lh+sub+"/") {
+		for _, sub := range homeSensitivePrefixes {
+			if strings.HasPrefix(lower, lh+sub) {
 				return true
 			}
+		}
+		if lower == lh+"/.local/share/keyrings" || strings.HasPrefix(lower, lh+"/.local/share/keyrings/") {
+			return true
 		}
 	}
 	return false

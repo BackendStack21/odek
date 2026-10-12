@@ -435,6 +435,17 @@ func accountHomes(abs string) []string {
 	return homes
 }
 
+// homeSensitivePrefixes are the home-relative prefixes that hold credentials
+// or configuration with code-execution reach. ClassifyPath rates them
+// system_write and IsSensitiveReadPath refuses them as @-references, so the
+// two gates share this one table.
+var homeSensitivePrefixes = []string{"/.ssh", "/.config", "/.gnupg", "/.aws", "/.kube",
+	"/.docker", "/.gitconfig", "/.env",
+	"/.netrc", "/.npmrc", "/.pypirc", "/.pgpass",
+	"/.git-credentials", "/.my.cnf", "/.mylogin.cnf",
+	"/.cargo", "/.gem", "/.azure", "/.password-store",
+	"/.terraform.d", "/.vault-token"}
+
 // classifyHomeRelative applies the home-directory rules to abs for one
 // account home. The boolean is false when abs is not protected by them.
 func classifyHomeRelative(home, abs string) (RiskClass, bool) {
@@ -443,12 +454,7 @@ func classifyHomeRelative(home, abs string) (RiskClass, bool) {
 	// /Users/x/.SSH and /Users/x/.ssh are the same directory and an
 	// exact-case match would let a case variant slip past the guard.
 	lowerAbs, lowerHome := FoldPathCase(abs), FoldPathCase(home)
-	for _, sub := range []string{"/.ssh", "/.config", "/.gnupg", "/.aws", "/.kube",
-		"/.docker", "/.gitconfig", "/.env",
-		"/.netrc", "/.npmrc", "/.pypirc", "/.pgpass",
-		"/.git-credentials", "/.my.cnf", "/.mylogin.cnf",
-		"/.cargo", "/.gem", "/.azure", "/.password-store",
-		"/.terraform.d", "/.vault-token"} {
+	for _, sub := range homeSensitivePrefixes {
 		if strings.HasPrefix(lowerAbs, lowerHome+sub) {
 			return SystemWrite, true
 		}
