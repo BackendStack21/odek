@@ -7,7 +7,6 @@ import (
 	"io"
 	"os"
 	"regexp"
-	"sort"
 	"strings"
 	"syscall"
 	"unicode/utf8"
@@ -27,6 +26,9 @@ const unreadScriptScanMaxBytes = 256 << 10
 // CPU/memory sink.
 const (
 	maxEncodedCandidateBytes = 1 << 20
+	maxDecodedPerToken       = 32 << 10
+	decodedHeadBytes         = 1 << 10
+	decodedHeadOverlap       = 64
 	maxEncodedTokenBytes     = 128 << 10
 	maxDecodedTotalBytes     = 256 << 10
 )
@@ -171,7 +173,7 @@ func decodedLooksTextual(dec string) bool {
 // decodeEncodedTokens extracts candidate encoded blobs and returns every
 // successful single-layer decode, concatenated with separators. Work is
 // bounded by bytes, not by candidate count: candidates are deduplicated and
-// tried longest first, only text-like decodes are kept, and the total
+// tried in source order, only text-like decodes are kept, and the total
 // decoded and candidate bytes are capped. A script full of ordinary long
 // paths therefore cannot starve a real payload.
 func decodeEncodedTokens(data []byte) string {
@@ -199,23 +201,47 @@ func decodeEncodedTokens(data []byte) string {
 			add(tok)
 		}
 	}
-	sort.SliceStable(toks, func(i, j int) bool { return len(toks[i]) > len(toks[j]) })
+	// Decode in source order. Identical decodes (a +/-free token decodes the
+	// same under every alphabet) are kept once, each is clipped to
+	// maxDecodedPerToken, and the output is emitted in two rounds - the head
+	// of every decode first, the remainders after - so one large benign blob
+	// cannot use up the budget before a later, short payload is reached.
+	var decs []string
+	seenDec := make(map[string]bool)
 	work := maxEncodedCandidateBytes
 	for _, tok := range toks {
 		if work -= len(tok); work < 0 {
 			break
 		}
 		for _, dec := range tryDecodeToken(tok) {
-			if !decodedLooksTextual(dec) {
+			if !decodedLooksTextual(dec) || seenDec[dec] {
 				continue
 			}
-			if len(dec) > budget {
-				dec = dec[:budget]
+			seenDec[dec] = true
+			if len(dec) > maxDecodedPerToken {
+				dec = dec[:maxDecodedPerToken]
 			}
-			b.WriteByte('\n')
-			b.WriteString(dec)
-			budget -= len(dec)
-			if budget <= 0 {
+			decs = append(decs, dec)
+		}
+	}
+	emit := func(part string) bool {
+		if len(part) > budget {
+			part = part[:budget]
+		}
+		b.WriteByte('\n')
+		b.WriteString(part)
+		budget -= len(part)
+		return budget <= 0
+	}
+	for _, dec := range decs {
+		if emit(dec[:min(len(dec), decodedHeadBytes)]) {
+			return b.String()
+		}
+	}
+	for _, dec := range decs {
+		if len(dec) > decodedHeadBytes {
+			// Overlap the cut so a phrase straddling it is still seen whole.
+			if emit(dec[decodedHeadBytes-decodedHeadOverlap:]) {
 				return b.String()
 			}
 		}
