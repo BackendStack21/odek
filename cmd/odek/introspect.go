@@ -254,8 +254,9 @@ func redactCredentialArgs(args []string) []string {
 	for i, a := range args {
 		if redactNext {
 			redactNext = false
-			// A following flag means the credential flag took no value.
-			if !strings.HasPrefix(a, "-") {
+			// A following long flag (--name) means the credential flag took
+			// no value; anything else, even a dash-led token, is the value.
+			if !looksLikeLongFlag(a) {
 				out[i] = redactedArgPlaceholder
 				continue
 			}
@@ -284,6 +285,16 @@ func redactCredentialArgs(args []string) []string {
 		out[i] = redactPositionalArg(a)
 	}
 	return out
+}
+
+// looksLikeLongFlag reports whether a is shaped like `--name` or `--name=…`
+// (a letter right after the double dash).
+func looksLikeLongFlag(a string) bool {
+	if len(a) < 3 || a[0] != '-' || a[1] != '-' {
+		return false
+	}
+	c := a[2]
+	return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z'
 }
 
 // redactPositionalArg masks a credential embedded in a single argument that
