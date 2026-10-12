@@ -273,6 +273,38 @@ func TestRED_ClassifyURLZoneScopedIPv6Loopback(t *testing.T) {
 	}
 }
 
+// Shell and REPL history, fish config and rotated odek logs are refused as
+// @-references and rated system_write by the path classifier.
+func TestRED_SensitiveReadPathHistoryAndRotatedLogs(t *testing.T) {
+	t.Setenv("HOME", "/home/user")
+	for _, p := range []string{
+		"/home/user/.zsh_sessions/ABC.history", "/home/user/.zsh_sessions", "/home/user/.zhistory",
+		"/home/user/.histfile", "/home/user/.local/share/fish/fish_history",
+		"/home/user/.config/fish/config.fish", "/home/user/.python_history",
+		"/home/user/.node_repl_history", "/home/user/.psql_history", "/home/user/.mysql_history",
+		"/home/user/.sqlite_history", "/home/user/.lesshst", "/home/user/.viminfo",
+		"/home/user/.odek/runtime.log.1", "/home/user/.odek/runtime.log.12", "/home/user/.odek/schedule.log.2",
+		"/home/user/.odek/runtime.log",
+	} {
+		if !IsSensitiveReadPath("", p) {
+			t.Errorf("IsSensitiveReadPath(%q) = false, want true", p)
+		}
+	}
+	for _, p := range []string{"/home/user/.odek/runtime.log.1", "/home/user/.zhistory", "/home/user/.config/fish/config.fish"} {
+		if got := ClassifyPath(p); Rank(got) < Rank(SystemWrite) {
+			t.Errorf("ClassifyPath(%q) = %s, want at least system_write", p, got)
+		}
+	}
+	for _, p := range []string{
+		"/home/user/.config/Code/settings.json", "/home/user/.local/share/applications/x.desktop",
+		"/home/user/project/runtime.log.1", "/home/user/.odek-notes/runtime.log.1", "/home/user/.history-docs/readme.md",
+	} {
+		if IsSensitiveReadPath("", p) {
+			t.Errorf("IsSensitiveReadPath(%q) = true, want false", p)
+		}
+	}
+}
+
 func TestRED_RecursiveReadersBroaderRootsAndNegatives(t *testing.T) {
 	t.Setenv("HOME", "/home/user")
 	t.Chdir(t.TempDir())

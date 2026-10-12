@@ -170,7 +170,7 @@ func TestHardening_NewNetworkAndExec(t *testing.T) {
 		{"uv run script.py", CodeExecution},
 		{"source ./evil.sh", CodeExecution},
 		{". /tmp/payload", CodeExecution},
-		{"find / -name '*.key' -exec cat {} +", CodeExecution},
+		{"find / -name '*.key' -exec cat {} +", SystemWrite},
 		{"pnpm add left-pad", Install},
 	}
 	for _, tc := range cases {

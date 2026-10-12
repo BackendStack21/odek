@@ -85,7 +85,7 @@ func IsSensitiveReadPath(root, path string) bool {
 		if isOdekTrustAnchor(home, abs) {
 			return true
 		}
-		if filepath.Dir(abs) == home {
+		if FoldPathCase(filepath.Dir(abs)) == FoldPathCase(home) {
 			b := FoldPathCase(filepath.Base(abs))
 			if shellRCFilesLower[b] || strings.HasSuffix(b, "_history") && strings.HasPrefix(b, ".") {
 				return true

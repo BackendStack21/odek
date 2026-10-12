@@ -412,25 +412,21 @@ func accountHomes(abs string) []string {
 	if physical := currentHomeDirs(); len(physical) > 1 {
 		homes = append(homes, physical[1:]...)
 	}
-	lower := strings.ToLower(abs)
-	for _, base := range []string{"/home/", "/users/"} {
-		if !strings.HasPrefix(lower, base) {
-			continue
-		}
-		rest := abs[len(base):]
-		name, _, _ := strings.Cut(rest, "/")
-		if name == "" {
-			continue
-		}
-		homes = append(homes, abs[:len(base)]+name)
+	if !strings.HasPrefix(abs, "/") {
+		return homes
 	}
-	if lower == "/root" || strings.HasPrefix(lower, "/root/") {
-		homes = append(homes, abs[:len("/root")])
-	}
-	// macOS keeps the superuser's home at /var/root (/private/var/root before
-	// the /private prefix is stripped).
-	if lower == "/var/root" || strings.HasPrefix(lower, "/var/root/") {
-		homes = append(homes, abs[:len("/var/root")])
+	// Components are compared case-folded with the full path-case fold: on a
+	// case-insensitive filesystem /Uſers/alice is /Users/alice.
+	comps := strings.Split(abs[1:], "/")
+	switch first := FoldPathCase(comps[0]); {
+	case (first == "home" || first == "users") && len(comps) > 1 && comps[1] != "":
+		homes = append(homes, "/"+comps[0]+"/"+comps[1])
+	case first == "root":
+		homes = append(homes, "/"+comps[0])
+	case first == "var" && len(comps) > 1 && FoldPathCase(comps[1]) == "root":
+		// macOS keeps the superuser's home at /var/root (/private/var/root
+		// before the /private prefix is stripped).
+		homes = append(homes, "/"+comps[0]+"/"+comps[1])
 	}
 	return homes
 }
@@ -477,7 +473,7 @@ func classifyHomeRelative(home, abs string) (RiskClass, bool) {
 	// Shell rc/profile files execute on the user's next shell start —
 	// writing them is persistence/escalation, not a local file edit.
 	// Case-folding defends against case-insensitive filesystems (macOS APFS).
-	if filepath.Dir(abs) == home && shellRCFilesLower[FoldPathCase(filepath.Base(abs))] {
+	if FoldPathCase(filepath.Dir(abs)) == lowerHome && shellRCFilesLower[FoldPathCase(filepath.Base(abs))] {
 		return SystemWrite, true
 	}
 	return LocalWrite, false
