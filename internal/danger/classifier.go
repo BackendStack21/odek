@@ -159,6 +159,7 @@ package danger
 import (
 	"encoding/binary"
 	"fmt"
+	"golang.org/x/net/idna"
 	"net"
 	"net/url"
 	"os"
@@ -797,6 +798,44 @@ func isOdekTrustAnchor(home, abs string) bool {
 // accept via inet_aton-style parsing) instead of string prefix matching
 // which was trivially bypassable.
 func ClassifyURL(rawURL string) RiskClass {
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Host == "" {
+		return classifyURLHost(rawURL)
+	}
+	host := u.Hostname()
+	ascii := true
+	for i := 0; i < len(host); i++ {
+		if host[i] >= 0x80 {
+			ascii = false
+			break
+		}
+	}
+	if ascii {
+		return classifyURLHost(rawURL)
+	}
+	// net/http maps the host through UTS-46 before dialing, so fullwidth or
+	// otherwise folded spellings reach the host they normalise to. Classify
+	// the mapped spelling too; a host that cannot be mapped is refused.
+	mapped, err := idna.Lookup.ToASCII(host)
+	if err != nil || mapped == "" {
+		return SystemWrite
+	}
+	if strings.Contains(mapped, ":") {
+		mapped = "[" + mapped + "]"
+	}
+	if port := u.Port(); port != "" {
+		mapped = mapped + ":" + port
+	}
+	clone := *u
+	clone.Host = mapped
+	a, b := classifyURLHost(clone.String()), classifyURLHost(rawURL)
+	if Rank(b) > Rank(a) {
+		return b
+	}
+	return a
+}
+
+func classifyURLHost(rawURL string) RiskClass {
 	u, err := url.Parse(rawURL)
 	if err != nil || u.Scheme == "" || u.Host == "" {
 		return NetworkEgress // can't parse — don't block, but will fail at fetch time
