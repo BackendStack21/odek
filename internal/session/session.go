@@ -1012,7 +1012,8 @@ func (s *Store) saveLockedMode(sess *Session, lazyIndex bool) (err error) {
 	// ErrConflict forever with unsaved turns. Snapshot everything the
 	// mutation touches and restore it on any error return.
 	var (
-		snapshotTask = sess.Task
+		snapshotTask   = sess.Task
+		snapshotBuffer = sess.Buffer
 		// Element copy, not a header copy: trimToFileCapLocked compacts the
 		// slice IN PLACE, which would corrupt the shared backing array under
 		// a header-copy snapshot and restore shifted/garbled contents after
@@ -1024,6 +1025,7 @@ func (s *Store) saveLockedMode(sess *Session, lazyIndex bool) (err error) {
 	defer func() {
 		if err != nil {
 			sess.Task = snapshotTask
+			sess.Buffer = snapshotBuffer
 			sess.Messages = snapshotMessages
 			sess.RedactBoundary = snapshotBoundary
 			sess.RedactBoundaryFP = snapshotBoundaryFP
@@ -1042,6 +1044,14 @@ func (s *Store) saveLockedMode(sess *Session, lazyIndex bool) (err error) {
 	// scanned — messages already redacted by a previous save are not
 	// re-scanned (see the field comment for the O(n²) rationale).
 	sess.Task = redact.RedactSecrets(sess.Task)
+	if len(sess.Buffer) > 0 {
+		// Copy first: the slice may alias the caller's buffer snapshot.
+		buf := make([]string, len(sess.Buffer))
+		for i, line := range sess.Buffer {
+			buf[i] = redact.RedactSecrets(line)
+		}
+		sess.Buffer = buf
+	}
 	if len(sess.Decisions) > 128 {
 		sess.Decisions = sess.Decisions[len(sess.Decisions)-128:]
 	}
@@ -1617,11 +1627,25 @@ func (s *Store) removeFilesLocked(id string) error {
 		// The audit log records ingest sources and resources of the session;
 		// it must not outlive a session the operator deleted.
 		_ = NewAuditStore(s.dir).Remove(id)
+		s.removeRunLock(id)
 	}
 	if os.IsNotExist(err) {
 		return nil
 	}
 	return err
+}
+
+// removeRunLock unlinks the session's execution lock file. The lock is taken
+// first and the file unlinked while it is held, so a live run (which holds
+// the lock) keeps its file; a missing or busy lock is left alone.
+func (s *Store) removeRunLock(id string) {
+	path := filepath.Join(s.dir, "."+id+".run.lock")
+	release, err := flock.TryLock(path)
+	if err != nil {
+		return
+	}
+	_ = os.Remove(path)
+	release()
 }
 
 // removeVectors drops ids from the vector index with a single store write.
