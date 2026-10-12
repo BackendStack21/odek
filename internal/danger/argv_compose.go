@@ -150,6 +150,9 @@ func argvComposeBounded(stage []string, stdin string, haveStdin bool) (out [][]s
 	emit := func(c []string) {
 		if len(out) < maxComposedCommands {
 			out = append(out, c)
+		} else {
+			// Lines beyond the cap would go unexamined: fail closed.
+			over = true
 		}
 	}
 	placeholder := ph != "" && anyContains(cmd, ph)
@@ -166,6 +169,7 @@ func argvComposeBounded(stage []string, stdin string, haveStdin bool) (out [][]s
 	case placeholder:
 		for _, l := range lines {
 			if len(out) >= maxComposedCommands {
+				over = true
 				break
 			}
 			lt := len(l)/2 + 1
