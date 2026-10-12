@@ -505,6 +505,9 @@ func analyzeWithStateWork(cmd string, depth int, inherited *shellAnalysisState, 
 			if recursiveReadsSecretTree(name, inner, stageCwd) {
 				result.add(SystemWrite)
 			}
+			if piped && pipeFedReadsSecretTree(upstream, stage, stageCwd) {
+				result.add(SystemWrite)
+			}
 			if name == "sqlite3" {
 				// readfile()/fsdir() pull a file's content into the query
 				// output: a credential or trust-anchor path is a secret read.

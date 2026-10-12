@@ -1,6 +1,7 @@
 package danger
 
 import (
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -102,6 +103,56 @@ func dangerHunt12bAtMost(t *testing.T, max RiskClass, cmd string) {
 	t.Helper()
 	if got := Classify(cmd); Rank(got) > Rank(max) {
 		t.Errorf("Classify(%q) = %s, want at most %s", cmd, got, max)
+	}
+}
+
+// finalHuntHomeCwd makes the working directory the user's home.
+func finalHuntHomeCwd(t *testing.T) string {
+	t.Helper()
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Chdir(home)
+	return home
+}
+
+// A bot launched from $HOME must still be able to search its sources and list
+// files: only readers that print file content broadly are secret reads.
+func TestRED_RecursiveReadersFromHomeAreNotOverStrict(t *testing.T) {
+	home := finalHuntHomeCwd(t)
+	for _, cmd := range []string{
+		`rg TODO`, `rg --files`, `rg -n TODO .`, `grep -r TODO .`, `grep -rn TODO ` + home,
+		`grep -rl foo .`, `rg -l foo ~`, `ag foo`, `find . -name '*.go' -exec grep -l foo {} +`,
+		`find . -name '*.go' -exec grep -n TODO {} +`,
+	} {
+		if got := Classify(cmd); Rank(got) >= Rank(SystemWrite) {
+			t.Errorf("Classify(%q) = %s, want below system_write", cmd, got)
+		}
+	}
+	dangerHunt12bAtLeast(t, SystemWrite,
+		`rg .`, `rg ''`, `grep -r '' .`, `grep -r . ~`, `rg -v zzz`, `rg KEY`, `rg -i password .`,
+		`rg -e foo -e .`, `grep -rE '^' .`,
+		`tar czf /tmp/x.tgz .`, `cp -r . /tmp/copy`, `find . -exec cat {} +`,
+		`find . -name '*.go' -exec grep -v zzz {} +`, `rg -uuu . ~`,
+		`grep -r foo /proc/self`, `grep -r foo /etc`, `rg foo /`)
+}
+
+func TestRED_RecursiveReaderWildcardRootsAndPipes(t *testing.T) {
+	t.Setenv("HOME", "/home/user")
+	t.Chdir(t.TempDir())
+	dangerHunt12bAtLeast(t, SystemWrite,
+		`rg KEY /ho?e/user`, `grep -r . /h*/user`, `rg -uu . /[h]ome/user`, `rg KEY /home/*`,
+		`find ~ -type f | xargs cat`, `find /home/user -name '*.pem' | xargs cat`,
+		`find ~ -type f -print0 | xargs -0 cat`, `find /home/user | xargs grep -h .`)
+	for _, cmd := range []string{
+		`find ~ -name '*.go' | xargs wc -l`, `find src | xargs cat`, `find . -name '*.go' | xargs cat`,
+		`rg TODO /ho?e/user`, `ls /ho?e/user`,
+	} {
+		if got := Classify(cmd); Rank(got) >= Rank(SystemWrite) {
+			t.Errorf("Classify(%q) = %s, want below system_write", cmd, got)
+		}
 	}
 }
 
