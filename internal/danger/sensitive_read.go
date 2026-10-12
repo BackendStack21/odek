@@ -19,8 +19,12 @@ var sensitiveDotDirs = fieldSet(".aws .ssh .kube .gnupg .azure .gcloud .secrets"
 // keyDirs are directory names that mark a *.key file as key material.
 var keyDirs = fieldSet("ssl tls certs certificates private keys pki secrets .secrets")
 
-// keyNameHints are name fragments that mark a *.key file as key material.
-var keyNameHints = []string{"server", "private", "priv", "secret", "tls", "ssl", "cert", "client", "ca", "id_", "signing", "jwt", "api"}
+// keyExactNames are whole file names (without .key) that mark key material.
+var keyExactNames = fieldSet("server private priv privkey secret tls ssl cert client ca signing jwt api host")
+
+// keyStrongTokens are name components (split on - _ .) that mark a *.key
+// file as key material wherever they appear.
+var keyStrongTokens = fieldSet("server private priv privkey secret tls ssl signing jwt")
 
 func stripPrivate(p string) string {
 	if rest, ok := strings.CutPrefix(p, "/private/"); ok {
@@ -111,16 +115,15 @@ func likelyKeyFile(base, dir string) bool {
 		}
 	}
 	name := strings.TrimSuffix(base, ".key")
-	for _, h := range keyNameHints {
-		if name == h || strings.Contains(name, h) && len(h) > 2 {
-			return true
-		}
+	// Generic words (client, ca, api, cert) name key material only as the
+	// whole file name; as a fragment they also appear in documents such as
+	// Keynote decks ("presentation-client.key", "capital-plan.key").
+	if keyExactNames[name] || strings.HasPrefix(name, "id_") {
+		return true
 	}
 	for _, p := range strings.FieldsFunc(name, func(r rune) bool { return r == '-' || r == '_' || r == '.' }) {
-		for _, h := range keyNameHints {
-			if p == h {
-				return true
-			}
+		if keyStrongTokens[p] {
+			return true
 		}
 	}
 	return false
