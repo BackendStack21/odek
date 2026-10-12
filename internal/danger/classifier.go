@@ -2564,7 +2564,7 @@ func builtinEnvDump(tokens []string) bool {
 		}
 		// `set -o` prints all options; `set -o errexit` sets one.
 		return len(tokens) == 2 && tokens[1] == "-o"
-	case "export", "declare", "typeset":
+	case "export", "declare", "typeset", "readonly":
 		sawFunc := false
 		flagOnly := true
 		for _, t := range tokens[1:] {

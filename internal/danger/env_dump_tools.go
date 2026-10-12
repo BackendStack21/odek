@@ -10,7 +10,11 @@ import (
 // jqEnvironmentRe matches jq's environment builtins (`env`, `$ENV`,
 // `$__prog_env`-style spellings and yq's `strenv`) in a filter program. A
 // field access such as `.env` or a quoted key is data and does not match.
-var jqEnvironmentRe = regexp.MustCompile(`(?:^|[^A-Za-z0-9_.\-"'])(?:\$ENV|\$__env|env|strenv)(?:[^A-Za-z0-9_\-]|$)`)
+var jqEnvironmentRe = regexp.MustCompile(`(?:^|[^A-Za-z0-9_.\-"'$])(?:\$ENV|\$__env|env|strenv)(?:[^A-Za-z0-9_\-]|$)`)
+
+// yqEnvironmentRe matches yq's env(NAME) / strenv(NAME) operators and a
+// $ENV reference.
+var yqEnvironmentRe = regexp.MustCompile(`(?:^|[^A-Za-z0-9_.\-"'$])(?:strenv|env)\s*\(|\$ENV\b`)
 
 // jqValueOptions take the next one (or two) words as values, not as the
 // program.
@@ -24,6 +28,22 @@ var jqValueOptions = map[string]int{
 // bare `env`.
 func jqDumpsEnvironment(name string, tokens []string) bool {
 	switch name {
+	case "yq":
+		for _, tok := range tokens[1:] {
+			if yqEnvironmentRe.MatchString(tok) {
+				return true
+			}
+		}
+		return false
+	case "awk", "gawk", "mawk", "nawk":
+		// ENVIRON holds the process environment; gawk's PROCINFO exposes
+		// more process state.
+		for _, tok := range tokens[1:] {
+			if strings.Contains(tok, "ENVIRON") || strings.Contains(tok, "PROCINFO") {
+				return true
+			}
+		}
+		return false
 	case "jq", "gojq", "jaq":
 	default:
 		return false
