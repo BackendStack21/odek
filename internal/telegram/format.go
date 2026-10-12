@@ -57,13 +57,6 @@ func FormatResponse(text string) ([]string, error) {
 			continue
 		}
 
-		// ── MEDIA prefix lines: leave as-is ──
-		if strings.HasPrefix(line, "MEDIA:") {
-			flushTable()
-			resultLines = append(resultLines, line)
-			continue
-		}
-
 		// ── Separator lines: ─── or ──...── → --- ──
 		if isSeparator(line) {
 			flushTable()
