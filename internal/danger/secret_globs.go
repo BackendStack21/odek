@@ -170,7 +170,12 @@ func globNamesSensitivePath(tok string) bool {
 // any process component, then a component that can be "environ".
 func globEnvironMatch(pat []string) bool {
 	for i := 0; i+2 < len(pat); i++ {
-		if pat[i] == "proc" && globSegMatch(pat[i+2], "environ") && globLiteralRun(pat[i+2]) >= 2 {
+		if pat[i] != "proc" || !globSegMatch(pat[i+2], "environ") {
+			continue
+		}
+		// A bare wildcard as the last component of a process directory
+		// reads every file in it, environ included.
+		if globLiteralRun(pat[i+2]) >= 2 || (i+3 == len(pat) && strings.Trim(pat[i+2], "*") == "") {
 			return true
 		}
 	}

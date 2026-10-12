@@ -494,6 +494,33 @@ func analyzeWithStateWork(cmd string, depth int, inherited *shellAnalysisState, 
 					}
 				}
 			}
+			if recursiveReadsSecretTree(name, inner, stageCwd) {
+				result.add(SystemWrite)
+			}
+			if name == "sqlite3" {
+				// readfile()/fsdir() pull a file's content into the query
+				// output: a credential or trust-anchor path is a secret read.
+				var scripts []string
+				scripts = append(scripts, inner[1:]...)
+				if piped {
+					if text, ok := staticPipeText(upstream); ok {
+						scripts = append(scripts, text)
+					}
+				}
+				for _, script := range scripts {
+					for _, target := range sqliteSQLReadTargets(script) {
+						if target == dynamicSubstToken {
+							result.add(Unknown)
+							continue
+						}
+						path := resolveInDirectory(expandShellTokenPath(target), stageCwd)
+						if credentialPathToken(path) || isSensitivePath(path) {
+							result.add(SystemWrite)
+						}
+						result.add(classifyResourceToken(path))
+					}
+				}
+			}
 			if isNetworkEgress(name, inner) {
 				result.add(NetworkEgress)
 			}

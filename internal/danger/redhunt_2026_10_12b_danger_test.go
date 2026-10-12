@@ -273,6 +273,57 @@ func TestRED_ClassifyURLZoneScopedIPv6Loopback(t *testing.T) {
 	}
 }
 
+func TestRED_RecursiveReadersBroaderRootsAndNegatives(t *testing.T) {
+	t.Setenv("HOME", "/home/user")
+	t.Chdir(t.TempDir())
+	dangerHunt12bAtLeast(t, SystemWrite,
+		`grep -rn KEY /proc/self/`,
+		`grep --recursive KEY /proc/12345`,
+		`grep -d recurse KEY /proc/thread-self`,
+		`egrep -ri secret ~`,
+		`rg KEY /home/user`,
+		`rg KEY /home/other`,
+		`ag KEY /proc/self`,
+		`find /proc/self -type f -exec cat {} +`,
+		`find ~ -name '*.pem' -exec cat {} \;`,
+		`tar czf /tmp/x.tgz ~`,
+		`cp -r ~ /tmp/copy`,
+		`rsync -a /home/user/ /tmp/copy/`,
+		`grep -r KEY /etc`,
+		`cat /proc/self/*`,
+	)
+	for _, cmd := range []string{
+		`grep -r TODO src/`, `grep TODO /proc/self/status`, `rg KEY docs`, `grep -rn foo .`,
+		`find . -name '*.go' -exec gofmt -l {} +`, `find ~ -name '*.go'`, `tar xzf a.tgz`,
+		`cp -r src /tmp/src2`, `ls -R /proc/self`, `grep KEY /home/user/notes.txt`,
+	} {
+		if got := Classify(cmd); Rank(got) >= Rank(SystemWrite) {
+			t.Errorf("Classify(%q) = %s, want below system_write", cmd, got)
+		}
+	}
+}
+
+func TestRED_SqliteReadfileBroaderForms(t *testing.T) {
+	t.Setenv("HOME", "/home/user")
+	t.Chdir(t.TempDir())
+	dangerHunt12bAtLeast(t, SystemWrite,
+		`sqlite3 db "select readfile('/etc/shadow')"`,
+		`sqlite3 db "select * from fsdir('/home/user/.ssh')"`,
+		`echo "select readfile('/home/user/.odek/config.json')" | sqlite3 db`,
+		`sqlite3 db "SELECT READFILE( '/home/user/.aws/credentials' )"`,
+	)
+	dangerHunt12bAtLeast(t, Unknown,
+		`sqlite3 db "select readfile(p) from t"`,
+	)
+	cfg := &DangerousConfig{}
+	for _, cmd := range []string{`sqlite3 db "select 1"`, `sqlite3 db "select readfile('notes.txt')"`} {
+		if got := Classify(cmd); Rank(got) >= Rank(SystemWrite) {
+			t.Errorf("Classify(%q) = %s, want below system_write", cmd, got)
+		}
+		_ = cfg
+	}
+}
+
 func TestRED_DenylistComposedAndArithmeticBodiesBroader(t *testing.T) {
 	t.Setenv("HOME", "/home/user")
 	t.Chdir(t.TempDir())
