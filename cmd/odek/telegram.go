@@ -2534,11 +2534,6 @@ func formatTelegramStats(info loop.IterationInfo, toolList []string) string {
 	)
 }
 
-// telegramPlanResume loads the chat's most recent plan into its conversation
-// and returns the reply text. Plan files are written by the agent during a
-// /plan turn and can carry content from untrusted sources, so the body is
-// injected inside the untrusted wrapper (only the continuation instruction
-// stays outside) and the session is marked tainted, like any other ingest.
 // telegramPlanViewTruncate caps a plan for display, cutting on a rune
 // boundary so the message stays valid UTF-8.
 func telegramPlanViewTruncate(content string) string {
@@ -2553,6 +2548,11 @@ func telegramPlanViewTruncate(content string) string {
 	return content[:cut] + "\n\n… _(truncated — plan too long for Telegram)_"
 }
 
+// telegramPlanResume loads the chat's most recent plan into its conversation
+// and returns the reply text. Plan files are written by the agent during a
+// /plan turn and can carry content from untrusted sources, so the body is
+// injected inside the untrusted wrapper (only the continuation instruction
+// stays outside) and the session is marked tainted, like any other ingest.
 func telegramPlanResume(chatID int64, sessionManager *telegram.SessionManager) string {
 	slug, content, err := telegram.MostRecentPlan(chatID)
 	if err != nil {
