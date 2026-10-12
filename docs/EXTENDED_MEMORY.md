@@ -487,7 +487,7 @@ The existing `memory` tool is extended with new actions:
 | `search_atoms` | `query` (required) | Explicit semantic search over the trusted atom corpus. |
 | `forget_atom` | `atom_id` (required) | Remove an atom by ID from the live store or quarantine. |
 | `pin_atom` | `atom_id` (required) | Pin a live atom so it is never evicted. |
-| `list_quarantine` | — | List tainted atoms awaiting promotion. |
+| `list_quarantine` | — | List tainted atoms awaiting promotion. A session that calls this (or `list_pending_review`) derives an untrusted episode, so the quarantined text cannot reach recall through the episode summary. |
 | `confirm_pending_review` | `pending_id` (required) | **Blocked**: pending reviews must be confirmed via the CLI. |
 | `reject_pending_review` | `pending_id` (required) | Reject a pending user-model inference. |
 | `list_pending_review` | — | List pending user-model inferences. |

@@ -97,6 +97,8 @@ var EpisodePathTools = map[string]bool{
 //     conservatively; absent/empty paths default to the workspace (trusted).
 //   - EpisodeShellTools taint when the command has a network or unknown
 //     effect (see shellCommandTaints); local commands stay trusted.
+//   - memory calls taint when the action surfaces quarantined or
+//     pending-review text (list_quarantine, list_pending_review).
 //   - Everything else (patch, write_file, …) is trusted.
 func ToolCallTaintsEpisode(name, argsJSON string) bool {
 	if strings.Contains(name, "__") {
@@ -111,7 +113,32 @@ func ToolCallTaintsEpisode(name, argsJSON string) bool {
 	if EpisodeShellTools[name] {
 		return shellCommandTaints(argsJSON)
 	}
+	if name == "memory" {
+		return memoryCallSurfacesUnreviewed(argsJSON)
+	}
 	return false
+}
+
+// episodeUnreviewedMemoryActions are memory-tool actions whose output carries
+// text the trust boundary refused or has not reviewed: quarantined atoms
+// (guard-rejected or extracted from untrusted sources) and pending-review
+// inferences with their conversation evidence. Surfacing them into a
+// transcript must not produce a trusted, auto-recalled episode.
+var episodeUnreviewedMemoryActions = map[string]bool{
+	"list_quarantine":     true,
+	"list_pending_review": true,
+}
+
+// memoryCallSurfacesUnreviewed reports whether a memory call returns
+// quarantined or unreviewed text. Malformed arguments taint conservatively.
+func memoryCallSurfacesUnreviewed(argsJSON string) bool {
+	var a struct {
+		Action string `json:"action"`
+	}
+	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
+		return true
+	}
+	return episodeUnreviewedMemoryActions[a.Action]
 }
 
 // EpisodeTaintSources walks messages and returns, in first-seen order, the
