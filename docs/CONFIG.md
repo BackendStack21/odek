@@ -531,7 +531,7 @@ Tests: `internal/budget/`, `internal/config/limits_test.go`, `internal/loop/budg
 
 | Field | Default | Env var | Description |
 |-------|---------|---------|-------------|
-| `max_concurrency` | `3` | `ODEK_MAX_CONCURRENCY` | Max concurrent sub-agent tasks spawned by `delegate_tasks`; tasks beyond the cap queue. 0 = default 3. The parent agent's own stream runs alongside them, so `3` means 4 concurrent provider streams — some providers (e.g. z.ai GLM) throttle around 5 concurrent streams and 429-saturate above that. |
+| `max_concurrency` | `3` | `ODEK_MAX_CONCURRENCY` | Max concurrent sub-agent tasks spawned by `delegate_tasks`; tasks beyond the cap queue. 0 = default 3. A project `./odek.json` may only lower it below the operator value (or the default 3); the sub-agent limiter is capped at 8. The parent agent's own stream runs alongside them, so `3` means 4 concurrent provider streams — some providers (e.g. z.ai GLM) throttle around 5 concurrent streams and 429-saturate above that. |
 | `trusted_proxies` | `[]` | `ODEK_TRUSTED_PROXIES` | Comma-separated list of IP addresses or CIDR ranges whose `X-Forwarded-For` / `X-Real-Ip` headers are honoured by `odek serve` for rate-limit attribution. Empty list means forwarding headers are ignored. |
 
 `trusted_proxies` is security-relevant: misconfiguring it can allow clients to spoof their IP and bypass the per-IP rate limiters on `/ws` upgrades and session lookups. Configure it only in operator-controlled sources (`~/.odek/config.json` or `ODEK_TRUSTED_PROXIES`).

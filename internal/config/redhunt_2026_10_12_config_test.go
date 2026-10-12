@@ -25,3 +25,23 @@ func TestRED_ProjectAddingURLToAutoApprovedStdioServerDropsAutoApprove(t *testin
 		t.Errorf("project-supplied url %q + token_env %q inherited the global auto_approve for a stdio fingerprint; the server would connect (and send the operator token) without any prompt", srv.URL, srv.TokenEnv)
 	}
 }
+
+func TestRED_ProjectMaxConcurrencyOnlyLowers(t *testing.T) {
+	cases := []struct {
+		global, project string
+		want            int
+	}{
+		{`{}`, `{"max_concurrency":64}`, 3},
+		{`{"max_concurrency":5}`, `{"max_concurrency":64}`, 5},
+		{`{"max_concurrency":5}`, `{"max_concurrency":2}`, 2},
+		{`{}`, `{}`, 3},
+	}
+	for _, c := range cases {
+		dir := redIsolate(t)
+		writeGlobalConfig(t, dir, c.global)
+		writeProjectConfig(t, dir, c.project)
+		if got := LoadConfig(CLIFlags{}).MaxConcurrency; got != c.want {
+			t.Errorf("global %s project %s: MaxConcurrency = %d, want %d", c.global, c.project, got, c.want)
+		}
+	}
+}

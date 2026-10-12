@@ -1952,6 +1952,20 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	// own budgets is safe, loosening the operator's budgets is not.
 	clampProjectLimits(global.Limits, project.Limits)
 
+	// max_concurrency bounds the process-wide sub-agent limiter when the
+	// operator sets no subagent.max_concurrency: a repo may only lower it
+	// below the operator's value (or the shipped default of 3).
+	if project.MaxConcurrency > 0 {
+		ceiling := global.MaxConcurrency
+		if ceiling <= 0 {
+			ceiling = 3
+		}
+		if project.MaxConcurrency > ceiling {
+			fmt.Fprintf(os.Stderr, "odek: WARNING: clamping max_concurrency=%d from project config (%s) to %d — a project may only lower it\n", project.MaxConcurrency, ProjectConfigPath(), ceiling)
+			project.MaxConcurrency = ceiling
+		}
+	}
+
 	// Planning ("planning" section): same clamp philosophy. A repo may opt
 	// out entirely and may tighten its own caps, but cannot re-enable a
 	// globally-disabled feature or raise an explicitly-set global cap.

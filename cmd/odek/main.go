@@ -2665,6 +2665,9 @@ func builtinTools(dc danger.DangerousConfig, sm *skills.SkillManager, approver d
 	if subConcurrency <= 0 {
 		subConcurrency = maxConcurrency
 	}
+	if subConcurrency > 8 {
+		subConcurrency = 8 // same ceiling as subagent.max_concurrency
+	}
 	subDepth := tcfg.Subagent.MaxDepth
 	if subDepth <= 0 {
 		subDepth = 2
