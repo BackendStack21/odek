@@ -20,6 +20,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/BackendStack21/odek/internal/danger"
 	"github.com/BackendStack21/odek/internal/pathutil"
 	"github.com/BackendStack21/odek/internal/session"
 )
@@ -370,6 +371,14 @@ func (f *FileResolver) Load(ctx context.Context, id string) (string, error) {
 	resolvedTarget := pathutil.ResolveDirSymlinks(target)
 	if !pathutil.WithinRoot(f.root, resolvedTarget) {
 		return "", fmt.Errorf("resource: path %q is outside root", id)
+	}
+
+	// An @-reference expands into the prompt with no approval step, so it
+	// must not read what the file tools gate: odek's trust anchors under
+	// ~/.odek (secrets, config, sessions, ...), credential files and other
+	// system-sensitive paths. This matters when the workspace is $HOME.
+	if danger.Rank(danger.ClassifyPath(resolvedTarget)) >= danger.Rank(danger.SystemWrite) {
+		return "", fmt.Errorf("resource: %q is a protected path and cannot be referenced", id)
 	}
 
 	// Open with O_NOFOLLOW to atomically prevent the final component from

@@ -566,6 +566,8 @@ If you find a format that leaks, add a regex to `internal/redact/redact.go` and 
 
 ### Audit log
 
+**@-file references refuse protected paths.** `@path` references expand into the prompt with no approval step, so the file resolver refuses any target the danger classifier rates `system_write` or higher: odek's trust anchors under `~/.odek` (secrets.env, config.json, sessions, memory, ...), credential files and directories (`.env`, SSH keys, cloud credentials) and system paths. This holds when the workspace is `$HOME`.
+
 Every time the agent ingests externally-sourced content — any `wrapUntrusted` call in a tool result, and any wrapper entering the **user** message (@-references, `--ctx` files, Web-UI attachments) — odek records:
 
 - the source (URL / path / `mcp:server:tool`)
