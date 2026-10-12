@@ -467,13 +467,13 @@ func (u *UserModel) applyDiff(ctx context.Context, diff userStateDiff) error {
 			continue
 		}
 		existing[key] = true
-		if p.ID == "" {
-			id, err := generateAtomID()
-			if err != nil {
-				continue
-			}
-			p.ID = id
+		// The ID is always generated: a model-supplied one could carry
+		// control characters or collide with an existing entry.
+		id, err := generateAtomID()
+		if err != nil {
+			continue
 		}
+		p.ID = id
 		if p.CreatedAt.IsZero() {
 			p.CreatedAt = time.Now().UTC()
 		}
