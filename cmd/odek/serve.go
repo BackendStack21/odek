@@ -203,6 +203,35 @@ var wsHandlerWG sync.WaitGroup
 // lookups, raising the cost of brute-force enumeration of session IDs.
 var sessionLookupLimiter = newRateLimiter(60, time.Minute)
 
+// jobsLookupLimiter is the rejection budget of the polled /api/jobs
+// endpoints, kept apart from sessionLookupLimiter: the WebUI polls every few
+// seconds per tab, so a deleted or tokenless session in a few tabs would
+// otherwise starve session detail and token-bootstrap lookups.
+var jobsLookupLimiter = newRateLimiter(60, time.Minute)
+
+// sessionScopedProxies are the trusted proxies used to key the lookup limiter
+// for session-scoped endpoints whose handlers are not given the list
+// (/api/cancel, jobs, artifacts, subagents). Set once at serve startup.
+var sessionScopedProxies []string
+
+// limitedLookupReject returns the status and message for a rejected session
+// lookup (unknown id or bad token): the original pair while the caller's
+// sessionLookupLimiter budget lasts, 429 once it is spent. Every
+// session-scoped endpoint routes its 404/401 through it so none becomes an
+// unthrottled enumeration oracle.
+func limitedLookupReject(r *http.Request, trustedProxies []string, code int, msg string) (int, string) {
+	if !sessionLookupLimiter.allow(clientIP(r, trustedProxies)) {
+		return http.StatusTooManyRequests, "rate limit exceeded"
+	}
+	return code, msg
+}
+
+// rejectSessionLookup writes a rejected session lookup through the limiter.
+func rejectSessionLookup(w http.ResponseWriter, r *http.Request, trustedProxies []string, code int, msg string) {
+	c, m := limitedLookupReject(r, trustedProxies, code, msg)
+	http.Error(w, m, c)
+}
+
 // rateLimiter is a tiny per-key sliding-window rate limiter.
 type rateLimiter struct {
 	mu      sync.Mutex
@@ -613,6 +642,7 @@ func newServeMux(d serveMuxDeps) *http.ServeMux {
 	mux.Handle("/api/maintenance", apiAuth(handleMaintenance(expandHome("~/.odek"), resolved)))
 	mux.Handle("/api/resources", apiAuth(handleResourceSearch(resourceReg)))
 	mux.Handle("/api/sessions", apiAuth(handleSessionListPaged(store)))
+	sessionScopedProxies = resolved.TrustedProxies
 	mux.Handle("/api/sessions/", apiAuth(handleSessionByID(store, resolved.TrustedProxies, wsToken)))
 	mux.Handle("/api/models", apiAuth(handleModelList(resolved.Model, newServeModelLister(resolved), resolved.Provider)))
 	mux.Handle("/api/workspace", apiAuth(handleWorkspace(resolved)))
@@ -2169,6 +2199,22 @@ func handlePrompt(
 	// and background wakes all pass through this boundary.
 	var err error
 	if sessionID != "" {
+		// Reject unknown and unauthenticated sessions before taking the
+		// execution lock: acquiring it creates a lock file, so an unknown id
+		// must never reach it. The checks repeat under the lock below.
+		pre, preErr := store.Load(sessionID)
+		if preErr != nil {
+			sendError(send, "session not found")
+			return currSess
+		}
+		preToken := msg.AuthToken
+		if preToken == "" && currSess != nil && currSess.ID == pre.ID {
+			preToken = currSess.AuthToken
+		}
+		if !wakeInitiated(msg) && !validateSessionTokenStrict(store, pre, preToken) {
+			sendError(send, "invalid session token")
+			return currSess
+		}
 		release, lockErr := store.AcquireExecution(ctx, sessionID)
 		if lockErr != nil {
 			sendError(send, lockErr.Error())
@@ -3621,12 +3667,12 @@ func handleSessionByID(store *session.Store, trustedProxies []string, wsToken st
 		case http.MethodDelete:
 			sess, err := store.Load(id)
 			if err != nil {
-				http.Error(w, "session not found", http.StatusNotFound)
+				rejectSessionLookup(w, r, trustedProxies, http.StatusNotFound, "session not found")
 				return
 			}
 			token := sessionTokenFromRequest(r)
 			if !validateSessionTokenStrict(store, sess, token) {
-				http.Error(w, "invalid session token", http.StatusUnauthorized)
+				rejectSessionLookup(w, r, trustedProxies, http.StatusUnauthorized, "invalid session token")
 				return
 			}
 			if err := store.Delete(id); err != nil {
@@ -3653,12 +3699,12 @@ func handleSessionByID(store *session.Store, trustedProxies []string, wsToken st
 			}
 			sess, err := store.Load(id)
 			if err != nil {
-				http.Error(w, "session not found", http.StatusNotFound)
+				rejectSessionLookup(w, r, trustedProxies, http.StatusNotFound, "session not found")
 				return
 			}
 			token := sessionTokenFromRequest(r)
 			if !validateSessionTokenStrict(store, sess, token) {
-				http.Error(w, "invalid session token", http.StatusUnauthorized)
+				rejectSessionLookup(w, r, trustedProxies, http.StatusUnauthorized, "invalid session token")
 				return
 			}
 			if body.Name != nil {
@@ -3928,11 +3974,11 @@ func handleCancel(store *session.Store) http.HandlerFunc {
 
 		sess, err := store.Load(sessionID)
 		if err != nil {
-			http.Error(w, "session not found", http.StatusNotFound)
+			rejectSessionLookup(w, r, sessionScopedProxies, http.StatusNotFound, "session not found")
 			return
 		}
 		if !validateSessionTokenStrict(store, sess, sessionTokenFromRequest(r)) {
-			http.Error(w, "invalid session token", http.StatusUnauthorized)
+			rejectSessionLookup(w, r, sessionScopedProxies, http.StatusUnauthorized, "invalid session token")
 			return
 		}
 

@@ -1012,7 +1012,8 @@ func (s *Store) saveLockedMode(sess *Session, lazyIndex bool) (err error) {
 	// ErrConflict forever with unsaved turns. Snapshot everything the
 	// mutation touches and restore it on any error return.
 	var (
-		snapshotTask = sess.Task
+		snapshotTask   = sess.Task
+		snapshotBuffer = sess.Buffer
 		// Element copy, not a header copy: trimToFileCapLocked compacts the
 		// slice IN PLACE, which would corrupt the shared backing array under
 		// a header-copy snapshot and restore shifted/garbled contents after
@@ -1024,6 +1025,7 @@ func (s *Store) saveLockedMode(sess *Session, lazyIndex bool) (err error) {
 	defer func() {
 		if err != nil {
 			sess.Task = snapshotTask
+			sess.Buffer = snapshotBuffer
 			sess.Messages = snapshotMessages
 			sess.RedactBoundary = snapshotBoundary
 			sess.RedactBoundaryFP = snapshotBoundaryFP
@@ -1042,6 +1044,14 @@ func (s *Store) saveLockedMode(sess *Session, lazyIndex bool) (err error) {
 	// scanned — messages already redacted by a previous save are not
 	// re-scanned (see the field comment for the O(n²) rationale).
 	sess.Task = redact.RedactSecrets(sess.Task)
+	if len(sess.Buffer) > 0 {
+		// Copy first: the slice may alias the caller's buffer snapshot.
+		buf := make([]string, len(sess.Buffer))
+		for i, line := range sess.Buffer {
+			buf[i] = redact.RedactSecrets(line)
+		}
+		sess.Buffer = buf
+	}
 	if len(sess.Decisions) > 128 {
 		sess.Decisions = sess.Decisions[len(sess.Decisions)-128:]
 	}
@@ -1113,7 +1123,29 @@ func (s *Store) saveLockedMode(sess *Session, lazyIndex bool) (err error) {
 	sess.EpisodeTaintTracked = true
 	for i := boundary; i < len(sess.Messages); i++ {
 		sess.Messages[i].Content = redact.RedactSecrets(sess.Messages[i].Content)
-		sess.Messages[i].ReasoningContent = redact.RedactSecrets(sess.Messages[i].ReasoningContent)
+		origReasoning := sess.Messages[i].ReasoningContent
+		sess.Messages[i].ReasoningContent = redact.RedactSecrets(origReasoning)
+		// A signature covers the exact reasoning text. When redaction changes
+		// that text, the signed reasoning can never be replayed (the provider
+		// would reject the mismatch on every continue), so drop it with its
+		// provenance: the turn then replays without thinking.
+		changed := sess.Messages[i].ReasoningContent != origReasoning && sess.Messages[i].ThinkingSignature != ""
+		if blocks := sess.Messages[i].ThinkingBlocks; len(blocks) > 0 {
+			// Copy first: the slice may be shared with the caller's live history.
+			redacted := append([]ThinkingBlock(nil), blocks...)
+			for j := range redacted {
+				if t := redact.RedactSecrets(redacted[j].Text); t != redacted[j].Text {
+					redacted[j].Text = t
+					changed = true
+				}
+			}
+			sess.Messages[i].ThinkingBlocks = redacted
+		}
+		if changed {
+			sess.Messages[i].ThinkingBlocks = nil
+			sess.Messages[i].ThinkingSignature = ""
+			sess.Messages[i].ThinkingProvider = ""
+		}
 		// Tool-call arguments are model-authored (shell commands, headers,
 		// file contents) and reach disk verbatim otherwise.
 		if len(sess.Messages[i].ToolCalls) > 0 {
@@ -1516,8 +1548,21 @@ func (s *Store) List(limit int) ([]Session, error) {
 		if err != nil {
 			continue
 		}
-		sess.Messages = nil // don't include full transcript in listings
-		sessions = append(sessions, *sess)
+		// Listings carry the same allowlisted metadata as the index path:
+		// the transcript, memory buffer, decision receipts and external refs
+		// are token-guarded detail, never part of a list row.
+		sessions = append(sessions, Session{
+			ID:           sess.ID,
+			CreatedAt:    sess.CreatedAt,
+			UpdatedAt:    sess.UpdatedAt,
+			Task:         sess.Task,
+			Turns:        sess.Turns,
+			Model:        sess.Model,
+			Pinned:       sess.Pinned,
+			Sandbox:      sess.Sandbox,
+			InputTokens:  sess.InputTokens,
+			OutputTokens: sess.OutputTokens,
+		})
 	}
 
 	sort.Slice(sessions, func(i, j int) bool {
@@ -1582,11 +1627,25 @@ func (s *Store) removeFilesLocked(id string) error {
 		// The audit log records ingest sources and resources of the session;
 		// it must not outlive a session the operator deleted.
 		_ = NewAuditStore(s.dir).Remove(id)
+		s.removeRunLock(id)
 	}
 	if os.IsNotExist(err) {
 		return nil
 	}
 	return err
+}
+
+// removeRunLock unlinks the session's execution lock file. The lock is taken
+// first and the file unlinked while it is held, so a live run (which holds
+// the lock) keeps its file; a missing or busy lock is left alone.
+func (s *Store) removeRunLock(id string) {
+	path := filepath.Join(s.dir, "."+id+".run.lock")
+	release, err := flock.TryLock(path)
+	if err != nil {
+		return
+	}
+	_ = os.Remove(path)
+	release()
 }
 
 // removeVectors drops ids from the vector index with a single store write.

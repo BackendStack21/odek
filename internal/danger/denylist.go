@@ -119,6 +119,11 @@ func denyScanVars(cmd string, dc *denyCtx, depth int, inherited map[string]strin
 			if denyStage(expanded, dc, depth) {
 				return true
 			}
+			// A default expansion is resolved above; its literal spelling is
+			// still a command position of its own.
+			if stageHasParameterBrace(stage) && denyStage(stage, dc, depth) {
+				return true
+			}
 			// A shell fed by a static echo/printf runs that text as a script.
 			if i > 0 && denyStaticPipeFeed(earlier, expanded, dc, depth) {
 				return true
@@ -133,6 +138,9 @@ func denyScanVars(cmd string, dc *denyCtx, depth int, inherited map[string]strin
 	// bodies are command positions of their own.
 	for _, stage := range commandStages(tokens, ops) {
 		if denyStage(denyExpand(stage, vars, unquoted), dc, depth) {
+			return true
+		}
+		if stageHasParameterBrace(stage) && denyStage(stage, dc, depth) {
 			return true
 		}
 	}
@@ -168,7 +176,7 @@ func denyVarsKey(vars map[string]string) string {
 // that is a whole word and whose value holds several words splits into those
 // words, as the shell would, so `$cmd` with cmd="git push" is two tokens.
 func denyExpand(stage []string, vars map[string]string, unquoted map[string]bool) []string {
-	if len(vars) == 0 {
+	if len(vars) == 0 && !stageHasParameterBrace(stage) {
 		return stage
 	}
 	out := make([]string, 0, len(stage))
@@ -200,6 +208,16 @@ func denySubstitute(tok string, vars map[string]string) string {
 		dollar += pos
 		b.WriteString(tok[pos:dollar])
 		name, end := variableReference(tok, dollar)
+		if name == "" {
+			if d, isDefault := parseDefaultExpansion(tok, dollar); isDefault {
+				value, known := vars[d.name]
+				if text, resolved := d.resolve(value, known, func(w string) string { return denySubstitute(w, vars) }); resolved {
+					b.WriteString(text)
+					pos = d.end
+					continue
+				}
+			}
+		}
 		value, ok := vars[name]
 		if name == "" || !ok {
 			b.WriteByte('$')
@@ -424,6 +442,26 @@ func denyPayloads(inner []string, dc *denyCtx, depth int) bool {
 		}
 	case name == "eval" && len(inner) > 1:
 		return denyScan(strings.Join(inner[1:], " "), dc, depth+1)
+	case name == "trap":
+		// The action string is run by the shell when the signal or
+		// condition fires, like an eval operand.
+		for i := 1; i < len(inner); i++ {
+			tok := inner[i]
+			if tok == "--" || (strings.HasPrefix(tok, "-") && tok != "-") {
+				continue
+			}
+			if tok != "-" && tok != "" && denyScan(tok, dc, depth+1) {
+				return true
+			}
+			// An escaped space (`trap git\ push EXIT`) reaches this walk as
+			// separate words; the shell reads one action, so the operands
+			// are scanned joined, as the operands of a script-running
+			// builtin are.
+			if i+1 < len(inner) && denyScan(strings.Join(inner[i:], " "), dc, depth+1) {
+				return true
+			}
+			break
+		}
 	case name == "alias":
 		// A body runs under the alias name on later lines.
 		defs, _ := aliasDefinitions(inner[1:])
@@ -565,4 +603,15 @@ func canonicalDenyTokens(toks []string) []string {
 		return out
 	}
 	return denyStripGlobals(out[0], out)
+}
+
+// stageHasParameterBrace reports whether a word of the stage holds a ${…}
+// expansion.
+func stageHasParameterBrace(stage []string) bool {
+	for _, tok := range stage {
+		if strings.Contains(tok, "${") {
+			return true
+		}
+	}
+	return false
 }

@@ -451,7 +451,7 @@ func TestFormatResponse_SeparatorLine(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("expected 1 chunk, got %d", len(got))
 	}
-	want := "Text\n---\nMore text"
+	want := "Text\n\\-\\-\\-\nMore text"
 	if got[0] != want {
 		t.Errorf("FormatResponse(%q) = %q, want %q", input, got[0], want)
 	}
@@ -466,8 +466,8 @@ func TestFormatResponse_SeparatorShortLine(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("expected 1 chunk, got %d", len(got))
 	}
-	// Two ── chars are recognized as a separator and converted to ---
-	want := "---"
+	// Two ── chars are recognized as a separator and converted to an escaped rule
+	want := `\-\-\-`
 	if got[0] != want {
 		t.Errorf("FormatResponse(%q) = %q, want %q", input, got[0], want)
 	}
@@ -482,7 +482,7 @@ func TestFormatResponse_SeparatorWithSpaces(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("expected 1 chunk, got %d", len(got))
 	}
-	want := "Text\n---\nMore text"
+	want := "Text\n\\-\\-\\-\nMore text"
 	if got[0] != want {
 		t.Errorf("FormatResponse(%q) = %q, want %q", input, got[0], want)
 	}
@@ -519,7 +519,7 @@ func TestFormatResponse_PipeTableWithSurroundingText(t *testing.T) {
 	}
 }
 
-func TestFormatResponse_MEDIALeftAsIs(t *testing.T) {
+func TestFormatResponse_MEDIALineEscapedLikeText(t *testing.T) {
 	input := "Some text\nMEDIA:photo:/path/to/image.jpg\nMore text"
 	got, err := FormatResponse(input)
 	if err != nil {
@@ -528,8 +528,8 @@ func TestFormatResponse_MEDIALeftAsIs(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("expected 1 chunk, got %d", len(got))
 	}
-	// MEDIA line left as-is, other lines processed (no reserved chars in this input)
-	want := "Some text\nMEDIA:photo:/path/to/image.jpg\nMore text"
+	// A mid-answer MEDIA line is plain text: reserved characters are escaped.
+	want := "Some text\nMEDIA:photo:/path/to/image\\.jpg\nMore text"
 	if got[0] != want {
 		t.Errorf("FormatResponse(%q) = %q, want %q", input, got[0], want)
 	}
@@ -635,7 +635,7 @@ func TestFormatResponse_SeparatorThenTableThenHeader(t *testing.T) {
 		t.Fatalf("expected 1 chunk, got %d", len(got))
 	}
 	// Separator → ---, Table → wrapped in ```, Header → *Summary*
-	want := "Text\n---\n```\n| A | B |\n| 1 | 2 |\n```\n*Summary*"
+	want := "Text\n\\-\\-\\-\n```\n| A | B |\n| 1 | 2 |\n```\n*Summary*"
 	if got[0] != want {
 		t.Errorf("FormatResponse(%q) = %q, want %q", input, got[0], want)
 	}

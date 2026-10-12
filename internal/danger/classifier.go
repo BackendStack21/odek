@@ -159,6 +159,7 @@ package danger
 import (
 	"encoding/binary"
 	"fmt"
+	"golang.org/x/net/idna"
 	"net"
 	"net/url"
 	"os"
@@ -434,6 +435,17 @@ func accountHomes(abs string) []string {
 	return homes
 }
 
+// homeSensitivePrefixes are the home-relative prefixes that hold credentials
+// or configuration with code-execution reach. ClassifyPath rates them
+// system_write and IsSensitiveReadPath refuses them as @-references, so the
+// two gates share this one table.
+var homeSensitivePrefixes = []string{"/.ssh", "/.config", "/.gnupg", "/.aws", "/.kube",
+	"/.docker", "/.gitconfig", "/.env",
+	"/.netrc", "/.npmrc", "/.pypirc", "/.pgpass",
+	"/.git-credentials", "/.my.cnf", "/.mylogin.cnf",
+	"/.cargo", "/.gem", "/.azure", "/.password-store",
+	"/.terraform.d", "/.vault-token"}
+
 // classifyHomeRelative applies the home-directory rules to abs for one
 // account home. The boolean is false when abs is not protected by them.
 func classifyHomeRelative(home, abs string) (RiskClass, bool) {
@@ -441,13 +453,8 @@ func classifyHomeRelative(home, abs string) (RiskClass, bool) {
 	// be case-insensitive (macOS APFS default, Windows NTFS), where
 	// /Users/x/.SSH and /Users/x/.ssh are the same directory and an
 	// exact-case match would let a case variant slip past the guard.
-	lowerAbs, lowerHome := strings.ToLower(abs), strings.ToLower(home)
-	for _, sub := range []string{"/.ssh", "/.config", "/.gnupg", "/.aws", "/.kube",
-		"/.docker", "/.gitconfig", "/.env",
-		"/.netrc", "/.npmrc", "/.pypirc", "/.pgpass",
-		"/.git-credentials", "/.my.cnf", "/.mylogin.cnf",
-		"/.cargo", "/.gem", "/.azure", "/.password-store",
-		"/.terraform.d", "/.vault-token"} {
+	lowerAbs, lowerHome := FoldPathCase(abs), FoldPathCase(home)
+	for _, sub := range homeSensitivePrefixes {
 		if strings.HasPrefix(lowerAbs, lowerHome+sub) {
 			return SystemWrite, true
 		}
@@ -470,7 +477,7 @@ func classifyHomeRelative(home, abs string) (RiskClass, bool) {
 	// Shell rc/profile files execute on the user's next shell start —
 	// writing them is persistence/escalation, not a local file edit.
 	// Case-folding defends against case-insensitive filesystems (macOS APFS).
-	if filepath.Dir(abs) == home && shellRCFilesLower[strings.ToLower(filepath.Base(abs))] {
+	if filepath.Dir(abs) == home && shellRCFilesLower[FoldPathCase(filepath.Base(abs))] {
 		return SystemWrite, true
 	}
 	return LocalWrite, false
@@ -518,7 +525,7 @@ var shellRCFiles = map[string]bool{
 var shellRCFilesLower = func() map[string]bool {
 	m := make(map[string]bool, len(shellRCFiles))
 	for k := range shellRCFiles {
-		m[strings.ToLower(k)] = true
+		m[FoldPathCase(k)] = true
 	}
 	return m
 }()
@@ -607,13 +614,13 @@ func isPersistencePathLexical(path string) bool {
 	if strings.HasPrefix(abs, "/private/") {
 		abs = strings.TrimPrefix(abs, "/private")
 	}
-	lower := strings.ToLower(abs)
+	lower := FoldPathCase(abs)
 	// A directory destination reaches its marker only with the trailing
 	// slash that Clean removed: writing INTO .git/hooks lands a hook.
 	dirLower := lower + "/"
 
 	for _, home := range accountHomes(abs) {
-		lowerHome := strings.ToLower(home)
+		lowerHome := FoldPathCase(home)
 		// Shell rc/profile files: run in every future shell.
 		if filepath.Dir(lower) == lowerHome && shellRCFilesLower[filepath.Base(lower)] {
 			return true
@@ -690,7 +697,7 @@ var lifecycleHookPatterns = []*regexp.Regexp{
 // deferred execution into package.json / conftest.py, else (base, false).
 // Only ever escalates — base is returned unchanged otherwise.
 func LifecycleContentClass(path, content string, base RiskClass) (RiskClass, bool) {
-	switch strings.ToLower(filepath.Base(path)) {
+	switch FoldPathCase(filepath.Base(path)) {
 	case "package.json", "conftest.py":
 	default:
 		return base, false
@@ -706,6 +713,33 @@ func LifecycleContentClass(path, content string, base RiskClass) (RiskClass, boo
 	return base, false
 }
 
+// FoldPathCase folds s the way case-insensitive filesystems match names:
+// every rune is mapped through its Unicode simple case-folding orbit, so
+// U+017F LONG S folds to 's' and U+212A KELVIN SIGN to 'k' as on APFS and
+// NTFS, which strings.ToLower alone does not do. Trust-anchor comparisons
+// must fold both sides with this function.
+func FoldPathCase(s string) string {
+	ascii := true
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 0x80 {
+			ascii = false
+			break
+		}
+	}
+	if ascii {
+		return strings.ToLower(s)
+	}
+	return strings.Map(func(r rune) rune {
+		min := r
+		for f := unicode.SimpleFold(r); f != r; f = unicode.SimpleFold(f) {
+			if f < min {
+				min = f
+			}
+		}
+		return unicode.ToLower(min)
+	}, s)
+}
+
 // isOdekTrustAnchor reports whether abs is a file or directory under ~/.odek
 // that must not be writable through auto-approved local_write tools. It must
 // stay in sync with cmd/odek/file_tool.go::isProtectedOdekPath.
@@ -716,7 +750,7 @@ func isOdekTrustAnchor(home, abs string) bool {
 	prefix := home + "/.odek"
 	// Case-folded comparison — ~/.ODEK and ~/.odek are the same directory
 	// on case-insensitive filesystems (macOS APFS default, Windows).
-	lowerAbs, lowerPrefix := strings.ToLower(abs), strings.ToLower(prefix)
+	lowerAbs, lowerPrefix := FoldPathCase(abs), FoldPathCase(prefix)
 	if lowerAbs != lowerPrefix && !strings.HasPrefix(lowerAbs, lowerPrefix+"/") {
 		return false
 	}
@@ -724,7 +758,7 @@ func isOdekTrustAnchor(home, abs string) bool {
 	if lowerAbs == lowerPrefix {
 		return true
 	}
-	rel := strings.ToLower(filepath.Clean(lowerAbs[len(lowerPrefix+"/"):]))
+	rel := FoldPathCase(filepath.Clean(lowerAbs[len(lowerPrefix+"/"):]))
 
 	protectedExact := []string{
 		"config.json",
@@ -770,6 +804,44 @@ func isOdekTrustAnchor(home, abs string) bool {
 // accept via inet_aton-style parsing) instead of string prefix matching
 // which was trivially bypassable.
 func ClassifyURL(rawURL string) RiskClass {
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Host == "" {
+		return classifyURLHost(rawURL)
+	}
+	host := u.Hostname()
+	ascii := true
+	for i := 0; i < len(host); i++ {
+		if host[i] >= 0x80 {
+			ascii = false
+			break
+		}
+	}
+	if ascii {
+		return classifyURLHost(rawURL)
+	}
+	// net/http maps the host through UTS-46 before dialing, so fullwidth or
+	// otherwise folded spellings reach the host they normalise to. Classify
+	// the mapped spelling too; a host that cannot be mapped is refused.
+	mapped, err := idna.Lookup.ToASCII(host)
+	if err != nil || mapped == "" {
+		return SystemWrite
+	}
+	if strings.Contains(mapped, ":") {
+		mapped = "[" + mapped + "]"
+	}
+	if port := u.Port(); port != "" {
+		mapped = mapped + ":" + port
+	}
+	clone := *u
+	clone.Host = mapped
+	a, b := classifyURLHost(clone.String()), classifyURLHost(rawURL)
+	if Rank(b) > Rank(a) {
+		return b
+	}
+	return a
+}
+
+func classifyURLHost(rawURL string) RiskClass {
 	u, err := url.Parse(rawURL)
 	if err != nil || u.Scheme == "" || u.Host == "" {
 		return NetworkEgress // can't parse — don't block, but will fail at fetch time
@@ -2537,7 +2609,7 @@ func builtinEnvDump(tokens []string) bool {
 		}
 		// `set -o` prints all options; `set -o errexit` sets one.
 		return len(tokens) == 2 && tokens[1] == "-o"
-	case "export", "declare", "typeset":
+	case "export", "declare", "typeset", "readonly":
 		sawFunc := false
 		flagOnly := true
 		for _, t := range tokens[1:] {
@@ -3047,6 +3119,7 @@ func skipCommandOptions(args string) (string, bool) {
 // not trying to be a fully accurate shell parser.
 func collapseUnquotedBackslashes(cmd string) string {
 	var out strings.Builder
+	killPattern := strings.Contains(cmd, "pkill") || strings.Contains(cmd, "killall") || strings.Contains(cmd, "pgrep")
 	inSingle := false
 	inDouble := false
 	for i := 0; i < len(cmd); i++ {
@@ -3072,6 +3145,13 @@ func collapseUnquotedBackslashes(cmd string) string {
 					// The shell keeps this backslash, and a database
 					// client's \! meta-command is spelled with it.
 					out.WriteByte(ch)
+				default:
+					// The shell keeps the backslash before any other
+					// character too. Only a process-pattern command needs
+					// it: "\w" and "\." are regular expressions there.
+					if killPattern && strings.IndexByte(`wWsSdDbB.`, next) >= 0 {
+						out.WriteByte(ch)
+					}
 				}
 				out.WriteByte(next)
 			} else {
@@ -4276,7 +4356,7 @@ func shellPathIsHomeSensitive(tok string) bool {
 	// /Users/x/.gitconfig, and an exact-case prefix match would let a case
 	// variant slip past the guard. Mirrors the folded comparisons its peers
 	// apply in ClassifyPath and IsPersistencePath.
-	lowerAbs, lowerHome := strings.ToLower(abs), strings.ToLower(home)
+	lowerAbs, lowerHome := FoldPathCase(abs), FoldPathCase(home)
 	if lowerAbs != lowerHome && !strings.HasPrefix(lowerAbs, lowerHome+"/") {
 		return false
 	}
@@ -5061,12 +5141,12 @@ func namesHomeOrAncestor(tok string) bool {
 		return false
 	}
 	p = filepath.Clean(p)
-	lowerP := strings.ToLower(p)
+	lowerP := FoldPathCase(p)
 	for _, home := range append(currentHomeDirs(), accountHomes(p)...) {
 		if home == "" {
 			continue
 		}
-		if pathWithin(strings.ToLower(filepath.Clean(home)), lowerP) {
+		if pathWithin(FoldPathCase(filepath.Clean(home)), lowerP) {
 			return true
 		}
 	}

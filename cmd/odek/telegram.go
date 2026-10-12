@@ -143,7 +143,21 @@ var chatRunInfos sync.Map // map[int64]loop.IterationInfo
 type pendingClarifyReq struct {
 	userID int64
 	ch     chan string
-	msgID  int
+
+	mu    sync.Mutex // guards msgID: set after the prompt is sent, read by the callback
+	msgID int
+}
+
+func (r *pendingClarifyReq) setMsgID(id int) {
+	r.mu.Lock()
+	r.msgID = id
+	r.mu.Unlock()
+}
+
+func (r *pendingClarifyReq) getMsgID() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.msgID
 }
 
 var pendingClarifyReqs sync.Map // map[string]*pendingClarifyReq
@@ -226,8 +240,8 @@ func handleClarifyCallback(chatID, userID int64, data string, bot *telegram.Bot)
 		// Channel full or closed — clarify already resolved.
 	}
 	// Remove the inline keyboard and update text to show the answer.
-	if req.msgID != 0 && bot != nil {
-		bot.EditMessageText(chatID, req.msgID,
+	if id := req.getMsgID(); id != 0 && bot != nil {
+		bot.EditMessageText(chatID, id,
 			"✅ *User answered:* "+answer,
 			&telegram.SendOpts{ParseMode: telegram.ParseModeMarkdownV2, ReplyMarkup: &telegram.InlineKeyboardMarkup{InlineKeyboard: [][]telegram.InlineKeyboardButton{}}})
 	}
@@ -753,26 +767,7 @@ func telegramCmd(args []string) error {
 
 		// Handle /plan-resume — inject most recent plan for this chat into session context.
 		if cmdName == "plan_resume" {
-			slug, content, err := telegram.MostRecentPlan(chatID)
-			if err != nil {
-				return fmt.Sprintf("❌ %v", err), nil
-			}
-			// Inject the plan as a system-level context message.
-			cs, err := sessionManager.GetOrCreate(chatID)
-			if err != nil {
-				return fmt.Sprintf("❌ Failed to get session: %v", err), nil
-			}
-			contextMsg := fmt.Sprintf(
-				"[Plan loaded: %s]\n\n%s\n\n---\nContinue working on this plan. "+
-					"Use your tools to implement the next step.",
-				slug, content,
-			)
-			cs.Messages = append(cs.Messages, session.Message{Role: "user", Content: contextMsg})
-			cs.LastActive = time.Now()
-			if err := sessionManager.Save(chatID, cs.Messages); err != nil {
-				return fmt.Sprintf("❌ Failed to save session: %v", err), nil
-			}
-			return fmt.Sprintf("📋 *Plan loaded*: `%s`\n\n_Injected into session context. Send a message to continue._", slug), nil
+			return telegramPlanResume(chatID, sessionManager), nil
 		}
 
 		// Handle /plan_status — show the agent's structured task plan for
@@ -1608,6 +1603,7 @@ func runChatTurn(
 		})
 	tools := builtinTools(resolved.Dangerous, nil, approver, resolved.MaxConcurrency, resolved.APIKey, toolConfigFromResolved(resolved), sessionManager.Store)
 	tools = appendBackgroundTools(tools, bgRT)
+	tools = scopeSessionSearchToChat(tools, chatID)
 
 	// Voice-reply speech backend: built once per turn only when the operator
 	// enabled tts.telegram_voice_replies with a provider-backed TTS backend.
@@ -1652,7 +1648,7 @@ func runChatTurn(
 			pct := used * 100 / limit
 			if pct >= 80 {
 				sendAsync(bot, chatID, fmt.Sprintf(
-					"⚠️ *Budget: %d%% used* (%d/%d tokens)\\. "+
+					"⚠️ *Budget: %d%% used* \\(%d/%d tokens\\)\\. "+
 						"Consider `/new` to trim conversation history or set a higher `daily_token_budget`\\.",
 					pct, used, limit,
 				), &telegram.SendOpts{ParseMode: telegram.ParseModeMarkdownV2, ReplyToMessageID: messageID})
@@ -1836,12 +1832,14 @@ func runChatTurn(
 				},
 			},
 		}
-		msg, err := bot.SendMessage(chatID, "❓ "+question,
-			&telegram.SendOpts{ReplyMarkup: replyMarkup, ParseMode: "Markdown", ReplyToMessageID: messageID})
+		// The question is model text: escape it so stray markers cannot make
+		// Telegram reject the prompt or render model-chosen links.
+		msg, err := bot.SendMessage(chatID, "❓ "+escapeMarkdownV2Literal(question),
+			&telegram.SendOpts{ReplyMarkup: replyMarkup, ParseMode: telegram.ParseModeMarkdownV2, ReplyToMessageID: messageID})
 		if err != nil {
 			return "", fmt.Errorf("clarify: send message: %w", err)
 		}
-		req.msgID = msg.ID
+		req.setMsgID(msg.ID)
 
 		// Wait for the user to click a button (or timeout).
 		select {
@@ -2223,12 +2221,13 @@ func runChatTurn(
 				log.Error("save session after cancel", "chat_id", chatID, "error", saveErr)
 			}
 			// Send a cancellation summary so the user knows what happened.
-			cancelMsg := "⏹️ *Task cancelled.*"
+			// MarkdownV2: every literal and the dynamic summary are escaped.
+			cancelMsg := "⏹️ *Task cancelled\\.*"
 			if infoVal, ok := chatRunInfos.LoadAndDelete(chatID); ok {
 				info := infoVal.(loop.IterationInfo)
-				cancelMsg += "\n\n" + formatStopSummary(info)
+				cancelMsg += "\n\n⏹️ *Task Interrupted*\n\n" + escapeMarkdownV2Literal(formatStopSummaryDetail(info))
 			}
-			cancelMsg += "\n\n_Session state saved. Send a new message to continue._"
+			cancelMsg += "\n\n_Session state saved\\. Send a new message to continue\\._"
 			sendAsync(bot, chatID, cancelMsg,
 				&telegram.SendOpts{ParseMode: telegram.ParseModeMarkdownV2, ReplyToMessageID: messageID})
 			return
@@ -2537,10 +2536,44 @@ func formatTelegramStats(info loop.IterationInfo, toolList []string) string {
 	)
 }
 
+// telegramPlanResume loads the chat's most recent plan into its conversation
+// and returns the reply text. Plan files are written by the agent during a
+// /plan turn and can carry content from untrusted sources, so the body is
+// injected inside the untrusted wrapper (only the continuation instruction
+// stays outside) and the session is marked tainted, like any other ingest.
+func telegramPlanResume(chatID int64, sessionManager *telegram.SessionManager) string {
+	slug, content, err := telegram.MostRecentPlan(chatID)
+	if err != nil {
+		return fmt.Sprintf("❌ %v", err)
+	}
+	cs, err := sessionManager.GetOrCreate(chatID)
+	if err != nil {
+		return fmt.Sprintf("❌ Failed to get session: %v", err)
+	}
+	contextMsg := fmt.Sprintf(
+		"[Plan loaded: %s]\n\n%s\n\nContinue working on this plan. "+
+			"Use your tools to implement the next step.",
+		slug, wrapUntrusted(context.Background(), fmt.Sprintf("telegram:chat:%d:plan:%s", chatID, slug), content),
+	)
+	cs.Messages = append(cs.Messages, session.Message{Role: "user", Content: contextMsg})
+	cs.LastActive = time.Now()
+	sessionManager.MarkUntrustedIngested(chatID)
+	if err := sessionManager.Save(chatID, cs.Messages); err != nil {
+		return fmt.Sprintf("❌ Failed to save session: %v", err)
+	}
+	return fmt.Sprintf("📋 *Plan loaded*: `%s`\n\n_Injected into session context. Send a message to continue._", slug)
+}
+
 // formatStopSummary formats a summary of an interrupted task for the /stop
 // command response. It includes turns completed, tokens consumed, tools used,
 // and total wall-clock time before cancellation.
 func formatStopSummary(info loop.IterationInfo) string {
+	return "⏹️ *Task Interrupted*\n\n" + formatStopSummaryDetail(info)
+}
+
+// formatStopSummaryDetail is the statistics line of the stop summary (turns,
+// tokens, speed, latency, tools) as plain text, without the heading.
+func formatStopSummaryDetail(info loop.IterationInfo) string {
 	toolStr := "none"
 	if len(info.ToolNames) > 0 {
 		// Deduplicate and sort tool names for a clean display.
@@ -2563,8 +2596,7 @@ func formatStopSummary(info loop.IterationInfo) string {
 	}
 
 	return fmt.Sprintf(
-		"⏹️ *Task Interrupted*\n\n"+
-			"%s · %d in / %d out%s · %s — tools: %s",
+		"%s · %d in / %d out%s · %s — tools: %s",
 		iters, info.InputTokens, info.OutputTokens, formatTokPerSec(info), latency.String(), toolStr,
 	)
 }
@@ -2602,7 +2634,9 @@ func sendAsync(bot *telegram.Bot, chatID int64, text string, opts *telegram.Send
 				fmt.Fprintf(os.Stderr, "odek telegram: async send panic: %v\n", r)
 			}
 		}()
-		if _, err := bot.SendMessage(chatID, text, opts); err != nil {
+		// A rejected entity parse must not lose the notice: it is retried once
+		// as plain text. Other failures are not retried here.
+		if _, err := bot.SendWithPlainFallback(chatID, text, opts); err != nil {
 			fmt.Fprintf(os.Stderr, "odek telegram: async send failed: %v\n", err)
 		}
 	}()

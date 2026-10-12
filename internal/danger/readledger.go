@@ -710,6 +710,12 @@ func inlinePayloadFlag(name, tok string) bool {
 	if pipedShells[name] {
 		return strings.Contains(tok[1:], "c")
 	}
+	// An option that takes a value (python -W/-X, perl -I/-M/-m, ruby
+	// -I/-r/-K/-C/-F) owns the rest of the word: `-Wignore` is a warning
+	// filter, not a cluster ending in the -e flag.
+	if strings.IndexByte("WXIMmrKCF", tok[1]) >= 0 {
+		return false
+	}
 	last := tok[len(tok)-1]
 	return last == 'c' || last == 'e'
 }
@@ -964,6 +970,14 @@ func stageExecutionFilesWritten(stage []string, cwd string, written map[string]b
 		return hit
 	}
 
+	// The startup-file variables name a file the shell sources before running
+	// anything, so a never-read script there runs like an executed operand.
+	for _, tok := range stage[:len(stage)-len(cmdTokens)] {
+		if value, ok := startupFileAssignment(name, tok); ok && value != "" {
+			gate(value, true)
+		}
+	}
+
 	directInvocation := strings.Contains(cmdTokens[0], "/") && !isScriptInterpreter(name) && name != "source" && name != "."
 	prevFlag := false
 scan:
@@ -1149,4 +1163,21 @@ func operandUnresolvable(tok string) bool {
 		return true
 	}
 	return strings.Contains(expandShellTokenPath(tok), "$")
+}
+
+// startupFileAssignment reports the file named by a BASH_ENV=FILE assignment
+// (any command may be a bash script) or an ENV=FILE assignment given to a
+// shell.
+func startupFileAssignment(name, tok string) (string, bool) {
+	key, value, ok := strings.Cut(tok, "=")
+	if !ok {
+		return "", false
+	}
+	switch {
+	case key == "BASH_ENV":
+		return value, true
+	case key == "ENV" && pipedShells[name]:
+		return value, true
+	}
+	return "", false
 }

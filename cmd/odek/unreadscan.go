@@ -31,16 +31,18 @@ const (
 
 // encodedTokenRe matches candidate single-layer encoded blobs inside a
 // script: long base64-alphabet runs (with optional padding) and long hex
-// runs. Candidates that fail to decode cleanly are ignored; decoded
+// runs. "=" is accepted only as trailing padding so a shell assignment
+// (NAME=blob) yields the blob on its own. Candidates that fail to decode
+// cleanly are ignored; decoded
 // garbage cannot match injection patterns, so a finding requires the
 // decoded bytes to actually carry an injection phrase.
-var encodedTokenRe = regexp.MustCompile(`[A-Za-z0-9+/=]{24,}|[A-Fa-f0-9]{40,}`)
+var encodedTokenRe = regexp.MustCompile(`[A-Za-z0-9+/]{24,}={0,2}|[A-Fa-f0-9]{40,}`)
 
 // urlSafeTokenRe matches runs in the URL-safe base64 alphabet ('-' and '_'
 // in place of '+' and '/'). It is a second pass rather than a wider
 // alphabet in encodedTokenRe so a standard blob glued to a hyphenated word
 // is still extracted on its own by the first pass.
-var urlSafeTokenRe = regexp.MustCompile(`[A-Za-z0-9_=-]{24,}`)
+var urlSafeTokenRe = regexp.MustCompile(`[A-Za-z0-9_-]{24,}={0,2}`)
 
 // scanUnreadScripts is the audit-then-exec companion to the
 // unread-script gate. For each target it reads the leading

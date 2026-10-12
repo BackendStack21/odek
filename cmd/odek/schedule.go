@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"text/tabwriter"
 	"time"
@@ -109,12 +110,13 @@ func scheduleList(st *schedule.Store) error {
 	}
 	state, _ := st.LoadState()
 	now := time.Now()
+	tz := defaultScheduleTZ()
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
 	fmt.Fprintln(w, "ID\tON\tCRON\tNEXT (local)\tLAST\tNAME")
 	for _, j := range jobs {
 		next := "—"
-		if s, err := jobSchedule(j); err != nil {
+		if s, err := jobSchedule(j, tz); err != nil {
 			next = "invalid"
 		} else if nt := s.Next(now); !nt.IsZero() {
 			next = nt.Local().Format("Mon 02 Jan 15:04")
@@ -182,8 +184,9 @@ func scheduleAdd(st *schedule.Store, args []string) error {
 	if err != nil {
 		return err
 	}
+	defTZ := defaultScheduleTZ()
 	next := "—"
-	if s, err := jobSchedule(saved); err == nil {
+	if s, err := jobSchedule(saved, defTZ); err == nil {
 		if nt := s.Next(time.Now()); !nt.IsZero() {
 			next = nt.Local().Format(time.RFC1123)
 		}
@@ -235,9 +238,10 @@ func scheduleNext(st *schedule.Store, args []string) error {
 	if err != nil {
 		return err // surface a corrupt/unreadable store, not a misleading cron error
 	}
+	tz := defaultScheduleTZ()
 	var s *schedule.Schedule
 	if ok && len(args) == 1 {
-		sc, err := jobSchedule(job)
+		sc, err := jobSchedule(job, tz)
 		if err != nil {
 			return err
 		}
@@ -495,7 +499,11 @@ func (r telegramRunner) Run(ctx context.Context, job schedule.Job) (string, int6
 			return "", 0, fmt.Errorf("daily token budget exhausted (%d/%d tokens)", used, limit)
 		}
 	}
-	result, tokens, err := telegramScheduledHeadlessRun(ctx, r.resolved, r.system, job.Task, r.mcpTools)
+	var taint scheduledRunTaint
+	result, tokens, err := telegramScheduledHeadlessRun(withScheduledRunTaint(ctx, &taint), r.resolved, r.system, job.Task, r.mcpTools)
+	// The delivery that follows writes this result into the chat's
+	// conversation; it must inherit what the run ingested.
+	rememberScheduledRunTaint(job.ID, taint.get())
 	// Bill whatever the run consumed, also when it failed: the tokens were
 	// spent at the provider either way.
 	if budgeted && tokens > 0 {
@@ -569,6 +577,17 @@ func (d telegramDeliverer) recordScheduledTurn(chatID int64, job schedule.Job, r
 		return nil // no active conversation to attach to — deliver-only
 	}
 
+	// The result is written as the assistant's own words, outside any
+	// untrusted wrapper, so the run's ingest taint has to travel with it or
+	// later turns in this chat would treat injected content as trusted.
+	taint := takeScheduledRunTaint(job.ID)
+	if taint.untrusted {
+		d.sessions.MarkUntrustedIngested(chatID)
+	}
+	if taint.episode {
+		d.sessions.MarkEpisodeUntrusted(chatID)
+	}
+
 	label := job.Name
 	if label == "" {
 		label = job.ID
@@ -598,6 +617,67 @@ func (d telegramDeliverer) recordScheduledTurn(chatID int64, job schedule.Job, r
 		)
 	}
 	return d.sessions.Save(chatID, msgs)
+}
+
+// scheduledRunTaintState is what a scheduled run's content may carry into the
+// chat it is delivered to: untrusted is the delegation taint (the run ingested
+// externally sourced content), episode the memory-gate taint.
+type scheduledRunTaintState struct {
+	untrusted bool
+	episode   bool
+}
+
+// scheduledRunTaint is a write-once-per-run sink the headless run fills in.
+type scheduledRunTaint struct {
+	mu    sync.Mutex
+	state scheduledRunTaintState
+	seen  bool
+}
+
+func (t *scheduledRunTaint) set(s scheduledRunTaintState) {
+	t.mu.Lock()
+	t.state, t.seen = s, true
+	t.mu.Unlock()
+}
+
+// get returns the recorded taint. A run that never reported (it failed before
+// finishing, or a stub) has unknown provenance and counts as tainted.
+func (t *scheduledRunTaint) get() scheduledRunTaintState {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if !t.seen {
+		return scheduledRunTaintState{untrusted: true, episode: true}
+	}
+	return t.state
+}
+
+type scheduledRunTaintKey struct{}
+
+func withScheduledRunTaint(ctx context.Context, t *scheduledRunTaint) context.Context {
+	return context.WithValue(ctx, scheduledRunTaintKey{}, t)
+}
+
+func scheduledRunTaintFrom(ctx context.Context) *scheduledRunTaint {
+	t, _ := ctx.Value(scheduledRunTaintKey{}).(*scheduledRunTaint)
+	return t
+}
+
+// scheduledRunTaints hands a run's taint to the delivery of its result, keyed
+// by job ID (a job does not overlap itself).
+var scheduledRunTaints sync.Map
+
+func rememberScheduledRunTaint(jobID string, s scheduledRunTaintState) {
+	scheduledRunTaints.Store(jobID, s)
+}
+
+// takeScheduledRunTaint returns and clears the taint recorded for the job's
+// latest run. A result with no recorded run has unknown provenance and counts
+// as tainted.
+func takeScheduledRunTaint(jobID string) scheduledRunTaintState {
+	if v, ok := scheduledRunTaints.LoadAndDelete(jobID); ok {
+		return v.(scheduledRunTaintState)
+	}
+	return scheduledRunTaintState{untrusted: true, episode: true}
 }
 
 // startSchedulerForBot starts the embedded scheduler unless an external
@@ -805,6 +885,12 @@ func runTaskHeadless(ctx context.Context, resolved config.ResolvedConfig, system
 	defer danger.ForgetReadLedger(auditID)
 	result, messages, err := agent.RunWithMessages(ctx, []session.Message{{Role: "user", Content: task}})
 	recordTurnAudit(auditStore, auditID, 1, task, messages)
+	if sink := scheduledRunTaintFrom(ctx); sink != nil {
+		sink.set(scheduledRunTaintState{
+			untrusted: agent.UntrustedIngested(),
+			episode:   len(session.EpisodeTaintSources(messages)) > 0,
+		})
+	}
 	tokens := int64(lastInfo.InputTokens + lastInfo.OutputTokens)
 	return result, tokens, err
 }
@@ -871,10 +957,24 @@ func schedulerOptions(sc config.ScheduleConfig, logger schedule.Logger) schedule
 	}
 }
 
-// jobSchedule compiles a job's cron in its timezone (or UTC) for display.
-func jobSchedule(j schedule.Job) (*schedule.Schedule, error) {
+// defaultScheduleTZ resolves the scheduler's default timezone from the
+// merged configuration.
+func defaultScheduleTZ() *time.Location {
+	return schedulerOptions(config.LoadConfig(config.CLIFlags{}).Schedules, schedule.NopLogger{}).DefaultTZ
+}
+
+// jobSchedule compiles a job's cron in its timezone for display. A job
+// without its own timezone uses the scheduler's configured default (the zone
+// the engine fires it in), so shown fire times match actual ones.
+// defaultTZ is the scheduler's resolved default zone; resolve it once per
+// command or surface with defaultScheduleTZ and pass it for every job.
+func jobSchedule(j schedule.Job, defaultTZ *time.Location) (*schedule.Schedule, error) {
 	loc := time.UTC
-	if j.Timezone != "" {
+	if j.Timezone == "" {
+		if defaultTZ != nil {
+			loc = defaultTZ
+		}
+	} else {
 		l, err := time.LoadLocation(j.Timezone)
 		if err != nil {
 			return nil, err
@@ -958,7 +1058,9 @@ func acquireScheduleLock() (func(), error) {
 	release, err := flock.TryLock(lockPath)
 	if err != nil {
 		if errors.Is(err, flock.ErrLocked) {
-			if data, rerr := os.ReadFile(lockPath); rerr == nil {
+			// The holder clears the pidfile just before unlocking, so it can
+			// be momentarily empty: report the daemon without a PID then.
+			if data, rerr := os.ReadFile(lockPath); rerr == nil && strings.TrimSpace(string(data)) != "" {
 				return nil, fmt.Errorf("another schedule daemon is already running (PID %s)", strings.TrimSpace(string(data)))
 			}
 			return nil, fmt.Errorf("another schedule daemon is already running")
@@ -988,5 +1090,17 @@ func acquireScheduleLock() (func(), error) {
 		}
 	}
 	_ = os.WriteFile(lockPath, []byte(strconv.Itoa(os.Getpid())), 0600)
-	return release, nil
+	// Release clears our PID while the lock is still held: a released lock
+	// whose pidfile names this still-living process (a graceful restart keeps
+	// the parent alive after spawning its child) would make the mixed-version
+	// gate above refuse the successor.
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			if data, rerr := os.ReadFile(lockPath); rerr == nil && strings.TrimSpace(string(data)) == strconv.Itoa(os.Getpid()) {
+				_ = os.Truncate(lockPath, 0)
+			}
+			release()
+		})
+	}, nil
 }

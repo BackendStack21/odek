@@ -175,12 +175,14 @@ func runLlamaMtmd(ctx context.Context, binary, modelPath, mmprojPath, prompt str
 		args = append(args, "--image", img)
 	}
 
-	cmd := exec.CommandContext(ctx, binary, args...)
-	output, err := cmd.Output()
+	output, stderrOut, overflow, err := toolsRunCappedOutput(ctx, binary, args, 10<<20)
+	if overflow {
+		return "", fmt.Errorf("llama-mtmd-cli output too large (more than %d bytes)", 10<<20)
+	}
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			return "", fmt.Errorf("llama-mtmd-cli failed (exit %d): %s",
-				exitErr.ExitCode(), strings.TrimSpace(string(exitErr.Stderr)))
+				exitErr.ExitCode(), strings.TrimSpace(string(stderrOut)))
 		}
 		return "", fmt.Errorf("llama-mtmd-cli failed: %v", err)
 	}

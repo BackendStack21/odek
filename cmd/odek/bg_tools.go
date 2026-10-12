@@ -203,13 +203,13 @@ func formatOneNotice(n bgproc.Notice) string {
 	var line string
 	switch n.Status {
 	case bgproc.StatusExited:
-		line = fmt.Sprintf("%s `%s` → exited (code %d) after %s", n.JobID, headString(n.Command, bgCommandHead), n.ExitCode, dur)
+		line = fmt.Sprintf("%s `%s` → exited (code %d) after %s", n.JobID, bgClientCommandHead(n.Command), n.ExitCode, dur)
 	case bgproc.StatusFailed:
-		line = fmt.Sprintf("%s `%s` → failed (exit %d) after %s", n.JobID, headString(n.Command, bgCommandHead), n.ExitCode, dur)
+		line = fmt.Sprintf("%s `%s` → failed (exit %d) after %s", n.JobID, bgClientCommandHead(n.Command), n.ExitCode, dur)
 	case bgproc.StatusTimeout:
-		line = fmt.Sprintf("%s `%s` → timeout after %s", n.JobID, headString(n.Command, bgCommandHead), dur)
+		line = fmt.Sprintf("%s `%s` → timeout after %s", n.JobID, bgClientCommandHead(n.Command), dur)
 	default:
-		line = fmt.Sprintf("%s `%s` → %s after %s", n.JobID, headString(n.Command, bgCommandHead), n.Status, dur)
+		line = fmt.Sprintf("%s `%s` → %s after %s", n.JobID, bgClientCommandHead(n.Command), n.Status, dur)
 	}
 	if n.Tail != "" {
 		line += "\n  tail: " + redact.RedactSecrets(n.Tail)
@@ -360,6 +360,17 @@ func (t *bgStartTool) Schema() any {
 const maxBGTimeoutSeconds = 365 * 24 * 3600
 
 func (t *bgStartTool) Call(args string) (string, error) {
+	return t.CallContext(context.Background(), args)
+}
+
+// CallContext evaluates the approval gate with the invocation context scoped
+// to this runtime's session, so the unread-script gate consults the session's
+// read ledger (as the shell tool does) rather than whatever context the shell
+// tool last recorded.
+func (t *bgStartTool) CallContext(ctx context.Context, args string) (string, error) {
+	if t.rt != nil {
+		ctx = withReadLedger(ctx, t.rt.session)
+	}
 	var p struct {
 		Command        string `json:"command"`
 		TimeoutSeconds int    `json:"timeout_seconds"`
@@ -385,9 +396,9 @@ func (t *bgStartTool) Call(args string) (string, error) {
 	if t.shell == nil {
 		return "", fmt.Errorf("bg_start unavailable: approval gate not wired")
 	}
-	approvedRisk, _ := danger.ClassifyScriptGateCtx(t.shell.toolCtx(), p.Command)
+	approvedRisk, unreadTargets := shellScriptGate(ctx, p.Command)
 	approvedEffects := danger.Analyze(p.Command).Effects
-	if err := t.shell.checkApproval(p.Command, "background job"); err != nil {
+	if err := t.shell.checkApprovalGated(p.Command, "background job", unreadTargets); err != nil {
 		return "", err
 	}
 	opts := bgproc.SpawnOptions{}
@@ -398,7 +409,7 @@ func (t *bgStartTool) Call(args string) (string, error) {
 			return "", err
 		}
 	}
-	if err := revalidateShellRisk(t.shell.toolCtx(), p.Command, approvedRisk, approvedEffects); err != nil {
+	if err := revalidateShellRisk(ctx, p.Command, approvedRisk, approvedEffects); err != nil {
 		if opts.Release != nil {
 			opts.Release()
 		}

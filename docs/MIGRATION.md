@@ -248,7 +248,7 @@ The SDK default is `https://api.deepseek.com` (no `/v1`). Operators who pinned `
 
 ## Sessions
 
-On-disk messages stay the **v1 nested** `tool_calls[].function` shape so existing `~/.odek/sessions` load without a rewrite. `thinking_signature` is additive (`omitempty`). v1 odek can still read a session that never stored a signature.
+On-disk messages stay the **v1 nested** `tool_calls[].function` shape so existing `~/.odek/sessions` load without a rewrite. `thinking_signature` is additive (`omitempty`). `thinking_blocks` (every signed Anthropic `thinking`/`redacted_thinking` block or Responses reasoning item, in order) and `thinking_provider` (the API format that signed them) are additive too; blocks are replayed verbatim only to the same format, and dropped when a session is continued on another provider. v1 odek can still read a session that never stored a signature.
 
 Unknown roles are kept on disk and dropped **with their assistant+tool group** at the call boundary (not rewritten on Load).
 

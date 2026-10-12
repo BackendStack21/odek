@@ -982,7 +982,7 @@ func (t *searchFilesTool) searchContent(args searchFilesArgs) (string, error) {
 	}
 
 	t.wrapContentMatches(matches)
-	return jsonResult(searchFilesResult{Matches: matches, Skipped: skipped})
+	return jsonResult(searchFilesResult{Matches: matches, Skipped: t.wrapSkipped(skipped)})
 }
 
 // wrapContentMatches marks every matched path and line as untrusted. All
@@ -1043,7 +1043,20 @@ func (t *searchFilesTool) searchFiles(args searchFilesArgs) (string, error) {
 		}
 	}
 
-	return jsonResult(searchFilesResult{Matches: matches, Skipped: skipped})
+	return jsonResult(searchFilesResult{Matches: matches, Skipped: t.wrapSkipped(skipped)})
+}
+
+// wrapSkipped marks skipped entries as untrusted: they carry repository file
+// names and error text, which are as attacker-controlled as matched paths.
+func (t *searchFilesTool) wrapSkipped(skipped []string) []string {
+	if len(skipped) == 0 {
+		return skipped
+	}
+	sources := make([]string, len(skipped))
+	for i, s := range skipped {
+		sources[i] = "search_files:skipped:" + s
+	}
+	return wrapUntrustedBatch(t.toolCtx(), "search_files:skipped", sources, skipped)
 }
 
 // ── Patch Tool ─────────────────────────────────────────────────────────
@@ -1590,8 +1603,9 @@ func confineToCWD(path string) (string, error) {
 		}
 		for _, h := range homes {
 			odekPrefix := h + "/.odek/"
-			if len(absResolved) >= len(odekPrefix) && strings.EqualFold(absResolved[:len(odekPrefix)], odekPrefix) {
-				if isProtectedOdekPath(absResolved[len(odekPrefix):]) {
+			foldedAbs, foldedPrefix := danger.FoldPathCase(absResolved), danger.FoldPathCase(odekPrefix)
+			if strings.HasPrefix(foldedAbs, foldedPrefix) {
+				if isProtectedOdekPath(foldedAbs[len(foldedPrefix):]) {
 					return "", fmt.Errorf("path %q is a protected odek configuration path and cannot be written by file tools", path)
 				}
 				return abs, nil
@@ -1614,7 +1628,7 @@ func confineToCWD(path string) (string, error) {
 func isProtectedOdekPath(rel string) bool {
 	// Case-folding defends against case-insensitive filesystems (macOS APFS):
 	// ~/.odek/CONFIG.JSON and ~/.odek/config.json are the same file.
-	rel = strings.ToLower(filepath.Clean(rel))
+	rel = danger.FoldPathCase(filepath.Clean(rel))
 
 	// Exact-file trust anchors. Rewriting any of these can disable safety
 	// policy, exfiltrate secrets, or persist attacker control.

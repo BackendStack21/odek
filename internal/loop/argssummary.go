@@ -63,9 +63,12 @@ func argv0(cmd string) string {
 // quotes and backslash escapes removed.
 type shellWord struct{ raw, value string }
 
-// shellWords splits cmd into words honouring single quotes, double quotes
-// and backslash escapes. A word left open by an unterminated quote is
-// dropped, so its contents never surface as a word of their own.
+// shellWords splits cmd into words honouring single quotes, double quotes,
+// backslash escapes and $( ... ), ${ ... } and backtick substitutions (each
+// is consumed whole, including quotes and parentheses nested inside it).
+// A word left open by an unterminated quote or substitution is dropped, and
+// so is everything after it, so no fragment of its contents surfaces as a
+// word of its own.
 func shellWords(cmd string) []shellWord {
 	var words []shellWord
 	var raw, val strings.Builder
@@ -73,6 +76,18 @@ func shellWords(cmd string) []shellWord {
 	var quote byte
 	for i := 0; i < len(cmd); i++ {
 		c := cmd[i]
+		if quote != '\'' {
+			if end, ok := substitutionEnd(cmd, i); ok {
+				if end < 0 {
+					return words
+				}
+				raw.WriteString(cmd[i : end+1])
+				val.WriteString(cmd[i : end+1])
+				inWord = true
+				i = end
+				continue
+			}
+		}
 		switch {
 		case quote == '\'':
 			raw.WriteByte(c)
@@ -119,6 +134,74 @@ func shellWords(cmd string) []shellWord {
 		words = append(words, shellWord{raw: raw.String(), value: val.String()})
 	}
 	return words
+}
+
+// substitutionEnd reports whether a $( ... ), ${ ... } or backtick
+// substitution opens at cmd[i]. When it does, end is the index of its
+// closing delimiter, or -1 when it never closes. Quotes, escapes and
+// nested substitutions or parentheses inside it are skipped.
+func substitutionEnd(cmd string, i int) (end int, ok bool) {
+	var closer byte
+	j := i + 1
+	switch {
+	case cmd[i] == '`':
+		closer = '`'
+	case cmd[i] == '$' && i+1 < len(cmd) && cmd[i+1] == '(':
+		closer, j = ')', i+2
+	case cmd[i] == '$' && i+1 < len(cmd) && cmd[i+1] == '{':
+		closer, j = '}', i+2
+	default:
+		return 0, false
+	}
+	parens := 0
+	for ; j < len(cmd); j++ {
+		c := cmd[j]
+		switch {
+		case c == '\\' && j+1 < len(cmd):
+			j++
+		case c == '\'':
+			k := strings.IndexByte(cmd[j+1:], '\'')
+			if k < 0 {
+				return -1, true
+			}
+			j += k + 1
+		case c == '"':
+			for j++; j < len(cmd) && cmd[j] != '"'; j++ {
+				if cmd[j] == '\\' {
+					j++
+				} else if e, nested := substitutionEnd(cmd, j); nested {
+					if e < 0 {
+						return -1, true
+					}
+					j = e
+				}
+			}
+			if j >= len(cmd) {
+				return -1, true
+			}
+		case c == '`' && closer != '`':
+			e, _ := substitutionEnd(cmd, j)
+			if e < 0 {
+				return -1, true
+			}
+			j = e
+		case c == '$' && j+1 < len(cmd) && (cmd[j+1] == '(' || cmd[j+1] == '{'):
+			e, _ := substitutionEnd(cmd, j)
+			if e < 0 {
+				return -1, true
+			}
+			j = e
+		case c == '(' && closer == ')':
+			parens++
+		case c == closer:
+			if closer == ')' && parens > 0 {
+				parens--
+				continue
+			}
+			return j, true
+		}
+	}
+	return -1, true
 }
 
 func isEnvAssignment(tok string) bool {

@@ -15,6 +15,9 @@ var projectCodeTools = map[string]bool{
 }
 
 func adapterRunsCode(name string, tokens []string, repo *gitRepoCtx) bool {
+	if gpgRunsProgram(name, tokens) {
+		return true
+	}
 	if hasAny([]string{"awk", "gawk", "mawk", "nawk"}, name) && optionPresent(tokens, "-l", "--load") {
 		return true
 	}
@@ -97,7 +100,10 @@ var (
 	// The loose forms count every place a statement may name a write
 	// target; one the strict forms cannot read fails closed.
 	sqliteWritefileLoose = regexp.MustCompile(`(?i)\bwritefile\b`)
-	sqliteVacuumLoose    = regexp.MustCompile(`(?i)\bvacuum\b[\s;]*(\S*?)[\s;]*\binto\b`)
+	// ATTACH [DATABASE] <file> AS <name> opens (and creates) the named file.
+	sqliteAttachCall  = regexp.MustCompile(`(?i)\battach(?:[\s;]+database)?[\s;]*`)
+	sqliteAttachLoose = regexp.MustCompile(`(?i)\battach\b`)
+	sqliteVacuumLoose = regexp.MustCompile(`(?i)\bvacuum\b[\s;]*(\S*?)[\s;]*\binto\b`)
 )
 
 // sqliteInsertVerbs start a statement whose INTO names a table, not a file.
@@ -114,8 +120,41 @@ func sqliteSeparateInsert(text string, m []int) bool {
 	return sqliteInsertVerbs[strings.ToLower(text[m[2]:m[3]])] && strings.Contains(text[m[0]:m[2]], ";")
 }
 
-// sqliteSQLWriteTargets returns the paths SQL text writes through writefile()
-// and VACUUM INTO. Only an argument that is exactly one string literal names
+// sqliteAttachFollows reports whether rest, the text after an ATTACH file
+// literal, continues with the AS keyword.
+func sqliteAttachFollows(rest string) bool {
+	if len(rest) < 2 || !strings.EqualFold(rest[:2], "as") {
+		return false
+	}
+	if len(rest) == 2 {
+		return true
+	}
+	c := rest[2]
+	return c != '_' && (c < '0' || c > '9') && (c < 'a' || c > 'z') && (c < 'A' || c > 'Z')
+}
+
+// sqliteAttachPath returns the file an ATTACH literal names: a `file:` URI is
+// reduced to its path, and the in-memory and temporary databases (”, ':memory:')
+// name no file.
+func sqliteAttachPath(value string) (string, bool) {
+	if value == "" || value == ":memory:" {
+		return "", false
+	}
+	if rest, ok := strings.CutPrefix(strings.ToLower(value), "file:"); ok {
+		value = value[len(value)-len(rest):]
+		if i := strings.IndexByte(value, '?'); i >= 0 {
+			value = value[:i]
+		}
+		value = strings.TrimPrefix(value, "//")
+		if value == "" || value == ":memory:" {
+			return "", false
+		}
+	}
+	return value, true
+}
+
+// sqliteSQLWriteTargets returns the paths SQL text writes through writefile(),
+// VACUUM INTO and ATTACH DATABASE. Only an argument that is exactly one string literal names
 // a path; anything else (a column, a parameter, a literal concatenated with
 // || or another expression) is only known at run time and is reported as the
 // dynamic marker, which fails closed.
@@ -125,7 +164,8 @@ func sqliteSQLWriteTargets(text string) []string {
 	for _, form := range []struct {
 		re, loose *regexp.Regexp
 		end       string // characters that may follow a whole-literal argument
-	}{{sqliteWritefileCall, sqliteWritefileLoose, ",)"}, {sqliteVacuumInto, sqliteVacuumLoose, ";"}} {
+		attach    bool   // ATTACH: the literal must be followed by AS
+	}{{sqliteWritefileCall, sqliteWritefileLoose, ",)", false}, {sqliteVacuumInto, sqliteVacuumLoose, ";", false}, {sqliteAttachCall, sqliteAttachLoose, "", true}} {
 		var matches [][]int
 		for _, m := range form.re.FindAllStringSubmatchIndex(text, -1) {
 			if sqliteSeparateInsert(text, m) {
@@ -145,7 +185,13 @@ func sqliteSQLWriteTargets(text string) []string {
 		for _, m := range matches {
 			value, rest, ok := sqlLeadingLiteral(text[m[1]:])
 			rest = strings.TrimLeft(rest, " \t\r\n")
-			if ok && (rest == "" || strings.ContainsRune(form.end, rune(rest[0]))) {
+			if ok && form.attach && sqliteAttachFollows(strings.TrimLeft(rest, ";")) {
+				if path, named := sqliteAttachPath(value); named {
+					out = append(out, path)
+				}
+				continue
+			}
+			if ok && !form.attach && (rest == "" || strings.ContainsRune(form.end, rune(rest[0]))) {
 				out = append(out, value)
 				continue
 			}
@@ -501,6 +547,9 @@ func syntaxCheckArgumentsOnly(tokens []string, flags ...string) bool {
 }
 
 func hostInspectorMutates(name string, tokens []string) bool {
+	if gpgMutatesKeyring(name, tokens) || killByNameBroadcasts(name, tokens) || jqDumpsEnvironment(name, tokens) || psShowsEnvironment(name, tokens) {
+		return true
+	}
 	switch name {
 	case "sysctl":
 		for _, tok := range tokens[1:] {
@@ -733,7 +782,7 @@ func executionFileTargets(name string, tokens []string) []string {
 	case "awk", "gawk", "mawk", "nawk":
 		// -f/--file name the awk program; -i/--include and -l/--load pull
 		// in more awk source or extension libraries.
-		options = []string{"-l", "--load", "-f", "--file", "-i", "--include"}
+		options = []string{"-l", "--load", "-f", "--file", "-i", "--include", "-E", "--exec"}
 	case "sed":
 		options = []string{"-f", "--file"}
 	case "emacs":
@@ -777,10 +826,14 @@ func executionFileTargets(name string, tokens []string) []string {
 		options = []string{"-f", "--file"}
 	case "sqlite3":
 		var out []string
-		for _, tok := range tokens[1:] {
+		for i, tok := range tokens[1:] {
 			parts := strings.Fields(tok)
 			if len(parts) > 1 && hasAny([]string{".read", ".load"}, parts[0]) {
 				out = append(out, parts[1])
+			}
+			// -init FILE runs the file's SQL and dot-commands at startup.
+			if (tok == "-init" || tok == "--init") && i+1 < len(tokens[1:]) {
+				out = append(out, tokens[1:][i+1])
 			}
 		}
 		return out

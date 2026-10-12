@@ -119,6 +119,11 @@ Notes:
 
 - **Delivery defaults to the current chat** (unlike the CLI, which defaults to
   `stdout`) — adding a job from a conversation sends its results back there.
+- A delivered result is also recorded into the chat's existing conversation.
+  The recorded turn carries the run's taint: if the scheduled run ingested
+  untrusted content (or its provenance is unknown), the chat session is marked
+  as having ingested untrusted content and its episodes are kept out of
+  automatic recall.
 - `/schedule run` executes the task **now, in this chat**, through the normal
   agent pipeline (you see progress and answer any approval prompts) — a safe way
   to test a job. It does not change the job's own schedule or delivery.
@@ -156,7 +161,7 @@ and comma-separated lists. Macros: `@hourly`, `@daily` (`@midnight`),
 `@weekly`, `@monthly`, `@yearly` (`@annually`).
 
 Granularity is **one minute** (no seconds field). Times are in the job's `--tz`
-or, failing that, the scheduler's default timezone (UTC unless configured).
+or, failing that, the scheduler's default timezone (UTC unless configured). The same default is used when `odek schedule` and the Telegram `/schedule` commands display fire times.
 
 **Daylight-saving changes** follow Vixie/cronie behavior. A job with a fixed
 time of day (neither the minute nor the hour field is a wildcard, e.g.

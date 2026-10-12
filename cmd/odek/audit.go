@@ -113,7 +113,7 @@ func recordTurnAudit(store *session.AuditStore, sessionID string, turn int, user
 	// mention. We intentionally do not scan raw tool results here; a
 	// resource that merely appears in a fetched page is not itself a
 	// divergence unless the agent acts on it.
-	novel := session.NovelResources(userText, actionText.String())
+	novel := session.NovelResources(redact.RedactSecrets(userText), redact.RedactSecrets(actionText.String()))
 
 	// Resources introduced by untrusted content itself. Even if the user
 	// mentioned the same resource earlier, acting on it after it appears in
@@ -169,7 +169,7 @@ func recordTurnAudit(store *session.AuditStore, sessionID string, turn int, user
 	}
 	var untrustedResources []string
 	seen := make(map[string]bool)
-	for _, r := range session.ResourcesIn(actionText.String()) {
+	for _, r := range session.ResourcesIn(redact.RedactSecrets(actionText.String())) {
 		lr := auditKey(r)
 		if untrustedResSet[lr] && !seen[lr] {
 			seen[lr] = true
@@ -194,9 +194,12 @@ func recordTurnAudit(store *session.AuditStore, sessionID string, turn int, user
 }
 
 // auditOpsResourceMatchesSource reports whether resource r is the untrusted
-// content's own source s (case-insensitive): equal, or one lies under the
-// other on a path boundary — the longer continues with '/', '?' or '#', or
-// the shorter ends with '/'. A raw string prefix is not enough: the
+// content's own source s (case-insensitive): equal, or r lies under s on a
+// path boundary: r continues s with '/', '?' or '#', or s ends with '/'.
+// The match is one-directional: an ancestor of the source (the directory a
+// file lives in, the site root of a page) is not the content's own source,
+// so the content naming it is a reused-resource signal. A raw string prefix
+// is not enough either: the
 // look-alike host https://news.example.com.collector.net extends the source
 // https://news.example.com without being part of it.
 func auditOpsResourceMatchesSource(r, s string) bool {
@@ -207,17 +210,13 @@ func auditOpsResourceMatchesSource(r, s string) bool {
 	if lr == ls {
 		return true
 	}
-	short, long := ls, lr
-	if len(lr) < len(ls) {
-		short, long = lr, ls
-	}
-	if !strings.HasPrefix(long, short) {
+	if !strings.HasPrefix(lr, ls) {
 		return false
 	}
-	if strings.HasSuffix(short, "/") {
+	if strings.HasSuffix(ls, "/") {
 		return true
 	}
-	switch long[len(short)] {
+	switch lr[len(ls)] {
 	case '/', '?', '#':
 		return true
 	}
@@ -275,12 +274,15 @@ func auditList(store *session.Store, auditStore *session.AuditStore) error {
 				suspicious++
 			}
 		}
-		firstSource := log.Ingests[0].Source
+		// Ingest sources are tool-chosen labels built from attacker-
+		// influenced text: escape control/bidi characters first, then
+		// truncate on rune boundaries.
+		firstSource := []rune(danger.SanitizeInline(log.Ingests[0].Source))
 		if len(firstSource) > 40 {
-			firstSource = firstSource[:37] + "..."
+			firstSource = append(firstSource[:37], '.', '.', '.')
 		}
 		fmt.Printf("%-22s %7d %6d %11d  %s\n",
-			s.ID, len(log.Ingests), len(log.Turns), suspicious, firstSource)
+			danger.SanitizeInline(s.ID), len(log.Ingests), len(log.Turns), suspicious, string(firstSource))
 	}
 	return nil
 }

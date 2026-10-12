@@ -22,10 +22,12 @@ package agent
 import (
 	"context"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/BackendStack21/odek/internal/budget"
@@ -394,12 +396,27 @@ func LoadProjectFile() string {
 		fmt.Fprintf(os.Stderr, "odek: warning: %s is a symlink — refusing to follow for security\n", ProjectFileName)
 		return ""
 	}
+	// A FIFO, device or socket would block (or stream forever) on read.
+	if !info.Mode().IsRegular() {
+		fmt.Fprintf(os.Stderr, "odek: warning: %s is not a regular file — ignoring\n", ProjectFileName)
+		return ""
+	}
 	if info.Size() > maxProjectFileBytes {
 		fmt.Fprintf(os.Stderr, "odek: warning: %s is too large (%d bytes, max %d) — ignoring\n", ProjectFileName, info.Size(), maxProjectFileBytes)
 		return ""
 	}
-	data, err := os.ReadFile(ProjectFileName)
+	// Non-blocking open so a file swapped for a FIFO after the Lstat cannot
+	// stall the open; re-check the opened handle and bound the read.
+	f, err := os.OpenFile(ProjectFileName, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	if fi, err := f.Stat(); err != nil || !fi.Mode().IsRegular() {
+		return ""
+	}
+	data, err := io.ReadAll(io.LimitReader(f, maxProjectFileBytes+1))
+	if err != nil || len(data) > maxProjectFileBytes {
 		return ""
 	}
 	return strings.TrimSpace(string(data))

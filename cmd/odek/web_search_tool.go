@@ -74,7 +74,7 @@ func (t *webSearchTool) checkRedirect(req *http.Request, via []*http.Request) er
 	}
 	target := req.URL.String()
 	if err := t.dangerousConfig.CheckOperation(danger.ToolOperation{
-		Name: "web_search", Resource: target, Risk: danger.ClassifyURL(target),
+		Name: "web_search", Resource: target, Risk: ssrfClassifyURL(target),
 	}, nil); err != nil {
 		return fmt.Errorf("redirect to %s blocked: %w", target, err)
 	}

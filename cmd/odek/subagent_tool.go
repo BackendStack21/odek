@@ -63,6 +63,11 @@ type delegateTasksTool struct {
 	// session deletion cascades; empty or invalid means the defensive
 	// "unfiled" subtree, which the janitor sweeps at task granularity.
 	sessionID string
+
+	// sandboxed is set when the parent's sandbox came up: every spawned
+	// child is then required to sandbox itself (ODEK_SANDBOX=true in its
+	// environment, so setup failure is fatal), whatever its own config says.
+	sandboxed bool
 	sessMu    sync.Mutex
 
 	// artifactsRoot is the artifacts home (~/.odek/artifacts in production,
@@ -438,7 +443,7 @@ func (t *delegateTasksTool) Call(args string) (string, error) {
 		// (aliased) ids through the registry, so an aliased duplicate must
 		// already be registered or the artifacts line advertises the plain
 		// id and artifact_read resolves it to the WRONG task's bytes.
-		notes := registerTaskArtifacts(r, dirs[i], i, taskIDs[i])
+		notes := registerSessionTaskArtifacts(t.getSessionID(), r, dirs[i], i, taskIDs[i])
 		buf.WriteString(formatTaskResultDetailed(r, i, t.artifactReadAvailable, taskIDs[i], dirs[i]))
 		// ambiguity notes render after the artifacts block, same shape as
 		// the pre-aliasing output.
@@ -592,6 +597,9 @@ func (t *delegateTasksTool) runTaskWithModel(taskIdx int, taskID, goal, taskCont
 	}
 	cmd.Env = append(childEnvWithout(stripNames),
 		subagentDepthEnvVar+"="+strconv.Itoa(subagentDepth()+1))
+	if t.sandboxed {
+		cmd.Env = append(cmd.Env, "ODEK_SANDBOX=true")
+	}
 	var keyFile *os.File
 	var keyCleanup func()
 	setupClass = "key_handoff_error"

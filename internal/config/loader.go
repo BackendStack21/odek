@@ -1151,7 +1151,13 @@ func ProjectConfigPath() string {
 // loadFile reads and parses a JSON config file. Returns a zero FileConfig
 // if the file doesn't exist or can't be read. String values go through
 // expandEnv for ${VAR} substitution.
-func loadFile(path string) FileConfig {
+func loadFile(path string) FileConfig { return loadFileExpand(path, true) }
+
+// loadFileExpand is loadFile with ${VAR} substitution switchable. The
+// untrusted project config is loaded without it: expanding host environment
+// variables into repo-controlled strings (model, sandbox image, ...) would
+// let a repo ship them off to a provider or registry.
+func loadFileExpand(path string, expand bool) FileConfig {
 	if path == "" {
 		return FileConfig{}
 	}
@@ -1195,6 +1201,9 @@ func loadFile(path string) FileConfig {
 		diagnostics.Warning("config", "decode_file", err)
 		fmt.Fprintf(os.Stderr, "odek: warning: config %s: invalid JSON — ignoring file: %v\n", path, err)
 		return FileConfig{} // invalid JSON = empty
+	}
+	if !expand {
+		return cfg
 	}
 	// Expand environment variables in all string fields
 	cfg.Model = expandEnv(cfg.Model)
@@ -1785,7 +1794,7 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	global := loadFile(GlobalConfigPath())
 
 	// Layer 2: project (./odek.json)
-	project := loadFile(ProjectConfigPath())
+	project := loadFileExpand(ProjectConfigPath(), false)
 
 	// Project config is untrusted: a malicious repo must not be able to steal
 	// the API key, poison the system prompt, or disable safety policy.
@@ -1951,6 +1960,20 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	// above this is a clamp, not an outright rejection: a repo tightening its
 	// own budgets is safe, loosening the operator's budgets is not.
 	clampProjectLimits(global.Limits, project.Limits)
+
+	// max_concurrency bounds the process-wide sub-agent limiter when the
+	// operator sets no subagent.max_concurrency: a repo may only lower it
+	// below the operator's value (or the shipped default of 3).
+	if project.MaxConcurrency > 0 {
+		ceiling := global.MaxConcurrency
+		if ceiling <= 0 {
+			ceiling = 3
+		}
+		if project.MaxConcurrency > ceiling {
+			fmt.Fprintf(os.Stderr, "odek: WARNING: clamping max_concurrency=%d from project config (%s) to %d — a project may only lower it\n", project.MaxConcurrency, ProjectConfigPath(), ceiling)
+			project.MaxConcurrency = ceiling
+		}
+	}
 
 	// Planning ("planning" section): same clamp philosophy. A repo may opt
 	// out entirely and may tighten its own caps, but cannot re-enable a
@@ -4057,6 +4080,11 @@ func overlayFile(base, override FileConfig) FileConfig {
 			// A command-less global marker or a project that swaps the
 			// command must not inherit the operator's approval.
 			if prev, ok := base.MCPServers[k]; ok {
+				// A higher layer cannot re-enable a server the operator
+				// disabled.
+				if prev.IsDisabled() {
+					v.Enabled = prev.Enabled
+				}
 				if prev.AutoApprove && mcpExecEqual(prev, v) {
 					v.AutoApprove = true
 				} else {
@@ -4124,20 +4152,15 @@ func overlayFile(base, override FileConfig) FileConfig {
 // URL-configured servers compare by their URL + token_env + limits —
 // again a name-only marker (no url, no command) matches nothing.
 func mcpExecEqual(a, b mcpclient.ServerConfig) bool {
-	if a.Command == "" && b.Command == "" {
-		if a.URL == "" || b.URL == "" {
-			return false
-		}
-		if a.URL != b.URL || a.TokenEnv != b.TokenEnv || a.TimeoutSeconds != b.TimeoutSeconds ||
-			a.MaxResponseBytes != b.MaxResponseBytes || a.MaxResultChars != b.MaxResultChars {
-			return false
-		}
-		return slices.Equal(a.ArtifactRoots, b.ArtifactRoots)
-	}
-	if a.Command == "" || b.Command == "" {
+	// A marker with neither a command nor a URL never matches.
+	if (a.Command == "" && a.URL == "") || (b.Command == "" && b.URL == "") {
 		return false
 	}
-	if a.Command != b.Command || a.TimeoutSeconds != b.TimeoutSeconds ||
+	// The transport identity is the whole of command, args, env, url and
+	// token_env: the URL transport is preferred whenever url is set, so a
+	// stdio fingerprint plus a project-supplied url is a different server.
+	if a.Command != b.Command || a.URL != b.URL || a.TokenEnv != b.TokenEnv ||
+		a.TimeoutSeconds != b.TimeoutSeconds ||
 		a.MaxResponseBytes != b.MaxResponseBytes || a.MaxResultChars != b.MaxResultChars {
 		return false
 	}

@@ -1,7 +1,9 @@
 package telegram
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -138,6 +140,20 @@ func (ft *FallbackTransport) tryURLs(req *http.Request) (*http.Response, error) 
 
 	directClient := ft.direct()
 
+	// Each attempt needs its own body: Clone shares the original reader, so
+	// an attempt that consumed it would leave every fallback with nothing to
+	// send. Buffer it once and hand every clone a fresh reader.
+	var bodyBytes []byte
+	hasBody := req.Body != nil && req.Body != http.NoBody
+	if hasBody {
+		b, err := io.ReadAll(req.Body)
+		req.Body.Close()
+		if err != nil {
+			return nil, fmt.Errorf("telegram: read request body: %w", err)
+		}
+		bodyBytes = b
+	}
+
 	firstErr := error(nil)
 	for _, base := range ft.allURLs() {
 		baseURL, err := url.Parse(base)
@@ -159,6 +175,13 @@ func (ft *FallbackTransport) tryURLs(req *http.Request) (*http.Response, error) 
 		}
 		// Ensure the Host header matches.
 		clone.Host = baseURL.Host
+		if hasBody {
+			clone.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+			clone.ContentLength = int64(len(bodyBytes))
+			clone.GetBody = func() (io.ReadCloser, error) {
+				return io.NopCloser(bytes.NewReader(bodyBytes)), nil
+			}
+		}
 
 		resp, err := directClient.Do(clone)
 		if err == nil {

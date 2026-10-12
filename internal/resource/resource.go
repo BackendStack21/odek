@@ -20,6 +20,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/BackendStack21/odek/internal/danger"
 	"github.com/BackendStack21/odek/internal/pathutil"
 	"github.com/BackendStack21/odek/internal/session"
 )
@@ -322,6 +323,9 @@ func (f *FileResolver) Search(ctx context.Context, query string, limit int) ([]R
 		if !pathutil.WithinRoot(absRoot, match) {
 			continue
 		}
+		if protectedTarget(f.root, pathutil.ResolveDirSymlinks(match)) {
+			continue
+		}
 		rel, _ := filepath.Rel(f.root, match)
 		// Use Lstat so that symlinks do not leak metadata from their targets.
 		info, err := os.Lstat(match)
@@ -357,6 +361,13 @@ func validateSearchQuery(query string) error {
 	return nil
 }
 
+// protectedTarget reports whether path is one @-references must neither read
+// nor advertise: odek trust anchors, home credential directories, shell rc
+// files, credential-shaped file names and system secret files.
+func protectedTarget(root, path string) bool {
+	return danger.IsSensitiveReadPath(pathutil.ResolveDirSymlinks(root), path)
+}
+
 func (f *FileResolver) Load(ctx context.Context, id string) (string, error) {
 	// id is the path after @ (e.g. "src/main.go")
 	target := filepath.Join(f.root, id)
@@ -370,6 +381,14 @@ func (f *FileResolver) Load(ctx context.Context, id string) (string, error) {
 	resolvedTarget := pathutil.ResolveDirSymlinks(target)
 	if !pathutil.WithinRoot(f.root, resolvedTarget) {
 		return "", fmt.Errorf("resource: path %q is outside root", id)
+	}
+
+	// An @-reference expands into the prompt with no approval step, so it
+	// must not read what the file tools gate: odek's trust anchors under
+	// ~/.odek (secrets, config, sessions, ...), credential files and other
+	// system-sensitive paths. This matters when the workspace is $HOME.
+	if protectedTarget(f.root, resolvedTarget) {
+		return "", fmt.Errorf("resource: %q is a protected path and cannot be referenced", id)
 	}
 
 	// Open with O_NOFOLLOW to atomically prevent the final component from

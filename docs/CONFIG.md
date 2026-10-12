@@ -17,7 +17,7 @@ Each layer overrides the one below it. Unset fields inherit from the layer below
 Layer 0 is unique: it does not hold config fields directly. Instead it injects
 `KEY=VALUE` pairs into the process environment so they're available for:
 
-- **Layer 1–2** `${VAR}` substitution in config files
+- **Layer 1** `${VAR}` substitution in the global config file (the untrusted project `./odek.json` is never expanded)
 - **Layer 3** `ODEK_*` env var lookups (e.g. `ODEK_PROVIDER`, `ODEK_MODEL`)
 - **Provider key env vars** (`DEEPSEEK_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `ZAI_API_KEY`, …)
 
@@ -111,7 +111,7 @@ Same schema as global. Only set the fields you want to override:
 >
 > The `limits` section is neither rejected nor freely settable in `./odek.json`: a project may only *lower* globally-set execution budgets, never raise or disable them. See [Execution budgets](#execution-budgets-limits).
 
-Both files are optional. Missing files are silently ignored. String values support `${VAR}` environment variable substitution — useful for API keys without plaintext storage.
+Both files are optional. Missing files are silently ignored. String values support `${VAR}` environment variable substitution — useful for API keys without plaintext storage. The untrusted project `./odek.json` is the exception: its values are never expanded from the host environment (only `sandbox_env` values, which go through the project-sandbox approval prompt that flags interpolation).
 
 ## Secrets file (`~/.odek/secrets.env`)
 
@@ -531,7 +531,7 @@ Tests: `internal/budget/`, `internal/config/limits_test.go`, `internal/loop/budg
 
 | Field | Default | Env var | Description |
 |-------|---------|---------|-------------|
-| `max_concurrency` | `3` | `ODEK_MAX_CONCURRENCY` | Max concurrent sub-agent tasks spawned by `delegate_tasks`; tasks beyond the cap queue. 0 = default 3. The parent agent's own stream runs alongside them, so `3` means 4 concurrent provider streams — some providers (e.g. z.ai GLM) throttle around 5 concurrent streams and 429-saturate above that. |
+| `max_concurrency` | `3` | `ODEK_MAX_CONCURRENCY` | Max concurrent sub-agent tasks spawned by `delegate_tasks`; tasks beyond the cap queue. 0 = default 3. A project `./odek.json` may only lower it below the operator value (or the default 3); the sub-agent limiter is capped at 8. The parent agent's own stream runs alongside them, so `3` means 4 concurrent provider streams — some providers (e.g. z.ai GLM) throttle around 5 concurrent streams and 429-saturate above that. |
 | `trusted_proxies` | `[]` | `ODEK_TRUSTED_PROXIES` | Comma-separated list of IP addresses or CIDR ranges whose `X-Forwarded-For` / `X-Real-Ip` headers are honoured by `odek serve` for rate-limit attribution. Empty list means forwarding headers are ignored. |
 
 `trusted_proxies` is security-relevant: misconfiguring it can allow clients to spoof their IP and bypass the per-IP rate limiters on `/ws` upgrades and session lookups. Configure it only in operator-controlled sources (`~/.odek/config.json` or `ODEK_TRUSTED_PROXIES`).

@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/BackendStack21/odek/internal/artifact"
@@ -33,10 +34,13 @@ const (
 // validated (symlink-resolved) path captured at collation time. seq is a
 // monotonic registration counter used for lazy queue eviction.
 type artifactEntry struct {
-	Ref          artifact.Ref
-	Path         string
-	TaskIdx      int
-	TaskID       string
+	Ref     artifact.Ref
+	Path    string
+	TaskIdx int
+	TaskID  string
+	// Session is the parent session that registered the artifact. Ids are
+	// namespaced per session: a session resolves and lists only its own.
+	Session      string
 	RegisteredAt time.Time
 	seq          uint64
 	OrigID       string  // id as the child reported it (pre-alias)
@@ -84,6 +88,15 @@ func resetArtifactRegistryForTest() {
 	artifactRegistry.marks = nil
 }
 
+// artifactKey is the registry key of an id within a session. The NUL
+// separator cannot occur in a session id or an artifact id.
+func artifactKey(session, id string) string {
+	if session == "" {
+		return id
+	}
+	return session + "\x00" + id
+}
+
 // registerSubagentArtifact records a validated artifact under its ref id.
 // FIRST-WINS on duplicate ids (D1, SUBAGENT_ARTIFACT_DELIVERY_PLAN.md): the
 // first occurrence keeps the plain id; a later task's duplicate registers
@@ -108,8 +121,8 @@ func registerSubagentArtifact(e artifactEntry) (string, bool) {
 	}
 	orig := e.Ref.ID
 	id := orig
-	if _, taken := artifactRegistry.byID[orig]; taken {
-		alias := aliasArtifactID(orig, e.TaskIdx)
+	if _, taken := artifactRegistry.byID[artifactKey(e.Session, orig)]; taken {
+		alias := aliasArtifactID(e.Session, orig, e.TaskIdx)
 		if alias == "" {
 			return "", true
 		}
@@ -123,9 +136,9 @@ func registerSubagentArtifact(e artifactEntry) (string, bool) {
 	e.OrigID = orig
 	e.key = key
 	e.occBase = occBase
-	artifactRegistry.byID[id] = &e
+	artifactRegistry.byID[artifactKey(e.Session, id)] = &e
 	artifactRegistry.byOrig[key] = id
-	artifactRegistry.order = append(artifactRegistry.order, registrySlot{id: id, seq: e.seq})
+	artifactRegistry.order = append(artifactRegistry.order, registrySlot{id: artifactKey(e.Session, id), seq: e.seq})
 	evictArtifactRegistryLocked()
 	return id, id != orig
 }
@@ -138,20 +151,20 @@ const maxAliasProbes = 128
 // owning task's "<id>.t<taskIdx+1>", probing forward past any live entry.
 // Caller must hold the registry mutex. Returns "" only if the fallback is
 // somehow taken (cannot happen: seq is monotonic).
-func aliasArtifactID(origID string, taskIdx int) string {
+func aliasArtifactID(session, origID string, taskIdx int) string {
 	for n := taskIdx + 1; n <= taskIdx+1+maxAliasProbes; n++ {
 		cand := fmt.Sprintf("%s.t%d", origID, n)
 		if !artifactIDRe.MatchString(cand) {
 			break // too long/invalid — probing further only gets longer
 		}
-		if _, taken := artifactRegistry.byID[cand]; !taken {
+		if _, taken := artifactRegistry.byID[artifactKey(session, cand)]; !taken {
 			return cand
 		}
 	}
 	for {
 		artifactRegistry.seq++
 		cand := fmt.Sprintf("artifact-%d", artifactRegistry.seq)
-		if _, taken := artifactRegistry.byID[cand]; !taken {
+		if _, taken := artifactRegistry.byID[artifactKey(session, cand)]; !taken {
 			return cand
 		}
 	}
@@ -238,20 +251,31 @@ func lookupEffectiveArtifactID(origID string, taskID string, occ int) (string, b
 	return id, ok
 }
 
-// lookupSubagentArtifact resolves an id to its validated entry.
+// lookupSubagentArtifact resolves an id in the unbound (empty) session.
 func lookupSubagentArtifact(id string) (artifactEntry, bool) {
+	return lookupSessionArtifact("", id)
+}
+
+// lookupSessionArtifact resolves an id to its validated entry, visible only
+// to the session that registered it.
+func lookupSessionArtifact(session, id string) (artifactEntry, bool) {
 	artifactRegistry.mu.Lock()
 	defer artifactRegistry.mu.Unlock()
-	e, ok := artifactRegistry.byID[id]
+	e, ok := artifactRegistry.byID[artifactKey(session, id)]
 	if !ok || e == nil {
 		return artifactEntry{}, false
 	}
 	return *e, true
 }
 
-// listSubagentArtifactIDs returns up to maxListedArtifactIDs registered ids
-// (oldest first), plus the total live count.
+// listSubagentArtifactIDs lists the unbound (empty) session's ids.
 func listSubagentArtifactIDs() ([]string, int) {
+	return listSessionArtifactIDs("")
+}
+
+// listSessionArtifactIDs returns up to maxListedArtifactIDs of the session's
+// registered ids (oldest first), plus the session's live count.
+func listSessionArtifactIDs(session string) ([]string, int) {
 	artifactRegistry.mu.Lock()
 	defer artifactRegistry.mu.Unlock()
 	ids := make([]string, 0, maxListedArtifactIDs)
@@ -259,11 +283,17 @@ func listSubagentArtifactIDs() ([]string, int) {
 		if len(ids) >= maxListedArtifactIDs {
 			break
 		}
-		if cur, ok := artifactRegistry.byID[slot.id]; ok && cur.seq == slot.seq {
-			ids = append(ids, slot.id)
+		if cur, ok := artifactRegistry.byID[slot.id]; ok && cur.seq == slot.seq && cur.Session == session {
+			ids = append(ids, cur.Ref.ID)
 		}
 	}
-	return ids, len(artifactRegistry.byID)
+	total := 0
+	for _, cur := range artifactRegistry.byID {
+		if cur.Session == session {
+			total++
+		}
+	}
+	return ids, total
 }
 
 // registerTaskArtifacts validates and registers every artifact of one
@@ -271,6 +301,12 @@ func listSubagentArtifactIDs() ([]string, int) {
 // for ambiguities (duplicate ids). Validation failures are silently skipped
 // — renderArtifacts already flags them in the summary.
 func registerTaskArtifacts(raw, dir string, taskIdx int, taskID string) []string {
+	return registerSessionTaskArtifacts("", raw, dir, taskIdx, taskID)
+}
+
+// registerSessionTaskArtifacts is registerTaskArtifacts bound to the parent
+// session that owns the registered artifacts.
+func registerSessionTaskArtifacts(session, raw, dir string, taskIdx int, taskID string) []string {
 	var r subagentResult
 	if err := json.Unmarshal([]byte(raw), &r); err != nil || len(r.Artifacts) == 0 {
 		return nil
@@ -281,7 +317,7 @@ func registerTaskArtifacts(raw, dir string, taskIdx int, taskID string) []string
 		if err != nil {
 			continue
 		}
-		id, dup := registerSubagentArtifact(artifactEntry{Ref: ref, Path: path, TaskIdx: taskIdx, TaskID: taskID})
+		id, dup := registerSubagentArtifact(artifactEntry{Ref: ref, Path: path, TaskIdx: taskIdx, TaskID: taskID, Session: session})
 		if dup {
 			notes = append(notes, fmt.Sprintf("[artifact] duplicate id %q — task %d copy registered as %q", ref.ID, taskIdx+1, id))
 		}
@@ -297,9 +333,9 @@ func artifactReadEnabled(tcfg toolConfig) bool {
 	return tcfg.SelfTrust == ""
 }
 
-// artifactIDList renders the bounded available-id list for unknown-id errors.
-func artifactIDList() string {
-	ids, total := listSubagentArtifactIDs()
+// sessionArtifactIDList renders the session's own bounded id list.
+func sessionArtifactIDList(session string) string {
+	ids, total := listSessionArtifactIDs(session)
 	if total == 0 {
 		return "no artifacts registered this session"
 	}
@@ -357,7 +393,10 @@ func relocateStagingArtifacts(staging, canonical string) (int, error) {
 	}
 	moved := 0
 	for _, e := range entries {
-		if e.IsDir() {
+		// Only regular files are artifacts: a staged symlink, FIFO or
+		// device is never delivered, and the copy fallback cannot be made
+		// to follow a link out of the workspace.
+		if !e.Type().IsRegular() {
 			continue
 		}
 		src := filepath.Join(staging, e.Name())
@@ -382,11 +421,18 @@ func relocateStagingArtifacts(staging, canonical string) (int, error) {
 
 // copyFileContents copies src to dst (0600), replacing any existing dst.
 func copyFileContents(src, dst string) error {
-	in, err := os.Open(src)
+	// O_NOFOLLOW refuses a final-component symlink and O_NONBLOCK keeps a
+	// FIFO from blocking the runner; the handle is re-checked as regular.
+	in, err := os.OpenFile(src, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return err
 	}
 	defer in.Close()
+	if fi, err := in.Stat(); err != nil {
+		return err
+	} else if !fi.Mode().IsRegular() {
+		return fmt.Errorf("not a regular file")
+	}
 	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
 		return err

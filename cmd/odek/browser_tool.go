@@ -60,6 +60,21 @@ const maxBrowserElements = 500
 // history limit cannot be bypassed by a small number of huge pages.
 const maxBrowserSnapshotBytes = 1 * 1024 * 1024
 
+// Per-field caps for page-derived strings kept outside Content (title, element
+// text, link URLs). With maxBrowserElements they bound the whole snapshot.
+const (
+	maxBrowserFieldBytes = 2 * 1024
+	maxBrowserURLBytes   = 8 * 1024
+)
+
+// capBrowserField clamps a single page-derived string to maxBrowserFieldBytes.
+func capBrowserField(s string) string {
+	if len(s) <= maxBrowserFieldBytes {
+		return s
+	}
+	return truncateUTF8Safe(s, maxBrowserFieldBytes)
+}
+
 // truncatePageContent caps page text at maxBrowserSnapshotBytes, backing up
 // to a UTF-8 rune boundary so a multibyte character split by the cap never
 // ships U+FFFD mojibake, and appends a truncation marker.
@@ -117,7 +132,7 @@ func (t *browserTool) checkRedirect(req *http.Request, via []*http.Request) erro
 		return fmt.Errorf("stopped after 10 redirects")
 	}
 	target := req.URL.String()
-	risk := danger.ClassifyURL(target)
+	risk := ssrfClassifyURL(target)
 	if err := t.dangerousConfig.CheckOperation(danger.ToolOperation{
 		Name: "browser", Resource: target, Risk: risk,
 	}, t.trustedClasses); err != nil {
@@ -229,7 +244,7 @@ func (t *browserTool) doNavigate(rawURL string) (string, error) {
 	req.Header.Set("Accept", "text/html,application/xhtml+xml")
 
 	// Security: classify and check browser operation
-	risk := danger.ClassifyURL(rawURL)
+	risk := ssrfClassifyURL(rawURL)
 	if err := t.dangerousConfig.CheckOperation(danger.ToolOperation{
 		Name: "browser", Resource: rawURL, Risk: risk,
 	}, t.trustedClasses); err != nil {
@@ -378,7 +393,7 @@ func parseHTML(ctx context.Context, html, pageURL string, status int) browserSna
 
 	// Extract title
 	if m := reTitle.FindStringSubmatch(html); len(m) > 1 {
-		snap.Title = strings.TrimSpace(m[1])
+		snap.Title = capBrowserField(strings.TrimSpace(m[1]))
 	}
 
 	var contentParts []string
@@ -416,12 +431,12 @@ func parseHTML(ctx context.Context, html, pageURL string, status int) browserSna
 			break
 		}
 		href := strings.TrimSpace(m[1])
-		text := strings.TrimSpace(m[2])
+		text := capBrowserField(strings.TrimSpace(m[2]))
 		// Skip non-navigable schemes. The check is case-insensitive and
 		// covers javascript:, data:, and vbscript: — all of which can carry
 		// script/active content the agent must never be sent into.
 		lowerHref := strings.ToLower(href)
-		if href == "" || text == "" || href == "#" ||
+		if href == "" || text == "" || href == "#" || len(href) > maxBrowserURLBytes ||
 			strings.HasPrefix(lowerHref, "javascript:") ||
 			strings.HasPrefix(lowerHref, "data:") ||
 			strings.HasPrefix(lowerHref, "vbscript:") {
@@ -451,7 +466,7 @@ func parseHTML(ctx context.Context, html, pageURL string, status int) browserSna
 		if len(elements) >= maxBrowserElements {
 			break
 		}
-		text := strings.TrimSpace(m[1])
+		text := capBrowserField(strings.TrimSpace(m[1]))
 		if text == "" {
 			text = "button"
 		}
@@ -476,6 +491,7 @@ func parseHTML(ctx context.Context, html, pageURL string, status int) browserSna
 		} else if pm := reInputPlaceholder.FindStringSubmatch(tag); len(pm) > 1 {
 			text = "[" + pm[1] + "]"
 		}
+		text = capBrowserField(text)
 		if text == "" {
 			text = "input"
 		}

@@ -326,6 +326,7 @@ type Client struct {
 	nextID    int
 	pending   map[int]chan callResponse // routes responses to waiting callers
 	writeErr  error                     // sticky writer failure, set once
+	readErr   error                     // sticky reader exit reason, set once when readLoop returns
 	closeOnce sync.Once
 
 	// URL transport (Streamable HTTP). Set only when ServerConfig.URL is
@@ -702,10 +703,15 @@ func (c *Client) Discover(ctx context.Context) (_ []ToolDef, setupErr error) {
 		return nil, fmt.Errorf("mcpclient %s: parse tools/list: %w", c.name, err)
 	}
 
+	seen := make(map[string]struct{}, len(result.Tools))
 	for i := range result.Tools {
 		if err := validateToolName(result.Tools[i].Name); err != nil {
 			return nil, fmt.Errorf("mcpclient %s: tools/list: %w", c.name, err)
 		}
+		if _, dup := seen[result.Tools[i].Name]; dup {
+			return nil, fmt.Errorf("mcpclient %s: tools/list: duplicate tool name %q", c.name, result.Tools[i].Name)
+		}
+		seen[result.Tools[i].Name] = struct{}{}
 	}
 
 	return result.Tools, nil
@@ -818,11 +824,12 @@ func (c *Client) CallTool(ctx context.Context, name string, argsJSON string) (st
 					extras = append(extras, p)
 				}
 			}
-			suffix := ""
 			if len(extras) > 0 {
 				// Trailing items are server text: neutralize any line that
-				// would read as a rendered artifact metadata entry.
-				suffix = "\n" + artifact.SanitizeText(strings.Join(extras, "\n"))
+				// would read as a rendered artifact metadata entry, and
+				// fold it into the envelope text so the single capping pass
+				// shrinks text first and always keeps the metadata lines.
+				env.Text += "\n" + artifact.SanitizeText(strings.Join(extras, "\n"))
 			}
 			for i := range env.Artifacts {
 				if _, err := artifact.Validate(env.Artifacts[i], c.artifactRoots); err != nil {
@@ -830,7 +837,7 @@ func (c *Client) CallTool(ctx context.Context, name string, argsJSON string) (st
 				}
 			}
 			artifact.Observe(ctx, env.Artifacts, c.artifactRoots)
-			return c.applyResultLimit(name, c.renderCappedEnvelope(name, env)+suffix), nil
+			return c.renderCappedEnvelope(name, env), nil
 		}
 	}
 	if env != nil {
@@ -979,6 +986,12 @@ func (c *Client) call(ctx context.Context, method string, params json.RawMessage
 		ID:      id,
 		Method:  method,
 		Params:  params,
+	}
+	if rerr := c.readErr; rerr != nil {
+		// The reader has exited: no response can ever be routed, so fail
+		// now instead of waiting for the per-server timeout.
+		c.mu.Unlock()
+		return nil, rerr
 	}
 	c.pending[id] = respCh
 	c.mu.Unlock()
@@ -1195,7 +1208,10 @@ func (c *Client) readLoop() {
 		maxResp = maxMCPResponseLine
 	}
 	scanner := bufio.NewScanner(c.stdout)
-	scanner.Buffer(make([]byte, 0, 64*1024), int(maxResp))
+	// bufio.Scanner's token limit is the larger of max and cap(buf), so the
+	// initial buffer must not exceed the configured cap or a small
+	// max_response_bytes would silently be raised to the buffer size.
+	scanner.Buffer(make([]byte, 0, min(64*1024, int(maxResp))), int(maxResp))
 
 	for scanner.Scan() {
 		// scanner.Bytes is valid only until the next Scan; the only retained
@@ -1258,13 +1274,33 @@ func (c *Client) readLoop() {
 	// oversized token. Unblock all waiters; if the line was too long, tell
 	// them why before closing the channel.
 	oversized := scanner.Err() == bufio.ErrTooLong
+	exitErr := scanner.Err()
+	if exitErr == nil {
+		exitErr = io.EOF
+	}
 	c.mu.Lock()
+	if oversized {
+		c.readErr = fmt.Errorf("mcpclient %s: response line exceeded configured max_response_bytes limit of %d bytes; connection closed", c.name, maxResp)
+	} else {
+		c.readErr = fmt.Errorf("mcpclient %s: connection to server lost: %w", c.name, exitErr)
+	}
 	pending := make(map[int]chan callResponse, len(c.pending))
 	for id, ch := range c.pending {
 		pending[id] = ch
 		delete(c.pending, id)
 	}
 	c.mu.Unlock()
+
+	if oversized {
+		// Fail closed: the stream is desynchronised, so end the session
+		// instead of leaving a live server nobody is reading from.
+		if c.stdin != nil {
+			c.stdin.Close()
+		}
+		if c.cmd != nil && c.cmd.Process != nil {
+			_ = c.cmd.Process.Kill()
+		}
+	}
 
 	for _, ch := range pending {
 		if oversized {

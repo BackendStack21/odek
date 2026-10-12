@@ -1113,7 +1113,7 @@ func handlePromptStart(st *serveState, store *session.Store, resources *resource
 		if err != nil {
 			switch {
 			case errors.Is(err, errInvalidSessionToken):
-				http.Error(w, err.Error(), http.StatusUnauthorized)
+				rejectSessionLookup(w, r, sessionScopedProxies, http.StatusUnauthorized, err.Error())
 			case errors.Is(err, errServeShuttingDown):
 				http.Error(w, err.Error(), http.StatusServiceUnavailable)
 			case errors.Is(err, errTooManyActiveRuns):

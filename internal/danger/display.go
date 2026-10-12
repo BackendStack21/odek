@@ -103,7 +103,7 @@ func escapeForDisplay(s string, keepLayout bool) string {
 			fmt.Fprintf(&b, `\x%02x`, r)
 		case r == ' ':
 			b.WriteByte(' ')
-		case unicode.IsPrint(r) && !isInvisible(r):
+		case unicode.IsPrint(r) && !isInvisible(r) && !isZeroWidthMark(r):
 			b.WriteRune(r)
 		case r > 0xFFFF:
 			fmt.Fprintf(&b, `\U%08x`, r)
@@ -136,4 +136,20 @@ func formatApprovalPrompt(cls RiskClass, cmd, description string) string {
 		fmt.Fprintf(&b, "   \033[1mWhy:\033[0m  %s\n", indentContinuation(SanitizeInline(description)))
 	}
 	return b.String()
+}
+
+// isZeroWidthMark reports whether r is a nonspacing mark that renders with no
+// width of its own: the variation selectors (U+FE00–FE0F, U+E0100–E01EF), the
+// Mongolian free variation selectors and the Khmer inherent vowels. Unlike an
+// accent they change nothing a reader can see, so a prompt must escape them.
+func isZeroWidthMark(r rune) bool {
+	switch {
+	case r >= 0xFE00 && r <= 0xFE0F,
+		r >= 0xE0100 && r <= 0xE01EF,
+		r >= 0x180B && r <= 0x180D,
+		r == 0x17B4 || r == 0x17B5,
+		r == 0x180F, r == 0x2800, r == 0xFFFC:
+		return true
+	}
+	return false
 }

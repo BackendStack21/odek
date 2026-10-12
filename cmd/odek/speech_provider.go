@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	sdk "github.com/BackendStack21/go-llm-sdk"
@@ -48,18 +49,47 @@ func (p *providerSpeechClient) SetBudgetView(v budget.View) { p.view = v }
 // request_timeout_seconds (already stamped into options.Timeout), bounded by
 // the remaining run-budget runtime when a budget view is available.
 func (p *providerSpeechClient) speakTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
+	ctx, cancel, _ := p.speakBudgeted(ctx)
+	return ctx, cancel
+}
+
+// speechTokenEstimate approximates the token count of speech text at four
+// characters per token. The provider SDK reports no usage for speech calls, so
+// this is the charge recorded against the run budget in its place.
+func speechTokenEstimate(chars int) int64 { return int64((chars + 3) / 4) }
+
+// speakBudgeted is speakTimeout plus a charge function: the usage passed to it
+// is what the settled grant records (zero cost, known), so a speech call is
+// always accounted for.
+func (p *providerSpeechClient) speakBudgeted(ctx context.Context) (context.Context, context.CancelFunc, func(budget.Usage)) {
+	usage := budget.Usage{CostKnown: true}
+	charge := func(u budget.Usage) { usage = u }
 	timeout := p.options.Timeout
 	if timeout <= 0 {
 		timeout = llmclient.DefaultTimeout
 	}
+	var settle func()
 	if owner, ok := p.view.(visionBudgetOwner); ok {
-		if grant, err := owner.ReserveInferenceBudget(); err == nil && grant.Limits.MaxRuntimeSeconds > 0 {
-			if bound := time.Duration(grant.Limits.MaxRuntimeSeconds) * time.Second; bound < timeout {
-				timeout = bound
+		if grant, err := owner.ReserveInferenceBudget(); err == nil {
+			// The reservation only supplies the remaining runtime; release it
+			// when the call finishes so it never keeps withholding budget.
+			settle = func() { u := usage; owner.SettleExternalBudget(grant, &u) }
+			if grant.Limits.MaxRuntimeSeconds > 0 {
+				if bound := time.Duration(grant.Limits.MaxRuntimeSeconds) * time.Second; bound < timeout {
+					timeout = bound
+				}
 			}
 		}
 	}
-	return context.WithTimeout(ctx, timeout)
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	if settle == nil {
+		return ctx, cancel, charge
+	}
+	var once sync.Once
+	return ctx, func() {
+		cancel()
+		once.Do(settle)
+	}, charge
 }
 
 // speechError maps SDK failures to actionable tool errors. ConfigError
@@ -89,8 +119,9 @@ func (p *providerSpeechClient) SpeakAudio(ctx context.Context, text string) (*ll
 	if err != nil {
 		return nil, fmt.Errorf("tts: configured provider is unavailable")
 	}
-	ctx, cancel := p.speakTimeout(ctx)
+	ctx, cancel, charge := p.speakBudgeted(ctx)
 	defer cancel()
+	charge(budget.Usage{InputTokens: speechTokenEstimate(len(text)), CostKnown: true})
 	res, err := c.Speak(ctx, p.ttsModel, llmclient.SpeakRequest{
 		Text: text, Voice: p.voice, Format: p.format, Speed: p.speed,
 	})
@@ -112,8 +143,10 @@ func (p *providerSpeechClient) TranscribeAudio(ctx context.Context, filename str
 	if err != nil {
 		return nil, fmt.Errorf("stt: configured provider is unavailable")
 	}
-	ctx, cancel := p.speakTimeout(ctx)
+	ctx, cancel, charge := p.speakBudgeted(ctx)
 	defer cancel()
+	// Audio has no character count; the transcript length is the estimate.
+	charge(budget.Usage{CostKnown: true})
 	res, err := c.Transcribe(ctx, p.sttModel, llmclient.TranscribeRequest{
 		Audio:    audio,
 		Filename: filename,
@@ -122,6 +155,7 @@ func (p *providerSpeechClient) TranscribeAudio(ctx context.Context, filename str
 	if err != nil {
 		return nil, speechError("stt", err)
 	}
+	charge(budget.Usage{OutputTokens: speechTokenEstimate(len(res.Text)), CostKnown: true})
 	return res, nil
 }
 

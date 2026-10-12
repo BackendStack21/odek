@@ -93,13 +93,13 @@ var patterns = []*regexp.Regexp{
 	// security_token covers the same AWS session token as the
 	// X-Amz-Security-Token header and presigned-URL query parameter.
 	// refresh_token is the long-lived credential in OAuth token responses.
-	regexp.MustCompile(`(?i)(?:api[_-]?key|api[_-]?secret|auth[_-]?token|access[_-]?token|refresh[_-]?token|bearer[_-]?token|client[_-]?secret|private[_-]?key|secret[_-]?key|secret[_-]?access[_-]?key|session[_-]?token|security[_-]?token|password|passwd)["'\x60]?\s*[:=]\s*(?:"[^"\n]{20,}"|'[^'\n]{20,}'|\x60[^\x60\n]{20,}\x60|[^\s]{20,})`),
+	regexp.MustCompile(`(?i)(?:api[_-]?key|api[_-]?secret|auth[_-]?token|access[_-]?token|refresh[_-]?token|bearer[_-]?token|client[_-]?secret|private[_-]?key|secret[_-]?key|secret[_-]?access[_-]?key|session[_-]?token|security[_-]?token|password|passwd)["'\x60]?\s*(?:=>|[:=])\s*(?:"[^"\n]{20,}"|'[^'\n]{20,}'|\x60[^\x60\n]{20,}\x60|[^\s]{20,})`),
 
-	// Bearer tokens in Authorization headers: the header-line form
-	// (Authorization: Bearer …) and the JSON/JS header-object form
+	// Bearer / token-scheme credentials in Authorization headers: the
+	// header-line form (Authorization: Bearer …, Authorization: token …) and the JSON/JS header-object form
 	// ("Authorization": "Bearer …"), where a closing quote precedes the
 	// colon and an opening quote precedes the scheme.
-	regexp.MustCompile(`(?i)Authorization["'\x60]?\s*[:=]\s*["'\x60]?Bearer\s+([a-zA-Z0-9+/=._-]{20,})`),
+	regexp.MustCompile(`(?i)Authorization["'\x60]?\s*[:=]\s*["'\x60]?(?:Bearer|Token|ApiKey|Bot|OAuth|Negotiate|Digest)\s+([a-zA-Z0-9+/=._-]{20,})`),
 
 	// Slack bot tokens: xoxb-, xoxp-
 	regexp.MustCompile(`xox[abpose]-[0-9]{10,}-[0-9]{10,}-[a-zA-Z0-9]{24,}`),
@@ -159,6 +159,199 @@ var patterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqps?|mssql|clickhouse)://[^:\s/]+:[^@\s/]{6,}@[^\s'\x60"]+`),
 }
 
+// guardedPattern is a context pattern whose value must also look like a
+// secret. The bare key names (token, secret, pass, …) are everywhere in
+// ordinary output (`--- PASS: TestX`, `token = strings.TrimSpace(h)`,
+// `secret: kubernetes-secret-name`), so a match counts only when the value
+// (capture group 1, quotes and CDATA wrappers removed) passes ok.
+type guardedPattern struct {
+	re *regexp.Regexp
+	ok func(value string) bool
+}
+
+const (
+	gSep = `["'\x60]?\s*(?:=>|[:=])\s*`
+	gVal = `("[^"\n]{20,}"|'[^'\n]{20,}'|\x60[^\x60\n]{20,}\x60|[^\s]{20,})`
+)
+
+var guardedPatterns = []guardedPattern{
+	// Bare and camelCase credential key names with :, = or => separators.
+	// Lower-case, Capitalised and UPPER spellings of token/secret, but
+	// only lower-case/Capitalised "pass" (UPPER PASS is test-runner output)
+	// unless it ends an env-style name (DB_PASS).
+	{regexp.MustCompile(`(?:\b(?:token|secret|passphrase|Token|Secret|Passphrase|TOKEN|SECRET|PASSPHRASE)|_(?i:token|secret|passphrase|pwd|pass)|\b[a-z][a-z0-9]*(?:Token|Secret|Passphrase|Password))` + gSep + gVal), looksCredentialShape},
+	// Bare pwd/PWD keys (ODBC pwd=..., PWD=...): the shell's PWD variable
+	// holds a working directory, so path-shaped values are not credentials.
+	{regexp.MustCompile(`\b(?:pwd|Pwd|PWD)` + gSep + gVal), looksCredentialShapeNotPath},
+	// Bare pass keys: test runners print `pass: TestX_Delete2`.
+	{regexp.MustCompile(`\b(?:pass|Pass)` + gSep + gVal), looksCredentialShapeNotTestName},
+	// CLI flags with a whitespace-separated value (--password VALUE,
+	// --secret-key VALUE, --private-key VALUE).
+	{regexp.MustCompile(`(?i)--?(?:password|passwd|passphrase|pwd|pass|token|secret|api[_-]?key|secret[_-]?key|private[_-]?key|access[_-]?key|client[_-]?secret)[ \t]+("[^"\n]{20,}"|'[^'\n]{20,}'|[^\s"']{20,})`), plausibleFlagValue},
+	// .netrc lines: password VALUE.
+	{regexp.MustCompile(`(?i)\b(?:password|passwd|passphrase)[ \t]+("[^"\n]{20,}"|'[^'\n]{20,}'|[^\s"']{20,})`), looksSecret},
+	// XML elements: <password>VALUE</password>, optional attributes and
+	// CDATA (Maven settings.xml, .NET config).
+	{regexp.MustCompile(`(?i)<(?:password|passwd|passphrase|pwd|secret|token|api[_-]?key|access[_-]?token|client[_-]?secret|secret[_-]?key)(?:\s[^<>]*)?>\s*((?:<!\[CDATA\[)?[^<\n]{20,}?(?:\]\]>)?)\s*</[A-Za-z_-]+>`), looksSecret},
+}
+
+// plausibleValue rejects values that are plainly code expressions.
+func plausibleValue(v string) bool {
+	v = strings.Trim(strings.TrimSuffix(strings.TrimPrefix(v, "<![CDATA["), "]]>"), "\"'`")
+	return len(v) >= 20 && !strings.ContainsAny(v, "(){}")
+}
+
+// plausibleFlagValue additionally rejects shell variable references, which
+// name a credential rather than carry one.
+func plausibleFlagValue(v string) bool {
+	t := unwrapValue(v)
+	return plausibleValue(v) && !strings.HasPrefix(t, "$") && !strings.HasPrefix(t, "%")
+}
+
+// looksSecret additionally requires a digit: random credentials have one
+// with overwhelming probability, while identifiers, import paths, resource
+// names and test names rarely do.
+func looksSecret(v string) bool {
+	return plausibleValue(v) && strings.ContainsAny(v, "0123456789") && !strings.Contains(v, "://")
+}
+
+// looksCredentialShape is the value test for the bare key names (token,
+// secret, pass, pwd). Those words head ordinary code and configuration, so
+// the value must be a single literal that is shaped like a generated
+// credential: variable and environment references, member-access chains,
+// paths, ARNs, timestamps and lowercase resource names are never secrets.
+// Keyed forms with their own dedicated patterns do not go through here.
+func looksCredentialShape(v string) bool {
+	if !looksSecret(v) {
+		return false
+	}
+	t := strings.TrimRight(unwrapValue(v), ";,")
+	if i := strings.IndexByte(t, '&'); i > 0 { // URL query: stop at the next parameter
+		t = t[:i]
+	}
+	if len(t) < 16 {
+		return false
+	}
+	for _, p := range []string{"$", "%", "process.env", "os.environ", "os.Getenv", "ENV[", "env."} {
+		if strings.HasPrefix(t, p) {
+			return false
+		}
+	}
+	if strings.Contains(t, "::") || strings.Contains(strings.ToLower(t), "arn:") {
+		return false
+	}
+	hasUpper, hasLower, hasDigit, special, hex, sep := false, false, false, false, true, false
+	for i := 0; i < len(t); i++ {
+		c := t[i]
+		switch {
+		case c >= 'A' && c <= 'Z':
+			hasUpper = true
+			hex = hex && c <= 'F'
+		case c >= 'a' && c <= 'z':
+			hasLower = true
+			hex = hex && c <= 'f'
+		case c >= '0' && c <= '9':
+			hasDigit = true
+		case c == '+' || c == '/' || c == '=':
+			special = true
+			hex = false
+		case c == '-' || c == '_' || c == '~':
+			hex = false
+			sep = true
+		default:
+			return false // '.', ':', quotes, brackets: not a credential alphabet
+		}
+	}
+	// A value with a '/' is a path unless every segment is credential-like:
+	// a word-only segment (Users/Alice/keysfolder) marks a path.
+	if strings.Contains(t, "/") {
+		for _, seg := range strings.Split(t, "/") {
+			if len(seg) >= 3 && !strings.ContainsAny(seg, "0123456789+=-_~") {
+				return false
+			}
+		}
+	}
+	switch {
+	case hasUpper && hasLower && hasDigit:
+		return true
+	case !special && !sep && len(t) >= 20 && hasDigit && (hasUpper || hasLower):
+		// One unseparated alphanumeric run (lowercase+digits or UPPER+digits).
+		// Dash- or underscore-joined groups such as UUIDs, resource names and
+		// identifiers are deliberately not matched.
+		return true
+	case hex && len(t) >= 32 && hasDigit:
+		return true
+	case special && hasDigit && (hasUpper || hasLower) && !strings.Contains(t, "//"):
+		return strings.ContainsAny(t, "+=") || (hasUpper && hasLower)
+	}
+	return false
+}
+
+func looksCredentialShapeNotPath(v string) bool {
+	return looksSecretNotPath(v) && looksCredentialShape(v)
+}
+
+func looksCredentialShapeNotTestName(v string) bool {
+	return looksSecretNotTestName(v) && looksCredentialShape(v)
+}
+
+func unwrapValue(v string) string {
+	return strings.Trim(strings.TrimSuffix(strings.TrimPrefix(v, "<![CDATA["), "]]>"), "\"'`")
+}
+
+// looksSecretNotPath additionally rejects filesystem paths.
+func looksSecretNotPath(v string) bool {
+	t := unwrapValue(v)
+	if strings.HasPrefix(t, "/") || strings.HasPrefix(t, "~") || strings.HasPrefix(t, "./") || strings.HasPrefix(t, "../") {
+		return false
+	}
+	return looksSecret(v)
+}
+
+// looksSecretNotTestName additionally rejects Go test identifiers.
+func looksSecretNotTestName(v string) bool {
+	return looksSecret(v) && !goTestName.MatchString(unwrapValue(v))
+}
+
+var goTestName = regexp.MustCompile(`^(?:Test|Benchmark|Fuzz|Example)[A-Za-z0-9]*(?:_[A-Za-z0-9]+)*$`)
+
+// guardedMatches returns the [start,end) offsets of every guarded match.
+func guardedMatches(text string) [][2]int {
+	var out [][2]int
+	for _, g := range guardedPatterns {
+		for _, m := range g.re.FindAllStringSubmatchIndex(text, -1) {
+			if m[2] >= 0 && g.ok(text[m[2]:m[3]]) {
+				out = append(out, [2]int{m[0], m[1]})
+			}
+		}
+	}
+	return out
+}
+
+// redactGuarded replaces every guarded match, merging overlaps.
+func redactGuarded(text string) string {
+	ms := guardedMatches(text)
+	if len(ms) == 0 {
+		return text
+	}
+	sort.Slice(ms, func(i, j int) bool { return ms[i][0] < ms[j][0] })
+	var b strings.Builder
+	last := 0
+	for _, m := range ms {
+		if m[0] < last {
+			if m[1] > last {
+				last = m[1]
+			}
+			continue
+		}
+		b.WriteString(text[last:m[0]])
+		b.WriteString("[REDACTED]")
+		last = m[1]
+	}
+	b.WriteString(text[last:])
+	return b.String()
+}
+
 // basicAuthPattern matches an HTTP Basic credential in a header line
 // (`Authorization: Basic <b64>`, also Proxy-Authorization) or a JSON/JS
 // header object (`"Authorization": "Basic <b64>"`). The word "Basic" alone
@@ -168,6 +361,11 @@ var patterns = []*regexp.Regexp{
 // The token is capped at basicTokenMax bytes so the regex never consumes an
 // unbounded run; a longer run is handled in basicAuthMatches.
 var basicAuthPattern = regexp.MustCompile(`(?i)(authorization["'\x60]?\s*[:=]\s*["'\x60]?basic\s+)([A-Za-z0-9+/_-]{4,1000}={0,2})`)
+
+// dockerAuthPattern matches the "auth" field of a Docker config.json
+// (base64 of user:password); like a Basic header it only counts when the
+// token decodes to a printable user:password pair.
+var dockerAuthPattern = regexp.MustCompile(`(?i)(["']auth["']\s*:\s*["'])([A-Za-z0-9+/_-]{4,1000}={0,2})`)
 
 // basicTokenMax is the token cap in basicAuthPattern.
 const basicTokenMax = 1000
@@ -206,16 +404,34 @@ func basicAuthCandidate(text string) bool {
 	return i >= 0 && indexFoldASCII(text[i:], "basic") >= 0
 }
 
+// dockerAuthCandidate is the prefilter for the Docker config pass.
+func dockerAuthCandidate(text string) bool {
+	return indexFoldASCII(text, "auth") >= 0
+}
+
 func basicAuthMatches(text string) [][2]int {
-	if !basicAuthCandidate(text) {
-		return nil
-	}
 	var out [][2]int
+	if basicAuthCandidate(text) {
+		out = appendCredentialMatches(out, text, basicAuthPattern)
+	}
+	if dockerAuthCandidate(text) {
+		out = appendCredentialMatches(out, text, dockerAuthPattern)
+	}
+	if len(out) > 1 {
+		sort.Slice(out, func(i, j int) bool { return out[i][0] < out[j][0] })
+	}
+	return out
+}
+
+// appendCredentialMatches appends the token offsets of each match of pat
+// (group 1: the key prefix, group 2: the base64 token) that decodes to a
+// user:password pair.
+func appendCredentialMatches(out [][2]int, text string, pat *regexp.Regexp) [][2]int {
 	// Locate whole matches with the fast unanchored matcher, then take the
 	// token submatch on each short match only: submatch extraction over the
 	// full text falls back to a much slower engine on large inputs.
-	for _, m := range basicAuthPattern.FindAllStringIndex(text, -1) {
-		sm := basicAuthPattern.FindStringSubmatchIndex(text[m[0]:m[1]])
+	for _, m := range pat.FindAllStringIndex(text, -1) {
+		sm := pat.FindStringSubmatchIndex(text[m[0]:m[1]])
 		if sm == nil {
 			continue
 		}
@@ -314,7 +530,7 @@ func RedactSecrets(text string) string {
 		}
 		result = p.ReplaceAllString(result, "[REDACTED]")
 	}
-	return redactBasicAuth(result)
+	return redactBasicAuth(redactGuarded(result))
 }
 
 // HasSecrets returns true if the text contains any recognized secret pattern
@@ -334,7 +550,7 @@ func HasSecrets(text string) bool {
 			return true
 		}
 	}
-	return len(basicAuthMatches(text)) > 0
+	return len(guardedMatches(text)) > 0 || len(basicAuthMatches(text)) > 0
 }
 
 // IsSafe returns true if the text contains no recognized secrets.
@@ -359,7 +575,7 @@ func CountSecrets(text string) int {
 		matches := p.FindAllString(text, -1)
 		count += len(matches)
 	}
-	count += len(basicAuthMatches(text))
+	count += len(guardedMatches(text)) + len(basicAuthMatches(text))
 	return count
 }
 

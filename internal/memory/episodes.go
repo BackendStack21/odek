@@ -19,6 +19,7 @@ import (
 	"github.com/BackendStack21/odek/internal/embedding"
 	"github.com/BackendStack21/odek/internal/flock"
 	"github.com/BackendStack21/odek/internal/fsatomic"
+	"github.com/BackendStack21/odek/internal/redact"
 	"github.com/BackendStack21/odek/internal/session"
 )
 
@@ -237,6 +238,10 @@ func (e *EpisodeStore) WriteWithProvenance(sessionID, summary string, turns int,
 	if err := os.MkdirAll(e.dir, 0700); err != nil {
 		return fmt.Errorf("memory: episodes mkdir: %w", err)
 	}
+
+	// Secrets are redacted before truncation so a cut cannot split a token
+	// into a form the patterns no longer recognise.
+	summary = redact.RedactSecrets(summary)
 
 	// Truncate summary to cap
 	if len(summary) > maxEpisodeSummaryBytes {

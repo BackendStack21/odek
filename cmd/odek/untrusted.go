@@ -405,25 +405,13 @@ func newWrapperNonce() string {
 // clock tick.
 var nonceCounter atomic.Uint64
 
-// reWrapperLiteral matches any literal occurrence of "untrusted_content"
-// (with or without an underscore-suffix) inside body content. We replace
-// the underscore in `untrusted_content` with a Unicode look-alike so the
-// model still reads the text correctly but it cannot pair with our
-// nonce'd tags.
-var reWrapperLiteral = regexp.MustCompile(`untrusted_content`)
-
+// neutraliseWrapperLiterals breaks every spelling of the boundary tag name in
+// a body. The underscore of the exact literal becomes a MIDDLE DOT, which is
+// visually distinct from a real tag fragment (a look-alike underscore made a
+// forged close tag read as the real boundary); upper-case, confusable-script,
+// fullwidth and invisible-character variants lose their leading "<" instead.
 func neutraliseWrapperLiterals(s string) string {
-	if !strings.Contains(s, "untrusted_content") {
-		return s
-	}
-	// Replace the underscore with a MIDDLE DOT: the neutralized form must
-	// be VISUALLY DISTINCT from a real tag fragment. The previous U+02CD
-	// look-alike replacement was perceptually identical (same glyph shape,
-	// near-identical tokens), so a forged </untrusted_content_...> inside a
-	// body still read as a real closing tag to the model and to human
-	// transcript reviewers — enabling perceive-the-wrapper-closed /
-	// fake-open deception despite the unguessable nonce.
-	return reWrapperLiteral.ReplaceAllString(s, "untrusted·content")
+	return loop.NeutraliseUntrustedLiterals(s)
 }
 
 // reWrapper captures both nonce values because Go's RE2 syntax has no

@@ -122,7 +122,10 @@ func (s *AuditStore) Remove(sessionID string) error {
 }
 
 func boundedAuditResources(content string) []string {
-	resources := ResourcesIn(content)
+	// Redact the whole body before extracting tokens: context-dependent
+	// patterns (key=value secrets, PEM bodies) stop matching once a token is
+	// cut out of its line, and the resource regex splits secrets at '/'.
+	resources := ResourcesIn(redact.RedactSecrets(content))
 	if len(resources) > 64 {
 		resources = resources[:64]
 	}

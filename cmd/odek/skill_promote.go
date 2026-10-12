@@ -96,7 +96,7 @@ func promoteSkill(userDir, name string, force bool) error {
 	// dir is attacker-controllable and every rescan would otherwise re-pin
 	// the skill, silently reverting this promotion.
 	if fromProject {
-		if err := skills.RecordPromotion(userDir, name, []byte(content)); err != nil {
+		if err := skills.RecordPromotion(userDir, loaded.Name, []byte(content)); err != nil {
 			return fmt.Errorf("promote: record promotion: %w", err)
 		}
 	}

@@ -128,6 +128,17 @@ func credentialStoreAccess(name string, tokens []string) bool {
 func secretNameOperand(name string, args []string) bool {
 	switch name {
 	case "printenv", "declare", "typeset":
+	case "export", "readonly":
+		// Only the print form shows a value: `export -p NAME`.
+		prints := false
+		for _, a := range args {
+			if isShortFlagToken(a) && strings.Contains(a, "p") {
+				prints = true
+			}
+		}
+		if !prints {
+			return false
+		}
 	default:
 		return false
 	}

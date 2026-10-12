@@ -27,16 +27,29 @@ type Message struct {
 	// verification retry), whether or not it was streamed live.
 	// SupersededReason names which. Replay clients fold these drafts; the
 	// fields are never sent to providers.
-	Superseded        bool          `json:"superseded,omitempty"`
-	SupersededReason  string        `json:"superseded_reason,omitempty"`
-	Role              string        `json:"role"`
-	Content           string        `json:"content"`
-	Name              string        `json:"name,omitempty"`
-	ToolCallID        string        `json:"tool_call_id,omitempty"`
-	ToolCalls         []ToolCall    `json:"tool_calls,omitempty"`
-	ReasoningContent  string        `json:"reasoning_content,omitempty"`
-	ThinkingSignature string        `json:"thinking_signature,omitempty"`
-	CacheControl      *CacheControl `json:"cache_control,omitempty"`
+	Superseded        bool       `json:"superseded,omitempty"`
+	SupersededReason  string     `json:"superseded_reason,omitempty"`
+	Role              string     `json:"role"`
+	Content           string     `json:"content"`
+	Name              string     `json:"name,omitempty"`
+	ToolCallID        string     `json:"tool_call_id,omitempty"`
+	ToolCalls         []ToolCall `json:"tool_calls,omitempty"`
+	ReasoningContent  string     `json:"reasoning_content,omitempty"`
+	ThinkingSignature string     `json:"thinking_signature,omitempty"`
+	// ThinkingBlocks are the provider-signed reasoning segments (Anthropic
+	// thinking and redacted_thinking blocks, Responses reasoning items) of an
+	// assistant turn, in order. ThinkingProvider names the API format that
+	// produced and signed them; they are replayed only to that format.
+	ThinkingBlocks   []ThinkingBlock `json:"thinking_blocks,omitempty"`
+	ThinkingProvider string          `json:"thinking_provider,omitempty"`
+	CacheControl     *CacheControl   `json:"cache_control,omitempty"`
+}
+
+// ThinkingBlock is one provider-signed reasoning segment, persisted verbatim.
+type ThinkingBlock struct {
+	Text      string `json:"text,omitempty"`
+	Signature string `json:"signature,omitempty"`
+	Redacted  string `json:"redacted,omitempty"`
 }
 
 // CacheControl is a leftover Anthropic marker from v1 transcripts. It is
@@ -113,6 +126,9 @@ func CloneMessages(msgs []Message) []Message {
 			tc := make([]ToolCall, len(m.ToolCalls))
 			copy(tc, m.ToolCalls)
 			out[i].ToolCalls = tc
+		}
+		if len(m.ThinkingBlocks) > 0 {
+			out[i].ThinkingBlocks = append([]ThinkingBlock(nil), m.ThinkingBlocks...)
 		}
 		if m.CacheControl != nil {
 			cc := *m.CacheControl

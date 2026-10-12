@@ -9,6 +9,7 @@ import (
 
 	"github.com/BackendStack21/odek/internal/bgproc"
 	"github.com/BackendStack21/odek/internal/config"
+	"github.com/BackendStack21/odek/internal/redact"
 	"github.com/BackendStack21/odek/internal/telegram"
 )
 
@@ -265,9 +266,9 @@ func formatBGJobsForChat(rt *bgRuntime) string {
 	b.WriteString("📋 Background jobs:\n")
 	for _, j := range jobs {
 		if j.Status == bgproc.StatusRunning {
-			fmt.Fprintf(&b, "• %s — %s — running (%.0fs)\n", j.ID, headString(j.Command, 48), jobRuntimeSeconds(j))
+			fmt.Fprintf(&b, "• %s — %s — running (%.0fs)\n", j.ID, headString(redact.RedactSecrets(j.Command), 48), jobRuntimeSeconds(j))
 		} else {
-			fmt.Fprintf(&b, "• %s — %s — %s (exit %d)\n", j.ID, headString(j.Command, 48), j.Status, j.ExitCode)
+			fmt.Fprintf(&b, "• %s — %s — %s (exit %d)\n", j.ID, headString(redact.RedactSecrets(j.Command), 48), j.Status, j.ExitCode)
 		}
 	}
 	return strings.TrimRight(b.String(), "\n")

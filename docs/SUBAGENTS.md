@@ -646,7 +646,7 @@ artifact_read({ "id": "report" })                # first 64 KiB
 artifact_read({ "id": "report", "offset": 65536 })  # continue paging
 ```
 
-`artifact_read` is a parent-side tool; the model passes an id, never a path — resolution goes through the session registry of validated refs, and each read reports the owning task. Ids derive from filename stems, and **first occurrence wins**: if two tasks stage files with the same stem (e.g. both write `report.md`), the first task keeps the plain id and later duplicates register under `<id>.t<task>` aliases (`report.t2`, `report.t3`, …) — probing past any live entry, including real stems that collide with the alias namespace. Rendered artifact lines always show the effective id plus the task number, so the parent copies an id `artifact_read` can actually resolve. Refs that fail validation (wrong hash, path escape) are dropped with an explicit flag and never rendered.
+`artifact_read` is a parent-side tool; the model passes an id, never a path — resolution goes through the session registry of validated refs (ids are namespaced per parent session: a session never resolves or lists another session's artifacts, and ids never collide across sessions), and each read reports the owning task. Ids derive from filename stems, and **first occurrence wins**: if two tasks stage files with the same stem (e.g. both write `report.md`), the first task keeps the plain id and later duplicates register under `<id>.t<task>` aliases (`report.t2`, `report.t3`, …) — probing past any live entry, including real stems that collide with the alias namespace. Rendered artifact lines always show the effective id plus the task number, so the parent copies an id `artifact_read` can actually resolve. Refs that fail validation (wrong hash, path escape) are dropped with an explicit flag and never rendered.
 
 Lifecycle: deleting a session deletes its artifacts (all paths — CLI, API, Telegram, retention sweep); the storage janitor backstop sweeps orphans after `maintenance.artifacts_max_age_hours` (default 24 hours, `0` = keep forever).
 
@@ -743,3 +743,7 @@ tree. Terminal task status and the parent's observed child-process exit status
 are separate fields. An unfinished tree row does not prove a child is still
 running. Records expire according to `logging.max_age_hours`. See
 [Runtime logging](LOGGING.md).
+
+## Sandbox inheritance
+
+When the parent's sandbox is active, every child spawned by `delegate_tasks` is started with `ODEK_SANDBOX=true` and sandboxes itself; if the child's sandbox cannot start the child fails instead of running on the host. A parent running without a sandbox leaves children to their own configuration.

@@ -56,12 +56,31 @@ type ChatSession struct {
 	// untrusted carries in-run taint (MarkUntrustedIngested) into the next
 	// save, which ORs it into the stored session's sticky flag.
 	untrusted bool
+
+	// episodeUntrusted is the same carry for the memory-gate flag
+	// (session.Session.EpisodeUntrusted): content whose tool calls are not in
+	// the chat's history (a scheduled run's output) still taints episodes.
+	episodeUntrusted bool
 }
 
 // UntrustedIngested reports whether the chat's persisted session has ever
 // carried untrusted content (session.Session.UntrustedIngested).
 func (cs *ChatSession) UntrustedIngested() bool {
 	return cs != nil && (cs.untrusted || (cs.stored != nil && cs.stored.UntrustedIngested))
+}
+
+// EpisodeUntrusted reports whether the chat's session carries content that
+// must keep its episodes out of automatic recall
+// (session.Session.EpisodeUntrusted).
+func (cs *ChatSession) EpisodeUntrusted() bool {
+	return cs != nil && (cs.episodeUntrusted || (cs.stored != nil && cs.stored.EpisodeUntrusted))
+}
+
+// MarkEpisodeUntrusted records that content written into the chat's session
+// came from a run that crossed the episode trust boundary. The next save
+// persists it on the session's sticky EpisodeUntrusted flag.
+func (sm *SessionManager) MarkEpisodeUntrusted(chatID int64) {
+	sm.markTaint(chatID, false, true)
 }
 
 // MarkUntrustedIngested records that the chat's current run is tainted (an
@@ -72,17 +91,24 @@ func (cs *ChatSession) UntrustedIngested() bool {
 // flight would make that save skip its cache update, leaving a stale stored
 // revision that fails every later save with a conflict.
 func (sm *SessionManager) MarkUntrustedIngested(chatID int64) {
+	sm.markTaint(chatID, true, false)
+}
+
+func (sm *SessionManager) markTaint(chatID int64, untrusted, episode bool) {
 	lock, _ := sm.saveLocks.LoadOrStore(chatID, new(sync.Mutex))
 	saveMu := lock.(*sync.Mutex)
 	saveMu.Lock()
 	defer saveMu.Unlock()
 	sm.Mu.Lock()
 	defer sm.Mu.Unlock()
-	if cs := sm.Cache[chatID]; cs != nil && !cs.untrusted {
-		marked := *cs
-		marked.untrusted = true
-		sm.Cache[chatID] = &marked
+	cs := sm.Cache[chatID]
+	if cs == nil || (cs.untrusted || !untrusted) && (cs.episodeUntrusted || !episode) {
+		return
 	}
+	marked := *cs
+	marked.untrusted = marked.untrusted || untrusted
+	marked.episodeUntrusted = marked.episodeUntrusted || episode
+	sm.Cache[chatID] = &marked
 }
 
 // ── Constructor ────────────────────────────────────────────────────────
@@ -275,6 +301,9 @@ func (sm *SessionManager) saveLocked(chatID int64, messages []session.Message, c
 	if cs.untrusted {
 		stored.UntrustedIngested = true
 	}
+	if cs.episodeUntrusted {
+		stored.EpisodeUntrusted = true
+	}
 	stored.UpdatedAt = updated.LastActive
 	stored.Turns = updated.TurnCount
 	var err error
@@ -391,6 +420,9 @@ func (sm *SessionManager) ArchiveAndDelete(chatID int64) error {
 		// the archive with the history it belongs to.
 		if cs.untrusted {
 			sess.UntrustedIngested = true
+		}
+		if cs.episodeUntrusted {
+			sess.EpisodeUntrusted = true
 		}
 		if err := sm.Store.Save(sess); err != nil {
 			return fmt.Errorf("archive: persist before archive: %w", err)

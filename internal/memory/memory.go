@@ -18,6 +18,7 @@ import (
 	"github.com/BackendStack21/odek/internal/flock"
 	"github.com/BackendStack21/odek/internal/guard"
 	"github.com/BackendStack21/odek/internal/memory/extended"
+	"github.com/BackendStack21/odek/internal/redact"
 	"github.com/BackendStack21/odek/internal/session"
 )
 
@@ -804,7 +805,7 @@ func (m *MemoryManager) AddFact(target, content string) error {
 	// Normalize once: FactStore stores trimmed content, so merge detection,
 	// dedup, and the corpus must all reason over the trimmed form or padded
 	// duplicates can append phantom corpus entries.
-	content = strings.TrimSpace(content)
+	content = redact.RedactSecrets(strings.TrimSpace(content))
 
 	// Serialize the whole read-modify-write across instances sharing this dir.
 	unlock, err := lockFactsDir(m.facts.dir)
@@ -956,6 +957,7 @@ func (m *MemoryManager) ReplaceFactApproved(target, oldText, expected, content s
 	if m.cfg.Enabled == nil || !*m.cfg.Enabled {
 		return fmt.Errorf("memory: disabled")
 	}
+	content = redact.RedactSecrets(content)
 	unlock, err := lockFactsDir(m.facts.dir)
 	if err != nil {
 		return err
@@ -1171,7 +1173,7 @@ func (m *MemoryManager) AppendBuffer(role, message string) {
 	if m.cfg.BufferEnabled == nil || !*m.cfg.BufferEnabled {
 		return
 	}
-	message = summarizeForBuffer(message)
+	message = redact.RedactSecrets(summarizeForBuffer(message))
 	line := FormatBufferLine(role, message)
 	m.buffer.Append(line)
 	m.markPromptDirty()

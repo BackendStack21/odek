@@ -103,7 +103,14 @@ func (c *DangerousConfig) PromptClassForCommand(cmd string) RiskClass {
 // substitutions, compound commands, pipelines and command wrappers.
 func Analyze(cmd string) Analysis {
 	defer beginPathMemo()()
-	return analyzeAtDepth(cmd, 0)
+	result := analyzeAtDepth(cmd, 0)
+	if strings.Contains(cmd, "${") {
+		// A default expansion is resolved as if its variable were unset; the
+		// literal spelling is judged too, so resolving never lowers a verdict.
+		literal := analyzeWithStateWork(cmd, 0, nil, &analysisWork{literalDefaults: true})
+		result.merge(literal)
+	}
+	return result
 }
 
 type shellAnalysisState struct {
@@ -141,7 +148,12 @@ type shellAnalysisState struct {
 // small fraction of it.
 const maxAnalysisTokens = 4096
 
-type analysisWork struct{ tokens int }
+type analysisWork struct {
+	tokens int
+	// literalDefaults keeps ${name:-word}-style expansions unresolved, which
+	// is how the literal spelling is judged alongside the resolved one.
+	literalDefaults bool
+}
 
 // Bound static expansion independently of recursion: repeated assignments
 // can otherwise double a value at each stage without nesting a command.
@@ -157,6 +169,10 @@ const MaxCommandBytes = 64 << 10
 func analyzeAtDepth(cmd string, depth int) Analysis { return analyzeWithState(cmd, depth, nil) }
 
 func analyzeWithState(cmd string, depth int, inherited *shellAnalysisState) Analysis {
+	return analyzeWithStateWork(cmd, depth, inherited, nil)
+}
+
+func analyzeWithStateWork(cmd string, depth int, inherited *shellAnalysisState, sharedWork *analysisWork) Analysis {
 	var result Analysis
 	if len(cmd) > MaxCommandBytes {
 		result.add(Unknown)
@@ -186,7 +202,10 @@ func analyzeWithState(cmd string, depth int, inherited *shellAnalysisState) Anal
 		// the rest of it into one word; whatever followed cannot be judged.
 		result.add(Unknown)
 	}
-	work := &analysisWork{}
+	work := sharedWork
+	if work == nil {
+		work = &analysisWork{}
+	}
 	if inherited != nil && inherited.work != nil {
 		work = inherited.work
 	}
@@ -392,7 +411,19 @@ func analyzeWithState(cmd string, depth int, inherited *shellAnalysisState) Anal
 					result.add(CodeExecution)
 				}
 			}
+			// An assignment is code when the value is set, whether or not it
+			// is exported or a shell starts in this segment: the variable
+			// outlives the statement. Assignments inside `env -S` strings
+			// count the same.
+			for _, split := range unwrappedStage.splits {
+				for _, body := range envAssignmentCodeBodies(tokenize(split)) {
+					result.merge(analyzeWithState(body, depth+1, &payloadState))
+				}
+			}
 			if len(inner) == 0 {
+				for _, body := range envAssignmentCodeBodies(stage) {
+					result.merge(analyzeWithState(body, depth+1, &payloadState))
+				}
 				if len(unwrappedStage.splits) > 0 && cwdKnown && !state.uncertain {
 					// `env -S 'bash script'` leaves nothing behind the
 					// wrapper, yet the split string is the command that runs.
@@ -419,6 +450,35 @@ func analyzeWithState(cmd string, depth int, inherited *shellAnalysisState) Anal
 				continue
 			}
 			name := commandName(inner[0])
+			for _, body := range arithmeticOperandSubstitutions(name, inner[1:]) {
+				result.merge(analyzeWithState(body, depth+1, &payloadState))
+			}
+			envTokens := stage[:len(stage)-len(inner)]
+			switch name {
+			case "export", "declare", "typeset", "readonly", "local":
+				envTokens = append(append([]string(nil), envTokens...), inner[1:]...)
+			}
+			for _, body := range envAssignmentCodeBodies(envTokens) {
+				result.merge(analyzeWithState(body, depth+1, &payloadState))
+			}
+			builtinBodies, builtinUnknown := builtinAssignedCodeBodies(name, inner[1:], stage)
+			for _, body := range builtinBodies {
+				result.merge(analyzeWithState(body, depth+1, &payloadState))
+			}
+			if builtinUnknown {
+				result.add(Unknown)
+			}
+			if name == "gpg" || name == "gpg2" {
+				home, set := state.vars["GNUPGHOME"]
+				for _, tok := range stage[:len(stage)-len(inner)] {
+					if v, ok := strings.CutPrefix(tok, "GNUPGHOME="); ok {
+						home, set = v, true
+					}
+				}
+				if set && !gpgDefaultHome(home) {
+					result.add(CodeExecution)
+				}
+			}
 			for _, assigned := range state.rebind(name, inner, len(stages) == 1 && !ambiguous) {
 				if afterAnd {
 					chain.vars[assigned] = true
@@ -808,6 +868,9 @@ func analyzeWithState(cmd string, depth int, inherited *shellAnalysisState) Anal
 			funcDefs = append(funcDefs, n.fn)
 		case nodeTest:
 			scanData(n.words)
+			for _, body := range arithmeticOperandSubstitutions("[[", n.words) {
+				result.merge(analyzeWithState(body, depth+1, &state))
+			}
 			exp := state.expand(n.words)
 			for k := 0; k+1 < len(exp); k++ {
 				if isRedirectToken(exp[k]) {
@@ -818,6 +881,9 @@ func analyzeWithState(cmd string, depth int, inherited *shellAnalysisState) Anal
 			}
 			runClauses(false, n.words, "&&", "||", "|", "|&", "(", ")", "!")
 		case nodeArith:
+			for _, body := range arithmeticOperandSubstitutions("((", n.words) {
+				result.merge(analyzeWithState(body, depth+1, &state))
+			}
 			for _, w := range n.words {
 				for _, name := range variableNames(w) {
 					state.forget(name)
@@ -1011,6 +1077,14 @@ func (s *shellAnalysisState) expandToken(token string, assignment bool, separato
 		b.WriteString(token[pos:dollar])
 		name, end := variableReference(token, dollar)
 		if name == "" {
+			if text, defEnd, ok := s.expandDefaultWord(token, dollar, separators); ok {
+				if text == dynamicSubstToken || b.Len()+len(text) > maxStaticWordBytes {
+					return dynamicSubstToken
+				}
+				b.WriteString(text)
+				pos = defEnd
+				continue
+			}
 			b.WriteByte('$')
 			pos = dollar + 1
 			continue

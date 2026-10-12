@@ -17,6 +17,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/BackendStack21/odek"
 	"github.com/BackendStack21/odek/internal/budget"
@@ -2479,6 +2480,9 @@ func setupSandbox(tools []odek.Tool, cfg sandboxConfig) (containerName string, c
 func applySandboxToolBindings(tools []odek.Tool, containerName string) {
 	for _, t := range tools {
 		switch tool := t.(type) {
+		case *delegateTasksTool:
+			// Children run as host processes; they must sandbox themselves.
+			tool.sandboxed = true
 		case *shellTool:
 			tool.containerName = containerName
 		case *writeFileTool:
@@ -2663,6 +2667,9 @@ func builtinTools(dc danger.DangerousConfig, sm *skills.SkillManager, approver d
 	subConcurrency := tcfg.Subagent.MaxConcurrency
 	if subConcurrency <= 0 {
 		subConcurrency = maxConcurrency
+	}
+	if subConcurrency > 8 {
+		subConcurrency = 8 // same ceiling as subagent.max_concurrency
 	}
 	subDepth := tcfg.Subagent.MaxDepth
 	if subDepth <= 0 {
@@ -3881,10 +3888,14 @@ func countUserTurnsUpTo(messages []session.Message, n int) int {
 	return count
 }
 
-// shorten truncates s to n chars, adding "…" if truncated.
+// shorten truncates s to at most n bytes, backing up to a rune boundary so a
+// multi-byte rune is never split, and adds "…" if truncated.
 func shorten(s string, n int) string {
-	if len(s) <= n {
+	if len(s) <= n || n < 0 {
 		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
 	}
 	return s[:n] + "…"
 }

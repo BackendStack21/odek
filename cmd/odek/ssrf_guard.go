@@ -13,6 +13,16 @@ import (
 	"github.com/BackendStack21/odek/internal/danger"
 )
 
+// ssrfClassifyURL classifies target after mapping its host the way net/http
+// does before dialing (UTS-46 via idna.Lookup). Fullwidth or otherwise
+// non-ASCII spellings of an IP literal or of "localhost" therefore classify as
+// the internal target they will actually reach, rather than as plain egress.
+// A host that cannot be mapped is refused outright (system_write), never
+// passed on as an ordinary external name.
+func ssrfClassifyURL(target string) danger.RiskClass {
+	return danger.ClassifyURL(target)
+}
+
 // proxyWarnOnce ensures the proxy-disabled warning is logged only once per
 // process even though ssrfGuardedTransport is called for several tools.
 var proxyWarnOnce sync.Once

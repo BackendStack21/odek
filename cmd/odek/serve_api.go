@@ -298,8 +298,8 @@ func handleSessionPlan(sess *session.Session, w http.ResponseWriter) {
 func exportSessionMarkdown(sess *session.Session) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# odek session %s\n\n", sess.ID)
-	fmt.Fprintf(&b, "- **Task:** %s\n", orDash(sess.Task))
-	fmt.Fprintf(&b, "- **Model:** %s\n", orDash(sess.Model))
+	fmt.Fprintf(&b, "- **Task:** %s\n", orDash(danger.SanitizeInline(sess.Task)))
+	fmt.Fprintf(&b, "- **Model:** %s\n", orDash(danger.SanitizeInline(sess.Model)))
 	fmt.Fprintf(&b, "- **Turns:** %d\n", sess.Turns)
 	fmt.Fprintf(&b, "- **Created:** %s\n", sess.CreatedAt.UTC().Format(time.RFC3339))
 	fmt.Fprintf(&b, "- **Updated:** %s\n", sess.UpdatedAt.UTC().Format(time.RFC3339))
@@ -337,7 +337,7 @@ func exportSessionMarkdown(sess *session.Session) string {
 			for _, tc := range m.ToolCalls {
 				args := prettyJSONArgs(tc.Function.Arguments)
 				fence := codeFence(args)
-				fmt.Fprintf(&b, "### tool call: %s\n\n%sjson\n", tc.Function.Name, fence)
+				fmt.Fprintf(&b, "### tool call: %s\n\n%sjson\n", danger.SanitizeInline(tc.Function.Name), fence)
 				b.WriteString(args)
 				b.WriteString("\n" + fence + "\n\n")
 			}
@@ -351,7 +351,7 @@ func exportSessionMarkdown(sess *session.Session) string {
 		case "tool":
 			body := stripUntrustedEnvelopes(m.Content)
 			fence := codeFence(body)
-			fmt.Fprintf(&b, "### tool result: %s\n\n%stext\n", orDash(m.Name), fence)
+			fmt.Fprintf(&b, "### tool result: %s\n\n%stext\n", orDash(danger.SanitizeInline(m.Name)), fence)
 			b.WriteString(body)
 			b.WriteString("\n" + fence + "\n\n")
 		}

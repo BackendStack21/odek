@@ -108,6 +108,7 @@ func scheduleTelegramUsage() string {
 }
 
 func scheduleTelegramList(st *schedule.Store) string {
+	tz := defaultScheduleTZ()
 	jobs, err := st.List()
 	if err != nil {
 		return "❌ " + err.Error()
@@ -129,7 +130,7 @@ func scheduleTelegramList(st *schedule.Store) string {
 			onOff = "⚪️"
 		}
 		next := "—"
-		if s, err := jobSchedule(j); err != nil {
+		if s, err := jobSchedule(j, tz); err != nil {
 			next = "invalid"
 		} else if nt := s.Next(now); !nt.IsZero() {
 			next = nt.Local().Format("Mon 02 Jan 15:04")
@@ -147,6 +148,7 @@ func scheduleTelegramList(st *schedule.Store) string {
 }
 
 func scheduleTelegramView(st *schedule.Store, id string) string {
+	tz := defaultScheduleTZ()
 	id = strings.TrimSpace(id)
 	if id == "" {
 		return "❗ Usage: `/schedule view <id>`"
@@ -195,7 +197,7 @@ func scheduleTelegramView(st *schedule.Store, id string) string {
 			fmt.Fprintf(&b, "*Error:* %s\n", rs.LastError)
 		}
 	}
-	if s, err := jobSchedule(job); err == nil {
+	if s, err := jobSchedule(job, tz); err == nil {
 		b.WriteString("*Next fires:*\n")
 		t := time.Now()
 		for range 3 {
@@ -210,6 +212,7 @@ func scheduleTelegramView(st *schedule.Store, id string) string {
 }
 
 func scheduleTelegramNext(st *schedule.Store, arg string) string {
+	tz := defaultScheduleTZ()
 	arg = strings.TrimSpace(arg)
 	if arg == "" {
 		return "❗ Usage: `/schedule next <id|cron>`"
@@ -219,7 +222,7 @@ func scheduleTelegramNext(st *schedule.Store, arg string) string {
 	// A bare token with no spaces or cron metacharacters may be a job ID.
 	if !strings.ContainsAny(arg, " *") {
 		if job, ok, err := st.Get(arg); err == nil && ok {
-			s, jerr := jobSchedule(job)
+			s, jerr := jobSchedule(job, tz)
 			if jerr != nil {
 				return "❌ " + jerr.Error()
 			}
@@ -248,6 +251,7 @@ func scheduleTelegramNext(st *schedule.Store, arg string) string {
 }
 
 func scheduleTelegramAdd(chatID int64, args string, st *schedule.Store, reload func()) string {
+	tz := defaultScheduleTZ()
 	job, errMsg := parseTelegramScheduleAdd(chatID, args)
 	if errMsg != "" {
 		return errMsg
@@ -260,7 +264,7 @@ func scheduleTelegramAdd(chatID int64, args string, st *schedule.Store, reload f
 		reload()
 	}
 	next := "—"
-	if s, err := jobSchedule(saved); err == nil {
+	if s, err := jobSchedule(saved, tz); err == nil {
 		if nt := s.Next(time.Now()); !nt.IsZero() {
 			next = nt.Local().Format("Mon 02 Jan 15:04")
 		}

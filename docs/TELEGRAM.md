@@ -275,8 +275,10 @@ longer pending gets a "Not applied" toast instead.
 
 ### Outbound Media
 
-The agent can send files back to the chat either by emitting a `MEDIA:` prefix in its final answer (`MEDIA:photo:/path`, `MEDIA:voice:/path`, `MEDIA:document:/path`) or by calling `send_message` with the `file` parameter. Before any upload, the user must explicitly approve the operation, and the path is validated by `internal/telegram.ResolveMediaPathForChat`:
+The agent can send files back to the chat either by emitting a `MEDIA:` prefix in its final answer (`MEDIA:photo:/path`, `MEDIA:voice:/path`, `MEDIA:document:/path`) or by calling `send_message` with the `file` parameter. Before any upload, the user must explicitly approve the operation (filed under `network_upload`, asked per call with no Trust Session button; a class-level trust earned on other prompts, such as `network_egress`, never approves an upload), and the path is validated by `internal/telegram.ResolveMediaPathForChat`:
 
+- Only the first line of an answer starting with `MEDIA:` is the directive; the text after it is sent as a normal formatted message. A `MEDIA:` line anywhere else in an answer is ordinary text and is escaped like any other line.
+- Media sends carry the caption, `parse_mode` and inline buttons given to `send_message`; multipart string fields (captions) are sent verbatim, not JSON-quoted.
 - Allowed directories: current working directory, `~/.odek/media/`, and the system temporary directory.
 - The path is resolved to an absolute, cleaned form and checked against the allowlist.
 - Symlinks are rejected: on Unix the final component is opened with `O_NOFOLLOW` and verified with `fstat` to close a TOCTOU race; on other platforms it is checked with `os.Lstat`. The resolved path must not escape the allowlist.
@@ -377,7 +379,7 @@ The `SessionManager` manages per-chat Telegram agent conversations, backed by th
 5. **Session recall** — the user message is saved to the session store *before* the agent loop runs, enabling `session_search` to find the current conversation's data during the same turn
 6. Active sessions survive bot restarts — on reconnect, the session is loaded from disk
 7. **/now archives** — using `/new` archives the current session with a timestamped ID (`tg-<chatID>-<YYYYMMDD>-<HHMMSS>`) before starting fresh. Archived sessions remain on disk and are visible via `odek session list`.
-8. **Chat-scoped listing/resume/prune** — `/sessions`, `/resume`, and `/prune` only operate on sessions belonging to the requesting chat. A chat cannot list, resume, or delete another chat's sessions.
+8. **Chat-scoped listing/resume/prune** — `/sessions`, `/resume`, and `/prune` only operate on sessions belonging to the requesting chat. A chat cannot list, resume, or delete another chat's sessions. The agent's `session_search` tool is scoped the same way on this surface: `list`, `search`, `find` and `get` only see the calling chat's sessions (`tg-<chatID>` and its archives), never other chats' or CLI/serve sessions.
 
 ### Key Methods
 
@@ -399,7 +401,7 @@ keyboard cannot answer someone else's clarify prompt.
 
 ## Plan Management (`plan.go`)
 
-Plans are stored as markdown files in `~/.odek/plans/chat<chatID>/<slug>.md`, isolating each Telegram chat's plans. Each plan is created from a natural language description and persisted for later review. The `/plan` command instructs the agent to save plans into the caller's per-chat directory, and `/plans`, `/plan_view`, `/plan_delete`, and `/plan_resume` only see plans belonging to that chat.
+Plans are stored as markdown files in `~/.odek/plans/chat<chatID>/<slug>.md`, isolating each Telegram chat's plans. Each plan is created from a natural language description and persisted for later review. The `/plan` command instructs the agent to save plans into the caller's per-chat directory, and `/plans`, `/plan_view`, `/plan_delete`, and `/plan_resume` only see plans belonging to that chat. Plan files are agent-written and may carry untrusted content, so `/plan_resume` injects the body inside the untrusted-content wrapper and marks the chat session as having ingested untrusted content.
 
 ### Size Cap
 

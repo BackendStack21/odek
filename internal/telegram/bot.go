@@ -380,14 +380,22 @@ func (b *Bot) doUpload(method string, field string, path string, params map[stri
 		return fmt.Errorf("telegram: copy file content: %w", err)
 	}
 
-	// Write extra parameters as JSON parts.
+	// Write extra parameters as form fields. Multipart fields are plain
+	// strings to the Bot API: strings go verbatim, only structured values
+	// (reply_markup and the like) and scalars are JSON-encoded.
 	for key, val := range params {
-		jsonVal, err := json.Marshal(val)
-		if err != nil {
-			b.log.Error("marshal param failed", "method", method, "key", key, "error", err)
-			return fmt.Errorf("telegram: marshal param %s: %w", key, err)
+		var fieldVal string
+		if sv, ok := val.(string); ok {
+			fieldVal = sv
+		} else {
+			jsonVal, err := json.Marshal(val)
+			if err != nil {
+				b.log.Error("marshal param failed", "method", method, "key", key, "error", err)
+				return fmt.Errorf("telegram: marshal param %s: %w", key, err)
+			}
+			fieldVal = string(jsonVal)
 		}
-		if err := writer.WriteField(key, string(jsonVal)); err != nil {
+		if err := writer.WriteField(key, fieldVal); err != nil {
 			b.log.Error("write field failed", "method", method, "key", key, "error", err)
 			return fmt.Errorf("telegram: write field %s: %w", key, err)
 		}
@@ -587,18 +595,34 @@ func (b *Bot) DeleteMessage(chatID int64, messageID int) error {
 	return b.doJSON("deleteMessage", params, nil)
 }
 
-// SendPhoto sends a photo from a file path to the specified chat.
-// opts may contain ReplyToMessageID to reply to a specific message.
-func (b *Bot) SendPhoto(chatID int64, path string, caption string, opts *SendOpts) (*Message, error) {
+// mediaParams builds the extra multipart fields of a media send: the target
+// chat, the caption and the opts the Bot API honours on uploads (reply target,
+// parse mode, reply markup).
+func mediaParams(chatID int64, caption string, opts *SendOpts) map[string]any {
 	params := map[string]any{
 		"chat_id": chatID,
 	}
 	if caption != "" {
 		params["caption"] = caption
 	}
-	if opts != nil && opts.ReplyToMessageID != 0 {
-		params["reply_to_message_id"] = opts.ReplyToMessageID
+	if opts != nil {
+		if opts.ReplyToMessageID != 0 {
+			params["reply_to_message_id"] = opts.ReplyToMessageID
+		}
+		if opts.ParseMode != "" {
+			params["parse_mode"] = opts.ParseMode
+		}
+		if opts.ReplyMarkup != nil {
+			params["reply_markup"] = opts.ReplyMarkup
+		}
 	}
+	return params
+}
+
+// SendPhoto sends a photo from a file path to the specified chat.
+// opts may contain ReplyToMessageID to reply to a specific message.
+func (b *Bot) SendPhoto(chatID int64, path string, caption string, opts *SendOpts) (*Message, error) {
+	params := mediaParams(chatID, caption, opts)
 
 	var msg Message
 	if err := b.doUpload("sendPhoto", "photo", path, params, &msg); err != nil {
@@ -610,15 +634,7 @@ func (b *Bot) SendPhoto(chatID int64, path string, caption string, opts *SendOpt
 // SendVoice sends a voice note from a file path to the specified chat.
 // opts may contain ReplyToMessageID to reply to a specific message.
 func (b *Bot) SendVoice(chatID int64, path string, caption string, opts *SendOpts) (*Message, error) {
-	params := map[string]any{
-		"chat_id": chatID,
-	}
-	if caption != "" {
-		params["caption"] = caption
-	}
-	if opts != nil && opts.ReplyToMessageID != 0 {
-		params["reply_to_message_id"] = opts.ReplyToMessageID
-	}
+	params := mediaParams(chatID, caption, opts)
 
 	var msg Message
 	if err := b.doUpload("sendVoice", "voice", path, params, &msg); err != nil {
@@ -630,15 +646,7 @@ func (b *Bot) SendVoice(chatID int64, path string, caption string, opts *SendOpt
 // SendDocument sends a document from a file path to the specified chat.
 // opts may contain ReplyToMessageID to reply to a specific message.
 func (b *Bot) SendDocument(chatID int64, path string, caption string, opts *SendOpts) (*Message, error) {
-	params := map[string]any{
-		"chat_id": chatID,
-	}
-	if caption != "" {
-		params["caption"] = caption
-	}
-	if opts != nil && opts.ReplyToMessageID != 0 {
-		params["reply_to_message_id"] = opts.ReplyToMessageID
-	}
+	params := mediaParams(chatID, caption, opts)
 
 	var msg Message
 	if err := b.doUpload("sendDocument", "document", path, params, &msg); err != nil {

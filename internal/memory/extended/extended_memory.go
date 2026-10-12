@@ -13,6 +13,7 @@ import (
 
 	"github.com/BackendStack21/odek/internal/embedding"
 	"github.com/BackendStack21/odek/internal/guard"
+	"github.com/BackendStack21/odek/internal/redact"
 )
 
 // ExtendedMemory orchestrates atom storage, embedding, extraction, recall,
@@ -244,6 +245,7 @@ func (em *ExtendedMemory) addAtoms(ctx context.Context, atoms []MemoryAtom, skip
 	stored := make([]MemoryAtom, 0, len(atoms))
 	for _, atom := range atoms {
 		NormalizeAtom(&atom)
+		atom.Text = redact.RedactSecrets(atom.Text)
 		if atom.SourceClass == SourceUserSaid {
 			// Manual addition through the tool/API is explicitly approved.
 			atom.SourceClass = SourceUserApproved
