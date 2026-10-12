@@ -397,6 +397,51 @@ func TestRED_SensitiveReadPathHistoryAndRotatedLogs(t *testing.T) {
 	}
 }
 
+// GNU parallel composes its input (stdin lines, ::: sources) like xargs, and
+// xargs placeholders and here-strings are composed too.
+func TestRED_ParallelAndXargsCompositionClassifierAndDenylist(t *testing.T) {
+	t.Setenv("HOME", "/home/user")
+	t.Chdir(t.TempDir())
+	dangerHunt12bAtLeast(t, Destructive,
+		`echo 'rm -rf /' | parallel`,
+		`parallel {} ::: 'rm -rf /'`,
+		`parallel rm -rf ::: /`,
+		`echo / | parallel rm -rf {}`,
+		`echo / | xargs -I% rm -rf %`,
+		`xargs rm -rf <<< /`,
+		`printf 'rm -rf /\n' | parallel -j2`,
+	)
+	dangerHunt12bDenied(t,
+		`echo 'git push' | parallel`,
+		`echo evil | parallel git push`,
+		`parallel git ::: push`,
+		`parallel {} ::: 'git push'`,
+		`xargs sh -c <<< 'git push'`,
+		`echo 'git push' | xargs -I% %`,
+		`echo push | parallel git`,
+		`xargs git <<< push`,
+	)
+	cfg := &DangerousConfig{Denylist: []string{"git push"}}
+	for _, cmd := range []string{
+		`echo status | parallel git`, `parallel git ::: status log`, `echo 'git status' | parallel`,
+		`xargs git <<< status`, `echo pull | xargs -I% git %`,
+	} {
+		if act := cfg.ActionForCommand(cmd); act == Deny {
+			t.Errorf("ActionForCommand(%q) = deny, want not denied", cmd)
+		}
+	}
+	for _, cmd := range []string{
+		`echo a b | parallel echo`, `parallel echo ::: a b c`, `echo hi | xargs echo`, `parallel ls ::: .`,
+		`echo src | xargs ls`, `echo 'ls -la' | parallel`,
+	} {
+		if got := Classify(cmd); Rank(got) >= Rank(SystemWrite) {
+			t.Errorf("Classify(%q) = %s, want below system_write", cmd, got)
+		}
+	}
+	// A parallel with no command whose input cannot be known fails closed.
+	dangerHunt12bAtLeast(t, Unknown, `cat cmds.txt | parallel`)
+}
+
 // A catch-all pgrep reaches kill through loops and nested substitutions too.
 func TestRED_PgrepFedKillThroughLoopsAndNesting(t *testing.T) {
 	t.Setenv("HOME", "/home/user")

@@ -1969,6 +1969,9 @@ func classifyPipelineIn(tokens []string, repos []*gitRepoCtx) RiskClass {
 	for idx, stage := range stages {
 		// idx > 0 means this stage receives piped input from the previous one.
 		worst = worstOf(worst, classifyStageIn(stage, idx > 0, repos[idx]))
+		if idx == 0 {
+			worst = worstOf(worst, classifyArgvComposerLiteralInput(stage, repos[idx]))
+		}
 		if idx > 0 {
 			// A pipe-fed argv composer turns upstream stdout into command
 			// arguments, so `echo "/" | xargs rm -rf` executes `rm -rf /`
@@ -2007,19 +2010,46 @@ func classifyPipelineIn(tokens []string, repos []*gitRepoCtx) RiskClass {
 // run is unknowable at classification time.
 func classifyArgvComposerSink(upstream [][]string, stage []string, repo *gitRepoCtx) RiskClass {
 	inner, ok := argvComposerInnerCommand(stage)
-	if !ok || len(inner) == 0 {
+	if !ok {
 		return Safe
 	}
-	if payload, static := staticPipePayload(upstream); static {
-		composed := make([]string, 0, len(inner)+len(payload))
-		composed = append(composed, inner...)
-		composed = append(composed, payload...)
-		return classifyStageIn(composed, false, repo)
+	text, static := staticPipeText(upstream)
+	if hs, ok := hereStringText(stage); ok {
+		text, static = hs, true
+	}
+	if comps := argvCompositions(stage, text, static); len(comps) > 0 {
+		worst := Safe
+		for _, c := range comps {
+			worst = worstOf(worst, classifyStageIn(c, false, repo))
+		}
+		return worst
+	}
+	if len(inner) == 0 {
+		// GNU parallel with no command runs each input line as a command.
+		if argvComposerName(stage) == "parallel" && !static && !strings.Contains(strings.Join(stage, " "), ":::") {
+			return Unknown
+		}
+		return Safe
+	}
+	if static {
+		return classifyStageIn(inner, false, repo)
 	}
 	if xargsInnerDangerous(inner) {
 		return Unknown
 	}
 	return Safe
+}
+
+// classifyArgvComposerLiteralInput classifies the commands an argv composer
+// runs from input written on its own line: parallel's `:::` argument sources
+// and a here-string on standard input.
+func classifyArgvComposerLiteralInput(stage []string, repo *gitRepoCtx) RiskClass {
+	text, static := hereStringText(stage)
+	worst := Safe
+	for _, c := range argvCompositions(stage, text, static) {
+		worst = worstOf(worst, classifyStageIn(c, false, repo))
+	}
+	return worst
 }
 
 // xargsInnerDangerous reports whether the command an argv composer runs is,

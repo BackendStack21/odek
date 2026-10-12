@@ -129,7 +129,7 @@ func denyScanVars(cmd string, dc *denyCtx, depth int, inherited map[string]strin
 				return true
 			}
 			// An argv composer appends a static producer's output to its command.
-			if i > 0 && denyArgvComposerFeed(earlier, expanded, dc, depth) {
+			if denyArgvComposerFeed(earlier, expanded, dc, depth) {
 				return true
 			}
 			earlier = append(earlier, expanded)
@@ -396,35 +396,22 @@ func denyStaticPipeFeed(upstream [][]string, sink []string, dc *denyCtx, depth i
 	return false
 }
 
-// denyArgvComposerFeed scans the command an argv composer (xargs, parallel)
-// runs once a static echo/printf producer's output is appended to it:
-// `echo push | xargs git` runs `git push`. A `{}` placeholder in the command
-// is replaced by the payload instead of being appended to.
+// denyArgvComposerFeed scans the commands an argv composer (xargs, parallel)
+// runs once its statically known input is composed in: a static echo/printf
+// producer upstream, a here-string, or parallel's `:::` argument sources.
+// `echo push | xargs git` runs `git push`; `echo 'git push' | parallel` and
+// `parallel {} ::: 'git push'` run it too.
 func denyArgvComposerFeed(upstream [][]string, sink []string, dc *denyCtx, depth int) bool {
-	inner, ok := argvComposerInnerCommand(sink)
-	if !ok || len(inner) == 0 {
-		return false
+	text, static := staticPipeText(upstream)
+	if hs, ok := hereStringText(sink); ok {
+		text, static = hs, true
 	}
-	payload, static := staticPipePayload(upstream)
-	if !static || len(payload) == 0 {
-		return false
-	}
-	var composed []string
-	placeholder := false
-	for _, tok := range inner {
-		if strings.Contains(tok, "{}") {
-			placeholder = true
-			for _, p := range payload {
-				composed = append(composed, strings.ReplaceAll(tok, "{}", p))
-			}
-			continue
+	for _, composed := range argvCompositions(sink, text, static) {
+		if denyStage(composed, dc, depth+1) {
+			return true
 		}
-		composed = append(composed, tok)
 	}
-	if !placeholder {
-		composed = append(append([]string(nil), inner...), payload...)
-	}
-	return denyStage(composed, dc, depth+1)
+	return false
 }
 
 // hereStringText returns the word a stage reads as its here-string.
