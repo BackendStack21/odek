@@ -1121,6 +1121,14 @@ func (s *Store) saveLockedMode(sess *Session, lazyIndex bool) (err error) {
 		}
 	}
 	sess.EpisodeTaintTracked = true
+	// System records (prompt, compaction digest) can be refreshed in place
+	// below the boundary without moving the anchored last message, so they
+	// are redacted on every save; there are only a few of them.
+	for i := 0; i < boundary; i++ {
+		if sess.Messages[i].Role == "system" {
+			sess.Messages[i].Content = redact.RedactSecrets(sess.Messages[i].Content)
+		}
+	}
 	for i := boundary; i < len(sess.Messages); i++ {
 		sess.Messages[i].Content = redact.RedactSecrets(sess.Messages[i].Content)
 		origReasoning := sess.Messages[i].ReasoningContent
