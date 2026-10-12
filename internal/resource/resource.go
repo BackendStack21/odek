@@ -323,6 +323,9 @@ func (f *FileResolver) Search(ctx context.Context, query string, limit int) ([]R
 		if !pathutil.WithinRoot(absRoot, match) {
 			continue
 		}
+		if protectedTarget(pathutil.ResolveDirSymlinks(match)) {
+			continue
+		}
 		rel, _ := filepath.Rel(f.root, match)
 		// Use Lstat so that symlinks do not leak metadata from their targets.
 		info, err := os.Lstat(match)
@@ -358,6 +361,12 @@ func validateSearchQuery(query string) error {
 	return nil
 }
 
+// protectedTarget reports whether path is one @-references must neither read
+// nor advertise: anything the danger classifier rates system_write or higher.
+func protectedTarget(path string) bool {
+	return danger.Rank(danger.ClassifyPath(path)) >= danger.Rank(danger.SystemWrite)
+}
+
 func (f *FileResolver) Load(ctx context.Context, id string) (string, error) {
 	// id is the path after @ (e.g. "src/main.go")
 	target := filepath.Join(f.root, id)
@@ -377,7 +386,7 @@ func (f *FileResolver) Load(ctx context.Context, id string) (string, error) {
 	// must not read what the file tools gate: odek's trust anchors under
 	// ~/.odek (secrets, config, sessions, ...), credential files and other
 	// system-sensitive paths. This matters when the workspace is $HOME.
-	if danger.Rank(danger.ClassifyPath(resolvedTarget)) >= danger.Rank(danger.SystemWrite) {
+	if protectedTarget(resolvedTarget) {
 		return "", fmt.Errorf("resource: %q is a protected path and cannot be referenced", id)
 	}
 
