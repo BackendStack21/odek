@@ -23,7 +23,11 @@ func TestIsSensitiveReadPath_HomeCredentialStores(t *testing.T) {
 	}
 	// Every entry of the shared table, so a new entry cannot drift.
 	for _, sub := range homeSensitivePrefixes {
-		p := "/home/user" + sub + "/x"
+		child := "/x"
+		if kids, ok := homeReadChildren[sub]; ok {
+			child = kids[0] + "/x"
+		}
+		p := "/home/user" + sub + child
 		if !IsSensitiveReadPath("/home/user", p) {
 			t.Errorf("%q (table entry %q) loads as an @-reference", p, sub)
 		}

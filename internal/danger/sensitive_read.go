@@ -26,6 +26,22 @@ var keyExactNames = fieldSet("server private priv privkey secret tls ssl cert cl
 // file as key material wherever they appear.
 var keyStrongTokens = fieldSet("server private priv privkey secret tls ssl signing jwt")
 
+// homeReadChildren narrows entries of homeSensitivePrefixes whose directory
+// also holds ordinary files (editor config, plugins, build config) to the
+// children that carry credentials. ClassifyPath keeps the whole prefix, since
+// a write anywhere under it is worth a prompt; a read gate that refused the
+// whole directory would block routine @-references from a home workspace.
+// An entry absent here is refused whole, so a newly added table entry is
+// protected by default. Matching is on path components.
+var homeReadChildren = map[string][]string{
+	"/.config": {"/gcloud", "/gh", "/hub", "/rclone", "/github-copilot", "/op", "/glab-cli",
+		"/doctl", "/hcloud", "/heroku", "/configstore", "/helm", "/pip/pip.conf", "/git/credentials"},
+	"/.docker":      {"/config.json"},
+	"/.cargo":       {"/credentials", "/credentials.toml"},
+	"/.gem":         {"/credentials"},
+	"/.terraform.d": {"/credentials.tfrc.json"},
+}
+
 func stripPrivate(p string) string {
 	if rest, ok := strings.CutPrefix(p, "/private/"); ok {
 		return "/" + rest
@@ -77,8 +93,14 @@ func IsSensitiveReadPath(root, path string) bool {
 		}
 		lh := FoldPathCase(home)
 		for _, sub := range homeSensitivePrefixes {
-			if strings.HasPrefix(lower, lh+sub) {
-				return true
+			children, narrowed := homeReadChildren[sub]
+			if !narrowed {
+				children = []string{""}
+			}
+			for _, c := range children {
+				if p := lh + sub + c; lower == p || strings.HasPrefix(lower, p+"/") {
+					return true
+				}
 			}
 		}
 		if lower == lh+"/.local/share/keyrings" || strings.HasPrefix(lower, lh+"/.local/share/keyrings/") {
