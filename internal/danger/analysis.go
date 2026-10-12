@@ -319,6 +319,9 @@ func analyzeWithStateWork(cmd string, depth int, inherited *shellAnalysisState, 
 			}
 			prepared = append(prepared, state.expand(st.words))
 		}
+		if pgrepFeedsKill(prepared, subs) {
+			result.add(SystemWrite)
+		}
 		var pipeline []string
 		var repos []*gitRepoCtx
 		for i, stage := range prepared {

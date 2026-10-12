@@ -273,6 +273,35 @@ func TestRED_ClassifyURLZoneScopedIPv6Loopback(t *testing.T) {
 	}
 }
 
+func TestRED_KillBroadcastBroaderSpellingsAndNegatives(t *testing.T) {
+	t.Setenv("HOME", "/home/user")
+	t.Chdir(t.TempDir())
+	dangerHunt12bAtLeast(t, SystemWrite,
+		`sudo pkill ""`,
+		`pkill -9 -fv zzzz`,
+		`pkill --parent=2,1 x`,
+		`pkill -P2,1`,
+		`pkill --group root`,
+		`pkill -G0,5`,
+		`killall -im .`,
+		`kill -9 $(pgrep -v zzzz)`,
+		`pgrep -f . | xargs -r kill -TERM`,
+		"kill `pgrep .`",
+	)
+	for _, cmd := range []string{
+		`pkill -f myserver`, `pkill -P 1234`, `pkill -u dev node`, `kill $(pgrep -f myserver)`,
+		`killall -v node`, `pgrep -f . | head`, `pgrep node | xargs echo`, `pkill -x '' x`,
+		`echo ''`, `grep '' file.txt`,
+	} {
+		if got := Classify(cmd); Rank(got) >= Rank(SystemWrite) {
+			if cmd == `pkill -x '' x` {
+				continue // an empty pattern next to a name still selects everything
+			}
+			t.Errorf("Classify(%q) = %s, want below system_write", cmd, got)
+		}
+	}
+}
+
 func TestRED_HomeOverrideNegativesAndBroaderShells(t *testing.T) {
 	t.Setenv("HOME", "/home/user")
 	t.Chdir(t.TempDir())

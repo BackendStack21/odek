@@ -2707,6 +2707,7 @@ func normalize(cmd string) (string, []string) {
 	cmd = joinLineContinuations(cmd)
 	cmd = consumeHeredocs(cmd)
 	cmd = stripComments(cmd)
+	cmd = markEmptyKillPatterns(cmd)
 	cmd = decodeANSIC(cmd)
 	cmd = expandIFS(cmd)
 	cmd = expandBraces(cmd)
