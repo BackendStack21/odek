@@ -454,8 +454,14 @@ func (h *Handler) SendResponse(chatID int64, text string, replyToMessageID int) 
 	}
 
 	// Check for MEDIA: prefix.
+	// Only the first line is the directive; whatever follows is the answer
+	// text and goes through the normal formatting path.
 	if strings.HasPrefix(text, "MEDIA:") {
-		h.sendMedia(chatID, text, replyToMessageID)
+		directive, rest, _ := strings.Cut(text, "\n")
+		h.sendMedia(chatID, strings.TrimSpace(directive), replyToMessageID)
+		if strings.TrimSpace(rest) != "" {
+			h.SendResponse(chatID, rest, replyToMessageID)
+		}
 		return
 	}
 
