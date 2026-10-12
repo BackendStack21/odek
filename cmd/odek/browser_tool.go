@@ -117,7 +117,7 @@ func (t *browserTool) checkRedirect(req *http.Request, via []*http.Request) erro
 		return fmt.Errorf("stopped after 10 redirects")
 	}
 	target := req.URL.String()
-	risk := danger.ClassifyURL(target)
+	risk := ssrfClassifyURL(target)
 	if err := t.dangerousConfig.CheckOperation(danger.ToolOperation{
 		Name: "browser", Resource: target, Risk: risk,
 	}, t.trustedClasses); err != nil {
@@ -229,7 +229,7 @@ func (t *browserTool) doNavigate(rawURL string) (string, error) {
 	req.Header.Set("Accept", "text/html,application/xhtml+xml")
 
 	// Security: classify and check browser operation
-	risk := danger.ClassifyURL(rawURL)
+	risk := ssrfClassifyURL(rawURL)
 	if err := t.dangerousConfig.CheckOperation(danger.ToolOperation{
 		Name: "browser", Resource: rawURL, Risk: risk,
 	}, t.trustedClasses); err != nil {

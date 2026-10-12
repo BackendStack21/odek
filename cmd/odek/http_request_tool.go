@@ -89,7 +89,7 @@ func (t *httpRequestTool) checkURL(target string) error {
 	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
 		return fmt.Errorf("url must be an absolute HTTP(S) URL")
 	}
-	return t.dangerousConfig.CheckOperation(danger.ToolOperation{Name: t.Name(), Resource: target, Risk: danger.ClassifyURL(target)}, nil)
+	return t.dangerousConfig.CheckOperation(danger.ToolOperation{Name: t.Name(), Resource: target, Risk: ssrfClassifyURL(target)}, nil)
 }
 
 // toolsHTTPRequestResource renders the request for an approval prompt:

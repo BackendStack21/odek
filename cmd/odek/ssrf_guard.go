@@ -7,11 +7,57 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
+	"golang.org/x/net/idna"
+
 	"github.com/BackendStack21/odek/internal/danger"
 )
+
+// ssrfClassifyURL classifies target after mapping its host the way net/http
+// does before dialing (UTS-46 via idna.Lookup). Fullwidth or otherwise
+// non-ASCII spellings of an IP literal or of "localhost" therefore classify as
+// the internal target they will actually reach, rather than as plain egress.
+// A host that cannot be mapped is refused outright (system_write), never
+// passed on as an ordinary external name.
+func ssrfClassifyURL(target string) danger.RiskClass {
+	u, err := url.Parse(target)
+	if err != nil || u.Host == "" {
+		return danger.ClassifyURL(target)
+	}
+	host := u.Hostname()
+	ascii := true
+	for i := 0; i < len(host); i++ {
+		if host[i] >= 0x80 {
+			ascii = false
+			break
+		}
+	}
+	if ascii {
+		return danger.ClassifyURL(target)
+	}
+	mapped, err := idna.Lookup.ToASCII(host)
+	if err != nil || mapped == "" {
+		return danger.SystemWrite
+	}
+	if strings.Contains(mapped, ":") {
+		mapped = "[" + mapped + "]"
+	}
+	if port := u.Port(); port != "" {
+		mapped = mapped + ":" + port
+	}
+	clone := *u
+	clone.Host = mapped
+	// The mapped spelling may itself be internal; classify both so the
+	// stricter verdict wins.
+	a, b := danger.ClassifyURL(clone.String()), danger.ClassifyURL(target)
+	if danger.Rank(b) > danger.Rank(a) {
+		return b
+	}
+	return a
+}
 
 // proxyWarnOnce ensures the proxy-disabled warning is logged only once per
 // process even though ssrfGuardedTransport is called for several tools.
