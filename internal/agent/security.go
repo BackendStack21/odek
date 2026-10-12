@@ -265,6 +265,18 @@ func headingAt(lines []string, i int) (title string, consumed int, ok bool) {
 			break
 		}
 	}
+	// A numbered-list prefix ("1. ## Safety", "2) **Safety**") likewise.
+	if d := 0; true {
+		for d < len(t) && d < 4 && t[d] >= '0' && t[d] <= '9' {
+			d++
+		}
+		if d > 0 && d+1 < len(t) && (t[d] == '.' || t[d] == ')') && t[d+1] == ' ' {
+			rest := strings.TrimSpace(t[d+2:])
+			if strings.HasPrefix(rest, "#") || strings.HasPrefix(rest, "**") || strings.HasPrefix(rest, "__") {
+				t = rest
+			}
+		}
+	}
 	if t == "" {
 		return "", 0, false
 	}
