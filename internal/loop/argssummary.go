@@ -115,6 +115,16 @@ func shellWords(cmd string) []shellWord {
 				val.Reset()
 				inWord = false
 			}
+		case c == '(' && inWord && isEnvAssignment(raw.String()) && strings.HasSuffix(raw.String(), "="):
+			// Array assignment NAME=(a b): the whole parenthesised value
+			// belongs to the assignment word.
+			end, _ := scanClosing(cmd, i+1, ')')
+			if end < 0 {
+				return words
+			}
+			raw.WriteString(cmd[i : end+1])
+			val.WriteString(cmd[i : end+1])
+			i = end
 		default:
 			inWord = true
 			raw.WriteByte(c)
@@ -153,6 +163,12 @@ func substitutionEnd(cmd string, i int) (end int, ok bool) {
 	default:
 		return 0, false
 	}
+	return scanClosing(cmd, j, closer)
+}
+
+// scanClosing finds the delimiter closing a construct whose body starts at
+// cmd[j]; it returns -1 when the construct never closes.
+func scanClosing(cmd string, j int, closer byte) (end int, ok bool) {
 	parens := 0
 	for ; j < len(cmd); j++ {
 		c := cmd[j]
@@ -209,7 +225,10 @@ func isEnvAssignment(tok string) bool {
 	if eq <= 0 {
 		return false
 	}
-	head := tok[:eq]
+	head := strings.TrimSuffix(tok[:eq], "+")
+	if head == "" {
+		return false
+	}
 	if head[0] == '_' {
 		return true
 	}
