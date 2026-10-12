@@ -419,6 +419,9 @@ func analyzeWithState(cmd string, depth int, inherited *shellAnalysisState) Anal
 				continue
 			}
 			name := commandName(inner[0])
+			for _, body := range arithmeticOperandSubstitutions(name, inner[1:]) {
+				result.merge(analyzeWithState(body, depth+1, &payloadState))
+			}
 			for _, assigned := range state.rebind(name, inner, len(stages) == 1 && !ambiguous) {
 				if afterAnd {
 					chain.vars[assigned] = true
@@ -808,6 +811,9 @@ func analyzeWithState(cmd string, depth int, inherited *shellAnalysisState) Anal
 			funcDefs = append(funcDefs, n.fn)
 		case nodeTest:
 			scanData(n.words)
+			for _, body := range arithmeticOperandSubstitutions("[[", n.words) {
+				result.merge(analyzeWithState(body, depth+1, &state))
+			}
 			exp := state.expand(n.words)
 			for k := 0; k+1 < len(exp); k++ {
 				if isRedirectToken(exp[k]) {
@@ -818,6 +824,9 @@ func analyzeWithState(cmd string, depth int, inherited *shellAnalysisState) Anal
 			}
 			runClauses(false, n.words, "&&", "||", "|", "|&", "(", ")", "!")
 		case nodeArith:
+			for _, body := range arithmeticOperandSubstitutions("((", n.words) {
+				result.merge(analyzeWithState(body, depth+1, &state))
+			}
 			for _, w := range n.words {
 				for _, name := range variableNames(w) {
 					state.forget(name)
