@@ -1538,8 +1538,21 @@ func (s *Store) List(limit int) ([]Session, error) {
 		if err != nil {
 			continue
 		}
-		sess.Messages = nil // don't include full transcript in listings
-		sessions = append(sessions, *sess)
+		// Listings carry the same allowlisted metadata as the index path:
+		// the transcript, memory buffer, decision receipts and external refs
+		// are token-guarded detail, never part of a list row.
+		sessions = append(sessions, Session{
+			ID:           sess.ID,
+			CreatedAt:    sess.CreatedAt,
+			UpdatedAt:    sess.UpdatedAt,
+			Task:         sess.Task,
+			Turns:        sess.Turns,
+			Model:        sess.Model,
+			Pinned:       sess.Pinned,
+			Sandbox:      sess.Sandbox,
+			InputTokens:  sess.InputTokens,
+			OutputTokens: sess.OutputTokens,
+		})
 	}
 
 	sort.Slice(sessions, func(i, j int) bool {
