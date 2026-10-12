@@ -426,7 +426,10 @@ func (t *delegateTasksTool) Call(args string) (string, error) {
 					Data: map[string]any{
 						"task_index": i,
 						"class":      d.Class,
-						"reason":     d.Reason,
+						// A denial reason can embed the denied command line;
+						// like tool arguments it is digested, never emitted.
+						"reason_sha256": events.ArgsDigest(d.Reason),
+						"reason_bytes":  len(d.Reason),
 					},
 				})
 			}
