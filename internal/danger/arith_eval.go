@@ -1,6 +1,9 @@
 package danger
 
-import "strings"
+import (
+	"regexp"
+	"strings"
+)
 
 // arithmeticEvalBuiltins evaluate some operands as arithmetic or array
 // subscripts. Bash expands a command substitution inside such a subscript
@@ -65,4 +68,57 @@ func arithmeticOperandSubstitutions(name string, args []string) []string {
 		bodies = append(bodies, subs...)
 	}
 	return bodies
+}
+
+// matchingBracket returns the index of the `]` closing the `[` at open,
+// counting nested brackets. Every scanned byte is charged to budget; ok is
+// false for an unterminated bracket or an exhausted budget.
+func matchingBracket(s string, open int, budget *int) (int, bool) {
+	depth := 0
+	for j := open; j < len(s); j++ {
+		if *budget--; *budget < 0 {
+			return 0, false
+		}
+		switch s[j] {
+		case '[':
+			depth++
+		case ']':
+			depth--
+			if depth == 0 {
+				return j, true
+			}
+		}
+	}
+	return 0, false
+}
+
+// arithParamRe matches the start of a parameter expansion body whose offset
+// (${name:off:len}) or subscript (${name[sub]}) bash evaluates arithmetically.
+// A colon followed by -, =, + or ? is a default/alternative operator instead.
+var arithParamRe = regexp.MustCompile(`^[!#]?(?:[A-Za-z_][A-Za-z0-9_]*|[0-9]+|[@*])(?:\[|:[^-=+?])`)
+
+// arithmeticParamBody returns the quote-stripped body of the `${…}` starting
+// at i when it is an arithmetic-bearing form (substring or subscript), so the
+// caller can extract substitutions bash would run inside it.
+func arithmeticParamBody(s string, i int, budget *int) (string, bool) {
+	depth := 0
+	for j := i + 1; j < len(s); j++ {
+		if *budget--; *budget < 0 {
+			return "", false
+		}
+		switch s[j] {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				body := s[i+2 : j]
+				if !arithParamRe.MatchString(body) {
+					return "", false
+				}
+				return strings.ReplaceAll(body, "'", ""), true
+			}
+		}
+	}
+	return "", false
 }

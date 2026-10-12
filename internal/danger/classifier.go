@@ -2822,6 +2822,35 @@ func extractSubstitutionsBounded(cmd string, budget *int, arith int) (string, []
 				continue
 			}
 		}
+		// $[ … ] is the legacy arithmetic expansion: its body is evaluated
+		// like $(( … )), so a substitution in it runs even inside quotes.
+		if cmd[i] == '$' && i+1 < len(cmd) && cmd[i+1] == '[' {
+			if j, ok := matchingBracket(cmd, i+1, budget); ok {
+				if arith >= maxArithNesting {
+					return out.String(), append(subs, unanalysableSubstitution)
+				}
+				_, nested := extractSubstitutionsBounded(strings.ReplaceAll(cmd[i+2:j], "'", ""), budget, arith+1)
+				subs = append(subs, nested...)
+				out.WriteByte('0')
+				i = j + 1
+				continue
+			}
+			if *budget < 0 {
+				return out.String(), append(subs, unanalysableSubstitution)
+			}
+		}
+		// ${name:offset:length} and ${name[subscript]} evaluate the offset,
+		// length and subscript arithmetically: a substitution there runs
+		// even when the shell word quoted it. The expansion itself stays in
+		// the stream; only the extra bodies are recorded.
+		if cmd[i] == '$' && i+1 < len(cmd) && cmd[i+1] == '{' {
+			if body, ok := arithmeticParamBody(cmd, i, budget); ok {
+				_, nested := extractSubstitutionsBounded(body, budget, arith+1)
+				subs = append(subs, nested...)
+			} else if *budget < 0 {
+				return out.String(), append(subs, unanalysableSubstitution)
+			}
+		}
 		// $(...) command substitution and <(...) / >(...) process
 		// substitution all run their body as a command. Treat them alike.
 		if i+1 < len(cmd) && (cmd[i] == '$' || cmd[i] == '<' || cmd[i] == '>') && cmd[i+1] == '(' {
@@ -2851,7 +2880,9 @@ func extractSubstitutionsBounded(cmd string, budget *int, arith int) (string, []
 					if inner, ok := arithmeticBody(body); ok && arith < maxArithNesting {
 						// $(( … )) is arithmetic and runs nothing itself;
 						// only a substitution nested in it can execute.
-						_, nested := extractSubstitutionsBounded(inner, budget, arith+1)
+						// Bash treats the body as double-quoted: a `'` is literal
+						// there and a substitution inside it still runs.
+						_, nested := extractSubstitutionsBounded(strings.ReplaceAll(inner, "'", ""), budget, arith+1)
 						subs = append(subs, nested...)
 						out.WriteByte('0')
 						i = j + 1
