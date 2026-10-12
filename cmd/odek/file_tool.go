@@ -1603,8 +1603,9 @@ func confineToCWD(path string) (string, error) {
 		}
 		for _, h := range homes {
 			odekPrefix := h + "/.odek/"
-			if len(absResolved) >= len(odekPrefix) && strings.EqualFold(absResolved[:len(odekPrefix)], odekPrefix) {
-				if isProtectedOdekPath(absResolved[len(odekPrefix):]) {
+			foldedAbs, foldedPrefix := danger.FoldPathCase(absResolved), danger.FoldPathCase(odekPrefix)
+			if strings.HasPrefix(foldedAbs, foldedPrefix) {
+				if isProtectedOdekPath(foldedAbs[len(foldedPrefix):]) {
 					return "", fmt.Errorf("path %q is a protected odek configuration path and cannot be written by file tools", path)
 				}
 				return abs, nil

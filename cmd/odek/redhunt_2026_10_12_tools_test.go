@@ -502,3 +502,15 @@ func TestToolsHTTPRequestStripsCredentialHeaderOnCrossHostRedirect(t *testing.T)
 		t.Fatalf("credential header forwarded across hosts: %q", got)
 	}
 }
+
+func TestToolsConfineToCWDKelvinOdekAlias(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, ".odek"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(home)
+	if _, err := confineToCWD(filepath.Join(home, ".ode\u212a", "config.json")); err == nil {
+		t.Error("kelvin-sign spelling of ~/.odek/config.json must be a protected path")
+	}
+}
