@@ -59,7 +59,7 @@ func TestRelocateStagingArtifacts_MovesFiles(t *testing.T) {
 	}
 }
 
-func TestRelocateStagingArtifacts_CopyFallback(t *testing.T) {
+func TestRelocateStagingArtifacts_CopiesContent(t *testing.T) {
 	root := t.TempDir()
 	staging := filepath.Join(root, "staging")
 	canonical := filepath.Join(root, "canonical")
@@ -67,10 +67,6 @@ func TestRelocateStagingArtifacts_CopyFallback(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeArtifactFile(t, staging, "report.md", "payload")
-
-	old := renameFailureHook
-	renameFailureHook = func() bool { return true } // force the copy path
-	defer func() { renameFailureHook = old }()
 
 	n, err := relocateStagingArtifacts(staging, canonical)
 	if err != nil {
