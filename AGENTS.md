@@ -134,6 +134,7 @@ internal/
     arith_eval.go               Arithmetic-evaluating builtins (let, declare, …) and arithmetic expansions ($(( )), $[ ], ${s:off:len}, ${a[sub]}): command substitutions inside are classified even when single-quoted
     secret_globs.go             Wildcard operands matched segment-wise against odek anchors, /proc/<pid>/environ and the credential path table
     secret_recursive.go         Recursive readers (grep -r, rg, find -exec cat, tar c, cp -r, …) rooted at /proc/<pid>, /etc, / or a home
+    argv_compose.go             xargs / GNU parallel / xe composition: static stdin, here-strings, ::: sources and -I/{} placeholders expanded into commands (classifier + denylist)
     param_default.go            ${name:-word} / ${name:=word} / ${name:+word} default words classified as the commands they can run
     env_dump_tools.go           jq/yq/ps environment disclosure → system_write
     env_code.go                 PROMPT_COMMAND / PS0-PS4 / BASH_FUNC_ assignments: values classified as commands
