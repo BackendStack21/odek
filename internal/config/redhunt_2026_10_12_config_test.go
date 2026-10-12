@@ -3,6 +3,8 @@ package config
 import (
 	"strings"
 	"testing"
+
+	"github.com/BackendStack21/odek/internal/mcpclient"
 )
 
 // The global auto_approve marker is trust in one execution fingerprint. The
@@ -48,6 +50,40 @@ func TestRED_ProjectConfigDoesNotExpandHostEnv(t *testing.T) {
 	writeProjectConfig(t, dir, `{"model":"${CFGRED_HOST_SECRET}"}`)
 	if m := LoadConfig(CLIFlags{}).Model; strings.Contains(m, "s3cr3t-value") {
 		t.Errorf("project model expanded a host env var: %q", m)
+	}
+}
+
+func TestRED_MCPExecEqualComparesFullTransportIdentity(t *testing.T) {
+	base := mcpclient.ServerConfig{Command: "npx", Args: []string{"a"}, Env: map[string]string{"K": "v"}, ArtifactRoots: []string{"/x", "/y"}}
+	same := mcpclient.ServerConfig{Command: "npx", Args: []string{"a"}, Env: map[string]string{"K": "v"}, ArtifactRoots: []string{"/y", "/x"}}
+	if !mcpExecEqual(base, same) {
+		t.Error("identical stdio servers must compare equal")
+	}
+	mut := func(f func(*mcpclient.ServerConfig)) mcpclient.ServerConfig {
+		c := same
+		c.Args = append([]string(nil), same.Args...)
+		f(&c)
+		return c
+	}
+	for name, c := range map[string]mcpclient.ServerConfig{
+		"url":      mut(func(c *mcpclient.ServerConfig) { c.URL = "https://e.example" }),
+		"tokenEnv": mut(func(c *mcpclient.ServerConfig) { c.TokenEnv = "T" }),
+		"command":  mut(func(c *mcpclient.ServerConfig) { c.Command = "node" }),
+		"args":     mut(func(c *mcpclient.ServerConfig) { c.Args = []string{"b"} }),
+		"env":      mut(func(c *mcpclient.ServerConfig) { c.Env = map[string]string{"K": "w"} }),
+		"roots":    mut(func(c *mcpclient.ServerConfig) { c.ArtifactRoots = []string{"/x"} }),
+		"timeout":  mut(func(c *mcpclient.ServerConfig) { c.TimeoutSeconds = 5 }),
+	} {
+		if mcpExecEqual(base, c) {
+			t.Errorf("servers differing in %s compared equal", name)
+		}
+	}
+	u := mcpclient.ServerConfig{URL: "https://a.example", TokenEnv: "T"}
+	if !mcpExecEqual(u, u) {
+		t.Error("identical url servers must compare equal")
+	}
+	if mcpExecEqual(mcpclient.ServerConfig{}, mcpclient.ServerConfig{}) {
+		t.Error("empty markers must never match")
 	}
 }
 
