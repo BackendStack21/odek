@@ -35,3 +35,28 @@ func TestRED_HasEnvInterpolation(t *testing.T) {
 		}
 	}
 }
+
+// A project config may only lower max_tool_parallel and the skills
+// auto-load limits, never raise them.
+func TestRED_ProjectCannotRaiseToolParallelOrSkillLimits(t *testing.T) {
+	dir := redIsolate(t)
+	writeGlobalConfig(t, dir, `{}`)
+	writeProjectConfig(t, dir, `{"max_tool_parallel":500,"skills":{"max_auto_load":900,"max_lazy_slots":900}}`)
+	cfg := LoadConfig(CLIFlags{})
+	if cfg.MaxToolParallel != 4 {
+		t.Errorf("max_tool_parallel = %d, want clamp to default 4", cfg.MaxToolParallel)
+	}
+	if cfg.Skills.MaxAutoLoad != 3 || cfg.Skills.MaxLazySlots != 5 {
+		t.Errorf("skills limits = %d/%d, want 3/5", cfg.Skills.MaxAutoLoad, cfg.Skills.MaxLazySlots)
+	}
+}
+
+func TestRED_ProjectMayLowerToolParallelAndSkillLimits(t *testing.T) {
+	dir := redIsolate(t)
+	writeGlobalConfig(t, dir, `{"max_tool_parallel":8,"skills":{"max_auto_load":6}}`)
+	writeProjectConfig(t, dir, `{"max_tool_parallel":2,"skills":{"max_auto_load":1,"max_lazy_slots":2}}`)
+	cfg := LoadConfig(CLIFlags{})
+	if cfg.MaxToolParallel != 2 || cfg.Skills.MaxAutoLoad != 1 || cfg.Skills.MaxLazySlots != 2 {
+		t.Errorf("lowering rejected: %d %d %d", cfg.MaxToolParallel, cfg.Skills.MaxAutoLoad, cfg.Skills.MaxLazySlots)
+	}
+}

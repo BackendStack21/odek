@@ -1994,6 +1994,22 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 		}
 	}
 
+	// max_tool_parallel and the skills auto-load limits: same rule. A repo
+	// may only lower them below the operator's value (or the shipped
+	// default), never raise concurrency or the amount of skill text loaded
+	// into the prompt.
+	if project.MaxToolParallel > 0 {
+		ceiling := global.MaxToolParallel
+		if ceiling <= 0 {
+			ceiling = 4
+		}
+		if project.MaxToolParallel > ceiling {
+			fmt.Fprintf(os.Stderr, "odek: WARNING: clamping max_tool_parallel=%d from project config (%s) to %d — a project may only lower it\n", project.MaxToolParallel, ProjectConfigPath(), ceiling)
+			project.MaxToolParallel = ceiling
+		}
+	}
+	clampProjectSkillsLimits(global.Skills, project.Skills)
+
 	// Planning ("planning" section): same clamp philosophy. A repo may opt
 	// out entirely and may tighten its own caps, but cannot re-enable a
 	// globally-disabled feature or raise an explicitly-set global cap.
@@ -3843,6 +3859,36 @@ func clampProjectSkillsImport(global, project *SkillsConfig) {
 		eff.RequireHTTPS = true
 	}
 	project.Import = &eff
+}
+
+// clampProjectSkillsLimits lowers the project's skills.max_auto_load and
+// skills.max_lazy_slots to the effective global value (the compiled default
+// where the operator set nothing): a repo can load fewer skills, never more.
+func clampProjectSkillsLimits(global, project *SkillsConfig) {
+	if project == nil {
+		return
+	}
+	def := skills.DefaultSkillsConfig()
+	clamp := func(name string, g, p *int, dflt int) *int {
+		if p == nil {
+			return nil
+		}
+		ceiling := dflt
+		if g != nil {
+			ceiling = *g
+		}
+		if *p > ceiling {
+			fmt.Fprintf(os.Stderr, "odek: WARNING: clamping skills.%s=%d from project config (%s) to %d — a project may only lower it\n", name, *p, ProjectConfigPath(), ceiling)
+			return &ceiling
+		}
+		return p
+	}
+	var gAuto, gLazy *int
+	if global != nil {
+		gAuto, gLazy = global.MaxAutoLoad, global.MaxLazySlots
+	}
+	project.MaxAutoLoad = clamp("max_auto_load", gAuto, project.MaxAutoLoad, def.MaxAutoLoad)
+	project.MaxLazySlots = clamp("max_lazy_slots", gLazy, project.MaxLazySlots, def.MaxLazySlots)
 }
 
 // clampProjectBackground enforces the background-section merge rule, the same
