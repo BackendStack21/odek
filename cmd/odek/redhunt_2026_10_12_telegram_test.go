@@ -423,9 +423,6 @@ func TestRED_TelegramScheduleViewIgnoresDefaultTimezone(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("ODEK_SCHEDULES_TIMEZONE", "Asia/Tokyo")
-	oldLocal := time.Local
-	time.Local = time.UTC
-	defer func() { time.Local = oldLocal }()
 
 	st, err := schedule.NewStoreAt(filepath.Join(home, ".odek"))
 	if err != nil {
