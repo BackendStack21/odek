@@ -93,14 +93,29 @@ func sanitizeIdentity(identity string) string {
 		identity = strings.ReplaceAll(identity, retired, "")
 	}
 	identity = strings.ReplaceAll(identity, "untrusted_content", "untrusted·content")
-	return strings.TrimSpace(stripPillarImitations(identity))
+	return closeOpenFence(strings.TrimSpace(stripPillarImitations(identity)))
+}
+
+// closeOpenFence terminates a code fence the text leaves open, so whatever is
+// appended after it (the authoritative pillar) is never inside a code block.
+func closeOpenFence(s string) string {
+	open := false
+	for _, line := range strings.Split(s, "\n") {
+		if isFenceLine(foldHeadingText(unquoteLine(line))) {
+			open = !open
+		}
+	}
+	if open {
+		return s + "\n```"
+	}
+	return s
 }
 
 // appendSecurityPillar removes exact pillar copies and appends the one
 // authoritative pillar last. It does not rewrite anything else, so it is
 // safe on a system message that already carries wrapped adjuncts.
 func appendSecurityPillar(system string) string {
-	system = strings.TrimSpace(strings.ReplaceAll(system, SecurityPillar, ""))
+	system = closeOpenFence(strings.TrimSpace(strings.ReplaceAll(system, SecurityPillar, "")))
 	if system == "" {
 		return SecurityPillar
 	}
@@ -122,12 +137,27 @@ func stripPillarImitations(identity string) string {
 	lines := strings.Split(identity, "\n")
 	out := make([]string, 0, len(lines))
 	inFence := false
+	// A fence opener that is never closed must not make the rest of the
+	// identity opaque, or an imitation hides after it.
+	unclosed := -1
+	for i, open := 0, -1; i < len(lines); i++ {
+		if isFenceLine(foldHeadingText(unquoteLine(lines[i]))) {
+			if open < 0 {
+				open = i
+			} else {
+				open = -1
+			}
+		}
+		if i == len(lines)-1 {
+			unclosed = open
+		}
+	}
 	stripping := false
 	consumed := false // the imitated block has consumed content
 	sawBlank := false
 	for i := 0; i < len(lines); i++ {
 		line := lines[i]
-		if isFenceLine(foldHeadingText(line)) {
+		if i != unclosed && isFenceLine(foldHeadingText(unquoteLine(line))) {
 			inFence = !inFence
 			stripping = false
 			out = append(out, line)
@@ -184,6 +214,11 @@ func isRuleBlockLine(line string) bool {
 	if line != "" && (line[0] == ' ' || line[0] == '\t') {
 		return true
 	}
+	if q := unquoteLine(line); q != line {
+		if strings.TrimSpace(q) != "" {
+			return true // a quoted line is part of the quoted block
+		}
+	}
 	t := strings.TrimSpace(foldHeadingText(line))
 	for _, bullet := range []string{"·", "•", "- ", "* ", "+ "} {
 		if strings.HasPrefix(t, bullet) {
@@ -200,6 +235,19 @@ func isRuleBlockLine(line string) bool {
 	return strings.HasPrefix(t, "**") && (strings.HasSuffix(t, "**") || strings.HasSuffix(t, "**:") || strings.HasSuffix(t, ":**"))
 }
 
+// unquoteLine strips Markdown blockquote markers (nested "> " runs, with
+// optional indentation) from the start of a line.
+func unquoteLine(line string) string {
+	t := strings.TrimLeft(line, " \t")
+	if !strings.HasPrefix(t, ">") {
+		return line
+	}
+	for strings.HasPrefix(t, ">") {
+		t = strings.TrimLeft(t[1:], " \t")
+	}
+	return t
+}
+
 // isFenceLine reports a code-fence delimiter line.
 func isFenceLine(folded string) bool {
 	t := strings.TrimSpace(folded)
@@ -209,7 +257,14 @@ func isFenceLine(folded string) bool {
 // headingAt recognises a heading starting at lines[i] and returns its title
 // and how many lines it spans.
 func headingAt(lines []string, i int) (title string, consumed int, ok bool) {
-	t := strings.TrimSpace(foldHeadingText(lines[i]))
+	t := strings.TrimSpace(foldHeadingText(unquoteLine(lines[i])))
+	// A list-item prefix before a heading ("- ## Safety") is still a heading.
+	for _, bullet := range []string{"- ", "* ", "+ ", "· ", "• "} {
+		if rest := strings.TrimSpace(strings.TrimPrefix(t, bullet)); rest != t && (strings.HasPrefix(rest, "#") || strings.HasPrefix(rest, "**") || strings.HasPrefix(rest, "__")) {
+			t = rest
+			break
+		}
+	}
 	if t == "" {
 		return "", 0, false
 	}
@@ -233,7 +288,7 @@ func headingAt(lines []string, i int) (title string, consumed int, ok bool) {
 	}
 	// Setext: a title line over a line of only '=' or '-'.
 	if i+1 < len(lines) && !isRuleBlockLine(lines[i]) {
-		u := strings.TrimSpace(foldHeadingText(lines[i+1]))
+		u := strings.TrimSpace(foldHeadingText(unquoteLine(lines[i+1])))
 		if len(u) >= 2 && (strings.Trim(u, "=") == "" || (len(u) >= 3 && strings.Trim(u, "-") == "")) {
 			return t, 2, true
 		}
