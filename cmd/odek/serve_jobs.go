@@ -186,10 +186,12 @@ func authenticateJobsRequest(store *session.Store, r *http.Request) (*session.Se
 	}
 	sess, err := store.Load(sessionID)
 	if err != nil || sess == nil {
-		return nil, http.StatusNotFound, "session not found"
+		code, msg := limitedLookupReject(r, sessionScopedProxies, http.StatusNotFound, "session not found")
+		return nil, code, msg
 	}
 	if !validateSessionTokenStrict(store, sess, sessionTokenFromRequest(r)) {
-		return nil, http.StatusUnauthorized, "invalid session token"
+		code, msg := limitedLookupReject(r, sessionScopedProxies, http.StatusUnauthorized, "invalid session token")
+		return nil, code, msg
 	}
 	return sess, 0, ""
 }
