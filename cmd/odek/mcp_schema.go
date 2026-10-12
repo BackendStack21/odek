@@ -59,8 +59,14 @@ const (
 	maxMCPSchemaPatternRunLen  = 16
 	maxMCPSchemaPatternWords   = 3
 	maxMCPSchemaPatternWordLen = 4
-	// maxMCPSchemaPatternSpaces bounds the spaces in a kept pattern.
-	maxMCPSchemaPatternSpaces = 2
+	// maxMCPSchemaPatternLongRuns bounds the runs of maxMCPSchemaPatternLongLen
+	// or more consecutive letters in a kept pattern; a literal (unescaped)
+	// space never appears in one.
+	maxMCPSchemaPatternLongRuns = 1
+	maxMCPSchemaPatternLongLen  = 5
+	// maxMCPEnumWords bounds the words (three or more letters) in a kept
+	// enum/const/default string: a token, not a sentence.
+	maxMCPEnumWords = 3
 	// maxMCPPatternKeyRunes bounds a kept patternProperties regex key.
 	maxMCPPatternKeyRunes = 64
 	// maxMCPDocLabelRunes bounds the keyword label of a lifted doc entry.
@@ -433,7 +439,7 @@ func mcpBoundedScalars(list []any) bool {
 		case nil, bool:
 		case string:
 			if utf8.RuneCountInString(x) > maxMCPEnumStringRunes || strings.ContainsAny(x, "\r\n") ||
-				strings.Count(x, " ") > maxMCPEnumStringSpaces {
+				strings.Count(x, " ") > maxMCPEnumStringSpaces || mcpLetterRuns(x, 3) > maxMCPEnumWords {
 				return false
 			}
 		default:
@@ -443,6 +449,26 @@ func mcpBoundedScalars(list []any) bool {
 		}
 	}
 	return true
+}
+
+// mcpLetterRuns counts the maximal runs of at least minLen consecutive
+// letters in s.
+func mcpLetterRuns(s string, minLen int) int {
+	n, run := 0, 0
+	for _, r := range s {
+		if unicode.IsLetter(r) {
+			run++
+			continue
+		}
+		if run >= minLen {
+			n++
+		}
+		run = 0
+	}
+	if run >= minLen {
+		n++
+	}
+	return n
 }
 
 func isJSONNumber(v any) bool {
@@ -544,16 +570,12 @@ func isShortMCPPattern(s string) bool {
 	if utf8.RuneCountInString(s) > maxMCPSchemaPatternRunes {
 		return false
 	}
-	spaces := 0
 	for _, r := range s {
-		switch {
-		case r == ' ':
-			spaces++
-		case unicode.IsControl(r) || unicode.IsSpace(r):
+		if unicode.IsControl(r) || unicode.IsSpace(r) {
 			return false
 		}
 	}
-	if spaces > maxMCPSchemaPatternSpaces {
+	if mcpLetterRuns(s, maxMCPSchemaPatternLongLen) > maxMCPSchemaPatternLongRuns {
 		return false
 	}
 	words, runLen, letters, wordy := 0, 0, 0, false

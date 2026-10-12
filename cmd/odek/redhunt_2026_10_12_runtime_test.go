@@ -44,7 +44,7 @@ func TestRED_RuntimeMCPSchemaPatternProseVariants(t *testing.T) {
 		`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`,
 		`^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(-[0-9A-Za-z.-]+)?$`,
 		`^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}:\d{2}Z)?$`,
-		`^(production|staging)$`,
+		`^(GET|POST)$`,
 	}
 	for _, p := range lifted {
 		out, _ := mcpModelSchema(map[string]any{"type": "object", "properties": map[string]any{"q": map[string]any{"type": "string", "pattern": p}}})
