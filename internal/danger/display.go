@@ -147,7 +147,8 @@ func isZeroWidthMark(r rune) bool {
 	case r >= 0xFE00 && r <= 0xFE0F,
 		r >= 0xE0100 && r <= 0xE01EF,
 		r >= 0x180B && r <= 0x180D,
-		r == 0x17B4 || r == 0x17B5:
+		r == 0x17B4 || r == 0x17B5,
+		r == 0x180F, r == 0x2800, r == 0xFFFC:
 		return true
 	}
 	return false
