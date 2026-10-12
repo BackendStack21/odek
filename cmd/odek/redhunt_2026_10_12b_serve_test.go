@@ -262,3 +262,35 @@ func TestRED_PromptLookupRejectionsShareTheLookupBudget(t *testing.T) {
 		t.Fatalf("context without a client address must not be limited, got %q", got)
 	}
 }
+
+// Ingests held before a new session exists are bounded by bytes; the excess
+// is dropped and reported in a marker ingest.
+func TestRED_ServeAuditBinderPendingIsByteBounded(t *testing.T) {
+	store := newTestSessionStore(t)
+	sess, err := store.Create(nil, "m", "t")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := &serveAuditBinder{store: session.NewAuditStore(store.Dir()).RequireSessionFile()}
+	chunk := strings.Repeat("a", 1<<20)
+	for i := 0; i < 8; i++ {
+		b.ingest("resource:big", chunk+string(rune('a'+i)))
+	}
+	if b.pendingB > serveAuditPendingMaxBytes {
+		t.Fatalf("pending holds %d bytes, cap %d", b.pendingB, serveAuditPendingMaxBytes)
+	}
+	b.bind(sess.ID, 1)
+	log, err := session.NewAuditStore(store.Dir()).Load(sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	marker := false
+	for _, in := range log.Ingests {
+		if strings.HasPrefix(in.Source, "audit:dropped_ingests:") {
+			marker = true
+		}
+	}
+	if !marker {
+		t.Fatalf("no drop marker among %d ingests", len(log.Ingests))
+	}
+}

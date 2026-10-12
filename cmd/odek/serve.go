@@ -2289,7 +2289,7 @@ func handlePrompt(
 	// Run agent. Audit recorder wired around the loop so every
 	// wrapUntrusted call (including @-refs and attachments below) is logged
 	// to this session's audit log under <sessions>/audit/.
-	auditStore := session.NewAuditStore(store.Dir())
+	auditStore := session.NewAuditStore(store.Dir()).RequireSessionFile()
 	var auditSessID string
 	var auditTurn int
 	if sess != nil {
@@ -2303,7 +2303,7 @@ func handlePrompt(
 	// @-references and attachments were wrapped. Ingests seen before then are
 	// held and flushed once the id is bound, so the first turn is audited too.
 	// Writes for a session deleted mid-turn are dropped.
-	audit := &serveAuditBinder{store: auditStore, sessions: store, id: auditSessID, turn: auditTurn}
+	audit := &serveAuditBinder{store: auditStore, id: auditSessID, turn: auditTurn}
 	// Scope the ingest recorder to this prompt's context so concurrent
 	// sessions cannot overwrite each other's audit attribution.
 	ctx = loop.WithIngestRecorder(ctx, audit.ingest)
@@ -2615,7 +2615,7 @@ func handlePrompt(
 		sess.InputTokens += int64(contextTokens)
 		sess.OutputTokens += int64(outputTokens)
 	}
-	if auditSessID != "" && audit.sessionExists(auditSessID) {
+	if auditSessID != "" {
 		recordTurnAudit(auditStore, auditSessID, auditTurn, originalPrompt, session.TurnMessages(allMessages, turnID))
 	}
 	streamedReasoning, streamedContent := 0, 0
@@ -4224,41 +4224,45 @@ func isLoopbackAddr(a net.Addr) bool {
 // records are dropped for sessions that no longer exist.
 type serveAuditBinder struct {
 	store    *session.AuditStore
-	sessions *session.Store
 	mu       sync.Mutex
 	id       string
 	turn     int
 	pending  [][2]string
+	pendingB int // bytes held in pending
+	dropped  int // ingests dropped because pending was full
 }
 
-func (b *serveAuditBinder) sessionExists(id string) bool {
-	_, err := os.Stat(b.sessions.Path(id))
-	return err == nil
-}
+// serveAuditPendingMaxBytes bounds the ingests held before a new session's id
+// exists; the rest are dropped and counted in a marker ingest.
+const serveAuditPendingMaxBytes = 4 << 20
 
 func (b *serveAuditBinder) ingest(source, content string) {
 	b.mu.Lock()
 	id, turn := b.id, b.turn
 	if id == "" {
-		if len(b.pending) < 1024 {
+		if len(b.pending) < 1024 && b.pendingB+len(source)+len(content) <= serveAuditPendingMaxBytes {
 			b.pending = append(b.pending, [2]string{source, content})
+			b.pendingB += len(source) + len(content)
+		} else {
+			b.dropped++
 		}
 		b.mu.Unlock()
 		return
 	}
 	b.mu.Unlock()
-	if b.sessionExists(id) {
-		_ = b.store.RecordIngest(id, turn, source, content)
-	}
+	_ = b.store.RecordIngest(id, turn, source, content)
 }
 
 func (b *serveAuditBinder) bind(id string, turn int) {
 	b.mu.Lock()
 	b.id, b.turn = id, turn
-	pending := b.pending
-	b.pending = nil
+	pending, dropped := b.pending, b.dropped
+	b.pending, b.pendingB, b.dropped = nil, 0, 0
 	b.mu.Unlock()
 	for _, p := range pending {
 		_ = b.store.RecordIngest(id, turn, p[0], p[1])
+	}
+	if dropped > 0 {
+		_ = b.store.RecordIngest(id, turn, fmt.Sprintf("audit:dropped_ingests:%d", dropped), "")
 	}
 }
