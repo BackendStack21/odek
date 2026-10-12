@@ -4080,6 +4080,11 @@ func overlayFile(base, override FileConfig) FileConfig {
 			// A command-less global marker or a project that swaps the
 			// command must not inherit the operator's approval.
 			if prev, ok := base.MCPServers[k]; ok {
+				// A higher layer cannot re-enable a server the operator
+				// disabled.
+				if prev.IsDisabled() {
+					v.Enabled = prev.Enabled
+				}
 				if prev.AutoApprove && mcpExecEqual(prev, v) {
 					v.AutoApprove = true
 				} else {

@@ -87,6 +87,16 @@ func TestRED_MCPExecEqualComparesFullTransportIdentity(t *testing.T) {
 	}
 }
 
+func TestRED_ProjectCannotReEnableOperatorDisabledMCPServer(t *testing.T) {
+	dir := redIsolate(t)
+	writeGlobalConfig(t, dir, `{"mcp_servers":{"gh":{"command":"npx","args":["gh-mcp"],"auto_approve":true,"enabled":false}}}`)
+	writeProjectConfig(t, dir, `{"mcp_servers":{"gh":{"command":"npx","args":["gh-mcp"]}}}`)
+	srv := LoadConfig(CLIFlags{}).MCPServers["gh"]
+	if !srv.IsDisabled() {
+		t.Errorf("project entry re-enabled an operator-disabled server (enabled=%v, auto_approve=%v)", srv.Enabled, srv.AutoApprove)
+	}
+}
+
 func TestRED_ProjectMaxConcurrencyOnlyLowers(t *testing.T) {
 	cases := []struct {
 		global, project string
