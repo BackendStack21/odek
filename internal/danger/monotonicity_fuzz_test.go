@@ -118,6 +118,9 @@ func monoHarvestSeeds() []string {
 // separator must keep the whole line deny-by-default.
 func FuzzSeparatorThenWipe(f *testing.F) {
 	monoSeedOnce(f)
+	// A non-root home keeps the path expectations independent of the runner
+	// (on macOS /home is an automount point, so a real directory is used).
+	f.Setenv("HOME", f.TempDir())
 	f.Fuzz(func(t *testing.T, prefix string) {
 		if len(prefix) > monoMaxPrefix || monoSwallows(prefix) {
 			t.Skip()
@@ -139,6 +142,9 @@ func FuzzSeparatorThenWipe(f *testing.F) {
 // execution, whatever the prefix does to quoting or substitution state.
 func FuzzPipeIntoShell(f *testing.F) {
 	monoSeedOnce(f)
+	// A non-root home keeps the path expectations independent of the runner
+	// (on macOS /home is an automount point, so a real directory is used).
+	f.Setenv("HOME", f.TempDir())
 	f.Fuzz(func(t *testing.T, prefix string) {
 		if len(prefix) > monoMaxPrefix || monoSwallows(prefix) {
 			t.Skip()
@@ -250,6 +256,9 @@ func FuzzHarmlessPrefixKeepsRank(f *testing.F) {
 			f.Add(uint8(i), uint8((p+i)%len(monoHarmlessWrappers)), "x")
 		}
 	}
+	// A non-root home keeps the path expectations independent of the runner
+	// (on macOS /home is an automount point, so a real directory is used).
+	f.Setenv("HOME", f.TempDir())
 	f.Fuzz(func(t *testing.T, ci, pi uint8, filler string) {
 		c := monoDangerous[int(ci)%len(monoDangerous)]
 		w := monoFiller(filler)
@@ -300,6 +309,9 @@ func FuzzAnalyzeBounded(f *testing.F) {
 	for _, s := range []string{"`", "ls|", "$(", "{a,", "$((", "<(", "\\\n", "a ", ">a ", "'", "\"$(", "$IFS", "$'\\x41'", "A=$A$A;", "cat <<A\n", "eval ", "sh -c '", "&&", ";"} {
 		f.Add(s)
 	}
+	// A non-root home keeps the path expectations independent of the runner
+	// (on macOS /home is an automount point, so a real directory is used).
+	f.Setenv("HOME", f.TempDir())
 	f.Fuzz(func(t *testing.T, s string) {
 		if s == "" || len(s) > 4096 {
 			t.Skip()

@@ -453,6 +453,13 @@ func denyPayloads(inner []string, dc *denyCtx, depth int) bool {
 			if tok != "-" && tok != "" && denyScan(tok, dc, depth+1) {
 				return true
 			}
+			// An escaped space (`trap git\ push EXIT`) reaches this walk as
+			// separate words; the shell reads one action, so the operands
+			// are scanned joined, as the operands of a script-running
+			// builtin are.
+			if i+1 < len(inner) && denyScan(strings.Join(inner[i:], " "), dc, depth+1) {
+				return true
+			}
 			break
 		}
 	case name == "alias":
