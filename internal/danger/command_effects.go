@@ -778,7 +778,7 @@ func executionFileTargets(name string, tokens []string) []string {
 	case "awk", "gawk", "mawk", "nawk":
 		// -f/--file name the awk program; -i/--include and -l/--load pull
 		// in more awk source or extension libraries.
-		options = []string{"-l", "--load", "-f", "--file", "-i", "--include"}
+		options = []string{"-l", "--load", "-f", "--file", "-i", "--include", "-E", "--exec"}
 	case "sed":
 		options = []string{"-f", "--file"}
 	case "emacs":

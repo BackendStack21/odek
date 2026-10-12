@@ -441,6 +441,25 @@ func analyzeWithStateWork(cmd string, depth int, inherited *shellAnalysisState, 
 			for _, body := range arithmeticOperandSubstitutions(name, inner[1:]) {
 				result.merge(analyzeWithState(body, depth+1, &payloadState))
 			}
+			envTokens := stage[:len(stage)-len(inner)]
+			switch name {
+			case "export", "declare", "typeset", "readonly", "local":
+				envTokens = append(append([]string(nil), envTokens...), inner[1:]...)
+			}
+			for _, body := range envAssignmentCodeBodies(envTokens) {
+				result.merge(analyzeWithState(body, depth+1, &payloadState))
+			}
+			if name == "gpg" || name == "gpg2" {
+				home, set := state.vars["GNUPGHOME"]
+				for _, tok := range stage[:len(stage)-len(inner)] {
+					if v, ok := strings.CutPrefix(tok, "GNUPGHOME="); ok {
+						home, set = v, true
+					}
+				}
+				if set && !gpgDefaultHome(home) {
+					result.add(CodeExecution)
+				}
+			}
 			for _, assigned := range state.rebind(name, inner, len(stages) == 1 && !ambiguous) {
 				if afterAnd {
 					chain.vars[assigned] = true
