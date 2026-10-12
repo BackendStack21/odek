@@ -566,7 +566,7 @@ If you find a format that leaks, add a regex to `internal/redact/redact.go` and 
 
 ### Audit log
 
-**@-file references refuse protected paths.** `@path` references expand into the prompt with no approval step, so the file resolver refuses any target the danger classifier rates `system_write` or higher: odek's trust anchors under `~/.odek` (secrets.env, config.json, sessions, memory, ...), credential files and directories (`.env`, SSH keys, cloud credentials) and system paths. This holds when the workspace is `$HOME`.
+**@-file references refuse sensitive paths.** `@path` references expand into the prompt with no approval step, so the file resolver (load and autocomplete search) refuses symlink-resolved targets that are: odek trust anchors under `~/.odek` (secrets.env, config.json, sessions, ...); home credential directories (`~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.kube`, `~/.config/gcloud`, `~/.docker/config.json`) and shell rc files; credential-shaped file names anywhere (`.env` and `.env.*` except example/sample/template, `*.pem`, `*.key`, `id_rsa`/`id_ed25519`, `.npmrc`, `.pypirc`, `.netrc`, `credentials.json`, ...); and system secret files (`/etc/shadow`, `/etc/sudoers`). Ordinary files elsewhere, including projects under `/opt`, `/srv` or `/tmp`, remain referenceable.
 
 Every time the agent ingests externally-sourced content — any `wrapUntrusted` call in a tool result, and any wrapper entering the **user** message (@-references, `--ctx` files, Web-UI attachments) — odek records:
 

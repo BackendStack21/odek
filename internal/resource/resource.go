@@ -362,9 +362,10 @@ func validateSearchQuery(query string) error {
 }
 
 // protectedTarget reports whether path is one @-references must neither read
-// nor advertise: anything the danger classifier rates system_write or higher.
+// nor advertise: odek trust anchors, home credential directories, shell rc
+// files, credential-shaped file names and system secret files.
 func protectedTarget(path string) bool {
-	return danger.Rank(danger.ClassifyPath(path)) >= danger.Rank(danger.SystemWrite)
+	return danger.IsSensitiveReadPath(path)
 }
 
 func (f *FileResolver) Load(ctx context.Context, id string) (string, error) {
