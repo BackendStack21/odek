@@ -2480,6 +2480,9 @@ func setupSandbox(tools []odek.Tool, cfg sandboxConfig) (containerName string, c
 func applySandboxToolBindings(tools []odek.Tool, containerName string) {
 	for _, t := range tools {
 		switch tool := t.(type) {
+		case *delegateTasksTool:
+			// Children run as host processes; they must sandbox themselves.
+			tool.sandboxed = true
 		case *shellTool:
 			tool.containerName = containerName
 		case *writeFileTool:
