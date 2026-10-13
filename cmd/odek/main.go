@@ -3113,24 +3113,31 @@ func skillCmd(args []string) error {
 		for _, a := range subArgs[1:] {
 			if a == "--force" || a == "-f" {
 				force = true
+				continue
 			}
+			return fmt.Errorf("usage: odek skill promote <name> [--force] (unexpected argument %q)", danger.SanitizeInline(a))
 		}
 		return promoteSkill(userDir, subArgs[0], force)
 
 	case "import":
-		if len(subArgs) == 0 {
-			return fmt.Errorf("usage: odek skill import <uri> [--basic] [--yes]")
-		}
-		uri := subArgs[0]
+		// Flags may come before or after the URI; anything else is a typo.
+		var uri string
 		basicOnly := false
 		autoYes := false
-		for _, a := range subArgs[1:] {
-			switch a {
-			case "--basic":
+		for _, a := range subArgs {
+			switch {
+			case a == "--basic":
 				basicOnly = true
-			case "--yes":
+			case a == "--yes":
 				autoYes = true
+			case uri == "" && !strings.HasPrefix(a, "-"):
+				uri = a
+			default:
+				return fmt.Errorf("usage: odek skill import <uri> [--basic] [--yes] (unexpected argument %q)", danger.SanitizeInline(a))
 			}
+		}
+		if uri == "" {
+			return fmt.Errorf("usage: odek skill import <uri> [--basic] [--yes]")
 		}
 
 		// Load config once for both RequireHTTPS and LLM assessment
@@ -3814,9 +3821,17 @@ func deleteSession(store *session.Store, args []string) error {
 		return fmt.Errorf("usage: odek session delete <id>")
 	}
 	// Delete is idempotent in the store; the operator asked for a specific
-	// session, so a missing one is reported instead of "Deleted".
+	// session, so a missing one is reported instead of "Deleted" — unless
+	// an index entry or audit log is left behind, which the delete purges.
 	if !store.Exists(args[0]) {
-		return fmt.Errorf("session %q not found", args[0])
+		if !store.HasRemnants(args[0]) {
+			return fmt.Errorf("session %q not found", args[0])
+		}
+		if err := store.Delete(args[0]); err != nil {
+			return fmt.Errorf("delete session: %w", err)
+		}
+		fmt.Printf("Removed leftovers of session %s (its file was already gone)\n", args[0])
+		return nil
 	}
 	if err := store.Delete(args[0]); err != nil {
 		return fmt.Errorf("delete session: %w", err)

@@ -15,4 +15,7 @@ func TestRED_AuditCmd_UnknownFlagRejected(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "unknown flag") {
 		t.Fatalf("audit --bogus: %v; want an unknown-flag error", err)
 	}
+	if err := auditCmd([]string{"--list", "extra"}); err == nil || !strings.Contains(err.Error(), "usage") {
+		t.Fatalf("audit --list extra: %v; want a usage error", err)
+	}
 }

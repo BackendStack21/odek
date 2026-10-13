@@ -244,6 +244,9 @@ func auditCmd(args []string) error {
 		printAuditUsage()
 		return nil
 	case "--list":
+		if len(args) != 1 {
+			return fmt.Errorf("audit: usage: odek audit --list")
+		}
 		return auditList(store, auditStore)
 	default:
 		if strings.HasPrefix(args[0], "-") {

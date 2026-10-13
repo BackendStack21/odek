@@ -8,6 +8,7 @@ import (
 // From the 2026-10-13 CLI contract audit: every command was run against
 // its documented contract.
 
+// `odek logs --help` prints the usage and exits 0; an unknown flag is an
 // error in the odek style, not the flag package's "Usage of logs:" dump.
 func TestRED_LogsCmd_HelpAndUnknownFlag(t *testing.T) {
 	setupTestHome(t)

@@ -8,6 +8,7 @@ import (
 // From the 2026-10-13 CLI contract audit: every command was run against
 // its documented contract.
 
+// `odek help`, `--help` and `-h` print the usage and exit 0; they were
 // "unknown command", exit 1.
 func TestRED_Dispatch_HelpAliasesExitZero(t *testing.T) {
 	for _, arg := range []string{"help", "--help", "-h"} {

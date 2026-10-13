@@ -42,8 +42,14 @@ func scheduleCmd(args []string) error {
 	// daemon and run resolve their own config; the rest only touch the store.
 	switch args[0] {
 	case "daemon":
+		if len(args) != 1 {
+			return fmt.Errorf("usage: odek schedule daemon (takes no arguments, got %q)", danger.SanitizeInline(strings.Join(args[1:], " ")))
+		}
 		return scheduleDaemon(args[1:])
 	case "run":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: odek schedule run <id>")
+		}
 		return scheduleRunNow(args[1:])
 	}
 
@@ -76,7 +82,8 @@ func scheduleCmd(args []string) error {
 		}
 		return scheduleSetEnabled(st, args[1:], false)
 	case "next":
-		if len(args) != 2 {
+		// A job id, a quoted cron expression, or an unquoted five-field one.
+		if len(args) != 2 && len(args) != 6 {
 			return fmt.Errorf("usage: odek schedule next <id|\"cron-expr\">")
 		}
 		return scheduleNext(st, args[1:])
@@ -264,6 +271,7 @@ func scheduleNext(st *schedule.Store, args []string) error {
 		s = sc
 		fmt.Printf("Job %s (%s): %s\n", job.ID, job.Name, job.Cron)
 	} else {
+		// A quoted expression, or its five fields as separate arguments.
 		expr := strings.Join(args, " ")
 		sc, err := schedule.Parse(expr)
 		if err != nil {

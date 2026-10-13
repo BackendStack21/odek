@@ -17,6 +17,7 @@ import (
 	"unicode"
 
 	"github.com/BackendStack21/odek/internal/config"
+	"github.com/BackendStack21/odek/internal/danger"
 	"github.com/BackendStack21/odek/internal/logquery"
 )
 
@@ -46,7 +47,7 @@ func logsCmd(args []string) error {
 		if name, ok := strings.CutPrefix(err.Error(), "flag provided but not defined: -"); ok {
 			return fmt.Errorf("unknown flag %q for logs (see: odek logs --help)", "--"+name)
 		}
-		return fmt.Errorf("%v (see: odek logs --help)", err)
+		return fmt.Errorf("%s (see: odek logs --help)", danger.SanitizeInline(err.Error()))
 	}
 	if fs.NArg() != 0 {
 		return fmt.Errorf("unexpected argument %q", fs.Arg(0))

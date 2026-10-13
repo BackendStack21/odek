@@ -1598,14 +1598,31 @@ type NotFoundError struct {
 func (e *NotFoundError) Error() string { return fmt.Sprintf("session %q not found", e.ID) }
 func (e *NotFoundError) Unwrap() error { return e.cause }
 
-// Exists reports whether a session file exists for id. An invalid id is
-// reported as absent.
+// Exists reports whether a session file exists for id (following links,
+// as List does). An invalid id is reported as absent.
 func (s *Store) Exists(id string) bool {
 	if ValidateSessionID(id) != nil {
 		return false
 	}
-	info, err := os.Lstat(s.path(id))
+	info, err := os.Stat(s.path(id))
 	return err == nil && info.Mode().IsRegular()
+}
+
+// HasRemnants reports whether anything of a session other than its file
+// is left behind — an index entry or an audit log — so a deliberate delete
+// can purge the leftovers of a session whose file is already gone.
+func (s *Store) HasRemnants(id string) bool {
+	if ValidateSessionID(id) != nil {
+		return false
+	}
+	s.mu.Lock()
+	_, inIndex := s.loadIndex()[id]
+	s.mu.Unlock()
+	if inIndex {
+		return true
+	}
+	_, err := os.Stat(filepath.Join(s.dir, "audit", id+".json"))
+	return err == nil
 }
 
 // Delete removes a session file from disk and removes its entry from
