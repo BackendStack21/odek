@@ -22,7 +22,8 @@ import (
 
 func logsCmd(args []string) error {
 	fs := flag.NewFlagSet("logs", flag.ContinueOnError)
-	fs.SetOutput(os.Stderr)
+	fs.SetOutput(io.Discard) // errors are reported in the odek style below
+	fs.Usage = func() {}
 	level := fs.String("level", "", "minimum level: debug, info, warn, error")
 	since := fs.String("since", "", "lower time bound (duration ago or RFC3339)")
 	until := fs.String("until", "", "upper time bound (RFC3339)")
@@ -38,7 +39,14 @@ func logsCmd(args []string) error {
 	limit := fs.Int("limit", 100, "maximum initial records (0 means unlimited)")
 	path := fs.String("file", "", "runtime log path override")
 	if err := fs.Parse(args); err != nil {
-		return err
+		if errors.Is(err, flag.ErrHelp) {
+			printLogsUsage(fs)
+			return nil
+		}
+		if name, ok := strings.CutPrefix(err.Error(), "flag provided but not defined: -"); ok {
+			return fmt.Errorf("unknown flag %q for logs (see: odek logs --help)", "--"+name)
+		}
+		return fmt.Errorf("%v (see: odek logs --help)", err)
 	}
 	if fs.NArg() != 0 {
 		return fmt.Errorf("unexpected argument %q", fs.Arg(0))
@@ -438,4 +446,16 @@ func statCursor(p string) (fileCursor, bool) {
 }
 func openLogRead(p string) (*os.File, error) {
 	return os.OpenFile(p, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+}
+
+// printLogsUsage prints the logs usage and flag defaults to stdout.
+func printLogsUsage(fs *flag.FlagSet) {
+	fmt.Println(`Usage: odek logs [filters]
+
+Query, follow, or display the local operational log (see docs/LOGGING.md).
+
+Filters:`)
+	fs.SetOutput(os.Stdout)
+	fs.PrintDefaults()
+	fs.SetOutput(io.Discard)
 }
