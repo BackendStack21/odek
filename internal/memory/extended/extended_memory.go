@@ -823,9 +823,15 @@ func (em *ExtendedMemory) OnUserMessage(ctx AtomContext, msg string) {
 	em.lastUser = msg
 	if ctx.SessionID != "" {
 		em.session = ctx.SessionID
+	} else {
+		// Stamp the shared session context so every stored atom can be
+		// traced to the session it came from.
+		ctx.SessionID = em.session
 	}
 	if ctx.Project != "" {
 		em.project = ctx.Project
+	} else {
+		ctx.Project = em.project
 	}
 	em.userStateTurns++
 	triggerInference := em.userModel.Enabled() && (em.userStateTurns%em.cfg.UserStateTurnInterval == 0 || em.userModel.FocusChanged())

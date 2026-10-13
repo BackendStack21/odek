@@ -20,7 +20,7 @@ func maintenanceEM(t *testing.T) (*ExtendedMemory, string) {
 	return em, dir
 }
 
-func seedAtom(t *testing.T, em *ExtendedMemory, text, typ string, age time.Duration) string {
+func seedMaintAtom(t *testing.T, em *ExtendedMemory, text, typ string, age time.Duration) string {
 	t.Helper()
 	atom := MemoryAtom{Text: text, Type: typ, SourceClass: SourceUserSaid, CreatedAt: time.Now().UTC().Add(-age)}
 	if err := em.AddAtom(context.Background(), atom); err != nil {
@@ -44,11 +44,11 @@ func seedAtom(t *testing.T, em *ExtendedMemory, text, typ string, age time.Durat
 func TestRED_PruneRemovesExpiredEphemeralsAndOrphanChunks(t *testing.T) {
 	em, dir := maintenanceEM(t)
 	old := 40 * 24 * time.Hour
-	expiredGoal := seedAtom(t, em, "Ship the schedules migration by Friday", TypeGoal, old)
-	expiredQ := seedAtom(t, em, "Does the usage counter include sub-agent cost?", TypeQuestion, old)
-	freshGoal := seedAtom(t, em, "Finish the memory CLI fixes", TypeGoal, time.Hour)
-	durable := seedAtom(t, em, "The user prefers tabs over spaces", TypePreference, old)
-	pinnedGoal := seedAtom(t, em, "Keep odek under 15 MB", TypeGoal, old)
+	expiredGoal := seedMaintAtom(t, em, "Ship the schedules migration by Friday", TypeGoal, old)
+	expiredQ := seedMaintAtom(t, em, "Does the usage counter include sub-agent cost?", TypeQuestion, old)
+	freshGoal := seedMaintAtom(t, em, "Finish the memory CLI fixes", TypeGoal, time.Hour)
+	durable := seedMaintAtom(t, em, "The user prefers tabs over spaces", TypePreference, old)
+	pinnedGoal := seedMaintAtom(t, em, "Keep odek under 15 MB", TypeGoal, old)
 	if err := em.PinAtom(pinnedGoal); err != nil {
 		t.Fatal(err)
 	}
@@ -109,8 +109,8 @@ func TestRED_PruneRemovesExpiredEphemeralsAndOrphanChunks(t *testing.T) {
 // user_approved from sub-agent task briefs are recovered this way.
 func TestRED_TriageMovesMatchingLiveAtomsToQuarantine(t *testing.T) {
 	em, _ := maintenanceEM(t)
-	brief := seedAtom(t, em, "I plan to deliver a read-only adversarial review of commit 20da00f as a verdict line", TypeGoal, time.Hour)
-	keep := seedAtom(t, em, "The user wants the WebUI fixed first", TypePreference, time.Hour)
+	brief := seedMaintAtom(t, em, "I plan to deliver a read-only adversarial review of commit 20da00f as a verdict line", TypeGoal, time.Hour)
+	keep := seedMaintAtom(t, em, "The user wants the WebUI fixed first", TypePreference, time.Hour)
 
 	re := regexp.MustCompile(`(?i)adversarial|verdict line`)
 	matched, err := em.Triage(re, false, "")
@@ -154,8 +154,8 @@ func TestRED_TriageMovesMatchingLiveAtomsToQuarantine(t *testing.T) {
 // said "0 vectors (dirty)" because the index was never loaded.
 func TestRED_PersistedIndexStatsWithoutRebuild(t *testing.T) {
 	em, dir := maintenanceEM(t)
-	seedAtom(t, em, "The repo uses Go 1.27", TypeFact, time.Hour)
-	seedAtom(t, em, "CI runs golangci-lint", TypeConvention, time.Hour)
+	seedMaintAtom(t, em, "The repo uses Go 1.27", TypeFact, time.Hour)
+	seedMaintAtom(t, em, "CI runs golangci-lint", TypeConvention, time.Hour)
 	// Build and persist the index, then close this instance.
 	em.Compact()
 	em.Close()
@@ -169,8 +169,12 @@ func TestRED_PersistedIndexStatsWithoutRebuild(t *testing.T) {
 	if vectors != 2 || stale {
 		t.Fatalf("persisted index = %d vectors, stale=%v; want 2, false", vectors, stale)
 	}
-	// A corpus change makes the persisted index stale until compacted.
-	seedAtom(t, fresh, "Tests run with -count=1", TypeConvention, time.Hour)
+	// A corpus change behind this instance's back (another process writing
+	// the store) makes the persisted index stale until it is rebuilt.
+	if err := NewAtomStore(dir).Add(MemoryAtom{ID: "0123456789abcdef0123456789abcdef", Text: "Tests run with -count=1",
+		Type: TypeConvention, SourceClass: SourceUserSaid, CreatedAt: time.Now().UTC()}, 0); err != nil {
+		t.Fatal(err)
+	}
 	if _, stale, _ := fresh.PersistedIndex(); !stale {
 		t.Fatal("index should be stale after the corpus changed")
 	}
@@ -183,8 +187,7 @@ func TestRED_PersistedIndexStatsWithoutRebuild(t *testing.T) {
 func TestRED_AtomContextCarriesSessionID(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Enabled = boolPtr(true)
-	llm := &gateLLM{started: make(chan struct{}), release: make(chan struct{}), resp: extractJSONResponse("User likes Python")}
-	close(llm.release)
+	llm := newMockLLM(extractJSONResponse("User likes Python"))
 	em := New(t.TempDir(), llm, cfg)
 	defer em.Close()
 	em.SetSessionContext("20260101-abc", "/work/odek")
@@ -195,5 +198,76 @@ func TestRED_AtomContextCarriesSessionID(t *testing.T) {
 	}
 	if atoms[0].Context.SessionID != "20260101-abc" || atoms[0].Context.Project != "/work/odek" {
 		t.Fatalf("atom context = %+v; session/project not recorded", atoms[0].Context)
+	}
+}
+
+// Edge cases of the maintenance API: a disabled subsystem refuses, a nil
+// pattern is an error, pinned atoms are listed by triage but never moved, a
+// dry run counts expired quarantine entries, and a store without a persisted
+// index reports ok=false.
+func TestMaintenanceEdgeCases(t *testing.T) {
+	disabled := New(t.TempDir(), nil, DefaultConfig())
+	if _, err := disabled.Prune(time.Now(), true); err == nil {
+		t.Error("Prune on a disabled subsystem should error")
+	}
+	if _, err := disabled.Triage(regexp.MustCompile("x"), false, ""); err == nil {
+		t.Error("Triage on a disabled subsystem should error")
+	}
+	var nilEM *ExtendedMemory
+	if _, _, ok := nilEM.PersistedIndex(); ok {
+		t.Error("nil receiver reports a persisted index")
+	}
+
+	em, _ := maintenanceEM(t)
+	if _, err := em.Triage(nil, false, ""); err == nil {
+		t.Error("nil pattern should error")
+	}
+	if _, _, ok := em.PersistedIndex(); ok {
+		t.Error("fresh store reports a persisted index")
+	}
+	pinned := seedMaintAtom(t, em, "Keep the binary under 15 MB", TypeGoal, time.Hour)
+	if err := em.PinAtom(pinned); err != nil {
+		t.Fatal(err)
+	}
+	matched, err := em.Triage(regexp.MustCompile("binary"), true, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matched) != 1 {
+		t.Fatalf("pinned atom not listed: %+v", matched)
+	}
+	if atoms, _ := em.List(); len(atoms) != 1 {
+		t.Fatal("pinned atom was moved to quarantine")
+	}
+
+	// Expired quarantine entries are counted on a dry run and evicted on a
+	// real one.
+	em.quarantine.SetTTLDays(7)
+	em.cfg.QuarantineTTLDays = 7
+	old := MemoryAtom{ID: "fedcba9876543210fedcba9876543210", Text: "stale quarantined", Type: TypeFact, SourceClass: SourceWeb, CreatedAt: time.Now().UTC().Add(-30 * 24 * time.Hour)}
+	if err := em.quarantine.StoreWithReason(old, "tainted"); err != nil {
+		t.Fatal(err)
+	}
+	// Backdate the quarantine timestamp: StoreWithReason stamps now.
+	entries, _ := em.quarantine.loadAtomsLocked()
+	for i := range entries {
+		entries[i].QuarantinedAt = time.Now().UTC().Add(-30 * 24 * time.Hour)
+	}
+	if err := em.quarantine.saveLocked(entries); err != nil {
+		t.Fatal(err)
+	}
+	rep, err := em.Prune(time.Now().UTC(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.ExpiredQuarantine != 1 {
+		t.Fatalf("dry run counted %d expired quarantine entries, want 1", rep.ExpiredQuarantine)
+	}
+	rep, err = em.Prune(time.Now().UTC(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.ExpiredQuarantine != 1 {
+		t.Fatalf("prune evicted %d expired quarantine entries, want 1", rep.ExpiredQuarantine)
 	}
 }
