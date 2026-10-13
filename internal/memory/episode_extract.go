@@ -177,12 +177,13 @@ func looksLikeEpisode(reply string) bool {
 	return !reEpisodeAddressesUser.MatchString(firstSentence(unquoted))
 }
 
-// lastSentence returns the text after the last sentence end (". ", "! ",
-// "? " or a newline) that is followed by more text, or all of s.
+// lastSentence returns the text after the last sentence or clause end
+// (". ", "! ", "? ", "; " or a newline) that is followed by more text, or
+// all of s.
 func lastSentence(s string) string {
 	s = strings.TrimSpace(s)
 	start := 0
-	for _, term := range []string{". ", "! ", "? ", "\n"} {
+	for _, term := range []string{". ", "! ", "? ", "; ", "\n"} {
 		if i := strings.LastIndex(s, term); i >= 0 && i+len(term) > start {
 			start = i + len(term)
 		}
