@@ -178,7 +178,7 @@ Atoms are deduplicated in two tiers at persistence time:
 
 ### Observability
 
-`ExtendedMemory.Stats()` returns a `Stats` snapshot — surfaced as `odek memory extended stats` — for operators and monitoring: live/quarantined atom counts, quarantine entries grouped by reason prefix (`tainted`, `scan_rejected`), index vector count and dirty flag, on-disk store size, and recall error counters (`RecallTimeouts` for context-deadline-exceeded errors, `RecallFailures` for all other recall errors). The CLI prints a degradation warning when either counter is non-zero.
+`ExtendedMemory.Stats()` returns a `Stats` snapshot for operators and monitoring: live/quarantined atom counts, quarantine entries grouped by reason prefix (`tainted`, `scan_rejected`), in-process index vector count and dirty flag, on-disk store size, and recall error counters (`RecallTimeouts` for context-deadline-exceeded errors, `RecallFailures` for all other recall errors). `ExtendedMemory.PersistedIndex()` reports the index on disk (vector count, stale against the current corpus) without rebuilding it; `odek memory extended stats` prints that, since a CLI process never builds the in-memory index and its recall counters are always zero. Sub-agents never extract atoms from their incoming messages (`agent.Config.Subagent`): those are tasks written by the parent model, and per-turn atoms are stored as `user_approved`.
 
 ## Semantic Search
 
@@ -495,30 +495,38 @@ The existing `memory` tool is extended with new actions:
 Additional CLI commands:
 
 ```bash
-odek memory extended forget <atom-id>
-odek memory extended quarantine
-odek memory extended compact
 odek memory extended stats
-odek memory extended consolidate
+odek memory extended compact
+odek memory extended prune [--dry-run]
+odek memory extended triage [--quarantine] <regexp>
+odek memory extended quarantine
 odek memory extended promote <atom-id>
+odek memory extended forget <atom-id>
 odek memory extended pin <atom-id>
 odek memory extended pending
 odek memory extended confirm <pending-id>
 odek memory extended reject <pending-id>
+odek memory extended consolidate
+odek memory extended nudges
 ```
 
 | Command | Effect |
 |---|---|
-| `forget` | Removes an atom from the live store or quarantine. |
+| `stats` | Shows live/quarantined counts, the quarantine reason breakdown, the persisted vector index (count; current or stale against the atom corpus) and the store size. |
+| `compact` | Rebuilds the vector index from the live atoms, persists it and waits for the rebuild before returning. |
+| `prune` | Deletes TTL-expired ephemeral atoms (goal, intent, question, error, file — see `ephemeral_ttl_days`), sweeps chunk files with no atom behind them and evicts quarantine entries past `quarantine_ttl_days`. `--dry-run` reports without changing anything. Recall already hides expired atoms; prune reclaims their space and keeps them out of the stale-goal nudges. |
+| `triage` | Lists live atoms whose text matches a Go regexp. With `--quarantine` each match (pinned atoms excepted) moves to quarantine with the reason `operator triage: <regexp>`, where `promote` restores it as `user_approved` and `forget` deletes it. This is the recovery path for atoms stored with the wrong trust label — for example sub-agent task briefs recorded as the principal's words before extraction was disabled for sub-agents. |
 | `quarantine` | Lists tainted atoms awaiting promotion. |
-| `compact` | Triggers a background rebuild of the vector index to reclaim space. |
-| `stats` | Shows store/index sizes, quarantine reason breakdown, and recall degradation counters (timeouts/failures). |
-| `consolidate` | Merges near-duplicate live atoms via the LLM (requires a configured backend). |
 | `promote` | Moves a quarantined atom to the live store as `user_approved`. |
+| `forget` | Removes an atom from the live store or quarantine. |
 | `pin` | Pins a live atom so it is never evicted. |
 | `pending` | Lists pending user-model inferences. |
 | `confirm` | Applies a pending user-model inference to the authoritative model. |
 | `reject` | Removes a pending user-model inference without applying it. |
+| `consolidate` | Merges near-duplicate live atoms via the LLM (requires a configured backend). |
+| `nudges` | Previews up to two proactive nudges without consuming the daily cap (requires a configured backend). |
+
+Every subcommand rejects stray arguments; `odek memory extended help` prints the usage. The CLI opens the store with the operator's resolved `memory.extended` config (TTLs, embedding backend) so it judges atoms exactly as the agent's recall does, and — unlike an agent, which evicts expired quarantine entries when it opens the store — it changes nothing on open: only `prune` evicts.
 
 The `odek memory promote <session-id>` command that already exists promotes **episodes**, not atoms. Atom promotion and pinning are explicitly human-gated and not exposed as agent tool confirmations.
 

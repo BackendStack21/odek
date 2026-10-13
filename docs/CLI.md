@@ -20,10 +20,13 @@
 | `odek skill delete <name>` | Delete a skill |
 | `odek skill promote <name>` | Clear `NeedsReview` on a tainted skill so it can trigger-load and load via `skill_load` |
 | `odek skill import <uri> [flags]` | Import a skill from file:// or https:// |
-| `odek memory list` | List pending (pending-review) memory facts; aliases `ls`, `pending` |
-| `odek memory promote <session-id>` | Promote a session's pending facts to the durable fact files |
-| `odek memory extended <subcommand>` | Extended-memory atom management; see below |
-| `odek memory extended <forget|promote|pin|quarantine|compact|stats|consolidate|nudges|pending|confirm|reject> [args]` | Extended-memory operations: delete/promote/pin atoms, list or confirm/reject pending-review atoms, quarantine listing, manual compaction, store stats, consolidate, and proactive-nudge management |
+| `odek memory list [--all]` | List episodes pending human review (full text, escaped); `--all` lists every episode with its state (trusted, approved, auto-approved, pending). Aliases `ls`, `pending` |
+| `odek memory promote <session-id>...` | Approve pending episodes for recall; a trusted or already approved episode is refused |
+| `odek memory discard <session-id>...` | Delete pending episodes (alias `reject`); trusted or approved episodes are refused |
+| `odek memory facts [user\|env]` | Show the fact files (numbered entries, bytes used / cap) |
+| `odek memory facts add\|replace\|remove <user\|env> ...` | Edit a fact file from the CLI: `add <text>`, `replace <old-substring> <text>`, `remove <old-substring>`. Same filters as the `memory` tool (2048-byte field bound, injection scan incl. the configured guard sidecar, redaction, pipe-to-shell filter); merge-on-write off |
+| `odek memory extended <stats\|compact\|prune [--dry-run]\|triage [--quarantine] <regexp>\|quarantine\|promote\|forget\|pin\|pending\|confirm\|reject\|consolidate\|nudges> [args]` | Extended-memory operations. `stats` reports the persisted vector index; `compact` rebuilds it and waits; `prune` deletes TTL-expired ephemeral atoms, orphan chunk files and expired quarantine entries; `triage` lists live atoms by pattern and `--quarantine` moves them to quarantine for review. See [EXTENDED_MEMORY.md](EXTENDED_MEMORY.md) |
+| `odek memory help` | Print the memory usage (also `odek memory extended help`); every subcommand rejects stray arguments |
 | `odek audit <session-id>` | Print the prompt-injection audit log for a session (JSON) |
 | `odek audit --list` | List sessions with non-zero ingest counts and divergence flags |
 | `odek serve [--addr <addr>] [--open] [--no-sandbox] [--trusted-proxies <ips/cidrs>]` | Web UI server (default `127.0.0.1:8080`). Sandbox is on by default; disable it with `--no-sandbox`, `ODEK_NO_SANDBOX=1`, or `"sandbox": false` in trusted config (an opt-out combined with `ODEK_REQUIRE_SANDBOX=1` is an error). Flags: `--tool` / `--no-tool` (repeatable), `--prompt-caching` / `--no-prompt-caching`, `--compaction` / `--no-compaction`, `--announce-budget` / `--no-announce-budget`, `--planning` / `--no-planning`, `--stream` / `--no-stream`. Binding to a non-loopback address prints a loud warning because anyone with the token can drive the agent. `--trusted-proxies` honours `X-Forwarded-For`/`X-Real-Ip` only from those addresses. |

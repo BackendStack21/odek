@@ -22,11 +22,15 @@ odek schedule next "*/15 * * * *"    # Preview upcoming fire times
 odek schedule daemon                 # Run the scheduler headless
 
 # Memory management (see docs/MEMORY.md, docs/EXTENDED_MEMORY.md)
-odek memory list                     # Pending facts awaiting review (aliases: ls, pending)
-odek memory promote <session-id>     # Promote a session's pending facts to durable facts
-odek memory extended stats           # Extended-memory store statistics
-odek memory extended pending         # List atoms pending review
-odek memory extended confirm <id>    # Approve a pending-review atom
+odek memory list [--all]             # Episodes pending review; --all: every episode with its state
+odek memory promote <session-id>...  # Approve pending episodes for recall
+odek memory discard <session-id>...  # Delete pending episodes
+odek memory facts [user|env]         # Show the fact files (add/replace/remove edit them)
+odek memory extended stats           # Extended-memory store + persisted index statistics
+odek memory extended prune --dry-run # Expired ephemeral atoms, orphan chunks (drop --dry-run to delete)
+odek memory extended triage <regexp> # Find live atoms by pattern (--quarantine moves them for review)
+odek memory extended pending         # List pending user-model inferences
+odek memory extended confirm <id>    # Apply a pending inference
 odek memory extended forget <id>     # Delete an atom
 
 # Sandbox (ON by default for run/repl/serve; continue pins — see Sandbox section)
@@ -207,13 +211,12 @@ instance, `server.limiter: false` (drops the Redis/Valkey dependency).
 
 ```
 ~/.odek/memory/
-├── facts/
-│   ├── user.md          → User profile (default cap: 4,000 chars)
-│   └── env.md           → Environment facts (default cap: 8,000 chars)
-├── project-facts/       → Per-project overlays (optional)
-└── episodes/
-    ├── <session-id>.md  → LLM-extracted session summaries
-    └── index.json       → Search metadata
+├── user.md                → User profile (default cap: 4,000 chars)
+├── env.md                 → Environment facts (default cap: 8,000 chars)
+├── <session-id>.md        → LLM-extracted session summaries (episodes)
+├── index.json             → Episode metadata (turns, preview, provenance)
+├── episodes_vectors.gob   → Persisted episode vector index (+ embedder, meta)
+└── extended/              → Extended Memory atoms
 ```
 
 ### Durability Model

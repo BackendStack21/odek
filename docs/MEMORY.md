@@ -6,17 +6,16 @@ odek has a **three-tier file-based memory** system. Minimal external dependencie
 
 ```
 ~/.odek/memory/
-├── facts/
-│   ├── user.md          ← Global user profile (4,000 chars)
-│   └── env.md           ← Global environment facts (8,000 chars)
-├── project-facts/       ← Optional per-project overrides (auto-layered)
-│   └── <path-hash>/
-│       ├── user.md
-│       └── env.md
-└── episodes/
-    ├── <session-id>.md  ← LLM-extracted summaries
-    └── index.json       ← Metadata for search
+├── user.md                   ← Global user profile (4,000 chars)
+├── env.md                    ← Global environment facts (8,000 chars)
+├── <session-id>.md           ← LLM-extracted episode summaries (one per session)
+├── index.json                ← Episode metadata (turns, preview, provenance)
+├── episodes_vectors.gob      ← Persisted episode vector index (+ episodes_embedder.gob,
+├── episodes_index_meta.json     episodes_index_meta.json); rebuilt from the summaries
+└── extended/                 ← Extended Memory atoms (docs/EXTENDED_MEMORY.md)
 ```
+
+Everything under the directory is `0600`. `odek memory facts` shows and edits the fact files; `odek memory list --all` lists every episode with its trust state (see [CLI.md](CLI.md)).
 
 ### Tier 1 — Facts (in system prompt)
 
@@ -24,8 +23,8 @@ Two typed files, injected as frozen snapshot at session start. Managed by the ag
 
 | Target | File | Cap | Purpose |
 |--------|------|-----|---------|
-| `user` | `facts/user.md` | 4,000 | User preferences, style, pet peeves |
-| `env` | `facts/env.md` | 8,000 | OS, tools, conventions, architecture |
+| `user` | `user.md` | 4,000 | User preferences, style, pet peeves |
+| `env` | `env.md` | 8,000 | OS, tools, conventions, architecture |
 
 **Frozen snapshot:** Loaded once at agent start into the system prompt. Live writes via the `memory` tool persist to disk immediately but appear in the prompt next session. This preserves LLM prefix caching.
 
@@ -45,7 +44,9 @@ HH:MM  agent  pushed 19 tests, tagged v0.8.19
 
 ### Tier 3 — Episodes (on-disk, searchable)
 
-After sessions with ≥3 turns, the MemoryManager extracts a session summary. When both episode extraction (`extract_on_end`) and fact extraction (`extract_facts`) are enabled, a **single combined LLM call** produces the episode summary and the durable facts in one JSON response (falling back to the two single-purpose calls if the combined response is unparseable). Written to `episodes/<session-id>.md`. Searchable via `memory(search=...)` — by default an LLM ranker orders episodes by relevance to the query; set `llm_search: false` to use the **RandomProjections** (go-vector) cosine ranker instead (zero LLM calls per search).
+After sessions with ≥3 turns, the MemoryManager extracts a session summary. When both episode extraction (`extract_on_end`) and fact extraction (`extract_facts`) are enabled, a **single combined LLM call** produces the episode summary and the durable facts in one JSON response (falling back to the two single-purpose calls if the combined response is unparseable). Written to `<session-id>.md`. Searchable via `memory(search=...)` — by default an LLM ranker orders episodes by relevance to the query; set `llm_search: false` to use the **RandomProjections** (go-vector) cosine ranker instead (zero LLM calls per search).
+
+The summariser does not read the raw history. The transcript it receives (`buildExtractionTranscript`) keeps user and assistant messages only — tool results are replaced by a size note, system messages dropped — caps each message at 4 KiB and the whole at 32 KiB, keeping the head (the original task, 8 KiB) and the tail (the outcome) around an elision marker when a session is longer. The prompt treats the transcript as data, asks for a third-person past-tense record, and lets the model answer `NONE` for a session with nothing to remember. A reply that declines, or whose opening reads as a turn in the conversation ("Picking this back up…", "Let me know…", addressing *you*) is not stored (`looksLikeEpisode`). Stored summaries are capped at 2,048 bytes, cut at the last sentence end in the second half of the allowance; the 120-character index preview is separate.
 
 Episode extraction runs **asynchronously** — it does not block the agent loop. Session-end work is tracked by the MemoryManager and drained with a bounded wait (~15s) in `Agent.Close`, so episodes survive CLI exit without hanging the process.
 
@@ -134,8 +135,8 @@ Key design property: **facts persist as text; go-vector RP is ephemeral.**
 | Component | Persists to disk? | Source of truth |
 |-----------|-------------------|-----------------|
 | Fact text (`user.md`, `env.md`) | ✅ Yes — plain markdown | The text *is* the durable state |
-| Episode summaries (`episodes/*.md`) | ✅ Yes — markdown files | Durable |
-| Episode index (`episodes/index.json`) | ✅ Yes — JSON | Durable |
+| Episode summaries (`<session-id>.md`) | ✅ Yes — markdown files | Durable |
+| Episode index (`index.json`) | ✅ Yes — JSON | Durable |
 | go-vector RP vocabulary + vectors | ❌ No — ephemeral | Rebuilt from text via `Fit()` |
 
 **Why this is safe:** `RandomProjections` is a stateless model. `Fit(corpus)` builds vocabulary from the input text deterministically — same text always produces the same `(word → random vector)` mappings. On every `AddFact` / `Replace` / `Remove`, `MergeDetector.Fit(entries)` is called, reading all facts from disk and recomputing embeddings. No persistent state needs to be saved or restored.
@@ -150,7 +151,7 @@ This is fine because `MergeDetector` is an optimization (avoids ~80% of LLM call
 
 ### Cold Start
 
-When `facts/user.md` and `facts/env.md` are empty (fresh install), `Fit()` produces an empty corpus. `Classify()` returns `"nobody"` and the entry is added directly — no merge checks, no SimpleCall. After the first few facts are written, subsequent mutations trigger `Fit()` with the growing corpus, and the detector self-trains.
+When `user.md` and `env.md` are empty (fresh install), `Fit()` produces an empty corpus. `Classify()` returns `"nobody"` and the entry is added directly — no merge checks, no SimpleCall. After the first few facts are written, subsequent mutations trigger `Fit()` with the growing corpus, and the detector self-trains.
 
 ## Subagent Memory
 
@@ -161,14 +162,19 @@ block in their system prompt carries the current facts — there is no snapshot 
 ```
 ═══ MEMORY [N% — X/Y chars] ═══
 ── User Profile ──
-... (facts/user.md)
+... (user.md)
 ── Environment ──
-... (facts/env.md)
+... (env.md)
 ```
 
 The `memory` tool is registered for subagents under the same `tools` filter as any other agent,
 so they can write facts. Add `memory` to `tools.disabled` to withhold it from every agent,
 subagents included.
+
+Sub-agents never run per-turn Extended Memory atom extraction (`agent.Config.Subagent`). Their
+incoming "user" message is the task the parent model wrote — possibly carrying text the parent
+ingested from tools — not words of the principal, and per-turn atoms are stored as
+`user_approved`. Extended Memory recall still works in sub-agents.
 
 ## Config
 
@@ -222,7 +228,7 @@ Key properties:
 - **Trust boundary**: per-turn extraction only produces `user_said` atoms. Tainted source classes (`tool_output`, `file_read`, `web`, `mcp`, `subagent`, `agent_generated`, `inferred`) can be stored but are quarantined and excluded from recall until promoted.
 - **Size cap**: defaults to 100 MB with `retention_decay` eviction; pinned atoms are never evicted.
 - **Tool surface**: `memory` tool actions `add_atom`, `search_atoms`, `forget_atom`, `pin_atom`, `list_quarantine`, `confirm_pending_review`, `reject_pending_review`, and `list_pending_review`.
-- **CLI surface**: `odek memory extended forget|promote|pin|quarantine|compact|stats|consolidate|nudges|pending|confirm|reject`.
+- **CLI surface**: `odek memory extended stats|compact|prune|triage|quarantine|promote|forget|pin|pending|confirm|reject|consolidate|nudges`.
 - **Pending user-model corrections**: unconfirmed `pending_review` entries age out after `memory.extended.user_state_pending_max_age_days` (default 14; explicit `0` disables expiry). Only unconfirmed pending entries are pruned — confirmed facts are never touched. Entries without a timestamp (legacy or hand-edited stores) are treated as expired; re-inference refreshes an existing entry's timestamp so continuously reinforced knowledge does not age out.
 
 **Proactive nudges** (opt-in): when `memory.extended.proactive_nudges_enabled` is `true` (default `false`), Extended Memory can synthesize short, user-facing nudges from trusted atoms — open questions, stale goals, blockers, and drift. Delivery is capped by `nudge_max_per_day` with a per-kind cooldown (`nudge_cooldown_hours`); goals only become "stale" after `nudge_stale_goal_days`. The Telegram bot pushes at most one nudge after a completed turn (in the background, prefixed with 💡). `odek memory extended nudges` prints a preview of up to 2 nudges without consuming the daily cap.
@@ -249,7 +255,7 @@ The guard runs the local rule scan first, then optionally consults a configured 
 
 ## Observability (lifecycle events)
 
-`odek memory extended stats` prints a snapshot of the Extended Memory store: live/quarantined atom counts, quarantine reason breakdown (`tainted` vs `scan_rejected` — the guard false-positive signal), index vector count and dirty flag, store size, and recall timeout/failure counters, with a degradation warning when recall errors have occurred in the process.
+`odek memory extended stats` prints a snapshot of the Extended Memory store: live/quarantined atom counts, quarantine reason breakdown (`tainted` vs `scan_rejected` — the guard false-positive signal), the persisted vector index (count, and whether it is current or stale against the atom corpus — a CLI process never builds the in-memory index, so it reports what the last long-lived process left on disk) and store size. The recall timeout/failure counters in `extended.Stats` are process-local and are exposed by `odek serve`, not printed by the CLI. `odek memory extended compact` rebuilds and persists the index and waits for it.
 
 Every memory lifecycle moment emits a `memory.MemoryEvent` so operators can see
 activity that was previously silent. Events fan out (via `MultiMemoryNotifier`)
@@ -288,7 +294,7 @@ surfaced the same way via `Config.AgentSignalHandler`.
 
 ### Episode Index Caching
 
-The episode index (`episodes/index.json`) is cached in memory after the first read. Every subsequent `FormatEpisodeContext` call (fires once per agent loop turn) hits the in-memory cache instead of re-reading + unmarshalling from disk. A read-write lock (`sync.RWMutex`) allows concurrent readers without blocking each other — only writes (rare, ~once per session) acquire the exclusive lock. The cache is invalidated after any write.
+The episode index (`index.json`) is cached in memory after the first read. Every subsequent `FormatEpisodeContext` call (fires once per agent loop turn) hits the in-memory cache instead of re-reading + unmarshalling from disk. A read-write lock (`sync.RWMutex`) allows concurrent readers without blocking each other — only writes (rare, ~once per session) acquire the exclusive lock. The cache is invalidated after any write.
 
 ### Search Ranking
 

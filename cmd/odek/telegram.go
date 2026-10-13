@@ -2121,6 +2121,12 @@ func runChatTurn(
 	// File delegate_tasks artifacts under the chat's session so the store's
 	// OnDelete cascade owns their lifecycle.
 	agent.SetToolSessionID(sess.ID)
+	// Stamp the chat's session on Extended Memory so atoms extracted from
+	// this turn record where they came from (the other surfaces do the same).
+	if mm := agent.Memory(); mm != nil {
+		cwd, _ := os.Getwd()
+		mm.SetSessionContext(sess.ID, cwd)
+	}
 	if bgRT != nil {
 		agent.SetBackgroundNoticeProvider(bgRT.provider)
 	}

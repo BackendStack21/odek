@@ -24,7 +24,11 @@ import (
 )
 
 // maxEpisodeSummaryBytes caps how much summary text we store per episode.
-const maxEpisodeSummaryBytes = 1024
+// Recall injects at most three episodes per turn, so the cap bounds the
+// prompt cost at ~6 KiB; the cut prefers a sentence end
+// (truncateEpisodeSummary) so the outcome, which comes last, is not lost
+// mid-word.
+const maxEpisodeSummaryBytes = 2048
 
 // episodeIndexFile is the index filename inside the episodes dir.
 const episodeIndexFile = "index.json"
@@ -243,11 +247,8 @@ func (e *EpisodeStore) WriteWithProvenance(sessionID, summary string, turns int,
 	// into a form the patterns no longer recognise.
 	summary = redact.RedactSecrets(summary)
 
-	// Truncate summary to cap
-	if len(summary) > maxEpisodeSummaryBytes {
-		// Truncate at a rune boundary to avoid storing invalid UTF-8.
-		summary = truncateAtRune(summary, maxEpisodeSummaryBytes) + "..."
-	}
+	// Bound the summary, cutting at a sentence end where possible.
+	summary = truncateEpisodeSummary(summary, maxEpisodeSummaryBytes)
 
 	unlock, err := lockEpisodes(e.dir)
 	if err != nil {
@@ -618,58 +619,63 @@ func (e *EpisodeStore) promote(sessionID string, readText bool, wantSHA256 strin
 	}
 	e.invalidateIndexCache()
 	e.mu.Lock()
+	text, err := e.promoteLocked(sessionID, readText, wantSHA256)
+	e.mu.Unlock()
+	unlock()
+	if err != nil {
+		return "", err
+	}
+	// Fired after releasing the lock (see notifyAll).
+	e.notifyAll([]MemoryEvent{{Type: "episode_promoted", SessionID: sessionID}})
+	return text, nil
+}
+
+// promoteLocked judges the index entry before touching the file, so an
+// unknown id is "not found" and a trusted episode is "not pending review" —
+// the same answers Discard gives — rather than a filesystem error. Caller
+// holds e.mu and the episodes file lock.
+func (e *EpisodeStore) promoteLocked(sessionID string, readText bool, wantSHA256 string) (string, error) {
+	idx, err := e.ReadIndex()
+	if err != nil {
+		return "", err
+	}
+	pos := -1
+	for i := range idx {
+		if idx[i].SessionID == sessionID {
+			pos = i
+			break
+		}
+	}
+	if pos < 0 {
+		return "", fmt.Errorf("memory: episode %q not found", sessionID)
+	}
+	prov := idx[pos].Provenance
+	if prov.UserApproved {
+		return "", fmt.Errorf("memory: episode %q is already approved", sessionID)
+	}
+	if !prov.Untrusted {
+		return "", fmt.Errorf("memory: episode %q is not pending review (trusted; already recallable)", sessionID)
+	}
 
 	text := ""
 	if readText {
 		data, err := os.ReadFile(filepath.Join(e.dir, sessionID+".md"))
 		if err != nil {
-			e.mu.Unlock()
-			unlock()
 			return "", fmt.Errorf("memory: read episode %s: %w", sessionID, err)
 		}
 		text = string(data)
 		if wantSHA256 != "" {
 			sum := sha256.Sum256(data)
 			if !strings.EqualFold(wantSHA256, hex.EncodeToString(sum[:])) {
-				e.mu.Unlock()
-				unlock()
 				return "", ErrEpisodeSummaryChanged
 			}
 		}
 	}
 
-	idx, err := e.ReadIndex()
-	if err != nil {
-		e.mu.Unlock()
-		unlock()
-		return "", err
-	}
-	found := false
-	for i := range idx {
-		if idx[i].SessionID == sessionID {
-			found = true
-			if idx[i].Provenance.UserApproved {
-				e.mu.Unlock()
-				unlock()
-				return "", fmt.Errorf("memory: episode %q is already approved", sessionID)
-			}
-			idx[i].Provenance.UserApproved = true
-		}
-	}
-	if !found {
-		e.mu.Unlock()
-		unlock()
-		return "", fmt.Errorf("memory: episode %q not found", sessionID)
-	}
+	idx[pos].Provenance.UserApproved = true
 	if err := e.writeIndex(idx); err != nil {
-		e.mu.Unlock()
-		unlock()
 		return "", err
 	}
-	e.mu.Unlock()
-	unlock()
-	// Fired after releasing the lock (see notifyAll).
-	e.notifyAll([]MemoryEvent{{Type: "episode_promoted", SessionID: sessionID}})
 	return text, nil
 }
 

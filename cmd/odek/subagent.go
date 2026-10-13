@@ -1160,6 +1160,7 @@ func subagentCmd(args []string) error {
 		Skills:           &resolved.Skills,
 		SkillManager:     sm,
 		MemoryConfig:     resolved.Memory,
+		Subagent:         true,
 		DangerousConfig:  &resolved.Dangerous,
 		Limits:           resolved.Limits,
 	}
