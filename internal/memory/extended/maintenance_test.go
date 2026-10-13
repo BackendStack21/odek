@@ -271,3 +271,40 @@ func TestMaintenanceEdgeCases(t *testing.T) {
 		t.Fatalf("prune evicted %d expired quarantine entries, want 1", rep.ExpiredQuarantine)
 	}
 }
+
+// Remaining branches: a store that never wrote a chunk has no chunks
+// directory; a zero quarantine TTL counts nothing; an unpinned triage move
+// without a reason gets the default one; a corrupt or incomplete persisted
+// index reports ok=false.
+func TestMaintenanceRemainingBranches(t *testing.T) {
+	em, dir := maintenanceEM(t)
+	em.cfg.QuarantineTTLDays = 0
+	rep, err := em.Prune(time.Now().UTC(), true)
+	if err != nil || rep != (PruneReport{}) {
+		t.Fatalf("prune on empty store: %+v %v", rep, err)
+	}
+
+	id := seedMaintAtom(t, em, "I plan to deliver a verdict line", TypeGoal, time.Hour)
+	if _, err := em.Triage(regexp.MustCompile("verdict"), true, ""); err != nil {
+		t.Fatal(err)
+	}
+	q, _ := em.ListQuarantineEntries()
+	if len(q) != 1 || q[0].ID != id || q[0].Reason != "operator triage" {
+		t.Fatalf("quarantine = %+v, want default reason", q)
+	}
+
+	// Persisted meta without the vectors file, then a corrupt meta file.
+	if err := os.WriteFile(filepath.Join(dir, vectorMetaFile), []byte(`{"fingerprint":"rp/256","corpus":"x"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	os.Remove(filepath.Join(dir, vectorFile))
+	if _, _, ok := em.PersistedIndex(); ok {
+		t.Error("missing vectors file reported as a persisted index")
+	}
+	if err := os.WriteFile(filepath.Join(dir, vectorMetaFile), []byte(`{not json`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, ok := em.PersistedIndex(); ok {
+		t.Error("corrupt meta reported as a persisted index")
+	}
+}
