@@ -246,6 +246,12 @@ func auditCmd(args []string) error {
 	case "--list":
 		return auditList(store, auditStore)
 	default:
+		if strings.HasPrefix(args[0], "-") {
+			return fmt.Errorf("audit: unknown flag %q (use --list or a session id)", args[0])
+		}
+		if len(args) != 1 {
+			return fmt.Errorf("audit: usage: odek audit <session-id> | --list")
+		}
 		log, err := auditStore.Load(args[0])
 		if err != nil {
 			return fmt.Errorf("audit: load: %w", err)
