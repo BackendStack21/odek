@@ -1036,6 +1036,20 @@ func (m *MemoryManager) RemoveFactApproved(target, oldText, expected string) err
 }
 
 // ReadFacts returns the full content of user and env fact files.
+// FactStats returns the entries of one fact target with the bytes used and
+// the target's cap — what the memory tool's stats action reports, for
+// operator surfaces such as `odek memory facts`.
+func (m *MemoryManager) FactStats(target string) (entries []string, used, capBytes int, err error) {
+	if target != "user" && target != "env" {
+		return nil, 0, 0, fmt.Errorf("memory: target must be user or env, got %q", target)
+	}
+	entries, err = m.facts.Entries(target)
+	if err != nil {
+		return nil, 0, 0, err
+	}
+	return entries, m.facts.sizeOf(entries), m.facts.cap(target), nil
+}
+
 func (m *MemoryManager) ReadFacts() (userContent, envContent string, err error) {
 	u, err := m.facts.Read("user")
 	if err != nil {
