@@ -9,7 +9,7 @@ It provides context about the project's architecture, conventions, and how to up
 
 - **Package:** `odek` (Go module: `github.com/BackendStack21/odek`)
 - **What it is:** Minimal Go autonomous agent runtime — ReAct (Reasoning + Acting) loop with zero frameworks (stdlib + a few focused packages).
-- **Binary:** `odek` — single static binary, <15 MB, instant startup.
+- **Binary:** `odek` — single static binary, ~15 MB, instant startup.
 - **Config:** Five-layer priority: `~/.odek/secrets.env` → `~/.odek/config.json` → `./odek.json` → `ODEK_*` env vars → CLI flags.
 - **Extension contract:** `odek-extension/v1` (docs/EXTENSIONS.md) — MCP server limits, artifact refs, runtime events, external session refs, execution budgets.
 - **Releases:** tag-driven (`git tag vX.Y.Z && git push --tags` builds binaries + release). See [GitHub Releases](https://github.com/BackendStack21/odek/releases).
@@ -239,7 +239,7 @@ Layered prompt-injection / approval-fatigue defenses. The full per-mitigation li
 - **Sub-agent caps** — `delegate_tasks` carries trust_level + max_risk enforced via the sub-agent's DangerousConfig; MCP tools withheld from untrusted sub-agents; API keys handed off via unlinked-tempfile FD, never env. Sub-agent results over ~2000 chars are delivered as registry-backed artifacts the parent reads via `artifact_read`.
 - **MCP hardening** — subprocess env sanitization (secret-pattern stripping), tool-name/description/inputSchema validation + injection scans (also under `ODEK_APPROVE_MCP`), provider schema reduced to structural keywords with schema free text moved into the wrapped description (`cmd/odek/mcp_schema.go`), per-tool approval for every server (keys hash command/args/env + schema hash + description text + all four limit fields), per-server limits with absolute ceilings, per-server `enabled` toggle, artifact-ref fail-closed validation.
 - **Config trust split** — `./odek.json` is untrusted: sensitive sections (provider, providers, llm, base_url, api_key, system, dangerous, memory, telegram, web_search, embedding, sessions, skills.dirs, verify, profiles, guard, schedules) ignored with warnings; sandbox knobs gated behind explicit operator approval (incl. implicit `Dockerfile.odek` builds, content-hash keyed); project limits may only lower global budgets, project prices rejected outright. Global config/secrets permission-checked; config files size-capped.
-- **Serve / network surface** — per-instance CSRF token on `/ws` and all `/api/*`, loopback Host checks, local-origin requirement for mutations, per-session auth tokens + rate limiting, clickjacking headers, WS message-size caps. SSRF dial guard (DNS-rebinding-safe, internal-IP refusal, proxy refusal) on browser/http_request/web_search. WebUI done-frame stats are markup-escape hardened; WebUI task supervision renders sub-agent state without trusting frame content.
+- **Serve / network surface** — per-instance CSRF token on `/ws` and all `/api/*`, loopback Host checks, local-origin requirement for mutations, per-session auth tokens + rate limiting, clickjacking headers, WS message-size caps. SSRF dial guard (DNS-rebinding-safe: refuses hosts that resolve to an internal address; proxy refusal) on browser/http_request/web_search. A literal internal IP is gated by the `network_egress` class, not the dial guard. WebUI done-frame stats are markup-escape hardened; WebUI task supervision renders sub-agent state without trusting frame content.
 - **Budgets, events, refs (v1.24.0)** — budget clamp merge (see above); event stream carries SHA-256 arg hashes + sizes only (never raw args), redact applied, JSONL sink 0600/no-symlink/fsync-per-event, drop-on-full dispatch; external refs validated and never dereferenced.
 - **Resource bounds** — pervasive size caps (shell output 1 MiB/stream, perf-tool files 10 MiB, session files 32 MiB, skill files 1 MiB, browser snapshots/history/elements, tree width, search results, write_file content, patch expansion), classifier input (commands over `danger.MaxCommandBytes` = 64 KiB are `unknown`/denied; one analysis examines at most 4096 tokens; here-doc, substitution and brace scanning are budgeted; read ledger 4096 paths × 1024 sessions; prompt text capped by `danger.DisplayMaxBytes`/`InlineMaxBytes`) to keep hostile input from OOMing the process.
 - **Telegram** — chat-scoped sessions/plans/media, callback binding to originating user, outbound media allowlist + approval, secret-subtree rejection, singleton flock, 0600 logs.
@@ -273,6 +273,21 @@ ODEK_E2E=true go test -v -count=1 ./cmd/odek/ -run "TestMCPClientE2E_"
 
 # Sandbox integration tests (requires Docker)
 go test -v -count=1 ./cmd/odek/ -run "TestSandbox"
+
+# Prompt-injection red-team E2E (on-demand only — NOT on CI; its own gate,
+# ODEK_PI_E2E, is separate from ODEK_E2E). Builds the binary, plants IPI
+# payloads on each ingestion surface, and drives `odek run` with a
+# deliberately compromised mock model to prove the RUNTIME blocks the attack
+# (classifier deny, untrusted wrapper + close-tag neutralisation, SSRF guard,
+# trust-anchor protection, memory fact filter). No live LLM or network.
+ODEK_PI_E2E=true go test -v -count=1 ./cmd/odek/ -run "TestPIE2E"
+
+# Live-model prompt-injection benchmark (on-demand only — NOT on CI; spends
+# real provider tokens). Borrows the operator's provider block + secrets.env
+# into an isolated fixture HOME (memory off), plants injections on real
+# surfaces, and scores the LIVE model: ingested / complied / blocked /
+# reported / leaked. Fails only if the model complied or leaked the canary.
+ODEK_PI_BENCH=true go test -v -count=1 ./cmd/odek/ -run "TestPIBench" -timeout 40m
 
 # PIGuard sidecar E2E (local only — too heavy for CI; provisions the
 # docker stack, runs the env-gated test, tears down. Use --linux on macOS

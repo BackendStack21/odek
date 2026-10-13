@@ -326,8 +326,9 @@ var instanceLockRef func()
 // next message pin a *fresh* mutex and TryLock it successfully, so two
 // agent runs execute concurrently for the same chat. Idle slots are reaped
 // by unpinChat after the last waiter unlocks — never from this reset path.
-func resetChatForNew(chatID int64, sessionManager *telegram.SessionManager, handler *telegram.Handler, log telegram.Logger) {
-	if err := sessionManager.ArchiveAndDelete(chatID); err != nil {
+func resetChatForNew(chatID int64, sessionManager *telegram.SessionManager, handler *telegram.Handler, log telegram.Logger) string {
+	archivedID, err := sessionManager.ArchiveAndDeleteID(chatID)
+	if err != nil {
 		log.Warn("archive session", "chat_id", chatID, "error", err)
 	}
 	// The next session of this chat reuses the "tg-<chat>" ledger key, so
@@ -338,6 +339,64 @@ func resetChatForNew(chatID int64, sessionManager *telegram.SessionManager, hand
 	if a := handler.GetApprover(chatID); a != nil {
 		a.ResetTrust()
 	}
+	return archivedID
+}
+
+// telegramEpisodeMemory builds the memory manager used for end-of-conversation
+// episode extraction, mirroring the resume path. Returns nil when memory is
+// disabled or no LLM backend resolves — extraction is best-effort.
+func telegramEpisodeMemory(resolved config.ResolvedConfig) *memory.MemoryManager {
+	if resolved.Memory.Enabled != nil && !*resolved.Memory.Enabled {
+		return nil
+	}
+	llm, err := llmclient.Dial(resolved.Provider, resolved.Model, resolved.APIKey, resolved.BaseURL)
+	if err != nil {
+		return nil
+	}
+	return memory.NewMemoryManager(expandHome("~/.odek/memory"), llm, resolved.Memory)
+}
+
+// telegramEpisodeOnReset extracts a memory episode for a Telegram chat whose
+// conversation is ending.
+//
+// A Telegram chat reuses one permanent session id ("tg-<chat>") and never
+// reaches the session-end path the CLI, REPL and Web UI use, so its
+// conversations never produced an episode and were invisible to recall
+// everywhere else. /new archives the conversation, which is its end.
+//
+// It is keyed on the ARCHIVE id, not "tg-<chat>": that live id is deleted by
+// the archive and reused by the chat's next conversation, so an episode keyed
+// on it would name a missing session and be overwritten by the next /new,
+// leaving a chat with at most one episode ever. Reading the archive also
+// means reading after ArchiveAndDeleteID has flushed any cached tail.
+//
+// Provenance is derived from the stored session exactly as on the other
+// surfaces: a chat that ingested forwards, media or web content yields an
+// untrusted episode that waits for `odek memory promote`, so Telegram content
+// cannot silently enter recall.
+//
+// CALL THIS OFF THE UPDATE LOOP. Episode extraction is a synchronous LLM call
+// (MemoryManager.OnSessionEnd* does not background it — every other surface
+// wraps it in RunBackground), and Telegram dispatches commands inline on the
+// single update goroutine, where a multi-minute call would stall every chat
+// and time out pending approvals in others.
+func telegramEpisodeOnReset(mm *memory.MemoryManager, store *session.Store, archivedID string) {
+	if mm == nil || store == nil || archivedID == "" {
+		return
+	}
+	sess, err := store.Load(archivedID)
+	if err != nil || sess == nil {
+		return
+	}
+	msgs := makeSessionMessageStrings(sess)
+	if len(msgs) == 0 {
+		return
+	}
+	mm.OnSessionEndWithProvenance(archivedID, sess.Turns, msgs, memory.DeriveSessionProvenance(sess))
+	// The extraction runs on the manager's tracked background goroutines;
+	// drain them here because nothing else owns this manager's lifetime.
+	// Drain the consolidation pass this manager may have started.
+	mm.WaitForBackground(15 * time.Second)
 }
 
 // telegramCmd is the entry point for "odek telegram".
@@ -580,8 +639,19 @@ func telegramCmd(args []string) error {
 			}
 			chatM := pinChat(chatID)
 			chatM.mu.Lock()
-			resetChatForNew(chatID, sessionManager, handler, handlerLog)
+			archivedID := resetChatForNew(chatID, sessionManager, handler, handlerLog)
 			unpinChat(chatID, chatM)
+			// The conversation ended, so record its episode — but off this
+			// goroutine: commands run inline on the single update loop, and
+			// extraction is a synchronous LLM call that would otherwise stall
+			// every chat and time out approvals pending elsewhere.
+			if archivedID != "" {
+				go func() {
+					if episodeMM := telegramEpisodeMemory(resolved); episodeMM != nil {
+						telegramEpisodeOnReset(episodeMM, store, archivedID)
+					}
+				}()
+			}
 			var b strings.Builder
 			b.WriteString("🔄 *Session archived, starting fresh*\n\n")
 			fmt.Fprintf(&b, "• Model: `%s`\n", resolved.Model)

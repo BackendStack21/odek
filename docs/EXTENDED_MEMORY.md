@@ -629,3 +629,8 @@ The per-turn system prompt injection order is:
 Operators can disable Extended Memory at any time and fall back to the original behavior. Individual feature surfaces can also be disabled independently via their config flags.
 
 The 100 MB disk cap covers only the `extended/` store; the `episodes/` and `facts/` directories of the base memory system are not counted against it.
+
+### Recall latency
+
+Turn-start recall is wrapped in a short budget (~5s) that bounds local vector search. Intent prediction is a full memory-LLM call and deliberately runs on a context **detached** from that budget, so it is not killed the instant the budget is spent. Recall therefore takes the prediction only if it arrives within its own deadline: when the deadline passes first it logs, returns what the literal query found, and lets the prediction finish in the background — its follow-up suggestions are still delivered to the sink — stamped with a turn generation so a late prediction cannot overwrite the suggestions of a turn that finished after it. Before this, recall blocked on the detached predictor and a slow memory backend could stall a turn for the whole memory-LLM timeout (minutes) despite the 5s budget.
+

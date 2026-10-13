@@ -1608,12 +1608,20 @@ func (s *Store) Exists(id string) bool {
 	return err == nil && info.Mode().IsRegular()
 }
 
-// HasRemnants reports whether anything of a session other than its file
-// is left behind — an index entry or an audit log — so a deliberate delete
-// can purge the leftovers of a session whose file is already gone.
+// HasRemnants reports whether anything of a session other than a readable
+// session file is left behind — an index entry, an audit log, or a path entry
+// that exists but does not resolve (a dangling symlink) — so a deliberate
+// delete can purge the leftovers of a session whose file is gone or broken.
 func (s *Store) HasRemnants(id string) bool {
 	if ValidateSessionID(id) != nil {
 		return false
+	}
+	// Lstat, not Stat: a symlink at the session path is an artifact of this
+	// store even when it no longer resolves. Exists() follows links (matching
+	// List), so a dangling link reads as absent there and would otherwise be
+	// undeletable from the CLI.
+	if _, err := os.Lstat(s.path(id)); err == nil {
+		return true
 	}
 	s.mu.Lock()
 	_, inIndex := s.loadIndex()[id]

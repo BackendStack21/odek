@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#030304">
   <meta name="color-scheme" content="dark">
-  <title>odek · Go agent runtime in one binary</title>
-  <meta name="description" content="A ReAct agent runtime in one &lt;15 MB Go binary. Seven modules in the whole dependency graph, 30+ built-in tools, Docker sandbox on by default, unrecognized shell commands denied. MIT.">
+  <title>odek · Go agent runtime in one static binary</title>
+  <meta name="description" content="A ReAct agent runtime in one static Go binary (~15 MB). Seven modules in the whole dependency graph, 30+ built-in tools, Docker sandbox on by default, fail-closed when unattended, unrecognized shell commands denied. MIT.">
   <link rel="canonical" href="https://odek.21no.de/">
   <link rel="robots" href="/robots.txt">
   <link rel="sitemap" href="/sitemap.xml">
@@ -14,20 +14,20 @@
   <meta property="og:site_name" content="odek">
   <meta property="og:locale" content="en_US">
   <meta property="og:url" content="https://odek.21no.de/">
-  <meta property="og:title" content="odek — &lt;15 MB Go agent runtime">
-  <meta property="og:description" content="Verified install, a provider key, then odek run. DeepSeek, OpenAI, Anthropic, Gemini, z.ai, Kimi, or any OpenAI-compatible endpoint.">
+  <meta property="og:title" content="odek — Go agent runtime in one static binary">
+  <meta property="og:description" content="One static Go binary, zero frameworks. Docker sandbox on by default, fail-closed when unattended, and a prompt-injection test suite that runs the real binary against a deliberately compromised model.">
   <meta property="og:image" content="https://odek.21no.de/og-image.png">
   <meta property="og:image:secure_url" content="https://odek.21no.de/og-image.png">
   <meta property="og:image:type" content="image/png">
   <meta property="og:image:width" content="1200">
   <meta property="og:image:height" content="630">
-  <meta property="og:image:alt" content="odek — &lt;15 MB static binary, zero-framework Go autonomous agent runtime">
+  <meta property="og:image:alt" content="odek — one static binary, zero frameworks: a Go autonomous agent runtime that is sandboxed, fail-closed unattended and injection-tested">
   <meta name="twitter:card" content="summary_large_image">
-  <meta name="twitter:title" content="odek — &lt;15 MB Go agent runtime">
-  <meta name="twitter:description" content="Verified install, a provider key, then odek run. DeepSeek, OpenAI, Anthropic, Gemini, z.ai, Kimi, or any OpenAI-compatible endpoint.">
+  <meta name="twitter:title" content="odek — Go agent runtime in one static binary">
+  <meta name="twitter:description" content="One static Go binary, zero frameworks. Docker sandbox on by default, fail-closed when unattended, and a prompt-injection test suite that runs the real binary against a deliberately compromised model.">
   <meta name="twitter:image" content="https://odek.21no.de/og-image.png">
-  <meta name="twitter:image:alt" content="odek — &lt;15 MB static binary, zero-framework Go autonomous agent runtime">
-  <meta name="keywords" content="odek, Go, autonomous agent, ReAct, GLM 5.3 Flash, z.ai, MCP, Docker sandbox, bodek">
+  <meta name="twitter:image:alt" content="odek — one static binary, zero frameworks: a Go autonomous agent runtime that is sandboxed, fail-closed unattended and injection-tested">
+  <meta name="keywords" content="odek, Go, autonomous agent, ReAct, GLM 5.3 Flash, z.ai, MCP, Docker sandbox, prompt injection, agent security, bodek">
   <meta name="robots" content="index, follow">
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self'; img-src 'self'; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'; frame-ancestors 'none'">
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
@@ -41,7 +41,7 @@
   "name": "odek",
   "applicationCategory": "DeveloperApplication",
   "operatingSystem": "Linux, macOS",
-  "description": "A <15 MB static Go binary that runs an autonomous ReAct agent loop. Zero frameworks. Provider-agnostic. Sandbox on by default.",
+  "description": "A static Go binary (~15 MB) that runs an autonomous ReAct agent loop. Zero frameworks. Provider-agnostic. Sandbox on by default, fail-closed when unattended.",
   "url": "https://odek.21no.de",
   "downloadUrl": "https://github.com/BackendStack21/odek/releases",
   "license": "https://github.com/BackendStack21/odek/blob/main/LICENSE",
@@ -61,7 +61,7 @@
       "name": "What is odek?",
       "acceptedAnswer": {
         "@type": "Answer",
-        "text": "odek is a <15 MB static Go binary that runs an autonomous ReAct agent loop. Its entire dependency graph is seven Go modules. It is provider-agnostic and ships 30+ built-in tools, parallel tool execution, persistent memory, an MCP server and client, a Docker sandbox (on by default), a Web UI, a Telegram bot, and cron schedules — with no frameworks and no Python venv."
+        "text": "odek is a static Go binary (~15 MB) that runs an autonomous ReAct agent loop. Its entire dependency graph is seven Go modules. It is provider-agnostic and ships 30+ built-in tools, parallel tool execution, persistent memory, an MCP server and client, a Docker sandbox (on by default), a Web UI, a Telegram bot, and cron schedules — with no frameworks and no Python venv."
       }
     },
     {
@@ -123,7 +123,7 @@
     <header class="hero">
       <p class="eyebrow">AGENT RUNTIME · GO · MIT</p>
       <h1>One binary.<br><span>Seven modules.</span></h1>
-      <p class="lede">Odek is a ReAct agent: it plans, calls tools in parallel, and asks before risky commands. The release binary is <span class="size">&lt;15 MB</span>, the Web UI is embedded in it, and its entire <code>go.sum</code> lists seven modules.</p>
+      <p class="lede">Odek is a ReAct agent: it plans, calls tools in parallel, and asks before risky commands. The release binary is <span class="size">~15 MB</span>, the Web UI is embedded in it, and its entire <code>go.sum</code> lists seven modules.</p>
       <div class="hero-actions">
         <a class="button primary" href="#install">Get started <span aria-hidden="true">↗</span></a>
         <a class="button secondary" href="#gallery">Explore the Web UI <span aria-hidden="true">↓</span></a>
