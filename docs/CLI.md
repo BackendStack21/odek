@@ -10,11 +10,11 @@
 | `odek repl [flags]` | Interactive REPL mode (persistent multi-turn session). Flags: `--id`, `--model`, `--thinking`, `--thinking-budget`, `--sandbox`, `--sandbox-*`, `--prompt-caching` / `--no-prompt-caching`, `--stream` / `--no-stream`, `--compaction`, `--announce-budget` / `--no-announce-budget`, `--planning` / `--no-planning`, `--interaction-mode`. Unrecognized flags are rejected with an error — in particular `--tool` / `--no-tool` are **not** supported in repl (use `odek run`, `serve`, or the `tools` config instead). |
 | `odek session list` | List sessions |
 | `odek session show [id]` | Show session details (default: latest) |
-| `odek session delete <id>` | Delete a session |
+| `odek session delete <id>` | Delete a session (an unknown id is an error) |
 | `odek session trim <id> <n>` | Keep only the `n` most recent messages |
 | `odek session cleanup <days>` | Delete sessions older than N days (see also: automatic storage maintenance below) |
 | `odek cleanup [--dry-run]` | One-shot storage sweep of `~/.odek`: expired sessions, audit records, plans, artifacts, media, and runtime-log retention. `--dry-run` previews without changing files. The same sweep runs automatically in long-lived services when maintenance is enabled. See [MAINTENANCE.md](MAINTENANCE.md) |
-| `odek logs [filters]` | Query, follow, or display the local operational log. See [Runtime logging](LOGGING.md) for filters and examples. |
+| `odek logs [filters]` | Query, follow, or display the local operational log (`--help` lists the filters). See [Runtime logging](LOGGING.md) for filters and examples. |
 | `odek skill list` | List all available skills |
 | `odek skill view <name>` | View a skill's full content |
 | `odek skill delete <name>` | Delete a skill |
@@ -27,16 +27,17 @@
 | `odek memory facts add\|replace\|remove <user\|env> ...` | Edit a fact file from the CLI: `add <text>`, `replace <old-substring> <text>`, `remove <old-substring>`. Same filters as the `memory` tool (2048-byte field bound, injection scan incl. the configured guard sidecar, redaction, pipe-to-shell filter); merge-on-write off |
 | `odek memory extended <stats\|compact\|prune [--dry-run]\|triage [--quarantine] <regexp>\|quarantine\|promote\|forget\|pin\|pending\|confirm\|reject\|consolidate\|nudges> [args]` | Extended-memory operations. `stats` reports the persisted vector index; `compact` rebuilds it and waits; `prune` deletes TTL-expired ephemeral atoms, orphan chunk files and expired quarantine entries; `triage` lists live atoms by pattern and `--quarantine` moves them to quarantine for review. See [EXTENDED_MEMORY.md](EXTENDED_MEMORY.md) |
 | `odek memory help` | Print the memory usage (also `odek memory extended help`); every subcommand rejects stray arguments |
-| `odek audit <session-id>` | Print the prompt-injection audit log for a session (JSON) |
+| `odek audit <session-id>` | Print the prompt-injection audit log for a session (JSON; empty for a session with no recorded ingests) |
 | `odek audit --list` | List sessions with non-zero ingest counts and divergence flags |
 | `odek serve [--addr <addr>] [--open] [--no-sandbox] [--trusted-proxies <ips/cidrs>]` | Web UI server (default `127.0.0.1:8080`). Sandbox is on by default; disable it with `--no-sandbox`, `ODEK_NO_SANDBOX=1`, or `"sandbox": false` in trusted config (an opt-out combined with `ODEK_REQUIRE_SANDBOX=1` is an error). Flags: `--tool` / `--no-tool` (repeatable), `--prompt-caching` / `--no-prompt-caching`, `--compaction` / `--no-compaction`, `--announce-budget` / `--no-announce-budget`, `--planning` / `--no-planning`, `--stream` / `--no-stream`. Binding to a non-loopback address prints a loud warning because anyone with the token can drive the agent. `--trusted-proxies` honours `X-Forwarded-For`/`X-Real-Ip` only from those addresses. |
-| `odek subagent --goal <string> [flags]` | Run a focused sub-task; outputs JSON on stdout. Spawned by `delegate_tasks` tool. Flags: `--goal`, `--task <file>`, `--context`, `--timeout` (≤1800s), `--max-iter` (≤100), `--profile <name>`, `--parent-session <id>`, `--quiet`, `--stream`. |
+| `odek subagent --goal <string> [flags]` | Run a focused sub-task; outputs JSON on stdout. Spawned by `delegate_tasks` tool. Flags: `--goal`, `--task <file>`, `--context`, `--timeout` (≤1800s), `--max-iter` (≤100) — values above the caps are clamped and the clamp is reported on stderr, `--profile <name>`, `--parent-session <id>`, `--quiet`, `--stream`. |
 | `odek init [--global|--local] [--force]` | Create a config file template (scope-aware: full schema globally, project-safe fields locally) |
 | `odek mcp [--sandbox]` | MCP server over stdio (built-in tools minus `delegate_tasks` / `memory`). Also loads `mcp_servers`. Sandbox is opt-in (`--sandbox`), unlike `odek run`. See [MCP.md](MCP.md) |
 | `odek telegram` | Start the Telegram bot (long-polling). Hosts the embedded scheduler unless `schedules.enabled=false` |
 | `odek schedule <subcommand>` | Manage native in-process scheduled tasks (cron): `list`, `add`, `rm`, `enable`, `disable`, `run`, `next`, `daemon`. See [Schedules](SCHEDULES.md) |
 | `odek upgrade [--check]` | Self-upgrade to the latest GitHub release. Auto-detects OS/arch (`odek-<goos>-<goarch>` asset), verifies the download against the release `checksums.txt` (SHA-256), and installs it atomically over the current binary. `--check` reports the latest version without installing. A GitHub 401/403/429 on the REST latest endpoint falls back to the HTML releases page; set `GITHUB_TOKEN` / `GH_TOKEN` to authenticate the API lookup |
 | `odek version` / `odek --version` / `odek -v` | Print version and exit |
+| `odek help` / `odek --help` / `odek -h` | Print the usage and exit 0 (an unknown command prints it and exits 1). `odek session`, `odek skill`, `odek schedule`, `odek memory`, `odek audit`, `odek logs` reject stray or unknown arguments with a usage error; `odek telegram` takes no arguments |
 
 ## Run flags
 
@@ -53,7 +54,7 @@ Unknown flags are a **hard error** — they are never folded into the task text 
 | `--provider <id>` | string | `deepseek` | LLM provider registry id (`deepseek`, `openai`, `anthropic`, `gemini`, `zai`, `kimi`, or a custom id). See [Providers](PROVIDERS.md). |
 | `--model <name>` | string | `deepseek-v4-flash` | LLM model id. No auto-thinking / auto-timeout from the name. |
 | `--base-url <url>` | string | (SDK default for provider) | Override the **selected** provider's API endpoint |
-| `--max-iter <n>` | int | `90` | Max think→act cycles |
+| `--max-iter <n>` | int | `90` | Max think→act cycles (a positive integer; `0` is an error) |
 | `--thinking <level>` | string | (unset) | Reasoning depth: `disabled`/`low`/`medium`/`high`. Aliases: `enabled`/`on` → `medium`, `off` → `disabled`, `mid` → `medium`, `max` → `high`. Not inferred from the model name. |
 | `--thinking-budget <n>` | int | `5000` | Max thinking tokens for extended thinking (Anthropic budget_tokens). Only applied when `--thinking` is set. |
 | `--temperature <n>` | float | `0` | LLM sampling temperature (0.0–2.0). Forced to 1 when Anthropic extended thinking is active. |
