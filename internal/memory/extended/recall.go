@@ -7,6 +7,7 @@ import (
 	"log"
 	"sort"
 	"strings"
+	"sync/atomic"
 
 	"github.com/BackendStack21/odek/internal/guard"
 )
@@ -35,6 +36,12 @@ type Recall struct {
 	// during recall so ExtendedMemory can surface them as follow-up
 	// suggestions. Nil disables capture without changing recall behavior.
 	followUpSink func([]PredictedIntent)
+
+	// followUpGen stamps each turn's delivery and followUpDelivered records
+	// the newest one published, so a prediction abandoned at the caller's
+	// deadline cannot land later and overwrite a newer turn's suggestions.
+	followUpGen       atomic.Uint64
+	followUpDelivered atomic.Uint64
 }
 
 // NewRecall creates a Recall instance.
@@ -152,18 +159,31 @@ func (r *Recall) queryAtomsWithPrediction(ctx context.Context, query string, rec
 		// what the literal query already found.
 		var res predictResult
 		got := false
+		// Probe first: with both cases ready Go chooses at random, which
+		// would discard a prediction that did land inside the deadline.
 		select {
 		case res = <-predCh:
 			got = true
-		case <-ctx.Done():
-			r.trackErr(ctx.Err())
-			log.Printf("extended memory: predicted-intent generation exceeded the recall budget; continuing without it")
-			go func() {
-				late := <-predCh
-				if late.err == nil {
-					r.deliverFollowUps(late.intents)
-				}
-			}()
+		default:
+		}
+		if !got {
+			select {
+			case res = <-predCh:
+				got = true
+			case <-ctx.Done():
+				r.trackErr(ctx.Err())
+				log.Printf("extended memory: predicted-intent generation exceeded the recall budget; continuing without it")
+				// L1: tag this turn so a late prediction cannot overwrite the
+				// suggestions of a turn that finished after it.
+				gen := r.followUpGen.Add(1)
+				go func() {
+					late := <-predCh
+					// L2: deliver even on failure, so a stale set from the
+					// previous turn is cleared exactly as the in-budget path
+					// clears it.
+					r.deliverFollowUpsGen(gen, late.intents)
+				}()
+			}
 		}
 		if got {
 			intents, err := res.intents, res.err
@@ -194,7 +214,7 @@ func (r *Recall) queryAtomsWithPrediction(ctx context.Context, query string, rec
 					}
 				}
 			}
-			r.deliverFollowUps(intents)
+			r.deliverFollowUpsGen(r.followUpGen.Add(1), intents)
 		}
 	}
 
@@ -223,6 +243,18 @@ func (r *Recall) queryAtomsWithPrediction(ctx context.Context, query string, rec
 // follow-up sink. It is called both when the prediction lands inside the
 // recall budget and when it arrives after the caller gave up, so a slow
 // predictor costs latency but never costs the suggestions.
+// deliverFollowUpsGen delivers only if no newer turn has already delivered.
+// A prediction abandoned at the caller's deadline can land after the NEXT
+// turn has published its own suggestions; without this guard it would replace
+// them with a stale set.
+func (r *Recall) deliverFollowUpsGen(gen uint64, intents []PredictedIntent) {
+	if r.followUpDelivered.Load() > gen {
+		return
+	}
+	r.followUpDelivered.Store(gen)
+	r.deliverFollowUps(intents)
+}
+
 func (r *Recall) deliverFollowUps(intents []PredictedIntent) {
 	if r.followUpSink == nil ||
 		r.cfg.FollowUpSuggestionsEnabled == nil || !*r.cfg.FollowUpSuggestionsEnabled {

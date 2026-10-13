@@ -384,6 +384,17 @@ func (sm *SessionManager) Delete(chatID int64) error {
 // The archived session is saved with an ID like "tg-<chatID>-<YYYYMMDD>-<HHMMSS>"
 // so it can be browsed via `odek session list`.
 func (sm *SessionManager) ArchiveAndDelete(chatID int64) error {
+	_, err := sm.ArchiveAndDeleteID(chatID)
+	return err
+}
+
+// ArchiveAndDeleteID is ArchiveAndDelete but returns the timestamped id the
+// conversation was archived under. Callers that act on the finished
+// conversation — memory episode extraction, for one — need that id: the live
+// "tg-<chat>" id is deleted here and reused by the chat's next conversation,
+// so anything keyed on it would name a session that no longer exists and be
+// overwritten by the next archive.
+func (sm *SessionManager) ArchiveAndDeleteID(chatID int64) (string, error) {
 	sessionID := fmt.Sprintf("tg-%d", chatID)
 
 	sm.Mu.Lock()
@@ -425,7 +436,7 @@ func (sm *SessionManager) ArchiveAndDelete(chatID int64) error {
 			sess.EpisodeUntrusted = true
 		}
 		if err := sm.Store.Save(sess); err != nil {
-			return fmt.Errorf("archive: persist before archive: %w", err)
+			return "", fmt.Errorf("archive: persist before archive: %w", err)
 		}
 	}
 
@@ -434,9 +445,9 @@ func (sm *SessionManager) ArchiveAndDelete(chatID int64) error {
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			// No session on disk — nothing to archive
-			return nil
+			return "", nil
 		}
-		return fmt.Errorf("archive: load session: %w", err)
+		return "", fmt.Errorf("archive: load session: %w", err)
 	}
 
 	// Save as archive with timestamped ID
@@ -453,11 +464,14 @@ func (sm *SessionManager) ArchiveAndDelete(chatID int64) error {
 	archived.ID = archiveID
 	archived.Revision = 0
 	if err := sm.Store.Save(&archived); err != nil {
-		return fmt.Errorf("archive: save archive: %w", err)
+		return "", fmt.Errorf("archive: save archive: %w", err)
 	}
 
 	// Delete the old session (file + index + vector index)
-	return sm.Store.Delete(sessionID)
+	if err := sm.Store.Delete(sessionID); err != nil {
+		return "", err
+	}
+	return archiveID, nil
 }
 
 // AppendMessage adds a single message (role + content) to the chat
