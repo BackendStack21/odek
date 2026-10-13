@@ -91,7 +91,8 @@ cmd/odek/
   skill_promote.go            `odek skill promote` — clear NeedsReview on a tainted skill
   schedule.go                 `odek schedule` command and scheduler wiring
   schedule_telegram.go        Telegram surface for schedules
-  memory_cmd.go               `odek memory` command
+  memory_cmd.go               `odek memory` command: episode review (list/--all, promote, discard), facts
+                              show/edit, extended stats/compact/prune/triage/quarantine
   cleanup.go                  `odek cleanup [--dry-run]` one-shot storage sweep + janitor wiring (telegram/serve/schedule daemon)
   upgrade.go                  `odek upgrade [--check]` self-upgrade from GitHub Releases (checksums.txt SHA-256 verified)
   external_ref.go             --external-ref flag parsing (run + continue) → session.ExternalRef
