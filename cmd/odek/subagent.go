@@ -724,10 +724,15 @@ func parseSubagentFlags(args []string) (subagentFlags, error) {
 		maxSubagentTimeout = 1800 // 30 minutes
 		maxSubagentIter    = 100
 	)
+	// The caps are documented limits; a value above them is clamped and the
+	// clamp is reported so an operator script does not believe it got what
+	// it asked for.
 	if cfg.timeout > maxSubagentTimeout {
+		fmt.Fprintf(os.Stderr, "odek: --timeout %d exceeds the sub-agent cap, clamped to %d\n", cfg.timeout, maxSubagentTimeout)
 		cfg.timeout = maxSubagentTimeout
 	}
 	if cfg.maxIter > maxSubagentIter {
+		fmt.Fprintf(os.Stderr, "odek: --max-iter %d exceeds the sub-agent cap, clamped to %d\n", cfg.maxIter, maxSubagentIter)
 		cfg.maxIter = maxSubagentIter
 	}
 

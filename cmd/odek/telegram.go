@@ -342,6 +342,16 @@ func resetChatForNew(chatID int64, sessionManager *telegram.SessionManager, hand
 
 // telegramCmd is the entry point for "odek telegram".
 func telegramCmd(args []string) error {
+	// The command takes no arguments: everything comes from the telegram
+	// config section. An unknown flag used to be ignored and the bot
+	// started polling anyway.
+	if len(args) == 1 && isHelpArg(args[0]) {
+		fmt.Println("Usage: odek telegram\n\nStart the Telegram bot (long-polling) from the telegram config section; takes no arguments. See docs/TELEGRAM.md.")
+		return nil
+	}
+	if len(args) != 0 {
+		return fmt.Errorf("usage: odek telegram (takes no arguments, got %q)", danger.SanitizeInline(strings.Join(args, " ")))
+	}
 	// 0. Acquire singleton lock — wait for any previous instance to exit.
 	lockRelease, err := acquireLock()
 	if err != nil {

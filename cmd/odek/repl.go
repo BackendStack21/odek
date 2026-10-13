@@ -58,7 +58,7 @@ func replCmd(args []string) error {
 	if sessionID != "" {
 		sess, err = store.Load(sessionID)
 		if err != nil {
-			return fmt.Errorf("load session %q: %w", sessionID, err)
+			return fmt.Errorf("load session: %w", err)
 		}
 	}
 

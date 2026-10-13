@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"hash/maphash"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -1367,7 +1368,7 @@ func (s *Store) trimToFileCapLocked(sess *Session, data []byte) ([]byte, error) 
 // doesn't exist or can't be parsed.
 func (s *Store) Load(id string) (_ *Session, loadErr error) {
 	defer func() {
-		if ValidateSessionID(id) == nil && !os.IsNotExist(loadErr) {
+		if ValidateSessionID(id) == nil && !errors.Is(loadErr, fs.ErrNotExist) {
 			diagnostics.Report("session", "load", id, loadErr)
 		}
 	}()
@@ -1376,6 +1377,9 @@ func (s *Store) Load(id string) (_ *Session, loadErr error) {
 	}
 	fd, err := os.OpenFile(s.path(id), os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, &NotFoundError{ID: id, cause: err}
+		}
 		return nil, fmt.Errorf("session: load %q: %w", id, err)
 	}
 	defer fd.Close()
@@ -1581,6 +1585,44 @@ func (s *Store) List(limit int) ([]Session, error) {
 		sessions = sessions[:limit]
 	}
 	return sessions, nil
+}
+
+// NotFoundError reports a session id with no file in the store. It prints
+// without the store path and unwraps to fs.ErrNotExist for callers that
+// test for a missing file.
+type NotFoundError struct {
+	ID    string
+	cause error
+}
+
+func (e *NotFoundError) Error() string { return fmt.Sprintf("session %q not found", e.ID) }
+func (e *NotFoundError) Unwrap() error { return e.cause }
+
+// Exists reports whether a session file exists for id (following links,
+// as List does). An invalid id is reported as absent.
+func (s *Store) Exists(id string) bool {
+	if ValidateSessionID(id) != nil {
+		return false
+	}
+	info, err := os.Stat(s.path(id))
+	return err == nil && info.Mode().IsRegular()
+}
+
+// HasRemnants reports whether anything of a session other than its file
+// is left behind — an index entry or an audit log — so a deliberate delete
+// can purge the leftovers of a session whose file is already gone.
+func (s *Store) HasRemnants(id string) bool {
+	if ValidateSessionID(id) != nil {
+		return false
+	}
+	s.mu.Lock()
+	_, inIndex := s.loadIndex()[id]
+	s.mu.Unlock()
+	if inIndex {
+		return true
+	}
+	_, err := os.Stat(filepath.Join(s.dir, "audit", id+".json"))
+	return err == nil
 }
 
 // Delete removes a session file from disk and removes its entry from

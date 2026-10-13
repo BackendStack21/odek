@@ -47,6 +47,9 @@ func dispatch(args []string) int {
 	switch cmd {
 	case "run":
 		return runExit(run(rest))
+	case "help", "--help", "-h":
+		printUsage()
+		return 0
 	case "version", "--version", "-v":
 		// --version is the form every packaging script, CI preflight, and
 		// support-bundle collector reaches for first; treat it as a full

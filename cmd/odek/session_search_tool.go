@@ -468,9 +468,14 @@ func (t *sessionSearchTool) handleGet(id string) (string, error) {
 		sess, err = t.store.Load(id)
 	}
 	if err != nil {
+		msg := fmt.Sprintf("session %q not found: %v", id, err)
+		var nf *session.NotFoundError
+		if errors.As(err, &nf) {
+			msg = nf.Error() // already says "not found"; do not say it twice
+		}
 		return jsonResult(sessionSearchResult{
 			ID:    id,
-			Error: fmt.Sprintf("session %q not found: %v", id, err),
+			Error: msg,
 		})
 	}
 
