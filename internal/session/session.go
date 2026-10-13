@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"hash/maphash"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -1367,7 +1368,7 @@ func (s *Store) trimToFileCapLocked(sess *Session, data []byte) ([]byte, error) 
 // doesn't exist or can't be parsed.
 func (s *Store) Load(id string) (_ *Session, loadErr error) {
 	defer func() {
-		if ValidateSessionID(id) == nil && !os.IsNotExist(loadErr) {
+		if ValidateSessionID(id) == nil && !errors.Is(loadErr, fs.ErrNotExist) {
 			diagnostics.Report("session", "load", id, loadErr)
 		}
 	}()
@@ -1376,6 +1377,9 @@ func (s *Store) Load(id string) (_ *Session, loadErr error) {
 	}
 	fd, err := os.OpenFile(s.path(id), os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, &NotFoundError{ID: id, cause: err}
+		}
 		return nil, fmt.Errorf("session: load %q: %w", id, err)
 	}
 	defer fd.Close()
@@ -1586,6 +1590,27 @@ func (s *Store) List(limit int) ([]Session, error) {
 // Delete removes a session file from disk and removes its entry from
 // the session index. Returns nil if the file doesn't exist (idempotent delete).
 // Fires OnDelete (when set) after a successful removal.
+// NotFoundError reports a session id with no file in the store. It prints
+// without the store path and unwraps to fs.ErrNotExist for callers that
+// test for a missing file.
+type NotFoundError struct {
+	ID    string
+	cause error
+}
+
+func (e *NotFoundError) Error() string { return fmt.Sprintf("session %q not found", e.ID) }
+func (e *NotFoundError) Unwrap() error { return e.cause }
+
+// Exists reports whether a session file exists for id. An invalid id is
+// reported as absent.
+func (s *Store) Exists(id string) bool {
+	if ValidateSessionID(id) != nil {
+		return false
+	}
+	info, err := os.Lstat(s.path(id))
+	return err == nil && info.Mode().IsRegular()
+}
+
 func (s *Store) Delete(id string) error {
 	if err := ValidateSessionID(id); err != nil {
 		return err

@@ -51,18 +51,34 @@ func scheduleCmd(args []string) error {
 	if err != nil {
 		return err
 	}
+	// Fixed-shape subcommands reject stray arguments.
 	switch args[0] {
 	case "list", "ls":
+		if len(args) != 1 {
+			return fmt.Errorf("usage: odek schedule list")
+		}
 		return scheduleList(st)
 	case "add":
 		return scheduleAdd(st, args[1:])
 	case "rm", "remove", "delete":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: odek schedule rm <id>")
+		}
 		return scheduleRemove(st, args[1:])
 	case "enable":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: odek schedule enable <id>")
+		}
 		return scheduleSetEnabled(st, args[1:], true)
 	case "disable":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: odek schedule disable <id>")
+		}
 		return scheduleSetEnabled(st, args[1:], false)
 	case "next":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: odek schedule next <id|\"cron-expr\">")
+		}
 		return scheduleNext(st, args[1:])
 	default:
 		return fmt.Errorf("unknown schedule command %q (use list, add, rm, enable, disable, run, next, daemon)", args[0])

@@ -580,12 +580,10 @@ func parseRunFlags(args []string) (runFlags, error) {
 				return f, fmt.Errorf("--max-iter requires a value")
 			}
 			n, err := strconv.Atoi(args[i+1])
-			if err != nil {
-				return f, fmt.Errorf("--max-iter requires an integer, got %q", args[i+1])
+			if err != nil || n <= 0 {
+				return f, fmt.Errorf("--max-iter requires a positive integer, got %q", args[i+1])
 			}
-			if n > 0 {
-				f.MaxIter = n
-			}
+			f.MaxIter = n
 			i += 2
 		case "--system":
 			if i+1 >= len(args) {
@@ -3065,6 +3063,9 @@ func skillCmd(args []string) error {
 
 	switch sub {
 	case "list":
+		if len(subArgs) != 0 {
+			return fmt.Errorf("usage: odek skill list")
+		}
 		sm := skills.NewSkillManager(userDir, "./.odek/skills")
 		tool := &skills.SkillListTool{}
 		tool.Manager = sm
@@ -3076,7 +3077,7 @@ func skillCmd(args []string) error {
 		return nil
 
 	case "view":
-		if len(subArgs) == 0 {
+		if len(subArgs) != 1 {
 			return fmt.Errorf("usage: odek skill view <name>")
 		}
 		sm := skills.NewSkillManager(userDir, "./.odek/skills")
@@ -3090,7 +3091,7 @@ func skillCmd(args []string) error {
 		return nil
 
 	case "delete":
-		if len(subArgs) == 0 {
+		if len(subArgs) != 1 {
 			return fmt.Errorf("usage: odek skill delete <name>")
 		}
 		sm := skills.NewSkillManager(userDir, "./.odek/skills")
@@ -3667,7 +3668,7 @@ func continueCmd(args []string) (outcome error) {
 // sessionCmd handles `odek session <list|show|delete> [args]`.
 func sessionCmd(args []string) error {
 	if len(args) == 0 {
-		fmt.Fprintf(os.Stderr, "Usage: odek session <list|show [id]|delete <id>>\n")
+		fmt.Fprintf(os.Stderr, "Usage: odek session <list|show [id]|delete <id>|trim <id> <n>|cleanup <days>>\n")
 		return nil
 	}
 
@@ -3676,16 +3677,33 @@ func sessionCmd(args []string) error {
 		return fmt.Errorf("session store: %w", err)
 	}
 
+	// Every subcommand has a fixed shape; a stray argument is a typo, not
+	// something to ignore.
 	switch args[0] {
 	case "list":
+		if len(args) != 1 {
+			return fmt.Errorf("usage: odek session list")
+		}
 		return listSessions(store)
 	case "show":
+		if len(args) > 2 {
+			return fmt.Errorf("usage: odek session show [id]")
+		}
 		return showSession(store, args[1:])
 	case "delete":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: odek session delete <id>")
+		}
 		return deleteSession(store, args[1:])
 	case "trim":
+		if len(args) != 3 {
+			return fmt.Errorf("usage: odek session trim <id> <n>")
+		}
 		return trimSession(store, args[1:])
 	case "cleanup":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: odek session cleanup <days>")
+		}
 		return cleanupSessions(store, args[1:])
 	default:
 		return fmt.Errorf("unknown session command %q (use list, show, trim, delete, cleanup)", args[0])
@@ -3794,6 +3812,11 @@ func showSession(store *session.Store, args []string) error {
 func deleteSession(store *session.Store, args []string) error {
 	if len(args) == 0 {
 		return fmt.Errorf("usage: odek session delete <id>")
+	}
+	// Delete is idempotent in the store; the operator asked for a specific
+	// session, so a missing one is reported instead of "Deleted".
+	if !store.Exists(args[0]) {
+		return fmt.Errorf("session %q not found", args[0])
 	}
 	if err := store.Delete(args[0]); err != nil {
 		return fmt.Errorf("delete session: %w", err)
