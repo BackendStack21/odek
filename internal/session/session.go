@@ -1587,9 +1587,6 @@ func (s *Store) List(limit int) ([]Session, error) {
 	return sessions, nil
 }
 
-// Delete removes a session file from disk and removes its entry from
-// the session index. Returns nil if the file doesn't exist (idempotent delete).
-// Fires OnDelete (when set) after a successful removal.
 // NotFoundError reports a session id with no file in the store. It prints
 // without the store path and unwraps to fs.ErrNotExist for callers that
 // test for a missing file.
@@ -1611,6 +1608,9 @@ func (s *Store) Exists(id string) bool {
 	return err == nil && info.Mode().IsRegular()
 }
 
+// Delete removes a session file from disk and removes its entry from
+// the session index. Returns nil if the file doesn't exist (idempotent delete).
+// Fires OnDelete (when set) after a successful removal.
 func (s *Store) Delete(id string) error {
 	if err := ValidateSessionID(id); err != nil {
 		return err
