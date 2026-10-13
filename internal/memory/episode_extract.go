@@ -95,17 +95,31 @@ func buildExtractionTranscript(messages []string) string {
 }
 
 // Replies that decline to summarise. The prompt asks for exactly NONE; older
-// models answered in prose.
-var reEpisodeDeclined = regexp.MustCompile(`(?i)^\W*(none|n/?a|nothing (to|worth) (persist|remember|summari[sz]|record|note)|no (durable|notable|significant) )`)
+// models answered in prose. Word-bounded so "Native…"/"Navigated…" pass.
+var reEpisodeDeclined = regexp.MustCompile(`(?i)^\W*((none|n/?a)\b|nothing (to|worth) (persist|remember|summari[sz]|record|note)|no (durable|notable|significant) )`)
 
 // Replies that summarise a session as having nothing in it ("User greeted
 // with 'hi' — nothing to persist. N/A"): a record of absence is not a record.
 var reEpisodeTrivial = regexp.MustCompile(`(?i)(\bnothing (to|worth) (persist|remember|summari[sz]e|record|note)\b|\bn/a\W*$)`)
 
-// Signals that the text addresses the user or narrates the model's next
-// action — a conversation turn, not a record of the session. Checked only in
-// the opening of the reply; a genuine summary may quote "you" later on.
-var reEpisodeConversational = regexp.MustCompile(`(?i)(^\W*(picking (this|it|that) (back )?up|let me|let's|here's|here is|sure|okay|ok|got it|thanks|i'll|i will|i've|i'm|i am)\b|\b(you|your|you're|you've|you'd)\b|\b(let me know|i'll|i will|i've)\b)`)
+// A reply that opens as a turn in the conversation rather than a record.
+var reEpisodeOpensAsTurn = regexp.MustCompile(`(?i)^\W*(picking (this|it|that) (back )?up|let me|let's|here's|here is|sure|okay|ok|got it|thanks|i'll|i will|i've|i'm|i am)\b`)
+
+// A first sentence that addresses the user or narrates the model's next
+// action. Applied to the first sentence only, with quoted spans removed, so
+// a third-person summary that quotes the user ("the user said 'your tests
+// fail'") or mentions their files ("configured your .bashrc") later on is
+// not rejected.
+var reEpisodeAddressesUser = regexp.MustCompile(`(?i)\b(you|your|you're|you've|you'd|let me know|i'll|i will|i've)\b`)
+
+// A later sentence that opens in the first person or asks the user to
+// reply ("Fixed the bug. I'll follow up.", "… Let me know if …"): checked
+// over the whole opening, quoted spans removed.
+var reEpisodeLaterTurn = regexp.MustCompile(`(?i)(^|[.!?]\s+)(i'll|i will|i've|let me know)\b`)
+
+// Quoted spans in a sentence: double quotes (straight or curly) and single
+// quotes that open after whitespace, so apostrophes ("user's") are left.
+var reEpisodeQuoted = regexp.MustCompile(`"[^"]*"|“[^”]*”|(^|\s)'[^']*'`)
 
 // episodeOpeningBytes is how much of a reply the conversational check reads.
 const episodeOpeningBytes = 240
@@ -126,14 +140,34 @@ func looksLikeEpisode(reply string) bool {
 		opening = truncateAtRune(opening, episodeOpeningBytes)
 	}
 	// Strip leading markdown emphasis/heading so "**Session summary:** …"
-	// is judged by its words.
+	// is judged by its words; fold curly apostrophes so "I’ll" is "I'll".
 	opening = strings.TrimLeft(opening, "*#_ \t")
-	return !reEpisodeConversational.MatchString(opening)
+	opening = strings.NewReplacer("’", "'", "‘", "'").Replace(opening)
+	if reEpisodeOpensAsTurn.MatchString(opening) {
+		return false
+	}
+	unquoted := reEpisodeQuoted.ReplaceAllString(opening, " ")
+	if reEpisodeLaterTurn.MatchString(unquoted) {
+		return false
+	}
+	return !reEpisodeAddressesUser.MatchString(firstSentence(unquoted))
+}
+
+// firstSentence returns s up to its first sentence end (". ", "! ", "? " or
+// a newline), or all of s.
+func firstSentence(s string) string {
+	end := len(s)
+	for _, term := range []string{". ", "! ", "? ", "\n"} {
+		if i := strings.Index(s, term); i >= 0 && i < end {
+			end = i
+		}
+	}
+	return s[:end]
 }
 
 // truncateEpisodeSummary bounds a summary to maxBytes, preferring the last
 // sentence end in the second half of the allowance so the stored text stays
-// whole sentences. Without one it falls back to a rune-safe cut marked "...".
+// whole sentences. Without one it falls back to a rune-safe cut marked "...", still within maxBytes.
 func truncateEpisodeSummary(s string, maxBytes int) string {
 	if len(s) <= maxBytes {
 		return s
@@ -148,5 +182,5 @@ func truncateEpisodeSummary(s string, maxBytes int) string {
 	if best >= maxBytes/2 {
 		return strings.TrimSpace(cut[:best+1])
 	}
-	return cut + "..."
+	return truncateAtRune(s, maxBytes-3) + "..."
 }

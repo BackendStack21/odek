@@ -1409,7 +1409,7 @@ type scopedFact struct {
 func (m *MemoryManager) extractEpisodeAndFacts(sessionID, convText string, turns int, prov EpisodeProvenance) bool {
 	const system = `You analyze a coding session and produce BOTH a narrative summary and DURABLE, reusable memory facts in a single JSON object.
 
-The "summary" field: 1-3 sentences covering what was implemented/fixed, key files changed, architectural decisions, and the outcome. Format as a narrative summary, not bullet points.
+The "summary" field: 1-3 sentences, third person, past tense, covering what was implemented/fixed, key files changed, architectural decisions, and the outcome. Format as a narrative summary, not bullet points. Do not address the user and do not continue the conversation. If the session has nothing worth remembering (greetings, tests of the assistant, trivial questions), use exactly "NONE".
 
 The "facts" field: ONLY facts worth remembering across future sessions:
 - scope "user": stable preferences or identity of the human (tooling choices, conventions they insist on, how they like answers).

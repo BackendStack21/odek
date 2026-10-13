@@ -57,6 +57,16 @@ func TestRED_PruneRemovesExpiredEphemeralsAndOrphanChunks(t *testing.T) {
 	if err := os.WriteFile(orphan, []byte("orphan text"), 0600); err != nil {
 		t.Fatal(err)
 	}
+	// A chunk written moments ago may belong to an atom another process is
+	// still indexing (Add writes the chunk before atoms.json): never swept.
+	young := filepath.Join(dir, "chunks", "fedcba9876543210fedcba9876543210.md")
+	if err := os.WriteFile(young, []byte("in-flight add"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	oldTime := time.Now().Add(-2 * orphanChunkGrace)
+	if err := os.Chtimes(orphan, oldTime, oldTime); err != nil {
+		t.Fatal(err)
+	}
 
 	// Dry run reports but changes nothing.
 	rep, err := em.Prune(time.Now().UTC(), true)
@@ -95,6 +105,9 @@ func TestRED_PruneRemovesExpiredEphemeralsAndOrphanChunks(t *testing.T) {
 	}
 	if _, err := os.Stat(orphan); !os.IsNotExist(err) {
 		t.Error("orphan chunk not swept")
+	}
+	if _, err := os.Stat(young); err != nil {
+		t.Error("chunk younger than the grace period was swept")
 	}
 	for _, gone := range []string{expiredGoal, expiredQ} {
 		if _, err := os.Stat(filepath.Join(dir, "chunks", gone+".md")); !os.IsNotExist(err) {

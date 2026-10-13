@@ -2,6 +2,7 @@ package extended
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -20,11 +21,22 @@ type PruneReport struct {
 	ExpiredQuarantine int // quarantine entries past quarantine_ttl_days
 }
 
+// orphanChunkGrace is how old a chunk file must be before the sweep treats
+// it as an orphan. AtomStore.Add writes the chunk before the atoms.json
+// entry, and another process (a serve or Telegram daemon extracting atoms
+// while the operator runs prune) is not covered by the in-process locks,
+// so a chunk younger than this is left alone.
+const orphanChunkGrace = 10 * time.Minute
+
 // Prune deletes TTL-expired ephemeral atoms, sweeps orphan chunk files and
 // evicts expired quarantine entries. Recall already hides expired atoms
 // (filterExpiredAtoms); Prune reclaims their space and keeps them out of
 // store-wide passes such as the stale-goal nudges. Pinned and durable atoms
-// are never touched. With dryRun the report is computed and nothing changes.
+// are never touched. With dryRun the report is computed and nothing
+// changes. A failure on one atom does not stop the pass: every step runs
+// and the errors are returned joined, next to the report of what was done.
+// Quarantine eviction uses the wall clock (EvictExpired); now is the TTL
+// reference for atoms.
 func (em *ExtendedMemory) Prune(now time.Time, dryRun bool) (PruneReport, error) {
 	var rep PruneReport
 	if em == nil || !em.Enabled() {
@@ -34,9 +46,8 @@ func (em *ExtendedMemory) Prune(now time.Time, dryRun bool) (PruneReport, error)
 	if err != nil {
 		return rep, err
 	}
-	live := make(map[string]bool, len(atoms))
+	var errs []error
 	for _, a := range atoms {
-		live[a.ID] = true
 		if !AtomExpired(a, em.cfg.EphemeralTTLDays, now) {
 			continue
 		}
@@ -45,52 +56,60 @@ func (em *ExtendedMemory) Prune(now time.Time, dryRun bool) (PruneReport, error)
 			continue
 		}
 		if err := em.ForgetAtom(a.ID); err != nil {
-			return rep, err
+			errs = append(errs, err)
 		}
 	}
 
-	orphans, err := em.store.orphanChunks(live)
+	orphans, err := em.store.sweepOrphanChunks(dryRun, now.Add(-orphanChunkGrace))
 	if err != nil {
-		return rep, err
+		errs = append(errs, err)
 	}
-	rep.OrphanChunks = len(orphans)
-	if !dryRun {
-		for _, p := range orphans {
-			if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
-				return rep, fmt.Errorf("extended store: remove orphan chunk: %w", err)
-			}
-		}
-	}
+	rep.OrphanChunks = orphans
 
 	if dryRun {
-		expired, err := em.quarantine.countExpired(em.cfg.QuarantineTTLDays, now)
+		expired, err := em.quarantine.countExpired(em.cfg.QuarantineTTLDays, time.Now().UTC())
 		if err != nil {
-			return rep, err
+			errs = append(errs, err)
 		}
 		rep.ExpiredQuarantine = expired
-		return rep, nil
+		return rep, errors.Join(errs...)
 	}
 	n, err := em.quarantine.EvictExpired(em.cfg.QuarantineTTLDays)
 	if err != nil {
-		return rep, err
+		errs = append(errs, err)
 	}
 	rep.ExpiredQuarantine = n
-	return rep, nil
+	return rep, errors.Join(errs...)
 }
 
-// orphanChunks returns the paths of chunk files whose atom id is not in
-// live. Only well-formed "<id>.md" names are considered.
-func (s *AtomStore) orphanChunks(live map[string]bool) ([]string, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+// sweepOrphanChunks removes (or, on a dry run, counts) chunk files whose
+// atom id is absent from atoms.json. The index is re-read under the store
+// locks so an atom added between a caller's listing and the sweep is seen,
+// and chunks modified after olderThan are skipped (see orphanChunkGrace).
+// Only well-formed "<id>.md" names are considered.
+func (s *AtomStore) sweepOrphanChunks(dryRun bool, olderThan time.Time) (int, error) {
+	lock := dirLock(s.dir)
+	lock.Lock()
+	defer lock.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	metas, err := s.loadAtomsLocked()
+	if err != nil {
+		return 0, err
+	}
+	live := make(map[string]bool, len(metas))
+	for _, m := range metas {
+		live[m.ID] = true
+	}
 	entries, err := os.ReadDir(s.chunksDir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, nil
+			return 0, nil
 		}
-		return nil, fmt.Errorf("extended store: read chunks: %w", err)
+		return 0, fmt.Errorf("extended store: read chunks: %w", err)
 	}
-	var out []string
+	n := 0
 	for _, e := range entries {
 		if e.IsDir() {
 			continue
@@ -99,9 +118,22 @@ func (s *AtomStore) orphanChunks(live map[string]bool) ([]string, error) {
 		if !ok || id == "" || live[id] {
 			continue
 		}
-		out = append(out, filepath.Join(s.chunksDir, e.Name()))
+		info, err := e.Info()
+		if err != nil || info.ModTime().After(olderThan) {
+			continue
+		}
+		n++
+		if dryRun {
+			continue
+		}
+		if err := os.Remove(filepath.Join(s.chunksDir, e.Name())); err != nil && !os.IsNotExist(err) {
+			return n, fmt.Errorf("extended store: remove orphan chunk: %w", err)
+		}
+		s.chunkCacheMu.Lock()
+		delete(s.chunkCache, id)
+		s.chunkCacheMu.Unlock()
 	}
-	return out, nil
+	return n, nil
 }
 
 // countExpired reports how many quarantine entries EvictExpired would drop
@@ -160,6 +192,8 @@ func (em *ExtendedMemory) Triage(re *regexp.Regexp, move bool, reason string) ([
 			return matched, err
 		}
 		if err := em.store.Remove(a.ID); err != nil {
+			// Undo the quarantine copy so the atom is not in both places.
+			_ = em.quarantine.Forget(a.ID)
 			return matched, err
 		}
 		em.assoc.RemoveAtom(a.ID)

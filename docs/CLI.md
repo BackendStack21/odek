@@ -24,7 +24,7 @@
 | `odek memory promote <session-id>...` | Approve pending episodes for recall; a trusted or already approved episode is refused |
 | `odek memory discard <session-id>...` | Delete pending episodes (alias `reject`); trusted or approved episodes are refused |
 | `odek memory facts [user\|env]` | Show the fact files (numbered entries, bytes used / cap) |
-| `odek memory facts add\|replace\|remove <user\|env> ...` | Edit a fact file from the CLI: `add <text>`, `replace <old-substring> <text>`, `remove <old-substring>`. Same scan and unsafe-content filters as the `memory` tool; merge-on-write off |
+| `odek memory facts add\|replace\|remove <user\|env> ...` | Edit a fact file from the CLI: `add <text>`, `replace <old-substring> <text>`, `remove <old-substring>`. Same filters as the `memory` tool (2048-byte field bound, injection scan incl. the configured guard sidecar, redaction, pipe-to-shell filter); merge-on-write off |
 | `odek memory extended <stats\|compact\|prune [--dry-run]\|triage [--quarantine] <regexp>\|quarantine\|promote\|forget\|pin\|pending\|confirm\|reject\|consolidate\|nudges> [args]` | Extended-memory operations. `stats` reports the persisted vector index; `compact` rebuilds it and waits; `prune` deletes TTL-expired ephemeral atoms, orphan chunk files and expired quarantine entries; `triage` lists live atoms by pattern and `--quarantine` moves them to quarantine for review. See [EXTENDED_MEMORY.md](EXTENDED_MEMORY.md) |
 | `odek memory help` | Print the memory usage (also `odek memory extended help`); every subcommand rejects stray arguments |
 | `odek audit <session-id>` | Print the prompt-injection audit log for a session (JSON) |

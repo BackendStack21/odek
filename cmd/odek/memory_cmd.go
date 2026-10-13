@@ -13,8 +13,10 @@ import (
 
 	"github.com/BackendStack21/odek/internal/config"
 	"github.com/BackendStack21/odek/internal/danger"
+	"github.com/BackendStack21/odek/internal/guard"
 	"github.com/BackendStack21/odek/internal/llmclient"
 	"github.com/BackendStack21/odek/internal/memory"
+	"github.com/BackendStack21/odek/internal/memory/approval"
 	"github.com/BackendStack21/odek/internal/memory/extended"
 )
 
@@ -43,6 +45,7 @@ const extendedUsage = `Usage: odek memory extended <subcommand> [args]
                                expired quarantine entries
   triage [--quarantine] <re>   List live atoms matching a Go regexp; with
                                --quarantine move them to quarantine for review
+                               (use -- before a pattern that starts with --)
   quarantine                   List quarantined atoms
   promote <atom-id>            Restore a quarantined atom as user_approved
   forget <atom-id>             Delete an atom (live or quarantined)
@@ -99,6 +102,10 @@ func memoryCmd(args []string) error {
 				all = true
 				continue
 			}
+			if isHelpArg(a) {
+				fmt.Print(memoryUsage)
+				return nil
+			}
 			return fmt.Errorf("usage: odek memory list [--all] (unexpected argument %q)", danger.SanitizeInline(a))
 		}
 		if all {
@@ -108,7 +115,7 @@ func memoryCmd(args []string) error {
 
 	case sub == "promote":
 		if len(subArgs) == 0 {
-			return fmt.Errorf("usage: odek memory promote <session_id>...")
+			return fmt.Errorf("usage: odek memory promote <session_id> [<session_id> ...]")
 		}
 		var errs []error
 		for _, id := range subArgs {
@@ -124,7 +131,7 @@ func memoryCmd(args []string) error {
 
 	case sub == "discard" || sub == "reject":
 		if len(subArgs) == 0 {
-			return fmt.Errorf("usage: odek memory discard <session_id>...")
+			return fmt.Errorf("usage: odek memory discard <session_id> [<session_id> ...]")
 		}
 		var errs []error
 		for _, id := range subArgs {
@@ -218,8 +225,10 @@ func memoryListAll(store *memory.EpisodeStore) error {
 
 // memoryFactsCmd handles `odek memory facts [...]`: the operator's direct
 // view of and editor for the fact files that every system prompt carries.
-// Writes go through the same scan and unsafe-content filters as the memory
-// tool; merge-on-write is off because an operator edit is explicit.
+// Writes go through the memory tool's filters — the 2048-byte field bound,
+// the injection scan (with the configured guard sidecar when one is set),
+// credential redaction and the pipe-to-shell filter; merge-on-write is off
+// because an operator edit is explicit.
 func memoryFactsCmd(dir string, args []string) error {
 	resolved := config.LoadConfig(config.CLIFlags{})
 	cfg := resolved.Memory
@@ -227,6 +236,14 @@ func memoryFactsCmd(dir string, args []string) error {
 	cfg.MergeOnWrite = memory.BoolPtr(false)
 	cfg.ConsolidateAtCapPct = new(int) // operator edits never trigger LLM consolidation
 	mm := memory.NewMemoryManager(dir, nil, cfg)
+	if g, err := guard.New(&resolved.Guard); err == nil {
+		mm.SetGuard(g, resolved.Guard)
+	} else {
+		fmt.Fprintf(os.Stderr, "odek: warning: guard unavailable, local scan only: %v\n", err)
+	}
+	bounds := func(action, target, content, oldText string) error {
+		return approval.CheckBounds(approval.Args{Action: action, Target: target, Content: content, OldText: oldText})
+	}
 
 	if len(args) == 0 {
 		return memoryFactsShow(mm, "user", "env")
@@ -249,6 +266,9 @@ func memoryFactsCmd(dir string, args []string) error {
 		if err := checkFactTarget(args[1]); err != nil {
 			return err
 		}
+		if err := bounds("add", args[1], args[2], ""); err != nil {
+			return err
+		}
 		if err := mm.AddFact(args[1], args[2]); err != nil {
 			return err
 		}
@@ -261,6 +281,9 @@ func memoryFactsCmd(dir string, args []string) error {
 		if err := checkFactTarget(args[1]); err != nil {
 			return err
 		}
+		if err := bounds("replace", args[1], args[3], args[2]); err != nil {
+			return err
+		}
 		if err := mm.ReplaceFact(args[1], args[2], args[3]); err != nil {
 			return err
 		}
@@ -271,6 +294,9 @@ func memoryFactsCmd(dir string, args []string) error {
 			return err
 		}
 		if err := checkFactTarget(args[1]); err != nil {
+			return err
+		}
+		if err := bounds("remove", args[1], "", args[2]); err != nil {
 			return err
 		}
 		if err := mm.RemoveFact(args[1], args[2]); err != nil {
@@ -337,6 +363,16 @@ func extendedMemoryCmd(dir string, args []string) error {
 
 	sub := args[0]
 	subArgs := args[1:]
+	if isHelpArg(sub) {
+		fmt.Print(extendedUsage)
+		return nil
+	}
+	switch sub {
+	case "forget", "promote", "pin", "quarantine", "compact", "stats", "prune", "triage", "consolidate", "nudges", "pending", "confirm", "reject":
+	default:
+		// Judged before the store is opened so a typo creates no files.
+		return fmt.Errorf("unknown extended memory subcommand %q (expected: stats, compact, prune, triage, quarantine, promote, forget, pin, pending, confirm, reject, consolidate, nudges; see odek memory extended help)", danger.SanitizeInline(sub))
+	}
 
 	extDir := filepath.Join(dir, "extended")
 	cfg := extended.DefaultConfig()
@@ -345,12 +381,8 @@ func extendedMemoryCmd(dir string, args []string) error {
 	em := extended.New(extDir, nil, cfg)
 	defer em.Close()
 
-	switch {
-	case isHelpArg(sub):
-		fmt.Print(extendedUsage)
-		return nil
-
-	case sub == "forget":
+	switch sub {
+	case "forget":
 		if err := exactArgs("extended forget <atom_id>", subArgs, 1); err != nil {
 			return err
 		}
@@ -361,7 +393,7 @@ func extendedMemoryCmd(dir string, args []string) error {
 		fmt.Printf("odek: forgot atom %q\n", danger.SanitizeInline(id))
 		return nil
 
-	case sub == "promote":
+	case "promote":
 		if err := exactArgs("extended promote <atom_id>", subArgs, 1); err != nil {
 			return err
 		}
@@ -372,7 +404,7 @@ func extendedMemoryCmd(dir string, args []string) error {
 		fmt.Printf("odek: promoted atom %q — it can now be recalled into future sessions\n", danger.SanitizeInline(id))
 		return nil
 
-	case sub == "pin":
+	case "pin":
 		if err := exactArgs("extended pin <atom_id>", subArgs, 1); err != nil {
 			return err
 		}
@@ -383,7 +415,7 @@ func extendedMemoryCmd(dir string, args []string) error {
 		fmt.Printf("odek: pinned atom %q\n", danger.SanitizeInline(id))
 		return nil
 
-	case sub == "quarantine":
+	case "quarantine":
 		if err := exactArgs("extended quarantine", subArgs, 0); err != nil {
 			return err
 		}
@@ -409,7 +441,7 @@ func extendedMemoryCmd(dir string, args []string) error {
 		fmt.Println("\nReview and restore with: odek memory extended promote <atom_id>")
 		return nil
 
-	case sub == "compact":
+	case "compact":
 		if err := exactArgs("extended compact", subArgs, 0); err != nil {
 			return err
 		}
@@ -430,7 +462,7 @@ func extendedMemoryCmd(dir string, args []string) error {
 		fmt.Printf("odek: vector index rebuilt — %d vectors persisted (%s)\n", vectors, state)
 		return nil
 
-	case sub == "stats":
+	case "stats":
 		if err := exactArgs("extended stats", subArgs, 0); err != nil {
 			return err
 		}
@@ -463,7 +495,7 @@ func extendedMemoryCmd(dir string, args []string) error {
 		fmt.Printf("  store size:        %.1f MiB\n", float64(st.StoreSizeBytes)/(1<<20))
 		return nil
 
-	case sub == "prune":
+	case "prune":
 		dryRun := false
 		for _, a := range subArgs {
 			if a == "--dry-run" {
@@ -484,17 +516,20 @@ func extendedMemoryCmd(dir string, args []string) error {
 			mode, rep.ExpiredAtoms, rep.OrphanChunks, rep.ExpiredQuarantine, plural(rep.ExpiredQuarantine, "y", "ies"))
 		return nil
 
-	case sub == "triage":
+	case "triage":
 		move := false
 		var pattern string
+		flagsDone := false
 		for _, a := range subArgs {
 			switch {
-			case a == "--quarantine":
+			case !flagsDone && a == "--":
+				flagsDone = true // what follows is the pattern, even if it starts with --
+			case !flagsDone && a == "--quarantine":
 				move = true
-			case pattern == "" && !strings.HasPrefix(a, "--"):
+			case pattern == "" && (flagsDone || !strings.HasPrefix(a, "--")):
 				pattern = a
 			default:
-				return fmt.Errorf("usage: odek memory extended triage [--quarantine] <regexp> (unexpected argument %q)", danger.SanitizeInline(a))
+				return fmt.Errorf("usage: odek memory extended triage [--quarantine] [--] <regexp> (unexpected argument %q)", danger.SanitizeInline(a))
 			}
 		}
 		if pattern == "" {
@@ -534,7 +569,7 @@ func extendedMemoryCmd(dir string, args []string) error {
 		}
 		return nil
 
-	case sub == "consolidate":
+	case "consolidate":
 		if err := exactArgs("extended consolidate", subArgs, 0); err != nil {
 			return err
 		}
@@ -559,7 +594,7 @@ func extendedMemoryCmd(dir string, args []string) error {
 		fmt.Printf("odek: consolidation complete — %d atom(s) merged into existing or new entries\n", merged)
 		return nil
 
-	case sub == "nudges":
+	case "nudges":
 		if err := exactArgs("extended nudges", subArgs, 0); err != nil {
 			return err
 		}
@@ -594,7 +629,7 @@ func extendedMemoryCmd(dir string, args []string) error {
 		}
 		return nil
 
-	case sub == "pending":
+	case "pending":
 		if err := exactArgs("extended pending", subArgs, 0); err != nil {
 			return err
 		}
@@ -616,7 +651,7 @@ func extendedMemoryCmd(dir string, args []string) error {
 		fmt.Println("\nConfirm with: odek memory extended confirm <id>")
 		return nil
 
-	case sub == "confirm":
+	case "confirm":
 		if err := exactArgs("extended confirm <pending_id>", subArgs, 1); err != nil {
 			return err
 		}
@@ -627,7 +662,7 @@ func extendedMemoryCmd(dir string, args []string) error {
 		fmt.Printf("odek: confirmed pending review %q\n", danger.SanitizeInline(id))
 		return nil
 
-	case sub == "reject":
+	case "reject":
 		if err := exactArgs("extended reject <pending_id>", subArgs, 1); err != nil {
 			return err
 		}
@@ -639,6 +674,6 @@ func extendedMemoryCmd(dir string, args []string) error {
 		return nil
 
 	default:
-		return fmt.Errorf("unknown extended memory subcommand %q (expected: stats, compact, prune, triage, quarantine, promote, forget, pin, pending, confirm, reject, consolidate, nudges; see odek memory extended help)", danger.SanitizeInline(sub))
+		return fmt.Errorf("unhandled extended memory subcommand %q", danger.SanitizeInline(sub))
 	}
 }

@@ -147,13 +147,50 @@ func TestRED_ConversationalOrEmptySummaryNotStored(t *testing.T) {
 		}
 	}
 
-	// A real summary still lands.
+	// Genuine summaries still land, including ones that open with a word
+	// starting in "na"/"none", quote the user, or mention "your" files past
+	// the first sentence.
+	for i, reply := range []string{
+		"**Session summary:** the user inspected the fix/verify branch; three findings were fixed RED-first and released as v2.33.2.",
+		"Native module build was fixed in pkg/a.go after the user reported a linker error.",
+		"Navigated the repo and fixed the race in loop.go.",
+		"Refactored the parser; the user said 'your tests fail' and the fix was committed.",
+		"The session configured the CI pipeline. Your .bashrc was also updated to export GOFLAGS.",
+	} {
+		dir := t.TempDir()
+		llm := &capturingLLM{reply: reply}
+		mm := NewMemoryManager(dir, llm, episodeOnlyConfig())
+		mm.OnSessionEndWithProvenance("20260101-real", 3, threeTurns, EpisodeProvenance{})
+		if _, err := os.Stat(filepath.Join(dir, "20260101-real.md")); err != nil {
+			t.Errorf("case %d: genuine summary not stored: %q", i, reply)
+		}
+	}
+	for i, reply := range []string{"I’ll check the branch next.", "None of the tests were run; let me know when you want them."} {
+		if looksLikeEpisode(reply) {
+			t.Errorf("case %d: conversational reply accepted: %q", i, reply)
+		}
+	}
+}
+
+// The combined episode+facts prompt carries the same rules as the
+// single-purpose one (third person, no addressing the user, NONE).
+func TestCombinedPromptSharesEpisodeRules(t *testing.T) {
 	dir := t.TempDir()
-	llm := &capturingLLM{reply: "**Session summary:** the user inspected the fix/verify branch; three findings were fixed RED-first and released as v2.33.2."}
-	mm := NewMemoryManager(dir, llm, episodeOnlyConfig())
-	mm.OnSessionEndWithProvenance("20260101-real", 3, threeTurns, EpisodeProvenance{})
-	if _, err := os.Stat(filepath.Join(dir, "20260101-real.md")); err != nil {
-		t.Fatalf("genuine summary not stored: %v", err)
+	llm := &capturingLLM{reply: `{"summary":"NONE","facts":[]}`}
+	cfg := combinedCfg()
+	mm := NewMemoryManager(dir, llm, cfg)
+	mm.OnSessionEndWithProvenance("20260101-comb", 3, threeTurns, EpisodeProvenance{})
+	system, _ := llm.last()
+	for _, want := range []string{"NONE", "Do not address the user", "third person"} {
+		if !strings.Contains(system, want) {
+			t.Errorf("combined prompt lacks %q", want)
+		}
+	}
+	if len(llm.users) != 1 {
+		t.Errorf("a NONE summary must not trigger the separate-call fallback; %d calls", len(llm.users))
+	}
+	if _, err := os.Stat(filepath.Join(dir, "20260101-comb.md")); err == nil {
+		t.Error("NONE stored as an episode")
 	}
 }
 
@@ -190,7 +227,7 @@ func TestRED_EpisodeSummaryTrimmedAtSentenceBoundary(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, _ = es.Read("20260101-nosent")
-	if !utf8.ValidString(got) || !strings.HasSuffix(got, "...") || len(got) > maxEpisodeSummaryBytes+3 {
+	if !utf8.ValidString(got) || !strings.HasSuffix(got, "...") || len(got) > maxEpisodeSummaryBytes {
 		t.Fatalf("fallback cut wrong: valid=%v len=%d", utf8.ValidString(got), len(got))
 	}
 }
