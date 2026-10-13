@@ -759,3 +759,7 @@ go test ./internal/telegram/ -v -count=1
 # With coverage
 go test -cover ./internal/telegram/
 ```
+
+### Memory episodes
+
+A Telegram chat reuses one permanent session id (`tg-<chat>`) and never reaches the session-end path the CLI, REPL and Web UI use, so its conversations used to produce no memory episode and stayed invisible to recall on every other surface. `/new` archives the conversation — its actual end — and an episode is now extracted there. Provenance is derived from the stored session exactly as elsewhere: a chat that ingested forwards, media or web content yields an **untrusted** episode that waits for `odek memory promote`, so Telegram content never silently enters recall. Extraction is best-effort and never blocks `/new`.

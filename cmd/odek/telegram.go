@@ -340,6 +340,52 @@ func resetChatForNew(chatID int64, sessionManager *telegram.SessionManager, hand
 	}
 }
 
+// telegramEpisodeMemory builds the memory manager used for end-of-conversation
+// episode extraction, mirroring the resume path. Returns nil when memory is
+// disabled or no LLM backend resolves — extraction is best-effort.
+func telegramEpisodeMemory(resolved config.ResolvedConfig) *memory.MemoryManager {
+	if resolved.Memory.Enabled != nil && !*resolved.Memory.Enabled {
+		return nil
+	}
+	llm, err := llmclient.Dial(resolved.Provider, resolved.Model, resolved.APIKey, resolved.BaseURL)
+	if err != nil {
+		return nil
+	}
+	return memory.NewMemoryManager(expandHome("~/.odek/memory"), llm, resolved.Memory)
+}
+
+// telegramEpisodeOnReset extracts a memory episode for a Telegram chat whose
+// conversation is ending.
+//
+// A Telegram chat reuses one permanent session id ("tg-<chat>") and never
+// reaches the session-end path the CLI, REPL and Web UI use, so its
+// conversations never produced an episode and were invisible to recall
+// everywhere else. /new archives the conversation, which is its end, so that
+// is where the episode is extracted. Provenance is derived from the stored
+// session exactly as on the other surfaces: a chat that ingested forwards,
+// media or web content yields an untrusted episode that waits for
+// `odek memory promote`, so Telegram content cannot silently enter recall.
+//
+// Best-effort: any failure is logged by the caller and never blocks /new.
+func telegramEpisodeOnReset(mm *memory.MemoryManager, store *session.Store, chatID int64) {
+	if mm == nil || store == nil {
+		return
+	}
+	id := fmt.Sprintf("tg-%d", chatID)
+	sess, err := store.Load(id)
+	if err != nil || sess == nil {
+		return
+	}
+	msgs := makeSessionMessageStrings(sess)
+	if len(msgs) == 0 {
+		return
+	}
+	mm.OnSessionEndWithProvenance(id, sess.Turns, msgs, memory.DeriveSessionProvenance(sess))
+	// The extraction runs on the manager's tracked background goroutines;
+	// drain them here because nothing else owns this manager's lifetime.
+	mm.WaitForBackground(15 * time.Second)
+}
+
 // telegramCmd is the entry point for "odek telegram".
 func telegramCmd(args []string) error {
 	// The command takes no arguments: everything comes from the telegram
@@ -580,6 +626,12 @@ func telegramCmd(args []string) error {
 			}
 			chatM := pinChat(chatID)
 			chatM.mu.Lock()
+			// The conversation ends here, so extract its episode before the
+			// archive removes the session (every other surface does this at
+			// session end).
+			if episodeMM := telegramEpisodeMemory(resolved); episodeMM != nil {
+				telegramEpisodeOnReset(episodeMM, store, chatID)
+			}
 			resetChatForNew(chatID, sessionManager, handler, handlerLog)
 			unpinChat(chatID, chatM)
 			var b strings.Builder

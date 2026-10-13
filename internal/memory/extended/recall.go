@@ -143,47 +143,58 @@ func (r *Recall) queryAtomsWithPrediction(ctx context.Context, query string, rec
 	}
 
 	if predicting {
-		res := <-predCh
-		intents, err := res.intents, res.err
-		if err != nil {
-			r.trackErr(err)
-			log.Printf("extended memory: predicted-intent generation failed: %v", err)
+		// The predictor runs on a context DETACHED from ours (it needs the
+		// memory-LLM budget, not the few seconds allotted to local vector
+		// search). Waiting on it unconditionally therefore stalls the whole
+		// turn for as long as that budget allows. Take the prediction only if
+		// it arrives within our own deadline; otherwise let it finish in the
+		// background, still deliver its follow-up suggestions, and return
+		// what the literal query already found.
+		var res predictResult
+		got := false
+		select {
+		case res = <-predCh:
+			got = true
+		case <-ctx.Done():
+			r.trackErr(ctx.Err())
+			log.Printf("extended memory: predicted-intent generation exceeded the recall budget; continuing without it")
+			go func() {
+				late := <-predCh
+				if late.err == nil {
+					r.deliverFollowUps(late.intents)
+				}
+			}()
 		}
-		capture := r.followUpSink != nil &&
-			r.cfg.FollowUpSuggestionsEnabled != nil && *r.cfg.FollowUpSuggestionsEnabled
-		minConf := r.cfg.FollowUpSuggestionMinConfidence
-		if minConf <= 0 || minConf > 1 {
-			minConf = DefaultConfig().FollowUpSuggestionMinConfidence
-		}
-		var followUps []PredictedIntent
-		for _, intent := range intents {
-			if intent.Confidence < minPredictedIntentConfidence {
-				continue
-			}
-			if capture && intent.Confidence >= minConf && len(followUps) < maxFollowUpSuggestions {
-				followUps = append(followUps, intent)
-			}
-			// Predicted intents reuse the composite score but skip the paid
-			// LLM rerank, which is reserved for the literal query.
-			predicted, err := r.queryAtomsScored(ctx, intent.Text, true)
+		if got {
+			intents, err := res.intents, res.err
 			if err != nil {
 				r.trackErr(err)
-				continue
+				log.Printf("extended memory: predicted-intent generation failed: %v", err)
 			}
-			// Follow-up anticipation: recall convention/file/error atoms from
-			// the same candidate set instead of re-running the search.
-			predicted = append(predicted, filterScoredByType(predicted, []string{TypeConvention, TypeFile, TypeError})...)
-			for _, s := range predicted {
-				// Weight predicted-intent matches by the intent's confidence
-				// so a speculative intent cannot outrank literal matches.
-				s.score *= intent.Confidence
-				if cur, ok := all[s.atom.ID]; !ok || s.score > cur.score {
-					all[s.atom.ID] = s
+			for _, intent := range intents {
+				if intent.Confidence < minPredictedIntentConfidence {
+					continue
+				}
+				// Predicted intents reuse the composite score but skip the paid
+				// LLM rerank, which is reserved for the literal query.
+				predicted, err := r.queryAtomsScored(ctx, intent.Text, true)
+				if err != nil {
+					r.trackErr(err)
+					continue
+				}
+				// Follow-up anticipation: recall convention/file/error atoms from
+				// the same candidate set instead of re-running the search.
+				predicted = append(predicted, filterScoredByType(predicted, []string{TypeConvention, TypeFile, TypeError})...)
+				for _, s := range predicted {
+					// Weight predicted-intent matches by the intent's confidence
+					// so a speculative intent cannot outrank literal matches.
+					s.score *= intent.Confidence
+					if cur, ok := all[s.atom.ID]; !ok || s.score > cur.score {
+						all[s.atom.ID] = s
+					}
 				}
 			}
-		}
-		if capture {
-			r.followUpSink(followUps)
+			r.deliverFollowUps(intents)
 		}
 	}
 
@@ -206,6 +217,31 @@ func (r *Recall) queryAtomsWithPrediction(ctx context.Context, query string, rec
 		atoms[i] = s.atom
 	}
 	return atoms, nil
+}
+
+// deliverFollowUps hands the high-confidence predicted intents to the
+// follow-up sink. It is called both when the prediction lands inside the
+// recall budget and when it arrives after the caller gave up, so a slow
+// predictor costs latency but never costs the suggestions.
+func (r *Recall) deliverFollowUps(intents []PredictedIntent) {
+	if r.followUpSink == nil ||
+		r.cfg.FollowUpSuggestionsEnabled == nil || !*r.cfg.FollowUpSuggestionsEnabled {
+		return
+	}
+	minConf := r.cfg.FollowUpSuggestionMinConfidence
+	if minConf <= 0 || minConf > 1 {
+		minConf = DefaultConfig().FollowUpSuggestionMinConfidence
+	}
+	var followUps []PredictedIntent
+	for _, intent := range intents {
+		if intent.Confidence < minPredictedIntentConfidence {
+			continue
+		}
+		if intent.Confidence >= minConf && len(followUps) < maxFollowUpSuggestions {
+			followUps = append(followUps, intent)
+		}
+	}
+	r.followUpSink(followUps)
 }
 
 // filterScoredByType returns the candidates whose atom type is in types.
