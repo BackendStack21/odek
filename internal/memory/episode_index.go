@@ -392,13 +392,20 @@ func (vi *episodeVectorIndex) saveLocked() {
 	if vi.store == nil || vi.emb == nil || vi.dir == "" {
 		return
 	}
+	// go-vector writes with os.Create (0666 & umask); the vectors and the
+	// embedder vocabulary reconstruct summary content, so both files are
+	// private like every other file under the memory directory.
 	storePath := filepath.Join(vi.dir, episodeVectorFile)
 	if tmp := storePath + ".tmp"; vi.store.Save(tmp) == nil {
 		if err := os.Rename(tmp, storePath); err != nil {
 			os.Remove(tmp)
+		} else {
+			_ = os.Chmod(storePath, 0600)
 		}
 	}
-	vi.emb.SaveState(filepath.Join(vi.dir, episodeEmbedFile))
+	embPath := filepath.Join(vi.dir, episodeEmbedFile)
+	vi.emb.SaveState(embPath)
+	_ = os.Chmod(embPath, 0600)
 
 	metaPath := filepath.Join(vi.dir, episodeIndexMetaFile)
 	if data, err := json.Marshal(indexMeta{Fingerprint: vi.emb.Fingerprint(), Corpus: vi.corpusFP}); err == nil {
