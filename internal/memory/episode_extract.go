@@ -99,8 +99,9 @@ func buildExtractionTranscript(messages []string) string {
 var reEpisodeDeclined = regexp.MustCompile(`(?i)^\W*((none|n/?a)\b|nothing (to|worth) (persist|remember|summari[sz]|record|note)|no (durable|notable|significant) )`)
 
 // Replies that summarise a session as having nothing in it ("User greeted
-// with 'hi' — nothing to persist. N/A"): a record of absence is not a record.
-var reEpisodeTrivial = regexp.MustCompile(`(?i)(\bnothing (to|worth) (persist|remember|summari[sz]e|record|note)\b|\bn/a\W*$)`)
+// with 'hi' — nothing to persist. N/A", "… so there is nothing worth
+// remembering."): a record of absence is not a record.
+var reEpisodeTrivial = regexp.MustCompile(`(?i)(\bnothing (to|worth) (persist|remember|summari[sz]|record|not)\w*|\bn/a\W*$)`)
 
 // A reply that opens as a turn in the conversation rather than a record.
 var reEpisodeOpensAsTurn = regexp.MustCompile(`(?i)^\W*(picking (this|it|that) (back )?up|let me|let's|here's|here is|sure|okay|ok|got it|thanks|i'll|i will|i've|i'm|i am)\b`)

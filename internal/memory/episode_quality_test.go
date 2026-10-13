@@ -133,6 +133,7 @@ func TestRED_ConversationalOrEmptySummaryNotStored(t *testing.T) {
 		"I'll start by checking the branch, then I've got the release to tag.",
 		"NONE",
 		"User greeted with \"hii\" and \"Wakeup\" — nothing to persist.  N/A",
+		"The session consisted only of two brief definitional questions about AI concepts, with no code written or files changed, so there is nothing worth remembering.",
 		"N/A",
 		"",
 	}
