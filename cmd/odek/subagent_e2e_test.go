@@ -68,6 +68,10 @@ func TestMain(m *testing.M) {
 	// (the sandbox only masked this by setting HOME=/tmp). Tests that need
 	// a specific home still t.Setenv locally; ODEK_TEST_KEEP_REAL_HOME=1 is
 	// the escape hatch for debugging config interactions.
+	// Stashed before the redirect: the live-model injection benchmark
+	// (ODEK_PI_BENCH) borrows the operator's provider credentials from the
+	// real ~/.odek. Nothing else reads it, and the hermetic default stands.
+	operatorRealHome, _ = os.UserHomeDir()
 	if os.Getenv("ODEK_TEST_KEEP_REAL_HOME") != "1" && os.Getenv("ODEK_TEST_HOME") == "" {
 		fixture, err := os.MkdirTemp("", "odek-test-home-*")
 		if err != nil {
@@ -92,6 +96,8 @@ func TestMain(m *testing.M) {
 	keep := map[string]bool{
 		"ODEK_NO_SANDBOX":               true,
 		"ODEK_E2E":                      true,
+		"ODEK_PI_E2E":                   true,
+		"ODEK_PI_BENCH":                 true,
 		"ODEK_BG_SANDBOX_TEST_IMAGE":    true,
 		"ODEK_TEST_HOME":                true,
 		"ODEK_TEST_KEEP_REAL_HOME":      true,

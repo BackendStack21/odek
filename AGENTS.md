@@ -274,6 +274,21 @@ ODEK_E2E=true go test -v -count=1 ./cmd/odek/ -run "TestMCPClientE2E_"
 # Sandbox integration tests (requires Docker)
 go test -v -count=1 ./cmd/odek/ -run "TestSandbox"
 
+# Prompt-injection red-team E2E (on-demand only — NOT on CI; its own gate,
+# ODEK_PI_E2E, is separate from ODEK_E2E). Builds the binary, plants IPI
+# payloads on each ingestion surface, and drives `odek run` with a
+# deliberately compromised mock model to prove the RUNTIME blocks the attack
+# (classifier deny, untrusted wrapper + close-tag neutralisation, SSRF guard,
+# trust-anchor protection, memory fact filter). No live LLM or network.
+ODEK_PI_E2E=true go test -v -count=1 ./cmd/odek/ -run "TestPIE2E"
+
+# Live-model prompt-injection benchmark (on-demand only — NOT on CI; spends
+# real provider tokens). Borrows the operator's provider block + secrets.env
+# into an isolated fixture HOME (memory off), plants injections on real
+# surfaces, and scores the LIVE model: ingested / complied / blocked /
+# reported / leaked. Fails only if the model complied or leaked the canary.
+ODEK_PI_BENCH=true go test -v -count=1 ./cmd/odek/ -run "TestPIBench" -timeout 40m
+
 # PIGuard sidecar E2E (local only — too heavy for CI; provisions the
 # docker stack, runs the env-gated test, tears down. Use --linux on macOS
 # for full socket-mode coverage.)
