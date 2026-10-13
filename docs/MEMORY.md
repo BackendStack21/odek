@@ -170,6 +170,11 @@ The `memory` tool is registered for subagents under the same `tools` filter as a
 so they can write facts. Add `memory` to `tools.disabled` to withhold it from every agent,
 subagents included.
 
+Sub-agents never run per-turn Extended Memory atom extraction (`agent.Config.Subagent`). Their
+incoming "user" message is the task the parent model wrote — possibly carrying text the parent
+ingested from tools — not words of the principal, and per-turn atoms are stored as
+`user_approved`. Extended Memory recall still works in sub-agents.
+
 ## Config
 
 ```json

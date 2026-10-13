@@ -222,6 +222,10 @@ type MemoryManager struct {
 	extSessionID string
 	extProject   string
 	extTurn      int
+	// extractOff disables per-turn atom extraction from incoming user
+	// messages (recall stays on). Sub-agents set it: their "user" messages
+	// are tasks written by the parent model, not words of the principal.
+	extractOff bool
 
 	// notifier receives memory lifecycle events (facts + episodes). Defaults to
 	// a NoopMemoryNotifier so the fire path is always safe without a nil check.
@@ -471,6 +475,25 @@ func (m *MemoryManager) SetSessionContext(sessionID, project string) {
 	}
 }
 
+// SetUserMessageExtraction switches per-turn Extended Memory atom extraction
+// from incoming user messages on or off. Recall is unaffected. Sub-agents
+// turn it off: every atom extracted per turn is stored as user_approved, and
+// a sub-agent's incoming message is the task its parent model wrote, which
+// may carry text the parent ingested from tools — not what the principal
+// said. Trust labels must not be laundered through delegation.
+func (m *MemoryManager) SetUserMessageExtraction(enabled bool) {
+	if m == nil {
+		return
+	}
+	m.extractOff = !enabled
+}
+
+// UserMessageExtractionEnabled reports whether OnUserMessageLoop extracts
+// atoms from incoming user messages.
+func (m *MemoryManager) UserMessageExtractionEnabled() bool {
+	return m != nil && !m.extractOff
+}
+
 // OnUserMessageLoop routes a user message to Extended Memory using the
 // session context previously set via SetSessionContext. It is the callback
 // used by the agent loop to trigger atom extraction when a new user message
@@ -486,7 +509,7 @@ func (m *MemoryManager) SetSessionContext(sessionID, project string) {
 // would otherwise kill the background work instantly. Call WaitForBackground
 // before process exit to drain in-flight extraction.
 func (m *MemoryManager) OnUserMessageLoop(ctx context.Context, msg string) {
-	if m.extended == nil {
+	if m.extended == nil || m.extractOff {
 		return
 	}
 	m.extTurn++

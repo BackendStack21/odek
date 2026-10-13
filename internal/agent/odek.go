@@ -194,6 +194,13 @@ type Config struct {
 	// Default: memory.DefaultMemoryConfig()
 	MemoryConfig memory.MemoryConfig
 
+	// Subagent marks an agent spawned by delegate_tasks. Its incoming
+	// "user" messages are tasks written by the parent model, not words of
+	// the principal, so per-turn Extended Memory atom extraction is
+	// disabled (recall stays on): atoms extracted per turn are stored as
+	// user_approved and recalled into every later session.
+	Subagent bool
+
 	// Guard is the prompt-injection detector shared across subsystems.
 	// When nil, subsystems fall back to local rule-based scanning on demand.
 	Guard guard.Guard
@@ -674,6 +681,9 @@ func New(cfg Config) (_ *Agent, setupErr error) {
 	}
 	memoryManager.InitExtended(memoryLLM, memoryDir)
 	memoryManager.SetGuard(cfg.Guard, cfg.GuardConfig)
+	if cfg.Subagent {
+		memoryManager.SetUserMessageExtraction(false)
+	}
 
 	// Wire memory lifecycle observability: fan out events to the programmatic
 	// handler (WebUI/Telegram/embedders) and the terminal renderer. Mirrors the
