@@ -855,21 +855,16 @@ func TestMemoryPromptCache(t *testing.T) {
 // semantic search — the next task asking "how did we fix the OOM bug?"
 // won't match "User prefers Go".
 func TestOnSessionEnd_ExtractionPromptIsTaskOriented(t *testing.T) {
-	src, err := os.ReadFile("memory.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	content := string(src)
-
 	// The EPISODE extraction prompt must be a task-oriented narrative summary,
 	// not a fact dump. (Durable-fact extraction is a separate, intentional path
-	// — extractFactsFromSession — so "durable facts" legitimately appears
-	// elsewhere in this file; scope the check to the episode prompt itself.)
-	if !strings.Contains(content, "Summarize this session") {
-		t.Error("episode extraction prompt should summarize the session narratively (recoverable by semantic search)")
+	// — extractFactsFromSession.)
+	for _, want := range []string{"Summarize the session", "implemented/fixed", "outcome", "Narrative prose, not bullet points"} {
+		if !strings.Contains(episodeSummaryPrompt, want) {
+			t.Errorf("episode extraction prompt should contain %q (narrative, recoverable by semantic search)", want)
+		}
 	}
-	if !strings.Contains(content, "narrative summary") {
-		t.Error("episode extraction prompt should ask for a narrative summary, not bullet points")
+	if strings.Contains(episodeSummaryPrompt, "one fact per line") {
+		t.Error("episode extraction prompt must not ask for a fact dump")
 	}
 }
 

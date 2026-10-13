@@ -194,19 +194,20 @@ func TestEpisodeStoreLargeSummaryTruncation(t *testing.T) {
 	dir := t.TempDir()
 	es := NewEpisodeStore(dir, nil)
 
-	// 2000 bytes — above 1024 max
-	longSummary := strings.Repeat("fact. ", 500)
+	// Well above the cap.
+	longSummary := strings.Repeat("fact. ", maxEpisodeSummaryBytes)
 	err := es.Write("sess-001", longSummary, 5)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	content, _ := es.Read("sess-001")
-	if len(content) > 1050 {
+	if len(content) > maxEpisodeSummaryBytes {
 		t.Errorf("summary should be truncated, got %d bytes", len(content))
 	}
-	if !strings.HasSuffix(content, "...") {
-		t.Error("truncated summary should end with ...")
+	// Cut at a sentence end, so no "..." fragment marker.
+	if !strings.HasSuffix(content, "fact.") {
+		t.Errorf("truncated summary should end at a sentence boundary, got …%q", content[len(content)-12:])
 	}
 }
 
@@ -314,8 +315,8 @@ func TestEpisodeStore_Write_TruncatesSummary(t *testing.T) {
 	es := NewEpisodeStore(dir, func(q string, eps []EpisodeMeta) ([]EpisodeMeta, error) {
 		return eps, nil
 	})
-	// Generate a summary longer than 1024 bytes
-	longSummary := strings.Repeat("This is a very long summary that should be truncated. ", 50)
+	// Generate a summary well beyond the cap.
+	longSummary := strings.Repeat("This is a very long summary that should be truncated. ", maxEpisodeSummaryBytes/40)
 	err := es.Write("sess-trunc", longSummary, 5)
 	if err != nil {
 		t.Fatal(err)
@@ -324,11 +325,11 @@ func TestEpisodeStore_Write_TruncatesSummary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(content) > 1100 {
+	if len(content) > maxEpisodeSummaryBytes {
 		t.Errorf("summary too long after truncation: %d bytes", len(content))
 	}
-	if !strings.HasSuffix(content, "...") {
-		t.Errorf("expected truncated suffix '...', got %q", content[len(content)-10:])
+	if !strings.HasSuffix(content, "truncated.") {
+		t.Errorf("expected a sentence-boundary cut, got %q", content[len(content)-12:])
 	}
 }
 

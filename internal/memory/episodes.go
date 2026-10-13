@@ -24,7 +24,11 @@ import (
 )
 
 // maxEpisodeSummaryBytes caps how much summary text we store per episode.
-const maxEpisodeSummaryBytes = 1024
+// Recall injects at most three episodes per turn, so the cap bounds the
+// prompt cost at ~6 KiB; the cut prefers a sentence end
+// (truncateEpisodeSummary) so the outcome, which comes last, is not lost
+// mid-word.
+const maxEpisodeSummaryBytes = 2048
 
 // episodeIndexFile is the index filename inside the episodes dir.
 const episodeIndexFile = "index.json"
@@ -243,11 +247,8 @@ func (e *EpisodeStore) WriteWithProvenance(sessionID, summary string, turns int,
 	// into a form the patterns no longer recognise.
 	summary = redact.RedactSecrets(summary)
 
-	// Truncate summary to cap
-	if len(summary) > maxEpisodeSummaryBytes {
-		// Truncate at a rune boundary to avoid storing invalid UTF-8.
-		summary = truncateAtRune(summary, maxEpisodeSummaryBytes) + "..."
-	}
+	// Bound the summary, cutting at a sentence end where possible.
+	summary = truncateEpisodeSummary(summary, maxEpisodeSummaryBytes)
 
 	unlock, err := lockEpisodes(e.dir)
 	if err != nil {
