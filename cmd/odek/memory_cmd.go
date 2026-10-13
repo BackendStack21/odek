@@ -167,7 +167,7 @@ func memoryListPending(store *memory.EpisodeStore) error {
 	}
 	fmt.Printf("%d episode(s) pending review (excluded from recall until promoted):\n\n", len(pending))
 	for _, ep := range pending {
-		fmt.Printf("• %s  (%d turns, %s)\n", ep.SessionID, ep.Turns, ep.CreatedAt.Format("2006-01-02 15:04"))
+		fmt.Printf("• %s  (%d turns, %s)\n", danger.SanitizeInline(ep.SessionID), ep.Turns, ep.CreatedAt.Format("2006-01-02 15:04"))
 		if len(ep.Provenance.Sources) > 0 {
 			fmt.Printf("    sources: %s\n", danger.SanitizeInline(strings.Join(ep.Provenance.Sources, ", ")))
 		}
@@ -214,7 +214,7 @@ func memoryListAll(store *memory.EpisodeStore) error {
 	fmt.Printf("%d episode(s): %d trusted, %d approved, %d auto-approved, %d pending\n\n",
 		len(idx), counts["trusted"], counts["approved"], counts["auto-approved"], counts["pending"])
 	for _, ep := range idx {
-		fmt.Printf("• %s  [%s]  %d turns, %s\n", ep.SessionID, episodeState(ep.Provenance), ep.Turns, ep.CreatedAt.Format("2006-01-02 15:04"))
+		fmt.Printf("• %s  [%s]  %d turns, %s\n", danger.SanitizeInline(ep.SessionID), episodeState(ep.Provenance), ep.Turns, ep.CreatedAt.Format("2006-01-02 15:04"))
 		if len(ep.Provenance.Sources) > 0 {
 			fmt.Printf("    sources: %s\n", danger.SanitizeInline(strings.Join(ep.Provenance.Sources, ", ")))
 		}
@@ -374,11 +374,16 @@ func extendedMemoryCmd(dir string, args []string) error {
 		return fmt.Errorf("unknown extended memory subcommand %q (expected: stats, compact, prune, triage, quarantine, promote, forget, pin, pending, confirm, reject, consolidate, nudges; see odek memory extended help)", danger.SanitizeInline(sub))
 	}
 
+	// Open the store with the operator's resolved Extended Memory config —
+	// TTLs and the embedding backend must match what the agent's recall
+	// uses, or prune deletes what recall still serves and compact rebuilds
+	// the index in the wrong space. No eviction on open: reporting commands
+	// change nothing, prune evicts explicitly.
 	extDir := filepath.Join(dir, "extended")
-	cfg := extended.DefaultConfig()
-	enabled := true
-	cfg.Enabled = &enabled
-	em := extended.New(extDir, nil, cfg)
+	resolved := config.LoadConfig(config.CLIFlags{})
+	cfg := memory.ExtendedConfigFor(resolved.Memory)
+	cfg.Enabled = memory.BoolPtr(true)
+	em := extended.NewForMaintenance(extDir, nil, cfg)
 	defer em.Close()
 
 	switch sub {
@@ -573,9 +578,8 @@ func extendedMemoryCmd(dir string, args []string) error {
 		if err := exactArgs("extended consolidate", subArgs, 0); err != nil {
 			return err
 		}
-		// Merging near-duplicate atoms needs an LLM; resolve the operator
-		// backend the same way the agent does.
-		resolved := config.LoadConfig(config.CLIFlags{})
+		// Merging near-duplicate atoms needs an LLM; the operator backend
+		// is resolved the same way the agent does.
 		if resolved.APIKey == "" {
 			return fmt.Errorf("memory extended consolidate requires an LLM backend (no API key resolved)")
 		}
@@ -598,9 +602,7 @@ func extendedMemoryCmd(dir string, args []string) error {
 		if err := exactArgs("extended nudges", subArgs, 0); err != nil {
 			return err
 		}
-		// Generating nudges needs an LLM; resolve the operator backend the
-		// same way the agent does (same pattern as consolidate).
-		resolved := config.LoadConfig(config.CLIFlags{})
+		// Generating nudges needs an LLM (same pattern as consolidate).
 		if resolved.APIKey == "" {
 			return fmt.Errorf("memory extended nudges requires an LLM backend (no API key resolved)")
 		}

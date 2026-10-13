@@ -3,6 +3,7 @@ package extended
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/BackendStack21/odek/internal/flock"
 	"os"
 	"path/filepath"
 	"sort"
@@ -92,6 +93,11 @@ func (s *AtomStore) Add(atom MemoryAtom, maxChars int) error {
 	lock := dirLock(s.dir)
 	lock.Lock()
 	defer lock.Unlock()
+	release, err := s.lockFile()
+	if err != nil {
+		return err
+	}
+	defer release()
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -191,6 +197,11 @@ func (s *AtomStore) Remove(id string) error {
 	lock := dirLock(s.dir)
 	lock.Lock()
 	defer lock.Unlock()
+	release, err := s.lockFile()
+	if err != nil {
+		return err
+	}
+	defer release()
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -265,6 +276,11 @@ func (s *AtomStore) Pin(id string, pin bool) error {
 	lock := dirLock(s.dir)
 	lock.Lock()
 	defer lock.Unlock()
+	release, err := s.lockFile()
+	if err != nil {
+		return err
+	}
+	defer release()
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -445,6 +461,18 @@ func (s *AtomStore) sizeLocked() (int64, error) {
 	}
 	total += size
 	return total, nil
+}
+
+// lockFile takes the cross-process advisory lock on atoms.json. The
+// in-process dirLock serialises goroutines of one process; an operator
+// command (prune, triage, forget) runs beside a serve or Telegram daemon
+// that adds atoms, and two processes doing read-modify-write on atoms.json
+// would otherwise lose each other's updates.
+func (s *AtomStore) lockFile() (func(), error) {
+	if err := os.MkdirAll(s.dir, 0700); err != nil {
+		return nil, fmt.Errorf("extended store: mkdir: %w", err)
+	}
+	return flock.Lock(filepath.Join(s.dir, "atoms.lock"))
 }
 
 func (s *AtomStore) chunkPath(id string) string {

@@ -3651,7 +3651,9 @@ func continueCmd(args []string) (outcome error) {
 	// via WaitForBackground before process exit so it is not silently lost.
 	if mm := agent.Memory(); mm != nil {
 		mm.RunBackground(func() {
-			msgStrs := makeSessionMessageStrings(sess)
+			// The reloaded session carries the turn that just ran; sess is
+			// the pre-turn snapshot.
+			msgStrs := makeSessionMessageStrings(updated)
 			prov := memory.DeriveSessionProvenance(updated)
 			mm.OnSessionEndWithProvenance(sess.ID, sess.Turns+1, msgStrs, prov)
 		})

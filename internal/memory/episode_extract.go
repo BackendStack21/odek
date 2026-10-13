@@ -94,33 +94,47 @@ func buildExtractionTranscript(messages []string) string {
 	return b.String()
 }
 
-// Replies that decline to summarise. The prompt asks for exactly NONE; older
-// models answered in prose. Word-bounded so "Native…"/"Navigated…" pass.
-var reEpisodeDeclined = regexp.MustCompile(`(?i)^\W*((none|n/?a)\b|nothing (to|worth) (persist|remember|summari[sz]|record|note)|no (durable|notable|significant) )`)
+// A reply that is nothing but a decline: NONE, N/A, or one short sentence
+// saying there is nothing to record. Anchored at both ends so a summary
+// that merely begins with "None of the tests…" or "No significant
+// regressions were found; …" is not mistaken for one.
+var reEpisodeDeclined = regexp.MustCompile(`(?i)^\W*(none|n/?a|nothing (to|worth) \w+|no (durable|notable|significant) [^.!?;]{0,80})[.!]?\W*$`)
 
-// Replies that summarise a session as having nothing in it ("User greeted
-// with 'hi' — nothing to persist. N/A", "… so there is nothing worth
-// remembering."): a record of absence is not a record.
-var reEpisodeTrivial = regexp.MustCompile(`(?i)(\bnothing (to|worth) (persist|remember|summari[sz]|record|not)\w*|\bn/a\W*$)`)
+// A reply that records an absence rather than a session: "there is nothing
+// worth remembering", a short note ending in "nothing to persist" or
+// "N/A". The phrase inside a longer sentence about code ("the no-op when
+// the buffer has nothing to persist") is not matched: the short-reply rule
+// is bounded at episodeTrivialMaxBytes and the long form needs "there is".
+var reEpisodeTrivial = regexp.MustCompile(`(?i)(\bthere (is|was) nothing (to|worth|durable|notable)\b|\bn/a\W*$)`)
 
-// A reply that opens as a turn in the conversation rather than a record.
-var reEpisodeOpensAsTurn = regexp.MustCompile(`(?i)^\W*(picking (this|it|that) (back )?up|let me|let's|here's|here is|sure|okay|ok|got it|thanks|i'll|i will|i've|i'm|i am)\b`)
+// reEpisodeTrivialShort is applied only to replies of at most
+// episodeTrivialMaxBytes.
+var reEpisodeTrivialShort = regexp.MustCompile(`(?i)\bnothing (to|worth) (persist|remember|summari[sz]|record|not)\w*`)
+
+const episodeTrivialMaxBytes = 120
+
+// A reply that opens as a turn in the conversation rather than a record:
+// an acknowledgement followed by punctuation, a first-person opener, or a
+// "let me / let's / here's" continuation. "Let's Encrypt…", "OK status
+// codes…" and "Thanks to a new cache…" are not matched.
+var reEpisodeOpensAsTurn = regexp.MustCompile(`(?i)^\W*((picking (this|it|that) (back )?up|i'll|i will|i've|i'm|i am)\b|(sure|okay|ok|got it|thanks|alright|certainly)\s*[,.!—–-]|let me (know|check|start|look|see|verify|take|try|pick|re-?run|summari[sz]e)\b|let's (start|begin|check|look|see|pick|continue|move|go|try|get|dig|recap|verify)\b|here('s| is) (what|the|a|my|an)\b)`)
 
 // A first sentence that addresses the user or narrates the model's next
-// action. Applied to the first sentence only, with quoted spans removed, so
-// a third-person summary that quotes the user ("the user said 'your tests
-// fail'") or mentions their files ("configured your .bashrc") later on is
-// not rejected.
-var reEpisodeAddressesUser = regexp.MustCompile(`(?i)\b(you|your|you're|you've|you'd|let me know|i'll|i will|i've)\b`)
+// action. Applied to the first sentence only, with quoted and code spans
+// removed, so a third-person summary that quotes the user ("the user said
+// 'your tests fail'"), documents a `you` alias or mentions their files later
+// on is not rejected.
+var reEpisodeAddressesUser = regexp.MustCompile(`(?i)\b(you (can|should|may|might|need|want|asked|said|told|mentioned|wanted|requested)|you'll|you'd|you've|if you|let me know|your (request|question|message|turn|answer)|i'll|i will|i've)\b`)
 
-// A later sentence that opens in the first person or asks the user to
-// reply ("Fixed the bug. I'll follow up.", "… Let me know if …"): checked
-// over the whole opening, quoted spans removed.
-var reEpisodeLaterTurn = regexp.MustCompile(`(?i)(^|[.!?]\s+)(i'll|i will|i've|let me know)\b`)
+// A later sentence that opens in the second or first person or asks the
+// user to reply ("Fixed the flaky test. You can rerun it with make test.",
+// "… Let me know if …"): checked over the whole opening, spans removed.
+var reEpisodeLaterTurn = regexp.MustCompile(`(?i)(^|[.!?]\s+)(you (can|should|may|might|need|want)|you'll|i'll|i will|i've|let me know)\b`)
 
-// Quoted spans in a sentence: double quotes (straight or curly) and single
-// quotes that open after whitespace, so apostrophes ("user's") are left.
-var reEpisodeQuoted = regexp.MustCompile(`"[^"]*"|“[^”]*”|(^|\s)'[^']*'`)
+// Quoted and code spans in a sentence: double quotes (straight or curly),
+// backticks, and single quotes that open after whitespace, so apostrophes
+// ("user's") are left.
+var reEpisodeQuoted = regexp.MustCompile("\"[^\"]*\"|“[^”]*”|`[^`]*`|(^|\\s)'[^']*'")
 
 // episodeOpeningBytes is how much of a reply the conversational check reads.
 const episodeOpeningBytes = 240
@@ -133,7 +147,13 @@ const episodeOpeningBytes = 240
 // later session would be noise at best.
 func looksLikeEpisode(reply string) bool {
 	reply = strings.TrimSpace(reply)
-	if reply == "" || reEpisodeDeclined.MatchString(reply) || reEpisodeTrivial.MatchString(reply) {
+	if reply == "" || reEpisodeDeclined.MatchString(reply) {
+		return false
+	}
+	// Quoted and code spans are what the session worked on, not what the
+	// reply says about it ("a 'Nothing to summarize' placeholder was added").
+	plain := reEpisodeQuoted.ReplaceAllString(reply, " ")
+	if reEpisodeTrivial.MatchString(plain) || (len(reply) <= episodeTrivialMaxBytes && reEpisodeTrivialShort.MatchString(plain)) {
 		return false
 	}
 	opening := reply

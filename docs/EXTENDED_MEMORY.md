@@ -526,7 +526,7 @@ odek memory extended nudges
 | `consolidate` | Merges near-duplicate live atoms via the LLM (requires a configured backend). |
 | `nudges` | Previews up to two proactive nudges without consuming the daily cap (requires a configured backend). |
 
-Every subcommand rejects stray arguments; `odek memory extended help` prints the usage.
+Every subcommand rejects stray arguments; `odek memory extended help` prints the usage. The CLI opens the store with the operator's resolved `memory.extended` config (TTLs, embedding backend) so it judges atoms exactly as the agent's recall does, and — unlike an agent, which evicts expired quarantine entries when it opens the store — it changes nothing on open: only `prune` evicts.
 
 The `odek memory promote <session-id>` command that already exists promotes **episodes**, not atoms. Atom promotion and pinning are explicitly human-gated and not exposed as agent tool confirmations.
 

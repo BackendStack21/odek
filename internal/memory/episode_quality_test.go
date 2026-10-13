@@ -157,6 +157,15 @@ func TestRED_ConversationalOrEmptySummaryNotStored(t *testing.T) {
 		"Navigated the repo and fixed the race in loop.go.",
 		"Refactored the parser; the user said 'your tests fail' and the fix was committed.",
 		"The session configured the CI pipeline. Your .bashrc was also updated to export GOFLAGS.",
+		"The audit writer was changed so a turn with nothing to record no longer writes an empty entry (audit.go); tests cover the no-op when the buffer has nothing to persist.",
+		"A 'Nothing to summarize' placeholder was added to the WebUI instead of N/A, and the session page renders it.",
+		"None of the existing tests covered the retry path, so the session added TestRetry and fixed the backoff.",
+		"No significant regressions were found; the session upgraded Go to 1.27 and re-ran the suite.",
+		"Let's Encrypt renewal was automated with a cron entry in deploy/renew.sh.",
+		"OK status codes were treated as errors by the client; the session fixed the check in http_request_tool.go.",
+		"Thanks to a new cache layer in render.go the session cut page build time in half.",
+		"The session fixed the bug where you could not log in after a password reset (auth.go).",
+		"The assistant documented the `you` alias in the shell helper and added a test.",
 	} {
 		dir := t.TempDir()
 		llm := &capturingLLM{reply: reply}
@@ -166,7 +175,15 @@ func TestRED_ConversationalOrEmptySummaryNotStored(t *testing.T) {
 			t.Errorf("case %d: genuine summary not stored: %q", i, reply)
 		}
 	}
-	for i, reply := range []string{"I’ll check the branch next.", "None of the tests were run; let me know when you want them."} {
+	for i, reply := range []string{
+		"I’ll check the branch next.",
+		"None of the tests were run; let me know when you want them.",
+		"Fixed the flaky test. You can rerun it with make test.",
+		"Sure, here's what happened: the parser was fixed.",
+		"Let me know if you want the plan file removed too.",
+		"The session consisted only of two brief definitional questions, so there is nothing worth remembering.",
+		"No durable facts.",
+	} {
 		if looksLikeEpisode(reply) {
 			t.Errorf("case %d: conversational reply accepted: %q", i, reply)
 		}

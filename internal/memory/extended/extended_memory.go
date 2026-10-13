@@ -100,6 +100,18 @@ func llmDeadline(llm LLMClient) time.Duration {
 
 // New creates an ExtendedMemory instance rooted at dir.
 func New(dir string, llm LLMClient, cfg Config) *ExtendedMemory {
+	return newExtended(dir, llm, cfg, true)
+}
+
+// NewForMaintenance opens the store like New but without the startup
+// eviction of expired quarantine entries, so an operator command that only
+// reports (stats, quarantine, prune --dry-run) changes nothing on open;
+// Prune evicts explicitly.
+func NewForMaintenance(dir string, llm LLMClient, cfg Config) *ExtendedMemory {
+	return newExtended(dir, llm, cfg, false)
+}
+
+func newExtended(dir string, llm LLMClient, cfg Config, evictOnOpen bool) *ExtendedMemory {
 	cfg = Resolve(cfg)
 	store := NewAtomStore(dir)
 	newEmb := func() embedding.TextEmbedder {
@@ -137,6 +149,14 @@ func New(dir string, llm LLMClient, cfg Config) *ExtendedMemory {
 		return !strings.Contains(err.Error(), "not found")
 	})
 	_ = em.userModel.Load()
+	if !evictOnOpen {
+		// Listing the quarantine also evicts expired entries when a TTL is
+		// set (Quarantine.loadLocked); a maintenance open keeps the TTL at
+		// zero so nothing is dropped until Prune evicts explicitly with
+		// the configured TTL.
+		em.quarantine.SetTTLDays(0)
+		return em
+	}
 	em.quarantine.SetTTLDays(cfg.QuarantineTTLDays)
 	if removed, err := em.quarantine.EvictExpired(cfg.QuarantineTTLDays); err != nil {
 		log.Printf("extended memory: startup quarantine eviction failed: %v", err)

@@ -31,10 +31,17 @@ func TestRED_SubagentUserMessagesNeverBecomeAtoms(t *testing.T) {
 		t.Fatalf("extraction LLM called %d times for a sub-agent task message; want 0", b.calls.Load())
 	}
 
-	// Recall stays wired: the sub-agent still benefits from what the
-	// principal told the parent.
-	if got := mm.FormatExtendedContext(context.Background(), "verdict"); got != "" {
-		t.Logf("recall context (empty store): %q", got)
+	// The switch is reversible and reported.
+	if mm.UserMessageExtractionEnabled() {
+		t.Fatal("extraction reported enabled while off")
+	}
+	mm.SetUserMessageExtraction(true)
+	mm.OnUserMessageLoop(context.Background(), "I prefer tabs")
+	if !mm.WaitForBackground(5 * time.Second) {
+		t.Fatal("background work did not drain")
+	}
+	if b.calls.Load() == 0 || !mm.UserMessageExtractionEnabled() {
+		t.Fatal("extraction did not resume after re-enabling")
 	}
 }
 

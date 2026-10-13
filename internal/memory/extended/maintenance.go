@@ -91,6 +91,11 @@ func (s *AtomStore) sweepOrphanChunks(dryRun bool, olderThan time.Time) (int, er
 	lock := dirLock(s.dir)
 	lock.Lock()
 	defer lock.Unlock()
+	release, err := s.lockFile()
+	if err != nil {
+		return 0, err
+	}
+	defer release()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 

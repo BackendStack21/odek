@@ -405,10 +405,7 @@ func (m *MemoryManager) InitExtended(memoryLLM extended.LLMClient, memoryDir str
 	if m.cfg.Extended == nil {
 		m.cfg.Extended = &extended.Config{}
 	}
-	cfg := extended.Resolve(*m.cfg.Extended)
-	if cfg.Embedding == nil && m.cfg.Embedding != nil {
-		cfg.Embedding = m.cfg.Embedding
-	}
+	cfg := ExtendedConfigFor(m.cfg)
 	if memoryDir == "" {
 		memoryDir = m.facts.dir
 	}
@@ -417,6 +414,24 @@ func (m *MemoryManager) InitExtended(memoryLLM extended.LLMClient, memoryDir str
 	if m.guard != nil {
 		m.extended.SetGuard(m.guard, m.guardCfg)
 	}
+}
+
+// ExtendedConfigFor resolves the Extended Memory config the agent runs with
+// from the memory section: subsystem defaults, the operator's overrides, and
+// the shared memory.embedding backend when the extended section sets none.
+// Operator surfaces that open the store outside an agent (the CLI) must use
+// the same resolution, or TTLs and the embedding space diverge from what
+// recall uses.
+func ExtendedConfigFor(cfg MemoryConfig) extended.Config {
+	ext := extended.Config{}
+	if cfg.Extended != nil {
+		ext = *cfg.Extended
+	}
+	resolved := extended.Resolve(ext)
+	if resolved.Embedding == nil && cfg.Embedding != nil {
+		resolved.Embedding = cfg.Embedding
+	}
+	return resolved
 }
 
 // OnUserMessage routes a user message to Extended Memory for atom extraction.
@@ -1035,7 +1050,6 @@ func (m *MemoryManager) RemoveFactApproved(target, oldText, expected string) err
 	return nil
 }
 
-// ReadFacts returns the full content of user and env fact files.
 // FactStats returns the entries of one fact target with the bytes used and
 // the target's cap — what the memory tool's stats action reports, for
 // operator surfaces such as `odek memory facts`.
@@ -1050,6 +1064,7 @@ func (m *MemoryManager) FactStats(target string) (entries []string, used, capByt
 	return entries, m.facts.sizeOf(entries), m.facts.cap(target), nil
 }
 
+// ReadFacts returns the full content of user and env fact files.
 func (m *MemoryManager) ReadFacts() (userContent, envContent string, err error) {
 	u, err := m.facts.Read("user")
 	if err != nil {

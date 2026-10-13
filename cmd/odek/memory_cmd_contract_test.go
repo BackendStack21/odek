@@ -260,6 +260,37 @@ func TestMemoryCmd_HelpAndTyposCreateNoFiles(t *testing.T) {
 	}
 }
 
+// TestRED_MemoryCmd_ExtendedUsesOperatorConfig: the CLI opens the store with
+// the operator's resolved Extended Memory config, so prune applies the
+// configured ephemeral TTL — not the default — and never deletes an atom
+// that the agent's recall still serves.
+func TestRED_MemoryCmd_ExtendedUsesOperatorConfig(t *testing.T) {
+	home := setupTestHome(t)
+	os.MkdirAll(filepath.Join(home, ".odek"), 0700)
+	if err := os.WriteFile(filepath.Join(home, ".odek", "config.json"), []byte(`{"memory":{"extended":{"enabled":true,"ephemeral_ttl_days":60}}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	extDir := filepath.Join(home, ".odek", "memory", "extended")
+	cfg := extended.DefaultConfig()
+	cfg.Enabled = memory.BoolPtr(true)
+	seeder := extended.New(extDir, nil, cfg)
+	if err := seeder.AddAtom(context.Background(), extended.MemoryAtom{Text: "Ship the schedules migration", Type: extended.TypeGoal, SourceClass: extended.SourceUserSaid, CreatedAt: time.Now().Add(-20 * 24 * time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	seeder.Close()
+	out := captureStdout(func() {
+		if err := memoryCmd([]string{"extended", "prune"}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !strings.Contains(out, "0 expired") {
+		t.Errorf("prune ignored ephemeral_ttl_days=60 (20-day-old goal):\n%s", out)
+	}
+	if live, _ := extended.New(extDir, nil, cfg).List(); len(live) != 1 {
+		t.Fatalf("prune deleted a goal recall still serves: %d live", len(live))
+	}
+}
+
 // TestRED_MemoryCmd_ExtendedPruneAndTriage: prune removes expired
 // ephemerals (dry run first), triage lists and quarantines by pattern.
 func TestRED_MemoryCmd_ExtendedPruneAndTriage(t *testing.T) {
