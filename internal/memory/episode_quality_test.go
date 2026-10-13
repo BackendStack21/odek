@@ -166,6 +166,9 @@ func TestRED_ConversationalOrEmptySummaryNotStored(t *testing.T) {
 		"Thanks to a new cache layer in render.go the session cut page build time in half.",
 		"The session fixed the bug where you could not log in after a password reset (auth.go).",
 		"The assistant documented the `you` alias in the shell helper and added a test.",
+		"Ran the benchmarks; there is nothing worth optimizing in parser.go so the session only added tests.",
+		"The migration was reverted cleanly: there was nothing to roll back in the schema, and the session re-ran the suite.",
+		"Debugged the cache. Nothing to remember about the old path; the session replaced it with an LRU in cache.go.",
 	} {
 		dir := t.TempDir()
 		llm := &capturingLLM{reply: reply}
@@ -183,6 +186,14 @@ func TestRED_ConversationalOrEmptySummaryNotStored(t *testing.T) {
 		"Let me know if you want the plan file removed too.",
 		"The session consisted only of two brief definitional questions, so there is nothing worth remembering.",
 		"No durable facts.",
+		"You're all set: the parser was fixed.",
+		"Sure thing — the parser was fixed.",
+		"Okay so here's the fix: parser patched.",
+		"Done. The parser was fixed and the tests pass.",
+		"Great question! The parser was fixed.",
+		"The parser was fixed. Want me to also add tests?",
+		"Fixed the parser. I can also add tests if needed.",
+		"The parser was fixed and the suite passes. Hope this helps!",
 	} {
 		if looksLikeEpisode(reply) {
 			t.Errorf("case %d: conversational reply accepted: %q", i, reply)
