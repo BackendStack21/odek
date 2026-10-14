@@ -145,7 +145,7 @@ var patternsTail = []*regexp.Regexp{
 	// basic auth URLs that often appear legitimately in code). The
 	// password segment must be at least 6 chars to avoid matching common
 	// placeholders like `:x@`.
-	regexp.MustCompile(`(?i)\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqps?|mssql|clickhouse)://[^:\s/]+:[^@\s/]{6,}@[^\s'\x60"]+`),
+	regexp.MustCompile(`(?i)\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|rediss?|amqps?|mssql|clickhouse)://[^:\s/]*:[^@\s/]{6,}@[^\s'\x60"]+`),
 }
 
 // Credential-named assignments (api_key, access_token, password,
