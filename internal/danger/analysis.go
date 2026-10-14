@@ -200,7 +200,7 @@ func analyzeWithStateWork(cmd string, depth int, inherited *shellAnalysisState, 
 	if pgrepFeedsKill(tokens, subs) {
 		result.add(SystemWrite)
 	}
-	if namerefNamesSecret(tokens) {
+	if namerefNamesSecret(tokens, ops) {
 		result.add(SystemWrite)
 	}
 	if unterminated {

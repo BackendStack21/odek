@@ -212,3 +212,74 @@ func TestPackageManagerSettingsOrdinaryFormsStaySafe(t *testing.T) {
 		}
 	}
 }
+
+// A nameref declaration judges its own target, not every word of the line:
+// a static, non-secret target leaves unrelated secret-shaped words alone.
+func TestRED_NamerefJudgesOnlyItsTarget(t *testing.T) {
+	t.Setenv("HOME", "/home/user")
+	t.Chdir(t.TempDir())
+	for _, cmd := range []string{
+		`declare -n ref=result; grep GITHUB_TOKEN README.md`,
+		`local -n out=result; echo OPENAI_API_KEY is required`,
+		`declare -n r=x; echo FOO=$BAR`,
+		`typeset -n a=b; printf '%s\n' AWS_SECRET_ACCESS_KEY`,
+		`declare -n r=items[0]; echo GITHUB_TOKEN`,
+		`declare -n r=x; r=GITHUB_TOKEN; echo $r`,
+	} {
+		if namerefNamesSecretLedgerProbe(cmd) {
+			t.Errorf("nameref rule fired on %q: its target is static and not a secret", cmd)
+		}
+	}
+}
+
+// Targets the analysis cannot know statically, or that name a secret through
+// any route bash offers, still fire.
+func TestNamerefTargetsFailClosed(t *testing.T) {
+	t.Setenv("HOME", "/home/user")
+	t.Chdir(t.TempDir())
+	for _, cmd := range []string{
+		`declare -n a=SESSION_COOKIE; echo $a`,
+		`declare -n r=GITHUB_TOKEN[0]; echo $r`,
+		`declare -rn r=GITHUB_TOKEN; echo $r`,
+		`declare -n -- r=GITHUB_TOKEN; echo $r`,
+		`declare -x -n r=GITHUB_TOKEN; echo $r`,
+		`typeset -n a=b c=AWS_SECRET_ACCESS_KEY; echo $c`,
+		`declare -n a=b; declare -n b=GITHUB_TOKEN; echo $a`,
+		`declare -n r=$1; echo $r`,
+		`local -n r=${X}; echo $r`,
+		`declare -n r=$(echo GITHUB_TOKEN); echo $r`,
+		"declare -n r=`echo GITHUB_TOKEN`; echo $r",
+		`declare -n "$x"; echo $x`,
+		`declare -n r=a.b; echo $r`,
+		`declare -n r; r=GITHUB_TOKEN; echo $r`,
+		`declare -n r; r+=GITHUB_TOKEN; echo $r`,
+		`declare -n r; r=$1; echo $r`,
+		`declare -n r; declare r=GITHUB_TOKEN; echo $r`,
+		`declare -n r; for r in GITHUB_TOKEN; do echo $r; done`,
+		`declare -n r; read r <<< GITHUB_TOKEN; echo $r`,
+		`declare -n r; printf -v r GITHUB_TOKEN; echo $r`,
+		`declare -n r; : ${r:=GITHUB_TOKEN}; echo $r`,
+		`declare -n r; r[0]=x; echo $r`,
+		`f(){ r=GITHUB_TOKEN; }; declare -n r; f; echo $r`,
+		`declare -n GITHUB_TOKEN; echo ${!GITHUB_TOKEN}`,
+		`declare -n r GITHUB_TOKEN; echo ${!GITHUB_TOKEN}`,
+		`builtin declare -n r=GITHUB_TOKEN; echo $r`,
+		`command local -n r=GITHUB_TOKEN; echo $r`,
+		`declare -n'a[$(rm -rf ~)]'=x`,
+	} {
+		if !namerefNamesSecretLedgerProbe(cmd) {
+			t.Errorf("nameref rule did not fire on %q", cmd)
+		}
+		if act := (&DangerousConfig{}).ActionForCommand(cmd); act == Allow {
+			t.Errorf("ActionForCommand(%q) = allow", cmd)
+		}
+	}
+}
+
+// namerefNamesSecretLedgerProbe runs the nameref rule over a command the way
+// analysis does: on the normalized, tokenized main command.
+func namerefNamesSecretLedgerProbe(cmd string) bool {
+	main, _ := normalize(cmd)
+	tokens, ops, _ := tokenizeMarked(main)
+	return namerefNamesSecret(tokens, ops)
+}
