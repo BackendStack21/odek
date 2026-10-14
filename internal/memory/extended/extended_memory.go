@@ -137,6 +137,10 @@ func newExtended(dir string, llm LLMClient, cfg Config, evictOnOpen bool) *Exten
 	em.llmTimeout = llmDeadline(llm)
 	em.recall.SetPredictor(em.predictor)
 	em.recall.SetFollowUpSink(em.setLastFollowUps)
+	em.assoc.SetExists(func(id string) bool {
+		_, err := store.Get(id)
+		return err == nil
+	})
 	em.recall.stats = &em.stats
 	// Wire the hygiene sweep's atom-existence checker to the live atom store,
 	// before Load runs it. Only a definitive not-found counts as missing —
@@ -687,6 +691,11 @@ func (em *ExtendedMemory) AnaphoraResolve(ctx context.Context, msg string) (stri
 	if em == nil || !em.Enabled() || em.recall == nil || em.cfg.AnaphoraResolutionEnabled == nil || !*em.cfg.AnaphoraResolutionEnabled {
 		return msg, false
 	}
+	// Untrusted wrapper blocks are dropped before any pronoun is located: a
+	// rewrite inside a wrapper tag would break it, and the wrapped body would
+	// then pass later stripping as if the user had said it. Extraction strips
+	// them anyway, so nothing trusted is lost.
+	msg = StripUntrustedWrappers(msg)
 	if !pronounRE.MatchString(msg) {
 		return msg, false
 	}

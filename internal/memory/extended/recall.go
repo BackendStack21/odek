@@ -7,6 +7,7 @@ import (
 	"log"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 
 	"github.com/BackendStack21/odek/internal/guard"
@@ -42,6 +43,9 @@ type Recall struct {
 	// deadline cannot land later and overwrite a newer turn's suggestions.
 	followUpGen       atomic.Uint64
 	followUpDelivered atomic.Uint64
+	// followUpMu makes the staleness check, the stamp and the sink call one
+	// step, so a late delivery cannot interleave with a newer turn's.
+	followUpMu sync.Mutex
 }
 
 // NewRecall creates a Recall instance.
@@ -248,6 +252,8 @@ func (r *Recall) queryAtomsWithPrediction(ctx context.Context, query string, rec
 // turn has published its own suggestions; without this guard it would replace
 // them with a stale set.
 func (r *Recall) deliverFollowUpsGen(gen uint64, intents []PredictedIntent) {
+	r.followUpMu.Lock()
+	defer r.followUpMu.Unlock()
 	if r.followUpDelivered.Load() > gen {
 		return
 	}
