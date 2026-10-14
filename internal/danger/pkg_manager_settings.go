@@ -34,16 +34,17 @@ func packageManagerSettingClass(name string, tokens []string) RiskClass {
 		if w != "set" {
 			continue
 		}
-		// `npm set KEY=VAL`, `npm config set KEY VAL`, `yarn config set …`.
+		// `npm set KEY=VAL ...`, `npm config set [--location L] KEY VAL`,
+		// `yarn config set …`: option values and several pairs may precede
+		// the key, so every word is checked as a key or KEY=VAL pair.
 		for _, arg := range words[i+1:] {
-			if strings.HasPrefix(arg, "-") {
+			if strings.HasPrefix(arg, "-") && !strings.Contains(arg, "=") {
 				continue
 			}
 			key, _, _ := strings.Cut(arg, "=")
 			if packageManagerShellKeys[strings.ToLower(strings.TrimLeft(key, "-"))] {
 				cls = worstOf(cls, Persistence)
 			}
-			break
 		}
 	}
 	return cls

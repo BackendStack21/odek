@@ -41,7 +41,7 @@ var wrapperSpecs = map[string]optSpec{
 	// optional value, which is only ever fused into the word: a bare `-e` or
 	// `--replace` never takes the wrapped command as its value.
 	"xargs":    xargsGrammar,
-	"parallel": xargsGrammar,
+	"parallel": parallelGrammar,
 	"xe":       xargsGrammar,
 	"sem":      semGrammar,
 	// env: -u NAME, -C DIR, -S STRING, -a NAME, -P PATH and their long
@@ -57,6 +57,23 @@ var semGrammar = optSpec{
 	shortOptional: xargsGrammar.shortOptional,
 	long: longTable("max-lines max-args max-procs max-chars delimiter arg-file jobs id",
 		"replace eof null exit interactive open-tty no-run-if-empty process-slot-var show-limits verbose fg wait semaphore"),
+	abbrev: true,
+}
+
+// parallelGrammar is GNU parallel's option grammar: unlike xargs it has many
+// value-taking long options (--header, --colsep, --sshlogin, …) whose values
+// must not be read as the command.
+var parallelGrammar = optSpec{
+	short:         "aCdEIjJLnNPsS",
+	shortOptional: "iel",
+	long: longTable("arg-file arg-file-sep colsep delimiter header jobs max-args max-replace-args max-lines "+
+		"max-chars replace sshlogin sshloginfile slf results joblog workdir wd retries timeout delay load "+
+		"memfree memsuspend tmpdir tmux-pane tagstring tag-string eta-style link plus-string rpl "+
+		"parset cleanup-env return transfer-file basefile template env trc sql sqlmaster sqlworker "+
+		"nice number-of-sockets halt halt-on-error shebang-wrap pipe-part block block-size recstart recend "+
+		"rsync-opts ssh sshdelay cat-command filter filter-hosts limit lb-lines",
+		"null quote verbose dry-run bar progress eta tty ctagstring tag keep-order group ungroup line-buffer "+
+			"pipe round-robin files fg bg citation will-cite semaphore wait no-run-if-empty xapply"),
 	abbrev: true,
 }
 

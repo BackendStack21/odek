@@ -2140,10 +2140,10 @@ func xargsDynamicArgvRisk(inner []string) RiskClass {
 // comes from input the classifier cannot see: they only read or print.
 var dynamicArgvReadOnly = map[string]bool{
 	"grep": true, "egrep": true, "fgrep": true, "rg": true, "cat": true, "head": true,
-	"tail": true, "wc": true, "ls": true, "stat": true, "file": true, "echo": true,
+	"tail": true, "wc": true, "ls": true, "stat": true, "echo": true,
 	"printf": true, "basename": true, "dirname": true, "sha256sum": true, "sha1sum": true,
 	"sha512sum": true, "md5sum": true, "md5": true, "shasum": true, "realpath": true,
-	"readlink": true, "du": true, "tr": true, "sort": true, "uniq": true, "cut": true,
+	"readlink": true, "du": true, "tr": true, "cut": true,
 	"true": true, "false": true, "test": true, "diff": true, "cmp": true,
 }
 
@@ -2711,14 +2711,21 @@ func classifyStageIn(tokens []string, pipedInto bool, repo *gitRepoCtx) RiskClas
 			// inherited descriptor as its transport.
 			for _, t := range cmdTokens[1:] {
 				if l := strings.ToLower(t); strings.HasPrefix(l, "ext::") || strings.HasPrefix(l, "fd::") ||
-					strings.Contains(l, "=ext::") || strings.Contains(l, "=fd::") {
+					strings.Contains(l, "=ext::") || strings.Contains(l, "=fd::") ||
+					// url.<ext::cmd>.insteadOf rewrites an ordinary URL to the
+					// command transport; allowing the transport only exists to
+					// enable it.
+					strings.Contains(l, "url.ext::") || strings.Contains(l, "url.fd::") ||
+					strings.Contains(l, "protocol.ext.allow=always") || strings.Contains(l, "protocol.allow=always") {
 					cls = worstOf(cls, CodeExecution)
 				}
 			}
 		}
 		// Package and version managers that run a command for their caller.
 		if runner := runnerCommand(name, cmdTokens); len(runner) > 0 {
-			cls = worstOf(cls, CodeExecution)
+			if name != "yarn" || yarnRunsBin(cmdTokens) {
+				cls = worstOf(cls, CodeExecution)
+			}
 			if inner := classifyStageIn(runner, false, repo); inner != Unknown {
 				cls = worstOf(cls, inner)
 			}

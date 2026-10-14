@@ -14,7 +14,24 @@ var (
 var yarnSubcommands = fieldSet("add bin cache check config create dedupe dlx exec explain generate-lock-entry " +
 	"global help import info init install licenses link list login logout node npm outdated owner pack patch " +
 	"plugin policies publish rebuild remove run set search tag team test unlink unplug up upgrade " +
-	"upgrade-interactive version versions why workspace workspaces constraints start build lint")
+	"upgrade-interactive version versions why workspace workspaces constraints start build lint " +
+	"audit access autoclean patch-commit stage")
+
+// yarnRunsBin reports whether a yarn invocation runs a binary explicitly
+// (`yarn exec|dlx|node CMD`). A bare `yarn WORD` is a script or bin name, which
+// npm run and pnpm treat the same way, so it keeps the verdict of the
+// command it names without an extra floor.
+func yarnRunsBin(tokens []string) bool {
+	r := yarnRunnerSpec.parse(tokens[1:])
+	if r.operandAt < 0 {
+		return false
+	}
+	switch tokens[1+r.operandAt] {
+	case "exec", "dlx", "node":
+		return true
+	}
+	return false
+}
 
 // runnerCommand returns the command a package or version manager runs on
 // behalf of its caller (`pnpm -C x exec CMD`, `yarn CMD`, `bun x CMD`,
