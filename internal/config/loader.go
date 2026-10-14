@@ -1980,6 +1980,19 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	// own budgets is safe, loosening the operator's budgets is not.
 	clampProjectLimits(global.Limits, project.Limits)
 
+	// Cost enforcement is keyed on the run's model ID. When the operator caps
+	// spend and prices models, a project model without a price would resolve
+	// to zero prices and silently switch the cap off, so such a model is
+	// ignored.
+	if project.Model != "" && project.Model != global.Model && global.Limits != nil && global.Limits.MaxCostUSD > 0 {
+		gl := *global.Limits
+		anyPrice := gl.InputCostPerMillionUSD > 0 || gl.OutputCostPerMillionUSD > 0 || len(gl.ModelPrices) > 0
+		if anyPrice && !gl.ResolveForModel(project.Model).CostEnforcementActive() {
+			fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring model %q from project config (%s) — it has no configured price, which would disable the global limits.max_cost_usd cap; price it in limits.model_prices in ~/.odek/config.json\n", project.Model, ProjectConfigPath())
+			project.Model = ""
+		}
+	}
+
 	// max_concurrency bounds the process-wide sub-agent limiter when the
 	// operator sets no subagent.max_concurrency: a repo may only lower it
 	// below the operator's value (or the shipped default of 3).

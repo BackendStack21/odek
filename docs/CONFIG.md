@@ -518,6 +518,7 @@ On exhaustion odek emits a `budget_exceeded` runtime event, persists the latest 
 - The **global** `~/.odek/config.json` may set any limit.
 - The project `./odek.json` may only **lower** an existing limit: a higher value is clamped down to the global one with a stderr warning, and zeroing/omitting a field re-inherits the global limit — a malicious repo can never raise or disable an operator budget. A project *may* set a limit the global config lacks (that only tightens its own runs).
 - Project-set per-million **prices are rejected outright** — flat pair and `model_prices` alike — a lower project price would silently weaken cost enforcement — and the global values are kept. Prices belong in `~/.odek/config.json`.
+- A project `model` that the global prices do not cover is **ignored with a warning** when the global config sets `max_cost_usd` and prices at least one model — otherwise naming an unpriced model would switch the operator's spend cap off. Price the model in `limits.model_prices` to allow it.
 - **CLI flags** (`--max-runtime`, `--max-tool-calls`, `--max-input-tokens`, `--max-output-tokens`, `--max-cost-usd`) are operator intent and set limits explicitly in either direction.
 - There is **no `ODEK_*` env-var layer** for limits.
 
