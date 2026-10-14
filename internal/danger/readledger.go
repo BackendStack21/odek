@@ -766,6 +766,12 @@ func stageWrittenPaths(stage, inner []string, name, cwd string) (paths []string,
 			raw = append(raw, operands...)
 		case "scp":
 			raw = append(raw, scpLocalWriteTargets(inner[1:], cwd)...)
+		case "aws", "gsutil", "docker", "podman", "kubectl", "oc", "rclone", "gh",
+			"sftp", "lftp", "aria2c", "aria2":
+			raw = append(raw, fetcherWriteTargets(name, inner[1:], cwd)...)
+		case "vim", "vi", "nvim", "gvim", "vimdiff", "nvimdiff", "view", "rvim", "evim", "vim.basic", "vim.tiny", "vim.nox":
+			// An interactive edit writes the files it is given.
+			raw = append(raw, operands...)
 		case "uniq":
 			// uniq [OPTION]... [INPUT [OUTPUT]] writes its second operand.
 			if len(operands) >= 2 {
@@ -880,6 +886,14 @@ func scpLocalWriteTargets(args []string, cwd string) []string {
 	if !remoteSource {
 		return nil // a local copy: the cp-like destination below
 	}
+	return localCopyDestination(dest, cwd, recursive)
+}
+
+// localCopyDestination returns the write target of a download into the local
+// path dest: dest itself when it names a file, or a placeholder for unknown
+// names when the copy is recursive or dest is a directory (the remote side
+// then chooses the names).
+func localCopyDestination(dest, cwd string, recursive bool) []string {
 	destPath := expandShellTokenPath(dest)
 	if !filepath.IsAbs(destPath) {
 		destPath = filepath.Join(cwd, destPath)
@@ -1011,8 +1025,9 @@ func stageWritesUnnamedFiles(name string, inner []string) bool {
 		return !hasAny(args, "-h", "--help")
 	case "vim", "vi", "nvim", "gvim", "vimdiff", "nvimdiff", "view", "rvim", "evim", "vim.basic", "vim.tiny", "vim.nox":
 		// A scripted editor run (-es, --headless, -c/+cmd, -s scriptin)
-		// writes whatever its commands choose.
-		return !hasAny(args, "--version", "-h", "--help")
+		// writes whatever its commands choose; an interactive one writes
+		// the files it is given (named by stageWrittenPaths).
+		return vimRunIsScripted(args)
 	case "awk", "gawk":
 		return awkEditsInPlace(args)
 	case "curl":
@@ -1075,6 +1090,265 @@ func stageWritesUnnamedFiles(name string, inner []string) bool {
 		return gitSubcommandRewritesTree(inner)
 	}
 	return false
+}
+
+// vimRunIsScripted reports whether a vim-family invocation runs commands
+// from somewhere other than the keyboard, or records into a file: +cmd,
+// -c/--cmd, -s/-S scripts, -u/-U init files, -e/-E/-es ex mode, -w/-W
+// script-out files, -V verbose logs, --headless, --embed, --listen,
+// --startuptime and the --remote family.
+func vimRunIsScripted(args []string) bool {
+	for _, a := range args {
+		if a == "--" {
+			break
+		}
+		switch {
+		case strings.HasPrefix(a, "+"):
+			return true
+		case strings.HasPrefix(a, "--"):
+			name, _, _ := strings.Cut(a, "=")
+			switch {
+			case name == "--cmd", name == "--headless", name == "--embed", name == "--listen",
+				name == "--startuptime", strings.HasPrefix(name, "--remote"):
+				return true
+			}
+		case isShortFlagToken(a):
+			if strings.ContainsAny(a[1:2], "csSuUeEwWV") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// fetcherWriteTargets returns the local files a download or copy tool
+// writes: a named destination, or a placeholder for unknown names when the
+// destination is a directory, the copy is recursive or a sync, or the tool
+// chooses the names itself (sftp/lftp sessions, aria2c, gh release download
+// and repo clone). Uploads and listings write nothing locally.
+func fetcherWriteTargets(name string, args []string, cwd string) []string {
+	unknown := []string{dynamicSubstToken}
+	switch name {
+	case "sftp", "lftp", "aria2c", "aria2":
+		if hasAny(args, "--version", "-v", "-h", "--help", "-V") && len(args) == 1 {
+			return nil
+		}
+		return unknown
+	case "gh":
+		ops := nonFlagWords(args, nil)
+		if len(ops) < 2 {
+			return nil
+		}
+		switch ops[0] + " " + ops[1] {
+		case "release download", "run download", "repo clone", "gist clone":
+			return unknown
+		}
+		return nil
+	case "aws":
+		ops := nonFlagWords(args, awsBooleanOptions)
+		if len(ops) < 2 {
+			return nil
+		}
+		switch {
+		case ops[0] == "s3" && (ops[1] == "cp" || ops[1] == "mv" || ops[1] == "sync"):
+			if len(ops) != 4 {
+				return unknown // operands the parse cannot place
+			}
+			if objectStoreURL(ops[3]) {
+				return nil
+			}
+			return localCopyDestination(ops[3], cwd, ops[1] == "sync" || hasAny(args, "--recursive"))
+		case ops[0] == "s3api" && ops[1] == "get-object":
+			if len(ops) < 3 {
+				return unknown
+			}
+			return []string{ops[len(ops)-1]}
+		}
+		return nil
+	case "gsutil":
+		// Global options before the verb; -o, -h and -u take a value.
+		verbAt := -1
+		for i := 0; i < len(args); i++ {
+			a := args[i]
+			if a == "-o" || a == "-h" || a == "-u" {
+				i++
+				continue
+			}
+			if !strings.HasPrefix(a, "-") {
+				verbAt = i
+				break
+			}
+		}
+		if verbAt < 0 {
+			return nil
+		}
+		verb, rest := args[verbAt], args[verbAt+1:]
+		if verb != "cp" && verb != "mv" && verb != "rsync" {
+			return nil
+		}
+		ops := nonFlagWords(rest, nil)
+		if len(ops) < 2 {
+			return unknown
+		}
+		dest := ops[len(ops)-1]
+		if objectStoreURL(dest) {
+			return nil
+		}
+		recursive := verb == "rsync"
+		for _, a := range rest {
+			if isShortFlagToken(a) && strings.ContainsAny(a[1:], "rR") {
+				recursive = true
+			}
+		}
+		return localCopyDestination(dest, cwd, recursive)
+	case "docker", "podman", "kubectl", "oc":
+		cpAt := -1
+		for i, a := range args {
+			if a == "cp" {
+				cpAt = i
+				break
+			}
+		}
+		if cpAt < 0 {
+			return nil
+		}
+		ops := nonFlagWords(args[cpAt+1:], nil)
+		if name == "kubectl" || name == "oc" {
+			ops = nonFlagWordsSkippingValues(args[cpAt+1:], kubectlCpValueOptions)
+		}
+		if len(ops) != 2 {
+			return unknown
+		}
+		src, dest := ops[0], ops[1]
+		namespaced := name == "kubectl" || name == "oc"
+		if containerPathOperand(dest, namespaced) || !containerPathOperand(src, namespaced) {
+			return nil // an upload, or a local copy
+		}
+		return localCopyDestination(dest, cwd, false)
+	case "rclone":
+		ops := nonFlagWords(args, nil)
+		if len(ops) < 1 {
+			return nil
+		}
+		verb := ops[0]
+		switch verb {
+		case "copy", "sync", "move", "copyto", "moveto", "copyurl", "bisync":
+		default:
+			return nil
+		}
+		ops = ops[1:]
+		valueAmbiguous := false
+		for _, a := range args {
+			if strings.HasPrefix(a, "--") && !strings.Contains(a, "=") {
+				valueAmbiguous = true // `--flag value` may have put a value among the operands
+			}
+		}
+		if valueAmbiguous || len(ops) != 2 || verb == "bisync" {
+			// Every local operand may be written.
+			for _, op := range ops {
+				if !rcloneRemoteOperand(op) {
+					return unknown
+				}
+			}
+			return nil
+		}
+		dest := ops[1]
+		if rcloneRemoteOperand(dest) {
+			return nil
+		}
+		if verb == "copyto" || verb == "moveto" || verb == "copyurl" {
+			return localCopyDestination(dest, cwd, false)
+		}
+		return unknown
+	}
+	return nil
+}
+
+// awsBooleanOptions are the aws CLI options that take no value; every other
+// `--option` without `=` consumes the next word.
+var awsBooleanOptions = fieldSet("--debug --no-verify-ssl --no-paginate --no-sign-request --recursive --dryrun " +
+	"--quiet --delete --only-show-errors --no-progress --follow-symlinks --no-follow-symlinks --exact-timestamps " +
+	"--size-only --force-glacier-transfer --ignore-glacier-warnings --no-guess-mime-type --no-cli-pager " +
+	"--cli-auto-prompt --no-cli-auto-prompt")
+
+// kubectlCpValueOptions are the kubectl/oc options around `cp` that take a
+// separate value.
+var kubectlCpValueOptions = fieldSet("-n --namespace -c --container --context --kubeconfig --cluster --user " +
+	"-s --server --retries --token --as --as-group --request-timeout")
+
+// nonFlagWords returns the words that are not options. When booleans is
+// non-nil, a long option without `=` that is not listed there consumes the
+// next word as its value.
+func nonFlagWords(args []string, booleans map[string]bool) []string {
+	var out []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "--" {
+			return append(out, args[i+1:]...)
+		}
+		if strings.HasPrefix(a, "-") && a != "-" {
+			if booleans != nil && strings.HasPrefix(a, "--") && !strings.Contains(a, "=") && !booleans[a] {
+				i++
+			}
+			continue
+		}
+		out = append(out, a)
+	}
+	return out
+}
+
+// nonFlagWordsSkippingValues returns the words that are not options, skipping
+// the separate value of every listed option.
+func nonFlagWordsSkippingValues(args []string, valued map[string]bool) []string {
+	var out []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "--" {
+			return append(out, args[i+1:]...)
+		}
+		if strings.HasPrefix(a, "-") && a != "-" {
+			if valued[a] {
+				i++
+			}
+			continue
+		}
+		out = append(out, a)
+	}
+	return out
+}
+
+// objectStoreURL reports whether an operand names a cloud object (s3://,
+// gs://) rather than a local path.
+func objectStoreURL(op string) bool {
+	return strings.HasPrefix(op, "s3://") || strings.HasPrefix(op, "gs://")
+}
+
+// containerPathOperand reports whether a docker/kubectl cp operand names a
+// path inside a container or pod (NAME:path, or NAMESPACE/POD:path when
+// namespaced) rather than a local path.
+func containerPathOperand(op string, namespaced bool) bool {
+	colon := strings.IndexByte(op, ':')
+	if colon <= 0 {
+		return false
+	}
+	slashes := strings.Count(op[:colon], "/")
+	if namespaced && slashes == 1 {
+		return !strings.HasPrefix(op, "/") && !strings.HasPrefix(op, ".")
+	}
+	return slashes == 0
+}
+
+// rcloneRemoteOperand reports whether an rclone operand names a configured
+// remote (NAME:path, :backend:path) rather than a local path.
+func rcloneRemoteOperand(op string) bool {
+	colon := strings.IndexByte(op, ':')
+	if colon < 0 {
+		return false
+	}
+	if colon == 0 {
+		return true // on-the-fly backend, `:s3:bucket`
+	}
+	return !strings.ContainsAny(op[:colon], "/\\")
 }
 
 // decompressesToFiles reports whether a compressor invocation decompresses
