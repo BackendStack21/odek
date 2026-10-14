@@ -174,7 +174,7 @@ Atoms are deduplicated in two tiers at persistence time:
 
 ### Atom Consolidation
 
-`ExtendedMemory.ConsolidateAtoms(ctx)` — exposed as `odek memory extended consolidate` — merges groups of live atoms that are near-duplicates (pairwise cosine similarity at or above `consolidate_similarity_threshold`). For each group it asks the memory LLM — one call per group — to merge the texts into a single concise atom, stores the merged atom through the normal add path (scan and size cap apply) keeping the group's highest confidence, a refreshed `CreatedAt`, and the union of the group's outward associations, then removes the originals. Quarantined atoms are never consolidated. On any failure for a group (LLM error, empty response, scan rejection) the originals are kept untouched.
+`ExtendedMemory.ConsolidateAtoms(ctx)` — exposed as `odek memory extended consolidate` — merges groups of live atoms (fitting a fresh embedder on the current atom corpus, so a new process groups correctly) that are near-duplicates (pairwise cosine similarity at or above `consolidate_similarity_threshold`). For each group it asks the memory LLM — one call per group — to merge the texts into a single concise atom, stores the merged atom through the normal add path (scan and size cap apply) keeping the group's highest confidence, a refreshed `CreatedAt`, and the union of the group's outward associations, then removes the originals. Quarantined atoms are never consolidated. On any failure for a group (LLM error, empty response, scan rejection) the originals are kept untouched.
 
 ### Observability
 
@@ -282,7 +282,7 @@ Pending reviews must be explicitly confirmed or rejected by the user. They are n
 
 The pending queue is disk-backed: list, confirm, and reject re-read `user_model.json` under an advisory file lock before acting, so a running `odek serve` process and CLI invocations always observe the same queue — no stale ids, no cross-process "not found" errors, and concurrent mutations never overwrite each other. New pending inferences are written through to disk immediately.
 
-On load, a hygiene sweep keeps the queue clean: entries whose text references an atom id that no longer exists in the atom store are dropped (the drop is logged with the entry id to the serve/CLI log), and duplicate entries with identical field and value consolidate to the highest-confidence one.
+On load, a hygiene sweep keeps the queue clean: entries whose text references an atom id that no longer exists in the atom store are dropped (the drop is logged with the entry id to the serve/CLI log), and duplicate entries with identical field and value consolidate to the highest-confidence one. A report-only maintenance open (stats, quarantine, `prune --dry-run`) skips the sweep and leaves the file untouched; the sweep elsewhere persists under the cross-process user-model lock from a fresh read.
 
 The agent's `memory` tool can list pending reviews (`list_pending_review`) and reject them (`reject_pending_review`), but it cannot confirm them — confirmation is deliberately reserved for the human-gated CLI to prevent a prompt-injected agent from approving its own inferences.
 
@@ -523,7 +523,7 @@ odek memory extended nudges
 | `pending` | Lists pending user-model inferences. |
 | `confirm` | Applies a pending user-model inference to the authoritative model. |
 | `reject` | Removes a pending user-model inference without applying it. |
-| `consolidate` | Merges near-duplicate live atoms via the LLM (requires a configured backend). |
+| `consolidate` | Merges near-duplicate live atoms via the LLM (requires a configured backend; uses `memory.extended.llm` when set). |
 | `nudges` | Previews up to two proactive nudges without consuming the daily cap (requires a configured backend). |
 
 Every subcommand rejects stray arguments; `odek memory extended help` prints the usage. The CLI opens the store with the operator's resolved `memory.extended` config (TTLs, embedding backend) so it judges atoms exactly as the agent's recall does, and — unlike an agent, which evicts expired quarantine entries when it opens the store — it changes nothing on open: only `prune` evicts.

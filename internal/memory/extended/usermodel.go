@@ -79,6 +79,9 @@ type UserModel struct {
 	focusChanged bool
 	loaded       bool
 	atomExists   func(string) bool
+	// noSweep makes Load read-only: the hygiene sweep neither runs nor
+	// persists, so a report-only open changes nothing on disk or in memory.
+	noSweep bool
 }
 
 // SetAtomChecker installs a predicate reporting whether a memory atom id
@@ -145,14 +148,21 @@ func (u *UserModel) Load() error {
 	}
 	state = scanUserState(state, func(v string) bool { return u.scanContent(context.Background(), v) == nil })
 
-	u.mu.Lock()
-	swept := sweepPendingReview(&state, u.atomExists)
-	if swept.dropped > 0 || swept.consolidated > 0 {
-		if err := u.store.Save(state); err != nil {
-			u.mu.Unlock()
-			return fmt.Errorf("user model: hygiene sweep persist: %w", err)
+	var swept pendingSweep
+	if !u.noSweep {
+		swept = sweepPendingReview(&state, u.atomExists)
+		if swept.dropped > 0 || swept.consolidated > 0 {
+			// Persist under the cross-process lock from a fresh read so a
+			// concurrent writer's pending-review change is not overwritten
+			// by this snapshot.
+			var perr error
+			state, swept, perr = u.persistSweep()
+			if perr != nil {
+				return perr
+			}
 		}
 	}
+	u.mu.Lock()
 	for _, id := range swept.droppedIDs {
 		log.Printf("extended memory: hygiene sweep dropped stale pending review %s (referenced atom missing)", id)
 	}
@@ -163,6 +173,28 @@ func (u *UserModel) Load() error {
 	u.loaded = true
 	u.mu.Unlock()
 	return nil
+}
+
+// persistSweep re-reads the user model under the cross-process lock,
+// re-applies the hygiene sweep to that fresh state and saves it.
+func (u *UserModel) persistSweep() (UserState, pendingSweep, error) {
+	unlock, err := u.store.WithLock()
+	if err != nil {
+		return UserState{}, pendingSweep{}, fmt.Errorf("user model: hygiene sweep lock: %w", err)
+	}
+	defer unlock()
+	state, err := u.store.Load()
+	if err != nil {
+		return UserState{}, pendingSweep{}, err
+	}
+	state = scanUserState(state, func(v string) bool { return u.scanContent(context.Background(), v) == nil })
+	swept := sweepPendingReview(&state, u.atomExists)
+	if swept.dropped > 0 || swept.consolidated > 0 {
+		if err := u.store.Save(state); err != nil {
+			return UserState{}, pendingSweep{}, fmt.Errorf("user model: hygiene sweep persist: %w", err)
+		}
+	}
+	return state, swept, nil
 }
 
 // pendingSweep records what the load-time hygiene sweep changed.
