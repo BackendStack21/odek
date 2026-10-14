@@ -63,12 +63,30 @@ type Config struct {
 //  3. Otherwise → "alpine:latest".
 func ResolveImage(cfg Config) (string, error) {
 	if cfg.Image != "" {
+		if err := validateImageName(cfg.Image); err != nil {
+			return "", err
+		}
 		return cfg.Image, nil
 	}
 	if _, err := os.Stat(DockerfileName); err == nil {
 		return buildFromDockerfile()
 	}
 	return "alpine:latest", nil
+}
+
+// validateImageName rejects image references docker could read as an option
+// (leading '-') and references carrying whitespace or control characters,
+// which are never part of a valid image name.
+func validateImageName(image string) error {
+	if strings.HasPrefix(image, "-") {
+		return fmt.Errorf("sandbox: invalid image %q: must not start with '-'", image)
+	}
+	for _, r := range image {
+		if r <= ' ' || r == 0x7f {
+			return fmt.Errorf("sandbox: invalid image %q: whitespace or control characters not allowed", image)
+		}
+	}
+	return nil
 }
 
 // buildFromDockerfile builds (or reuses a cached) image from Dockerfile.odek.
