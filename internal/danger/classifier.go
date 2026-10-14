@@ -2751,6 +2751,20 @@ func builtinEnvDump(tokens []string) bool {
 // separately after unwrapWrappers strips env); `env`, `env -i`,
 // `env -u SECRET`, `env --unset=SECRET` (equals-form long options), and
 // `printenv` are dumps.
+// isEnvFlagCluster reports whether t is a short cluster of env's valueless
+// flags (-iv, -0v).
+func isEnvFlagCluster(t string) bool {
+	if len(t) < 3 || t[0] != '-' || t[1] == '-' {
+		return false
+	}
+	for _, c := range t[1:] {
+		if c != 'i' && c != 'v' && c != '0' {
+			return false
+		}
+	}
+	return true
+}
+
 func isEnvironmentDump(tokens []string) bool {
 	if len(tokens) == 0 {
 		return false
@@ -2769,15 +2783,17 @@ func isEnvironmentDump(tokens []string) bool {
 			continue
 		}
 		if t == "-i" || t == "--ignore-environment" ||
-			t == "-0" || t == "--null" ||
-			t == "--help" || t == "--version" {
+			t == "-0" || t == "--null" || t == "-v" || t == "--debug" ||
+			t == "--ignore-signal" || t == "--block-signal" || t == "--default-signal" ||
+			t == "--help" || t == "--version" || isEnvFlagCluster(t) {
 			i++
 			continue
 		}
 		if o, next, ok := wrapperSpecs["env"].valueOption(tokens, i); ok {
-			if o.is("--split-string") {
+			if o.is("--split-string") && strings.TrimSpace(o.value) != "" {
 				// -S STRING supplies the command env runs; it is not a
 				// flag-only invocation, and unwrapWrappers classifies it.
+				// An empty string supplies none.
 				return false
 			}
 			i = next
