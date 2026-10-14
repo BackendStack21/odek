@@ -152,7 +152,7 @@ func scheduleList(st *schedule.Store) error {
 		if !j.Enabled {
 			on = "no"
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", j.ID, on, j.Cron, next, last, j.Name)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", j.ID, on, j.Cron, next, last, danger.SanitizeInline(j.Name))
 	}
 	return w.Flush()
 }
@@ -219,7 +219,7 @@ func scheduleAdd(st *schedule.Store, args []string) error {
 		state = "disabled"
 	}
 	fmt.Printf("Added %s (%s, %s)\n  cron:    %s\n  deliver: %s\n  next:    %s\n",
-		saved.ID, saved.Name, state, saved.Cron, deliverString(saved.Deliver), next)
+		saved.ID, danger.SanitizeInline(saved.Name), state, saved.Cron, deliverString(saved.Deliver), next)
 	return nil
 }
 
@@ -269,7 +269,7 @@ func scheduleNext(st *schedule.Store, args []string) error {
 			return err
 		}
 		s = sc
-		fmt.Printf("Job %s (%s): %s\n", job.ID, job.Name, job.Cron)
+		fmt.Printf("Job %s (%s): %s\n", job.ID, danger.SanitizeInline(job.Name), job.Cron)
 	} else {
 		// A quoted expression, or its five fields as separate arguments.
 		expr := strings.Join(args, " ")
@@ -324,7 +324,7 @@ func scheduleRunNow(args []string) error {
 	}
 	defer mcpCleanup()
 
-	fmt.Fprintf(os.Stderr, "Running %s (%s)…\n", job.ID, job.Name)
+	fmt.Fprintf(os.Stderr, "Running %s (%s)…\n", job.ID, danger.SanitizeInline(job.Name))
 	result, _, err := runTaskHeadless(ctx, resolved, system, job.Task, mcpTools)
 	if err != nil {
 		return fmt.Errorf("run: %w", err)
@@ -416,7 +416,7 @@ type cliDeliverer struct {
 func (d cliDeliverer) Deliver(ctx context.Context, job schedule.Job, result string) error {
 	switch job.Deliver.Kind {
 	case schedule.DeliverStdout:
-		fmt.Printf("\n── %s · %s ──\n%s\n", render.EscapeInlineForTerminal(redact.RedactSecrets(job.Name)), time.Now().Format(time.RFC1123), render.EscapeForTerminal(redact.RedactSecrets(result)))
+		fmt.Printf("\n── %s · %s ──\n%s\n", danger.SanitizeInline(redact.RedactSecrets(job.Name)), time.Now().Format(time.RFC1123), danger.SanitizeForDisplay(redact.RedactSecrets(result)))
 		return nil
 	case schedule.DeliverLog:
 		return appendScheduleLog(job, result)
@@ -1056,7 +1056,7 @@ func firstWords(s string, n int) string {
 // appendScheduleLog delivers unaddressed scheduler output to the terminal.
 // The operational log records delivery metadata only, never result text.
 func appendScheduleLog(job schedule.Job, result string) error {
-	_, err := fmt.Fprintf(os.Stdout, "[%s] %s (%s)\n%s\n\n", time.Now().Format(time.RFC3339), render.EscapeInlineForTerminal(redact.RedactSecrets(job.Name)), render.EscapeInlineForTerminal(job.ID), render.EscapeForTerminal(redact.RedactSecrets(result)))
+	_, err := fmt.Fprintf(os.Stdout, "[%s] %s (%s)\n%s\n\n", time.Now().Format(time.RFC3339), danger.SanitizeInline(redact.RedactSecrets(job.Name)), danger.SanitizeInline(job.ID), danger.SanitizeForDisplay(redact.RedactSecrets(result)))
 	if err != nil {
 		diagnostics.Report("schedule", "delivery", "", err)
 	} else {

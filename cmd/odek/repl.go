@@ -15,6 +15,7 @@ import (
 	"github.com/BackendStack21/odek"
 	"github.com/BackendStack21/odek/internal/bgproc"
 	"github.com/BackendStack21/odek/internal/config"
+	"github.com/BackendStack21/odek/internal/danger"
 	"github.com/BackendStack21/odek/internal/guard"
 	"github.com/BackendStack21/odek/internal/memory"
 	"github.com/BackendStack21/odek/internal/render"
@@ -496,7 +497,7 @@ func printBackgroundJobs(w io.Writer, rt *bgRuntime) {
 		if j.EndedAt.IsZero() {
 			d = time.Since(j.StartedAt)
 		}
-		fmt.Fprintf(w, "%-8s %-9s %10s  %-4s  %s\n", j.ID, j.Status, d.Round(time.Second), exit, render.EscapeInlineForTerminal(bgClientCommandHead(j.Command)))
+		fmt.Fprintf(w, "%-8s %-9s %10s  %-4s  %s\n", j.ID, j.Status, d.Round(time.Second), exit, danger.SanitizeInline(bgClientCommandHead(j.Command)))
 	}
 }
 

@@ -260,16 +260,3 @@ func (r *Renderer) flushStreamCarry() {
 	}
 	fmt.Fprint(r.w, out)
 }
-
-// EscapeForTerminal is escapeTerminal for callers outside the package that
-// print stored or model-derived text to a terminal: control, bidi and
-// invisible characters become visible escapes; newline and tab are kept.
-func EscapeForTerminal(s string) string {
-	return escapeTerminal(s, true)
-}
-
-// EscapeInlineForTerminal is EscapeForTerminal for single-line fields:
-// newline and tab are escaped too.
-func EscapeInlineForTerminal(s string) string {
-	return escapeTerminal(s, false)
-}
