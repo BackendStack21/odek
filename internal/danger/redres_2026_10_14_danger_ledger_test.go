@@ -565,3 +565,51 @@ func TestRED_LedgerEmacsclientAndEmacsVisitVoidLicence(t *testing.T) {
 		}
 	}
 }
+
+// emacs and emacsclient accept unambiguous abbreviations of their long
+// options; an ambiguous one fails closed. ALTERNATE_EDITOR in the command's
+// environment runs like -a.
+func TestRED_LedgerEmacsLongOptionAbbreviations(t *testing.T) {
+	dir := dangerHunt13LedgerSetup(t)
+	if err := os.MkdirAll(filepath.Join(dir, "d"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sub := filepath.Join(dir, "d", "x.sh")
+	if err := os.WriteFile(sub, []byte("#!/bin/sh\necho sub\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	RecordRead(sub)
+	for _, cmd := range []string{
+		`emacsclient --ev '(x)' && bash x.sh`,
+		`emacsclient --eva '(x)' && bash x.sh`,
+		`emacsclient --alt=vi notes.md && bash x.sh`,
+		`emacsclient --alternate vi notes.md && bash x.sh`,
+		`emacs --vis=x.sh && bash x.sh`,
+		`emacs --find=x.sh && bash x.sh`,
+		`emacs --fi=x.sh && bash x.sh`,
+		`emacs --chd d notes.md && bash d/x.sh`,
+		`emacs --bat notes.md && bash x.sh`,
+		`emacs --scr s.el && bash x.sh`,
+		`emacs --ev '(x)' && bash x.sh`,
+		`emacs --e '(x)' && bash x.sh`,
+		`emacs --fun f && bash x.sh`,
+		`emacs --lo s.el && bash x.sh`,
+		`ALTERNATE_EDITOR=vi emacsclient notes.md && bash x.sh`,
+		`env ALTERNATE_EDITOR= emacsclient notes.md && bash x.sh`,
+	} {
+		if got := UnreadScriptTargets(cmd); len(got) == 0 {
+			t.Errorf("UnreadScriptTargets(%q) = [], want the script gated", cmd)
+		}
+	}
+	for _, cmd := range []string{
+		`emacs --no-spl notes.md && bash x.sh`,
+		`emacs --vis=notes.md && bash x.sh`,
+		`emacsclient --no notes.md && bash x.sh`,
+		`emacsclient --tt notes.md && bash x.sh`,
+		`FOO=1 emacsclient notes.md && bash x.sh`,
+	} {
+		if got := UnreadScriptTargets(cmd); len(got) != 0 {
+			t.Errorf("UnreadScriptTargets(%q) = %v, want none", cmd, got)
+		}
+	}
+}

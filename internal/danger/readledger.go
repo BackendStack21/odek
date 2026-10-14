@@ -775,12 +775,8 @@ func stageWrittenPaths(stage, inner []string, name, cwd string) (paths []string,
 			// An interactive edit writes the files it is given, including
 			// emacs's --visit/--file/--find-file=FILE spellings.
 			raw = append(raw, operands...)
-			for _, tok := range inner[1:] {
-				for _, opt := range []string{"--visit=", "--file=", "--find-file="} {
-					if value, ok := strings.CutPrefix(tok, opt); ok {
-						raw = append(raw, value)
-					}
-				}
+			if name != "emacsclient" {
+				raw = append(raw, emacsVisitValues(inner[1:])...)
 			}
 		case "uniq":
 			// uniq [OPTION]... [INPUT [OUTPUT]] writes its second operand.
@@ -1001,6 +997,11 @@ func stageLedgerFiles(stage []string, cwd string, written map[string]bool) (file
 		paths, unnamed := stageWrittenPaths(stage, inner, name, cwd)
 		for _, path := range paths {
 			written[path] = true
+		}
+		// emacsclient runs $ALTERNATE_EDITOR, with the file arguments, when
+		// no server answers.
+		if name == "emacsclient" && stageSetsEnvironment(stage, "ALTERNATE_EDITOR") {
+			unnamed = true
 		}
 		if unnamed || stageWritesUnnamedFiles(name, inner) {
 			written[unknownWritesKey] = true
@@ -1340,10 +1341,11 @@ func emacsRunIsScripted(args []string) bool {
 		}
 		name, _, _ := strings.Cut(a, "=")
 		switch name {
-		case "--batch", "-batch", "--script", "-script", "-x", "-l", "--load", "-load",
-			"--eval", "-eval", "--execute", "-execute", "-f", "--funcall", "-funcall",
-			"-u", "--user", "-user", "--init-directory", "--daemon", "--bg-daemon", "--fg-daemon",
-			"--chdir", "-chdir":
+		case "-batch", "-script", "-x", "-l", "-load", "-eval", "-execute", "-f", "-funcall",
+			"-u", "-user", "-chdir":
+			return true
+		}
+		if strings.HasPrefix(a, "--") && longOptionMayBe(a, emacsLongOptions, emacsScriptedLongOptions) {
 			// --chdir resolves every file operand against another
 			// directory, so the files it names are not the ones analysed.
 			return true
@@ -1352,20 +1354,100 @@ func emacsRunIsScripted(args []string) bool {
 	return false
 }
 
+// emacsLongOptions is emacs's long-option table; startup accepts any
+// unambiguous abbreviation of these.
+var emacsLongOptions = strings.Fields("batch script load eval execute funcall user init-directory daemon " +
+	"bg-daemon fg-daemon chdir visit file find-file insert kill directory no-init-file no-site-file " +
+	"no-site-lisp no-splash no-desktop quick debug-init no-window-system version help display name title " +
+	"geometry dump-file seccomp module-assertions no-build-details no-x-resources terminal temacs " +
+	"basic-display background-color foreground-color border-color border-width color cursor-color font " +
+	"fullscreen fullheight fullwidth maximized internal-border line-spacing mouse-color no-bitmap-icon " +
+	"no-blinking-cursor reverse-video vertical-scroll-bars xrm parent-id iconic no-loadup smid")
+
+// emacsScriptedLongOptions are the emacs long options that run Lisp or move
+// the directory file operands resolve against.
+var emacsScriptedLongOptions = fieldSet("batch script load eval execute funcall user init-directory daemon " +
+	"bg-daemon fg-daemon chdir")
+
+// emacsVisitLongOptions are the emacs long options whose value is a file
+// to visit.
+var emacsVisitLongOptions = fieldSet("visit file find-file")
+
+// emacsVisitValues returns the files named by --visit/--file/--find-file=FILE,
+// also through an abbreviation (--vis=FILE, --fi=FILE).
+func emacsVisitValues(args []string) []string {
+	var out []string
+	for _, a := range args {
+		if a == "--" {
+			break
+		}
+		if !strings.HasPrefix(a, "--") {
+			continue
+		}
+		if _, value, ok := strings.Cut(a, "="); ok && longOptionMayBe(a, emacsLongOptions, emacsVisitLongOptions) {
+			out = append(out, value)
+		}
+	}
+	return out
+}
+
+// emacsclientLongOptions is emacsclient's getopt_long table.
+var emacsclientLongOptions = strings.Fields("version help nowait reuse-frame create-frame frame-parameters quiet " +
+	"suppress-output eval display parent-id timeout tty tramp alternate-editor socket-name server-file")
+
+// emacsclientScriptedLongOptions make the server evaluate Lisp or run another
+// editor command.
+var emacsclientScriptedLongOptions = fieldSet("eval alternate-editor")
+
+// longOptionMayBe reports whether a --long option token, resolved like
+// getopt_long against table (exact name, else every option it is a prefix
+// of), may be one of the options in set. An ambiguous abbreviation counts
+// when any of its candidates is in set.
+func longOptionMayBe(tok string, table []string, set map[string]bool) bool {
+	given, _, _ := strings.Cut(strings.TrimPrefix(tok, "--"), "=")
+	if given == "" {
+		return false
+	}
+	for _, name := range table {
+		if name == given {
+			return set[name]
+		}
+	}
+	for _, name := range table {
+		if strings.HasPrefix(name, given) && set[name] {
+			return true
+		}
+	}
+	return false
+}
+
 // emacsclientRunIsScripted reports whether an emacsclient invocation makes
 // the server evaluate Lisp (-e/--eval, also inside a short cluster such as
-// -ne) or runs an alternate editor command (-a/--alternate-editor), either of
-// which can write any file.
+// -ne, or any abbreviation of --eval) or runs an alternate editor command
+// (-a/--alternate-editor or an abbreviation), either of which can write any
+// file.
 func emacsclientRunIsScripted(args []string) bool {
 	for _, a := range args {
 		if a == "--" {
 			break
 		}
-		name, _, _ := strings.Cut(a, "=")
 		switch {
-		case name == "--eval", name == "--alternate-editor":
-			return true
+		case strings.HasPrefix(a, "--"):
+			if longOptionMayBe(a, emacsclientLongOptions, emacsclientScriptedLongOptions) {
+				return true
+			}
 		case isShortFlagToken(a) && strings.ContainsAny(a[1:], "ea"):
+			return true
+		}
+	}
+	return false
+}
+
+// stageSetsEnvironment reports whether a stage assigns the environment
+// variable name for the command it runs (`NAME=v cmd`, `env NAME=v cmd`).
+func stageSetsEnvironment(stage []string, name string) bool {
+	for _, tok := range stage {
+		if strings.HasPrefix(tok, name+"=") {
 			return true
 		}
 	}
