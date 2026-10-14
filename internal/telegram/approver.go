@@ -324,6 +324,13 @@ func (a *TelegramApprover) promptCommand(cls danger.RiskClass, cmd, description 
 			return fmt.Errorf("operation denied: %s", danger.SanitizeInline(cmd))
 		}
 	case <-a.cancel:
+		// Strip the buttons so a stale keyboard can't be tapped after the
+		// prompt was withdrawn.
+		if err := a.bot.EditMessageText(a.ChatID, pr.messageID,
+			"🚫 *Cancelled* — the operation was not executed",
+			&SendOpts{ParseMode: ParseModeMarkdownV2, ReplyMarkup: &InlineKeyboardMarkup{InlineKeyboard: [][]InlineKeyboardButton{}}}); err != nil {
+			a.log.Warn("telegram approver: cancel prompt edit failed", "message_id", pr.messageID, "error", err)
+		}
 		return fmt.Errorf("approval cancelled: %s", danger.SanitizeInline(cmd))
 	case <-time.After(approvalTimeout):
 		// Mark the prompt visibly expired and strip the buttons so a stale

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/BackendStack21/odek/internal/danger"
 	"github.com/BackendStack21/odek/internal/session"
@@ -50,6 +51,33 @@ func TestRED_MediaChatScopeBypassedByCaseVariantPath(t *testing.T) {
 	if !strings.Contains(err.Error(), "different chat") {
 		t.Logf("refused with: %v", err)
 	}
+}
+
+// A cancelled approval prompt must lose its Approve/Deny buttons, as the
+// timeout path does, so a stale keyboard cannot be tapped.
+func TestRED_PromptCommand_CancelStripsButtons(t *testing.T) {
+	rec := &requestRecorder{}
+	ts := testServer(t, rec)
+	defer ts.Close()
+	bot := testBot(t, ts)
+
+	a := NewTelegramApprover(bot, 1, 0)
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		a.Cancel()
+	}()
+	err := a.PromptCommand(dangerClassShell(), "echo hi", "")
+	if err == nil || !strings.Contains(err.Error(), "cancelled") {
+		t.Fatalf("want cancelled error, got %v", err)
+	}
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	for _, r := range rec.requests {
+		if strings.HasSuffix(r.Path, "/editMessageText") && strings.Contains(r.Body, `"inline_keyboard":[]`) {
+			return
+		}
+	}
+	t.Fatal("cancel should edit the approval message and strip its buttons")
 }
 
 // The comparison helper behind the media scope must match names the way a
