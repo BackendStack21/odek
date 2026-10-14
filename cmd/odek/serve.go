@@ -2125,6 +2125,7 @@ func handlePrompt(
 	agent.BeginRun(runID, turnID)
 	requestCtx := ctx
 	outcomeErr := errors.New("serve turn did not complete")
+	promptCounted, promptCompleted := false, false
 	originalSend := send
 	send = func(frame map[string]any) {
 		frame["run_id"] = agent.RunID()
@@ -2147,7 +2148,6 @@ func handlePrompt(
 				sid = sess.ID
 			}
 			diagnostics.Emit(events.Event{Type: "panic_recovered", SessionID: sid, TurnID: turnID, Data: map[string]any{"component": "serve", "operation": "turn", "error_class": "panic"}})
-			atomic.AddInt64(&serveStats.PromptsFailed, 1)
 			if sess != nil {
 				collectDecisions()
 				sess.Messages = append(sess.Messages, session.Message{Role: "assistant", TurnID: turnID, Content: "[Turn aborted: internal error. Completed checkpoints were preserved.]"})
@@ -2161,6 +2161,11 @@ func handlePrompt(
 		}
 		if outcomeErr != nil && requestCtx.Err() != nil {
 			outcomeErr = requestCtx.Err()
+		}
+		// Every started prompt that did not complete counts as failed,
+		// whichever validation, execution or panic path ended it.
+		if promptCounted && !promptCompleted && outcomeErr != nil {
+			atomic.AddInt64(&serveStats.PromptsFailed, 1)
 		}
 		agent.FinishRun(outcomeErr)
 		status := "completed"
@@ -2233,6 +2238,7 @@ func handlePrompt(
 
 	originalPrompt := prompt
 	atomic.AddInt64(&serveStats.PromptsStarted, 1)
+	promptCounted = true
 
 	// Acquire ownership before loading execution history: REST, WebSocket,
 	// and background wakes all pass through this boundary.
@@ -2624,7 +2630,6 @@ func handlePrompt(
 	}
 
 	if err != nil {
-		atomic.AddInt64(&serveStats.PromptsFailed, 1) // B3-SERVE-1: failed prompts must reach the usage aggregate
 		outcomeErr = err
 		if sess == nil {
 			sendError(send, err.Error())
@@ -2712,6 +2717,7 @@ func handlePrompt(
 	cacheRead := agent.TotalCacheReadTokens()
 	cached := agent.TotalCachedTokens()
 	atomic.AddInt64(&serveStats.PromptsCompleted, 1)
+	promptCompleted = true
 
 	// Save session — persist buffer and update the vector index.
 	// The message history was already persisted per-turn by the persist
