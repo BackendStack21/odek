@@ -12,6 +12,8 @@ import (
 func TestRED_ParentCapDropsAllowlistEntriesAboveCap(t *testing.T) {
 	dc := danger.DangerousConfig{Allowlist: []string{"touch gc_out.txt", "ls"}}
 	applyParentRiskCap(&dc, "safe")
+	ref := capOnlyReference("trusted", "", "safe")
+	dropDeniedAllowlistEntries(&dc, &ref)
 	if got := dc.ActionForCommand("touch gc_out.txt"); got != danger.Deny {
 		t.Errorf("allowlisted write under a safe parent cap = %v, want deny", got)
 	}

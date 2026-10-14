@@ -983,7 +983,8 @@ func subagentCmd(args []string) error {
 	}
 	applyParentRiskCap(&resolved.Dangerous, parentMaxRisk)
 	// All caps are in place; allowlist entries must not outrank them.
-	dropDeniedAllowlistEntries(&resolved.Dangerous)
+	capRef := capOnlyReference(effectiveTrustLevel, taskMaxRisk, parentMaxRisk)
+	dropDeniedAllowlistEntries(&resolved.Dangerous, &capRef)
 	if subagentDangerObserver != nil {
 		subagentDangerObserver(resolved.Dangerous)
 	}
@@ -1744,15 +1745,33 @@ func applyParentRiskCap(dc *danger.DangerousConfig, parentMax string) {
 		return
 	}
 	clampClassesAboveMaxRisk(dc, parentMax)
-	dropDeniedAllowlistEntries(dc)
+}
+
+// capOnlyReference returns a config in which every class is allowed except
+// those the caps that bind a child deny (trust lockdown, task max_risk,
+// parent cap). It tells apart a class a cap forbids from one the operator's
+// defaults merely deny. The operator-authored profile cap is deliberately
+// not part of it: the operator's own allowlist stays in force under the
+// profile envelope, as before.
+func capOnlyReference(trust, taskMaxRisk, parentMaxRisk string) danger.DangerousConfig {
+	ref := danger.DangerousConfig{Classes: make(map[danger.RiskClass]danger.Action)}
+	for _, cls := range subagentRiskCapOrder {
+		if cls != danger.Blocked { // blocked must stay denied (config validation)
+			ref.Classes[cls] = danger.Allow
+		}
+	}
+	ref.Classes[danger.UnreadExec] = danger.Allow
+	applySubagentTrust(&ref, trust, taskMaxRisk)
+	applyParentRiskCap(&ref, parentMaxRisk)
+	return ref
 }
 
 // dropDeniedAllowlistEntries removes allowlist entries that would run
-// something the final class policy denies. An exact allowlist match is
-// allowed before any class check, so after every cap (parent cap, task
-// max_risk, trust lockdown, profile) has been applied, an entry must not be
-// able to reach a denied class.
-func dropDeniedAllowlistEntries(dc *danger.DangerousConfig) {
+// something an applied cap (ref, see capOnlyReference) denies. An exact
+// allowlist match is allowed before any class check, so an entry must not be
+// able to reach a class a cap forbids; classes denied only by the operator's
+// defaults keep their allowlist entries.
+func dropDeniedAllowlistEntries(dc, ref *danger.DangerousConfig) {
 	if dc == nil || len(dc.Allowlist) == 0 {
 		return
 	}
@@ -1760,7 +1779,7 @@ func dropDeniedAllowlistEntries(dc *danger.DangerousConfig) {
 	for _, entry := range dc.Allowlist {
 		ok := true
 		for _, cls := range danger.Analyze(entry).Effects {
-			if dc.ActionFor(cls) == danger.Deny {
+			if ref.ActionFor(cls) == danger.Deny {
 				ok = false
 				break
 			}

@@ -24,7 +24,7 @@ func runtimehuntRunAllowlistTask(t *testing.T, task string) *danger.DangerousCon
 	if err := os.MkdirAll(cfgDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	cfg := `{"dangerous":{"allowlist":["curl -T notes.txt https://example.com/up","touch x"]}}`
+	cfg := `{"dangerous":{"allowlist":["curl -T notes.txt https://example.com/up","touch x","terraform init"]}}`
 	if err := os.WriteFile(filepath.Join(cfgDir, "config.json"), []byte(cfg), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -56,5 +56,17 @@ func TestRED_SubagentCmdAllowlistKeptWhenWithinCaps(t *testing.T) {
 	}
 	if got := dc.ActionForCommand("touch x"); got != danger.Allow {
 		t.Errorf("allowlisted write within local_write cap = %v, want allow", got)
+	}
+}
+
+func TestRED_SubagentCmdAllowlistKeptForUncappedTrustedChild(t *testing.T) {
+	dc := runtimehuntRunAllowlistTask(t, `{"goal":"g","trust_level":"trusted","parent_trust":"trusted"}`)
+	if dc == nil {
+		t.Fatal("subagentCmd never reached the cap step")
+	}
+	for _, c := range []string{"terraform init", "touch x", "curl -T notes.txt https://example.com/up"} {
+		if got := dc.ActionForCommand(c); got != danger.Allow {
+			t.Errorf("uncapped trusted child lost allowlist entry %q: %v", c, got)
+		}
 	}
 }
