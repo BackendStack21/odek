@@ -416,7 +416,7 @@ type cliDeliverer struct {
 func (d cliDeliverer) Deliver(ctx context.Context, job schedule.Job, result string) error {
 	switch job.Deliver.Kind {
 	case schedule.DeliverStdout:
-		fmt.Printf("\n── %s · %s ──\n%s\n", danger.SanitizeInline(redact.RedactSecrets(job.Name)), time.Now().Format(time.RFC1123), danger.SanitizeForDisplay(redact.RedactSecrets(result)))
+		fmt.Printf("\n── %s · %s ──\n%s\n", danger.SanitizeInline(redact.RedactSecrets(job.Name)), time.Now().Format(time.RFC1123), danger.EscapeTerminalText(redact.RedactSecrets(result)))
 		return nil
 	case schedule.DeliverLog:
 		return appendScheduleLog(job, result)
@@ -1056,7 +1056,7 @@ func firstWords(s string, n int) string {
 // appendScheduleLog delivers unaddressed scheduler output to the terminal.
 // The operational log records delivery metadata only, never result text.
 func appendScheduleLog(job schedule.Job, result string) error {
-	_, err := fmt.Fprintf(os.Stdout, "[%s] %s (%s)\n%s\n\n", time.Now().Format(time.RFC3339), danger.SanitizeInline(redact.RedactSecrets(job.Name)), danger.SanitizeInline(job.ID), danger.SanitizeForDisplay(redact.RedactSecrets(result)))
+	_, err := fmt.Fprintf(os.Stdout, "[%s] %s (%s)\n%s\n\n", time.Now().Format(time.RFC3339), danger.SanitizeInline(redact.RedactSecrets(job.Name)), danger.SanitizeInline(job.ID), danger.EscapeTerminalText(redact.RedactSecrets(result)))
 	if err != nil {
 		diagnostics.Report("schedule", "delivery", "", err)
 	} else {

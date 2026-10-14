@@ -3848,7 +3848,7 @@ func showSession(store *session.Store, args []string) error {
 
 	for i, msg := range sess.Messages {
 		content := strings.TrimSpace(msg.Content)
-		shown := danger.SanitizeForDisplay(content)
+		shown := danger.EscapeTerminalText(content)
 		switch msg.Role {
 		case "system":
 			fmt.Printf("── [SYSTEM] ──\n%s\n\n", shown)
@@ -3857,7 +3857,7 @@ func showSession(store *session.Store, args []string) error {
 		case "assistant":
 			if len(msg.ToolCalls) > 0 {
 				for _, tc := range msg.ToolCalls {
-					fmt.Printf("── [TOOL CALL: %s %s] ──\n%s\n\n", danger.SanitizeInline(tc.Function.Name), danger.SanitizeInline(nextLabel(callCursor, tc.ID)), danger.SanitizeForDisplay(tc.Function.Arguments))
+					fmt.Printf("── [TOOL CALL: %s %s] ──\n%s\n\n", danger.SanitizeInline(tc.Function.Name), danger.SanitizeInline(nextLabel(callCursor, tc.ID)), danger.EscapeTerminalText(tc.Function.Arguments))
 				}
 			} else {
 				fmt.Printf("── [ASSISTANT] ──\n%s\n\n", shown)
