@@ -912,10 +912,12 @@ func stageWritesUnnamedFiles(name string, inner []string) bool {
 	args := inner[1:]
 	switch name {
 	case "patch", "unzip", "7z", "7za", "7zz", "7zr", "unrar", "unar", "cpio",
-		"gunzip", "bunzip2", "unxz", "uncompress", "unlzma", "unzstd":
+		"gunzip", "bunzip2", "unxz", "uncompress", "unlzma", "unzstd", "ed", "ex":
 		return !hasAny(args, "-l", "-t", "-v", "-Z", "--list", "--test", "--dry-run", "-h", "--help", "--version")
 	case "gzip", "bzip2", "xz", "zstd", "lzma":
 		return hasAny(args, "-d", "--decompress", "--uncompress")
+	case "ar", "jar", "dpkg-deb", "dpkg", "pax", "bsdcpio":
+		return archiveExtractionArgs(args)
 	case "tar", "bsdtar", "gtar":
 		for i, a := range args {
 			switch {
@@ -930,13 +932,108 @@ func stageWritesUnnamedFiles(name string, inner []string) bool {
 				return true // old-style first word: `tar xf a.tar`
 			}
 		}
-	case "git":
-		sub, _ := gitSubcommandAndArgs(inner)
-		switch sub {
-		case "checkout", "restore", "switch", "reset", "merge", "rebase", "pull", "stash",
-			"apply", "am", "cherry-pick", "revert", "checkout-index", "read-tree", "clean":
-			return true
+	case "cp", "mv", "rsync", "install":
+		// Directory contents merge into the destination under names the
+		// command line does not give: a glob, a trailing-slash source, or a
+		// recursive copy.
+		for _, a := range args {
+			if a == "--recursive" || a == "--archive" || (isShortFlagToken(a) && strings.ContainsAny(a[1:], "rRa")) {
+				return true
+			}
+			if !strings.HasPrefix(a, "-") && (hasGlobMeta(a) || strings.HasSuffix(a, "/") || strings.HasSuffix(a, "/.")) {
+				return true
+			}
 		}
+	case "hg", "svn":
+		if len(args) > 0 {
+			switch args[0] {
+			case "update", "up", "pull", "checkout", "co", "revert", "merge", "switch", "import", "unbundle":
+				return true
+			}
+		}
+	case "git":
+		return gitSubcommandRewritesTree(inner)
+	}
+	return false
+}
+
+// archiveExtractionArgs reports whether an ar / jar / pax / dpkg-deb style
+// argument list extracts files into the working directory.
+func archiveExtractionArgs(args []string) bool {
+	for i, a := range args {
+		switch {
+		case a == "--extract" || a == "--raw-extract" || a == "--fsys-tarfile":
+			return true
+		case strings.HasPrefix(a, "--") || a == "":
+		case strings.HasPrefix(a, "-"):
+			if strings.ContainsAny(a[1:], "xrR") {
+				return true
+			}
+		case i == 0 && strings.ContainsRune(a, 'x'):
+			return true // old-style first word: `ar x lib.a`, `jar xf a.jar`
+		}
+	}
+	return false
+}
+
+// gitSubcommandRewritesTree reports whether a git invocation can replace the
+// content of tracked files in the work tree. The read-only variants (listing
+// stashes, aborting nothing, dry runs, creating a branch, moving only the
+// index or HEAD) keep earlier reads valid.
+func gitSubcommandRewritesTree(inner []string) bool {
+	sub, args := gitSubcommandAndArgs(inner)
+	var operands []string
+	flag := func(names ...string) bool {
+		for _, a := range args {
+			for _, n := range names {
+				if a == n || strings.HasPrefix(a, n+"=") {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	for _, a := range args {
+		if !strings.HasPrefix(a, "-") {
+			operands = append(operands, a)
+		}
+	}
+	switch sub {
+	case "checkout", "switch":
+		if flag("-b", "-B", "-c", "-C", "--create", "--force-create", "--orphan") && len(operands) <= 1 && !flag("--") {
+			return false // a new branch at HEAD: no file changes
+		}
+		return true
+	case "reset":
+		// --soft and --mixed move only HEAD and the index.
+		return flag("--hard", "--merge", "--keep")
+	case "restore":
+		return !(flag("--staged", "-S") && !flag("--worktree", "-W"))
+	case "stash":
+		if len(operands) > 0 {
+			switch operands[0] {
+			case "list", "show", "drop", "clear", "create", "store":
+				return false
+			}
+		}
+		return true
+	case "merge":
+		return !flag("--abort", "--quit")
+	case "clean":
+		return !flag("-n", "--dry-run")
+	case "rebase":
+		return !flag("--quit")
+	case "pull", "apply", "am", "cherry-pick", "revert", "checkout-index", "read-tree",
+		"submodule", "sparse-checkout", "worktree", "bisect", "filter-branch", "lfs":
+		if sub == "submodule" || sub == "worktree" {
+			if len(operands) > 0 {
+				switch operands[0] {
+				case "status", "summary", "list", "foreach", "init", "deinit", "lock", "unlock", "prune":
+					return false
+				}
+			}
+		}
+		return true
 	}
 	return false
 }
