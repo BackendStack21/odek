@@ -1699,6 +1699,9 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 			// is answered even while a prompt occupies the processor loop.
 			if msgType.Type == "ping" {
 				pong := wsServerInfoEvent(serveStateStartedAt(state), snap)
+				// The connection's model changes per prompt; the connect-time
+				// snapshot would report a stale one.
+				pong["model"] = connInfo.wireCopy().Model
 				pong["type"] = "pong"
 				pong["t"] = time.Now().UnixMilli()
 				writeWSJSON(conn, pong)

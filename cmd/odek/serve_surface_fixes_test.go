@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -295,8 +296,11 @@ func TestServe_E2E_PingPongUsesConfigSnapshotNotLiveModel(t *testing.T) {
 		if pong["t"] == nil {
 			t.Errorf("round %d: pong missing t field: %v", i, pong)
 		}
-		if got, _ := pong["model"].(string); got != "initial-model" {
-			t.Fatalf("round %d: pong model = %q, want the immutable snapshot %q (live reads race with the processor loop)", i, got, "initial-model")
+		// The pong reports the connection's lock-protected model: the
+		// connect-time model or one of the switches, never anything else
+		// (live reads of resolved.Model would race with the processor loop).
+		if got, _ := pong["model"].(string); got != "initial-model" && !strings.HasPrefix(got, "switched-model-") {
+			t.Fatalf("round %d: pong model = %q, want initial-model or a switched-model-N", i, got)
 		}
 	}
 }
