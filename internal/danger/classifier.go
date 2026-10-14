@@ -581,6 +581,32 @@ var persistenceDirMarkers = []string{
 	// ~/Library forms alike once ~ is expanded.
 	"/library/launchdaemons",
 	"/library/launchagents",
+	"/.husky/",                  // husky points core.hooksPath here: runs on commit, push
+	"/profile_default/startup/", // IPython runs every file here at start
+	"/.vim/plugin/",             // Vim sources these at start
+	"/.vim/autoload/",
+}
+
+// homeStartupFiles are dotfiles directly in $HOME that a program reads and
+// runs commands from every time it starts (`!cmd` in vim, `shell` in gdb,
+// `run-shell` in tmux, direnv's legacy rc).
+var homeStartupFiles = map[string]bool{
+	".direnvrc": true, ".vimrc": true, ".gvimrc": true, ".exrc": true,
+	".gdbinit": true, ".tmux.conf": true, ".screenrc": true, ".emacs": true,
+	".pythonstartup": true,
+}
+
+// pythonStartupHook reports whether a lowercased path is a file every Python
+// process of an environment imports at start: a .pth file (its import lines
+// run) in site-packages, or sitecustomize / usercustomize.
+func pythonStartupHook(lower string) bool {
+	base := filepath.Base(lower)
+	switch base {
+	case "sitecustomize.py", "usercustomize.py":
+		return true
+	}
+	return strings.HasSuffix(base, ".pth") &&
+		(strings.Contains(lower, "/site-packages/") || strings.Contains(lower, "/dist-packages/"))
 }
 
 // persistenceBaseNames are exact (lowercased) file names that defer
@@ -642,6 +668,9 @@ func isPersistencePathLexical(path string) bool {
 		if filepath.Dir(lower) == lowerHome && shellRCFilesLower[filepath.Base(lower)] {
 			return true
 		}
+		if filepath.Dir(lower) == lowerHome && homeStartupFiles[filepath.Base(lower)] {
+			return true
+		}
 		// User systemd units: run at login / on timer.
 		for _, unitDir := range []string{"/.config/systemd/user/", "/.local/share/systemd/user/"} {
 			if strings.HasPrefix(dirLower, lowerHome+unitDir) {
@@ -654,7 +683,7 @@ func isPersistencePathLexical(path string) bool {
 			return true
 		}
 	}
-	if isGitExecConfig(dirLower) {
+	if isGitExecConfig(dirLower) || pythonStartupHook(lower) {
 		return true
 	}
 	return persistenceBaseNames[filepath.Base(lower)]
@@ -1988,6 +2017,7 @@ func classifyPipelineIn(tokens []string, repos []*gitRepoCtx) RiskClass {
 		if idx == 0 {
 			worst = worstOf(worst, classifyArgvComposerLiteralInput(stage, repos[idx]))
 		}
+		worst = worstOf(worst, classifyShellHereString(stage))
 		if idx > 0 {
 			// A pipe-fed argv composer turns upstream stdout into command
 			// arguments, so `echo "/" | xargs rm -rf` executes `rm -rf /`
@@ -2147,6 +2177,25 @@ func classifyPipedShellSink(upstream [][]string, stage []string) RiskClass {
 		return Safe
 	}
 	return cls
+}
+
+// classifyShellHereString classifies the script a shell reads from a literal
+// here-string (`sh <<< 'rm -rf ~'`) as a command, like the same text piped in.
+// A script that cannot be judged keeps the code_execution floor.
+func classifyShellHereString(stage []string) RiskClass {
+	cmd, _ := unwrapWrappers(stage)
+	if len(cmd) == 0 || !pipedShells[commandName(cmd[0])] || shellInlineScriptIndex(cmd) >= 0 {
+		return Safe
+	}
+	text, ok := hereStringText(cmd)
+	text = strings.TrimSpace(text)
+	if !ok || text == "" {
+		return Safe
+	}
+	if cls := Classify(text); cls != Unknown {
+		return cls
+	}
+	return Safe
 }
 
 // classifyXargsFileInput fails closed when a (non-pipe) xargs invocation

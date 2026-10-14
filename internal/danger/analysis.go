@@ -994,6 +994,15 @@ func analyzeWithStateWork(cmd string, depth int, inherited *shellAnalysisState, 
 		if substExecutes && substitutionDecodes(sub) {
 			result.add(Unknown)
 		}
+		if substExecutes {
+			// A substitution of a literal echo/printf is the program text:
+			// `bash <(echo 'rm -rf ~')` runs the echoed command.
+			if text, ok := staticPipeText([][]string{tokenize(sub)}); ok {
+				if cls := Classify(strings.TrimSpace(text)); cls != Unknown {
+					result.add(cls)
+				}
+			}
+		}
 		if substExecutes && !state.uncertain {
 			files, rewritten := substitutionReaderFiles(sub, state.cwd, state.written)
 			for _, path := range files {
@@ -1244,9 +1253,14 @@ func (s *shellAnalysisState) rebind(name string, inner []string, bind bool) (nam
 	}
 	switch name {
 	case "read":
+		// The variables hold whatever the input supplies at run time; a
+		// request that splices one in carries local data out.
 		s.forget("REPLY")
+		s.vars["REPLY"] = dynamicSubstToken
 		for _, tok := range inner[1:] {
-			s.forget(operandName(tok))
+			if op := operandName(tok); op != "" && !strings.HasPrefix(op, "-") {
+				s.vars[op] = dynamicSubstToken
+			}
 		}
 	case "shift", "set":
 		// The positional parameters change meaning.
@@ -1256,8 +1270,11 @@ func (s *shellAnalysisState) rebind(name string, inner []string, bind bool) (nam
 		s.argsKnown = false
 	case "mapfile", "readarray":
 		s.forget("MAPFILE")
+		s.vars["MAPFILE"] = dynamicSubstToken
 		for _, tok := range inner[1:] {
-			s.forget(operandName(tok))
+			if op := operandName(tok); op != "" && !strings.HasPrefix(op, "-") {
+				s.vars[op] = dynamicSubstToken
+			}
 		}
 	case "getopts":
 		s.forget("OPTARG", "OPTIND", "OPTERR")
