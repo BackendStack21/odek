@@ -241,6 +241,18 @@ func registryPublish(name string, args []string) bool {
 	if dryRunSetting(name, args) {
 		return false // nothing is sent
 	}
+	// The verb read with the tool's global option grammar, so any number of
+	// value-taking options (`npm --prefix app --registry r publish`) cannot
+	// push it past the word window below.
+	if spec, ok := packageManagerGlobals[name]; ok {
+		global := args
+		if name == "cargo" && len(global) > 0 && strings.HasPrefix(global[0], "+") {
+			global = global[1:]
+		}
+		if runnerVerbAt(spec, global, registryPublishVerbs[name]...) >= 0 {
+			return true
+		}
+	}
 	var words []string
 	for _, a := range args {
 		if a == "--" {

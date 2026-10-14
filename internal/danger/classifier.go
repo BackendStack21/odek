@@ -1933,7 +1933,10 @@ var installPrefixes = map[string]bool{
 // runners and plugin-loading toolchains are handled by adapterRunsCode,
 // retaining execution policy even when their ordinary use is routine.
 var pkgRunSubcommands = map[string]map[string]bool{
-	"npm":      {"start": true, "run": true, "run-script": true, "test": true, "stop": true, "restart": true, "exec": true},
+	"npm": {"start": true, "run": true, "run-script": true, "test": true, "stop": true, "restart": true, "exec": true,
+		// npm's aliases and unambiguous prefixes of these verbs.
+		"t": true, "tst": true, "tes": true, "rum": true, "urn": true, "run-scrip": true, "x": true, "exe": true,
+		"sto": true, "rest": true, "resta": true, "restar": true},
 	"pnpm":     {"start": true, "run": true, "test": true, "exec": true},
 	"yarn":     {"start": true, "run": true, "test": true, "exec": true},
 	"bun":      {"start": true, "run": true, "test": true, "exec": true},
@@ -7047,6 +7050,9 @@ func isPackageManagerRun(first string, tokens []string) bool {
 	subs, ok := pkgRunSubcommands[first]
 	if !ok {
 		return false
+	}
+	if packageManagerRunVerb(first, tokens, subs) {
+		return true
 	}
 	for _, tok := range tokens[1:] {
 		if strings.HasPrefix(tok, "-") {

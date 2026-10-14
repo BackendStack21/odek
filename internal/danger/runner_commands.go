@@ -11,8 +11,9 @@ import (
 var (
 	pnpmRunnerSpec = optSpec{posix: true, short: "CF", long: longTable("dir filter reporter loglevel workspace-concurrency", "")}
 	// pnpmExecSpec is the grammar of `pnpm exec|dlx|x`: -p/--package names a
-	// package to install; -c/--shell-mode runs the command through a shell.
-	pnpmExecSpec = optSpec{posix: true, short: "pF", long: longTable("package resume-from filter reporter "+
+	// package to install, -C/--dir the directory (also accepted after the
+	// verb); -c/--shell-mode runs the command through a shell.
+	pnpmExecSpec = optSpec{posix: true, short: "pFC", long: longTable("package resume-from filter reporter dir "+
 		"workspace-concurrency report-summary-file", "")}
 	// yarnExecSpec is the grammar of `yarn exec|dlx`: -p/--package names a
 	// package to install.
@@ -232,7 +233,7 @@ func runnerDirectory(name string, tokens []string) (dir string, known, has bool)
 				switch {
 				case o.is("-C", "--dir"):
 					dir, has = joinRunnerDir(dir, o.value, o.has), true
-				case o.is("-F", "--filter", "-r", "--recursive"):
+				case o.is("-F", "--filter", "-r", "--recursive", "-w", "--workspace-root"):
 					unknown, has = true, true
 				}
 			}
@@ -247,8 +248,11 @@ func runnerDirectory(name string, tokens []string) (dir string, known, has bool)
 		has = dir != "" || unknown
 	case "bun":
 		for _, o := range bunRunnerSpec.parse(args).opts {
-			if o.is("--cwd") {
+			switch {
+			case o.is("--cwd"):
 				dir, has = joinRunnerDir(dir, o.value, o.has), true
+			case o.is("-F", "--filter"):
+				unknown, has = true, true
 			}
 		}
 	case "npm":
@@ -296,6 +300,45 @@ func runnerRunsRelativeScript(cmd []string) bool {
 			continue
 		}
 		return relative(tok)
+	}
+	return false
+}
+
+// packageManagerGlobals are the global option grammars of the package
+// managers whose script-running verbs (pkgRunSubcommands) may follow
+// value-taking options: `npm --prefix app test`, `pnpm -C app run build`,
+// `yarn --cwd app start`, `bun --cwd app run build`.
+var packageManagerGlobals = map[string]optSpec{
+	"npm":      npmGlobalSpec,
+	"pnpm":     pnpmRunnerSpec,
+	"yarn":     yarnRunnerSpec,
+	"bun":      bunRunnerSpec,
+	"cargo":    {posix: true, short: "CZ", long: longTable("config color", "")},
+	"composer": {posix: true, short: "d", long: longTable("working-dir", "")},
+}
+
+// packageManagerRunVerb reports whether a package manager invocation reaches
+// one of its script-running verbs past its global options and their values,
+// or (bun) runs a script path directly (`bun --cwd app ./x.ts`).
+func packageManagerRunVerb(name string, tokens []string, subs map[string]bool) bool {
+	spec, ok := packageManagerGlobals[name]
+	if !ok || len(tokens) < 2 {
+		return false
+	}
+	args := tokens[1:]
+	if name == "cargo" && len(args) > 0 && strings.HasPrefix(args[0], "+") {
+		args = args[1:] // rustup toolchain selector
+	}
+	verbs := make([]string, 0, len(subs))
+	for v := range subs {
+		verbs = append(verbs, v)
+	}
+	if runnerVerbAt(spec, args, verbs...) >= 0 {
+		return true
+	}
+	if r := spec.parse(args); name == "bun" && r.operandAt >= 0 {
+		op := args[r.operandAt]
+		return strings.Contains(op, "/") || strings.Contains(op, ".")
 	}
 	return false
 }
@@ -469,6 +512,19 @@ func runnerCommandStrings(name string, tokens []string) []string {
 		return out
 	case "npx":
 		return npmCallStrings(args)
+	case "bun":
+		// bun exec STRING runs STRING through Bun's shell.
+		at := runnerVerbAt(bunRunnerSpec, args, "exec")
+		if at < 0 {
+			return nil
+		}
+		words := args[at+1:]
+		if len(words) > 0 && words[0] == "--" {
+			words = words[1:]
+		}
+		if cmd := strings.Join(words, " "); strings.TrimSpace(cmd) != "" {
+			return []string{cmd}
+		}
 	case "pnpm":
 		at := runnerVerbAt(pnpmRunnerSpec, args, "exec", "dlx", "x")
 		if at < 0 || !pnpmShellMode(args[at+1:]) {
