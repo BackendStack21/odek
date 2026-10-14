@@ -273,12 +273,12 @@ func scheduleNext(st *schedule.Store, args []string) error {
 	} else {
 		// A quoted expression, or its five fields as separate arguments.
 		expr := strings.Join(args, " ")
-		sc, err := schedule.Parse(expr)
+		sc, label, err := exprSchedule(expr, tz)
 		if err != nil {
 			return err
 		}
 		s = sc
-		fmt.Printf("Expression: %s (UTC)\n", expr)
+		fmt.Printf("Expression: %s (%s)\n", expr, label)
 	}
 	t := time.Now()
 	for range 5 {
@@ -977,6 +977,18 @@ func schedulerOptions(sc config.ScheduleConfig, logger schedule.Logger) schedule
 // merged configuration.
 func defaultScheduleTZ() *time.Location {
 	return schedulerOptions(config.LoadConfig(config.CLIFlags{}).Schedules, schedule.NopLogger{}).DefaultTZ
+}
+
+// exprSchedule compiles a bare cron expression in the scheduler's default
+// zone (UTC when none is configured), as a job added with it would fire, and
+// returns the zone name for display.
+func exprSchedule(expr string, defaultTZ *time.Location) (*schedule.Schedule, string, error) {
+	loc := defaultTZ
+	if loc == nil {
+		loc = time.UTC
+	}
+	sc, err := schedule.ParseInLocation(expr, loc)
+	return sc, loc.String(), err
 }
 
 // jobSchedule compiles a job's cron in its timezone for display. A job

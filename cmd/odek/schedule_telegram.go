@@ -230,11 +230,11 @@ func scheduleTelegramNext(st *schedule.Store, arg string) string {
 		}
 	}
 	if sc == nil {
-		s, err := schedule.Parse(arg)
+		s, label, err := exprSchedule(arg, tz)
 		if err != nil {
 			return "❌ " + err.Error()
 		}
-		sc, header = s, fmt.Sprintf("⏰ `%s` (UTC)", arg)
+		sc, header = s, fmt.Sprintf("⏰ `%s` (%s)", arg, label)
 	}
 	var b strings.Builder
 	b.WriteString(header + "\n")
