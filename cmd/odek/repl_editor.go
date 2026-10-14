@@ -132,7 +132,6 @@ func (e *replEditor) handleByte(b byte) (bool, error) {
 		return e.handleEnter()
 	case e.bracketed && b == 0x09: // TAB inside a paste is literal text
 		e.insertRune('\t')
-	case e.bracketed && (b < 0x20 || b == 0x7f): // other pasted control bytes never act as editing keys
 	case b == 0x7f || b == 0x08: // DEL / BS
 		e.backspace()
 	case b == 0x09: // TAB
