@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"os"
 	"runtime"
@@ -42,6 +43,15 @@ func dispatch(args []string) int {
 				panic(value) // preserve the original crash behavior after flushing
 			}
 		}()
+	}
+
+	if helpRequested(cmd, rest) {
+		if cmd == "schedule" {
+			printScheduleUsage()
+		} else {
+			printUsage()
+		}
+		return 0
 	}
 
 	switch cmd {
@@ -96,10 +106,30 @@ func dispatch(args []string) int {
 	}
 }
 
+// helpRequested reports whether the arguments are a request for help on a
+// command that does not otherwise handle one: -h, --help or (for the
+// command groups) help, as the first argument or, for groups, right after
+// the group name. Later positions are task text or operands and never count.
+func helpRequested(cmd string, args []string) bool {
+	isHelp := func(a string) bool { return a == "-h" || a == "--help" }
+	switch cmd {
+	case "session", "schedule", "skill":
+		if len(args) > 0 && (isHelp(args[0]) || args[0] == "help") {
+			return true
+		}
+		return len(args) > 1 && isHelp(args[1])
+	case "run", "continue", "repl", "init", "subagent":
+		return len(args) > 0 && isHelp(args[0])
+	}
+	return false
+}
+
 // cliExit is the default error→exit translator: prints the error to stderr
 // with the "odek:" prefix and returns exit code 1, or returns 0 on nil.
 func cliExit(err error) int {
-	if err == nil {
+	if err == nil || errors.Is(err, flag.ErrHelp) {
+		// -h/--help on a flag-parsed command: the flag package already
+		// printed the usage; asking for help is not a failure.
 		return 0
 	}
 	logCommandFailure(err)
