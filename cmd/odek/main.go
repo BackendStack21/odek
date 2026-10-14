@@ -25,6 +25,7 @@ import (
 	"github.com/BackendStack21/odek/internal/danger"
 	"github.com/BackendStack21/odek/internal/diagnostics"
 	"github.com/BackendStack21/odek/internal/events"
+	"github.com/BackendStack21/odek/internal/fsatomic"
 	"github.com/BackendStack21/odek/internal/guard"
 	"github.com/BackendStack21/odek/internal/llmclient"
 	"github.com/BackendStack21/odek/internal/loop"
@@ -1812,6 +1813,15 @@ func initConfig(args []string) error {
 		template = localConfigTemplate
 	}
 
+	// A project directory is untrusted: ./odek.json may be a link planted by
+	// a cloned repository. Never write through it, with or without --force,
+	// and treat a dangling link as existing so it cannot create its target.
+	if !global {
+		if fi, err := os.Lstat(configPath); err == nil && !fi.Mode().IsRegular() {
+			return fmt.Errorf("refusing to write %s: it is not a regular file (symlink or special file); remove it first", configPath)
+		}
+	}
+
 	// Check if file already exists
 	if _, err := os.Stat(configPath); err == nil && !force {
 		fmt.Fprintf(os.Stderr, "odek: %s config already exists at %s\n", scope, configPath)
@@ -1825,7 +1835,19 @@ func initConfig(args []string) error {
 		return fmt.Errorf("create directory %s: %w", dir, err)
 	}
 
-	if err := os.WriteFile(configPath, []byte(template+"\n"), 0600); err != nil {
+	// The operator's own global config may be a link into a dotfiles tree:
+	// write atomically to the file it points at, keeping its mode, so the
+	// link survives. (A project ./odek.json link was refused above.)
+	writePath, mode := configPath, os.FileMode(0600)
+	if global {
+		if resolved, err := filepath.EvalSymlinks(configPath); err == nil {
+			writePath = resolved
+		}
+		if fi, err := os.Stat(writePath); err == nil && fi.Mode().IsRegular() {
+			mode = fi.Mode().Perm()
+		}
+	}
+	if err := fsatomic.WriteFile(writePath, []byte(template+"\n"), mode); err != nil {
 		return fmt.Errorf("write config: %w", err)
 	}
 
@@ -2683,6 +2705,16 @@ func builtinTools(dc danger.DangerousConfig, sm *skills.SkillManager, approver d
 		// Top-level runs (odek run/repl/serve/telegram) are operator-trusted.
 		selfTrust = "trusted"
 	}
+	// A sub-agent hands its own effective risk cap to the children it
+	// spawns; top-level runs (SelfTrust empty) have no inherited cap.
+	selfMaxRisk := ""
+	if tcfg.SelfTrust != "" {
+		selfMaxRisk = effectiveMaxRisk(&dc)
+		if selfMaxRisk == "" {
+			// Every class denied: the children get no authority either.
+			selfMaxRisk = parentRiskCapNone
+		}
+	}
 	// Artifacts home for the delegate_tasks result channel; empty disables
 	// the channel (never fail agent startup over it).
 	artifactsRoot, _ := artifactsHome()
@@ -2712,6 +2744,7 @@ func builtinTools(dc danger.DangerousConfig, sm *skills.SkillManager, approver d
 			maxDepth:              subDepth,
 			budgetInherit:         subInherit,
 			selfTrust:             selfTrust,
+			selfMaxRisk:           selfMaxRisk,
 			profiles:              tcfg.Profiles,
 			artifactsRoot:         artifactsRoot, // empty ⇒ no artifact dirs created
 			artifactReadAvailable: artifactReadEnabled(tcfg),
@@ -2875,6 +2908,16 @@ func reservedBuiltinToolNames() map[string]bool {
 	return names
 }
 
+// claimMCPToolName records a registered MCP tool name, failing when another
+// tool already uses it (the registry would otherwise panic or shadow).
+func claimMCPToolName(seen map[string]struct{}, server, tool, registered string) error {
+	if _, dup := seen[registered]; dup {
+		return fmt.Errorf("mcp server %q: tool %q registers as %q, which another MCP tool already uses", server, tool, registered)
+	}
+	seen[registered] = struct{}{}
+	return nil
+}
+
 // loadMCPTools calls approveMCPServers, which requires explicit user approval
 // (interactive prompt or ODEK_APPROVE_MCP=1) and persists approvals in
 // ~/.odek/mcp_approvals.json. After discovery, each advertised tool is checked
@@ -2909,6 +2952,7 @@ func loadMCPTools(resolved config.ResolvedConfig, tools *[]odek.Tool) (func(), e
 		projectServers[n] = true
 	}
 	var cleaners []func()
+	mcpRegistered := map[string]struct{}{}
 	for name, cfg := range resolved.MCPServers {
 		if cfg.IsDisabled() {
 			// Configured but off: keep the entry (approval hashes, later
@@ -2979,7 +3023,15 @@ func loadMCPTools(resolved config.ResolvedConfig, tools *[]odek.Tool) (func(), e
 			// Server-controlled description and schema text is made
 			// non-authoritative before it enters the tool catalogue (see
 			// newMCPModelTool).
-			*tools = append(*tools, newMCPModelTool(client, name, def, injectionGuard, resolved.Guard))
+			mt := newMCPModelTool(client, name, def, injectionGuard, resolved.Guard)
+			if err := claimMCPToolName(mcpRegistered, name, def.Name, mt.Name()); err != nil {
+				client.Close()
+				for _, c := range cleaners {
+					c()
+				}
+				return nil, err
+			}
+			*tools = append(*tools, mt)
 		}
 
 		cleaners = append(cleaners, func() {
@@ -3730,8 +3782,8 @@ func listSessions(store *session.Store) error {
 	fmt.Printf("%-22s %-5s %-30s %s\n", "ID", "Turns", "Model", "Task")
 	fmt.Println(strings.Repeat("─", 80))
 	for _, s := range sessions {
-		task := shorten(s.Task, 30)
-		model := shorten(s.Model, 20)
+		task := danger.SanitizeInline(shorten(s.Task, 30))
+		model := danger.SanitizeInline(shorten(s.Model, 20))
 		fmt.Printf("%-22s %-5d %-30s %s\n", s.ID, s.Turns, model, task)
 	}
 	return nil
@@ -3755,11 +3807,11 @@ func showSession(store *session.Store, args []string) error {
 	}
 
 	fmt.Printf("Session: %s\n", sess.ID)
-	fmt.Printf("Model:   %s\n", sess.Model)
+	fmt.Printf("Model:   %s\n", danger.SanitizeInline(sess.Model))
 	fmt.Printf("Turns:   %d\n", sess.Turns)
 	fmt.Printf("Created: %s\n", sess.CreatedAt.Format("2006-01-02 15:04:05 UTC"))
 	fmt.Printf("Updated: %s\n", sess.UpdatedAt.Format("2006-01-02 15:04:05 UTC"))
-	fmt.Printf("Task:    %s\n", sess.Task)
+	fmt.Printf("Task:    %s\n", danger.SanitizeInline(sess.Task))
 	fmt.Println()
 
 	// Call-ID correlation: parallel tool calls are stored as
@@ -3796,21 +3848,22 @@ func showSession(store *session.Store, args []string) error {
 
 	for i, msg := range sess.Messages {
 		content := strings.TrimSpace(msg.Content)
+		shown := danger.EscapeTerminalText(content)
 		switch msg.Role {
 		case "system":
-			fmt.Printf("── [SYSTEM] ──\n%s\n\n", content)
+			fmt.Printf("── [SYSTEM] ──\n%s\n\n", shown)
 		case "user":
-			fmt.Printf("── [USER Turn %d] ──\n%s\n\n", countUserTurnsUpTo(sess.Messages, i), content)
+			fmt.Printf("── [USER Turn %d] ──\n%s\n\n", countUserTurnsUpTo(sess.Messages, i)+1, shown)
 		case "assistant":
 			if len(msg.ToolCalls) > 0 {
 				for _, tc := range msg.ToolCalls {
-					fmt.Printf("── [TOOL CALL: %s %s] ──\n%s\n\n", tc.Function.Name, nextLabel(callCursor, tc.ID), tc.Function.Arguments)
+					fmt.Printf("── [TOOL CALL: %s %s] ──\n%s\n\n", danger.SanitizeInline(tc.Function.Name), danger.SanitizeInline(nextLabel(callCursor, tc.ID)), danger.EscapeTerminalText(tc.Function.Arguments))
 				}
 			} else {
-				fmt.Printf("── [ASSISTANT] ──\n%s\n\n", content)
+				fmt.Printf("── [ASSISTANT] ──\n%s\n\n", shown)
 			}
 		case "tool":
-			fmt.Printf("── [TOOL RESULT: %s %s] ──\n%s\n\n", msg.Name, nextLabel(resultCursor, msg.ToolCallID), shorten(content, 200))
+			fmt.Printf("── [TOOL RESULT: %s %s] ──\n%s\n\n", danger.SanitizeInline(msg.Name), danger.SanitizeInline(nextLabel(resultCursor, msg.ToolCallID)), danger.SanitizeForDisplay(shorten(content, 200)))
 		}
 	}
 	return nil
@@ -3848,8 +3901,8 @@ func trimSession(store *session.Store, args []string) error {
 		return fmt.Errorf("usage: odek session trim <id> <n>")
 	}
 	id := args[0]
-	var n int
-	if _, err := fmt.Sscanf(args[1], "%d", &n); err != nil || n < 2 {
+	n, nerr := strconv.Atoi(args[1])
+	if nerr != nil || n < 2 {
 		return fmt.Errorf("n must be at least 2 (system + at least 1 message), got %q", args[1])
 	}
 
@@ -3898,15 +3951,18 @@ func trimSession(store *session.Store, args []string) error {
 	return nil
 }
 
+// maxCleanupDays bounds `session cleanup <days>` so the cutoff date cannot overflow.
+const maxCleanupDays = 36500
+
 // cleanupSessions deletes all sessions older than the given number of days.
 // Usage: odek session cleanup <days>
 func cleanupSessions(store *session.Store, args []string) error {
 	if len(args) == 0 {
 		return fmt.Errorf("usage: odek session cleanup <days>")
 	}
-	var days int
-	if _, err := fmt.Sscanf(args[0], "%d", &days); err != nil || days < 0 {
-		return fmt.Errorf("invalid days %q — must be a non-negative integer", args[0])
+	days, derr := strconv.Atoi(args[0])
+	if derr != nil || days < 0 || days > maxCleanupDays {
+		return fmt.Errorf("invalid days %q — must be an integer between 0 and %d", args[0], maxCleanupDays)
 	}
 
 	before := time.Now().UTC().AddDate(0, 0, -days)

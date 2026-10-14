@@ -547,7 +547,7 @@ Runs the full agent without a WebSocket. The body is the prompt message:
 ```jsonc
 {
   "content": "summarize the repo",   // required, same 1 MiB cap as WS prompts
-  "session_id": "2026…",             // optional — omit to create a session
+  "session_id": "2026…",             // optional — omit to create a session; an unknown id is 404
   "auth_token": "…",                 // session token when continuing
   "model": "glm-5.3",                // optional per-run model override
   "thinking": "medium",              // optional per-run depth: disabled|low|medium|high (omit = inherit)
@@ -556,7 +556,9 @@ Runs the full agent without a WebSocket. The body is the prompt message:
 }
 ```
 
-Returns `202 {run_id, session_id, status:"running"}`. The run executes the
+Returns `202 {run_id, session_id, status:"running"}`. A `session_id` that does
+not exist is refused with `404` (throttled like a bad token) — clients cannot
+choose the id of a new session; omit it to create one. The run executes the
 exact `handlePrompt` path (refs, audit, per-turn persistence); events land in
 the run record and the `/api/events` ring. Approvals block the run and are
 answerable over REST:
@@ -564,7 +566,7 @@ answerable over REST:
 | Endpoint | Method | Purpose |
 |---|---|---|
 | `/api/runs` | GET | Recent runs (status, timing, tokens; newest first) |
-| `/api/runs/{id}` | GET | Detail incl. event tail (200 events) + result |
+| `/api/runs/{id}` | GET | Detail incl. event tail (200 events, 4 MiB total, values clipped to 8 KiB) + result |
 | `/api/runs/{id}` | DELETE | Cancel |
 | `/api/runs/{id}/cancel` | POST | Cancel (reports `idle:true` when already finished) |
 | `/api/runs/{id}/approvals` | GET | Pending approval requests (risk, command) |

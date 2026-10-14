@@ -583,6 +583,52 @@ var persistenceDirMarkers = []string{
 	"/library/launchagents",
 }
 
+// startupHookMarkers are start-time hooks of other programs. Writing one is
+// deferred execution; reading, copying from or deleting one is not.
+var startupHookMarkers = []string{
+	"/.husky/",                  // husky points core.hooksPath here: runs on commit, push
+	"/profile_default/startup/", // IPython runs every file here at start
+	"/.vim/plugin/",             // Vim sources these at start
+	"/.vim/autoload/",
+	"/.vim/vimrc",
+	"/.bashrc.d/", // sourced by distro shell profiles
+	"/.profile.d/",
+	"/.zshrc.d/",
+	"/.emacs.d/init.el", // Emacs evaluates these at start
+	"/.emacs.d/early-init.el",
+	"/.vscode/tasks.json", // runs on folder open / build
+}
+
+// homeStartupFiles are dotfiles directly in $HOME that a program reads and
+// runs commands from every time it starts (`!cmd` in vim, `shell` in gdb,
+// `run-shell` in tmux, direnv's legacy rc).
+var homeStartupFiles = map[string]bool{
+	".direnvrc": true, ".vimrc": true, ".gvimrc": true, ".exrc": true,
+	".gdbinit": true, ".tmux.conf": true, ".screenrc": true, ".emacs": true,
+	".pythonstartup": true, ".pdbrc": true, ".irbrc": true, ".pryrc": true,
+}
+
+// pythonStartupHook reports whether a lowercased path is a file every Python
+// process of an environment imports at start: a .pth file (its import lines
+// run) in site-packages, or sitecustomize / usercustomize.
+func pythonStartupHook(lower string) bool {
+	base := filepath.Base(lower)
+	switch base {
+	case "sitecustomize.py", "usercustomize.py":
+		return true
+	}
+	// Any IPython profile (not only profile_default) runs its startup
+	// directory and config at launch; Jupyter loads its *config* files.
+	if strings.Contains(lower, "/.ipython/profile_") && (strings.Contains(lower, "/startup/") || strings.HasSuffix(base, "_config.py")) {
+		return true
+	}
+	if strings.Contains(lower, "/.jupyter/") && strings.Contains(base, "config") {
+		return true
+	}
+	return strings.HasSuffix(base, ".pth") &&
+		(strings.Contains(lower, "/site-packages/") || strings.Contains(lower, "/dist-packages/"))
+}
+
 // persistenceBaseNames are exact (lowercased) file names that defer
 // execution wherever they appear in a tree.
 var persistenceBaseNames = map[string]bool{
@@ -606,16 +652,25 @@ var persistenceBaseNames = map[string]bool{
 // It is direction-agnostic; callers gating reads should keep using
 // ClassifyPath (reads of these files stay at their existing class) and
 // reserve the persistence escalation for writes via ClassifyPathWrite.
-func IsPersistencePath(path string) bool {
+func IsPersistencePath(path string) bool { return persistencePath(path, true) }
+
+// isCorePersistencePath is IsPersistencePath without the start-time hooks of
+// other programs: the targets whose mere mention as an operand was already
+// persistence.
+func isCorePersistencePath(path string) bool { return persistencePath(path, false) }
+
+func persistencePath(path string, hooks bool) bool {
 	path = expandShellTokenPath(path)
-	if isPersistencePathLexical(path) {
+	if persistencePathLexical(path, hooks) {
 		return true
 	}
 	resolved, err := resolvePathTarget(path)
-	return err == nil && isPersistencePathLexical(resolved)
+	return err == nil && persistencePathLexical(resolved, hooks)
 }
 
-func isPersistencePathLexical(path string) bool {
+func isPersistencePathLexical(path string) bool { return persistencePathLexical(path, true) }
+
+func persistencePathLexical(path string, hooks bool) bool {
 	// Expand ~ / $HOME shorthands so direct API callers (file tools, tests)
 	// behave identically to shell-token classification.
 	path = expandShellTokenPath(path)
@@ -642,6 +697,9 @@ func isPersistencePathLexical(path string) bool {
 		if filepath.Dir(lower) == lowerHome && shellRCFilesLower[filepath.Base(lower)] {
 			return true
 		}
+		if hooks && filepath.Dir(lower) == lowerHome && homeStartupFiles[filepath.Base(lower)] {
+			return true
+		}
 		// User systemd units: run at login / on timer.
 		for _, unitDir := range []string{"/.config/systemd/user/", "/.local/share/systemd/user/"} {
 			if strings.HasPrefix(dirLower, lowerHome+unitDir) {
@@ -651,6 +709,16 @@ func isPersistencePathLexical(path string) bool {
 	}
 	for _, marker := range persistenceDirMarkers {
 		if strings.Contains(dirLower, marker) {
+			return true
+		}
+	}
+	if hooks {
+		for _, marker := range startupHookMarkers {
+			if strings.Contains(dirLower, marker) {
+				return true
+			}
+		}
+		if pythonStartupHook(lower) {
 			return true
 		}
 	}
@@ -688,12 +756,16 @@ func isGitExecConfig(dirLower string) bool {
 // Persistence (rank above SystemWrite, default action Prompt, never
 // eligible for session trust shortcuts). Reads keep using ClassifyPath —
 // reading a CI workflow file must stay as frictionless as before.
-func ClassifyPathWrite(path string) RiskClass {
+func ClassifyPathWrite(path string) RiskClass { return classifyPathWriteMode(path, true) }
+
+// classifyPathWriteMode is ClassifyPathWrite where hooks selects whether the
+// start-time hooks of other programs count as persistence targets.
+func classifyPathWriteMode(path string, hooks bool) RiskClass {
 	cls := ClassifyPath(path)
 	if cls == Blocked || cls == Destructive {
 		return cls // already worse than persistence
 	}
-	if IsPersistencePath(path) && Rank(Persistence) > Rank(cls) {
+	if persistencePath(path, hooks) && Rank(Persistence) > Rank(cls) {
 		return Persistence
 	}
 	return cls
@@ -794,8 +866,18 @@ func isOdekTrustAnchor(home, abs string) bool {
 	if lowerAbs == lowerPrefix {
 		return true
 	}
-	rel := FoldPathCase(filepath.Clean(lowerAbs[len(lowerPrefix+"/"):]))
+	return IsOdekTrustAnchorRel(lowerAbs[len(lowerPrefix+"/"):])
+}
 
+// IsOdekTrustAnchorRel reports whether rel, a path relative to ~/.odek, names a
+// trust anchor (exact file, rotated log, protected directory or its content, or
+// the Telegram token budget counter). It is the single anchor table shared by
+// the path classifier and the file tools.
+func IsOdekTrustAnchorRel(rel string) bool {
+	rel = FoldPathCase(filepath.Clean(rel))
+	if rel == "." {
+		return true
+	}
 	for _, p := range odekProtectedFiles {
 		if rel == p {
 			return true
@@ -811,6 +893,11 @@ func isOdekTrustAnchor(home, abs string) bool {
 		if rel == d || strings.HasPrefix(rel, d+string(filepath.Separator)) {
 			return true
 		}
+	}
+	// The Telegram daily token budget counter (and its lock) enforces an
+	// operator-set spending cap; rewriting it would reset the cap.
+	if strings.HasPrefix(rel, "telegram_token_usage_") && !strings.Contains(rel, "/") {
+		return true
 	}
 	return false
 }
@@ -1742,6 +1829,7 @@ var projectExecCommands = map[string]bool{
 	"make": true, "gmake": true, "pytest": true, "py.test": true,
 	"just": true, "task": true, "jest": true, "vitest": true,
 	"bazel": true, "rake": true, "mix": true,
+	"rspec": true, "rails": true, "cucumber": true, "tox": true, "nox": true,
 }
 
 var systemPrefixes = map[string]bool{
@@ -1972,6 +2060,7 @@ func classifyPipelineIn(tokens []string, repos []*gitRepoCtx) RiskClass {
 		if idx == 0 {
 			worst = worstOf(worst, classifyArgvComposerLiteralInput(stage, repos[idx]))
 		}
+		worst = worstOf(worst, classifyShellHereString(stage))
 		if idx > 0 {
 			// A pipe-fed argv composer turns upstream stdout into command
 			// arguments, so `echo "/" | xargs rm -rf` executes `rm -rf /`
@@ -2041,8 +2130,97 @@ func classifyArgvComposerSink(upstream [][]string, stage []string, repo *gitRepo
 	if xargsInnerDangerous(inner) {
 		return Unknown
 	}
+	return xargsDynamicArgvRisk(inner, composerReplaceString(stage))
+}
+
+// xargsDynamicArgvRisk is the floor for an argv composer whose argument list
+// comes from input the classifier cannot see. A command that takes its
+// program, expression or verb from its first argument (a shell, an
+// interpreter, awk, sed, find, a VCS or kill front end, a wrapper with
+// nothing behind it) runs whatever that input holds. A command with a fixed
+// non-option argument of its own keeps its ordinary classification: the input
+// only extends it. Options and words holding the replace string (ph, or {})
+// are not fixed arguments. With fully dynamic arguments the result is the
+// command's worst case: pure readers stay safe, local writers are
+// local_write, curl and wget upload, everything else is code_execution.
+func xargsDynamicArgvRisk(inner []string, ph string) RiskClass {
+	if len(inner) == 0 {
+		return Safe
+	}
+	unwrapped, _ := unwrapWrappers(inner)
+	if len(unwrapped) == 0 {
+		// Only wrappers (`nohup`, `timeout 5`): the input is the command.
+		return CodeExecution
+	}
+	name := commandName(unwrapped[0])
+	if pipedShells[name] && shellInlineScriptIndex(unwrapped) < 0 {
+		// No script of its own (a bare shell, or `-c` with nothing after it):
+		// the input supplies the script or its file.
+		return CodeExecution
+	}
+	if !xargsHasFixedArgument(name, unwrapped, ph) {
+		if cls, ok := dynamicArgvClass[name]; ok {
+			return cls
+		}
+		return CodeExecution
+	}
 	return Safe
 }
+
+// xargsHasFixedArgument reports whether the command line carries a non-option
+// word of its own that is not the replace string. find, fd and the kill
+// family take tests, actions or signals from their arguments, so appended
+// input is never harmless to them.
+func xargsHasFixedArgument(name string, words []string, ph string) bool {
+	switch name {
+	case "find", "fd", "fdfind", "kill", "pkill", "killall":
+		return false
+	case "git":
+		sub, _ := gitSubcommandAndArgs(words)
+		return sub != "" && !xargsPlaceholderWord(sub, ph)
+	}
+	for _, w := range words[1:] {
+		if w != "" && !strings.HasPrefix(w, "-") {
+			// The first operand decides: when it is the replace string the
+			// input supplies the script or verb.
+			return !xargsPlaceholderWord(w, ph)
+		}
+	}
+	return false
+}
+
+func xargsPlaceholderWord(w, ph string) bool {
+	return strings.Contains(w, "{}") || (ph != "" && strings.Contains(w, ph))
+}
+
+// composerReplaceString returns the replace string a stage's argv composer
+// defines (-I STR, -i, --replace), or "".
+func composerReplaceString(stage []string) string {
+	inner, ok := argvComposerInnerCommand(stage)
+	idx := argvComposerIndex(stage)
+	if !ok || idx < 0 || len(stage)-len(inner) <= idx+1 {
+		return ""
+	}
+	return xargsReplaceString(stage[idx+1 : len(stage)-len(inner)])
+}
+
+// dynamicArgvClass is the worst case of a command whose every argument is
+// supplied at run time. Commands not listed (sort, uniq, file, xxd, less,
+// date, … : options can write or execute) are code_execution.
+var dynamicArgvClass = func() map[string]RiskClass {
+	m := map[string]RiskClass{}
+	for _, n := range []string{"grep", "egrep", "fgrep", "rg", "cat", "head", "tail", "wc", "ls", "stat",
+		"echo", "printf", "basename", "dirname", "sha256sum", "sha1sum", "sha512sum", "md5sum", "md5",
+		"shasum", "realpath", "readlink", "du", "tr", "cut", "true", "false", "test", "diff", "cmp",
+		"nl", "tac", "jq"} {
+		m[n] = Safe
+	}
+	for _, n := range []string{"touch", "gzip", "gunzip", "mkdir", "gofmt", "black", "prettier"} {
+		m[n] = LocalWrite
+	}
+	m["curl"], m["wget"] = NetworkUpload, NetworkUpload
+	return m
+}()
 
 // classifyArgvComposerLiteralInput classifies the commands an argv composer
 // runs from input written on its own line: parallel's `:::` argument sources
@@ -2100,6 +2278,25 @@ func classifyPipedShellSink(upstream [][]string, stage []string) RiskClass {
 	return cls
 }
 
+// classifyShellHereString classifies the script a shell reads from a literal
+// here-string (`sh <<< 'rm -rf ~'`) as a command, like the same text piped in.
+// A script that cannot be judged keeps the code_execution floor.
+func classifyShellHereString(stage []string) RiskClass {
+	cmd, _ := unwrapWrappers(stage)
+	if len(cmd) == 0 || !pipedShells[commandName(cmd[0])] || shellInlineScriptIndex(cmd) >= 0 {
+		return Safe
+	}
+	text, ok := hereStringText(cmd)
+	text = strings.TrimSpace(text)
+	if !ok || text == "" {
+		return Safe
+	}
+	if cls := Classify(text); cls != Unknown {
+		return cls
+	}
+	return Safe
+}
+
 // classifyXargsFileInput fails closed when a (non-pipe) xargs invocation
 // reads its argv from a file or input redirect. `xargs -a paths rm -rf`
 // and `xargs rm -rf < paths` execute whatever paths the file contains;
@@ -2108,19 +2305,33 @@ func classifyPipedShellSink(upstream [][]string, stage []string) RiskClass {
 // command line, so it is not treated as an external source.
 func classifyXargsFileInput(stage []string) RiskClass {
 	inner, ok := argvComposerInnerCommand(stage)
-	if !ok || len(inner) == 0 {
+	if !ok || !xargsHasExternalArgSource(stage) {
 		return Safe
 	}
-	if !xargsHasExternalArgSource(stage) {
+	if len(inner) == 0 {
+		// GNU parallel with no command runs each line of its file as one.
+		if argvComposerName(stage) == "parallel" {
+			return CodeExecution
+		}
 		return Safe
 	}
 	if xargsInnerDangerous(inner) {
 		return Unknown
 	}
-	return Safe
+	return xargsDynamicArgvRisk(inner, composerReplaceString(stage))
 }
 
 func xargsHasExternalArgSource(tokens []string) bool {
+	// The composer's own options (read with the shared grammar, so -a inside
+	// a cluster such as -0a or -ta counts) end where its command begins.
+	if inner, ok := argvComposerInnerCommand(tokens); ok {
+		if idx := argvComposerIndex(tokens); idx >= 0 && len(tokens)-len(inner) > idx+1 {
+			opts := tokens[idx+1 : len(tokens)-len(inner)]
+			if xargsGrammar.parse(opts).has("-a", "--arg-file") {
+				return true
+			}
+		}
+	}
 	for _, t := range tokens {
 		if t == "-a" || strings.HasPrefix(t, "--arg-file") {
 			return true
@@ -2559,6 +2770,56 @@ func classifyStageIn(tokens []string, pipedInto bool, repo *gitRepoCtx) RiskClas
 		if name == "find" && hasAny(cmdTokens, "-exec", "-execdir", "-ok", "-okdir") {
 			cls = worstOf(cls, CodeExecution)
 		}
+		// The command each action runs is judged as a command of its own, so
+		// `find . -exec rm -rf ~ \;` is as destructive as `rm -rf ~`.
+		// Command strings that options hand to a shell (git -c core.pager=,
+		// ssh -o ProxyCommand=, tar --to-command=, rsync -e, su -c) are
+		// judged as command lines of their own.
+		for _, payload := range commandStringPayloads(name, cmdTokens) {
+			if inner := Classify(payload); inner != Unknown {
+				cls = worstOf(cls, inner)
+			}
+		}
+		cls = worstOf(cls, packageManagerSettingClass(name, cmdTokens))
+		if parallelHasUnknownOption(tokens) {
+			cls = worstOf(cls, Unknown)
+		}
+		cls = worstOf(cls, parallelOptionValueRisk(tokens))
+		if name == "git" {
+			// ext:: and fd:: remotes make git run a command or use an
+			// inherited descriptor as its transport.
+			for _, t := range cmdTokens[1:] {
+				if l := strings.ToLower(t); strings.HasPrefix(l, "ext::") || strings.HasPrefix(l, "fd::") ||
+					strings.Contains(l, "=ext::") || strings.Contains(l, "=fd::") ||
+					// url.<ext::cmd>.insteadOf rewrites an ordinary URL to the
+					// command transport; allowing the transport only exists to
+					// enable it.
+					strings.Contains(l, "url.ext::") || strings.Contains(l, "url.fd::") ||
+					strings.Contains(l, "protocol.ext.allow=always") || strings.Contains(l, "protocol.allow=always") {
+					cls = worstOf(cls, CodeExecution)
+				}
+			}
+		}
+		// Package and version managers that run a command for their caller.
+		if runner := runnerCommand(name, cmdTokens); len(runner) > 0 {
+			if name != "yarn" || yarnRunsBin(cmdTokens) {
+				cls = worstOf(cls, CodeExecution)
+			}
+			if inner := classifyStageIn(runner, false, repo); inner != Unknown {
+				cls = worstOf(cls, inner)
+			}
+		}
+		// An action command the classifier cannot judge keeps the
+		// code_execution floor rather than becoming unknown.
+		leaves, over := execActionLeaves(name, cmdTokens)
+		if over {
+			cls = worstOf(cls, Unknown)
+		}
+		for _, payload := range leaves {
+			if inner := classifyStageIn(payload, false, repo); inner != Unknown {
+				cls = worstOf(cls, inner)
+			}
+		}
 	}
 	// Reverse-shell channels and sensitive resources can appear anywhere in
 	// the stage (including behind redirects we don't fully parse). Display
@@ -2703,6 +2964,20 @@ func builtinEnvDump(tokens []string) bool {
 // separately after unwrapWrappers strips env); `env`, `env -i`,
 // `env -u SECRET`, `env --unset=SECRET` (equals-form long options), and
 // `printenv` are dumps.
+// isEnvFlagCluster reports whether t is a short cluster of env's valueless
+// flags (-iv, -0v).
+func isEnvFlagCluster(t string) bool {
+	if len(t) < 3 || t[0] != '-' || t[1] == '-' {
+		return false
+	}
+	for _, c := range t[1:] {
+		if c != 'i' && c != 'v' && c != '0' {
+			return false
+		}
+	}
+	return true
+}
+
 func isEnvironmentDump(tokens []string) bool {
 	if len(tokens) == 0 {
 		return false
@@ -2721,15 +2996,17 @@ func isEnvironmentDump(tokens []string) bool {
 			continue
 		}
 		if t == "-i" || t == "--ignore-environment" ||
-			t == "-0" || t == "--null" ||
-			t == "--help" || t == "--version" {
+			t == "-0" || t == "--null" || t == "-v" || t == "--debug" ||
+			t == "--ignore-signal" || t == "--block-signal" || t == "--default-signal" ||
+			t == "--help" || t == "--version" || isEnvFlagCluster(t) {
 			i++
 			continue
 		}
 		if o, next, ok := wrapperSpecs["env"].valueOption(tokens, i); ok {
-			if o.is("--split-string") {
+			if o.is("--split-string") && strings.TrimSpace(o.value) != "" {
 				// -S STRING supplies the command env runs; it is not a
 				// flag-only invocation, and unwrapWrappers classifies it.
+				// An empty string supplies none.
 				return false
 			}
 			i = next
@@ -4464,9 +4741,17 @@ func isPersistenceWrite(first string, tokens []string) bool {
 	// `mv y ~/.config/systemd/user/evil.service`.
 	if (writePrefixes[first] && !commandOnlyReads(first, tokens)) || first == "ln" || first == "install" {
 		for _, tok := range tokens[1:] {
-			if IsPersistencePath(expandShellTokenPath(tok)) {
+			if isCorePersistencePath(expandShellTokenPath(tok)) {
 				return true
 			}
+		}
+	}
+	// Only what is written can plant a start-time hook: the destination of a
+	// copy, every operand of tee/touch/truncate, the file patch rewrites, the
+	// output of uniq and split.
+	for _, tok := range startupWriteOperands(first, tokens) {
+		if IsPersistencePath(expandShellTokenPath(tok)) {
+			return true
 		}
 	}
 	// Directory destinations: the file that lands is <dir>/<basename(src)>.
@@ -4507,6 +4792,46 @@ func isPersistenceWrite(first string, tokens []string) bool {
 		}
 	}
 	return false
+}
+
+// startupWriteOperands returns the operands of a write command that receive
+// content: the last operand of a copy/move/link/install, every operand of
+// tee, touch and truncate.
+func startupWriteOperands(name string, tokens []string) []string {
+	var operands []string
+	for _, tok := range tokens[1:] {
+		if tok != "" && !strings.HasPrefix(tok, "-") && !isRedirectToken(tok) {
+			operands = append(operands, tok)
+		}
+	}
+	switch name {
+	case "cp", "mv", "install", "ln", "rsync":
+		if len(operands) > 0 {
+			return operands[len(operands)-1:]
+		}
+	case "tee", "touch", "truncate":
+		return operands
+	case "patch":
+		// patch [-o OUT] [ORIGFILE [PATCHFILE]] rewrites ORIGFILE, or writes OUT.
+		var out []string
+		for i, tok := range tokens[1:] {
+			if (tok == "-o" || tok == "--output") && i+2 < len(tokens) {
+				out = append(out, tokens[i+2])
+			} else if v, ok := strings.CutPrefix(tok, "--output="); ok {
+				out = append(out, v)
+			}
+		}
+		if len(operands) > 0 {
+			out = append(out, operands[0])
+		}
+		return out
+	case "uniq", "split", "csplit":
+		// uniq IN [OUT], split FILE [PREFIX]: the second operand is written.
+		if len(operands) >= 2 {
+			return operands[1:2]
+		}
+	}
+	return nil
 }
 
 // shellPathIsSensitive reports whether a shell token names a path that should
@@ -6178,6 +6503,86 @@ func hasShortFlag(args []string, flag rune) bool {
 		}
 	}
 	return false
+}
+
+// maxExecActionLeaves bounds how many action commands one stage examines.
+const maxExecActionLeaves = 64
+
+// execActionLeaves returns the commands the exec actions of a stage
+// ultimately run. An action command that is itself a find or fd with exec
+// actions adds nothing of its own beyond the floor already applied, so the
+// walk descends to the commands those nested actions run. Each is examined
+// once, which keeps a long chain of nested actions linear; over reports that
+// the bound was reached and commands went unexamined.
+func execActionLeaves(name string, tokens []string) (leaves [][]string, over bool) {
+	work := execActionCommands(name, tokens)
+	for len(work) > 0 && len(leaves) < maxExecActionLeaves {
+		payload := work[len(work)-1]
+		work = work[:len(work)-1]
+		cmd, _ := unwrapWrappers(payload)
+		if len(cmd) > 0 {
+			if nested := execActionCommands(commandName(cmd[0]), cmd); len(nested) > 0 {
+				work = append(work, nested...)
+				continue
+			}
+		}
+		leaves = append(leaves, payload)
+	}
+	return leaves, len(work) > 0
+}
+
+// execActionCommands returns the commands that find's -exec/-execdir/-ok/-okdir
+// actions and fd's -x/-X (--exec, --exec-batch) run. The `{}` placeholder
+// stands for a matched path and is replaced by a relative path so it does not
+// make the command look like it targets something unknown.
+func execActionCommands(name string, tokens []string) [][]string {
+	var out [][]string
+	add := func(words []string) {
+		if len(words) == 0 {
+			return
+		}
+		cmd := make([]string, len(words))
+		for i, w := range words {
+			cmd[i] = strings.ReplaceAll(w, "{}", "./match")
+		}
+		out = append(out, cmd)
+	}
+	switch name {
+	case "find":
+		for i := 1; i < len(tokens); i++ {
+			switch tokens[i] {
+			case "-exec", "-execdir", "-ok", "-okdir":
+			default:
+				continue
+			}
+			end := len(tokens)
+			for j := i + 1; j < len(tokens); j++ {
+				// A bare + inside the command is an argument; only {} + ends it.
+				if tokens[j] == ";" || tokens[j] == `\;` || (tokens[j] == "+" && j > i+1 && tokens[j-1] == "{}") {
+					end = j
+					break
+				}
+			}
+			add(tokens[i+1 : end])
+			i = end
+		}
+	case "fd", "fdfind":
+		for _, o := range fdSyntax.parse(tokens[1:]).opts {
+			if !o.is("--exec", "--exec-batch") {
+				continue
+			}
+			words := tokens[1+o.at+1:]
+			for j, w := range words {
+				if w == ";" || w == `\;` {
+					words = words[:j]
+					break
+				}
+			}
+			add(words)
+			break
+		}
+	}
+	return out
 }
 
 func isCodeExecution(first string, tokens []string, repo *gitRepoCtx) bool {

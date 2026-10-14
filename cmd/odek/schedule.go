@@ -152,7 +152,7 @@ func scheduleList(st *schedule.Store) error {
 		if !j.Enabled {
 			on = "no"
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", j.ID, on, j.Cron, next, last, j.Name)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", j.ID, on, j.Cron, next, last, danger.SanitizeInline(j.Name))
 	}
 	return w.Flush()
 }
@@ -219,7 +219,7 @@ func scheduleAdd(st *schedule.Store, args []string) error {
 		state = "disabled"
 	}
 	fmt.Printf("Added %s (%s, %s)\n  cron:    %s\n  deliver: %s\n  next:    %s\n",
-		saved.ID, saved.Name, state, saved.Cron, deliverString(saved.Deliver), next)
+		saved.ID, danger.SanitizeInline(saved.Name), state, saved.Cron, deliverString(saved.Deliver), next)
 	return nil
 }
 
@@ -269,16 +269,16 @@ func scheduleNext(st *schedule.Store, args []string) error {
 			return err
 		}
 		s = sc
-		fmt.Printf("Job %s (%s): %s\n", job.ID, job.Name, job.Cron)
+		fmt.Printf("Job %s (%s): %s\n", job.ID, danger.SanitizeInline(job.Name), job.Cron)
 	} else {
 		// A quoted expression, or its five fields as separate arguments.
 		expr := strings.Join(args, " ")
-		sc, err := schedule.Parse(expr)
+		sc, label, err := exprSchedule(expr, tz)
 		if err != nil {
 			return err
 		}
 		s = sc
-		fmt.Printf("Expression: %s (UTC)\n", expr)
+		fmt.Printf("Expression: %s (%s)\n", expr, label)
 	}
 	t := time.Now()
 	for range 5 {
@@ -324,7 +324,7 @@ func scheduleRunNow(args []string) error {
 	}
 	defer mcpCleanup()
 
-	fmt.Fprintf(os.Stderr, "Running %s (%s)…\n", job.ID, job.Name)
+	fmt.Fprintf(os.Stderr, "Running %s (%s)…\n", job.ID, danger.SanitizeInline(job.Name))
 	result, _, err := runTaskHeadless(ctx, resolved, system, job.Task, mcpTools)
 	if err != nil {
 		return fmt.Errorf("run: %w", err)
@@ -416,7 +416,7 @@ type cliDeliverer struct {
 func (d cliDeliverer) Deliver(ctx context.Context, job schedule.Job, result string) error {
 	switch job.Deliver.Kind {
 	case schedule.DeliverStdout:
-		fmt.Printf("\n── %s · %s ──\n%s\n", redact.RedactSecrets(job.Name), time.Now().Format(time.RFC1123), redact.RedactSecrets(result))
+		fmt.Printf("\n── %s · %s ──\n%s\n", danger.SanitizeInline(redact.RedactSecrets(job.Name)), time.Now().Format(time.RFC1123), danger.EscapeTerminalText(redact.RedactSecrets(result)))
 		return nil
 	case schedule.DeliverLog:
 		return appendScheduleLog(job, result)
@@ -979,6 +979,18 @@ func defaultScheduleTZ() *time.Location {
 	return schedulerOptions(config.LoadConfig(config.CLIFlags{}).Schedules, schedule.NopLogger{}).DefaultTZ
 }
 
+// exprSchedule compiles a bare cron expression in the scheduler's default
+// zone (UTC when none is configured), as a job added with it would fire, and
+// returns the zone name for display.
+func exprSchedule(expr string, defaultTZ *time.Location) (*schedule.Schedule, string, error) {
+	loc := defaultTZ
+	if loc == nil {
+		loc = time.UTC
+	}
+	sc, err := schedule.ParseInLocation(expr, loc)
+	return sc, loc.String(), err
+}
+
 // jobSchedule compiles a job's cron in its timezone for display. A job
 // without its own timezone uses the scheduler's configured default (the zone
 // the engine fires it in), so shown fire times match actual ones.
@@ -1044,7 +1056,7 @@ func firstWords(s string, n int) string {
 // appendScheduleLog delivers unaddressed scheduler output to the terminal.
 // The operational log records delivery metadata only, never result text.
 func appendScheduleLog(job schedule.Job, result string) error {
-	_, err := fmt.Fprintf(os.Stdout, "[%s] %s (%s)\n%s\n\n", time.Now().Format(time.RFC3339), redact.RedactSecrets(job.Name), job.ID, redact.RedactSecrets(result))
+	_, err := fmt.Fprintf(os.Stdout, "[%s] %s (%s)\n%s\n\n", time.Now().Format(time.RFC3339), danger.SanitizeInline(redact.RedactSecrets(job.Name)), danger.SanitizeInline(job.ID), danger.EscapeTerminalText(redact.RedactSecrets(result)))
 	if err != nil {
 		diagnostics.Report("schedule", "delivery", "", err)
 	} else {

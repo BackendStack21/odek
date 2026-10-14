@@ -1624,51 +1624,9 @@ func confineToCWD(path string) (string, error) {
 // isProtectedOdekPath reports whether rel (a path relative to ~/.odek/,
 // already cleaned by confineToCWD) names one of odek's trust anchors that
 // must not be writable through the generic file tools. Keep in sync with
-// the SystemWrite escalation in danger.ClassifyPath.
+// the SystemWrite escalation in danger.ClassifyPath (both use one table).
 func isProtectedOdekPath(rel string) bool {
-	// Case-folding defends against case-insensitive filesystems (macOS APFS):
-	// ~/.odek/CONFIG.JSON and ~/.odek/config.json are the same file.
-	rel = danger.FoldPathCase(filepath.Clean(rel))
-
-	// Exact-file trust anchors. Rewriting any of these can disable safety
-	// policy, exfiltrate secrets, or persist attacker control.
-	protectedExact := []string{
-		"config.json",
-		"secrets.env",
-		"identity.md",
-		"schedules.json",
-		"schedule-state.json",
-		"schedules.lock",
-		"mcp_approvals.json",
-		"mcp_tool_approvals.json",
-		"project_sandbox_approvals.json",
-		"restart.json",
-		"telegram.lock",
-		"telegram.pid",
-		"schedule.pid",
-		"schedule.log",
-		"runtime.log",
-	}
-	for _, p := range protectedExact {
-		if rel == p {
-			return true
-		}
-	}
-
-	// Directory trust anchors. Anything inside these directories is protected.
-	protectedDirs := []string{
-		"skills",   // auto-loaded into future prompts
-		"sessions", // conversation history & auth tokens
-		"audit",    // forensic audit log
-		"plans",    // persisted task plans
-		"memory",   // persisted memory state re-enters future system prompts
-	}
-	for _, d := range protectedDirs {
-		if rel == d || strings.HasPrefix(rel, d+string(filepath.Separator)) {
-			return true
-		}
-	}
-	return false
+	return danger.IsOdekTrustAnchorRel(rel)
 }
 
 // patchToCRLF turns every bare '\n' in s into "\r\n", leaving existing

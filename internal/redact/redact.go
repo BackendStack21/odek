@@ -145,7 +145,7 @@ var patternsTail = []*regexp.Regexp{
 	// basic auth URLs that often appear legitimately in code). The
 	// password segment must be at least 6 chars to avoid matching common
 	// placeholders like `:x@`.
-	regexp.MustCompile(`(?i)\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqps?|mssql|clickhouse)://[^:\s/]+:[^@\s/]{6,}@[^\s'\x60"]+`),
+	regexp.MustCompile(`(?i)\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|rediss?|amqps?|mssql|clickhouse)(?:\+[a-z0-9_]+)?://[^:\s/]*:[^@\s/]{6,}@[^\s'\x60"]+`),
 }
 
 // Credential-named assignments (api_key, access_token, password,
@@ -166,7 +166,9 @@ type guardedPattern struct {
 
 const (
 	gSep = `["'\x60]?\s*(?:=>|[:=])\s*`
-	gVal = `("[^"\n]{20,}"|'[^'\n]{20,}'|\x60[^\x60\n]{20,}\x60|[^\s]{20,})`
+	// The unquoted alternative ends at a JSON string escape (\n, \r, \t, \"),
+	// so a credential followed by an encoded newline is judged alone.
+	gVal = `("[^"\n]{20,}"|'[^'\n]{20,}'|\x60[^\x60\n]{20,}\x60|(?:[^\s\\]|\\[^\snrt"]){20,})`
 )
 
 var guardedPatterns = []guardedPattern{
@@ -203,6 +205,616 @@ func plausibleFlagValue(v string) bool {
 	return plausibleValue(v) && !strings.HasPrefix(t, "$") && !strings.HasPrefix(t, "%")
 }
 
+// valuePatterns are context patterns whose redaction span is the capture
+// group only (group 1), so the surrounding command or URL stays readable.
+// The group must also pass ok.
+var valuePatterns = []guardedPattern{
+	// Chat incoming-webhook URLs: whoever holds the URL can post as the
+	// integration, so the secret path segment is a bearer credential.
+	{regexp.MustCompile(`(?:^|[^A-Za-z0-9.-])hooks\.slack\.com/(?:services|workflows|triggers)/(?:[A-Za-z0-9]+/){1,3}([A-Za-z0-9]{20,})`), plausibleWebhookToken},
+	{regexp.MustCompile(`(?:^|[^A-Za-z0-9.-])discord(?:app)?\.com/api/(?:v[0-9]+/)?webhooks/[0-9]+/([A-Za-z0-9_-]{40,})`), plausibleWebhookToken},
+}
+
+// plausibleAuthPassword judges the PASSWORD of a USER:PASSWORD operand or a
+// password flag value inside a command that takes credentials: it must not
+// be a variable reference, a code expression, a URL or an obvious
+// placeholder word.
+func plausibleAuthPassword(v string) bool {
+	t := unwrapValue(v)
+	if len(t) < 6 || strings.ContainsAny(t[:1], "$%{<") || strings.ContainsAny(t, "(){}") || strings.Contains(t, "://") {
+		return false
+	}
+	switch strings.ToLower(t) {
+	case "password", "passwd", "secret", "changeme", "yourpassword", "pa55word":
+		return false
+	}
+	return !allSameFold(t) && !placeholderShape(t)
+}
+
+// placeholderShape reports whether v is only upper-case letters joined by
+// underscores or hyphens (YOUR_API_KEY, PASSWORD_HERE, REPLACE_ME): the shape
+// of a documentation placeholder, not of a generated credential. A single
+// upper-case run (ABCDEFGHIJ) is not a placeholder.
+func placeholderShape(v string) bool {
+	sep := false
+	for i := 0; i < len(v); i++ {
+		c := v[i]
+		if c == '_' || c == '-' {
+			sep = true
+		} else if c < 'A' || c > 'Z' {
+			return false
+		}
+	}
+	return sep
+}
+
+// allSameFold reports whether every byte of t is the same letter (XXXXXX).
+func allSameFold(t string) bool {
+	for i := 1; i < len(t); i++ {
+		if !strings.EqualFold(t[i:i+1], t[:1]) {
+			return false
+		}
+	}
+	return true
+}
+
+// plausibleWebhookToken rejects documentation placeholders: no digit, fewer
+// than four characters other than X, or placeholder words.
+func plausibleWebhookToken(v string) bool {
+	if !strings.ContainsAny(v, "0123456789") {
+		return false
+	}
+	real := 0
+	for i := 0; i < len(v); i++ {
+		if c := v[i]; c != 'X' && c != 'x' && c != '_' && c != '-' {
+			real++
+		}
+	}
+	if real < 4 {
+		return false
+	}
+	l := strings.ToLower(v)
+	for _, w := range []string{"token", "webhook", "your", "here", "example", "placeholder"} {
+		if strings.Contains(l, w) {
+			return false
+		}
+	}
+	return true
+}
+
+// commandScanMax bounds how far one command is tokenised.
+const commandScanMax = 64 << 10
+
+// cmdWord is the raw [s,e) extent of one shell word.
+type cmdWord struct{ s, e int }
+
+// commandWords tokenises the command that continues at from: words are
+// split on blanks and backslash-newline continuations; quotes group a word
+// (so a quoted & ; | or newline does not end the command); an unquoted
+// newline, |, ; or & ends it. A quote with no closing quote is an ordinary
+// character. In JSON-encoded text (json) an unquoted \n, \r or \t escape
+// sequence also ends the word (and \n, \r end the command), and a double
+// quote with no closing quote ends the command: it closes the JSON string the
+// command sits in. It returns the words and the offset where scanning
+// stopped, bounded by commandScanMax bytes.
+func commandWords(text string, from int, json bool) ([]cmdWord, int) {
+	limit := len(text)
+	if limit-from > commandScanMax {
+		limit = from + commandScanMax
+	}
+	closer := func(i int, q byte) int { // index of the closing quote after i, or -1
+		for i++; i < limit; i++ {
+			if text[i] == '\\' && q == '"' {
+				i++
+				continue
+			}
+			if text[i] == q {
+				return i
+			}
+		}
+		return -1
+	}
+	var words []cmdWord
+	i := from
+	for i < limit {
+		c := text[i]
+		switch {
+		case c == ' ' || c == '\t':
+			i++
+			continue
+		case c == '\\' && i+1 < limit && (text[i+1] == '\n' || text[i+1] == '\r'):
+			i += 2
+			if text[i-1] == '\r' && i < limit && text[i] == '\n' {
+				i++
+			}
+			continue
+		case json && c == '\\' && i+1 < limit && text[i+1] == 't':
+			i += 2
+			continue
+		case json && c == '\\' && i+1 < limit && (text[i+1] == 'n' || text[i+1] == 'r'):
+			return words, i
+		case c == '\n' || c == '\r' || c == '|' || c == ';' || c == '&':
+			return words, i
+		}
+		s := i
+		unbalanced := false
+	word:
+		for i < limit {
+			switch c := text[i]; c {
+			case ' ', '\t', '\n', '\r', '|', ';', '&':
+				break word
+			case '\\':
+				if i+1 < limit {
+					switch text[i+1] {
+					case '\n', '\r':
+						break word
+					case 'n', 'r', 't':
+						if json {
+							break word
+						}
+					}
+				}
+				i += 2
+			case '\'':
+				if k := closer(i, '\''); k >= 0 {
+					i = k + 1
+				} else {
+					i++
+				}
+			case '"':
+				k := closer(i, '"')
+				if k < 0 {
+					if json {
+						unbalanced = true
+						break word
+					}
+					i++
+					continue
+				}
+				i = k + 1
+			default:
+				i++
+			}
+		}
+		if i > limit {
+			i = limit
+		}
+		if i > s {
+			words = append(words, cmdWord{s, i})
+		}
+		if unbalanced {
+			return words, i
+		}
+	}
+	return words, i
+}
+
+// unquoteWord returns the shell-unquoted content of text[s:e] and, for each
+// content byte, its raw offset.
+func unquoteWord(text string, s, e int) ([]byte, []int) {
+	var out []byte
+	var idx []int
+	var q byte
+	for i := s; i < e; i++ {
+		c := text[i]
+		switch {
+		case q == 0 && (c == '\'' || c == '"'):
+			q = c
+		case q != 0 && c == q:
+			q = 0
+		case c == '\\' && q != '\'' && i+1 < e:
+			i++
+			out = append(out, text[i])
+			idx = append(idx, i)
+		default:
+			out = append(out, c)
+			idx = append(idx, i)
+		}
+	}
+	return out, idx
+}
+
+// operandPassword returns the raw span of the PASSWORD in a USER:PASSWORD
+// operand starting at text[s] (word end e), when it passes ok. A shell-quoted
+// operand is unquoted first. An unquoted operand that carries a quote after
+// its colon is not parsed as shell quoting (the quote is part of the
+// password, or closes a JSON string around the command): the password then
+// runs to the next blank, JSON \n \r \t \" escape or double quote.
+func operandPassword(text string, s, e int, json bool, ok func(string) bool) (int, int, bool) {
+	if ps, pe, handled := looseOperand(text, s, e, true, json, ok); handled {
+		return ps, pe, pe > ps
+	}
+	c, idx := unquoteWord(text, s, e)
+	k := bytesIndexByte(c, ':')
+	if k < 0 || k+1 >= len(c) {
+		return 0, 0, false
+	}
+	if !ok(string(c[k+1:])) {
+		return 0, 0, false
+	}
+	return idx[k+1], idx[len(c)-1] + 1, true
+}
+
+// looseOperand handles an operand at text[s:] (word end e) that is not an
+// ordinary shell word. handled is false for an ordinary word, which the
+// shell-quoting parse then covers.
+//
+// In JSON-encoded text (json): an operand wrapped in escaped quotes
+// (\"user:pass\"), or one with a quote after the first byte of its
+// password; the password runs to the next blank, JSON escape or double quote.
+// In plain shell text: an operand whose apostrophe pairs with a later quote
+// across blanks (the word extends past its first blank-delimited chunk); the
+// password runs to the next blank, and double quotes and backslash sequences
+// are ordinary password characters.
+func looseOperand(text string, s, e int, userPass, json bool, ok func(string) bool) (ps, pe int, handled bool) {
+	if s >= len(text) || text[s] == '"' || text[s] == '\'' {
+		return 0, 0, false
+	}
+	jsonQuoted := json && strings.HasPrefix(text[s:], `\"`)
+	if jsonQuoted {
+		s += 2
+	}
+	ce := s
+	for ce < len(text) && !isOperandEnd(text, ce, json) {
+		ce++
+	}
+	ps = s
+	if userPass {
+		k := strings.IndexByte(text[s:ce], ':')
+		if k < 0 {
+			return 0, 0, false
+		}
+		ps = s + k + 1
+	}
+	stray := false
+	for i := ps + 1; i < ce; i++ {
+		if c := text[i]; c == '\'' || (json && c == '"') {
+			stray = true
+			break
+		}
+	}
+	if !json && e <= ce {
+		stray = false
+	}
+	if !stray && !jsonQuoted {
+		return 0, 0, false
+	}
+	pe = ce
+	if json {
+		if d := strings.IndexByte(text[ps:ce], '"'); d >= 0 {
+			pe = ps + d
+		}
+	}
+	if pe <= ps || !ok(text[ps:pe]) {
+		return ps, ps, true
+	}
+	return ps, pe, true
+}
+
+// isOperandEnd reports whether text[i] ends an unquoted operand: a blank, a
+// newline, a command separator, and in JSON-encoded text a \n \r \t \" escape.
+func isOperandEnd(text string, i int, json bool) bool {
+	switch text[i] {
+	case ' ', '\t', '\n', '\r', '|', ';', '&':
+		return true
+	case '\\':
+		if json && i+1 < len(text) {
+			switch text[i+1] {
+			case 'n', 'r', 't', '"':
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func bytesIndexByte(b []byte, c byte) int {
+	for i, x := range b {
+		if x == c {
+			return i
+		}
+	}
+	return -1
+}
+
+// wholePassword returns the raw span of an entire word value starting at
+// text[s] (word end e) when it passes ok, with the same loose handling of
+// stray quotes as operandPassword.
+func wholePassword(text string, s, e int, json bool, ok func(string) bool) (int, int, bool) {
+	if ps, pe, handled := looseOperand(text, s, e, false, json, ok); handled {
+		return ps, pe, pe > ps
+	}
+	c, idx := unquoteWord(text, s, e)
+	if len(c) == 0 || !ok(string(c)) {
+		return 0, 0, false
+	}
+	return idx[0], idx[len(c)-1] + 1, true
+}
+
+// jsonStringTracker answers, for increasing offsets, whether an offset sits
+// inside a JSON string: an odd number of unescaped double quotes precede it on
+// its line (JSON strings hold no raw newline). It advances incrementally, so
+// a sequence of queries scans the text once.
+type jsonStringTracker struct {
+	pos    int
+	inside bool
+	single bool // inside a shell single-quoted span (outside any JSON string)
+}
+
+func (t *jsonStringTracker) at(text string, off int) bool {
+	for ; t.pos < off && t.pos < len(text); t.pos++ {
+		switch text[t.pos] {
+		case '\n':
+			t.inside, t.single = false, false
+		case '\\':
+			t.pos++
+		case '\'':
+			if !t.inside {
+				t.single = !t.single
+			}
+		case '"':
+			if !t.single {
+				t.inside = !t.inside
+			}
+		}
+	}
+	return t.inside
+}
+
+// commandTools are the commands whose credential flags are recognised, with
+// the flag grammar each uses.
+var commandTools = []struct {
+	name string
+	kind int
+}{{"curl", 0}, {"wget", 1}, {"http", 2}, {"https", 2}, {"xh", 2}}
+
+// commandCredentialMatches returns the spans of passwords given on the
+// command line of curl (-u, -U, --user, --proxy-user USER:PASSWORD, also
+// attached and clustered), wget (--password and variants) and HTTPie/xh
+// (--auth, -a USER:PASSWORD). Scoping to these commands keeps -u / -U /
+// -a as used by docker, sudo, rsync, pip and others readable. Command words
+// match in any case.
+func commandCredentialMatches(text string) [][2]int {
+	var out [][2]int
+	for _, tool := range commandTools {
+		var inJSON jsonStringTracker
+		for pos := 0; pos < len(text); {
+			j := indexFoldASCII(text[pos:], tool.name)
+			if j < 0 {
+				break
+			}
+			j += pos
+			after := j + len(tool.name)
+			pos = after
+			if j > 0 && isCommandWordByte(text[j-1]) {
+				continue
+			}
+			if after < len(text) && !strings.ContainsRune(" \t\n\r\\", rune(text[after])) {
+				continue
+			}
+			json := inJSON.at(text, j)
+			words, end := commandWords(text, after, json)
+			out = append(out, toolCredentialSpans(text, tool.kind, json, words)...)
+			if end > pos {
+				pos = end
+			}
+		}
+	}
+	return out
+}
+
+func isCommandWordByte(c byte) bool {
+	return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_' || c == '-' || c == '.'
+}
+
+func toolCredentialSpans(text string, kind int, json bool, words []cmdWord) [][2]int {
+	var out [][2]int
+	add := func(s, e int, ok bool) {
+		if ok {
+			out = append(out, [2]int{s, e})
+		}
+	}
+	for k, w := range words {
+		raw := text[w.s:w.e]
+		// operand is the raw extent of the credential operand, if any.
+		os, oe := -1, -1
+		next := func() {
+			if k+1 < len(words) {
+				os, oe = words[k+1].s, words[k+1].e
+			}
+		}
+		if strings.HasPrefix(raw, "--") {
+			name, attS := raw, -1
+			if eq := strings.IndexByte(raw, '='); eq > 0 {
+				name, attS = raw[:eq], w.s+eq+1
+			}
+			var match bool
+			switch kind {
+			case 0:
+				match = name == "--user" || name == "--proxy-user"
+			case 1:
+				match = name == "--password" || name == "--http-password" || name == "--ftp-password" || name == "--proxy-password"
+			default:
+				match = name == "--auth"
+			}
+			if !match {
+				continue
+			}
+			if attS >= 0 {
+				os, oe = attS, w.e
+			} else {
+				next()
+			}
+		} else if strings.HasPrefix(raw, "-") && len(raw) > 1 && kind != 1 {
+			if kind == 2 {
+				if raw != "-a" {
+					continue
+				}
+				next()
+			} else {
+				j := 1
+				for j < len(raw) && (raw[j] >= 'a' && raw[j] <= 'z' || raw[j] >= 'A' && raw[j] <= 'Z') && raw[j] != 'u' && raw[j] != 'U' {
+					j++
+				}
+				if j >= len(raw) || (raw[j] != 'u' && raw[j] != 'U') {
+					continue
+				}
+				if j+1 == len(raw) {
+					next()
+				} else {
+					os, oe = w.s+j+1, w.e
+				}
+			}
+		} else {
+			continue
+		}
+		if os < 0 {
+			continue
+		}
+		if kind == 1 {
+			add(wholePassword(text, os, oe, json, plausibleAuthPassword))
+		} else {
+			add(operandPassword(text, os, oe, json, plausibleAuthPassword))
+		}
+	}
+	return out
+}
+
+// cookieHeaderRe finds a Cookie / Set-Cookie header (also inside a quoted
+// curl -H argument or a JSON header object); group 1 is the value up to the
+// end of the line or the closing quote.
+var cookieHeaderRe = regexp.MustCompile(`(?i)\b(?:set-)?cookie["'\x60]?[ \t]*:[ \t]*["'\x60]?([^\r\n"'\x60]+)`)
+
+// cookieMatches returns the offsets of each cookie value on Cookie /
+// Set-Cookie header lines that is a session credential: the cookie name
+// reads as a session or auth cookie and the value is a plausible token, or
+// the value is shaped like a generated session identifier whatever its name.
+// Names, attributes and other cookies stay readable.
+func cookieMatches(text string) [][2]int {
+	if indexFoldASCII(text, "cookie") < 0 {
+		return nil
+	}
+	var out [][2]int
+	for _, m := range cookieHeaderRe.FindAllStringSubmatchIndex(text, -1) {
+		start, end := m[2], m[3]
+		for pos := start; pos <= end; {
+			next := strings.IndexByte(text[pos:end], ';')
+			partEnd := end
+			if next >= 0 {
+				partEnd = pos + next
+			}
+			part := text[pos:partEnd]
+			if eq := strings.IndexByte(part, '='); eq > 0 {
+				name := strings.TrimSpace(part[:eq])
+				val := strings.TrimRight(part[eq+1:], " \t")
+				if (sessionCookieName(name) && plausibleCookieToken(val)) || cookieValueShape(val) {
+					vs := pos + eq + 1
+					out = append(out, [2]int{vs, vs + len(val)})
+				}
+			}
+			pos = partEnd + 1
+		}
+	}
+	return out
+}
+
+// sessionCookieName reports whether a cookie name reads as a session or
+// authentication cookie. The name is split into segments (on _ - . and
+// camelCase boundaries) and judged by its last segment, skipping a trailing
+// "id": PHPSESSID, JSESSIONID, _gh_sess, connect.sid, laravel_session,
+// session_id, csrftoken, auth_token, __Secure-3PSID and remember_user_token
+// match, loginHint and tokenType do not.
+func sessionCookieName(name string) bool {
+	segs := nameSegments(name)
+	for _, sg := range segs {
+		if sg == "remember" {
+			return true
+		}
+	}
+	if n := len(segs); n > 1 && segs[n-1] == "id" {
+		segs = segs[:n-1]
+	}
+	if len(segs) == 0 {
+		return false
+	}
+	cands := []string{segs[len(segs)-1]}
+	if n := len(segs); n > 1 {
+		cands = append(cands, segs[n-2]+segs[n-1])
+	}
+	for _, c := range cands {
+		for _, suf := range []string{"session", "sessionid", "sess", "sessid", "sid", "token", "jwt", "csrf", "xsrf", "auth", "secret", "passwd", "password", "apikey", "credential", "credentials"} {
+			if strings.HasSuffix(c, suf) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// nameSegments splits a name into lower-case segments at separators
+// (_ - . space) and camelCase boundaries (aB, 3P, and the end of an
+// acronym before a capitalised word).
+func nameSegments(name string) []string {
+	var segs []string
+	start := 0
+	flush := func(end int) {
+		if end > start {
+			segs = append(segs, strings.ToLower(name[start:end]))
+		}
+	}
+	isUp := func(c byte) bool { return c >= 'A' && c <= 'Z' }
+	isLo := func(c byte) bool { return c >= 'a' && c <= 'z' }
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		switch {
+		case c == '_' || c == '-' || c == '.' || c == ' ':
+			flush(i)
+			start = i + 1
+		case i > start && isUp(c) && (isLo(name[i-1]) || (name[i-1] >= '0' && name[i-1] <= '9')):
+			flush(i)
+			start = i
+		case i > start && isUp(c) && isUp(name[i-1]) && i+1 < len(name) && isLo(name[i+1]):
+			flush(i)
+			start = i
+		}
+	}
+	flush(len(name))
+	return segs
+}
+
+// plausibleCookieToken accepts a single token of at least 8 characters that
+// is not a variable reference or placeholder.
+func plausibleCookieToken(v string) bool {
+	if len(v) < 8 || strings.ContainsAny(v[:1], "$%{<") || strings.ContainsAny(v, " \t<>{}()") {
+		return false
+	}
+	return !allSameFold(v) && !placeholderShape(v)
+}
+
+// cookieValueShape accepts a single token of at least 16 base64url,
+// percent-encoded or dotted characters that holds a letter and a digit and
+// is either mixed-case or 32+ characters long.
+func cookieValueShape(v string) bool {
+	if len(v) < 16 || v[0] == '%' || v[0] == '$' {
+		return false
+	}
+	upper, lower, digit := false, false, false
+	for i := 0; i < len(v); i++ {
+		switch c := v[i]; {
+		case c >= 'A' && c <= 'Z':
+			upper = true
+		case c >= 'a' && c <= 'z':
+			lower = true
+		case c >= '0' && c <= '9':
+			digit = true
+		case strings.IndexByte("%._~+/=-", c) >= 0:
+		default:
+			return false
+		}
+	}
+	return digit && (upper || lower) && ((upper && lower) || len(v) >= 32)
+}
+
 // looksSecret additionally requires a digit: random credentials have one
 // with overwhelming probability, while identifiers, import paths, resource
 // names and test names rarely do.
@@ -217,6 +829,7 @@ func looksSecret(v string) bool {
 // paths, ARNs, timestamps and lowercase resource names are never secrets.
 // Keyed forms with their own dedicated patterns do not go through here.
 func looksCredentialShape(v string) bool {
+	v = cutJSONEscape(v)
 	if !looksSecret(v) {
 		return false
 	}
@@ -288,6 +901,22 @@ func looksCredentialShape(v string) bool {
 	return false
 }
 
+// cutJSONEscape ends v at the first JSON string escape for a newline, return,
+// tab or quote: in JSON-encoded output a multi-line value keeps "\n" as two
+// characters, and whatever follows belongs to the next line.
+func cutJSONEscape(v string) string {
+	for i := 0; i+1 < len(v); i++ {
+		if v[i] == '\\' {
+			switch v[i+1] {
+			case 'n', 'r', 't', '"':
+				return v[:i]
+			}
+			i++
+		}
+	}
+	return v
+}
+
 func looksCredentialShapeNotPath(v string) bool {
 	return looksSecretNotPath(v) && looksCredentialShape(v)
 }
@@ -332,7 +961,15 @@ func guardedPatternMatches(text string) [][2]int {
 			}
 		}
 	}
-	return out
+	for _, g := range valuePatterns {
+		for _, m := range g.re.FindAllStringSubmatchIndex(text, -1) {
+			if m[2] >= 0 && g.ok(text[m[2]:m[3]]) {
+				out = append(out, [2]int{m[2], m[3]})
+			}
+		}
+	}
+	out = append(out, commandCredentialMatches(text)...)
+	return append(out, cookieMatches(text)...)
 }
 
 // redactGuarded replaces every guarded match, merging overlaps.

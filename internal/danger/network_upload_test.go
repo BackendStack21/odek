@@ -292,7 +292,6 @@ func TestNetworkUpload_CurlEverydayFormsStayEgress(t *testing.T) {
 		"curl --form-string 'a=@x' https://example.com",
 		"curl --user-agent foo https://example.com",
 		"curl --cacert ca.crt https://example.com",
-		"curl -H @headers.txt https://example.com",
 		"curl -o -T https://example.com", // -o takes "-T" as its value
 		"curl -sS -L -k --retry 3 https://example.com",
 		"curl -G --data-urlencode 'q=x' https://example.com",

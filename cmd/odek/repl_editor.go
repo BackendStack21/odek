@@ -10,6 +10,7 @@ import (
 	"sync"
 	"unicode/utf8"
 
+	"github.com/BackendStack21/odek/internal/fsatomic"
 	"golang.org/x/term"
 )
 
@@ -129,6 +130,13 @@ func (e *replEditor) handleByte(b byte) (bool, error) {
 		return e.handleEscape()
 	case b == 0x0d: // CR (Enter)
 		return e.handleEnter()
+	case e.bracketed && b == 0x09: // TAB inside a paste is literal text
+		e.insertRune('\t')
+	case e.bracketed && b == 0x0a: // LF inside a paste is a newline like CR
+		return e.handleEnter()
+	case e.bracketed && b != 0x03 && b != 0x04 && (b < 0x20 || b == 0x7f):
+		// Any other pasted control byte is dropped: it must never act as an
+		// editing key (Ctrl+U/K/A/L, DEL). Ctrl+C and Ctrl+D still abort.
 	case b == 0x7f || b == 0x08: // DEL / BS
 		e.backspace()
 	case b == 0x09: // TAB
@@ -161,7 +169,9 @@ func (e *replEditor) handleByte(b byte) (bool, error) {
 		e.pending = append(e.pending, b)
 		if utf8.FullRune(e.pending) {
 			r, _ := utf8.DecodeRune(e.pending)
-			e.insertRune(r)
+			if !e.bracketed || r < 0x80 || r > 0x9f { // pasted C1 controls are dropped
+				e.insertRune(r)
+			}
 			e.pending = nil
 		} else if len(e.pending) > utf8.UTFMax {
 			e.pending = nil // malformed sequence — drop, never wedge
@@ -209,6 +219,16 @@ func (e *replEditor) handleEscape() (bool, error) {
 			e.readTildeOrBracketed("Insert")
 		case '1': // Bracketed paste end \x1b[201~
 			e.readTildeOrBracketed("")
+		case '4', '8': // End (rxvt/linux console) — \x1b[4~ / \x1b[8~
+			if e.skipCSITail() == '~' {
+				e.end()
+			}
+		case '7': // Home (rxvt) — \x1b[7~
+			if e.skipCSITail() == '~' {
+				e.home()
+			}
+		case '5', '6', '9', '0': // PageUp/PageDown and other keys: ignored
+			e.skipCSITail()
 		}
 	case 'O': // Old-style home/end
 		b, err = in.ReadByte()
@@ -295,6 +315,23 @@ func (e *replEditor) readTildeOrBracketed(_ string) {
 	for (b >= '0' && b <= '9') || b == ';' {
 		if b, err = in.ReadByte(); err != nil {
 			return
+		}
+	}
+}
+
+// skipCSITail consumes the rest of a CSI sequence whose first parameter byte
+// was already read, up to and including the final byte (0x40-0x7e), and
+// returns that final byte (0 on a read error). The tail never reaches the
+// edit buffer.
+func (e *replEditor) skipCSITail() byte {
+	in := e.input()
+	for {
+		b, err := in.ReadByte()
+		if err != nil {
+			return 0
+		}
+		if b >= 0x40 && b <= 0x7e {
+			return b
 		}
 	}
 }
@@ -549,6 +586,10 @@ func (h *replHistory) Add(line string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
+	// An entry too large to reload (a huge paste) is not recorded.
+	if len(line) > historyMaxEntryBytes {
+		return
+	}
 	// Dedup consecutive
 	if len(h.entries) > 0 && h.entries[len(h.entries)-1] == line {
 		return
@@ -594,14 +635,57 @@ func (h *replHistory) Load(path string) {
 
 	f, err := os.Open(path)
 	if err != nil {
+		if os.IsNotExist(err) {
+			// First start: nothing to load, but the first Add must create
+			// the file. Only real read errors keep persistence off.
+			h.loaded = true
+		}
 		return
 	}
 	defer f.Close()
 
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		line := scanner.Text()
-		line = strings.TrimSpace(line)
+	rd := bufio.NewReaderSize(f, 64<<10)
+	first := true
+	escaped := false // files without the format marker hold raw lines
+	var ioErr error
+	var buf []byte
+	tooLong := false
+	for {
+		chunk, isPrefix, err := rd.ReadLine()
+		if err != nil {
+			if err != io.EOF {
+				ioErr = err
+			}
+			break
+		}
+		if !tooLong {
+			buf = append(buf, chunk...)
+			if len(buf) > historyMaxLineBytes {
+				tooLong = true // an over-long line is skipped, not fatal
+				buf = nil
+			}
+		}
+		if isPrefix {
+			continue
+		}
+		raw := string(buf)
+		skip := tooLong
+		buf, tooLong = buf[:0], false
+		if skip {
+			first = false
+			continue
+		}
+		if first {
+			first = false
+			if raw == historyFormatMarker {
+				escaped = true
+				continue
+			}
+		}
+		if escaped {
+			raw = unescapeHistoryLine(raw)
+		}
+		line := strings.TrimSpace(raw)
 		if line == "" {
 			continue
 		}
@@ -615,15 +699,101 @@ func (h *replHistory) Load(path string) {
 		h.entries = h.entries[len(h.entries)-h.max:]
 	}
 	h.pos = len(h.entries)
+	// A real read error leaves a partial list: never persist from it, so the
+	// original file is not rewritten and lost.
+	if ioErr != nil {
+		fmt.Fprintf(os.Stderr, "odek: cannot read REPL history (%v); history will not be saved\n", ioErr)
+		return
+	}
 	h.loaded = true
 }
 
 // historyFullRewrites counts whole-file history rewrites (observed by tests).
 var historyFullRewrites int
 
+// historyMaxEntryBytes caps a recorded entry; historyMaxLineBytes is the
+// longest file line Load accepts (an escaped entry is at most twice its
+// size, plus slack).
+const (
+	historyMaxEntryBytes = 64 << 10
+	historyMaxLineBytes  = 4*historyMaxEntryBytes + 1024
+)
+
+// historyFormatMarker is the first line of a history file whose entries are
+// escaped (backslash, newline, carriage return). Files without it predate
+// escaping and are read verbatim.
+const historyFormatMarker = "#odek-history v2"
+
+// escapeHistoryLine encodes an entry as one physical line: backslash,
+// newline and carriage return are escaped so a multi-line paste reloads as
+// a single entry.
+func escapeHistoryLine(s string) string {
+	if !strings.ContainsAny(s, "\\\n\r") {
+		return s
+	}
+	return strings.NewReplacer("\\", "\\\\", "\n", "\\n", "\r", "\\r").Replace(s)
+}
+
+// unescapeHistoryLine reverses escapeHistoryLine. Unknown escapes are kept
+// literally.
+func unescapeHistoryLine(s string) string {
+	if !strings.Contains(s, "\\") {
+		return s
+	}
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\\' && i+1 < len(s) {
+			switch s[i+1] {
+			case '\\':
+				b.WriteByte('\\')
+				i++
+				continue
+			case 'n':
+				b.WriteByte('\n')
+				i++
+				continue
+			case 'r':
+				b.WriteByte('\r')
+				i++
+				continue
+			}
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
+}
+
+// appendHistoryLine appends one entry to the history file. It refuses a
+// path that is not a regular file (a planted symlink) and verifies the
+// opened file is the one inspected, so the append never lands on a link
+// target; the caller then falls back to an atomic rewrite, which replaces
+// the link.
+func appendHistoryLine(path, line string) error {
+	fi, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if !fi.Mode().IsRegular() {
+		return fmt.Errorf("history path is not a regular file")
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0600)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	if fi2, err := f.Stat(); err != nil || !os.SameFile(fi, fi2) {
+		return fmt.Errorf("history file changed while opening")
+	}
+	_ = f.Chmod(0600)
+	_, err = fmt.Fprintln(f, escapeHistoryLine(line))
+	return err
+}
+
 // persist saves the history. After one full rewrite the file mirrors
 // h.entries, so a plain Add only appends its line; a rewrite happens again
 // only when the oldest entries were trimmed or the file is not yet in sync.
+// Rewrites are atomic (temp file + rename), replacing rather than following
+// a symlink at the history path.
 func (h *replHistory) persist(trimmed bool) {
 	if !h.loaded {
 		return // don't write until at least one Load
@@ -632,38 +802,20 @@ func (h *replHistory) persist(trimmed bool) {
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return
 	}
-	// Harden any existing history file created with looser permissions.
-	_ = os.Chmod(path, 0600)
 	if h.synced && !trimmed {
-		f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0600)
-		if err != nil {
-			h.synced = false
+		if err := appendHistoryLine(path, h.entries[len(h.entries)-1]); err == nil {
 			return
 		}
-		_, err = fmt.Fprintln(f, h.entries[len(h.entries)-1])
-		if cerr := f.Close(); err == nil {
-			err = cerr
-		}
-		if err != nil {
-			h.synced = false
-		}
-		return
+		h.synced = false
 	}
 	historyFullRewrites++
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
-	if err != nil {
-		h.synced = false
-		return
-	}
-	w := bufio.NewWriter(f)
+	var b strings.Builder
+	b.WriteString(historyFormatMarker + "\n")
 	for _, entry := range h.entries {
-		fmt.Fprintln(w, entry)
+		b.WriteString(escapeHistoryLine(entry))
+		b.WriteByte('\n')
 	}
-	err = w.Flush()
-	if cerr := f.Close(); err == nil {
-		err = cerr
-	}
-	h.synced = err == nil
+	h.synced = fsatomic.WriteFile(path, []byte(b.String()), 0600) == nil
 }
 
 // odekDir returns the ~/.odek directory path.

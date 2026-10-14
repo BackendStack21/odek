@@ -1699,6 +1699,9 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 			// is answered even while a prompt occupies the processor loop.
 			if msgType.Type == "ping" {
 				pong := wsServerInfoEvent(serveStateStartedAt(state), snap)
+				// The connection's model changes per prompt; the connect-time
+				// snapshot would report a stale one.
+				pong["model"] = connInfo.wireCopy().Model
 				pong["type"] = "pong"
 				pong["t"] = time.Now().UnixMilli()
 				writeWSJSON(conn, pong)
@@ -2125,6 +2128,7 @@ func handlePrompt(
 	agent.BeginRun(runID, turnID)
 	requestCtx := ctx
 	outcomeErr := errors.New("serve turn did not complete")
+	promptCounted, promptCompleted := false, false
 	originalSend := send
 	send = func(frame map[string]any) {
 		frame["run_id"] = agent.RunID()
@@ -2147,7 +2151,6 @@ func handlePrompt(
 				sid = sess.ID
 			}
 			diagnostics.Emit(events.Event{Type: "panic_recovered", SessionID: sid, TurnID: turnID, Data: map[string]any{"component": "serve", "operation": "turn", "error_class": "panic"}})
-			atomic.AddInt64(&serveStats.PromptsFailed, 1)
 			if sess != nil {
 				collectDecisions()
 				sess.Messages = append(sess.Messages, session.Message{Role: "assistant", TurnID: turnID, Content: "[Turn aborted: internal error. Completed checkpoints were preserved.]"})
@@ -2161,6 +2164,11 @@ func handlePrompt(
 		}
 		if outcomeErr != nil && requestCtx.Err() != nil {
 			outcomeErr = requestCtx.Err()
+		}
+		// Every started prompt that did not complete counts as failed,
+		// whichever validation, execution or panic path ended it.
+		if promptCounted && !promptCompleted && outcomeErr != nil {
+			atomic.AddInt64(&serveStats.PromptsFailed, 1)
 		}
 		agent.FinishRun(outcomeErr)
 		status := "completed"
@@ -2233,6 +2241,7 @@ func handlePrompt(
 
 	originalPrompt := prompt
 	atomic.AddInt64(&serveStats.PromptsStarted, 1)
+	promptCounted = true
 
 	// Acquire ownership before loading execution history: REST, WebSocket,
 	// and background wakes all pass through this boundary.
@@ -2624,7 +2633,6 @@ func handlePrompt(
 	}
 
 	if err != nil {
-		atomic.AddInt64(&serveStats.PromptsFailed, 1) // B3-SERVE-1: failed prompts must reach the usage aggregate
 		outcomeErr = err
 		if sess == nil {
 			sendError(send, err.Error())
@@ -2712,6 +2720,7 @@ func handlePrompt(
 	cacheRead := agent.TotalCacheReadTokens()
 	cached := agent.TotalCachedTokens()
 	atomic.AddInt64(&serveStats.PromptsCompleted, 1)
+	promptCompleted = true
 
 	// Save session — persist buffer and update the vector index.
 	// The message history was already persisted per-turn by the persist
@@ -3007,6 +3016,9 @@ func requireLocalHost(next http.Handler) http.Handler {
 		host := r.Host
 		if h, _, err := net.SplitHostPort(host); err == nil {
 			host = h
+		} else if strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") {
+			// Bracketed IPv6 literal without a port.
+			host = host[1 : len(host)-1]
 		}
 		if host != "localhost" && host != "127.0.0.1" && host != "::1" {
 			http.Error(w, "Host not allowed", http.StatusForbidden)

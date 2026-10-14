@@ -89,6 +89,7 @@ func TestRED_Repl_HistoryAddAppendsInsteadOfRewriting(t *testing.T) {
 		t.Fatal(err)
 	}
 	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	lines = lines[1:] // format marker
 	if len(lines) != 50 || lines[49] != "cmd "+strings.Repeat("x", 49) {
 		t.Fatalf("history file has %d lines", len(lines))
 	}
@@ -112,6 +113,7 @@ func TestHistoryTrimmedRewritesAndStaysBounded(t *testing.T) {
 	}
 	data, _ := os.ReadFile(filepath.Join(home, ".odek", historyFilename))
 	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	lines = lines[1:] // format marker
 	if len(lines) != 5 || lines[0] != "line h" || lines[4] != "line l" {
 		t.Fatalf("lines=%v", lines)
 	}

@@ -79,6 +79,7 @@ var EpisodePathTools = map[string]bool{
 	"tr":           true,
 	"diff":         true,
 	"file_info":    true,
+	"patch":        true,
 	"glob":         true,
 	"tree":         true,
 	"base64":       true,
@@ -99,7 +100,7 @@ var EpisodePathTools = map[string]bool{
 //     effect (see shellCommandTaints); local commands stay trusted.
 //   - memory calls taint when the action surfaces quarantined or
 //     pending-review text (list_quarantine, list_pending_review).
-//   - Everything else (patch, write_file, …) is trusted.
+//   - Everything else (write_file, …) is trusted.
 func ToolCallTaintsEpisode(name, argsJSON string) bool {
 	if strings.Contains(name, "__") {
 		return true

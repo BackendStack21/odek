@@ -98,7 +98,7 @@ func DefaultConfig() Config {
 		AssociationsEnabled:             boolPtr(true),
 		AssociationSemanticTopK:         3,
 		SemanticDedupThreshold:          floatPtr(0.92),
-		ConsolidateSimilarityThreshold:  0.9,
+		ConsolidateSimilarityThreshold:  0, // unset: 0.8 local embedder, 0.9 remote
 		ProactiveReturnAfterBreak:       boolPtr(true),
 		StyleMirroringEnabled:           boolPtr(true),
 		AnaphoraResolutionEnabled:       boolPtr(true),

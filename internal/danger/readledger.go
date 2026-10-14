@@ -760,6 +760,16 @@ func stageWrittenPaths(stage, inner []string, name, cwd string) []string {
 		switch name {
 		case "tee":
 			raw = append(raw, operands...)
+		case "uniq":
+			// uniq [OPTION]... [INPUT [OUTPUT]] writes its second operand.
+			if len(operands) >= 2 {
+				raw = append(raw, operands[1])
+			}
+		case "patch":
+			// patch [OPTION]... [ORIGFILE [PATCHFILE]] rewrites ORIGFILE.
+			if len(operands) >= 1 {
+				raw = append(raw, operands[0])
+			}
 		case "cp", "mv", "install", "ln", "rsync":
 			if target, ok := targetDirectoryOption(name, inner[1:]); ok {
 				// -t DIR / --target-directory=DIR names the destination;
@@ -864,7 +874,9 @@ var targetDirectoryLongOptions = []string{"target-directory"}
 func stageLedgerFiles(stage []string, cwd string, written map[string]bool) (files, rewritten []string) {
 	files = stageExecutionFilesWritten(stage, cwd, written)
 	for _, path := range files {
-		if written[pathKey(path)] {
+		// An earlier stage that replaced files the analysis cannot name
+		// leaves the licence of the bytes read before describing none of them.
+		if written[pathKey(path)] || written[unknownWritesKey] {
 			rewritten = append(rewritten, path)
 		}
 	}
@@ -877,8 +889,159 @@ func stageLedgerFiles(stage []string, cwd string, written map[string]bool) (file
 		for _, path := range stageWrittenPaths(stage, inner, name, cwd) {
 			written[path] = true
 		}
+		if stageWritesUnnamedFiles(name, inner) {
+			written[unknownWritesKey] = true
+		}
 	}
 	return files, rewritten
+}
+
+// unknownWritesKey marks, in the per-command written set, that an earlier
+// stage rewrote files whose names the analysis cannot read off the command
+// line. It is not a path, so it never matches one.
+const unknownWritesKey = "\x00unnamed-writes"
+
+// stageWritesUnnamedFiles reports whether a command replaces files in place
+// without naming all of them as operands: patch (the diff names the files),
+// archive extraction, decompression, and the VCS verbs that rewrite the work
+// tree.
+func stageWritesUnnamedFiles(name string, inner []string) bool {
+	if len(inner) == 0 {
+		return false
+	}
+	args := inner[1:]
+	switch name {
+	case "patch", "unzip", "7z", "7za", "7zz", "7zr", "unrar", "unar", "cpio",
+		"gunzip", "bunzip2", "unxz", "uncompress", "unlzma", "unzstd", "ed", "ex":
+		return !hasAny(args, "-l", "-t", "-v", "-Z", "--list", "--test", "--dry-run", "-h", "--help", "--version")
+	case "gzip", "bzip2", "xz", "zstd", "lzma":
+		return hasAny(args, "-d", "--decompress", "--uncompress")
+	case "ar", "jar", "dpkg-deb", "dpkg", "pax", "bsdcpio":
+		return archiveExtractionArgs(args)
+	case "tar", "bsdtar", "gtar":
+		for i, a := range args {
+			switch {
+			case a == "--extract" || a == "--get":
+				return true
+			case strings.HasPrefix(a, "--") || a == "":
+			case strings.HasPrefix(a, "-"):
+				if strings.ContainsRune(a, 'x') {
+					return true
+				}
+			case i == 0 && strings.ContainsRune(a, 'x'):
+				return true // old-style first word: `tar xf a.tar`
+			}
+		}
+	case "cp", "mv", "rsync", "install":
+		// Directory contents merge into the destination under names the
+		// command line does not give: a glob, a trailing-slash source, or a
+		// recursive copy.
+		for _, a := range args {
+			if a == "--recursive" || a == "--archive" || (isShortFlagToken(a) && strings.ContainsAny(a[1:], "rRa")) {
+				return true
+			}
+			if !strings.HasPrefix(a, "-") && (hasGlobMeta(a) || strings.HasSuffix(a, "/") || strings.HasSuffix(a, "/.")) {
+				return true
+			}
+		}
+	case "hg", "svn":
+		if len(args) > 0 {
+			switch args[0] {
+			case "update", "up", "pull", "checkout", "co", "revert", "merge", "switch", "import", "unbundle":
+				return true
+			}
+		}
+	case "git":
+		return gitSubcommandRewritesTree(inner)
+	}
+	return false
+}
+
+// archiveExtractionArgs reports whether an ar / jar / pax / dpkg-deb style
+// argument list extracts files into the working directory.
+func archiveExtractionArgs(args []string) bool {
+	for i, a := range args {
+		switch {
+		case a == "--extract" || a == "--raw-extract" || a == "--fsys-tarfile":
+			return true
+		case strings.HasPrefix(a, "--") || a == "":
+		case strings.HasPrefix(a, "-"):
+			if strings.ContainsAny(a[1:], "xrR") {
+				return true
+			}
+		case i == 0 && strings.ContainsRune(a, 'x'):
+			return true // old-style first word: `ar x lib.a`, `jar xf a.jar`
+		}
+	}
+	return false
+}
+
+// gitSubcommandRewritesTree reports whether a git invocation can replace the
+// content of tracked files in the work tree. The read-only variants (listing
+// stashes, aborting nothing, dry runs, creating a branch, moving only the
+// index or HEAD) keep earlier reads valid.
+func gitSubcommandRewritesTree(inner []string) bool {
+	sub, args := gitSubcommandAndArgs(inner)
+	var operands []string
+	flag := func(names ...string) bool {
+		for _, a := range args {
+			for _, n := range names {
+				if a == n || strings.HasPrefix(a, n+"=") {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	for _, a := range args {
+		if !strings.HasPrefix(a, "-") {
+			operands = append(operands, a)
+		}
+	}
+	switch sub {
+	case "checkout", "switch":
+		forced := flag("-f", "--force", "-B", "-C", "--force-create", "--discard-changes")
+		for _, a := range args {
+			if isShortFlagToken(a) && strings.ContainsRune(a[1:], 'f') {
+				forced = true // -f inside a cluster such as -fb
+			}
+		}
+		if !forced && flag("-b", "-c", "--create", "--orphan") && len(operands) <= 1 && !flag("--") {
+			return false // a new branch at HEAD: no file changes
+		}
+		return true
+	case "reset":
+		// --soft and --mixed move only HEAD and the index.
+		return flag("--hard", "--merge", "--keep")
+	case "restore":
+		return !flag("--staged", "-S") || flag("--worktree", "-W")
+	case "stash":
+		if len(operands) > 0 {
+			switch operands[0] {
+			case "list", "show", "drop", "clear", "create", "store":
+				return false
+			}
+		}
+		return true
+	case "merge":
+		return !flag("--quit") // --abort restores the files it merged
+	case "clean":
+		return !flag("-n", "--dry-run")
+	case "rebase":
+		return !flag("--quit")
+	case "pull", "apply", "am", "cherry-pick", "revert", "checkout-index", "read-tree",
+		"submodule", "sparse-checkout", "worktree", "bisect", "filter-branch", "lfs":
+		if sub == "submodule" || sub == "worktree" {
+			if len(operands) > 0 {
+				switch operands[0] {
+				case "status", "summary", "list", "foreach", "init", "deinit", "lock", "unlock", "prune":
+					return false
+				}
+			}
+		}
+		return true
+	}
+	return false
 }
 
 // stageExecutionFilesWritten returns the files a stage executes. Only the

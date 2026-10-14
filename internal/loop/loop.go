@@ -1347,7 +1347,7 @@ func (e *Engine) planTitleQuery() string {
 			continue
 		}
 		if len(title) > maxPlanTitleChars {
-			title = title[:maxPlanTitleChars]
+			title = cutUTF8(title, maxPlanTitleChars)
 		}
 		parts = append(parts, title)
 	}
@@ -2404,7 +2404,7 @@ func (e *Engine) summarizeProgress(ctx context.Context, messages []session.Messa
 			content = strings.TrimSpace(content + " [called tools: " + strings.Join(names, ", ") + "]")
 		}
 		if len(content) > budgetSummarySnippetBytes {
-			content = content[:budgetSummarySnippetBytes] + "…"
+			content = cutUTF8(content, budgetSummarySnippetBytes) + "…"
 		}
 		if content == "" {
 			continue
@@ -2645,6 +2645,15 @@ func (e *Engine) sanitizePersistedSystemMessages(ctx context.Context, messages [
 			continue
 		}
 		content := messages[i].Content
+		// A memory block left by a previous run (this process or another) is
+		// superseded: the engine injects the current block itself every run.
+		// Keeping it would accumulate one stale copy, and one cache
+		// breakpoint, per resume.
+		if body := strings.TrimSuffix(content, "\n\n"+memoryAuthorityReminder); i > 0 && body != content && strings.TrimSpace(body) != "" {
+			messages = append(messages[:i], messages[i+1:]...)
+			i--
+			continue
+		}
 		if strings.HasPrefix(content, digestMsgHeader) {
 			body := strings.TrimPrefix(content, digestMsgHeader)
 			if !isEngineMinted(body) {
@@ -3975,10 +3984,15 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 			if len(output) > maxOutput {
 				head := maxOutput * 3 / 4 // 3KB head
 				tail := maxOutput / 4     // 1KB tail
-				output = output[:head] +
+				headPart := cutUTF8(output, head)
+				tailStart := len(output) - tail
+				for tailStart < len(output) && !utf8.RuneStart(output[tailStart]) {
+					tailStart++
+				}
+				output = headPart +
 					fmt.Sprintf("\n\n... [%d bytes omitted — output was %d bytes total] ...\n\n",
-						len(output)-head-tail, len(output)) +
-					output[len(output)-tail:]
+						tailStart-len(headPart), len(output)) +
+					output[tailStart:]
 			}
 			if results[i].durationMs >= longToolRuntimeMs {
 				output += "\n" + formatLongToolRuntimeFooter(results[i].durationMs)

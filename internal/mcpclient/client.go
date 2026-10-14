@@ -1424,14 +1424,18 @@ func (a *ToolAdapter) Name() string {
 const MaxRegisteredToolNameLen = 64
 
 // RegisteredToolName returns the model-facing name of an MCP tool:
-// "<server>__<tool>" when it fits the provider limit, otherwise
+// "<server>__<tool>" when it fits the provider limit and is unambiguous, otherwise
 // "<server-part>__<tool-part>_<hash8>" with each part truncated separately
 // and 8 hex digits of a SHA-256 over the full server and tool. The "__"
 // separator is always present because the loop's approval classification
 // and the episode taint recognise MCP tools by it.
 func RegisteredToolName(server, tool string) string {
 	full := server + "__" + tool
-	if len(full) <= MaxRegisteredToolNameLen {
+	// A server name ending in "_" or a tool name starting with "_" makes the
+	// join ambiguous ("gh_"+"issues" vs "gh"+"_issues"): those pairs always
+	// carry the hash suffix so distinct pairs register distinct names.
+	ambiguous := strings.HasSuffix(server, "_") || strings.HasPrefix(tool, "_")
+	if len(full) <= MaxRegisteredToolNameLen && !ambiguous {
 		return full
 	}
 	sum := sha256.Sum256([]byte(server + "\x00" + tool))

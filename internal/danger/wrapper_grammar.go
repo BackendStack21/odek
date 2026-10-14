@@ -8,7 +8,10 @@
 
 package danger
 
-import "strings"
+import (
+	"path/filepath"
+	"strings"
+)
 
 // wrapperSpecs are the option grammars of the wrappers that run another
 // command: which options consume a value (so the value is not mistaken for
@@ -38,7 +41,7 @@ var wrapperSpecs = map[string]optSpec{
 	// optional value, which is only ever fused into the word: a bare `-e` or
 	// `--replace` never takes the wrapped command as its value.
 	"xargs":    xargsGrammar,
-	"parallel": xargsGrammar,
+	"parallel": parallelGrammar,
 	"xe":       xargsGrammar,
 	"sem":      semGrammar,
 	// env: -u NAME, -C DIR, -S STRING, -a NAME, -P PATH and their long
@@ -55,6 +58,28 @@ var semGrammar = optSpec{
 	long: longTable("max-lines max-args max-procs max-chars delimiter arg-file jobs id",
 		"replace eof null exit interactive open-tty no-run-if-empty process-slot-var show-limits verbose fg wait semaphore"),
 	abbrev: true,
+}
+
+// parallelGrammar is GNU parallel's option grammar, built from its documented
+// option list. Value-taking options (--header, --colsep, --sshlogin, --jobs,
+// …) must not leave their value to be read as the command, and boolean ones
+// (--link, --pipepart, --tmux, --lb, …) must not swallow the command. Names
+// match exactly (no abbreviations in this table): an option this table does
+// not know reads as a flag, so the next word is the command and is classified
+// rather than hidden.
+var parallelGrammar = optSpec{
+	short:         "aCdEIjJLnNPsS",
+	shortOptional: "iel",
+	long: longTable("arg-file arg-file-sep colsep delimiter eof env halt header jobs max-procs joblog load "+
+		"max-args max-replace-args max-lines max-chars memfree memsuspend nice results res retries return "+
+		"rpl sshlogin sshloginfile slf sshdelay tagstring template tmpl timeout tmpdir delay workdir wd "+
+		"transfer-file transferfile tf basefile bf trc block block-size recstart recend compress-program "+
+		"decompress-program sql sqlandworker sqlmaster sqlworker parset replace",
+		"null quote shellquote verbose dry-run dryrun bar progress eta tty tag ctag keep-order group ungroup "+
+			"line-buffer linebuffer lb pipe pipepart round-robin files fg bg citation will-cite semaphore sem wait "+
+			"no-run-if-empty xapply link cat fifo tmux tmuxpane cleanup filter-hosts nonall onall interactive "+
+			"silent resume retry-failed shebang shebang-wrap number-of-cores number-of-sockets number-of-threads "+
+			"number-of-cpus plus use-cores-instead-of-threads use-sockets-instead-of-threads show-limits"),
 }
 
 var xargsGrammar = optSpec{
@@ -248,6 +273,21 @@ func (step *wrapperStep) parallelPayload(tokens []string, from, i int) {
 	}
 }
 
+// projectRunnerSpec reads the options in front of the command a project
+// environment runner executes; none of them takes a value that could hide it.
+var projectRunnerSpec = optSpec{posix: true}
+
+// uvRunSpec is `uv run`'s option grammar: the value-taking options, so their
+// values are not read as the command.
+var uvRunSpec = optSpec{
+	posix: true,
+	short: "pw",
+	long: longTable("with with-requirements with-editable python project directory env-file extra group "+
+		"only-group package index default-index index-url extra-index-url find-links index-strategy "+
+		"keyring-provider resolution prerelease exclude-newer config-file cache-dir link-mode "+
+		"refresh-package reinstall-package upgrade-package no-binary-package no-build-package config-setting", ""),
+}
+
 // subcommandWrapper recognises tools that run a command only for certain
 // subcommands: `asdf exec`, `direnv exec DIR`, `mise|rtx exec|x … --`,
 // `nix run|shell|develop`, and `nix-shell`.
@@ -270,6 +310,36 @@ func subcommandWrapper(name string, tokens []string, i int) (wrapperStep, bool) 
 			step.next = min(i+3, len(tokens))
 			if step.next < len(tokens) && tokens[step.next] == "--" {
 				step.next++
+			}
+			return step, true
+		}
+	case "poetry", "pipenv", "pdm", "rye", "hatch", "uv", "bundle", "bundler":
+		// Project environment runners: `poetry run CMD`, `uv run CMD`,
+		// `bundle exec CMD` execute CMD like direnv exec does.
+		verb := "run"
+		if name == "bundle" || name == "bundler" {
+			verb = "exec"
+		}
+		if len(rest) > 0 && (rest[0] == verb || (verb == "exec" && rest[0] == "e")) {
+			step.floor = CodeExecution
+			spec := projectRunnerSpec
+			if name == "uv" {
+				spec = uvRunSpec
+			}
+			r := spec.parse(tokens[i+2:])
+			switch {
+			case r.operandAt >= 0:
+				step.next = i + 2 + r.operandAt
+			case len(r.rest) > 0:
+				step.next = len(tokens) - len(r.rest)
+			default:
+				step.next = len(tokens)
+			}
+			if step.next < len(tokens) && scriptFileExtensions[strings.ToLower(filepath.Ext(tokens[step.next]))] &&
+				!strings.Contains(tokens[step.next], "/") {
+				// `uv run script.py` runs the file with the project's
+				// interpreter: there is no command word to judge.
+				step.next = len(tokens)
 			}
 			return step, true
 		}

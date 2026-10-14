@@ -518,6 +518,7 @@ On exhaustion odek emits a `budget_exceeded` runtime event, persists the latest 
 - The **global** `~/.odek/config.json` may set any limit.
 - The project `./odek.json` may only **lower** an existing limit: a higher value is clamped down to the global one with a stderr warning, and zeroing/omitting a field re-inherits the global limit — a malicious repo can never raise or disable an operator budget. A project *may* set a limit the global config lacks (that only tightens its own runs).
 - Project-set per-million **prices are rejected outright** — flat pair and `model_prices` alike — a lower project price would silently weaken cost enforcement — and the global values are kept. Prices belong in `~/.odek/config.json`.
+- A project `model` that the global prices do not cover is **ignored with a warning** when the global config sets `max_cost_usd` and prices at least one model — otherwise naming an unpriced model would switch the operator's spend cap off. Price the model in `limits.model_prices` to allow it.
 - **CLI flags** (`--max-runtime`, `--max-tool-calls`, `--max-input-tokens`, `--max-output-tokens`, `--max-cost-usd`) are operator intent and set limits explicitly in either direction.
 - There is **no `ODEK_*` env-var layer** for limits.
 
@@ -646,7 +647,7 @@ The `memory` section controls the persistent memory system (see [docs/MEMORY.md]
       "semantic_search_min_score": 0.55,
       "semantic_search_rerank": true,
       "semantic_dedup_threshold": 0.92,
-      "consolidate_similarity_threshold": 0.9,
+      "consolidate_similarity_threshold": 0.8,
       "atom_max_chars": 300,
       "memory_budget_chars": 2000,
       "decay_half_life_days": 30,
@@ -683,7 +684,7 @@ The `memory` section controls the persistent memory system (see [docs/MEMORY.md]
 | `semantic_search_min_score` | `0.55` | — | — | Minimum cosine similarity for a candidate to be considered. |
 | `semantic_search_rerank` | `true` | — | — | Use the memory LLM to rerank candidates. |
 | `semantic_dedup_threshold` | `0.92` | — | — | Cosine similarity at or above which an incoming atom is treated as a paraphrase of an existing live atom and refreshes it instead of appending. `0` disables the semantic tier (exact-match dedup always runs). |
-| `consolidate_similarity_threshold` | `0.9` | — | — | Pairwise cosine similarity at or above which live atoms are grouped for LLM merging by `odek memory extended consolidate` / `ConsolidateAtoms`. |
+| `consolidate_similarity_threshold` | unset (`0.8` local embedder, `0.9` HTTP embedder) | — | — | Pairwise cosine similarity at or above which live atoms are grouped for LLM merging by `odek memory extended consolidate` / `ConsolidateAtoms`. |
 | `atom_max_chars` | `300` | `ODEK_MEMORY_EXTENDED_ATOM_MAX_CHARS` | `--memory-extended-atom-max-chars` | Maximum stored text length per atom. |
 | `memory_budget_chars` | `2000` | `ODEK_MEMORY_EXTENDED_MEMORY_BUDGET_CHARS` | `--memory-extended-memory-budget-chars` | Maximum injected Extended Memory context per turn. |
 | `decay_half_life_days` | `30` | — | — | Days until an atom's recall/eviction weight halves. |
@@ -900,6 +901,7 @@ The top-level `profiles` section defines named permission envelopes. When a task
 
 A built-in profile named **`default`** (`max_risk: "local_write"`) is always materialized unless you define your own profile with that name (yours wins) or set `subagent.default_profile: "none"`. **This is the envelope sub-agents run under when no profile is selected** — `delegate_tasks` tasks without a `profile` field and `odek subagent` runs without `--profile` are capped at `local_write`: no system writes, code execution, installs, network egress, or destructive operations.
 
+- **Delegation chain:** a sub-agent that delegates again stamps its own effective risk cap into the child task (`parent_max_risk`); the grandchild runs with the lower of that cap and its own, whatever `max_risk` or profile the task declares. Profile allowlist entries that the inherited cap denies are dropped, a fully locked-down sub-agent stamps `none` (deny everything), and a task file from a sub-agent without `parent_max_risk` is refused.
 - **Precedence:** `--profile` flag > task-file `profile` > `subagent.default_profile` (built-in `default` unless overridden).
 - **Operator sovereignty:** `"none"` is honored only from your config — a task file or flag can never strip the operator's envelope; a task cannot opt out of it, only select a different defined profile.
 - **Behavior change vs. earlier releases:** trusted sub-agents were previously uncapped; they are now clamped to `local_write` too. Tasks needing `code_execution`/`network_egress` must select an explicit profile (e.g. `test-runner`, `researcher`).

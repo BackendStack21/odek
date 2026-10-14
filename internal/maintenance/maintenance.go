@@ -551,16 +551,23 @@ func sweepPlans(home string, maxAgeDays int) (int, error) {
 // Returns the total number of bytes freed.
 func sweepMedia(home string) (int64, error) {
 	root := filepath.Join(home, "media")
-	if _, err := os.Stat(root); err != nil {
+	fi, err := os.Lstat(root)
+	if err != nil {
 		if os.IsNotExist(err) {
 			return 0, nil
 		}
 		return 0, fmt.Errorf("maintenance: stat media dir: %w", err)
 	}
+	// A symlinked media directory is never swept: deleting by age behind a
+	// link the sweep did not create could remove unrelated user files. The
+	// link is left in place and the skip is reported.
+	if fi.Mode()&os.ModeSymlink != 0 {
+		return 0, fmt.Errorf("maintenance: media dir %s is a symlink; not swept", root)
+	}
 	cutoff := time.Now().Add(-mediaMaxAge)
 	var freed int64
-	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
+	err = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || path == root {
 			return nil // never remove directories; skip unreadable entries
 		}
 		info, err := d.Info()

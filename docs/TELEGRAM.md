@@ -260,7 +260,7 @@ characters, escape sequences, bidi overrides and invisible characters replaced
 by visible escapes (`\x1b`, `\u202e`), and an over-long command keeps its head
 and tail around a `…[N more bytes]` marker, so the chat shows the command that
 will run. Starting a fresh conversation with `/new` also drops that chat's
-unread-script read ledger, so a script read in the archived session gates again.
+unread-script read ledger, and so does `/resume` when it switches to a different conversation, so a script read in the archived session gates again.
 
 Every approval prompt states its deadline ("expires in 2m0s"). When the wait
 window closes without a response, the prompt message is edited in place to an
@@ -284,7 +284,7 @@ The agent can send files back to the chat either by emitting a `MEDIA:` prefix i
 - The path is resolved to an absolute, cleaned form and checked against the allowlist.
 - Symlinks are rejected: on Unix the final component is opened with `O_NOFOLLOW` and verified with `fstat` to close a TOCTOU race; on other platforms it is checked with `os.Lstat`. The resolved path must not escape the allowlist.
 - Files outside the allowlist (e.g. `/home/user/.ssh/id_rsa`) are refused, closing prompt-injection-driven exfiltration.
-- Files inside the shared `~/.odek/media/` directory are additionally scoped to the originating chat. A file is accepted only when its basename contains the chat's `_chat<chatID>_` tag (matching files downloaded by the bot) or when it lives under `~/.odek/media/chat<chatID>/`. This prevents one chat from asking the bot to re-send documents or media uploaded by another chat.
+- Files inside the shared `~/.odek/media/` directory are additionally scoped to the originating chat. A file is accepted only when its basename contains the chat's `_chat<chatID>_` tag (matching files downloaded by the bot) or when it lives under `~/.odek/media/chat<chatID>/`. On case-insensitive platforms (macOS, Windows) the comparison is case-folded, so a case-variant spelling of the media directory is scoped the same way; on case-sensitive filesystems names are compared exactly. This prevents one chat from asking the bot to re-send documents or media uploaded by another chat.
 - When the bot was launched from a broad base directory such as `$HOME` or `/`, the approval prompt includes an extra warning, because a path that looks harmless may still reach sensitive files.
 
 ### `send_message` callback restrictions
@@ -307,7 +307,7 @@ defense-in-depth.
 | `/new` | Archive the current session and start a fresh conversation. Archived sessions are timestamped (`tg-<chatID>-<YYYYMMDD>-<HHMMSS>`) and remain visible via `odek session list` |
 | `/stats` | Show session statistics (messages, turns, duration) plus daily token usage against the configured `daily_token_budget` |
 | `/jobs` | List background jobs for this chat |
-| `/stop` | Cancel a running agent task |
+| `/stop` | Cancel a running agent task. A pending approval prompt or clarify question is released immediately, so the chat is free again at once |
 
 ### Wake-on-complete (background jobs)
 

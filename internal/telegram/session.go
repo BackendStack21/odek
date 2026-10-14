@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/BackendStack21/odek/internal/danger"
 	"github.com/BackendStack21/odek/internal/session"
 )
 
@@ -655,6 +656,10 @@ func (sm *SessionManager) ResumeSession(chatID int64, sessionID string) (*ChatSe
 		if err := sm.Store.Save(stored); err != nil {
 			return nil, fmt.Errorf("persist resumed session: %w", err)
 		}
+		// The resumed conversation reuses the canonical ledger key, so reads
+		// recorded in the conversation it replaced must not license its
+		// executions.
+		danger.ForgetReadLedger(canonical)
 	}
 
 	cs := &ChatSession{

@@ -215,6 +215,8 @@ func handleBrowserUpload(store *session.Store, model, workspace string) http.Han
 			return
 		}
 		var sess *session.Session
+		var createdID string
+		uploadStored := false
 		if r.URL.Query().Get("session_id") != "" {
 			var code int
 			var msg string
@@ -249,6 +251,14 @@ func handleBrowserUpload(store *session.Store, model, workspace string) http.Han
 				http.Error(w, "cannot create upload session", 500)
 				return
 			}
+			// A rejected upload never returns the new session's id or token,
+			// so the session must not outlive the request.
+			createdID = sess.ID
+			defer func() {
+				if !uploadStored {
+					_ = store.Delete(createdID)
+				}
+			}()
 		}
 		browserUploads.Lock()
 		defer browserUploads.Unlock()
@@ -287,6 +297,7 @@ func handleBrowserUpload(store *session.Store, model, workspace string) http.Han
 			http.Error(w, "cannot store upload", 500)
 			return
 		}
+		uploadStored = true
 		full := filepath.Join(workspace, rel)
 		browserUploads.entries[id] = browserUpload{sessionID: sess.ID, path: full, name: name, size: len(data), workspace: workspace, created: time.Now().UTC()}
 		digest := sha256.Sum256(data)

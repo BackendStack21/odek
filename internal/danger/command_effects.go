@@ -14,6 +14,15 @@ var projectCodeTools = map[string]bool{
 	"golangci-lint": true, "gdb": true, "lldb": true,
 }
 
+// fdSyntax reads fd's options, so -x/-X inside a short cluster (-Hx) is
+// recognised and a letter that is the value of -e/-E/-t/... is not.
+var fdSyntax = optSpec{
+	short: "dEetSocjCMDlgp",
+	alias: map[byte]string{'x': "--exec", 'X': "--exec-batch"},
+	long: longTable("max-depth exclude extension type size owner color threads changed-within changed-before "+
+		"min-depth exact-depth max-results base-directory search-path path-separator ignore-file strip-cwd-prefix", ""),
+}
+
 func adapterRunsCode(name string, tokens []string, repo *gitRepoCtx) bool {
 	if gpgRunsProgram(name, tokens) {
 		return true
@@ -43,7 +52,7 @@ func adapterRunsCode(name string, tokens []string, repo *gitRepoCtx) bool {
 		return transferClientRunsProgram(name, tokens)
 	}
 	if name == "fd" || name == "fdfind" {
-		return optionPresent(tokens, "--exec", "--exec-batch", "-x", "-X")
+		return optionPresent(tokens, "--exec", "--exec-batch", "-x", "-X") || fdSyntax.parse(tokens[1:]).has("--exec", "--exec-batch")
 	}
 	if name == "gcc" || name == "g++" || name == "cc" || name == "c++" || name == "clang" || name == "clang++" {
 		return optionPresent(tokens, "-fplugin", "-specs", "--specs", "-wrapper", "-B", "-Xclang", "-load")
@@ -80,7 +89,7 @@ func adapterRunsCode(name string, tokens []string, repo *gitRepoCtx) bool {
 			return gitVerbRunsRepoCode(sub, args, tokens, repo)
 		}
 	}
-	if name == "curl" && optionPresent(tokens, "-K", "--config") {
+	if name == "curl" && (optionPresent(tokens, "-K", "--config") || curlSyntax.parse(tokens[1:]).has("--config")) {
 		return true
 	}
 	if name == "wget" && optionPresent(tokens, "--config", "-i", "--input-file") {
@@ -801,9 +810,55 @@ func sedScriptTexts(tokens []string) []string {
 	return words
 }
 
+// pythonModuleFiles returns the workspace files `python -m NAME` can run:
+// -m puts the current directory first on sys.path, so NAME.py and
+// NAME/__main__.py (dots as path separators) execute ahead of an installed
+// module of the same name.
+func pythonModuleFiles(args []string) []string {
+	r := pythonOptions.parse(args)
+	for _, o := range r.opts {
+		// Options in front of -m are the interpreter's; everything after
+		// the module name is the module's own argv, whatever it looks like.
+		if o.is("-c") {
+			return nil // inline code: no module is imported by -m
+		}
+		if !o.has || !o.is("-m") {
+			continue
+		}
+		parts := strings.Split(o.value, ".")
+		path := strings.Join(parts, "/")
+		files := []string{path + ".py", path + "/__main__.py", path + "/__init__.py"}
+		// Importing a dotted module imports each parent package first.
+		for i := 1; i < len(parts); i++ {
+			files = append(files, strings.Join(parts[:i], "/")+"/__init__.py")
+		}
+		return files
+	}
+	return nil
+}
+
+// pythonOptions is the interpreter's own option grammar: -m, -c, -W, -X and -Q
+// take a value (possibly the rest of a cluster such as -Bm), and the first
+// operand is the script.
+var pythonOptions = optSpec{posix: true, short: "mcWXQ"}
+
+// pythonInterpreterName reports whether name is a Python interpreter,
+// including versioned spellings (python3.11, pypy3).
+func pythonInterpreterName(name string) bool {
+	for _, base := range []string{"python", "pypy"} {
+		if rest, ok := strings.CutPrefix(name, base); ok {
+			return strings.Trim(rest, "0123456789.") == ""
+		}
+	}
+	return false
+}
+
 func executionFileTargets(name string, tokens []string) []string {
 	if len(tokens) == 0 {
 		return nil
+	}
+	if pythonInterpreterName(name) {
+		return pythonModuleFiles(tokens[1:])
 	}
 	var options []string
 	// commandOptions take a debugger/editor command string whose `source`

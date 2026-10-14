@@ -200,6 +200,9 @@ func analyzeWithStateWork(cmd string, depth int, inherited *shellAnalysisState, 
 	if pgrepFeedsKill(tokens, subs) {
 		result.add(SystemWrite)
 	}
+	if namerefNamesSecret(tokens) {
+		result.add(SystemWrite)
+	}
 	if unterminated {
 		// The shell would reject this line, but an open quote has swallowed
 		// the rest of it into one word; whatever followed cannot be judged.
@@ -610,11 +613,12 @@ func analyzeWithStateWork(cmd string, depth int, inherited *shellAnalysisState, 
 			// Only actual write operands are resolved against a changed cwd;
 			// language programs and display strings are analyzed by their adapters.
 			if writePrefixes[name] && !commandOnlyReads(name, inner) && name != "sed" {
+				written := startupWriteOperands(name, inner)
 				for _, tok := range inner[1:] {
 					if tok == "" || strings.HasPrefix(tok, "-") || isRedirectToken(tok) {
 						continue
 					}
-					result.add(state.targetRisk(tok, stageCwd, cwdKnown))
+					result.add(state.targetRiskMode(tok, stageCwd, cwdKnown, hasAny(written, tok)))
 				}
 			}
 			if (stageCwd != cwd || !cwdKnown || state.uncertain) && !displayVerbs[name] {
@@ -991,6 +995,15 @@ func analyzeWithStateWork(cmd string, depth int, inherited *shellAnalysisState, 
 		if substExecutes && substitutionDecodes(sub) {
 			result.add(Unknown)
 		}
+		if substExecutes {
+			// A substitution of a literal echo/printf is the program text:
+			// `bash <(echo 'rm -rf ~')` runs the echoed command.
+			if text, ok := staticPipeText([][]string{tokenize(sub)}); ok {
+				if cls := Classify(strings.TrimSpace(text)); cls != Unknown {
+					result.add(cls)
+				}
+			}
+		}
 		if substExecutes && !state.uncertain {
 			files, rewritten := substitutionReaderFiles(sub, state.cwd, state.written)
 			for _, path := range files {
@@ -1241,9 +1254,14 @@ func (s *shellAnalysisState) rebind(name string, inner []string, bind bool) (nam
 	}
 	switch name {
 	case "read":
+		// The variables hold whatever the input supplies at run time; a
+		// request that splices one in carries local data out.
 		s.forget("REPLY")
+		s.vars["REPLY"] = dynamicSubstToken
 		for _, tok := range inner[1:] {
-			s.forget(operandName(tok))
+			if op := operandName(tok); op != "" && !strings.HasPrefix(op, "-") {
+				s.vars[op] = dynamicSubstToken
+			}
 		}
 	case "shift", "set":
 		// The positional parameters change meaning.
@@ -1253,8 +1271,11 @@ func (s *shellAnalysisState) rebind(name string, inner []string, bind bool) (nam
 		s.argsKnown = false
 	case "mapfile", "readarray":
 		s.forget("MAPFILE")
+		s.vars["MAPFILE"] = dynamicSubstToken
 		for _, tok := range inner[1:] {
-			s.forget(operandName(tok))
+			if op := operandName(tok); op != "" && !strings.HasPrefix(op, "-") {
+				s.vars[op] = dynamicSubstToken
+			}
 		}
 	case "getopts":
 		s.forget("OPTARG", "OPTIND", "OPTERR")
@@ -1384,6 +1405,13 @@ func resolveInDirectory(path, cwd string) string {
 }
 
 func (s *shellAnalysisState) targetRisk(target, cwd string, known bool) RiskClass {
+	return s.targetRiskMode(target, cwd, known, true)
+}
+
+// targetRiskMode is targetRisk where hooks selects whether the start-time
+// hooks of other programs count as persistence: only a write to one plants
+// code, so an operand that is read, copied from or deleted passes false.
+func (s *shellAnalysisState) targetRiskMode(target, cwd string, known, hooks bool) RiskClass {
 	target = expandShellTokenPath(target)
 	if strings.ContainsAny(target, "$*?[]") || strings.Contains(target, dynamicSubstToken) {
 		return Unknown
@@ -1401,7 +1429,7 @@ func (s *shellAnalysisState) targetRisk(target, cwd string, known bool) RiskClas
 		return LocalWrite
 	}
 	path := resolveInDirectory(target, cwd)
-	risk := worstOf(ClassifyPathWrite(path), classifyResourceToken(path))
+	risk := worstOf(classifyPathWriteMode(path, hooks), classifyResourceToken(path))
 	if credentialPathToken(path) {
 		risk = worstOf(risk, SystemWrite)
 	}

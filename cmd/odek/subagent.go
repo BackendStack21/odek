@@ -756,6 +756,9 @@ type taskFileSpec struct {
 	Profile       string         `json:"profile,omitempty"`
 	Budget        *taskBudget    `json:"budget,omitempty"`
 	ParentTrust   string         `json:"parent_trust,omitempty"`
+	// ParentMaxRisk is the spawning sub-agent's effective risk cap; the
+	// child never runs with a higher one.
+	ParentMaxRisk string `json:"parent_max_risk,omitempty"`
 	// ArtifactRoot is the per-task directory the PARENT created
 	// (~/.odek/artifacts/<session>/<task>). When set, the runner scans it at
 	// exit and attaches odek.artifact-ref/v1 refs to the result. Additive
@@ -826,6 +829,7 @@ func subagentCmd(args []string) error {
 	var taskBudgetBlock *taskBudget // parent's remaining budget (share mode)
 	var taskArtifactRoot string     // per-task artifact dir from the envelope
 	var taskTaskID string           // envelope task id (staging key)
+	var parentMaxRisk string        // parent sub-agent's own effective risk cap
 	var parentTrust string          // parent's own effective trust
 	var eventContext events.Context
 	var runtimeEvents bool
@@ -862,6 +866,7 @@ func subagentCmd(args []string) error {
 		taskProfile = taskSpec.Profile
 		taskBudgetBlock = taskSpec.Budget
 		parentTrust = taskSpec.ParentTrust
+		parentMaxRisk = taskSpec.ParentMaxRisk
 		taskArtifactRoot = taskSpec.ArtifactRoot
 		taskTaskID = taskSpec.TaskID
 		// Telemetry correlation (sub-agent telemetry): protocol-2 parents
@@ -969,6 +974,20 @@ func subagentCmd(args []string) error {
 	// rooted in untrusted content cannot spawn trusted children.
 	effectiveTrustLevel := effectiveTrust(parentTrust, taskTrust)
 	applySubagentTrust(&resolved.Dangerous, effectiveTrustLevel, taskMaxRisk)
+	// The spawning sub-agent's own cap bounds this child too (min of the
+	// two), whatever profile or max_risk the task declared.
+	if parentMaxRisk == "" && subagentDepth() >= 2 {
+		// A task file written by a sub-agent always carries the cap; a
+		// missing one is a tampered or foreign file, never "no cap".
+		return fmt.Errorf("task file from a sub-agent lacks parent_max_risk")
+	}
+	applyParentRiskCap(&resolved.Dangerous, parentMaxRisk)
+	// All caps are in place; allowlist entries must not outrank them.
+	capRef := capOnlyReference(effectiveTrustLevel, taskMaxRisk, parentMaxRisk)
+	dropDeniedAllowlistEntries(&resolved.Dangerous, &capRef)
+	if subagentDangerObserver != nil {
+		subagentDangerObserver(resolved.Dangerous)
+	}
 
 	// Budget inheritance (subagent.budget_inherit="share"): the
 	// parent wrote its remaining budget into the task file; the child
@@ -1697,6 +1716,79 @@ func clampClassesAboveMaxRisk(dc *danger.DangerousConfig, maxRisk string) {
 			dc.Classes[cls] = danger.Deny
 		}
 	}
+}
+
+// parentRiskCapNone is the parent_max_risk value of a sub-agent that may run
+// nothing at all (every class denied).
+const parentRiskCapNone = "none"
+
+// subagentDangerObserver, when set by a test, receives the child's resolved
+// danger config after the parent's risk cap has been applied.
+var subagentDangerObserver func(danger.DangerousConfig)
+
+// applyParentRiskCap bounds a child by the spawning sub-agent's cap. Classes
+// above the cap are denied, and allowlist entries (which win over class
+// policy) that would run something the cap denies are dropped.
+func applyParentRiskCap(dc *danger.DangerousConfig, parentMax string) {
+	if dc == nil || parentMax == "" {
+		return
+	}
+	if parentMax == parentRiskCapNone {
+		if dc.Classes == nil {
+			dc.Classes = make(map[danger.RiskClass]danger.Action)
+		}
+		for _, cls := range subagentRiskCapOrder {
+			dc.Classes[cls] = danger.Deny
+		}
+		dc.Classes[danger.UnreadExec] = danger.Deny
+		dc.Allowlist = nil
+		return
+	}
+	clampClassesAboveMaxRisk(dc, parentMax)
+}
+
+// capOnlyReference returns a config in which every class is allowed except
+// those the caps that bind a child deny (trust lockdown, task max_risk,
+// parent cap). It tells apart a class a cap forbids from one the operator's
+// defaults merely deny. The operator-authored profile cap is deliberately
+// not part of it: the operator's own allowlist stays in force under the
+// profile envelope, as before.
+func capOnlyReference(trust, taskMaxRisk, parentMaxRisk string) danger.DangerousConfig {
+	ref := danger.DangerousConfig{Classes: make(map[danger.RiskClass]danger.Action)}
+	for _, cls := range subagentRiskCapOrder {
+		if cls != danger.Blocked { // blocked must stay denied (config validation)
+			ref.Classes[cls] = danger.Allow
+		}
+	}
+	ref.Classes[danger.UnreadExec] = danger.Allow
+	applySubagentTrust(&ref, trust, taskMaxRisk)
+	applyParentRiskCap(&ref, parentMaxRisk)
+	return ref
+}
+
+// dropDeniedAllowlistEntries removes allowlist entries that would run
+// something an applied cap (ref, see capOnlyReference) denies. An exact
+// allowlist match is allowed before any class check, so an entry must not be
+// able to reach a class a cap forbids; classes denied only by the operator's
+// defaults keep their allowlist entries.
+func dropDeniedAllowlistEntries(dc, ref *danger.DangerousConfig) {
+	if dc == nil || len(dc.Allowlist) == 0 {
+		return
+	}
+	kept := make([]string, 0, len(dc.Allowlist))
+	for _, entry := range dc.Allowlist {
+		ok := true
+		for _, cls := range danger.Analyze(entry).Effects {
+			if ref.ActionFor(cls) == danger.Deny {
+				ok = false
+				break
+			}
+		}
+		if ok {
+			kept = append(kept, entry)
+		}
+	}
+	dc.Allowlist = kept
 }
 
 // applyProfile overlays an operator-defined capability profile onto

@@ -51,9 +51,26 @@ func argv0(cmd string) string {
 			return ""
 		}
 		if ok {
+			// An assignment cut by an unquoted operator ("K=v;curl x") is
+			// followed by a command in the same word; the name is unknown.
+			if !strings.ContainsAny(w.raw, "'\"\\") && strings.ContainsAny(w.raw, ";&|<>") {
+				return ""
+			}
 			continue
 		}
+		// The program name ends at the first unquoted command operator. A
+		// prefix that opens a subshell, group or substitution (or holds an
+		// assignment) is not a program name and may carry secret values, so
+		// nothing of it is reported.
 		field := w.value
+		if !strings.ContainsAny(w.raw, "'\"\\") {
+			if k := strings.IndexAny(field, ";&|<>"); k >= 0 {
+				field = field[:k]
+			}
+		}
+		if strings.ContainsAny(field, "$(){}`") {
+			return ""
+		}
 		if i := strings.LastIndexByte(field, '/'); i >= 0 {
 			field = field[i+1:]
 		}

@@ -17,7 +17,7 @@ import (
 var sensitiveEnvSuffixes = []string{
 	"TOKEN", "SECRET", "SECRET_KEY", "API_KEY", "APIKEY", "PASSWORD", "PASSWD",
 	"PASSPHRASE", "PRIVATE_KEY", "PRIVATEKEY", "ACCESS_KEY", "CREDENTIALS",
-	"CREDENTIAL", "DATABASE_URL",
+	"CREDENTIAL", "DATABASE_URL", "COOKIE", "WEBHOOK", "WEBHOOK_URL",
 }
 
 // sensitiveEnvNames are well-known secret-bearing variables whose names do not
@@ -399,6 +399,44 @@ func indirectSensitiveRef(tokens []string, vars map[string]string) bool {
 				continue
 			}
 			if value, ok := vars[name]; ok && sensitiveEnvName(strings.TrimSpace(value)) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// namerefNamesSecret reports whether a command declares a nameref (`declare
+// -n`, `typeset -n`, `local -n`) and also names a secret-bearing variable as
+// a word or an assigned value. The nameref aliases that variable, so reading
+// it through the alias prints the secret like `echo $NAME` would.
+func namerefNamesSecret(tokens []string) bool {
+	declared := false
+	for i, tok := range tokens {
+		switch commandName(tok) {
+		case "declare", "typeset", "local":
+		default:
+			continue
+		}
+		for _, a := range tokens[i+1:] {
+			if !isShortFlagToken(a) {
+				break
+			}
+			if strings.Contains(a, "n") {
+				declared = true
+			}
+		}
+	}
+	if !declared {
+		return false
+	}
+	for _, tok := range tokens {
+		if sensitiveEnvName(tok) {
+			return true
+		}
+		if _, value, ok := strings.Cut(tok, "="); ok {
+			// A target built from an expansion cannot be judged: fail closed.
+			if sensitiveEnvName(value) || strings.Contains(value, "$") {
 				return true
 			}
 		}

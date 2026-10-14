@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"slices"
+	"sort"
 	"strings"
 	"time"
 
@@ -31,10 +32,6 @@ func (em *ExtendedMemory) ConsolidateAtoms(ctx context.Context) (merged int, err
 	if em.llm == nil {
 		return 0, fmt.Errorf("extended memory: consolidation requires an LLM")
 	}
-	threshold := em.cfg.ConsolidateSimilarityThreshold
-	if threshold <= 0 {
-		threshold = DefaultConfig().ConsolidateSimilarityThreshold
-	}
 	atoms, err := em.store.List()
 	if err != nil {
 		return 0, fmt.Errorf("extended memory: consolidate list atoms: %w", err)
@@ -42,15 +39,25 @@ func (em *ExtendedMemory) ConsolidateAtoms(ctx context.Context) (merged int, err
 	if len(atoms) < 2 {
 		return 0, nil
 	}
+	if len(atoms) > maxConsolidateAtoms {
+		// Bound embedding cost and the quadratic grouping pass: consolidate
+		// the most recent atoms; older ones are picked up by later runs.
+		sort.SliceStable(atoms, func(i, j int) bool { return atoms[i].CreatedAt.After(atoms[j].CreatedAt) })
+		atoms = atoms[:maxConsolidateAtoms]
+	}
 	texts := make([]string, len(atoms))
 	for i, a := range atoms {
 		texts[i] = a.Text
 	}
-	// Embed the live corpus directly: the vector index may be stale, and
+	// Fit and embed the live corpus directly: the vector index may be stale, and
 	// consolidation must compare the current atoms.
-	vecs, err := em.index.embedTexts(texts)
+	vecs, remote, err := em.index.embedCorpus(ctx, texts)
 	if err != nil {
 		return 0, fmt.Errorf("extended memory: consolidate embed: %w", err)
+	}
+	threshold := em.cfg.ConsolidateSimilarityThreshold
+	if threshold <= 0 {
+		threshold = defaultConsolidateThreshold(remote)
 	}
 	for _, group := range groupBySimilarity(atoms, vecs, threshold) {
 		if em.mergeGroup(ctx, group) {
@@ -58,6 +65,21 @@ func (em *ExtendedMemory) ConsolidateAtoms(ctx context.Context) (merged int, err
 		}
 	}
 	return merged, nil
+}
+
+// maxConsolidateAtoms caps the corpus one consolidation run embeds and groups.
+const maxConsolidateAtoms = 2000
+
+// defaultConsolidateThreshold is the grouping threshold when
+// consolidate_similarity_threshold is unset. Grouping only proposes
+// candidates (the memory LLM decides each merge); the local bag-of-words
+// embedder scores paraphrases lower than a remote semantic embedder does, so
+// it needs a lower bar.
+func defaultConsolidateThreshold(remote bool) float32 {
+	if remote {
+		return 0.9
+	}
+	return 0.8
 }
 
 // groupBySimilarity greedily clusters atoms whose cosine similarity to the

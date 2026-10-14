@@ -3,6 +3,7 @@ package danger
 import (
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 // homoglyphMap folds common Unicode confusables (Cyrillic/Greek look-alikes)
@@ -90,6 +91,15 @@ var homoglyphMap = map[rune]rune{
 	'ȷ': 'j', // U+0237 dotless j
 	'ɑ': 'a', // U+0251 Latin alpha
 
+	// Latin small capitals (phonetic and IPA extensions)
+	'ᴀ': 'a', 'ʙ': 'b', 'ᴄ': 'c', 'ᴅ': 'd', 'ᴇ': 'e', 'ꜰ': 'f', 'ɢ': 'g',
+	'ʜ': 'h', 'ɪ': 'i', 'ᴊ': 'j', 'ᴋ': 'k', 'ʟ': 'l', 'ᴍ': 'm', 'ɴ': 'n',
+	'ᴏ': 'o', 'ᴘ': 'p', 'ʀ': 'r', 'ꜱ': 's', 'ᴛ': 't', 'ᴜ': 'u', 'ᴠ': 'v',
+	'ᴡ': 'w', 'ʏ': 'y', 'ᴢ': 'z', 'ɛ': 'e', 'ᴦ': 'r', 'ᴨ': 'n', 'ᴫ': 'l',
+	'ᴁ': 'a', 'ᴂ': 'a', 'ᴃ': 'b', 'ᴆ': 'd', 'ᴈ': 'e', 'ᴉ': 'i', 'ᴎ': 'n',
+	'ᴐ': 'o', 'ᴔ': 'o', 'ᴕ': 'o', 'ᴖ': 'n', 'ᴗ': 'u', 'ᴙ': 'r', 'ᴚ': 'r',
+	'ᴟ': 'u', 'ᴣ': 'z', 'ᴤ': 'z', 'ᴥ': 'o',
+
 	// Letterlike symbols (the holes in the mathematical alphanumerics)
 	'ℂ': 'c', 'ℊ': 'g', 'ℋ': 'h', 'ℌ': 'h', 'ℍ': 'h', 'ℎ': 'h', 'ℐ': 'i',
 	'ℑ': 'i', 'ℒ': 'l', 'ℓ': 'l', 'ℕ': 'n', 'ℙ': 'p', 'ℚ': 'q', 'ℛ': 'r',
@@ -132,17 +142,26 @@ func normalizeCommandSpacing(s string) string {
 // character commonly used to evade text scanners. Every Unicode format
 // character (category Cf: bidi controls and isolates, the Arabic letter mark,
 // invisible operators, tag characters, BOM) is invisible, as are the Hangul
-// fillers, which are letters by category but render as blank space.
+// fillers and the braille blank, which render as blank space.
 func isInvisible(r rune) bool {
 	switch r {
 	case '\u034F', // combining grapheme joiner
 		'\u115F', '\u1160', // Hangul choseong / jungseong fillers
 		'\u180E', // Mongolian vowel separator
 		'\u3164', // Hangul filler
+		'\u2800', // braille pattern blank
 		'\uFFA0': // halfwidth Hangul filler
 		return true
 	}
 	return unicode.Is(unicode.Cf, r)
+}
+
+// isStrippedControl reports whether r is a C0/C1 control character or DEL
+// other than whitespace. It renders as nothing (or is dropped by a tokenizer)
+// inside a word, so NormalizeForScan removes it; ordinary terminal and binary
+// content carries such bytes, so they are not reported as hidden characters.
+func isStrippedControl(r rune) bool {
+	return unicode.Is(unicode.Cc, r) && !unicode.IsSpace(r)
 }
 
 // ContainsInvisible reports whether s contains any invisible character that
@@ -163,17 +182,34 @@ func ContainsInvisible(s string) bool {
 // Combining diacritical marks (U+0300–U+036F etc.) are stripped because they
 // render invisibly inside a word while breaking contiguous-pattern matching —
 // "instructio\u0301ns" must scan like "instructions".
-func NormalizeForScan(text string) string {
-	// Single pass: drop invisible/combining characters and collapse
-	// whitespace runs to single spaces while building, so the old
-	// build → ToLower → Fields+Join copy chain becomes one build plus
-	// one ToLower copy (ToLower over the string keeps the exact original
-	// case-folding semantics).
+func NormalizeForScan(text string) string { return normalizeScan(text, true) }
+
+// normalizeScan is NormalizeForScan with a choice for the C0 separator
+// controls (0x1C-0x1F): a space keeps the words either side apart, deleting
+// them joins the letters of a word that was split by one. The scan reads both.
+func normalizeScan(text string, separatorsAsSpace bool) string {
 	var b strings.Builder
 	b.Grow(len(text))
 	prevSpace := true // leading whitespace is dropped
-	for _, r := range text {
-		if isInvisible(r) {
+	for i := 0; i < len(text); {
+		r, size := utf8.DecodeRuneInString(text[i:])
+		if r == 0x1b {
+			// An ANSI CSI sequence (ESC [ params final) renders as nothing:
+			// drop it as a unit rather than leaving its parameters behind.
+			if n := ansiCSILen(text[i:]); n > 0 {
+				i += n
+				if separatorsAsSpace && !prevSpace {
+					b.WriteByte(' ')
+					prevSpace = true
+				}
+				continue
+			}
+		}
+		i += size
+		if r >= 0x1c && r <= 0x1f && separatorsAsSpace {
+			r = ' '
+		}
+		if isInvisible(r) || isStrippedControl(r) {
 			continue
 		}
 		if unicode.Is(unicode.Mn, r) || unicode.Is(unicode.Me, r) || unicode.Is(unicode.Mc, r) {
@@ -190,6 +226,138 @@ func NormalizeForScan(text string) string {
 		prevSpace = false
 	}
 	return strings.ToLower(strings.TrimSuffix(b.String(), " "))
+}
+
+// isScanControl reports whether r is a control character the scan reads as
+// either a separator or nothing: C0, DEL and C1 controls other than
+// whitespace.
+func isScanControl(r rune) bool { return isStrippedControl(r) }
+
+// controlVariants returns the extra readings of content that hold controls:
+// escape sequences and control characters read as a space (the payload of an
+// OSC/DCS/APC string stays visible) and read as nothing (the whole sequence
+// goes). Each reading is also homoglyph-folded. Readings equal to normalized,
+// or absent controls, add nothing.
+func controlVariants(content, normalized string) []string {
+	if !strings.ContainsFunc(content, func(r rune) bool { return r == 0x1b || isScanControl(r) }) {
+		return nil
+	}
+	var out []string
+	seen := map[string]bool{normalized: true}
+	add := func(v string) {
+		if !seen[v] {
+			seen[v] = true
+			out = append(out, v)
+		}
+	}
+	for _, join := range []bool{false, true} {
+		v := normalizeScan(controlVariantText(content, join), true)
+		add(v)
+		add(FoldHomoglyphs(v))
+	}
+	return out
+}
+
+// controlVariantText rewrites escape sequences and controls: as a space, or
+// (join) as nothing, dropping a sequence's payload too.
+func controlVariantText(text string, join bool) string {
+	var b strings.Builder
+	b.Grow(len(text))
+	for i := 0; i < len(text); {
+		r, size := utf8.DecodeRuneInString(text[i:])
+		if r == 0x1b || r == 0x9b {
+			n, intro, term := escapeSpan(text[i:])
+			if join {
+				i += n
+				continue
+			}
+			b.WriteByte(' ')
+			b.WriteString(text[i+intro : i+n-term])
+			if term > 0 {
+				b.WriteByte(' ')
+			}
+			i += n
+			continue
+		}
+		if isScanControl(r) {
+			if !join {
+				b.WriteByte(' ')
+			}
+			i += size
+			continue
+		}
+		b.WriteString(text[i : i+size])
+		i += size
+	}
+	return b.String()
+}
+
+// escapeSpan measures the escape sequence at the start of s (which begins with
+// ESC or U+009B): its total length, the length of its introducer and the
+// length of its string terminator. A control string (OSC, DCS, APC, PM, SOS)
+// has a payload between introducer and terminator; an unterminated one runs
+// to the end of the input.
+func escapeSpan(s string) (n, intro, term int) {
+	if strings.HasPrefix(s, "\u009b") {
+		i := 2
+		for i < len(s) && s[i] >= 0x30 && s[i] <= 0x3f {
+			i++
+		}
+		for i < len(s) && s[i] >= 0x20 && s[i] <= 0x2f {
+			i++
+		}
+		if i < len(s) && s[i] >= 0x40 && s[i] <= 0x7e {
+			i++
+			return i, i, 0
+		}
+		return 2, 2, 0
+	}
+	if len(s) < 2 {
+		return 1, 1, 0
+	}
+	switch c := s[1]; {
+	case c == '[':
+		if n := ansiCSILen(s); n > 0 {
+			return n, n, 0
+		}
+		return 2, 2, 0
+	case c == ']' || c == 'P' || c == '_' || c == '^' || c == 'X':
+		for i := 2; i < len(s); i++ {
+			switch {
+			case s[i] == 0x07:
+				return i + 1, 2, 1
+			case s[i] == 0x1b && i+1 < len(s) && s[i+1] == '\\':
+				return i + 2, 2, 2
+			case strings.HasPrefix(s[i:], "\u009c"):
+				return i + 2, 2, 2
+			}
+		}
+		// Unterminated: the string runs to the end of the input. Consuming it
+		// whole keeps a run of introducers from rescanning the same tail.
+		return len(s), 2, 0
+	case c >= 0x20 && c <= 0x7e:
+		return 2, 2, 0
+	}
+	return 1, 1, 0
+}
+
+// ansiCSILen returns the length of the ANSI CSI sequence at the start of s
+// (ESC [ parameter bytes, intermediate bytes, final byte), or 0.
+func ansiCSILen(s string) int {
+	if len(s) < 3 || s[0] != 0x1b || s[1] != '[' {
+		return 0
+	}
+	i := 2
+	for i < len(s) && s[i] >= 0x30 && s[i] <= 0x3f {
+		i++
+	}
+	for i < len(s) && s[i] >= 0x20 && s[i] <= 0x2f {
+		i++
+	}
+	if i < len(s) && s[i] >= 0x40 && s[i] <= 0x7e {
+		return i + 1
+	}
+	return 0
 }
 
 // FoldHomoglyphs returns text with common Unicode confusables (Cyrillic/Greek
@@ -241,6 +409,19 @@ func foldStyledRune(r rune) (rune, bool) {
 		return '1' + (r - 0x2460), true
 	case r == 0x24EA:
 		return '0', true
+	case r >= 0x1F130 && r <= 0x1F149: // squared capitals
+		return 'a' + (r - 0x1F130), true
+	case r >= 0x1F150 && r <= 0x1F169: // negative circled capitals
+		return 'a' + (r - 0x1F150), true
+	case r >= 0x1F170 && r <= 0x1F189: // negative squared capitals
+		return 'a' + (r - 0x1F170), true
+	case r >= 0x1F1E6 && r <= 0x1F1FF: // regional indicator letters
+		return 'a' + (r - 0x1F1E6), true
+	case r >= 0xFF01 && r <= 0xFF5E:
+		// The fullwidth ASCII block: punctuation and digits as well as
+		// letters, so a control token spelled with fullwidth bars and
+		// angle brackets folds to its ASCII form.
+		return r - 0xFEE0, true
 	}
 	return 0, false
 }

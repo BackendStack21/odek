@@ -53,6 +53,13 @@ func SanitizeInline(s string) string {
 	return sanitizeDisplay(s, InlineMaxBytes, false)
 }
 
+// EscapeTerminalText escapes s exactly like SanitizeForDisplay but never
+// shortens it. It is for output whose full length is the point, such as a
+// session transcript or a scheduled job's result printed to a terminal.
+func EscapeTerminalText(s string) string {
+	return escapeForDisplay(s, true)
+}
+
 func sanitizeDisplay(s string, max int, keepLayout bool) string {
 	if s == "" {
 		return ""

@@ -190,10 +190,84 @@ func networkTransferEffects(name string, inner []string, feed stdinFeed) []RiskC
 		v.upload = sub == "send-email" || sub == "imap-send"
 	case "aws", "gsutil", "gcloud", "az":
 		v.upload = cloudUploadForm(name, args)
+	case "npm", "pnpm", "yarn", "bun", "cargo", "gem", "poetry", "uv", "twine", "hatch", "flit",
+		"dart", "flutter", "nuget", "dotnet":
+		v.upload = registryPublish(name, args)
 	case "dig", "nslookup", "host", "drill", "ping", "ping6", "traceroute", "traceroute6":
 		v.unknown = dnsQueryCarriesRuntimeData(name, args)
 	}
 	return v.effects()
+}
+
+// registryPublishVerbs are the subcommands that send the local package to a
+// package registry with the stored credentials.
+var registryPublishVerbs = map[string][]string{
+	"npm": {"publish"}, "pnpm": {"publish"}, "yarn": {"publish"}, "bun": {"publish"},
+	"cargo": {"publish"}, "gem": {"push"}, "poetry": {"publish"}, "uv": {"publish"},
+	"twine": {"upload"}, "hatch": {"publish"}, "flit": {"publish"},
+	"dart": {"publish"}, "flutter": {"publish"}, "nuget": {"push"}, "dotnet": {"push"},
+}
+
+// dryRunSetting reports whether the last dry-run setting of a publish command
+// is true: --dry-run, --dry-run=VALUE, --dry-run VALUE (true/false),
+// --no-dry-run and -n. A later false setting undoes an earlier true one.
+func dryRunSetting(name string, args []string) bool {
+	dry := false
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--no-dry-run" || a == "--no-dryrun":
+			dry = false
+		case a == "--dry-run" || a == "--dryrun":
+			dry = true
+			if i+1 < len(args) && (args[i+1] == "false" || args[i+1] == "true") {
+				dry = args[i+1] == "true"
+				i++
+			}
+		case strings.HasPrefix(a, "--dry-run=") || strings.HasPrefix(a, "--dryrun="):
+			_, v, _ := strings.Cut(a, "=")
+			dry = v == "true" || v == "1" || v == "yes" || v == ""
+		case a == "-n" && (name == "npm" || name == "pnpm" || name == "cargo"):
+			dry = true
+		}
+	}
+	return dry
+}
+
+// registryPublish reports whether a package-manager invocation publishes the
+// working tree's package: the publish verb is among the first subcommand
+// words (`yarn npm publish`, `dotnet nuget push`, `dart pub publish`).
+func registryPublish(name string, args []string) bool {
+	if dryRunSetting(name, args) {
+		return false // nothing is sent
+	}
+	var words []string
+	for _, a := range args {
+		if a == "--" {
+			break
+		}
+		if !strings.HasPrefix(a, "-") {
+			words = append(words, a)
+		}
+	}
+	if len(words) == 0 {
+		return false
+	}
+	switch words[0] {
+	case "run", "run-script", "help", "view", "info", "search", "exec", "x", "dlx":
+		return false
+	}
+	for i, w := range words {
+		if i >= 3 {
+			break
+		}
+		for _, verb := range registryPublishVerbs[name] {
+			if w == verb {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // ── curl ────────────────────────────────────────────────────────────
@@ -204,7 +278,7 @@ var curlSyntax = optSpec{
 	alias: map[byte]string{
 		'A': "--user-agent", 'b': "--cookie", 'd': "--data", 'e': "--referer",
 		'E': "--cert", 'F': "--form", 'H': "--header", 'n': "--netrc",
-		'Q': "--quote", 'T': "--upload-file", 'u': "--user", 'U': "--proxy-user",
+		'K': "--config", 'Q': "--quote", 'T': "--upload-file", 'u': "--user", 'U': "--proxy-user",
 		'X': "--request",
 	},
 	long: longTable(
@@ -261,6 +335,11 @@ func curlTransfer(args []string) transferVerdict {
 				base = "--" + strings.TrimPrefix(n, "--expand-")
 			}
 			switch base {
+			case "--header", "--proxy-header":
+				// @file sends the file's lines as headers.
+				if strings.HasPrefix(val, "@") {
+					v.upload = true
+				}
 			case "--upload-file", "--netrc", "--netrc-file", "--netrc-optional",
 				"--user", "--proxy-user", "--oauth2-bearer",
 				"--cert", "--key", "--proxy-cert", "--proxy-key",
@@ -292,6 +371,25 @@ func curlTransfer(args []string) transferVerdict {
 				}
 			case "--url":
 				urls = append(urls, val)
+			case "--url-query":
+				// +@file, @file and name@file append a file's content to the
+				// query string.
+				if curlURLEncodeReadsFile(strings.TrimPrefix(val, "+")) || hasVariableReference(val) {
+					v.upload = true
+				}
+			case "--variable":
+				switch {
+				case strings.HasPrefix(val, "%"):
+					// %NAME imports an environment variable.
+					name, _, _ := strings.Cut(val[1:], "=")
+					if sensitiveEnvName(name) {
+						v.system = true
+					}
+				case curlURLEncodeReadsFile(val) || hasVariableReference(val):
+					// name@file reads a file the expansion options splice
+					// into the request.
+					v.upload = true
+				}
 			}
 		}
 		if hasDynamicSubstitution(val) && o.is(curlRuntimeDataOptions...) {

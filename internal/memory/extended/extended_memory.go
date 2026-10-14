@@ -148,6 +148,9 @@ func newExtended(dir string, llm LLMClient, cfg Config, evictOnOpen bool) *Exten
 		}
 		return !strings.Contains(err.Error(), "not found")
 	})
+	// A maintenance open is report-only: it must not sweep (and persist) the
+	// pending-review queue.
+	em.userModel.noSweep = !evictOnOpen
 	_ = em.userModel.Load()
 	if !evictOnOpen {
 		// Listing the quarantine also evicts expired entries when a TTL is
