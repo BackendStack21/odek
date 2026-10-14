@@ -810,6 +810,38 @@ func sedScriptTexts(tokens []string) []string {
 	return words
 }
 
+// pythonModuleFiles returns the workspace files `python -m NAME` can run:
+// -m puts the current directory first on sys.path, so NAME.py and
+// NAME/__main__.py (dots as path separators) execute ahead of an installed
+// module of the same name.
+func pythonModuleFiles(args []string) []string {
+	for i := 0; i < len(args); i++ {
+		tok := args[i]
+		if !strings.HasPrefix(tok, "-") || tok == "-" || tok == "--" {
+			return nil // the script operand ends the interpreter options
+		}
+		if tok == "-c" {
+			return nil
+		}
+		module := ""
+		switch {
+		case tok == "-m" && i+1 < len(args):
+			module = args[i+1]
+		case strings.HasPrefix(tok, "-m") && !strings.HasPrefix(tok, "--") && len(tok) > 2:
+			module = tok[2:]
+		case tok == "-W" || tok == "-X" || tok == "-Q":
+			i++ // value-taking interpreter options
+			continue
+		}
+		if module == "" {
+			continue
+		}
+		path := strings.ReplaceAll(module, ".", "/")
+		return []string{path + ".py", path + "/__main__.py"}
+	}
+	return nil
+}
+
 func executionFileTargets(name string, tokens []string) []string {
 	if len(tokens) == 0 {
 		return nil
@@ -860,6 +892,8 @@ func executionFileTargets(name string, tokens []string) []string {
 		options = []string{"-toolexec"}
 	case "protoc":
 		options = []string{"--plugin"}
+	case "python", "python2", "python3", "pypy", "pypy3":
+		return pythonModuleFiles(tokens[1:])
 	case "psql":
 		// -f/--file name a script whose \! and \copy ... program
 		// meta-commands run local programs.
