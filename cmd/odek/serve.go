@@ -1953,13 +1953,19 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 			}
 		}
 
-		// Apply the model and thinking switches only once the prompt's session
-		// and token checks have passed, so a rejected prompt cannot change the
-		// connection's model for later prompts.
-		if msg.Model != "" && msg.Model != currentModel {
-			currentModel = msg.Model
-			resolved.Model = msg.Model
-			func() {
+		// The model and thinking switches take effect only once handlePrompt
+		// has accepted the prompt (size, limits, session, execution lock and
+		// recovery checks passed), so a rejected prompt cannot change the
+		// connection's model for later prompts. Thinking is validated now so
+		// a bad value is still reported before any work starts.
+		if _, _, err := resolveServeThinking(msg.Thinking); err != nil {
+			writeWSJSON(conn, map[string]any{"type": "error", "message": err.Error()})
+			continue
+		}
+		acceptSwitch := func() {
+			if msg.Model != "" && msg.Model != currentModel {
+				currentModel = msg.Model
+				resolved.Model = msg.Model
 				// Model discovery may block. Keep the attached session busy
 				// so background completion cannot enqueue an extra wake.
 				live := connInfo.wireCopy()
@@ -1967,12 +1973,8 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 				defer connInfo.setLive(live.SessionID, live.Busy)
 				agent.SwitchModel(msg.Model)
 				connInfo.setModel(msg.Model)
-			}()
-		}
-
-		if err := applyServeThinking(agent, msg.Thinking); err != nil {
-			writeWSJSON(conn, map[string]any{"type": "error", "message": err.Error()})
-			continue
+			}
+			_ = applyServeThinking(agent, msg.Thinking)
 		}
 
 		// Run prompt — passes the persistent agent for buffer continuity
@@ -2008,7 +2010,7 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 				}
 				connInfo.setLive(sid, false)
 			}()
-			currentSession = handlePrompt(context.WithValue(promptCtx, serveApproverKey{}, approver), wsSend, store, resources, resolved, agent, injectionGuard, currentSession, msg, &sessionInputTokens, &sessionOutputTokens, promptCancelWithApproval, &deltas, bgRT, turnTag)
+			currentSession = handlePrompt(context.WithValue(context.WithValue(promptCtx, serveApproverKey{}, approver), serveAcceptSwitchKey{}, acceptSwitch), wsSend, store, resources, resolved, agent, injectionGuard, currentSession, msg, &sessionInputTokens, &sessionOutputTokens, promptCancelWithApproval, &deltas, bgRT, turnTag)
 		}()
 		connInfo.recordPrompt()
 		sid := ""
@@ -2427,6 +2429,15 @@ func handlePrompt(
 	if len(enrichedPrompt) > resource.MaxExpandedPromptBytes {
 		sendError(send, "expanded prompt exceeds maximum size")
 		return currSess
+	}
+
+	// The prompt is accepted: apply the connection's pending model/thinking
+	// switch now and use the new model for the session record and frames.
+	if accept, _ := ctx.Value(serveAcceptSwitchKey{}).(func()); accept != nil {
+		accept()
+		if msg.Model != "" {
+			resolved.Model = msg.Model
+		}
 	}
 
 	// Build message history with an identity that survives compaction.

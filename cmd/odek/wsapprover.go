@@ -629,3 +629,8 @@ func (a *wsApprover) drainDecisions(turnID string) []session.Decision {
 }
 
 type serveApproverKey struct{}
+
+// serveAcceptSwitchKey carries the callback a WebSocket connection supplies to
+// apply its pending per-prompt model/thinking switch once handlePrompt has
+// accepted the prompt.
+type serveAcceptSwitchKey struct{}

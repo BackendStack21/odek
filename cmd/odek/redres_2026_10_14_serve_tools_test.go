@@ -262,3 +262,109 @@ func TestRED_ArtifactOpenDoesNotBlockOnFIFO(t *testing.T) {
 		t.Fatal("opening a swapped-in FIFO blocks")
 	}
 }
+
+// A prompt that handlePrompt rejects after the token check (oversize here)
+// must not change the connection's model for later prompts.
+func TestRED_WSRejectedOversizePromptDoesNotSwitchModel(t *testing.T) {
+	var mu sync.Mutex
+	var models []string
+	llm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodGet {
+			_, _ = w.Write([]byte(`{"data":[]}`))
+			return
+		}
+		var body struct {
+			Model string `json:"model"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		mu.Lock()
+		models = append(models, body.Model)
+		mu.Unlock()
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}]}`))
+	}))
+	defer llm.Close()
+	defer setTestEnv(t, llm.URL)()
+
+	store := newTestSessionStore(t)
+	ln, mux := buildServeMuxPromptAll(t, store)
+	defer startServeTest(t, ln, mux)()
+	waitForHTTP(t, ln.Addr().String())
+	wsUpgradeLimiter.reset()
+	conn := dialTestWS(t, ln.Addr().String())
+	defer conn.Close()
+
+	send := func(m map[string]string) {
+		b, _ := json.Marshal(m)
+		if err := golangws.Message.Send(conn, string(b)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	send(map[string]string{"type": "prompt", "content": "hello"})
+	var sid, tok string
+	readWSUntil(t, conn, 30*time.Second, func(e map[string]any) bool {
+		if e["type"] == "session" {
+			sid, _ = e["session_id"].(string)
+			tok, _ = e["auth_token"].(string)
+		}
+		return e["type"] == "done"
+	})
+	send(map[string]string{"type": "prompt", "content": strings.Repeat("a", maxPromptBytes+1), "session_id": sid, "auth_token": tok, "model": "svtres-switched-model"})
+	readWSUntil(t, conn, 30*time.Second, func(e map[string]any) bool { return e["type"] == "error" })
+	send(map[string]string{"type": "prompt", "content": "again", "session_id": sid, "auth_token": tok})
+	readWSUntil(t, conn, 30*time.Second, func(e map[string]any) bool { return e["type"] == "done" })
+
+	mu.Lock()
+	defer mu.Unlock()
+	for _, m := range models {
+		if m == "svtres-switched-model" {
+			t.Fatalf("rejected oversize prompt switched the connection model; LLM saw models %v", models)
+		}
+	}
+}
+
+// An accepted prompt still switches the model, and later prompts keep it.
+func TestWSAcceptedPromptSwitchesModelSvtres(t *testing.T) {
+	var mu sync.Mutex
+	var models []string
+	llm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodGet {
+			_, _ = w.Write([]byte(`{"data":[]}`))
+			return
+		}
+		var body struct {
+			Model string `json:"model"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		mu.Lock()
+		models = append(models, body.Model)
+		mu.Unlock()
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}]}`))
+	}))
+	defer llm.Close()
+	defer setTestEnv(t, llm.URL)()
+	store := newTestSessionStore(t)
+	ln, mux := buildServeMuxPromptAll(t, store)
+	defer startServeTest(t, ln, mux)()
+	waitForHTTP(t, ln.Addr().String())
+	wsUpgradeLimiter.reset()
+	conn := dialTestWS(t, ln.Addr().String())
+	defer conn.Close()
+	for _, m := range []string{"svtres-model-b", ""} {
+		payload := map[string]string{"type": "prompt", "content": "hi"}
+		if m != "" {
+			payload["model"] = m
+		}
+		b, _ := json.Marshal(payload)
+		if err := golangws.Message.Send(conn, string(b)); err != nil {
+			t.Fatal(err)
+		}
+		readWSUntil(t, conn, 30*time.Second, func(e map[string]any) bool { return e["type"] == "done" })
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(models) < 2 || models[0] != "svtres-model-b" || models[1] != "svtres-model-b" {
+		t.Fatalf("accepted switch not applied/retained: %v", models)
+	}
+}
