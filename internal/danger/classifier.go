@@ -2819,6 +2819,11 @@ func classifyStageIn(tokens []string, pipedInto bool, repo *gitRepoCtx) RiskClas
 				cls = worstOf(cls, inner)
 			}
 		}
+		// Printing a registry credential reads the same secret as
+		// `cat ~/.npmrc`.
+		if packageConfigPrintsCredential(name, cmdTokens) {
+			cls = worstOf(cls, SystemWrite)
+		}
 		// An action command the classifier cannot judge keeps the
 		// code_execution floor rather than becoming unknown.
 		leaves, over := execActionLeaves(name, cmdTokens)

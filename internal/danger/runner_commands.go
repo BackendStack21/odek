@@ -307,3 +307,43 @@ func npmCallStrings(args []string) []string {
 	}
 	return out
 }
+
+// npmAuthKey reports whether key is one of the npm and yarn configuration
+// keys that hold a registry credential.
+func npmAuthKey(key string) bool {
+	k := strings.ToLower(key)
+	for _, s := range []string{"_authtoken", "_auth", "_password", "npmauthtoken", "npmauthident", "npmpassword"} {
+		if k == s || strings.HasSuffix(k, ":"+s) || strings.HasSuffix(k, "."+s) {
+			return true
+		}
+	}
+	return false
+}
+
+// packageConfigPrintsCredential reports whether a package manager command
+// prints a registry credential (`npm config get //host/:_authToken`,
+// `yarn config get npmAuthToken`), which is the same secret `cat ~/.npmrc`
+// reads.
+func packageConfigPrintsCredential(name string, tokens []string) bool {
+	switch name {
+	case "npm", "pnpm", "yarn":
+	default:
+		return false
+	}
+	ops := (optSpec{long: npmGlobalSpec.long, short: npmGlobalSpec.short}).parse(tokens[1:]).operands
+	// npm and pnpm also accept `get` without `config`.
+	if len(ops) > 0 && ops[0] == "config" {
+		ops = ops[1:]
+	} else if name == "yarn" {
+		return false
+	}
+	if len(ops) == 0 || ops[0] != "get" {
+		return false
+	}
+	for _, key := range ops[1:] {
+		if npmAuthKey(key) {
+			return true
+		}
+	}
+	return false
+}

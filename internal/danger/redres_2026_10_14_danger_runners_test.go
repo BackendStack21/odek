@@ -238,6 +238,33 @@ func TestRED_BuildToolHomeCredentialFilesAreSensitive(t *testing.T) {
 	}
 }
 
+// npm config get of an auth key prints the registry credential.
+func TestRED_NpmConfigGetAuthKeyIsCredentialRead(t *testing.T) {
+	for _, c := range []string{
+		"npm config get //registry.npmjs.org/:_authToken",
+		"npm config get _authToken",
+		"npm config get _auth",
+		"npm config get //r.example/:_password",
+		"npm get //registry.npmjs.org/:_authToken",
+		"pnpm config get //registry.npmjs.org/:_authToken",
+		"yarn config get npmAuthToken",
+	} {
+		if got := drRunnersAction(c); got == Allow {
+			t.Errorf("ActionForCommand(%q) = allow (class %s); prints a credential, want prompt", c, Classify(c))
+		}
+	}
+	for _, c := range []string{"npm config get registry", "npm config get prefix", "yarn config get npmRegistryServer"} {
+		if got := drRunnersAction(c); got != Allow {
+			t.Errorf("ActionForCommand(%q) = %s (class %s); want allow", c, got, Classify(c))
+		}
+	}
+	if packageConfigPrintsCredential("cargo", []string{"cargo", "config", "get", "_authToken"}) ||
+		packageConfigPrintsCredential("npm", []string{"npm", "config"}) ||
+		packageConfigPrintsCredential("yarn", []string{"yarn", "get", "npmAuthToken"}) {
+		t.Errorf("packageConfigPrintsCredential matched a command that prints no credential")
+	}
+}
+
 // The shapes runnerCommand reads: which words are the command and which
 // invocations run none.
 func TestDangerRunners_RunnerCommandShapes(t *testing.T) {
