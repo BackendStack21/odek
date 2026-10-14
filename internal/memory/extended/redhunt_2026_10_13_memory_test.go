@@ -20,7 +20,6 @@ func TestRED_ConsolidateInFreshProcessNeverGroups(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Enabled = boolPtr(true)
 	cfg.SemanticDedupThreshold = floatPtr(0) // keep the near-duplicates apart at add time
-	cfg.ConsolidateSimilarityThreshold = 0.8 // the fitted RP cosine of this pair is ~0.89
 
 	seeder := New(dir, nil, cfg)
 	for _, text := range []string{
@@ -85,5 +84,56 @@ func TestRED_MaintenanceOpenRewritesUserModel(t *testing.T) {
 	}
 	if got := len(em.userModel.ListPendingReview()); got != 3 {
 		t.Fatalf("maintenance open dropped pending reviews: %d left, want 3", got)
+	}
+}
+
+// TestRED_ConsolidateDefaultThresholdGroupsParaphrases: with the local
+// embedder and the default (unset) threshold, near-paraphrases group while
+// unrelated atoms stay apart.
+func TestRED_ConsolidateDefaultThresholdGroupsParaphrases(t *testing.T) {
+	unrelated := []string{
+		"The deploy pipeline publishes container images to the registry",
+		"Tests run with the race detector on every push",
+		"The database migration uses goose and runs at startup",
+		"Prefers dark mode in the terminal editor",
+		"Weekly planning happens on Monday mornings",
+	}
+	pairs := []struct {
+		a, b string
+		want bool
+	}{
+		{"User prefers Go for backend services", "User prefers Go for backend services and tools", true},
+		{"User lives in Berlin, Germany", "The user lives in Berlin", true},
+		// Reordered wording scores ~0.76 with the local embedder: below the bar.
+		{"User works at Acme Corp as a backend engineer", "User is a backend engineer at Acme Corp", false},
+	}
+	if defaultConsolidateThreshold(false) != 0.8 || defaultConsolidateThreshold(true) != 0.9 {
+		t.Fatalf("default thresholds: local %v remote %v", defaultConsolidateThreshold(false), defaultConsolidateThreshold(true))
+	}
+	for _, p := range pairs {
+		texts := append([]string{p.a, p.b}, unrelated...)
+		atoms := make([]MemoryAtom, len(texts))
+		for i, x := range texts {
+			atoms[i] = MemoryAtom{ID: x, Text: x}
+		}
+		vi := newAtomVectorIndex(t.TempDir(), nil, nil)
+		vecs, remote, err := vi.embedCorpus(context.Background(), texts)
+		if err != nil || remote {
+			t.Fatalf("embedCorpus: remote=%v err=%v", remote, err)
+		}
+		groups := groupBySimilarity(atoms, vecs, defaultConsolidateThreshold(remote))
+		grouped := len(groups) == 1 && len(groups[0]) == 2
+		if p.want && !grouped || !p.want && len(groups) != 0 {
+			t.Errorf("pair %q / %q: groups=%v, want grouped=%v", p.a, p.b, groups, p.want)
+		}
+	}
+}
+
+func TestRED_EmbedCorpusHonoursCancelledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	vi := newAtomVectorIndex(t.TempDir(), nil, nil)
+	if _, _, err := vi.embedCorpus(ctx, []string{"a", "b"}); err == nil {
+		t.Fatal("embedCorpus ignored a cancelled context")
 	}
 }

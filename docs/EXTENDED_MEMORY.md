@@ -381,7 +381,7 @@ Extended Memory is configured under the `memory.extended` section.
       "associations_enabled": true,
       "association_semantic_top_k": 3,
       "semantic_dedup_threshold": 0.92,
-      "consolidate_similarity_threshold": 0.9,
+      "consolidate_similarity_threshold": 0.8,
       "proactive_return_after_break": true,
       "style_mirroring_enabled": true,
       "anaphora_resolution_enabled": true,
@@ -436,7 +436,7 @@ Extended Memory is configured under the `memory.extended` section.
 | `associations_enabled` | `true` | Enable bidirectional atom associations (temporal, task, semantic). |
 | `association_semantic_top_k` | `3` | Number of semantic neighbours linked when building associations. |
 | `semantic_dedup_threshold` | `0.92` | Cosine similarity at or above which an incoming atom is treated as a paraphrase of an existing live atom and refreshes it instead of appending. `0` disables the semantic tier (exact-match dedup always runs). |
-| `consolidate_similarity_threshold` | `0.9` | Cosine similarity at or above which live atoms are grouped as near-duplicates for `ConsolidateAtoms` merging. |
+| `consolidate_similarity_threshold` | unset (`0.8` local embedder, `0.9` HTTP embedder) | Cosine similarity at or above which live atoms are grouped as near-duplicates for `ConsolidateAtoms` merging; the local bag-of-words embedder scores paraphrases lower, hence the lower default. An explicit value always wins. A run considers at most the 2000 most recent atoms. |
 | `proactive_return_after_break` | `true` | On session resume, inject a "where you left off" summary. |
 | `style_mirroring_enabled` | `true` | Inject a style-guidance directive based on the inferred user model. |
 | `anaphora_resolution_enabled` | `true` | Resolve the first pronoun in a user message against recent trusted atoms when the top atom's score is high enough. |

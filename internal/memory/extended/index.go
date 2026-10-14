@@ -1,6 +1,7 @@
 package extended
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
@@ -174,24 +175,38 @@ func (vi *atomVectorIndex) embedTexts(texts []string) ([]vector.Vector, error) {
 	return emb.EmbedAll(texts)
 }
 
-// embedCorpus fits an embedder on texts and embeds them with it, so vectors
-// reflect exactly the corpus given (a fresh process or an index built before
+// embedCorpus embeds texts with an embedder fitted to exactly that corpus, so
+// vectors reflect the current atoms (a fresh process or an index built before
 // recent additions would otherwise embed against a missing or stale
-// vocabulary). The shared embedder is left untouched unless it is refit-safe.
-func (vi *atomVectorIndex) embedCorpus(texts []string) ([]vector.Vector, error) {
+// vocabulary). A refit-safe (remote, stateless) embedder is used as is — its
+// vectors do not depend on a fit and its cache avoids repeat calls — while the
+// local embedder is fitted on a fresh instance so the shared one is untouched.
+// remote reports which kind was used.
+func (vi *atomVectorIndex) embedCorpus(ctx context.Context, texts []string) (vecs []vector.Vector, remote bool, err error) {
 	vi.mu.RLock()
-	hasEmb := vi.emb != nil
+	live := vi.emb
 	vi.mu.RUnlock()
-	if !hasEmb {
-		return nil, fmt.Errorf("extended memory: no embedder available")
+	if live == nil {
+		return nil, false, fmt.Errorf("extended memory: no embedder available")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, false, err
+	}
+	if s, ok := live.(sharedRefitSafe); ok && s.SharedRefitSafe() {
+		vecs, err = live.EmbedAll(texts)
+		return vecs, true, err
 	}
 	vi.mu.Lock()
-	emb := vi.rebuildEmbedder()
+	emb := vi.newEmb()
 	vi.mu.Unlock()
 	if err := emb.Fit(texts); err != nil {
-		return nil, fmt.Errorf("extended memory: embedder fit: %w", err)
+		return nil, false, fmt.Errorf("extended memory: embedder fit: %w", err)
 	}
-	return emb.EmbedAll(texts)
+	if err := ctx.Err(); err != nil {
+		return nil, false, err
+	}
+	vecs, err = emb.EmbedAll(texts)
+	return vecs, false, err
 }
 
 // stats reports the number of indexed vectors and whether the index needs a

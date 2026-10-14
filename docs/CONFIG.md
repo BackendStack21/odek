@@ -646,7 +646,7 @@ The `memory` section controls the persistent memory system (see [docs/MEMORY.md]
       "semantic_search_min_score": 0.55,
       "semantic_search_rerank": true,
       "semantic_dedup_threshold": 0.92,
-      "consolidate_similarity_threshold": 0.9,
+      "consolidate_similarity_threshold": 0.8,
       "atom_max_chars": 300,
       "memory_budget_chars": 2000,
       "decay_half_life_days": 30,
@@ -683,7 +683,7 @@ The `memory` section controls the persistent memory system (see [docs/MEMORY.md]
 | `semantic_search_min_score` | `0.55` | — | — | Minimum cosine similarity for a candidate to be considered. |
 | `semantic_search_rerank` | `true` | — | — | Use the memory LLM to rerank candidates. |
 | `semantic_dedup_threshold` | `0.92` | — | — | Cosine similarity at or above which an incoming atom is treated as a paraphrase of an existing live atom and refreshes it instead of appending. `0` disables the semantic tier (exact-match dedup always runs). |
-| `consolidate_similarity_threshold` | `0.9` | — | — | Pairwise cosine similarity at or above which live atoms are grouped for LLM merging by `odek memory extended consolidate` / `ConsolidateAtoms`. |
+| `consolidate_similarity_threshold` | unset (`0.8` local embedder, `0.9` HTTP embedder) | — | — | Pairwise cosine similarity at or above which live atoms are grouped for LLM merging by `odek memory extended consolidate` / `ConsolidateAtoms`. |
 | `atom_max_chars` | `300` | `ODEK_MEMORY_EXTENDED_ATOM_MAX_CHARS` | `--memory-extended-atom-max-chars` | Maximum stored text length per atom. |
 | `memory_budget_chars` | `2000` | `ODEK_MEMORY_EXTENDED_MEMORY_BUDGET_CHARS` | `--memory-extended-memory-budget-chars` | Maximum injected Extended Memory context per turn. |
 | `decay_half_life_days` | `30` | — | — | Days until an atom's recall/eviction weight halves. |
