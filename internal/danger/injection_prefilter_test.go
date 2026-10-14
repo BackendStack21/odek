@@ -40,9 +40,12 @@ func scanInjectionReference(content string) []ScanResult {
 		}
 		return re.MatchString(s)
 	}
+	bare := stripMarkdownMarkers(normalized)
+	bareFolded := FoldHomoglyphs(bare)
 	for _, p := range injectionPatterns {
 		if match(p.Re, normalized) || (foldDistinct && match(p.Re, folded)) ||
-			(foldedNu != "" && match(p.Re, foldedNu)) {
+			(foldedNu != "" && match(p.Re, foldedNu)) ||
+			(bare != normalized && (match(p.Re, bare) || match(p.Re, bareFolded))) {
 			results = append(results, ScanResult{Label: p.Label, Pattern: p.Re.String()})
 		}
 	}
