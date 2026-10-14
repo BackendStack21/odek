@@ -1654,7 +1654,7 @@ func handleChatMessage(
 	log telegram.Logger,
 	photos ...*telegramPhotoInput,
 ) {
-	runChatTurn(false, false, chatID, messageID, userID, text, bot, handler, sessionManager,
+	runChatTurn(nil, false, chatID, messageID, userID, text, bot, handler, sessionManager,
 		resolved, systemMessage, log, photos...)
 }
 
@@ -1678,7 +1678,7 @@ func handleChatMessageGated(
 	if ctx.Err() != nil {
 		return // /stop or /new cancelled this media message
 	}
-	runChatTurn(true, false, chatID, messageID, userID, text, bot, handler, sessionManager,
+	runChatTurn(ctx, false, chatID, messageID, userID, text, bot, handler, sessionManager,
 		resolved, systemMessage, log, photos...)
 }
 
@@ -1698,7 +1698,7 @@ func handleWakeTurn(
 ) {
 	// The bound user is resolved inside runChatTurn once the chat slot is
 	// held, so a wake queued behind another user's turn binds to that user.
-	runChatTurn(false, true, chatID, 0, 0, text, bot, handler,
+	runChatTurn(nil, true, chatID, 0, 0, text, bot, handler,
 		sessionManager, resolved, systemMessage, log)
 }
 
@@ -1763,7 +1763,7 @@ var errClarifyUnbound = errors.New("clarify: unavailable on a system-initiated t
 // runChatTurn is the shared turn pipeline for operator messages and
 // system-initiated wake turns (wake=true).
 func runChatTurn(
-	gateHeld bool,
+	jobCtx context.Context,
 	wake bool,
 	chatID int64,
 	messageID int,
@@ -1778,8 +1778,12 @@ func runChatTurn(
 	photos ...*telegramPhotoInput,
 ) {
 	// A /new or /resume issued just before this turn finishes first.
-	if !gateHeld {
+	// A non-nil jobCtx means the caller is a media job already inside the
+	// chat's gate chain (it must not wait on its own gate); /stop and /new
+	// cancel it, and the turn's lease derives from it.
+	if jobCtx == nil {
 		waitChatReset(chatID)
+		jobCtx = context.Background()
 	}
 	// Serialize per chat: only one agent loop runs per chat at a time.
 	// Prevents same-chat message racing that would corrupt session history.
@@ -1790,6 +1794,10 @@ func runChatTurn(
 		slot.mu.Lock()
 	}
 	defer unpinChat(chatID, slot)
+	// /stop or /new may have cancelled this turn while it waited for the slot.
+	if jobCtx.Err() != nil {
+		return
+	}
 	if wake {
 		userID = telegramWakeUser(chatID, resolved.Telegram)
 	}
@@ -1834,7 +1842,7 @@ func runChatTurn(
 	handler.SetApprover(chatID, approver)
 	defer handler.DeleteApprover(chatID)
 
-	leaseCtx, leaseCancel := context.WithCancel(context.Background())
+	leaseCtx, leaseCancel := context.WithCancel(jobCtx)
 	chatCancels.Store(chatID, leaseCancel)
 	defer chatCancels.LoadAndDelete(chatID)
 	defer leaseCancel()

@@ -103,3 +103,25 @@ func TestRED_CheckChatMediaReadSpellings(t *testing.T) {
 		t.Errorf("empty path: %v", err)
 	}
 }
+
+func TestRED_ChatMediaSkipper(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := filepath.Join(home, ".odek", "media")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	skip := ChatMediaSkipper(7)
+	if !skip(filepath.Join(dir, "doc_chat8_a.pdf")) {
+		t.Error("other chat's file not skipped")
+	}
+	if skip(filepath.Join(dir, "doc_chat7_a.pdf")) {
+		t.Error("own file skipped")
+	}
+	if skip(filepath.Join(home, "notes.txt")) || skip("") {
+		t.Error("non-media path skipped")
+	}
+	if ChatMediaSkipper(0)(filepath.Join(dir, "doc_chat8_a.pdf")) {
+		t.Error("no chat context must skip nothing")
+	}
+}

@@ -860,6 +860,7 @@ func (t *searchFilesTool) checkSearchPath(path string) (skip bool, reason string
 }
 
 func (t *searchFilesTool) searchContent(args searchFilesArgs) (string, error) {
+	otherChatMedia := telegramMediaSkipper(t.toolCtx())
 	re, err := regexp.Compile(args.Pattern)
 	if err != nil {
 		return jsonError(fmt.Sprintf("invalid regex pattern %q: %v", args.Pattern, err))
@@ -916,13 +917,13 @@ func (t *searchFilesTool) searchContent(args searchFilesArgs) (string, error) {
 			}
 			// A broad root may contain the shared Telegram media directory;
 			// another chat's downloads are never searched.
-			if err := checkTelegramMediaRead(t.toolCtx(), path); err != nil {
-				skipped = append(skipped, path+": "+err.Error())
+			if otherChatMedia(path) {
+				skipped = append(skipped, path+": another chat's media")
 				return filepath.SkipDir
 			}
 			return nil
 		}
-		if err := checkTelegramMediaRead(t.toolCtx(), path); err != nil {
+		if otherChatMedia(path) {
 			return nil
 		}
 		// Skip symlinks — prevents TOCTOU on the path and avoids listing
@@ -1041,7 +1042,7 @@ func (t *searchFilesTool) searchFiles(args searchFilesArgs) (string, error) {
 	pattern := args.Pattern
 	searchDir := args.Path
 
-	paths, err := confinedGlobSkip(searchDir, pattern, args.Limit, false, t.otherChatMedia)
+	paths, err := confinedGlobSkip(searchDir, pattern, args.Limit, false, telegramMediaSkipper(t.toolCtx()))
 	if err != nil {
 		return jsonError(fmt.Sprintf("invalid search pattern %q: %v", pattern, err))
 	}
@@ -1869,7 +1870,7 @@ func (t *globTool) Call(argsJSON string) (result string, err error) {
 		return jsonError(err.Error())
 	}
 
-	paths, err := confinedGlobSkip(args.Path, args.Pattern, args.Limit, true, t.otherChatMedia)
+	paths, err := confinedGlobSkip(args.Path, args.Pattern, args.Limit, true, telegramMediaSkipper(t.toolCtx()))
 	if err != nil {
 		return jsonError(fmt.Sprintf("invalid glob %q: %v", args.Pattern, err))
 	}
@@ -2037,13 +2038,3 @@ var (
 	_ odek.Tool = (*globTool)(nil)
 	_ odek.Tool = (*fileInfoTool)(nil)
 )
-
-// otherChatMedia reports whether path is inside another Telegram chat's media
-// (always false outside a Telegram turn); listings skip such entries.
-func (t *searchFilesTool) otherChatMedia(path string) bool {
-	return checkTelegramMediaRead(t.toolCtx(), path) != nil
-}
-
-func (t *globTool) otherChatMedia(path string) bool {
-	return checkTelegramMediaRead(t.toolCtx(), path) != nil
-}

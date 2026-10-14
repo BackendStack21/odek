@@ -3,6 +3,9 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,6 +15,7 @@ import (
 
 	"github.com/BackendStack21/odek/internal/danger"
 	"github.com/BackendStack21/odek/internal/session"
+	"github.com/BackendStack21/odek/internal/telegram"
 )
 
 func tgresMediaFile(t *testing.T, name string) string {
@@ -393,5 +397,71 @@ func TestRED_TelegramStopAndNewCancelPendingMediaJobs(t *testing.T) {
 	}
 	if cancelChatMediaJobs(chat) {
 		t.Error("registry not cleaned up")
+	}
+}
+
+// A media turn queued behind a running text turn (waiting for the chat slot)
+// must not run once /stop or /new cancelled it.
+func TestRED_TelegramCancelledMediaTurnNeverRunsAfterSlotWait(t *testing.T) {
+	const chatID = int64(88140001)
+	sm := tgrh13Env(t, chatID)
+	bot, notify := tgrh13Bot(t)
+	var mu sync.Mutex
+	mediaSeen := false
+	llm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		body := string(raw)
+		if strings.Contains(body, "MEDIA-MARKER") {
+			mu.Lock()
+			mediaSeen = true
+			mu.Unlock()
+		}
+		if strings.Contains(body, "migrate the db") && !strings.Contains(body, "call_1") {
+			resp := map[string]any{"choices": []map[string]any{{"message": map[string]any{
+				"content": "",
+				"tool_calls": []map[string]any{{
+					"id": "call_1", "type": "function",
+					"function": map[string]any{"name": "clarify", "arguments": `{"question":"Proceed with the migration?"}`},
+				}},
+			}}}}
+			_ = json.NewEncoder(w).Encode(resp)
+			return
+		}
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}]}`))
+	}))
+	t.Cleanup(llm.Close)
+	handler := telegram.NewHandler(bot)
+	resolved := tgrh13Resolved(llm.URL)
+
+	textDone := make(chan struct{})
+	go func() {
+		defer close(textDone)
+		handleChatMessage(chatID, 5, 42, "migrate the db", bot, handler, sm, resolved, "sys", telegram.NewNopLogger())
+	}()
+	tgrh13AwaitPrompt(t, notify, "Proceed with the migration")
+
+	mediaDone := make(chan struct{})
+	runChatMediaOffLoop(chatID, nil, func(ctx context.Context) {
+		defer close(mediaDone)
+		handleChatMessageGated(ctx, chatID, 6, 42, "MEDIA-MARKER photo", bot, handler, sm, resolved, "sys", telegram.NewNopLogger())
+	})
+	tgrh13AwaitPrompt(t, notify, "queued") // the media turn is waiting for the slot
+
+	// What /stop does: cancel pending media jobs and the running turn.
+	cancelChatTurn(chatID)
+	select {
+	case <-textDone:
+	case <-time.After(10 * time.Second):
+		t.Fatal("text turn did not stop")
+	}
+	select {
+	case <-mediaDone:
+	case <-time.After(10 * time.Second):
+		t.Fatal("cancelled media turn did not return")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if mediaSeen {
+		t.Fatal("cancelled media turn still ran against the model")
 	}
 }

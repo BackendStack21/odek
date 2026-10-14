@@ -903,8 +903,9 @@ func (t *treeTool) Call(argsJSON string) (result string, err error) {
 	// checkSearchPath. A broad root (e.g. $HOME with include_hidden) must not
 	// silently expose sensitive subtrees such as ~/.odek or ~/.ssh: names and
 	// metadata leak structure even without file contents.
+	otherChatMedia := telegramMediaSkipper(t.toolCtx())
 	checkTreePath := func(p string) bool {
-		if checkTelegramMediaRead(t.toolCtx(), p) != nil {
+		if otherChatMedia(p) {
 			return true // another Telegram chat's media
 		}
 		return t.dangerousConfig.CheckOperation(danger.ToolOperation{

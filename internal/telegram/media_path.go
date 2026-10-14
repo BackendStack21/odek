@@ -393,3 +393,37 @@ func CheckChatMediaRead(path string, chatID int64) error {
 	}
 	return nil
 }
+
+// ChatMediaSkipper returns a filter for directory listings: it reports true
+// for a path inside another chat's media. The media directory is resolved
+// once, and only paths lexically inside it (in either spelling) pay for the
+// full check, so walking a broad root costs no per-entry symlink resolution.
+func ChatMediaSkipper(chatID int64) func(path string) bool {
+	if chatID == 0 {
+		return func(string) bool { return false }
+	}
+	mediaDir, err := MediaDir()
+	if err != nil {
+		return func(string) bool { return false }
+	}
+	dirs := []string{filepath.Clean(mediaDir)}
+	if resolved, err := filepath.EvalSymlinks(mediaDir); err == nil && filepath.Clean(resolved) != dirs[0] {
+		dirs = append(dirs, filepath.Clean(resolved))
+	}
+	return func(path string) bool {
+		if path == "" {
+			return false
+		}
+		abs, err := filepath.Abs(path)
+		if err != nil {
+			return false
+		}
+		abs = filepath.Clean(abs)
+		for _, d := range dirs {
+			if isPathInsideFold(abs, d) {
+				return CheckChatMediaRead(abs, chatID) != nil
+			}
+		}
+		return false
+	}
+}

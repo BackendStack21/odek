@@ -24,3 +24,13 @@ func checkTelegramMediaRead(ctx context.Context, path string) error {
 	}
 	return telegram.CheckChatMediaRead(path, chatID)
 }
+
+// telegramMediaSkipper returns the per-entry filter listings use to skip other
+// chats' media; outside a Telegram turn it skips nothing.
+func telegramMediaSkipper(ctx context.Context) func(string) bool {
+	chatID, ok := ctx.Value(telegramMediaChatKey{}).(int64)
+	if !ok || chatID == 0 {
+		return func(string) bool { return false }
+	}
+	return telegram.ChatMediaSkipper(chatID)
+}
