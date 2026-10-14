@@ -441,6 +441,8 @@ var homeSensitivePrefixes = []string{"/.ssh", "/.config", "/.gnupg", "/.aws", "/
 	"/.git-credentials", "/.my.cnf", "/.mylogin.cnf",
 	"/.cargo", "/.gem", "/.azure", "/.password-store",
 	"/.terraform.d", "/.vault-token",
+	// Maven and Gradle repository and signing credentials.
+	"/.m2/settings.xml", "/.m2/settings-security.xml", "/.gradle/gradle.properties",
 	// History directories (single history files are in homeHistoryNames).
 	"/.zsh_sessions", "/.bash_sessions", "/.local/share/fish/fish_history",
 	"/.local/share/zsh", "/.local/share/atuin"}
@@ -4226,6 +4228,7 @@ var sensitivePathFragments = []string{
 	"/.my.cnf", "/.mylogin.cnf",
 	"/.cargo/credentials", "/.gem/credentials", "/.azure/credentials",
 	"/.password-store", "/.terraform.d", "/.vault-token",
+	"/.m2/settings.xml", "/.m2/settings-security.xml", "/.gradle/gradle.properties",
 	"/proc/self/environ", "/environ",
 }
 

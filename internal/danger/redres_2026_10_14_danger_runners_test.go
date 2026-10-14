@@ -203,6 +203,41 @@ func TestRED_ProjectRunnerScriptOperandIsGated(t *testing.T) {
 	}
 }
 
+// Maven and Gradle keep repository and signing credentials in the home
+// directory; reading them is a credential read like ~/.npmrc.
+func TestRED_BuildToolHomeCredentialFilesAreSensitive(t *testing.T) {
+	for _, c := range []string{
+		"cat ~/.m2/settings.xml",
+		"cat ~/.m2/settings-security.xml",
+		"cat ~/.gradle/gradle.properties",
+		"grep password ~/.m2/settings.xml",
+	} {
+		if got := drRunnersAction(c); got == Allow {
+			t.Errorf("ActionForCommand(%q) = allow (class %s); credential file read, want prompt", c, Classify(c))
+		}
+	}
+	home, _ := os.UserHomeDir()
+	for _, rel := range []string{".m2/settings.xml", ".gradle/gradle.properties"} {
+		p := filepath.Join(home, rel)
+		if !IsSensitiveReadPath("", p) {
+			t.Errorf("IsSensitiveReadPath(%q) = false; want an @-reference refused", p)
+		}
+		if got := ClassifyPathWrite(p); got != SystemWrite {
+			t.Errorf("ClassifyPathWrite(%q) = %s; want system_write", p, got)
+		}
+	}
+	for _, c := range []string{
+		"cat ~/.m2/repository/org/x/1.0/x-1.0.pom",
+		"ls ~/.gradle/caches",
+		"cat settings.xml",
+		"cat gradle.properties",
+	} {
+		if got := drRunnersAction(c); got != Allow {
+			t.Errorf("ActionForCommand(%q) = %s (class %s); not a credential file, want allow", c, got, Classify(c))
+		}
+	}
+}
+
 // The shapes runnerCommand reads: which words are the command and which
 // invocations run none.
 func TestDangerRunners_RunnerCommandShapes(t *testing.T) {
