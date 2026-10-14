@@ -93,7 +93,7 @@ func sanitizeIdentity(identity string) string {
 		identity = strings.ReplaceAll(identity, retired, "")
 	}
 	identity = strings.ReplaceAll(identity, "untrusted_content", "untrusted·content")
-	return closeOpenFence(strings.TrimSpace(stripPillarImitations(identity)))
+	return closeOpenComment(closeOpenFence(strings.TrimSpace(stripPillarImitations(identity))))
 }
 
 // fenceTracker follows Markdown fenced code blocks with CommonMark rules: an
@@ -241,11 +241,22 @@ func closeOpenFence(s string) string {
 	return s
 }
 
+// closeOpenComment terminates an HTML comment the text leaves open. In
+// Markdown an unterminated "<!--" hides everything after it, so the
+// authoritative pillar appended last would be part of the comment. A stray
+// "-->" appended after text that holds no open comment renders as plain text.
+func closeOpenComment(s string) string {
+	if strings.LastIndex(s, "<!--") > strings.LastIndex(s, "-->") {
+		return s + "\n-->"
+	}
+	return s
+}
+
 // appendSecurityPillar removes exact pillar copies and appends the one
 // authoritative pillar last. It does not rewrite anything else, so it is
 // safe on a system message that already carries wrapped adjuncts.
 func appendSecurityPillar(system string) string {
-	system = closeOpenFence(strings.TrimSpace(strings.ReplaceAll(system, SecurityPillar, "")))
+	system = closeOpenComment(closeOpenFence(strings.TrimSpace(strings.ReplaceAll(system, SecurityPillar, ""))))
 	if system == "" {
 		return SecurityPillar
 	}
