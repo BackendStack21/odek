@@ -564,16 +564,10 @@ func ScanInjection(content string) []ScanResult {
 		bare = stripMarkdownMarkers(normalized)
 		bareFolded = FoldHomoglyphs(bare)
 	}
-	// C0 separator controls read as a space or as nothing; scan the joined
-	// reading too.
-	var joined, joinedFolded string
-	if strings.ContainsAny(content, "\x1b\x1c\x1d\x1e\x1f") {
-		joined = normalizeScan(content, false)
-		joinedFolded = FoldHomoglyphs(joined)
-	}
+	extras := controlVariants(content, normalized)
 	for i, p := range injectionPatterns {
 		lits := injectionLiterals[i]
-		if (joined != "" && (matchPattern(p.Re, lits, joined) || matchPattern(p.Re, lits, joinedFolded))) ||
+		if matchAny(p.Re, lits, extras) ||
 			matchPattern(p.Re, lits, normalized) || (foldDistinct && matchPattern(p.Re, lits, folded)) ||
 			(foldedNu != "" && matchPattern(p.Re, lits, foldedNu)) ||
 			(bare != "" && (matchPattern(p.Re, lits, bare) || (bareFolded != bare && matchPattern(p.Re, lits, bareFolded)))) {
@@ -598,6 +592,15 @@ func stripMarkdownMarkers(s string) string {
 		}
 		return r
 	}, s)
+}
+
+func matchAny(re *regexp.Regexp, lits []string, texts []string) bool {
+	for _, t := range texts {
+		if matchPattern(re, lits, t) {
+			return true
+		}
+	}
+	return false
 }
 
 // scanStructural runs the scans that need more than one regexp over the

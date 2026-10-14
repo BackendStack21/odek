@@ -228,6 +228,117 @@ func normalizeScan(text string, separatorsAsSpace bool) string {
 	return strings.ToLower(strings.TrimSuffix(b.String(), " "))
 }
 
+// isScanControl reports whether r is a control character the scan reads as
+// either a separator or nothing: C0, DEL and C1 controls other than
+// whitespace.
+func isScanControl(r rune) bool { return isStrippedControl(r) }
+
+// controlVariants returns the extra readings of content that hold controls:
+// escape sequences and control characters read as a space (the payload of an
+// OSC/DCS/APC string stays visible) and read as nothing (the whole sequence
+// goes). Each reading is also homoglyph-folded. Readings equal to normalized,
+// or absent controls, add nothing.
+func controlVariants(content, normalized string) []string {
+	if !strings.ContainsFunc(content, func(r rune) bool { return r == 0x1b || isScanControl(r) }) {
+		return nil
+	}
+	var out []string
+	seen := map[string]bool{normalized: true}
+	add := func(v string) {
+		if !seen[v] {
+			seen[v] = true
+			out = append(out, v)
+		}
+	}
+	for _, join := range []bool{false, true} {
+		v := normalizeScan(controlVariantText(content, join), true)
+		add(v)
+		add(FoldHomoglyphs(v))
+	}
+	return out
+}
+
+// controlVariantText rewrites escape sequences and controls: as a space, or
+// (join) as nothing, dropping a sequence's payload too.
+func controlVariantText(text string, join bool) string {
+	var b strings.Builder
+	b.Grow(len(text))
+	for i := 0; i < len(text); {
+		r, size := utf8.DecodeRuneInString(text[i:])
+		if r == 0x1b || r == 0x9b {
+			n, intro, term := escapeSpan(text[i:])
+			if join {
+				i += n
+				continue
+			}
+			b.WriteByte(' ')
+			b.WriteString(text[i+intro : i+n-term])
+			if term > 0 {
+				b.WriteByte(' ')
+			}
+			i += n
+			continue
+		}
+		if isScanControl(r) {
+			if !join {
+				b.WriteByte(' ')
+			}
+			i += size
+			continue
+		}
+		b.WriteString(text[i : i+size])
+		i += size
+	}
+	return b.String()
+}
+
+// escapeSpan measures the escape sequence at the start of s (which begins with
+// ESC or U+009B): its total length, the length of its introducer and the
+// length of its string terminator. A control string (OSC, DCS, APC, PM, SOS)
+// has a payload between introducer and terminator; an unterminated one counts
+// as its introducer only, leaving the text after it visible.
+func escapeSpan(s string) (n, intro, term int) {
+	if strings.HasPrefix(s, "\u009b") {
+		i := 2
+		for i < len(s) && s[i] >= 0x30 && s[i] <= 0x3f {
+			i++
+		}
+		for i < len(s) && s[i] >= 0x20 && s[i] <= 0x2f {
+			i++
+		}
+		if i < len(s) && s[i] >= 0x40 && s[i] <= 0x7e {
+			i++
+			return i, i, 0
+		}
+		return 2, 2, 0
+	}
+	if len(s) < 2 {
+		return 1, 1, 0
+	}
+	switch c := s[1]; {
+	case c == '[':
+		if n := ansiCSILen(s); n > 0 {
+			return n, n, 0
+		}
+		return 2, 2, 0
+	case c == ']' || c == 'P' || c == '_' || c == '^' || c == 'X':
+		for i := 2; i < len(s); i++ {
+			switch {
+			case s[i] == 0x07:
+				return i + 1, 2, 1
+			case s[i] == 0x1b && i+1 < len(s) && s[i+1] == '\\':
+				return i + 2, 2, 2
+			case strings.HasPrefix(s[i:], "\u009c"):
+				return i + 2, 2, 2
+			}
+		}
+		return 2, 2, 0
+	case c >= 0x20 && c <= 0x7e:
+		return 2, 2, 0
+	}
+	return 1, 1, 0
+}
+
 // ansiCSILen returns the length of the ANSI CSI sequence at the start of s
 // (ESC [ parameter bytes, intermediate bytes, final byte), or 0.
 func ansiCSILen(s string) int {
