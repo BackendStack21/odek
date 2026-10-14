@@ -204,7 +204,7 @@ var curlSyntax = optSpec{
 	alias: map[byte]string{
 		'A': "--user-agent", 'b': "--cookie", 'd': "--data", 'e': "--referer",
 		'E': "--cert", 'F': "--form", 'H': "--header", 'n': "--netrc",
-		'Q': "--quote", 'T': "--upload-file", 'u': "--user", 'U': "--proxy-user",
+		'K': "--config", 'Q': "--quote", 'T': "--upload-file", 'u': "--user", 'U': "--proxy-user",
 		'X': "--request",
 	},
 	long: longTable(
@@ -261,6 +261,11 @@ func curlTransfer(args []string) transferVerdict {
 				base = "--" + strings.TrimPrefix(n, "--expand-")
 			}
 			switch base {
+			case "--header", "--proxy-header":
+				// @file sends the file's lines as headers.
+				if strings.HasPrefix(val, "@") {
+					v.upload = true
+				}
 			case "--upload-file", "--netrc", "--netrc-file", "--netrc-optional",
 				"--user", "--proxy-user", "--oauth2-bearer",
 				"--cert", "--key", "--proxy-cert", "--proxy-key",
@@ -292,6 +297,25 @@ func curlTransfer(args []string) transferVerdict {
 				}
 			case "--url":
 				urls = append(urls, val)
+			case "--url-query":
+				// +@file, @file and name@file append a file's content to the
+				// query string.
+				if curlURLEncodeReadsFile(strings.TrimPrefix(val, "+")) || hasVariableReference(val) {
+					v.upload = true
+				}
+			case "--variable":
+				switch {
+				case strings.HasPrefix(val, "%"):
+					// %NAME imports an environment variable.
+					name, _, _ := strings.Cut(val[1:], "=")
+					if sensitiveEnvName(name) {
+						v.system = true
+					}
+				case curlURLEncodeReadsFile(val) || hasVariableReference(val):
+					// name@file reads a file the expansion options splice
+					// into the request.
+					v.upload = true
+				}
 			}
 		}
 		if hasDynamicSubstitution(val) && o.is(curlRuntimeDataOptions...) {

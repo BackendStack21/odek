@@ -14,6 +14,15 @@ var projectCodeTools = map[string]bool{
 	"golangci-lint": true, "gdb": true, "lldb": true,
 }
 
+// fdSyntax reads fd's options, so -x/-X inside a short cluster (-Hx) is
+// recognised and a letter that is the value of -e/-E/-t/... is not.
+var fdSyntax = optSpec{
+	short: "dEetSocjCMDlgp",
+	alias: map[byte]string{'x': "--exec", 'X': "--exec-batch"},
+	long: longTable("max-depth exclude extension type size owner color threads changed-within changed-before "+
+		"min-depth exact-depth max-results base-directory search-path path-separator ignore-file strip-cwd-prefix", ""),
+}
+
 func adapterRunsCode(name string, tokens []string, repo *gitRepoCtx) bool {
 	if gpgRunsProgram(name, tokens) {
 		return true
@@ -43,7 +52,7 @@ func adapterRunsCode(name string, tokens []string, repo *gitRepoCtx) bool {
 		return transferClientRunsProgram(name, tokens)
 	}
 	if name == "fd" || name == "fdfind" {
-		return optionPresent(tokens, "--exec", "--exec-batch", "-x", "-X")
+		return optionPresent(tokens, "--exec", "--exec-batch", "-x", "-X") || fdSyntax.parse(tokens[1:]).has("--exec", "--exec-batch")
 	}
 	if name == "gcc" || name == "g++" || name == "cc" || name == "c++" || name == "clang" || name == "clang++" {
 		return optionPresent(tokens, "-fplugin", "-specs", "--specs", "-wrapper", "-B", "-Xclang", "-load")
@@ -80,7 +89,7 @@ func adapterRunsCode(name string, tokens []string, repo *gitRepoCtx) bool {
 			return gitVerbRunsRepoCode(sub, args, tokens, repo)
 		}
 	}
-	if name == "curl" && optionPresent(tokens, "-K", "--config") {
+	if name == "curl" && (optionPresent(tokens, "-K", "--config") || curlSyntax.parse(tokens[1:]).has("--config")) {
 		return true
 	}
 	if name == "wget" && optionPresent(tokens, "--config", "-i", "--input-file") {
