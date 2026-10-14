@@ -74,6 +74,68 @@ func TestRED_BareSecretKeyBeforeJSONEscapedNewlineLeaks(t *testing.T) {
 	})
 }
 
+func TestCurlScopedCredentialFlag(t *testing.T) {
+	for in, want := range map[string]string{
+		"curl -uadmin:Sup3rS3cretPw https://x.example":      "curl -uadmin:[REDACTED] https://x.example",
+		"curl -u admin:letmeinplease https://x.example":     "curl -u admin:[REDACTED] https://x.example",
+		"curl -sSLu admin:letmein https://x.example":        "curl -sSLu admin:[REDACTED] https://x.example",
+		`curl -u "admin:letmeinplease" https://x.example`:   `curl -u "admin:[REDACTED]" https://x.example`,
+		"curl --user admin:letmeinplease https://x.example": "curl --user admin:[REDACTED] https://x.example",
+		"wget --user=a --password=letmeinplease https://x":  "wget --user=a --password=[REDACTED] https://x",
+		"http --auth admin:letmeinplease GET https://x":     "http --auth admin:[REDACTED] GET https://x",
+	} {
+		if got := RedactSecrets(in); got != want {
+			t.Errorf("RedactSecrets(%q)\n got  %q\n want %q", in, got, want)
+		}
+	}
+	cfghunt13ExpectUnchanged(t, []string{
+		"rsync -u host:/var/backups1/data",
+		"ls -U dir:abc12345",
+		"pip install -U pkg:v12345678",
+		"sudo -u postgres:postgres1 psql",
+		"docker run -u appuser:appgroup2 alpine",
+		"curl -s https://x.example | sudo -u postgres:postgres1 psql",
+		"curl -u admin:password https://x.example",
+		"curl --user-agent foo:barbarbar1 https://x.example",
+		"curl -u admin:$PASS https://x.example",
+	})
+}
+
+func TestCookieValueOnlyRedaction(t *testing.T) {
+	for in, want := range map[string]string{
+		"Cookie: sessionid=abcdefghijklmnopqrstuvwx":                     "Cookie: sessionid=[REDACTED]",
+		"Cookie: JSESSIONID=ABCDEFGHIJKLMNOPQRSTUV; theme=dark":          "Cookie: JSESSIONID=[REDACTED]; theme=dark",
+		"Set-Cookie: sid=abcdefgh12; Path=/; HttpOnly":                   "Set-Cookie: sid=[REDACTED]; Path=/; HttpOnly",
+		"Cookie: lang=en-US; csrftoken=abcdefghijklmn; theme=dark":       "Cookie: lang=en-US; csrftoken=[REDACTED]; theme=dark",
+		"Cookie: a=b; unknown=" + cfghunt13Secret + "; z=y":              "Cookie: a=b; unknown=[REDACTED]; z=y",
+		`curl -H "Cookie: PHPSESSID=abcdefghijklmnop" https://x.example`: `curl -H "Cookie: PHPSESSID=[REDACTED]" https://x.example`,
+	} {
+		if got := RedactSecrets(in); got != want {
+			t.Errorf("RedactSecrets(%q)\n got  %q\n want %q", in, got, want)
+		}
+	}
+	cfghunt13ExpectUnchanged(t, []string{
+		"Cookie: theme=dark; lang=en-US; consent=yes",
+		"Cookie: preferences=compact-layout-wide",
+		"Cookie: session=abc",
+		"Cookie: session=$SESSION_VALUE_X",
+		"Set-Cookie: session=; Max-Age=0",
+	})
+}
+
+func TestWebhookPlaceholdersAndVariants(t *testing.T) {
+	cfghunt13ExpectRedacted(t, []string{
+		"https://hooks.slack" + ".com/triggers/T01ABCDEF/123456789012/" + cfghunt13Secret,
+		"https://hooks.slack" + ".com/workflows/T01ABCDEF/A02GHIJKL/" + cfghunt13Secret,
+	})
+	cfghunt13ExpectUnchanged(t, []string{
+		"https://hooks.slack" + ".com/services/T00000000/B00000000/XXXXXXXXXXXXXXXXXXXXXXXX",
+		"https://hooks.slack" + ".com/services/TXXXXXXXX/BXXXXXXXX/xxxxxxxxxxxxxxxxxxxxxxxx",
+		"https://discord.com/api/webhooks/123456789012345678/XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
+		"https://discord.com/api/webhooks/123456789012345678/your_webhook_token_goes_right_here_ok_1",
+	})
+}
+
 func TestWebhookAndURLCorpusUnchanged(t *testing.T) {
 	cfghunt13ExpectUnchanged(t, []string{
 		"see https://hooks.slack" + ".com/services for the docs",
@@ -114,6 +176,11 @@ func TestNewRedactionRulesScaleLinearly(t *testing.T) {
 		"cookie header":   func(n int) string { return strings.Repeat("Cookie: a=b;", n/12) },
 		"cookie long":     func(n int) string { return "Cookie: " + strings.Repeat("a=Bc1;", n/6) },
 		"curl flags":      func(n int) string { return strings.Repeat(" -u a:", n/6) },
+		"curl repeated":   func(n int) string { return strings.Repeat("curl -x ", n/8) },
+		"curl no end":     func(n int) string { return "curl " + strings.Repeat("-a ", n/3) },
+		"cookie pairs":    func(n int) string { return "Cookie: " + strings.Repeat("sid=a;", n/6) },
+		"cookie repeated": func(n int) string { return strings.Repeat("Cookie:sid=", n/11) },
+		"wget http":       func(n int) string { return strings.Repeat("wget http ", n/10) },
 		"curl long user":  func(n int) string { return "curl -u " + strings.Repeat("a", n) },
 		"db urls":         func(n int) string { return strings.Repeat("redis://:", n/9) },
 		"db driver":       func(n int) string { return "postgresql+" + strings.Repeat("a", n) },

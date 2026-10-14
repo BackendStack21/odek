@@ -146,11 +146,6 @@ var patternsTail = []*regexp.Regexp{
 	// password segment must be at least 6 chars to avoid matching common
 	// placeholders like `:x@`.
 	regexp.MustCompile(`(?i)\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|rediss?|amqps?|mssql|clickhouse)(?:\+[a-z0-9_]+)?://[^:\s/]*:[^@\s/]{6,}@[^\s'\x60"]+`),
-
-	// Incoming-webhook URLs: whoever holds the URL can post as the
-	// integration, so the secret path segment is a bearer credential.
-	regexp.MustCompile(`hooks\.slack\.com/services/T[A-Z0-9]+/B[A-Z0-9]+/[A-Za-z0-9]{20,}`),
-	regexp.MustCompile(`discord(?:app)?\.com/api/(?:v[0-9]+/)?webhooks/[0-9]+/[A-Za-z0-9_-]{40,}`),
 }
 
 // Credential-named assignments (api_key, access_token, password,
@@ -190,13 +185,6 @@ var guardedPatterns = []guardedPattern{
 	// CLI flags with a whitespace-separated value (--password VALUE,
 	// --secret-key VALUE, --private-key VALUE).
 	{regexp.MustCompile(`(?i)--?(?:password|passwd|passphrase|pwd|pass|token|secret|api[_-]?key|secret[_-]?key|private[_-]?key|access[_-]?key|client[_-]?secret)[ \t]+("[^"\n]{20,}"|'[^'\n]{20,}'|[^\s"']{20,})`), plausibleFlagValue},
-	// curl credential flags: -u / --user / --proxy-user USER:PASSWORD (also
-	// -U). The user part alone (`-u admin`) is not a credential.
-	{regexp.MustCompile(`(?:^|\s)(?:-[uU]|--(?:proxy-)?user)(?:[ \t]+|=)["']?[^\s:"']*:("[^"\n]{8,}"|'[^'\n]{8,}'|[^\s"']{8,})`), plausibleUserFlagPassword},
-	// Cookie / Set-Cookie header lines (also inside curl -H "Cookie: …"): a
-	// session cookie is a bearer credential. The match runs to the end of
-	// the line or the closing quote.
-	{regexp.MustCompile(`(?i)\b(?:set-)?cookie["'\x60]?[ \t]*:[ \t]*["'\x60]?([^\r\n"'\x60]{16,})`), cookieHeaderHasSession},
 	// .netrc lines: password VALUE.
 	{regexp.MustCompile(`(?i)\b(?:password|passwd|passphrase)[ \t]+("[^"\n]{20,}"|'[^'\n]{20,}'|[^\s"']{20,})`), looksSecret},
 	// XML elements: <password>VALUE</password>, optional attributes and
@@ -217,41 +205,143 @@ func plausibleFlagValue(v string) bool {
 	return plausibleValue(v) && !strings.HasPrefix(t, "$") && !strings.HasPrefix(t, "%")
 }
 
-// plausibleUserFlagPassword judges the PASSWORD of a USER:PASSWORD flag
-// operand. `-u` is also a user/group flag elsewhere (docker run -u
-// www-data:www-data, -u 1000:1000), so the value must read as a password: a
-// literal that is not a variable reference or code expression and carries a
-// digit or password punctuation (or is 16+ characters), and is not a bare
-// number.
-func plausibleUserFlagPassword(v string) bool {
-	t := unwrapValue(v)
-	if len(t) < 8 || strings.ContainsAny(t[:1], "$%{<") || strings.ContainsAny(t, "(){}") || strings.Contains(t, "://") {
-		return false
-	}
-	digits := 0
-	for i := 0; i < len(t); i++ {
-		if t[i] >= '0' && t[i] <= '9' {
-			digits++
-		}
-	}
-	if digits == len(t) {
-		return false
-	}
-	return digits > 0 || strings.ContainsAny(t, passwordPunct) || len(t) >= 16
+// valuePatterns are context patterns whose redaction span is the capture
+// group only (group 1), so the surrounding command or URL stays readable.
+// The group must also pass ok.
+var valuePatterns = []guardedPattern{
+	// curl credential flags: -u / -U / --user / --proxy-user USER:PASSWORD,
+	// also attached (-uUSER:PASSWORD) and inside short-flag clusters (-sSLu).
+	// Scoped to a curl command (up to the next pipe, separator or newline),
+	// because -u / -U mean other things elsewhere (docker run -u uid:gid,
+	// sudo -u user, rsync -u). The user part alone (`-u admin`) is not a
+	// credential.
+	{regexp.MustCompile(`\bcurl\b[^\n|;&]*?\s(?:-[A-Za-z]*[uU][ \t=]*|--(?:proxy-)?user[ \t=]+)["']?[^\s:"']*:("[^"\n]{6,}"|'[^'\n]{6,}'|[^\s"']{6,})`), plausibleAuthPassword},
+	// wget --password=VALUE / --http-password VALUE / --ftp-password VALUE.
+	{regexp.MustCompile(`\bwget\b[^\n|;&]*?\s--(?:http-|ftp-|proxy-)?password[ \t=]+("[^"\n]{6,}"|'[^'\n]{6,}'|[^\s"']{6,})`), plausibleAuthPassword},
+	// HTTPie --auth / -a USER:PASSWORD.
+	{regexp.MustCompile(`\b(?:http|https|xh)\b[^\n|;&]*?\s(?:--auth[ \t=]+|-a[ \t]+)["']?[^\s:"']*:("[^"\n]{6,}"|'[^'\n]{6,}'|[^\s"']{6,})`), plausibleAuthPassword},
+	// Chat incoming-webhook URLs: whoever holds the URL can post as the
+	// integration, so the secret path segment is a bearer credential.
+	{regexp.MustCompile(`hooks\.slack\.com/(?:services|workflows|triggers)/(?:[A-Za-z0-9]+/){1,3}([A-Za-z0-9]{20,})`), plausibleWebhookToken},
+	{regexp.MustCompile(`discord(?:app)?\.com/api/(?:v[0-9]+/)?webhooks/[0-9]+/([A-Za-z0-9_-]{40,})`), plausibleWebhookToken},
 }
 
-// cookieHeaderHasSession reports whether a Cookie / Set-Cookie header value
-// carries a cookie whose value is shaped like a generated session
-// identifier. Attributes (Path, Domain, Expires, SameSite, Max-Age) are
-// short, dictionary words, host names or dates and fail the shape test.
-func cookieHeaderHasSession(v string) bool {
-	for _, part := range strings.Split(v, ";") {
-		_, val, ok := strings.Cut(strings.TrimSpace(part), "=")
-		if ok && cookieValueShape(val) {
+// plausibleAuthPassword judges the PASSWORD of a USER:PASSWORD operand or a
+// password flag value inside a command that takes credentials: it must not
+// be a variable reference, a code expression, a URL or an obvious
+// placeholder word.
+func plausibleAuthPassword(v string) bool {
+	t := unwrapValue(v)
+	if len(t) < 6 || strings.ContainsAny(t[:1], "$%{<") || strings.ContainsAny(t, "(){}") || strings.Contains(t, "://") {
+		return false
+	}
+	switch strings.ToLower(t) {
+	case "password", "passwd", "secret", "changeme", "yourpassword", "pa55word":
+		return false
+	}
+	return !allSameFold(t)
+}
+
+// allSameFold reports whether every byte of t is the same letter (XXXXXX).
+func allSameFold(t string) bool {
+	for i := 1; i < len(t); i++ {
+		if !strings.EqualFold(t[i:i+1], t[:1]) {
+			return false
+		}
+	}
+	return true
+}
+
+// plausibleWebhookToken rejects documentation placeholders: no digit, fewer
+// than four characters other than X, or placeholder words.
+func plausibleWebhookToken(v string) bool {
+	if !strings.ContainsAny(v, "0123456789") {
+		return false
+	}
+	real := 0
+	for i := 0; i < len(v); i++ {
+		if c := v[i]; c != 'X' && c != 'x' && c != '_' && c != '-' {
+			real++
+		}
+	}
+	if real < 4 {
+		return false
+	}
+	l := strings.ToLower(v)
+	for _, w := range []string{"token", "webhook", "your", "here", "example", "placeholder"} {
+		if strings.Contains(l, w) {
+			return false
+		}
+	}
+	return true
+}
+
+// cookieHeaderRe finds a Cookie / Set-Cookie header (also inside a quoted
+// curl -H argument or a JSON header object); group 1 is the value up to the
+// end of the line or the closing quote.
+var cookieHeaderRe = regexp.MustCompile(`(?i)\b(?:set-)?cookie["'\x60]?[ \t]*:[ \t]*["'\x60]?([^\r\n"'\x60]+)`)
+
+// cookieMatches returns the offsets of each cookie value on Cookie /
+// Set-Cookie header lines that is a session credential: the cookie name
+// reads as a session or auth cookie and the value is a plausible token, or
+// the value is shaped like a generated session identifier whatever its name.
+// Names, attributes and other cookies stay readable.
+func cookieMatches(text string) [][2]int {
+	if indexFoldASCII(text, "cookie") < 0 {
+		return nil
+	}
+	var out [][2]int
+	for _, m := range cookieHeaderRe.FindAllStringSubmatchIndex(text, -1) {
+		start, end := m[2], m[3]
+		for pos := start; pos <= end; {
+			next := strings.IndexByte(text[pos:end], ';')
+			partEnd := end
+			if next >= 0 {
+				partEnd = pos + next
+			}
+			part := text[pos:partEnd]
+			if eq := strings.IndexByte(part, '='); eq > 0 {
+				name := strings.TrimSpace(part[:eq])
+				val := strings.TrimRight(part[eq+1:], " \t")
+				if (sessionCookieName(name) && plausibleCookieToken(val)) || cookieValueShape(val) {
+					vs := pos + eq + 1
+					out = append(out, [2]int{vs, vs + len(val)})
+				}
+			}
+			pos = partEnd + 1
+		}
+	}
+	return out
+}
+
+// sessionCookieName reports whether a cookie name reads as a session or
+// authentication cookie (PHPSESSID, JSESSIONID, connect.sid, csrftoken,
+// auth, jwt, remember_me, …).
+func sessionCookieName(name string) bool {
+	l := strings.ToLower(name)
+	for _, w := range []string{"session", "sess", "token", "auth", "jwt", "csrf", "xsrf", "remember", "login", "secret", "passw", "credential", "apikey"} {
+		if strings.Contains(l, w) {
+			return true
+		}
+	}
+	if strings.HasSuffix(l, "sid") {
+		return true
+	}
+	for _, seg := range strings.FieldsFunc(l, func(r rune) bool { return r == '-' || r == '_' || r == '.' }) {
+		if seg == "sid" || seg == "ssid" {
 			return true
 		}
 	}
 	return false
+}
+
+// plausibleCookieToken accepts a single token of at least 8 characters that
+// is not a variable reference or placeholder.
+func plausibleCookieToken(v string) bool {
+	if len(v) < 8 || strings.ContainsAny(v[:1], "$%{<") || strings.ContainsAny(v, " \t<>{}()") {
+		return false
+	}
+	return !allSameFold(v)
 }
 
 // cookieValueShape accepts a single token of at least 16 base64url,
@@ -424,7 +514,14 @@ func guardedPatternMatches(text string) [][2]int {
 			}
 		}
 	}
-	return out
+	for _, g := range valuePatterns {
+		for _, m := range g.re.FindAllStringSubmatchIndex(text, -1) {
+			if m[2] >= 0 && g.ok(text[m[2]:m[3]]) {
+				out = append(out, [2]int{m[2], m[3]})
+			}
+		}
+	}
+	return append(out, cookieMatches(text)...)
 }
 
 // redactGuarded replaces every guarded match, merging overlaps.
