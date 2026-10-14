@@ -148,6 +148,8 @@ func Sweep(ctx context.Context, home string, cfg Config) (Report, error) {
 	rep.MediaFreedBytes = freed
 	fail("media", err)
 
+	fail("schedule_heartbeats", sweepScheduleHeartbeats(home))
+
 	return rep, firstErr
 }
 
@@ -543,6 +545,39 @@ func sweepPlans(home string, maxAgeDays int) (int, error) {
 		_ = os.Remove(dirs[i])
 	}
 	return removed, nil
+}
+
+// scheduleHeartbeatMaxAge is how long a schedule-host heartbeat file may go
+// unrefreshed before it is considered orphaned. A live scheduler rewrites it
+// every 15 seconds; a process that exited without running its deferred
+// cleanup (crash, os.Exit) leaves it behind.
+const scheduleHeartbeatMaxAge = 10 * time.Minute
+
+// sweepScheduleHeartbeats removes orphaned schedule-host-<pid>.json files.
+func sweepScheduleHeartbeats(home string) error {
+	entries, err := os.ReadDir(home)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("maintenance: read home: %w", err)
+	}
+	cutoff := time.Now().Add(-scheduleHeartbeatMaxAge)
+	var firstErr error
+	for _, e := range entries {
+		name := e.Name()
+		if !strings.HasPrefix(name, "schedule-host-") || !strings.HasSuffix(name, ".json") || !e.Type().IsRegular() {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil || !info.ModTime().Before(cutoff) {
+			continue
+		}
+		if err := os.Remove(filepath.Join(home, name)); err != nil && !os.IsNotExist(err) && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
 }
 
 // sweepMedia deletes downloaded Telegram media files older than mediaMaxAge,
