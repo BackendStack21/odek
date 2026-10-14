@@ -182,6 +182,13 @@ func TestEscapedQuoteAndCookieRulesScaleLinearly(t *testing.T) {
 		"json open quotes":  func(n int) string { return `{"o":"` + strings.Repeat(`api_key=\"Ab1`, n/13) },
 		"cookie unknown":    func(n int) string { return "Cookie: " + strings.Repeat("u=abcdefgh1;", n/12) },
 		"curl dq escapes":   func(n int) string { return `{"c":"curl -u \"a:` + strings.Repeat(`\\\"`, n/4) },
+		"cookie quoted":     func(n int) string { return "Cookie: " + strings.Repeat(`a="abcdefgh1"; `, n/16) },
+		"cookie open quote": func(n int) string { return strings.Repeat(`Cookie: a="`, n/11) },
+		"cookie nested":     func(n int) string { return "Cookie: a=" + strings.Repeat("cookie:", n/7) },
+		"cookie escapes":    func(n int) string { return strings.Repeat(`Cookie: a=abcdefgh1\n`, n/20) },
+		"cookie commas":     func(n int) string { return "Set-Cookie: " + strings.Repeat(", "+strings.Repeat("x", 300), n/302) },
+		"cookie json":       func(n int) string { return `{"h":"Cookie: ` + strings.Repeat(`a=\"abcdefgh1\"; `, n/18) },
+		"curl cookies":      func(n int) string { return strings.Repeat("curl -b a=abcdefgh1;b=c ", n/24) },
 	}
 	base := 64 << 10
 	for name, gen := range gens {
@@ -212,5 +219,80 @@ func TestJSONEncodedValueEdges(t *testing.T) {
 	})
 	redres14ExpectHidden(t, map[string][]string{
 		"Cookie: __=abcdefgh1234": {"abcdefgh1234"},
+	})
+}
+
+// A quoted cookie value is one unit: it is judged without its quotes, and a
+// quoted value earlier in the header does not end the header.
+func TestRED_QuotedCookieValueLeaks(t *testing.T) {
+	redres14ExpectExact(t, map[string]string{
+		`Cookie: sessionid="abcdef123456789"`:                        `Cookie: sessionid="[REDACTED]"`,
+		`Set-Cookie: sessionid="abcdef123456789"; Path=/`:            `Set-Cookie: sessionid="[REDACTED]"; Path=/`,
+		`Cookie: a="xyz"; sessionid=abcdef123456789`:                 `Cookie: a="xyz"; sessionid=[REDACTED]`,
+		`cookie: foo="abcdefghijkl"`:                                 `cookie: foo="[REDACTED]"`,
+		`Cookie: foo='abcdefghijkl'; theme=dark`:                     `Cookie: foo='[REDACTED]'; theme=dark`,
+		`curl -H 'Cookie: sid=abcdef123456789' https://x.example`:    `curl -H 'Cookie: sid=[REDACTED]' https://x.example`,
+		`curl -H "Cookie: theme=dark; sid=abcdef123456789" -v x`:     `curl -H "Cookie: theme=dark; sid=[REDACTED]" -v x`,
+		`{"h":"Cookie: a=\"xyz\"; sid=\"abcdef123456789\"; x=1"}`:    `{"h":"Cookie: a=\"xyz\"; sid=\"[REDACTED]\"; x=1"}`,
+		`{"headers":{"Cookie":"theme=dark; user=abcdefghijklmnop"}}`: `{"headers":{"Cookie":"theme=dark; user=[REDACTED]"}}`,
+	})
+	redres14ExpectUnchanged(t, []string{
+		`Cookie: theme="dark"; lang="en-US"`,
+		`curl -H "Cookie: theme=dark" https://x.example/abcdefghijklmnop`,
+		`Cookie: sid="unterminated abcdefghijkl`,
+		`Cookie: a="xyz" sid`,
+	})
+}
+
+// A cookie header inside JSON-encoded or escaped text ends at a literal \r,
+// \n or \t escape and at the quote that closes the JSON string.
+func TestRED_EscapedCookieHeaderLeaks(t *testing.T) {
+	redres14ExpectExact(t, map[string]string{
+		`Cookie: sid=abcdef123456789\r\nHost: x`:                      `Cookie: sid=[REDACTED]\r\nHost: x`,
+		`{"h":"Cookie: sid=abcdef123456789\r\nHost: x"}`:              `{"h":"Cookie: sid=[REDACTED]\r\nHost: x"}`,
+		`Cookie: foo=abcdefghijkl\nCookie: bar=abcdefghijkl`:          `Cookie: foo=[REDACTED]\nCookie: bar=[REDACTED]`,
+		`{"h":"Cookie: sid=abcdef123456789"}`:                         `{"h":"Cookie: sid=[REDACTED]"}`,
+		`{"h":"Set-Cookie: sid=abcdef123456789\tPath=/abcdefghijkl"}`: `{"h":"Set-Cookie: sid=[REDACTED]\tPath=/abcdefghijkl"}`,
+	})
+	redres14ExpectUnchanged(t, []string{
+		`{"h":"Cookie: theme=dark\r\nHost: abcdefghijklmnop.example"}`,
+		`{"h":"Cookie: theme=dark","x":"user=abcdefghijklmnop"}`,
+	})
+}
+
+// Folded Set-Cookie headers separate cookies with ", "; curl passes cookies
+// with -b / --cookie. Both go through the same cookie-pair rule.
+func TestRED_SetCookieCommaAndCurlCookieLeaks(t *testing.T) {
+	redres14ExpectHidden(t, map[string][]string{
+		"Set-Cookie: foo=abcdefghijkl, bar=zzzzzzzzzzzz": {"abcdefghijkl"},
+	})
+	redres14ExpectExact(t, map[string]string{
+		"Set-Cookie: foo=abcdefghijkl, bar=Zq8xLm2pWr5t; Path=/":                        "Set-Cookie: foo=[REDACTED], bar=[REDACTED]; Path=/",
+		"Set-Cookie: sid=abcdefgh12; Expires=Wed, 21 Oct 2026 07:28:00 GMT; theme=dark": "Set-Cookie: sid=[REDACTED]; Expires=Wed, 21 Oct 2026 07:28:00 GMT; theme=dark",
+		"curl --cookie foo=abcdefghijkl https://x.example":                              "curl --cookie foo=[REDACTED] https://x.example",
+		"curl --cookie=foo=abcdefghijkl https://x.example":                              "curl --cookie=foo=[REDACTED] https://x.example",
+		"curl -b 'foo=abcdefghijkl; theme=dark' https://x.example":                      "curl -b 'foo=[REDACTED]; theme=dark' https://x.example",
+		`curl -sb "sid=abcdef123456789" https://x.example`:                              `curl -sb "sid=[REDACTED]" https://x.example`,
+		`{"cmd":"curl -b \"foo=abcdefghijkl\" https://x.example"}`:                      `{"cmd":"curl -b \"foo=[REDACTED]\" https://x.example"}`,
+	})
+	redres14ExpectUnchanged(t, []string{
+		"curl -b cookies.txt https://x.example",
+		"curl -b /home/user/.cache/cookies-abcdefghijkl.txt https://x.example",
+		"curl -c jar.txt -b jar.txt https://x.example",
+		"curl -b 'theme=dark; lang=en-US' https://x.example",
+		"mytool -b foo=abcdefghijkl",
+		"Set-Cookie: theme=dark, lang=en-US",
+	})
+}
+
+// Set-Cookie attributes stay readable in their common spellings.
+func TestRED_SetCookieAttributeVariants(t *testing.T) {
+	redres14ExpectUnchanged(t, []string{
+		"Set-Cookie: theme=dark; max_age=31536000; Path=/",
+		"Set-Cookie: theme=dark; MAX-AGE=31536000; SAMESITE=Strict",
+		"Set-Cookie: theme=dark; Max_Age=31536000; Same_Site=Lax; Http_Only",
+	})
+	redres14ExpectExact(t, map[string]string{
+		"Set-Cookie: sid=abcdefgh12; max_age=31536000": "Set-Cookie: sid=[REDACTED]; max_age=31536000",
 	})
 }

@@ -634,6 +634,7 @@ func toolCredentialSpans(text string, kind int, json bool, words []cmdWord) [][2
 				os, oe = words[k+1].s, words[k+1].e
 			}
 		}
+		cookie := false // the operand is a curl -b / --cookie cookie string
 		if strings.HasPrefix(raw, "--") {
 			name, attS := raw, -1
 			if eq := strings.IndexByte(raw, '='); eq > 0 {
@@ -642,7 +643,8 @@ func toolCredentialSpans(text string, kind int, json bool, words []cmdWord) [][2
 			var match bool
 			switch kind {
 			case 0:
-				match = name == "--user" || name == "--proxy-user"
+				cookie = name == "--cookie"
+				match = cookie || name == "--user" || name == "--proxy-user"
 			case 1:
 				match = name == "--password" || name == "--http-password" || name == "--ftp-password" || name == "--proxy-password"
 			default:
@@ -664,12 +666,13 @@ func toolCredentialSpans(text string, kind int, json bool, words []cmdWord) [][2
 				next()
 			} else {
 				j := 1
-				for j < len(raw) && (raw[j] >= 'a' && raw[j] <= 'z' || raw[j] >= 'A' && raw[j] <= 'Z') && raw[j] != 'u' && raw[j] != 'U' {
+				for j < len(raw) && (raw[j] >= 'a' && raw[j] <= 'z' || raw[j] >= 'A' && raw[j] <= 'Z') && raw[j] != 'u' && raw[j] != 'U' && raw[j] != 'b' {
 					j++
 				}
-				if j >= len(raw) || (raw[j] != 'u' && raw[j] != 'U') {
+				if j >= len(raw) || (raw[j] != 'u' && raw[j] != 'U' && raw[j] != 'b') {
 					continue
 				}
+				cookie = raw[j] == 'b'
 				if j+1 == len(raw) {
 					next()
 				} else {
@@ -682,6 +685,10 @@ func toolCredentialSpans(text string, kind int, json bool, words []cmdWord) [][2
 		if os < 0 {
 			continue
 		}
+		if cookie {
+			out = append(out, cookieOperandSpans(text, os, oe)...)
+			continue
+		}
 		if kind == 1 {
 			add(wholePassword(text, os, oe, json, plausibleAuthPassword))
 		} else {
@@ -691,10 +698,32 @@ func toolCredentialSpans(text string, kind int, json bool, words []cmdWord) [][2
 	return out
 }
 
-// cookieHeaderRe finds a Cookie / Set-Cookie header (also inside a quoted
-// curl -H argument or a JSON header object); group 1 is the value up to the
-// end of the line or the closing quote.
-var cookieHeaderRe = regexp.MustCompile(`(?i)\b(?:set-)?cookie["'\x60]?[ \t]*:[ \t]*["'\x60]?([^\r\n"'\x60]+)`)
+// cookieOperandSpans returns the raw spans of the cookie values in a curl
+// -b / --cookie operand at text[s:e] that cookieCredential accepts. The word
+// is shell-unquoted first (escaped quotes from JSON-encoded text unquote to
+// literal quotes around the operand and are dropped); an operand without '='
+// names a cookie file and is left alone.
+func cookieOperandSpans(text string, s, e int) [][2]int {
+	c, idx := unquoteWord(text, s, e)
+	lo, hi := 0, len(c)
+	if hi-lo >= 2 && c[lo] == '"' && c[hi-1] == '"' {
+		lo, hi = lo+1, hi-1
+	}
+	if bytesIndexByte(c[lo:hi], '=') < 0 {
+		return nil
+	}
+	spans, _ := cookieScan{text: string(c[lo:hi])}.pairs(0, cookieCredential)
+	out := make([][2]int, 0, len(spans))
+	for _, sp := range spans {
+		out = append(out, [2]int{idx[lo+sp[0]], idx[lo+sp[1]-1] + 1})
+	}
+	return out
+}
+
+// cookieHeaderRe finds the start of a Cookie / Set-Cookie header value (also
+// inside a quoted curl -H argument, a JSON header object, or after a literal
+// \r \n \t escape); group 1 is the header name.
+var cookieHeaderRe = regexp.MustCompile(`(?i)(?:\b|\\[nrt])((?:set-)?cookie)["'\x60]?[ \t]*:[ \t]*`)
 
 // cookieMatches returns the offsets of each cookie value on Cookie /
 // Set-Cookie header lines that may be a credential (see cookieCredential).
@@ -704,28 +733,181 @@ func cookieMatches(text string) [][2]int {
 		return nil
 	}
 	var out [][2]int
+	var inJSON jsonStringTracker
+	scanned := 0 // end of the previous header: a match inside it is part of it
 	for _, m := range cookieHeaderRe.FindAllStringSubmatchIndex(text, -1) {
-		start, end := m[2], m[3]
-		setCookie := m[0]+4 <= len(text) && strings.EqualFold(text[m[0]:m[0]+4], "set-")
-		for pos := start; pos <= end; {
-			next := strings.IndexByte(text[pos:end], ';')
-			partEnd := end
-			if next >= 0 {
-				partEnd = pos + next
-			}
-			part := text[pos:partEnd]
-			if eq := strings.IndexByte(part, '='); eq > 0 {
-				name := strings.TrimSpace(part[:eq])
-				val := strings.TrimRight(part[eq+1:], " \t")
-				if (!setCookie || !setCookieAttribute(name)) && cookieCredential(name, val) {
-					vs := pos + eq + 1
-					out = append(out, [2]int{vs, vs + len(val)})
-				}
-			}
-			pos = partEnd + 1
+		if m[0] < scanned {
+			continue
 		}
+		setCookie := hasPrefixFold(text[m[2]:], "set-")
+		json := inJSON.at(text, m[2])
+		pos := m[1]
+		var closer byte
+		if pos < len(text) && strings.IndexByte("\"'`", text[pos]) >= 0 {
+			closer = text[pos]
+			json = json || closer == '"'
+			pos++
+		}
+		s := cookieScan{text: text, json: json, closer: closer}
+		var spans [][2]int
+		spans, scanned = s.pairs(pos, func(name, val string) bool {
+			return (!setCookie || !setCookieAttribute(name)) && cookieCredential(name, val)
+		})
+		out = append(out, spans...)
 	}
 	return out
+}
+
+// cookieScan reads cookie pairs (name=value separated by ; or by ", " before
+// another name=value) from a header value or a curl --cookie operand.
+type cookieScan struct {
+	text   string
+	json   bool // inside a JSON string: the text is JSON-encoded
+	closer byte // quote that opened the header value, or 0
+}
+
+// stop reports whether the header value ends at i: a raw line break, a
+// literal \r \n \t escape, an escaped quote, the quote that opened the value
+// or, inside a JSON string or plain text, any other quote.
+func (s cookieScan) stop(i int) bool {
+	switch c := s.text[i]; c {
+	case '\r', '\n', '"', '\'', '`':
+		return true
+	case '\\':
+		if i+1 < len(s.text) {
+			switch s.text[i+1] {
+			case 'r', 'n', 't', '"':
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// quotedValue returns the inner extent of a quoted cookie value starting at
+// i and the offset after its closing quote: "…", '…' or `…` (inside a JSON
+// string the double quote is escaped: \"…\"). ok is false when i does not open
+// a quoted value or the value is not closed on its line.
+func (s cookieScan) quotedValue(i int) (vs, ve, next int, ok bool) {
+	t := s.text
+	if i >= len(t) {
+		return 0, 0, 0, false
+	}
+	open := ""
+	switch {
+	case s.json && strings.HasPrefix(t[i:], `\"`):
+		open = `\"`
+	case !s.json && t[i] == '"', t[i] == '\'', t[i] == '`':
+		if t[i] == s.closer {
+			return 0, 0, 0, false
+		}
+		open = t[i : i+1]
+	default:
+		return 0, 0, 0, false
+	}
+	vs = i + len(open)
+	for j := vs; j < len(t); j++ {
+		switch t[j] {
+		case '\r', '\n':
+			return 0, 0, 0, false
+		case '\\':
+			if strings.HasPrefix(t[j:], open) {
+				return vs, j, j + len(open), true
+			}
+			if j+1 < len(t) && (t[j+1] == 'r' || t[j+1] == 'n') {
+				return 0, 0, 0, false
+			}
+			j++
+		case '"':
+			if open == `\"` {
+				return 0, 0, 0, false // the quote closing the JSON string
+			}
+			if open == `"` {
+				return vs, j, j + 1, true
+			}
+		default:
+			if open == t[j:j+1] {
+				return vs, j, j + 1, true
+			}
+		}
+	}
+	return 0, 0, 0, false
+}
+
+// commaSplit reports whether a comma at i separates two cookies: after
+// optional blanks it is followed by a cookie name and '=' (a date such as
+// "Wed, 21 Oct" is not).
+func (s cookieScan) commaSplit(i int) bool {
+	t := s.text
+	if t[i] != ',' {
+		return false
+	}
+	j := i + 1
+	for j < len(t) && (t[j] == ' ' || t[j] == '\t') {
+		j++
+	}
+	k := j
+	for k < len(t) && k-j < 256 && strings.IndexByte(" \t\r\n;,=\"'`\\", t[k]) < 0 {
+		k++
+	}
+	return k > j && k < len(t) && t[k] == '='
+}
+
+// pairs scans cookie pairs from pos and returns the value spans that redact
+// accepts and the offset where the header value ended.
+func (s cookieScan) pairs(pos int, redact func(name, val string) bool) ([][2]int, int) {
+	t := s.text
+	var out [][2]int
+	i := pos
+	for i < len(t) {
+		for i < len(t) && (t[i] == ' ' || t[i] == '\t') {
+			i++
+		}
+		if i >= len(t) || s.stop(i) {
+			break
+		}
+		ns := i
+		for i < len(t) && !s.stop(i) && t[i] != '=' && t[i] != ';' {
+			i++
+		}
+		if i >= len(t) || s.stop(i) {
+			break
+		}
+		if t[i] == ';' {
+			i++
+			continue
+		}
+		name := strings.TrimSpace(t[ns:i])
+		i++ // '='
+		var vs, ve int
+		if qs, qe, next, ok := s.quotedValue(i); ok {
+			vs, ve, i = qs, qe, next
+		} else {
+			vs = i
+			for i < len(t) && !s.stop(i) && t[i] != ';' && !s.commaSplit(i) {
+				if s.json && t[i] == '\\' && i+1 < len(t) {
+					i++ // an escaped character belongs to the value
+				}
+				i++
+			}
+			ve = i
+			for ve > vs && (t[ve-1] == ' ' || t[ve-1] == '\t') {
+				ve--
+			}
+		}
+		if name != "" && redact(name, t[vs:ve]) {
+			out = append(out, [2]int{vs, ve})
+		}
+		// Skip anything after a quoted value up to the next separator.
+		for i < len(t) && !s.stop(i) && t[i] != ';' && !s.commaSplit(i) {
+			i++
+		}
+		if i >= len(t) || s.stop(i) {
+			break
+		}
+		i++ // ';' or ','
+	}
+	return out, i
 }
 
 // cookieCredential decides whether a cookie value on a Cookie / Set-Cookie
@@ -776,10 +958,12 @@ func preferenceCookieName(name string) bool {
 }
 
 // setCookieAttribute reports whether a Set-Cookie pair name is a cookie
-// attribute (Path, Domain, Expires, …) rather than the cookie itself.
+// attribute (Path, Domain, Expires, …) rather than the cookie itself, in any
+// letter case and with or without _ or - inside (Max-Age, max_age, SameSite).
 func setCookieAttribute(name string) bool {
-	switch strings.ToLower(name) {
-	case "path", "domain", "expires", "max-age", "samesite", "secure", "httponly", "priority", "partitioned", "version", "comment":
+	n := strings.NewReplacer("_", "", "-", "").Replace(strings.ToLower(name))
+	switch n {
+	case "path", "domain", "expires", "maxage", "samesite", "secure", "httponly", "priority", "partitioned", "version", "comment":
 		return true
 	}
 	return false
