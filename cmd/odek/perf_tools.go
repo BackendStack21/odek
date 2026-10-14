@@ -339,6 +339,9 @@ func (t *diffTool) Call(argsJSON string) (result string, err error) {
 	if args.PathA != "" && args.PathB != "" {
 		pathA, pathB = args.PathA, args.PathB
 		for _, p := range []string{args.PathA, args.PathB} {
+			if err := checkTelegramMediaRead(t.toolCtx(), p); err != nil {
+				return jsonError(err.Error())
+			}
 			if err := confineIfRestricted(t.restrictToCWD, p); err != nil {
 				return jsonError(err.Error())
 			}
@@ -360,6 +363,9 @@ func (t *diffTool) Call(argsJSON string) (result string, err error) {
 		textB = string(data)
 	} else if args.Path != "" {
 		pathA, pathB = args.Path, "<inline>"
+		if err := checkTelegramMediaRead(t.toolCtx(), args.Path); err != nil {
+			return jsonError(err.Error())
+		}
 		if err := confineIfRestricted(t.restrictToCWD, args.Path); err != nil {
 			return jsonError(err.Error())
 		}
@@ -592,6 +598,9 @@ func (t *jsonQueryTool) Call(argsJSON string) (result string, err error) {
 	}
 	if args.Path == "" {
 		return jsonError("path is required")
+	}
+	if err := checkTelegramMediaRead(t.toolCtx(), args.Path); err != nil {
+		return jsonError(err.Error())
 	}
 	if err := confineIfRestricted(t.restrictToCWD, args.Path); err != nil {
 		return jsonError(err.Error())
@@ -876,6 +885,9 @@ func (t *treeTool) Call(argsJSON string) (result string, err error) {
 	if args.MaxDepth > 10 {
 		args.MaxDepth = 10
 	}
+	if err := checkTelegramMediaRead(t.toolCtx(), args.Path); err != nil {
+		return jsonError(err.Error())
+	}
 	if err := confineIfRestricted(t.restrictToCWD, args.Path); err != nil {
 		return jsonError(err.Error())
 	}
@@ -1046,6 +1058,7 @@ func collectTreePaths(e *treeEntry, out *[]*string) {
 // ═════════════════════════════════════════════════════════════════════════
 
 type checksumTool struct {
+	ctxTool
 	dangerousConfig danger.DangerousConfig
 	restrictToCWD   bool // sandbox: reject paths that escape the workspace
 }
@@ -1097,6 +1110,9 @@ func (t *checksumTool) hashFile(arg checksumFileArg) (entry checksumEntry) {
 	}()
 	if arg.Path == "" {
 		return checksumEntry{Error: "path is required"}
+	}
+	if err := checkTelegramMediaRead(t.toolCtx(), arg.Path); err != nil {
+		return checksumEntry{Path: arg.Path, Algorithm: strings.ToLower(arg.Algorithm), Error: err.Error()}
 	}
 	if err := confineIfRestricted(t.restrictToCWD, arg.Path); err != nil {
 		return checksumEntry{Path: arg.Path, Algorithm: strings.ToLower(arg.Algorithm), Error: err.Error()}
@@ -1229,6 +1245,9 @@ func (t *headTailTool) readPreview(path string, n int, mode string) (result head
 			result = headTailFileResult{Path: path, Error: fmt.Sprintf("internal error: %v", r)}
 		}
 	}()
+	if err := checkTelegramMediaRead(t.toolCtx(), path); err != nil {
+		return headTailFileResult{Path: path, Error: err.Error()}
+	}
 	if err := confineIfRestricted(t.restrictToCWD, path); err != nil {
 		return headTailFileResult{Path: path, Error: err.Error()}
 	}
@@ -1412,6 +1431,9 @@ func (t *base64Tool) Call(argsJSON string) (result string, err error) {
 	}
 
 	// File mode
+	if err := checkTelegramMediaRead(t.toolCtx(), args.Path); err != nil {
+		return jsonError(err.Error())
+	}
 	if err := confineIfRestricted(t.restrictToCWD, args.Path); err != nil {
 		return jsonError(err.Error())
 	}

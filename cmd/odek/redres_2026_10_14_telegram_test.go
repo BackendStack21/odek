@@ -256,3 +256,53 @@ func TestRED_TelegramTextAndResetWaitForPendingMedia(t *testing.T) {
 		t.Fatalf("media job must come first: %v", order)
 	}
 }
+
+type tgresCtxCaller interface {
+	SetContext(context.Context)
+	Call(string) (string, error)
+}
+
+func TestRED_TelegramMediaScopeCoversEveryPathTool(t *testing.T) {
+	p := tgresMediaFile(t, "doc_chat111_secret_ab.txt")
+	dc := danger.DangerousConfig{}
+	q := tgresQuote(p)
+	cases := map[string]struct {
+		tool tgresCtxCaller
+		args string
+	}{
+		"read_file":   {&readFileTool{dangerousConfig: dc}, `{"path":` + q + `}`},
+		"head_tail":   {&headTailTool{dangerousConfig: dc}, `{"path":` + q + `}`},
+		"base64":      {&base64Tool{dangerousConfig: dc}, `{"path":` + q + `}`},
+		"checksum":    {&checksumTool{dangerousConfig: dc}, `{"path":` + q + `}`},
+		"diff":        {&diffTool{dangerousConfig: dc}, `{"path_a":` + q + `,"path_b":` + q + `}`},
+		"json_query":  {&jsonQueryTool{dangerousConfig: dc}, `{"path":` + q + `,"query":"."}`},
+		"file_info":   {&fileInfoTool{dangerousConfig: dc}, `{"path":` + q + `}`},
+		"patch":       {&patchTool{dangerousConfig: dc}, `{"path":` + q + `,"old_string":"private","new_string":"x"}`},
+		"write_file":  {&writeFileTool{dangerousConfig: dc}, `{"path":` + q + `,"content":"x"}`},
+		"search_file": {&searchFilesTool{dangerousConfig: dc}, `{"pattern":"private","path":` + q + `}`},
+		"search_dir":  {&searchFilesTool{dangerousConfig: dc}, `{"pattern":"private","path":` + tgresQuote(filepath.Dir(p)) + `}`},
+		"tree":        {&treeTool{dangerousConfig: dc}, `{"path":` + tgresQuote(filepath.Dir(p)) + `}`},
+		"glob":        {&globTool{dangerousConfig: dc}, `{"pattern":"*","path":` + tgresQuote(filepath.Dir(p)) + `}`},
+	}
+	for name, c := range cases {
+		c.tool.SetContext(withTelegramMediaChat(context.Background(), 222))
+		out, _ := c.tool.Call(c.args)
+		if !strings.Contains(out, "different chat") || strings.Contains(out, "private contents") {
+			t.Errorf("%s: other chat's media not refused: %q", name, out)
+		}
+	}
+	// A broad search root that contains the media directory skips it.
+	home, _ := os.UserHomeDir()
+	st := &searchFilesTool{dangerousConfig: dc}
+	st.SetContext(withTelegramMediaChat(context.Background(), 222))
+	out, _ := st.Call(`{"pattern":"private","path":` + tgresQuote(filepath.Join(home, ".odek")) + `}`)
+	if strings.Contains(out, "private contents") {
+		t.Errorf("broad search read another chat's media: %q", out)
+	}
+	// The owner and non-Telegram runs are unaffected.
+	rt := &readFileTool{dangerousConfig: dc}
+	rt.SetContext(withTelegramMediaChat(context.Background(), 111))
+	if out, err := rt.Call(`{"path":` + q + `}`); err != nil || !strings.Contains(out, "private contents") {
+		t.Errorf("owner refused: %q %v", out, err)
+	}
+}

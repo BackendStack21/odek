@@ -460,7 +460,7 @@ Media files are saved to `~/.odek/media/` (created automatically on first downlo
 
 Downloads and voice auto-transcription run on the chat's ordered background queue, never on the update loop; text messages, commands, `/new`/`/resume` and scheduled turns of that chat start only after a media message received earlier has been fully handled (so "photo, then a question" sees the photo), so a slow download or speech-to-text run does not delay other chats or their approval callbacks.
 
-The file-reading tools (`read_file`, `vision`, `transcribe`) are scoped the same way as outbound media: during a Telegram turn they refuse files in `~/.odek/media/` that belong to another chat (same `_chat<chatID>_` / `chat<chatID>/` rule, resolved through `~`, `..`, symlinks and case folding). Other paths are unaffected.
+The path-taking native tools (`read_file`, `vision`, `transcribe`, `head_tail`, `base64`, `checksum`, `diff`, `json_query`, `file_info`, `patch`, `write_file`, `search_files`, `glob`, `tree`) are scoped the same way as outbound media: during a Telegram turn they refuse files in `~/.odek/media/` that belong to another chat (same `_chat<chatID>_` / `chat<chatID>/` rule, resolved through `~`, `..`, symlinks and case folding). A broad `search_files` root skips the media directory. Other paths are unaffected. The `shell` tool (approval-gated) and sub-agents spawned by `delegate_tasks` are not scoped.
 
 ### Download limits
 

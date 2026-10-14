@@ -559,6 +559,9 @@ func (t *writeFileTool) Call(argsJSON string) (string, error) {
 
 	// Path confinement: when restrictToCWD is enabled, reject paths that
 	// escape the working directory via ".." traversal or absolute paths.
+	if err := checkTelegramMediaRead(t.toolCtx(), args.Path); err != nil {
+		return jsonError(err.Error())
+	}
 	if t.restrictToCWD {
 		resolved, err := confineToCWD(args.Path)
 		if err != nil {
@@ -800,6 +803,9 @@ func (t *searchFilesTool) Call(argsJSON string) (string, error) {
 		args.Limit = maxSearchLimit
 	}
 
+	if err := checkTelegramMediaRead(t.toolCtx(), args.Path); err != nil {
+		return jsonError(err.Error())
+	}
 	if t.restrictToCWD {
 		confined, err := confineToCWD(args.Path)
 		if err != nil {
@@ -895,6 +901,15 @@ func (t *searchFilesTool) searchContent(args searchFilesArgs) (string, error) {
 				skipped = append(skipped, path+": "+reason)
 				return filepath.SkipDir
 			}
+			// A broad root may contain the shared Telegram media directory;
+			// another chat's downloads are never searched.
+			if err := checkTelegramMediaRead(t.toolCtx(), path); err != nil {
+				skipped = append(skipped, path+": "+err.Error())
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if err := checkTelegramMediaRead(t.toolCtx(), path); err != nil {
 			return nil
 		}
 		// Skip symlinks — prevents TOCTOU on the path and avoids listing
@@ -1134,6 +1149,9 @@ func (t *patchTool) Call(argsJSON string) (string, error) {
 
 	// Path confinement: same as write_file — reject paths that escape the
 	// working directory via ".." traversal or absolute paths.
+	if err := checkTelegramMediaRead(t.toolCtx(), args.Path); err != nil {
+		return jsonError(err.Error())
+	}
 	if t.restrictToCWD {
 		resolved, err := confineToCWD(args.Path)
 		if err != nil {
@@ -1818,6 +1836,9 @@ func (t *globTool) Call(argsJSON string) (result string, err error) {
 		args.Limit = maxGlobMatches
 	}
 
+	if err := checkTelegramMediaRead(t.toolCtx(), args.Path); err != nil {
+		return jsonError(err.Error())
+	}
 	if t.restrictToCWD {
 		confined, err := confineToCWD(args.Path)
 		if err != nil {
@@ -1938,6 +1959,9 @@ func (t *fileInfoTool) Call(argsJSON string) (result string, err error) {
 
 	// Path confinement: when restrictToCWD is enabled, reject paths that
 	// escape the working directory via ".." traversal or absolute paths.
+	if err := checkTelegramMediaRead(t.toolCtx(), args.Path); err != nil {
+		return jsonError(err.Error())
+	}
 	if t.restrictToCWD {
 		resolved, err := confineToCWD(args.Path)
 		if err != nil {
