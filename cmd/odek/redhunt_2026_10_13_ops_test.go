@@ -492,3 +492,30 @@ func TestReplHistoryLegacyFileLoadsRaw(t *testing.T) {
 		t.Errorf("entries after migration = %q", h2.entries)
 	}
 }
+
+func TestInitGlobalForceKeepsLinkedConfigAndMode(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	target := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(target, []byte(`{"old":true}`), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(home, ".odek"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(home, ".odek", "config.json")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	_ = opsHuntCaptureStdout(t, func() { _ = initConfig([]string{"--global", "--force"}) })
+	if fi, err := os.Lstat(link); err != nil || fi.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("global config symlink was replaced (err=%v)", err)
+	}
+	got, _ := os.ReadFile(target)
+	if strings.Contains(string(got), `"old"`) || len(got) == 0 {
+		t.Errorf("target not rewritten: %s", got)
+	}
+	if fi, _ := os.Stat(target); fi.Mode().Perm() != 0o640 {
+		t.Errorf("mode = %v, want 0640 preserved", fi.Mode().Perm())
+	}
+}

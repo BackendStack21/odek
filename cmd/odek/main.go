@@ -1835,7 +1835,19 @@ func initConfig(args []string) error {
 		return fmt.Errorf("create directory %s: %w", dir, err)
 	}
 
-	if err := fsatomic.WriteFile(configPath, []byte(template+"\n"), 0600); err != nil {
+	// The operator's own global config may be a link into a dotfiles tree:
+	// write atomically to the file it points at, keeping its mode, so the
+	// link survives. (A project ./odek.json link was refused above.)
+	writePath, mode := configPath, os.FileMode(0600)
+	if global {
+		if resolved, err := filepath.EvalSymlinks(configPath); err == nil {
+			writePath = resolved
+		}
+		if fi, err := os.Stat(writePath); err == nil && fi.Mode().IsRegular() {
+			mode = fi.Mode().Perm()
+		}
+	}
+	if err := fsatomic.WriteFile(writePath, []byte(template+"\n"), mode); err != nil {
 		return fmt.Errorf("write config: %w", err)
 	}
 
