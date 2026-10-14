@@ -43,6 +43,7 @@ cmd/odek/
   telegram.go                 Telegram bot command — wires odek agent into Telegram poller
   telegram_voice.go           Telegram voice messages: STT transcription of audio notes
   telegram_vision.go          Telegram vision: photo/image input routing
+  telegram_media_scope.go     Per-chat media read scope for the native path tools on Telegram turns
   subagent.go                 Sub-agent command (--goal, --context, --task) + flag parsing/limits
   subagent_tool.go            delegate_tasks built-in tool (sub-agent spawning)
   subagent_key.go             FD-based API key handoff (parent → sub-agent, never via env)
