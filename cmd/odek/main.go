@@ -3878,8 +3878,8 @@ func trimSession(store *session.Store, args []string) error {
 		return fmt.Errorf("usage: odek session trim <id> <n>")
 	}
 	id := args[0]
-	var n int
-	if _, err := fmt.Sscanf(args[1], "%d", &n); err != nil || n < 2 {
+	n, nerr := strconv.Atoi(args[1])
+	if nerr != nil || n < 2 {
 		return fmt.Errorf("n must be at least 2 (system + at least 1 message), got %q", args[1])
 	}
 
@@ -3934,8 +3934,8 @@ func cleanupSessions(store *session.Store, args []string) error {
 	if len(args) == 0 {
 		return fmt.Errorf("usage: odek session cleanup <days>")
 	}
-	var days int
-	if _, err := fmt.Sscanf(args[0], "%d", &days); err != nil || days < 0 {
+	days, derr := strconv.Atoi(args[0])
+	if derr != nil || days < 0 {
 		return fmt.Errorf("invalid days %q — must be a non-negative integer", args[0])
 	}
 
