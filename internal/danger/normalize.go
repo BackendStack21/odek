@@ -3,6 +3,7 @@ package danger
 import (
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 // homoglyphMap folds common Unicode confusables (Cyrillic/Greek look-alikes)
@@ -181,16 +182,33 @@ func ContainsInvisible(s string) bool {
 // Combining diacritical marks (U+0300–U+036F etc.) are stripped because they
 // render invisibly inside a word while breaking contiguous-pattern matching —
 // "instructio\u0301ns" must scan like "instructions".
-func NormalizeForScan(text string) string {
-	// Single pass: drop invisible/combining characters and collapse
-	// whitespace runs to single spaces while building, so the old
-	// build → ToLower → Fields+Join copy chain becomes one build plus
-	// one ToLower copy (ToLower over the string keeps the exact original
-	// case-folding semantics).
+func NormalizeForScan(text string) string { return normalizeScan(text, true) }
+
+// normalizeScan is NormalizeForScan with a choice for the C0 separator
+// controls (0x1C-0x1F): a space keeps the words either side apart, deleting
+// them joins the letters of a word that was split by one. The scan reads both.
+func normalizeScan(text string, separatorsAsSpace bool) string {
 	var b strings.Builder
 	b.Grow(len(text))
 	prevSpace := true // leading whitespace is dropped
-	for _, r := range text {
+	for i := 0; i < len(text); {
+		r, size := utf8.DecodeRuneInString(text[i:])
+		if r == 0x1b {
+			// An ANSI CSI sequence (ESC [ params final) renders as nothing:
+			// drop it as a unit rather than leaving its parameters behind.
+			if n := ansiCSILen(text[i:]); n > 0 {
+				i += n
+				if separatorsAsSpace && !prevSpace {
+					b.WriteByte(' ')
+					prevSpace = true
+				}
+				continue
+			}
+		}
+		i += size
+		if r >= 0x1c && r <= 0x1f && separatorsAsSpace {
+			r = ' '
+		}
 		if isInvisible(r) || isStrippedControl(r) {
 			continue
 		}
@@ -208,6 +226,25 @@ func NormalizeForScan(text string) string {
 		prevSpace = false
 	}
 	return strings.ToLower(strings.TrimSuffix(b.String(), " "))
+}
+
+// ansiCSILen returns the length of the ANSI CSI sequence at the start of s
+// (ESC [ parameter bytes, intermediate bytes, final byte), or 0.
+func ansiCSILen(s string) int {
+	if len(s) < 3 || s[0] != 0x1b || s[1] != '[' {
+		return 0
+	}
+	i := 2
+	for i < len(s) && s[i] >= 0x30 && s[i] <= 0x3f {
+		i++
+	}
+	for i < len(s) && s[i] >= 0x20 && s[i] <= 0x2f {
+		i++
+	}
+	if i < len(s) && s[i] >= 0x40 && s[i] <= 0x7e {
+		return i + 1
+	}
+	return 0
 }
 
 // FoldHomoglyphs returns text with common Unicode confusables (Cyrillic/Greek
@@ -265,6 +302,8 @@ func foldStyledRune(r rune) (rune, bool) {
 		return 'a' + (r - 0x1F150), true
 	case r >= 0x1F170 && r <= 0x1F189: // negative squared capitals
 		return 'a' + (r - 0x1F170), true
+	case r >= 0x1F1E6 && r <= 0x1F1FF: // regional indicator letters
+		return 'a' + (r - 0x1F1E6), true
 	case r >= 0xFF01 && r <= 0xFF5E:
 		// The fullwidth ASCII block: punctuation and digits as well as
 		// letters, so a control token spelled with fullwidth bars and

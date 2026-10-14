@@ -564,9 +564,17 @@ func ScanInjection(content string) []ScanResult {
 		bare = stripMarkdownMarkers(normalized)
 		bareFolded = FoldHomoglyphs(bare)
 	}
+	// C0 separator controls read as a space or as nothing; scan the joined
+	// reading too.
+	var joined, joinedFolded string
+	if strings.ContainsAny(content, "\x1b\x1c\x1d\x1e\x1f") {
+		joined = normalizeScan(content, false)
+		joinedFolded = FoldHomoglyphs(joined)
+	}
 	for i, p := range injectionPatterns {
 		lits := injectionLiterals[i]
-		if matchPattern(p.Re, lits, normalized) || (foldDistinct && matchPattern(p.Re, lits, folded)) ||
+		if (joined != "" && (matchPattern(p.Re, lits, joined) || matchPattern(p.Re, lits, joinedFolded))) ||
+			matchPattern(p.Re, lits, normalized) || (foldDistinct && matchPattern(p.Re, lits, folded)) ||
 			(foldedNu != "" && matchPattern(p.Re, lits, foldedNu)) ||
 			(bare != "" && (matchPattern(p.Re, lits, bare) || (bareFolded != bare && matchPattern(p.Re, lits, bareFolded)))) {
 			results = append(results, ScanResult{
