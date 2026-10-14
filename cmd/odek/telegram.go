@@ -717,6 +717,9 @@ func telegramCmd(args []string) error {
 			if err != nil {
 				return fmt.Sprintf("❌ %v", err), nil
 			}
+			// A different conversation is now live: wake turns must not
+			// inherit the previous conversation's user binding.
+			telegramTurnUsers.Delete(chatID)
 			// Return-after-break: inject a concise "where you left off"
 			// summary into the resumed context (same as `odek continue` and
 			// the REPL resume path). A throwaway manager is built here because
@@ -1740,6 +1743,10 @@ func runChatTurn(
 	// to prevent log spam when the API is unreachable or rate-limited.
 	typingDone := make(chan struct{})
 	defer close(typingDone)
+	// runStopped is closed when the agent run's context ends (/stop, /new,
+	// timeout). Blocking tools (clarify) select on it: typingDone only closes
+	// when this function returns, which a blocked tool call prevents.
+	runStopped := make(chan struct{})
 	go func() {
 		ticker := time.NewTicker(4 * time.Second)
 		defer ticker.Stop()
@@ -1925,6 +1932,8 @@ func runChatTurn(
 			return answer, nil
 		case <-time.After(10 * time.Minute):
 			return "", fmt.Errorf("clarify: timed out waiting for response")
+		case <-runStopped:
+			return "", fmt.Errorf("clarify: task cancelled by /stop")
 		case <-typingDone:
 			return "", fmt.Errorf("clarify: task cancelled by /stop")
 		}
@@ -2230,6 +2239,13 @@ func runChatTurn(
 	// those ingests on it now so the audit sees the turn crossed the boundary.
 	recordOpeningIngests(agentCtx, text)
 	chatCancels.Store(chatID, agentCancel)
+	// When the run ends, release anything blocked on the user: a pending
+	// approval prompt is cancelled and a pending clarify returns.
+	go func() {
+		<-agentCtx.Done()
+		approver.Cancel()
+		close(runStopped)
+	}()
 	defer func() {
 		agentCancel()
 		chatCancels.LoadAndDelete(chatID)
