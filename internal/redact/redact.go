@@ -167,8 +167,9 @@ type guardedPattern struct {
 const (
 	gSep = `["'\x60]?\s*(?:=>|[:=])\s*`
 	// The unquoted alternative ends at a JSON string escape (\n, \r, \t, \"),
-	// so a credential followed by an encoded newline is judged alone.
-	gVal = `("[^"\n]{20,}"|'[^'\n]{20,}'|\x60[^\x60\n]{20,}\x60|(?:[^\s\\]|\\[^\snrt"]){20,})`
+	// so a credential followed by an encoded newline is judged alone. A
+	// literal in escaped quotes (\"...\", JSON-encoded) is a quoted value.
+	gVal = `("[^"\n]{20,}"|'[^'\n]{20,}'|\x60[^\x60\n]{20,}\x60|\\"(?:[^"\\\n]|\\[^"\nnrt]){20,}\\"|(?:[^\s\\]|\\[^\snrt"]){20,})`
 )
 
 var guardedPatterns = []guardedPattern{
@@ -1090,12 +1091,16 @@ func guardedPatternMatches(text string) [][2]int {
 				continue
 			}
 			// Group 1 always participates in a guarded match.
-			judge, end := m[3], m[1]
-			unquoted := m[1] == m[3] && m[3] > m[2] && strings.IndexByte("\"'`", text[m[2]]) < 0
-			if unquoted {
+			vs, judge, end := m[2], m[3], m[1]
+			escQuoted := m[3]-m[2] >= 4 && strings.HasPrefix(text[m[2]:], `\"`) && strings.HasSuffix(text[:m[3]], `\"`)
+			unquoted := !escQuoted && m[1] == m[3] && m[3] > m[2] && strings.IndexByte("\"'`", text[m[2]]) < 0
+			switch {
+			case escQuoted:
+				vs, judge = m[2]+2, m[3]-2
+			case unquoted:
 				judge = unquotedJudgeEnd(text, m[2], m[3], inJSON.at(text, m[2]))
 			}
-			if !g.ok(text[m[2]:judge]) {
+			if !g.ok(text[vs:judge]) {
 				continue
 			}
 			if unquoted {

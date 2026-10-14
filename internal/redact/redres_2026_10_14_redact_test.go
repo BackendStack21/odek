@@ -150,6 +150,22 @@ func TestCredentialValueQuoteHandlingOutsideJSON(t *testing.T) {
 	})
 }
 
+// A bare token / secret / pwd / pass value in escaped quotes (JSON-encoded
+// "token: \"...\"") is a quoted literal and is judged without its quotes.
+func TestRED_EscapedQuotedBareKeyValueLeaks(t *testing.T) {
+	redres14ExpectExact(t, map[string]string{
+		`{"out":"token: \"Xy7kLm9pQ2zzAbCdEf3456\" next"}`:  `{"out":"[REDACTED] next"}`,
+		`{"out":"secret=\"Xy7kLm9pQ2zzAbCdEf3456\"\nnext"}`: `{"out":"[REDACTED]\nnext"}`,
+		`{"out":"MYSQL_PWD=\"Xy7kLm9pQ2zzAbCdEf3456\";ls"}`: `{"out":"MYSQL[REDACTED];ls"}`,
+	})
+	redres14ExpectUnchanged(t, []string{
+		`{"out":"secret: \"kubernetes-secret-name-for-app\""}`,
+		`{"out":"token: \"${GITHUB_TOKEN_VALUE_HERE}\"\nnext"}`,
+		`{"out":"pass: \"TestEscapedQuotedBareKeyValue\""}`,
+		`{"out":"pwd=\"/home/user/projects/app-server\""}`,
+	})
+}
+
 // Escaped-quote continuation, JSON-aware value ends and the cookie rule stay
 // linear on hostile input: a value continued through \" is never rescanned
 // from a later match inside it.
