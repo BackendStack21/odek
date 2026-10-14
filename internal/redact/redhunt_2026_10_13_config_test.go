@@ -101,6 +101,53 @@ func TestCurlScopedCredentialFlag(t *testing.T) {
 	})
 }
 
+func TestCommandScopeAcrossContinuationsAndQuotes(t *testing.T) {
+	for in, want := range map[string]string{
+		"curl \\\n  -u a:secretpw1 https://x":                     "curl \\\n  -u a:[REDACTED] https://x",
+		`curl "https://x?a=1&b=2" -u a:secretpw1`:                 `curl "https://x?a=1&b=2" -u a:[REDACTED]`,
+		`curl -H 'A: b;c|d' -u a:secretpw1 https://x`:             `curl -H 'A: b;c|d' -u a:[REDACTED] https://x`,
+		`curl --user "admin:pass word" https://x`:                 `curl --user "admin:[REDACTED]" https://x`,
+		`curl --user 'admin:pass word' https://x`:                 `curl --user 'admin:[REDACTED]' https://x`,
+		`curl --proxy-user="a:pass word" https://x`:               `curl --proxy-user="a:[REDACTED]" https://x`,
+		`curl -u a:"pa ss word" https://x`:                        `curl -u a:"[REDACTED]" https://x`,
+		"CURL -u a:secretpw1 https://x":                           "CURL -u a:[REDACTED] https://x",
+		"Wget --PASSWORD" + " x":                                  "Wget --PASSWORD x",
+		"WGET --password=letmeinplease https://x":                 "WGET --password=[REDACTED] https://x",
+		"cd /tmp && /usr/bin/curl -sS -u a:secretpw1 https://x":   "cd /tmp && /usr/bin/curl -sS -u a:[REDACTED] https://x",
+		"curl https://x; curl -u a:secretpw1 https://y":           "curl https://x; curl -u a:[REDACTED] https://y",
+		"echo hi | curl -K - -u a:secretpw1":                      "echo hi | curl -K - -u a:[REDACTED]",
+		"curl -s -o /dev/null https://x -u a:secretpw1 -w '%{h}'": "curl -s -o /dev/null https://x -u a:[REDACTED] -w '%{h}'",
+	} {
+		if got := RedactSecrets(in); got != want {
+			t.Errorf("RedactSecrets(%q)\n got  %q\n want %q", in, got, want)
+		}
+	}
+	cfghunt13ExpectUnchanged(t, []string{
+		"curl -u me:YOUR_API_KEY https://x",
+		"curl -u me:API_TOKEN https://x",
+		"curl -u me:PASSWORD_HERE https://x",
+		"curl https://x\nsudo -u postgres:postgres1 psql",
+		"curl https://x && sudo -u postgres:postgres1 psql",
+		"curl -s https://x \\\n | sudo -u postgres:postgres1 psql",
+	})
+}
+
+func TestCookieNameSegmentsAndPlaceholders(t *testing.T) {
+	for _, name := range []string{"remember_user_token", "_gh_sess", "connect.sid", "PHPSESSID", "laravel_session", "__Secure-3PSID", "JSESSIONID", "session_id", "csrftoken", "auth_token", "authToken", "XSRF-TOKEN", "sessionid"} {
+		in := "Cookie: " + name + "=abcdefghijklmnop"
+		if got := RedactSecrets(in); strings.Contains(got, "abcdefgh") {
+			t.Errorf("session cookie %q not redacted: %q", name, got)
+		}
+	}
+	cfghunt13ExpectUnchanged(t, []string{
+		"Cookie: loginHint=abcdefghijklmnop",
+		"Cookie: tokenType=abcdefghijklmnop",
+		"Cookie: session=YOUR_SESSION_ID",
+		"Cookie: sid=REPLACE_ME_NOW",
+		"Cookie: theme=abcdefghijklmnop",
+	})
+}
+
 func TestCookieValueOnlyRedaction(t *testing.T) {
 	for in, want := range map[string]string{
 		"Cookie: sessionid=abcdefghijklmnopqrstuvwx":                     "Cookie: sessionid=[REDACTED]",
@@ -171,21 +218,26 @@ func TestJSONEscapedSecretCorpus(t *testing.T) {
 // The new rules stay linear on hostile input.
 func TestNewRedactionRulesScaleLinearly(t *testing.T) {
 	gens := map[string]func(n int) string{
-		"json escapes":    func(n int) string { return strings.Repeat(`token:\n\n\n\n`, n/12) },
-		"escape tokens":   func(n int) string { return "token: " + strings.Repeat(`aB3\x`, n/5) },
-		"cookie header":   func(n int) string { return strings.Repeat("Cookie: a=b;", n/12) },
-		"cookie long":     func(n int) string { return "Cookie: " + strings.Repeat("a=Bc1;", n/6) },
-		"curl flags":      func(n int) string { return strings.Repeat(" -u a:", n/6) },
-		"curl repeated":   func(n int) string { return strings.Repeat("curl -x ", n/8) },
-		"curl no end":     func(n int) string { return "curl " + strings.Repeat("-a ", n/3) },
-		"cookie pairs":    func(n int) string { return "Cookie: " + strings.Repeat("sid=a;", n/6) },
-		"cookie repeated": func(n int) string { return strings.Repeat("Cookie:sid=", n/11) },
-		"wget http":       func(n int) string { return strings.Repeat("wget http ", n/10) },
-		"curl long user":  func(n int) string { return "curl -u " + strings.Repeat("a", n) },
-		"db urls":         func(n int) string { return strings.Repeat("redis://:", n/9) },
-		"db driver":       func(n int) string { return "postgresql+" + strings.Repeat("a", n) },
-		"webhooks":        func(n int) string { return strings.Repeat("hooks.slack" + ".com/services/TA/BA/", n/31) },
-		"discord webhook": func(n int) string { return strings.Repeat("discord.com/api/webhooks/1/", n/27) },
+		"json escapes":       func(n int) string { return strings.Repeat(`token:\n\n\n\n`, n/12) },
+		"escape tokens":      func(n int) string { return "token: " + strings.Repeat(`aB3\x`, n/5) },
+		"cookie header":      func(n int) string { return strings.Repeat("Cookie: a=b;", n/12) },
+		"cookie long":        func(n int) string { return "Cookie: " + strings.Repeat("a=Bc1;", n/6) },
+		"curl flags":         func(n int) string { return strings.Repeat(" -u a:", n/6) },
+		"curl repeated":      func(n int) string { return strings.Repeat("curl -x ", n/8) },
+		"curl continuations": func(n int) string { return strings.Repeat("curl \\\n", n/7) },
+		"curl quoted ops":    func(n int) string { return "curl " + strings.Repeat("'a;b|c&d' ", n/10) },
+		"curl open quote":    func(n int) string { return strings.Repeat("curl '", n/6) },
+		"curl open dquote":   func(n int) string { return "curl \"" + strings.Repeat("a\\ ", n/3) },
+		"curl many cmds":     func(n int) string { return strings.Repeat("curl -u a;", n/10) },
+		"curl no end":        func(n int) string { return "curl " + strings.Repeat("-a ", n/3) },
+		"cookie pairs":       func(n int) string { return "Cookie: " + strings.Repeat("sid=a;", n/6) },
+		"cookie repeated":    func(n int) string { return strings.Repeat("Cookie:sid=", n/11) },
+		"wget http":          func(n int) string { return strings.Repeat("wget http ", n/10) },
+		"curl long user":     func(n int) string { return "curl -u " + strings.Repeat("a", n) },
+		"db urls":            func(n int) string { return strings.Repeat("redis://:", n/9) },
+		"db driver":          func(n int) string { return "postgresql+" + strings.Repeat("a", n) },
+		"webhooks":           func(n int) string { return strings.Repeat("hooks.slack" + ".com/services/TA/BA/", n/31) },
+		"discord webhook":    func(n int) string { return strings.Repeat("discord.com/api/webhooks/1/", n/27) },
 	}
 	base := 64 << 10
 	if raceEnabled {
@@ -198,6 +250,12 @@ func TestNewRedactionRulesScaleLinearly(t *testing.T) {
 		}
 		if large > 9*small {
 			t.Errorf("%s: super-linear: %d bytes %v, x4 %v", name, base, small, large)
+		}
+		// 16x the input (64 KiB to 1 MiB) may not cost more than ~40x.
+		if !raceEnabled && !testing.Short() {
+			if huge := finalRedactTime(gen(16*base), 1); huge > 40*small {
+				t.Errorf("%s: super-linear: %d bytes %v, x16 %v", name, base, small, huge)
+			}
 		}
 	}
 }

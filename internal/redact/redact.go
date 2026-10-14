@@ -209,17 +209,6 @@ func plausibleFlagValue(v string) bool {
 // group only (group 1), so the surrounding command or URL stays readable.
 // The group must also pass ok.
 var valuePatterns = []guardedPattern{
-	// curl credential flags: -u / -U / --user / --proxy-user USER:PASSWORD,
-	// also attached (-uUSER:PASSWORD) and inside short-flag clusters (-sSLu).
-	// Scoped to a curl command (up to the next pipe, separator or newline),
-	// because -u / -U mean other things elsewhere (docker run -u uid:gid,
-	// sudo -u user, rsync -u). The user part alone (`-u admin`) is not a
-	// credential.
-	{regexp.MustCompile(`\bcurl\b[^\n|;&]*?\s(?:-[A-Za-z]*[uU][ \t=]*|--(?:proxy-)?user[ \t=]+)["']?[^\s:"']*:("[^"\n]{6,}"|'[^'\n]{6,}'|[^\s"']{6,})`), plausibleAuthPassword},
-	// wget --password=VALUE / --http-password VALUE / --ftp-password VALUE.
-	{regexp.MustCompile(`\bwget\b[^\n|;&]*?\s--(?:http-|ftp-|proxy-)?password[ \t=]+("[^"\n]{6,}"|'[^'\n]{6,}'|[^\s"']{6,})`), plausibleAuthPassword},
-	// HTTPie --auth / -a USER:PASSWORD.
-	{regexp.MustCompile(`\b(?:http|https|xh)\b[^\n|;&]*?\s(?:--auth[ \t=]+|-a[ \t]+)["']?[^\s:"']*:("[^"\n]{6,}"|'[^'\n]{6,}'|[^\s"']{6,})`), plausibleAuthPassword},
 	// Chat incoming-webhook URLs: whoever holds the URL can post as the
 	// integration, so the secret path segment is a bearer credential.
 	{regexp.MustCompile(`hooks\.slack\.com/(?:services|workflows|triggers)/(?:[A-Za-z0-9]+/){1,3}([A-Za-z0-9]{20,})`), plausibleWebhookToken},
@@ -239,7 +228,24 @@ func plausibleAuthPassword(v string) bool {
 	case "password", "passwd", "secret", "changeme", "yourpassword", "pa55word":
 		return false
 	}
-	return !allSameFold(t)
+	return !allSameFold(t) && !placeholderShape(t)
+}
+
+// placeholderShape reports whether v is only upper-case letters joined by
+// underscores or hyphens (YOUR_API_KEY, PASSWORD_HERE, REPLACE_ME): the shape
+// of a documentation placeholder, not of a generated credential. A single
+// upper-case run (ABCDEFGHIJ) is not a placeholder.
+func placeholderShape(v string) bool {
+	sep := false
+	for i := 0; i < len(v); i++ {
+		c := v[i]
+		if c == '_' || c == '-' {
+			sep = true
+		} else if c < 'A' || c > 'Z' {
+			return false
+		}
+	}
+	return sep
 }
 
 // allSameFold reports whether every byte of t is the same letter (XXXXXX).
@@ -274,6 +280,252 @@ func plausibleWebhookToken(v string) bool {
 		}
 	}
 	return true
+}
+
+// commandScanMax bounds how far one command is tokenised.
+const commandScanMax = 64 << 10
+
+// cmdWord is the raw [s,e) extent of one shell word.
+type cmdWord struct{ s, e int }
+
+// commandWords tokenises the command that continues at from: words are
+// split on blanks and backslash-newline continuations; quotes group a word
+// (so a quoted & ; | or newline does not end the command); an unquoted
+// newline, |, ; or & ends it. It returns the words and the offset where
+// scanning stopped. The scan is bounded by commandScanMax bytes.
+func commandWords(text string, from int) ([]cmdWord, int) {
+	limit := len(text)
+	if limit-from > commandScanMax {
+		limit = from + commandScanMax
+	}
+	var words []cmdWord
+	i := from
+	for i < limit {
+		c := text[i]
+		switch {
+		case c == ' ' || c == '\t':
+			i++
+			continue
+		case c == '\\' && i+1 < limit && (text[i+1] == '\n' || text[i+1] == '\r'):
+			i += 2
+			if text[i-1] == '\r' && i < limit && text[i] == '\n' {
+				i++
+			}
+			continue
+		case c == '\n' || c == '\r' || c == '|' || c == ';' || c == '&':
+			return words, i
+		}
+		s := i
+	word:
+		for i < limit {
+			switch c := text[i]; c {
+			case ' ', '\t', '\n', '\r', '|', ';', '&':
+				break word
+			case '\\':
+				if i+1 < limit && (text[i+1] == '\n' || text[i+1] == '\r') {
+					break word
+				}
+				i += 2
+			case '\'':
+				i++
+				for i < limit && text[i] != '\'' {
+					i++
+				}
+				i++
+			case '"':
+				i++
+				for i < limit && text[i] != '"' {
+					if text[i] == '\\' {
+						i++
+					}
+					i++
+				}
+				i++
+			default:
+				i++
+			}
+		}
+		if i > limit {
+			i = limit
+		}
+		words = append(words, cmdWord{s, i})
+	}
+	return words, i
+}
+
+// unquoteWord returns the shell-unquoted content of text[s:e] and, for each
+// content byte, its raw offset.
+func unquoteWord(text string, s, e int) ([]byte, []int) {
+	var out []byte
+	var idx []int
+	var q byte
+	for i := s; i < e; i++ {
+		c := text[i]
+		switch {
+		case q == 0 && (c == '\'' || c == '"'):
+			q = c
+		case q != 0 && c == q:
+			q = 0
+		case c == '\\' && q != '\'' && i+1 < e:
+			i++
+			out = append(out, text[i])
+			idx = append(idx, i)
+		default:
+			out = append(out, c)
+			idx = append(idx, i)
+		}
+	}
+	return out, idx
+}
+
+// operandPassword returns the raw span of the PASSWORD in a USER:PASSWORD
+// operand occupying text[s:e] (quotes allowed), when it passes ok.
+func operandPassword(text string, s, e int, ok func(string) bool) (int, int, bool) {
+	c, idx := unquoteWord(text, s, e)
+	k := bytesIndexByte(c, ':')
+	if k < 0 || k+1 >= len(c) {
+		return 0, 0, false
+	}
+	if !ok(string(c[k+1:])) {
+		return 0, 0, false
+	}
+	return idx[k+1], idx[len(c)-1] + 1, true
+}
+
+func bytesIndexByte(b []byte, c byte) int {
+	for i, x := range b {
+		if x == c {
+			return i
+		}
+	}
+	return -1
+}
+
+// wholePassword returns the raw span of an entire (unquoted) word value
+// when it passes ok.
+func wholePassword(text string, s, e int, ok func(string) bool) (int, int, bool) {
+	c, idx := unquoteWord(text, s, e)
+	if len(c) == 0 || !ok(string(c)) {
+		return 0, 0, false
+	}
+	return idx[0], idx[len(c)-1] + 1, true
+}
+
+// commandTools are the commands whose credential flags are recognised, with
+// the flag grammar each uses.
+var commandTools = []struct {
+	name string
+	kind int
+}{{"curl", 0}, {"wget", 1}, {"http", 2}, {"https", 2}, {"xh", 2}}
+
+// commandCredentialMatches returns the spans of passwords given on the
+// command line of curl (-u, -U, --user, --proxy-user USER:PASSWORD, also
+// attached and clustered), wget (--password and variants) and HTTPie/xh
+// (--auth, -a USER:PASSWORD). Scoping to these commands keeps -u / -U /
+// -a as used by docker, sudo, rsync, pip and others readable. Command words
+// match in any case.
+func commandCredentialMatches(text string) [][2]int {
+	var out [][2]int
+	for _, tool := range commandTools {
+		for pos := 0; pos < len(text); {
+			j := indexFoldASCII(text[pos:], tool.name)
+			if j < 0 {
+				break
+			}
+			j += pos
+			after := j + len(tool.name)
+			pos = after
+			if j > 0 && isCommandWordByte(text[j-1]) {
+				continue
+			}
+			if after < len(text) && !strings.ContainsRune(" \t\n\r\\", rune(text[after])) {
+				continue
+			}
+			words, end := commandWords(text, after)
+			out = append(out, toolCredentialSpans(text, tool.kind, words)...)
+			if end > pos {
+				pos = end
+			}
+		}
+	}
+	return out
+}
+
+func isCommandWordByte(c byte) bool {
+	return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_' || c == '-' || c == '.'
+}
+
+func toolCredentialSpans(text string, kind int, words []cmdWord) [][2]int {
+	var out [][2]int
+	add := func(s, e int, ok bool) {
+		if ok {
+			out = append(out, [2]int{s, e})
+		}
+	}
+	for k, w := range words {
+		raw := text[w.s:w.e]
+		// operand is the raw extent of the credential operand, if any.
+		os, oe := -1, -1
+		next := func() {
+			if k+1 < len(words) {
+				os, oe = words[k+1].s, words[k+1].e
+			}
+		}
+		if strings.HasPrefix(raw, "--") {
+			name, attS := raw, -1
+			if eq := strings.IndexByte(raw, '='); eq > 0 {
+				name, attS = raw[:eq], w.s+eq+1
+			}
+			var match bool
+			switch kind {
+			case 0:
+				match = name == "--user" || name == "--proxy-user"
+			case 1:
+				match = name == "--password" || name == "--http-password" || name == "--ftp-password" || name == "--proxy-password"
+			default:
+				match = name == "--auth"
+			}
+			if !match {
+				continue
+			}
+			if attS >= 0 {
+				os, oe = attS, w.e
+			} else {
+				next()
+			}
+		} else if strings.HasPrefix(raw, "-") && len(raw) > 1 && kind != 1 {
+			if kind == 2 {
+				if raw != "-a" {
+					continue
+				}
+				next()
+			} else {
+				j := 1
+				for j < len(raw) && (raw[j] >= 'a' && raw[j] <= 'z' || raw[j] >= 'A' && raw[j] <= 'Z') && raw[j] != 'u' && raw[j] != 'U' {
+					j++
+				}
+				if j >= len(raw) || (raw[j] != 'u' && raw[j] != 'U') {
+					continue
+				}
+				if j+1 == len(raw) {
+					next()
+				} else {
+					os, oe = w.s+j+1, w.e
+				}
+			}
+		} else {
+			continue
+		}
+		if os < 0 {
+			continue
+		}
+		if kind == 1 {
+			add(wholePassword(text, os, oe, plausibleAuthPassword))
+		} else {
+			add(operandPassword(text, os, oe, plausibleAuthPassword))
+		}
+	}
+	return out
 }
 
 // cookieHeaderRe finds a Cookie / Set-Cookie header (also inside a quoted
@@ -315,24 +567,67 @@ func cookieMatches(text string) [][2]int {
 }
 
 // sessionCookieName reports whether a cookie name reads as a session or
-// authentication cookie (PHPSESSID, JSESSIONID, connect.sid, csrftoken,
-// auth, jwt, remember_me, …).
+// authentication cookie. The name is split into segments (on _ - . and
+// camelCase boundaries) and judged by its last segment, skipping a trailing
+// "id": PHPSESSID, JSESSIONID, _gh_sess, connect.sid, laravel_session,
+// session_id, csrftoken, auth_token, __Secure-3PSID and remember_user_token
+// match, loginHint and tokenType do not.
 func sessionCookieName(name string) bool {
-	l := strings.ToLower(name)
-	for _, w := range []string{"session", "sess", "token", "auth", "jwt", "csrf", "xsrf", "remember", "login", "secret", "passw", "credential", "apikey"} {
-		if strings.Contains(l, w) {
+	segs := nameSegments(name)
+	for _, sg := range segs {
+		if sg == "remember" {
 			return true
 		}
 	}
-	if strings.HasSuffix(l, "sid") {
-		return true
+	if n := len(segs); n > 1 && segs[n-1] == "id" {
+		segs = segs[:n-1]
 	}
-	for _, seg := range strings.FieldsFunc(l, func(r rune) bool { return r == '-' || r == '_' || r == '.' }) {
-		if seg == "sid" || seg == "ssid" {
-			return true
+	if len(segs) == 0 {
+		return false
+	}
+	cands := []string{segs[len(segs)-1]}
+	if n := len(segs); n > 1 {
+		cands = append(cands, segs[n-2]+segs[n-1])
+	}
+	for _, c := range cands {
+		for _, suf := range []string{"session", "sessionid", "sess", "sessid", "sid", "token", "jwt", "csrf", "xsrf", "auth", "secret", "passwd", "password", "apikey", "credential", "credentials"} {
+			if strings.HasSuffix(c, suf) {
+				return true
+			}
 		}
 	}
 	return false
+}
+
+// nameSegments splits a name into lower-case segments at separators
+// (_ - . space) and camelCase boundaries (aB, 3P, and the end of an
+// acronym before a capitalised word).
+func nameSegments(name string) []string {
+	var segs []string
+	start := 0
+	flush := func(end int) {
+		if end > start {
+			segs = append(segs, strings.ToLower(name[start:end]))
+		}
+	}
+	isUp := func(c byte) bool { return c >= 'A' && c <= 'Z' }
+	isLo := func(c byte) bool { return c >= 'a' && c <= 'z' }
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		switch {
+		case c == '_' || c == '-' || c == '.' || c == ' ':
+			flush(i)
+			start = i + 1
+		case i > start && isUp(c) && (isLo(name[i-1]) || (name[i-1] >= '0' && name[i-1] <= '9')):
+			flush(i)
+			start = i
+		case i > start && isUp(c) && isUp(name[i-1]) && i+1 < len(name) && isLo(name[i+1]):
+			flush(i)
+			start = i
+		}
+	}
+	flush(len(name))
+	return segs
 }
 
 // plausibleCookieToken accepts a single token of at least 8 characters that
@@ -341,7 +636,7 @@ func plausibleCookieToken(v string) bool {
 	if len(v) < 8 || strings.ContainsAny(v[:1], "$%{<") || strings.ContainsAny(v, " \t<>{}()") {
 		return false
 	}
-	return !allSameFold(v)
+	return !allSameFold(v) && !placeholderShape(v)
 }
 
 // cookieValueShape accepts a single token of at least 16 base64url,
@@ -521,6 +816,7 @@ func guardedPatternMatches(text string) [][2]int {
 			}
 		}
 	}
+	out = append(out, commandCredentialMatches(text)...)
 	return append(out, cookieMatches(text)...)
 }
 
