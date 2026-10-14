@@ -40,10 +40,14 @@ func opsHuntFeedEditor(t *testing.T, in string, completions []string) string {
 // leaves the '~' in the buffer, where it is inserted into the line as typed
 // text.
 func TestRED_ReplEditorPageKeysLeakTilde(t *testing.T) {
-	for _, seq := range []string{"\x1b[5~", "\x1b[6~", "\x1b[4~", "\x1b[7~", "\x1b[8~"} {
+	// Page keys are ignored, End keys leave the cursor at the end, and the
+	// rxvt Home key moves the cursor to the start (so "cd" lands before "ab").
+	for seq, want := range map[string]string{
+		"\x1b[5~": "abcd", "\x1b[6~": "abcd", "\x1b[4~": "abcd", "\x1b[8~": "abcd", "\x1b[7~": "cdab",
+	} {
 		got := opsHuntFeedEditor(t, "ab"+seq+"cd", nil)
-		if got != "abcd" {
-			t.Errorf("input ab%qcd: line = %q, want %q (escape-sequence tail leaked into the prompt)", seq, got, "abcd")
+		if got != want {
+			t.Errorf("input ab%qcd: line = %q, want %q (escape-sequence tail leaked into the prompt)", seq, got, want)
 		}
 	}
 }
