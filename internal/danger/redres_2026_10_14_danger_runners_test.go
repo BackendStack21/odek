@@ -462,3 +462,125 @@ func TestRED_PdmRunOptionsBeforeScript(t *testing.T) {
 		}
 	}
 }
+
+// drRunnersJSDirSetup makes a working directory whose evil.js and evil.ts
+// were read, and a subdirectory x holding unread copies.
+func drRunnersJSDirSetup(t *testing.T) {
+	t.Helper()
+	ResetReadLedgerForTest()
+	t.Cleanup(ResetReadLedgerForTest)
+	dir, _ := filepath.EvalSymlinks(t.TempDir())
+	t.Chdir(dir)
+	for _, base := range []string{dir, filepath.Join(dir, "x")} {
+		if err := os.MkdirAll(base, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		for _, rel := range []string{"evil.js", "evil.ts"} {
+			p := filepath.Join(base, rel)
+			if err := os.WriteFile(p, []byte("process.exit(0)\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if base == dir {
+				RecordRead(p)
+			}
+		}
+	}
+}
+
+// A package runner's directory option is the working directory of the
+// command it runs, as `env -C x node evil.js` is: the script it executes is
+// gated in that directory.
+func TestRED_PackageRunnerDirectoryAppliesToScripts(t *testing.T) {
+	drRunnersJSDirSetup(t)
+	if redGated("node evil.js") || !redGated("env -C x node evil.js") {
+		t.Fatalf("baseline: ./evil.js is read, x/evil.js is not")
+	}
+	for _, c := range []string{
+		"pnpm -C x exec node evil.js",
+		"pnpm --dir x exec node evil.js",
+		"pnpm --dir=x exec node evil.js",
+		"yarn --cwd x node evil.js",
+		"yarn --cwd x run node evil.js",
+		"yarn --cwd x exec node evil.js",
+		"bun --cwd x evil.ts",
+		"bun --cwd x run evil.ts",
+		"bun --cwd x x node evil.js",
+		"mise exec -C x -- node evil.js",
+		"mise exec --cd x -- node evil.js",
+	} {
+		if !redGated(c) {
+			cls, tg := ClassifyScriptGate(c)
+			t.Errorf("ClassifyScriptGate(%q) = %s %v; x/ holds the unread script, want gated", c, cls, tg)
+		}
+	}
+	// A workspace selected by name, a filter or a recursive run has no
+	// directory the analysis can know: a relative script it runs is unknown.
+	for _, c := range []string{
+		"yarn workspace x node evil.js",
+		"yarn workspaces foreach -A exec node evil.js",
+		"npm -w x exec node evil.js",
+		"npm exec -w x -- node evil.js",
+		"npm --workspace=x exec node evil.js",
+		"pnpm --filter x exec node evil.js",
+		"pnpm -r exec node evil.js",
+	} {
+		if got := Classify(c); got != Unknown {
+			t.Errorf("Classify(%q) = %s; the workspace directory is unknown, want unknown", c, got)
+		}
+	}
+	// No script operand: nothing depends on the directory.
+	for _, c := range []string{
+		"yarn workspace x add lodash",
+		"npm -w x exec -- eslint --version",
+		"pnpm --filter x exec tsc",
+		"pnpm -C x exec node -e 1",
+	} {
+		if got := Classify(c); got == Unknown {
+			t.Errorf("Classify(%q) = unknown; no relative script runs", c)
+		}
+	}
+	for _, c := range []string{"pnpm -C $D exec node evil.js", "bun --cwd '*' x node evil.js", "yarn --cwd $D node evil.js"} {
+		if got := Classify(c); got != Unknown {
+			t.Errorf("Classify(%q) = %s; unresolvable runner directory, want unknown", c, got)
+		}
+	}
+	for _, c := range []struct {
+		cmd        string
+		dir        string
+		known, has bool
+	}{
+		{"yarn --cwd a --cwd b exec ls", "a/b", true, true},
+		{"yarn --cwd a --cwd /abs exec ls", "/abs", true, true},
+		{"yarn exec ls", "", true, false},
+		{"pnpm exec ls", "", true, false},
+		{"npm exec ls", "", true, false},
+		{"npm -ws exec ls", "", false, true},
+		{"cargo run", "", true, false},
+		{"pnpm", "", true, false},
+	} {
+		tokens := strings.Fields(c.cmd)
+		dir, known, has := runnerDirectory(tokens[0], tokens)
+		if dir != c.dir || known != c.known || has != c.has {
+			t.Errorf("runnerDirectory(%q) = %q %v %v, want %q %v %v", c.cmd, dir, known, has, c.dir, c.known, c.has)
+		}
+	}
+	for _, c := range []struct {
+		cmd  string
+		want bool
+	}{
+		{"./run.sh", true}, {"/abs/run.sh", false}, {"evil.js", true}, {"tsc", false},
+		{"python -m evil", true}, {"node -e 1", false}, {"node /abs/x.js", false}, {"node", false},
+	} {
+		if got := runnerRunsRelativeScript(strings.Fields(c.cmd)); got != c.want {
+			t.Errorf("runnerRunsRelativeScript(%q) = %v, want %v", c.cmd, got, c.want)
+		}
+	}
+	if runnerRunsRelativeScript(nil) {
+		t.Errorf("an empty command runs no script")
+	}
+	// Read copies in the runner directory are licensed.
+	RecordRead(filepath.Join("x", "evil.js"))
+	if redGated("pnpm -C x exec node evil.js") {
+		t.Errorf("pnpm -C x exec node evil.js gated after x/evil.js was read")
+	}
+}

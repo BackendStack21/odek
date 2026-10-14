@@ -1689,7 +1689,7 @@ func gitSubcommandRewritesTree(inner []string) bool {
 // redirect operators and their targets, and data arguments that follow the
 // program, never do. Glob operands gate every match, and a path written by an
 // earlier stage of the same command gates even when it does not exist yet.
-func stageExecutionFilesWritten(stage []string, cwd string, written map[string]bool) []string {
+func stageExecutionFilesWritten(stage []string, cwd string, written map[string]bool) (files []string) {
 	if len(stage) == 0 {
 		return nil
 	}
@@ -1721,6 +1721,16 @@ func stageExecutionFilesWritten(stage []string, cwd string, written map[string]b
 	}
 	name := commandName(cmdTokens[0])
 	operands := cmdTokens[1:]
+	// A package runner's directory option (`pnpm -C x`, `yarn --cwd x`,
+	// `bun --cwd x`) is the working directory of its own operands and of
+	// the command it runs, which is gated as a stage of its own.
+	if dir, known, has := runnerDirectory(name, cmdTokens); has && known {
+		cwd = resolveInDirectory(dir, cwd)
+	}
+	if runner := runnerCommand(name, cmdTokens); len(runner) > 0 {
+		runnerFiles := stageExecutionFilesWritten(runner, cwd, written)
+		defer func() { files = append(files, runnerFiles...) }()
+	}
 	if name == "find" {
 		return findExecutionFiles(cmdTokens, cwd, written)
 	}

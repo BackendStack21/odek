@@ -2810,6 +2810,11 @@ func classifyStageIn(tokens []string, pipedInto bool, repo *gitRepoCtx) RiskClas
 			if inner := classifyStageIn(runner, false, repo); inner != Unknown {
 				cls = worstOf(cls, inner)
 			}
+			// A relative script run in a workspace the analysis cannot
+			// locate has no file the read ledger could judge.
+			if _, known, has := runnerDirectory(name, cmdTokens); has && !known && runnerRunsRelativeScript(runner) {
+				cls = worstOf(cls, Unknown)
+			}
 		}
 		// Command lines a runner hands to a shell (`npx -c CMD`,
 		// `npm explore PKG -- CMD`).

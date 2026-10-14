@@ -442,6 +442,16 @@ func subcommandWrapper(name string, tokens []string, i int) (wrapperStep, bool) 
 					step.payload = v
 					return step, true
 				}
+				if v, ok := strings.CutPrefix(t, "--cd="); ok {
+					step.dir = v
+				}
+				if t == "-C" || t == "--cd" {
+					// The command runs in that directory (see wrapperDirectory).
+					step.dir = "$" // no value: unknown
+					if j+1 < len(tokens) {
+						step.dir = tokens[j+1]
+					}
+				}
 				if t == "-C" || t == "--cd" || t == "-j" || t == "--jobs" {
 					j++
 				}

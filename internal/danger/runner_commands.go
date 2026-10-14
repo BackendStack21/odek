@@ -1,6 +1,7 @@
 package danger
 
 import (
+	"path/filepath"
 	"slices"
 	"strings"
 )
@@ -120,11 +121,33 @@ var yarnRunVerbs = []string{"exec", "dlx", "node", "run", "workspace", "workspac
 // floor. `yarn workspace NAME …` and `yarn workspaces foreach|run …` run the
 // yarn command that follows in other workspaces and are read through.
 func yarnRunner(tokens []string) ([]string, bool) {
+	y := yarnRun(tokens)
+	return y.cmd, y.bin
+}
+
+// yarnReading is what a yarn invocation runs and where.
+type yarnReading struct {
+	cmd []string
+	bin bool
+	// dir is the directory --cwd selects; dirUnknown is set once
+	// `yarn workspace NAME` or `yarn workspaces foreach|run` picks
+	// workspaces the analysis cannot locate.
+	dir        string
+	dirUnknown bool
+}
+
+func yarnRun(tokens []string) yarnReading {
+	var y yarnReading
 	args := tokens[1:]
 	for len(args) > 0 {
 		r := yarnRunnerSpec.parse(args)
+		for _, o := range r.opts {
+			if o.is("--cwd") {
+				y.dir = joinRunnerDir(y.dir, o.value, o.has)
+			}
+		}
 		if r.operandAt < 0 {
-			return nil, false
+			return y
 		}
 		at := r.operandAt
 		if !slices.Contains(yarnRunVerbs, args[at]) {
@@ -135,40 +158,146 @@ func yarnRunner(tokens []string) ([]string, bool) {
 		verb, rest := args[at], args[at+1:]
 		switch verb {
 		case "exec", "dlx":
-			return commandAfter(yarnExecSpec, rest), true
+			y.cmd, y.bin = commandAfter(yarnExecSpec, rest), true
+			return y
 		case "node":
-			return rest, true
+			y.cmd, y.bin = append([]string{"node"}, rest...), true
+			return y
 		case "run":
 			if len(rest) > 0 && rest[0] == "--" {
 				rest = rest[1:]
 			}
-			return rest, false
+			y.cmd = rest
+			return y
 		case "workspace":
 			if len(rest) == 0 {
-				return nil, false
+				return y
 			}
+			y.dirUnknown = true
 			args = rest[1:] // the workspace name
 			continue
 		case "workspaces":
 			if len(rest) == 0 {
-				return nil, false
+				return y
 			}
+			y.dirUnknown = true
 			switch rest[0] {
 			case "foreach":
 				args = commandAfter(yarnForeachSpec, rest[1:])
 				continue
 			case "run":
 				// Yarn 1: `yarn workspaces run SCRIPT`.
-				return rest[1:], false
+				y.cmd = rest[1:]
 			}
-			return nil, false
+			return y
 		}
-		if yarnSubcommands[verb] {
-			return nil, false
+		if !yarnSubcommands[verb] {
+			y.cmd = args[at:]
 		}
-		return args[at:], false
+		return y
 	}
-	return nil, false
+	return y
+}
+
+// joinRunnerDir applies a directory option value to the directory selected
+// so far. A missing value or one the analysis cannot resolve (variables,
+// globs) gives "$", which runnerDirectory reports as unknown.
+func joinRunnerDir(dir, value string, has bool) string {
+	switch {
+	case !has || strings.ContainsAny(value, "$`*?[") || strings.Contains(dir, "$"):
+		return "$"
+	case dir == "" || filepath.IsAbs(value):
+		return value
+	}
+	return filepath.Join(dir, value)
+}
+
+// runnerDirectory reports the working directory a package runner's options
+// give the command it runs. has is false when no option selects one. dir is
+// the directory named by pnpm -C|--dir, yarn --cwd or bun --cwd. known is
+// false when the directory cannot be located statically: workspaces chosen
+// by name, filter or recursion (`yarn workspace NAME`, `yarn workspaces
+// foreach`, `npm -w|--workspace|--workspaces`, `pnpm --filter|-r`), or a
+// value with variables or globs.
+func runnerDirectory(name string, tokens []string) (dir string, known, has bool) {
+	if len(tokens) < 2 {
+		return "", true, false
+	}
+	args := tokens[1:]
+	unknown := false
+	switch name {
+	case "pnpm":
+		scan := func(r optResult) {
+			for _, o := range r.opts {
+				switch {
+				case o.is("-C", "--dir"):
+					dir, has = joinRunnerDir(dir, o.value, o.has), true
+				case o.is("-F", "--filter", "-r", "--recursive"):
+					unknown, has = true, true
+				}
+			}
+		}
+		scan(pnpmRunnerSpec.parse(args))
+		if at := runnerVerbAt(pnpmRunnerSpec, args, "exec", "dlx", "x"); at >= 0 {
+			scan(pnpmExecSpec.parse(args[at+1:]))
+		}
+	case "yarn":
+		y := yarnRun(tokens)
+		dir, unknown = y.dir, y.dirUnknown
+		has = dir != "" || unknown
+	case "bun":
+		for _, o := range bunRunnerSpec.parse(args).opts {
+			if o.is("--cwd") {
+				dir, has = joinRunnerDir(dir, o.value, o.has), true
+			}
+		}
+	case "npm":
+		scan := func(r optResult) {
+			for _, o := range r.opts {
+				if o.is("-w", "--workspace", "--workspaces", "--ws") {
+					unknown, has = true, true
+				}
+			}
+		}
+		scan(npmGlobalSpec.parse(args))
+		if at := runnerVerbAt(npmGlobalSpec, args, npmRunnerVerbs...); at >= 0 {
+			scan(npmExecSpec.parse(args[at+1:]))
+		}
+	}
+	if unknown || dir == "$" {
+		return "", false, has
+	}
+	return dir, true, has
+}
+
+// runnerRunsRelativeScript reports whether cmd executes a script named by a
+// relative path: a relative program path, a script file as the command, or
+// the first operand of an interpreter (also a `-m` module).
+func runnerRunsRelativeScript(cmd []string) bool {
+	if len(cmd) == 0 {
+		return false
+	}
+	relative := func(tok string) bool { return !filepath.IsAbs(expandShellTokenPath(tok)) }
+	first := cmd[0]
+	if strings.Contains(first, "/") || scriptFileExtensions[strings.ToLower(filepath.Ext(first))] {
+		return relative(first)
+	}
+	name := commandName(first)
+	if !isScriptInterpreter(name) && name != "source" && name != "." {
+		return false
+	}
+	for _, tok := range cmd[1:] {
+		switch {
+		case inlinePayloadFlag(name, tok):
+			return false
+		case tok == "-m":
+			return true // a module resolved from the working directory
+		case strings.HasPrefix(tok, "-"):
+			continue
+		}
+		return relative(tok)
+	}
+	return false
 }
 
 // yarnRunsBin reports whether a yarn invocation runs a binary explicitly
