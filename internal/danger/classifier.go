@@ -794,8 +794,18 @@ func isOdekTrustAnchor(home, abs string) bool {
 	if lowerAbs == lowerPrefix {
 		return true
 	}
-	rel := FoldPathCase(filepath.Clean(lowerAbs[len(lowerPrefix+"/"):]))
+	return IsOdekTrustAnchorRel(lowerAbs[len(lowerPrefix+"/"):])
+}
 
+// IsOdekTrustAnchorRel reports whether rel, a path relative to ~/.odek, names a
+// trust anchor (exact file, rotated log, protected directory or its content, or
+// the Telegram token budget counter). It is the single anchor table shared by
+// the path classifier and the file tools.
+func IsOdekTrustAnchorRel(rel string) bool {
+	rel = FoldPathCase(filepath.Clean(rel))
+	if rel == "." {
+		return true
+	}
 	for _, p := range odekProtectedFiles {
 		if rel == p {
 			return true
