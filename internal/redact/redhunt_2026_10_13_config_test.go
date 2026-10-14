@@ -181,6 +181,23 @@ func TestCommandCredentialsPlainShellQuotesAndEscapes(t *testing.T) {
 	})
 }
 
+func TestJSONModeIgnoresQuotesInShellSingleQuotes(t *testing.T) {
+	for _, in := range []string{
+		`grep -c '"' data.csv && curl -u admin:Xk9vQ2mL\t7pR4tY8wZ3nB6cF1 https://x`,
+		`echo '"' '"' '"' && curl -u admin:Xk9vQ2mL\n7pR4tY8wZ3nB6cF1 https://x`,
+		`echo don't say "hi" && curl -u admin:Xk9vQ2mL\n7pR4tY8wZ3nB6cF1 https://x`,
+	} {
+		if got := RedactSecrets(in); strings.Contains(got, "7pR4") {
+			t.Errorf("RedactSecrets(%q) left password text: %q", in, got)
+		}
+	}
+	// A real JSON string context still enables the JSON cuts.
+	in := `{"cmd":"grep -c '\"' f && curl -u a:s3cretpw1\nls"}`
+	if got, want := RedactSecrets(in), `{"cmd":"grep -c '\"' f && curl -u a:[REDACTED]\nls"}`; got != want {
+		t.Errorf("got %q want %q", got, want)
+	}
+}
+
 func TestCookieNameSegmentsAndPlaceholders(t *testing.T) {
 	for _, name := range []string{"remember_user_token", "_gh_sess", "connect.sid", "PHPSESSID", "laravel_session", "__Secure-3PSID", "JSESSIONID", "session_id", "csrftoken", "auth_token", "authToken", "XSRF-TOKEN", "sessionid"} {
 		in := "Cookie: " + name + "=abcdefghijklmnop"

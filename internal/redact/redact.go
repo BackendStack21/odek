@@ -538,17 +538,24 @@ func wholePassword(text string, s, e int, json bool, ok func(string) bool) (int,
 type jsonStringTracker struct {
 	pos    int
 	inside bool
+	single bool // inside a shell single-quoted span (outside any JSON string)
 }
 
 func (t *jsonStringTracker) at(text string, off int) bool {
 	for ; t.pos < off && t.pos < len(text); t.pos++ {
 		switch text[t.pos] {
 		case '\n':
-			t.inside = false
+			t.inside, t.single = false, false
 		case '\\':
 			t.pos++
+		case '\'':
+			if !t.inside {
+				t.single = !t.single
+			}
 		case '"':
-			t.inside = !t.inside
+			if !t.single {
+				t.inside = !t.inside
+			}
 		}
 	}
 	return t.inside
