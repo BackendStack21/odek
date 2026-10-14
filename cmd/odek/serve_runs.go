@@ -594,13 +594,15 @@ func clipRunEventString(s string) string {
 		return s
 	}
 	half := serveRunEventFieldMax / 2
-	head, tail := s[:half], s[len(s)-half:]
-	for len(head) > 0 && !utf8.ValidString(head) {
-		head = head[:len(head)-1]
+	// Move each cut to a rune boundary; invalid bytes elsewhere are kept.
+	h, t := half, len(s)-half
+	for h > 0 && !utf8.RuneStart(s[h]) {
+		h--
 	}
-	for len(tail) > 0 && !utf8.ValidString(tail) {
-		tail = tail[1:]
+	for t < len(s) && !utf8.RuneStart(s[t]) {
+		t++
 	}
+	head, tail := s[:h], s[t:]
 	return fmt.Sprintf("%s\n[... %d bytes omitted ...]\n%s", head, len(s)-len(head)-len(tail), tail)
 }
 
