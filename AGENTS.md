@@ -134,6 +134,8 @@ internal/
     gh_adapter.go               gh classified by command and verb (reads egress, mutations system_write, deletes destructive)
     git_repo_arming.go          Repo-aware git escalation: ordinary verbs are code_execution only when the repo is armed
     readledger.go               Unread-script gate: fingerprinted, bounded read ledger; ForgetReadLedger per session key
+    command_strings.go          Command strings carried by tool options (git -c core.pager, ssh -o ProxyCommand, tar --to-command, rsync -e, su -c) → classified and denylist-scanned
+    denylist_carriers.go        Denylist scan of su/runuser/at/tmux/screen command carriers and git -c alias expansion
     ledger_indirect.go          Scripts delivered indirectly (pipes, substitutions, eval, find -exec, program-file options)
     path_identity.go            Symlink-resolving path targets for classification (snapshot, not an execution boundary)
     sensitive_read.go           IsSensitiveReadPath: paths @-references refuse (shares the home credential table with ClassifyPath)
