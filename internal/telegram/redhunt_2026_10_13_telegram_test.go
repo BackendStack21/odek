@@ -53,6 +53,25 @@ func TestRED_MediaChatScopeBypassedByCaseVariantPath(t *testing.T) {
 	}
 }
 
+// On a case-sensitive filesystem names are compared exactly: media/CHAT2 is a
+// different directory from media/chat2 and is not the chat's own subdirectory.
+func TestRED_MediaScopeIsCaseExactOnCaseSensitiveFS(t *testing.T) {
+	old := pathsCaseInsensitive
+	pathsCaseInsensitive = false
+	defer func() { pathsCaseInsensitive = old }()
+	sep := string(filepath.Separator)
+	media := sep + filepath.Join("home", "u", ".odek", "media")
+	if isPathInsideFold(sep+filepath.Join("home", "u", ".odek", "MEDIA", "x"), media) {
+		t.Fatal("case variant must not be inside on a case-sensitive filesystem")
+	}
+	if err := checkChatMediaScope(media+sep+"CHAT2"+sep+"x.txt", media, 2); err == nil {
+		t.Fatal("media/CHAT2 must not count as chat 2's own subdirectory")
+	}
+	if err := checkChatMediaScope(media+sep+"chat2"+sep+"x.txt", media, 2); err != nil {
+		t.Fatalf("own subdirectory should pass: %v", err)
+	}
+}
+
 // A cancelled approval prompt must lose its Approve/Deny buttons, as the
 // timeout path does, so a stale keyboard cannot be tapped.
 func TestRED_PromptCommand_CancelStripsButtons(t *testing.T) {
@@ -83,6 +102,9 @@ func TestRED_PromptCommand_CancelStripsButtons(t *testing.T) {
 // The comparison helper behind the media scope must match names the way a
 // case-insensitive filesystem does; this runs on every platform.
 func TestRED_IsPathInsideFoldMatchesCaseVariants(t *testing.T) {
+	old := pathsCaseInsensitive
+	pathsCaseInsensitive = true
+	defer func() { pathsCaseInsensitive = old }()
 	sep := string(filepath.Separator)
 	media := sep + filepath.Join("home", "u", ".odek", "media")
 	if !isPathInsideFold(media+sep+"doc_chat1_x.txt", media) {

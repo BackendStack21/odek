@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/BackendStack21/odek/internal/danger"
@@ -308,17 +309,26 @@ func mediaBaseDirs() (dirs []string, mediaDir string, err error) {
 	return resolved, mediaDir, nil
 }
 
+// pathsCaseInsensitive reports whether the platform's default filesystems
+// match names without regard to letter case. A variable so tests can exercise
+// both behaviours on any platform.
+var pathsCaseInsensitive = runtime.GOOS == "darwin" || runtime.GOOS == "windows"
+
+// isPathInsideFold is isPathInside compared the way the platform's filesystem
+// matches names. filepath.EvalSymlinks does not canonicalise letter case, so
+// on case-insensitive filesystems (APFS, NTFS) a case-variant spelling of the
+// media directory names the same files and scope decisions must treat it as
+// inside. On case-sensitive filesystems names are compared exactly.
+func isPathInsideFold(child, parent string) bool {
+	if pathsCaseInsensitive {
+		child, parent = danger.FoldPathCase(child), danger.FoldPathCase(parent)
+	}
+	return isPathInside(child, parent)
+}
+
 // isPathInside reports whether child is equal to or inside parent, using
 // filepath-aware separator matching to avoid false positives from path
 // prefixes.
-// isPathInsideFold is isPathInside compared the way a case-insensitive
-// filesystem matches names. filepath.EvalSymlinks does not canonicalise letter
-// case, so a case-variant spelling of the media directory names the same files
-// on APFS/NTFS; scope decisions must treat it as inside.
-func isPathInsideFold(child, parent string) bool {
-	return isPathInside(danger.FoldPathCase(child), danger.FoldPathCase(parent))
-}
-
 func isPathInside(child, parent string) bool {
 	if child == parent {
 		return true
