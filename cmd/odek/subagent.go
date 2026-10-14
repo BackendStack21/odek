@@ -756,6 +756,9 @@ type taskFileSpec struct {
 	Profile       string         `json:"profile,omitempty"`
 	Budget        *taskBudget    `json:"budget,omitempty"`
 	ParentTrust   string         `json:"parent_trust,omitempty"`
+	// ParentMaxRisk is the spawning sub-agent's effective risk cap; the
+	// child never runs with a higher one.
+	ParentMaxRisk string `json:"parent_max_risk,omitempty"`
 	// ArtifactRoot is the per-task directory the PARENT created
 	// (~/.odek/artifacts/<session>/<task>). When set, the runner scans it at
 	// exit and attaches odek.artifact-ref/v1 refs to the result. Additive
@@ -826,6 +829,7 @@ func subagentCmd(args []string) error {
 	var taskBudgetBlock *taskBudget // parent's remaining budget (share mode)
 	var taskArtifactRoot string     // per-task artifact dir from the envelope
 	var taskTaskID string           // envelope task id (staging key)
+	var parentMaxRisk string        // parent sub-agent's own effective risk cap
 	var parentTrust string          // parent's own effective trust
 	var eventContext events.Context
 	var runtimeEvents bool
@@ -862,6 +866,7 @@ func subagentCmd(args []string) error {
 		taskProfile = taskSpec.Profile
 		taskBudgetBlock = taskSpec.Budget
 		parentTrust = taskSpec.ParentTrust
+		parentMaxRisk = taskSpec.ParentMaxRisk
 		taskArtifactRoot = taskSpec.ArtifactRoot
 		taskTaskID = taskSpec.TaskID
 		// Telemetry correlation (sub-agent telemetry): protocol-2 parents
@@ -969,6 +974,9 @@ func subagentCmd(args []string) error {
 	// rooted in untrusted content cannot spawn trusted children.
 	effectiveTrustLevel := effectiveTrust(parentTrust, taskTrust)
 	applySubagentTrust(&resolved.Dangerous, effectiveTrustLevel, taskMaxRisk)
+	// The spawning sub-agent's own cap bounds this child too (min of the
+	// two), whatever profile or max_risk the task declared.
+	clampClassesAboveMaxRisk(&resolved.Dangerous, parentMaxRisk)
 
 	// Budget inheritance (subagent.budget_inherit="share"): the
 	// parent wrote its remaining budget into the task file; the child

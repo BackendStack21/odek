@@ -124,6 +124,11 @@ type delegateTasksTool struct {
 	// Empty = top-level operator run (trusted).
 	selfTrust string
 
+	// selfMaxRisk is THIS sub-agent process's own effective risk cap:
+	// stamped into every spawned task file so a child's cap cannot be
+	// escaped by delegating again. Empty = no inherited cap (top-level run).
+	selfMaxRisk string
+
 	// eventMu/emitEventFn carry the runtime event emitter injected by
 	// odek.New (SetEventEmitter); used to surface child denials as
 	// subagent_denied events.
@@ -543,6 +548,7 @@ func (t *delegateTasksTool) runTaskWithModel(taskIdx int, taskID, goal, taskCont
 	defer registerSubagentCancel(taskID, cancel)()
 
 	task := newTaskEnvelope(taskID, goal, taskContext, guidance, trustLevel, maxRisk, profile, taskBudgetBlock, t.selfTrust)
+	task.ParentMaxRisk = t.selfMaxRisk
 	task.EventContext = t.childEventContext(taskID)
 	task.RuntimeEvents = task.EventContext.ParentRunID != ""
 	task.ArtifactRoot = artifactDir
@@ -1185,10 +1191,13 @@ type taskEnvelope struct {
 	Profile       string         `json:"profile,omitempty"`
 	Budget        *taskBudget    `json:"budget,omitempty"`
 	ParentTrust   string         `json:"parent_trust,omitempty"`
-	ArtifactRoot  string         `json:"artifact_root,omitempty"`
-	Provider      string         `json:"provider,omitempty"`
-	Model         string         `json:"model,omitempty"`
-	BaseURL       string         `json:"base_url,omitempty"`
+	// ParentMaxRisk is the spawning sub-agent's own effective risk cap; the
+	// child clamps to min(parent cap, its own cap).
+	ParentMaxRisk string `json:"parent_max_risk,omitempty"`
+	ArtifactRoot  string `json:"artifact_root,omitempty"`
+	Provider      string `json:"provider,omitempty"`
+	Model         string `json:"model,omitempty"`
+	BaseURL       string `json:"base_url,omitempty"`
 	// Tools and Sandbox carry the parent's effective tool filter and
 	// container posture; the child enforces them on top of its own config.
 	Tools   *taskToolsPosture   `json:"tools,omitempty"`

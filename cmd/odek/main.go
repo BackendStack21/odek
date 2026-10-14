@@ -2683,6 +2683,12 @@ func builtinTools(dc danger.DangerousConfig, sm *skills.SkillManager, approver d
 		// Top-level runs (odek run/repl/serve/telegram) are operator-trusted.
 		selfTrust = "trusted"
 	}
+	// A sub-agent hands its own effective risk cap to the children it
+	// spawns; top-level runs (SelfTrust empty) have no inherited cap.
+	selfMaxRisk := ""
+	if tcfg.SelfTrust != "" {
+		selfMaxRisk = effectiveMaxRisk(&dc)
+	}
 	// Artifacts home for the delegate_tasks result channel; empty disables
 	// the channel (never fail agent startup over it).
 	artifactsRoot, _ := artifactsHome()
@@ -2712,6 +2718,7 @@ func builtinTools(dc danger.DangerousConfig, sm *skills.SkillManager, approver d
 			maxDepth:              subDepth,
 			budgetInherit:         subInherit,
 			selfTrust:             selfTrust,
+			selfMaxRisk:           selfMaxRisk,
 			profiles:              tcfg.Profiles,
 			artifactsRoot:         artifactsRoot, // empty ⇒ no artifact dirs created
 			artifactReadAvailable: artifactReadEnabled(tcfg),
