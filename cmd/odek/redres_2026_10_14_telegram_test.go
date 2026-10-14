@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/BackendStack21/odek/internal/danger"
+	"github.com/BackendStack21/odek/internal/session"
 )
 
 func tgresMediaFile(t *testing.T, name string) string {
@@ -160,5 +161,48 @@ func TestRED_TelegramMediaJobsRunOffTheUpdateLoop(t *testing.T) {
 	defer mu.Unlock()
 	if len(order) != 3 || order[0] != 1 || order[1] != 2 || order[2] != 3 {
 		t.Fatalf("per-chat order not preserved: %v", order)
+	}
+}
+
+func TestRED_TelegramResumeSummaryReachesNextTurn(t *testing.T) {
+	const chat int64 = 910010
+	t.Cleanup(func() { telegramResumePending.Delete(chat) })
+	srv := simpleLLMServer(t, "You were reviewing the auth refactor.")
+	mm := newExtendedBackedManager(t, srv)
+	msgs := []session.Message{
+		{Role: "system", Content: "identity"},
+		{Role: "user", Content: "first"},
+		{Role: "assistant", Content: "answer"},
+		{Role: "user", Content: "continue please"},
+	}
+
+	// No resume pending: untouched.
+	out, n := takeTelegramResumeSummary(context.Background(), chat, mm, msgs, false)
+	if n != 0 || len(out) != len(msgs) {
+		t.Fatalf("no resume pending but messages changed: n=%d len=%d", n, len(out))
+	}
+
+	telegramResumePending.Store(chat, struct{}{})
+	// A wake turn leaves the mark for the principal's next turn.
+	if _, n := takeTelegramResumeSummary(context.Background(), chat, mm, msgs, true); n != 0 {
+		t.Fatal("wake turn consumed the resume summary")
+	}
+	out, n = takeTelegramResumeSummary(context.Background(), chat, mm, msgs, false)
+	if n != 1 || len(out) != len(msgs)+1 {
+		t.Fatalf("summary not inserted: n=%d len=%d", n, len(out))
+	}
+	rb := out[len(out)-2]
+	if rb.Name != session.ReturnAfterBreakName || rb.Role != "user" || !strings.Contains(rb.Content, "auth refactor") {
+		t.Errorf("summary message wrong: %+v", rb)
+	}
+	if out[len(out)-1].Content != "continue please" {
+		t.Errorf("the turn's own message must stay last: %+v", out[len(out)-1])
+	}
+	if msgs[len(msgs)-1].Content != "continue please" || len(msgs) != 4 {
+		t.Error("input slice mutated")
+	}
+	// Consumed: the following turn gets no summary.
+	if _, n := takeTelegramResumeSummary(context.Background(), chat, mm, msgs, false); n != 0 {
+		t.Error("summary injected twice")
 	}
 }

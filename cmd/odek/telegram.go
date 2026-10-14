@@ -428,6 +428,7 @@ func resetChatForNew(chatID int64, sessionManager *telegram.SessionManager, hand
 	danger.ForgetReadLedger(fmt.Sprintf("tg-%d", chatID))
 	// A fresh conversation starts with no wake-turn user binding.
 	telegramTurnUsers.Delete(chatID)
+	telegramResumePending.Delete(chatID)
 	if a := handler.GetApprover(chatID); a != nil {
 		a.ResetTrust()
 	}
@@ -821,15 +822,10 @@ func telegramCmd(args []string) error {
 				danger.ForgetReadLedger(fmt.Sprintf("tg-%d", chatID))
 				unpinChat(chatID, chatM)
 			})
-			// Return-after-break: inject a concise "where you left off"
-			// summary into the resumed context (same as `odek continue` and
-			// the REPL resume path). A throwaway manager is built here because
-			// the /resume command runs outside any per-message agent.
-			resumeMM := memory.NewMemoryManager(expandHome("~/.odek/memory"), nil, resolved.Memory)
-			if resumeLLM, err := llmclient.Dial(resolved.Provider, resolved.Model, resolved.APIKey, resolved.BaseURL); err == nil {
-				resumeMM.InitExtended(resumeLLM, expandHome("~/.odek/memory"))
-			}
-			cs.Messages = injectReturnAfterBreak(context.Background(), resumeMM, cs.Messages)
+			// Return-after-break: the next turn of this chat gets a concise
+			// "where you left off" summary (the turn reloads history from the
+			// store, so it is injected there, not into this session object).
+			telegramResumePending.Store(chatID, struct{}{})
 			taskPreview := resumeTaskPreview(cs.Messages)
 			if taskPreview == "" {
 				return fmt.Sprintf("✅ *Session resumed*: `%s` (empty)\n\nSend a message to continue.", cs.SessionID), nil
@@ -2412,7 +2408,9 @@ func runChatTurn(
 	if cs.UntrustedIngested() {
 		agentCtx = loop.WithUntrustedIngest(agentCtx)
 	}
-	response, updatedMessages, err := agent.RunWithMessages(agentCtx, cs.Messages)
+	runMessages, rbInserted := takeTelegramResumeSummary(agentCtx, chatID, agent.Memory(), cs.Messages, wake)
+	auditHistLen += rbInserted
+	response, updatedMessages, err := agent.RunWithMessages(agentCtx, runMessages)
 	if agent.UntrustedIngested() {
 		// Before the cancel-path and final saves below.
 		sessionManager.MarkUntrustedIngested(chatID)
