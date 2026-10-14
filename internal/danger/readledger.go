@@ -760,6 +760,16 @@ func stageWrittenPaths(stage, inner []string, name, cwd string) []string {
 		switch name {
 		case "tee":
 			raw = append(raw, operands...)
+		case "uniq":
+			// uniq [OPTION]... [INPUT [OUTPUT]] writes its second operand.
+			if len(operands) >= 2 {
+				raw = append(raw, operands[1])
+			}
+		case "patch":
+			// patch [OPTION]... [ORIGFILE [PATCHFILE]] rewrites ORIGFILE.
+			if len(operands) >= 1 {
+				raw = append(raw, operands[0])
+			}
 		case "cp", "mv", "install", "ln", "rsync":
 			if target, ok := targetDirectoryOption(name, inner[1:]); ok {
 				// -t DIR / --target-directory=DIR names the destination;
@@ -864,7 +874,9 @@ var targetDirectoryLongOptions = []string{"target-directory"}
 func stageLedgerFiles(stage []string, cwd string, written map[string]bool) (files, rewritten []string) {
 	files = stageExecutionFilesWritten(stage, cwd, written)
 	for _, path := range files {
-		if written[pathKey(path)] {
+		// An earlier stage that replaced files the analysis cannot name
+		// leaves the licence of the bytes read before describing none of them.
+		if written[pathKey(path)] || written[unknownWritesKey] {
 			rewritten = append(rewritten, path)
 		}
 	}
@@ -877,8 +889,56 @@ func stageLedgerFiles(stage []string, cwd string, written map[string]bool) (file
 		for _, path := range stageWrittenPaths(stage, inner, name, cwd) {
 			written[path] = true
 		}
+		if stageWritesUnnamedFiles(name, inner) {
+			written[unknownWritesKey] = true
+		}
 	}
 	return files, rewritten
+}
+
+// unknownWritesKey marks, in the per-command written set, that an earlier
+// stage rewrote files whose names the analysis cannot read off the command
+// line. It is not a path, so it never matches one.
+const unknownWritesKey = "\x00unnamed-writes"
+
+// stageWritesUnnamedFiles reports whether a command replaces files in place
+// without naming all of them as operands: patch (the diff names the files),
+// archive extraction, decompression, and the VCS verbs that rewrite the work
+// tree.
+func stageWritesUnnamedFiles(name string, inner []string) bool {
+	if len(inner) == 0 {
+		return false
+	}
+	args := inner[1:]
+	switch name {
+	case "patch", "unzip", "7z", "7za", "7zz", "7zr", "unrar", "unar", "cpio",
+		"gunzip", "bunzip2", "unxz", "uncompress", "unlzma", "unzstd":
+		return !hasAny(args, "-l", "-t", "-v", "-Z", "--list", "--test", "--dry-run", "-h", "--help", "--version")
+	case "gzip", "bzip2", "xz", "zstd", "lzma":
+		return hasAny(args, "-d", "--decompress", "--uncompress")
+	case "tar", "bsdtar", "gtar":
+		for i, a := range args {
+			switch {
+			case a == "--extract" || a == "--get":
+				return true
+			case strings.HasPrefix(a, "--") || a == "":
+			case strings.HasPrefix(a, "-"):
+				if strings.ContainsRune(a, 'x') {
+					return true
+				}
+			case i == 0 && strings.ContainsRune(a, 'x'):
+				return true // old-style first word: `tar xf a.tar`
+			}
+		}
+	case "git":
+		sub, _ := gitSubcommandAndArgs(inner)
+		switch sub {
+		case "checkout", "restore", "switch", "reset", "merge", "rebase", "pull", "stash",
+			"apply", "am", "cherry-pick", "revert", "checkout-index", "read-tree", "clean":
+			return true
+		}
+	}
+	return false
 }
 
 // stageExecutionFilesWritten returns the files a stage executes. Only the
