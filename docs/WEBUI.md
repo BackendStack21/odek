@@ -564,7 +564,7 @@ answerable over REST:
 | Endpoint | Method | Purpose |
 |---|---|---|
 | `/api/runs` | GET | Recent runs (status, timing, tokens; newest first) |
-| `/api/runs/{id}` | GET | Detail incl. event tail (200 events) + result |
+| `/api/runs/{id}` | GET | Detail incl. event tail (200 events, 4 MiB total, values clipped to 8 KiB) + result |
 | `/api/runs/{id}` | DELETE | Cancel |
 | `/api/runs/{id}/cancel` | POST | Cancel (reports `idle:true` when already finished) |
 | `/api/runs/{id}/approvals` | GET | Pending approval requests (risk, command) |
