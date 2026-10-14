@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -147,7 +148,22 @@ func withSessionRedirectGuard(base *http.Client, server *url.URL) *http.Client {
 
 // sameOrigin reports whether two URLs share scheme, host name and port.
 func sameOrigin(a, b *url.URL) bool {
-	return strings.EqualFold(a.Scheme, b.Scheme) && strings.EqualFold(a.Host, b.Host)
+	return strings.EqualFold(a.Scheme, b.Scheme) && strings.EqualFold(originHostPort(a), originHostPort(b))
+}
+
+// originHostPort returns host:port with the scheme's default port filled in,
+// so https://h and https://h:443 compare equal.
+func originHostPort(u *url.URL) string {
+	port := u.Port()
+	if port == "" {
+		switch strings.ToLower(u.Scheme) {
+		case "https":
+			port = "443"
+		case "http":
+			port = "80"
+		}
+	}
+	return net.JoinHostPort(u.Hostname(), port)
 }
 
 // httpCall performs one JSON-RPC request over HTTP and returns the raw result.
