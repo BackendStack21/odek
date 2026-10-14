@@ -496,7 +496,7 @@ func printBackgroundJobs(w io.Writer, rt *bgRuntime) {
 		if j.EndedAt.IsZero() {
 			d = time.Since(j.StartedAt)
 		}
-		fmt.Fprintf(w, "%-8s %-9s %9ss  %-4s  %s\n", j.ID, j.Status, d.Round(time.Second), exit, headString(j.Command, bgCommandHead))
+		fmt.Fprintf(w, "%-8s %-9s %10s  %-4s  %s\n", j.ID, j.Status, d.Round(time.Second), exit, render.EscapeInlineForTerminal(bgClientCommandHead(j.Command)))
 	}
 }
 
