@@ -75,3 +75,31 @@ func TestRED_CheckChatMediaReadScope(t *testing.T) {
 		t.Errorf("no chat context must not restrict: %v", err)
 	}
 }
+
+func TestRED_CheckChatMediaReadSpellings(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := filepath.Join(home, ".odek", "media")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(dir, "voice_chat8_a.ogg")
+	if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(t.TempDir(), "l.ogg")
+	if err := os.Symlink(p, link); err != nil {
+		t.Skip("symlinks unavailable")
+	}
+	for _, path := range []string{"~/.odek/media/voice_chat8_a.ogg", filepath.Join(dir, "..", "media", "voice_chat8_a.ogg"), link} {
+		if err := CheckChatMediaRead(path, 7); err == nil {
+			t.Errorf("%q allowed for the wrong chat", path)
+		}
+		if err := CheckChatMediaRead(path, 8); err != nil {
+			t.Errorf("%q refused for the owner: %v", path, err)
+		}
+	}
+	if err := CheckChatMediaRead("", 7); err != nil {
+		t.Errorf("empty path: %v", err)
+	}
+}
