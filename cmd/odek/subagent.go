@@ -1174,7 +1174,7 @@ func subagentCmd(args []string) error {
 		NoProjectFile:    resolved.NoAgents,
 		Thinking:         resolved.Thinking,
 		Tools:            tools,
-		ToolFilter:       engineToolFilter(resolved.Tools, profileTools),
+		ToolFilter:       engineToolFilter(resolved.Tools, profileTools, taskToolsPost),
 		SandboxCleanup:   sandboxCleanup,
 		Renderer:         rend,
 		Skills:           &resolved.Skills,
@@ -1838,7 +1838,12 @@ func effectiveToolConfig(global config.ToolConfig, profile *config.ToolConfig) c
 // engineToolFilter is the filter handed to the engine for auto-registered
 // tools; it follows the same precedence as the built-in tool filtering so a
 // profile that enables a globally disabled tool is not overridden.
-func engineToolFilter(global config.ToolConfig, profile *config.ToolConfig) odek.ToolFilterConfig {
+func engineToolFilter(global config.ToolConfig, profile *config.ToolConfig, parent *taskToolsPosture) odek.ToolFilterConfig {
 	eff := effectiveToolConfig(global, profile)
+	// A child never exceeds its parent: engine-registered tools obey the
+	// parent's stamped filter exactly like the built-in tools do.
+	if parentFilter, ok := parent.filter(); ok {
+		eff = mergeToolFilters(eff, parentFilter)
+	}
 	return odek.ToolFilterConfig{Enabled: eff.Enabled, Disabled: eff.Disabled}
 }
