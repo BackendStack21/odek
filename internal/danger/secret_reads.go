@@ -425,6 +425,9 @@ func indirectSensitiveRef(tokens []string, vars map[string]string) bool {
 func namerefNamesSecret(tokens []string, ops []bool) bool {
 	isOp := func(i int) bool { return i < len(ops) && ops[i] }
 	var targetless []string
+	// declOperand marks the words that are nameref declaration operands; they
+	// name the nameref, so they are not later assignments of it.
+	declOperand := make(map[int]bool)
 	for i, tok := range tokens {
 		if isOp(i) {
 			continue
@@ -453,22 +456,25 @@ func namerefNamesSecret(tokens []string, ops []bool) bool {
 			continue
 		}
 		for ; j < len(tokens) && !isOp(j); j++ {
+			declOperand[j] = true
 			name, target, hasTarget := strings.Cut(tokens[j], "=")
 			if !staticShellName(name) || sensitiveEnvName(name) {
 				return true
 			}
-			if !hasTarget || target == "" {
+			if !hasTarget {
 				targetless = append(targetless, name)
 				continue
 			}
-			if namerefTargetUnsafe(target) {
+			// An empty target is what an expansion the normalizer dropped
+			// (`r=$1`) leaves behind: not statically known.
+			if target == "" || namerefTargetUnsafe(target) {
 				return true
 			}
 		}
 	}
 	for _, name := range targetless {
 		for i, tok := range tokens {
-			if isOp(i) {
+			if isOp(i) || declOperand[i] {
 				continue
 			}
 			if tok == name || strings.HasPrefix(tok, name+"[") ||
