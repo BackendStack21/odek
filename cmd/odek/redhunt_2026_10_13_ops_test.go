@@ -530,3 +530,39 @@ func TestReplEditorBracketedPasteDropsControlBytes(t *testing.T) {
 		t.Errorf("Ctrl+U outside paste: %q", got)
 	}
 }
+
+func TestReplHistoryHugePasteDoesNotLoseLaterEntries(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	path := filepath.Join(home, ".odek", historyFilename)
+	big := strings.Repeat("line of pasted text\n", 5000) // ~100 KiB
+	h := newReplHistory()
+	h.Load(path)
+	h.Add("before")
+	h.Add(big) // over the entry cap: not recorded
+	h.Add("entry after paste")
+	h2 := newReplHistory()
+	h2.Load(path)
+	h2.Add("next session")
+	h3 := newReplHistory()
+	h3.Load(path)
+	want := []string{"before", "entry after paste", "next session"}
+	if len(h3.entries) != 3 || h3.entries[0] != want[0] || h3.entries[1] != want[1] || h3.entries[2] != want[2] {
+		t.Fatalf("entries = %q, want %q", h3.entries, want)
+	}
+
+	// A file holding an over-long line loads what it can and is never
+	// rewritten from the partial list.
+	huge := strings.Repeat("x", historyMaxLineBytes+10)
+	content := historyFormatMarker + "\nkeep1\n" + huge + "\nkeep2\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h4 := newReplHistory()
+	h4.Load(path)
+	h4.Add("new")
+	got, _ := os.ReadFile(path)
+	if string(got) != content {
+		t.Errorf("history file was rewritten after a failed load (%d bytes)", len(got))
+	}
+}

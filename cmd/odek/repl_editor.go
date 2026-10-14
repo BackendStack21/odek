@@ -586,6 +586,10 @@ func (h *replHistory) Add(line string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
+	// An entry too large to reload (a huge paste) is not recorded.
+	if len(line) > historyMaxEntryBytes {
+		return
+	}
 	// Dedup consecutive
 	if len(h.entries) > 0 && h.entries[len(h.entries)-1] == line {
 		return
@@ -641,6 +645,7 @@ func (h *replHistory) Load(path string) {
 	defer f.Close()
 
 	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 64<<10), historyMaxLineBytes)
 	first := true
 	escaped := false // files without the format marker hold raw lines
 	for scanner.Scan() {
@@ -669,11 +674,21 @@ func (h *replHistory) Load(path string) {
 		h.entries = h.entries[len(h.entries)-h.max:]
 	}
 	h.pos = len(h.entries)
-	h.loaded = true
+	// A read error (e.g. an over-long line) leaves a partial list: never
+	// persist from it, so the original file is not rewritten and lost.
+	h.loaded = scanner.Err() == nil
 }
 
 // historyFullRewrites counts whole-file history rewrites (observed by tests).
 var historyFullRewrites int
+
+// historyMaxEntryBytes caps a recorded entry; historyMaxLineBytes is the
+// longest file line Load accepts (an escaped entry is at most twice its
+// size, plus slack).
+const (
+	historyMaxEntryBytes = 64 << 10
+	historyMaxLineBytes  = 4*historyMaxEntryBytes + 1024
+)
 
 // historyFormatMarker is the first line of a history file whose entries are
 // escaped (backslash, newline, carriage return). Files without it predate
