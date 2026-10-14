@@ -17,7 +17,7 @@ import (
 var sensitiveEnvSuffixes = []string{
 	"TOKEN", "SECRET", "SECRET_KEY", "API_KEY", "APIKEY", "PASSWORD", "PASSWD",
 	"PASSPHRASE", "PRIVATE_KEY", "PRIVATEKEY", "ACCESS_KEY", "CREDENTIALS",
-	"CREDENTIAL", "DATABASE_URL", "COOKIE", "WEBHOOK", "WEBHOOK_URL", "AUTH_SOCK",
+	"CREDENTIAL", "DATABASE_URL", "COOKIE", "WEBHOOK", "WEBHOOK_URL",
 }
 
 // sensitiveEnvNames are well-known secret-bearing variables whose names do not

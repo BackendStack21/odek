@@ -581,6 +581,11 @@ var persistenceDirMarkers = []string{
 	// ~/Library forms alike once ~ is expanded.
 	"/library/launchdaemons",
 	"/library/launchagents",
+}
+
+// startupHookMarkers are start-time hooks of other programs. Writing one is
+// deferred execution; reading, copying from or deleting one is not.
+var startupHookMarkers = []string{
 	"/.husky/",                  // husky points core.hooksPath here: runs on commit, push
 	"/profile_default/startup/", // IPython runs every file here at start
 	"/.vim/plugin/",             // Vim sources these at start
@@ -647,16 +652,25 @@ var persistenceBaseNames = map[string]bool{
 // It is direction-agnostic; callers gating reads should keep using
 // ClassifyPath (reads of these files stay at their existing class) and
 // reserve the persistence escalation for writes via ClassifyPathWrite.
-func IsPersistencePath(path string) bool {
+func IsPersistencePath(path string) bool { return persistencePath(path, true) }
+
+// isCorePersistencePath is IsPersistencePath without the start-time hooks of
+// other programs: the targets whose mere mention as an operand was already
+// persistence.
+func isCorePersistencePath(path string) bool { return persistencePath(path, false) }
+
+func persistencePath(path string, hooks bool) bool {
 	path = expandShellTokenPath(path)
-	if isPersistencePathLexical(path) {
+	if persistencePathLexical(path, hooks) {
 		return true
 	}
 	resolved, err := resolvePathTarget(path)
-	return err == nil && isPersistencePathLexical(resolved)
+	return err == nil && persistencePathLexical(resolved, hooks)
 }
 
-func isPersistencePathLexical(path string) bool {
+func isPersistencePathLexical(path string) bool { return persistencePathLexical(path, true) }
+
+func persistencePathLexical(path string, hooks bool) bool {
 	// Expand ~ / $HOME shorthands so direct API callers (file tools, tests)
 	// behave identically to shell-token classification.
 	path = expandShellTokenPath(path)
@@ -683,7 +697,7 @@ func isPersistencePathLexical(path string) bool {
 		if filepath.Dir(lower) == lowerHome && shellRCFilesLower[filepath.Base(lower)] {
 			return true
 		}
-		if filepath.Dir(lower) == lowerHome && homeStartupFiles[filepath.Base(lower)] {
+		if hooks && filepath.Dir(lower) == lowerHome && homeStartupFiles[filepath.Base(lower)] {
 			return true
 		}
 		// User systemd units: run at login / on timer.
@@ -698,7 +712,17 @@ func isPersistencePathLexical(path string) bool {
 			return true
 		}
 	}
-	if isGitExecConfig(dirLower) || pythonStartupHook(lower) {
+	if hooks {
+		for _, marker := range startupHookMarkers {
+			if strings.Contains(dirLower, marker) {
+				return true
+			}
+		}
+		if pythonStartupHook(lower) {
+			return true
+		}
+	}
+	if isGitExecConfig(dirLower) {
 		return true
 	}
 	return persistenceBaseNames[filepath.Base(lower)]
@@ -732,12 +756,16 @@ func isGitExecConfig(dirLower string) bool {
 // Persistence (rank above SystemWrite, default action Prompt, never
 // eligible for session trust shortcuts). Reads keep using ClassifyPath —
 // reading a CI workflow file must stay as frictionless as before.
-func ClassifyPathWrite(path string) RiskClass {
+func ClassifyPathWrite(path string) RiskClass { return classifyPathWriteMode(path, true) }
+
+// classifyPathWriteMode is ClassifyPathWrite where hooks selects whether the
+// start-time hooks of other programs count as persistence targets.
+func classifyPathWriteMode(path string, hooks bool) RiskClass {
 	cls := ClassifyPath(path)
 	if cls == Blocked || cls == Destructive {
 		return cls // already worse than persistence
 	}
-	if IsPersistencePath(path) && Rank(Persistence) > Rank(cls) {
+	if persistencePath(path, hooks) && Rank(Persistence) > Rank(cls) {
 		return Persistence
 	}
 	return cls
@@ -2102,17 +2130,20 @@ func classifyArgvComposerSink(upstream [][]string, stage []string, repo *gitRepo
 	if xargsInnerDangerous(inner) {
 		return Unknown
 	}
-	return xargsDynamicArgvRisk(inner)
+	return xargsDynamicArgvRisk(inner, composerReplaceString(stage))
 }
 
-// xargsDynamicArgvRisk is the floor for an argv composer whose whole argument
-// list comes from input the classifier cannot see. A command that takes its
+// xargsDynamicArgvRisk is the floor for an argv composer whose argument list
+// comes from input the classifier cannot see. A command that takes its
 // program, expression or verb from its first argument (a shell, an
 // interpreter, awk, sed, find, a VCS or kill front end, a wrapper with
-// nothing behind it) runs whatever that input holds. A command with fixed
-// arguments of its own keeps its ordinary classification: the input only
-// extends them.
-func xargsDynamicArgvRisk(inner []string) RiskClass {
+// nothing behind it) runs whatever that input holds. A command with a fixed
+// non-option argument of its own keeps its ordinary classification: the input
+// only extends it. Options and words holding the replace string (ph, or {})
+// are not fixed arguments. With fully dynamic arguments the result is the
+// command's worst case: pure readers stay safe, local writers are
+// local_write, curl and wget upload, everything else is code_execution.
+func xargsDynamicArgvRisk(inner []string, ph string) RiskClass {
 	if len(inner) == 0 {
 		return Safe
 	}
@@ -2127,25 +2158,69 @@ func xargsDynamicArgvRisk(inner []string) RiskClass {
 		// the input supplies the script or its file.
 		return CodeExecution
 	}
-	if len(unwrapped) > 1 {
-		return Safe
+	if !xargsHasFixedArgument(name, unwrapped, ph) {
+		if cls, ok := dynamicArgvClass[name]; ok {
+			return cls
+		}
+		return CodeExecution
 	}
-	if dynamicArgvReadOnly[name] {
-		return Safe
-	}
-	return CodeExecution
+	return Safe
 }
 
-// dynamicArgvReadOnly are the commands that stay safe when every argument
-// comes from input the classifier cannot see: they only read or print.
-var dynamicArgvReadOnly = map[string]bool{
-	"grep": true, "egrep": true, "fgrep": true, "rg": true, "cat": true, "head": true,
-	"tail": true, "wc": true, "ls": true, "stat": true, "echo": true,
-	"printf": true, "basename": true, "dirname": true, "sha256sum": true, "sha1sum": true,
-	"sha512sum": true, "md5sum": true, "md5": true, "shasum": true, "realpath": true,
-	"readlink": true, "du": true, "tr": true, "cut": true,
-	"true": true, "false": true, "test": true, "diff": true, "cmp": true,
+// xargsHasFixedArgument reports whether the command line carries a non-option
+// word of its own that is not the replace string. find, fd and the kill
+// family take tests, actions or signals from their arguments, so appended
+// input is never harmless to them.
+func xargsHasFixedArgument(name string, words []string, ph string) bool {
+	switch name {
+	case "find", "fd", "fdfind", "kill", "pkill", "killall":
+		return false
+	case "git":
+		sub, _ := gitSubcommandAndArgs(words)
+		return sub != "" && !xargsPlaceholderWord(sub, ph)
+	}
+	for _, w := range words[1:] {
+		if w != "" && !strings.HasPrefix(w, "-") {
+			// The first operand decides: when it is the replace string the
+			// input supplies the script or verb.
+			return !xargsPlaceholderWord(w, ph)
+		}
+	}
+	return false
 }
+
+func xargsPlaceholderWord(w, ph string) bool {
+	return strings.Contains(w, "{}") || (ph != "" && strings.Contains(w, ph))
+}
+
+// composerReplaceString returns the replace string a stage's argv composer
+// defines (-I STR, -i, --replace), or "".
+func composerReplaceString(stage []string) string {
+	inner, ok := argvComposerInnerCommand(stage)
+	idx := argvComposerIndex(stage)
+	if !ok || idx < 0 || len(stage)-len(inner) <= idx+1 {
+		return ""
+	}
+	return xargsReplaceString(stage[idx+1 : len(stage)-len(inner)])
+}
+
+// dynamicArgvClass is the worst case of a command whose every argument is
+// supplied at run time. Commands not listed (sort, uniq, file, xxd, less,
+// date, … : options can write or execute) are code_execution.
+var dynamicArgvClass = func() map[string]RiskClass {
+	m := map[string]RiskClass{}
+	for _, n := range []string{"grep", "egrep", "fgrep", "rg", "cat", "head", "tail", "wc", "ls", "stat",
+		"echo", "printf", "basename", "dirname", "sha256sum", "sha1sum", "sha512sum", "md5sum", "md5",
+		"shasum", "realpath", "readlink", "du", "tr", "cut", "true", "false", "test", "diff", "cmp",
+		"nl", "tac", "jq"} {
+		m[n] = Safe
+	}
+	for _, n := range []string{"touch", "gzip", "gunzip", "mkdir", "gofmt", "black", "prettier"} {
+		m[n] = LocalWrite
+	}
+	m["curl"], m["wget"] = NetworkUpload, NetworkUpload
+	return m
+}()
 
 // classifyArgvComposerLiteralInput classifies the commands an argv composer
 // runs from input written on its own line: parallel's `:::` argument sources
@@ -2243,7 +2318,7 @@ func classifyXargsFileInput(stage []string) RiskClass {
 	if xargsInnerDangerous(inner) {
 		return Unknown
 	}
-	return xargsDynamicArgvRisk(inner)
+	return xargsDynamicArgvRisk(inner, composerReplaceString(stage))
 }
 
 func xargsHasExternalArgSource(tokens []string) bool {
@@ -4662,6 +4737,13 @@ func isPersistenceWrite(first string, tokens []string) bool {
 	// `mv y ~/.config/systemd/user/evil.service`.
 	if (writePrefixes[first] && !commandOnlyReads(first, tokens)) || first == "ln" || first == "install" {
 		for _, tok := range tokens[1:] {
+			if isCorePersistencePath(expandShellTokenPath(tok)) {
+				return true
+			}
+		}
+		// Only what is written can plant a start-time hook: the destination
+		// of a copy, every operand of tee/touch/truncate.
+		for _, tok := range startupWriteOperands(first, tokens) {
 			if IsPersistencePath(expandShellTokenPath(tok)) {
 				return true
 			}
@@ -4705,6 +4787,27 @@ func isPersistenceWrite(first string, tokens []string) bool {
 		}
 	}
 	return false
+}
+
+// startupWriteOperands returns the operands of a write command that receive
+// content: the last operand of a copy/move/link/install, every operand of
+// tee, touch and truncate.
+func startupWriteOperands(name string, tokens []string) []string {
+	var operands []string
+	for _, tok := range tokens[1:] {
+		if tok != "" && !strings.HasPrefix(tok, "-") && !isRedirectToken(tok) {
+			operands = append(operands, tok)
+		}
+	}
+	switch name {
+	case "cp", "mv", "install", "ln", "rsync":
+		if len(operands) > 0 {
+			return operands[len(operands)-1:]
+		}
+	case "tee", "touch", "truncate":
+		return operands
+	}
+	return nil
 }
 
 // shellPathIsSensitive reports whether a shell token names a path that should
@@ -6430,7 +6533,8 @@ func execActionCommands(name string, tokens []string) [][]string {
 			}
 			end := len(tokens)
 			for j := i + 1; j < len(tokens); j++ {
-				if tokens[j] == ";" || tokens[j] == `\;` || tokens[j] == "+" {
+				// A bare + inside the command is an argument; only {} + ends it.
+				if tokens[j] == ";" || tokens[j] == `\;` || (tokens[j] == "+" && j > i+1 && tokens[j-1] == "{}") {
 					end = j
 					break
 				}

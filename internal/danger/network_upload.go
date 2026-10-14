@@ -212,6 +212,11 @@ var registryPublishVerbs = map[string][]string{
 // working tree's package: the publish verb is among the first subcommand
 // words (`yarn npm publish`, `dotnet nuget push`, `dart pub publish`).
 func registryPublish(name string, args []string) bool {
+	for _, a := range args {
+		if a == "--dry-run" || a == "--dryrun" || a == "-n" && (name == "npm" || name == "pnpm" || name == "cargo") {
+			return false // nothing is sent
+		}
+	}
 	var words []string
 	for _, a := range args {
 		if a == "--" {

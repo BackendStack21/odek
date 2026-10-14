@@ -1,5 +1,7 @@
 package danger
 
+import "strings"
+
 // Runner option grammars: the value-taking global options that may sit
 // between the runner and its subcommand.
 var (
@@ -62,7 +64,14 @@ func runnerCommand(name string, tokens []string) []string {
 	case "pnpm":
 		return after(pnpmRunnerSpec, "exec", "dlx", "x")
 	case "bun":
-		return after(bunRunnerSpec, "x")
+		rest := after(bunRunnerSpec, "x")
+		// bunx options (--bun, -p/--package PKG) precede the command.
+		if r := (optSpec{posix: true, short: "p", long: longTable("package", "")}).parse(rest); r.operandAt >= 0 {
+			return rest[r.operandAt:]
+		} else if len(r.rest) > 0 {
+			return r.rest
+		}
+		return nil
 	case "pyenv", "rbenv":
 		return after(optSpec{posix: true}, "exec")
 	case "fnm":
@@ -74,7 +83,12 @@ func runnerCommand(name string, tokens []string) []string {
 		}
 		return nil
 	case "nvm":
-		if rest := after(optSpec{posix: true}, "exec", "run"); len(rest) > 0 {
+		// nvm exec [--silent] [VERSION] CMD: skip the flags and the version.
+		rest := after(optSpec{posix: true}, "exec", "run")
+		for len(rest) > 0 && strings.HasPrefix(rest[0], "-") {
+			rest = rest[1:]
+		}
+		if len(rest) > 0 {
 			return rest[1:] // the version
 		}
 	case "yarn":

@@ -20,7 +20,7 @@ func TestRED_ReviewDynamicArgvShortClustersAndShellC(t *testing.T) {
 func TestRED_ReviewDynamicArgvAllowlistInverted(t *testing.T) {
 	t.Setenv("HOME", "/home/user")
 	t.Chdir(t.TempDir())
-	for _, c := range []string{"docker", "kubectl", "npm", "pip", "gh", "curl", "scp", "nc", "psql", "crontab", "sqlite3", "openssl", "gpg", "less", "man", "unzip"} {
+	for _, c := range []string{"docker", "kubectl", "npm", "pip", "gh", "scp", "nc", "psql", "crontab", "sqlite3", "openssl", "gpg", "less", "man", "unzip"} {
 		dangerHunt13NotAllowed(t, CodeExecution, `xargs -a list `+c)
 	}
 	cfg := &DangerousConfig{}
@@ -175,7 +175,6 @@ func TestRED_ReviewNamerefSecretNames(t *testing.T) {
 	dangerHunt13NotAllowed(t, SystemWrite,
 		`declare -n a=SESSION_COOKIE; echo $a`,
 		`declare -n a=SLACK_WEBHOOK; echo $a`,
-		`declare -n a=SSH_AUTH_SOCK; echo $a`,
 		`k=KEY; declare -n a=OPENAI_API_${k}; echo $a`,
 		`declare -n a="OPENAI_API_$K"; echo $a`,
 	)

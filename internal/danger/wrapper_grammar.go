@@ -60,21 +60,26 @@ var semGrammar = optSpec{
 	abbrev: true,
 }
 
-// parallelGrammar is GNU parallel's option grammar: unlike xargs it has many
-// value-taking long options (--header, --colsep, --sshlogin, …) whose values
-// must not be read as the command.
+// parallelGrammar is GNU parallel's option grammar, built from its documented
+// option list. Value-taking options (--header, --colsep, --sshlogin, --jobs,
+// …) must not leave their value to be read as the command, and boolean ones
+// (--link, --pipepart, --tmux, --lb, …) must not swallow the command. Names
+// match exactly (no abbreviations in this table): an option this table does
+// not know reads as a flag, so the next word is the command and is classified
+// rather than hidden.
 var parallelGrammar = optSpec{
 	short:         "aCdEIjJLnNPsS",
 	shortOptional: "iel",
-	long: longTable("arg-file arg-file-sep colsep delimiter header jobs max-args max-replace-args max-lines "+
-		"max-chars replace sshlogin sshloginfile slf results joblog workdir wd retries timeout delay load "+
-		"memfree memsuspend tmpdir tmux-pane tagstring tag-string eta-style link plus-string rpl "+
-		"parset cleanup-env return transfer-file basefile template env trc sql sqlmaster sqlworker "+
-		"nice number-of-sockets halt halt-on-error shebang-wrap pipe-part block block-size recstart recend "+
-		"rsync-opts ssh sshdelay cat-command filter filter-hosts limit lb-lines",
-		"null quote verbose dry-run bar progress eta tty ctagstring tag keep-order group ungroup line-buffer "+
-			"pipe round-robin files fg bg citation will-cite semaphore wait no-run-if-empty xapply"),
-	abbrev: true,
+	long: longTable("arg-file arg-file-sep colsep delimiter eof env halt header jobs max-procs joblog load "+
+		"max-args max-replace-args max-lines max-chars memfree memsuspend nice results res retries return "+
+		"rpl sshlogin sshloginfile slf sshdelay tagstring template tmpl timeout tmpdir delay workdir wd "+
+		"transfer-file transferfile tf basefile bf trc block block-size recstart recend compress-program "+
+		"decompress-program sql sqlandworker sqlmaster sqlworker parset replace",
+		"null quote shellquote verbose dry-run dryrun bar progress eta tty tag ctag keep-order group ungroup "+
+			"line-buffer linebuffer lb pipe pipepart round-robin files fg bg citation will-cite semaphore sem wait "+
+			"no-run-if-empty xapply link cat fifo tmux tmuxpane cleanup filter-hosts nonall onall interactive "+
+			"silent resume retry-failed shebang shebang-wrap number-of-cores number-of-sockets number-of-threads "+
+			"number-of-cpus plus use-cores-instead-of-threads use-sockets-instead-of-threads show-limits"),
 }
 
 var xargsGrammar = optSpec{
