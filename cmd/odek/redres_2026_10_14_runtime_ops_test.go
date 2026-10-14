@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/BackendStack21/odek/internal/config"
+	"github.com/BackendStack21/odek/internal/maintenance"
 )
 
 // rtopsHome points HOME at a fresh temp dir so dispatch-level tests never
@@ -208,11 +209,11 @@ func TestRED_RtOps_ReplHistoryRedactsSecrets(t *testing.T) {
 func TestRED_RtOps_EngineToolFilterFollowsProfile(t *testing.T) {
 	global := config.ToolConfig{Disabled: []string{"memory"}}
 	profile := &config.ToolConfig{Enabled: []string{"memory", "read_file"}}
-	got := engineToolFilter(global, profile)
+	got := engineToolFilter(global, profile, nil)
 	if len(got.Disabled) != 0 || len(got.Enabled) != 2 {
 		t.Errorf("profile filter must replace the global one, got %+v", got)
 	}
-	got = engineToolFilter(global, nil)
+	got = engineToolFilter(global, nil, nil)
 	if len(got.Disabled) != 1 || got.Disabled[0] != "memory" {
 		t.Errorf("without a profile the global filter applies, got %+v", got)
 	}
@@ -256,5 +257,38 @@ func TestRED_RtOps_HelpUsageIsCommandSpecific(t *testing.T) {
 		if strings.Contains(b.String(), "odek upgrade") {
 			t.Errorf("usage for %s is the global usage", c)
 		}
+	}
+}
+
+func TestRED_RtOps_EngineToolFilterNeverExceedsParent(t *testing.T) {
+	global := config.ToolConfig{Disabled: []string{"memory"}}
+	profile := &config.ToolConfig{Disabled: []string{"shell"}}
+	parent := &taskToolsPosture{Disabled: []string{"memory"}}
+	got := engineToolFilter(global, profile, parent)
+	disabled := map[string]bool{}
+	for _, n := range got.Disabled {
+		disabled[n] = true
+	}
+	if !disabled["memory"] || !disabled["shell"] {
+		t.Errorf("child engine filter must keep the parent's memory restriction, got %+v", got)
+	}
+}
+
+func TestRED_RtOps_CleanupDryRunListsHeartbeats(t *testing.T) {
+	home := t.TempDir()
+	stale := filepath.Join(home, "schedule-host-77.json")
+	fresh := filepath.Join(home, "schedule-host-78.json")
+	for _, p := range []string{stale, fresh} {
+		if err := os.WriteFile(p, []byte("{}"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	old := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(stale, old, old); err != nil {
+		t.Fatal(err)
+	}
+	c := collectCleanupCandidates(home, maintenance.DefaultConfig())
+	if len(c.heartbeats) != 1 || c.heartbeats[0] != stale {
+		t.Errorf("heartbeats = %v, want [%s]", c.heartbeats, stale)
 	}
 }

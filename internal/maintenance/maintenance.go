@@ -553,17 +553,18 @@ func sweepPlans(home string, maxAgeDays int) (int, error) {
 // cleanup (crash, os.Exit) leaves it behind.
 const scheduleHeartbeatMaxAge = 10 * time.Minute
 
-// sweepScheduleHeartbeats removes orphaned schedule-host-<pid>.json files.
-func sweepScheduleHeartbeats(home string) error {
+// ScheduleHeartbeatCandidates lists the orphaned schedule-host heartbeat files
+// a sweep would remove. The sweep and `odek cleanup --dry-run` share it.
+func ScheduleHeartbeatCandidates(home string) ([]string, error) {
 	entries, err := os.ReadDir(home)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil
+			return nil, nil
 		}
-		return fmt.Errorf("maintenance: read home: %w", err)
+		return nil, fmt.Errorf("maintenance: read home: %w", err)
 	}
 	cutoff := time.Now().Add(-scheduleHeartbeatMaxAge)
-	var firstErr error
+	var out []string
 	for _, e := range entries {
 		name := e.Name()
 		if !strings.HasPrefix(name, "schedule-host-") || !strings.HasSuffix(name, ".json") || !e.Type().IsRegular() {
@@ -573,7 +574,17 @@ func sweepScheduleHeartbeats(home string) error {
 		if err != nil || !info.ModTime().Before(cutoff) {
 			continue
 		}
-		if err := os.Remove(filepath.Join(home, name)); err != nil && !os.IsNotExist(err) && firstErr == nil {
+		out = append(out, filepath.Join(home, name))
+	}
+	return out, nil
+}
+
+// sweepScheduleHeartbeats removes orphaned schedule-host-<pid>.json files.
+func sweepScheduleHeartbeats(home string) error {
+	paths, err := ScheduleHeartbeatCandidates(home)
+	var firstErr error = err
+	for _, p := range paths {
+		if err := os.Remove(p); err != nil && !os.IsNotExist(err) && firstErr == nil {
 			firstErr = err
 		}
 	}
