@@ -188,6 +188,9 @@ var guardedPatterns = []guardedPattern{
 	// CLI flags with a whitespace-separated value (--password VALUE,
 	// --secret-key VALUE, --private-key VALUE).
 	{regexp.MustCompile(`(?i)--?(?:password|passwd|passphrase|pwd|pass|token|secret|api[_-]?key|secret[_-]?key|private[_-]?key|access[_-]?key|client[_-]?secret)[ \t]+("[^"\n]{20,}"|'[^'\n]{20,}'|[^\s"']{20,})`), plausibleFlagValue},
+	// curl credential flags: -u / --user / --proxy-user USER:PASSWORD (also
+	// -U). The user part alone (`-u admin`) is not a credential.
+	{regexp.MustCompile(`(?:^|\s)(?:-[uU]|--(?:proxy-)?user)(?:[ \t]+|=)["']?[^\s:"']*:("[^"\n]{8,}"|'[^'\n]{8,}'|[^\s"']{8,})`), plausibleUserFlagPassword},
 	// .netrc lines: password VALUE.
 	{regexp.MustCompile(`(?i)\b(?:password|passwd|passphrase)[ \t]+("[^"\n]{20,}"|'[^'\n]{20,}'|[^\s"']{20,})`), looksSecret},
 	// XML elements: <password>VALUE</password>, optional attributes and
@@ -206,6 +209,29 @@ func plausibleValue(v string) bool {
 func plausibleFlagValue(v string) bool {
 	t := unwrapValue(v)
 	return plausibleValue(v) && !strings.HasPrefix(t, "$") && !strings.HasPrefix(t, "%")
+}
+
+// plausibleUserFlagPassword judges the PASSWORD of a USER:PASSWORD flag
+// operand. `-u` is also a user/group flag elsewhere (docker run -u
+// www-data:www-data, -u 1000:1000), so the value must read as a password: a
+// literal that is not a variable reference or code expression and carries a
+// digit or password punctuation (or is 16+ characters), and is not a bare
+// number.
+func plausibleUserFlagPassword(v string) bool {
+	t := unwrapValue(v)
+	if len(t) < 8 || strings.ContainsAny(t[:1], "$%{<") || strings.ContainsAny(t, "(){}") || strings.Contains(t, "://") {
+		return false
+	}
+	digits := 0
+	for i := 0; i < len(t); i++ {
+		if t[i] >= '0' && t[i] <= '9' {
+			digits++
+		}
+	}
+	if digits == len(t) {
+		return false
+	}
+	return digits > 0 || strings.ContainsAny(t, passwordPunct) || len(t) >= 16
 }
 
 // looksSecret additionally requires a digit: random credentials have one

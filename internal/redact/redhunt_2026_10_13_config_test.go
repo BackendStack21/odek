@@ -88,6 +88,26 @@ func TestRED_CurlUserFlagCredentialLeaks(t *testing.T) {
 	})
 }
 
+func TestCurlUserFlagCorpus(t *testing.T) {
+	cfghunt13ExpectRedacted(t, []string{
+		"curl --user=admin:" + cfghunt13Secret + " https://x.example",
+		`curl -u "admin:` + cfghunt13Secret + `" https://x.example`,
+		"curl --proxy-user px:" + cfghunt13Secret + " https://x.example",
+	})
+	if got := RedactSecrets("curl -u admin:hunter2pw https://x.example"); strings.Contains(got, "hunter2pw") {
+		t.Errorf("short password leaked: %q", got)
+	}
+	cfghunt13ExpectUnchanged(t, []string{
+		"docker run -u 1000:1000 alpine",
+		"docker run -u www-data:www-data alpine",
+		"docker run --user appuser:docker alpine",
+		"curl -u admin:$CURL_PASSWORD https://x.example",
+		`curl -u "admin:${CURL_PASSWORD}" https://x.example`,
+		"git config user.name x && mkdir-u a:b",
+		"pip install -U pip",
+	})
+}
+
 // Session cookies are bearer credentials: a Cookie / Set-Cookie header line in
 // curl -v output or an http_request result replays the session. No rule
 // covers cookie headers, so the session value is persisted verbatim.
