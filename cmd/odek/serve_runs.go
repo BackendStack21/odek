@@ -1089,9 +1089,9 @@ func startServeRun(
 
 	// Headless runs may wait longer than the socket default for approvals.
 	if req.ApprovalTimeoutSeconds > 0 {
-		t := time.Duration(req.ApprovalTimeoutSeconds) * time.Second
-		if t > maxRunApprovalWait {
-			t = maxRunApprovalWait
+		t := maxRunApprovalWait
+		if req.ApprovalTimeoutSeconds < int(maxRunApprovalWait/time.Second) {
+			t = time.Duration(req.ApprovalTimeoutSeconds) * time.Second
 		}
 		approver.SetApprovalTimeout(t)
 	}
