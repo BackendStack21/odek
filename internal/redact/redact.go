@@ -165,7 +165,7 @@ type guardedPattern struct {
 }
 
 const (
-	gSep = `["'\x60]?\s*(?:=>|[:=])\s*`
+	gSep = `(?:\\?["'\x60])?\s*(?:=>|[:=])\s*`
 	// The unquoted alternative ends at a JSON string escape (\n, \r, \t, \"),
 	// so a credential followed by an encoded newline is judged alone. A
 	// literal in escaped quotes (\"...\", JSON-encoded) is a quoted value.
@@ -720,10 +720,13 @@ func cookieOperandSpans(text string, s, e int) [][2]int {
 	return out
 }
 
-// cookieHeaderRe finds the start of a Cookie / Set-Cookie header value (also
-// inside a quoted curl -H argument, a JSON header object, or after a literal
-// \r \n \t escape); group 1 is the header name.
-var cookieHeaderRe = regexp.MustCompile(`(?i)(?:\b|\\[nrt])((?:set-)?cookie)["'\x60]?[ \t]*:[ \t]*`)
+// cookieHeaderRe finds the start of a Cookie / Set-Cookie header value: a
+// header line (also inside a quoted curl -H argument, a JSON header object
+// with plain or escaped key quotes, or after a literal \r \n \t escape), or
+// the second argument of a setHeader / set / append / add / header call
+// whose first argument names the header. Group 1 or group 2 is the header
+// name; group 3 is set when the value is an array of strings.
+var cookieHeaderRe = regexp.MustCompile(`(?i)(?:(?:\b|\\[nrt])((?:set-)?cookie)(?:\\?["'\x60])?[ \t]*:|\b(?:setheader|set|append|add|header)\([ \t]*["'\x60]((?:set-)?cookie)["'\x60][ \t]*,)[ \t]*(\[[ \t]*)?`)
 
 // cookieMatches returns the offsets of each cookie value on Cookie /
 // Set-Cookie header lines that may be a credential (see cookieCredential).
@@ -739,23 +742,64 @@ func cookieMatches(text string) [][2]int {
 		if m[0] < scanned {
 			continue
 		}
-		setCookie := hasPrefixFold(text[m[2]:], "set-")
-		json := inJSON.at(text, m[2])
-		pos := m[1]
-		var closer byte
-		if pos < len(text) && strings.IndexByte("\"'`", text[pos]) >= 0 {
-			closer = text[pos]
-			json = json || closer == '"'
-			pos++
+		name := m[2]
+		if name < 0 {
+			name = m[4]
 		}
-		s := cookieScan{text: text, json: json, closer: closer}
-		var spans [][2]int
-		spans, scanned = s.pairs(pos, func(name, val string) bool {
-			return (!setCookie || !setCookieAttribute(name)) && cookieCredential(name, val)
-		})
-		out = append(out, spans...)
+		setCookie := hasPrefixFold(text[name:], "set-")
+		json := inJSON.at(text, name)
+		redact := func(n, val string) bool {
+			return (!setCookie || !setCookieAttribute(n)) && cookieCredential(n, val)
+		}
+		pos := m[1]
+		for {
+			s := cookieScan{text: text, json: json}
+			if json && strings.HasPrefix(text[pos:], `\"`) {
+				pos += 2 // escaped quote opening the value; \" also ends it
+			} else if pos < len(text) && strings.IndexByte("\"'`", text[pos]) >= 0 {
+				s.closer = text[pos]
+				s.json = json || s.closer == '"'
+				pos++
+			}
+			var spans [][2]int
+			spans, scanned = s.pairs(pos, redact)
+			out = append(out, spans...)
+			if m[6] < 0 || s.closer == 0 {
+				break
+			}
+			// A string array: continue with the next "…" element.
+			next, ok := nextArrayString(text, scanned, s.closer)
+			if !ok {
+				break
+			}
+			pos = next
+		}
 	}
 	return out
+}
+
+// nextArrayString reports where the next string element of an array starts
+// when text[i] closes the previous one with quote q: the closing quote, a
+// comma and the opening quote of the next element, with blanks between.
+func nextArrayString(text string, i int, q byte) (int, bool) {
+	if i >= len(text) || text[i] != q {
+		return 0, false
+	}
+	i++
+	for i < len(text) && (text[i] == ' ' || text[i] == '\t') {
+		i++
+	}
+	if i >= len(text) || text[i] != ',' {
+		return 0, false
+	}
+	i++
+	for i < len(text) && (text[i] == ' ' || text[i] == '\t') {
+		i++
+	}
+	if i >= len(text) || text[i] != q {
+		return 0, false
+	}
+	return i, true
 }
 
 // cookieScan reads cookie pairs (name=value separated by ; or by ", " before
@@ -1301,10 +1345,16 @@ func guardedPatternMatches(text string) [][2]int {
 			if !g.ok(text[vs:judge]) {
 				continue
 			}
-			if unquoted {
+			start := m[0]
+			switch {
+			case unquoted:
 				end = escapedQuoteTail(text, judge)
+			case escQuoted:
+				// A literal in escaped quotes keeps its key and quotes, so
+				// JSON encoded inside a JSON string stays well-formed.
+				start, end = vs, judge
 			}
-			out = append(out, [2]int{m[0], end})
+			out = append(out, [2]int{start, end})
 			last = end
 		}
 	}

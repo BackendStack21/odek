@@ -154,9 +154,9 @@ func TestCredentialValueQuoteHandlingOutsideJSON(t *testing.T) {
 // "token: \"...\"") is a quoted literal and is judged without its quotes.
 func TestRED_EscapedQuotedBareKeyValueLeaks(t *testing.T) {
 	redres14ExpectExact(t, map[string]string{
-		`{"out":"token: \"Xy7kLm9pQ2zzAbCdEf3456\" next"}`:  `{"out":"[REDACTED] next"}`,
-		`{"out":"secret=\"Xy7kLm9pQ2zzAbCdEf3456\"\nnext"}`: `{"out":"[REDACTED]\nnext"}`,
-		`{"out":"MYSQL_PWD=\"Xy7kLm9pQ2zzAbCdEf3456\";ls"}`: `{"out":"MYSQL[REDACTED];ls"}`,
+		`{"out":"token: \"Xy7kLm9pQ2zzAbCdEf3456\" next"}`:  `{"out":"token: \"[REDACTED]\" next"}`,
+		`{"out":"secret=\"Xy7kLm9pQ2zzAbCdEf3456\"\nnext"}`: `{"out":"secret=\"[REDACTED]\"\nnext"}`,
+		`{"out":"MYSQL_PWD=\"Xy7kLm9pQ2zzAbCdEf3456\";ls"}`: `{"out":"MYSQL_PWD=\"[REDACTED]\";ls"}`,
 	})
 	redres14ExpectUnchanged(t, []string{
 		`{"out":"secret: \"kubernetes-secret-name-for-app\""}`,
@@ -189,6 +189,11 @@ func TestEscapedQuoteAndCookieRulesScaleLinearly(t *testing.T) {
 		"cookie commas":     func(n int) string { return "Set-Cookie: " + strings.Repeat(", "+strings.Repeat("x", 300), n/302) },
 		"cookie json":       func(n int) string { return `{"h":"Cookie: ` + strings.Repeat(`a=\"abcdefgh1\"; `, n/18) },
 		"curl cookies":      func(n int) string { return strings.Repeat("curl -b a=abcdefgh1;b=c ", n/24) },
+		"escaped keys":      func(n int) string { return `{"o":"{` + strings.Repeat(`\"password\":\"Xy7kLm9pQ2zz\",`, n/31) },
+		"escaped key nulls": func(n int) string { return `{"o":"{` + strings.Repeat(`\"password\":null,`, n/17) },
+		"cookie arrays":     func(n int) string { return `{"set-cookie":[` + strings.Repeat(`"a=abcdefgh1", `, n/15) },
+		"setheader calls":   func(n int) string { return strings.Repeat(`set('cookie', 'a=abcdefgh1');`, n/29) },
+		"setheader arrays":  func(n int) string { return `setHeader('Set-Cookie', [` + strings.Repeat(`'a=b', `, n/7) },
 	}
 	base := 64 << 10
 	for name, gen := range gens {
@@ -334,5 +339,42 @@ func TestCookieScannerAndShapeEdges(t *testing.T) {
 	})
 	redres14ExpectHidden(t, map[string][]string{
 		"Cookie: XMLHttpSession=abcdefgh12": {"abcdefgh12"},
+	})
+}
+
+// JSON encoded inside a JSON string escapes its key quotes (\"password\":);
+// the credential under such a key is redacted and the structure kept.
+func TestRED_EscapedKeyJSONInJSONLeaks(t *testing.T) {
+	redres14ExpectExact(t, map[string]string{
+		`{"out":"{\"password\":\"Xy7kLm9pQ2zz\",\"x\":1}"}`:           `{"out":"{\"password\":\"[REDACTED]\",\"x\":1}"}`,
+		`{"out":"{\"api_key\": \"Xy7kLm9pQ2zzAbCdEf3456\"}"}`:         `{"out":"{\"api_key\": \"[REDACTED]\"}"}`,
+		`{"out":"{\"token\":\"Xy7kLm9pQ2zzAbCdEf3456\",\"n\":2}"}`:    `{"out":"{\"token\":\"[REDACTED]\",\"n\":2}"}`,
+		`{"out":"{\"db_password\":\"Xy7kLm9\\\"pQ2zz\"}"}`:            `{"out":"{\"db_password\":\"[REDACTED]\"}"}`,
+		`{"out":"{\"Set-Cookie\":\"sid=abcdefgh12345678; Path=/\"}"}`: `{"out":"{\"Set-Cookie\":\"sid=[REDACTED]; Path=/\"}"}`,
+	})
+	redres14ExpectUnchanged(t, []string{
+		`{"out":"{\"password\":\"${DB_PASSWORD}\",\"x\":1}"}`,
+		`{"out":"{\"password\":null,\"token\":\"short\"}"}`,
+		`{"out":"{\"token_count\":\"12345678901234567890123\"}"}`,
+	})
+}
+
+// Set-Cookie values in a JSON array and in a setHeader / set / append call
+// are cookie header values.
+func TestRED_SetCookieArrayAndCallLeaks(t *testing.T) {
+	redres14ExpectExact(t, map[string]string{
+		`{"set-cookie":["sid=abcdefgh12345678; Path=/"]}`:                                           `{"set-cookie":["sid=[REDACTED]; Path=/"]}`,
+		`{"Set-Cookie": [ "sid=abcdefgh12345678; Path=/", "theme=dark", "u=abcdefghijkl" ], "x":1}`: `{"Set-Cookie": [ "sid=[REDACTED]; Path=/", "theme=dark", "u=[REDACTED]" ], "x":1}`,
+		`res.setHeader('Set-Cookie', 'sid=abcdefgh12345678; HttpOnly')`:                             `res.setHeader('Set-Cookie', 'sid=[REDACTED]; HttpOnly')`,
+		`w.Header().Set("Set-Cookie", "sid=abcdefgh12345678; Path=/")`:                              `w.Header().Set("Set-Cookie", "sid=[REDACTED]; Path=/")`,
+		`headers.append("cookie", "user=abcdefghijklmnop")`:                                         `headers.append("cookie", "user=[REDACTED]")`,
+		`res.setHeader('Set-Cookie', ['a=abcdefgh12345678', 'b=Zq8xLm2pWr5t'])`:                     `res.setHeader('Set-Cookie', ['a=[REDACTED]', 'b=[REDACTED]'])`,
+	})
+	redres14ExpectUnchanged(t, []string{
+		`{"set-cookie":["theme=dark; Path=/"]}`,
+		`res.setHeader('Set-Cookie', cookieValue)`,
+		`["cookie", "user=abcdefghijklmnop"]`,
+		`log("cookie", "user=abcdefghijklmnop")`,
+		`{"cookies":["user=abcdefghijklmnop"]}`,
 	})
 }

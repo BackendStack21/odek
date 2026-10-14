@@ -13,7 +13,7 @@ const passwordPunct = "!@#$%^&*"
 // credentialNameRe finds a name containing a secret word followed by an
 // assignment separator (=, :, =>), tolerating a closing quote after the
 // name (JSON) and whitespace around the separator. Group 1 is the name.
-var credentialNameRe = regexp.MustCompile(`(?i)([A-Za-z0-9_-]*(?:token|secret|passw(?:or)?d|credential|api[_-]?key|access[_-]?key|private[_-]?key)[A-Za-z0-9_-]*)["'\x60]?\s*(?:=>|[:=])\s*`)
+var credentialNameRe = regexp.MustCompile(`(?i)([A-Za-z0-9_-]*(?:token|secret|passw(?:or)?d|credential|api[_-]?key|access[_-]?key|private[_-]?key)[A-Za-z0-9_-]*)(?:\\?["'\x60])?\s*(?:=>|[:=])\s*`)
 
 // keyedNameRe matches the names whose value is always treated as a
 // credential, wherever the name begins: it ends with one of these words.
@@ -131,7 +131,8 @@ const credentialJudgeWindow = 256
 // parseCredentialValue reads the value starting at pos: a quoted literal up
 // to its closing quote on the same line (a backslash-escaped quote does not
 // close it), or an unquoted run to the next whitespace, cut at `,"` (the
-// start of the next JSON member) and at a } or ] that closes a structure
+// start of the next JSON member; inside a JSON string also at `,\"`, the next
+// member of JSON encoded in that string) and at a } or ] that closes a structure
 // opened before the name (curly and square are the open counts at the name).
 // Any other bracket belongs to the value, so a secret that contains one is
 // kept whole. An opening quote without a closing one starts an unquoted run.
@@ -201,7 +202,7 @@ func parseCredentialValue(text string, pos int, curly, square int, full, json bo
 				return closeBracketValue(text, pos, end)
 			}
 		case ',':
-			if end+1 < len(text) && text[end+1] == '"' {
+			if end+1 < len(text) && text[end+1] == '"' || json && strings.HasPrefix(text[end+1:], `\"`) {
 				return clipCredentialValue(text[pos:end]), end, false, true
 			}
 		case '\\':
@@ -421,6 +422,9 @@ func credentialMatches(text string) [][2]int {
 			// Python dicts): only the value inside its quotes is replaced, so
 			// the key and the document structure stay intact.
 			start, end = m[1]+1, end-1
+		} else if quoted && strings.HasPrefix(text[m[3]:], `\"`) && strings.HasPrefix(text[m[1]:], `\"`) && end-2 > m[1]+2 {
+			// The same for JSON encoded inside a JSON string ({\"password\":\"…\"}).
+			start, end = m[1]+2, end-2
 		}
 		out = append(out, [2]int{start, end})
 	}
