@@ -423,6 +423,9 @@ func (t *readFileTool) Call(argsJSON string) (string, error) {
 			return jsonError(err.Error())
 		}
 	}
+	if err := checkTelegramMediaRead(t.toolCtx(), args.Path); err != nil {
+		return jsonError(err.Error())
+	}
 
 	// Security: resolve directory symlinks before classification so a path that
 	// traverses a symlinked directory is classified by its real target.

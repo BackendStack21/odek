@@ -1,0 +1,95 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/BackendStack21/odek/internal/danger"
+)
+
+func tgresMediaFile(t *testing.T, name string) string {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := filepath.Join(home, ".odek", "media")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(dir, name)
+	if err := os.WriteFile(p, []byte("private contents of chat A\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func tgresQuote(s string) string { b, _ := json.Marshal(s); return string(b) }
+
+func TestRED_TelegramReadFileRefusesOtherChatsMedia(t *testing.T) {
+	p := tgresMediaFile(t, "doc_chat111_note_abcd.txt")
+	tl := &readFileTool{dangerousConfig: danger.DangerousConfig{}}
+	args, _ := json.Marshal(map[string]any{"path": p})
+
+	tl.SetContext(withTelegramMediaChat(context.Background(), 222))
+	out, err := tl.Call(string(args))
+	if err == nil || strings.Contains(out, "private contents") {
+		t.Fatalf("chat 222 read chat 111's media: out=%q err=%v", out, err)
+	}
+	if !strings.Contains(out, "different chat") {
+		t.Fatalf("want a different-chat refusal, got %q", out)
+	}
+
+	// The owning chat still reads it.
+	tl.SetContext(withTelegramMediaChat(context.Background(), 111))
+	out, err = tl.Call(string(args))
+	if err != nil || !strings.Contains(out, "private contents") {
+		t.Fatalf("owner read failed: out=%q err=%v", out, err)
+	}
+
+	// Outside a Telegram turn nothing changes.
+	tl.SetContext(context.Background())
+	if out, err = tl.Call(string(args)); err != nil || !strings.Contains(out, "private contents") {
+		t.Fatalf("non-telegram read failed: out=%q err=%v", out, err)
+	}
+}
+
+func TestRED_TelegramMediaScopeCoversSiblingsAndSpellings(t *testing.T) {
+	p := tgresMediaFile(t, "voice_chat111_x.ogg")
+	home, _ := os.UserHomeDir()
+	link := filepath.Join(t.TempDir(), "alias.ogg")
+	if err := os.Symlink(p, link); err != nil {
+		t.Skip("symlinks unavailable")
+	}
+	ctx := withTelegramMediaChat(context.Background(), 222)
+	for name, path := range map[string]string{
+		"absolute": p,
+		"tilde":    "~/.odek/media/voice_chat111_x.ogg",
+		"dotdot":   filepath.Join(home, ".odek", "media", "..", "media", "voice_chat111_x.ogg"),
+		"symlink":  link,
+	} {
+		if err := checkTelegramMediaRead(ctx, path); err == nil {
+			t.Errorf("%s spelling %q: chat 222 allowed", name, path)
+		}
+	}
+	// vision and transcribe consult the same guard before touching the file.
+	vt := &visionTool{dangerousConfig: danger.DangerousConfig{}}
+	tt := &transcribeTool{dangerousConfig: danger.DangerousConfig{}}
+	vt.SetContext(ctx)
+	tt.SetContext(ctx)
+	if out, _ := tt.Call(`{"path":` + tgresQuote(p) + `}`); !strings.Contains(out, "different chat") {
+		t.Errorf("transcribe did not refuse: %q", out)
+	}
+	if out, _ := vt.CallContext(ctx, `{"path":`+tgresQuote(p)+`}`); !strings.Contains(out, "different chat") {
+		t.Errorf("vision did not refuse: %q", out)
+	}
+	// A file of the chat itself and files outside the media dir are fine.
+	if err := checkTelegramMediaRead(withTelegramMediaChat(context.Background(), 111), p); err != nil {
+		t.Errorf("owner refused: %v", err)
+	}
+	if err := checkTelegramMediaRead(ctx, filepath.Join(t.TempDir(), "x.txt")); err != nil {
+		t.Errorf("non-media path refused: %v", err)
+	}
+}

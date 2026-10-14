@@ -2332,6 +2332,7 @@ func runChatTurn(
 	}
 	agentCtx = withAuditRecorder(agentCtx, auditStore, cs.SessionID, auditTurn)
 	agentCtx = withReadLedger(agentCtx, cs.SessionID)
+	agentCtx = withTelegramMediaChat(agentCtx, chatID)
 	// Forwarded text, voice transcripts, captions and documents were wrapped
 	// by the update callbacks before this turn's recorder existed; record
 	// those ingests on it now so the audit sees the turn crossed the boundary.

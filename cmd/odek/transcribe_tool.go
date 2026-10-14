@@ -378,6 +378,9 @@ func (t *transcribeTool) Call(argsJSON string) (result string, err error) {
 	if err := confineIfRestricted(t.restrictToCWD, args.Path); err != nil {
 		return jsonError(err.Error())
 	}
+	if err := checkTelegramMediaRead(t.toolCtx(), args.Path); err != nil {
+		return jsonError(err.Error())
+	}
 
 	// Security: classify the audio file path
 	if err := t.dangerousConfig.CheckOperation(danger.ToolOperation{
