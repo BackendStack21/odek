@@ -232,3 +232,22 @@ func TestRED_SupersededDraftSentAsAnthropicPrefill(t *testing.T) {
 		t.Fatalf("corrective request ends with an assistant message (roles=%v): the superseded draft is sent as an assistant prefill", req.Messages)
 	}
 }
+
+func TestArgv0OperatorPrefixCases(t *testing.T) {
+	cases := map[string]string{
+		"ls;rm x":             "ls",
+		"ls;":                 "ls",
+		"echo>f hi":           "echo",
+		"cat<f":               "cat",
+		"$HOME/bin/tool a":    "",
+		"(K=v; curl)":         "",
+		"$(K=v curl)":         "",
+		"K=v ls -l":           "ls",
+		"/usr/bin/git status": "git",
+	}
+	for in, want := range cases {
+		if got := argv0(in); got != want {
+			t.Errorf("argv0(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

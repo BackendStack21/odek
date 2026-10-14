@@ -53,13 +53,19 @@ func argv0(cmd string) string {
 		if ok {
 			continue
 		}
-		// A word that opens a subshell, group or substitution (or carries
-		// shell metacharacters) is not a program name; its body may hold
-		// assignment values, so nothing of it is reported.
-		if strings.ContainsAny(w.value, "(){}$`;&|<>") {
+		// The program name ends at the first unquoted command operator. A
+		// prefix that opens a subshell, group or substitution (or holds an
+		// assignment) is not a program name and may carry secret values, so
+		// nothing of it is reported.
+		field := w.value
+		if !strings.ContainsAny(w.raw, "'\"\\") {
+			if k := strings.IndexAny(field, ";&|<>"); k >= 0 {
+				field = field[:k]
+			}
+		}
+		if strings.ContainsAny(field, "$(){}`") {
 			return ""
 		}
-		field := w.value
 		if i := strings.LastIndexByte(field, '/'); i >= 0 {
 			field = field[i+1:]
 		}
