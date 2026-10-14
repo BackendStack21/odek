@@ -804,7 +804,7 @@ func telegramCmd(args []string) error {
 			if sessionID == "" {
 				return "❗ Usage: `/resume <session-id>`\n\nUse `/sessions` to see available sessions.", nil
 			}
-			cs, err := sessionManager.ResumeSession(chatID, sessionID)
+			cs, archivedID, err := sessionManager.ResumeSessionArchived(chatID, sessionID)
 			if err != nil {
 				return fmt.Sprintf("❌ %v", err), nil
 			}
@@ -821,6 +821,15 @@ func telegramCmd(args []string) error {
 				chatM.mu.Lock()
 				danger.ForgetReadLedger(fmt.Sprintf("tg-%d", chatID))
 				unpinChat(chatID, chatM)
+				// The replaced conversation ended here exactly as it does on
+				// /new, so it yields its episode too (off the update loop).
+				if archivedID != "" {
+					go func() {
+						if episodeMM := telegramEpisodeMemory(resolved); episodeMM != nil {
+							telegramEpisodeOnReset(episodeMM, store, archivedID)
+						}
+					}()
+				}
 			})
 			// Return-after-break: the next turn of this chat gets a concise
 			// "where you left off" summary (the turn reloads history from the

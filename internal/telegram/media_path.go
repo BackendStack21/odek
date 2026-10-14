@@ -369,8 +369,20 @@ func CheckChatMediaRead(path string, chatID int64) error {
 	}
 	abs = filepath.Clean(abs)
 	candidates := []string{abs}
-	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
-		candidates = append(candidates, filepath.Clean(resolved))
+	// Resolve symlinks through the deepest existing ancestor so a file that
+	// does not exist yet is still compared in the media directory's spelling.
+	existing, rest := abs, ""
+	for {
+		if resolved, err := filepath.EvalSymlinks(existing); err == nil {
+			candidates = append(candidates, filepath.Clean(filepath.Join(resolved, rest)))
+			break
+		}
+		parent := filepath.Dir(existing)
+		if parent == existing {
+			break
+		}
+		rest = filepath.Join(filepath.Base(existing), rest)
+		existing = parent
 	}
 	for _, c := range candidates {
 		if isPathInsideFold(c, mediaDir) {
