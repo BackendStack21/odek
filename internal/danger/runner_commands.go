@@ -103,12 +103,12 @@ func commandAfter(spec optSpec, args []string) []string {
 	return nil
 }
 
-// yarnSubcommands are the yarn verbs that are not a bin or script name; any
-// other first operand makes yarn run that command.
+// yarnSubcommands are yarn's built-in verbs; any other first operand is a
+// script or bin name that yarn runs (`yarn build`, `yarn test`).
 var yarnSubcommands = fieldSet("add bin cache check config create dedupe dlx exec explain generate-lock-entry " +
 	"global help import info init install licenses link list login logout node npm outdated owner pack patch " +
-	"plugin policies publish rebuild remove run set search tag team test unlink unplug up upgrade " +
-	"upgrade-interactive version versions why workspace workspaces constraints start build lint " +
+	"plugin policies publish rebuild remove run set search tag team unlink unplug up upgrade " +
+	"upgrade-interactive version versions why workspace workspaces constraints " +
 	"audit access autoclean patch-commit stage")
 
 // yarnRunVerbs are the yarn verbs that run a command or that read through
@@ -135,6 +135,9 @@ type yarnReading struct {
 	// workspaces the analysis cannot locate.
 	dir        string
 	dirUnknown bool
+	// script is set when yarn runs a package.json script or bin by name
+	// (`yarn build`, `yarn run build`, `yarn workspace web build`).
+	script bool
 }
 
 func yarnRun(tokens []string) yarnReading {
@@ -151,7 +154,7 @@ func yarnRun(tokens []string) yarnReading {
 			return y
 		}
 		at := r.operandAt
-		if !slices.Contains(yarnRunVerbs, args[at]) {
+		if !slices.Contains(yarnRunVerbs, args[at]) && !yarnSubcommands[args[at]] {
 			if loose := runnerVerbAt(yarnRunnerSpec, args, yarnRunVerbs...); loose >= 0 {
 				at = loose
 			}
@@ -168,7 +171,7 @@ func yarnRun(tokens []string) yarnReading {
 			if len(rest) > 0 && rest[0] == "--" {
 				rest = rest[1:]
 			}
-			y.cmd = rest
+			y.cmd, y.script = rest, len(rest) > 0
 			return y
 		case "workspace":
 			if len(rest) == 0 {
@@ -188,12 +191,12 @@ func yarnRun(tokens []string) yarnReading {
 				continue
 			case "run":
 				// Yarn 1: `yarn workspaces run SCRIPT`.
-				y.cmd = rest[1:]
+				y.cmd, y.script = rest[1:], len(rest) > 1
 			}
 			return y
 		}
 		if !yarnSubcommands[verb] {
-			y.cmd = args[at:]
+			y.cmd, y.script = args[at:], true
 		}
 		return y
 	}
@@ -320,27 +323,176 @@ var packageManagerGlobals = map[string]optSpec{
 // packageManagerRunVerb reports whether a package manager invocation reaches
 // one of its script-running verbs past its global options and their values,
 // or (bun) runs a script path directly (`bun --cwd app ./x.ts`).
+//
+// For npm, pnpm, yarn and bun the first operand under the grammar decides:
+// a script verb runs a script, any other built-in subcommand does not (its
+// arguments are never read as a verb), and for pnpm, yarn and bun a word that
+// is no built-in names a package.json script (`yarn build`, `pnpm build`,
+// `bun dev`). Only when the first operand is neither, so an option the
+// grammar does not know may have taken it as its value, is the verb looked
+// for past it.
 func packageManagerRunVerb(name string, tokens []string, subs map[string]bool) bool {
 	spec, ok := packageManagerGlobals[name]
 	if !ok || len(tokens) < 2 {
 		return false
 	}
 	args := tokens[1:]
-	if name == "cargo" && len(args) > 0 && strings.HasPrefix(args[0], "+") {
-		args = args[1:] // rustup toolchain selector
+	switch name {
+	case "yarn":
+		y := yarnRun(tokens)
+		return y.script || y.bin
+	case "npm", "pnpm", "bun":
+		isVerb := func(w string) bool { return subs[w] }
+		if name == "npm" {
+			isVerb = func(w string) bool { return npmScriptCommands[npmResolveCommand(w)] }
+		}
+		r := spec.parse(args)
+		if r.operandAt >= 0 && name != "npm" && !packageManagerBuiltin(name, args[r.operandAt]) {
+			return true // a package.json script, or (bun) a file to run
+		}
+		return packageManagerVerbAt(name, spec, args, isVerb) >= 0
+	case "cargo":
+		if len(args) > 0 && strings.HasPrefix(args[0], "+") {
+			args = args[1:] // rustup toolchain selector
+		}
 	}
 	verbs := make([]string, 0, len(subs))
 	for v := range subs {
 		verbs = append(verbs, v)
 	}
-	if runnerVerbAt(spec, args, verbs...) >= 0 {
-		return true
+	return runnerVerbAt(spec, args, verbs...) >= 0
+}
+
+// packageManagerVerbAt returns the index in args of the verb isVerb accepts,
+// or -1. The first operand under spec is the verb when isVerb accepts it; a
+// built-in subcommand there ends the search, so `npm -g install test` is an
+// install. Otherwise an option spec does not know may have taken that
+// operand as its value, and the verb is looked for past it.
+func packageManagerVerbAt(name string, spec optSpec, args []string, isVerb func(string) bool) int {
+	r := spec.parse(args)
+	switch {
+	case r.operandAt >= 0:
+		if w := args[r.operandAt]; isVerb(w) {
+			return r.operandAt
+		} else if packageManagerBuiltin(name, w) {
+			return -1
+		}
+	case len(r.rest) > 0:
+		if isVerb(r.rest[0]) {
+			return len(args) - len(r.rest)
+		}
+		return -1
 	}
-	if r := spec.parse(args); name == "bun" && r.operandAt >= 0 {
-		op := args[r.operandAt]
-		return strings.Contains(op, "/") || strings.Contains(op, ".")
+	valueOK := false
+	for i, a := range args {
+		switch {
+		case a == "--":
+			return -1
+		case len(a) > 1 && a[0] == '-':
+			valueOK = !strings.Contains(a, "=")
+		case isVerb(a):
+			return i
+		case valueOK && !packageManagerBuiltin(name, a):
+			valueOK = false
+		default:
+			return -1
+		}
+	}
+	return -1
+}
+
+// packageManagerBuiltin reports whether word is a built-in subcommand of the
+// package manager (anything else is a script name for pnpm, yarn and bun).
+func packageManagerBuiltin(name, word string) bool {
+	switch name {
+	case "npm":
+		return npmResolveCommand(word) != ""
+	case "pnpm":
+		return pnpmBuiltins[word]
+	case "yarn":
+		return yarnSubcommands[word]
+	case "bun":
+		return bunBuiltins[word]
 	}
 	return false
+}
+
+// pnpmBuiltins are pnpm's own subcommands and aliases.
+var pnpmBuiltins = fieldSet("add approve-builds audit bin c cat-file cat-index completion config create dedupe " +
+	"deploy dlx doctor env exec fetch find-hash get help i ignored-builds import init install install-test it " +
+	"la licenses link list ll ln ls outdated pack patch patch-commit patch-remove prune publish rb rebuild " +
+	"recursive remove rm root run run-script sbom self-update server set setup start store t test un " +
+	"uninstall unlink up update upgrade why x")
+
+// bunBuiltins are bun's own subcommands and aliases.
+var bunBuiltins = fieldSet("a add audit build c completions create discord exec getcompletes help i info init " +
+	"install link outdated patch patch-commit pm publish remove repl rm run test unlink update upgrade why x")
+
+// npmCommands are npm's commands; npmAliases its aliases (and accepted
+// misspellings) of them.
+var (
+	npmCommandList = strings.Fields("access adduser audit bugs cache ci completion config dedupe deprecate " +
+		"diff dist-tag docs doctor edit exec explain explore find-dupes fund get help help-search hook init " +
+		"install install-ci-test install-test link ll login logout ls org outdated owner pack ping pkg prefix " +
+		"profile prune publish query rebuild repo restart root run-script sbom search set shrinkwrap star " +
+		"stars start stop team test token uninstall unpublish unstar update version view whoami")
+	npmAliases = map[string]string{
+		"un": "uninstall", "rb": "rebuild", "list": "ls", "ln": "link", "create": "init", "i": "install",
+		"it": "install-test", "cit": "install-ci-test", "up": "update", "c": "config", "s": "search",
+		"se": "search", "tst": "test", "t": "test", "ddp": "dedupe", "v": "view", "run": "run-script",
+		"clean-install": "ci", "clean-install-test": "install-ci-test", "install-clean-test": "install-ci-test",
+		"x": "exec", "why": "explain", "la": "ll", "verison": "version", "ic": "ci", "innit": "init",
+		"isntall": "install", "install-clean": "ci", "isntall-clean": "ci", "hlep": "help",
+		"dist-tags": "dist-tag", "upgrade": "update", "udpate": "update", "rum": "run-script",
+		"sit": "install-ci-test", "urn": "run-script", "ogr": "org", "add-user": "adduser", "home": "docs",
+		"issues": "bugs", "info": "view", "show": "view", "find": "search", "add": "install",
+		"unlink": "uninstall", "remove": "uninstall", "rm": "uninstall", "r": "uninstall", "author": "owner",
+		"isnt": "install",
+	}
+	// npmScriptCommands run package scripts or a command.
+	npmScriptCommands = fieldSet("run-script test start stop restart exec explore install-test install-ci-test")
+)
+
+// npmResolveCommand resolves a word to the npm command it runs, the way npm
+// does: camelCase to kebab-case, then an exact command, an alias, or an
+// unambiguous prefix of the command and alias names. "" when it names none.
+func npmResolveCommand(word string) string {
+	if word == "" {
+		return ""
+	}
+	var b strings.Builder
+	for _, c := range word {
+		if c >= 'A' && c <= 'Z' {
+			b.WriteByte('-')
+			c += 'a' - 'A'
+		}
+		b.WriteRune(c)
+	}
+	w := b.String()
+	if slices.Contains(npmCommandList, w) {
+		return w
+	}
+	if c, ok := npmAliases[w]; ok {
+		return c
+	}
+	match := ""
+	for _, n := range npmCommandList {
+		if strings.HasPrefix(n, w) {
+			if match != "" {
+				return ""
+			}
+			match = n
+		}
+	}
+	for n, c := range npmAliases {
+		if strings.HasPrefix(n, w) {
+			if match != "" {
+				return ""
+			}
+			match = c
+		}
+	}
+	return match
 }
 
 // yarnRunsBin reports whether a yarn invocation runs a binary explicitly

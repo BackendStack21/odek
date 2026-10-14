@@ -2,6 +2,7 @@ package danger
 
 import (
 	"net/url"
+	"slices"
 	"strings"
 )
 
@@ -249,8 +250,21 @@ func registryPublish(name string, args []string) bool {
 		if name == "cargo" && len(global) > 0 && strings.HasPrefix(global[0], "+") {
 			global = global[1:]
 		}
-		if runnerVerbAt(spec, global, registryPublishVerbs[name]...) >= 0 {
-			return true
+		switch name {
+		case "npm", "pnpm", "yarn", "bun":
+			// A built-in subcommand ends the search: `npm --json view
+			// publish` views a package named publish.
+			isVerb := func(w string) bool { return slices.Contains(registryPublishVerbs[name], w) }
+			if name == "npm" {
+				isVerb = func(w string) bool { return npmResolveCommand(w) == "publish" }
+			}
+			if packageManagerVerbAt(name, spec, global, isVerb) >= 0 {
+				return true
+			}
+		default:
+			if runnerVerbAt(spec, global, registryPublishVerbs[name]...) >= 0 {
+				return true
+			}
 		}
 	}
 	var words []string

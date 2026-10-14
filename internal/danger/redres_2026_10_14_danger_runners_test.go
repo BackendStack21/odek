@@ -677,3 +677,82 @@ func TestRED_RunnerWorkspaceAndPostVerbDirectory(t *testing.T) {
 		}
 	}
 }
+
+// drRunnersAtLeastCode asserts every command is at least code_execution.
+func drRunnersAtLeastCode(t *testing.T, why string, cmds ...string) {
+	t.Helper()
+	for _, c := range cmds {
+		if got := Classify(c); worstOf(got, CodeExecution) != got {
+			t.Errorf("Classify(%q) = %s; %s, want at least code_execution", c, got, why)
+		}
+	}
+}
+
+// A built-in subcommand found by the option grammar is the verb; a script
+// word after it is that command's argument, not a run verb.
+func TestRED_PackageManagerBuiltinIsNotHiddenRunVerb(t *testing.T) {
+	for _, c := range []struct{ cmd, base string }{
+		{"npm --global install test", "npm install test"},
+		{"npm -g install x", "npm install x"},
+		{"yarn -W add test", "yarn add test"},
+		{"pnpm -g add start", "pnpm add start"},
+		{"npm --json view publish", "npm view publish"},
+	} {
+		if got, want := Classify(c.cmd), Classify(c.base); got != want {
+			t.Errorf("Classify(%q) = %s; want %s like %q", c.cmd, got, want, c.base)
+		}
+	}
+	if got := Classify("npm --global publish"); worstOf(got, NetworkUpload) != got {
+		t.Errorf("Classify(npm --global publish) = %s; still a publish", got)
+	}
+}
+
+// npm resolves its verb from camelCase spelling, exact names, aliases and
+// any unambiguous prefix of its command and alias list.
+func TestRED_NpmResolvesScriptVerbsLikeNpm(t *testing.T) {
+	drRunnersAtLeastCode(t, "npm runs a package script",
+		"npm run-s build", "npm run-scr build", "npm run- build", "npm ur build",
+		"npm res", "npm runScript build", "npm it", "npm cit", "npm install-test",
+		"npm install-ci-test", "npm install-clean-test", "npm sit", "npm clean-install-test",
+		"npm --prefix app run-s build",
+	)
+	for _, c := range []string{"npm star x", "npm view x", "npm stars", "npm ls", "npm whoami", "npm explain x"} {
+		if got := drRunnersAction(c); got != Allow {
+			t.Errorf("ActionForCommand(%q) = %s (class %s); runs no script, want allow", c, got, Classify(c))
+		}
+	}
+	if got := Classify("npm i"); got != Classify("npm install") {
+		t.Errorf("Classify(npm i) = %s; want the npm install class %s", got, Classify("npm install"))
+	}
+	for word, want := range map[string]string{
+		"runScript": "run-script", "run-s": "run-script", "ur": "run-script", "rum": "run-script",
+		"res": "restart", "it": "install-test", "i": "install", "star": "star", "re": "", "s": "search",
+		"tes": "test", "exe": "exec", "x": "exec", "": "", "zzz": "",
+	} {
+		if got := npmResolveCommand(word); got != want {
+			t.Errorf("npmResolveCommand(%q) = %q, want %q", word, got, want)
+		}
+	}
+}
+
+// pnpm, yarn and bun run a package.json script when the first word is not a
+// built-in subcommand (`yarn build`, `pnpm build`, `bun dev`), as `npm run
+// build` does.
+func TestRED_ImplicitPackageScriptIsCodeExecution(t *testing.T) {
+	drRunnersAtLeastCode(t, "an implicit package.json script runs",
+		"yarn build", "yarn lint", "pnpm build", "bun dev",
+		"pnpm --filter web build", "pnpm -C app build",
+		"yarn workspace web build", "yarn workspace web run build",
+		"yarn --cwd app build", "bun --cwd app dev",
+	)
+	for _, c := range []string{
+		"yarn", "pnpm", "yarn info lodash", "yarn why lodash", "yarn list", "yarn outdated",
+		"pnpm list", "pnpm why lodash", "pnpm outdated", "pnpm store path", "bun pm ls", "bun outdated",
+		"yarn workspaces list", "yarn workspace web info", "yarn config get registry",
+		"pnpm --version", "bun --version", "yarn --version",
+	} {
+		if got := drRunnersAction(c); got != Allow {
+			t.Errorf("ActionForCommand(%q) = %s (class %s); a built-in, want allow", c, got, Classify(c))
+		}
+	}
+}
