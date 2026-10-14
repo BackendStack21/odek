@@ -74,6 +74,18 @@ func TestRED_BareSecretKeyBeforeJSONEscapedNewlineLeaks(t *testing.T) {
 	})
 }
 
+func TestWebhookAndURLCorpusUnchanged(t *testing.T) {
+	cfghunt13ExpectUnchanged(t, []string{
+		"see https://hooks.slack" + ".com/services for the docs",
+		"https://api.slack.com/messaging/webhooks",
+		"https://discord.com/api/webhooks/123456789012345678",
+		"https://discord.com/developers/docs/resources/webhook",
+		"postgresql+psycopg2://db.internal/app",
+		"rediss://cache.internal:6380/0",
+		"mail me at a@b.com about redis://localhost:6379",
+	})
+}
+
 func TestJSONEscapedSecretCorpus(t *testing.T) {
 	cfghunt13ExpectRedacted(t, []string{
 		`{"v":"secret: ` + cfghunt13Secret + `\r\nnext"}`,
