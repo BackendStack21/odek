@@ -3,6 +3,7 @@ package agent
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -95,7 +96,7 @@ func sanitizeIdentity(identity string) string {
 		identity = strings.ReplaceAll(identity, retired, "")
 	}
 	identity = strings.ReplaceAll(identity, "untrusted_content", "untrusted·content")
-	return closeOpenBlocks(closeOpenFence(strings.TrimSpace(stripPillarImitations(identity))))
+	return closeOpenBlocks(strings.TrimSpace(stripPillarImitations(identity)))
 }
 
 // fenceTracker follows Markdown fenced code blocks with CommonMark rules: an
@@ -228,28 +229,154 @@ func (f *fenceTracker) feed(line string) (delim bool) {
 	return true
 }
 
-// closeOpenFence terminates a code fence the text leaves open, so whatever is
-// appended after it (the authoritative pillar) is never inside a code block.
-// The closer repeats the opener's character and length, indented to its
-// container.
-func closeOpenFence(s string) string {
-	var ft fenceTracker
-	for _, line := range strings.Split(s, "\n") {
-		ft.feed(line)
+// closeOpenBlocks makes sure nothing appended after s (the authoritative
+// pillar) lands inside a code fence or a raw HTML block. A lenient pass first
+// terminates raw HTML constructs wherever they open; one left-to-right
+// CommonMark scan then closes whatever is still open at the end.
+func closeOpenBlocks(s string) string {
+	return closeOpenConstructs(closeOpenRaw(s))
+}
+
+// blockTags are the HTML block names that start a CommonMark type 6 block.
+var blockTags = map[string]bool{
+	"address": true, "article": true, "aside": true, "base": true, "basefont": true, "blockquote": true,
+	"body": true, "caption": true, "center": true, "col": true, "colgroup": true, "dd": true,
+	"details": true, "dialog": true, "dir": true, "div": true, "dl": true, "dt": true,
+	"fieldset": true, "figcaption": true, "figure": true, "footer": true, "form": true, "frame": true,
+	"frameset": true, "h1": true, "h2": true, "h3": true, "h4": true, "h5": true, "h6": true,
+	"head": true, "header": true, "hr": true, "html": true, "iframe": true, "legend": true,
+	"li": true, "link": true, "main": true, "menu": true, "menuitem": true, "nav": true,
+	"noframes": true, "ol": true, "optgroup": true, "option": true, "p": true, "param": true,
+	"section": true, "source": true, "summary": true, "table": true, "tbody": true, "td": true,
+	"tfoot": true, "th": true, "thead": true, "title": true, "tr": true, "track": true, "ul": true,
+}
+
+// htmlTypeSevenRe matches a complete open or closing tag alone on its line
+// (CommonMark HTML block type 7).
+var htmlTypeSevenRe = regexp.MustCompile(`^(?:<([A-Za-z][A-Za-z0-9-]*)(?:\s+[A-Za-z_:][A-Za-z0-9_.:-]*(?:\s*=\s*(?:[^\s"'=<>\x60]+|'[^']*'|"[^"]*"))?)*\s*/?>|</([A-Za-z][A-Za-z0-9-]*)\s*>)\s*$`)
+
+// htmlBlockStart classifies a line that starts a top-level HTML block. It
+// returns the closing marker for types 1 to 5 ("" for types 6 and 7, which
+// end at a blank line), whether the block starts, and whether the end
+// condition already holds on the start line.
+func htmlBlockStart(t string, interrupt bool) (closer string, blank bool, started bool, ended bool) {
+	lower := strings.ToLower(t)
+	for _, tag := range []string{"script", "pre", "style", "textarea"} {
+		if strings.HasPrefix(lower, "<"+tag) {
+			if n := 1 + len(tag); n == len(lower) || strings.IndexByte(" \t>", lower[n]) >= 0 {
+				ended = strings.Contains(lower, "</script>") || strings.Contains(lower, "</pre>") ||
+					strings.Contains(lower, "</style>") || strings.Contains(lower, "</textarea>")
+				return "</" + tag + ">", false, true, ended
+			}
+		}
 	}
-	if ft.open {
+	for _, c := range [][2]string{{"<!--", "-->"}, {"<?", "?>"}, {"<![cdata[", "]]>"}} {
+		if strings.HasPrefix(lower, c[0]) {
+			return c[1], false, true, strings.Contains(lower, c[1])
+		}
+	}
+	if strings.HasPrefix(lower, "<!") && len(lower) > 2 && lower[2] >= 'a' && lower[2] <= 'z' {
+		return ">", false, true, strings.Contains(lower, ">")
+	}
+	if strings.HasPrefix(lower, "<") {
+		n := 1
+		if strings.HasPrefix(lower, "</") {
+			n = 2
+		}
+		e := n
+		for e < len(lower) && (lower[e] >= 'a' && lower[e] <= 'z' || lower[e] >= '0' && lower[e] <= '9') {
+			e++
+		}
+		if e > n && blockTags[lower[n:e]] && (e == len(lower) || strings.IndexByte(" \t>", lower[e]) >= 0 || strings.HasPrefix(lower[e:], "/>")) {
+			return "", true, true, false
+		}
+	}
+	if !interrupt {
+		if m := htmlTypeSevenRe.FindStringSubmatch(t); m != nil {
+			name := strings.ToLower(m[1] + m[2])
+			if name != "script" && name != "pre" && name != "style" && name != "textarea" {
+				return "", true, true, false
+			}
+		}
+	}
+	return "", false, false, false
+}
+
+// closeOpenConstructs scans s once, left to right, tracking the CommonMark
+// state: inside a code fence, comment markers and HTML lines are literal;
+// inside a raw HTML block, fence lines are literal. Whatever is still open at
+// the end is closed, so appended text starts in plain document context. HTML
+// blocks that end at a blank line (types 6 and 7) need nothing: the pillar is
+// always separated by one.
+func closeOpenConstructs(s string) string {
+	var ft fenceTracker
+	htmlCloser := ""
+	htmlBlank := false
+	para := false
+	for _, line := range strings.Split(s, "\n") {
+		if ft.open {
+			ft.feed(line)
+			continue
+		}
+		if htmlCloser != "" {
+			if closeLine := strings.ToLower(line); htmlEndsOn(htmlCloser, closeLine) {
+				htmlCloser = ""
+			}
+			continue
+		}
+		if htmlBlank {
+			if strings.TrimSpace(line) == "" {
+				htmlBlank, para = false, false
+			}
+			continue
+		}
+		if ft.feed(line) {
+			para = false
+			continue
+		}
+		if strings.TrimSpace(line) == "" {
+			para = false
+			continue
+		}
+		if col, i := leadingColumns(line); col < 4 {
+			if closer, blank, started, ended := htmlBlockStart(line[i:], para); started {
+				para = false
+				if blank {
+					htmlBlank = true
+				} else if !ended {
+					htmlCloser = closer
+				}
+				continue
+			}
+		}
+		para = true
+	}
+	switch {
+	case ft.open:
 		return s + "\n" + strings.Repeat(" ", ft.base) + strings.Repeat(string(ft.ch), ft.n)
+	case htmlCloser != "":
+		return s + "\n" + htmlCloser
 	}
 	return s
 }
 
-// closeOpenBlocks terminates the raw HTML constructs the text leaves open:
+// htmlEndsOn reports whether a lower-cased line ends a type 1 to 5 block
+// whose closer is closer. Type 1 ends on any of its closing tags.
+func htmlEndsOn(closer, lowerLine string) bool {
+	if strings.HasPrefix(closer, "</") {
+		return strings.Contains(lowerLine, "</script>") || strings.Contains(lowerLine, "</pre>") ||
+			strings.Contains(lowerLine, "</style>") || strings.Contains(lowerLine, "</textarea>")
+	}
+	return strings.Contains(lowerLine, closer)
+}
+
+// closeOpenRaw terminates the raw HTML constructs the text leaves open:
 // a comment, CDATA section, processing instruction, or a script, style, pre
 // or textarea element. In Markdown each of these swallows everything up to
 // its terminator, so the authoritative pillar appended last would become part
 // of it. Terminators are appended innermost (latest opener) first; one
 // appended after text that holds no such construct is inert plain text.
-func closeOpenBlocks(s string) string {
+func closeOpenRaw(s string) string {
 	type open struct {
 		at     int
 		closer string
@@ -319,7 +446,7 @@ func lastTagOpen(lower, opener string) int {
 // authoritative pillar last. It does not rewrite anything else, so it is
 // safe on a system message that already carries wrapped adjuncts.
 func appendSecurityPillar(system string) string {
-	system = closeOpenBlocks(closeOpenFence(strings.TrimSpace(strings.ReplaceAll(system, SecurityPillar, ""))))
+	system = closeOpenBlocks(strings.TrimSpace(strings.ReplaceAll(system, SecurityPillar, "")))
 	if system == "" {
 		return SecurityPillar
 	}

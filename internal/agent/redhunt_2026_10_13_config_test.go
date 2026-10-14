@@ -95,10 +95,39 @@ func TestCloseOpenBlocksDeclarationsAndFences(t *testing.T) {
 			t.Errorf("closeOpenBlocks(%q) = %q, want unchanged (fenced code)", in, got)
 		}
 	}
-	// A closer inside a fence does not mask a real opener outside it.
-	in := "<pre>real\n```\n</pre>\n```"
-	if got := closeOpenBlocks(in); got != in+"\n</pre>" {
-		t.Errorf("closeOpenBlocks(%q) = %q", in, got)
+}
+
+// Fences and raw HTML blocks interleave by CommonMark rules: inside a fence
+// comment markers are literal, inside an HTML block fence lines are literal.
+// Whatever the order, nothing may be left open before the pillar.
+func TestCloseOpenBlocksInterleavedFencesAndHTML(t *testing.T) {
+	for _, in := range []string{
+		"<!--\n```\n-->\n```",                      // comment, fence line, end, fence opens
+		"```\n<!--\n```\n-->",                      // fence holds the opener; stray -->
+		"<pre>real\n```\n</pre>\n```",              // fence line inside a pre block
+		"<div>\n```\n\ntext\n```",                  // type 6 block holds the fence line
+		"<custom-tag>\n```\n\n```\ncode",           // type 7 block
+		"text\n<!--\n~~~\n-->\n~~~\nmore",          // comment then tilde fence
+		"```\ncode\n```\n<!DOCTYPE x\n```\n>\n```", // declaration holds fence lines
+		"<script>\n```\n</script>\n```",
+		"<?php\n```\n?>\n```",
+		"<![CDATA[\n```\n]]>\n```",
+		"- item\n  <!--\n  ```\n  -->",
+	} {
+		got := closeOpenBlocks(in)
+		if again := closeOpenConstructs(got); again != got {
+			t.Errorf("closeOpenBlocks(%q) = %q leaves a construct open (closing it adds %q)", in, got, again[len(got):])
+		}
+		sys := appendSecurityPillar(in)
+		if !strings.HasSuffix(sys, "\n\n"+SecurityPillar) {
+			t.Errorf("pillar not separated by a blank line for %q", in)
+		}
+	}
+	// Closed constructs are left alone.
+	for _, in := range []string{"<!-- a -->\n```\ncode\n```", "```\n<!--\n```\n-->", "<div>\n```\n\ntext\n", "<p>x</p>\n\ntext"} {
+		if got := closeOpenConstructs(in); got != in {
+			t.Errorf("closeOpenConstructs(%q) = %q, want unchanged", in, got)
+		}
 	}
 }
 
@@ -117,6 +146,8 @@ func TestCloseOpenBlocksScalesLinearly(t *testing.T) {
 	for name, gen := range map[string]func(n int) string{
 		"pre prefixes": func(n int) string { return strings.Repeat("<pre", n/4) },
 		"decls":        func(n int) string { return strings.Repeat("<!--", n/4) },
+		"html lines":   func(n int) string { return strings.Repeat("<a b='c' d=\"e\" >\n\n", n/18) },
+		"unclosed tag": func(n int) string { return "<a " + strings.Repeat("b='c' ", n/7) },
 		"bang":         func(n int) string { return strings.Repeat("<!", n/2) },
 		"fences":       func(n int) string { return strings.Repeat("```\n<pre>\n", n/10) },
 	} {

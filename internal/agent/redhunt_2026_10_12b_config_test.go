@@ -147,8 +147,8 @@ func TestRED_FenceTracker_LegitIdentityUnmangled(t *testing.T) {
 		"a\n```x`y\nnotfence": "a\n```x`y\nnotfence",
 		"a\n\t```\nindented":  "a\n\t```\nindented",
 	} {
-		if got := closeOpenFence(in); got != want {
-			t.Errorf("closeOpenFence(%q) = %q, want %q", in, got, want)
+		if got := closeOpenConstructs(in); got != want {
+			t.Errorf("closeOpenConstructs(%q) = %q, want %q", in, got, want)
 		}
 	}
 }
@@ -198,8 +198,8 @@ func TestRED_FenceTracker_ListItemContainers(t *testing.T) {
 		"a\n-     ```\nx":  "a\n-     ```\nx",  // 5+ spaces after the marker: indented code
 		"a\n- ```\nnot in": "a\n- ```\nnot in", // text at column 0 ends the item
 	} {
-		if got := closeOpenFence(in); got != want {
-			t.Errorf("closeOpenFence(%q) = %q, want %q", in, got, want)
+		if got := closeOpenConstructs(in); got != want {
+			t.Errorf("closeOpenConstructs(%q) = %q, want %q", in, got, want)
 		}
 	}
 }
