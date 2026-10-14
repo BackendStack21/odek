@@ -46,9 +46,9 @@ func (em *ExtendedMemory) ConsolidateAtoms(ctx context.Context) (merged int, err
 	for i, a := range atoms {
 		texts[i] = a.Text
 	}
-	// Embed the live corpus directly: the vector index may be stale, and
+	// Fit and embed the live corpus directly: the vector index may be stale, and
 	// consolidation must compare the current atoms.
-	vecs, err := em.index.embedTexts(texts)
+	vecs, err := em.index.embedCorpus(texts)
 	if err != nil {
 		return 0, fmt.Errorf("extended memory: consolidate embed: %w", err)
 	}

@@ -174,6 +174,26 @@ func (vi *atomVectorIndex) embedTexts(texts []string) ([]vector.Vector, error) {
 	return emb.EmbedAll(texts)
 }
 
+// embedCorpus fits an embedder on texts and embeds them with it, so vectors
+// reflect exactly the corpus given (a fresh process or an index built before
+// recent additions would otherwise embed against a missing or stale
+// vocabulary). The shared embedder is left untouched unless it is refit-safe.
+func (vi *atomVectorIndex) embedCorpus(texts []string) ([]vector.Vector, error) {
+	vi.mu.RLock()
+	hasEmb := vi.emb != nil
+	vi.mu.RUnlock()
+	if !hasEmb {
+		return nil, fmt.Errorf("extended memory: no embedder available")
+	}
+	vi.mu.Lock()
+	emb := vi.rebuildEmbedder()
+	vi.mu.Unlock()
+	if err := emb.Fit(texts); err != nil {
+		return nil, fmt.Errorf("extended memory: embedder fit: %w", err)
+	}
+	return emb.EmbedAll(texts)
+}
+
 // stats reports the number of indexed vectors and whether the index needs a
 // rebuild (dirty or never built).
 func (vi *atomVectorIndex) stats() (vectors int, dirty bool) {
