@@ -1925,22 +1925,6 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 				writeWSJSON(conn, map[string]any{"type": "error", "message": "invalid model ID"})
 				continue
 			}
-			currentModel = msg.Model
-			resolved.Model = msg.Model
-			func() {
-				// Model discovery may block. Keep the attached session busy
-				// so background completion cannot enqueue an extra wake.
-				live := connInfo.wireCopy()
-				connInfo.setLive(live.SessionID, true)
-				defer connInfo.setLive(live.SessionID, live.Busy)
-				agent.SwitchModel(msg.Model)
-				connInfo.setModel(msg.Model)
-			}()
-		}
-
-		if err := applyServeThinking(agent, msg.Thinking); err != nil {
-			writeWSJSON(conn, map[string]any{"type": "error", "message": err.Error()})
-			continue
 		}
 
 		// Handle session switch mid-connection (new conversation)
@@ -1967,6 +1951,28 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 					mm.RestoreBuffer(sess.Buffer)
 				}
 			}
+		}
+
+		// Apply the model and thinking switches only once the prompt's session
+		// and token checks have passed, so a rejected prompt cannot change the
+		// connection's model for later prompts.
+		if msg.Model != "" && msg.Model != currentModel {
+			currentModel = msg.Model
+			resolved.Model = msg.Model
+			func() {
+				// Model discovery may block. Keep the attached session busy
+				// so background completion cannot enqueue an extra wake.
+				live := connInfo.wireCopy()
+				connInfo.setLive(live.SessionID, true)
+				defer connInfo.setLive(live.SessionID, live.Busy)
+				agent.SwitchModel(msg.Model)
+				connInfo.setModel(msg.Model)
+			}()
+		}
+
+		if err := applyServeThinking(agent, msg.Thinking); err != nil {
+			writeWSJSON(conn, map[string]any{"type": "error", "message": err.Error()})
+			continue
 		}
 
 		// Run prompt — passes the persistent agent for buffer continuity
