@@ -210,6 +210,16 @@ func (e *replEditor) handleEscape() (bool, error) {
 			e.readTildeOrBracketed("Insert")
 		case '1': // Bracketed paste end \x1b[201~
 			e.readTildeOrBracketed("")
+		case '4', '8': // End (rxvt/linux console) — \x1b[4~ / \x1b[8~
+			if e.skipCSITail() == '~' {
+				e.end()
+			}
+		case '7': // Home (rxvt) — \x1b[7~
+			if e.skipCSITail() == '~' {
+				e.home()
+			}
+		case '5', '6', '9', '0': // PageUp/PageDown and other keys: ignored
+			e.skipCSITail()
 		}
 	case 'O': // Old-style home/end
 		b, err = in.ReadByte()
@@ -296,6 +306,23 @@ func (e *replEditor) readTildeOrBracketed(_ string) {
 	for (b >= '0' && b <= '9') || b == ';' {
 		if b, err = in.ReadByte(); err != nil {
 			return
+		}
+	}
+}
+
+// skipCSITail consumes the rest of a CSI sequence whose first parameter byte
+// was already read, up to and including the final byte (0x40-0x7e), and
+// returns that final byte (0 on a read error). The tail never reaches the
+// edit buffer.
+func (e *replEditor) skipCSITail() byte {
+	in := e.input()
+	for {
+		b, err := in.ReadByte()
+		if err != nil {
+			return 0
+		}
+		if b >= 0x40 && b <= 0x7e {
+			return b
 		}
 	}
 }
