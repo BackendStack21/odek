@@ -2688,6 +2688,10 @@ func builtinTools(dc danger.DangerousConfig, sm *skills.SkillManager, approver d
 	selfMaxRisk := ""
 	if tcfg.SelfTrust != "" {
 		selfMaxRisk = effectiveMaxRisk(&dc)
+		if selfMaxRisk == "" {
+			// Every class denied: the children get no authority either.
+			selfMaxRisk = parentRiskCapNone
+		}
 	}
 	// Artifacts home for the delegate_tasks result channel; empty disables
 	// the channel (never fail agent startup over it).

@@ -976,7 +976,15 @@ func subagentCmd(args []string) error {
 	applySubagentTrust(&resolved.Dangerous, effectiveTrustLevel, taskMaxRisk)
 	// The spawning sub-agent's own cap bounds this child too (min of the
 	// two), whatever profile or max_risk the task declared.
-	clampClassesAboveMaxRisk(&resolved.Dangerous, parentMaxRisk)
+	if parentMaxRisk == "" && subagentDepth() >= 2 {
+		// A task file written by a sub-agent always carries the cap; a
+		// missing one is a tampered or foreign file, never "no cap".
+		return fmt.Errorf("task file from a sub-agent lacks parent_max_risk")
+	}
+	applyParentRiskCap(&resolved.Dangerous, parentMaxRisk)
+	if subagentDangerObserver != nil {
+		subagentDangerObserver(resolved.Dangerous)
+	}
 
 	// Budget inheritance (subagent.budget_inherit="share"): the
 	// parent wrote its remaining budget into the task file; the child
@@ -1705,6 +1713,52 @@ func clampClassesAboveMaxRisk(dc *danger.DangerousConfig, maxRisk string) {
 			dc.Classes[cls] = danger.Deny
 		}
 	}
+}
+
+// parentRiskCapNone is the parent_max_risk value of a sub-agent that may run
+// nothing at all (every class denied).
+const parentRiskCapNone = "none"
+
+// subagentDangerObserver, when set by a test, receives the child's resolved
+// danger config after the parent's risk cap has been applied.
+var subagentDangerObserver func(danger.DangerousConfig)
+
+// applyParentRiskCap bounds a child by the spawning sub-agent's cap. Classes
+// above the cap are denied, and allowlist entries (which win over class
+// policy) that would run something the cap denies are dropped.
+func applyParentRiskCap(dc *danger.DangerousConfig, parentMax string) {
+	if dc == nil || parentMax == "" {
+		return
+	}
+	if parentMax == parentRiskCapNone {
+		if dc.Classes == nil {
+			dc.Classes = make(map[danger.RiskClass]danger.Action)
+		}
+		for _, cls := range subagentRiskCapOrder {
+			dc.Classes[cls] = danger.Deny
+		}
+		dc.Classes[danger.UnreadExec] = danger.Deny
+		dc.Allowlist = nil
+		return
+	}
+	clampClassesAboveMaxRisk(dc, parentMax)
+	if len(dc.Allowlist) == 0 {
+		return
+	}
+	kept := make([]string, 0, len(dc.Allowlist))
+	for _, entry := range dc.Allowlist {
+		ok := true
+		for _, cls := range danger.Analyze(entry).Effects {
+			if dc.ActionFor(cls) == danger.Deny {
+				ok = false
+				break
+			}
+		}
+		if ok {
+			kept = append(kept, entry)
+		}
+	}
+	dc.Allowlist = kept
 }
 
 // applyProfile overlays an operator-defined capability profile onto
