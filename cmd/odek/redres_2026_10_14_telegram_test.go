@@ -465,3 +465,48 @@ func TestRED_TelegramCancelledMediaTurnNeverRunsAfterSlotWait(t *testing.T) {
 		t.Fatal("cancelled media turn still ran against the model")
 	}
 }
+
+func TestRED_TelegramListingsSkipMediaThroughSymlinkedRoot(t *testing.T) {
+	_ = tgresMediaFile(t, "doc_chat111_secret_ab.txt")
+	home, _ := os.UserHomeDir()
+	alt := filepath.Join(t.TempDir(), "o")
+	if err := os.Symlink(filepath.Join(home, ".odek"), alt); err != nil {
+		t.Skip("symlinks unavailable")
+	}
+	root := tgresQuote(alt)
+	ctx := withTelegramMediaChat(context.Background(), 222)
+	allow := "allow"
+	dc := danger.DangerousConfig{DefaultAction: &allow}
+	calls := map[string]func() string{
+		"search_content": func() string {
+			s := &searchFilesTool{dangerousConfig: dc}
+			s.SetContext(ctx)
+			out, _ := s.Call(`{"pattern":"private","path":` + root + `}`)
+			return out
+		},
+		"search_files": func() string {
+			s := &searchFilesTool{dangerousConfig: dc}
+			s.SetContext(ctx)
+			out, _ := s.Call(`{"pattern":"*","target":"files","path":` + root + `}`)
+			return out
+		},
+		"glob": func() string {
+			g := &globTool{dangerousConfig: dc}
+			g.SetContext(ctx)
+			out, _ := g.Call(`{"pattern":"**/*","path":` + root + `}`)
+			return out
+		},
+		"tree": func() string {
+			tr := &treeTool{dangerousConfig: dc}
+			tr.SetContext(ctx)
+			out, _ := tr.Call(`{"path":` + root + `,"include_hidden":true}`)
+			return out
+		},
+	}
+	for name, call := range calls {
+		out := call()
+		if strings.Contains(out, "chat111") || strings.Contains(out, "private contents") {
+			t.Errorf("%s through a symlinked root exposed another chat's media: %q", name, out)
+		}
+	}
+}

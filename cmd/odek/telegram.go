@@ -1654,7 +1654,7 @@ func handleChatMessage(
 	log telegram.Logger,
 	photos ...*telegramPhotoInput,
 ) {
-	runChatTurn(nil, false, chatID, messageID, userID, text, bot, handler, sessionManager,
+	runChatTurn(context.Background(), false, false, chatID, messageID, userID, text, bot, handler, sessionManager,
 		resolved, systemMessage, log, photos...)
 }
 
@@ -1678,7 +1678,7 @@ func handleChatMessageGated(
 	if ctx.Err() != nil {
 		return // /stop or /new cancelled this media message
 	}
-	runChatTurn(ctx, false, chatID, messageID, userID, text, bot, handler, sessionManager,
+	runChatTurn(ctx, true, false, chatID, messageID, userID, text, bot, handler, sessionManager,
 		resolved, systemMessage, log, photos...)
 }
 
@@ -1698,7 +1698,7 @@ func handleWakeTurn(
 ) {
 	// The bound user is resolved inside runChatTurn once the chat slot is
 	// held, so a wake queued behind another user's turn binds to that user.
-	runChatTurn(nil, true, chatID, 0, 0, text, bot, handler,
+	runChatTurn(context.Background(), false, true, chatID, 0, 0, text, bot, handler,
 		sessionManager, resolved, systemMessage, log)
 }
 
@@ -1764,6 +1764,7 @@ var errClarifyUnbound = errors.New("clarify: unavailable on a system-initiated t
 // system-initiated wake turns (wake=true).
 func runChatTurn(
 	jobCtx context.Context,
+	gateHeld bool,
 	wake bool,
 	chatID int64,
 	messageID int,
@@ -1778,12 +1779,11 @@ func runChatTurn(
 	photos ...*telegramPhotoInput,
 ) {
 	// A /new or /resume issued just before this turn finishes first.
-	// A non-nil jobCtx means the caller is a media job already inside the
-	// chat's gate chain (it must not wait on its own gate); /stop and /new
-	// cancel it, and the turn's lease derives from it.
-	if jobCtx == nil {
+	// gateHeld means the caller is a media job already inside the chat's gate
+	// chain (it must not wait on its own gate); /stop and /new cancel jobCtx,
+	// and the turn's lease derives from it.
+	if !gateHeld {
 		waitChatReset(chatID)
-		jobCtx = context.Background()
 	}
 	// Serialize per chat: only one agent loop runs per chat at a time.
 	// Prevents same-chat message racing that would corrupt session history.

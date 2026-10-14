@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 
 	"github.com/BackendStack21/odek/internal/danger"
 )
@@ -410,6 +411,24 @@ func ChatMediaSkipper(chatID int64) func(path string) bool {
 	if resolved, err := filepath.EvalSymlinks(mediaDir); err == nil && filepath.Clean(resolved) != dirs[0] {
 		dirs = append(dirs, filepath.Clean(resolved))
 	}
+	// Parent directories are resolved once each (walks visit many entries per
+	// directory), so a root reached through a symlink is judged by where its
+	// entries really live.
+	var mu sync.Mutex
+	parents := map[string]string{}
+	resolveParent := func(dir string) string {
+		mu.Lock()
+		defer mu.Unlock()
+		if r, ok := parents[dir]; ok {
+			return r
+		}
+		r := dir
+		if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+			r = filepath.Clean(resolved)
+		}
+		parents[dir] = r
+		return r
+	}
 	return func(path string) bool {
 		if path == "" {
 			return false
@@ -419,8 +438,9 @@ func ChatMediaSkipper(chatID int64) func(path string) bool {
 			return false
 		}
 		abs = filepath.Clean(abs)
+		real := filepath.Join(resolveParent(filepath.Dir(abs)), filepath.Base(abs))
 		for _, d := range dirs {
-			if isPathInsideFold(abs, d) {
+			if isPathInsideFold(abs, d) || isPathInsideFold(real, d) {
 				return CheckChatMediaRead(abs, chatID) != nil
 			}
 		}
