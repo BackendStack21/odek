@@ -444,3 +444,24 @@ func TestRED_SessionShowEscapesTerminalControls(t *testing.T) {
 		t.Errorf("odek session show wrote raw terminal control bytes: %q", out)
 	}
 }
+
+func TestSessionCleanupRejectsOverflowingDays(t *testing.T) {
+	store, err := session.NewStoreWithDir(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := store.Create([]session.Message{{Role: "user", Content: "keep me"}}, "m", "keep me")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range []string{"9223372036854775807", "36501"} {
+		var cerr error
+		opsHuntCaptureStdout(t, func() { cerr = cleanupSessions(store, []string{d}) })
+		if cerr == nil {
+			t.Errorf("cleanup with days %s was accepted", d)
+		}
+	}
+	if !store.Exists(sess.ID) {
+		t.Errorf("overflowing days deleted a fresh session")
+	}
+}

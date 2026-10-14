@@ -3939,6 +3939,9 @@ func trimSession(store *session.Store, args []string) error {
 	return nil
 }
 
+// maxCleanupDays bounds `session cleanup <days>` so the cutoff date cannot overflow.
+const maxCleanupDays = 36500
+
 // cleanupSessions deletes all sessions older than the given number of days.
 // Usage: odek session cleanup <days>
 func cleanupSessions(store *session.Store, args []string) error {
@@ -3946,8 +3949,8 @@ func cleanupSessions(store *session.Store, args []string) error {
 		return fmt.Errorf("usage: odek session cleanup <days>")
 	}
 	days, derr := strconv.Atoi(args[0])
-	if derr != nil || days < 0 {
-		return fmt.Errorf("invalid days %q — must be a non-negative integer", args[0])
+	if derr != nil || days < 0 || days > maxCleanupDays {
+		return fmt.Errorf("invalid days %q — must be an integer between 0 and %d", args[0], maxCleanupDays)
 	}
 
 	before := time.Now().UTC().AddDate(0, 0, -days)
