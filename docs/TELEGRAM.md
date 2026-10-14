@@ -458,7 +458,7 @@ Supports downloading voice messages, photos, and documents from Telegram to the 
 
 Media files are saved to `~/.odek/media/` (created automatically on first download).
 
-Downloads and voice auto-transcription run on a per-chat background queue (in arrival order within a chat), never on the update loop, so a slow download or speech-to-text run does not delay other chats or their approval callbacks.
+Downloads and voice auto-transcription run on the chat's ordered background queue, never on the update loop; text messages, commands, `/new`/`/resume` and scheduled turns of that chat start only after a media message received earlier has been fully handled (so "photo, then a question" sees the photo), so a slow download or speech-to-text run does not delay other chats or their approval callbacks.
 
 The file-reading tools (`read_file`, `vision`, `transcribe`) are scoped the same way as outbound media: during a Telegram turn they refuse files in `~/.odek/media/` that belong to another chat (same `_chat<chatID>_` / `chat<chatID>/` rule, resolved through `~`, `..`, symlinks and case folding). Other paths are unaffected.
 

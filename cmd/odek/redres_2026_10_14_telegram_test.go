@@ -206,3 +206,53 @@ func TestRED_TelegramResumeSummaryReachesNextTurn(t *testing.T) {
 		t.Error("summary injected twice")
 	}
 }
+
+func TestRED_TelegramTextAndResetWaitForPendingMedia(t *testing.T) {
+	const chat int64 = 910020
+	var mu sync.Mutex
+	var order []string
+	rec := func(s string) {
+		mu.Lock()
+		order = append(order, s)
+		mu.Unlock()
+	}
+	release := make(chan struct{})
+	runChatMediaOffLoop(chat, nil, func() {
+		<-release
+		rec("media-turn")
+	})
+
+	// A text turn (runChatTurn begins with waitChatReset) and a /new queued
+	// behind the slow media job must both come after it.
+	done := make(chan struct{}, 2)
+	go func() {
+		waitChatReset(chat)
+		rec("text-turn")
+		done <- struct{}{}
+	}()
+	time.Sleep(50 * time.Millisecond)
+	runChatResetOffLoop(chat, func() {
+		rec("reset")
+		done <- struct{}{}
+	})
+	time.Sleep(50 * time.Millisecond)
+	mu.Lock()
+	if len(order) != 0 {
+		mu.Unlock()
+		t.Fatalf("ran before the media job finished: %v", order)
+	}
+	mu.Unlock()
+	close(release)
+	for i := 0; i < 2; i++ {
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatal("queued work never ran")
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if order[0] != "media-turn" {
+		t.Fatalf("media job must come first: %v", order)
+	}
+}

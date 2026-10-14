@@ -93,16 +93,14 @@ func runChatResetOffLoop(chatID int64, fn func()) {
 	runChatGated(&chatResetGates, chatID, fn)
 }
 
-// chatMediaGates orders a chat's media preparation (download, transcription)
-// the same way chatResetGates orders resets.
-var chatMediaGates sync.Map // map[int64]chan struct{}
-
-// runChatMediaOffLoop runs fn (a media download and optional transcription)
-// on its own goroutine, after any earlier media job of the same chat, so a
+// runChatMediaOffLoop runs fn (a media download, optional transcription and
+// the turn it triggers) on the chat's ordered gate chain, shared with session
+// resets: later text turns, commands and resets of the chat start only after
+// it, and earlier ones before it. fn runs on its own goroutine, so a
 // slow download or speech-to-text run never holds up the update loop for
 // other chats or their approval callbacks. A panic in fn is logged, not fatal.
 func runChatMediaOffLoop(chatID int64, log telegram.Logger, fn func()) {
-	runChatGated(&chatMediaGates, chatID, func() {
+	runChatGated(&chatResetGates, chatID, func() {
 		defer func() {
 			if r := recover(); r != nil && log != nil {
 				log.Error("media handler panic", "chat_id", chatID, "panic", r)
@@ -1033,7 +1031,7 @@ func telegramCmd(args []string) error {
 			localPath, err := telegram.DownloadVoice(bot, chatID, fileID)
 			if err != nil {
 				handlerLog.Warn("voice download failed", "chat_id", chatID, "error", err)
-				go handleChatMessage(chatID, messageID, userID,
+				handleChatMessageGated(chatID, messageID, userID,
 					fmt.Sprintf("[voice message received — download failed: %v]", err),
 					bot, handler, sessionManager, resolved, systemMessage, handlerLog)
 				return
@@ -1052,7 +1050,7 @@ func telegramCmd(args []string) error {
 						// Transcribed text crosses an external trust boundary; wrap it before
 						// injecting it into the user message stream (telegramVoiceMessage).
 						transcript := telegramGuardScan(context.Background(), r.Text, "voice transcript")
-						go handleChatMessage(chatID, messageID, userID,
+						handleChatMessageGated(chatID, messageID, userID,
 							telegramVoiceMessage(chatID, transcript),
 							bot, handler, sessionManager, resolved, systemMessage, handlerLog)
 						return
@@ -1063,7 +1061,7 @@ func telegramCmd(args []string) error {
 			}
 
 			// Fallback: pass the file path to the agent
-			go handleChatMessage(chatID, messageID, userID,
+			handleChatMessageGated(chatID, messageID, userID,
 				wrapUntrusted(context.Background(), fmt.Sprintf("telegram:chat:%d:voice", chatID),
 					fmt.Sprintf("🎤 Voice message saved to %q. Use transcribe() tool to get the text.", localPath)),
 				bot, handler, sessionManager, resolved, systemMessage, handlerLog)
@@ -1076,7 +1074,7 @@ func telegramCmd(args []string) error {
 			localPath, err := telegram.DownloadPhoto(bot, chatID, fileIDs)
 			if err != nil {
 				handlerLog.Warn("photo download failed", "chat_id", chatID, "error", err)
-				go handleChatMessage(chatID, messageID, userID,
+				handleChatMessageGated(chatID, messageID, userID,
 					fmt.Sprintf("[photo received — download failed: %v]", err),
 					bot, handler, sessionManager, resolved, systemMessage, handlerLog)
 				return
@@ -1088,7 +1086,7 @@ func telegramCmd(args []string) error {
 			// Queue auto-description inside the run so approvals, /stop, usage,
 			// and execution budgets cover both local and provider vision.
 			if resolved.Vision.AutoDescribeEnabled() {
-				go handleChatMessage(chatID, messageID, userID,
+				handleChatMessageGated(chatID, messageID, userID,
 					photoFallbackMessage(localPath, caption), bot, handler, sessionManager,
 					resolved, systemMessage, handlerLog, &telegramPhotoInput{Path: localPath, Caption: caption})
 				return
@@ -1096,7 +1094,7 @@ func telegramCmd(args []string) error {
 
 			// Fallback: hand the agent the file path (and caption) so it can analyze
 			// the image itself via the vision/shell tools.
-			go handleChatMessage(chatID, messageID, userID,
+			handleChatMessageGated(chatID, messageID, userID,
 				photoFallbackMessage(localPath, caption),
 				bot, handler, sessionManager, resolved, systemMessage, handlerLog)
 		})
@@ -1108,12 +1106,12 @@ func telegramCmd(args []string) error {
 			localPath, err := telegram.DownloadDocument(bot, chatID, fileID, fileName)
 			if err != nil {
 				handlerLog.Warn("document download failed", "chat_id", chatID, "file_name", fileName, "error", err)
-				go handleChatMessage(chatID, messageID, userID,
+				handleChatMessageGated(chatID, messageID, userID,
 					fmt.Sprintf("[document received — download failed: %v]", err),
 					bot, handler, sessionManager, resolved, systemMessage, handlerLog)
 				return
 			}
-			go handleChatMessage(chatID, messageID, userID,
+			handleChatMessageGated(chatID, messageID, userID,
 				telegramDocumentMessage(localPath),
 				bot, handler, sessionManager, resolved, systemMessage, handlerLog)
 		})
@@ -1601,7 +1599,27 @@ func handleChatMessage(
 	log telegram.Logger,
 	photos ...*telegramPhotoInput,
 ) {
-	runChatTurn(false, chatID, messageID, userID, text, bot, handler, sessionManager,
+	runChatTurn(false, false, chatID, messageID, userID, text, bot, handler, sessionManager,
+		resolved, systemMessage, log, photos...)
+}
+
+// handleChatMessageGated is handleChatMessage for a caller that already runs
+// inside the chat's gate chain (runChatMediaOffLoop): it must not wait for
+// that gate, which only closes once the turn returns.
+func handleChatMessageGated(
+	chatID int64,
+	messageID int,
+	userID int64,
+	text string,
+	bot *telegram.Bot,
+	handler *telegram.Handler,
+	sessionManager *telegram.SessionManager,
+	resolved config.ResolvedConfig,
+	systemMessage string,
+	log telegram.Logger,
+	photos ...*telegramPhotoInput,
+) {
+	runChatTurn(true, false, chatID, messageID, userID, text, bot, handler, sessionManager,
 		resolved, systemMessage, log, photos...)
 }
 
@@ -1621,7 +1639,7 @@ func handleWakeTurn(
 ) {
 	// The bound user is resolved inside runChatTurn once the chat slot is
 	// held, so a wake queued behind another user's turn binds to that user.
-	runChatTurn(true, chatID, 0, 0, text, bot, handler,
+	runChatTurn(false, true, chatID, 0, 0, text, bot, handler,
 		sessionManager, resolved, systemMessage, log)
 }
 
@@ -1686,6 +1704,7 @@ var errClarifyUnbound = errors.New("clarify: unavailable on a system-initiated t
 // runChatTurn is the shared turn pipeline for operator messages and
 // system-initiated wake turns (wake=true).
 func runChatTurn(
+	gateHeld bool,
 	wake bool,
 	chatID int64,
 	messageID int,
@@ -1700,7 +1719,9 @@ func runChatTurn(
 	photos ...*telegramPhotoInput,
 ) {
 	// A /new or /resume issued just before this turn finishes first.
-	waitChatReset(chatID)
+	if !gateHeld {
+		waitChatReset(chatID)
+	}
 	// Serialize per chat: only one agent loop runs per chat at a time.
 	// Prevents same-chat message racing that would corrupt session history.
 	slot := pinChat(chatID)
