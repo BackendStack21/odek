@@ -119,6 +119,22 @@ func TestRED_CookieHeaderSessionValueLeaks(t *testing.T) {
 	})
 }
 
+func TestCookieHeaderCorpus(t *testing.T) {
+	cfghunt13ExpectRedacted(t, []string{
+		"cookie: theme=dark; sid=" + cfghunt13Secret,
+		`{"Cookie": "lang=en; connect.sid=s%3A` + cfghunt13Secret + `.sig"}`,
+		"Set-Cookie: sid=" + cfghunt13Secret + "; Expires=Wed, 21 Oct 2026 07:28:00 GMT; Secure",
+	})
+	cfghunt13ExpectUnchanged(t, []string{
+		"Cookie: theme=dark; lang=en-US; consent=yes",
+		"Set-Cookie: Path=/; Domain=sub1.example.com; Expires=Wed, 21 Oct 2026 07:28:00 GMT; HttpOnly",
+		"Cookie: sessionid=<your-session-id-here>",
+		"Cookie: sid=$SESSION_COOKIE_VALUE_HERE",
+		"the cookie: a small piece of text a site stores in the browser",
+		"cookie jar: /home/user/.cache/cookies.txt",
+	})
+}
+
 // Incoming-webhook URLs are bearer credentials (anyone holding the URL can
 // post as the integration); secret scanners treat them as such. They are not
 // redacted.

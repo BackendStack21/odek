@@ -191,6 +191,10 @@ var guardedPatterns = []guardedPattern{
 	// curl credential flags: -u / --user / --proxy-user USER:PASSWORD (also
 	// -U). The user part alone (`-u admin`) is not a credential.
 	{regexp.MustCompile(`(?:^|\s)(?:-[uU]|--(?:proxy-)?user)(?:[ \t]+|=)["']?[^\s:"']*:("[^"\n]{8,}"|'[^'\n]{8,}'|[^\s"']{8,})`), plausibleUserFlagPassword},
+	// Cookie / Set-Cookie header lines (also inside curl -H "Cookie: …"): a
+	// session cookie is a bearer credential. The match runs to the end of
+	// the line or the closing quote.
+	{regexp.MustCompile(`(?i)\b(?:set-)?cookie["'\x60]?[ \t]*:[ \t]*["'\x60]?([^\r\n"'\x60]{16,})`), cookieHeaderHasSession},
 	// .netrc lines: password VALUE.
 	{regexp.MustCompile(`(?i)\b(?:password|passwd|passphrase)[ \t]+("[^"\n]{20,}"|'[^'\n]{20,}'|[^\s"']{20,})`), looksSecret},
 	// XML elements: <password>VALUE</password>, optional attributes and
@@ -232,6 +236,44 @@ func plausibleUserFlagPassword(v string) bool {
 		return false
 	}
 	return digits > 0 || strings.ContainsAny(t, passwordPunct) || len(t) >= 16
+}
+
+// cookieHeaderHasSession reports whether a Cookie / Set-Cookie header value
+// carries a cookie whose value is shaped like a generated session
+// identifier. Attributes (Path, Domain, Expires, SameSite, Max-Age) are
+// short, dictionary words, host names or dates and fail the shape test.
+func cookieHeaderHasSession(v string) bool {
+	for _, part := range strings.Split(v, ";") {
+		_, val, ok := strings.Cut(strings.TrimSpace(part), "=")
+		if ok && cookieValueShape(val) {
+			return true
+		}
+	}
+	return false
+}
+
+// cookieValueShape accepts a single token of at least 16 base64url,
+// percent-encoded or dotted characters that holds a letter and a digit and
+// is either mixed-case or 32+ characters long.
+func cookieValueShape(v string) bool {
+	if len(v) < 16 || v[0] == '%' || v[0] == '$' {
+		return false
+	}
+	upper, lower, digit := false, false, false
+	for i := 0; i < len(v); i++ {
+		switch c := v[i]; {
+		case c >= 'A' && c <= 'Z':
+			upper = true
+		case c >= 'a' && c <= 'z':
+			lower = true
+		case c >= '0' && c <= '9':
+			digit = true
+		case strings.IndexByte("%._~+/=-", c) >= 0:
+		default:
+			return false
+		}
+	}
+	return digit && (upper || lower) && ((upper && lower) || len(v) >= 32)
 }
 
 // looksSecret additionally requires a digit: random credentials have one
