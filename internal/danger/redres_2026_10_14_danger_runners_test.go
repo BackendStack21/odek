@@ -584,3 +584,21 @@ func TestRED_PackageRunnerDirectoryAppliesToScripts(t *testing.T) {
 		t.Errorf("pnpm -C x exec node evil.js gated after x/evil.js was read")
 	}
 }
+
+// A runner script operand with a path (`uv run sub/evil.py`, `./evil.py`)
+// is judged by the read ledger like a bare one: gated while unread, plain
+// code_execution once read.
+func TestRED_RunnerSlashScriptOperandUsesLedger(t *testing.T) {
+	drRunnersDirSetup(t) // ./evil.py and ./sub/evil.py are read
+	for _, c := range []string{"uv run sub/evil.py", "uv run ./evil.py", "poetry run ./sub/evil.py"} {
+		if got, tg := ClassifyScriptGate(c); got != CodeExecution || len(tg) > 0 {
+			t.Errorf("ClassifyScriptGate(%q) = %s %v; the script was read, want code_execution", c, got, tg)
+		}
+	}
+	for _, c := range []string{"uv run x/evil.py", "uv run ./x/sub/evil.py", "uv --directory x run ./evil.py"} {
+		if !redGated(c) {
+			cls, tg := ClassifyScriptGate(c)
+			t.Errorf("ClassifyScriptGate(%q) = %s %v; the script is unread, want gated", c, cls, tg)
+		}
+	}
+}

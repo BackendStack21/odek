@@ -411,10 +411,12 @@ func subcommandWrapper(name string, tokens []string, i int) (wrapperStep, bool) 
 				step.next = len(tokens)
 			}
 			if step.next < len(tokens) && scriptFileExtensions[strings.ToLower(filepath.Ext(tokens[step.next]))] &&
-				!strings.Contains(tokens[step.next], "/") {
-				// `uv run script.py` runs the file with the project's
-				// interpreter: there is no command word to judge, but the
-				// file is executed code for the unread-script gate.
+				!strings.ContainsAny(tokens[step.next], "$`*?[{~") {
+				// `uv run script.py` (also `sub/script.py`, `./script.py`)
+				// runs the file with the project's interpreter: there is no
+				// command word to judge, but the file is executed code for
+				// the unread-script gate. A path the analysis cannot spell
+				// out ($VAR, globs, ~) stays the command and is judged as one.
 				step.script = tokens[step.next]
 				step.next = len(tokens)
 			}
