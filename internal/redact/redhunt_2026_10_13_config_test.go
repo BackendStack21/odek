@@ -288,7 +288,7 @@ func TestNewRedactionRulesScaleLinearly(t *testing.T) {
 		"curl long user":     func(n int) string { return "curl -u " + strings.Repeat("a", n) },
 		"db urls":            func(n int) string { return strings.Repeat("redis://:", n/9) },
 		"db driver":          func(n int) string { return "postgresql+" + strings.Repeat("a", n) },
-		"webhooks":           func(n int) string { return strings.Repeat("hooks.slack" + ".com/services/TA/BA/", n/31) },
+		"webhooks":           func(n int) string { return strings.Repeat("hooks.slack"+".com/services/TA/BA/", n/31) },
 		"discord webhook":    func(n int) string { return strings.Repeat("discord.com/api/webhooks/1/", n/27) },
 	}
 	base := 64 << 10
