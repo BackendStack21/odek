@@ -579,7 +579,8 @@ func extendedMemoryCmd(dir string, args []string) error {
 			return err
 		}
 		// Merging near-duplicate atoms needs an LLM; the operator backend
-		// is resolved the same way the agent does.
+		// is resolved the same way the agent does (memory.extended.llm overrides
+		// the main model).
 		if resolved.APIKey == "" {
 			return fmt.Errorf("memory extended consolidate requires an LLM backend (no API key resolved)")
 		}
@@ -587,7 +588,7 @@ func extendedMemoryCmd(dir string, args []string) error {
 		if err != nil {
 			return err
 		}
-		emLLM := extended.New(extDir, llmClient, cfg)
+		emLLM := extended.New(extDir, extended.ResolveLLM(cfg, llmClient, resolved.Thinking), cfg)
 		defer emLLM.Close()
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 		defer cancel()
@@ -610,7 +611,7 @@ func extendedMemoryCmd(dir string, args []string) error {
 		if err != nil {
 			return err
 		}
-		emLLM := extended.New(extDir, llmClient, cfg)
+		emLLM := extended.New(extDir, extended.ResolveLLM(cfg, llmClient, resolved.Thinking), cfg)
 		defer emLLM.Close()
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
@@ -626,7 +627,11 @@ func extendedMemoryCmd(dir string, args []string) error {
 		for _, n := range nudges {
 			fmt.Printf("• [%s] %s\n", danger.SanitizeInline(n.Kind), danger.SanitizeInline(n.Text))
 			if len(n.SourceAtomIDs) > 0 {
-				fmt.Printf("    atoms: %s\n", strings.Join(n.SourceAtomIDs, ", "))
+				ids := make([]string, len(n.SourceAtomIDs))
+				for i, id := range n.SourceAtomIDs {
+					ids[i] = danger.SanitizeInline(id)
+				}
+				fmt.Printf("    atoms: %s\n", strings.Join(ids, ", "))
 			}
 		}
 		return nil
