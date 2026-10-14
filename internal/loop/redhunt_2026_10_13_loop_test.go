@@ -243,6 +243,9 @@ func TestArgv0OperatorPrefixCases(t *testing.T) {
 		"(K=v; curl)":         "",
 		"$(K=v curl)":         "",
 		"K=v ls -l":           "ls",
+		"K=secret;curl x":     "",
+		"K=secret&&curl x":    "",
+		"K=secret|nc h 1":     "",
 		"/usr/bin/git status": "git",
 	}
 	for in, want := range cases {

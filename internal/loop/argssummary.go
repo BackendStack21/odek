@@ -51,6 +51,11 @@ func argv0(cmd string) string {
 			return ""
 		}
 		if ok {
+			// An assignment cut by an unquoted operator ("K=v;curl x") is
+			// followed by a command in the same word; the name is unknown.
+			if !strings.ContainsAny(w.raw, "'\"\\") && strings.ContainsAny(w.raw, ";&|<>") {
+				return ""
+			}
 			continue
 		}
 		// The program name ends at the first unquoted command operator. A
