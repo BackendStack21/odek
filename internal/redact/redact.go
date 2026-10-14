@@ -171,7 +171,9 @@ type guardedPattern struct {
 
 const (
 	gSep = `["'\x60]?\s*(?:=>|[:=])\s*`
-	gVal = `("[^"\n]{20,}"|'[^'\n]{20,}'|\x60[^\x60\n]{20,}\x60|[^\s]{20,})`
+	// The unquoted alternative ends at a JSON string escape (\n, \r, \t, \"),
+	// so a credential followed by an encoded newline is judged alone.
+	gVal = `("[^"\n]{20,}"|'[^'\n]{20,}'|\x60[^\x60\n]{20,}\x60|(?:[^\s\\]|\\[^\snrt"]){20,})`
 )
 
 var guardedPatterns = []guardedPattern{
@@ -290,6 +292,7 @@ func looksSecret(v string) bool {
 // paths, ARNs, timestamps and lowercase resource names are never secrets.
 // Keyed forms with their own dedicated patterns do not go through here.
 func looksCredentialShape(v string) bool {
+	v = cutJSONEscape(v)
 	if !looksSecret(v) {
 		return false
 	}
@@ -359,6 +362,22 @@ func looksCredentialShape(v string) bool {
 		return strings.ContainsAny(t, "+=") || (hasUpper && hasLower)
 	}
 	return false
+}
+
+// cutJSONEscape ends v at the first JSON string escape for a newline, return,
+// tab or quote: in JSON-encoded output a multi-line value keeps "\n" as two
+// characters, and whatever follows belongs to the next line.
+func cutJSONEscape(v string) string {
+	for i := 0; i+1 < len(v); i++ {
+		if v[i] == '\\' {
+			switch v[i+1] {
+			case 'n', 'r', 't', '"':
+				return v[:i]
+			}
+			i++
+		}
+	}
+	return v
 }
 
 func looksCredentialShapeNotPath(v string) bool {

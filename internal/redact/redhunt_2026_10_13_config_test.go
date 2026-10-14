@@ -3,6 +3,7 @@ package redact
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 // cfghunt13Secret is a generated-looking credential (mixed case + digits, 24
@@ -71,6 +72,55 @@ func TestRED_BareSecretKeyBeforeJSONEscapedNewlineLeaks(t *testing.T) {
 		`{"data":{"app.yaml":"token: ` + cfghunt13Secret + `\nlog_level: debug\n"}}`,
 		`{"content":"secret=` + cfghunt13Secret + `\nDEBUG=1"}`,
 	})
+}
+
+func TestJSONEscapedSecretCorpus(t *testing.T) {
+	cfghunt13ExpectRedacted(t, []string{
+		`{"v":"secret: ` + cfghunt13Secret + `\r\nnext"}`,
+		`{"v":"token=` + cfghunt13Secret + `\tx"}`,
+		`{"token":"` + cfghunt13Secret + `\nfoo"}`,
+		`{"content":"API_KEY=` + cfghunt13Secret + `\nDEBUG=1"}`,
+	})
+	// The text after the escape stays readable for the unquoted form.
+	if got := RedactSecrets(`{"v":"token: ` + cfghunt13Secret + `\nlog_level: debug"}`); !strings.Contains(got, `\nlog_level: debug`) {
+		t.Errorf("text after the escape was swallowed: %q", got)
+	}
+	cfghunt13ExpectUnchanged(t, []string{
+		`{"v":"token: kubernetes-secret-name\nlog_level: debug"}`,
+		`fmt.Printf("token: %s\n", tok)`,
+		`{"v":"secret=C:\new\table\files\path\here\x"}`,
+		`{"v":"token: short\nsecond line"}`,
+		`{"v":"secret: ${SECRET_VALUE_FROM_ENV_VAR}\nnext"}`,
+	})
+}
+
+// The new rules stay linear on hostile input.
+func TestNewRedactionRulesScaleLinearly(t *testing.T) {
+	gens := map[string]func(n int) string{
+		"json escapes":    func(n int) string { return strings.Repeat(`token:\n\n\n\n`, n/12) },
+		"escape tokens":   func(n int) string { return "token: " + strings.Repeat(`aB3\x`, n/5) },
+		"cookie header":   func(n int) string { return strings.Repeat("Cookie: a=b;", n/12) },
+		"cookie long":     func(n int) string { return "Cookie: " + strings.Repeat("a=Bc1;", n/6) },
+		"curl flags":      func(n int) string { return strings.Repeat(" -u a:", n/6) },
+		"curl long user":  func(n int) string { return "curl -u " + strings.Repeat("a", n) },
+		"db urls":         func(n int) string { return strings.Repeat("redis://:", n/9) },
+		"db driver":       func(n int) string { return "postgresql+" + strings.Repeat("a", n) },
+		"webhooks":        func(n int) string { return strings.Repeat("hooks.slack" + ".com/services/TA/BA/", n/31) },
+		"discord webhook": func(n int) string { return strings.Repeat("discord.com/api/webhooks/1/", n/27) },
+	}
+	base := 64 << 10
+	if raceEnabled {
+		base = 16 << 10
+	}
+	for name, gen := range gens {
+		small, large := finalRedactTime(gen(base), 2), finalRedactTime(gen(4*base), 1)
+		if small < 2*time.Millisecond {
+			small = 2 * time.Millisecond
+		}
+		if large > 9*small {
+			t.Errorf("%s: super-linear: %d bytes %v, x4 %v", name, base, small, large)
+		}
+	}
 }
 
 // curl -u / --user USER:PASSWORD puts an HTTP Basic credential on the command
