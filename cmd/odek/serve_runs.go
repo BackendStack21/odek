@@ -436,6 +436,7 @@ const (
 // Sentinel errors mapped to HTTP statuses by handlePromptStart.
 var (
 	errInvalidSessionToken = errors.New("invalid session token")
+	errSessionNotFound     = errors.New("session not found")
 	errTooManyActiveRuns   = errors.New("too many active runs")
 	errServeShuttingDown   = errors.New("server is shutting down")
 )
@@ -992,14 +993,20 @@ func startServeRun(
 	// Session-token validation, same rule as every other session-scoped
 	// endpoint (2026-08 audit: the AuthToken field was accepted but never
 	// checked, so a cookie-only caller could resume and mutate any
-	// session). A session_id that does not load is fine — handlePrompt
-	// creates a fresh session. Legacy sessions without a stored token
+	// session). A session_id that does not exist is refused. Legacy sessions without a stored token
 	// are minted, but the minted token must be presented (strict).
 	if req.SessionID != "" && store != nil {
-		if sess, err := store.Load(req.SessionID); err == nil && sess != nil {
+		sess, err := store.Load(req.SessionID)
+		var nf *session.NotFoundError
+		switch {
+		case err == nil && sess != nil:
 			if !validateSessionTokenStrict(store, sess, req.AuthToken) {
 				return nil, errInvalidSessionToken
 			}
+		case errors.As(err, &nf):
+			// An unknown id is refused before any agent is built, through
+			// the same throttled path as a bad token (no existence oracle).
+			return nil, errSessionNotFound
 		}
 	}
 
@@ -1185,6 +1192,8 @@ func handlePromptStart(st *serveState, store *session.Store, resources *resource
 			switch {
 			case errors.Is(err, errInvalidSessionToken):
 				rejectSessionLookup(w, r, sessionScopedProxies, http.StatusUnauthorized, err.Error())
+			case errors.Is(err, errSessionNotFound):
+				rejectSessionLookup(w, r, sessionScopedProxies, http.StatusNotFound, err.Error())
 			case errors.Is(err, errServeShuttingDown):
 				http.Error(w, err.Error(), http.StatusServiceUnavailable)
 			case errors.Is(err, errTooManyActiveRuns):
