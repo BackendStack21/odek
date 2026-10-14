@@ -426,6 +426,10 @@ func (a *wsApprover) PromptClarify(question string) (string, error) {
 		return "", fmt.Errorf("cancelled")
 	}
 	id := a.newClarifyID()
+	// The question is model-authored: escape control, bidi and invisible
+	// characters like every approval prompt so the human reads the bytes the
+	// model wrote (the same text is recorded in the decision trail).
+	question = danger.SanitizeForDisplay(question)
 	decision := session.Decision{ID: id, Kind: "question", Command: question, State: "interrupted"}
 	defer func() { a.recordDecision(decision) }()
 	resp := make(chan string, 1)
