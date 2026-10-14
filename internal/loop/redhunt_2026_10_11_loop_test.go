@@ -369,7 +369,7 @@ func TestRED_ArgSummaryArgv0QuoteAware(t *testing.T) {
 	cases := []struct{ cmd, want string }{
 		{`TOKEN='a b c' API="x \"y z\"" /usr/bin/env -i run`, "env"},
 		{`PASS="open quote never closed ./run`, ""},
-		{`"FOO=bar" baz`, "FOO=bar"},
+		{`"FOO=bar" baz`, ""},
 		{`"/opt/my tools/run me" --flag`, "run me"},
 		{`a\ b c`, "a b"},
 		{"X=1\tY=2\ncurl", "curl"},

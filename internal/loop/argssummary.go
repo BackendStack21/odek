@@ -63,7 +63,7 @@ func argv0(cmd string) string {
 		// program name and may carry secret values, so nothing of it is
 		// reported.
 		field := w.value
-		if strings.ContainsAny(field, "$(){}`") {
+		if strings.ContainsAny(field, "$(){}`=") {
 			return ""
 		}
 		if i := strings.LastIndexByte(field, '/'); i >= 0 {

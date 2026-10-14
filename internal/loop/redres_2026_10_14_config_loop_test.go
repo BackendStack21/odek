@@ -34,6 +34,22 @@ func TestRED_Argv0QuotedWordThenOperator(t *testing.T) {
 	}
 }
 
+// A word that is assignment-shaped after quote removal is never a program
+// name, so a quoted or escaped variable name cannot surface its value.
+func TestRED_Argv0QuotedAssignmentName(t *testing.T) {
+	for _, cmd := range []string{`'K'=sekret curl x`, `"K"=sekret curl x`, `\K=sekret curl`} {
+		if got := argv0(cmd); got != "" {
+			t.Errorf("argv0(%q) = %q, want empty", cmd, got)
+		}
+	}
+	if got := argv0(`K=sekret curl`); got != "curl" {
+		t.Errorf("plain assignment: %q", got)
+	}
+	if got := argv0(`env K=x curl`); got != "env" {
+		t.Errorf("env: %q", got)
+	}
+}
+
 // Tool-call arguments are model-authored and often copied from untrusted
 // content, so the verifier sees them inside the untrusted boundary and the
 // prompt names them as data.
