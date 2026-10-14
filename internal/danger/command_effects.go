@@ -815,36 +815,51 @@ func sedScriptTexts(tokens []string) []string {
 // NAME/__main__.py (dots as path separators) execute ahead of an installed
 // module of the same name.
 func pythonModuleFiles(args []string) []string {
-	for i := 0; i < len(args); i++ {
-		tok := args[i]
-		if !strings.HasPrefix(tok, "-") || tok == "-" || tok == "--" {
-			return nil // the script operand ends the interpreter options
-		}
-		if tok == "-c" {
-			return nil
-		}
-		module := ""
-		switch {
-		case tok == "-m" && i+1 < len(args):
-			module = args[i+1]
-		case strings.HasPrefix(tok, "-m") && !strings.HasPrefix(tok, "--") && len(tok) > 2:
-			module = tok[2:]
-		case tok == "-W" || tok == "-X" || tok == "-Q":
-			i++ // value-taking interpreter options
+	r := pythonOptions.parse(args)
+	for _, o := range r.opts {
+		if !o.is("-c") {
 			continue
 		}
-		if module == "" {
+		return nil // inline code: no module is imported by -m
+	}
+	for _, o := range r.opts {
+		if !o.has || !o.is("-m") {
 			continue
 		}
-		path := strings.ReplaceAll(module, ".", "/")
-		return []string{path + ".py", path + "/__main__.py"}
+		parts := strings.Split(o.value, ".")
+		path := strings.Join(parts, "/")
+		files := []string{path + ".py", path + "/__main__.py", path + "/__init__.py"}
+		// Importing a dotted module imports each parent package first.
+		for i := 1; i < len(parts); i++ {
+			files = append(files, strings.Join(parts[:i], "/")+"/__init__.py")
+		}
+		return files
 	}
 	return nil
+}
+
+// pythonOptions is the interpreter's own option grammar: -m, -c, -W, -X and -Q
+// take a value (possibly the rest of a cluster such as -Bm), and the first
+// operand is the script.
+var pythonOptions = optSpec{posix: true, short: "mcWXQ"}
+
+// pythonInterpreterName reports whether name is a Python interpreter,
+// including versioned spellings (python3.11, pypy3).
+func pythonInterpreterName(name string) bool {
+	for _, base := range []string{"python", "pypy"} {
+		if rest, ok := strings.CutPrefix(name, base); ok {
+			return strings.Trim(rest, "0123456789.") == ""
+		}
+	}
+	return false
 }
 
 func executionFileTargets(name string, tokens []string) []string {
 	if len(tokens) == 0 {
 		return nil
+	}
+	if pythonInterpreterName(name) {
+		return pythonModuleFiles(tokens[1:])
 	}
 	var options []string
 	// commandOptions take a debugger/editor command string whose `source`
@@ -892,8 +907,6 @@ func executionFileTargets(name string, tokens []string) []string {
 		options = []string{"-toolexec"}
 	case "protoc":
 		options = []string{"--plugin"}
-	case "python", "python2", "python3", "pypy", "pypy3":
-		return pythonModuleFiles(tokens[1:])
 	case "psql":
 		// -f/--file name a script whose \! and \copy ... program
 		// meta-commands run local programs.
