@@ -298,7 +298,7 @@ func subcommandWrapper(name string, tokens []string, i int) (wrapperStep, bool) 
 		if name == "bundle" || name == "bundler" {
 			verb = "exec"
 		}
-		if len(rest) > 0 && rest[0] == verb {
+		if len(rest) > 0 && (rest[0] == verb || (verb == "exec" && rest[0] == "e")) {
 			step.floor = CodeExecution
 			spec := projectRunnerSpec
 			if name == "uv" {

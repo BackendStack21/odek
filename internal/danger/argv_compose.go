@@ -17,6 +17,17 @@ func argvComposerName(stage []string) string {
 	return ""
 }
 
+// argvComposerIndex returns the index of the argv composer word in a stage,
+// or -1.
+func argvComposerIndex(stage []string) int {
+	for i, tok := range stage {
+		if argvComposers[commandName(tok)] {
+			return i
+		}
+	}
+	return -1
+}
+
 // xargsReplaceString returns the placeholder an xargs-style option list
 // defines (-I STR, -ISTR, -i, -iSTR, --replace[=STR]), or "".
 func xargsReplaceString(opts []string) string {

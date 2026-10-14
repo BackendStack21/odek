@@ -585,6 +585,13 @@ var persistenceDirMarkers = []string{
 	"/profile_default/startup/", // IPython runs every file here at start
 	"/.vim/plugin/",             // Vim sources these at start
 	"/.vim/autoload/",
+	"/.vim/vimrc",
+	"/.bashrc.d/", // sourced by distro shell profiles
+	"/.profile.d/",
+	"/.zshrc.d/",
+	"/.emacs.d/init.el", // Emacs evaluates these at start
+	"/.emacs.d/early-init.el",
+	"/.vscode/tasks.json", // runs on folder open / build
 }
 
 // homeStartupFiles are dotfiles directly in $HOME that a program reads and
@@ -593,7 +600,7 @@ var persistenceDirMarkers = []string{
 var homeStartupFiles = map[string]bool{
 	".direnvrc": true, ".vimrc": true, ".gvimrc": true, ".exrc": true,
 	".gdbinit": true, ".tmux.conf": true, ".screenrc": true, ".emacs": true,
-	".pythonstartup": true,
+	".pythonstartup": true, ".pdbrc": true, ".irbrc": true, ".pryrc": true,
 }
 
 // pythonStartupHook reports whether a lowercased path is a file every Python
@@ -603,6 +610,14 @@ func pythonStartupHook(lower string) bool {
 	base := filepath.Base(lower)
 	switch base {
 	case "sitecustomize.py", "usercustomize.py":
+		return true
+	}
+	// Any IPython profile (not only profile_default) runs its startup
+	// directory and config at launch; Jupyter loads its *config* files.
+	if strings.Contains(lower, "/.ipython/profile_") && (strings.Contains(lower, "/startup/") || strings.HasSuffix(base, "_config.py")) {
+		return true
+	}
+	if strings.Contains(lower, "/.jupyter/") && strings.Contains(base, "config") {
 		return true
 	}
 	return strings.HasSuffix(base, ".pth") &&
@@ -2106,21 +2121,30 @@ func xargsDynamicArgvRisk(inner []string) RiskClass {
 		// Only wrappers (`nohup`, `timeout 5`): the input is the command.
 		return CodeExecution
 	}
+	name := commandName(unwrapped[0])
+	if pipedShells[name] && shellInlineScriptIndex(unwrapped) < 0 {
+		// No script of its own (a bare shell, or `-c` with nothing after it):
+		// the input supplies the script or its file.
+		return CodeExecution
+	}
 	if len(unwrapped) > 1 {
 		return Safe
 	}
-	name := commandName(unwrapped[0])
-	switch {
-	case pipedShells[name], codeEvalPrefixes[name], stdinExecInterpreters[name],
-		embeddedShellInterpreters[name], argvComposers[name], execWrappers[name]:
-		return CodeExecution
+	if dynamicArgvReadOnly[name] {
+		return Safe
 	}
-	switch name {
-	case "sed", "find", "fd", "fdfind", "git", "kill", "pkill", "killall",
-		"ssh", "rsync", "make", "tar":
-		return CodeExecution
-	}
-	return Safe
+	return CodeExecution
+}
+
+// dynamicArgvReadOnly are the commands that stay safe when every argument
+// comes from input the classifier cannot see: they only read or print.
+var dynamicArgvReadOnly = map[string]bool{
+	"grep": true, "egrep": true, "fgrep": true, "rg": true, "cat": true, "head": true,
+	"tail": true, "wc": true, "ls": true, "stat": true, "file": true, "echo": true,
+	"printf": true, "basename": true, "dirname": true, "sha256sum": true, "sha1sum": true,
+	"sha512sum": true, "md5sum": true, "md5": true, "shasum": true, "realpath": true,
+	"readlink": true, "du": true, "tr": true, "sort": true, "uniq": true, "cut": true,
+	"true": true, "false": true, "test": true, "diff": true, "cmp": true,
 }
 
 // classifyArgvComposerLiteralInput classifies the commands an argv composer
@@ -2206,10 +2230,14 @@ func classifyShellHereString(stage []string) RiskClass {
 // command line, so it is not treated as an external source.
 func classifyXargsFileInput(stage []string) RiskClass {
 	inner, ok := argvComposerInnerCommand(stage)
-	if !ok || len(inner) == 0 {
+	if !ok || !xargsHasExternalArgSource(stage) {
 		return Safe
 	}
-	if !xargsHasExternalArgSource(stage) {
+	if len(inner) == 0 {
+		// GNU parallel with no command runs each line of its file as one.
+		if argvComposerName(stage) == "parallel" {
+			return CodeExecution
+		}
 		return Safe
 	}
 	if xargsInnerDangerous(inner) {
@@ -2219,6 +2247,16 @@ func classifyXargsFileInput(stage []string) RiskClass {
 }
 
 func xargsHasExternalArgSource(tokens []string) bool {
+	// The composer's own options (read with the shared grammar, so -a inside
+	// a cluster such as -0a or -ta counts) end where its command begins.
+	if inner, ok := argvComposerInnerCommand(tokens); ok {
+		if idx := argvComposerIndex(tokens); idx >= 0 && len(tokens)-len(inner) > idx+1 {
+			opts := tokens[idx+1 : len(tokens)-len(inner)]
+			if xargsGrammar.parse(opts).has("-a", "--arg-file") {
+				return true
+			}
+		}
+	}
 	for _, t := range tokens {
 		if t == "-a" || strings.HasPrefix(t, "--arg-file") {
 			return true
@@ -2664,6 +2702,24 @@ func classifyStageIn(tokens []string, pipedInto bool, repo *gitRepoCtx) RiskClas
 		// judged as command lines of their own.
 		for _, payload := range commandStringPayloads(name, cmdTokens) {
 			if inner := Classify(payload); inner != Unknown {
+				cls = worstOf(cls, inner)
+			}
+		}
+		cls = worstOf(cls, packageManagerSettingClass(name, cmdTokens))
+		if name == "git" {
+			// ext:: and fd:: remotes make git run a command or use an
+			// inherited descriptor as its transport.
+			for _, t := range cmdTokens[1:] {
+				if l := strings.ToLower(t); strings.HasPrefix(l, "ext::") || strings.HasPrefix(l, "fd::") ||
+					strings.Contains(l, "=ext::") || strings.Contains(l, "=fd::") {
+					cls = worstOf(cls, CodeExecution)
+				}
+			}
+		}
+		// Package and version managers that run a command for their caller.
+		if runner := runnerCommand(name, cmdTokens); len(runner) > 0 {
+			cls = worstOf(cls, CodeExecution)
+			if inner := classifyStageIn(runner, false, repo); inner != Unknown {
 				cls = worstOf(cls, inner)
 			}
 		}
