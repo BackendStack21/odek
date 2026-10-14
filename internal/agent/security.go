@@ -254,8 +254,18 @@ func closeOpenBlocks(s string) string {
 		at     int
 		closer string
 	}
-	lower := strings.ToLower(s)
+	lower := strings.ToLower(outsideFences(s))
 	var opens []open
+	// An HTML declaration (<!DOCTYPE …, <!ELEMENT …) runs to the first line
+	// that holds a ">".
+	for i := strings.LastIndex(lower, "<!"); i >= 0; i = strings.LastIndex(lower[:i], "<!") {
+		if i+2 < len(lower) && lower[i+2] >= 'a' && lower[i+2] <= 'z' {
+			if !strings.Contains(lower[i:], ">") {
+				opens = append(opens, open{i, ">"})
+			}
+			break
+		}
+	}
 	for _, c := range [][2]string{{"<!--", "-->"}, {"<![cdata[", "]]>"}, {"<?", "?>"}} {
 		if i := strings.LastIndex(lower, c[0]); i >= 0 && !strings.Contains(lower[i+len(c[0]):], c[1]) {
 			opens = append(opens, open{i, c[1]})
@@ -272,6 +282,20 @@ func closeOpenBlocks(s string) string {
 		s += "\n" + o.closer
 	}
 	return s
+}
+
+// outsideFences returns s with every fenced code block (fence lines
+// included) blanked, so raw HTML inside code is not mistaken for a live
+// construct.
+func outsideFences(s string) string {
+	lines := strings.Split(s, "\n")
+	var ft fenceTracker
+	for i, line := range lines {
+		if delim := ft.feed(line); delim || ft.open {
+			lines[i] = ""
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 // lastTagOpen returns the index of the last occurrence of the opener (for

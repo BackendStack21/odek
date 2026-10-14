@@ -4,6 +4,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 // cfghunt13PillarInsideOpenHTMLComment reports whether the first line of the
@@ -73,6 +74,58 @@ func TestCloseOpenBlocksGeneralised(t *testing.T) {
 	for _, in := range []string{"plain", "<script>x</script>", "<pre>a</pre>", "<?xml?>", "<![CDATA[x]]>", "<prefix>", "a <preview> b"} {
 		if got := closeOpenBlocks(in); got != in {
 			t.Errorf("closeOpenBlocks(%q) = %q, want unchanged", in, got)
+		}
+	}
+}
+
+func TestCloseOpenBlocksDeclarationsAndFences(t *testing.T) {
+	for _, open := range []string{"<!DOCTYPE foo", "<!ELEMENT a", "text\n\n<!doctype html public"} {
+		sys := appendSecurityPillar("# Notes\n\n" + open)
+		at := strings.LastIndex(sys, strings.SplitN(SecurityPillar, "\n", 2)[0])
+		before := sys[:at]
+		if d := strings.LastIndex(before, "<!"); d < 0 || !strings.Contains(before[d:], ">") {
+			t.Errorf("%q: pillar left inside an unterminated declaration", open)
+		}
+		if !strings.HasSuffix(before, "\n\n") {
+			t.Errorf("%q: no blank line before the pillar", open)
+		}
+	}
+	for _, in := range []string{"```\n<pre>code\n```", "~~~\n<script>\n~~~", "```html\n<!-- x\n```\ntail", "```\n<!DOCTYPE x\n```"} {
+		if got := closeOpenBlocks(in); got != in {
+			t.Errorf("closeOpenBlocks(%q) = %q, want unchanged (fenced code)", in, got)
+		}
+	}
+	// A closer inside a fence does not mask a real opener outside it.
+	in := "<pre>real\n```\n</pre>\n```"
+	if got := closeOpenBlocks(in); got != in+"\n</pre>" {
+		t.Errorf("closeOpenBlocks(%q) = %q", in, got)
+	}
+}
+
+func TestCloseOpenBlocksScalesLinearly(t *testing.T) {
+	best := func(s string) time.Duration {
+		d := time.Duration(1 << 62)
+		for i := 0; i < 3; i++ {
+			t0 := time.Now()
+			closeOpenBlocks(s)
+			if e := time.Since(t0); e < d {
+				d = e
+			}
+		}
+		return d
+	}
+	for name, gen := range map[string]func(n int) string{
+		"pre prefixes": func(n int) string { return strings.Repeat("<pre", n/4) },
+		"decls":        func(n int) string { return strings.Repeat("<!--", n/4) },
+		"bang":         func(n int) string { return strings.Repeat("<!", n/2) },
+		"fences":       func(n int) string { return strings.Repeat("```\n<pre>\n", n/10) },
+	} {
+		small, large := best(gen(64<<10)), best(gen(256<<10))
+		if small < time.Millisecond {
+			small = time.Millisecond
+		}
+		if large > 9*small {
+			t.Errorf("%s: super-linear: %v then %v", name, small, large)
 		}
 	}
 }
