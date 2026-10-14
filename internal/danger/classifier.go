@@ -2669,7 +2669,11 @@ func classifyStageIn(tokens []string, pipedInto bool, repo *gitRepoCtx) RiskClas
 		}
 		// An action command the classifier cannot judge keeps the
 		// code_execution floor rather than becoming unknown.
-		for _, payload := range execActionCommands(name, cmdTokens) {
+		leaves, over := execActionLeaves(name, cmdTokens)
+		if over {
+			cls = worstOf(cls, Unknown)
+		}
+		for _, payload := range leaves {
 			if inner := classifyStageIn(payload, false, repo); inner != Unknown {
 				cls = worstOf(cls, inner)
 			}
@@ -6309,6 +6313,32 @@ func hasShortFlag(args []string, flag rune) bool {
 		}
 	}
 	return false
+}
+
+// maxExecActionLeaves bounds how many action commands one stage examines.
+const maxExecActionLeaves = 64
+
+// execActionLeaves returns the commands the exec actions of a stage
+// ultimately run. An action command that is itself a find or fd with exec
+// actions adds nothing of its own beyond the floor already applied, so the
+// walk descends to the commands those nested actions run. Each is examined
+// once, which keeps a long chain of nested actions linear; over reports that
+// the bound was reached and commands went unexamined.
+func execActionLeaves(name string, tokens []string) (leaves [][]string, over bool) {
+	work := execActionCommands(name, tokens)
+	for len(work) > 0 && len(leaves) < maxExecActionLeaves {
+		payload := work[len(work)-1]
+		work = work[:len(work)-1]
+		cmd, _ := unwrapWrappers(payload)
+		if len(cmd) > 0 {
+			if nested := execActionCommands(commandName(cmd[0]), cmd); len(nested) > 0 {
+				work = append(work, nested...)
+				continue
+			}
+		}
+		leaves = append(leaves, payload)
+	}
+	return leaves, len(work) > 0
 }
 
 // execActionCommands returns the commands that find's -exec/-execdir/-ok/-okdir
