@@ -11,6 +11,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/BackendStack21/odek/internal/fsatomic"
+	"github.com/BackendStack21/odek/internal/redact"
 	"golang.org/x/term"
 )
 
@@ -785,7 +786,7 @@ func appendHistoryLine(path, line string) error {
 		return fmt.Errorf("history file changed while opening")
 	}
 	_ = f.Chmod(0600)
-	_, err = fmt.Fprintln(f, escapeHistoryLine(line))
+	_, err = fmt.Fprintln(f, escapeHistoryLine(redact.RedactSecrets(line)))
 	return err
 }
 
@@ -812,7 +813,7 @@ func (h *replHistory) persist(trimmed bool) {
 	var b strings.Builder
 	b.WriteString(historyFormatMarker + "\n")
 	for _, entry := range h.entries {
-		b.WriteString(escapeHistoryLine(entry))
+		b.WriteString(escapeHistoryLine(redact.RedactSecrets(entry)))
 		b.WriteByte('\n')
 	}
 	h.synced = fsatomic.WriteFile(path, []byte(b.String()), 0600) == nil
