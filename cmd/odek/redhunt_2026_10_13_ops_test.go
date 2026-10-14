@@ -465,3 +465,30 @@ func TestSessionCleanupRejectsOverflowingDays(t *testing.T) {
 		t.Errorf("overflowing days deleted a fresh session")
 	}
 }
+
+// A history file written before escaping existed (no format marker) keeps
+// literal backslash sequences such as regexes and Windows paths.
+func TestReplHistoryLegacyFileLoadsRaw(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	path := filepath.Join(home, ".odek", historyFilename)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	legacy := "grep 'a\\nb' f\nC:\\new\\dir\n"
+	if err := os.WriteFile(path, []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h := newReplHistory()
+	h.Load(path)
+	want := []string{"grep 'a\\nb' f", "C:\\new\\dir"}
+	if len(h.entries) != 2 || h.entries[0] != want[0] || h.entries[1] != want[1] {
+		t.Fatalf("legacy entries = %q, want %q", h.entries, want)
+	}
+	h.Add("next")
+	h2 := newReplHistory()
+	h2.Load(path)
+	if len(h2.entries) != 3 || h2.entries[0] != want[0] || h2.entries[1] != want[1] {
+		t.Errorf("entries after migration = %q", h2.entries)
+	}
+}

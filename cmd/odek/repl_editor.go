@@ -634,8 +634,21 @@ func (h *replHistory) Load(path string) {
 	defer f.Close()
 
 	scanner := bufio.NewScanner(f)
+	first := true
+	escaped := false // files without the format marker hold raw lines
 	for scanner.Scan() {
-		line := strings.TrimSpace(unescapeHistoryLine(scanner.Text()))
+		raw := scanner.Text()
+		if first {
+			first = false
+			if raw == historyFormatMarker {
+				escaped = true
+				continue
+			}
+		}
+		if escaped {
+			raw = unescapeHistoryLine(raw)
+		}
+		line := strings.TrimSpace(raw)
 		if line == "" {
 			continue
 		}
@@ -655,6 +668,11 @@ func (h *replHistory) Load(path string) {
 // historyFullRewrites counts whole-file history rewrites (observed by tests).
 var historyFullRewrites int
 
+// historyFormatMarker is the first line of a history file whose entries are
+// escaped (backslash, newline, carriage return). Files without it predate
+// escaping and are read verbatim.
+const historyFormatMarker = "#odek-history v2"
+
 // escapeHistoryLine encodes an entry as one physical line: backslash,
 // newline and carriage return are escaped so a multi-line paste reloads as
 // a single entry.
@@ -666,7 +684,7 @@ func escapeHistoryLine(s string) string {
 }
 
 // unescapeHistoryLine reverses escapeHistoryLine. Unknown escapes are kept
-// literally, so history files written before escaping existed still load.
+// literally.
 func unescapeHistoryLine(s string) string {
 	if !strings.Contains(s, "\\") {
 		return s
@@ -741,6 +759,7 @@ func (h *replHistory) persist(trimmed bool) {
 	}
 	historyFullRewrites++
 	var b strings.Builder
+	b.WriteString(historyFormatMarker + "\n")
 	for _, entry := range h.entries {
 		b.WriteString(escapeHistoryLine(entry))
 		b.WriteByte('\n')
