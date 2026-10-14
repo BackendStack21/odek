@@ -50,3 +50,16 @@ func TestRED_VectorsMetaIsNotASessionFile(t *testing.T) {
 		t.Error("ordinary session file rejected")
 	}
 }
+
+func TestRED_ReservedStoreFileIDsCaseInsensitive(t *testing.T) {
+	for _, id := range []string{"Index", "INDEX", "Vectors_Meta", "VECTORS_META"} {
+		if err := ValidateSessionID(id); err == nil {
+			t.Errorf("ValidateSessionID(%q) accepted a case variant of a store-owned file", id)
+		}
+	}
+	for _, name := range []string{"Index.json", "VECTORS_META.json"} {
+		if isSessionFile(name) {
+			t.Errorf("isSessionFile(%q) = true", name)
+		}
+	}
+}

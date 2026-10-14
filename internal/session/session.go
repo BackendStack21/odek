@@ -446,7 +446,7 @@ func ValidateSessionID(id string) error {
 // owned by the store itself (the index and the vector-index metadata)
 // rather than being a session.
 func isStoreOwnedFile(name string) bool {
-	return name == indexFile || name == vectorMetaFile
+	return strings.EqualFold(name, indexFile) || strings.EqualFold(name, vectorMetaFile)
 }
 
 func (s *Store) path(id string) string {
