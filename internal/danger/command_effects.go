@@ -817,12 +817,11 @@ func sedScriptTexts(tokens []string) []string {
 func pythonModuleFiles(args []string) []string {
 	r := pythonOptions.parse(args)
 	for _, o := range r.opts {
-		if !o.is("-c") {
-			continue
+		// Options in front of -m are the interpreter's; everything after
+		// the module name is the module's own argv, whatever it looks like.
+		if o.is("-c") {
+			return nil // inline code: no module is imported by -m
 		}
-		return nil // inline code: no module is imported by -m
-	}
-	for _, o := range r.opts {
 		if !o.has || !o.is("-m") {
 			continue
 		}
