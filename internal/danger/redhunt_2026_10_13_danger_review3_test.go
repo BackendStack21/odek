@@ -84,6 +84,63 @@ func TestRED_Review3ParallelUnknownOptionFailsClosed(t *testing.T) {
 	}
 }
 
+func TestRED_Review3ParallelOptionValuesAreClassified(t *testing.T) {
+	t.Setenv("HOME", "/home/user")
+	t.Chdir(t.TempDir())
+	dangerHunt13NotAllowed(t, CodeExecution,
+		`parallel --compress-program 'sh -c id' echo ::: x`,
+		`parallel --decompress-program 'sh -c id' echo ::: x`,
+		`parallel --rpl '{x} s/a/b/' echo ::: x`,
+		`parallel --sshlogin 'ssh-cmd host' echo ::: x`,
+		`parallel -S 'ssh-cmd host' echo ::: x`,
+		`parallel --ssh 'ssh-cmd' echo ::: x`,
+	)
+	if got := Classify(`parallel --compress-program 'rm -rf ~' echo ::: x`); got != Destructive {
+		t.Errorf("program value not judged: %s", got)
+	}
+	dangerHunt13NotAllowed(t, SystemWrite,
+		`parallel --results ~/.bashrc echo ::: x`,
+		`parallel --joblog ~/.bashrc echo ::: x`,
+		`parallel --tmpdir / echo ::: x`,
+		`parallel --workdir /etc echo ::: x`,
+		`parallel --return ~/.ssh/authorized_keys echo ::: x`,
+		`parallel --basefile ~/.bashrc echo ::: x`,
+		`parallel --transferfile ~/.bashrc echo ::: x`,
+	)
+	dangerHunt13NotAllowed(t, Unknown, `parallel --results '$X' echo ::: x`)
+	if got := Classify(`parallel --results out echo ::: x`); Rank(got) > Rank(LocalWrite) {
+		t.Errorf("plain --results out = %s", got)
+	}
+}
+
+func TestRED_Review3PublishDryRunFalseIsUpload(t *testing.T) {
+	t.Setenv("HOME", "/home/user")
+	t.Chdir(t.TempDir())
+	dangerHunt13NotAllowed(t, NetworkUpload,
+		`npm publish --dry-run false`,
+		`npm publish --dry-run --dry-run=false`,
+		`npm publish --dry-run --no-dry-run`,
+		`npm publish --dry-run=false`,
+		`cargo publish --dry-run --dry-run=false`,
+	)
+	for _, c := range []string{`npm publish --dry-run`, `npm publish --dry-run=true`, `npm publish --no-dry-run --dry-run`, `cargo publish --dry-run`} {
+		if got := Classify(c); got == NetworkUpload {
+			t.Errorf("Classify(%q) = upload, want none", c)
+		}
+	}
+}
+
+func TestRED_Review3PatchUniqSplitWriteTargets(t *testing.T) {
+	t.Setenv("HOME", "/home/user")
+	t.Chdir(t.TempDir())
+	dangerHunt13NotAllowed(t, SystemWrite,
+		`patch ~/.vimrc < p.diff`,
+		`patch -o ~/.vimrc orig.txt p.diff`,
+		`uniq in.txt ~/.vimrc`,
+		`split big.txt ~/.vimrc`,
+	)
+}
+
 func TestRED_Review3DynamicArgvOptionsAreNotFixedArguments(t *testing.T) {
 	t.Setenv("HOME", "/home/user")
 	t.Chdir(t.TempDir())

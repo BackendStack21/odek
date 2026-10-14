@@ -2784,6 +2784,7 @@ func classifyStageIn(tokens []string, pipedInto bool, repo *gitRepoCtx) RiskClas
 		if parallelHasUnknownOption(tokens) {
 			cls = worstOf(cls, Unknown)
 		}
+		cls = worstOf(cls, parallelOptionValueRisk(tokens))
 		if name == "git" {
 			// ext:: and fd:: remotes make git run a command or use an
 			// inherited descriptor as its transport.
@@ -4744,12 +4745,13 @@ func isPersistenceWrite(first string, tokens []string) bool {
 				return true
 			}
 		}
-		// Only what is written can plant a start-time hook: the destination
-		// of a copy, every operand of tee/touch/truncate.
-		for _, tok := range startupWriteOperands(first, tokens) {
-			if IsPersistencePath(expandShellTokenPath(tok)) {
-				return true
-			}
+	}
+	// Only what is written can plant a start-time hook: the destination of a
+	// copy, every operand of tee/touch/truncate, the file patch rewrites, the
+	// output of uniq and split.
+	for _, tok := range startupWriteOperands(first, tokens) {
+		if IsPersistencePath(expandShellTokenPath(tok)) {
+			return true
 		}
 	}
 	// Directory destinations: the file that lands is <dir>/<basename(src)>.
@@ -4809,6 +4811,25 @@ func startupWriteOperands(name string, tokens []string) []string {
 		}
 	case "tee", "touch", "truncate":
 		return operands
+	case "patch":
+		// patch [-o OUT] [ORIGFILE [PATCHFILE]] rewrites ORIGFILE, or writes OUT.
+		var out []string
+		for i, tok := range tokens[1:] {
+			if (tok == "-o" || tok == "--output") && i+2 < len(tokens) {
+				out = append(out, tokens[i+2])
+			} else if v, ok := strings.CutPrefix(tok, "--output="); ok {
+				out = append(out, v)
+			}
+		}
+		if len(operands) > 0 {
+			out = append(out, operands[0])
+		}
+		return out
+	case "uniq", "split", "csplit":
+		// uniq IN [OUT], split FILE [PREFIX]: the second operand is written.
+		if len(operands) >= 2 {
+			return operands[1:2]
+		}
 	}
 	return nil
 }

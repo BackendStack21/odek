@@ -208,14 +208,38 @@ var registryPublishVerbs = map[string][]string{
 	"dart": {"publish"}, "flutter": {"publish"}, "nuget": {"push"}, "dotnet": {"push"},
 }
 
+// dryRunSetting reports whether the last dry-run setting of a publish command
+// is true: --dry-run, --dry-run=VALUE, --dry-run VALUE (true/false),
+// --no-dry-run and -n. A later false setting undoes an earlier true one.
+func dryRunSetting(name string, args []string) bool {
+	dry := false
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--no-dry-run" || a == "--no-dryrun":
+			dry = false
+		case a == "--dry-run" || a == "--dryrun":
+			dry = true
+			if i+1 < len(args) && (args[i+1] == "false" || args[i+1] == "true") {
+				dry = args[i+1] == "true"
+				i++
+			}
+		case strings.HasPrefix(a, "--dry-run=") || strings.HasPrefix(a, "--dryrun="):
+			_, v, _ := strings.Cut(a, "=")
+			dry = v == "true" || v == "1" || v == "yes" || v == ""
+		case a == "-n" && (name == "npm" || name == "pnpm" || name == "cargo"):
+			dry = true
+		}
+	}
+	return dry
+}
+
 // registryPublish reports whether a package-manager invocation publishes the
 // working tree's package: the publish verb is among the first subcommand
 // words (`yarn npm publish`, `dotnet nuget push`, `dart pub publish`).
 func registryPublish(name string, args []string) bool {
-	for _, a := range args {
-		if a == "--dry-run" || a == "--dryrun" || a == "-n" && (name == "npm" || name == "pnpm" || name == "cargo") {
-			return false // nothing is sent
-		}
+	if dryRunSetting(name, args) {
+		return false // nothing is sent
 	}
 	var words []string
 	for _, a := range args {
