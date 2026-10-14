@@ -17,8 +17,8 @@ import (
 )
 
 // GET /api/usage promises prompts_started / prompts_completed / prompts_failed
-// aggregates, and the B3-SERVE-1 fix made "a run that ends with status=failed"
-// bump prompts_failed. handlePrompt increments PromptsStarted before the
+// aggregates, and a run that ends with status=failed
+// bumps prompts_failed. handlePrompt increments PromptsStarted before the
 // session/reference/attachment validation, but every early sendError return
 // after that point (unknown @sess reference, invalid reference token, session
 // not found, recovery mismatch, attachment errors, expanded-prompt cap) leaves
