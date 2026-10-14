@@ -904,6 +904,9 @@ func (t *treeTool) Call(argsJSON string) (result string, err error) {
 	// silently expose sensitive subtrees such as ~/.odek or ~/.ssh: names and
 	// metadata leak structure even without file contents.
 	checkTreePath := func(p string) bool {
+		if checkTelegramMediaRead(t.toolCtx(), p) != nil {
+			return true // another Telegram chat's media
+		}
 		return t.dangerousConfig.CheckOperation(danger.ToolOperation{
 			Name: "tree", Resource: p, Risk: classifyResolvedPath(p),
 		}, nil) != nil
@@ -1089,6 +1092,14 @@ func (t *checksumTool) Schema() any {
 		"path":      map[string]any{"type": "string", "description": "File to hash."},
 		"algorithm": map[string]any{"type": "string", "enum": []string{"sha256", "sha1", "md5"}},
 	}, "required": []string{"path"}}
+}
+
+// CallContext runs one invocation on a private copy bound to ctx, so parallel
+// calls never share the recorded context.
+func (t *checksumTool) CallContext(ctx context.Context, args string) (string, error) {
+	call := &checksumTool{dangerousConfig: t.dangerousConfig, restrictToCWD: t.restrictToCWD}
+	call.SetContext(ctx)
+	return call.Call(args)
 }
 
 func (t *checksumTool) Call(argsJSON string) (string, error) {

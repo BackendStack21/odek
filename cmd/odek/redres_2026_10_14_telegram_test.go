@@ -108,7 +108,7 @@ func TestRED_TelegramMediaJobsRunOffTheUpdateLoop(t *testing.T) {
 	returned := make(chan struct{})
 	go func() {
 		// A slow download/transcription for chat A must not block the caller.
-		runChatMediaOffLoop(chatA, nil, func() {
+		runChatMediaOffLoop(chatA, nil, func(context.Context) {
 			close(started)
 			<-release
 			mu.Lock()
@@ -117,15 +117,15 @@ func TestRED_TelegramMediaJobsRunOffTheUpdateLoop(t *testing.T) {
 			done <- struct{}{}
 		})
 		// Same chat: queued behind the first, order preserved.
-		runChatMediaOffLoop(chatA, nil, func() {
+		runChatMediaOffLoop(chatA, nil, func(context.Context) {
 			mu.Lock()
 			order = append(order, 2)
 			mu.Unlock()
 			done <- struct{}{}
 		})
 		// A panicking job is contained and does not stall the chat's queue.
-		runChatMediaOffLoop(chatA, nil, func() { panic("boom") })
-		runChatMediaOffLoop(chatA, nil, func() {
+		runChatMediaOffLoop(chatA, nil, func(context.Context) { panic("boom") })
+		runChatMediaOffLoop(chatA, nil, func(context.Context) {
 			mu.Lock()
 			order = append(order, 3)
 			mu.Unlock()
@@ -142,7 +142,7 @@ func TestRED_TelegramMediaJobsRunOffTheUpdateLoop(t *testing.T) {
 
 	// Another chat's job runs while chat A's is still in flight.
 	other := make(chan struct{})
-	runChatMediaOffLoop(chatB, nil, func() { close(other) })
+	runChatMediaOffLoop(chatB, nil, func(context.Context) { close(other) })
 	select {
 	case <-other:
 	case <-time.After(2 * time.Second):
@@ -217,7 +217,7 @@ func TestRED_TelegramTextAndResetWaitForPendingMedia(t *testing.T) {
 		mu.Unlock()
 	}
 	release := make(chan struct{})
-	runChatMediaOffLoop(chat, nil, func() {
+	runChatMediaOffLoop(chat, nil, func(context.Context) {
 		<-release
 		rec("media-turn")
 	})
@@ -304,5 +304,94 @@ func TestRED_TelegramMediaScopeCoversEveryPathTool(t *testing.T) {
 	rt.SetContext(withTelegramMediaChat(context.Background(), 111))
 	if out, err := rt.Call(`{"path":` + q + `}`); err != nil || !strings.Contains(out, "private contents") {
 		t.Errorf("owner refused: %q %v", out, err)
+	}
+}
+
+func TestRED_TelegramListingsSkipOtherChatsMedia(t *testing.T) {
+	p := tgresMediaFile(t, "doc_chat111_secret_ab.txt")
+	own := filepath.Join(filepath.Dir(p), "doc_chat222_mine_cd.txt")
+	if err := os.WriteFile(own, []byte("mine"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	home, _ := os.UserHomeDir()
+	root := tgresQuote(filepath.Join(home, ".odek"))
+	ctx := withTelegramMediaChat(context.Background(), 222)
+	allow := "allow"
+	dc := danger.DangerousConfig{DefaultAction: &allow}
+
+	// Control: outside a Telegram turn the same listing does show the file.
+	gc := &globTool{dangerousConfig: dc}
+	if out, _ := gc.Call(`{"pattern":"**/*","path":` + root + `}`); !strings.Contains(out, "chat111") {
+		t.Fatalf("control listing does not show the media file: %q", out)
+	}
+	g := &globTool{dangerousConfig: dc}
+	g.SetContext(ctx)
+	out, _ := g.Call(`{"pattern":"**/*","path":` + root + `}`)
+	if strings.Contains(out, "chat111") {
+		t.Errorf("glob listed another chat's media: %q", out)
+	}
+	s := &searchFilesTool{dangerousConfig: dc}
+	s.SetContext(ctx)
+	out, _ = s.Call(`{"pattern":"*","target":"files","path":` + root + `}`)
+	if strings.Contains(out, "chat111") {
+		t.Errorf("search_files(files) listed another chat's media: %q", out)
+	}
+	tr := &treeTool{dangerousConfig: dc}
+	tr.SetContext(ctx)
+	out, _ = tr.Call(`{"path":` + root + `,"include_hidden":true}`)
+	if strings.Contains(out, "chat111") {
+		t.Errorf("tree listed another chat's media: %q", out)
+	}
+}
+
+func TestRED_ChecksumCallContextIsPerInvocation(t *testing.T) {
+	p := tgresMediaFile(t, "doc_chat111_secret_ab.txt")
+	c := &checksumTool{dangerousConfig: danger.DangerousConfig{}}
+	// The shared instance carries no context; the invocation's own does.
+	out, _ := c.CallContext(withTelegramMediaChat(context.Background(), 222), `{"path":`+tgresQuote(p)+`}`)
+	if !strings.Contains(out, "different chat") {
+		t.Errorf("CallContext ignored the invocation context: %q", out)
+	}
+	out, _ = c.CallContext(withTelegramMediaChat(context.Background(), 111), `{"path":`+tgresQuote(p)+`}`)
+	if strings.Contains(out, "different chat") || !strings.Contains(out, "hash") {
+		t.Errorf("owner call failed: %q", out)
+	}
+}
+
+func TestRED_TelegramStopAndNewCancelPendingMediaJobs(t *testing.T) {
+	const chat int64 = 910030
+	release := make(chan struct{})
+	started := make(chan context.Context, 1)
+	ranSecond := make(chan struct{}, 1)
+	runChatMediaOffLoop(chat, nil, func(ctx context.Context) {
+		started <- ctx
+		<-release
+	})
+	runChatMediaOffLoop(chat, nil, func(context.Context) { ranSecond <- struct{}{} })
+	first := <-started
+
+	if !cancelChatMediaJobs(chat) {
+		t.Fatal("pending media jobs were not reported")
+	}
+	if first.Err() == nil {
+		t.Error("running media job's context was not cancelled")
+	}
+	close(release)
+	// A later reset on the same gate chain completes, and the queued job
+	// cancelled before it started never ran.
+	done := make(chan struct{})
+	runChatResetOffLoop(chat, func() { close(done) })
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("gate chain stalled")
+	}
+	select {
+	case <-ranSecond:
+		t.Error("cancelled queued media job still ran")
+	default:
+	}
+	if cancelChatMediaJobs(chat) {
+		t.Error("registry not cleaned up")
 	}
 }

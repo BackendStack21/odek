@@ -93,20 +93,70 @@ func runChatResetOffLoop(chatID int64, fn func()) {
 	runChatGated(&chatResetGates, chatID, fn)
 }
 
+// chatMediaJobs tracks, per chat, the cancel functions of media jobs that are
+// queued or running (download, transcription, the turn they trigger), so
+// /stop and /new can cancel a media message that has no agent run yet.
+var (
+	chatMediaMu     sync.Mutex
+	chatMediaJobs   = map[int64]map[uint64]context.CancelFunc{}
+	chatMediaNextID uint64
+)
+
+func registerChatMediaJob(chatID int64) (context.Context, func()) {
+	ctx, cancel := context.WithCancel(context.Background())
+	chatMediaMu.Lock()
+	chatMediaNextID++
+	id := chatMediaNextID
+	if chatMediaJobs[chatID] == nil {
+		chatMediaJobs[chatID] = map[uint64]context.CancelFunc{}
+	}
+	chatMediaJobs[chatID][id] = cancel
+	chatMediaMu.Unlock()
+	return ctx, func() {
+		chatMediaMu.Lock()
+		delete(chatMediaJobs[chatID], id)
+		if len(chatMediaJobs[chatID]) == 0 {
+			delete(chatMediaJobs, chatID)
+		}
+		chatMediaMu.Unlock()
+		cancel()
+	}
+}
+
+// cancelChatMediaJobs cancels every queued or running media job of the chat
+// and reports whether there was any.
+func cancelChatMediaJobs(chatID int64) bool {
+	chatMediaMu.Lock()
+	jobs := chatMediaJobs[chatID]
+	delete(chatMediaJobs, chatID)
+	chatMediaMu.Unlock()
+	for _, cancel := range jobs {
+		cancel()
+	}
+	return len(jobs) > 0
+}
+
 // runChatMediaOffLoop runs fn (a media download, optional transcription and
 // the turn it triggers) on the chat's ordered gate chain, shared with session
 // resets: later text turns, commands and resets of the chat start only after
 // it, and earlier ones before it. fn runs on its own goroutine, so a
 // slow download or speech-to-text run never holds up the update loop for
-// other chats or their approval callbacks. A panic in fn is logged, not fatal.
-func runChatMediaOffLoop(chatID int64, log telegram.Logger, fn func()) {
+// other chats or their approval callbacks. fn receives a context that /stop
+// and /new cancel; a job cancelled before it starts never runs. A panic in fn
+// is logged, not fatal.
+func runChatMediaOffLoop(chatID int64, log telegram.Logger, fn func(ctx context.Context)) {
+	ctx, done := registerChatMediaJob(chatID)
 	runChatGated(&chatResetGates, chatID, func() {
+		defer done()
 		defer func() {
 			if r := recover(); r != nil && log != nil {
 				log.Error("media handler panic", "chat_id", chatID, "panic", r)
 			}
 		}()
-		fn()
+		if ctx.Err() != nil {
+			return
+		}
+		fn(ctx)
 	})
 }
 
@@ -164,6 +214,7 @@ func waitChatReset(chatID int64) {
 
 // cancelChatTurn cancels the chat's in-flight agent run, if any.
 func cancelChatTurn(chatID int64) {
+	cancelChatMediaJobs(chatID)
 	if cancelVal, ok := chatCancels.LoadAndDelete(chatID); ok {
 		if cancel, ok := cancelVal.(context.CancelFunc); ok {
 			cancel()
@@ -819,6 +870,10 @@ func telegramCmd(args []string) error {
 				chatM.mu.Lock()
 				danger.ForgetReadLedger(fmt.Sprintf("tg-%d", chatID))
 				unpinChat(chatID, chatM)
+				// Marked only now, after any turn of the replaced
+				// conversation has unwound, so only the resumed
+				// conversation's next turn can consume it.
+				telegramResumePending.Store(chatID, struct{}{})
 				// The replaced conversation ended here exactly as it does on
 				// /new, so it yields its episode too (off the update loop).
 				if archivedID != "" {
@@ -832,7 +887,6 @@ func telegramCmd(args []string) error {
 			// Return-after-break: the next turn of this chat gets a concise
 			// "where you left off" summary (the turn reloads history from the
 			// store, so it is injected there, not into this session object).
-			telegramResumePending.Store(chatID, struct{}{})
 			taskPreview := resumeTaskPreview(cs.Messages)
 			if taskPreview == "" {
 				return fmt.Sprintf("✅ *Session resumed*: `%s` (empty)\n\nSend a message to continue.", cs.SessionID), nil
@@ -966,7 +1020,7 @@ func telegramCmd(args []string) error {
 		// Handle /stop — cancel the running agent task and report a summary.
 		if cmdName == "stop" {
 			// Cancel the running agent context, if any.
-			cancelled := false
+			cancelled := cancelChatMediaJobs(chatID)
 			if cancelVal, ok := chatCancels.LoadAndDelete(chatID); ok {
 				cancel := cancelVal.(context.CancelFunc)
 				cancel()
@@ -1026,12 +1080,12 @@ func telegramCmd(args []string) error {
 	}
 
 	handler.OnVoiceMessage = func(chatID int64, messageID int, fileID string, userID int64) (string, error) {
-		runChatMediaOffLoop(chatID, handlerLog, func() {
+		runChatMediaOffLoop(chatID, handlerLog, func(mctx context.Context) {
 			// Download the voice file.
 			localPath, err := telegram.DownloadVoice(bot, chatID, fileID)
 			if err != nil {
 				handlerLog.Warn("voice download failed", "chat_id", chatID, "error", err)
-				handleChatMessageGated(chatID, messageID, userID,
+				handleChatMessageGated(mctx, chatID, messageID, userID,
 					fmt.Sprintf("[voice message received — download failed: %v]", err),
 					bot, handler, sessionManager, resolved, systemMessage, handlerLog)
 				return
@@ -1040,6 +1094,7 @@ func telegramCmd(args []string) error {
 			// Auto-transcribe if configured and whisper is available.
 			if resolved.Transcription.AutoTranscribe {
 				tool := newTranscribeTool(resolved.Dangerous, resolved.Transcription)
+				tool.SetContext(mctx)
 				result, err := tool.Call(fmt.Sprintf(`{"path":"%s"}`, localPath))
 				if err == nil {
 					var r struct {
@@ -1050,7 +1105,7 @@ func telegramCmd(args []string) error {
 						// Transcribed text crosses an external trust boundary; wrap it before
 						// injecting it into the user message stream (telegramVoiceMessage).
 						transcript := telegramGuardScan(context.Background(), r.Text, "voice transcript")
-						handleChatMessageGated(chatID, messageID, userID,
+						handleChatMessageGated(mctx, chatID, messageID, userID,
 							telegramVoiceMessage(chatID, transcript),
 							bot, handler, sessionManager, resolved, systemMessage, handlerLog)
 						return
@@ -1061,7 +1116,7 @@ func telegramCmd(args []string) error {
 			}
 
 			// Fallback: pass the file path to the agent
-			handleChatMessageGated(chatID, messageID, userID,
+			handleChatMessageGated(mctx, chatID, messageID, userID,
 				wrapUntrusted(context.Background(), fmt.Sprintf("telegram:chat:%d:voice", chatID),
 					fmt.Sprintf("🎤 Voice message saved to %q. Use transcribe() tool to get the text.", localPath)),
 				bot, handler, sessionManager, resolved, systemMessage, handlerLog)
@@ -1070,11 +1125,11 @@ func telegramCmd(args []string) error {
 	}
 
 	handler.OnPhotoMessage = func(chatID int64, messageID int, fileIDs []string, caption string, userID int64) (string, error) {
-		runChatMediaOffLoop(chatID, handlerLog, func() {
+		runChatMediaOffLoop(chatID, handlerLog, func(mctx context.Context) {
 			localPath, err := telegram.DownloadPhoto(bot, chatID, fileIDs)
 			if err != nil {
 				handlerLog.Warn("photo download failed", "chat_id", chatID, "error", err)
-				handleChatMessageGated(chatID, messageID, userID,
+				handleChatMessageGated(mctx, chatID, messageID, userID,
 					fmt.Sprintf("[photo received — download failed: %v]", err),
 					bot, handler, sessionManager, resolved, systemMessage, handlerLog)
 				return
@@ -1086,7 +1141,7 @@ func telegramCmd(args []string) error {
 			// Queue auto-description inside the run so approvals, /stop, usage,
 			// and execution budgets cover both local and provider vision.
 			if resolved.Vision.AutoDescribeEnabled() {
-				handleChatMessageGated(chatID, messageID, userID,
+				handleChatMessageGated(mctx, chatID, messageID, userID,
 					photoFallbackMessage(localPath, caption), bot, handler, sessionManager,
 					resolved, systemMessage, handlerLog, &telegramPhotoInput{Path: localPath, Caption: caption})
 				return
@@ -1094,7 +1149,7 @@ func telegramCmd(args []string) error {
 
 			// Fallback: hand the agent the file path (and caption) so it can analyze
 			// the image itself via the vision/shell tools.
-			handleChatMessageGated(chatID, messageID, userID,
+			handleChatMessageGated(mctx, chatID, messageID, userID,
 				photoFallbackMessage(localPath, caption),
 				bot, handler, sessionManager, resolved, systemMessage, handlerLog)
 		})
@@ -1102,16 +1157,16 @@ func telegramCmd(args []string) error {
 	}
 
 	handler.OnDocumentMessage = func(chatID int64, messageID int, fileID string, fileName string, userID int64) (string, error) {
-		runChatMediaOffLoop(chatID, handlerLog, func() {
+		runChatMediaOffLoop(chatID, handlerLog, func(mctx context.Context) {
 			localPath, err := telegram.DownloadDocument(bot, chatID, fileID, fileName)
 			if err != nil {
 				handlerLog.Warn("document download failed", "chat_id", chatID, "file_name", fileName, "error", err)
-				handleChatMessageGated(chatID, messageID, userID,
+				handleChatMessageGated(mctx, chatID, messageID, userID,
 					fmt.Sprintf("[document received — download failed: %v]", err),
 					bot, handler, sessionManager, resolved, systemMessage, handlerLog)
 				return
 			}
-			handleChatMessageGated(chatID, messageID, userID,
+			handleChatMessageGated(mctx, chatID, messageID, userID,
 				telegramDocumentMessage(localPath),
 				bot, handler, sessionManager, resolved, systemMessage, handlerLog)
 		})
@@ -1607,6 +1662,7 @@ func handleChatMessage(
 // inside the chat's gate chain (runChatMediaOffLoop): it must not wait for
 // that gate, which only closes once the turn returns.
 func handleChatMessageGated(
+	ctx context.Context,
 	chatID int64,
 	messageID int,
 	userID int64,
@@ -1619,6 +1675,9 @@ func handleChatMessageGated(
 	log telegram.Logger,
 	photos ...*telegramPhotoInput,
 ) {
+	if ctx.Err() != nil {
+		return // /stop or /new cancelled this media message
+	}
 	runChatTurn(true, false, chatID, messageID, userID, text, bot, handler, sessionManager,
 		resolved, systemMessage, log, photos...)
 }

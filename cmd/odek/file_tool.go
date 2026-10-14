@@ -64,6 +64,13 @@ const maxGlobWalkMatches = 20000
 // the newest-first sort (bounded by maxGlobWalkMatches), so the newest
 // matches win regardless of their position in the lexical walk order.
 func confinedGlob(root, pattern string, limit int, includeDirs bool) ([]string, error) {
+	return confinedGlobSkip(root, pattern, limit, includeDirs, nil)
+}
+
+// confinedGlobSkip is confinedGlob with a per-entry filter: an entry (and, for
+// a directory, its subtree) for which skip returns true is not walked or
+// returned.
+func confinedGlobSkip(root, pattern string, limit int, includeDirs bool, skip func(path string) bool) ([]string, error) {
 	if limit <= 0 {
 		limit = maxGlobMatches
 	}
@@ -127,6 +134,12 @@ func confinedGlob(root, pattern string, limit int, includeDirs bool) ([]string, 
 		// Skip every symlink, including symlinked directories. WalkDir uses
 		// Lstat, so a symlink-to-directory has type symlink, not directory.
 		if d.Type()&fs.ModeSymlink != 0 {
+			return nil
+		}
+		if skip != nil && skip(path) {
+			if d.IsDir() {
+				return fs.SkipDir
+			}
 			return nil
 		}
 		// Skip hidden directories and build-artifact directories.
@@ -1028,7 +1041,7 @@ func (t *searchFilesTool) searchFiles(args searchFilesArgs) (string, error) {
 	pattern := args.Pattern
 	searchDir := args.Path
 
-	paths, err := confinedGlob(searchDir, pattern, args.Limit, false)
+	paths, err := confinedGlobSkip(searchDir, pattern, args.Limit, false, t.otherChatMedia)
 	if err != nil {
 		return jsonError(fmt.Sprintf("invalid search pattern %q: %v", pattern, err))
 	}
@@ -1856,7 +1869,7 @@ func (t *globTool) Call(argsJSON string) (result string, err error) {
 		return jsonError(err.Error())
 	}
 
-	paths, err := confinedGlob(args.Path, args.Pattern, args.Limit, true)
+	paths, err := confinedGlobSkip(args.Path, args.Pattern, args.Limit, true, t.otherChatMedia)
 	if err != nil {
 		return jsonError(fmt.Sprintf("invalid glob %q: %v", args.Pattern, err))
 	}
@@ -2024,3 +2037,13 @@ var (
 	_ odek.Tool = (*globTool)(nil)
 	_ odek.Tool = (*fileInfoTool)(nil)
 )
+
+// otherChatMedia reports whether path is inside another Telegram chat's media
+// (always false outside a Telegram turn); listings skip such entries.
+func (t *searchFilesTool) otherChatMedia(path string) bool {
+	return checkTelegramMediaRead(t.toolCtx(), path) != nil
+}
+
+func (t *globTool) otherChatMedia(path string) bool {
+	return checkTelegramMediaRead(t.toolCtx(), path) != nil
+}
