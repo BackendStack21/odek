@@ -3760,8 +3760,8 @@ func listSessions(store *session.Store) error {
 	fmt.Printf("%-22s %-5s %-30s %s\n", "ID", "Turns", "Model", "Task")
 	fmt.Println(strings.Repeat("─", 80))
 	for _, s := range sessions {
-		task := shorten(s.Task, 30)
-		model := shorten(s.Model, 20)
+		task := render.EscapeInlineForTerminal(shorten(s.Task, 30))
+		model := render.EscapeInlineForTerminal(shorten(s.Model, 20))
 		fmt.Printf("%-22s %-5d %-30s %s\n", s.ID, s.Turns, model, task)
 	}
 	return nil
@@ -3785,11 +3785,11 @@ func showSession(store *session.Store, args []string) error {
 	}
 
 	fmt.Printf("Session: %s\n", sess.ID)
-	fmt.Printf("Model:   %s\n", sess.Model)
+	fmt.Printf("Model:   %s\n", render.EscapeInlineForTerminal(sess.Model))
 	fmt.Printf("Turns:   %d\n", sess.Turns)
 	fmt.Printf("Created: %s\n", sess.CreatedAt.Format("2006-01-02 15:04:05 UTC"))
 	fmt.Printf("Updated: %s\n", sess.UpdatedAt.Format("2006-01-02 15:04:05 UTC"))
-	fmt.Printf("Task:    %s\n", sess.Task)
+	fmt.Printf("Task:    %s\n", render.EscapeInlineForTerminal(sess.Task))
 	fmt.Println()
 
 	// Call-ID correlation: parallel tool calls are stored as
@@ -3826,21 +3826,22 @@ func showSession(store *session.Store, args []string) error {
 
 	for i, msg := range sess.Messages {
 		content := strings.TrimSpace(msg.Content)
+		shown := render.EscapeForTerminal(content)
 		switch msg.Role {
 		case "system":
-			fmt.Printf("── [SYSTEM] ──\n%s\n\n", content)
+			fmt.Printf("── [SYSTEM] ──\n%s\n\n", shown)
 		case "user":
-			fmt.Printf("── [USER Turn %d] ──\n%s\n\n", countUserTurnsUpTo(sess.Messages, i), content)
+			fmt.Printf("── [USER Turn %d] ──\n%s\n\n", countUserTurnsUpTo(sess.Messages, i)+1, shown)
 		case "assistant":
 			if len(msg.ToolCalls) > 0 {
 				for _, tc := range msg.ToolCalls {
-					fmt.Printf("── [TOOL CALL: %s %s] ──\n%s\n\n", tc.Function.Name, nextLabel(callCursor, tc.ID), tc.Function.Arguments)
+					fmt.Printf("── [TOOL CALL: %s %s] ──\n%s\n\n", render.EscapeInlineForTerminal(tc.Function.Name), render.EscapeInlineForTerminal(nextLabel(callCursor, tc.ID)), render.EscapeForTerminal(tc.Function.Arguments))
 				}
 			} else {
-				fmt.Printf("── [ASSISTANT] ──\n%s\n\n", content)
+				fmt.Printf("── [ASSISTANT] ──\n%s\n\n", shown)
 			}
 		case "tool":
-			fmt.Printf("── [TOOL RESULT: %s %s] ──\n%s\n\n", msg.Name, nextLabel(resultCursor, msg.ToolCallID), shorten(content, 200))
+			fmt.Printf("── [TOOL RESULT: %s %s] ──\n%s\n\n", render.EscapeInlineForTerminal(msg.Name), render.EscapeInlineForTerminal(nextLabel(resultCursor, msg.ToolCallID)), render.EscapeForTerminal(shorten(content, 200)))
 		}
 	}
 	return nil
