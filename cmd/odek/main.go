@@ -25,6 +25,7 @@ import (
 	"github.com/BackendStack21/odek/internal/danger"
 	"github.com/BackendStack21/odek/internal/diagnostics"
 	"github.com/BackendStack21/odek/internal/events"
+	"github.com/BackendStack21/odek/internal/fsatomic"
 	"github.com/BackendStack21/odek/internal/guard"
 	"github.com/BackendStack21/odek/internal/llmclient"
 	"github.com/BackendStack21/odek/internal/loop"
@@ -1812,6 +1813,15 @@ func initConfig(args []string) error {
 		template = localConfigTemplate
 	}
 
+	// A project directory is untrusted: ./odek.json may be a link planted by
+	// a cloned repository. Never write through it, with or without --force,
+	// and treat a dangling link as existing so it cannot create its target.
+	if !global {
+		if fi, err := os.Lstat(configPath); err == nil && !fi.Mode().IsRegular() {
+			return fmt.Errorf("refusing to write %s: it is not a regular file (symlink or special file); remove it first", configPath)
+		}
+	}
+
 	// Check if file already exists
 	if _, err := os.Stat(configPath); err == nil && !force {
 		fmt.Fprintf(os.Stderr, "odek: %s config already exists at %s\n", scope, configPath)
@@ -1825,7 +1835,7 @@ func initConfig(args []string) error {
 		return fmt.Errorf("create directory %s: %w", dir, err)
 	}
 
-	if err := os.WriteFile(configPath, []byte(template+"\n"), 0600); err != nil {
+	if err := fsatomic.WriteFile(configPath, []byte(template+"\n"), 0600); err != nil {
 		return fmt.Errorf("write config: %w", err)
 	}
 
