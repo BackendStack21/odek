@@ -2916,6 +2916,7 @@ func loadMCPTools(resolved config.ResolvedConfig, tools *[]odek.Tool) (func(), e
 		projectServers[n] = true
 	}
 	var cleaners []func()
+	mcpRegistered := map[string]struct{}{}
 	for name, cfg := range resolved.MCPServers {
 		if cfg.IsDisabled() {
 			// Configured but off: keep the entry (approval hashes, later
@@ -2986,7 +2987,16 @@ func loadMCPTools(resolved config.ResolvedConfig, tools *[]odek.Tool) (func(), e
 			// Server-controlled description and schema text is made
 			// non-authoritative before it enters the tool catalogue (see
 			// newMCPModelTool).
-			*tools = append(*tools, newMCPModelTool(client, name, def, injectionGuard, resolved.Guard))
+			mt := newMCPModelTool(client, name, def, injectionGuard, resolved.Guard)
+			if _, dup := mcpRegistered[mt.Name()]; dup {
+				client.Close()
+				for _, c := range cleaners {
+					c()
+				}
+				return nil, fmt.Errorf("mcp server %q: tool %q registers as %q, which another MCP tool already uses", name, def.Name, mt.Name())
+			}
+			mcpRegistered[mt.Name()] = struct{}{}
+			*tools = append(*tools, mt)
 		}
 
 		cleaners = append(cleaners, func() {
