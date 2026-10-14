@@ -24,7 +24,8 @@ const memoryUsage = `Usage: odek memory <subcommand> [args]
 
 Episodes (session summaries; untrusted ones wait for human review):
   list [--all]                 Pending episodes; --all shows every episode with its state
-  promote <session-id>...      Approve pending episodes for recall
+  promote <session-id>...      Approve pending episodes for recall; with one id,
+                               --sha256 <hash> (from list) refuses a changed summary
   discard <session-id>...      Delete pending episodes (alias: reject)
 
 Facts (always in the system prompt):
@@ -114,12 +115,26 @@ func memoryCmd(args []string) error {
 		return memoryListPending(store)
 
 	case sub == "promote":
-		if len(subArgs) == 0 {
-			return fmt.Errorf("usage: odek memory promote <session_id> [<session_id> ...]")
+		ids, wantHash, err := parsePromoteArgs(subArgs)
+		if err != nil {
+			return err
 		}
 		var errs []error
-		for _, id := range subArgs {
-			promoted, err := store.PromoteIfHash(id, "")
+		for _, id := range ids {
+			// Without an explicit reviewed hash, bind the approval to the
+			// exact text this command is about to show, so what is printed
+			// is what becomes recallable even if the file changes meanwhile.
+			hash := wantHash
+			if hash == "" {
+				if full, rerr := store.Read(id); rerr == nil {
+					hash = episodeSummaryHash(full)
+				}
+			}
+			promoted, err := store.PromoteIfHash(id, hash)
+			if errors.Is(err, memory.ErrEpisodeSummaryChanged) {
+				errs = append(errs, fmt.Errorf("episode %q changed since it was reviewed; run odek memory list and review it again", danger.SanitizeInline(id)))
+				continue
+			}
 			if err != nil {
 				errs = append(errs, err)
 				continue
@@ -154,6 +169,31 @@ func memoryCmd(args []string) error {
 	}
 }
 
+// parsePromoteArgs splits `promote` arguments into session ids and the
+// optional --sha256 reviewed-text hash (only valid with a single id).
+func parsePromoteArgs(args []string) ([]string, string, error) {
+	var ids []string
+	hash := ""
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--sha256" {
+			if i+1 >= len(args) || args[i+1] == "" {
+				return nil, "", fmt.Errorf("usage: odek memory promote <session_id> [--sha256 <hash>] (--sha256 needs a value)")
+			}
+			hash = args[i+1]
+			i++
+			continue
+		}
+		ids = append(ids, args[i])
+	}
+	if len(ids) == 0 {
+		return nil, "", fmt.Errorf("usage: odek memory promote <session_id> [<session_id> ...] [--sha256 <hash>]")
+	}
+	if hash != "" && len(ids) != 1 {
+		return nil, "", fmt.Errorf("usage: odek memory promote: --sha256 applies to exactly one session id")
+	}
+	return ids, hash, nil
+}
+
 // memoryListPending prints the episodes waiting for human review with their
 // full stored text — what recall would replay — escaped for the terminal.
 func memoryListPending(store *memory.EpisodeStore) error {
@@ -175,9 +215,10 @@ func memoryListPending(store *memory.EpisodeStore) error {
 		if full, err := store.Read(ep.SessionID); err == nil {
 			text = full
 		}
+		fmt.Printf("    sha256: %s\n", episodeSummaryHash(text))
 		fmt.Printf("    %s\n\n", strings.ReplaceAll(danger.SanitizeForDisplay(strings.TrimSpace(text)), "\n", "\n    "))
 	}
-	fmt.Println("Review the summary above, then promote with:  odek memory promote <session_id>...")
+	fmt.Println("Review the summary above, then promote with:  odek memory promote <session_id> [--sha256 <hash>]")
 	fmt.Println("                              or drop with:  odek memory discard <session_id>...")
 	return nil
 }

@@ -21,7 +21,7 @@
 | `odek skill promote <name>` | Clear `NeedsReview` on a tainted skill so it can trigger-load and load via `skill_load` |
 | `odek skill import <uri> [flags]` | Import a skill from file:// or https:// |
 | `odek memory list [--all]` | List episodes pending human review (full text, escaped); `--all` lists every episode with its state (trusted, approved, auto-approved, pending). Aliases `ls`, `pending` |
-| `odek memory promote <session-id>...` | Approve pending episodes for recall; a trusted or already approved episode is refused |
+| `odek memory promote <session-id>...` | Approve pending episodes for recall; a trusted or already approved episode is refused. The approval is bound to the exact text printed (`odek memory list` shows its `sha256`); `--sha256 <hash>` (one id) refuses a summary that changed after review |
 | `odek memory discard <session-id>...` | Delete pending episodes (alias `reject`); trusted or approved episodes are refused |
 | `odek memory facts [user\|env]` | Show the fact files (numbered entries, bytes used / cap) |
 | `odek memory facts add\|replace\|remove <user\|env> ...` | Edit a fact file from the CLI: `add <text>`, `replace <old-substring> <text>`, `remove <old-substring>`. Same filters as the `memory` tool (2048-byte field bound, injection scan incl. the configured guard sidecar, redaction, pipe-to-shell filter); merge-on-write off |
