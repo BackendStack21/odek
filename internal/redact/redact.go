@@ -726,7 +726,7 @@ func cookieOperandSpans(text string, s, e int) [][2]int {
 // the second argument of a setHeader / set / append / add / header call
 // whose first argument names the header. Group 1 or group 2 is the header
 // name; group 3 is set when the value is an array of strings.
-var cookieHeaderRe = regexp.MustCompile(`(?i)(?:(?:\b|\\[nrt])((?:set-)?cookie)(?:\\?["'\x60])?[ \t]*:|\b(?:setheader|set|append|add|header)\([ \t]*["'\x60]((?:set-)?cookie)["'\x60][ \t]*,)[ \t]*(\[[ \t]*)?`)
+var cookieHeaderRe = regexp.MustCompile(`(?i)(?:(?:\b|\\[nrt])((?:set-)?cookie)(?:\\?["'\x60])?[ \t]*:|\b(?:setheader|set|append|add|header)\([ \t]*["'\x60]((?:set-)?cookie)["'\x60][ \t]*,)[ \t]*(\[\s{0,256})?`)
 
 // cookieMatches returns the offsets of each cookie value on Cookie /
 // Set-Cookie header lines that may be a credential (see cookieCredential).
@@ -752,23 +752,29 @@ func cookieMatches(text string) [][2]int {
 			return (!setCookie || !setCookieAttribute(n)) && cookieCredential(n, val)
 		}
 		pos := m[1]
+		if m[6] >= 0 && json {
+			pos = skipArrayBlank(text, pos, true)
+		}
 		for {
 			s := cookieScan{text: text, json: json}
+			quote := "" // quote that opened this value, if any
 			if json && strings.HasPrefix(text[pos:], `\"`) {
-				pos += 2 // escaped quote opening the value; \" also ends it
+				quote = `\"` // escaped quote opening the value; \" also ends it
+				pos += 2
 			} else if pos < len(text) && strings.IndexByte("\"'`", text[pos]) >= 0 {
 				s.closer = text[pos]
 				s.json = json || s.closer == '"'
+				quote = text[pos : pos+1]
 				pos++
 			}
 			var spans [][2]int
 			spans, scanned = s.pairs(pos, redact)
 			out = append(out, spans...)
-			if m[6] < 0 || s.closer == 0 {
+			if m[6] < 0 || quote == "" {
 				break
 			}
 			// A string array: continue with the next "…" element.
-			next, ok := nextArrayString(text, scanned, s.closer)
+			next, ok := nextArrayString(text, scanned, quote)
 			if !ok {
 				break
 			}
@@ -778,25 +784,41 @@ func cookieMatches(text string) [][2]int {
 	return out
 }
 
+// arrayBlankMax bounds the blanks skipped between array elements.
+const arrayBlankMax = 256
+
+// skipArrayBlank skips up to arrayBlankMax bytes of blanks and line breaks
+// at i; with escapes (JSON encoded in a JSON string) also the literal \n \r
+// \t escapes that stand for them.
+func skipArrayBlank(text string, i int, escapes bool) int {
+	for limit := i + arrayBlankMax; i < len(text) && i < limit; {
+		switch c := text[i]; {
+		case c == ' ' || c == '\t' || c == '\r' || c == '\n':
+			i++
+		case escapes && c == '\\' && i+1 < len(text) && strings.IndexByte("nrt", text[i+1]) >= 0:
+			i += 2
+		default:
+			return i
+		}
+	}
+	return i
+}
+
 // nextArrayString reports where the next string element of an array starts
-// when text[i] closes the previous one with quote q: the closing quote, a
-// comma and the opening quote of the next element, with blanks between.
-func nextArrayString(text string, i int, q byte) (int, bool) {
-	if i >= len(text) || text[i] != q {
+// when text[i] closes the previous one with quote q (a quote character, or
+// \" inside a JSON string): the closing quote, a comma and the opening quote
+// of the next element, with blanks and line breaks between.
+func nextArrayString(text string, i int, q string) (int, bool) {
+	if i >= len(text) || !strings.HasPrefix(text[i:], q) {
 		return 0, false
 	}
-	i++
-	for i < len(text) && (text[i] == ' ' || text[i] == '\t') {
-		i++
-	}
+	escapes := q == `\"`
+	i = skipArrayBlank(text, i+len(q), escapes)
 	if i >= len(text) || text[i] != ',' {
 		return 0, false
 	}
-	i++
-	for i < len(text) && (text[i] == ' ' || text[i] == '\t') {
-		i++
-	}
-	if i >= len(text) || text[i] != q {
+	i = skipArrayBlank(text, i+1, escapes)
+	if !strings.HasPrefix(text[i:], q) {
 		return 0, false
 	}
 	return i, true
@@ -857,15 +879,17 @@ func (s cookieScan) quotedValue(i int) (vs, ve, next int, ok bool) {
 		return 0, 0, 0, false
 	}
 	vs = i + len(open)
+	if open == `\"` {
+		if j, ok := escapedQuoteClose(t, vs, len(t)); ok {
+			return vs, j, j + 2, true
+		}
+		return 0, 0, 0, false
+	}
 	for j := vs; j < len(t); j++ {
 		switch t[j] {
 		case '\r', '\n':
 			return 0, 0, 0, false
 		case '\\':
-			if open == `\"` && strings.HasPrefix(t[j:], `\\\"`) {
-				j += 3 // a doubly escaped quote belongs to the value
-				continue
-			}
 			if strings.HasPrefix(t[j:], open) {
 				return vs, j, j + len(open), true
 			}
@@ -874,9 +898,6 @@ func (s cookieScan) quotedValue(i int) (vs, ve, next int, ok bool) {
 			}
 			j++
 		case '"':
-			if open == `\"` {
-				return 0, 0, 0, false // the quote closing the JSON string
-			}
 			if open == `"` {
 				return vs, j, j + 1, true
 			}
@@ -1310,6 +1331,22 @@ func escapedQuoteTail(text string, ve int) int {
 	return end
 }
 
+// escapedMemberEnd ends an unquoted value at text[vs:ve] under an escaped key
+// at the end of its member of the encoded JSON: before ,\" or a } or ].
+func escapedMemberEnd(text string, vs, ve int) int {
+	for i := vs; i < ve; i++ {
+		switch text[i] {
+		case '}', ']':
+			return i
+		case ',':
+			if strings.HasPrefix(text[i+1:], `\"`) {
+				return i
+			}
+		}
+	}
+	return ve
+}
+
 // oddBackslashesBefore reports whether text[vs:i] ends in an odd number of
 // backslashes, so the character at i is escaped.
 func oddBackslashesBefore(text string, vs, i int) bool {
@@ -1336,17 +1373,28 @@ func guardedPatternMatches(text string) [][2]int {
 			vs, judge, end := m[2], m[3], m[1]
 			escQuoted := m[3]-m[2] >= 4 && strings.HasPrefix(text[m[2]:], `\"`) && strings.HasSuffix(text[:m[3]], `\"`)
 			unquoted := !escQuoted && m[1] == m[3] && m[3] > m[2] && strings.IndexByte("\"'`", text[m[2]]) < 0
+			escKey := false
 			switch {
 			case escQuoted:
 				vs, judge = m[2]+2, m[3]-2
 			case unquoted:
-				judge = unquotedJudgeEnd(text, m[2], m[3], inJSON.at(text, m[2]))
+				json := inJSON.at(text, m[2])
+				judge = unquotedJudgeEnd(text, m[2], m[3], json)
+				if json && strings.Contains(text[m[0]:m[2]], `\"`) {
+					// An unquoted value under an escaped key (JSON encoded in a
+					// JSON string) ends with its member: at ,\" or a closing
+					// bracket. It is replaced on its own.
+					escKey = true
+					judge = escapedMemberEnd(text, m[2], judge)
+				}
 			}
 			if !g.ok(text[vs:judge]) {
 				continue
 			}
 			start := m[0]
 			switch {
+			case escKey:
+				start, end = m[2], judge
 			case unquoted:
 				end = escapedQuoteTail(text, judge)
 			case escQuoted:

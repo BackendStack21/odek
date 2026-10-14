@@ -189,6 +189,11 @@ func TestEscapedQuoteAndCookieRulesScaleLinearly(t *testing.T) {
 		"cookie commas":     func(n int) string { return "Set-Cookie: " + strings.Repeat(", "+strings.Repeat("x", 300), n/302) },
 		"cookie json":       func(n int) string { return `{"h":"Cookie: ` + strings.Repeat(`a=\"abcdefgh1\"; `, n/18) },
 		"curl cookies":      func(n int) string { return strings.Repeat("curl -b a=abcdefgh1;b=c ", n/24) },
+		"pretty arrays":     func(n int) string { return "\"set-cookie\": [\n" + strings.Repeat("  \"a=abcdefgh1\",\n", n/17) },
+		"escaped arrays":    func(n int) string { return `{"h":"{\"Set-Cookie\":[` + strings.Repeat(`\"a=abcdefgh1\",\n`, n/18) },
+		"escaped bslash":    func(n int) string { return `{"a":"{` + strings.Repeat(`\"password\":\"Ab1!@#xyz\\\\\",`, n/30) },
+		"escaped open":      func(n int) string { return `{"a":"{\"password\":\"` + strings.Repeat(`\\\\\\\"x`, n/9) },
+		"escaped members":   func(n int) string { return `{"a":"{` + strings.Repeat(`\"token\":abcdefghijklmnopqrstuvwxyz1,`, n/38) },
 		"escaped keys":      func(n int) string { return `{"o":"{` + strings.Repeat(`\"password\":\"Xy7kLm9pQ2zz\",`, n/31) },
 		"escaped key nulls": func(n int) string { return `{"o":"{` + strings.Repeat(`\"password\":null,`, n/17) },
 		"cookie arrays":     func(n int) string { return `{"set-cookie":[` + strings.Repeat(`"a=abcdefgh1", `, n/15) },
@@ -376,5 +381,42 @@ func TestRED_SetCookieArrayAndCallLeaks(t *testing.T) {
 		`["cookie", "user=abcdefghijklmnop"]`,
 		`log("cookie", "user=abcdefghijklmnop")`,
 		`{"cookies":["user=abcdefghijklmnop"]}`,
+	})
+}
+
+// Pretty-printed Set-Cookie arrays and arrays in JSON encoded inside a JSON
+// string are scanned element by element.
+func TestRED_SetCookieArrayLayoutLeaks(t *testing.T) {
+	redres14ExpectExact(t, map[string]string{
+		"\"set-cookie\": [\n    \"sid=abcdefghijklmnop1234; Path=/\",\n    \"uid=Zq8xLm2pWr5t9999\"\n]":              "\"set-cookie\": [\n    \"sid=[REDACTED]; Path=/\",\n    \"uid=[REDACTED]\"\n]",
+		"res.setHeader('Set-Cookie', [\n  'theme=dark',\n  'sid=abcdefghijklmnop1234'\n])":                           "res.setHeader('Set-Cookie', [\n  'theme=dark',\n  'sid=[REDACTED]'\n])",
+		"{\"Set-Cookie\": [\r\n\t\"a=abcdefghijkl\" ,\r\n\t\"b=Zq8xLm2pWr5t\"\r\n]}":                                 "{\"Set-Cookie\": [\r\n\t\"a=[REDACTED]\" ,\r\n\t\"b=[REDACTED]\"\r\n]}",
+		`{"headers":"{\"Set-Cookie\":[\"sid=abcdefghijklmnop1234\",\"uid=Zq8xLm2pWr5t9999\"]}"}`:                     `{"headers":"{\"Set-Cookie\":[\"sid=[REDACTED]\",\"uid=[REDACTED]\"]}"}`,
+		`{"headers":"{\"Set-Cookie\":[\"theme=dark\",\"sid=abcdefghijklmnop1234\"]}"}`:                               `{"headers":"{\"Set-Cookie\":[\"theme=dark\",\"sid=[REDACTED]\"]}"}`,
+		`{"headers":"{\"Set-Cookie\":[\"theme=dark\", \"sid=abcdefghijklmnop1234\"],\"x\":\"y=abcdefghijklmnop\"}"}`: `{"headers":"{\"Set-Cookie\":[\"theme=dark\", \"sid=[REDACTED]\"],\"x\":\"y=abcdefghijklmnop\"}"}`,
+	})
+	redres14ExpectHidden(t, map[string][]string{
+		"\"set-cookie\": [\n    \"sid=abcdefghijklmnop1234; Path=/\",\n    \"uid=zzzzzzzzzzzzzzzz9999\"\n]": {"abcdefghijklmnop1234", "zzzzzzzzzzzzzzzz9999"},
+	})
+	redres14ExpectUnchanged(t, []string{
+		"\"set-cookie\": [\n  \"theme=dark\"\n],\n\"other\": \"user=abcdefghijklmnop\"",
+		"\"set-cookie\": [\n  \"theme=dark\"\n]\n\n\"user=abcdefghijklmnop\"",
+	})
+}
+
+// A value of JSON encoded in a JSON string ends where its escaped quotes or
+// the escaped member ends: an escaped backslash before the closing \" belongs
+// to the value, and an unquoted value ends at ,\" or }.
+func TestRED_EscapedJSONValueEdgesLoseStructure(t *testing.T) {
+	redres14ExpectExact(t, map[string]string{
+		`{"a":"{\"password\":\"Abc123!@#xyz\\\\\",\"b\":1}"}`:             `{"a":"{\"password\":\"[REDACTED]\",\"b\":1}"}`,
+		`{"a":"{\"token\":abcdefghijklmnopqrstuvwxyz123456,\"next\":1}"}`: `{"a":"{\"token\":[REDACTED],\"next\":1}"}`,
+		`{"a":"{\"password\":Xy7kLm9pQ2zz}"}`:                             `{"a":"{\"password\":[REDACTED]}"}`,
+		`{"a":"{\"api_key\":Xy7kLm9pQ2zzAbCdEf3456,\"n\":1}"}`:            `{"a":"{\"api_key\":[REDACTED],\"n\":1}"}`,
+		`{"a":"{\"password\":\"Abc\\\\\\\"123!@#xyz\",\"b\":1}"}`:         `{"a":"{\"password\":\"[REDACTED]\",\"b\":1}"}`,
+	})
+	redres14ExpectUnchanged(t, []string{
+		`{"a":"{\"token\":12345,\"next\":\"abcdefghijklmnopqrstuvwxyz\"}"}`,
+		`{"a":"{\"password\":null,\"b\":\"Xy7kLm9pQ2zz\"}"}`,
 	})
 }

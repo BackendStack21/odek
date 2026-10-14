@@ -239,37 +239,55 @@ func jsonStringEnds(text string, i int) bool {
 }
 
 // jsonEscapedQuoted reads a literal wrapped in escaped quotes (\"...\") that
-// starts at text[pos] inside a JSON string. A doubly escaped quote (\\\")
-// belongs to the literal. It fails at a JSON line-break escape, at the
-// unescaped quote that closes the JSON string, at a raw newline and past
-// maxCredentialValueCheck bytes.
+// starts at text[pos] inside a JSON string (see escapedQuoteClose), at most
+// maxCredentialValueCheck bytes long.
 func jsonEscapedQuoted(text string, pos int) (string, int, bool) {
 	start := pos + 2
 	limit := len(text)
 	if limit-start > maxCredentialValueCheck {
 		limit = start + maxCredentialValueCheck
 	}
-	for i := start; i < limit; i++ {
-		switch text[i] {
-		case '\n', '\r', '"':
-			return "", 0, false
-		case '\\':
-			if i+1 >= len(text) {
-				return "", 0, false
-			}
-			switch n := text[i+1]; {
-			case n == '"':
-				return text[start:i], i + 2, true
-			case n == '\\' && strings.HasPrefix(text[i+2:], `\"`):
-				i += 3
-			case n == 'n' || n == 'r':
-				return "", 0, false
-			default:
-				i++
-			}
-		}
+	if i, ok := escapedQuoteClose(text, start, limit); ok {
+		return text[start:i], i + 2, true
 	}
 	return "", 0, false
+}
+
+// escapedQuoteClose finds the escaped quote (\") that closes a literal opened
+// by an escaped quote just before start, in JSON-encoded text. The text is
+// read one encoded character at a time (a backslash pair is one character),
+// and the literal's own escapes are tracked on the decoded characters: a
+// decoded backslash escapes the next one, so \\\" (an escaped quote inside
+// the literal) belongs to it while \\\\\" (an escaped backslash, then the
+// closing quote) ends it. It fails at the raw quote that ends the enclosing
+// JSON string, at a raw or encoded line break and at limit.
+func escapedQuoteClose(text string, start, limit int) (int, bool) {
+	inner := false // the previous decoded character was an unescaped backslash
+	for i := start; i < limit; {
+		switch c := text[i]; c {
+		case '"', '\n', '\r':
+			return 0, false
+		case '\\':
+			if i+1 >= len(text) {
+				return 0, false
+			}
+			switch d := text[i+1]; {
+			case d == 'n' || d == 'r':
+				return 0, false
+			case inner:
+				inner = false
+			case d == '\\':
+				inner = true
+			case d == '"':
+				return i, true
+			}
+			i += 2
+		default:
+			inner = false
+			i++
+		}
+	}
+	return 0, false
 }
 
 // closeBracketValue ends a value at the closing bracket at end; a quote just
@@ -422,9 +440,16 @@ func credentialMatches(text string) [][2]int {
 			// Python dicts): only the value inside its quotes is replaced, so
 			// the key and the document structure stay intact.
 			start, end = m[1]+1, end-1
-		} else if quoted && strings.HasPrefix(text[m[3]:], `\"`) && strings.HasPrefix(text[m[1]:], `\"`) && end-2 > m[1]+2 {
-			// The same for JSON encoded inside a JSON string ({\"password\":\"…\"}).
-			start, end = m[1]+2, end-2
+		} else if json && strings.HasPrefix(text[m[3]:], `\"`) {
+			// The same for JSON encoded inside a JSON string: the value inside
+			// its escaped quotes ({\"password\":\"…\"}), or an unquoted value
+			// ({\"password\":…,\"next\":…}), is replaced on its own.
+			switch {
+			case quoted && strings.HasPrefix(text[m[1]:], `\"`) && strings.HasSuffix(text[:end], `\"`) && end-2 > m[1]+2:
+				start, end = m[1]+2, end-2
+			case !quoted && end > m[1]:
+				start = m[1]
+			}
 		}
 		out = append(out, [2]int{start, end})
 	}
