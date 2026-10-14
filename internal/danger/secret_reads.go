@@ -17,7 +17,7 @@ import (
 var sensitiveEnvSuffixes = []string{
 	"TOKEN", "SECRET", "SECRET_KEY", "API_KEY", "APIKEY", "PASSWORD", "PASSWD",
 	"PASSPHRASE", "PRIVATE_KEY", "PRIVATEKEY", "ACCESS_KEY", "CREDENTIALS",
-	"CREDENTIAL", "DATABASE_URL",
+	"CREDENTIAL", "DATABASE_URL", "COOKIE", "WEBHOOK", "WEBHOOK_URL", "AUTH_SOCK",
 }
 
 // sensitiveEnvNames are well-known secret-bearing variables whose names do not
@@ -434,8 +434,11 @@ func namerefNamesSecret(tokens []string) bool {
 		if sensitiveEnvName(tok) {
 			return true
 		}
-		if _, value, ok := strings.Cut(tok, "="); ok && sensitiveEnvName(value) {
-			return true
+		if _, value, ok := strings.Cut(tok, "="); ok {
+			// A target built from an expansion cannot be judged: fail closed.
+			if sensitiveEnvName(value) || strings.Contains(value, "$") {
+				return true
+			}
 		}
 	}
 	return false
