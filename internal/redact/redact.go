@@ -291,12 +291,28 @@ type cmdWord struct{ s, e int }
 // commandWords tokenises the command that continues at from: words are
 // split on blanks and backslash-newline continuations; quotes group a word
 // (so a quoted & ; | or newline does not end the command); an unquoted
-// newline, |, ; or & ends it. It returns the words and the offset where
-// scanning stopped. The scan is bounded by commandScanMax bytes.
+// newline, |, ; or & ends it. Because the text may be JSON-encoded, an
+// unquoted \n, \r or \t escape sequence also ends the word (and \n, \r end
+// the command). A single quote with no closing quote is an ordinary
+// character; a double quote with no closing quote ends the command (it
+// closes the JSON string the command sits in). It returns the words and the
+// offset where scanning stopped, bounded by commandScanMax bytes.
 func commandWords(text string, from int) ([]cmdWord, int) {
 	limit := len(text)
 	if limit-from > commandScanMax {
 		limit = from + commandScanMax
+	}
+	closer := func(i int, q byte) int { // index of the closing quote after i, or -1
+		for i++; i < limit; i++ {
+			if text[i] == '\\' && q == '"' {
+				i++
+				continue
+			}
+			if text[i] == q {
+				return i
+			}
+		}
+		return -1
 	}
 	var words []cmdWord
 	i := from
@@ -312,35 +328,42 @@ func commandWords(text string, from int) ([]cmdWord, int) {
 				i++
 			}
 			continue
+		case c == '\\' && i+1 < limit && text[i+1] == 't':
+			i += 2
+			continue
+		case c == '\\' && i+1 < limit && (text[i+1] == 'n' || text[i+1] == 'r'):
+			return words, i
 		case c == '\n' || c == '\r' || c == '|' || c == ';' || c == '&':
 			return words, i
 		}
 		s := i
+		unbalanced := false
 	word:
 		for i < limit {
 			switch c := text[i]; c {
 			case ' ', '\t', '\n', '\r', '|', ';', '&':
 				break word
 			case '\\':
-				if i+1 < limit && (text[i+1] == '\n' || text[i+1] == '\r') {
-					break word
+				if i+1 < limit {
+					switch text[i+1] {
+					case '\n', '\r', 'n', 'r', 't':
+						break word
+					}
 				}
 				i += 2
 			case '\'':
-				i++
-				for i < limit && text[i] != '\'' {
+				if k := closer(i, '\''); k >= 0 {
+					i = k + 1
+				} else {
 					i++
 				}
-				i++
 			case '"':
-				i++
-				for i < limit && text[i] != '"' {
-					if text[i] == '\\' {
-						i++
-					}
-					i++
+				k := closer(i, '"')
+				if k < 0 {
+					unbalanced = true
+					break word
 				}
-				i++
+				i = k + 1
 			default:
 				i++
 			}
@@ -348,7 +371,12 @@ func commandWords(text string, from int) ([]cmdWord, int) {
 		if i > limit {
 			i = limit
 		}
-		words = append(words, cmdWord{s, i})
+		if i > s {
+			words = append(words, cmdWord{s, i})
+		}
+		if unbalanced {
+			return words, i
+		}
 	}
 	return words, i
 }
@@ -379,8 +407,15 @@ func unquoteWord(text string, s, e int) ([]byte, []int) {
 }
 
 // operandPassword returns the raw span of the PASSWORD in a USER:PASSWORD
-// operand occupying text[s:e] (quotes allowed), when it passes ok.
+// operand starting at text[s] (word end e), when it passes ok. A shell-quoted
+// operand is unquoted first. An unquoted operand that carries a quote after
+// its colon is not parsed as shell quoting (the quote is part of the
+// password, or closes a JSON string around the command): the password then
+// runs to the next blank, JSON \n \r \t \" escape or double quote.
 func operandPassword(text string, s, e int, ok func(string) bool) (int, int, bool) {
+	if ps, pe, handled := looseOperand(text, s, true, ok); handled {
+		return ps, pe, pe > ps
+	}
 	c, idx := unquoteWord(text, s, e)
 	k := bytesIndexByte(c, ':')
 	if k < 0 || k+1 >= len(c) {
@@ -392,6 +427,68 @@ func operandPassword(text string, s, e int, ok func(string) bool) (int, int, boo
 	return idx[k+1], idx[len(c)-1] + 1, true
 }
 
+// looseOperand handles an operand at text[s:] that is not an ordinary shell
+// word: one wrapped in JSON-escaped quotes (\"user:pass\"), or one that
+// carries a quote after the first byte of its password. handled is false for
+// an ordinary word (the shell-quoting parse then applies). The password runs
+// to the end of the blank-delimited chunk, a JSON escape, or a double quote.
+func looseOperand(text string, s int, userPass bool, ok func(string) bool) (ps, pe int, handled bool) {
+	if s >= len(text) || text[s] == '"' || text[s] == '\'' {
+		return 0, 0, false
+	}
+	jsonQuoted := strings.HasPrefix(text[s:], `\"`)
+	if jsonQuoted {
+		s += 2
+	}
+	ce := s
+	for ce < len(text) && !isOperandEnd(text, ce) {
+		ce++
+	}
+	ps = s
+	if userPass {
+		k := strings.IndexByte(text[s:ce], ':')
+		if k < 0 {
+			return 0, 0, false
+		}
+		ps = s + k + 1
+	}
+	stray := false
+	for i := ps + 1; i < ce; i++ {
+		if text[i] == '"' || text[i] == '\'' {
+			stray = true
+			break
+		}
+	}
+	if !stray && !jsonQuoted {
+		return 0, 0, false
+	}
+	pe = ce
+	if d := strings.IndexByte(text[ps:ce], '"'); d >= 0 {
+		pe = ps + d
+	}
+	if pe <= ps || !ok(text[ps:pe]) {
+		return ps, ps, true
+	}
+	return ps, pe, true
+}
+
+// isOperandEnd reports whether text[i] ends an unquoted operand: a blank, a
+// newline, a command separator, or a JSON \n \r \t \" escape.
+func isOperandEnd(text string, i int) bool {
+	switch text[i] {
+	case ' ', '\t', '\n', '\r', '|', ';', '&':
+		return true
+	case '\\':
+		if i+1 < len(text) {
+			switch text[i+1] {
+			case 'n', 'r', 't', '"':
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func bytesIndexByte(b []byte, c byte) int {
 	for i, x := range b {
 		if x == c {
@@ -401,9 +498,13 @@ func bytesIndexByte(b []byte, c byte) int {
 	return -1
 }
 
-// wholePassword returns the raw span of an entire (unquoted) word value
-// when it passes ok.
+// wholePassword returns the raw span of an entire word value starting at
+// text[s] (word end e) when it passes ok, with the same loose handling of
+// stray quotes as operandPassword.
 func wholePassword(text string, s, e int, ok func(string) bool) (int, int, bool) {
+	if ps, pe, handled := looseOperand(text, s, false, ok); handled {
+		return ps, pe, pe > ps
+	}
 	c, idx := unquoteWord(text, s, e)
 	if len(c) == 0 || !ok(string(c)) {
 		return 0, 0, false

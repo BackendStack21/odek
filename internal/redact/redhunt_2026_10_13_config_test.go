@@ -132,6 +132,31 @@ func TestCommandScopeAcrossContinuationsAndQuotes(t *testing.T) {
 	})
 }
 
+func TestCommandCredentialsInJSONEncodedText(t *testing.T) {
+	for in, want := range map[string]string{
+		`{"cmd":"curl -u admin:s3cretpw1"}`:                              `{"cmd":"curl -u admin:[REDACTED]"}`,
+		`{"cmd":"curl -u a:s3cretpw1","next":"x"}`:                       `{"cmd":"curl -u a:[REDACTED]","next":"x"}`,
+		`{"cmd":"curl -u admin:s3cretpw1\nnext word"}`:                   `{"cmd":"curl -u admin:[REDACTED]\nnext word"}`,
+		`{"cmd":"curl -u admin:s3cretpw1\tnext"}`:                        `{"cmd":"curl -u admin:[REDACTED]\tnext"}`,
+		`{"cmd":"curl -H \"A: b\" -u admin:s3cretpw1 https://x"}`:        `{"cmd":"curl -H \"A: b\" -u admin:[REDACTED] https://x"}`,
+		`{"cmd":"curl --user \"admin:s3cretpw1\" https://x"}`:            `{"cmd":"curl --user \"admin:[REDACTED]\" https://x"}`,
+		`{"cmd":"wget --password s3cretpw1\nls"}`:                        `{"cmd":"wget --password [REDACTED]\nls"}`,
+		`{"cmd":"curl -u a:s3cretpw1\nsudo -u postgres:postgres1 psql"}`: `{"cmd":"curl -u a:[REDACTED]\nsudo -u postgres:postgres1 psql"}`,
+		"curl -u admin:pa'ss1234 https://x":                              "curl -u admin:[REDACTED] https://x",
+		"curl -u admin:pa'ss1234 -H 'X: y' https://x":                    "curl -u admin:[REDACTED] -H 'X: y' https://x",
+		"curl -u admin:s3cretpw1 -d '{\"a\":1}' https://x":               "curl -u admin:[REDACTED] -d '{\"a\":1}' https://x",
+		"curl -u \"admin:pass word\" https://x":                          "curl -u \"admin:[REDACTED]\" https://x",
+	} {
+		if got := RedactSecrets(in); got != want {
+			t.Errorf("RedactSecrets(%q)\n got  %q\n want %q", in, got, want)
+		}
+	}
+	cfghunt13ExpectUnchanged(t, []string{
+		`{"cmd":"curl https://x\nsudo -u postgres:postgres1 psql"}`,
+		`{"cmd":"docker run -u appuser:appgroup2 alpine"}`,
+	})
+}
+
 func TestCookieNameSegmentsAndPlaceholders(t *testing.T) {
 	for _, name := range []string{"remember_user_token", "_gh_sess", "connect.sid", "PHPSESSID", "laravel_session", "__Secure-3PSID", "JSESSIONID", "session_id", "csrftoken", "auth_token", "authToken", "XSRF-TOKEN", "sessionid"} {
 		in := "Cookie: " + name + "=abcdefghijklmnop"
@@ -229,6 +254,9 @@ func TestNewRedactionRulesScaleLinearly(t *testing.T) {
 		"curl open quote":    func(n int) string { return strings.Repeat("curl '", n/6) },
 		"curl open dquote":   func(n int) string { return "curl \"" + strings.Repeat("a\\ ", n/3) },
 		"curl many cmds":     func(n int) string { return strings.Repeat("curl -u a;", n/10) },
+		"curl json":          func(n int) string { return strings.Repeat(`{"c":"curl -u a:pw1234"}`, n/23) },
+		"curl stray quotes":  func(n int) string { return strings.Repeat("curl -u a:p'q ", n/14) },
+		"curl json escapes":  func(n int) string { return strings.Repeat(`curl -u a:\"b\n`, n/15) },
 		"curl no end":        func(n int) string { return "curl " + strings.Repeat("-a ", n/3) },
 		"cookie pairs":       func(n int) string { return "Cookie: " + strings.Repeat("sid=a;", n/6) },
 		"cookie repeated":    func(n int) string { return strings.Repeat("Cookie:sid=", n/11) },
