@@ -79,6 +79,7 @@ var EpisodePathTools = map[string]bool{
 	"tr":           true,
 	"diff":         true,
 	"file_info":    true,
+	"patch":        true,
 	"glob":         true,
 	"tree":         true,
 	"base64":       true,
