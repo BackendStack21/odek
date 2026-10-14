@@ -392,6 +392,9 @@ func (t *visionTool) CallContext(ctx context.Context, argsJSON string) (result s
 	if err := confineIfRestricted(t.restrictToCWD, args.Path); err != nil {
 		return jsonError(err.Error())
 	}
+	if err := checkTelegramMediaRead(ctx, args.Path); err != nil {
+		return jsonError(err.Error())
+	}
 	prompt := args.Prompt
 	if prompt == "" {
 		prompt = "Describe this in detail."

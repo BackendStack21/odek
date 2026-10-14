@@ -711,7 +711,7 @@ func parseSubagentFlags(args []string) (subagentFlags, error) {
 			}
 			cfg.profile = args[i]
 		default:
-			return cfg, fmt.Errorf("unknown flag %q", args[i])
+			return cfg, leadingFlagError2(args[i], fmt.Errorf("unknown flag %q", args[i]))
 		}
 		i++
 	}
@@ -1093,11 +1093,7 @@ func subagentCmd(args []string) error {
 
 	// Apply tool filtering based on configuration (after MCP tools are loaded
 	// so disabled/enabled lists can reference MCP tool names too).
-	toolFilter := resolved.Tools
-	if profileTools != nil {
-		// the profile's tool filter overrides the global one.
-		toolFilter = *profileTools
-	}
+	toolFilter := effectiveToolConfig(resolved.Tools, profileTools)
 	tools = filterBuiltinTools(tools, toolFilter, nil)
 	// Never more tools than the parent: intersect with its effective filter.
 	if parentFilter, ok := taskToolsPost.filter(); ok {
@@ -1178,7 +1174,7 @@ func subagentCmd(args []string) error {
 		NoProjectFile:    resolved.NoAgents,
 		Thinking:         resolved.Thinking,
 		Tools:            tools,
-		ToolFilter:       odek.ToolFilterConfig{Enabled: resolved.Tools.Enabled, Disabled: resolved.Tools.Disabled},
+		ToolFilter:       engineToolFilter(resolved.Tools, profileTools, taskToolsPost),
 		SandboxCleanup:   sandboxCleanup,
 		Renderer:         rend,
 		Skills:           &resolved.Skills,
@@ -1828,4 +1824,26 @@ func isOdekTempTaskFile(path string) bool {
 	// Must match the prefix used by delegateTasksTool when creating task files.
 	base := filepath.Base(abs)
 	return strings.HasPrefix(base, "odek-task-") && strings.HasSuffix(base, ".json")
+}
+
+// effectiveToolConfig returns the tool filter a sub-agent applies: the
+// profile's filter replaces the global one when the profile sets one.
+func effectiveToolConfig(global config.ToolConfig, profile *config.ToolConfig) config.ToolConfig {
+	if profile != nil {
+		return *profile
+	}
+	return global
+}
+
+// engineToolFilter is the filter handed to the engine for auto-registered
+// tools; it follows the same precedence as the built-in tool filtering so a
+// profile that enables a globally disabled tool is not overridden.
+func engineToolFilter(global config.ToolConfig, profile *config.ToolConfig, parent *taskToolsPosture) odek.ToolFilterConfig {
+	eff := effectiveToolConfig(global, profile)
+	// A child never exceeds its parent: engine-registered tools obey the
+	// parent's stamped filter exactly like the built-in tools do.
+	if parentFilter, ok := parent.filter(); ok {
+		eff = mergeToolFilters(eff, parentFilter)
+	}
+	return odek.ToolFilterConfig{Enabled: eff.Enabled, Disabled: eff.Disabled}
 }

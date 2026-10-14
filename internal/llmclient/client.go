@@ -596,6 +596,14 @@ func toSDKThinkingBlocks(in []session.ThinkingBlock) []sdk.ThinkingBlock {
 // reasoning so a later replay can refuse a different provider.
 func (c *Client) mapResult(res *sdk.ChatResult) *CallResult {
 	out := mapResult(res)
+	// The SDK reports Anthropic stop reasons outside its canonical set
+	// (pause_turn, model_context_window_exceeded) as an empty finish reason,
+	// while end_turn arrives as "stop". An empty reason with no tool calls from
+	// an Anthropic provider is therefore an unfinished answer, not a complete
+	// one.
+	if out != nil && out.FinishReason == "" && len(out.ToolCalls) == 0 && c.IsAnthropic() {
+		out.Termination = TerminationInterrupted
+	}
 	if out != nil && (out.ThinkingSignature != "" || len(out.ThinkingBlocks) > 0) {
 		out.ThinkingProvider = string(c.Format())
 	}

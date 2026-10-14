@@ -64,6 +64,13 @@ const maxGlobWalkMatches = 20000
 // the newest-first sort (bounded by maxGlobWalkMatches), so the newest
 // matches win regardless of their position in the lexical walk order.
 func confinedGlob(root, pattern string, limit int, includeDirs bool) ([]string, error) {
+	return confinedGlobSkip(root, pattern, limit, includeDirs, nil)
+}
+
+// confinedGlobSkip is confinedGlob with a per-entry filter: an entry (and, for
+// a directory, its subtree) for which skip returns true is not walked or
+// returned.
+func confinedGlobSkip(root, pattern string, limit int, includeDirs bool, skip func(path string) bool) ([]string, error) {
 	if limit <= 0 {
 		limit = maxGlobMatches
 	}
@@ -127,6 +134,12 @@ func confinedGlob(root, pattern string, limit int, includeDirs bool) ([]string, 
 		// Skip every symlink, including symlinked directories. WalkDir uses
 		// Lstat, so a symlink-to-directory has type symlink, not directory.
 		if d.Type()&fs.ModeSymlink != 0 {
+			return nil
+		}
+		if skip != nil && skip(path) {
+			if d.IsDir() {
+				return fs.SkipDir
+			}
 			return nil
 		}
 		// Skip hidden directories and build-artifact directories.
@@ -423,6 +436,9 @@ func (t *readFileTool) Call(argsJSON string) (string, error) {
 			return jsonError(err.Error())
 		}
 	}
+	if err := checkTelegramMediaRead(t.toolCtx(), args.Path); err != nil {
+		return jsonError(err.Error())
+	}
 
 	// Security: resolve directory symlinks before classification so a path that
 	// traverses a symlinked directory is classified by its real target.
@@ -556,6 +572,9 @@ func (t *writeFileTool) Call(argsJSON string) (string, error) {
 
 	// Path confinement: when restrictToCWD is enabled, reject paths that
 	// escape the working directory via ".." traversal or absolute paths.
+	if err := checkTelegramMediaRead(t.toolCtx(), args.Path); err != nil {
+		return jsonError(err.Error())
+	}
 	if t.restrictToCWD {
 		resolved, err := confineToCWD(args.Path)
 		if err != nil {
@@ -797,6 +816,9 @@ func (t *searchFilesTool) Call(argsJSON string) (string, error) {
 		args.Limit = maxSearchLimit
 	}
 
+	if err := checkTelegramMediaRead(t.toolCtx(), args.Path); err != nil {
+		return jsonError(err.Error())
+	}
 	if t.restrictToCWD {
 		confined, err := confineToCWD(args.Path)
 		if err != nil {
@@ -838,6 +860,7 @@ func (t *searchFilesTool) checkSearchPath(path string) (skip bool, reason string
 }
 
 func (t *searchFilesTool) searchContent(args searchFilesArgs) (string, error) {
+	otherChatMedia := telegramMediaSkipper(t.toolCtx())
 	re, err := regexp.Compile(args.Pattern)
 	if err != nil {
 		return jsonError(fmt.Sprintf("invalid regex pattern %q: %v", args.Pattern, err))
@@ -892,6 +915,15 @@ func (t *searchFilesTool) searchContent(args searchFilesArgs) (string, error) {
 				skipped = append(skipped, path+": "+reason)
 				return filepath.SkipDir
 			}
+			// A broad root may contain the shared Telegram media directory;
+			// another chat's downloads are never searched.
+			if otherChatMedia(path) {
+				skipped = append(skipped, path+": another chat's media")
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if otherChatMedia(path) {
 			return nil
 		}
 		// Skip symlinks — prevents TOCTOU on the path and avoids listing
@@ -1010,7 +1042,7 @@ func (t *searchFilesTool) searchFiles(args searchFilesArgs) (string, error) {
 	pattern := args.Pattern
 	searchDir := args.Path
 
-	paths, err := confinedGlob(searchDir, pattern, args.Limit, false)
+	paths, err := confinedGlobSkip(searchDir, pattern, args.Limit, false, telegramMediaSkipper(t.toolCtx()))
 	if err != nil {
 		return jsonError(fmt.Sprintf("invalid search pattern %q: %v", pattern, err))
 	}
@@ -1131,6 +1163,9 @@ func (t *patchTool) Call(argsJSON string) (string, error) {
 
 	// Path confinement: same as write_file — reject paths that escape the
 	// working directory via ".." traversal or absolute paths.
+	if err := checkTelegramMediaRead(t.toolCtx(), args.Path); err != nil {
+		return jsonError(err.Error())
+	}
 	if t.restrictToCWD {
 		resolved, err := confineToCWD(args.Path)
 		if err != nil {
@@ -1815,6 +1850,9 @@ func (t *globTool) Call(argsJSON string) (result string, err error) {
 		args.Limit = maxGlobMatches
 	}
 
+	if err := checkTelegramMediaRead(t.toolCtx(), args.Path); err != nil {
+		return jsonError(err.Error())
+	}
 	if t.restrictToCWD {
 		confined, err := confineToCWD(args.Path)
 		if err != nil {
@@ -1832,7 +1870,7 @@ func (t *globTool) Call(argsJSON string) (result string, err error) {
 		return jsonError(err.Error())
 	}
 
-	paths, err := confinedGlob(args.Path, args.Pattern, args.Limit, true)
+	paths, err := confinedGlobSkip(args.Path, args.Pattern, args.Limit, true, telegramMediaSkipper(t.toolCtx()))
 	if err != nil {
 		return jsonError(fmt.Sprintf("invalid glob %q: %v", args.Pattern, err))
 	}
@@ -1935,6 +1973,9 @@ func (t *fileInfoTool) Call(argsJSON string) (result string, err error) {
 
 	// Path confinement: when restrictToCWD is enabled, reject paths that
 	// escape the working directory via ".." traversal or absolute paths.
+	if err := checkTelegramMediaRead(t.toolCtx(), args.Path); err != nil {
+		return jsonError(err.Error())
+	}
 	if t.restrictToCWD {
 		resolved, err := confineToCWD(args.Path)
 		if err != nil {

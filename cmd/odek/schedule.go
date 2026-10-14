@@ -92,8 +92,10 @@ func scheduleCmd(args []string) error {
 	}
 }
 
-func printScheduleUsage() {
-	fmt.Println(`Usage: odek schedule <command>
+func printScheduleUsage() { writeScheduleUsage(os.Stdout) }
+
+func writeScheduleUsage(w io.Writer) {
+	fmt.Fprintln(w, `Usage: odek schedule <command>
 
 Commands:
   list                      List scheduled jobs (id, next fire, last status)

@@ -407,39 +407,127 @@ func indirectSensitiveRef(tokens []string, vars map[string]string) bool {
 }
 
 // namerefNamesSecret reports whether a command declares a nameref (`declare
-// -n`, `typeset -n`, `local -n`) and also names a secret-bearing variable as
-// a word or an assigned value. The nameref aliases that variable, so reading
-// it through the alias prints the secret like `echo $NAME` would.
-func namerefNamesSecret(tokens []string) bool {
-	declared := false
+// -n`, `typeset -n`, `local -n`) whose target may be a secret-bearing
+// variable. The nameref aliases that variable, so reading it through the
+// alias prints the secret like `echo $NAME` would. ops marks the operator
+// tokens, which end a declaration's operands.
+//
+// Only the declaration's own words are judged: a target given as NAME=TARGET
+// fires when TARGET is secret-shaped or not a static variable name (an
+// expansion, a substitution, anything the analysis cannot read). A nameref
+// declared without a target takes one from its first assignment, which bash
+// accepts in many forms (NAME=…, declare NAME=…, read NAME, printf -v NAME,
+// for NAME in …, ${NAME:=…}), possibly inside a function defined earlier on
+// the line; such a name fires when any word of the command assigns it a
+// secret-shaped or non-static target, or names it as a bare word. Declaring a
+// secret-shaped name itself as a nameref turns its value into a target name
+// (`${!NAME}` then prints the secret), so it fires too.
+func namerefNamesSecret(tokens []string, ops []bool) bool {
+	isOp := func(i int) bool { return i < len(ops) && ops[i] }
+	var targetless []string
+	// declOperand marks the words that are nameref declaration operands; they
+	// name the nameref, so they are not later assignments of it.
+	declOperand := make(map[int]bool)
 	for i, tok := range tokens {
+		if isOp(i) {
+			continue
+		}
 		switch commandName(tok) {
 		case "declare", "typeset", "local":
 		default:
 			continue
 		}
-		for _, a := range tokens[i+1:] {
-			if !isShortFlagToken(a) {
+		declared := false
+		j := i + 1
+		for ; j < len(tokens) && !isOp(j) && isShortFlagToken(tokens[j]); j++ {
+			a := tokens[j]
+			if a == "--" {
+				j++
 				break
+			}
+			if !namerefFlagCluster(a[1:]) {
+				return true // option text the analysis cannot read: fail closed
 			}
 			if strings.Contains(a, "n") {
 				declared = true
 			}
 		}
-	}
-	if !declared {
-		return false
-	}
-	for _, tok := range tokens {
-		if sensitiveEnvName(tok) {
-			return true
+		if !declared {
+			continue
 		}
-		if _, value, ok := strings.Cut(tok, "="); ok {
-			// A target built from an expansion cannot be judged: fail closed.
-			if sensitiveEnvName(value) || strings.Contains(value, "$") {
+		for ; j < len(tokens) && !isOp(j); j++ {
+			declOperand[j] = true
+			name, target, hasTarget := strings.Cut(tokens[j], "=")
+			if !staticShellName(name) || sensitiveEnvName(name) {
+				return true
+			}
+			if !hasTarget {
+				targetless = append(targetless, name)
+				continue
+			}
+			// An empty target is what an expansion the normalizer dropped
+			// (`r=$1`) leaves behind: not statically known.
+			if target == "" || namerefTargetUnsafe(target) {
 				return true
 			}
 		}
 	}
+	for _, name := range targetless {
+		for i, tok := range tokens {
+			if isOp(i) || declOperand[i] {
+				continue
+			}
+			if tok == name || strings.HasPrefix(tok, name+"[") ||
+				strings.Contains(tok, "${"+name+"=") || strings.Contains(tok, "${"+name+":=") {
+				return true
+			}
+			for _, sep := range []string{"=", "+="} {
+				if value, ok := strings.CutPrefix(tok, name+sep); ok && namerefTargetUnsafe(value) {
+					return true
+				}
+			}
+		}
+	}
 	return false
+}
+
+// namerefFlagCluster reports whether a declare/typeset/local option cluster
+// is made of option letters only.
+func namerefFlagCluster(cluster string) bool {
+	for i := 0; i < len(cluster); i++ {
+		c := cluster[i]
+		if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') {
+			return false
+		}
+	}
+	return true
+}
+
+// staticShellName reports whether s is a plain shell variable name.
+func staticShellName(s string) bool {
+	if s == "" || (s[0] >= '0' && s[0] <= '9') {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if !isShellVarByte(s[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+// namerefTargetUnsafe reports whether a nameref target may name a
+// secret-bearing variable: it is secret-shaped (an array subscript does not
+// change the variable it names), or it is not a static variable name at all.
+func namerefTargetUnsafe(target string) bool {
+	name := target
+	if open := strings.IndexByte(target, '['); open >= 0 {
+		name = target[:open]
+		subscript := target[open:]
+		if !strings.HasSuffix(subscript, "]") || strings.ContainsAny(subscript, "$`") ||
+			strings.Contains(subscript, dynamicSubstToken) {
+			return true
+		}
+	}
+	return !staticShellName(name) || sensitiveEnvName(name)
 }

@@ -46,29 +46,24 @@ func clampSummaryStr(s string) string {
 // Best-effort by design — this is audit metadata, not a parser.
 func argv0(cmd string) string {
 	for _, w := range shellWords(cmd) {
+		// An unquoted command operator reached before any program word (a
+		// leading redirect, or an assignment cut by ';' / '&&' / '|') means
+		// the program is not attributable here.
+		if w.op {
+			return ""
+		}
 		ok, open := assignmentWord(w.raw)
 		if open {
 			return ""
 		}
 		if ok {
-			// An assignment cut by an unquoted operator ("K=v;curl x") is
-			// followed by a command in the same word; the name is unknown.
-			if !strings.ContainsAny(w.raw, "'\"\\") && strings.ContainsAny(w.raw, ";&|<>") {
-				return ""
-			}
 			continue
 		}
-		// The program name ends at the first unquoted command operator. A
-		// prefix that opens a subshell, group or substitution (or holds an
-		// assignment) is not a program name and may carry secret values, so
-		// nothing of it is reported.
+		// A word that opens a subshell, group or substitution is not a
+		// program name and may carry secret values, so nothing of it is
+		// reported.
 		field := w.value
-		if !strings.ContainsAny(w.raw, "'\"\\") {
-			if k := strings.IndexAny(field, ";&|<>"); k >= 0 {
-				field = field[:k]
-			}
-		}
-		if strings.ContainsAny(field, "$(){}`") {
+		if strings.ContainsAny(field, "$(){}`=") {
 			return ""
 		}
 		if i := strings.LastIndexByte(field, '/'); i >= 0 {
@@ -81,8 +76,12 @@ func argv0(cmd string) string {
 
 // shellWord is one whitespace-separated shell word: raw keeps its quoting
 // (assignment detection needs the unquoted name before '='), value has the
-// quotes and backslash escapes removed.
-type shellWord struct{ raw, value string }
+// quotes and backslash escapes removed. Unquoted operator characters are
+// words of their own so a quoted word ends at the operator that follows it.
+type shellWord struct {
+	raw, value string
+	op         bool // an unquoted command operator character (; & | < >)
+}
 
 // shellWords splits cmd into words honouring single quotes, double quotes,
 // backslash escapes and $( ... ), ${ ... } and backtick substitutions (each
@@ -146,6 +145,14 @@ func shellWords(cmd string) []shellWord {
 			raw.WriteString(cmd[i : end+1])
 			val.WriteString(cmd[i : end+1])
 			i = end
+		case strings.IndexByte(";&|<>", c) >= 0:
+			if inWord {
+				words = append(words, shellWord{raw: raw.String(), value: val.String()})
+				raw.Reset()
+				val.Reset()
+				inWord = false
+			}
+			words = append(words, shellWord{raw: string(c), value: string(c), op: true})
 		default:
 			inWord = true
 			raw.WriteByte(c)

@@ -2,6 +2,7 @@ package danger
 
 import (
 	"net/url"
+	"slices"
 	"strings"
 )
 
@@ -240,6 +241,31 @@ func dryRunSetting(name string, args []string) bool {
 func registryPublish(name string, args []string) bool {
 	if dryRunSetting(name, args) {
 		return false // nothing is sent
+	}
+	// The verb read with the tool's global option grammar, so any number of
+	// value-taking options (`npm --prefix app --registry r publish`) cannot
+	// push it past the word window below.
+	if spec, ok := packageManagerGlobals[name]; ok {
+		global := args
+		if name == "cargo" && len(global) > 0 && strings.HasPrefix(global[0], "+") {
+			global = global[1:]
+		}
+		switch name {
+		case "npm", "pnpm", "yarn", "bun":
+			// A built-in subcommand ends the search: `npm --json view
+			// publish` views a package named publish.
+			isVerb := func(w string) bool { return slices.Contains(registryPublishVerbs[name], w) }
+			if name == "npm" {
+				isVerb = func(w string) bool { return npmResolveCommand(w) == "publish" }
+			}
+			if packageManagerVerbAt(name, spec, global, isVerb) >= 0 {
+				return true
+			}
+		default:
+			if runnerVerbAt(spec, global, registryPublishVerbs[name]...) >= 0 {
+				return true
+			}
+		}
 	}
 	var words []string
 	for _, a := range args {

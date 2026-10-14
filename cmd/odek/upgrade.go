@@ -56,7 +56,7 @@ checksums.txt (SHA-256), and installed atomically over the running binary.
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	client := transport.NewPooledClient(60 * time.Second)
+	client := newUpgradeClient()
 
 	_, err = performUpgrade(ctx, client, githubAPIBase, exe, getVersion(), checkOnly, os.Stdout)
 	return err
@@ -389,31 +389,81 @@ func performUpgrade(ctx context.Context, client *http.Client, apiBase, exePath, 
 	return latest, nil
 }
 
-func downloadBytes(ctx context.Context, client *http.Client, url string) ([]byte, error) {
+// upgradeIdleTimeout is how long a download may go without receiving a
+// byte (headers included) before it is abandoned. It bounds stalls, not
+// total duration: a slow but steady link keeps going until the command's
+// overall deadline.
+var upgradeIdleTimeout = 30 * time.Second
+
+// upgradeHeaderTimeout bounds the wait for response headers.
+const upgradeHeaderTimeout = 30 * time.Second
+
+// newUpgradeClient returns the HTTP client for the upgrade flow. It has no
+// whole-request deadline (that would fail a ~15 MB download on a slow
+// link); the connect and header phases are bounded here, body stalls by
+// idleReader, and the overall duration by the caller's context.
+func newUpgradeClient() *http.Client {
+	tr := transport.PooledTransport().Clone()
+	tr.ResponseHeaderTimeout = upgradeHeaderTimeout
+	return &http.Client{Transport: tr}
+}
+
+// idleReader cancels its request when no byte arrives within the idle
+// timeout; every successful read re-arms the timer.
+type idleReader struct {
+	r     io.Reader
+	timer *time.Timer
+	idle  time.Duration
+}
+
+func (ir *idleReader) Read(p []byte) (int, error) {
+	n, err := ir.r.Read(p)
+	if n > 0 {
+		ir.timer.Reset(ir.idle)
+	}
+	return n, err
+}
+
+// getWithIdleWatchdog issues a GET whose request is cancelled when the
+// connection goes idle. The returned stop must be called when done.
+func getWithIdleWatchdog(ctx context.Context, client *http.Client, url string) (*http.Response, *idleReader, func(), error) {
+	idle := upgradeIdleTimeout
+	ctx, cancel := context.WithCancel(ctx)
+	timer := time.AfterFunc(idle, cancel)
+	stop := func() { timer.Stop(); cancel() }
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return nil, err
+		stop()
+		return nil, nil, nil, err
 	}
 	resp, err := client.Do(req)
 	if err != nil {
+		stop()
+		return nil, nil, nil, err
+	}
+	timer.Reset(idle)
+	return resp, &idleReader{r: resp.Body, timer: timer, idle: idle}, stop, nil
+}
+
+func downloadBytes(ctx context.Context, client *http.Client, url string) ([]byte, error) {
+	resp, body, stop, err := getWithIdleWatchdog(ctx, client, url)
+	if err != nil {
 		return nil, err
 	}
+	defer stop()
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("GET %s: %s", url, resp.Status)
 	}
-	return io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	return io.ReadAll(io.LimitReader(body, 1<<20))
 }
 
 func downloadToFile(ctx context.Context, client *http.Client, url, dst string) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	resp, body, stop, err := getWithIdleWatchdog(ctx, client, url)
 	if err != nil {
 		return err
 	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return err
-	}
+	defer stop()
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("GET %s: %s", url, resp.Status)
@@ -423,7 +473,7 @@ func downloadToFile(ctx context.Context, client *http.Client, url, dst string) e
 	if err != nil {
 		return err
 	}
-	_, copyErr := io.Copy(f, io.LimitReader(resp.Body, 256<<20))
+	_, copyErr := io.Copy(f, io.LimitReader(body, 256<<20))
 	closeErr := f.Close()
 	if copyErr != nil {
 		return copyErr

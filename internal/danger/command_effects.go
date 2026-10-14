@@ -840,13 +840,21 @@ func pythonModuleFiles(args []string) []string {
 // pythonOptions is the interpreter's own option grammar: -m, -c, -W, -X and -Q
 // take a value (possibly the rest of a cluster such as -Bm), and the first
 // operand is the script.
-var pythonOptions = optSpec{posix: true, short: "mcWXQ"}
+var pythonOptions = optSpec{posix: true, short: "mcWXQ",
+	long: longTable("check-hash-based-pycs", "help help-env help-xoptions help-all version")}
 
 // pythonInterpreterName reports whether name is a Python interpreter,
-// including versioned spellings (python3.11, pypy3).
+// including versioned spellings (python3.11, pypy3) and build variants
+// (free-threaded python3.13t, debug python3.13d and python3.13-debug).
 func pythonInterpreterName(name string) bool {
 	for _, base := range []string{"python", "pypy"} {
 		if rest, ok := strings.CutPrefix(name, base); ok {
+			for _, suffix := range []string{"-debug", "-dbg"} {
+				rest = strings.TrimSuffix(rest, suffix)
+			}
+			if version := strings.TrimRight(rest, "tdmu"); version != "" {
+				rest = version
+			}
 			return strings.Trim(rest, "0123456789.") == ""
 		}
 	}

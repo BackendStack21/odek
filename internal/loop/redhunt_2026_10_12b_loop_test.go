@@ -223,7 +223,7 @@ func TestRED_LoopArgv0SubscriptedAssignments(t *testing.T) {
 		`A[a b]=sk-secret ls`:   "",
 		`A[0=sk-secret ls`:      "",
 		`A[0]=(sk-secret x) ls`: "ls",
-		`a[1]b=c ls`:            "a[1]b=c",
+		`a[1]b=c ls`:            "",
 	} {
 		if got := argv0(cmd); got != want {
 			t.Errorf("argv0(%q) = %q, want %q", cmd, got, want)

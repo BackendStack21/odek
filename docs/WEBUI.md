@@ -73,8 +73,9 @@ Two token layers:
 2. **Session token** (per session) — required by session-scoped mutations
    and detail reads (`X-Session-Token` header). A fresh token is issued
    when the session is created: the WS `session` event carries
-   `auth_token`, and REST runs echo it in detail responses. To adopt a
-   session you didn't create (or after losing the token), GET
+   `auth_token`. REST run details never include it (the event tail strips it), so
+   a REST client that started a new conversation adopts it the same way as a
+   session it didn't create (or after losing the token): GET
    `/api/sessions/{id}` with the **instance** token header — the server
    bootstraps and returns the session token in the `X-Session-Token`
    response header.
@@ -775,7 +776,7 @@ The UI communicates entirely over a single WebSocket at `/ws`. Messages are newl
 | `approval_request` | Agent needs user approval for dangerous operation; blocks the run up to `timeout_seconds` (60s default) | `id`, `risk` (class name), `command` (or resource), `description`, `is_operation`, `allow_trust`, `friction`, `friction_approvals`, `timeout_seconds` (the effective server-enforced wait in seconds — render the card's countdown from it) |
 | `approval_ack` | Server confirms an approval response | `id`, `action` |
 | `approval_expired` | Server declares the approval dead after `timeout_seconds` elapsed with no response — autoclose the matching card; late `approval_response` frames for the id are dropped | `id` |
-| `clarify_request` | Agent asked a principal-channel question; blocks the run up to `timeout_seconds` (300s) | `id`, `question`, `timeout_seconds` |
+| `clarify_request` | Agent asked a principal-channel question (control, bidi and invisible characters escaped); blocks the run up to `timeout_seconds` (300s) | `id`, `question`, `timeout_seconds` |
 | `clarify_ack` | Server confirms a clarify answer | `id` |
 | `clarify_expired` | Server declares the question dead after `timeout_seconds` with no answer | `id` |
 | `skill_event` | Skill lifecycle event (`loaded`/`autoloaded`/`used`/`deleted` — `skill_save`/`skill_patch` were removed with the self-learning feature) | `event`, `skill_name`, `skills`, `heuristic` |
@@ -1058,7 +1059,8 @@ up to 300 entries/16 MiB of text per visible session. Historical outcomes from
 older servers remain unknown instead of being inferred from optimistic output.
 
 REST run approvals expose `requires_confirmation` when the operator's REST
-friction setting requires a typed response. The UI asks for that response before
+friction setting (`dangerous.rest_approval_friction`) requires a typed response;
+the per-class `friction` flag is reported separately. The UI asks for that response before
 submitting. Full run details can be refreshed without closing the inspected view.
 
 ### Visual regression review

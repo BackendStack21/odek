@@ -441,6 +441,8 @@ var homeSensitivePrefixes = []string{"/.ssh", "/.config", "/.gnupg", "/.aws", "/
 	"/.git-credentials", "/.my.cnf", "/.mylogin.cnf",
 	"/.cargo", "/.gem", "/.azure", "/.password-store",
 	"/.terraform.d", "/.vault-token",
+	// Maven and Gradle repository and signing credentials.
+	"/.m2/settings.xml", "/.m2/settings-security.xml", "/.gradle/gradle.properties",
 	// History directories (single history files are in homeHistoryNames).
 	"/.zsh_sessions", "/.bash_sessions", "/.local/share/fish/fish_history",
 	"/.local/share/zsh", "/.local/share/atuin"}
@@ -1931,7 +1933,10 @@ var installPrefixes = map[string]bool{
 // runners and plugin-loading toolchains are handled by adapterRunsCode,
 // retaining execution policy even when their ordinary use is routine.
 var pkgRunSubcommands = map[string]map[string]bool{
-	"npm":      {"start": true, "run": true, "run-script": true, "test": true, "stop": true, "restart": true, "exec": true},
+	"npm": {"start": true, "run": true, "run-script": true, "test": true, "stop": true, "restart": true, "exec": true,
+		// npm's aliases and unambiguous prefixes of these verbs.
+		"t": true, "tst": true, "tes": true, "rum": true, "urn": true, "run-scrip": true, "x": true, "exe": true,
+		"sto": true, "rest": true, "resta": true, "restar": true},
 	"pnpm":     {"start": true, "run": true, "test": true, "exec": true},
 	"yarn":     {"start": true, "run": true, "test": true, "exec": true},
 	"bun":      {"start": true, "run": true, "test": true, "exec": true},
@@ -2808,6 +2813,24 @@ func classifyStageIn(tokens []string, pipedInto bool, repo *gitRepoCtx) RiskClas
 			if inner := classifyStageIn(runner, false, repo); inner != Unknown {
 				cls = worstOf(cls, inner)
 			}
+			// A relative script run in a workspace the analysis cannot
+			// locate has no file the read ledger could judge.
+			if _, known, has := runnerDirectory(name, cmdTokens); has && !known && runnerRunsRelativeScript(runner) {
+				cls = worstOf(cls, Unknown)
+			}
+		}
+		// Command lines a runner hands to a shell (`npx -c CMD`,
+		// `npm explore PKG -- CMD`).
+		for _, line := range runnerCommandStrings(name, cmdTokens) {
+			cls = worstOf(cls, CodeExecution)
+			if inner := Classify(line); inner != Unknown {
+				cls = worstOf(cls, inner)
+			}
+		}
+		// Printing a registry credential reads the same secret as
+		// `cat ~/.npmrc`.
+		if packageConfigPrintsCredential(name, cmdTokens) {
+			cls = worstOf(cls, SystemWrite)
 		}
 		// An action command the classifier cannot judge keeps the
 		// code_execution floor rather than becoming unknown.
@@ -3791,6 +3814,9 @@ type unwrapped struct {
 	// splits are the `env -S` strings, each a command line env splits into
 	// the command it runs.
 	splits []string
+	// scripts are script files a project runner hands to its interpreter
+	// (`uv run script.py`); the unread-script gate judges them.
+	scripts []string
 }
 
 func unwrapWrappersFull(tokens []string) unwrapped {
@@ -3817,6 +3843,9 @@ func unwrapWrappersFull(tokens []string) unwrapped {
 		assignments = append(assignments, step.assigns...)
 		if step.payload != "" {
 			out.payloads = append(out.payloads, step.payload)
+		}
+		if step.script != "" {
+			out.scripts = append(out.scripts, step.script)
 		}
 		i = step.next
 	}
@@ -4212,6 +4241,7 @@ var sensitivePathFragments = []string{
 	"/.my.cnf", "/.mylogin.cnf",
 	"/.cargo/credentials", "/.gem/credentials", "/.azure/credentials",
 	"/.password-store", "/.terraform.d", "/.vault-token",
+	"/.m2/settings.xml", "/.m2/settings-security.xml", "/.gradle/gradle.properties",
 	"/proc/self/environ", "/environ",
 }
 
@@ -7020,6 +7050,9 @@ func isPackageManagerRun(first string, tokens []string) bool {
 	subs, ok := pkgRunSubcommands[first]
 	if !ok {
 		return false
+	}
+	if packageManagerRunVerb(first, tokens, subs) {
+		return true
 	}
 	for _, tok := range tokens[1:] {
 		if strings.HasPrefix(tok, "-") {

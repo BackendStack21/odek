@@ -6,6 +6,7 @@ import (
 	"github.com/BackendStack21/odek/internal/session"
 	"io"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/BackendStack21/odek/internal/danger"
@@ -104,4 +105,29 @@ func formatFollowUpSuggestions(suggestions []string) string {
 		fmt.Fprintf(&b, "• %s\n", danger.SanitizeInline(s))
 	}
 	return b.String()
+}
+
+// telegramResumePending records chats whose conversation was just replaced by
+// /resume: the next real turn gets the return-after-break summary.
+var telegramResumePending sync.Map // map[int64]struct{}
+
+// takeTelegramResumeSummary consumes a chat's pending resume mark and, when
+// there was one, inserts the return-after-break summary just before the
+// turn's final (user) message. It returns the messages to run and how many
+// messages were inserted (0 or 1). Wake turns leave the mark for the first
+// turn the principal starts.
+func takeTelegramResumeSummary(ctx context.Context, chatID int64, mm *memory.MemoryManager, messages []session.Message, wake bool) ([]session.Message, int) {
+	if wake || len(messages) == 0 {
+		return messages, 0
+	}
+	if _, ok := telegramResumePending.LoadAndDelete(chatID); !ok {
+		return messages, 0
+	}
+	last := len(messages) - 1
+	head := append([]session.Message(nil), messages[:last]...)
+	withRB := injectReturnAfterBreak(ctx, mm, head)
+	if len(withRB) == len(head) {
+		return messages, 0
+	}
+	return append(withRB, messages[last]), 1
 }

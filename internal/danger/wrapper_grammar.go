@@ -129,6 +129,12 @@ type wrapperStep struct {
 	// operands (also accepted by sudo).
 	splits  []string
 	assigns []string
+	// script is the script file a project runner hands to its interpreter
+	// (`uv run script.py`).
+	script string
+	// dir is the working directory the wrapper switches to before running
+	// the command (`uv --directory DIR run`, `poetry -C DIR run`).
+	dir string
 }
 
 // wrapperAt reads the wrapper that starts at tokens[i]. ok is false when the
@@ -288,6 +294,67 @@ var uvRunSpec = optSpec{
 		"refresh-package reinstall-package upgrade-package no-binary-package no-build-package config-setting", ""),
 }
 
+// projectRunnerGlobals are the global option grammars of the project
+// environment runners: the value-taking options that may sit between the
+// runner and its verb, so their values are not read as the verb.
+var projectRunnerGlobals = map[string]optSpec{
+	"poetry":  {posix: true, short: "CP", long: longTable("directory project", "")},
+	"pipenv":  {posix: true, long: longTable("python pypi-mirror", "")},
+	"pdm":     {posix: true, short: "cp", long: longTable("config project", "")},
+	"rye":     {posix: true},
+	"hatch":   {posix: true, short: "ep", long: longTable("env project data-dir cache-dir config", "")},
+	"uv":      uvGlobalSpec,
+	"bundle":  {posix: true, short: "r", long: longTable("gemfile retry", "")},
+	"bundler": {posix: true, short: "r", long: longTable("gemfile retry", "")},
+}
+
+// uvGlobalSpec is the grammar of the uv options that may precede its
+// subcommand.
+var uvGlobalSpec = optSpec{
+	posix: true,
+	long: longTable("directory project cache-dir config-file color python-preference allow-insecure-host "+
+		"python index index-url extra-index-url default-index find-links", ""),
+}
+
+// projectRunSpec returns the option grammar of a project runner's run verb.
+func projectRunSpec(name string) optSpec {
+	switch name {
+	case "uv":
+		return uvRunSpec
+	case "pdm":
+		return pdmRunSpec
+	}
+	return projectRunnerSpec
+}
+
+// pdmRunSpec is `pdm run`'s option grammar: --venv NAME and -p/--project
+// DIR take a value.
+var pdmRunSpec = optSpec{posix: true, short: "p", long: longTable("venv project config", "")}
+
+// projectRunnerDirectory returns the working directory a runner's options
+// select (`poetry -C dir`, `uv --directory dir`, `uv run --directory dir`),
+// or "". `--project` selects the project only; the working directory and the
+// paths of the command's operands stay where they were.
+func projectRunnerDirectory(name string, parsed ...optResult) string {
+	if name != "poetry" && name != "uv" {
+		return ""
+	}
+	dir := ""
+	for _, r := range parsed {
+		for _, o := range r.opts {
+			isDir := o.is("--directory") || (name == "poetry" && o.is("-C"))
+			switch {
+			case !isDir:
+			case o.has:
+				dir = o.value
+			default:
+				dir = "$" // a directory option without a value: unknown
+			}
+		}
+	}
+	return dir
+}
+
 // subcommandWrapper recognises tools that run a command only for certain
 // subcommands: `asdf exec`, `direnv exec DIR`, `mise|rtx exec|x … --`,
 // `nix run|shell|develop`, and `nix-shell`.
@@ -320,27 +387,42 @@ func subcommandWrapper(name string, tokens []string, i int) (wrapperStep, bool) 
 		if name == "bundle" || name == "bundler" {
 			verb = "exec"
 		}
-		if len(rest) > 0 && (rest[0] == verb || (verb == "exec" && rest[0] == "e")) {
+		// Global options (`poetry -C dir`, `pipenv --python 3.12`) may
+		// precede the verb.
+		// A `--` ends only the global options: the verb follows it.
+		g := projectRunnerGlobals[name].parse(rest)
+		verbAt := g.operandAt
+		if verbAt < 0 && len(g.rest) > 0 {
+			verbAt = len(rest) - len(g.rest)
+		}
+		if verbAt < 0 {
+			break
+		}
+		if v := rest[verbAt]; v == verb || (verb == "exec" && v == "e") {
 			step.floor = CodeExecution
-			spec := projectRunnerSpec
-			if name == "uv" {
-				spec = uvRunSpec
-			}
-			r := spec.parse(tokens[i+2:])
+			start := i + 1 + verbAt + 1
+			r := projectRunSpec(name).parse(tokens[start:])
 			switch {
 			case r.operandAt >= 0:
-				step.next = i + 2 + r.operandAt
+				step.next = start + r.operandAt
 			case len(r.rest) > 0:
 				step.next = len(tokens) - len(r.rest)
 			default:
 				step.next = len(tokens)
 			}
 			if step.next < len(tokens) && scriptFileExtensions[strings.ToLower(filepath.Ext(tokens[step.next]))] &&
-				!strings.Contains(tokens[step.next], "/") {
-				// `uv run script.py` runs the file with the project's
-				// interpreter: there is no command word to judge.
+				!strings.ContainsAny(tokens[step.next], "$`*?[{~") {
+				// `uv run script.py` (also `sub/script.py`, `./script.py`)
+				// runs the file with the project's interpreter: there is no
+				// command word to judge, but the file is executed code for
+				// the unread-script gate. A path the analysis cannot spell
+				// out ($VAR, globs, ~) stays the command and is judged as one.
+				step.script = tokens[step.next]
 				step.next = len(tokens)
 			}
+			// A directory option moves the working directory of everything
+			// the runner starts (see wrapperDirectory).
+			step.dir = projectRunnerDirectory(name, g, r)
 			return step, true
 		}
 	case "mise", "rtx":
@@ -361,6 +443,16 @@ func subcommandWrapper(name string, tokens []string, i int) (wrapperStep, bool) 
 				if v, ok := strings.CutPrefix(t, "--command="); ok {
 					step.payload = v
 					return step, true
+				}
+				if v, ok := strings.CutPrefix(t, "--cd="); ok {
+					step.dir = v
+				}
+				if t == "-C" || t == "--cd" {
+					// The command runs in that directory (see wrapperDirectory).
+					step.dir = "$" // no value: unknown
+					if j+1 < len(tokens) {
+						step.dir = tokens[j+1]
+					}
 				}
 				if t == "-C" || t == "--cd" || t == "-j" || t == "--jobs" {
 					j++

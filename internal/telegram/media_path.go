@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 
 	"github.com/BackendStack21/odek/internal/danger"
 )
@@ -338,4 +339,111 @@ func isPathInside(child, parent string) bool {
 		parent += sep
 	}
 	return strings.HasPrefix(child+sep, parent)
+}
+
+// CheckChatMediaRead reports whether chatID may read path. A path inside the
+// shared media directory (after ~ expansion, symlink resolution and, on
+// case-insensitive platforms, case folding) must belong to the chat; any
+// other path is not this check's concern and passes. A path that cannot be
+// resolved is judged by its lexical absolute form, so a missing file cannot
+// be used to dodge the scope.
+func CheckChatMediaRead(path string, chatID int64) error {
+	if chatID == 0 || path == "" {
+		return nil
+	}
+	mediaDir, err := MediaDir()
+	if err != nil {
+		return nil
+	}
+	if resolvedMedia, err := filepath.EvalSymlinks(mediaDir); err == nil {
+		mediaDir = resolvedMedia
+	}
+	mediaDir = filepath.Clean(mediaDir)
+	if strings.HasPrefix(path, "~") {
+		if home, err := os.UserHomeDir(); err == nil {
+			path = filepath.Join(home, strings.TrimPrefix(path, "~"))
+		}
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return fmt.Errorf("media path: resolve absolute: %w", err)
+	}
+	abs = filepath.Clean(abs)
+	candidates := []string{abs}
+	// Resolve symlinks through the deepest existing ancestor so a file that
+	// does not exist yet is still compared in the media directory's spelling.
+	existing, rest := abs, ""
+	for {
+		if resolved, err := filepath.EvalSymlinks(existing); err == nil {
+			candidates = append(candidates, filepath.Clean(filepath.Join(resolved, rest)))
+			break
+		}
+		parent := filepath.Dir(existing)
+		if parent == existing {
+			break
+		}
+		rest = filepath.Join(filepath.Base(existing), rest)
+		existing = parent
+	}
+	for _, c := range candidates {
+		if isPathInsideFold(c, mediaDir) {
+			if err := checkChatMediaScope(c, mediaDir, chatID); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// ChatMediaSkipper returns a filter for directory listings: it reports true
+// for a path inside another chat's media. The media directory is resolved
+// once, and only paths lexically inside it (in either spelling) pay for the
+// full check, so walking a broad root costs no per-entry symlink resolution.
+func ChatMediaSkipper(chatID int64) func(path string) bool {
+	if chatID == 0 {
+		return func(string) bool { return false }
+	}
+	mediaDir, err := MediaDir()
+	if err != nil {
+		return func(string) bool { return false }
+	}
+	dirs := []string{filepath.Clean(mediaDir)}
+	if resolved, err := filepath.EvalSymlinks(mediaDir); err == nil && filepath.Clean(resolved) != dirs[0] {
+		dirs = append(dirs, filepath.Clean(resolved))
+	}
+	// Parent directories are resolved once each (walks visit many entries per
+	// directory), so a root reached through a symlink is judged by where its
+	// entries really live.
+	var mu sync.Mutex
+	parents := map[string]string{}
+	resolveParent := func(dir string) string {
+		mu.Lock()
+		defer mu.Unlock()
+		if r, ok := parents[dir]; ok {
+			return r
+		}
+		r := dir
+		if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+			r = filepath.Clean(resolved)
+		}
+		parents[dir] = r
+		return r
+	}
+	return func(path string) bool {
+		if path == "" {
+			return false
+		}
+		abs, err := filepath.Abs(path)
+		if err != nil {
+			return false
+		}
+		abs = filepath.Clean(abs)
+		real := filepath.Join(resolveParent(filepath.Dir(abs)), filepath.Base(abs))
+		for _, d := range dirs {
+			if isPathInsideFold(abs, d) || isPathInsideFold(real, d) {
+				return CheckChatMediaRead(abs, chatID) != nil
+			}
+		}
+		return false
+	}
 }

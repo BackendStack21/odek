@@ -574,6 +574,20 @@ func (sm *SessionManager) ListSessions(chatID int64, limit int) ([]SessionInfo, 
 // (by ID prefix or task contains) among this chat's sessions is used.
 // Returns an error if the matched session belongs to a different chat.
 func (sm *SessionManager) ResumeSession(chatID int64, sessionID string) (*ChatSession, error) {
+	cs, _, err := sm.ResumeSessionArchived(chatID, sessionID)
+	return cs, err
+}
+
+// ResumeSessionArchived is ResumeSession but also returns the id the replaced
+// live conversation was archived under ("" when nothing was archived), so the
+// caller can record that conversation's memory episode as /new does.
+func (sm *SessionManager) ResumeSessionArchived(chatID int64, sessionID string) (*ChatSession, string, error) {
+	var archivedID string
+	cs, err := sm.resumeSession(chatID, sessionID, &archivedID)
+	return cs, archivedID, err
+}
+
+func (sm *SessionManager) resumeSession(chatID int64, sessionID string, archivedOut *string) (*ChatSession, error) {
 	if sessionID == "" {
 		return nil, fmt.Errorf("session ID required — use /sessions to list")
 	}
@@ -637,9 +651,11 @@ func (sm *SessionManager) ResumeSession(chatID int64, sessionID string) (*ChatSe
 		}
 		stored = fresh
 	} else {
-		if err := sm.ArchiveAndDelete(chatID); err != nil {
+		archived, err := sm.ArchiveAndDeleteID(chatID)
+		if err != nil {
 			return nil, err
 		}
+		*archivedOut = archived
 		stored = &session.Session{
 			ID:        canonical,
 			CreatedAt: sess.CreatedAt,

@@ -16,6 +16,7 @@ import (
 	"go/token"
 	"hash"
 	"io"
+	"io/fs"
 	"math"
 	"os"
 	"path/filepath"
@@ -42,6 +43,14 @@ const maxInlineContentBytes = 10 << 20 // 10 MiB
 // maxTreeEntries caps the number of children reported for a single directory
 // by the tree tool, preventing OOM from directories with millions of entries.
 const maxTreeEntries = 1000
+
+// maxTreeTotalEntries caps the entries (files and directories) one tree call
+// reports across the whole walk, so a deep walk of a large repository cannot
+// return tens of megabytes into the context.
+const maxTreeTotalEntries = 2000
+
+// treeBudget counts the entries emitted so far by one tree call.
+type treeBudget struct{ count int }
 
 // openRegularNoFollow opens path read-only without following a final symlink
 // and without ever blocking: O_NONBLOCK keeps open(2) on a FIFO with no
@@ -330,6 +339,9 @@ func (t *diffTool) Call(argsJSON string) (result string, err error) {
 	if args.PathA != "" && args.PathB != "" {
 		pathA, pathB = args.PathA, args.PathB
 		for _, p := range []string{args.PathA, args.PathB} {
+			if err := checkTelegramMediaRead(t.toolCtx(), p); err != nil {
+				return jsonError(err.Error())
+			}
 			if err := confineIfRestricted(t.restrictToCWD, p); err != nil {
 				return jsonError(err.Error())
 			}
@@ -351,6 +363,9 @@ func (t *diffTool) Call(argsJSON string) (result string, err error) {
 		textB = string(data)
 	} else if args.Path != "" {
 		pathA, pathB = args.Path, "<inline>"
+		if err := checkTelegramMediaRead(t.toolCtx(), args.Path); err != nil {
+			return jsonError(err.Error())
+		}
 		if err := confineIfRestricted(t.restrictToCWD, args.Path); err != nil {
 			return jsonError(err.Error())
 		}
@@ -584,6 +599,9 @@ func (t *jsonQueryTool) Call(argsJSON string) (result string, err error) {
 	if args.Path == "" {
 		return jsonError("path is required")
 	}
+	if err := checkTelegramMediaRead(t.toolCtx(), args.Path); err != nil {
+		return jsonError(err.Error())
+	}
 	if err := confineIfRestricted(t.restrictToCWD, args.Path); err != nil {
 		return jsonError(err.Error())
 	}
@@ -812,7 +830,7 @@ type treeTool struct {
 
 func (t *treeTool) Name() string { return "tree" }
 func (t *treeTool) Description() string {
-	return `List the directory tree with file counts, sizes, and nesting. Returns a structured tree: each entry shows path, is_dir, file_count, total_size, children, depth. Entries deeper than max_depth (default 3, max 10) are silently cut — pass 10 before concluding a file is absent.`
+	return `List the directory tree with file counts, sizes, and nesting. Returns a structured tree: each entry shows path, is_dir, file_count, total_size, children, depth. Entries deeper than max_depth (default 3, max 10) are silently cut — pass 10 before concluding a file is absent. Dependency/build directories (node_modules, vendor, target, dist, build, __pycache__, .venv, .next) are not descended into unless given as the root, and the output stops after 2000 entries with a truncation notice.`
 }
 
 type treeArgs struct {
@@ -867,6 +885,9 @@ func (t *treeTool) Call(argsJSON string) (result string, err error) {
 	if args.MaxDepth > 10 {
 		args.MaxDepth = 10
 	}
+	if err := checkTelegramMediaRead(t.toolCtx(), args.Path); err != nil {
+		return jsonError(err.Error())
+	}
 	if err := confineIfRestricted(t.restrictToCWD, args.Path); err != nil {
 		return jsonError(err.Error())
 	}
@@ -882,13 +903,17 @@ func (t *treeTool) Call(argsJSON string) (result string, err error) {
 	// checkSearchPath. A broad root (e.g. $HOME with include_hidden) must not
 	// silently expose sensitive subtrees such as ~/.odek or ~/.ssh: names and
 	// metadata leak structure even without file contents.
+	otherChatMedia := telegramMediaSkipper(t.toolCtx())
 	checkTreePath := func(p string) bool {
+		if otherChatMedia(p) {
+			return true // another Telegram chat's media
+		}
 		return t.dangerousConfig.CheckOperation(danger.ToolOperation{
 			Name: "tree", Resource: p, Risk: classifyResolvedPath(p),
 		}, nil) != nil
 	}
 
-	entry, err := buildTree(args.Path, 0, args.MaxDepth, args.IncludeHidden, checkTreePath)
+	entry, err := buildTree(args.Path, 0, args.MaxDepth, args.IncludeHidden, checkTreePath, &treeBudget{})
 	if err != nil {
 		return jsonResult(treeResult{Error: err.Error()})
 	}
@@ -911,7 +936,7 @@ func (t *treeTool) Call(argsJSON string) (result string, err error) {
 // skipPath, when non-nil, is consulted for every discovered child path;
 // paths it rejects are omitted (search tools apply the identical rule via
 // checkSearchPath).
-func buildTree(path string, depth, maxDepth int, includeHidden bool, skipPath func(path string) bool) (treeEntry, error) {
+func buildTree(path string, depth, maxDepth int, includeHidden bool, skipPath func(path string) bool, budget *treeBudget) (treeEntry, error) {
 	var info os.FileInfo
 	var err error
 	if depth == 0 {
@@ -926,8 +951,19 @@ func buildTree(path string, depth, maxDepth int, includeHidden bool, skipPath fu
 		info, err = os.Lstat(path)
 	}
 	if err != nil {
-		return treeEntry{Path: path, ErrMsg: err.Error()}, nil
+		// Report the reason only: the file name is already carried (wrapped
+		// as untrusted) by Path, while the error text would repeat it raw.
+		reason := err.Error()
+		var pe *fs.PathError
+		if errors.As(err, &pe) {
+			reason = pe.Err.Error()
+		}
+		return treeEntry{Path: path, ErrMsg: reason}, nil
 	}
+	if budget == nil {
+		budget = &treeBudget{}
+	}
+	budget.count++
 
 	entry := treeEntry{
 		Path:  filepath.Base(path),
@@ -988,7 +1024,20 @@ func buildTree(path string, depth, maxDepth int, includeHidden bool, skipPath fu
 		if skipPath != nil && skipPath(childPath) {
 			continue
 		}
-		child, err := buildTree(childPath, depth+1, maxDepth, includeHidden, skipPath)
+		// Dependency and build-output directories are skipped like in
+		// search_files and glob (an explicitly requested root is still listed).
+		if e.IsDir() && skipDir(e.Name()) {
+			continue
+		}
+		if budget.count >= maxTreeTotalEntries {
+			msg := fmt.Sprintf("tree truncated (%d entries reported; narrow the path or lower max_depth)", maxTreeTotalEntries)
+			if entry.ErrMsg != "" {
+				msg = entry.ErrMsg + "; " + msg
+			}
+			entry.ErrMsg = msg
+			break
+		}
+		child, err := buildTree(childPath, depth+1, maxDepth, includeHidden, skipPath, budget)
 		if err != nil {
 			continue
 		}
@@ -1013,6 +1062,7 @@ func collectTreePaths(e *treeEntry, out *[]*string) {
 // ═════════════════════════════════════════════════════════════════════════
 
 type checksumTool struct {
+	ctxTool
 	dangerousConfig danger.DangerousConfig
 	restrictToCWD   bool // sandbox: reject paths that escape the workspace
 }
@@ -1045,6 +1095,14 @@ func (t *checksumTool) Schema() any {
 	}, "required": []string{"path"}}
 }
 
+// CallContext runs one invocation on a private copy bound to ctx, so parallel
+// calls never share the recorded context.
+func (t *checksumTool) CallContext(ctx context.Context, args string) (string, error) {
+	call := &checksumTool{dangerousConfig: t.dangerousConfig, restrictToCWD: t.restrictToCWD}
+	call.SetContext(ctx)
+	return call.Call(args)
+}
+
 func (t *checksumTool) Call(argsJSON string) (string, error) {
 	var args checksumFileArg
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
@@ -1064,6 +1122,9 @@ func (t *checksumTool) hashFile(arg checksumFileArg) (entry checksumEntry) {
 	}()
 	if arg.Path == "" {
 		return checksumEntry{Error: "path is required"}
+	}
+	if err := checkTelegramMediaRead(t.toolCtx(), arg.Path); err != nil {
+		return checksumEntry{Path: arg.Path, Algorithm: strings.ToLower(arg.Algorithm), Error: err.Error()}
 	}
 	if err := confineIfRestricted(t.restrictToCWD, arg.Path); err != nil {
 		return checksumEntry{Path: arg.Path, Algorithm: strings.ToLower(arg.Algorithm), Error: err.Error()}
@@ -1196,6 +1257,9 @@ func (t *headTailTool) readPreview(path string, n int, mode string) (result head
 			result = headTailFileResult{Path: path, Error: fmt.Sprintf("internal error: %v", r)}
 		}
 	}()
+	if err := checkTelegramMediaRead(t.toolCtx(), path); err != nil {
+		return headTailFileResult{Path: path, Error: err.Error()}
+	}
 	if err := confineIfRestricted(t.restrictToCWD, path); err != nil {
 		return headTailFileResult{Path: path, Error: err.Error()}
 	}
@@ -1379,6 +1443,9 @@ func (t *base64Tool) Call(argsJSON string) (result string, err error) {
 	}
 
 	// File mode
+	if err := checkTelegramMediaRead(t.toolCtx(), args.Path); err != nil {
+		return jsonError(err.Error())
+	}
 	if err := confineIfRestricted(t.restrictToCWD, args.Path); err != nil {
 		return jsonError(err.Error())
 	}

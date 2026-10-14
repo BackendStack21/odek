@@ -3,7 +3,9 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
+	"io"
 	"os"
 	"runtime"
 	"slices"
@@ -44,9 +46,26 @@ func dispatch(args []string) int {
 		}()
 	}
 
+	if helpRequested(cmd, rest) {
+		printCommandUsage(os.Stdout, cmd)
+		return 0
+	}
+	// exitFor turns a command result into an exit code. A help flag met by
+	// a flag parser (anywhere in the command's own flags) prints that
+	// command's usage and exits 0, whichever translator the command uses.
+	exitFor := func(err error, translate func(error) int) int {
+		if errors.Is(err, flag.ErrHelp) {
+			if errors.Is(err, errHelpFlag) {
+				printCommandUsage(os.Stdout, cmd)
+			}
+			return 0
+		}
+		return translate(err)
+	}
+
 	switch cmd {
 	case "run":
-		return runExit(run(rest))
+		return exitFor(run(rest), runExit)
 	case "help", "--help", "-h":
 		printUsage()
 		return 0
@@ -57,37 +76,37 @@ func dispatch(args []string) int {
 		printVersion()
 		return 0
 	case "init":
-		return cliExit(initConfig(rest))
+		return exitFor(initConfig(rest), cliExit)
 	case "continue":
 		// continue enforces execution budgets like run: a typed budget
 		// error maps to exit code 4 (docs/EXTENSIONS.md).
-		return runExit(continueCmd(rest))
+		return exitFor(continueCmd(rest), runExit)
 	case "session":
-		return cliExit(sessionCmd(rest))
+		return exitFor(sessionCmd(rest), cliExit)
 	case "audit":
-		return cliExit(auditCmd(rest))
+		return exitFor(auditCmd(rest), cliExit)
 	case "repl":
-		return cliExit(replCmd(rest))
+		return exitFor(replCmd(rest), cliExit)
 	case "skill":
-		return cliExit(skillCmd(rest))
+		return exitFor(skillCmd(rest), cliExit)
 	case "serve":
-		return cliExit(serveCmd(rest))
+		return exitFor(serveCmd(rest), cliExit)
 	case "subagent":
-		return subagentExit(subagentCmd(rest))
+		return exitFor(subagentCmd(rest), subagentExit)
 	case "mcp":
-		return cliExit(mcpCmd(rest))
+		return exitFor(mcpCmd(rest), cliExit)
 	case "telegram":
-		return cliExit(telegramCmd(rest))
+		return exitFor(telegramCmd(rest), cliExit)
 	case "schedule":
-		return cliExit(scheduleCmd(rest))
+		return exitFor(scheduleCmd(rest), cliExit)
 	case "memory":
-		return cliExit(memoryCmd(rest))
+		return exitFor(memoryCmd(rest), cliExit)
 	case "cleanup":
-		return cliExit(cleanupCmd(rest))
+		return exitFor(cleanupCmd(rest), cliExit)
 	case "logs":
-		return cliExit(logsCmd(rest))
+		return exitFor(logsCmd(rest), cliExit)
 	case "upgrade":
-		return cliExit(upgradeCmd(rest))
+		return exitFor(upgradeCmd(rest), cliExit)
 	default:
 		diagnostics.Warning("cli", "unknown_command", nil)
 		fmt.Fprintf(os.Stderr, "odek: unknown command %q\n", cmd)
@@ -96,10 +115,70 @@ func dispatch(args []string) int {
 	}
 }
 
+// errHelpFlag marks a help flag (-h/--help) met by a flag parser; it matches
+// flag.ErrHelp so every exit translator can treat it as success.
+var errHelpFlag error = helpFlagError{}
+
+type helpFlagError struct{}
+
+func (helpFlagError) Error() string        { return "help requested" }
+func (helpFlagError) Is(target error) bool { return target == flag.ErrHelp }
+
+// leadingFlagError is the parser error for an unrecognised flag in a
+// command's own flag section: -h/--help there is a help request, anything
+// else an unknown flag.
+func leadingFlagError(arg string) error {
+	return leadingFlagError2(arg, unknownFlagError(arg))
+}
+
+// leadingFlagError2 is leadingFlagError for parsers with their own
+// unknown-flag message.
+func leadingFlagError2(arg string, unknown error) error {
+	if arg == "-h" || arg == "--help" {
+		return errHelpFlag
+	}
+	return unknown
+}
+
+// printCommandUsage writes the usage of a command (its parent command for
+// sub-subcommands); commands without a dedicated synopsis get the global one.
+func printCommandUsage(w io.Writer, cmd string) {
+	switch cmd {
+	case "schedule":
+		writeScheduleUsage(w)
+	case "session":
+		fmt.Fprintln(w, "Usage: odek session <list|show [id]|trim <id> <n>|delete <id>|cleanup <days>>")
+	case "skill":
+		fmt.Fprintln(w, "Usage: odek skill <list|view|delete|promote|import> [args]")
+	default:
+		printUsage()
+	}
+}
+
+// helpRequested reports whether the arguments are a request for help on a
+// command that does not otherwise handle one: -h, --help or (for the
+// command groups) help, as the first argument or, for groups, right after
+// the group name. Later positions are task text or operands and never count.
+func helpRequested(cmd string, args []string) bool {
+	isHelp := func(a string) bool { return a == "-h" || a == "--help" }
+	switch cmd {
+	case "session", "schedule", "skill":
+		if len(args) > 0 && (isHelp(args[0]) || args[0] == "help") {
+			return true
+		}
+		return len(args) > 1 && isHelp(args[1])
+	case "run", "continue", "repl", "init", "subagent":
+		return len(args) > 0 && isHelp(args[0])
+	}
+	return false
+}
+
 // cliExit is the default error→exit translator: prints the error to stderr
 // with the "odek:" prefix and returns exit code 1, or returns 0 on nil.
 func cliExit(err error) int {
-	if err == nil {
+	if err == nil || errors.Is(err, flag.ErrHelp) {
+		// -h/--help on a flag-parsed command: the flag package already
+		// printed the usage; asking for help is not a failure.
 		return 0
 	}
 	logCommandFailure(err)

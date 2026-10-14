@@ -200,7 +200,7 @@ func analyzeWithStateWork(cmd string, depth int, inherited *shellAnalysisState, 
 	if pgrepFeedsKill(tokens, subs) {
 		result.add(SystemWrite)
 	}
-	if namerefNamesSecret(tokens) {
+	if namerefNamesSecret(tokens, ops) {
 		result.add(SystemWrite)
 	}
 	if unterminated {
@@ -429,9 +429,15 @@ func analyzeWithStateWork(cmd string, depth int, inherited *shellAnalysisState, 
 				result.add(Unknown)
 			}
 			if len(inner) == 0 {
-				if len(unwrappedStage.splits) > 0 && cwdKnown && !state.uncertain {
-					// `env -S 'bash script'` leaves nothing behind the
-					// wrapper, yet the split string is the command that runs.
+				if len(unwrappedStage.scripts) > 0 && (!cwdKnown || state.uncertain) {
+					// The script runs from a directory the analysis cannot
+					// resolve, so no read licence can be checked for it.
+					result.add(Unknown)
+				}
+				if (len(unwrappedStage.splits) > 0 || len(unwrappedStage.scripts) > 0) && cwdKnown && !state.uncertain {
+					// `env -S 'bash script'` and `uv run script.py` leave
+					// nothing behind the wrapper, yet the split string is the
+					// command that runs and the script is the program.
 					files, rewritten := stageLedgerFiles(stage, stageCwd, state.written)
 					for _, path := range files {
 						result.addFile(path)
@@ -1504,6 +1510,17 @@ func wrapperDirectory(tokens []string, cwd string) (string, bool) {
 			break
 		}
 		if name != "env" {
+			// A runner directory option (`uv --directory DIR run`,
+			// `poetry -C DIR run`) moves the command it runs.
+			if step.dir != "" {
+				if strings.ContainsAny(step.dir, "$*?[]`") {
+					return cwd, false
+				}
+				cwd = resolveInDirectory(step.dir, cwd)
+				if st, err := os.Stat(cwd); err != nil || !st.IsDir() {
+					return cwd, false
+				}
+			}
 			i = step.next - 1
 			continue
 		}

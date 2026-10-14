@@ -398,7 +398,7 @@ odek mcp --sandbox
 | `json_query` | Dot-path query with array indexing (`users[0].name`, nested `matrix[0][1]`) |
 | `base64` | Encode files/strings, decode base64 |
 | `checksum` | SHA-256, SHA-1, MD5 hashing of one file |
-| `tree` | Structured directory tree listing |
+| `tree` | Structured directory tree listing (skips dependency/build dirs, capped at 2000 entries) |
 
 > **Size limits:** file inputs for `head_tail`, `diff`, `json_query`,
 > `base64`, and `checksum` are

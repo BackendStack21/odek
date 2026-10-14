@@ -98,7 +98,7 @@ func verifyArtifactWindow(path string, ref artifact.Ref, maxBytes, offset, limit
 	}
 	// O_NOFOLLOW makes the open itself refuse a final-component symlink
 	// swapped in between the Lstat and the open.
-	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	f, err := openArtifactNoFollow(path)
 	if err != nil {
 		return nil, 0, false, err
 	}
@@ -237,7 +237,7 @@ type artifactReadArgs struct {
 func (t *artifactReadTool) Call(args string) (string, error) {
 	var in artifactReadArgs
 	if err := json.Unmarshal([]byte(args), &in); err != nil {
-		return fmt.Sprintf(`{"error":"parse failed: %v"}`, err), nil
+		return artifactReadErrorJSON("parse failed: %v", err), nil
 	}
 	if in.ID == "" {
 		return `{"error":"id is required"}`, nil
@@ -255,7 +255,7 @@ func (t *artifactReadTool) Call(args string) (string, error) {
 	session := t.getSessionID()
 	entry, ok := lookupSessionArtifact(session, in.ID)
 	if !ok {
-		return fmt.Sprintf(`{"error":"unknown artifact id %q — registered artifacts: %s"}`, in.ID, sessionArtifactIDList(session)), nil
+		return artifactReadErrorJSON("unknown artifact id %q — registered artifacts: %s", in.ID, sessionArtifactIDList(session)), nil
 	}
 
 	// Re-verify at read time (TOCTOU): the file is re-opened with symlink
@@ -268,13 +268,13 @@ func (t *artifactReadTool) Call(args string) (string, error) {
 		var pastEnd *artifactPastEndError
 		switch {
 		case errors.As(err, &pastEnd):
-			return fmt.Sprintf(`{"error":"artifact %q is %d bytes; offset %d is past the end"}`, in.ID, pastEnd.total, in.Offset), nil
+			return artifactReadErrorJSON("artifact %q is %d bytes; offset %d is past the end", in.ID, pastEnd.total, in.Offset), nil
 		case os.IsNotExist(err):
 			// The janitor backstop or a session delete may have removed
 			// the subtree since collation.
-			return fmt.Sprintf(`{"error":"artifact %q is no longer available (removed by cleanup)"}`, in.ID), nil
+			return artifactReadErrorJSON("artifact %q is no longer available (removed by cleanup)", in.ID), nil
 		default:
-			return fmt.Sprintf(`{"error":"artifact %q failed read-time verification: %v"}`, in.ID, err), nil
+			return artifactReadErrorJSON("artifact %q failed read-time verification: %v", in.ID, err), nil
 		}
 	}
 
@@ -299,4 +299,20 @@ func (t *artifactReadTool) Call(args string) (string, error) {
 	// Child-derived content: inside the untrusted boundary, recorded by the
 	// per-call audit ingest like every other tool result.
 	return wrapUntrusted(t.toolCtx(), "artifact_read", b.String()), nil
+}
+
+// artifactReadErrorJSON renders an error result through encoding/json: the
+// model-supplied id and OS error text can carry quotes, control bytes or
+// invalid UTF-8, which Go %q quoting would emit as invalid JSON escapes.
+func artifactReadErrorJSON(format string, a ...any) string {
+	data, _ := json.Marshal(map[string]string{"error": fmt.Sprintf(format, a...)})
+	return string(data)
+}
+
+// openArtifactNoFollow opens an artifact for reading without following a
+// final-component symlink. O_NONBLOCK keeps a path swapped for a FIFO between
+// the Lstat and the open from blocking the call; the handle is then rejected
+// by the regular-file check, and regular files are unaffected.
+func openArtifactNoFollow(path string) (*os.File, error) {
+	return os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 }

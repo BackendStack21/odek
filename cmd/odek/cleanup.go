@@ -136,6 +136,7 @@ type cleanupCandidates struct {
 	plans             []string
 	artifacts         []string
 	runtimeLogBackups []string
+	heartbeats        []string
 }
 
 // collectCleanupCandidates enumerates expired files under home without
@@ -163,6 +164,7 @@ func collectCleanupCandidates(home string, cfg maintenance.Config) cleanupCandid
 	if cfg.RuntimeLog.Path != "" {
 		c.runtimeLogBackups, _ = runtimelog.ExcessBackupPaths(cfg.RuntimeLog.Path, cfg.RuntimeLog.MaxFiles)
 	}
+	c.heartbeats, _ = maintenance.ScheduleHeartbeatCandidates(home)
 	return c
 }
 
@@ -248,7 +250,7 @@ func printCleanupDryRun(home string, cfg maintenance.Config) {
 	}
 
 	c := collectCleanupCandidates(home, cfg)
-	if expired == 0 && !rotateRuntimeLog && len(c.sessions) == 0 && len(c.audit) == 0 && len(c.plans) == 0 && len(c.artifacts) == 0 && len(c.runtimeLogBackups) == 0 {
+	if expired == 0 && !rotateRuntimeLog && len(c.sessions) == 0 && len(c.audit) == 0 && len(c.plans) == 0 && len(c.artifacts) == 0 && len(c.runtimeLogBackups) == 0 && len(c.heartbeats) == 0 {
 		fmt.Println("Dry run: storage is clean — nothing would be removed.")
 		return
 	}
@@ -256,6 +258,9 @@ func printCleanupDryRun(home string, cfg maintenance.Config) {
 	fmt.Printf("  runtime records expired: %d\n", expired)
 	if rotateRuntimeLog {
 		fmt.Printf("  runtime log rotated: %s\n", cfg.RuntimeLog.Path)
+	}
+	if len(c.heartbeats) > 0 {
+		fmt.Printf("  orphaned scheduler heartbeats: %d\n", len(c.heartbeats))
 	}
 	if len(c.runtimeLogBackups) > 0 {
 		fmt.Printf("  excess runtime log backups: %d\n", len(c.runtimeLogBackups))

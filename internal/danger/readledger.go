@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -731,8 +732,12 @@ func pathKey(path string) string {
 
 // stageWrittenPaths returns the file paths a stage writes, resolved against
 // cwd: shell redirects, semantic output options (curl -o, wget -O, sed -i,
-// ...), tee operands, and the destination of cp/mv/install/ln.
-func stageWrittenPaths(stage, inner []string, name, cwd string) []string {
+// ...), tee and sponge operands, the destination of cp/mv/install/ln and the
+// local destination of an scp download. unnamed reports a write target whose
+// name the analysis cannot read off the command line: a glob, an expansion
+// that does not resolve, a command substitution, or a target the tool
+// chooses itself.
+func stageWrittenPaths(stage, inner []string, name, cwd string) (paths []string, unnamed bool) {
 	var raw []string
 	for j, tok := range stage {
 		if isRedirectToken(tok) && j+1 < len(stage) {
@@ -758,8 +763,21 @@ func stageWrittenPaths(stage, inner []string, name, cwd string) []string {
 			operands = append(operands, tok)
 		}
 		switch name {
-		case "tee":
+		case "tee", "sponge":
 			raw = append(raw, operands...)
+		case "scp":
+			raw = append(raw, scpLocalWriteTargets(inner[1:], cwd)...)
+		case "aws", "gsutil", "docker", "podman", "kubectl", "oc", "rclone", "gh",
+			"sftp", "lftp", "aria2c", "aria2", "ftp", "tftp", "fetch":
+			raw = append(raw, fetcherWriteTargets(name, inner[1:], cwd)...)
+		case "vim", "vi", "nvim", "gvim", "vimdiff", "nvimdiff", "view", "rvim", "evim", "vim.basic", "vim.tiny", "vim.nox",
+			"emacs", "emacs-nox", "emacs-gtk", "emacsclient":
+			// An interactive edit writes the files it is given, including
+			// emacs's --visit/--file/--find-file=FILE spellings.
+			raw = append(raw, operands...)
+			if name != "emacsclient" {
+				raw = append(raw, emacsVisitValues(inner[1:])...)
+			}
 		case "uniq":
 			// uniq [OPTION]... [INPUT [OUTPUT]] writes its second operand.
 			if len(operands) >= 2 {
@@ -804,16 +822,106 @@ func stageWrittenPaths(stage, inner []string, name, cwd string) []string {
 	}
 	var out []string
 	for _, tok := range raw {
-		if tok == "" || tok == "-" || strings.Contains(tok, dynamicSubstToken) {
+		if tok == "" || tok == "-" {
+			continue
+		}
+		if strings.Contains(tok, dynamicSubstToken) {
+			unnamed = true
 			continue
 		}
 		path := expandShellTokenPath(tok)
+		if hasGlobMeta(path) || strings.ContainsAny(path, "$`") {
+			// The shell picks the file at run time (a glob match, or a
+			// variable this analysis cannot resolve).
+			unnamed = true
+		}
 		if !filepath.IsAbs(path) {
 			path = filepath.Join(cwd, path)
 		}
 		out = append(out, pathKey(path))
 	}
-	return out
+	return out, unnamed
+}
+
+// scpLocalWriteTargets returns the local files an scp download writes: the
+// destination itself, or a placeholder for unknown names when the
+// destination is a directory or the copy is recursive (the remote side
+// chooses the names). An upload (local sources, remote destination) writes
+// nothing locally.
+func scpLocalWriteTargets(args []string, cwd string) []string {
+	var operands []string
+	recursive := false
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "--" {
+			operands = append(operands, args[i+1:]...)
+			break
+		}
+		if isShortFlagToken(a) {
+			for j := 1; j < len(a); j++ {
+				c := a[j]
+				if c == 'r' {
+					recursive = true
+				}
+				// These options take a value: the rest of the word or the
+				// next one.
+				if strings.IndexByte("cDFiJlmoPSX", c) >= 0 {
+					if j == len(a)-1 {
+						i++
+					}
+					break
+				}
+			}
+			continue
+		}
+		operands = append(operands, a)
+	}
+	if len(operands) < 2 {
+		return nil
+	}
+	dest := operands[len(operands)-1]
+	if scpRemoteOperand(dest) {
+		return nil
+	}
+	remoteSource := false
+	for _, src := range operands[:len(operands)-1] {
+		if scpRemoteOperand(src) {
+			remoteSource = true
+		}
+	}
+	if !remoteSource {
+		return nil // a local copy: the cp-like destination below
+	}
+	return localCopyDestination(dest, cwd, recursive)
+}
+
+// localCopyDestination returns the write target of a download into the local
+// path dest: dest itself when it names a file, or a placeholder for unknown
+// names when the copy is recursive or dest is a directory (the remote side
+// then chooses the names).
+func localCopyDestination(dest, cwd string, recursive bool) []string {
+	destPath := expandShellTokenPath(dest)
+	if !filepath.IsAbs(destPath) {
+		destPath = filepath.Join(cwd, destPath)
+	}
+	if st, err := os.Stat(destPath); recursive || strings.HasSuffix(dest, "/") || (err == nil && st.IsDir()) {
+		return []string{dynamicSubstToken}
+	}
+	return []string{dest}
+}
+
+// scpRemoteOperand reports whether an scp operand names a remote file
+// (host:path, user@host:path or an scp:// URI) rather than a local path.
+func scpRemoteOperand(op string) bool {
+	if strings.HasPrefix(op, "scp://") {
+		return true
+	}
+	colon := strings.IndexByte(op, ':')
+	if colon <= 0 {
+		return false
+	}
+	// A slash before the colon makes it a local path (./a:b).
+	return !strings.Contains(op[:colon], "/")
 }
 
 // targetDirectoryOption returns the DIR of a -t DIR, -tDIR, --target-directory
@@ -886,10 +994,16 @@ func stageLedgerFiles(stage []string, cwd string, written map[string]bool) (file
 		if len(inner) > 0 {
 			name = commandName(inner[0])
 		}
-		for _, path := range stageWrittenPaths(stage, inner, name, cwd) {
+		paths, unnamed := stageWrittenPaths(stage, inner, name, cwd)
+		for _, path := range paths {
 			written[path] = true
 		}
-		if stageWritesUnnamedFiles(name, inner) {
+		// emacsclient runs $ALTERNATE_EDITOR, with the file arguments, when
+		// no server answers.
+		if name == "emacsclient" && stageSetsEnvironment(stage, "ALTERNATE_EDITOR") {
+			unnamed = true
+		}
+		if unnamed || stageWritesUnnamedFiles(name, inner) {
 			written[unknownWritesKey] = true
 		}
 	}
@@ -914,8 +1028,27 @@ func stageWritesUnnamedFiles(name string, inner []string) bool {
 	case "patch", "unzip", "7z", "7za", "7zz", "7zr", "unrar", "unar", "cpio",
 		"gunzip", "bunzip2", "unxz", "uncompress", "unlzma", "unzstd", "ed", "ex":
 		return !hasAny(args, "-l", "-t", "-v", "-Z", "--list", "--test", "--dry-run", "-h", "--help", "--version")
-	case "gzip", "bzip2", "xz", "zstd", "lzma":
-		return hasAny(args, "-d", "--decompress", "--uncompress")
+	case "gzip", "bzip2", "xz", "zstd", "lzma", "pigz", "pbzip2", "pixz", "pxz", "lzip", "plzip", "lzop",
+		"lz4", "brotli", "unpigz", "unlz4", "lunzip", "unlzop", "unbrotli":
+		return hasAny(args, "-d", "--decompress", "--uncompress") || decompressesToFiles(name, args)
+	case "ditto":
+		// ditto copies or extracts a whole tree into the destination.
+		return !hasAny(args, "-h", "--help")
+	case "vim", "vi", "nvim", "gvim", "vimdiff", "nvimdiff", "view", "rvim", "evim", "vim.basic", "vim.tiny", "vim.nox":
+		// A scripted editor run (-es, --headless, -c/+cmd, -s scriptin)
+		// writes whatever its commands choose; an interactive one writes
+		// the files it is given (named by stageWrittenPaths).
+		return vimRunIsScripted(args)
+	case "emacs", "emacs-nox", "emacs-gtk":
+		return emacsRunIsScripted(args)
+	case "emacsclient":
+		return emacsclientRunIsScripted(args)
+	case "awk", "gawk":
+		return awkEditsInPlace(args)
+	case "curl":
+		return curlChoosesOutputName(args)
+	case "wget":
+		return wgetChoosesOutputName(args)
 	case "ar", "jar", "dpkg-deb", "dpkg", "pax", "bsdcpio":
 		return archiveExtractionArgs(args)
 	case "tar", "bsdtar", "gtar":
@@ -945,16 +1078,627 @@ func stageWritesUnnamedFiles(name string, inner []string) bool {
 			}
 		}
 	case "hg", "svn":
-		if len(args) > 0 {
-			switch args[0] {
-			case "update", "up", "pull", "checkout", "co", "revert", "merge", "switch", "import", "unbundle":
+		sub, subArgs := vcsSubcommand(args)
+		switch sub {
+		case "update", "up", "pull", "checkout", "co", "revert", "merge", "switch", "import", "unbundle":
+			return true
+		}
+		if name == "svn" {
+			switch sub {
+			case "export", "patch", "resolve", "resolved", "copy", "cp", "move", "mv", "rename", "ren":
 				return true
 			}
+			return false
+		}
+		switch sub {
+		case "shelve":
+			return !hasAny(subArgs, "-l", "--list", "-p", "--patch", "--stat", "-d", "--delete", "--cleanup")
+		case "purge", "clean":
+			return !hasAny(subArgs, "-p", "--print", "-0", "--print0")
+		case "resolve":
+			return !hasAny(subArgs, "-l", "--list", "-m", "--mark", "-u", "--unmark")
+		case "unshelve", "rebase", "graft", "strip", "clone", "backout", "histedit", "transplant",
+			"fetch", "rollback", "uncommit", "prune", "evolve", "next", "prev", "split", "fold":
+			return true
 		}
 	case "git":
 		return gitSubcommandRewritesTree(inner)
 	}
 	return false
+}
+
+// vimRunIsScripted reports whether a vim-family invocation runs commands
+// from somewhere other than the keyboard, or records into a file: +cmd,
+// -c/--cmd, -s/-S scripts, -u/-U init files, -e/-E/-es ex mode, -w/-W
+// script-out files, -V verbose logs, --headless, --embed, --listen,
+// --startuptime and the --remote family.
+func vimRunIsScripted(args []string) bool {
+	for _, a := range args {
+		if a == "--" {
+			break
+		}
+		switch {
+		case strings.HasPrefix(a, "+"):
+			return true
+		case strings.HasPrefix(a, "--"):
+			name, _, _ := strings.Cut(a, "=")
+			switch {
+			case name == "--cmd", name == "--headless", name == "--embed", name == "--listen",
+				name == "--startuptime", strings.HasPrefix(name, "--remote"):
+				return true
+			}
+		case isShortFlagToken(a):
+			if strings.ContainsAny(a[1:2], "csSuUeEwWV") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// fetcherWriteTargets returns the local files a download or copy tool
+// writes: a named destination, or a placeholder for unknown names when the
+// destination is a directory, the copy is recursive or a sync, or the tool
+// chooses the names itself (sftp/lftp sessions, aria2c, gh release download
+// and repo clone). Uploads and listings write nothing locally.
+func fetcherWriteTargets(name string, args []string, cwd string) []string {
+	unknown := []string{dynamicSubstToken}
+	switch name {
+	case "ftp", "tftp", "fetch":
+		return outputOptionDownloadTargets(name, args, cwd)
+	case "sftp", "lftp", "aria2c", "aria2":
+		if hasAny(args, "--version", "-v", "-h", "--help", "-V") && len(args) == 1 {
+			return nil
+		}
+		return unknown
+	case "gh":
+		ops := nonFlagWords(args, nil)
+		if len(ops) < 2 {
+			return nil
+		}
+		switch ops[0] + " " + ops[1] {
+		case "release download", "run download", "repo clone", "gist clone":
+			return unknown
+		}
+		return nil
+	case "aws":
+		ops := nonFlagWords(args, awsBooleanOptions)
+		if len(ops) < 2 {
+			return nil
+		}
+		switch {
+		case ops[0] == "s3" && (ops[1] == "cp" || ops[1] == "mv" || ops[1] == "sync"):
+			if len(ops) != 4 {
+				return unknown // operands the parse cannot place
+			}
+			if objectStoreURL(ops[3]) {
+				return nil
+			}
+			return localCopyDestination(ops[3], cwd, ops[1] == "sync" || hasAny(args, "--recursive"))
+		case ops[0] == "s3api" && ops[1] == "get-object":
+			if len(ops) < 3 {
+				return unknown
+			}
+			return []string{ops[len(ops)-1]}
+		}
+		return nil
+	case "gsutil":
+		// Global options before the verb; -o, -h and -u take a value.
+		verbAt := -1
+		for i := 0; i < len(args); i++ {
+			a := args[i]
+			if a == "-o" || a == "-h" || a == "-u" {
+				i++
+				continue
+			}
+			if !strings.HasPrefix(a, "-") {
+				verbAt = i
+				break
+			}
+		}
+		if verbAt < 0 {
+			return nil
+		}
+		verb, rest := args[verbAt], args[verbAt+1:]
+		if verb != "cp" && verb != "mv" && verb != "rsync" {
+			return nil
+		}
+		ops := nonFlagWords(rest, nil)
+		if len(ops) < 2 {
+			return unknown
+		}
+		dest := ops[len(ops)-1]
+		if objectStoreURL(dest) {
+			return nil
+		}
+		recursive := verb == "rsync"
+		for _, a := range rest {
+			if isShortFlagToken(a) && strings.ContainsAny(a[1:], "rR") {
+				recursive = true
+			}
+		}
+		return localCopyDestination(dest, cwd, recursive)
+	case "docker", "podman", "kubectl", "oc":
+		cpAt := -1
+		for i, a := range args {
+			if a == "cp" {
+				cpAt = i
+				break
+			}
+		}
+		if cpAt < 0 {
+			return nil
+		}
+		ops := nonFlagWords(args[cpAt+1:], nil)
+		if name == "kubectl" || name == "oc" {
+			ops = nonFlagWordsSkippingValues(args[cpAt+1:], kubectlCpValueOptions)
+		}
+		if len(ops) != 2 {
+			return unknown
+		}
+		src, dest := ops[0], ops[1]
+		namespaced := name == "kubectl" || name == "oc"
+		if containerPathOperand(dest, namespaced) || !containerPathOperand(src, namespaced) {
+			return nil // an upload, or a local copy
+		}
+		return localCopyDestination(dest, cwd, false)
+	case "rclone":
+		ops := nonFlagWords(args, nil)
+		if len(ops) < 1 {
+			return nil
+		}
+		verb := ops[0]
+		switch verb {
+		case "copy", "sync", "move", "copyto", "moveto", "copyurl", "bisync":
+		default:
+			return nil
+		}
+		ops = ops[1:]
+		valueAmbiguous := false
+		for _, a := range args {
+			if strings.HasPrefix(a, "--") && !strings.Contains(a, "=") {
+				valueAmbiguous = true // `--flag value` may have put a value among the operands
+			}
+		}
+		if valueAmbiguous || len(ops) != 2 || verb == "bisync" {
+			// Every local operand may be written.
+			for _, op := range ops {
+				if !rcloneRemoteOperand(op) {
+					return unknown
+				}
+			}
+			return nil
+		}
+		dest := ops[1]
+		if rcloneRemoteOperand(dest) {
+			return nil
+		}
+		if verb == "copyto" || verb == "moveto" || verb == "copyurl" {
+			return localCopyDestination(dest, cwd, false)
+		}
+		return unknown
+	}
+	return nil
+}
+
+// outputOptionDownloadTargets returns the local files ftp, tftp and BSD fetch
+// write: the -o FILE destination (`-` is stdout), or the base name of each
+// URL operand. An interactive session or a host operand (ftp host, tftp
+// host) and a directory destination write names the analysis cannot read.
+func outputOptionDownloadTargets(name string, args []string, cwd string) []string {
+	unknown := []string{dynamicSubstToken}
+	var operands []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "--" {
+			operands = append(operands, args[i+1:]...)
+			break
+		}
+		if !isShortFlagToken(a) {
+			operands = append(operands, a)
+			continue
+		}
+		if at := strings.IndexByte(a, 'o'); at > 0 {
+			dest := a[at+1:]
+			if dest == "" {
+				if i+1 >= len(args) {
+					return unknown
+				}
+				i++
+				dest = args[i]
+			}
+			if dest == "-" {
+				return nil
+			}
+			return localCopyDestination(dest, cwd, false)
+		}
+	}
+	if name == "tftp" || len(operands) == 0 {
+		return unknown
+	}
+	var targets []string
+	for _, op := range operands {
+		u, err := url.Parse(op)
+		if err != nil || u.Scheme == "" || u.Host == "" {
+			return unknown // a host: an interactive session can get anything
+		}
+		base := filepath.Base(u.Path)
+		if base == "." || base == "/" || strings.HasSuffix(u.Path, "/") {
+			return unknown
+		}
+		targets = append(targets, base)
+	}
+	return targets
+}
+
+// emacsRunIsScripted reports whether an emacs invocation runs Lisp that can
+// write any file: batch and script modes, loaded files, evaluated forms,
+// called functions, another user's or directory's init files, and daemons.
+func emacsRunIsScripted(args []string) bool {
+	for _, a := range args {
+		if a == "--" {
+			break
+		}
+		name, _, _ := strings.Cut(a, "=")
+		switch name {
+		case "-batch", "-script", "-x", "-l", "-load", "-eval", "-execute", "-f", "-funcall",
+			"-u", "-user", "-chdir":
+			return true
+		}
+		if strings.HasPrefix(a, "--") && longOptionMayBe(a, emacsLongOptions, emacsScriptedLongOptions) {
+			// --chdir resolves every file operand against another
+			// directory, so the files it names are not the ones analysed.
+			return true
+		}
+	}
+	return false
+}
+
+// emacsLongOptions is emacs's long-option table; startup accepts any
+// unambiguous abbreviation of these.
+var emacsLongOptions = strings.Fields("batch script load eval execute funcall user init-directory daemon " +
+	"bg-daemon fg-daemon chdir visit file find-file insert kill directory no-init-file no-site-file " +
+	"no-site-lisp no-splash no-desktop quick debug-init no-window-system version help display name title " +
+	"geometry dump-file seccomp module-assertions no-build-details no-x-resources terminal temacs " +
+	"basic-display background-color foreground-color border-color border-width color cursor-color font " +
+	"fullscreen fullheight fullwidth maximized internal-border line-spacing mouse-color no-bitmap-icon " +
+	"no-blinking-cursor reverse-video vertical-scroll-bars xrm parent-id iconic no-loadup smid")
+
+// emacsScriptedLongOptions are the emacs long options that run Lisp or move
+// the directory file operands resolve against.
+var emacsScriptedLongOptions = fieldSet("batch script load eval execute funcall user init-directory daemon " +
+	"bg-daemon fg-daemon chdir")
+
+// emacsVisitLongOptions are the emacs long options whose value is a file
+// to visit.
+var emacsVisitLongOptions = fieldSet("visit file find-file")
+
+// emacsVisitValues returns the files named by --visit/--file/--find-file=FILE,
+// also through an abbreviation (--vis=FILE, --fi=FILE).
+func emacsVisitValues(args []string) []string {
+	var out []string
+	for _, a := range args {
+		if a == "--" {
+			break
+		}
+		if !strings.HasPrefix(a, "--") {
+			continue
+		}
+		if _, value, ok := strings.Cut(a, "="); ok && longOptionMayBe(a, emacsLongOptions, emacsVisitLongOptions) {
+			out = append(out, value)
+		}
+	}
+	return out
+}
+
+// emacsclientLongOptions is emacsclient's getopt_long table.
+var emacsclientLongOptions = strings.Fields("version help nowait reuse-frame create-frame frame-parameters quiet " +
+	"suppress-output eval display parent-id timeout tty tramp alternate-editor socket-name server-file")
+
+// emacsclientScriptedLongOptions make the server evaluate Lisp or run another
+// editor command.
+var emacsclientScriptedLongOptions = fieldSet("eval alternate-editor")
+
+// longOptionMayBe reports whether a --long option token, resolved like
+// getopt_long against table (exact name, else every option it is a prefix
+// of), may be one of the options in set. An ambiguous abbreviation counts
+// when any of its candidates is in set.
+func longOptionMayBe(tok string, table []string, set map[string]bool) bool {
+	given, _, _ := strings.Cut(strings.TrimPrefix(tok, "--"), "=")
+	if given == "" {
+		return false
+	}
+	for _, name := range table {
+		if name == given {
+			return set[name]
+		}
+	}
+	for _, name := range table {
+		if strings.HasPrefix(name, given) && set[name] {
+			return true
+		}
+	}
+	return false
+}
+
+// emacsclientRunIsScripted reports whether an emacsclient invocation makes
+// the server evaluate Lisp (-e/--eval, also inside a short cluster such as
+// -ne, or any abbreviation of --eval) or runs an alternate editor command
+// (-a/--alternate-editor or an abbreviation), either of which can write any
+// file.
+func emacsclientRunIsScripted(args []string) bool {
+	for _, a := range args {
+		if a == "--" {
+			break
+		}
+		switch {
+		case strings.HasPrefix(a, "--"):
+			if longOptionMayBe(a, emacsclientLongOptions, emacsclientScriptedLongOptions) {
+				return true
+			}
+		case isShortFlagToken(a) && strings.ContainsAny(a[1:], "ea"):
+			return true
+		}
+	}
+	return false
+}
+
+// stageSetsEnvironment reports whether a stage assigns the environment
+// variable name for the command it runs (`NAME=v cmd`, `env NAME=v cmd`).
+func stageSetsEnvironment(stage []string, name string) bool {
+	for _, tok := range stage {
+		if strings.HasPrefix(tok, name+"=") {
+			return true
+		}
+	}
+	return false
+}
+
+// awsBooleanOptions are the aws CLI options that take no value; every other
+// `--option` without `=` consumes the next word.
+var awsBooleanOptions = fieldSet("--debug --no-verify-ssl --no-paginate --no-sign-request --recursive --dryrun " +
+	"--quiet --delete --only-show-errors --no-progress --follow-symlinks --no-follow-symlinks --exact-timestamps " +
+	"--size-only --force-glacier-transfer --ignore-glacier-warnings --no-guess-mime-type --no-cli-pager " +
+	"--cli-auto-prompt --no-cli-auto-prompt")
+
+// kubectlCpValueOptions are the kubectl/oc options around `cp` that take a
+// separate value.
+var kubectlCpValueOptions = fieldSet("-n --namespace -c --container --context --kubeconfig --cluster --user " +
+	"-s --server --retries --token --as --as-group --request-timeout")
+
+// nonFlagWords returns the words that are not options. When booleans is
+// non-nil, a long option without `=` that is not listed there consumes the
+// next word as its value.
+func nonFlagWords(args []string, booleans map[string]bool) []string {
+	var out []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "--" {
+			return append(out, args[i+1:]...)
+		}
+		if strings.HasPrefix(a, "-") && a != "-" {
+			if booleans != nil && strings.HasPrefix(a, "--") && !strings.Contains(a, "=") && !booleans[a] {
+				i++
+			}
+			continue
+		}
+		out = append(out, a)
+	}
+	return out
+}
+
+// nonFlagWordsSkippingValues returns the words that are not options, skipping
+// the separate value of every listed option.
+func nonFlagWordsSkippingValues(args []string, valued map[string]bool) []string {
+	var out []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "--" {
+			return append(out, args[i+1:]...)
+		}
+		if strings.HasPrefix(a, "-") && a != "-" {
+			if valued[a] {
+				i++
+			}
+			continue
+		}
+		out = append(out, a)
+	}
+	return out
+}
+
+// objectStoreURL reports whether an operand names a cloud object (s3://,
+// gs://) rather than a local path.
+func objectStoreURL(op string) bool {
+	return strings.HasPrefix(op, "s3://") || strings.HasPrefix(op, "gs://")
+}
+
+// containerPathOperand reports whether a docker/kubectl cp operand names a
+// path inside a container or pod (NAME:path, or NAMESPACE/POD:path when
+// namespaced) rather than a local path.
+func containerPathOperand(op string, namespaced bool) bool {
+	colon := strings.IndexByte(op, ':')
+	if colon <= 0 {
+		return false
+	}
+	slashes := strings.Count(op[:colon], "/")
+	if namespaced && slashes == 1 {
+		return !strings.HasPrefix(op, "/") && !strings.HasPrefix(op, ".")
+	}
+	return slashes == 0
+}
+
+// rcloneRemoteOperand reports whether an rclone operand names a configured
+// remote (NAME:path, :backend:path) rather than a local path.
+func rcloneRemoteOperand(op string) bool {
+	colon := strings.IndexByte(op, ':')
+	if colon < 0 {
+		return false
+	}
+	if colon == 0 {
+		return true // on-the-fly backend, `:s3:bucket`
+	}
+	return !strings.ContainsAny(op[:colon], "/\\")
+}
+
+// decompressesToFiles reports whether a compressor invocation decompresses
+// into files named after its inputs: a decompress flag inside a short-option
+// cluster (-dk, -kd, -fd, -dq), or a decompress-only command name, unless the
+// output goes to stdout or the run only tests or lists.
+func decompressesToFiles(name string, args []string) bool {
+	decompress := strings.HasPrefix(name, "un") || name == "lunzip"
+	stdout := false
+	// Short options that take a value own the rest of their word.
+	valueLetters := "SoTFCMDPLB"
+	for _, a := range args {
+		if a == "--" {
+			break
+		}
+		switch a {
+		case "--decompress", "--uncompress":
+			decompress = true
+		case "--stdout", "--to-stdout", "--test", "--list":
+			stdout = true
+		}
+		if !isShortFlagToken(a) {
+			continue
+		}
+		for j := 1; j < len(a); j++ {
+			c := a[j]
+			if strings.IndexByte(valueLetters, c) >= 0 {
+				break
+			}
+			switch c {
+			case 'd':
+				decompress = true
+			case 'c', 't':
+				stdout = true
+			case 'l':
+				// lz4 -l selects the legacy format; elsewhere it lists.
+				stdout = stdout || !strings.Contains(name, "lz4")
+			}
+		}
+	}
+	return decompress && !stdout
+}
+
+// awkEditsInPlace reports whether gawk loads its inplace extension
+// (`-i inplace`, `--include=inplace`), which rewrites every file operand.
+func awkEditsInPlace(args []string) bool {
+	for i, a := range args {
+		if a == "--" {
+			break
+		}
+		value := ""
+		switch {
+		case (a == "-i" || a == "--include") && i+1 < len(args):
+			value = args[i+1]
+		case strings.HasPrefix(a, "--include="):
+			value = strings.TrimPrefix(a, "--include=")
+		case strings.HasPrefix(a, "-i") && len(a) > 2:
+			value = a[2:]
+		default:
+			continue
+		}
+		value = strings.TrimSuffix(filepath.Base(value), ".awk")
+		if value == "inplace" || strings.ContainsAny(value, "$`") || strings.Contains(value, dynamicSubstToken) {
+			return true
+		}
+	}
+	return false
+}
+
+// curlChoosesOutputName reports whether curl saves under a name the server
+// chooses (-J / --remote-header-name) or reads its options from a config
+// file (-K / --config) that can name any output.
+func curlChoosesOutputName(args []string) bool {
+	for _, a := range args {
+		if a == "--" {
+			break
+		}
+		if strings.HasPrefix(a, "--") {
+			if name, _, _, ok := resolveLongOption(a, []string{"remote-header-name", "config"}); ok && name != "" {
+				return true
+			}
+			continue
+		}
+		if !isShortFlagToken(a) {
+			continue
+		}
+		for j := 1; j < len(a); j++ {
+			if a[j] == 'J' || a[j] == 'K' {
+				return true
+			}
+			// Options that take a value own the rest of the word.
+			if strings.IndexByte("oduHXeAbcDEhrTwyYzmCxUQ", a[j]) >= 0 {
+				break
+			}
+		}
+	}
+	return false
+}
+
+// wgetChoosesOutputName reports whether wget saves under names the command
+// line does not give: recursive and mirror runs, page requisites, URL lists,
+// server-chosen names, and -e/--execute or a config file that can switch any
+// of these on.
+func wgetChoosesOutputName(args []string) bool {
+	long := []string{"recursive", "mirror", "page-requisites", "input-file", "content-disposition",
+		"trust-server-names", "execute", "config", "base", "force-directories"}
+	for _, a := range args {
+		if a == "--" {
+			break
+		}
+		if strings.HasPrefix(a, "--") {
+			if name, _, _, ok := resolveLongOption(a, long); ok && name != "" {
+				return true
+			}
+			continue
+		}
+		if !isShortFlagToken(a) || (len(a) == 3 && a[1] == 'n') {
+			continue // -nc, -nd, -nH, -np, -nv are two-letter options
+		}
+		for j := 1; j < len(a); j++ {
+			switch a[j] {
+			case 'r', 'm', 'p', 'i', 'e', 'x', 'B':
+				return true
+			}
+			// Options that take a value own the rest of the word.
+			if strings.IndexByte("oaOPtTwlADIXRUQ", a[j]) >= 0 {
+				break
+			}
+		}
+	}
+	return false
+}
+
+// vcsSubcommand returns the subcommand of an hg or svn invocation and the
+// words after it, skipping the global options (and their values) that may
+// precede it. An option whose value cannot be told apart from the
+// subcommand is skipped together with the next word.
+func vcsSubcommand(args []string) (string, []string) {
+	valued := map[string]bool{
+		"-R": true, "--repository": true, "--repo": true, "--cwd": true, "--config": true,
+		"--encoding": true, "--encodingmode": true, "--color": true, "--pager": true,
+		"--username": true, "--password": true, "--config-dir": true, "--config-option": true,
+		"--trust-server-cert-failures": true,
+	}
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "--" {
+			if i+1 < len(args) {
+				return args[i+1], args[i+2:]
+			}
+			return "", nil
+		}
+		if !strings.HasPrefix(a, "-") || a == "-" {
+			return a, args[i+1:]
+		}
+		if valued[a] {
+			i++
+		}
+	}
+	return "", nil
 }
 
 // archiveExtractionArgs reports whether an ar / jar / pax / dpkg-deb style
@@ -1029,6 +1773,17 @@ func gitSubcommandRewritesTree(inner []string) bool {
 		return !flag("-n", "--dry-run")
 	case "rebase":
 		return !flag("--quit")
+	case "merge-file":
+		// Writes the merge result into the first file unless -p prints it.
+		return !flag("-p", "--stdout")
+	case "mv":
+		// Without -f git mv refuses to overwrite an existing destination.
+		for _, a := range args {
+			if a == "--force" || (isShortFlagToken(a) && strings.ContainsRune(a[1:], 'f')) {
+				return true
+			}
+		}
+		return false
 	case "pull", "apply", "am", "cherry-pick", "revert", "checkout-index", "read-tree",
 		"submodule", "sparse-checkout", "worktree", "bisect", "filter-branch", "lfs":
 		if sub == "submodule" || sub == "worktree" {
@@ -1049,7 +1804,7 @@ func gitSubcommandRewritesTree(inner []string) bool {
 // redirect operators and their targets, and data arguments that follow the
 // program, never do. Glob operands gate every match, and a path written by an
 // earlier stage of the same command gates even when it does not exist yet.
-func stageExecutionFilesWritten(stage []string, cwd string, written map[string]bool) []string {
+func stageExecutionFilesWritten(stage []string, cwd string, written map[string]bool) (files []string) {
 	if len(stage) == 0 {
 		return nil
 	}
@@ -1067,11 +1822,30 @@ func stageExecutionFilesWritten(stage []string, cwd string, written map[string]b
 			return stageExecutionFilesWritten(composed, cwd, written)
 		}
 	}
+	if len(unwrapped.scripts) > 0 {
+		// `uv run script.py`: the runner hands the file to its interpreter,
+		// so it is gated as `sh script.py` would be.
+		var out []string
+		for _, script := range unwrapped.scripts {
+			out = append(out, stageExecutionFilesWritten([]string{"sh", script}, cwd, written)...)
+		}
+		return append(out, stageExecutionFilesWritten(cmdTokens, cwd, written)...)
+	}
 	if len(cmdTokens) == 0 {
 		return nil
 	}
 	name := commandName(cmdTokens[0])
 	operands := cmdTokens[1:]
+	// A package runner's directory option (`pnpm -C x`, `yarn --cwd x`,
+	// `bun --cwd x`) is the working directory of its own operands and of
+	// the command it runs, which is gated as a stage of its own.
+	if dir, known, has := runnerDirectory(name, cmdTokens); has && known {
+		cwd = resolveInDirectory(dir, cwd)
+	}
+	if runner := runnerCommand(name, cmdTokens); len(runner) > 0 {
+		runnerFiles := stageExecutionFilesWritten(runner, cwd, written)
+		defer func() { files = append(files, runnerFiles...) }()
+	}
 	if name == "find" {
 		return findExecutionFiles(cmdTokens, cwd, written)
 	}

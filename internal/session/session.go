@@ -436,7 +436,17 @@ func ValidateSessionID(id string) error {
 	if strings.Contains(id, "\x00") {
 		return fmt.Errorf("session: invalid ID %q: null byte not allowed", id)
 	}
+	if isStoreOwnedFile(id + ".json") {
+		return fmt.Errorf("session: invalid ID %q: reserved for a store-owned file", id)
+	}
 	return nil
+}
+
+// isStoreOwnedFile reports whether a file name in the session directory is
+// owned by the store itself (the index and the vector-index metadata)
+// rather than being a session.
+func isStoreOwnedFile(name string) bool {
+	return strings.EqualFold(name, indexFile) || strings.EqualFold(name, vectorMetaFile)
 }
 
 func (s *Store) path(id string) string {
@@ -687,7 +697,7 @@ func indexEntry(sess *Session) *IndexEntry {
 // isSessionFile returns true if the filename is a session JSON file
 // (not the index file, not a directory, not a temp file).
 func isSessionFile(name string) bool {
-	return strings.HasSuffix(name, ".json") && name != indexFile && !strings.HasSuffix(name, ".tmp")
+	return strings.HasSuffix(name, ".json") && !isStoreOwnedFile(name) && !strings.HasSuffix(name, ".tmp")
 }
 
 // ── CRUD ───────────────────────────────────────────────────────────────
