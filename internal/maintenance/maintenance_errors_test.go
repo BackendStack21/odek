@@ -292,11 +292,11 @@ func TestSweepPlansInfoError(t *testing.T) {
 	}
 }
 
-// TestSweepMediaStatError covers a non-NotExist Stat failure via a symlink
-// loop at the media root.
+// TestSweepMediaStatError covers a non-NotExist Lstat failure: the home
+// path is a regular file, so the media root lookup fails with ENOTDIR.
 func TestSweepMediaStatError(t *testing.T) {
-	home := t.TempDir()
-	if err := os.Symlink("media", filepath.Join(home, "media")); err != nil {
+	home := filepath.Join(t.TempDir(), "homefile")
+	if err := os.WriteFile(home, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := sweepMedia(home); err == nil || !strings.Contains(err.Error(), "stat media dir") {
