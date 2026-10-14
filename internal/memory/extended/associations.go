@@ -44,6 +44,8 @@ func (a *Associations) Link(fromID, toID string) {
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	delete(a.removed, fromID)
+	delete(a.removed, toID)
 	a.linkOne(fromID, toID)
 	a.linkOne(toID, fromID)
 }
@@ -251,4 +253,17 @@ func (a *Associations) SetExists(fn func(id string) bool) {
 	a.mu.Lock()
 	a.exists = fn
 	a.mu.Unlock()
+}
+
+// Restore clears the removal marks of ids that were put back in the store, so
+// their persisted links survive later merges.
+func (a *Associations) Restore(ids ...string) {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for _, id := range ids {
+		delete(a.removed, id)
+	}
 }

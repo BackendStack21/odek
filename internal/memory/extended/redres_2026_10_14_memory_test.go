@@ -2,6 +2,7 @@ package extended
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -119,5 +120,41 @@ func TestRED_Associations_RemovedAtomNotResurrected(t *testing.T) {
 	}
 	if !strings.Contains(string(raw), "atom-ccc") {
 		t.Errorf("new link lost: %s", raw)
+	}
+}
+
+// A restored atom (consolidation rollback) and a re-linked id must not stay
+// tombstoned: their persisted links have to survive later merges.
+func TestRED_Associations_RestoreAndLinkClearTombstone(t *testing.T) {
+	dir := t.TempDir()
+	a := NewAssociationsWithDir(dir)
+	a.Link("atom-aaa", "atom-bbb")
+	_ = a.Persist()
+	a.RemoveAtom("atom-aaa")
+	a.Restore("atom-aaa")
+	if err := a.Persist(); err != nil {
+		t.Fatal(err)
+	}
+	if got := NewAssociationsWithDir(dir).Related("atom-aaa"); len(got) != 1 {
+		t.Errorf("restored atom lost its links: %v", got)
+	}
+	a.RemoveAtom("atom-bbb")
+	a.Link("atom-bbb", "atom-ccc")
+	_ = a.Persist()
+	if got := NewAssociationsWithDir(dir).Related("atom-bbb"); len(got) == 0 {
+		t.Errorf("re-linked atom still tombstoned")
+	}
+}
+
+func TestRED_Exists_OnlyNotFoundIsGone(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Enabled = boolPtr(true)
+	em := New(t.TempDir(), newMockLLM(), cfg)
+	defer em.Close()
+	if _, err := em.store.Get("atom-missing"); !errors.Is(err, ErrAtomNotFound) {
+		t.Errorf("missing atom error = %v, want ErrAtomNotFound", err)
+	}
+	if _, err := em.store.Get("bad id/../x"); errors.Is(err, ErrAtomNotFound) {
+		t.Errorf("invalid id must not read as not-found: %v", err)
 	}
 }

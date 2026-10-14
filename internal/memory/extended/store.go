@@ -2,6 +2,7 @@ package extended
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/BackendStack21/odek/internal/flock"
 	"os"
@@ -146,6 +147,10 @@ func (s *AtomStore) Add(atom MemoryAtom, maxChars int) error {
 }
 
 // Get loads an atom by ID.
+// ErrAtomNotFound is wrapped by Get when no atom has the requested id.
+var ErrAtomNotFound = errors.New("atom not found")
+
+// Get returns the atom with the given id.
 func (s *AtomStore) Get(id string) (MemoryAtom, error) {
 	if err := session.ValidateSessionID(id); err != nil {
 		return MemoryAtom{}, fmt.Errorf("extended store: invalid atom id: %w", err)
@@ -168,7 +173,7 @@ func (s *AtomStore) Get(id string) (MemoryAtom, error) {
 		}
 	}
 	if !found {
-		return MemoryAtom{}, fmt.Errorf("extended store: atom %s not found", id)
+		return MemoryAtom{}, fmt.Errorf("extended store: atom %s not found: %w", id, ErrAtomNotFound)
 	}
 
 	text, err := os.ReadFile(s.chunkPath(id))

@@ -196,7 +196,9 @@ func (em *ExtendedMemory) mergeGroup(ctx context.Context, group []MemoryAtom) bo
 		for _, a := range group {
 			if rerr := em.store.Add(a, em.cfg.AtomMaxChars); rerr != nil {
 				log.Printf("extended memory: consolidate rollback of original %s: %v", a.ID, rerr)
+				continue
 			}
+			em.assoc.Restore(a.ID)
 		}
 		em.index.markDirty()
 		return false

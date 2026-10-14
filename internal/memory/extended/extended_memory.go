@@ -3,6 +3,7 @@ package extended
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -139,7 +140,7 @@ func newExtended(dir string, llm LLMClient, cfg Config, evictOnOpen bool) *Exten
 	em.recall.SetFollowUpSink(em.setLastFollowUps)
 	em.assoc.SetExists(func(id string) bool {
 		_, err := store.Get(id)
-		return err == nil
+		return !errors.Is(err, ErrAtomNotFound)
 	})
 	em.recall.stats = &em.stats
 	// Wire the hygiene sweep's atom-existence checker to the live atom store,
