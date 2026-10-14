@@ -205,9 +205,17 @@ func TestCookieNameSegmentsAndPlaceholders(t *testing.T) {
 			t.Errorf("session cookie %q not redacted: %q", name, got)
 		}
 	}
+	// Names that do not read as session cookies are no longer a reason to keep
+	// a token-shaped value: any non-preference cookie value is redacted.
+	for in, want := range map[string]string{
+		"Cookie: loginHint=abcdefghijklmnop": "Cookie: loginHint=[REDACTED]",
+		"Cookie: tokenType=abcdefghijklmnop": "Cookie: tokenType=[REDACTED]",
+	} {
+		if got := RedactSecrets(in); got != want {
+			t.Errorf("RedactSecrets(%q) = %q, want %q", in, got, want)
+		}
+	}
 	cfghunt13ExpectUnchanged(t, []string{
-		"Cookie: loginHint=alice",
-		"Cookie: tokenType=Bearer",
 		"Cookie: session=YOUR_SESSION_ID",
 		"Cookie: sid=REPLACE_ME_NOW",
 		"Cookie: theme=abcdefghijklmnop",
