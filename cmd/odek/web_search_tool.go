@@ -232,7 +232,7 @@ func (t *webSearchTool) query(query, category string) (*searxngResponse, error) 
 	ctx := t.toolCtx()
 	endpoint, err := url.Parse(strings.TrimRight(t.cfg.BaseURL, "/") + "/search")
 	if err != nil {
-		return nil, fmt.Errorf("invalid web_search base_url %q: %v", t.cfg.BaseURL, err)
+		return nil, fmt.Errorf("invalid web_search base_url configuration")
 	}
 	q := endpoint.Query()
 	q.Set("q", query)
@@ -277,7 +277,14 @@ func (t *webSearchTool) query(query, category string) (*searxngResponse, error) 
 		}
 	}
 	if err != nil {
-		return nil, fmt.Errorf("cannot reach SearXNG at %s — is the service running? (%v)", t.cfg.BaseURL, err)
+		// The url.Error wrapper repeats the request URL (base_url userinfo,
+		// path or token); report only the underlying cause.
+		cause := error(err)
+		var uerr *url.Error
+		if errors.As(err, &uerr) && uerr.Err != nil {
+			cause = uerr.Err
+		}
+		return nil, fmt.Errorf("cannot reach SearXNG (configured backend) — is the service running? (%v)", cause)
 	}
 	defer httpResp.Body.Close()
 
