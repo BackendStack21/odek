@@ -531,14 +531,16 @@ func (s *AuditStore) preserveCorruptLocked(sessionID string) {
 // ── Divergence heuristic ─────────────────────────────────────────────
 
 // reResource matches strings that look like a resource the agent might
-// act on: URLs, absolute paths, dotted file extensions, command names.
+// act on: URLs, absolute paths, dotted file extensions, command names,
+// bare IPv4 addresses and bracketed IPv6 literals (the usual targets of
+// nc/ssh/curl exfiltration that carry no scheme or domain name).
 // The heuristic compares resources referenced by tool calls against
 // the user's preceding message; anything novel is suspicious when the
 // session has ingested untrusted content this turn.
 //
 // Optional surrounding quotes are captured so JSON-encoded tool arguments
 // (e.g. {"path":"README.md"}) are inspected correctly.
-var reResource = regexp.MustCompile(`(?i)["']?(https?://[^\s'"<>]+|/[A-Za-z0-9_./-]{2,}|[A-Za-z0-9_-]+\.[A-Za-z]{2,5})["']?`)
+var reResource = regexp.MustCompile(`(?i)["']?(https?://[^\s'"<>]+|/[A-Za-z0-9_./-]{2,}|(?:[0-9]{1,3}\.){3}[0-9]{1,3}|\[[0-9a-f:.]*:[0-9a-f:.]*\]|[A-Za-z0-9_-]+\.[A-Za-z]{2,5})["']?`)
 
 // ResourcesIn returns the set of resource-like tokens found in text.
 func ResourcesIn(text string) []string {
