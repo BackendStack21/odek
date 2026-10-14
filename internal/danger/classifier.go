@@ -2809,6 +2809,14 @@ func classifyStageIn(tokens []string, pipedInto bool, repo *gitRepoCtx) RiskClas
 				cls = worstOf(cls, inner)
 			}
 		}
+		// Command lines a runner hands to a shell (`npx -c CMD`,
+		// `npm explore PKG -- CMD`).
+		for _, line := range runnerCommandStrings(name, cmdTokens) {
+			cls = worstOf(cls, CodeExecution)
+			if inner := Classify(line); inner != Unknown {
+				cls = worstOf(cls, inner)
+			}
+		}
 		// An action command the classifier cannot judge keeps the
 		// code_execution floor rather than becoming unknown.
 		leaves, over := execActionLeaves(name, cmdTokens)

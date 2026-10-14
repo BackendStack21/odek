@@ -288,6 +288,28 @@ var uvRunSpec = optSpec{
 		"refresh-package reinstall-package upgrade-package no-binary-package no-build-package config-setting", ""),
 }
 
+// projectRunnerGlobals are the global option grammars of the project
+// environment runners: the value-taking options that may sit between the
+// runner and its verb, so their values are not read as the verb.
+var projectRunnerGlobals = map[string]optSpec{
+	"poetry":  {posix: true, short: "CP", long: longTable("directory project", "")},
+	"pipenv":  {posix: true, long: longTable("python pypi-mirror", "")},
+	"pdm":     {posix: true, short: "cp", long: longTable("config project", "")},
+	"rye":     {posix: true},
+	"hatch":   {posix: true, short: "ep", long: longTable("env project data-dir cache-dir config", "")},
+	"uv":      uvGlobalSpec,
+	"bundle":  {posix: true, short: "r", long: longTable("gemfile retry", "")},
+	"bundler": {posix: true, short: "r", long: longTable("gemfile retry", "")},
+}
+
+// uvGlobalSpec is the grammar of the uv options that may precede its
+// subcommand.
+var uvGlobalSpec = optSpec{
+	posix: true,
+	long: longTable("directory project cache-dir config-file color python-preference allow-insecure-host "+
+		"python index index-url extra-index-url default-index find-links", ""),
+}
+
 // subcommandWrapper recognises tools that run a command only for certain
 // subcommands: `asdf exec`, `direnv exec DIR`, `mise|rtx exec|x … --`,
 // `nix run|shell|develop`, and `nix-shell`.
@@ -320,16 +342,23 @@ func subcommandWrapper(name string, tokens []string, i int) (wrapperStep, bool) 
 		if name == "bundle" || name == "bundler" {
 			verb = "exec"
 		}
-		if len(rest) > 0 && (rest[0] == verb || (verb == "exec" && rest[0] == "e")) {
+		// Global options (`poetry -C dir`, `pipenv --python 3.12`) may
+		// precede the verb.
+		g := projectRunnerGlobals[name].parse(rest)
+		if g.operandAt < 0 {
+			break
+		}
+		if v := rest[g.operandAt]; v == verb || (verb == "exec" && v == "e") {
 			step.floor = CodeExecution
 			spec := projectRunnerSpec
 			if name == "uv" {
 				spec = uvRunSpec
 			}
-			r := spec.parse(tokens[i+2:])
+			start := i + 1 + g.operandAt + 1
+			r := spec.parse(tokens[start:])
 			switch {
 			case r.operandAt >= 0:
-				step.next = i + 2 + r.operandAt
+				step.next = start + r.operandAt
 			case len(r.rest) > 0:
 				step.next = len(tokens) - len(r.rest)
 			default:
