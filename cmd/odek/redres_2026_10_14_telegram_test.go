@@ -6,7 +6,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/BackendStack21/odek/internal/danger"
 )
@@ -91,5 +93,72 @@ func TestRED_TelegramMediaScopeCoversSiblingsAndSpellings(t *testing.T) {
 	}
 	if err := checkTelegramMediaRead(ctx, filepath.Join(t.TempDir(), "x.txt")); err != nil {
 		t.Errorf("non-media path refused: %v", err)
+	}
+}
+
+func TestRED_TelegramMediaJobsRunOffTheUpdateLoop(t *testing.T) {
+	const chatA, chatB int64 = 910001, 910002
+	release := make(chan struct{})
+	started := make(chan struct{})
+	var order []int
+	var mu sync.Mutex
+	done := make(chan struct{}, 3)
+
+	returned := make(chan struct{})
+	go func() {
+		// A slow download/transcription for chat A must not block the caller.
+		runChatMediaOffLoop(chatA, nil, func() {
+			close(started)
+			<-release
+			mu.Lock()
+			order = append(order, 1)
+			mu.Unlock()
+			done <- struct{}{}
+		})
+		// Same chat: queued behind the first, order preserved.
+		runChatMediaOffLoop(chatA, nil, func() {
+			mu.Lock()
+			order = append(order, 2)
+			mu.Unlock()
+			done <- struct{}{}
+		})
+		// A panicking job is contained and does not stall the chat's queue.
+		runChatMediaOffLoop(chatA, nil, func() { panic("boom") })
+		runChatMediaOffLoop(chatA, nil, func() {
+			mu.Lock()
+			order = append(order, 3)
+			mu.Unlock()
+			done <- struct{}{}
+		})
+		close(returned)
+	}()
+	select {
+	case <-returned:
+	case <-time.After(2 * time.Second):
+		t.Fatal("runChatMediaOffLoop blocked the caller")
+	}
+	<-started
+
+	// Another chat's job runs while chat A's is still in flight.
+	other := make(chan struct{})
+	runChatMediaOffLoop(chatB, nil, func() { close(other) })
+	select {
+	case <-other:
+	case <-time.After(2 * time.Second):
+		t.Fatal("chat B's media job waited on chat A")
+	}
+
+	close(release)
+	for i := 0; i < 3; i++ {
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatal("queued media jobs did not finish")
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(order) != 3 || order[0] != 1 || order[1] != 2 || order[2] != 3 {
+		t.Fatalf("per-chat order not preserved: %v", order)
 	}
 }

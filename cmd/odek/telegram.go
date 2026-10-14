@@ -90,15 +90,38 @@ var chatResetGates sync.Map // map[int64]chan struct{}
 // goroutine, preserving command order) and runs fn on a new goroutine after
 // any earlier reset of the same chat. Never blocks the caller.
 func runChatResetOffLoop(chatID int64, fn func()) {
+	runChatGated(&chatResetGates, chatID, fn)
+}
+
+// chatMediaGates orders a chat's media preparation (download, transcription)
+// the same way chatResetGates orders resets.
+var chatMediaGates sync.Map // map[int64]chan struct{}
+
+// runChatMediaOffLoop runs fn (a media download and optional transcription)
+// on its own goroutine, after any earlier media job of the same chat, so a
+// slow download or speech-to-text run never holds up the update loop for
+// other chats or their approval callbacks. A panic in fn is logged, not fatal.
+func runChatMediaOffLoop(chatID int64, log telegram.Logger, fn func()) {
+	runChatGated(&chatMediaGates, chatID, func() {
+		defer func() {
+			if r := recover(); r != nil && log != nil {
+				log.Error("media handler panic", "chat_id", chatID, "panic", r)
+			}
+		}()
+		fn()
+	})
+}
+
+func runChatGated(gates *sync.Map, chatID int64, fn func()) {
 	gate := make(chan struct{})
 	var prev chan struct{}
-	if v, ok := chatResetGates.Swap(chatID, gate); ok {
+	if v, ok := gates.Swap(chatID, gate); ok {
 		prev, _ = v.(chan struct{})
 	}
 	go func() {
 		defer func() {
 			close(gate)
-			chatResetGates.CompareAndDelete(chatID, gate)
+			gates.CompareAndDelete(chatID, gate)
 		}()
 		if prev != nil {
 			<-prev
@@ -1000,89 +1023,95 @@ func telegramCmd(args []string) error {
 	}
 
 	handler.OnVoiceMessage = func(chatID int64, messageID int, fileID string, userID int64) (string, error) {
-		// Download the voice file.
-		localPath, err := telegram.DownloadVoice(bot, chatID, fileID)
-		if err != nil {
-			handlerLog.Warn("voice download failed", "chat_id", chatID, "error", err)
-			go handleChatMessage(chatID, messageID, userID,
-				fmt.Sprintf("[voice message received — download failed: %v]", err),
-				bot, handler, sessionManager, resolved, systemMessage, handlerLog)
-			return "", nil
-		}
-
-		// Auto-transcribe if configured and whisper is available.
-		if resolved.Transcription.AutoTranscribe {
-			tool := newTranscribeTool(resolved.Dangerous, resolved.Transcription)
-			result, err := tool.Call(fmt.Sprintf(`{"path":"%s"}`, localPath))
-			if err == nil {
-				var r struct {
-					Text  string `json:"text"`
-					Error string `json:"error"`
-				}
-				if json.Unmarshal([]byte(result), &r) == nil && r.Error == "" && r.Text != "" {
-					// Transcribed text crosses an external trust boundary; wrap it before
-					// injecting it into the user message stream (telegramVoiceMessage).
-					transcript := telegramGuardScan(context.Background(), r.Text, "voice transcript")
-					go handleChatMessage(chatID, messageID, userID,
-						telegramVoiceMessage(chatID, transcript),
-						bot, handler, sessionManager, resolved, systemMessage, handlerLog)
-					return "", nil
-				}
+		runChatMediaOffLoop(chatID, handlerLog, func() {
+			// Download the voice file.
+			localPath, err := telegram.DownloadVoice(bot, chatID, fileID)
+			if err != nil {
+				handlerLog.Warn("voice download failed", "chat_id", chatID, "error", err)
+				go handleChatMessage(chatID, messageID, userID,
+					fmt.Sprintf("[voice message received — download failed: %v]", err),
+					bot, handler, sessionManager, resolved, systemMessage, handlerLog)
+				return
 			}
-			// Transcription failed — fall through to file path message
-			handlerLog.Warn("auto-transcribe failed, falling back to path", "chat_id", chatID, "error", err)
-		}
 
-		// Fallback: pass the file path to the agent
-		go handleChatMessage(chatID, messageID, userID,
-			wrapUntrusted(context.Background(), fmt.Sprintf("telegram:chat:%d:voice", chatID),
-				fmt.Sprintf("🎤 Voice message saved to %q. Use transcribe() tool to get the text.", localPath)),
-			bot, handler, sessionManager, resolved, systemMessage, handlerLog)
+			// Auto-transcribe if configured and whisper is available.
+			if resolved.Transcription.AutoTranscribe {
+				tool := newTranscribeTool(resolved.Dangerous, resolved.Transcription)
+				result, err := tool.Call(fmt.Sprintf(`{"path":"%s"}`, localPath))
+				if err == nil {
+					var r struct {
+						Text  string `json:"text"`
+						Error string `json:"error"`
+					}
+					if json.Unmarshal([]byte(result), &r) == nil && r.Error == "" && r.Text != "" {
+						// Transcribed text crosses an external trust boundary; wrap it before
+						// injecting it into the user message stream (telegramVoiceMessage).
+						transcript := telegramGuardScan(context.Background(), r.Text, "voice transcript")
+						go handleChatMessage(chatID, messageID, userID,
+							telegramVoiceMessage(chatID, transcript),
+							bot, handler, sessionManager, resolved, systemMessage, handlerLog)
+						return
+					}
+				}
+				// Transcription failed — fall through to file path message
+				handlerLog.Warn("auto-transcribe failed, falling back to path", "chat_id", chatID, "error", err)
+			}
+
+			// Fallback: pass the file path to the agent
+			go handleChatMessage(chatID, messageID, userID,
+				wrapUntrusted(context.Background(), fmt.Sprintf("telegram:chat:%d:voice", chatID),
+					fmt.Sprintf("🎤 Voice message saved to %q. Use transcribe() tool to get the text.", localPath)),
+				bot, handler, sessionManager, resolved, systemMessage, handlerLog)
+		})
 		return "", nil
 	}
 
 	handler.OnPhotoMessage = func(chatID int64, messageID int, fileIDs []string, caption string, userID int64) (string, error) {
-		localPath, err := telegram.DownloadPhoto(bot, chatID, fileIDs)
-		if err != nil {
-			handlerLog.Warn("photo download failed", "chat_id", chatID, "error", err)
+		runChatMediaOffLoop(chatID, handlerLog, func() {
+			localPath, err := telegram.DownloadPhoto(bot, chatID, fileIDs)
+			if err != nil {
+				handlerLog.Warn("photo download failed", "chat_id", chatID, "error", err)
+				go handleChatMessage(chatID, messageID, userID,
+					fmt.Sprintf("[photo received — download failed: %v]", err),
+					bot, handler, sessionManager, resolved, systemMessage, handlerLog)
+				return
+			}
+
+			caption = strings.TrimSpace(caption)
+			caption = telegramGuardScan(context.Background(), caption, "photo caption")
+
+			// Queue auto-description inside the run so approvals, /stop, usage,
+			// and execution budgets cover both local and provider vision.
+			if resolved.Vision.AutoDescribeEnabled() {
+				go handleChatMessage(chatID, messageID, userID,
+					photoFallbackMessage(localPath, caption), bot, handler, sessionManager,
+					resolved, systemMessage, handlerLog, &telegramPhotoInput{Path: localPath, Caption: caption})
+				return
+			}
+
+			// Fallback: hand the agent the file path (and caption) so it can analyze
+			// the image itself via the vision/shell tools.
 			go handleChatMessage(chatID, messageID, userID,
-				fmt.Sprintf("[photo received — download failed: %v]", err),
+				photoFallbackMessage(localPath, caption),
 				bot, handler, sessionManager, resolved, systemMessage, handlerLog)
-			return "", nil
-		}
-
-		caption = strings.TrimSpace(caption)
-		caption = telegramGuardScan(context.Background(), caption, "photo caption")
-
-		// Queue auto-description inside the run so approvals, /stop, usage,
-		// and execution budgets cover both local and provider vision.
-		if resolved.Vision.AutoDescribeEnabled() {
-			go handleChatMessage(chatID, messageID, userID,
-				photoFallbackMessage(localPath, caption), bot, handler, sessionManager,
-				resolved, systemMessage, handlerLog, &telegramPhotoInput{Path: localPath, Caption: caption})
-			return "", nil
-		}
-
-		// Fallback: hand the agent the file path (and caption) so it can analyze
-		// the image itself via the vision/shell tools.
-		go handleChatMessage(chatID, messageID, userID,
-			photoFallbackMessage(localPath, caption),
-			bot, handler, sessionManager, resolved, systemMessage, handlerLog)
+		})
 		return "", nil
 	}
 
 	handler.OnDocumentMessage = func(chatID int64, messageID int, fileID string, fileName string, userID int64) (string, error) {
-		localPath, err := telegram.DownloadDocument(bot, chatID, fileID, fileName)
-		if err != nil {
-			handlerLog.Warn("document download failed", "chat_id", chatID, "file_name", fileName, "error", err)
+		runChatMediaOffLoop(chatID, handlerLog, func() {
+			localPath, err := telegram.DownloadDocument(bot, chatID, fileID, fileName)
+			if err != nil {
+				handlerLog.Warn("document download failed", "chat_id", chatID, "file_name", fileName, "error", err)
+				go handleChatMessage(chatID, messageID, userID,
+					fmt.Sprintf("[document received — download failed: %v]", err),
+					bot, handler, sessionManager, resolved, systemMessage, handlerLog)
+				return
+			}
 			go handleChatMessage(chatID, messageID, userID,
-				fmt.Sprintf("[document received — download failed: %v]", err),
+				telegramDocumentMessage(localPath),
 				bot, handler, sessionManager, resolved, systemMessage, handlerLog)
-			return "", nil
-		}
-		go handleChatMessage(chatID, messageID, userID,
-			telegramDocumentMessage(localPath),
-			bot, handler, sessionManager, resolved, systemMessage, handlerLog)
+		})
 		return "", nil
 	}
 

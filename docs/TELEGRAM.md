@@ -458,6 +458,10 @@ Supports downloading voice messages, photos, and documents from Telegram to the 
 
 Media files are saved to `~/.odek/media/` (created automatically on first download).
 
+Downloads and voice auto-transcription run on a per-chat background queue (in arrival order within a chat), never on the update loop, so a slow download or speech-to-text run does not delay other chats or their approval callbacks.
+
+The file-reading tools (`read_file`, `vision`, `transcribe`) are scoped the same way as outbound media: during a Telegram turn they refuse files in `~/.odek/media/` that belong to another chat (same `_chat<chatID>_` / `chat<chatID>/` rule, resolved through `~`, `..`, symlinks and case folding). Other paths are unaffected.
+
 ### Download limits
 
 - **Per-file cap:** `telegram.max_download_size` (default **5 MiB**). Files larger than the cap are rejected before they are written to disk. Set to `-1` to disable.
