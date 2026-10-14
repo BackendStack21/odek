@@ -291,13 +291,13 @@ type cmdWord struct{ s, e int }
 // commandWords tokenises the command that continues at from: words are
 // split on blanks and backslash-newline continuations; quotes group a word
 // (so a quoted & ; | or newline does not end the command); an unquoted
-// newline, |, ; or & ends it. Because the text may be JSON-encoded, an
-// unquoted \n, \r or \t escape sequence also ends the word (and \n, \r end
-// the command). A single quote with no closing quote is an ordinary
-// character; a double quote with no closing quote ends the command (it
-// closes the JSON string the command sits in). It returns the words and the
-// offset where scanning stopped, bounded by commandScanMax bytes.
-func commandWords(text string, from int) ([]cmdWord, int) {
+// newline, |, ; or & ends it. A quote with no closing quote is an ordinary
+// character. In JSON-encoded text (json) an unquoted \n, \r or \t escape
+// sequence also ends the word (and \n, \r end the command), and a double
+// quote with no closing quote ends the command: it closes the JSON string the
+// command sits in. It returns the words and the offset where scanning
+// stopped, bounded by commandScanMax bytes.
+func commandWords(text string, from int, json bool) ([]cmdWord, int) {
 	limit := len(text)
 	if limit-from > commandScanMax {
 		limit = from + commandScanMax
@@ -328,10 +328,10 @@ func commandWords(text string, from int) ([]cmdWord, int) {
 				i++
 			}
 			continue
-		case c == '\\' && i+1 < limit && text[i+1] == 't':
+		case json && c == '\\' && i+1 < limit && text[i+1] == 't':
 			i += 2
 			continue
-		case c == '\\' && i+1 < limit && (text[i+1] == 'n' || text[i+1] == 'r'):
+		case json && c == '\\' && i+1 < limit && (text[i+1] == 'n' || text[i+1] == 'r'):
 			return words, i
 		case c == '\n' || c == '\r' || c == '|' || c == ';' || c == '&':
 			return words, i
@@ -346,8 +346,12 @@ func commandWords(text string, from int) ([]cmdWord, int) {
 			case '\\':
 				if i+1 < limit {
 					switch text[i+1] {
-					case '\n', '\r', 'n', 'r', 't':
+					case '\n', '\r':
 						break word
+					case 'n', 'r', 't':
+						if json {
+							break word
+						}
 					}
 				}
 				i += 2
@@ -360,8 +364,12 @@ func commandWords(text string, from int) ([]cmdWord, int) {
 			case '"':
 				k := closer(i, '"')
 				if k < 0 {
-					unbalanced = true
-					break word
+					if json {
+						unbalanced = true
+						break word
+					}
+					i++
+					continue
 				}
 				i = k + 1
 			default:
@@ -412,8 +420,8 @@ func unquoteWord(text string, s, e int) ([]byte, []int) {
 // its colon is not parsed as shell quoting (the quote is part of the
 // password, or closes a JSON string around the command): the password then
 // runs to the next blank, JSON \n \r \t \" escape or double quote.
-func operandPassword(text string, s, e int, ok func(string) bool) (int, int, bool) {
-	if ps, pe, handled := looseOperand(text, s, true, ok); handled {
+func operandPassword(text string, s, e int, json bool, ok func(string) bool) (int, int, bool) {
+	if ps, pe, handled := looseOperand(text, s, e, true, json, ok); handled {
 		return ps, pe, pe > ps
 	}
 	c, idx := unquoteWord(text, s, e)
@@ -427,21 +435,27 @@ func operandPassword(text string, s, e int, ok func(string) bool) (int, int, boo
 	return idx[k+1], idx[len(c)-1] + 1, true
 }
 
-// looseOperand handles an operand at text[s:] that is not an ordinary shell
-// word: one wrapped in JSON-escaped quotes (\"user:pass\"), or one that
-// carries a quote after the first byte of its password. handled is false for
-// an ordinary word (the shell-quoting parse then applies). The password runs
-// to the end of the blank-delimited chunk, a JSON escape, or a double quote.
-func looseOperand(text string, s int, userPass bool, ok func(string) bool) (ps, pe int, handled bool) {
+// looseOperand handles an operand at text[s:] (word end e) that is not an
+// ordinary shell word. handled is false for an ordinary word, which the
+// shell-quoting parse then covers.
+//
+// In JSON-encoded text (json): an operand wrapped in escaped quotes
+// (\"user:pass\"), or one with a quote after the first byte of its
+// password; the password runs to the next blank, JSON escape or double quote.
+// In plain shell text: an operand whose apostrophe pairs with a later quote
+// across blanks (the word extends past its first blank-delimited chunk); the
+// password runs to the next blank, and double quotes and backslash sequences
+// are ordinary password characters.
+func looseOperand(text string, s, e int, userPass, json bool, ok func(string) bool) (ps, pe int, handled bool) {
 	if s >= len(text) || text[s] == '"' || text[s] == '\'' {
 		return 0, 0, false
 	}
-	jsonQuoted := strings.HasPrefix(text[s:], `\"`)
+	jsonQuoted := json && strings.HasPrefix(text[s:], `\"`)
 	if jsonQuoted {
 		s += 2
 	}
 	ce := s
-	for ce < len(text) && !isOperandEnd(text, ce) {
+	for ce < len(text) && !isOperandEnd(text, ce, json) {
 		ce++
 	}
 	ps = s
@@ -454,17 +468,22 @@ func looseOperand(text string, s int, userPass bool, ok func(string) bool) (ps, 
 	}
 	stray := false
 	for i := ps + 1; i < ce; i++ {
-		if text[i] == '"' || text[i] == '\'' {
+		if c := text[i]; c == '\'' || (json && c == '"') {
 			stray = true
 			break
 		}
+	}
+	if !json && e <= ce {
+		stray = false
 	}
 	if !stray && !jsonQuoted {
 		return 0, 0, false
 	}
 	pe = ce
-	if d := strings.IndexByte(text[ps:ce], '"'); d >= 0 {
-		pe = ps + d
+	if json {
+		if d := strings.IndexByte(text[ps:ce], '"'); d >= 0 {
+			pe = ps + d
+		}
 	}
 	if pe <= ps || !ok(text[ps:pe]) {
 		return ps, ps, true
@@ -473,13 +492,13 @@ func looseOperand(text string, s int, userPass bool, ok func(string) bool) (ps, 
 }
 
 // isOperandEnd reports whether text[i] ends an unquoted operand: a blank, a
-// newline, a command separator, or a JSON \n \r \t \" escape.
-func isOperandEnd(text string, i int) bool {
+// newline, a command separator, and in JSON-encoded text a \n \r \t \" escape.
+func isOperandEnd(text string, i int, json bool) bool {
 	switch text[i] {
 	case ' ', '\t', '\n', '\r', '|', ';', '&':
 		return true
 	case '\\':
-		if i+1 < len(text) {
+		if json && i+1 < len(text) {
 			switch text[i+1] {
 			case 'n', 'r', 't', '"':
 				return true
@@ -501,8 +520,8 @@ func bytesIndexByte(b []byte, c byte) int {
 // wholePassword returns the raw span of an entire word value starting at
 // text[s] (word end e) when it passes ok, with the same loose handling of
 // stray quotes as operandPassword.
-func wholePassword(text string, s, e int, ok func(string) bool) (int, int, bool) {
-	if ps, pe, handled := looseOperand(text, s, false, ok); handled {
+func wholePassword(text string, s, e int, json bool, ok func(string) bool) (int, int, bool) {
+	if ps, pe, handled := looseOperand(text, s, e, false, json, ok); handled {
 		return ps, pe, pe > ps
 	}
 	c, idx := unquoteWord(text, s, e)
@@ -510,6 +529,29 @@ func wholePassword(text string, s, e int, ok func(string) bool) (int, int, bool)
 		return 0, 0, false
 	}
 	return idx[0], idx[len(c)-1] + 1, true
+}
+
+// jsonStringTracker answers, for increasing offsets, whether an offset sits
+// inside a JSON string: an odd number of unescaped double quotes precede it on
+// its line (JSON strings hold no raw newline). It advances incrementally, so
+// a sequence of queries scans the text once.
+type jsonStringTracker struct {
+	pos    int
+	inside bool
+}
+
+func (t *jsonStringTracker) at(text string, off int) bool {
+	for ; t.pos < off && t.pos < len(text); t.pos++ {
+		switch text[t.pos] {
+		case '\n':
+			t.inside = false
+		case '\\':
+			t.pos++
+		case '"':
+			t.inside = !t.inside
+		}
+	}
+	return t.inside
 }
 
 // commandTools are the commands whose credential flags are recognised, with
@@ -528,6 +570,7 @@ var commandTools = []struct {
 func commandCredentialMatches(text string) [][2]int {
 	var out [][2]int
 	for _, tool := range commandTools {
+		var inJSON jsonStringTracker
 		for pos := 0; pos < len(text); {
 			j := indexFoldASCII(text[pos:], tool.name)
 			if j < 0 {
@@ -542,8 +585,9 @@ func commandCredentialMatches(text string) [][2]int {
 			if after < len(text) && !strings.ContainsRune(" \t\n\r\\", rune(text[after])) {
 				continue
 			}
-			words, end := commandWords(text, after)
-			out = append(out, toolCredentialSpans(text, tool.kind, words)...)
+			json := inJSON.at(text, j)
+			words, end := commandWords(text, after, json)
+			out = append(out, toolCredentialSpans(text, tool.kind, json, words)...)
 			if end > pos {
 				pos = end
 			}
@@ -556,7 +600,7 @@ func isCommandWordByte(c byte) bool {
 	return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_' || c == '-' || c == '.'
 }
 
-func toolCredentialSpans(text string, kind int, words []cmdWord) [][2]int {
+func toolCredentialSpans(text string, kind int, json bool, words []cmdWord) [][2]int {
 	var out [][2]int
 	add := func(s, e int, ok bool) {
 		if ok {
@@ -621,9 +665,9 @@ func toolCredentialSpans(text string, kind int, words []cmdWord) [][2]int {
 			continue
 		}
 		if kind == 1 {
-			add(wholePassword(text, os, oe, plausibleAuthPassword))
+			add(wholePassword(text, os, oe, json, plausibleAuthPassword))
 		} else {
-			add(operandPassword(text, os, oe, plausibleAuthPassword))
+			add(operandPassword(text, os, oe, json, plausibleAuthPassword))
 		}
 	}
 	return out

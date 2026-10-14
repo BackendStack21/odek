@@ -157,6 +157,30 @@ func TestCommandCredentialsInJSONEncodedText(t *testing.T) {
 	})
 }
 
+func TestCommandCredentialsPlainShellQuotesAndEscapes(t *testing.T) {
+	for in, want := range map[string]string{
+		`curl -u admin:Xk9vQ2mL"7pR4tY8wZ3nB6cF1" https://x`:      `curl -u admin:[REDACTED]" https://x`,
+		`curl -u admin:Xk9vQ2mL"7pR4tY8wZ3nB6cF1 https://x`:       `curl -u admin:[REDACTED] https://x`,
+		`curl -u admin:Xk9vQ2mL\t7pR4tY8wZ3nB6cF1 https://x`:      `curl -u admin:[REDACTED] https://x`,
+		`curl -u admin:Xk9vQ2mL\n7pR4tY8wZ3nB6cF1 https://x`:      `curl -u admin:[REDACTED] https://x`,
+		`curl -u admin:Xk9vQ2mL'7pR4tY8wZ3nB6cF1 https://x`:       `curl -u admin:[REDACTED] https://x`,
+		`curl -u admin:pa"ss word" https://x`:                     `curl -u admin:[REDACTED] https://x`,
+		`echo "x" && curl -u admin:Xk9v"Q2mL7pR4tY8wZ" https://x`: `echo "x" && curl -u admin:[REDACTED]" https://x`,
+	} {
+		got := RedactSecrets(in)
+		if strings.Contains(got, "7pR4") || strings.Contains(got, "ss word") || strings.Contains(got, "Q2mL") {
+			t.Errorf("RedactSecrets(%q) left password text: %q", in, got)
+		}
+		if got != want && !strings.Contains(in, "pa\"ss") {
+			t.Errorf("RedactSecrets(%q)\n got  %q\n want %q", in, got, want)
+		}
+	}
+	cfghunt13ExpectUnchanged(t, []string{
+		`curl https://x "a b" && sudo -u postgres:postgres1 psql`,
+		`docker run -u appuser:appgroup2 "alpine:3"`,
+	})
+}
+
 func TestCookieNameSegmentsAndPlaceholders(t *testing.T) {
 	for _, name := range []string{"remember_user_token", "_gh_sess", "connect.sid", "PHPSESSID", "laravel_session", "__Secure-3PSID", "JSESSIONID", "session_id", "csrftoken", "auth_token", "authToken", "XSRF-TOKEN", "sessionid"} {
 		in := "Cookie: " + name + "=abcdefghijklmnop"
