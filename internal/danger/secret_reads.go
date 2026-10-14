@@ -405,3 +405,38 @@ func indirectSensitiveRef(tokens []string, vars map[string]string) bool {
 	}
 	return false
 }
+
+// namerefNamesSecret reports whether a command declares a nameref (`declare
+// -n`, `typeset -n`, `local -n`) and also names a secret-bearing variable as
+// a word or an assigned value. The nameref aliases that variable, so reading
+// it through the alias prints the secret like `echo $NAME` would.
+func namerefNamesSecret(tokens []string) bool {
+	declared := false
+	for i, tok := range tokens {
+		switch commandName(tok) {
+		case "declare", "typeset", "local":
+		default:
+			continue
+		}
+		for _, a := range tokens[i+1:] {
+			if !isShortFlagToken(a) {
+				break
+			}
+			if strings.Contains(a, "n") {
+				declared = true
+			}
+		}
+	}
+	if !declared {
+		return false
+	}
+	for _, tok := range tokens {
+		if sensitiveEnvName(tok) {
+			return true
+		}
+		if _, value, ok := strings.Cut(tok, "="); ok && sensitiveEnvName(value) {
+			return true
+		}
+	}
+	return false
+}

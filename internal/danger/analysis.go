@@ -200,6 +200,9 @@ func analyzeWithStateWork(cmd string, depth int, inherited *shellAnalysisState, 
 	if pgrepFeedsKill(tokens, subs) {
 		result.add(SystemWrite)
 	}
+	if namerefNamesSecret(tokens) {
+		result.add(SystemWrite)
+	}
 	if unterminated {
 		// The shell would reject this line, but an open quote has swallowed
 		// the rest of it into one word; whatever followed cannot be judged.
