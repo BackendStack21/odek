@@ -8,6 +8,7 @@ import (
 	"unicode"
 
 	"github.com/BackendStack21/odek/internal/danger"
+	"github.com/BackendStack21/odek/internal/loop"
 )
 
 // SecurityPillar is the invariant runtime policy. Config.SystemMessage is an
@@ -524,7 +525,7 @@ func DefaultUntrustedWrapper(source, content string) string {
 		}
 	}
 	source = strings.NewReplacer(`"`, "″", "<", "‹", ">", "›", "\n", " ", "\r", " ").Replace(source)
-	body := strings.ReplaceAll(content, "untrusted_content", "untrusted·content")
+	body := loop.NeutraliseUntrustedLiterals(content)
 	marker := "untrusted_content_" + nonce
 	return "<" + marker + ` source="` + source + "\">" + "\n" + body + "\n</" + marker + ">"
 }
