@@ -771,9 +771,17 @@ func stageWrittenPaths(stage, inner []string, name, cwd string) (paths []string,
 			"sftp", "lftp", "aria2c", "aria2", "ftp", "tftp", "fetch":
 			raw = append(raw, fetcherWriteTargets(name, inner[1:], cwd)...)
 		case "vim", "vi", "nvim", "gvim", "vimdiff", "nvimdiff", "view", "rvim", "evim", "vim.basic", "vim.tiny", "vim.nox",
-			"emacs", "emacs-nox", "emacs-gtk":
-			// An interactive edit writes the files it is given.
+			"emacs", "emacs-nox", "emacs-gtk", "emacsclient":
+			// An interactive edit writes the files it is given, including
+			// emacs's --visit/--file/--find-file=FILE spellings.
 			raw = append(raw, operands...)
+			for _, tok := range inner[1:] {
+				for _, opt := range []string{"--visit=", "--file=", "--find-file="} {
+					if value, ok := strings.CutPrefix(tok, opt); ok {
+						raw = append(raw, value)
+					}
+				}
+			}
 		case "uniq":
 			// uniq [OPTION]... [INPUT [OUTPUT]] writes its second operand.
 			if len(operands) >= 2 {
@@ -1032,6 +1040,8 @@ func stageWritesUnnamedFiles(name string, inner []string) bool {
 		return vimRunIsScripted(args)
 	case "emacs", "emacs-nox", "emacs-gtk":
 		return emacsRunIsScripted(args)
+	case "emacsclient":
+		return emacsclientRunIsScripted(args)
 	case "awk", "gawk":
 		return awkEditsInPlace(args)
 	case "curl":
@@ -1332,7 +1342,30 @@ func emacsRunIsScripted(args []string) bool {
 		switch name {
 		case "--batch", "-batch", "--script", "-script", "-x", "-l", "--load", "-load",
 			"--eval", "-eval", "--execute", "-execute", "-f", "--funcall", "-funcall",
-			"-u", "--user", "-user", "--init-directory", "--daemon", "--bg-daemon", "--fg-daemon":
+			"-u", "--user", "-user", "--init-directory", "--daemon", "--bg-daemon", "--fg-daemon",
+			"--chdir", "-chdir":
+			// --chdir resolves every file operand against another
+			// directory, so the files it names are not the ones analysed.
+			return true
+		}
+	}
+	return false
+}
+
+// emacsclientRunIsScripted reports whether an emacsclient invocation makes
+// the server evaluate Lisp (-e/--eval, also inside a short cluster such as
+// -ne) or runs an alternate editor command (-a/--alternate-editor), either of
+// which can write any file.
+func emacsclientRunIsScripted(args []string) bool {
+	for _, a := range args {
+		if a == "--" {
+			break
+		}
+		name, _, _ := strings.Cut(a, "=")
+		switch {
+		case name == "--eval", name == "--alternate-editor":
+			return true
+		case isShortFlagToken(a) && strings.ContainsAny(a[1:], "ea"):
 			return true
 		}
 	}

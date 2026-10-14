@@ -1,6 +1,8 @@
 package danger
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -514,6 +516,49 @@ func TestRED_LedgerFtpFetchAndBatchEmacsVoidLicence(t *testing.T) {
 		`fetch https://example.com/a && bash x.sh`,
 		`ftp -- https://example.com/a && bash x.sh`,
 		`emacs --version && bash x.sh`,
+	} {
+		if got := UnreadScriptTargets(cmd); len(got) != 0 {
+			t.Errorf("UnreadScriptTargets(%q) = %v, want none", cmd, got)
+		}
+	}
+}
+
+// emacsclient evaluations and visited files, emacs --visit/--file/--find-file
+// operands and --chdir runs void the licence of a script run afterwards.
+func TestRED_LedgerEmacsclientAndEmacsVisitVoidLicence(t *testing.T) {
+	dir := dangerHunt13LedgerSetup(t)
+	if err := os.MkdirAll(filepath.Join(dir, "d"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sub := filepath.Join(dir, "d", "x.sh")
+	if err := os.WriteFile(sub, []byte("#!/bin/sh\necho sub\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	RecordRead(sub)
+	for _, cmd := range []string{
+		`emacsclient -e '(with-temp-file "x.sh" (insert "id"))' && bash x.sh`,
+		`emacsclient --eval '(save-some-buffers t)' && bash x.sh`,
+		`emacsclient -n -e '(x)' && bash x.sh`,
+		`emacsclient -t --eval='(x)' && bash x.sh`,
+		`emacsclient x.sh && bash x.sh`,
+		`emacsclient -c +3 x.sh && bash x.sh`,
+		`emacs --visit=x.sh && bash x.sh`,
+		`emacs --visit x.sh && bash x.sh`,
+		`emacs --file=x.sh && bash x.sh`,
+		`emacs --find-file x.sh && bash x.sh`,
+		`emacs --chdir d x.sh && bash d/x.sh`,
+		`emacs --chdir=d notes.md && bash d/x.sh`,
+		`emacsclient -a vi notes.md && bash x.sh`,
+		`emacsclient --alternate-editor=vi notes.md && bash x.sh`,
+	} {
+		if got := UnreadScriptTargets(cmd); len(got) == 0 {
+			t.Errorf("UnreadScriptTargets(%q) = [], want the script gated", cmd)
+		}
+	}
+	for _, cmd := range []string{
+		`emacsclient notes.md && bash x.sh`,
+		`emacs --visit=notes.md && bash x.sh`,
+		`emacsclient --version && bash x.sh`,
 	} {
 		if got := UnreadScriptTargets(cmd); len(got) != 0 {
 			t.Errorf("UnreadScriptTargets(%q) = %v, want none", cmd, got)
