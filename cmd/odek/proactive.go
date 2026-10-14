@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/BackendStack21/odek/internal/danger"
 	"github.com/BackendStack21/odek/internal/memory"
 )
 
@@ -100,7 +101,7 @@ func formatFollowUpSuggestions(suggestions []string) string {
 	var b strings.Builder
 	b.WriteString("── You might also want to ──\n")
 	for _, s := range suggestions {
-		fmt.Fprintf(&b, "• %s\n", s)
+		fmt.Fprintf(&b, "• %s\n", danger.SanitizeInline(s))
 	}
 	return b.String()
 }
