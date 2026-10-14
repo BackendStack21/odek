@@ -3799,6 +3799,9 @@ type unwrapped struct {
 	// splits are the `env -S` strings, each a command line env splits into
 	// the command it runs.
 	splits []string
+	// scripts are script files a project runner hands to its interpreter
+	// (`uv run script.py`); the unread-script gate judges them.
+	scripts []string
 }
 
 func unwrapWrappersFull(tokens []string) unwrapped {
@@ -3825,6 +3828,9 @@ func unwrapWrappersFull(tokens []string) unwrapped {
 		assignments = append(assignments, step.assigns...)
 		if step.payload != "" {
 			out.payloads = append(out.payloads, step.payload)
+		}
+		if step.script != "" {
+			out.scripts = append(out.scripts, step.script)
 		}
 		i = step.next
 	}

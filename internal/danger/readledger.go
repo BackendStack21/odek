@@ -1358,6 +1358,15 @@ func stageExecutionFilesWritten(stage []string, cwd string, written map[string]b
 			return stageExecutionFilesWritten(composed, cwd, written)
 		}
 	}
+	if len(unwrapped.scripts) > 0 {
+		// `uv run script.py`: the runner hands the file to its interpreter,
+		// so it is gated as `sh script.py` would be.
+		var out []string
+		for _, script := range unwrapped.scripts {
+			out = append(out, stageExecutionFilesWritten([]string{"sh", script}, cwd, written)...)
+		}
+		return append(out, stageExecutionFilesWritten(cmdTokens, cwd, written)...)
+	}
 	if len(cmdTokens) == 0 {
 		return nil
 	}

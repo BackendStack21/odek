@@ -429,9 +429,10 @@ func analyzeWithStateWork(cmd string, depth int, inherited *shellAnalysisState, 
 				result.add(Unknown)
 			}
 			if len(inner) == 0 {
-				if len(unwrappedStage.splits) > 0 && cwdKnown && !state.uncertain {
-					// `env -S 'bash script'` leaves nothing behind the
-					// wrapper, yet the split string is the command that runs.
+				if (len(unwrappedStage.splits) > 0 || len(unwrappedStage.scripts) > 0) && cwdKnown && !state.uncertain {
+					// `env -S 'bash script'` and `uv run script.py` leave
+					// nothing behind the wrapper, yet the split string is the
+					// command that runs and the script is the program.
 					files, rewritten := stageLedgerFiles(stage, stageCwd, state.written)
 					for _, path := range files {
 						result.addFile(path)

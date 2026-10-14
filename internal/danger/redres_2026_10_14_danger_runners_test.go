@@ -171,6 +171,38 @@ func TestRED_PythonVariantNamesAndLongOptionsGateModule(t *testing.T) {
 	}
 }
 
+// Project runners hand a script operand to the project's interpreter
+// (`uv run script.py`); the unread-script gate must apply as it does for
+// `python script.py`.
+func TestRED_ProjectRunnerScriptOperandIsGated(t *testing.T) {
+	p := drRunnersScriptDir(t)
+	if !redGated("python evil.py") {
+		t.Fatalf("baseline: python evil.py must gate the unread %s", p)
+	}
+	for _, c := range []string{
+		"uv run evil.py",
+		"uv run --with requests evil.py",
+		"uv run -- evil.py",
+		"uv --directory . run evil.py",
+		"poetry run evil.py",
+		"pipenv run evil.py",
+		"pdm run evil.py",
+		"timeout 5 uv run evil.py",
+	} {
+		if got := Classify(c); worstOf(got, CodeExecution) != got {
+			t.Errorf("Classify(%q) = %s; want at least code_execution", c, got)
+		}
+		if !redGated(c) {
+			cls, tg := ClassifyScriptGate(c)
+			t.Errorf("ClassifyScriptGate(%q) = %s %v; the unread %s runs, want gated", c, cls, tg, p)
+		}
+	}
+	RecordRead(p)
+	if redGated("uv run evil.py") {
+		t.Errorf("uv run evil.py gated after evil.py was read")
+	}
+}
+
 // The shapes runnerCommand reads: which words are the command and which
 // invocations run none.
 func TestDangerRunners_RunnerCommandShapes(t *testing.T) {

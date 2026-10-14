@@ -129,6 +129,9 @@ type wrapperStep struct {
 	// operands (also accepted by sudo).
 	splits  []string
 	assigns []string
+	// script is the script file a project runner hands to its interpreter
+	// (`uv run script.py`).
+	script string
 }
 
 // wrapperAt reads the wrapper that starts at tokens[i]. ok is false when the
@@ -310,6 +313,18 @@ var uvGlobalSpec = optSpec{
 		"python index index-url extra-index-url default-index find-links", ""),
 }
 
+// projectRunnerDirectory returns the working directory a runner's global
+// options select (`poetry -C dir`, `uv --directory dir`), or "".
+func projectRunnerDirectory(name string, g optResult) string {
+	dir := ""
+	for _, o := range g.opts {
+		if o.has && (o.is("--directory") || (name == "poetry" && o.is("-C"))) {
+			dir = o.value
+		}
+	}
+	return dir
+}
+
 // subcommandWrapper recognises tools that run a command only for certain
 // subcommands: `asdf exec`, `direnv exec DIR`, `mise|rtx exec|x … --`,
 // `nix run|shell|develop`, and `nix-shell`.
@@ -367,7 +382,13 @@ func subcommandWrapper(name string, tokens []string, i int) (wrapperStep, bool) 
 			if step.next < len(tokens) && scriptFileExtensions[strings.ToLower(filepath.Ext(tokens[step.next]))] &&
 				!strings.Contains(tokens[step.next], "/") {
 				// `uv run script.py` runs the file with the project's
-				// interpreter: there is no command word to judge.
+				// interpreter: there is no command word to judge, but the
+				// file is executed code for the unread-script gate,
+				// resolved against a directory option when one is given.
+				step.script = tokens[step.next]
+				if dir := projectRunnerDirectory(name, g); dir != "" {
+					step.script = filepath.Join(dir, step.script)
+				}
 				step.next = len(tokens)
 			}
 			return step, true
