@@ -280,7 +280,10 @@ func TestDangerRunners_RunnerCommandShapes(t *testing.T) {
 		{"yarn run -- rm -rf /", "rm -rf /"},
 		{"yarn --cwd web", ""},
 		{"yarn workspaces foreach -- exec ls", "ls"},
-		{"npm -- exec ls", ""},
+		{"npm -- exec ls", "ls"},
+		{"npm -- install", ""},
+		{"npm explo foo -- ls", ""},
+		{"pnpm exec -c ls", ""},
 		{"npm install", ""},
 		{"npm exec -c ls", ""},
 		{"tox exec -e py", ""},
@@ -309,6 +312,9 @@ func TestDangerRunners_RunnerCommandShapes(t *testing.T) {
 		{[]string{"npm", "install"}, ""},
 		{[]string{"npx", "-c", "rm -rf /", "--call=ls"}, "rm -rf /|ls"},
 		{[]string{"pnpm", "exec", "ls"}, ""},
+		{[]string{"pnpm", "install"}, ""},
+		{[]string{"pnpm", "exec", "-c"}, ""},
+		{[]string{"npm", "exp", "-c", "id", "foo", "--", "ls"}, "id|foo -- ls"},
 		{[]string{"npm"}, ""},
 	} {
 		got := strings.Join(runnerCommandStrings(c.tokens[0], c.tokens), "|")
@@ -318,5 +324,141 @@ func TestDangerRunners_RunnerCommandShapes(t *testing.T) {
 	}
 	if runnerCommand("npm", []string{"npm"}) != nil {
 		t.Errorf("a bare npm runs nothing")
+	}
+}
+
+// drRunnersDeny asserts that every command is denied by the stock policy.
+func drRunnersDeny(t *testing.T, why string, cmds ...string) {
+	t.Helper()
+	for _, c := range cmds {
+		if got := drRunnersAction(c); got != Deny {
+			t.Errorf("ActionForCommand(%q) = %s (class %s); %s, want deny", c, got, Classify(c), why)
+		}
+	}
+}
+
+// npm resolves any unambiguous prefix of a command name (`npm exe` is
+// `npm exec`, `npm explo` is `npm explore`).
+func TestRED_NpmAbbreviatedRunnerVerbs(t *testing.T) {
+	drRunnersDeny(t, "npm runs the abbreviated exec/explore verb",
+		"npm exe -c 'rm -rf /'",
+		"npm exe rm -rf /",
+		"npm --prefix x exe -- rm -rf /",
+		"npm explo foo -- rm -rf /",
+		"npm explor foo -- rm -rf /",
+		"npm exp foo -- rm -rf /",
+	)
+	if got := Classify("npm ex ls"); worstOf(got, CodeExecution) != got {
+		t.Errorf("Classify(npm ex ls) = %s; an exec/explore prefix is at least code_execution", got)
+	}
+	if got := drRunnersAction("npm explain lodash"); got != Allow {
+		t.Errorf("ActionForCommand(npm explain lodash) = %s; explain runs nothing", got)
+	}
+}
+
+// A `--` before the verb ends the global options; the word after it is still
+// the subcommand.
+func TestRED_RunnerVerbAfterDoubleDash(t *testing.T) {
+	drRunnersDeny(t, "the verb after -- runs the command",
+		"npm -- exec rm -rf /",
+		"npm --prefix x -- exec rm -rf /",
+		"pnpm -- exec rm -rf /",
+		"poetry -- run rm -rf /",
+	)
+}
+
+// yarn, pnpm and bun read their own options after exec/dlx/x; the command
+// behind them is classified, and `pnpm exec -c` runs a shell command line.
+func TestRED_RunnerPostVerbOptions(t *testing.T) {
+	drRunnersDeny(t, "the runner runs rm -rf /",
+		"yarn dlx -p pkg rm -rf /",
+		"yarn dlx --package pkg rm -rf /",
+		"yarn dlx -q rm -rf /",
+		"yarn exec -- rm -rf /",
+		"yarn workspace web dlx -p pkg rm -rf /",
+		"pnpm dlx -p pkg rm -rf /",
+		"pnpm dlx --package=pkg rm -rf /",
+		"pnpm dlx --package pkg rm -rf /",
+		"pnpm exec -r rm -rf /",
+		"pnpm exec --parallel rm -rf /",
+		"pnpm exec --resume-from pkg rm -rf /",
+		"pnpm exec -c 'rm -rf /'",
+		"pnpm exec --shell-mode 'rm -rf /'",
+		"pnpm dlx -c 'rm -rf /'",
+		"bun -c x x rm -rf /",
+		"bun --config x x rm -rf /",
+	)
+}
+
+// drRunnersDirSetup makes a working directory whose evil.py, evil.sh and
+// sub/evil.py were read, and a subdirectory x holding unread copies.
+func drRunnersDirSetup(t *testing.T) {
+	t.Helper()
+	ResetReadLedgerForTest()
+	t.Cleanup(ResetReadLedgerForTest)
+	dir, _ := filepath.EvalSymlinks(t.TempDir())
+	t.Chdir(dir)
+	for _, base := range []string{dir, filepath.Join(dir, "x")} {
+		for _, rel := range []string{"evil.py", "evil.sh", "sub/evil.py"} {
+			p := filepath.Join(base, rel)
+			if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(p, []byte("import os\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if base == dir {
+				RecordRead(p)
+			}
+		}
+	}
+}
+
+// A runner's directory option moves the working directory of everything it
+// runs: the script, and the operands of an interpreter it starts.
+func TestRED_RunnerDirectoryAppliesToScripts(t *testing.T) {
+	drRunnersDirSetup(t)
+	if redGated("python evil.py") {
+		t.Fatalf("baseline: ./evil.py was read and must not gate")
+	}
+	for _, c := range []string{
+		"uv --directory x run evil.py",
+		"uv run --directory x evil.py",
+		"uv run --directory=x evil.py",
+		"uv --directory x run sub/evil.py",
+		"uv --directory x run ./evil.py",
+		"uv --directory x run python evil.py",
+		"uv run --directory x python evil.py",
+		"poetry -C x run python evil.py",
+		"poetry --directory x run sh evil.sh",
+		"poetry -C x run evil.py",
+	} {
+		if !redGated(c) {
+			cls, tg := ClassifyScriptGate(c)
+			t.Errorf("ClassifyScriptGate(%q) = %s %v; x/ holds the unread script, want gated", c, cls, tg)
+		}
+	}
+	// --project selects the project, not the working directory.
+	if redGated("uv --project x run evil.py") {
+		t.Errorf("uv --project x run evil.py gated; the script is ./evil.py, which was read")
+	}
+	// A directory the analysis cannot resolve leaves the script unjudged.
+	if got := Classify("uv --directory $D run evil.py"); got != Unknown {
+		t.Errorf("Classify(uv --directory $D run evil.py) = %s; want unknown", got)
+	}
+}
+
+// pdm run options that take a value must not be read as the script.
+func TestRED_PdmRunOptionsBeforeScript(t *testing.T) {
+	p := drRunnersScriptDir(t)
+	for _, c := range []string{
+		"pdm run --venv in-project evil.py",
+		"pdm run -s evil.py",
+		"pdm run -v --venv x evil.py",
+	} {
+		if !redGated(c) {
+			cls, tg := ClassifyScriptGate(c)
+			t.Errorf("ClassifyScriptGate(%q) = %s %v; the unread %s runs, want gated", c, cls, tg, p)
+		}
 	}
 }

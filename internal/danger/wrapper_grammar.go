@@ -132,6 +132,9 @@ type wrapperStep struct {
 	// script is the script file a project runner hands to its interpreter
 	// (`uv run script.py`).
 	script string
+	// dir is the working directory the wrapper switches to before running
+	// the command (`uv --directory DIR run`, `poetry -C DIR run`).
+	dir string
 }
 
 // wrapperAt reads the wrapper that starts at tokens[i]. ok is false when the
@@ -313,13 +316,40 @@ var uvGlobalSpec = optSpec{
 		"python index index-url extra-index-url default-index find-links", ""),
 }
 
-// projectRunnerDirectory returns the working directory a runner's global
-// options select (`poetry -C dir`, `uv --directory dir`), or "".
-func projectRunnerDirectory(name string, g optResult) string {
+// projectRunSpec returns the option grammar of a project runner's run verb.
+func projectRunSpec(name string) optSpec {
+	switch name {
+	case "uv":
+		return uvRunSpec
+	case "pdm":
+		return pdmRunSpec
+	}
+	return projectRunnerSpec
+}
+
+// pdmRunSpec is `pdm run`'s option grammar: --venv NAME and -p/--project
+// DIR take a value.
+var pdmRunSpec = optSpec{posix: true, short: "p", long: longTable("venv project config", "")}
+
+// projectRunnerDirectory returns the working directory a runner's options
+// select (`poetry -C dir`, `uv --directory dir`, `uv run --directory dir`),
+// or "". `--project` selects the project only; the working directory and the
+// paths of the command's operands stay where they were.
+func projectRunnerDirectory(name string, parsed ...optResult) string {
+	if name != "poetry" && name != "uv" {
+		return ""
+	}
 	dir := ""
-	for _, o := range g.opts {
-		if o.has && (o.is("--directory") || (name == "poetry" && o.is("-C"))) {
-			dir = o.value
+	for _, r := range parsed {
+		for _, o := range r.opts {
+			isDir := o.is("--directory") || (name == "poetry" && o.is("-C"))
+			switch {
+			case !isDir:
+			case o.has:
+				dir = o.value
+			default:
+				dir = "$" // a directory option without a value: unknown
+			}
 		}
 	}
 	return dir
@@ -359,18 +389,19 @@ func subcommandWrapper(name string, tokens []string, i int) (wrapperStep, bool) 
 		}
 		// Global options (`poetry -C dir`, `pipenv --python 3.12`) may
 		// precede the verb.
+		// A `--` ends only the global options: the verb follows it.
 		g := projectRunnerGlobals[name].parse(rest)
-		if g.operandAt < 0 {
+		verbAt := g.operandAt
+		if verbAt < 0 && len(g.rest) > 0 {
+			verbAt = len(rest) - len(g.rest)
+		}
+		if verbAt < 0 {
 			break
 		}
-		if v := rest[g.operandAt]; v == verb || (verb == "exec" && v == "e") {
+		if v := rest[verbAt]; v == verb || (verb == "exec" && v == "e") {
 			step.floor = CodeExecution
-			spec := projectRunnerSpec
-			if name == "uv" {
-				spec = uvRunSpec
-			}
-			start := i + 1 + g.operandAt + 1
-			r := spec.parse(tokens[start:])
+			start := i + 1 + verbAt + 1
+			r := projectRunSpec(name).parse(tokens[start:])
 			switch {
 			case r.operandAt >= 0:
 				step.next = start + r.operandAt
@@ -383,14 +414,13 @@ func subcommandWrapper(name string, tokens []string, i int) (wrapperStep, bool) 
 				!strings.Contains(tokens[step.next], "/") {
 				// `uv run script.py` runs the file with the project's
 				// interpreter: there is no command word to judge, but the
-				// file is executed code for the unread-script gate,
-				// resolved against a directory option when one is given.
+				// file is executed code for the unread-script gate.
 				step.script = tokens[step.next]
-				if dir := projectRunnerDirectory(name, g); dir != "" {
-					step.script = filepath.Join(dir, step.script)
-				}
 				step.next = len(tokens)
 			}
+			// A directory option moves the working directory of everything
+			// the runner starts (see wrapperDirectory).
+			step.dir = projectRunnerDirectory(name, g, r)
 			return step, true
 		}
 	case "mise", "rtx":

@@ -9,7 +9,14 @@ import (
 // between the runner and its subcommand.
 var (
 	pnpmRunnerSpec = optSpec{posix: true, short: "CF", long: longTable("dir filter reporter loglevel workspace-concurrency", "")}
-	bunRunnerSpec  = optSpec{posix: true, short: "rdlF", long: longTable("cwd config elide-lines env-file preload "+
+	// pnpmExecSpec is the grammar of `pnpm exec|dlx|x`: -p/--package names a
+	// package to install; -c/--shell-mode runs the command through a shell.
+	pnpmExecSpec = optSpec{posix: true, short: "pF", long: longTable("package resume-from filter reporter "+
+		"workspace-concurrency report-summary-file", "")}
+	// yarnExecSpec is the grammar of `yarn exec|dlx`: -p/--package names a
+	// package to install.
+	yarnExecSpec  = optSpec{posix: true, short: "p", long: longTable("package", "")}
+	bunRunnerSpec = optSpec{posix: true, short: "rdlFc", long: longTable("cwd config elide-lines env-file preload "+
 		"tsconfig-override define loader conditions filter main-fields port origin jsx-factory jsx-fragment "+
 		"jsx-import-source jsx-runtime extension-order inspect-wait", "")}
 	yarnRunnerSpec = optSpec{posix: true, long: longTable("cwd", "")}
@@ -50,14 +57,23 @@ func withLong(table map[string]bool, names ...string) map[string]bool {
 // When it is not one of verbs, the arguments are read again as options
 // that may each take the following word as a value, so a global option the
 // grammar does not know cannot hide the verb behind its value.
+// A `--` ends the global options only: the word after it is still read as
+// the subcommand (`npm -- exec CMD`).
 func runnerVerbAt(spec optSpec, args []string, verbs ...string) int {
-	if r := spec.parse(args); r.operandAt >= 0 && slices.Contains(verbs, args[r.operandAt]) {
+	r := spec.parse(args)
+	if r.operandAt >= 0 && slices.Contains(verbs, args[r.operandAt]) {
 		return r.operandAt
+	}
+	if r.operandAt < 0 && len(r.rest) > 0 && slices.Contains(verbs, r.rest[0]) {
+		return len(args) - len(r.rest)
 	}
 	valueOK := false
 	for i, a := range args {
 		switch {
 		case a == "--":
+			if i+1 < len(args) && slices.Contains(verbs, args[i+1]) {
+				return i + 1
+			}
 			return -1
 		case len(a) > 1 && a[0] == '-':
 			valueOK = !strings.Contains(a, "=")
@@ -118,7 +134,9 @@ func yarnRunner(tokens []string) ([]string, bool) {
 		}
 		verb, rest := args[at], args[at+1:]
 		switch verb {
-		case "exec", "dlx", "node":
+		case "exec", "dlx":
+			return commandAfter(yarnExecSpec, rest), true
+		case "node":
 			return rest, true
 		case "run":
 			if len(rest) > 0 && rest[0] == "--" {
@@ -179,6 +197,29 @@ func npmExecCommand(args []string) []string {
 	return commandAfter(npmExecSpec, args)
 }
 
+// npm resolves any unambiguous prefix of a command name, and `x` is an alias
+// of exec. npmExecVerbs and npmExploreVerbs list the spellings of exec and
+// explore; npmAmbiguousVerbs are the shorter prefixes shared by exec,
+// explain and explore, read as either verb so a spelling npm might resolve
+// never hides the command.
+var (
+	npmExecVerbs      = []string{"exec", "exe", "x"}
+	npmExploreVerbs   = []string{"explore", "explor", "explo"}
+	npmAmbiguousVerbs = []string{"ex", "exp", "expl"}
+	npmRunnerVerbs    = slices.Concat(npmExecVerbs, npmExploreVerbs, npmAmbiguousVerbs)
+)
+
+// pnpmShellMode reports whether `pnpm exec|dlx` options select shell mode
+// (-c/--shell-mode), which runs the command words as a shell command line.
+func pnpmShellMode(args []string) bool {
+	for _, o := range pnpmExecSpec.parse(args).opts {
+		if o.is("-c", "--shell-mode") {
+			return true
+		}
+	}
+	return false
+}
+
 // runnerCommand returns the command a package or version manager runs on
 // behalf of its caller (`pnpm -C x exec CMD`, `yarn CMD`, `bun x CMD`,
 // `npm --prefix x exec CMD`, `npx CMD`, `uvx CMD`, `tox exec -- CMD`,
@@ -203,7 +244,11 @@ func runnerCommand(name string, tokens []string) []string {
 	}
 	switch name {
 	case "pnpm":
-		return after(pnpmRunnerSpec, "exec", "dlx", "x")
+		rest := after(pnpmRunnerSpec, "exec", "dlx", "x")
+		if pnpmShellMode(rest) {
+			return nil // a command line: see runnerCommandStrings
+		}
+		return commandAfter(pnpmExecSpec, rest)
 	case "bun":
 		return bunxCommand(after(bunRunnerSpec, "x"))
 	case "bunx":
@@ -211,8 +256,8 @@ func runnerCommand(name string, tokens []string) []string {
 	case "npx":
 		return npmExecCommand(args)
 	case "npm":
-		at := runnerVerbAt(npmGlobalSpec, args, "exec", "x")
-		if at < 0 {
+		at := runnerVerbAt(npmGlobalSpec, args, npmRunnerVerbs...)
+		if at < 0 || slices.Contains(npmExploreVerbs, args[at]) {
 			return nil
 		}
 		return npmExecCommand(args[at+1:])
@@ -230,7 +275,7 @@ func runnerCommand(name string, tokens []string) []string {
 		if name == "bundle" || name == "bundler" {
 			verbs = []string{"exec", "e"}
 		}
-		return commandAfter(projectRunnerSpec, after(projectRunnerGlobals[name], verbs...))
+		return commandAfter(projectRunSpec(name), after(projectRunnerGlobals[name], verbs...))
 	case "tox":
 		// tox exec -e ENV -- CMD: the command follows the terminator.
 		at := runnerVerbAt(toxSpec, args, "exec", "e")
@@ -262,8 +307,8 @@ func runnerCommand(name string, tokens []string) []string {
 }
 
 // runnerCommandStrings returns the shell command lines a package runner
-// runs: `npm exec -c CMD`, `npx -c CMD` and `npm explore PKG -- CMD`, whose
-// words npm joins and hands to a shell.
+// runs: `npm exec -c CMD`, `npx -c CMD`, `npm explore PKG -- CMD` (whose
+// words npm joins and hands to a shell) and `pnpm exec|dlx -c CMD`.
 func runnerCommandStrings(name string, tokens []string) []string {
 	if len(tokens) < 2 {
 		return nil
@@ -271,27 +316,38 @@ func runnerCommandStrings(name string, tokens []string) []string {
 	args := tokens[1:]
 	switch name {
 	case "npm":
-		at := runnerVerbAt(npmGlobalSpec, args, "exec", "x", "explore")
+		at := runnerVerbAt(npmGlobalSpec, args, npmRunnerVerbs...)
 		if at < 0 {
 			return nil
 		}
-		if args[at] != "explore" {
-			return npmCallStrings(args[at+1:])
+		var out []string
+		if !slices.Contains(npmExploreVerbs, args[at]) {
+			out = npmCallStrings(args[at+1:])
 		}
-		r := (optSpec{posix: true}).parse(args[at+1:])
-		var words []string
-		switch {
-		case r.operandAt >= 0:
-			words = r.operands[1:] // after the package name
-			if len(words) > 0 && words[0] == "--" {
-				words = words[1:]
+		if !slices.Contains(npmExecVerbs, args[at]) {
+			r := (optSpec{posix: true}).parse(args[at+1:])
+			var words []string
+			if r.operandAt >= 0 {
+				words = r.operands[1:] // after the package name
+				if len(words) > 0 && words[0] == "--" {
+					words = words[1:]
+				}
+			}
+			if cmd := strings.Join(words, " "); strings.TrimSpace(cmd) != "" {
+				out = append(out, cmd)
 			}
 		}
-		if cmd := strings.Join(words, " "); strings.TrimSpace(cmd) != "" {
-			return []string{cmd}
-		}
+		return out
 	case "npx":
 		return npmCallStrings(args)
+	case "pnpm":
+		at := runnerVerbAt(pnpmRunnerSpec, args, "exec", "dlx", "x")
+		if at < 0 || !pnpmShellMode(args[at+1:]) {
+			return nil
+		}
+		if cmd := strings.Join(commandAfter(pnpmExecSpec, args[at+1:]), " "); strings.TrimSpace(cmd) != "" {
+			return []string{cmd}
+		}
 	}
 	return nil
 }
