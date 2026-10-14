@@ -451,6 +451,16 @@ func toSDKMessagesFor(in []session.Message, cacheAnthropic, requireSignedThinkin
 			}
 		}
 	}
+	// Anthropic allows at most 4 cache breakpoints per request (system
+	// blocks, tools and messages share the budget). The first system block,
+	// the last tool and the first user message take three; only the last
+	// cache-marked later system block (the live memory slot) gets the fourth.
+	lastCachedSystem := -1
+	for i, m := range in {
+		if !skip[i] && m.Role == "system" && m.CacheControl != nil {
+			lastCachedSystem = i
+		}
+	}
 	for i, m := range in {
 		if skip[i] {
 			continue
@@ -458,7 +468,7 @@ func toSDKMessagesFor(in []session.Message, cacheAnthropic, requireSignedThinkin
 		switch m.Role {
 		case "system":
 			sb := sdk.SystemBlock{Text: m.Content}
-			if cacheAnthropic && (len(sys) == 0 || m.CacheControl != nil) {
+			if cacheAnthropic && (len(sys) == 0 || i == lastCachedSystem) {
 				sb.Cache = true
 			}
 			sys = append(sys, sb)

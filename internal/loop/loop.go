@@ -2645,6 +2645,15 @@ func (e *Engine) sanitizePersistedSystemMessages(ctx context.Context, messages [
 			continue
 		}
 		content := messages[i].Content
+		// A memory block left by a previous run (this process or another) is
+		// superseded: the engine injects the current block itself every run.
+		// Keeping it would accumulate one stale copy, and one cache
+		// breakpoint, per resume.
+		if body := strings.TrimSuffix(content, "\n\n"+memoryAuthorityReminder); i > 0 && body != content && strings.TrimSpace(body) != "" {
+			messages = append(messages[:i], messages[i+1:]...)
+			i--
+			continue
+		}
 		if strings.HasPrefix(content, digestMsgHeader) {
 			body := strings.TrimPrefix(content, digestMsgHeader)
 			if !isEngineMinted(body) {
