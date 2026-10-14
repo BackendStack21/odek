@@ -2056,6 +2056,39 @@ func classifyArgvComposerSink(upstream [][]string, stage []string, repo *gitRepo
 	if xargsInnerDangerous(inner) {
 		return Unknown
 	}
+	return xargsDynamicArgvRisk(inner)
+}
+
+// xargsDynamicArgvRisk is the floor for an argv composer whose whole argument
+// list comes from input the classifier cannot see. A command that takes its
+// program, expression or verb from its first argument (a shell, an
+// interpreter, awk, sed, find, a VCS or kill front end, a wrapper with
+// nothing behind it) runs whatever that input holds. A command with fixed
+// arguments of its own keeps its ordinary classification: the input only
+// extends them.
+func xargsDynamicArgvRisk(inner []string) RiskClass {
+	if len(inner) == 0 {
+		return Safe
+	}
+	unwrapped, _ := unwrapWrappers(inner)
+	if len(unwrapped) == 0 {
+		// Only wrappers (`nohup`, `timeout 5`): the input is the command.
+		return CodeExecution
+	}
+	if len(unwrapped) > 1 {
+		return Safe
+	}
+	name := commandName(unwrapped[0])
+	switch {
+	case pipedShells[name], codeEvalPrefixes[name], stdinExecInterpreters[name],
+		embeddedShellInterpreters[name], argvComposers[name], execWrappers[name]:
+		return CodeExecution
+	}
+	switch name {
+	case "sed", "find", "fd", "fdfind", "git", "kill", "pkill", "killall",
+		"ssh", "rsync", "make", "tar":
+		return CodeExecution
+	}
 	return Safe
 }
 
@@ -2132,7 +2165,7 @@ func classifyXargsFileInput(stage []string) RiskClass {
 	if xargsInnerDangerous(inner) {
 		return Unknown
 	}
-	return Safe
+	return xargsDynamicArgvRisk(inner)
 }
 
 func xargsHasExternalArgSource(tokens []string) bool {

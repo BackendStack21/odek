@@ -37,3 +37,31 @@ func TestRED_InjectionScanSquaredLettersEvade(t *testing.T) {
 		}
 	}
 }
+
+// An argv composer whose argument source is not on the command line (a pipe
+// from a dynamic producer, -a/--arg-file, an input redirect) runs whatever
+// the source holds as the inner command's arguments. Only a fixed verb list
+// (rm, mv, cp, chmod, …) fails closed; every other inner command runs
+// attacker-chosen argv under allow: `xargs nohup` / `xargs timeout 5` run any
+// program, `xargs -a list bash` runs `bash -c '…'` or an unread script,
+// `xargs git` can push --force, `xargs awk` runs system(), `xargs find`
+// deletes, `xargs kill` broadcasts. The pipe-fed shell form already prompts
+// (`cat list | xargs bash` is code_execution); the file-fed one is safe.
+func TestRED_ArgvComposerDynamicArgsRunAnyCommand(t *testing.T) {
+	t.Setenv("HOME", "/home/user")
+	t.Chdir(t.TempDir())
+	dangerHunt13NotAllowed(t, CodeExecution,
+		`xargs -a list bash`,
+		`xargs -a list sh`,
+		`xargs --arg-file=list python3`,
+		`xargs -a list nohup`,
+		`xargs -a list timeout 5`,
+		`cat list | xargs nohup`,
+		`cat list | xargs timeout 5`,
+		`cat list | xargs awk`,
+		`cat list | xargs find`,
+		`cat list | xargs git`,
+		`cat list | xargs kill`,
+		`cat list | xargs sed`,
+	)
+}
