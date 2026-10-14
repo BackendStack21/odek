@@ -524,7 +524,7 @@ On exhaustion odek emits a `budget_exceeded` runtime event, persists the latest 
 
 **Cost-disabled warning:** when `max_cost_usd` is set but neither `model_prices[model]` nor the flat pair yields both positive prices for the run's model, odek prints a stderr warning that cost enforcement is disabled (token budgets stay active) — the gap is never silent.
 
-**Current limitation:** budget enforcement is wired into `odek run` and `odek subagent` only. `odek continue`, the REPL, `odek serve`, and the Telegram bot do not yet enforce limits.
+**Current limitation:** budget enforcement is wired into `odek run`, `odek continue` and `odek subagent` only. The REPL, `odek serve`, and the Telegram bot do not yet enforce limits.
 
 Tests: `internal/budget/`, `internal/config/limits_test.go`, `internal/loop/budget_test.go`, `cmd/odek/budget_test.go`.
 

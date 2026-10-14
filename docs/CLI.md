@@ -7,7 +7,7 @@
 | `odek run [flags] <task>` | Execute a task with the agent loop (single-shot by default) |
 | `odek run --session [flags] <task>` | Execute and save conversation as a multi-turn session |
 | `odek continue [--id <id>] [flags] <task>` | Continue the most recent session (or by `--id`). Accepts the run flags that shape one turn (`--max-iter`, `--thinking`, `--thinking-budget`, `--temperature`, `--tool` / `--no-tool`, `--ctx`, `--no-color`, `--no-agents`, `--stream` / `--no-stream`, `--prompt-caching` / `--no-prompt-caching`, `--compaction` / `--no-compaction`, `--planning` / `--no-planning`, `--announce-budget` / `--no-announce-budget`, `--events-jsonl`, `--events-include-args`, `--external-ref`, `--deliver`, the budget caps, memory-extended and guard flags) with the same syntax as `odek run`. Budget caps exit with code 4 like `run`. The session keeps its provider, model, endpoint, system prompt and sandbox posture: `--model`, `--provider`, `--base-url`, `--system`, `--sandbox` / `--no-sandbox`, `--sandbox-*` and `--session` are rejected with an error. Sessions persist per completed step: Ctrl-C/SIGTERM resumes from the last step; SIGKILL may lose the in-flight step |
-| `odek repl [flags]` | Interactive REPL mode (persistent multi-turn session). Flags: `--id`, `--model`, `--thinking`, `--thinking-budget`, `--sandbox`, `--sandbox-*`, `--prompt-caching` / `--no-prompt-caching`, `--stream` / `--no-stream`, `--compaction`, `--announce-budget` / `--no-announce-budget`, `--planning` / `--no-planning`, `--interaction-mode`. Unrecognized flags are rejected with an error — in particular `--tool` / `--no-tool` are **not** supported in repl (use `odek run`, `serve`, or the `tools` config instead). |
+| `odek repl [flags]` | Interactive REPL mode (persistent multi-turn session). Flags: `--id`, `--model`, `--thinking`, `--thinking-budget`, `--sandbox`, `--sandbox-*`, `--prompt-caching` / `--no-prompt-caching`, `--stream` / `--no-stream`, `--compaction`, `--announce-budget` / `--no-announce-budget`, `--planning` / `--no-planning`, `--interaction-mode`. Unrecognized flags are rejected with an error — in particular `--tool` / `--no-tool` are **not** supported in repl (use `odek run`, `serve`, or the `tools` config instead). Line history (`~/.odek/repl_history`, 0600) is written with secrets redacted, like sessions and logs. |
 | `odek session list` | List sessions |
 | `odek session show [id]` | Show session details (default: latest) |
 | `odek session delete <id>` | Delete a session (an unknown id is an error) |
@@ -35,9 +35,9 @@
 | `odek mcp [--sandbox]` | MCP server over stdio (built-in tools minus `delegate_tasks` / `memory`). Also loads `mcp_servers`. Sandbox is opt-in (`--sandbox`), unlike `odek run`. See [MCP.md](MCP.md) |
 | `odek telegram` | Start the Telegram bot (long-polling). Hosts the embedded scheduler unless `schedules.enabled=false` |
 | `odek schedule <subcommand>` | Manage native in-process scheduled tasks (cron): `list`, `add`, `rm`, `enable`, `disable`, `run`, `next`, `daemon`. See [Schedules](SCHEDULES.md) |
-| `odek upgrade [--check]` | Self-upgrade to the latest GitHub release. Auto-detects OS/arch (`odek-<goos>-<goarch>` asset), verifies the download against the release `checksums.txt` (SHA-256), and installs it atomically over the current binary. `--check` reports the latest version without installing. A GitHub 401/403/429 on the REST latest endpoint falls back to the HTML releases page; set `GITHUB_TOKEN` / `GH_TOKEN` to authenticate the API lookup |
+| `odek upgrade [--check]` | Self-upgrade to the latest GitHub release. Downloads have no whole-body deadline: connection and header waits are bounded, a transfer is abandoned after 30 seconds without receiving a byte, and the whole command stops after 5 minutes. Auto-detects OS/arch (`odek-<goos>-<goarch>` asset), verifies the download against the release `checksums.txt` (SHA-256), and installs it atomically over the current binary. `--check` reports the latest version without installing. A GitHub 401/403/429 on the REST latest endpoint falls back to the HTML releases page; set `GITHUB_TOKEN` / `GH_TOKEN` to authenticate the API lookup |
 | `odek version` / `odek --version` / `odek -v` | Print version and exit |
-| `odek help` / `odek --help` / `odek -h` | Print the usage and exit 0 (an unknown command prints it and exits 1). `odek session`, `odek skill`, `odek schedule` (incl. `daemon`, `run`), `odek memory`, `odek audit`, `odek logs` reject stray or unknown arguments with a usage error; `odek telegram` takes no arguments (`--help` prints its usage) |
+| `odek help` / `odek --help` / `odek -h` | Print the usage and exit 0 (an unknown command prints it and exits 1). `odek session`, `odek skill`, `odek schedule` (incl. `daemon`, `run`), `odek memory`, `odek audit`, `odek logs` reject stray or unknown arguments with a usage error; `odek telegram` takes no arguments (`--help` prints its usage). `-h` / `--help` (and `help` for `session`, `skill`, `schedule`) exits 0 and prints usage on stdout for every command, including `run`, `continue`, `repl`, `init`, `subagent` and subcommands such as `schedule add --help`; `--help` is only recognised in the leading argument position, never inside task text |
 
 ## Run flags
 
@@ -128,7 +128,7 @@ A partial-progress summary is produced only when the tool-call budget fired and 
 
 Cost enforcement is active only when `max_cost_usd` **and** both per-million prices (`input_cost_per_million_usd`, `output_cost_per_million_usd`) are configured; otherwise a stderr warning is printed and the token budgets stay active. odek never hard-codes provider prices.
 
-**Current limitation:** budgets apply to `odek run` and `odek subagent` only — not `continue`, the REPL, `serve`, or Telegram.
+**Current limitation:** budgets apply to `odek run`, `odek continue` and `odek subagent` only — not the REPL, `serve`, or Telegram.
 
 ## Exit codes
 
