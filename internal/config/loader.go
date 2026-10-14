@@ -1980,18 +1980,9 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	// own budgets is safe, loosening the operator's budgets is not.
 	clampProjectLimits(global.Limits, project.Limits)
 
-	// Cost enforcement is keyed on the run's model ID. When the operator caps
-	// spend and prices models, a project model without a price would resolve
-	// to zero prices and silently switch the cap off, so such a model is
-	// ignored.
-	if project.Model != "" && project.Model != global.Model && global.Limits != nil && global.Limits.MaxCostUSD > 0 {
-		gl := *global.Limits
-		anyPrice := gl.InputCostPerMillionUSD > 0 || gl.OutputCostPerMillionUSD > 0 || len(gl.ModelPrices) > 0
-		if anyPrice && !gl.ResolveForModel(project.Model).CostEnforcementActive() {
-			fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring model %q from project config (%s) — it has no configured price, which would disable the global limits.max_cost_usd cap; price it in limits.model_prices in ~/.odek/config.json\n", project.Model, ProjectConfigPath())
-			project.Model = ""
-		}
-	}
+	// A project model that would switch the operator's cost cap off is
+	// dropped after the CLI limits are applied (see below).
+	projectModel := project.Model
 
 	// max_concurrency bounds the process-wide sub-agent limiter when the
 	// operator sets no subagent.max_concurrency: a repo may only lower it
@@ -2751,6 +2742,19 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 		}
 		if cli.MaxCostUSD > 0 {
 			cfg.Limits.MaxCostUSD = cli.MaxCostUSD
+		}
+	}
+
+	// Cost enforcement is keyed on the run's model ID. When the effective cap
+	// (global file or --max-cost-usd) is set and the operator prices models, a
+	// project-chosen model without a price would resolve to zero prices and
+	// silently switch the cap off, so that model is ignored.
+	if projectModel != "" && cli.Model == "" && envString("MODEL") == "" && cfg.Model == projectModel && projectModel != global.Model && cfg.Limits != nil && cfg.Limits.MaxCostUSD > 0 {
+		gl := *cfg.Limits
+		anyPrice := gl.InputCostPerMillionUSD > 0 || gl.OutputCostPerMillionUSD > 0 || len(gl.ModelPrices) > 0
+		if anyPrice && !gl.ResolveForModel(projectModel).CostEnforcementActive() {
+			fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring model %q from project config (%s) — it has no configured price, which would disable the limits.max_cost_usd cap; price it in limits.model_prices in ~/.odek/config.json\n", projectModel, ProjectConfigPath())
+			cfg.Model = global.Model
 		}
 	}
 

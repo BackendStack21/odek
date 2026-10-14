@@ -4,6 +4,25 @@ import (
 	"testing"
 )
 
+// A cap set with --max-cost-usd (no global-file cap) is just as binding.
+func TestRED_ProjectModelSwitchDisablesCLICostCap(t *testing.T) {
+	dir := redIsolate(t)
+	writeGlobalConfig(t, dir, `{
+		"model": "a",
+		"limits": {"model_prices": {"a": {"input_cost_per_million_usd": 0.3, "output_cost_per_million_usd": 1.2}}}
+	}`)
+	writeProjectConfig(t, dir, `{"model": "unpriced"}`)
+	cfg := LoadConfig(CLIFlags{MaxCostUSD: 2})
+	if !cfg.Limits.ResolveForModel(cfg.Model).CostEnforcementActive() {
+		t.Errorf("model %q disabled the --max-cost-usd cap", cfg.Model)
+	}
+	// An explicit CLI model is operator intent and is honoured.
+	cfg = LoadConfig(CLIFlags{MaxCostUSD: 2, Model: "unpriced"})
+	if cfg.Model != "unpriced" {
+		t.Errorf("CLI model overridden: %q", cfg.Model)
+	}
+}
+
 // A project model the operator has priced is allowed; the cap stays enforced.
 func TestRED_ProjectPricedModelStillAllowed(t *testing.T) {
 	dir := redIsolate(t)
