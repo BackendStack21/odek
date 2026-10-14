@@ -582,7 +582,7 @@ func ScheduleHeartbeatCandidates(home string) ([]string, error) {
 // sweepScheduleHeartbeats removes orphaned schedule-host-<pid>.json files.
 func sweepScheduleHeartbeats(home string) error {
 	paths, err := ScheduleHeartbeatCandidates(home)
-	var firstErr error = err
+	firstErr := err
 	for _, p := range paths {
 		if err := os.Remove(p); err != nil && !os.IsNotExist(err) && firstErr == nil {
 			firstErr = err
