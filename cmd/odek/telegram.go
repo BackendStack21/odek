@@ -81,6 +81,50 @@ func unpinChat(chatID int64, s *chatSlot) {
 	chatMetaMu.Unlock()
 }
 
+// chatResetGates holds, per chat, a channel closed when the most recent
+// session reset (/new, /resume) has finished. Resets run off the update loop,
+// so turns started after the command wait on it and land in the new session.
+var chatResetGates sync.Map // map[int64]chan struct{}
+
+// runChatResetOffLoop registers a reset gate synchronously (on the caller's
+// goroutine, preserving command order) and runs fn on a new goroutine after
+// any earlier reset of the same chat. Never blocks the caller.
+func runChatResetOffLoop(chatID int64, fn func()) {
+	gate := make(chan struct{})
+	var prev chan struct{}
+	if v, ok := chatResetGates.Swap(chatID, gate); ok {
+		prev, _ = v.(chan struct{})
+	}
+	go func() {
+		defer func() {
+			close(gate)
+			chatResetGates.CompareAndDelete(chatID, gate)
+		}()
+		if prev != nil {
+			<-prev
+		}
+		fn()
+	}()
+}
+
+// waitChatReset blocks until any pending session reset of the chat is done.
+func waitChatReset(chatID int64) {
+	if v, ok := chatResetGates.Load(chatID); ok {
+		if g, _ := v.(chan struct{}); g != nil {
+			<-g
+		}
+	}
+}
+
+// cancelChatTurn cancels the chat's in-flight agent run, if any.
+func cancelChatTurn(chatID int64) {
+	if cancelVal, ok := chatCancels.LoadAndDelete(chatID); ok {
+		if cancel, ok := cancelVal.(context.CancelFunc); ok {
+			cancel()
+		}
+	}
+}
+
 // dropChatPin drops a waiter recorded by pinChat when the caller gave up
 // without locking s.mu (so there is nothing to unlock).
 func dropChatPin(chatID int64, s *chatSlot) {
@@ -629,29 +673,27 @@ func telegramCmd(args []string) error {
 			// Stop any in-flight run for this chat BEFORE archiving (same
 			// cancel path as /stop): a live turn's persist callbacks would
 			// otherwise race the archive and resurrect the session under
-			// the old ID. The per-chat mutex is held for the whole run and
-			// released only after the run (including its final persist)
-			// unwinds — taking it here serializes the archive strictly after.
-			if cancelVal, ok := chatCancels.LoadAndDelete(chatID); ok {
-				if cancel, ok := cancelVal.(context.CancelFunc); ok {
-					cancel()
+			// the old ID.
+			cancelChatTurn(chatID)
+			// The archive itself waits for the turn to unwind (it needs the
+			// per-chat mutex), so it runs off the update loop. Messages that
+			// arrive meanwhile wait for the reset, so they land in the new
+			// session.
+			runChatResetOffLoop(chatID, func() {
+				chatM := pinChat(chatID)
+				chatM.mu.Lock()
+				archivedID := resetChatForNew(chatID, sessionManager, handler, handlerLog)
+				unpinChat(chatID, chatM)
+				// The conversation ended, so record its episode (a
+				// synchronous LLM call) without holding anything else up.
+				if archivedID != "" {
+					go func() {
+						if episodeMM := telegramEpisodeMemory(resolved); episodeMM != nil {
+							telegramEpisodeOnReset(episodeMM, store, archivedID)
+						}
+					}()
 				}
-			}
-			chatM := pinChat(chatID)
-			chatM.mu.Lock()
-			archivedID := resetChatForNew(chatID, sessionManager, handler, handlerLog)
-			unpinChat(chatID, chatM)
-			// The conversation ended, so record its episode — but off this
-			// goroutine: commands run inline on the single update loop, and
-			// extraction is a synchronous LLM call that would otherwise stall
-			// every chat and time out approvals pending elsewhere.
-			if archivedID != "" {
-				go func() {
-					if episodeMM := telegramEpisodeMemory(resolved); episodeMM != nil {
-						telegramEpisodeOnReset(episodeMM, store, archivedID)
-					}
-				}()
-			}
+			})
 			var b strings.Builder
 			b.WriteString("🔄 *Session archived, starting fresh*\n\n")
 			fmt.Fprintf(&b, "• Model: `%s`\n", resolved.Model)
@@ -720,6 +762,17 @@ func telegramCmd(args []string) error {
 			// A different conversation is now live: wake turns must not
 			// inherit the previous conversation's user binding.
 			telegramTurnUsers.Delete(chatID)
+			// Stop the replaced conversation's turn and background jobs, and
+			// drop its read ledger once that turn has unwound so it cannot
+			// record reads after the forget.
+			dropBGRuntimeForChat(chatID)
+			cancelChatTurn(chatID)
+			runChatResetOffLoop(chatID, func() {
+				chatM := pinChat(chatID)
+				chatM.mu.Lock()
+				danger.ForgetReadLedger(fmt.Sprintf("tg-%d", chatID))
+				unpinChat(chatID, chatM)
+			})
 			// Return-after-break: inject a concise "where you left off"
 			// summary into the resumed context (same as `odek continue` and
 			// the REPL resume path). A throwaway manager is built here because
@@ -1569,6 +1622,8 @@ func runChatTurn(
 	log telegram.Logger,
 	photos ...*telegramPhotoInput,
 ) {
+	// A /new or /resume issued just before this turn finishes first.
+	waitChatReset(chatID)
 	// Serialize per chat: only one agent loop runs per chat at a time.
 	// Prevents same-chat message racing that would corrupt session history.
 	slot := pinChat(chatID)

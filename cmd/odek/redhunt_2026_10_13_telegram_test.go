@@ -178,7 +178,50 @@ func TestRED_TelegramStopDoesNotInterruptPendingClarify(t *testing.T) {
 	}
 }
 
-// Same defect for approvals: TelegramApprover.Cancel() is never called on
+// /new and /resume must not block the update loop on a running turn: the
+// reset is queued off the loop, and a message sent after the command waits
+// for the reset so it lands in the new session.
+func TestRED_TelegramResetRunsOffLoopAndOrdersLaterTurns(t *testing.T) {
+	const chatID = int64(88130003)
+	t.Cleanup(func() { chatResetGates.Delete(chatID); deleteChatMutex(chatID) })
+
+	slot := pinChat(chatID)
+	slot.mu.Lock() // a turn is running
+
+	resetDone := make(chan struct{})
+	start := time.Now()
+	runChatResetOffLoop(chatID, func() {
+		s := pinChat(chatID)
+		s.mu.Lock()
+		unpinChat(chatID, s)
+		close(resetDone)
+	})
+	if time.Since(start) > time.Second {
+		t.Fatal("runChatResetOffLoop blocked the caller")
+	}
+
+	waited := make(chan struct{})
+	go func() { waitChatReset(chatID); close(waited) }()
+	select {
+	case <-waited:
+		t.Fatal("a later turn must wait for the pending reset")
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	unpinChat(chatID, slot) // the turn unwinds
+	select {
+	case <-resetDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("reset never ran after the turn unwound")
+	}
+	select {
+	case <-waited:
+	case <-time.After(5 * time.Second):
+		t.Fatal("later turn never released after the reset")
+	}
+}
+
+// Same defect for approvals:TelegramApprover.Cancel() is never called on
 // the Telegram surface, and PromptCommand waits only on a callback, Cancel or
 // the 120 s timeout. A /stop or /new during a pending approval leaves the
 // turn blocked for the full timeout, and /new freezes the update loop (and
