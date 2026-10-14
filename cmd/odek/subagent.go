@@ -982,6 +982,8 @@ func subagentCmd(args []string) error {
 		return fmt.Errorf("task file from a sub-agent lacks parent_max_risk")
 	}
 	applyParentRiskCap(&resolved.Dangerous, parentMaxRisk)
+	// All caps are in place; allowlist entries must not outrank them.
+	dropDeniedAllowlistEntries(&resolved.Dangerous)
 	if subagentDangerObserver != nil {
 		subagentDangerObserver(resolved.Dangerous)
 	}
@@ -1742,7 +1744,16 @@ func applyParentRiskCap(dc *danger.DangerousConfig, parentMax string) {
 		return
 	}
 	clampClassesAboveMaxRisk(dc, parentMax)
-	if len(dc.Allowlist) == 0 {
+	dropDeniedAllowlistEntries(dc)
+}
+
+// dropDeniedAllowlistEntries removes allowlist entries that would run
+// something the final class policy denies. An exact allowlist match is
+// allowed before any class check, so after every cap (parent cap, task
+// max_risk, trust lockdown, profile) has been applied, an entry must not be
+// able to reach a denied class.
+func dropDeniedAllowlistEntries(dc *danger.DangerousConfig) {
+	if dc == nil || len(dc.Allowlist) == 0 {
 		return
 	}
 	kept := make([]string, 0, len(dc.Allowlist))
