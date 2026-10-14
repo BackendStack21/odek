@@ -146,6 +146,11 @@ var patternsTail = []*regexp.Regexp{
 	// password segment must be at least 6 chars to avoid matching common
 	// placeholders like `:x@`.
 	regexp.MustCompile(`(?i)\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|rediss?|amqps?|mssql|clickhouse)(?:\+[a-z0-9_]+)?://[^:\s/]*:[^@\s/]{6,}@[^\s'\x60"]+`),
+
+	// Incoming-webhook URLs: whoever holds the URL can post as the
+	// integration, so the secret path segment is a bearer credential.
+	regexp.MustCompile(`hooks\.slack\.com/services/T[A-Z0-9]+/B[A-Z0-9]+/[A-Za-z0-9]{20,}`),
+	regexp.MustCompile(`discord(?:app)?\.com/api/(?:v[0-9]+/)?webhooks/[0-9]+/[A-Za-z0-9_-]{40,}`),
 }
 
 // Credential-named assignments (api_key, access_token, password,
