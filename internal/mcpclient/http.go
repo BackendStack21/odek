@@ -119,16 +119,20 @@ const maxHTTPRedirects = 10
 
 // withSessionRedirectGuard returns a shallow copy of base (which may be
 // shared, so it is never mutated) whose redirect policy removes the
-// Mcp-Session-Id header when a redirect leaves the configured server's
-// scheme and host. net/http strips only Authorization, Cookie and
-// WWW-Authenticate on its own. The base client's own CheckRedirect, if any,
-// still runs afterwards.
+// Mcp-Session-Id and Authorization headers when a redirect leaves the
+// configured server's scheme, host or port. The base client's own
+// CheckRedirect, if any, still runs afterwards.
 func withSessionRedirectGuard(base *http.Client, server *url.URL) *http.Client {
 	c := *base
 	prev := base.CheckRedirect
 	c.CheckRedirect = func(req *http.Request, via []*http.Request) error {
-		if !strings.EqualFold(req.URL.Scheme, server.Scheme) || !strings.EqualFold(req.URL.Host, server.Host) {
+		// The bearer token and session id follow only same-origin
+		// redirects: net/http compares host names alone, so Authorization
+		// would otherwise cross a scheme downgrade, another port or a
+		// subdomain.
+		if !sameOrigin(req.URL, server) {
 			req.Header.Del(mcpSessionIDHeader)
+			req.Header.Del("Authorization")
 		}
 		if prev != nil {
 			return prev(req, via)
@@ -139,6 +143,11 @@ func withSessionRedirectGuard(base *http.Client, server *url.URL) *http.Client {
 		return nil
 	}
 	return &c
+}
+
+// sameOrigin reports whether two URLs share scheme, host name and port.
+func sameOrigin(a, b *url.URL) bool {
+	return strings.EqualFold(a.Scheme, b.Scheme) && strings.EqualFold(a.Host, b.Host)
 }
 
 // httpCall performs one JSON-RPC request over HTTP and returns the raw result.
