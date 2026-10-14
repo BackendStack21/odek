@@ -1757,6 +1757,7 @@ var projectExecCommands = map[string]bool{
 	"make": true, "gmake": true, "pytest": true, "py.test": true,
 	"just": true, "task": true, "jest": true, "vitest": true,
 	"bazel": true, "rake": true, "mix": true,
+	"rspec": true, "rails": true, "cucumber": true, "tox": true, "nox": true,
 }
 
 var systemPrefixes = map[string]bool{
@@ -2606,6 +2607,15 @@ func classifyStageIn(tokens []string, pipedInto bool, repo *gitRepoCtx) RiskClas
 		// find … -exec/-execdir/-ok CMD runs an arbitrary command per match.
 		if name == "find" && hasAny(cmdTokens, "-exec", "-execdir", "-ok", "-okdir") {
 			cls = worstOf(cls, CodeExecution)
+		}
+		// The command each action runs is judged as a command of its own, so
+		// `find . -exec rm -rf ~ \;` is as destructive as `rm -rf ~`.
+		// An action command the classifier cannot judge keeps the
+		// code_execution floor rather than becoming unknown.
+		for _, payload := range execActionCommands(name, cmdTokens) {
+			if inner := classifyStageIn(payload, false, repo); inner != Unknown {
+				cls = worstOf(cls, inner)
+			}
 		}
 	}
 	// Reverse-shell channels and sensitive resources can appear anywhere in
@@ -6242,6 +6252,59 @@ func hasShortFlag(args []string, flag rune) bool {
 		}
 	}
 	return false
+}
+
+// execActionCommands returns the commands that find's -exec/-execdir/-ok/-okdir
+// actions and fd's -x/-X (--exec, --exec-batch) run. The `{}` placeholder
+// stands for a matched path and is replaced by a relative path so it does not
+// make the command look like it targets something unknown.
+func execActionCommands(name string, tokens []string) [][]string {
+	var out [][]string
+	add := func(words []string) {
+		if len(words) == 0 {
+			return
+		}
+		cmd := make([]string, len(words))
+		for i, w := range words {
+			cmd[i] = strings.ReplaceAll(w, "{}", "./match")
+		}
+		out = append(out, cmd)
+	}
+	switch name {
+	case "find":
+		for i := 1; i < len(tokens); i++ {
+			switch tokens[i] {
+			case "-exec", "-execdir", "-ok", "-okdir":
+			default:
+				continue
+			}
+			end := len(tokens)
+			for j := i + 1; j < len(tokens); j++ {
+				if tokens[j] == ";" || tokens[j] == `\;` || tokens[j] == "+" {
+					end = j
+					break
+				}
+			}
+			add(tokens[i+1 : end])
+			i = end
+		}
+	case "fd", "fdfind":
+		for _, o := range fdSyntax.parse(tokens[1:]).opts {
+			if !o.is("--exec", "--exec-batch") {
+				continue
+			}
+			words := tokens[1+o.at+1:]
+			for j, w := range words {
+				if w == ";" || w == `\;` {
+					words = words[:j]
+					break
+				}
+			}
+			add(words)
+			break
+		}
+	}
+	return out
 }
 
 func isCodeExecution(first string, tokens []string, repo *gitRepoCtx) bool {

@@ -266,3 +266,53 @@ func TestRED_EnvSignalAndDebugOptionsDumpEnvironment(t *testing.T) {
 		`env -S ''`,
 	)
 }
+
+// find -exec/-execdir/-ok and fd -x/-X run their argument command, but the
+// command is never classified: the stage only gets the code_execution floor.
+// `find . -exec rm -rf ~ \;` is code_execution (prompt, and eligible for a
+// session class-trust shortcut) while `rm -rf ~`, `xargs sh -c 'rm -rf ~'`
+// and `bash -c 'rm -rf ~'` are destructive (deny, never trust-shortcuttable).
+// (classifier_test.go pins the sh -c form at exactly CodeExecution; that
+// expectation encodes the gap.)
+func TestRED_FindExecInnerCommandNotClassified(t *testing.T) {
+	t.Setenv("HOME", "/home/user")
+	t.Chdir(t.TempDir())
+	cfg := &DangerousConfig{}
+	for _, cmd := range []string{
+		`find . -exec rm -rf ~ \;`,
+		`find . -exec sh -c 'rm -rf ~' \;`,
+		`find . -execdir bash -c 'rm -rf ~' {} +`,
+		`find . -ok sh -c 'rm -rf ~' \;`,
+		`fd -x sh -c 'rm -rf ~'`,
+		`fd . -X rm -rf ~`,
+	} {
+		if got := Classify(cmd); got != Destructive {
+			t.Errorf("Classify(%q) = %s, want destructive", cmd, got)
+		}
+		if act := cfg.ActionForCommand(cmd); act != Deny {
+			t.Errorf("ActionForCommand(%q) = %s, want deny (destructive)", cmd, act)
+		}
+	}
+}
+
+// poetry run, uv run, pipenv run and bundle exec run an arbitrary command in
+// the project environment, exactly like the wrappers the grammar already
+// strips (direnv exec, nix/mise/asdf exec): `direnv exec . rm -rf ~` is
+// destructive, but these classify code_execution without looking at the
+// command, so a destructive payload is downgraded to a prompt.
+func TestRED_ProjectRunnerWrappersHideCommand(t *testing.T) {
+	t.Setenv("HOME", "/home/user")
+	t.Chdir(t.TempDir())
+	for _, cmd := range []string{
+		`poetry run rm -rf ~`,
+		`uv run rm -rf ~`,
+		`uv run -- rm -rf ~`,
+		`pipenv run rm -rf ~`,
+		`bundle exec rm -rf ~`,
+		`poetry run sh -c 'rm -rf ~'`,
+	} {
+		if got := Classify(cmd); got != Destructive {
+			t.Errorf("Classify(%q) = %s, want destructive (direnv exec . rm -rf ~ is)", cmd, got)
+		}
+	}
+}

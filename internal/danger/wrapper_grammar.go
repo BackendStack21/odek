@@ -8,7 +8,10 @@
 
 package danger
 
-import "strings"
+import (
+	"path/filepath"
+	"strings"
+)
 
 // wrapperSpecs are the option grammars of the wrappers that run another
 // command: which options consume a value (so the value is not mistaken for
@@ -248,6 +251,21 @@ func (step *wrapperStep) parallelPayload(tokens []string, from, i int) {
 	}
 }
 
+// projectRunnerSpec reads the options in front of the command a project
+// environment runner executes; none of them takes a value that could hide it.
+var projectRunnerSpec = optSpec{posix: true}
+
+// uvRunSpec is `uv run`'s option grammar: the value-taking options, so their
+// values are not read as the command.
+var uvRunSpec = optSpec{
+	posix: true,
+	short: "pw",
+	long: longTable("with with-requirements with-editable python project directory env-file extra group "+
+		"only-group package index default-index index-url extra-index-url find-links index-strategy "+
+		"keyring-provider resolution prerelease exclude-newer config-file cache-dir link-mode "+
+		"refresh-package reinstall-package upgrade-package no-binary-package no-build-package config-setting", ""),
+}
+
 // subcommandWrapper recognises tools that run a command only for certain
 // subcommands: `asdf exec`, `direnv exec DIR`, `mise|rtx exec|x … --`,
 // `nix run|shell|develop`, and `nix-shell`.
@@ -270,6 +288,36 @@ func subcommandWrapper(name string, tokens []string, i int) (wrapperStep, bool) 
 			step.next = min(i+3, len(tokens))
 			if step.next < len(tokens) && tokens[step.next] == "--" {
 				step.next++
+			}
+			return step, true
+		}
+	case "poetry", "pipenv", "pdm", "rye", "hatch", "uv", "bundle", "bundler":
+		// Project environment runners: `poetry run CMD`, `uv run CMD`,
+		// `bundle exec CMD` execute CMD like direnv exec does.
+		verb := "run"
+		if name == "bundle" || name == "bundler" {
+			verb = "exec"
+		}
+		if len(rest) > 0 && rest[0] == verb {
+			step.floor = CodeExecution
+			spec := projectRunnerSpec
+			if name == "uv" {
+				spec = uvRunSpec
+			}
+			r := spec.parse(tokens[i+2:])
+			switch {
+			case r.operandAt >= 0:
+				step.next = i + 2 + r.operandAt
+			case len(r.rest) > 0:
+				step.next = len(tokens) - len(r.rest)
+			default:
+				step.next = len(tokens)
+			}
+			if step.next < len(tokens) && scriptFileExtensions[strings.ToLower(filepath.Ext(tokens[step.next]))] &&
+				!strings.Contains(tokens[step.next], "/") {
+				// `uv run script.py` runs the file with the project's
+				// interpreter: there is no command word to judge.
+				step.next = len(tokens)
 			}
 			return step, true
 		}

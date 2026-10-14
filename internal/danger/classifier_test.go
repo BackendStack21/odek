@@ -423,8 +423,8 @@ func TestClassify_EmbeddedShellInterpreterExecution(t *testing.T) {
 		{"emacs file.el", CodeExecution},
 		{"emacs --version", Safe},
 		{"ed file.txt", CodeExecution},
-		// find -exec already escalates (defence-in-depth check).
-		{"find . -exec sh -c 'rm -rf ~' \\;", CodeExecution},
+		// find -exec escalates, and the command it runs is classified too.
+		{"find . -exec sh -c 'rm -rf ~' \\;", Destructive},
 		{"find . -name '*.go'", Safe},
 	}
 	for _, tt := range tests {
