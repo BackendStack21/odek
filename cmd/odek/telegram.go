@@ -107,6 +107,31 @@ func runChatResetOffLoop(chatID int64, fn func()) {
 	}()
 }
 
+// sessionOrderedCommands read or change the chat's session and so must run
+// after a pending session reset.
+var sessionOrderedCommands = map[string]bool{
+	"resume": true, "plan_resume": true, "stats": true, "sessions": true,
+	"plan_status": true, "prune": true,
+}
+
+// deferCommandAfterReset queues run behind the chat's pending session reset
+// when cmdName is session-dependent and a reset is pending, delivering its
+// result through deliver. It reports whether the command was deferred; the
+// caller must not block on it.
+func deferCommandAfterReset(chatID int64, cmdName string, run func() (string, error), deliver func(string, error)) bool {
+	if !sessionOrderedCommands[cmdName] {
+		return false
+	}
+	if _, pending := chatResetGates.Load(chatID); !pending {
+		return false
+	}
+	runChatResetOffLoop(chatID, func() {
+		resp, err := run()
+		deliver(resp, err)
+	})
+	return true
+}
+
 // waitChatReset blocks until any pending session reset of the chat is done.
 func waitChatReset(chatID int64) {
 	if v, ok := chatResetGates.Load(chatID); ok {
@@ -940,6 +965,24 @@ func telegramCmd(args []string) error {
 		}
 
 		return cmd.Handler(argsStr)
+	}
+	// Commands that read or change the chat's session queue behind a pending
+	// /new or /resume (which reset off the update loop), so they act on the
+	// session that command leaves behind.
+	runCommandNow := handler.OnCommand
+	handler.OnCommand = func(chatID int64, messageID int, cmdName string, argsStr string, userID int64) (string, error) {
+		if deferCommandAfterReset(chatID, cmdName,
+			func() (string, error) { return runCommandNow(chatID, messageID, cmdName, argsStr, userID) },
+			func(resp string, err error) {
+				if err != nil {
+					handler.SendResponse(chatID, "❌ "+err.Error(), messageID)
+				} else if resp != "" {
+					handler.SendResponse(chatID, resp, messageID)
+				}
+			}) {
+			return "", nil
+		}
+		return runCommandNow(chatID, messageID, cmdName, argsStr, userID)
 	}
 
 	handler.OnCallbackQuery = func(chatID int64, data string, userID int64) (string, error) {

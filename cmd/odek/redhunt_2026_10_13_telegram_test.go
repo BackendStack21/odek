@@ -221,7 +221,57 @@ func TestRED_TelegramResetRunsOffLoopAndOrdersLaterTurns(t *testing.T) {
 	}
 }
 
-// Same defect for approvals:TelegramApprover.Cancel() is never called on
+// A session-dependent command issued after /new must run after the pending
+// reset (never before it, never blocking the caller), and unrelated commands
+// or an idle chat run immediately.
+func TestRED_TelegramSessionCommandsQueueBehindPendingReset(t *testing.T) {
+	const chatID = int64(88130004)
+	t.Cleanup(func() { chatResetGates.Delete(chatID); deleteChatMutex(chatID) })
+
+	if deferCommandAfterReset(chatID, "resume", func() (string, error) { return "", nil }, func(string, error) {}) {
+		t.Fatal("no reset pending: command must run immediately")
+	}
+
+	slot := pinChat(chatID)
+	slot.mu.Lock() // a turn is running
+	var mu sync.Mutex
+	var order []string
+	note := func(s string) { mu.Lock(); order = append(order, s); mu.Unlock() }
+	runChatResetOffLoop(chatID, func() {
+		s := pinChat(chatID)
+		s.mu.Lock()
+		unpinChat(chatID, s)
+		note("reset")
+	})
+	delivered := make(chan struct{})
+	if !deferCommandAfterReset(chatID, "resume", func() (string, error) { note("resume"); return "ok", nil },
+		func(resp string, err error) { note("deliver:" + resp); close(delivered) }) {
+		t.Fatal("resume behind a pending reset must be deferred")
+	}
+	if deferCommandAfterReset(chatID, "stop", func() (string, error) { return "", nil }, func(string, error) {}) {
+		t.Fatal("/stop must not be deferred")
+	}
+	mu.Lock()
+	if len(order) != 0 {
+		mu.Unlock()
+		t.Fatalf("nothing may run while the turn holds the chat: %v", order)
+	}
+	mu.Unlock()
+
+	unpinChat(chatID, slot)
+	select {
+	case <-delivered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("deferred command never ran")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if strings.Join(order, ",") != "reset,resume,deliver:ok" {
+		t.Fatalf("order = %v, want reset before resume", order)
+	}
+}
+
+// Same defect for approvals: TelegramApprover.Cancel() is never called on
 // the Telegram surface, and PromptCommand waits only on a callback, Cancel or
 // the 120 s timeout. A /stop or /new during a pending approval leaves the
 // turn blocked for the full timeout, and /new freezes the update loop (and
