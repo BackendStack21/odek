@@ -731,8 +731,12 @@ func pathKey(path string) string {
 
 // stageWrittenPaths returns the file paths a stage writes, resolved against
 // cwd: shell redirects, semantic output options (curl -o, wget -O, sed -i,
-// ...), tee operands, and the destination of cp/mv/install/ln.
-func stageWrittenPaths(stage, inner []string, name, cwd string) []string {
+// ...), tee and sponge operands, the destination of cp/mv/install/ln and the
+// local destination of an scp download. unnamed reports a write target whose
+// name the analysis cannot read off the command line: a glob, an expansion
+// that does not resolve, a command substitution, or a target the tool
+// chooses itself.
+func stageWrittenPaths(stage, inner []string, name, cwd string) (paths []string, unnamed bool) {
 	var raw []string
 	for j, tok := range stage {
 		if isRedirectToken(tok) && j+1 < len(stage) {
@@ -758,8 +762,10 @@ func stageWrittenPaths(stage, inner []string, name, cwd string) []string {
 			operands = append(operands, tok)
 		}
 		switch name {
-		case "tee":
+		case "tee", "sponge":
 			raw = append(raw, operands...)
+		case "scp":
+			raw = append(raw, scpLocalWriteTargets(inner[1:], cwd)...)
 		case "uniq":
 			// uniq [OPTION]... [INPUT [OUTPUT]] writes its second operand.
 			if len(operands) >= 2 {
@@ -804,16 +810,98 @@ func stageWrittenPaths(stage, inner []string, name, cwd string) []string {
 	}
 	var out []string
 	for _, tok := range raw {
-		if tok == "" || tok == "-" || strings.Contains(tok, dynamicSubstToken) {
+		if tok == "" || tok == "-" {
+			continue
+		}
+		if strings.Contains(tok, dynamicSubstToken) {
+			unnamed = true
 			continue
 		}
 		path := expandShellTokenPath(tok)
+		if hasGlobMeta(path) || strings.ContainsAny(path, "$`") {
+			// The shell picks the file at run time (a glob match, or a
+			// variable this analysis cannot resolve).
+			unnamed = true
+		}
 		if !filepath.IsAbs(path) {
 			path = filepath.Join(cwd, path)
 		}
 		out = append(out, pathKey(path))
 	}
-	return out
+	return out, unnamed
+}
+
+// scpLocalWriteTargets returns the local files an scp download writes: the
+// destination itself, or a placeholder for unknown names when the
+// destination is a directory or the copy is recursive (the remote side
+// chooses the names). An upload (local sources, remote destination) writes
+// nothing locally.
+func scpLocalWriteTargets(args []string, cwd string) []string {
+	var operands []string
+	recursive := false
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "--" {
+			operands = append(operands, args[i+1:]...)
+			break
+		}
+		if isShortFlagToken(a) {
+			for j := 1; j < len(a); j++ {
+				c := a[j]
+				if c == 'r' {
+					recursive = true
+				}
+				// These options take a value: the rest of the word or the
+				// next one.
+				if strings.IndexByte("cDFiJlmoPSX", c) >= 0 {
+					if j == len(a)-1 {
+						i++
+					}
+					break
+				}
+			}
+			continue
+		}
+		operands = append(operands, a)
+	}
+	if len(operands) < 2 {
+		return nil
+	}
+	dest := operands[len(operands)-1]
+	if scpRemoteOperand(dest) {
+		return nil
+	}
+	remoteSource := false
+	for _, src := range operands[:len(operands)-1] {
+		if scpRemoteOperand(src) {
+			remoteSource = true
+		}
+	}
+	if !remoteSource {
+		return nil // a local copy: the cp-like destination below
+	}
+	destPath := expandShellTokenPath(dest)
+	if !filepath.IsAbs(destPath) {
+		destPath = filepath.Join(cwd, destPath)
+	}
+	if st, err := os.Stat(destPath); recursive || strings.HasSuffix(dest, "/") || (err == nil && st.IsDir()) {
+		return []string{dynamicSubstToken}
+	}
+	return []string{dest}
+}
+
+// scpRemoteOperand reports whether an scp operand names a remote file
+// (host:path, user@host:path or an scp:// URI) rather than a local path.
+func scpRemoteOperand(op string) bool {
+	if strings.HasPrefix(op, "scp://") {
+		return true
+	}
+	colon := strings.IndexByte(op, ':')
+	if colon <= 0 {
+		return false
+	}
+	// A slash before the colon makes it a local path (./a:b).
+	return !strings.Contains(op[:colon], "/")
 }
 
 // targetDirectoryOption returns the DIR of a -t DIR, -tDIR, --target-directory
@@ -886,10 +974,11 @@ func stageLedgerFiles(stage []string, cwd string, written map[string]bool) (file
 		if len(inner) > 0 {
 			name = commandName(inner[0])
 		}
-		for _, path := range stageWrittenPaths(stage, inner, name, cwd) {
+		paths, unnamed := stageWrittenPaths(stage, inner, name, cwd)
+		for _, path := range paths {
 			written[path] = true
 		}
-		if stageWritesUnnamedFiles(name, inner) {
+		if unnamed || stageWritesUnnamedFiles(name, inner) {
 			written[unknownWritesKey] = true
 		}
 	}
@@ -914,8 +1003,22 @@ func stageWritesUnnamedFiles(name string, inner []string) bool {
 	case "patch", "unzip", "7z", "7za", "7zz", "7zr", "unrar", "unar", "cpio",
 		"gunzip", "bunzip2", "unxz", "uncompress", "unlzma", "unzstd", "ed", "ex":
 		return !hasAny(args, "-l", "-t", "-v", "-Z", "--list", "--test", "--dry-run", "-h", "--help", "--version")
-	case "gzip", "bzip2", "xz", "zstd", "lzma":
-		return hasAny(args, "-d", "--decompress", "--uncompress")
+	case "gzip", "bzip2", "xz", "zstd", "lzma", "pigz", "pbzip2", "pixz", "pxz", "lzip", "plzip", "lzop",
+		"lz4", "brotli", "unpigz", "unlz4", "lunzip", "unlzop", "unbrotli":
+		return hasAny(args, "-d", "--decompress", "--uncompress") || decompressesToFiles(name, args)
+	case "ditto":
+		// ditto copies or extracts a whole tree into the destination.
+		return !hasAny(args, "-h", "--help")
+	case "vim", "vi", "nvim", "gvim", "vimdiff", "nvimdiff", "view", "rvim", "evim", "vim.basic", "vim.tiny", "vim.nox":
+		// A scripted editor run (-es, --headless, -c/+cmd, -s scriptin)
+		// writes whatever its commands choose.
+		return !hasAny(args, "--version", "-h", "--help")
+	case "awk", "gawk":
+		return awkEditsInPlace(args)
+	case "curl":
+		return curlChoosesOutputName(args)
+	case "wget":
+		return wgetChoosesOutputName(args)
 	case "ar", "jar", "dpkg-deb", "dpkg", "pax", "bsdcpio":
 		return archiveExtractionArgs(args)
 	case "tar", "bsdtar", "gtar":
@@ -945,16 +1048,193 @@ func stageWritesUnnamedFiles(name string, inner []string) bool {
 			}
 		}
 	case "hg", "svn":
-		if len(args) > 0 {
-			switch args[0] {
-			case "update", "up", "pull", "checkout", "co", "revert", "merge", "switch", "import", "unbundle":
+		sub, subArgs := vcsSubcommand(args)
+		switch sub {
+		case "update", "up", "pull", "checkout", "co", "revert", "merge", "switch", "import", "unbundle":
+			return true
+		}
+		if name == "svn" {
+			switch sub {
+			case "export", "patch", "resolve", "resolved", "copy", "cp", "move", "mv", "rename", "ren":
 				return true
 			}
+			return false
+		}
+		switch sub {
+		case "shelve":
+			return !hasAny(subArgs, "-l", "--list", "-p", "--patch", "--stat", "-d", "--delete", "--cleanup")
+		case "purge", "clean":
+			return !hasAny(subArgs, "-p", "--print", "-0", "--print0")
+		case "resolve":
+			return !hasAny(subArgs, "-l", "--list", "-m", "--mark", "-u", "--unmark")
+		case "unshelve", "rebase", "graft", "strip", "clone", "backout", "histedit", "transplant",
+			"fetch", "rollback", "uncommit", "prune", "evolve", "next", "prev", "split", "fold":
+			return true
 		}
 	case "git":
 		return gitSubcommandRewritesTree(inner)
 	}
 	return false
+}
+
+// decompressesToFiles reports whether a compressor invocation decompresses
+// into files named after its inputs: a decompress flag inside a short-option
+// cluster (-dk, -kd, -fd, -dq), or a decompress-only command name, unless the
+// output goes to stdout or the run only tests or lists.
+func decompressesToFiles(name string, args []string) bool {
+	decompress := strings.HasPrefix(name, "un") || name == "lunzip"
+	stdout := false
+	// Short options that take a value own the rest of their word.
+	valueLetters := "SoTFCMDPLB"
+	for _, a := range args {
+		if a == "--" {
+			break
+		}
+		switch a {
+		case "--decompress", "--uncompress":
+			decompress = true
+		case "--stdout", "--to-stdout", "--test", "--list":
+			stdout = true
+		}
+		if !isShortFlagToken(a) {
+			continue
+		}
+		for j := 1; j < len(a); j++ {
+			c := a[j]
+			if strings.IndexByte(valueLetters, c) >= 0 {
+				break
+			}
+			switch c {
+			case 'd':
+				decompress = true
+			case 'c', 't':
+				stdout = true
+			case 'l':
+				// lz4 -l selects the legacy format; elsewhere it lists.
+				stdout = stdout || !strings.Contains(name, "lz4")
+			}
+		}
+	}
+	return decompress && !stdout
+}
+
+// awkEditsInPlace reports whether gawk loads its inplace extension
+// (`-i inplace`, `--include=inplace`), which rewrites every file operand.
+func awkEditsInPlace(args []string) bool {
+	for i, a := range args {
+		if a == "--" {
+			break
+		}
+		value := ""
+		switch {
+		case (a == "-i" || a == "--include") && i+1 < len(args):
+			value = args[i+1]
+		case strings.HasPrefix(a, "--include="):
+			value = strings.TrimPrefix(a, "--include=")
+		case strings.HasPrefix(a, "-i") && len(a) > 2:
+			value = a[2:]
+		default:
+			continue
+		}
+		value = strings.TrimSuffix(filepath.Base(value), ".awk")
+		if value == "inplace" || strings.ContainsAny(value, "$`") || strings.Contains(value, dynamicSubstToken) {
+			return true
+		}
+	}
+	return false
+}
+
+// curlChoosesOutputName reports whether curl saves under a name the server
+// chooses (-J / --remote-header-name) or reads its options from a config
+// file (-K / --config) that can name any output.
+func curlChoosesOutputName(args []string) bool {
+	for _, a := range args {
+		if a == "--" {
+			break
+		}
+		if strings.HasPrefix(a, "--") {
+			if name, _, _, ok := resolveLongOption(a, []string{"remote-header-name", "config"}); ok && name != "" {
+				return true
+			}
+			continue
+		}
+		if !isShortFlagToken(a) {
+			continue
+		}
+		for j := 1; j < len(a); j++ {
+			if a[j] == 'J' || a[j] == 'K' {
+				return true
+			}
+			// Options that take a value own the rest of the word.
+			if strings.IndexByte("oduHXeAbcDEhrTwyYzmCxUQ", a[j]) >= 0 {
+				break
+			}
+		}
+	}
+	return false
+}
+
+// wgetChoosesOutputName reports whether wget saves under names the command
+// line does not give: recursive and mirror runs, page requisites, URL lists,
+// server-chosen names, and -e/--execute or a config file that can switch any
+// of these on.
+func wgetChoosesOutputName(args []string) bool {
+	long := []string{"recursive", "mirror", "page-requisites", "input-file", "content-disposition",
+		"trust-server-names", "execute", "config", "base", "force-directories"}
+	for _, a := range args {
+		if a == "--" {
+			break
+		}
+		if strings.HasPrefix(a, "--") {
+			if name, _, _, ok := resolveLongOption(a, long); ok && name != "" {
+				return true
+			}
+			continue
+		}
+		if !isShortFlagToken(a) || (len(a) == 3 && a[1] == 'n') {
+			continue // -nc, -nd, -nH, -np, -nv are two-letter options
+		}
+		for j := 1; j < len(a); j++ {
+			switch a[j] {
+			case 'r', 'm', 'p', 'i', 'e', 'x', 'B':
+				return true
+			}
+			// Options that take a value own the rest of the word.
+			if strings.IndexByte("oaOPtTwlADIXRUQ", a[j]) >= 0 {
+				break
+			}
+		}
+	}
+	return false
+}
+
+// vcsSubcommand returns the subcommand of an hg or svn invocation and the
+// words after it, skipping the global options (and their values) that may
+// precede it. An option whose value cannot be told apart from the
+// subcommand is skipped together with the next word.
+func vcsSubcommand(args []string) (string, []string) {
+	valued := map[string]bool{
+		"-R": true, "--repository": true, "--repo": true, "--cwd": true, "--config": true,
+		"--encoding": true, "--encodingmode": true, "--color": true, "--pager": true,
+		"--username": true, "--password": true, "--config-dir": true, "--config-option": true,
+		"--trust-server-cert-failures": true,
+	}
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "--" {
+			if i+1 < len(args) {
+				return args[i+1], args[i+2:]
+			}
+			return "", nil
+		}
+		if !strings.HasPrefix(a, "-") || a == "-" {
+			return a, args[i+1:]
+		}
+		if valued[a] {
+			i++
+		}
+	}
+	return "", nil
 }
 
 // archiveExtractionArgs reports whether an ar / jar / pax / dpkg-deb style
@@ -1029,6 +1309,17 @@ func gitSubcommandRewritesTree(inner []string) bool {
 		return !flag("-n", "--dry-run")
 	case "rebase":
 		return !flag("--quit")
+	case "merge-file":
+		// Writes the merge result into the first file unless -p prints it.
+		return !flag("-p", "--stdout")
+	case "mv":
+		// Without -f git mv refuses to overwrite an existing destination.
+		for _, a := range args {
+			if a == "--force" || (isShortFlagToken(a) && strings.ContainsRune(a[1:], 'f')) {
+				return true
+			}
+		}
+		return false
 	case "pull", "apply", "am", "cherry-pick", "revert", "checkout-index", "read-tree",
 		"submodule", "sparse-checkout", "worktree", "bisect", "filter-branch", "lfs":
 		if sub == "submodule" || sub == "worktree" {
