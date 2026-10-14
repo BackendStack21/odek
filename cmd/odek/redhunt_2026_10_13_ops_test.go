@@ -519,3 +519,14 @@ func TestInitGlobalForceKeepsLinkedConfigAndMode(t *testing.T) {
 		t.Errorf("mode = %v, want 0640 preserved", fi.Mode().Perm())
 	}
 }
+
+func TestReplEditorBracketedPasteDropsControlBytes(t *testing.T) {
+	got := opsHuntFeedEditor(t, "\x1b[200~ab\x15cd\x0b\x01\x7f\x0c\u0085\u009bef\x1b[201~", nil)
+	if got != "abcdef" {
+		t.Errorf("pasted text = %q, want %q", got, "abcdef")
+	}
+	// Outside a paste the editing keys still work.
+	if got := opsHuntFeedEditor(t, "ab\x15cd", nil); got != "cd" {
+		t.Errorf("Ctrl+U outside paste: %q", got)
+	}
+}

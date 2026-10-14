@@ -132,6 +132,11 @@ func (e *replEditor) handleByte(b byte) (bool, error) {
 		return e.handleEnter()
 	case e.bracketed && b == 0x09: // TAB inside a paste is literal text
 		e.insertRune('\t')
+	case e.bracketed && b == 0x0a: // LF inside a paste is a newline like CR
+		return e.handleEnter()
+	case e.bracketed && b != 0x03 && b != 0x04 && (b < 0x20 || b == 0x7f):
+		// Any other pasted control byte is dropped: it must never act as an
+		// editing key (Ctrl+U/K/A/L, DEL). Ctrl+C and Ctrl+D still abort.
 	case b == 0x7f || b == 0x08: // DEL / BS
 		e.backspace()
 	case b == 0x09: // TAB
@@ -164,7 +169,9 @@ func (e *replEditor) handleByte(b byte) (bool, error) {
 		e.pending = append(e.pending, b)
 		if utf8.FullRune(e.pending) {
 			r, _ := utf8.DecodeRune(e.pending)
-			e.insertRune(r)
+			if !(e.bracketed && r >= 0x80 && r <= 0x9f) { // pasted C1 controls are dropped
+				e.insertRune(r)
+			}
 			e.pending = nil
 		} else if len(e.pending) > utf8.UTFMax {
 			e.pending = nil // malformed sequence — drop, never wedge
