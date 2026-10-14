@@ -416,7 +416,7 @@ type cliDeliverer struct {
 func (d cliDeliverer) Deliver(ctx context.Context, job schedule.Job, result string) error {
 	switch job.Deliver.Kind {
 	case schedule.DeliverStdout:
-		fmt.Printf("\n── %s · %s ──\n%s\n", redact.RedactSecrets(job.Name), time.Now().Format(time.RFC1123), redact.RedactSecrets(result))
+		fmt.Printf("\n── %s · %s ──\n%s\n", render.EscapeInlineForTerminal(redact.RedactSecrets(job.Name)), time.Now().Format(time.RFC1123), render.EscapeForTerminal(redact.RedactSecrets(result)))
 		return nil
 	case schedule.DeliverLog:
 		return appendScheduleLog(job, result)
@@ -1044,7 +1044,7 @@ func firstWords(s string, n int) string {
 // appendScheduleLog delivers unaddressed scheduler output to the terminal.
 // The operational log records delivery metadata only, never result text.
 func appendScheduleLog(job schedule.Job, result string) error {
-	_, err := fmt.Fprintf(os.Stdout, "[%s] %s (%s)\n%s\n\n", time.Now().Format(time.RFC3339), redact.RedactSecrets(job.Name), job.ID, redact.RedactSecrets(result))
+	_, err := fmt.Fprintf(os.Stdout, "[%s] %s (%s)\n%s\n\n", time.Now().Format(time.RFC3339), render.EscapeInlineForTerminal(redact.RedactSecrets(job.Name)), render.EscapeInlineForTerminal(job.ID), render.EscapeForTerminal(redact.RedactSecrets(result)))
 	if err != nil {
 		diagnostics.Report("schedule", "delivery", "", err)
 	} else {
