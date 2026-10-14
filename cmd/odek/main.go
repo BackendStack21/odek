@@ -2886,6 +2886,16 @@ func reservedBuiltinToolNames() map[string]bool {
 	return names
 }
 
+// claimMCPToolName records a registered MCP tool name, failing when another
+// tool already uses it (the registry would otherwise panic or shadow).
+func claimMCPToolName(seen map[string]struct{}, server, tool, registered string) error {
+	if _, dup := seen[registered]; dup {
+		return fmt.Errorf("mcp server %q: tool %q registers as %q, which another MCP tool already uses", server, tool, registered)
+	}
+	seen[registered] = struct{}{}
+	return nil
+}
+
 // loadMCPTools calls approveMCPServers, which requires explicit user approval
 // (interactive prompt or ODEK_APPROVE_MCP=1) and persists approvals in
 // ~/.odek/mcp_approvals.json. After discovery, each advertised tool is checked
@@ -2992,14 +3002,13 @@ func loadMCPTools(resolved config.ResolvedConfig, tools *[]odek.Tool) (func(), e
 			// non-authoritative before it enters the tool catalogue (see
 			// newMCPModelTool).
 			mt := newMCPModelTool(client, name, def, injectionGuard, resolved.Guard)
-			if _, dup := mcpRegistered[mt.Name()]; dup {
+			if err := claimMCPToolName(mcpRegistered, name, def.Name, mt.Name()); err != nil {
 				client.Close()
 				for _, c := range cleaners {
 					c()
 				}
-				return nil, fmt.Errorf("mcp server %q: tool %q registers as %q, which another MCP tool already uses", name, def.Name, mt.Name())
+				return nil, err
 			}
-			mcpRegistered[mt.Name()] = struct{}{}
 			*tools = append(*tools, mt)
 		}
 
