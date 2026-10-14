@@ -63,6 +63,27 @@ func TestRED_Review3ParallelBooleanOptionsDoNotSwallowCommand(t *testing.T) {
 	}
 }
 
+func TestRED_Review3ParallelUnknownOptionFailsClosed(t *testing.T) {
+	t.Setenv("HOME", "/home/user")
+	t.Chdir(t.TempDir())
+	if got := Classify(`parallel --pipe-part --block 1M wc -l :::: f`); got != Unknown {
+		t.Errorf("unlisted --pipe-part = %s, want unknown", got)
+	}
+	for _, c := range []string{`parallel --notarealopt echo rm -rf ~ ::: a`, `parallel -Z echo rm -rf ~ ::: a`, `parallel --notarealopt=1 echo rm -rf ~ ::: a`} {
+		if got := Classify(c); got != Unknown && got != Destructive {
+			t.Errorf("Classify(%q) = %s, want unknown or destructive", c, got)
+		}
+	}
+	if got := Classify(`parallel --link make test ::: x`); got != CodeExecution {
+		t.Errorf("parallel --link make test = %s, want code_execution", got)
+	}
+	for _, c := range []string{`parallel --link gzip ::: a ::: b`, `parallel --max-procs 4 gzip ::: a.log`, `parallel -j4 gzip ::: a.log`, `parallel --lb gzip ::: a`} {
+		if got := Classify(c); got != LocalWrite {
+			t.Errorf("Classify(%q) = %s, want local_write", c, got)
+		}
+	}
+}
+
 func TestRED_Review3DynamicArgvOptionsAreNotFixedArguments(t *testing.T) {
 	t.Setenv("HOME", "/home/user")
 	t.Chdir(t.TempDir())

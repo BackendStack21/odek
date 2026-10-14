@@ -2781,6 +2781,9 @@ func classifyStageIn(tokens []string, pipedInto bool, repo *gitRepoCtx) RiskClas
 			}
 		}
 		cls = worstOf(cls, packageManagerSettingClass(name, cmdTokens))
+		if parallelHasUnknownOption(tokens) {
+			cls = worstOf(cls, Unknown)
+		}
 		if name == "git" {
 			// ext:: and fd:: remotes make git run a command or use an
 			// inherited descriptor as its transport.
