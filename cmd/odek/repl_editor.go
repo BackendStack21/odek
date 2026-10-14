@@ -644,12 +644,37 @@ func (h *replHistory) Load(path string) {
 	}
 	defer f.Close()
 
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 0, 64<<10), historyMaxLineBytes)
+	rd := bufio.NewReaderSize(f, 64<<10)
 	first := true
 	escaped := false // files without the format marker hold raw lines
-	for scanner.Scan() {
-		raw := scanner.Text()
+	var ioErr error
+	var buf []byte
+	tooLong := false
+	for {
+		chunk, isPrefix, err := rd.ReadLine()
+		if err != nil {
+			if err != io.EOF {
+				ioErr = err
+			}
+			break
+		}
+		if !tooLong {
+			buf = append(buf, chunk...)
+			if len(buf) > historyMaxLineBytes {
+				tooLong = true // an over-long line is skipped, not fatal
+				buf = nil
+			}
+		}
+		if isPrefix {
+			continue
+		}
+		raw := string(buf)
+		skip := tooLong
+		buf, tooLong = buf[:0], false
+		if skip {
+			first = false
+			continue
+		}
 		if first {
 			first = false
 			if raw == historyFormatMarker {
@@ -674,9 +699,13 @@ func (h *replHistory) Load(path string) {
 		h.entries = h.entries[len(h.entries)-h.max:]
 	}
 	h.pos = len(h.entries)
-	// A read error (e.g. an over-long line) leaves a partial list: never
-	// persist from it, so the original file is not rewritten and lost.
-	h.loaded = scanner.Err() == nil
+	// A real read error leaves a partial list: never persist from it, so the
+	// original file is not rewritten and lost.
+	if ioErr != nil {
+		fmt.Fprintf(os.Stderr, "odek: cannot read REPL history (%v); history will not be saved\n", ioErr)
+		return
+	}
+	h.loaded = true
 }
 
 // historyFullRewrites counts whole-file history rewrites (observed by tests).

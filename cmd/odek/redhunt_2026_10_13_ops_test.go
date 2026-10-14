@@ -551,18 +551,22 @@ func TestReplHistoryHugePasteDoesNotLoseLaterEntries(t *testing.T) {
 		t.Fatalf("entries = %q, want %q", h3.entries, want)
 	}
 
-	// A file holding an over-long line loads what it can and is never
-	// rewritten from the partial list.
-	huge := strings.Repeat("x", historyMaxLineBytes+10)
+	// An over-long line between normal entries is skipped; the rest loads
+	// and saving keeps working.
+	huge := strings.Repeat("x", 300<<10)
 	content := historyFormatMarker + "\nkeep1\n" + huge + "\nkeep2\n"
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	h4 := newReplHistory()
 	h4.Load(path)
+	if len(h4.entries) != 2 || h4.entries[0] != "keep1" || h4.entries[1] != "keep2" {
+		t.Fatalf("entries = %q", h4.entries)
+	}
 	h4.Add("new")
-	got, _ := os.ReadFile(path)
-	if string(got) != content {
-		t.Errorf("history file was rewritten after a failed load (%d bytes)", len(got))
+	h5 := newReplHistory()
+	h5.Load(path)
+	if len(h5.entries) != 3 || h5.entries[2] != "new" {
+		t.Errorf("new entry not persisted: %q", h5.entries)
 	}
 }
