@@ -36,9 +36,16 @@ func TestDeriveProvenance_Empty(t *testing.T) {
 }
 
 func TestDeriveProvenance_PureShellIsTrusted(t *testing.T) {
-	prov := deriveMessagesProvenance([]session.Message{toolMsg("shell"), toolMsg("patch")})
+	prov := deriveMessagesProvenance([]session.Message{toolMsg("shell"), toolMsgArgs("patch", `{"path":"a.go"}`)})
 	if prov.Untrusted {
 		t.Errorf("shell+patch is internal, should be trusted, got %+v", prov)
+	}
+}
+
+func TestDeriveProvenance_PatchOutsideWorkspaceTaints(t *testing.T) {
+	prov := deriveMessagesProvenance([]session.Message{toolMsgArgs("patch", `{"path":"/etc/hosts"}`)})
+	if !prov.Untrusted {
+		t.Errorf("patch outside the workspace should taint, got %+v", prov)
 	}
 }
 
