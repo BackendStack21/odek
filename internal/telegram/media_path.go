@@ -103,7 +103,7 @@ func resolveMediaPath(path string, chatID int64) (string, error) {
 				return "", err
 			}
 			// Enforce per-chat isolation inside the shared media directory.
-			if chatID != 0 && mediaDir != "" && isPathInside(resolved, mediaDir) {
+			if chatID != 0 && mediaDir != "" && isPathInsideFold(resolved, mediaDir) {
 				if err := checkChatMediaScope(resolved, mediaDir, chatID); err != nil {
 					return "", err
 				}
@@ -255,7 +255,7 @@ func BroadBaseWarning() string {
 func checkChatMediaScope(resolved, mediaDir string, chatID int64) error {
 	// Allow files under a per-chat subdirectory.
 	chatSubdir := filepath.Join(mediaDir, fmt.Sprintf("chat%d", chatID))
-	if isPathInside(resolved, chatSubdir) {
+	if isPathInsideFold(resolved, chatSubdir) {
 		return nil
 	}
 
@@ -311,6 +311,14 @@ func mediaBaseDirs() (dirs []string, mediaDir string, err error) {
 // isPathInside reports whether child is equal to or inside parent, using
 // filepath-aware separator matching to avoid false positives from path
 // prefixes.
+// isPathInsideFold is isPathInside compared the way a case-insensitive
+// filesystem matches names. filepath.EvalSymlinks does not canonicalise letter
+// case, so a case-variant spelling of the media directory names the same files
+// on APFS/NTFS; scope decisions must treat it as inside.
+func isPathInsideFold(child, parent string) bool {
+	return isPathInside(danger.FoldPathCase(child), danger.FoldPathCase(parent))
+}
+
 func isPathInside(child, parent string) bool {
 	if child == parent {
 		return true
