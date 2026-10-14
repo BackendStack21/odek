@@ -5,6 +5,8 @@ import (
 	"io"
 	"os"
 	"runtime"
+	"strconv"
+	"strings"
 )
 
 // writeKeyToUnlinkedFile writes the API key to a 0600 temp file and
@@ -87,8 +89,8 @@ func readKeyFromInheritedFD() string {
 	// Don't pass the signal through to grandchildren.
 	os.Unsetenv(keyFDEnvVar)
 
-	var fd int
-	if _, err := fmt.Sscanf(fdStr, "%d", &fd); err != nil || fd < 3 {
+	fd, err := strconv.Atoi(fdStr)
+	if err != nil || fd < 3 || strings.HasPrefix(fdStr, "+") {
 		return ""
 	}
 	f := os.NewFile(uintptr(fd), "odek-key-fd")
