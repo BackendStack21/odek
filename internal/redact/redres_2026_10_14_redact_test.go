@@ -296,3 +296,21 @@ func TestRED_SetCookieAttributeVariants(t *testing.T) {
 		"Set-Cookie: sid=abcdefgh12; max_age=31536000": "Set-Cookie: sid=[REDACTED]; max_age=31536000",
 	})
 }
+
+// A credential under a quoted key (JSON, JS, Python dicts) keeps the key and
+// its quotes: only the value inside its quotes is replaced, so the document
+// stays well-formed.
+func TestRED_QuotedKeyCredentialBreaksStructure(t *testing.T) {
+	redres14ExpectExact(t, map[string]string{
+		`{"password":"abcdefghijklmnopqrstuvwx\"yzABCDEFGH","x":1}`: `{"password":"[REDACTED]","x":1}`,
+		`{"password":"Xy7kLm9pQ2zz","x":1}`:                         `{"password":"[REDACTED]","x":1}`,
+		`{"api_key": "Xy7kLm9pQ2zzAbCdEf3456"}`:                     `{"api_key": "[REDACTED]"}`,
+		`{'db_password': 'Xy7kLm9pQ2zz'}`:                           `{'db_password': '[REDACTED]'}`,
+	})
+	redres14ExpectExact(t, map[string]string{
+		`password: "Xy7kLm9pQ2zz"`:            `[REDACTED]`,
+		`{"password":Xy7kLm9pQ2zz,"x":1}`:     `{"[REDACTED],"x":1}`,
+		`{"out":"password=Xy7kLm9pQ2zz"}`:     `{"out":"[REDACTED]"}`,
+		`{"password":"${DB_PASSWORD}","x":1}`: `{"password":"${DB_PASSWORD}","x":1}`,
+	})
+}

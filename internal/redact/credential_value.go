@@ -363,7 +363,9 @@ func sourceValue(v string) bool {
 
 // credentialMatches returns the [start,end) offsets of every credential
 // assignment whose value is a literal secret candidate. The span covers
-// name, separator and value, as for the other redaction rules.
+// name, separator and value, as for the other redaction rules, except under a
+// quoted key whose value has the same quotes ({"password":"…"}), where it
+// covers the value inside its quotes only.
 func credentialMatches(text string) [][2]int {
 	var out [][2]int
 	covered := 0 // end of the last consumed span; names inside it are part of it
@@ -413,7 +415,14 @@ func credentialMatches(text string) [][2]int {
 			_, end, _, _ = parseCredentialValue(text, m[1], curly, square, true, json)
 		}
 		covered = end
-		out = append(out, [2]int{m[2], end})
+		start := m[2]
+		if quoted && m[3] < len(text) && (text[m[3]] == '"' || text[m[3]] == '\'') && text[m[1]] == text[m[3]] && end-1 > m[1] {
+			// A quoted key with a value in the same quotes (JSON, JS and
+			// Python dicts): only the value inside its quotes is replaced, so
+			// the key and the document structure stay intact.
+			start, end = m[1]+1, end-1
+		}
+		out = append(out, [2]int{start, end})
 	}
 	return out
 }
