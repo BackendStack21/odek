@@ -155,3 +155,60 @@ func TestLedgerUnnamedWritersReadOnlyVariantsKeepLicence(t *testing.T) {
 		}
 	}
 }
+
+// Package-manager settings that name code later runs execute (yarn Berry's
+// yarnPath and plugins, npm's init-module, browser, python and the config
+// file locations) are deferred execution like script-shell; installing a
+// yarn plugin or a yarn release from a URL or path persists that code too.
+func TestRED_PackageManagerCodeLoadingSettings(t *testing.T) {
+	t.Setenv("HOME", "/home/user")
+	t.Chdir(t.TempDir())
+	dangerHunt13NotAllowed(t, Persistence,
+		`yarn config set yarnPath /tmp/evil.cjs`,
+		`yarn config set yarnPath=/tmp/evil.cjs`,
+		`yarn config set plugins '[{"path":"/tmp/p.cjs"}]'`,
+		`yarn config set --home plugins x`,
+		`yarn plugin import https://example.com/plugin.js`,
+		`yarn plugin import ./plugin.cjs`,
+		`yarn plugin import @scope/yarn-plugin-x`,
+		`yarn set version https://example.com/yarn.js`,
+		`yarn set version ./yarn.cjs`,
+		`yarn set version /tmp/yarn.js`,
+		`yarn policies set-version https://example.com/yarn.js`,
+		`npm config set init-module /tmp/x.js`,
+		`npm config set init.module /tmp/x.js`,
+		`npm set browser=/tmp/x`,
+		`npm config set python /tmp/py`,
+		`npm config set globalconfig /tmp/npmrc`,
+		`npm config set userconfig /tmp/npmrc`,
+		`pnpm config set python /tmp/py`,
+	)
+	dangerHunt13NotAllowed(t, CodeExecution,
+		`npm init --init-module=/tmp/x.js`,
+		`npm docs x --browser=/tmp/x`,
+		`npm install --python=/tmp/py`,
+		`npm install --userconfig=/tmp/npmrc`,
+		`npm install --globalconfig /tmp/npmrc`,
+		`npm init --init.module=/tmp/x.js`,
+	)
+}
+
+func TestPackageManagerSettingsOrdinaryFormsStaySafe(t *testing.T) {
+	for _, tokens := range [][]string{
+		{"yarn", "set", "version", "stable"},
+		{"yarn", "set", "version", "4.1.0"},
+		{"yarn", "set", "version", "from", "sources"},
+		{"yarn", "config", "get", "yarnPath"},
+		{"yarn", "plugin", "list"},
+		{"yarn", "plugin", "remove", "x"},
+		{"npm", "config", "get", "python"},
+		{"npm", "config", "set", "registry", "https://example.com/"},
+		{"npm", "install", "--save-dev", "x"},
+		{"yarn", "add", "plugin", "import"},
+		{"git", "config", "set", "yarnPath"},
+	} {
+		if got := packageManagerSettingClass(tokens[0], tokens); got != Safe {
+			t.Errorf("packageManagerSettingClass(%q) = %s, want safe", tokens, got)
+		}
+	}
+}
