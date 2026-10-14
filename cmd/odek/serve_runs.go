@@ -40,6 +40,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/BackendStack21/odek/internal/config"
 	"github.com/BackendStack21/odek/internal/diagnostics"
@@ -417,7 +418,12 @@ const (
 	serveRunsCap           = 100 // total registry bound
 	serveRunsCompletedKept = 20  // newest completed runs kept on eviction
 	maxRunApprovalWait     = 10 * time.Minute
-	serveRunEventsKept     = 200 // per-run event tail bound
+	serveRunEventsKept     = 200 // per-run event tail bound (count)
+	// Byte bounds for the tail: each recorded value is clipped to
+	// serveRunEventFieldMax and the whole tail stays under
+	// serveRunEventsMaxBytes, so tool output cannot pin memory in finished runs.
+	serveRunEventFieldMax  = 8 << 10
+	serveRunEventsMaxBytes = 4 << 20
 	// maxActiveServeRuns caps concurrently-running (or approval-waiting)
 	// REST runs. The WS surface caps itself at maxWSConnections (each
 	// connection spawns an agent — and a sandbox container); the REST run
@@ -451,7 +457,9 @@ type serveRun struct {
 
 	mu              sync.Mutex
 	cond            *sync.Cond
-	events          []map[string]any // bounded event tail
+	events          []map[string]any // bounded event tail (count and bytes)
+	eventSizes      []int            // approximate retained bytes per tail event
+	eventBytes      int              // sum of eventSizes
 	pending         map[string]*approvalRequest
 	approver        *wsApprover
 	cancel          context.CancelFunc
@@ -532,12 +540,67 @@ func (r *serveRun) record(v any) error {
 		// (2026-08 audit). Strip it from the recorded copy.
 		delete(m, "auth_token")
 	}
+	m, size := clipRunEvent(m)
 	r.events = append(r.events, m)
-	if len(r.events) > serveRunEventsKept {
-		r.events = r.events[len(r.events)-serveRunEventsKept:]
+	r.eventSizes = append(r.eventSizes, size)
+	r.eventBytes += size
+	for len(r.events) > serveRunEventsKept || (r.eventBytes > serveRunEventsMaxBytes && len(r.events) > 1) {
+		r.eventBytes -= r.eventSizes[0]
+		r.events[0] = nil
+		r.events = r.events[1:]
+		r.eventSizes = r.eventSizes[1:]
 	}
 	r.cond.Broadcast()
 	return nil
+}
+
+// clipRunEvent returns a copy of the event frame with oversized values
+// shortened (head and tail kept around a truncation marker) and the
+// approximate retained size of the copy. Nested values are measured by their
+// JSON encoding and replaced by a marker when they exceed the field bound.
+func clipRunEvent(m map[string]any) (map[string]any, int) {
+	out := make(map[string]any, len(m))
+	size := 0
+	for k, v := range m {
+		switch t := v.(type) {
+		case string:
+			t = clipRunEventString(t)
+			out[k] = t
+			size += len(k) + len(t)
+		case nil, bool, int, int64, float64:
+			out[k] = v
+			size += len(k) + 8
+		default:
+			b, err := json.Marshal(v)
+			if err != nil || len(b) > serveRunEventFieldMax {
+				marker := fmt.Sprintf("[%d bytes omitted from run event tail]", len(b))
+				if err != nil {
+					marker = "[value omitted from run event tail]"
+				}
+				out[k] = marker
+				size += len(k) + len(marker)
+			} else {
+				out[k] = v
+				size += len(k) + len(b)
+			}
+		}
+	}
+	return out, size
+}
+
+func clipRunEventString(s string) string {
+	if len(s) <= serveRunEventFieldMax {
+		return s
+	}
+	half := serveRunEventFieldMax / 2
+	head, tail := s[:half], s[len(s)-half:]
+	for len(head) > 0 && !utf8.ValidString(head) {
+		head = head[:len(head)-1]
+	}
+	for len(tail) > 0 && !utf8.ValidString(tail) {
+		tail = tail[1:]
+	}
+	return fmt.Sprintf("%s\n[... %d bytes omitted ...]\n%s", head, len(s)-len(head)-len(tail), tail)
 }
 
 // numberOf extracts an int64 from a map value that may be int, int64, or
