@@ -141,8 +141,7 @@ func normalizeCommandSpacing(s string) string {
 // character commonly used to evade text scanners. Every Unicode format
 // character (category Cf: bidi controls and isolates, the Arabic letter mark,
 // invisible operators, tag characters, BOM) is invisible, as are the Hangul
-// fillers and the braille blank, which render as blank space, and the
-// non-whitespace control characters (category Cc).
+// fillers and the braille blank, which render as blank space.
 func isInvisible(r rune) bool {
 	switch r {
 	case '\u034F', // combining grapheme joiner
@@ -153,12 +152,15 @@ func isInvisible(r rune) bool {
 		'\uFFA0': // halfwidth Hangul filler
 		return true
 	}
-	if unicode.Is(unicode.Cc, r) {
-		// C0/C1 controls and DEL render as nothing inside a word; the
-		// whitespace controls are collapsed to spaces instead.
-		return !unicode.IsSpace(r)
-	}
 	return unicode.Is(unicode.Cf, r)
+}
+
+// isStrippedControl reports whether r is a C0/C1 control character or DEL
+// other than whitespace. It renders as nothing (or is dropped by a tokenizer)
+// inside a word, so NormalizeForScan removes it; ordinary terminal and binary
+// content carries such bytes, so they are not reported as hidden characters.
+func isStrippedControl(r rune) bool {
+	return unicode.Is(unicode.Cc, r) && !unicode.IsSpace(r)
 }
 
 // ContainsInvisible reports whether s contains any invisible character that
@@ -189,7 +191,7 @@ func NormalizeForScan(text string) string {
 	b.Grow(len(text))
 	prevSpace := true // leading whitespace is dropped
 	for _, r := range text {
-		if isInvisible(r) {
+		if isInvisible(r) || isStrippedControl(r) {
 			continue
 		}
 		if unicode.Is(unicode.Mn, r) || unicode.Is(unicode.Me, r) || unicode.Is(unicode.Mc, r) {
