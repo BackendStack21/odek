@@ -209,6 +209,15 @@ func handleSchedulePreview(w http.ResponseWriter, r *http.Request) {
 	at := time.Now()
 	for range 3 {
 		at = expr.Next(at)
+		if at.IsZero() {
+			// Same rule as saving a schedule: a cron that never matches a
+			// real date is rejected.
+			if len(next) == 0 {
+				http.Error(w, "schedule never matches a real date", http.StatusBadRequest)
+				return
+			}
+			break
+		}
 		next = append(next, at)
 	}
 	writeAPIJSON(w, http.StatusOK, map[string]any{"next": next, "timezone": loc.String()})
