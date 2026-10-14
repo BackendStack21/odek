@@ -160,7 +160,7 @@ func TestRED_ReplHistoryDoesNotFollowSymlink(t *testing.T) {
 // through, so injected content can retitle the window, write the clipboard
 // (OSC 52), or erase/overwrite earlier output.
 func TestRED_ScheduleStdoutDeliveryEscapesTerminalControls(t *testing.T) {
-	payload := "done\x1b]52;c;ZWNobyBwd25lZA==\x07\x1b[2K\rall good ‮gnp.exe"
+	payload := "done\x1b]52;c;ZWNobyBwd25lZA==\x07\x1b[2K\rall good \u202egnp.exe"
 	for _, kind := range []string{schedule.DeliverStdout, schedule.DeliverLog} {
 		r, w, err := os.Pipe()
 		if err != nil {
@@ -178,7 +178,7 @@ func TestRED_ScheduleStdoutDeliveryEscapesTerminalControls(t *testing.T) {
 			t.Fatalf("%s: deliver: %v", kind, derr)
 		}
 		s := string(out)
-		if strings.ContainsAny(s, "\x1b\x07\r‮") {
+		if strings.ContainsAny(s, "\x1b\x07\r\u202e") {
 			t.Errorf("%s delivery wrote raw terminal control bytes: %q", kind, s)
 		}
 	}
@@ -425,7 +425,7 @@ func TestRED_SessionShowEscapesTerminalControls(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	evil := "ok\x1b]52;c;cm0gLXJmIH4=\x07\x1b[1A\x1b[2Kclean ‮exe.txt"
+	evil := "ok\x1b]52;c;cm0gLXJmIH4=\x07\x1b[1A\x1b[2Kclean \u202eexe.txt"
 	msgs := []session.Message{
 		{Role: "system", Content: "sys"},
 		{Role: "user", Content: "summarize the page"},
@@ -440,7 +440,7 @@ func TestRED_SessionShowEscapesTerminalControls(t *testing.T) {
 	if serr != nil {
 		t.Fatalf("show: %v", serr)
 	}
-	if strings.ContainsAny(out, "\x1b\x07‮") {
+	if strings.ContainsAny(out, "\x1b\x07\u202e") {
 		t.Errorf("odek session show wrote raw terminal control bytes: %q", out)
 	}
 }
