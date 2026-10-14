@@ -557,10 +557,18 @@ func sweepMedia(home string) (int64, error) {
 		}
 		return 0, fmt.Errorf("maintenance: stat media dir: %w", err)
 	}
+	// A symlinked media directory is supported: sweep the directory behind
+	// it. WalkDir does not follow a symlinked root, and the root itself is
+	// never removed.
+	resolved, rerr := filepath.EvalSymlinks(root)
+	if rerr != nil {
+		return 0, fmt.Errorf("maintenance: resolve media dir: %w", rerr)
+	}
+	root = resolved
 	cutoff := time.Now().Add(-mediaMaxAge)
 	var freed int64
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
+		if err != nil || d.IsDir() || path == root {
 			return nil // never remove directories; skip unreadable entries
 		}
 		info, err := d.Info()
