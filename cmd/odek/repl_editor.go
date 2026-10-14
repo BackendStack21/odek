@@ -10,6 +10,7 @@ import (
 	"sync"
 	"unicode/utf8"
 
+	"github.com/BackendStack21/odek/internal/fsatomic"
 	"golang.org/x/term"
 )
 
@@ -594,14 +595,18 @@ func (h *replHistory) Load(path string) {
 
 	f, err := os.Open(path)
 	if err != nil {
+		if os.IsNotExist(err) {
+			// First start: nothing to load, but the first Add must create
+			// the file. Only real read errors keep persistence off.
+			h.loaded = true
+		}
 		return
 	}
 	defer f.Close()
 
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
-		line := scanner.Text()
-		line = strings.TrimSpace(line)
+		line := strings.TrimSpace(unescapeHistoryLine(scanner.Text()))
 		if line == "" {
 			continue
 		}
@@ -621,9 +626,76 @@ func (h *replHistory) Load(path string) {
 // historyFullRewrites counts whole-file history rewrites (observed by tests).
 var historyFullRewrites int
 
+// escapeHistoryLine encodes an entry as one physical line: backslash,
+// newline and carriage return are escaped so a multi-line paste reloads as
+// a single entry.
+func escapeHistoryLine(s string) string {
+	if !strings.ContainsAny(s, "\\\n\r") {
+		return s
+	}
+	return strings.NewReplacer("\\", "\\\\", "\n", "\\n", "\r", "\\r").Replace(s)
+}
+
+// unescapeHistoryLine reverses escapeHistoryLine. Unknown escapes are kept
+// literally, so history files written before escaping existed still load.
+func unescapeHistoryLine(s string) string {
+	if !strings.Contains(s, "\\") {
+		return s
+	}
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\\' && i+1 < len(s) {
+			switch s[i+1] {
+			case '\\':
+				b.WriteByte('\\')
+				i++
+				continue
+			case 'n':
+				b.WriteByte('\n')
+				i++
+				continue
+			case 'r':
+				b.WriteByte('\r')
+				i++
+				continue
+			}
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
+}
+
+// appendHistoryLine appends one entry to the history file. It refuses a
+// path that is not a regular file (a planted symlink) and verifies the
+// opened file is the one inspected, so the append never lands on a link
+// target; the caller then falls back to an atomic rewrite, which replaces
+// the link.
+func appendHistoryLine(path, line string) error {
+	fi, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if !fi.Mode().IsRegular() {
+		return fmt.Errorf("history path is not a regular file")
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0600)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	if fi2, err := f.Stat(); err != nil || !os.SameFile(fi, fi2) {
+		return fmt.Errorf("history file changed while opening")
+	}
+	_ = f.Chmod(0600)
+	_, err = fmt.Fprintln(f, escapeHistoryLine(line))
+	return err
+}
+
 // persist saves the history. After one full rewrite the file mirrors
 // h.entries, so a plain Add only appends its line; a rewrite happens again
 // only when the oldest entries were trimmed or the file is not yet in sync.
+// Rewrites are atomic (temp file + rename), replacing rather than following
+// a symlink at the history path.
 func (h *replHistory) persist(trimmed bool) {
 	if !h.loaded {
 		return // don't write until at least one Load
@@ -632,38 +704,19 @@ func (h *replHistory) persist(trimmed bool) {
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return
 	}
-	// Harden any existing history file created with looser permissions.
-	_ = os.Chmod(path, 0600)
 	if h.synced && !trimmed {
-		f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0600)
-		if err != nil {
-			h.synced = false
+		if err := appendHistoryLine(path, h.entries[len(h.entries)-1]); err == nil {
 			return
 		}
-		_, err = fmt.Fprintln(f, h.entries[len(h.entries)-1])
-		if cerr := f.Close(); err == nil {
-			err = cerr
-		}
-		if err != nil {
-			h.synced = false
-		}
-		return
+		h.synced = false
 	}
 	historyFullRewrites++
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
-	if err != nil {
-		h.synced = false
-		return
-	}
-	w := bufio.NewWriter(f)
+	var b strings.Builder
 	for _, entry := range h.entries {
-		fmt.Fprintln(w, entry)
+		b.WriteString(escapeHistoryLine(entry))
+		b.WriteByte('\n')
 	}
-	err = w.Flush()
-	if cerr := f.Close(); err == nil {
-		err = cerr
-	}
-	h.synced = err == nil
+	h.synced = fsatomic.WriteFile(path, []byte(b.String()), 0600) == nil
 }
 
 // odekDir returns the ~/.odek directory path.
