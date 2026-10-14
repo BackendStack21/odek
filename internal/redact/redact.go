@@ -696,10 +696,8 @@ func toolCredentialSpans(text string, kind int, json bool, words []cmdWord) [][2
 var cookieHeaderRe = regexp.MustCompile(`(?i)\b(?:set-)?cookie["'\x60]?[ \t]*:[ \t]*["'\x60]?([^\r\n"'\x60]+)`)
 
 // cookieMatches returns the offsets of each cookie value on Cookie /
-// Set-Cookie header lines that is a session credential: the cookie name
-// reads as a session or auth cookie and the value is a plausible token, or
-// the value is shaped like a generated session identifier whatever its name.
-// Names, attributes and other cookies stay readable.
+// Set-Cookie header lines that may be a credential (see cookieCredential).
+// Names, Set-Cookie attributes and preference cookies stay readable.
 func cookieMatches(text string) [][2]int {
 	if indexFoldASCII(text, "cookie") < 0 {
 		return nil
@@ -707,6 +705,7 @@ func cookieMatches(text string) [][2]int {
 	var out [][2]int
 	for _, m := range cookieHeaderRe.FindAllStringSubmatchIndex(text, -1) {
 		start, end := m[2], m[3]
+		setCookie := m[0]+4 <= len(text) && strings.EqualFold(text[m[0]:m[0]+4], "set-")
 		for pos := start; pos <= end; {
 			next := strings.IndexByte(text[pos:end], ';')
 			partEnd := end
@@ -717,7 +716,7 @@ func cookieMatches(text string) [][2]int {
 			if eq := strings.IndexByte(part, '='); eq > 0 {
 				name := strings.TrimSpace(part[:eq])
 				val := strings.TrimRight(part[eq+1:], " \t")
-				if (sessionCookieName(name) && plausibleCookieToken(val)) || cookieValueShape(val) {
+				if !(setCookie && setCookieAttribute(name)) && cookieCredential(name, val) {
 					vs := pos + eq + 1
 					out = append(out, [2]int{vs, vs + len(val)})
 				}
@@ -726,6 +725,63 @@ func cookieMatches(text string) [][2]int {
 		}
 	}
 	return out
+}
+
+// cookieCredential decides whether a cookie value on a Cookie / Set-Cookie
+// header is redacted. A cookie value is opaque server state sent back as a
+// bearer value, so the rule fails closed on the name: any cookie whose value
+// is a plausible token (8+ characters, no variable reference or placeholder)
+// is redacted unless its name reads as a preference cookie (theme, lang,
+// locale, consent, …). A session-like name, a __Host- or __Secure- prefixed
+// name or a generated-session value shape is redacted whatever the other
+// half says.
+func cookieCredential(name, val string) bool {
+	if sessionCookieName(name) || hasPrefixFold(name, "__Host-") || hasPrefixFold(name, "__Secure-") {
+		return plausibleCookieToken(val)
+	}
+	if cookieValueShape(val) {
+		return true
+	}
+	return !preferenceCookieName(name) && plausibleCookieToken(val)
+}
+
+// hasPrefixFold reports whether s begins with prefix, ignoring ASCII case.
+func hasPrefixFold(s, prefix string) bool {
+	return len(s) >= len(prefix) && strings.EqualFold(s[:len(prefix)], prefix)
+}
+
+// preferenceCookieWords are name segments that mark a cookie holding a
+// display, language or consent preference rather than identity.
+var preferenceCookieWords = map[string]bool{
+	"theme": true, "lang": true, "language": true, "locale": true, "i18n": true,
+	"tz": true, "timezone": true, "currency": true, "country": true, "region": true,
+	"consent": true, "cookieconsent": true, "gdpr": true,
+	"pref": true, "prefs": true, "preference": true, "preferences": true,
+	"layout": true, "mode": true, "view": true, "sort": true, "display": true,
+	"dismissed": true, "banner": true, "notice": true, "tour": true,
+	"sidebar": true, "collapsed": true, "font": true, "color": true, "colour": true,
+	"scheme": true, "appearance": true, "density": true, "zoom": true, "units": true,
+}
+
+// preferenceCookieName reports whether any segment of a cookie name is a
+// preference word (user_locale, OptanonConsent, color-scheme).
+func preferenceCookieName(name string) bool {
+	for _, sg := range nameSegments(name) {
+		if preferenceCookieWords[sg] {
+			return true
+		}
+	}
+	return false
+}
+
+// setCookieAttribute reports whether a Set-Cookie pair name is a cookie
+// attribute (Path, Domain, Expires, …) rather than the cookie itself.
+func setCookieAttribute(name string) bool {
+	switch strings.ToLower(name) {
+	case "path", "domain", "expires", "max-age", "samesite", "secure", "httponly", "priority", "partitioned", "version", "comment":
+		return true
+	}
+	return false
 }
 
 // sessionCookieName reports whether a cookie name reads as a session or

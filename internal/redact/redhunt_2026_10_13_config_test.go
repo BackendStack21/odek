@@ -206,8 +206,8 @@ func TestCookieNameSegmentsAndPlaceholders(t *testing.T) {
 		}
 	}
 	cfghunt13ExpectUnchanged(t, []string{
-		"Cookie: loginHint=abcdefghijklmnop",
-		"Cookie: tokenType=abcdefghijklmnop",
+		"Cookie: loginHint=alice",
+		"Cookie: tokenType=Bearer",
 		"Cookie: session=YOUR_SESSION_ID",
 		"Cookie: sid=REPLACE_ME_NOW",
 		"Cookie: theme=abcdefghijklmnop",

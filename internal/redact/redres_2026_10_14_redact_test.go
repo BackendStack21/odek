@@ -44,6 +44,52 @@ func redres14ExpectUnchanged(t *testing.T, inputs []string) {
 	}
 }
 
+// A cookie in a Cookie / Set-Cookie header is server state sent back as a
+// bearer value, whatever its name: a name that does not read as a session
+// cookie must not let a short value through.
+func TestRED_CookieUnknownNameShortValueLeaks(t *testing.T) {
+	redres14ExpectHidden(t, map[string][]string{
+		"Cookie: __Host-x=abcdefgh1234":                                      {"abcdefgh1234"},
+		"Cookie: user=abcdefghijklmnop":                                      {"abcdefghijklmnop"},
+		"Set-Cookie: user=abcdefghijklmnop; Path=/; HttpOnly":                {"abcdefghijklmnop"},
+		"Set-Cookie: __Secure-pref=abcdefgh1234; Secure":                     {"abcdefgh1234"},
+		`curl -H "Cookie: theme=dark; uid=abcdefgh1234" https://x.example`:   {"abcdefgh1234"},
+		`{"headers":{"Cookie":"lang=en; user=abcdefghijklmnop"}}`:            {"abcdefghijklmnop"},
+		"< set-cookie: remember=abcdefgh1234; Max-Age=3600":                  {"abcdefgh1234"},
+		"Cookie: account=a1b2c3d4e5; theme=dark":                             {"a1b2c3d4e5"},
+		"Cookie: loginHint=abcdefghijklmnop":                                 {"abcdefghijklmnop"},
+		"Cookie: _ga=GA1.2.1234567890.1234567890; prefs=compact":             {"1234567890.1234567890"},
+		"Set-Cookie: user=abcdefghijklmnop; Domain=sub1.example.com; Secure": {"abcdefghijklmnop"},
+	})
+	redres14ExpectExact(t, map[string]string{
+		"Cookie: theme=dark; user=abcdefghijklmnop":                                        "Cookie: theme=dark; user=[REDACTED]",
+		"Set-Cookie: user=abcdefghijklmnop; Path=/; Domain=sub1.example.com; SameSite=Lax": "Set-Cookie: user=[REDACTED]; Path=/; Domain=sub1.example.com; SameSite=Lax",
+		"Set-Cookie: __Host-x=abcdefgh1234; Path=/; Expires=Wed, 21 Oct 2026 07:28:00 GMT": "Set-Cookie: __Host-x=[REDACTED]; Path=/; Expires=Wed, 21 Oct 2026 07:28:00 GMT",
+	})
+}
+
+// Plain preference cookies, short values, placeholders and key=value text
+// outside a cookie header stay readable.
+func TestCookieRuleDoesNotOverRedact(t *testing.T) {
+	redres14ExpectUnchanged(t, []string{
+		"Cookie: theme=dark; lang=en-US; consent=yes",
+		"Cookie: preferences=compact-layout-wide",
+		"Cookie: theme=abcdefghijklmnop",
+		"Cookie: user_locale=en-GB-oxendict",
+		"Cookie: tokenType=Bearer",
+		"Cookie: user=$USER_COOKIE_VALUE",
+		"Cookie: user=YOUR_USER_ID",
+		"Cookie: user=<your-user-cookie>",
+		"Set-Cookie: user=; Max-Age=0",
+		"Set-Cookie: Path=/; Domain=sub1.example.com; Expires=Wed, 21 Oct 2026 07:28:00 GMT; HttpOnly",
+		"user=abcdefghijklmnop",
+		"https://x.example/?user=abcdefghijklmnop&__Host-x=abcdefgh1234",
+		"name: user=abcdefghijklmnop",
+		"the cookie: a small piece of text a site stores in the browser",
+		"cookie jar: /home/user/.cache/cookies.txt",
+	})
+}
+
 // A password that contains a double quote is written as \" in JSON-encoded
 // text (and in shell double-quoted text); the escaped quote is part of the
 // value, so the whole value is redacted, not only the part before it.
