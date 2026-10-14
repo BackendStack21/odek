@@ -217,3 +217,44 @@ func TestRED_RtOps_EngineToolFilterFollowsProfile(t *testing.T) {
 		t.Errorf("without a profile the global filter applies, got %+v", got)
 	}
 }
+
+func TestRED_RtOps_HelpFlagAnywhereInLeadingFlags(t *testing.T) {
+	rtopsHome(t)
+	cases := [][]string{
+		{"run", "--model", "x", "-h"},
+		{"run", "--model", "x", "--help", "task"},
+		{"continue", "--id", "abc", "-h"},
+		{"repl", "--model", "x", "--help"},
+		{"init", "--force", "-h"},
+		{"subagent", "--goal", "g", "--help"},
+		{"session", "list", "-h"},
+		{"skill", "list", "--help"},
+		{"schedule", "list", "-h"},
+	}
+	for _, c := range cases {
+		if code := dispatch(c); code != 0 {
+			t.Errorf("odek %s exit = %d, want 0", strings.Join(c, " "), code)
+		}
+	}
+	// A help-looking token after the task text begins stays an error, and
+	// text after "--" is verbatim task text.
+	if _, err := parseRunFlags([]string{"explain", "--help"}); err == nil {
+		t.Error("--help after task text must stay an unknown-flag error")
+	}
+	if f, err := parseRunFlags([]string{"--", "--help"}); err != nil || f.Task != "--help" {
+		t.Errorf("after --: task=%q err=%v", f.Task, err)
+	}
+}
+
+func TestRED_RtOps_HelpUsageIsCommandSpecific(t *testing.T) {
+	for _, c := range []string{"session", "skill", "schedule"} {
+		var b strings.Builder
+		printCommandUsage(&b, c)
+		if !strings.Contains(b.String(), "odek "+c) {
+			t.Errorf("usage for %s lacks its own synopsis: %q", c, b.String())
+		}
+		if strings.Contains(b.String(), "odek upgrade") {
+			t.Errorf("usage for %s is the global usage", c)
+		}
+	}
+}

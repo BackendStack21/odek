@@ -711,7 +711,7 @@ func parseSubagentFlags(args []string) (subagentFlags, error) {
 			}
 			cfg.profile = args[i]
 		default:
-			return cfg, fmt.Errorf("unknown flag %q", args[i])
+			return cfg, leadingFlagError2(args[i], fmt.Errorf("unknown flag %q", args[i]))
 		}
 		i++
 	}

@@ -984,7 +984,7 @@ func parseRunFlags(args []string) (runFlags, error) {
 			// Unknown flags are a hard error, never task text: a
 			// typo'd flag must not silently corrupt the prompt.
 			if isFlagLike(args[i]) {
-				return f, unknownFlagError(args[i])
+				return f, leadingFlagError(args[i])
 			}
 			// Not a flag — treat remaining as the task
 			goto done
@@ -1215,7 +1215,7 @@ func parseReplFlags(args []string) (replFlags, error) {
 				f.Planning = boolPtr(false)
 			default:
 				if isFlagLike(args[i]) {
-					return f, unknownFlagError(args[i])
+					return f, leadingFlagError(args[i])
 				}
 			}
 			break
@@ -1309,7 +1309,7 @@ func parseReplFlags(args []string) (replFlags, error) {
 			// typo'd flag leaves the operator believing it took effect.
 			// Bare positionals are still ignored — repl takes no task text.
 			if isFlagLike(args[i]) {
-				return f, unknownFlagError(args[i])
+				return f, leadingFlagError(args[i])
 			}
 			i++
 		}
@@ -1796,7 +1796,7 @@ func initConfig(args []string) error {
 		case "--force", "-f":
 			force = true
 		default:
-			return fmt.Errorf("unknown flag %q for init", args[i])
+			return leadingFlagError2(args[i], fmt.Errorf("unknown flag %q for init", args[i]))
 		}
 	}
 
