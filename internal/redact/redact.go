@@ -716,7 +716,7 @@ func cookieMatches(text string) [][2]int {
 			if eq := strings.IndexByte(part, '='); eq > 0 {
 				name := strings.TrimSpace(part[:eq])
 				val := strings.TrimRight(part[eq+1:], " \t")
-				if !(setCookie && setCookieAttribute(name)) && cookieCredential(name, val) {
+				if (!setCookie || !setCookieAttribute(name)) && cookieCredential(name, val) {
 					vs := pos + eq + 1
 					out = append(out, [2]int{vs, vs + len(val)})
 				}
@@ -1016,16 +1016,13 @@ func guardedMatches(text string) [][2]int {
 	return append(guardedPatternMatches(text), credentialMatches(text)...)
 }
 
-// unquotedValueExtent corrects the extent of an unquoted value that a guarded
-// pattern matched at text[vs:ve]. Inside a JSON string (json) the value ends
-// at the unescaped quote that closes the string, which a pattern would
-// otherwise take as part of the value. A pattern stops at an escaped quote
-// (\" in JSON-encoded or shell double-quoted text), but that quote is a
-// character of the value: the value is judged on the part before it and
-// redacted through it, up to the next blank, unescaped quote or \n \r \t \f
-// \b escape. It returns the end of the part that is judged and the end of the
-// span that is redacted.
-func unquotedValueExtent(text string, vs, ve int, json bool) (judge, end int) {
+// unquotedJudgeEnd corrects the end of an unquoted value that a guarded
+// pattern matched at text[vs:ve] and returns the end of the part that is
+// judged. Inside a JSON string (json) the value ends at the unescaped quote
+// that closes the string, which a pattern would otherwise take as part of the
+// value. A pattern that stopped at an escaped quote (\" in JSON-encoded or
+// shell double-quoted text) is judged on the part before it.
+func unquotedJudgeEnd(text string, vs, ve int, json bool) int {
 	if json {
 		for i := vs; i < ve; i++ {
 			if text[i] == '\\' {
@@ -1041,7 +1038,15 @@ func unquotedValueExtent(text string, vs, ve int, json bool) (judge, end int) {
 	if ve > vs && ve < len(text) && text[ve] == '"' && oddBackslashesBefore(text, vs, ve) {
 		ve-- // the pattern took the backslash of an escaped quote
 	}
-	end = ve
+	return ve
+}
+
+// escapedQuoteTail returns where a value that was judged up to ve is
+// redacted to. An escaped quote at ve is a character of the value, so the
+// value continues through it up to the next blank, unescaped quote or
+// \n \r \t \f \b escape.
+func escapedQuoteTail(text string, ve int) int {
+	end := ve
 	for end+1 < len(text) && text[end] == '\\' && text[end+1] == '"' {
 		end += 2
 	run:
@@ -1059,10 +1064,7 @@ func unquotedValueExtent(text string, vs, ve int, json bool) (judge, end int) {
 			}
 		}
 	}
-	if end > len(text) {
-		end = len(text)
-	}
-	return ve, end
+	return end
 }
 
 // oddBackslashesBefore reports whether text[vs:i] ends in an odd number of
@@ -1082,17 +1084,25 @@ func guardedPatternMatches(text string) [][2]int {
 	var out [][2]int
 	for _, g := range guardedPatterns {
 		var inJSON jsonStringTracker
+		last := 0 // end of the previous span: a match inside it is already covered
 		for _, m := range g.re.FindAllStringSubmatchIndex(text, -1) {
-			if m[2] < 0 {
+			if m[0] < last {
 				continue
 			}
+			// Group 1 always participates in a guarded match.
 			judge, end := m[3], m[1]
-			if m[1] == m[3] && m[3] > m[2] && strings.IndexByte("\"'`", text[m[2]]) < 0 {
-				judge, end = unquotedValueExtent(text, m[2], m[3], inJSON.at(text, m[2]))
+			unquoted := m[1] == m[3] && m[3] > m[2] && strings.IndexByte("\"'`", text[m[2]]) < 0
+			if unquoted {
+				judge = unquotedJudgeEnd(text, m[2], m[3], inJSON.at(text, m[2]))
 			}
-			if g.ok(text[m[2]:judge]) {
-				out = append(out, [2]int{m[0], end})
+			if !g.ok(text[m[2]:judge]) {
+				continue
 			}
+			if unquoted {
+				end = escapedQuoteTail(text, judge)
+			}
+			out = append(out, [2]int{m[0], end})
+			last = end
 		}
 	}
 	for _, g := range valuePatterns {

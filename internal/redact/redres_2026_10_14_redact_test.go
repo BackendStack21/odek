@@ -3,6 +3,7 @@ package redact
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 // redres14ExpectExact checks RedactSecrets output exactly.
@@ -146,5 +147,54 @@ func TestCredentialValueQuoteHandlingOutsideJSON(t *testing.T) {
 		`{"out":"token: \"short\"","n":1}`,
 		`{"msg":"set the password=\"${DB_PASSWORD}\"\nthen run"}`,
 		`{"msg":"token: see docs\" and more"}`,
+	})
+}
+
+// Escaped-quote continuation, JSON-aware value ends and the cookie rule stay
+// linear on hostile input: a value continued through \" is never rescanned
+// from a later match inside it.
+func TestEscapedQuoteAndCookieRulesScaleLinearly(t *testing.T) {
+	if raceEnabled {
+		t.Skip("timing ratio")
+	}
+	gens := map[string]func(n int) string{
+		"bare key chain":    func(n int) string { return strings.Repeat(`token:Xy7kLm9pQ2zzAbCdEf3456\"`, n/30) },
+		"pwd chain":         func(n int) string { return strings.Repeat(`pwd=Xy7kLm9pQ2zzAbCdEf3456\"x`, n/29) },
+		"flag chain":        func(n int) string { return "--password " + strings.Repeat(`Xy7kLm9pQ2zzAbCdEf3456\"`, n/24) },
+		"json cred escapes": func(n int) string { return `{"o":"` + strings.Repeat(`password=\"Ab1\\\"`, n/18) },
+		"json cred quotes":  func(n int) string { return `{"o":"` + strings.Repeat(`password=Ab1"x`, n/14) },
+		"json open quotes":  func(n int) string { return `{"o":"` + strings.Repeat(`api_key=\"Ab1`, n/13) },
+		"cookie unknown":    func(n int) string { return "Cookie: " + strings.Repeat("u=abcdefgh1;", n/12) },
+		"curl dq escapes":   func(n int) string { return `{"c":"curl -u \"a:` + strings.Repeat(`\\\"`, n/4) },
+	}
+	base := 64 << 10
+	for name, gen := range gens {
+		small, large := finalRedactTime(gen(base), 2), finalRedactTime(gen(4*base), 1)
+		if small < 2*time.Millisecond {
+			small = 2 * time.Millisecond
+		}
+		if large > 12*small {
+			t.Errorf("%s: super-linear: %d bytes %v, x4 %v", name, base, small, large)
+		}
+	}
+}
+
+// Edge cases of JSON-encoded value parsing: unclosed or truncated escaped
+// quotes, other escapes inside a value, blanks before a structural character
+// and over-long literals.
+func TestJSONEncodedValueEdges(t *testing.T) {
+	long := strings.Repeat("Ab1", 1500)
+	redres14ExpectExact(t, map[string]string{
+		`{"out":"api_key=\"Xy7kLm9pQ2zzAbCdEf3456\nnext"}`:    `{"out":"[REDACTED]\nnext"}`,
+		`{"out":"api_key=\"Xy7k\/Lm9pQ2zzAbCdEf3456\" next"}`: `{"out":"[REDACTED] next"}`,
+		`{"out":"password=\"Xy7kLm9pQ2zz`:                     `{"out":"[REDACTED]`,
+		`{"out":"password=\"Xy7kLm9pQ2zz\`:                    `{"out":"[REDACTED]`,
+		`{"out": "password=Xy7kLm9pQ2zz" , "b":1}`:            `{"out": "[REDACTED]" , "b":1}`,
+		`{"out":"api_key=\"` + long + `\" next"}`:             `{"out":"[REDACTED] next"}`,
+		`{"out":"token: Xy7kLm9pQ2zzAbCdEf3456\"GhIj12\`:      `{"out":"[REDACTED]\`,
+		`{"out":"token: Xy7kLm9pQ2zzAbCdEf3456\"Gh\/Ij12 x"}`: `{"out":"[REDACTED] x"}`,
+	})
+	redres14ExpectHidden(t, map[string][]string{
+		"Cookie: __=abcdefgh1234": {"abcdefgh1234"},
 	})
 }
