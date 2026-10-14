@@ -99,6 +99,11 @@ Or set models_dir in the vision config.`, mp, dir, dir)
 	return mp, mmp, nil
 }
 
+// visionVideoFormats lists the video containers the vision tool accepts.
+// Playlist and script demuxers (hls, concat, ...) are excluded so a disguised
+// playlist cannot make ffmpeg open other local files.
+const visionVideoFormats = "mov,mp4,m4a,matroska,webm,avi,flv,mpeg,mpegts,ogg,asf"
+
 // extractVideoFrames samples n evenly-spaced frames from videoPath into a
 // temporary directory. Returns paths to the JPEG frame files; caller must
 // remove the directory (filepath.Dir of the first path).
@@ -113,6 +118,8 @@ func extractVideoFrames(ctx context.Context, videoPath string, n int) ([]string,
 	// Get duration with ffprobe
 	out, err := exec.CommandContext(ctx, "ffprobe",
 		"-v", "error",
+		"-protocol_whitelist", "file",
+		"-format_whitelist", visionVideoFormats,
 		"-show_entries", "format=duration",
 		"-of", "csv=p=0",
 		videoPath,
@@ -138,6 +145,8 @@ func extractVideoFrames(ctx context.Context, videoPath string, n int) ([]string,
 		ts := interval * float64(i)
 		out := filepath.Join(tmpDir, fmt.Sprintf("frame_%02d.jpg", i))
 		cmd := exec.CommandContext(ctx, "ffmpeg",
+			"-protocol_whitelist", "file",
+			"-format_whitelist", visionVideoFormats,
 			"-ss", fmt.Sprintf("%.3f", ts),
 			"-i", videoPath,
 			"-frames:v", "1",
