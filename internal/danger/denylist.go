@@ -375,7 +375,7 @@ func denyStage(stage []string, dc *denyCtx, depth int) bool {
 // shell through pass-through stages that hand their input on unchanged.
 func denyStaticPipeFeed(upstream [][]string, sink []string, dc *denyCtx, depth int) bool {
 	cmd, _ := unwrapWrappers(sink)
-	if len(cmd) == 0 || !(pipedShells[commandName(cmd[0])] || scriptSchedulers[commandName(cmd[0])]) || shellInlineScriptIndex(cmd) >= 0 {
+	if len(cmd) == 0 || !pipedShells[commandName(cmd[0])] && !scriptSchedulers[commandName(cmd[0])] || shellInlineScriptIndex(cmd) >= 0 {
 		return false
 	}
 	for j := len(upstream) - 1; j >= 0; j-- {

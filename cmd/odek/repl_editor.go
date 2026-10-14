@@ -169,7 +169,7 @@ func (e *replEditor) handleByte(b byte) (bool, error) {
 		e.pending = append(e.pending, b)
 		if utf8.FullRune(e.pending) {
 			r, _ := utf8.DecodeRune(e.pending)
-			if !(e.bracketed && r >= 0x80 && r <= 0x9f) { // pasted C1 controls are dropped
+			if !e.bracketed || r < 0x80 || r > 0x9f { // pasted C1 controls are dropped
 				e.insertRune(r)
 			}
 			e.pending = nil

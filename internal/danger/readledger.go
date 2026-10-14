@@ -1014,7 +1014,7 @@ func gitSubcommandRewritesTree(inner []string) bool {
 		// --soft and --mixed move only HEAD and the index.
 		return flag("--hard", "--merge", "--keep")
 	case "restore":
-		return !(flag("--staged", "-S") && !flag("--worktree", "-W"))
+		return !flag("--staged", "-S") || flag("--worktree", "-W")
 	case "stash":
 		if len(operands) > 0 {
 			switch operands[0] {
