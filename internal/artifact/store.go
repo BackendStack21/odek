@@ -174,7 +174,13 @@ func insideRoots(resolved string, roots []string) (bool, error) {
 		if err != nil {
 			continue
 		}
-		if resolved == resolvedRoot || strings.HasPrefix(resolved, resolvedRoot+string(filepath.Separator)) {
+		// The filesystem root already ends in a separator; appending another
+		// would make the prefix "//" and reject every artifact.
+		prefix := resolvedRoot
+		if !strings.HasSuffix(prefix, string(filepath.Separator)) {
+			prefix += string(filepath.Separator)
+		}
+		if resolved == resolvedRoot || strings.HasPrefix(resolved, prefix) {
 			return true, nil
 		}
 	}
