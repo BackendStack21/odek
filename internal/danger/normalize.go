@@ -90,6 +90,15 @@ var homoglyphMap = map[rune]rune{
 	'ȷ': 'j', // U+0237 dotless j
 	'ɑ': 'a', // U+0251 Latin alpha
 
+	// Latin small capitals (phonetic and IPA extensions)
+	'ᴀ': 'a', 'ʙ': 'b', 'ᴄ': 'c', 'ᴅ': 'd', 'ᴇ': 'e', 'ꜰ': 'f', 'ɢ': 'g',
+	'ʜ': 'h', 'ɪ': 'i', 'ᴊ': 'j', 'ᴋ': 'k', 'ʟ': 'l', 'ᴍ': 'm', 'ɴ': 'n',
+	'ᴏ': 'o', 'ᴘ': 'p', 'ʀ': 'r', 'ꜱ': 's', 'ᴛ': 't', 'ᴜ': 'u', 'ᴠ': 'v',
+	'ᴡ': 'w', 'ʏ': 'y', 'ᴢ': 'z', 'ɛ': 'e', 'ᴦ': 'r', 'ᴨ': 'n', 'ᴫ': 'l',
+	'ᴁ': 'a', 'ᴂ': 'a', 'ᴃ': 'b', 'ᴆ': 'd', 'ᴈ': 'e', 'ᴉ': 'i', 'ᴎ': 'n',
+	'ᴐ': 'o', 'ᴔ': 'o', 'ᴕ': 'o', 'ᴖ': 'n', 'ᴗ': 'u', 'ᴙ': 'r', 'ᴚ': 'r',
+	'ᴟ': 'u', 'ᴣ': 'z', 'ᴤ': 'z', 'ᴥ': 'o',
+
 	// Letterlike symbols (the holes in the mathematical alphanumerics)
 	'ℂ': 'c', 'ℊ': 'g', 'ℋ': 'h', 'ℌ': 'h', 'ℍ': 'h', 'ℎ': 'h', 'ℐ': 'i',
 	'ℑ': 'i', 'ℒ': 'l', 'ℓ': 'l', 'ℕ': 'n', 'ℙ': 'p', 'ℚ': 'q', 'ℛ': 'r',
@@ -132,15 +141,22 @@ func normalizeCommandSpacing(s string) string {
 // character commonly used to evade text scanners. Every Unicode format
 // character (category Cf: bidi controls and isolates, the Arabic letter mark,
 // invisible operators, tag characters, BOM) is invisible, as are the Hangul
-// fillers, which are letters by category but render as blank space.
+// fillers and the braille blank, which render as blank space, and the
+// non-whitespace control characters (category Cc).
 func isInvisible(r rune) bool {
 	switch r {
 	case '\u034F', // combining grapheme joiner
 		'\u115F', '\u1160', // Hangul choseong / jungseong fillers
 		'\u180E', // Mongolian vowel separator
 		'\u3164', // Hangul filler
+		'\u2800', // braille pattern blank
 		'\uFFA0': // halfwidth Hangul filler
 		return true
+	}
+	if unicode.Is(unicode.Cc, r) {
+		// C0/C1 controls and DEL render as nothing inside a word; the
+		// whitespace controls are collapsed to spaces instead.
+		return !unicode.IsSpace(r)
 	}
 	return unicode.Is(unicode.Cf, r)
 }
@@ -241,6 +257,17 @@ func foldStyledRune(r rune) (rune, bool) {
 		return '1' + (r - 0x2460), true
 	case r == 0x24EA:
 		return '0', true
+	case r >= 0x1F130 && r <= 0x1F149: // squared capitals
+		return 'a' + (r - 0x1F130), true
+	case r >= 0x1F150 && r <= 0x1F169: // negative circled capitals
+		return 'a' + (r - 0x1F150), true
+	case r >= 0x1F170 && r <= 0x1F189: // negative squared capitals
+		return 'a' + (r - 0x1F170), true
+	case r >= 0xFF01 && r <= 0xFF5E:
+		// The fullwidth ASCII block: punctuation and digits as well as
+		// letters, so a control token spelled with fullwidth bars and
+		// angle brackets folds to its ASCII form.
+		return r - 0xFEE0, true
 	}
 	return 0, false
 }

@@ -127,7 +127,7 @@ var injectionPatterns = []InjectionPattern{
 	// Untrusted data should never contain the special tokens or role markers a
 	// chat template uses to delimit turns. Their presence is an attempt to
 	// forge a system/assistant turn or break out of the user turn.
-	{regexp.MustCompile(`<\|(im_start|im_end|system|user|assistant|endoftext|eot_id|start_header_id|end_header_id)\|>`), "chat control-token injection"},
+	{regexp.MustCompile(`<\|(im_start|im_end|system|user|assistant|endoftext|eot_id|start_header_id|end_header_id|begin_of_sentence|end_of_sentence|begin▁of▁sentence|end▁of▁sentence|tool_calls_begin|tool_calls_end)\|>`), "chat control-token injection"},
 	{regexp.MustCompile(`<\|(start|end)_of_turn\|>|<start_of_turn>|<end_of_turn>`), "chat control-token injection"},
 	{regexp.MustCompile(`\[/?inst\]|<</?sys>>`), "instruction-marker injection"},
 	{regexp.MustCompile(`<(system|assistant|developer)>\s*(you|your|ignore|new|always|must)`), "forged role tag"},
@@ -557,10 +557,18 @@ func ScanInjection(content string) []ScanResult {
 	if strings.Contains(normalized, "ν") {
 		foldedNu = FoldHomoglyphs(strings.ReplaceAll(normalized, "ν", "n"))
 	}
+	// Markdown emphasis and code markers inside a phrase render as the plain
+	// sentence but break contiguous matching: scan the text without them too.
+	var bare, bareFolded string
+	if strings.ContainsAny(normalized, markdownMarkers) {
+		bare = stripMarkdownMarkers(normalized)
+		bareFolded = FoldHomoglyphs(bare)
+	}
 	for i, p := range injectionPatterns {
 		lits := injectionLiterals[i]
 		if matchPattern(p.Re, lits, normalized) || (foldDistinct && matchPattern(p.Re, lits, folded)) ||
-			(foldedNu != "" && matchPattern(p.Re, lits, foldedNu)) {
+			(foldedNu != "" && matchPattern(p.Re, lits, foldedNu)) ||
+			(bare != "" && (matchPattern(p.Re, lits, bare) || (bareFolded != bare && matchPattern(p.Re, lits, bareFolded)))) {
 			results = append(results, ScanResult{
 				Label:   p.Label,
 				Pattern: p.Re.String(),
@@ -568,6 +576,20 @@ func ScanInjection(content string) []ScanResult {
 		}
 	}
 	return append(results, scanStructural(content, normalized, folded)...)
+}
+
+// markdownMarkers are the emphasis, strikethrough and code-span characters
+// that Markdown renders away.
+const markdownMarkers = "*_`~"
+
+// stripMarkdownMarkers removes every Markdown emphasis and code marker from s.
+func stripMarkdownMarkers(s string) string {
+	return strings.Map(func(r rune) rune {
+		if strings.ContainsRune(markdownMarkers, r) {
+			return -1
+		}
+		return r
+	}, s)
 }
 
 // scanStructural runs the scans that need more than one regexp over the
