@@ -314,3 +314,25 @@ func TestRED_QuotedKeyCredentialBreaksStructure(t *testing.T) {
 		`{"password":"${DB_PASSWORD}","x":1}`: `{"password":"${DB_PASSWORD}","x":1}`,
 	})
 }
+
+// Edge cases of the cookie pair scanner and of the bare-key value shape.
+func TestCookieScannerAndShapeEdges(t *testing.T) {
+	redres14ExpectExact(t, map[string]string{
+		`{"h":"Cookie: sid=\"abc\\\"def12345\"; x=1"}`:  `{"h":"Cookie: sid=\"[REDACTED]\"; x=1"}`,
+		`{"h":"Cookie: sid=abc\/def12345; x=1"}`:        `{"h":"Cookie: sid=[REDACTED]; x=1"}`,
+		`{"h":"Cookie: theme=\"dark\\nmore\"; x=1"}`:    `{"h":"Cookie: theme=\"dark\\nmore\"; x=1"}`,
+		`Cookie: a="abc\"defghijk"; theme=dark`:         `Cookie: a="[REDACTED]"; theme=dark`,
+		`curl -H 'Cookie: sid='abcdefghijkl x`:          `curl -H 'Cookie: sid='abcdefghijkl x`,
+		`'a' {password=Xy7kLm9pQ2zz"}`:                  `'a' {[REDACTED]"}`,
+		`{"out":"token: %Xy7kLm9pQ2zzAbCdEf3456"}`:      `{"out":"token: %Xy7kLm9pQ2zzAbCdEf3456"}`,
+		`{"out":"token: xy7!klm9pq2zzabcdef3456 more"}`: `{"out":"[REDACTED] more"}`,
+		`{"h":"Cookie: sid=\"abc\ndef12345\"; x=1"}`:    `{"h":"Cookie: sid=\"abc\ndef12345\"; x=1"}`,
+		`{"h":"Cookie: sid=\"abcdef12345\"}`:            `{"h":"Cookie: sid=\"[REDACTED]\"}`,
+		`{"h":"Cookie: sid=\"abcdef12345"}`:             `{"h":"Cookie: sid=\"[REDACTED]"}`,
+		`Cookie: sid="abcdef12345`:                      `Cookie: sid="[REDACTED]`,
+		`Cookie: sid='abcdef12345\nHost: x`:             `Cookie: sid='[REDACTED]\nHost: x`,
+	})
+	redres14ExpectHidden(t, map[string][]string{
+		"Cookie: XMLHttpSession=abcdefgh12": {"abcdefgh12"},
+	})
+}

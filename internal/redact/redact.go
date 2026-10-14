@@ -784,25 +784,32 @@ func (s cookieScan) stop(i int) bool {
 	return false
 }
 
+// opener returns the quote that opens a quoted cookie value at i ("", ', `
+// or, inside a JSON string, \"), or "" when i does not open one. The quote
+// that opened the whole header value closes the header instead.
+func (s cookieScan) opener(i int) string {
+	t := s.text
+	switch {
+	case i >= len(t):
+		return ""
+	case s.json && strings.HasPrefix(t[i:], `\"`):
+		return `\"`
+	case t[i] == s.closer:
+		return ""
+	case !s.json && t[i] == '"', t[i] == '\'', t[i] == '`':
+		return t[i : i+1]
+	}
+	return ""
+}
+
 // quotedValue returns the inner extent of a quoted cookie value starting at
 // i and the offset after its closing quote: "…", '…' or `…` (inside a JSON
 // string the double quote is escaped: \"…\"). ok is false when i does not open
 // a quoted value or the value is not closed on its line.
 func (s cookieScan) quotedValue(i int) (vs, ve, next int, ok bool) {
 	t := s.text
-	if i >= len(t) {
-		return 0, 0, 0, false
-	}
-	open := ""
-	switch {
-	case s.json && strings.HasPrefix(t[i:], `\"`):
-		open = `\"`
-	case !s.json && t[i] == '"', t[i] == '\'', t[i] == '`':
-		if t[i] == s.closer {
-			return 0, 0, 0, false
-		}
-		open = t[i : i+1]
-	default:
+	open := s.opener(i)
+	if open == "" {
 		return 0, 0, 0, false
 	}
 	vs = i + len(open)
@@ -811,6 +818,10 @@ func (s cookieScan) quotedValue(i int) (vs, ve, next int, ok bool) {
 		case '\r', '\n':
 			return 0, 0, 0, false
 		case '\\':
+			if open == `\"` && strings.HasPrefix(t[j:], `\\\"`) {
+				j += 3 // a doubly escaped quote belongs to the value
+				continue
+			}
 			if strings.HasPrefix(t[j:], open) {
 				return vs, j, j + len(open), true
 			}
@@ -883,6 +894,9 @@ func (s cookieScan) pairs(pos int, redact func(name, val string) bool) ([][2]int
 		if qs, qe, next, ok := s.quotedValue(i); ok {
 			vs, ve, i = qs, qe, next
 		} else {
+			// An unclosed opening quote is skipped and the rest is judged as
+			// an unquoted value, so a stray quote never hides the value.
+			i += len(s.opener(i))
 			vs = i
 			for i < len(t) && !s.stop(i) && t[i] != ';' && !s.commaSplit(i) {
 				if s.json && t[i] == '\\' && i+1 < len(t) {
