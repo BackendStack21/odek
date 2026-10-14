@@ -295,8 +295,8 @@ func controlVariantText(text string, join bool) string {
 // escapeSpan measures the escape sequence at the start of s (which begins with
 // ESC or U+009B): its total length, the length of its introducer and the
 // length of its string terminator. A control string (OSC, DCS, APC, PM, SOS)
-// has a payload between introducer and terminator; an unterminated one counts
-// as its introducer only, leaving the text after it visible.
+// has a payload between introducer and terminator; an unterminated one runs
+// to the end of the input.
 func escapeSpan(s string) (n, intro, term int) {
 	if strings.HasPrefix(s, "\u009b") {
 		i := 2
@@ -332,7 +332,9 @@ func escapeSpan(s string) (n, intro, term int) {
 				return i + 2, 2, 2
 			}
 		}
-		return 2, 2, 0
+		// Unterminated: the string runs to the end of the input. Consuming it
+		// whole keeps a run of introducers from rescanning the same tail.
+		return len(s), 2, 0
 	case c >= 0x20 && c <= 0x7e:
 		return 2, 2, 0
 	}

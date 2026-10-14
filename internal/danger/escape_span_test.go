@@ -12,7 +12,7 @@ func TestEscapeSpanForms(t *testing.T) {
 		{"\x1b]0;t\x07X", 6, 2, 1},
 		{"\x1b]0;t\x1b\\X", 7, 2, 2},
 		{"\x1b]0;t\u009cX", 7, 2, 2},
-		{"\x1b]unterminated", 2, 2, 0},
+		{"\x1b]unterminated", 14, 2, 0},
 		{"\x1bcX", 2, 2, 0},
 		{"\x1b", 1, 1, 0},
 		{"\x1b\x01", 1, 1, 0},
