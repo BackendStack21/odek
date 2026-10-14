@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -767,9 +768,10 @@ func stageWrittenPaths(stage, inner []string, name, cwd string) (paths []string,
 		case "scp":
 			raw = append(raw, scpLocalWriteTargets(inner[1:], cwd)...)
 		case "aws", "gsutil", "docker", "podman", "kubectl", "oc", "rclone", "gh",
-			"sftp", "lftp", "aria2c", "aria2":
+			"sftp", "lftp", "aria2c", "aria2", "ftp", "tftp", "fetch":
 			raw = append(raw, fetcherWriteTargets(name, inner[1:], cwd)...)
-		case "vim", "vi", "nvim", "gvim", "vimdiff", "nvimdiff", "view", "rvim", "evim", "vim.basic", "vim.tiny", "vim.nox":
+		case "vim", "vi", "nvim", "gvim", "vimdiff", "nvimdiff", "view", "rvim", "evim", "vim.basic", "vim.tiny", "vim.nox",
+			"emacs", "emacs-nox", "emacs-gtk":
 			// An interactive edit writes the files it is given.
 			raw = append(raw, operands...)
 		case "uniq":
@@ -1028,6 +1030,8 @@ func stageWritesUnnamedFiles(name string, inner []string) bool {
 		// writes whatever its commands choose; an interactive one writes
 		// the files it is given (named by stageWrittenPaths).
 		return vimRunIsScripted(args)
+	case "emacs", "emacs-nox", "emacs-gtk":
+		return emacsRunIsScripted(args)
 	case "awk", "gawk":
 		return awkEditsInPlace(args)
 	case "curl":
@@ -1129,6 +1133,8 @@ func vimRunIsScripted(args []string) bool {
 func fetcherWriteTargets(name string, args []string, cwd string) []string {
 	unknown := []string{dynamicSubstToken}
 	switch name {
+	case "ftp", "tftp", "fetch":
+		return outputOptionDownloadTargets(name, args, cwd)
 	case "sftp", "lftp", "aria2c", "aria2":
 		if hasAny(args, "--version", "-v", "-h", "--help", "-V") && len(args) == 1 {
 			return nil
@@ -1262,6 +1268,75 @@ func fetcherWriteTargets(name string, args []string, cwd string) []string {
 		return unknown
 	}
 	return nil
+}
+
+// outputOptionDownloadTargets returns the local files ftp, tftp and BSD fetch
+// write: the -o FILE destination (`-` is stdout), or the base name of each
+// URL operand. An interactive session or a host operand (ftp host, tftp
+// host) and a directory destination write names the analysis cannot read.
+func outputOptionDownloadTargets(name string, args []string, cwd string) []string {
+	unknown := []string{dynamicSubstToken}
+	var operands []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "--" {
+			operands = append(operands, args[i+1:]...)
+			break
+		}
+		if !isShortFlagToken(a) {
+			operands = append(operands, a)
+			continue
+		}
+		if at := strings.IndexByte(a, 'o'); at > 0 {
+			dest := a[at+1:]
+			if dest == "" {
+				if i+1 >= len(args) {
+					return unknown
+				}
+				i++
+				dest = args[i]
+			}
+			if dest == "-" {
+				return nil
+			}
+			return localCopyDestination(dest, cwd, false)
+		}
+	}
+	if name == "tftp" || len(operands) == 0 {
+		return unknown
+	}
+	var targets []string
+	for _, op := range operands {
+		u, err := url.Parse(op)
+		if err != nil || u.Scheme == "" || u.Host == "" {
+			return unknown // a host: an interactive session can get anything
+		}
+		base := filepath.Base(u.Path)
+		if base == "." || base == "/" || strings.HasSuffix(u.Path, "/") {
+			return unknown
+		}
+		targets = append(targets, base)
+	}
+	return targets
+}
+
+// emacsRunIsScripted reports whether an emacs invocation runs Lisp that can
+// write any file: batch and script modes, loaded files, evaluated forms,
+// called functions, another user's or directory's init files, and daemons.
+func emacsRunIsScripted(args []string) bool {
+	for _, a := range args {
+		if a == "--" {
+			break
+		}
+		name, _, _ := strings.Cut(a, "=")
+		switch name {
+		case "--batch", "-batch", "--script", "-script", "-x", "-l", "--load", "-load",
+			"--eval", "-eval", "--execute", "-execute", "-f", "--funcall", "-funcall",
+			"-u", "--user", "-user", "--init-directory", "--daemon", "--bg-daemon", "--fg-daemon":
+			return true
+		}
+	}
+	return false
 }
 
 // awsBooleanOptions are the aws CLI options that take no value; every other
