@@ -461,12 +461,35 @@ func toSDKMessagesFor(in []session.Message, cacheAnthropic, requireSignedThinkin
 			lastCachedSystem = i
 		}
 	}
+	// System messages after the final assistant turn (a corrective re-ask
+	// following a superseded draft) are hoisted into the top-level system
+	// field on Anthropic, which would leave the draft as the last message —
+	// an assistant prefill the model continues, or a 400 with extended
+	// thinking. They are delivered as a trailing user turn instead.
+	trailingFrom := len(in)
+	if requireSignedThinking {
+		last := -1
+		for i := len(in) - 1; i >= 0; i-- {
+			if !skip[i] && in[i].Role != "system" {
+				last = i
+				break
+			}
+		}
+		if last >= 0 && in[last].Role == "assistant" && len(in[last].ToolCalls) == 0 {
+			trailingFrom = last + 1
+		}
+	}
+	var trailing []string
 	for i, m := range in {
 		if skip[i] {
 			continue
 		}
 		switch m.Role {
 		case "system":
+			if i >= trailingFrom {
+				trailing = append(trailing, m.Content)
+				continue
+			}
 			sb := sdk.SystemBlock{Text: m.Content}
 			if cacheAnthropic && (len(sys) == 0 || i == lastCachedSystem) {
 				sb.Cache = true
@@ -508,6 +531,9 @@ func toSDKMessagesFor(in []session.Message, cacheAnthropic, requireSignedThinkin
 				ToolName:   m.ToolName(),
 			})
 		}
+	}
+	if len(trailing) > 0 {
+		out = append(out, sdk.Message{Role: sdk.RoleUser, Content: strings.Join(trailing, "\n\n")})
 	}
 	return sys, out
 }
