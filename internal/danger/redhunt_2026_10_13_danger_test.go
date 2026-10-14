@@ -316,3 +316,62 @@ func TestRED_ProjectRunnerWrappersHideCommand(t *testing.T) {
 		}
 	}
 }
+
+// Options whose value is a shell command run that string through /bin/sh:
+// git -c core.pager / core.sshCommand / alias.X=!cmd, ssh -o ProxyCommand,
+// tar --to-command / -I, rsync -e. The option spelling earns code_execution,
+// but the string itself is never classified (script -c, flock -c and env -S
+// strings are), so a destructive payload is only a prompt.
+func TestRED_CommandStringOptionPayloadNotClassified(t *testing.T) {
+	t.Setenv("HOME", "/home/user")
+	t.Chdir(t.TempDir())
+	for _, cmd := range []string{
+		`git -c core.pager='rm -rf ~' log`,
+		`git -c core.sshCommand='rm -rf ~' fetch`,
+		`git -c alias.x='!rm -rf ~' x`,
+		`ssh -o ProxyCommand='rm -rf ~' host`,
+		`tar -cf x.tar --to-command='rm -rf ~' a`,
+		`tar -cf x.tar -I 'rm -rf ~' a`,
+		`rsync -e 'rm -rf ~' a b:c`,
+	} {
+		if got := Classify(cmd); got != Destructive {
+			t.Errorf("Classify(%q) = %s, want destructive", cmd, got)
+		}
+	}
+}
+
+// The denylist is documented to match every command the line would run,
+// including shell -c payloads, trap actions and PROMPT_COMMAND bodies. Other
+// local command carriers are not scanned: su -c / sg -c strings, runuser,
+// at/batch scripts fed on stdin, tmux/screen session commands, and the
+// command-string options above. With a [rm, git push] denylist and every
+// class allowed, these run the denied command.
+func TestRED_DenylistMissesCommandCarriers(t *testing.T) {
+	t.Setenv("HOME", "/home/user")
+	t.Chdir(t.TempDir())
+	cfg := &DangerousConfig{
+		Denylist: []string{"rm", "git push"},
+		Classes: map[RiskClass]Action{
+			CodeExecution: Allow, SystemWrite: Allow, Persistence: Allow, NetworkEgress: Allow,
+			NetworkUpload: Allow, Unknown: Allow, Destructive: Allow, Install: Allow,
+		},
+	}
+	for _, cmd := range []string{
+		`su -c 'rm x'`,
+		`runuser -u x -- rm x`,
+		`at now <<< 'rm x'`,
+		`echo 'rm x' | at now`,
+		`tmux new -d 'rm x'`,
+		`screen -dm rm x`,
+		`git -c core.pager='rm x' log`,
+		`git -c alias.p=push p`,
+		`git -c alias.p='!git push' p`,
+		`ssh -o ProxyCommand='rm x' host`,
+		`tar -cf x.tar --to-command='rm x' a`,
+		`find . -exec sh -c 'rm x' \;`,
+	} {
+		if act := cfg.ActionForCommand(cmd); act != Deny {
+			t.Errorf("ActionForCommand(%q) = %s with denylist [rm, git push], want deny", cmd, act)
+		}
+	}
+}
