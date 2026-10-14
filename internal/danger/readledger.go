@@ -1000,7 +1000,13 @@ func gitSubcommandRewritesTree(inner []string) bool {
 	}
 	switch sub {
 	case "checkout", "switch":
-		if flag("-b", "-B", "-c", "-C", "--create", "--force-create", "--orphan") && len(operands) <= 1 && !flag("--") {
+		forced := flag("-f", "--force", "-B", "-C", "--force-create", "--discard-changes")
+		for _, a := range args {
+			if isShortFlagToken(a) && strings.ContainsRune(a[1:], 'f') {
+				forced = true // -f inside a cluster such as -fb
+			}
+		}
+		if !forced && flag("-b", "-c", "--create", "--orphan") && len(operands) <= 1 && !flag("--") {
 			return false // a new branch at HEAD: no file changes
 		}
 		return true
@@ -1018,7 +1024,7 @@ func gitSubcommandRewritesTree(inner []string) bool {
 		}
 		return true
 	case "merge":
-		return !flag("--abort", "--quit")
+		return !flag("--quit") // --abort restores the files it merged
 	case "clean":
 		return !flag("-n", "--dry-run")
 	case "rebase":

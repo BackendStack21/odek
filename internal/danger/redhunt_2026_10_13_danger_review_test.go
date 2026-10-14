@@ -142,7 +142,6 @@ func TestRED_ReviewLedgerReadOnlyVariantsKeepLicence(t *testing.T) {
 	for _, cmd := range []string{
 		`git stash list && bash x.sh`,
 		`git stash show && bash x.sh`,
-		`git merge --abort && bash x.sh`,
 		`git clean -n && bash x.sh`,
 		`git checkout -b feature && bash x.sh`,
 		`git reset --soft HEAD~1 && bash x.sh`,
