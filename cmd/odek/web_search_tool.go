@@ -1,10 +1,12 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -277,14 +279,9 @@ func (t *webSearchTool) query(query, category string) (*searxngResponse, error) 
 		}
 	}
 	if err != nil {
-		// The url.Error wrapper repeats the request URL (base_url userinfo,
-		// path or token); report only the underlying cause.
-		cause := error(err)
-		var uerr *url.Error
-		if errors.As(err, &uerr) && uerr.Err != nil {
-			cause = uerr.Err
-		}
-		return nil, fmt.Errorf("cannot reach SearXNG (configured backend) — is the service running? (%v)", cause)
+		// Only a coarse cause class is reported: the underlying error names the
+		// backend host and port.
+		return nil, fmt.Errorf("cannot reach SearXNG (configured backend, %s) — is the service running?", searxngFailureClass(err))
 	}
 	defer httpResp.Body.Close()
 
@@ -309,3 +306,20 @@ func (t *webSearchTool) query(query, category string) (*searxngResponse, error) 
 
 // Ensure webSearchTool implements odek.Tool
 var _ odek.Tool = (*webSearchTool)(nil)
+
+// searxngFailureClass names why a request failed without any host details.
+func searxngFailureClass(err error) string {
+	var dnsErr *net.DNSError
+	var netErr net.Error
+	switch {
+	case strings.Contains(err.Error(), "resolves to an internal address"):
+		return "blocked: backend resolves to an internal address (SSRF guard)"
+	case errors.Is(err, syscall.ECONNREFUSED):
+		return "connection refused"
+	case errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &netErr) && netErr.Timeout()):
+		return "timeout"
+	case errors.As(err, &dnsErr):
+		return "DNS failure"
+	}
+	return "network error"
+}

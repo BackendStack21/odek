@@ -156,3 +156,31 @@ func TestRED_TelegramTokenBudgetFilesAreTrustAnchors(t *testing.T) {
 		}
 	}
 }
+
+// The web_search error names a cause class only, never the backend host:port.
+func TestRED_WebSearchErrorOmitsBackendHost(t *testing.T) {
+	orig := searxngRetryDelay
+	searxngRetryDelay = time.Millisecond
+	t.Cleanup(func() { searxngRetryDelay = orig })
+	tool := newWebSearchTool(toolsFixDefaults(), config.WebSearchConfig{BaseURL: "http://127.0.0.1:1", Timeout: 2})
+	raw, _ := tool.Call(`{"query":"x"}`)
+	if strings.Contains(raw, "127.0.0.1") || !strings.Contains(raw, "connection refused") {
+		t.Fatalf("error must give a cause class without host details: %s", raw)
+	}
+}
+
+// File tools and the path classifier share one ~/.odek anchor table.
+func TestRED_OdekAnchorParityBetweenFileToolsAndClassifier(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	for _, rel := range []string{"config.json", "runtime.log.1", "schedule.log.2", "runtime.log", "telegram_token_usage_2026-10-13.lock",
+		"sessions/a.json", "memory/x/y", "CONFIG.JSON", "notes.txt", "media/a.png", "runtime.log.1/x"} {
+		want := danger.ClassifyPathWrite(filepath.Join(home, ".odek", rel)) == danger.SystemWrite
+		if got := isProtectedOdekPath(rel); got != want {
+			t.Errorf("%s: isProtectedOdekPath=%v but classifier system_write=%v", rel, got, want)
+		}
+	}
+	if !isProtectedOdekPath("runtime.log.1") {
+		t.Error("rotated logs must be protected from file tools")
+	}
+}
