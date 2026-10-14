@@ -456,6 +456,12 @@ func looseOperand(text string, s, e int, userPass, json bool, ok func(string) bo
 	}
 	ce := s
 	for ce < len(text) && !isOperandEnd(text, ce, json) {
+		if jsonQuoted && strings.HasPrefix(text[ce:], `\\\"`) {
+			// An escaped quote inside the escaped-quoted operand is a
+			// character of the password, not its closing quote.
+			ce += 4
+			continue
+		}
 		ce++
 	}
 	ps = s
@@ -481,8 +487,12 @@ func looseOperand(text string, s, e int, userPass, json bool, ok func(string) bo
 	}
 	pe = ce
 	if json {
-		if d := strings.IndexByte(text[ps:ce], '"'); d >= 0 {
-			pe = ps + d
+		// An unescaped double quote closes the JSON string around the command.
+		for i := ps; i < ce; i++ {
+			if text[i] == '"' && !oddBackslashesBefore(text, ps, i) {
+				pe = i
+				break
+			}
 		}
 	}
 	if pe <= ps || !ok(text[ps:pe]) {
@@ -953,8 +963,12 @@ func guardedMatches(text string) [][2]int {
 // unquotedValueExtent corrects the extent of an unquoted value that a guarded
 // pattern matched at text[vs:ve]. Inside a JSON string (json) the value ends
 // at the unescaped quote that closes the string, which a pattern would
-// otherwise take as part of the value. It returns the end of the part that is
-// judged and the end of the span that is redacted.
+// otherwise take as part of the value. A pattern stops at an escaped quote
+// (\" in JSON-encoded or shell double-quoted text), but that quote is a
+// character of the value: the value is judged on the part before it and
+// redacted through it, up to the next blank, unescaped quote or \n \r \t \f
+// \b escape. It returns the end of the part that is judged and the end of the
+// span that is redacted.
 func unquotedValueExtent(text string, vs, ve int, json bool) (judge, end int) {
 	if json {
 		for i := vs; i < ve; i++ {
@@ -968,7 +982,42 @@ func unquotedValueExtent(text string, vs, ve int, json bool) (judge, end int) {
 			}
 		}
 	}
-	return ve, ve
+	if ve > vs && ve < len(text) && text[ve] == '"' && oddBackslashesBefore(text, vs, ve) {
+		ve-- // the pattern took the backslash of an escaped quote
+	}
+	end = ve
+	for end+1 < len(text) && text[end] == '\\' && text[end+1] == '"' {
+		end += 2
+	run:
+		for end < len(text) {
+			switch c := text[end]; c {
+			case ' ', '\t', '\n', '\r', '"', '\'', '`':
+				break run
+			case '\\':
+				if end+1 >= len(text) || text[end+1] == '"' || jsonBlankEscape(text[end+1]) {
+					break run
+				}
+				end += 2
+			default:
+				end++
+			}
+		}
+	}
+	if end > len(text) {
+		end = len(text)
+	}
+	return ve, end
+}
+
+// oddBackslashesBefore reports whether text[vs:i] ends in an odd number of
+// backslashes, so the character at i is escaped.
+func oddBackslashesBefore(text string, vs, i int) bool {
+	n := 0
+	for i > vs && text[i-1] == '\\' {
+		n++
+		i--
+	}
+	return n%2 == 1
 }
 
 // guardedPatternMatches is guardedMatches without the credential-named

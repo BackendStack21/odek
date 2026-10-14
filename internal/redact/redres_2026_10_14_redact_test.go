@@ -44,6 +44,26 @@ func redres14ExpectUnchanged(t *testing.T, inputs []string) {
 	}
 }
 
+// A password that contains a double quote is written as \" in JSON-encoded
+// text (and in shell double-quoted text); the escaped quote is part of the
+// value, so the whole value is redacted, not only the part before it.
+func TestRED_EscapedQuoteInPasswordLeaksTail(t *testing.T) {
+	redres14ExpectExact(t, map[string]string{
+		`{"out":"token: Xy7kLm9pQ2zzAbCdEf3456\"GhIj12 next"}`:                     `{"out":"[REDACTED] next"}`,
+		`{"out":"DB_PASS=Xy7kLm9pQ2zzAbCdEf3456\"GhIj12 next"}`:                    `{"out":"DB[REDACTED] next"}`,
+		`{"out":"pass: Xy7kLm9pQ2zzAbCdEf3456\"GhIj12\nnext"}`:                     `{"out":"[REDACTED]\nnext"}`,
+		`{"out":"pwd=Xy7kLm9pQ2zzAbCdEf3456\"GhIj12\"x next"}`:                     `{"out":"[REDACTED] next"}`,
+		`{"out":"mytool --password Xy7kLm9pQ2zzAbCdEf3456\"GhIj12 next"}`:          `{"out":"mytool [REDACTED] next"}`,
+		`{"out":"machine x login y password Xy7kLm9pQ2zzAbCdEf3456\"GhIj12 next"}`: `{"out":"machine x login y [REDACTED] next"}`,
+		`echo "token: Xy7kLm9pQ2zzAbCdEf3456\"GhIj12 next"`:                        `echo "[REDACTED] next"`,
+		`{"out":"token: Xy7kLm9pQ2zzAbCdEf3456\"GhIj12"}`:                          `{"out":"[REDACTED]"}`,
+		`{"cmd":"curl -u \"admin:Xy7kLm9\\\"pQ2zz\" https://x.example"}`:           `{"cmd":"curl -u \"admin:[REDACTED]\" https://x.example"}`,
+		`{"cmd":"wget --password \"Xy7kLm9\\\"pQ2zz\" https://x.example"}`:         `{"cmd":"wget --password \"[REDACTED]\" https://x.example"}`,
+		`{"out":"password=Xy7kLm9\"pQ2zz\nnext"}`:                                  `{"out":"[REDACTED]\nnext"}`,
+		`{"out":"password=\"Xy7kLm9\\\"pQ2zz\" next"}`:                             `{"out":"[REDACTED] next"}`,
+	})
+}
+
 // In JSON-encoded text a credential-named value ends at an encoded newline,
 // return or tab and at the closing quote of the JSON string; what follows is
 // the next line or the next member and stays readable.
