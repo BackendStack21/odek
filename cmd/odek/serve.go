@@ -3016,6 +3016,9 @@ func requireLocalHost(next http.Handler) http.Handler {
 		host := r.Host
 		if h, _, err := net.SplitHostPort(host); err == nil {
 			host = h
+		} else if strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") {
+			// Bracketed IPv6 literal without a port.
+			host = host[1 : len(host)-1]
 		}
 		if host != "localhost" && host != "127.0.0.1" && host != "::1" {
 			http.Error(w, "Host not allowed", http.StatusForbidden)
