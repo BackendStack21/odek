@@ -51,13 +51,39 @@ func TestRED_RepoAgentsMDUnclosedHTMLCommentSwallowsPillar(t *testing.T) {
 	}
 }
 
-func TestCloseOpenCommentLeavesClosedCommentsAlone(t *testing.T) {
-	for _, in := range []string{"plain", "a <!-- note --> b", "<!-- a --> x <!-- b -->"} {
-		if got := closeOpenComment(in); got != in {
-			t.Errorf("closeOpenComment(%q) = %q, want unchanged", in, got)
+func TestCloseOpenBlocksGeneralised(t *testing.T) {
+	for _, open := range []string{
+		"<script>alert(1)", "<SCRIPT type=x>", "<style>a{", "<pre>code", "<textarea>x",
+		"<?php echo", "<![CDATA[ x", "<!-- c",
+		"text <!-- a --> then <script>x",
+	} {
+		sys := appendSecurityPillar("# Notes\n\n" + open)
+		at := strings.LastIndex(sys, strings.SplitN(SecurityPillar, "\n", 2)[0])
+		if at < 0 {
+			t.Fatalf("pillar missing for %q", open)
+		}
+		before := strings.ToLower(sys[:at])
+		for _, p := range [][2]string{{"<script", "</script"}, {"<style", "</style"}, {"<pre", "</pre"}, {"<textarea", "</textarea"}, {"<?", "?>"}, {"<![cdata[", "]]>"}, {"<!--", "-->"}} {
+			if o := strings.LastIndex(before, p[0]); o >= 0 && !strings.Contains(before[o:], p[1]) {
+				t.Errorf("%q: pillar left inside unterminated %s", open, p[0])
+			}
 		}
 	}
-	if got := closeOpenComment("a <!-- b --> c <!-- d"); !strings.HasSuffix(got, "\n-->") {
+	// Terminated constructs and ordinary text get no extra closers.
+	for _, in := range []string{"plain", "<script>x</script>", "<pre>a</pre>", "<?xml?>", "<![CDATA[x]]>", "<prefix>", "a <preview> b"} {
+		if got := closeOpenBlocks(in); got != in {
+			t.Errorf("closeOpenBlocks(%q) = %q, want unchanged", in, got)
+		}
+	}
+}
+
+func TestCloseOpenCommentLeavesClosedCommentsAlone(t *testing.T) {
+	for _, in := range []string{"plain", "a <!-- note --> b", "<!-- a --> x <!-- b -->"} {
+		if got := closeOpenBlocks(in); got != in {
+			t.Errorf("closeOpenBlocks(%q) = %q, want unchanged", in, got)
+		}
+	}
+	if got := closeOpenBlocks("a <!-- b --> c <!-- d"); !strings.HasSuffix(got, "\n-->") {
 		t.Errorf("open comment not closed: %q", got)
 	}
 }

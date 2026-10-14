@@ -3,6 +3,7 @@ package agent
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"sort"
 	"strings"
 	"time"
 	"unicode"
@@ -94,7 +95,7 @@ func sanitizeIdentity(identity string) string {
 		identity = strings.ReplaceAll(identity, retired, "")
 	}
 	identity = strings.ReplaceAll(identity, "untrusted_content", "untrusted·content")
-	return closeOpenComment(closeOpenFence(strings.TrimSpace(stripPillarImitations(identity))))
+	return closeOpenBlocks(closeOpenFence(strings.TrimSpace(stripPillarImitations(identity))))
 }
 
 // fenceTracker follows Markdown fenced code blocks with CommonMark rules: an
@@ -242,22 +243,59 @@ func closeOpenFence(s string) string {
 	return s
 }
 
-// closeOpenComment terminates an HTML comment the text leaves open. In
-// Markdown an unterminated "<!--" hides everything after it, so the
-// authoritative pillar appended last would be part of the comment. A stray
-// "-->" appended after text that holds no open comment renders as plain text.
-func closeOpenComment(s string) string {
-	if strings.LastIndex(s, "<!--") > strings.LastIndex(s, "-->") {
-		return s + "\n-->"
+// closeOpenBlocks terminates the raw HTML constructs the text leaves open:
+// a comment, CDATA section, processing instruction, or a script, style, pre
+// or textarea element. In Markdown each of these swallows everything up to
+// its terminator, so the authoritative pillar appended last would become part
+// of it. Terminators are appended innermost (latest opener) first; one
+// appended after text that holds no such construct is inert plain text.
+func closeOpenBlocks(s string) string {
+	type open struct {
+		at     int
+		closer string
+	}
+	lower := strings.ToLower(s)
+	var opens []open
+	for _, c := range [][2]string{{"<!--", "-->"}, {"<![cdata[", "]]>"}, {"<?", "?>"}} {
+		if i := strings.LastIndex(lower, c[0]); i >= 0 && !strings.Contains(lower[i+len(c[0]):], c[1]) {
+			opens = append(opens, open{i, c[1]})
+		}
+	}
+	for _, tag := range []string{"script", "style", "pre", "textarea"} {
+		i := lastTagOpen(lower, "<"+tag)
+		if i >= 0 && !strings.Contains(lower[i:], "</"+tag) {
+			opens = append(opens, open{i, "</" + tag + ">"})
+		}
+	}
+	sort.Slice(opens, func(a, b int) bool { return opens[a].at > opens[b].at })
+	for _, o := range opens {
+		s += "\n" + o.closer
 	}
 	return s
+}
+
+// lastTagOpen returns the index of the last occurrence of the opener (for
+// example "<pre") that ends the tag name there, or -1: "<prefix" and
+// "<preview>" do not open a pre element.
+func lastTagOpen(lower, opener string) int {
+	end := len(lower)
+	for {
+		i := strings.LastIndex(lower[:end], opener)
+		if i < 0 {
+			return -1
+		}
+		if n := i + len(opener); n == len(lower) || strings.IndexByte(" \t\r\n>/", lower[n]) >= 0 {
+			return i
+		}
+		end = i
+	}
 }
 
 // appendSecurityPillar removes exact pillar copies and appends the one
 // authoritative pillar last. It does not rewrite anything else, so it is
 // safe on a system message that already carries wrapped adjuncts.
 func appendSecurityPillar(system string) string {
-	system = closeOpenComment(closeOpenFence(strings.TrimSpace(strings.ReplaceAll(system, SecurityPillar, ""))))
+	system = closeOpenBlocks(closeOpenFence(strings.TrimSpace(strings.ReplaceAll(system, SecurityPillar, ""))))
 	if system == "" {
 		return SecurityPillar
 	}
