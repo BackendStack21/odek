@@ -1655,6 +1655,12 @@ func isProtectedOdekPath(rel string) bool {
 		}
 	}
 
+	// The Telegram daily token budget counter (and its lock) enforces an
+	// operator-set spending cap; rewriting it would reset the cap.
+	if strings.HasPrefix(rel, "telegram_token_usage_") && !strings.Contains(rel, string(filepath.Separator)) {
+		return true
+	}
+
 	// Directory trust anchors. Anything inside these directories is protected.
 	protectedDirs := []string{
 		"skills",   // auto-loaded into future prompts

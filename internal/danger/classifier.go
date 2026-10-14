@@ -812,6 +812,11 @@ func isOdekTrustAnchor(home, abs string) bool {
 			return true
 		}
 	}
+	// The Telegram daily token budget counter (and its lock) enforces an
+	// operator-set spending cap; rewriting it would reset the cap.
+	if strings.HasPrefix(rel, "telegram_token_usage_") && !strings.Contains(rel, "/") {
+		return true
+	}
 	return false
 }
 
