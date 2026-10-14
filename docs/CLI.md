@@ -390,7 +390,7 @@ Procedure for building optimized Docker images.
 - a 16-hex SHA-256 prefix of the content
 - the turn it landed on
 
-After each turn, odek runs a divergence heuristic and sets `suspicious_divergence=true` when the agent ingested untrusted content **and** its actions or final response reference resources that either (a) did not appear in the user's preceding message, or (b) were introduced by the untrusted content itself. This catches classic prompt injection, response-only exfiltration, and reused-resource injection.
+After each turn, odek runs a divergence heuristic and sets `suspicious_divergence=true` when the agent ingested untrusted content **and** its actions or final response reference resources that either (a) did not appear in the user's preceding message, or (b) were introduced by the untrusted content itself. This catches classic prompt injection, response-only exfiltration, and reused-resource injection. Resources are URLs, absolute paths, file/domain-like tokens, and bare IPv4 / bracketed IPv6 addresses (the `nc`/`ssh` exfiltration targets that have no scheme or domain).
 
 ```bash
 odek audit --list
