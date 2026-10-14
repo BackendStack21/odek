@@ -176,7 +176,7 @@ fields are restricted, a day matches if *either* matches. So `0 0 13 * 5` fires
 on the 13th **or** any Friday — not only Friday the 13th.
 
 ```bash
-odek schedule next "0 9 * * 1-5"   # validate an expression and see upcoming fires
+odek schedule next "0 9 * * 1-5"   # validate an expression and see upcoming fires (in schedules.timezone, UTC when unset)
 ```
 
 ---
