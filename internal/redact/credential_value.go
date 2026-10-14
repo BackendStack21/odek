@@ -142,11 +142,21 @@ const credentialJudgeWindow = 256
 // only as far as judging needs; complete reports whether end is the real end
 // of the token. A rejected value therefore never costs more than the bounded
 // window, however long the rest of the line is.
-func parseCredentialValue(text string, pos int, curly, square int, full bool) (val string, end int, quoted, complete bool) {
+//
+// Inside a JSON string (json) the text is JSON-encoded: a value wrapped in
+// escaped quotes (\"...\") is a quoted literal, and an unquoted run also ends
+// at a \n, \r, \t, \f or \b escape and at the unescaped quote that closes the
+// JSON string. Any other escape, \" included, is part of the value.
+func parseCredentialValue(text string, pos int, curly, square int, full, json bool) (val string, end int, quoted, complete bool) {
 	if pos >= len(text) {
 		return "", pos, false, true
 	}
-	if c := text[pos]; c == '"' || c == '\'' || c == '`' {
+	if json && strings.HasPrefix(text[pos:], `\"`) {
+		if v, e, ok := jsonEscapedQuoted(text, pos); ok {
+			return clipCredentialValue(v), e, true, true
+		}
+		pos += 2
+	} else if c := text[pos]; c == '"' || c == '\'' || c == '`' {
 		rest := text[pos+1:]
 		limit := len(rest)
 		if limit > maxCredentialValueCheck {
@@ -194,9 +204,71 @@ func parseCredentialValue(text string, pos int, curly, square int, full bool) (v
 			if end+1 < len(text) && text[end+1] == '"' {
 				return clipCredentialValue(text[pos:end]), end, false, true
 			}
+		case '\\':
+			if json && end+1 < len(text) {
+				if jsonBlankEscape(text[end+1]) {
+					return clipCredentialValue(text[pos:end]), end, false, true
+				}
+				end++ // the escaped character belongs to the value
+			}
+		case '"':
+			if json && jsonStringEnds(text, end+1) {
+				return clipCredentialValue(text[pos:end]), end, false, true
+			}
 		}
 	}
 	return clipCredentialValue(text[pos:end]), end, false, end == len(text)
+}
+
+// jsonBlankEscape reports whether c, after a backslash in JSON-encoded text,
+// encodes a line break, tab or other blank control character.
+func jsonBlankEscape(c byte) bool {
+	return c == 'n' || c == 'r' || c == 't' || c == 'f' || c == 'b'
+}
+
+// jsonStringEnds reports whether the unescaped double quote just before i
+// closes a JSON string: it is followed, after optional blanks, by the end of
+// the text or line or by a JSON structural character. A quote followed by
+// anything else is an ordinary character of the surrounding text.
+func jsonStringEnds(text string, i int) bool {
+	for i < len(text) && (text[i] == ' ' || text[i] == '\t') {
+		i++
+	}
+	return i == len(text) || strings.IndexByte(",:}]\r\n", text[i]) >= 0
+}
+
+// jsonEscapedQuoted reads a literal wrapped in escaped quotes (\"...\") that
+// starts at text[pos] inside a JSON string. A doubly escaped quote (\\\")
+// belongs to the literal. It fails at a JSON line-break escape, at the
+// unescaped quote that closes the JSON string, at a raw newline and past
+// maxCredentialValueCheck bytes.
+func jsonEscapedQuoted(text string, pos int) (string, int, bool) {
+	start := pos + 2
+	limit := len(text)
+	if limit-start > maxCredentialValueCheck {
+		limit = start + maxCredentialValueCheck
+	}
+	for i := start; i < limit; i++ {
+		switch text[i] {
+		case '\n', '\r', '"':
+			return "", 0, false
+		case '\\':
+			if i+1 >= len(text) {
+				return "", 0, false
+			}
+			switch n := text[i+1]; {
+			case n == '"':
+				return text[start:i], i + 2, true
+			case n == '\\' && strings.HasPrefix(text[i+2:], `\"`):
+				i += 3
+			case n == 'n' || n == 'r':
+				return "", 0, false
+			default:
+				i++
+			}
+		}
+	}
+	return "", 0, false
 }
 
 // closeBracketValue ends a value at the closing bracket at end; a quote just
@@ -296,6 +368,7 @@ func credentialMatches(text string) [][2]int {
 	var out [][2]int
 	covered := 0 // end of the last consumed span; names inside it are part of it
 	depthPos, curly, square := 0, 0, 0
+	var inJSON jsonStringTracker
 	for _, m := range credentialNameRe.FindAllStringSubmatchIndex(text, -1) {
 		if m[2] < covered {
 			continue
@@ -325,7 +398,8 @@ func credentialMatches(text string) [][2]int {
 				}
 			}
 		}
-		val, end, quoted, complete := parseCredentialValue(text, m[1], curly, square, false)
+		json := inJSON.at(text, m[2])
+		val, end, quoted, complete := parseCredentialValue(text, m[1], curly, square, false, json)
 		if !credentialValueOK(val, quoted, passwordNameRe.MatchString(name)) {
 			if referenceValue(val, quoted) {
 				covered = end // the reference is skipped whole, never redacted from inside
@@ -336,7 +410,7 @@ func credentialMatches(text string) [][2]int {
 			continue
 		}
 		if !complete {
-			_, end, _, _ = parseCredentialValue(text, m[1], curly, square, true)
+			_, end, _, _ = parseCredentialValue(text, m[1], curly, square, true, json)
 		}
 		covered = end
 		out = append(out, [2]int{m[2], end})

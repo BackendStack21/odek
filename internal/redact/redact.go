@@ -950,14 +950,43 @@ func guardedMatches(text string) [][2]int {
 	return append(guardedPatternMatches(text), credentialMatches(text)...)
 }
 
+// unquotedValueExtent corrects the extent of an unquoted value that a guarded
+// pattern matched at text[vs:ve]. Inside a JSON string (json) the value ends
+// at the unescaped quote that closes the string, which a pattern would
+// otherwise take as part of the value. It returns the end of the part that is
+// judged and the end of the span that is redacted.
+func unquotedValueExtent(text string, vs, ve int, json bool) (judge, end int) {
+	if json {
+		for i := vs; i < ve; i++ {
+			if text[i] == '\\' {
+				i++
+				continue
+			}
+			if text[i] == '"' && jsonStringEnds(text, i+1) {
+				ve = i
+				break
+			}
+		}
+	}
+	return ve, ve
+}
+
 // guardedPatternMatches is guardedMatches without the credential-named
 // assignments, which RedactSecrets handles in an earlier stage.
 func guardedPatternMatches(text string) [][2]int {
 	var out [][2]int
 	for _, g := range guardedPatterns {
+		var inJSON jsonStringTracker
 		for _, m := range g.re.FindAllStringSubmatchIndex(text, -1) {
-			if m[2] >= 0 && g.ok(text[m[2]:m[3]]) {
-				out = append(out, [2]int{m[0], m[1]})
+			if m[2] < 0 {
+				continue
+			}
+			judge, end := m[3], m[1]
+			if m[1] == m[3] && m[3] > m[2] && strings.IndexByte("\"'`", text[m[2]]) < 0 {
+				judge, end = unquotedValueExtent(text, m[2], m[3], inJSON.at(text, m[2]))
+			}
+			if g.ok(text[m[2]:judge]) {
+				out = append(out, [2]int{m[0], end})
 			}
 		}
 	}
