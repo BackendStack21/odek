@@ -190,10 +190,55 @@ func networkTransferEffects(name string, inner []string, feed stdinFeed) []RiskC
 		v.upload = sub == "send-email" || sub == "imap-send"
 	case "aws", "gsutil", "gcloud", "az":
 		v.upload = cloudUploadForm(name, args)
+	case "npm", "pnpm", "yarn", "bun", "cargo", "gem", "poetry", "uv", "twine", "hatch", "flit",
+		"dart", "flutter", "nuget", "dotnet":
+		v.upload = registryPublish(name, args)
 	case "dig", "nslookup", "host", "drill", "ping", "ping6", "traceroute", "traceroute6":
 		v.unknown = dnsQueryCarriesRuntimeData(name, args)
 	}
 	return v.effects()
+}
+
+// registryPublishVerbs are the subcommands that send the local package to a
+// package registry with the stored credentials.
+var registryPublishVerbs = map[string][]string{
+	"npm": {"publish"}, "pnpm": {"publish"}, "yarn": {"publish"}, "bun": {"publish"},
+	"cargo": {"publish"}, "gem": {"push"}, "poetry": {"publish"}, "uv": {"publish"},
+	"twine": {"upload"}, "hatch": {"publish"}, "flit": {"publish"},
+	"dart": {"publish"}, "flutter": {"publish"}, "nuget": {"push"}, "dotnet": {"push"},
+}
+
+// registryPublish reports whether a package-manager invocation publishes the
+// working tree's package: the publish verb is among the first subcommand
+// words (`yarn npm publish`, `dotnet nuget push`, `dart pub publish`).
+func registryPublish(name string, args []string) bool {
+	var words []string
+	for _, a := range args {
+		if a == "--" {
+			break
+		}
+		if !strings.HasPrefix(a, "-") {
+			words = append(words, a)
+		}
+	}
+	if len(words) == 0 {
+		return false
+	}
+	switch words[0] {
+	case "run", "run-script", "help", "view", "info", "search", "exec", "x", "dlx":
+		return false
+	}
+	for i, w := range words {
+		if i >= 3 {
+			break
+		}
+		for _, verb := range registryPublishVerbs[name] {
+			if w == verb {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // ── curl ────────────────────────────────────────────────────────────
