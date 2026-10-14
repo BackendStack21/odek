@@ -2610,6 +2610,14 @@ func classifyStageIn(tokens []string, pipedInto bool, repo *gitRepoCtx) RiskClas
 		}
 		// The command each action runs is judged as a command of its own, so
 		// `find . -exec rm -rf ~ \;` is as destructive as `rm -rf ~`.
+		// Command strings that options hand to a shell (git -c core.pager=,
+		// ssh -o ProxyCommand=, tar --to-command=, rsync -e, su -c) are
+		// judged as command lines of their own.
+		for _, payload := range commandStringPayloads(name, cmdTokens) {
+			if inner := Classify(payload); inner != Unknown {
+				cls = worstOf(cls, inner)
+			}
+		}
 		// An action command the classifier cannot judge keeps the
 		// code_execution floor rather than becoming unknown.
 		for _, payload := range execActionCommands(name, cmdTokens) {
