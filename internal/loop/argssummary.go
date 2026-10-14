@@ -53,6 +53,12 @@ func argv0(cmd string) string {
 		if ok {
 			continue
 		}
+		// A word that opens a subshell, group or substitution (or carries
+		// shell metacharacters) is not a program name; its body may hold
+		// assignment values, so nothing of it is reported.
+		if strings.ContainsAny(w.value, "(){}$`;&|<>") {
+			return ""
+		}
 		field := w.value
 		if i := strings.LastIndexByte(field, '/'); i >= 0 {
 			field = field[i+1:]
