@@ -1740,8 +1740,8 @@ const localConfigTemplate = `{
   "no_agents": false,
   "planning": {
     "enabled": null,
-    "max_steps": 0,
-    "max_render_chars": 0
+    "max_steps": null,
+    "max_render_chars": null
   },
   "limits": {
     "max_runtime_seconds": 0,
@@ -1751,7 +1751,7 @@ const localConfigTemplate = `{
     "max_cost_usd": 0
   },
   "sandbox_image": "",
-  "sandbox_network": "none",
+  "sandbox_network": "",
   "sandbox_memory": "",
   "sandbox_cpus": "",
   "sandbox_user": "",
@@ -1761,9 +1761,9 @@ const localConfigTemplate = `{
     "disabled": []
   },
   "skills": {
-    "max_auto_load": 3,
-    "max_lazy_slots": 5,
-    "verbose": false
+    "max_auto_load": null,
+    "max_lazy_slots": null,
+    "verbose": null
   },
   "mcp_servers": {}
 }`
