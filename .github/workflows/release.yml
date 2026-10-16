@@ -15,11 +15,11 @@ jobs:
         goos: [linux, darwin]
         goarch: [amd64, arm64]
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           # Minimum supported build toolchain is Go 1.25.12 (go.mod floor);
           # "1.25" resolves to the latest 1.25.x patch release.
@@ -35,7 +35,7 @@ jobs:
           go build -ldflags "-s -w -X main.version=${TAG}" -o odek-${{ matrix.goos }}-${{ matrix.goarch }} ./cmd/odek
 
       - name: upload artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: odek-${{ matrix.goos }}-${{ matrix.goarch }}
           path: odek-${{ matrix.goos }}-${{ matrix.goarch }}
@@ -47,7 +47,7 @@ jobs:
       contents: write
       id-token: write # OIDC identity for Sigstore keyless signing / attestation
     steps:
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: odek-*
           merge-multiple: true
@@ -61,7 +61,7 @@ jobs:
       # handled by the release step so the SBOM ships signed like every other
       # asset.
       - name: SBOM
-        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+        uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
         with:
           format: spdx-json
           output-file: odek-${{ github.ref_name }}-sbom.spdx.json
