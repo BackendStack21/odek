@@ -27,7 +27,7 @@ API key. Changes that can affect an existing install:
 4. **`odek init` (project) no longer pins `sandbox_network`, planning or
    skills values.** A `./odek.json` from an older `odek init` keeps working
    without edits: its `"sandbox_network": "none"` no longer needs sandbox
-   approval (none is the strictest mode), and its planning `0` placeholders
+   approval when your global mode is also `none` (the default), and its planning `0` placeholders
    are treated as unset instead of clamping planning to its minimum. It
    still pins `skills.max_auto_load: 3` and `max_lazy_slots: 5`; set them to
    `null` if your global config raises those limits.

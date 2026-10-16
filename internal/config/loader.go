@@ -2081,10 +2081,13 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 		projectSandboxOverride.HasImage = true
 		projectSandboxOverride.Image = project.SandboxImage
 	}
-	// "none" is the default and the strictest network mode, so a project
-	// asking for it cannot weaken the sandbox and needs no approval (older
-	// `odek init` versions wrote it into every ./odek.json).
-	if project.SandboxNetwork != "" && project.SandboxNetwork != DefaultSandboxNetwork {
+	// A project "none" that matches the operator's own network mode changes
+	// nothing, so it needs no approval (older `odek init` versions wrote it
+	// into every ./odek.json). Over a different global mode it would
+	// silently cut the sandbox off the network, so it is still an override.
+	projectNetworkNoop := project.SandboxNetwork == DefaultSandboxNetwork &&
+		ifZero(global.SandboxNetwork, DefaultSandboxNetwork) == DefaultSandboxNetwork
+	if project.SandboxNetwork != "" && !projectNetworkNoop {
 		projectSandboxOverride.HasNetwork = true
 		projectSandboxOverride.Network = project.SandboxNetwork
 	}

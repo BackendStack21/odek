@@ -95,3 +95,17 @@ func TestRED_ProjectNetworkOtherThanNoneStillNeedsApproval(t *testing.T) {
 		t.Error(`project "sandbox_network": "bridge" is not flagged as a sandbox override`)
 	}
 }
+
+// TestRED_ProjectNoneOverGlobalNetworkNeedsApproval: a project "none" is
+// exempt from approval only when it changes nothing; over an operator's
+// global "bridge" it would silently cut the sandbox off the network.
+func TestRED_ProjectNoneOverGlobalNetworkNeedsApproval(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	t.Chdir(dir)
+	writeGlobalConfig(t, dir, `{"sandbox_network":"bridge"}`)
+	writeProjectConfig(t, dir, `{"sandbox_network":"none"}`)
+	if !LoadConfig(CLIFlags{}).ProjectSandboxOverride.HasNetwork {
+		t.Error(`project "none" over a global "bridge" skipped sandbox approval`)
+	}
+}

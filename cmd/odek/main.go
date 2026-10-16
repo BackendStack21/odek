@@ -1839,7 +1839,8 @@ func initConfig(args []string) error {
 
 	// Create parent directory (os.MkdirAll on "." is a no-op — fine for
 	// local). ~/.odek holds sessions, memory, audit logs and approval
-	// stores, so it is private to the operator.
+	// stores, so a newly created one is private to the operator; an
+	// existing directory keeps its mode.
 	dir := filepath.Dir(configPath)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("create directory %s: %w", dir, err)
@@ -1867,9 +1868,11 @@ func initConfig(args []string) error {
 	// It is created only when absent (O_EXCL also refuses a planted link)
 	// and holds nothing but comments; --force never rewrites it.
 	secretsCreated := false
-	secretsPath := ""
+	secretsPath := "~/.odek/secrets.env"
 	if global {
-		secretsPath = config.SecretsEnvPath()
+		if p := config.SecretsEnvPath(); p != "" {
+			secretsPath = p
+		}
 		created, err := scaffoldSecretsEnv(secretsPath)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "odek: warning: could not create %s: %v\n", secretsPath, err)
@@ -2872,7 +2875,10 @@ func builtinTools(dc danger.DangerousConfig, sm *skills.SkillManager, approver d
 	// backend) every call would fail. Their names stay reserved against MCP
 	// shadowing either way (reservedBuiltinToolNames).
 	vision := newConfiguredVisionTool(dc, tcfg, approver)
-	transcribe, transcribeReady := newConfiguredTranscribeTool(dc, tcfg)
+	// One provider speech client (nil unless tts or stt is provider-backed)
+	// serves both speak and transcribe.
+	speech := newSpeechClient(tcfg.TTS, tcfg.STT, tcfg.SpeechOptions)
+	transcribe, transcribeReady := newConfiguredTranscribeTool(dc, tcfg, speech)
 	tools := []odek.Tool{
 		shell,
 		&delegateTasksTool{
@@ -2934,12 +2940,9 @@ func builtinTools(dc danger.DangerousConfig, sm *skills.SkillManager, approver d
 	)
 
 	// speak is registered only when provider-backed TTS is configured (there
-	// is no local TTS backend). The transcribe tool's provider STT wiring
-	// lives in newConfiguredTranscribeTool.
-	if tcfg.TTS.Backend == config.TTSBackendProvider {
-		if speech := newSpeechClient(tcfg.TTS, tcfg.STT, tcfg.SpeechOptions); speech != nil {
-			tools = append(tools, newSpeakTool(dc, tcfg.TTS, speech))
-		}
+	// is no local TTS backend).
+	if tcfg.TTS.Backend == config.TTSBackendProvider && speech != nil {
+		tools = append(tools, newSpeakTool(dc, tcfg.TTS, speech))
 	}
 
 	// artifact_read is registered only for top-level runs (SelfTrust empty):

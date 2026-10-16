@@ -501,7 +501,7 @@ If the photo has a **caption**, that text becomes the user's request and also fo
 
 ### Auto-Transcribe (Voice → Text)
 
-When `transcription.auto_transcribe: true` is set in config (off by default) and a transcription backend can run (whisper.cpp plus a model, or `stt.backend: provider`, which auto-transcription now honours like the `transcribe` tool), voice messages are automatically transcribed into text before reaching the agent:
+When `transcription.auto_transcribe: true` is set in config (off by default) and whisper.cpp plus a model are installed, voice messages are automatically transcribed into text before reaching the agent:
 
 ```
 Voice message received → DownloadVoice (OGG Opus to disk)
@@ -516,7 +516,7 @@ Voice message received → DownloadVoice (OGG Opus to disk)
 
 **Docker:** the official image bundles the whisper.cpp CLI, the `small` (multilingual) model, and ffmpeg, with `auto_transcribe` enabled in the shipped configs — so voice transcription works out of the box with no host install, at usable German/English/Spanish quality. See [../docker/README.md](../docker/README.md#voice-transcription-out-of-the-box).
 
-**Provider STT:** setting `stt.backend: "provider"` in config routes transcription (including auto-transcribe) through the configured provider's transcription endpoint instead of local whisper. Local remains the default; see the `stt` section in [CONFIG.md](CONFIG.md).
+**Provider STT:** setting `stt.backend: "provider"` in config routes the `transcribe` tool through the configured provider's transcription endpoint instead of local whisper. Auto-transcribe stays local-only: it runs before the agent run starts, outside execution budgets, usage accounting and `/stop`, so with only provider STT the agent is pointed at the `transcribe` tool and transcribes inside the run. Local remains the default; see the `stt` section in [CONFIG.md](CONFIG.md).
 
 ### Voice Replies (Text → Voice Note)
 

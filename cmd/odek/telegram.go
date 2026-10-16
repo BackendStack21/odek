@@ -577,9 +577,9 @@ func telegramCmd(args []string) error {
 		resolved.APIKey = key
 	}
 
-	// 2. Validate API key presence.
-	if resolved.APIKey == "" {
-		return fmt.Errorf("no API key configured — set your provider's key (DEEPSEEK_API_KEY for the default provider) in ~/.odek/secrets.env, ODEK_API_KEY, or providers.<id>.api_key in ~/.odek/config.json")
+	// 2. Validate API key presence (same check and message as run/repl).
+	if err := requireAPIKey(resolved); err != nil {
+		return err
 	}
 	// Store for spawnChild: config loader clears ODEK_API_KEY from env,
 	// so the child process needs us to hand it off securely.
@@ -1091,15 +1091,18 @@ func telegramCmd(args []string) error {
 				return
 			}
 
-			// Auto-transcribe if configured and the transcriber can run (the
-			// provider STT backend, or whisper.cpp plus a model on this host).
-			tool, ready := newConfiguredTranscribeTool(resolved.Dangerous, toolConfigFromResolved(resolved))
-			if resolved.Transcription.AutoTranscribe && !ready {
-				handlerLog.Warn("auto-transcribe enabled but no transcription backend is installed", "chat_id", chatID)
+			// Auto-transcribe if configured and local whisper can run. It runs
+			// before the agent run starts, so it never uses a provider STT
+			// backend (that would bypass budgets, usage and /stop); with only
+			// provider STT the agent transcribes through the tool instead.
+			autoReady, toolReady := telegramVoiceBackends(toolConfigFromResolved(resolved))
+			if resolved.Transcription.AutoTranscribe && !autoReady {
+				handlerLog.Warn("auto-transcribe enabled but whisper.cpp or its model is not installed", "chat_id", chatID)
 			}
-			if resolved.Transcription.AutoTranscribe && ready {
+			if resolved.Transcription.AutoTranscribe && autoReady {
+				tool := newTranscribeTool(resolved.Dangerous, resolved.Transcription)
 				tool.SetContext(mctx)
-				result, err := tool.Call(fmt.Sprintf(`{"path":"%s"}`, localPath))
+				result, err := tool.Call(transcribeCallArgs(localPath))
 				if err == nil {
 					var r struct {
 						Text  string `json:"text"`
@@ -1122,7 +1125,7 @@ func telegramCmd(args []string) error {
 			// Fallback: pass the file path to the agent
 			handleChatMessageGated(mctx, chatID, messageID, userID,
 				wrapUntrusted(context.Background(), fmt.Sprintf("telegram:chat:%d:voice", chatID),
-					voiceFallbackMessage(localPath, ready)),
+					voiceFallbackMessage(localPath, toolReady)),
 				bot, handler, sessionManager, resolved, systemMessage, handlerLog)
 		})
 		return "", nil

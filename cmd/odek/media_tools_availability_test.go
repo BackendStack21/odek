@@ -117,23 +117,22 @@ func TestRED_MediaToolNamesStayReserved(t *testing.T) {
 	}
 }
 
-// TestRED_TelegramVoiceUsesProviderSTT: Telegram voice auto-transcription
-// must use the provider STT backend when one is configured, like the
-// transcribe tool does, instead of always running local whisper.
-func TestRED_TelegramVoiceUsesProviderSTT(t *testing.T) {
+// TestRED_ConfiguredTranscribeWiresProviderSTT: the transcribe tool uses the
+// provider STT backend when one is configured.
+func TestRED_ConfiguredTranscribeWiresProviderSTT(t *testing.T) {
 	mediaScratch(t)
 	tcfg := mediaToolConfig()
 	tcfg.STT = config.STTConfig{Backend: config.STTBackendProvider, Provider: "openai", Model: "whisper-1"}
-	tool, ready := newConfiguredTranscribeTool(danger.DangerousConfig{}, tcfg)
+	tool, ready := newConfiguredTranscribeTool(danger.DangerousConfig{}, tcfg, newSpeechClient(tcfg.TTS, tcfg.STT, tcfg.SpeechOptions))
 	if !ready {
 		t.Fatal("provider STT backend reported as not ready")
 	}
 	if tool.speech == nil {
-		t.Error("transcribe tool built for Telegram has no provider STT backend")
+		t.Error("transcribe tool has no provider STT backend")
 	}
 
 	tcfg.STT = config.STTConfig{Backend: config.STTBackendLocal}
-	if _, ready := newConfiguredTranscribeTool(danger.DangerousConfig{}, tcfg); ready {
+	if _, ready := newConfiguredTranscribeTool(danger.DangerousConfig{}, tcfg, nil); ready {
 		t.Error("local STT reported ready without whisper.cpp installed")
 	}
 }

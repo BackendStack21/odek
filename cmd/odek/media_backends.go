@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -48,20 +49,38 @@ func visionBackendReady(vc config.VisionConfig) bool {
 	return true
 }
 
-// newConfiguredTranscribeTool builds the transcribe tool with the provider
-// STT backend wired when stt.backend is "provider", and reports whether its
-// backend can run. The agent tool set and Telegram voice auto-transcription
-// share it so both honour the same backend.
-func newConfiguredTranscribeTool(dc danger.DangerousConfig, tcfg toolConfig) (*transcribeTool, bool) {
+// newConfiguredTranscribeTool builds the transcribe tool, wiring speech as
+// its STT backend when stt.backend is "provider" (speech may be nil), and
+// reports whether its backend can run.
+func newConfiguredTranscribeTool(dc danger.DangerousConfig, tcfg toolConfig, speech *providerSpeechClient) (*transcribeTool, bool) {
 	t := newTranscribeTool(dc, tcfg.Transcription)
 	providerSTT := false
-	if tcfg.STT.Backend == config.STTBackendProvider {
-		if speech := newSpeechClient(tcfg.TTS, tcfg.STT, tcfg.SpeechOptions); speech != nil {
-			t.SetSpeechBackend(tcfg.STT, speech)
-			providerSTT = true
-		}
+	if tcfg.STT.Backend == config.STTBackendProvider && speech != nil {
+		t.SetSpeechBackend(tcfg.STT, speech)
+		providerSTT = true
 	}
 	return t, transcribeBackendReady(tcfg.Transcription, providerSTT)
+}
+
+// telegramVoiceBackends reports whether Telegram voice auto-transcription
+// can run and whether the agent has a transcribe tool. Auto-transcription
+// happens before the agent run starts — outside execution budgets, usage
+// accounting and /stop — so it uses local whisper only and never a paid
+// provider STT call; with only provider STT the agent transcribes through
+// the tool, inside the run.
+func telegramVoiceBackends(tcfg toolConfig) (autoReady, toolReady bool) {
+	autoReady = transcribeBackendReady(tcfg.Transcription, false)
+	providerSTT := tcfg.STT.Backend == config.STTBackendProvider &&
+		newSpeechClient(tcfg.TTS, tcfg.STT, tcfg.SpeechOptions) != nil
+	return autoReady, autoReady || providerSTT
+}
+
+// transcribeCallArgs encodes the transcribe tool's arguments for path.
+func transcribeCallArgs(path string) string {
+	b, _ := json.Marshal(struct {
+		Path string `json:"path"`
+	}{path})
+	return string(b)
 }
 
 // gatedBuiltinTools are built-in tools registered only when their backend

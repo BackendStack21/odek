@@ -124,3 +124,32 @@ func TestRED_RunChecksKeyBeforeMCPApproval(t *testing.T) {
 		t.Fatalf("run error = %v, want the missing-key error first; stderr:\n%s", err, stderr)
 	}
 }
+
+// TestRED_TelegramAutoTranscribeStaysLocal: Telegram voice auto-transcription
+// runs before the agent run starts, outside execution budgets, usage
+// accounting and /stop, so it must never make a paid provider STT call.
+// With only provider STT configured, auto-transcription is not ready, but
+// the fallback still points the agent at the transcribe tool (which runs
+// inside the run).
+func TestRED_TelegramAutoTranscribeStaysLocal(t *testing.T) {
+	mediaScratch(t)
+	tcfg := mediaToolConfig()
+	tcfg.STT = config.STTConfig{Backend: config.STTBackendProvider, Provider: "openai", Model: "whisper-1"}
+	autoReady, toolReady := telegramVoiceBackends(tcfg)
+	if autoReady {
+		t.Error("auto-transcription is ready with only a provider STT backend (would bypass run budgets)")
+	}
+	if !toolReady {
+		t.Error("transcribe tool not reported available with a provider STT backend")
+	}
+}
+
+func TestRED_TranscribeArgsAreValidJSON(t *testing.T) {
+	path := `C:\media\voice "1".ogg`
+	var got struct {
+		Path string `json:"path"`
+	}
+	if err := json.Unmarshal([]byte(transcribeCallArgs(path)), &got); err != nil || got.Path != path {
+		t.Errorf("transcribeCallArgs(%q) = %q (err %v)", path, transcribeCallArgs(path), err)
+	}
+}
