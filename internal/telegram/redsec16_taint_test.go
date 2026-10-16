@@ -81,3 +81,35 @@ func TestRED_MarkTaintSpansPersists(t *testing.T) {
 		t.Fatal("nil chat has spans")
 	}
 }
+
+// Resuming an archive keeps its sticky untrusted spans on the canonical
+// session, like the other sticky taint state.
+func TestRED_ResumeArchiveKeepsTaintSpans(t *testing.T) {
+	sm, st := setupTestSessionManager(t)
+	const chat int64 = 95
+	archive := &session.Session{
+		ID:         "tg-95-20260101-000000",
+		Task:       "tg-95",
+		Messages:   []session.Message{{Role: "user", Content: "hi"}, {Role: "assistant", Content: "hello"}},
+		TaintSpans: []session.TaintSpan{{Kind: "host", Value: "evil.example"}},
+	}
+	if err := st.Save(archive); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sm.ResumeSession(chat, archive.ID); err != nil {
+		t.Fatal(err)
+	}
+	got, err := st.Load("tg-95")
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, sp := range got.TaintSpans {
+		if sp.Kind == "host" && sp.Value == "evil.example" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("canonical session lost the archive's taint spans: %+v", got.TaintSpans)
+	}
+}

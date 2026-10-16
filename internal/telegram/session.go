@@ -710,6 +710,7 @@ func (sm *SessionManager) resumeSession(chatID int64, sessionID string, archived
 			UntrustedIngested:   sess.UntrustedIngested,
 			EpisodeUntrusted:    sess.EpisodeUntrusted,
 			EpisodeTaintTracked: sess.EpisodeTaintTracked,
+			TaintSpans:          sess.TaintSpans,
 		}
 		if err := sm.Store.Save(stored); err != nil {
 			return nil, fmt.Errorf("persist resumed session: %w", err)
