@@ -26,8 +26,10 @@ func TestDownloadDocument_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DownloadDocument: %v", err)
 	}
-	if !strings.Contains(filepath.Base(path), "report_") || filepath.Ext(path) != ".pdf" {
-		t.Errorf("expected hash-bearing PDF filename in path, got %q", path)
+	// The saved name is odek's own: a file-ID digest and the extension, no
+	// sender-chosen text.
+	if strings.Contains(filepath.Base(path), "report") || filepath.Ext(path) != ".pdf" {
+		t.Errorf("expected a digest-named PDF without the sender's name, got %q", path)
 	}
 
 	data, err := os.ReadFile(path)
