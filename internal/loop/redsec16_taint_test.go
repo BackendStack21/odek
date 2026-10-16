@@ -664,7 +664,7 @@ func TestRED_TaintSpans_MultiTenantSuffixPrincipal(t *testing.T) {
 func TestRED_TaintMessageDigest_FieldsUnambiguous(t *testing.T) {
 	a := session.Message{Role: "tool\x00call1", Content: "https://evil.example/c"}
 	b := session.Message{Role: "tool", ToolCallID: "call1", Content: "https://evil.example/c"}
-	var da, db [32]byte = taintMessageDigest(&a), taintMessageDigest(&b)
+	var da, db taintDigest = taintMessageDigest(&a), taintMessageDigest(&b)
 	if da == db {
 		t.Fatal("distinct messages share a scanned digest")
 	}

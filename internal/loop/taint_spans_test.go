@@ -224,9 +224,9 @@ func TestTaintSpanStore_ObserveSources(t *testing.T) {
 	if s.seq != before {
 		t.Error("trimmed history re-recorded already scanned messages")
 	}
-	s.scanned = make(map[[32]byte]struct{}, maxTaintScanned)
+	s.scanned = make(map[taintDigest]struct{}, maxTaintScanned)
 	for i := 0; i < maxTaintScanned; i++ {
-		var d [32]byte
+		var d taintDigest
 		binary.BigEndian.PutUint64(d[:], uint64(i))
 		s.scanned[d] = struct{}{}
 	}

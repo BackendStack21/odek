@@ -2,10 +2,10 @@ package loop
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"hash/maphash"
 	"net"
 	"net/url"
 	"os"
@@ -168,9 +168,9 @@ type taintSpanStore struct {
 	links    map[string]uint64
 	// scanned holds digests of messages already scanned; scannedLen and
 	// scannedTail let an append-only history skip straight to new messages.
-	scanned    map[[32]byte]struct{}
+	scanned    map[taintDigest]struct{}
 	scannedLen int
-	scannedTip [32]byte
+	scannedTip taintDigest
 	principal  taintPrincipal
 }
 
@@ -185,7 +185,7 @@ func newTaintSpanStore() *taintSpanStore {
 		spans:   make(map[string]*taintSpan),
 		hashed:  make(map[string]*taintSpan),
 		links:   make(map[string]uint64),
-		scanned: make(map[[32]byte]struct{}),
+		scanned: make(map[taintDigest]struct{}),
 	}
 }
 
@@ -573,18 +573,28 @@ func isHexOrDash(c byte) bool {
 
 // ── recording ──────────────────────────────────────────────────────────
 
-func taintMessageDigest(m *session.Message) [32]byte {
-	// SHA-256 over length-prefixed fields: no two distinct messages share a
-	// digest, so a new message is never skipped as already scanned.
-	h := sha256.New()
-	for _, f := range []string{m.Role, m.ToolCallID, m.Name, m.Content} {
-		var n [8]byte
-		binary.BigEndian.PutUint64(n[:], uint64(len(f)))
-		h.Write(n[:])
-		h.Write([]byte(f))
+// taintDigest identifies a scanned message within this process.
+type taintDigest [16]byte
+
+// taintDigestSeeds key the message digest per process, so content cannot be
+// crafted to collide with a message already scanned.
+var taintDigestSeeds = [2]maphash.Seed{maphash.MakeSeed(), maphash.MakeSeed()}
+
+func taintMessageDigest(m *session.Message) taintDigest {
+	// Two independently seeded 64-bit hashes over length-prefixed fields:
+	// fields cannot run into each other, and a collision needs the seeds.
+	var out taintDigest
+	for i, seed := range taintDigestSeeds {
+		var h maphash.Hash
+		h.SetSeed(seed)
+		for _, f := range []string{m.Role, m.ToolCallID, m.Name, m.Content} {
+			var n [8]byte
+			binary.BigEndian.PutUint64(n[:], uint64(len(f)))
+			h.Write(n[:])
+			h.WriteString(f)
+		}
+		binary.BigEndian.PutUint64(out[i*8:], h.Sum64())
 	}
-	var out [32]byte
-	copy(out[:], h.Sum(nil))
 	return out
 }
 
@@ -809,7 +819,7 @@ func (s *taintSpanStore) observe(messages []session.Message, env taintEnv) {
 			continue
 		}
 		if len(s.scanned) >= maxTaintScanned {
-			s.scanned = make(map[[32]byte]struct{})
+			s.scanned = make(map[taintDigest]struct{})
 		}
 		s.scanned[d] = struct{}{}
 		switch m.Role {
