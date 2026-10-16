@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/BackendStack21/odek/internal/config"
@@ -158,5 +159,61 @@ func TestRED_GlobalInitKeepsOdekHomePrivate(t *testing.T) {
 	}
 	if perm := fi.Mode().Perm(); perm&0o077 != 0 {
 		t.Errorf("--force kept a group/other-readable config (mode %o)", perm)
+	}
+}
+
+// TestRED_GlobalInitScaffoldsPrivateSecretsFile: init --global tells a new
+// user where the API key goes and creates a private ~/.odek/secrets.env
+// stub (nothing set, only a commented placeholder). An existing
+// secrets.env is never touched, even with --force.
+func TestRED_GlobalInitScaffoldsPrivateSecretsFile(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	out := opsHuntCaptureStdout(t, func() {
+		if err := initConfig([]string{"--global"}); err != nil {
+			t.Error(err)
+		}
+	})
+	secrets := filepath.Join(home, ".odek", "secrets.env")
+	fi, err := os.Stat(secrets)
+	if err != nil {
+		t.Fatalf("secrets.env not created: %v", err)
+	}
+	if perm := fi.Mode().Perm(); perm != 0o600 {
+		t.Errorf("secrets.env mode %o, want 600", perm)
+	}
+	body, _ := os.ReadFile(secrets)
+	if !strings.Contains(string(body), "# DEEPSEEK_API_KEY=") {
+		t.Errorf("secrets.env lacks the commented DEEPSEEK_API_KEY placeholder:\n%s", body)
+	}
+	for _, line := range strings.Split(string(body), "\n") {
+		if l := strings.TrimSpace(line); l != "" && !strings.HasPrefix(l, "#") {
+			t.Errorf("secrets.env stub sets a value: %q", l)
+		}
+	}
+	for _, want := range []string{"secrets.env", "DEEPSEEK_API_KEY"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("init --global output does not mention %s:\n%s", want, out)
+		}
+	}
+
+	if err := os.WriteFile(secrets, []byte("DEEPSEEK_API_KEY=keep-me\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	opsHuntCaptureStdout(t, func() { _ = initConfig([]string{"--global", "--force"}) })
+	if got, _ := os.ReadFile(secrets); string(got) != "DEEPSEEK_API_KEY=keep-me\n" {
+		t.Errorf("init --global --force rewrote an existing secrets.env: %q", got)
+	}
+}
+
+// TestRED_LocalInitCreatesNoSecretsFile: project init never writes into
+// ~/.odek.
+func TestRED_LocalInitCreatesNoSecretsFile(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Chdir(t.TempDir())
+	opsHuntCaptureStdout(t, func() { _ = initConfig(nil) })
+	if _, err := os.Lstat(filepath.Join(home, ".odek")); err == nil {
+		t.Error("odek init (local) created ~/.odek")
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"math"
 	"net/http"
 	"net/url"
@@ -1385,6 +1386,8 @@ Commands:
 
 Init flags:
   --global, -g        Create global config at ~/.odek/config.json
+                      (and a private ~/.odek/secrets.env stub if missing)
+  --local, -l         Create project config at ./odek.json (default)
   --force, -f         Overwrite existing file without prompting
 
 Run flags:
@@ -1851,9 +1854,38 @@ func initConfig(args []string) error {
 		return fmt.Errorf("write config: %w", err)
 	}
 
+	// A private secrets.env stub tells a new user where the API key goes.
+	// It is created only when absent (O_EXCL also refuses a planted link)
+	// and holds nothing but comments; --force never rewrites it.
+	secretsCreated := false
+	secretsPath := ""
+	if global {
+		secretsPath = config.SecretsEnvPath()
+		created, err := scaffoldSecretsEnv(secretsPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "odek: warning: could not create %s: %v\n", secretsPath, err)
+		}
+		secretsCreated = created
+	}
+
 	fmt.Printf("✓ Created %s config: %s\n", scope, configPath)
+	if secretsCreated {
+		fmt.Printf("✓ Created secrets file: %s (mode 0600)\n", secretsPath)
+	}
 	fmt.Println()
 	if global {
+		fmt.Println("  Next steps:")
+		fmt.Printf("    1. Put your API key in %s:\n", secretsPath)
+		fmt.Println("         DEEPSEEK_API_KEY=sk-...")
+		fmt.Println("       The config reads it as ${DEEPSEEK_API_KEY}. For another provider,")
+		fmt.Println("       change \"provider\"/\"model\" and add that provider's key the same way.")
+		fmt.Println("    2. Try it: odek run \"hello\"")
+		if _, err := exec.LookPath("docker"); err != nil {
+			fmt.Println()
+			fmt.Println("  Docker was not found on PATH. odek still works, but runs commands")
+			fmt.Println("  without the sandbox (and says so) until Docker is installed and running.")
+		}
+		fmt.Println()
 		fmt.Println("  Edit this file to set your preferences. Common fields:")
 		fmt.Println("    provider          LLM provider id (default: deepseek)")
 		fmt.Println("    model             LLM model name (default: deepseek-v4-flash)")
@@ -1892,6 +1924,36 @@ func initConfig(args []string) error {
 	fmt.Println()
 	fmt.Println("  Priority: ~/.odek/secrets.env → ~/.odek/config.json → ./odek.json → ODEK_* env → CLI flags")
 	return nil
+}
+
+// secretsEnvStub is written to ~/.odek/secrets.env by `odek init --global`
+// when the file does not exist yet. It sets nothing.
+const secretsEnvStub = `# odek secrets: KEY=value lines, loaded before ~/.odek/config.json.
+# Values become environment variables for ${VAR} references in the config.
+# Keep this file private (chmod 600); odek refuses to load it otherwise.
+#
+# Uncomment and set the key for your provider:
+# DEEPSEEK_API_KEY=
+`
+
+// scaffoldSecretsEnv creates path with secretsEnvStub, mode 0600, only when
+// nothing exists there. It reports whether it created the file.
+func scaffoldSecretsEnv(path string) (bool, error) {
+	if path == "" {
+		return false, nil
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if errors.Is(err, fs.ErrExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if _, err := f.WriteString(secretsEnvStub); err != nil {
+		f.Close()
+		return true, err
+	}
+	return true, f.Close()
 }
 
 // ── Run ───────────────────────────────────────────────────────────────

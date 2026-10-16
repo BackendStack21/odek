@@ -4316,6 +4316,10 @@ func overlaySkills(base, override *SkillsConfig) {
 	}
 }
 
+// SecretsEnvPath returns the path of ~/.odek/secrets.env, the file
+// loadSecretsEnv reads (empty when the home directory is unknown).
+func SecretsEnvPath() string { return secretsEnvPath() }
+
 // secretsEnvPath returns the path to the secrets environment file.
 func secretsEnvPath() string {
 	home, err := os.UserHomeDir()
