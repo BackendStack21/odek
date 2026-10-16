@@ -1868,16 +1868,16 @@ func initConfig(args []string) error {
 	// It is created only when absent (O_EXCL also refuses a planted link)
 	// and holds nothing but comments; --force never rewrites it.
 	secretsCreated := false
-	secretsPath := "~/.odek/secrets.env"
+	secretsPath := "~/.odek/secrets.env" // shown when the home dir is unknown
 	if global {
 		if p := config.SecretsEnvPath(); p != "" {
 			secretsPath = p
+			created, err := scaffoldSecretsEnv(p)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "odek: warning: could not create %s: %v\n", p, err)
+			}
+			secretsCreated = created
 		}
-		created, err := scaffoldSecretsEnv(secretsPath)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "odek: warning: could not create %s: %v\n", secretsPath, err)
-		}
-		secretsCreated = created
 	}
 
 	fmt.Printf("✓ Created %s config: %s\n", scope, configPath)
@@ -3052,13 +3052,12 @@ func reservedBuiltinToolNames() map[string]bool {
 	// must not shadow the names.
 	names["clarify"] = true
 	names["send_message"] = true
-	// Gated tools (transcribe, vision, speak, web_search) are registered
-	// only when their backend is configured or installed; reserve them
-	// regardless so enabling a backend later cannot collide with an MCP
-	// tool that took the name meanwhile.
-	for name := range gatedBuiltinTools {
-		names[name] = true
-	}
+	// transcribe and vision were always registered before they were gated
+	// on their backend, so they stay reserved. speak and web_search were
+	// never reserved while unconfigured; reserving them would abort startup
+	// for an MCP server that already exposes a tool of that name.
+	names["transcribe"] = true
+	names["vision"] = true
 	return names
 }
 

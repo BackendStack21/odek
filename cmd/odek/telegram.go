@@ -1095,8 +1095,13 @@ func telegramCmd(args []string) error {
 			// before the agent run starts, so it never uses a provider STT
 			// backend (that would bypass budgets, usage and /stop); with only
 			// provider STT the agent transcribes through the tool instead.
-			autoReady, toolReady := telegramVoiceBackends(toolConfigFromResolved(resolved))
-			if resolved.Transcription.AutoTranscribe && !autoReady {
+			autoReady, toolReady := telegramVoiceBackends(toolConfig{
+				Transcription: resolved.Transcription,
+				STT:           resolved.STT,
+				TTS:           resolved.TTS,
+				SpeechOptions: telegramSpeechOptions(resolved, resolved.LLM.RequestTimeoutSeconds),
+			}, resolved.Tools)
+			if resolved.Transcription.AutoTranscribe && !autoReady && warnMediaBackendMissingOnce("transcribe") {
 				handlerLog.Warn("auto-transcribe enabled but whisper.cpp or its model is not installed", "chat_id", chatID)
 			}
 			if resolved.Transcription.AutoTranscribe && autoReady {
@@ -1147,10 +1152,10 @@ func telegramCmd(args []string) error {
 
 			// Queue auto-description inside the run so approvals, /stop, usage,
 			// and execution budgets cover both local and provider vision.
-			visionReady := visionBackendReady(resolved.Vision)
+			visionReady := telegramVisionReady(resolved.Vision, resolved.Tools)
 			describe := resolved.Vision.AutoDescribeEnabled() && visionReady
-			if resolved.Vision.AutoDescribeEnabled() && !describe {
-				handlerLog.Warn("auto-describe enabled but no vision backend is installed", "chat_id", chatID)
+			if resolved.Vision.AutoDescribeEnabled() && !describe && warnMediaBackendMissingOnce("vision") {
+				handlerLog.Warn("auto-describe enabled but no vision backend is installed (or vision is filtered out)", "chat_id", chatID)
 			}
 			if describe {
 				handleChatMessageGated(mctx, chatID, messageID, userID,

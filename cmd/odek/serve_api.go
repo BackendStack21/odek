@@ -771,11 +771,6 @@ func handleTools(resolved config.ResolvedConfig) http.HandlerFunc {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		names := make([]string, 0, 32)
-		for name := range reservedBuiltinToolNames() {
-			names = append(names, name)
-		}
-		sort.Strings(names)
 
 		enabledSet := map[string]bool{}
 		for _, n := range resolved.Tools.Enabled {
@@ -798,6 +793,20 @@ func handleTools(resolved config.ResolvedConfig) http.HandlerFunc {
 		for _, t := range builtinTools(danger.DangerousConfig{}, nil, nil, 1, "", tcfg, nil) {
 			descriptors[t.Name()] = t
 		}
+		// One tool build: registered tools, the surface-injected principal
+		// tools, and gated tools (listed as unavailable when not built).
+		nameSet := map[string]bool{"clarify": true, "send_message": true}
+		for name := range descriptors {
+			nameSet[name] = true
+		}
+		for name := range gatedBuiltinTools {
+			nameSet[name] = true
+		}
+		names := make([]string, 0, len(nameSet))
+		for name := range nameSet {
+			names = append(names, name)
+		}
+		sort.Strings(names)
 		out := make([]toolSummary, 0, len(names))
 		for _, n := range names {
 			// Shared filter rule (introspect.go) — the same one the

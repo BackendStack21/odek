@@ -49,17 +49,36 @@ func visionBackendReady(vc config.VisionConfig) bool {
 	return true
 }
 
+// providerSTTReady reports whether stt.backend is "provider" with a usable
+// speech client (speech may be nil).
+func providerSTTReady(stt config.STTConfig, speech *providerSpeechClient) bool {
+	return stt.Backend == config.STTBackendProvider && speech != nil
+}
+
 // newConfiguredTranscribeTool builds the transcribe tool, wiring speech as
 // its STT backend when stt.backend is "provider" (speech may be nil), and
 // reports whether its backend can run.
 func newConfiguredTranscribeTool(dc danger.DangerousConfig, tcfg toolConfig, speech *providerSpeechClient) (*transcribeTool, bool) {
 	t := newTranscribeTool(dc, tcfg.Transcription)
-	providerSTT := false
-	if tcfg.STT.Backend == config.STTBackendProvider && speech != nil {
+	providerSTT := providerSTTReady(tcfg.STT, speech)
+	if providerSTT {
 		t.SetSpeechBackend(tcfg.STT, speech)
-		providerSTT = true
 	}
 	return t, transcribeBackendReady(tcfg.Transcription, providerSTT)
+}
+
+// toolAllowedByFilter applies the operator's tools.enabled/disabled filter
+// to one tool name (the rule tool.FilterTools applies).
+func toolAllowedByFilter(name string, cfg config.ToolConfig) bool {
+	enabled := make(map[string]bool, len(cfg.Enabled))
+	for _, n := range cfg.Enabled {
+		enabled[n] = true
+	}
+	disabled := make(map[string]bool, len(cfg.Disabled))
+	for _, n := range cfg.Disabled {
+		disabled[n] = true
+	}
+	return toolEnabled(name, enabled, disabled, cfg.Enabled != nil)
 }
 
 // telegramVoiceBackends reports whether Telegram voice auto-transcription
@@ -67,12 +86,29 @@ func newConfiguredTranscribeTool(dc danger.DangerousConfig, tcfg toolConfig, spe
 // happens before the agent run starts — outside execution budgets, usage
 // accounting and /stop — so it uses local whisper only and never a paid
 // provider STT call; with only provider STT the agent transcribes through
-// the tool, inside the run.
-func telegramVoiceBackends(tcfg toolConfig) (autoReady, toolReady bool) {
+// the tool, inside the run. toolReady also honours the tools filter.
+func telegramVoiceBackends(tcfg toolConfig, tools config.ToolConfig) (autoReady, toolReady bool) {
 	autoReady = transcribeBackendReady(tcfg.Transcription, false)
 	providerSTT := tcfg.STT.Backend == config.STTBackendProvider &&
-		newSpeechClient(tcfg.TTS, tcfg.STT, tcfg.SpeechOptions) != nil
-	return autoReady, autoReady || providerSTT
+		providerSTTReady(tcfg.STT, newSpeechClient(tcfg.TTS, tcfg.STT, tcfg.SpeechOptions))
+	return autoReady, (autoReady || providerSTT) && toolAllowedByFilter("transcribe", tools)
+}
+
+// telegramVisionReady reports whether the agent has a vision tool: the
+// backend can run and the tools filter keeps it.
+func telegramVisionReady(vc config.VisionConfig, tools config.ToolConfig) bool {
+	return visionBackendReady(vc) && toolAllowedByFilter("vision", tools)
+}
+
+// mediaMissingWarned records Telegram media warnings already logged, so a
+// missing backend is reported once per process rather than per message.
+var mediaMissingWarned sync.Map
+
+// warnMediaBackendMissingOnce reports whether this is the first warning for
+// kind, recording it.
+func warnMediaBackendMissingOnce(kind string) bool {
+	_, seen := mediaMissingWarned.LoadOrStore(kind, true)
+	return !seen
 }
 
 // transcribeCallArgs encodes the transcribe tool's arguments for path.
@@ -90,7 +126,7 @@ func transcribeCallArgs(path string) string {
 var gatedBuiltinTools = map[string]string{
 	"transcribe": "no transcription backend: install whisper.cpp and a model, or set stt.backend to provider",
 	"vision":     "no vision backend: install llama-mtmd-cli and the MiniCPM-V files, or set vision.backend to provider",
-	"speak":      "no speech backend: set tts.backend to provider",
+	"speak":      "no speech backend: set tts.backend to provider with a provider and model",
 	"web_search": "no search backend: set web_search.base_url to a SearXNG instance",
 }
 

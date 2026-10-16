@@ -90,15 +90,45 @@ func TestRED_APIToolsReportsUnavailableGatedTools(t *testing.T) {
 	}
 }
 
-// TestRED_AllGatedToolNamesReserved: every conditionally registered tool
-// name is reserved against MCP shadowing, not just the media tools.
-func TestRED_AllGatedToolNamesReserved(t *testing.T) {
+// TestRED_GatedToolNamesReservedLikeMain: transcribe and vision were always
+// registered (so reserved) before gating and stay reserved; speak and
+// web_search were never reserved when unconfigured, and reserving them now
+// would make an MCP server with a "web_search" or "speak" tool abort startup.
+func TestRED_GatedToolNamesReservedLikeMain(t *testing.T) {
 	mediaScratch(t)
 	reserved := reservedBuiltinToolNames()
-	for name := range gatedBuiltinTools {
+	for _, name := range []string{"transcribe", "vision"} {
 		if !reserved[name] {
 			t.Errorf("%s is not reserved against MCP shadowing", name)
 		}
+	}
+	for _, name := range []string{"web_search", "speak"} {
+		if reserved[name] {
+			t.Errorf("unconfigured %s is reserved; an MCP tool of that name would abort startup", name)
+		}
+	}
+}
+
+// TestRED_TelegramMediaHintsRespectToolFilter: a media tool removed by the
+// operator's tools filter is not offered in Telegram hints, even when its
+// backend is installed.
+func TestRED_TelegramMediaHintsRespectToolFilter(t *testing.T) {
+	home, bin := mediaScratch(t)
+	installFake(t, filepath.Join(bin, "whisper-cli"))
+	installFake(t, filepath.Join(home, ".odek", "whisper", "models", "ggml-tiny.bin"))
+	tcfg := mediaToolConfig()
+	if _, toolReady := telegramVoiceBackends(tcfg, config.ToolConfig{}); !toolReady {
+		t.Fatal("transcribe not available with whisper installed and no filter")
+	}
+	if _, toolReady := telegramVoiceBackends(tcfg, config.ToolConfig{Disabled: []string{"transcribe"}}); toolReady {
+		t.Error("disabled transcribe still offered in the Telegram voice hint")
+	}
+	if _, toolReady := telegramVoiceBackends(tcfg, config.ToolConfig{Enabled: []string{"read_file"}}); toolReady {
+		t.Error("transcribe outside tools.enabled still offered in the Telegram voice hint")
+	}
+	vc := config.VisionConfig{Backend: config.VisionBackendProvider, Model: "m"}
+	if !telegramVisionReady(vc, config.ToolConfig{}) || telegramVisionReady(vc, config.ToolConfig{Disabled: []string{"vision"}}) {
+		t.Error("telegramVisionReady ignores the tools filter")
 	}
 }
 
@@ -135,7 +165,7 @@ func TestRED_TelegramAutoTranscribeStaysLocal(t *testing.T) {
 	mediaScratch(t)
 	tcfg := mediaToolConfig()
 	tcfg.STT = config.STTConfig{Backend: config.STTBackendProvider, Provider: "openai", Model: "whisper-1"}
-	autoReady, toolReady := telegramVoiceBackends(tcfg)
+	autoReady, toolReady := telegramVoiceBackends(tcfg, config.ToolConfig{})
 	if autoReady {
 		t.Error("auto-transcription is ready with only a provider STT backend (would bypass run budgets)")
 	}
