@@ -71,6 +71,9 @@ jobs:
       - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
         with:
           cosign-release: v3.1.3 # pinned: a future cosign major must not break a tagged release mid-flight
+          # `odek upgrade` (cmd/odek/upgrade_sigstore.go) verifies Rekor v1
+          # hashedrekord bundles with compiled-in trust roots: confirm a new
+          # cosign still emits that bundle shape before bumping this pin.
 
       # Keyless signing: Fulcio-issued certificate bound to this workflow's
       # OIDC identity, logged in the Rekor transparency log. Explicit file
