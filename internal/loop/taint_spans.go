@@ -43,7 +43,9 @@ import (
 //     file extension. Bare hosts on a short list of ubiquitous sites
 //     (github.com, pypi.org, …) are not recorded; their URLs still are.
 //     Schemeless module paths of Go import specs and go.mod/go.sum lines
-//     are not recorded either (taintGoModuleLine).
+//     read by a file tool from .go, go.mod, go.sum or module-cache paths are
+//     not recorded either (taintGoSource, taintGoModuleLine); the same line
+//     shapes from any other source record their host.
 //   - path: absolute, ~/, $HOME/ and ${HOME}/ paths (cleaned) with at least two segments, outside the
 //     working directory, the sandbox /workspace mount, the home directory's
 //     ancestors, /dev/{null,stdin,stdout,stderr} and the standard bin
@@ -313,6 +315,13 @@ func extractTaintURLs(text string) []taintRaw {
 // mentions and the candidate side of a match use: a looser candidate costs
 // nothing, since only recorded spans can match.
 func extractTaintSpans(text string, env taintEnv, loose bool) []taintRaw {
+	return extractTaintSpansFrom(text, env, loose, false)
+}
+
+// extractTaintSpansFrom is extractTaintSpans for text from a known source:
+// goSource marks a read of Go sources or module files (see taintGoSource),
+// the only text whose import specs and go.mod lines are not recorded as hosts.
+func extractTaintSpansFrom(text string, env taintEnv, loose, goSource bool) []taintRaw {
 	if len(text) > taintScanMaxBytes {
 		text = text[:taintScanMaxBytes]
 	}
@@ -338,7 +347,7 @@ func extractTaintSpans(text string, env taintEnv, loose bool) []taintRaw {
 			continue
 		}
 		end := loc[1] - trail
-		if !loose && taintGoModuleLine(text, loc[0]) {
+		if goSource && !loose && taintGoModuleLine(text, loc[0]) {
 			// A Go import spec or go.mod/go.sum entry names a dependency,
 			// not a target: module-cache reads would otherwise record every
 			// import host.
@@ -601,6 +610,41 @@ func stripUntrustedBodies(s string) string {
 // bg_start calls in the history.
 func bgReadTool(name string) bool { return name == "bg_output" || name == "bg_status" }
 
+// taintGoSource reports whether a tool call reads only Go sources or module
+// files: every path argument names a .go, go.mod or go.sum file, or lies in
+// the Go module cache (a pkg/mod directory). Only such reads skip import
+// specs and go.mod lines when recording hosts.
+func taintGoSource(tc *session.ToolCall) bool {
+	var a struct {
+		Path  string `json:"path"`
+		PathA string `json:"path_a"`
+		PathB string `json:"path_b"`
+		Files []struct {
+			Path string `json:"path"`
+		} `json:"files"`
+	}
+	if json.Unmarshal([]byte(tc.Function.Arguments), &a) != nil {
+		return false
+	}
+	paths := []string{a.Path, a.PathA, a.PathB}
+	for _, f := range a.Files {
+		paths = append(paths, f.Path)
+	}
+	seen := false
+	for _, p := range paths {
+		if p == "" {
+			continue
+		}
+		seen = true
+		clean := path.Clean(p)
+		base := path.Base(clean)
+		if !strings.HasSuffix(base, ".go") && base != "go.mod" && base != "go.sum" && !strings.Contains(clean+"/", "/pkg/mod/") {
+			return false
+		}
+	}
+	return seen && session.EpisodePathTools[tc.Function.Name]
+}
+
 // taintingToolCall reports whether a recorded call's result is a span
 // source: the episode rule says it crossed the trust boundary, or it reads
 // output of a background job that did.
@@ -641,7 +685,10 @@ func (s *taintSpanStore) observe(messages []session.Message, env taintEnv) {
 		principalSpans = taintPrincipalSpans(principalText, env)
 	}
 
-	type job struct{ text, source string }
+	type job struct {
+		text, source string
+		goSource     bool
+	}
 	var jobs []job
 	s.mu.Lock()
 	start := 0
@@ -676,11 +723,11 @@ func (s *taintSpanStore) observe(messages []session.Message, env taintEnv) {
 					break
 				}
 			}
-			jobs = append(jobs, job{m.Content, source})
+			jobs = append(jobs, job{m.Content, source, tc != nil && taintGoSource(tc)})
 		default:
 			for _, w := range untrustedBodies(m.Content) {
 				if session.ExternalNonToolIngest(w.source) || (w.source == "bg" && bgTaints) {
-					jobs = append(jobs, job{w.body, w.source})
+					jobs = append(jobs, job{w.body, w.source, false})
 				}
 			}
 		}
@@ -693,7 +740,7 @@ func (s *taintSpanStore) observe(messages []session.Message, env taintEnv) {
 
 	extracted := make([][]taintRaw, len(jobs))
 	for i, j := range jobs {
-		extracted[i] = extractTaintSpans(j.text, env, false)
+		extracted[i] = extractTaintSpansFrom(j.text, env, false, j.goSource)
 	}
 
 	s.mu.Lock()
