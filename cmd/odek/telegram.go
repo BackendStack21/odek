@@ -577,9 +577,9 @@ func telegramCmd(args []string) error {
 		resolved.APIKey = key
 	}
 
-	// 2. Validate API key presence.
-	if resolved.APIKey == "" {
-		return fmt.Errorf("no API key configured — set ODEK_API_KEY, DEEPSEEK_API_KEY, or configure in odek.json")
+	// 2. Validate API key presence (same check and message as run/repl).
+	if err := requireAPIKey(resolved); err != nil {
+		return err
 	}
 	// Store for spawnChild: config loader clears ODEK_API_KEY from env,
 	// so the child process needs us to hand it off securely.
@@ -1091,11 +1091,23 @@ func telegramCmd(args []string) error {
 				return
 			}
 
-			// Auto-transcribe if configured and whisper is available.
-			if resolved.Transcription.AutoTranscribe {
+			// Auto-transcribe if configured and local whisper can run. It runs
+			// before the agent run starts, so it never uses a provider STT
+			// backend (that would bypass budgets, usage and /stop); with only
+			// provider STT the agent transcribes through the tool instead.
+			autoReady, toolReady := telegramVoiceBackends(toolConfig{
+				Transcription: resolved.Transcription,
+				STT:           resolved.STT,
+				TTS:           resolved.TTS,
+				SpeechOptions: telegramSpeechOptions(resolved, resolved.LLM.RequestTimeoutSeconds),
+			}, resolved.Tools)
+			if resolved.Transcription.AutoTranscribe && !autoReady && warnMediaBackendMissingOnce("transcribe") {
+				handlerLog.Warn("auto-transcribe enabled but whisper.cpp or its model is not installed", "chat_id", chatID)
+			}
+			if resolved.Transcription.AutoTranscribe && autoReady {
 				tool := newTranscribeTool(resolved.Dangerous, resolved.Transcription)
 				tool.SetContext(mctx)
-				result, err := tool.Call(fmt.Sprintf(`{"path":"%s"}`, localPath))
+				result, err := tool.Call(transcribeCallArgs(localPath))
 				if err == nil {
 					var r struct {
 						Text  string `json:"text"`
@@ -1118,7 +1130,7 @@ func telegramCmd(args []string) error {
 			// Fallback: pass the file path to the agent
 			handleChatMessageGated(mctx, chatID, messageID, userID,
 				wrapUntrusted(context.Background(), fmt.Sprintf("telegram:chat:%d:voice", chatID),
-					fmt.Sprintf("🎤 Voice message saved to %q. Use transcribe() tool to get the text.", localPath)),
+					voiceFallbackMessage(localPath, toolReady)),
 				bot, handler, sessionManager, resolved, systemMessage, handlerLog)
 		})
 		return "", nil
@@ -1140,9 +1152,14 @@ func telegramCmd(args []string) error {
 
 			// Queue auto-description inside the run so approvals, /stop, usage,
 			// and execution budgets cover both local and provider vision.
-			if resolved.Vision.AutoDescribeEnabled() {
+			visionReady := telegramVisionReady(resolved.Vision, resolved.Tools)
+			describe := resolved.Vision.AutoDescribeEnabled() && visionReady
+			if resolved.Vision.AutoDescribeEnabled() && !describe && warnMediaBackendMissingOnce("vision") {
+				handlerLog.Warn("auto-describe enabled but no vision backend is installed (or vision is filtered out)", "chat_id", chatID)
+			}
+			if describe {
 				handleChatMessageGated(mctx, chatID, messageID, userID,
-					photoFallbackMessage(localPath, caption), bot, handler, sessionManager,
+					photoFallbackMessage(localPath, caption, visionReady), bot, handler, sessionManager,
 					resolved, systemMessage, handlerLog, &telegramPhotoInput{Path: localPath, Caption: caption})
 				return
 			}
@@ -1150,7 +1167,7 @@ func telegramCmd(args []string) error {
 			// Fallback: hand the agent the file path (and caption) so it can analyze
 			// the image itself via the vision/shell tools.
 			handleChatMessageGated(mctx, chatID, messageID, userID,
-				photoFallbackMessage(localPath, caption),
+				photoFallbackMessage(localPath, caption, visionReady),
 				bot, handler, sessionManager, resolved, systemMessage, handlerLog)
 		})
 		return "", nil
@@ -3226,11 +3243,27 @@ func telegramDocumentMessage(localPath string) string {
 // photoFallbackMessage builds the message injected when auto-describe is off or
 // the vision model fails: it hands the agent the saved file path (and caption,
 // if any) so the agent can analyze the image itself via the vision/shell tools.
-func photoFallbackMessage(localPath, caption string) string {
+func photoFallbackMessage(localPath, caption string, visionReady bool) string {
+	hint := "Use the vision tool to analyze the image, then respond."
+	if !visionReady {
+		hint = "The vision tool is not available here, so the image cannot be analyzed; respond from the caption if possible and tell the user."
+	}
 	if caption != "" {
-		return fmt.Sprintf("🖼 Photo saved to %q with this message from the user:\n%s\n\nUse the vision tool to analyze the image, then respond.", localPath, wrapUntrusted(context.Background(), "telegram:photo:caption", caption))
+		return fmt.Sprintf("🖼 Photo saved to %q with this message from the user:\n%s\n\n%s", localPath, wrapUntrusted(context.Background(), "telegram:photo:caption", caption), hint)
+	}
+	if !visionReady {
+		return fmt.Sprintf("🖼 Photo received and saved to %q. The vision tool is not available here, so the image cannot be analyzed; tell the user.", localPath)
 	}
 	return fmt.Sprintf("🖼 Photo received and saved to %q. Use the vision tool or shell commands to analyze and respond.", localPath)
+}
+
+// voiceFallbackMessage tells the agent where a voice note was saved and,
+// only when the agent has the transcribe tool, to use it.
+func voiceFallbackMessage(localPath string, transcribeReady bool) string {
+	if !transcribeReady {
+		return fmt.Sprintf("🎤 Voice message saved to %q. The transcribe tool is not available here, so it cannot be transcribed; tell the user.", localPath)
+	}
+	return fmt.Sprintf("🎤 Voice message saved to %q. Use transcribe() tool to get the text.", localPath)
 }
 
 // mediaTypeFromExt returns the Telegram media type for a file extension.

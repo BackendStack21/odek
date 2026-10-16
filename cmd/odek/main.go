@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"math"
 	"net/http"
 	"net/url"
@@ -1385,6 +1386,8 @@ Commands:
 
 Init flags:
   --global, -g        Create global config at ~/.odek/config.json
+                      (and a private ~/.odek/secrets.env stub if missing)
+  --local, -l         Create project config at ./odek.json (default)
   --force, -f         Overwrite existing file without prompting
 
 Run flags:
@@ -1511,9 +1514,13 @@ Environment variables:
 // including the sensitive ones (api_key, base_url, system, dangerous, …)
 // that project-level ./odek.json files are not allowed to set.
 //
-// Sections that are rarely tuned by hand (mcp_servers, transcription,
-// vision, embedding, trusted_proxies) are intentionally omitted from the
-// template to keep it maintainable — see docs/CONFIG.md for the full schema.
+// Everything it enables works with the binary and one API key. Features
+// that need something else stay off or empty: the guard uses the local
+// scan (no PIGuard sidecar), web_search has no SearXNG base_url, Telegram
+// auto-transcription/description are off (whisper.cpp / MiniCPM-V), and
+// mcp_servers, embedding and telegram are empty. The sandbox key is left
+// out so the default-on posture applies; without Docker it falls back to
+// unsandboxed with a warning. See docs/CONFIG.md for the full schema.
 const globalConfigTemplate = `{
   "provider": "deepseek",
   "model": "deepseek-v4-flash",
@@ -1577,14 +1584,6 @@ const globalConfigTemplate = `{
   },
   "guard": {
     "provider": "local",
-    "url": "",
-    "batch_url": "",
-    "long_url": "",
-    "socket_path": "",
-    "threshold": 0.9,
-    "timeout_seconds": 5,
-    "fallback_to_local": true,
-    "max_text_length": 0,
     "scan": {
       "memory": true,
       "system_prompt": true,
@@ -1595,7 +1594,7 @@ const globalConfigTemplate = `{
     }
   },
   "tools": {
-    "enabled": [],
+    "enabled": null,
     "disabled": []
   },
   "profiles": {},
@@ -1607,7 +1606,7 @@ const globalConfigTemplate = `{
     "import": {
       "max_size_bytes": 1048576,
       "timeout_seconds": 5,
-      "require_https": false
+      "require_https": true
     }
   },
   "memory": {
@@ -1667,7 +1666,7 @@ const globalConfigTemplate = `{
   "transcription": {
     "model": "tiny",
     "language": "",
-    "auto_transcribe": true,
+    "auto_transcribe": false,
     "models_dir": "",
     "binary_path": ""
   },
@@ -1679,7 +1678,7 @@ const globalConfigTemplate = `{
     "models_dir": "",
     "binary_path": "",
     "video_frames": 8,
-    "auto_describe": true
+    "auto_describe": false
   },
   "trusted_proxies": [],
   "schedules": {
@@ -1718,11 +1717,10 @@ const globalConfigTemplate = `{
 }`
 
 // localConfigTemplate is written to ./odek.json by `odek init`.
-// Project configs are untrusted: the loader ignores sensitive fields
-// (api_key, base_url, system, dangerous, memory, sessions, embedding,
-// guard, maintenance, telegram, web_search, trusted_proxies,
-// tools.enabled, skills.dirs) with a warning, and rejects sandbox=false /
-// sandbox_readonly=false outright. The template therefore contains only
+// Project configs are untrusted: the loader ignores operator-only fields
+// (projectIgnoredFields) and sandbox=false / sandbox_readonly=false with a
+// warning, and treats any non-empty sandbox_* value as an override that
+// needs operator approval. The template therefore contains only
 // fields a project may legitimately set, so a fresh `odek init` produces
 // a config that loads warning-free. Empty/zero values inherit from the
 // global config and the layers below.
@@ -1740,8 +1738,8 @@ const localConfigTemplate = `{
   "no_agents": false,
   "planning": {
     "enabled": null,
-    "max_steps": 0,
-    "max_render_chars": 0
+    "max_steps": null,
+    "max_render_chars": null
   },
   "limits": {
     "max_runtime_seconds": 0,
@@ -1751,7 +1749,7 @@ const localConfigTemplate = `{
     "max_cost_usd": 0
   },
   "sandbox_image": "",
-  "sandbox_network": "none",
+  "sandbox_network": "",
   "sandbox_memory": "",
   "sandbox_cpus": "",
   "sandbox_user": "",
@@ -1761,9 +1759,9 @@ const localConfigTemplate = `{
     "disabled": []
   },
   "skills": {
-    "max_auto_load": 3,
-    "max_lazy_slots": 5,
-    "verbose": false
+    "max_auto_load": null,
+    "max_lazy_slots": null,
+    "verbose": null
   },
   "mcp_servers": {}
 }`
@@ -1826,12 +1824,25 @@ func initConfig(args []string) error {
 	if _, err := os.Stat(configPath); err == nil && !force {
 		fmt.Fprintf(os.Stderr, "odek: %s config already exists at %s\n", scope, configPath)
 		fmt.Fprintf(os.Stderr, "  Use --force to overwrite.\n")
+		// The secrets stub is independent of the config: scaffold it
+		// even when the config is kept.
+		if global {
+			secretsPath := config.SecretsEnvPath()
+			if created, err := scaffoldSecretsEnv(secretsPath); err != nil {
+				fmt.Fprintf(os.Stderr, "odek: warning: could not create %s: %v\n", secretsPath, err)
+			} else if created {
+				fmt.Printf("✓ Created secrets file: %s (mode 0600) — put your API key there, e.g. DEEPSEEK_API_KEY=sk-...\n", secretsPath)
+			}
+		}
 		return nil
 	}
 
-	// Create parent directory (os.MkdirAll on "." is a no-op — fine for local)
+	// Create parent directory (os.MkdirAll on "." is a no-op — fine for
+	// local). ~/.odek holds sessions, memory, audit logs and approval
+	// stores, so a newly created one is private to the operator; an
+	// existing directory keeps its mode.
 	dir := filepath.Dir(configPath)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("create directory %s: %w", dir, err)
 	}
 
@@ -1844,16 +1855,50 @@ func initConfig(args []string) error {
 			writePath = resolved
 		}
 		if fi, err := os.Stat(writePath); err == nil && fi.Mode().IsRegular() {
-			mode = fi.Mode().Perm()
+			// Keep the owner bits of an existing file but never its
+			// group/other access (the config can hold API keys), and
+			// always let the owner read and write it.
+			mode = fi.Mode().Perm()&^0o077 | 0o600
 		}
 	}
 	if err := fsatomic.WriteFile(writePath, []byte(template+"\n"), mode); err != nil {
 		return fmt.Errorf("write config: %w", err)
 	}
 
+	// A private secrets.env stub tells a new user where the API key goes.
+	// It is created only when absent (O_EXCL also refuses a planted link)
+	// and holds nothing but comments; --force never rewrites it.
+	secretsCreated := false
+	secretsPath := "~/.odek/secrets.env" // shown when the home dir is unknown
+	if global {
+		if p := config.SecretsEnvPath(); p != "" {
+			secretsPath = p
+			created, err := scaffoldSecretsEnv(p)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "odek: warning: could not create %s: %v\n", p, err)
+			}
+			secretsCreated = created
+		}
+	}
+
 	fmt.Printf("✓ Created %s config: %s\n", scope, configPath)
+	if secretsCreated {
+		fmt.Printf("✓ Created secrets file: %s (mode 0600)\n", secretsPath)
+	}
 	fmt.Println()
 	if global {
+		fmt.Println("  Next steps:")
+		fmt.Printf("    1. Put your API key in %s:\n", secretsPath)
+		fmt.Println("         DEEPSEEK_API_KEY=sk-...")
+		fmt.Println("       The config reads it as ${DEEPSEEK_API_KEY}. For another provider,")
+		fmt.Println("       change \"provider\"/\"model\" and add that provider's key the same way.")
+		fmt.Println("    2. Try it: odek run \"hello\"")
+		if _, err := exec.LookPath("docker"); err != nil {
+			fmt.Println()
+			fmt.Println("  Docker was not found on PATH. odek still works, but runs commands")
+			fmt.Println("  without the sandbox (and says so) until Docker is installed and running.")
+		}
+		fmt.Println()
 		fmt.Println("  Edit this file to set your preferences. Common fields:")
 		fmt.Println("    provider          LLM provider id (default: deepseek)")
 		fmt.Println("    model             LLM model name (default: deepseek-v4-flash)")
@@ -1878,20 +1923,100 @@ func initConfig(args []string) error {
 		fmt.Println("  Project config — only project-safe fields are honored here.")
 		fmt.Println("  Empty values inherit from your global config.")
 		fmt.Println()
-		fmt.Println("  The loader ignores operator-only fields in ./odek.json:")
-		fmt.Println("    provider, providers, api_key, base_url, llm, system,")
-		fmt.Println("    dangerous, memory, sessions,")
-		fmt.Println("    embedding, guard, maintenance, telegram, web_search,")
-		fmt.Println("    trusted_proxies, tools.enabled, skills.dirs")
+		fmt.Println("  The loader ignores operator-only fields in ./odek.json (with a warning):")
+		for _, line := range wrapFieldList(projectIgnoredFields, 66) {
+			fmt.Println("    " + line)
+		}
 		fmt.Println("  Set those in ~/.odek/config.json instead: odek init --global")
 		fmt.Println()
-		fmt.Println("  Note: project configs may only enable the sandbox")
-		fmt.Println("  (\"sandbox\": true) — sandbox=false is rejected.")
+		fmt.Println("  Budgets and caps (limits, planning, background, skills.import,")
+		fmt.Println("  max_tool_parallel, max_concurrency) may only be lowered here.")
+		fmt.Println("  Project configs may only enable the sandbox (\"sandbox\": true):")
+		fmt.Println("  sandbox=false and sandbox_readonly=false are ignored, and any")
+		fmt.Println("  sandbox_* value needs your approval before it applies.")
 		fmt.Println("  Full schema: see docs/CONFIG.md.")
 	}
 	fmt.Println()
 	fmt.Println("  Priority: ~/.odek/secrets.env → ~/.odek/config.json → ./odek.json → ODEK_* env → CLI flags")
 	return nil
+}
+
+// projectIgnoredFields lists the fields the loader ignores, with a warning,
+// when they appear in a project ./odek.json. `odek init` prints it, and
+// TestRED_LocalInitSummaryMatchesLoader pins it against the loader.
+var projectIgnoredFields = []string{
+	"provider", "providers", "api_key", "base_url", "llm", "system",
+	"dangerous", "memory", "sessions", "embedding", "guard", "maintenance",
+	"logging", "telegram", "web_search", "transcription", "vision", "tts",
+	"stt", "trusted_proxies", "schedules", "subagent", "verify", "profiles",
+	"tools.enabled", "skills.dirs", "skills.embedding",
+	"mcp_servers.<name>.auto_approve",
+}
+
+// wrapFieldList joins fields with ", " into lines of at most width bytes.
+func wrapFieldList(fields []string, width int) []string {
+	var lines []string
+	line := ""
+	for i, f := range fields {
+		item := f
+		if i < len(fields)-1 {
+			item += ","
+		}
+		if line != "" && len(line)+1+len(item) > width {
+			lines = append(lines, line)
+			line = ""
+		}
+		if line != "" {
+			line += " "
+		}
+		line += item
+	}
+	if line != "" {
+		lines = append(lines, line)
+	}
+	return lines
+}
+
+// secretsEnvStub is written to ~/.odek/secrets.env by `odek init --global`
+// when the file does not exist yet. It sets nothing.
+const secretsEnvStub = `# odek secrets: KEY=value lines, loaded before ~/.odek/config.json.
+# Values become environment variables for ${VAR} references in the config.
+# Keep this file private (chmod 600); odek refuses to load it otherwise.
+#
+# Uncomment and set the key for your provider:
+# DEEPSEEK_API_KEY=
+`
+
+// scaffoldSecretsEnv creates path with secretsEnvStub, mode 0600, only when
+// nothing exists there. It reports whether it created the file.
+func scaffoldSecretsEnv(path string) (bool, error) {
+	if path == "" {
+		return false, nil
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if errors.Is(err, fs.ErrExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	err = writeSecretsStub(f)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		// Never leave a half-written stub behind.
+		os.Remove(path)
+		return false, err
+	}
+	return true, nil
+}
+
+// writeSecretsStub writes secretsEnvStub to f (a variable so tests can
+// inject a write failure).
+var writeSecretsStub = func(f *os.File) error {
+	_, err := f.WriteString(secretsEnvStub)
+	return err
 }
 
 // ── Run ───────────────────────────────────────────────────────────────
@@ -1931,6 +2056,11 @@ func run(args []string) (outcome error) {
 
 	// Load config from all sources (file → env → CLI)
 	resolved := config.LoadConfig(cliFlagsFromRun(f))
+	// Fail fast on a missing API key, before approval prompts, MCP server
+	// spawns or sandbox startup.
+	if err := requireAPIKey(resolved); err != nil {
+		return err
+	}
 	if err := approveProjectSandbox(resolved, os.Stdin, os.Stdout); err != nil {
 		return err
 	}
@@ -2382,6 +2512,16 @@ func deliverToTelegram(text string, resolved config.ResolvedConfig) error {
 	return nil
 }
 
+// requireAPIKey returns the missing-key error odek.New would return for
+// resolved, so commands can report it before slow setup (sandbox startup).
+func requireAPIKey(resolved config.ResolvedConfig) error {
+	return odek.CheckAPIKey(odek.Config{
+		Provider:  resolved.Provider,
+		APIKey:    resolved.APIKey,
+		Providers: resolved.ProviderOverrides(),
+	})
+}
+
 // ── Sandbox Setup ──────────────────────────────────────────────────────
 
 // setupSandbox creates a Docker container with the given configuration
@@ -2731,8 +2871,15 @@ func builtinTools(dc danger.DangerousConfig, sm *skills.SkillManager, approver d
 		toolsDisabled: tcfg.Introspection.ToolsDisabled,
 		mcpServers:    tcfg.Introspection.MCPServers,
 	}
+	// transcribe and vision are offered only when their backend can run —
+	// on a stock install (no whisper.cpp, no MiniCPM-V files, no provider
+	// backend) every call would fail. Their names stay reserved against MCP
+	// shadowing either way (reservedBuiltinToolNames).
 	vision := newConfiguredVisionTool(dc, tcfg, approver)
-	transcribe := newTranscribeTool(dc, tcfg.Transcription)
+	// One provider speech client (nil unless tts or stt is provider-backed)
+	// serves both speak and transcribe.
+	speech := newSpeechClient(tcfg.TTS, tcfg.STT, tcfg.SpeechOptions)
+	transcribe, transcribeReady := newConfiguredTranscribeTool(dc, tcfg, speech)
 	tools := []odek.Tool{
 		shell,
 		&delegateTasksTool{
@@ -2777,26 +2924,26 @@ func builtinTools(dc danger.DangerousConfig, sm *skills.SkillManager, approver d
 		&checksumTool{dangerousConfig: dc},
 		&headTailTool{dangerousConfig: dc},
 		&base64Tool{dangerousConfig: dc},
-		transcribe,
-		vision,
+	}
+	if transcribeReady {
+		tools = append(tools, transcribe)
+	}
+	if visionBackendReady(tcfg.Vision) {
+		tools = append(tools, vision)
+	}
+	tools = append(tools,
 		// session_search returns content from arbitrary past sessions —
 		// including sessions that ingested untrusted content. That path
 		// otherwise bypasses the memory taint gate and the audit log, so
 		// wrap its whole output as untrusted (which also records an ingest).
 		&untrustedToolWrapper{inner: newSessionSearchTool(store), source: "session_search"},
 		newBrowserTool(dc),
-	}
+	)
 
-	// Speech provider wiring: speak is registered only when provider-backed
-	// TTS is configured; the transcribe tool dispatches to the provider STT
-	// backend only when stt.backend is "provider" (local whisper otherwise).
-	if speech := newSpeechClient(tcfg.TTS, tcfg.STT, tcfg.SpeechOptions); speech != nil {
-		if tcfg.TTS.Backend == config.TTSBackendProvider {
-			tools = append(tools, newSpeakTool(dc, tcfg.TTS, speech))
-		}
-		if tcfg.STT.Backend == config.STTBackendProvider {
-			transcribe.SetSpeechBackend(tcfg.STT, speech)
-		}
+	// speak is registered only when provider-backed TTS is configured (there
+	// is no local TTS backend).
+	if tcfg.TTS.Backend == config.TTSBackendProvider && speech != nil {
+		tools = append(tools, newSpeakTool(dc, tcfg.TTS, speech))
 	}
 
 	// artifact_read is registered only for top-level runs (SelfTrust empty):
@@ -2859,6 +3006,7 @@ func filterBuiltinTools(tools []odek.Tool, cfg config.ToolConfig, required map[s
 	for i, t := range tools {
 		adapted[i] = odekToolAdapter{t}
 	}
+	warnUnavailableEnabledTools(cfg.Enabled, tools)
 	filtered := tool.FilterTools(adapted, cfg.Enabled, cfg.Disabled, required)
 	out := make([]odek.Tool, len(filtered))
 	for i, t := range filtered {
@@ -2905,6 +3053,12 @@ func reservedBuiltinToolNames() map[string]bool {
 	// must not shadow the names.
 	names["clarify"] = true
 	names["send_message"] = true
+	// transcribe and vision were always registered before they were gated
+	// on their backend, so they stay reserved. speak and web_search were
+	// never reserved while unconfigured; reserving them would abort startup
+	// for an MCP server that already exposes a tool of that name.
+	names["transcribe"] = true
+	names["vision"] = true
 	return names
 }
 
@@ -3418,6 +3572,11 @@ func continueCmd(args []string) (outcome error) {
 	// Resolve config from the session's provider+model so resume does not
 	// pair a stored model id with the operator's current default provider.
 	resolved := config.LoadConfig(continueCLIFlags(sess, f))
+	// Fail fast on a missing API key, before approval prompts, MCP server
+	// spawns or sandbox startup.
+	if err := requireAPIKey(resolved); err != nil {
+		return err
+	}
 
 	// Initialize semantic search index (non-fatal on failure). Sessions use the
 	// shared embedding backend (or a sessions.embedding override).

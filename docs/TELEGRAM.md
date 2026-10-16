@@ -484,7 +484,7 @@ The path-taking native tools (`read_file`, `vision`, `transcribe`, `head_tail`, 
 
 ### Auto-Describe (Photo → Vision)
 
-When `vision.auto_describe: true` is set in config (default) and the configured vision backend is available, photos are automatically described before reaching the agent. The default backend is local MiniCPM-V; set `vision.backend` to `provider` and provide a `vision.model` to use the resolved main provider instead:
+When `vision.auto_describe: true` is set in config (off by default) and the configured vision backend is available, photos are automatically described before reaching the agent. The default backend is local MiniCPM-V; set `vision.backend` to `provider` and provide a `vision.model` to use the resolved main provider instead:
 
 ```
 Photo received → DownloadPhoto (largest size to disk)
@@ -495,13 +495,13 @@ Photo received → DownloadPhoto (largest size to disk)
 
 If the photo has a **caption**, that text becomes the user's request and also focuses the vision extraction. Both the caption passed to the local vision model and the description returned to the main agent are wrapped in `<untrusted_content>` boundaries (external text is untrusted input).
 
-**Fallback:** If auto-describe is disabled or the vision model fails, the agent receives the file path (and caption, if any) with a suggestion to use the `vision` tool manually.
+**Fallback:** If auto-describe is disabled, no vision backend is installed (a warning is logged when auto-describe is on), or the vision model fails, the agent receives the file path (and caption, if any). It is told to use the `vision` tool only when a vision backend can run; otherwise it is told the image cannot be analyzed, so it can say so instead of calling a tool it does not have.
 
 **Docker:** the official image bundles `llama-mtmd-cli` and MiniCPM-V 4.6, with `auto_describe` enabled in the shipped configs — so photo understanding works out of the box. See [../docker/README.md](../docker/README.md#image--video-understanding-out-of-the-box).
 
 ### Auto-Transcribe (Voice → Text)
 
-When `transcription.auto_transcribe: true` is set in config and whisper is installed, voice messages are automatically transcribed into text before reaching the agent:
+When `transcription.auto_transcribe: true` is set in config (off by default) and whisper.cpp plus a model are installed, voice messages are automatically transcribed into text before reaching the agent:
 
 ```
 Voice message received → DownloadVoice (OGG Opus to disk)
@@ -512,11 +512,11 @@ Voice message received → DownloadVoice (OGG Opus to disk)
 
 **OGG Opus handling:** whisper.cpp uses `dr_wav`/`dr_mp3` internally and does not support OGG Opus. The transcribe tool auto-detects unsupported formats and converts via ffmpeg. If ffmpeg is unavailable, the original file is passed to whisper which produces a clear error message.
 
-**Fallback:** If auto-transcribe fails (ffmpeg unavailable, corrupt audio, whisper error), the agent receives the file path with a suggestion to use the `transcribe()` tool manually.
+**Fallback:** If auto-transcribe is disabled, no backend is installed (a warning is logged), or it fails (ffmpeg unavailable, corrupt audio, whisper error), the agent receives the file path. It is told to use the `transcribe` tool only when a transcription backend can run; otherwise it is told the note cannot be transcribed.
 
 **Docker:** the official image bundles the whisper.cpp CLI, the `small` (multilingual) model, and ffmpeg, with `auto_transcribe` enabled in the shipped configs — so voice transcription works out of the box with no host install, at usable German/English/Spanish quality. See [../docker/README.md](../docker/README.md#voice-transcription-out-of-the-box).
 
-**Provider STT:** setting `stt.backend: "provider"` in config routes transcription (including auto-transcribe) through the configured provider's transcription endpoint instead of local whisper. Local remains the default; see the `stt` section in [CONFIG.md](CONFIG.md).
+**Provider STT:** setting `stt.backend: "provider"` in config routes the `transcribe` tool through the configured provider's transcription endpoint instead of local whisper. Auto-transcribe stays local-only: it runs before the agent run starts, outside execution budgets, usage accounting and `/stop`, so with only provider STT the agent is pointed at the `transcribe` tool and transcribes inside the run. Local remains the default; see the `stt` section in [CONFIG.md](CONFIG.md).
 
 ### Voice Replies (Text → Voice Note)
 

@@ -771,11 +771,6 @@ func handleTools(resolved config.ResolvedConfig) http.HandlerFunc {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		names := make([]string, 0, 32)
-		for name := range reservedBuiltinToolNames() {
-			names = append(names, name)
-		}
-		sort.Strings(names)
 
 		enabledSet := map[string]bool{}
 		for _, n := range resolved.Tools.Enabled {
@@ -787,11 +782,31 @@ func handleTools(resolved config.ResolvedConfig) http.HandlerFunc {
 		}
 		whitelistActive := resolved.Tools.Enabled != nil
 
+		// Descriptors come from the resolved tool config so gated tools
+		// (transcribe, vision, speak, web_search) appear exactly when the
+		// agent would be offered them. Planning is forced on so plan is
+		// always described; it is reported unavailable below when off.
+		tcfg := toolConfigFromResolved(resolved)
 		pc := config.DefaultPlanningConfig()
+		tcfg.Planning = &pc
 		descriptors := map[string]odek.Tool{}
-		for _, t := range builtinTools(danger.DangerousConfig{}, nil, nil, 1, "", toolConfig{Planning: &pc}, nil) {
+		for _, t := range builtinTools(danger.DangerousConfig{}, nil, nil, 1, "", tcfg, nil) {
 			descriptors[t.Name()] = t
 		}
+		// One tool build: registered tools, the surface-injected principal
+		// tools, and gated tools (listed as unavailable when not built).
+		nameSet := map[string]bool{"clarify": true, "send_message": true}
+		for name := range descriptors {
+			nameSet[name] = true
+		}
+		for name := range gatedBuiltinTools {
+			nameSet[name] = true
+		}
+		names := make([]string, 0, len(nameSet))
+		for name := range nameSet {
+			names = append(names, name)
+		}
+		sort.Strings(names)
 		out := make([]toolSummary, 0, len(names))
 		for _, n := range names {
 			// Shared filter rule (introspect.go) — the same one the
@@ -803,6 +818,12 @@ func handleTools(resolved config.ResolvedConfig) http.HandlerFunc {
 			}
 			if !entry.Enabled {
 				entry.Reason = "Disabled by the operator tool filter"
+			} else if reason, gated := gatedBuiltinTools[n]; gated && descriptors[n] == nil {
+				entry.Enabled = false
+				entry.Reason = "Not available: " + reason
+			} else if n == "plan" && !resolved.Planning.Enabled {
+				entry.Enabled = false
+				entry.Reason = "Not available: planning is disabled (planning.enabled)"
 			}
 			out = append(out, entry)
 		}

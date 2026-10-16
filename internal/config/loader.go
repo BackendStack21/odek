@@ -181,8 +181,11 @@ type SessionsConfig struct {
 // TranscriptionConfig controls the transcribe tool (local whisper.cpp).
 // Populated from the "transcription" section of odek.json.
 type TranscriptionConfig struct {
-	Model          string `json:"model,omitempty"`
-	Language       string `json:"language,omitempty"`
+	Model    string `json:"model,omitempty"`
+	Language string `json:"language,omitempty"`
+	// AutoTranscribe makes Telegram voice notes run through the transcriber
+	// before the agent answers. Off unless set: the local backend needs
+	// whisper.cpp and a model file, which a stock install does not have.
 	AutoTranscribe bool   `json:"auto_transcribe,omitempty"`
 	ModelsDir      string `json:"models_dir,omitempty"`
 	BinaryPath     string `json:"binary_path,omitempty"`
@@ -212,16 +215,16 @@ type VisionConfig struct {
 	// AutoDescribe controls whether photos received over Telegram are
 	// automatically run through the vision model to extract a description
 	// before the agent answers (mirrors transcription.auto_transcribe).
-	// Nil defaults to true — a supplied vision section without the field
-	// resolves to the same default as an absent section; explicit false
-	// disables it.
+	// Nil defaults to false — both backends need something a stock install
+	// lacks (local MiniCPM-V files, or a vision-capable provider model), so
+	// only an explicit true enables it.
 	AutoDescribe *bool `json:"auto_describe,omitempty"`
 }
 
 // AutoDescribeEnabled reports the resolved auto_describe setting, filling
-// the unset (nil) case with the true default.
+// the unset (nil) case with the false default.
 func (v VisionConfig) AutoDescribeEnabled() bool {
-	return v.AutoDescribe == nil || *v.AutoDescribe
+	return v.AutoDescribe != nil && *v.AutoDescribe
 }
 
 const (
@@ -1793,6 +1796,20 @@ func mergeDangerousConfig(base, override *danger.DangerousConfig) {
 
 // ── Merge ──────────────────────────────────────────────────────────────
 
+// emptyToolsAllowlistWarned records the config paths already warned about,
+// so commands that load the config more than once warn a single time.
+var emptyToolsAllowlistWarned sync.Map
+
+// warnEmptyToolsAllowlist explains an explicitly empty tools.enabled list.
+// `odek init --global` used to write "enabled": [] by mistake; the empty
+// allowlist is honored, but the operator is told what it does.
+func warnEmptyToolsAllowlist(path string) {
+	if _, seen := emptyToolsAllowlistWarned.LoadOrStore(path, true); seen {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "odek: WARNING: tools.enabled is an empty list in %s, which disables every built-in tool; remove it or set it to null to allow all tools\n", path)
+}
+
 // LoadConfig merges configuration from all four layers and returns the
 // fully resolved result.
 //
@@ -1811,6 +1828,7 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 
 	// Layer 1: global (~/.odek/config.json)
 	global := loadFile(GlobalConfigPath())
+	globalEmptyAllowlist := global.Tools != nil && global.Tools.Enabled != nil && len(global.Tools.Enabled) == 0
 
 	// Layer 2: project (./odek.json)
 	project := loadFileExpand(ProjectConfigPath(), false)
@@ -2061,7 +2079,13 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 		projectSandboxOverride.HasImage = true
 		projectSandboxOverride.Image = project.SandboxImage
 	}
-	if project.SandboxNetwork != "" {
+	// A project "none" that matches the operator's own network mode changes
+	// nothing, so it needs no approval (older `odek init` versions wrote it
+	// into every ./odek.json). Over a different global mode it would
+	// silently cut the sandbox off the network, so it is still an override.
+	projectNetworkNoop := project.SandboxNetwork == DefaultSandboxNetwork &&
+		ifZero(global.SandboxNetwork, DefaultSandboxNetwork) == DefaultSandboxNetwork
+	if project.SandboxNetwork != "" && !projectNetworkNoop {
 		projectSandboxOverride.HasNetwork = true
 		projectSandboxOverride.Network = project.SandboxNetwork
 	}
@@ -3185,6 +3209,12 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 		redact.RegisterSecret(os.Getenv(name))
 	}
 
+	// Warn only when the global empty list is what actually applies, not
+	// when ODEK_TOOLS_ENABLED or --tool replaced it.
+	if globalEmptyAllowlist && resolved.Tools.Enabled != nil && len(resolved.Tools.Enabled) == 0 {
+		warnEmptyToolsAllowlist(GlobalConfigPath())
+	}
+
 	return resolved
 }
 
@@ -3557,10 +3587,7 @@ func resolveTranscription(cfg *TranscriptionConfig) TranscriptionConfig {
 	if cfg != nil {
 		return *cfg
 	}
-	return TranscriptionConfig{
-		Model:          "tiny",
-		AutoTranscribe: true,
-	}
+	return TranscriptionConfig{Model: "tiny"}
 }
 
 // resolveVision returns the resolved vision config.
@@ -3815,7 +3842,19 @@ func clampProjectLimits(global, project *budget.Limits) {
 // planning section, project values apply freely — they can only opt out or
 // deviate from the defaults, not override an operator decision.
 func clampProjectPlanning(global, project *PlanningFileConfig) {
-	if project == nil || global == nil {
+	if project == nil {
+		return
+	}
+	// 0 is not a usable cap (it is clamped up to the minimum); older
+	// `odek init` versions wrote it as an "inherit" placeholder, so treat a
+	// project 0 as unset.
+	if project.MaxSteps != nil && *project.MaxSteps == 0 {
+		project.MaxSteps = nil
+	}
+	if project.MaxRenderChars != nil && *project.MaxRenderChars == 0 {
+		project.MaxRenderChars = nil
+	}
+	if global == nil {
 		return
 	}
 	if global.Enabled != nil && !*global.Enabled && project.Enabled != nil && *project.Enabled {
@@ -4315,6 +4354,10 @@ func overlaySkills(base, override *SkillsConfig) {
 		base.Embedding = override.Embedding
 	}
 }
+
+// SecretsEnvPath returns the path of ~/.odek/secrets.env, the file
+// loadSecretsEnv reads (empty when the home directory is unknown).
+func SecretsEnvPath() string { return secretsEnvPath() }
 
 // secretsEnvPath returns the path to the secrets environment file.
 func secretsEnvPath() string {

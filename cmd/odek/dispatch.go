@@ -9,6 +9,7 @@ import (
 	"os"
 	"runtime"
 	"slices"
+	"strings"
 
 	"github.com/BackendStack21/odek/internal/budget"
 	"github.com/BackendStack21/odek/internal/diagnostics"
@@ -173,6 +174,12 @@ func helpRequested(cmd string, args []string) bool {
 	return false
 }
 
+// cliErrorLine renders err with a single "odek: " prefix. Errors from the
+// public API already start with "odek: " by convention.
+func cliErrorLine(err error) string {
+	return "odek: " + strings.TrimPrefix(err.Error(), "odek: ")
+}
+
 // cliExit is the default error→exit translator: prints the error to stderr
 // with the "odek:" prefix and returns exit code 1, or returns 0 on nil.
 func cliExit(err error) int {
@@ -182,7 +189,7 @@ func cliExit(err error) int {
 		return 0
 	}
 	logCommandFailure(err)
-	fmt.Fprintf(os.Stderr, "odek: %v\n", err)
+	fmt.Fprintln(os.Stderr, cliErrorLine(err))
 	return 1
 }
 
@@ -195,7 +202,7 @@ func runExit(err error) int {
 		return 0
 	}
 	logCommandFailure(err)
-	fmt.Fprintf(os.Stderr, "odek: %v\n", err)
+	fmt.Fprintln(os.Stderr, cliErrorLine(err))
 	if _, ok := budget.As(err); ok {
 		return 4
 	}
@@ -229,7 +236,7 @@ func subagentExit(err error) int {
 		// error arrived before any run started. Same wire contract as a
 		// mid-run exhaustion — budget_exhausted envelope, exit code 4.
 		logCommandFailure(err)
-		fmt.Fprintf(os.Stderr, "odek: %v\n", err)
+		fmt.Fprintln(os.Stderr, cliErrorLine(err))
 		_ = json.NewEncoder(os.Stdout).Encode(subagentResult{
 			Status:        "budget_exhausted",
 			PartialReason: "execution_budget",
@@ -238,7 +245,7 @@ func subagentExit(err error) int {
 		return 4
 	}
 	logCommandFailure(err)
-	fmt.Fprintf(os.Stderr, "odek: %v\n", err)
+	fmt.Fprintln(os.Stderr, cliErrorLine(err))
 	_ = json.NewEncoder(os.Stdout).Encode(subagentResult{
 		Status: "error",
 		Error:  err.Error(),

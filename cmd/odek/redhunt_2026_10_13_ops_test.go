@@ -515,8 +515,10 @@ func TestInitGlobalForceKeepsLinkedConfigAndMode(t *testing.T) {
 	if strings.Contains(string(got), `"old"`) || len(got) == 0 {
 		t.Errorf("target not rewritten: %s", got)
 	}
-	if fi, _ := os.Stat(target); fi.Mode().Perm() != 0o640 {
-		t.Errorf("mode = %v, want 0640 preserved", fi.Mode().Perm())
+	// Owner bits are preserved; group/other access is dropped because the
+	// loader warns on every run about a group/world-readable config.
+	if fi, _ := os.Stat(target); fi.Mode().Perm() != 0o600 {
+		t.Errorf("mode = %v, want 0600 (0640 minus group access)", fi.Mode().Perm())
 	}
 }
 

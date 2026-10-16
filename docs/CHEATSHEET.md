@@ -136,14 +136,14 @@ Rows are in severity order; the strictest class a command triggers wins. Sub-age
 }
 ```
 
-Settings: `model` (tiny/base/small/medium), `language` (ISO code, empty=auto), `auto_transcribe` (Telegram voice → text), `models_dir` (model directory), `binary_path` (whisper binary path).
+Settings: `model` (tiny/base/small/medium), `language` (ISO code, empty=auto), `auto_transcribe` (Telegram voice → text, default false), `models_dir` (model directory), `binary_path` (whisper binary path).
 
 ### Image & Video Understanding
 - **`vision`** tool uses local MiniCPM-V 4.6 (1.3B) via `llama-mtmd-cli` — no cloud APIs
 - Accepts images (JPEG, PNG, GIF, WebP, BMP) and videos (MP4, MOV, AVI, MKV, WebM)
 - Videos are sampled into evenly-spaced frames with ffmpeg; all frames analysed in one call
 - Model files: `model.gguf` (~529 MB, Q4\_K\_M) + `mmproj.gguf` (~1.1 GB) — bundled in the Docker image at `/usr/local/share/minicpm-v/models/`
-- **Telegram photos auto-describe** (`auto_describe`, default on): a received photo is run through the vision model first to extract a description, then the agent answers using it. Any caption you send with the photo becomes your request and focuses the extraction.
+- **Telegram photos auto-describe** (`auto_describe`, default off; on in the Docker configs): a received photo is run through the vision model first to extract a description, then the agent answers using it. Any caption you send with the photo becomes your request and focuses the extraction.
 - Configure via `vision` section in config:
 
 ```json
@@ -157,7 +157,7 @@ Settings: `model` (tiny/base/small/medium), `language` (ISO code, empty=auto), `
 }
 ```
 
-Settings: `auto_describe` (Telegram photo → description before the agent answers, default true), `models_dir` (dir with `model.gguf` + `mmproj.gguf`), `binary_path` (llama-mtmd-cli path), `video_frames` (frames to sample from video, default 8).
+Settings: `auto_describe` (Telegram photo → description before the agent answers, default false), `models_dir` (dir with `model.gguf` + `mmproj.gguf`), `binary_path` (llama-mtmd-cli path), `video_frames` (frames to sample from video, default 8).
 
 ### Web Search
 - **`web_search`** tool queries a self-hosted **SearXNG** metasearch instance — no cloud search API, no keys

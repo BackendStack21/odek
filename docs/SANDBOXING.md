@@ -75,6 +75,10 @@ project-level sandbox knobs (`sandbox_env`, `sandbox_image`, `sandbox_network`,
 `sandbox_volumes`) can exfiltrate host secrets via `${VAR}` interpolation, pull
 an attacker-controlled image, or widen network access, odek requires explicit
 operator approval before applying them.
+A project `"sandbox_network": "none"` that matches the operator's own network
+mode (the default `none`) changes nothing, so it needs no approval (older
+`odek init` versions wrote it into every `./odek.json`). Over a different
+global mode it would cut the sandbox off the network, so it still prompts.
 
 When a project requests any sandbox override, odek prints a warning and prompts:
 

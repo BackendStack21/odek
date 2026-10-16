@@ -464,8 +464,8 @@ Gives the agent a protected plan tool and a plan message that survives context t
 |-------|---------|---------|----------|-------------|
 | `planning.enabled` | `true` | `ODEK_PLANNING` | `--planning` / `--no-planning` | Enable the plan tool and protected plan message |
 | `planning.remind` | `false` | — | — | Soft plan reminder: after 3 non-plan tool calls with no plan, one bounded hint is injected into the tool result, and plans created after work began are flagged `provisional`. Never a hard gate; project config cannot re-enable it when the operator set it off |
-| `planning.max_steps` | `12` | — | — | Plan steps allowed (clamped 1–50) |
-| `planning.max_render_chars` | `2000` | — | — | Cap on the protected plan render (clamped 200–8000); checked or revised plans must fit in full, including reserved evidence space |
+| `planning.max_steps` | `12` | — | — | Plan steps allowed (clamped 1–50). A project `0` counts as unset |
+| `planning.max_render_chars` | `2000` | — | — | Cap on the protected plan render (clamped 200–8000; a project `0` counts as unset); checked or revised plans must fit in full, including reserved evidence space |
 
 Acceptance checks need no additional flag: declare them through `plan create`
 while planning is enabled. Large declarations may need a higher operator-set
@@ -564,7 +564,7 @@ The `skills` section controls the skill system:
 | `dirs` | — | [] | Extra skill directories beyond `~/.odek/skills` and `./.odek/skills` |
 | `import.max_size_bytes` | — | 1048576 (1MB) | Max size for fetched skill content |
 | `import.timeout_seconds` | — | 5 | HTTP timeout for skill URI fetch |
-| `import.require_https` | — | false | Reject http:// URIs when true |
+| `import.require_https` | — | false | Reject http:// URIs when true. `odek init --global` writes `true` |
 
 A project `odek.json` may only narrow `skills.import`: it can lower `max_size_bytes` and `timeout_seconds` and turn `require_https` on, but never raise a cap or turn `require_https` off relative to the operator's (or the compiled default) policy.
 | `embedding` | — | *(inherits top-level `embedding`)* | Optional override of the shared embedding backend for semantic skill matching. When unset, skills inherit the top-level `embedding` default with the per-turn query timeout bounded to 2s. See [Shared embedding backend](#shared-embedding-backend-embedding--memory-sessions--skills). |
@@ -1153,7 +1153,7 @@ agents — for example, a chatbot with only `web_search`, `transcribe`, and
 
 | Field | Env | Default | Description |
 |---|---|---|---|
-| `enabled` | `ODEK_TOOLS_ENABLED` | unset | Whitelist. When set, only these tools are registered. Comma-separated in env. |
+| `enabled` | `ODEK_TOOLS_ENABLED` | unset | Whitelist. When set, only these tools are registered. Comma-separated in env. Leave it out or `null` for no whitelist: an empty list `[]` is a whitelist of nothing and disables every built-in tool (the loader warns when `~/.odek/config.json` has one; `odek init --global` wrote `[]` by mistake from v1.19.0 until this fix, so remove that line from older configs). |
 | `disabled` | `ODEK_TOOLS_DISABLED` | unset | Blacklist. These tools are removed from the default set. Comma-separated in env. |
 
 CLI flags override file and env config:
@@ -1198,19 +1198,19 @@ project config cannot set it).
 
 ## Audio transcription (`transcription`)
 
-Configures the `transcribe` tool (local whisper.cpp).
+Configures the `transcribe` tool (local whisper.cpp). The tool is offered to the model only when it can run: `stt.backend` is `provider`, or the whisper CLI (`binary_path` or `whisper`/`whisper-cli` on `PATH`) and the model file are both installed. A stock install without whisper.cpp does not see the tool at all.
 
 | Field | Default | Description |
 |-------|---------|-------------|
 | `model` | `tiny` | Whisper model name |
 | `language` | `""` | ISO language code (e.g. `en`); empty = auto-detect |
-| `auto_transcribe` | `true` | Automatically transcribe audio received over Telegram before the agent answers |
+| `auto_transcribe` | `false` | Automatically transcribe audio received over Telegram before the agent answers. Off by default because it needs whisper.cpp and a model file; enable it after installing them |
 | `models_dir` | `""` | Directory holding whisper model files |
 | `binary_path` | `""` | Explicit path to the whisper CLI; empty = `PATH` lookup |
 
 ## Vision (`vision`)
 
-Configures the `vision` tool (MiniCPM-V via `llama-mtmd-cli`).
+Configures the `vision` tool (MiniCPM-V via `llama-mtmd-cli`). The tool is offered to the model only when it can run: `backend` is `provider`, or `llama-mtmd-cli` and both `model.gguf` and `mmproj.gguf` are installed.
 
 | Field | Default | Description |
 |-------|---------|-------------|
@@ -1221,15 +1221,18 @@ Configures the `vision` tool (MiniCPM-V via `llama-mtmd-cli`).
 | `models_dir` | `/usr/local/share/minicpm-v/models` (container) with fallback to `~/.odek/minicpm-v/models` | Directory containing `model.gguf` and `mmproj.gguf` |
 | `binary_path` | `""` | Explicit path to `llama-mtmd-cli`; empty = `PATH` lookup |
 | `video_frames` | `8` | Number of frames sampled evenly from a video |
-| `auto_describe` | `true` | Automatically describe photos received over Telegram before the agent answers (mirrors `transcription.auto_transcribe`) |
+| `auto_describe` | `false` | Automatically describe photos received over Telegram before the agent answers (mirrors `transcription.auto_transcribe`) |
 
 `vision` is operator-only and uses the shared `llm.request_timeout_seconds` for
 provider requests. It has no vision-specific secret, endpoint, format, or
 timeout fields. `video_frames` defaults to `8` and is capped at `32`.
 
-`auto_describe` defaults to `true` whether or not a `vision` section is
-present; set it to `false` explicitly to disable the Telegram preprocessing
-path.
+`auto_describe` and `transcription.auto_transcribe` default to `false`
+whether or not their section is present: the local backends need
+`llama-mtmd-cli` plus MiniCPM-V files, or whisper.cpp plus a model, and the
+`provider` vision backend needs a vision-capable model. Set them to `true`
+once a backend is installed. The Docker images ship both stacks and enable
+both in their bundled configs.
 
 Example provider-backed configuration:
 
@@ -1431,9 +1434,11 @@ odek init --global
 odek init --force
 ```
 
-The **global template** covers the full schema: connection (`provider`, `providers`, `model`, `llm`), execution (`max_iterations`, `max_tool_parallel`, `prompt_caching`, `compaction`, `announce_budget`, `interaction_mode`), sandbox resource knobs (the `sandbox` key itself is deliberately absent — unset inherits the default-on posture), `dangerous` (with `non_interactive` pinned to the documented `read_only` default), `guard`, `tools`, `profiles`, `skills`, `memory` (including the `extract_facts` / `auto_approve_episodes` opt-outs), `subagent` (including `max_depth`, `announce_budget`, `budget_inherit`, `default_profile`), `limits`, `planning`, `mcp_servers`, `web_search`, `transcription`, `vision`, `trusted_proxies`, `schedules`, `maintenance`, and `telegram`. Blocks whose mere presence changes behavior (`embedding`, `memory.embedding`, `sessions.embedding`, `skills.embedding`) are intentionally omitted — add them only when you actually run an embedder. Top-level `base_url` / `api_key` remain v1 aliases (see [MIGRATION.md](MIGRATION.md)).
+`odek init --global` creates `~/.odek` with mode `0700` and writes the config `0600`. If `~/.odek/secrets.env` does not exist yet, it also creates it (`0600`) with comments and a commented `# DEEPSEEK_API_KEY=` placeholder, and prints next steps (where the key goes, plus a note when Docker is not on `PATH`). The stub is created even when the config already exists and is kept (no `--force` needed). An existing `secrets.env`, or a link at that path, is never touched, even with `--force`. With `--force`, an existing file (or the file a symlinked config points at) keeps its owner permission bits (always at least owner read/write), but group/other access is dropped, since the loader warns on every run about a group- or world-readable config.
 
-The **local template** contains only fields a project may legitimately set (`model`, `thinking`, iteration/parallelism limits, `interaction_mode`, inherit-neutral `prompt_caching`/`stream`/`compaction`/`announce_budget`/`planning`/`limits`, sandbox resource knobs, `tools.disabled`, `skills` without `dirs`, `mcp_servers`). `schedules` is omitted entirely — it is global-only and the loader ignores it from project configs. Operator-only fields (`provider`, `providers`, `llm`, `api_key`, `base_url`, `system`, `dangerous`, `memory`, `sessions`, `embedding`, `guard`, `maintenance`, `telegram`, `web_search`, `transcription`, `vision`, `trusted_proxies`, `tools.enabled`, `skills.dirs`, `subagent`, `profiles`) belong in `~/.odek/config.json`. Project configs may only *enable* the sandbox — `"sandbox": false` is rejected, so neither template pins it locally.
+The **global template** covers the full schema: connection (`provider`, `providers`, `model`, `llm`), execution (`max_iterations`, `max_tool_parallel`, `prompt_caching`, `compaction`, `announce_budget`, `interaction_mode`), sandbox resource knobs (the `sandbox` key itself is deliberately absent — unset inherits the default-on posture), `dangerous` (with `non_interactive` pinned to the documented `read_only` default), `guard` (the local provider and its scan scopes only — the PIGuard sidecar fields are left out; see [Prompt-injection guard](#prompt-injection-guard) to enable the sidecar), `tools`, `profiles`, `skills`, `memory` (including the `extract_facts` / `auto_approve_episodes` opt-outs), `subagent` (including `max_depth`, `announce_budget`, `budget_inherit`, `default_profile`), `limits`, `planning`, `mcp_servers`, `web_search`, `transcription`, `vision`, `trusted_proxies`, `schedules`, `maintenance`, and `telegram`. `embedding` and `sessions` are written as empty objects, which resolve to the zero-dependency local `rp` embedder exactly as if they were absent; set `provider: "http"` (and `memory.embedding` / `sessions.embedding` / `skills.embedding` overrides) only when you actually run an embedding server. `tools.enabled` is written as `null` (no whitelist). Everything the template turns on works with the binary and one API key: no PIGuard sidecar, SearXNG, whisper.cpp, MiniCPM-V, MCP server or Telegram bot is needed. Top-level `base_url` / `api_key` remain v1 aliases (see [MIGRATION.md](MIGRATION.md)).
+
+The **local template** contains only fields a project may legitimately set (`model`, `thinking`, iteration/parallelism limits, `interaction_mode`, inherit-neutral `prompt_caching`/`stream`/`compaction`/`announce_budget`/`planning`/`limits`, empty sandbox resource knobs, `tools.disabled`, `skills` without `dirs`, `mcp_servers`). Every value is in inherit-neutral form (`null`, `""`, `0` limits), so adding a fresh `./odek.json` changes nothing until you edit it. That includes the sandbox knobs: any non-empty `sandbox_*` value in a project config (other than a `sandbox_network: "none"` that matches the operator's own mode) is a project sandbox override that needs operator approval (interactive prompt, or `ODEK_APPROVE_PROJECT_SANDBOX=1` without a TTY), so the template leaves them empty. `schedules` is omitted entirely — it is global-only and the loader ignores it from project configs. Operator-only fields (`provider`, `providers`, `api_key`, `base_url`, `llm`, `system`, `dangerous`, `memory`, `sessions`, `embedding`, `guard`, `maintenance`, `logging`, `telegram`, `web_search`, `transcription`, `vision`, `tts`, `stt`, `trusted_proxies`, `schedules`, `subagent`, `verify`, `profiles`, `tools.enabled`, `skills.dirs`, `skills.embedding`, `mcp_servers.<name>.auto_approve`) belong in `~/.odek/config.json`; the loader ignores them in `./odek.json` with a warning, and `odek init` prints the same list (pinned against the loader by a test). Project configs may only *enable* the sandbox — `"sandbox": false` and `"sandbox_readonly": false` are ignored with a warning, so neither template pins them locally.
 
 ## Recommended minimal config
 

@@ -82,6 +82,11 @@ func replCmd(args []string) error {
 		SandboxCPUs:     f.SandboxCPUs,
 		SandboxUser:     f.SandboxUser,
 	})
+	// Fail fast on a missing API key, before approval prompts, MCP server
+	// spawns or sandbox startup.
+	if err := requireAPIKey(resolved); err != nil {
+		return err
+	}
 	if err := approveProjectSandbox(resolved, os.Stdin, os.Stdout); err != nil {
 		return err
 	}
