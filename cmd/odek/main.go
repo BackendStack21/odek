@@ -1577,14 +1577,6 @@ const globalConfigTemplate = `{
   },
   "guard": {
     "provider": "local",
-    "url": "",
-    "batch_url": "",
-    "long_url": "",
-    "socket_path": "",
-    "threshold": 0.9,
-    "timeout_seconds": 5,
-    "fallback_to_local": true,
-    "max_text_length": 0,
     "scan": {
       "memory": true,
       "system_prompt": true,

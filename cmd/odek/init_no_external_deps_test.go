@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"io"
 	"testing"
 
@@ -89,5 +90,27 @@ func TestRED_FreshGlobalInitNeedsNoExternalDependencies(t *testing.T) {
 	}
 	if r.Telegram.Token != "" {
 		t.Error("telegram.bot_token is set")
+	}
+}
+
+// TestRED_GlobalTemplateGuardHasNoSidecarFields: the template enables the
+// zero-dependency local guard, so it must not carry PIGuard sidecar
+// settings — they are inert under "local", and the pinned 5s timeout would
+// silently override the deliberate 1s code default for anyone who later
+// switches to piguard. docs/CONFIG.md documents the sidecar fields.
+func TestRED_GlobalTemplateGuardHasNoSidecarFields(t *testing.T) {
+	var fc struct {
+		Guard map[string]any `json:"guard"`
+	}
+	if err := json.Unmarshal([]byte(globalConfigTemplate), &fc); err != nil {
+		t.Fatal(err)
+	}
+	if fc.Guard["provider"] != "local" {
+		t.Errorf("guard.provider = %v, want local", fc.Guard["provider"])
+	}
+	for key := range fc.Guard {
+		if key != "provider" && key != "scan" {
+			t.Errorf("guard.%s is a PIGuard sidecar field; leave it out of the template", key)
+		}
 	}
 }
