@@ -1824,6 +1824,16 @@ func initConfig(args []string) error {
 	if _, err := os.Stat(configPath); err == nil && !force {
 		fmt.Fprintf(os.Stderr, "odek: %s config already exists at %s\n", scope, configPath)
 		fmt.Fprintf(os.Stderr, "  Use --force to overwrite.\n")
+		// The secrets stub is independent of the config: scaffold it
+		// even when the config is kept.
+		if global {
+			secretsPath := config.SecretsEnvPath()
+			if created, err := scaffoldSecretsEnv(secretsPath); err != nil {
+				fmt.Fprintf(os.Stderr, "odek: warning: could not create %s: %v\n", secretsPath, err)
+			} else if created {
+				fmt.Printf("✓ Created secrets file: %s (mode 0600) — put your API key there, e.g. DEEPSEEK_API_KEY=sk-...\n", secretsPath)
+			}
+		}
 		return nil
 	}
 
@@ -1986,11 +1996,23 @@ func scaffoldSecretsEnv(path string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if _, err := f.WriteString(secretsEnvStub); err != nil {
-		f.Close()
-		return true, err
+	err = writeSecretsStub(f)
+	if cerr := f.Close(); err == nil {
+		err = cerr
 	}
-	return true, f.Close()
+	if err != nil {
+		// Never leave a half-written stub behind.
+		os.Remove(path)
+		return false, err
+	}
+	return true, nil
+}
+
+// writeSecretsStub writes secretsEnvStub to f (a variable so tests can
+// inject a write failure).
+var writeSecretsStub = func(f *os.File) error {
+	_, err := f.WriteString(secretsEnvStub)
+	return err
 }
 
 // ── Run ───────────────────────────────────────────────────────────────

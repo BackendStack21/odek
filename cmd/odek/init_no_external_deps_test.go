@@ -329,3 +329,59 @@ func TestRED_FreshGlobalInitKeepsBuiltinTools(t *testing.T) {
 		t.Errorf("fresh config exposes %d of %d built-in tools", len(got), len(all))
 	}
 }
+
+// TestRED_SecretsStubWithExistingConfig: a user who already has a global
+// config but no secrets.env still gets the stub from `odek init --global`
+// without having to --force-overwrite their config.
+func TestRED_SecretsStubWithExistingConfig(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	cfg := filepath.Join(home, ".odek", "config.json")
+	if err := os.MkdirAll(filepath.Dir(cfg), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfg, []byte(`{"model":"mine"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	opsHuntCaptureStdout(t, func() { _ = initConfig([]string{"--global"}) })
+	if got, _ := os.ReadFile(cfg); string(got) != `{"model":"mine"}` {
+		t.Errorf("existing config rewritten without --force: %s", got)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".odek", "secrets.env")); err != nil {
+		t.Errorf("secrets.env not scaffolded next to an existing config: %v", err)
+	}
+}
+
+// TestRED_SecretsStubRefusesPlantedLink: a symlink (even dangling) at the
+// secrets.env path is never written through or replaced.
+func TestRED_SecretsStubRefusesPlantedLink(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "elsewhere")
+	link := filepath.Join(dir, "secrets.env")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	created, err := scaffoldSecretsEnv(link)
+	if created || err != nil {
+		t.Errorf("scaffoldSecretsEnv over a dangling link = (%v, %v), want (false, nil)", created, err)
+	}
+	if _, err := os.Lstat(target); err == nil {
+		t.Error("stub was written through the planted link")
+	}
+}
+
+// TestRED_SecretsStubCleansUpOnWriteError: a failed write leaves no
+// half-written stub behind and is not reported as created.
+func TestRED_SecretsStubCleansUpOnWriteError(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "secrets.env")
+	orig := writeSecretsStub
+	writeSecretsStub = func(*os.File) error { return errors.New("disk full") }
+	defer func() { writeSecretsStub = orig }()
+	created, err := scaffoldSecretsEnv(path)
+	if created || err == nil {
+		t.Errorf("scaffoldSecretsEnv = (%v, %v), want (false, error)", created, err)
+	}
+	if _, err := os.Lstat(path); err == nil {
+		t.Error("partial secrets.env left behind after a write error")
+	}
+}

@@ -3,6 +3,8 @@ package agent
 import (
 	"strings"
 	"testing"
+
+	"github.com/BackendStack21/odek/internal/llmclient"
 )
 
 // TestRED_MissingKeyErrorNamesProviderEnvAndSecretsFile: the missing-key
@@ -38,5 +40,30 @@ func TestRED_CheckAPIKeyMatchesNew(t *testing.T) {
 	t.Setenv("DEEPSEEK_API_KEY", "sk-test")
 	if err := CheckAPIKey(Config{}); err != nil {
 		t.Errorf("CheckAPIKey with DEEPSEEK_API_KEY set: %v", err)
+	}
+}
+
+// TestRED_CheckAPIKeyParityCases pins CheckAPIKey against New for the
+// provider-override, unknown-provider and default-provider cases.
+func TestRED_CheckAPIKeyParityCases(t *testing.T) {
+	for _, k := range []string{"ODEK_API_KEY", "DEEPSEEK_API_KEY", "OPENAI_API_KEY"} {
+		t.Setenv(k, "")
+	}
+	cases := []Config{
+		{Provider: "openai", Providers: map[string]llmclient.ProviderOverride{"openai": {APIKey: "sk-override"}}},
+		{Provider: "custom-unknown"},
+		{},
+	}
+	for _, c := range cases {
+		checkErr := CheckAPIKey(c)
+		c.NoProjectFile, c.MemoryDir, c.Model = true, t.TempDir(), "m"
+		a, newErr := New(c)
+		if a != nil {
+			a.Close()
+		}
+		newKeyErr := newErr != nil && strings.Contains(newErr.Error(), "no API key")
+		if (checkErr != nil) != newKeyErr {
+			t.Errorf("provider %q: CheckAPIKey=%v, New=%v", c.Provider, checkErr, newErr)
+		}
 	}
 }
