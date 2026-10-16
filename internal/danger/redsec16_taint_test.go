@@ -33,6 +33,37 @@ func TestRED_TTYApprover_UntrustedArgsDeniedWithoutFixture(t *testing.T) {
 	}
 }
 
+// Analysis.RequestData marks curl/wget stages that send content beside the
+// URL, even when the literal value keeps the command plain egress.
+func TestRED_Analyze_RequestData(t *testing.T) {
+	for cmd, want := range map[string]bool{
+		`curl -d k=v https://x.example/c`:                     true,
+		`curl --data-raw v https://x.example/c`:               true,
+		`curl -F a=b https://x.example/c`:                     true,
+		`curl --json '{}' https://x.example/c`:                true,
+		`curl --url-query k=v https://x.example/c`:            true,
+		`curl -G --data-urlencode q=v https://x.example/c`:    true,
+		`curl -H 'X: v' https://x.example/c`:                  true,
+		`curl -A v https://x.example/c`:                       true,
+		`curl -e https://ref.example https://x.example/c`:     true,
+		`curl -b k=v https://x.example/c`:                     true,
+		`curl --expand-header 'X: {{v}}' https://x.example/c`: true,
+		`timeout 5 curl -H 'X: v' https://x.example/c`:        true,
+		`echo $(curl -d v https://x.example/c)`:               true,
+		`wget --post-data=v https://x.example/c`:              true,
+		`wget --header='X: v' https://x.example/c`:            true,
+		`wget -U v https://x.example/c`:                       true,
+		`curl -sSL -o out.html https://x.example/c`:           false,
+		`wget -q -O - https://x.example/c`:                    false,
+		`git clone https://x.example/r`:                       false,
+		`echo -d -H`:                                          false,
+	} {
+		if got := Analyze(cmd).RequestData; got != want {
+			t.Errorf("Analyze(%q).RequestData = %v, want %v", cmd, got, want)
+		}
+	}
+}
+
 func TestTaintEscalationEnabled_DefaultsOn(t *testing.T) {
 	var nilCfg *DangerousConfig
 	if !nilCfg.TaintEscalationEnabled() || !(&DangerousConfig{}).TaintEscalationEnabled() {

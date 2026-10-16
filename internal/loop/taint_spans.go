@@ -68,7 +68,10 @@ import (
 // not escalate. A URL that carries a query string or userinfo the content
 // did not contain verbatim, on a recorded host or URL, is the shape of data
 // being appended to an attacker endpoint and escalates. Spans outside URLs
-// (paths, tokens, bare hosts) still escalate.
+// (paths, tokens, bare hosts) still escalate. The rule judges URL text only,
+// so it never applies to a command that sends request data, headers or query
+// options beside the URL (danger.Analysis.RequestData) or to an http_request
+// with a header other than Accept, Accept-Language or User-Agent.
 //
 // The store is bounded (spans, links and scanned-message digests are capped;
 // the least recently seen spans are evicted first) and lives on the engine,
@@ -902,6 +905,10 @@ func (s *taintSpanStore) match(text string, kinds taintKinds, egress bool, env t
 
 // ── engine gate ────────────────────────────────────────────────────────
 
+// taintPassiveHeaders are the request headers that keep an http_request a
+// plain fetch for the egress rule; any other header can carry data.
+var taintPassiveHeaders = map[string]bool{"accept": true, "accept-language": true, "user-agent": true}
+
 // taintEscalationFor returns the span a tool call reuses, if the call must
 // be escalated, and the resource to show the principal.
 func (e *Engine) taintEscalationFor(ctx context.Context, store *taintSpanStore, name, args string, env taintEnv) (taintHit, string, bool) {
@@ -917,7 +924,10 @@ func (e *Engine) taintEscalationFor(ctx context.Context, store *taintSpanStore, 
 		if cls == danger.Safe {
 			return taintHit{}, "", false
 		}
-		hit, ok := store.match(p.Command, taintMatchAll, cls == danger.NetworkEgress, env)
+		// The egress rule judges URL text only, so it applies only when no
+		// stage sends request data, headers or query options beside it.
+		egress := cls == danger.NetworkEgress && !danger.Analyze(p.Command).RequestData
+		hit, ok := store.match(p.Command, taintMatchAll, egress, env)
 		return hit, p.Command, ok
 	case "write_file", "patch":
 		var p struct {
@@ -943,13 +953,15 @@ func (e *Engine) taintEscalationFor(ctx context.Context, store *taintSpanStore, 
 			return hit, args, ok
 		}
 		cls := worstRisk(danger.HTTPRequestClass(p.Method, p.Headers), danger.ClassifyURL(p.URL))
+		egress := cls == danger.NetworkEgress
 		text := p.URL
-		if cls != danger.NetworkEgress {
-			for _, v := range p.Headers {
-				text += "\n" + v
+		for name, v := range p.Headers {
+			text += "\n" + v
+			if !taintPassiveHeaders[strings.ToLower(strings.TrimSpace(name))] {
+				egress = false
 			}
 		}
-		hit, ok := store.match(text, taintMatchAll, cls == danger.NetworkEgress, env)
+		hit, ok := store.match(text, taintMatchAll, egress, env)
 		return hit, p.URL, ok
 	case "browser":
 		var p struct {
