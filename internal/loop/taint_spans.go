@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"sort"
@@ -1086,8 +1087,13 @@ func (e *Engine) taintEscalationFor(ctx context.Context, store *taintSpanStore, 
 			return taintHit{}, "", false
 		}
 		target := p.Path
-		if !strings.HasPrefix(target, "/") && !strings.HasPrefix(target, "~") {
-			return taintHit{}, "", false
+		if !strings.HasPrefix(target, "/") && !strings.HasPrefix(target, "~") && !strings.HasPrefix(target, "$") {
+			// Relative targets resolve against the working directory, so
+			// "../" cannot step outside the workspace unnoticed.
+			if env.cwd == "" || env.cwd == "." {
+				return taintHit{}, "", false
+			}
+			target = filepath.Join(env.cwd, target)
 		}
 		hit, ok := store.match(target, taintMatchPath, false, env)
 		return hit, p.Path, ok

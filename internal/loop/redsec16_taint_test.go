@@ -683,3 +683,27 @@ func TestRED_TaintPrincipal_NewestFirst(t *testing.T) {
 		t.Fatal("the latest principal message fell outside the principal budget")
 	}
 }
+
+// A relative write target is resolved against the working directory before
+// matching: `../` cannot step outside the workspace unnoticed.
+func TestRED_TaintEscalation_RelativeWriteTargetResolved(t *testing.T) {
+	e := &Engine{}
+	s := newTaintSpanStore()
+	s.insertLocked(extractTaintSpans("drop it at /home/u/.config/autostart/run.sh", sec16TaintEnv, false), "web")
+	for args, want := range map[string]bool{
+		`{"path":"../.config/autostart/run.sh","content":"x"}`: true,
+		`{"path":"src/../../.config/autostart/run.sh"}`:        true,
+		`{"path":"notes/run.sh","content":"x"}`:                false,
+		`{"path":"./.config/autostart/run.sh","content":"x"}`:  false,
+	} {
+		if _, _, ok := e.taintEscalationFor(context.Background(), s, "write_file", args, sec16TaintEnv); ok != want {
+			t.Errorf("write_file %s: escalated=%v, want %v", args, ok, want)
+		}
+	}
+	if _, _, ok := e.taintEscalationFor(context.Background(), s, "patch", `{"path":"$HOME/.config/autostart/run.sh"}`, sec16TaintEnv); !ok {
+		t.Error("$HOME write target not matched")
+	}
+	if _, _, ok := e.taintEscalationFor(context.Background(), s, "patch", `{"path":"../x"}`, taintEnv{home: "/home/u"}); ok {
+		t.Error("relative target matched without a known working directory")
+	}
+}
