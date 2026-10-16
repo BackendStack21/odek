@@ -2,6 +2,7 @@ package loop
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
 	"strings"
 	"testing"
@@ -223,9 +224,11 @@ func TestTaintSpanStore_ObserveSources(t *testing.T) {
 	if s.seq != before {
 		t.Error("trimmed history re-recorded already scanned messages")
 	}
-	s.scanned = make(map[uint64]struct{}, maxTaintScanned)
+	s.scanned = make(map[[32]byte]struct{}, maxTaintScanned)
 	for i := 0; i < maxTaintScanned; i++ {
-		s.scanned[uint64(i)] = struct{}{}
+		var d [32]byte
+		binary.BigEndian.PutUint64(d[:], uint64(i))
+		s.scanned[d] = struct{}{}
 	}
 	s.observe(append(msgs, session.Message{Role: "tool", ToolCallID: "orphan2", Content: "x https://late.example/l"}), sec16TaintEnv)
 	if !has("late.example") || len(s.scanned) > maxTaintScanned {

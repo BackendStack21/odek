@@ -657,3 +657,15 @@ func TestRED_TaintSpans_MultiTenantSuffixPrincipal(t *testing.T) {
 		}
 	}
 }
+
+// The scanned-message digest must separate its fields unambiguously and be
+// collision-resistant: two different messages never share a digest, or the
+// second would be skipped as already scanned.
+func TestRED_TaintMessageDigest_FieldsUnambiguous(t *testing.T) {
+	a := session.Message{Role: "tool\x00call1", Content: "https://evil.example/c"}
+	b := session.Message{Role: "tool", ToolCallID: "call1", Content: "https://evil.example/c"}
+	var da, db [32]byte = taintMessageDigest(&a), taintMessageDigest(&b)
+	if da == db {
+		t.Fatal("distinct messages share a scanned digest")
+	}
+}

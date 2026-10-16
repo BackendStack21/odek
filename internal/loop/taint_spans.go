@@ -2,9 +2,10 @@ package loop
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
-	"hash/fnv"
 	"net"
 	"net/url"
 	"os"
@@ -151,9 +152,9 @@ type taintSpanStore struct {
 	links map[string]uint64
 	// scanned holds digests of messages already scanned; scannedLen and
 	// scannedTail let an append-only history skip straight to new messages.
-	scanned    map[uint64]struct{}
+	scanned    map[[32]byte]struct{}
 	scannedLen int
-	scannedTip uint64
+	scannedTip [32]byte
 	principal  taintPrincipal
 }
 
@@ -167,7 +168,7 @@ func newTaintSpanStore() *taintSpanStore {
 	return &taintSpanStore{
 		spans:   make(map[string]*taintSpan),
 		links:   make(map[string]uint64),
-		scanned: make(map[uint64]struct{}),
+		scanned: make(map[[32]byte]struct{}),
 	}
 }
 
@@ -542,16 +543,19 @@ func isHexOrDash(c byte) bool {
 
 // ── recording ──────────────────────────────────────────────────────────
 
-func taintMessageDigest(m *session.Message) uint64 {
-	h := fnv.New64a()
-	h.Write([]byte(m.Role))
-	h.Write([]byte{0})
-	h.Write([]byte(m.ToolCallID))
-	h.Write([]byte{0})
-	h.Write([]byte(m.Name))
-	h.Write([]byte{0})
-	h.Write([]byte(m.Content))
-	return h.Sum64()
+func taintMessageDigest(m *session.Message) [32]byte {
+	// SHA-256 over length-prefixed fields: no two distinct messages share a
+	// digest, so a new message is never skipped as already scanned.
+	h := sha256.New()
+	for _, f := range []string{m.Role, m.ToolCallID, m.Name, m.Content} {
+		var n [8]byte
+		binary.BigEndian.PutUint64(n[:], uint64(len(f)))
+		h.Write(n[:])
+		h.Write([]byte(f))
+	}
+	var out [32]byte
+	copy(out[:], h.Sum(nil))
+	return out
 }
 
 // untrustedBody is one wrapper in a message.
@@ -720,7 +724,7 @@ func (s *taintSpanStore) observe(messages []session.Message, env taintEnv) {
 			continue
 		}
 		if len(s.scanned) >= maxTaintScanned {
-			s.scanned = make(map[uint64]struct{})
+			s.scanned = make(map[[32]byte]struct{})
 		}
 		s.scanned[d] = struct{}{}
 		switch m.Role {
