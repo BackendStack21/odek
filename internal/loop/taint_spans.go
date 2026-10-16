@@ -42,6 +42,8 @@ import (
 //     host words followed by ":" or "/" whose last label is not a common
 //     file extension. Bare hosts on a short list of ubiquitous sites
 //     (github.com, pypi.org, …) are not recorded; their URLs still are.
+//     Schemeless module paths of Go import specs and go.mod/go.sum lines
+//     are not recorded either (taintGoModuleLine).
 //   - path: absolute, ~/, $HOME/ and ${HOME}/ paths (cleaned) with at least two segments, outside the
 //     working directory, the sandbox /workspace mount, the home directory's
 //     ancestors, /dev/{null,stdin,stdout,stderr} and the standard bin
@@ -336,6 +338,12 @@ func extractTaintSpans(text string, env taintEnv, loose bool) []taintRaw {
 			continue
 		}
 		end := loc[1] - trail
+		if !loose && taintGoModuleLine(text, loc[0]) {
+			// A Go import spec or go.mod/go.sum entry names a dependency,
+			// not a target: module-cache reads would otherwise record every
+			// import host.
+			continue
+		}
 		if loose && end < len(text) && (isTaintWordByte(text[end]) || text[end] == '-' || text[end] == '.' && end+1 < len(text) && isTaintWordByte(text[end+1])) {
 			continue
 		}
@@ -377,6 +385,48 @@ func extractTaintSpans(text string, env taintEnv, loose bool) []taintRaw {
 		out = append(out, taintRaw{kind: taintKindToken, value: tok, at: loc[0], end: loc[1]})
 	}
 	return out
+}
+
+var (
+	// taintGoImportRe matches a Go import spec line: `import "p"`, or an
+	// entry of an import block, optionally named or commented.
+	taintGoImportRe = regexp.MustCompile(`^\s*(?:import\s+)?(?:[A-Za-z_.][A-Za-z0-9_]*\s+)?"[^"\s]+"\s*(?://.*)?$`)
+	// taintGoModRe matches a go.mod requirement or a go.sum line: a module
+	// path followed by a version.
+	taintGoModRe = regexp.MustCompile(`^\s*(?:(?:require|replace|exclude|retract)\s+)?[^\s"]+\s+v[0-9]`)
+)
+
+// taintGoModuleLineMax bounds the line taintGoModuleLine examines, so the
+// check stays constant-time per host word; real import lines are short.
+const taintGoModuleLineMax = 512
+
+// taintGoModuleLine reports whether the host word at i begins the module
+// path of a Go import spec or a go.mod/go.sum entry on its line.
+func taintGoModuleLine(text string, i int) bool {
+	start := i
+	for start > 0 && text[start-1] != '\n' {
+		start--
+		if i-start > taintGoModuleLineMax {
+			return false
+		}
+	}
+	end := i
+	for end < len(text) && text[end] != '\n' {
+		end++
+		if end-i > taintGoModuleLineMax {
+			return false
+		}
+	}
+	line := text[start:end]
+	at := i - start
+	if at > 0 && line[at-1] == '"' {
+		return taintGoImportRe.MatchString(line)
+	}
+	switch strings.TrimSpace(line[:at]) {
+	case "", "require", "replace", "exclude", "retract":
+		return taintGoModRe.MatchString(line)
+	}
+	return false
 }
 
 // inTaintIntervals reports whether i lies in one of spans, which are sorted
