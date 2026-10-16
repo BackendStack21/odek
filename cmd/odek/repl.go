@@ -144,6 +144,10 @@ func replCmd(args []string) error {
 		Env:      resolved.SandboxEnv,
 		Volumes:  resolved.SandboxVolumes,
 	}
+	// Fail fast on a missing API key, before starting a sandbox container.
+	if err := requireAPIKey(resolved); err != nil {
+		return err
+	}
 	bgName, bgCleanup, bgSandboxed, bgErr := ensureSandbox(resolved, tools, sbCfg)
 	if bgErr != nil {
 		return fmt.Errorf("sandbox: %w", bgErr)

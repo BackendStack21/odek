@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -280,5 +281,34 @@ func TestRED_LocalInitSummaryMatchesLoader(t *testing.T) {
 		if !slices.Contains(projectIgnoredFields, field) {
 			t.Errorf("loader ignores %q from project config but odek init does not list it", field)
 		}
+	}
+}
+
+// TestRED_CLIErrorsCarryOnePrefix: errors that already start with "odek:"
+// (the public API's convention) are printed with a single prefix.
+func TestRED_CLIErrorsCarryOnePrefix(t *testing.T) {
+	stderr := captureStderrDuring(t, func() { cliExit(errors.New("odek: llm: boom")) })
+	if strings.Contains(stderr, "odek: odek:") {
+		t.Errorf("doubled prefix: %q", stderr)
+	}
+	if !strings.Contains(stderr, "odek: llm: boom") {
+		t.Errorf("error text lost: %q", stderr)
+	}
+}
+
+// TestRED_RunReportsMissingKeyBeforeSandbox: with no API key, `odek run`
+// fails with the key error and never starts (or warns about) the sandbox.
+func TestRED_RunReportsMissingKeyBeforeSandbox(t *testing.T) {
+	initScratch(t)
+	for _, k := range []string{"ODEK_API_KEY", "DEEPSEEK_API_KEY", "OPENAI_API_KEY", "ODEK_NO_SANDBOX", "ODEK_REQUIRE_SANDBOX"} {
+		t.Setenv(k, "")
+	}
+	var err error
+	stderr := captureStderrDuring(t, func() { err = run([]string{"hello"}) })
+	if err == nil || !strings.Contains(err.Error(), "no API key") {
+		t.Fatalf("run error = %v, want the missing-key error", err)
+	}
+	if strings.Contains(stderr, "sandbox") {
+		t.Errorf("sandbox output before the missing-key error:\n%s", stderr)
 	}
 }

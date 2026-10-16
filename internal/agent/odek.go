@@ -473,6 +473,47 @@ func providerKeyEnv(provider string) []string {
 	}
 }
 
+// resolveProviderKey applies New's provider default ("deepseek") and API key
+// fallback (ODEK_API_KEY, then the provider's env keys).
+func resolveProviderKey(cfg Config) (provider, apiKey string) {
+	provider, apiKey = cfg.Provider, cfg.APIKey
+	if provider == "" {
+		provider = "deepseek"
+	}
+	if apiKey == "" {
+		apiKey = os.Getenv("ODEK_API_KEY")
+	}
+	if apiKey == "" {
+		for _, k := range providerKeyEnv(provider) {
+			if v := os.Getenv(k); v != "" {
+				return provider, v
+			}
+		}
+	}
+	return provider, apiKey
+}
+
+// missingKeyError reports a cfg (already through resolveProviderKey) that
+// has no key for its provider.
+func missingKeyError(cfg Config) error {
+	if cfg.APIKey != "" || (cfg.Providers != nil && cfg.Providers[cfg.Provider].APIKey != "") {
+		return nil
+	}
+	envHint := "the provider env key"
+	if envs := providerKeyEnv(cfg.Provider); len(envs) > 0 {
+		envHint = envs[0]
+	}
+	return fmt.Errorf("odek: no API key for provider %q (set %s, e.g. in ~/.odek/secrets.env, or ODEK_API_KEY or providers.%s.api_key)", cfg.Provider, envHint, cfg.Provider)
+}
+
+// CheckAPIKey reports the error New would return for a missing API key,
+// without building anything. Callers use it to fail fast before expensive
+// setup such as starting a sandbox container.
+func CheckAPIKey(cfg Config) error {
+	cfg.Provider, cfg.APIKey = resolveProviderKey(cfg)
+	return missingKeyError(cfg)
+}
+
 // New creates a new Agent with the given configuration.
 //
 // If Config.SandboxCleanup is set, the cleanup function is called when
@@ -488,22 +529,9 @@ func New(cfg Config) (_ *Agent, setupErr error) {
 	if cfg.MaxIterations <= 0 {
 		cfg.MaxIterations = defaultMaxIter
 	}
-	if cfg.Provider == "" {
-		cfg.Provider = "deepseek"
-	}
-	if cfg.APIKey == "" {
-		cfg.APIKey = os.Getenv("ODEK_API_KEY")
-		if cfg.APIKey == "" {
-			for _, k := range providerKeyEnv(cfg.Provider) {
-				if v := os.Getenv(k); v != "" {
-					cfg.APIKey = v
-					break
-				}
-			}
-		}
-	}
-	if cfg.APIKey == "" && (cfg.Providers == nil || cfg.Providers[cfg.Provider].APIKey == "") {
-		return nil, fmt.Errorf("odek: no API key for provider %q (set providers.%s.api_key, ODEK_API_KEY, or the provider env key)", cfg.Provider, cfg.Provider)
+	cfg.Provider, cfg.APIKey = resolveProviderKey(cfg)
+	if err := missingKeyError(cfg); err != nil {
+		return nil, err
 	}
 	if cfg.Model == "" {
 		cfg.Model = defaultModel

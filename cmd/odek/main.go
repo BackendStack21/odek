@@ -2099,6 +2099,10 @@ func run(args []string) (outcome error) {
 	// hard-fail behavior.
 	var runContainerName string
 	var runSandboxed bool
+	// Fail fast on a missing API key, before starting a sandbox container.
+	if err := requireAPIKey(resolved); err != nil {
+		return err
+	}
 	runContainerName, sandboxCleanup, runSandboxed, err = ensureSandbox(resolved, tools, sbCfg)
 	if err != nil {
 		return err
@@ -2479,6 +2483,16 @@ func deliverToTelegram(text string, resolved config.ResolvedConfig) error {
 		return fmt.Errorf("send telegram message: %w", err)
 	}
 	return nil
+}
+
+// requireAPIKey returns the missing-key error odek.New would return for
+// resolved, so commands can report it before slow setup (sandbox startup).
+func requireAPIKey(resolved config.ResolvedConfig) error {
+	return odek.CheckAPIKey(odek.Config{
+		Provider:  resolved.Provider,
+		APIKey:    resolved.APIKey,
+		Providers: resolved.ProviderOverrides(),
+	})
 }
 
 // ── Sandbox Setup ──────────────────────────────────────────────────────
@@ -3608,6 +3622,10 @@ func continueCmd(args []string) (outcome error) {
 	}
 	var contContainerName string
 	var contSandboxed bool
+	// Fail fast on a missing API key, before starting a sandbox container.
+	if err := requireAPIKey(resolved); err != nil {
+		return err
+	}
 	contContainerName, sandboxCleanup, contSandboxed, err = ensureSandbox(resolved, tools, sbCfg)
 	if err != nil {
 		return err

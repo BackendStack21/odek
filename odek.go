@@ -49,6 +49,10 @@ const SecurityPillar = agent.SecurityPillar
 // New constructs an agent with the supplied configuration.
 func New(cfg Config) (*Agent, error) { return agent.New(cfg) }
 
+// CheckAPIKey reports the error New would return for a missing API key,
+// without building anything.
+func CheckAPIKey(cfg Config) error { return agent.CheckAPIKey(cfg) }
+
 // ProfileLabel returns the display label for a model.
 func ProfileLabel(model string) string { return agent.ProfileLabel(model) }
 

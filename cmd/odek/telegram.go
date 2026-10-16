@@ -579,7 +579,7 @@ func telegramCmd(args []string) error {
 
 	// 2. Validate API key presence.
 	if resolved.APIKey == "" {
-		return fmt.Errorf("no API key configured — set ODEK_API_KEY, DEEPSEEK_API_KEY, or configure in odek.json")
+		return fmt.Errorf("no API key configured — set your provider's key (DEEPSEEK_API_KEY for the default provider) in ~/.odek/secrets.env, ODEK_API_KEY, or providers.<id>.api_key in ~/.odek/config.json")
 	}
 	// Store for spawnChild: config loader clears ODEK_API_KEY from env,
 	// so the child process needs us to hand it off securely.
