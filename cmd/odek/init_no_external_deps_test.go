@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -215,5 +216,69 @@ func TestRED_LocalInitCreatesNoSecretsFile(t *testing.T) {
 	opsHuntCaptureStdout(t, func() { _ = initConfig(nil) })
 	if _, err := os.Lstat(filepath.Join(home, ".odek")); err == nil {
 		t.Error("odek init (local) created ~/.odek")
+	}
+}
+
+// projectIgnoredSamples holds one project-config snippet per field that
+// `odek init` says the loader ignores in ./odek.json.
+var projectIgnoredSamples = map[string]string{
+	"provider":                        `{"provider":"openai"}`,
+	"providers":                       `{"providers":{"openai":{"api_key":"x"}}}`,
+	"api_key":                         `{"api_key":"x"}`,
+	"base_url":                        `{"base_url":"http://127.0.0.1:1"}`,
+	"llm":                             `{"llm":{"request_timeout_seconds":5}}`,
+	"system":                          `{"system":"x"}`,
+	"dangerous":                       `{"dangerous":{"non_interactive":"allow"}}`,
+	"memory":                          `{"memory":{"enabled":false}}`,
+	"sessions":                        `{"sessions":{"embedding":{"provider":"rp"}}}`,
+	"embedding":                       `{"embedding":{"provider":"rp"}}`,
+	"guard":                           `{"guard":{"provider":"local"}}`,
+	"maintenance":                     `{"maintenance":{"enabled":false}}`,
+	"logging":                         `{"logging":{"enabled":false}}`,
+	"telegram":                        `{"telegram":{"bot_token":"x"}}`,
+	"web_search":                      `{"web_search":{"base_url":"http://127.0.0.1:1"}}`,
+	"transcription":                   `{"transcription":{"model":"tiny"}}`,
+	"vision":                          `{"vision":{"backend":"local"}}`,
+	"tts":                             `{"tts":{"backend":"provider"}}`,
+	"stt":                             `{"stt":{"backend":"local"}}`,
+	"trusted_proxies":                 `{"trusted_proxies":["127.0.0.1"]}`,
+	"schedules":                       `{"schedules":{"enabled":false}}`,
+	"subagent":                        `{"subagent":{"max_depth":1}}`,
+	"verify":                          `{"verify":{"enabled":true}}`,
+	"profiles":                        `{"profiles":{"p":{}}}`,
+	"tools.enabled":                   `{"tools":{"enabled":["shell"]}}`,
+	"skills.dirs":                     `{"skills":{"dirs":["/nonexistent"]}}`,
+	"skills.embedding":                `{"skills":{"embedding":{"provider":"rp"}}}`,
+	"mcp_servers.<name>.auto_approve": `{"mcp_servers":{"s":{"command":"true","auto_approve":true}}}`,
+}
+
+// TestRED_LocalInitSummaryMatchesLoader: every field the local init
+// summary lists as ignored is really ignored (with a warning) by the
+// loader, so the printed guidance cannot drift from the code again.
+func TestRED_LocalInitSummaryMatchesLoader(t *testing.T) {
+	for _, field := range projectIgnoredFields {
+		sample, ok := projectIgnoredSamples[field]
+		if !ok {
+			t.Errorf("no sample for listed field %q", field)
+			continue
+		}
+		t.Run(field, func(t *testing.T) {
+			dir := t.TempDir()
+			t.Setenv("HOME", t.TempDir())
+			t.Chdir(dir)
+			if err := os.WriteFile(filepath.Join(dir, "odek.json"), []byte(sample), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			stderr := captureStderrDuring(t, func() { config.LoadConfig(config.CLIFlags{}) })
+			want := "ignoring " + strings.ReplaceAll(field, "<name>", "s")
+			if !strings.Contains(stderr, want) {
+				t.Errorf("loader did not warn %q for %s; stderr:\n%s", want, sample, stderr)
+			}
+		})
+	}
+	for field := range projectIgnoredSamples {
+		if !slices.Contains(projectIgnoredFields, field) {
+			t.Errorf("loader ignores %q from project config but odek init does not list it", field)
+		}
 	}
 }

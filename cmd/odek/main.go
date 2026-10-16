@@ -1717,11 +1717,10 @@ const globalConfigTemplate = `{
 }`
 
 // localConfigTemplate is written to ./odek.json by `odek init`.
-// Project configs are untrusted: the loader ignores sensitive fields
-// (api_key, base_url, system, dangerous, memory, sessions, embedding,
-// guard, maintenance, telegram, web_search, trusted_proxies,
-// tools.enabled, skills.dirs) with a warning, and rejects sandbox=false /
-// sandbox_readonly=false outright. The template therefore contains only
+// Project configs are untrusted: the loader ignores operator-only fields
+// (projectIgnoredFields) and sandbox=false / sandbox_readonly=false with a
+// warning, and treats any non-empty sandbox_* value as an override that
+// needs operator approval. The template therefore contains only
 // fields a project may legitimately set, so a fresh `odek init` produces
 // a config that loads warning-free. Empty/zero values inherit from the
 // global config and the layers below.
@@ -1910,20 +1909,58 @@ func initConfig(args []string) error {
 		fmt.Println("  Project config — only project-safe fields are honored here.")
 		fmt.Println("  Empty values inherit from your global config.")
 		fmt.Println()
-		fmt.Println("  The loader ignores operator-only fields in ./odek.json:")
-		fmt.Println("    provider, providers, api_key, base_url, llm, system,")
-		fmt.Println("    dangerous, memory, sessions,")
-		fmt.Println("    embedding, guard, maintenance, telegram, web_search,")
-		fmt.Println("    trusted_proxies, tools.enabled, skills.dirs")
+		fmt.Println("  The loader ignores operator-only fields in ./odek.json (with a warning):")
+		for _, line := range wrapFieldList(projectIgnoredFields, 66) {
+			fmt.Println("    " + line)
+		}
 		fmt.Println("  Set those in ~/.odek/config.json instead: odek init --global")
 		fmt.Println()
-		fmt.Println("  Note: project configs may only enable the sandbox")
-		fmt.Println("  (\"sandbox\": true) — sandbox=false is rejected.")
+		fmt.Println("  Budgets and caps (limits, planning, background, skills.import,")
+		fmt.Println("  max_tool_parallel, max_concurrency) may only be lowered here.")
+		fmt.Println("  Project configs may only enable the sandbox (\"sandbox\": true):")
+		fmt.Println("  sandbox=false and sandbox_readonly=false are ignored, and any")
+		fmt.Println("  sandbox_* value needs your approval before it applies.")
 		fmt.Println("  Full schema: see docs/CONFIG.md.")
 	}
 	fmt.Println()
 	fmt.Println("  Priority: ~/.odek/secrets.env → ~/.odek/config.json → ./odek.json → ODEK_* env → CLI flags")
 	return nil
+}
+
+// projectIgnoredFields lists the fields the loader ignores, with a warning,
+// when they appear in a project ./odek.json. `odek init` prints it, and
+// TestRED_LocalInitSummaryMatchesLoader pins it against the loader.
+var projectIgnoredFields = []string{
+	"provider", "providers", "api_key", "base_url", "llm", "system",
+	"dangerous", "memory", "sessions", "embedding", "guard", "maintenance",
+	"logging", "telegram", "web_search", "transcription", "vision", "tts",
+	"stt", "trusted_proxies", "schedules", "subagent", "verify", "profiles",
+	"tools.enabled", "skills.dirs", "skills.embedding",
+	"mcp_servers.<name>.auto_approve",
+}
+
+// wrapFieldList joins fields with ", " into lines of at most width bytes.
+func wrapFieldList(fields []string, width int) []string {
+	var lines []string
+	line := ""
+	for i, f := range fields {
+		item := f
+		if i < len(fields)-1 {
+			item += ","
+		}
+		if line != "" && len(line)+1+len(item) > width {
+			lines = append(lines, line)
+			line = ""
+		}
+		if line != "" {
+			line += " "
+		}
+		line += item
+	}
+	if line != "" {
+		lines = append(lines, line)
+	}
+	return lines
 }
 
 // secretsEnvStub is written to ~/.odek/secrets.env by `odek init --global`
