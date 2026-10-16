@@ -690,10 +690,20 @@ func (s *taintSpanStore) observe(messages []session.Message, env taintEnv) {
 				bgTaints = true
 			}
 		}
-		if m.Role == "user" && !session.IsSyntheticUserName(m.Name) && principal.Len() < taintPrincipalMaxBytes {
-			principal.WriteString(stripUntrustedBodies(m.Content))
-			principal.WriteByte('\n')
+	}
+	// The principal's messages are collected newest first, so the latest
+	// instructions always fit the budget however long an early paste was.
+	for i := len(messages) - 1; i >= 0 && principal.Len() < taintPrincipalMaxBytes; i-- {
+		m := &messages[i]
+		if m.Role != "user" || session.IsSyntheticUserName(m.Name) {
+			continue
 		}
+		text := stripUntrustedBodies(m.Content)
+		if room := taintPrincipalMaxBytes - principal.Len(); len(text) > room {
+			text = text[:room]
+		}
+		principal.WriteString(text)
+		principal.WriteByte('\n')
 	}
 
 	// Extraction runs outside the mutex: only the scan bookkeeping and the

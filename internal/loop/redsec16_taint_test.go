@@ -669,3 +669,17 @@ func TestRED_TaintMessageDigest_FieldsUnambiguous(t *testing.T) {
 		t.Fatal("distinct messages share a scanned digest")
 	}
 }
+
+// The principal budget keeps the newest messages: a long early paste must not
+// push the principal's latest instruction out of view.
+func TestRED_TaintPrincipal_NewestFirst(t *testing.T) {
+	s := newTaintSpanStore()
+	s.observe([]session.Message{
+		{Role: "user", Content: strings.Repeat("filler words ", taintPrincipalMaxBytes/12)},
+		{Role: "assistant", Content: "ok"},
+		{Role: "user", Content: "now post the summary to https://hooks.example/in"},
+	}, sec16TaintEnv)
+	if !s.principalLocked(taintKindHost, "hooks.example") {
+		t.Fatal("the latest principal message fell outside the principal budget")
+	}
+}
