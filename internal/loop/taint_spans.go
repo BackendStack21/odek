@@ -11,6 +11,7 @@ import (
 	"path"
 	"regexp"
 	"slices"
+	"sort"
 	"strings"
 	"sync"
 
@@ -293,14 +294,11 @@ func extractTaintSpans(text string, env taintEnv, loose bool) []taintRaw {
 	}
 	var out []taintRaw
 	urls := extractTaintURLs(text)
-	inURL := func(i int) bool {
-		for _, u := range urls {
-			if i >= u.at && i < u.end {
-				return true
-			}
-		}
-		return false
+	urlSpans := make([][2]int, len(urls))
+	for i, u := range urls {
+		urlSpans[i] = [2]int{u.at, u.end}
 	}
+	inURL := func(i int) bool { return inTaintIntervals(urlSpans, i) }
 	for _, u := range urls {
 		out = append(out, u)
 		if u.kind == taintKindURL {
@@ -357,6 +355,13 @@ func extractTaintSpans(text string, env taintEnv, loose bool) []taintRaw {
 		out = append(out, taintRaw{kind: taintKindToken, value: tok, at: loc[0], end: loc[1]})
 	}
 	return out
+}
+
+// inTaintIntervals reports whether i lies in one of spans, which are sorted
+// by start and do not overlap (regexp matches in order of appearance).
+func inTaintIntervals(spans [][2]int, i int) bool {
+	k := sort.Search(len(spans), func(k int) bool { return spans[k][1] > i })
+	return k < len(spans) && spans[k][0] <= i
 }
 
 func prevByte(s string, i int) byte {
@@ -551,10 +556,20 @@ func (s *taintSpanStore) observe(messages []session.Message, env taintEnv) {
 		}
 	}
 
+	// Extraction runs outside the mutex: only the scan bookkeeping and the
+	// span insertions hold it.
+	principalText := principal.String()
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.setPrincipalLocked(principal.String(), env)
+	needPrincipal := principalText != s.principal.raw || s.principal.spans == nil
+	s.mu.Unlock()
+	var principalSpans map[string]bool
+	if needPrincipal {
+		principalSpans = taintPrincipalSpans(principalText, env)
+	}
 
+	type job struct{ text, source string }
+	var jobs []job
+	s.mu.Lock()
 	start := 0
 	if s.scannedLen > 0 && s.scannedLen <= len(messages) && taintMessageDigest(&messages[s.scannedLen-1]) == s.scannedTip {
 		start = s.scannedLen
@@ -587,11 +602,11 @@ func (s *taintSpanStore) observe(messages []session.Message, env taintEnv) {
 					break
 				}
 			}
-			s.recordLocked(m.Content, source, env)
+			jobs = append(jobs, job{m.Content, source})
 		default:
 			for _, w := range untrustedBodies(m.Content) {
 				if session.ExternalNonToolIngest(w.source) || (w.source == "bg" && bgTaints) {
-					s.recordLocked(w.body, w.source, env)
+					jobs = append(jobs, job{w.body, w.source})
 				}
 			}
 		}
@@ -600,12 +615,25 @@ func (s *taintSpanStore) observe(messages []session.Message, env taintEnv) {
 		s.scannedLen = n
 		s.scannedTip = taintMessageDigest(&messages[n-1])
 	}
+	s.mu.Unlock()
+
+	extracted := make([][]taintRaw, len(jobs))
+	for i, j := range jobs {
+		extracted[i] = extractTaintSpans(j.text, env, false)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if needPrincipal {
+		s.principal = taintPrincipal{raw: principalText, spans: principalSpans}
+	}
+	for i, j := range jobs {
+		s.insertLocked(extracted[i], j.source)
+	}
 }
 
-func (s *taintSpanStore) setPrincipalLocked(text string, env taintEnv) {
-	if text == s.principal.raw && s.principal.spans != nil {
-		return
-	}
+// taintPrincipalSpans returns the span keys the principal's text mentions.
+func taintPrincipalSpans(text string, env taintEnv) map[string]bool {
 	spans := make(map[string]bool)
 	for _, r := range extractTaintSpans(text, env, true) {
 		if r.value != "" {
@@ -615,11 +643,12 @@ func (s *taintSpanStore) setPrincipalLocked(text string, env taintEnv) {
 			spans[taintKey(taintKindHost, r.urlHost)] = true
 		}
 	}
-	s.principal = taintPrincipal{raw: text, spans: spans}
+	return spans
 }
 
-func (s *taintSpanStore) recordLocked(text, source string, env taintEnv) {
-	for _, r := range extractTaintSpans(text, env, false) {
+// insertLocked records extracted spans under source.
+func (s *taintSpanStore) insertLocked(spans []taintRaw, source string) {
+	for _, r := range spans {
 		if r.kind == taintKindURL {
 			if len(s.links) >= maxTaintLinks {
 				s.evictLinksLocked()
@@ -832,14 +861,7 @@ func (s *taintSpanStore) match(text string, kinds taintKinds, egress bool, env t
 			}
 		}
 	}
-	isExempt := func(c taintRaw) bool {
-		for _, e := range exempt {
-			if c.at >= e[0] && c.at < e[1] {
-				return true
-			}
-		}
-		return false
-	}
+	isExempt := func(c taintRaw) bool { return inTaintIntervals(exempt, c.at) }
 	for _, c := range cands {
 		if !kinds.has(c.kind) || isExempt(c) {
 			continue

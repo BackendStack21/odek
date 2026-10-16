@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/BackendStack21/odek/internal/danger"
 	"github.com/BackendStack21/odek/internal/events"
@@ -336,5 +337,41 @@ func TestTaintEscalation_NoPromptForOrdinaryWork(t *testing.T) {
 				t.Fatalf("untrusted_args prompts = %d, want 0", got)
 			}
 		})
+	}
+}
+
+// sec16TaintMinDuration returns the fastest of three runs of fn.
+func sec16TaintMinDuration(fn func()) time.Duration {
+	best := time.Duration(1<<63 - 1)
+	for i := 0; i < 3; i++ {
+		start := time.Now()
+		fn()
+		if d := time.Since(start); d < best {
+			best = d
+		}
+	}
+	return best
+}
+
+// Span extraction must scale linearly: a 1 MiB tool result full of URLs and
+// host words used to take seconds because every host word rescanned every
+// URL. Sixteen times the input may cost at most ~48 times the time (linear
+// is ~16; the quadratic scan measured well over 100).
+func TestRED_TaintSpans_ExtractionScalesLinearly(t *testing.T) {
+	build := func(n int) string {
+		var b strings.Builder
+		for i := 0; b.Len() < n; i++ {
+			fmt.Fprintf(&b, "https://h%d.example/p host%d.example/x ", i, i)
+		}
+		return b.String()
+	}
+	small, large := build(64<<10), build(1<<20)
+	ts := sec16TaintMinDuration(func() { extractTaintSpans(small, sec16TaintEnv, false) })
+	tl := sec16TaintMinDuration(func() { extractTaintSpans(large, sec16TaintEnv, false) })
+	if ts <= 0 {
+		ts = time.Microsecond
+	}
+	if ratio := float64(tl) / float64(ts); ratio > 48 {
+		t.Fatalf("16x input took %.0fx the time (%v vs %v): extraction is superlinear", ratio, tl, ts)
 	}
 }

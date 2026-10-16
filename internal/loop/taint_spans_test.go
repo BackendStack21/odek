@@ -13,6 +13,16 @@ import (
 
 var sec16TaintEnv = taintEnv{home: "/home/u", cwd: "/home/u/proj"}
 
+// setPrincipalLocked replaces the principal's mentions with those of text.
+func (s *taintSpanStore) setPrincipalLocked(text string, env taintEnv) {
+	s.principal = taintPrincipal{raw: text, spans: taintPrincipalSpans(text, env)}
+}
+
+// recordLocked records the spans of text under source.
+func (s *taintSpanStore) recordLocked(text, source string, env taintEnv) {
+	s.insertLocked(extractTaintSpans(text, env, false), source)
+}
+
 func sec16TaintKinds(text string) map[string]bool {
 	out := map[string]bool{}
 	for _, r := range extractTaintSpans(text, sec16TaintEnv, false) {
