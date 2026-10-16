@@ -114,3 +114,14 @@ func TestRED_GlobalTemplateGuardHasNoSidecarFields(t *testing.T) {
 		}
 	}
 }
+
+// TestRED_GlobalTemplateRequiresHTTPSForSkillImports: a fresh operator
+// config refuses plain-HTTP skill imports, which can be tampered with in
+// transit. Projects may tighten this but never relax it.
+func TestRED_GlobalTemplateRequiresHTTPSForSkillImports(t *testing.T) {
+	initScratch(t)
+	t.Chdir(t.TempDir())
+	if !config.LoadConfig(config.CLIFlags{}).Skills.Import.RequireHTTPS {
+		t.Error("odek init --global leaves skills.import.require_https off")
+	}
+}

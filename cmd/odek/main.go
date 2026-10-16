@@ -1511,9 +1511,13 @@ Environment variables:
 // including the sensitive ones (api_key, base_url, system, dangerous, …)
 // that project-level ./odek.json files are not allowed to set.
 //
-// Sections that are rarely tuned by hand (mcp_servers, transcription,
-// vision, embedding, trusted_proxies) are intentionally omitted from the
-// template to keep it maintainable — see docs/CONFIG.md for the full schema.
+// Everything it enables works with the binary and one API key. Features
+// that need something else stay off or empty: the guard uses the local
+// scan (no PIGuard sidecar), web_search has no SearXNG base_url, Telegram
+// auto-transcription/description are off (whisper.cpp / MiniCPM-V), and
+// mcp_servers, embedding and telegram are empty. The sandbox key is left
+// out so the default-on posture applies; without Docker it falls back to
+// unsandboxed with a warning. See docs/CONFIG.md for the full schema.
 const globalConfigTemplate = `{
   "provider": "deepseek",
   "model": "deepseek-v4-flash",
@@ -1599,7 +1603,7 @@ const globalConfigTemplate = `{
     "import": {
       "max_size_bytes": 1048576,
       "timeout_seconds": 5,
-      "require_https": false
+      "require_https": true
     }
   },
   "memory": {
