@@ -42,7 +42,7 @@ import (
 //     host words followed by ":" or "/" whose last label is not a common
 //     file extension. Bare hosts on a short list of ubiquitous sites
 //     (github.com, pypi.org, …) are not recorded; their URLs still are.
-//   - path: absolute and ~/ paths with at least two segments, outside the
+//   - path: absolute, ~/, $HOME/ and ${HOME}/ paths (cleaned) with at least two segments, outside the
 //     working directory, the sandbox /workspace mount, the home directory's
 //     ancestors, /dev/{null,stdin,stdout,stderr} and the standard bin
 //     directories.
@@ -181,7 +181,7 @@ var (
 	taintHostWordRe   = regexp.MustCompile(`(?i)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,24}[:/]`)
 	taintBareHostRe   = regexp.MustCompile(`(?i)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,24}`)
 	taintIPv4Re       = regexp.MustCompile(`\d{1,3}(?:\.\d{1,3}){3}`)
-	taintPathRe       = regexp.MustCompile(`[~/][A-Za-z0-9._~+@%-]*(?:/[A-Za-z0-9._~+@%-]+)+`)
+	taintPathRe       = regexp.MustCompile(`(?:\$\{HOME\}|\$HOME|[~/])[A-Za-z0-9._~+@%-]*(?:/+[A-Za-z0-9._~+@%-]+)+`)
 	taintTokenRe      = regexp.MustCompile(`[A-Za-z0-9+_=-]{32,}`)
 	taintTrailingTrim = ".,;:!?)]}'\"*"
 )
@@ -378,16 +378,18 @@ func isTaintWordByte(b byte) bool {
 	return b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' || isDigit(b) || b == '_'
 }
 
-// normaliseTaintPath expands ~/, cleans p and applies the path exclusions.
+// normaliseTaintPath expands ~/, $HOME/ and ${HOME}/, cleans p (doubled
+// slashes, "." and ".." segments) and applies the path exclusions.
 func normaliseTaintPath(p string, env taintEnv) (string, bool) {
-	if strings.HasPrefix(p, "~") {
-		if !strings.HasPrefix(p, "~/") || env.home == "" || env.home == "." {
+	for _, prefix := range []string{"~", "${HOME}", "$HOME"} {
+		if !strings.HasPrefix(p, prefix) {
+			continue
+		}
+		if !strings.HasPrefix(p[len(prefix):], "/") || env.home == "" || env.home == "." {
 			return "", false
 		}
-		p = env.home + p[1:]
-	}
-	if strings.HasPrefix(p, "//") {
-		return "", false
+		p = env.home + p[len(prefix):]
+		break
 	}
 	p = path.Clean(p)
 	if strings.Count(p, "/") < 2 {

