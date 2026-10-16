@@ -17,6 +17,7 @@ import (
 
 	"github.com/BackendStack21/odek/internal/danger"
 	"github.com/BackendStack21/odek/internal/events"
+	"github.com/BackendStack21/odek/internal/redact"
 	"github.com/BackendStack21/odek/internal/session"
 )
 
@@ -221,6 +222,17 @@ var taintMultiTenantSuffixes = map[string]bool{
 	"run.app": true, "surge.sh": true, "pythonanywhere.com": true, "blogspot.com": true,
 	"wordpress.com": true, "substack.com": true, "notion.site": true, "webflow.io": true,
 	"azureedge.net": true, "r2.dev": true, "deno.dev": true, "replit.app": true,
+	// Dynamic DNS, wildcard-IP, tunnel and request-capture services.
+	"duckdns.org": true, "ddns.net": true, "hopto.org": true, "no-ip.org": true,
+	"nip.io": true, "sslip.io": true, "ngrok-free.dev": true, "ngrok.dev": true,
+	"serveo.net": true, "localtunnel.me": true, "ts.net": true, "pipedream.net": true,
+	"interact.sh": true, "oast.fun": true, "oast.live": true, "oast.me": true,
+	"oast.pro": true, "oast.site": true, "oast.online": true, "requestcatcher.com": true,
+	"webhook.site": true,
+	// Hosted app and site builders.
+	"replit.dev": true, "github.dev": true, "hf.space": true, "streamlit.app": true,
+	"supabase.co": true, "lovable.app": true, "neocities.org": true, "wixsite.com": true,
+	"weebly.com": true, "azurestaticapps.net": true,
 }
 
 // taintFileExtensions are last labels that mark a dotted word as a file
@@ -1010,8 +1022,23 @@ func (s *taintSpanStore) match(text string, kinds taintKinds, egress bool, env t
 // ── engine gate ────────────────────────────────────────────────────────
 
 // taintPassiveHeaders are the request headers that keep an http_request a
-// plain fetch for the egress rule; any other header can carry data.
+// plain fetch for the egress rule; any other header can carry data, and a
+// passive one does too when its value is data-shaped (taintDataShaped).
 var taintPassiveHeaders = map[string]bool{"accept": true, "accept-language": true, "user-agent": true}
+
+// taintDataShaped reports whether a header value carries an opaque token
+// (the token-span shape) or a secret the redactor recognises.
+func taintDataShaped(v string) bool {
+	if len(v) > taintMatchMaxBytes {
+		return true
+	}
+	for _, loc := range taintTokenRe.FindAllStringIndex(v, -1) {
+		if opaqueTaintToken(strings.TrimRight(v[loc[0]:loc[1]], "=")) {
+			return true
+		}
+	}
+	return redact.RedactSecrets(v) != v
+}
 
 // taintEscalationFor returns the span a tool call reuses, if the call must
 // be escalated, and the resource to show the principal.
@@ -1061,7 +1088,7 @@ func (e *Engine) taintEscalationFor(ctx context.Context, store *taintSpanStore, 
 		text := p.URL
 		for name, v := range p.Headers {
 			text += "\n" + v
-			if !taintPassiveHeaders[strings.ToLower(strings.TrimSpace(name))] {
+			if !taintPassiveHeaders[strings.ToLower(strings.TrimSpace(name))] || taintDataShaped(v) {
 				egress = false
 			}
 		}
