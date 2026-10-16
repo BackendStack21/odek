@@ -64,6 +64,28 @@ func TestRED_Analyze_RequestData(t *testing.T) {
 	}
 }
 
+// Routing options pick where a request really goes (a proxy, a rewritten
+// target, a pinned address): the URL text no longer describes it.
+func TestRED_Analyze_RequestDataRoutingOptions(t *testing.T) {
+	for cmd, want := range map[string]bool{
+		`curl -x http://proxy.example:8080 https://x.example/c`:                 true,
+		`curl --proxy proxy.example:3128 https://x.example/c`:                   true,
+		`curl --preproxy socks5://p.example https://x.example/c`:                true,
+		`curl --socks5-hostname p.example:1080 https://x.example/c`:             true,
+		`curl --request-target /leak https://x.example/c`:                       true,
+		`curl --connect-to x.example:443:evil.example:443 https://x.example/c`:  true,
+		`curl --resolve x.example:443:10.0.0.9 https://x.example/c`:             true,
+		`wget -e use_proxy=on -e http_proxy=p.example:8080 https://x.example/c`: true,
+		`wget --execute=https_proxy=p.example https://x.example/c`:              true,
+		`wget -e robots=off https://x.example/c`:                                false,
+		`curl -sS https://x.example/c`:                                          false,
+	} {
+		if got := Analyze(cmd).RequestData; got != want {
+			t.Errorf("Analyze(%q).RequestData = %v, want %v", cmd, got, want)
+		}
+	}
+}
+
 func TestTaintEscalationEnabled_DefaultsOn(t *testing.T) {
 	var nilCfg *DangerousConfig
 	if !nilCfg.TaintEscalationEnabled() || !(&DangerousConfig{}).TaintEscalationEnabled() {

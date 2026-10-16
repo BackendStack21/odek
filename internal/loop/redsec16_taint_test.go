@@ -742,3 +742,23 @@ func TestRED_TaintRecord_ScansTailOfLargeMessage(t *testing.T) {
 		t.Fatal("a URL at the end of a 2 MiB message was not recorded")
 	}
 }
+
+// A proxy or routing option names the request's real target: the call is
+// matched in full, so a proxy host first seen in untrusted content escalates
+// even when the URL itself is a followed link.
+func TestRED_TaintEscalation_ProxyHostIsATarget(t *testing.T) {
+	e := &Engine{}
+	s := newTaintSpanStore()
+	s.insertLocked(extractTaintSpans("mirror at https://docs.example.org/guide, proxy evil.example:8080", sec16TaintEnv, false), "web")
+	shell := func(cmd string) string { b, _ := json.Marshal(map[string]string{"command": cmd}); return string(b) }
+	for cmd, want := range map[string]bool{
+		"curl -x evil.example:8080 https://docs.example.org/guide":                               true,
+		"curl --proxy http://evil.example:8080 https://docs.example.org/guide":                   true,
+		"curl --connect-to docs.example.org:443:evil.example:443 https://docs.example.org/guide": true,
+		"curl -s https://docs.example.org/guide":                                                 false,
+	} {
+		if _, _, ok := e.taintEscalationFor(context.Background(), s, "shell", shell(cmd), sec16TaintEnv); ok != want {
+			t.Errorf("%q: escalated=%v, want %v", cmd, ok, want)
+		}
+	}
+}

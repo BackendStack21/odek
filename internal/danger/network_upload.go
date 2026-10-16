@@ -305,7 +305,7 @@ var curlSyntax = optSpec{
 		'A': "--user-agent", 'b': "--cookie", 'd': "--data", 'e': "--referer",
 		'E': "--cert", 'F': "--form", 'H': "--header", 'n': "--netrc",
 		'K': "--config", 'Q': "--quote", 'T': "--upload-file", 'u': "--user", 'U': "--proxy-user",
-		'X': "--request",
+		'X': "--request", 'x': "--proxy",
 	},
 	long: longTable(
 		"abstract-unix-socket alt-svc aws-sigv4 cacert capath cert cert-type ciphers config connect-timeout "+
@@ -491,7 +491,10 @@ func fileURLReadClass(rest string) RiskClass {
 // text does not show (Analysis.RequestData).
 var (
 	curlRequestDataOptions = fieldSet("--data --data-ascii --data-binary --data-raw --data-urlencode " +
-		"--form --form-string --json --url-query --header --proxy-header --user-agent --referer --cookie")
+		"--form --form-string --json --url-query --header --proxy-header --user-agent --referer --cookie " +
+		// Routing options: where the request really goes.
+		"--proxy --preproxy --socks4 --socks4a --socks5 --socks5-hostname --request-target --connect-to " +
+		"--resolve --doh-url")
 	wgetRequestDataOptions = fieldSet("--post-data --body-data --header --user-agent --referer --method")
 )
 
@@ -517,7 +520,21 @@ func transferSendsRequestData(name string, inner []string) bool {
 			if opts[n] || strings.HasPrefix(n, "--expand-") && opts["--"+strings.TrimPrefix(n, "--expand-")] {
 				return true
 			}
+			if name == "wget" && n == "--execute" && wgetProxySetting(o.value) {
+				return true
+			}
 		}
+	}
+	return false
+}
+
+// wgetProxySetting reports whether a wgetrc command (-e/--execute) routes
+// requests through a proxy.
+func wgetProxySetting(cmd string) bool {
+	key, _, _ := strings.Cut(strings.ToLower(strings.ReplaceAll(cmd, " ", "")), "=")
+	switch key {
+	case "use_proxy", "useproxy", "http_proxy", "httpproxy", "https_proxy", "httpsproxy", "ftp_proxy", "ftpproxy":
+		return true
 	}
 	return false
 }
