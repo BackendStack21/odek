@@ -539,7 +539,7 @@ Skill listing with provenance: `name`, `description`, `auto_load`, `usage_count`
 
 ### `GET /api/tools`
 
-The built-in tool registry with the resolved enabled/disabled state after `tools.enabled` / `tools.disabled` filtering, plus the configured MCP server count (per-connection tool lists vary with MCP).
+The built-in tool registry with the resolved enabled/disabled state after `tools.enabled` / `tools.disabled` filtering, plus the configured MCP server count (per-connection tool lists vary with MCP). `transcribe`, `vision`, `speak` and `web_search` are listed with `enabled: false` and a `reason` naming the missing backend when they would not be registered (no whisper.cpp / MiniCPM-V / provider backend / SearXNG `base_url`).
 
 ### `POST /api/prompt` — headless runs
 

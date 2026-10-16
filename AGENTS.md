@@ -223,7 +223,7 @@ ReAct cycle: observe → think → act → repeat.
 
 ### Tools
 Built-in tools include: http_request, math_eval, diff, json_query, tree, checksum, head_tail, base64, transcribe, speak, browser, read_file, write_file, search_files, patch, shell, plan, delegate_tasks, session_search, artifact_read, config_view, list_tools, list_subagent_profiles, clarify, send_message.
-`transcribe` and `vision` are registered only when their backend can run (provider backend, or the local whisper.cpp / MiniCPM-V binaries and model files); `speak` only with provider TTS; `web_search` only with a SearXNG `base_url`. Their names stay reserved against MCP shadowing.
+`transcribe` and `vision` are registered only when their backend can run (provider backend, or the local whisper.cpp / MiniCPM-V binaries and model files); `speak` only with provider TTS; `web_search` only with a SearXNG `base_url`. All four names stay reserved against MCP shadowing (`gatedBuiltinTools`), `/api/tools` reports an unregistered one as unavailable with the missing backend, and an explicit `tools.enabled` entry naming one warns.
 
 ### Terminal Rendering (`internal/render/`)
 Vertical space compression is baked into the render paths; blank lines removed from Iteration/FinalAnswer/Summary. Raw-mode cursor uses `\r\n` for cross-platform compatibility.

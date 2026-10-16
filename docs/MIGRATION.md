@@ -1,5 +1,35 @@
 # Migrating to odek v2
 
+## Init and external-dependency defaults
+
+A fresh `odek init` now produces a setup that needs only the binary and one
+API key. Changes that can affect an existing install:
+
+1. **Configs from `odek init --global` (v1.19.0 onward) disabled every
+   built-in tool.** The template wrote `"tools": {"enabled": []}`, and an
+   empty `tools.enabled` list is an allowlist of nothing. odek now warns
+   about it on startup. Remove the line, or set it to `null`:
+   ```json
+   "tools": { "enabled": null, "disabled": [] }
+   ```
+2. **Telegram auto-processing is off by default.**
+   `transcription.auto_transcribe` and `vision.auto_describe` now default to
+   `false` (they needed whisper.cpp or MiniCPM-V). If you installed them,
+   turn auto-processing back on:
+   ```json
+   "transcription": { "auto_transcribe": true },
+   "vision": { "auto_describe": true }
+   ```
+   The bundled Docker configs already set both.
+3. **`transcribe` and `vision` are offered only when they can run** (a
+   provider backend, or the local binary and model files). With an explicit
+   `tools.enabled` list naming one that is not available, odek warns.
+4. **`odek init` (project) no longer pins `sandbox_network`, planning or
+   skills values.** A `./odek.json` from an older `odek init` still has
+   `"sandbox_network": "none"`, which needs sandbox approval on every
+   non-interactive run; change it to `""`. Its planning `0` values clamp
+   planning to its minimum, so set `max_steps`/`max_render_chars` to `null`.
+
 ## Batch execution tool retirement
 
 The batch execution tools have been removed from all built-in registries,

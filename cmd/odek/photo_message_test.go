@@ -69,7 +69,7 @@ func TestPhotoVisionMessage_PreservesUntrustedWrapping(t *testing.T) {
 func TestPhotoFallbackMessage(t *testing.T) {
 	path := "/home/odek/.odek/media/photo_abc123.jpg"
 
-	noCap := photoFallbackMessage(path, "")
+	noCap := photoFallbackMessage(path, "", true)
 	if !strings.Contains(noCap, path) {
 		t.Errorf("fallback dropped the path: %q", noCap)
 	}
@@ -77,7 +77,7 @@ func TestPhotoFallbackMessage(t *testing.T) {
 		t.Errorf("no-caption fallback should not reference a user message: %q", noCap)
 	}
 
-	withCap := photoFallbackMessage(path, "what is this?")
+	withCap := photoFallbackMessage(path, "what is this?", true)
 	if !strings.Contains(withCap, path) {
 		t.Errorf("captioned fallback dropped the path: %q", withCap)
 	}

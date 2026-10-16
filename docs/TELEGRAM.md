@@ -495,7 +495,7 @@ Photo received → DownloadPhoto (largest size to disk)
 
 If the photo has a **caption**, that text becomes the user's request and also focuses the vision extraction. Both the caption passed to the local vision model and the description returned to the main agent are wrapped in `<untrusted_content>` boundaries (external text is untrusted input).
 
-**Fallback:** If auto-describe is disabled, no vision backend is installed (a warning is logged), or the vision model fails, the agent receives the file path (and caption, if any) with a suggestion to use the `vision` tool manually.
+**Fallback:** If auto-describe is disabled, no vision backend is installed (a warning is logged when auto-describe is on), or the vision model fails, the agent receives the file path (and caption, if any). It is told to use the `vision` tool only when a vision backend can run; otherwise it is told the image cannot be analyzed, so it can say so instead of calling a tool it does not have.
 
 **Docker:** the official image bundles `llama-mtmd-cli` and MiniCPM-V 4.6, with `auto_describe` enabled in the shipped configs — so photo understanding works out of the box. See [../docker/README.md](../docker/README.md#image--video-understanding-out-of-the-box).
 
@@ -512,7 +512,7 @@ Voice message received → DownloadVoice (OGG Opus to disk)
 
 **OGG Opus handling:** whisper.cpp uses `dr_wav`/`dr_mp3` internally and does not support OGG Opus. The transcribe tool auto-detects unsupported formats and converts via ffmpeg. If ffmpeg is unavailable, the original file is passed to whisper which produces a clear error message.
 
-**Fallback:** If auto-transcribe is disabled, no backend is installed (a warning is logged), or it fails (ffmpeg unavailable, corrupt audio, whisper error), the agent receives the file path with a suggestion to use the `transcribe()` tool manually.
+**Fallback:** If auto-transcribe is disabled, no backend is installed (a warning is logged), or it fails (ffmpeg unavailable, corrupt audio, whisper error), the agent receives the file path. It is told to use the `transcribe` tool only when a transcription backend can run; otherwise it is told the note cannot be transcribed.
 
 **Docker:** the official image bundles the whisper.cpp CLI, the `small` (multilingual) model, and ffmpeg, with `auto_transcribe` enabled in the shipped configs — so voice transcription works out of the box with no host install, at usable German/English/Spanish quality. See [../docker/README.md](../docker/README.md#voice-transcription-out-of-the-box).
 

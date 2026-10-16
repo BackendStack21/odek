@@ -1,9 +1,12 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 
+	"github.com/BackendStack21/odek"
 	"github.com/BackendStack21/odek/internal/config"
 	"github.com/BackendStack21/odek/internal/danger"
 )
@@ -59,4 +62,39 @@ func newConfiguredTranscribeTool(dc danger.DangerousConfig, tcfg toolConfig) (*t
 		}
 	}
 	return t, transcribeBackendReady(tcfg.Transcription, providerSTT)
+}
+
+// gatedBuiltinTools are built-in tools registered only when their backend
+// is configured or installed, mapped to what is missing when they are
+// absent. Their names stay reserved against MCP shadowing, and surfaces
+// that list tools report them as unavailable rather than enabled.
+var gatedBuiltinTools = map[string]string{
+	"transcribe": "no transcription backend: install whisper.cpp and a model, or set stt.backend to provider",
+	"vision":     "no vision backend: install llama-mtmd-cli and the MiniCPM-V files, or set vision.backend to provider",
+	"speak":      "no speech backend: set tts.backend to provider",
+	"web_search": "no search backend: set web_search.base_url to a SearXNG instance",
+}
+
+// gatedToolWarned records gated tools already reported as missing from an
+// explicit allowlist, so repeated tool-set builds warn once per process.
+var gatedToolWarned sync.Map
+
+// warnUnavailableEnabledTools reports allowlisted gated tools that are not
+// registered: tool.FilterTools skips unknown names silently, which would
+// leave e.g. `--tool vision` running with no tools and no explanation.
+func warnUnavailableEnabledTools(enabled []string, registered []odek.Tool) {
+	have := make(map[string]bool, len(registered))
+	for _, t := range registered {
+		have[t.Name()] = true
+	}
+	for _, name := range enabled {
+		reason, gated := gatedBuiltinTools[name]
+		if !gated || have[name] {
+			continue
+		}
+		if _, seen := gatedToolWarned.LoadOrStore(name, true); seen {
+			continue
+		}
+		fmt.Fprintf(os.Stderr, "odek: WARNING: tool %q is enabled but not available (%s)\n", name, reason)
+	}
 }

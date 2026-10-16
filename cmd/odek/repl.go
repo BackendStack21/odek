@@ -82,6 +82,11 @@ func replCmd(args []string) error {
 		SandboxCPUs:     f.SandboxCPUs,
 		SandboxUser:     f.SandboxUser,
 	})
+	// Fail fast on a missing API key, before approval prompts, MCP server
+	// spawns or sandbox startup.
+	if err := requireAPIKey(resolved); err != nil {
+		return err
+	}
 	if err := approveProjectSandbox(resolved, os.Stdin, os.Stdout); err != nil {
 		return err
 	}
@@ -143,10 +148,6 @@ func replCmd(args []string) error {
 		User:     resolved.SandboxUser,
 		Env:      resolved.SandboxEnv,
 		Volumes:  resolved.SandboxVolumes,
-	}
-	// Fail fast on a missing API key, before starting a sandbox container.
-	if err := requireAPIKey(resolved); err != nil {
-		return err
 	}
 	bgName, bgCleanup, bgSandboxed, bgErr := ensureSandbox(resolved, tools, sbCfg)
 	if bgErr != nil {

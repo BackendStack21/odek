@@ -787,9 +787,15 @@ func handleTools(resolved config.ResolvedConfig) http.HandlerFunc {
 		}
 		whitelistActive := resolved.Tools.Enabled != nil
 
+		// Descriptors come from the resolved tool config so gated tools
+		// (transcribe, vision, speak, web_search) appear exactly when the
+		// agent would be offered them; planning is forced on so plan is
+		// always described.
+		tcfg := toolConfigFromResolved(resolved)
 		pc := config.DefaultPlanningConfig()
+		tcfg.Planning = &pc
 		descriptors := map[string]odek.Tool{}
-		for _, t := range builtinTools(danger.DangerousConfig{}, nil, nil, 1, "", toolConfig{Planning: &pc}, nil) {
+		for _, t := range builtinTools(danger.DangerousConfig{}, nil, nil, 1, "", tcfg, nil) {
 			descriptors[t.Name()] = t
 		}
 		out := make([]toolSummary, 0, len(names))
@@ -803,6 +809,9 @@ func handleTools(resolved config.ResolvedConfig) http.HandlerFunc {
 			}
 			if !entry.Enabled {
 				entry.Reason = "Disabled by the operator tool filter"
+			} else if reason, gated := gatedBuiltinTools[n]; gated && descriptors[n] == nil {
+				entry.Enabled = false
+				entry.Reason = "Not available: " + reason
 			}
 			out = append(out, entry)
 		}

@@ -2052,6 +2052,11 @@ func run(args []string) (outcome error) {
 
 	// Load config from all sources (file → env → CLI)
 	resolved := config.LoadConfig(cliFlagsFromRun(f))
+	// Fail fast on a missing API key, before approval prompts, MCP server
+	// spawns or sandbox startup.
+	if err := requireAPIKey(resolved); err != nil {
+		return err
+	}
 	if err := approveProjectSandbox(resolved, os.Stdin, os.Stdout); err != nil {
 		return err
 	}
@@ -2121,10 +2126,6 @@ func run(args []string) (outcome error) {
 	// hard-fail behavior.
 	var runContainerName string
 	var runSandboxed bool
-	// Fail fast on a missing API key, before starting a sandbox container.
-	if err := requireAPIKey(resolved); err != nil {
-		return err
-	}
 	runContainerName, sandboxCleanup, runSandboxed, err = ensureSandbox(resolved, tools, sbCfg)
 	if err != nil {
 		return err
@@ -3001,6 +3002,7 @@ func filterBuiltinTools(tools []odek.Tool, cfg config.ToolConfig, required map[s
 	for i, t := range tools {
 		adapted[i] = odekToolAdapter{t}
 	}
+	warnUnavailableEnabledTools(cfg.Enabled, tools)
 	filtered := tool.FilterTools(adapted, cfg.Enabled, cfg.Disabled, required)
 	out := make([]odek.Tool, len(filtered))
 	for i, t := range filtered {
@@ -3047,11 +3049,13 @@ func reservedBuiltinToolNames() map[string]bool {
 	// must not shadow the names.
 	names["clarify"] = true
 	names["send_message"] = true
-	// transcribe and vision are registered only when their backend can run;
-	// reserve them regardless so installing whisper.cpp or MiniCPM-V later
-	// cannot collide with an MCP tool that took the name meanwhile.
-	names["transcribe"] = true
-	names["vision"] = true
+	// Gated tools (transcribe, vision, speak, web_search) are registered
+	// only when their backend is configured or installed; reserve them
+	// regardless so enabling a backend later cannot collide with an MCP
+	// tool that took the name meanwhile.
+	for name := range gatedBuiltinTools {
+		names[name] = true
+	}
 	return names
 }
 
@@ -3565,6 +3569,11 @@ func continueCmd(args []string) (outcome error) {
 	// Resolve config from the session's provider+model so resume does not
 	// pair a stored model id with the operator's current default provider.
 	resolved := config.LoadConfig(continueCLIFlags(sess, f))
+	// Fail fast on a missing API key, before approval prompts, MCP server
+	// spawns or sandbox startup.
+	if err := requireAPIKey(resolved); err != nil {
+		return err
+	}
 
 	// Initialize semantic search index (non-fatal on failure). Sessions use the
 	// shared embedding backend (or a sessions.embedding override).
@@ -3644,10 +3653,6 @@ func continueCmd(args []string) (outcome error) {
 	}
 	var contContainerName string
 	var contSandboxed bool
-	// Fail fast on a missing API key, before starting a sandbox container.
-	if err := requireAPIKey(resolved); err != nil {
-		return err
-	}
 	contContainerName, sandboxCleanup, contSandboxed, err = ensureSandbox(resolved, tools, sbCfg)
 	if err != nil {
 		return err
