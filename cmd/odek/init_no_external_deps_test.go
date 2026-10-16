@@ -3,6 +3,8 @@ package main
 import (
 	"encoding/json"
 	"io"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/BackendStack21/odek/internal/config"
@@ -123,5 +125,38 @@ func TestRED_GlobalTemplateRequiresHTTPSForSkillImports(t *testing.T) {
 	t.Chdir(t.TempDir())
 	if !config.LoadConfig(config.CLIFlags{}).Skills.Import.RequireHTTPS {
 		t.Error("odek init --global leaves skills.import.require_https off")
+	}
+}
+
+// TestRED_GlobalInitKeepsOdekHomePrivate: ~/.odek holds sessions, memory,
+// audit logs and approval stores, so init must create it 0700, and
+// --force must not carry group/other bits of an existing config over.
+func TestRED_GlobalInitKeepsOdekHomePrivate(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := initConfig([]string{"--global"}); err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Stat(filepath.Join(home, ".odek"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := fi.Mode().Perm(); perm != 0o700 {
+		t.Errorf("~/.odek created with mode %o, want 700", perm)
+	}
+
+	cfg := config.GlobalConfigPath()
+	if err := os.Chmod(cfg, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := initConfig([]string{"--global", "--force"}); err != nil {
+		t.Fatal(err)
+	}
+	fi, err = os.Stat(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := fi.Mode().Perm(); perm&0o077 != 0 {
+		t.Errorf("--force kept a group/other-readable config (mode %o)", perm)
 	}
 }

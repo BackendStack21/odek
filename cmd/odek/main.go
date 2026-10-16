@@ -1825,9 +1825,11 @@ func initConfig(args []string) error {
 		return nil
 	}
 
-	// Create parent directory (os.MkdirAll on "." is a no-op — fine for local)
+	// Create parent directory (os.MkdirAll on "." is a no-op — fine for
+	// local). ~/.odek holds sessions, memory, audit logs and approval
+	// stores, so it is private to the operator.
 	dir := filepath.Dir(configPath)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("create directory %s: %w", dir, err)
 	}
 
@@ -1840,7 +1842,9 @@ func initConfig(args []string) error {
 			writePath = resolved
 		}
 		if fi, err := os.Stat(writePath); err == nil && fi.Mode().IsRegular() {
-			mode = fi.Mode().Perm()
+			// Keep the owner bits of an existing file but never its
+			// group/other access: the config can hold API keys.
+			mode = fi.Mode().Perm() &^ 0o077
 		}
 	}
 	if err := fsatomic.WriteFile(writePath, []byte(template+"\n"), mode); err != nil {
