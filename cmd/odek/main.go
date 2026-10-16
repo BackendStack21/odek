@@ -2731,8 +2731,12 @@ func builtinTools(dc danger.DangerousConfig, sm *skills.SkillManager, approver d
 		toolsDisabled: tcfg.Introspection.ToolsDisabled,
 		mcpServers:    tcfg.Introspection.MCPServers,
 	}
+	// transcribe and vision are offered only when their backend can run —
+	// on a stock install (no whisper.cpp, no MiniCPM-V files, no provider
+	// backend) every call would fail. Their names stay reserved against MCP
+	// shadowing either way (reservedBuiltinToolNames).
 	vision := newConfiguredVisionTool(dc, tcfg, approver)
-	transcribe := newTranscribeTool(dc, tcfg.Transcription)
+	transcribe, transcribeReady := newConfiguredTranscribeTool(dc, tcfg)
 	tools := []odek.Tool{
 		shell,
 		&delegateTasksTool{
@@ -2777,25 +2781,28 @@ func builtinTools(dc danger.DangerousConfig, sm *skills.SkillManager, approver d
 		&checksumTool{dangerousConfig: dc},
 		&headTailTool{dangerousConfig: dc},
 		&base64Tool{dangerousConfig: dc},
-		transcribe,
-		vision,
+	}
+	if transcribeReady {
+		tools = append(tools, transcribe)
+	}
+	if visionBackendReady(tcfg.Vision) {
+		tools = append(tools, vision)
+	}
+	tools = append(tools,
 		// session_search returns content from arbitrary past sessions —
 		// including sessions that ingested untrusted content. That path
 		// otherwise bypasses the memory taint gate and the audit log, so
 		// wrap its whole output as untrusted (which also records an ingest).
 		&untrustedToolWrapper{inner: newSessionSearchTool(store), source: "session_search"},
 		newBrowserTool(dc),
-	}
+	)
 
-	// Speech provider wiring: speak is registered only when provider-backed
-	// TTS is configured; the transcribe tool dispatches to the provider STT
-	// backend only when stt.backend is "provider" (local whisper otherwise).
-	if speech := newSpeechClient(tcfg.TTS, tcfg.STT, tcfg.SpeechOptions); speech != nil {
-		if tcfg.TTS.Backend == config.TTSBackendProvider {
+	// speak is registered only when provider-backed TTS is configured (there
+	// is no local TTS backend). The transcribe tool's provider STT wiring
+	// lives in newConfiguredTranscribeTool.
+	if tcfg.TTS.Backend == config.TTSBackendProvider {
+		if speech := newSpeechClient(tcfg.TTS, tcfg.STT, tcfg.SpeechOptions); speech != nil {
 			tools = append(tools, newSpeakTool(dc, tcfg.TTS, speech))
-		}
-		if tcfg.STT.Backend == config.STTBackendProvider {
-			transcribe.SetSpeechBackend(tcfg.STT, speech)
 		}
 	}
 
@@ -2905,6 +2912,11 @@ func reservedBuiltinToolNames() map[string]bool {
 	// must not shadow the names.
 	names["clarify"] = true
 	names["send_message"] = true
+	// transcribe and vision are registered only when their backend can run;
+	// reserve them regardless so installing whisper.cpp or MiniCPM-V later
+	// cannot collide with an MCP tool that took the name meanwhile.
+	names["transcribe"] = true
+	names["vision"] = true
 	return names
 }
 

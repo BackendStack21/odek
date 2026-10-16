@@ -1091,9 +1091,17 @@ func telegramCmd(args []string) error {
 				return
 			}
 
-			// Auto-transcribe if configured and whisper is available.
+			// Auto-transcribe if configured and the transcriber can run (the
+			// provider STT backend, or whisper.cpp plus a model on this host).
+			var tool *transcribeTool
+			ready := false
 			if resolved.Transcription.AutoTranscribe {
-				tool := newTranscribeTool(resolved.Dangerous, resolved.Transcription)
+				tool, ready = newConfiguredTranscribeTool(resolved.Dangerous, toolConfigFromResolved(resolved))
+				if !ready {
+					handlerLog.Warn("auto-transcribe enabled but no transcription backend is installed", "chat_id", chatID)
+				}
+			}
+			if ready {
 				tool.SetContext(mctx)
 				result, err := tool.Call(fmt.Sprintf(`{"path":"%s"}`, localPath))
 				if err == nil {
@@ -1140,7 +1148,11 @@ func telegramCmd(args []string) error {
 
 			// Queue auto-description inside the run so approvals, /stop, usage,
 			// and execution budgets cover both local and provider vision.
-			if resolved.Vision.AutoDescribeEnabled() {
+			describe := resolved.Vision.AutoDescribeEnabled() && visionBackendReady(resolved.Vision)
+			if resolved.Vision.AutoDescribeEnabled() && !describe {
+				handlerLog.Warn("auto-describe enabled but no vision backend is installed", "chat_id", chatID)
+			}
+			if describe {
 				handleChatMessageGated(mctx, chatID, messageID, userID,
 					photoFallbackMessage(localPath, caption), bot, handler, sessionManager,
 					resolved, systemMessage, handlerLog, &telegramPhotoInput{Path: localPath, Caption: caption})

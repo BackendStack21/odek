@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	_ "golang.org/x/image/webp"
 	"image"
@@ -31,9 +32,10 @@ var videoExts = map[string]bool{
 	".webm": true, ".m4v": true, ".flv": true, ".wmv": true,
 }
 
-// llamaMtmdBinary locates the llama-mtmd-cli binary.
-// Priority: cfg.BinaryPath > PATH search.
-func llamaMtmdBinary(cfg config.VisionConfig) (string, error) {
+// findLlamaMtmdBinary locates the llama-mtmd-cli binary without printing
+// anything. Priority: cfg.BinaryPath > PATH search. A binary missing from
+// PATH is reported as errLlamaMtmdNotOnPath.
+func findLlamaMtmdBinary(cfg config.VisionConfig) (string, error) {
 	if cfg.BinaryPath != "" {
 		if _, err := os.Stat(cfg.BinaryPath); err == nil {
 			return cfg.BinaryPath, nil
@@ -42,6 +44,18 @@ func llamaMtmdBinary(cfg config.VisionConfig) (string, error) {
 	}
 	if path, err := exec.LookPath("llama-mtmd-cli"); err == nil {
 		return path, nil
+	}
+	return "", errLlamaMtmdNotOnPath
+}
+
+var errLlamaMtmdNotOnPath = errors.New("llama-mtmd-cli not found")
+
+// llamaMtmdBinary is findLlamaMtmdBinary plus build instructions on stderr
+// when the binary is not on PATH.
+func llamaMtmdBinary(cfg config.VisionConfig) (string, error) {
+	path, err := findLlamaMtmdBinary(cfg)
+	if !errors.Is(err, errLlamaMtmdNotOnPath) {
+		return path, err
 	}
 	fmt.Fprintln(os.Stderr, `llama-mtmd-cli not found on PATH.
 
@@ -55,12 +69,13 @@ To install manually:
   install build/bin/llama-mtmd-cli /usr/local/bin/
 
 Or set binary_path in the vision config.`)
-	return "", fmt.Errorf("llama-mtmd-cli not found")
+	return "", err
 }
 
-// visionModelPaths resolves the model.gguf and mmproj.gguf paths.
-// Priority: cfg.ModelsDir > Docker image path > ~/.odek/minicpm-v/models.
-func visionModelPaths(cfg config.VisionConfig) (modelPath, mmprojPath string, err error) {
+// visionModelsDir returns the directory expected to hold model.gguf and
+// mmproj.gguf. Priority: cfg.ModelsDir > Docker image path >
+// ~/.odek/minicpm-v/models.
+func visionModelsDir(cfg config.VisionConfig) (string, error) {
 	dir := cfg.ModelsDir
 	if dir == "" {
 		// Docker image baked path (see docker/Dockerfile minicpm stage)
@@ -70,10 +85,20 @@ func visionModelPaths(cfg config.VisionConfig) (modelPath, mmprojPath string, er
 		} else {
 			home, homeErr := os.UserHomeDir()
 			if homeErr != nil {
-				return "", "", fmt.Errorf("cannot determine home directory: %v", homeErr)
+				return "", fmt.Errorf("cannot determine home directory: %v", homeErr)
 			}
 			dir = filepath.Join(home, ".odek", "minicpm-v", "models")
 		}
+	}
+	return dir, nil
+}
+
+// visionModelPaths resolves the model.gguf and mmproj.gguf paths, printing
+// download instructions on stderr when the model is missing.
+func visionModelPaths(cfg config.VisionConfig) (modelPath, mmprojPath string, err error) {
+	dir, err := visionModelsDir(cfg)
+	if err != nil {
+		return "", "", err
 	}
 
 	mp := filepath.Join(dir, "model.gguf")

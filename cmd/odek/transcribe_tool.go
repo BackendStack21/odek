@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -70,20 +71,32 @@ func convertToWAV(ctx context.Context, srcPath string) string {
 
 // ── Resolved Paths ──────────────────────────────────────────────────
 
-// whisperBinary attempts to locate the whisper CLI binary.
-// Priority: cfg.BinaryPath > PATH search for whisper/whisper-cli.
-func whisperBinary(cfg config.TranscriptionConfig) (string, error) {
+// findWhisperBinary locates the whisper CLI binary without printing
+// anything. Priority: cfg.BinaryPath > PATH search for whisper/whisper-cli.
+// A binary missing from PATH is reported as errWhisperNotOnPath.
+func findWhisperBinary(cfg config.TranscriptionConfig) (string, error) {
 	if cfg.BinaryPath != "" {
 		if _, err := os.Stat(cfg.BinaryPath); err == nil {
 			return cfg.BinaryPath, nil
 		}
 		return "", fmt.Errorf("whisper binary not found at configured path %q", cfg.BinaryPath)
 	}
-
 	for _, name := range []string{"whisper", "whisper-cli"} {
 		if path, err := exec.LookPath(name); err == nil {
 			return path, nil
 		}
+	}
+	return "", errWhisperNotOnPath
+}
+
+var errWhisperNotOnPath = errors.New("whisper CLI not found")
+
+// whisperBinary is findWhisperBinary plus install instructions on stderr
+// when the binary is not on PATH.
+func whisperBinary(cfg config.TranscriptionConfig) (string, error) {
+	path, err := findWhisperBinary(cfg)
+	if !errors.Is(err, errWhisperNotOnPath) {
+		return path, err
 	}
 
 	fmt.Fprintln(os.Stderr, `whisper CLI not found. Install it:
@@ -97,12 +110,14 @@ Then download a model:
   curl -LO https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin
 
 Or set binary_path in config if installed elsewhere.`)
-	return "", fmt.Errorf("whisper CLI not found")
+	return "", err
 }
 
-// modelPath resolves the absolute path to the whisper model file.
-// Priority: absolute path in config > ~/.odek/whisper/models/ggml-<model>.bin
-func modelPath(cfg config.TranscriptionConfig) (string, error) {
+// findWhisperModel resolves the absolute path to the whisper model file
+// without printing anything. Priority: absolute path in config >
+// <models_dir or ~/.odek/whisper/models>/ggml-<model>.bin. A model missing
+// from the models directory is reported as errWhisperModelMissing.
+func findWhisperModel(cfg config.TranscriptionConfig) (path, modelsDir string, err error) {
 	model := cfg.Model
 	if model == "" {
 		model = "tiny"
@@ -111,17 +126,17 @@ func modelPath(cfg config.TranscriptionConfig) (string, error) {
 	// If cfg.Model is already an absolute path to a .bin file, use it directly
 	if strings.HasSuffix(model, ".bin") && filepath.IsAbs(model) {
 		if _, err := os.Stat(model); err == nil {
-			return model, nil
+			return model, "", nil
 		}
-		return "", fmt.Errorf("whisper model not found at %q", model)
+		return "", "", fmt.Errorf("whisper model not found at %q", model)
 	}
 
 	// Build path from default or configured models dir
-	modelsDir := cfg.ModelsDir
+	modelsDir = cfg.ModelsDir
 	if modelsDir == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {
-			return "", fmt.Errorf("cannot determine home directory: %v", err)
+			return "", "", fmt.Errorf("cannot determine home directory: %v", err)
 		}
 		modelsDir = filepath.Join(home, ".odek", "whisper", "models")
 	}
@@ -134,7 +149,7 @@ func modelPath(cfg config.TranscriptionConfig) (string, error) {
 
 	for _, p := range candidates {
 		if _, err := os.Stat(p); err == nil {
-			return p, nil
+			return p, modelsDir, nil
 		}
 	}
 
@@ -142,8 +157,25 @@ func modelPath(cfg config.TranscriptionConfig) (string, error) {
 	if model == "tiny" {
 		enPath := filepath.Join(modelsDir, "ggml-tiny.en.bin")
 		if _, err := os.Stat(enPath); err == nil {
-			return enPath, nil
+			return enPath, modelsDir, nil
 		}
+	}
+
+	return "", modelsDir, errWhisperModelMissing
+}
+
+var errWhisperModelMissing = errors.New("whisper model not found")
+
+// modelPath is findWhisperModel plus download instructions on stderr when
+// the model is missing from the models directory.
+func modelPath(cfg config.TranscriptionConfig) (string, error) {
+	path, modelsDir, err := findWhisperModel(cfg)
+	if !errors.Is(err, errWhisperModelMissing) {
+		return path, err
+	}
+	model := cfg.Model
+	if model == "" {
+		model = "tiny"
 	}
 
 	fmt.Fprintf(os.Stderr, `whisper model "ggml-%s.bin" not found.
@@ -156,7 +188,7 @@ Download it:
 Available models: tiny (75MB, fastest), base (150MB), small (500MB), medium (1.5GB)
 Set "model" in transcription config to change which model is expected.`,
 		model, modelsDir, modelsDir, model)
-	return "", fmt.Errorf("whisper model not found")
+	return "", err
 }
 
 // ═════════════════════════════════════════════════════════════════════════

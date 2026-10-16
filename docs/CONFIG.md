@@ -1198,7 +1198,7 @@ project config cannot set it).
 
 ## Audio transcription (`transcription`)
 
-Configures the `transcribe` tool (local whisper.cpp).
+Configures the `transcribe` tool (local whisper.cpp). The tool is offered to the model only when it can run: `stt.backend` is `provider`, or the whisper CLI (`binary_path` or `whisper`/`whisper-cli` on `PATH`) and the model file are both installed. A stock install without whisper.cpp does not see the tool at all.
 
 | Field | Default | Description |
 |-------|---------|-------------|
@@ -1210,7 +1210,7 @@ Configures the `transcribe` tool (local whisper.cpp).
 
 ## Vision (`vision`)
 
-Configures the `vision` tool (MiniCPM-V via `llama-mtmd-cli`).
+Configures the `vision` tool (MiniCPM-V via `llama-mtmd-cli`). The tool is offered to the model only when it can run: `backend` is `provider`, or `llama-mtmd-cli` and both `model.gguf` and `mmproj.gguf` are installed.
 
 | Field | Default | Description |
 |-------|---------|-------------|
