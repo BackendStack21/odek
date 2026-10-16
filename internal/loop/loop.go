@@ -3553,7 +3553,7 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 		// recorded from untrusted content is put in front of the principal
 		// before any other gate can auto-pass it. taintDenied[i] holds the
 		// denial for each call the principal refused.
-		taintDenied := e.taintGate(toolCtx, messages, result.ToolCalls, callIDs, iterNum)
+		taintDenied := e.taintGate(toolCtx, messages, result.ToolCalls, execN, callIDs, iterNum)
 
 		// Phase 1.5: batch approval gate
 		// When an approver is set and the LLM returned multiple tool calls,

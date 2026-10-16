@@ -1041,8 +1041,9 @@ func boundTaintDisplay(s string) string {
 
 // taintGate escalates every call in the batch whose arguments reuse an
 // untrusted span. It returns, per call, the denial reason ("" when the call
-// may proceed to the ordinary gates).
-func (e *Engine) taintGate(ctx context.Context, messages []session.Message, calls []session.ToolCall, callIDs []string, iterNum int) []string {
+// may proceed to the ordinary gates). Only the first admitted calls — those
+// the tool-call budget lets run — are examined.
+func (e *Engine) taintGate(ctx context.Context, messages []session.Message, calls []session.ToolCall, admitted int, callIDs []string, iterNum int) []string {
 	if e.dangerousCfg != nil && !e.dangerousCfg.TaintEscalationEnabled() {
 		return nil
 	}
@@ -1051,6 +1052,10 @@ func (e *Engine) taintGate(ctx context.Context, messages []session.Message, call
 	store.observe(messages, env)
 	var denied []string
 	for i, tc := range calls {
+		if i >= admitted {
+			// The tool-call budget skips this call: it never runs.
+			break
+		}
 		hit, resource, ok := e.taintEscalationFor(ctx, store, tc.Function.Name, tc.Function.Arguments, env)
 		if !ok {
 			continue
