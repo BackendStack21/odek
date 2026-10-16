@@ -1335,7 +1335,7 @@ func printUsage() {
   odek memory <list|promote <session_id>>
   odek cleanup [--dry-run]
   odek logs [filters] [--follow] [--json]
-  odek upgrade [--check]
+  odek upgrade [--check] [--skip-signature]
   odek version | odek --version
 
 Commands:

@@ -95,7 +95,9 @@ cmd/odek/
   memory_cmd.go               `odek memory` command: episode review (list/--all, promote, discard), facts
                               show/edit, extended stats/compact/prune/triage/quarantine
   cleanup.go                  `odek cleanup [--dry-run]` one-shot storage sweep + janitor wiring (telegram/serve/schedule daemon)
-  upgrade.go                  `odek upgrade [--check]` self-upgrade from GitHub Releases (checksums.txt SHA-256 verified)
+  upgrade.go                  `odek upgrade [--check] [--skip-signature]` self-upgrade from GitHub Releases (checksums.txt SHA-256 verified)
+  upgrade_sigstore.go         Stdlib Sigstore bundle verifier for checksums.txt (embedded Fulcio root + Rekor key,
+                              identity pinned to release.yml@refs/tags/<tag>; fails closed)
   external_ref.go             --external-ref flag parsing (run + continue) → session.ExternalRef
   native_tool_context.go      Invocation-scoped contexts for independent native tool calls
   toolctx.go                  Tool-call context plumbing
