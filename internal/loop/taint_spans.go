@@ -250,7 +250,8 @@ func extractTaintURLs(text string) []taintRaw {
 			continue
 		}
 		scheme := strings.ToLower(u.Scheme)
-		host := strings.ToLower(u.Hostname())
+		// A fully-qualified name ("evil.example.") is the same host.
+		host := strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
 		end := loc[0] + len(raw)
 		if scheme == "file" {
 			if p := u.Path; p != "" {
