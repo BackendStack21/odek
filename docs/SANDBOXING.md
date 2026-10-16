@@ -75,6 +75,9 @@ project-level sandbox knobs (`sandbox_env`, `sandbox_image`, `sandbox_network`,
 `sandbox_volumes`) can exfiltrate host secrets via `${VAR}` interpolation, pull
 an attacker-controlled image, or widen network access, odek requires explicit
 operator approval before applying them.
+A project `"sandbox_network": "none"` is the exception: it is the default and
+the strictest mode, so it cannot widen anything and is applied without
+approval (older `odek init` versions wrote it into every `./odek.json`).
 
 When a project requests any sandbox override, odek prints a warning and prompts:
 

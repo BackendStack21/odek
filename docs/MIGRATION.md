@@ -25,10 +25,12 @@ API key. Changes that can affect an existing install:
    provider backend, or the local binary and model files). With an explicit
    `tools.enabled` list naming one that is not available, odek warns.
 4. **`odek init` (project) no longer pins `sandbox_network`, planning or
-   skills values.** A `./odek.json` from an older `odek init` still has
-   `"sandbox_network": "none"`, which needs sandbox approval on every
-   non-interactive run; change it to `""`. Its planning `0` values clamp
-   planning to its minimum, so set `max_steps`/`max_render_chars` to `null`.
+   skills values.** A `./odek.json` from an older `odek init` keeps working
+   without edits: its `"sandbox_network": "none"` no longer needs sandbox
+   approval (none is the strictest mode), and its planning `0` placeholders
+   are treated as unset instead of clamping planning to its minimum. It
+   still pins `skills.max_auto_load: 3` and `max_lazy_slots: 5`; set them to
+   `null` if your global config raises those limits.
 
 ## Batch execution tool retirement
 

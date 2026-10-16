@@ -2081,7 +2081,10 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 		projectSandboxOverride.HasImage = true
 		projectSandboxOverride.Image = project.SandboxImage
 	}
-	if project.SandboxNetwork != "" {
+	// "none" is the default and the strictest network mode, so a project
+	// asking for it cannot weaken the sandbox and needs no approval (older
+	// `odek init` versions wrote it into every ./odek.json).
+	if project.SandboxNetwork != "" && project.SandboxNetwork != DefaultSandboxNetwork {
 		projectSandboxOverride.HasNetwork = true
 		projectSandboxOverride.Network = project.SandboxNetwork
 	}
@@ -3832,7 +3835,19 @@ func clampProjectLimits(global, project *budget.Limits) {
 // planning section, project values apply freely — they can only opt out or
 // deviate from the defaults, not override an operator decision.
 func clampProjectPlanning(global, project *PlanningFileConfig) {
-	if project == nil || global == nil {
+	if project == nil {
+		return
+	}
+	// 0 is not a usable cap (it is clamped up to the minimum); older
+	// `odek init` versions wrote it as an "inherit" placeholder, so treat a
+	// project 0 as unset.
+	if project.MaxSteps != nil && *project.MaxSteps == 0 {
+		project.MaxSteps = nil
+	}
+	if project.MaxRenderChars != nil && *project.MaxRenderChars == 0 {
+		project.MaxRenderChars = nil
+	}
+	if global == nil {
 		return
 	}
 	if global.Enabled != nil && !*global.Enabled && project.Enabled != nil && *project.Enabled {
