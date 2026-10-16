@@ -66,7 +66,9 @@ import (
 //     safe. A command that is plain network egress follows the egress rule.
 //   - write_file / patch: a path span in the target path (content is never
 //     matched: writing up research with links is ordinary work).
-//   - MCP tools (<server>__<tool>): any span in any string argument or key.
+//   - MCP tools (<server>__<tool>) and delegate_tasks: any span in any string
+//     argument or key. In a child, a task fenced as <untrusted_input_<nonce>>
+//     is untrusted content (recorded, never principal).
 //   - http_request and browser navigate: the egress rule when the request is
 //     plain network egress; any span in the URL and header values otherwise
 //     (uploads, credentialed requests, internal targets).
@@ -632,19 +634,64 @@ func untrustedBodies(s string) []untrustedBody {
 // stripUntrustedBodies removes every wrapper from s, leaving the text the
 // principal wrote.
 func stripUntrustedBodies(s string) string {
-	bodies := untrustedBodies(s)
+	bodies := append(untrustedBodies(s), untrustedInputBodies(s)...)
+	sort.Slice(bodies, func(i, j int) bool { return bodies[i].start < bodies[j].start })
 	if len(bodies) == 0 {
 		return s
 	}
 	var b strings.Builder
 	prev := 0
 	for _, w := range bodies {
+		if w.start < prev {
+			continue // nested in a wrapper already removed
+		}
 		b.WriteString(s[prev:w.start])
 		b.WriteByte('\n')
 		prev = w.end
 	}
 	b.WriteString(s[prev:])
 	return b.String()
+}
+
+// untrustedInputSource labels spans recorded from a delegated task that its
+// parent fenced as untrusted input.
+const untrustedInputSource = "delegated task (untrusted input)"
+
+// untrustedInputBodies returns every <untrusted_input_<nonce>> fence in s:
+// the boundary a parent puts around a delegated task derived from untrusted
+// content. Its body is untrusted in the child, never the principal's words.
+func untrustedInputBodies(s string) []untrustedBody {
+	const open = "<untrusted_input_"
+	var out []untrustedBody
+	off := 0
+	for {
+		i := strings.Index(s[off:], open)
+		if i < 0 {
+			return out
+		}
+		start := off + i
+		rest := s[start+len(open):]
+		n := 0
+		for n < len(rest) && (isDigit(rest[n]) || rest[n] >= 'a' && rest[n] <= 'f') {
+			n++
+		}
+		if n == 0 || n >= len(rest) || rest[n] != '>' {
+			off = start + len(open)
+			continue
+		}
+		bodyStart := start + len(open) + n + 1
+		closeTag := "</untrusted_input_" + rest[:n] + ">"
+		end, body := len(s), s[bodyStart:]
+		if c := strings.Index(s[bodyStart:], closeTag); c >= 0 {
+			body = s[bodyStart : bodyStart+c]
+			end = bodyStart + c + len(closeTag)
+		}
+		out = append(out, untrustedBody{source: untrustedInputSource, body: body, start: start, end: end})
+		off = end
+		if off >= len(s) {
+			return out
+		}
+	}
 }
 
 // bgReadTool reports tools that surface background-job output; they inherit the taint of the
@@ -778,6 +825,11 @@ func (s *taintSpanStore) observe(messages []session.Message, env taintEnv) {
 		default:
 			for _, w := range untrustedBodies(m.Content) {
 				if session.ExternalNonToolIngest(w.source) || (w.source == "bg" && bgTaints) {
+					jobs = append(jobs, job{w.body, w.source, false})
+				}
+			}
+			if m.Role == "user" {
+				for _, w := range untrustedInputBodies(m.Content) {
 					jobs = append(jobs, job{w.body, w.source, false})
 				}
 			}
@@ -1191,8 +1243,9 @@ func (e *Engine) taintEscalationFor(ctx context.Context, store *taintSpanStore, 
 		hit, ok := store.match(p.URL, taintMatchAll, cls == danger.NetworkEgress, env)
 		return hit, p.URL, ok
 	}
-	if strings.Contains(name, "__") {
-		// An MCP tool is third-party code with any effect: every string
+	if strings.Contains(name, "__") || name == "delegate_tasks" {
+		// An MCP tool is third-party code with any effect, and a delegated
+		// task hands its strings to a child that acts on them: every string
 		// argument takes the full match.
 		hit, ok := store.match(taintArgumentStrings(args), taintMatchAll, false, env)
 		return hit, name + " " + args, ok
