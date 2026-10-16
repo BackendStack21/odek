@@ -951,3 +951,17 @@ func TestTaintPersist_SeedAndExportEdges(t *testing.T) {
 		}
 	}
 }
+
+// A store rebuilt from persisted state may hold only hashed spans (tokens and
+// redactable values); an oversize argument must still fail closed.
+func TestRED_TaintOversizeFailsClosedWithHashedSpansOnly(t *testing.T) {
+	s := newTaintSpanStore()
+	s.seedLocked([]session.TaintSpan{{Kind: "token", Hash: taintHash("Zx9QwErTyUiOpAsDfGhJkLzXcVbNm1234567")}})
+	if len(s.spans) != 0 || len(s.hashed) != 1 {
+		t.Fatalf("setup: spans=%d hashed=%d", len(s.spans), len(s.hashed))
+	}
+	big := strings.Repeat("a ", taintMatchCeiling)
+	if _, ok := s.match(big, taintMatchAll, false, sec16TaintEnv); !ok {
+		t.Fatal("oversize argument not escalated while hashed spans are recorded")
+	}
+}

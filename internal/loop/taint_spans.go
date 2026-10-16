@@ -1085,7 +1085,7 @@ func (s *taintSpanStore) match(text string, kinds taintKinds, egress bool, env t
 	if len(text) > taintMatchCeiling {
 		// Too large to match in full: with any span recorded, fail closed.
 		s.mu.Lock()
-		n := len(s.spans)
+		n := len(s.spans) + len(s.hashed)
 		s.mu.Unlock()
 		if n == 0 {
 			return taintHit{}, false
