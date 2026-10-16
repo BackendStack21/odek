@@ -1814,6 +1814,11 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 
 	// Layer 1: global (~/.odek/config.json)
 	global := loadFile(GlobalConfigPath())
+	if global.Tools != nil && global.Tools.Enabled != nil && len(global.Tools.Enabled) == 0 {
+		// `odek init --global` used to write "enabled": [] by mistake; an
+		// empty allowlist is honored, but say what it does.
+		fmt.Fprintf(os.Stderr, "odek: WARNING: tools.enabled is an empty list in %s, which disables every built-in tool; remove it or set it to null to allow all tools\n", GlobalConfigPath())
+	}
 
 	// Layer 2: project (./odek.json)
 	project := loadFileExpand(ProjectConfigPath(), false)

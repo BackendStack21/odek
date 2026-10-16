@@ -1153,7 +1153,7 @@ agents — for example, a chatbot with only `web_search`, `transcribe`, and
 
 | Field | Env | Default | Description |
 |---|---|---|---|
-| `enabled` | `ODEK_TOOLS_ENABLED` | unset | Whitelist. When set, only these tools are registered. Comma-separated in env. Leave it out or `null` for no whitelist: an empty list `[]` is a whitelist of nothing and disables every built-in tool. |
+| `enabled` | `ODEK_TOOLS_ENABLED` | unset | Whitelist. When set, only these tools are registered. Comma-separated in env. Leave it out or `null` for no whitelist: an empty list `[]` is a whitelist of nothing and disables every built-in tool (the loader warns when `~/.odek/config.json` has one; `odek init --global` wrote `[]` by mistake from v1.19.0 until this fix, so remove that line from older configs). |
 | `disabled` | `ODEK_TOOLS_DISABLED` | unset | Blacklist. These tools are removed from the default set. Comma-separated in env. |
 
 CLI flags override file and env config:
