@@ -25,6 +25,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/BackendStack21/odek/internal/diagnostics"
 	"github.com/BackendStack21/odek/internal/fsatomic"
@@ -52,11 +53,26 @@ type AuditTurn struct {
 	SuspiciousDivergence bool     `json:"suspicious_divergence"`
 }
 
+// AuditEscalation records a tool call the agent loop escalated because an
+// argument reused a span (URL, host, path or opaque token) recorded from
+// untrusted content, and the principal's decision.
+type AuditEscalation struct {
+	Turn     int       `json:"turn"`
+	Tool     string    `json:"tool"`
+	Kind     string    `json:"kind"`     // url, host, path or token
+	Span     string    `json:"span"`     // the reused span (bounded, redacted)
+	Source   string    `json:"source"`   // where the span was first seen
+	Resource string    `json:"resource"` // the escalated command, path or URL (bounded, redacted)
+	Approved bool      `json:"approved"`
+	At       time.Time `json:"at"`
+}
+
 // AuditLog is the per-session aggregate.
 type AuditLog struct {
-	SessionID string        `json:"session_id"`
-	Ingests   []AuditIngest `json:"ingests"`
-	Turns     []AuditTurn   `json:"turns"`
+	SessionID   string            `json:"session_id"`
+	Ingests     []AuditIngest     `json:"ingests"`
+	Turns       []AuditTurn       `json:"turns"`
+	Escalations []AuditEscalation `json:"escalations,omitempty"`
 }
 
 // AuditStore manages per-session audit logs under <dir>/audit/.
@@ -203,6 +219,37 @@ func (s *AuditStore) RecordTurn(sessionID string, turn AuditTurn) error {
 	return s.appendRecord(sessionID, auditRecord{Type: "turn", Turn: &turn})
 }
 
+// auditEscalationFieldMax bounds each free-text field of an escalation record.
+const auditEscalationFieldMax = 512
+
+// RecordEscalation appends an untrusted-args escalation for a session. Every
+// free-text field is redacted and bounded before it is written.
+func (s *AuditStore) RecordEscalation(sessionID string, esc AuditEscalation) error {
+	if err := ValidateSessionID(sessionID); err != nil {
+		return err
+	}
+	bound := func(v string) string {
+		v = redact.RedactSecrets(v)
+		if len(v) > auditEscalationFieldMax {
+			cut := auditEscalationFieldMax
+			for cut > 0 && !utf8.RuneStart(v[cut]) {
+				cut--
+			}
+			v = v[:cut]
+		}
+		return v
+	}
+	esc.Tool = bound(esc.Tool)
+	esc.Kind = bound(esc.Kind)
+	esc.Span = bound(esc.Span)
+	esc.Source = bound(esc.Source)
+	esc.Resource = bound(esc.Resource)
+	if esc.At.IsZero() {
+		esc.At = time.Now().UTC()
+	}
+	return s.appendRecord(sessionID, auditRecord{Type: "escalation", Escalation: &esc})
+}
+
 // redactAuditList returns a redacted copy of list; the caller's slice is
 // never modified.
 func redactAuditList(list []string) []string {
@@ -222,6 +269,8 @@ type auditRecord struct {
 	Type   string       `json:"type"`
 	Turn   *AuditTurn   `json:"turn,omitempty"`
 	Ingest *AuditIngest `json:"ingest,omitempty"`
+	// Escalation is set on "escalation" records.
+	Escalation *AuditEscalation `json:"escalation,omitempty"`
 }
 
 // Load returns the audit log for a session, or empty if not present.
@@ -336,6 +385,11 @@ func (s *AuditStore) appendRecord(sessionID string, rec auditRecord) error {
 				}
 				for i := range old.Turns {
 					if err := enc.Encode(auditRecord{Type: "turn", Turn: &old.Turns[i]}); err != nil {
+						return err
+					}
+				}
+				for i := range old.Escalations {
+					if err := enc.Encode(auditRecord{Type: "escalation", Escalation: &old.Escalations[i]}); err != nil {
 						return err
 					}
 				}
@@ -511,6 +565,10 @@ func (s *AuditStore) loadLocked(sessionID string) (AuditLog, error) {
 		case "turn":
 			if rec.Turn != nil {
 				log.Turns = append(log.Turns, *rec.Turn)
+			}
+		case "escalation":
+			if rec.Escalation != nil {
+				log.Escalations = append(log.Escalations, *rec.Escalation)
 			}
 		}
 	}

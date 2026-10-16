@@ -210,6 +210,14 @@ func messagesTaintEpisode(messages []Message) bool {
 // background-job notices ("bg", judged by the bg_start call that started the
 // job).
 func externalNonToolIngest(src string) bool {
+	return ExternalNonToolIngest(src)
+}
+
+// ExternalNonToolIngest is the exported form of externalNonToolIngest: the
+// wrapper labels in non-tool messages that carry external content no tool
+// call accounts for. The agent loop uses it to decide which wrapped bodies
+// feed untrusted-span escalation.
+func ExternalNonToolIngest(src string) bool {
 	switch {
 	case EngineDerivedSource(src), src == "episode", src == "bg",
 		strings.HasPrefix(src, "tool:"), strings.HasPrefix(src, "project:"):

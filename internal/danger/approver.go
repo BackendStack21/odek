@@ -39,6 +39,15 @@ type Approver interface {
 // in the session).
 const ToolBatchClass = RiskClass("tool_batch")
 
+// UntrustedArgsClass is the synthetic risk class of the agent loop's prompt
+// for a tool call whose arguments reuse a span (URL, host, path or opaque
+// token) recorded from untrusted content earlier in the session. It is not a
+// policy class: no dangerous config can allow it, it is never
+// session-trustable, and without an interactive approval channel it is denied
+// whatever non_interactive says, so an argument steered by untrusted content
+// never runs unattended.
+const UntrustedArgsClass = RiskClass("untrusted_args")
+
 // TrustShortcutAllowed reports whether cls may be session-trusted via the
 // "trust" shortcut. Destructive, Blocked, and Unknown must never be
 // (fail-closed catch-alls; blanket-trusting them is carte blanche), and
@@ -47,11 +56,15 @@ const ToolBatchClass = RiskClass("tool_batch")
 // was granted, so a one-time "trust" must not cover every future hook,
 // profile, and CI-workflow write. UnreadExec is excluded because the
 // entire point of the gate is per-script review — trusting it once would
-// blanket-approve every unread script for the session. NetworkUpload keeps
-// the shortcut, like SystemWrite: the friction rules cover repeated approvals.
+// blanket-approve every unread script for the session. UntrustedArgsClass is
+// excluded because each prompt names a different untrusted-content span: one
+// grant must not approve the next attacker-chosen argument. NetworkUpload
+// keeps the shortcut, like SystemWrite: the friction rules cover repeated
+// approvals.
 func TrustShortcutAllowed(cls RiskClass) bool {
 	return cls != Destructive && cls != Blocked && cls != Unknown &&
-		cls != ToolBatchClass && cls != Persistence && cls != UnreadExec
+		cls != ToolBatchClass && cls != Persistence && cls != UnreadExec &&
+		cls != UntrustedArgsClass
 }
 
 // readToolNames are the native tools whose entire effect on their target is
@@ -101,6 +114,12 @@ func WithTTYPrompt(fn func() error) error {
 	ttyPromptMu.Lock()
 	defer ttyPromptMu.Unlock()
 	return fn()
+}
+
+// untrustedArgsNonInteractiveDenial is the error every non-interactive
+// fallback returns for UntrustedArgsClass, whatever non_interactive says.
+func untrustedArgsNonInteractiveDenial(cmd string) error {
+	return fmt.Errorf("operation denied (non-interactive mode; an argument was derived from untrusted content): %s", SanitizeInline(cmd))
 }
 
 // TTYApprover implements Approver by reading from /dev/tty.
@@ -279,6 +298,9 @@ func (a *TTYApprover) promptLocked(cls RiskClass, cmd, description string, readT
 		effectiveTTY = ttyPath()
 	}
 	if testing.Testing() && (effectiveTTY == "" || effectiveTTY == "/dev/tty") {
+		if cls == UntrustedArgsClass {
+			return untrustedArgsNonInteractiveDenial(cmd)
+		}
 		if a.DangerousConfig != nil {
 			switch a.DangerousConfig.NonInteractiveAction() {
 			case Allow:
@@ -296,7 +318,11 @@ func (a *TTYApprover) promptLocked(cls RiskClass, cmd, description string, readT
 	}
 	tty, err := os.OpenFile(a.TTYPath, os.O_RDWR, 0)
 	if err != nil {
-		// Non-interactive: use the configured fallback.
+		// Non-interactive: use the configured fallback. An untrusted-args
+		// prompt has none: it exists to put a human in front of the call.
+		if cls == UntrustedArgsClass {
+			return untrustedArgsNonInteractiveDenial(cmd)
+		}
 		if a.DangerousConfig != nil {
 			switch a.DangerousConfig.NonInteractiveAction() {
 			case Allow:

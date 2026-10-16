@@ -1250,6 +1250,18 @@ type DangerousConfig struct {
 	// contract. Deny stays single-field: friction protects against
 	// accidental approvals, not denials.
 	RESTApprovalFriction *bool `json:"rest_approval_friction,omitempty"`
+
+	// TaintEscalation, when false, disables the agent loop's escalation of
+	// tool calls whose arguments reuse spans recorded from untrusted content
+	// (UntrustedArgsClass). Default true. Operator-only: the project
+	// config's dangerous section is ignored by design.
+	TaintEscalation *bool `json:"taint_escalation,omitempty"`
+}
+
+// TaintEscalationEnabled reports whether untrusted-span escalation is on.
+// Nil-safe; unset means on.
+func (c *DangerousConfig) TaintEscalationEnabled() bool {
+	return c == nil || c.TaintEscalation == nil || *c.TaintEscalation
 }
 
 // StripSecretsEnvChildrenEnabled reports whether host-mode shell/bg

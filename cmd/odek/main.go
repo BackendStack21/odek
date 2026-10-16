@@ -2299,6 +2299,7 @@ func run(args []string) (outcome error) {
 			ctx = loop.WithIngestRecorder(ctx, func(source, content string) {
 				_ = auditStore.RecordIngest(sessIDCapture, currentTurn, source, content)
 			})
+			ctx = withEscalationAudit(ctx, auditStore, func() (string, int) { return sessIDCapture, currentTurn })
 		} else {
 			// Non-session mode still needs a transient ID so extracted atoms can
 			// be traced back to this run for review.
@@ -3769,6 +3770,7 @@ func continueCmd(args []string) (outcome error) {
 	ctx = loop.WithIngestRecorder(ctx, func(source, content string) {
 		_ = auditStore.RecordIngest(sessIDCapture, currentTurn, source, content)
 	})
+	ctx = withEscalationAudit(ctx, auditStore, func() (string, int) { return sessIDCapture, currentTurn })
 	ctx = withReadLedger(ctx, sessIDCapture)
 
 	// Resolve @references in the continue task now that the audit recorder
