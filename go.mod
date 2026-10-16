@@ -6,10 +6,10 @@ require (
 	github.com/BackendStack21/go-llm-sdk v1.0.0
 	github.com/BackendStack21/go-mcp v1.4.0
 	github.com/BackendStack21/go-vector v1.4.0
-	golang.org/x/image v0.46.0
-	golang.org/x/net v0.60.0
-	golang.org/x/sys v0.48.0
-	golang.org/x/term v0.46.0
+	golang.org/x/image v0.47.0
+	golang.org/x/net v0.61.0
+	golang.org/x/sys v0.49.0
+	golang.org/x/term v0.47.0
 )
 
-require golang.org/x/text v0.42.0 // indirect
+require golang.org/x/text v0.43.0 // indirect
