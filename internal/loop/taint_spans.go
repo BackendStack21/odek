@@ -1055,13 +1055,17 @@ func (e *Engine) taintEscalationFor(ctx context.Context, store *taintSpanStore, 
 		if json.Unmarshal([]byte(args), &p) != nil || strings.TrimSpace(p.Command) == "" {
 			return taintHit{}, "", false
 		}
-		cls, _ := danger.ClassifyScriptGateCtx(ctx, p.Command)
+		// One analysis serves the class and the request-data check. The
+		// unread-script gate only raises an already non-safe class, so the
+		// plain analysis class decides safe and plain-egress here.
+		analysis := danger.Analyze(p.Command)
+		cls := analysis.Class()
 		if cls == danger.Safe {
 			return taintHit{}, "", false
 		}
 		// The egress rule judges URL text only, so it applies only when no
 		// stage sends request data, headers or query options beside it.
-		egress := cls == danger.NetworkEgress && !danger.Analyze(p.Command).RequestData
+		egress := cls == danger.NetworkEgress && !analysis.RequestData
 		hit, ok := store.match(p.Command, taintMatchAll, egress, env)
 		return hit, p.Command, ok
 	case "write_file", "patch":
