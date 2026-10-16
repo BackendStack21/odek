@@ -38,7 +38,7 @@ func TestLoadConfig_ProjectTranscriptionIgnored(t *testing.T) {
 	if cfg.Transcription.BinaryPath != "" {
 		t.Errorf("Transcription.BinaryPath = %q, want empty (project transcription must be ignored)", cfg.Transcription.BinaryPath)
 	}
-	// Note: AutoTranscribe falls back to the built-in default (true) once
+	// Note: AutoTranscribe falls back to the built-in default (false) once
 	// the project section is stripped — that flag only selects whether the
 	// operator-configured (or PATH-resolved) binary runs, so it is benign
 	// without control of binary_path.

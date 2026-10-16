@@ -20,8 +20,8 @@ func TestResolveVision_Defaults(t *testing.T) {
 	if v.BinaryPath != "" {
 		t.Errorf("BinaryPath = %q, want empty", v.BinaryPath)
 	}
-	if !v.AutoDescribeEnabled() {
-		t.Error("AutoDescribe = false, want true (default when section absent)")
+	if v.AutoDescribeEnabled() {
+		t.Error("AutoDescribe = true, want false (default when section absent)")
 	}
 }
 
@@ -48,11 +48,11 @@ func TestValidateVisionConfig(t *testing.T) {
 
 func TestResolveVision_AutoDescribeDefaultWhenSectionPresent(t *testing.T) {
 	// A vision section supplied without auto_describe must resolve to the
-	// same default as an absent section (true), mirroring
-	// transcription.auto_transcribe. Explicit false must still win.
+	// same default as an absent section (false), mirroring
+	// transcription.auto_transcribe. Explicit values must still win.
 	v := resolveVision(&VisionConfig{Backend: VisionBackendProvider, Model: "m"})
-	if !v.AutoDescribeEnabled() {
-		t.Error("AutoDescribe = false, want true (default when section present but field absent)")
+	if v.AutoDescribeEnabled() {
+		t.Error("AutoDescribe = true, want false (default when section present but field absent)")
 	}
 	off := resolveVision(&VisionConfig{Backend: VisionBackendProvider, Model: "m", AutoDescribe: boolPtr(false)})
 	if off.AutoDescribeEnabled() {

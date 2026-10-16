@@ -63,3 +63,31 @@ func TestRED_FreshLocalInitInheritsGlobalValues(t *testing.T) {
 			globalOnly.Skills.MaxLazySlots, withLocal.Skills.MaxLazySlots)
 	}
 }
+
+// TestRED_FreshGlobalInitNeedsNoExternalDependencies: what `odek init
+// --global` writes must resolve to a setup that works with the binary and
+// one API key — no PIGuard sidecar, SearXNG, whisper.cpp, local vision
+// models, MCP servers or Telegram bot.
+func TestRED_FreshGlobalInitNeedsNoExternalDependencies(t *testing.T) {
+	initScratch(t)
+	t.Chdir(t.TempDir())
+	r := config.LoadConfig(config.CLIFlags{})
+	if r.Guard.Provider != "local" {
+		t.Errorf("guard.provider = %q, want local (no sidecar)", r.Guard.Provider)
+	}
+	if r.WebSearch.BaseURL != "" {
+		t.Errorf("web_search.base_url = %q, want empty (no SearXNG)", r.WebSearch.BaseURL)
+	}
+	if r.Transcription.AutoTranscribe {
+		t.Error("transcription.auto_transcribe is on (needs whisper.cpp)")
+	}
+	if r.Vision.AutoDescribeEnabled() {
+		t.Error("vision.auto_describe is on (needs MiniCPM-V or a vision model)")
+	}
+	if len(r.MCPServers) != 0 {
+		t.Errorf("mcp_servers = %v, want none", r.MCPServers)
+	}
+	if r.Telegram.Token != "" {
+		t.Error("telegram.bot_token is set")
+	}
+}

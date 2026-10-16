@@ -1667,7 +1667,7 @@ const globalConfigTemplate = `{
   "transcription": {
     "model": "tiny",
     "language": "",
-    "auto_transcribe": true,
+    "auto_transcribe": false,
     "models_dir": "",
     "binary_path": ""
   },
@@ -1679,7 +1679,7 @@ const globalConfigTemplate = `{
     "models_dir": "",
     "binary_path": "",
     "video_frames": 8,
-    "auto_describe": true
+    "auto_describe": false
   },
   "trusted_proxies": [],
   "schedules": {

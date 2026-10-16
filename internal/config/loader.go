@@ -181,8 +181,11 @@ type SessionsConfig struct {
 // TranscriptionConfig controls the transcribe tool (local whisper.cpp).
 // Populated from the "transcription" section of odek.json.
 type TranscriptionConfig struct {
-	Model          string `json:"model,omitempty"`
-	Language       string `json:"language,omitempty"`
+	Model    string `json:"model,omitempty"`
+	Language string `json:"language,omitempty"`
+	// AutoTranscribe makes Telegram voice notes run through the transcriber
+	// before the agent answers. Off unless set: the local backend needs
+	// whisper.cpp and a model file, which a stock install does not have.
 	AutoTranscribe bool   `json:"auto_transcribe,omitempty"`
 	ModelsDir      string `json:"models_dir,omitempty"`
 	BinaryPath     string `json:"binary_path,omitempty"`
@@ -212,16 +215,16 @@ type VisionConfig struct {
 	// AutoDescribe controls whether photos received over Telegram are
 	// automatically run through the vision model to extract a description
 	// before the agent answers (mirrors transcription.auto_transcribe).
-	// Nil defaults to true — a supplied vision section without the field
-	// resolves to the same default as an absent section; explicit false
-	// disables it.
+	// Nil defaults to false — both backends need something a stock install
+	// lacks (local MiniCPM-V files, or a vision-capable provider model), so
+	// only an explicit true enables it.
 	AutoDescribe *bool `json:"auto_describe,omitempty"`
 }
 
 // AutoDescribeEnabled reports the resolved auto_describe setting, filling
-// the unset (nil) case with the true default.
+// the unset (nil) case with the false default.
 func (v VisionConfig) AutoDescribeEnabled() bool {
-	return v.AutoDescribe == nil || *v.AutoDescribe
+	return v.AutoDescribe != nil && *v.AutoDescribe
 }
 
 const (
@@ -3557,10 +3560,7 @@ func resolveTranscription(cfg *TranscriptionConfig) TranscriptionConfig {
 	if cfg != nil {
 		return *cfg
 	}
-	return TranscriptionConfig{
-		Model:          "tiny",
-		AutoTranscribe: true,
-	}
+	return TranscriptionConfig{Model: "tiny"}
 }
 
 // resolveVision returns the resolved vision config.

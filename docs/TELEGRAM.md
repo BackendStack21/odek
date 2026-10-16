@@ -484,7 +484,7 @@ The path-taking native tools (`read_file`, `vision`, `transcribe`, `head_tail`, 
 
 ### Auto-Describe (Photo → Vision)
 
-When `vision.auto_describe: true` is set in config (default) and the configured vision backend is available, photos are automatically described before reaching the agent. The default backend is local MiniCPM-V; set `vision.backend` to `provider` and provide a `vision.model` to use the resolved main provider instead:
+When `vision.auto_describe: true` is set in config (off by default) and the configured vision backend is available, photos are automatically described before reaching the agent. The default backend is local MiniCPM-V; set `vision.backend` to `provider` and provide a `vision.model` to use the resolved main provider instead:
 
 ```
 Photo received → DownloadPhoto (largest size to disk)

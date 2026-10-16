@@ -1204,7 +1204,7 @@ Configures the `transcribe` tool (local whisper.cpp).
 |-------|---------|-------------|
 | `model` | `tiny` | Whisper model name |
 | `language` | `""` | ISO language code (e.g. `en`); empty = auto-detect |
-| `auto_transcribe` | `true` | Automatically transcribe audio received over Telegram before the agent answers |
+| `auto_transcribe` | `false` | Automatically transcribe audio received over Telegram before the agent answers. Off by default because it needs whisper.cpp and a model file; enable it after installing them |
 | `models_dir` | `""` | Directory holding whisper model files |
 | `binary_path` | `""` | Explicit path to the whisper CLI; empty = `PATH` lookup |
 
@@ -1221,15 +1221,18 @@ Configures the `vision` tool (MiniCPM-V via `llama-mtmd-cli`).
 | `models_dir` | `/usr/local/share/minicpm-v/models` (container) with fallback to `~/.odek/minicpm-v/models` | Directory containing `model.gguf` and `mmproj.gguf` |
 | `binary_path` | `""` | Explicit path to `llama-mtmd-cli`; empty = `PATH` lookup |
 | `video_frames` | `8` | Number of frames sampled evenly from a video |
-| `auto_describe` | `true` | Automatically describe photos received over Telegram before the agent answers (mirrors `transcription.auto_transcribe`) |
+| `auto_describe` | `false` | Automatically describe photos received over Telegram before the agent answers (mirrors `transcription.auto_transcribe`) |
 
 `vision` is operator-only and uses the shared `llm.request_timeout_seconds` for
 provider requests. It has no vision-specific secret, endpoint, format, or
 timeout fields. `video_frames` defaults to `8` and is capped at `32`.
 
-`auto_describe` defaults to `true` whether or not a `vision` section is
-present; set it to `false` explicitly to disable the Telegram preprocessing
-path.
+`auto_describe` and `transcription.auto_transcribe` default to `false`
+whether or not their section is present: the local backends need
+`llama-mtmd-cli` plus MiniCPM-V files, or whisper.cpp plus a model, and the
+`provider` vision backend needs a vision-capable model. Set them to `true`
+once a backend is installed. The Docker images ship both stacks and enable
+both in their bundled configs.
 
 Example provider-backed configuration:
 
