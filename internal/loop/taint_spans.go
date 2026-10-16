@@ -198,6 +198,23 @@ var taintCommonHosts = map[string]bool{
 	"wikipedia.org": true, "en.wikipedia.org": true, "developer.mozilla.org": true,
 }
 
+// taintMultiTenantSuffixes are hosting suffixes whose subdomains belong to
+// unrelated tenants. The principal mentioning one never covers another
+// tenant's subdomain.
+var taintMultiTenantSuffixes = map[string]bool{
+	"github.io": true, "gitlab.io": true, "githubusercontent.com": true,
+	"amazonaws.com": true, "s3.amazonaws.com": true, "cloudfront.net": true,
+	"vercel.app": true, "now.sh": true, "netlify.app": true, "netlify.com": true,
+	"pages.dev": true, "workers.dev": true, "herokuapp.com": true, "fly.dev": true,
+	"onrender.com": true, "railway.app": true, "glitch.me": true, "repl.co": true,
+	"ngrok.app": true, "ngrok.io": true, "ngrok-free.app": true, "trycloudflare.com": true,
+	"loca.lt": true, "web.app": true, "firebaseapp.com": true, "appspot.com": true,
+	"azurewebsites.net": true, "blob.core.windows.net": true, "cloudfunctions.net": true,
+	"run.app": true, "surge.sh": true, "pythonanywhere.com": true, "blogspot.com": true,
+	"wordpress.com": true, "substack.com": true, "notion.site": true, "webflow.io": true,
+	"azureedge.net": true, "r2.dev": true, "deno.dev": true, "replit.app": true,
+}
+
 // taintFileExtensions are last labels that mark a dotted word as a file
 // name rather than a host (main.go:12, README.md/…).
 var taintFileExtensions = map[string]bool{
@@ -731,12 +748,19 @@ func (s *taintSpanStore) principalLocked(kind taintSpanKind, v string) bool {
 	p := s.principal.spans
 	switch kind {
 	case taintKindHost:
-		for h := v; strings.Count(h, ".") >= 1; h = h[strings.IndexByte(h, '.')+1:] {
-			if p[taintKey(taintKindHost, h)] {
+		if p[taintKey(taintKindHost, v)] {
+			return true
+		}
+		// A mentioned parent domain covers its subdomains, unless it is a
+		// multi-tenant hosting suffix: there every subdomain is a different
+		// owner, and only the exact mentioned host is covered.
+		for h := v; strings.Count(h, ".") >= 1; {
+			h = h[strings.IndexByte(h, '.')+1:]
+			if p[taintKey(taintKindHost, h)] && !taintMultiTenantSuffixes[h] {
 				return true
 			}
 		}
-		return p[taintKey(taintKindHost, v)]
+		return false
 	case taintKindURL:
 		// A mentioned host covers every URL on it, except on the shared
 		// hosting sites in taintCommonHosts, where one user's repository says

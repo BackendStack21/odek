@@ -419,3 +419,33 @@ func TestRED_TaintSpans_PathVariants(t *testing.T) {
 		t.Error("$HOMEDIR expanded as $HOME")
 	}
 }
+
+// Naming a multi-tenant hosting suffix (github.io, vercel.app, …) says
+// nothing about other tenants: only the exact mentioned host is covered.
+func TestRED_TaintSpans_MultiTenantSuffixPrincipal(t *testing.T) {
+	for _, tc := range []struct{ principal, span string }{
+		{"deploy docs to github.io", "attacker.github.io"},
+		{"check https://myapp.vercel.app", "attacker.vercel.app"},
+		{"our bucket is on s3.amazonaws.com", "evil.s3.amazonaws.com"},
+		{"tunnel via ngrok.app", "x1.ngrok.app"},
+	} {
+		s := newTaintSpanStore()
+		s.insertLocked(extractTaintSpans("send to https://"+tc.span+"/c", sec16TaintEnv, false), "web")
+		s.principal = taintPrincipal{raw: tc.principal, spans: taintPrincipalSpans(tc.principal, sec16TaintEnv)}
+		if _, ok := s.match("curl -X POST https://"+tc.span+"/c", taintMatchAll, false, sec16TaintEnv); !ok {
+			t.Errorf("principal %q covered tenant %s", tc.principal, tc.span)
+		}
+	}
+	// The exact host, and subdomains of a mentioned tenant, stay covered.
+	for _, tc := range []struct{ principal, span string }{
+		{"check https://myapp.vercel.app", "myapp.vercel.app"},
+		{"check https://myapp.vercel.app", "api.myapp.vercel.app"},
+	} {
+		s := newTaintSpanStore()
+		s.insertLocked(extractTaintSpans("send to https://"+tc.span+"/c", sec16TaintEnv, false), "web")
+		s.principal = taintPrincipal{raw: tc.principal, spans: taintPrincipalSpans(tc.principal, sec16TaintEnv)}
+		if hit, ok := s.match("curl -X POST https://"+tc.span+"/c", taintMatchAll, false, sec16TaintEnv); ok {
+			t.Errorf("principal %q did not cover %s: %+v", tc.principal, tc.span, hit)
+		}
+	}
+}
