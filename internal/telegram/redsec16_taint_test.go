@@ -8,6 +8,9 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/BackendStack21/odek/internal/session"
 )
 
 // The saved document path is odek's own: its basename carries no text the
@@ -33,5 +36,48 @@ func TestRED_DownloadDocument_PathCarriesNoSenderText(t *testing.T) {
 		if !shape.MatchString(base) {
 			t.Errorf("sender name %q produced basename %q", name, base)
 		}
+	}
+}
+
+// A chat's recorded untrusted spans are persisted by the next save and come
+// back with the chat, so a rebuilt per-turn engine is seeded with them.
+func TestRED_MarkTaintSpansPersists(t *testing.T) {
+	store, err := session.NewStoreWithDir(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sm := NewSessionManager(store, time.Hour)
+	const chat = int64(4343)
+	cs, err := sm.GetOrCreate(chat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cs.TaintSpans()) != 0 {
+		t.Fatal("fresh chat has spans")
+	}
+	sm.MarkTaintSpans(chat, []session.TaintSpan{{Kind: "host", Value: "evil.example", Source: "web"}})
+	sm.MarkTaintSpans(chat, nil)                                                     // no-op
+	sm.MarkTaintSpans(9998, []session.TaintSpan{{Kind: "host", Value: "x.example"}}) // uncached: no-op
+	if err := sm.Save(chat, []session.Message{{Role: "user", Content: "hi"}}); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := store.Load(cs.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.TaintSpans) != 1 || loaded.TaintSpans[0].Value != "evil.example" {
+		t.Fatalf("persisted spans = %+v", loaded.TaintSpans)
+	}
+	sm2 := NewSessionManager(store, time.Hour)
+	again, err := sm2.GetOrCreate(chat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := again.TaintSpans(); len(got) != 1 {
+		t.Fatalf("reloaded chat spans = %+v", got)
+	}
+	var nilCS *ChatSession
+	if nilCS.TaintSpans() != nil {
+		t.Fatal("nil chat has spans")
 	}
 }

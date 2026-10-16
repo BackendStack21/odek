@@ -13,7 +13,13 @@ import (
 // untrusted content itself may already be gone from it (context trimming,
 // write-time size trimming, compaction); the flag never is.
 func withSessionTaint(ctx context.Context, sess *session.Session) context.Context {
-	if sess != nil && sess.UntrustedIngested && !loop.UntrustedIngested(ctx) {
+	if sess == nil {
+		return ctx
+	}
+	// The persisted untrusted spans seed the untrusted-args gate for the
+	// same reason: the content they came from may be gone from the history.
+	ctx = loop.WithTaintSpanSeed(ctx, sess.TaintSpans)
+	if sess.UntrustedIngested && !loop.UntrustedIngested(ctx) {
 		return loop.WithUntrustedIngest(ctx)
 	}
 	return ctx
@@ -24,7 +30,12 @@ func withSessionTaint(ctx context.Context, sess *session.Session) context.Contex
 // taint that never reaches the history (a third-party tool catalogue, an
 // ingest recorded without a persisted wrapper). The store keeps it sticky.
 func markRunTaint(a *odek.Agent, sess *session.Session) {
-	if a != nil && sess != nil && a.UntrustedIngested() {
+	if a == nil || sess == nil {
+		return
+	}
+	if a.UntrustedIngested() {
 		sess.UntrustedIngested = true
 	}
+	// The recorded untrusted spans (sticky; the store merges what is on disk).
+	sess.TaintSpans = session.MergeTaintSpans(a.TaintSpans(sess.Messages), sess.TaintSpans)
 }

@@ -167,7 +167,7 @@ internal/
   logquery/                   Structured query over runtime logs
   memory/                     MemoryManager (facts, buffer, episodes, merge, scan). EpisodeProvenance — tainted episodes never auto-replayed.
   session/                    Session store (CRUD, trim, cleanup, compact JSON). AuditStore + divergence heuristic.
-                              Sticky taint flags (UntrustedIngested; EpisodeUntrusted from the episode trust rule in episode_taint.go).
+                              Sticky taint flags (UntrustedIngested; EpisodeUntrusted from the episode trust rule in episode_taint.go) and sticky TaintSpans (taint_spans.go: untrusted spans, tokens hashed, merged on every save).
                               ExternalRef — opaque operator-supplied refs, never dereferenced.
   artifact/                   odek.artifact-ref/v1 + odek.tool-result/v1: fail-closed ref validation
                               (roots/symlinks/sha256/size) and model-safe rendering (metadata only, no paths/content).

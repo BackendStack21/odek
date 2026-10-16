@@ -2504,6 +2504,7 @@ func runChatTurn(
 		if agent.UntrustedIngested() {
 			sessionManager.MarkUntrustedIngested(chatID)
 		}
+		sessionManager.MarkTaintSpans(chatID, agent.TaintSpans(trimmed))
 		if err := sessionManager.SaveNoIndexAt(chatID, turnGen, trimmed); err != nil {
 			checkpointErr = fmt.Errorf("persist Telegram checkpoint: %w", err)
 			agentCancel()
@@ -2519,16 +2520,21 @@ func runChatTurn(
 	agent.BeginRun("", "")
 	var outcome error
 	defer finishAgentInvocation(agent, &outcome)
+	// The run's context carries the persisted taint and untrusted spans. It
+	// is a new variable: the cancel watcher above already reads agentCtx.
+	runCtx := agentCtx
 	if cs.UntrustedIngested() {
-		agentCtx = loop.WithUntrustedIngest(agentCtx)
+		runCtx = loop.WithUntrustedIngest(runCtx)
 	}
-	runMessages, rbInserted := takeTelegramResumeSummary(agentCtx, chatID, agent.Memory(), cs.Messages, wake)
+	runCtx = loop.WithTaintSpanSeed(runCtx, cs.TaintSpans())
+	runMessages, rbInserted := takeTelegramResumeSummary(runCtx, chatID, agent.Memory(), cs.Messages, wake)
 	auditHistLen += rbInserted
-	response, updatedMessages, err := agent.RunWithMessages(agentCtx, runMessages)
+	response, updatedMessages, err := agent.RunWithMessages(runCtx, runMessages)
 	if agent.UntrustedIngested() {
 		// Before the cancel-path and final saves below.
 		sessionManager.MarkUntrustedIngested(chatID)
 	}
+	sessionManager.MarkTaintSpans(chatID, agent.TaintSpans(updatedMessages))
 	// Drain the progress bubble before anything else is sent: every progress
 	// edit completes before the final answer (or error reply) goes out.
 	progress.finish(!resolved.ToolProgressCleanup)

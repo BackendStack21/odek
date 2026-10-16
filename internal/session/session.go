@@ -146,6 +146,13 @@ type Session struct {
 	// compacted history is still stored untrusted.
 	EpisodeUntrusted bool `json:"episode_untrusted,omitempty"`
 
+	// TaintSpans are the spans the agent loop recorded from untrusted
+	// content (URLs, hosts, paths, hashed tokens; see TaintSpan). They are
+	// sticky like UntrustedIngested: every save merges in the spans already
+	// on disk (MergeTaintSpans, bounded), and trimming never touches them,
+	// so a resumed or rebuilt engine still escalates their reuse.
+	TaintSpans []TaintSpan `json:"taint_spans,omitempty"`
+
 	// EpisodeTaintTracked marks a session whose EpisodeUntrusted flag has
 	// been derived over its whole history. Files written before the flag
 	// existed lack it; Load derives the flag from their history once.
@@ -997,6 +1004,7 @@ func (s *Store) saveLockedMode(sess *Session, lazyIndex bool) (err error) {
 		if current.EpisodeUntrusted {
 			sess.EpisodeUntrusted = true
 		}
+		sess.TaintSpans = MergeTaintSpans(sess.TaintSpans, current.TaintSpans)
 	} else if !errors.Is(loadErr, os.ErrNotExist) {
 		return loadErr
 	} else if sess.persistedID == sess.ID {

@@ -85,8 +85,9 @@ import (
 //
 // The store is bounded (spans, links and scanned-message digests are capped;
 // the least recently seen spans are evicted first) and lives on the engine,
-// so it survives context trimming within one engine; a rebuilt engine
-// re-seeds from the history it is given. It is a heuristic: a span the model
+// so it survives context trimming within one engine; the set is exported as
+// sticky session state and seeds rebuilt engines (taint_persist.go). It is a
+// heuristic: a span the model
 // transforms (re-encodes, splits, retypes) is not recognised, and data
 // encoded into the path of a plain GET is not escalated.
 
@@ -157,7 +158,14 @@ type taintSpanStore struct {
 	mu    sync.Mutex
 	seq   uint64
 	spans map[string]*taintSpan
-	links map[string]uint64
+	// hashed holds persisted spans known only by their SHA-256 (tokens and
+	// secret-shaped values; see taint_persist.go), keyed taintKey(kind, hash).
+	hashed map[string]*taintSpan
+	// seedLen and seedHead identify the persisted span list last seeded, so
+	// a run does not re-seed it every iteration.
+	seedLen  int
+	seedHead *session.TaintSpan
+	links    map[string]uint64
 	// scanned holds digests of messages already scanned; scannedLen and
 	// scannedTail let an append-only history skip straight to new messages.
 	scanned    map[[32]byte]struct{}
@@ -175,6 +183,7 @@ type taintPrincipal struct {
 func newTaintSpanStore() *taintSpanStore {
 	return &taintSpanStore{
 		spans:   make(map[string]*taintSpan),
+		hashed:  make(map[string]*taintSpan),
 		links:   make(map[string]uint64),
 		scanned: make(map[[32]byte]struct{}),
 	}
@@ -998,6 +1007,9 @@ func (s *taintSpanStore) principalLocked(kind taintSpanKind, v string) bool {
 func (s *taintSpanStore) lookupLocked(r taintRaw) (taintHit, bool) {
 	try := func(kind taintSpanKind, v string) (taintHit, bool) {
 		sp, ok := s.spans[taintKey(kind, v)]
+		if !ok && len(s.hashed) > 0 {
+			sp, ok = s.hashed[taintKey(kind, taintHash(v))]
+		}
 		if !ok || s.principalLocked(kind, v) {
 			return taintHit{}, false
 		}
@@ -1083,7 +1095,7 @@ func (s *taintSpanStore) match(text string, kinds taintKinds, egress bool, env t
 	cands := extractTaintSpans(text, env, true)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if len(s.spans) == 0 {
+	if len(s.spans) == 0 && len(s.hashed) == 0 {
 		return taintHit{}, false
 	}
 	// URLs the content linked verbatim, and path-only URLs, are browsing
@@ -1318,6 +1330,14 @@ func (e *Engine) taintGate(ctx context.Context, messages []session.Message, call
 	}
 	env := currentTaintEnv()
 	store := e.spanStore()
+	if seed := taintSpanSeedFrom(ctx); len(seed) > 0 {
+		store.mu.Lock()
+		if store.seedLen != len(seed) || store.seedHead != &seed[0] {
+			store.seedLocked(seed)
+			store.seedLen, store.seedHead = len(seed), &seed[0]
+		}
+		store.mu.Unlock()
+	}
 	store.observe(messages, env)
 	var denied []string
 	for i, tc := range calls {
