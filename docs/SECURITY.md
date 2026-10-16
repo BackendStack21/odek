@@ -540,6 +540,8 @@ cosign verify-blob --bundle odek-darwin-arm64.bundle \
   odek-darwin-arm64
 ```
 
+The build pipeline itself is pinned: every GitHub Action in `.github/workflows/` is referenced by full commit SHA (the release tag in a trailing comment), checkouts set `persist-credentials: false` so later steps cannot reuse the job token through git, CI tools such as `govulncheck` run at a fixed version, and Dependabot (`.github/dependabot.yml`) proposes action and Go-module updates as reviewable PRs. `tests/supplychain` fails CI if a floating action ref, a `@latest` tool install, a credential-persisting checkout or the Dependabot config regresses.
+
 ### Resource bounds
 
 Hostile or accidental input is bounded everywhere it is sized, to keep it from OOMing or stalling the process. The major caps:

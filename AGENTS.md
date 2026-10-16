@@ -314,6 +314,8 @@ HOME=/home/user go test -fuzz=FuzzHarmlessPrefixKeepsRank -fuzztime=30s ./intern
 HOME=/home/user go test -fuzz=FuzzAnalyzeBounded -fuzztime=30s ./internal/danger/
 ```
 
+Workflow actions are pinned by commit SHA with a `# vX.Y.Z` comment and checkouts set `persist-credentials: false`; `tests/supplychain` enforces both, plus version-pinned CI tools and the Dependabot config — bump a pin through Dependabot or by replacing SHA and comment together.
+
 CI also runs `golangci-lint` (staticcheck) and `govulncheck` on every push/PR — run both locally before pushing. `golangci-lint` may fail to run on this module's Go version (it can crash while loading packages); then run `go vet` and `gofmt -l` on the changed packages and rely on CI for staticcheck.
 
 `internal/danger` tests must run with a non-root `HOME` (`HOME=/home/user go test -count=1 ./internal/danger/`): `/root` is a system prefix and counts as the current user's home only when `HOME` resolves there, so the path-classification expectations assume a home elsewhere. The `internal/danger` fuzz targets seed from every string literal in the package's regression tests, so new regression cases extend the corpus automatically.
