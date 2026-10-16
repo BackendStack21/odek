@@ -292,7 +292,13 @@ func extractTaintURLs(text string) []taintRaw {
 			hostPort = host + ":" + port
 		}
 		p := strings.TrimRight(u.EscapedPath(), "/")
-		link := scheme + "://" + hostPort + p
+		// The link keeps userinfo verbatim: a URL with userinfo is followed
+		// as linked only when that exact userinfo appeared in the content.
+		userinfo := ""
+		if u.User != nil {
+			userinfo = u.User.String() + "@"
+		}
+		link := scheme + "://" + userinfo + hostPort + p
 		if u.RawQuery != "" {
 			link += "?" + u.RawQuery
 		}
