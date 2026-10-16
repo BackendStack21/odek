@@ -95,9 +95,12 @@ const (
 	taintScanMaxBytes      = 1 << 20
 	taintPrincipalMaxBytes = 256 << 10
 	taintMatchMaxBytes     = 64 << 10
-	taintTokenMinLen       = 32
-	taintTokenMaxLen       = 512
-	taintDisplayMax        = 200
+	// taintMatchCeiling is the largest candidate matched in full; above it
+	// any recorded span escalates the call fail-closed.
+	taintMatchCeiling = 4 << 20
+	taintTokenMinLen  = 32
+	taintTokenMaxLen  = 512
+	taintDisplayMax   = 200
 )
 
 type taintSpanKind string
@@ -107,6 +110,8 @@ const (
 	taintKindHost  taintSpanKind = "host"
 	taintKindPath  taintSpanKind = "path"
 	taintKindToken taintSpanKind = "token"
+	// taintKindOversize marks a candidate too large to match in full.
+	taintKindOversize taintSpanKind = "oversize"
 )
 
 // TaintEscalation is one escalated tool call, handed to the recorder that
@@ -342,9 +347,6 @@ func extractTaintSpans(text string, env taintEnv, loose bool) []taintRaw {
 // goSource marks a read of Go sources or module files (see taintGoSource),
 // the only text whose import specs and go.mod lines are not recorded as hosts.
 func extractTaintSpansFrom(text string, env taintEnv, loose, goSource bool) []taintRaw {
-	if len(text) > taintScanMaxBytes {
-		text = text[:taintScanMaxBytes]
-	}
 	var out []taintRaw
 	urls := extractTaintURLs(text)
 	urlSpans := make([][2]int, len(urls))
@@ -456,6 +458,22 @@ func taintGoModuleLine(text string, i int) bool {
 		return taintGoModRe.MatchString(line)
 	}
 	return false
+}
+
+// extractTaintSpansForRecord extracts the spans of recorded content. Text
+// over taintScanMaxBytes is scanned in its first taintScanMaxBytes and its
+// last taintScanMaxBytes/4, so padding cannot push a trailing span out of
+// view; only the middle of such a message goes unscanned.
+func extractTaintSpansForRecord(text string, env taintEnv, goSource bool) []taintRaw {
+	if len(text) <= taintScanMaxBytes {
+		return extractTaintSpansFrom(text, env, false, goSource)
+	}
+	head := extractTaintSpansFrom(text[:taintScanMaxBytes], env, false, goSource)
+	tail := text[len(text)-taintScanMaxBytes/4:]
+	if i := strings.IndexAny(tail, " \t\r\n"); i >= 0 {
+		tail = tail[i:] // start at a word boundary
+	}
+	return append(head, extractTaintSpansFrom(tail, env, false, goSource)...)
 }
 
 // inTaintIntervals reports whether i lies in one of spans, which are sorted
@@ -773,7 +791,7 @@ func (s *taintSpanStore) observe(messages []session.Message, env taintEnv) {
 
 	extracted := make([][]taintRaw, len(jobs))
 	for i, j := range jobs {
-		extracted[i] = extractTaintSpansFrom(j.text, env, false, j.goSource)
+		extracted[i] = extractTaintSpansForRecord(j.text, env, j.goSource)
 	}
 
 	s.mu.Lock()
@@ -1000,8 +1018,15 @@ func (k taintKinds) has(kind taintSpanKind) bool {
 // match returns the first recorded span text reuses. With egress set, the
 // egress rule applies to the URLs in text.
 func (s *taintSpanStore) match(text string, kinds taintKinds, egress bool, env taintEnv) (taintHit, bool) {
-	if len(text) > taintMatchMaxBytes {
-		text = text[:taintMatchMaxBytes]
+	if len(text) > taintMatchCeiling {
+		// Too large to match in full: with any span recorded, fail closed.
+		s.mu.Lock()
+		n := len(s.spans)
+		s.mu.Unlock()
+		if n == 0 {
+			return taintHit{}, false
+		}
+		return taintHit{kind: taintKindOversize, span: fmt.Sprintf("%d-byte argument", len(text)), source: "an argument too large to check"}, true
 	}
 	cands := extractTaintSpans(text, env, true)
 	s.mu.Lock()
@@ -1140,7 +1165,8 @@ func (e *Engine) taintEscalationFor(ctx context.Context, store *taintSpanStore, 
 }
 
 // taintArgumentStrings returns every string (and object key) in a JSON
-// argument object, one per line and bounded by taintMatchMaxBytes. Arguments
+// argument object, one per line. Collection stops just past taintMatchCeiling,
+// so an oversized argument set reaches match's fail-closed rule. Arguments
 // that do not parse are returned as they are.
 func taintArgumentStrings(args string) string {
 	var v any
@@ -1150,7 +1176,7 @@ func taintArgumentStrings(args string) string {
 	var b strings.Builder
 	var walk func(any)
 	walk = func(v any) {
-		if b.Len() >= taintMatchMaxBytes {
+		if b.Len() > taintMatchCeiling {
 			return
 		}
 		switch t := v.(type) {
