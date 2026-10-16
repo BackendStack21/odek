@@ -116,8 +116,9 @@ type shellTool struct {
 	// dangerousConfig controls per-class actions and allow/denylists.
 	dangerousConfig danger.DangerousConfig
 
-	// stripChildSecretEnv: operator opt-in (dangerous.strip_secrets_env_children)
-	// — host-mode children get secrets.env names stripped from their env.
+	// stripChildSecretEnv: on unless the operator sets
+	// dangerous.strip_secrets_env_children to false — host-mode children get
+	// secrets.env names stripped from their env.
 	stripChildSecretEnv bool
 
 	// approver handles interactive approval prompts. When nil, falls back
@@ -434,7 +435,7 @@ func (t *shellTool) buildCmd(ctx context.Context, command string) (*exec.Cmd, fu
 	}
 	cmd := exec.CommandContext(ctx, "sh", "-c", command)
 	if t.stripChildSecretEnv {
-		// Operator opt-in (dangerous.strip_secrets_env_children): host-mode
+		// Default on (dangerous.strip_secrets_env_children): host-mode
 		// children get secrets.env names stripped, matching the unconditional
 		// strip on sub-agent and MCP stdio spawns. Sandbox mode needs no strip:
 		// the container never sees host secrets.env values.

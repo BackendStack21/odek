@@ -156,7 +156,7 @@ odek run "@README.md what does this project do?"
 | `odek schedule <add\|list\|...>` | Native cron scheduler (see [docs/SCHEDULES.md](docs/SCHEDULES.md)) |
 | `odek cleanup [--dry-run]` | One-shot storage sweep of `~/.odek` (see [docs/MAINTENANCE.md](docs/MAINTENANCE.md)) |
 | `odek logs [filters]` | Query or follow local operational logs (see [docs/LOGGING.md](docs/LOGGING.md)) |
-| `odek upgrade [--check]` | Self-upgrade from GitHub Releases (SHA-256 verified) |
+| `odek upgrade [--check]` | Self-upgrade from GitHub Releases (Sigstore signature + SHA-256 verified) |
 | `odek version` | Print version |
 
 ### Key Flags

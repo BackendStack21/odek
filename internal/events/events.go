@@ -49,6 +49,7 @@ const (
 	TypeSideCallUsage         = "side_call_usage"
 	TypeVerificationStarted   = "verification_started"
 	TypeVerificationCompleted = "verification_completed"
+	TypeTaintEscalated        = "taint_escalated"
 )
 
 // Budget limit names carried in budget_exceeded events (data.limit_name).

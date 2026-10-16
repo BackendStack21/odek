@@ -52,7 +52,7 @@ func TestRED_TelegramOpeningMessageIngestsRecorded(t *testing.T) {
 		{"forwarded", telegramTextMessage(9, "fwd body", true), "telegram:chat:9:forwarded"},
 		{"voice", telegramVoiceMessage(9, "spoken words"), "telegram:chat:9:voice"},
 		{"caption", photoFallbackMessage("/tmp/p.jpg", "look at this", true), "telegram:photo:caption"},
-		{"document", telegramDocumentMessage("/tmp/d.pdf"), "telegram:document"},
+		{"document", telegramDocumentMessage("/tmp/d.pdf", "d.pdf"), "telegram:document"},
 	} {
 		mu.Lock()
 		sources = nil

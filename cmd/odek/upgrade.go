@@ -22,27 +22,40 @@ import (
 
 // upgradeCmd implements `odek upgrade [--check]`: a self-upgrade from
 // GitHub Releases. The platform asset is selected by OS/arch autodetection
-// (runtime.GOOS/GOARCH → odek-<goos>-<goarch>), the download is verified
-// against the release's checksums.txt, and the current binary is replaced
-// atomically (temp file + rename in the same directory).
+// (runtime.GOOS/GOARCH → odek-<goos>-<goarch>), the release's checksums.txt
+// is verified against its Sigstore signature (upgrade_sigstore.go), the
+// download is verified against checksums.txt, and the current binary is
+// replaced atomically (temp file + rename in the same directory).
 func upgradeCmd(args []string) error {
-	checkOnly := false
+	var opts upgradeOptions
 	for _, a := range args {
 		switch a {
 		case "--check":
-			checkOnly = true
+			opts.checkOnly = true
+		case "--skip-signature":
+			opts.skipSignature = true
 		case "--help", "-h":
-			fmt.Println(`Usage: odek upgrade [--check]
+			fmt.Println(`Usage: odek upgrade [--check] [--skip-signature]
 
-Upgrade the odek binary to the latest GitHub release. The asset matching
-the current OS/architecture is downloaded, verified against the release's
-checksums.txt (SHA-256), and installed atomically over the running binary.
+Upgrade the odek binary to the latest GitHub release. The release's
+checksums.txt is verified against its Sigstore signature (the release
+workflow's keyless certificate for that exact tag, logged in Rekor); the
+asset matching the current OS/architecture is then downloaded, verified
+against checksums.txt (SHA-256), and installed atomically over the running
+binary. Any verification failure refuses the upgrade.
 
-  --check   Report the latest version without installing anything.`)
+  --check            Report the latest version without installing anything.
+  --skip-signature   UNSAFE: skip the Sigstore check and trust checksums.txt
+                     from the release itself. Only for when this binary's
+                     embedded Sigstore trust root can no longer verify new
+                     releases; verify the download yourself with cosign.`)
 			return nil
 		default:
 			return fmt.Errorf("unknown flag %q for upgrade", a)
 		}
+	}
+	if opts.skipSignature && !opts.checkOnly {
+		fmt.Fprintln(os.Stderr, "warning: --skip-signature: the release signature is NOT verified; a tampered release would be installed")
 	}
 
 	exe, err := os.Executable()
@@ -58,7 +71,7 @@ checksums.txt (SHA-256), and installed atomically over the running binary.
 	defer cancel()
 	client := newUpgradeClient()
 
-	_, err = performUpgrade(ctx, client, githubAPIBase, exe, getVersion(), checkOnly, os.Stdout)
+	_, err = performUpgrade(ctx, client, githubAPIBase, exe, getVersion(), opts, os.Stdout)
 	return err
 }
 
@@ -196,6 +209,7 @@ func conventionalRelease(tag string) *ghRelease {
 		}{Name: name, BrowserDownloadURL: base + name})
 	}
 	add("checksums.txt")
+	add(checksumsBundleAsset)
 	for _, goos := range []string{"darwin", "linux"} {
 		for _, arch := range []string{"amd64", "arm64"} {
 			add("odek-" + goos + "-" + arch)
@@ -303,11 +317,21 @@ func upgradeAssetName() (string, error) {
 	return "", fmt.Errorf("no prebuilt release for %s/%s — build from source instead", runtime.GOOS, runtime.GOARCH)
 }
 
+// checksumsBundleAsset is the Sigstore bundle release.yml publishes for
+// checksums.txt.
+const checksumsBundleAsset = "checksums.txt.bundle"
+
+// upgradeOptions are the `odek upgrade` flags.
+type upgradeOptions struct {
+	checkOnly     bool
+	skipSignature bool
+}
+
 // performUpgrade runs the full upgrade flow against apiBase, replacing the
 // binary at exePath. It returns the installed (or available, with
 // checkOnly) version. The empty string with nil error means "already up to
 // date".
-func performUpgrade(ctx context.Context, client *http.Client, apiBase, exePath, current string, checkOnly bool, out io.Writer) (string, error) {
+func performUpgrade(ctx context.Context, client *http.Client, apiBase, exePath, current string, opts upgradeOptions, out io.Writer) (string, error) {
 	asset, err := upgradeAssetName()
 	if err != nil {
 		return "", err
@@ -328,7 +352,7 @@ func performUpgrade(ctx context.Context, client *http.Client, apiBase, exePath, 
 		return "", nil
 	}
 	fmt.Fprintf(out, "upgrade available: %s → %s (%s/%s)\n", current, latest, runtime.GOOS, runtime.GOARCH)
-	if checkOnly {
+	if opts.checkOnly {
 		return latest, nil
 	}
 
@@ -339,6 +363,10 @@ func performUpgrade(ctx context.Context, client *http.Client, apiBase, exePath, 
 	checksumsURL := rel.assetURL("checksums.txt")
 	if checksumsURL == "" {
 		return "", fmt.Errorf("release %s has no checksums.txt — refusing to install an unverifiable binary", latest)
+	}
+	bundleURL := rel.assetURL(checksumsBundleAsset)
+	if bundleURL == "" && !opts.skipSignature {
+		return "", fmt.Errorf("release %s has no %s — refusing to install without a verifiable signature (--skip-signature overrides, unsafe)", latest, checksumsBundleAsset)
 	}
 
 	// Download into a temp dir next to the target so the final rename stays
@@ -352,6 +380,18 @@ func performUpgrade(ctx context.Context, client *http.Client, apiBase, exePath, 
 	checksumData, err := downloadBytes(ctx, client, checksumsURL)
 	if err != nil {
 		return "", fmt.Errorf("cannot download checksums.txt: %w", err)
+	}
+	if opts.skipSignature {
+		fmt.Fprintln(out, "signature verification skipped (--skip-signature)")
+	} else {
+		bundle, err := downloadBytes(ctx, client, bundleURL)
+		if err != nil {
+			return "", fmt.Errorf("cannot download %s: %w", checksumsBundleAsset, err)
+		}
+		if err := verifyChecksumsBundle(upgradeTrust, bundle, checksumData, latest); err != nil {
+			return "", fmt.Errorf("release %s signature verification failed: %w — refusing to install", latest, err)
+		}
+		fmt.Fprintf(out, "verified Sigstore signature: %s@refs/tags/%s\n", upgradeWorkflow, latest)
 	}
 	wantSum := parseChecksums(checksumData)[asset]
 	if wantSum == "" {

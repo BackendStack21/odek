@@ -146,6 +146,13 @@ type Session struct {
 	// compacted history is still stored untrusted.
 	EpisodeUntrusted bool `json:"episode_untrusted,omitempty"`
 
+	// TaintSpans are the spans the agent loop recorded from untrusted
+	// content (URLs, hosts, paths, hashed tokens; see TaintSpan). They are
+	// sticky like UntrustedIngested: every save merges in the spans already
+	// on disk (MergeTaintSpans, bounded), and trimming never touches them,
+	// so a resumed or rebuilt engine still escalates their reuse.
+	TaintSpans []TaintSpan `json:"taint_spans,omitempty"`
+
 	// EpisodeTaintTracked marks a session whose EpisodeUntrusted flag has
 	// been derived over its whole history. Files written before the flag
 	// existed lack it; Load derives the flag from their history once.
@@ -822,9 +829,12 @@ type revStamp struct {
 	revision   uint64
 	untrusted  bool
 	episode    bool
-	size       int64
-	mod        time.Time
-	ino        uint64
+	// spans: the revision carries TaintSpans, which the stamp does not
+	// hold, so a save must re-read the file to merge them.
+	spans bool
+	size  int64
+	mod   time.Time
+	ino   uint64
 }
 
 // cachedRevision returns the revision this store last persisted for id when
@@ -839,7 +849,7 @@ func (s *Store) cachedRevision(id string, info os.FileInfo, statErr error) *Sess
 		return nil
 	}
 	st, ok := s.revStamps[id]
-	if !ok || st.mod.Nanosecond() == 0 || st.ino == 0 || time.Since(st.mod) < revStampSettle {
+	if !ok || st.spans || st.mod.Nanosecond() == 0 || st.ino == 0 || time.Since(st.mod) < revStampSettle {
 		return nil
 	}
 	if info.Size() != st.size || !info.ModTime().Equal(st.mod) || fileInode(info) != st.ino {
@@ -863,6 +873,7 @@ func (s *Store) rememberRevision(sess *Session) {
 		revision:   sess.Revision,
 		untrusted:  sess.UntrustedIngested,
 		episode:    sess.EpisodeUntrusted,
+		spans:      len(sess.TaintSpans) > 0,
 		size:       info.Size(),
 		mod:        info.ModTime(),
 		ino:        fileInode(info),
@@ -997,6 +1008,7 @@ func (s *Store) saveLockedMode(sess *Session, lazyIndex bool) (err error) {
 		if current.EpisodeUntrusted {
 			sess.EpisodeUntrusted = true
 		}
+		sess.TaintSpans = MergeTaintSpans(sess.TaintSpans, current.TaintSpans)
 	} else if !errors.Is(loadErr, os.ErrNotExist) {
 		return loadErr
 	} else if sess.persistedID == sess.ID {

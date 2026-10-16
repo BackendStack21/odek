@@ -176,7 +176,7 @@ odek can emit a structured runtime event stream: **one JSON object per line
   `session_saved`, `context_trimmed`, `budget_exceeded`, `run_completed`,
   `run_failed`, `plan_created`, `plan_updated`, `plan_blocked`, `plan_reassessment`, `plan_validation_failed`, `subagent_denied`,
   `subagent_spawned`, `subagent_completed`, `subagent_concurrency_wait`,
-  `side_call_usage`.
+  `side_call_usage`, `taint_escalated`.
 - `run_id` is a random 128-bit hex identifier generated per agent run and
   stamped on every event of that run. `session_id` appears once the session
   is known; earlier events omit it. `iteration` is the 1-based loop
@@ -210,6 +210,7 @@ Per-type `data` fields:
 | `plan_blocked` | `steps`, `blocked`, `version` |
 | `plan_reassessment` | `reason`, `failure_batches` (always `3`) |
 | `plan_validation_failed` | `verb`, `class` (coarse failure class; never raw arguments or plan content) |
+| `taint_escalated` | `call_id`, `span_kind` (`url`, `host`, `path`, `token`), `span_sha256`, `span_bytes`, `approved` (bool) — a tool call whose arguments reuse a span recorded from untrusted content was put before the principal; the span itself is never emitted |
 | `subagent_denied` | `task_index`, `class`, `reason_sha256`, `reason_bytes` (the reason text can embed the denied command, so only its digest and size are emitted; emitted by `delegate_tasks` for each policy denial a child reports) |
 | `subagent_spawned` | `task_id`, `pid`, `depth`, `timeout_seconds`, `goal_sha256` (16 hex chars: first 8 bytes of SHA-256 of the goal; the goal itself is never logged) |
 | `subagent_completed` | `task_id`, `status`, plus optional `iterations`, `duration_seconds`, `tokens_used`, `artifact_count` when the child result carried them |

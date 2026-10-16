@@ -70,8 +70,26 @@ func TestUpgradeAssetName(t *testing.T) {
 }
 
 // fakeReleaseServer serves a latest-release JSON payload plus asset and
-// checksums.txt downloads for the current platform's asset name.
+// checksums.txt downloads for the current platform's asset name. The
+// release carries no Sigstore bundle.
 func fakeReleaseServer(t *testing.T, tag string, binContent []byte, sumOverride string) *httptest.Server {
+	return fakeReleaseServerWithBundle(t, tag, binContent, sumOverride, nil)
+}
+
+// fakeSignedReleaseServer is fakeReleaseServer plus a checksums.txt.bundle
+// signed by an in-test Sigstore CA and log, which upgradeTrust is pointed at
+// for the duration of the test.
+func fakeSignedReleaseServer(t *testing.T, tag string, binContent []byte, sumOverride string) *httptest.Server {
+	ts := newTestSigstore(t)
+	ts.install(t)
+	return fakeReleaseServerWithBundle(t, tag, binContent, sumOverride, func(checksums []byte) []byte {
+		return ts.bundle(t, checksums, testBundleOpts{tag: tag})
+	})
+}
+
+// fakeReleaseServerWithBundle serves the release; bundleFn, when non-nil,
+// produces the checksums.txt.bundle for the served checksums.txt.
+func fakeReleaseServerWithBundle(t *testing.T, tag string, binContent []byte, sumOverride string, bundleFn func([]byte) []byte) *httptest.Server {
 	t.Helper()
 	asset, err := upgradeAssetName()
 	if err != nil {
@@ -82,27 +100,42 @@ func fakeReleaseServer(t *testing.T, tag string, binContent []byte, sumOverride 
 		h := sha256.Sum256(binContent)
 		sum = hex.EncodeToString(h[:])
 	}
+	checksums := []byte(fmt.Sprintf("%s  %s\n", sum, asset))
 	mux := http.NewServeMux()
 	srv := httptest.NewServer(mux)
 	mux.HandleFunc("/repos/"+githubRepo+"/releases/latest", func(w http.ResponseWriter, r *http.Request) {
+		bundleAsset := ""
+		if bundleFn != nil {
+			bundleAsset = fmt.Sprintf(`,{"name":%q,"browser_download_url":%q}`, checksumsBundleAsset, srv.URL+"/dl/"+checksumsBundleAsset)
+		}
 		fmt.Fprintf(w, `{"tag_name":%q,"assets":[`+
 			`{"name":%q,"browser_download_url":%q},`+
-			`{"name":"checksums.txt","browser_download_url":%q}]}`,
-			tag, asset, srv.URL+"/dl/"+asset, srv.URL+"/dl/checksums.txt")
+			`{"name":"checksums.txt","browser_download_url":%q}%s]}`,
+			tag, asset, srv.URL+"/dl/"+asset, srv.URL+"/dl/checksums.txt", bundleAsset)
 	})
 	mux.HandleFunc("/dl/"+asset, func(w http.ResponseWriter, r *http.Request) {
 		w.Write(binContent)
 	})
 	mux.HandleFunc("/dl/checksums.txt", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintf(w, "%s  %s\n", sum, asset)
+		w.Write(checksums)
 	})
+	if bundleFn != nil {
+		bundle := bundleFn(checksums)
+		mux.HandleFunc("/dl/"+checksumsBundleAsset, func(w http.ResponseWriter, r *http.Request) {
+			if bundle == nil {
+				http.NotFound(w, r)
+				return
+			}
+			w.Write(bundle)
+		})
+	}
 	t.Cleanup(srv.Close)
 	return srv
 }
 
 func TestPerformUpgrade_EndToEnd(t *testing.T) {
 	newBin := []byte("#!/bin/sh\necho odek v9.9.9\n")
-	srv := fakeReleaseServer(t, "v9.9.9", newBin, "")
+	srv := fakeSignedReleaseServer(t, "v9.9.9", newBin, "")
 
 	dir := t.TempDir()
 	exe := filepath.Join(dir, "odek")
@@ -111,7 +144,7 @@ func TestPerformUpgrade_EndToEnd(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	got, err := performUpgrade(context.Background(), srv.Client(), srv.URL, exe, "v1.0.0", false, &out)
+	got, err := performUpgrade(context.Background(), srv.Client(), srv.URL, exe, "v1.0.0", upgradeOptions{}, &out)
 	if err != nil {
 		t.Fatalf("performUpgrade: %v", err)
 	}
@@ -144,7 +177,7 @@ func TestPerformUpgrade_UpToDate(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out bytes.Buffer
-	got, err := performUpgrade(context.Background(), srv.Client(), srv.URL, exe, "v1.16.0", false, &out)
+	got, err := performUpgrade(context.Background(), srv.Client(), srv.URL, exe, "v1.16.0", upgradeOptions{}, &out)
 	if err != nil {
 		t.Fatalf("performUpgrade: %v", err)
 	}
@@ -163,7 +196,7 @@ func TestPerformUpgrade_CheckOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out bytes.Buffer
-	got, err := performUpgrade(context.Background(), srv.Client(), srv.URL, exe, "v1.0.0", true, &out)
+	got, err := performUpgrade(context.Background(), srv.Client(), srv.URL, exe, "v1.0.0", upgradeOptions{checkOnly: true}, &out)
 	if err != nil {
 		t.Fatalf("performUpgrade: %v", err)
 	}
@@ -181,13 +214,13 @@ func TestPerformUpgrade_CheckOnly(t *testing.T) {
 
 func TestPerformUpgrade_ChecksumMismatch(t *testing.T) {
 	bad := strings.Repeat("0", 64)
-	srv := fakeReleaseServer(t, "v9.9.9", []byte("bin"), bad)
+	srv := fakeSignedReleaseServer(t, "v9.9.9", []byte("bin"), bad)
 	exe := filepath.Join(t.TempDir(), "odek")
 	if err := os.WriteFile(exe, []byte("old"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	var out bytes.Buffer
-	_, err := performUpgrade(context.Background(), srv.Client(), srv.URL, exe, "v1.0.0", false, &out)
+	_, err := performUpgrade(context.Background(), srv.Client(), srv.URL, exe, "v1.0.0", upgradeOptions{}, &out)
 	if err == nil || !strings.Contains(err.Error(), "checksum mismatch") {
 		t.Fatalf("expected checksum mismatch error, got %v", err)
 	}

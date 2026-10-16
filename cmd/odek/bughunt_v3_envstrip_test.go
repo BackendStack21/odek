@@ -3,8 +3,8 @@ package main
 // Bug-hunt v3 residual fix — secrets.env child-strip knob coverage.
 //
 // dangerous.strip_secrets_env_children: host-mode shell children get the
-// configured secrets.env names removed from their environment; default off
-// preserves credential-using workflows (gh, curl).
+// configured secrets.env names removed from their environment by default;
+// an explicit false preserves credential-using workflows (gh, curl).
 
 import (
 	"context"

@@ -160,7 +160,7 @@ func TestTelegramVoiceMessage_WrapsTranscript(t *testing.T) {
 // TestTelegramDocumentMessage_Wraps verifies that the document-received message
 // is wrapped as untrusted content.
 func TestTelegramDocumentMessage_Wraps(t *testing.T) {
-	msg := telegramDocumentMessage("/tmp/doc.pdf")
+	msg := telegramDocumentMessage("/tmp/doc.pdf", "doc.pdf")
 	if !strings.Contains(msg, "<untrusted_content_") {
 		t.Fatalf("document message should be wrapped as untrusted, got: %s", msg)
 	}

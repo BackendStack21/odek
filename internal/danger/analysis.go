@@ -18,6 +18,10 @@ type Analysis struct {
 	// RewrittenFiles are execution files that an earlier stage of the same
 	// command writes: no prior read describes the content that will run.
 	RewrittenFiles []string
+	// RequestData is set when a curl or wget stage sends request data,
+	// headers, a user agent, a referer, cookies or extra query parameters:
+	// content the request carries that its URL does not show.
+	RequestData bool
 }
 
 func (a Analysis) Class() RiskClass {
@@ -61,6 +65,7 @@ func (a *Analysis) merge(other Analysis) {
 	for _, path := range other.RewrittenFiles {
 		a.addRewritten(path)
 	}
+	a.RequestData = a.RequestData || other.RequestData
 }
 
 func (a *Analysis) addRewritten(path string) {
@@ -550,6 +555,9 @@ func analyzeWithStateWork(cmd string, depth int, inherited *shellAnalysisState, 
 			}
 			for _, effect := range networkTransferEffects(name, inner, feed) {
 				result.add(effect)
+			}
+			if transferSendsRequestData(name, inner) {
+				result.RequestData = true
 			}
 			if isInstall(name, inner) {
 				result.add(Install)

@@ -1235,6 +1235,14 @@ func (a *Agent) UntrustedIngested() bool {
 	return a.engine.UntrustedIngested()
 }
 
+// TaintSpans records the untrusted spans of messages (the history about to
+// be saved) and returns the engine's span set as session state. Persist it on
+// session.Session.TaintSpans and seed later runs with loop.WithTaintSpanSeed,
+// so trimming or rebuilding never forgets a span.
+func (a *Agent) TaintSpans(messages []session.Message) []session.TaintSpan {
+	return a.engine.TaintSpanState(messages)
+}
+
 // TotalInputTokens returns the cumulative prompt tokens consumed across all
 // iterations of the most recent RunWithMessages call.
 func (a *Agent) TotalInputTokens() int {

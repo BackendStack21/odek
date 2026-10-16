@@ -62,6 +62,46 @@ type ChatSession struct {
 	// (session.Session.EpisodeUntrusted): content whose tool calls are not in
 	// the chat's history (a scheduled run's output) still taints episodes.
 	episodeUntrusted bool
+
+	// taintSpans carries the run's recorded untrusted spans (MarkTaintSpans)
+	// into the next save, which merges them into the stored session's
+	// sticky TaintSpans.
+	taintSpans []session.TaintSpan
+}
+
+// TaintSpans returns the chat's untrusted spans: those carried for the next
+// save and those already persisted (session.Session.TaintSpans).
+func (cs *ChatSession) TaintSpans() []session.TaintSpan {
+	if cs == nil {
+		return nil
+	}
+	var stored []session.TaintSpan
+	if cs.stored != nil {
+		stored = cs.stored.TaintSpans
+	}
+	return session.MergeTaintSpans(cs.taintSpans, stored)
+}
+
+// MarkTaintSpans records the run's untrusted spans for the chat. The next
+// save merges them into the session's sticky TaintSpans. It takes the same
+// locks as MarkUntrustedIngested.
+func (sm *SessionManager) MarkTaintSpans(chatID int64, spans []session.TaintSpan) {
+	if len(spans) == 0 {
+		return
+	}
+	lock, _ := sm.saveLocks.LoadOrStore(chatID, new(sync.Mutex))
+	saveMu := lock.(*sync.Mutex)
+	saveMu.Lock()
+	defer saveMu.Unlock()
+	sm.Mu.Lock()
+	defer sm.Mu.Unlock()
+	cs := sm.Cache[chatID]
+	if cs == nil {
+		return
+	}
+	marked := *cs
+	marked.taintSpans = session.MergeTaintSpans(spans, cs.taintSpans)
+	sm.Cache[chatID] = &marked
 }
 
 // UntrustedIngested reports whether the chat's persisted session has ever
@@ -299,6 +339,7 @@ func (sm *SessionManager) saveLocked(chatID int64, messages []session.Message, c
 		stored = &copy
 	}
 	stored.Messages = session.CloneMessages(messages)
+	stored.TaintSpans = session.MergeTaintSpans(cs.taintSpans, stored.TaintSpans)
 	if cs.untrusted {
 		stored.UntrustedIngested = true
 	}
@@ -430,6 +471,7 @@ func (sm *SessionManager) ArchiveAndDeleteID(chatID int64) (string, error) {
 		}
 		// In-run taint not yet persisted (MarkUntrustedIngested) goes into
 		// the archive with the history it belongs to.
+		sess.TaintSpans = session.MergeTaintSpans(cs.taintSpans, sess.TaintSpans)
 		if cs.untrusted {
 			sess.UntrustedIngested = true
 		}
@@ -668,6 +710,7 @@ func (sm *SessionManager) resumeSession(chatID int64, sessionID string, archived
 			UntrustedIngested:   sess.UntrustedIngested,
 			EpisodeUntrusted:    sess.EpisodeUntrusted,
 			EpisodeTaintTracked: sess.EpisodeTaintTracked,
+			TaintSpans:          sess.TaintSpans,
 		}
 		if err := sm.Store.Save(stored); err != nil {
 			return nil, fmt.Errorf("persist resumed session: %w", err)

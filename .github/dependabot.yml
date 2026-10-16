@@ -1,0 +1,19 @@
+# Dependency updates arrive as reviewable PRs instead of floating refs:
+# workflow actions stay pinned by commit SHA, and Dependabot proposes the
+# next SHA (with its release tag in the trailing comment).
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      actions:
+        patterns: ["*"]
+  - package-ecosystem: "gomod"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      golang-x:
+        patterns: ["golang.org/x/*"]

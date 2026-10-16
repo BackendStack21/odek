@@ -1234,13 +1234,12 @@ type DangerousConfig struct {
 	// When nil, CheckOperation falls back to /dev/tty (CLI-compatible default).
 	Approver Approver `json:"-"`
 
-	// StripSecretsEnvChildren, when true, strips secrets.env names from the
-	// environment of host-mode child processes spawned by the shell tool
-	// and background jobs (sub-agents and MCP stdio spawns already strip
-	// unconditionally). Default false: children inherit, preserving
-	// operator workflows that legitimately need credentials in shell
-	// children (gh, curl). Operator-only: the project config's dangerous
-	// section is ignored by design.
+	// StripSecretsEnvChildren strips secrets.env names from the environment
+	// of host-mode child processes spawned by the shell tool and background
+	// jobs (sub-agents and MCP stdio spawns strip unconditionally). Unset
+	// or true strips; false lets children inherit, for operator workflows
+	// that need credentials in shell children (gh, curl). Operator-only:
+	// the project config's dangerous section is ignored by design.
 	StripSecretsEnvChildren *bool `json:"strip_secrets_env_children,omitempty"`
 
 	// RESTApprovalFriction, when true, requires a typed `confirm` field
@@ -1251,12 +1250,25 @@ type DangerousConfig struct {
 	// contract. Deny stays single-field: friction protects against
 	// accidental approvals, not denials.
 	RESTApprovalFriction *bool `json:"rest_approval_friction,omitempty"`
+
+	// TaintEscalation, when false, disables the agent loop's escalation of
+	// tool calls whose arguments reuse spans recorded from untrusted content
+	// (UntrustedArgsClass). Default true. Operator-only: the project
+	// config's dangerous section is ignored by design.
+	TaintEscalation *bool `json:"taint_escalation,omitempty"`
+}
+
+// TaintEscalationEnabled reports whether untrusted-span escalation is on.
+// Nil-safe; unset means on.
+func (c *DangerousConfig) TaintEscalationEnabled() bool {
+	return c == nil || c.TaintEscalation == nil || *c.TaintEscalation
 }
 
 // StripSecretsEnvChildrenEnabled reports whether host-mode shell/bg
-// children must have secrets.env names stripped from their env. Nil-safe.
+// children must have secrets.env names stripped from their env: true
+// unless the operator set the knob to false. Nil-safe.
 func (c *DangerousConfig) StripSecretsEnvChildrenEnabled() bool {
-	return c != nil && c.StripSecretsEnvChildren != nil && *c.StripSecretsEnvChildren
+	return c == nil || c.StripSecretsEnvChildren == nil || *c.StripSecretsEnvChildren
 }
 
 // RESTApprovalFrictionEnabled reports whether the REST approval bridge must
@@ -1487,6 +1499,26 @@ func parseAction(s string) Action {
 func tokenize(input string) []string {
 	tokens, _ := tokenizeChecked(input)
 	return tokens
+}
+
+// ShellWords returns the words of cmd as the classifier sees them: after
+// normalisation (line joins, ANSI-C decoding, brace expansion, command
+// substitutions replaced by a placeholder, backslashes collapsed) and quote
+// removal, operators included. dynamic[i] reports that words[i] holds an
+// unresolved expansion — a variable, a command substitution or a backtick —
+// whose run-time value the text does not show. A command over
+// MaxCommandBytes returns ok false.
+func ShellWords(cmd string) (words []string, dynamic []bool, ok bool) {
+	if len(cmd) > MaxCommandBytes {
+		return nil, nil, false
+	}
+	norm, _ := normalize(cmd)
+	words = tokenize(norm)
+	dynamic = make([]bool, len(words))
+	for i, w := range words {
+		dynamic[i] = strings.ContainsAny(w, "$`") || strings.Contains(w, dynamicSubstToken)
+	}
+	return words, dynamic, true
 }
 
 // tokenizeChecked is tokenize that also reports whether a quote was still

@@ -2324,6 +2324,7 @@ func handlePrompt(
 	// Scope the ingest recorder to this prompt's context so concurrent
 	// sessions cannot overwrite each other's audit attribution.
 	ctx = loop.WithIngestRecorder(ctx, audit.ingest)
+	ctx = loop.WithTaintEscalationRecorder(ctx, audit.escalation)
 
 	// Resolve @ references (now recorded if a session is active)
 	refs := resource.ParseRefs(prompt)
@@ -4259,6 +4260,25 @@ type serveAuditBinder struct {
 	pending  [][2]string
 	pendingB int // bytes held in pending
 	dropped  int // ingests dropped because pending was full
+	// pendingEsc holds untrusted-args escalations recorded before the id
+	// is bound (bounded like pending).
+	pendingEsc []loop.TaintEscalation
+}
+
+// escalation records an untrusted-args escalation, holding it until the
+// session id is bound.
+func (b *serveAuditBinder) escalation(e loop.TaintEscalation) {
+	b.mu.Lock()
+	id, turn := b.id, b.turn
+	if id == "" {
+		if len(b.pendingEsc) < 1024 {
+			b.pendingEsc = append(b.pendingEsc, e)
+		}
+		b.mu.Unlock()
+		return
+	}
+	b.mu.Unlock()
+	_ = b.store.RecordEscalation(id, auditEscalation(turn, e))
 }
 
 // serveAuditPendingMaxBytes bounds the ingests held before a new session's id
@@ -4285,11 +4305,14 @@ func (b *serveAuditBinder) ingest(source, content string) {
 func (b *serveAuditBinder) bind(id string, turn int) {
 	b.mu.Lock()
 	b.id, b.turn = id, turn
-	pending, dropped := b.pending, b.dropped
-	b.pending, b.pendingB, b.dropped = nil, 0, 0
+	pending, dropped, pendingEsc := b.pending, b.dropped, b.pendingEsc
+	b.pending, b.pendingB, b.dropped, b.pendingEsc = nil, 0, 0, nil
 	b.mu.Unlock()
 	for _, p := range pending {
 		_ = b.store.RecordIngest(id, turn, p[0], p[1])
+	}
+	for _, e := range pendingEsc {
+		_ = b.store.RecordEscalation(id, auditEscalation(turn, e))
 	}
 	if dropped > 0 {
 		_ = b.store.RecordIngest(id, turn, fmt.Sprintf("audit:dropped_ingests:%d", dropped), "")

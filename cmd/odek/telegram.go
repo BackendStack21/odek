@@ -1184,7 +1184,7 @@ func telegramCmd(args []string) error {
 				return
 			}
 			handleChatMessageGated(mctx, chatID, messageID, userID,
-				telegramDocumentMessage(localPath),
+				telegramDocumentMessage(localPath, fileName),
 				bot, handler, sessionManager, resolved, systemMessage, handlerLog)
 		})
 		return "", nil
@@ -2504,6 +2504,7 @@ func runChatTurn(
 		if agent.UntrustedIngested() {
 			sessionManager.MarkUntrustedIngested(chatID)
 		}
+		sessionManager.MarkTaintSpans(chatID, agent.TaintSpans(trimmed))
 		if err := sessionManager.SaveNoIndexAt(chatID, turnGen, trimmed); err != nil {
 			checkpointErr = fmt.Errorf("persist Telegram checkpoint: %w", err)
 			agentCancel()
@@ -2519,16 +2520,21 @@ func runChatTurn(
 	agent.BeginRun("", "")
 	var outcome error
 	defer finishAgentInvocation(agent, &outcome)
+	// The run's context carries the persisted taint and untrusted spans. It
+	// is a new variable: the cancel watcher above already reads agentCtx.
+	runCtx := agentCtx
 	if cs.UntrustedIngested() {
-		agentCtx = loop.WithUntrustedIngest(agentCtx)
+		runCtx = loop.WithUntrustedIngest(runCtx)
 	}
-	runMessages, rbInserted := takeTelegramResumeSummary(agentCtx, chatID, agent.Memory(), cs.Messages, wake)
+	runCtx = loop.WithTaintSpanSeed(runCtx, cs.TaintSpans())
+	runMessages, rbInserted := takeTelegramResumeSummary(runCtx, chatID, agent.Memory(), cs.Messages, wake)
 	auditHistLen += rbInserted
-	response, updatedMessages, err := agent.RunWithMessages(agentCtx, runMessages)
+	response, updatedMessages, err := agent.RunWithMessages(runCtx, runMessages)
 	if agent.UntrustedIngested() {
 		// Before the cancel-path and final saves below.
 		sessionManager.MarkUntrustedIngested(chatID)
 	}
+	sessionManager.MarkTaintSpans(chatID, agent.TaintSpans(updatedMessages))
 	// Drain the progress bubble before anything else is sent: every progress
 	// edit completes before the final answer (or error reply) goes out.
 	progress.finish(!resolved.ToolProgressCleanup)
@@ -3234,10 +3240,17 @@ func telegramVoiceMessage(chatID int64, transcript string) string {
 }
 
 // telegramDocumentMessage builds the user-role message for an incoming
-// document. The whole message is wrapped as untrusted because the document
-// path comes from an external channel.
-func telegramDocumentMessage(localPath string) string {
-	return wrapUntrusted(context.Background(), "telegram:document", fmt.Sprintf("📄 Document received and saved to %q. Use shell tools to analyze and respond.", localPath))
+// document. The saved path is odek's own (the media directory, the chat tag,
+// a file-ID digest and the sanitized extension; telegram.DownloadDocument),
+// so it stays outside the wrapper like the photo path: the agent's commands
+// on that file do not count as reusing untrusted content. The sender-chosen
+// file name is wrapped as untrusted, which keeps the external ingest recorded.
+func telegramDocumentMessage(localPath, senderName string) string {
+	if senderName == "" {
+		senderName = "(none)"
+	}
+	name := wrapUntrusted(context.Background(), "telegram:document", "sender's file name: "+senderName)
+	return fmt.Sprintf("📄 Document received and saved to %q.\n%s\nUse shell tools to analyze and respond.", localPath, name)
 }
 
 // photoFallbackMessage builds the message injected when auto-describe is off or

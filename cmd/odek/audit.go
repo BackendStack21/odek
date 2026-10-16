@@ -22,9 +22,33 @@ func withAuditRecorder(ctx context.Context, store *session.AuditStore, sessionID
 	if store == nil || sessionID == "" {
 		return ctx
 	}
+	ctx = withEscalationAudit(ctx, store, func() (string, int) { return sessionID, turn })
 	return loop.WithIngestRecorder(ctx, func(source, content string) {
 		_ = store.RecordIngest(sessionID, turn, source, content)
 	})
+}
+
+// withEscalationAudit attaches the sink for untrusted-args escalations: each
+// tool call the loop escalated because an argument reused a span from
+// untrusted content is written to the session's audit log with the
+// principal's decision. target reports the session id and turn at record
+// time, for surfaces that bind them after the recorder is installed.
+func withEscalationAudit(ctx context.Context, store *session.AuditStore, target func() (string, int)) context.Context {
+	if store == nil {
+		return ctx
+	}
+	return loop.WithTaintEscalationRecorder(ctx, func(e loop.TaintEscalation) {
+		id, turn := target()
+		if id == "" {
+			return
+		}
+		_ = store.RecordEscalation(id, auditEscalation(turn, e))
+	})
+}
+
+// auditEscalation converts a loop escalation into its audit record.
+func auditEscalation(turn int, e loop.TaintEscalation) session.AuditEscalation {
+	return session.AuditEscalation{Turn: turn, Tool: e.Tool, Kind: e.Kind, Span: e.Span, Source: e.Source, Resource: e.Resource, Approved: e.Approved}
 }
 
 // withReadLedger scopes the unread-script read ledger to sessionID so a

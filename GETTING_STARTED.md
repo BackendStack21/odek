@@ -263,7 +263,9 @@ bodek --mouse                          # mouse-wheel scrolling (blocks text sele
 Both tools self-upgrade from their GitHub Releases. Each run downloads the
 latest release, verifies it against the release's `checksums.txt`
 (SHA-256), and replaces the running binary atomically — no manual download,
-no package manager.
+no package manager. `odek upgrade` also verifies the Sigstore signature on
+`checksums.txt` (the release workflow's identity for that exact tag) and
+refuses to install when it does not verify.
 
 ```bash
 odek upgrade          # update odek to the latest release

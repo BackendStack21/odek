@@ -33,8 +33,8 @@ type BackgroundSettings struct {
 	MaxTimeoutSeconds int  // 0 = uncapped (jobs bounded by session lifetime)
 	Notify            bool // background.notify == "observe"
 
-	// StripChildSecretEnv: operator opt-in (dangerous.strip_secrets_env_children)
-	// — host-mode job children get secrets.env names stripped from their env.
+	// StripChildSecretEnv: on unless dangerous.strip_secrets_env_children is
+	// false — host-mode job children get secrets.env names stripped.
 	StripChildSecretEnv bool
 
 	// Wake-on-complete (serve surface only — see cmd/odek/bg_wake.go).
@@ -106,12 +106,12 @@ func newBackgroundRuntime(s BackgroundSettings, sessionID, containerName string,
 	}
 	// The wrap resolves the container per spawn so late binding works
 	// (surfaces that start the sandbox after building tools call
-	// SetContainer before the agent runs). Empty name = host mode, the
-	// same default the manager uses without a wrapper.
+	// SetContainer before the agent runs). Empty name = host mode: the
+	// manager's own host path, which applies the secrets.env strip.
 	cfg.SandboxWrap = func(command string) ([]string, func(), error) {
 		name, _ := rt.container.Load().(string)
 		if name == "" {
-			return []string{"sh", "-c", command}, nil, nil
+			return nil, nil, bgproc.ErrRunOnHost
 		}
 		argv, followUp := wrapBackgroundSandboxCommand(name, command)
 		return append([]string{"docker"}, argv...), followUp, nil

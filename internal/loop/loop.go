@@ -550,6 +550,11 @@ type Engine struct {
 	approver     danger.Approver
 	dangerousCfg *danger.DangerousConfig // used by batch gate to pre-check risk
 
+	// taintSpans holds spans recorded from untrusted content for the
+	// untrusted-args gate (taint_spans.go); created on first use.
+	taintMu    sync.Mutex
+	taintSpans *taintSpanStore
+
 	// Token accounting — accumulated across all iterations of the most recent run.
 	// Reset on each Run/RunWithMessages call and read by callers (e.g. WebUI).
 	TotalInputTokens  int
@@ -3544,6 +3549,12 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 			})
 		}
 
+		// Phase 1.4: untrusted-args gate. A call whose arguments reuse a span
+		// recorded from untrusted content is put in front of the principal
+		// before any other gate can auto-pass it. taintDenied[i] holds the
+		// denial for each call the principal refused.
+		taintDenied := e.taintGate(toolCtx, messages, result.ToolCalls, execN, callIDs, iterNum)
+
 		// Phase 1.5: batch approval gate
 		// When an approver is set and the LLM returned multiple tool calls,
 		// present a single approval prompt for the entire batch instead of
@@ -3576,6 +3587,10 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 			var risky []riskyCall
 			hasUnclassifiable := false
 			for i, tc := range result.ToolCalls {
+				if taintDenied != nil && taintDenied[i] != "" {
+					// Refused by the untrusted-args gate: it will not run.
+					continue
+				}
 				risk, resource := classifyToolCallCtx(ctx, tc.Function.Name, tc.Function.Arguments)
 				if risk == "" {
 					if neverPromptsInBatch(tc.Function.Name) {
@@ -3722,7 +3737,9 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 
 		if batchDenied {
 			for i := range results {
-				if refusedByCard[i] {
+				if taintDenied != nil && taintDenied[i] != "" {
+					results[i] = execResult{output: taintDenied[i], errored: true, denied: true}
+				} else if refusedByCard[i] {
 					results[i] = execResult{output: "error: batch approval denied", errored: true, denied: true}
 				} else {
 					results[i] = execResult{output: "error: not run — another action in this batch was denied approval", errored: true, notRun: true}
@@ -3739,6 +3756,11 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 						errored: true,
 						notRun:  true,
 					}
+					close(done[i])
+					continue
+				}
+				if taintDenied != nil && taintDenied[i] != "" {
+					results[i] = execResult{output: taintDenied[i], errored: true, denied: true}
 					close(done[i])
 					continue
 				}

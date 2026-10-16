@@ -211,24 +211,13 @@ func DownloadDocument(bot *Bot, chatID int64, fileID, fileName string) (string, 
 	// voice/photo naming so the file is matched by chatMediaPattern and counted
 	// toward the per-chat media quota (a bare "chat<chatID>_" prefix would not
 	// match the leading-underscore glob and would let documents bypass the cap).
-	safeName := sanitizeDocName(fileName, fileID, f.FilePath)
-	// Named documents also need the full Telegram ID in their path: the same
-	// filename can be used by two different files in one chat.
-	// Place the ID before the extension so the resulting file remains useful
-	// to callers that infer type from its suffix, and bound the whole name.
-	ext := filepath.Ext(safeName)
-	stem := strings.TrimSuffix(safeName, ext)
-	suffix := "_" + fileIDSuffix(fileID)
-	maxStem := maxDocNameLen - len(suffix) - len(ext)
-	if maxStem < 0 {
-		ext = ext[:maxDocNameLen-len(suffix)]
-		maxStem = 0
-	}
-	if len(stem) > maxStem {
-		stem = stem[:maxStem]
-	}
-	safeName = stem + suffix + ext
-	localPath := filepath.Join(dir, fmt.Sprintf("doc_chat%d_%s", chatID, safeName))
+	// The saved name is odek's own: the file-ID digest plus the sanitized
+	// extension only. The sender's file name never reaches the path, so the
+	// path can be handed to the agent outside the untrusted wrapper while
+	// the name itself travels inside it. The digest keeps two files with
+	// the same name apart.
+	localPath := filepath.Join(dir, fmt.Sprintf("doc_chat%d_%s%s", chatID, fileIDSuffix(fileID),
+		docExtension(sanitizeDocName(fileName, fileID, f.FilePath))))
 
 	if err := os.WriteFile(localPath, data, 0600); err != nil {
 		return "", fmt.Errorf("telegram document: save: %w", err)
@@ -315,6 +304,28 @@ func neutralizeChatTag(name string) string {
 		s = strings.ReplaceAll(s, "_chat", "_cht")
 	}
 	return s[1:]
+}
+
+// maxDocExtLen bounds the extension kept from a sender's file name.
+const maxDocExtLen = 16
+
+// docExtension returns name's extension lower-cased, letters and digits
+// only and at most maxDocExtLen of them, or "" when none is left.
+func docExtension(name string) string {
+	ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(name), "."))
+	var b strings.Builder
+	for _, r := range ext {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		}
+		if b.Len() == maxDocExtLen {
+			break
+		}
+	}
+	if b.Len() == 0 {
+		return ""
+	}
+	return "." + b.String()
 }
 
 // fallbackDocName returns a deterministic filename derived from the Telegram
