@@ -1061,6 +1061,22 @@ func (s *taintSpanStore) match(text string, kinds taintKinds, egress bool, env t
 
 // ── engine gate ────────────────────────────────────────────────────────
 
+// taintURLPositionWord reports whether a shell word with an unresolved
+// expansion sits where a URL is built: it holds a scheme, or the text before
+// the expansion already has a host or path shape (".", "/" or ":").
+func taintURLPositionWord(w string) bool {
+	if strings.Contains(w, "://") {
+		return true
+	}
+	cut := len(w)
+	for _, marker := range []string{"$", "`", "odek.dynamic-subst"} {
+		if i := strings.Index(w, marker); i >= 0 && i < cut {
+			cut = i
+		}
+	}
+	return strings.ContainsAny(w[:cut], "./:")
+}
+
 // taintPassiveHeaders are the request headers that keep an http_request a
 // plain fetch for the egress rule; any other header can carry data, and a
 // passive one does too when its value is data-shaped (taintDataShaped).
@@ -1102,7 +1118,27 @@ func (e *Engine) taintEscalationFor(ctx context.Context, store *taintSpanStore, 
 		// The egress rule judges URL text only, so it applies only when no
 		// stage sends request data, headers or query options beside it.
 		egress := cls == danger.NetworkEgress && !analysis.RequestData
+		// The exemption is decided on the words the shell really passes:
+		// quoting, a backslash or "$Q" can splice a query onto a linked URL
+		// that the raw text shows bare. A URL-position word holding an
+		// unresolved expansion voids the exemption outright, and both the
+		// raw and the normalised text are matched.
+		var normalised string
+		if egress {
+			// An over-long command classifies unknown, never plain egress,
+			// so ShellWords always succeeds here.
+			words, dynamic, _ := danger.ShellWords(p.Command)
+			for i, w := range words {
+				if dynamic[i] && taintURLPositionWord(w) {
+					egress = false
+				}
+			}
+			normalised = strings.Join(words, " ")
+		}
 		hit, ok := store.match(p.Command, taintMatchAll, egress, env)
+		if !ok && normalised != "" && normalised != p.Command {
+			hit, ok = store.match(normalised, taintMatchAll, egress, env)
+		}
 		return hit, p.Command, ok
 	case "write_file", "patch":
 		var p struct {

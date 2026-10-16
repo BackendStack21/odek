@@ -1501,6 +1501,26 @@ func tokenize(input string) []string {
 	return tokens
 }
 
+// ShellWords returns the words of cmd as the classifier sees them: after
+// normalisation (line joins, ANSI-C decoding, brace expansion, command
+// substitutions replaced by a placeholder, backslashes collapsed) and quote
+// removal, operators included. dynamic[i] reports that words[i] holds an
+// unresolved expansion — a variable, a command substitution or a backtick —
+// whose run-time value the text does not show. A command over
+// MaxCommandBytes returns ok false.
+func ShellWords(cmd string) (words []string, dynamic []bool, ok bool) {
+	if len(cmd) > MaxCommandBytes {
+		return nil, nil, false
+	}
+	norm, _ := normalize(cmd)
+	words = tokenize(norm)
+	dynamic = make([]bool, len(words))
+	for i, w := range words {
+		dynamic[i] = strings.ContainsAny(w, "$`") || strings.Contains(w, dynamicSubstToken)
+	}
+	return words, dynamic, true
+}
+
 // tokenizeChecked is tokenize that also reports whether a quote was still
 // open at the end of the input. A real shell rejects such a line outright, so
 // nothing in it runs; the tokenizer, however, folds the rest of the line into

