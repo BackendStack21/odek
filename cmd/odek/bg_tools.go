@@ -106,12 +106,12 @@ func newBackgroundRuntime(s BackgroundSettings, sessionID, containerName string,
 	}
 	// The wrap resolves the container per spawn so late binding works
 	// (surfaces that start the sandbox after building tools call
-	// SetContainer before the agent runs). Empty name = host mode, the
-	// same default the manager uses without a wrapper.
+	// SetContainer before the agent runs). Empty name = host mode: the
+	// manager's own host path, which applies the secrets.env strip.
 	cfg.SandboxWrap = func(command string) ([]string, func(), error) {
 		name, _ := rt.container.Load().(string)
 		if name == "" {
-			return []string{"sh", "-c", command}, nil, nil
+			return nil, nil, bgproc.ErrRunOnHost
 		}
 		argv, followUp := wrapBackgroundSandboxCommand(name, command)
 		return append([]string{"docker"}, argv...), followUp, nil

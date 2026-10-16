@@ -115,7 +115,8 @@ type Config struct {
 	// SandboxWrap, when set, rewrites the command into a sandboxed argv
 	// (e.g. the shell tool's docker-exec pidfile wrapper) and returns a
 	// follow-up func invoked after the job is forcibly stopped. When nil,
-	// commands run on the host via "sh -c".
+	// commands run on the host via "sh -c". A wrapper that returns ErrRunOnHost
+	// selects that host path for one spawn (refused under RequireSandbox).
 	SandboxWrap func(command string) (argv []string, followUp func(), err error)
 	// StripEnvNames, when non-empty, is removed from the environment of
 	// host-mode job processes (the sandbox client process keeps it; the
@@ -302,7 +303,13 @@ func (m *Manager) buildCommand(command, cwd string, wrap func(string) ([]string,
 	attrs := &syscall.SysProcAttr{Setpgid: true}
 	if wrap != nil {
 		argv, followUp, err := wrap(command)
-		if err != nil {
+		switch {
+		case errors.Is(err, ErrRunOnHost):
+			if m.cfg.RequireSandbox {
+				return nil, nil, errors.New("bgproc: sandbox routing required")
+			}
+			return m.hostCommand(command, cwd, attrs, stripEnv), nil, nil
+		case err != nil:
 			return nil, nil, err
 		}
 		if len(argv) == 0 {
@@ -317,12 +324,21 @@ func (m *Manager) buildCommand(command, cwd string, wrap func(string) ([]string,
 		cmd.WaitDelay = 3 * time.Second
 		return cmd, followUp, nil
 	}
+	return m.hostCommand(command, cwd, attrs, stripEnv), nil, nil
+}
+
+// ErrRunOnHost, returned by a SandboxWrap, runs that spawn on the host via
+// "sh -c" with the host-mode environment strip applied.
+var ErrRunOnHost = errors.New("bgproc: run on host")
+
+// hostCommand builds the host-mode child: "sh -c" with StripEnvNames removed.
+func (m *Manager) hostCommand(command, cwd string, attrs *syscall.SysProcAttr, stripEnv func(*exec.Cmd)) *exec.Cmd {
 	cmd := exec.Command("sh", "-c", command)
 	stripEnv(cmd)
 	cmd.SysProcAttr = attrs
 	cmd.Dir = cwd
 	cmd.WaitDelay = 3 * time.Second
-	return cmd, nil, nil
+	return cmd
 }
 
 // wait reaps the process and finalizes the job exactly once.
