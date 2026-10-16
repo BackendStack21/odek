@@ -3234,10 +3234,14 @@ func telegramVoiceMessage(chatID int64, transcript string) string {
 }
 
 // telegramDocumentMessage builds the user-role message for an incoming
-// document. The whole message is wrapped as untrusted because the document
-// path comes from an external channel.
+// document. The saved path is odek's own (the media directory and a
+// sanitized name), so it stays outside the wrapper like the photo path: the
+// agent's commands on that file do not count as reusing untrusted content.
+// The sender-chosen file name inside it is wrapped as untrusted, which keeps
+// the external ingest recorded.
 func telegramDocumentMessage(localPath string) string {
-	return wrapUntrusted(context.Background(), "telegram:document", fmt.Sprintf("📄 Document received and saved to %q. Use shell tools to analyze and respond.", localPath))
+	name := wrapUntrusted(context.Background(), "telegram:document", "sender's file name: "+filepath.Base(localPath))
+	return fmt.Sprintf("📄 Document received and saved to %q.\n%s\nUse shell tools to analyze and respond.", localPath, name)
 }
 
 // photoFallbackMessage builds the message injected when auto-describe is off or

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/BackendStack21/odek/internal/loop"
@@ -31,6 +32,26 @@ func TestRED_AuditRecorders_RecordTaintEscalations(t *testing.T) {
 		b.bind("sess2", 1)
 		sec16TaintAssertEscalation(t, store, "sess2", 1)
 	})
+}
+
+// The saved-document path is chosen by odek, not the sender: it belongs to
+// the principal's message, outside the untrusted wrapper, so commands the
+// agent runs on it are not escalated as reusing untrusted content. The
+// sender-chosen file name stays wrapped.
+func TestRED_TelegramDocumentPathOutsideWrapper(t *testing.T) {
+	const p = "/home/u/.odek/media/doc_chat9_report_ab12.pdf"
+	msg := telegramDocumentMessage(p)
+	if !strings.Contains(msg, p) {
+		t.Fatalf("message lacks the saved path: %s", msg)
+	}
+	for _, body := range unwrapUntrustedAll(msg) {
+		if strings.Contains(body, p) {
+			t.Fatalf("saved path is inside the untrusted wrapper: %s", msg)
+		}
+	}
+	if bodies := unwrapUntrustedAll(msg); len(bodies) != 1 || !strings.Contains(bodies[0], "doc_chat9_report_ab12.pdf") {
+		t.Fatalf("sender-chosen file name not wrapped: %v", bodies)
+	}
 }
 
 func sec16TaintAssertEscalation(t *testing.T, store *session.AuditStore, id string, turn int) {
