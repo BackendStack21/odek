@@ -1234,13 +1234,12 @@ type DangerousConfig struct {
 	// When nil, CheckOperation falls back to /dev/tty (CLI-compatible default).
 	Approver Approver `json:"-"`
 
-	// StripSecretsEnvChildren, when true, strips secrets.env names from the
-	// environment of host-mode child processes spawned by the shell tool
-	// and background jobs (sub-agents and MCP stdio spawns already strip
-	// unconditionally). Default false: children inherit, preserving
-	// operator workflows that legitimately need credentials in shell
-	// children (gh, curl). Operator-only: the project config's dangerous
-	// section is ignored by design.
+	// StripSecretsEnvChildren strips secrets.env names from the environment
+	// of host-mode child processes spawned by the shell tool and background
+	// jobs (sub-agents and MCP stdio spawns strip unconditionally). Unset
+	// or true strips; false lets children inherit, for operator workflows
+	// that need credentials in shell children (gh, curl). Operator-only:
+	// the project config's dangerous section is ignored by design.
 	StripSecretsEnvChildren *bool `json:"strip_secrets_env_children,omitempty"`
 
 	// RESTApprovalFriction, when true, requires a typed `confirm` field
@@ -1254,9 +1253,10 @@ type DangerousConfig struct {
 }
 
 // StripSecretsEnvChildrenEnabled reports whether host-mode shell/bg
-// children must have secrets.env names stripped from their env. Nil-safe.
+// children must have secrets.env names stripped from their env: true
+// unless the operator set the knob to false. Nil-safe.
 func (c *DangerousConfig) StripSecretsEnvChildrenEnabled() bool {
-	return c != nil && c.StripSecretsEnvChildren != nil && *c.StripSecretsEnvChildren
+	return c == nil || c.StripSecretsEnvChildren == nil || *c.StripSecretsEnvChildren
 }
 
 // RESTApprovalFrictionEnabled reports whether the REST approval bridge must

@@ -10,8 +10,8 @@ func TestStripSecretsEnvChildrenEnabledNilSafe(t *testing.T) {
 		cfg  *DangerousConfig
 		want bool
 	}{
-		{"nil receiver", (*DangerousConfig)(nil), false},
-		{"nil pointer field", &DangerousConfig{}, false},
+		{"nil receiver", (*DangerousConfig)(nil), true},
+		{"nil pointer field", &DangerousConfig{}, true},
 		{"false", &DangerousConfig{StripSecretsEnvChildren: boolPtr(false)}, false},
 		{"true", &DangerousConfig{StripSecretsEnvChildren: boolPtr(true)}, true},
 	}

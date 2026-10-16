@@ -118,9 +118,9 @@ type Config struct {
 	// commands run on the host via "sh -c".
 	SandboxWrap func(command string) (argv []string, followUp func(), err error)
 	// StripEnvNames, when non-empty, is removed from the child process
-	// environment (host and sandbox-client processes alike; the operator
-	// dangerous.strip_secrets_env_children knob feeds secrets.env names
-	// here). Empty/nil inherits the parent environment unchanged.
+	// environment (host and sandbox-client processes alike; the
+	// dangerous.strip_secrets_env_children knob, on by default, feeds
+	// secrets.env names here). Empty/nil inherits the parent environment unchanged.
 	StripEnvNames []string
 }
 

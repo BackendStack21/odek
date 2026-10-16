@@ -33,8 +33,8 @@ type BackgroundSettings struct {
 	MaxTimeoutSeconds int  // 0 = uncapped (jobs bounded by session lifetime)
 	Notify            bool // background.notify == "observe"
 
-	// StripChildSecretEnv: operator opt-in (dangerous.strip_secrets_env_children)
-	// — host-mode job children get secrets.env names stripped from their env.
+	// StripChildSecretEnv: on unless dangerous.strip_secrets_env_children is
+	// false — host-mode job children get secrets.env names stripped.
 	StripChildSecretEnv bool
 
 	// Wake-on-complete (serve surface only — see cmd/odek/bg_wake.go).

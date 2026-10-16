@@ -247,6 +247,7 @@ Layered prompt-injection / approval-fatigue defenses. The full per-mitigation li
 - **Budgets, events, refs (v1.24.0)** — budget clamp merge (see above); event stream carries SHA-256 arg hashes + sizes only (never raw args), redact applied, JSONL sink 0600/no-symlink/fsync-per-event, drop-on-full dispatch; external refs validated and never dereferenced.
 - **Resource bounds** — pervasive size caps (shell output 1 MiB/stream, perf-tool files 10 MiB, session files 32 MiB, skill files 1 MiB, browser snapshots/history/elements, tree width, search results, write_file content, patch expansion), classifier input (commands over `danger.MaxCommandBytes` = 64 KiB are `unknown`/denied; one analysis examines at most 4096 tokens; here-doc, substitution and brace scanning are budgeted; read ledger 4096 paths × 1024 sessions; prompt text capped by `danger.DisplayMaxBytes`/`InlineMaxBytes`) to keep hostile input from OOMing the process.
 - **Telegram** — chat-scoped sessions/plans/media, callback binding to originating user, outbound media allowlist + approval, secret-subtree rejection, singleton flock, 0600 logs.
+- **Child environment** — host-mode `shell`/`bg_*` children have every `secrets.env` name stripped by default (`dangerous.strip_secrets_env_children`, operator-only; `false` restores inheritance); sub-agent and MCP stdio spawns strip unconditionally.
 - **Redaction** — `internal/redact` (20+ patterns: provider keys, cloud creds, PEM, JWT, DB URLs, …) applied to sessions, logs, and the event stream.
 
 ### Security findings (`sec_findings.md`)
