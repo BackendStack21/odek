@@ -1796,6 +1796,20 @@ func mergeDangerousConfig(base, override *danger.DangerousConfig) {
 
 // ── Merge ──────────────────────────────────────────────────────────────
 
+// emptyToolsAllowlistWarned records the config paths already warned about,
+// so commands that load the config more than once warn a single time.
+var emptyToolsAllowlistWarned sync.Map
+
+// warnEmptyToolsAllowlist explains an explicitly empty tools.enabled list.
+// `odek init --global` used to write "enabled": [] by mistake; the empty
+// allowlist is honored, but the operator is told what it does.
+func warnEmptyToolsAllowlist(path string) {
+	if _, seen := emptyToolsAllowlistWarned.LoadOrStore(path, true); seen {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "odek: WARNING: tools.enabled is an empty list in %s, which disables every built-in tool; remove it or set it to null to allow all tools\n", path)
+}
+
 // LoadConfig merges configuration from all four layers and returns the
 // fully resolved result.
 //
@@ -1815,9 +1829,7 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	// Layer 1: global (~/.odek/config.json)
 	global := loadFile(GlobalConfigPath())
 	if global.Tools != nil && global.Tools.Enabled != nil && len(global.Tools.Enabled) == 0 {
-		// `odek init --global` used to write "enabled": [] by mistake; an
-		// empty allowlist is honored, but say what it does.
-		fmt.Fprintf(os.Stderr, "odek: WARNING: tools.enabled is an empty list in %s, which disables every built-in tool; remove it or set it to null to allow all tools\n", GlobalConfigPath())
+		warnEmptyToolsAllowlist(GlobalConfigPath())
 	}
 
 	// Layer 2: project (./odek.json)
