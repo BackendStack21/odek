@@ -829,9 +829,12 @@ type revStamp struct {
 	revision   uint64
 	untrusted  bool
 	episode    bool
-	size       int64
-	mod        time.Time
-	ino        uint64
+	// spans: the revision carries TaintSpans, which the stamp does not
+	// hold, so a save must re-read the file to merge them.
+	spans bool
+	size  int64
+	mod   time.Time
+	ino   uint64
 }
 
 // cachedRevision returns the revision this store last persisted for id when
@@ -846,7 +849,7 @@ func (s *Store) cachedRevision(id string, info os.FileInfo, statErr error) *Sess
 		return nil
 	}
 	st, ok := s.revStamps[id]
-	if !ok || st.mod.Nanosecond() == 0 || st.ino == 0 || time.Since(st.mod) < revStampSettle {
+	if !ok || st.spans || st.mod.Nanosecond() == 0 || st.ino == 0 || time.Since(st.mod) < revStampSettle {
 		return nil
 	}
 	if info.Size() != st.size || !info.ModTime().Equal(st.mod) || fileInode(info) != st.ino {
@@ -870,6 +873,7 @@ func (s *Store) rememberRevision(sess *Session) {
 		revision:   sess.Revision,
 		untrusted:  sess.UntrustedIngested,
 		episode:    sess.EpisodeUntrusted,
+		spans:      len(sess.TaintSpans) > 0,
 		size:       info.Size(),
 		mod:        info.ModTime(),
 		ino:        fileInode(info),

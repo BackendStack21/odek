@@ -134,3 +134,37 @@ func TestMergeTaintSpans_Validation(t *testing.T) {
 		t.Fatal("empty merge not nil")
 	}
 }
+
+// A save served from the settled revision stamp (no re-read of the file)
+// must still keep the spans the previous revision recorded.
+func TestRED_SessionTaintSpans_SurviveSettledRevisionCache(t *testing.T) {
+	prev := revStampSettle
+	revStampSettle = 0
+	defer func() { revStampSettle = prev }()
+	s, err := NewStoreWithDir(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess := &Session{ID: "20261016-settled", Task: "t", Messages: []Message{{Role: "user", Content: "hi"}}}
+	if err := s.Save(sess); err != nil {
+		t.Fatal(err)
+	}
+	if s.cachedRevisionForTest(sess.ID) == nil {
+		t.Skip("filesystem gives no nanosecond mtime or inode; the stamp cache is never used here")
+	}
+	sess.TaintSpans = []TaintSpan{{Kind: "host", Value: "evil.example"}}
+	if err := s.Save(sess); err != nil {
+		t.Fatal(err)
+	}
+	sess.TaintSpans = []TaintSpan{{Kind: "path", Value: "/opt/x/y"}}
+	if err := s.Save(sess); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Load(sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.TaintSpans) != 2 {
+		t.Fatalf("settled-cache save dropped earlier spans: %+v", got.TaintSpans)
+	}
+}
