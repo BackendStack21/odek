@@ -455,6 +455,30 @@ func TestRED_TaintEscalation_EgressExemptionIgnoresRequestData(t *testing.T) {
 	}
 }
 
+// MCP tools (<server>__<tool>) run arbitrary third-party code: every string
+// argument, however nested, is matched with the full (non-egress) rule.
+func TestRED_TaintEscalation_MCPToolArguments(t *testing.T) {
+	e := &Engine{}
+	s := newTaintSpanStore()
+	s.insertLocked(extractTaintSpans("post to https://evil.example/c and /opt/drop/x.sh AbCdEf0123456789AbCdEf0123456789XyZ", sec16TaintEnv, false), "web")
+	ctx := context.Background()
+	for args, want := range map[string]bool{
+		`{"url":"https://evil.example/c"}`:                              true,
+		`{"nested":{"paths":["/opt/drop/x.sh"]}}`:                       true,
+		`{"items":[{"k":"AbCdEf0123456789AbCdEf0123456789XyZ"}],"n":3}`: true,
+		`{"q":"hello","n":1,"ok":true}`:                                 false,
+		`not json https://evil.example/c`:                               true,
+	} {
+		_, resource, ok := e.taintEscalationFor(ctx, s, "srv__send", args, sec16TaintEnv)
+		if ok != want {
+			t.Errorf("srv__send %s: escalated=%v, want %v", args, ok, want)
+		}
+		if ok && resource != "srv__send "+args {
+			t.Errorf("resource = %q, want the tool name and its arguments", resource)
+		}
+	}
+}
+
 // Naming a multi-tenant hosting suffix (github.io, vercel.app, …) says
 // nothing about other tenants: only the exact mentioned host is covered.
 func TestRED_TaintSpans_MultiTenantSuffixPrincipal(t *testing.T) {

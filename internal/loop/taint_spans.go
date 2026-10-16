@@ -59,6 +59,7 @@ import (
 //     safe. A command that is plain network egress follows the egress rule.
 //   - write_file / patch: a path span in the target path (content is never
 //     matched: writing up research with links is ordinary work).
+//   - MCP tools (<server>__<tool>): any span in any string argument or key.
 //   - http_request and browser navigate: the egress rule when the request is
 //     plain network egress; any span in the URL and header values otherwise
 //     (uploads, credentialed requests, internal targets).
@@ -975,7 +976,46 @@ func (e *Engine) taintEscalationFor(ctx context.Context, store *taintSpanStore, 
 		hit, ok := store.match(p.URL, taintMatchAll, cls == danger.NetworkEgress, env)
 		return hit, p.URL, ok
 	}
+	if strings.Contains(name, "__") {
+		// An MCP tool is third-party code with any effect: every string
+		// argument takes the full match.
+		hit, ok := store.match(taintArgumentStrings(args), taintMatchAll, false, env)
+		return hit, name + " " + args, ok
+	}
 	return taintHit{}, "", false
+}
+
+// taintArgumentStrings returns every string (and object key) in a JSON
+// argument object, one per line and bounded by taintMatchMaxBytes. Arguments
+// that do not parse are returned as they are.
+func taintArgumentStrings(args string) string {
+	var v any
+	if json.Unmarshal([]byte(args), &v) != nil {
+		return args
+	}
+	var b strings.Builder
+	var walk func(any)
+	walk = func(v any) {
+		if b.Len() >= taintMatchMaxBytes {
+			return
+		}
+		switch t := v.(type) {
+		case string:
+			b.WriteString(t)
+			b.WriteByte('\n')
+		case []any:
+			for _, e := range t {
+				walk(e)
+			}
+		case map[string]any:
+			for k, e := range t {
+				walk(k)
+				walk(e)
+			}
+		}
+	}
+	walk(v)
+	return b.String()
 }
 
 // spanStore returns the engine's untrusted-span store, creating it.
