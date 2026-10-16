@@ -3246,22 +3246,22 @@ func telegramDocumentMessage(localPath string) string {
 func photoFallbackMessage(localPath, caption string, visionReady bool) string {
 	hint := "Use the vision tool to analyze the image, then respond."
 	if !visionReady {
-		hint = "There is no vision backend installed, so the image cannot be analyzed here; respond from the caption if possible and tell the user."
+		hint = "The vision tool is not available here, so the image cannot be analyzed; respond from the caption if possible and tell the user."
 	}
 	if caption != "" {
 		return fmt.Sprintf("🖼 Photo saved to %q with this message from the user:\n%s\n\n%s", localPath, wrapUntrusted(context.Background(), "telegram:photo:caption", caption), hint)
 	}
 	if !visionReady {
-		return fmt.Sprintf("🖼 Photo received and saved to %q. There is no vision backend installed, so the image cannot be analyzed here; tell the user.", localPath)
+		return fmt.Sprintf("🖼 Photo received and saved to %q. The vision tool is not available here, so the image cannot be analyzed; tell the user.", localPath)
 	}
 	return fmt.Sprintf("🖼 Photo received and saved to %q. Use the vision tool or shell commands to analyze and respond.", localPath)
 }
 
 // voiceFallbackMessage tells the agent where a voice note was saved and,
-// only when a transcription backend can run, to use the transcribe tool.
+// only when the agent has the transcribe tool, to use it.
 func voiceFallbackMessage(localPath string, transcribeReady bool) string {
 	if !transcribeReady {
-		return fmt.Sprintf("🎤 Voice message saved to %q. There is no transcription backend installed, so it cannot be transcribed here; tell the user.", localPath)
+		return fmt.Sprintf("🎤 Voice message saved to %q. The transcribe tool is not available here, so it cannot be transcribed; tell the user.", localPath)
 	}
 	return fmt.Sprintf("🎤 Voice message saved to %q. Use transcribe() tool to get the text.", localPath)
 }

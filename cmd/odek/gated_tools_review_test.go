@@ -20,19 +20,19 @@ func TestRED_TelegramMediaFallbackMatchesAvailableTools(t *testing.T) {
 	path := "/home/odek/.odek/media/photo_abc.jpg"
 	for _, caption := range []string{"", "what is this?"} {
 		msg := photoFallbackMessage(path, caption, false)
-		if strings.Contains(msg, "vision tool") {
+		if strings.Contains(msg, "Use the vision tool") {
 			t.Errorf("photo fallback without a vision backend points at the vision tool: %q", msg)
 		}
-		if !strings.Contains(msg, path) || !strings.Contains(msg, "no vision backend") {
-			t.Errorf("photo fallback must keep the path and say no vision backend is installed: %q", msg)
+		if !strings.Contains(msg, path) || !strings.Contains(msg, "vision tool is not available") {
+			t.Errorf("photo fallback must keep the path and say the vision tool is not available: %q", msg)
 		}
-		if ready := photoFallbackMessage(path, caption, true); !strings.Contains(ready, "vision tool") {
+		if ready := photoFallbackMessage(path, caption, true); !strings.Contains(ready, "Use the vision tool") {
 			t.Errorf("photo fallback with a vision backend lost the vision tool hint: %q", ready)
 		}
 	}
 
 	voice := voiceFallbackMessage("/tmp/v.ogg", false)
-	if strings.Contains(voice, "transcribe()") || !strings.Contains(voice, "no transcription backend") {
+	if strings.Contains(voice, "transcribe()") || !strings.Contains(voice, "transcribe tool is not available") {
 		t.Errorf("voice fallback without a backend: %q", voice)
 	}
 	if ready := voiceFallbackMessage("/tmp/v.ogg", true); !strings.Contains(ready, "transcribe") {

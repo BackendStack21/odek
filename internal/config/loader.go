@@ -1828,9 +1828,7 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 
 	// Layer 1: global (~/.odek/config.json)
 	global := loadFile(GlobalConfigPath())
-	if global.Tools != nil && global.Tools.Enabled != nil && len(global.Tools.Enabled) == 0 {
-		warnEmptyToolsAllowlist(GlobalConfigPath())
-	}
+	globalEmptyAllowlist := global.Tools != nil && global.Tools.Enabled != nil && len(global.Tools.Enabled) == 0
 
 	// Layer 2: project (./odek.json)
 	project := loadFileExpand(ProjectConfigPath(), false)
@@ -3209,6 +3207,12 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	secretsEnvMu.Unlock()
 	for _, name := range names {
 		redact.RegisterSecret(os.Getenv(name))
+	}
+
+	// Warn only when the global empty list is what actually applies, not
+	// when ODEK_TOOLS_ENABLED or --tool replaced it.
+	if globalEmptyAllowlist && resolved.Tools.Enabled != nil && len(resolved.Tools.Enabled) == 0 {
+		warnEmptyToolsAllowlist(GlobalConfigPath())
 	}
 
 	return resolved

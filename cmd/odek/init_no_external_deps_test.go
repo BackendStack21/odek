@@ -385,3 +385,23 @@ func TestRED_SecretsStubCleansUpOnWriteError(t *testing.T) {
 		t.Error("partial secrets.env left behind after a write error")
 	}
 }
+
+// TestRED_ForceKeepsConfigOwnerReadable: --force over a config with no
+// owner bits must still write a file the owner can read.
+func TestRED_ForceKeepsConfigOwnerReadable(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	opsHuntCaptureStdout(t, func() { _ = initConfig([]string{"--global"}) })
+	cfg := config.GlobalConfigPath()
+	if err := os.Chmod(cfg, 0o044); err != nil {
+		t.Fatal(err)
+	}
+	opsHuntCaptureStdout(t, func() { _ = initConfig([]string{"--global", "--force"}) })
+	fi, err := os.Stat(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := fi.Mode().Perm(); perm != 0o600 {
+		t.Errorf("--force over mode 0044 wrote %o, want 600", perm)
+	}
+}

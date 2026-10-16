@@ -1856,8 +1856,9 @@ func initConfig(args []string) error {
 		}
 		if fi, err := os.Stat(writePath); err == nil && fi.Mode().IsRegular() {
 			// Keep the owner bits of an existing file but never its
-			// group/other access: the config can hold API keys.
-			mode = fi.Mode().Perm() &^ 0o077
+			// group/other access (the config can hold API keys), and
+			// always let the owner read and write it.
+			mode = fi.Mode().Perm()&^0o077 | 0o600
 		}
 	}
 	if err := fsatomic.WriteFile(writePath, []byte(template+"\n"), mode); err != nil {

@@ -74,3 +74,18 @@ func captureLoaderStderr(t *testing.T, fn func()) string {
 	b, _ := io.ReadAll(r)
 	return string(b)
 }
+
+// TestRED_EmptyAllowlistWarningHonoursOverrides: ODEK_TOOLS_ENABLED (or
+// --tool) replaces the global empty list, so no warning is due then.
+func TestRED_EmptyAllowlistWarningHonoursOverrides(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	t.Chdir(dir)
+	writeGlobalConfig(t, dir, `{"tools":{"enabled":[]}}`)
+	os.Chmod(filepath.Join(dir, ".odek", "config.json"), 0o600)
+	t.Setenv("ODEK_TOOLS_ENABLED", "shell")
+	stderr := captureLoaderStderr(t, func() { LoadConfig(CLIFlags{}) })
+	if strings.Contains(stderr, "tools.enabled is an empty list") {
+		t.Errorf("warned although ODEK_TOOLS_ENABLED overrides the empty list:\n%s", stderr)
+	}
+}

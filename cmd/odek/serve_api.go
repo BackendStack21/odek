@@ -784,8 +784,8 @@ func handleTools(resolved config.ResolvedConfig) http.HandlerFunc {
 
 		// Descriptors come from the resolved tool config so gated tools
 		// (transcribe, vision, speak, web_search) appear exactly when the
-		// agent would be offered them; planning is forced on so plan is
-		// always described.
+		// agent would be offered them. Planning is forced on so plan is
+		// always described; it is reported unavailable below when off.
 		tcfg := toolConfigFromResolved(resolved)
 		pc := config.DefaultPlanningConfig()
 		tcfg.Planning = &pc
@@ -821,6 +821,9 @@ func handleTools(resolved config.ResolvedConfig) http.HandlerFunc {
 			} else if reason, gated := gatedBuiltinTools[n]; gated && descriptors[n] == nil {
 				entry.Enabled = false
 				entry.Reason = "Not available: " + reason
+			} else if n == "plan" && !resolved.Planning.Enabled {
+				entry.Enabled = false
+				entry.Reason = "Not available: planning is disabled (planning.enabled)"
 			}
 			out = append(out, entry)
 		}

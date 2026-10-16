@@ -89,8 +89,7 @@ func toolAllowedByFilter(name string, cfg config.ToolConfig) bool {
 // the tool, inside the run. toolReady also honours the tools filter.
 func telegramVoiceBackends(tcfg toolConfig, tools config.ToolConfig) (autoReady, toolReady bool) {
 	autoReady = transcribeBackendReady(tcfg.Transcription, false)
-	providerSTT := tcfg.STT.Backend == config.STTBackendProvider &&
-		providerSTTReady(tcfg.STT, newSpeechClient(tcfg.TTS, tcfg.STT, tcfg.SpeechOptions))
+	providerSTT := providerSTTReady(tcfg.STT, newSpeechClient(tcfg.TTS, tcfg.STT, tcfg.SpeechOptions))
 	return autoReady, (autoReady || providerSTT) && toolAllowedByFilter("transcribe", tools)
 }
 
@@ -113,9 +112,7 @@ func warnMediaBackendMissingOnce(kind string) bool {
 
 // transcribeCallArgs encodes the transcribe tool's arguments for path.
 func transcribeCallArgs(path string) string {
-	b, _ := json.Marshal(struct {
-		Path string `json:"path"`
-	}{path})
+	b, _ := json.Marshal(transcribeArgs{Path: path})
 	return string(b)
 }
 
