@@ -1594,7 +1594,7 @@ const globalConfigTemplate = `{
     }
   },
   "tools": {
-    "enabled": [],
+    "enabled": null,
     "disabled": []
   },
   "profiles": {},

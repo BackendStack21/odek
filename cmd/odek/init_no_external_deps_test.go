@@ -312,3 +312,20 @@ func TestRED_RunReportsMissingKeyBeforeSandbox(t *testing.T) {
 		t.Errorf("sandbox output before the missing-key error:\n%s", stderr)
 	}
 }
+
+// TestRED_FreshGlobalInitKeepsBuiltinTools: the template documented
+// tools.enabled as an empty list, but a present (non-nil) list is a strict
+// allowlist, so every fresh config silently disabled every built-in tool.
+func TestRED_FreshGlobalInitKeepsBuiltinTools(t *testing.T) {
+	initScratch(t)
+	t.Chdir(t.TempDir())
+	r := config.LoadConfig(config.CLIFlags{})
+	if r.Tools.Enabled != nil {
+		t.Errorf("tools.enabled = %#v, want unset (nil): a present list is an allowlist", r.Tools.Enabled)
+	}
+	all := builtinTools(r.Dangerous, nil, nil, 1, "", toolConfigFromResolved(r), nil)
+	got := filterBuiltinTools(all, r.Tools, nil)
+	if len(got) != len(all) {
+		t.Errorf("fresh config exposes %d of %d built-in tools", len(got), len(all))
+	}
+}
