@@ -117,8 +117,8 @@ type Config struct {
 	// follow-up func invoked after the job is forcibly stopped. When nil,
 	// commands run on the host via "sh -c".
 	SandboxWrap func(command string) (argv []string, followUp func(), err error)
-	// StripEnvNames, when non-empty, is removed from the child process
-	// environment (host and sandbox-client processes alike; the
+	// StripEnvNames, when non-empty, is removed from the environment of
+	// host-mode job processes (the sandbox client process keeps it; the
 	// dangerous.strip_secrets_env_children knob, on by default, feeds
 	// secrets.env names here). Empty/nil inherits the parent environment unchanged.
 	StripEnvNames []string
@@ -308,8 +308,10 @@ func (m *Manager) buildCommand(command, cwd string, wrap func(string) ([]string,
 		if len(argv) == 0 {
 			return nil, nil, errors.New("sandbox wrapper returned empty argv")
 		}
+		// No strip here: argv runs the host container client, which may
+		// need DOCKER_* or proxy settings, and the container never sees
+		// the host environment.
 		cmd := exec.Command(argv[0], argv[1:]...)
-		stripEnv(cmd)
 		cmd.SysProcAttr = attrs
 		cmd.Dir = cwd
 		cmd.WaitDelay = 3 * time.Second
