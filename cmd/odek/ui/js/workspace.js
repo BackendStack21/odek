@@ -76,8 +76,15 @@ function addInspectButton(block, item) {
 }
 // attachInspect gives a re-rendered history step (Show earlier) its inspect
 // action without recording it again: the Activity list already holds the
-// result in transcript order from the session load.
-S.attachInspect = (block, output) => addInspectButton(block, resultItem(block, output));
+// result in transcript order from the session load. That item is rebound to
+// the visible step so "Show in conversation" reaches it.
+S.attachInspect = (block, output) => {
+  const text = String(output || '');
+  const callId = block.dataset.callId || '', turnId = block.dataset.turnId || '';
+  const item = outputs.find((o) => !o.block.isConnected && o.callId === callId && o.turnId === turnId && o.output === text);
+  if (item) item.block = block;
+  addInspectButton(block, item || resultItem(block, output));
+};
 S.recordResult = (block, output) => {
   const item = resultItem(block, output);
   item.stepId=(S.plan?.steps || []).find(step=>step.status==='in_progress')?.id || '';

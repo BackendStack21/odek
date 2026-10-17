@@ -12,6 +12,7 @@
 // rows trimmed from a live turn come back by reloading the persisted session.
 import { S } from './state.js';
 import { messagesEl } from './dom.js';
+import { hasClass, nodeHolds } from './utils.js';
 
 export const MAX_UNITS = 300;      // units kept while the view follows the bottom
 export const HARD_UNITS = 600;     // ceiling while the operator reads further up
@@ -20,22 +21,8 @@ export const HISTORY_UNITS = 150;  // units a session load or "Show earlier" ren
 
 const TOP_UNITS = ['msg', 'turn-stream', 'tool-block', 'subagent-group', 'thinking-block', 'msg-divider'];
 
-function hasClass(el, name) {
-  if (!el) return false;
-  if (el.classList && el.classList.contains) return el.classList.contains(name);
-  return (' ' + (el.className || '') + ' ').indexOf(' ' + name + ' ') !== -1;
-}
-
 function kids(el) {
   return el && el.children ? Array.from(el.children) : [];
-}
-
-function holds(parent, node) {
-  if (!parent || !node) return false;
-  if (parent === node) return true;
-  if (parent.contains) return parent.contains(node);
-  for (let el = node; el; el = el.parentNode) if (el === parent) return true;
-  return false;
 }
 
 function isStream(el) { return hasClass(el, 'turn-stream'); }
@@ -46,7 +33,7 @@ function isLive(el) {
   if (el.dataset && el.dataset.outcome === 'running') return true;
   if (hasClass(el, 'live')) return true;
   const refs = [S.streamBubbleEl, S.thinkingContentEl, S.subagentGroup, S.loadingEl];
-  return refs.some((ref) => holds(el, ref));
+  return refs.some((ref) => nodeHolds(el, ref));
 }
 
 export function countUnits() {
@@ -73,8 +60,10 @@ export function resetTranscriptTrim() {
 
 // setHistoryBacklog records the loaded session's messages and the index
 // where the rendered window starts; messages before it are offered back.
+// Kept even when the whole session fit (end 0): the budget may trim those
+// rows later, and they must stay recoverable.
 export function setHistoryBacklog(messages, end) {
-  trimState().backlog = end > 0 ? { messages, end } : null;
+  trimState().backlog = { messages, end };
   syncTrimMarker();
 }
 
@@ -158,25 +147,38 @@ function newestRow() {
   return inner[inner.length - 1] || null;
 }
 
+// rowsInOrder lists every budget row in document order.
+function rowsInOrder() {
+  const out = [];
+  for (const el of kids(messagesEl)) {
+    if (isStream(el)) out.push(...kids(el));
+    else if (isTopUnit(el)) out.push(el);
+  }
+  return out;
+}
+
 // firstRowInView returns the first row not wholly above the visible part
 // of the transcript — or, when that row belongs to a loaded message, the
-// message's first row, so a message is never split by a trim. Null when
-// layout is unavailable (every row then counts as above the view).
+// message's first row, so a message is never split by a trim. Rows are in
+// document order, so a binary search keeps the layout reads logarithmic.
+// Null when layout is unavailable (every row then counts as above the view).
 function firstRowInView() {
   if (!messagesEl.getBoundingClientRect) return null;
+  const rows = rowsInOrder();
+  if (!rows.length || !rows[0].getBoundingClientRect) return null;
   const viewTopPx = messagesEl.getBoundingClientRect().top;
-  let groupStart = null;
-  let groupHidx = null;
-  for (const el of kids(messagesEl)) {
-    const rows = isStream(el) ? kids(el) : (isTopUnit(el) ? [el] : []);
-    for (const row of rows) {
-      const hidx = row.dataset ? row.dataset.hidx : undefined;
-      if (hidx == null || hidx === '') { groupStart = null; groupHidx = null; }
-      else if (hidx !== groupHidx) { groupStart = row; groupHidx = hidx; }
-      if (!row.getBoundingClientRect || row.getBoundingClientRect().bottom > viewTopPx) return groupStart || row;
-    }
+  let lo = 0, hi = rows.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (rows[mid].getBoundingClientRect().bottom > viewTopPx) hi = mid;
+    else lo = mid + 1;
   }
-  return null;
+  if (lo >= rows.length) return null;
+  const hidx = rows[lo].dataset ? rows[lo].dataset.hidx : undefined;
+  if (hidx != null && hidx !== '') {
+    while (lo > 0 && rows[lo - 1].dataset && rows[lo - 1].dataset.hidx === hidx) lo--;
+  }
+  return rows[lo];
 }
 
 function viewTop(el) {
@@ -247,7 +249,7 @@ export function syncTrimMarker() {
   let label, action, caption, disabled;
   if (state.live) {
     label = 'Earlier activity is hidden to keep the page responsive.';
-    caption = S.busy ? 'Reload full history after this turn' : 'Reload full history';
+    caption = S.busy ? 'Reload earlier history after this turn' : 'Reload earlier history';
     disabled = !!S.busy || !S.sessionId;
     action = 'reload';
   } else {

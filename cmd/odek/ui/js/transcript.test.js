@@ -69,7 +69,11 @@ class FakeEl {
   set scrollHeight(v) { this._scrollHeight = v; }
   get id() { return this._id || ''; }
   set id(v) { this._id = v; }
-  get isConnected() { return true; }
+  get isConnected() {
+    let root = this;
+    while (root.parentNode) root = root.parentNode;
+    return root === globalThis.document.body || Object.values(byId).includes(root);
+  }
   setAttribute(k, v) { this._attrs[k] = String(v); }
   getAttribute(k) { return k in this._attrs ? this._attrs[k] : null; }
   removeAttribute(k) { delete this._attrs[k]; }
@@ -153,6 +157,8 @@ globalThis.cancelAnimationFrame = (t) => clearTimeout(t);
 const S = (await import('./state.js')).S;
 const render = await import('./render.js');
 const transcript = await import('./transcript.js');
+await import('./workspace.js');
+const wsHooks = { record: S.recordResult, attach: S.attachInspect };
 const messages = byId.messages;
 
 // Height follows the rendered row count so scroll compensation is observable.
@@ -244,12 +250,14 @@ test('marker reload waits for the running turn', () => {
   const btn = marker().querySelector('.tt-more');
   assert.equal(btn.disabled, true, 'no reload mid-turn');
   let reloads = 0;
+  const realReload = S.reloadSession;
   S.reloadSession = () => { reloads++; };
   S.busy = false;
   render.endStream('completed');
   assert.equal(btn.disabled, false, 'turn end re-enables reload');
   btn.click();
   assert.equal(reloads, 1);
+  S.reloadSession = realReload;
 });
 
 test('historyWindowStart snaps to a turn start and falls back inside one oversized turn', () => {
@@ -379,7 +387,7 @@ test('results outside the loaded window still reach the Activity panel in order;
 });
 
 test('Activity results repaint once per frame and keep a bounded byte total', async () => {
-  await import('./workspace.js');
+  S.recordResult = wsHooks.record;
   const list = byId['output-list'];
   let paints = 0;
   const origAppend = list.appendChild.bind(list);
@@ -434,11 +442,12 @@ test('Show earlier steps keep their inspect action without re-recording', () => 
   render.showEarlierHistory();
   assert.equal(recorded.length, n, 'not recorded again');
   assert.ok(inspected.length > 0, 'inspect action attached to re-rendered steps');
-  S.attachInspect = undefined;
+  S.attachInspect = wsHooks.attach;
 });
 
 test('holdView corrects only what browser scroll anchoring left over', () => {
   const anchor = new FakeEl('div');
+  messages.appendChild(anchor);
   let top = 400;
   anchor.getBoundingClientRect = () => ({ top });
   messages.scrollTop = 1000;
@@ -465,4 +474,98 @@ test('while reading up, rows on screen and below are never trimmed', () => {
   } finally {
     delete messages.getBoundingClientRect;
   }
+});
+
+test('a session that fit one window stays recoverable after the budget trims it', () => {
+  render.renderSessionHistory(session(20)); // 100 rows: whole session rendered
+  assert.equal(marker(), null, 'nothing hidden yet');
+  for (let i = 0; i < transcript.MAX_UNITS; i++) finishedTool(i);
+  assert.ok(marker(), 'trimmed history is announced');
+  assert.equal(marker().querySelector('.tt-more').dataset.action, 'earlier');
+  const live = rows().filter(r => !r.dataset.hidx).length;
+  marker().querySelector('.tt-more').click();
+  const shown = new Set(rows().filter(r => r.dataset.hidx).map(r => r.dataset.hidx));
+  assert.ok(shown.size > 0 && rows().filter(r => !r.dataset.hidx).length === live, 'history rows rendered back above the live rows');
+});
+
+test('Show earlier holds the first row on screen when the older half of a turn joins its stream', () => {
+  // Position rows by document order so holdView sees real movement.
+  const order = () => rows();
+  const proto = FakeEl.prototype;
+  proto.getBoundingClientRect = function () {
+    const list = order();
+    let el = this;
+    if (el.classList.contains('turn-stream')) el = el.children[0] || el;
+    const i = list.indexOf(el);
+    const top = (i < 0 ? 0 : i * 10) - messages.scrollTop;
+    return { top, bottom: top + 10 };
+  };
+  try {
+    // One giant turn: the window starts mid-turn, so the boundary splits it.
+    const big = [{ role: 'user', content: 'go', turn_id: 'g' }, ...Array.from({ length: 200 }, (_, i) => ({ role: 'assistant', content: 'step ' + i, turn_id: 'g' }))];
+    render.renderSessionHistory(big);
+    const first = rows()[0];
+    messages.scrollTop = 0;
+    const before = first.getBoundingClientRect().top;
+    render.showEarlierHistory();
+    assert.equal(messages.children.filter(c => c.classList.contains('turn-stream')).length, 1, 'turn rejoined');
+    assert.equal(first.getBoundingClientRect().top, before, 'first row stayed where it was on screen');
+  } finally {
+    delete proto.getBoundingClientRect;
+  }
+});
+
+test('several results on one unopened step all render on expand', () => {
+  render.addToolCall('shell', '{}', '');
+  const block = S.currentToolBlock;
+  render.addToolResult('shell', 'first', '', 'completed');
+  S.toolBlockQueues.clear();
+  render.addToolResult('shell', 'second', '', 'completed');
+  block.querySelector('.tb-header').click();
+  assert.equal(block.querySelectorAll('.tb-result').length, 2, 'neither result is lost');
+});
+
+test('a bubble measured while hidden is measured again later', () => {
+  render.addMessage('assistant', 'first');
+  const bubble = messages.querySelector('.msg.assistant').querySelector('.bubble');
+  const content = bubble.querySelector('.content');
+  let height = 0;
+  Object.defineProperty(content, 'scrollHeight', { get: () => height });
+  render.addMessage('assistant', 'second');
+  assert.equal(bubble.dataset.collapseChecked, undefined, 'zero height is no measurement');
+  height = 900;
+  render.addMessage('assistant', 'third');
+  assert.ok(bubble.classList.contains('collapsible'), 'folded once it has a real height');
+});
+
+test('system-initiated records neither use the window budget nor start a window', () => {
+  assert.equal(render.historyUnits({ role: 'user', name: 'bg-wake', content: 'x' }), 0);
+  assert.equal(render.historyUnits({ role: 'user', name: 'return-after-break', content: 'x' }), 0);
+  const list = [{ role: 'user', content: 'real', turn_id: 'a' }];
+  for (let i = 0; i < 30; i++) list.push({ role: 'assistant', content: 'a' + i });
+  list.push({ role: 'user', name: 'bg-wake', content: 'wake' });
+  for (let i = 0; i < 4; i++) list.push({ role: 'assistant', content: 'w' + i });
+  const start = render.historyWindowStart(list, list.length, 20);
+  assert.notEqual(list[start].name, 'bg-wake', 'window never opens on a record that renders nothing');
+});
+
+test('Show in conversation reaches a step re-rendered by Show earlier', async () => {
+  S.recordResult = wsHooks.record;
+  S.attachInspect = wsHooks.attach;
+  S.clearResults();
+  // The shim's textContent='' keeps children; start from empty panels.
+  byId['output-list'].children.length = 0;
+  byId['output-detail'].children.length = 0;
+  render.renderSessionHistory(session(40)); // window ~30 turns; turn 0 is a load-time stub
+  render.showEarlierHistory();
+  await new Promise((r) => setTimeout(r, 5));
+  const jumped = [];
+  rows().filter(r => r.classList.contains('tool-block')).forEach((b) => { b.scrollIntoView = () => jumped.push(b.dataset.callId); });
+  const first = byId['output-list'].querySelectorAll('.output-item')[0];
+  assert.ok(first, 'Activity lists the oldest result');
+  first.click();
+  const jump = byId['output-detail'].querySelectorAll('button').find(b => b.textContent === 'Show in conversation');
+  jump.click();
+  assert.deepEqual(jumped, ['k0'], 'the Activity item now points at the visible step, not the load-time stub');
+  S.clearResults();
 });

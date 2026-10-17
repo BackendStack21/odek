@@ -89,6 +89,20 @@ export function teach(key, text) {
   showToast(String(text).replace(/^tip:\s*/i, ''), HINT_TTL_MS, 'tip');
 }
 
+// ── DOM helpers (tolerant of the test suites' minimal DOM shims) ──
+export function hasClass(el, name) {
+  if (!el) return false;
+  if (el.classList && el.classList.contains) return el.classList.contains(name);
+  return (' ' + (el.className || '') + ' ').indexOf(' ' + name + ' ') !== -1;
+}
+export function nodeHolds(parent, node) {
+  if (!parent || !node) return false;
+  if (parent === node) return true;
+  if (parent.contains) return parent.contains(node);
+  for (let el = node; el; el = el.parentNode) if (el === parent) return true;
+  return false;
+}
+
 // ── Smart Scroll ──
 export const SCROLL_THRESHOLD = 100;
 export function isNearBottom() {

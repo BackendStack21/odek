@@ -286,7 +286,7 @@ export function newSession() {
 // agent (buffer restore) via session_switch, then renders the transcript
 // from the REST detail. Falls back to the legacy piggyback-on-prompt path
 // when the socket is down.
-export async function loadAndRenderSession(sid) {
+export async function loadAndRenderSession(sid, opts = {}) {
   // F-A2: same mid-run guard as newSession — ask, cancel through the stop
   // control, and only then bootstrap the switch (which fetches).
   if (S.busy) {
@@ -357,7 +357,10 @@ export async function loadAndRenderSession(sid) {
     renderSessionHistory(messages);
     S.restoreDecisionReceipts?.(sess.decisions || []);
 
-    forceScrollBottom();
+    // A reload asked for from the trim marker wants the earlier rows: land
+    // at the top of the window, beside "Show earlier", not at the end.
+    if (opts.atTop) { S.stickBottom = false; messagesEl.scrollTop = 0; }
+    else forceScrollBottom();
     showToast('Session loaded');
     announce('Session loaded');
     if (typeof S.closePanels === 'function') S.closePanels();
@@ -370,7 +373,7 @@ export async function loadAndRenderSession(sid) {
 // only in the persisted session. Never while a turn runs.
 S.reloadSession = () => {
   if (S.busy || !S.sessionId) return;
-  loadAndRenderSession(S.sessionId);
+  loadAndRenderSession(S.sessionId, { atTop: true });
 };
 
 // ── Session Rename ──

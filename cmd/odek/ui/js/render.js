@@ -7,7 +7,7 @@ import { messagesEl, promptEl, sendBtn, emptyState } from './dom.js';
 import {
   escapeHtml, escapeAttr, truncateStr, copyTextToClipboard,
   scrollBottom, forceScrollBottom, historyUserText,
-  showCancel, hideCancel, teach,
+  showCancel, hideCancel, teach, hasClass, nodeHolds,
 } from './utils.js';
 import { pruneMessages, syncTrimMarker, setHistoryBacklog, trimState, holdView, HISTORY_UNITS } from './transcript.js';
 import { markdownToHtml, CODE_COPY_LABEL, CODE_COPIED_LABEL } from './markdown.js';
@@ -301,12 +301,6 @@ export function hideLoading() {
 // replies, not reasoning, and each burst is sealed when a tool starts
 // so the next tokens open a new row instead of concatenating the whole
 // turn into one bubble. Reasoning stays behind ▶ thinking until opened.
-function hasClass(el, name) {
-  if (!el) return false;
-  if (el.classList && el.classList.contains) return el.classList.contains(name);
-  return (' ' + (el.className || '') + ' ').indexOf(' ' + name + ' ') !== -1;
-}
-
 function liveAnswerEl() {
   const el = S.streamBubbleEl;
   return (el && el.parentNode === messagesEl) ? el : null;
@@ -430,13 +424,22 @@ function capThinkingLines(host) {
   let excess = rows.length - (note ? 1 : 0) - MAX_THINKING_LINES;
   if (excess <= 0) return;
   if (!note) {
-    note = document.createElement('div');
-    note.className = 'thinking-trim';
-    note.dataset.trimmed = '0';
+    note = thinkingTrimNote();
     host.insertBefore(note, rows[0] || null);
   }
   const trimmed = Number(note.dataset.trimmed || 0) + excess;
   while (excess-- > 0) host.children[1].remove();
+  setThinkingTrim(note, trimmed);
+}
+
+function thinkingTrimNote() {
+  const note = document.createElement('div');
+  note.className = 'thinking-trim';
+  note.dataset.trimmed = '0';
+  return note;
+}
+
+function setThinkingTrim(note, trimmed) {
   note.dataset.trimmed = String(trimmed);
   note.textContent = '… ' + trimmed + ' earlier lines not shown';
 }
@@ -760,19 +763,24 @@ function sealTurnStream() {
 }
 
 // ── Message rendering ──
-export function addMessage(role, content) {
-  hideEmptyState();
+// buildMessage renders a user or assistant row; live and history rendering
+// share it so the bubble markup stays in one place.
+function buildMessage(role, content) {
   const wrapper = document.createElement('div');
   wrapper.className = 'msg ' + role;
-
   const sender = role === 'user' ? '❯ you' : assistantSender();
-
   wrapper.innerHTML =
     '<div class="bubble">' +
       '<div class="sender">' + sender + '</div>' +
       '<div class="content">' + markdownToHtml(content) + '</div>' +
     '</div>';
   if (role === 'assistant') attachWakeChip(wrapper);
+  return wrapper;
+}
+
+export function addMessage(role, content) {
+  hideEmptyState();
+  const wrapper = buildMessage(role, content);
   messagesEl.appendChild(wrapper);
   const bubble = wrapper.querySelector('.bubble');
   if (bubble) addCopyButton(bubble);
@@ -803,14 +811,7 @@ export function addDivider(text) {
 // Render a completed assistant message (not streaming) with copy button.
 export function renderAssistantMessage(content) {
   hideEmptyState();
-  const wrapper = document.createElement('div');
-  wrapper.className = 'msg assistant';
-  wrapper.innerHTML =
-    '<div class="bubble">' +
-      '<div class="sender">' + assistantSender() + '</div>' +
-      '<div class="content">' + markdownToHtml(content) + '</div>' +
-    '</div>';
-  attachWakeChip(wrapper);
+  const wrapper = buildMessage('assistant', content);
   messagesEl.appendChild(wrapper);
   const bubble = wrapper.querySelector('.bubble');
   if (bubble) addCopyButton(bubble);
@@ -943,7 +944,7 @@ function appendToolResultContent(block, output, record = true) {
   const preview = block.querySelector('.tb-preview');
   if (view && preview) { preview.textContent = view.summary; preview.title = view.summary; }
 
-  block.pendingResult = output;
+  (block.pendingResults ||= []).push(output);
   const body = block.querySelector('.tb-body');
   if (!body || body.classList.contains('open')) renderPendingResult(block);
   if (record && typeof S.recordResult === 'function') S.recordResult(block, output);
@@ -951,16 +952,18 @@ function appendToolResultContent(block, output, record = true) {
 }
 
 function renderPendingResult(block) {
-  const output = block.pendingResult;
-  if (output == null) return;
-  block.pendingResult = null;
-  const resultEl = document.createElement('div');
-  resultEl.className = 'tb-result';
+  const pending = block.pendingResults;
+  if (!pending || !pending.length) return;
+  block.pendingResults = null;
   const body = block.querySelector('.tb-body');
   const inspect = body && body.querySelector('.result-inspect');
-  if (inspect) body.insertBefore(resultEl, inspect);
-  else (body || block).appendChild(resultEl);
-  renderResult(resultEl, { name: block.dataset.toolName || '', output, args:block.dataset.toolArgs || '', compact: true });
+  pending.forEach((output) => {
+    const resultEl = document.createElement('div');
+    resultEl.className = 'tb-result';
+    if (inspect) body.insertBefore(resultEl, inspect);
+    else (body || block).appendChild(resultEl);
+    renderResult(resultEl, { name: block.dataset.toolName || '', output, args:block.dataset.toolArgs || '', compact: true });
+  });
 }
 
 // fillToolResult renders tool output into resultEl. The server sends raw,
@@ -1485,10 +1488,16 @@ function historyRow(el) {
   return el;
 }
 
+// System-initiated user records (bg-wake preamble, bg-notice,
+// return-after-break) are not text the operator typed and render nothing.
+function syntheticUser(msg) {
+  return typeof msg.name === 'string' && (msg.name.startsWith('bg-') || msg.name === 'return-after-break');
+}
+
 // historyUnits counts the rows one persisted message renders as.
 export function historyUnits(msg) {
   if (!msg) return 0;
-  if (msg.role === 'user') return 1;
+  if (msg.role === 'user') return syntheticUser(msg) ? 0 : 1;
   if (msg.role !== 'assistant') return 0;
   return (msg.reasoning_content ? 1 : 0) + (msg.content ? 1 : 0) +
     (Array.isArray(msg.tool_calls) ? msg.tool_calls.length : 0);
@@ -1511,7 +1520,7 @@ export function historyWindowStart(messages, end, budget = HISTORY_UNITS) {
     }
     units += n;
     if (n) fit = i;
-    if (messages[i] && messages[i].role === 'user') { turnStart = i; turnUnits = units; }
+    if (n && messages[i].role === 'user') { turnStart = i; turnUnits = units; }
   }
   return 0;
 }
@@ -1587,9 +1596,7 @@ function renderHistoryRange(messages, from, to) {
       historyIdx = messageIndex;
       if (msg.role === 'user') {
         historyTurnId = msg.turn_id || 'history-' + messageIndex;
-        // System-initiated records (bg-wake preamble, bg-notice, return-after-break)
-        // are not text the operator typed.
-        if (typeof msg.name === 'string' && (msg.name.startsWith('bg-') || msg.name === 'return-after-break')) continue;
+        if (syntheticUser(msg)) continue;
         renderHistoricalUser(historyUserText(msg.content, msg.principal_prompt));
         continue;
       }
@@ -1666,7 +1673,10 @@ export function showEarlierHistory() {
   const kids = Array.from(messagesEl.children || []);
   const marker = kids.find((el) => hasClass(el, 'transcript-trim'));
   const ref = marker ? (kids[kids.indexOf(marker) + 1] || null) : (kids[0] || null);
-  holdView(ref, () => {
+  // Hold on the first row on screen: when the older half of a split turn
+  // joins `ref`, the stream's own top does not move.
+  const anchor = ref && hasClass(ref, 'turn-stream') ? (ref.children[0] || ref) : ref;
+  holdView(anchor, () => {
     // A window boundary inside a turn splits its stream; rejoin the halves so
     // the turn reads as one log, as a full render would draw it.
     const tail = nodes[nodes.length - 1];
@@ -1690,13 +1700,7 @@ export function showEarlierHistory() {
 S.showEarlierHistory = showEarlierHistory;
 
 function renderHistoricalUser(content) {
-  const wrapper = document.createElement('div');
-  wrapper.className = 'msg user';
-  wrapper.innerHTML =
-    '<div class="bubble">' +
-      '<div class="sender">❯ you</div>' +
-      '<div class="content">' + markdownToHtml(content) + '</div>' +
-    '</div>';
+  const wrapper = buildMessage('user', content);
   historyTarget().appendChild(historyRow(wrapper));
   const bubble = wrapper.querySelector('.bubble');
   if (bubble) addCopyButton(bubble);
@@ -1704,14 +1708,7 @@ function renderHistoricalUser(content) {
 
 function renderHistoricalAssistant(raw) {
   const [content, unverified] = stripVerifyMarker(raw);
-  const wrapper = document.createElement('div');
-  wrapper.className = 'msg assistant';
-  wrapper.innerHTML =
-    '<div class="bubble">' +
-      '<div class="sender">' + assistantSender() + '</div>' +
-      '<div class="content">' + markdownToHtml(content) + '</div>' +
-    '</div>';
-  attachWakeChip(wrapper);
+  const wrapper = buildMessage('assistant', content);
   ensureHistoryStream().appendChild(historyRow(wrapper));
   const bubble = wrapper.querySelector('.bubble');
   if (bubble) addCopyButton(bubble);
@@ -1739,10 +1736,8 @@ function renderHistoricalThinking(content) {
     host.appendChild(row);
   });
   if (lines.length > MAX_THINKING_LINES) {
-    const note = document.createElement('div');
-    note.className = 'thinking-trim';
-    note.dataset.trimmed = String(lines.length - MAX_THINKING_LINES);
-    note.textContent = '… ' + note.dataset.trimmed + ' earlier lines not shown';
+    const note = thinkingTrimNote();
+    setThinkingTrim(note, lines.length - MAX_THINKING_LINES);
     host.insertBefore(note, host.children[0] || null);
   }
 }
@@ -1818,18 +1813,6 @@ function resolveBubble(el) {
   return el.classList.contains('bubble') ? el : el.querySelector('.bubble');
 }
 
-function nodeHolds(parent, node) {
-  if (!parent || !node) return false;
-  if (parent === node) return true;
-  if (parent.contains) return parent.contains(node);
-  let el = node;
-  while (el) {
-    if (el === parent) return true;
-    el = el.parentNode;
-  }
-  return false;
-}
-
 function assistantMessages() {
   const found = messagesEl.querySelectorAll('.msg.assistant');
   return found ? Array.from(found) : [];
@@ -1870,12 +1853,14 @@ function checkCollapse(host, opts) {
   }
   const content = bubble.querySelector('.content');
   if (!content) return;
+  const existing = bubble.querySelector('.collapse-toggle');
+  const height = content.scrollHeight;
   // Older bubbles no longer change, so each is measured once: re-reading
   // scrollHeight across the whole transcript forced a layout per bubble
-  // every time a reply opened.
-  if (bubble.dataset) bubble.dataset.collapseChecked = '1';
-  const existing = bubble.querySelector('.collapse-toggle');
-  if (content.scrollHeight <= COLLAPSE_MAX_HEIGHT_PX) {
+  // every time a reply opened. A zero height is no measurement (hidden pane
+  // or detached) and is retried on the next pass.
+  if (height > 0 && bubble.dataset) bubble.dataset.collapseChecked = '1';
+  if (height <= COLLAPSE_MAX_HEIGHT_PX) {
     releaseCollapse(bubble);
     return;
   }
