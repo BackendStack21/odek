@@ -43,7 +43,7 @@ export const S = {
   busy: false,
   health: null,      // last server info snapshot (health.js)
   history: loadHistory(),
-  historyIdx: -1,
+  historyIdx: 0, // set to history.length below
   attachedFiles: [], // {name, size, content}
   currentModel: localStorage.getItem('odek_model') || '',
   currentThinking: localStorage.getItem('odek_thinking') || '',
@@ -137,6 +137,7 @@ export const S = {
   hintsShown: loadHintsShown(),
   currentIntent: '',
 };
+S.historyIdx = S.history.length;
 
 function loadHintsShown() {
   try {
