@@ -598,7 +598,11 @@ func serveCmd(args []string) error {
 	if !isLoopbackAddr(listener.Addr()) {
 		fmt.Fprintf(os.Stderr, "\n⚠️  WARNING: odek serve is bound to a non-loopback address.\n")
 		fmt.Fprintf(os.Stderr, "   Anyone who can reach this port can control the agent once they have the token above.\n")
-		fmt.Fprintf(os.Stderr, "   Use --addr 127.0.0.1:<port> (or a firewall) to restrict access.\n\n")
+		fmt.Fprintf(os.Stderr, "   Use --addr 127.0.0.1:<port> (or a firewall) to restrict access.\n")
+		if note := serveNonLoopbackHostNote(listener.Addr()); note != "" {
+			fmt.Fprintf(os.Stderr, "   %s\n", note)
+		}
+		fmt.Fprintf(os.Stderr, "\n")
 	}
 
 	if openBrowser {
@@ -4211,6 +4215,19 @@ func serveDisplayAddr(a net.Addr) string {
 		return net.JoinHostPort("127.0.0.1", strconv.Itoa(ta.Port))
 	}
 	return a.String()
+}
+
+// serveNonLoopbackHostNote explains why the printed URL does not work from a
+// browser for a bind to one specific non-loopback address: the server accepts
+// only loopback Host and Origin values. It returns "" for loopback and
+// wildcard binds, whose printed URL already names 127.0.0.1.
+func serveNonLoopbackHostNote(a net.Addr) string {
+	ta, ok := a.(*net.TCPAddr)
+	if !ok || ta.IP.IsLoopback() || ta.IP.IsUnspecified() {
+		return ""
+	}
+	return "The URL above is served on " + a.String() + " but the server accepts only loopback Host/Origin values: " +
+		"opening it directly answers 403 \"Host not allowed\". Reach it through a proxy or tunnel that presents a localhost Host and Origin."
 }
 
 // browserOpenerDirs are the system directories openInBrowser searches for a

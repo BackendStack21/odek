@@ -181,6 +181,19 @@ func TestRED_HTTPBrowserOpenerDirsAreRootOwnedSystemDirs(t *testing.T) {
 	}
 }
 
+func TestRED_HTTPNonLoopbackBindNoteExplainsHostRestriction(t *testing.T) {
+	if got := serveNonLoopbackHostNote(&net.TCPAddr{IP: net.ParseIP("10.1.2.3"), Port: 80}); !strings.Contains(got, "loopback Host") || !strings.Contains(got, "10.1.2.3:80") {
+		t.Errorf("note for a specific non-loopback bind = %q", got)
+	}
+	for _, a := range []*net.TCPAddr{
+		{IP: net.IPv4zero, Port: 1}, {IP: net.ParseIP("127.0.0.1"), Port: 1}, {IP: net.IPv6loopback, Port: 1},
+	} {
+		if got := serveNonLoopbackHostNote(a); got != "" {
+			t.Errorf("note for %v = %q, want none", a, got)
+		}
+	}
+}
+
 func TestRED_HTTPServeDisplayAddr(t *testing.T) {
 	for _, tc := range []struct {
 		in   *net.TCPAddr
