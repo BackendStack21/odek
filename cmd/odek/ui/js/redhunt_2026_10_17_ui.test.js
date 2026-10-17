@@ -367,20 +367,39 @@ test('RED: live delegate_tasks tool_call with a non-string goal throws in the fr
 // scans to the end each time, so the cost is quadratic in the input. The
 // streaming path re-renders the whole answer every frame, and reloaded user
 // turns render expanded @-reference bodies (up to 12 MiB) through it too.
+// Render time must scale linearly: quadrupling the input may cost roughly 4x,
+// a quadratic tokenizer costs 16x. Best-of-three timings per size keep the
+// ratio stable; the bound sits between the two regimes.
+function uiScalingRatio(unit, small) {
+  const best = (n) => {
+    let min = Infinity;
+    for (let k = 0; k < 3; k++) {
+      const t = process.hrtime.bigint();
+      markdownToHtml(unit.repeat(n));
+      min = Math.min(min, Number(process.hrtime.bigint() - t));
+    }
+    return min;
+  };
+  return best(small * 4) / Math.max(best(small), 1);
+}
+
 test('RED: markdownToHtml is quadratic on unclosed <http: autolinks (hostile text freezes the tab)', () => {
-  const s = '<http:'.repeat(40000); // 240 KB
-  const t = Date.now();
-  markdownToHtml(s);
-  const ms = Date.now() - t;
-  assert.ok(ms < 1500, 'rendering 240 KB took ' + ms + 'ms');
+  const ratio = uiScalingRatio('<http:', 8000);
+  assert.ok(ratio < 9, 'render cost grew ' + ratio.toFixed(1) + 'x for 4x input');
 });
 
 test('RED: markdownToHtml is quadratic on rejected bare URLs (backslash)', () => {
-  const s = 'http://\\'.repeat(30000); // 240 KB
-  const t = Date.now();
-  markdownToHtml(s);
-  const ms = Date.now() - t;
-  assert.ok(ms < 1500, 'rendering 240 KB took ' + ms + 'ms');
+  const ratio = uiScalingRatio('http://\\', 8000);
+  assert.ok(ratio < 9, 'render cost grew ' + ratio.toFixed(1) + 'x for 4x input');
+});
+
+test('autolinks still link ordinary URLs and reject over-long candidates', () => {
+  const ok = 'https://example.com/' + 'a'.repeat(1500);
+  assert.match(markdownToHtml('see ' + ok + ' now'), /<a href="https:\/\/example\.com\/a+"/);
+  assert.match(markdownToHtml('<' + ok + '>'), /<a href=/);
+  const long = 'https://example.com/' + 'a'.repeat(3000);
+  assert.doesNotMatch(markdownToHtml('see ' + long), /<a /);
+  assert.doesNotMatch(markdownToHtml('<' + long + '>'), /<a /);
 });
 
 // pytest and jest print failures before passes ("3 failed, 10 passed");

@@ -48,8 +48,12 @@ export function isSafeHref(url) {
 
 const WORD_CHAR = /[A-Za-z0-9]/;
 const TASK_ITEM = /^\[([ xX])\]\s+(.+)$/;
-const ANGLE_AUTO = /^<((?:https?:|mailto:)[^>\s]+)>/i;
-const BARE_URL = /^(https?:\/\/[^\s<>]+)/i;
+// Autolink candidates are matched in place (sticky) and capped: an unbounded
+// [^>\s]+ run rescans to the end of the line at every rejected '<' or 'h', which
+// is quadratic on hostile text. A candidate longer than the cap is not a link.
+const AUTOLINK_MAX = 2048;
+const ANGLE_AUTO = new RegExp('<((?:https?:|mailto:)[^>\\s]{1,' + AUTOLINK_MAX + '})>', 'iy');
+const BARE_URL = new RegExp('(https?:\\/\\/[^\\s<>]{1,' + AUTOLINK_MAX + '})(?![^\\s<>])', 'iy');
 const TRAIL_PUNCT = /[),.;:!?]+$/;
 
 export function markdownToHtml(text) {
@@ -451,7 +455,8 @@ function inlineHtml(text) {
     }
 
     if (ch === '<') {
-      const m = ANGLE_AUTO.exec(text.slice(i));
+      ANGLE_AUTO.lastIndex = i;
+      const m = ANGLE_AUTO.exec(text);
       if (m && isSafeHref(m[1])) {
         flush();
         out += anchorHtml(m[1], escapeHtml(m[1]));
@@ -460,8 +465,10 @@ function inlineHtml(text) {
       }
     }
 
-    if ((ch === 'h' || ch === 'H') && BARE_URL.test(text.slice(i))) {
-      const m = BARE_URL.exec(text.slice(i));
+    BARE_URL.lastIndex = i;
+    const bare = (ch === 'h' || ch === 'H') ? BARE_URL.exec(text) : null;
+    if (bare) {
+      const m = bare;
       let url = m[1];
       const trail = (url.match(TRAIL_PUNCT) || [''])[0];
       if (trail) url = url.slice(0, -trail.length);
