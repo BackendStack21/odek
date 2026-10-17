@@ -74,9 +74,14 @@ test('attachment envelope collapses to a chip, bodies dropped', () => {
   assert.equal(stripAttachmentBodies(text), '📎 notes.txt\n\n\nwhat is in this file?');
 });
 
-test('non-attachment envelopes pass through unwrapped', () => {
+test('resource envelopes collapse to their reference, never their body', () => {
   const text = wrap('c3c3c3c3c3c3c3c3', 'resource:@README.md', 'readme body');
-  assert.equal(stripAttachmentBodies(text), 'readme body');
+  assert.equal(stripAttachmentBodies(text), '@README.md');
+});
+
+test('other envelopes pass through unwrapped', () => {
+  const text = wrap('c3c3c3c3c3c3c3c3', 'tool:read_file', 'file body');
+  assert.equal(stripAttachmentBodies(text), 'file body');
 });
 
 test('unwrapForDisplay strips neutralised inner envelopes for display', async () => {

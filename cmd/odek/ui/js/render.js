@@ -6,7 +6,7 @@ import { S } from './state.js';
 import { messagesEl, promptEl, sendBtn, emptyState } from './dom.js';
 import {
   escapeHtml, escapeAttr, truncateStr, copyTextToClipboard,
-  pruneMessages, scrollBottom, forceScrollBottom, stripAttachmentBodies,
+  pruneMessages, scrollBottom, forceScrollBottom, historyUserText,
   showCancel, hideCancel, teach,
 } from './utils.js';
 import { markdownToHtml, CODE_COPY_LABEL, CODE_COPIED_LABEL } from './markdown.js';
@@ -1422,7 +1422,10 @@ export function renderSessionHistory(messages) {
     }
     if (msg.role === 'user') {
       historyTurnId=msg.turn_id || 'history-'+messageIndex;
-      addMessage('user', stripAttachmentBodies(msg.content || ''));
+      // System-initiated records (bg-wake preamble, bg-notice, return-after-break)
+      // are not text the operator typed.
+      if (typeof msg.name === 'string' && (msg.name.startsWith('bg-') || msg.name === 'return-after-break')) return;
+      addMessage('user', historyUserText(msg.content, msg.principal_prompt));
       return;
     }
     if (msg.role !== 'assistant') return; // skip system/tool internals
