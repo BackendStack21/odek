@@ -696,7 +696,7 @@ Plus the shared sandbox flags (`--sandbox`, `--no-sandbox`, `--sandbox-image`, �
 
 ## WebSocket Protocol
 
-The UI communicates entirely over a single WebSocket at `/ws`. Messages are newline-delimited JSON. The server streams events for a prompt until `done`, and the client may send control frames on the same socket (`cancel`, `subagent_cancel`, `ping`, `approval_response`, `session_switch` — see [Client → Server](#client--server)).
+The UI communicates entirely over a single WebSocket at `/ws`. Messages are newline-delimited JSON. The server streams events for a prompt until `done`, and the client may send control frames on the same socket (`cancel`, `subagent_cancel`, `ping`, `approval_response`, `session_switch`, `session_new` — see [Client → Server](#client--server)).
 
 ### Client → Server
 
@@ -706,7 +706,8 @@ The UI communicates entirely over a single WebSocket at `/ws`. Messages are newl
 {
   "type": "prompt",
   "content": "What files are in src/?",
-  "session_id": "20260519-abc123",  // optional — omit for new session
+  "session_id": "20260519-abc123",  // optional — omit for a new session, also on a
+                                    // connection that already ran turns for another one
   "auth_token": "…",                // when continuing a session
   "model": "glm-5.3",               // optional per-run model override
   "thinking": "medium",             // optional per-run depth: disabled|low|medium|high (omit = inherit)
@@ -752,6 +753,12 @@ The UI communicates entirely over a single WebSocket at `/ws`. Messages are newl
   "session_id": "20260519-abc123",
   "auth_token": "…"
 }
+
+// Detach the connection from its current session ("New session" in the UI):
+// clears the memory buffer and the session token totals, and background
+// wakes for the previous session no longer target this connection. No reply;
+// the next prompt without session_id creates the new session.
+{ "type": "session_new" }
 ```
 
 ### Server → Client

@@ -239,6 +239,12 @@ export function newSession() {
   S.saveAttachments?.();
   S.clearResults?.();
   S.sessionId = null;
+  // Detach the connection from the previous session so its memory buffer,
+  // token totals and background wakes stay with it. A closed socket needs
+  // nothing: the reconnect does not re-adopt a session when none is set.
+  if (S.ws && S.ws.readyState === WebSocket.OPEN) {
+    S.ws.send(JSON.stringify({ type: 'session_new' }));
+  }
   resetSessionViews();
   resetMetrics();
   // Plan and jobs are session-scoped — drop both before the next attach.

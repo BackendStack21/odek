@@ -101,7 +101,10 @@ func TestWebSocketModelDiscoveryKeepsSessionBusy(t *testing.T) {
 			break
 		}
 	}
-	if err := websocket.Message.Send(conn, `{"type":"prompt","content":"hello","model":"custom-small"}`); err != nil {
+	// The attached session is continued by naming it; a prompt without
+	// session_id would start a new session.
+	prompt, _ := json.Marshal(map[string]any{"type": "prompt", "content": "hello", "model": "custom-small", "session_id": sess.ID, "auth_token": sess.AuthToken})
+	if err := websocket.Message.Send(conn, string(prompt)); err != nil {
 		t.Fatal(err)
 	}
 	select {

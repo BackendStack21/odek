@@ -1324,6 +1324,7 @@ func TestServe_E2E_TokenStats(t *testing.T) {
 	conn.SetReadDeadline(time.Now().Add(15 * time.Second))
 
 	var doneEvent map[string]any
+	var firstSessionID, firstAuthToken string
 	for i := 0; i < 15; i++ {
 		var raw []byte
 		if err := golangws.Message.Receive(conn, &raw); err != nil {
@@ -1334,6 +1335,10 @@ func TestServe_E2E_TokenStats(t *testing.T) {
 		var evt map[string]any
 		if err := json.Unmarshal(raw, &evt); err != nil {
 			t.Fatalf("unmarshal event %d: %v", i, err)
+		}
+		if evt["type"] == "session" {
+			firstSessionID, _ = evt["session_id"].(string)
+			firstAuthToken, _ = evt["auth_token"].(string)
 		}
 		if evt["type"] == "done" {
 			doneEvent = evt
@@ -1406,7 +1411,9 @@ statsCheck:
 
 	// Send a second prompt to verify session-level accumulation
 	llmSrv.Reset() // reset mock so next prompt also makes a tool call
-	prompt2 := map[string]string{"type": "prompt", "content": "do another thing"}
+	// Continuing a session names it; a prompt without session_id starts a
+	// new one.
+	prompt2 := map[string]string{"type": "prompt", "content": "do another thing", "session_id": firstSessionID, "auth_token": firstAuthToken}
 	payload2, _ := json.Marshal(prompt2)
 	if err := golangws.Message.Send(conn, string(payload2)); err != nil {
 		t.Fatalf("Send prompt 2: %v", err)

@@ -1793,6 +1793,20 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 	// Session-level token economics (cumulative across all turns)
 	var sessionInputTokens, sessionOutputTokens int
 
+	// detachSession leaves the connection without a current session: the
+	// next prompt without a session_id creates a new one, starting from an
+	// empty memory buffer and zero session token totals, and background
+	// wakes for the previous session no longer target this connection.
+	detachSession := func() {
+		currentSession = nil
+		sessionInputTokens, sessionOutputTokens = 0, 0
+		connInfo.setLive("", false)
+		agent.SetEventSessionID("")
+		if mm := agent.Memory(); mm != nil {
+			mm.ClearBuffer()
+		}
+	}
+
 	for data := range promptCh {
 		// Peek at the message type without full unmarshal
 		var msgType struct {
@@ -1830,6 +1844,13 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 				}
 				writeWSJSON(conn, map[string]any{"type": "session", "session_id": sess.ID, "auth_token": sess.AuthToken, "model": resolved.Model, "sandbox": resolved.Sandbox})
 			}
+			continue
+		}
+
+		// The Web UI's "New session" control: forget the attached session
+		// so nothing of it carries into the next conversation.
+		if msgType.Type == "session_new" {
+			detachSession()
 			continue
 		}
 
@@ -1934,6 +1955,12 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 				writeWSJSON(conn, map[string]any{"type": "error", "message": "invalid model ID"})
 				continue
 			}
+		}
+
+		// A prompt without a session_id starts a new conversation, even on a
+		// connection that already ran turns for another session.
+		if msg.SessionID == "" && currentSession != nil {
+			detachSession()
 		}
 
 		// Handle session switch mid-connection (new conversation)
