@@ -100,3 +100,38 @@ test('RED: newSession on a closed socket sends nothing', () => {
   sessions.newSession();
   assert.equal(sock.sent.length, 0);
 });
+
+// The composer allows 10 MiB of attachments plus the prompt; a frame that
+// still exceeds the server's WebSocket cap (JSON escaping) is refused before
+// sending, keeping the prompt and attachments, instead of being dropped by
+// the server.
+const input = await import('./input.js');
+
+test('RED: promptFrameBytes measures the encoded frame', () => {
+  assert.equal(typeof input.promptFrameBytes, 'function');
+  assert.equal(input.WS_MESSAGE_LIMIT_BYTES, 16 * 1024 * 1024);
+  const small = input.promptFrameBytes('hi', []);
+  assert.ok(small > 0 && small < 8192);
+  // JSON escaping and multi-byte characters both count.
+  assert.ok(input.promptFrameBytes('', [{ name: 'a', content: '\n'.repeat(1000) }]) >= 2000);
+  assert.ok(input.promptFrameBytes('日'.repeat(1000), []) >= 3000);
+});
+
+test('RED: an over-cap frame is not sent and the attachments stay', () => {
+  const sock = new globalThis.WebSocket();
+  S.ws = sock;
+  S.busy = false;
+  S.uploading = false;
+  S.sessionId = null;
+  const prompt = document.getElementById('prompt');
+  prompt.value = 'summarise';
+  // 9 MiB of control characters: within the composer caps, but each one
+  // escapes to six bytes in JSON.
+  S.attachedFiles.length = 0;
+  S.attachedFiles.push({ name: 'ctl.bin', size: 9 * 1024 * 1024, content: '\u0001'.repeat(9 * 1024 * 1024) });
+  input.send();
+  assert.equal(sock.sent.filter(m => JSON.parse(m).type === 'prompt').length, 0, 'no prompt frame sent');
+  assert.equal(S.attachedFiles.length, 1, 'attachments kept for editing');
+  assert.equal(prompt.value, 'summarise', 'prompt kept');
+  S.attachedFiles.length = 0;
+});

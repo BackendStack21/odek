@@ -603,3 +603,123 @@ func TestRED_WSClarifyRejectedAnswerIsNacked(t *testing.T) {
 	default:
 	}
 }
+
+// docs/WEBUI.md (and the composer) allow text attachments of 5 MiB each and
+// 10 MiB in total, sent inline in the prompt frame. The socket's
+// MaxPayloadBytes is 8 MiB, so a prompt with two 4.5 MiB files (9 MiB, inside
+// every documented cap) makes Receive fail with ErrFrameTooLarge, which the
+// reader treats as a disconnect: the socket is torn down with no error frame
+// and the prompt silently vanishes (the UI only sees a reconnect).
+func TestRED_WSDocumentedAttachmentSizeDoesNotDropConnection(t *testing.T) {
+	llmSrv := mockLLM(t, func(w http.ResponseWriter, callCount int) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}]}`))
+	})
+	defer llmSrv.Close()
+	envCleanup := setTestEnv(t, llmSrv.URL)
+	defer envCleanup()
+	store := newTestSessionStore(t)
+	ln, mux := buildServeMux(t, store)
+	defer startServeTest(t, ln, mux)()
+	waitForHTTP(t, ln.Addr().String())
+	wsUpgradeLimiter.reset()
+	conn := dialTestWS(t, ln.Addr().String())
+	defer conn.Close()
+
+	// The whole documented budget: a 1 MiB prompt and two 5 MiB files
+	// (10 MiB total), with newlines that JSON escaping doubles.
+	file := strings.Repeat("line of text\n", 5*1024*1024/13)
+	payload, _ := json.Marshal(map[string]any{
+		"type":    "prompt",
+		"content": "summarise the files " + strings.Repeat("p", maxPromptBytes-32),
+		"attachments": []map[string]string{
+			{"name": "a.txt", "content": file},
+			{"name": "b.txt", "content": file},
+		},
+	})
+	if err := golangws.Message.Send(conn, string(payload)); err != nil {
+		t.Fatalf("server tore the socket down while a prompt within the documented attachment caps was being sent: %v", err)
+	}
+	conn.SetReadDeadline(time.Now().Add(120 * time.Second))
+	for i := 0; i < 300; i++ {
+		var raw []byte
+		if err := golangws.Message.Receive(conn, &raw); err != nil {
+			t.Fatalf("server dropped the connection on a prompt within the documented attachment caps (no error frame): %v", err)
+		}
+		var evt map[string]any
+		if json.Unmarshal(raw, &evt) != nil {
+			continue
+		}
+		if evt["type"] == "error" {
+			t.Fatalf("prompt within the documented caps was refused: %v", evt["message"])
+		}
+		if evt["type"] == "turn_started" { // accepted past every size check
+			return
+		}
+	}
+	t.Fatal("prompt never started")
+}
+
+// A message over the frame cap is not buffered; the server answers it with an
+// error frame and keeps the socket usable, and closes a connection that keeps
+// sending them.
+func TestRED_WSOversizedFrameGetsErrorFrame(t *testing.T) {
+	llmSrv := mockLLM(t, func(w http.ResponseWriter, callCount int) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}]}`))
+	})
+	defer llmSrv.Close()
+	envCleanup := setTestEnv(t, llmSrv.URL)
+	defer envCleanup()
+	store := newTestSessionStore(t)
+	ln, mux := buildServeMux(t, store)
+	defer startServeTest(t, ln, mux)()
+	waitForHTTP(t, ln.Addr().String())
+	wsUpgradeLimiter.reset()
+	conn := dialTestWS(t, ln.Addr().String())
+	defer conn.Close()
+	conn.SetReadDeadline(time.Now().Add(30 * time.Second))
+
+	huge := `{"type":"prompt","content":"` + strings.Repeat("x", maxWSMessageBytes+1024) + `"}`
+	readUntil := func(want func(map[string]any) bool) {
+		t.Helper()
+		for {
+			var raw []byte
+			if err := golangws.Message.Receive(conn, &raw); err != nil {
+				t.Fatalf("connection dropped: %v", err)
+			}
+			var evt map[string]any
+			if json.Unmarshal(raw, &evt) == nil && want(evt) {
+				return
+			}
+		}
+	}
+	tooLarge := func(e map[string]any) bool {
+		m, _ := e["message"].(string)
+		return e["type"] == "error" && strings.Contains(m, "too large")
+	}
+	for i := 1; i < maxWSOversizedFrames; i++ {
+		if err := golangws.Message.Send(conn, huge); err != nil {
+			t.Fatalf("oversized message %d: socket torn down: %v", i, err)
+		}
+		readUntil(tooLarge)
+		// The socket still works after the oversized frame was skipped.
+		if err := golangws.Message.Send(conn, `{"type":"ping"}`); err != nil {
+			t.Fatal(err)
+		}
+		readUntil(func(e map[string]any) bool { return e["type"] == "pong" })
+	}
+	// One more closes the connection.
+	if err := golangws.Message.Send(conn, huge); err != nil {
+		return
+	}
+	for {
+		var raw []byte
+		if err := golangws.Message.Receive(conn, &raw); err != nil {
+			return
+		}
+		if strings.Contains(string(raw), "too large") {
+			t.Fatalf("connection still open after %d oversized messages", maxWSOversizedFrames)
+		}
+	}
+}

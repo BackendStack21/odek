@@ -52,8 +52,15 @@ var uiFS embed.FS
 
 // maxWSMessageBytes caps the size of an incoming WebSocket text message.
 // This prevents a local client from exhausting server memory by sending a
-// multi-gigabyte frame.
-const maxWSMessageBytes = 8 * 1024 * 1024 // 8 MiB
+// multi-gigabyte frame. It covers the largest documented prompt frame — a
+// 1 MiB prompt plus 10 MiB of inline attachments — with headroom for JSON
+// escaping; the Web UI checks the encoded frame against it before sending.
+const maxWSMessageBytes = 16 * 1024 * 1024 // 16 MiB
+
+// maxWSOversizedFrames is how many over-cap messages a connection may send
+// before it is closed. Each one is answered with an error frame (the
+// oversized payload is discarded without buffering it).
+const maxWSOversizedFrames = 3
 
 // maxPromptBytes caps the size of the user prompt accepted through the Web UI.
 // Combined with the WebSocket frame cap, this prevents a local client from
@@ -1684,9 +1691,19 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 			// close. Do NOT close(promptCh) here as well.
 			connInfo.wakeSlot.close()
 		}()
+		oversized := 0
 		for {
 			var data []byte
-			if err := golangws.Message.Receive(conn, &data); err != nil {
+			err := golangws.Message.Receive(conn, &data)
+			if errors.Is(err, golangws.ErrFrameTooLarge) && oversized < maxWSOversizedFrames-1 {
+				// The library skips the rest of the frame on the next
+				// Receive, so the socket stays usable: tell the client why
+				// its message was dropped instead of tearing it down.
+				oversized++
+				writeWSError(conn, fmt.Sprintf("message too large: a WebSocket message may be at most %d MiB", maxWSMessageBytes>>20))
+				continue
+			}
+			if err != nil {
 				// Socket gone: cancel in-flight/queued prompt work and release
 				// any pending approval so a blocked handlePrompt returns now
 				// instead of waiting out the 60s timeout.
