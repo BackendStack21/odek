@@ -133,3 +133,63 @@ func TestRED_WSUpdateMetaConcurrentWithTurnSaves(t *testing.T) {
 		t.Fatalf("messages = %d, want 21", len(stored.Messages))
 	}
 }
+
+// A transcript save by another process between UpdateMeta's load and write
+// is a conflict UpdateMeta retries on a fresh load, keeping both changes.
+func TestRED_WSUpdateMetaRetriesForeignWriter(t *testing.T) {
+	s := newTestStore(t)
+	sess, err := s.Create([]Message{{Role: "user", Content: "hi"}}, "m", "t")
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := NewStoreWithDir(s.Dir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	got, err := s.UpdateMeta(sess.ID, func(x *Session) {
+		calls++
+		if calls == 1 {
+			foreign, err := other.Load(sess.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			foreign.Messages = append(foreign.Messages, Message{Role: "assistant", Content: "foreign"})
+			if err := other.Save(foreign); err != nil {
+				t.Fatal(err)
+			}
+		}
+		x.Pinned = true
+	})
+	if err != nil {
+		t.Fatalf("UpdateMeta: %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("edit applied %d times, want a retry (2)", calls)
+	}
+	stored, err := s.Load(sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Pinned || !stored.Pinned || len(stored.Messages) != 2 {
+		t.Fatalf("pinned=%v/%v messages=%d", got.Pinned, stored.Pinned, len(stored.Messages))
+	}
+}
+
+func TestRED_WSUpdateMetaRevisionExhausted(t *testing.T) {
+	s := newTestStore(t)
+	sess, err := s.Create([]Message{{Role: "user", Content: "hi"}}, "m", "t")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess.MetaRevision = ^uint64(0)
+	if err := s.Save(sess); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.UpdateMeta(sess.ID, func(x *Session) { x.Pinned = true }); err == nil {
+		t.Fatal("UpdateMeta past the last meta revision succeeded")
+	}
+	if stored, _ := s.Load(sess.ID); stored.Pinned || stored.MetaRevision != ^uint64(0) {
+		t.Fatalf("failed update changed the file: pinned=%v meta=%d", stored.Pinned, stored.MetaRevision)
+	}
+}
