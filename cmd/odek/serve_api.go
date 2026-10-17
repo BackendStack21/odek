@@ -31,6 +31,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"sort"
 	"strings"
 	"sync/atomic"
@@ -722,7 +723,19 @@ func handleSkills(sc skills.SkillsConfig) http.HandlerFunc {
 		for _, s := range append(append([]skills.Skill{}, res.AutoLoad...), res.Lazy...) {
 			if name := r.URL.Query().Get("name"); name != "" {
 				if s.Name == name {
-					writeAPIJSON(w, http.StatusOK, s)
+					// sha256 is the hash of the reviewed file; the promote
+					// request sends it back with source.path so exactly the
+					// reviewed copy, unchanged, is promoted.
+					data, err := os.ReadFile(s.Source.Path)
+					if err != nil {
+						http.Error(w, "skill unreadable", http.StatusNotFound)
+						return
+					}
+					sum := sha256.Sum256(data)
+					writeAPIJSON(w, http.StatusOK, struct {
+						skills.Skill
+						SHA256 string `json:"sha256"`
+					}{s, hex.EncodeToString(sum[:])})
 					return
 				}
 				continue
@@ -939,7 +952,9 @@ func handleMCPServers(resolved config.ResolvedConfig) http.HandlerFunc {
 // handleSkillPromote is the REST face of `odek skill promote` — clears
 // NeedsReview so a skill can auto-load. Tainted skills (untrusted origin)
 // still require force, exactly like the CLI. Operator-gated by the
-// instance token; the agent cannot call it.
+// instance token; the agent cannot call it. path and sha256 (from
+// GET /api/skills?name=) bind the promotion to the reviewed file; without
+// them a name carried by several SKILL.md files is refused.
 func handleSkillPromote() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -947,8 +962,10 @@ func handleSkillPromote() http.HandlerFunc {
 			return
 		}
 		var body struct {
-			Name  string `json:"name"`
-			Force bool   `json:"force"`
+			Name   string `json:"name"`
+			Path   string `json:"path"`
+			SHA256 string `json:"sha256"`
+			Force  bool   `json:"force"`
 		}
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&body); err != nil {
 			http.Error(w, "invalid JSON", http.StatusBadRequest)
@@ -958,7 +975,7 @@ func handleSkillPromote() http.HandlerFunc {
 			http.Error(w, "name required", http.StatusBadRequest)
 			return
 		}
-		if err := promoteSkill(expandHome("~/.odek/skills"), body.Name, body.Force); err != nil {
+		if err := promoteSkillAt(expandHome("~/.odek/skills"), body.Name, body.Path, body.SHA256, body.Force); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}

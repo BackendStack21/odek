@@ -645,9 +645,16 @@ withheld (they may carry credentials).
 
 ### `POST /api/skills/promote`
 
-`{name, force?}` — the REST face of `odek skill promote`: clears
-NeedsReview so a skill can auto-load. Tainted skills and every project-dir
-(`./.odek/skills/`) skill still require `force`.
+`{name, path?, sha256?, force?}` — the REST face of `odek skill promote`:
+clears NeedsReview so a skill can auto-load. Tainted skills and every
+project-dir (`./.odek/skills/`) skill still require `force`. `name` is the
+skill's frontmatter name, never its directory name. `path` and `sha256` are
+the `source.path` and `sha256` of the reviewed copy from
+`GET /api/skills?name=`: the server promotes exactly that file, and only
+while its content still hashes to `sha256` (otherwise `400`, nothing is
+promoted). Without `path`, a name carried by more than one `SKILL.md` in the
+user and project skill dirs is refused, since the server cannot tell which
+copy was reviewed. The Skills panel always sends both.
 
 ### `POST /api/memory/consolidate`
 
@@ -991,7 +998,7 @@ New operator-authenticated endpoints:
 | Endpoint | Behavior |
 | --- | --- |
 | `GET /api/capabilities` | Additive feature flags and result renderer families. Missing flags mean unavailable. |
-| `GET /api/skills?name=NAME` | Full discovered skill body and provenance for human review. |
+| `GET /api/skills?name=NAME` | Full discovered skill body and provenance for human review, plus `sha256` (hash of the `SKILL.md` at `source.path`) to bind a promote to the reviewed copy. |
 | `GET /api/tools` | Adds descriptions and JSON schemas to built-in registry entries. |
 | `GET /api/schedules` | Shared scheduler definitions, runtime states and next-fire previews. |
 | `POST /api/schedules` | Create a schedule using the CLI's validation and file locks. |

@@ -233,10 +233,16 @@ export function kickConnection(id) {
   return apiFetch('/api/connections/' + encodeURIComponent(id), { method: 'DELETE' });
 }
 
-export function promoteSkill(name, force) {
+// promoteSkill promotes a skill. reviewed ({path, sha256} from
+// GET /api/skills?name=) binds the promotion to the reviewed file, so the
+// server promotes exactly that copy and only while it is unchanged.
+export function promoteSkill(name, force, reviewed) {
+  const body = { name, force: !!force };
+  if (reviewed && reviewed.path) body.path = String(reviewed.path);
+  if (reviewed && reviewed.sha256) body.sha256 = String(reviewed.sha256);
   return apiFetch('/api/skills/promote', {
     method: 'POST',
-    body: JSON.stringify({ name, force: !!force }),
+    body: JSON.stringify(body),
   });
 }
 

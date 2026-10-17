@@ -440,7 +440,7 @@ async function loadSkills() {
       row.append(head, desc, src);
       const review = document.createElement('details'); review.className = 'skill-review';
       const summary = document.createElement('summary'); summary.textContent = 'Review content and provenance'; review.appendChild(summary);
-      review.addEventListener('toggle', async () => { if (!review.open || review.dataset.loaded) return; try {const full = await getSkill(sk.name); const body = document.createElement('pre');body.className='skill-body';body.textContent=full.body || '';const provenance=document.createElement('pre');provenance.className='skill-body';provenance.textContent=JSON.stringify(full.provenance || {},null,2);review.append(body,provenance);review.dataset.loaded='1';}catch(e){showToast(e.message);} });
+      review.addEventListener('toggle', async () => { if (!review.open || review.dataset.loaded) return; try {const full = await getSkill(sk.name); const body = document.createElement('pre');body.className='skill-body';body.textContent=full.body || '';const provenance=document.createElement('pre');provenance.className='skill-body';provenance.textContent=JSON.stringify(full.provenance || {},null,2);review.append(body,provenance);review.dataset.path=(full.source && full.source.path) || '';review.dataset.sha256=full.sha256 || '';review.dataset.loaded='1';}catch(e){showToast(e.message);} });
       row.appendChild(review);
       if (sk.needs_review) {
         const actions = document.createElement('div');
@@ -450,9 +450,12 @@ async function loadSkills() {
         promo.textContent = sk.untrusted ? 'force promote' : 'promote';
         promo.addEventListener('click', async () => {
           if (!review.dataset.loaded || !review.open) { review.open = true; showToast('Review the skill content before promoting it'); return; }
+          if (!review.dataset.path || !review.dataset.sha256) { showToast('The review did not identify the skill file; reload the panel'); return; }
           promo.disabled = true;
           try {
-            await promoteSkill(sk.name, !!sk.untrusted);
+            // Bound to the reviewed file: the server promotes that copy only
+            // while its content still matches what was shown.
+            await promoteSkill(sk.name, !!sk.untrusted, { path: review.dataset.path, sha256: review.dataset.sha256 });
             showToast('skill promoted');
             loadSkills();
           } catch (err) {
