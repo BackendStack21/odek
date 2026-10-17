@@ -23,6 +23,15 @@ import (
 
 // apiHunt1017PostSession issues POST /api/sessions/{id} through the
 // production handler with the session token.
+func apiHunt1017PostSession(t *testing.T, store *session.Store, id, token, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/"+id, strings.NewReader(body))
+	req.Header.Set("X-Session-Token", token)
+	w := httptest.NewRecorder()
+	handleSessionByID(store, nil, "")(w, req)
+	return w
+}
+
 // apiHunt1017SkillEnv isolates HOME and the working directory (the project
 // skills dir is ./.odek/skills) and writes project skills keyed by directory.
 func apiHunt1017SkillEnv(t *testing.T, project map[string]string) {
@@ -308,6 +317,34 @@ func TestRED_RESTFactDeleteCannotRemoveSubstringEntry(t *testing.T) {
 // the title. It lands in index.json and in every row of every
 // GET /api/sessions response (and @sess completion), so one bad paste
 // makes each listing carry ~1 MiB.
+func TestRED_SessionRenameTitleUnbounded(t *testing.T) {
+	store := newTestSessionStore(t)
+	sess, err := store.Create([]session.Message{{Role: "user", Content: "hi"}}, "m", "short")
+	if err != nil {
+		t.Fatal(err)
+	}
+	huge := strings.Repeat("log line 0123456789 ", 10000) // ~200 KB
+	body, _ := json.Marshal(map[string]string{"name": huge})
+	w := apiHunt1017PostSession(t, store, sess.ID, sess.AuthToken, string(body))
+	if w.Code >= 400 {
+		// Rejected: correct. The stored title is untouched, and a title at
+		// the cap is still accepted.
+		if got, err := store.Load(sess.ID); err != nil || got.Task != "short" {
+			t.Fatalf("rejected rename changed the title: %v %q", err, got.Task)
+		}
+		atCap, _ := json.Marshal(map[string]string{"name": strings.Repeat("é", 200)})
+		if w := apiHunt1017PostSession(t, store, sess.ID, sess.AuthToken, string(atCap)); w.Code != http.StatusOK {
+			t.Fatalf("rename to a 200-character title = %d %s", w.Code, w.Body.String())
+		}
+		return
+	}
+	lw := httptest.NewRecorder()
+	handleSessionListPaged(store)(lw, httptest.NewRequest(http.MethodGet, "/api/sessions?limit=50", nil))
+	if lw.Body.Len() > 64<<10 {
+		t.Fatalf("rename answered %d and the one-session listing is now %d bytes: session titles are unbounded", w.Code, lw.Body.Len())
+	}
+}
+
 // TestRED_ExportToolNameInjectsInlineMarkup: the earlier fix for forged
 // export structure escapes control characters in model-chosen tool names,
 // but the names still land in markdown headings verbatim, so inline markup

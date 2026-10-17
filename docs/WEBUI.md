@@ -369,7 +369,9 @@ The core session CRUD (session-token gated):
   instance token bootstraps and returns it for sessions you didn't create.
   Rate-limited to 60 lookups/min per IP (**429** beyond that).
 - **POST** `{"name"?: string, "pinned"?: bool}` — rename and/or pin;
-  at least one field required (**400** otherwise). A failed save (disk,
+  at least one field required (**400** otherwise). A `name` over 200
+  characters is refused with **400** (the title rides in every session
+  listing row). A failed save (disk,
   permissions, revision conflict) returns **500** instead of echoing an
   unpersisted change.
 - **DELETE** — removes the session and its index entry; **204**.

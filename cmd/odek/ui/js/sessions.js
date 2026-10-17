@@ -367,6 +367,7 @@ export function renameSession(sid, el) {
   input.type = 'text';
   input.value = currentName === 'untitled' ? '' : currentName;
   input.placeholder = 'session name…';
+  input.maxLength = 200; // the server refuses longer titles
   taskEl.textContent = '';
   taskEl.appendChild(input);
   input.focus();

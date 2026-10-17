@@ -3762,6 +3762,13 @@ func handleSessionByID(store *session.Store, trustedProxies []string, wsToken st
 				http.Error(w, "nothing to update (name or pinned required)", http.StatusBadRequest)
 				return
 			}
+			// The title is carried by index.json and every session listing
+			// row, so it is bounded like the titles new sessions get.
+			const maxSessionTitleRunes = 200
+			if body.Name != nil && len([]rune(*body.Name)) > maxSessionTitleRunes {
+				http.Error(w, fmt.Sprintf("name too long (max %d characters)", maxSessionTitleRunes), http.StatusBadRequest)
+				return
+			}
 			sess, err := store.Load(id)
 			if err != nil {
 				rejectSessionLookup(w, r, trustedProxies, http.StatusNotFound, "session not found")
