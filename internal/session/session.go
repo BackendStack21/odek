@@ -79,6 +79,10 @@ type Session struct {
 	// Generation distinguishes deletion/recreation of a fixed session ID.
 	// Revisions alone cannot reject an old snapshot after a counter restarts.
 	Generation string `json:"generation,omitempty"`
+	// MetaRevision counts metadata-only edits (UpdateMeta: title, pin, a
+	// minted auth token). They leave Revision alone, so a live turn's
+	// snapshot still saves; that save adopts the newer metadata on disk.
+	MetaRevision uint64 `json:"meta_revision,omitempty"`
 
 	ID        string     `json:"id"`                   // e.g. "20260518-abc123…" (128-bit random suffix)
 	AuthToken string     `json:"auth_token,omitempty"` // session-scoped secret required by serve handlers
@@ -766,6 +770,37 @@ func (s *Store) Save(sess *Session) error {
 	return s.addToVectorIndex(sess)
 }
 
+// maxMetaRetries bounds UpdateMeta's reload-and-retry when a transcript save
+// commits between its load and its write.
+const maxMetaRetries = 8
+
+// UpdateMeta applies a metadata-only edit (title, pin, a minted auth token)
+// to the stored session and returns the saved copy. It does not advance the
+// transcript Revision, so a turn running on the session keeps saving its
+// snapshot, and that save adopts the edit instead of overwriting it. fn must
+// change only Task, Pinned or AuthToken; it may run more than once.
+func (s *Store) UpdateMeta(id string, fn func(*Session)) (*Session, error) {
+	for attempt := 0; ; attempt++ {
+		// Load under s.mu so no save from this process can commit between
+		// the load and the write; only another process can, and that
+		// conflict is retried.
+		s.mu.Lock()
+		sess, err := s.Load(id)
+		if err == nil {
+			fn(sess)
+			err = s.saveLockedOpts(sess, false, true)
+		}
+		s.mu.Unlock()
+		if errors.Is(err, ErrConflict) && attempt < maxMetaRetries {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		return sess, s.addToVectorIndex(sess)
+	}
+}
+
 // SaveNoIndex persists a session exactly like Save — redaction, file-cap
 // trimming and atomic write all still happen, and index.json is refreshed
 // unless the indexed summary would trail by under indexLagWindow (only
@@ -832,9 +867,14 @@ type revStamp struct {
 	// spans: the revision carries TaintSpans, which the stamp does not
 	// hold, so a save must re-read the file to merge them.
 	spans bool
-	size  int64
-	mod   time.Time
-	ino   uint64
+	// Metadata a later save of an older snapshot adopts (see MetaRevision).
+	metaRevision uint64
+	task         string
+	pinned       bool
+	authToken    string
+	size         int64
+	mod          time.Time
+	ino          uint64
 }
 
 // cachedRevision returns the revision this store last persisted for id when
@@ -855,7 +895,8 @@ func (s *Store) cachedRevision(id string, info os.FileInfo, statErr error) *Sess
 	if info.Size() != st.size || !info.ModTime().Equal(st.mod) || fileInode(info) != st.ino {
 		return nil
 	}
-	return &Session{ID: id, Generation: st.generation, Revision: st.revision, persistedID: id, UntrustedIngested: st.untrusted, EpisodeUntrusted: st.episode}
+	return &Session{ID: id, Generation: st.generation, Revision: st.revision, persistedID: id, UntrustedIngested: st.untrusted, EpisodeUntrusted: st.episode,
+		MetaRevision: st.metaRevision, Task: st.task, Pinned: st.pinned, AuthToken: st.authToken}
 }
 
 // rememberRevision stamps the file just written for sess.
@@ -875,8 +916,13 @@ func (s *Store) rememberRevision(sess *Session) {
 		episode:    sess.EpisodeUntrusted,
 		spans:      len(sess.TaintSpans) > 0,
 		size:       info.Size(),
-		mod:        info.ModTime(),
-		ino:        fileInode(info),
+
+		metaRevision: sess.MetaRevision,
+		task:         sess.Task,
+		pinned:       sess.Pinned,
+		authToken:    sess.AuthToken,
+		mod:          info.ModTime(),
+		ino:          fileInode(info),
 	}
 }
 
@@ -958,7 +1004,13 @@ func (s *Store) saveLocked(sess *Session) error {
 // saveLockedMode is saveLocked; lazyIndex lets a per-step checkpoint leave
 // index.json untouched when the indexed summary would only move forward by
 // less than indexLagWindow (see indexMayLag).
-func (s *Store) saveLockedMode(sess *Session, lazyIndex bool) (err error) {
+func (s *Store) saveLockedMode(sess *Session, lazyIndex bool) error {
+	return s.saveLockedOpts(sess, lazyIndex, false)
+}
+
+// saveLockedOpts is saveLockedMode; metaOnly marks an UpdateMeta write,
+// which advances MetaRevision instead of Revision.
+func (s *Store) saveLockedOpts(sess *Session, lazyIndex, metaOnly bool) (err error) {
 	defer func() { diagnostics.Report("session", "save", sess.ID, err) }()
 	// Reject malformed or traversal-bearing session IDs before the ID is used
 	// to build a filesystem path. A planted session file with an embedded
@@ -1009,6 +1061,16 @@ func (s *Store) saveLockedMode(sess *Session, lazyIndex bool) (err error) {
 			sess.EpisodeUntrusted = true
 		}
 		sess.TaintSpans = MergeTaintSpans(sess.TaintSpans, current.TaintSpans)
+		// Metadata edited since this snapshot was loaded (a rename or pin
+		// while a turn runs) wins over the snapshot's stale copy.
+		if current.MetaRevision > sess.MetaRevision {
+			sess.MetaRevision = current.MetaRevision
+			sess.Task = current.Task
+			sess.Pinned = current.Pinned
+			if current.AuthToken != "" {
+				sess.AuthToken = current.AuthToken
+			}
+		}
 	} else if !errors.Is(loadErr, os.ErrNotExist) {
 		return loadErr
 	} else if sess.persistedID == sess.ID {
@@ -1016,6 +1078,7 @@ func (s *Store) saveLockedMode(sess *Session, lazyIndex bool) (err error) {
 	}
 	previousRevision := sess.Revision
 	previousGeneration := sess.Generation
+	previousMetaRevision := sess.MetaRevision
 	if current == nil && sess.persistedID != sess.ID {
 		sess.Revision = 0
 		sess.Generation = ""
@@ -1023,10 +1086,19 @@ func (s *Store) saveLockedMode(sess *Session, lazyIndex bool) (err error) {
 	if sess.Generation == "" {
 		sess.Generation = generateID()
 	}
-	if sess.Revision == ^uint64(0) {
-		return fmt.Errorf("session: revision exhausted")
+	if metaOnly && current != nil && loadErr == nil {
+		// The transcript is unchanged: keep Revision so a running turn's
+		// snapshot of it still saves (and adopts this metadata).
+		if sess.MetaRevision == ^uint64(0) {
+			return fmt.Errorf("session: revision exhausted")
+		}
+		sess.MetaRevision++
+	} else {
+		if sess.Revision == ^uint64(0) {
+			return fmt.Errorf("session: revision exhausted")
+		}
+		sess.Revision++
 	}
-	sess.Revision++
 	committed := false
 	// saveLocked mutates sess in place (secret redaction, capacity trim,
 	// boundary advance). A failed save must leave the caller's snapshot
@@ -1056,6 +1128,7 @@ func (s *Store) saveLockedMode(sess *Session, lazyIndex bool) (err error) {
 		if !committed {
 			sess.Revision = previousRevision
 			sess.Generation = previousGeneration
+			sess.MetaRevision = previousMetaRevision
 		}
 	}()
 

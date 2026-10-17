@@ -1,10 +1,15 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
+	"fmt"
+	"github.com/BackendStack21/odek/internal/session"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -243,5 +248,262 @@ func TestRED_WSSessionNewFrameDetachesConnection(t *testing.T) {
 	}
 	if sess.Turns != 2 {
 		t.Fatalf("resumed session turns = %d, want 2", sess.Turns)
+	}
+}
+
+// Renaming (or pinning) a session from the sidebar while its WebUI turn runs
+// bumps the stored revision; the turn's next per-step checkpoint then fails
+// with a revision conflict and the running turn is aborted ("failed to
+// persist session"). A metadata edit must not kill a live turn.
+func TestRED_WSRenameDuringTurnDoesNotAbortTurn(t *testing.T) {
+	release := make(chan struct{})
+	reached := make(chan struct{}, 1)
+	llmSrv := mockLLM(t, func(w http.ResponseWriter, callCount int) {
+		w.Header().Set("Content-Type", "application/json")
+		if callCount == 1 {
+			w.Write([]byte(`{"choices":[{"message":{"content":"","tool_calls":[{"id":"c1","type":"function","function":{"name":"math_eval","arguments":"{\"expression\":\"1+1\"}"}}]}}]}`))
+			return
+		}
+		if callCount == 2 {
+			reached <- struct{}{}
+			<-release
+		}
+		w.Write([]byte(`{"choices":[{"message":{"content":"final answer"}}]}`))
+	})
+	defer llmSrv.Close()
+	envCleanup := setTestEnv(t, llmSrv.URL)
+	defer envCleanup()
+	store := newTestSessionStore(t)
+	sess, err := store.Create([]session.Message{{Role: "system", Content: ""}}, "test-model", "orig")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln, mux := buildServeMuxWithSessionByID(t, store)
+	defer startServeTest(t, ln, mux)()
+	addr := ln.Addr().String()
+	waitForHTTP(t, addr)
+	wsUpgradeLimiter.reset()
+	conn := dialTestWS(t, addr)
+	defer conn.Close()
+
+	payload, _ := json.Marshal(map[string]any{"type": "prompt", "content": "compute", "session_id": sess.ID, "auth_token": sess.AuthToken})
+	if err := golangws.Message.Send(conn, string(payload)); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-reached:
+	case <-time.After(15 * time.Second):
+		close(release)
+		t.Fatal("second LLM call never reached")
+	}
+	// Rename through the production REST route while the turn is mid-flight.
+	testTokenMu.Lock()
+	tok := testLastToken
+	testTokenMu.Unlock()
+	req, _ := http.NewRequest(http.MethodPost, "http://"+addr+"/api/sessions/"+sess.ID, strings.NewReader(`{"name":"renamed"}`))
+	req.Header.Set("X-Odek-Ws-Token", tok)
+	req.Header.Set("X-Session-Token", sess.AuthToken)
+	req.Header.Set("Origin", "http://"+addr)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		close(release)
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	close(release)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("rename status %d", resp.StatusCode)
+	}
+	frames := wsHuntReadTurn(t, conn)
+	var errs []string
+	done := false
+	for _, f := range frames {
+		switch f["type"] {
+		case "error":
+			m, _ := f["message"].(string)
+			errs = append(errs, m)
+		case "done":
+			done = true
+		}
+	}
+	if !done || len(errs) > 0 {
+		t.Fatalf("turn aborted after a mid-turn rename: done=%v errors=%q", done, errs)
+	}
+	stored, err := store.Load(sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Task != "renamed" {
+		t.Fatalf("rename lost after the turn saved: task = %q", stored.Task)
+	}
+	if last := stored.Messages[len(stored.Messages)-1]; last.Content != "final answer" {
+		t.Fatalf("persisted transcript ends with %q, want the turn's final answer", last.Content)
+	}
+}
+
+// The WebUI sidebar exposes pin and rename on every session row at any time,
+// including the session whose turn is running. The REST handler loads and
+// Saves the session without the execution lock, bumping its revision; the
+// running turn's next per-step persist then hits ErrConflict, which cancels
+// the run ("failed to persist session") and loses the rest of the turn.
+func TestRED_UIFuncPinOrRenameDuringRunAbortsTheTurn(t *testing.T) {
+	release := make(chan struct{})
+	llm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodGet {
+			json.NewEncoder(w).Encode(map[string]any{"data": []map[string]any{}})
+			return
+		}
+		body, _ := io.ReadAll(r.Body)
+		if bytes.Contains(body, []byte(`"role":"tool"`)) {
+			w.Write([]byte(`{"choices":[{"message":{"content":"final-answer-ok"},"finish_reason":"stop"}]}`))
+			return
+		}
+		select {
+		case <-release:
+		case <-time.After(20 * time.Second):
+		}
+		w.Write([]byte(`{"choices":[{"message":{"content":"","tool_calls":[{"id":"calc","type":"function","function":{"name":"math_eval","arguments":"{\"expression\":\"1+1\"}"}}]},"finish_reason":"tool_calls"}]}`))
+	}))
+	defer llm.Close()
+	envCleanup := setTestEnv(t, llm.URL)
+	defer envCleanup()
+
+	store := newTestSessionStore(t)
+	ln, mux := buildServeMux(t, store)
+	defer startServeTest(t, ln, mux)()
+	waitForHTTP(t, ln.Addr().String())
+	wsUpgradeLimiter.reset()
+	conn := dialTestWS(t, ln.Addr().String())
+	defer conn.Close()
+
+	payload, _ := json.Marshal(map[string]any{"type": "prompt", "content": "compute something"})
+	if err := golangws.Message.Send(conn, string(payload)); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	conn.SetReadDeadline(time.Now().Add(30 * time.Second))
+	sid, token := "", ""
+	released := false
+	var final map[string]any
+	for i := 0; i < 400 && final == nil; i++ {
+		var raw []byte
+		if err := golangws.Message.Receive(conn, &raw); err != nil {
+			t.Fatalf("Receive: %v", err)
+		}
+		var evt map[string]any
+		if json.Unmarshal(raw, &evt) != nil {
+			continue
+		}
+		switch evt["type"] {
+		case "session":
+			sid, _ = evt["session_id"].(string)
+			token, _ = evt["auth_token"].(string)
+			if !released {
+				// Operator pins the running session from the sidebar.
+				// The pin races the turn's pre-run prompt save and must
+				// still succeed on the first attempt.
+				req := httptest.NewRequest(http.MethodPost, "/api/sessions/"+sid, strings.NewReader(`{"pinned":true}`))
+				req.Header.Set("X-Session-Token", token)
+				rec := httptest.NewRecorder()
+				handleSessionByID(store, nil, "")(rec, req)
+				if rec.Code != http.StatusOK {
+					close(release)
+					t.Fatalf("pin racing the pre-run save answered %d: %s", rec.Code, rec.Body.String())
+				}
+				close(release)
+				released = true
+			}
+		case "done", "error":
+			final = evt
+		}
+	}
+	if !released {
+		close(release)
+	}
+	if final == nil {
+		t.Fatal("turn never finished")
+	}
+	if final["type"] == "error" {
+		t.Fatalf("pinning the running session aborted its turn: %v", final["message"])
+	}
+	sess, err := store.Load(sid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !sess.Pinned {
+		t.Fatalf("pin lost after the turn saved")
+	}
+}
+
+// wsAPIPostSession issues POST /api/sessions/{id} through the
+// production handler with the session token.
+func wsAPIPostSession(t *testing.T, store *session.Store, id, token, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/"+id, strings.NewReader(body))
+	req.Header.Set("X-Session-Token", token)
+	w := httptest.NewRecorder()
+	handleSessionByID(store, nil, "")(w, req)
+	return w
+}
+
+// TestRED_SessionPinDuringLiveTurnAbortsTurn: pinning (or renaming) a
+// session from the sidebar while its turn is running bumps the stored
+// revision; the live turn's next per-step checkpoint then fails with
+// "stale revision", the run is cancelled and its progress is lost.
+func TestRED_SessionPinDuringLiveTurnAbortsTurn(t *testing.T) {
+	inSecond := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	llmSrv := mockLLM(t, func(w http.ResponseWriter, callCount int) {
+		w.Header().Set("Content-Type", "application/json")
+		switch callCount {
+		case 1:
+			fmt.Fprint(w, `{"choices":[{"message":{"content":"","tool_calls":[{"id":"c_1","type":"function","function":{"name":"math_eval","arguments":"{\"expression\":\"1+1\"}"}}]}}],"usage":{"prompt_tokens":10,"completion_tokens":5}}`)
+		case 2:
+			once.Do(func() { close(inSecond) })
+			<-release
+			fmt.Fprint(w, `{"choices":[{"message":{"content":"","tool_calls":[{"id":"c_2","type":"function","function":{"name":"math_eval","arguments":"{\"expression\":\"2+2\"}"}}]}}],"usage":{"prompt_tokens":10,"completion_tokens":5}}`)
+		default:
+			fmt.Fprint(w, `{"choices":[{"message":{"content":"final answer"}}],"usage":{"prompt_tokens":10,"completion_tokens":5}}`)
+		}
+	})
+	defer llmSrv.Close()
+
+	env := newRestRunEnv(t, llmSrv.URL, nil)
+	sess, err := env.store.Create([]session.Message{{Role: "user", Content: "earlier"}, {Role: "assistant", Content: "ok"}}, "m", "pin me")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := json.Marshal(map[string]any{"content": "compute things", "session_id": sess.ID, "auth_token": sess.AuthToken})
+	_, resp := startTestRun(t, env, string(body))
+	runID, _ := resp["run_id"].(string)
+
+	select {
+	case <-inSecond:
+	case <-time.After(30 * time.Second):
+		close(release)
+		t.Fatal("run never reached the second LLM call")
+	}
+	w := wsAPIPostSession(t, env.store, sess.ID, sess.AuthToken, `{"pinned":true}`)
+	close(release)
+	if w.Code != http.StatusOK {
+		t.Fatalf("pin answered %d (%s)", w.Code, strings.TrimSpace(w.Body.String()))
+	}
+
+	snap := waitRunStatus(t, runID, 30*time.Second)
+	if snap["status"] != "completed" {
+		t.Fatalf("run status = %v (error: %v), want completed: a pin from the session list must not abort the live turn", snap["status"], snap["error"])
+	}
+	final, err := env.store.Load(sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	last := final.Messages[len(final.Messages)-1]
+	if last.Content != "final answer" {
+		t.Fatalf("persisted transcript ends with %q, want the turn's final answer", last.Content)
+	}
+	if !final.Pinned {
+		t.Fatal("pin lost after the turn's final save")
 	}
 }

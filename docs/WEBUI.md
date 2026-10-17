@@ -371,9 +371,11 @@ The core session CRUD (session-token gated):
 - **POST** `{"name"?: string, "pinned"?: bool}` — rename and/or pin;
   at least one field required (**400** otherwise). A `name` over 200
   characters is refused with **400** (the title rides in every session
-  listing row). A failed save (disk,
-  permissions, revision conflict) returns **500** instead of echoing an
-  unpersisted change.
+  listing row). The edit is
+  metadata-only: it does not advance the transcript revision, so a turn
+  running on the session keeps checkpointing and its saves keep the new
+  title/pin (neither the edit nor the turn is lost). A failed save (disk,
+  permissions) returns **500** instead of echoing an unpersisted change.
 - **DELETE** — removes the session and its index entry; **204**.
 
 ### `GET /api/sessions/{id}/plan`

@@ -3147,12 +3147,21 @@ func validateSessionToken(store *session.Store, sess *session.Session, token str
 			// a bootstrap: fail closed and leave the file untouched.
 			return "", false
 		}
-		sess.AuthToken = session.GenerateAuthToken()
-		if err := store.Save(sess); err != nil {
+		// Minting is a metadata-only update, so it cannot conflict with (or
+		// break) a turn running on the session. A token minted concurrently
+		// by another request is kept, not replaced.
+		minted := session.GenerateAuthToken()
+		saved, err := store.UpdateMeta(sess.ID, func(s *session.Session) {
+			if s.AuthToken == "" {
+				s.AuthToken = minted
+			}
+		})
+		if err != nil {
 			// If we cannot persist the token, still allow this request but do not
 			// leak a transient token to the client.
 			return "", true
 		}
+		sess.AuthToken = saved.AuthToken
 		return sess.AuthToken, true
 	}
 	// Constant-time comparison so an attacker cannot recover the token byte by
@@ -3805,16 +3814,20 @@ func handleSessionByID(store *session.Store, trustedProxies []string, wsToken st
 				rejectSessionLookup(w, r, trustedProxies, http.StatusUnauthorized, "invalid session token")
 				return
 			}
-			if body.Name != nil {
-				sess.Task = *body.Name
-			}
-			if body.Pinned != nil {
-				sess.Pinned = *body.Pinned
-			}
-			// A failed save (disk full, permissions, revision conflict with a
-			// concurrent per-step persist) must not be reported as success:
-			// the client would show a rename or pin that is lost on reload.
-			if err := store.Save(sess); err != nil {
+			// A metadata-only update: it leaves the transcript revision alone,
+			// so a turn running on this session keeps checkpointing (and its
+			// saves adopt the new title/pin). A failed save (disk full,
+			// permissions) must not be reported as success: the client would
+			// show a rename or pin that is lost on reload.
+			sess, err = store.UpdateMeta(id, func(s *session.Session) {
+				if body.Name != nil {
+					s.Task = *body.Name
+				}
+				if body.Pinned != nil {
+					s.Pinned = *body.Pinned
+				}
+			})
+			if err != nil {
 				http.Error(w, "failed to save session", http.StatusInternalServerError)
 				return
 			}
