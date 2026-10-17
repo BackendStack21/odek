@@ -1201,13 +1201,23 @@ func startServeRun(
 
 	go func() {
 		defer serveRunsWG.Done() // Add happened in admitServeRun
+		// Teardown runs after the panic handler has recorded the failure, so
+		// an approval answer arriving in between sees a terminal run.
+		defer func() {
+			defer func() {
+				if recovered := recover(); recovered != nil {
+					diagnostics.Emit(events.Event{Type: "panic_recovered", Data: map[string]any{"component": "serve", "operation": "headless_run", "error_class": "panic"}})
+					run.finish("failed", "run failed: internal error")
+				}
+			}()
+			run.releaseResources()
+		}()
 		defer func() {
 			if recovered := recover(); recovered != nil {
 				diagnostics.Emit(events.Event{Type: "panic_recovered", Data: map[string]any{"component": "serve", "operation": "headless_run", "error_class": "panic"}})
 				run.finish("failed", "run failed: internal error")
 			}
 		}()
-		defer run.releaseResources()
 		var sessionIn, sessionOut int
 		ctx = context.WithValue(ctx, serveRunIDKey{}, run.ID)
 		ctx = context.WithValue(ctx, serveApproverKey{}, approver)
