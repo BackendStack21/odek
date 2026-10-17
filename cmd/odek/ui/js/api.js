@@ -1,7 +1,7 @@
 // Centralized REST client for the /api/* management surface. Every module
 // goes through these helpers so the instance-token header, session-token
 // handling, and error normalization live in exactly one place.
-import { apiHeaders } from './net.js';
+import { apiHeaders, forgetStoredWsToken, STALE_TOKEN_HINT } from './net.js';
 
 // apiFetch performs a token-authenticated JSON request and returns the parsed
 // body. Throws an Error carrying the server's message on non-2xx responses.
@@ -20,6 +20,13 @@ export async function apiFetch(path, opts = {}) {
       const text = await resp.text();
       if (text) msg = text.length > 200 ? text.slice(0, 200) + '…' : text;
     } catch { /* keep default */ }
+    // The instance-token gate answers a bare "Forbidden" (Host/Origin
+    // rejections carry their own text): forget the stale saved token and tell
+    // the user how to recover.
+    if (resp.status === 403 && msg.trim() === 'Forbidden') {
+      forgetStoredWsToken();
+      msg = STALE_TOKEN_HINT;
+    }
     const err = new Error(msg);
     err.status = resp.status;
     throw err;

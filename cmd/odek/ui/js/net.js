@@ -21,6 +21,14 @@ export function getWsToken() {
   }
 }
 
+// forgetStoredWsToken drops the remembered token once the server has rejected
+// it (typically after `odek serve` restarted and issued a new one).
+export function forgetStoredWsToken() {
+  try { localStorage.removeItem(TOKEN_STORAGE_KEY); } catch { /* storage unavailable */ }
+}
+
+export const STALE_TOKEN_HINT = 'The saved access token was rejected (the server was probably restarted). Open the new token URL printed by `odek serve` in your terminal.';
+
 // wsSend sends a JSON payload over `socket` only when it is actually OPEN
 // (readyState 1 — the WebSocket.OPEN constant, kept literal so import-free
 // test shims work). Returns true when handed to the transport, false when
