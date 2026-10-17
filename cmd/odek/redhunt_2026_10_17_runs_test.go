@@ -1,8 +1,7 @@
 package main
 
-// RED tests for the 2026-10-17 Web UI bug hunt, area "runs" (serve-side
-// headless runs, jobs, wake-on-complete, artifacts). Each test encodes the
-// CORRECT behavior and fails on the code at v2.34.11.
+// Regression tests for serve-side headless runs, jobs, wake-on-complete and
+// artifacts. Each test encodes the correct behavior.
 
 import (
 	"encoding/json"
