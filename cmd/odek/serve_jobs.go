@@ -290,11 +290,14 @@ func handleJobOutput(store *session.Store, mgr *bgproc.Manager) http.HandlerFunc
 			writeAPIJSON(w, http.StatusNotFound, map[string]any{"job_id": jobID, "status": "unknown"})
 			return
 		}
-		// End-of-stream normalization: the manager reports ("", end) once
-		// since reaches the logical end; the API contract is next_cursor 0
-		// when there is nothing more to read (0 = restart from the top).
+		// End-of-stream normalization: once a finished job's output is fully
+		// read the API contract is next_cursor 0. A running job that a
+		// tailing client has merely caught up with keeps its cursor, so the
+		// next poll continues instead of re-reading the whole output.
 		if chunk == "" {
-			next = 0
+			if j, ok := mgr.Get(sess.ID, jobID); !ok || j.Status != bgproc.StatusRunning {
+				next = 0
+			}
 		}
 		writeAPIJSON(w, http.StatusOK, map[string]any{
 			"job_id":      jobID,

@@ -305,7 +305,7 @@ The dropdown fetches from `GET /api/resources?q=<query>&limit=8`. Results includ
 ### Background jobs
 
 - `GET /api/jobs` — the authenticated session's background jobs (id, command head, status, runtime, exit code). The command head is secret-redacted before it is clamped, like the `bg_job` frame's `command_head`.
-- `GET /api/jobs/{id}/output?since=N&limit=N` — output window with `next_cursor` for continuation.
+- `GET /api/jobs/{id}/output?since=N&limit=N` — output window with `next_cursor` for continuation. A running job keeps its cursor when the client has caught up; `next_cursor` is 0 only once a finished job's output is fully read.
 - `POST /api/jobs/{id}/stop` — kill a running job.
 
 All three require the same per-instance CSRF token, loopback Host check, and
