@@ -586,9 +586,13 @@ func serveCmd(args []string) error {
 	// never served over plain HTTP, so a network attacker who can only make
 	// `GET /` cannot retrieve it. Browser clients get it via the token URL;
 	// non-browser clients can supply it as a header or subprotocol.
-	tokenURL := "http://" + listener.Addr().String() + "/?token=" + wsToken
+	// A wildcard bind (0.0.0.0, [::], ":port") is reached through loopback;
+	// the Host/Origin checks accept only loopback names, so the printed URL
+	// must name one.
+	displayAddr := serveDisplayAddr(listener.Addr())
+	tokenURL := "http://" + displayAddr + "/?token=" + wsToken
 	fmt.Fprintf(os.Stderr, "odek serve ⚡  %s\n", tokenURL)
-	fmt.Fprintf(os.Stderr, "  WebSocket: ws://%s/ws\n", listener.Addr())
+	fmt.Fprintf(os.Stderr, "  WebSocket: ws://%s/ws\n", displayAddr)
 	fmt.Fprintf(os.Stderr, "  WS token:  %s\n", wsToken)
 	fmt.Fprintf(os.Stderr, "  Type @ to reference files, drop or attach files inline.\n")
 
@@ -4227,6 +4231,16 @@ func makeSessionMessageStrings(sess *session.Session) []string {
 		out = append(out, m.Role+": "+m.Content)
 	}
 	return out
+}
+
+// serveDisplayAddr returns the host:port a local browser should use for the
+// listener: an unspecified bind address becomes the loopback address the
+// server's Host and Origin checks accept.
+func serveDisplayAddr(a net.Addr) string {
+	if ta, ok := a.(*net.TCPAddr); ok && ta.IP.IsUnspecified() {
+		return net.JoinHostPort("127.0.0.1", strconv.Itoa(ta.Port))
+	}
+	return a.String()
 }
 
 // browserOpenerDirs are the system directories openInBrowser searches for a
