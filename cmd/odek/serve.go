@@ -14,11 +14,11 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"os/signal"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
-	"runtime"
 	"regexp"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -548,9 +548,8 @@ func serveCmd(args []string) error {
 
 	// Per-instance CSRF token for browser-driven WebSocket connections. A
 	// random token is issued at server start, injected into the served HTML,
-	// and also delivered as a SameSite=Strict HttpOnly cookie. The /ws
-	// handshake requires the token via cookie, header, or WebSocket
-	// subprotocol, so a page served by another localhost port cannot open
+	// (never as a cookie, which would reach every port of the host). The /ws
+	// handshake requires the token via header or WebSocket subprotocol, so a page served by another localhost port cannot open
 	// an agent-controlling WebSocket.
 	wsToken, err := newServeToken()
 	if err != nil {
@@ -2903,21 +2902,12 @@ func newServeToken() (string, error) {
 
 // validateServeToken verifies that the browser has the per-instance CSRF
 // token. It accepts the token via:
-//   - the HttpOnly SameSite=Strict cookie set when serving index.html
-//     (automatic for legitimate same-origin pages),
 //   - an X-Odek-Ws-Token header (for non-browser clients), or
 //   - a WebSocket subprotocol of the form "odek.<token>" (for clients that
 //     can set Sec-WebSocket-Protocol).
 func validateServeToken(cfg *golangws.Config, req *http.Request, token string) error {
 	if token == "" {
 		return fmt.Errorf("server token not configured")
-	}
-
-	// Cookie (browser same-origin / same-site requests).
-	if c, err := req.Cookie(wsTokenCookieName); err == nil && c.Value != "" {
-		if subtle.ConstantTimeCompare([]byte(c.Value), []byte(token)) == 1 {
-			return nil
-		}
 	}
 
 	// Explicit header (non-browser clients).
@@ -3060,13 +3050,6 @@ func validateServeTokenHTTP(req *http.Request, token string) error {
 		return fmt.Errorf("server token not configured")
 	}
 
-	// Cookie (browser same-origin / same-site requests).
-	if c, err := req.Cookie(wsTokenCookieName); err == nil && c.Value != "" {
-		if subtle.ConstantTimeCompare([]byte(c.Value), []byte(token)) == 1 {
-			return nil
-		}
-	}
-
 	// Explicit header (non-browser clients).
 	if h := req.Header.Get(wsTokenHeaderName); h != "" {
 		if subtle.ConstantTimeCompare([]byte(h), []byte(token)) == 1 {
@@ -3094,12 +3077,12 @@ func requireServeToken(token string) func(http.Handler) http.Handler {
 
 // presentsInstanceTokenHeader reports whether the request carries the
 // per-instance CSRF token in the X-Odek-Ws-Token header. Header presentation
-// is a KNOWLEDGE proof — unlike the ambient SameSite=Strict cookie, a
+// is a KNOWLEDGE proof — a
 // cross-origin (e.g. DNS-rebinding) page can neither read the token value
 // nor set the header (the custom header triggers a CORS preflight, which
 // odek does not answer). It therefore distinguishes legitimate front-ends
 // (the WebUI, bodek, curl with the token URL) from a rebinding page that
-// merely holds the cookie.
+// cannot supply it.
 func presentsInstanceTokenHeader(r *http.Request, wsToken string) bool {
 	if wsToken == "" {
 		return false
@@ -4146,49 +4129,35 @@ func handleStatic(wsToken string) http.HandlerFunc {
 		// The HTML entry point only receives the per-instance CSRF token when
 		// the request presents the token in the `?token=` query parameter. This
 		// prevents a network attacker from retrieving the token with a simple
-		// `GET /`. The token is delivered both as a SameSite=Strict HttpOnly
-		// cookie (sent automatically on same-site WebSocket upgrades) and as a
-		// meta tag (read by app.js and sent as a WebSocket subprotocol).
+		// `GET /`. The token is delivered in a meta tag (read by the page, kept in
+		// origin-scoped storage and sent as a header or WebSocket subprotocol).
 		variant := ""
 		if r.URL.Path == "/" && wsToken != "" {
 			variant = "#empty"
 			authed := false
 			// Constant-time, like every other comparison in this file: this
-			// is the one endpoint that mints the authenticated cookie.
+			// is the one endpoint that hands the token to a page.
 			if subtle.ConstantTimeCompare([]byte(r.URL.Query().Get("token")), []byte(wsToken)) == 1 {
+				// Cookies are host-scoped, not port-scoped, so the token is
+				// never stored in one: the page keeps it in origin-scoped
+				// browser storage instead. Expire a cookie minted by an
+				// earlier version.
 				http.SetCookie(w, &http.Cookie{
 					Name:     wsTokenCookieName,
-					Value:    wsToken,
+					Value:    "",
 					Path:     "/",
+					MaxAge:   -1,
 					SameSite: http.SameSiteStrictMode,
 					HttpOnly: true,
-					// Secure is set even though the server usually runs on
-					// plain-http loopback: modern browsers treat localhost as a
-					// potentially trustworthy origin and accept Secure cookies
-					// there, and the UI always sends the token as a WebSocket
-					// subprotocol (and /api header), so a browser that drops
-					// the cookie loses nothing.
-					Secure: true,
-					// No explicit MaxAge/Expires so the cookie is a session cookie.
+					Secure:   true,
 				})
-				data = []byte(strings.Replace(string(data), "{{ODEK_WS_TOKEN}}", wsToken, 1))
-				w.Header().Set("Cache-Control", "no-store")
-				authed = true
-				variant = "#token"
-			} else if c, err := r.Cookie(wsTokenCookieName); err == nil &&
-				subtle.ConstantTimeCompare([]byte(c.Value), []byte(wsToken)) == 1 {
-				// Returning browser: the HttpOnly cookie minted by an earlier
-				// token URL is sufficient — the tokenized URL is needed only
-				// once per browser, shrinking the URL's exposure window and
-				// enabling a redirect-based strip later without breaking the
-				// client contract.
 				data = []byte(strings.Replace(string(data), "{{ODEK_WS_TOKEN}}", wsToken, 1))
 				w.Header().Set("Cache-Control", "no-store")
 				authed = true
 				variant = "#token"
 			}
 			if !authed {
-				// No valid token in the URL or cookie: serve the UI but leave
+				// No valid token in the URL: serve the UI but leave
 				// the meta tag empty so the browser cannot connect until the
 				// user uses the token URL printed to the console.
 				data = []byte(strings.Replace(string(data), "{{ODEK_WS_TOKEN}}", "", 1))

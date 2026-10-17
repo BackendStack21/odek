@@ -11,8 +11,8 @@ odek serve
 ```
 
 Open the printed **token URL** in your browser — the token authenticates the
-WebSocket handshake and every `/api/*` call (cookie + `X-Odek-Ws-Token`
-header + `odek.<token>` subprotocol). A plain `http://localhost:8080` loads
+WebSocket handshake and every `/api/*` call (`X-Odek-Ws-Token`
+header or `odek.<token>` subprotocol; never a cookie, which browsers send to every port of the host). A plain `http://localhost:8080` loads
 the UI but cannot connect until you use the token URL. The UI reconnects
 automatically (exponential backoff, 1s → 30s cap) if the server restarts.
 
@@ -67,8 +67,8 @@ Two token layers:
 1. **Instance token** (one per `odek serve` process) — printed to stderr as
    the token URL (`http://127.0.0.1:8080/?token=<64-hex>`) at startup.
    Present it as the `X-Odek-Ws-Token` header on every REST call, and/or as
-   the `odek.<token>` WebSocket subprotocol, and/or rely on the
-   `odek_ws_token` cookie a browser obtained from the token URL. Without it
+   the `odek.<token>` WebSocket subprotocol. The browser UI keeps the token it received from the token URL in
+   origin-scoped `localStorage`. Without it
    every `/api/*` call is **403** and the WS handshake is rejected.
 2. **Session token** (per session) — required by session-scoped mutations
    and detail reads (`X-Session-Token` header). A fresh token is issued
@@ -83,7 +83,7 @@ Two token layers:
 ### Minimal interactive flow (WebSocket)
 
 1. Read the token URL from serve's stderr; extract the token.
-2. `GET /?token=<t>` (optional — validates the token, sets the cookie).
+2. `GET /?token=<t>` (optional — validates the token and expires any legacy `odek_ws_token` cookie).
 3. Open `ws://…/ws` with subprotocol `odek.<t>` → receive `server_info`.
 4. Send `{"type":"prompt","content":"…","session_id":null}` → receive
    `session` (capture `session_id` + `auth_token`), then `thinking_delta` /
@@ -316,7 +316,7 @@ minted but never bootstrap-passed on jobs routes). Foreign job ids answer
 `{"status":"unknown"}` (same shape as stale ids — no existence oracle across
 sessions).
 
-All `/api/*` endpoints require the per-instance CSRF token (`odek_ws_token` cookie or `X-Odek-Ws-Token` header) and a loopback `Host` header; state-changing methods additionally require a local `Origin`. Missing/invalid credentials return 403.
+All `/api/*` endpoints require the per-instance CSRF token (`X-Odek-Ws-Token` header) and a loopback `Host` header; state-changing methods additionally require a local `Origin`. Missing/invalid credentials return 403.
 
 Every response carries `Cache-Control: no-store`. The surface covers six
 groups, detailed below: **sessions** (search/list, detail, rename/pin,
@@ -671,8 +671,8 @@ listings return pinned sessions first, and both list and detail carry
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--addr <addr>` | `127.0.0.1:8080` | Listen address (loopback by default; e.g. `--addr localhost:9090`). Binding a non-loopback address prints a loud warning |
-| `--open` | false | Open browser automatically after starting |
+| `--addr <addr>` | `127.0.0.1:8080` | Listen address (loopback by default; e.g. `--addr localhost:9090`). Binding a non-loopback address prints a loud warning; a wildcard bind (`0.0.0.0`, `[::]`) prints a `127.0.0.1` token URL because Host and Origin checks accept loopback names only |
+| `--open` | false | Open the token URL in the system browser after starting (`open` on macOS, `xdg-open`/`gnome-open` on Linux, run by absolute path from `/usr/bin`, `/bin`, `/usr/local/bin` or `/opt/homebrew/bin`; never resolved against the workspace) |
 | `--tool <name>` | — | Enable a specific tool for served runs (repeatable; highest-priority whitelist layer) |
 | `--no-tool <name>` | — | Disable a specific tool for served runs (repeatable; merged with lower-priority disabled lists) |
 | `--trusted-proxies <ips/cidrs>` | — | Client IPs trusted for `X-Forwarded-For` / `X-Real-Ip` resolution, used by rate limiting. **Only set this for proxies you control** — a spoofed header from an untrusted client defeats per-IP rate limits |

@@ -2,7 +2,6 @@ package main
 
 import (
 	"bufio"
-	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -2368,7 +2367,7 @@ func TestServe_E2E_AttachmentsWrappedAsUntrusted(t *testing.T) {
 // TestServe_CSRF_TokenRequired verifies that the WebSocket endpoint requires
 // the per-instance CSRF token, that the token is only exposed when the request
 // includes the correct ?token= query parameter, and that the token is exposed
-// both as an HttpOnly SameSite=Strict cookie and as a meta tag in index.html.
+// in the meta tag of index.html and never in a cookie.
 func TestServe_CSRF_TokenRequired(t *testing.T) {
 	store := newTestSessionStore(t)
 	ln, mux := buildServeMux(t, store)
@@ -2402,7 +2401,7 @@ func TestServe_CSRF_TokenRequired(t *testing.T) {
 		}
 	}
 
-	// 2. GET /?token=<token> exposes the token and sets the cookie.
+	// 2. GET /?token=<token> exposes the token in the meta tag only.
 	resp, err = http.Get("http://" + addr + "/?token=" + token)
 	if err != nil {
 		t.Fatalf("GET /?token=: %v", err)
@@ -2416,23 +2415,10 @@ func TestServe_CSRF_TokenRequired(t *testing.T) {
 	if m == nil || m[1] != token {
 		t.Fatalf("CSRF token meta tag missing from index.html with correct token")
 	}
-	var cookieFound bool
 	for _, c := range resp.Cookies() {
-		if c.Name == wsTokenCookieName {
-			cookieFound = true
-			if !c.HttpOnly {
-				t.Errorf("%s cookie is not HttpOnly", wsTokenCookieName)
-			}
-			if c.SameSite != http.SameSiteStrictMode {
-				t.Errorf("%s cookie SameSite = %v, want Strict", wsTokenCookieName, c.SameSite)
-			}
-			if subtle.ConstantTimeCompare([]byte(c.Value), []byte(m[1])) != 1 {
-				t.Errorf("cookie value does not match meta tag token")
-			}
+		if c.Name == wsTokenCookieName && c.Value != "" {
+			t.Errorf("%s cookie must not carry a value (cookies reach every port of the host)", wsTokenCookieName)
 		}
-	}
-	if !cookieFound {
-		t.Errorf("%s cookie not set by index.html handler", wsTokenCookieName)
 	}
 
 	// 3. A WebSocket upgrade without the token must be rejected.

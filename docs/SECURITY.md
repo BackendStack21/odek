@@ -394,8 +394,8 @@ Resume parsing is strict and total — any deviation in the stored plan drops it
 
 `odek serve` issues a fresh 256-bit random token at startup and prints the token URL to the console. The token is:
 
-- delivered into the served `index.html` (as `<meta name="odek-ws-token" content="...">`) and set as an `HttpOnly` `SameSite=Strict` cookie named `odek_ws_token` **only when the request includes the correct `?token=<token>` query parameter** (compared in constant time) — a plain `GET /` returns the UI but leaves the token field empty, so a network attacker who reaches the port cannot obtain it;
-- required by the `/ws` handshake and by every `/api/*` endpoint via the cookie, an `X-Odek-Ws-Token` header, or a WebSocket subprotocol of the form `odek.<token>`;
+- delivered into the served `index.html` (as `<meta name="odek-ws-token" content="...">`) and kept by the page in origin-scoped `localStorage` (never in a cookie: cookies are host-scoped and would be sent to every other service on the same host; a legacy `odek_ws_token` cookie is expired) **only when the request includes the correct `?token=<token>` query parameter** (compared in constant time) — a plain `GET /` returns the UI but leaves the token field empty, so a network attacker who reaches the port cannot obtain it;
+- required by the `/ws` handshake and by every `/api/*` endpoint via an `X-Odek-Ws-Token` header, or a WebSocket subprotocol of the form `odek.<token>`;
 - accompanied by a loud warning when `odek serve` binds to a non-loopback address, because anyone who can reach the port and guess/read the token can drive the agent.
 
 The origin allowlist (`localhost`, `127.0.0.1`, `[::1]`, and empty Origin for non-browser clients) and `Host`-header validation (loopback hosts only) remain as defense-in-depth against cross-port localhost CSRF and DNS-rebinding attacks that point an external domain at the loopback interface; the token is the primary protection.
