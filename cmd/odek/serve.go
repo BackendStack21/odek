@@ -1817,11 +1817,12 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 				// client sending prompts faster than they can run. Always NACK:
 				// silently dropping session_switch / cancel leaves the UI
 				// believing a state change happened.
-				if msgType.Type == "prompt" {
+				switch msgType.Type {
+				case "prompt":
 					writeWSError(conn, "busy: a prompt is already running")
-				} else if msgType.Type == "session_new" {
+				case "session_new":
 					writeWSSessionNewRejected(conn)
-				} else {
+				default:
 					writeWSError(conn, "busy: "+msgType.Type+" dropped (queue full)")
 				}
 			}
