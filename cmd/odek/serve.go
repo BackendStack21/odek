@@ -4215,8 +4215,9 @@ func serveDisplayAddr(a net.Addr) string {
 
 // browserOpenerDirs are the system directories openInBrowser searches for a
 // browser opener. Only these absolute locations are used: never PATH and never
-// the current directory, which is the (possibly untrusted) workspace.
-var browserOpenerDirs = []string{"/usr/bin", "/bin", "/usr/local/bin", "/opt/homebrew/bin"}
+// the current directory (the possibly untrusted workspace). Only root-owned
+// system directories are listed, never user-writable ones like Homebrew prefixes.
+var browserOpenerDirs = []string{"/usr/bin", "/bin"}
 
 // browserOpenerNames lists the openers to try, preferred first for the host OS.
 func browserOpenerNames() []string {

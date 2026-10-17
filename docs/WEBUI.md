@@ -672,7 +672,7 @@ listings return pinned sessions first, and both list and detail carry
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--addr <addr>` | `127.0.0.1:8080` | Listen address (loopback by default; e.g. `--addr localhost:9090`). Binding a non-loopback address prints a loud warning; a wildcard bind (`0.0.0.0`, `[::]`) prints a `127.0.0.1` token URL because Host and Origin checks accept loopback names only |
-| `--open` | false | Open the token URL in the system browser after starting (`open` on macOS, `xdg-open`/`gnome-open` on Linux, run by absolute path from `/usr/bin`, `/bin`, `/usr/local/bin` or `/opt/homebrew/bin`; never resolved against the workspace) |
+| `--open` | false | Open the token URL in the system browser after starting (`open` on macOS, `xdg-open`/`gnome-open` on Linux, run by absolute path from the root-owned `/usr/bin` or `/bin`; never resolved against the workspace) |
 | `--tool <name>` | — | Enable a specific tool for served runs (repeatable; highest-priority whitelist layer) |
 | `--no-tool <name>` | — | Disable a specific tool for served runs (repeatable; merged with lower-priority disabled lists) |
 | `--trusted-proxies <ips/cidrs>` | — | Client IPs trusted for `X-Forwarded-For` / `X-Real-Ip` resolution, used by rate limiting. **Only set this for proxies you control** — a spoofed header from an untrusted client defeats per-IP rate limits |

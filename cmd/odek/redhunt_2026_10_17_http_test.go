@@ -173,6 +173,14 @@ func TestRED_HTTPOpenBrowserExecutesWorkspaceBinary(t *testing.T) {
 	t.Fatal("serve --open never launched the opener from the trusted directory")
 }
 
+func TestRED_HTTPBrowserOpenerDirsAreRootOwnedSystemDirs(t *testing.T) {
+	for _, d := range browserOpenerDirs {
+		if d != "/usr/bin" && d != "/bin" {
+			t.Errorf("browserOpenerDirs contains %q; only root-owned system dirs may be searched", d)
+		}
+	}
+}
+
 func TestRED_HTTPServeDisplayAddr(t *testing.T) {
 	for _, tc := range []struct {
 		in   *net.TCPAddr
