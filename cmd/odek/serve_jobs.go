@@ -285,6 +285,12 @@ func handleJobOutput(store *session.Store, mgr *bgproc.Manager) http.HandlerFunc
 			writeAPIJSON(w, http.StatusNotFound, map[string]any{"job_id": jobID, "status": "unknown"})
 			return
 		}
+		// Sample the status before reading: a job that exits between the two
+		// steps then still reports its cursor, and the next poll sees the end.
+		running := false
+		if j, ok := mgr.Get(sess.ID, jobID); ok && j.Status == bgproc.StatusRunning {
+			running = true
+		}
 		chunk, next, err := mgr.Output(sess.ID, jobID, since, limit)
 		if err != nil {
 			writeAPIJSON(w, http.StatusNotFound, map[string]any{"job_id": jobID, "status": "unknown"})
@@ -295,7 +301,7 @@ func handleJobOutput(store *session.Store, mgr *bgproc.Manager) http.HandlerFunc
 		// tailing client has merely caught up with keeps its cursor, so the
 		// next poll continues instead of re-reading the whole output.
 		if chunk == "" {
-			if j, ok := mgr.Get(sess.ID, jobID); !ok || j.Status != bgproc.StatusRunning {
+			if !running {
 				next = 0
 			}
 		}
