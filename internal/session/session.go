@@ -1061,6 +1061,12 @@ func (s *Store) saveLockedOpts(sess *Session, lazyIndex, metaOnly bool) (err err
 			sess.EpisodeUntrusted = true
 		}
 		sess.TaintSpans = MergeTaintSpans(sess.TaintSpans, current.TaintSpans)
+		// A metadata edit must apply on top of the latest metadata: when
+		// another writer edited it since the load, conflict so UpdateMeta
+		// reloads and reapplies its edit instead of dropping one of them.
+		if metaOnly && current.MetaRevision != sess.MetaRevision {
+			return fmt.Errorf("%w: metadata %d, current %d", ErrConflict, sess.MetaRevision, current.MetaRevision)
+		}
 		// Metadata edited since this snapshot was loaded (a rename or pin
 		// while a turn runs) wins over the snapshot's stale copy.
 		if current.MetaRevision > sess.MetaRevision {

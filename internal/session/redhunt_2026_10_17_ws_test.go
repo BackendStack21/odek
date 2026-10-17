@@ -2,6 +2,7 @@ package session
 
 import (
 	"errors"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -191,5 +192,70 @@ func TestRED_WSUpdateMetaRevisionExhausted(t *testing.T) {
 	}
 	if stored, _ := s.Load(sess.ID); stored.Pinned || stored.MetaRevision != ^uint64(0) {
 		t.Fatalf("failed update changed the file: pinned=%v meta=%d", stored.Pinned, stored.MetaRevision)
+	}
+}
+
+// Two stores on one directory model two processes (separate s.mu, shared
+// flock). A metadata edit committed by the other store between this
+// store's load and write must not silently discard this store's edit.
+func TestRED_WSUpdateMetaCrossStoreLostUpdate(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "sessions")
+	a, err := NewStoreWithDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := NewStoreWithDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := a.Create([]Message{{Role: "user", Content: "hi"}}, "m", "original")
+	if err != nil {
+		t.Fatal(err)
+	}
+	once := false
+	got, err := a.UpdateMeta(sess.ID, func(x *Session) {
+		x.Pinned = true
+		if !once {
+			once = true
+			if _, err := b.UpdateMeta(sess.ID, func(y *Session) { y.Task = "renamed" }); err != nil {
+				t.Fatal(err)
+			}
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, _ := a.Load(sess.ID)
+	t.Logf("returned pinned=%v task=%q; stored pinned=%v task=%q meta=%d", got.Pinned, got.Task, stored.Pinned, stored.Task, stored.MetaRevision)
+	if !stored.Pinned || stored.Task != "renamed" {
+		t.Fatalf("lost update: stored pinned=%v task=%q (want pinned=true task=renamed)", stored.Pinned, stored.Task)
+	}
+}
+
+// A transcript snapshot from another process that is older than a meta edit
+// keeps saving and adopts it (cross-store), and an older-revision snapshot is
+// still rejected.
+func TestRED_WSCrossStoreTranscriptAdoptsMetaAndStaleRejected(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "sessions")
+	a, _ := NewStoreWithDir(dir)
+	b, _ := NewStoreWithDir(dir)
+	sess, err := a.Create([]Message{{Role: "user", Content: "hi"}}, "m", "original")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale, _ := b.Load(sess.ID)
+	if _, err := b.UpdateMeta(sess.ID, func(y *Session) { y.Pinned = true }); err != nil {
+		t.Fatal(err)
+	}
+	sess.Messages = append(sess.Messages, Message{Role: "assistant", Content: "x"})
+	if err := a.SaveNoIndex(sess); err != nil {
+		t.Fatalf("live save: %v", err)
+	}
+	if !sess.Pinned {
+		t.Fatal("pin not adopted")
+	}
+	stale.Messages = append(stale.Messages, Message{Role: "assistant", Content: "other"})
+	if err := b.Save(stale); err == nil {
+		t.Fatal("stale snapshot accepted")
 	}
 }
