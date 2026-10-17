@@ -228,6 +228,9 @@ type connWakeSlot struct {
 	ch     chan []byte
 	token  string
 	closed bool
+	// queued, when set, is the connection's queued-bytes counter; posted
+	// items count toward it like client messages do.
+	queued *atomic.Int64
 }
 
 func newConnWakeSlot(ch chan []byte, token string) *connWakeSlot {
@@ -247,10 +250,16 @@ func (s *connWakeSlot) post(item wsClientMsg) bool {
 	if err != nil {
 		return false
 	}
+	if s.queued != nil {
+		s.queued.Add(int64(len(raw)))
+	}
 	select {
 	case s.ch <- raw:
 		return true
 	default:
+		if s.queued != nil {
+			s.queued.Add(-int64(len(raw)))
+		}
 		return false
 	}
 }

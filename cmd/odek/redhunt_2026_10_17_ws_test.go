@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -721,5 +722,87 @@ func TestRED_WSOversizedFrameGetsErrorFrame(t *testing.T) {
 		if strings.Contains(string(raw), "too large") {
 			t.Fatalf("connection still open after %d oversized messages", maxWSOversizedFrames)
 		}
+	}
+}
+
+// Messages waiting for the busy prompt processor are bounded in bytes, not
+// only in count: a client cannot park several near-cap messages per
+// connection. Over the budget the message is refused with a queue-full
+// error frame and the connection stays usable.
+func TestRED_WSQueuedMessagesAreByteBounded(t *testing.T) {
+	release := make(chan struct{})
+	entered := make(chan struct{}, 1)
+	llmSrv := mockLLM(t, func(w http.ResponseWriter, callCount int) {
+		w.Header().Set("Content-Type", "application/json")
+		if callCount == 1 {
+			entered <- struct{}{}
+			<-release
+		}
+		w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}]}`))
+	})
+	defer llmSrv.Close()
+	defer close(release)
+	envCleanup := setTestEnv(t, llmSrv.URL)
+	defer envCleanup()
+	store := newTestSessionStore(t)
+	ln, mux := buildServeMux(t, store)
+	defer startServeTest(t, ln, mux)()
+	waitForHTTP(t, ln.Addr().String())
+	wsUpgradeLimiter.reset()
+	conn := dialTestWS(t, ln.Addr().String())
+	defer conn.Close()
+	conn.SetReadDeadline(time.Now().Add(30 * time.Second))
+
+	if err := golangws.Message.Send(conn, `{"type":"prompt","content":"first"}`); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-entered:
+	case <-time.After(20 * time.Second):
+		t.Fatal("first turn never reached the LLM")
+	}
+	// Each message is under the frame cap (10 MiB); three of them exceed
+	// any per-connection budget of one full-size message.
+	big := `{"type":"prompt","content":"` + strings.Repeat("q", 10<<20) + `"}`
+	for i := 0; i < 3; i++ {
+		if err := golangws.Message.Send(conn, big); err != nil {
+			t.Fatalf("send %d: %v", i, err)
+		}
+	}
+	for {
+		var raw []byte
+		if err := golangws.Message.Receive(conn, &raw); err != nil {
+			t.Fatalf("connection dropped: %v", err)
+		}
+		var evt map[string]any
+		if json.Unmarshal(raw, &evt) != nil {
+			continue
+		}
+		if m, _ := evt["message"].(string); evt["type"] == "error" && strings.Contains(m, "queue full") {
+			return
+		}
+	}
+}
+
+// Wake items count toward the connection's queued-bytes budget while they
+// wait, and a refused post releases what it reserved.
+func TestRED_WSWakeSlotCountsQueuedBytes(t *testing.T) {
+	var queued atomic.Int64
+	ch := make(chan []byte, 1)
+	slot := newConnWakeSlot(ch, newWakeToken())
+	slot.queued = &queued
+	if !slot.post(wsClientMsg{Type: "bg_wake", SessionID: "s"}) {
+		t.Fatal("first post refused")
+	}
+	held := queued.Load()
+	if held <= 0 || held != int64(len(<-ch)) {
+		t.Fatalf("queued bytes = %d, want the posted item's size", held)
+	}
+	ch <- []byte("x") // channel full
+	if slot.post(wsClientMsg{Type: "bg_wake", SessionID: "s"}) {
+		t.Fatal("post into a full channel succeeded")
+	}
+	if queued.Load() != held {
+		t.Fatalf("refused post leaked its reservation: %d, want %d", queued.Load(), held)
 	}
 }

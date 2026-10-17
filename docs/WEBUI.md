@@ -126,7 +126,7 @@ Two token layers:
 - **Errors**: `403` missing/invalid instance token; `401` missing/invalid
   session token; `404` unknown id; `400` malformed input; `405` wrong
   method; `429` session-detail rate limit (60/min per IP).
-- **Limits**: WS message ≤ 16 MiB (room for a 1 MiB prompt plus 10 MiB of inline attachments after JSON escaping; a larger message is discarded unread and answered with an `error` frame, the connection closes on the third, and the UI refuses to send one); ≤ 20 concurrent WS connections; 30 WS
+- **Limits**: WS message ≤ 16 MiB (room for a 1 MiB prompt plus 10 MiB of inline attachments after JSON escaping; a larger message is discarded unread and answered with an `error` frame, the connection closes on the third, and the UI refuses to send one; messages waiting while a prompt runs may total 16 MiB per connection, beyond that they are refused with a `busy: … queue full` error frame); ≤ 20 concurrent WS connections; 30 WS
   upgrades/min per IP; prompt ≤ 1 MiB; attachments ≤ 5 MiB each / 10 MiB
   total; model ids ≤ 128 chars matching `[A-Za-z0-9_.:/@-]+`; REST request
   bodies ≤ 2 MiB on the runs surface (`POST /api/prompt`), ≤ 1 MiB on the

@@ -588,7 +588,7 @@ Hostile or accidental input is bounded everywhere it is sized, to keep it from O
 | Session files | trimmed at 32 MiB |
 | Schedule JSON files | 10 MiB |
 | `/api/resources` | 100 results, 256-byte query |
-| Serve input payloads | WS messages 16 MiB (over-cap messages discarded unbuffered with an error frame, connection closed on the third); WS/REST prompts 1 MiB; REST bodies 1 MiB (runs 2 MiB); Web-UI attachments 5 MiB per file / 10 MiB total |
+| Serve input payloads | WS messages 16 MiB (over-cap messages discarded unbuffered with an error frame, connection closed on the third); messages waiting for a busy connection at most 16 MiB in total (beyond that refused with a queue-full error frame), so one connection holds at most about 48 MiB of client messages (queued + running + being read, plus parsed copies of the running one; about 1 GiB over the 20-connection cap); WS/REST prompts 1 MiB; REST bodies 1 MiB (runs 2 MiB); Web-UI attachments 5 MiB per file / 10 MiB total |
 | Skill import download | 1 MiB / 5 s |
 | Serve concurrency | 20 WS connections + 30 upgrades/min/IP; 20 active runs; 60 session lookups/min/IP (rejected `/api/jobs` polls have their own 60/min/IP bucket) |
 

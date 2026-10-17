@@ -62,6 +62,13 @@ const maxWSMessageBytes = 16 * 1024 * 1024 // 16 MiB
 // oversized payload is discarded without buffering it).
 const maxWSOversizedFrames = 3
 
+// maxWSQueuedBytes bounds the bytes of client messages waiting for a busy
+// connection's prompt processor (the queue is also bounded in count). One
+// full-size message can wait while another runs; beyond that a message is
+// refused with a queue-full error frame. Per connection at most this much is
+// queued, plus the message being processed and the one being read.
+const maxWSQueuedBytes = maxWSMessageBytes
+
 // maxPromptBytes caps the size of the user prompt accepted through the Web UI.
 // Combined with the WebSocket frame cap, this prevents a local client from
 // bloating the session file or exhausting the LLM context budget.
@@ -1681,7 +1688,12 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 	// fields are installed under the connection lock — the dispatcher
 	// reads them concurrently (bindWakeSlot/wakeTarget pair).
 	wakeToken := newWakeToken()
-	connInfo.bindWakeSlot(newConnWakeSlot(promptCh, wakeToken), wakeToken)
+	// queuedBytes sums the messages in promptCh: added before each enqueue
+	// (reader and wake slot), released when the processor dequeues one.
+	var queuedBytes atomic.Int64
+	wakeSlot := newConnWakeSlot(promptCh, wakeToken)
+	wakeSlot.queued = &queuedBytes
+	connInfo.bindWakeSlot(wakeSlot, wakeToken)
 	go func() {
 		defer func() {
 			// slot.close() closes promptCh under the slot's lock (the
@@ -1787,9 +1799,16 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 				continue
 			}
 
+			size := int64(len(data))
+			if queuedBytes.Add(size) > maxWSQueuedBytes {
+				queuedBytes.Add(-size)
+				writeWSError(conn, fmt.Sprintf("busy: %s dropped (queue full: waiting messages exceed %d MiB)", msgType.Type, maxWSQueuedBytes>>20))
+				continue
+			}
 			select {
 			case promptCh <- data:
 			default:
+				queuedBytes.Add(-size)
 				// Processor is busy and the queue is full — only reachable by a
 				// client sending prompts faster than they can run. Always NACK:
 				// silently dropping session_switch / cancel leaves the UI
@@ -1825,6 +1844,7 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 	}
 
 	for data := range promptCh {
+		queuedBytes.Add(-int64(len(data)))
 		// Peek at the message type without full unmarshal
 		var msgType struct {
 			Type string `json:"type"`
