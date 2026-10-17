@@ -48,8 +48,12 @@ export function isSafeHref(url) {
 
 const WORD_CHAR = /[A-Za-z0-9]/;
 const TASK_ITEM = /^\[([ xX])\]\s+(.+)$/;
-const ANGLE_AUTO = /^<((?:https?:|mailto:)[^>\s]+)>/i;
-const BARE_URL = /^(https?:\/\/[^\s<>]+)/i;
+// Autolink candidates are matched in place (sticky) and capped: an unbounded
+// [^>\s]+ run rescans to the end of the line at every rejected '<' or 'h', which
+// is quadratic on hostile text. A candidate longer than the cap is not a link.
+const AUTOLINK_MAX = 2048;
+const ANGLE_AUTO = new RegExp('<((?:https?:|mailto:)[^>\\s]{1,' + AUTOLINK_MAX + '})>', 'iy');
+const BARE_URL = new RegExp('(https?:\\/\\/[^\\s<>]{1,' + AUTOLINK_MAX + '})(?![^\\s<>])', 'iy');
 const TRAIL_PUNCT = /[),.;:!?]+$/;
 
 export function markdownToHtml(text) {
@@ -332,23 +336,35 @@ function anchorHtml(url, inner, extraClass) {
     (extraClass ? ' class="' + extraClass + '"' : '') + '>' + inner + '</a>';
 }
 
-function takeEmphasis(text, i, delim, tag) {
+// memoFind answers "first position >= from where scan succeeds" and remembers
+// the answer per key. A later query from a position at or before a cached hit
+// (or after a cached miss) is answered without rescanning, so repeated failed
+// or repeated identical searches across one inline run cost linear time overall.
+function memoFind(memo, key, from, scan) {
+  const c = memo.get(key);
+  if (c && c.from <= from && (c.pos < 0 || c.pos >= from)) return c.pos;
+  const pos = scan(from);
+  memo.set(key, { from, pos });
+  return pos;
+}
+
+function takeEmphasis(text, i, delim, tag, memo) {
   const n = delim.length;
   const prev = i > 0 ? text[i - 1] : '';
   if (n === 1 && WORD_CHAR.test(prev)) return null;
   if (text.slice(i, i + n) !== delim) return null;
-  let end = -1;
-  for (let j = i + n; j < text.length; j++) {
-    if (text.slice(j, j + n) !== delim) continue;
-    if (j === i + n) continue; // empty span
-    if (n === 1 && text[j + 1] === delim) continue; // leave ** / __ to the pair arm
-    if (n === 1) {
-      const after = j + n < text.length ? text[j + n] : '';
-      if (WORD_CHAR.test(after)) continue;
+  // A closer's validity does not depend on the opener, so the first valid
+  // closer is memoised per delimiter.
+  const closer = (from) => memoFind(memo, 'e' + delim, from, (start) => {
+    for (let j = text.indexOf(delim, start); j >= 0; j = text.indexOf(delim, j + 1)) {
+      if (n === 1 && text[j + 1] === delim) continue; // leave ** / __ to the pair arm
+      if (n === 1 && WORD_CHAR.test(j + n < text.length ? text[j + n] : '')) continue;
+      return j;
     }
-    end = j;
-    break;
-  }
+    return -1;
+  });
+  let end = closer(i + n);
+  if (end === i + n) end = closer(i + n + 1); // empty span
   if (end < 0) return null;
   return {
     html: '<' + tag + '>' + inlineHtml(text.slice(i + n, end)) + '</' + tag + '>',
@@ -364,13 +380,15 @@ function inlineHtml(text) {
   let lit = '';
   const flush = () => { if (lit) { out += escapeHtml(lit); lit = ''; } };
   let i = 0;
+  const memo = new Map();
+  const find = (str, from) => memoFind(memo, str, from, (start) => text.indexOf(str, start));
 
   while (i < text.length) {
     const ch = text[i];
 
     // Inline code — content is escaped, never re-processed.
     if (ch === '`') {
-      const end = text.indexOf('`', i + 1);
+      const end = find('`', i + 1);
       if (end > i + 1) {
         flush();
         out += '<code>' + escapeHtml(text.slice(i + 1, end)) + '</code>';
@@ -381,19 +399,19 @@ function inlineHtml(text) {
     }
 
     if (ch === '*' && text[i + 1] === '*') {
-      const hit = takeEmphasis(text, i, '**', 'strong');
+      const hit = takeEmphasis(text, i, '**', 'strong', memo);
       if (hit) { flush(); out += hit.html; i = hit.next; continue; }
       lit += '**'; i += 2; continue;
     }
 
     if (ch === '_' && text[i + 1] === '_') {
-      const hit = takeEmphasis(text, i, '__', 'strong');
+      const hit = takeEmphasis(text, i, '__', 'strong', memo);
       if (hit) { flush(); out += hit.html; i = hit.next; continue; }
       lit += '__'; i += 2; continue;
     }
 
     if (ch === '~' && text[i + 1] === '~') {
-      const end = text.indexOf('~~', i + 2);
+      const end = find('~~', i + 2);
       if (end > i + 2) {
         flush();
         out += '<s>' + inlineHtml(text.slice(i + 2, end)) + '</s>';
@@ -404,22 +422,22 @@ function inlineHtml(text) {
     }
 
     if (ch === '*') {
-      const hit = takeEmphasis(text, i, '*', 'em');
+      const hit = takeEmphasis(text, i, '*', 'em', memo);
       if (hit) { flush(); out += hit.html; i = hit.next; continue; }
       lit += ch; i++; continue;
     }
 
     if (ch === '_') {
-      const hit = takeEmphasis(text, i, '_', 'em');
+      const hit = takeEmphasis(text, i, '_', 'em', memo);
       if (hit) { flush(); out += hit.html; i = hit.next; continue; }
       lit += ch; i++; continue;
     }
 
     // Images — caption link only, never <img> (CSP + no remote fetch).
     if (ch === '!' && text[i + 1] === '[') {
-      const close = text.indexOf('](', i + 2);
+      const close = find('](', i + 2);
       if (close > i + 1) {
-        const end = text.indexOf(')', close + 2);
+        const end = find(')', close + 2);
         if (end > close + 2) {
           const label = text.slice(i + 2, close);
           const url = text.slice(close + 2, end).trim();
@@ -435,9 +453,9 @@ function inlineHtml(text) {
 
     // Links — [text](url) with a scheme allowlist.
     if (ch === '[') {
-      const close = text.indexOf('](', i + 1);
+      const close = find('](', i + 1);
       if (close > i + 1) {
-        const end = text.indexOf(')', close + 2);
+        const end = find(')', close + 2);
         if (end > close + 2) {
           const label = text.slice(i + 1, close);
           const url = text.slice(close + 2, end).trim();
@@ -451,7 +469,8 @@ function inlineHtml(text) {
     }
 
     if (ch === '<') {
-      const m = ANGLE_AUTO.exec(text.slice(i));
+      ANGLE_AUTO.lastIndex = i;
+      const m = ANGLE_AUTO.exec(text);
       if (m && isSafeHref(m[1])) {
         flush();
         out += anchorHtml(m[1], escapeHtml(m[1]));
@@ -460,8 +479,10 @@ function inlineHtml(text) {
       }
     }
 
-    if ((ch === 'h' || ch === 'H') && BARE_URL.test(text.slice(i))) {
-      const m = BARE_URL.exec(text.slice(i));
+    BARE_URL.lastIndex = i;
+    const bare = (ch === 'h' || ch === 'H') ? BARE_URL.exec(text) : null;
+    if (bare) {
+      const m = bare;
       let url = m[1];
       const trail = (url.match(TRAIL_PUNCT) || [''])[0];
       if (trail) url = url.slice(0, -trail.length);

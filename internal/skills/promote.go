@@ -60,6 +60,13 @@ func RecordPromotion(userDir, name string, content []byte) error {
 	return nil
 }
 
+// IsPromotedContent reports whether this exact project skill file content
+// was operator-promoted under name (hash recorded in the trusted registry in
+// userDir) — the check the scanner uses to lift the project-dir pin.
+func IsPromotedContent(userDir, name string, content []byte) bool {
+	return isPromotedContent(userDir, name, content)
+}
+
 // isPromotedContent reports whether this exact skill file content was
 // operator-promoted (hash recorded in the trusted registry).
 func isPromotedContent(userDir, name string, content []byte) bool {

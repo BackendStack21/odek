@@ -1435,8 +1435,12 @@ Run flags:
 Skill commands:
   odek skill list                    List all available skills
   odek skill view <name>             View a skill's full content
+  odek skill view --path <SKILL.md>  View one skill file exactly as stored
   odek skill delete <name>           Delete a skill
   odek skill promote <name> [--force] Promote a tainted skill after review
+  odek skill promote --path <SKILL.md> [--force]
+                                     Promote one specific skill file (needed
+                                     when several files carry the same name)
   odek skill import <uri> [flags]    Import a skill from file:// or https://
                                      Flags: --basic (skip LLM), --yes (auto-approve)
 
@@ -3284,18 +3288,17 @@ func skillCmd(args []string) error {
 		return nil
 
 	case "view":
-		if len(subArgs) != 1 {
-			return fmt.Errorf("usage: odek skill view <name>")
-		}
-		sm := skills.NewSkillManager(userDir, "./.odek/skills")
-		tool := &skills.SkillLoadTool{}
-		tool.Manager = sm
-		result, err := tool.Call(jsonMarshalName(subArgs[0]))
-		if err != nil {
-			return err
-		}
-		fmt.Println(result)
-		return nil
+		return skillViewCmd(userDir, subArgs, func(name string) error {
+			sm := skills.NewSkillManager(userDir, "./.odek/skills")
+			tool := &skills.SkillLoadTool{}
+			tool.Manager = sm
+			result, err := tool.Call(jsonMarshalName(name))
+			if err != nil {
+				return err
+			}
+			fmt.Println(result)
+			return nil
+		})
 
 	case "delete":
 		if len(subArgs) != 1 {
@@ -3313,18 +3316,7 @@ func skillCmd(args []string) error {
 		// loaded. Intended for skills auto-saved from sessions that
 		// ingested untrusted content — the user reviews the body and
 		// then promotes it. See SkillProvenance.
-		if len(subArgs) == 0 {
-			return fmt.Errorf("usage: odek skill promote <name> [--force]")
-		}
-		force := false
-		for _, a := range subArgs[1:] {
-			if a == "--force" || a == "-f" {
-				force = true
-				continue
-			}
-			return fmt.Errorf("usage: odek skill promote <name> [--force] (unexpected argument %q)", danger.SanitizeInline(a))
-		}
-		return promoteSkill(userDir, subArgs[0], force)
+		return skillPromoteCmd(userDir, subArgs)
 
 	case "import":
 		// Flags may come before or after the URI; anything else is a typo.

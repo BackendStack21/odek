@@ -101,12 +101,10 @@ func TestRED_SandboxedParentPropagatesSandboxToSubagent(t *testing.T) {
 	}
 }
 
-// `odek skill promote <dir>` records the project-skill promotion under the
-// DIRECTORY name, but the loader looks the promotion up under the skill's
-// FRONTMATTER name (isPromotedContent(userDir, s.Name, data)). A project
-// skill whose directory differs from its name therefore can never be
-// promoted: promote --force reports success and the skill stays pinned
-// NeedsReview on every rescan (and `promote <name>` is "not found").
+// A project skill whose directory differs from its frontmatter name is
+// promoted by its frontmatter name: the promotion is recorded under the name
+// the loader looks it up by (isPromotedContent(userDir, s.Name, data)), so it
+// survives a rescan.
 func TestRED_PromoteProjectSkillWhoseDirDiffersFromName(t *testing.T) {
 	root := t.TempDir()
 	projDir := filepath.Join(root, ".odek", "skills")
@@ -125,7 +123,12 @@ func TestRED_PromoteProjectSkillWhoseDirDiffersFromName(t *testing.T) {
 	}
 	t.Chdir(root)
 
-	if err := promoteSkill(userDir, "deploy-helper", true); err != nil {
+	// The directory name is not the skill's identity; the frontmatter name
+	// (what listings show and the loader keys the promotion by) is.
+	if err := promoteSkill(userDir, "deploy-helper", true); err == nil {
+		t.Fatal(`promoteSkill accepted the directory name of a skill named "deploy"`)
+	}
+	if err := promoteSkill(userDir, "deploy", true); err != nil {
 		t.Fatalf("promoteSkill: %v", err)
 	}
 	s := findSkill(skills.ScanDirs(projDir, userDir, nil), "deploy")

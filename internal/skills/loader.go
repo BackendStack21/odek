@@ -5,6 +5,8 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -58,6 +60,36 @@ func warnInvalidSkillName(path string, err error) {
 		where = "(inline content)"
 	}
 	log.Printf("skills: not loading %s: %s", danger.SanitizeInline(where), danger.SanitizeInline(err.Error()))
+}
+
+// SameSkillContent reports whether data is the SKILL.md that produced s: its
+// frontmatter fields and body parse to the same values. Callers that show s and
+// bind an action to a hash of data use it to refuse a file rewritten in between.
+func SameSkillContent(data []byte, s Skill) bool {
+	if int64(len(data)) > MaxSkillFileBytes {
+		return false
+	}
+	p := parseSkillContent(string(data), s.Source.Path)
+	if p == nil {
+		return false
+	}
+	if p.Name != s.Name || p.Description != s.Description ||
+		p.Version != s.Version || p.Author != s.Author ||
+		p.AutoLoad != s.AutoLoad || p.Quality != s.Quality ||
+		p.BodyHash != s.BodyHash || !reflect.DeepEqual(p.Trigger, s.Trigger) {
+		return false
+	}
+	// Provenance as parsed, or as a project-dir scan marks it for review.
+	if sameProvenance(p.Provenance, s.Provenance) {
+		return true
+	}
+	markProjectSkill(p)
+	return sameProvenance(p.Provenance, s.Provenance)
+}
+
+func sameProvenance(a, b SkillProvenance) bool {
+	return a.Untrusted == b.Untrusted && a.NeedsReview == b.NeedsReview &&
+		slices.Equal(a.Sources, b.Sources)
 }
 
 // parseSkillContent parses SKILL.md content from a string.

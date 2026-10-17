@@ -14,9 +14,11 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -50,8 +52,22 @@ var uiFS embed.FS
 
 // maxWSMessageBytes caps the size of an incoming WebSocket text message.
 // This prevents a local client from exhausting server memory by sending a
-// multi-gigabyte frame.
-const maxWSMessageBytes = 8 * 1024 * 1024 // 8 MiB
+// multi-gigabyte frame. It covers the largest documented prompt frame — a
+// 1 MiB prompt plus 10 MiB of inline attachments — with headroom for JSON
+// escaping; the Web UI checks the encoded frame against it before sending.
+const maxWSMessageBytes = 16 * 1024 * 1024 // 16 MiB
+
+// maxWSOversizedFrames is how many over-cap messages a connection may send
+// before it is closed. Each one is answered with an error frame (the
+// oversized payload is discarded without buffering it).
+const maxWSOversizedFrames = 3
+
+// maxWSQueuedBytes bounds the bytes of client messages waiting for a busy
+// connection's prompt processor (the queue is also bounded in count). One
+// full-size message can wait while another runs; beyond that a message is
+// refused with a queue-full error frame. Per connection at most this much is
+// queued, plus the message being processed and the one being read.
+const maxWSQueuedBytes = maxWSMessageBytes
 
 // maxPromptBytes caps the size of the user prompt accepted through the Web UI.
 // Combined with the WebSocket frame cap, this prevents a local client from
@@ -546,9 +562,8 @@ func serveCmd(args []string) error {
 
 	// Per-instance CSRF token for browser-driven WebSocket connections. A
 	// random token is issued at server start, injected into the served HTML,
-	// and also delivered as a SameSite=Strict HttpOnly cookie. The /ws
-	// handshake requires the token via cookie, header, or WebSocket
-	// subprotocol, so a page served by another localhost port cannot open
+	// (never as a cookie, which would reach every port of the host). The /ws
+	// handshake requires the token via header or WebSocket subprotocol, so a page served by another localhost port cannot open
 	// an agent-controlling WebSocket.
 	wsToken, err := newServeToken()
 	if err != nil {
@@ -584,16 +599,24 @@ func serveCmd(args []string) error {
 	// never served over plain HTTP, so a network attacker who can only make
 	// `GET /` cannot retrieve it. Browser clients get it via the token URL;
 	// non-browser clients can supply it as a header or subprotocol.
-	tokenURL := "http://" + listener.Addr().String() + "/?token=" + wsToken
+	// A wildcard bind (0.0.0.0, [::], ":port") is reached through loopback;
+	// the Host/Origin checks accept only loopback names, so the printed URL
+	// must name one.
+	displayAddr := serveDisplayAddr(listener.Addr())
+	tokenURL := "http://" + displayAddr + "/?token=" + wsToken
 	fmt.Fprintf(os.Stderr, "odek serve ⚡  %s\n", tokenURL)
-	fmt.Fprintf(os.Stderr, "  WebSocket: ws://%s/ws\n", listener.Addr())
+	fmt.Fprintf(os.Stderr, "  WebSocket: ws://%s/ws\n", displayAddr)
 	fmt.Fprintf(os.Stderr, "  WS token:  %s\n", wsToken)
 	fmt.Fprintf(os.Stderr, "  Type @ to reference files, drop or attach files inline.\n")
 
 	if !isLoopbackAddr(listener.Addr()) {
 		fmt.Fprintf(os.Stderr, "\n⚠️  WARNING: odek serve is bound to a non-loopback address.\n")
 		fmt.Fprintf(os.Stderr, "   Anyone who can reach this port can control the agent once they have the token above.\n")
-		fmt.Fprintf(os.Stderr, "   Use --addr 127.0.0.1:<port> (or a firewall) to restrict access.\n\n")
+		fmt.Fprintf(os.Stderr, "   Use --addr 127.0.0.1:<port> (or a firewall) to restrict access.\n")
+		if note := serveNonLoopbackHostNote(listener.Addr()); note != "" {
+			fmt.Fprintf(os.Stderr, "   %s\n", note)
+		}
+		fmt.Fprintf(os.Stderr, "\n")
 	}
 
 	if openBrowser {
@@ -690,7 +713,7 @@ func newServeMux(d serveMuxDeps) *http.ServeMux {
 	mux.Handle("/api/memory/facts", apiAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodPost:
-			handleMemoryFactsAdd(memoryDir, resolved.Memory)(w, r)
+			handleMemoryFactsAdd(memoryDir, resolved.Memory, resolved.Guard)(w, r)
 		case http.MethodDelete:
 			handleMemoryFactsRemove(memoryDir, resolved.Memory)(w, r)
 		default:
@@ -1665,7 +1688,12 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 	// fields are installed under the connection lock — the dispatcher
 	// reads them concurrently (bindWakeSlot/wakeTarget pair).
 	wakeToken := newWakeToken()
-	connInfo.bindWakeSlot(newConnWakeSlot(promptCh, wakeToken), wakeToken)
+	// queuedBytes sums the messages in promptCh: added before each enqueue
+	// (reader and wake slot), released when the processor dequeues one.
+	var queuedBytes atomic.Int64
+	wakeSlot := newConnWakeSlot(promptCh, wakeToken)
+	wakeSlot.queued = &queuedBytes
+	connInfo.bindWakeSlot(wakeSlot, wakeToken)
 	go func() {
 		defer func() {
 			// slot.close() closes promptCh under the slot's lock (the
@@ -1675,9 +1703,19 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 			// close. Do NOT close(promptCh) here as well.
 			connInfo.wakeSlot.close()
 		}()
+		oversized := 0
 		for {
 			var data []byte
-			if err := golangws.Message.Receive(conn, &data); err != nil {
+			err := golangws.Message.Receive(conn, &data)
+			if errors.Is(err, golangws.ErrFrameTooLarge) && oversized < maxWSOversizedFrames-1 {
+				// The library skips the rest of the frame on the next
+				// Receive, so the socket stays usable: tell the client why
+				// its message was dropped instead of tearing it down.
+				oversized++
+				writeWSError(conn, fmt.Sprintf("message too large: a WebSocket message may be at most %d MiB", maxWSMessageBytes>>20))
+				continue
+			}
+			if err != nil {
 				// Socket gone: cancel in-flight/queued prompt work and release
 				// any pending approval so a blocked handlePrompt returns now
 				// instead of waiting out the 60s timeout.
@@ -1761,16 +1799,30 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 				continue
 			}
 
+			size := int64(len(data))
+			if queuedBytes.Add(size) > maxWSQueuedBytes {
+				queuedBytes.Add(-size)
+				if msgType.Type == "session_new" {
+					writeWSSessionNewRejected(conn)
+					continue
+				}
+				writeWSError(conn, fmt.Sprintf("busy: %s dropped (queue full: waiting messages exceed %d MiB)", msgType.Type, maxWSQueuedBytes>>20))
+				continue
+			}
 			select {
 			case promptCh <- data:
 			default:
+				queuedBytes.Add(-size)
 				// Processor is busy and the queue is full — only reachable by a
 				// client sending prompts faster than they can run. Always NACK:
 				// silently dropping session_switch / cancel leaves the UI
 				// believing a state change happened.
-				if msgType.Type == "prompt" {
+				switch msgType.Type {
+				case "prompt":
 					writeWSError(conn, "busy: a prompt is already running")
-				} else {
+				case "session_new":
+					writeWSSessionNewRejected(conn)
+				default:
 					writeWSError(conn, "busy: "+msgType.Type+" dropped (queue full)")
 				}
 			}
@@ -1784,7 +1836,37 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 	// Session-level token economics (cumulative across all turns)
 	var sessionInputTokens, sessionOutputTokens int
 
+	// ranOn is the session that ran a turn on this connection since it was
+	// attached. leaveSession runs the end-of-session memory step for it when
+	// the connection moves to another session (or none), as a disconnect
+	// does; a session that was only viewed is left without one.
+	ranOn := ""
+	leaveSession := func(nextID string) {
+		if currentSession != nil && currentSession.ID != nextID && currentSession.ID == ranOn {
+			endWSSessionMemoryFn(agent.Memory(), currentSession)
+		}
+		if currentSession == nil || currentSession.ID != nextID {
+			ranOn = ""
+		}
+	}
+
+	// detachSession leaves the connection without a current session: the
+	// next prompt without a session_id creates a new one, starting from an
+	// empty memory buffer and zero session token totals, and background
+	// wakes for the previous session no longer target this connection.
+	detachSession := func() {
+		leaveSession("")
+		currentSession = nil
+		sessionInputTokens, sessionOutputTokens = 0, 0
+		connInfo.setLive("", false)
+		agent.SetEventSessionID("")
+		if mm := agent.Memory(); mm != nil {
+			mm.ClearBuffer()
+		}
+	}
+
 	for data := range promptCh {
+		queuedBytes.Add(-int64(len(data)))
 		// Peek at the message type without full unmarshal
 		var msgType struct {
 			Type string `json:"type"`
@@ -1808,6 +1890,7 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 					writeWSError(conn, wsLookupRejectMsg(conn, "invalid session token"))
 					continue
 				}
+				leaveSession(sess.ID)
 				currentSession = sess
 				connInfo.setLive(sess.ID, false)
 				// Background jobs started from here on belong to the newly
@@ -1821,6 +1904,16 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 				}
 				writeWSJSON(conn, map[string]any{"type": "session", "session_id": sess.ID, "auth_token": sess.AuthToken, "model": resolved.Model, "sandbox": resolved.Sandbox})
 			}
+			continue
+		}
+
+		// The Web UI's "New session" control: forget the attached session
+		// so nothing of it carries into the next conversation.
+		if msgType.Type == "session_new" {
+			detachSession()
+			// Acknowledged in queue order: every frame of the session just
+			// left (e.g. a wake turn queued earlier) was sent before this.
+			writeWSJSON(conn, map[string]any{"type": "session_new_ok"})
 			continue
 		}
 
@@ -1891,6 +1984,9 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 				// through handlePrompt must not latch Busy=true forever.
 				defer connInfo.setLive(wake.SessionID, false)
 				currentSession = handlePrompt(context.WithValue(promptCtx, serveApproverKey{}, approver), wsSend, store, resources, resolved, agent, injectionGuard, currentSession, wakeMsg, &sessionInputTokens, &sessionOutputTokens, promptCancelWithApproval, &deltas, bgRT, turnTag)
+				if currentSession != nil {
+					ranOn = currentSession.ID
+				}
 			}()
 			promptCancel()
 			continue
@@ -1927,6 +2023,12 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 			}
 		}
 
+		// A prompt without a session_id starts a new conversation, even on a
+		// connection that already ran turns for another session.
+		if msg.SessionID == "" && currentSession != nil {
+			detachSession()
+		}
+
 		// Handle session switch mid-connection (new conversation)
 		if msg.SessionID != "" && (currentSession == nil || currentSession.ID != msg.SessionID) {
 			sess, err := store.Load(msg.SessionID)
@@ -1938,6 +2040,7 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 				writeWSError(conn, wsLookupRejectMsg(conn, "invalid session token"))
 				continue
 			}
+			leaveSession(sess.ID)
 			currentSession = sess
 			// Reset the in-memory buffer to the resumed session's state.
 			// Without the clear, switching to a session whose saved buffer is
@@ -2011,6 +2114,9 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 				connInfo.setLive(sid, false)
 			}()
 			currentSession = handlePrompt(context.WithValue(context.WithValue(promptCtx, serveApproverKey{}, approver), serveAcceptSwitchKey{}, acceptSwitch), wsSend, store, resources, resolved, agent, injectionGuard, currentSession, msg, &sessionInputTokens, &sessionOutputTokens, promptCancelWithApproval, &deltas, bgRT, turnTag)
+			if currentSession != nil {
+				ranOn = currentSession.ID
+			}
 		}()
 		connInfo.recordPrompt()
 		sid := ""
@@ -2024,13 +2130,23 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 	}
 
 	// WebSocket disconnected — extract episode if enough turns
-	if currentSession != nil {
-		if mm := agent.Memory(); mm != nil {
-			msgStrs := makeSessionMessageStrings(currentSession)
-			prov := memory.DeriveSessionProvenance(currentSession)
-			mm.OnSessionEndWithProvenance(currentSession.ID, currentSession.Turns, msgStrs, prov)
-		}
+	endWSSessionMemoryFn(agent.Memory(), currentSession)
+}
+
+// endWSSessionMemoryFn is endWSSessionMemory; tests swap it to observe which
+// sessions a connection ends.
+var endWSSessionMemoryFn = endWSSessionMemory
+
+// endWSSessionMemory runs the end-of-session memory step (episode and fact
+// extraction, gated on turns and the session's provenance taint) for a
+// session the WebSocket connection is leaving.
+func endWSSessionMemory(mm *memory.MemoryManager, sess *session.Session) {
+	if mm == nil || sess == nil {
+		return
 	}
+	msgStrs := makeSessionMessageStrings(sess)
+	prov := memory.DeriveSessionProvenance(sess)
+	mm.OnSessionEndWithProvenance(sess.ID, sess.Turns, msgStrs, prov)
 }
 
 // handleWSCancel processes a WebSocket cancel message. Auth mirrors
@@ -2636,8 +2752,7 @@ func handlePrompt(
 	outputTokens := agent.TotalOutputTokens()
 	*sessionInputTokens += contextTokens
 	*sessionOutputTokens += outputTokens
-	atomic.AddInt64(&serveStats.TokensIn, int64(contextTokens))
-	atomic.AddInt64(&serveStats.TokensOut, int64(outputTokens))
+	recordServeTokens(resolved.Limits, resolved.Model, contextTokens, outputTokens)
 	if sess != nil {
 		sess.InputTokens += int64(contextTokens)
 		sess.OutputTokens += int64(outputTokens)
@@ -2897,21 +3012,12 @@ func newServeToken() (string, error) {
 
 // validateServeToken verifies that the browser has the per-instance CSRF
 // token. It accepts the token via:
-//   - the HttpOnly SameSite=Strict cookie set when serving index.html
-//     (automatic for legitimate same-origin pages),
 //   - an X-Odek-Ws-Token header (for non-browser clients), or
 //   - a WebSocket subprotocol of the form "odek.<token>" (for clients that
 //     can set Sec-WebSocket-Protocol).
 func validateServeToken(cfg *golangws.Config, req *http.Request, token string) error {
 	if token == "" {
 		return fmt.Errorf("server token not configured")
-	}
-
-	// Cookie (browser same-origin / same-site requests).
-	if c, err := req.Cookie(wsTokenCookieName); err == nil && c.Value != "" {
-		if subtle.ConstantTimeCompare([]byte(c.Value), []byte(token)) == 1 {
-			return nil
-		}
 	}
 
 	// Explicit header (non-browser clients).
@@ -3047,18 +3153,11 @@ func requireLocalHost(next http.Handler) http.Handler {
 }
 
 // validateServeTokenHTTP verifies the per-instance CSRF token on an HTTP
-// request. It accepts the same cookie and header transports as the WebSocket
+// request. It accepts the X-Odek-Ws-Token header like the WebSocket
 // handshake, but not the WebSocket subprotocol.
 func validateServeTokenHTTP(req *http.Request, token string) error {
 	if token == "" {
 		return fmt.Errorf("server token not configured")
-	}
-
-	// Cookie (browser same-origin / same-site requests).
-	if c, err := req.Cookie(wsTokenCookieName); err == nil && c.Value != "" {
-		if subtle.ConstantTimeCompare([]byte(c.Value), []byte(token)) == 1 {
-			return nil
-		}
 	}
 
 	// Explicit header (non-browser clients).
@@ -3088,12 +3187,12 @@ func requireServeToken(token string) func(http.Handler) http.Handler {
 
 // presentsInstanceTokenHeader reports whether the request carries the
 // per-instance CSRF token in the X-Odek-Ws-Token header. Header presentation
-// is a KNOWLEDGE proof — unlike the ambient SameSite=Strict cookie, a
+// is a KNOWLEDGE proof — a
 // cross-origin (e.g. DNS-rebinding) page can neither read the token value
 // nor set the header (the custom header triggers a CORS preflight, which
 // odek does not answer). It therefore distinguishes legitimate front-ends
 // (the WebUI, bodek, curl with the token URL) from a rebinding page that
-// merely holds the cookie.
+// cannot supply it.
 func presentsInstanceTokenHeader(r *http.Request, wsToken string) bool {
 	if wsToken == "" {
 		return false
@@ -3128,12 +3227,21 @@ func validateSessionToken(store *session.Store, sess *session.Session, token str
 			// a bootstrap: fail closed and leave the file untouched.
 			return "", false
 		}
-		sess.AuthToken = session.GenerateAuthToken()
-		if err := store.Save(sess); err != nil {
+		// Minting is a metadata-only update, so it cannot conflict with (or
+		// break) a turn running on the session. A token minted concurrently
+		// by another request is kept, not replaced.
+		minted := session.GenerateAuthToken()
+		saved, err := store.UpdateMeta(sess.ID, func(s *session.Session) {
+			if s.AuthToken == "" {
+				s.AuthToken = minted
+			}
+		})
+		if err != nil {
 			// If we cannot persist the token, still allow this request but do not
 			// leak a transient token to the client.
 			return "", true
 		}
+		sess.AuthToken = saved.AuthToken
 		return sess.AuthToken, true
 	}
 	// Constant-time comparison so an attacker cannot recover the token byte by
@@ -3477,6 +3585,13 @@ func writeWSError(conn *golangws.Conn, msg string) {
 	writeWSJSON(conn, map[string]string{"type": "error", "message": msg})
 }
 
+// writeWSSessionNewRejected refuses a session_new the connection could not
+// queue. The connection stays attached to its current session; the typed frame
+// lets the client stop waiting for session_new_ok and retry.
+func writeWSSessionNewRejected(conn *golangws.Conn) {
+	writeWSJSON(conn, map[string]string{"type": "session_new_rejected", "message": "busy: session_new dropped (queue full)"})
+}
+
 // applyServeThinking applies a per-prompt thinking override. Empty/omitted
 // means inherit — the agent's current (startup / last explicit) level stays.
 // Unknown values are rejected so a typo cannot silently wipe the default.
@@ -3698,8 +3813,8 @@ func handleSessionByID(store *session.Store, trustedProxies []string, wsToken st
 					return
 				}
 				// Export and plan views are explicit operator-initiated
-				// downloads that authenticate with the instance cookie in
-				// the browser; they stay reachable on the bootstrap path.
+				// downloads that authenticate with the instance token header
+				// in the browser; they stay reachable on the bootstrap path.
 				// The base detail response is mint-only.
 				if strings.HasSuffix(r.URL.Path, "/export") {
 					w.Header().Set("X-Session-Token", sess.AuthToken)
@@ -3769,6 +3884,13 @@ func handleSessionByID(store *session.Store, trustedProxies []string, wsToken st
 				http.Error(w, "nothing to update (name or pinned required)", http.StatusBadRequest)
 				return
 			}
+			// The title is carried by index.json and every session listing
+			// row, so it is bounded like the titles new sessions get.
+			const maxSessionTitleRunes = 200
+			if body.Name != nil && len([]rune(*body.Name)) > maxSessionTitleRunes {
+				http.Error(w, fmt.Sprintf("name too long (max %d characters)", maxSessionTitleRunes), http.StatusBadRequest)
+				return
+			}
 			sess, err := store.Load(id)
 			if err != nil {
 				rejectSessionLookup(w, r, trustedProxies, http.StatusNotFound, "session not found")
@@ -3779,16 +3901,20 @@ func handleSessionByID(store *session.Store, trustedProxies []string, wsToken st
 				rejectSessionLookup(w, r, trustedProxies, http.StatusUnauthorized, "invalid session token")
 				return
 			}
-			if body.Name != nil {
-				sess.Task = *body.Name
-			}
-			if body.Pinned != nil {
-				sess.Pinned = *body.Pinned
-			}
-			// A failed save (disk full, permissions, revision conflict with a
-			// concurrent per-step persist) must not be reported as success:
-			// the client would show a rename or pin that is lost on reload.
-			if err := store.Save(sess); err != nil {
+			// A metadata-only update: it leaves the transcript revision alone,
+			// so a turn running on this session keeps checkpointing (and its
+			// saves adopt the new title/pin). A failed save (disk full,
+			// permissions) must not be reported as success: the client would
+			// show a rename or pin that is lost on reload.
+			sess, err = store.UpdateMeta(id, func(s *session.Session) {
+				if body.Name != nil {
+					s.Task = *body.Name
+				}
+				if body.Pinned != nil {
+					s.Pinned = *body.Pinned
+				}
+			})
+			if err != nil {
 				http.Error(w, "failed to save session", http.StatusInternalServerError)
 				return
 			}
@@ -4121,7 +4247,8 @@ func handleStatic(wsToken string) http.HandlerFunc {
 			// is impossible.
 			name := strings.TrimPrefix(r.URL.Path, "/js/")
 			if name != "" && !strings.Contains(name, "..") &&
-				!strings.ContainsAny(name, "/\\") && strings.HasSuffix(name, ".js") {
+				!strings.ContainsAny(name, "/\\") && strings.HasSuffix(name, ".js") &&
+				!strings.HasSuffix(name, ".test.js") {
 				entry = [2]string{"ui/js/" + name, "application/javascript; charset=utf-8"}
 				ok = true
 			}
@@ -4139,49 +4266,35 @@ func handleStatic(wsToken string) http.HandlerFunc {
 		// The HTML entry point only receives the per-instance CSRF token when
 		// the request presents the token in the `?token=` query parameter. This
 		// prevents a network attacker from retrieving the token with a simple
-		// `GET /`. The token is delivered both as a SameSite=Strict HttpOnly
-		// cookie (sent automatically on same-site WebSocket upgrades) and as a
-		// meta tag (read by app.js and sent as a WebSocket subprotocol).
+		// `GET /`. The token is delivered in a meta tag (read by the page, kept in
+		// origin-scoped storage and sent as a header or WebSocket subprotocol).
 		variant := ""
 		if r.URL.Path == "/" && wsToken != "" {
 			variant = "#empty"
 			authed := false
 			// Constant-time, like every other comparison in this file: this
-			// is the one endpoint that mints the authenticated cookie.
+			// is the one endpoint that hands the token to a page.
 			if subtle.ConstantTimeCompare([]byte(r.URL.Query().Get("token")), []byte(wsToken)) == 1 {
+				// Cookies are host-scoped, not port-scoped, so the token is
+				// never stored in one: the page keeps it in origin-scoped
+				// browser storage instead. Expire a cookie minted by an
+				// earlier version.
 				http.SetCookie(w, &http.Cookie{
 					Name:     wsTokenCookieName,
-					Value:    wsToken,
+					Value:    "",
 					Path:     "/",
+					MaxAge:   -1,
 					SameSite: http.SameSiteStrictMode,
 					HttpOnly: true,
-					// Secure is set even though the server usually runs on
-					// plain-http loopback: modern browsers treat localhost as a
-					// potentially trustworthy origin and accept Secure cookies
-					// there, and the UI always sends the token as a WebSocket
-					// subprotocol (and /api header), so a browser that drops
-					// the cookie loses nothing.
-					Secure: true,
-					// No explicit MaxAge/Expires so the cookie is a session cookie.
+					Secure:   true,
 				})
-				data = []byte(strings.Replace(string(data), "{{ODEK_WS_TOKEN}}", wsToken, 1))
-				w.Header().Set("Cache-Control", "no-store")
-				authed = true
-				variant = "#token"
-			} else if c, err := r.Cookie(wsTokenCookieName); err == nil &&
-				subtle.ConstantTimeCompare([]byte(c.Value), []byte(wsToken)) == 1 {
-				// Returning browser: the HttpOnly cookie minted by an earlier
-				// token URL is sufficient — the tokenized URL is needed only
-				// once per browser, shrinking the URL's exposure window and
-				// enabling a redirect-based strip later without breaking the
-				// client contract.
 				data = []byte(strings.Replace(string(data), "{{ODEK_WS_TOKEN}}", wsToken, 1))
 				w.Header().Set("Cache-Control", "no-store")
 				authed = true
 				variant = "#token"
 			}
 			if !authed {
-				// No valid token in the URL or cookie: serve the UI but leave
+				// No valid token in the URL: serve the UI but leave
 				// the meta tag empty so the browser cannot connect until the
 				// user uses the token URL printed to the console.
 				data = []byte(strings.Replace(string(data), "{{ODEK_WS_TOKEN}}", "", 1))
@@ -4227,15 +4340,74 @@ func makeSessionMessageStrings(sess *session.Session) []string {
 	return out
 }
 
-func openInBrowser(url string) {
-	cmds := []string{"xdg-open", "open", "gnome-open"}
-	for _, cmd := range cmds {
-		if _, err := os.Stat("/usr/bin/" + cmd); err == nil {
-			attr := &os.ProcAttr{Files: []*os.File{nil, nil, nil}}
-			os.StartProcess(cmd, []string{cmd, url}, attr)
-			return
+// serveDisplayAddr returns the host:port a local browser should use for the
+// listener: an unspecified bind address becomes the loopback address the
+// server's Host and Origin checks accept.
+func serveDisplayAddr(a net.Addr) string {
+	if ta, ok := a.(*net.TCPAddr); ok && ta.IP.IsUnspecified() {
+		return net.JoinHostPort("127.0.0.1", strconv.Itoa(ta.Port))
+	}
+	return a.String()
+}
+
+// serveNonLoopbackHostNote explains why the printed URL does not work from a
+// browser for a bind to one specific non-loopback address: the server accepts
+// only loopback Host and Origin values. It returns "" for loopback and
+// wildcard binds, whose printed URL already names 127.0.0.1.
+func serveNonLoopbackHostNote(a net.Addr) string {
+	ta, ok := a.(*net.TCPAddr)
+	if !ok || ta.IP.IsLoopback() || ta.IP.IsUnspecified() {
+		return ""
+	}
+	return "The URL above is served on " + a.String() + " but the server accepts only loopback Host/Origin values: " +
+		"opening it directly answers 403 \"Host not allowed\". Reach it through a proxy or tunnel that presents a localhost Host and Origin."
+}
+
+// browserOpenerDirs are the system directories openInBrowser searches for a
+// browser opener. Only these absolute locations are used: never PATH and never
+// the current directory (the possibly untrusted workspace). Only root-owned
+// system directories are listed, never user-writable ones like Homebrew prefixes.
+var browserOpenerDirs = []string{"/usr/bin", "/bin"}
+
+// browserOpenerNames lists the openers to try, preferred first for the host OS.
+func browserOpenerNames() []string {
+	if runtime.GOOS == "darwin" {
+		return []string{"open"}
+	}
+	return []string{"xdg-open", "gnome-open"}
+}
+
+// findBrowserOpener returns the absolute path of the first regular executable
+// opener found in a trusted directory, or "" when none exists.
+func findBrowserOpener() string {
+	for _, name := range browserOpenerNames() {
+		for _, dir := range browserOpenerDirs {
+			p := filepath.Join(dir, name)
+			if !filepath.IsAbs(p) {
+				continue
+			}
+			if fi, err := os.Stat(p); err == nil && fi.Mode().IsRegular() && fi.Mode().Perm()&0o111 != 0 {
+				return p
+			}
 		}
 	}
+	return ""
+}
+
+// openInBrowser launches the system browser opener on url. The opener is
+// started by absolute path from a trusted directory with a neutral working
+// directory, so a binary planted in the workspace is never executed.
+func openInBrowser(url string) {
+	p := findBrowserOpener()
+	if p == "" {
+		return
+	}
+	cmd := exec.Command(p, url)
+	cmd.Dir = "/"
+	if err := cmd.Start(); err != nil {
+		return
+	}
+	go func() { _ = cmd.Wait() }()
 }
 
 // isLoopbackAddr reports whether a TCP listener is bound to a loopback

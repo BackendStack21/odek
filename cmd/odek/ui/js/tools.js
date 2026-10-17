@@ -10,7 +10,6 @@ const DIFF_LINE = /^(?:diff --git |@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@|--- \S.*\n
 const HTTP_STATUS = /\bHTTP\/\d(?:\.\d)?\s+(\d{3})\b/;
 const GIT_COMMIT = /(?:^|\s)([0-9a-f]{7,40})\s+(?:commit|ok)|\[(?:main|master|[a-z0-9._/-]+)(?:\s+[0-9a-f]{7})?\]/i;
 const GIT_PUSH = /^\s*To\s+\S+|^\s*\d+\s+\w+\s+->\s+\w+/m;
-const GO_TEST = /(\d+)\s+passed(?:.*?(\d+)\s+skipped)?(?:.*?(\d+)\s+failed)?/i;
 const SEARCH_HITS = /(\d+)\s+(?:matches?|hits?|results?)\b/i;
 const LINT_WARN = /(\d+)\s+warnings?(?:\s*,\s*(\d+)\s+errors?)?/i;
 
@@ -37,18 +36,37 @@ export function classifyToolResult(name, output) {
     });
   }
 
-  const goPassed = (text.match(/^ok\s+\S+/gm) || []).length;
+  // Go package lines carry a duration or "(cached)"; bare "ok N - name" lines
+  // are TAP test points, not packages.
+  const goPassed = (text.match(/^ok\s+\S+\s+(?:[\d.]+s\b|\(cached\))/gm) || []).length;
   const goFailed = (text.match(/^FAIL\s+\S+/gm) || []).length;
-  if ((goPassed || goFailed) && /^(shell)$/.test(name)) chips.push({ kind: 'test', label: goPassed + ' packages passed' + (goFailed ? ' · ' + goFailed + ' failed' : ''), tone: goFailed ? 'danger' : 'ok' });
-  const tests = text.match(GO_TEST);
-  if (tests && (name === 'shell')) {
-    const passed = tests[1] || '0';
-    const skipped = tests[2];
-    const failed = tests[3];
-    let label = '✓ ' + passed + ' passed';
-    if (skipped) label += ' · ' + skipped + ' skipped';
-    if (failed && Number(failed) > 0) label += ' · ' + failed + ' failed';
-    chips.push({ kind: 'test', label, tone: failed && Number(failed) > 0 ? 'danger' : 'ok' });
+  const tapFailed = Math.max(
+    (text.match(/^not ok\b/gm) || []).length,
+    Number((text.match(/^# fail (\d+)/m) || [])[1] || 0),
+  );
+  if ((goPassed || goFailed || tapFailed) && /^(shell)$/.test(name)) {
+    const failed = goFailed + tapFailed;
+    chips.push({
+      kind: 'test',
+      label: (goPassed ? goPassed + ' packages passed' : '') + (goPassed && failed ? ' · ' : '') + (failed ? failed + ' failed' : ''),
+      tone: failed ? 'danger' : 'ok',
+    });
+  }
+  // The summary line lists passed/failed/skipped in any order (pytest and jest
+  // print failures first), so each count is read independently.
+  const summary = name === 'shell' ? text.split('\n').find((line) => /\d+\s+(?:passed|failed)\b/i.test(line)) : null;
+  if (summary) {
+    const count = (re) => Number((summary.match(re) || [])[1] || 0);
+    const passed = count(/(\d+)\s+passed/i);
+    const skipped = count(/(\d+)\s+skipped/i);
+    const failed = count(/(\d+)\s+failed/i);
+    if (passed || failed) {
+      let label = failed ? '✗ ' : '✓ ';
+      label += passed ? passed + ' passed' : '';
+      if (skipped) label += (passed ? ' · ' : '') + skipped + ' skipped';
+      if (failed) label += (passed || skipped ? ' · ' : '') + failed + ' failed';
+      chips.push({ kind: 'test', label, tone: failed ? 'danger' : 'ok' });
+    }
   }
 
   if (GIT_PUSH.test(text) || /\bpushed\b/i.test(text) && /origin|remote/i.test(text)) {

@@ -371,14 +371,23 @@ func (f *FactStore) RemoveApproved(target, oldText, expected string) error {
 var ErrEntryChanged = errors.New("memory: the entry changed after it was approved; nothing was modified — retry")
 
 // matchEntry returns the index of the one entry containing oldText (already
-// trimmed). With expected set, that entry must also equal expected.
+// trimmed). An entry equal to oldText is that one even when longer entries
+// also contain it; otherwise several containing entries are ambiguous. With
+// expected set, the selected entry must also equal expected.
 func matchEntry(entries []string, oldText, expected string) (int, error) {
-	matchIdx, matchCount := 0, 0
+	matchIdx, matchCount, exactIdx, exactCount := 0, 0, 0, 0
 	for i, e := range entries {
 		if strings.Contains(e, oldText) {
 			matchIdx = i
 			matchCount++
 		}
+		if strings.TrimSpace(e) == oldText {
+			exactIdx = i
+			exactCount++
+		}
+	}
+	if matchCount > 1 && exactCount == 1 {
+		matchIdx, matchCount = exactIdx, 1
 	}
 	if matchCount == 0 {
 		if expected != "" {

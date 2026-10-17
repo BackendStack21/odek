@@ -6,7 +6,7 @@ import { S } from './state.js';
 import { messagesEl, promptEl, sendBtn, emptyState } from './dom.js';
 import {
   escapeHtml, escapeAttr, truncateStr, copyTextToClipboard,
-  pruneMessages, scrollBottom, forceScrollBottom, stripAttachmentBodies,
+  pruneMessages, scrollBottom, forceScrollBottom, historyUserText,
   showCancel, hideCancel, teach,
 } from './utils.js';
 import { markdownToHtml, CODE_COPY_LABEL, CODE_COPIED_LABEL } from './markdown.js';
@@ -1049,6 +1049,19 @@ function subagentHeadHTML(n) {
   '</div>';
 }
 
+// subagentTasks and subagentGoal coerce model-authored delegate_tasks
+// arguments at the boundary: tasks is always an array and a goal always a
+// string, whatever the persisted JSON held.
+function subagentTasks(parsed) {
+  return parsed && Array.isArray(parsed.tasks) ? parsed.tasks : [];
+}
+function subagentGoal(task) {
+  const goal = task && task.goal;
+  if (typeof goal === 'string') return goal;
+  if (goal == null) return '';
+  try { return JSON.stringify(goal) || ''; } catch { return ''; }
+}
+
 function subagentCardHTML(i, goal, withStop) {
   const title = goal || ('Task ' + (i + 1));
   return '<div class="sa-top" role="button" tabindex="0" aria-expanded="false">' +
@@ -1072,7 +1085,7 @@ export function addSubagentGroup(command) {
   let tasks = [];
   try {
     const parsed = JSON.parse(command);
-    tasks = parsed.tasks || [];
+    tasks = subagentTasks(parsed);
   } catch { tasks = []; }
 
   const group = document.createElement('div');
@@ -1087,8 +1100,8 @@ export function addSubagentGroup(command) {
     const card = document.createElement('div');
     card.className = 'subagent-card queued';
     card.dataset.index = i;
-    card.dataset.goal = task.goal || '';
-    card.innerHTML = subagentCardHTML(i, task.goal, true);
+    card.dataset.goal = subagentGoal(task);
+    card.innerHTML = subagentCardHTML(i, subagentGoal(task), true);
     const queuedStatus=card.querySelector('.sa-status');if(queuedStatus)queuedStatus.textContent='queued';
     // Disarmed until the subagent_state started record delivers the
     // task_id — the task may still be queued behind the concurrency
@@ -1422,7 +1435,10 @@ export function renderSessionHistory(messages) {
     }
     if (msg.role === 'user') {
       historyTurnId=msg.turn_id || 'history-'+messageIndex;
-      addMessage('user', stripAttachmentBodies(msg.content || ''));
+      // System-initiated records (bg-wake preamble, bg-notice, return-after-break)
+      // are not text the operator typed.
+      if (typeof msg.name === 'string' && (msg.name.startsWith('bg-') || msg.name === 'return-after-break')) return;
+      addMessage('user', historyUserText(msg.content, msg.principal_prompt));
       return;
     }
     if (msg.role !== 'assistant') return; // skip system/tool internals
@@ -1531,7 +1547,7 @@ function renderHistoricalToolBlock(name, args, result, outcome = 'unknown', turn
 // per-task final states parsed from the tool result.
 function renderHistoricalSubagents(args, output, groupId) {
   let tasks = [];
-  try { tasks = JSON.parse(args).tasks || []; } catch { tasks = []; }
+  try { tasks = subagentTasks(JSON.parse(args)); } catch { tasks = []; }
   const taskResults = parseSubagentResults(output);
 
   const group = document.createElement('div');
@@ -1545,8 +1561,8 @@ function renderHistoricalSubagents(args, output, groupId) {
     card.className = 'subagent-card running';
     card.dataset.index = i;
     card.dataset.taskId = groupId+'-'+i;
-    card.dataset.goal = task.goal || '';
-    card.innerHTML = subagentCardHTML(i, task.goal, false);
+    card.dataset.goal = subagentGoal(task);
+    card.innerHTML = subagentCardHTML(i, subagentGoal(task), false);
     grid.appendChild(card);
     finalizeSubagentCard(card, taskResults[i]);
   });

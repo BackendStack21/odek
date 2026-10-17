@@ -141,8 +141,27 @@ export function stripAttachmentBodies(content) {
   if (!content) return '';
   return parseUntrusted(content).map((seg) => {
     if (seg.source && seg.source.startsWith('attachment:')) {
-      return '📎 ' + seg.source.slice('attachment:'.length) + '\n';
+      return '📎 ' + displayLabel(seg.source.slice('attachment:'.length)) + '\n';
+    }
+    if (seg.source && seg.source.startsWith('resource:')) {
+      // @-reference bodies are untrusted file/session text the server
+      // expanded into the prompt; show the reference, never the body.
+      return displayLabel(seg.source.slice('resource:'.length));
     }
     return seg.body;
   }).join('');
+}
+
+// historyUserText is what a reloaded user turn shows. The server persists
+// the resource-expanded prompt as content and what the operator typed as
+// principal_prompt; the typed text is shown (never expanded @-reference
+// bodies) with attachment chips derived from the envelopes in content.
+// Legacy rows without principal_prompt fall back to the collapsed content.
+export function historyUserText(content, principal) {
+  if (typeof principal !== 'string') return stripAttachmentBodies(content || '');
+  const chips = content ? parseUntrusted(content)
+    .filter((seg) => seg.source && seg.source.startsWith('attachment:'))
+    .map((seg) => '📎 ' + displayLabel(seg.source.slice('attachment:'.length)) + '\n')
+    .join('') : '';
+  return chips + principal;
 }

@@ -5,7 +5,7 @@ import { messagesEl, scrollBottomBtn, cancelBtn } from './dom.js';
 
 // stripAttachmentBodies lives in untrusted.js (pure, node-testable);
 // re-exported here so render.js keeps a single utils import.
-export { stripAttachmentBodies } from './untrusted.js';
+export { stripAttachmentBodies, historyUserText } from './untrusted.js';
 
 // ── Escape helpers (implemented in escape.js so markdown.js can use them
 // without importing the browser-dependent modules) ──

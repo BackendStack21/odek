@@ -43,7 +43,7 @@ export const S = {
   busy: false,
   health: null,      // last server info snapshot (health.js)
   history: loadHistory(),
-  historyIdx: -1,
+  historyIdx: 0, // set to history.length below
   attachedFiles: [], // {name, size, content}
   currentModel: localStorage.getItem('odek_model') || '',
   currentThinking: localStorage.getItem('odek_thinking') || '',
@@ -137,6 +137,26 @@ export const S = {
   hintsShown: loadHintsShown(),
   currentIntent: '',
 };
+S.historyIdx = S.history.length;
+
+// Every session id the tab displays is recorded at the point it is assigned
+// (whichever path sets it), so late frames naming a session the tab has since
+// left can be recognised. The set is bounded; the oldest ids fall out first.
+const DISPLAYED_SESSIONS_MAX = 64;
+const displayedSessions = new Set();
+let currentSessionId = S.sessionId;
+Object.defineProperty(S, 'sessionId', {
+  enumerable: true,
+  get() { return currentSessionId; },
+  set(v) {
+    currentSessionId = v;
+    if (!v) return;
+    displayedSessions.delete(v);
+    displayedSessions.add(v);
+    if (displayedSessions.size > DISPLAYED_SESSIONS_MAX) displayedSessions.delete(displayedSessions.values().next().value);
+  },
+});
+export function wasSessionDisplayed(id) { return displayedSessions.has(id); }
 
 function loadHintsShown() {
   try {

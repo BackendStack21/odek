@@ -1,7 +1,7 @@
 // Centralized REST client for the /api/* management surface. Every module
 // goes through these helpers so the instance-token header, session-token
 // handling, and error normalization live in exactly one place.
-import { apiHeaders } from './net.js';
+import { apiHeaders, forgetStoredWsToken, STALE_TOKEN_HINT } from './net.js';
 
 // apiFetch performs a token-authenticated JSON request and returns the parsed
 // body. Throws an Error carrying the server's message on non-2xx responses.
@@ -20,6 +20,13 @@ export async function apiFetch(path, opts = {}) {
       const text = await resp.text();
       if (text) msg = text.length > 200 ? text.slice(0, 200) + '…' : text;
     } catch { /* keep default */ }
+    // The instance-token gate answers a bare "Forbidden" (Host/Origin
+    // rejections carry their own text): forget the stale saved token and tell
+    // the user how to recover.
+    if (resp.status === 403 && msg.trim() === 'Forbidden') {
+      forgetStoredWsToken();
+      msg = STALE_TOKEN_HINT;
+    }
     const err = new Error(msg);
     err.status = resp.status;
     throw err;
@@ -76,8 +83,8 @@ export function deleteSession(id, sessionToken) {
 // exportSessionUrl builds the download URL for a transcript export. The
 // browser navigates to it (fetch + blob would also work, but a navigation
 // gets the Content-Disposition filename for free). Session token travels in
-// the query string only if the cookie is unavailable — prefer the header
-// path via downloadExport below.
+// the query string only as a last resort — prefer the header path via
+// downloadExport below.
 export function exportSessionUrl(id, format) {
   return '/api/sessions/' + encodeURIComponent(id) + '/export?format=' + encodeURIComponent(format || 'md');
 }
@@ -226,10 +233,16 @@ export function kickConnection(id) {
   return apiFetch('/api/connections/' + encodeURIComponent(id), { method: 'DELETE' });
 }
 
-export function promoteSkill(name, force) {
+// promoteSkill promotes a skill. reviewed ({path, sha256} from
+// GET /api/skills?name=) binds the promotion to the reviewed file, so the
+// server promotes exactly that copy and only while it is unchanged.
+export function promoteSkill(name, force, reviewed) {
+  const body = { name, force: !!force };
+  if (reviewed && reviewed.path) body.path = String(reviewed.path);
+  if (reviewed && reviewed.sha256) body.sha256 = String(reviewed.sha256);
   return apiFetch('/api/skills/promote', {
     method: 'POST',
-    body: JSON.stringify({ name, force: !!force }),
+    body: JSON.stringify(body),
   });
 }
 

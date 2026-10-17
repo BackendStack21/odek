@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/BackendStack21/odek/internal/config"
 	"github.com/BackendStack21/odek/internal/maintenance"
@@ -84,13 +85,17 @@ func handleSchedules(home string) http.HandlerFunc {
 			return
 		}
 		var job schedule.Job
-		dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10))
+		// Room for the editor's limits in multi-byte text (up to 4 bytes per
+		// character) plus the other fields.
+		dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 256<<10))
 		dec.DisallowUnknownFields()
 		if err := dec.Decode(&job); err != nil {
 			http.Error(w, "invalid schedule", 400)
 			return
 		}
-		if len(job.Task) > 32000 || len(job.Name) > 200 {
+		// Characters, not bytes: the editor's maxLength counts UTF-16 units,
+		// never fewer than the characters, so everything it accepts fits.
+		if utf8.RuneCountInString(job.Task) > 32000 || utf8.RuneCountInString(job.Name) > 200 {
 			http.Error(w, "schedule too large", 400)
 			return
 		}

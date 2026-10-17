@@ -2,7 +2,7 @@
 // New in v2: token_delta/thinking_delta live streaming, pong heartbeat
 // replies carrying server info, cancelled confirmations, and the server_info
 // hello pushed on connect.
-import { S, setSessionToken, getSessionToken } from './state.js';
+import { S, setSessionToken, getSessionToken, wasSessionDisplayed } from './state.js';
 import { getWsToken } from './net.js';
 import { dotEl, statusEl, sendBtn, skeletonEl, modelLabel, promptEl } from './dom.js';
 import { formatErrorMessage, showToast, announce, showCancel } from './utils.js';
@@ -13,7 +13,7 @@ import {
   lastAssistantBubble, supersedeStream, markTurnUnverified, stripVerifyMarker,
 } from './render.js';
 import { queueApproval, dismissApproval, clearApprovals, expireApproval } from './approvals.js';
-import { queueClarify, dismissClarify, clearClarify, expireClarify } from './clarify.js';
+import { queueClarify, dismissClarify, clearClarify, expireClarify, rejectClarify } from './clarify.js';
 import { loadSessions } from './sessions.js';
 import { onPong, onServerInfo, startHeartbeat, stopHeartbeat, notifyUser } from './health.js';
 import { metricsLiveContext, metricsDone, metricsApplySpeed, metricsResetSpeed, metricsBeginTurn, metricsLiveUsage, turnStatsSpans, setMetricsModel } from './metrics.js';
@@ -77,6 +77,13 @@ function noteDisconnect() {
   if (droppedBusy) S.onRecoveryNeeded?.('Connection interrupted the turn');
 }
 
+// A cancel ack or settle frame that names a session we have since left (New
+// session nulls S.sessionId) must not paint stop narration or recovery state
+// into the conversation now on screen.
+function retiredSessionFrame(event) {
+  return !!event.session_id && event.session_id !== S.sessionId && wasSessionDisplayed(event.session_id);
+}
+
 export function connect() {
   if (reconnectTimer) {
     clearTimeout(reconnectTimer);
@@ -90,6 +97,9 @@ export function connect() {
   S.ws = new WebSocket(proto + '//' + location.host + '/ws', protocols);
 
   S.ws.onopen = () => {
+    // A new connection has nothing queued for a session left on the old one.
+    S.pendingSessionNew = false;
+    cancelSessionNewRetry();
     hideConnBanner();
     dotEl.className = 'dot connected';
     statusEl.textContent = 'connected';
@@ -146,6 +156,18 @@ export function connect() {
     let event;
     try { event = JSON.parse(e.data); } catch { return; }
 
+
+    if (S.pendingSessionNew) {
+      // Session-bearing frames queued server-side before session_new belong
+      // to the session the user left: drop them, and close their turns so
+      // the turn's later frames are dropped too, until the ack.
+      if (event.type === 'session_new_ok') { S.pendingSessionNew = false; cancelSessionNewRetry(); return; }
+      if (event.type === 'session_new_rejected') { retrySessionNew(); return; }
+      if (event.session_id) {
+        if (event.turn_id) { S.closedTurnIds ||= new Set(); S.closedTurnIds.add(event.turn_id); }
+        return;
+      }
+    }
     if (event.type!=='turn_settled' && event.turn_id && S.closedTurnIds?.has(event.turn_id)) return;
     if (S.turnEnded && ['tool_call','tool_result','thinking','thinking_delta','token','token_delta','subagent_state','subagent_log','approval_request','clarify_request','done'].includes(event.type)) return;
     if (S.stopRequested && ['tool_call','subagent_log','thinking','thinking_delta','approval_request','clarify_request'].includes(event.type)) return;
@@ -314,6 +336,7 @@ export function connect() {
         break;
 
       case 'cancelled':
+        if (retiredSessionFrame(event)) break;
         if (!sameTurn || (event.session_id && S.sessionId && event.session_id !== S.sessionId)) break;
         S.pauseQueue?.();
         if(event.idle){clearApprovals({drain:false});clearClarify();endStream('cancelled');addSystemMessage('No active execution to stop.');break;}
@@ -325,6 +348,7 @@ export function connect() {
         break;
 
       case 'turn_settled':
+        if (retiredSessionFrame(event)) break;
         if(event.session_id && S.sessionId && event.session_id!==S.sessionId)break;
         if(event.turn_id && S.currentTurnId && event.turn_id!==S.currentTurnId)break;
         if(S.stopRequested && event.status==='cancelled'){
@@ -437,6 +461,10 @@ export function connect() {
         expireClarify(event.id);
         break;
 
+      case 'clarify_rejected':
+        rejectClarify(event.id, event.reason);
+        break;
+
       case 'skill_event':
         S.refreshKnowledge?.();
         break;
@@ -454,6 +482,39 @@ export function connect() {
 }
 
 // wsSend safely sends a JSON message when the socket is open.
+// The server refused session_new because this connection's queue was full.
+// Re-send it after a pause while the queue drains; after a bounded number of
+// refusals stop waiting, so the next session's frames are not dropped forever.
+const SESSION_NEW_RETRY_MS = 1000;
+const SESSION_NEW_MAX_RETRIES = 10;
+let sessionNewRetryTimer = null;
+
+// cancelSessionNewRetry drops a pending re-send and resets the refusal count
+// (on ack, reconnect, give-up, or a fresh New session).
+export function cancelSessionNewRetry() {
+  if (sessionNewRetryTimer !== null) clearTimeout(sessionNewRetryTimer);
+  sessionNewRetryTimer = null;
+  S.sessionNewRetries = 0;
+}
+
+function retrySessionNew() {
+  const retries = (S.sessionNewRetries || 0) + 1;
+  if (retries > SESSION_NEW_MAX_RETRIES) {
+    S.pendingSessionNew = false;
+    cancelSessionNewRetry();
+    showToast('Server busy: the new session may still show the previous one');
+    return;
+  }
+  if (sessionNewRetryTimer !== null) clearTimeout(sessionNewRetryTimer);
+  S.sessionNewRetries = retries;
+  const sock = S.ws;
+  sessionNewRetryTimer = setTimeout(() => {
+    sessionNewRetryTimer = null;
+    if (!S.pendingSessionNew || S.ws !== sock || sock.readyState !== WebSocket.OPEN) return;
+    sock.send(JSON.stringify({ type: 'session_new' }));
+  }, SESSION_NEW_RETRY_MS);
+}
+
 export function wsSend(obj) {
   if (S.ws && S.ws.readyState === WebSocket.OPEN) {
     S.ws.send(JSON.stringify(obj));

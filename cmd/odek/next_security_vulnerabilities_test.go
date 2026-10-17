@@ -279,7 +279,7 @@ func TestServe_API_AcceptsServeTokenHeader(t *testing.T) {
 	}
 }
 
-func TestServe_API_AcceptsServeTokenCookie(t *testing.T) {
+func TestServe_API_RejectsServeTokenCookie(t *testing.T) {
 	store := newTestSessionStore(t)
 	ln, mux := buildServeMux(t, store)
 
@@ -297,8 +297,8 @@ func TestServe_API_AcceptsServeTokenCookie(t *testing.T) {
 		t.Fatalf("GET /api/sessions: %v", err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200 with serve token cookie, got %d", resp.StatusCode)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403: the token is not accepted from a cookie, got %d", resp.StatusCode)
 	}
 }
 

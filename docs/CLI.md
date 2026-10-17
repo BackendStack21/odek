@@ -16,9 +16,11 @@
 | `odek cleanup [--dry-run]` | One-shot storage sweep of `~/.odek`: expired sessions, audit records, plans, artifacts, media, and runtime-log retention. `--dry-run` previews without changing files. The same sweep runs automatically in long-lived services when maintenance is enabled. See [MAINTENANCE.md](MAINTENANCE.md) |
 | `odek logs [filters]` | Query, follow, or display the local operational log (`--help` lists the filters). See [Runtime logging](LOGGING.md) for filters and examples. |
 | `odek skill list` | List all available skills |
-| `odek skill view <name>` | View a skill's full content |
+| `odek skill view <name>` | View a skill's full content (the copy the loader selects; other files carrying the name are listed on stderr) |
+| `odek skill view --path <SKILL.md>` | Show one skill file exactly as stored, with its review state (trusted / pending review) |
 | `odek skill delete <name>` | Delete a skill |
-| `odek skill promote <name>` | Clear `NeedsReview` on a tainted skill so it can trigger-load and load via `skill_load` |
+| `odek skill promote <name> [--force]` | Clear `NeedsReview` on a tainted skill so it can trigger-load and load via `skill_load`. Refused when several `SKILL.md` files carry the name: the error lists each with its state |
+| `odek skill promote --path <SKILL.md> [--force]` | Promote exactly that file. It must be a `SKILL.md` in a skill directory of `./.odek/skills` or `~/.odek/skills`, not a symlink |
 | `odek skill import <uri> [flags]` | Import a skill from file:// or https:// |
 | `odek memory list [--all]` | List episodes pending human review (full text, escaped); `--all` lists every episode with its state (trusted, approved, auto-approved, pending). Aliases `ls`, `pending` |
 | `odek memory promote <session-id>...` | Approve pending episodes for recall; a trusted or already approved episode is refused. The approval is bound to the exact text printed (`odek memory list` shows its `sha256`); `--sha256 <hash>` (one id) refuses a summary that changed after review |
@@ -320,6 +322,10 @@ odek skill delete docker-build
 # Review the body first, then promote.
 odek skill view my-skill
 odek skill promote my-skill
+
+# When several files carry the name, inspect and promote one by path.
+odek skill view --path .odek/skills/my-skill/SKILL.md
+odek skill promote --path .odek/skills/my-skill/SKILL.md --force
 
 # Import a skill from a file or URL
 odek skill import ./skills/my-skill.md

@@ -228,6 +228,9 @@ type connWakeSlot struct {
 	ch     chan []byte
 	token  string
 	closed bool
+	// queued, when set, is the connection's queued-bytes counter; posted
+	// items count toward it like client messages do.
+	queued *atomic.Int64
 }
 
 func newConnWakeSlot(ch chan []byte, token string) *connWakeSlot {
@@ -247,10 +250,16 @@ func (s *connWakeSlot) post(item wsClientMsg) bool {
 	if err != nil {
 		return false
 	}
+	if s.queued != nil {
+		s.queued.Add(int64(len(raw)))
+	}
 	select {
 	case s.ch <- raw:
 		return true
 	default:
+		if s.queued != nil {
+			s.queued.Add(-int64(len(raw)))
+		}
 		return false
 	}
 }
@@ -378,6 +387,12 @@ func (wsWakeRouter) State(sessionID string) wakeConnState {
 	if len(conns) == 0 {
 		return wakeNoConn
 	}
+	// A headless REST run executing on the session holds its execution
+	// lease and drains the completion notice itself, so the session is busy
+	// even though no attached connection is.
+	if sessionHasActiveRun(sessionID) {
+		return wakeBusy
+	}
 	for _, c := range conns {
 		if c.isBusy() {
 			return wakeBusy // per-SESSION exclusion
@@ -388,6 +403,9 @@ func (wsWakeRouter) State(sessionID string) wakeConnState {
 
 // Post delivers the wake item to an idle bound connection's slot.
 func (wsWakeRouter) Post(sessionID string, item wsClientMsg) bool {
+	if sessionHasActiveRun(sessionID) {
+		return false
+	}
 	for _, c := range wsConnsForSession(sessionID) {
 		if c.isBusy() {
 			continue

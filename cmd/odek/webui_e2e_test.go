@@ -68,6 +68,9 @@ func assetURL(t *testing.T, embedded string) (string, bool) {
 	switch {
 	case embedded == "ui/index.html":
 		return "/", true
+	case strings.HasPrefix(embedded, "ui/js/") && strings.HasSuffix(embedded, ".test.js"):
+		// Frontend unit tests are embedded but deliberately never served.
+		return "", false
 	case strings.HasPrefix(embedded, "ui/js/"):
 		return "/" + strings.TrimPrefix(embedded, "ui/"), true
 	case strings.HasPrefix(embedded, "ui/fonts/"):
@@ -261,14 +264,14 @@ func TestWebUI_AssetETagRevalidation(t *testing.T) {
 	}
 }
 
-func TestWebUI_TokenInjectionAndCookie(t *testing.T) {
+func TestWebUI_TokenInjectionWithoutCookie(t *testing.T) {
 	wsToken, _ := newServeToken()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", handleStatic(wsToken))
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	// Correct token → injected meta + hardened session cookie + no-store.
+	// Correct token → injected meta + no-store, no token cookie.
 	resp, err := http.Get(srv.URL + "/?token=" + wsToken)
 	if err != nil {
 		t.Fatal(err)
@@ -281,17 +284,10 @@ func TestWebUI_TokenInjectionAndCookie(t *testing.T) {
 	if resp.Header.Get("Cache-Control") != "no-store" {
 		t.Errorf("Cache-Control = %q, want no-store", resp.Header.Get("Cache-Control"))
 	}
-	var cookie *http.Cookie
 	for _, c := range resp.Cookies() {
-		if c.Name == wsTokenCookieName {
-			cookie = c
+		if c.Name == wsTokenCookieName && c.Value != "" {
+			t.Errorf("token cookie carries a value: %+v", c)
 		}
-	}
-	if cookie == nil {
-		t.Fatal("token cookie not set")
-	}
-	if cookie.Value != wsToken || cookie.SameSite != http.SameSiteStrictMode || !cookie.Secure || !cookie.HttpOnly {
-		t.Errorf("cookie = %+v", cookie)
 	}
 
 	// Missing/wrong token → the page loads but the meta tag stays empty, so

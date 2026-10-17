@@ -33,6 +33,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"sort"
 	"strconv"
@@ -42,6 +43,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/BackendStack21/odek/internal/budget"
 	"github.com/BackendStack21/odek/internal/config"
 	"github.com/BackendStack21/odek/internal/diagnostics"
 	"github.com/BackendStack21/odek/internal/events"
@@ -154,9 +156,17 @@ var serveStats struct {
 	PromptsFailed    int64
 	TokensIn         int64
 	TokensOut        int64
-	PlansCreated     int64
-	PlansUpdated     int64
-	PlansBlocked     int64
+	// CostMicroUSD is the cost of the tokens recorded through
+	// recordServeTokens, priced per the model each turn actually used.
+	// PricedTokensIn/Out count the tokens that cost covers; PricedAny
+	// is 1 once any recorded turn ran on a model with configured prices.
+	CostMicroUSD    int64
+	PricedTokensIn  int64
+	PricedTokensOut int64
+	PricedAny       int64
+	PlansCreated    int64
+	PlansUpdated    int64
+	PlansBlocked    int64
 }
 
 // recordPlanUsage folds plan lifecycle events into the lifetime usage
@@ -177,6 +187,21 @@ func recordPlanUsage(ev events.Event) {
 // resolved per-million prices. Costs are absent (0, prices_configured=false)
 // when the operator has not configured prices — clients must render that as
 // "unavailable", not $0.
+// recordServeTokens adds one turn's provider usage to the server counters and
+// prices it with the model the turn ran on, so per-run and per-prompt model
+// overrides use their own model_prices entry.
+func recordServeTokens(limits budget.Limits, model string, in, out int) {
+	atomic.AddInt64(&serveStats.TokensIn, int64(in))
+	atomic.AddInt64(&serveStats.TokensOut, int64(out))
+	inPrice, outPrice := limits.ResolvePrices(model)
+	atomic.AddInt64(&serveStats.CostMicroUSD, int64(math.Round(float64(in)*inPrice+float64(out)*outPrice)))
+	atomic.AddInt64(&serveStats.PricedTokensIn, int64(in))
+	atomic.AddInt64(&serveStats.PricedTokensOut, int64(out))
+	if inPrice > 0 || outPrice > 0 {
+		atomic.StoreInt64(&serveStats.PricedAny, 1)
+	}
+}
+
 func handleUsage(resolved config.ResolvedConfig) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -186,7 +211,19 @@ func handleUsage(resolved config.ResolvedConfig) http.HandlerFunc {
 		in := atomic.LoadInt64(&serveStats.TokensIn)
 		out := atomic.LoadInt64(&serveStats.TokensOut)
 		inPrice, outPrice := resolved.Limits.ResolvePrices(resolved.Model)
-		cost := float64(in)/1e6*inPrice + float64(out)/1e6*outPrice
+		// Tokens recorded per turn carry their own model's cost; any
+		// remainder is priced at the configured model.
+		restIn := in - atomic.LoadInt64(&serveStats.PricedTokensIn)
+		restOut := out - atomic.LoadInt64(&serveStats.PricedTokensOut)
+		if restIn < 0 {
+			restIn = 0
+		}
+		if restOut < 0 {
+			restOut = 0
+		}
+		cost := float64(atomic.LoadInt64(&serveStats.CostMicroUSD))/1e6 +
+			float64(restIn)/1e6*inPrice + float64(restOut)/1e6*outPrice
+		pricesConfigured := inPrice > 0 || outPrice > 0 || atomic.LoadInt64(&serveStats.PricedAny) == 1
 		writeAPIJSON(w, http.StatusOK, map[string]any{
 			"prompts_started":    atomic.LoadInt64(&serveStats.PromptsStarted),
 			"prompts_completed":  atomic.LoadInt64(&serveStats.PromptsCompleted),
@@ -197,7 +234,7 @@ func handleUsage(resolved config.ResolvedConfig) http.HandlerFunc {
 			"plans_updated":      atomic.LoadInt64(&serveStats.PlansUpdated),
 			"plans_blocked":      atomic.LoadInt64(&serveStats.PlansBlocked),
 			"estimated_cost_usd": cost,
-			"prices_configured":  inPrice > 0 || outPrice > 0,
+			"prices_configured":  pricesConfigured,
 			"model":              resolved.Model,
 			"ws_connections":     atomic.LoadInt64(&serveWSConnections),
 			"runs_active":        activeRunCount(),
@@ -732,6 +769,13 @@ func (r *serveRun) isTerminal() bool {
 func (r *serveRun) releaseResources() {
 	r.mu.Lock()
 	cleanup := r.cleanup
+	// Drop the references that keep the agent graph (and, through the
+	// engine's persist callback, the run's whole in-memory session) alive:
+	// a finished run stays in the registry for its snapshot, but only the
+	// snapshot fields need to survive.
+	r.cleanup = nil
+	r.cancel = nil
+	r.approver = nil
 	r.mu.Unlock()
 	defer func() {
 		r.mu.Lock()
@@ -857,6 +901,25 @@ func lookupRun(id string) *serveRun {
 	serveRuns.mu.Lock()
 	defer serveRuns.mu.Unlock()
 	return serveRuns.runs[id]
+}
+
+// sessionHasActiveRun reports whether a non-terminal headless run is bound to
+// the session.
+func sessionHasActiveRun(sessionID string) bool {
+	if sessionID == "" {
+		return false
+	}
+	serveRuns.mu.Lock()
+	defer serveRuns.mu.Unlock()
+	for _, rr := range serveRuns.runs {
+		rr.mu.Lock()
+		match := rr.SessionID == sessionID && !runStatusTerminal(rr.Status)
+		rr.mu.Unlock()
+		if match {
+			return true
+		}
+	}
+	return false
 }
 
 func activeRunCount() int {
@@ -1138,13 +1201,23 @@ func startServeRun(
 
 	go func() {
 		defer serveRunsWG.Done() // Add happened in admitServeRun
+		// Teardown runs after the panic handler has recorded the failure, so
+		// an approval answer arriving in between sees a terminal run.
+		defer func() {
+			defer func() {
+				if recovered := recover(); recovered != nil {
+					diagnostics.Emit(events.Event{Type: "panic_recovered", Data: map[string]any{"component": "serve", "operation": "headless_run", "error_class": "panic"}})
+					run.finish("failed", "run failed: internal error")
+				}
+			}()
+			run.releaseResources()
+		}()
 		defer func() {
 			if recovered := recover(); recovered != nil {
 				diagnostics.Emit(events.Event{Type: "panic_recovered", Data: map[string]any{"component": "serve", "operation": "headless_run", "error_class": "panic"}})
 				run.finish("failed", "run failed: internal error")
 			}
 		}()
-		defer run.releaseResources()
 		var sessionIn, sessionOut int
 		ctx = context.WithValue(ctx, serveRunIDKey{}, run.ID)
 		ctx = context.WithValue(ctx, serveApproverKey{}, approver)
@@ -1339,8 +1412,21 @@ func handleRunApprovalAnswer() http.HandlerFunc {
 		}
 		run.mu.Lock()
 		approver := run.approver
+		terminal := runStatusTerminal(run.Status)
+		// The approver coerces "trust" to a one-shot approve for classes
+		// that never offer trust (and while friction is engaged); report
+		// the action that will actually apply, not the requested one.
+		effective := body.Action
+		if req := run.pending[approvalID]; effective == "trust" && req != nil && !req.AllowTrust {
+			effective = "approve"
+		}
 		run.mu.Unlock()
 		if approver == nil {
+			if terminal {
+				// Teardown released the approver: the approval is gone.
+				http.Error(w, "approval not found (it may have timed out)", http.StatusNotFound)
+				return
+			}
 			http.Error(w, "run has no approver", http.StatusConflict)
 			return
 		}
@@ -1349,8 +1435,8 @@ func handleRunApprovalAnswer() http.HandlerFunc {
 			return
 		}
 		// Mirror the ack + pending-list update the socket path gets.
-		_ = run.record(map[string]any{"type": "approval_ack", "id": approvalID, "action": body.Action})
-		writeAPIJSON(w, http.StatusOK, map[string]any{"run_id": runID, "approval_id": approvalID, "action": body.Action})
+		_ = run.record(map[string]any{"type": "approval_ack", "id": approvalID, "action": effective})
+		writeAPIJSON(w, http.StatusOK, map[string]any{"run_id": runID, "approval_id": approvalID, "action": effective})
 	}
 }
 

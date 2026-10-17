@@ -31,6 +31,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"sort"
 	"strings"
 	"sync/atomic"
@@ -298,8 +299,8 @@ func handleSessionPlan(sess *session.Session, w http.ResponseWriter) {
 func exportSessionMarkdown(sess *session.Session) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# odek session %s\n\n", sess.ID)
-	fmt.Fprintf(&b, "- **Task:** %s\n", orDash(danger.SanitizeInline(sess.Task)))
-	fmt.Fprintf(&b, "- **Model:** %s\n", orDash(danger.SanitizeInline(sess.Model)))
+	fmt.Fprintf(&b, "- **Task:** %s\n", orDash(exportInlineText(sess.Task)))
+	fmt.Fprintf(&b, "- **Model:** %s\n", orDash(exportInlineText(sess.Model)))
 	fmt.Fprintf(&b, "- **Turns:** %d\n", sess.Turns)
 	fmt.Fprintf(&b, "- **Created:** %s\n", sess.CreatedAt.UTC().Format(time.RFC3339))
 	fmt.Fprintf(&b, "- **Updated:** %s\n", sess.UpdatedAt.UTC().Format(time.RFC3339))
@@ -337,7 +338,7 @@ func exportSessionMarkdown(sess *session.Session) string {
 			for _, tc := range m.ToolCalls {
 				args := prettyJSONArgs(tc.Function.Arguments)
 				fence := codeFence(args)
-				fmt.Fprintf(&b, "### tool call: %s\n\n%sjson\n", danger.SanitizeInline(tc.Function.Name), fence)
+				fmt.Fprintf(&b, "### tool call: %s\n\n%sjson\n", exportInlineText(tc.Function.Name), fence)
 				b.WriteString(args)
 				b.WriteString("\n" + fence + "\n\n")
 			}
@@ -351,9 +352,39 @@ func exportSessionMarkdown(sess *session.Session) string {
 		case "tool":
 			body := stripUntrustedEnvelopes(m.Content)
 			fence := codeFence(body)
-			fmt.Fprintf(&b, "### tool result: %s\n\n%stext\n", orDash(danger.SanitizeInline(m.Name)), fence)
+			fmt.Fprintf(&b, "### tool result: %s\n\n%stext\n", orDash(exportInlineText(m.Name)), fence)
 			b.WriteString(body)
 			b.WriteString("\n" + fence + "\n\n")
+		}
+	}
+	return b.String()
+}
+
+// exportInlineText renders untrusted text (model-chosen tool names, the
+// session title, the model id) for a single markdown line outside a code
+// fence: control, bidi and invisible characters are escaped, '<', '>' and
+// '&' become entities so no raw HTML survives, and the ASCII punctuation
+// that opens inline markup (links, images, emphasis, code spans, tables,
+// autolinks) is backslash-escaped so it renders as literal text. '-', '.',
+// ',', '/', quotes and '=' stay as they are: they open nothing mid-line and
+// tool names and model ids are full of them.
+func exportInlineText(s string) string {
+	s = danger.SanitizeInline(s)
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		switch {
+		case r == '<':
+			b.WriteString("&lt;")
+		case r == '>':
+			b.WriteString("&gt;")
+		case r == '&':
+			b.WriteString("&amp;")
+		case r < 0x80 && strings.ContainsRune("!#$%()*+:;?@[\\]^_`{|}~", r):
+			b.WriteByte('\\')
+			b.WriteRune(r)
+		default:
+			b.WriteRune(r)
 		}
 	}
 	return b.String()
@@ -431,6 +462,20 @@ func newServeMemoryManager(dir string, cfg memory.MemoryConfig) *memory.MemoryMa
 	return memory.NewMemoryManager(dir, nil, cfg)
 }
 
+// attachServeMemoryGuard installs the configured injection guard on mm —
+// the same detector the agent's memory tool and `odek memory facts` consult
+// on every fact write — and returns its closer. An error (a sidecar that
+// cannot be set up with fallback_to_local off) means the write must be
+// refused rather than checked by the local scan alone.
+func attachServeMemoryGuard(mm *memory.MemoryManager, gcfg guard.Config) (func(), error) {
+	g, err := guard.New(&gcfg)
+	if err != nil {
+		return func() {}, err
+	}
+	mm.SetGuard(g, gcfg)
+	return func() { _ = g.Close() }, nil
+}
+
 // splitFactEntries splits a raw facts-file body into entries. Entries are
 // separated by a line containing only "§" (memory.entrySep).
 func splitFactEntries(content string) []string {
@@ -503,9 +548,10 @@ func factCap(configured, def int) int {
 }
 
 // handleMemoryFactsAdd appends a fact via the same MemoryManager path the
-// agent's memory tool uses (including the unsafe-content filter).
+// agent's memory tool uses (including the unsafe-content filter and the
+// configured guard sidecar).
 // POST {target: "user"|"env", content: "..."}
-func handleMemoryFactsAdd(memoryDir string, cfg memory.MemoryConfig) http.HandlerFunc {
+func handleMemoryFactsAdd(memoryDir string, cfg memory.MemoryConfig, gcfg guard.Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -527,7 +573,14 @@ func handleMemoryFactsAdd(memoryDir string, cfg memory.MemoryConfig) http.Handle
 			http.Error(w, "content required", http.StatusBadRequest)
 			return
 		}
-		if err := newServeMemoryManager(memoryDir, cfg).AddFact(body.Target, body.Content); err != nil {
+		mm := newServeMemoryManager(memoryDir, cfg)
+		closeGuard, err := attachServeMemoryGuard(mm, gcfg)
+		defer closeGuard()
+		if err != nil {
+			http.Error(w, "memory guard unavailable: "+err.Error(), http.StatusServiceUnavailable)
+			return
+		}
+		if err := mm.AddFact(body.Target, body.Content); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
@@ -701,11 +754,19 @@ type skillSummary struct {
 	Source      string `json:"source"`
 	NeedsReview bool   `json:"needs_review"`
 	Untrusted   bool   `json:"untrusted"`
+	// RequiresForce is the promote gate's own condition: promoting this
+	// skill needs force (untrusted origin, or any provenance source —
+	// every project-dir skill carries "project").
+	RequiresForce bool `json:"requires_force"`
 }
 
 // handleSkills lists discovered skills with their provenance state, so the
 // operator can see what the agent may auto-load and what is pinned
 // NeedsReview (excluded from trigger matching until promoted).
+// skillReviewReadFile reads the SKILL.md whose hash binds a WebUI promote.
+// Tests replace it to simulate a file rewritten after the listing scan.
+var skillReviewReadFile = os.ReadFile
+
 func handleSkills(sc skills.SkillsConfig) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -722,7 +783,25 @@ func handleSkills(sc skills.SkillsConfig) http.HandlerFunc {
 		for _, s := range append(append([]skills.Skill{}, res.AutoLoad...), res.Lazy...) {
 			if name := r.URL.Query().Get("name"); name != "" {
 				if s.Name == name {
-					writeAPIJSON(w, http.StatusOK, s)
+					// sha256 is the hash of the reviewed file; the promote
+					// request sends it back with source.path so exactly the
+					// reviewed copy, unchanged, is promoted.
+					data, err := skillReviewReadFile(s.Source.Path)
+					if err != nil {
+						http.Error(w, "skill unreadable", http.StatusNotFound)
+						return
+					}
+					// The shown skill and the hash must describe the same
+					// bytes: a file rewritten since the scan is refused.
+					if !skills.SameSkillContent(data, s) {
+						http.Error(w, "skill changed while loading; reload to review the current file", http.StatusConflict)
+						return
+					}
+					sum := sha256.Sum256(data)
+					writeAPIJSON(w, http.StatusOK, struct {
+						skills.Skill
+						SHA256 string `json:"sha256"`
+					}{s, hex.EncodeToString(sum[:])})
 					return
 				}
 				continue
@@ -735,6 +814,8 @@ func handleSkills(sc skills.SkillsConfig) http.HandlerFunc {
 				Source:      s.Source.Dir,
 				NeedsReview: s.Provenance.NeedsReview,
 				Untrusted:   s.Provenance.Untrusted,
+				RequiresForce: s.Provenance.NeedsReview &&
+					(s.Provenance.Untrusted || len(s.Provenance.Sources) > 0),
 			})
 		}
 		if r.URL.Query().Get("name") != "" {
@@ -939,7 +1020,9 @@ func handleMCPServers(resolved config.ResolvedConfig) http.HandlerFunc {
 // handleSkillPromote is the REST face of `odek skill promote` — clears
 // NeedsReview so a skill can auto-load. Tainted skills (untrusted origin)
 // still require force, exactly like the CLI. Operator-gated by the
-// instance token; the agent cannot call it.
+// instance token; the agent cannot call it. path and sha256 (from
+// GET /api/skills?name=) bind the promotion to the reviewed file; without
+// them a name carried by several SKILL.md files is refused.
 func handleSkillPromote() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -947,8 +1030,10 @@ func handleSkillPromote() http.HandlerFunc {
 			return
 		}
 		var body struct {
-			Name  string `json:"name"`
-			Force bool   `json:"force"`
+			Name   string `json:"name"`
+			Path   string `json:"path"`
+			SHA256 string `json:"sha256"`
+			Force  bool   `json:"force"`
 		}
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&body); err != nil {
 			http.Error(w, "invalid JSON", http.StatusBadRequest)
@@ -958,7 +1043,7 @@ func handleSkillPromote() http.HandlerFunc {
 			http.Error(w, "name required", http.StatusBadRequest)
 			return
 		}
-		if err := promoteSkill(expandHome("~/.odek/skills"), body.Name, body.Force); err != nil {
+		if err := promoteSkillAt(expandHome("~/.odek/skills"), body.Name, body.Path, body.SHA256, body.Force); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
@@ -997,6 +1082,12 @@ func handleMemoryConsolidate(memoryDir string, resolved config.ResolvedConfig) h
 		}
 		if body.Mode == "apply" {
 			mm := memory.NewMemoryManager(memoryDir, nil, resolved.Memory)
+			closeGuard, err := attachServeMemoryGuard(mm, resolved.Guard)
+			defer closeGuard()
+			if err != nil {
+				http.Error(w, "memory guard unavailable: "+err.Error(), http.StatusServiceUnavailable)
+				return
+			}
 			if err := mm.ApplyConsolidation(body.Target, body.Preview); err != nil {
 				http.Error(w, err.Error(), http.StatusConflict)
 				return
@@ -1017,6 +1108,12 @@ func handleMemoryConsolidate(memoryDir string, resolved config.ResolvedConfig) h
 			cfg.Enabled = &t
 		}
 		mm := memory.NewMemoryManager(memoryDir, client, cfg)
+		closeGuard, err := attachServeMemoryGuard(mm, resolved.Guard)
+		defer closeGuard()
+		if err != nil {
+			http.Error(w, "memory guard unavailable: "+err.Error(), http.StatusServiceUnavailable)
+			return
+		}
 		if body.Mode == "preview" {
 			preview, err := mm.PreviewConsolidation(body.Target)
 			if err != nil {

@@ -11,8 +11,8 @@ odek serve
 ```
 
 Open the printed **token URL** in your browser — the token authenticates the
-WebSocket handshake and every `/api/*` call (cookie + `X-Odek-Ws-Token`
-header + `odek.<token>` subprotocol). A plain `http://localhost:8080` loads
+WebSocket handshake and every `/api/*` call (`X-Odek-Ws-Token`
+header or `odek.<token>` subprotocol; never a cookie, which browsers send to every port of the host). A plain `http://localhost:8080` loads
 the UI but cannot connect until you use the token URL. The UI reconnects
 automatically (exponential backoff, 1s → 30s cap) if the server restarts.
 
@@ -67,8 +67,8 @@ Two token layers:
 1. **Instance token** (one per `odek serve` process) — printed to stderr as
    the token URL (`http://127.0.0.1:8080/?token=<64-hex>`) at startup.
    Present it as the `X-Odek-Ws-Token` header on every REST call, and/or as
-   the `odek.<token>` WebSocket subprotocol, and/or rely on the
-   `odek_ws_token` cookie a browser obtained from the token URL. Without it
+   the `odek.<token>` WebSocket subprotocol. The browser UI keeps the token it received from the token URL in
+   origin-scoped `localStorage`. Without it
    every `/api/*` call is **403** and the WS handshake is rejected.
 2. **Session token** (per session) — required by session-scoped mutations
    and detail reads (`X-Session-Token` header). A fresh token is issued
@@ -83,7 +83,7 @@ Two token layers:
 ### Minimal interactive flow (WebSocket)
 
 1. Read the token URL from serve's stderr; extract the token.
-2. `GET /?token=<t>` (optional — validates the token, sets the cookie).
+2. `GET /?token=<t>` (optional — validates the token and expires any legacy `odek_ws_token` cookie).
 3. Open `ws://…/ws` with subprotocol `odek.<t>` → receive `server_info`.
 4. Send `{"type":"prompt","content":"…","session_id":null}` → receive
    `session` (capture `session_id` + `auth_token`), then `thinking_delta` /
@@ -126,7 +126,7 @@ Two token layers:
 - **Errors**: `403` missing/invalid instance token; `401` missing/invalid
   session token; `404` unknown id; `400` malformed input; `405` wrong
   method; `429` session-detail rate limit (60/min per IP).
-- **Limits**: WS frame ≤ 8 MiB; ≤ 20 concurrent WS connections; 30 WS
+- **Limits**: WS message ≤ 16 MiB (room for a 1 MiB prompt plus 10 MiB of inline attachments after JSON escaping; a larger message is discarded unread and answered with an `error` frame, the connection closes on the third, and the UI refuses to send one; messages waiting while a prompt runs may total 16 MiB per connection, beyond that they are refused with a `busy: … queue full` error frame); ≤ 20 concurrent WS connections; 30 WS
   upgrades/min per IP; prompt ≤ 1 MiB; attachments ≤ 5 MiB each / 10 MiB
   total; model ids ≤ 128 chars matching `[A-Za-z0-9_.:/@-]+`; REST request
   bodies ≤ 2 MiB on the runs surface (`POST /api/prompt`), ≤ 1 MiB on the
@@ -196,7 +196,7 @@ User-requested action confirmations and actionable errors remain visible.
 - **Wake turns** — `turn_started.initiated=system` renders as `⬡ odek · wake` on the assistant head, never as a user message
 - **Busy spinner** — Bodek braille spinner in the top bar, composer rail, and transcript while a turn runs (`reasoning · 4s`). The spinner keeps moving across thinking, tools, and approval waits — removing the transcript placeholder does not freeze it.
 - **Live plan & jobs** — Bodek header chips (`plan 1/4`, `● 2 jobs` / `✗ job`) stay visible when idle; click opens the inspector Now tab. While a turn runs the status rail appends `▸ plan 2/5 · <active step> · ⛔N`. Plan progress is agent-reported; the UI refreshes persisted state after tool results and provides a verification action.
-- **Markdown** — hand-written tokenizer (zero deps, no CDN): headings, lists, task lists, quotes, GFM tables, fenced code with copy, emphasis, strikethrough, allowlisted links/autolinks. Images are caption links, never `<img>` (CSP + no remote fetch). Streaming-safe: an open fence still renders; an open `**` stays literal.
+- **Markdown** — hand-written tokenizer (zero deps, no CDN): headings, lists, task lists, quotes, GFM tables, fenced code with copy, emphasis, strikethrough, allowlisted links/autolinks (autolink candidates are capped at 2048 characters so rendering stays linear on hostile text). Images are caption links, never `<img>` (CSP + no remote fetch). Streaming-safe: an open fence still renders; an open `**` stays literal. Reloaded user turns show the text the operator typed (`principal_prompt`) with attachment chips; expanded `@`-reference bodies and system-initiated `bg-*` records are never rendered as operator text.
 - **Live streaming** *(on by default; `--no-stream` / `stream: false` / `ODEK_STREAM=false`)* — answer and reasoning fragments arrive as they are generated (`token_delta` / `thinking_delta`) and render through the same rAF-batched pipeline; streaming state is in the health popover. Providers that reject SSE fall back silently to the bulk path.
 - **Reasoning, partial replies, and tools** — one sequential log per turn. Reasoning is collapsed behind a **▶ thinking** toggle (hidden by default; click to expand). Visible assistant text (`token_delta` / `token`, including DeepSeek/GLM mid-turn “Let me look…” replies) is a timeline row sealed when a tool starts so the next tokens open a new row instead of concatenating the turn. Tool heads sit in that same stream in arrival order. Tool args and results stay collapsed until the head is opened; long results truncate behind “show all”. History replays the same interleaved log.
 - **Revised drafts and unverified answers** — when the loop re-asks the model after a final-looking reply (`answer_superseded`), the draft folds into a collapsed `⋯ draft revised (verification|completion check)` row (click to expand) and the revised reply renders as the answer. `done.verified == "fail"` adds a `✗ unverified` chip to the answer's sender line. History replays both: `superseded` records fold the same way, and answers persisted with the verification-failed marker show the chip instead of the marker text.
@@ -305,7 +305,7 @@ The dropdown fetches from `GET /api/resources?q=<query>&limit=8`. Results includ
 ### Background jobs
 
 - `GET /api/jobs` — the authenticated session's background jobs (id, command head, status, runtime, exit code). The command head is secret-redacted before it is clamped, like the `bg_job` frame's `command_head`.
-- `GET /api/jobs/{id}/output?since=N&limit=N` — output window with `next_cursor` for continuation.
+- `GET /api/jobs/{id}/output?since=N&limit=N` — output window with `next_cursor` for continuation. A running job keeps its cursor when the client has caught up; `next_cursor` is 0 only once a finished job's output is fully read.
 - `POST /api/jobs/{id}/stop` — kill a running job.
 
 All three require the same per-instance CSRF token, loopback Host check, and
@@ -316,7 +316,7 @@ minted but never bootstrap-passed on jobs routes). Foreign job ids answer
 `{"status":"unknown"}` (same shape as stale ids — no existence oracle across
 sessions).
 
-All `/api/*` endpoints require the per-instance CSRF token (`odek_ws_token` cookie or `X-Odek-Ws-Token` header) and a loopback `Host` header; state-changing methods additionally require a local `Origin`. Missing/invalid credentials return 403.
+All `/api/*` endpoints require the per-instance CSRF token (`X-Odek-Ws-Token` header) and a loopback `Host` header; state-changing methods additionally require a local `Origin`. Missing/invalid credentials return 403.
 
 Every response carries `Cache-Control: no-store`. The surface covers six
 groups, detailed below: **sessions** (search/list, detail, rename/pin,
@@ -369,9 +369,13 @@ The core session CRUD (session-token gated):
   instance token bootstraps and returns it for sessions you didn't create.
   Rate-limited to 60 lookups/min per IP (**429** beyond that).
 - **POST** `{"name"?: string, "pinned"?: bool}` — rename and/or pin;
-  at least one field required (**400** otherwise). A failed save (disk,
-  permissions, revision conflict) returns **500** instead of echoing an
-  unpersisted change.
+  at least one field required (**400** otherwise). A `name` over 200
+  characters is refused with **400** (the title rides in every session
+  listing row). The edit is
+  metadata-only: it does not advance the transcript revision, so a turn
+  running on the session keeps checkpointing and its saves keep the new
+  title/pin (neither the edit nor the turn is lost). A failed save (disk,
+  permissions) returns **500** instead of echoing an unpersisted change.
 - **DELETE** — removes the session and its index entry; **204**.
 
 ### `GET /api/sessions/{id}/plan`
@@ -527,15 +531,15 @@ to `…/plan` do not fall through to the base-session mutators.
 Operator-gated memory management (the REST face of `odek memory`):
 
 - `GET /api/memory` → facts grouped by target (`user` / `env`, entries split on the `§` separator), configured caps, episode totals, and the pending-review queue (tainted episodes stored but excluded from recall). Each pending entry carries the full stored episode text in `summary` (the text recall would replay, not the 120-character index cut), sanitised with `danger.SanitizeForDisplay`, plus `summary_sha256`, the hash of the raw stored text.
-- `POST /api/memory/facts` `{target:"user"|"env", content}` — adds through the same MemoryManager path the agent's memory tool uses, including the unsafe-content filter (`curl … | sh`-style facts are rejected).
-- `DELETE /api/memory/facts` `{target, old_text}` — removes the matching entry.
+- `POST /api/memory/facts` `{target:"user"|"env", content}` — adds through the same MemoryManager path the agent's memory tool uses, including the unsafe-content filter (`curl … | sh`-style facts are rejected) and the configured `guard` sidecar. When the sidecar cannot be set up and `guard.fallback_to_local` is false, the write is refused with `503`. Consolidation preview and apply scan the merged facts the same way.
+- `DELETE /api/memory/facts` `{target, old_text}` — removes the matching entry: the one entry containing `old_text`, or the entry equal to it when longer entries also contain it (the memory panel sends the row's full text).
 - `POST /api/memory/episodes/promote` `{session_id, summary_sha256}` → `200 {session_id, summary, sources}` — promotes a tainted episode to recallable, the same human gate as the CLI. `summary_sha256` is required (`400` without it): it is the hash from the pending listing of the text the operator reviewed. The store compares it with the stored text under the episode lock and promotes only on a match; a changed summary gets `409` and nothing is promoted. The response shows the promoted text (sanitised) and its taint sources. (Earlier versions accepted `{session_id}` alone and answered `204 No Content`; clients must now send the hash and read a JSON body.) The agent cannot reach these endpoints (its browser/http tools refuse loopback via the SSRF guard, and it never holds the instance token), so the gate stays human.
 - **Memory panel.** The memory workspace lists pending episodes with the full sanitised summary, the taint sources, and the first 12 characters of `summary_sha256`. **promote** asks for confirmation that names the sources and the hash prefix, then sends the hash it displayed. A `409` (summary changed), a stale-hash `400` or any other client error (for example, the episode was already promoted or discarded elsewhere) reloads the list, so the operator reviews current state. Server and network failures leave the row in place for a retry. The confirmation also shows the summary length. An entry without `summary_sha256` (its text could not be read) has promote disabled, and the reason is shown as text in the row. The success notice reports the promoted length and sources from the response.
 - `POST /api/memory/episodes/discard` `{session_id}` — removes a pending (untrusted, unapproved) episode permanently (index entry + summary file). Refuses episodes that are approved, trusted, or auto-approved — only quarantine-removal goes through this gate. Same operator-only access as promote; CLI twin: `odek memory discard <session_id>`.
 
 ### `GET /api/skills`
 
-Skill listing with provenance: `name`, `description`, `auto_load`, `usage_count`, `source` (directory), `needs_review`, `untrusted`. Bodies are omitted (size and injection hygiene — load them via the agent's `skill_load`). Skills pinned `needs_review` are excluded from trigger matching and from `skill_load` (agent-side body reads) until `odek skill promote`.
+Skill listing with provenance: `name`, `description`, `auto_load`, `usage_count`, `source` (directory), `needs_review`, `untrusted`, `requires_force` (a pending skill whose promote needs `force`: untrusted origin or any provenance source, which includes every project-dir skill). The Skills panel labels such rows **force promote**, asks for confirmation, and sends `force` from this flag. Bodies are omitted (size and injection hygiene — load them via the agent's `skill_load`). Skills pinned `needs_review` are excluded from trigger matching and from `skill_load` (agent-side body reads) until `odek skill promote`.
 
 ### `GET /api/tools`
 
@@ -571,7 +575,7 @@ answerable over REST:
 | `/api/runs/{id}` | DELETE | Cancel |
 | `/api/runs/{id}/cancel` | POST | Cancel (reports `idle:true` when already finished) |
 | `/api/runs/{id}/approvals` | GET | Pending approval requests (risk, command) |
-| `/api/runs/{id}/approvals/{aid}` | POST | `{action: "approve" \| "deny" \| "trust"}` |
+| `/api/runs/{id}/approvals/{aid}` | POST | `{action: "approve" \| "deny" \| "trust"}`; the response reports the action actually applied (`trust` becomes `approve` for classes that never offer trust or while friction is engaged) |
 
 Answers flow through the same `wsApprover` path as the WebUI — trust
 caching matches, and friction flags are exposed the same way. Typed
@@ -603,7 +607,7 @@ same ring.
 ### `GET /api/usage`
 
 Server-lifetime aggregates: `prompts_started/completed/failed`,
-`tokens_in/out`, `estimated_cost_usd` via `limits.ResolvePrices`,
+`tokens_in/out`, `estimated_cost_usd` (each turn priced with `limits.ResolvePrices` for the model it actually ran on, so per-run and per-prompt model overrides use their own `model_prices`),
 `prices_configured` (false ⇒ render costs as "unavailable"), and plan
 rollup `plans_created` / `plans_updated` / `plans_blocked` (counts only).
 Sessions also carry cumulative `input_tokens`/`output_tokens` (shown in
@@ -618,7 +622,7 @@ run id for headless runs), redacted + truncated `goal`, `phase`
 `step`, `last_tool`, `duration_seconds`, `tokens_used`. Narrow further with
 `?key=<run_key>`. The WebSocket `subagent_cancel` message likewise only stops tasks owned by the authenticated session (a foreign task id replies `accepted:false`).
 
-Operator view: `GET /api/subagents` without `session_id` lists every run's tasks, but only when the caller presents the instance token in the `X-Odek-Ws-Token` header (the ambient cookie is not enough) and any `Origin` header is local; otherwise it answers 400/403. Each entry carries the owning `session_id` when known.
+Operator view: `GET /api/subagents` without `session_id` lists every run's tasks, but only when the caller presents the instance token in the `X-Odek-Ws-Token` header (no ambient credential is enough) and any `Origin` header is local; otherwise it answers 400/403. Each entry carries the owning `session_id` when known.
 
 ### `GET /api/connections` · `DELETE /api/connections/{id}`
 
@@ -645,9 +649,15 @@ withheld (they may carry credentials).
 
 ### `POST /api/skills/promote`
 
-`{name, force?}` — the REST face of `odek skill promote`: clears
-NeedsReview so a skill can auto-load. Tainted skills and every project-dir
-(`./.odek/skills/`) skill still require `force`.
+`{name, path?, sha256?, force?}` — the REST face of `odek skill promote`:
+clears NeedsReview so a skill can auto-load. Tainted skills and every
+project-dir (`./.odek/skills/`) skill still require `force`. `name` is the
+skill's frontmatter name, never its directory name. `path` and `sha256` are
+the `source.path` and `sha256` of the reviewed copy from
+`GET /api/skills?name=` (which hashes the same bytes it shows, and answers
+`409` if the file changed while it was being read): the server promotes exactly that file, and only
+while its content still hashes to `sha256` (otherwise `400`, nothing is
+promoted). Without `path`, a name carried by more than one `SKILL.md` in the user and project skill dirs is refused, whatever the copies' states, since the server cannot tell which one was reviewed; the error lists every copy with its state. The Skills panel always sends both.
 
 ### `POST /api/memory/consolidate`
 
@@ -671,8 +681,8 @@ listings return pinned sessions first, and both list and detail carry
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--addr <addr>` | `127.0.0.1:8080` | Listen address (loopback by default; e.g. `--addr localhost:9090`). Binding a non-loopback address prints a loud warning |
-| `--open` | false | Open browser automatically after starting |
+| `--addr <addr>` | `127.0.0.1:8080` | Listen address (loopback by default; e.g. `--addr localhost:9090`). Binding a non-loopback address prints a loud warning; a wildcard bind (`0.0.0.0`, `[::]`) prints a `127.0.0.1` token URL because Host and Origin checks accept loopback names only; a bind to one specific non-loopback IP warns that its URL answers 403 unless reached through a proxy or tunnel presenting a localhost Host and Origin |
+| `--open` | false | Open the token URL in the system browser after starting (`open` on macOS, `xdg-open`/`gnome-open` on Linux, run by absolute path from the root-owned `/usr/bin` or `/bin`; never resolved against the workspace) |
 | `--tool <name>` | — | Enable a specific tool for served runs (repeatable; highest-priority whitelist layer) |
 | `--no-tool <name>` | — | Disable a specific tool for served runs (repeatable; merged with lower-priority disabled lists) |
 | `--trusted-proxies <ips/cidrs>` | — | Client IPs trusted for `X-Forwarded-For` / `X-Real-Ip` resolution, used by rate limiting. **Only set this for proxies you control** — a spoofed header from an untrusted client defeats per-IP rate limits |
@@ -689,7 +699,7 @@ Plus the shared sandbox flags (`--sandbox`, `--no-sandbox`, `--sandbox-image`, �
 
 ## WebSocket Protocol
 
-The UI communicates entirely over a single WebSocket at `/ws`. Messages are newline-delimited JSON. The server streams events for a prompt until `done`, and the client may send control frames on the same socket (`cancel`, `subagent_cancel`, `ping`, `approval_response`, `session_switch` — see [Client → Server](#client--server)).
+The UI communicates entirely over a single WebSocket at `/ws`. Messages are newline-delimited JSON. The server streams events for a prompt until `done`, and the client may send control frames on the same socket (`cancel`, `subagent_cancel`, `ping`, `approval_response`, `session_switch`, `session_new` — see [Client → Server](#client--server)).
 
 ### Client → Server
 
@@ -699,7 +709,8 @@ The UI communicates entirely over a single WebSocket at `/ws`. Messages are newl
 {
   "type": "prompt",
   "content": "What files are in src/?",
-  "session_id": "20260519-abc123",  // optional — omit for new session
+  "session_id": "20260519-abc123",  // optional — omit for a new session, also on a
+                                    // connection that already ran turns for another one
   "auth_token": "…",                // when continuing a session
   "model": "glm-5.3",               // optional per-run model override
   "thinking": "medium",             // optional per-run depth: disabled|low|medium|high (omit = inherit)
@@ -740,11 +751,25 @@ The UI communicates entirely over a single WebSocket at `/ws`. Messages are newl
 // Switch the connection to an existing session without sending a prompt:
 // restores the memory buffer into the connection's agent and emits the
 // standard `session` event.
+// Leaving a session (session_switch, session_new, or a prompt for another
+// session) runs its end-of-session memory step (episode/fact extraction, the
+// same provenance gate as a disconnect) when it ran a turn on this
+// connection. A connection's background jobs belong to one session: the
+// previous session's running jobs are stopped on a switch, or when the new
+// session's first prompt starts after session_new.
 {
   "type": "session_switch",
   "session_id": "20260519-abc123",
   "auth_token": "…"
 }
+
+// Detach the connection from its current session ("New session" in the UI):
+// clears the memory buffer and the session token totals, and background
+// wakes for the previous session no longer target this connection. Answered
+// with session_new_ok in queue order; the UI ignores session-bearing frames
+// (of the session it left) until then. The next prompt without session_id
+// creates the new session.
+{ "type": "session_new" }
 ```
 
 ### Server → Client
@@ -777,7 +802,10 @@ The UI communicates entirely over a single WebSocket at `/ws`. Messages are newl
 | `approval_ack` | Server confirms an approval response | `id`, `action` |
 | `approval_expired` | Server declares the approval dead after `timeout_seconds` elapsed with no response — autoclose the matching card; late `approval_response` frames for the id are dropped | `id` |
 | `clarify_request` | Agent asked a principal-channel question (control, bidi and invisible characters escaped); blocks the run up to `timeout_seconds` (300s) | `id`, `question`, `timeout_seconds` |
+| `session_new_ok` | Ack for `session_new`, sent after every frame queued before it | — |
+| `session_new_rejected` | `session_new` refused because the connection's queue is full; the connection stays on its current session. The UI re-sends `session_new` (1s apart, up to 10 times) and then stops waiting | `message` |
 | `clarify_ack` | Server confirms a clarify answer | `id` |
+| `clarify_rejected` | Server refused a clarify answer for a still-pending question (over 32000 characters, or blank); the card re-enables so the answer can be edited and resent | `id`, `reason` |
 | `clarify_expired` | Server declares the question dead after `timeout_seconds` with no answer | `id` |
 | `skill_event` | Skill lifecycle event (`loaded`/`autoloaded`/`used`/`deleted` — `skill_save`/`skill_patch` were removed with the self-learning feature) | `event`, `skill_name`, `skills`, `heuristic` |
 | `memory_event` | Memory lifecycle event | `event`, `target`, `session_id`, `content`, `count`, `new_count`, `untrusted` |
@@ -991,10 +1019,10 @@ New operator-authenticated endpoints:
 | Endpoint | Behavior |
 | --- | --- |
 | `GET /api/capabilities` | Additive feature flags and result renderer families. Missing flags mean unavailable. |
-| `GET /api/skills?name=NAME` | Full discovered skill body and provenance for human review. |
+| `GET /api/skills?name=NAME` | Full discovered skill body and provenance for human review, plus `sha256` (hash of the `SKILL.md` at `source.path`) to bind a promote to the reviewed copy. |
 | `GET /api/tools` | Adds descriptions and JSON schemas to built-in registry entries. |
 | `GET /api/schedules` | Shared scheduler definitions, runtime states and next-fire previews. |
-| `POST /api/schedules` | Create a schedule using the CLI's validation and file locks. |
+| `POST /api/schedules` | Create a schedule using the CLI's validation and file locks. Task ≤ 32000 characters, name ≤ 200 characters (counted in characters, not bytes). |
 | `POST /api/schedules/{id}` | Replace a schedule definition, preserving identity and creation time. |
 | `DELETE /api/schedules/{id}` | Delete a schedule. |
 | `GET /api/maintenance` | Operator-resolved retention policy. |
@@ -1133,6 +1161,6 @@ additionally supplies `recovery_revision` and `recovery_generation`; both must
 match the session loaded under execution ownership, otherwise the turn fails
 without executing. `permissions_get` snapshots temporary grants;
 `permissions_revoke` clears grants on this connection. `clarify_response` accepts
-`action: "answer"` (default) or `"skip"`; Skip returns a skipped-question tool
+`action: "answer"` (default, at most 32000 characters) or `"skip"`; Skip returns a skipped-question tool
 error without inventing an answer. `clarify_ack.action` confirms that choice.
 Existing protocol clients may omit these additive fields.

@@ -87,6 +87,18 @@ export function drainQueue() {
 S.drainQueue = drainQueue;
 S.pauseQueue = () => { S.queuePaused = true; renderQueueStrip(); };
 
+// WS_MESSAGE_LIMIT_BYTES mirrors the server's WebSocket message cap
+// (maxWSMessageBytes in serve.go).
+export const WS_MESSAGE_LIMIT_BYTES = 16 * 1024 * 1024;
+
+// promptFrameBytes estimates the encoded size of a prompt frame: the JSON
+// text in UTF-8 plus headroom for the small fields sent alongside.
+export function promptFrameBytes(text, attachments) {
+  const json = JSON.stringify({ content: text, attachments });
+  const bytes = typeof TextEncoder === 'function' ? new TextEncoder().encode(json).length : json.length * 3;
+  return bytes + 4096;
+}
+
 // ── Send ──
 export function send(recoveryCheckpoint) {
   if (recoveryCheckpoint && !('recovery_revision' in recoveryCheckpoint)) recoveryCheckpoint = undefined;
@@ -116,6 +128,13 @@ export function send(recoveryCheckpoint) {
     const chips = S.attachedFiles.map(f => '📎 ' + f.name + ' (' + formatFileSize(f.size) + ')').join('\n');
     display = chips + (text ? '\n\n' + text : '');
     attachments = S.attachedFiles.map(f => ({ name: f.name, content: f.content, ...(f.upload_id ? {upload_id:f.upload_id} : {}) }));
+    // The server drops a WebSocket message over its cap; refuse here with a
+    // clear reason and keep the prompt and attachments for editing.
+    const frameBytes = promptFrameBytes(text, attachments);
+    if (frameBytes > WS_MESSAGE_LIMIT_BYTES) {
+      showToast('Message too large to send (' + formatFileSize(frameBytes) + ', limit ' + formatFileSize(WS_MESSAGE_LIMIT_BYTES) + '). Remove an attachment or shorten the prompt.');
+      return;
+    }
     clearAttachedFiles();
   }
 
@@ -555,8 +574,11 @@ async function checkCompletion() {
     return;
   }
 
-  const query = before.slice(atIdx + 1).split(/\s/)[0];
-  if (!query) {
+  // Complete only while the cursor is inside the @-token: whitespace between
+  // the '@' and the cursor means the reference is finished and the text typed
+  // after it must never be replaced by a completion.
+  const query = before.slice(atIdx + 1);
+  if (!query || /\s/.test(query)) {
     hideCompletion();
     return;
   }
