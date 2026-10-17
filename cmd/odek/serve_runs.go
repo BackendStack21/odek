@@ -866,6 +866,25 @@ func lookupRun(id string) *serveRun {
 	return serveRuns.runs[id]
 }
 
+// sessionHasActiveRun reports whether a non-terminal headless run is bound to
+// the session.
+func sessionHasActiveRun(sessionID string) bool {
+	if sessionID == "" {
+		return false
+	}
+	serveRuns.mu.Lock()
+	defer serveRuns.mu.Unlock()
+	for _, rr := range serveRuns.runs {
+		rr.mu.Lock()
+		match := rr.SessionID == sessionID && !runStatusTerminal(rr.Status)
+		rr.mu.Unlock()
+		if match {
+			return true
+		}
+	}
+	return false
+}
+
 func activeRunCount() int {
 	serveRuns.mu.Lock()
 	defer serveRuns.mu.Unlock()

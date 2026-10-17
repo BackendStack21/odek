@@ -14,6 +14,29 @@ import (
 	"time"
 )
 
+// The wake router decides "idle" from WebSocket connections only. A
+// headless REST run executing on the same session is invisible to it, so a
+// wake turn is queued on the attached connection while the session is busy:
+// the connection blocks on the session execution lock until the REST run
+// ends (its own iterations already drained the completion notice) and then
+// spends a wake turn — and a max_wakes_per_hour slot — on nothing.
+func TestRED_RunsWakeRouterIgnoresActiveRESTRunOnSession(t *testing.T) {
+	resetServeRuns()
+	t.Cleanup(resetServeRuns)
+
+	const sid = "20261017-runs-wake-busy"
+	conn := &wsConnInfo{ID: "conn-runs-wake-busy", SessionID: sid, ConnectedAt: time.Now()}
+	wsConnRegister(conn)
+	t.Cleanup(func() { wsConnUnregister(conn.ID) })
+
+	run := &serveRun{ID: "run-runs-wake-busy", SessionID: sid, Status: "running", StartedAt: time.Now(), pending: map[string]*approvalRequest{}}
+	registerRun(run)
+
+	if got := (wsWakeRouter{}).State(sid); got != wakeBusy {
+		t.Fatalf("wake state with a running REST run on the session = %v, want wakeBusy (%v); the dispatcher will post a wake turn into a busy session", got, wakeBusy)
+	}
+}
+
 // Finished REST runs stay in the registry (up to 100) together with their
 // cleanup closure, which captures the whole agent — and through the
 // engine's per-turn persist callback, the run's full in-memory session.

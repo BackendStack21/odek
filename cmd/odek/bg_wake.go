@@ -378,6 +378,12 @@ func (wsWakeRouter) State(sessionID string) wakeConnState {
 	if len(conns) == 0 {
 		return wakeNoConn
 	}
+	// A headless REST run executing on the session holds its execution
+	// lease and drains the completion notice itself, so the session is busy
+	// even though no attached connection is.
+	if sessionHasActiveRun(sessionID) {
+		return wakeBusy
+	}
 	for _, c := range conns {
 		if c.isBusy() {
 			return wakeBusy // per-SESSION exclusion
@@ -388,6 +394,9 @@ func (wsWakeRouter) State(sessionID string) wakeConnState {
 
 // Post delivers the wake item to an idle bound connection's slot.
 func (wsWakeRouter) Post(sessionID string, item wsClientMsg) bool {
+	if sessionHasActiveRun(sessionID) {
+		return false
+	}
 	for _, c := range wsConnsForSession(sessionID) {
 		if c.isBusy() {
 			continue
