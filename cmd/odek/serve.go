@@ -699,7 +699,7 @@ func newServeMux(d serveMuxDeps) *http.ServeMux {
 	mux.Handle("/api/memory/facts", apiAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodPost:
-			handleMemoryFactsAdd(memoryDir, resolved.Memory)(w, r)
+			handleMemoryFactsAdd(memoryDir, resolved.Memory, resolved.Guard)(w, r)
 		case http.MethodDelete:
 			handleMemoryFactsRemove(memoryDir, resolved.Memory)(w, r)
 		default:

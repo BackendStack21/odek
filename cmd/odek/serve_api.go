@@ -432,6 +432,20 @@ func newServeMemoryManager(dir string, cfg memory.MemoryConfig) *memory.MemoryMa
 	return memory.NewMemoryManager(dir, nil, cfg)
 }
 
+// attachServeMemoryGuard installs the configured injection guard on mm —
+// the same detector the agent's memory tool and `odek memory facts` consult
+// on every fact write — and returns its closer. An error (a sidecar that
+// cannot be set up with fallback_to_local off) means the write must be
+// refused rather than checked by the local scan alone.
+func attachServeMemoryGuard(mm *memory.MemoryManager, gcfg guard.Config) (func(), error) {
+	g, err := guard.New(&gcfg)
+	if err != nil {
+		return func() {}, err
+	}
+	mm.SetGuard(g, gcfg)
+	return func() { _ = g.Close() }, nil
+}
+
 // splitFactEntries splits a raw facts-file body into entries. Entries are
 // separated by a line containing only "§" (memory.entrySep).
 func splitFactEntries(content string) []string {
@@ -504,9 +518,10 @@ func factCap(configured, def int) int {
 }
 
 // handleMemoryFactsAdd appends a fact via the same MemoryManager path the
-// agent's memory tool uses (including the unsafe-content filter).
+// agent's memory tool uses (including the unsafe-content filter and the
+// configured guard sidecar).
 // POST {target: "user"|"env", content: "..."}
-func handleMemoryFactsAdd(memoryDir string, cfg memory.MemoryConfig) http.HandlerFunc {
+func handleMemoryFactsAdd(memoryDir string, cfg memory.MemoryConfig, gcfg guard.Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -528,7 +543,14 @@ func handleMemoryFactsAdd(memoryDir string, cfg memory.MemoryConfig) http.Handle
 			http.Error(w, "content required", http.StatusBadRequest)
 			return
 		}
-		if err := newServeMemoryManager(memoryDir, cfg).AddFact(body.Target, body.Content); err != nil {
+		mm := newServeMemoryManager(memoryDir, cfg)
+		closeGuard, err := attachServeMemoryGuard(mm, gcfg)
+		defer closeGuard()
+		if err != nil {
+			http.Error(w, "memory guard unavailable: "+err.Error(), http.StatusServiceUnavailable)
+			return
+		}
+		if err := mm.AddFact(body.Target, body.Content); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
@@ -1020,6 +1042,12 @@ func handleMemoryConsolidate(memoryDir string, resolved config.ResolvedConfig) h
 		}
 		if body.Mode == "apply" {
 			mm := memory.NewMemoryManager(memoryDir, nil, resolved.Memory)
+			closeGuard, err := attachServeMemoryGuard(mm, resolved.Guard)
+			defer closeGuard()
+			if err != nil {
+				http.Error(w, "memory guard unavailable: "+err.Error(), http.StatusServiceUnavailable)
+				return
+			}
 			if err := mm.ApplyConsolidation(body.Target, body.Preview); err != nil {
 				http.Error(w, err.Error(), http.StatusConflict)
 				return
@@ -1040,6 +1068,12 @@ func handleMemoryConsolidate(memoryDir string, resolved config.ResolvedConfig) h
 			cfg.Enabled = &t
 		}
 		mm := memory.NewMemoryManager(memoryDir, client, cfg)
+		closeGuard, err := attachServeMemoryGuard(mm, resolved.Guard)
+		defer closeGuard()
+		if err != nil {
+			http.Error(w, "memory guard unavailable: "+err.Error(), http.StatusServiceUnavailable)
+			return
+		}
 		if body.Mode == "preview" {
 			preview, err := mm.PreviewConsolidation(body.Target)
 			if err != nil {
