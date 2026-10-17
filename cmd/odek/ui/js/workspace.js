@@ -10,14 +10,23 @@ function textNode(tag, cls, text) {
   const el = document.createElement(tag); el.className = cls; el.textContent = text; return el;
 }
 const outputs = [];S.activityPruned=false;
+let outputBytes = 0;
 export function clearResults() {
-  outputs.length = 0;S.activityPruned=false;
+  outputs.length = 0;outputBytes = 0;S.activityPruned=false;
   const budget=byId("budget-view");if(budget){budget.textContent="Budget usage appears after the first iteration.";budget.classList.remove("budget-exhausted");}
   S.resetArtifacts?.();
   S.resetSupervision?.();S.clearDecisionReceipts?.();
   const detail=byId('output-detail');if(detail){detail.textContent='';detail.hidden=true;}
   const list=byId('output-list');if(list)list.hidden=false;
   paintResults();
+}
+// A burst of results (a parallel tool batch, a session load) repaints the
+// list once per frame instead of rebuilding up to 300 rows per result.
+let paintRAF = null;
+function schedulePaintResults() {
+  if (paintRAF != null) return;
+  const run = () => { paintRAF = null; paintResults(); };
+  paintRAF = typeof requestAnimationFrame === 'function' ? requestAnimationFrame(run) : setTimeout(run, 0);
 }
 function paintResults() {
   const list = byId('output-list');
@@ -30,7 +39,7 @@ function paintResults() {
     if(query && !(item.name+' '+item.preview+' '+item.outcome).toLowerCase().includes(query))continue;
     const button = textNode('button', 'output-item', ''); button.type = 'button';
     button.dataset.outcome=item.outcome;
-    button.append(textNode('span','output-outcome',item.outcome==='completed'?'Returned':item.outcome==='failed'?'Failed':'Unknown'),textNode('span', 'output-kind', resultKind(item.name, item.output)), textNode('strong', 'output-name', item.name), textNode('span', 'output-path', item.preview));
+    button.append(textNode('span','output-outcome',item.outcome==='completed'?'Returned':item.outcome==='failed'?'Failed':'Unknown'),textNode('span', 'output-kind', item.kind ||= resultKind(item.name, item.output)), textNode('strong', 'output-name', item.name), textNode('span', 'output-path', item.preview));
     button.addEventListener('click', () => inspect(item)); list.appendChild(button);
   }
   paintEvidence();
@@ -59,13 +68,13 @@ function openActivityDetails() {
 S.openActivityDetails = openActivityDetails;
 
 S.recordResult = (block, output) => {
-  const item = { block, output, outcome:block.dataset.outcome || 'unknown', turnId:block.dataset.turnId || '', callId:block.dataset.callId || '', name: block.dataset.toolName || 'tool', args: block.dataset.toolArgs || '', preview: toolPreview(block.dataset.toolName || '', block.dataset.toolArgs || '') };
+  const item = { block, output: String(output || ''), outcome:block.dataset.outcome || 'unknown', turnId:block.dataset.turnId || '', callId:block.dataset.callId || '', name: block.dataset.toolName || 'tool', args: block.dataset.toolArgs || '', preview: toolPreview(block.dataset.toolName || '', block.dataset.toolArgs || '') };
   item.stepId=(S.plan?.steps || []).find(step=>step.status==='in_progress')?.id || '';
-  outputs.push(item);
+  outputs.push(item);outputBytes+=item.output.length;
   let pruned=false;
-  while(outputs.length>300 || outputs.reduce((n,result)=>n+result.output.length,0)>16*1024*1024){outputs.shift();pruned=true;}
+  while(outputs.length>300 || outputBytes>16*1024*1024){outputBytes-=outputs.shift().output.length;pruned=true;}
   if(pruned)S.activityPruned=true;
-  paintResults();
+  schedulePaintResults();
   const body = block.querySelector('.tb-body');
   if (body) { const button = textNode('button', 'result-inspect', 'Inspect result ↗'); button.type = 'button'; button.addEventListener('click', () => inspect(item)); body.appendChild(button); }
 };

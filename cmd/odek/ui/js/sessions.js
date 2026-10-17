@@ -7,6 +7,7 @@ import { listSessions, getSession, renameSession as renameSessionAPI, deleteSess
 import { messagesEl, promptEl, sendBtn, sessionListEl, sidebarSearch, cancelBtn } from './dom.js';
 import { escapeHtml, escapeAttr, relativeTime, formatNum, showToast, forceScrollBottom, hideCancel, announce, openDialog, closeDialog, isDialogOpen } from './utils.js';
 import { resetTurnState, hideLoading, renderSessionHistory } from './render.js';
+import { resetTranscriptTrim } from './transcript.js';
 import { clearApprovals } from './approvals.js';
 import { clearClarify } from './clarify.js';
 import { metricsFromSession, resetMetrics } from './metrics.js';
@@ -268,6 +269,7 @@ export function newSession() {
 
   // Clear messages and restore empty state.
   messagesEl.innerHTML = '';
+  resetTranscriptTrim();
   if (S.savedEmptyStateNode) messagesEl.appendChild(S.savedEmptyStateNode);
 
   sessionListEl.querySelectorAll('.session-item').forEach(s => s.classList.remove('active'));
@@ -339,6 +341,7 @@ export async function loadAndRenderSession(sid) {
     promptEl.disabled = false;
 
     messagesEl.innerHTML = '';
+    resetTranscriptTrim();
 
     const messages = sess.messages || [];
     // The full transcript renders now (tool calls, thinking, sub-agents);
@@ -362,6 +365,13 @@ export async function loadAndRenderSession(sid) {
     showToast('Error loading session');
   }
 }
+
+// The transcript-trim marker's reload: rows trimmed from a live turn exist
+// only in the persisted session. Never while a turn runs.
+S.reloadSession = () => {
+  if (S.busy || !S.sessionId) return;
+  loadAndRenderSession(S.sessionId);
+};
 
 // ── Session Rename ──
 // Inline edit: swaps the task label for an input; Enter commits, Esc

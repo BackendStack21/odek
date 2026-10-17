@@ -1248,6 +1248,11 @@ body.workspace-wide #session-rail { box-shadow: none; animation: none; }
 .turn-receipt { margin-left: 8px; font-size: var(--fs-2xs); font-weight: 400; color: var(--text-3); }
 .msg-divider { display: flex; align-items: center; gap: 12px; margin: var(--space-6) 0 var(--space-4); font-size: var(--fs-2xs); font-weight: 600; letter-spacing: .1em; text-transform: uppercase; color: var(--text-3); user-select: none; }
 .msg-divider::before, .msg-divider::after { content: ''; flex: 1; height: 1px; background: var(--line); }
+.transcript-trim { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 6px 12px; margin: 0 0 var(--space-5); font-size: var(--fs-2xs); color: var(--text-3); }
+.tt-text { text-align: center; }
+.tt-more { padding: 2px 10px; border: 1px solid var(--line); border-radius: var(--r-sm); background: transparent; color: var(--amber); font: inherit; font-weight: 600; cursor: pointer; }
+.tt-more:hover:not(:disabled) { color: var(--amber-hi); }
+.tt-more:disabled { color: var(--text-3); cursor: default; }
 .wake-turn .bubble { border-left: 0; }
 .wake-chip { display: none; }
 
@@ -1314,6 +1319,7 @@ body.workspace-wide #session-rail { box-shadow: none; animation: none; }
 .thinking-content.open { display: block; animation: fade-slide var(--dur) var(--ease) both; }
 .thinking-line { display: block; margin: 0 0 .5em; }
 .thinking-line:last-child { margin-bottom: 0; }
+.thinking-trim { display: block; margin: 0 0 .5em; color: var(--text-3); font-style: italic; }
 
 .stream-cursor {
   display: inline-block;
