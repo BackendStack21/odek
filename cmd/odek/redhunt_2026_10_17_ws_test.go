@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"github.com/BackendStack21/odek/internal/memory"
 	"github.com/BackendStack21/odek/internal/session"
 	"io"
 	"net/http"
@@ -804,5 +805,95 @@ func TestRED_WSWakeSlotCountsQueuedBytes(t *testing.T) {
 	}
 	if queued.Load() != held {
 		t.Fatalf("refused post leaked its reservation: %d, want %d", queued.Load(), held)
+	}
+}
+
+// Leaving a session that ran a turn on this connection ("New session", or a
+// switch to another session) runs the end-of-session memory step for it, as a
+// disconnect does; a session that was only viewed is left without one.
+func TestRED_WSLeavingSessionRunsSessionEnd(t *testing.T) {
+	var mu sync.Mutex
+	var ended []string
+	orig := endWSSessionMemoryFn
+	endWSSessionMemoryFn = func(mm *memory.MemoryManager, sess *session.Session) {
+		if sess != nil {
+			mu.Lock()
+			ended = append(ended, sess.ID)
+			mu.Unlock()
+		}
+	}
+	defer func() { endWSSessionMemoryFn = orig }()
+	endedCount := func(id string) int {
+		mu.Lock()
+		defer mu.Unlock()
+		n := 0
+		for _, e := range ended {
+			if e == id {
+				n++
+			}
+		}
+		return n
+	}
+
+	llmSrv := mockLLM(t, func(w http.ResponseWriter, callCount int) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}]}`))
+	})
+	defer llmSrv.Close()
+	envCleanup := setTestEnv(t, llmSrv.URL)
+	defer envCleanup()
+	store := newTestSessionStore(t)
+	viewed, err := store.Create([]session.Message{{Role: "system", Content: ""}}, "m", "viewed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln, mux := buildServeMux(t, store)
+	defer startServeTest(t, ln, mux)()
+	waitForHTTP(t, ln.Addr().String())
+	wsUpgradeLimiter.reset()
+	conn := dialTestWS(t, ln.Addr().String())
+	defer conn.Close()
+
+	if err := golangws.Message.Send(conn, `{"type":"prompt","content":"first conversation"}`); err != nil {
+		t.Fatal(err)
+	}
+	first := wsHuntSessionID(wsHuntReadTurn(t, conn))
+	if err := golangws.Message.Send(conn, `{"type":"session_new"}`); err != nil {
+		t.Fatal(err)
+	}
+	// session_switch to a session that is only viewed, then leave it.
+	sw, _ := json.Marshal(map[string]any{"type": "session_switch", "session_id": viewed.ID, "auth_token": viewed.AuthToken})
+	if err := golangws.Message.Send(conn, string(sw)); err != nil {
+		t.Fatal(err)
+	}
+	conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+	for {
+		var evt map[string]any
+		if err := readJSON(conn, &evt); err != nil {
+			t.Fatalf("waiting for the switch: %v", err)
+		}
+		if evt["type"] == "session" && evt["session_id"] == viewed.ID {
+			break
+		}
+	}
+	if err := golangws.Message.Send(conn, `{"type":"session_new"}`); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for endedCount(first) == 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("leaving %s with New session did not run the session-end step", first)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	// Let the session_new for the viewed session be processed.
+	for wsFixConnectionsBoundTo(t, viewed.ID) != 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("viewed session never detached")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if endedCount(first) != 1 || endedCount(viewed.ID) != 0 {
+		t.Fatalf("session-end counts: ran=%d viewed=%d, want 1 and 0", endedCount(first), endedCount(viewed.ID))
 	}
 }

@@ -750,6 +750,12 @@ The UI communicates entirely over a single WebSocket at `/ws`. Messages are newl
 // Switch the connection to an existing session without sending a prompt:
 // restores the memory buffer into the connection's agent and emits the
 // standard `session` event.
+// Leaving a session (session_switch, session_new, or a prompt for another
+// session) runs its end-of-session memory step (episode/fact extraction, the
+// same provenance gate as a disconnect) when it ran a turn on this
+// connection. A connection's background jobs belong to one session: the
+// previous session's running jobs are stopped on a switch, or when the new
+// session's first prompt starts after session_new.
 {
   "type": "session_switch",
   "session_id": "20260519-abc123",

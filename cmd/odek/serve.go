@@ -1829,11 +1829,26 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 	// Session-level token economics (cumulative across all turns)
 	var sessionInputTokens, sessionOutputTokens int
 
+	// ranOn is the session that ran a turn on this connection since it was
+	// attached. leaveSession runs the end-of-session memory step for it when
+	// the connection moves to another session (or none), as a disconnect
+	// does; a session that was only viewed is left without one.
+	ranOn := ""
+	leaveSession := func(nextID string) {
+		if currentSession != nil && currentSession.ID != nextID && currentSession.ID == ranOn {
+			endWSSessionMemoryFn(agent.Memory(), currentSession)
+		}
+		if currentSession == nil || currentSession.ID != nextID {
+			ranOn = ""
+		}
+	}
+
 	// detachSession leaves the connection without a current session: the
 	// next prompt without a session_id creates a new one, starting from an
 	// empty memory buffer and zero session token totals, and background
 	// wakes for the previous session no longer target this connection.
 	detachSession := func() {
+		leaveSession("")
 		currentSession = nil
 		sessionInputTokens, sessionOutputTokens = 0, 0
 		connInfo.setLive("", false)
@@ -1868,6 +1883,7 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 					writeWSError(conn, wsLookupRejectMsg(conn, "invalid session token"))
 					continue
 				}
+				leaveSession(sess.ID)
 				currentSession = sess
 				connInfo.setLive(sess.ID, false)
 				// Background jobs started from here on belong to the newly
@@ -1958,6 +1974,9 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 				// through handlePrompt must not latch Busy=true forever.
 				defer connInfo.setLive(wake.SessionID, false)
 				currentSession = handlePrompt(context.WithValue(promptCtx, serveApproverKey{}, approver), wsSend, store, resources, resolved, agent, injectionGuard, currentSession, wakeMsg, &sessionInputTokens, &sessionOutputTokens, promptCancelWithApproval, &deltas, bgRT, turnTag)
+				if currentSession != nil {
+					ranOn = currentSession.ID
+				}
 			}()
 			promptCancel()
 			continue
@@ -2011,6 +2030,7 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 				writeWSError(conn, wsLookupRejectMsg(conn, "invalid session token"))
 				continue
 			}
+			leaveSession(sess.ID)
 			currentSession = sess
 			// Reset the in-memory buffer to the resumed session's state.
 			// Without the clear, switching to a session whose saved buffer is
@@ -2084,6 +2104,9 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 				connInfo.setLive(sid, false)
 			}()
 			currentSession = handlePrompt(context.WithValue(context.WithValue(promptCtx, serveApproverKey{}, approver), serveAcceptSwitchKey{}, acceptSwitch), wsSend, store, resources, resolved, agent, injectionGuard, currentSession, msg, &sessionInputTokens, &sessionOutputTokens, promptCancelWithApproval, &deltas, bgRT, turnTag)
+			if currentSession != nil {
+				ranOn = currentSession.ID
+			}
 		}()
 		connInfo.recordPrompt()
 		sid := ""
@@ -2097,13 +2120,23 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 	}
 
 	// WebSocket disconnected — extract episode if enough turns
-	if currentSession != nil {
-		if mm := agent.Memory(); mm != nil {
-			msgStrs := makeSessionMessageStrings(currentSession)
-			prov := memory.DeriveSessionProvenance(currentSession)
-			mm.OnSessionEndWithProvenance(currentSession.ID, currentSession.Turns, msgStrs, prov)
-		}
+	endWSSessionMemoryFn(agent.Memory(), currentSession)
+}
+
+// endWSSessionMemoryFn is endWSSessionMemory; tests swap it to observe which
+// sessions a connection ends.
+var endWSSessionMemoryFn = endWSSessionMemory
+
+// endWSSessionMemory runs the end-of-session memory step (episode and fact
+// extraction, gated on turns and the session's provenance taint) for a
+// session the WebSocket connection is leaving.
+func endWSSessionMemory(mm *memory.MemoryManager, sess *session.Session) {
+	if mm == nil || sess == nil {
+		return
 	}
+	msgStrs := makeSessionMessageStrings(sess)
+	prov := memory.DeriveSessionProvenance(sess)
+	mm.OnSessionEndWithProvenance(sess.ID, sess.Turns, msgStrs, prov)
 }
 
 // handleWSCancel processes a WebSocket cancel message. Auth mirrors
