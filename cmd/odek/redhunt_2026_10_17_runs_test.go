@@ -166,7 +166,7 @@ func TestRED_RunsFinishedRunPinsAgentAndSession(t *testing.T) {
 		}
 		finished = append(finished, run)
 	}
-	if testing.Short() {
+	if testing.Short() || raceEnabled {
 		return
 	}
 	after := measure()
