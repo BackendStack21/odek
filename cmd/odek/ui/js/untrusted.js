@@ -141,7 +141,7 @@ export function stripAttachmentBodies(content) {
   if (!content) return '';
   return parseUntrusted(content).map((seg) => {
     if (seg.source && seg.source.startsWith('attachment:')) {
-      return '📎 ' + seg.source.slice('attachment:'.length) + '\n';
+      return '📎 ' + displayLabel(seg.source.slice('attachment:'.length)) + '\n';
     }
     if (seg.source && seg.source.startsWith('resource:')) {
       // @-reference bodies are untrusted file/session text the server
