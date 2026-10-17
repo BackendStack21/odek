@@ -654,7 +654,8 @@ clears NeedsReview so a skill can auto-load. Tainted skills and every
 project-dir (`./.odek/skills/`) skill still require `force`. `name` is the
 skill's frontmatter name, never its directory name. `path` and `sha256` are
 the `source.path` and `sha256` of the reviewed copy from
-`GET /api/skills?name=`: the server promotes exactly that file, and only
+`GET /api/skills?name=` (which hashes the same bytes it shows, and answers
+`409` if the file changed while it was being read): the server promotes exactly that file, and only
 while its content still hashes to `sha256` (otherwise `400`, nothing is
 promoted). Without `path`, a name carried by more than one `SKILL.md` in the user and project skill dirs is refused, whatever the copies' states, since the server cannot tell which one was reviewed; the error lists every copy with its state. The Skills panel always sends both.
 

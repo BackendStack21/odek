@@ -549,3 +549,31 @@ func mustAbsAPIHunt1017(t *testing.T, p string) string {
 	}
 	return a
 }
+
+// The review card's body and the sha256 it sends back on promote must come
+// from the same bytes: a SKILL.md rewritten between the listing scan and the
+// hash read is refused instead of binding the promote to unseen content.
+func TestRED_SkillReviewHashMatchesShownContent(t *testing.T) {
+	benign := "---\nname: rev\ndescription: d\n---\nbenign body\n"
+	apiHunt1017SkillEnv(t, map[string]string{"rev": benign})
+	orig := skillReviewReadFile
+	t.Cleanup(func() { skillReviewReadFile = orig })
+	skillReviewReadFile = func(path string) ([]byte, error) {
+		// The file flips after the scan that produced the shown body.
+		return []byte("---\nname: rev\ndescription: d\n---\nswapped body\n"), nil
+	}
+	w := httptest.NewRecorder()
+	handleSkills(skills.SkillsConfig{})(w, httptest.NewRequest(http.MethodGet, "/api/skills?name=rev", nil))
+	if w.Code == http.StatusOK {
+		var got struct {
+			Body   string `json:"body"`
+			SHA256 string `json:"sha256"`
+		}
+		_ = json.Unmarshal(w.Body.Bytes(), &got)
+		if strings.Contains(got.Body, "benign") {
+			t.Fatalf("review shows the scanned body %q but binds sha256 %s of different bytes", got.Body, got.SHA256)
+		}
+	} else if w.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 200 with consistent content or 409", w.Code)
+	}
+}

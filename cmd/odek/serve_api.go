@@ -763,6 +763,10 @@ type skillSummary struct {
 // handleSkills lists discovered skills with their provenance state, so the
 // operator can see what the agent may auto-load and what is pinned
 // NeedsReview (excluded from trigger matching until promoted).
+// skillReviewReadFile reads the SKILL.md whose hash binds a WebUI promote.
+// Tests replace it to simulate a file rewritten after the listing scan.
+var skillReviewReadFile = os.ReadFile
+
 func handleSkills(sc skills.SkillsConfig) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -782,9 +786,15 @@ func handleSkills(sc skills.SkillsConfig) http.HandlerFunc {
 					// sha256 is the hash of the reviewed file; the promote
 					// request sends it back with source.path so exactly the
 					// reviewed copy, unchanged, is promoted.
-					data, err := os.ReadFile(s.Source.Path)
+					data, err := skillReviewReadFile(s.Source.Path)
 					if err != nil {
 						http.Error(w, "skill unreadable", http.StatusNotFound)
+						return
+					}
+					// The shown skill and the hash must describe the same
+					// bytes: a file rewritten since the scan is refused.
+					if !skills.SameSkillContent(data, s) {
+						http.Error(w, "skill changed while loading; reload to review the current file", http.StatusConflict)
 						return
 					}
 					sum := sha256.Sum256(data)
