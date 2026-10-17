@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -28,10 +29,10 @@ import (
 //
 // The skill is identified by its frontmatter name, never by its directory
 // name: a repository controls both, so a directory named like one skill can
-// hold another. When more than one SKILL.md carries the name, the one copy
-// pending review is promoted; with two or more pending copies promotion is
-// refused (the caller cannot tell which was reviewed). promoteSkillAt takes
-// the reviewed file's path and content hash instead.
+// hold another. When more than one SKILL.md carries the name, promotion is
+// refused whatever their states (the caller cannot tell which copy was
+// reviewed) and the error lists every copy; promoteSkillAt takes the reviewed
+// file's path (`odek skill promote --path`) and content hash instead.
 //
 // If the skill's provenance shows it originated from untrusted content
 // (Untrusted=true or non-empty Sources), promotion is refused unless
@@ -67,65 +68,94 @@ func (c promoteCandidate) needsPromotion(userDir string) bool {
 	return c.skill.Provenance.NeedsReview || c.skill.Provenance.Untrusted
 }
 
-// promoteSkillAt is promoteSkill bound to a reviewed copy. A non-empty
-// reviewedPath must be the SKILL.md path the review showed (Source.Path in
-// GET /api/skills?name=), and a non-empty reviewedSHA256 the hash of the
-// file content the review showed; the promotion is refused when the copy at
-// that path is gone or its content changed since.
-func promoteSkillAt(userDir, name, reviewedPath, reviewedSHA256 string, force bool) error {
-	cleaned := filepath.Clean(name)
-	if name == "" || cleaned == "." || cleaned == ".." || cleaned != filepath.Base(cleaned) || strings.ContainsAny(name, "/\\") {
-		return fmt.Errorf("promote: invalid skill name %q", name)
+// promoteCandidateState names a candidate's review state for operator messages.
+func (c promoteCandidate) state(userDir string) string {
+	if c.needsPromotion(userDir) {
+		return "pending review"
 	}
-	var candidates []promoteCandidate
+	return "trusted"
+}
+
+// skillCandidatesAll lists the candidates for name (every skill when name is
+// empty) in the project then the user skills dir, the scanner's order.
+func skillCandidatesAll(userDir, name string) []promoteCandidate {
+	var out []promoteCandidate
 	for _, base := range []struct {
 		dir     string
 		project bool
 	}{{skills.ProjectSkillsDir(), true}, {userDir, false}} {
-		candidates = append(candidates, skillPromoteCandidates(base.dir, name, base.project)...)
+		out = append(out, skillPromoteCandidates(base.dir, name, base.project)...)
 	}
+	return out
+}
+
+// skillCandidateAtPath returns the candidate whose SKILL.md is the file at
+// path. Only files the candidate scan accepted qualify: a SKILL.md directly
+// in a skill directory of the project or user skills dir, neither the
+// directory nor the file a symlink. The given path may be relative or
+// absolute; it must name the same file (a symlink pointing at a skill file is
+// not that file).
+func skillCandidateAtPath(candidates []promoteCandidate, path string) (promoteCandidate, bool) {
+	want := filepath.Clean(path)
+	wantInfo, wantErr := os.Lstat(path)
+	for _, cand := range candidates {
+		if filepath.Clean(cand.path()) == want {
+			return cand, true
+		}
+		if wantErr != nil || wantInfo.Mode()&os.ModeSymlink != 0 {
+			continue
+		}
+		if fi, err := os.Lstat(cand.path()); err == nil && os.SameFile(fi, wantInfo) {
+			return cand, true
+		}
+	}
+	return promoteCandidate{}, false
+}
+
+// skillCopiesError lists every SKILL.md carrying a name with its state and
+// how to inspect and promote one of them by path, after the lead line.
+func skillCopiesError(lead, userDir string, candidates []promoteCandidate) error {
+	var b strings.Builder
+	b.WriteString(lead)
+	for _, cand := range candidates {
+		fmt.Fprintf(&b, "\n  %s (%s)", danger.SanitizeInline(cand.path()), cand.state(userDir))
+	}
+	b.WriteString("\ninspect one with `odek skill view --path <file>` and promote it with `odek skill promote --path <file> [--force]`")
+	return errors.New(b.String())
+}
+
+// promoteSkillAt is promoteSkill bound to a reviewed copy. A non-empty
+// reviewedPath must be the SKILL.md the review showed (Source.Path in
+// GET /api/skills?name=, or `odek skill promote --path`); name may then be
+// empty, and otherwise must be that file's frontmatter name. A non-empty
+// reviewedSHA256 is the hash of the file content the review showed. The
+// promotion is refused when the copy at that path is gone or its content
+// changed since.
+func promoteSkillAt(userDir, name, reviewedPath, reviewedSHA256 string, force bool) error {
+	if name != "" || reviewedPath == "" {
+		cleaned := filepath.Clean(name)
+		if name == "" || cleaned == "." || cleaned == ".." || cleaned != filepath.Base(cleaned) || strings.ContainsAny(name, "/\\") {
+			return fmt.Errorf("promote: invalid skill name %q", name)
+		}
+	}
+	candidates := skillCandidatesAll(userDir, name)
 
 	var c promoteCandidate
 	switch {
 	case reviewedPath != "":
-		want := filepath.Clean(reviewedPath)
-		found := false
-		for _, cand := range candidates {
-			if filepath.Clean(cand.path()) == want {
-				c, found = cand, true
-				break
-			}
-		}
+		var found bool
+		c, found = skillCandidateAtPath(candidates, reviewedPath)
 		if !found {
+			if name == "" {
+				return fmt.Errorf("promote: %s is not a SKILL.md in %s or %s (or it is a symlink, or was moved or removed)", danger.SanitizeInline(reviewedPath), userDir, skills.ProjectSkillsDir())
+			}
 			return fmt.Errorf("promote: no skill %q at %s (it was moved, renamed or removed since the review)", name, danger.SanitizeInline(reviewedPath))
 		}
+		name = c.skill.Name
 	case len(candidates) == 0:
 		return fmt.Errorf("promote: skill %q not found in %s or %s", name, userDir, skills.ProjectSkillsDir())
 	case len(candidates) > 1:
-		// Copies that are already trusted need nothing; when exactly one
-		// copy needs promotion, that is the one. Two or more stay
-		// ambiguous: nothing tells which of them was reviewed.
-		var pending []promoteCandidate
-		for _, cand := range candidates {
-			if cand.needsPromotion(userDir) {
-				pending = append(pending, cand)
-			}
-		}
-		switch len(pending) {
-		case 0:
-			fmt.Fprintf(os.Stderr, "odek: skill %q is already trusted (NeedsReview=false)\n", name)
-			return nil
-		case 1:
-			c = pending[0]
-			fmt.Fprintf(os.Stderr, "odek: promoting the copy pending review at %s\n", danger.SanitizeInline(c.path()))
-		default:
-			paths := make([]string, 0, len(pending))
-			for _, cand := range pending {
-				paths = append(paths, danger.SanitizeInline(cand.path()))
-			}
-			return fmt.Errorf("promote: %d skill files named %q are pending review (%s); refusing to guess which one was reviewed — remove or rename the copies you do not want, or promote the reviewed one from the WebUI Skills panel",
-				len(pending), name, strings.Join(paths, ", "))
-		}
+		return skillCopiesError(fmt.Sprintf("promote: %d skill files are named %q; refusing to guess which one you reviewed:", len(candidates), name), userDir, candidates)
 	default:
 		c = candidates[0]
 	}
@@ -256,7 +286,7 @@ func skillPromoteCandidates(dir, name string, project bool) []promoteCandidate {
 			continue
 		}
 		s := parseSkillBytes(e.Name(), data)
-		if s == nil || s.Name != name {
+		if s == nil || (name != "" && s.Name != name) {
 			continue
 		}
 		out = append(out, promoteCandidate{baseDir: dir, entry: e.Name(), data: data, skill: s, fromProject: project})
@@ -312,4 +342,101 @@ func parseSkillBytes(dirName string, in []byte) *skills.Skill {
 	}
 	s := all[0]
 	return &s
+}
+
+// skillPathFlag extracts `--path <file>` / `--path=<file>` from args and
+// returns the remaining arguments.
+func skillPathFlag(usage string, args []string) (path string, rest []string, err error) {
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--path":
+			if i+1 >= len(args) || args[i+1] == "" {
+				return "", nil, fmt.Errorf("usage: %s (--path needs a SKILL.md file)", usage)
+			}
+			if path != "" {
+				return "", nil, fmt.Errorf("usage: %s (--path given twice)", usage)
+			}
+			path = args[i+1]
+			i++
+		case strings.HasPrefix(a, "--path="):
+			if path != "" || a == "--path=" {
+				return "", nil, fmt.Errorf("usage: %s (--path needs one SKILL.md file)", usage)
+			}
+			path = strings.TrimPrefix(a, "--path=")
+		default:
+			rest = append(rest, a)
+		}
+	}
+	return path, rest, nil
+}
+
+const (
+	skillPromoteUsage = "odek skill promote <name> [--force] | odek skill promote --path <SKILL.md> [--force]"
+	skillViewUsage    = "odek skill view <name> | odek skill view --path <SKILL.md>"
+)
+
+// skillPromoteCmd handles `odek skill promote`: by name when exactly one
+// SKILL.md carries it, or by --path for one specific file.
+func skillPromoteCmd(userDir string, args []string) error {
+	path, rest, err := skillPathFlag(skillPromoteUsage, args)
+	if err != nil {
+		return err
+	}
+	name, force := "", false
+	for _, a := range rest {
+		switch {
+		case a == "--force" || a == "-f":
+			force = true
+		case name == "" && path == "" && !strings.HasPrefix(a, "-"):
+			name = a
+		default:
+			return fmt.Errorf("usage: %s (unexpected argument %q)", skillPromoteUsage, danger.SanitizeInline(a))
+		}
+	}
+	if name == "" && path == "" {
+		return fmt.Errorf("usage: %s", skillPromoteUsage)
+	}
+	return promoteSkillAt(userDir, name, path, "", force)
+}
+
+// skillViewAtPath prints one SKILL.md exactly as stored — the bytes a
+// `promote --path` of it would act on — with its location and review state.
+// The path is validated like a promote path: a SKILL.md of the project or
+// user skills dir, no symlinks.
+func skillViewAtPath(w io.Writer, userDir, path string) error {
+	c, ok := skillCandidateAtPath(skillCandidatesAll(userDir, ""), path)
+	if !ok {
+		return fmt.Errorf("view: %s is not a SKILL.md in %s or %s (or it is a symlink)", danger.SanitizeInline(path), userDir, skills.ProjectSkillsDir())
+	}
+	fmt.Fprintf(w, "skill %s — %s (%s)\n\n", danger.SanitizeInline(c.skill.Name), danger.SanitizeInline(c.path()), c.state(userDir))
+	fmt.Fprintln(w, danger.EscapeTerminalText(string(c.data)))
+	return nil
+}
+
+// skillViewCmd handles `odek skill view`. By name it shows the copy the
+// loader selects and, when other SKILL.md files carry the name, lists them
+// on stderr; --path shows one specific file.
+func skillViewCmd(userDir string, args []string, viewByName func(name string) error) error {
+	path, rest, err := skillPathFlag(skillViewUsage, args)
+	if err != nil {
+		return err
+	}
+	if path != "" {
+		if len(rest) != 0 {
+			return fmt.Errorf("usage: %s", skillViewUsage)
+		}
+		return skillViewAtPath(os.Stdout, userDir, path)
+	}
+	if len(rest) != 1 || strings.HasPrefix(rest[0], "-") {
+		return fmt.Errorf("usage: %s", skillViewUsage)
+	}
+	if err := viewByName(rest[0]); err != nil {
+		return err
+	}
+	if cands := skillCandidatesAll(userDir, rest[0]); len(cands) > 1 {
+		lead := fmt.Sprintf("odek: note: %d skill files are named %q; the one shown is the copy the loader selects:", len(cands), rest[0])
+		fmt.Fprintln(os.Stderr, skillCopiesError(lead, userDir, cands).Error())
+	}
+	return nil
 }

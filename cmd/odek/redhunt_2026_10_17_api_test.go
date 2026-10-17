@@ -449,42 +449,103 @@ func TestRED_SkillPromoteSameNamePendingCopies(t *testing.T) {
 	}
 }
 
-// TestRED_SkillPromoteNameOnlyPicksTheOnePendingCopy: a trusted user copy
-// and a pending project copy share a name. Only the project copy needs
-// promotion, so a name-only promote selects it and leaves the trusted copy
-// untouched; with two pending copies it still fails closed, naming the paths.
-func TestRED_SkillPromoteNameOnlyPicksTheOnePendingCopy(t *testing.T) {
+// TestRED_SkillPromoteCLISameNameNeedsPath: a trusted user copy and a pending
+// project copy share a name. `odek skill view <name>` shows the trusted copy,
+// so a name-only promote must not clear the project copy the operator never
+// saw: it fails closed, listing every copy with its state and the --path
+// commands. `skill view --path` shows the exact file and `skill promote
+// --path` promotes exactly it; symlinks and files outside the skill dirs are
+// refused.
+func TestRED_SkillPromoteCLISameNameNeedsPath(t *testing.T) {
 	const projBody = "---\nname: shared\ndescription: project copy\n---\n\nPROJECT BODY\n"
-	apiHunt1017SkillEnv(t, map[string]string{"shared": projBody, "other": "---\nname: twice\ndescription: p\n---\n\nP\n"})
+	apiHunt1017SkillEnv(t, map[string]string{"shared": projBody})
 	userDir := expandHome("~/.odek/skills")
-	write := func(dir, body string) string {
-		p := filepath.Join(userDir, dir, "SKILL.md")
-		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		return p
+	userSkill := filepath.Join(userDir, "shared", "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(userSkill), 0o755); err != nil {
+		t.Fatal(err)
 	}
 	const userBody = "---\nname: shared\ndescription: trusted user copy\n---\n\nUSER BODY\n"
-	userSkill := write("shared", userBody)
+	if err := os.WriteFile(userSkill, []byte(userBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	projSkill := filepath.Join(".odek", "skills", "shared", "SKILL.md")
+	projected := func() bool {
+		s, ok := apiHunt1017SkillByName(t, "shared")
+		return ok && strings.Contains(s.Body, "PROJECT BODY")
+	}
 
-	if err := promoteSkill(userDir, "shared", true); err != nil {
-		t.Fatalf("name-only promote with exactly one pending copy = %v", err)
+	err := skillPromoteCmd(userDir, []string{"shared", "--force"})
+	if err == nil {
+		t.Fatal("name-only promote with a trusted and a pending copy succeeded")
+	}
+	for _, want := range []string{projSkill + " (pending review)", userSkill + " (trusted)", "odek skill view --path", "odek skill promote --path"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("ambiguity error lacks %q:\n%v", want, err)
+		}
+	}
+	if projected() {
+		t.Fatal("the project copy became the loaded skill after a refused promote")
+	}
+
+	// Inspect by path: the exact stored bytes and the state.
+	var out strings.Builder
+	if err := skillViewAtPath(&out, userDir, projSkill); err != nil || !strings.Contains(out.String(), "PROJECT BODY") || !strings.Contains(out.String(), "pending review") {
+		t.Fatalf("view --path = %v %q", err, out.String())
+	}
+
+	// Refused paths: a symlink to the skill, and a file outside the dirs.
+	link := filepath.Join(t.TempDir(), "SKILL.md")
+	if err := os.Symlink(filepath.Join(mustAbsAPIHunt1017(t, projSkill)), link); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(t.TempDir(), "SKILL.md")
+	if err := os.WriteFile(outside, []byte(projBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{link, outside} {
+		if err := skillPromoteCmd(userDir, []string{"--path", p, "--force"}); err == nil {
+			t.Errorf("promote --path %s succeeded", p)
+		}
+		if err := skillViewAtPath(&out, userDir, p); err == nil {
+			t.Errorf("view --path %s succeeded", p)
+		}
+	}
+
+	// Promote by path (absolute form too): exactly the project copy.
+	if err := skillPromoteCmd(userDir, []string{"--path=" + mustAbsAPIHunt1017(t, projSkill)}); err == nil {
+		t.Fatal("promote --path of a project skill without --force succeeded")
+	}
+	if err := skillPromoteCmd(userDir, []string{"--path", mustAbsAPIHunt1017(t, projSkill), "--force"}); err != nil {
+		t.Fatalf("promote --path = %v", err)
 	}
 	if b, _ := os.ReadFile(userSkill); string(b) != userBody {
-		t.Fatalf("promote rewrote the trusted user copy: %q", b)
+		t.Fatalf("promote --path of the project copy rewrote the user copy: %q", b)
 	}
-	data, _ := os.ReadFile(filepath.Join(".odek", "skills", "shared", "SKILL.md"))
+	data, _ := os.ReadFile(projSkill)
 	if !skills.IsPromotedContent(userDir, "shared", data) {
-		t.Fatal("the pending project copy was not promoted")
+		t.Fatal("promote --path did not promote the project copy")
 	}
 
-	// Two copies needing promotion: still ambiguous, and the error names both.
-	write("twice", "---\nname: twice\ndescription: u\nodek:\n  provenance:\n    needs_review: true\n---\n\nU\n")
-	err := promoteSkill(userDir, "twice", true)
-	if err == nil || !strings.Contains(err.Error(), filepath.Join("other", "SKILL.md")) || !strings.Contains(err.Error(), filepath.Join("twice", "SKILL.md")) {
-		t.Fatalf("promote of a name with two pending copies = %v, want an ambiguity error naming both paths", err)
+	// A single candidate still promotes by name.
+	if err := os.Remove(userSkill); err != nil {
+		t.Fatal(err)
 	}
+	if err := os.WriteFile(projSkill, []byte(projBody+"edited\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := skillPromoteCmd(userDir, []string{"shared", "-f"}); err != nil {
+		t.Fatalf("single-candidate name-only promote = %v", err)
+	}
+	if !projected() {
+		t.Fatal("single-candidate promote did not trust the project copy")
+	}
+}
+
+func mustAbsAPIHunt1017(t *testing.T, p string) string {
+	t.Helper()
+	a, err := filepath.Abs(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return a
 }
