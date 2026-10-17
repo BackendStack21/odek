@@ -1802,6 +1802,10 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 			size := int64(len(data))
 			if queuedBytes.Add(size) > maxWSQueuedBytes {
 				queuedBytes.Add(-size)
+				if msgType.Type == "session_new" {
+					writeWSSessionNewRejected(conn)
+					continue
+				}
 				writeWSError(conn, fmt.Sprintf("busy: %s dropped (queue full: waiting messages exceed %d MiB)", msgType.Type, maxWSQueuedBytes>>20))
 				continue
 			}
@@ -1815,6 +1819,8 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 				// believing a state change happened.
 				if msgType.Type == "prompt" {
 					writeWSError(conn, "busy: a prompt is already running")
+				} else if msgType.Type == "session_new" {
+					writeWSSessionNewRejected(conn)
 				} else {
 					writeWSError(conn, "busy: "+msgType.Type+" dropped (queue full)")
 				}
@@ -3576,6 +3582,13 @@ func (w *connWriteState) run(conn *golangws.Conn) {
 
 func writeWSError(conn *golangws.Conn, msg string) {
 	writeWSJSON(conn, map[string]string{"type": "error", "message": msg})
+}
+
+// writeWSSessionNewRejected refuses a session_new the connection could not
+// queue. The connection stays attached to its current session; the typed frame
+// lets the client stop waiting for session_new_ok and retry.
+func writeWSSessionNewRejected(conn *golangws.Conn) {
+	writeWSJSON(conn, map[string]string{"type": "session_new_rejected", "message": "busy: session_new dropped (queue full)"})
 }
 
 // applyServeThinking applies a per-prompt thinking override. Empty/omitted

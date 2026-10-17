@@ -160,3 +160,33 @@ test('RED: frames of the left session before session_new_ok are ignored', (t) =>
   sock.onmessage({ data: JSON.stringify({ type: 'session', session_id: 'new-session', auth_token: 't2' }) });
   assert.equal(S.sessionId, 'new-session', 'frames after the ack are handled');
 });
+
+// A session_new the server could not queue is refused with
+// session_new_rejected: the client re-sends it shortly after and keeps the
+// left session's frames out meanwhile; once the retries are exhausted it stops
+// waiting so the next session's frames are not dropped forever.
+test('RED: a rejected session_new is retried, then the wait ends', (t) => {
+  mock.timers.enable({ apis: ['setInterval', 'setTimeout'] });
+  t.after(() => mock.timers.reset());
+  wsMod.connect();
+  const sock = S.ws;
+  sock.onopen?.();
+  S.busy = false;
+  S.sessionId = 'old-session';
+  sessions.newSession();
+  const sentNew = () => sock.sent.filter(m => JSON.parse(m).type === 'session_new').length;
+  assert.equal(sentNew(), 1);
+  sock.onmessage({ data: JSON.stringify({ type: 'session_new_rejected', message: 'busy' }) });
+  assert.equal(S.pendingSessionNew, true, 'still waiting for the detach');
+  mock.timers.tick(5000);
+  assert.equal(sentNew(), 2, 'session_new re-sent after a refusal');
+  sock.onmessage({ data: JSON.stringify({ type: 'session', session_id: 'old-session', auth_token: 't' }) });
+  assert.equal(S.sessionId, null, 'left session re-adopted while retrying');
+  for (let i = 0; i < 20; i++) {
+    sock.onmessage({ data: JSON.stringify({ type: 'session_new_rejected', message: 'busy' }) });
+    mock.timers.tick(5000);
+  }
+  assert.equal(S.pendingSessionNew, false, 'gave up waiting after bounded retries');
+  sock.onmessage({ data: JSON.stringify({ type: 'session', session_id: 'next-session', auth_token: 't2' }) });
+  assert.equal(S.sessionId, 'next-session', 'the next session is adopted once the wait ends');
+});

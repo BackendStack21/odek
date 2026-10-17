@@ -964,3 +964,65 @@ func TestRED_WSScheduleTaskCapCountsCharacters(t *testing.T) {
 		t.Fatalf("name over 200 characters accepted: %d", w.Code)
 	}
 }
+
+// A session_new the server cannot queue is refused with a typed frame, so the
+// client can tell that the detach did not happen instead of waiting for an ack
+// that never comes.
+func TestRED_WSDroppedSessionNewIsTypedRefusal(t *testing.T) {
+	release := make(chan struct{})
+	entered := make(chan struct{}, 1)
+	llmSrv := mockLLM(t, func(w http.ResponseWriter, callCount int) {
+		w.Header().Set("Content-Type", "application/json")
+		if callCount == 1 {
+			entered <- struct{}{}
+			<-release
+		}
+		w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}]}`))
+	})
+	defer llmSrv.Close()
+	defer close(release)
+	envCleanup := setTestEnv(t, llmSrv.URL)
+	defer envCleanup()
+	store := newTestSessionStore(t)
+	ln, mux := buildServeMux(t, store)
+	defer startServeTest(t, ln, mux)()
+	waitForHTTP(t, ln.Addr().String())
+	wsUpgradeLimiter.reset()
+	conn := dialTestWS(t, ln.Addr().String())
+	defer conn.Close()
+	conn.SetReadDeadline(time.Now().Add(30 * time.Second))
+
+	if err := golangws.Message.Send(conn, `{"type":"prompt","content":"first"}`); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-entered:
+	case <-time.After(20 * time.Second):
+		t.Fatal("first turn never reached the LLM")
+	}
+	// Fill the per-connection queue, then ask for a new session.
+	for i := 0; i < 16; i++ {
+		if err := golangws.Message.Send(conn, `{"type":"prompt","content":"queued"}`); err != nil {
+			t.Fatalf("send %d: %v", i, err)
+		}
+	}
+	if err := golangws.Message.Send(conn, `{"type":"session_new"}`); err != nil {
+		t.Fatal(err)
+	}
+	for {
+		var raw []byte
+		if err := golangws.Message.Receive(conn, &raw); err != nil {
+			t.Fatalf("no typed session_new refusal before the connection ended: %v", err)
+		}
+		var evt map[string]any
+		if json.Unmarshal(raw, &evt) != nil {
+			continue
+		}
+		if evt["type"] == "session_new_rejected" {
+			return
+		}
+		if m, _ := evt["message"].(string); evt["type"] == "error" && strings.Contains(m, "session_new") {
+			t.Fatalf("session_new refusal arrived as an untyped error frame: %q", m)
+		}
+	}
+}

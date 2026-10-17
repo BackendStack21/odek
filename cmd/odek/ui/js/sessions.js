@@ -247,6 +247,7 @@ export function newSession() {
   if (S.ws && S.ws.readyState === WebSocket.OPEN) {
     S.ws.send(JSON.stringify({ type: 'session_new' }));
     S.pendingSessionNew = true;
+    S.sessionNewRetries = 0;
   }
   resetSessionViews();
   resetMetrics();

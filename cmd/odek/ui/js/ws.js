@@ -161,6 +161,7 @@ export function connect() {
       // to the session the user left: drop them, and close their turns so
       // the turn's later frames are dropped too, until the ack.
       if (event.type === 'session_new_ok') { S.pendingSessionNew = false; return; }
+      if (event.type === 'session_new_rejected') { retrySessionNew(); return; }
       if (event.session_id) {
         if (event.turn_id) { S.closedTurnIds ||= new Set(); S.closedTurnIds.add(event.turn_id); }
         return;
@@ -480,6 +481,26 @@ export function connect() {
 }
 
 // wsSend safely sends a JSON message when the socket is open.
+// The server refused session_new because this connection's queue was full.
+// Re-send it after a pause while the queue drains; after a bounded number of
+// refusals stop waiting, so the next session's frames are not dropped forever.
+const SESSION_NEW_RETRY_MS = 1000;
+const SESSION_NEW_MAX_RETRIES = 10;
+function retrySessionNew() {
+  S.sessionNewRetries = (S.sessionNewRetries || 0) + 1;
+  if (S.sessionNewRetries > SESSION_NEW_MAX_RETRIES) {
+    S.pendingSessionNew = false;
+    S.sessionNewRetries = 0;
+    showToast('Server busy: the new session may still show the previous one');
+    return;
+  }
+  const sock = S.ws;
+  setTimeout(() => {
+    if (!S.pendingSessionNew || S.ws !== sock || sock.readyState !== WebSocket.OPEN) return;
+    sock.send(JSON.stringify({ type: 'session_new' }));
+  }, SESSION_NEW_RETRY_MS);
+}
+
 export function wsSend(obj) {
   if (S.ws && S.ws.readyState === WebSocket.OPEN) {
     S.ws.send(JSON.stringify(obj));
