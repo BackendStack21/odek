@@ -775,22 +775,28 @@ func TestCompound_WrappingKeepsTheVerdict(t *testing.T) {
 		"[[ a == a ]] && %s",
 		"{ ( %s ); }",
 	}
+	// Every dangerous command times every shape is slow under -race; the
+	// shapes are checked in parallel.
+	t.Parallel()
 	var cfg DangerousConfig
-	for _, danger := range monoDangerous {
-		base := Classify(danger)
-		for _, shape := range shapes {
-			cmd := fmt.Sprintf(shape, danger)
-			wrapped := Classify(cmd)
-			if monoRankDropped(base, wrapped) {
-				t.Errorf("Classify(%q) = %s ranks below Classify(%q) = %s", cmd, wrapped, danger, base)
+	for _, shape := range shapes {
+		t.Run(shape, func(t *testing.T) {
+			t.Parallel()
+			for _, danger := range monoDangerous {
+				base := Classify(danger)
+				cmd := fmt.Sprintf(shape, danger)
+				wrapped := Classify(cmd)
+				if monoRankDropped(base, wrapped) {
+					t.Errorf("Classify(%q) = %s ranks below Classify(%q) = %s", cmd, wrapped, danger, base)
+				}
+				if monoActionRank(cfg.ActionForCommand(cmd)) < monoActionRank(cfg.ActionForCommand(danger)) {
+					t.Errorf("ActionForCommand(%q) = %s is weaker than %q = %s", cmd, cfg.ActionForCommand(cmd), danger, cfg.ActionForCommand(danger))
+				}
+				if !monoEffectsSubset(Analyze(danger), Analyze(cmd)) && !strings.HasPrefix(shape, "!") {
+					t.Errorf("Analyze(%q).Effects = %v lost the effects %v", cmd, Analyze(cmd).Effects, Analyze(danger).Effects)
+				}
 			}
-			if monoActionRank(cfg.ActionForCommand(cmd)) < monoActionRank(cfg.ActionForCommand(danger)) {
-				t.Errorf("ActionForCommand(%q) = %s is weaker than %q = %s", cmd, cfg.ActionForCommand(cmd), danger, cfg.ActionForCommand(danger))
-			}
-			if !monoEffectsSubset(Analyze(danger), Analyze(cmd)) && !strings.HasPrefix(shape, "!") {
-				t.Errorf("Analyze(%q).Effects = %v lost the effects %v", cmd, Analyze(cmd).Effects, Analyze(danger).Effects)
-			}
-		}
+		})
 	}
 }
 

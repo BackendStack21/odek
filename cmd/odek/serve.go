@@ -211,9 +211,50 @@ func cancelPrompt(sessionID string) bool {
 // defers (sandbox cleanup, agent.Close) to run before the process exits.
 var wsConns sync.Map // map[*golangws.Conn]struct{}
 
-// wsHandlerWG counts live handleWS goroutines; serveOnListener waits on it
+// wsHandlers counts live handleWS goroutines; serveOnListener waits on it
 // after closing all connections to ensure cleanup completes.
-var wsHandlerWG sync.WaitGroup
+var wsHandlers liveCounter
+
+// liveCounter counts live goroutines and lets a drain wait until none are
+// left. Unlike sync.WaitGroup, add may run concurrently with wait: a
+// connection accepted while (or after) a drain waits is ordered by the
+// mutex, not left to the WaitGroup rule that an add from zero must happen
+// before Wait.
+type liveCounter struct {
+	mu   sync.Mutex
+	n    int
+	idle chan struct{} // closed when n returns to zero
+}
+
+func (c *liveCounter) add() {
+	c.mu.Lock()
+	if c.n == 0 {
+		c.idle = make(chan struct{})
+	}
+	c.n++
+	c.mu.Unlock()
+}
+
+func (c *liveCounter) done() {
+	c.mu.Lock()
+	c.n--
+	if c.n == 0 {
+		close(c.idle)
+	}
+	c.mu.Unlock()
+}
+
+// wait blocks until no goroutine is counted.
+func (c *liveCounter) wait() {
+	c.mu.Lock()
+	if c.n == 0 {
+		c.mu.Unlock()
+		return
+	}
+	idle := c.idle
+	c.mu.Unlock()
+	<-idle
+}
 
 // sessionLookupLimiter provides basic per-IP rate limiting for session detail
 // lookups, raising the cost of brute-force enumeration of session IDs.
@@ -867,7 +908,7 @@ func serveOnListener(listener net.Listener, mux *http.ServeMux) error {
 
 	// Phase 2: close active WebSocket connections so their handleWS goroutines
 	// unblock from Receive(), run their defers (agent.Close → docker rm -f),
-	// and decrement wsHandlerWG.
+	// and leave wsHandlers.
 	//
 	// http.Server.Shutdown does not forcibly close WebSocket connections because
 	// they are long-lived and never become "idle". Without this step, the
@@ -918,7 +959,7 @@ func serveOnListener(listener net.Listener, mux *http.ServeMux) error {
 func drainServeWork(timeout time.Duration) bool {
 	drained := make(chan struct{})
 	go func() {
-		wsHandlerWG.Wait()
+		wsHandlers.wait()
 		serveRunsWG.Wait()
 		close(drained)
 	}()
@@ -1532,11 +1573,11 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 	// Register for graceful-shutdown tracking before anything else.
 	// serveOnListener closes all tracked connections on SIGINT/SIGTERM,
 	// which unblocks the Receive loop below and lets defers run.
-	wsHandlerWG.Add(1)
+	wsHandlers.add()
 	wsConns.Store(conn, struct{}{})
 	defer func() {
 		wsConns.Delete(conn)
-		wsHandlerWG.Done()
+		wsHandlers.done()
 	}()
 	defer conn.Close()
 	defer releaseConnWriter(conn) // drop the per-connection write state
