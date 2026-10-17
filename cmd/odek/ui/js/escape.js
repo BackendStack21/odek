@@ -2,13 +2,13 @@
 // markdown.js without pulling in state.js/dom.js (which require a browser).
 
 export function escapeHtml(s) {
-  if (s == null || s === '') return '';
+  if (s == null || s === false || s === '') return '';
   s = String(s);
   return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 
 export function escapeAttr(s) {
-  if (s == null || s === '') return '';
+  if (s == null || s === false || s === '') return '';
   s = String(s);
   // & must be replaced first — doing it last double-escapes the entities
   // introduced by the quote replacements (&quot; → &amp;quot;).
