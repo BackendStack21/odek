@@ -15,7 +15,9 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"regexp"
 	"sort"
 	"strconv"
@@ -4227,15 +4229,50 @@ func makeSessionMessageStrings(sess *session.Session) []string {
 	return out
 }
 
-func openInBrowser(url string) {
-	cmds := []string{"xdg-open", "open", "gnome-open"}
-	for _, cmd := range cmds {
-		if _, err := os.Stat("/usr/bin/" + cmd); err == nil {
-			attr := &os.ProcAttr{Files: []*os.File{nil, nil, nil}}
-			os.StartProcess(cmd, []string{cmd, url}, attr)
-			return
+// browserOpenerDirs are the system directories openInBrowser searches for a
+// browser opener. Only these absolute locations are used: never PATH and never
+// the current directory, which is the (possibly untrusted) workspace.
+var browserOpenerDirs = []string{"/usr/bin", "/bin", "/usr/local/bin", "/opt/homebrew/bin"}
+
+// browserOpenerNames lists the openers to try, preferred first for the host OS.
+func browserOpenerNames() []string {
+	if runtime.GOOS == "darwin" {
+		return []string{"open"}
+	}
+	return []string{"xdg-open", "gnome-open"}
+}
+
+// findBrowserOpener returns the absolute path of the first regular executable
+// opener found in a trusted directory, or "" when none exists.
+func findBrowserOpener() string {
+	for _, name := range browserOpenerNames() {
+		for _, dir := range browserOpenerDirs {
+			p := filepath.Join(dir, name)
+			if !filepath.IsAbs(p) {
+				continue
+			}
+			if fi, err := os.Stat(p); err == nil && fi.Mode().IsRegular() && fi.Mode().Perm()&0o111 != 0 {
+				return p
+			}
 		}
 	}
+	return ""
+}
+
+// openInBrowser launches the system browser opener on url. The opener is
+// started by absolute path from a trusted directory with a neutral working
+// directory, so a binary planted in the workspace is never executed.
+func openInBrowser(url string) {
+	p := findBrowserOpener()
+	if p == "" {
+		return
+	}
+	cmd := exec.Command(p, url)
+	cmd.Dir = "/"
+	if err := cmd.Start(); err != nil {
+		return
+	}
+	go func() { _ = cmd.Wait() }()
 }
 
 // isLoopbackAddr reports whether a TCP listener is bound to a loopback
