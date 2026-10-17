@@ -28,9 +28,10 @@ import (
 //
 // The skill is identified by its frontmatter name, never by its directory
 // name: a repository controls both, so a directory named like one skill can
-// hold another. When more than one SKILL.md carries the name, promotion is
-// refused (the caller cannot tell which copy was reviewed); promoteSkillAt
-// takes the reviewed file's path and content hash instead.
+// hold another. When more than one SKILL.md carries the name, the one copy
+// pending review is promoted; with two or more pending copies promotion is
+// refused (the caller cannot tell which was reviewed). promoteSkillAt takes
+// the reviewed file's path and content hash instead.
 //
 // If the skill's provenance shows it originated from untrusted content
 // (Untrusted=true or non-empty Sources), promotion is refused unless
@@ -54,6 +55,16 @@ type promoteCandidate struct {
 
 func (c promoteCandidate) path() string {
 	return filepath.Join(c.baseDir, c.entry, "SKILL.md")
+}
+
+// needsPromotion reports whether the copy is pending review as the scanner
+// sees it: a project copy unless this exact content was already promoted,
+// an operator-dir copy when its provenance flags it.
+func (c promoteCandidate) needsPromotion(userDir string) bool {
+	if c.fromProject {
+		return !skills.IsPromotedContent(userDir, c.skill.Name, c.data)
+	}
+	return c.skill.Provenance.NeedsReview || c.skill.Provenance.Untrusted
 }
 
 // promoteSkillAt is promoteSkill bound to a reviewed copy. A non-empty
@@ -91,12 +102,30 @@ func promoteSkillAt(userDir, name, reviewedPath, reviewedSHA256 string, force bo
 	case len(candidates) == 0:
 		return fmt.Errorf("promote: skill %q not found in %s or %s", name, userDir, skills.ProjectSkillsDir())
 	case len(candidates) > 1:
-		paths := make([]string, 0, len(candidates))
+		// Copies that are already trusted need nothing; when exactly one
+		// copy needs promotion, that is the one. Two or more stay
+		// ambiguous: nothing tells which of them was reviewed.
+		var pending []promoteCandidate
 		for _, cand := range candidates {
-			paths = append(paths, danger.SanitizeInline(cand.path()))
+			if cand.needsPromotion(userDir) {
+				pending = append(pending, cand)
+			}
 		}
-		return fmt.Errorf("promote: %d skill files are named %q (%s); refusing to guess which one was reviewed — remove or rename the copies you do not want",
-			len(candidates), name, strings.Join(paths, ", "))
+		switch len(pending) {
+		case 0:
+			fmt.Fprintf(os.Stderr, "odek: skill %q is already trusted (NeedsReview=false)\n", name)
+			return nil
+		case 1:
+			c = pending[0]
+			fmt.Fprintf(os.Stderr, "odek: promoting the copy pending review at %s\n", danger.SanitizeInline(c.path()))
+		default:
+			paths := make([]string, 0, len(pending))
+			for _, cand := range pending {
+				paths = append(paths, danger.SanitizeInline(cand.path()))
+			}
+			return fmt.Errorf("promote: %d skill files named %q are pending review (%s); refusing to guess which one was reviewed — remove or rename the copies you do not want, or promote the reviewed one from the WebUI Skills panel",
+				len(pending), name, strings.Join(paths, ", "))
+		}
 	default:
 		c = candidates[0]
 	}

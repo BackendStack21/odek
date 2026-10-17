@@ -448,3 +448,43 @@ func TestRED_SkillPromoteSameNamePendingCopies(t *testing.T) {
 		t.Fatalf("after the bound promote the loaded dup = %+v, want the trusted project copy", s.Provenance)
 	}
 }
+
+// TestRED_SkillPromoteNameOnlyPicksTheOnePendingCopy: a trusted user copy
+// and a pending project copy share a name. Only the project copy needs
+// promotion, so a name-only promote selects it and leaves the trusted copy
+// untouched; with two pending copies it still fails closed, naming the paths.
+func TestRED_SkillPromoteNameOnlyPicksTheOnePendingCopy(t *testing.T) {
+	const projBody = "---\nname: shared\ndescription: project copy\n---\n\nPROJECT BODY\n"
+	apiHunt1017SkillEnv(t, map[string]string{"shared": projBody, "other": "---\nname: twice\ndescription: p\n---\n\nP\n"})
+	userDir := expandHome("~/.odek/skills")
+	write := func(dir, body string) string {
+		p := filepath.Join(userDir, dir, "SKILL.md")
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	const userBody = "---\nname: shared\ndescription: trusted user copy\n---\n\nUSER BODY\n"
+	userSkill := write("shared", userBody)
+
+	if err := promoteSkill(userDir, "shared", true); err != nil {
+		t.Fatalf("name-only promote with exactly one pending copy = %v", err)
+	}
+	if b, _ := os.ReadFile(userSkill); string(b) != userBody {
+		t.Fatalf("promote rewrote the trusted user copy: %q", b)
+	}
+	data, _ := os.ReadFile(filepath.Join(".odek", "skills", "shared", "SKILL.md"))
+	if !skills.IsPromotedContent(userDir, "shared", data) {
+		t.Fatal("the pending project copy was not promoted")
+	}
+
+	// Two copies needing promotion: still ambiguous, and the error names both.
+	write("twice", "---\nname: twice\ndescription: u\nodek:\n  provenance:\n    needs_review: true\n---\n\nU\n")
+	err := promoteSkill(userDir, "twice", true)
+	if err == nil || !strings.Contains(err.Error(), filepath.Join("other", "SKILL.md")) || !strings.Contains(err.Error(), filepath.Join("twice", "SKILL.md")) {
+		t.Fatalf("promote of a name with two pending copies = %v, want an ambiguity error naming both paths", err)
+	}
+}

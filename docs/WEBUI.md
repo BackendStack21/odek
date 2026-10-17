@@ -654,9 +654,7 @@ skill's frontmatter name, never its directory name. `path` and `sha256` are
 the `source.path` and `sha256` of the reviewed copy from
 `GET /api/skills?name=`: the server promotes exactly that file, and only
 while its content still hashes to `sha256` (otherwise `400`, nothing is
-promoted). Without `path`, a name carried by more than one `SKILL.md` in the
-user and project skill dirs is refused, since the server cannot tell which
-copy was reviewed. The Skills panel always sends both.
+promoted). Without `path`, a name carried by more than one `SKILL.md` in the user and project skill dirs promotes the one copy pending review; two or more pending copies are refused, since the server cannot tell which one was reviewed. The Skills panel always sends both.
 
 ### `POST /api/memory/consolidate`
 
