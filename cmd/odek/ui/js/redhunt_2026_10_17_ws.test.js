@@ -190,3 +190,25 @@ test('RED: a rejected session_new is retried, then the wait ends', (t) => {
   sock.onmessage({ data: JSON.stringify({ type: 'session', session_id: 'next-session', auth_token: 't2' }) });
   assert.equal(S.sessionId, 'next-session', 'the next session is adopted once the wait ends');
 });
+
+// One pending retry at a time: a second New session while a retry is pending
+// cancels it, so the old timer cannot send an extra session_new.
+test('RED: New session cancels a pending session_new retry', (t) => {
+  mock.timers.enable({ apis: ['setInterval', 'setTimeout'] });
+  t.after(() => mock.timers.reset());
+  wsMod.connect();
+  const sock = S.ws;
+  sock.onopen?.();
+  S.busy = false;
+  S.sessionId = 'old-session';
+  sessions.newSession();
+  const sentNew = () => sock.sent.filter(m => JSON.parse(m).type === 'session_new').length;
+  sock.onmessage({ data: JSON.stringify({ type: 'session_new_rejected', message: 'busy' }) });
+  sock.onmessage({ data: JSON.stringify({ type: 'session_new_rejected', message: 'busy' }) });
+  sessions.newSession();
+  assert.equal(sentNew(), 2);
+  mock.timers.tick(5000);
+  assert.equal(sentNew(), 2, 'a stale retry timer sent an extra session_new');
+  sock.onmessage({ data: JSON.stringify({ type: 'session_new_ok' }) });
+  assert.equal(S.sessionNewRetries || 0, 0, 'retry count reset on ack');
+});

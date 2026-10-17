@@ -99,6 +99,7 @@ export function connect() {
   S.ws.onopen = () => {
     // A new connection has nothing queued for a session left on the old one.
     S.pendingSessionNew = false;
+    cancelSessionNewRetry();
     hideConnBanner();
     dotEl.className = 'dot connected';
     statusEl.textContent = 'connected';
@@ -160,7 +161,7 @@ export function connect() {
       // Session-bearing frames queued server-side before session_new belong
       // to the session the user left: drop them, and close their turns so
       // the turn's later frames are dropped too, until the ack.
-      if (event.type === 'session_new_ok') { S.pendingSessionNew = false; return; }
+      if (event.type === 'session_new_ok') { S.pendingSessionNew = false; cancelSessionNewRetry(); return; }
       if (event.type === 'session_new_rejected') { retrySessionNew(); return; }
       if (event.session_id) {
         if (event.turn_id) { S.closedTurnIds ||= new Set(); S.closedTurnIds.add(event.turn_id); }
@@ -486,16 +487,29 @@ export function connect() {
 // refusals stop waiting, so the next session's frames are not dropped forever.
 const SESSION_NEW_RETRY_MS = 1000;
 const SESSION_NEW_MAX_RETRIES = 10;
+let sessionNewRetryTimer = null;
+
+// cancelSessionNewRetry drops a pending re-send and resets the refusal count
+// (on ack, reconnect, give-up, or a fresh New session).
+export function cancelSessionNewRetry() {
+  if (sessionNewRetryTimer !== null) clearTimeout(sessionNewRetryTimer);
+  sessionNewRetryTimer = null;
+  S.sessionNewRetries = 0;
+}
+
 function retrySessionNew() {
-  S.sessionNewRetries = (S.sessionNewRetries || 0) + 1;
-  if (S.sessionNewRetries > SESSION_NEW_MAX_RETRIES) {
+  const retries = (S.sessionNewRetries || 0) + 1;
+  if (retries > SESSION_NEW_MAX_RETRIES) {
     S.pendingSessionNew = false;
-    S.sessionNewRetries = 0;
+    cancelSessionNewRetry();
     showToast('Server busy: the new session may still show the previous one');
     return;
   }
+  if (sessionNewRetryTimer !== null) clearTimeout(sessionNewRetryTimer);
+  S.sessionNewRetries = retries;
   const sock = S.ws;
-  setTimeout(() => {
+  sessionNewRetryTimer = setTimeout(() => {
+    sessionNewRetryTimer = null;
     if (!S.pendingSessionNew || S.ws !== sock || sock.readyState !== WebSocket.OPEN) return;
     sock.send(JSON.stringify({ type: 'session_new' }));
   }, SESSION_NEW_RETRY_MS);

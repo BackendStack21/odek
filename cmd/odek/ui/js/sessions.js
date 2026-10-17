@@ -11,6 +11,7 @@ import { clearApprovals } from './approvals.js';
 import { clearClarify } from './clarify.js';
 import { metricsFromSession, resetMetrics } from './metrics.js';
 import { resetPlanPanel } from './plan.js';
+import { cancelSessionNewRetry } from './ws.js';
 
 const PAGE_SIZE = 50;
 const moreBtn = document.getElementById('sessions-more');
@@ -246,8 +247,8 @@ export function newSession() {
   // for the left session are ignored so they cannot re-adopt it here.
   if (S.ws && S.ws.readyState === WebSocket.OPEN) {
     S.ws.send(JSON.stringify({ type: 'session_new' }));
+    cancelSessionNewRetry();
     S.pendingSessionNew = true;
-    S.sessionNewRetries = 0;
   }
   resetSessionViews();
   resetMetrics();
