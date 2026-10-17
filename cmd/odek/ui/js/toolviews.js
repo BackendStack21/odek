@@ -77,23 +77,23 @@ export function toolView(name, raw, input = '') {
       kind = 'matches'; items = list(data.matches).map(r => entry(pathLabel(r.path), '', r.line ? `Line ${r.line}` : '', [section('Match','text',r.content)])); break;
     case 'glob':
       // {"matches":[{path,size,is_dir}]}; null matches means zero, not an error.
-      if (data.error) { kind = 'files'; items = [entry(args.pattern || 'glob','failed','',[section('Error','text',data.error)])]; break; }
+      if (data.error) { kind = 'files'; items = [entry(pathLabel(args.pattern || 'glob'),'failed','',[section('Error','text',data.error)])]; break; }
       if (data.matches !== null && !Array.isArray(data.matches)) return null;
       kind = 'files'; items = list(data.matches).map(m => entry(pathLabel(m.path), '', m.is_dir ? 'directory' : byteSize(m.size))); break;
     case 'read_file':
       if (typeof data.content !== 'string' && !data.error) return null;
-      kind = 'file'; items = [entry(args.path || 'File content',data.error ? 'failed' : '',data.total_lines != null ? `${data.total_lines} lines` : '',[section(data.error ? 'Error' : 'Content',data.error ? 'text' : 'code',data.error || data.content)])]; break;
+      kind = 'file'; items = [entry(pathLabel(args.path || 'File content'),data.error ? 'failed' : '',data.total_lines != null ? `${data.total_lines} lines` : '',[section(data.error ? 'Error' : 'Content',data.error ? 'text' : 'code',data.error || data.content)])]; break;
     case 'patch': case 'write_file':
       if (typeof data.success !== 'boolean' && !data.error) return null;
-      kind = 'edit'; items = [entry(data.path || args.path || name,status(data),'',data.error ? [section('Error','text',data.error)] : data.diff ? [section('Diff','diff',data.diff)] : [])]; break;
+      kind = 'edit'; items = [entry(pathLabel(data.path || args.path || name),status(data),'',data.error ? [section('Error','text',data.error)] : data.diff ? [section('Diff','diff',data.diff)] : [])]; break;
     case 'diff':
       if (!Array.isArray(data.hunks) || data.hunks.some(h=>!object(h) || !Array.isArray(h.lines) || h.lines.some(l=>!object(l)))) return null;
-      kind = 'diff'; items = [entry(`${displayValue(data.path_a)} → ${displayValue(data.path_b)}`,'','',[section('Changes','diff',unifiedDiff(data))])]; break;
+      kind = 'diff'; items = [entry(`${pathLabel(data.path_a)} → ${pathLabel(data.path_b)}`,'','',[section('Changes','diff',unifiedDiff(data))])]; break;
     case 'count_lines': case 'word_count': case 'checksum': case 'sort': case 'head_tail':
       // count_lines/word_count/sort tools were removed; cases kept so persisted
       // old-session transcripts still render.
       if (!Array.isArray(data.results)) return null;
-      kind = 'files'; items = results.map(r => entry(r.path,r.error ? 'failed' : '', '', [section('Details','text',Object.entries(r).filter(([k])=>k!=='path').map(([k,v])=>`${k.replace(/_/g,' ')}: ${displayValue(v)}`).join('\n'))])); break;
+      kind = 'files'; items = results.map(r => entry(pathLabel(r.path),r.error ? 'failed' : '', '', [section('Details','text',Object.entries(r).filter(([k])=>k!=='path').map(([k,v])=>`${k.replace(/_/g,' ')}: ${displayValue(v)}`).join('\n'))])); break;
     default: return null;
   }
   const failed = items.filter(item=>item.status==='failed').length;
