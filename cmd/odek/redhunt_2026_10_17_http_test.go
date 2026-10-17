@@ -4,6 +4,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +12,19 @@ import (
 	"testing"
 	"time"
 )
+
+// The embedded UI directive (//go:embed ui) includes the frontend unit tests
+// (ui/js/*.test.js), and the /js/ route serves any embedded *.js name, so the
+// production server ships and serves test files that are not part of the UI.
+func TestRED_HTTPStaticServesFrontendTestFiles(t *testing.T) {
+	handler := handleStatic("tok")
+	r := httptest.NewRequest(http.MethodGet, "/js/api.test.js", nil)
+	w := httptest.NewRecorder()
+	handler(w, r)
+	if w.Code == http.StatusOK {
+		t.Fatalf("GET /js/api.test.js = 200 (%d bytes); frontend test files must not be embedded or served", w.Body.Len())
+	}
+}
 
 // openInBrowser must run an opener resolved from a trusted directory by
 // absolute path, never a name resolved against the current directory (the

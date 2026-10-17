@@ -4127,7 +4127,8 @@ func handleStatic(wsToken string) http.HandlerFunc {
 			// is impossible.
 			name := strings.TrimPrefix(r.URL.Path, "/js/")
 			if name != "" && !strings.Contains(name, "..") &&
-				!strings.ContainsAny(name, "/\\") && strings.HasSuffix(name, ".js") {
+				!strings.ContainsAny(name, "/\\") && strings.HasSuffix(name, ".js") &&
+				!strings.HasSuffix(name, ".test.js") {
 				entry = [2]string{"ui/js/" + name, "application/javascript; charset=utf-8"}
 				ok = true
 			}
