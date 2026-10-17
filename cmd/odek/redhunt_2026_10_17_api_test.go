@@ -577,3 +577,28 @@ func TestRED_SkillReviewHashMatchesShownContent(t *testing.T) {
 		t.Fatalf("status = %d, want 200 with consistent content or 409", w.Code)
 	}
 }
+
+// Provenance is part of what the review card shows (and what decides whether
+// force is needed): a file whose provenance changed after the scan is not the
+// reviewed file.
+func TestRED_SkillReviewHashCoversProvenance(t *testing.T) {
+	tainted := "---\nname: prov\ndescription: d\nodek:\n  provenance:\n    untrusted: true\n    sources: evil.example\n---\nbody\n"
+	apiHunt1017SkillEnv(t, map[string]string{"prov": tainted})
+	orig := skillReviewReadFile
+	t.Cleanup(func() { skillReviewReadFile = orig })
+	skillReviewReadFile = func(path string) ([]byte, error) {
+		return []byte("---\nname: prov\ndescription: d\n---\nbody\n"), nil
+	}
+	w := httptest.NewRecorder()
+	handleSkills(skills.SkillsConfig{})(w, httptest.NewRequest(http.MethodGet, "/api/skills?name=prov", nil))
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409: shown provenance differs from the hashed bytes", w.Code)
+	}
+	// The unchanged project skill (marked for review at scan time) still loads.
+	skillReviewReadFile = orig
+	w = httptest.NewRecorder()
+	handleSkills(skills.SkillsConfig{})(w, httptest.NewRequest(http.MethodGet, "/api/skills?name=prov", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("unchanged project skill = %d %s, want 200", w.Code, w.Body.String())
+	}
+}

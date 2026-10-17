@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -72,10 +73,23 @@ func SameSkillContent(data []byte, s Skill) bool {
 	if p == nil {
 		return false
 	}
-	return p.Name == s.Name && p.Description == s.Description &&
-		p.Version == s.Version && p.Author == s.Author &&
-		p.AutoLoad == s.AutoLoad && p.Quality == s.Quality &&
-		p.BodyHash == s.BodyHash && reflect.DeepEqual(p.Trigger, s.Trigger)
+	if p.Name != s.Name || p.Description != s.Description ||
+		p.Version != s.Version || p.Author != s.Author ||
+		p.AutoLoad != s.AutoLoad || p.Quality != s.Quality ||
+		p.BodyHash != s.BodyHash || !reflect.DeepEqual(p.Trigger, s.Trigger) {
+		return false
+	}
+	// Provenance as parsed, or as a project-dir scan marks it for review.
+	if sameProvenance(p.Provenance, s.Provenance) {
+		return true
+	}
+	markProjectSkill(p)
+	return sameProvenance(p.Provenance, s.Provenance)
+}
+
+func sameProvenance(a, b SkillProvenance) bool {
+	return a.Untrusted == b.Untrusted && a.NeedsReview == b.NeedsReview &&
+		slices.Equal(a.Sources, b.Sources)
 }
 
 // parseSkillContent parses SKILL.md content from a string.
