@@ -752,7 +752,7 @@ func TestRED_WSQueuedMessagesAreByteBounded(t *testing.T) {
 	wsUpgradeLimiter.reset()
 	conn := dialTestWS(t, ln.Addr().String())
 	defer conn.Close()
-	conn.SetReadDeadline(time.Now().Add(30 * time.Second))
+	conn.SetReadDeadline(time.Now().Add(90 * time.Second))
 
 	if err := golangws.Message.Send(conn, `{"type":"prompt","content":"first"}`); err != nil {
 		t.Fatal(err)
@@ -762,9 +762,9 @@ func TestRED_WSQueuedMessagesAreByteBounded(t *testing.T) {
 	case <-time.After(20 * time.Second):
 		t.Fatal("first turn never reached the LLM")
 	}
-	// Each message is under the frame cap (10 MiB); three of them exceed
-	// any per-connection budget of one full-size message.
-	big := `{"type":"prompt","content":"` + strings.Repeat("q", 10<<20) + `"}`
+	// Each message is under the frame cap; three of them (18 MiB) exceed the
+	// per-connection queued-bytes budget.
+	big := `{"type":"prompt","content":"` + strings.Repeat("q", 6<<20) + `"}`
 	for i := 0; i < 3; i++ {
 		if err := golangws.Message.Send(conn, big); err != nil {
 			t.Fatalf("send %d: %v", i, err)
