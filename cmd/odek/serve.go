@@ -3043,7 +3043,7 @@ func requireLocalHost(next http.Handler) http.Handler {
 }
 
 // validateServeTokenHTTP verifies the per-instance CSRF token on an HTTP
-// request. It accepts the same cookie and header transports as the WebSocket
+// request. It accepts the X-Odek-Ws-Token header like the WebSocket
 // handshake, but not the WebSocket subprotocol.
 func validateServeTokenHTTP(req *http.Request, token string) error {
 	if token == "" {
@@ -3687,8 +3687,8 @@ func handleSessionByID(store *session.Store, trustedProxies []string, wsToken st
 					return
 				}
 				// Export and plan views are explicit operator-initiated
-				// downloads that authenticate with the instance cookie in
-				// the browser; they stay reachable on the bootstrap path.
+				// downloads that authenticate with the instance token header
+				// in the browser; they stay reachable on the bootstrap path.
 				// The base detail response is mint-only.
 				if strings.HasSuffix(r.URL.Path, "/export") {
 					w.Header().Set("X-Session-Token", sess.AuthToken)

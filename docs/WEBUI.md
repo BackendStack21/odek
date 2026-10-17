@@ -618,7 +618,7 @@ run id for headless runs), redacted + truncated `goal`, `phase`
 `step`, `last_tool`, `duration_seconds`, `tokens_used`. Narrow further with
 `?key=<run_key>`. The WebSocket `subagent_cancel` message likewise only stops tasks owned by the authenticated session (a foreign task id replies `accepted:false`).
 
-Operator view: `GET /api/subagents` without `session_id` lists every run's tasks, but only when the caller presents the instance token in the `X-Odek-Ws-Token` header (the ambient cookie is not enough) and any `Origin` header is local; otherwise it answers 400/403. Each entry carries the owning `session_id` when known.
+Operator view: `GET /api/subagents` without `session_id` lists every run's tasks, but only when the caller presents the instance token in the `X-Odek-Ws-Token` header (no ambient credential is enough) and any `Origin` header is local; otherwise it answers 400/403. Each entry carries the owning `session_id` when known.
 
 ### `GET /api/connections` · `DELETE /api/connections/{id}`
 

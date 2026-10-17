@@ -76,8 +76,8 @@ export function deleteSession(id, sessionToken) {
 // exportSessionUrl builds the download URL for a transcript export. The
 // browser navigates to it (fetch + blob would also work, but a navigation
 // gets the Content-Disposition filename for free). Session token travels in
-// the query string only if the cookie is unavailable — prefer the header
-// path via downloadExport below.
+// the query string only as a last resort — prefer the header path via
+// downloadExport below.
 export function exportSessionUrl(id, format) {
   return '/api/sessions/' + encodeURIComponent(id) + '/export?format=' + encodeURIComponent(format || 'md');
 }
