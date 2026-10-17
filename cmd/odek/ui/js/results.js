@@ -4,6 +4,9 @@ import { escapeHtml } from './escape.js';
 import { toolView, renderToolItems, treeText } from './toolviews.js';
 
 export const RESULT_PAGE = 200;
+// The Activity list keeps at most this many results / bytes of output.
+export const ACTIVITY_MAX_RESULTS = 300;
+export const ACTIVITY_MAX_BYTES = 16 * 1024 * 1024;
 export function resultText(output) {
   let text = String(output || '');
   // Persisted tool messages include a nonce-matched model-facing frame.

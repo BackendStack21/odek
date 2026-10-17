@@ -89,6 +89,26 @@ export function teach(key, text) {
   showToast(String(text).replace(/^tip:\s*/i, ''), HINT_TTL_MS, 'tip');
 }
 
+// System-initiated user records (bg-wake preamble, bg-notice,
+// return-after-break) are not text the operator typed.
+export function isSyntheticUser(msg) {
+  return !!msg && typeof msg.name === 'string' && (msg.name.startsWith('bg-') || msg.name === 'return-after-break');
+}
+
+// ── DOM helpers (tolerant of the test suites' minimal DOM shims) ──
+export function hasClass(el, name) {
+  if (!el) return false;
+  if (el.classList && el.classList.contains) return el.classList.contains(name);
+  return (' ' + (el.className || '') + ' ').indexOf(' ' + name + ' ') !== -1;
+}
+export function nodeHolds(parent, node) {
+  if (!parent || !node) return false;
+  if (parent === node) return true;
+  if (parent.contains) return parent.contains(node);
+  for (let el = node; el; el = el.parentNode) if (el === parent) return true;
+  return false;
+}
+
 // ── Smart Scroll ──
 export const SCROLL_THRESHOLD = 100;
 export function isNearBottom() {
@@ -150,17 +170,6 @@ export function scrollToBottom() {
   if (messagesEl.scrollTo) messagesEl.scrollTo({ top: messagesEl.scrollHeight, behavior: 'smooth' });
   else messagesEl.scrollTop = messagesEl.scrollHeight;
   if (scrollBottomBtn) scrollBottomBtn.classList.remove('visible');
-}
-
-// ── Message cap ──
-const MAX_MESSAGES = 80;
-export function pruneMessages() {
-  const items = messagesEl.querySelectorAll(':scope > .msg, :scope > .turn-stream, :scope > .tool-block, :scope > .subagent-group, :scope > .thinking-block');
-  if (items.length > MAX_MESSAGES) {
-    for (let i = 0, n = items.length - MAX_MESSAGES; i < n; i++) {
-      items[i].remove();
-    }
-  }
 }
 
 // ── Error message normalization ──

@@ -6,14 +6,15 @@ import { S } from './state.js';
 import { messagesEl, promptEl, sendBtn, emptyState } from './dom.js';
 import {
   escapeHtml, escapeAttr, truncateStr, copyTextToClipboard,
-  pruneMessages, scrollBottom, forceScrollBottom, historyUserText,
-  showCancel, hideCancel, teach,
+  scrollBottom, forceScrollBottom, historyUserText,
+  showCancel, hideCancel, teach, hasClass, nodeHolds, isSyntheticUser,
 } from './utils.js';
+import { pruneMessages, syncTrimMarker, setHistoryBacklog, trimState, holdView, HISTORY_UNITS } from './transcript.js';
 import { markdownToHtml, CODE_COPY_LABEL, CODE_COPIED_LABEL } from './markdown.js';
 import { parseUntrusted } from './untrusted.js';
 import { classifyToolResult, chipsHtml, prettyToolBody, collectReceipt, formatReceipt } from './tools.js';
 import { toolIcon } from './icons.js';
-import { renderResult, resultText } from './results.js';
+import { renderResult, resultText, ACTIVITY_MAX_RESULTS, ACTIVITY_MAX_BYTES } from './results.js';
 import { toolPreview, toolArguments, toolView, renderToolItems } from './toolviews.js';
 import { metricsNoteOutput } from './metrics.js';
 
@@ -300,12 +301,6 @@ export function hideLoading() {
 // replies, not reasoning, and each burst is sealed when a tool starts
 // so the next tokens open a new row instead of concatenating the whole
 // turn into one bubble. Reasoning stays behind ▶ thinking until opened.
-function hasClass(el, name) {
-  if (!el) return false;
-  if (el.classList && el.classList.contains) return el.classList.contains(name);
-  return (' ' + (el.className || '') + ' ').indexOf(' ' + name + ' ') !== -1;
-}
-
 function liveAnswerEl() {
   const el = S.streamBubbleEl;
   return (el && el.parentNode === messagesEl) ? el : null;
@@ -417,6 +412,36 @@ function newThinkingLine(text) {
   line.textContent = text || '';
   S.thinkingContentEl.appendChild(line);
   S.thinkingLineEl = line;
+  capThinkingLines(S.thinkingContentEl);
+}
+
+// A reasoning block keeps its most recent rows; older ones collapse into a
+// single note (the persisted session still holds the full reasoning).
+export const MAX_THINKING_LINES = 400;
+function capThinkingLines(host) {
+  const rows = host.children || [];
+  let note = rows[0] && hasClass(rows[0], 'thinking-trim') ? rows[0] : null;
+  let excess = rows.length - (note ? 1 : 0) - MAX_THINKING_LINES;
+  if (excess <= 0) return;
+  if (!note) {
+    note = thinkingTrimNote();
+    host.insertBefore(note, rows[0] || null);
+  }
+  const trimmed = Number(note.dataset.trimmed || 0) + excess;
+  while (excess-- > 0) host.children[1].remove();
+  setThinkingTrim(note, trimmed);
+}
+
+function thinkingTrimNote() {
+  const note = document.createElement('div');
+  note.className = 'thinking-trim';
+  note.dataset.trimmed = '0';
+  return note;
+}
+
+function setThinkingTrim(note, trimmed) {
+  note.dataset.trimmed = String(trimmed);
+  note.textContent = '… ' + trimmed + ' earlier lines not shown';
 }
 
 function appendThinkingFragment(content) {
@@ -670,6 +695,9 @@ export function settlePendingWork(reason = 'interrupted') {
       const latency = block.querySelector('.tb-latency');
       if (latency) latency.textContent = label;
       block.dataset.pendingState = reason;
+      // Once the turn is over no result can arrive: the step is settled, so
+      // the transcript budget may trim it like any finished step.
+      if (!stopping) block.dataset.outcome = 'unknown';
     }
   }
   if (S.subagentGroup) {
@@ -702,6 +730,7 @@ export function endStream(reason = "interrupted") {
     if (S.closedTurnIds.size > 32) S.closedTurnIds.delete(S.closedTurnIds.values().next().value);
   }
   removeStreamCursor();
+  endThinking(); // an interrupted turn leaves no row marked live
   sealTurnStream();
   // The live answer is the latest — never fold it. Older long replies
   // were already compacted when this bubble opened.
@@ -724,6 +753,7 @@ export function endStream(reason = "interrupted") {
   promptEl.disabled = false;
   setSendMode(sendBtn, 'send');
   S.refreshSupervision?.();
+  syncTrimMarker();
 }
 
 function sealTurnStream() {
@@ -734,19 +764,24 @@ function sealTurnStream() {
 }
 
 // ── Message rendering ──
-export function addMessage(role, content) {
-  hideEmptyState();
+// buildMessage renders a user or assistant row; live and history rendering
+// share it so the bubble markup stays in one place.
+function buildMessage(role, content) {
   const wrapper = document.createElement('div');
   wrapper.className = 'msg ' + role;
-
   const sender = role === 'user' ? '❯ you' : assistantSender();
-
   wrapper.innerHTML =
     '<div class="bubble">' +
       '<div class="sender">' + sender + '</div>' +
       '<div class="content">' + markdownToHtml(content) + '</div>' +
     '</div>';
   if (role === 'assistant') attachWakeChip(wrapper);
+  return wrapper;
+}
+
+export function addMessage(role, content) {
+  hideEmptyState();
+  const wrapper = buildMessage(role, content);
   messagesEl.appendChild(wrapper);
   const bubble = wrapper.querySelector('.bubble');
   if (bubble) addCopyButton(bubble);
@@ -777,14 +812,7 @@ export function addDivider(text) {
 // Render a completed assistant message (not streaming) with copy button.
 export function renderAssistantMessage(content) {
   hideEmptyState();
-  const wrapper = document.createElement('div');
-  wrapper.className = 'msg assistant';
-  wrapper.innerHTML =
-    '<div class="bubble">' +
-      '<div class="sender">' + assistantSender() + '</div>' +
-      '<div class="content">' + markdownToHtml(content) + '</div>' +
-    '</div>';
-  attachWakeChip(wrapper);
+  const wrapper = buildMessage('assistant', content);
   messagesEl.appendChild(wrapper);
   const bubble = wrapper.querySelector('.bubble');
   if (bubble) addCopyButton(bubble);
@@ -909,17 +937,34 @@ export function addToolCall(name, data, callId = '') {
 // appendToolResultContent renders a tool result into the collapsed .tb-body
 // (same toggle as args), truncating long output behind a "show all" expander.
 // Shared by the live path (addToolResult) and session-history rendering.
-function appendToolResultContent(block, output) {
+// The result view (toolbar, search, line rows) is built on the first expand:
+// most steps are never opened, and eagerly rendered bodies were the bulk of
+// a long session's DOM. Until then the output waits on the block itself.
+function appendToolResultContent(block, output, record = true) {
   const view = toolView(block.dataset.toolName || '', resultText(output), block.dataset.toolArgs || '');
   const preview = block.querySelector('.tb-preview');
   if (view && preview) { preview.textContent = view.summary; preview.title = view.summary; }
 
-  const resultEl = document.createElement('div');
-  resultEl.className = 'tb-result';
+  (block.pendingResults ||= []).push(output);
   const body = block.querySelector('.tb-body');
-  (body || block).appendChild(resultEl);
-  renderResult(resultEl, { name: block.dataset.toolName || '', output, args:block.dataset.toolArgs || '', compact: true });
-  if (typeof S.recordResult === 'function') S.recordResult(block, output);
+  if (!body || body.classList.contains('open')) renderPendingResult(block);
+  if (record && typeof S.recordResult === 'function') S.recordResult(block, output);
+  else if (!record && typeof S.attachInspect === 'function') S.attachInspect(block, output, inspectClaims);
+}
+
+function renderPendingResult(block) {
+  const pending = block.pendingResults;
+  if (!pending || !pending.length) return;
+  block.pendingResults = null;
+  const body = block.querySelector('.tb-body');
+  const inspect = body && body.querySelector('.result-inspect');
+  pending.forEach((output) => {
+    const resultEl = document.createElement('div');
+    resultEl.className = 'tb-result';
+    if (inspect) body.insertBefore(resultEl, inspect);
+    else (body || block).appendChild(resultEl);
+    renderResult(resultEl, { name: block.dataset.toolName || '', output, args:block.dataset.toolArgs || '', compact: true });
+  });
 }
 
 // fillToolResult renders tool output into resultEl. The server sends raw,
@@ -1015,6 +1060,7 @@ function toggleToolBody(header) {
   const arrow = header.querySelector('.arrow');
   const body = header.parentElement.querySelector('.tb-body');
   if (body) {
+    if (!body.classList.contains('open')) renderPendingResult(header.parentElement);
     body.classList.toggle('open');
     arrow.classList.toggle('open');
     header.setAttribute('aria-expanded', body.classList.contains('open'));
@@ -1414,76 +1460,269 @@ export function appendSubagentLog(taskIdx, event) {
   lineEl.className = 'log-line';
   lineEl.textContent = text;
   logContainer.appendChild(lineEl);
+  // A long-running sub-agent keeps only its recent beats in the chip log.
+  while (logContainer.children.length > MAX_SUBAGENT_LOG_LINES) logContainer.children[0].remove();
 }
+export const MAX_SUBAGENT_LOG_LINES = 200;
 
 // ── Session history rendering ──
-// Renders the full persisted transcript on session load: user/assistant
-// text, thinking (reasoning_content), tool calls with their results, and
+// Renders the persisted transcript on session load: user/assistant text,
+// thinking (reasoning_content), tool calls with their results, and
 // delegate_tasks sub-agent groups. Previously only user/assistant text was
 // re-rendered, so a reloaded session silently dropped most of what happened.
-export function renderSessionHistory(messages) {
-  // Index tool results by call id for matching against assistant tool_calls.
-  let historyTurnId='';
-  messages.forEach((msg, messageIndex) => {
-    // Correlate within this assistant group: some providers reuse IDs across turns.
-    const resultsById = new Map();
-    const outcomesById = new Map();
-    for(let index=messageIndex+1;index<messages.length && messages[index].role==='tool';index++) {
-      const result=messages[index];
-      const key=result.tool_call_id || 'position-'+(index-messageIndex-1);
-      resultsById.set(key,result.content || '');outcomesById.set(key,result.tool_outcome || 'unknown');
-    }
-    if (msg.role === 'user') {
-      historyTurnId=msg.turn_id || 'history-'+messageIndex;
-      // System-initiated records (bg-wake preamble, bg-notice, return-after-break)
-      // are not text the operator typed.
-      if (typeof msg.name === 'string' && (msg.name.startsWith('bg-') || msg.name === 'return-after-break')) return;
-      addMessage('user', historyUserText(msg.content, msg.principal_prompt));
-      return;
-    }
-    if (msg.role !== 'assistant') return; // skip system/tool internals
+//
+// A long session renders only its most recent window (HISTORY_UNITS rows);
+// the transcript-trim marker offers earlier messages back one window at a
+// time, so opening a large session costs about as much as opening a small
+// one. Every row carries its message index (data-hidx) so the budget can
+// hand trimmed messages back to the backlog.
+let historyHost = null; // detached container a window renders into
+let historyIdx = null;  // message index stamped on each row
+let historyRecord = true; // feed tool results to the Activity panel
+let inspectClaims = null; // Activity items rebound during one Show earlier
 
-    if (msg.reasoning_content) renderHistoricalThinking(msg.reasoning_content);
+function historyTarget() {
+  return historyHost || messagesEl;
+}
 
-    // Content before tools: the model streams the visible reply first,
-    // then acts. Putting tools first parked every partial after the log.
-    if (msg.content) {
-      const wrapper = renderHistoricalAssistant(msg.content);
-      if (msg.superseded) foldDraft(wrapper, msg.superseded_reason);
+function historyRow(el) {
+  if (historyIdx != null && el.dataset) el.dataset.hidx = String(historyIdx);
+  return el;
+}
+
+// historyUnits counts the rows one persisted message renders as.
+export function historyUnits(msg) {
+  if (!msg) return 0;
+  if (msg.role === 'user') return isSyntheticUser(msg) ? 0 : 1;
+  if (msg.role !== 'assistant') return 0;
+  return (msg.reasoning_content ? 1 : 0) + (msg.content ? 1 : 0) +
+    (Array.isArray(msg.tool_calls) ? msg.tool_calls.length : 0);
+}
+
+// historyWindowStart returns where the window ending at `end` begins: the
+// earliest turn start that keeps it within `budget` rows, or the earliest
+// message that still fits when snapping to a turn start would leave the
+// window less than half full (one turn larger than the budget). At least
+// one message is always included.
+export function historyWindowStart(messages, end, budget = HISTORY_UNITS) {
+  let units = 0;
+  let fit = end;
+  let turnStart = -1;
+  let turnUnits = 0;
+  for (let i = end - 1; i >= 0; i--) {
+    const n = historyUnits(messages[i]);
+    if (n && fit < end && units + n > budget) {
+      return turnStart >= 0 && turnUnits * 2 >= budget ? turnStart : fit;
     }
+    units += n;
+    if (n) fit = i;
+    if (n && messages[i].role === 'user') { turnStart = i; turnUnits = units; }
+  }
+  return 0;
+}
 
-    const toolCalls = Array.isArray(msg.tool_calls) ? msg.tool_calls : [];
-    if (toolCalls.length > 0) {
-      toolCalls.forEach((tc, toolIndex) => {
-        const name = (tc.function && tc.function.name) || 'tool';
-        const args = (tc.function && tc.function.arguments) || '';
-        const key=tc.id || 'position-'+toolIndex;
-        const result = resultsById.get(key) || '';
-        if (name === 'delegate_tasks') {
-          renderHistoricalSubagents(args, result, 'history-'+messageIndex+'-'+toolIndex);
+// historyToolCalls lists one assistant message's tool calls paired with
+// their results. Results are correlated within the assistant group: some
+// providers reuse ids across turns.
+function historyToolCalls(messages, messageIndex) {
+  const msg = messages[messageIndex];
+  const resultsById = new Map();
+  const outcomesById = new Map();
+  for (let index = messageIndex + 1; index < messages.length && messages[index] && messages[index].role === 'tool'; index++) {
+    const result = messages[index];
+    const key = result.tool_call_id || 'position-' + (index - messageIndex - 1);
+    resultsById.set(key, result.content || ''); outcomesById.set(key, result.tool_outcome || 'unknown');
+  }
+  const toolCalls = Array.isArray(msg.tool_calls) ? msg.tool_calls : [];
+  return toolCalls.map((tc, toolIndex) => {
+    const key = (tc && tc.id) || 'position-' + toolIndex;
+    return {
+      id: (tc && tc.id) || '',
+      name: (tc && tc.function && tc.function.name) || 'tool',
+      args: (tc && tc.function && tc.function.arguments) || '',
+      result: resultsById.get(key) || '',
+      outcome: outcomesById.get(key),
+      toolIndex,
+    };
+  });
+}
+
+function historyTurnIdBefore(messages, from) {
+  for (let i = from - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m && m.role === 'user') return m.turn_id || 'history-' + i;
+  }
+  return '';
+}
+
+// recordHistoricalResults feeds tool results outside the rendered window
+// to the Activity panel in transcript order, so its evidence summary covers
+// the session and not only the visible window. Only the newest results the
+// panel can hold are collected (walking back from the window), so a huge
+// session costs no more than the panel's cap. The stub block is never
+// attached; "Show in conversation" already skips disconnected blocks.
+function recordHistoricalResults(messages, from, to) {
+  if (typeof S.recordResult !== 'function') return;
+  const picked = [];
+  let bytes = 0;
+  for (let i = to - 1; i >= from && picked.length < ACTIVITY_MAX_RESULTS && bytes <= ACTIVITY_MAX_BYTES; i--) {
+    const msg = messages[i];
+    if (!msg || msg.role !== 'assistant') continue;
+    const calls = historyToolCalls(messages, i).filter((call) => call.name !== 'delegate_tasks' && call.result);
+    for (let k = calls.length - 1; k >= 0; k--) {
+      picked.push({ index: i, call: calls[k] });
+      bytes += String(calls[k].result).length;
+    }
+  }
+  picked.reverse().forEach(({ index, call }) => {
+    const msg = messages[index];
+    const stub = document.createElement('div');
+    stub.dataset.toolName = call.name;
+    stub.dataset.toolArgs = call.args;
+    stub.dataset.outcome = call.outcome || 'unknown';
+    stub.dataset.turnId = msg.turn_id || historyTurnIdBefore(messages, index);
+    stub.dataset.callId = call.id;
+    S.recordResult(stub, call.result);
+  });
+}
+
+// renderHistoryRange renders messages[from, to) into a detached container
+// and returns its rows, ready to attach.
+function renderHistoryRange(messages, from, to) {
+  historyHost = document.createElement('div');
+  try {
+    let historyTurnId = historyTurnIdBefore(messages, from);
+    for (let messageIndex = from; messageIndex < to; messageIndex++) {
+      const msg = messages[messageIndex];
+      if (!msg) continue;
+      historyIdx = messageIndex;
+      if (msg.role === 'user') {
+        historyTurnId = msg.turn_id || 'history-' + messageIndex;
+        if (isSyntheticUser(msg)) continue;
+        renderHistoricalUser(historyUserText(msg.content, msg.principal_prompt));
+        continue;
+      }
+      if (msg.role !== 'assistant') continue; // skip system/tool internals
+
+      if (msg.reasoning_content) renderHistoricalThinking(msg.reasoning_content);
+
+      // Content before tools: the model streams the visible reply first,
+      // then acts. Putting tools first parked every partial after the log.
+      if (msg.content) {
+        const wrapper = renderHistoricalAssistant(msg.content);
+        if (msg.superseded) foldDraft(wrapper, msg.superseded_reason);
+      }
+
+      historyToolCalls(messages, messageIndex).forEach((call) => {
+        if (call.name === 'delegate_tasks') {
+          renderHistoricalSubagents(call.args, call.result, 'history-' + messageIndex + '-' + call.toolIndex);
         } else {
-          renderHistoricalToolBlock(name, args, result, outcomesById.get(key), msg.turn_id || historyTurnId, tc.id || '');
+          renderHistoricalToolBlock(call.name, call.args, call.result, call.outcome, msg.turn_id || historyTurnId, call.id);
         }
       });
     }
+    return Array.from(historyHost.children);
+  } finally {
+    historyHost = null;
+    historyIdx = null;
+  }
+}
+
+// historyMessages lists the .msg rows among freshly rendered nodes.
+function historyMessages(nodes) {
+  const out = [];
+  nodes.forEach((node) => {
+    if (hasClass(node, 'msg')) out.push(node);
+    else if (node.querySelectorAll) out.push(...Array.from(node.querySelectorAll('.msg')));
   });
+  return out;
+}
+
+// settleHistoryMessages folds long bubbles once the rows are attached (a
+// detached bubble has no height). The latest reply stays open.
+function settleHistoryMessages(msgs) {
+  const latest = lastAssistantBubble();
+  msgs.forEach((msg) => {
+    const bubble = msg.querySelector('.bubble');
+    if (bubble && bubble !== latest) checkCollapse(bubble, { latest: false });
+  });
+}
+
+// renderSessionHistory renders the newest window of a session. With
+// { record: false } (a reload of the session already shown) results are not
+// recorded again; the Activity items are rebound to the re-rendered steps.
+export function renderSessionHistory(messages, opts = {}) {
+  const list = Array.isArray(messages) ? messages : [];
+  const record = opts.record !== false;
+  hideEmptyState();
+  const start = historyWindowStart(list, list.length);
+  if (record) recordHistoricalResults(list, 0, start);
+  historyRecord = record;
+  inspectClaims = record ? null : new Set();
+  let nodes;
+  try { nodes = renderHistoryRange(list, start, list.length); } finally { historyRecord = true; inspectClaims = null; }
+  nodes.forEach((node) => messagesEl.appendChild(node));
+  settleHistoryMessages(historyMessages(nodes));
+  setHistoryBacklog(list, start);
+}
+
+// showEarlierHistory renders the window before the oldest rendered history
+// message under the trim marker, keeping the visible rows in place.
+export function showEarlierHistory() {
+  const backlog = trimState().backlog;
+  if (!backlog || backlog.end <= 0) return;
+  const active = document.activeElement;
+  const fromMarker = !!(active && active.closest && active.closest('.transcript-trim'));
+  const end = backlog.end;
+  const start = historyWindowStart(backlog.messages, end);
+  historyRecord = false; // already recorded when the session loaded
+  inspectClaims = new Set();
+  let nodes;
+  try { nodes = renderHistoryRange(backlog.messages, start, end); } finally { historyRecord = true; inspectClaims = null; }
+  const msgs = historyMessages(nodes);
+  const kids = Array.from(messagesEl.children || []);
+  const marker = kids.find((el) => hasClass(el, 'transcript-trim'));
+  const ref = marker ? (kids[kids.indexOf(marker) + 1] || null) : (kids[0] || null);
+  // Hold on the first row on screen: when the older half of a split turn
+  // joins `ref`, the stream's own top does not move.
+  const anchor = ref && hasClass(ref, 'turn-stream') ? (ref.children[0] || ref) : ref;
+  holdView(anchor, () => {
+    // A window boundary inside a turn splits its stream; rejoin the halves so
+    // the turn reads as one log, as a full render would draw it.
+    const tail = nodes[nodes.length - 1];
+    if (tail && ref && hasClass(tail, 'turn-stream') && hasClass(ref, 'turn-stream')) {
+      const first = ref.children[0] || null;
+      Array.from(tail.children).forEach((row) => ref.insertBefore(row, first));
+      nodes.pop();
+    }
+    nodes.forEach((node) => messagesEl.insertBefore(node, ref));
+    settleHistoryMessages(msgs);
+  });
+  backlog.end = start;
+  syncTrimMarker();
+  // The last window removes the marker; keep keyboard focus in the
+  // transcript instead of dropping it to the page.
+  if (fromMarker && active.isConnected === false) {
+    const target = msgs.length && msgs[0].querySelector ? msgs[0].querySelector('button, [role="button"]') : null;
+    target?.focus?.();
+  }
+}
+S.showEarlierHistory = showEarlierHistory;
+
+function renderHistoricalUser(content) {
+  const wrapper = buildMessage('user', content);
+  historyTarget().appendChild(historyRow(wrapper));
+  const bubble = wrapper.querySelector('.bubble');
+  if (bubble) addCopyButton(bubble);
 }
 
 function renderHistoricalAssistant(raw) {
   const [content, unverified] = stripVerifyMarker(raw);
-  const wrapper = document.createElement('div');
-  wrapper.className = 'msg assistant';
-  wrapper.innerHTML =
-    '<div class="bubble">' +
-      '<div class="sender">' + assistantSender() + '</div>' +
-      '<div class="content">' + markdownToHtml(content) + '</div>' +
-    '</div>';
-  attachWakeChip(wrapper);
-  ensureHistoryStream().appendChild(wrapper);
+  const wrapper = buildMessage('assistant', content);
+  ensureHistoryStream().appendChild(historyRow(wrapper));
   const bubble = wrapper.querySelector('.bubble');
   if (bubble) addCopyButton(bubble);
   if (bubble && unverified) markUnverified(bubble);
-  compactOlderAnswers(wrapper);
   return wrapper;
 }
 
@@ -1497,24 +1736,30 @@ function renderHistoricalThinking(content) {
       '<span class="arrow">▶</span> thinking' +
     '</div>' +
     '<div class="thinking-content"></div>';
-  ensureHistoryStream().appendChild(block);
+  ensureHistoryStream().appendChild(historyRow(block));
   const host = block.querySelector('.thinking-content');
-  String(content || '').split('\n').forEach((line) => {
-    if (!line) return;
+  const lines = String(content || '').split('\n').filter(Boolean);
+  lines.slice(-MAX_THINKING_LINES).forEach((line) => {
     const row = document.createElement('div');
     row.className = 'thinking-line';
     row.textContent = line;
     host.appendChild(row);
   });
+  if (lines.length > MAX_THINKING_LINES) {
+    const note = thinkingTrimNote();
+    setThinkingTrim(note, lines.length - MAX_THINKING_LINES);
+    host.insertBefore(note, host.children[0] || null);
+  }
 }
 
 function ensureHistoryStream() {
-  const kids = messagesEl.children || [];
+  const host = historyTarget();
+  const kids = host.children || [];
   const last = kids.length ? kids[kids.length - 1] : null;
   if (last && hasClass(last, 'turn-stream')) return last;
   const stream = document.createElement('div');
   stream.className = 'turn-stream';
-  messagesEl.appendChild(stream);
+  host.appendChild(stream);
   return stream;
 }
 
@@ -1539,8 +1784,8 @@ function renderHistoricalToolBlock(name, args, result, outcome = 'unknown', turn
   el.dataset.outcome=outcome;el.dataset.turnId=turnId;el.dataset.callId=callId;
   const status = el.querySelector('.tb-status');
   if (status) { status.textContent = outcome === 'failed' ? '✗' : outcome === 'completed' ? '✓' : '·'; status.title = outcome === 'unknown' ? 'Historical execution outcome unavailable' : 'Tool ' + outcome; status.classList.toggle('err', outcome === 'failed'); }
-  ensureHistoryStream().appendChild(el);
-  if (result) appendToolResultContent(el, result);
+  ensureHistoryStream().appendChild(historyRow(el));
+  if (result) appendToolResultContent(el, result, historyRecord);
 }
 
 // renderHistoricalSubagents renders a completed delegate_tasks group with
@@ -1553,7 +1798,7 @@ function renderHistoricalSubagents(args, output, groupId) {
   const group = document.createElement('div');
   group.className = 'subagent-group';
   group.innerHTML = subagentHeadHTML(tasks.length) + '<div class="subagent-grid"></div>';
-  ensureHistoryStream().appendChild(group);
+  ensureHistoryStream().appendChild(historyRow(group));
   const grid = group.querySelector('.subagent-grid');
 
   tasks.forEach((task, i) => {
@@ -1576,18 +1821,6 @@ export const COLLAPSE_MAX_HEIGHT_PX = 460;
 function resolveBubble(el) {
   if (!el) return null;
   return el.classList.contains('bubble') ? el : el.querySelector('.bubble');
-}
-
-function nodeHolds(parent, node) {
-  if (!parent || !node) return false;
-  if (parent === node) return true;
-  if (parent.contains) return parent.contains(node);
-  let el = node;
-  while (el) {
-    if (el === parent) return true;
-    el = el.parentNode;
-  }
-  return false;
 }
 
 function assistantMessages() {
@@ -1631,7 +1864,13 @@ function checkCollapse(host, opts) {
   const content = bubble.querySelector('.content');
   if (!content) return;
   const existing = bubble.querySelector('.collapse-toggle');
-  if (content.scrollHeight <= COLLAPSE_MAX_HEIGHT_PX) {
+  const height = content.scrollHeight;
+  // Older bubbles no longer change, so each is measured once: re-reading
+  // scrollHeight across the whole transcript forced a layout per bubble
+  // every time a reply opened. A zero height is no measurement (hidden pane
+  // or detached) and is retried on the next pass.
+  if (height > 0 && bubble.dataset) bubble.dataset.collapseChecked = '1';
+  if (height <= COLLAPSE_MAX_HEIGHT_PX) {
     releaseCollapse(bubble);
     return;
   }
@@ -1648,6 +1887,39 @@ function checkCollapse(host, opts) {
   bubble.appendChild(toggle);
 }
 
+// remeasureFolds re-checks every older bubble after a layout change (window
+// or inspector width, reading size, density): one measurement per bubble is
+// only valid for the layout it was taken in.
+export function remeasureFolds() {
+  const all = assistantMessages();
+  messagesEl.querySelectorAll('.bubble').forEach((b) => { if (b.dataset) delete b.dataset.collapseChecked; });
+  messagesEl.querySelectorAll('.msg.user').forEach((msg) => {
+    const bubble = msg.querySelector('.bubble');
+    if (bubble) checkCollapse(bubble, { latest: false });
+  });
+  compactOlderAnswers(all[all.length - 1] || null);
+}
+// Trailing debounce: an inspector drag changes the layout on every frame.
+let foldTimer = null;
+let foldWidth = 0;
+function scheduleRemeasure() {
+  clearTimeout(foldTimer);
+  foldTimer = setTimeout(() => { foldTimer = null; remeasureFolds(); }, 150);
+}
+if (typeof ResizeObserver === 'function' && messagesEl) {
+  new ResizeObserver((entries) => {
+    const w = Math.round(entries[0]?.contentRect?.width || 0);
+    if (w && foldWidth && w !== foldWidth) scheduleRemeasure();
+    foldWidth = w;
+  }).observe(messagesEl);
+}
+if (typeof MutationObserver === 'function' && document.documentElement) {
+  // Reading size is a root custom property; density a body class.
+  const watch = new MutationObserver(scheduleRemeasure);
+  watch.observe(document.documentElement, { attributes: true, attributeFilter: ['style'] });
+  if (document.body) watch.observe(document.body, { attributes: true, attributeFilter: ['class'] });
+}
+
 // compactOlderAnswers folds every assistant bubble except `keep` (the
 // current latest). Call when a new assistant reply opens so history
 // shrinks and the live answer stays full-height.
@@ -1655,7 +1927,7 @@ export function compactOlderAnswers(keep) {
   assistantMessages().forEach((msg) => {
     if (keep && (msg === keep || nodeHolds(msg, keep))) return;
     const bubble = msg.querySelector('.bubble');
-    if (bubble) checkCollapse(bubble, { latest: false });
+    if (bubble && !(bubble.dataset && bubble.dataset.collapseChecked === '1')) checkCollapse(bubble, { latest: false });
   });
 }
 

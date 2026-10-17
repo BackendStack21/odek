@@ -1,6 +1,6 @@
 // Workspace navigation, per-session drafts and the inspectable result collection.
 import { S } from './state.js';
-import { renderResult, resultKind } from './results.js';
+import { renderResult, resultKind, ACTIVITY_MAX_RESULTS, ACTIVITY_MAX_BYTES } from './results.js';
 import { toolPreview } from './toolviews.js';
 import { openTab } from './commands.js';
 import { summarizeEvidence } from './evidence.js';
@@ -10,14 +10,23 @@ function textNode(tag, cls, text) {
   const el = document.createElement(tag); el.className = cls; el.textContent = text; return el;
 }
 const outputs = [];S.activityPruned=false;
+let outputBytes = 0;
 export function clearResults() {
-  outputs.length = 0;S.activityPruned=false;
+  outputs.length = 0;outputBytes = 0;S.activityPruned=false;
   const budget=byId("budget-view");if(budget){budget.textContent="Budget usage appears after the first iteration.";budget.classList.remove("budget-exhausted");}
   S.resetArtifacts?.();
   S.resetSupervision?.();S.clearDecisionReceipts?.();
   const detail=byId('output-detail');if(detail){detail.textContent='';detail.hidden=true;}
   const list=byId('output-list');if(list)list.hidden=false;
   paintResults();
+}
+// A burst of results (a parallel tool batch, a session load) repaints the
+// list once per frame instead of rebuilding up to 300 rows per result.
+let paintRAF = null;
+function schedulePaintResults() {
+  if (paintRAF != null) return;
+  const run = () => { paintRAF = null; paintResults(); };
+  paintRAF = typeof requestAnimationFrame === 'function' ? requestAnimationFrame(run) : setTimeout(run, 0);
 }
 function paintResults() {
   const list = byId('output-list');
@@ -30,7 +39,7 @@ function paintResults() {
     if(query && !(item.name+' '+item.preview+' '+item.outcome).toLowerCase().includes(query))continue;
     const button = textNode('button', 'output-item', ''); button.type = 'button';
     button.dataset.outcome=item.outcome;
-    button.append(textNode('span','output-outcome',item.outcome==='completed'?'Returned':item.outcome==='failed'?'Failed':'Unknown'),textNode('span', 'output-kind', resultKind(item.name, item.output)), textNode('strong', 'output-name', item.name), textNode('span', 'output-path', item.preview));
+    button.append(textNode('span','output-outcome',item.outcome==='completed'?'Returned':item.outcome==='failed'?'Failed':'Unknown'),textNode('span', 'output-kind', item.kind ||= resultKind(item.name, item.output)), textNode('strong', 'output-name', item.name), textNode('span', 'output-path', item.preview));
     button.addEventListener('click', () => inspect(item)); list.appendChild(button);
   }
   paintEvidence();
@@ -58,16 +67,35 @@ function openActivityDetails() {
 }
 S.openActivityDetails = openActivityDetails;
 
-S.recordResult = (block, output) => {
-  const item = { block, output, outcome:block.dataset.outcome || 'unknown', turnId:block.dataset.turnId || '', callId:block.dataset.callId || '', name: block.dataset.toolName || 'tool', args: block.dataset.toolArgs || '', preview: toolPreview(block.dataset.toolName || '', block.dataset.toolArgs || '') };
-  item.stepId=(S.plan?.steps || []).find(step=>step.status==='in_progress')?.id || '';
-  outputs.push(item);
-  let pruned=false;
-  while(outputs.length>300 || outputs.reduce((n,result)=>n+result.output.length,0)>16*1024*1024){outputs.shift();pruned=true;}
-  if(pruned)S.activityPruned=true;
-  paintResults();
+function resultItem(block, output) {
+  return { block, output: String(output || ''), outcome:block.dataset.outcome || 'unknown', turnId:block.dataset.turnId || '', callId:block.dataset.callId || '', name: block.dataset.toolName || 'tool', args: block.dataset.toolArgs || '', preview: toolPreview(block.dataset.toolName || '', block.dataset.toolArgs || '') };
+}
+function addInspectButton(block, item) {
   const body = block.querySelector('.tb-body');
   if (body) { const button = textNode('button', 'result-inspect', 'Inspect result ↗'); button.type = 'button'; button.addEventListener('click', () => inspect(item)); body.appendChild(button); }
+}
+// attachInspect gives a re-rendered history step (Show earlier) its inspect
+// action without recording it again: the Activity list already holds the
+// result in transcript order from the session load. That item is rebound to
+// the visible step so "Show in conversation" reaches it.
+// `claimed` holds the items already rebound in this render, so identical
+// results within a turn (no call ids, same output) bind one step each.
+S.attachInspect = (block, output, claimed) => {
+  const text = String(output || '');
+  const callId = block.dataset.callId || '', turnId = block.dataset.turnId || '';
+  const item = outputs.find((o) => !o.block.isConnected && !(claimed && claimed.has(o)) && o.callId === callId && o.turnId === turnId && o.output === text);
+  if (item) { item.block = block; claimed?.add(item); }
+  addInspectButton(block, item || resultItem(block, output));
+};
+S.recordResult = (block, output) => {
+  const item = resultItem(block, output);
+  item.stepId=(S.plan?.steps || []).find(step=>step.status==='in_progress')?.id || '';
+  outputs.push(item);outputBytes+=item.output.length;
+  let pruned=false;
+  while(outputs.length>ACTIVITY_MAX_RESULTS || outputBytes>ACTIVITY_MAX_BYTES){outputBytes-=outputs.shift().output.length;pruned=true;}
+  if(pruned)S.activityPruned=true;
+  schedulePaintResults();
+  addInspectButton(block, item);
 };
 S.clearResults = clearResults;
 
