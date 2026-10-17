@@ -15,6 +15,7 @@ import { messagesEl } from './dom.js';
 
 export const MAX_UNITS = 300;      // units kept while the view follows the bottom
 export const HARD_UNITS = 600;     // ceiling while the operator reads further up
+export const ABSOLUTE_UNITS = 1200; // past this, rows on screen are trimmed too
 export const HISTORY_UNITS = 150;  // units a session load or "Show earlier" renders
 
 const TOP_UNITS = ['msg', 'turn-stream', 'tool-block', 'subagent-group', 'thinking-block', 'msg-divider'];
@@ -99,14 +100,23 @@ export function pruneMessages() {
   const reading = !S.stickBottom;
   if (reading && units <= HARD_UNITS) return;
 
-  const before = messagesEl.scrollHeight;
   const state = trimState();
+  // While reading, only rows wholly above the view leave, so the row being
+  // read stays put; the absolute ceiling bounds an operator parked at the top.
+  const limit = reading && units <= ABSOLUTE_UNITS ? firstRowInView() : null;
+  // The view is held on a row that survives: the first one on screen, or
+  // the newest row (a turn stream itself is no anchor — trimmed rows live
+  // inside it, so its top does not move).
+  const anchor = reading ? (limit || newestRow()) : null;
   let lastHidx = null;
   let removedHistory = false;
   // A loaded message renders as several rows (reply, reasoning, tool steps);
   // they leave together so a re-render from the backlog never duplicates or
   // drops part of a message.
+  let blocked = false;
   const drop = (row) => {
+    if (row === limit) blocked = true;
+    if (blocked) return false;
     const hidx = row.dataset ? row.dataset.hidx : undefined;
     const sameMessage = lastHidx != null && hidx === lastHidx;
     if (units <= MAX_UNITS && !sameMessage) return false;
@@ -118,24 +128,74 @@ export function pruneMessages() {
     return true;
   };
 
-  for (const el of kids(messagesEl)) {
-    if (units <= MAX_UNITS && lastHidx == null) break;
+  const trim = () => { for (const el of kids(messagesEl)) {
+    if ((units <= MAX_UNITS && lastHidx == null) || blocked) break;
     if (isStream(el)) {
       for (const row of kids(el)) {
-        if (!drop(row) && units <= MAX_UNITS) break;
+        if (!drop(row) && (units <= MAX_UNITS || blocked)) break;
       }
       if (!kids(el).length && el !== S.turnStreamEl) el.remove();
     } else if (isTopUnit(el)) {
-      if (!drop(el) && units <= MAX_UNITS) break;
+      if (!drop(el) && (units <= MAX_UNITS || blocked)) break;
     }
-  }
+  } };
+  if (reading) holdView(anchor, trim);
+  else trim();
 
   if (removedHistory && state.backlog) {
     const first = firstHistoryIndex();
     state.backlog.end = first >= 0 ? first : state.backlog.messages.length;
   }
-  if (reading) messagesEl.scrollTop -= before - messagesEl.scrollHeight;
   syncTrimMarker();
+}
+
+function newestRow() {
+  const top = kids(messagesEl).filter((el) => isStream(el) || isTopUnit(el));
+  const last = top[top.length - 1];
+  if (!last) return null;
+  if (!isStream(last)) return last;
+  const inner = kids(last);
+  return inner[inner.length - 1] || null;
+}
+
+// firstRowInView returns the first row not wholly above the visible part
+// of the transcript — or, when that row belongs to a loaded message, the
+// message's first row, so a message is never split by a trim. Null when
+// layout is unavailable (every row then counts as above the view).
+function firstRowInView() {
+  if (!messagesEl.getBoundingClientRect) return null;
+  const viewTopPx = messagesEl.getBoundingClientRect().top;
+  let groupStart = null;
+  let groupHidx = null;
+  for (const el of kids(messagesEl)) {
+    const rows = isStream(el) ? kids(el) : (isTopUnit(el) ? [el] : []);
+    for (const row of rows) {
+      const hidx = row.dataset ? row.dataset.hidx : undefined;
+      if (hidx == null || hidx === '') { groupStart = null; groupHidx = null; }
+      else if (hidx !== groupHidx) { groupStart = row; groupHidx = hidx; }
+      if (!row.getBoundingClientRect || row.getBoundingClientRect().bottom > viewTopPx) return groupStart || row;
+    }
+  }
+  return null;
+}
+
+function viewTop(el) {
+  return el && el.getBoundingClientRect && el.isConnected !== false ? el.getBoundingClientRect().top : null;
+}
+
+// holdView keeps `anchor` (a row that survives the change) at the same
+// viewport offset while rows are added or removed above it. It corrects only
+// what is left after the browser's own scroll anchoring, which Chrome and
+// Firefox apply and Safari does not; correcting by the height delta alone
+// doubled the shift where anchoring had already run. Without a layout API
+// the height delta is the whole correction.
+export function holdView(anchor, change) {
+  const top = viewTop(anchor);
+  const height = messagesEl.scrollHeight;
+  change();
+  const after = viewTop(anchor);
+  if (top != null && after != null) messagesEl.scrollTop += after - top;
+  else messagesEl.scrollTop += messagesEl.scrollHeight - height;
 }
 
 // earlierTurns counts the operator turns before the rendered window (the
@@ -173,6 +233,7 @@ export function syncTrimMarker() {
     marker.setAttribute('role', 'note');
     const text = document.createElement('span');
     text.className = 'tt-text';
+    text.setAttribute('aria-live', 'polite');
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.className = 'tt-more';
@@ -183,20 +244,27 @@ export function syncTrimMarker() {
   if (first !== marker) messagesEl.insertBefore(marker, first || null);
   const text = marker.querySelector('.tt-text');
   const btn = marker.querySelector('.tt-more');
+  let label, action, caption, disabled;
   if (state.live) {
-    text.textContent = 'Earlier activity is hidden to keep the page responsive.';
-    btn.textContent = S.busy ? 'Reload full history after this turn' : 'Reload full history';
-    btn.disabled = !!S.busy || !S.sessionId;
-    btn.dataset.action = 'reload';
+    label = 'Earlier activity is hidden to keep the page responsive.';
+    caption = S.busy ? 'Reload full history after this turn' : 'Reload full history';
+    disabled = !!S.busy || !S.sessionId;
+    action = 'reload';
   } else {
     const turns = earlierTurns(backlog);
-    text.textContent = turns
+    label = turns
       ? turns + (turns === 1 ? ' earlier turn is' : ' earlier turns are') + ' not shown.'
       : 'Earlier activity is not shown.';
-    btn.textContent = 'Show earlier';
-    btn.disabled = false;
-    btn.dataset.action = 'earlier';
+    caption = 'Show earlier';
+    disabled = false;
+    action = 'earlier';
   }
+  // The marker re-syncs on every trim during a busy turn; writing unchanged
+  // text would still mutate the live region and cost a re-announcement.
+  if (text.textContent !== label) text.textContent = label;
+  if (btn.textContent !== caption) btn.textContent = caption;
+  if (btn.disabled !== disabled) btn.disabled = disabled;
+  if (btn.dataset.action !== action) btn.dataset.action = action;
 }
 
 messagesEl?.addEventListener?.('click', (e) => {

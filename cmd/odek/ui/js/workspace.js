@@ -67,16 +67,26 @@ function openActivityDetails() {
 }
 S.openActivityDetails = openActivityDetails;
 
+function resultItem(block, output) {
+  return { block, output: String(output || ''), outcome:block.dataset.outcome || 'unknown', turnId:block.dataset.turnId || '', callId:block.dataset.callId || '', name: block.dataset.toolName || 'tool', args: block.dataset.toolArgs || '', preview: toolPreview(block.dataset.toolName || '', block.dataset.toolArgs || '') };
+}
+function addInspectButton(block, item) {
+  const body = block.querySelector('.tb-body');
+  if (body) { const button = textNode('button', 'result-inspect', 'Inspect result ↗'); button.type = 'button'; button.addEventListener('click', () => inspect(item)); body.appendChild(button); }
+}
+// attachInspect gives a re-rendered history step (Show earlier) its inspect
+// action without recording it again: the Activity list already holds the
+// result in transcript order from the session load.
+S.attachInspect = (block, output) => addInspectButton(block, resultItem(block, output));
 S.recordResult = (block, output) => {
-  const item = { block, output: String(output || ''), outcome:block.dataset.outcome || 'unknown', turnId:block.dataset.turnId || '', callId:block.dataset.callId || '', name: block.dataset.toolName || 'tool', args: block.dataset.toolArgs || '', preview: toolPreview(block.dataset.toolName || '', block.dataset.toolArgs || '') };
+  const item = resultItem(block, output);
   item.stepId=(S.plan?.steps || []).find(step=>step.status==='in_progress')?.id || '';
   outputs.push(item);outputBytes+=item.output.length;
   let pruned=false;
   while(outputs.length>300 || outputBytes>16*1024*1024){outputBytes-=outputs.shift().output.length;pruned=true;}
   if(pruned)S.activityPruned=true;
   schedulePaintResults();
-  const body = block.querySelector('.tb-body');
-  if (body) { const button = textNode('button', 'result-inspect', 'Inspect result ↗'); button.type = 'button'; button.addEventListener('click', () => inspect(item)); body.appendChild(button); }
+  addInspectButton(block, item);
 };
 S.clearResults = clearResults;
 

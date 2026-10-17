@@ -9,7 +9,7 @@ import {
   scrollBottom, forceScrollBottom, historyUserText,
   showCancel, hideCancel, teach,
 } from './utils.js';
-import { pruneMessages, syncTrimMarker, setHistoryBacklog, trimState, HISTORY_UNITS } from './transcript.js';
+import { pruneMessages, syncTrimMarker, setHistoryBacklog, trimState, holdView, HISTORY_UNITS } from './transcript.js';
 import { markdownToHtml, CODE_COPY_LABEL, CODE_COPIED_LABEL } from './markdown.js';
 import { parseUntrusted } from './untrusted.js';
 import { classifyToolResult, chipsHtml, prettyToolBody, collectReceipt, formatReceipt } from './tools.js';
@@ -692,6 +692,9 @@ export function settlePendingWork(reason = 'interrupted') {
       const latency = block.querySelector('.tb-latency');
       if (latency) latency.textContent = label;
       block.dataset.pendingState = reason;
+      // Once the turn is over no result can arrive: the step is settled, so
+      // the transcript budget may trim it like any finished step.
+      if (!stopping) block.dataset.outcome = 'unknown';
     }
   }
   if (S.subagentGroup) {
@@ -944,6 +947,7 @@ function appendToolResultContent(block, output, record = true) {
   const body = block.querySelector('.tb-body');
   if (!body || body.classList.contains('open')) renderPendingResult(block);
   if (record && typeof S.recordResult === 'function') S.recordResult(block, output);
+  else if (!record && typeof S.attachInspect === 'function') S.attachInspect(block, output);
 }
 
 function renderPendingResult(block) {
@@ -1651,6 +1655,8 @@ export function renderSessionHistory(messages) {
 export function showEarlierHistory() {
   const backlog = trimState().backlog;
   if (!backlog || backlog.end <= 0) return;
+  const active = document.activeElement;
+  const fromMarker = !!(active && active.closest && active.closest('.transcript-trim'));
   const end = backlog.end;
   const start = historyWindowStart(backlog.messages, end);
   historyRecord = false; // already recorded when the session loaded
@@ -1660,20 +1666,26 @@ export function showEarlierHistory() {
   const kids = Array.from(messagesEl.children || []);
   const marker = kids.find((el) => hasClass(el, 'transcript-trim'));
   const ref = marker ? (kids[kids.indexOf(marker) + 1] || null) : (kids[0] || null);
-  const before = messagesEl.scrollHeight;
-  // A window boundary inside a turn splits its stream; rejoin the halves so
-  // the turn reads as one log, as a full render would draw it.
-  const tail = nodes[nodes.length - 1];
-  if (tail && ref && hasClass(tail, 'turn-stream') && hasClass(ref, 'turn-stream')) {
-    const first = ref.children[0] || null;
-    Array.from(tail.children).forEach((row) => ref.insertBefore(row, first));
-    nodes.pop();
-  }
-  nodes.forEach((node) => messagesEl.insertBefore(node, ref));
-  settleHistoryMessages(msgs);
-  messagesEl.scrollTop += messagesEl.scrollHeight - before;
+  holdView(ref, () => {
+    // A window boundary inside a turn splits its stream; rejoin the halves so
+    // the turn reads as one log, as a full render would draw it.
+    const tail = nodes[nodes.length - 1];
+    if (tail && ref && hasClass(tail, 'turn-stream') && hasClass(ref, 'turn-stream')) {
+      const first = ref.children[0] || null;
+      Array.from(tail.children).forEach((row) => ref.insertBefore(row, first));
+      nodes.pop();
+    }
+    nodes.forEach((node) => messagesEl.insertBefore(node, ref));
+    settleHistoryMessages(msgs);
+  });
   backlog.end = start;
   syncTrimMarker();
+  // The last window removes the marker; keep keyboard focus in the
+  // transcript instead of dropping it to the page.
+  if (fromMarker && active.isConnected === false) {
+    const target = msgs.length && msgs[0].querySelector ? msgs[0].querySelector('button, [role="button"]') : null;
+    target?.focus?.();
+  }
 }
 S.showEarlierHistory = showEarlierHistory;
 

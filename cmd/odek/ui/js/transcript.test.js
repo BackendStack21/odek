@@ -412,3 +412,57 @@ test('the trim marker reload is refused mid-turn and reloads the session when id
   await new Promise((r) => setTimeout(r, 5));
   assert.ok(fetched.some((u) => u.includes('sess-1')), 'idle reload fetches the persisted session: ' + fetched.join(','));
 });
+
+test('steps settled by a stopped or interrupted turn become trimmable', () => {
+  render.addToolCall('shell', '{"command":"sleep"}', 'orphan');
+  const block = S.currentToolBlock;
+  render.requestTurnStop();
+  assert.equal(block.dataset.outcome, 'running', 'a stopping step can still receive its result');
+  render.endStream('cancelled');
+  assert.equal(block.dataset.outcome, 'unknown', 'after the turn ends nothing can arrive');
+  for (let i = 0; i < transcript.MAX_UNITS + 5; i++) finishedTool(i);
+  assert.equal(block.parentNode, null, 'the settled step is trimmed like any finished one');
+});
+
+test('Show earlier steps keep their inspect action without re-recording', () => {
+  const recorded = [];
+  const inspected = [];
+  S.recordResult = (block, output) => recorded.push(output);
+  S.attachInspect = (block, output) => inspected.push(output);
+  render.renderSessionHistory(session(60));
+  const n = recorded.length;
+  render.showEarlierHistory();
+  assert.equal(recorded.length, n, 'not recorded again');
+  assert.ok(inspected.length > 0, 'inspect action attached to re-rendered steps');
+  S.attachInspect = undefined;
+});
+
+test('holdView corrects only what browser scroll anchoring left over', () => {
+  const anchor = new FakeEl('div');
+  let top = 400;
+  anchor.getBoundingClientRect = () => ({ top });
+  messages.scrollTop = 1000;
+  // The browser already anchored: the row did not move, so nothing to add.
+  transcript.holdView(anchor, () => {});
+  assert.equal(messages.scrollTop, 1000);
+  // No anchoring: rows inserted above pushed the anchor down by 250px.
+  transcript.holdView(anchor, () => { top = 650; });
+  assert.equal(messages.scrollTop, 1250);
+});
+
+test('while reading up, rows on screen and below are never trimmed', () => {
+  S.stickBottom = false;
+  messages.getBoundingClientRect = () => ({ top: 0 });
+  try {
+    for (let i = 0; i < transcript.HARD_UNITS; i++) finishedTool(i);
+    // Rows 0..99 lie above the view; row 100 onward is on screen or below.
+    rows().forEach((row, i) => { row.getBoundingClientRect = () => ({ top: (i - 100) * 10, bottom: (i - 99) * 10 }); });
+    const reading = rows()[100];
+    finishedTool('over');
+    assert.ok(reading.parentNode, 'the row being read survives the ceiling trim');
+    assert.equal(rows()[0], reading, 'only rows above the view were trimmed');
+    assert.equal(transcript.countUnits(), transcript.HARD_UNITS + 1 - 100);
+  } finally {
+    delete messages.getBoundingClientRect;
+  }
+});
