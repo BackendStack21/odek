@@ -242,8 +242,11 @@ export function newSession() {
   // Detach the connection from the previous session so its memory buffer,
   // token totals and background wakes stay with it. A closed socket needs
   // nothing: the reconnect does not re-adopt a session when none is set.
+  // Until the server acknowledges (session_new_ok), frames still arriving
+  // for the left session are ignored so they cannot re-adopt it here.
   if (S.ws && S.ws.readyState === WebSocket.OPEN) {
     S.ws.send(JSON.stringify({ type: 'session_new' }));
+    S.pendingSessionNew = true;
   }
   resetSessionViews();
   resetMetrics();

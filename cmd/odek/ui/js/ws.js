@@ -97,6 +97,8 @@ export function connect() {
   S.ws = new WebSocket(proto + '//' + location.host + '/ws', protocols);
 
   S.ws.onopen = () => {
+    // A new connection has nothing queued for a session left on the old one.
+    S.pendingSessionNew = false;
     hideConnBanner();
     dotEl.className = 'dot connected';
     statusEl.textContent = 'connected';
@@ -154,6 +156,16 @@ export function connect() {
     try { event = JSON.parse(e.data); } catch { return; }
 
 
+    if (S.pendingSessionNew) {
+      // Session-bearing frames queued server-side before session_new belong
+      // to the session the user left: drop them, and close their turns so
+      // the turn's later frames are dropped too, until the ack.
+      if (event.type === 'session_new_ok') { S.pendingSessionNew = false; return; }
+      if (event.session_id) {
+        if (event.turn_id) { S.closedTurnIds ||= new Set(); S.closedTurnIds.add(event.turn_id); }
+        return;
+      }
+    }
     if (event.type!=='turn_settled' && event.turn_id && S.closedTurnIds?.has(event.turn_id)) return;
     if (S.turnEnded && ['tool_call','tool_result','thinking','thinking_delta','token','token_delta','subagent_state','subagent_log','approval_request','clarify_request','done'].includes(event.type)) return;
     if (S.stopRequested && ['tool_call','subagent_log','thinking','thinking_delta','approval_request','clarify_request'].includes(event.type)) return;

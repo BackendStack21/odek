@@ -897,3 +897,48 @@ func TestRED_WSLeavingSessionRunsSessionEnd(t *testing.T) {
 		t.Fatalf("session-end counts: ran=%d viewed=%d, want 1 and 0", endedCount(first), endedCount(viewed.ID))
 	}
 }
+
+// session_new is acknowledged in queue order, so the UI knows every frame of
+// the session it left (a wake turn queued before the detach) arrived before
+// the ack.
+func TestRED_WSSessionNewIsAcknowledged(t *testing.T) {
+	llmSrv := mockLLM(t, func(w http.ResponseWriter, callCount int) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}]}`))
+	})
+	defer llmSrv.Close()
+	envCleanup := setTestEnv(t, llmSrv.URL)
+	defer envCleanup()
+	store := newTestSessionStore(t)
+	ln, mux := buildServeMux(t, store)
+	defer startServeTest(t, ln, mux)()
+	waitForHTTP(t, ln.Addr().String())
+	wsUpgradeLimiter.reset()
+	conn := dialTestWS(t, ln.Addr().String())
+	defer conn.Close()
+
+	if err := golangws.Message.Send(conn, `{"type":"prompt","content":"first"}`); err != nil {
+		t.Fatal(err)
+	}
+	// Sent while the turn may still run: the ack must follow every frame of it.
+	if err := golangws.Message.Send(conn, `{"type":"session_new"}`); err != nil {
+		t.Fatal(err)
+	}
+	conn.SetReadDeadline(time.Now().Add(20 * time.Second))
+	settled := false
+	for {
+		var evt map[string]any
+		if err := readJSON(conn, &evt); err != nil {
+			t.Fatalf("no session_new_ok: %v", err)
+		}
+		switch evt["type"] {
+		case "turn_settled":
+			settled = true
+		case "session_new_ok":
+			if !settled {
+				t.Fatal("session_new_ok arrived before the earlier turn settled")
+			}
+			return
+		}
+	}
+}

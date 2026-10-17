@@ -764,8 +764,10 @@ The UI communicates entirely over a single WebSocket at `/ws`. Messages are newl
 
 // Detach the connection from its current session ("New session" in the UI):
 // clears the memory buffer and the session token totals, and background
-// wakes for the previous session no longer target this connection. No reply;
-// the next prompt without session_id creates the new session.
+// wakes for the previous session no longer target this connection. Answered
+// with session_new_ok in queue order; the UI ignores session-bearing frames
+// (of the session it left) until then. The next prompt without session_id
+// creates the new session.
 { "type": "session_new" }
 ```
 
@@ -799,6 +801,7 @@ The UI communicates entirely over a single WebSocket at `/ws`. Messages are newl
 | `approval_ack` | Server confirms an approval response | `id`, `action` |
 | `approval_expired` | Server declares the approval dead after `timeout_seconds` elapsed with no response — autoclose the matching card; late `approval_response` frames for the id are dropped | `id` |
 | `clarify_request` | Agent asked a principal-channel question (control, bidi and invisible characters escaped); blocks the run up to `timeout_seconds` (300s) | `id`, `question`, `timeout_seconds` |
+| `session_new_ok` | Ack for `session_new`, sent after every frame queued before it | — |
 | `clarify_ack` | Server confirms a clarify answer | `id` |
 | `clarify_rejected` | Server refused a clarify answer for a still-pending question (over 32000 characters, or blank); the card re-enables so the answer can be edited and resent | `id`, `reason` |
 | `clarify_expired` | Server declares the question dead after `timeout_seconds` with no answer | `id` |

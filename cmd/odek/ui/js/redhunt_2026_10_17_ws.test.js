@@ -2,7 +2,7 @@
 // previous session (session_new frame), so the previous session's memory
 // buffer, token totals and background wakes do not carry into the new view.
 // Run: node --test cmd/odek/ui/js/
-import { test } from 'node:test';
+import { test, mock } from 'node:test';
 import assert from 'node:assert/strict';
 
 class WSFixClassList {
@@ -134,4 +134,29 @@ test('RED: an over-cap frame is not sent and the attachments stay', () => {
   assert.equal(S.attachedFiles.length, 1, 'attachments kept for editing');
   assert.equal(prompt.value, 'summarise', 'prompt kept');
   S.attachedFiles.length = 0;
+});
+
+// Until the server acknowledges session_new, frames of the session being
+// left (a wake turn queued before the detach) must not re-adopt it in the
+// fresh view.
+const wsMod = await import('./ws.js');
+
+test('RED: frames of the left session before session_new_ok are ignored', (t) => {
+  // Heartbeat and jobs-watch intervals start on open/session; keep them fake.
+  mock.timers.enable({ apis: ['setInterval', 'setTimeout'] });
+  t.after(() => mock.timers.reset());
+  wsMod.connect();
+  const sock = S.ws;
+  sock.onopen?.();
+  S.busy = false;
+  S.sessionId = 'old-session';
+  sessions.newSession();
+  assert.equal(S.sessionId, null);
+  sock.onmessage({ data: JSON.stringify({ type: 'session', session_id: 'old-session', auth_token: 't' }) });
+  sock.onmessage({ data: JSON.stringify({ type: 'turn_started', session_id: 'old-session', turn_id: 't_wake', initiated: 'system' }) });
+  assert.equal(S.sessionId, null, 'the left session was re-adopted before the ack');
+  assert.notEqual(S.currentTurnId, 't_wake', 'a turn of the left session opened in the new view');
+  sock.onmessage({ data: JSON.stringify({ type: 'session_new_ok' }) });
+  sock.onmessage({ data: JSON.stringify({ type: 'session', session_id: 'new-session', auth_token: 't2' }) });
+  assert.equal(S.sessionId, 'new-session', 'frames after the ack are handled');
 });

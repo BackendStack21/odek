@@ -1904,6 +1904,9 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 		// so nothing of it carries into the next conversation.
 		if msgType.Type == "session_new" {
 			detachSession()
+			// Acknowledged in queue order: every frame of the session just
+			// left (e.g. a wake turn queued earlier) was sent before this.
+			writeWSJSON(conn, map[string]any{"type": "session_new_ok"})
 			continue
 		}
 
