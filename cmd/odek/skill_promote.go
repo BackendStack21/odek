@@ -93,19 +93,16 @@ func skillCandidatesAll(userDir, name string) []promoteCandidate {
 // path. Only files the candidate scan accepted qualify: a SKILL.md directly
 // in a skill directory of the project or user skills dir, neither the
 // directory nor the file a symlink. The given path may be relative or
-// absolute; it must name the same file (a symlink pointing at a skill file is
-// not that file).
+// absolute and is matched lexically against the candidates' absolute paths;
+// the caller-supplied path is never opened or stat'ed itself.
 func skillCandidateAtPath(candidates []promoteCandidate, path string) (promoteCandidate, bool) {
-	want := filepath.Clean(path)
-	wantInfo, wantErr := os.Lstat(path)
+	want, err := filepath.Abs(path)
+	if err != nil {
+		return promoteCandidate{}, false
+	}
 	for _, cand := range candidates {
-		if filepath.Clean(cand.path()) == want {
-			return cand, true
-		}
-		if wantErr != nil || wantInfo.Mode()&os.ModeSymlink != 0 {
-			continue
-		}
-		if fi, err := os.Lstat(cand.path()); err == nil && os.SameFile(fi, wantInfo) {
+		got, err := filepath.Abs(cand.path())
+		if err == nil && got == want {
 			return cand, true
 		}
 	}
