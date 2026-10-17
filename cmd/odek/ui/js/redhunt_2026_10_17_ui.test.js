@@ -203,6 +203,17 @@ beforeEach(() => {
   byId.completion.innerHTML = '';
 });
 
+// The index starts at history.length, so after a page load (this test runs first:
+// any send resets the index) ArrowUp on an empty composer recalls nothing (idx > 0 is false)
+// until the first send resets the index.
+test('RED: ArrowUp after a page load recalls the most recent persisted prompt', () => {
+  assert.deepEqual(S.history.slice(0, 2), ['first prompt', 'second prompt'], 'history loaded from localStorage');
+  const prompt = byId.prompt;
+  prompt.value = '';
+  prompt.dispatch('keydown', { key: 'ArrowUp', altKey: false, shiftKey: false });
+  assert.equal(prompt.value, 'second prompt', 'ArrowUp on an empty composer recalled ' + JSON.stringify(prompt.value));
+});
+
 // Finding: @-completion replaces from the last '@' up to the CURSOR, but the
 // query is only the first word after '@'. Text typed after an earlier
 // @-reference keeps re-opening the popup, and Enter (meant to send) accepts
@@ -288,17 +299,6 @@ test('RED: reloaded system-initiated wake preamble is not rendered as an operato
   const users = byId.messages.querySelectorAll('.msg.user');
   const typed = users.map(u => collectText(u).join(' ')).filter(t => /background jobs finished/.test(t));
   assert.equal(typed.length, 0, 'wake preamble rendered as an operator ("❯ you") message');
-});
-
-// Finding: S.historyIdx starts at -1 instead of history.length, so after a
-// page load ArrowUp on an empty composer recalls nothing (idx > 0 is false)
-// until the first send resets the index.
-test('RED: ArrowUp after a page load recalls the most recent persisted prompt', () => {
-  assert.deepEqual(S.history.slice(0, 2), ['first prompt', 'second prompt'], 'history loaded from localStorage');
-  const prompt = byId.prompt;
-  prompt.value = '';
-  prompt.dispatch('keydown', { key: 'ArrowUp', altKey: false, shiftKey: false });
-  assert.equal(prompt.value, 'second prompt', 'ArrowUp on an empty composer recalled ' + JSON.stringify(prompt.value));
 });
 
 function uisecResetDom() {

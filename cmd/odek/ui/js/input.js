@@ -555,8 +555,11 @@ async function checkCompletion() {
     return;
   }
 
-  const query = before.slice(atIdx + 1).split(/\s/)[0];
-  if (!query) {
+  // Complete only while the cursor is inside the @-token: whitespace between
+  // the '@' and the cursor means the reference is finished and the text typed
+  // after it must never be replaced by a completion.
+  const query = before.slice(atIdx + 1);
+  if (!query || /\s/.test(query)) {
     hideCompletion();
     return;
   }
