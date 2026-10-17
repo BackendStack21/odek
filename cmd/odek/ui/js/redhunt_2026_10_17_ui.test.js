@@ -373,7 +373,7 @@ test('RED: live delegate_tasks tool_call with a non-string goal throws in the fr
 function uiScalingRatio(unit, small) {
   const best = (n) => {
     let min = Infinity;
-    for (let k = 0; k < 3; k++) {
+    for (let k = 0; k < 5; k++) {
       const t = process.hrtime.bigint();
       markdownToHtml(unit.repeat(n));
       min = Math.min(min, Number(process.hrtime.bigint() - t));
@@ -391,6 +391,21 @@ test('RED: markdownToHtml is quadratic on unclosed <http: autolinks (hostile tex
 test('RED: markdownToHtml is quadratic on rejected bare URLs (backslash)', () => {
   const ratio = uiScalingRatio('http://\\', 8000);
   assert.ok(ratio < 9, 'render cost grew ' + ratio.toFixed(1) + 'x for 4x input');
+});
+
+for (const unit of ['**_a', '[', '[a](', '![', '![a](', '~~', '* a*b', '_ a_b', '`', '**', '*', '_']) {
+  test('RED: markdownToHtml scales linearly on repeated ' + JSON.stringify(unit), () => {
+    const ratio = uiScalingRatio(unit, Math.ceil(100000 / unit.length));
+    assert.ok(ratio < 9, 'render cost grew ' + ratio.toFixed(1) + 'x for 4x input');
+  });
+}
+
+test('inline constructs still render after the linear tokenizer', () => {
+  assert.equal(markdownToHtml('**b** and *i* and ~~s~~ `c`'), '<p><strong>b</strong> and <em>i</em> and <s>s</s> <code>c</code></p>');
+  assert.match(markdownToHtml('[x](https://a.b/c) ![y](https://a.b/i.png)'), /<a href="https:\/\/a\.b\/c"[^>]*>x<\/a> <a [^>]*md-img[^>]*>y<\/a>/);
+  assert.equal(markdownToHtml('snake_case_name and 2*3*4'), '<p>snake_case_name and 2*3*4</p>');
+  assert.equal(markdownToHtml('**unclosed *a'), '<p>**unclosed *a</p>');
+  assert.equal(markdownToHtml('[x](javascript:alert)'), '<p>x</p>');
 });
 
 test('autolinks still link ordinary URLs and reject over-long candidates', () => {
