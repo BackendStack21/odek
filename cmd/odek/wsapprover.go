@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/BackendStack21/odek/internal/danger"
 	"github.com/BackendStack21/odek/internal/session"
@@ -512,10 +513,24 @@ func (a *wsApprover) PromptClarify(question string) (string, error) {
 	}
 }
 
+// maxClarifyAnswerChars caps a clarify answer in characters (runes). The
+// question card's textarea limits the same number of UTF-16 code units, and a
+// rune never takes fewer units than one, so every answer the card accepts
+// fits; the byte length is bounded by four times this.
+const maxClarifyAnswerChars = 32000
+
 // HandleClarifyResponse delivers a browser answer to a pending PromptClarify.
-// Empty answers are ignored so a blank card cannot complete the wait.
+// Empty answers are ignored so a blank card cannot complete the wait. An
+// answer rejected for a pending question is answered with clarify_rejected,
+// so the card can be edited and sent again instead of waiting for expiry.
 func (a *wsApprover) HandleClarifyResponse(id, answer string) bool {
-	if len(answer) > 32000 || strings.TrimSpace(answer) == "" {
+	if reason := clarifyAnswerProblem(answer); reason != "" {
+		a.mu.Lock()
+		_, pending := a.pendingClarify[id]
+		a.mu.Unlock()
+		if pending && a.sendFn != nil {
+			a.sendFn(map[string]any{"type": "clarify_rejected", "id": id, "reason": reason})
+		}
 		return false
 	}
 	a.mu.Lock()
@@ -600,6 +615,17 @@ func (a *wsApprover) RevokeTrust() {
 	defer a.mu.Unlock()
 	a.approveAll = map[danger.RiskClass]bool{}
 	a.trustAll = false
+}
+
+// clarifyAnswerProblem returns why a clarify answer is refused, or "".
+func clarifyAnswerProblem(answer string) string {
+	if len(answer) > 4*maxClarifyAnswerChars || utf8.RuneCountInString(answer) > maxClarifyAnswerChars {
+		return fmt.Sprintf("answer exceeds %d characters", maxClarifyAnswerChars)
+	}
+	if strings.TrimSpace(answer) == "" {
+		return "answer is empty"
+	}
+	return ""
 }
 
 // This sentinel never crosses the principal-channel boundary as an answer.

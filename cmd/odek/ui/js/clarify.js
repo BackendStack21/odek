@@ -64,6 +64,21 @@ export function dismissClarify(id,action) {
   if (queued && queued.id === id) {S.recordDecision?.({id,kind:'question',command:queued.question,action:action || queued._action || 'answer',state:'accepted'});queued._recorded=true;clearClarify();}
 }
 
+// rejectClarify re-opens the card after the server refused the answer
+// (clarify_rejected): the question is still pending, so the user can edit
+// and send again, skip or stop.
+export function rejectClarify(id, reason) {
+  if (!queued || queued.id !== id || !activeCard) return;
+  queued._pending = false;
+  activeCard.querySelectorAll('button').forEach(button => { button.disabled = false; });
+  activeCard.querySelector('.clarify-status')?.remove();
+  const status = document.createElement('p');
+  status.className = 'management-note clarify-status';
+  status.textContent = 'Answer not accepted: ' + (reason || 'rejected by the server') + '. Edit it and send again.';
+  activeCard.appendChild(status);
+  activeCard.querySelector('.ac-friction-input')?.focus();
+}
+
 export function expireClarify(id) {
   if(queued?.id===id){S.recordDecision?.({id,kind:'question',command:queued.question,state:'expired'});queued._recorded=true;clearClarify();}
 }
@@ -152,5 +167,6 @@ function sendAnswer(action='answer') {
   }
   queued._pending=true;queued._action=action;
   activeCard.querySelectorAll('button').forEach(button=>{button.disabled=true;});
-  const status=document.createElement('p');status.className='management-note';status.textContent='Sending answer… waiting for server acceptance';activeCard.appendChild(status);
+  activeCard.querySelector('.clarify-status')?.remove();
+  const status=document.createElement('p');status.className='management-note clarify-status';status.textContent='Sending answer… waiting for server acceptance';activeCard.appendChild(status);
 }

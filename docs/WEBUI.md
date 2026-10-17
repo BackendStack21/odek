@@ -794,6 +794,7 @@ The UI communicates entirely over a single WebSocket at `/ws`. Messages are newl
 | `approval_expired` | Server declares the approval dead after `timeout_seconds` elapsed with no response — autoclose the matching card; late `approval_response` frames for the id are dropped | `id` |
 | `clarify_request` | Agent asked a principal-channel question (control, bidi and invisible characters escaped); blocks the run up to `timeout_seconds` (300s) | `id`, `question`, `timeout_seconds` |
 | `clarify_ack` | Server confirms a clarify answer | `id` |
+| `clarify_rejected` | Server refused a clarify answer for a still-pending question (over 32000 characters, or blank); the card re-enables so the answer can be edited and resent | `id`, `reason` |
 | `clarify_expired` | Server declares the question dead after `timeout_seconds` with no answer | `id` |
 | `skill_event` | Skill lifecycle event (`loaded`/`autoloaded`/`used`/`deleted` — `skill_save`/`skill_patch` were removed with the self-learning feature) | `event`, `skill_name`, `skills`, `heuristic` |
 | `memory_event` | Memory lifecycle event | `event`, `target`, `session_id`, `content`, `count`, `new_count`, `untrusted` |
@@ -1149,6 +1150,6 @@ additionally supplies `recovery_revision` and `recovery_generation`; both must
 match the session loaded under execution ownership, otherwise the turn fails
 without executing. `permissions_get` snapshots temporary grants;
 `permissions_revoke` clears grants on this connection. `clarify_response` accepts
-`action: "answer"` (default) or `"skip"`; Skip returns a skipped-question tool
+`action: "answer"` (default, at most 32000 characters) or `"skip"`; Skip returns a skipped-question tool
 error without inventing an answer. `clarify_ack.action` confirms that choice.
 Existing protocol clients may omit these additive fields.

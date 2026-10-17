@@ -13,7 +13,7 @@ import {
   lastAssistantBubble, supersedeStream, markTurnUnverified, stripVerifyMarker,
 } from './render.js';
 import { queueApproval, dismissApproval, clearApprovals, expireApproval } from './approvals.js';
-import { queueClarify, dismissClarify, clearClarify, expireClarify } from './clarify.js';
+import { queueClarify, dismissClarify, clearClarify, expireClarify, rejectClarify } from './clarify.js';
 import { loadSessions } from './sessions.js';
 import { onPong, onServerInfo, startHeartbeat, stopHeartbeat, notifyUser } from './health.js';
 import { metricsLiveContext, metricsDone, metricsApplySpeed, metricsResetSpeed, metricsBeginTurn, metricsLiveUsage, turnStatsSpans, setMetricsModel } from './metrics.js';
@@ -445,6 +445,10 @@ export function connect() {
 
       case 'clarify_expired':
         expireClarify(event.id);
+        break;
+
+      case 'clarify_rejected':
+        rejectClarify(event.id, event.reason);
         break;
 
       case 'skill_event':

@@ -507,3 +507,99 @@ func TestRED_SessionPinDuringLiveTurnAbortsTurn(t *testing.T) {
 		t.Fatal("pin lost after the turn's final save")
 	}
 }
+
+// The WebUI question card caps answers with textarea maxLength=32000, which
+// counts UTF-16 code units; HandleClarifyResponse caps at 32000 BYTES and
+// drops anything longer silently (no NACK, no clarify_ack). A non-ASCII answer
+// the card accepts (here 12000 CJK characters = 36000 bytes) is discarded and
+// the card stays "Sending answer… waiting for server acceptance" with every
+// button disabled until the 300s expiry.
+func TestRED_WSClarifyAnswerWithinUILimitIsDelivered(t *testing.T) {
+	a := newWSApprover(nil)
+	reqs := make(chan clarifyRequest, 1)
+	a.sendFn = func(v any) error {
+		if f, ok := v.(clarifyRequest); ok {
+			reqs <- f
+		}
+		return nil
+	}
+	answer := strings.Repeat("日", 12000) // 12000 UTF-16 units (< UI 32000), 36000 bytes
+	type result struct {
+		ans string
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		s, err := a.PromptClarify("which?")
+		done <- result{s, err}
+	}()
+	req := <-reqs
+	delivered := a.HandleClarifyResponse(req.ID, answer)
+	if !delivered {
+		// Unblock the wait; the failure below reports the drop.
+		a.Cancel()
+	}
+	r := <-done
+	if !delivered || r.err != nil || r.ans != answer {
+		t.Fatalf("answer accepted by the UI card (12000 chars) was dropped by the server: delivered=%v err=%v (no ack/nack frame is sent, card hangs until expiry)", delivered, r.err)
+	}
+}
+
+// An answer the server refuses for a pending question (over the character
+// cap, or blank) is answered with clarify_rejected carrying the id, the
+// question stays pending, and a corrected answer is still delivered.
+func TestRED_WSClarifyRejectedAnswerIsNacked(t *testing.T) {
+	a := newWSApprover(nil)
+	reqs := make(chan clarifyRequest, 1)
+	frames := make(chan map[string]any, 8)
+	a.sendFn = func(v any) error {
+		switch f := v.(type) {
+		case clarifyRequest:
+			reqs <- f
+		case map[string]any:
+			frames <- f
+		}
+		return nil
+	}
+	type result struct {
+		ans string
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		s, err := a.PromptClarify("which?")
+		done <- result{s, err}
+	}()
+	req := <-reqs
+	for _, bad := range []string{strings.Repeat("日", maxClarifyAnswerChars+1), strings.Repeat("a", maxClarifyAnswerChars+1), "   "} {
+		if a.HandleClarifyResponse(req.ID, bad) {
+			t.Fatalf("refused answer (%d bytes) reported delivered", len(bad))
+		}
+		select {
+		case f := <-frames:
+			if f["type"] != "clarify_rejected" || f["id"] != req.ID || f["reason"] == "" {
+				t.Fatalf("NACK frame = %v", f)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("no clarify_rejected frame for a refused answer")
+		}
+	}
+	// Exactly at the cap in characters (multi-byte) is accepted.
+	ok := strings.Repeat("日", maxClarifyAnswerChars)
+	if !a.HandleClarifyResponse(req.ID, ok) {
+		t.Fatal("answer at the character cap refused")
+	}
+	r := <-done
+	if r.err != nil || r.ans != ok {
+		t.Fatalf("corrected answer not delivered: err=%v", r.err)
+	}
+	// No NACK for an id that is not pending (unknown or already answered).
+	a.HandleClarifyResponse("clr-unknown", "")
+	select {
+	case f := <-frames:
+		if f["type"] == "clarify_rejected" {
+			t.Fatalf("NACK sent for a question that is not pending: %v", f)
+		}
+	default:
+	}
+}
