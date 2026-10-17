@@ -447,15 +447,16 @@ async function loadSkills() {
         actions.className = 'sk-actions';
         const promo = document.createElement('button');
         promo.className = 'sk-promote';
-        promo.textContent = sk.untrusted ? 'force promote' : 'promote';
+        promo.textContent = sk.requires_force ? 'force promote' : 'promote';
         promo.addEventListener('click', async () => {
           if (!review.dataset.loaded || !review.open) { review.open = true; showToast('Review the skill content before promoting it'); return; }
           if (!review.dataset.path || !review.dataset.sha256) { showToast('The review did not identify the skill file; reload the panel'); return; }
+          if (sk.requires_force && !window.confirm('This skill comes from a project directory or an untrusted source. Promote it with force so it can load without review?')) return;
           promo.disabled = true;
           try {
             // Bound to the reviewed file: the server promotes that copy only
             // while its content still matches what was shown.
-            await promoteSkill(sk.name, !!sk.untrusted, { path: review.dataset.path, sha256: review.dataset.sha256 });
+            await promoteSkill(sk.name, !!sk.requires_force, { path: review.dataset.path, sha256: review.dataset.sha256 });
             showToast('skill promoted');
             loadSkills();
           } catch (err) {

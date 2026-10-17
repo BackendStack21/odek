@@ -702,6 +702,10 @@ type skillSummary struct {
 	Source      string `json:"source"`
 	NeedsReview bool   `json:"needs_review"`
 	Untrusted   bool   `json:"untrusted"`
+	// RequiresForce is the promote gate's own condition: promoting this
+	// skill needs force (untrusted origin, or any provenance source —
+	// every project-dir skill carries "project").
+	RequiresForce bool `json:"requires_force"`
 }
 
 // handleSkills lists discovered skills with their provenance state, so the
@@ -748,6 +752,8 @@ func handleSkills(sc skills.SkillsConfig) http.HandlerFunc {
 				Source:      s.Source.Dir,
 				NeedsReview: s.Provenance.NeedsReview,
 				Untrusted:   s.Provenance.Untrusted,
+				RequiresForce: s.Provenance.NeedsReview &&
+					(s.Provenance.Untrusted || len(s.Provenance.Sources) > 0),
 			})
 		}
 		if r.URL.Query().Get("name") != "" {

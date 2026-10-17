@@ -84,6 +84,71 @@ func TestRED_SkillPromoteTrustsSkillOtherThanReviewed(t *testing.T) {
 // require force (docs/WEBUI.md), but the listing reports untrusted=false
 // for them, and the WebUI promote button sends force=untrusted, so the
 // browser can never promote a project skill (400 "tainted ... use --force").
+func TestRED_SkillListGivesNoForceSignalForProjectSkills(t *testing.T) {
+	apiHunt1017SkillEnv(t, map[string]string{
+		"proj": "---\nname: proj\ndescription: project skill\n---\n\nbody\n",
+	})
+	w := httptest.NewRecorder()
+	handleSkills(skills.SkillsConfig{})(w, httptest.NewRequest(http.MethodGet, "/api/skills", nil))
+	var list struct {
+		Skills []skillSummary `json:"skills"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &list); err != nil {
+		t.Fatal(err)
+	}
+	var row *skillSummary
+	for i := range list.Skills {
+		if list.Skills[i].Name == "proj" {
+			row = &list.Skills[i]
+		}
+	}
+	if row == nil || !row.NeedsReview {
+		t.Fatalf("project skill row = %+v, want needs_review", row)
+	}
+	// What panels.js sends: force from the row's requires_force signal.
+	body, _ := json.Marshal(map[string]any{"name": row.Name, "force": row.RequiresForce})
+	req := httptest.NewRequest(http.MethodPost, "/api/skills/promote", strings.NewReader(string(body)))
+	w = httptest.NewRecorder()
+	handleSkillPromote()(w, req)
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("WebUI promote of a reviewed project skill = %d %q: the listing gives the client no way to know force is required", w.Code, strings.TrimSpace(w.Body.String()))
+	}
+
+	// An operator-dir skill pending review with no taint sources does not
+	// require force, and the gate still refuses force-less tainted promotes.
+	userDir := filepath.Join(os.Getenv("HOME"), ".odek", "skills")
+	for name, prov := range map[string]string{
+		"plain":   "    needs_review: true\n",
+		"tainted": "    needs_review: true\n    untrusted: true\n    sources: [\"https://x.example\"]\n",
+	} {
+		d := filepath.Join(userDir, name)
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		md := "---\nname: " + name + "\ndescription: d\nodek:\n  provenance:\n" + prov + "---\n\nbody\n"
+		if err := os.WriteFile(filepath.Join(d, "SKILL.md"), []byte(md), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	w = httptest.NewRecorder()
+	handleSkills(skills.SkillsConfig{})(w, httptest.NewRequest(http.MethodGet, "/api/skills", nil))
+	list.Skills = nil
+	if err := json.Unmarshal(w.Body.Bytes(), &list); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]bool{"plain": false, "tainted": true}
+	for _, s := range list.Skills {
+		if exp, ok := want[s.Name]; ok && s.RequiresForce != exp {
+			t.Errorf("%s requires_force = %v, want %v", s.Name, s.RequiresForce, exp)
+		}
+	}
+	w = httptest.NewRecorder()
+	handleSkillPromote()(w, httptest.NewRequest(http.MethodPost, "/api/skills/promote", strings.NewReader(`{"name":"tainted"}`)))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("force-less promote of a tainted skill = %d, want 400", w.Code)
+	}
+}
+
 // apiHunt1017Mux mounts the production serve mux over an isolated store and
 // memory dir and returns a request helper carrying the instance token and a
 // local Origin.
