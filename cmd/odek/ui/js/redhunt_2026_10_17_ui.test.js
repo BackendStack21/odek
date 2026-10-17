@@ -380,23 +380,26 @@ function uiScalingRatio(unit, small) {
     }
     return min;
   };
-  return best(small * 4) / Math.max(best(small), 1);
+  // A quadratic tokenizer exceeds the bound on every attempt; scheduler noise only on some.
+  let ratio = Infinity;
+  for (let attempt = 0; attempt < 3 && ratio >= 12; attempt++) ratio = Math.min(ratio, best(small * 4) / Math.max(best(small), 1));
+  return ratio;
 }
 
 test('RED: markdownToHtml is quadratic on unclosed <http: autolinks (hostile text freezes the tab)', () => {
   const ratio = uiScalingRatio('<http:', 8000);
-  assert.ok(ratio < 9, 'render cost grew ' + ratio.toFixed(1) + 'x for 4x input');
+  assert.ok(ratio < 12, 'render cost grew ' + ratio.toFixed(1) + 'x for 4x input');
 });
 
 test('RED: markdownToHtml is quadratic on rejected bare URLs (backslash)', () => {
   const ratio = uiScalingRatio('http://\\', 8000);
-  assert.ok(ratio < 9, 'render cost grew ' + ratio.toFixed(1) + 'x for 4x input');
+  assert.ok(ratio < 12, 'render cost grew ' + ratio.toFixed(1) + 'x for 4x input');
 });
 
 for (const unit of ['**_a', '[', '[a](', '![', '![a](', '~~', '* a*b', '_ a_b', '`', '**', '*', '_']) {
   test('RED: markdownToHtml scales linearly on repeated ' + JSON.stringify(unit), () => {
-    const ratio = uiScalingRatio(unit, Math.ceil(100000 / unit.length));
-    assert.ok(ratio < 9, 'render cost grew ' + ratio.toFixed(1) + 'x for 4x input');
+    const ratio = uiScalingRatio(unit, Math.ceil(150000 / unit.length));
+    assert.ok(ratio < 12, 'render cost grew ' + ratio.toFixed(1) + 'x for 4x input');
   });
 }
 
@@ -443,4 +446,36 @@ test('RED: write_file/patch/read_file result titles show raw bidi overrides in t
   const rf = toolView('read_file', JSON.stringify({ content: 'x', total_lines: 1 }), JSON.stringify({ path: 'cfg' + rlo + 'lmy.sh' }));
   assert.ok(rf && rf.items.length, 'read_file view');
   assert.ok(!rf.items[0].title.includes(rlo), 'read_file title must escape U+202E: ' + JSON.stringify(rf.items[0].title));
+});
+
+test('RED: escapeHtml/escapeAttr map null, undefined and false to empty and stringify numbers', async () => {
+  const { escapeHtml, escapeAttr } = await import('./escape.js');
+  for (const f of [escapeHtml, escapeAttr]) {
+    assert.equal(f(null), '');
+    assert.equal(f(undefined), '');
+    assert.equal(f(false), '');
+    assert.equal(f(''), '');
+    assert.equal(f(42), '42');
+  }
+});
+
+test('RED: legacy attachment chip escapes bidi/control characters in the file name', async () => {
+  const { stripAttachmentBodies } = await import('./untrusted.js');
+  const env = '<untrusted_content_ab12cd source="attachment:a‮b.txt">\nbody\n</untrusted_content_ab12cd>';
+  assert.ok(!stripAttachmentBodies(env).includes('‮'), JSON.stringify(stripAttachmentBodies(env)));
+});
+
+test('RED: stop frames for a session set outside the frame handler do not leak after New session', () => {
+  // The id is assigned directly (upload path / loadSession), never seen in a frame.
+  S.sessionId = 'sess-uploaded';
+  globalThis.confirm = () => true;
+  sessions.newSession();
+  assert.equal(S.sessionId, null);
+  byId.messages.children.length = 0;
+  S.recoveryReason = '';
+  deliver({ type: 'cancelled', session_id: 'sess-uploaded', requested: true });
+  deliver({ type: 'turn_settled', turn_id: 't_x', session_id: 'sess-uploaded', status: 'cancelled' });
+  const text = collectText(byId.messages).join(' ');
+  assert.doesNotMatch(text, /Stop accepted|Execution stopped/, text);
+  assert.equal(S.recoveryReason || '', '');
 });

@@ -2,7 +2,7 @@
 // New in v2: token_delta/thinking_delta live streaming, pong heartbeat
 // replies carrying server info, cancelled confirmations, and the server_info
 // hello pushed on connect.
-import { S, setSessionToken, getSessionToken } from './state.js';
+import { S, setSessionToken, getSessionToken, wasSessionDisplayed } from './state.js';
 import { getWsToken } from './net.js';
 import { dotEl, statusEl, sendBtn, skeletonEl, modelLabel, promptEl } from './dom.js';
 import { formatErrorMessage, showToast, announce, showCancel } from './utils.js';
@@ -77,12 +77,11 @@ function noteDisconnect() {
   if (droppedBusy) S.onRecoveryNeeded?.('Connection interrupted the turn');
 }
 
-// Session ids this tab has displayed. A cancel ack or settle frame that names
-// a session we have since left (New session nulls S.sessionId) must not paint
-// stop narration or recovery state into the conversation now on screen.
-const seenSessionIds = new Set();
+// A cancel ack or settle frame that names a session we have since left (New
+// session nulls S.sessionId) must not paint stop narration or recovery state
+// into the conversation now on screen.
 function retiredSessionFrame(event) {
-  return !!event.session_id && event.session_id !== S.sessionId && seenSessionIds.has(event.session_id);
+  return !!event.session_id && event.session_id !== S.sessionId && wasSessionDisplayed(event.session_id);
 }
 
 export function connect() {
@@ -154,7 +153,6 @@ export function connect() {
     let event;
     try { event = JSON.parse(e.data); } catch { return; }
 
-    if (S.sessionId) seenSessionIds.add(S.sessionId);
 
     if (event.type!=='turn_settled' && event.turn_id && S.closedTurnIds?.has(event.turn_id)) return;
     if (S.turnEnded && ['tool_call','tool_result','thinking','thinking_delta','token','token_delta','subagent_state','subagent_log','approval_request','clarify_request','done'].includes(event.type)) return;
