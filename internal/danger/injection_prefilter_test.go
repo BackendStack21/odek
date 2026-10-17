@@ -98,30 +98,41 @@ func testStringLiterals(t *testing.T) []string {
 	return out
 }
 
+// The corpus is every string literal in the package's tests, so it grows with
+// each regression case; it is checked in parallel shards (each with its own
+// mutation stream) to keep the package inside the CI test timeout under -race.
 func TestRED_Injection_PrefilterEquivalentToFullScan(t *testing.T) {
+	t.Parallel()
 	corpus := testStringLiterals(t)
 	for _, p := range injectionPatterns {
 		corpus = append(corpus, p.Label)
 	}
-	rng := rand.New(rand.NewSource(7))
-	check := func(s string) {
-		if got, want := ScanInjection(s), scanInjectionReference(s); !sameResults(got, want) {
-			t.Fatalf("verdict differs for %q:\n got %v\nwant %v", s, got, want)
-		}
-	}
-	for _, s := range corpus {
-		check(s)
-		check(strings.ToUpper(s))
-		// Random mutations: splice corpus entries, drop or duplicate a span.
-		for i := 0; i < 3; i++ {
-			o := corpus[rng.Intn(len(corpus))]
-			if len(s) > 0 {
-				a := rng.Intn(len(s) + 1)
-				b := a + rng.Intn(len(s)-a+1)
-				check(s[:a] + " " + o + " " + s[b:])
-				check(s[:b] + s[a:])
+	const shards = 4
+	for shard := 0; shard < shards; shard++ {
+		t.Run(strconv.Itoa(shard), func(t *testing.T) {
+			t.Parallel()
+			rng := rand.New(rand.NewSource(7 + int64(shard)))
+			check := func(s string) {
+				if got, want := ScanInjection(s), scanInjectionReference(s); !sameResults(got, want) {
+					t.Fatalf("verdict differs for %q:\n got %v\nwant %v", s, got, want)
+				}
 			}
-		}
+			for i := shard; i < len(corpus); i += shards {
+				s := corpus[i]
+				check(s)
+				check(strings.ToUpper(s))
+				// Random mutations: splice corpus entries, drop or duplicate a span.
+				for j := 0; j < 3; j++ {
+					o := corpus[rng.Intn(len(corpus))]
+					if len(s) > 0 {
+						a := rng.Intn(len(s) + 1)
+						b := a + rng.Intn(len(s)-a+1)
+						check(s[:a] + " " + o + " " + s[b:])
+						check(s[:b] + s[a:])
+					}
+				}
+			}
+		})
 	}
 }
 
