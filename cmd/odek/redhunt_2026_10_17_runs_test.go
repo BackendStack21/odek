@@ -9,11 +9,13 @@ import (
 	"fmt"
 	"github.com/BackendStack21/odek/internal/budget"
 	"github.com/BackendStack21/odek/internal/config"
+	"github.com/BackendStack21/odek/internal/danger"
 	"github.com/BackendStack21/odek/internal/session"
 	"net/http"
 	"net/http/httptest"
 	"runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -179,5 +181,69 @@ func TestRED_RunsFinishedRunPinsAgentAndSession(t *testing.T) {
 	if grown > uint64(payload)*3/2 {
 		t.Fatalf("%d finished runs still pin %.1f MiB of heap (session payload %d MiB each)",
 			runs, float64(grown)/(1<<20), payload>>20)
+	}
+}
+
+// The REST approval bridge echoes the REQUESTED action, not the one the
+// approver applied. "trust" on a class that never offers trust (destructive)
+// is coerced to a one-shot approve by wsApprover, yet the API answers
+// {"action":"trust"} and records an approval_ack claiming trust, so a
+// management client believes the class is now trusted for the run.
+func TestRED_RunsApprovalBridgeReportsCoercedTrustAsTrust(t *testing.T) {
+	resetServeRuns()
+	t.Cleanup(resetServeRuns)
+
+	run := &serveRun{ID: "run-runs-trust-coerce", Status: "running", StartedAt: time.Now(), pending: map[string]*approvalRequest{}}
+	run.cond = sync.NewCond(&run.mu)
+	approver := newWSApprover(func(v any) error {
+		if ar, ok := v.(approvalRequest); ok {
+			run.recordApprovalRequest(ar)
+			return nil
+		}
+		return run.record(v)
+	})
+	run.approver = approver
+	registerRun(run)
+
+	done := make(chan error, 1)
+	go func() { done <- approver.PromptCommand(danger.Destructive, "rm -rf ./build", "") }()
+
+	var aid string
+	deadline := time.Now().Add(5 * time.Second)
+	for aid == "" {
+		snap := run.snapshot(false)
+		if p, _ := snap["pending_approvals"].([]map[string]any); len(p) > 0 {
+			aid, _ = p[0]["id"].(string)
+			if allow, _ := p[0]["allow_trust"].(bool); allow {
+				t.Fatal("precondition: destructive must not offer trust")
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("approval never became pending")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	w := httptest.NewRecorder()
+	handleRunApprovalAnswer()(w, httptest.NewRequest(http.MethodPost, "/api/runs/"+run.ID+"/approvals/"+aid, strings.NewReader(`{"action":"trust"}`)))
+	if w.Code != http.StatusOK {
+		t.Fatalf("answer status = %d: %s", w.Code, w.Body.String())
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("precondition: coerced approve should run the command, got %v", err)
+	}
+	var body map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &body)
+
+	snap := run.snapshot(true)
+	evs, _ := snap["events"].([]map[string]any)
+	claimsTrust := false
+	for _, ev := range evs {
+		if ev["type"] == "approval_ack" && ev["action"] == "trust" {
+			claimsTrust = true
+		}
+	}
+	if body["action"] != "approve" || claimsTrust {
+		t.Fatalf("bridge reported action=%v (tail claims trust ack: %v) for a destructive prompt the approver applied as a one-shot approve", body["action"], claimsTrust)
 	}
 }

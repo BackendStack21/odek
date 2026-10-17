@@ -573,7 +573,7 @@ answerable over REST:
 | `/api/runs/{id}` | DELETE | Cancel |
 | `/api/runs/{id}/cancel` | POST | Cancel (reports `idle:true` when already finished) |
 | `/api/runs/{id}/approvals` | GET | Pending approval requests (risk, command) |
-| `/api/runs/{id}/approvals/{aid}` | POST | `{action: "approve" \| "deny" \| "trust"}` |
+| `/api/runs/{id}/approvals/{aid}` | POST | `{action: "approve" \| "deny" \| "trust"}`; the response reports the action actually applied (`trust` becomes `approve` for classes that never offer trust or while friction is engaged) |
 
 Answers flow through the same `wsApprover` path as the WebUI — trust
 caching matches, and friction flags are exposed the same way. Typed

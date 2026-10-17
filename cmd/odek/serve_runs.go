@@ -1402,8 +1402,21 @@ func handleRunApprovalAnswer() http.HandlerFunc {
 		}
 		run.mu.Lock()
 		approver := run.approver
+		terminal := runStatusTerminal(run.Status)
+		// The approver coerces "trust" to a one-shot approve for classes
+		// that never offer trust (and while friction is engaged); report
+		// the action that will actually apply, not the requested one.
+		effective := body.Action
+		if req := run.pending[approvalID]; effective == "trust" && req != nil && !req.AllowTrust {
+			effective = "approve"
+		}
 		run.mu.Unlock()
 		if approver == nil {
+			if terminal {
+				// Teardown released the approver: the approval is gone.
+				http.Error(w, "approval not found (it may have timed out)", http.StatusNotFound)
+				return
+			}
 			http.Error(w, "run has no approver", http.StatusConflict)
 			return
 		}
@@ -1412,8 +1425,8 @@ func handleRunApprovalAnswer() http.HandlerFunc {
 			return
 		}
 		// Mirror the ack + pending-list update the socket path gets.
-		_ = run.record(map[string]any{"type": "approval_ack", "id": approvalID, "action": body.Action})
-		writeAPIJSON(w, http.StatusOK, map[string]any{"run_id": runID, "approval_id": approvalID, "action": body.Action})
+		_ = run.record(map[string]any{"type": "approval_ack", "id": approvalID, "action": effective})
+		writeAPIJSON(w, http.StatusOK, map[string]any{"run_id": runID, "approval_id": approvalID, "action": effective})
 	}
 }
 
