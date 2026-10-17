@@ -1020,7 +1020,7 @@ New operator-authenticated endpoints:
 | `GET /api/skills?name=NAME` | Full discovered skill body and provenance for human review, plus `sha256` (hash of the `SKILL.md` at `source.path`) to bind a promote to the reviewed copy. |
 | `GET /api/tools` | Adds descriptions and JSON schemas to built-in registry entries. |
 | `GET /api/schedules` | Shared scheduler definitions, runtime states and next-fire previews. |
-| `POST /api/schedules` | Create a schedule using the CLI's validation and file locks. |
+| `POST /api/schedules` | Create a schedule using the CLI's validation and file locks. Task ≤ 32000 characters, name ≤ 200 characters (counted in characters, not bytes). |
 | `POST /api/schedules/{id}` | Replace a schedule definition, preserving identity and creation time. |
 | `DELETE /api/schedules/{id}` | Delete a schedule. |
 | `GET /api/maintenance` | Operator-resolved retention policy. |

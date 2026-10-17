@@ -942,3 +942,25 @@ func TestRED_WSSessionNewIsAcknowledged(t *testing.T) {
 		}
 	}
 }
+
+// The schedule editor limits Task to 32000 and Name to 200 UTF-16 units; the
+// server must accept everything the editor accepts (multi-byte included) and
+// still refuse one character more.
+func TestRED_WSScheduleTaskCapCountsCharacters(t *testing.T) {
+	h := handleSchedules(t.TempDir())
+	post := func(name, task string) *httptest.ResponseRecorder {
+		body, _ := json.Marshal(map[string]any{"name": name, "cron": "0 9 * * 1-5", "task": task, "deliver": map[string]any{"kind": "log"}, "enabled": false})
+		w := httptest.NewRecorder()
+		h(w, httptest.NewRequest("POST", "/api/schedules", bytes.NewReader(body)))
+		return w
+	}
+	if w := post(strings.Repeat("名", 200), strings.Repeat("日", 32000)); w.Code != http.StatusOK {
+		t.Fatalf("editor-sized multi-byte schedule refused: %d %s", w.Code, strings.TrimSpace(w.Body.String()))
+	}
+	if w := post("n", strings.Repeat("日", 32001)); w.Code != http.StatusBadRequest {
+		t.Fatalf("task over 32000 characters accepted: %d", w.Code)
+	}
+	if w := post(strings.Repeat("名", 201), "t"); w.Code != http.StatusBadRequest {
+		t.Fatalf("name over 200 characters accepted: %d", w.Code)
+	}
+}
