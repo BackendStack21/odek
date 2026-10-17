@@ -286,7 +286,7 @@ export function newSession() {
 // agent (buffer restore) via session_switch, then renders the transcript
 // from the REST detail. Falls back to the legacy piggyback-on-prompt path
 // when the socket is down.
-export async function loadAndRenderSession(sid, opts = {}) {
+export async function loadAndRenderSession(sid) {
   // F-A2: same mid-run guard as newSession — ask, cancel through the stop
   // control, and only then bootstrap the switch (which fetches).
   if (S.busy) {
@@ -357,10 +357,7 @@ export async function loadAndRenderSession(sid, opts = {}) {
     renderSessionHistory(messages);
     S.restoreDecisionReceipts?.(sess.decisions || []);
 
-    // A reload asked for from the trim marker wants the earlier rows: land
-    // at the top of the window, beside "Show earlier", not at the end.
-    if (opts.atTop) { S.stickBottom = false; messagesEl.scrollTop = 0; }
-    else forceScrollBottom();
+    forceScrollBottom();
     showToast('Session loaded');
     announce('Session loaded');
     if (typeof S.closePanels === 'function') S.closePanels();
@@ -370,10 +367,26 @@ export async function loadAndRenderSession(sid, opts = {}) {
 }
 
 // The transcript-trim marker's reload: rows trimmed from a live turn exist
-// only in the persisted session. Never while a turn runs.
-S.reloadSession = () => {
+// only in the persisted session. It refetches and re-renders the transcript
+// alone — the connection's agent, queue and plan are left as they are — and
+// lands at the top of the new window, beside "Show earlier". Never while a
+// turn runs.
+S.reloadSession = async () => {
   if (S.busy || !S.sessionId) return;
-  loadAndRenderSession(S.sessionId, { atTop: true });
+  const sid = S.sessionId;
+  const loadVersion = ++sessionLoadVersion;
+  try {
+    const sess = await getSession(sid, getSessionToken(sid) || undefined);
+    if (loadVersion !== sessionLoadVersion || S.busy || S.sessionId !== sid) return;
+    resetTurnState();
+    messagesEl.innerHTML = '';
+    resetTranscriptTrim();
+    renderSessionHistory(sess.messages || [], { record: false });
+    S.stickBottom = false;
+    messagesEl.scrollTop = 0;
+  } catch {
+    showToast('Error reloading history');
+  }
 };
 
 // ── Session Rename ──

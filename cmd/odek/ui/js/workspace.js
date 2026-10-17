@@ -1,6 +1,6 @@
 // Workspace navigation, per-session drafts and the inspectable result collection.
 import { S } from './state.js';
-import { renderResult, resultKind } from './results.js';
+import { renderResult, resultKind, ACTIVITY_MAX_RESULTS, ACTIVITY_MAX_BYTES } from './results.js';
 import { toolPreview } from './toolviews.js';
 import { openTab } from './commands.js';
 import { summarizeEvidence } from './evidence.js';
@@ -78,11 +78,13 @@ function addInspectButton(block, item) {
 // action without recording it again: the Activity list already holds the
 // result in transcript order from the session load. That item is rebound to
 // the visible step so "Show in conversation" reaches it.
-S.attachInspect = (block, output) => {
+// `claimed` holds the items already rebound in this render, so identical
+// results within a turn (no call ids, same output) bind one step each.
+S.attachInspect = (block, output, claimed) => {
   const text = String(output || '');
   const callId = block.dataset.callId || '', turnId = block.dataset.turnId || '';
-  const item = outputs.find((o) => !o.block.isConnected && o.callId === callId && o.turnId === turnId && o.output === text);
-  if (item) item.block = block;
+  const item = outputs.find((o) => !o.block.isConnected && !(claimed && claimed.has(o)) && o.callId === callId && o.turnId === turnId && o.output === text);
+  if (item) { item.block = block; claimed?.add(item); }
   addInspectButton(block, item || resultItem(block, output));
 };
 S.recordResult = (block, output) => {
@@ -90,7 +92,7 @@ S.recordResult = (block, output) => {
   item.stepId=(S.plan?.steps || []).find(step=>step.status==='in_progress')?.id || '';
   outputs.push(item);outputBytes+=item.output.length;
   let pruned=false;
-  while(outputs.length>300 || outputBytes>16*1024*1024){outputBytes-=outputs.shift().output.length;pruned=true;}
+  while(outputs.length>ACTIVITY_MAX_RESULTS || outputBytes>ACTIVITY_MAX_BYTES){outputBytes-=outputs.shift().output.length;pruned=true;}
   if(pruned)S.activityPruned=true;
   schedulePaintResults();
   addInspectButton(block, item);

@@ -569,3 +569,116 @@ test('Show in conversation reaches a step re-rendered by Show earlier', async ()
   assert.deepEqual(jumped, ['k0'], 'the Activity item now points at the visible step, not the load-time stub');
   S.clearResults();
 });
+
+test('an interrupted turn leaves no reasoning row marked live', () => {
+  S.currentTurnId = 't-esc';
+  render.streamThinking('pondering');
+  const block = messages.querySelector('.thinking-block');
+  assert.ok(block.classList.contains('live'));
+  render.endStream('interrupted');
+  assert.equal(block.classList.contains('live'), false, 'the budget may trim it now');
+});
+
+test('folds are re-measured after a layout change', () => {
+  render.addMessage('assistant', 'first');
+  const bubble = messages.querySelector('.msg.assistant').querySelector('.bubble');
+  let height = 100;
+  Object.defineProperty(bubble.querySelector('.content'), 'scrollHeight', { get: () => height });
+  render.addMessage('assistant', 'second');
+  assert.equal(bubble.classList.contains('collapsible'), false);
+  height = 900; // e.g. reading size raised
+  render.addMessage('assistant', 'third');
+  assert.equal(bubble.classList.contains('collapsible'), false, 'measured once, not on every reply');
+  render.remeasureFolds();
+  assert.ok(bubble.classList.contains('collapsible'), 'layout change re-measures');
+});
+
+test('identical results in one turn rebind to distinct Activity items', async () => {
+  S.recordResult = wsHooks.record;
+  S.attachInspect = wsHooks.attach;
+  S.clearResults();
+  byId['output-list'].children.length = 0;
+  const stub = () => { const b = document.createElement('div'); Object.assign(b.dataset, { toolName: 'shell', toolArgs: '{}', turnId: 'h', callId: '', outcome: 'completed' }); return b; };
+  S.recordResult(stub(), 'same');
+  S.recordResult(stub(), 'same');
+  const blocks = [0, 1].map(() => {
+    const b = document.createElement('div'); b.className = 'tool-block';
+    b.innerHTML = '<div class="tb-body"></div>';
+    Object.assign(b.dataset, { toolName: 'shell', toolArgs: '{}', turnId: 'h', callId: '' });
+    return b;
+  });
+  const claims = new Set();
+  blocks.forEach((b) => S.attachInspect(b, 'same', claims));
+  blocks.forEach((b) => messages.appendChild(b));
+  await new Promise((r) => setTimeout(r, 5));
+  const jumped = [];
+  blocks.forEach((b, i) => { b.scrollIntoView = () => jumped.push(i); });
+  for (const item of byId['output-list'].querySelectorAll('.output-item')) {
+    byId['output-detail'].children.length = 0;
+    item.click();
+    byId['output-detail'].querySelectorAll('button').find(b => b.textContent === 'Show in conversation').click();
+  }
+  assert.deepEqual(jumped, [0, 1], 'each step owns its own item');
+  S.clearResults();
+});
+
+test('the earlier-turns count ignores system-initiated records', () => {
+  const list = [];
+  for (let t = 0; t < 40; t++) {
+    list.push({ role: 'user', content: 'q' + t });
+    list.push({ role: 'user', name: 'bg-wake', content: 'wake' });
+    for (let i = 0; i < 4; i++) list.push({ role: 'assistant', content: 'a' + i });
+  }
+  render.renderSessionHistory(list);
+  const end = transcript.trimState().backlog.end;
+  const real = list.slice(0, end).filter(m => m.role === 'user' && !m.name).length;
+  assert.match(marker().querySelector('.tt-text').textContent, new RegExp('^' + real + ' earlier turns'));
+});
+
+test('session load records at most the Activity cap of earlier results, newest first kept in order', () => {
+  const recorded = [];
+  S.recordResult = (block, output) => recorded.push(output);
+  const list = session(400); // 400 results, ~370 before the window
+  render.renderSessionHistory(list);
+  const windowResults = rows().filter(r => r.classList.contains('tool-block')).length;
+  assert.ok(recorded.length <= 300 + windowResults, 'bounded by the panel cap: ' + recorded.length);
+  const all = list.filter(m => m.role === 'tool').map(m => m.content);
+  assert.deepEqual(recorded, all.slice(all.length - recorded.length), 'the newest results, in transcript order');
+});
+
+test('a reader parked at the top costs no layout reads until they scroll', () => {
+  S.stickBottom = false;
+  let reads = 0;
+  try {
+    for (let i = 0; i < transcript.HARD_UNITS; i++) finishedTool(i); // at the ceiling, no trim yet
+    messages.getBoundingClientRect = () => { reads++; return { top: 0 }; };
+    const onScreen = function () { reads++; return { top: 0, bottom: 10 }; };
+    FakeEl.prototype.getBoundingClientRect = onScreen; // every row on screen
+    finishedTool('a');
+    const after = reads;
+    assert.ok(after > 0, 'first trim attempt measured');
+    finishedTool('b'); finishedTool('c');
+    assert.equal(reads, after, 'parked: no further layout reads');
+    messages.dispatch('scroll');
+    finishedTool('d');
+    assert.ok(reads > after, 'a scroll re-arms the check');
+  } finally {
+    delete messages.getBoundingClientRect;
+    delete FakeEl.prototype.getBoundingClientRect;
+  }
+});
+
+test('reload re-renders the transcript without switching sessions or re-recording', async () => {
+  const sent = [];
+  S.ws = { readyState: 1, send: (m) => sent.push(m) };
+  const recorded = [];
+  S.recordResult = (b, o) => recorded.push(o);
+  globalThis.fetch = async () => ({ ok: true, status: 200, headers: { get: (h) => (h === 'Content-Type' ? 'application/json' : null) }, json: async () => ({ messages: session(3) }), text: async () => '' });
+  render.renderSessionHistory([]);
+  await S.reloadSession();
+  assert.equal(sent.length, 0, 'no session_switch');
+  assert.equal(recorded.length, 0, 'Activity not recorded again');
+  assert.ok(rows().some(r => r.classList.contains('tool-block')), 'history re-rendered');
+  assert.equal(messages.scrollTop, 0);
+  S.ws = null;
+});

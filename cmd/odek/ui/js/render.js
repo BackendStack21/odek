@@ -7,14 +7,14 @@ import { messagesEl, promptEl, sendBtn, emptyState } from './dom.js';
 import {
   escapeHtml, escapeAttr, truncateStr, copyTextToClipboard,
   scrollBottom, forceScrollBottom, historyUserText,
-  showCancel, hideCancel, teach, hasClass, nodeHolds,
+  showCancel, hideCancel, teach, hasClass, nodeHolds, isSyntheticUser,
 } from './utils.js';
 import { pruneMessages, syncTrimMarker, setHistoryBacklog, trimState, holdView, HISTORY_UNITS } from './transcript.js';
 import { markdownToHtml, CODE_COPY_LABEL, CODE_COPIED_LABEL } from './markdown.js';
 import { parseUntrusted } from './untrusted.js';
 import { classifyToolResult, chipsHtml, prettyToolBody, collectReceipt, formatReceipt } from './tools.js';
 import { toolIcon } from './icons.js';
-import { renderResult, resultText } from './results.js';
+import { renderResult, resultText, ACTIVITY_MAX_RESULTS, ACTIVITY_MAX_BYTES } from './results.js';
 import { toolPreview, toolArguments, toolView, renderToolItems } from './toolviews.js';
 import { metricsNoteOutput } from './metrics.js';
 
@@ -730,6 +730,7 @@ export function endStream(reason = "interrupted") {
     if (S.closedTurnIds.size > 32) S.closedTurnIds.delete(S.closedTurnIds.values().next().value);
   }
   removeStreamCursor();
+  endThinking(); // an interrupted turn leaves no row marked live
   sealTurnStream();
   // The live answer is the latest — never fold it. Older long replies
   // were already compacted when this bubble opened.
@@ -948,7 +949,7 @@ function appendToolResultContent(block, output, record = true) {
   const body = block.querySelector('.tb-body');
   if (!body || body.classList.contains('open')) renderPendingResult(block);
   if (record && typeof S.recordResult === 'function') S.recordResult(block, output);
-  else if (!record && typeof S.attachInspect === 'function') S.attachInspect(block, output);
+  else if (!record && typeof S.attachInspect === 'function') S.attachInspect(block, output, inspectClaims);
 }
 
 function renderPendingResult(block) {
@@ -1478,6 +1479,7 @@ export const MAX_SUBAGENT_LOG_LINES = 200;
 let historyHost = null; // detached container a window renders into
 let historyIdx = null;  // message index stamped on each row
 let historyRecord = true; // feed tool results to the Activity panel
+let inspectClaims = null; // Activity items rebound during one Show earlier
 
 function historyTarget() {
   return historyHost || messagesEl;
@@ -1488,16 +1490,10 @@ function historyRow(el) {
   return el;
 }
 
-// System-initiated user records (bg-wake preamble, bg-notice,
-// return-after-break) are not text the operator typed and render nothing.
-function syntheticUser(msg) {
-  return typeof msg.name === 'string' && (msg.name.startsWith('bg-') || msg.name === 'return-after-break');
-}
-
 // historyUnits counts the rows one persisted message renders as.
 export function historyUnits(msg) {
   if (!msg) return 0;
-  if (msg.role === 'user') return syntheticUser(msg) ? 0 : 1;
+  if (msg.role === 'user') return isSyntheticUser(msg) ? 0 : 1;
   if (msg.role !== 'assistant') return 0;
   return (msg.reasoning_content ? 1 : 0) + (msg.content ? 1 : 0) +
     (Array.isArray(msg.tool_calls) ? msg.tool_calls.length : 0);
@@ -1561,27 +1557,33 @@ function historyTurnIdBefore(messages, from) {
 
 // recordHistoricalResults feeds tool results outside the rendered window
 // to the Activity panel in transcript order, so its evidence summary covers
-// the session and not only the visible window. The stub block is never
+// the session and not only the visible window. Only the newest results the
+// panel can hold are collected (walking back from the window), so a huge
+// session costs no more than the panel's cap. The stub block is never
 // attached; "Show in conversation" already skips disconnected blocks.
 function recordHistoricalResults(messages, from, to) {
   if (typeof S.recordResult !== 'function') return;
-  let turnId = historyTurnIdBefore(messages, from);
-  for (let i = from; i < to; i++) {
+  const picked = [];
+  let bytes = 0;
+  for (let i = to - 1; i >= from && picked.length < ACTIVITY_MAX_RESULTS && bytes <= ACTIVITY_MAX_BYTES; i--) {
     const msg = messages[i];
-    if (!msg) continue;
-    if (msg.role === 'user') { turnId = msg.turn_id || 'history-' + i; continue; }
-    if (msg.role !== 'assistant') continue;
-    historyToolCalls(messages, i).forEach((call) => {
-      if (call.name === 'delegate_tasks' || !call.result) return;
-      const stub = document.createElement('div');
-      stub.dataset.toolName = call.name;
-      stub.dataset.toolArgs = call.args;
-      stub.dataset.outcome = call.outcome || 'unknown';
-      stub.dataset.turnId = msg.turn_id || turnId;
-      stub.dataset.callId = call.id;
-      S.recordResult(stub, call.result);
-    });
+    if (!msg || msg.role !== 'assistant') continue;
+    const calls = historyToolCalls(messages, i).filter((call) => call.name !== 'delegate_tasks' && call.result);
+    for (let k = calls.length - 1; k >= 0; k--) {
+      picked.push({ index: i, call: calls[k] });
+      bytes += String(calls[k].result).length;
+    }
   }
+  picked.reverse().forEach(({ index, call }) => {
+    const msg = messages[index];
+    const stub = document.createElement('div');
+    stub.dataset.toolName = call.name;
+    stub.dataset.toolArgs = call.args;
+    stub.dataset.outcome = call.outcome || 'unknown';
+    stub.dataset.turnId = msg.turn_id || historyTurnIdBefore(messages, index);
+    stub.dataset.callId = call.id;
+    S.recordResult(stub, call.result);
+  });
 }
 
 // renderHistoryRange renders messages[from, to) into a detached container
@@ -1596,7 +1598,7 @@ function renderHistoryRange(messages, from, to) {
       historyIdx = messageIndex;
       if (msg.role === 'user') {
         historyTurnId = msg.turn_id || 'history-' + messageIndex;
-        if (syntheticUser(msg)) continue;
+        if (isSyntheticUser(msg)) continue;
         renderHistoricalUser(historyUserText(msg.content, msg.principal_prompt));
         continue;
       }
@@ -1646,12 +1648,19 @@ function settleHistoryMessages(msgs) {
   });
 }
 
-export function renderSessionHistory(messages) {
+// renderSessionHistory renders the newest window of a session. With
+// { record: false } (a reload of the session already shown) results are not
+// recorded again; the Activity items are rebound to the re-rendered steps.
+export function renderSessionHistory(messages, opts = {}) {
   const list = Array.isArray(messages) ? messages : [];
+  const record = opts.record !== false;
   hideEmptyState();
   const start = historyWindowStart(list, list.length);
-  recordHistoricalResults(list, 0, start);
-  const nodes = renderHistoryRange(list, start, list.length);
+  if (record) recordHistoricalResults(list, 0, start);
+  historyRecord = record;
+  inspectClaims = record ? null : new Set();
+  let nodes;
+  try { nodes = renderHistoryRange(list, start, list.length); } finally { historyRecord = true; inspectClaims = null; }
   nodes.forEach((node) => messagesEl.appendChild(node));
   settleHistoryMessages(historyMessages(nodes));
   setHistoryBacklog(list, start);
@@ -1667,8 +1676,9 @@ export function showEarlierHistory() {
   const end = backlog.end;
   const start = historyWindowStart(backlog.messages, end);
   historyRecord = false; // already recorded when the session loaded
+  inspectClaims = new Set();
   let nodes;
-  try { nodes = renderHistoryRange(backlog.messages, start, end); } finally { historyRecord = true; }
+  try { nodes = renderHistoryRange(backlog.messages, start, end); } finally { historyRecord = true; inspectClaims = null; }
   const msgs = historyMessages(nodes);
   const kids = Array.from(messagesEl.children || []);
   const marker = kids.find((el) => hasClass(el, 'transcript-trim'));
@@ -1875,6 +1885,39 @@ function checkCollapse(host, opts) {
   toggle.className = 'collapse-toggle';
   setToggleLabel(toggle, false);
   bubble.appendChild(toggle);
+}
+
+// remeasureFolds re-checks every older bubble after a layout change (window
+// or inspector width, reading size, density): one measurement per bubble is
+// only valid for the layout it was taken in.
+export function remeasureFolds() {
+  const all = assistantMessages();
+  messagesEl.querySelectorAll('.bubble').forEach((b) => { if (b.dataset) delete b.dataset.collapseChecked; });
+  messagesEl.querySelectorAll('.msg.user').forEach((msg) => {
+    const bubble = msg.querySelector('.bubble');
+    if (bubble) checkCollapse(bubble, { latest: false });
+  });
+  compactOlderAnswers(all[all.length - 1] || null);
+}
+// Trailing debounce: an inspector drag changes the layout on every frame.
+let foldTimer = null;
+let foldWidth = 0;
+function scheduleRemeasure() {
+  clearTimeout(foldTimer);
+  foldTimer = setTimeout(() => { foldTimer = null; remeasureFolds(); }, 150);
+}
+if (typeof ResizeObserver === 'function' && messagesEl) {
+  new ResizeObserver((entries) => {
+    const w = Math.round(entries[0]?.contentRect?.width || 0);
+    if (w && foldWidth && w !== foldWidth) scheduleRemeasure();
+    foldWidth = w;
+  }).observe(messagesEl);
+}
+if (typeof MutationObserver === 'function' && document.documentElement) {
+  // Reading size is a root custom property; density a body class.
+  const watch = new MutationObserver(scheduleRemeasure);
+  watch.observe(document.documentElement, { attributes: true, attributeFilter: ['style'] });
+  if (document.body) watch.observe(document.body, { attributes: true, attributeFilter: ['class'] });
 }
 
 // compactOlderAnswers folds every assistant bubble except `keep` (the

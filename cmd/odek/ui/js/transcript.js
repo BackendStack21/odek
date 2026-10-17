@@ -12,7 +12,7 @@
 // rows trimmed from a live turn come back by reloading the persisted session.
 import { S } from './state.js';
 import { messagesEl } from './dom.js';
-import { hasClass, nodeHolds } from './utils.js';
+import { hasClass, nodeHolds, isSyntheticUser } from './utils.js';
 
 export const MAX_UNITS = 300;      // units kept while the view follows the bottom
 export const HARD_UNITS = 600;     // ceiling while the operator reads further up
@@ -36,6 +36,10 @@ function isLive(el) {
   return refs.some((ref) => nodeHolds(el, ref));
 }
 
+// Set when a trim while reading removed nothing; cleared by any scroll.
+let parked = false;
+messagesEl?.addEventListener?.('scroll', () => { parked = false; }, { passive: true });
+
 export function countUnits() {
   let n = 0;
   for (const el of kids(messagesEl)) {
@@ -54,6 +58,7 @@ export function trimState() {
 // whenever the transcript is cleared (new session, session load).
 export function resetTranscriptTrim() {
   S.transcriptTrim = { live: 0, backlog: null };
+  parked = false;
   const marker = findMarker();
   if (marker) marker.remove();
 }
@@ -88,6 +93,9 @@ export function pruneMessages() {
   if (units <= MAX_UNITS) return;
   const reading = !S.stickBottom;
   if (reading && units <= HARD_UNITS) return;
+  // A reader parked where nothing above the view can go: skip the layout
+  // reads until they scroll (or the absolute ceiling is reached).
+  if (reading && parked && units <= ABSOLUTE_UNITS) return;
 
   const state = trimState();
   // While reading, only rows wholly above the view leave, so the row being
@@ -117,19 +125,23 @@ export function pruneMessages() {
     return true;
   };
 
-  const trim = () => { for (const el of kids(messagesEl)) {
+  const trim = () => { rows: for (const el of kids(messagesEl)) {
     if ((units <= MAX_UNITS && lastHidx == null) || blocked) break;
     if (isStream(el)) {
+      let stopped = false;
       for (const row of kids(el)) {
-        if (!drop(row) && (units <= MAX_UNITS || blocked)) break;
+        if (!drop(row) && (units <= MAX_UNITS || blocked)) { stopped = true; break; }
       }
       if (!kids(el).length && el !== S.turnStreamEl) el.remove();
+      if (stopped) break rows;
     } else if (isTopUnit(el)) {
       if (!drop(el) && (units <= MAX_UNITS || blocked)) break;
     }
   } };
+  const before = units;
   if (reading) holdView(anchor, trim);
   else trim();
+  parked = reading && units === before;
 
   if (removedHistory && state.backlog) {
     const first = firstHistoryIndex();
@@ -206,7 +218,10 @@ export function holdView(anchor, change) {
 function earlierTurns(backlog) {
   if (backlog.turnsEnd !== backlog.end) {
     let n = 0;
-    for (let i = 0; i < backlog.end; i++) if (backlog.messages[i] && backlog.messages[i].role === 'user') n++;
+    for (let i = 0; i < backlog.end; i++) {
+      const m = backlog.messages[i];
+      if (m && m.role === 'user' && !isSyntheticUser(m)) n++;
+    }
     backlog.turns = n;
     backlog.turnsEnd = backlog.end;
   }

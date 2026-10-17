@@ -89,6 +89,12 @@ export function teach(key, text) {
   showToast(String(text).replace(/^tip:\s*/i, ''), HINT_TTL_MS, 'tip');
 }
 
+// System-initiated user records (bg-wake preamble, bg-notice,
+// return-after-break) are not text the operator typed.
+export function isSyntheticUser(msg) {
+  return !!msg && typeof msg.name === 'string' && (msg.name.startsWith('bg-') || msg.name === 'return-after-break');
+}
+
 // ── DOM helpers (tolerant of the test suites' minimal DOM shims) ──
 export function hasClass(el, name) {
   if (!el) return false;
