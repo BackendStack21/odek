@@ -2,13 +2,19 @@ package main
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/BackendStack21/odek/internal/config"
+	"github.com/BackendStack21/odek/internal/memory"
+	"github.com/BackendStack21/odek/internal/resource"
+	"github.com/BackendStack21/odek/internal/session"
 	"github.com/BackendStack21/odek/internal/skills"
 )
 
@@ -152,6 +158,43 @@ func TestRED_SkillListGivesNoForceSignalForProjectSkills(t *testing.T) {
 // apiHunt1017Mux mounts the production serve mux over an isolated store and
 // memory dir and returns a request helper carrying the instance token and a
 // local Origin.
+func apiHunt1017Mux(t *testing.T, resolved config.ResolvedConfig) (memoryDir string, store *session.Store, do func(method, path, body string, hdr map[string]string) (int, string)) {
+	t.Helper()
+	store = newTestSessionStore(t)
+	token, err := newServeToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	memoryDir = filepath.Join(t.TempDir(), "memory")
+	mux := newServeMux(serveMuxDeps{
+		Store:     store,
+		Resources: resource.NewRegistry(),
+		Resolved:  resolved,
+		State:     &serveState{startedAt: time.Now(), resolved: resolved},
+		WsToken:   token,
+		MemoryDir: memoryDir,
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	do = func(method, path, body string, hdr map[string]string) (int, string) {
+		req, _ := http.NewRequest(method, srv.URL+path, strings.NewReader(body))
+		req.Header.Set("X-Odek-Ws-Token", token)
+		req.Header.Set("Origin", srv.URL)
+		req.Header.Set("Content-Type", "application/json")
+		for k, v := range hdr {
+			req.Header.Set(k, v)
+		}
+		resp, err := srv.Client().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, string(b)
+	}
+	return memoryDir, store, do
+}
+
 // TestRED_RESTFactAddSkipsConfiguredGuardSidecar: the operator configured a
 // PIGuard sidecar with fallback off; the agent's memory tool and
 // `odek memory facts add` both consult it (SetGuard), but POST
@@ -162,6 +205,37 @@ func TestRED_SkillListGivesNoForceSignalForProjectSkills(t *testing.T) {
 // matches old_text as a SUBSTRING and refuses when it is contained in more
 // than one entry — so a fact that is a prefix/substring of another fact
 // can never be removed from the browser, even though the exact entry exists.
+func TestRED_RESTFactDeleteCannotRemoveSubstringEntry(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	resolved := loadJSONMockResolved()
+	memoryDir, _, do := apiHunt1017Mux(t, resolved)
+	off := false
+	seed := memory.NewMemoryManager(memoryDir, nil, memory.MemoryConfig{Enabled: memory.BoolPtr(true), MergeOnWrite: &off})
+	for _, f := range []string{"Uses Go 1.27", "Uses Go 1.27 with the race detector on CI"} {
+		if err := seed.AddFact("user", f); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	code, body := do(http.MethodGet, "/api/memory", "", nil)
+	var mem struct {
+		Facts map[string][]string `json:"facts"`
+	}
+	if code != http.StatusOK || json.Unmarshal([]byte(body), &mem) != nil || len(mem.Facts["user"]) != 2 {
+		t.Fatalf("GET /api/memory = %d %s", code, body)
+	}
+	row := mem.Facts["user"][0]
+	if row != "Uses Go 1.27" {
+		row = mem.Facts["user"][1]
+	}
+	// What panels.js sends for that row: removeMemoryFact(target, fact).
+	reqBody, _ := json.Marshal(map[string]string{"target": "user", "old_text": row})
+	code, body = do(http.MethodDelete, "/api/memory/facts", string(reqBody), nil)
+	if code != http.StatusNoContent {
+		t.Fatalf("deleting the listed entry %q = %d %q, want 204 (the exact entry exists)", row, code, strings.TrimSpace(body))
+	}
+}
+
 // TestRED_SessionRenameTitleUnbounded: new sessions get a 60-rune title,
 // but POST /api/sessions/{id} {name} stores up to the 1 MiB body limit as
 // the title. It lands in index.json and in every row of every
