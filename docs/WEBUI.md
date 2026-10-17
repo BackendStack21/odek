@@ -605,7 +605,7 @@ same ring.
 ### `GET /api/usage`
 
 Server-lifetime aggregates: `prompts_started/completed/failed`,
-`tokens_in/out`, `estimated_cost_usd` via `limits.ResolvePrices`,
+`tokens_in/out`, `estimated_cost_usd` (each turn priced with `limits.ResolvePrices` for the model it actually ran on, so per-run and per-prompt model overrides use their own `model_prices`),
 `prices_configured` (false ⇒ render costs as "unavailable"), and plan
 rollup `plans_created` / `plans_updated` / `plans_blocked` (counts only).
 Sessions also carry cumulative `input_tokens`/`output_tokens` (shown in

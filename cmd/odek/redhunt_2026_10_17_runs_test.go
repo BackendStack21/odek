@@ -5,14 +5,65 @@ package main
 // CORRECT behavior and fails on the code at v2.34.11.
 
 import (
+	"encoding/json"
 	"fmt"
+	"github.com/BackendStack21/odek/internal/budget"
+	"github.com/BackendStack21/odek/internal/config"
 	"github.com/BackendStack21/odek/internal/session"
 	"net/http"
+	"net/http/httptest"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
+
+// /api/usage prices every token at the server's configured model, so a REST
+// run with a per-run model override (documented on POST /api/prompt) is
+// priced with the wrong model's model_prices entry.
+func TestRED_RunsUsageCostIgnoresPerRunModelPrices(t *testing.T) {
+	llmSrv := mockLLM(t, func(w http.ResponseWriter, callCount int) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"choices":[{"message":{"content":"priced"}}],"usage":{"prompt_tokens":1000,"completion_tokens":1000}}`))
+	})
+	defer llmSrv.Close()
+
+	env := newRestRunEnv(t, llmSrv.URL, func(rc *config.ResolvedConfig) {
+		rc.Limits.InputCostPerMillionUSD = 0
+		rc.Limits.OutputCostPerMillionUSD = 0
+		rc.Limits.ModelPrices = map[string]budget.ModelPrice{
+			"runs-priced-model": {InputCostPerMillionUSD: 100, OutputCostPerMillionUSD: 100},
+		}
+	})
+	resetServeUsageForTest()
+	t.Cleanup(resetServeUsageForTest)
+
+	_, resp := startTestRun(t, env, `{"content":"price me","model":"runs-priced-model"}`)
+	runID, _ := resp["run_id"].(string)
+	snap := waitRunStatus(t, runID, 30*time.Second)
+	if snap["status"] != "completed" {
+		t.Fatalf("run status = %v (error %v)", snap["status"], snap["error"])
+	}
+	if atomic.LoadInt64(&serveStats.TokensIn) == 0 {
+		t.Fatal("precondition: run tokens were not accumulated")
+	}
+
+	w := httptest.NewRecorder()
+	handleUsage(env.resolved)(w, httptest.NewRequest(http.MethodGet, "/api/usage", nil))
+	var usage map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &usage); err != nil {
+		t.Fatal(err)
+	}
+	in := float64(atomic.LoadInt64(&serveStats.TokensIn))
+	out := float64(atomic.LoadInt64(&serveStats.TokensOut))
+	want := (in + out) / 1e6 * 100
+	cost, _ := usage["estimated_cost_usd"].(float64)
+	if usage["prices_configured"] != true || cost < want*0.99 {
+		t.Fatalf("usage for a run on runs-priced-model ($100/M): prices_configured=%v estimated_cost_usd=%v, want ~%v (tokens priced at the configured model %q instead of the run's model)",
+			usage["prices_configured"], cost, want, env.resolved.Model)
+	}
+}
 
 // The wake router decides "idle" from WebSocket connections only. A
 // headless REST run executing on the same session is invisible to it, so a

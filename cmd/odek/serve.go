@@ -2645,8 +2645,7 @@ func handlePrompt(
 	outputTokens := agent.TotalOutputTokens()
 	*sessionInputTokens += contextTokens
 	*sessionOutputTokens += outputTokens
-	atomic.AddInt64(&serveStats.TokensIn, int64(contextTokens))
-	atomic.AddInt64(&serveStats.TokensOut, int64(outputTokens))
+	recordServeTokens(resolved.Limits, resolved.Model, contextTokens, outputTokens)
 	if sess != nil {
 		sess.InputTokens += int64(contextTokens)
 		sess.OutputTokens += int64(outputTokens)
