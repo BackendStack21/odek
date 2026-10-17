@@ -732,6 +732,13 @@ func (r *serveRun) isTerminal() bool {
 func (r *serveRun) releaseResources() {
 	r.mu.Lock()
 	cleanup := r.cleanup
+	// Drop the references that keep the agent graph (and, through the
+	// engine's persist callback, the run's whole in-memory session) alive:
+	// a finished run stays in the registry for its snapshot, but only the
+	// snapshot fields need to survive.
+	r.cleanup = nil
+	r.cancel = nil
+	r.approver = nil
 	r.mu.Unlock()
 	defer func() {
 		r.mu.Lock()
