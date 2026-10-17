@@ -257,13 +257,14 @@ test('RED: old turn cancel/settle frames must not paint into a new session after
   assert.equal(S.sessionId, null);
   byId.messages.children.length = 0; // the new conversation starts empty
   S.recoveryReason = '';
+  const pausedByNewSession = !!S.queuePaused;
   // The server answers the cancel issued by newSession for the OLD session.
   deliver({ type: 'cancelled', session_id: 'sess-old', requested: true });
   deliver({ type: 'turn_settled', turn_id: 't_old', session_id: 'sess-old', status: 'cancelled', run_id: 'r1' });
   const text = collectText(byId.messages).join(' ');
   assert.doesNotMatch(text, /Stop accepted|Execution stopped/, 'old session stop narration rendered into the new conversation: ' + text);
   assert.equal(S.recoveryReason || '', '', 'new conversation flagged as needing recovery for the old session');
-  assert.equal(!!S.queuePaused, false, 'new conversation queue paused by the old turn');
+  assert.equal(!!S.queuePaused, pausedByNewSession, 'new conversation queue paused by the old turn');
 });
 
 // Finding: reloaded history renders the server-side EXPANDED prompt

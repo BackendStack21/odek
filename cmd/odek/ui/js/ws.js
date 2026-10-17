@@ -77,6 +77,14 @@ function noteDisconnect() {
   if (droppedBusy) S.onRecoveryNeeded?.('Connection interrupted the turn');
 }
 
+// Session ids this tab has displayed. A cancel ack or settle frame that names
+// a session we have since left (New session nulls S.sessionId) must not paint
+// stop narration or recovery state into the conversation now on screen.
+const seenSessionIds = new Set();
+function retiredSessionFrame(event) {
+  return !!event.session_id && event.session_id !== S.sessionId && seenSessionIds.has(event.session_id);
+}
+
 export function connect() {
   if (reconnectTimer) {
     clearTimeout(reconnectTimer);
@@ -145,6 +153,8 @@ export function connect() {
   S.ws.onmessage = (e) => {
     let event;
     try { event = JSON.parse(e.data); } catch { return; }
+
+    if (S.sessionId) seenSessionIds.add(S.sessionId);
 
     if (event.type!=='turn_settled' && event.turn_id && S.closedTurnIds?.has(event.turn_id)) return;
     if (S.turnEnded && ['tool_call','tool_result','thinking','thinking_delta','token','token_delta','subagent_state','subagent_log','approval_request','clarify_request','done'].includes(event.type)) return;
@@ -314,6 +324,7 @@ export function connect() {
         break;
 
       case 'cancelled':
+        if (retiredSessionFrame(event)) break;
         if (!sameTurn || (event.session_id && S.sessionId && event.session_id !== S.sessionId)) break;
         S.pauseQueue?.();
         if(event.idle){clearApprovals({drain:false});clearClarify();endStream('cancelled');addSystemMessage('No active execution to stop.');break;}
@@ -325,6 +336,7 @@ export function connect() {
         break;
 
       case 'turn_settled':
+        if (retiredSessionFrame(event)) break;
         if(event.session_id && S.sessionId && event.session_id!==S.sessionId)break;
         if(event.turn_id && S.currentTurnId && event.turn_id!==S.currentTurnId)break;
         if(S.stopRequested && event.status==='cancelled'){
