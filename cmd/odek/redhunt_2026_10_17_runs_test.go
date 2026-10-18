@@ -105,8 +105,10 @@ func TestRED_RunsFinishedRunPinsAgentAndSession(t *testing.T) {
 	t.Cleanup(resetServeRuns)
 
 	// One large prior turn in the session (well under the 32 MiB file cap).
+	// The heap check below is skipped under -short and -race, so only it
+	// needs the large payload; under -race a 6 MiB turn outlives the run wait.
 	payload := 6 << 20
-	if testing.Short() {
+	if testing.Short() || raceEnabled {
 		payload = 64 << 10
 	}
 	sess, err := env.store.Create([]session.Message{
@@ -129,7 +131,7 @@ func TestRED_RunsFinishedRunPinsAgentAndSession(t *testing.T) {
 	base := measure()
 
 	runs := 4
-	if testing.Short() {
+	if testing.Short() || raceEnabled {
 		runs = 1
 	}
 	var finished []*serveRun

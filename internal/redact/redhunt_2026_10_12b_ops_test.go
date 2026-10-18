@@ -189,7 +189,8 @@ func TestRED_RedactCredentialNamesScaleLinearly(t *testing.T) {
 		if large > 9*small {
 			t.Errorf("%s: super-linear: 64KiB %v, 256KiB %v", name, small, large)
 		}
-		if !testing.Short() && ops12bTime(gen(1<<20)) > 10*time.Second {
+		// Wall-clock budget only without the race detector (5-10x slower).
+		if !raceEnabled && !testing.Short() && ops12bTime(gen(1<<20)) > 10*time.Second {
 			t.Errorf("%s: 1 MiB too slow", name)
 		}
 	}
