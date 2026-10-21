@@ -89,6 +89,35 @@ func adapterRunsCode(name string, tokens []string, repo *gitRepoCtx) bool {
 			return gitVerbRunsRepoCode(sub, args, tokens, repo)
 		}
 	}
+	if name == "pandoc" {
+		// --filter <prog> runs an arbitrary external program as a JSON
+		// filter, and --lua-filter <file> runs a Lua script in pandoc's
+		// interpreter (which exposes os.execute); either executes
+		// attacker-chosen code. pandoc is a write prefix, so these forms
+		// otherwise read as local_write and auto-allowed.
+		if optionPresent(tokens, "--filter", "-F", "--lua-filter") {
+			return true
+		}
+	}
+	if name == "ssh-keygen" {
+		// -D <lib> loads a PKCS#11 shared library to enumerate its keys and
+		// -w <lib> loads a FIDO middleware library; either runs attacker-chosen
+		// native code at load time (a classic GTFOBins escape). ssh-keygen is a
+		// write prefix, so without this gate `ssh-keygen -D ./evil.so` read as
+		// local_write and auto-allowed.
+		if optionPresent(tokens, "-D", "-w") {
+			return true
+		}
+	}
+	if name == "openssl" {
+		// -engine / -provider / -provider-path load a shared library (an ENGINE
+		// or OSSL provider module) into the openssl process; the module's init
+		// runs on load, so a chosen .so executes native code. openssl is a
+		// network prefix, so these forms otherwise fell through to egress/allow.
+		if optionPresent(tokens, "-engine", "-provider", "-provider-path") {
+			return true
+		}
+	}
 	if name == "curl" && (optionPresent(tokens, "-K", "--config") || curlSyntax.parse(tokens[1:]).has("--config")) {
 		return true
 	}

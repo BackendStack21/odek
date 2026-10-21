@@ -7118,6 +7118,18 @@ func isInstall(first string, tokens []string) bool {
 		}
 	}
 
+	// pip wheel / pip download build the requested project from source,
+	// running its setup.py or PEP 517 build backend — arbitrary code, the
+	// same exposure as `pip install`. They are absent from the verb switch
+	// above, so without this they fell through to Safe (auto-allow).
+	if first == "pip" || first == "pip3" {
+		for _, tok := range tokens[1:] {
+			if tok == "wheel" || tok == "download" {
+				return true
+			}
+		}
+	}
+
 	// cargo install
 	if first == "cargo" {
 		return hasArgAfter(tokens, "cargo", "install")
