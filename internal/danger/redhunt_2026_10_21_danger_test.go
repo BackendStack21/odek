@@ -55,32 +55,47 @@ func TestRED_SSHKeygenSharedLibraryLoadIsCodeExecution(t *testing.T) {
 	)
 }
 
-// openssl loads a shared library into its own process through -engine,
-// -provider and -provider-path; the ENGINE / OSSL provider module executes
-// native code on load. openssl is a network prefix, so these forms otherwise
-// fell through to network_egress and auto-allow.
-func TestRED_OpenSSLEngineProviderLoadIsCodeExecution(t *testing.T) {
+// openssl loads a shared library into its own process through -engine and
+// -provider when the value names a path (an attacker-planted .so), through
+// -provider-path (which redirects the module search directory so a later bare
+// name loads from the attacker location), and through -config (whose
+// openssl_conf section can activate an arbitrary engine/provider module, the
+// same uninspectable-config escape as curl -K). openssl is a network prefix,
+// so these forms otherwise fell through to network_egress and auto-allow.
+func TestRED_OpenSSLModuleLoadIsCodeExecution(t *testing.T) {
 	t.Setenv("HOME", "/home/user")
 	t.Chdir(t.TempDir())
 	hunt21CodeExec(t,
 		`openssl req -engine /tmp/x.so`,
 		`openssl req -engine=/tmp/x.so`,
+		`openssl req -engine ./evil.so`,
 		`openssl dgst -provider /tmp/x.so -sha256 f`,
+		`openssl dgst -provider=./x.so -sha256 f`,
 		`openssl dgst -provider-path /tmp/lib -provider x -sha256 f`,
+		`openssl req -config /tmp/evil.cnf -new`,
+		`openssl req --config=/tmp/evil.cnf`,
 	)
-	// Local digest/encode and metadata forms stay allowed.
+	// Local digest/encode and metadata forms stay allowed, and so do the
+	// built-in modules loaded by bare name from the trusted system directory
+	// (`-provider legacy`, `-engine gost`) — the common OpenSSL 3 idiom.
 	hunt21Allowed(t,
 		`openssl dgst -sha256 file`,
 		`openssl version`,
 		`openssl rand -hex 16`,
+		`openssl dgst -provider legacy -sha256 file`,
+		`openssl pkcs12 -provider legacy -in x`,
+		`openssl enc -provider default -aes-256-cbc -in a -out b`,
+		`openssl dgst -engine gost -sha256 file`,
 	)
 }
 
-// pandoc runs attacker-chosen code through two option values: --filter/-F
-// runs an arbitrary external program as a JSON filter, and --lua-filter runs
-// a Lua script in pandoc's interpreter (which exposes os.execute). pandoc is
-// a write prefix, so these forms otherwise read as local_write and
-// auto-allowed.
+// pandoc runs attacker-chosen code through its program-naming options:
+// --filter/-F runs an arbitrary external program as a JSON filter,
+// --lua-filter runs a Lua script in pandoc's interpreter (which exposes
+// os.execute), and --pdf-engine runs the named PDF backend — a path value
+// executes an attacker binary, while a bare engine name (`xelatex`) is a
+// trusted PATH lookup. pandoc is a write prefix, so the escaping forms
+// otherwise read as local_write and auto-allowed.
 func TestRED_PandocFilterIsCodeExecution(t *testing.T) {
 	t.Setenv("HOME", "/home/user")
 	t.Chdir(t.TempDir())
@@ -90,12 +105,16 @@ func TestRED_PandocFilterIsCodeExecution(t *testing.T) {
 		`pandoc --filter=/tmp/evil a.md -o b.html`,
 		`pandoc --filter /tmp/evil a.md`,
 		`pandoc -F /tmp/evil a.md`,
+		`pandoc a.md --pdf-engine=/tmp/evil -o b.pdf`,
+		`pandoc a.md --pdf-engine ./evil -o b.pdf`,
 	)
-	// Ordinary conversion stays allowed.
+	// Ordinary conversion stays allowed, including a bare --pdf-engine name
+	// that resolves to a trusted binary on PATH.
 	hunt21Allowed(t,
 		`pandoc a.md -o b.pdf`,
 		`pandoc -s a.md -o b.html`,
 		`pandoc --version`,
+		`pandoc a.md --pdf-engine xelatex -o b.pdf`,
 	)
 }
 
@@ -124,11 +143,15 @@ func TestRED_PipBuildFromSourceRunsCode(t *testing.T) {
 			t.Errorf("ActionForCommand(%q) = allow under the default policy", cmd)
 		}
 	}
-	// Read-only pip queries stay allowed.
+	// Read-only pip queries stay allowed — including ones that pass `wheel`
+	// or `download` as a package-name argument rather than the subcommand.
 	hunt21Allowed(t,
 		`pip list`,
 		`pip show requests`,
 		`pip --version`,
 		`pip freeze`,
+		`pip show wheel`,
+		`pip index versions wheel`,
+		`pip3 show download`,
 	)
 }

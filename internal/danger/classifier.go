@@ -7121,12 +7121,15 @@ func isInstall(first string, tokens []string) bool {
 	// pip wheel / pip download build the requested project from source,
 	// running its setup.py or PEP 517 build backend — arbitrary code, the
 	// same exposure as `pip install`. They are absent from the verb switch
-	// above, so without this they fell through to Safe (auto-allow).
+	// above, so without this they fell through to Safe (auto-allow). Match
+	// only the subcommand (the first non-flag token) so `pip show wheel`,
+	// where `wheel` is a package-name argument, stays an ordinary query.
 	if first == "pip" || first == "pip3" {
 		for _, tok := range tokens[1:] {
-			if tok == "wheel" || tok == "download" {
-				return true
+			if strings.HasPrefix(tok, "-") {
+				continue
 			}
+			return tok == "wheel" || tok == "download"
 		}
 	}
 

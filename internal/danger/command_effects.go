@@ -89,15 +89,8 @@ func adapterRunsCode(name string, tokens []string, repo *gitRepoCtx) bool {
 			return gitVerbRunsRepoCode(sub, args, tokens, repo)
 		}
 	}
-	if name == "pandoc" {
-		// --filter <prog> runs an arbitrary external program as a JSON
-		// filter, and --lua-filter <file> runs a Lua script in pandoc's
-		// interpreter (which exposes os.execute); either executes
-		// attacker-chosen code. pandoc is a write prefix, so these forms
-		// otherwise read as local_write and auto-allowed.
-		if optionPresent(tokens, "--filter", "-F", "--lua-filter") {
-			return true
-		}
+	if name == "pandoc" && pandocRunsProgram(tokens) {
+		return true
 	}
 	if name == "ssh-keygen" {
 		// -D <lib> loads a PKCS#11 shared library to enumerate its keys and
@@ -109,20 +102,92 @@ func adapterRunsCode(name string, tokens []string, repo *gitRepoCtx) bool {
 			return true
 		}
 	}
-	if name == "openssl" {
-		// -engine / -provider / -provider-path load a shared library (an ENGINE
-		// or OSSL provider module) into the openssl process; the module's init
-		// runs on load, so a chosen .so executes native code. openssl is a
-		// network prefix, so these forms otherwise fell through to egress/allow.
-		if optionPresent(tokens, "-engine", "-provider", "-provider-path") {
-			return true
-		}
+	if name == "openssl" && opensslLoadsModule(tokens) {
+		return true
 	}
 	if name == "curl" && (optionPresent(tokens, "-K", "--config") || curlSyntax.parse(tokens[1:]).has("--config")) {
 		return true
 	}
 	if name == "wget" && optionPresent(tokens, "--config", "-i", "--input-file") {
 		return true
+	}
+	return false
+}
+
+// valueIsPathLike reports whether an option value names a filesystem path the
+// caller controls (an absolute path, a ./ or ../ relative path, or any value
+// containing a slash) rather than a bare name resolved from a trusted search
+// directory. It is used to tell an attacker-planted module/program path
+// (`-engine ./evil.so`, `--pdf-engine=/tmp/x`) from a trusted bare name
+// (`-provider legacy`, `--pdf-engine xelatex`) that loads from a system
+// location the agent cannot write.
+func valueIsPathLike(v string) bool {
+	if v == "" {
+		return false
+	}
+	return strings.ContainsRune(v, '/') || strings.HasPrefix(v, ".")
+}
+
+// optionValue returns the value of option opt at tokens[i]: a fused
+// `--opt=value`, or the following token for the separate `--opt value` form.
+func optionValue(tokens []string, i int, opt string) (string, bool) {
+	tok := tokens[i]
+	if tok == opt {
+		if i+1 < len(tokens) {
+			return tokens[i+1], true
+		}
+		return "", true
+	}
+	if strings.HasPrefix(tok, opt+"=") {
+		return tok[len(opt)+1:], true
+	}
+	return "", false
+}
+
+// pandocRunsProgram reports whether a pandoc invocation shells out to an
+// attacker-chosen program or script. --filter/-F names an external JSON
+// filter and --lua-filter names a Lua script (pandoc's Lua exposes
+// os.execute); both run whatever they name, so any value escalates.
+// --pdf-engine names the PDF backend pandoc exec's — a bare engine name
+// (`xelatex`) is a trusted PATH lookup, but a path value runs that binary
+// directly, so only a path-like value escalates.
+func pandocRunsProgram(tokens []string) bool {
+	if optionPresent(tokens, "--filter", "-F", "--lua-filter") {
+		return true
+	}
+	for i := 1; i < len(tokens); i++ {
+		if v, ok := optionValue(tokens, i, "--pdf-engine"); ok && valueIsPathLike(v) {
+			return true
+		}
+	}
+	return false
+}
+
+// opensslLoadsModule reports whether an openssl invocation loads native code
+// of the caller's choosing. -engine / -provider run a shared module's
+// initializer on load; a bare module name (`-provider legacy`) resolves from
+// the trusted system module directory, but a path value loads an
+// attacker-planted .so, so only a path-like value escalates. -provider-path
+// redirects that search directory itself, so any use escalates (a later bare
+// name then loads from the attacker location). -config names a configuration
+// file whose openssl_conf section can activate an arbitrary engine/provider
+// module; the file is uninspectable here, so it fails closed like curl -K.
+func opensslLoadsModule(tokens []string) bool {
+	for i := 1; i < len(tokens); i++ {
+		tok := tokens[i]
+		switch {
+		case tok == "-provider-path" || strings.HasPrefix(tok, "-provider-path="):
+			return true
+		case tok == "-config" || tok == "--config" ||
+			strings.HasPrefix(tok, "-config=") || strings.HasPrefix(tok, "--config="):
+			return true
+		}
+		if v, ok := optionValue(tokens, i, "-engine"); ok && valueIsPathLike(v) {
+			return true
+		}
+		if v, ok := optionValue(tokens, i, "-provider"); ok && valueIsPathLike(v) {
+			return true
+		}
 	}
 	return false
 }
