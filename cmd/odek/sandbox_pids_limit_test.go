@@ -100,24 +100,19 @@ func TestInitTemplates_SandboxPidsLimitEmpty(t *testing.T) {
 
 // ── wiring: every sandboxConfig{} literal and flag parser carries the knob ─
 
-func TestSandboxPidsLimit_AllSandboxConfigLiteralsCarryKnob(t *testing.T) {
+func TestSandboxPidsLimit_NoSandboxConfigLiteralOutsideHelper(t *testing.T) {
 	literal := regexp.MustCompile(`sandboxConfig\{`)
-	knob := regexp.MustCompile(`\bPidsLimit:\s+resolved\.SandboxPidsLimit`)
-	total := 0
 	for _, file := range []string{"main.go", "repl.go", "serve.go", "subagent.go", "mcp.go"} {
 		src, err := os.ReadFile(file)
 		if err != nil {
 			t.Fatal(err)
 		}
-		lits := len(literal.FindAll(src, -1))
-		got := len(knob.FindAll(src, -1))
-		total += lits
-		if lits != got {
-			t.Errorf("%s: %d sandboxConfig{} literals but %d carry PidsLimit: resolved.SandboxPidsLimit", file, lits, got)
+		if n := len(literal.FindAll(src, -1)); n != 0 {
+			t.Errorf("%s builds %d sandboxConfig{} literals; use sandboxConfigFromResolved", file, n)
 		}
-	}
-	if total != 6 {
-		t.Errorf("expected 6 sandboxConfig{} literals across the CLI, found %d", total)
+		if !strings.Contains(string(src), "sandboxConfigFromResolved(resolved)") {
+			t.Errorf("%s does not use sandboxConfigFromResolved", file)
+		}
 	}
 }
 

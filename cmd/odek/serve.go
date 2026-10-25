@@ -1119,17 +1119,7 @@ func newServeAgent(resolved config.ResolvedConfig, system string, runKey string,
 		subagentTool.OnSubagentDone = newSubagentDoneRelayOwned(sendFn, runKey, subagentOwner)
 	}
 	if resolved.Sandbox {
-		cfg := sandboxConfig{
-			Image:     resolved.SandboxImage,
-			Network:   resolved.SandboxNetwork,
-			Readonly:  resolved.SandboxReadonly,
-			Memory:    resolved.SandboxMemory,
-			CPUs:      resolved.SandboxCPUs,
-			PidsLimit: resolved.SandboxPidsLimit,
-			User:      resolved.SandboxUser,
-			Env:       resolved.SandboxEnv,
-			Volumes:   resolved.SandboxVolumes,
-		}
+		cfg := sandboxConfigFromResolved(resolved)
 		var sbContainerName string
 		var sandboxErr error
 		sbContainerName, sandboxCleanup, sandboxErr = setupSandbox(tools, cfg)

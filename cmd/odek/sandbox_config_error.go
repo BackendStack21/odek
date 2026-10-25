@@ -45,3 +45,20 @@ func sandboxPostureView(resolved config.ResolvedConfig) map[string]any {
 	}
 	return map[string]any{"network": network, "pids_limit": pids, "image": resolved.SandboxImage}
 }
+
+// sandboxConfigFromResolved builds the container settings for one run from
+// the merged configuration. Every surface (run, continue, repl, serve,
+// sub-agents, mcp) starts its sandbox from this single mapping.
+func sandboxConfigFromResolved(resolved config.ResolvedConfig) sandboxConfig {
+	return sandboxConfig{
+		Image:     resolved.SandboxImage,
+		Network:   resolved.SandboxNetwork,
+		Readonly:  resolved.SandboxReadonly,
+		Memory:    resolved.SandboxMemory,
+		CPUs:      resolved.SandboxCPUs,
+		PidsLimit: resolved.SandboxPidsLimit,
+		User:      resolved.SandboxUser,
+		Env:       resolved.SandboxEnv,
+		Volumes:   resolved.SandboxVolumes,
+	}
+}

@@ -1105,17 +1105,7 @@ func subagentCmd(args []string) error {
 	var sandboxCleanup func() error
 
 	if resolved.Sandbox {
-		sbCfg := sandboxConfig{
-			Image:     resolved.SandboxImage,
-			Network:   resolved.SandboxNetwork,
-			Readonly:  resolved.SandboxReadonly,
-			Memory:    resolved.SandboxMemory,
-			CPUs:      resolved.SandboxCPUs,
-			PidsLimit: resolved.SandboxPidsLimit,
-			User:      resolved.SandboxUser,
-			Env:       resolved.SandboxEnv,
-			Volumes:   resolved.SandboxVolumes,
-		}
+		sbCfg := sandboxConfigFromResolved(resolved)
 		var subContainerName string
 		subContainerName, cleanup, err := setupSandbox(tools, sbCfg)
 		bgRT.SetContainer(subContainerName)

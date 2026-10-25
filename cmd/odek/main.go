@@ -2095,17 +2095,7 @@ func run(args []string) (outcome error) {
 	systemMessage := buildSystemPrompt(resolved)
 
 	// Build sandbox config from resolved settings (first occurrence)
-	sbCfg := sandboxConfig{
-		Image:     resolved.SandboxImage,
-		Network:   resolved.SandboxNetwork,
-		Readonly:  resolved.SandboxReadonly,
-		Memory:    resolved.SandboxMemory,
-		CPUs:      resolved.SandboxCPUs,
-		PidsLimit: resolved.SandboxPidsLimit,
-		User:      resolved.SandboxUser,
-		Env:       resolved.SandboxEnv,
-		Volumes:   resolved.SandboxVolumes,
-	}
+	sbCfg := sandboxConfigFromResolved(resolved)
 
 	// Skills setup
 	sm := skills.NewSkillManagerWithEmbedding(
@@ -3671,17 +3661,7 @@ func continueCmd(args []string) (outcome error) {
 
 	var sandboxCleanup func() error
 
-	sbCfg := sandboxConfig{
-		Image:     resolved.SandboxImage,
-		Network:   resolved.SandboxNetwork,
-		Readonly:  resolved.SandboxReadonly,
-		Memory:    resolved.SandboxMemory,
-		CPUs:      resolved.SandboxCPUs,
-		PidsLimit: resolved.SandboxPidsLimit,
-		User:      resolved.SandboxUser,
-		Env:       resolved.SandboxEnv,
-		Volumes:   resolved.SandboxVolumes,
-	}
+	sbCfg := sandboxConfigFromResolved(resolved)
 	var contContainerName string
 	var contSandboxed bool
 	contContainerName, sandboxCleanup, contSandboxed, err = ensureSandbox(resolved, tools, sbCfg)
