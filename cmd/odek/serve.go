@@ -1134,6 +1134,7 @@ func newServeAgent(resolved config.ResolvedConfig, system string, runKey string,
 		subagentTool.OnSubagentLog = newSubagentTelemetryRelayOwned(sendFn, runKey, subagentOwner)
 		subagentTool.OnSubagentDone = newSubagentDoneRelayOwned(sendFn, runKey, subagentOwner)
 	}
+	var cardNote string
 	if resolved.Sandbox {
 		cfg := sandboxConfigFromResolved(resolved)
 		var sbContainerName string
@@ -1143,6 +1144,8 @@ func newServeAgent(resolved config.ResolvedConfig, system string, runKey string,
 			sandboxCleanup = nil
 			return fail(fmt.Errorf("sandbox: %w", sandboxErr))
 		}
+		system = withSandboxEnvironment(system, sbContainerName)
+		cardNote = sandboxCardNoteFor(sbContainerName)
 		if bgRT != nil {
 			bgRT.SetContainer(sbContainerName)
 			bgRT.serveSandbox = &serveSandboxLease{container: sbContainerName, cleanup: sandboxCleanup}
@@ -1194,6 +1197,7 @@ func newServeAgent(resolved config.ResolvedConfig, system string, runKey string,
 		MaxIterations:    resolved.MaxIter,
 		MaxToolParallel:  resolved.MaxToolParallel,
 		SystemMessage:    system,
+		ApprovalCardNote: cardNote,
 		UntrustedWrapper: wrapEngineContext,
 		RuntimeContext:   runtimeCtx,
 		NoProjectFile:    resolved.NoAgents,

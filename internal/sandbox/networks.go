@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os/exec"
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -21,6 +22,10 @@ type NetworkInfo struct {
 	Scope          string
 	Internal       bool
 	ComposeProject string
+	// ServiceNames are the names of the containers already attached to the
+	// network when it was inspected (their DNS names). Raw inspect data: callers
+	// must validate before showing it to the model.
+	ServiceNames []string
 }
 
 // DockerRunner runs one docker command and returns its combined output. It is
@@ -84,12 +89,13 @@ func ResolveNetworks(ctx context.Context, names []string) ([]NetworkInfo, error)
 			return nil, invalidNetwork("cannot inspect sandbox network %q: %v (%s)", name, err, strings.TrimSpace(string(out)))
 		}
 		var res []struct {
-			Name     string
-			ID       string `json:"Id"`
-			Driver   string
-			Scope    string
-			Internal bool
-			Labels   map[string]string
+			Name       string
+			ID         string `json:"Id"`
+			Driver     string
+			Scope      string
+			Internal   bool
+			Labels     map[string]string
+			Containers map[string]struct{ Name string }
 		}
 		if err := json.Unmarshal(out, &res); err != nil || len(res) != 1 {
 			return nil, invalidNetwork("unexpected docker inspect output for sandbox network %q", name)
@@ -104,7 +110,14 @@ func ResolveNetworks(ctx context.Context, names []string) ([]NetworkInfo, error)
 		if !networkIDRE.MatchString(r.ID) {
 			return nil, invalidNetwork("sandbox network %q has an invalid ID", name)
 		}
-		nets = append(nets, NetworkInfo{Name: name, ID: r.ID, Driver: r.Driver, Scope: r.Scope,
+		var services []string
+		for _, c := range r.Containers {
+			if c.Name != "" {
+				services = append(services, c.Name)
+			}
+		}
+		sort.Strings(services)
+		nets = append(nets, NetworkInfo{Name: name, ServiceNames: services, ID: r.ID, Driver: r.Driver, Scope: r.Scope,
 			Internal: r.Internal, ComposeProject: r.Labels[composeProjectLabel]})
 	}
 	return nets, nil

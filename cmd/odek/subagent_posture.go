@@ -165,10 +165,17 @@ func applyTaskSandboxPosture(resolved *config.ResolvedConfig, p *taskSandboxPost
 	if p.PidsLimit != "" {
 		resolved.SandboxPidsLimit = lowerPidsLimit(p.PidsLimit, resolved.SandboxPidsLimit)
 	}
-	resolved.SandboxNetworks = intersectNames(resolved.SandboxNetworks, p.Networks)
-	if resolved.SandboxComposeProject != p.ComposeProject {
-		resolved.SandboxComposeProject = ""
+	// The parent stamps the networks it resolved (compose members included).
+	// A child never re-resolves a project by label, which could attach a
+	// network that joined after the parent resolved it: it keeps a subset of
+	// the stamped list, and inherits that list when it names the same project.
+	shared := p.ComposeProject != "" && resolved.SandboxComposeProject == p.ComposeProject
+	nets := intersectNames(resolved.SandboxNetworks, p.Networks)
+	if shared {
+		nets = mergeNames(p.Networks, nets)
 	}
+	resolved.SandboxNetworks = nets
+	resolved.SandboxComposeProject = ""
 	if p.User != "" {
 		resolved.SandboxUser = p.User
 	}
@@ -251,6 +258,22 @@ func intersectNames(child, parent []string) []string {
 	var out []string
 	for _, n := range child {
 		if allowed[n] {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// mergeNames returns base followed by the names of extra that base lacks.
+func mergeNames(base, extra []string) []string {
+	out := append([]string(nil), base...)
+	seen := make(map[string]bool, len(base))
+	for _, n := range base {
+		seen[n] = true
+	}
+	for _, n := range extra {
+		if !seen[n] {
+			seen[n] = true
 			out = append(out, n)
 		}
 	}

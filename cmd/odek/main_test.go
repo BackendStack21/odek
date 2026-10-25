@@ -2184,6 +2184,7 @@ func TestBuildSandboxArgs_RejectsHostNetwork(t *testing.T) {
 	r, w, _ := os.Pipe()
 	os.Stderr = w
 
+	t.Setenv(sandbox.LenientNetworkEnv, "1")
 	cfg := sandboxConfig{Network: "host"}
 	args := sandbox.BuildRunArgs(cfg, "odek-test", "/workspace", "alpine:latest")
 

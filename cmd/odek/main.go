@@ -2177,6 +2177,7 @@ func run(args []string) (outcome error) {
 	if err != nil {
 		return err
 	}
+	systemMessage = withSandboxEnvironment(systemMessage, runContainerName)
 	if err := injectCtxFiles(runContainerName, runSandboxed, sandboxCleanup, f.Ctx, cwd); err != nil {
 		return err
 	}
@@ -2228,6 +2229,7 @@ func run(args []string) (outcome error) {
 		MaxIterations:     resolved.MaxIter,
 		MaxToolParallel:   resolved.MaxToolParallel,
 		SystemMessage:     systemMessage,
+		ApprovalCardNote:  sandboxCardNoteFor(runContainerName),
 		UntrustedWrapper:  wrapEngineContext,
 		NoProjectFile:     resolved.NoAgents,
 		Thinking:          resolved.Thinking,
@@ -2716,9 +2718,11 @@ func setupSandbox(tools []odek.Tool, cfg sandboxConfig) (containerName string, c
 	fmt.Fprintln(os.Stderr, sandboxPostureLine(cfg, image))
 
 	cleanup = newSandboxCleanup(containerName, func(ctx context.Context) error {
+		forgetSandboxEnvironment(containerName)
 		return exec.CommandContext(ctx, "docker", "rm", "-f", containerName).Run()
 	})
 
+	rememberSandboxEnvironment(containerName, cfg)
 	applySandboxToolBindings(tools, containerName)
 	recordChildSandbox(tools, cfg)
 	return containerName, cleanup, nil
@@ -2736,6 +2740,7 @@ func applySandboxToolBindings(tools []odek.Tool, containerName string) {
 			tool.sandboxed = true
 		case *shellTool:
 			tool.containerName = containerName
+			tool.sandboxEnv = sandboxEnvironmentFor(containerName)
 		case *writeFileTool:
 			tool.containerName = containerName
 		case *patchTool:
@@ -3729,6 +3734,7 @@ func continueCmd(args []string) (outcome error) {
 	if err != nil {
 		return err
 	}
+	systemMessage = withSandboxEnvironment(systemMessage, contContainerName)
 	cwd, _ := os.Getwd()
 	if err := injectCtxFiles(contContainerName, contSandboxed, sandboxCleanup, f.Ctx, cwd); err != nil {
 		return err
@@ -3768,6 +3774,7 @@ func continueCmd(args []string) (outcome error) {
 		MaxIterations:     resolved.MaxIter,
 		MaxToolParallel:   resolved.MaxToolParallel,
 		SystemMessage:     systemMessage,
+		ApprovalCardNote:  sandboxCardNoteFor(contContainerName),
 		UntrustedWrapper:  wrapEngineContext,
 		NoProjectFile:     resolved.NoAgents,
 		Thinking:          resolved.Thinking,

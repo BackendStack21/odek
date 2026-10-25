@@ -196,8 +196,8 @@ func TestApplyTaskSandboxPosture_ComposeProjectOnlyWhenParentMatches(t *testing.
 	}
 	r = config.ResolvedConfig{SandboxComposeProject: "app"}
 	applyTaskSandboxPosture(&r, &taskSandboxPosture{ComposeProject: "app", Networks: []string{"app_default"}})
-	if r.SandboxComposeProject != "app" {
-		t.Errorf("the parent's own compose project may be kept, got %q", r.SandboxComposeProject)
+	if r.SandboxComposeProject != "" || !reflect.DeepEqual(r.SandboxNetworks, []string{"app_default"}) {
+		t.Errorf("a shared project is replaced by the parent's stamped networks, got %q / %v", r.SandboxComposeProject, r.SandboxNetworks)
 	}
 }
 

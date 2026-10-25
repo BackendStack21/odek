@@ -66,8 +66,12 @@ Shared across all projects:
 > behavior.
 >
 > Sandbox resource keys (`sandbox_image`, `sandbox_network`, `sandbox_readonly`,
-> `sandbox_memory`, `sandbox_cpus`, `sandbox_user`) follow the standard
-> `ODEK_*` env / CLI-flag patterns. Two keys are **config-file-only**:
+> `sandbox_memory`, `sandbox_cpus`, `sandbox_user`, `sandbox_pids_limit`
+> (`ODEK_SANDBOX_PIDS_LIMIT`, default 4096, a project may only lower it),
+> `sandbox_networks` (`ODEK_SANDBOX_NETWORKS`, comma-separated, `--sandbox-networks`)
+> and `sandbox_compose_project` (`ODEK_SANDBOX_COMPOSE_PROJECT`, `--sandbox-compose`))
+> follow the standard `ODEK_*` env / CLI-flag patterns. Networks and the Compose
+> project are project sandbox overrides that need operator approval. Two keys are **config-file-only**:
 > `sandbox_env` (object of extra environment variables injected into the
 > container; supports `${VAR}` interpolation against host env) and
 > `sandbox_volumes` (array of extra `host:container` mounts; host paths must

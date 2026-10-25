@@ -402,3 +402,34 @@ func TestNetworkWarnings(t *testing.T) {
 		t.Errorf("a non-internal network must be named in an internet warning, got %v", w)
 	}
 }
+
+// ── service names from inspect ──────────────────────────────────────────
+
+func TestResolveNetworks_CollectsServiceNames(t *testing.T) {
+	f := &netFakeDocker{handler: func(args []string) ([]byte, error) {
+		return []byte(fmt.Sprintf(`[{"Name":"app","Id":%q,"Driver":"bridge","Scope":"local","Internal":true,"Labels":{},
+			"Containers":{"c1":{"Name":"web"},"c2":{"Name":"postgres"},"c3":{"Name":""}}}]`, id('a'))), nil
+	}}
+	f.install(t)
+	nets, err := ResolveNetworks(context.Background(), []string{"app"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(nets[0].ServiceNames, ","); got != "postgres,web" {
+		t.Errorf("ServiceNames = %q, want sorted non-empty names postgres,web", got)
+	}
+}
+
+func TestResolveNetworks_NoContainersNoServiceNames(t *testing.T) {
+	f := &netFakeDocker{handler: func(args []string) ([]byte, error) {
+		return []byte(netJSON("app", id('a'), "bridge", "local", true, "")), nil
+	}}
+	f.install(t)
+	nets, err := ResolveNetworks(context.Background(), []string{"app"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(nets[0].ServiceNames) != 0 {
+		t.Errorf("ServiceNames = %v, want none", nets[0].ServiceNames)
+	}
+}

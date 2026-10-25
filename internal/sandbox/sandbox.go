@@ -176,8 +176,11 @@ func dockerBuildArgs(tag string) []string {
 //	--init, --pids-limit, --tmpfs /tmp:noexec,nosuid, --network none (bridge only when explicitly
 //	requested), and --user <invoking uid:gid> when no user is configured.
 //
-// Volume mounts are filtered against ForbiddenMountPrefixes; "host" network
-// is forced to "none" here; prefer BuildRunArgsChecked, which rejects it.
+// Volume mounts are filtered against ForbiddenMountPrefixes. An invalid
+// network mode, or attached networks that were not resolved, yield nil: the
+// builder never downgrades or widens silently. Only ODEK_SANDBOX_NETWORK_LENIENT=1
+// turns an invalid mode into "none" (with a warning). Prefer
+// BuildRunArgsChecked, which reports the reason as an error.
 func BuildRunArgs(cfg Config, containerName, workdir, image string) []string {
 	pids, err := ParsePidsLimit(cfg.PidsLimit)
 	if err != nil {
@@ -194,24 +197,16 @@ func BuildRunArgs(cfg Config, containerName, workdir, image string) []string {
 		"--pids-limit", strconv.Itoa(pids),
 	}
 
-	network := cfg.Network
-	switch network {
-	case "", "none":
-		// Fully isolated mode. Empty (direct Config construction) resolves
-		// to "none" to match the config layer's DefaultSandboxNetwork —
-		// bridge is the only non-isolated mode allowed, and it must be an
-		// explicit choice.
+	network, nerr := ValidateNetwork(cfg.Network)
+	if nerr != nil {
+		if os.Getenv(LenientNetworkEnv) != "1" {
+			return nil
+		}
+		fmt.Fprintf(os.Stderr, "odek: WARNING: --sandbox-network %q is not allowed; %s=1 forces 'none'.\n", cfg.Network, LenientNetworkEnv)
 		network = "none"
-	case "bridge":
-		// Docker default bridge network; explicit opt-in only.
-	case "host":
-		fmt.Fprintf(os.Stderr, "odek: WARNING: --sandbox-network host destroys container isolation. Forcing 'none'.\n")
-		network = "none"
-	default:
-		// Reject modes such as "container:<name>" that share another
-		// container's network namespace and bypass isolation.
-		fmt.Fprintf(os.Stderr, "odek: WARNING: --sandbox-network %q is not allowed. Only 'none' and 'bridge' are permitted. Forcing 'none'.\n", network)
-		network = "none"
+	}
+	if len(cfg.Networks) > 0 && len(cfg.ResolvedNetworks) != len(cfg.Networks) {
+		return nil
 	}
 	if len(cfg.ResolvedNetworks) > 0 && network == "none" {
 		// Attached networks replace "none"; the rest connect after start.

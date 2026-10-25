@@ -35,7 +35,7 @@ cmd/odek/
   serve_supervision.go        WebUI task supervision: sub-agent state frames, cancel, safe recovery
   serve_artifacts.go          Artifact registry + delivery over the serve surface
   serve_workspace.go          WebUI workspace/session-state access endpoints
-  serve_diagnostics.go        Diagnostics endpoints (/api/diagnostics)
+  serve_diagnostics.go        Diagnostics helpers for the serve surface
   serve_retention.go          Session/artifact retention enforcement on the serve surface
   serve_bg_sandbox.go         Sandbox follow-up handling for background jobs (pidfile kill)
   repl.go                     Interactive REPL with multi-turn session support
@@ -80,6 +80,9 @@ cmd/odek/
   audit.go                    Per-turn audit + `odek audit` subcommand (divergence heuristic)
   sandbox_file.go             Sandbox-aware file-tool bridge
   sandbox_cleanup.go          Sandbox teardown/cleanup helpers
+  sandbox_compose.go          Resolves sandbox_networks + sandbox_compose_project into inspected networks (IDs)
+  sandbox_environment.go      Execution-environment block (system prompt + shell description) and batch-card
+                              network note, built only from validated config and inspect fields
   ssrf_guard.go               URL / SSRF validation helpers
   vision_tool.go              Vision / image-input tool
   vision_provider.go          Provider-backed vision backend (reuses the providers.<id> registry)

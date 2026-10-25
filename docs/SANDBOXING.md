@@ -51,8 +51,11 @@ All sandbox settings are available in `~/.odek/config.json`, `./odek.json`, `ODE
 | Field | Env var | CLI flag | Type | Default | Description |
 |-------|---------|----------|------|---------|-------------|
 | `sandbox` | `ODEK_SANDBOX` | `--sandbox` / `--no-sandbox` (`run` / `repl` / `serve`; not `continue`) | bool | **on** (run/repl/serve); continue pins | Sandbox isolation is default-on for `run`/`repl`/`serve`. `--no-sandbox` or `ODEK_NO_SANDBOX=1` opts out on those commands. `continue` pins the session bit unless trusted `"sandbox": false` or `ODEK_SANDBOX=false` set `SandboxExplicit` first (`ODEK_NO_SANDBOX=1` does not). `ODEK_REQUIRE_SANDBOX=1` makes any unsandboxed outcome fatal |
-| `sandbox_image` | `ODEK_SANDBOX_IMAGE` | `--sandbox-image` | string | `alpine:latest` | Docker image for the sandbox container |
+| `sandbox_image` | `ODEK_SANDBOX_IMAGE` | `--sandbox-image` | string | pinned `alpine:3.22@sha256:2e0b81d6…` | Docker image for the sandbox container |
 | `sandbox_network` | `ODEK_SANDBOX_NETWORK` | `--sandbox-network` | string | `none` | Docker network mode |
+| `sandbox_networks` | `ODEK_SANDBOX_NETWORKS` (comma-separated) | `--sandbox-networks` | array | `[]` | Existing user-defined Docker networks to attach (bridge driver, local scope). Replaces `none` when set; see [Network modes](#network-modes) |
+| `sandbox_compose_project` | `ODEK_SANDBOX_COMPOSE_PROJECT` | `--sandbox-compose` | string | `""` | Compose project whose networks (found by the `com.docker.compose.project` label) are attached |
+| `sandbox_pids_limit` | `ODEK_SANDBOX_PIDS_LIMIT` | `--sandbox-pids-limit` | int | `4096` | Container process limit; a project config may only lower it |
 | `sandbox_readonly` | `ODEK_SANDBOX_READONLY` | `--sandbox-readonly` | bool | `false` | Mount working directory read-only |
 | `sandbox_memory` | `ODEK_SANDBOX_MEMORY` | `--sandbox-memory` | string | `""` | Memory limit (e.g. `512m`, `2g`) |
 | `sandbox_cpus` | `ODEK_SANDBOX_CPUS` | `--sandbox-cpus` | string | `""` | CPU limit (e.g. `0.5`, `2`) |
@@ -205,17 +208,24 @@ Build behavior:
 **Priority:**
 1. `sandbox_image` config field → use that image directly (explicit wins)
 2. `Dockerfile.odek` exists → build and use it
-3. Neither → `alpine:latest`
+3. Neither → the embedded, digest-pinned default image (`alpine:3.22@sha256:2e0b81d60597f449baa56dc25d355367869d2dca4cd57e866f1e2b52af3eb55f`, kept fresh by Dependabot). The multi-arch index digest was looked up with `docker buildx imagetools inspect alpine:3.22`.
 
 ## Network modes
 
-| Mode | Internet | Host access | Use case |
-|------|----------|-------------|----------|
-| `none` (default) | ❌ No | ❌ No | Fully isolated — every sandboxed run starts here; right choice for untrusted code and malware scans |
-| `bridge` | ✅ Yes | ❌ No | Explicit opt-in only: `npm install`, `go mod download`, `git clone`, API calls |
-| `host` / any other value | ❌ No | ❌ No | **Not supported.** `host` destroys container isolation, so odek refuses it and forces `none` with a warning; unrecognized modes (e.g. `container:<name>`) are forced to `none` the same way |
+| Mode | Internet | Host services | Use case |
+|------|----------|---------------|----------|
+| `none` (default) | No | No | Fully isolated; right choice for untrusted code and malware scans |
+| `bridge` | Yes | **Reachable** | Explicit opt-in: `npm install`, `go mod download`, `git clone`, API calls |
+| `sandbox_networks` / `sandbox_compose_project` | Depends on the network | Only the attached networks | Reach a Compose stack (databases, services) by name; replaces `none` |
+| `host` / `container:<name>` / `ns:` / any other value | - | - | **Refused.** The sandbox fails to start with an actionable error; it never falls back to host execution or silently to `none` |
 
-**Security note:** `bridge` gives the container internet access but isolates it from the host's network stack (no access to `localhost:port` on the host, no access to your LAN). Because a wider network is a privilege, `bridge` must be an explicit operator choice — a project-level `./odek.json` that requests it triggers the sandbox-override approval prompt above. Anything that is not `bridge` runs isolated: `host` and unknown network modes are downgraded to `none` at container start, with a warning on stderr.
+**Security note:** `bridge` is not isolated from the host. A bridge container reaches the Docker gateway and services bound on the host's network interfaces, and on cloud machines the instance metadata endpoint (IMDS, `169.254.169.254`) and your LAN. Use `none` (or an `Internal` network) when that matters. Because a wider network is a privilege, `bridge` and attached networks must be explicit operator choices: a project-level `./odek.json` that requests them triggers the sandbox-override approval prompt above. The prompt shows each network's name, full ID, `Internal` flag and Compose project, and the ID is part of the approval key, so a recreated network asks again.
+
+An invalid value (`host`, `container:x`, an unknown name) is a configuration error, not a reason to run unsandboxed. `ODEK_SANDBOX_NETWORK_LENIENT=1` restores the older behaviour of downgrading an invalid mode to `none` with a warning.
+
+**Attached networks.** Names must match `^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$` and may not be `host`, `none`, `bridge` or `default`; at most 8 are attached. Each is inspected: only local bridge networks are accepted and the full network ID is what Docker receives. The first network is given to `docker run`, the rest are connected after start; any failure removes the container, and teardown never removes networks. A warning is printed when a network is not `Internal` or is combined with `bridge`. `--sandbox-compose <project>` finds the project's networks by label (never by guessing `<project>_default`) and fails with a hint when none exist.
+
+**What the model is told.** The system prompt (and the `shell` tool description) ends with an execution-environment block: container, `/workspace`, user, network mode, attached networks, service DNS names of containers already on them (charset-checked, at most 20) and that `localhost` is the container itself. Batch approval cards show the active networks. Sub-agents only narrow: a child keeps a subset of the networks its parent resolved and never re-resolves a Compose project.
 
 ## File injection
 

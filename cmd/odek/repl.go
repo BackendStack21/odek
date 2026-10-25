@@ -147,6 +147,7 @@ func replCmd(args []string) error {
 	if bgErr != nil {
 		return fmt.Errorf("sandbox: %w", bgErr)
 	}
+	systemMessage = withSandboxEnvironment(systemMessage, bgName)
 	if bgSandboxed {
 		sandboxCleanup = bgCleanup
 	}
@@ -189,6 +190,7 @@ func replCmd(args []string) error {
 		APIKey:           resolved.APIKey,
 		MaxIterations:    resolved.MaxIter,
 		SystemMessage:    systemMessage,
+		ApprovalCardNote: sandboxCardNoteFor(bgName),
 		UntrustedWrapper: wrapEngineContext,
 		NoProjectFile:    resolved.NoAgents,
 		Thinking:         resolved.Thinking,

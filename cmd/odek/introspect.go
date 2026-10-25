@@ -22,7 +22,6 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/BackendStack21/odek/internal/sandbox"
 	"regexp"
 	"sort"
 	"strings"
@@ -30,6 +29,7 @@ import (
 	"github.com/BackendStack21/odek/internal/budget"
 	"github.com/BackendStack21/odek/internal/config"
 	"github.com/BackendStack21/odek/internal/redact"
+	"github.com/BackendStack21/odek/internal/sandbox"
 )
 
 // ── shared view builders (REST + tools) ──────────────────────────────────

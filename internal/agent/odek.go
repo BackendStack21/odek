@@ -308,6 +308,10 @@ type Config struct {
 	// calls are bypassed via SetTrustAll.
 	Approver danger.Approver
 
+	// ApprovalCardNote is a line appended to every batch approval card (the
+	// active sandbox networks).
+	ApprovalCardNote string
+
 	// DangerousConfig holds the user's risk class configuration (Allow/Deny/
 	// Prompt per risk class). Used by the batch gate to decide whether a
 	// tool call needs approval before showing the prompt. When nil, the
@@ -828,6 +832,9 @@ func New(cfg Config) (_ *Agent, setupErr error) {
 	}
 	if cfg.DangerousConfig != nil {
 		engine.SetDangerousConfig(cfg.DangerousConfig)
+	}
+	if cfg.ApprovalCardNote != "" {
+		engine.SetApprovalCardNote(cfg.ApprovalCardNote)
 	}
 
 	// Set skill verbosity: condensed by default, full banners when verbose.
