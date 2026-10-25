@@ -64,7 +64,10 @@ func TestRED_RtOps_KeyFDStrictParse(t *testing.T) {
 	}
 	_, _ = w.WriteString("secret-key\n")
 	w.Close()
-	t.Setenv(keyFDEnvVar, fmt.Sprintf("%d", int(r.Fd())))
+	defer r.Close()
+	// The reader closes the descriptor it is handed, so it gets a dup: r
+	// keeps its own, and its finalizer never closes a reused number.
+	t.Setenv(keyFDEnvVar, dupFD(t, r))
 	if got := readKeyFromInheritedFD(); got != "secret-key" {
 		t.Errorf("valid fd rejected: %q", got)
 	}
