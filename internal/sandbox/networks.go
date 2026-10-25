@@ -101,6 +101,13 @@ func ResolveNetworks(ctx context.Context, names []string) ([]NetworkInfo, error)
 			return nil, invalidNetwork("unexpected docker inspect output for sandbox network %q", name)
 		}
 		r := res[0]
+		// Docker resolves the argument by full ID, then name, then ID
+		// prefix, so the answer can be a different network (even the
+		// predefined bridge). Only the network that carries the requested
+		// name is accepted.
+		if r.Name != name {
+			return nil, invalidNetwork("sandbox network %q resolved to network %q: networks are attached by exact name", name, r.Name)
+		}
 		if r.Driver != "bridge" {
 			return nil, invalidNetwork("sandbox network %q has driver %q: only bridge networks are allowed", name, r.Driver)
 		}
