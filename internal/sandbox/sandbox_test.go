@@ -60,8 +60,8 @@ func TestResolveImage_DefaultsToAlpine(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ResolveImage: %v", err)
 	}
-	if img != "alpine:latest" {
-		t.Errorf("img = %q, want 'alpine:latest'", img)
+	if img != DefaultImage {
+		t.Errorf("img = %q, want %q", img, DefaultImage)
 	}
 }
 

@@ -14,6 +14,7 @@ package sandbox
 import (
 	"context"
 	"crypto/sha256"
+	_ "embed"
 	"encoding/hex"
 	"fmt"
 	"os"
@@ -25,6 +26,16 @@ import (
 
 	"github.com/BackendStack21/odek/internal/pathutil"
 )
+
+// defaultDockerfile is the embedded fallback image definition; its FROM line
+// is the digest-pinned reference ResolveImage returns when nothing else is
+// configured.
+//
+//go:embed default.Dockerfile
+var defaultDockerfile string
+
+// DefaultImage is the fallback image reference used by ResolveImage.
+const DefaultImage = "alpine:3.22@sha256:2e0b81d60597f449baa56dc25d355367869d2dca4cd57e866f1e2b52af3eb55f"
 
 // DockerfileName is the project-local Dockerfile name. Presence in the
 // working directory triggers a cached image build via buildFromDockerfile.
@@ -65,7 +76,7 @@ type Config struct {
 //     caller is responsible for gating this on operator approval (see
 //     cmd/odek/project_sandbox_approval.go) — the Dockerfile and its build
 //     context are repo-controlled.
-//  3. Otherwise → "alpine:latest".
+//  3. Otherwise → DefaultImage (digest-pinned, from default.Dockerfile).
 func ResolveImage(cfg Config) (string, error) {
 	if cfg.Image != "" {
 		if err := validateImageName(cfg.Image); err != nil {
@@ -76,7 +87,7 @@ func ResolveImage(cfg Config) (string, error) {
 	if _, err := os.Stat(DockerfileName); err == nil {
 		return buildFromDockerfile()
 	}
-	return "alpine:latest", nil
+	return DefaultImage, nil
 }
 
 // validateImageName rejects image references docker could read as an option

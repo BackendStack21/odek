@@ -823,7 +823,7 @@ Flags:
   --open                   Open browser automatically
   --sandbox                Enable Docker sandbox (default on for serve mode)
   --no-sandbox             Disable the default sandbox (requires explicit opt-out)
-  --sandbox-image image    Docker image (default: alpine:latest or Dockerfile.odek)
+  --sandbox-image image    Docker image (default: pinned alpine or Dockerfile.odek)
   --sandbox-network net    Docker network mode (default: none)
   --sandbox-readonly       Mount working directory read-only
   --sandbox-memory limit   Container memory limit (e.g. 512m, 2g)
