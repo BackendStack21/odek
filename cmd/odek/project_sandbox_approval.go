@@ -62,6 +62,13 @@ func approveProjectSandboxWithTTY(resolved config.ResolvedConfig, stdin io.Reade
 		o.HasUser || o.HasMemory || o.HasCPUs || o.HasPidsLimit || o.HasNetworks || o.HasComposeProject
 	dfHash, dfRequired := dockerfileBuildRequirement(resolved)
 	if !hasOverride && !dfRequired {
+		// Nothing to approve: the project requests no networks, so no
+		// earlier network grant for this directory may linger.
+		if wd, err := os.Getwd(); err == nil {
+			if dir, err := filepath.Abs(wd); err == nil {
+				recordProjectNetworkGrant(dir, o, nil)
+			}
+		}
 		return nil
 	}
 
@@ -185,8 +192,8 @@ func approveProjectSandboxWithTTY(resolved config.ResolvedConfig, stdin io.Reade
 		}
 		if hasOverride {
 			recordOverrideGrant(projectDir, overrideKey)
-			recordProjectNetworkGrant(projectDir, o, nets)
 		}
+		recordProjectNetworkGrant(projectDir, o, nets)
 		return nil
 	case "t", "trust":
 		if hasOverride {
@@ -199,9 +206,7 @@ func approveProjectSandboxWithTTY(resolved config.ResolvedConfig, stdin io.Reade
 		if err := saveProjectSandboxApprovals(approved); err != nil {
 			return fmt.Errorf("project sandbox approval: save approvals: %w", err)
 		}
-		if hasOverride {
-			recordProjectNetworkGrant(projectDir, o, nets)
-		}
+		recordProjectNetworkGrant(projectDir, o, nets)
 		return nil
 	default:
 		return fmt.Errorf("project sandbox config was not approved")
@@ -420,18 +425,20 @@ var (
 	projectNetworkGrants   = map[string]map[string]bool{}
 )
 
-// recordProjectNetworkGrant remembers the networks behind an approval of a
-// project override that requests networks.
+// recordProjectNetworkGrant remembers the networks behind the latest
+// approval for projectDir. An approved override that requests no networks
+// drops any earlier grant, so the record always matches the latest approval.
 func recordProjectNetworkGrant(projectDir string, o config.ProjectSandboxOverride, nets []sandbox.NetworkInfo) {
+	projectNetworkGrantsMu.Lock()
+	defer projectNetworkGrantsMu.Unlock()
 	if !o.HasNetworks && !o.HasComposeProject {
+		delete(projectNetworkGrants, projectDir)
 		return
 	}
 	ids := map[string]bool{}
 	for _, n := range nets {
 		ids[n.ID] = true
 	}
-	projectNetworkGrantsMu.Lock()
-	defer projectNetworkGrantsMu.Unlock()
 	projectNetworkGrants[projectDir] = ids
 }
 
