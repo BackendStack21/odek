@@ -110,17 +110,72 @@ func ResolveNetworks(ctx context.Context, names []string) ([]NetworkInfo, error)
 		if !networkIDRE.MatchString(r.ID) {
 			return nil, invalidNetwork("sandbox network %q has an invalid ID", name)
 		}
-		var services []string
-		for _, c := range r.Containers {
-			if c.Name != "" {
-				services = append(services, c.Name)
-			}
-		}
-		sort.Strings(services)
-		nets = append(nets, NetworkInfo{Name: name, ServiceNames: services, ID: r.ID, Driver: r.Driver, Scope: r.Scope,
-			Internal: r.Internal, ComposeProject: r.Labels[composeProjectLabel]})
+		nets = append(nets, NetworkInfo{Name: name, ServiceNames: serviceNames(ctx, name, r.Containers), ID: r.ID,
+			Driver: r.Driver, Scope: r.Scope, Internal: r.Internal, ComposeProject: r.Labels[composeProjectLabel]})
 	}
 	return nets, nil
+}
+
+// maxServiceInspect bounds how many containers one network's service-name
+// lookup inspects.
+const maxServiceInspect = 64
+
+var shortContainerIDRE = regexp.MustCompile(`^[0-9a-f]{12}$`)
+
+// serviceNames returns the DNS names other containers answer to on network:
+// each container's aliases there (Compose registers the service name as an
+// alias) minus its own name and short ID, or the container name when it has
+// no other alias. When the containers cannot be inspected the container
+// names are used. The result is sorted and de-duplicated.
+func serviceNames(ctx context.Context, network string, containers map[string]struct{ Name string }) []string {
+	ids := make([]string, 0, len(containers))
+	for cid := range containers {
+		ids = append(ids, cid)
+	}
+	sort.Strings(ids)
+	if len(ids) > maxServiceInspect {
+		ids = ids[:maxServiceInspect]
+	}
+	aliases := map[string][]string{}
+	if len(ids) > 0 {
+		if out, err := DockerRunner(ctx, append([]string{"inspect"}, ids...)...); err == nil {
+			var res []struct {
+				ID              string `json:"Id"`
+				NetworkSettings struct {
+					Networks map[string]struct{ Aliases []string }
+				}
+			}
+			if json.Unmarshal(out, &res) == nil {
+				for _, c := range res {
+					aliases[c.ID] = c.NetworkSettings.Networks[network].Aliases
+				}
+			}
+		}
+	}
+	seen := map[string]bool{}
+	var names []string
+	add := func(n string) {
+		if n != "" && !seen[n] {
+			seen[n] = true
+			names = append(names, n)
+		}
+	}
+	for _, cid := range ids {
+		own := containers[cid].Name
+		found := false
+		for _, a := range aliases[cid] {
+			if a == own || shortContainerIDRE.MatchString(a) || strings.HasPrefix(cid, a) {
+				continue
+			}
+			add(a)
+			found = true
+		}
+		if !found {
+			add(own)
+		}
+	}
+	sort.Strings(names)
+	return names
 }
 
 // ExtraNetworkIDs returns the network IDs that must be attached with
