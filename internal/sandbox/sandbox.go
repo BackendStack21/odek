@@ -44,7 +44,7 @@ var ForbiddenMountPrefixes = []string{
 // has no notion of where values were sourced.
 type Config struct {
 	Image    string            // Docker image (e.g. "node:20-alpine"); empty triggers Dockerfile/default resolution
-	Network  string            // "bridge" | "none" | "host"; "host" and any other value are forced to "none"
+	Network  string            // "none" (default) | "bridge"; other values are rejected by BuildRunArgsChecked
 	Readonly bool              // Mount the working directory read-only
 	Memory   string            // Memory limit (e.g. "512m", "2g")
 	CPUs     string            // CPU limit (e.g. "0.5", "2")
@@ -152,7 +152,7 @@ func dockerBuildArgs(tag string) []string {
 //	requested), and --user <invoking uid:gid> when no user is configured.
 //
 // Volume mounts are filtered against ForbiddenMountPrefixes; "host" network
-// is forced to "none".
+// is forced to "none" here; prefer BuildRunArgsChecked, which rejects it.
 func BuildRunArgs(cfg Config, containerName, workdir, image string) []string {
 	args := []string{
 		"run",

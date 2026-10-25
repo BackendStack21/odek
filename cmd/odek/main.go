@@ -336,7 +336,7 @@ type runFlags struct {
 
 	// Sandbox-specific CLI flags
 	SandboxImage    string // Docker image (e.g. "node:20-alpine")
-	SandboxNetwork  string // Network mode: "none" | "bridge" | "host"
+	SandboxNetwork  string // Network mode: "none" | "bridge"
 	SandboxMemory   string // Memory limit (e.g. "512m", "2g")
 	SandboxCPUs     string // CPU limit (e.g. "0.5", "2")
 	SandboxUser     string // Container user (e.g. "1000:1000")
@@ -1447,7 +1447,7 @@ Skill commands:
 Sandbox flags:
   --sandbox            Run in isolated Docker container
   --sandbox-image <img>  Docker image (default: alpine:latest)
-  --sandbox-network <m>  Network mode: none (default) | bridge | host
+  --sandbox-network <m>  Network mode: none (default) | bridge
   --sandbox-readonly   Mount working directory read-only
   --sandbox-memory <s> Memory limit (e.g. 512m, 2g)
   --sandbox-cpus <n>   CPU limit (e.g. 0.5, 2, 4)
@@ -2603,6 +2603,12 @@ func setupSandbox(tools []odek.Tool, cfg sandboxConfig) (containerName string, c
 		}
 	}
 
+	if os.Getenv(sandbox.LenientNetworkEnv) != "1" {
+		if _, nerr := sandbox.ValidateNetwork(cfg.Network); nerr != nil {
+			return "", nil, fmt.Errorf("%w: %w", errSandboxConfig, nerr)
+		}
+	}
+
 	image, err := sandbox.ResolveImage(cfg)
 	if err != nil {
 		return "", nil, err
@@ -2625,7 +2631,10 @@ func setupSandbox(tools []odek.Tool, cfg sandboxConfig) (containerName string, c
 	// recycled the PID).
 	exec.Command("docker", "rm", "-f", containerName).Run() //nolint:errcheck
 
-	args := sandbox.BuildRunArgs(cfg, containerName, wd, image)
+	args, aerr := sandbox.BuildRunArgsChecked(cfg, containerName, wd, image)
+	if aerr != nil {
+		return "", nil, fmt.Errorf("%w: %w", errSandboxConfig, aerr)
+	}
 	createCmd := exec.Command("docker", args...)
 	createCmd.Stderr = os.Stderr
 	if err := createCmd.Run(); err != nil {
