@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 )
 
 // ErrInvalidNetwork marks a network mode that is not one of the allowed
@@ -42,5 +43,34 @@ func BuildRunArgsChecked(cfg Config, containerName, workdir, image string) ([]st
 		network = "none"
 	}
 	cfg.Network = network
+	if _, perr := ParsePidsLimit(cfg.PidsLimit); perr != nil {
+		return nil, perr
+	}
 	return BuildRunArgs(cfg, containerName, workdir, image), nil
+}
+
+// DefaultPidsLimit is the container process limit applied when no
+// sandbox_pids_limit is configured.
+const DefaultPidsLimit = 4096
+
+// ErrInvalidPidsLimit marks a pids limit that is not a positive integer.
+var ErrInvalidPidsLimit = errors.New("invalid sandbox pids limit")
+
+// ParsePidsLimit returns the effective pids limit for raw: empty gives
+// DefaultPidsLimit; anything but a positive decimal integer yields an error
+// wrapping ErrInvalidPidsLimit that names the value.
+func ParsePidsLimit(raw string) (int, error) {
+	if raw == "" {
+		return DefaultPidsLimit, nil
+	}
+	for _, r := range raw {
+		if r < '0' || r > '9' {
+			return 0, fmt.Errorf("%w %q: must be a positive integer", ErrInvalidPidsLimit, raw)
+		}
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n <= 0 {
+		return 0, fmt.Errorf("%w %q: must be a positive integer", ErrInvalidPidsLimit, raw)
+	}
+	return n, nil
 }

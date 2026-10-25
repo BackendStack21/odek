@@ -1106,14 +1106,15 @@ func subagentCmd(args []string) error {
 
 	if resolved.Sandbox {
 		sbCfg := sandboxConfig{
-			Image:    resolved.SandboxImage,
-			Network:  resolved.SandboxNetwork,
-			Readonly: resolved.SandboxReadonly,
-			Memory:   resolved.SandboxMemory,
-			CPUs:     resolved.SandboxCPUs,
-			User:     resolved.SandboxUser,
-			Env:      resolved.SandboxEnv,
-			Volumes:  resolved.SandboxVolumes,
+			Image:     resolved.SandboxImage,
+			Network:   resolved.SandboxNetwork,
+			Readonly:  resolved.SandboxReadonly,
+			Memory:    resolved.SandboxMemory,
+			CPUs:      resolved.SandboxCPUs,
+			PidsLimit: resolved.SandboxPidsLimit,
+			User:      resolved.SandboxUser,
+			Env:       resolved.SandboxEnv,
+			Volumes:   resolved.SandboxVolumes,
 		}
 		var subContainerName string
 		subContainerName, cleanup, err := setupSandbox(tools, sbCfg)

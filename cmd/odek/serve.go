@@ -456,7 +456,7 @@ func serveCmd(args []string) error {
 	var announceBudget *bool
 	var planning *bool
 	var stream *bool
-	var sandboxImage, sandboxNetwork, sandboxMemory, sandboxCPUs, sandboxUser string
+	var sandboxImage, sandboxNetwork, sandboxMemory, sandboxCPUs, sandboxPidsLimit, sandboxUser string
 	var toolsEnabled, toolsDisabled, trustedProxies []string
 
 	for i := 0; i < len(args); i++ {
@@ -492,6 +492,11 @@ func serveCmd(args []string) error {
 			i++
 			if i < len(args) {
 				sandboxMemory = args[i]
+			}
+		case "--sandbox-pids-limit":
+			i++
+			if i < len(args) {
+				sandboxPidsLimit = args[i]
 			}
 		case "--sandbox-cpus":
 			i++
@@ -550,21 +555,22 @@ func serveCmd(args []string) error {
 	}
 
 	resolved := config.LoadConfig(config.CLIFlags{
-		Sandbox:         sandbox,
-		PromptCaching:   promptCaching,
-		Compaction:      compaction,
-		AnnounceBudget:  announceBudget,
-		Planning:        planning,
-		Stream:          stream,
-		SandboxImage:    sandboxImage,
-		SandboxNetwork:  sandboxNetwork,
-		SandboxReadonly: sandboxReadonly,
-		SandboxMemory:   sandboxMemory,
-		SandboxCPUs:     sandboxCPUs,
-		SandboxUser:     sandboxUser,
-		ToolsEnabled:    toolsEnabled,
-		ToolsDisabled:   toolsDisabled,
-		TrustedProxies:  trustedProxies,
+		Sandbox:          sandbox,
+		PromptCaching:    promptCaching,
+		Compaction:       compaction,
+		AnnounceBudget:   announceBudget,
+		Planning:         planning,
+		Stream:           stream,
+		SandboxImage:     sandboxImage,
+		SandboxNetwork:   sandboxNetwork,
+		SandboxReadonly:  sandboxReadonly,
+		SandboxMemory:    sandboxMemory,
+		SandboxCPUs:      sandboxCPUs,
+		SandboxPidsLimit: sandboxPidsLimit,
+		SandboxUser:      sandboxUser,
+		ToolsEnabled:     toolsEnabled,
+		ToolsDisabled:    toolsDisabled,
+		TrustedProxies:   trustedProxies,
 	})
 	if err := approveProjectSandbox(resolved, os.Stdin, os.Stdout); err != nil {
 		return err
@@ -822,6 +828,7 @@ Flags:
   --sandbox-readonly       Mount working directory read-only
   --sandbox-memory limit   Container memory limit (e.g. 512m, 2g)
   --sandbox-cpus limit     Container CPU limit (e.g. 0.5, 2, 4)
+  --sandbox-pids-limit n   Container process limit (default: 4096)
   --sandbox-user user      Container user (e.g. 1000:1000)
   --prompt-caching         Enable prompt caching (default: on)
   --no-prompt-caching      Disable prompt caching
@@ -1113,14 +1120,15 @@ func newServeAgent(resolved config.ResolvedConfig, system string, runKey string,
 	}
 	if resolved.Sandbox {
 		cfg := sandboxConfig{
-			Image:    resolved.SandboxImage,
-			Network:  resolved.SandboxNetwork,
-			Readonly: resolved.SandboxReadonly,
-			Memory:   resolved.SandboxMemory,
-			CPUs:     resolved.SandboxCPUs,
-			User:     resolved.SandboxUser,
-			Env:      resolved.SandboxEnv,
-			Volumes:  resolved.SandboxVolumes,
+			Image:     resolved.SandboxImage,
+			Network:   resolved.SandboxNetwork,
+			Readonly:  resolved.SandboxReadonly,
+			Memory:    resolved.SandboxMemory,
+			CPUs:      resolved.SandboxCPUs,
+			PidsLimit: resolved.SandboxPidsLimit,
+			User:      resolved.SandboxUser,
+			Env:       resolved.SandboxEnv,
+			Volumes:   resolved.SandboxVolumes,
 		}
 		var sbContainerName string
 		var sandboxErr error

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"sync"
 
 	"github.com/BackendStack21/odek"
@@ -61,12 +62,13 @@ func mergeToolFilters(a, b config.ToolConfig) config.ToolConfig {
 // taskSandboxPosture is the parent's container posture as written into a
 // task file. Empty strings mean "not set by the parent".
 type taskSandboxPosture struct {
-	Readonly bool   `json:"readonly,omitempty"`
-	Image    string `json:"image,omitempty"`
-	Network  string `json:"network,omitempty"`
-	Memory   string `json:"memory,omitempty"`
-	CPUs     string `json:"cpus,omitempty"`
-	User     string `json:"user,omitempty"`
+	Readonly  bool   `json:"readonly,omitempty"`
+	Image     string `json:"image,omitempty"`
+	Network   string `json:"network,omitempty"`
+	Memory    string `json:"memory,omitempty"`
+	CPUs      string `json:"cpus,omitempty"`
+	PidsLimit string `json:"pids_limit,omitempty"`
+	User      string `json:"user,omitempty"`
 	// ApprovalKeys are the project-sandbox approval keys the parent was
 	// granted this session (project directory + content hash bound).
 	ApprovalKeys []string `json:"approval_keys,omitempty"`
@@ -109,7 +111,7 @@ func recordChildSandbox(tools []odek.Tool, cfg sandboxConfig) {
 			d.sessMu.Lock()
 			d.childSandbox = &taskSandboxPosture{
 				Readonly: cfg.Readonly, Image: cfg.Image, Network: cfg.Network,
-				Memory: cfg.Memory, CPUs: cfg.CPUs, User: cfg.User,
+				Memory: cfg.Memory, CPUs: cfg.CPUs, PidsLimit: cfg.PidsLimit, User: cfg.User,
 			}
 			d.sessMu.Unlock()
 		}
@@ -157,6 +159,9 @@ func applyTaskSandboxPosture(resolved *config.ResolvedConfig, p *taskSandboxPost
 	}
 	if p.CPUs != "" {
 		resolved.SandboxCPUs = p.CPUs
+	}
+	if p.PidsLimit != "" {
+		resolved.SandboxPidsLimit = lowerPidsLimit(p.PidsLimit, resolved.SandboxPidsLimit)
 	}
 	if p.User != "" {
 		resolved.SandboxUser = p.User
@@ -213,4 +218,19 @@ func sessionSandboxApprovalKeys() []string {
 	}
 	overrideGrantsMu.Unlock()
 	return keys
+}
+
+// lowerPidsLimit returns the smaller of the parent and child limits. An
+// empty or unparsable child value yields the parent's, so a child never
+// runs with a higher process limit than the sandbox it was spawned from.
+func lowerPidsLimit(parent, child string) string {
+	p, perr := strconv.Atoi(parent)
+	c, cerr := strconv.Atoi(child)
+	if perr != nil || p <= 0 {
+		return child
+	}
+	if cerr != nil || c <= 0 || c > p {
+		return parent
+	}
+	return child
 }

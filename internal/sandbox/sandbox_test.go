@@ -104,7 +104,7 @@ func TestBuildRunArgs_DefaultsApplied(t *testing.T) {
 		"run", "--rm", "--detach", "--name", "odek-test",
 		"--cap-drop", "ALL",
 		"--security-opt", "no-new-privileges",
-		"--tmpfs", "/tmp:noexec",
+		"--tmpfs", "/tmp:noexec,nosuid",
 		"alpine:latest", "sleep", "infinity",
 	} {
 		if !contains(args, want) {

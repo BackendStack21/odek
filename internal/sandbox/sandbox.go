@@ -19,6 +19,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -51,6 +52,10 @@ type Config struct {
 	User     string            // Container user (e.g. "1000:1000"); empty defaults to the invoking uid:gid (see BuildRunArgs)
 	Env      map[string]string // Extra environment variables
 	Volumes  []string          // Extra volume mounts (filtered against ForbiddenMountPrefixes)
+	// PidsLimit is the container process limit as a decimal string. Empty
+	// means DefaultPidsLimit; non-numeric, zero or negative values are
+	// rejected by BuildRunArgsChecked with ErrInvalidPidsLimit.
+	PidsLimit string
 }
 
 // ResolveImage determines the Docker image for a sandbox container.
@@ -148,12 +153,16 @@ func dockerBuildArgs(tag string) []string {
 // Security defaults applied unconditionally:
 //
 //	--rm, --detach, --cap-drop ALL, --security-opt no-new-privileges,
-//	--tmpfs /tmp:noexec, --network none (bridge only when explicitly
+//	--init, --pids-limit, --tmpfs /tmp:noexec,nosuid, --network none (bridge only when explicitly
 //	requested), and --user <invoking uid:gid> when no user is configured.
 //
 // Volume mounts are filtered against ForbiddenMountPrefixes; "host" network
 // is forced to "none" here; prefer BuildRunArgsChecked, which rejects it.
 func BuildRunArgs(cfg Config, containerName, workdir, image string) []string {
+	pids, err := ParsePidsLimit(cfg.PidsLimit)
+	if err != nil {
+		pids = DefaultPidsLimit
+	}
 	args := []string{
 		"run",
 		"--rm",
@@ -161,6 +170,8 @@ func BuildRunArgs(cfg Config, containerName, workdir, image string) []string {
 		"--name", containerName,
 		"--cap-drop", "ALL",
 		"--security-opt", "no-new-privileges",
+		"--init",
+		"--pids-limit", strconv.Itoa(pids),
 	}
 
 	network := cfg.Network
@@ -189,7 +200,7 @@ func BuildRunArgs(cfg Config, containerName, workdir, image string) []string {
 		volume += ":ro"
 	}
 	args = append(args, "-v", volume)
-	args = append(args, "--tmpfs", "/tmp:noexec")
+	args = append(args, "--tmpfs", "/tmp:noexec,nosuid")
 
 	if cfg.Memory != "" {
 		args = append(args, "--memory", cfg.Memory)

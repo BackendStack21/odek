@@ -335,12 +335,13 @@ type runFlags struct {
 	Ctx           []string // --ctx files to attach
 
 	// Sandbox-specific CLI flags
-	SandboxImage    string // Docker image (e.g. "node:20-alpine")
-	SandboxNetwork  string // Network mode: "none" | "bridge"
-	SandboxMemory   string // Memory limit (e.g. "512m", "2g")
-	SandboxCPUs     string // CPU limit (e.g. "0.5", "2")
-	SandboxUser     string // Container user (e.g. "1000:1000")
-	SandboxReadonly *bool  // nil = not set; true = read-only mount
+	SandboxImage     string // Docker image (e.g. "node:20-alpine")
+	SandboxNetwork   string // Network mode: "none" | "bridge"
+	SandboxMemory    string // Memory limit (e.g. "512m", "2g")
+	SandboxCPUs      string // CPU limit (e.g. "0.5", "2")
+	SandboxPidsLimit string // Container process limit (e.g. "512")
+	SandboxUser      string // Container user (e.g. "1000:1000")
+	SandboxReadonly  *bool  // nil = not set; true = read-only mount
 
 	// Extended memory subsystem CLI overrides.
 	MemoryExtendedEnabled                     *bool // nil = not set
@@ -419,12 +420,13 @@ func cliFlagsFromRun(f runFlags) config.CLIFlags {
 		ToolsEnabled:   f.ToolsEnabled,
 		ToolsDisabled:  f.ToolsDisabled,
 
-		SandboxImage:    f.SandboxImage,
-		SandboxNetwork:  f.SandboxNetwork,
-		SandboxReadonly: f.SandboxReadonly,
-		SandboxMemory:   f.SandboxMemory,
-		SandboxCPUs:     f.SandboxCPUs,
-		SandboxUser:     f.SandboxUser,
+		SandboxImage:     f.SandboxImage,
+		SandboxNetwork:   f.SandboxNetwork,
+		SandboxReadonly:  f.SandboxReadonly,
+		SandboxMemory:    f.SandboxMemory,
+		SandboxCPUs:      f.SandboxCPUs,
+		SandboxPidsLimit: f.SandboxPidsLimit,
+		SandboxUser:      f.SandboxUser,
 
 		MemoryExtendedEnabled:                     f.MemoryExtendedEnabled,
 		MemoryExtendedMaxSizeMB:                   f.MemoryExtendedMaxSizeMB,
@@ -777,6 +779,12 @@ func parseRunFlags(args []string) (runFlags, error) {
 				return f, fmt.Errorf("--sandbox-cpus requires a value")
 			}
 			f.SandboxCPUs = args[i+1]
+			i += 2
+		case "--sandbox-pids-limit":
+			if i+1 >= len(args) {
+				return f, fmt.Errorf("--sandbox-pids-limit requires a value")
+			}
+			f.SandboxPidsLimit = args[i+1]
 			i += 2
 		case "--sandbox-user":
 			if i+1 >= len(args) {
@@ -1164,12 +1172,13 @@ type replFlags struct {
 	InteractionMode string
 
 	// Sandbox-specific CLI flags
-	SandboxImage    string
-	SandboxNetwork  string
-	SandboxReadonly *bool
-	SandboxMemory   string
-	SandboxCPUs     string
-	SandboxUser     string
+	SandboxImage     string
+	SandboxNetwork   string
+	SandboxReadonly  *bool
+	SandboxMemory    string
+	SandboxCPUs      string
+	SandboxPidsLimit string
+	SandboxUser      string
 }
 
 // parseReplFlags parses `odek repl` arguments and returns the parsed flags.
@@ -1268,6 +1277,9 @@ func parseReplFlags(args []string) (replFlags, error) {
 			i += 2
 		case "--sandbox-cpus":
 			f.SandboxCPUs = args[i+1]
+			i += 2
+		case "--sandbox-pids-limit":
+			f.SandboxPidsLimit = args[i+1]
 			i += 2
 		case "--sandbox-user":
 			f.SandboxUser = args[i+1]
@@ -1451,6 +1463,7 @@ Sandbox flags:
   --sandbox-readonly   Mount working directory read-only
   --sandbox-memory <s> Memory limit (e.g. 512m, 2g)
   --sandbox-cpus <n>   CPU limit (e.g. 0.5, 2, 4)
+  --sandbox-pids-limit <n>  Process limit (default: 4096)
   --sandbox-user <s>   Run as user (uid:gid or name)
 
 Extended memory flags:
@@ -1492,10 +1505,11 @@ Environment variables:
   ODEK_TOOLS_ENABLED   Comma-separated tool whitelist
   ODEK_TOOLS_DISABLED  Comma-separated tool blacklist
   ODEK_SANDBOX_IMAGE   Docker image for sandbox container
-  ODEK_SANDBOX_NETWORK Network mode (none | bridge | host)
+  ODEK_SANDBOX_NETWORK Network mode (none | bridge)
   ODEK_SANDBOX_READONLY true/false — mount read-only
   ODEK_SANDBOX_MEMORY  Memory limit (e.g. 512m, 2g)
   ODEK_SANDBOX_CPUS    CPU limit (e.g. 0.5, 2)
+  ODEK_SANDBOX_PIDS_LIMIT  Process limit (default: 4096)
   ODEK_SANDBOX_USER    Container user (uid:gid or name)
   ODEK_MEMORY_EXTENDED_ENABLED                 true/false — enable Extended Memory
   ODEK_MEMORY_EXTENDED_MAX_SIZE_MB             Max on-disk size in MiB
@@ -1572,6 +1586,7 @@ const globalConfigTemplate = `{
   "sandbox_readonly": false,
   "sandbox_memory": "",
   "sandbox_cpus": "",
+  "sandbox_pids_limit": "",
   "sandbox_user": "",
   "sandbox_env": {},
   "sandbox_volumes": [],
@@ -1756,6 +1771,7 @@ const localConfigTemplate = `{
   "sandbox_network": "",
   "sandbox_memory": "",
   "sandbox_cpus": "",
+  "sandbox_pids_limit": "",
   "sandbox_user": "",
   "sandbox_env": {},
   "sandbox_volumes": [],
@@ -2080,14 +2096,15 @@ func run(args []string) (outcome error) {
 
 	// Build sandbox config from resolved settings (first occurrence)
 	sbCfg := sandboxConfig{
-		Image:    resolved.SandboxImage,
-		Network:  resolved.SandboxNetwork,
-		Readonly: resolved.SandboxReadonly,
-		Memory:   resolved.SandboxMemory,
-		CPUs:     resolved.SandboxCPUs,
-		User:     resolved.SandboxUser,
-		Env:      resolved.SandboxEnv,
-		Volumes:  resolved.SandboxVolumes,
+		Image:     resolved.SandboxImage,
+		Network:   resolved.SandboxNetwork,
+		Readonly:  resolved.SandboxReadonly,
+		Memory:    resolved.SandboxMemory,
+		CPUs:      resolved.SandboxCPUs,
+		PidsLimit: resolved.SandboxPidsLimit,
+		User:      resolved.SandboxUser,
+		Env:       resolved.SandboxEnv,
+		Volumes:   resolved.SandboxVolumes,
 	}
 
 	// Skills setup
@@ -2609,6 +2626,10 @@ func setupSandbox(tools []odek.Tool, cfg sandboxConfig) (containerName string, c
 		}
 	}
 
+	if _, perr := sandbox.ParsePidsLimit(cfg.PidsLimit); perr != nil {
+		return "", nil, fmt.Errorf("%w: %w", errSandboxConfig, perr)
+	}
+
 	image, err := sandbox.ResolveImage(cfg)
 	if err != nil {
 		return "", nil, err
@@ -2640,6 +2661,8 @@ func setupSandbox(tools []odek.Tool, cfg sandboxConfig) (containerName string, c
 	if err := createCmd.Run(); err != nil {
 		return "", nil, fmt.Errorf("failed to create sandbox container %q: %w\n  hint: make sure Docker is running, or disable sandbox with --no-sandbox", containerName, err)
 	}
+
+	fmt.Fprintln(os.Stderr, sandboxPostureLine(cfg, image))
 
 	cleanup = newSandboxCleanup(containerName, func(ctx context.Context) error {
 		return exec.CommandContext(ctx, "docker", "rm", "-f", containerName).Run()
@@ -3649,14 +3672,15 @@ func continueCmd(args []string) (outcome error) {
 	var sandboxCleanup func() error
 
 	sbCfg := sandboxConfig{
-		Image:    resolved.SandboxImage,
-		Network:  resolved.SandboxNetwork,
-		Readonly: resolved.SandboxReadonly,
-		Memory:   resolved.SandboxMemory,
-		CPUs:     resolved.SandboxCPUs,
-		User:     resolved.SandboxUser,
-		Env:      resolved.SandboxEnv,
-		Volumes:  resolved.SandboxVolumes,
+		Image:     resolved.SandboxImage,
+		Network:   resolved.SandboxNetwork,
+		Readonly:  resolved.SandboxReadonly,
+		Memory:    resolved.SandboxMemory,
+		CPUs:      resolved.SandboxCPUs,
+		PidsLimit: resolved.SandboxPidsLimit,
+		User:      resolved.SandboxUser,
+		Env:       resolved.SandboxEnv,
+		Volumes:   resolved.SandboxVolumes,
 	}
 	var contContainerName string
 	var contSandboxed bool

@@ -58,7 +58,7 @@ func approveProjectSandbox(resolved config.ResolvedConfig, stdin io.Reader, stdo
 func approveProjectSandboxWithTTY(resolved config.ResolvedConfig, stdin io.Reader, stdout io.Writer, tty bool) error {
 	o := resolved.ProjectSandboxOverride
 	hasOverride := o.HasEnv || o.HasImage || o.HasNetwork || o.HasVolumes ||
-		o.HasUser || o.HasMemory || o.HasCPUs
+		o.HasUser || o.HasMemory || o.HasCPUs || o.HasPidsLimit
 	dfHash, dfRequired := dockerfileBuildRequirement(resolved)
 	if !hasOverride && !dfRequired {
 		return nil
@@ -138,6 +138,9 @@ func approveProjectSandboxWithTTY(resolved config.ResolvedConfig, stdin io.Reade
 		}
 		if o.HasCPUs {
 			fmt.Fprintf(stdout, "  cpus:    %s\n", danger.SanitizeInline(o.CPUs))
+		}
+		if o.HasPidsLimit {
+			fmt.Fprintf(stdout, "  pids:    %s\n", danger.SanitizeInline(o.PidsLimit))
 		}
 		fmt.Fprintln(stdout)
 		fmt.Fprintln(stdout, "Allowing this means code in the sandbox can read workspace files and,")
@@ -296,6 +299,9 @@ func projectSandboxApprovalKey(projectDir string, o config.ProjectSandboxOverrid
 	hashField(h, "user", o.User)
 	hashField(h, "memory", o.Memory)
 	hashField(h, "cpus", o.CPUs)
+	if o.PidsLimit != "" {
+		hashField(h, "pids", o.PidsLimit)
+	}
 	return hex.EncodeToString(h.Sum(nil))
 }
 
