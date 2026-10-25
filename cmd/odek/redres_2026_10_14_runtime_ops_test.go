@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -36,8 +37,11 @@ func TestRED_RtOps_KeyFDStrictParse(t *testing.T) {
 			t.Fatal(err)
 		}
 		w.Close()
-		fd := int(r.Fd())
-		val := fmt.Sprintf("%d", fd)
+		// A dup of r: if a malformed value were ever accepted, the reader
+		// would close its own descriptor, never one r still owns.
+		dup := dupFD(t, r)
+		fd, _ := strconv.Atoi(dup)
+		val := dup
 		if bad == "3x" || bad == "03x" {
 			val += "x"
 		} else if bad == "+3" {
@@ -54,6 +58,9 @@ func TestRED_RtOps_KeyFDStrictParse(t *testing.T) {
 		t.Setenv(keyFDEnvVar, val)
 		if got := readKeyFromInheritedFD(); got != "" {
 			t.Errorf("env %q accepted, key %q", val, got)
+		} else {
+			// Rejected before it was opened: the dup is still ours to close.
+			os.NewFile(uintptr(fd), "rejected-key-fd").Close()
 		}
 		r.Close()
 	}
