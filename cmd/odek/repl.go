@@ -75,14 +75,15 @@ func replCmd(args []string) error {
 		Planning:        f.Planning,
 		InteractionMode: f.InteractionMode,
 
-		SandboxImage:     f.SandboxImage,
-		SandboxNetwork:   f.SandboxNetwork,
-		SandboxReadonly:  f.SandboxReadonly,
-		SandboxMemory:    f.SandboxMemory,
-		SandboxCPUs:      f.SandboxCPUs,
-		SandboxPidsLimit: f.SandboxPidsLimit,
-		SandboxNetworks:  f.SandboxNetworks,
-		SandboxUser:      f.SandboxUser,
+		SandboxImage:          f.SandboxImage,
+		SandboxNetwork:        f.SandboxNetwork,
+		SandboxReadonly:       f.SandboxReadonly,
+		SandboxMemory:         f.SandboxMemory,
+		SandboxCPUs:           f.SandboxCPUs,
+		SandboxPidsLimit:      f.SandboxPidsLimit,
+		SandboxNetworks:       f.SandboxNetworks,
+		SandboxComposeProject: f.SandboxComposeProject,
+		SandboxUser:           f.SandboxUser,
 	})
 	// Fail fast on a missing API key, before approval prompts, MCP server
 	// spawns or sandbox startup.

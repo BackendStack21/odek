@@ -73,6 +73,9 @@ type Config struct {
 	// ResolvedNetworks is the inspected form of Networks (full IDs); it is
 	// filled by ResolveNetworks before the argument list is built.
 	ResolvedNetworks []NetworkInfo
+	// ComposeProject names a Docker Compose project whose networks are
+	// attached (resolved by label, never by guessing "<project>_default").
+	ComposeProject string
 }
 
 // ResolveImage determines the Docker image for a sandbox container.

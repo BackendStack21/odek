@@ -335,14 +335,15 @@ type runFlags struct {
 	Ctx           []string // --ctx files to attach
 
 	// Sandbox-specific CLI flags
-	SandboxImage     string   // Docker image (e.g. "node:20-alpine")
-	SandboxNetwork   string   // Network mode: "none" | "bridge"
-	SandboxMemory    string   // Memory limit (e.g. "512m", "2g")
-	SandboxCPUs      string   // CPU limit (e.g. "0.5", "2")
-	SandboxPidsLimit string   // Container process limit (e.g. "512")
-	SandboxNetworks  []string // Existing Docker networks to attach (--sandbox-networks a,b)
-	SandboxUser      string   // Container user (e.g. "1000:1000")
-	SandboxReadonly  *bool    // nil = not set; true = read-only mount
+	SandboxImage          string   // Docker image (e.g. "node:20-alpine")
+	SandboxNetwork        string   // Network mode: "none" | "bridge"
+	SandboxMemory         string   // Memory limit (e.g. "512m", "2g")
+	SandboxCPUs           string   // CPU limit (e.g. "0.5", "2")
+	SandboxPidsLimit      string   // Container process limit (e.g. "512")
+	SandboxNetworks       []string // Existing Docker networks to attach (--sandbox-networks a,b)
+	SandboxComposeProject string   // Compose project whose networks attach (--sandbox-compose p)
+	SandboxUser           string   // Container user (e.g. "1000:1000")
+	SandboxReadonly       *bool    // nil = not set; true = read-only mount
 
 	// Extended memory subsystem CLI overrides.
 	MemoryExtendedEnabled                     *bool // nil = not set
@@ -421,14 +422,15 @@ func cliFlagsFromRun(f runFlags) config.CLIFlags {
 		ToolsEnabled:   f.ToolsEnabled,
 		ToolsDisabled:  f.ToolsDisabled,
 
-		SandboxImage:     f.SandboxImage,
-		SandboxNetwork:   f.SandboxNetwork,
-		SandboxReadonly:  f.SandboxReadonly,
-		SandboxMemory:    f.SandboxMemory,
-		SandboxCPUs:      f.SandboxCPUs,
-		SandboxPidsLimit: f.SandboxPidsLimit,
-		SandboxNetworks:  f.SandboxNetworks,
-		SandboxUser:      f.SandboxUser,
+		SandboxImage:          f.SandboxImage,
+		SandboxNetwork:        f.SandboxNetwork,
+		SandboxReadonly:       f.SandboxReadonly,
+		SandboxMemory:         f.SandboxMemory,
+		SandboxCPUs:           f.SandboxCPUs,
+		SandboxPidsLimit:      f.SandboxPidsLimit,
+		SandboxNetworks:       f.SandboxNetworks,
+		SandboxComposeProject: f.SandboxComposeProject,
+		SandboxUser:           f.SandboxUser,
 
 		MemoryExtendedEnabled:                     f.MemoryExtendedEnabled,
 		MemoryExtendedMaxSizeMB:                   f.MemoryExtendedMaxSizeMB,
@@ -787,6 +789,12 @@ func parseRunFlags(args []string) (runFlags, error) {
 				return f, fmt.Errorf("--sandbox-pids-limit requires a value")
 			}
 			f.SandboxPidsLimit = args[i+1]
+			i += 2
+		case "--sandbox-compose":
+			if i+1 >= len(args) {
+				return f, fmt.Errorf("--sandbox-compose requires a value")
+			}
+			f.SandboxComposeProject = args[i+1]
 			i += 2
 		case "--sandbox-networks":
 			if i+1 >= len(args) {
@@ -1180,14 +1188,15 @@ type replFlags struct {
 	InteractionMode string
 
 	// Sandbox-specific CLI flags
-	SandboxImage     string
-	SandboxNetwork   string
-	SandboxReadonly  *bool
-	SandboxMemory    string
-	SandboxCPUs      string
-	SandboxPidsLimit string
-	SandboxNetworks  []string
-	SandboxUser      string
+	SandboxImage          string
+	SandboxNetwork        string
+	SandboxReadonly       *bool
+	SandboxMemory         string
+	SandboxCPUs           string
+	SandboxPidsLimit      string
+	SandboxNetworks       []string
+	SandboxComposeProject string
+	SandboxUser           string
 }
 
 // parseReplFlags parses `odek repl` arguments and returns the parsed flags.
@@ -1292,6 +1301,9 @@ func parseReplFlags(args []string) (replFlags, error) {
 			i += 2
 		case "--sandbox-networks":
 			f.SandboxNetworks = config.SplitList(args[i+1])
+			i += 2
+		case "--sandbox-compose":
+			f.SandboxComposeProject = args[i+1]
 			i += 2
 		case "--sandbox-user":
 			f.SandboxUser = args[i+1]
@@ -1477,6 +1489,7 @@ Sandbox flags:
   --sandbox-cpus <n>   CPU limit (e.g. 0.5, 2, 4)
   --sandbox-pids-limit <n>  Process limit (default: 4096)
   --sandbox-networks <l>  Attach existing Docker networks (comma-separated)
+  --sandbox-compose <p>   Attach the networks of a running Compose project
   --sandbox-user <s>   Run as user (uid:gid or name)
 
 Extended memory flags:
@@ -1524,6 +1537,7 @@ Environment variables:
   ODEK_SANDBOX_CPUS    CPU limit (e.g. 0.5, 2)
   ODEK_SANDBOX_PIDS_LIMIT  Process limit (default: 4096)
   ODEK_SANDBOX_NETWORKS  Existing Docker networks to attach (comma-separated)
+  ODEK_SANDBOX_COMPOSE_PROJECT  Compose project whose networks to attach
   ODEK_SANDBOX_USER    Container user (uid:gid or name)
   ODEK_MEMORY_EXTENDED_ENABLED                 true/false — enable Extended Memory
   ODEK_MEMORY_EXTENDED_MAX_SIZE_MB             Max on-disk size in MiB
@@ -1602,6 +1616,7 @@ const globalConfigTemplate = `{
   "sandbox_cpus": "",
   "sandbox_pids_limit": "",
   "sandbox_networks": [],
+  "sandbox_compose_project": "",
   "sandbox_user": "",
   "sandbox_env": {},
   "sandbox_volumes": [],
@@ -1788,6 +1803,7 @@ const localConfigTemplate = `{
   "sandbox_cpus": "",
   "sandbox_pids_limit": "",
   "sandbox_networks": [],
+  "sandbox_compose_project": "",
   "sandbox_user": "",
   "sandbox_env": {},
   "sandbox_volumes": [],
@@ -2636,19 +2652,13 @@ func setupSandbox(tools []odek.Tool, cfg sandboxConfig) (containerName string, c
 		return "", nil, fmt.Errorf("%w: %w", errSandboxConfig, perr)
 	}
 
-	if len(cfg.Networks) > 0 {
-		names, nerr := sandbox.NormalizeNetworks(cfg.Networks)
+	if len(cfg.Networks) > 0 || cfg.ComposeProject != "" {
+		var nerr error
+		cfg, nerr = resolveSandboxNetworks(cfg, os.Stderr)
 		if nerr != nil {
-			return "", nil, fmt.Errorf("%w: %w", errSandboxConfig, nerr)
+			return "", nil, nerr
 		}
-		ictx, icancel := context.WithTimeout(context.Background(), 30*time.Second)
-		resolvedNets, nerr := sandbox.ResolveNetworks(ictx, names)
-		icancel()
-		if nerr != nil {
-			return "", nil, fmt.Errorf("%w: %w", errSandboxConfig, nerr)
-		}
-		cfg.Networks = names
-		cfg.ResolvedNetworks = resolvedNets
+		resolvedNets := cfg.ResolvedNetworks
 		mode, merr := sandbox.ValidateNetwork(cfg.Network)
 		if merr != nil {
 			mode = "none"

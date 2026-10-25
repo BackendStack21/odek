@@ -457,6 +457,7 @@ func serveCmd(args []string) error {
 	var planning *bool
 	var stream *bool
 	var sandboxNetworks []string
+	var sandboxComposeProject string
 	var sandboxImage, sandboxNetwork, sandboxMemory, sandboxCPUs, sandboxPidsLimit, sandboxUser string
 	var toolsEnabled, toolsDisabled, trustedProxies []string
 
@@ -493,6 +494,11 @@ func serveCmd(args []string) error {
 			i++
 			if i < len(args) {
 				sandboxMemory = args[i]
+			}
+		case "--sandbox-compose":
+			i++
+			if i < len(args) {
+				sandboxComposeProject = args[i]
 			}
 		case "--sandbox-networks":
 			i++
@@ -561,23 +567,24 @@ func serveCmd(args []string) error {
 	}
 
 	resolved := config.LoadConfig(config.CLIFlags{
-		Sandbox:          sandbox,
-		PromptCaching:    promptCaching,
-		Compaction:       compaction,
-		AnnounceBudget:   announceBudget,
-		Planning:         planning,
-		Stream:           stream,
-		SandboxImage:     sandboxImage,
-		SandboxNetwork:   sandboxNetwork,
-		SandboxReadonly:  sandboxReadonly,
-		SandboxMemory:    sandboxMemory,
-		SandboxCPUs:      sandboxCPUs,
-		SandboxPidsLimit: sandboxPidsLimit,
-		SandboxNetworks:  sandboxNetworks,
-		SandboxUser:      sandboxUser,
-		ToolsEnabled:     toolsEnabled,
-		ToolsDisabled:    toolsDisabled,
-		TrustedProxies:   trustedProxies,
+		Sandbox:               sandbox,
+		PromptCaching:         promptCaching,
+		Compaction:            compaction,
+		AnnounceBudget:        announceBudget,
+		Planning:              planning,
+		Stream:                stream,
+		SandboxImage:          sandboxImage,
+		SandboxNetwork:        sandboxNetwork,
+		SandboxReadonly:       sandboxReadonly,
+		SandboxMemory:         sandboxMemory,
+		SandboxCPUs:           sandboxCPUs,
+		SandboxPidsLimit:      sandboxPidsLimit,
+		SandboxNetworks:       sandboxNetworks,
+		SandboxComposeProject: sandboxComposeProject,
+		SandboxUser:           sandboxUser,
+		ToolsEnabled:          toolsEnabled,
+		ToolsDisabled:         toolsDisabled,
+		TrustedProxies:        trustedProxies,
 	})
 	if err := approveProjectSandbox(resolved, os.Stdin, os.Stdout); err != nil {
 		return err
@@ -837,6 +844,7 @@ Flags:
   --sandbox-cpus limit     Container CPU limit (e.g. 0.5, 2, 4)
   --sandbox-pids-limit n   Container process limit (default: 4096)
   --sandbox-networks l     Attach existing Docker networks (comma-separated)
+  --sandbox-compose p      Attach the networks of a running Compose project
   --sandbox-user user      Container user (e.g. 1000:1000)
   --prompt-caching         Enable prompt caching (default: on)
   --no-prompt-caching      Disable prompt caching

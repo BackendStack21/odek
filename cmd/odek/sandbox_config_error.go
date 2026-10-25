@@ -56,15 +56,16 @@ func sandboxPostureView(resolved config.ResolvedConfig) map[string]any {
 // sub-agents, mcp) starts its sandbox from this single mapping.
 func sandboxConfigFromResolved(resolved config.ResolvedConfig) sandboxConfig {
 	return sandboxConfig{
-		Image:     resolved.SandboxImage,
-		Network:   resolved.SandboxNetwork,
-		Readonly:  resolved.SandboxReadonly,
-		Memory:    resolved.SandboxMemory,
-		CPUs:      resolved.SandboxCPUs,
-		PidsLimit: resolved.SandboxPidsLimit,
-		Networks:  resolved.SandboxNetworks,
-		User:      resolved.SandboxUser,
-		Env:       resolved.SandboxEnv,
-		Volumes:   resolved.SandboxVolumes,
+		Image:          resolved.SandboxImage,
+		Network:        resolved.SandboxNetwork,
+		Readonly:       resolved.SandboxReadonly,
+		Memory:         resolved.SandboxMemory,
+		CPUs:           resolved.SandboxCPUs,
+		PidsLimit:      resolved.SandboxPidsLimit,
+		Networks:       resolved.SandboxNetworks,
+		ComposeProject: resolved.SandboxComposeProject,
+		User:           resolved.SandboxUser,
+		Env:            resolved.SandboxEnv,
+		Volumes:        resolved.SandboxVolumes,
 	}
 }

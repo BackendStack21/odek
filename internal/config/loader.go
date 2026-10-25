@@ -103,14 +103,15 @@ type CLIFlags struct {
 	Planning *bool // nil = not set
 
 	// Sandbox-specific
-	SandboxImage     string
-	SandboxNetwork   string
-	SandboxMemory    string
-	SandboxCPUs      string
-	SandboxPidsLimit string
-	SandboxNetworks  []string
-	SandboxUser      string
-	SandboxReadonly  *bool // nil = not set
+	SandboxImage          string
+	SandboxNetwork        string
+	SandboxMemory         string
+	SandboxCPUs           string
+	SandboxPidsLimit      string
+	SandboxNetworks       []string
+	SandboxComposeProject string
+	SandboxUser           string
+	SandboxReadonly       *bool // nil = not set
 
 	// InteractionMode controls how tool-call progress is surfaced.
 	// "engaging" (default) = emoji-rich narration, progress message edited.
@@ -735,16 +736,17 @@ type FileConfig struct {
 	System string `json:"system,omitempty"`
 
 	// Sandbox-specific fields.
-	SandboxImage     string            `json:"sandbox_image,omitempty"`
-	SandboxNetwork   string            `json:"sandbox_network,omitempty"`
-	SandboxReadonly  *bool             `json:"sandbox_readonly,omitempty"`
-	SandboxMemory    string            `json:"sandbox_memory,omitempty"`
-	SandboxCPUs      string            `json:"sandbox_cpus,omitempty"`
-	SandboxPidsLimit string            `json:"sandbox_pids_limit,omitempty"`
-	SandboxNetworks  []string          `json:"sandbox_networks,omitempty"`
-	SandboxUser      string            `json:"sandbox_user,omitempty"`
-	SandboxEnv       map[string]string `json:"sandbox_env,omitempty"`
-	SandboxVolumes   []string          `json:"sandbox_volumes,omitempty"`
+	SandboxImage          string            `json:"sandbox_image,omitempty"`
+	SandboxNetwork        string            `json:"sandbox_network,omitempty"`
+	SandboxReadonly       *bool             `json:"sandbox_readonly,omitempty"`
+	SandboxMemory         string            `json:"sandbox_memory,omitempty"`
+	SandboxCPUs           string            `json:"sandbox_cpus,omitempty"`
+	SandboxPidsLimit      string            `json:"sandbox_pids_limit,omitempty"`
+	SandboxNetworks       []string          `json:"sandbox_networks,omitempty"`
+	SandboxComposeProject string            `json:"sandbox_compose_project,omitempty"`
+	SandboxUser           string            `json:"sandbox_user,omitempty"`
+	SandboxEnv            map[string]string `json:"sandbox_env,omitempty"`
+	SandboxVolumes        []string          `json:"sandbox_volumes,omitempty"`
 
 	// Dangerous operation approval settings.
 	Dangerous *danger.DangerousConfig `json:"dangerous,omitempty"`
@@ -933,6 +935,9 @@ type ProjectSandboxOverride struct {
 	// Networks is the project's sandbox_networks list.
 	HasNetworks bool
 	Networks    []string
+	// ComposeProject is the project's sandbox_compose_project.
+	HasComposeProject bool
+	ComposeProject    string
 }
 
 // ResolvedConfig is the fully merged result. Every field has a concrete
@@ -1003,6 +1008,11 @@ type ResolvedConfig struct {
 	// sandbox attaches to. Config: sandbox_networks, ODEK_SANDBOX_NETWORKS
 	// (comma-separated), --sandbox-networks.
 	SandboxNetworks []string
+
+	// SandboxComposeProject names a Compose project whose networks attach.
+	// Config: sandbox_compose_project, ODEK_SANDBOX_COMPOSE_PROJECT,
+	// --sandbox-compose.
+	SandboxComposeProject string
 
 	// SandboxUser sets the container user (e.g. "1000:1000" or "node").
 	// Empty string means root (default Docker behavior).
@@ -2107,6 +2117,10 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 		projectSandboxOverride.HasPidsLimit = true
 		projectSandboxOverride.PidsLimit = project.SandboxPidsLimit
 	}
+	if project.SandboxComposeProject != "" {
+		projectSandboxOverride.HasComposeProject = true
+		projectSandboxOverride.ComposeProject = project.SandboxComposeProject
+	}
 	if len(project.SandboxNetworks) > 0 {
 		projectSandboxOverride.HasNetworks = true
 		projectSandboxOverride.Networks = append([]string(nil), project.SandboxNetworks...)
@@ -2232,6 +2246,9 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	}
 	if v := envString("SANDBOX_PIDS_LIMIT"); v != "" {
 		cfg.SandboxPidsLimit = v
+	}
+	if v := envString("SANDBOX_COMPOSE_PROJECT"); v != "" {
+		cfg.SandboxComposeProject = v
 	}
 	if v := envString("SANDBOX_NETWORKS"); v != "" {
 		cfg.SandboxNetworks = SplitList(v)
@@ -2625,6 +2642,9 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	if cli.SandboxPidsLimit != "" {
 		cfg.SandboxPidsLimit = cli.SandboxPidsLimit
 	}
+	if cli.SandboxComposeProject != "" {
+		cfg.SandboxComposeProject = cli.SandboxComposeProject
+	}
 	if len(cli.SandboxNetworks) > 0 {
 		cfg.SandboxNetworks = cli.SandboxNetworks
 	}
@@ -2857,6 +2877,7 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 		SandboxCPUs:            cfg.SandboxCPUs,
 		SandboxPidsLimit:       cfg.SandboxPidsLimit,
 		SandboxNetworks:        cfg.SandboxNetworks,
+		SandboxComposeProject:  cfg.SandboxComposeProject,
 		SandboxUser:            cfg.SandboxUser,
 		SandboxEnv:             cfg.SandboxEnv,
 		SandboxVolumes:         cfg.SandboxVolumes,
@@ -4119,6 +4140,9 @@ func overlayFile(base, override FileConfig) FileConfig {
 	}
 	if override.SandboxPidsLimit != "" {
 		base.SandboxPidsLimit = override.SandboxPidsLimit
+	}
+	if override.SandboxComposeProject != "" {
+		base.SandboxComposeProject = override.SandboxComposeProject
 	}
 	if override.SandboxNetworks != nil {
 		base.SandboxNetworks = append(base.SandboxNetworks, override.SandboxNetworks...)

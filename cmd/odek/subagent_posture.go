@@ -62,14 +62,15 @@ func mergeToolFilters(a, b config.ToolConfig) config.ToolConfig {
 // taskSandboxPosture is the parent's container posture as written into a
 // task file. Empty strings mean "not set by the parent".
 type taskSandboxPosture struct {
-	Readonly  bool     `json:"readonly,omitempty"`
-	Image     string   `json:"image,omitempty"`
-	Network   string   `json:"network,omitempty"`
-	Memory    string   `json:"memory,omitempty"`
-	CPUs      string   `json:"cpus,omitempty"`
-	PidsLimit string   `json:"pids_limit,omitempty"`
-	Networks  []string `json:"networks,omitempty"`
-	User      string   `json:"user,omitempty"`
+	Readonly       bool     `json:"readonly,omitempty"`
+	Image          string   `json:"image,omitempty"`
+	Network        string   `json:"network,omitempty"`
+	Memory         string   `json:"memory,omitempty"`
+	CPUs           string   `json:"cpus,omitempty"`
+	PidsLimit      string   `json:"pids_limit,omitempty"`
+	Networks       []string `json:"networks,omitempty"`
+	ComposeProject string   `json:"compose_project,omitempty"`
+	User           string   `json:"user,omitempty"`
 	// ApprovalKeys are the project-sandbox approval keys the parent was
 	// granted this session (project directory + content hash bound).
 	ApprovalKeys []string `json:"approval_keys,omitempty"`
@@ -112,7 +113,7 @@ func recordChildSandbox(tools []odek.Tool, cfg sandboxConfig) {
 			d.sessMu.Lock()
 			d.childSandbox = &taskSandboxPosture{
 				Readonly: cfg.Readonly, Image: cfg.Image, Network: cfg.Network,
-				Memory: cfg.Memory, CPUs: cfg.CPUs, PidsLimit: cfg.PidsLimit, Networks: cfg.Networks, User: cfg.User,
+				Memory: cfg.Memory, CPUs: cfg.CPUs, PidsLimit: cfg.PidsLimit, Networks: cfg.Networks, ComposeProject: cfg.ComposeProject, User: cfg.User,
 			}
 			d.sessMu.Unlock()
 		}
