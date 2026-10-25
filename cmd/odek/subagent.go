@@ -1106,13 +1106,14 @@ func subagentCmd(args []string) error {
 
 	if resolved.Sandbox {
 		sbCfg := sandboxConfigFromResolved(resolved)
-		var subContainerName string
 		subContainerName, cleanup, err := setupSandbox(tools, sbCfg)
 		bgRT.SetContainer(subContainerName)
 		if err != nil {
 			return fmt.Errorf("setup sandbox: %w", err)
 		}
-		_ = subContainerName
+		// The block is built from the child's own validated sandbox
+		// config, never from parent-supplied text.
+		systemMsg = withSandboxEnvironment(systemMsg, subContainerName)
 		sandboxCleanup = cleanup
 	}
 
