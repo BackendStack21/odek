@@ -243,7 +243,7 @@ Service DNS names on those networks: postgres, redis
 - localhost is the container itself, not the host or those services; reach them by name.
 ```
 
-Network and service names come from Docker and, through a Compose file, can be chosen by the project, so they are listed inside the same nonce'd untrusted-content wrapper as tool output: a name that passes the charset check but reads like an instruction is still only data. Sub-agents only narrow: a child attaches a subset of the network names its parent resolved and never attaches a network its Compose project gained after the parent resolved it.
+Network and service names come from Docker and, through a Compose file, can be chosen by the project, so they are listed inside the same nonce'd untrusted-content wrapper as tool output: a name that passes the charset check but reads like an instruction is still only data. Sub-agents only narrow: a child attaches a subset of the networks its parent resolved, pinned to the IDs the parent attached, so it never attaches a network its Compose project gained later or one recreated under the same name.
 
 ## File injection
 

@@ -78,6 +78,14 @@ type Config struct {
 	// ComposeProject names a Docker Compose project whose networks are
 	// attached (resolved by label, never by guessing "<project>_default").
 	ComposeProject string
+	// ProjectNetworks and ProjectComposeProject are the networks the project
+	// config itself requested; they need operator approval.
+	ProjectNetworks       []string
+	ProjectComposeProject string
+	// AllowedNetworkIDs, when set, limits attachment to these network IDs: a
+	// sub-agent may attach only networks that still carry the IDs its
+	// parent resolved.
+	AllowedNetworkIDs []string
 }
 
 // ResolveImage determines the Docker image for a sandbox container.

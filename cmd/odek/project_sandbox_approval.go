@@ -413,18 +413,11 @@ func resolveOverrideNetworks(o config.ProjectSandboxOverride) ([]sandbox.Network
 	return cfg.ResolvedNetworks, nil
 }
 
-// projectNetworkGrant records, for one project directory, the networks the
-// operator approved: the names and Compose project the project requested and
-// the IDs they resolved to when approval was given.
-type projectNetworkGrant struct {
-	names   map[string]bool
-	compose string
-	ids     map[string]bool
-}
-
+// projectNetworkGrants records, per project directory, the IDs of the
+// networks the operator approved for the project's own network request.
 var (
 	projectNetworkGrantsMu sync.Mutex
-	projectNetworkGrants   = map[string]projectNetworkGrant{}
+	projectNetworkGrants   = map[string]map[string]bool{}
 )
 
 // recordProjectNetworkGrant remembers the networks behind an approval of a
@@ -433,39 +426,46 @@ func recordProjectNetworkGrant(projectDir string, o config.ProjectSandboxOverrid
 	if !o.HasNetworks && !o.HasComposeProject {
 		return
 	}
-	g := projectNetworkGrant{names: map[string]bool{}, ids: map[string]bool{}}
-	if o.HasNetworks {
-		for _, n := range o.Networks {
-			g.names[n] = true
-		}
-	}
-	if o.HasComposeProject {
-		g.compose = o.ComposeProject
-	}
+	ids := map[string]bool{}
 	for _, n := range nets {
-		g.ids[n.ID] = true
+		ids[n.ID] = true
 	}
 	projectNetworkGrantsMu.Lock()
 	defer projectNetworkGrantsMu.Unlock()
-	projectNetworkGrants[projectDir] = g
+	projectNetworkGrants[projectDir] = ids
 }
 
 // resetProjectNetworkGrants forgets every recorded grant.
 func resetProjectNetworkGrants() {
 	projectNetworkGrantsMu.Lock()
 	defer projectNetworkGrantsMu.Unlock()
-	projectNetworkGrants = map[string]projectNetworkGrant{}
+	projectNetworkGrants = map[string]map[string]bool{}
 }
 
 // checkProjectNetworkGrant enforces the project network approval at the
 // point of container creation. Networks are resolved again at setup, so
-// every network the project contributes (by name or through its Compose
-// project) must have an ID the operator approved: a network that joined the
-// Compose project, or was recreated under an approved name, after the prompt
-// is refused. Networks configured by the operator need no grant, and
-// ODEK_APPROVE_PROJECT_SANDBOX=1 approves whatever the project requests.
-func checkProjectNetworkGrant(nets []sandbox.NetworkInfo) error {
-	if os.Getenv("ODEK_APPROVE_PROJECT_SANDBOX") == "1" || len(nets) == 0 {
+// every network the project config contributes (by name or through its
+// Compose project) must have an ID the operator approved in this process: a
+// network that joined the Compose project, or was recreated under an
+// approved name, after the prompt is refused, and so is a project request
+// that was never approved here. Networks configured by the operator need no
+// grant, and ODEK_APPROVE_PROJECT_SANDBOX=1 approves whatever the project
+// requests.
+func checkProjectNetworkGrant(cfg sandboxConfig) error {
+	if os.Getenv("ODEK_APPROVE_PROJECT_SANDBOX") == "1" {
+		return nil
+	}
+	requested := map[string]bool{}
+	for _, n := range cfg.ProjectNetworks {
+		requested[n] = true
+	}
+	var owned []sandbox.NetworkInfo
+	for _, n := range cfg.ResolvedNetworks {
+		if requested[n.Name] || (cfg.ProjectComposeProject != "" && n.ComposeProject == cfg.ProjectComposeProject) {
+			owned = append(owned, n)
+		}
+	}
+	if len(owned) == 0 {
 		return nil
 	}
 	projectDir, err := os.Getwd()
@@ -476,21 +476,46 @@ func checkProjectNetworkGrant(nets []sandbox.NetworkInfo) error {
 		return fmt.Errorf("%w: project sandbox networks: working directory: %w", errSandboxConfig, err)
 	}
 	projectNetworkGrantsMu.Lock()
-	g, ok := projectNetworkGrants[projectDir]
+	ids, granted := projectNetworkGrants[projectDir]
 	projectNetworkGrantsMu.Unlock()
-	if !ok {
-		return nil
-	}
 	var unapproved []string
-	for _, n := range nets {
-		owned := g.names[n.Name] || (g.compose != "" && n.ComposeProject == g.compose)
-		if owned && !g.ids[n.ID] {
+	for _, n := range owned {
+		if !ids[n.ID] {
 			unapproved = append(unapproved, n.Name)
 		}
 	}
-	if len(unapproved) > 0 {
-		return fmt.Errorf("%w: project sandbox networks changed since they were approved: %s; run again to review and approve them",
-			errSandboxConfig, danger.SanitizeInline(strings.Join(unapproved, ", ")))
+	if len(unapproved) == 0 {
+		return nil
+	}
+	names := danger.SanitizeInline(strings.Join(unapproved, ", "))
+	if !granted {
+		return fmt.Errorf("%w: project sandbox networks were not approved: %s; run again to review and approve them",
+			errSandboxConfig, names)
+	}
+	return fmt.Errorf("%w: project sandbox networks changed since they were approved: %s; run again to review and approve them",
+		errSandboxConfig, names)
+}
+
+// checkAllowedNetworkIDs limits a sub-agent to the networks its parent
+// attached: every resolved network must still carry one of the stamped IDs.
+// A network recreated under the parent's name has a new ID and is refused.
+func checkAllowedNetworkIDs(cfg sandboxConfig) error {
+	if len(cfg.AllowedNetworkIDs) == 0 {
+		return nil
+	}
+	allowed := map[string]bool{}
+	for _, id := range cfg.AllowedNetworkIDs {
+		allowed[id] = true
+	}
+	var changed []string
+	for _, n := range cfg.ResolvedNetworks {
+		if !allowed[n.ID] {
+			changed = append(changed, n.Name)
+		}
+	}
+	if len(changed) > 0 {
+		return fmt.Errorf("%w: sandbox networks changed since the parent sandbox resolved them: %s",
+			errSandboxConfig, danger.SanitizeInline(strings.Join(changed, ", ")))
 	}
 	return nil
 }

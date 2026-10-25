@@ -2660,7 +2660,10 @@ func setupSandbox(tools []odek.Tool, cfg sandboxConfig) (containerName string, c
 		if nerr != nil {
 			return "", nil, nerr
 		}
-		if gerr := checkProjectNetworkGrant(cfg.ResolvedNetworks); gerr != nil {
+		if gerr := checkAllowedNetworkIDs(cfg); gerr != nil {
+			return "", nil, gerr
+		}
+		if gerr := checkProjectNetworkGrant(cfg); gerr != nil {
 			return "", nil, gerr
 		}
 		resolvedNets := cfg.ResolvedNetworks

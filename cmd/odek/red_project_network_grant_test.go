@@ -47,14 +47,15 @@ func (m *mutableComposeDocker) install(t *testing.T) {
 	t.Cleanup(func() { sandbox.DockerRunner = old })
 }
 
-// setupNets resolves networks the way setupSandbox does for cfg.
-func setupNets(t *testing.T, cfg sandboxConfig) []sandbox.NetworkInfo {
+// setupNets resolves networks the way setupSandbox does for cfg and returns
+// the config setupSandbox checks.
+func setupNets(t *testing.T, cfg sandboxConfig) sandboxConfig {
 	t.Helper()
 	got, err := resolveSandboxNetworks(cfg, io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return got.ResolvedNetworks
+	return got
 }
 
 func composeOverride(project string) config.ResolvedConfig {
@@ -70,7 +71,7 @@ func TestRED_ProjectNetworkGrant_NetworkJoiningAfterApprovalIsRefused(t *testing
 	if err := approveProjectSandboxWithTTY(composeOverride("app"), strings.NewReader("y\n"), io.Discard, true); err != nil {
 		t.Fatal(err)
 	}
-	cfg := sandboxConfig{ComposeProject: "app"}
+	cfg := sandboxConfig{ComposeProject: "app", ProjectComposeProject: "app"}
 
 	if err := checkProjectNetworkGrant(setupNets(t, cfg)); err != nil {
 		t.Fatalf("the approved networks must be accepted at setup: %v", err)
@@ -96,7 +97,7 @@ func TestRED_ProjectNetworkGrant_RecreatedNetworkIsRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 	d.nets["shared"] = fakeNet{id: id("d"), internal: false}
-	if err := checkProjectNetworkGrant(setupNets(t, sandboxConfig{Networks: []string{"shared"}})); err == nil {
+	if err := checkProjectNetworkGrant(setupNets(t, sandboxConfig{Networks: []string{"shared"}, ProjectNetworks: []string{"shared"}})); err == nil {
 		t.Fatal("a network recreated under the approved name must be refused")
 	}
 }
@@ -117,7 +118,7 @@ func TestRED_ProjectNetworkGrant_PersistedTrustIsCheckedToo(t *testing.T) {
 	}
 	// …and its setup is still held to the networks that trust covered.
 	d.nets["app_admin"] = fakeNet{id: id("c"), compose: "app"}
-	if err := checkProjectNetworkGrant(setupNets(t, sandboxConfig{ComposeProject: "app"})); err == nil {
+	if err := checkProjectNetworkGrant(setupNets(t, sandboxConfig{ComposeProject: "app", ProjectComposeProject: "app"})); err == nil {
 		t.Fatal("setup after a persisted approval must still refuse an unapproved network")
 	}
 }
@@ -136,7 +137,7 @@ func TestRED_ProjectNetworkGrant_OperatorNetworksAndEnvApprovalUnaffected(t *tes
 	if err := approveProjectSandboxWithTTY(netOverride("opnet"), strings.NewReader(""), io.Discard, false); err != nil {
 		t.Fatal(err)
 	}
-	if err := checkProjectNetworkGrant(setupNets(t, sandboxConfig{Networks: []string{"opnet"}})); err != nil {
+	if err := checkProjectNetworkGrant(setupNets(t, sandboxConfig{Networks: []string{"opnet"}, ProjectNetworks: []string{"opnet"}})); err != nil {
 		t.Fatalf("env approval must cover setup: %v", err)
 	}
 }
