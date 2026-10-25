@@ -2575,11 +2575,13 @@ func ensureSandbox(resolved config.ResolvedConfig, tools []odek.Tool, cfg sandbo
 		warnSandboxDisabled()
 		return "", nil, false, nil
 	}
-	name, cleanup, serr := setupSandbox(tools, cfg)
+	name, cleanup, serr := setupSandboxFn(tools, cfg)
 	if serr == nil {
 		return name, cleanup, true, nil
 	}
-	if explicit || os.Getenv("ODEK_REQUIRE_SANDBOX") == "1" {
+	// A configuration error is never a reason to run unsandboxed: only
+	// "Docker unavailable" may fall back in implicit mode.
+	if explicit || errors.Is(serr, errSandboxConfig) || os.Getenv("ODEK_REQUIRE_SANDBOX") == "1" {
 		return "", nil, false, fmt.Errorf("sandbox: %w", serr)
 	}
 	fmt.Fprintf(os.Stderr, "⚠️  odek: default sandbox unavailable (%v)\n", serr)
