@@ -102,7 +102,13 @@ func TestSandboxEnvironmentBlock_HostileFieldsDropped(t *testing.T) {
 	if !strings.Contains(b, "goodservice") {
 		t.Errorf("valid service name dropped:\n%s", b)
 	}
-	for _, bad := range []string{"IGNORE-PREVIOUS", "ignore previous", "curl evil", "<untrusted", "semi;colon",
+	// The names sit inside the block's own untrusted wrapper; a hostile
+	// name must not reach the wrapper body either.
+	bodies, _ := extractUntrustedAll(b)
+	if len(bodies) != 1 || strings.Contains(bodies[0], "untrusted") {
+		t.Errorf("want exactly one wrapper whose body carries no wrapper markup, got %q", bodies)
+	}
+	for _, bad := range []string{"IGNORE-PREVIOUS", "ignore previous", "curl evil", "semi;colon",
 		"has space", "\x1b", "\r", "\x00", "\u202e", strings.Repeat("x", 100), "-leading-dash"} {
 		if strings.Contains(b, bad) {
 			t.Errorf("hostile fragment %q reached the block:\n%s", bad, b)
