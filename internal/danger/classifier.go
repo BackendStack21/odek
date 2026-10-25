@@ -407,7 +407,14 @@ func pathWithin(abs, dir string) bool {
 func accountHomes(abs string) []string {
 	var homes []string
 	if home, _ := os.UserHomeDir(); home != "" {
+		home = filepath.Clean(home)
 		homes = append(homes, home)
+		// abs has its /private prefix stripped, so a $HOME spelled through
+		// /private (/private/var/..., /private/tmp/...) is compared in the
+		// same form.
+		if strings.HasPrefix(home, "/private/") {
+			homes = append(homes, strings.TrimPrefix(home, "/private"))
+		}
 	}
 	if physical := currentHomeDirs(); len(physical) > 1 {
 		homes = append(homes, physical[1:]...)

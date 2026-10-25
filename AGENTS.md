@@ -284,11 +284,10 @@ ODEK_E2E=true go test -v -count=1 ./cmd/odek/ -run "TestE2E_"
 # MCP E2E tests (builds fakeserver from source at test time)
 ODEK_E2E=true go test -v -count=1 ./cmd/odek/ -run "TestMCPClientE2E_"
 
-# Sandbox integration tests (requires Docker). Tests swap HOME, which hides
-# Docker Desktop's CLI context, so point DOCKER_HOST at the daemon or the
-# Docker-gated tests skip as "Docker daemon unavailable".
-DOCKER_HOST=$(docker context inspect --format '{{.Endpoints.docker.Host}}') \
-  ODEK_E2E=true go test -v -count=1 ./cmd/odek/ -run "TestSandbox|TestE2E_Sandbox"
+# Sandbox integration tests (requires Docker). TestMain pins the active docker
+# context's endpoint as DOCKER_HOST before it swaps in a fixture HOME, so Docker
+# Desktop is reached too.
+ODEK_E2E=true go test -v -count=1 ./cmd/odek/ -run "TestSandbox|TestE2E_Sandbox"
 
 # Prompt-injection red-team E2E (on-demand only — NOT on CI; its own gate,
 # ODEK_PI_E2E, is separate from ODEK_E2E). Builds the binary, plants IPI

@@ -1014,6 +1014,11 @@ type ResolvedConfig struct {
 	// --sandbox-compose.
 	SandboxComposeProject string
 
+	// SandboxAllowedNetworkIDs is set only for sub-agents, from the parent's
+	// task file: the IDs of the networks the parent attached. It is never
+	// read from a config file or the environment.
+	SandboxAllowedNetworkIDs []string
+
 	// SandboxUser sets the container user (e.g. "1000:1000" or "node").
 	// Empty string means root (default Docker behavior).
 	// Config: sandbox_user, ODEK_SANDBOX_USER, --sandbox-user.

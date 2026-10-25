@@ -70,6 +70,7 @@ type taskSandboxPosture struct {
 	PidsLimit      string   `json:"pids_limit,omitempty"`
 	Networks       []string `json:"networks,omitempty"`
 	ComposeProject string   `json:"compose_project,omitempty"`
+	NetworkIDs     []string `json:"network_ids,omitempty"`
 	User           string   `json:"user,omitempty"`
 	// ApprovalKeys are the project-sandbox approval keys the parent was
 	// granted this session (project directory + content hash bound).
@@ -77,6 +78,9 @@ type taskSandboxPosture struct {
 }
 
 var approvalKeyPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
+
+// networkIDPattern matches a full Docker network ID.
+var networkIDPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 const maxTaskApprovalKeys = 16
 
@@ -111,9 +115,14 @@ func recordChildSandbox(tools []odek.Tool, cfg sandboxConfig) {
 	for _, t := range tools {
 		if d, ok := t.(*delegateTasksTool); ok {
 			d.sessMu.Lock()
+			var ids []string
+			for _, n := range cfg.ResolvedNetworks {
+				ids = append(ids, n.ID)
+			}
 			d.childSandbox = &taskSandboxPosture{
 				Readonly: cfg.Readonly, Image: cfg.Image, Network: cfg.Network,
 				Memory: cfg.Memory, CPUs: cfg.CPUs, PidsLimit: cfg.PidsLimit, Networks: cfg.Networks, ComposeProject: cfg.ComposeProject, User: cfg.User,
+				NetworkIDs: ids,
 			}
 			d.sessMu.Unlock()
 		}
@@ -176,6 +185,15 @@ func applyTaskSandboxPosture(resolved *config.ResolvedConfig, p *taskSandboxPost
 	}
 	resolved.SandboxNetworks = nets
 	resolved.SandboxComposeProject = ""
+	// The stamped IDs pin those names to the networks the parent attached,
+	// so a network recreated under the same name is refused at setup.
+	var ids []string
+	for _, id := range p.NetworkIDs {
+		if len(ids) < sandbox.MaxNetworks && networkIDPattern.MatchString(id) {
+			ids = append(ids, id)
+		}
+	}
+	resolved.SandboxAllowedNetworkIDs = ids
 	if p.User != "" {
 		resolved.SandboxUser = p.User
 	}

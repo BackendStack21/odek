@@ -76,9 +76,13 @@ func sandboxConfigFromResolved(resolved config.ResolvedConfig) sandboxConfig {
 		PidsLimit:      resolved.SandboxPidsLimit,
 		Networks:       resolved.SandboxNetworks,
 		ComposeProject: resolved.SandboxComposeProject,
-		User:           resolved.SandboxUser,
-		Env:            resolved.SandboxEnv,
-		Volumes:        resolved.SandboxVolumes,
+		// The project's own request, which the approval gate covers.
+		ProjectNetworks:       projectNetworkRequest(resolved.ProjectSandboxOverride),
+		ProjectComposeProject: projectComposeRequest(resolved.ProjectSandboxOverride),
+		AllowedNetworkIDs:     resolved.SandboxAllowedNetworkIDs,
+		User:                  resolved.SandboxUser,
+		Env:                   resolved.SandboxEnv,
+		Volumes:               resolved.SandboxVolumes,
 	}
 }
 
@@ -133,4 +137,22 @@ func ensureSandboxImage(image string) error {
 		return fmt.Errorf("cannot pull sandbox image %s: %w", danger.SanitizeInline(image), err)
 	}
 	return nil
+}
+
+// projectNetworkRequest returns the network names the project config itself
+// requested.
+func projectNetworkRequest(o config.ProjectSandboxOverride) []string {
+	if !o.HasNetworks {
+		return nil
+	}
+	return o.Networks
+}
+
+// projectComposeRequest returns the Compose project the project config
+// itself requested.
+func projectComposeRequest(o config.ProjectSandboxOverride) string {
+	if !o.HasComposeProject {
+		return ""
+	}
+	return o.ComposeProject
 }
