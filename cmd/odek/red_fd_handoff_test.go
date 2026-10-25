@@ -1,10 +1,12 @@
 package main
 
 import (
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -22,23 +24,73 @@ func TestRED_FDHandoffTestsPassADuplicatedDescriptor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fset := token.NewFileSet()
 	for _, f := range files {
-		file, err := parser.ParseFile(fset, f, nil, 0)
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, decl := range file.Decls {
-			fn, ok := decl.(*ast.FuncDecl)
-			if !ok || fn.Body == nil || fn.Name.Name == "dupFD" || !setsFDEnvVar(fn.Body) {
-				continue
-			}
-			for _, pos := range rawFdCalls(fn.Body) {
-				t.Errorf("%s: %s reads an owned descriptor with .Fd() outside syscall.Dup/dupFD while handing fds to the key/frame reader",
-					fset.Position(pos), fn.Name.Name)
-			}
+		for _, v := range fdHandoffViolations(t, f, nil) {
+			t.Error(v)
 		}
 	}
+}
+
+// The checker itself must flag a raw handoff, however the number reaches
+// the env var, and accept a dup.
+func TestRED_FDHandoffChecker_FlagsRawAndAcceptsDup(t *testing.T) {
+	const src = `package main
+
+func rawDirect(t *testing.T, r *os.File) { t.Setenv(keyFDEnvVar, fmt.Sprint(r.Fd())) }
+
+func rawViaVariable(t *testing.T, r *os.File) {
+	fd := int(r.Fd())
+	t.Setenv(frameFDEnvVar, strconv.Itoa(fd))
+}
+
+func rawInClosure(t *testing.T, r *os.File) {
+	f := func() string { return fmt.Sprint(r.Fd()) }
+	os.Setenv(keyFDEnvVar, f())
+}
+
+func viaDupFD(t *testing.T, r *os.File) { t.Setenv(keyFDEnvVar, dupFD(t, r)) }
+
+func viaSyscallDup(t *testing.T, r *os.File) {
+	fd, _ := syscall.Dup(int(r.Fd()))
+	t.Setenv(keyFDEnvVar, strconv.Itoa(fd))
+}
+
+func unrelated(r *os.File) uintptr { return r.Fd() }
+`
+	got := fdHandoffViolations(t, "fixture_test.go", src)
+	want := []string{"rawDirect", "rawViaVariable", "rawInClosure"}
+	if len(got) != len(want) {
+		t.Fatalf("violations = %q, want one each for %v", got, want)
+	}
+	for i, name := range want {
+		if !strings.Contains(got[i], " "+name+" ") {
+			t.Errorf("violation %d = %q, want it to name %s", i, got[i], name)
+		}
+	}
+}
+
+// fdHandoffViolations parses one test file (or src when non-nil) and
+// describes every .Fd() call outside syscall.Dup/dupFD in a function that
+// sets the key or frame fd env var.
+func fdHandoffViolations(t *testing.T, name string, src any) []string {
+	t.Helper()
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, name, src, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []string
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Body == nil || fn.Name.Name == "dupFD" || !setsFDEnvVar(fn.Body) {
+			continue
+		}
+		for _, pos := range rawFdCalls(fn.Body) {
+			out = append(out, fmt.Sprintf("%s: %s reads an owned descriptor with .Fd() outside syscall.Dup/dupFD while handing fds to the key/frame reader",
+				fset.Position(pos), fn.Name.Name))
+		}
+	}
+	return out
 }
 
 // setsFDEnvVar reports whether body calls t.Setenv(keyFDEnvVar|frameFDEnvVar, …).
