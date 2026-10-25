@@ -67,6 +67,7 @@ func buildConfigView(resolved config.ResolvedConfig) map[string]any {
 			"cpus":       resolved.SandboxCPUs,
 			"user":       resolved.SandboxUser,
 			"pids_limit": sandboxPostureView(resolved)["pids_limit"],
+			"networks":   append([]string{}, resolved.SandboxNetworks...),
 		},
 		"memory": map[string]any{
 			"enabled":                  boolPtr(resolved.Memory.Enabled),

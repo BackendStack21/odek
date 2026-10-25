@@ -58,7 +58,7 @@ func approveProjectSandbox(resolved config.ResolvedConfig, stdin io.Reader, stdo
 func approveProjectSandboxWithTTY(resolved config.ResolvedConfig, stdin io.Reader, stdout io.Writer, tty bool) error {
 	o := resolved.ProjectSandboxOverride
 	hasOverride := o.HasEnv || o.HasImage || o.HasNetwork || o.HasVolumes ||
-		o.HasUser || o.HasMemory || o.HasCPUs || o.HasPidsLimit
+		o.HasUser || o.HasMemory || o.HasCPUs || o.HasPidsLimit || o.HasNetworks
 	dfHash, dfRequired := dockerfileBuildRequirement(resolved)
 	if !hasOverride && !dfRequired {
 		return nil
@@ -138,6 +138,9 @@ func approveProjectSandboxWithTTY(resolved config.ResolvedConfig, stdin io.Reade
 		}
 		if o.HasCPUs {
 			fmt.Fprintf(stdout, "  cpus:    %s\n", danger.SanitizeInline(o.CPUs))
+		}
+		if o.HasNetworks {
+			fmt.Fprintf(stdout, "  networks: %s\n", danger.SanitizeInline(strings.Join(o.Networks, ", ")))
 		}
 		if o.HasPidsLimit {
 			fmt.Fprintf(stdout, "  pids:    %s\n", danger.SanitizeInline(o.PidsLimit))
@@ -301,6 +304,9 @@ func projectSandboxApprovalKey(projectDir string, o config.ProjectSandboxOverrid
 	hashField(h, "cpus", o.CPUs)
 	if o.PidsLimit != "" {
 		hashField(h, "pids", o.PidsLimit)
+	}
+	if len(o.Networks) > 0 {
+		hashField(h, "networks", strings.Join(o.Networks, "\x00"))
 	}
 	return hex.EncodeToString(h.Sum(nil))
 }

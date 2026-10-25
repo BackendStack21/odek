@@ -456,6 +456,7 @@ func serveCmd(args []string) error {
 	var announceBudget *bool
 	var planning *bool
 	var stream *bool
+	var sandboxNetworks []string
 	var sandboxImage, sandboxNetwork, sandboxMemory, sandboxCPUs, sandboxPidsLimit, sandboxUser string
 	var toolsEnabled, toolsDisabled, trustedProxies []string
 
@@ -492,6 +493,11 @@ func serveCmd(args []string) error {
 			i++
 			if i < len(args) {
 				sandboxMemory = args[i]
+			}
+		case "--sandbox-networks":
+			i++
+			if i < len(args) {
+				sandboxNetworks = config.SplitList(args[i])
 			}
 		case "--sandbox-pids-limit":
 			i++
@@ -567,6 +573,7 @@ func serveCmd(args []string) error {
 		SandboxMemory:    sandboxMemory,
 		SandboxCPUs:      sandboxCPUs,
 		SandboxPidsLimit: sandboxPidsLimit,
+		SandboxNetworks:  sandboxNetworks,
 		SandboxUser:      sandboxUser,
 		ToolsEnabled:     toolsEnabled,
 		ToolsDisabled:    toolsDisabled,
@@ -829,6 +836,7 @@ Flags:
   --sandbox-memory limit   Container memory limit (e.g. 512m, 2g)
   --sandbox-cpus limit     Container CPU limit (e.g. 0.5, 2, 4)
   --sandbox-pids-limit n   Container process limit (default: 4096)
+  --sandbox-networks l     Attach existing Docker networks (comma-separated)
   --sandbox-user user      Container user (e.g. 1000:1000)
   --prompt-caching         Enable prompt caching (default: on)
   --no-prompt-caching      Disable prompt caching

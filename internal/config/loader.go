@@ -108,6 +108,7 @@ type CLIFlags struct {
 	SandboxMemory    string
 	SandboxCPUs      string
 	SandboxPidsLimit string
+	SandboxNetworks  []string
 	SandboxUser      string
 	SandboxReadonly  *bool // nil = not set
 
@@ -740,6 +741,7 @@ type FileConfig struct {
 	SandboxMemory    string            `json:"sandbox_memory,omitempty"`
 	SandboxCPUs      string            `json:"sandbox_cpus,omitempty"`
 	SandboxPidsLimit string            `json:"sandbox_pids_limit,omitempty"`
+	SandboxNetworks  []string          `json:"sandbox_networks,omitempty"`
 	SandboxUser      string            `json:"sandbox_user,omitempty"`
 	SandboxEnv       map[string]string `json:"sandbox_env,omitempty"`
 	SandboxVolumes   []string          `json:"sandbox_volumes,omitempty"`
@@ -928,6 +930,9 @@ type ProjectSandboxOverride struct {
 	// PidsLimit is the (already clamped) project pids limit.
 	HasPidsLimit bool
 	PidsLimit    string
+	// Networks is the project's sandbox_networks list.
+	HasNetworks bool
+	Networks    []string
 }
 
 // ResolvedConfig is the fully merged result. Every field has a concrete
@@ -993,6 +998,11 @@ type ResolvedConfig struct {
 	// lower it. Config: sandbox_pids_limit, ODEK_SANDBOX_PIDS_LIMIT,
 	// --sandbox-pids-limit.
 	SandboxPidsLimit string
+
+	// SandboxNetworks lists existing user-defined Docker networks the
+	// sandbox attaches to. Config: sandbox_networks, ODEK_SANDBOX_NETWORKS
+	// (comma-separated), --sandbox-networks.
+	SandboxNetworks []string
 
 	// SandboxUser sets the container user (e.g. "1000:1000" or "node").
 	// Empty string means root (default Docker behavior).
@@ -2097,6 +2107,10 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 		projectSandboxOverride.HasPidsLimit = true
 		projectSandboxOverride.PidsLimit = project.SandboxPidsLimit
 	}
+	if len(project.SandboxNetworks) > 0 {
+		projectSandboxOverride.HasNetworks = true
+		projectSandboxOverride.Networks = append([]string(nil), project.SandboxNetworks...)
+	}
 	if project.SandboxImage != "" {
 		projectSandboxOverride.HasImage = true
 		projectSandboxOverride.Image = project.SandboxImage
@@ -2218,6 +2232,9 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	}
 	if v := envString("SANDBOX_PIDS_LIMIT"); v != "" {
 		cfg.SandboxPidsLimit = v
+	}
+	if v := envString("SANDBOX_NETWORKS"); v != "" {
+		cfg.SandboxNetworks = SplitList(v)
 	}
 	if v := envString("SANDBOX_USER"); v != "" {
 		cfg.SandboxUser = v
@@ -2608,6 +2625,9 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	if cli.SandboxPidsLimit != "" {
 		cfg.SandboxPidsLimit = cli.SandboxPidsLimit
 	}
+	if len(cli.SandboxNetworks) > 0 {
+		cfg.SandboxNetworks = cli.SandboxNetworks
+	}
 	if cli.SandboxUser != "" {
 		cfg.SandboxUser = cli.SandboxUser
 	}
@@ -2836,6 +2856,7 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 		SandboxMemory:          cfg.SandboxMemory,
 		SandboxCPUs:            cfg.SandboxCPUs,
 		SandboxPidsLimit:       cfg.SandboxPidsLimit,
+		SandboxNetworks:        cfg.SandboxNetworks,
 		SandboxUser:            cfg.SandboxUser,
 		SandboxEnv:             cfg.SandboxEnv,
 		SandboxVolumes:         cfg.SandboxVolumes,
@@ -4099,6 +4120,9 @@ func overlayFile(base, override FileConfig) FileConfig {
 	if override.SandboxPidsLimit != "" {
 		base.SandboxPidsLimit = override.SandboxPidsLimit
 	}
+	if override.SandboxNetworks != nil {
+		base.SandboxNetworks = append(base.SandboxNetworks, override.SandboxNetworks...)
+	}
 	if override.SandboxUser != "" {
 		base.SandboxUser = override.SandboxUser
 	}
@@ -4533,4 +4557,16 @@ func clampProjectPidsLimit(global, project string) string {
 		return strconv.Itoa(ceiling)
 	}
 	return project
+}
+
+// SplitList splits a comma-separated list, trimming blanks and dropping
+// empty entries.
+func SplitList(v string) []string {
+	var out []string
+	for _, p := range strings.Split(v, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }

@@ -67,6 +67,12 @@ type Config struct {
 	// means DefaultPidsLimit; non-numeric, zero or negative values are
 	// rejected by BuildRunArgsChecked with ErrInvalidPidsLimit.
 	PidsLimit string
+	// Networks lists existing user-defined Docker networks to attach the
+	// container to (names, validated by NormalizeNetworks).
+	Networks []string
+	// ResolvedNetworks is the inspected form of Networks (full IDs); it is
+	// filled by ResolveNetworks before the argument list is built.
+	ResolvedNetworks []NetworkInfo
 }
 
 // ResolveImage determines the Docker image for a sandbox container.
@@ -203,6 +209,10 @@ func BuildRunArgs(cfg Config, containerName, workdir, image string) []string {
 		// container's network namespace and bypass isolation.
 		fmt.Fprintf(os.Stderr, "odek: WARNING: --sandbox-network %q is not allowed. Only 'none' and 'bridge' are permitted. Forcing 'none'.\n", network)
 		network = "none"
+	}
+	if len(cfg.ResolvedNetworks) > 0 && network == "none" {
+		// Attached networks replace "none"; the rest connect after start.
+		network = cfg.ResolvedNetworks[0].ID
 	}
 	args = append(args, "--network", network)
 

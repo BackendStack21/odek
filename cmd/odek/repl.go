@@ -81,6 +81,7 @@ func replCmd(args []string) error {
 		SandboxMemory:    f.SandboxMemory,
 		SandboxCPUs:      f.SandboxCPUs,
 		SandboxPidsLimit: f.SandboxPidsLimit,
+		SandboxNetworks:  f.SandboxNetworks,
 		SandboxUser:      f.SandboxUser,
 	})
 	// Fail fast on a missing API key, before approval prompts, MCP server

@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/BackendStack21/odek/internal/config"
 	"github.com/BackendStack21/odek/internal/danger"
@@ -29,7 +30,11 @@ func sandboxPostureLine(cfg sandboxConfig, image string) string {
 	if err != nil {
 		pids = sandbox.DefaultPidsLimit
 	}
-	return fmt.Sprintf("odek: sandbox network=%s pids=%d image=%s", network, pids, danger.SanitizeInline(image))
+	line := fmt.Sprintf("odek: sandbox network=%s pids=%d image=%s", network, pids, danger.SanitizeInline(image))
+	if len(cfg.Networks) > 0 {
+		line += " networks=" + danger.SanitizeInline(strings.Join(cfg.Networks, ","))
+	}
+	return line
 }
 
 // sandboxPostureView reports the effective sandbox network, pids limit and
@@ -57,6 +62,7 @@ func sandboxConfigFromResolved(resolved config.ResolvedConfig) sandboxConfig {
 		Memory:    resolved.SandboxMemory,
 		CPUs:      resolved.SandboxCPUs,
 		PidsLimit: resolved.SandboxPidsLimit,
+		Networks:  resolved.SandboxNetworks,
 		User:      resolved.SandboxUser,
 		Env:       resolved.SandboxEnv,
 		Volumes:   resolved.SandboxVolumes,

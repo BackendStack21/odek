@@ -43,6 +43,9 @@ func BuildRunArgsChecked(cfg Config, containerName, workdir, image string) ([]st
 		network = "none"
 	}
 	cfg.Network = network
+	if len(cfg.Networks) > 0 && len(cfg.ResolvedNetworks) != len(cfg.Networks) {
+		return nil, fmt.Errorf("%w: attached networks %v were not resolved by docker inspect", ErrInvalidNetwork, cfg.Networks)
+	}
 	if _, perr := ParsePidsLimit(cfg.PidsLimit); perr != nil {
 		return nil, perr
 	}
