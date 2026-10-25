@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 
@@ -88,6 +89,7 @@ func approveProjectSandboxWithTTY(resolved config.ResolvedConfig, stdin io.Reade
 	overrideOK := !hasOverride || approved[overrideKey] || sessionDockerfileApproved(overrideKey)
 	dfOK := !dfRequired || approved[dfKey] || sessionDockerfileApproved(dfKey)
 	if overrideOK && dfOK {
+		recordProjectNetworkGrant(projectDir, o, nets)
 		return nil
 	}
 
@@ -183,6 +185,7 @@ func approveProjectSandboxWithTTY(resolved config.ResolvedConfig, stdin io.Reade
 		}
 		if hasOverride {
 			recordOverrideGrant(projectDir, overrideKey)
+			recordProjectNetworkGrant(projectDir, o, nets)
 		}
 		return nil
 	case "t", "trust":
@@ -195,6 +198,9 @@ func approveProjectSandboxWithTTY(resolved config.ResolvedConfig, stdin io.Reade
 		}
 		if err := saveProjectSandboxApprovals(approved); err != nil {
 			return fmt.Errorf("project sandbox approval: save approvals: %w", err)
+		}
+		if hasOverride {
+			recordProjectNetworkGrant(projectDir, o, nets)
 		}
 		return nil
 	default:
@@ -382,8 +388,13 @@ func saveProjectSandboxApprovals(approvals map[string]bool) error {
 func projectSandboxApprovalKeyWithNetworks(projectDir string, o config.ProjectSandboxOverride, nets []sandbox.NetworkInfo) string {
 	h := sha256.New()
 	writeOverrideKeyFields(h, projectDir, o)
+	ids := make([]string, 0, len(nets))
 	for _, n := range nets {
-		hashField(h, "netid", n.ID)
+		ids = append(ids, n.ID)
+	}
+	sort.Strings(ids)
+	for _, nid := range ids {
+		hashField(h, "netid", nid)
 	}
 	return hex.EncodeToString(h.Sum(nil))
 }
@@ -400,4 +411,86 @@ func resolveOverrideNetworks(o config.ProjectSandboxOverride) ([]sandbox.Network
 		return nil, err
 	}
 	return cfg.ResolvedNetworks, nil
+}
+
+// projectNetworkGrant records, for one project directory, the networks the
+// operator approved: the names and Compose project the project requested and
+// the IDs they resolved to when approval was given.
+type projectNetworkGrant struct {
+	names   map[string]bool
+	compose string
+	ids     map[string]bool
+}
+
+var (
+	projectNetworkGrantsMu sync.Mutex
+	projectNetworkGrants   = map[string]projectNetworkGrant{}
+)
+
+// recordProjectNetworkGrant remembers the networks behind an approval of a
+// project override that requests networks.
+func recordProjectNetworkGrant(projectDir string, o config.ProjectSandboxOverride, nets []sandbox.NetworkInfo) {
+	if !o.HasNetworks && !o.HasComposeProject {
+		return
+	}
+	g := projectNetworkGrant{names: map[string]bool{}, ids: map[string]bool{}}
+	if o.HasNetworks {
+		for _, n := range o.Networks {
+			g.names[n] = true
+		}
+	}
+	if o.HasComposeProject {
+		g.compose = o.ComposeProject
+	}
+	for _, n := range nets {
+		g.ids[n.ID] = true
+	}
+	projectNetworkGrantsMu.Lock()
+	defer projectNetworkGrantsMu.Unlock()
+	projectNetworkGrants[projectDir] = g
+}
+
+// resetProjectNetworkGrants forgets every recorded grant.
+func resetProjectNetworkGrants() {
+	projectNetworkGrantsMu.Lock()
+	defer projectNetworkGrantsMu.Unlock()
+	projectNetworkGrants = map[string]projectNetworkGrant{}
+}
+
+// checkProjectNetworkGrant enforces the project network approval at the
+// point of container creation. Networks are resolved again at setup, so
+// every network the project contributes (by name or through its Compose
+// project) must have an ID the operator approved: a network that joined the
+// Compose project, or was recreated under an approved name, after the prompt
+// is refused. Networks configured by the operator need no grant, and
+// ODEK_APPROVE_PROJECT_SANDBOX=1 approves whatever the project requests.
+func checkProjectNetworkGrant(nets []sandbox.NetworkInfo) error {
+	if os.Getenv("ODEK_APPROVE_PROJECT_SANDBOX") == "1" || len(nets) == 0 {
+		return nil
+	}
+	projectDir, err := os.Getwd()
+	if err == nil {
+		projectDir, err = filepath.Abs(projectDir)
+	}
+	if err != nil {
+		return fmt.Errorf("%w: project sandbox networks: working directory: %w", errSandboxConfig, err)
+	}
+	projectNetworkGrantsMu.Lock()
+	g, ok := projectNetworkGrants[projectDir]
+	projectNetworkGrantsMu.Unlock()
+	if !ok {
+		return nil
+	}
+	var unapproved []string
+	for _, n := range nets {
+		owned := g.names[n.Name] || (g.compose != "" && n.ComposeProject == g.compose)
+		if owned && !g.ids[n.ID] {
+			unapproved = append(unapproved, n.Name)
+		}
+	}
+	if len(unapproved) > 0 {
+		return fmt.Errorf("%w: project sandbox networks changed since they were approved: %s; run again to review and approve them",
+			errSandboxConfig, danger.SanitizeInline(strings.Join(unapproved, ", ")))
+	}
+	return nil
 }
