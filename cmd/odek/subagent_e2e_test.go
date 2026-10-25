@@ -72,6 +72,10 @@ func TestMain(m *testing.M) {
 	// (ODEK_PI_BENCH) borrows the operator's provider credentials from the
 	// real ~/.odek. Nothing else reads it, and the hermetic default stands.
 	operatorRealHome, _ = os.UserHomeDir()
+	// The docker CLI finds a Docker Desktop daemon through the context under
+	// the real ~/.docker, which the fixture HOME below hides; every
+	// Docker-gated test would then skip as "Docker daemon unavailable".
+	pinDockerHostForTests()
 	if os.Getenv("ODEK_TEST_KEEP_REAL_HOME") != "1" && os.Getenv("ODEK_TEST_HOME") == "" {
 		fixture, err := os.MkdirTemp("", "odek-test-home-*")
 		if err != nil {
