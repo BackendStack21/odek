@@ -113,6 +113,10 @@ type shellTool struct {
 	// When empty, commands run directly on the host.
 	containerName string
 
+	// sandboxEnv is the execution-environment block mirrored into the tool
+	// description while sandboxed.
+	sandboxEnv string
+
 	// dangerousConfig controls per-class actions and allow/denylists.
 	dangerousConfig danger.DangerousConfig
 
@@ -145,9 +149,13 @@ type shellTool struct {
 func (t *shellTool) Name() string { return "shell" }
 
 func (t *shellTool) Description() string {
-	return `Run a shell command and return its output. Use for builds, tests, git, package management, scripts. For file inspection prefer read_file, glob, tree, search_files, head_tail.
+	d := `Run a shell command and return its output. Use for builds, tests, git, package management, scripts. For file inspection prefer read_file, glob, tree, search_files, head_tail.
 Output is fully buffered: nothing returns until the command exits (a tool_running heartbeat fires every 60s). Set timeout_seconds for long commands so stuck ones fail fast (default/clamp: 1800s). Work that would block the turn for minutes belongs in bg_start.
 High-risk operations may prompt for approval (see Risk classes in docs/SECURITY.md); the gate fails closed — unrecognised commands are denied.`
+	if t.containerName != "" && t.sandboxEnv != "" {
+		d += "\n\n" + t.sandboxEnv
+	}
+	return d
 }
 
 func (t *shellTool) Schema() any {

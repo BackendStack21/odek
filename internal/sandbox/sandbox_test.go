@@ -60,8 +60,8 @@ func TestResolveImage_DefaultsToAlpine(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ResolveImage: %v", err)
 	}
-	if img != "alpine:latest" {
-		t.Errorf("img = %q, want 'alpine:latest'", img)
+	if img != DefaultImage {
+		t.Errorf("img = %q, want %q", img, DefaultImage)
 	}
 }
 
@@ -104,7 +104,7 @@ func TestBuildRunArgs_DefaultsApplied(t *testing.T) {
 		"run", "--rm", "--detach", "--name", "odek-test",
 		"--cap-drop", "ALL",
 		"--security-opt", "no-new-privileges",
-		"--tmpfs", "/tmp:noexec",
+		"--tmpfs", "/tmp:noexec,nosuid",
 		"alpine:latest", "sleep", "infinity",
 	} {
 		if !contains(args, want) {
@@ -113,32 +113,40 @@ func TestBuildRunArgs_DefaultsApplied(t *testing.T) {
 	}
 }
 
-func TestBuildRunArgs_HostNetworkForcedToNone(t *testing.T) {
-	args := BuildRunArgs(Config{Network: "host"}, "odek-test", "/workspace", "alpine:latest")
-	for i, a := range args {
-		if a == "--network" && i+1 < len(args) {
-			if args[i+1] != "none" {
-				t.Errorf("network arg = %q, want 'none' (host must be rejected)", args[i+1])
-			}
-			return
+func TestBuildRunArgs_InvalidNetworkNeverSilentlyDowngraded(t *testing.T) {
+	t.Setenv(LenientNetworkEnv, "")
+	for _, network := range []string{"host", "container:privileged-sidecar", "ns:/proc/1/ns/net", "myapp_default"} {
+		args := BuildRunArgs(Config{Network: network}, "odek-test", "/workspace", "alpine:latest")
+		if args != nil {
+			t.Errorf("network %q: unchecked BuildRunArgs returned %v, want nil (an invalid mode must not become none)", network, args)
 		}
 	}
-	t.Error("--network flag not found in args")
 }
 
-func TestBuildRunArgs_ContainerNetworkForcedToNone(t *testing.T) {
-	// "container:<name>" shares another container's network namespace and
-	// must not be allowed.
-	args := BuildRunArgs(Config{Network: "container:privileged-sidecar"}, "odek-test", "/workspace", "alpine:latest")
-	for i, a := range args {
-		if a == "--network" && i+1 < len(args) {
-			if args[i+1] != "none" {
-				t.Errorf("network arg = %q, want 'none' (container: mode must be rejected)", args[i+1])
+func TestBuildRunArgs_UnresolvedNetworksNotBuilt(t *testing.T) {
+	t.Setenv(LenientNetworkEnv, "")
+	if args := BuildRunArgs(Config{Networks: []string{"a"}}, "odek-test", "/workspace", "alpine:latest"); args != nil {
+		t.Errorf("unresolved networks produced args: %v", args)
+	}
+}
+
+func TestBuildRunArgs_LenientEnvDowngradesToNone(t *testing.T) {
+	t.Setenv(LenientNetworkEnv, "1")
+	for _, network := range []string{"host", "container:privileged-sidecar"} {
+		args := BuildRunArgs(Config{Network: network}, "odek-test", "/workspace", "alpine:latest")
+		found := false
+		for i, a := range args {
+			if a == "--network" && i+1 < len(args) {
+				found = true
+				if args[i+1] != "none" {
+					t.Errorf("network %q under lenient env = %q, want none", network, args[i+1])
+				}
 			}
-			return
+		}
+		if !found {
+			t.Errorf("network %q under lenient env: --network flag not found in %v", network, args)
 		}
 	}
-	t.Error("--network flag not found in args")
 }
 
 func TestBuildRunArgs_BridgeNetworkAllowed(t *testing.T) {

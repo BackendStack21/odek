@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"sync"
 
 	"github.com/BackendStack21/odek"
@@ -61,12 +62,15 @@ func mergeToolFilters(a, b config.ToolConfig) config.ToolConfig {
 // taskSandboxPosture is the parent's container posture as written into a
 // task file. Empty strings mean "not set by the parent".
 type taskSandboxPosture struct {
-	Readonly bool   `json:"readonly,omitempty"`
-	Image    string `json:"image,omitempty"`
-	Network  string `json:"network,omitempty"`
-	Memory   string `json:"memory,omitempty"`
-	CPUs     string `json:"cpus,omitempty"`
-	User     string `json:"user,omitempty"`
+	Readonly       bool     `json:"readonly,omitempty"`
+	Image          string   `json:"image,omitempty"`
+	Network        string   `json:"network,omitempty"`
+	Memory         string   `json:"memory,omitempty"`
+	CPUs           string   `json:"cpus,omitempty"`
+	PidsLimit      string   `json:"pids_limit,omitempty"`
+	Networks       []string `json:"networks,omitempty"`
+	ComposeProject string   `json:"compose_project,omitempty"`
+	User           string   `json:"user,omitempty"`
 	// ApprovalKeys are the project-sandbox approval keys the parent was
 	// granted this session (project directory + content hash bound).
 	ApprovalKeys []string `json:"approval_keys,omitempty"`
@@ -109,7 +113,7 @@ func recordChildSandbox(tools []odek.Tool, cfg sandboxConfig) {
 			d.sessMu.Lock()
 			d.childSandbox = &taskSandboxPosture{
 				Readonly: cfg.Readonly, Image: cfg.Image, Network: cfg.Network,
-				Memory: cfg.Memory, CPUs: cfg.CPUs, User: cfg.User,
+				Memory: cfg.Memory, CPUs: cfg.CPUs, PidsLimit: cfg.PidsLimit, Networks: cfg.Networks, ComposeProject: cfg.ComposeProject, User: cfg.User,
 			}
 			d.sessMu.Unlock()
 		}
@@ -158,6 +162,20 @@ func applyTaskSandboxPosture(resolved *config.ResolvedConfig, p *taskSandboxPost
 	if p.CPUs != "" {
 		resolved.SandboxCPUs = p.CPUs
 	}
+	if p.PidsLimit != "" {
+		resolved.SandboxPidsLimit = lowerPidsLimit(p.PidsLimit, resolved.SandboxPidsLimit)
+	}
+	// The parent stamps the networks it resolved (compose members included).
+	// A child never attaches networks by project label, which could add a
+	// network that joined after the parent resolved it: it keeps a subset of
+	// the stamped list, and inherits that list when it names the same project.
+	shared := p.ComposeProject != "" && resolved.SandboxComposeProject == p.ComposeProject
+	nets := intersectNames(resolved.SandboxNetworks, p.Networks)
+	if shared {
+		nets = mergeNames(p.Networks, nets)
+	}
+	resolved.SandboxNetworks = nets
+	resolved.SandboxComposeProject = ""
 	if p.User != "" {
 		resolved.SandboxUser = p.User
 	}
@@ -213,4 +231,51 @@ func sessionSandboxApprovalKeys() []string {
 	}
 	overrideGrantsMu.Unlock()
 	return keys
+}
+
+// lowerPidsLimit returns the smaller of the parent and child limits. An
+// empty or unparsable child value yields the parent's, so a child never
+// runs with a higher process limit than the sandbox it was spawned from.
+func lowerPidsLimit(parent, child string) string {
+	p, perr := strconv.Atoi(parent)
+	c, cerr := strconv.Atoi(child)
+	if perr != nil || p <= 0 {
+		return child
+	}
+	if cerr != nil || c <= 0 || c > p {
+		return parent
+	}
+	return child
+}
+
+// intersectNames keeps the child names that the parent also has, in the
+// child's order. A child never gains a name from the parent.
+func intersectNames(child, parent []string) []string {
+	allowed := make(map[string]bool, len(parent))
+	for _, n := range parent {
+		allowed[n] = true
+	}
+	var out []string
+	for _, n := range child {
+		if allowed[n] {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// mergeNames returns base followed by the names of extra that base lacks.
+func mergeNames(base, extra []string) []string {
+	out := append([]string(nil), base...)
+	seen := make(map[string]bool, len(base))
+	for _, n := range base {
+		seen[n] = true
+	}
+	for _, n := range extra {
+		if !seen[n] {
+			seen[n] = true
+			out = append(out, n)
+		}
+	}
+	return out
 }

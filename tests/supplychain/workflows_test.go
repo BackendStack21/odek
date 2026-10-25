@@ -104,3 +104,47 @@ func TestRED_DependabotCoversActionsAndGoModules(t *testing.T) {
 		}
 	}
 }
+
+var digestFrom = regexp.MustCompile(`(?mi)^FROM\s+\S+@sha256:[0-9a-f]{64}\b`)
+
+func TestRED_SandboxDefaultDockerfileIsDigestPinned(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "internal", "sandbox", "default.Dockerfile"))
+	if err != nil {
+		t.Fatalf("default sandbox Dockerfile missing: %v", err)
+	}
+	if !digestFrom.Match(data) {
+		t.Errorf("internal/sandbox/default.Dockerfile FROM must carry @sha256:<64 hex>")
+	}
+}
+
+func TestRED_DependabotCoversSandboxDockerfileOnly(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", ".github", "dependabot.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var eco, dir string
+	found := false
+	flush := func() {
+		if eco == "docker" {
+			if dir == "/internal/sandbox" {
+				found = true
+			} else {
+				t.Errorf("docker ecosystem directory %q; want only /internal/sandbox", dir)
+			}
+		}
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		l := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "- "))
+		switch {
+		case strings.HasPrefix(l, "package-ecosystem:"):
+			flush()
+			eco, dir = strings.Trim(strings.TrimSpace(strings.TrimPrefix(l, "package-ecosystem:")), `"`), ""
+		case strings.HasPrefix(l, "directory:"):
+			dir = strings.Trim(strings.TrimSpace(strings.TrimPrefix(l, "directory:")), `"`)
+		}
+	}
+	flush()
+	if !found {
+		t.Error("dependabot.yml has no docker ecosystem for /internal/sandbox")
+	}
+}

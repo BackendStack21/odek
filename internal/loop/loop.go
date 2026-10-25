@@ -549,6 +549,8 @@ type Engine struct {
 	// PromptCommand calls auto-approve.
 	approver     danger.Approver
 	dangerousCfg *danger.DangerousConfig // used by batch gate to pre-check risk
+	// approvalCardNote is appended to every batch approval card.
+	approvalCardNote string
 
 	// taintSpans holds spans recorded from untrusted content for the
 	// untrusted-args gate (taint_spans.go); created on first use.
@@ -931,6 +933,11 @@ func (e *Engine) SetApprover(a danger.Approver) { e.approver = a }
 // pre-classification. Without it, the batch gate cannot know which
 // risk classes require approval and would skip pre-checking.
 func (e *Engine) SetDangerousConfig(cfg *danger.DangerousConfig) { e.dangerousCfg = cfg }
+
+// SetApprovalCardNote sets a line appended to every batch approval card, for
+// context the approver should see next to the listed actions (the active
+// sandbox networks). The note is sanitized for display.
+func (e *Engine) SetApprovalCardNote(note string) { e.approvalCardNote = note }
 
 // SetCompaction enables or disables LLM-based rolling compaction of dropped
 // context. When enabled, turn groups dropped by context trimming are
@@ -3650,6 +3657,9 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 					// truncate responsibly; hiding part of a command is exactly
 					// what lets a hidden payload slip through a single approval.
 					sb.WriteString(batchApprovalLine(i, rc.name, rc.resource))
+				}
+				if e.approvalCardNote != "" {
+					sb.WriteString("\n" + danger.SanitizeInline(e.approvalCardNote) + "\n")
 				}
 				description := sb.String()
 

@@ -122,6 +122,12 @@ func continuePinnedFlag(f runFlags) string {
 		return "--sandbox-memory"
 	case f.SandboxCPUs != "":
 		return "--sandbox-cpus"
+	case f.SandboxComposeProject != "":
+		return "--sandbox-compose"
+	case len(f.SandboxNetworks) > 0:
+		return "--sandbox-networks"
+	case f.SandboxPidsLimit != "":
+		return "--sandbox-pids-limit"
 	case f.SandboxUser != "":
 		return "--sandbox-user"
 	case f.Session != nil:

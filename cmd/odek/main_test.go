@@ -1427,7 +1427,7 @@ func TestJsonMarshalName(t *testing.T) {
 // ── Sandbox Tests ────────────────────────────────────────────────────
 
 func TestResolveSandboxImage_Default(t *testing.T) {
-	// No image configured, no Dockerfile.odek → alpine:latest
+	// No image configured, no Dockerfile.odek → the pinned default image
 	dir := t.TempDir()
 	cwd, _ := os.Getwd()
 	os.Chdir(dir)
@@ -1437,8 +1437,8 @@ func TestResolveSandboxImage_Default(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolveSandboxImage error: %v", err)
 	}
-	if image != "alpine:latest" {
-		t.Errorf("image = %q, want %q", image, "alpine:latest")
+	if image != sandbox.DefaultImage {
+		t.Errorf("image = %q, want %q", image, sandbox.DefaultImage)
 	}
 }
 
@@ -2184,6 +2184,7 @@ func TestBuildSandboxArgs_RejectsHostNetwork(t *testing.T) {
 	r, w, _ := os.Pipe()
 	os.Stderr = w
 
+	t.Setenv(sandbox.LenientNetworkEnv, "1")
 	cfg := sandboxConfig{Network: "host"}
 	args := sandbox.BuildRunArgs(cfg, "odek-test", "/workspace", "alpine:latest")
 

@@ -60,7 +60,7 @@ Unknown flags are a **hard error** — they are never folded into the task text 
 | `--thinking <level>` | string | (unset) | Reasoning depth: `disabled`/`low`/`medium`/`high`. Aliases: `enabled`/`on` → `medium`, `off` → `disabled`, `mid` → `medium`, `max` → `high`. Not inferred from the model name. |
 | `--thinking-budget <n>` | int | `5000` | Max thinking tokens for extended thinking (Anthropic budget_tokens). Only applied when `--thinking` is set. |
 | `--temperature <n>` | float | `0` | LLM sampling temperature (0.0–2.0). Forced to 1 when Anthropic extended thinking is active. |
-| `--sandbox` | bool | default on | Execute shell commands inside Docker container. Defaults ON when no layer sets it; degrades loudly to unsandboxed when Docker is unavailable (fatal with `ODEK_REQUIRE_SANDBOX=1`). Explicit `--sandbox` keeps the hard-fail behavior. |
+| `--sandbox` | bool | default on | Execute shell commands inside Docker container. Defaults ON when no layer sets it; degrades loudly to unsandboxed only when the Docker daemon is unreachable or the image cannot be pulled (fatal with `ODEK_REQUIRE_SANDBOX=1`); a configuration error (bad network, image reference, limit or user) is always fatal. Explicit `--sandbox` keeps the hard-fail behavior. |
 | `--no-sandbox` | bool | — | Explicitly disable the sandbox (same as `ODEK_NO_SANDBOX=1`); silences the default-on behavior. |
 | `--deliver` | bool | false | Deliver the agent's final response to the configured Telegram `default_chat_id`. Requires `telegram.bot_token` + `telegram.default_chat_id` in config. Handy for host-cron one-shots; for recurring tasks prefer the native scheduler (`odek schedule`, see [Schedules](SCHEDULES.md)). |
 | `--interaction-mode <mode>` | string | `engaging` | Tool-call rendering: `engaging` (emoji narration), `enhance` (persistent), `verbose` (raw tool output), or `off` |
@@ -376,8 +376,11 @@ Procedure for building optimized Docker images.
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--sandbox-image <img>` | `alpine:latest` | Docker image |
-| `--sandbox-network <mode>` | `none` | Network: `none`/`bridge`. `host` rejected. |
+| `--sandbox-image <img>` | pinned `alpine:3.22` digest | Docker image |
+| `--sandbox-network <mode>` | `none` | Network: `none`/`bridge`. Any other value (`host`, `container:…`, a network name) stops the run with a configuration error; `ODEK_SANDBOX_NETWORK_LENIENT=1` downgrades it to `none` instead. |
+| `--sandbox-networks <list>` | — | Attach existing user-defined Docker networks (comma-separated; local bridge networks only, at most 8). Replaces `none`. See [SANDBOXING.md](SANDBOXING.md#network-modes) |
+| `--sandbox-compose <project>` | — | Attach every network of a running Compose project, found by its `com.docker.compose.project` label |
+| `--sandbox-pids-limit <n>` | `4096` | Process limit inside the container |
 | `--sandbox-readonly` | false | Mount working directory read-only |
 | `--sandbox-memory <s>` | — | Memory limit (e.g. `512m`, `2g`) |
 | `--sandbox-cpus <n>` | — | CPU limit (e.g. `0.5`, `2`) |
@@ -386,7 +389,7 @@ Procedure for building optimized Docker images.
 
 `odek run`, `repl`, and `serve` default the sandbox **on**. `odek continue` pins the session's stored sandbox bit (it does not inherit a new default-on). To override that pin, set `ODEK_SANDBOX=false` or `"sandbox": false` in **trusted** config (`~/.odek/config.json`) — those mark the policy explicit *before* the pin. `ODEK_NO_SANDBOX=1` does **not** override a sandboxed session on continue (it is only consulted when nothing has set `SandboxExplicit`). `odek continue` does not accept `--no-sandbox`, and project `./odek.json` `"sandbox": false` is ignored. `odek mcp` is opt-in (`--sandbox`). `odek serve` hard-fails if Docker is missing. `run` / `repl` implicit default-on degrades loudly to unsandboxed unless `ODEK_REQUIRE_SANDBOX=1`. A sandboxed `continue` is an explicit want, so a missing Docker is fatal.
 
-**Project-level sandbox approval:** if `./odek.json` sets `sandbox_env`, `sandbox_image`, `sandbox_network`, or `sandbox_volumes`, odek prompts for approval before applying them. In CI or scripted invocations, set `ODEK_APPROVE_PROJECT_SANDBOX=1` to auto-approve, or place sandbox config in `~/.odek/config.json` / `ODEK_*` env vars / CLI flags instead, which do not require approval.
+**Project-level sandbox approval:** if `./odek.json` sets `sandbox_env`, `sandbox_image`, `sandbox_network`, `sandbox_networks`, `sandbox_compose_project`, `sandbox_pids_limit`, or `sandbox_volumes`, odek prompts for approval before applying them. In CI or scripted invocations, set `ODEK_APPROVE_PROJECT_SANDBOX=1` to auto-approve, or place sandbox config in `~/.odek/config.json` / `ODEK_*` env vars / CLI flags instead, which do not require approval.
 
 ## Audit log
 
@@ -480,6 +483,10 @@ odek run --sandbox "npm test"
 
 # Custom sandbox image
 odek run --sandbox --sandbox-image node:20-alpine "node --version"
+
+# Reach services of a running Compose project (redis, postgres, …) by name
+docker compose up -d
+odek run --sandbox --sandbox-compose myapp "run the integration tests"
 
 # Interactive REPL with sandbox
 odek repl --sandbox --model deepseek-v4-pro

@@ -75,12 +75,15 @@ func replCmd(args []string) error {
 		Planning:        f.Planning,
 		InteractionMode: f.InteractionMode,
 
-		SandboxImage:    f.SandboxImage,
-		SandboxNetwork:  f.SandboxNetwork,
-		SandboxReadonly: f.SandboxReadonly,
-		SandboxMemory:   f.SandboxMemory,
-		SandboxCPUs:     f.SandboxCPUs,
-		SandboxUser:     f.SandboxUser,
+		SandboxImage:          f.SandboxImage,
+		SandboxNetwork:        f.SandboxNetwork,
+		SandboxReadonly:       f.SandboxReadonly,
+		SandboxMemory:         f.SandboxMemory,
+		SandboxCPUs:           f.SandboxCPUs,
+		SandboxPidsLimit:      f.SandboxPidsLimit,
+		SandboxNetworks:       f.SandboxNetworks,
+		SandboxComposeProject: f.SandboxComposeProject,
+		SandboxUser:           f.SandboxUser,
 	})
 	// Fail fast on a missing API key, before approval prompts, MCP server
 	// spawns or sandbox startup.
@@ -139,20 +142,12 @@ func replCmd(args []string) error {
 	// Sandbox: defaults ON with a loud unsandboxed fallback; explicit
 	// --sandbox keeps the hard-fail behavior. Runs before tool filtering so
 	// the background runtime can route spawns through the same container.
-	sbCfg := sandboxConfig{
-		Image:    resolved.SandboxImage,
-		Network:  resolved.SandboxNetwork,
-		Readonly: resolved.SandboxReadonly,
-		Memory:   resolved.SandboxMemory,
-		CPUs:     resolved.SandboxCPUs,
-		User:     resolved.SandboxUser,
-		Env:      resolved.SandboxEnv,
-		Volumes:  resolved.SandboxVolumes,
-	}
+	sbCfg := sandboxConfigFromResolved(resolved)
 	bgName, bgCleanup, bgSandboxed, bgErr := ensureSandbox(resolved, tools, sbCfg)
 	if bgErr != nil {
 		return fmt.Errorf("sandbox: %w", bgErr)
 	}
+	systemMessage = withSandboxEnvironment(systemMessage, bgName)
 	if bgSandboxed {
 		sandboxCleanup = bgCleanup
 	}
@@ -195,6 +190,7 @@ func replCmd(args []string) error {
 		APIKey:           resolved.APIKey,
 		MaxIterations:    resolved.MaxIter,
 		SystemMessage:    systemMessage,
+		ApprovalCardNote: sandboxCardNoteFor(bgName),
 		UntrustedWrapper: wrapEngineContext,
 		NoProjectFile:    resolved.NoAgents,
 		Thinking:         resolved.Thinking,

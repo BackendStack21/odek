@@ -57,16 +57,7 @@ Flags:
 	}
 
 	// Start agent loop (mcp)
-	sbCfg := sandboxConfig{
-		Image:    resolved.SandboxImage,
-		Network:  resolved.SandboxNetwork,
-		Readonly: resolved.SandboxReadonly,
-		Memory:   resolved.SandboxMemory,
-		CPUs:     resolved.SandboxCPUs,
-		User:     resolved.SandboxUser,
-		Env:      resolved.SandboxEnv,
-		Volumes:  resolved.SandboxVolumes,
-	}
+	sbCfg := sandboxConfigFromResolved(resolved)
 
 	// Build skills manager (for skill tools)
 	sm := skills.NewSkillManagerWithEmbedding(

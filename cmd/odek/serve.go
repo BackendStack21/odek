@@ -456,7 +456,9 @@ func serveCmd(args []string) error {
 	var announceBudget *bool
 	var planning *bool
 	var stream *bool
-	var sandboxImage, sandboxNetwork, sandboxMemory, sandboxCPUs, sandboxUser string
+	var sandboxNetworks []string
+	var sandboxComposeProject string
+	var sandboxImage, sandboxNetwork, sandboxMemory, sandboxCPUs, sandboxPidsLimit, sandboxUser string
 	var toolsEnabled, toolsDisabled, trustedProxies []string
 
 	for i := 0; i < len(args); i++ {
@@ -492,6 +494,21 @@ func serveCmd(args []string) error {
 			i++
 			if i < len(args) {
 				sandboxMemory = args[i]
+			}
+		case "--sandbox-compose":
+			i++
+			if i < len(args) {
+				sandboxComposeProject = args[i]
+			}
+		case "--sandbox-networks":
+			i++
+			if i < len(args) {
+				sandboxNetworks = config.SplitList(args[i])
+			}
+		case "--sandbox-pids-limit":
+			i++
+			if i < len(args) {
+				sandboxPidsLimit = args[i]
 			}
 		case "--sandbox-cpus":
 			i++
@@ -550,21 +567,24 @@ func serveCmd(args []string) error {
 	}
 
 	resolved := config.LoadConfig(config.CLIFlags{
-		Sandbox:         sandbox,
-		PromptCaching:   promptCaching,
-		Compaction:      compaction,
-		AnnounceBudget:  announceBudget,
-		Planning:        planning,
-		Stream:          stream,
-		SandboxImage:    sandboxImage,
-		SandboxNetwork:  sandboxNetwork,
-		SandboxReadonly: sandboxReadonly,
-		SandboxMemory:   sandboxMemory,
-		SandboxCPUs:     sandboxCPUs,
-		SandboxUser:     sandboxUser,
-		ToolsEnabled:    toolsEnabled,
-		ToolsDisabled:   toolsDisabled,
-		TrustedProxies:  trustedProxies,
+		Sandbox:               sandbox,
+		PromptCaching:         promptCaching,
+		Compaction:            compaction,
+		AnnounceBudget:        announceBudget,
+		Planning:              planning,
+		Stream:                stream,
+		SandboxImage:          sandboxImage,
+		SandboxNetwork:        sandboxNetwork,
+		SandboxReadonly:       sandboxReadonly,
+		SandboxMemory:         sandboxMemory,
+		SandboxCPUs:           sandboxCPUs,
+		SandboxPidsLimit:      sandboxPidsLimit,
+		SandboxNetworks:       sandboxNetworks,
+		SandboxComposeProject: sandboxComposeProject,
+		SandboxUser:           sandboxUser,
+		ToolsEnabled:          toolsEnabled,
+		ToolsDisabled:         toolsDisabled,
+		TrustedProxies:        trustedProxies,
 	})
 	if err := approveProjectSandbox(resolved, os.Stdin, os.Stdout); err != nil {
 		return err
@@ -817,11 +837,14 @@ Flags:
   --open                   Open browser automatically
   --sandbox                Enable Docker sandbox (default on for serve mode)
   --no-sandbox             Disable the default sandbox (requires explicit opt-out)
-  --sandbox-image image    Docker image (default: alpine:latest or Dockerfile.odek)
+  --sandbox-image image    Docker image (default: pinned alpine or Dockerfile.odek)
   --sandbox-network net    Docker network mode (default: none)
   --sandbox-readonly       Mount working directory read-only
   --sandbox-memory limit   Container memory limit (e.g. 512m, 2g)
   --sandbox-cpus limit     Container CPU limit (e.g. 0.5, 2, 4)
+  --sandbox-pids-limit n   Container process limit (default: 4096)
+  --sandbox-networks l     Attach existing Docker networks (comma-separated)
+  --sandbox-compose p      Attach the networks of a running Compose project
   --sandbox-user user      Container user (e.g. 1000:1000)
   --prompt-caching         Enable prompt caching (default: on)
   --no-prompt-caching      Disable prompt caching
@@ -1111,17 +1134,9 @@ func newServeAgent(resolved config.ResolvedConfig, system string, runKey string,
 		subagentTool.OnSubagentLog = newSubagentTelemetryRelayOwned(sendFn, runKey, subagentOwner)
 		subagentTool.OnSubagentDone = newSubagentDoneRelayOwned(sendFn, runKey, subagentOwner)
 	}
+	var cardNote string
 	if resolved.Sandbox {
-		cfg := sandboxConfig{
-			Image:    resolved.SandboxImage,
-			Network:  resolved.SandboxNetwork,
-			Readonly: resolved.SandboxReadonly,
-			Memory:   resolved.SandboxMemory,
-			CPUs:     resolved.SandboxCPUs,
-			User:     resolved.SandboxUser,
-			Env:      resolved.SandboxEnv,
-			Volumes:  resolved.SandboxVolumes,
-		}
+		cfg := sandboxConfigFromResolved(resolved)
 		var sbContainerName string
 		var sandboxErr error
 		sbContainerName, sandboxCleanup, sandboxErr = setupSandbox(tools, cfg)
@@ -1129,6 +1144,8 @@ func newServeAgent(resolved config.ResolvedConfig, system string, runKey string,
 			sandboxCleanup = nil
 			return fail(fmt.Errorf("sandbox: %w", sandboxErr))
 		}
+		system = withSandboxEnvironment(system, sbContainerName)
+		cardNote = sandboxCardNoteFor(sbContainerName)
 		if bgRT != nil {
 			bgRT.SetContainer(sbContainerName)
 			bgRT.serveSandbox = &serveSandboxLease{container: sbContainerName, cleanup: sandboxCleanup}
@@ -1180,6 +1197,7 @@ func newServeAgent(resolved config.ResolvedConfig, system string, runKey string,
 		MaxIterations:    resolved.MaxIter,
 		MaxToolParallel:  resolved.MaxToolParallel,
 		SystemMessage:    system,
+		ApprovalCardNote: cardNote,
 		UntrustedWrapper: wrapEngineContext,
 		RuntimeContext:   runtimeCtx,
 		NoProjectFile:    resolved.NoAgents,

@@ -103,12 +103,15 @@ type CLIFlags struct {
 	Planning *bool // nil = not set
 
 	// Sandbox-specific
-	SandboxImage    string
-	SandboxNetwork  string
-	SandboxMemory   string
-	SandboxCPUs     string
-	SandboxUser     string
-	SandboxReadonly *bool // nil = not set
+	SandboxImage          string
+	SandboxNetwork        string
+	SandboxMemory         string
+	SandboxCPUs           string
+	SandboxPidsLimit      string
+	SandboxNetworks       []string
+	SandboxComposeProject string
+	SandboxUser           string
+	SandboxReadonly       *bool // nil = not set
 
 	// InteractionMode controls how tool-call progress is surfaced.
 	// "engaging" (default) = emoji-rich narration, progress message edited.
@@ -733,14 +736,17 @@ type FileConfig struct {
 	System string `json:"system,omitempty"`
 
 	// Sandbox-specific fields.
-	SandboxImage    string            `json:"sandbox_image,omitempty"`
-	SandboxNetwork  string            `json:"sandbox_network,omitempty"`
-	SandboxReadonly *bool             `json:"sandbox_readonly,omitempty"`
-	SandboxMemory   string            `json:"sandbox_memory,omitempty"`
-	SandboxCPUs     string            `json:"sandbox_cpus,omitempty"`
-	SandboxUser     string            `json:"sandbox_user,omitempty"`
-	SandboxEnv      map[string]string `json:"sandbox_env,omitempty"`
-	SandboxVolumes  []string          `json:"sandbox_volumes,omitempty"`
+	SandboxImage          string            `json:"sandbox_image,omitempty"`
+	SandboxNetwork        string            `json:"sandbox_network,omitempty"`
+	SandboxReadonly       *bool             `json:"sandbox_readonly,omitempty"`
+	SandboxMemory         string            `json:"sandbox_memory,omitempty"`
+	SandboxCPUs           string            `json:"sandbox_cpus,omitempty"`
+	SandboxPidsLimit      string            `json:"sandbox_pids_limit,omitempty"`
+	SandboxNetworks       []string          `json:"sandbox_networks,omitempty"`
+	SandboxComposeProject string            `json:"sandbox_compose_project,omitempty"`
+	SandboxUser           string            `json:"sandbox_user,omitempty"`
+	SandboxEnv            map[string]string `json:"sandbox_env,omitempty"`
+	SandboxVolumes        []string          `json:"sandbox_volumes,omitempty"`
 
 	// Dangerous operation approval settings.
 	Dangerous *danger.DangerousConfig `json:"dangerous,omitempty"`
@@ -923,6 +929,15 @@ type ProjectSandboxOverride struct {
 	Memory    string
 	HasCPUs   bool
 	CPUs      string
+	// PidsLimit is the (already clamped) project pids limit.
+	HasPidsLimit bool
+	PidsLimit    string
+	// Networks is the project's sandbox_networks list.
+	HasNetworks bool
+	Networks    []string
+	// ComposeProject is the project's sandbox_compose_project.
+	HasComposeProject bool
+	ComposeProject    string
 }
 
 // ResolvedConfig is the fully merged result. Every field has a concrete
@@ -958,8 +973,8 @@ type ResolvedConfig struct {
 	System     string
 
 	// SandboxImage is the Docker image for the sandbox container.
-	// Default: "alpine:latest" (applied at call site, not here —
-	// set to "alpine:latest" only if Dockerfile.odek doesn't exist).
+	// Default: the digest-pinned sandbox.DefaultImage (applied at call
+	// site, not here — used only if Dockerfile.odek doesn't exist).
 	// Config: sandbox_image, ODEK_SANDBOX_IMAGE, --sandbox-image.
 	SandboxImage string
 
@@ -982,6 +997,22 @@ type ResolvedConfig struct {
 	// Empty string means no limit.
 	// Config: sandbox_cpus, ODEK_SANDBOX_CPUS, --sandbox-cpus.
 	SandboxCPUs string
+
+	// SandboxPidsLimit is the container process limit as a decimal string.
+	// Empty means the built-in default (4096). A project config may only
+	// lower it. Config: sandbox_pids_limit, ODEK_SANDBOX_PIDS_LIMIT,
+	// --sandbox-pids-limit.
+	SandboxPidsLimit string
+
+	// SandboxNetworks lists existing user-defined Docker networks the
+	// sandbox attaches to. Config: sandbox_networks, ODEK_SANDBOX_NETWORKS
+	// (comma-separated), --sandbox-networks.
+	SandboxNetworks []string
+
+	// SandboxComposeProject names a Compose project whose networks attach.
+	// Config: sandbox_compose_project, ODEK_SANDBOX_COMPOSE_PROJECT,
+	// --sandbox-compose.
+	SandboxComposeProject string
 
 	// SandboxUser sets the container user (e.g. "1000:1000" or "node").
 	// Empty string means root (default Docker behavior).
@@ -1218,6 +1249,7 @@ func loadFileExpand(path string, expand bool) FileConfig {
 	cfg.SandboxNetwork = expandEnv(cfg.SandboxNetwork)
 	cfg.SandboxMemory = expandEnv(cfg.SandboxMemory)
 	cfg.SandboxCPUs = expandEnv(cfg.SandboxCPUs)
+	cfg.SandboxPidsLimit = expandEnv(cfg.SandboxPidsLimit)
 	cfg.SandboxUser = expandEnv(cfg.SandboxUser)
 	if len(cfg.Providers) > 0 {
 		for id, ov := range cfg.Providers {
@@ -2032,6 +2064,12 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	}
 	clampProjectSkillsLimits(global.Skills, project.Skills)
 
+	// sandbox_pids_limit: a repo may only lower the process limit below the
+	// operator's value (or the built-in default).
+	if project.SandboxPidsLimit != "" {
+		project.SandboxPidsLimit = clampProjectPidsLimit(global.SandboxPidsLimit, project.SandboxPidsLimit)
+	}
+
 	// Planning ("planning" section): same clamp philosophy. A repo may opt
 	// out entirely and may tighten its own caps, but cannot re-enable a
 	// globally-disabled feature or raise an explicitly-set global cap.
@@ -2074,6 +2112,18 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	if project.SandboxCPUs != "" {
 		projectSandboxOverride.HasCPUs = true
 		projectSandboxOverride.CPUs = project.SandboxCPUs
+	}
+	if project.SandboxPidsLimit != "" {
+		projectSandboxOverride.HasPidsLimit = true
+		projectSandboxOverride.PidsLimit = project.SandboxPidsLimit
+	}
+	if project.SandboxComposeProject != "" {
+		projectSandboxOverride.HasComposeProject = true
+		projectSandboxOverride.ComposeProject = project.SandboxComposeProject
+	}
+	if len(project.SandboxNetworks) > 0 {
+		projectSandboxOverride.HasNetworks = true
+		projectSandboxOverride.Networks = append([]string(nil), project.SandboxNetworks...)
 	}
 	if project.SandboxImage != "" {
 		projectSandboxOverride.HasImage = true
@@ -2193,6 +2243,15 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	}
 	if v := envString("SANDBOX_CPUS"); v != "" {
 		cfg.SandboxCPUs = v
+	}
+	if v := envString("SANDBOX_PIDS_LIMIT"); v != "" {
+		cfg.SandboxPidsLimit = v
+	}
+	if v := envString("SANDBOX_COMPOSE_PROJECT"); v != "" {
+		cfg.SandboxComposeProject = v
+	}
+	if v := envString("SANDBOX_NETWORKS"); v != "" {
+		cfg.SandboxNetworks = SplitList(v)
 	}
 	if v := envString("SANDBOX_USER"); v != "" {
 		cfg.SandboxUser = v
@@ -2580,6 +2639,15 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	if cli.SandboxCPUs != "" {
 		cfg.SandboxCPUs = cli.SandboxCPUs
 	}
+	if cli.SandboxPidsLimit != "" {
+		cfg.SandboxPidsLimit = cli.SandboxPidsLimit
+	}
+	if cli.SandboxComposeProject != "" {
+		cfg.SandboxComposeProject = cli.SandboxComposeProject
+	}
+	if len(cli.SandboxNetworks) > 0 {
+		cfg.SandboxNetworks = cli.SandboxNetworks
+	}
 	if cli.SandboxUser != "" {
 		cfg.SandboxUser = cli.SandboxUser
 	}
@@ -2803,10 +2871,13 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 		MaxIter:   cfg.MaxIter,
 		System:    cfg.System,
 
-		SandboxImage:           cfg.SandboxImage, // empty = resolve at call site (Dockerfile.odek or alpine:latest)
+		SandboxImage:           cfg.SandboxImage, // empty = resolve at call site (Dockerfile.odek or the pinned default image)
 		SandboxNetwork:         ifZero(cfg.SandboxNetwork, DefaultSandboxNetwork),
 		SandboxMemory:          cfg.SandboxMemory,
 		SandboxCPUs:            cfg.SandboxCPUs,
+		SandboxPidsLimit:       cfg.SandboxPidsLimit,
+		SandboxNetworks:        cfg.SandboxNetworks,
+		SandboxComposeProject:  cfg.SandboxComposeProject,
 		SandboxUser:            cfg.SandboxUser,
 		SandboxEnv:             cfg.SandboxEnv,
 		SandboxVolumes:         cfg.SandboxVolumes,
@@ -4067,6 +4138,15 @@ func overlayFile(base, override FileConfig) FileConfig {
 	if override.SandboxCPUs != "" {
 		base.SandboxCPUs = override.SandboxCPUs
 	}
+	if override.SandboxPidsLimit != "" {
+		base.SandboxPidsLimit = override.SandboxPidsLimit
+	}
+	if override.SandboxComposeProject != "" {
+		base.SandboxComposeProject = override.SandboxComposeProject
+	}
+	if override.SandboxNetworks != nil {
+		base.SandboxNetworks = append(base.SandboxNetworks, override.SandboxNetworks...)
+	}
 	if override.SandboxUser != "" {
 		base.SandboxUser = override.SandboxUser
 	}
@@ -4481,4 +4561,36 @@ func SecretsEnvNames() []string {
 	secretsEnvMu.Lock()
 	defer secretsEnvMu.Unlock()
 	return append([]string(nil), secretsEnvNames...)
+}
+
+// clampProjectPidsLimit returns the lower of the project and operator pids
+// limits (the operator's falling back to the built-in default). A project
+// value that does not parse is returned unchanged so the sandbox start
+// rejects it.
+func clampProjectPidsLimit(global, project string) string {
+	p, err := strconv.Atoi(project)
+	if err != nil || p <= 0 {
+		return project
+	}
+	ceiling := 4096 // sandbox.DefaultPidsLimit
+	if g, gerr := strconv.Atoi(global); gerr == nil && g > 0 {
+		ceiling = g
+	}
+	if p > ceiling {
+		fmt.Fprintf(os.Stderr, "odek: WARNING: clamping sandbox_pids_limit=%d from project config (%s) to %d — a project may only lower it\n", p, ProjectConfigPath(), ceiling)
+		return strconv.Itoa(ceiling)
+	}
+	return project
+}
+
+// SplitList splits a comma-separated list, trimming blanks and dropping
+// empty entries.
+func SplitList(v string) []string {
+	var out []string
+	for _, p := range strings.Split(v, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }

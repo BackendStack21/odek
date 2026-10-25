@@ -303,7 +303,7 @@ See [docs/SUBAGENTS.md](SUBAGENTS.md) for full documentation.
 
 ### Sandbox (`internal/sandbox/` + `cmd/odek/main.go::setupSandbox`)
 
-- **sandbox/sandbox.go**: container lifecycle inputs — image resolution (explicit / `Dockerfile.odek` / `alpine:latest`), `docker run` argument construction with mandatory hardening (`--cap-drop ALL`, `--security-opt no-new-privileges`, `--tmpfs /tmp:noexec`), and `InjectFiles` (preserves nested paths via in-container `mkdir -p`)
+- **sandbox/sandbox.go**: container lifecycle inputs — image resolution (explicit / `Dockerfile.odek` / digest-pinned `alpine:3.22` default), `docker run` argument construction with mandatory hardening (`--cap-drop ALL`, `--security-opt no-new-privileges`, `--init`, `--pids-limit`, `--tmpfs /tmp:noexec,nosuid`), network validation and attachment (`networks.go`, `compose.go`), and `InjectFiles` (preserves nested paths via in-container `mkdir -p`)
 - **cmd/odek/main.go::setupSandbox**: wires the resolved container into `*shellTool` — kept in `cmd/odek` because the sandbox package must not know about agent-tool internals
 
 See [docs/SANDBOXING.md](SANDBOXING.md) for the user-facing security model.

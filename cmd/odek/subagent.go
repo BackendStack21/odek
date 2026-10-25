@@ -1105,23 +1105,15 @@ func subagentCmd(args []string) error {
 	var sandboxCleanup func() error
 
 	if resolved.Sandbox {
-		sbCfg := sandboxConfig{
-			Image:    resolved.SandboxImage,
-			Network:  resolved.SandboxNetwork,
-			Readonly: resolved.SandboxReadonly,
-			Memory:   resolved.SandboxMemory,
-			CPUs:     resolved.SandboxCPUs,
-			User:     resolved.SandboxUser,
-			Env:      resolved.SandboxEnv,
-			Volumes:  resolved.SandboxVolumes,
-		}
-		var subContainerName string
+		sbCfg := sandboxConfigFromResolved(resolved)
 		subContainerName, cleanup, err := setupSandbox(tools, sbCfg)
 		bgRT.SetContainer(subContainerName)
 		if err != nil {
 			return fmt.Errorf("setup sandbox: %w", err)
 		}
-		_ = subContainerName
+		// The block is built from the child's own validated sandbox
+		// config, never from parent-supplied text.
+		systemMsg = withSandboxEnvironment(systemMsg, subContainerName)
 		sandboxCleanup = cleanup
 	}
 

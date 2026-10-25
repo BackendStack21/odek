@@ -29,6 +29,7 @@ import (
 	"github.com/BackendStack21/odek/internal/budget"
 	"github.com/BackendStack21/odek/internal/config"
 	"github.com/BackendStack21/odek/internal/redact"
+	"github.com/BackendStack21/odek/internal/sandbox"
 )
 
 // ── shared view builders (REST + tools) ──────────────────────────────────
@@ -59,13 +60,16 @@ func buildConfigView(resolved config.ResolvedConfig) map[string]any {
 		"interaction_mode":  resolved.InteractionMode,
 		"no_agents_md":      resolved.NoAgents,
 		"sandbox": map[string]any{
-			"enabled":  resolved.Sandbox,
-			"image":    resolved.SandboxImage,
-			"network":  resolved.SandboxNetwork,
-			"readonly": resolved.SandboxReadonly,
-			"memory":   resolved.SandboxMemory,
-			"cpus":     resolved.SandboxCPUs,
-			"user":     resolved.SandboxUser,
+			"enabled":         resolved.Sandbox,
+			"image":           resolved.SandboxImage,
+			"network":         resolved.SandboxNetwork,
+			"readonly":        resolved.SandboxReadonly,
+			"memory":          resolved.SandboxMemory,
+			"cpus":            resolved.SandboxCPUs,
+			"user":            resolved.SandboxUser,
+			"pids_limit":      sandboxPostureView(resolved)["pids_limit"],
+			"networks":        validNetworkNames(resolved.SandboxNetworks),
+			"compose_project": resolved.SandboxComposeProject,
 		},
 		"memory": map[string]any{
 			"enabled":                  boolPtr(resolved.Memory.Enabled),
@@ -498,4 +502,16 @@ func buildIntrospectionState(resolved config.ResolvedConfig) IntrospectionState 
 		// depth — the REST /api/mcp face keeps verbatim argv).
 		MCPServers: redactMCPServersView(buildMCPServersView(resolved)),
 	}
+}
+
+// validNetworkNames returns the names that pass sandbox network validation,
+// so the view never carries text a hostile config smuggled in.
+func validNetworkNames(names []string) []string {
+	out := []string{}
+	for _, n := range names {
+		if v, err := sandbox.NormalizeNetworks([]string{n}); err == nil {
+			out = append(out, v...)
+		}
+	}
+	return out
 }

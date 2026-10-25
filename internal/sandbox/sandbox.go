@@ -14,16 +14,30 @@ package sandbox
 import (
 	"context"
 	"crypto/sha256"
+	_ "embed"
 	"encoding/hex"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/BackendStack21/odek/internal/pathutil"
 )
+
+// defaultDockerfile is the embedded fallback image definition; its FROM line
+// is the digest-pinned reference ResolveImage returns when nothing else is
+// configured.
+//
+//go:embed default.Dockerfile
+var defaultDockerfile string
+
+// DefaultImage is the fallback image reference used by ResolveImage: the
+// FROM line of the embedded default.Dockerfile, so bumping that file (by
+// Dependabot or by hand) is the only edit a new pin needs.
+var DefaultImage = defaultImageFrom(defaultDockerfile)
 
 // DockerfileName is the project-local Dockerfile name. Presence in the
 // working directory triggers a cached image build via buildFromDockerfile.
@@ -44,13 +58,26 @@ var ForbiddenMountPrefixes = []string{
 // has no notion of where values were sourced.
 type Config struct {
 	Image    string            // Docker image (e.g. "node:20-alpine"); empty triggers Dockerfile/default resolution
-	Network  string            // "bridge" | "none" | "host"; "host" and any other value are forced to "none"
+	Network  string            // "none" (default) | "bridge"; other values are rejected by BuildRunArgsChecked
 	Readonly bool              // Mount the working directory read-only
 	Memory   string            // Memory limit (e.g. "512m", "2g")
 	CPUs     string            // CPU limit (e.g. "0.5", "2")
 	User     string            // Container user (e.g. "1000:1000"); empty defaults to the invoking uid:gid (see BuildRunArgs)
 	Env      map[string]string // Extra environment variables
 	Volumes  []string          // Extra volume mounts (filtered against ForbiddenMountPrefixes)
+	// PidsLimit is the container process limit as a decimal string. Empty
+	// means DefaultPidsLimit; non-numeric, zero or negative values are
+	// rejected by BuildRunArgsChecked with ErrInvalidPidsLimit.
+	PidsLimit string
+	// Networks lists existing user-defined Docker networks to attach the
+	// container to (names, validated by NormalizeNetworks).
+	Networks []string
+	// ResolvedNetworks is the inspected form of Networks (full IDs); it is
+	// filled by ResolveNetworks before the argument list is built.
+	ResolvedNetworks []NetworkInfo
+	// ComposeProject names a Docker Compose project whose networks are
+	// attached (resolved by label, never by guessing "<project>_default").
+	ComposeProject string
 }
 
 // ResolveImage determines the Docker image for a sandbox container.
@@ -60,7 +87,7 @@ type Config struct {
 //     caller is responsible for gating this on operator approval (see
 //     cmd/odek/project_sandbox_approval.go) — the Dockerfile and its build
 //     context are repo-controlled.
-//  3. Otherwise → "alpine:latest".
+//  3. Otherwise → DefaultImage (digest-pinned, from default.Dockerfile).
 func ResolveImage(cfg Config) (string, error) {
 	if cfg.Image != "" {
 		if err := validateImageName(cfg.Image); err != nil {
@@ -71,7 +98,10 @@ func ResolveImage(cfg Config) (string, error) {
 	if _, err := os.Stat(DockerfileName); err == nil {
 		return buildFromDockerfile()
 	}
-	return "alpine:latest", nil
+	if DefaultImage == "" {
+		return "", fmt.Errorf("sandbox: the embedded default.Dockerfile names no FROM image")
+	}
+	return DefaultImage, nil
 }
 
 // validateImageName rejects image references docker could read as an option
@@ -148,12 +178,19 @@ func dockerBuildArgs(tag string) []string {
 // Security defaults applied unconditionally:
 //
 //	--rm, --detach, --cap-drop ALL, --security-opt no-new-privileges,
-//	--tmpfs /tmp:noexec, --network none (bridge only when explicitly
+//	--init, --pids-limit, --tmpfs /tmp:noexec,nosuid, --network none (bridge only when explicitly
 //	requested), and --user <invoking uid:gid> when no user is configured.
 //
-// Volume mounts are filtered against ForbiddenMountPrefixes; "host" network
-// is forced to "none".
+// Volume mounts are filtered against ForbiddenMountPrefixes. An invalid
+// network mode, or attached networks that were not resolved, yield nil: the
+// builder never downgrades or widens silently. Only ODEK_SANDBOX_NETWORK_LENIENT=1
+// turns an invalid mode into "none" (with a warning). Prefer
+// BuildRunArgsChecked, which reports the reason as an error.
 func BuildRunArgs(cfg Config, containerName, workdir, image string) []string {
+	pids, err := ParsePidsLimit(cfg.PidsLimit)
+	if err != nil {
+		pids = DefaultPidsLimit
+	}
 	args := []string{
 		"run",
 		"--rm",
@@ -161,26 +198,24 @@ func BuildRunArgs(cfg Config, containerName, workdir, image string) []string {
 		"--name", containerName,
 		"--cap-drop", "ALL",
 		"--security-opt", "no-new-privileges",
+		"--init",
+		"--pids-limit", strconv.Itoa(pids),
 	}
 
-	network := cfg.Network
-	switch network {
-	case "", "none":
-		// Fully isolated mode. Empty (direct Config construction) resolves
-		// to "none" to match the config layer's DefaultSandboxNetwork —
-		// bridge is the only non-isolated mode allowed, and it must be an
-		// explicit choice.
+	network, nerr := ValidateNetwork(cfg.Network)
+	if nerr != nil {
+		if os.Getenv(LenientNetworkEnv) != "1" {
+			return nil
+		}
+		fmt.Fprintf(os.Stderr, "odek: WARNING: --sandbox-network %q is not allowed; %s=1 forces 'none'.\n", cfg.Network, LenientNetworkEnv)
 		network = "none"
-	case "bridge":
-		// Docker default bridge network; explicit opt-in only.
-	case "host":
-		fmt.Fprintf(os.Stderr, "odek: WARNING: --sandbox-network host destroys container isolation. Forcing 'none'.\n")
-		network = "none"
-	default:
-		// Reject modes such as "container:<name>" that share another
-		// container's network namespace and bypass isolation.
-		fmt.Fprintf(os.Stderr, "odek: WARNING: --sandbox-network %q is not allowed. Only 'none' and 'bridge' are permitted. Forcing 'none'.\n", network)
-		network = "none"
+	}
+	if len(cfg.Networks) > 0 && len(cfg.ResolvedNetworks) != len(cfg.Networks) {
+		return nil
+	}
+	if len(cfg.ResolvedNetworks) > 0 && network == "none" {
+		// Attached networks replace "none"; the rest connect after start.
+		network = cfg.ResolvedNetworks[0].ID
 	}
 	args = append(args, "--network", network)
 
@@ -189,7 +224,7 @@ func BuildRunArgs(cfg Config, containerName, workdir, image string) []string {
 		volume += ":ro"
 	}
 	args = append(args, "-v", volume)
-	args = append(args, "--tmpfs", "/tmp:noexec")
+	args = append(args, "--tmpfs", "/tmp:noexec,nosuid")
 
 	if cfg.Memory != "" {
 		args = append(args, "--memory", cfg.Memory)
@@ -496,4 +531,16 @@ func InjectFiles(containerName string, files []string, cwd string) (int, error) 
 		injected++
 	}
 	return injected, nil
+}
+
+// defaultImageFrom returns the image named by the first FROM line of a
+// Dockerfile, or "" when there is none.
+func defaultImageFrom(dockerfile string) string {
+	for _, line := range strings.Split(dockerfile, "\n") {
+		f := strings.Fields(line)
+		if len(f) >= 2 && strings.EqualFold(f[0], "FROM") {
+			return f[1]
+		}
+	}
+	return ""
 }
