@@ -1,9 +1,12 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/BackendStack21/odek/internal/config"
 	"github.com/BackendStack21/odek/internal/danger"
@@ -77,4 +80,24 @@ func sandboxConfigFromResolved(resolved config.ResolvedConfig) sandboxConfig {
 		Env:            resolved.SandboxEnv,
 		Volumes:        resolved.SandboxVolumes,
 	}
+}
+
+// dockerReachable reports whether the Docker daemon answers. It is a
+// variable so tests can decide the outcome without a daemon.
+var dockerReachable = func() bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return exec.CommandContext(ctx, "docker", "version", "--format", "{{.Server.Version}}").Run() == nil
+}
+
+// sandboxStartError classifies a failure to resolve the image or start the
+// container. When the daemon answers, the failure came from the
+// configuration (image, limits, user, networks), so it is marked as a
+// configuration error and never falls back to host execution; only an
+// unreachable daemon keeps the error as "Docker unavailable".
+func sandboxStartError(err error) error {
+	if errors.Is(err, errSandboxConfig) || !dockerReachable() {
+		return err
+	}
+	return fmt.Errorf("%w: %w", errSandboxConfig, err)
 }

@@ -69,6 +69,9 @@ func TestEnsureSandbox_ImplicitFailureDegradesLoudly(t *testing.T) {
 	t.Setenv("ODEK_NO_SANDBOX", "")
 	t.Setenv("ODEK_REQUIRE_SANDBOX", "")
 
+	// An unreachable daemon is the "Docker unavailable" case that may fall
+	// back; with the daemon up the same failure is a configuration error.
+	stubDockerReachable(t, false)
 	resolved := config.ResolvedConfig{} // implicit default-on
 	flush := captureStderr(t)
 	name, cleanup, sandboxed, err := ensureSandbox(resolved, nil, sandboxConfig{Image: unbuildableImage})

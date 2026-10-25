@@ -2675,7 +2675,7 @@ func setupSandbox(tools []odek.Tool, cfg sandboxConfig) (containerName string, c
 
 	image, err := sandbox.ResolveImage(cfg)
 	if err != nil {
-		return "", nil, err
+		return "", nil, sandboxStartError(err)
 	}
 
 	// A monotonic sequence number lets concurrent callers (multiple
@@ -2702,7 +2702,7 @@ func setupSandbox(tools []odek.Tool, cfg sandboxConfig) (containerName string, c
 	createCmd := exec.Command("docker", args...)
 	createCmd.Stderr = os.Stderr
 	if err := createCmd.Run(); err != nil {
-		return "", nil, fmt.Errorf("failed to create sandbox container %q: %w\n  hint: make sure Docker is running, or disable sandbox with --no-sandbox", containerName, err)
+		return "", nil, sandboxStartError(fmt.Errorf("failed to create sandbox container %q: %w\n  hint: make sure Docker is running, or disable sandbox with --no-sandbox", containerName, err))
 	}
 
 	if len(cfg.ResolvedNetworks) > 0 {
