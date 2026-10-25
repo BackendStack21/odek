@@ -376,8 +376,11 @@ Procedure for building optimized Docker images.
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--sandbox-image <img>` | `alpine:latest` | Docker image |
-| `--sandbox-network <mode>` | `none` | Network: `none`/`bridge`. `host` rejected. |
+| `--sandbox-image <img>` | pinned `alpine:3.22` digest | Docker image |
+| `--sandbox-network <mode>` | `none` | Network: `none`/`bridge`. Any other value (`host`, `container:…`, a network name) stops the run with a configuration error; `ODEK_SANDBOX_NETWORK_LENIENT=1` downgrades it to `none` instead. |
+| `--sandbox-networks <list>` | — | Attach existing user-defined Docker networks (comma-separated; local bridge networks only, at most 8). Replaces `none`. See [SANDBOXING.md](SANDBOXING.md#network-modes) |
+| `--sandbox-compose <project>` | — | Attach every network of a running Compose project, found by its `com.docker.compose.project` label |
+| `--sandbox-pids-limit <n>` | `4096` | Process limit inside the container |
 | `--sandbox-readonly` | false | Mount working directory read-only |
 | `--sandbox-memory <s>` | — | Memory limit (e.g. `512m`, `2g`) |
 | `--sandbox-cpus <n>` | — | CPU limit (e.g. `0.5`, `2`) |
@@ -386,7 +389,7 @@ Procedure for building optimized Docker images.
 
 `odek run`, `repl`, and `serve` default the sandbox **on**. `odek continue` pins the session's stored sandbox bit (it does not inherit a new default-on). To override that pin, set `ODEK_SANDBOX=false` or `"sandbox": false` in **trusted** config (`~/.odek/config.json`) — those mark the policy explicit *before* the pin. `ODEK_NO_SANDBOX=1` does **not** override a sandboxed session on continue (it is only consulted when nothing has set `SandboxExplicit`). `odek continue` does not accept `--no-sandbox`, and project `./odek.json` `"sandbox": false` is ignored. `odek mcp` is opt-in (`--sandbox`). `odek serve` hard-fails if Docker is missing. `run` / `repl` implicit default-on degrades loudly to unsandboxed unless `ODEK_REQUIRE_SANDBOX=1`. A sandboxed `continue` is an explicit want, so a missing Docker is fatal.
 
-**Project-level sandbox approval:** if `./odek.json` sets `sandbox_env`, `sandbox_image`, `sandbox_network`, or `sandbox_volumes`, odek prompts for approval before applying them. In CI or scripted invocations, set `ODEK_APPROVE_PROJECT_SANDBOX=1` to auto-approve, or place sandbox config in `~/.odek/config.json` / `ODEK_*` env vars / CLI flags instead, which do not require approval.
+**Project-level sandbox approval:** if `./odek.json` sets `sandbox_env`, `sandbox_image`, `sandbox_network`, `sandbox_networks`, `sandbox_compose_project`, `sandbox_pids_limit`, or `sandbox_volumes`, odek prompts for approval before applying them. In CI or scripted invocations, set `ODEK_APPROVE_PROJECT_SANDBOX=1` to auto-approve, or place sandbox config in `~/.odek/config.json` / `ODEK_*` env vars / CLI flags instead, which do not require approval.
 
 ## Audit log
 
@@ -480,6 +483,10 @@ odek run --sandbox "npm test"
 
 # Custom sandbox image
 odek run --sandbox --sandbox-image node:20-alpine "node --version"
+
+# Reach services of a running Compose project (redis, postgres, …) by name
+docker compose up -d
+odek run --sandbox --sandbox-compose myapp "run the integration tests"
 
 # Interactive REPL with sandbox
 odek repl --sandbox --model deepseek-v4-pro

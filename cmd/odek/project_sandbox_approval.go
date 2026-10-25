@@ -238,7 +238,7 @@ func dockerfileBuildRequirement(resolved config.ResolvedConfig) (hash string, re
 func requireDockerfileBuildApproval() error {
 	data, err := os.ReadFile(sandbox.DockerfileName)
 	if err != nil {
-		return nil // no Dockerfile → ResolveImage falls back to alpine:latest
+		return nil // no Dockerfile → ResolveImage falls back to the pinned default image
 	}
 	if os.Getenv("ODEK_APPROVE_PROJECT_SANDBOX") == "1" {
 		return nil

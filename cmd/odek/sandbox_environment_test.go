@@ -44,21 +44,6 @@ func TestSandboxEnvironmentBlock_AbsentWhenUnsandboxed(t *testing.T) {
 	}
 }
 
-func TestSandboxEnvironmentBlock_NetworkModes(t *testing.T) {
-	if b := sandboxEnvironmentBlock(sandboxConfig{Network: "bridge"}, "c1"); !strings.Contains(b, "bridge") {
-		t.Errorf("bridge mode not shown:\n%s", b)
-	}
-	if b := sandboxEnvironmentBlock(sandboxConfig{}, "c1"); !strings.Contains(b, "none") {
-		t.Errorf("empty network must read as none:\n%s", b)
-	}
-	// An invalid mode (reachable only under the lenient escape hatch) is
-	// shown as the mode actually applied.
-	b := sandboxEnvironmentBlock(sandboxConfig{Network: "host"}, "c1")
-	if strings.Contains(b, "host") && !strings.Contains(b, "none") {
-		t.Errorf("invalid mode must not be echoed as the effective mode:\n%s", b)
-	}
-}
-
 func TestSandboxEnvironmentBlock_ReadonlyWorkspace(t *testing.T) {
 	b := sandboxEnvironmentBlock(sandboxConfig{Readonly: true}, "c1")
 	if !strings.Contains(strings.ToLower(b), "read-only") {

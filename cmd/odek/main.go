@@ -1482,7 +1482,7 @@ Skill commands:
 
 Sandbox flags:
   --sandbox            Run in isolated Docker container
-  --sandbox-image <img>  Docker image (default: alpine:latest)
+  --sandbox-image <img>  Docker image (default: pinned alpine 3.22)
   --sandbox-network <m>  Network mode: none (default) | bridge
   --sandbox-readonly   Mount working directory read-only
   --sandbox-memory <s> Memory limit (e.g. 512m, 2g)

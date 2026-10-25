@@ -973,8 +973,8 @@ type ResolvedConfig struct {
 	System     string
 
 	// SandboxImage is the Docker image for the sandbox container.
-	// Default: "alpine:latest" (applied at call site, not here —
-	// set to "alpine:latest" only if Dockerfile.odek doesn't exist).
+	// Default: the digest-pinned sandbox.DefaultImage (applied at call
+	// site, not here — used only if Dockerfile.odek doesn't exist).
 	// Config: sandbox_image, ODEK_SANDBOX_IMAGE, --sandbox-image.
 	SandboxImage string
 
@@ -2871,7 +2871,7 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 		MaxIter:   cfg.MaxIter,
 		System:    cfg.System,
 
-		SandboxImage:           cfg.SandboxImage, // empty = resolve at call site (Dockerfile.odek or alpine:latest)
+		SandboxImage:           cfg.SandboxImage, // empty = resolve at call site (Dockerfile.odek or the pinned default image)
 		SandboxNetwork:         ifZero(cfg.SandboxNetwork, DefaultSandboxNetwork),
 		SandboxMemory:          cfg.SandboxMemory,
 		SandboxCPUs:            cfg.SandboxCPUs,

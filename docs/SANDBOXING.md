@@ -225,7 +225,20 @@ An invalid value (`host`, `container:x`, an unknown name) is a configuration err
 
 **Attached networks.** Names must match `^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$` and may not be `host`, `none`, `bridge` or `default`; at most 8 are attached. Each is inspected: only local bridge networks are accepted and the full network ID is what Docker receives. The first network is given to `docker run`, the rest are connected after start; any failure removes the container, and teardown never removes networks. A warning is printed when a network is not `Internal` or is combined with `bridge`. `--sandbox-compose <project>` finds the project's networks by label (never by guessing `<project>_default`) and fails with a hint when none exist. When a project `odek.json` requests networks, the approval covers the network IDs shown in the prompt; if the project's networks change before the container starts (a new network joins the Compose project, or one is recreated), the run stops and asks for approval again on the next start.
 
-**What the model is told.** The system prompt (and the `shell` tool description) ends with an execution-environment block: container, `/workspace`, user, network mode, attached networks, service DNS names of containers already on them (charset-checked, at most 20) and that `localhost` is the container itself. Batch approval cards show the active networks. Sub-agents only narrow: a child keeps a subset of the networks its parent resolved and never re-resolves a Compose project.
+**What the model is told.** The system prompt (and the `shell` tool description) ends with an execution-environment block: container, `/workspace`, user, the network it actually has (`none`, `bridge`, `attached networks only` or `bridge plus attached networks`), whether the internet is reachable (bridge, or any attached network that is not `Internal`), the attached networks, the names other containers answer to on them (Compose service aliases such as `redis`, falling back to container names; charset-checked, at most 20) and that `localhost` is the container itself. The startup line reports the same network (`network=none|bridge|attached|bridge+attached`), and batch approval cards show it with the attached networks. For example, with `--sandbox-compose myapp`:
+
+```text
+## Execution environment
+Shell commands run inside a Docker sandbox, not on the host.
+- Container: odek-4242-1
+- Workspace: /workspace
+- User: 1000:1000
+- Network: attached networks only
+- Internet: reachable
+- Attached networks: myapp_backend (internal), myapp_default
+- Service DNS names on those networks: postgres, redis
+- localhost is the container itself, not the host or those services; reach them by name.
+``` Sub-agents only narrow: a child keeps a subset of the networks its parent resolved and never re-resolves a Compose project.
 
 ## File injection
 
