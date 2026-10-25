@@ -2699,6 +2699,9 @@ func setupSandbox(tools []odek.Tool, cfg sandboxConfig) (containerName string, c
 	if aerr != nil {
 		return "", nil, fmt.Errorf("%w: %w", errSandboxConfig, aerr)
 	}
+	if err := ensureSandboxImage(image); err != nil {
+		return "", nil, err
+	}
 	createCmd := exec.Command("docker", args...)
 	createCmd.Stderr = os.Stderr
 	if err := createCmd.Run(); err != nil {

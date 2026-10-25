@@ -101,3 +101,36 @@ func sandboxStartError(err error) error {
 	}
 	return fmt.Errorf("%w: %w", errSandboxConfig, err)
 }
+
+// sandboxImagePresent reports whether image is in the local image store.
+var sandboxImagePresent = func(image string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	return exec.CommandContext(ctx, "docker", "image", "inspect", "--format", "{{.Id}}", image).Run() == nil
+}
+
+// sandboxPullImage pulls image; the pull output is not shown.
+var sandboxPullImage = func(image string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "docker", "pull", "--quiet", image).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%w (%s)", err, strings.TrimSpace(danger.SanitizeInline(string(out))))
+	}
+	return nil
+}
+
+// ensureSandboxImage pulls the image when it is not cached. A failed pull
+// (offline machine, registry outage) is a reachability problem, not a
+// configuration error, so it is returned unmarked and implicit mode keeps
+// its loud fallback; once the image is local, a docker run failure can only
+// come from the configuration.
+func ensureSandboxImage(image string) error {
+	if sandboxImagePresent(image) {
+		return nil
+	}
+	if err := sandboxPullImage(image); err != nil {
+		return fmt.Errorf("cannot pull sandbox image %s: %w", danger.SanitizeInline(image), err)
+	}
+	return nil
+}

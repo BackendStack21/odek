@@ -61,3 +61,27 @@ func TestRED_ResolveNetworks_ServiceNamesFallBackToContainerNames(t *testing.T) 
 		t.Errorf("ServiceNames = %q, want the container names as a fallback", got)
 	}
 }
+
+// A short service name that happens to be a hex prefix of the container ID
+// ("db", "cafe") is still a service name; only short-ID aliases are dropped.
+func TestRED_ServiceNames_KeepsHexLookingServiceNames(t *testing.T) {
+	cid := "db" + strings.Repeat("0", 62)
+	f := &netFakeDocker{handler: func(args []string) ([]byte, error) {
+		switch {
+		case isNetInspect(args):
+			return fmt.Appendf(nil, `[{"Name":"app","Id":%q,"Driver":"bridge","Scope":"local","Internal":true,"Labels":{},
+				"Containers":{%q:{"Name":"app-db-1"}}}]`, id('a'), cid), nil
+		case len(args) >= 2 && args[0] == "inspect":
+			return fmt.Appendf(nil, `[{"Id":%q,"NetworkSettings":{"Networks":{"app":{"Aliases":["app-db-1","db",%q]}}}}]`, cid, cid[:12]), nil
+		}
+		return nil, errors.New("unexpected docker call")
+	}}
+	f.install(t)
+	nets, err := ResolveNetworks(context.Background(), []string{"app"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(nets[0].ServiceNames, ","); got != "db" {
+		t.Errorf("ServiceNames = %q, want db", got)
+	}
+}

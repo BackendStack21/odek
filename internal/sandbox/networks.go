@@ -171,7 +171,7 @@ func serviceNames(ctx context.Context, network string, containers map[string]str
 		own := containers[cid].Name
 		found := false
 		for _, a := range aliases[cid] {
-			if a == own || shortContainerIDRE.MatchString(a) || strings.HasPrefix(cid, a) {
+			if a == own || shortContainerIDRE.MatchString(a) || (len(a) >= 12 && strings.HasPrefix(cid, a)) {
 				continue
 			}
 			add(a)

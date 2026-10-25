@@ -23,6 +23,7 @@ func stubDockerReachable(t *testing.T, up bool) {
 
 func TestRED_EnsureSandbox_StartFailureWithDaemonUpIsFatal(t *testing.T) {
 	stubDockerReachable(t, true)
+	stubSandboxImage(t, true, nil) // the image is cached, so docker run fails on the config alone
 	for _, cfg := range []sandboxConfig{
 		{Image: "-bad"},                     // invalid image reference
 		{Image: "alpine:3", Memory: "lots"}, // docker run rejects the limit
