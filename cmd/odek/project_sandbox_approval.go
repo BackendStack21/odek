@@ -420,18 +420,20 @@ var (
 	projectNetworkGrants   = map[string]map[string]bool{}
 )
 
-// recordProjectNetworkGrant remembers the networks behind an approval of a
-// project override that requests networks.
+// recordProjectNetworkGrant remembers the networks behind the latest
+// approval for projectDir. An approved override that requests no networks
+// drops any earlier grant, so the record always matches the latest approval.
 func recordProjectNetworkGrant(projectDir string, o config.ProjectSandboxOverride, nets []sandbox.NetworkInfo) {
+	projectNetworkGrantsMu.Lock()
+	defer projectNetworkGrantsMu.Unlock()
 	if !o.HasNetworks && !o.HasComposeProject {
+		delete(projectNetworkGrants, projectDir)
 		return
 	}
 	ids := map[string]bool{}
 	for _, n := range nets {
 		ids[n.ID] = true
 	}
-	projectNetworkGrantsMu.Lock()
-	defer projectNetworkGrantsMu.Unlock()
 	projectNetworkGrants[projectDir] = ids
 }
 
