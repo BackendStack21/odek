@@ -82,7 +82,8 @@ func approveProjectSandboxWithTTY(resolved config.ResolvedConfig, stdin io.Reade
 		return fmt.Errorf("project sandbox approval: load approvals: %w", err)
 	}
 
-	overrideKey := projectSandboxApprovalKey(projectDir, o)
+	nets, netErr := resolveOverrideNetworks(o)
+	overrideKey := projectSandboxApprovalKeyWithNetworks(projectDir, o, nets)
 	dfKey := dockerfileApprovalKey(projectDir, dfHash)
 	overrideOK := !hasOverride || approved[overrideKey] || sessionDockerfileApproved(overrideKey)
 	dfOK := !dfRequired || approved[dfKey] || sessionDockerfileApproved(dfKey)
@@ -141,6 +142,13 @@ func approveProjectSandboxWithTTY(resolved config.ResolvedConfig, stdin io.Reade
 		}
 		if o.HasNetworks {
 			fmt.Fprintf(stdout, "  networks: %s\n", danger.SanitizeInline(strings.Join(o.Networks, ", ")))
+		}
+		for _, n := range nets {
+			fmt.Fprintf(stdout, "    network %s id=%s internal=%t compose=%s\n",
+				danger.SanitizeInline(n.Name), danger.SanitizeInline(n.ID), n.Internal, danger.SanitizeInline(n.ComposeProject))
+		}
+		if netErr != nil {
+			fmt.Fprintf(stdout, "    (networks could not be inspected: %s)\n", danger.SanitizeInline(netErr.Error()))
 		}
 		if o.HasComposeProject {
 			fmt.Fprintf(stdout, "  compose project: %s\n", danger.SanitizeInline(o.ComposeProject))
@@ -291,7 +299,10 @@ func hashField(h hash.Hash, tag, value string) {
 // store. A change to the project directory, image, network, env keys OR
 // VALUES, volumes, user, memory, or cpus invalidates the prior approval.
 func projectSandboxApprovalKey(projectDir string, o config.ProjectSandboxOverride) string {
-	h := sha256.New()
+	return projectSandboxApprovalKeyWithNetworks(projectDir, o, nil)
+}
+
+func writeOverrideKeyFields(h hash.Hash, projectDir string, o config.ProjectSandboxOverride) {
 	hashField(h, "dir", projectDir)
 	hashField(h, "image", o.Image)
 	hashField(h, "network", o.Network)
@@ -314,7 +325,6 @@ func projectSandboxApprovalKey(projectDir string, o config.ProjectSandboxOverrid
 	if o.ComposeProject != "" {
 		hashField(h, "compose", o.ComposeProject)
 	}
-	return hex.EncodeToString(h.Sum(nil))
 }
 
 // dockerfileApprovalKey returns the persisted-approval key for an implicit
@@ -364,4 +374,30 @@ func saveProjectSandboxApprovals(approvals map[string]bool) error {
 		return err
 	}
 	return fsatomic.WriteFile(path, data, 0600)
+}
+
+// projectSandboxApprovalKeyWithNetworks extends the approval key with the
+// full IDs of the resolved networks, so a network recreated under the same
+// name needs a new approval. Without networks it equals the plain key.
+func projectSandboxApprovalKeyWithNetworks(projectDir string, o config.ProjectSandboxOverride, nets []sandbox.NetworkInfo) string {
+	h := sha256.New()
+	writeOverrideKeyFields(h, projectDir, o)
+	for _, n := range nets {
+		hashField(h, "netid", n.ID)
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// resolveOverrideNetworks inspects the project's requested networks (and
+// those of its compose project) for the approval prompt and key. A failure
+// yields no networks plus the reason, so the prompt still lists the names.
+func resolveOverrideNetworks(o config.ProjectSandboxOverride) ([]sandbox.NetworkInfo, error) {
+	if !o.HasNetworks && !o.HasComposeProject {
+		return nil, nil
+	}
+	cfg, err := resolveSandboxNetworks(sandboxConfig{Networks: o.Networks, ComposeProject: o.ComposeProject}, io.Discard)
+	if err != nil {
+		return nil, err
+	}
+	return cfg.ResolvedNetworks, nil
 }

@@ -22,6 +22,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/BackendStack21/odek/internal/sandbox"
 	"regexp"
 	"sort"
 	"strings"
@@ -67,7 +68,7 @@ func buildConfigView(resolved config.ResolvedConfig) map[string]any {
 			"cpus":            resolved.SandboxCPUs,
 			"user":            resolved.SandboxUser,
 			"pids_limit":      sandboxPostureView(resolved)["pids_limit"],
-			"networks":        append([]string{}, resolved.SandboxNetworks...),
+			"networks":        validNetworkNames(resolved.SandboxNetworks),
 			"compose_project": resolved.SandboxComposeProject,
 		},
 		"memory": map[string]any{
@@ -501,4 +502,16 @@ func buildIntrospectionState(resolved config.ResolvedConfig) IntrospectionState 
 		// depth — the REST /api/mcp face keeps verbatim argv).
 		MCPServers: redactMCPServersView(buildMCPServersView(resolved)),
 	}
+}
+
+// validNetworkNames returns the names that pass sandbox network validation,
+// so the view never carries text a hostile config smuggled in.
+func validNetworkNames(names []string) []string {
+	out := []string{}
+	for _, n := range names {
+		if v, err := sandbox.NormalizeNetworks([]string{n}); err == nil {
+			out = append(out, v...)
+		}
+	}
+	return out
 }

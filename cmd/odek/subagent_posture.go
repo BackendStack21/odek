@@ -165,6 +165,10 @@ func applyTaskSandboxPosture(resolved *config.ResolvedConfig, p *taskSandboxPost
 	if p.PidsLimit != "" {
 		resolved.SandboxPidsLimit = lowerPidsLimit(p.PidsLimit, resolved.SandboxPidsLimit)
 	}
+	resolved.SandboxNetworks = intersectNames(resolved.SandboxNetworks, p.Networks)
+	if resolved.SandboxComposeProject != p.ComposeProject {
+		resolved.SandboxComposeProject = ""
+	}
 	if p.User != "" {
 		resolved.SandboxUser = p.User
 	}
@@ -235,4 +239,20 @@ func lowerPidsLimit(parent, child string) string {
 		return parent
 	}
 	return child
+}
+
+// intersectNames keeps the child names that the parent also has, in the
+// child's order. A child never gains a name from the parent.
+func intersectNames(child, parent []string) []string {
+	allowed := make(map[string]bool, len(parent))
+	for _, n := range parent {
+		allowed[n] = true
+	}
+	var out []string
+	for _, n := range child {
+		if allowed[n] {
+			out = append(out, n)
+		}
+	}
+	return out
 }
