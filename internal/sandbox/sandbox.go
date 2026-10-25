@@ -34,8 +34,10 @@ import (
 //go:embed default.Dockerfile
 var defaultDockerfile string
 
-// DefaultImage is the fallback image reference used by ResolveImage.
-const DefaultImage = "alpine:3.22@sha256:2e0b81d60597f449baa56dc25d355367869d2dca4cd57e866f1e2b52af3eb55f"
+// DefaultImage is the fallback image reference used by ResolveImage: the
+// FROM line of the embedded default.Dockerfile, so bumping that file (by
+// Dependabot or by hand) is the only edit a new pin needs.
+var DefaultImage = defaultImageFrom(defaultDockerfile)
 
 // DockerfileName is the project-local Dockerfile name. Presence in the
 // working directory triggers a cached image build via buildFromDockerfile.
@@ -95,6 +97,9 @@ func ResolveImage(cfg Config) (string, error) {
 	}
 	if _, err := os.Stat(DockerfileName); err == nil {
 		return buildFromDockerfile()
+	}
+	if DefaultImage == "" {
+		return "", fmt.Errorf("sandbox: the embedded default.Dockerfile names no FROM image")
 	}
 	return DefaultImage, nil
 }
@@ -526,4 +531,16 @@ func InjectFiles(containerName string, files []string, cwd string) (int, error) 
 		injected++
 	}
 	return injected, nil
+}
+
+// defaultImageFrom returns the image named by the first FROM line of a
+// Dockerfile, or "" when there is none.
+func defaultImageFrom(dockerfile string) string {
+	for _, line := range strings.Split(dockerfile, "\n") {
+		f := strings.Fields(line)
+		if len(f) >= 2 && strings.EqualFold(f[0], "FROM") {
+			return f[1]
+		}
+	}
+	return ""
 }
