@@ -40,3 +40,45 @@ func TestRED_ProjectNetworkGrant_LaterApprovalWithoutNetworksClearsIt(t *testing
 		t.Error("an approval without network fields must drop the earlier network grant")
 	}
 }
+
+// The same holds for approvals that carry no override at all: a Dockerfile.odek
+// build approval, or a run with nothing to approve.
+func TestRED_ProjectNetworkGrant_ApprovalWithoutOverrideClearsIt(t *testing.T) {
+	approvalEnv(t)
+	d := &mutableComposeDocker{nets: map[string]fakeNet{"shared": {id: id("a"), internal: true}}}
+	d.install(t)
+	wd, _ := os.Getwd()
+	dir, _ := filepath.Abs(wd)
+	granted := func() bool {
+		projectNetworkGrantsMu.Lock()
+		defer projectNetworkGrantsMu.Unlock()
+		_, ok := projectNetworkGrants[dir]
+		return ok
+	}
+	grant := func() {
+		t.Helper()
+		resetProjectNetworkGrants()
+		if err := approveProjectSandboxWithTTY(netOverride("shared"), strings.NewReader("y\n"), io.Discard, true); err != nil || !granted() {
+			t.Fatalf("setup: network approval must record a grant (err=%v)", err)
+		}
+	}
+
+	grant()
+	if err := approveProjectSandboxWithTTY(config.ResolvedConfig{}, strings.NewReader(""), io.Discard, false); err != nil {
+		t.Fatal(err)
+	}
+	if granted() {
+		t.Error("a run with nothing to approve must drop the earlier network grant")
+	}
+
+	grant()
+	if err := os.WriteFile(filepath.Join(dir, "Dockerfile.odek"), []byte("FROM alpine:3\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := approveProjectSandboxWithTTY(config.ResolvedConfig{Sandbox: true}, strings.NewReader("y\n"), io.Discard, true); err != nil {
+		t.Fatal(err)
+	}
+	if granted() {
+		t.Error("a Dockerfile-only approval must drop the earlier network grant")
+	}
+}

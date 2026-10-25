@@ -62,6 +62,13 @@ func approveProjectSandboxWithTTY(resolved config.ResolvedConfig, stdin io.Reade
 		o.HasUser || o.HasMemory || o.HasCPUs || o.HasPidsLimit || o.HasNetworks || o.HasComposeProject
 	dfHash, dfRequired := dockerfileBuildRequirement(resolved)
 	if !hasOverride && !dfRequired {
+		// Nothing to approve: the project requests no networks, so no
+		// earlier network grant for this directory may linger.
+		if wd, err := os.Getwd(); err == nil {
+			if dir, err := filepath.Abs(wd); err == nil {
+				recordProjectNetworkGrant(dir, o, nil)
+			}
+		}
 		return nil
 	}
 
@@ -185,8 +192,8 @@ func approveProjectSandboxWithTTY(resolved config.ResolvedConfig, stdin io.Reade
 		}
 		if hasOverride {
 			recordOverrideGrant(projectDir, overrideKey)
-			recordProjectNetworkGrant(projectDir, o, nets)
 		}
+		recordProjectNetworkGrant(projectDir, o, nets)
 		return nil
 	case "t", "trust":
 		if hasOverride {
@@ -199,9 +206,7 @@ func approveProjectSandboxWithTTY(resolved config.ResolvedConfig, stdin io.Reade
 		if err := saveProjectSandboxApprovals(approved); err != nil {
 			return fmt.Errorf("project sandbox approval: save approvals: %w", err)
 		}
-		if hasOverride {
-			recordProjectNetworkGrant(projectDir, o, nets)
-		}
+		recordProjectNetworkGrant(projectDir, o, nets)
 		return nil
 	default:
 		return fmt.Errorf("project sandbox config was not approved")
