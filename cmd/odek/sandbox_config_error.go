@@ -30,6 +30,15 @@ func sandboxPostureLine(cfg sandboxConfig, image string) string {
 	if err != nil {
 		pids = sandbox.DefaultPidsLimit
 	}
+	// Attached networks replace "none", so the line names what the
+	// container actually has.
+	if len(cfg.Networks) > 0 || len(cfg.ResolvedNetworks) > 0 {
+		if network == "bridge" {
+			network = "bridge+attached"
+		} else {
+			network = "attached"
+		}
+	}
 	line := fmt.Sprintf("odek: sandbox network=%s pids=%d image=%s", network, pids, danger.SanitizeInline(image))
 	if len(cfg.Networks) > 0 {
 		line += " networks=" + danger.SanitizeInline(strings.Join(cfg.Networks, ","))

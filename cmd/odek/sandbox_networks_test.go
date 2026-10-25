@@ -194,7 +194,7 @@ func TestEnsureSandbox_NetworkConfigErrorNeverFallsBackToHost(t *testing.T) {
 
 func TestSandboxPostureLine_ListsNetworks(t *testing.T) {
 	got := sandboxPostureLine(sandboxConfig{Networks: []string{"app_default", "db-net"}}, "alpine:3")
-	if !strings.HasPrefix(got, "odek: sandbox network=none pids=4096 image=alpine:3") {
+	if !strings.HasPrefix(got, "odek: sandbox network=attached pids=4096 image=alpine:3") {
 		t.Errorf("line prefix changed: %q", got)
 	}
 	if !strings.Contains(got, "networks=app_default,db-net") {

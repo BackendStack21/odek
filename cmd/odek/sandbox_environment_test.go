@@ -25,7 +25,7 @@ func TestSandboxEnvironmentBlock_DescribesEnvironment(t *testing.T) {
 	}
 	block := sandboxEnvironmentBlock(cfg, "odek-42-1")
 	for _, want := range []string{
-		"Execution environment", "odek-42-1", "/workspace", "1000:1000", "none",
+		"Execution environment", "odek-42-1", "/workspace", "1000:1000", "attached networks only",
 		"app_default", "db_net", "web", "postgres", "redis",
 		"localhost is the container itself",
 	} {

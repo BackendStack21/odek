@@ -34,6 +34,27 @@ func envNetworkMode(cfg sandboxConfig) string {
 	return mode
 }
 
+// envNetworkLabel describes the network the container actually has and
+// whether the internet is reachable through it. Attached networks replace
+// "none"; bridge, or any attached network that is not internal, reaches the
+// internet.
+func envNetworkLabel(cfg sandboxConfig) (label string, internet bool) {
+	mode := envNetworkMode(cfg)
+	internet = mode == "bridge"
+	if len(cfg.ResolvedNetworks) == 0 {
+		return mode, internet
+	}
+	for _, n := range cfg.ResolvedNetworks {
+		if !n.Internal {
+			internet = true
+		}
+	}
+	if mode == "bridge" {
+		return "bridge plus attached networks", internet
+	}
+	return "attached networks only", internet
+}
+
 // envNetworks returns the attached networks with valid, non-reserved names.
 func envNetworks(cfg sandboxConfig) []sandbox.NetworkInfo {
 	var out []sandbox.NetworkInfo
@@ -69,7 +90,13 @@ func sandboxEnvironmentBlock(cfg sandboxConfig, containerName string) string {
 	if envUserRE.MatchString(cfg.User) {
 		fmt.Fprintf(&b, "- User: %s\n", cfg.User)
 	}
-	fmt.Fprintf(&b, "- Network mode: %s\n", envNetworkMode(cfg))
+	label, internet := envNetworkLabel(cfg)
+	fmt.Fprintf(&b, "- Network: %s\n", label)
+	if internet {
+		b.WriteString("- Internet: reachable\n")
+	} else {
+		b.WriteString("- Internet: not reachable\n")
+	}
 	nets := envNetworks(cfg)
 	if len(nets) > 0 {
 		var parts []string
@@ -109,7 +136,8 @@ func sandboxCardNote(cfg sandboxConfig, containerName string) string {
 	if containerName == "" {
 		return ""
 	}
-	note := "Sandbox network: " + envNetworkMode(cfg)
+	label, _ := envNetworkLabel(cfg)
+	note := "Sandbox network: " + label
 	var names []string
 	for _, n := range envNetworks(cfg) {
 		names = append(names, n.Name)
