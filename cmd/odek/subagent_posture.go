@@ -166,7 +166,7 @@ func applyTaskSandboxPosture(resolved *config.ResolvedConfig, p *taskSandboxPost
 		resolved.SandboxPidsLimit = lowerPidsLimit(p.PidsLimit, resolved.SandboxPidsLimit)
 	}
 	// The parent stamps the networks it resolved (compose members included).
-	// A child never re-resolves a project by label, which could attach a
+	// A child never attaches networks by project label, which could add a
 	// network that joined after the parent resolved it: it keeps a subset of
 	// the stamped list, and inherits that list when it names the same project.
 	shared := p.ComposeProject != "" && resolved.SandboxComposeProject == p.ComposeProject
