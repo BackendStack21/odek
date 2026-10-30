@@ -795,9 +795,9 @@ func telegramCmd(args []string) error {
 			var b strings.Builder
 			b.WriteString("🔄 *Session archived, starting fresh*\n\n")
 			fmt.Fprintf(&b, "• Model: `%s`\n", resolved.Model)
-			if resolved.Sandbox {
-				b.WriteString("• Sandbox: enabled\n")
-			}
+			// Chat turns run on the host: no container is started for them,
+			// whatever the sandbox config says, so never report one.
+			b.WriteString("• Sandbox: not used for chat turns (code execution prompts here)\n")
 			if resolved.Skills.Verbose {
 				b.WriteString("• Skills verbose: on\n")
 			}
@@ -1745,6 +1745,35 @@ func telegramWakeUser(chatID int64, cfg telegram.TelegramConfig) int64 {
 	return 0
 }
 
+// buildTelegramDangerConfig is the danger policy for a Telegram chat turn.
+//
+// The daemon runs on the host — no sandbox container is started for chat
+// turns — and its input is remote. The operator's global policy is tuned
+// for an interactive terminal session, so an interactive-grade `allow` on
+// the classes that execute code (code_execution, and install via package
+// lifecycle scripts) would let a prompt-injected chat run attacker-steered
+// code with no per-action gate. Telegram does have a human — the per-turn
+// chat approver — so those grants are downgraded to prompt rather than
+// denied: the person in the chat approves each one. Anything the operator
+// set explicitly below allow (prompt, deny) is left exactly as configured,
+// and plain network_egress is not code and is untouched.
+//
+// resolved.Dangerous is shared by every chat and turn in the process, so the
+// Classes map is copied before anything is changed.
+func buildTelegramDangerConfig(resolved config.ResolvedConfig) danger.DangerousConfig {
+	dc := resolved.Dangerous
+	dc.Classes = make(map[danger.RiskClass]danger.Action, len(resolved.Dangerous.Classes)+2)
+	for cls, act := range resolved.Dangerous.Classes {
+		dc.Classes[cls] = act
+	}
+	for _, cls := range []danger.RiskClass{danger.CodeExecution, danger.Install} {
+		if dc.Classes[cls] == danger.Allow {
+			dc.Classes[cls] = danger.Prompt
+		}
+	}
+	return dc
+}
+
 // newTelegramTurnApprover builds the per-turn approver. Wake turns require a
 // bound user: with userID 0 every prompt is denied rather than answerable by
 // anyone in the chat.
@@ -1919,7 +1948,8 @@ func runChatTurn(
 			go handleWakeTurn(wakeChatID, wakeText, bot, handler,
 				sessionManager, resolved, systemMessage, log)
 		})
-	tools := builtinTools(resolved.Dangerous, nil, approver, resolved.MaxConcurrency, resolved.APIKey, toolConfigFromResolved(resolved), sessionManager.Store)
+	telegramDanger := buildTelegramDangerConfig(resolved)
+	tools := builtinTools(telegramDanger, nil, approver, resolved.MaxConcurrency, resolved.APIKey, toolConfigFromResolved(resolved), sessionManager.Store)
 	tools = appendBackgroundTools(tools, bgRT)
 	tools = scopeSessionSearchToChat(tools, chatID)
 
@@ -2430,7 +2460,7 @@ func runChatTurn(
 			sendAsync(bot, chatID, msg, &telegram.SendOpts{ReplyToMessageID: messageID})
 		},
 		Approver:        approver,
-		DangerousConfig: &resolved.Dangerous,
+		DangerousConfig: &telegramDanger,
 		Guard:           telegramGuard,
 		GuardConfig:     telegramGuardCfg,
 	}

@@ -805,21 +805,72 @@ func buildHeadlessDangerConfig(resolved config.ResolvedConfig) danger.DangerousC
 	} {
 		dangerCfg.Classes[cls] = danger.Deny
 	}
-	// code_execution is denied unattended unless schedules.dangerous grants
-	// it explicitly (docs/SCHEDULES.md, "Safety: unattended tasks"). The
-	// global class is tuned for interactive sessions with a human present,
-	// and a headless run never starts a sandbox container (runTaskHeadless
-	// builds its tools directly), so inheriting a global `allow` would run
-	// attacker-steered shell on the host with neither isolation nor a human.
-	// A silently ignored grant looks like a broken scheduler, so say so.
-	if _, explicit := resolved.Schedules.Dangerous.Classes[danger.CodeExecution]; !explicit {
-		if dangerCfg.Classes[danger.CodeExecution] == danger.Allow {
-			fmt.Fprintln(os.Stderr, "odek schedule: ignoring global dangerous.classes.code_execution=allow for this unattended run; "+
-				"set schedules.dangerous.classes.code_execution to grant it to scheduled jobs")
+	// code_execution and install are denied unattended unless
+	// schedules.dangerous grants them explicitly (docs/SCHEDULES.md, "Safety:
+	// unattended tasks"). Both run arbitrary code (install through package
+	// lifecycle scripts). The global class is tuned for interactive sessions
+	// with a human present; a headless run starts the default sandbox only
+	// when Docker is available and degrades with a warning otherwise, so the
+	// floor must not depend on a container: inheriting a global `allow` would
+	// run attacker-steered code on the host with neither isolation nor a
+	// human. A silently ignored grant looks like a broken scheduler, so say so.
+	for _, cls := range []danger.RiskClass{danger.CodeExecution, danger.Install} {
+		if _, explicit := resolved.Schedules.Dangerous.Classes[cls]; explicit {
+			continue
 		}
-		dangerCfg.Classes[danger.CodeExecution] = danger.Deny
+		if dangerCfg.Classes[cls] == danger.Allow {
+			fmt.Fprintf(os.Stderr, "odek schedule: ignoring global dangerous.classes.%s=allow for this unattended run; "+
+				"set schedules.dangerous.classes.%s to grant it to scheduled jobs\n", cls, cls)
+		}
+		dangerCfg.Classes[cls] = danger.Deny
 	}
+	// An exact allowlist entry is allowed before any class check, so a global
+	// entry that reaches a floored class ("bash -c …" is code_execution)
+	// would bypass the floor. Drop entries that would run something the
+	// floor denies; entries the operator's defaults merely deny are kept,
+	// exactly as for sub-agent caps (dropDeniedAllowlistEntries).
+	floorRef := danger.DangerousConfig{Classes: make(map[danger.RiskClass]danger.Action)}
+	for _, cls := range subagentRiskCapOrder {
+		floorRef.Classes[cls] = danger.Allow
+	}
+	floorRef.Classes[danger.UnreadExec] = danger.Allow
+	for cls, act := range dangerCfg.Classes {
+		if act == danger.Deny {
+			floorRef.Classes[cls] = danger.Deny
+		}
+	}
+	dropDeniedAllowlistEntries(&dangerCfg, &floorRef)
 	return dangerCfg
+}
+
+// headlessParentRiskCap is the risk cap an unattended parent stamps into
+// every delegate_tasks envelope: the highest-ranked class its floored policy
+// ALLOWS without a human. With no approver present, prompt is deny, so the
+// cap is computed from Allow alone — effectiveMaxRisk (which treats prompt as
+// not-denied) would report system_write and still admit a code_execution
+// child. Under the default floor this is network_egress; an explicit
+// schedules.dangerous grant of code_execution raises it to code_execution.
+// Empty allow set ⇒ parentRiskCapNone (children get no authority).
+func headlessParentRiskCap(dc *danger.DangerousConfig) string {
+	if dc == nil {
+		return parentRiskCapNone
+	}
+	for _, cls := range subagentRiskCapOrder {
+		if dc.ActionFor(cls) == danger.Allow {
+			return string(cls)
+		}
+	}
+	return parentRiskCapNone
+}
+
+// headlessToolConfig is the tool configuration for an unattended run: the
+// interactive configuration plus the risk cap the parent stamps into every
+// delegate_tasks envelope, so a child cannot reopen a class the floor closed
+// by reloading global config or selecting a shipped profile.
+func headlessToolConfig(resolved config.ResolvedConfig, dc danger.DangerousConfig) toolConfig {
+	tcfg := toolConfigFromResolved(resolved)
+	tcfg.ParentRiskCap = headlessParentRiskCap(&dc)
+	return tcfg
 }
 
 // runTaskHeadless builds a fresh agent with no terminal renderer and no
@@ -837,11 +888,25 @@ func buildHeadlessDangerConfig(resolved config.ResolvedConfig) danger.DangerousC
 func runTaskHeadless(ctx context.Context, resolved config.ResolvedConfig, system, task string, mcpTools []odek.Tool) (string, int64, error) {
 	dangerCfg := buildHeadlessDangerConfig(resolved)
 
-	tools := builtinTools(dangerCfg, nil, nil, resolved.MaxConcurrency, resolved.APIKey, toolConfigFromResolved(resolved), nil)
+	tools := builtinTools(dangerCfg, nil, nil, resolved.MaxConcurrency, resolved.APIKey, headlessToolConfig(resolved, dangerCfg), nil)
+
+	// Sandbox: the same default-on posture as `run` — the container binds
+	// the shell/file tools when Docker is available; an implicit failure
+	// degrades with a warning (ODEK_REQUIRE_SANDBOX=1 makes it fatal). The
+	// danger floor above, not the container, is the hard guarantee.
+	containerName, sandboxCleanup, _, err := ensureSandbox(resolved, tools, sandboxConfigFromResolved(resolved))
+	if err != nil {
+		return "", 0, err
+	}
+	if sandboxCleanup != nil {
+		defer func() { _ = sandboxCleanup() }()
+	}
+	system = withSandboxEnvironment(system, containerName)
 
 	// Background commands for scheduled runs: headless semantics — jobs die
-	// when the run ends (process-scoped key, Shutdown below).
-	bgRT := newBackgroundRuntime(backgroundSettingsFromResolved(resolved), fmt.Sprintf("sched-%d", time.Now().UnixNano()), "", nil)
+	// when the run ends (process-scoped key, Shutdown below). Bound to the
+	// same container as the foreground tools.
+	bgRT := newBackgroundRuntime(backgroundSettingsFromResolved(resolved), fmt.Sprintf("sched-%d", time.Now().UnixNano()), containerName, nil)
 	defer bgRT.Shutdown()
 	tools = appendBackgroundTools(tools, bgRT)
 

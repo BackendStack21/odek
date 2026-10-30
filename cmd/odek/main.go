@@ -2842,6 +2842,12 @@ type toolConfig struct {
 	// SelfTrust is THIS process's own effective trust level; stamped
 	// into spawned task files. Empty = top-level operator run (trusted).
 	SelfTrust string
+	// ParentRiskCap, when set, is the risk cap this (top-level) run stamps
+	// into every delegate_tasks envelope regardless of SelfTrust. Unattended
+	// surfaces set it from what their floored policy allows without a human
+	// (prompt counts as deny), so a child cannot reopen a class the parent's
+	// floor closed by reloading global config or a shipped profile.
+	ParentRiskCap string
 	// Planning, when non-nil and Enabled, registers the built-in plan tool.
 	// The store it carries is shared with the loop engine via odek.New's
 	// discovery of *loop.PlanTool in the returned tools slice.
@@ -2958,6 +2964,13 @@ func builtinTools(dc danger.DangerousConfig, sm *skills.SkillManager, approver d
 			// Every class denied: the children get no authority either.
 			selfMaxRisk = parentRiskCapNone
 		}
+	}
+	if tcfg.ParentRiskCap != "" {
+		// An unattended parent (scheduled run) binds its children by the
+		// cap its floored policy allows without a human, not by the raw
+		// config: effectiveMaxRisk treats prompt as not-denied and would
+		// hand down system_write, which still admits a code_execution child.
+		selfMaxRisk = tcfg.ParentRiskCap
 	}
 	// Artifacts home for the delegate_tasks result channel; empty disables
 	// the channel (never fail agent startup over it).
