@@ -805,6 +805,20 @@ func buildHeadlessDangerConfig(resolved config.ResolvedConfig) danger.DangerousC
 	} {
 		dangerCfg.Classes[cls] = danger.Deny
 	}
+	// code_execution is denied unattended unless schedules.dangerous grants
+	// it explicitly (docs/SCHEDULES.md, "Safety: unattended tasks"). The
+	// global class is tuned for interactive sessions with a human present,
+	// and a headless run never starts a sandbox container (runTaskHeadless
+	// builds its tools directly), so inheriting a global `allow` would run
+	// attacker-steered shell on the host with neither isolation nor a human.
+	// A silently ignored grant looks like a broken scheduler, so say so.
+	if _, explicit := resolved.Schedules.Dangerous.Classes[danger.CodeExecution]; !explicit {
+		if dangerCfg.Classes[danger.CodeExecution] == danger.Allow {
+			fmt.Fprintln(os.Stderr, "odek schedule: ignoring global dangerous.classes.code_execution=allow for this unattended run; "+
+				"set schedules.dangerous.classes.code_execution to grant it to scheduled jobs")
+		}
+		dangerCfg.Classes[danger.CodeExecution] = danger.Deny
+	}
 	return dangerCfg
 }
 
