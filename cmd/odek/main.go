@@ -2597,6 +2597,23 @@ func sandboxIntent(resolved config.ResolvedConfig) (want, explicit bool) {
 	return true, false
 }
 
+// applyImplicitSandboxDefault surfaces the default-on sandbox intent in
+// resolved.Sandbox for the daemon entry points (schedule run/daemon, the
+// scheduler embedded in telegram). Those paths run many fires under the
+// implicit default, but the startup Dockerfile.odek approval gate
+// (dockerfileBuildRequirement) only looks at resolved.Sandbox, which is false
+// under that default — so an unapproved Dockerfile was never gated at startup
+// and degraded every fire instead. Mirrors serve, which sets resolved.Sandbox
+// from its policy before the gate runs. Explicit opt-outs are untouched.
+func applyImplicitSandboxDefault(resolved *config.ResolvedConfig) {
+	if resolved == nil {
+		return
+	}
+	if want, _ := sandboxIntent(*resolved); want && !resolved.Sandbox {
+		resolved.Sandbox = true
+	}
+}
+
 // ensureSandbox starts the sandbox under default-on semantics:
 //   - wanted + success        → container started, sandboxed=true
 //   - wanted + failure        → explicit want (or ODEK_REQUIRE_SANDBOX=1)

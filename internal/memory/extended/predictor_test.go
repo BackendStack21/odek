@@ -180,7 +180,7 @@ func TestRED_PredictorSkipsOverrideShapedTurn(t *testing.T) {
 }
 
 // Benign turns and intents are untouched by the new controls.
-func TestRED_PredictorKeepsBenignDeveloperIntents(t *testing.T) {
+func TestPredictorKeepsBenignDeveloperIntents(t *testing.T) {
 	llm := newMockLLM(`[{"text":"Write the password reset flow","confidence":0.8},{"text":"Обновить README.md","confidence":0.5}]`)
 	cfg := DefaultConfig()
 	cfg.PredictiveIntents = 3

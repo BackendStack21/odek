@@ -566,6 +566,7 @@ func telegramCmd(args []string) error {
 
 	// 1. Load config from all sources (file → env).
 	resolved := config.LoadConfig(config.CLIFlags{})
+	applyImplicitSandboxDefault(&resolved)
 	if err := approveProjectSandbox(resolved, os.Stdin, os.Stdout); err != nil {
 		return err
 	}
@@ -797,7 +798,9 @@ func telegramCmd(args []string) error {
 			fmt.Fprintf(&b, "• Model: `%s`\n", resolved.Model)
 			// Chat turns run on the host: no container is started for them,
 			// whatever the sandbox config says, so never report one.
-			b.WriteString("• Sandbox: not used for chat turns (code execution prompts here)\n")
+			chatDanger := buildTelegramDangerConfig(resolved)
+			fmt.Fprintf(&b, "• Sandbox: not used for chat turns (code execution: %s)\n",
+				chatDanger.ActionFor(danger.CodeExecution))
 			if resolved.Skills.Verbose {
 				b.WriteString("• Skills verbose: on\n")
 			}
@@ -1105,7 +1108,7 @@ func telegramCmd(args []string) error {
 				handlerLog.Warn("auto-transcribe enabled but whisper.cpp or its model is not installed", "chat_id", chatID)
 			}
 			if resolved.Transcription.AutoTranscribe && autoReady {
-				tool := newTranscribeTool(resolved.Dangerous, resolved.Transcription)
+				tool := newTranscribeTool(buildTelegramDangerConfig(resolved), resolved.Transcription)
 				tool.SetContext(mctx)
 				result, err := tool.Call(transcribeCallArgs(localPath))
 				if err == nil {

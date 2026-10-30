@@ -209,7 +209,15 @@ in the session) classes are always denied. Schedule-specific policy in
 `network_egress`, `network_upload`, `system_write`, `code_execution`, `install`, and `unknown`
 are the ones an unattended run can be granted — but the floor itself cannot
 be lifted. Every class that prompts by default is therefore denied in a
-scheduled run until `schedules.dangerous` allows it. `network_egress` is allowed
+scheduled run until `schedules.dangerous` allows it. For `code_execution` and
+`install` that is enforced literally: a **global** `dangerous.classes` `allow`
+(tuned for an interactive session) is ignored for scheduled jobs, with a
+warning on stderr naming `schedules.dangerous`, so only an explicit
+`schedules.dangerous.classes` grant reaches an unattended run. The same split
+applies to allowlists: `schedules.dangerous.allowlist` entries are explicit
+unattended grants and are always kept (the example below needs no class
+grant), while a global `dangerous.allowlist` entry that would run something a
+floored class denies is dropped for the fire, with a warning. `network_egress` is allowed
 by default, but `network_upload` (a webhook `POST`, `curl -d @file`, an `rsync`
 or `scp` to a backup host, a listener or tunnel) is not: a job that must upload
 needs `schedules.dangerous.classes: {"network_upload": "allow"}`. An upload also
@@ -218,6 +226,20 @@ analysis as interactive runs applies, including secret-read gating (a
 reference to a token-shaped environment variable or a credential file is a
 `system_write`, denied unless granted). This prevents a compromised task definition from erasing files,
 installing persistence, or running unreviewed scripts while unattended.
+
+Scheduled fires also get the **default sandbox**, exactly as `odek run`: when
+Docker is reachable the fire's shell, file and background tools run in a
+container (one per fire, removed when it ends); when the sandbox is wanted
+only by default and Docker is unavailable the fire degrades to the host with
+the usual notice, and the danger floor — not the container — remains the hard
+guarantee. `ODEK_REQUIRE_SANDBOX=1` makes an unsandboxed fire fatal, and an
+explicit `"sandbox": true` fails the fire when Docker is down, as for `run`.
+Operators hosting the scheduler inside a container should set
+`"sandbox": false` (the shipped `docker/config.*.json` already do). Children a
+scheduled job spawns with `delegate_tasks` inherit a risk cap derived from
+what the floored policy allows — `local_write` unless `schedules.dangerous`
+grants the whole ladder up to `code_execution` — so a child cannot reopen a
+class the floor closed by reloading global config or selecting a profile.
 
 Read/summarise/deliver tasks work as usual. If you truly need a scheduled job
 that performs high-risk operations, run it interactively via `odek run` or the

@@ -365,7 +365,7 @@ func TestRED_FormatFollowUpSuggestions_AllDroppedPrintsNothing(t *testing.T) {
 // silently deletes ordinary developer follow-ups (anything naming a
 // password/token/secret, any <tag>, every Cyrillic suggestion that names a
 // Latin filename). The filter must only drop override-shaped suggestions.
-func TestRED_FormatFollowUpSuggestions_KeepsBenignDeveloperFollowUps(t *testing.T) {
+func TestFormatFollowUpSuggestions_KeepsBenignDeveloperFollowUps(t *testing.T) {
 	benign := []string{
 		"Write the password reset flow",
 		"Add a <script> loader to index.html",

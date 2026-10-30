@@ -45,7 +45,7 @@ func TestRED_TelegramDangerConfig_DowngradesCodeGrantsToPrompt(t *testing.T) {
 	}
 }
 
-func TestRED_TelegramDangerConfig_LeavesPromptAndDenyUntouched(t *testing.T) {
+func TestTelegramDangerConfig_LeavesPromptAndDenyUntouched(t *testing.T) {
 	resolved := config.ResolvedConfig{
 		Dangerous: danger.DangerousConfig{
 			Classes: map[danger.RiskClass]danger.Action{

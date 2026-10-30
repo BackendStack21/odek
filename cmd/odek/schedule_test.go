@@ -360,10 +360,11 @@ func TestDeliverStdoutRedactsSecrets(t *testing.T) {
 
 // RED (hardness-testing A1): docs/SCHEDULES.md promises that every
 // prompt-by-default class is denied unattended "until schedules.dangerous
-// allows it". The headless runner never starts a sandbox container
-// (runTaskHeadless builds tools directly), so inheriting the operator's
-// *interactive* global `code_execution: allow` ran attacker-steered shell on
-// the host with neither isolation nor a human. The global grant must not leak
+// allows it". The headless runner starts the default sandbox only when Docker
+// is reachable and degrades with a warning otherwise, so the floor cannot rely
+// on a container: inheriting the operator's *interactive* global
+// `code_execution: allow` ran attacker-steered shell on the host with neither
+// isolation nor a human. The global grant must not leak
 // into a scheduled run; only an explicit schedules.dangerous grant counts.
 func TestRED_BuildHeadlessDangerConfig_GlobalCodeExecutionAllowDoesNotLeak(t *testing.T) {
 	for _, sandboxFlag := range []bool{false, true} {
@@ -385,7 +386,7 @@ func TestRED_BuildHeadlessDangerConfig_GlobalCodeExecutionAllowDoesNotLeak(t *te
 
 // The documented escape hatch stays: an explicit schedules.dangerous grant is
 // honoured (SCHEDULES.md "Safety: unattended tasks").
-func TestRED_BuildHeadlessDangerConfig_ExplicitScheduleGrantHonoured(t *testing.T) {
+func TestBuildHeadlessDangerConfig_ExplicitScheduleGrantHonoured(t *testing.T) {
 	resolved := config.ResolvedConfig{
 		Schedules: config.ScheduleConfig{
 			Dangerous: danger.DangerousConfig{

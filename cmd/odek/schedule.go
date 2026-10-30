@@ -313,6 +313,7 @@ func scheduleRunNow(args []string) error {
 	}
 
 	resolved := config.LoadConfig(config.CLIFlags{})
+	applyImplicitSandboxDefault(&resolved)
 	if err := approveProjectSandbox(resolved, os.Stdin, os.Stdout); err != nil {
 		return err
 	}
@@ -347,6 +348,7 @@ func scheduleDaemon(_ []string) error {
 	defer unlock()
 
 	resolved := config.LoadConfig(config.CLIFlags{})
+	applyImplicitSandboxDefault(&resolved)
 	if err := approveProjectSandbox(resolved, os.Stdin, os.Stdout); err != nil {
 		return err
 	}
@@ -784,14 +786,21 @@ func startSchedulerForBot(ctx context.Context, bot *telegram.Bot, resolved confi
 // network_upload, system_write, code_execution, install, or unknown for cron
 // jobs.
 func buildHeadlessDangerConfig(resolved config.ResolvedConfig) danger.DangerousConfig {
+	// resolved.Dangerous is shared by every fire — and, under `odek telegram`,
+	// by every chat turn — so the map and lists are copied before anything is
+	// written. Aliasing them once locked later chat turns to the floor and let
+	// concurrent fires race on the same map.
 	dangerCfg := resolved.Dangerous
+	dangerCfg.Classes = make(map[danger.RiskClass]danger.Action, len(resolved.Dangerous.Classes)+8)
+	for k, v := range resolved.Dangerous.Classes {
+		dangerCfg.Classes[k] = v
+	}
+	dangerCfg.Allowlist = append([]string(nil), resolved.Dangerous.Allowlist...)
+	dangerCfg.Denylist = append([]string(nil), resolved.Dangerous.Denylist...)
 	mergeScheduleDangerous(&dangerCfg, resolved.Schedules.Dangerous)
 
 	deny := "deny"
 	dangerCfg.NonInteractive = &deny
-	if dangerCfg.Classes == nil {
-		dangerCfg.Classes = make(map[danger.RiskClass]danger.Action)
-	}
 	// Non-overrideable floor. Destructive and blocked are irreversible or
 	// hard-coded malicious; scheduled runs must never execute them.
 	// Persistence (deferred-execution writes) and unread_exec (unread
@@ -811,9 +820,8 @@ func buildHeadlessDangerConfig(resolved config.ResolvedConfig) danger.DangerousC
 	// lifecycle scripts). The global class is tuned for interactive sessions
 	// with a human present; a headless run starts the default sandbox only
 	// when Docker is available and degrades with a warning otherwise, so the
-	// floor must not depend on a container: inheriting a global `allow` would
-	// run attacker-steered code on the host with neither isolation nor a
-	// human. A silently ignored grant looks like a broken scheduler, so say so.
+	// floor must not depend on a container. A silently ignored grant looks
+	// like a broken scheduler, so say so.
 	for _, cls := range []danger.RiskClass{danger.CodeExecution, danger.Install} {
 		if _, explicit := resolved.Schedules.Dangerous.Classes[cls]; explicit {
 			continue
@@ -824,22 +832,54 @@ func buildHeadlessDangerConfig(resolved config.ResolvedConfig) danger.DangerousC
 		}
 		dangerCfg.Classes[cls] = danger.Deny
 	}
-	// An exact allowlist entry is allowed before any class check, so a global
-	// entry that reaches a floored class ("bash -c …" is code_execution)
-	// would bypass the floor. Drop entries that would run something the
-	// floor denies; entries the operator's defaults merely deny are kept,
-	// exactly as for sub-agent caps (dropDeniedAllowlistEntries).
+	// Allowlist. An exact entry is allowed before any class check, so a
+	// GLOBAL entry that reaches a floored class ("bash -c …" is code_execution)
+	// would bypass the floor; those are dropped, loudly. A schedules.dangerous
+	// allowlist entry is an explicit unattended grant with the same standing
+	// as a class grant and is always kept (the documented
+	// `"allowlist": ["go test ./..."]` needs no class grant). The reference
+	// is the floor alone — classes the operator's own defaults merely deny
+	// keep their entries, exactly as for sub-agent caps.
 	floorRef := danger.DangerousConfig{Classes: make(map[danger.RiskClass]danger.Action)}
 	for _, cls := range subagentRiskCapOrder {
-		floorRef.Classes[cls] = danger.Allow
+		if cls != danger.Blocked { // blocked must stay denied (config validation)
+			floorRef.Classes[cls] = danger.Allow
+		}
 	}
 	floorRef.Classes[danger.UnreadExec] = danger.Allow
-	for cls, act := range dangerCfg.Classes {
-		if act == danger.Deny {
+	for _, cls := range []danger.RiskClass{
+		danger.Destructive, danger.Blocked, danger.Persistence, danger.UnreadExec,
+		danger.CodeExecution, danger.Install,
+	} {
+		if dangerCfg.Classes[cls] == danger.Deny {
 			floorRef.Classes[cls] = danger.Deny
 		}
 	}
-	dropDeniedAllowlistEntries(&dangerCfg, &floorRef)
+	scheduleEntries := make(map[string]bool, len(resolved.Schedules.Dangerous.Allowlist))
+	for _, e := range resolved.Schedules.Dangerous.Allowlist {
+		scheduleEntries[e] = true
+	}
+	kept := make([]string, 0, len(dangerCfg.Allowlist))
+	for _, entry := range dangerCfg.Allowlist {
+		if scheduleEntries[entry] {
+			kept = append(kept, entry)
+			continue
+		}
+		var floored danger.RiskClass
+		for _, cls := range danger.Analyze(entry).Effects {
+			if floorRef.ActionFor(cls) == danger.Deny {
+				floored = cls
+				break
+			}
+		}
+		if floored == "" {
+			kept = append(kept, entry)
+			continue
+		}
+		fmt.Fprintf(os.Stderr, "odek schedule: dropping global dangerous.allowlist entry %q for this unattended run (%s is denied unattended); "+
+			"add it to schedules.dangerous.allowlist to grant it to scheduled jobs\n", entry, floored)
+	}
+	dangerCfg.Allowlist = kept
 	return dangerCfg
 }
 
@@ -855,8 +895,23 @@ func headlessParentRiskCap(dc *danger.DangerousConfig) string {
 	if dc == nil {
 		return parentRiskCapNone
 	}
+	// The cap is rank-based (applyParentRiskCap denies every class ranked
+	// ABOVE it), so it is only sound when everything above it is denied: it
+	// must sit strictly below the LOWEST-ranked class the floored policy does
+	// not allow. With no human present, prompt is deny. Under the default
+	// floor install (rank 3) is denied, so the cap is local_write — a
+	// network_egress cap would leave install open one hop down, and a
+	// documented system_write grant would lift the cap over code_execution.
+	lowestDenied := 1 << 30
 	for _, cls := range subagentRiskCapOrder {
-		if dc.ActionFor(cls) == danger.Allow {
+		if dc.ActionFor(cls) != danger.Allow {
+			if r := danger.Rank(cls); r < lowestDenied {
+				lowestDenied = r
+			}
+		}
+	}
+	for _, cls := range subagentRiskCapOrder { // highest rank first
+		if dc.ActionFor(cls) == danger.Allow && danger.Rank(cls) < lowestDenied {
 			return string(cls)
 		}
 	}

@@ -347,7 +347,7 @@ services:
 
 Notes:
 
-- `--no-sandbox` is required when odek itself runs **inside** a container and would otherwise try nested Docker: `odek serve`, `odek run`, and `odek repl` all default the sandbox **on**. `odek telegram` does not start a sandbox container and takes no arguments (`["telegram","--no-sandbox"]` exits with a usage error). Without `--no-sandbox`, `serve` / `run` / `repl` try to launch sandbox containers and fail.
+- `--no-sandbox` is required when odek itself runs **inside** a container and would otherwise try nested Docker: `odek serve`, `odek run`, and `odek repl` all default the sandbox **on**. `odek telegram` starts no sandbox container for chat turns and takes no arguments (`["telegram","--no-sandbox"]` exits with a usage error), but its embedded scheduler sandboxes each scheduled fire by default — so set `"sandbox": false` in the config it loads when it runs inside a container (the shipped `docker/config.*.json` already do). Without `--no-sandbox`, `serve` / `run` / `repl` try to launch sandbox containers and fail.
 - The Web UI binds to `0.0.0.0:8080` *inside* the container; the `ports` mapping exposes
   it only on the host's `127.0.0.1`. Use a reverse proxy (Caddy/nginx) if you need remote
   access.
