@@ -20,6 +20,10 @@ import (
 func TestRunTaskHeadless_MemoryWired(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	// Headless runs now start the default sandbox when Docker is reachable;
+	// this test is about memory wiring, so opt out explicitly rather than
+	// pull an image on a Docker-equipped CI runner.
+	t.Setenv("ODEK_NO_SANDBOX", "1")
 
 	// Seed an extended-memory atom in the (temp) global memory dir.
 	extCfg := extended.DefaultConfig()

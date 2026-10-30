@@ -357,3 +357,65 @@ func TestDeliverStdoutRedactsSecrets(t *testing.T) {
 		t.Fatal("scheduled output leaked a secret")
 	}
 }
+
+// RED (hardness-testing A1): docs/SCHEDULES.md promises that every
+// prompt-by-default class is denied unattended "until schedules.dangerous
+// allows it". The headless runner starts the default sandbox only when Docker
+// is reachable and degrades with a warning otherwise, so the floor cannot rely
+// on a container: inheriting the operator's *interactive* global
+// `code_execution: allow` ran attacker-steered shell on the host with neither
+// isolation nor a human. The global grant must not leak
+// into a scheduled run; only an explicit schedules.dangerous grant counts.
+func TestRED_BuildHeadlessDangerConfig_GlobalCodeExecutionAllowDoesNotLeak(t *testing.T) {
+	for _, sandboxFlag := range []bool{false, true} {
+		resolved := config.ResolvedConfig{
+			Sandbox: sandboxFlag,
+			Dangerous: danger.DangerousConfig{
+				Classes: map[danger.RiskClass]danger.Action{
+					danger.CodeExecution: danger.Allow,
+				},
+			},
+		}
+		cfg := buildHeadlessDangerConfig(resolved)
+		if got := cfg.Classes[danger.CodeExecution]; got != danger.Deny {
+			t.Errorf("sandbox=%v: global code_execution allow must not reach a headless run, want deny got %s",
+				sandboxFlag, got)
+		}
+	}
+}
+
+// The documented escape hatch stays: an explicit schedules.dangerous grant is
+// honoured (SCHEDULES.md "Safety: unattended tasks").
+func TestBuildHeadlessDangerConfig_ExplicitScheduleGrantHonoured(t *testing.T) {
+	resolved := config.ResolvedConfig{
+		Schedules: config.ScheduleConfig{
+			Dangerous: danger.DangerousConfig{
+				Classes: map[danger.RiskClass]danger.Action{
+					danger.CodeExecution: danger.Allow,
+				},
+			},
+		},
+	}
+	cfg := buildHeadlessDangerConfig(resolved)
+	if got := cfg.Classes[danger.CodeExecution]; got != danger.Allow {
+		t.Errorf("explicit schedules.dangerous code_execution allow must be honoured, got %s", got)
+	}
+}
+
+// A silently-ignored global grant would look like a broken scheduler, so the
+// runner says what it did and where the grant belongs.
+func TestRED_BuildHeadlessDangerConfig_WarnsWhenGlobalAllowIgnored(t *testing.T) {
+	resolved := config.ResolvedConfig{
+		Dangerous: danger.DangerousConfig{
+			Classes: map[danger.RiskClass]danger.Action{
+				danger.CodeExecution: danger.Allow,
+			},
+		},
+	}
+	flush := captureStderr(t)
+	buildHeadlessDangerConfig(resolved)
+	stderr := flush()
+	if !strings.Contains(stderr, "code_execution") || !strings.Contains(stderr, "schedules.dangerous") {
+		t.Errorf("expected a warning naming code_execution and schedules.dangerous, got %q", stderr)
+	}
+}

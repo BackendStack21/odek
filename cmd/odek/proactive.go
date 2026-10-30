@@ -93,6 +93,7 @@ func printFollowUpSuggestions(w io.Writer, mm followUpSuggester, interactionMode
 // formatFollowUpSuggestions renders the suggestion block, or "" when there
 // are no suggestions. At most maxFollowUpSuggestions lines are included.
 func formatFollowUpSuggestions(suggestions []string) string {
+	suggestions = dropInjectionShapedSuggestions(suggestions)
 	if len(suggestions) == 0 {
 		return ""
 	}
@@ -105,6 +106,24 @@ func formatFollowUpSuggestions(suggestions []string) string {
 		fmt.Fprintf(&b, "• %s\n", danger.SanitizeInline(s))
 	}
 	return b.String()
+}
+
+// dropInjectionShapedSuggestions removes suggestions that are an instruction
+// override aimed at the assistant (danger.IsOverrideShaped). The predictor
+// already refuses to produce them (internal/memory/extended); this is
+// defence in depth at the last renderer, so a suggestion source added later
+// cannot re-present an injected override as a one-click next prompt. Filtering
+// happens before the cap so a dropped line never consumes a slot. nil-safe; an
+// all-dropped list renders nothing, like an empty one.
+func dropInjectionShapedSuggestions(in []string) []string {
+	out := make([]string, 0, len(in))
+	for _, s := range in {
+		if danger.IsOverrideShaped(s) {
+			continue
+		}
+		out = append(out, s)
+	}
+	return out
 }
 
 // telegramResumePending records chats whose conversation was just replaced by
