@@ -385,8 +385,13 @@ func (t *shellTool) promptUserGated(cmd, description string, targets []string) e
 	if len(targets) > 0 {
 		// Stronger finding alongside unread targets: still surface which
 		// scripts would run unread.
+		// The description comes from the model, which may be the one being
+		// misled, so it never displaces the list of what would run.
+		unread := fmt.Sprintf("also executes an unread script: %s", strings.Join(targets, ", "))
 		if description == "" {
-			description = fmt.Sprintf("also executes an unread script: %s", strings.Join(targets, ", "))
+			description = unread
+		} else {
+			description += " (" + unread + ")"
 		}
 	}
 

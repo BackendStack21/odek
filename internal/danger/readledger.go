@@ -557,6 +557,7 @@ func UnreadScriptTargetsCtx(ctx context.Context, cmd string) []string {
 func unreadScriptTargetsKey(key, cmd string) []string {
 	var out []string
 	seen := map[string]bool{}
+	runner := nestedRunnerOfCommand(cmd)
 	collect := func(a Analysis) {
 		rewritten := map[string]bool{}
 		for _, path := range a.RewrittenFiles {
@@ -569,10 +570,24 @@ func unreadScriptTargetsKey(key, cmd string) []string {
 			if rewritten[path] || !wasReadFreshKey(key, path) {
 				seen[path] = true
 				out = append(out, path)
+				continue
+			}
+			// Reading a script licenses that script, not what it launches.
+			for _, nested := range nestedUnreadTargetsAs(key, path, map[string]bool{}, 0, runner) {
+				if !seen[nested] {
+					seen[nested] = true
+					out = append(out, nested)
+				}
 			}
 		}
 	}
 	collect(Analyze(cmd))
+	for _, target := range inlinePayloadTargets(key, cmd) {
+		if !seen[target] {
+			seen[target] = true
+			out = append(out, target)
+		}
+	}
 	// Brace groups distribute over their word before exec (`bash {x,y}.sh`
 	// runs x.sh). Analyze the distributed spelling as well so the operand
 	// the shell actually opens is the one that is gated.
