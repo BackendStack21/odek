@@ -227,6 +227,8 @@ reference to a token-shaped environment variable or a credential file is a
 `system_write`, denied unless granted). This prevents a compromised task definition from erasing files,
 installing persistence, or running unreviewed scripts while unattended.
 
+Since v2.37.0, reading a script no longer clears it if it launches a local binary or chooses its program at run time (`eval`, `xargs`, a variable in command position). A scheduled job that does this is denied, and there is no per-job override. Move the work into a script that names its programs literally, or run the binary from a system path.
+
 Scheduled fires also get the **default sandbox**, exactly as `odek run`: when
 Docker is reachable the fire's shell, file and background tools run in a
 container (one per fire, removed when it ends); when the sandbox is wanted
