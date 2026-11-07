@@ -22,6 +22,7 @@ import { metricsNoteOutput } from './metrics.js';
 // resetTurnState clears all per-turn streaming/tool/sub-agent state. Called
 // before a new turn (send), on new session, and when loading a session.
 export function resetTurnState() {
+  revealStream(); // a bubble left held by a turn that never ended shows
   settlePendingWork("interrupted");
   S.turnEnded = false;
   S.stopRequested = false;
@@ -521,6 +522,7 @@ function ensureStreamBubble() {
 function sealPartialResponse() {
   streamFlush();
   if (!S.streamBubbleEl) return;
+  revealStream(); // a tool call followed it: a progress note, never superseded
   removeStreamCursor();
   const content = S.streamContentEl;
   if (content) {
@@ -577,6 +579,40 @@ export function supersedeStream(reason) {
   if (!msg) return;
   sealPartialResponse();
   foldDraft(msg, reason);
+}
+
+// ── Held answers ──
+// A streamed reply may still be superseded (completion check, verification
+// retry), so the live answer row opens held — hidden — and shows only once
+// it is final: a tool call seals it as a progress note, a pass/uncertain
+// verdict or bulk (never superseded) text commits it, or the turn ends.
+// A superseded draft is never shown; it appears only as its folded row.
+// Showing, folding, and re-streaming an answer read as a blink.
+function revealStream() {
+  const msg = S.streamBubbleEl;
+  if (!msg || !msg.classList || !msg.classList.contains('held')) return;
+  msg.classList.remove('held');
+  // Older long replies compact as this one appears, not while it is hidden.
+  compactOlderAnswers(msg);
+}
+
+// commitStream shows the live answer now: it is final before done, which
+// trails the session save.
+export function commitStream() {
+  streamFlush();
+  revealStream();
+}
+
+// onVerificationEvent drives the intent label and commits the held answer
+// on a shipping verdict. Fail, skipped (re-emitted as exhausted after a
+// fail) and unknown verdicts keep holding until the turn ends, so an
+// unverified answer appears with its chip.
+export function onVerificationEvent(rt) {
+  if (!rt) return;
+  if (rt.type === 'verification_started') setIntent('verifying answer');
+  if (rt.type !== 'verification_completed') return;
+  const verdict = rt.data && rt.data.verdict;
+  if (verdict === 'pass' || verdict === 'uncertain') commitStream();
 }
 
 // stripVerifyMarker removes a leading verification-failed marker from
@@ -659,7 +695,7 @@ function startStream() {
   hideLoading(); // remove the inline loading indicator — streaming has started
 
   const wrapper = document.createElement('div');
-  wrapper.className = 'msg assistant';
+  wrapper.className = 'msg assistant held'; // shown once final (revealStream)
   if (S.currentTurnId) wrapper.dataset.turnId = S.currentTurnId;
   wrapper.style.opacity = '1';
   wrapper.innerHTML =
@@ -676,7 +712,6 @@ function startStream() {
   S.streamBubbleEl = wrapper;
   S.streamContentEl = wrapper.querySelector('.stream-content');
   if (S.streamContentEl && S.streamCursorEl) S.streamContentEl.appendChild(S.streamCursorEl);
-  compactOlderAnswers(wrapper);
   const bubble = wrapper.querySelector('.bubble');
   if (bubble) addCopyButton(bubble);
   pruneMessages();
@@ -730,6 +765,7 @@ export function endStream(reason = "interrupted") {
     if (S.closedTurnIds.size > 32) S.closedTurnIds.delete(S.closedTurnIds.values().next().value);
   }
   removeStreamCursor();
+  revealStream(); // every turn end shows the held answer
   endThinking(); // an interrupted turn leaves no row marked live
   sealTurnStream();
   // The live answer is the latest — never fold it. Older long replies
