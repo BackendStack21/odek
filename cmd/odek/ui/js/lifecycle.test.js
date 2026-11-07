@@ -1283,6 +1283,30 @@ test('older long answers compact when the held answer shows, not while it is hid
   assert.ok(old.classList.contains('collapsible'), 'compacts as the answer appears');
 });
 
+test('a stopped turn shows its held partial answer once the stop settles', () => {
+  S.closedTurnIds = new Set();
+  deliver({ type: 'turn_started', turn_id: 't-stop-held' });
+  deliver({ type: 'token_delta', turn_id: 't-stop-held', content: 'Partial answer.' });
+  render.streamFlush();
+  const answer = lastAnswer();
+  render.requestTurnStop();
+  deliver({ type: 'cancelled', turn_id: 't-stop-held', requested: true });
+  deliver({ type: 'error', turn_id: 't-stop-held', message: 'context canceled' });
+  deliver({ type: 'turn_settled', turn_id: 't-stop-held', status: 'cancelled' });
+  assert.equal(isHeld(answer), false, 'the stopped turn keeps its partial answer visible');
+});
+
+test('a dropped socket shows the held partial answer', () => {
+  const sock = S.ws;
+  sock.onopen();
+  deliver({ type: 'turn_started', turn_id: 't-drop-held' });
+  deliver({ type: 'token_delta', turn_id: 't-drop-held', content: 'Partial answer.' });
+  render.streamFlush();
+  const answer = lastAnswer();
+  sock.onclose();
+  assert.equal(isHeld(answer), false, 'the interrupted turn keeps its partial answer visible');
+});
+
 test('answer_superseded without a streamed draft is a no-op', () => {
   deliver({ type: 'turn_started', turn_id: 't-draft-none' });
   deliver({ type: 'answer_superseded', turn_id: 't-draft-none', reason: 'completion_nudge', cycle: 1 });
