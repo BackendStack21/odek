@@ -11,6 +11,7 @@ import {
   addToolCall, addToolResult, addSubagentGroup, completeSubagents,
   appendSubagentLog, addSystemMessage, updateSubagentState,
   lastAssistantBubble, supersedeStream, markTurnUnverified, stripVerifyMarker,
+  commitStream, onVerificationEvent,
 } from './render.js';
 import { queueApproval, dismissApproval, clearApprovals, expireApproval } from './approvals.js';
 import { queueClarify, dismissClarify, clearClarify, expireClarify, rejectClarify } from './clarify.js';
@@ -204,6 +205,7 @@ export function connect() {
         break;
 
       case 'runtime_event':
+        if (sameTurn) onVerificationEvent(event.event);
         if (sameTurn && typeof S.onRuntimeEvent === 'function') S.onRuntimeEvent(event.event);
         break;
 
@@ -265,6 +267,9 @@ export function connect() {
         const [text, marked] = stripVerifyMarker(event.content);
         if (marked) S.turnUnverified = true;
         streamToken(text);
+        // Bulk text is final: a buffered pre-tool note, or the answer sent
+        // after verification — only streamed drafts are ever superseded.
+        if (text) commitStream();
         break;
       }
 

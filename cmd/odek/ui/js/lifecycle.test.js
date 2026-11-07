@@ -1192,6 +1192,97 @@ test('answer_superseded folds the streamed draft and the next reply is the answe
   assert.equal(toggle.getAttribute('aria-expanded'), 'true');
 });
 
+// Held answers: a streamed reply may still be superseded, so the live
+// answer row stays hidden until it is final — an answer is never shown,
+// folded, and re-streamed.
+const isHeld = (el) => el.classList.contains('held');
+const lastAnswer = () => byId.messages.querySelectorAll('.msg.assistant').at(-1);
+
+test('a superseded draft is never shown; the replacement shows on a passing verdict', () => {
+  deliver({ type: 'turn_started', turn_id: 't-hold' });
+  deliver({ type: 'token_delta', turn_id: 't-hold', content: 'Draft.' });
+  render.streamFlush();
+  const draft = lastAnswer();
+  assert.ok(isHeld(draft), 'the candidate answer is held while it streams');
+  deliver({ type: 'runtime_event', turn_id: 't-hold', event: { type: 'verification_started' } });
+  assert.equal(S.currentIntent, 'verifying answer');
+  deliver({ type: 'runtime_event', turn_id: 't-hold', event: { type: 'verification_completed', data: { verdict: 'fail' } } });
+  assert.ok(isHeld(draft), 'a fail verdict keeps holding');
+  deliver({ type: 'answer_superseded', turn_id: 't-hold', reason: 'verify_retry', cycle: 1 });
+  assert.ok(draft.classList.contains('draft') && !isHeld(draft), 'the draft shows only as its folded row');
+  deliver({ type: 'token_delta', turn_id: 't-hold', content: 'Final.' });
+  render.streamFlush();
+  const final = lastAnswer();
+  assert.notEqual(final, draft);
+  assert.ok(isHeld(final), 'the replacement is held too');
+  deliver({ type: 'runtime_event', turn_id: 't-hold', event: { type: 'verification_completed', data: { verdict: 'pass' } } });
+  assert.equal(isHeld(final), false, 'a passing verdict shows it before done');
+  deliver({ type: 'done', turn_id: 't-hold', verified: 'pass' });
+  assert.equal(isHeld(final), false);
+});
+
+test('a progress note shows when its tool call lands; bulk text shows on arrival', () => {
+  deliver({ type: 'turn_started', turn_id: 't-note' });
+  deliver({ type: 'token_delta', turn_id: 't-note', content: 'Reading the file.' });
+  render.streamFlush();
+  const note = lastAnswer();
+  assert.ok(isHeld(note), 'it may still be the final answer');
+  deliver({ type: 'tool_call', turn_id: 't-note', name: 'read_file', data: '{"path":"a.go"}' });
+  assert.equal(isHeld(note), false, 'the tool call proves it a note');
+  deliver({ type: 'tool_result', turn_id: 't-note', name: 'read_file', data: 'ok' });
+  deliver({ type: 'token', turn_id: 't-note', content: 'Buffered answer.' });
+  const bulk = lastAnswer();
+  assert.notEqual(bulk, note);
+  assert.equal(isHeld(bulk), false, 'bulk text is never superseded');
+  deliver({ type: 'done', turn_id: 't-note' });
+});
+
+for (const [name, frame] of [
+  ['skipped', { type: 'verification_completed', data: { verdict: 'skipped', skipped_reason: 'budget' } }],
+  ['unknown', { type: 'verification_completed', data: { verdict: 'fail_soft' } }],
+  ['no data', { type: 'verification_completed' }],
+]) {
+  for (const end of ['done', 'error']) {
+    test(`a ${name} verdict holds the answer until ${end} shows it`, () => {
+      const tid = `t-${name}-${end}`;
+      deliver({ type: 'turn_started', turn_id: tid });
+      deliver({ type: 'token_delta', turn_id: tid, content: 'Answer.' });
+      deliver({ type: 'runtime_event', turn_id: tid, event: frame });
+      render.streamFlush();
+      const answer = lastAnswer();
+      assert.ok(isHeld(answer), 'only pass/uncertain ship before the turn ends');
+      deliver(end === 'done'
+        ? { type: 'done', turn_id: tid, verified: 'fail' }
+        : { type: 'error', turn_id: tid, message: 'boom' });
+      assert.equal(isHeld(answer), false, 'every turn end shows the held answer');
+    });
+  }
+}
+
+test('an uncertain verdict ships the answer and an empty bulk frame commits nothing', () => {
+  deliver({ type: 'turn_started', turn_id: 't-uncertain' });
+  deliver({ type: 'token_delta', turn_id: 't-uncertain', content: 'Answer.' });
+  deliver({ type: 'token', turn_id: 't-uncertain', content: render.VERIFY_FAILED_MARKER });
+  render.streamFlush();
+  const answer = lastAnswer();
+  assert.ok(isHeld(answer), 'a marker-only bulk frame carries no text to commit');
+  deliver({ type: 'runtime_event', turn_id: 't-uncertain', event: { type: 'verification_completed', data: { verdict: 'uncertain' } } });
+  assert.equal(isHeld(answer), false);
+  render.onVerificationEvent(null); // a frame without an event is ignored
+});
+
+test('older long answers compact when the held answer shows, not while it is hidden', () => {
+  render.addMessage('assistant', 'Earlier long answer.');
+  const old = byId.messages.querySelectorAll('.msg.assistant').at(-1).querySelector('.bubble');
+  Object.defineProperty(old.querySelector('.content'), 'scrollHeight', { get: () => 900 });
+  deliver({ type: 'turn_started', turn_id: 't-compact' });
+  deliver({ type: 'token_delta', turn_id: 't-compact', content: 'Answer.' });
+  render.streamFlush();
+  assert.equal(old.classList.contains('collapsible'), false, 'nothing new is visible yet');
+  deliver({ type: 'done', turn_id: 't-compact' });
+  assert.ok(old.classList.contains('collapsible'), 'compacts as the answer appears');
+});
+
 test('answer_superseded without a streamed draft is a no-op', () => {
   deliver({ type: 'turn_started', turn_id: 't-draft-none' });
   deliver({ type: 'answer_superseded', turn_id: 't-draft-none', reason: 'completion_nudge', cycle: 1 });
