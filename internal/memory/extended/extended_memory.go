@@ -143,6 +143,10 @@ func newExtended(dir string, llm LLMClient, cfg Config, evictOnOpen bool) *Exten
 		return !errors.Is(err, ErrAtomNotFound)
 	})
 	em.recall.stats = &em.stats
+	// The rerank breaker outlives this instance: serve and Telegram build a
+	// new agent per connection, run or message, and each one opens the
+	// directory again.
+	em.recall.breaker = rerankBreakerFor(dir)
 	// Wire the hygiene sweep's atom-existence checker to the live atom store,
 	// before Load runs it. Only a definitive not-found counts as missing —
 	// transient read errors must not cause the sweep to drop entries.
@@ -704,8 +708,10 @@ func (em *ExtendedMemory) AnaphoraResolve(ctx context.Context, msg string) (stri
 	defer cancel()
 
 	// queryAtomsScored already filters by min score and ranks by the blended
-	// similarity/retention score, so the top candidate is the antecedent.
-	scored, err := em.recall.queryAtomsScored(ctx, msg, false)
+	// similarity/retention score, so the top candidate is the antecedent. The
+	// paid LLM rerank is skipped: the blended order is what picks it, and a
+	// rerank per pronoun-bearing turn would only add cost.
+	scored, err := em.recall.queryAtomsScored(ctx, msg, true)
 	if err != nil || len(scored) == 0 {
 		return msg, false
 	}

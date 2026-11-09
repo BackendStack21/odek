@@ -689,7 +689,7 @@ The `memory` section controls the persistent memory system (see [docs/MEMORY.md]
 | `semantic_search_top_k` | `10` | — | — | Number of atoms returned to the system prompt. |
 | `semantic_search_overfetch` | `4` | — | — | Candidate multiplier before filtering and reranking. |
 | `semantic_search_min_score` | `0.55` | — | — | Minimum cosine similarity for a candidate to be considered. |
-| `semantic_search_rerank` | `true` | — | — | Use the memory LLM to rerank candidates. |
+| `semantic_search_rerank` | `true` | — | — | Use the memory LLM to rerank candidates. A rerank call gets at most half of the remaining turn-start recall budget (2 s max), and after two consecutive failures it is skipped for 1 to 15 minutes ([EXTENDED_MEMORY.md](EXTENDED_MEMORY.md#recall-latency)). |
 | `semantic_dedup_threshold` | `0.92` | — | — | Cosine similarity at or above which an incoming atom is treated as a paraphrase of an existing live atom and refreshes it instead of appending. `0` disables the semantic tier (exact-match dedup always runs). |
 | `consolidate_similarity_threshold` | unset (`0.8` local embedder, `0.9` HTTP embedder) | — | — | Pairwise cosine similarity at or above which live atoms are grouped for LLM merging by `odek memory extended consolidate` / `ConsolidateAtoms`. |
 | `atom_max_chars` | `300` | `ODEK_MEMORY_EXTENDED_ATOM_MAX_CHARS` | `--memory-extended-atom-max-chars` | Maximum stored text length per atom. |

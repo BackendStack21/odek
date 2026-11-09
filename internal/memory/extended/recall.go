@@ -33,6 +33,11 @@ type Recall struct {
 	guardCfg  guard.Config
 	stats     *recallStats
 
+	// breaker skips the rerank while the memory LLM keeps failing it. It is
+	// shared per extended-memory directory (rerankBreakerFor); nil disables
+	// it.
+	breaker *rerankBreaker
+
 	// followUpSink receives the high-confidence predicted intents captured
 	// during recall so ExtendedMemory can surface them as follow-up
 	// suggestions. Nil disables capture without changing recall behavior.
@@ -114,6 +119,15 @@ func (r *Recall) trackErr(err error) {
 		r.stats.timeouts.Add(1)
 	} else {
 		r.stats.failures.Add(1)
+	}
+}
+
+// noteRerankSkipped counts a rerank that was due but not made (breaker open,
+// or too little of the recall budget left) in the counters backing
+// ExtendedMemory.Stats.
+func (r *Recall) noteRerankSkipped() {
+	if r.stats != nil {
+		r.stats.rerankSkipped.Add(1)
 	}
 }
 
@@ -404,7 +418,23 @@ type scoredAtomMeta struct {
 // rerank asks the memory LLM to order the candidate atoms by relevance and
 // rewrites their scores so that order survives a later sort by score. On an
 // LLM failure or a "none" answer the candidates are returned unchanged.
+//
+// The call gets a bounded share of ctx (rerankBudget), so when the memory
+// LLM is slow recall still returns the blended order in time. It is skipped,
+// leaving the candidates unchanged, when that share is too small to be worth
+// a call or the breaker is open.
 func (r *Recall) rerank(ctx context.Context, query string, scored []scoredAtomMeta) []scoredAtomMeta {
+	budget := rerankBudget(ctx)
+	if budget < rerankMinBudget {
+		r.noteRerankSkipped()
+		return scored
+	}
+	allowed, probe := r.breaker.begin()
+	if !allowed {
+		r.noteRerankSkipped()
+		return scored
+	}
+
 	var b strings.Builder
 	fmt.Fprintf(&b, "Rank these memory atoms by relevance to: %s\n\n", query)
 	for i, s := range scored {
@@ -413,12 +443,14 @@ func (r *Recall) rerank(ctx context.Context, query string, scored []scoredAtomMe
 	b.WriteString("\nReturn only the indices of the most relevant entries, ordered by relevance (most relevant first).\n")
 	b.WriteString("Format: a single line of comma-separated numbers, e.g. \"3,0,1\". If none are relevant, return \"none\".")
 
-	resp, err := r.llm.SimpleCall(ctx,
+	callCtx, cancel := context.WithTimeout(ctx, budget)
+	resp, err := r.llm.SimpleCall(callCtx,
 		"You are a relevance ranking system. Return only a comma-separated list of indices or the word 'none'.",
 		b.String(),
 	)
+	cancel()
+	r.breaker.end(probe, err, callerCancelled(ctx, err))
 	if err != nil {
-		log.Printf("extended memory: rerank LLM call failed: %v", err)
 		return scored
 	}
 	resp = strings.TrimSpace(resp)

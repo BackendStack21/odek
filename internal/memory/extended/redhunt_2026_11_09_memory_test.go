@@ -2,6 +2,9 @@ package extended
 
 import (
 	"context"
+	"errors"
+	"log"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -400,5 +403,527 @@ func TestRED_StripUntrustedWrappers_Table(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// ---- Rerank latency guard ----
+
+// rerankQuery matches both seeded atoms, so the literal query always has more
+// than one candidate and the rerank always runs.
+const rerankQuery = "parser refactor tests"
+
+// rerankLLM answers the rerank prompt by mode: block until the call's
+// context is done, fail at once, return context.Canceled, or answer. It
+// counts rerank calls only.
+type rerankLLM struct {
+	mu    sync.Mutex
+	mode  string // "block", "fail", "cancel" or "ok"
+	calls int
+}
+
+func (m *rerankLLM) setMode(mode string) {
+	m.mu.Lock()
+	m.mode = mode
+	m.mu.Unlock()
+}
+
+func (m *rerankLLM) rerankCalls() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.calls
+}
+
+func (m *rerankLLM) SimpleCall(ctx context.Context, system, _ string) (string, error) {
+	if !strings.Contains(system, "relevance ranking") {
+		return "[]", nil
+	}
+	m.mu.Lock()
+	m.calls++
+	mode := m.mode
+	m.mu.Unlock()
+	switch mode {
+	case "block":
+		<-ctx.Done()
+		return "", ctx.Err()
+	case "fail":
+		return "", errors.New("memory LLM: upstream unavailable")
+	case "cancel":
+		return "", context.Canceled
+	}
+	return "1,0", nil
+}
+
+// newRerankEM opens dir with rerank on and prediction off, so only the
+// rerank talks to the memory LLM, seeding two atoms when the store is new.
+func newRerankEM(t *testing.T, dir string, llm LLMClient) *ExtendedMemory {
+	t.Helper()
+	cfg := DefaultConfig()
+	cfg.Enabled = boolPtr(true)
+	cfg.SemanticSearchMinScore = 0.001
+	cfg.SemanticDedupThreshold = floatPtr(0)
+	cfg.SemanticSearchRerank = boolPtr(true)
+	cfg.FollowUpAnticipationEnabled = boolPtr(false)
+	cfg.AutoExtractPerTurn = boolPtr(false)
+	em := New(dir, llm, cfg)
+	t.Cleanup(func() { em.Close() })
+	emb := newMockEmbedder(vectorDim)
+	em.index.newEmb = func() embedding.TextEmbedder { return emb }
+	em.index.emb = emb
+	em.index.markDirty()
+	if atoms, _ := em.List(); len(atoms) == 0 {
+		for _, text := range []string{
+			"the parser lives in internal/parse and has table tests",
+			"run make test before pushing a refactor",
+		} {
+			if err := em.AddAtom(context.Background(), MemoryAtom{Text: text, SourceClass: SourceUserSaid, Type: TypeFact}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	return em
+}
+
+func scoredIDs(s []scoredAtomMeta) string {
+	out := make([]string, len(s))
+	for i, a := range s {
+		out[i] = a.atom.ID
+	}
+	return strings.Join(out, ",")
+}
+
+// recallTurn runs one turn-start recall under a budget of d.
+func recallTurn(t *testing.T, em *ExtendedMemory, d time.Duration) string {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), d)
+	defer cancel()
+	return em.FormatExtendedContext(ctx, rerankQuery)
+}
+
+// A rerank that does not answer must not eat the whole turn-start budget:
+// recall falls back to the blended order with time to spare.
+func TestRED_SlowRerankLeavesRecallBudget(t *testing.T) {
+	llm := &rerankLLM{mode: "block"}
+	em := newRerankEM(t, t.TempDir(), llm)
+	blended, err := em.recall.queryAtomsScored(context.Background(), rerankQuery, true)
+	if err != nil || len(blended) < 2 {
+		t.Fatalf("blended = %v, %v", blended, err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 400*time.Millisecond)
+	defer cancel()
+	got, err := em.recall.queryAtomsScored(ctx, rerankQuery, false)
+	if ctx.Err() != nil {
+		t.Fatal("the rerank used up the whole recall budget before recall returned")
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := llm.rerankCalls(); n != 1 {
+		t.Fatalf("rerank calls = %d, want 1", n)
+	}
+	if scoredIDs(got) != scoredIDs(blended) {
+		t.Errorf("order after a timed-out rerank = %s, want the blended order %s", scoredIDs(got), scoredIDs(blended))
+	}
+
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 400*time.Millisecond)
+	defer cancel2()
+	out := em.FormatExtendedContext(ctx2, rerankQuery)
+	if ctx2.Err() != nil {
+		t.Error("turn-start recall used up its whole budget on the rerank")
+	}
+	if out == "" {
+		t.Error("turn-start recall returned no context after a timed-out rerank")
+	}
+}
+
+// Two consecutive rerank failures or timeouts open the breaker: the next
+// turn makes no rerank call and recall keeps the blended order.
+func TestRED_RerankBreakerOpensAfterTwoFailures(t *testing.T) {
+	for _, mode := range []string{"fail", "block"} {
+		t.Run(mode, func(t *testing.T) {
+			llm := &rerankLLM{mode: mode}
+			em := newRerankEM(t, t.TempDir(), llm)
+			recallTurn(t, em, 200*time.Millisecond)
+			recallTurn(t, em, 200*time.Millisecond)
+			if n := llm.rerankCalls(); n != 2 {
+				t.Fatalf("rerank calls after two turns = %d, want 2", n)
+			}
+			if out := recallTurn(t, em, 200*time.Millisecond); out == "" {
+				t.Error("recall returned no context while the rerank was skipped")
+			}
+			if n := llm.rerankCalls(); n != 2 {
+				t.Errorf("a third turn made a rerank call after two consecutive %s results (calls = %d)", mode, n)
+			}
+		})
+	}
+}
+
+// serve and Telegram build a new agent, and with it a new ExtendedMemory and
+// Recall, per connection, run or message. The breaker belongs to the memory
+// directory, so a rebuilt agent does not retry a memory LLM known to fail.
+func TestRED_RerankBreakerSurvivesRebuild(t *testing.T) {
+	dir := t.TempDir()
+	llm := &rerankLLM{mode: "fail"}
+	first := newRerankEM(t, dir, llm)
+	recallTurn(t, first, time.Second)
+	recallTurn(t, first, time.Second)
+	first.Close()
+	if n := llm.rerankCalls(); n != 2 {
+		t.Fatalf("rerank calls = %d, want 2", n)
+	}
+	second := newRerankEM(t, dir, llm)
+	recallTurn(t, second, time.Second)
+	if n := llm.rerankCalls(); n != 2 {
+		t.Errorf("a rebuilt ExtendedMemory on the same directory retried a failing rerank (calls = %d)", n)
+	}
+}
+
+// AnaphoraResolve takes the top candidate by blended score as the
+// antecedent; it has no use for a paid rerank.
+func TestRED_AnaphoraResolveMakesNoRerankCall(t *testing.T) {
+	llm := &rerankLLM{mode: "ok"}
+	em := newRerankEM(t, t.TempDir(), llm)
+	if _, ok := em.AnaphoraResolve(context.Background(), "how do I refactor it"); !ok {
+		t.Fatal("no resolution; the test no longer reaches the candidate query")
+	}
+	if n := llm.rerankCalls(); n != 0 {
+		t.Errorf("anaphora resolution made %d rerank call(s)", n)
+	}
+}
+
+// A turn the user stopped says nothing about the memory LLM: cancelled calls
+// never open the breaker.
+func TestRerankBreakerIgnoresCallerCancel(t *testing.T) {
+	llm := &rerankLLM{mode: "block"}
+	em := newRerankEM(t, t.TempDir(), llm)
+	for i := 0; i < 3; i++ {
+		ctx, cancel := context.WithCancel(context.Background())
+		time.AfterFunc(30*time.Millisecond, cancel)
+		_ = em.FormatExtendedContext(ctx, rerankQuery)
+		cancel()
+	}
+	llm.setMode("cancel")
+	recallTurn(t, em, time.Second)
+	recallTurn(t, em, time.Second)
+	llm.setMode("ok")
+	recallTurn(t, em, time.Second)
+	if n := llm.rerankCalls(); n != 6 {
+		t.Errorf("rerank calls = %d, want 6: cancelled calls must not open the breaker", n)
+	}
+}
+
+// fakeClock drives the rerank breaker's cooldowns without sleeping.
+type fakeClock struct {
+	mu sync.Mutex
+	t  time.Time
+}
+
+func newFakeClock() *fakeClock { return &fakeClock{t: time.Unix(1_800_000_000, 0)} }
+
+func (c *fakeClock) now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.t
+}
+
+func (c *fakeClock) advance(d time.Duration) {
+	c.mu.Lock()
+	c.t = c.t.Add(d)
+	c.mu.Unlock()
+}
+
+// After the cooldown one probe is made; a failed probe doubles the cooldown,
+// a successful one closes the breaker and resets the backoff.
+func TestRerankBreakerCooldownProbeAndReset(t *testing.T) {
+	llm := &rerankLLM{mode: "fail"}
+	em := newRerankEM(t, t.TempDir(), llm)
+	clk := newFakeClock()
+	em.recall.breaker.setClock(clk.now)
+	turn := func() { recallTurn(t, em, time.Second) }
+	expectCalls := func(step string, want int) {
+		t.Helper()
+		if n := llm.rerankCalls(); n != want {
+			t.Fatalf("%s: rerank calls = %d, want %d", step, n, want)
+		}
+	}
+
+	turn()
+	turn()
+	expectCalls("two failures", 2)
+	if s := em.Stats(); !s.RerankBreakerOpen {
+		t.Fatal("Stats does not report the open breaker")
+	}
+	turn()
+	expectCalls("open", 2)
+	if s := em.Stats(); s.RerankSkipped != 1 {
+		t.Errorf("RerankSkipped = %d, want 1", s.RerankSkipped)
+	}
+
+	clk.advance(59 * time.Second)
+	turn()
+	expectCalls("inside the first cooldown", 2)
+	clk.advance(2 * time.Second)
+	turn()
+	expectCalls("first probe", 3)
+	turn()
+	expectCalls("after a failed probe", 3)
+
+	// The failed probe doubled the cooldown to two minutes.
+	clk.advance(61 * time.Second)
+	turn()
+	expectCalls("inside the doubled cooldown", 3)
+	clk.advance(60 * time.Second)
+	llm.setMode("ok")
+	turn()
+	expectCalls("second probe", 4)
+	if em.Stats().RerankBreakerOpen {
+		t.Fatal("a successful probe did not close the breaker")
+	}
+	turn()
+	expectCalls("closed again", 5)
+
+	// The success reset the count and the backoff: one failure keeps it
+	// closed, the second opens it with the base cooldown again.
+	llm.setMode("fail")
+	turn()
+	turn()
+	expectCalls("two new failures", 7)
+	turn()
+	expectCalls("reopened", 7)
+	clk.advance(61 * time.Second)
+	turn()
+	expectCalls("probe after the base cooldown", 8)
+}
+
+func TestRerankBreakerBackoffIsCapped(t *testing.T) {
+	b := &rerankBreaker{}
+	clk := newFakeClock()
+	b.setClock(clk.now)
+	fail := errors.New("upstream unavailable")
+	for i := 0; i < rerankBreakerThreshold; i++ {
+		if ok, probe := b.begin(); !ok || probe {
+			t.Fatalf("closed breaker: begin = %v, %v", ok, probe)
+		}
+		b.end(false, fail, false)
+	}
+	if b.cooldown != rerankBreakerBaseCooldown {
+		t.Fatalf("cooldown after opening = %v", b.cooldown)
+	}
+	for _, want := range []time.Duration{2 * time.Minute, 4 * time.Minute, 8 * time.Minute, 15 * time.Minute, 15 * time.Minute} {
+		if ok, _ := b.begin(); ok {
+			t.Fatal("open breaker allowed a call inside its cooldown")
+		}
+		clk.advance(b.cooldown)
+		ok, probe := b.begin()
+		if !ok || !probe {
+			t.Fatalf("no probe after the cooldown: begin = %v, %v", ok, probe)
+		}
+		if ok, _ := b.begin(); ok {
+			t.Fatal("a second call was allowed while the probe was in flight")
+		}
+		b.end(true, fail, false)
+		if b.cooldown != want {
+			t.Fatalf("cooldown = %v, want %v", b.cooldown, want)
+		}
+	}
+
+	// A cancelled probe changes nothing and lets the next turn probe.
+	clk.advance(b.cooldown)
+	if ok, probe := b.begin(); !ok || !probe {
+		t.Fatal("no probe after the cooldown")
+	}
+	b.end(true, context.Canceled, true)
+	if b.cooldown != rerankBreakerMaxCooldown {
+		t.Fatalf("a cancelled probe changed the cooldown to %v", b.cooldown)
+	}
+	if ok, probe := b.begin(); !ok || !probe {
+		t.Fatal("a cancelled probe left the breaker waiting on it")
+	}
+	b.end(true, nil, false)
+	if b.cooldown != 0 || b.failures != 0 || b.isOpen() {
+		t.Fatalf("a successful probe left cooldown=%v failures=%d", b.cooldown, b.failures)
+	}
+}
+
+// syncWriter is a log destination safe to read while other goroutines log.
+type syncWriter struct {
+	mu  sync.Mutex
+	buf strings.Builder
+}
+
+func (w *syncWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buf.Write(p)
+}
+
+// rerankLines returns the logged lines that mention the rerank.
+func (w *syncWriter) rerankLines() []string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	var out []string
+	for _, l := range strings.Split(w.buf.String(), "\n") {
+		if strings.Contains(l, "rerank") {
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
+// While the breaker is open nothing is logged per turn: one line when it
+// opens (with the cooldown) and one when it closes.
+func TestRerankBreakerLogsTransitionsOnly(t *testing.T) {
+	w := &syncWriter{}
+	prev := log.Writer()
+	log.SetOutput(w)
+	defer log.SetOutput(prev)
+
+	llm := &rerankLLM{mode: "fail"}
+	em := newRerankEM(t, t.TempDir(), llm)
+	clk := newFakeClock()
+	em.recall.breaker.setClock(clk.now)
+	recallTurn(t, em, time.Second)
+	recallTurn(t, em, time.Second)
+	lines := w.rerankLines()
+	if len(lines) != 2 || !strings.Contains(lines[1], "skipping rerank for 1m0s") {
+		t.Fatalf("log after two failures = %q", lines)
+	}
+	for i := 0; i < 5; i++ {
+		recallTurn(t, em, time.Second)
+	}
+	if got := w.rerankLines(); len(got) != 2 {
+		t.Errorf("turns with the breaker open logged %q", got[2:])
+	}
+	clk.advance(time.Minute)
+	llm.setMode("ok")
+	recallTurn(t, em, time.Second)
+	recallTurn(t, em, time.Second)
+	got := w.rerankLines()
+	if len(got) != 3 || !strings.Contains(got[2], "resumed") {
+		t.Errorf("log after recovery = %q", got)
+	}
+}
+
+// With too little of the recall budget left the rerank is not attempted, and
+// that is not a failure of the memory LLM.
+func TestRerankSkippedWhenBudgetTooSmall(t *testing.T) {
+	llm := &rerankLLM{mode: "ok"}
+	em := newRerankEM(t, t.TempDir(), llm)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*rerankMinBudget-time.Millisecond)
+	defer cancel()
+	if _, err := em.recall.queryAtomsScored(ctx, rerankQuery, false); err != nil {
+		t.Fatal(err)
+	}
+	if n := llm.rerankCalls(); n != 0 {
+		t.Errorf("rerank calls with %v left = %d", 2*rerankMinBudget, n)
+	}
+	s := em.Stats()
+	if s.RerankSkipped != 1 || s.RerankBreakerOpen {
+		t.Errorf("stats = %+v, want one skip and a closed breaker", s)
+	}
+}
+
+func TestRerankBudget(t *testing.T) {
+	if got := rerankBudget(context.Background()); got != rerankMaxBudget {
+		t.Errorf("no deadline: budget = %v, want %v", got, rerankMaxBudget)
+	}
+	long, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	if got := rerankBudget(long); got != rerankMaxBudget {
+		t.Errorf("long deadline: budget = %v, want %v", got, rerankMaxBudget)
+	}
+	short, cancel2 := context.WithTimeout(context.Background(), time.Second)
+	defer cancel2()
+	if got := rerankBudget(short); got > 500*time.Millisecond || got <= 0 {
+		t.Errorf("1s deadline: budget = %v, want at most half of what is left", got)
+	}
+}
+
+// Concurrent sessions on one memory directory share the breaker.
+func TestRerankBreakerConcurrentRecall(t *testing.T) {
+	dir := t.TempDir()
+	llm := &rerankLLM{mode: "fail"}
+	ems := []*ExtendedMemory{newRerankEM(t, dir, llm), newRerankEM(t, dir, llm)}
+	const workers, turns = 8, 5
+	var wg sync.WaitGroup
+	for g := 0; g < workers; g++ {
+		wg.Add(1)
+		go func(em *ExtendedMemory) {
+			defer wg.Done()
+			for i := 0; i < turns; i++ {
+				ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+				_ = em.FormatExtendedContext(ctx, rerankQuery)
+				cancel()
+			}
+		}(ems[g%2])
+	}
+	wg.Wait()
+	n := llm.rerankCalls()
+	if n > 2*workers {
+		t.Errorf("rerank calls = %d of %d turns: the breaker did not stop them", n, workers*turns)
+	}
+	for _, em := range ems {
+		if !em.Stats().RerankBreakerOpen {
+			t.Error("a session on the directory does not see the open breaker")
+		}
+	}
+	recallTurn(t, ems[1], time.Second)
+	if llm.rerankCalls() != n {
+		t.Error("a turn after the concurrent failures made a rerank call")
+	}
+}
+
+// The registry stays bounded however many directories a process opens.
+func TestRerankBreakerRegistryBounded(t *testing.T) {
+	base := t.TempDir()
+	first := rerankBreakerFor(base + "/first")
+	for i := 0; i < rerankBreakerRegistryMax+8; i++ {
+		_ = rerankBreakerFor(base + "/d" + strconv.Itoa(i))
+	}
+	rerankBreakers.Lock()
+	size := len(rerankBreakers.byDir)
+	rerankBreakers.Unlock()
+	if size > rerankBreakerRegistryMax {
+		t.Errorf("registry holds %d breakers, cap %d", size, rerankBreakerRegistryMax)
+	}
+	if rerankBreakerFor(base+"/first") == first {
+		t.Error("the least recently used breaker was not evicted")
+	}
+	same := rerankBreakerFor(base + "/again")
+	if rerankBreakerFor(base+"/again/../again") != same {
+		t.Error("equivalent spellings of one directory got different breakers")
+	}
+}
+
+// Calls already in flight when the breaker opens do not extend its cooldown,
+// and a Recall without a breaker reranks as before.
+func TestRerankBreakerInFlightCallsAndNilBreaker(t *testing.T) {
+	b := &rerankBreaker{}
+	clk := newFakeClock()
+	b.setClock(clk.now)
+	fail := errors.New("upstream unavailable")
+	started := 0
+	for i := 0; i < 3; i++ {
+		if ok, _ := b.begin(); ok {
+			started++
+		}
+	}
+	if started != 3 {
+		t.Fatalf("a closed breaker allowed %d of 3 concurrent calls", started)
+	}
+	for i := 0; i < 3; i++ {
+		b.end(false, fail, false)
+	}
+	if b.cooldown != rerankBreakerBaseCooldown {
+		t.Errorf("a call that started before the breaker opened changed the cooldown to %v", b.cooldown)
+	}
+
+	var none *rerankBreaker
+	if ok, probe := none.begin(); !ok || probe {
+		t.Error("a nil breaker refused a call")
+	}
+	none.end(false, fail, false)
+	if none.isOpen() {
+		t.Error("a nil breaker reports open")
 	}
 }
