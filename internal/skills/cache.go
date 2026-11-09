@@ -24,6 +24,7 @@ type fileCache map[string]time.Time
 // `odek skill promote` a persistent no-op across SkillManager reloads), and
 // a trusted copy wins over a same-named copy pending review.
 func scanDirsCached(projectDir, userDir string, extraDirs []string, fc fileCache, prev skillCache) *ScanResult {
+	projectDir = DistinctProjectDir(projectDir, userDir)
 	return selectSkills(projectDir, userDir, skillDirs(projectDir, userDir, extraDirs), func(dir string) []Skill {
 		return scanDirCached(dir, fc, prev)
 	})

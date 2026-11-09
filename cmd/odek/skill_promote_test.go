@@ -237,3 +237,20 @@ func TestPromoteSkill_ProjectDirFallback(t *testing.T) {
 		t.Errorf("needs_review should be cleared after promote, got:\n%s", data)
 	}
 }
+
+// Run from $HOME, ./.odek/skills is the user skills dir: promote sees one
+// trusted candidate (the loader's view), not the same file twice.
+func TestPromoteSkill_FromHomeSeesOneCandidate(t *testing.T) {
+	home := t.TempDir()
+	t.Chdir(home)
+	userDir := filepath.Join(home, ".odek", "skills")
+	writeTestSkill(t, userDir, "audit", "name: audit\ndescription: a trusted skill\n", "# body\n")
+
+	cands := skillCandidatesAll(userDir, "audit")
+	if len(cands) != 1 || cands[0].fromProject {
+		t.Fatalf("candidates = %d (project: %v), want one user-dir candidate", len(cands), len(cands) == 1 && cands[0].fromProject)
+	}
+	if err := promoteSkill(userDir, "audit", false); err != nil {
+		t.Fatalf("promote from $HOME: %v", err)
+	}
+}

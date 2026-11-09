@@ -288,6 +288,16 @@ The agent's `memory` tool can list pending reviews (`list_pending_review`) and r
 
 Loaded and summarized user-model values are scanned for injection patterns; any field that fails the scan is dropped so a tampered `user_model.json` cannot poison the system prompt.
 
+### Size Bounds
+
+The model's summary goes into every system prompt, and the predictive-recall and inference calls send the whole model, so its size is bounded:
+
+- `languages`, `patterns`, `tools` and `common_openers` keep their 20 most recently seen entries. An entry inferred again moves to the end, so habits that keep being reinforced outlive one-off observations. Entries are trimmed before comparison, so a re-inferred entry matches its stored copy.
+- Each list entry and every free-text field (style, focus, follow-ups, pending-review value and evidence) is cut to 300 characters.
+- In the rendered summary each list and the pending-review section get 1,500 characters, ending in "…" when entries are left out, so the focus, interaction and pending sections and the closing line always render. The whole block is capped at 12,000 characters as a backstop.
+
+The bounds apply to every read and write of `user_model.json`: a file written before them, or edited by hand, is cut down when it is loaded and saved bounded on the next update. Bounding runs before the injection scan, so the scan sees exactly what can reach a prompt.
+
 ## Indirect Content Quarantine
 
 Atoms with a tainted `source_class` (`tool_output`, `file_read`, `web`, `mcp`, `subagent`, `agent_generated`, `inferred`) are stored in `extended/quarantine.json` instead of the live atom corpus.

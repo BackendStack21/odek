@@ -77,16 +77,15 @@ func (c promoteCandidate) state(userDir string) string {
 }
 
 // skillCandidatesAll lists the candidates for name (every skill when name is
-// empty) in the project then the user skills dir, the scanner's order.
+// empty) in the project then the user skills dir, the scanner's order. Run
+// from $HOME the project dir is the user dir itself; its skills are listed
+// once, as user skills, as the loader sees them (skills.DistinctProjectDir).
 func skillCandidatesAll(userDir, name string) []promoteCandidate {
 	var out []promoteCandidate
-	for _, base := range []struct {
-		dir     string
-		project bool
-	}{{skills.ProjectSkillsDir(), true}, {userDir, false}} {
-		out = append(out, skillPromoteCandidates(base.dir, name, base.project)...)
+	if projectDir := skills.DistinctProjectDir(skills.ProjectSkillsDir(), userDir); projectDir != "" {
+		out = append(out, skillPromoteCandidates(projectDir, name, true)...)
 	}
-	return out
+	return append(out, skillPromoteCandidates(userDir, name, false)...)
 }
 
 // skillCandidateAtPath returns the candidate whose SKILL.md is the file at

@@ -373,7 +373,19 @@ type ScanResult struct {
 // wins over a distrusted one; among equally trusted copies the first in scan
 // order wins. See selectSkills.
 func ScanDirs(projectDir, userDir string, extraDirs []string) *ScanResult {
+	projectDir = DistinctProjectDir(projectDir, userDir)
 	return selectSkills(projectDir, userDir, skillDirs(projectDir, userDir, extraDirs), scanDir)
+}
+
+// DistinctProjectDir returns projectDir, or "" when it is the user dir itself
+// (odek run from $HOME, where ./.odek/skills is ~/.odek/skills, or a symlink to
+// it). Those skills then load once, from the trusted user dir, instead of also
+// as distrusted project copies that the trusted ones shadow.
+func DistinctProjectDir(projectDir, userDir string) string {
+	if sameDir(projectDir, userDir) {
+		return ""
+	}
+	return projectDir
 }
 
 // skillDirs lists the skill directories in scan order: project → user → extras.
@@ -386,6 +398,22 @@ func skillDirs(projectDir, userDir string, extraDirs []string) []string {
 		dirs = append(dirs, userDir)
 	}
 	return append(dirs, extraDirs...)
+}
+
+// sameDir reports whether a and b name the same existing directory.
+func sameDir(a, b string) bool {
+	if a == "" || b == "" {
+		return false
+	}
+	ai, err := os.Stat(a)
+	if err != nil || !ai.IsDir() {
+		return false
+	}
+	bi, err := os.Stat(b)
+	if err != nil || !bi.IsDir() {
+		return false
+	}
+	return os.SameFile(ai, bi)
 }
 
 // selectSkills scans dirs with scan, applies the project-dir distrust pin,

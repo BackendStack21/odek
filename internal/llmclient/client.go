@@ -95,6 +95,7 @@ func NewSDK(opts Options) (*sdk.SDK, error) {
 	sdkOpts := []sdk.Option{
 		sdk.WithRequestTimeout(timeout),
 		sdk.WithTransport(transport.PooledTransport()),
+		sdk.WithAttemptObserver(reportAttempt),
 	}
 	for id, ov := range opts.Providers {
 		popts := []sdk.ProviderOption{}
@@ -809,5 +810,27 @@ func DiscoverContext(ctx context.Context, p *sdk.Provider, model string) int {
 			return m.ContextWindow
 		}
 	}
+	// Local servers often list a model under another spelling: its repository
+	// path or another case ("mlx-community/Qwen3.5-2B-4bit" for
+	// "Qwen3.5-2B-4bit"). Accept a case-insensitive match on the last path
+	// segment, but only when exactly one listed model has it.
+	want := lastPathSegment(model)
+	match, n := 0, 0
+	for _, m := range models {
+		if strings.EqualFold(lastPathSegment(m.ID), want) {
+			match, n = m.ContextWindow, n+1
+		}
+	}
+	if n == 1 {
+		return match
+	}
 	return 0
+}
+
+// lastPathSegment is the part of a model id after its last "/".
+func lastPathSegment(id string) string {
+	if i := strings.LastIndexByte(id, '/'); i >= 0 {
+		return id[i+1:]
+	}
+	return id
 }
