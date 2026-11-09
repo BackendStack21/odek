@@ -153,9 +153,16 @@ type Session struct {
 	// TaintSpans are the spans the agent loop recorded from untrusted
 	// content (URLs, hosts, paths, hashed tokens; see TaintSpan). They are
 	// sticky like UntrustedIngested: every save merges in the spans already
-	// on disk (MergeTaintSpans, bounded), and trimming never touches them,
+	// on disk (MergeTaintState, bounded), and trimming never touches them,
 	// so a resumed or rebuilt engine still escalates their reuse.
 	TaintSpans []TaintSpan `json:"taint_spans,omitempty"`
+
+	// TaintOverflow records, as a fixed-size filter, every untrusted span
+	// that a bound dropped from TaintSpans or from the loop's span store
+	// (see TaintOverflow), so a span is never forgotten. It is sticky like
+	// TaintSpans: every save ORs in the filter already on disk, and trimming
+	// and compaction never touch it.
+	TaintOverflow TaintOverflow `json:"taint_overflow,omitempty"`
 
 	// EpisodeTaintTracked marks a session whose EpisodeUntrusted flag has
 	// been derived over its whole history. Files written before the flag
@@ -864,8 +871,8 @@ type revStamp struct {
 	revision   uint64
 	untrusted  bool
 	episode    bool
-	// spans: the revision carries TaintSpans, which the stamp does not
-	// hold, so a save must re-read the file to merge them.
+	// spans: the revision carries TaintSpans or TaintOverflow, which the
+	// stamp does not hold, so a save must re-read the file to merge them.
 	spans bool
 	// Metadata a later save of an older snapshot adopts (see MetaRevision).
 	metaRevision uint64
@@ -914,7 +921,7 @@ func (s *Store) rememberRevision(sess *Session) {
 		revision:   sess.Revision,
 		untrusted:  sess.UntrustedIngested,
 		episode:    sess.EpisodeUntrusted,
-		spans:      len(sess.TaintSpans) > 0,
+		spans:      !sess.TaintState().Empty(),
 		size:       info.Size(),
 
 		metaRevision: sess.MetaRevision,
@@ -1060,7 +1067,7 @@ func (s *Store) saveLockedOpts(sess *Session, lazyIndex, metaOnly bool) (err err
 		if current.EpisodeUntrusted {
 			sess.EpisodeUntrusted = true
 		}
-		sess.TaintSpans = MergeTaintSpans(sess.TaintSpans, current.TaintSpans)
+		sess.SetTaintState(MergeTaintState(sess.TaintState(), current.TaintState()))
 		// A metadata edit must apply on top of the latest metadata: when
 		// another writer edited it since the load, conflict so UpdateMeta
 		// reloads and reapplies its edit instead of dropping one of them.

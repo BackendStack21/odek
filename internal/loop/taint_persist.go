@@ -2,8 +2,7 @@ package loop
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
+	"slices"
 	"sort"
 
 	"github.com/BackendStack21/odek/internal/redact"
@@ -16,33 +15,48 @@ import (
 // Telegram per turn, odek continue) never forgets a span. A value that could
 // carry a secret — every token, anything the redactor would change, anything
 // over the persisted size cap — is exported as its SHA-256 only; the store
-// matches such entries by hashing each candidate.
+// matches such entries by hashing each candidate. The persisted list is
+// bounded (session.MaxTaintSpans); the store's overflow filter, which also
+// records every span the export cuts from the list, is exported and seeded
+// with it (session.Session.TaintOverflow), so no bound forgets a span.
 
 type taintSeedKey struct{}
 
 // WithTaintSpanSeed returns a context whose runs seed the engine's span
-// store from spans (a session's persisted TaintSpans).
-func WithTaintSpanSeed(ctx context.Context, spans []session.TaintSpan) context.Context {
-	if len(spans) == 0 {
+// store from st (a session's persisted TaintSpans and TaintOverflow).
+func WithTaintSpanSeed(ctx context.Context, st session.TaintState) context.Context {
+	if st.Empty() {
 		return ctx
 	}
-	return context.WithValue(ctx, taintSeedKey{}, spans)
+	return context.WithValue(ctx, taintSeedKey{}, st)
 }
 
-func taintSpanSeedFrom(ctx context.Context) []session.TaintSpan {
+func taintSpanSeedFrom(ctx context.Context) session.TaintState {
 	if ctx == nil {
-		return nil
+		return session.TaintState{}
 	}
-	spans, _ := ctx.Value(taintSeedKey{}).([]session.TaintSpan)
-	return spans
+	st, _ := ctx.Value(taintSeedKey{}).(session.TaintState)
+	return st
 }
 
-func taintHash(v string) string {
-	sum := sha256.Sum256([]byte(v))
-	return hex.EncodeToString(sum[:])
+func taintHash(v string) string { return session.TaintSpanHash(v) }
+
+// seedStateLocked seeds the store from persisted state it has not seeded
+// yet: the spans, and the overflow filter ORed into the store's own.
+func (s *taintSpanStore) seedStateLocked(st session.TaintState) {
+	if n := len(st.Spans); n > 0 && (s.seedLen != n || s.seedHead != &st.Spans[0]) {
+		s.seedLocked(st.Spans)
+		s.seedLen, s.seedHead = n, &st.Spans[0]
+	}
+	if len(st.Overflow) > 0 && s.seedOverflow != &st.Overflow[0] {
+		// The union is a new filter, so the store never aliases the seed.
+		s.overflow = session.UnionTaintOverflow(s.overflow, st.Overflow)
+		s.seedOverflow = &st.Overflow[0]
+	}
 }
 
-// seedLocked adds persisted spans the store does not hold yet.
+// seedLocked adds persisted spans the store does not hold yet. A full table
+// evicts into the overflow filter, as recording does.
 func (s *taintSpanStore) seedLocked(spans []session.TaintSpan) {
 	for _, sp := range spans {
 		kind := taintSpanKind(sp.Kind)
@@ -51,8 +65,8 @@ func (s *taintSpanStore) seedLocked(spans []session.TaintSpan) {
 		default:
 			continue
 		}
-		table, value := s.spans, sp.Value
-		if sp.Hash != "" {
+		table, value, hashed := s.spans, sp.Value, sp.Hash != ""
+		if hashed {
 			table, value = s.hashed, sp.Hash
 		}
 		if value == "" {
@@ -63,32 +77,20 @@ func (s *taintSpanStore) seedLocked(spans []session.TaintSpan) {
 			continue
 		}
 		if len(table) >= maxTaintSpans {
-			evictTaintTableLocked(table)
+			s.evictTableLocked(table, hashed)
 		}
 		s.seq++
 		table[k] = &taintSpan{source: sp.Source, seq: s.seq}
 	}
 }
 
-// evictTaintTableLocked drops the least recently seen eighth of table.
-func evictTaintTableLocked(table map[string]*taintSpan) {
-	seqs := make([]uint64, 0, len(table))
-	for _, sp := range table {
-		seqs = append(seqs, sp.seq)
-	}
-	cutoff := eighthCutoff(seqs)
-	for k, sp := range table {
-		if sp.seq <= cutoff {
-			delete(table, k)
-		}
-	}
-}
-
 // TaintSpanState records the spans of messages (the history being saved,
 // so content that arrived after the last gate counts) and exports the
-// engine's recorded spans, newest first, as
-// session state (see session.MergeTaintSpans for the bounds).
-func (e *Engine) TaintSpanState(messages []session.Message) []session.TaintSpan {
+// engine's span state: the newest session.MaxTaintSpans recorded spans,
+// newest first, and the overflow filter (see session.MergeTaintState for
+// the bounds). Spans the list cuts stay held by the store and are added to
+// its overflow filter, so the export never forgets one.
+func (e *Engine) TaintSpanState(messages []session.Message) session.TaintState {
 	if len(messages) > 0 && (e.dangerousCfg == nil || e.dangerousCfg.TaintEscalationEnabled()) {
 		e.spanStore().observe(messages, currentTaintEnv())
 	}
@@ -96,14 +98,20 @@ func (e *Engine) TaintSpanState(messages []session.Message) []session.TaintSpan 
 	store := e.taintSpans
 	e.taintMu.Unlock()
 	if store == nil {
-		return nil
+		return session.TaintState{}
 	}
-	store.mu.Lock()
 	type entry struct {
-		sp  session.TaintSpan
-		seq uint64
+		sp     session.TaintSpan
+		seq    uint64
+		key    string
+		held   *taintSpan
+		hashed bool
 	}
 	var entries []entry
+	// The spans and the filter are read under one hold of the lock: an
+	// eviction in between would move a span from the one not yet read into
+	// the one already read.
+	store.mu.Lock()
 	for _, table := range []struct {
 		m      map[string]*taintSpan
 		hashed bool
@@ -119,16 +127,23 @@ func (e *Engine) TaintSpanState(messages []session.Message) []session.TaintSpan 
 			default:
 				out.Value = value
 			}
-			entries = append(entries, entry{out, sp.seq})
+			entries = append(entries, entry{out, sp.seq, k, sp, table.hashed})
 		}
 	}
-	store.mu.Unlock()
 	sort.Slice(entries, func(i, j int) bool { return entries[i].seq > entries[j].seq })
+	if len(entries) > session.MaxTaintSpans {
+		for _, en := range entries[session.MaxTaintSpans:] {
+			store.overflowLocked(en.key, en.held, en.hashed)
+		}
+		entries = entries[:session.MaxTaintSpans]
+	}
+	overflow := slices.Clone(store.overflow)
+	store.mu.Unlock()
 	spans := make([]session.TaintSpan, len(entries))
 	for i, en := range entries {
 		spans[i] = en.sp
 	}
-	return session.MergeTaintSpans(spans, nil)
+	return session.MergeTaintState(session.TaintState{Spans: spans, Overflow: overflow}, session.TaintState{})
 }
 
 // cutTaintKey splits a taintKey back into kind and value.

@@ -1241,10 +1241,20 @@ func (a *Agent) UntrustedIngested() bool {
 }
 
 // TaintSpans records the untrusted spans of messages (the history about to
-// be saved) and returns the engine's span set as session state. Persist it on
-// session.Session.TaintSpans and seed later runs with loop.WithTaintSpanSeed,
-// so trimming or rebuilding never forgets a span.
+// be saved) and returns the span list of TaintState. The list is bounded and
+// does not carry the overflow filter of spans past the bound: persist
+// TaintState instead to keep every span.
 func (a *Agent) TaintSpans(messages []session.Message) []session.TaintSpan {
+	return a.engine.TaintSpanState(messages).Spans
+}
+
+// TaintState records the untrusted spans of messages (the history about to
+// be saved) and returns the engine's span state: the bounded span list and
+// the overflow filter of every span past the bound. Merge it into the
+// session (session.MergeTaintState, Session.SetTaintState) and seed later
+// runs with loop.WithTaintSpanSeed(ctx, sess.TaintState()), so trimming or
+// rebuilding never forgets a span.
+func (a *Agent) TaintState(messages []session.Message) session.TaintState {
 	return a.engine.TaintSpanState(messages)
 }
 

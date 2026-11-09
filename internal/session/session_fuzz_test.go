@@ -36,6 +36,8 @@ func FuzzSessionLoad(f *testing.F) {
 		{validID + "..hidden", `{}`},
 		{"normal-name", `{"id":"normal-name","messages":[]}`},
 		{validID, `{"id":"` + validID + `","messages":[{"role":"tool","content":"sk-ant-api03-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]}`},
+		{validID, `{"id":"` + validID + `","taint_spans":[{"kind":"host","value":"evil.example"}],"taint_overflow":"AQID"}`},
+		{validID, `{"id":"` + validID + `","taint_overflow":"not base64!"}`},
 	}
 	for _, s := range seeds {
 		f.Add(s.id, s.data)

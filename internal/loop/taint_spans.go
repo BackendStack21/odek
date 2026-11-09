@@ -85,9 +85,17 @@ import (
 //
 // The store is bounded (spans, links and scanned-message digests are capped;
 // the least recently seen spans are evicted first) and lives on the engine,
-// so it survives context trimming within one engine; the set is exported as
-// sticky session state and seeds rebuilt engines (taint_persist.go). It is a
-// heuristic: a span the model
+// so it survives context trimming within one engine. Evicting a span must
+// not forget it: content that names an endpoint and then floods the store
+// with filler would otherwise push the endpoint out of the gate. Every span
+// the store evicts, and every span a persisted bound drops, goes into a
+// fixed-size Bloom filter (session.TaintOverflow) that a lookup missing the
+// held spans consults. A filter hit escalates like a held span (the
+// principal's mentions still exempt it), with a source saying the content is
+// no longer held; a false positive only adds an escalation. Spans and filter
+// are exported as sticky session state and seed rebuilt engines
+// (taint_persist.go), so a span recorded once keeps escalating for the life
+// of the session. It is a heuristic: a span the model
 // transforms (re-encodes, splits, retypes) is not recognised, and data
 // encoded into the path of a plain GET is not escalated.
 
@@ -148,7 +156,15 @@ func TaintEscalationRecorderFrom(ctx context.Context) func(TaintEscalation) {
 type taintSpan struct {
 	source string
 	seq    uint64
+	// overflowed marks a span already added to the store's overflow filter
+	// (an export cut it from the persisted list; see TaintSpanState).
+	overflowed bool
 }
+
+// taintOverflowSource labels an escalation found only in the overflow
+// filter: the span was recorded from untrusted content this session no
+// longer holds.
+const taintOverflowSource = "earlier untrusted content (no longer held)"
 
 // taintSpan keys are kind + "\x00" + normalised value.
 func taintKey(kind taintSpanKind, v string) string { return string(kind) + "\x00" + v }
@@ -161,11 +177,18 @@ type taintSpanStore struct {
 	// hashed holds persisted spans known only by their SHA-256 (tokens and
 	// secret-shaped values; see taint_persist.go), keyed taintKey(kind, hash).
 	hashed map[string]*taintSpan
-	// seedLen and seedHead identify the persisted span list last seeded, so
-	// a run does not re-seed it every iteration.
-	seedLen  int
-	seedHead *session.TaintSpan
-	links    map[string]uint64
+	// overflow records every span evicted from spans or hashed, and every
+	// span an export cut from the persisted list (session.TaintOverflow).
+	// It is never cleared.
+	overflow session.TaintOverflow
+	// seedLen, seedHead and seedOverflow identify the persisted state last
+	// seeded, so a run does not re-seed it every iteration.
+	seedLen      int
+	seedHead     *session.TaintSpan
+	seedOverflow *byte
+	// links are evicted without a record: losing one only removes the
+	// egress rule's exemption for that URL, which fails closed.
+	links map[string]uint64
 	// scanned holds digests of messages already scanned; scannedLen and
 	// scannedTail let an append-only history skip straight to new messages.
 	scanned    map[taintDigest]struct{}
@@ -912,7 +935,7 @@ func (s *taintSpanStore) insertLocked(spans []taintRaw, source string) {
 			continue
 		}
 		if len(s.spans) >= maxTaintSpans {
-			s.evictSpansLocked()
+			s.evictTableLocked(s.spans, false)
 		}
 		s.spans[k] = &taintSpan{source: source, seq: s.seq}
 	}
@@ -929,21 +952,40 @@ func eighthCutoff(seqs []uint64) uint64 {
 	return seqs[n-1]
 }
 
-// evictSpansLocked drops the least recently seen eighth of the spans.
-func (s *taintSpanStore) evictSpansLocked() {
-	seqs := make([]uint64, 0, len(s.spans))
-	for _, sp := range s.spans {
+// evictTableLocked moves the least recently seen eighth of table (s.spans,
+// or s.hashed when hashed is set) into the overflow filter.
+func (s *taintSpanStore) evictTableLocked(table map[string]*taintSpan, hashed bool) {
+	seqs := make([]uint64, 0, len(table))
+	for _, sp := range table {
 		seqs = append(seqs, sp.seq)
 	}
 	cutoff := eighthCutoff(seqs)
-	for k, sp := range s.spans {
+	for k, sp := range table {
 		if sp.seq <= cutoff {
-			delete(s.spans, k)
+			s.overflowLocked(k, sp, hashed)
+			delete(table, k)
 		}
 	}
 }
 
-// evictLinksLocked drops the least recently seen eighth of the links.
+// overflowLocked adds the span keyed k (in the hashed table when hashed is
+// set) to the overflow filter, once.
+func (s *taintSpanStore) overflowLocked(k string, sp *taintSpan, hashed bool) {
+	if sp.overflowed {
+		return
+	}
+	kind, value, _ := cutTaintKey(k)
+	if hashed {
+		s.overflow.AddHash(kind, value)
+	} else {
+		s.overflow.AddValue(kind, value)
+	}
+	sp.overflowed = true
+}
+
+// evictLinksLocked drops the least recently seen eighth of the links. A
+// dropped link is not recorded anywhere: it only exempted a URL under the
+// egress rule, so losing it fails closed.
 func (s *taintSpanStore) evictLinksLocked() {
 	seqs := make([]uint64, 0, len(s.links))
 	for _, seq := range s.links {
@@ -1013,17 +1055,26 @@ func (s *taintSpanStore) principalLocked(kind taintSpanKind, v string) bool {
 	}
 }
 
-// lookupLocked finds a recorded span covering candidate r.
+// lookupLocked finds a recorded span covering candidate r: a held span, or
+// one the overflow filter records.
 func (s *taintSpanStore) lookupLocked(r taintRaw) (taintHit, bool) {
 	try := func(kind taintSpanKind, v string) (taintHit, bool) {
+		var source string
 		sp, ok := s.spans[taintKey(kind, v)]
-		if !ok && len(s.hashed) > 0 {
-			sp, ok = s.hashed[taintKey(kind, taintHash(v))]
+		if ok {
+			source = sp.source
+		} else if len(s.hashed) > 0 || len(s.overflow) > 0 {
+			h := taintHash(v)
+			if sp, ok = s.hashed[taintKey(kind, h)]; ok {
+				source = sp.source
+			} else if s.overflow.HasHash(string(kind), h) {
+				ok, source = true, taintOverflowSource
+			}
 		}
 		if !ok || s.principalLocked(kind, v) {
 			return taintHit{}, false
 		}
-		return taintHit{kind: kind, span: v, source: sp.source}, true
+		return taintHit{kind: kind, span: v, source: source}, true
 	}
 	switch r.kind {
 	case taintKindHost:
@@ -1089,15 +1140,22 @@ func (k taintKinds) has(kind taintSpanKind) bool {
 	}
 }
 
+// emptyLocked reports whether the store has recorded no span at all: none
+// held and none in the overflow filter.
+func (s *taintSpanStore) emptyLocked() bool {
+	return len(s.spans) == 0 && len(s.hashed) == 0 && len(s.overflow) == 0
+}
+
 // match returns the first recorded span text reuses. With egress set, the
 // egress rule applies to the URLs in text.
 func (s *taintSpanStore) match(text string, kinds taintKinds, egress bool, env taintEnv) (taintHit, bool) {
 	if len(text) > taintMatchCeiling {
-		// Too large to match in full: with any span recorded, fail closed.
+		// Too large to match in full: with any span recorded (held or in
+		// the overflow filter), fail closed.
 		s.mu.Lock()
-		n := len(s.spans) + len(s.hashed)
+		empty := s.emptyLocked()
 		s.mu.Unlock()
-		if n == 0 {
+		if empty {
 			return taintHit{}, false
 		}
 		return taintHit{kind: taintKindOversize, span: fmt.Sprintf("%d-byte argument", len(text)), source: "an argument too large to check"}, true
@@ -1105,7 +1163,7 @@ func (s *taintSpanStore) match(text string, kinds taintKinds, egress bool, env t
 	cands := extractTaintSpans(text, env, true)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if len(s.spans) == 0 && len(s.hashed) == 0 {
+	if s.emptyLocked() {
 		return taintHit{}, false
 	}
 	// URLs the content linked verbatim, and path-only URLs, are browsing
@@ -1340,12 +1398,9 @@ func (e *Engine) taintGate(ctx context.Context, messages []session.Message, call
 	}
 	env := currentTaintEnv()
 	store := e.spanStore()
-	if seed := taintSpanSeedFrom(ctx); len(seed) > 0 {
+	if seed := taintSpanSeedFrom(ctx); !seed.Empty() {
 		store.mu.Lock()
-		if store.seedLen != len(seed) || store.seedHead != &seed[0] {
-			store.seedLocked(seed)
-			store.seedLen, store.seedHead = len(seed), &seed[0]
-		}
+		store.seedStateLocked(seed)
 		store.mu.Unlock()
 	}
 	store.observe(messages, env)
