@@ -159,6 +159,12 @@ type taintSpan struct {
 	// overflowed marks a span already added to the store's overflow filter
 	// (an export cut it from the persisted list; see TaintSpanState).
 	overflowed bool
+	// persisted caches the span's exported form (value or hash, redacted
+	// source) as computed under redaction registry generation persistedGen;
+	// see taintSpan.persistedLocked.
+	persisted    session.TaintSpan
+	persistedGen uint64
+	persistedSet bool
 }
 
 // taintOverflowSource labels an escalation found only in the overflow
@@ -186,6 +192,12 @@ type taintSpanStore struct {
 	seedLen      int
 	seedHead     *session.TaintSpan
 	seedOverflow *byte
+	// version changes with every change to what TaintSpanState exports: a
+	// span recorded, seen again (its order changes), seeded or evicted, or
+	// the overflow filter merged with a seed. export memoizes the last
+	// export against it (taint_persist.go).
+	version uint64
+	export  *taintExport
 	// links are evicted without a record: losing one only removes the
 	// egress rule's exemption for that URL, which fails closed.
 	links map[string]uint64
@@ -930,6 +942,7 @@ func (s *taintSpanStore) insertLocked(spans []taintRaw, source string) {
 		}
 		k := taintKey(r.kind, r.value)
 		s.seq++
+		s.version++
 		if sp, ok := s.spans[k]; ok {
 			sp.seq = s.seq
 			continue
@@ -966,6 +979,7 @@ func (s *taintSpanStore) evictTableLocked(table map[string]*taintSpan, hashed bo
 			delete(table, k)
 		}
 	}
+	s.version++
 }
 
 // overflowLocked adds the span keyed k (in the hashed table when hashed is

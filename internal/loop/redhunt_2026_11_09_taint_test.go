@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/BackendStack21/odek/internal/redact"
 	"github.com/BackendStack21/odek/internal/session"
 	"github.com/BackendStack21/odek/internal/tool"
 )
@@ -299,5 +301,173 @@ func TestTaintSpanOverflow_EvictedSpanExported(t *testing.T) {
 	}
 	if &state.Overflow[0] == &store.overflow[0] {
 		t.Fatal("the export aliases the store's filter")
+	}
+}
+
+// exportFixtureText names n URLs, their hosts and n opaque tokens: about 3n
+// spans.
+func exportFixtureText(from, n int) string {
+	var b strings.Builder
+	for i := from; i < from+n; i++ {
+		fmt.Fprintf(&b, "https://h%d.example.org/p/%d %s\n", i, i, floodToken(i))
+	}
+	return b.String()
+}
+
+// exportFixture returns an engine whose store holds about 3n spans.
+func exportFixture(n int) *Engine {
+	eng := New(nil, tool.NewRegistry(nil), 1, "", nil, 0)
+	store := eng.spanStore()
+	store.mu.Lock()
+	store.recordLocked(exportFixtureText(0, n), "https://blog.example.net/post", sec16TaintEnv)
+	store.mu.Unlock()
+	return eng
+}
+
+// Exporting an unchanged span set (every per-step save does) costs a small,
+// constant amount of work, not a redaction pass and a merge over every span.
+func TestRED_TaintSpanState_UnchangedExportIsConstant(t *testing.T) {
+	eng := exportFixture(1300) // about 3900 spans
+	_ = eng.TaintSpanState(nil)
+	allocs := testing.AllocsPerRun(10, func() { _ = eng.TaintSpanState(nil) })
+	if allocs > 16 {
+		t.Fatalf("exporting an unchanged set of ~3900 spans allocates %.0f times per call, want a small constant", allocs)
+	}
+}
+
+// A secret registered after a span was recorded turns that span into its
+// hash, and scrubs its source, on the very next export.
+func TestTaintSpanState_SecretRegisteredLaterIsHashed(t *testing.T) {
+	t.Cleanup(redact.ResetSecrets)
+	const secret = "Vq7RmK2xLp9TzW4s"
+	const span = "/opt/vault/" + secret + "/drop.sh"
+	eng := exportFixture(50)
+	store := eng.spanStore()
+	store.mu.Lock()
+	store.recordLocked("copy it to "+span, "https://blog.example.net/"+secret, sec16TaintEnv)
+	store.mu.Unlock()
+	plain := false
+	for _, sp := range eng.TaintSpanState(nil).Spans {
+		plain = plain || sp.Kind == "path" && sp.Value == span
+	}
+	if !plain {
+		t.Fatal("setup: the path span is not exported in the clear before the secret is known")
+	}
+	redact.RegisterSecret(secret)
+	hashed := false
+	for _, sp := range eng.TaintSpanState(nil).Spans {
+		if strings.Contains(sp.Value, secret) || strings.Contains(sp.Source, secret) {
+			t.Fatalf("a secret registered after recording is still exported: %+v", sp)
+		}
+		hashed = hashed || sp.Kind == "path" && sp.Hash == taintHash(span)
+	}
+	if !hashed {
+		t.Fatal("the span holding a later-registered secret is not exported as its hash")
+	}
+}
+
+// overflowCovers reports whether every bit set in sub is set in super.
+func overflowCovers(super, sub session.TaintOverflow) bool {
+	if len(sub) == 0 {
+		return true
+	}
+	if len(super) != len(sub) {
+		return false
+	}
+	for i := range sub {
+		if sub[i]&^super[i] != 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// After every change, the export of an engine that has been exported all
+// along (answered from a memo whenever the store did not change) equals the
+// first export of a fresh engine that made the same changes, and callers
+// cannot alter it.
+func TestTaintSpanState_RepeatedExportMatchesFresh(t *testing.T) {
+	var f session.TaintOverflow
+	f.AddValue(string(taintKindHost), "seeded-overflow.example")
+	var hashedSeed []session.TaintSpan
+	for i := 0; i < 300; i++ {
+		hashedSeed = append(hashedSeed, session.TaintSpan{Kind: "token", Hash: taintHash(floodToken(90000 + i)), Source: "seed"})
+	}
+	ops := []func(s *taintSpanStore){
+		func(s *taintSpanStore) { s.recordLocked(exportFixtureText(0, 600), "web-a", sec16TaintEnv) },
+		func(s *taintSpanStore) { s.recordLocked(floodTaintHosts(0, 500), "web-b", sec16TaintEnv) },
+		// Seen again: the order changes, the set does not.
+		func(s *taintSpanStore) { s.recordLocked(exportFixtureText(100, 50), "web-c", sec16TaintEnv) },
+		func(s *taintSpanStore) { s.seedLocked(hashedSeed) },
+		func(s *taintSpanStore) { s.seedStateLocked(session.TaintState{Overflow: f}) },
+		// Past the cap: evictions, and an export cut over both tables.
+		func(s *taintSpanStore) { s.recordLocked(floodTaintHosts(500, 3000), "web-d", sec16TaintEnv) },
+		func(s *taintSpanStore) { s.recordLocked(exportFixtureText(2000, 400), "web-e", sec16TaintEnv) },
+		func(s *taintSpanStore) { s.recordLocked(floodTaintHosts(3400, 10), "web-f", sec16TaintEnv) },
+	}
+	apply := func(eng *Engine, ops ...func(s *taintSpanStore)) {
+		s := eng.spanStore()
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		for _, op := range ops {
+			op(s)
+		}
+	}
+	a := New(nil, tool.NewRegistry(nil), 1, "", nil, 0)
+	var got session.TaintState
+	for i, op := range ops {
+		apply(a, op)
+		got = a.TaintSpanState(nil)
+		if again := a.TaintSpanState(nil); !reflect.DeepEqual(again, got) {
+			t.Fatalf("after change %d: two exports of an unchanged store differ", i)
+		}
+		fresh := New(nil, tool.NewRegistry(nil), 1, "", nil, 0)
+		apply(fresh, ops[:i+1]...)
+		want := fresh.TaintSpanState(nil)
+		if !reflect.DeepEqual(got.Spans, want.Spans) {
+			t.Fatalf("after change %d: the export differs from a fresh export of the same store", i)
+		}
+		// The engine exported all along may have recorded more cut spans
+		// in its filter (fail-closed), never fewer.
+		if !overflowCovers(got.Overflow, want.Overflow) {
+			t.Fatalf("after change %d: the export lost filter bits of a fresh export", i)
+		}
+	}
+	if len(got.Spans) != session.MaxTaintSpans || !got.Overflow.HasValue(string(taintKindHost), "seeded-overflow.example") {
+		t.Fatalf("setup: exported %d spans, want the cap %d, and the seeded filter", len(got.Spans), session.MaxTaintSpans)
+	}
+	want := session.TaintState{Spans: append([]session.TaintSpan(nil), got.Spans...), Overflow: append(session.TaintOverflow(nil), got.Overflow...)}
+	got.Spans[0].Value, got.Spans[0].Hash = "tampered.example", ""
+	got.Overflow[0] ^= 0xff
+	if again := a.TaintSpanState(nil); !reflect.DeepEqual(again, want) {
+		t.Fatal("a caller's change to an export altered the next export")
+	}
+}
+
+// BenchmarkTaintSpanState_Unchanged measures a per-step save's export when
+// nothing new was recorded since the last one.
+func BenchmarkTaintSpanState_Unchanged(b *testing.B) {
+	eng := exportFixture(1300)
+	_ = eng.TaintSpanState(nil)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = eng.TaintSpanState(nil)
+	}
+}
+
+// BenchmarkTaintSpanState_NewSpans measures an export after a step recorded
+// a page with a few new spans.
+func BenchmarkTaintSpanState_NewSpans(b *testing.B) {
+	eng := exportFixture(1300)
+	store := eng.spanStore()
+	_ = eng.TaintSpanState(nil)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		store.mu.Lock()
+		store.recordLocked(exportFixtureText(100000+3*i, 3), "web", sec16TaintEnv)
+		store.mu.Unlock()
+		_ = eng.TaintSpanState(nil)
 	}
 }

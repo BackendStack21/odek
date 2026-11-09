@@ -52,6 +52,7 @@ func (s *taintSpanStore) seedStateLocked(st session.TaintState) {
 		// The union is a new filter, so the store never aliases the seed.
 		s.overflow = session.UnionTaintOverflow(s.overflow, st.Overflow)
 		s.seedOverflow = &st.Overflow[0]
+		s.version++
 	}
 }
 
@@ -80,8 +81,52 @@ func (s *taintSpanStore) seedLocked(spans []session.TaintSpan) {
 			s.evictTableLocked(table, hashed)
 		}
 		s.seq++
+		s.version++
 		table[k] = &taintSpan{source: sp.Source, seq: s.seq}
 	}
+}
+
+// taintExport is a memoized TaintSpanState result: valid while the store's
+// version and the redaction registry generation are those it was computed
+// under.
+type taintExport struct {
+	state   session.TaintState
+	version uint64
+	gen     uint64
+}
+
+// cloneTaintState returns a copy of st that shares no backing array with it.
+func cloneTaintState(st session.TaintState) session.TaintState {
+	return session.TaintState{Spans: slices.Clone(st.Spans), Overflow: slices.Clone(st.Overflow)}
+}
+
+// persistedLocked returns the span's persisted form — kind, value or hash,
+// and redacted source — computing it once per redaction registry generation
+// gen. A token, a value over the persisted size cap, and a value the
+// redactor would change are persisted as their hash; a secret registered
+// later (a new generation) re-decides it. redactedSources memoizes source
+// labels within one export, since a message's spans share one.
+func (sp *taintSpan) persistedLocked(k string, hashed bool, gen uint64, redactedSources map[string]string) session.TaintSpan {
+	if sp.persistedSet && sp.persistedGen == gen {
+		return sp.persisted
+	}
+	kind, value, _ := cutTaintKey(k)
+	source, ok := redactedSources[sp.source]
+	if !ok {
+		source = redact.RedactSecrets(sp.source)
+		redactedSources[sp.source] = source
+	}
+	out := session.TaintSpan{Kind: kind, Source: source}
+	switch {
+	case hashed:
+		out.Hash = value
+	case kind == string(taintKindToken) || len(value) > session.MaxTaintSpanValueBytes || redact.RedactSecrets(value) != value:
+		out.Hash = taintHash(value)
+	default:
+		out.Value = value
+	}
+	sp.persisted, sp.persistedGen, sp.persistedSet = out, gen, true
+	return out
 }
 
 // TaintSpanState records the spans of messages (the history being saved,
@@ -90,6 +135,12 @@ func (s *taintSpanStore) seedLocked(spans []session.TaintSpan) {
 // newest first, and the overflow filter (see session.MergeTaintState for
 // the bounds). Spans the list cuts stay held by the store and are added to
 // its overflow filter, so the export never forgets one.
+//
+// Every per-step save calls it, and the set rarely changes between steps:
+// an export is memoized against the store's version and the redaction
+// registry generation, and each span's persisted form is computed once per
+// generation, so an unchanged set costs a copy and a changed one redacts
+// only its new spans. The result is the caller's own copy.
 func (e *Engine) TaintSpanState(messages []session.Message) session.TaintState {
 	if len(messages) > 0 && (e.dangerousCfg == nil || e.dangerousCfg.TaintEscalationEnabled()) {
 		e.spanStore().observe(messages, currentTaintEnv())
@@ -100,6 +151,9 @@ func (e *Engine) TaintSpanState(messages []session.Message) session.TaintState {
 	if store == nil {
 		return session.TaintState{}
 	}
+	// The generation is read before anything is redacted: a secret
+	// registered while this export runs must not be stamped as applied.
+	gen := redact.Generation()
 	type entry struct {
 		sp     session.TaintSpan
 		seq    uint64
@@ -107,31 +161,30 @@ func (e *Engine) TaintSpanState(messages []session.Message) session.TaintState {
 		held   *taintSpan
 		hashed bool
 	}
-	var entries []entry
 	// The spans and the filter are read under one hold of the lock: an
 	// eviction in between would move a span from the one not yet read into
 	// the one already read.
 	store.mu.Lock()
+	if m := store.export; m != nil && m.version == store.version && m.gen == gen {
+		st := cloneTaintState(m.state)
+		store.mu.Unlock()
+		return st
+	}
+	version := store.version
+	entries := make([]entry, 0, len(store.spans)+len(store.hashed))
+	sources := make(map[string]string)
 	for _, table := range []struct {
 		m      map[string]*taintSpan
 		hashed bool
 	}{{store.spans, false}, {store.hashed, true}} {
 		for k, sp := range table.m {
-			kind, value, _ := cutTaintKey(k)
-			out := session.TaintSpan{Kind: kind, Source: redact.RedactSecrets(sp.source)}
-			switch {
-			case table.hashed:
-				out.Hash = value
-			case kind == string(taintKindToken) || len(value) > session.MaxTaintSpanValueBytes || redact.RedactSecrets(value) != value:
-				out.Hash = taintHash(value)
-			default:
-				out.Value = value
-			}
-			entries = append(entries, entry{out, sp.seq, k, sp, table.hashed})
+			entries = append(entries, entry{sp.persistedLocked(k, table.hashed, gen, sources), sp.seq, k, sp, table.hashed})
 		}
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].seq > entries[j].seq })
 	if len(entries) > session.MaxTaintSpans {
+		// Recording a cut span in the filter is part of this export (the
+		// filter is copied below), so it leaves the version alone.
 		for _, en := range entries[session.MaxTaintSpans:] {
 			store.overflowLocked(en.key, en.held, en.hashed)
 		}
@@ -143,7 +196,13 @@ func (e *Engine) TaintSpanState(messages []session.Message) session.TaintState {
 	for i, en := range entries {
 		spans[i] = en.sp
 	}
-	return session.MergeTaintState(session.TaintState{Spans: spans, Overflow: overflow}, session.TaintState{})
+	st := session.MergeTaintState(session.TaintState{Spans: spans, Overflow: overflow}, session.TaintState{})
+	store.mu.Lock()
+	if store.version == version {
+		store.export = &taintExport{state: st, version: version, gen: gen}
+	}
+	store.mu.Unlock()
+	return cloneTaintState(st)
 }
 
 // cutTaintKey splits a taintKey back into kind and value.

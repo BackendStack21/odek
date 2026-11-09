@@ -37,18 +37,21 @@ func MergeTaintState(newer, older TaintState) TaintState {
 	if len(newer.Spans) == 0 && len(older.Spans) == 0 {
 		return out
 	}
-	seen := make(map[string]bool, len(newer.Spans)+len(older.Spans))
+	// The key is the span without its source; a struct key costs no
+	// allocation per span (every per-step save merges a few thousand).
+	type spanKey struct{ kind, value, hash string }
+	seen := make(map[spanKey]struct{}, len(newer.Spans)+len(older.Spans))
 	out.Spans = make([]TaintSpan, 0, min(len(newer.Spans)+len(older.Spans), MaxTaintSpans))
 	for _, list := range [][]TaintSpan{newer.Spans, older.Spans} {
 		for _, sp := range list {
 			if sp.Kind == "" {
 				continue
 			}
-			key := sp.Kind + "\x00" + sp.Value + "\x00" + sp.Hash
-			if seen[key] {
+			key := spanKey{sp.Kind, sp.Value, sp.Hash}
+			if _, dup := seen[key]; dup {
 				continue
 			}
-			seen[key] = true
+			seen[key] = struct{}{}
 			if len(out.Spans) == MaxTaintSpans || (sp.Value == "") == (sp.Hash == "") || len(sp.Value) > MaxTaintSpanValueBytes || len(sp.Hash) > 64 {
 				if sp.Value != "" {
 					out.Overflow.AddValue(sp.Kind, sp.Value)
