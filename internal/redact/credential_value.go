@@ -13,7 +13,12 @@ const passwordPunct = "!@#$%^&*"
 // credentialNameRe finds a name containing a secret word followed by an
 // assignment separator (=, :, =>), tolerating a closing quote after the
 // name (JSON) and whitespace around the separator. Group 1 is the name.
-var credentialNameRe = regexp.MustCompile(`(?i)([A-Za-z0-9_-]*(?:token|secret|passw(?:or)?d|credential|api[_-]?key|access[_-]?key|private[_-]?key)[A-Za-z0-9_-]*)(?:\\?["'\x60])?\s*(?:=>|[:=])\s*`)
+// Gate: the secret word in some letter case: token, secret, passw (password,
+// passwd), credential, or api, access or private before key, joined by
+// nothing, '_' or '-'.
+var credentialNameRe = gated(regexp.MustCompile(`(?i)([A-Za-z0-9_-]*(?:token|secret|passw(?:or)?d|credential|api[_-]?key|access[_-]?key|private[_-]?key)[A-Za-z0-9_-]*)(?:\\?["'\x60])?\s*(?:=>|[:=])\s*`),
+	literals(folded("token", "secret", "passw", "credential",
+		"apikey", "api_key", "api-key", "accesskey", "access_key", "access-key", "privatekey", "private_key", "private-key")))
 
 // keyedNameRe matches the names whose value is always treated as a
 // credential, wherever the name begins: it ends with one of these words.
@@ -385,7 +390,11 @@ func sourceValue(v string) bool {
 // name, separator and value, as for the other redaction rules, except under a
 // quoted key whose value has the same quotes ({"password":"…"}), where it
 // covers the value inside its quotes only.
-func credentialMatches(text string) [][2]int {
+func credentialMatches(s *textScan) [][2]int {
+	if !s.may(credentialNameRe) {
+		return nil
+	}
+	text := s.text
 	var out [][2]int
 	covered := 0 // end of the last consumed span; names inside it are part of it
 	depthPos, curly, square := 0, 0, 0
@@ -459,9 +468,16 @@ func credentialMatches(text string) [][2]int {
 // redactCredentials replaces every credential-named assignment found by
 // credentialMatches (matches are ordered and never overlap).
 func redactCredentials(text string) string {
-	ms := credentialMatches(text)
+	s := newScan(text, false)
+	s.redactCredentials()
+	return s.text
+}
+
+func (s *textScan) redactCredentials() {
+	text := s.text
+	ms := credentialMatches(s)
 	if len(ms) == 0 {
-		return text
+		return
 	}
 	var b strings.Builder
 	last := 0
@@ -471,5 +487,5 @@ func redactCredentials(text string) string {
 		last = m[1]
 	}
 	b.WriteString(text[last:])
-	return b.String()
+	s.set(b.String())
 }
