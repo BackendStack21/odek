@@ -157,7 +157,7 @@ Output ONLY a JSON array. Example:
 
 Extracted atoms are immediately:
 
-1. Wrapped untrusted content (`<untrusted_content_*>`) is stripped from the user message before extraction.
+1. Untrusted regions are stripped from the user message before extraction: nonce'd `<untrusted_content_*>` wrappers (ended only by the close tag with the same nonce; one whose close tag is missing runs to the end of the message) and `<untrusted_input_*>` fences around a delegated task.
 2. Scanned for injection patterns, invisible Unicode, confusable scripts, and credential patterns (`sk-...`, PEM private keys, bearer tokens). If the optional guard is enabled for `memory`, the same content is also sent to the configured sidecar for a second opinion.
 3. Assigned `source_class: user_said`.
 4. Embedded and written to the atom store.
@@ -186,7 +186,7 @@ Extended Memory replaces episode-based recall with semantic search over atom vec
 
 ### Recall Pipeline
 
-1. Embed the latest user message via `memory.extended.embedding`.
+1. Take the principal's own words from the latest user message: untrusted regions (wrapped `@`-refs, attachments, `--ctx` files, forwards, a sub-agent's fenced task) are removed exactly as for extraction, and the rest is trimmed and cut to 2000 runes. If nothing remains, recall stops here: no context, no embedding, no memory-LLM call, and the previous turn's follow-up suggestions are cleared. Otherwise embed that text via `memory.extended.embedding`.
 2. Query the go-vector store for the top `semantic_search_top_k * semantic_search_overfetch` candidates.
 3. Drop tainted atoms and atoms below `semantic_search_min_score`.
 4. Compute a composite score: `0.6 * cosine_similarity + 0.4 * retention_score`.
@@ -215,7 +215,7 @@ The final recall result is also bounded by `memory_budget_chars`. Tainted atoms 
 
 ## Predictive Recall
 
-When `follow_up_anticipation_enabled` is true (default), the memory LLM receives the current user message, the last several user messages, and the current user-state model. It returns a JSON array of up to `predictive_intents` likely follow-up intents. Each intent is embedded and searched, and the union of literal-query matches and predicted-intent matches is injected into the main agent's context. For each predicted intent, the system also performs a type-targeted recall for `convention`, `file`, and `error` atoms so the agent can pre-load relevant conventions, references, and known failure modes.
+When `follow_up_anticipation_enabled` is true (default), the memory LLM receives the current user message, the last several user messages, and the current user-state model. Every message it receives is the principal's own words only, stripped and bounded as in step 1 of the recall pipeline; wrapped content in a turn is never part of the prompt. It returns a JSON array of up to `predictive_intents` likely follow-up intents. Each intent is embedded and searched, and the union of literal-query matches and predicted-intent matches is injected into the main agent's context. For each predicted intent, the system also performs a type-targeted recall for `convention`, `file`, and `error` atoms so the agent can pre-load relevant conventions, references, and known failure modes.
 
 Intents carry a `confidence` (0.0-1.0). Intents below 0.3 are skipped entirely; otherwise the composite score of every atom found via a predicted intent is multiplied by that intent's confidence, so a speculative intent cannot outrank literal-query matches.
 
@@ -557,7 +557,7 @@ Proactive engagement turns Extended Memory from a passive recall layer into a so
 
 ### Follow-up suggestions
 
-Predictive recall already generates likely follow-up intents on every recall to widen the search. Proactive engagement captures those intents instead of discarding them: after the internal noise floor of 0.3 confidence, intents at or above `follow_up_suggestion_min_confidence` (default `0.6`) are kept — at most 3 per recall — and exposed via `ExtendedMemory.LastFollowUps()` / `MemoryManager.FollowUpSuggestions()` for the CLI/Web/Telegram surfaces to render as suggested next steps. The capture costs zero extra LLM calls (it reuses the prediction the recall pipeline already paid for) and is replaced on every recall. Disable with `follow_up_suggestions_enabled: false` (recall behavior is unchanged either way).
+Predictive recall already generates likely follow-up intents on every recall to widen the search. Proactive engagement captures those intents instead of discarding them: after the internal noise floor of 0.3 confidence, intents at or above `follow_up_suggestion_min_confidence` (default `0.6`) are kept — at most 3 per recall — and exposed via `ExtendedMemory.LastFollowUps()` / `MemoryManager.FollowUpSuggestions()` for the CLI/Web/Telegram surfaces to render as suggested next steps. The capture costs zero extra LLM calls (it reuses the prediction the recall pipeline already paid for) and is replaced on every recall. Disable with `follow_up_suggestions_enabled: false` (recall behavior is unchanged either way). Suggestions are derived from the principal's own words only: an instruction inside an attached or forwarded document never reaches the predictor, so it cannot come back as a suggested next step, and a turn that is nothing but such content clears the list.
 
 ### Open loops
 
@@ -585,6 +585,7 @@ Extended Memory inherits and extends the provenance model from [MEMORY.md](MEMOR
 - **Taint quarantine**: indirect content is never embedded into the recallable vector space until promoted.
 - **Scan on write**: every atom is scanned for injection patterns, invisible Unicode, and credential patterns before persistence. The optional prompt-injection guard (see [docs/CONFIG.md](CONFIG.md#prompt-injection-guard)) can apply a second opinion to the `memory` scope; when enabled, it covers atom extraction, `add_atom`, user-model inference, and anaphora resolution.
 - **Untrusted wrapper**: content from file reads, web fetches, MCP, and subagents is wrapped as untrusted before the main model ever sees it; the memory subsystem treats it as tainted.
+- **Principal-only memory prompts**: wrapped content inside a user turn (`@`-refs, attachments, `--ctx` files, forwards, a fenced delegated task) is removed before the turn is embedded for recall, sent to intent prediction or rerank, kept as a recent message, or extracted, using the same nonce-paired parser the loop uses for its taint spans.
 - **No self-promotion**: the agent cannot promote a quarantined atom or confirm a pending user-model inference. Promotion and confirmation require an explicit user action or user message.
 - **Bounded storage**: the size cap prevents a memory-DoS where an attacker fills disk with recalled junk.
 - **Dedicated LLM isolation**: a compromised memory LLM can only add atoms; it cannot bypass provenance filtering or inject instructions into the main model's prompt.

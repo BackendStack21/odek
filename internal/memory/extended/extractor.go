@@ -108,13 +108,32 @@ func qualityViolation(text string) bool {
 	return ok
 }
 
-// untrustedRe matches nonce'd untrusted content wrappers so they can be
-// stripped before extraction.
-var untrustedRe = regexp.MustCompile(`(?s)<untrusted_content_[^\s>]*\s+source="[^"]*"\s*>.*?</untrusted_content_[^\s>]*>`)
-
-// StripUntrustedWrappers removes <untrusted_content_*> blocks from text.
+// StripUntrustedWrappers removes every untrusted region from text, leaving
+// only the principal's own words: nonce'd <untrusted_content_*> wrappers
+// (ended only by the close tag with the same nonce) and <untrusted_input_*>
+// fences around a delegated task. A region whose close tag is missing
+// (truncated content) runs to the end of the text. It is the same parser the
+// loop uses to tell the principal's text from ingested content.
 func StripUntrustedWrappers(text string) string {
-	return untrustedRe.ReplaceAllString(text, "")
+	return session.StripUntrustedBodies(text)
+}
+
+// maxRecallQueryRunes bounds the principal text recall hands to the memory
+// LLM (the intent-prediction and rerank prompts) and embeds as the query, and
+// each turn kept in the recent-message list that later predictions see. A
+// pasted log or document can run to hundreds of KB; the topic of a turn is
+// carried by far less. 2000 runes keep a long question with a short snippet
+// whole, and bound the predictor prompt (current turn plus ten recent turns)
+// to roughly 22K characters, which still fits the context of a small local
+// memory model.
+const maxRecallQueryRunes = 2000
+
+// principalQuery returns the principal's own words in a user turn, as recall
+// may use them: untrusted regions removed, surrounding whitespace trimmed,
+// cut to maxRecallQueryRunes. It is empty when nothing of the principal's
+// remains.
+func principalQuery(msg string) string {
+	return clipRunes(strings.TrimSpace(StripUntrustedWrappers(msg)), maxRecallQueryRunes)
 }
 
 // fenceRe matches a leading/trailing markdown code fence (``` or ```json)

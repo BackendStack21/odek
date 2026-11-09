@@ -261,6 +261,13 @@ func (r *Recall) deliverFollowUpsGen(gen uint64, intents []PredictedIntent) {
 	r.deliverFollowUps(intents)
 }
 
+// clearFollowUps replaces the follow-up suggestions with none for a turn that
+// runs no prediction, stamped as the newest turn so a prediction still
+// running for an earlier turn cannot land after it.
+func (r *Recall) clearFollowUps() {
+	r.deliverFollowUpsGen(r.followUpGen.Add(1), nil)
+}
+
 func (r *Recall) deliverFollowUps(intents []PredictedIntent) {
 	if r.followUpSink == nil ||
 		r.cfg.FollowUpSuggestionsEnabled == nil || !*r.cfg.FollowUpSuggestionsEnabled {

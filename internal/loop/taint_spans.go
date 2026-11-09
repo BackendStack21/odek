@@ -641,111 +641,45 @@ type untrustedBody struct {
 	end    int
 }
 
-// untrustedBodies returns every real untrusted-content wrapper in s.
+// untrustedBodies returns every real untrusted-content wrapper in s
+// (session.UntrustedBodies).
 func untrustedBodies(s string) []untrustedBody {
-	var out []untrustedBody
-	const attr = ` source="`
-	off := 0
-	for {
-		i := strings.Index(s[off:], session.UntrustedWrapperPrefix)
-		if i < 0 {
-			return out
-		}
-		start := off + i
-		rest := s[start+len(session.UntrustedWrapperPrefix):]
-		n := 0
-		for n < len(rest) && (isDigit(rest[n]) || rest[n] >= 'a' && rest[n] <= 'f') {
-			n++
-		}
-		if n == 0 || !strings.HasPrefix(rest[n:], attr) {
-			off = start + len(session.UntrustedWrapperPrefix)
-			continue
-		}
-		nonce := rest[:n]
-		label := rest[n+len(attr):]
-		q := strings.Index(label, `">`)
-		if q < 0 {
-			out = append(out, untrustedBody{source: "", body: label, start: start, end: len(s)})
-			return out
-		}
-		bodyStart := start + len(session.UntrustedWrapperPrefix) + n + len(attr) + q + 2
-		closeTag := "</untrusted_content_" + nonce + ">"
-		c := strings.Index(s[bodyStart:], closeTag)
-		end := len(s)
-		body := s[bodyStart:]
-		if c >= 0 {
-			body = s[bodyStart : bodyStart+c]
-			end = bodyStart + c + len(closeTag)
-		}
-		out = append(out, untrustedBody{source: label[:q], body: body, start: start, end: end})
-		off = end
-		if off >= len(s) {
-			return out
-		}
-	}
+	return loopUntrustedBodies(session.UntrustedBodies(s), "")
 }
 
-// stripUntrustedBodies removes every wrapper from s, leaving the text the
-// principal wrote.
+// stripUntrustedBodies removes every wrapper and fence from s, leaving the
+// text the principal wrote (session.StripUntrustedBodies).
 func stripUntrustedBodies(s string) string {
-	bodies := append(untrustedBodies(s), untrustedInputBodies(s)...)
-	sort.Slice(bodies, func(i, j int) bool { return bodies[i].start < bodies[j].start })
-	if len(bodies) == 0 {
-		return s
-	}
-	var b strings.Builder
-	prev := 0
-	for _, w := range bodies {
-		if w.start < prev {
-			continue // nested in a wrapper already removed
-		}
-		b.WriteString(s[prev:w.start])
-		b.WriteByte('\n')
-		prev = w.end
-	}
-	b.WriteString(s[prev:])
-	return b.String()
+	return session.StripUntrustedBodies(s)
 }
 
 // untrustedInputSource labels spans recorded from a delegated task that its
 // parent fenced as untrusted input.
 const untrustedInputSource = "delegated task (untrusted input)"
 
-// untrustedInputBodies returns every <untrusted_input_<nonce>> fence in s:
-// the boundary a parent puts around a delegated task derived from untrusted
-// content. Its body is untrusted in the child, never the principal's words.
+// untrustedInputBodies returns every <untrusted_input_<nonce>> fence in s
+// (session.UntrustedInputBodies): the boundary a parent puts around a
+// delegated task derived from untrusted content, labelled
+// untrustedInputSource.
 func untrustedInputBodies(s string) []untrustedBody {
-	const open = "<untrusted_input_"
-	var out []untrustedBody
-	off := 0
-	for {
-		i := strings.Index(s[off:], open)
-		if i < 0 {
-			return out
-		}
-		start := off + i
-		rest := s[start+len(open):]
-		n := 0
-		for n < len(rest) && (isDigit(rest[n]) || rest[n] >= 'a' && rest[n] <= 'f') {
-			n++
-		}
-		if n == 0 || n >= len(rest) || rest[n] != '>' {
-			off = start + len(open)
-			continue
-		}
-		bodyStart := start + len(open) + n + 1
-		closeTag := "</untrusted_input_" + rest[:n] + ">"
-		end, body := len(s), s[bodyStart:]
-		if c := strings.Index(s[bodyStart:], closeTag); c >= 0 {
-			body = s[bodyStart : bodyStart+c]
-			end = bodyStart + c + len(closeTag)
-		}
-		out = append(out, untrustedBody{source: untrustedInputSource, body: body, start: start, end: end})
-		off = end
-		if off >= len(s) {
-			return out
-		}
+	return loopUntrustedBodies(session.UntrustedInputBodies(s), untrustedInputSource)
+}
+
+// loopUntrustedBodies converts the shared parser's regions, labelling each
+// with source when source is set.
+func loopUntrustedBodies(in []session.UntrustedBody, source string) []untrustedBody {
+	if len(in) == 0 {
+		return nil
 	}
+	out := make([]untrustedBody, len(in))
+	for i, b := range in {
+		src := b.Source
+		if source != "" {
+			src = source
+		}
+		out[i] = untrustedBody{source: src, body: b.Body, start: b.Start, end: b.End}
+	}
+	return out
 }
 
 // bgReadTool reports tools that surface background-job output; they inherit the taint of the

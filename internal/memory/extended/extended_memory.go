@@ -821,8 +821,19 @@ func (em *ExtendedMemory) PinAtom(id string) error {
 
 // FormatExtendedContext returns formatted Extended Memory context for the
 // query, or empty string if nothing matches or Extended Memory is disabled.
+//
+// The query is a user turn as the loop sees it, which can carry wrapped
+// untrusted content (@-refs, attachments, --ctx files, forwards, a fenced
+// delegated task). Only the principal's own words, bounded, are embedded and
+// handed to the memory LLM; a turn with none makes no recall at all and
+// clears the previous turn's follow-up suggestions.
 func (em *ExtendedMemory) FormatExtendedContext(ctx context.Context, query string) string {
 	if em == nil || !em.Enabled() {
+		return ""
+	}
+	query = principalQuery(query)
+	if query == "" {
+		em.recall.clearFollowUps()
 		return ""
 	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -846,14 +857,17 @@ func (em *ExtendedMemory) FormatContext(ctx context.Context, query string) strin
 	return em.FormatExtendedContext(ctx, query)
 }
 
-// OnUserMessage extracts atoms from a user message and stores them.
+// OnUserMessage extracts atoms from a user message and stores them. The turn
+// is remembered for later predictions as the principal's own words only
+// (principalQuery); extraction strips untrusted regions itself.
 func (em *ExtendedMemory) OnUserMessage(ctx AtomContext, msg string) {
 	if em == nil || !em.Enabled() {
 		return
 	}
+	principal := principalQuery(msg)
 
 	em.mu.Lock()
-	em.lastUser = msg
+	em.lastUser = principal
 	if ctx.SessionID != "" {
 		em.session = ctx.SessionID
 	} else {
@@ -873,12 +887,14 @@ func (em *ExtendedMemory) OnUserMessage(ctx AtomContext, msg string) {
 	}
 	em.mu.Unlock()
 
-	em.recentMu.Lock()
-	em.recentUserMessages = append(em.recentUserMessages, msg)
-	if len(em.recentUserMessages) > recentUserMessageLimit {
-		em.recentUserMessages = em.recentUserMessages[len(em.recentUserMessages)-recentUserMessageLimit:]
+	if principal != "" {
+		em.recentMu.Lock()
+		em.recentUserMessages = append(em.recentUserMessages, principal)
+		if len(em.recentUserMessages) > recentUserMessageLimit {
+			em.recentUserMessages = em.recentUserMessages[len(em.recentUserMessages)-recentUserMessageLimit:]
+		}
+		em.recentMu.Unlock()
 	}
-	em.recentMu.Unlock()
 
 	if em.cfg.AutoExtractPerTurn == nil || !*em.cfg.AutoExtractPerTurn {
 		return
