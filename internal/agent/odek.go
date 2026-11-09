@@ -594,9 +594,7 @@ func New(cfg Config) (_ *Agent, setupErr error) {
 			maxContext = discovered
 		}
 	}
-	if maxContext > 0 {
-		log.Printf("odek: model %q context window: %d tokens", cfg.Model, maxContext)
-	}
+	noteContextWindow(cfg.Model, maxContext)
 
 	// Build tool registry from external Tool interface
 	tools := make([]tool.Tool, len(cfg.Tools))
@@ -1717,4 +1715,30 @@ func (a *Agent) DroppedEvents() uint64 {
 		return 0
 	}
 	return a.emitter.Dropped()
+}
+
+// contextNotices remembers which context-window notices this process printed:
+// every serve session, chat, schedule run and sub-agent builds an agent, and
+// the line would otherwise repeat for each.
+var contextNotices sync.Map
+
+// noteContextWindow prints the context-window notice once per process for each
+// model and window.
+func noteContextWindow(model string, maxContext int) {
+	if _, seen := contextNotices.LoadOrStore(fmt.Sprintf("%s\x00%d", model, maxContext), true); !seen {
+		log.Print(contextWindowNotice(model, maxContext))
+	}
+}
+
+// contextWindowNotice is the startup line about the trim budget. An unknown
+// window is a warning: proactive trimming is then off, and the conversation is
+// only trimmed after the provider rejects a request as too long.
+func contextWindowNotice(model string, maxContext int) string {
+	if maxContext > 0 {
+		return fmt.Sprintf("odek: model %q context window: %d tokens", model, maxContext)
+	}
+	return fmt.Sprintf("odek: model %q context window unknown (llm.context_window is not set, the model is not in "+
+		"the built-in table, and the provider's model list did not give one for it, or could not be read); "+
+		"proactive trimming is off, so the conversation is only trimmed after the provider rejects it as too long "+
+		"— set llm.context_window", model)
 }

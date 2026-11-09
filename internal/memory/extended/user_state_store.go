@@ -47,7 +47,10 @@ func (s *UserStateStore) Load() (UserState, error) {
 	if err := json.Unmarshal(data, &state); err != nil {
 		return UserState{}, fmt.Errorf("user state store: parse: %w", err)
 	}
-	return state, nil
+	// Every read is bounded (a file written before the size bounds, or edited
+	// by hand), so no load path can hand an oversized model to a prompt or
+	// write it back.
+	return boundUserState(state), nil
 }
 
 // Save writes the UserState atomically with restricted permissions.
@@ -58,7 +61,7 @@ func (s *UserStateStore) Save(state UserState) error {
 	if err := os.MkdirAll(filepath.Dir(s.file), 0700); err != nil {
 		return fmt.Errorf("user state store: mkdir: %w", err)
 	}
-	data, err := json.MarshalIndent(state, "", "  ")
+	data, err := json.MarshalIndent(boundUserState(state), "", "  ")
 	if err != nil {
 		return fmt.Errorf("user state store: marshal: %w", err)
 	}

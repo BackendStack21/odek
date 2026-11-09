@@ -428,3 +428,57 @@ func writeTestSkill(t *testing.T, dir, name, body string) {
 	content := "---\nname: " + name + "\n---\n\n" + body
 	os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(content), 0644)
 }
+
+// Run from $HOME, ./.odek/skills is ~/.odek/skills: the skills load once, from
+// the trusted user dir, with no distrusted project copies shadowed by them.
+func TestScanDirs_ProjectDirIsTheUserDir(t *testing.T) {
+	userDir := t.TempDir()
+	writeSkillFile(t, userDir, "audit", "name: audit\ndescription: Audit code\n", "Audit the code.")
+	for _, projectDir := range []string{userDir, userDir + string(os.PathSeparator) + "."} {
+		res := ScanDirs(projectDir, userDir, nil)
+		all := append(append([]Skill(nil), res.AutoLoad...), res.Lazy...)
+		if len(all) != 1 {
+			t.Fatalf("project %q: %d skills, want 1", projectDir, len(all))
+		}
+		if all[0].Provenance.NeedsReview {
+			t.Fatalf("project %q: the user's own skill was marked for review", projectDir)
+		}
+	}
+}
+
+func TestScanDirs_ProjectDirSymlinkedToTheUserDir(t *testing.T) {
+	userDir := t.TempDir()
+	writeSkillFile(t, userDir, "audit", "name: audit\ndescription: Audit code\n", "Audit the code.")
+	link := filepath.Join(t.TempDir(), "skills")
+	if err := os.Symlink(userDir, link); err != nil {
+		t.Skipf("symlink: %v", err)
+	}
+	res := ScanDirs(link, userDir, nil)
+	all := append(append([]Skill(nil), res.AutoLoad...), res.Lazy...)
+	if len(all) != 1 || all[0].Provenance.NeedsReview {
+		t.Fatalf("got %d skills (needs review: %v), want the trusted copy only", len(all), len(all) == 1 && all[0].Provenance.NeedsReview)
+	}
+}
+
+// A distinct project dir keeps its distrust pin.
+func TestScanDirs_DistinctProjectDirStaysDistrusted(t *testing.T) {
+	userDir, projectDir := t.TempDir(), t.TempDir()
+	writeSkillFile(t, projectDir, "deploy", "name: deploy\ndescription: Deploy\n", "Deploy the app.")
+	res := ScanDirs(projectDir, userDir, nil)
+	all := append(append([]Skill(nil), res.AutoLoad...), res.Lazy...)
+	if len(all) != 1 || !all[0].Provenance.NeedsReview {
+		t.Fatalf("project skill not pinned for review: %+v", all)
+	}
+}
+
+// The cached scan (the SkillManager's path) treats a project dir that is the
+// user dir the same way.
+func TestScanDirsCached_ProjectDirIsTheUserDir(t *testing.T) {
+	userDir := t.TempDir()
+	writeSkillFile(t, userDir, "audit", "name: audit\ndescription: Audit code\n", "Audit the code.")
+	res := scanDirsCached(userDir, userDir, nil, make(fileCache), make(skillCache))
+	all := append(append([]Skill(nil), res.AutoLoad...), res.Lazy...)
+	if len(all) != 1 || all[0].Provenance.NeedsReview {
+		t.Fatalf("got %d skills (needs review: %v), want the trusted copy only", len(all), len(all) == 1 && all[0].Provenance.NeedsReview)
+	}
+}
