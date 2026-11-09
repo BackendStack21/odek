@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/BackendStack21/odek/internal/session"
 )
@@ -125,15 +126,56 @@ func StripUntrustedWrappers(text string) string {
 // carried by far less. 2000 runes keep a long question with a short snippet
 // whole, and bound the predictor prompt (current turn plus ten recent turns)
 // to roughly 22K characters, which still fits the context of a small local
-// memory model.
+// memory model. A longer text keeps both of its ends (elideMiddleRunes): the
+// commonest long principal message is a paste followed by the actual
+// question, and its opening usually says what the paste is.
 const maxRecallQueryRunes = 2000
+
+// recallQueryElision stands, on its own line, for the middle of a principal
+// text cut by elideMiddleRunes.
+const recallQueryElision = "\n…\n"
 
 // principalQuery returns the principal's own words in a user turn, as recall
 // may use them: untrusted regions removed, surrounding whitespace trimmed,
-// cut to maxRecallQueryRunes. It is empty when nothing of the principal's
-// remains.
+// and at most maxRecallQueryRunes runes (elideMiddleRunes). It is empty when
+// nothing of the principal's remains.
 func principalQuery(msg string) string {
-	return clipRunes(strings.TrimSpace(StripUntrustedWrappers(msg)), maxRecallQueryRunes)
+	return elideMiddleRunes(strings.TrimSpace(StripUntrustedWrappers(msg)), maxRecallQueryRunes)
+}
+
+// elideMiddleRunes returns s unchanged when it has at most n runes.
+// Otherwise it keeps the first and the last part of s, splitting what the
+// recallQueryElision marker leaves of n between them (the head gets the odd
+// rune), so the result has exactly n runes and is cut on rune boundaries.
+// When n leaves no room beside the marker, s is cut to its first n runes.
+func elideMiddleRunes(s string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	total := utf8.RuneCountInString(s)
+	if total <= n {
+		return s
+	}
+	marker := utf8.RuneCountInString(recallQueryElision)
+	if n <= marker {
+		return clipRunes(s, n)
+	}
+	keep := n - marker
+	headRunes := keep - keep/2
+	tailFrom := total - keep/2 // rune index where the kept tail starts
+	headEnd, tailStart := len(s), len(s)
+	r := 0
+	for i := range s {
+		if r == headRunes {
+			headEnd = i
+		}
+		if r == tailFrom {
+			tailStart = i
+			break
+		}
+		r++
+	}
+	return s[:headEnd] + recallQueryElision + s[tailStart:]
 }
 
 // fenceRe matches a leading/trailing markdown code fence (``` or ```json)

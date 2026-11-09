@@ -248,7 +248,11 @@ func TestWrappedOnlyTurnClearsFollowUps(t *testing.T) {
 // LLM (now and as a recent message on later turns) and embeds is bounded.
 func TestRED_OversizedPrincipalMessageIsBounded(t *testing.T) {
 	const tail = "TAILMARK9041"
-	huge := redPrincipal + ". " + strings.Repeat("parser token ", 30000) + tail
+	// mid sits deep inside the message: whatever the cut keeps of its two
+	// ends, the middle of a 390 KB paste is never sent.
+	const mid = "MIDMARK5527"
+	filler := strings.Repeat("parser token ", 15000)
+	huge := redPrincipal + ". " + filler + mid + " " + filler + tail
 	const promptLimit = 32 << 10
 
 	check := func(t *testing.T, llm *promptRecLLM, emb *mockEmbedder) {
@@ -262,8 +266,8 @@ func TestRED_OversizedPrincipalMessageIsBounded(t *testing.T) {
 				if len(p) > promptLimit {
 					t.Errorf("%s prompt is %d bytes for one turn", kind, len(p))
 				}
-				if strings.Contains(p, tail) {
-					t.Errorf("%s prompt carries the end of a %d-byte message", kind, len(huge))
+				if strings.Contains(p, mid) {
+					t.Errorf("%s prompt carries the middle of a %d-byte message", kind, len(huge))
 				}
 				if !strings.Contains(p, redPrincipal) {
 					t.Errorf("%s prompt lost the start of the message", kind)
@@ -271,7 +275,7 @@ func TestRED_OversizedPrincipalMessageIsBounded(t *testing.T) {
 			}
 		}
 		for _, q := range emb.embedded() {
-			if strings.Contains(q, tail) {
+			if strings.Contains(q, mid) {
 				t.Errorf("the whole %d-byte message was embedded as a recall query", len(huge))
 			}
 		}
@@ -287,8 +291,10 @@ func TestRED_OversizedPrincipalMessageIsBounded(t *testing.T) {
 		// Multi-byte runes throughout, so a byte-based cut would split one.
 		msg := redPrincipal + ". " + strings.Repeat("parsér tökén ", 30000) + tail
 		runes := []rune(msg)
-		kept := string(runes[:maxRecallQueryRunes])
-		over := string(runes[:maxRecallQueryRunes+1])
+		keep := maxRecallQueryRunes - utf8.RuneCountInString(recallQueryElision)
+		head, tailRunes := keep-keep/2, keep/2
+		kept := string(runes[:head]) + recallQueryElision + string(runes[len(runes)-tailRunes:])
+		over := string(runes[:head+1])
 		llm := &promptRecLLM{}
 		em, emb := newRedRecallEM(t, llm)
 		_ = em.FormatExtendedContext(redRecallCtx(t), msg)
@@ -298,7 +304,7 @@ func TestRED_OversizedPrincipalMessageIsBounded(t *testing.T) {
 					t.Errorf("%s prompt is not valid UTF-8", kind)
 				}
 				if !strings.Contains(p, kept) {
-					t.Errorf("%s prompt does not carry the first %d runes of the message", kind, maxRecallQueryRunes)
+					t.Errorf("%s prompt does not carry the message cut to %d runes (both ends)", kind, maxRecallQueryRunes)
 				}
 				if strings.Contains(p, over) {
 					t.Errorf("%s prompt carries more than %d runes of the message", kind, maxRecallQueryRunes)
@@ -322,11 +328,106 @@ func TestRED_OversizedPrincipalMessageIsBounded(t *testing.T) {
 			if len(p) > promptLimit*recentUserMessageLimit/2 {
 				t.Errorf("predictor prompt is %d bytes: recent messages are unbounded", len(p))
 			}
-			if strings.Contains(p, tail) {
-				t.Error("predictor prompt carries the end of an oversized recent message")
+			if strings.Contains(p, mid) {
+				t.Error("predictor prompt carries the middle of an oversized recent message")
 			}
 		}
 	})
+}
+
+// The commonest long principal message is a paste followed by the actual
+// question ("<log> … why does this fail?"). Bounding it must keep the
+// question as well as the opening, for this turn and for the turns
+// remembered for later predictions.
+func TestRED_RecallQueryKeepsTrailingQuestion(t *testing.T) {
+	const opening = "Here is the build log from the nightly parser job"
+	const question = "why does TestParseNested fail only on arm64"
+	msg := opening + ".\n" + strings.Repeat("ok   github.com/acme/parse/internal   0.412s\n", 2000) + question + "?"
+	if danger.IsOverrideShaped(msg) {
+		t.Fatal("test message is override-shaped; the predictor would skip it on any build")
+	}
+
+	t.Run("current turn", func(t *testing.T) {
+		llm := &promptRecLLM{}
+		em, emb := newRedRecallEM(t, llm)
+		_ = em.FormatExtendedContext(redRecallCtx(t), msg)
+		for _, kind := range []string{"intent-prediction", "relevance ranking"} {
+			got := llm.prompts(kind)
+			if len(got) == 0 {
+				t.Fatalf("no %s prompt was sent", kind)
+			}
+			for _, p := range got {
+				if !strings.Contains(p, question) {
+					t.Errorf("%s prompt lost the question at the end of the message", kind)
+				}
+				if !strings.Contains(p, opening) {
+					t.Errorf("%s prompt lost the opening sentence of the message", kind)
+				}
+			}
+		}
+		found := false
+		for _, q := range emb.embedded() {
+			if strings.Contains(q, question) && strings.Contains(q, opening) {
+				found = true
+			}
+		}
+		if !found {
+			t.Error("the recall query embedded does not carry both the opening and the question")
+		}
+	})
+	t.Run("recent turns", func(t *testing.T) {
+		llm := &promptRecLLM{}
+		em, _ := newRedRecallEM(t, llm)
+		em.OnUserMessage(AtomContext{}, msg)
+		_ = em.FormatExtendedContext(redRecallCtx(t), "and what about the lexer")
+		got := llm.prompts("intent-prediction")
+		if len(got) == 0 {
+			t.Fatal("no intent-prediction prompt was sent")
+		}
+		for _, p := range got {
+			if !strings.Contains(p, question) || !strings.Contains(p, opening) {
+				t.Error("the remembered turn lost its opening or its question")
+			}
+		}
+	})
+}
+
+func TestElideMiddleRunes_Table(t *testing.T) {
+	m := recallQueryElision
+	cases := []struct {
+		name string
+		s    string
+		n    int
+		want string
+	}{
+		{"under the cap", "abcdef", 10, "abcdef"},
+		{"exactly at the cap", "abcdefghij", 10, "abcdefghij"},
+		{"one over the cap", "abcdefghijk", 10, "abcd" + m + "ijk"},
+		{"odd room: the head gets the extra rune", "abcdefghijkl", 8, "abc" + m + "kl"},
+		{"multi-byte runes at both cut points", "ééééé日日日日日", 9, "ééé" + m + "日日日"},
+		{"multi-byte everywhere", strings.Repeat("ü", 50), 11, strings.Repeat("ü", 4) + m + strings.Repeat("ü", 4)},
+		{"room for one rune beside the marker", "abcdefgh", 4, "a" + m},
+		{"cap equal to the marker", "abcdefgh", 3, "abc"},
+		{"cap smaller than the marker", "日本語のテキスト", 2, "日本"},
+		{"cap of one", "abcdef", 1, "a"},
+		{"cap of zero", "abcdef", 0, ""},
+		{"negative cap", "abcdef", -4, ""},
+		{"empty text", "", 5, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := elideMiddleRunes(c.s, c.n)
+			if got != c.want {
+				t.Errorf("elideMiddleRunes(%q, %d) = %q, want %q", c.s, c.n, got, c.want)
+			}
+			if !utf8.ValidString(got) {
+				t.Errorf("result is not valid UTF-8: %q", got)
+			}
+			if c.n >= 0 && utf8.RuneCountInString(got) > c.n {
+				t.Errorf("result has %d runes, cap %d", utf8.RuneCountInString(got), c.n)
+			}
+		})
+	}
 }
 
 // The stripper is the trust boundary for every memory caller (extraction,

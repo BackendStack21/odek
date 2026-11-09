@@ -186,7 +186,7 @@ Extended Memory replaces episode-based recall with semantic search over atom vec
 
 ### Recall Pipeline
 
-1. Take the principal's own words from the latest user message: untrusted regions (wrapped `@`-refs, attachments, `--ctx` files, forwards, a sub-agent's fenced task) are removed exactly as for extraction, and the rest is trimmed and cut to 2000 runes. If nothing remains, recall stops here: no context, no embedding, no memory-LLM call, and the previous turn's follow-up suggestions are cleared. Otherwise embed that text via `memory.extended.embedding`.
+1. Take the principal's own words from the latest user message: untrusted regions (wrapped `@`-refs, attachments, `--ctx` files, forwards, a sub-agent's fenced task) are removed exactly as for extraction, and the rest is trimmed and bounded to 2000 runes. A longer text keeps both of its ends, about 1000 runes each, joined by an elision line (`…`), so a pasted log followed by the actual question keeps its opening and the question. If nothing remains, recall stops here: no context, no embedding, no memory-LLM call, and the previous turn's follow-up suggestions are cleared. Otherwise embed that text via `memory.extended.embedding`.
 2. Query the go-vector store for the top `semantic_search_top_k * semantic_search_overfetch` candidates.
 3. Drop tainted atoms and atoms below `semantic_search_min_score`.
 4. Compute a composite score: `0.6 * cosine_similarity + 0.4 * retention_score`.
