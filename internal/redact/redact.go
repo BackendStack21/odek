@@ -1452,12 +1452,6 @@ func guardedPatternMatches(s *textScan) [][2]int {
 }
 
 // redactGuarded replaces every guarded match, merging overlaps.
-func redactGuarded(text string) string {
-	s := newScan(text, false)
-	s.redactGuarded()
-	return s.text
-}
-
 func (s *textScan) redactGuarded() {
 	text := s.text
 	ms := guardedPatternMatches(s)

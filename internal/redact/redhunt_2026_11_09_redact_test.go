@@ -76,12 +76,33 @@ func TestRED_RedactSecretFreeTextCostsFewRegexpPasses(t *testing.T) {
 	if calibration.MatchString(text) {
 		t.Fatal("calibration pattern must not match")
 	}
+	// Each side is the best of five runs; the calibration is floored at 1ms,
+	// as the scaling tests floor their small input, so timer granularity on a
+	// very fast machine cannot inflate the ratio.
 	scan := bestOf(5, func() { calibration.FindStringIndex(text) })
+	if scan < time.Millisecond {
+		scan = time.Millisecond
+	}
 	redact := bestOf(5, func() { RedactSecrets(text) })
 	ratio := float64(redact) / float64(scan)
 	t.Logf("256 KiB prose: RedactSecrets %v, one full scan %v, ratio %.2f", redact, scan, ratio)
 	if ratio > 6 {
 		t.Fatalf("RedactSecrets on secret-free prose costs %.1f full regexp scans (%v vs %v), want at most 6", ratio, redact, scan)
+	}
+}
+
+// HTTPie and xh take the credential after -a; other short flags of theirs are
+// skipped, and -a outside those commands is left alone.
+func TestHTTPieShortAuthFlag(t *testing.T) {
+	for in, want := range map[string]string{
+		"http -a admin:letmeinplease GET https://x":       "http -a admin:[REDACTED] GET https://x",
+		"xh -v -a admin:letmeinplease https://x":          "xh -v -a admin:[REDACTED] https://x",
+		"https -b -a admin:letmeinplease POST https://x":  "https -b -a admin:[REDACTED] POST https://x",
+		"tar -a admin:letmeinplease -cf out.tar.gz files": "tar -a admin:letmeinplease -cf out.tar.gz files",
+	} {
+		if got := RedactSecrets(in); got != want {
+			t.Errorf("RedactSecrets(%q)\n got  %q\n want %q", in, got, want)
+		}
 	}
 }
 
@@ -105,7 +126,9 @@ func TestRedactPatternSkipChecksScaleLinearly(t *testing.T) {
 		base = 16 << 10
 	}
 	for name, gen := range gens {
-		small, large := finalRedactTime(gen(base), 3), finalRedactTime(gen(10*base), 1)
+		// Both sizes take the best of several runs: one preempted run of the
+		// larger input would otherwise read as super-linear growth.
+		small, large := finalRedactTime(gen(base), 3), finalRedactTime(gen(10*base), 2)
 		if small < time.Millisecond {
 			small = time.Millisecond
 		}

@@ -467,12 +467,6 @@ func credentialMatches(s *textScan) [][2]int {
 
 // redactCredentials replaces every credential-named assignment found by
 // credentialMatches (matches are ordered and never overlap).
-func redactCredentials(text string) string {
-	s := newScan(text, false)
-	s.redactCredentials()
-	return s.text
-}
-
 func (s *textScan) redactCredentials() {
 	text := s.text
 	ms := credentialMatches(s)
