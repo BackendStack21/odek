@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
+	"hash/fnv"
 	"math/bits"
 )
 
@@ -15,10 +16,11 @@ import (
 // positive only adds an escalation, which is the fail-closed direction; there
 // are no false negatives.
 //
-// The filter never holds a raw value. Bit positions derive from the SHA-256
-// of the span's hashed key, kind + NUL + TaintSpanHash(value): a span kept in
-// the clear and the same span kept as its hash set the same bits, and the
-// positions are stable across processes, so the filter can be persisted.
+// The filter never holds a raw value. Bit positions derive from the span's
+// hashed key, kind + NUL + TaintSpanHash(value) (see taintOverflowProbe): a
+// span kept in the clear and the same span kept as its hash set the same
+// bits, and the positions are stable across processes, so the filter can be
+// persisted.
 //
 // A nil filter is empty. A filter whose length is neither 0 nor
 // TaintOverflowBytes (a damaged or hand-edited session file) can no longer
@@ -46,9 +48,10 @@ const (
 	// unrelated command in a hundred. A quarter of the size (32 KiB) would put
 	// the 50,000 figure at about 8% per lookup, several tens of percent per
 	// command, which an unattended surface turns into denials.
-	TaintOverflowBytes  = 128 << 10
-	taintOverflowBits   = TaintOverflowBytes * 8
-	taintOverflowProbes = 4
+	TaintOverflowBytes    = 128 << 10
+	taintOverflowBits     = TaintOverflowBytes * 8
+	taintOverflowLog2Bits = 20 // taintOverflowBits == 1 << taintOverflowLog2Bits
+	taintOverflowProbes   = 4
 
 	// TaintOverflowNearlyFull is the Fill at which the filter counts as
 	// nearly full. With 4 probes a lookup of a span that was never recorded
@@ -69,13 +72,28 @@ func TaintSpanHash(value string) string {
 }
 
 // taintOverflowProbe returns the bit positions of the span kind/hash.
+//
+// The key is kind + NUL + hash, where hash is already the hex SHA-256 of the
+// value, so the positions need spreading, not secrecy: they come from two
+// FNV-1a 64-bit hashes by double hashing. h1 is the FNV-1a of the key, h2
+// that of the key followed by one 0xff byte, forced odd, and position i is
+// the top 20 bits of h1 + i*h2. The top bits matter: FNV-1a's low 20 bits
+// depend only on the low 20 bits of its state, so h2's low bits would be a
+// function of h1's and the four probes would collapse into one (measured: a
+// false-positive rate near n/2^20 instead of the estimate). FNV-1a has no
+// seed, so the positions are the same in every process and on every
+// platform, as a persisted filter needs; the layout is pinned by a test.
 func taintOverflowProbe(kind, hash string) [taintOverflowProbes]uint32 {
-	var buf [96]byte
-	key := append(append(append(buf[:0], kind...), 0), hash...)
-	sum := sha256.Sum256(key)
+	h := fnv.New64a()
+	h.Write([]byte(kind))
+	h.Write([]byte{0})
+	h.Write([]byte(hash))
+	h1 := h.Sum64()
+	h.Write([]byte{0xff})
+	h2 := h.Sum64() | 1
 	var pos [taintOverflowProbes]uint32
 	for i := range pos {
-		pos[i] = binary.BigEndian.Uint32(sum[4*i:]) % taintOverflowBits
+		pos[i] = uint32((h1 + uint64(i)*h2) >> (64 - taintOverflowLog2Bits))
 	}
 	return pos
 }
