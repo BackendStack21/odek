@@ -1,9 +1,6 @@
 package session
 
-import (
-	"sort"
-	"strings"
-)
+import "strings"
 
 // UntrustedInputPrefix opens the fence a parent puts around a delegated task
 // derived from untrusted content: <untrusted_input_<hex nonce>>.
@@ -26,81 +23,141 @@ type UntrustedBody struct {
 // order. A wrapper is `<untrusted_content_<hex nonce> source="<label>">` and
 // ends only at the close tag carrying the same nonce, so a forged or nested
 // close tag inside the body does not end it. Prose naming the tag is not a
-// wrapper.
+// wrapper. Regions are found by one pass over s with the fences
+// (untrustedRegions), so a wrapper tag inside a fence body is part of that
+// body, not a wrapper.
 func UntrustedBodies(s string) []UntrustedBody {
+	return regionsOfKind(s, false)
+}
+
+// UntrustedInputBodies returns every <untrusted_input_<hex nonce>> fence in
+// s, in order. A fence ends only at the close tag carrying the same nonce.
+// Its body is untrusted in the child, never the principal's words. Like
+// UntrustedBodies, it reports the regions of one pass over s, so a fence tag
+// inside a wrapper body is part of that body, not a fence.
+func UntrustedInputBodies(s string) []UntrustedBody {
+	return regionsOfKind(s, true)
+}
+
+// untrustedRegion is one region found by untrustedRegions, of either kind.
+type untrustedRegion struct {
+	UntrustedBody
+	fence bool
+}
+
+func regionsOfKind(s string, fence bool) []UntrustedBody {
 	var out []UntrustedBody
-	const attr = ` source="`
+	for _, r := range untrustedRegions(s) {
+		if r.fence == fence {
+			out = append(out, r.UntrustedBody)
+		}
+	}
+	return out
+}
+
+// untrustedRegions returns every untrusted region of s, wrappers and fences,
+// in one pass: the earliest valid opener of either kind starts a region,
+// which runs to its own nonce-paired close tag, or to the end of s when that
+// is missing; the scan resumes after the region. An opener inside a region's
+// body is never parsed as a region, so an unterminated opener nested in a
+// region of the other kind cannot hide a real region that follows it.
+// Regions never overlap.
+func untrustedRegions(s string) []untrustedRegion {
+	var out []untrustedRegion
+	nextWrap := indexFrom(s, UntrustedWrapperPrefix, 0)
+	nextFence := indexFrom(s, UntrustedInputPrefix, 0)
 	off := 0
 	for {
-		i := strings.Index(s[off:], UntrustedWrapperPrefix)
-		if i < 0 {
+		if nextWrap >= 0 && nextWrap < off {
+			nextWrap = indexFrom(s, UntrustedWrapperPrefix, off)
+		}
+		if nextFence >= 0 && nextFence < off {
+			nextFence = indexFrom(s, UntrustedInputPrefix, off)
+		}
+		var (
+			r  untrustedRegion
+			ok bool
+		)
+		switch {
+		case nextWrap < 0 && nextFence < 0:
 			return out
+		case nextFence < 0 || (nextWrap >= 0 && nextWrap < nextFence):
+			if r, ok = wrapperAt(s, nextWrap); !ok {
+				nextWrap = indexFrom(s, UntrustedWrapperPrefix, nextWrap+len(UntrustedWrapperPrefix))
+				continue
+			}
+		default:
+			if r, ok = fenceAt(s, nextFence); !ok {
+				nextFence = indexFrom(s, UntrustedInputPrefix, nextFence+len(UntrustedInputPrefix))
+				continue
+			}
 		}
-		start := off + i
-		rest := s[start+len(UntrustedWrapperPrefix):]
-		n := 0
-		for n < len(rest) && isLowerHex(rest[n]) {
-			n++
-		}
-		if n == 0 || !strings.HasPrefix(rest[n:], attr) {
-			off = start + len(UntrustedWrapperPrefix)
-			continue
-		}
-		nonce := rest[:n]
-		label := rest[n+len(attr):]
-		q := strings.Index(label, `">`)
-		if q < 0 {
-			return append(out, UntrustedBody{Body: label, Start: start, End: len(s)})
-		}
-		bodyStart := start + len(UntrustedWrapperPrefix) + n + len(attr) + q + 2
-		closeTag := "</untrusted_content_" + nonce + ">"
-		end, body := len(s), s[bodyStart:]
-		if c := strings.Index(s[bodyStart:], closeTag); c >= 0 {
-			body = s[bodyStart : bodyStart+c]
-			end = bodyStart + c + len(closeTag)
-		}
-		out = append(out, UntrustedBody{Source: label[:q], Body: body, Start: start, End: end})
-		off = end
+		out = append(out, r)
+		off = r.End
 		if off >= len(s) {
 			return out
 		}
 	}
 }
 
-// UntrustedInputBodies returns every <untrusted_input_<hex nonce>> fence in
-// s, in order. A fence ends only at the close tag carrying the same nonce.
-// Its body is untrusted in the child, never the principal's words.
-func UntrustedInputBodies(s string) []UntrustedBody {
-	var out []UntrustedBody
-	off := 0
-	for {
-		i := strings.Index(s[off:], UntrustedInputPrefix)
-		if i < 0 {
-			return out
-		}
-		start := off + i
-		rest := s[start+len(UntrustedInputPrefix):]
-		n := 0
-		for n < len(rest) && isLowerHex(rest[n]) {
-			n++
-		}
-		if n == 0 || n >= len(rest) || rest[n] != '>' {
-			off = start + len(UntrustedInputPrefix)
-			continue
-		}
-		bodyStart := start + len(UntrustedInputPrefix) + n + 1
-		closeTag := "</untrusted_input_" + rest[:n] + ">"
-		end, body := len(s), s[bodyStart:]
-		if c := strings.Index(s[bodyStart:], closeTag); c >= 0 {
-			body = s[bodyStart : bodyStart+c]
-			end = bodyStart + c + len(closeTag)
-		}
-		out = append(out, UntrustedBody{Body: body, Start: start, End: end})
-		off = end
-		if off >= len(s) {
-			return out
-		}
+// indexFrom returns the index of sub in s at or after from, or -1.
+func indexFrom(s, sub string, from int) int {
+	if from > len(s) {
+		return -1
 	}
+	if i := strings.Index(s[from:], sub); i >= 0 {
+		return from + i
+	}
+	return -1
+}
+
+// wrapperAt parses the untrusted-content wrapper whose opener starts at
+// start, reporting false when the text there is not a wrapper opener.
+func wrapperAt(s string, start int) (untrustedRegion, bool) {
+	const attr = ` source="`
+	rest := s[start+len(UntrustedWrapperPrefix):]
+	n := 0
+	for n < len(rest) && isLowerHex(rest[n]) {
+		n++
+	}
+	if n == 0 || !strings.HasPrefix(rest[n:], attr) {
+		return untrustedRegion{}, false
+	}
+	nonce := rest[:n]
+	label := rest[n+len(attr):]
+	q := strings.Index(label, `">`)
+	if q < 0 {
+		return untrustedRegion{UntrustedBody: UntrustedBody{Body: label, Start: start, End: len(s)}}, true
+	}
+	bodyStart := start + len(UntrustedWrapperPrefix) + n + len(attr) + q + 2
+	closeTag := "</untrusted_content_" + nonce + ">"
+	end, body := len(s), s[bodyStart:]
+	if c := strings.Index(s[bodyStart:], closeTag); c >= 0 {
+		body = s[bodyStart : bodyStart+c]
+		end = bodyStart + c + len(closeTag)
+	}
+	return untrustedRegion{UntrustedBody: UntrustedBody{Source: label[:q], Body: body, Start: start, End: end}}, true
+}
+
+// fenceAt parses the untrusted-input fence whose opener starts at start,
+// reporting false when the text there is not a fence opener.
+func fenceAt(s string, start int) (untrustedRegion, bool) {
+	rest := s[start+len(UntrustedInputPrefix):]
+	n := 0
+	for n < len(rest) && isLowerHex(rest[n]) {
+		n++
+	}
+	if n == 0 || n >= len(rest) || rest[n] != '>' {
+		return untrustedRegion{}, false
+	}
+	bodyStart := start + len(UntrustedInputPrefix) + n + 1
+	closeTag := "</untrusted_input_" + rest[:n] + ">"
+	end, body := len(s), s[bodyStart:]
+	if c := strings.Index(s[bodyStart:], closeTag); c >= 0 {
+		body = s[bodyStart : bodyStart+c]
+		end = bodyStart + c + len(closeTag)
+	}
+	return untrustedRegion{UntrustedBody: UntrustedBody{Body: body, Start: start, End: end}, fence: true}, true
 }
 
 // StripUntrustedBodies removes every untrusted-content wrapper and
@@ -122,17 +179,13 @@ func UnwrapUntrustedBodies(s string) string {
 }
 
 func replaceUntrustedBodies(s string, keepBody bool) string {
-	bodies := append(UntrustedBodies(s), UntrustedInputBodies(s)...)
-	if len(bodies) == 0 {
+	regions := untrustedRegions(s)
+	if len(regions) == 0 {
 		return s
 	}
-	sort.Slice(bodies, func(i, j int) bool { return bodies[i].Start < bodies[j].Start })
 	var b strings.Builder
 	prev := 0
-	for _, w := range bodies {
-		if w.Start < prev {
-			continue // nested in a region already replaced
-		}
+	for _, w := range regions {
 		b.WriteString(s[prev:w.Start])
 		b.WriteByte('\n')
 		if keepBody {

@@ -239,6 +239,17 @@ func (b *rerankBreaker) end(probe bool, err error, inconclusive bool) {
 	}
 }
 
+// releaseProbe frees the probe slot of a probe whose outcome was never
+// recorded (the call panicked), changing nothing else.
+func (b *rerankBreaker) releaseProbe() {
+	if b == nil {
+		return
+	}
+	b.mu.Lock()
+	b.probing = false
+	b.mu.Unlock()
+}
+
 // logShortTimeout reports whether a rerank timeout under less than a fair
 // budget should be logged now: at most once per rerankShortTimeoutLogEvery
 // for this breaker. A nil breaker always logs.

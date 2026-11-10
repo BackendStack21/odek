@@ -471,6 +471,16 @@ func (r *Recall) rerank(ctx context.Context, query string, scored []scoredAtomMe
 		r.noteRerankSkipped()
 		return scored
 	}
+	// A probe whose outcome is never recorded (the call panicked) must still
+	// free the probe slot, or no later turn could probe again.
+	recorded := false
+	if probe {
+		defer func() {
+			if !recorded {
+				r.breaker.releaseProbe()
+			}
+		}()
+	}
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "Rank these memory atoms by relevance to: %s\n\n", query)
@@ -489,6 +499,7 @@ func (r *Recall) rerank(ctx context.Context, query string, scored []scoredAtomMe
 	cancel()
 	fair := budget >= limits.fair
 	r.breaker.end(probe, err, err != nil && rerankInconclusive(ctx, err, timedOut, fair))
+	recorded = true
 	if timedOut && !callerCancelled(ctx, err) {
 		r.trackErr(context.DeadlineExceeded)
 		if !fair && r.breaker.logShortTimeout() {
