@@ -42,11 +42,10 @@ type ExtendedMemory struct {
 	guard    guard.Guard
 	guardCfg guard.Config
 
-	dir      string
-	mu       sync.RWMutex
-	session  string
-	project  string
-	lastUser string
+	dir     string
+	mu      sync.RWMutex
+	session string
+	project string
 
 	// testCapBytes overrides cfg.MaxSizeMB in tests. 0 means use cfg.
 	testCapBytes int64
@@ -710,8 +709,11 @@ func (em *ExtendedMemory) AnaphoraResolve(ctx context.Context, msg string) (stri
 	// queryAtomsScored already filters by min score and ranks by the blended
 	// similarity/retention score, so the top candidate is the antecedent. The
 	// paid LLM rerank is skipped: the blended order is what picks it, and a
-	// rerank per pronoun-bearing turn would only add cost.
-	scored, err := em.recall.queryAtomsScored(ctx, msg, true)
+	// rerank per pronoun-bearing turn would only add cost. The search uses the
+	// bounded principal text, like recall: embedding takes no context, so an
+	// unbounded paste would be embedded whole on every such turn. The pronoun
+	// is still replaced in the whole message below.
+	scored, err := em.recall.queryAtomsScored(ctx, principalQuery(msg), true)
 	if err != nil || len(scored) == 0 {
 		return msg, false
 	}
@@ -880,7 +882,6 @@ func (em *ExtendedMemory) OnUserMessage(ctx AtomContext, msg string) {
 	principal := principalQuery(msg)
 
 	em.mu.Lock()
-	em.lastUser = principal
 	if ctx.SessionID != "" {
 		em.session = ctx.SessionID
 	} else {

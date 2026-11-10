@@ -1237,6 +1237,28 @@ func TestRED_TruncatedProbeTimeoutLeavesBreakerAsIs(t *testing.T) {
 	}
 }
 
+// Anaphora resolution runs on every pronoun-bearing turn, and embedding takes
+// no context, so its search query must be bounded like recall's. The pronoun
+// is still replaced in the whole (stripped) message.
+func TestRED_AnaphoraSearchQueryIsBounded(t *testing.T) {
+	const tail = "TAILMARK3318"
+	msg := "why does it fail on the parser? " + strings.Repeat("panic: parser token stack overflow\n", 9000) + tail
+	llm := &promptRecLLM{}
+	em, emb := newRedRecallEM(t, llm)
+	resolved, ok := em.AnaphoraResolve(context.Background(), msg)
+	if !ok {
+		t.Fatal("no resolution; the test no longer reaches the candidate query")
+	}
+	for _, q := range emb.embedded() {
+		if n := utf8.RuneCountInString(q); n > maxRecallQueryRunes {
+			t.Errorf("anaphora resolution embedded a %d-rune query (cap %d)", n, maxRecallQueryRunes)
+		}
+	}
+	if !strings.HasSuffix(resolved, tail) || strings.Contains(resolved, " it ") {
+		t.Errorf("the pronoun was not replaced in the whole message (len %d)", len(resolved))
+	}
+}
+
 func TestRerankInconclusive(t *testing.T) {
 	live := context.Background()
 	stopped, cancel := context.WithCancel(context.Background())
