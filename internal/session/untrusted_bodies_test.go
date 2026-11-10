@@ -102,3 +102,37 @@ func TestUntrustedBodies_SourcesAndOffsets(t *testing.T) {
 		t.Errorf("fences = %+v", in)
 	}
 }
+
+func TestUnwrapUntrustedBodies_Table(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"plain text unchanged", "plain text", "plain text"},
+		{"whole message one wrapper", `<untrusted_content_ab source="voice">` + "\nhello there\n</untrusted_content_ab>", "\n\nhello there\n\n"},
+		{
+			"text around two wrappers",
+			`pre <untrusted_content_ab source="w">ONE</untrusted_content_ab> mid <untrusted_content_cd source="r">TWO</untrusted_content_cd> post`,
+			"pre \nONE\n mid \nTWO\n post",
+		},
+		{"unterminated wrapper keeps the rest as body", `pre <untrusted_content_ab source="w">BODY and more`, "pre \nBODY and more\n"},
+		{"fence", "pre <untrusted_input_ab12>X</untrusted_input_ab12> post", "pre \nX\n post"},
+		{
+			"close tag with the wrong nonce stays in the body",
+			`pre <untrusted_content_ab source="w">ONE</untrusted_content_cd> TWO</untrusted_content_ab> post`,
+			"pre \nONE</untrusted_content_cd> TWO\n post",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := UnwrapUntrustedBodies(c.in)
+			if got != c.want {
+				t.Errorf("UnwrapUntrustedBodies(%q)\n got %q\nwant %q", c.in, got, c.want)
+			}
+			if strings.Contains(got, UntrustedWrapperPrefix+"ab") || strings.Contains(got, UntrustedInputPrefix+"ab12>") {
+				t.Errorf("an outer tag survived: %q", got)
+			}
+		})
+	}
+}

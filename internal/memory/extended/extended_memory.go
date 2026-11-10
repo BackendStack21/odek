@@ -829,17 +829,24 @@ func (em *ExtendedMemory) PinAtom(id string) error {
 // query, or empty string if nothing matches or Extended Memory is disabled.
 //
 // The query is a user turn as the loop sees it, which can carry wrapped
-// untrusted content (@-refs, attachments, --ctx files, forwards, a fenced
-// delegated task). Only the principal's own words, bounded, are embedded and
-// handed to the memory LLM; a turn with none makes no recall at all and
-// clears the previous turn's follow-up suggestions.
+// untrusted content (@-refs, attachments, --ctx files, forwards, voice
+// transcripts, photo captions and descriptions, a fenced delegated task).
+// The local vector search embeds the turn with that content unwrapped
+// (recallSearchText), so it may decide which trusted atoms surface. The
+// memory LLM (intent prediction and rerank) only ever sees the principal's
+// own words (principalQuery). A turn with no principal words gets the vector
+// search alone: no memory-LLM call, and the previous turn's follow-up
+// suggestions are cleared. A turn with no text at all makes no recall.
 func (em *ExtendedMemory) FormatExtendedContext(ctx context.Context, query string) string {
 	if em == nil || !em.Enabled() {
 		return ""
 	}
-	query = principalQuery(query)
-	if query == "" {
+	principal := principalQuery(query)
+	search := recallSearchText(query)
+	if principal == "" {
 		em.recall.clearFollowUps()
+	}
+	if search == "" {
 		return ""
 	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -850,7 +857,7 @@ func (em *ExtendedMemory) FormatExtendedContext(ctx context.Context, query strin
 	copy(recent, em.recentUserMessages)
 	em.recentMu.Unlock()
 
-	context, err := em.recall.Query(ctx, query, recent, em.userModel.State())
+	context, err := em.recall.queryTurn(ctx, principal, search, recent, em.userModel.State())
 	if err != nil {
 		log.Printf("extended memory: format context failed: %v", err)
 		return ""

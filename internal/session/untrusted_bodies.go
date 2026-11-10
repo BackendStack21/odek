@@ -108,6 +108,20 @@ func UntrustedInputBodies(s string) []UntrustedBody {
 // removed region becomes a newline, so the text on either side cannot join
 // into a new tag; an unterminated region removes everything to the end.
 func StripUntrustedBodies(s string) string {
+	return replaceUntrustedBodies(s, false)
+}
+
+// UnwrapUntrustedBodies replaces every untrusted-content wrapper and
+// untrusted-input fence in s with its body, removing the tags: the
+// principal's text together with the content in it. Each body sits on its
+// own lines. Regions nested inside a body are kept as they appear there.
+// The result carries untrusted text; use it only where untrusted text may
+// steer the outcome (for example a local similarity search).
+func UnwrapUntrustedBodies(s string) string {
+	return replaceUntrustedBodies(s, true)
+}
+
+func replaceUntrustedBodies(s string, keepBody bool) string {
 	bodies := append(UntrustedBodies(s), UntrustedInputBodies(s)...)
 	if len(bodies) == 0 {
 		return s
@@ -117,10 +131,14 @@ func StripUntrustedBodies(s string) string {
 	prev := 0
 	for _, w := range bodies {
 		if w.Start < prev {
-			continue // nested in a region already removed
+			continue // nested in a region already replaced
 		}
 		b.WriteString(s[prev:w.Start])
 		b.WriteByte('\n')
+		if keepBody {
+			b.WriteString(w.Body)
+			b.WriteByte('\n')
+		}
 		prev = w.End
 	}
 	b.WriteString(s[prev:])

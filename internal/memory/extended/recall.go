@@ -93,10 +93,18 @@ type QueryResult struct {
 // Query searches for relevant atoms. It returns a formatted context string
 // bounded by MemoryBudgetChars, or empty string if nothing matches.
 func (r *Recall) Query(ctx context.Context, query string, recent []string, state UserState) (string, error) {
+	return r.queryTurn(ctx, query, query, recent, state)
+}
+
+// queryTurn is Query with the turn split in two: search is embedded for the
+// vector search, principal is the only text handed to the memory LLM (intent
+// prediction and rerank). With an empty principal the vector search runs
+// alone, with no memory-LLM call.
+func (r *Recall) queryTurn(ctx context.Context, principal, search string, recent []string, state UserState) (string, error) {
 	if r.store == nil || r.index == nil {
 		return "", nil
 	}
-	res, err := r.queryAtomsWithPrediction(ctx, query, recent, state)
+	res, err := r.recallAtoms(ctx, principal, search, recent, state)
 	if err != nil {
 		log.Printf("extended memory: recall query failed: %v", err)
 		return "", err
@@ -137,13 +145,21 @@ func (r *Recall) noteRerankSkipped() {
 // is sorted by that score, so predicted-intent matches cannot override the
 // blended ranking with a pure retention ordering.
 func (r *Recall) queryAtomsWithPrediction(ctx context.Context, query string, recent []string, state UserState) ([]MemoryAtom, error) {
+	return r.recallAtoms(ctx, query, query, recent, state)
+}
+
+// recallAtoms is queryAtomsWithPrediction with the turn split in two (see
+// queryTurn): the literal vector search embeds search, while prediction and
+// the rerank of the literal candidates use principal only, and are skipped
+// when it is empty.
+func (r *Recall) recallAtoms(ctx context.Context, principal, search string, recent []string, state UserState) ([]MemoryAtom, error) {
 	all := make(map[string]scoredAtomMeta)
 
 	// Run intent prediction concurrently with the literal query (which may
 	// include a paid LLM rerank). Sequentially, the rerank can consume most of
 	// the recall context deadline, starving the predictor of budget and making
 	// it fail with context-deadline-exceeded before its LLM call even starts.
-	predicting := r.predictor != nil && r.cfg.PredictiveIntents > 0 &&
+	predicting := principal != "" && r.predictor != nil && r.cfg.PredictiveIntents > 0 &&
 		r.cfg.FollowUpAnticipationEnabled != nil && *r.cfg.FollowUpAnticipationEnabled
 	type predictResult struct {
 		intents []PredictedIntent
@@ -153,12 +169,12 @@ func (r *Recall) queryAtomsWithPrediction(ctx context.Context, query string, rec
 	if predicting {
 		predCh = make(chan predictResult, 1)
 		go func() {
-			intents, err := r.predictor.Predict(ctx, query, recent, state)
+			intents, err := r.predictor.Predict(ctx, principal, recent, state)
 			predCh <- predictResult{intents, err}
 		}()
 	}
 
-	literal, err := r.queryAtomsScored(ctx, query, false)
+	literal, err := r.scoredCandidates(ctx, search, principal, principal == "")
 	if err != nil {
 		r.trackErr(err)
 		return nil, err
@@ -351,6 +367,14 @@ func (r *Recall) queryAtoms(ctx context.Context, query string) ([]MemoryAtom, er
 // map. skipRerank suppresses the paid LLM rerank for auxiliary (predicted
 // intent) queries.
 func (r *Recall) queryAtomsScored(ctx context.Context, query string, skipRerank bool) ([]scoredAtomMeta, error) {
+	return r.scoredCandidates(ctx, query, query, skipRerank)
+}
+
+// scoredCandidates is queryAtomsScored with the vector-search text and the
+// rerank text apart: candidates come from embedding search, and the rerank
+// prompt, if any, is built from rerankQuery alone. An empty rerankQuery
+// skips the rerank.
+func (r *Recall) scoredCandidates(ctx context.Context, search, rerankQuery string, skipRerank bool) ([]scoredAtomMeta, error) {
 	k := r.cfg.SemanticSearchTopK
 	if k <= 0 {
 		k = DefaultConfig().SemanticSearchTopK
@@ -364,7 +388,7 @@ func (r *Recall) queryAtomsScored(ctx context.Context, query string, skipRerank 
 		minScore = DefaultConfig().SemanticSearchMinScore
 	}
 
-	candidates := r.index.search(query, k*overfetch)
+	candidates := r.index.search(search, k*overfetch)
 	if len(candidates) == 0 {
 		return nil, nil
 	}
@@ -396,8 +420,8 @@ func (r *Recall) queryAtomsScored(ctx context.Context, query string, skipRerank 
 		scored = append(scored, scoredAtomMeta{atom: atom, score: score})
 	}
 
-	if !skipRerank && r.cfg.SemanticSearchRerank != nil && *r.cfg.SemanticSearchRerank && r.llm != nil && len(scored) > 1 {
-		scored = r.rerank(ctx, query, scored)
+	if !skipRerank && rerankQuery != "" && r.cfg.SemanticSearchRerank != nil && *r.cfg.SemanticSearchRerank && r.llm != nil && len(scored) > 1 {
+		scored = r.rerank(ctx, rerankQuery, scored)
 	}
 
 	sort.SliceStable(scored, func(i, j int) bool {

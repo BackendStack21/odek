@@ -128,7 +128,8 @@ func StripUntrustedWrappers(text string) string {
 // to roughly 22K characters, which still fits the context of a small local
 // memory model. A longer text keeps both of its ends (elideMiddleRunes): the
 // commonest long principal message is a paste followed by the actual
-// question, and its opening usually says what the paste is.
+// question, and its opening usually says what the paste is. The same bound
+// applies to the wider vector-search text (recallSearchText).
 const maxRecallQueryRunes = 2000
 
 // recallQueryElision stands, on its own line, for the middle of a principal
@@ -141,6 +142,17 @@ const recallQueryElision = "\n…\n"
 // nothing of the principal's remains.
 func principalQuery(msg string) string {
 	return elideMiddleRunes(strings.TrimSpace(StripUntrustedWrappers(msg)), maxRecallQueryRunes)
+}
+
+// recallSearchText returns the text the local vector search embeds for a
+// user turn: the principal's words together with the bodies of its untrusted
+// regions, tags removed, trimmed and bounded like principalQuery. A voice
+// transcript, a photo caption or an attached document can then still decide
+// which trusted atoms surface. It carries untrusted text, so it is only ever
+// embedded: it never reaches a memory-LLM prompt, the recent-message list or
+// a follow-up suggestion. It is empty when the turn has no text at all.
+func recallSearchText(msg string) string {
+	return elideMiddleRunes(strings.TrimSpace(session.UnwrapUntrustedBodies(msg)), maxRecallQueryRunes)
 }
 
 // elideMiddleRunes returns s unchanged when it has at most n runes.
