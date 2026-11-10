@@ -13,40 +13,55 @@ import (
 // start until recall returns. Two guards keep a slow or failing memory LLM
 // from stalling every turn.
 //
-// First, one rerank call gets at most half of the recall budget left when it
-// starts, and never more than rerankMaxBudget, so when it does not answer
-// recall still has time to return the blended ranking.
+// First, one rerank call gets what is left of the recall budget minus a
+// small reserve, so when it does not answer recall still has time to return
+// the blended ranking, and never more than rerankMaxBudget. A memory model
+// that answers inside the recall budget therefore still reranks, however
+// slow it is; one that hangs costs at most one near-full budget per turn
+// until the breaker opens.
 //
 // Second, a circuit breaker: after rerankBreakerThreshold consecutive
-// failures or timeouts the rerank is skipped for a cooldown that starts at
+// failures the rerank is skipped for a cooldown that starts at
 // rerankBreakerBaseCooldown and doubles on each failed probe up to
 // rerankBreakerMaxCooldown. Once a cooldown has passed, one call probes the
 // memory LLM; a success closes the breaker and resets the backoff. While it
 // is open, recall uses the blended order and makes no rerank call.
 //
 // Only outcomes that say something about the memory LLM count toward the
-// breaker: an error from the LLM, or a timeout of a call that had the full
-// rerankMaxBudget. A call the caller cancelled, or one that timed out under
-// a budget the recall deadline had shortened, changes no breaker state.
+// breaker: an error from the LLM, or a timeout of a call that had at least
+// rerankFairBudget. A call the caller cancelled, or one that timed out with
+// less than a fair budget (the vector search ate the rest of the recall
+// budget), changes no breaker state. Such a short-budget timeout is still
+// counted as a recall timeout and logged, at most once a minute.
 const (
-	// rerankMaxBudget caps one rerank call. The rerank asks for one line of
+	// rerankMaxBudget caps one rerank call: the 5 s turn-start recall
+	// budget, so a model that answers within it reranks as it did before
+	// the rerank was bounded. It also bounds callers that set no deadline
+	// (explicit atom search), which would otherwise wait for the memory-LLM
+	// client timeout.
+	rerankMaxBudget = 5 * time.Second
+	// rerankFairBudget is the least budget under which a rerank timeout
+	// says the memory LLM is unhealthy. The rerank asks for one line of
 	// indices over a prompt of a few KB (a bounded query plus at most
-	// top_k*overfetch atoms of atom_max_chars), which a responsive model
-	// answers well inside 2 s. Turn-start recall has a 5 s budget, so the
-	// half-of-what-is-left rule alone would allow about 2.5 s there; the cap
-	// keeps a slow call to 2 s, about 3 s short of that deadline. It also
-	// bounds callers that set no deadline (explicit atom search), which
-	// would otherwise wait for the memory-LLM client timeout.
-	rerankMaxBudget = 2 * time.Second
+	// top_k*overfetch atoms of atom_max_chars); a responsive model, local
+	// or remote, answers that well inside 1.5 s, while a hung or overloaded
+	// one does not answer at all.
+	rerankFairBudget = 1500 * time.Millisecond
 	// rerankMinBudget is the least time worth giving a rerank call. A
 	// memory-LLM round trip (request, prompt processing of a few KB, one
 	// line back) takes a few hundred milliseconds even on a responsive
 	// model, so a call given less mostly times out and only spends the
-	// turn's start time. With less than this left, the rerank is skipped
-	// and the skip is not a failure. Together with the shortened-budget rule
-	// above, a slow vector search that eats the recall budget cannot trip
-	// the breaker: either no call is made, or its timeout does not count.
+	// turn's start time. With less than this left, the rerank is skipped and
+	// the skip is not a failure.
 	rerankMinBudget = 300 * time.Millisecond
+	// rerankReserveMin is the least time held back from the rerank for
+	// recall to sort, format and return once the call ends; the reserve is a
+	// tenth of what is left when that is more.
+	rerankReserveMin = 250 * time.Millisecond
+
+	// rerankShortTimeoutLogEvery rate-limits the log line for rerank
+	// timeouts under less than a fair budget, per breaker.
+	rerankShortTimeoutLogEvery = time.Minute
 
 	rerankBreakerThreshold    = 2
 	rerankBreakerBaseCooldown = time.Minute
@@ -58,18 +73,40 @@ const (
 	rerankBreakerRegistryMax = 64
 )
 
-// rerankBudget returns how long one rerank call may take under ctx.
-func rerankBudget(ctx context.Context) time.Duration {
-	return rerankBudgetWithin(ctx, rerankMaxBudget)
+// rerankLimits is the rerank budget rule: the cap, the fair budget, the
+// floor and the minimum reserve.
+type rerankLimits struct {
+	max, fair, min, reserveMin time.Duration
 }
 
-// rerankBudgetWithin is rerankBudget with the cap given: half of what is
-// left on ctx, never more than max.
-func rerankBudgetWithin(ctx context.Context, max time.Duration) time.Duration {
-	budget := max
+// defaultRerankLimits is the rule recall runs with.
+var defaultRerankLimits = rerankLimits{
+	max:        rerankMaxBudget,
+	fair:       rerankFairBudget,
+	min:        rerankMinBudget,
+	reserveMin: rerankReserveMin,
+}
+
+// scaledTo returns the rule with its cap set to max and every other limit
+// scaled in proportion (tests run the rule in a fraction of its time).
+func (l rerankLimits) scaledTo(max time.Duration) rerankLimits {
+	scale := func(d time.Duration) time.Duration {
+		return time.Duration(float64(d) * float64(max) / float64(l.max))
+	}
+	return rerankLimits{max: max, fair: scale(l.fair), min: scale(l.min), reserveMin: scale(l.reserveMin)}
+}
+
+// rerankBudgetWithin returns how long one rerank call may take under ctx:
+// what is left on ctx minus a reserve (a tenth of it, at least
+// l.reserveMin) so recall can still return the blended order, never more
+// than l.max. Without a deadline it is l.max.
+func rerankBudgetWithin(ctx context.Context, l rerankLimits) time.Duration {
+	budget := l.max
 	if dl, ok := ctx.Deadline(); ok {
-		if half := time.Until(dl) / 2; half < budget {
-			budget = half
+		left := time.Until(dl)
+		reserve := max(left/10, l.reserveMin)
+		if avail := left - reserve; avail < budget {
+			budget = avail
 		}
 	}
 	return budget
@@ -86,6 +123,8 @@ type rerankBreaker struct {
 	cooldown  time.Duration    // current cooldown; zero while closed
 	openUntil time.Time
 	probing   bool
+	// shortLogged is when a short-budget timeout was last logged.
+	shortLogged time.Time
 
 	used uint64 // registry recency, guarded by rerankBreakers' mutex
 }
@@ -156,9 +195,9 @@ func (b *rerankBreaker) begin() (allowed, probe bool) {
 }
 
 // end records the outcome of a call begin allowed. An inconclusive outcome
-// (the caller cancelled the call, or it timed out under a shortened budget;
-// rerankInconclusive) says nothing about the memory LLM: it changes no state, and
-// an inconclusive probe lets the next turn probe.
+// (the caller cancelled the call, or it timed out with less than a fair
+// budget; rerankInconclusive) says nothing about the memory LLM: it changes
+// no state, and an inconclusive probe lets the next turn probe.
 func (b *rerankBreaker) end(probe bool, err error, inconclusive bool) {
 	if b == nil {
 		if err != nil {
@@ -200,6 +239,23 @@ func (b *rerankBreaker) end(probe bool, err error, inconclusive bool) {
 	}
 }
 
+// logShortTimeout reports whether a rerank timeout under less than a fair
+// budget should be logged now: at most once per rerankShortTimeoutLogEvery
+// for this breaker. A nil breaker always logs.
+func (b *rerankBreaker) logShortTimeout() bool {
+	if b == nil {
+		return true
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	now := b.clockLocked()
+	if !b.shortLogged.IsZero() && now.Sub(b.shortLogged) < rerankShortTimeoutLogEvery {
+		return false
+	}
+	b.shortLogged = now
+	return true
+}
+
 // isOpen reports whether the breaker is currently skipping reranks (open or
 // waiting on a probe).
 func (b *rerankBreaker) isOpen() bool {
@@ -218,10 +274,10 @@ func callerCancelled(ctx context.Context, err error) bool {
 }
 
 // rerankInconclusive reports whether a failed rerank call says nothing about
-// the memory LLM: the caller cancelled it, or it timed out (timedOut) under
-// a budget shorter than the full cap because the recall deadline was near.
-// Errors from the LLM itself, and timeouts of a call that had the full cap,
-// are conclusive.
-func rerankInconclusive(ctx context.Context, err error, timedOut, fullBudget bool) bool {
-	return callerCancelled(ctx, err) || (timedOut && !fullBudget)
+// the memory LLM: the caller cancelled it, or it timed out (timedOut) with
+// less than a fair budget (fairBudget false) because the recall deadline was
+// near. Errors from the LLM itself, and timeouts of a call that had a fair
+// budget, are conclusive.
+func rerankInconclusive(ctx context.Context, err error, timedOut, fairBudget bool) bool {
+	return callerCancelled(ctx, err) || (timedOut && !fairBudget)
 }

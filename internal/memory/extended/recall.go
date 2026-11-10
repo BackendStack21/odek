@@ -38,8 +38,9 @@ type Recall struct {
 	// shared per extended-memory directory (rerankBreakerFor); nil disables
 	// it.
 	breaker *rerankBreaker
-	// rerankCap replaces rerankMaxBudget (and caps rerankMinBudget) when set;
-	// tests use it so a full-budget timeout does not take seconds.
+	// rerankCap, when set, runs the rerank budget rule scaled down to that
+	// cap (rerankLimits.scaledTo); tests use it so budget timeouts take
+	// milliseconds, not seconds.
 	rerankCap time.Duration
 
 	// followUpSink receives the high-confidence predicted intents captured
@@ -447,19 +448,21 @@ type scoredAtomMeta struct {
 // rewrites their scores so that order survives a later sort by score. On an
 // LLM failure or a "none" answer the candidates are returned unchanged.
 //
-// The call gets a bounded share of ctx (rerankBudget), so when the memory
-// LLM is slow recall still returns the blended order in time. It is skipped,
-// leaving the candidates unchanged, when that share is too small to be worth
-// a call or the breaker is open. Its outcome counts toward the breaker only
-// when it says something about the memory LLM (rerankInconclusive).
+// The call gets what is left of ctx minus a reserve (rerankBudgetWithin), so
+// when the memory LLM does not answer recall still returns the blended order
+// in time. It is skipped, leaving the candidates unchanged, when that budget
+// is too small to be worth a call or the breaker is open. Its outcome counts
+// toward the breaker only when it says something about the memory LLM
+// (rerankInconclusive). Every timeout that is not a caller cancel counts as
+// a recall timeout in Stats; one under less than a fair budget is also
+// logged, at most once a minute.
 func (r *Recall) rerank(ctx context.Context, query string, scored []scoredAtomMeta) []scoredAtomMeta {
-	maxBudget := rerankMaxBudget
+	limits := defaultRerankLimits
 	if r.rerankCap > 0 {
-		maxBudget = r.rerankCap
+		limits = limits.scaledTo(r.rerankCap)
 	}
-	minBudget := min(rerankMinBudget, maxBudget)
-	budget := rerankBudgetWithin(ctx, maxBudget)
-	if budget < minBudget {
+	budget := rerankBudgetWithin(ctx, limits)
+	if budget < limits.min {
 		r.noteRerankSkipped()
 		return scored
 	}
@@ -484,7 +487,15 @@ func (r *Recall) rerank(ctx context.Context, query string, scored []scoredAtomMe
 	)
 	timedOut := err != nil && (errors.Is(err, context.DeadlineExceeded) || errors.Is(callCtx.Err(), context.DeadlineExceeded))
 	cancel()
-	r.breaker.end(probe, err, err != nil && rerankInconclusive(ctx, err, timedOut, budget >= maxBudget))
+	fair := budget >= limits.fair
+	r.breaker.end(probe, err, err != nil && rerankInconclusive(ctx, err, timedOut, fair))
+	if timedOut && !callerCancelled(ctx, err) {
+		r.trackErr(context.DeadlineExceeded)
+		if !fair && r.breaker.logShortTimeout() {
+			log.Printf("extended memory: rerank timed out with %v of recall budget left (a fair attempt gets %v); not counted against the memory LLM",
+				budget.Round(time.Millisecond), limits.fair)
+		}
+	}
 	if err != nil {
 		return scored
 	}
