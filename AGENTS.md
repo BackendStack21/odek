@@ -187,7 +187,8 @@ internal/
                               session_scope.go (session-id → chat ownership check), send_fallback.go (plain-text resend when markup is rejected)
   render/                     Terminal output and narrator support
   narrate/                    LLM-powered emoji-rich progress messages
-  redact/                     Secret redaction (20+ patterns; credential_value.go judges unquoted credential values)
+  redact/                     Secret redaction (20+ patterns; credential_value.go judges unquoted credential values; gate.go skips a pattern whose
+                              required literals are absent — output is identical to running every pattern)
   mcp/                        MCP server handler (stdio JSON-RPC: tools/list, tools/call)
   mcpclient/                  MCP client (connect to external MCP servers); per-server limits (timeout/response bytes/result
                               chars/artifact roots) + odek-extension/v1 contract (contract.go), artifact-ref enforcement in CallTool
@@ -317,6 +318,8 @@ go test -fuzz=FuzzParseSkillContent -fuzztime=30s ./internal/skills/
 go test -fuzz=FuzzSessionLoad -fuzztime=30s ./internal/session/
 go test -fuzz=FuzzParseEnvelope -fuzztime=30s ./internal/artifact/      # + FuzzValidateRef
 go test -fuzz=FuzzEventJSON -fuzztime=30s ./internal/events/
+# Redaction gates vs. the ungated reference path (-run '^$' skips the package's timing tests, which a fuzz-instrumented build slows past their bounds)
+go test -run '^$' -fuzz=FuzzRedactGatedMatchesUngated -fuzztime=30s ./internal/redact/
 go test -fuzz=FuzzExternalRefValidate -fuzztime=30s ./internal/session/
 go test -fuzz=FuzzParseExternalRefFlag -fuzztime=30s ./cmd/odek/
 go test -fuzz=FuzzClampProjectLimits -fuzztime=30s ./internal/config/
