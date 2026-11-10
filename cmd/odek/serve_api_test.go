@@ -16,6 +16,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -813,6 +814,7 @@ func TestServeOnListener_StopsWhenListenerClosed(t *testing.T) {
 		// Any error is acceptable — we just want to confirm the goroutine exited.
 		t.Logf("serveOnListener returned: %v", err)
 	case <-time.After(5 * time.Second):
+		t.Log(serveDrainStacks())
 		t.Fatal("serveOnListener did not stop after listener was closed")
 	}
 
@@ -855,6 +857,7 @@ func TestServeOnListener_ReturnsNilOnCleanShutdown(t *testing.T) {
 	case <-done:
 		// exited — pass
 	case <-time.After(5 * time.Second):
+		t.Log(serveDrainStacks())
 		t.Fatal("server did not exit after listener close")
 	}
 }
@@ -1154,4 +1157,20 @@ func TestFilterPersistSnapshot_NoHead(t *testing.T) {
 	if len(got) != 2 || got[0].Role != "system" {
 		t.Fatalf("digest should survive with empty head, got %+v", got)
 	}
+}
+
+// serveDrainStacks returns the stacks of the goroutines that keep a serve
+// shutdown from draining: WebSocket handlers and headless runs left in flight
+// by an earlier test. The shutdown tests log it when the drain does not
+// finish, so the failure names what is still running.
+func serveDrainStacks() string {
+	buf := make([]byte, 8<<20)
+	buf = buf[:runtime.Stack(buf, true)]
+	var keep []string
+	for _, g := range strings.Split(string(buf), "\n\n") {
+		if strings.Contains(g, "handleWS") || strings.Contains(g, "serve_runs.go") || strings.Contains(g, "serveRunsWG") || strings.Contains(g, "wsHandlers") {
+			keep = append(keep, g)
+		}
+	}
+	return fmt.Sprintf("%d goroutine(s) holding the serve drain:\n\n%s", len(keep), strings.Join(keep, "\n\n"))
 }
