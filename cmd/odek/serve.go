@@ -3791,6 +3791,18 @@ func handleSessionList(store *session.Store) http.HandlerFunc {
 	}
 }
 
+// sessionDetailView returns the copy of sess that GET and POST
+// /api/sessions/{id} send to the client. It leaves out the untrusted-span
+// gate state (taint_spans, and taint_overflow, about 175 KB of base64 once a
+// span was dropped): the runtime reseeds the gate from the session file, and
+// no client reads either field. The stored session is never modified, and
+// the session file and the JSON export (the raw record) keep both fields.
+func sessionDetailView(sess *session.Session) *session.Session {
+	view := *sess
+	view.TaintSpans, view.TaintOverflow = nil, nil
+	return &view
+}
+
 func handleSessionByID(store *session.Store, trustedProxies []string, wsToken string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/recovery") {
@@ -3908,7 +3920,7 @@ func handleSessionByID(store *session.Store, trustedProxies []string, wsToken st
 			if effectiveToken != "" {
 				w.Header().Set("X-Session-Token", effectiveToken)
 			}
-			json.NewEncoder(w).Encode(sess)
+			json.NewEncoder(w).Encode(sessionDetailView(sess))
 
 		case http.MethodDelete:
 			sess, err := store.Load(id)
@@ -3978,7 +3990,7 @@ func handleSessionByID(store *session.Store, trustedProxies []string, wsToken st
 				return
 			}
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(sess)
+			json.NewEncoder(w).Encode(sessionDetailView(sess))
 
 		default:
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
