@@ -52,6 +52,7 @@ func (s *taintSpanStore) seedStateLocked(st session.TaintState) {
 		// The union is a new filter, so the store never aliases the seed.
 		s.overflow = session.UnionTaintOverflow(s.overflow, st.Overflow)
 		s.seedOverflow = &st.Overflow[0]
+		s.overflowFillKnown = false
 		s.version++
 	}
 }

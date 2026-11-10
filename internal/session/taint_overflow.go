@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
+	"math/bits"
 )
 
 // TaintOverflow is a fixed-size Bloom filter of the untrusted spans that a
@@ -44,6 +45,15 @@ const (
 	TaintOverflowBytes  = 128 << 10
 	taintOverflowBits   = TaintOverflowBytes * 8
 	taintOverflowProbes = 4
+
+	// TaintOverflowNearlyFull is the Fill at which the filter counts as
+	// nearly full. With 4 probes a lookup of a span that was never recorded
+	// hits when all 4 of its bits are set, so at fill p the false-positive
+	// rate of one lookup is p^4: 2.6% at 0.4, roughly one unrelated gated
+	// command in ten. A filter reaches it after about 134,000 dropped spans
+	// (1 - e^(-4n/2^20) = 0.4). Past it, a hit found only in the filter is
+	// labelled as possibly false (see internal/loop/taint_spans.go).
+	TaintOverflowNearlyFull = 0.4
 )
 
 // TaintSpanHash returns the hex SHA-256 of a span value: the form a span
@@ -117,6 +127,25 @@ func (f TaintOverflow) HasHash(kind, hash string) bool {
 		}
 	}
 	return true
+}
+
+// Fill returns the fraction of the filter's bits that are set: 0 for an
+// empty filter, 1 for a filter of the wrong size (it is treated as
+// saturated). It counts every bit, so callers that look it up often cache
+// it until the filter changes.
+func (f TaintOverflow) Fill() float64 {
+	switch len(f) {
+	case 0:
+		return 0
+	case TaintOverflowBytes:
+	default:
+		return 1
+	}
+	set := 0
+	for i := 0; i < TaintOverflowBytes; i += 8 {
+		set += bits.OnesCount64(binary.LittleEndian.Uint64(f[i:]))
+	}
+	return float64(set) / taintOverflowBits
 }
 
 // UnionTaintOverflow returns a new filter holding every span of a and b, nil

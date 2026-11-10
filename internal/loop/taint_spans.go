@@ -172,6 +172,12 @@ type taintSpan struct {
 // longer holds.
 const taintOverflowSource = "earlier untrusted content (no longer held)"
 
+// taintOverflowFullSource replaces taintOverflowSource once the filter is
+// nearly full (session.TaintOverflowNearlyFull): the hit may be a false
+// match, and the filter is never cleared within a session, so the principal
+// is told how to reset it.
+const taintOverflowFullSource = "earlier untrusted content (no longer held; this session's untrusted-span record is nearly full, so this may be a false match: a new session resets it)"
+
 // taintSpan keys are kind + "\x00" + normalised value.
 func taintKey(kind taintSpanKind, v string) string { return string(kind) + "\x00" + v }
 
@@ -185,8 +191,11 @@ type taintSpanStore struct {
 	hashed map[string]*taintSpan
 	// overflow records every span evicted from spans or hashed, and every
 	// span an export cut from the persisted list (session.TaintOverflow).
-	// It is never cleared.
-	overflow session.TaintOverflow
+	// It is never cleared. overflowFill caches its Fill while
+	// overflowFillKnown is set; every change to the filter clears it.
+	overflow          session.TaintOverflow
+	overflowFill      float64
+	overflowFillKnown bool
 	// seedLen, seedHead and seedOverflow identify the persisted state last
 	// seeded, so a run does not re-seed it every iteration.
 	seedLen      int
@@ -934,6 +943,20 @@ func (s *taintSpanStore) overflowLocked(k string, sp *taintSpan, hashed bool) {
 		s.overflow.AddValue(kind, value)
 	}
 	sp.overflowed = true
+	s.overflowFillKnown = false
+}
+
+// overflowSourceLocked returns the source label of a hit found only in the
+// overflow filter: taintOverflowFullSource once the filter is nearly full,
+// taintOverflowSource before. The fill is counted once per filter change.
+func (s *taintSpanStore) overflowSourceLocked() string {
+	if !s.overflowFillKnown {
+		s.overflowFill, s.overflowFillKnown = s.overflow.Fill(), true
+	}
+	if s.overflowFill >= session.TaintOverflowNearlyFull {
+		return taintOverflowFullSource
+	}
+	return taintOverflowSource
 }
 
 // evictLinksLocked drops the least recently seen eighth of the links. A
@@ -1021,7 +1044,7 @@ func (s *taintSpanStore) lookupLocked(r taintRaw) (taintHit, bool) {
 			if sp, ok = s.hashed[taintKey(kind, h)]; ok {
 				source = sp.source
 			} else if s.overflow.HasHash(string(kind), h) {
-				ok, source = true, taintOverflowSource
+				ok, source = true, s.overflowSourceLocked()
 			}
 		}
 		if !ok || s.principalLocked(kind, v) {
