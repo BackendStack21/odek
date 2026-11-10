@@ -59,6 +59,12 @@ func (s *taintSpanStore) seedStateLocked(st session.TaintState) {
 // seedLocked adds persisted spans the store does not hold yet. A full table
 // evicts into the overflow filter, as recording does.
 //
+// The list is newest first (as TaintSpanState exports it) and is seeded
+// oldest first, so it keeps its recency: the newest persisted span is the
+// most recently seen of the seeded ones, every span recorded afterwards is
+// newer still, eviction takes the oldest persisted spans first, and an
+// export of the seeded store gives the list back in the same order.
+//
 // A span is held once, in one table: a persisted hash whose plain span is
 // already held only makes the plain span newer, and a persisted plain span
 // replaces a held copy of its hash (the plain form needs no hashing to
@@ -67,7 +73,8 @@ func (s *taintSpanStore) seedLocked(spans []session.TaintSpan) {
 	// plainByHash maps the hashed key of every plain span to its plain key;
 	// it is built only when a persisted hash meets held plain spans.
 	var plainByHash map[string]string
-	for _, sp := range spans {
+	for i := len(spans) - 1; i >= 0; i-- {
+		sp := spans[i]
 		kind := taintSpanKind(sp.Kind)
 		switch kind {
 		case taintKindURL, taintKindHost, taintKindPath, taintKindToken:
