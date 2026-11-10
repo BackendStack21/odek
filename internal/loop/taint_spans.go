@@ -881,6 +881,11 @@ func (s *taintSpanStore) insertLocked(spans []taintRaw, source string) {
 			sp.seq = s.seq
 			continue
 		}
+		// A span is held once. A copy seeded as its hash gives way to this
+		// sighting, which is newer and carries a real source label.
+		if len(s.hashed) > 0 {
+			delete(s.hashed, taintKey(r.kind, taintHash(r.value)))
+		}
 		if len(s.spans) >= maxTaintSpans {
 			s.evictTableLocked(s.spans, false)
 		}

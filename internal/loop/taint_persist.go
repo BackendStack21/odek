@@ -58,7 +58,15 @@ func (s *taintSpanStore) seedStateLocked(st session.TaintState) {
 
 // seedLocked adds persisted spans the store does not hold yet. A full table
 // evicts into the overflow filter, as recording does.
+//
+// A span is held once, in one table: a persisted hash whose plain span is
+// already held only makes the plain span newer, and a persisted plain span
+// replaces a held copy of its hash (the plain form needs no hashing to
+// match and keeps a readable source).
 func (s *taintSpanStore) seedLocked(spans []session.TaintSpan) {
+	// plainByHash maps the hashed key of every plain span to its plain key;
+	// it is built only when a persisted hash meets held plain spans.
+	var plainByHash map[string]string
 	for _, sp := range spans {
 		kind := taintSpanKind(sp.Kind)
 		switch kind {
@@ -76,6 +84,28 @@ func (s *taintSpanStore) seedLocked(spans []session.TaintSpan) {
 		k := taintKey(kind, value)
 		if _, ok := table[k]; ok {
 			continue
+		}
+		if hashed && len(s.spans) > 0 {
+			if plainByHash == nil {
+				plainByHash = make(map[string]string, len(s.spans))
+				for pk := range s.spans {
+					pkind, pvalue, _ := cutTaintKey(pk)
+					plainByHash[taintKey(taintSpanKind(pkind), taintHash(pvalue))] = pk
+				}
+			}
+			if held := s.spans[plainByHash[k]]; held != nil {
+				s.seq++
+				s.version++
+				held.seq = s.seq
+				continue
+			}
+		}
+		if !hashed && (len(s.hashed) > 0 || plainByHash != nil) {
+			hk := taintKey(kind, taintHash(value))
+			delete(s.hashed, hk)
+			if plainByHash != nil {
+				plainByHash[hk] = k
+			}
 		}
 		if len(table) >= maxTaintSpans {
 			s.evictTableLocked(table, hashed)
