@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/BackendStack21/odek/internal/guard"
 )
@@ -37,6 +38,9 @@ type Recall struct {
 	// shared per extended-memory directory (rerankBreakerFor); nil disables
 	// it.
 	breaker *rerankBreaker
+	// rerankCap replaces rerankMaxBudget (and caps rerankMinBudget) when set;
+	// tests use it so a full-budget timeout does not take seconds.
+	rerankCap time.Duration
 
 	// followUpSink receives the high-confidence predicted intents captured
 	// during recall so ExtendedMemory can surface them as follow-up
@@ -446,10 +450,16 @@ type scoredAtomMeta struct {
 // The call gets a bounded share of ctx (rerankBudget), so when the memory
 // LLM is slow recall still returns the blended order in time. It is skipped,
 // leaving the candidates unchanged, when that share is too small to be worth
-// a call or the breaker is open.
+// a call or the breaker is open. Its outcome counts toward the breaker only
+// when it says something about the memory LLM (rerankInconclusive).
 func (r *Recall) rerank(ctx context.Context, query string, scored []scoredAtomMeta) []scoredAtomMeta {
-	budget := rerankBudget(ctx)
-	if budget < rerankMinBudget {
+	maxBudget := rerankMaxBudget
+	if r.rerankCap > 0 {
+		maxBudget = r.rerankCap
+	}
+	minBudget := min(rerankMinBudget, maxBudget)
+	budget := rerankBudgetWithin(ctx, maxBudget)
+	if budget < minBudget {
 		r.noteRerankSkipped()
 		return scored
 	}
@@ -472,8 +482,9 @@ func (r *Recall) rerank(ctx context.Context, query string, scored []scoredAtomMe
 		"You are a relevance ranking system. Return only a comma-separated list of indices or the word 'none'.",
 		b.String(),
 	)
+	timedOut := err != nil && (errors.Is(err, context.DeadlineExceeded) || errors.Is(callCtx.Err(), context.DeadlineExceeded))
 	cancel()
-	r.breaker.end(probe, err, callerCancelled(ctx, err))
+	r.breaker.end(probe, err, err != nil && rerankInconclusive(ctx, err, timedOut, budget >= maxBudget))
 	if err != nil {
 		return scored
 	}

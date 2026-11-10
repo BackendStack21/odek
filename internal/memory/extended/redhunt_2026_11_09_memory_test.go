@@ -620,7 +620,8 @@ func TestRED_SlowRerankLeavesRecallBudget(t *testing.T) {
 		t.Fatalf("blended = %v, %v", blended, err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 400*time.Millisecond)
+	// A 1 s budget leaves the rerank about half of it, above rerankMinBudget.
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	got, err := em.recall.queryAtomsScored(ctx, rerankQuery, false)
 	if ctx.Err() != nil {
@@ -636,7 +637,7 @@ func TestRED_SlowRerankLeavesRecallBudget(t *testing.T) {
 		t.Errorf("order after a timed-out rerank = %s, want the blended order %s", scoredIDs(got), scoredIDs(blended))
 	}
 
-	ctx2, cancel2 := context.WithTimeout(context.Background(), 400*time.Millisecond)
+	ctx2, cancel2 := context.WithTimeout(context.Background(), time.Second)
 	defer cancel2()
 	out := em.FormatExtendedContext(ctx2, rerankQuery)
 	if ctx2.Err() != nil {
@@ -647,19 +648,22 @@ func TestRED_SlowRerankLeavesRecallBudget(t *testing.T) {
 	}
 }
 
-// Two consecutive rerank failures or timeouts open the breaker: the next
-// turn makes no rerank call and recall keeps the blended order.
+// Two consecutive rerank failures or full-budget timeouts open the breaker:
+// the next turn makes no rerank call and recall keeps the blended order.
 func TestRED_RerankBreakerOpensAfterTwoFailures(t *testing.T) {
 	for _, mode := range []string{"fail", "block"} {
 		t.Run(mode, func(t *testing.T) {
 			llm := &rerankLLM{mode: mode}
 			em := newRerankEM(t, t.TempDir(), llm)
-			recallTurn(t, em, 200*time.Millisecond)
-			recallTurn(t, em, 200*time.Millisecond)
+			// A timeout counts only when the call had the full rerank
+			// budget; a small cap gives it that within a 1 s recall budget.
+			em.recall.rerankCap = 150 * time.Millisecond
+			recallTurn(t, em, time.Second)
+			recallTurn(t, em, time.Second)
 			if n := llm.rerankCalls(); n != 2 {
 				t.Fatalf("rerank calls after two turns = %d, want 2", n)
 			}
-			if out := recallTurn(t, em, 200*time.Millisecond); out == "" {
+			if out := recallTurn(t, em, time.Second); out == "" {
 				t.Error("recall returned no context while the rerank was skipped")
 			}
 			if n := llm.rerankCalls(); n != 2 {
@@ -1154,5 +1158,109 @@ func TestRED_CaptionTurnSearchesOnCaptionNotInPrompts(t *testing.T) {
 		if strings.Contains(f.Text, redCanary) {
 			t.Errorf("caption text came back as a follow-up suggestion: %q", f.Text)
 		}
+	}
+}
+
+// ---- Rerank outcomes that say nothing about the memory LLM ----
+
+// breakerCooldown reads the breaker's current cooldown under its lock.
+func breakerCooldown(b *rerankBreaker) time.Duration {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.cooldown
+}
+
+// A recall budget of 1 s leaves the rerank about half a second, well short
+// of its full budget: when the search has eaten the rest of the turn-start
+// budget, a timeout is not evidence that the memory LLM is unhealthy, and
+// two of them must not open the breaker every agent on the directory shares.
+func TestRED_TruncatedRerankTimeoutsDoNotOpenBreaker(t *testing.T) {
+	llm := &rerankLLM{mode: "block"}
+	em := newRerankEM(t, t.TempDir(), llm)
+	recallTurn(t, em, time.Second)
+	recallTurn(t, em, time.Second)
+	if n := llm.rerankCalls(); n != 2 {
+		t.Fatalf("rerank calls after two turns = %d, want 2", n)
+	}
+	if em.Stats().RerankBreakerOpen {
+		t.Error("two timeouts under a shortened budget opened the breaker")
+	}
+	recallTurn(t, em, time.Second)
+	if n := llm.rerankCalls(); n != 3 {
+		t.Errorf("a third turn made no rerank attempt (calls = %d)", n)
+	}
+}
+
+// A rerank with only a sliver of budget left would time out whatever the
+// memory LLM does; it is not attempted, and that is not a failure.
+func TestRED_RerankNotAttemptedWithoutAFairBudget(t *testing.T) {
+	llm := &rerankLLM{mode: "block"}
+	em := newRerankEM(t, t.TempDir(), llm)
+	recallTurn(t, em, 400*time.Millisecond)
+	if n := llm.rerankCalls(); n != 0 {
+		t.Errorf("a rerank with about 200 ms of budget was attempted (calls = %d)", n)
+	}
+	if s := em.Stats(); s.RerankSkipped != 1 || s.RerankBreakerOpen {
+		t.Errorf("stats = %+v, want one skip and a closed breaker", s)
+	}
+}
+
+// A half-open probe that times out under a shortened budget says nothing
+// about the memory LLM either: the cooldown is not doubled and the probe
+// slot is released, so the next turn probes again.
+func TestRED_TruncatedProbeTimeoutLeavesBreakerAsIs(t *testing.T) {
+	llm := &rerankLLM{mode: "fail"}
+	em := newRerankEM(t, t.TempDir(), llm)
+	clk := newFakeClock()
+	em.recall.breaker.setClock(clk.now)
+	recallTurn(t, em, time.Second)
+	recallTurn(t, em, time.Second)
+	if !em.Stats().RerankBreakerOpen {
+		t.Fatal("two failures did not open the breaker")
+	}
+	clk.advance(rerankBreakerBaseCooldown + time.Second)
+	llm.setMode("block")
+	recallTurn(t, em, time.Second)
+	if n := llm.rerankCalls(); n != 3 {
+		t.Fatalf("no probe after the cooldown (calls = %d)", n)
+	}
+	if got := breakerCooldown(em.recall.breaker); got != rerankBreakerBaseCooldown {
+		t.Errorf("a probe that timed out under a shortened budget changed the cooldown to %v", got)
+	}
+	llm.setMode("ok")
+	recallTurn(t, em, time.Second)
+	if n := llm.rerankCalls(); n != 4 {
+		t.Errorf("the next turn did not probe again (calls = %d): the probe slot stayed taken or the breaker reopened", n)
+	}
+	if em.Stats().RerankBreakerOpen {
+		t.Error("a successful probe did not close the breaker")
+	}
+}
+
+func TestRerankInconclusive(t *testing.T) {
+	live := context.Background()
+	stopped, cancel := context.WithCancel(context.Background())
+	cancel()
+	upstream := errors.New("memory LLM: upstream unavailable")
+	cases := []struct {
+		name               string
+		ctx                context.Context
+		err                error
+		timedOut, fullCall bool
+		want               bool
+	}{
+		{"LLM error", live, upstream, false, true, false},
+		{"LLM error under a shortened budget", live, upstream, false, false, false},
+		{"timeout with the full budget", live, context.DeadlineExceeded, true, true, false},
+		{"timeout under a shortened budget", live, context.DeadlineExceeded, true, false, true},
+		{"caller cancelled", stopped, context.Canceled, false, true, true},
+		{"cancelled error from the client", live, context.Canceled, false, true, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := rerankInconclusive(c.ctx, c.err, c.timedOut, c.fullCall); got != c.want {
+				t.Errorf("rerankInconclusive = %v, want %v", got, c.want)
+			}
+		})
 	}
 }

@@ -23,6 +23,11 @@ import (
 // rerankBreakerMaxCooldown. Once a cooldown has passed, one call probes the
 // memory LLM; a success closes the breaker and resets the backoff. While it
 // is open, recall uses the blended order and makes no rerank call.
+//
+// Only outcomes that say something about the memory LLM count toward the
+// breaker: an error from the LLM, or a timeout of a call that had the full
+// rerankMaxBudget. A call the caller cancelled, or one that timed out under
+// a budget the recall deadline had shortened, changes no breaker state.
 const (
 	// rerankMaxBudget caps one rerank call. The rerank asks for one line of
 	// indices over a prompt of a few KB (a bounded query plus at most
@@ -33,10 +38,15 @@ const (
 	// bounds callers that set no deadline (explicit atom search), which
 	// would otherwise wait for the memory-LLM client timeout.
 	rerankMaxBudget = 2 * time.Second
-	// rerankMinBudget is the least time worth giving a rerank call. With
-	// less left, the rerank is skipped without counting as a failure, so a
-	// slow vector search cannot trip the breaker.
-	rerankMinBudget = 20 * time.Millisecond
+	// rerankMinBudget is the least time worth giving a rerank call. A
+	// memory-LLM round trip (request, prompt processing of a few KB, one
+	// line back) takes a few hundred milliseconds even on a responsive
+	// model, so a call given less mostly times out and only spends the
+	// turn's start time. With less than this left, the rerank is skipped
+	// and the skip is not a failure. Together with the shortened-budget rule
+	// above, a slow vector search that eats the recall budget cannot trip
+	// the breaker: either no call is made, or its timeout does not count.
+	rerankMinBudget = 300 * time.Millisecond
 
 	rerankBreakerThreshold    = 2
 	rerankBreakerBaseCooldown = time.Minute
@@ -50,7 +60,13 @@ const (
 
 // rerankBudget returns how long one rerank call may take under ctx.
 func rerankBudget(ctx context.Context) time.Duration {
-	budget := rerankMaxBudget
+	return rerankBudgetWithin(ctx, rerankMaxBudget)
+}
+
+// rerankBudgetWithin is rerankBudget with the cap given: half of what is
+// left on ctx, never more than max.
+func rerankBudgetWithin(ctx context.Context, max time.Duration) time.Duration {
+	budget := max
 	if dl, ok := ctx.Deadline(); ok {
 		if half := time.Until(dl) / 2; half < budget {
 			budget = half
@@ -139,10 +155,11 @@ func (b *rerankBreaker) begin() (allowed, probe bool) {
 	return true, true
 }
 
-// end records the outcome of a call begin allowed. A call the caller
-// cancelled (the user stopped the turn) says nothing about the memory LLM:
-// it changes no state, and a cancelled probe lets the next turn probe.
-func (b *rerankBreaker) end(probe bool, err error, cancelled bool) {
+// end records the outcome of a call begin allowed. An inconclusive outcome
+// (the caller cancelled the call, or it timed out under a shortened budget;
+// rerankInconclusive) says nothing about the memory LLM: it changes no state, and
+// an inconclusive probe lets the next turn probe.
+func (b *rerankBreaker) end(probe bool, err error, inconclusive bool) {
 	if b == nil {
 		if err != nil {
 			log.Printf("extended memory: rerank LLM call failed: %v", err)
@@ -160,7 +177,7 @@ func (b *rerankBreaker) end(probe bool, err error, cancelled bool) {
 			log.Printf("extended memory: rerank answered again; reranking resumed")
 		}
 		b.failures, b.cooldown, b.openUntil = 0, 0, time.Time{}
-	case cancelled:
+	case inconclusive:
 	case probe && b.cooldown > 0:
 		b.failures++
 		b.cooldown *= 2
@@ -198,4 +215,13 @@ func (b *rerankBreaker) isOpen() bool {
 // stopping the turn rather than from the memory LLM.
 func callerCancelled(ctx context.Context, err error) bool {
 	return errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled)
+}
+
+// rerankInconclusive reports whether a failed rerank call says nothing about
+// the memory LLM: the caller cancelled it, or it timed out (timedOut) under
+// a budget shorter than the full cap because the recall deadline was near.
+// Errors from the LLM itself, and timeouts of a call that had the full cap,
+// are conclusive.
+func rerankInconclusive(ctx context.Context, err error, timedOut, fullBudget bool) bool {
+	return callerCancelled(ctx, err) || (timedOut && !fullBudget)
 }
