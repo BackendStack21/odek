@@ -209,6 +209,38 @@ type TaintState struct {
 // Empty reports whether st holds no span and no overflow record.
 func (st TaintState) Empty() bool { return len(st.Spans) == 0 && len(st.Overflow) == 0 }
 
+// Covers reports whether st already records everything other does, so that
+// merging other into st would add nothing: st's filter covers other's, and
+// each of other's spans is in st's list (same kind, value and hash) or in
+// st's filter. A filter false positive can only make a span count as
+// recorded, and such a span would match st's filter anyway.
+func (st TaintState) Covers(other TaintState) bool {
+	if !st.Overflow.Covers(other.Overflow) {
+		return false
+	}
+	if len(other.Spans) == 0 {
+		return true
+	}
+	type spanKey struct{ kind, value, hash string }
+	have := make(map[spanKey]struct{}, len(st.Spans))
+	for _, sp := range st.Spans {
+		have[spanKey{sp.Kind, sp.Value, sp.Hash}] = struct{}{}
+	}
+	for _, sp := range other.Spans {
+		if sp.Kind == "" || sp.Value == "" && sp.Hash == "" {
+			continue // nothing a lookup could name
+		}
+		if _, ok := have[spanKey{sp.Kind, sp.Value, sp.Hash}]; ok {
+			continue
+		}
+		if (sp.Value == "" || st.Overflow.HasValue(sp.Kind, sp.Value)) && (sp.Hash == "" || st.Overflow.HasHash(sp.Kind, sp.Hash)) {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
 // TaintState returns the session's untrusted-span state.
 func (s *Session) TaintState() TaintState {
 	if s == nil {

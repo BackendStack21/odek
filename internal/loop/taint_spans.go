@@ -1388,6 +1388,20 @@ func taintArgumentStrings(args string) string {
 	return b.String()
 }
 
+// ResetTaintSpans empties the engine's untrusted-span record: both span
+// tables, the overflow filter, the links, the scan bookkeeping, the
+// principal's mentions, the export memo and the seed identity. The record
+// belongs to one session; an engine that serves several in turn (a Web UI
+// connection) calls this when its session changes, so the next run starts
+// from the new session's persisted state only (WithTaintSpanSeed) and the
+// previous session's record never reaches the new one's file. Call it
+// between runs, after the previous session's state was saved.
+func (e *Engine) ResetTaintSpans() {
+	e.taintMu.Lock()
+	e.taintSpans = nil
+	e.taintMu.Unlock()
+}
+
 // spanStore returns the engine's untrusted-span store, creating it.
 func (e *Engine) spanStore() *taintSpanStore {
 	e.taintMu.Lock()

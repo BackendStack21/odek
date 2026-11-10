@@ -2,7 +2,9 @@ package session
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
+	"io/fs"
 	"reflect"
 	"strings"
 	"testing"
@@ -142,6 +144,68 @@ func TestMergeTaintState_SteadyStateShares(t *testing.T) {
 	cut := MergeTaintState(TaintState{full, shared}, TaintState{spanList("q", 1), nil})
 	if !bytes.Equal(shared, saved) || !cut.Overflow.HasValue("host", "q0.example") {
 		t.Error("a dropped span was added to the shared input filter, or lost")
+	}
+}
+
+func TestTaintStateCovers(t *testing.T) {
+	base := TaintState{Spans: []TaintSpan{{Kind: "host", Value: "a.example"}, {Kind: "token", Hash: TaintSpanHash("tok")}}, Overflow: overflowWith("cut.example")}
+	for _, tc := range []struct {
+		name  string
+		other TaintState
+		want  bool
+	}{
+		{"empty", TaintState{}, true},
+		{"same spans", TaintState{Spans: base.Spans}, true},
+		{"span in the filter", TaintState{Spans: []TaintSpan{{Kind: "host", Value: "cut.example"}}}, true},
+		{"nameless entries", TaintState{Spans: []TaintSpan{{Kind: ""}, {Kind: "host"}}}, true},
+		{"new span", TaintState{Spans: []TaintSpan{{Kind: "host", Value: "b.example"}}}, false},
+		{"new filter bits", TaintState{Overflow: overflowWith("other.example")}, false},
+	} {
+		if got := base.Covers(tc.other); got != tc.want {
+			t.Errorf("%s: Covers = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// AddTaintState writes only what the file lacks, keeps the transcript
+// revision, and reports a missing session.
+func TestStoreAddTaintState(t *testing.T) {
+	s, err := NewStoreWithDir(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := s.Create([]Message{{Role: "user", Content: "hi"}}, "m", "t")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess.TaintSpans = []TaintSpan{{Kind: "host", Value: "a.example"}}
+	if err := s.Save(sess); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := s.Load(sess.ID)
+	if err := s.AddTaintState(sess.ID, TaintState{Spans: []TaintSpan{{Kind: "host", Value: "a.example"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AddTaintState(sess.ID, TaintState{}); err != nil {
+		t.Fatal(err)
+	}
+	same, _ := s.Load(sess.ID)
+	if same.MetaRevision != before.MetaRevision || same.Revision != before.Revision {
+		t.Fatal("a state the file already covers was written")
+	}
+	add := TaintState{Spans: []TaintSpan{{Kind: "host", Value: "b.example"}}, Overflow: overflowWith("cut.example")}
+	if err := s.AddTaintState(sess.ID, add); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := s.Load(sess.ID)
+	if !got.TaintState().Covers(add) || !got.TaintState().Covers(before.TaintState()) {
+		t.Fatalf("merged state = %+v", got.TaintSpans)
+	}
+	if got.Revision != before.Revision || got.MetaRevision == before.MetaRevision {
+		t.Fatalf("revision %d→%d, meta revision %d→%d: the transcript revision moved", before.Revision, got.Revision, before.MetaRevision, got.MetaRevision)
+	}
+	if err := s.AddTaintState("20261110-missing", add); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("missing session: %v", err)
 	}
 }
 

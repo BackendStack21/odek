@@ -1261,6 +1261,15 @@ func (a *Agent) TaintState(messages []session.Message) session.TaintState {
 	return a.engine.TaintSpanState(messages)
 }
 
+// ResetTaintSpans empties the agent's untrusted-span record (see
+// loop.Engine.ResetTaintSpans). An agent that serves several sessions in
+// turn calls it when it moves to another session, after persisting
+// TaintState into the session it leaves; the next run is then seeded from
+// the new session's state only.
+func (a *Agent) ResetTaintSpans() {
+	a.engine.ResetTaintSpans()
+}
+
 // TotalInputTokens returns the cumulative prompt tokens consumed across all
 // iterations of the most recent RunWithMessages call.
 func (a *Agent) TotalInputTokens() int {

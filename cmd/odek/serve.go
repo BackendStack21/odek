@@ -1901,6 +1901,11 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 	// does; a session that was only viewed is left without one.
 	ranOn := ""
 	leaveSession := func(nextID string) {
+		if currentSession != nil && currentSession.ID != nextID {
+			// The engine's untrusted-span record belongs to the session
+			// being left; the next one starts from its own file.
+			leaveSessionTaint(store, agent, currentSession.ID)
+		}
 		if currentSession != nil && currentSession.ID != nextID && currentSession.ID == ranOn {
 			endWSSessionMemoryFn(agent.Memory(), currentSession)
 		}
@@ -2190,6 +2195,23 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 
 	// WebSocket disconnected — extract episode if enough turns
 	endWSSessionMemoryFn(agent.Memory(), currentSession)
+}
+
+// leaveSessionTaint hands the untrusted-span record a connection's engine
+// holds to the session the connection is leaving, then empties the record,
+// so the next session's runs are seeded from that session's own file only
+// and nothing of the previous session reaches it. The record normally
+// reached the left session's file with its last save; anything still
+// missing (a save that failed, a turn that panicked) is merged in first. If
+// that cannot be written the record stays on the engine: carrying it into
+// the next session fails closed, dropping it would lose spans for the
+// session left. A session that no longer exists has nothing to keep.
+func leaveSessionTaint(store *session.Store, agent *odek.Agent, sessionID string) {
+	if err := store.AddTaintState(sessionID, agent.TaintState(nil)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		fmt.Fprintf(os.Stderr, "odek: warning: keeping session %s's untrusted-span record on this connection: %v\n", sessionID, err)
+		return
+	}
+	agent.ResetTaintSpans()
 }
 
 // endWSSessionMemoryFn is endWSSessionMemory; tests swap it to observe which
