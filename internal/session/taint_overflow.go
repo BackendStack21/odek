@@ -28,7 +28,11 @@ import (
 // every session written before.
 //
 // AddValue and AddHash modify the filter in place, so only its owner calls
-// them; MergeTaintState and UnionTaintOverflow never modify their inputs.
+// them: a filter it allocated itself or got from UnionTaintOverflow, which
+// always returns a new one (the loop's span store keeps its filter that
+// way). MergeTaintState and UnionTaintOverflow never modify their inputs,
+// but a merged filter may share its backing array with an input, so it is
+// only ever replaced, never modified in place.
 type TaintOverflow []byte
 
 const (
