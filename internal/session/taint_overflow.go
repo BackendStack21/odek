@@ -152,6 +152,22 @@ func (f TaintOverflow) Fill() float64 {
 	return float64(set) / taintOverflowBits
 }
 
+// Covers reports whether f already records everything g does, so that
+// merging g into f would change nothing: g is empty or has no bit set, f is
+// saturated (wrong size), or every bit set in g is set in f. A wrong-size g
+// is covered only by a saturated f.
+func (f TaintOverflow) Covers(g TaintOverflow) bool {
+	switch {
+	case len(g) == 0, len(f) != 0 && len(f) != TaintOverflowBytes:
+		return true
+	case len(g) != TaintOverflowBytes:
+		return false
+	case len(f) == 0:
+		return !taintOverflowAny(g)
+	}
+	return taintOverflowCovers(f, g)
+}
+
 // UnionTaintOverflow returns a new filter holding every span of a and b, nil
 // when neither holds any, and a saturated filter when either has the wrong
 // size.

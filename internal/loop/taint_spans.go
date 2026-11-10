@@ -165,6 +165,19 @@ type taintSpan struct {
 	persisted    session.TaintSpan
 	persistedGen uint64
 	persistedSet bool
+	// hash caches the hex SHA-256 of a plain span's value (hashOf), so a
+	// span is hashed at most once however often the store looks it up by
+	// its persisted hash.
+	hash string
+}
+
+// hashOf returns the hex SHA-256 of value, the plain span's value,
+// computing it once.
+func (sp *taintSpan) hashOf(value string) string {
+	if sp.hash == "" {
+		sp.hash = taintHash(value)
+	}
+	return sp.hash
 }
 
 // taintOverflowSource labels an escalation found only in the overflow
@@ -181,14 +194,35 @@ const taintOverflowFullSource = "earlier untrusted content (no longer held; this
 // taintSpan keys are kind + "\x00" + normalised value.
 func taintKey(kind taintSpanKind, v string) string { return string(kind) + "\x00" + v }
 
+// appendTaintKey appends taintKey(kind, v) to b, so a lookup can index a map
+// with string(b) without allocating.
+func appendTaintKey(b []byte, kind taintSpanKind, v string) []byte {
+	return append(append(append(b, kind...), 0), v...)
+}
+
+// taintSeqBase is where sequence numbers start. Recording counts up from it
+// and seeding counts down (taintSpanStore.low), so every seeded span is
+// older than every span this engine recorded itself.
+const taintSeqBase = 1 << 62
+
 // taintSpanStore holds the spans recorded from untrusted content.
 type taintSpanStore struct {
-	mu    sync.Mutex
-	seq   uint64
+	mu  sync.Mutex
+	seq uint64
+	// low is the sequence number of the oldest seeded span; the next span
+	// seeded gets low-1.
+	low   uint64
 	spans map[string]*taintSpan
 	// hashed holds persisted spans known only by their SHA-256 (tokens and
 	// secret-shaped values; see taint_persist.go), keyed taintKey(kind, hash).
 	hashed map[string]*taintSpan
+	// plainByHash maps taintKey(kind, hash) to the key in spans of the
+	// plain span with that hash. It is built the first time a persisted hash
+	// meets held plain spans and kept current from then on (recording and
+	// evicting plain spans update it), so a re-seed never re-hashes them.
+	plainByHash map[string]string
+	// kbuf is scratch space for map lookups by a key built in place.
+	kbuf []byte
 	// overflow records every span evicted from spans or hashed, and every
 	// span an export cut from the persisted list (session.TaintOverflow).
 	// It is never cleared. overflowFill caches its Fill while
@@ -226,6 +260,8 @@ type taintPrincipal struct {
 
 func newTaintSpanStore() *taintSpanStore {
 	return &taintSpanStore{
+		seq:     taintSeqBase,
+		low:     taintSeqBase,
 		spans:   make(map[string]*taintSpan),
 		hashed:  make(map[string]*taintSpan),
 		links:   make(map[string]uint64),
@@ -890,15 +926,20 @@ func (s *taintSpanStore) insertLocked(spans []taintRaw, source string) {
 			sp.seq = s.seq
 			continue
 		}
+		sp := &taintSpan{source: source, seq: s.seq}
 		// A span is held once. A copy seeded as its hash gives way to this
 		// sighting, which is newer and carries a real source label.
-		if len(s.hashed) > 0 {
-			delete(s.hashed, taintKey(r.kind, taintHash(r.value)))
+		if len(s.hashed) > 0 || s.plainByHash != nil {
+			hk := taintKey(r.kind, sp.hashOf(r.value))
+			delete(s.hashed, hk)
+			if s.plainByHash != nil {
+				s.plainByHash[hk] = k
+			}
 		}
 		if len(s.spans) >= maxTaintSpans {
 			s.evictTableLocked(s.spans, false)
 		}
-		s.spans[k] = &taintSpan{source: source, seq: s.seq}
+		s.spans[k] = sp
 	}
 }
 
@@ -924,6 +965,10 @@ func (s *taintSpanStore) evictTableLocked(table map[string]*taintSpan, hashed bo
 	for k, sp := range table {
 		if sp.seq <= cutoff {
 			s.overflowLocked(k, sp, hashed)
+			if !hashed && s.plainByHash != nil {
+				kind, value, _ := cutTaintKey(k)
+				delete(s.plainByHash, taintKey(taintSpanKind(kind), sp.hashOf(value)))
+			}
 			delete(table, k)
 		}
 	}

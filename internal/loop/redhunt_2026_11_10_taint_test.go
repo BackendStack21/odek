@@ -1,6 +1,7 @@
 package loop
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -55,39 +56,71 @@ func TestRED_TaintSpanTables_HoldEachSpanOnce(t *testing.T) {
 	}
 }
 
-// Within one persisted list (newest first, seeded oldest first), a plain
-// span replaces a held copy of its hash, and a hash whose plain span is held
-// only refreshes it.
+// Within one persisted list (newest first) a span is held once: the newest
+// entry for it is added, and an older entry for the same span, in either
+// form, changes nothing.
 func TestTaintSpanTables_SeedHoldsEachSpanOnce(t *testing.T) {
 	s := newTaintSpanStore()
 	s.seedLocked([]session.TaintSpan{
 		{Kind: "host", Hash: taintHash("c.example"), Source: "old"},
-		{Kind: "host", Hash: taintHash("b.example"), Source: "old"},
-		{Kind: "host", Value: "b.example", Source: "persisted"},
-		{Kind: "host", Value: "a.example", Source: "persisted"},
-		{Kind: "host", Hash: taintHash("a.example"), Source: "old"},
+		{Kind: "host", Hash: taintHash("b.example"), Source: "newer"},
+		{Kind: "host", Value: "b.example", Source: "older"},
+		{Kind: "host", Value: "a.example", Source: "newer"},
+		{Kind: "host", Hash: taintHash("a.example"), Source: "older"},
 	})
-	if len(s.spans) != 2 || len(s.hashed) != 1 {
-		t.Fatalf("spans=%d hashed=%d, want 2 and 1", len(s.spans), len(s.hashed))
+	if len(s.spans) != 1 || len(s.hashed) != 2 {
+		t.Fatalf("spans=%d hashed=%d, want 1 and 2", len(s.spans), len(s.hashed))
 	}
-	b := s.spans[taintKey(taintKindHost, "b.example")]
 	a := s.spans[taintKey(taintKindHost, "a.example")]
-	if a == nil || b == nil || b.seq <= a.seq || b.source != "persisted" {
-		t.Fatalf("a=%+v b=%+v: a refreshed plain span keeps its source and becomes newer", a, b)
+	b := s.hashed[taintKey(taintKindHost, taintHash("b.example"))]
+	if a == nil || b == nil || b.seq <= a.seq || a.source != "newer" || b.source != "newer" {
+		t.Fatalf("a=%+v b=%+v: the newest entry of each span is held, in list order", a, b)
 	}
-	// An evicted plain span no longer counts as held: its hash is kept.
+	// A hash whose plain span is held changes nothing; once that plain
+	// span is evicted, its hash is held.
 	s2 := newTaintSpanStore()
 	s2.recordLocked(floodTaintHosts(0, maxTaintSpans), "web", sec16TaintEnv)
-	s2.seedLocked([]session.TaintSpan{ // newest first: seeded bottom-up
-		{Kind: "host", Hash: taintHash("f2.filler2.net")}, // evicted: held as its hash
+	s2.seedLocked([]session.TaintSpan{ // newest first: seeded top-down
+		{Kind: "host", Hash: taintHash("f1.filler1.net")}, // held plain: builds the index, no-op
 		{Kind: "host", Value: "new.example"},              // evicts the oldest eighth
-		{Kind: "host", Hash: taintHash("f1.filler1.net")}, // builds the index
+		{Kind: "host", Hash: taintHash("f2.filler2.net")}, // evicted by now: held as its hash
 	})
 	if _, ok := s2.hashed[taintKey(taintKindHost, taintHash("f2.filler2.net"))]; !ok {
 		t.Fatal("a hash whose plain span was evicted was not held")
 	}
 	if _, ok := s2.hashed[taintKey(taintKindHost, taintHash("f1.filler1.net"))]; ok {
 		t.Fatal("a hash whose plain span is held was stored twice")
+	}
+	if _, ok := s2.plainByHash[taintKey(taintKindHost, taintHash("f2.filler2.net"))]; ok {
+		t.Fatal("the plain-span index kept an evicted span")
+	}
+}
+
+// A plain span recorded raw replaces its seeded hash and joins the
+// plain-span index once that index exists.
+func TestTaintReseed_RecordingKeepsTheIndexCurrent(t *testing.T) {
+	s := newTaintSpanStore()
+	s.recordLocked("first.example/", "web", sec16TaintEnv)
+	s.seedLocked([]session.TaintSpan{{Kind: "host", Hash: taintHash("second.example")}}) // builds the index
+	if s.plainByHash == nil {
+		t.Fatal("setup: no plain-span index")
+	}
+	s.recordLocked("second.example/ third.example/", "web", sec16TaintEnv)
+	if len(s.hashed) != 0 {
+		t.Fatal("a span recorded raw is still held as its hash")
+	}
+	version := s.version
+	s.seedLocked([]session.TaintSpan{{Kind: "host", Hash: taintHash("third.example")}, {Kind: "host", Value: "first.example"}})
+	if s.version != version || len(s.hashed) != 0 {
+		t.Fatal("re-seeding spans held plain changed the store")
+	}
+	// A plain persisted entry whose hash is held changes nothing either.
+	h := newTaintSpanStore()
+	h.seedLocked([]session.TaintSpan{{Kind: "token", Hash: taintHash(floodToken(1))}})
+	version = h.version
+	h.seedLocked([]session.TaintSpan{{Kind: "token", Value: floodToken(1)}})
+	if h.version != version || len(h.spans) != 0 {
+		t.Fatal("a plain entry whose hash is held was added")
 	}
 }
 
@@ -200,5 +233,133 @@ func TestTaintOverflow_EvictionRecountsFill(t *testing.T) {
 	}
 	if got := s.overflowSourceLocked(); got != taintOverflowSource {
 		t.Fatalf("label after a small eviction = %q", got)
+	}
+}
+
+// reseedFixture returns an engine whose store recorded n URLs, their hosts
+// and n tokens raw (tokens are held plain and exported as hashes); past the
+// span cap, so it has evicted into a non-empty filter.
+func reseedFixture(n int) (*Engine, *taintSpanStore) {
+	eng := New(nil, tool.NewRegistry(nil), 1, "", nil, 0)
+	store := eng.spanStore()
+	store.mu.Lock()
+	for i := 0; i < n; i++ {
+		store.recordLocked(fmt.Sprintf("see https://u%d.example.org/p %s", i, floodToken(i)), fmt.Sprintf("web-%d", i), sec16TaintEnv)
+	}
+	store.mu.Unlock()
+	return eng, store
+}
+
+// A long-lived engine (a serve connection, the REPL) is re-seeded every run
+// with the state it exported itself. That changes nothing: the same export
+// in the same order, the same store version, and the memoized export is
+// still the one served.
+func TestRED_TaintReseed_OwnExportChangesNothing(t *testing.T) {
+	eng, store := reseedFixture(1400)
+	first := eng.TaintSpanState(nil)
+	if len(first.Overflow) == 0 {
+		t.Fatalf("setup: exported %d spans and no filter", len(first.Spans))
+	}
+	store.mu.Lock()
+	version := store.version
+	store.mu.Unlock()
+	for run := 1; run <= 3; run++ {
+		seed := taintJSONRoundTrip(t, first)
+		store.mu.Lock()
+		store.seedStateLocked(seed)
+		changed := store.version != version
+		store.mu.Unlock()
+		if changed {
+			t.Errorf("run %d: re-seeding the engine's own export changed the store", run)
+		}
+		got := eng.TaintSpanState(nil)
+		for i := range first.Spans {
+			if got.Spans[i] != first.Spans[i] {
+				t.Fatalf("run %d: export position %d is %+v, want %+v", run, i, got.Spans[i], first.Spans[i])
+			}
+		}
+	}
+	if allocs := testing.AllocsPerRun(5, func() { _ = eng.TaintSpanState(nil) }); allocs > 4 {
+		t.Errorf("after the re-seeds the export is recomputed (%.0f allocations), not served from the memo", allocs)
+	}
+}
+
+// Re-seeding with its own state never moves a held span ahead of spans
+// recorded after it, so the spans that leave a full store are the oldest.
+func TestRED_TaintReseed_KeepsNewerSpansAheadOfHeldTokens(t *testing.T) {
+	const n = 2040
+	eng := New(nil, tool.NewRegistry(nil), 1, "", nil, 0)
+	store := eng.spanStore()
+	var tokens, hosts strings.Builder
+	for i := 0; i < n; i++ {
+		fmt.Fprintf(&tokens, "key %s\n", floodToken(i))
+		fmt.Fprintf(&hosts, "n%d.example.org/ ", i)
+	}
+	store.mu.Lock()
+	store.recordLocked(tokens.String(), "older page", sec16TaintEnv)
+	store.recordLocked(hosts.String(), "newer page", sec16TaintEnv)
+	if len(store.spans) != 2*n {
+		t.Fatalf("setup: %d spans held", len(store.spans))
+	}
+	store.mu.Unlock()
+	state := taintJSONRoundTrip(t, eng.TaintSpanState(nil))
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	store.seedStateLocked(state)
+	store.recordLocked(floodTaintHosts(0, 20), "newest page", sec16TaintEnv) // past the cap: an eighth leaves
+	if _, ok := store.spans[taintKey(taintKindHost, "n0.example.org")]; !ok {
+		t.Error("a host recorded after the tokens left the store before them")
+	}
+	if _, ok := store.spans[taintKey(taintKindToken, floodToken(0))]; ok {
+		t.Error("the oldest token is still held after an eviction")
+	}
+}
+
+// reseedCopies returns n independent copies of st, as each run's seed is.
+func reseedCopies(t testing.TB, st session.TaintState, n int) []session.TaintState {
+	b, err := json.Marshal(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := make([]session.TaintState, n)
+	for i := range out {
+		if err := json.Unmarshal(b, &out[i]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return out
+}
+
+// A no-op re-seed of a full store looks every persisted entry up without
+// hashing the held spans again.
+func TestRED_TaintReseed_NoOpDoesNotHashHeldSpans(t *testing.T) {
+	eng, store := reseedFixture(1400)
+	copies := reseedCopies(t, eng.TaintSpanState(nil), 16)
+	store.mu.Lock()
+	store.seedStateLocked(copies[0])
+	store.mu.Unlock()
+	i := 1
+	allocs := testing.AllocsPerRun(10, func() {
+		store.mu.Lock()
+		store.seedStateLocked(copies[i])
+		store.mu.Unlock()
+		i++
+	})
+	if allocs > 16 {
+		t.Fatalf("a no-op re-seed of %d persisted spans allocates %.0f times (it re-hashes the held spans)", len(copies[0].Spans), allocs)
+	}
+}
+
+// BenchmarkTaintReseed_OwnExport measures re-seeding a full store with its
+// own export, as every run of a long-lived engine does.
+func BenchmarkTaintReseed_OwnExport(b *testing.B) {
+	eng, store := reseedFixture(1400)
+	copies := reseedCopies(b, eng.TaintSpanState(nil), 64)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		store.mu.Lock()
+		store.seedStateLocked(copies[i%len(copies)])
+		store.mu.Unlock()
 	}
 }

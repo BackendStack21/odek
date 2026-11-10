@@ -42,40 +42,41 @@ func taintSpanSeedFrom(ctx context.Context) session.TaintState {
 func taintHash(v string) string { return session.TaintSpanHash(v) }
 
 // seedStateLocked seeds the store from persisted state it has not seeded
-// yet: the spans, and the overflow filter ORed into the store's own.
+// yet: the spans, and the overflow filter ORed into the store's own. A
+// filter that adds no bit changes nothing.
 func (s *taintSpanStore) seedStateLocked(st session.TaintState) {
 	if n := len(st.Spans); n > 0 && (s.seedLen != n || s.seedHead != &st.Spans[0]) {
 		s.seedLocked(st.Spans)
 		s.seedLen, s.seedHead = n, &st.Spans[0]
 	}
 	if len(st.Overflow) > 0 && s.seedOverflow != &st.Overflow[0] {
-		// The union is a new filter, so the store never aliases the seed.
-		s.overflow = session.UnionTaintOverflow(s.overflow, st.Overflow)
+		if !s.overflow.Covers(st.Overflow) {
+			// The union is a new filter, so the store never aliases the seed.
+			s.overflow = session.UnionTaintOverflow(s.overflow, st.Overflow)
+			s.overflowFillKnown = false
+			s.version++
+		}
 		s.seedOverflow = &st.Overflow[0]
-		s.overflowFillKnown = false
-		s.version++
 	}
 }
 
-// seedLocked adds persisted spans the store does not hold yet. A full table
+// seedLocked adds the persisted spans the store does not hold. A full table
 // evicts into the overflow filter, as recording does.
 //
-// The list is newest first (as TaintSpanState exports it) and is seeded
-// oldest first, so it keeps its recency: the newest persisted span is the
-// most recently seen of the seeded ones, every span recorded afterwards is
-// newer still, eviction takes the oldest persisted spans first, and an
-// export of the seeded store gives the list back in the same order.
+// A persisted entry whose span the store already holds, as a plain span or
+// as its hash, changes nothing: no sequence number moves and the version
+// stays, so re-seeding a long-lived engine (the REPL, a serve connection)
+// with the state it exported itself leaves its export, and the memo of it,
+// as they were. A span is held once, in one table.
 //
-// A span is held once, in one table: a persisted hash whose plain span is
-// already held only makes the plain span newer, and a persisted plain span
-// replaces a held copy of its hash (the plain form needs no hashing to
-// match and keeps a readable source).
+// The list is newest first (as TaintSpanState exports it). Each added span
+// takes the next sequence number below every one the store has used, so the
+// seeded spans keep their recency among themselves and are all older than
+// anything this engine recorded: eviction takes the oldest persisted spans
+// first, and an export of a freshly seeded store gives the list back in the
+// same order.
 func (s *taintSpanStore) seedLocked(spans []session.TaintSpan) {
-	// plainByHash maps the hashed key of every plain span to its plain key;
-	// it is built only when a persisted hash meets held plain spans.
-	var plainByHash map[string]string
-	for i := len(spans) - 1; i >= 0; i-- {
-		sp := spans[i]
+	for _, sp := range spans {
 		kind := taintSpanKind(sp.Kind)
 		switch kind {
 		case taintKindURL, taintKindHost, taintKindPath, taintKindToken:
@@ -89,39 +90,68 @@ func (s *taintSpanStore) seedLocked(spans []session.TaintSpan) {
 		if value == "" {
 			continue
 		}
-		k := taintKey(kind, value)
-		if _, ok := table[k]; ok {
+		held, plainHash := s.holdsLocked(kind, value, hashed)
+		if held {
 			continue
-		}
-		if hashed && len(s.spans) > 0 {
-			if plainByHash == nil {
-				plainByHash = make(map[string]string, len(s.spans))
-				for pk := range s.spans {
-					pkind, pvalue, _ := cutTaintKey(pk)
-					plainByHash[taintKey(taintSpanKind(pkind), taintHash(pvalue))] = pk
-				}
-			}
-			if held := s.spans[plainByHash[k]]; held != nil {
-				s.seq++
-				s.version++
-				held.seq = s.seq
-				continue
-			}
-		}
-		if !hashed && (len(s.hashed) > 0 || plainByHash != nil) {
-			hk := taintKey(kind, taintHash(value))
-			delete(s.hashed, hk)
-			if plainByHash != nil {
-				plainByHash[hk] = k
-			}
 		}
 		if len(table) >= maxTaintSpans {
 			s.evictTableLocked(table, hashed)
 		}
-		s.seq++
+		s.low--
 		s.version++
-		table[k] = &taintSpan{source: sp.Source, seq: s.seq}
+		k := taintKey(kind, value)
+		added := &taintSpan{source: sp.Source, seq: s.low, hash: plainHash}
+		if !hashed && s.plainByHash != nil {
+			s.plainByHash[taintKey(kind, added.hashOf(value))] = k
+		}
+		table[k] = added
 	}
+}
+
+// holdsLocked reports whether the store holds the span kind/value (value is
+// the hash when hashed is set) in either table. For a plain span missing
+// from the plain table it also returns the hash it computed, for reuse. A
+// lookup that finds the span costs no hashing and no allocation: both tables
+// are indexed directly, and a persisted hash is matched against held plain
+// spans through plainByHash.
+func (s *taintSpanStore) holdsLocked(kind taintSpanKind, value string, hashed bool) (bool, string) {
+	s.kbuf = appendTaintKey(s.kbuf[:0], kind, value)
+	if hashed {
+		if _, ok := s.hashed[string(s.kbuf)]; ok {
+			return true, ""
+		}
+		if len(s.spans) == 0 {
+			return false, ""
+		}
+		if pk, ok := s.plainIndexLocked()[string(s.kbuf)]; ok {
+			_, held := s.spans[pk]
+			return held, ""
+		}
+		return false, ""
+	}
+	if _, ok := s.spans[string(s.kbuf)]; ok {
+		return true, ""
+	}
+	if len(s.hashed) == 0 {
+		return false, ""
+	}
+	h := taintHash(value)
+	s.kbuf = appendTaintKey(s.kbuf[:0], kind, h)
+	_, ok := s.hashed[string(s.kbuf)]
+	return ok, h
+}
+
+// plainIndexLocked returns plainByHash, building it on first use: one
+// SHA-256 per held plain span not hashed before, once in the span's life.
+func (s *taintSpanStore) plainIndexLocked() map[string]string {
+	if s.plainByHash == nil {
+		s.plainByHash = make(map[string]string, len(s.spans))
+		for k, sp := range s.spans {
+			kind, value, _ := cutTaintKey(k)
+			s.plainByHash[taintKey(taintSpanKind(kind), sp.hashOf(value))] = k
+		}
+	}
+	return s.plainByHash
 }
 
 // taintExport is a memoized TaintSpanState result: valid while the store's
@@ -159,7 +189,7 @@ func (sp *taintSpan) persistedLocked(k string, hashed bool, gen uint64, redacted
 	case hashed:
 		out.Hash = value
 	case kind == string(taintKindToken) || len(value) > session.MaxTaintSpanValueBytes || redact.RedactSecrets(value) != value:
-		out.Hash = taintHash(value)
+		out.Hash = sp.hashOf(value)
 	default:
 		out.Value = value
 	}

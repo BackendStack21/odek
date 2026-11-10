@@ -145,6 +145,30 @@ func TestMergeTaintState_SteadyStateShares(t *testing.T) {
 	}
 }
 
+func TestTaintOverflowCovers(t *testing.T) {
+	a, ab := overflowWith("a1"), overflowWith("a1", "b1")
+	zero := make(TaintOverflow, TaintOverflowBytes)
+	wrong := TaintOverflow{1, 2, 3}
+	for _, tc := range []struct {
+		name string
+		f, g TaintOverflow
+		want bool
+	}{
+		{"empty g", nil, nil, true},
+		{"all-zero g", nil, zero, true},
+		{"subset", ab, a, true},
+		{"superset", a, ab, false},
+		{"equal copies", ab, bytes.Clone(ab), true},
+		{"empty f", nil, a, false},
+		{"saturated f", wrong, ab, true},
+		{"wrong-size g", ab, wrong, false},
+	} {
+		if got := tc.f.Covers(tc.g); got != tc.want {
+			t.Errorf("%s: Covers = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
 func TestTaintOverflowFill(t *testing.T) {
 	var empty TaintOverflow
 	if empty.Fill() != 0 {
