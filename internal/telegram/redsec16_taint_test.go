@@ -52,12 +52,12 @@ func TestRED_MarkTaintSpansPersists(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(cs.TaintSpans()) != 0 {
+	if !cs.TaintSpans().Empty() {
 		t.Fatal("fresh chat has spans")
 	}
-	sm.MarkTaintSpans(chat, []session.TaintSpan{{Kind: "host", Value: "evil.example", Source: "web"}})
-	sm.MarkTaintSpans(chat, nil)                                                     // no-op
-	sm.MarkTaintSpans(9998, []session.TaintSpan{{Kind: "host", Value: "x.example"}}) // uncached: no-op
+	sm.MarkTaintSpans(chat, session.TaintState{Spans: []session.TaintSpan{{Kind: "host", Value: "evil.example", Source: "web"}}})
+	sm.MarkTaintSpans(chat, session.TaintState{})                                                               // no-op
+	sm.MarkTaintSpans(9998, session.TaintState{Spans: []session.TaintSpan{{Kind: "host", Value: "x.example"}}}) // uncached: no-op
 	if err := sm.Save(chat, []session.Message{{Role: "user", Content: "hi"}}); err != nil {
 		t.Fatal(err)
 	}
@@ -73,11 +73,11 @@ func TestRED_MarkTaintSpansPersists(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := again.TaintSpans(); len(got) != 1 {
+	if got := again.TaintSpans(); len(got.Spans) != 1 {
 		t.Fatalf("reloaded chat spans = %+v", got)
 	}
 	var nilCS *ChatSession
-	if nilCS.TaintSpans() != nil {
+	if !nilCS.TaintSpans().Empty() {
 		t.Fatal("nil chat has spans")
 	}
 }

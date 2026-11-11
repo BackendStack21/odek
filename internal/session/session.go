@@ -153,9 +153,16 @@ type Session struct {
 	// TaintSpans are the spans the agent loop recorded from untrusted
 	// content (URLs, hosts, paths, hashed tokens; see TaintSpan). They are
 	// sticky like UntrustedIngested: every save merges in the spans already
-	// on disk (MergeTaintSpans, bounded), and trimming never touches them,
+	// on disk (MergeTaintState, bounded), and trimming never touches them,
 	// so a resumed or rebuilt engine still escalates their reuse.
 	TaintSpans []TaintSpan `json:"taint_spans,omitempty"`
+
+	// TaintOverflow records, as a fixed-size filter, every untrusted span
+	// that a bound dropped from TaintSpans or from the loop's span store
+	// (see TaintOverflow), so a span is never forgotten. It is sticky like
+	// TaintSpans: every save ORs in the filter already on disk, and trimming
+	// and compaction never touch it.
+	TaintOverflow TaintOverflow `json:"taint_overflow,omitempty"`
 
 	// EpisodeTaintTracked marks a session whose EpisodeUntrusted flag has
 	// been derived over its whole history. Files written before the flag
@@ -801,6 +808,36 @@ func (s *Store) UpdateMeta(id string, fn func(*Session)) (*Session, error) {
 	}
 }
 
+// AddTaintState merges st into the stored session's sticky untrusted-span
+// state (TaintSpans, TaintOverflow) and writes the file only when st holds
+// something it does not. Like UpdateMeta it leaves the transcript Revision
+// alone, so a turn running on the session keeps saving, and it reloads and
+// retries when another writer commits in between. A missing session is an
+// error that unwraps to fs.ErrNotExist.
+func (s *Store) AddTaintState(id string, st TaintState) error {
+	if st.Empty() {
+		return nil
+	}
+	for attempt := 0; ; attempt++ {
+		s.mu.Lock()
+		sess, err := s.Load(id)
+		if err == nil {
+			current := sess.TaintState()
+			if current.Covers(st) {
+				s.mu.Unlock()
+				return nil
+			}
+			sess.SetTaintState(MergeTaintState(st, current))
+			err = s.saveLockedOpts(sess, true, true)
+		}
+		s.mu.Unlock()
+		if errors.Is(err, ErrConflict) && attempt < maxMetaRetries {
+			continue
+		}
+		return err
+	}
+}
+
 // SaveNoIndex persists a session exactly like Save — redaction, file-cap
 // trimming and atomic write all still happen, and index.json is refreshed
 // unless the indexed summary would trail by under indexLagWindow (only
@@ -864,8 +901,8 @@ type revStamp struct {
 	revision   uint64
 	untrusted  bool
 	episode    bool
-	// spans: the revision carries TaintSpans, which the stamp does not
-	// hold, so a save must re-read the file to merge them.
+	// spans: the revision carries TaintSpans or TaintOverflow, which the
+	// stamp does not hold, so a save must re-read the file to merge them.
 	spans bool
 	// Metadata a later save of an older snapshot adopts (see MetaRevision).
 	metaRevision uint64
@@ -914,7 +951,7 @@ func (s *Store) rememberRevision(sess *Session) {
 		revision:   sess.Revision,
 		untrusted:  sess.UntrustedIngested,
 		episode:    sess.EpisodeUntrusted,
-		spans:      len(sess.TaintSpans) > 0,
+		spans:      !sess.TaintState().Empty(),
 		size:       info.Size(),
 
 		metaRevision: sess.MetaRevision,
@@ -1060,7 +1097,7 @@ func (s *Store) saveLockedOpts(sess *Session, lazyIndex, metaOnly bool) (err err
 		if current.EpisodeUntrusted {
 			sess.EpisodeUntrusted = true
 		}
-		sess.TaintSpans = MergeTaintSpans(sess.TaintSpans, current.TaintSpans)
+		sess.SetTaintState(MergeTaintState(sess.TaintState(), current.TaintState()))
 		// A metadata edit must apply on top of the latest metadata: when
 		// another writer edited it since the load, conflict so UpdateMeta
 		// reloads and reapplies its edit instead of dropping one of them.

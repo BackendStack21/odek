@@ -2537,7 +2537,7 @@ func runChatTurn(
 		if agent.UntrustedIngested() {
 			sessionManager.MarkUntrustedIngested(chatID)
 		}
-		sessionManager.MarkTaintSpans(chatID, agent.TaintSpans(trimmed))
+		sessionManager.MarkTaintSpans(chatID, agent.TaintState(trimmed))
 		if err := sessionManager.SaveNoIndexAt(chatID, turnGen, trimmed); err != nil {
 			checkpointErr = fmt.Errorf("persist Telegram checkpoint: %w", err)
 			agentCancel()
@@ -2567,7 +2567,7 @@ func runChatTurn(
 		// Before the cancel-path and final saves below.
 		sessionManager.MarkUntrustedIngested(chatID)
 	}
-	sessionManager.MarkTaintSpans(chatID, agent.TaintSpans(updatedMessages))
+	sessionManager.MarkTaintSpans(chatID, agent.TaintState(updatedMessages))
 	// Drain the progress bubble before anything else is sent: every progress
 	// edit completes before the final answer (or error reply) goes out.
 	progress.finish(!resolved.ToolProgressCleanup)

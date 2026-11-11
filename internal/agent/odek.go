@@ -1241,11 +1241,33 @@ func (a *Agent) UntrustedIngested() bool {
 }
 
 // TaintSpans records the untrusted spans of messages (the history about to
-// be saved) and returns the engine's span set as session state. Persist it on
-// session.Session.TaintSpans and seed later runs with loop.WithTaintSpanSeed,
-// so trimming or rebuilding never forgets a span.
+// be saved) and returns the span list of TaintState. The list is bounded and
+// does not carry the overflow filter of spans past the bound, so persisting
+// it alone forgets every span the bound dropped.
+//
+// Deprecated: use TaintState, which returns the list and the overflow
+// filter; persist and seed both.
 func (a *Agent) TaintSpans(messages []session.Message) []session.TaintSpan {
+	return a.engine.TaintSpanState(messages).Spans
+}
+
+// TaintState records the untrusted spans of messages (the history about to
+// be saved) and returns the engine's span state: the bounded span list and
+// the overflow filter of every span past the bound. Merge it into the
+// session (session.MergeTaintState, Session.SetTaintState) and seed later
+// runs with loop.WithTaintSpanSeed(ctx, sess.TaintState()), so trimming or
+// rebuilding never forgets a span.
+func (a *Agent) TaintState(messages []session.Message) session.TaintState {
 	return a.engine.TaintSpanState(messages)
+}
+
+// ResetTaintSpans empties the agent's untrusted-span record (see
+// loop.Engine.ResetTaintSpans). An agent that serves several sessions in
+// turn calls it when it moves to another session, after persisting
+// TaintState into the session it leaves; the next run is then seeded from
+// the new session's state only.
+func (a *Agent) ResetTaintSpans() {
+	a.engine.ResetTaintSpans()
 }
 
 // TotalInputTokens returns the cumulative prompt tokens consumed across all

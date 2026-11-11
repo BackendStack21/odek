@@ -363,8 +363,10 @@ The provider's `ListModels` catalog plus the configured model (always present, `
 
 The core session CRUD (session-token gated):
 
-- **GET** — the full session record (messages, buffer, `auth_token`,
-  `pinned`, `input_tokens`/`output_tokens`). The effective session token is
+- **GET** — the session record (messages, buffer, `auth_token`,
+  `pinned`, `input_tokens`/`output_tokens`) without the untrusted-span gate
+  state (`taint_spans`, `taint_overflow`), which only the runtime reads; the
+  session file and the JSON export keep it. The effective session token is
   echoed in the `X-Session-Token` response header; presenting only the
   instance token bootstraps and returns it for sessions you didn't create.
   Rate-limited to 60 lookups/min per IP (**429** beyond that).
@@ -374,7 +376,8 @@ The core session CRUD (session-token gated):
   listing row). The edit is
   metadata-only: it does not advance the transcript revision, so a turn
   running on the session keeps checkpointing and its saves keep the new
-  title/pin (neither the edit nor the turn is lost). A failed save (disk,
+  title/pin (neither the edit nor the turn is lost). The response echoes the
+  updated record as **GET** returns it. A failed save (disk,
   permissions) returns **500** instead of echoing an unpersisted change.
 - **DELETE** — removes the session and its index entry; **204**.
 

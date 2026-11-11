@@ -42,11 +42,10 @@ type ExtendedMemory struct {
 	guard    guard.Guard
 	guardCfg guard.Config
 
-	dir      string
-	mu       sync.RWMutex
-	session  string
-	project  string
-	lastUser string
+	dir     string
+	mu      sync.RWMutex
+	session string
+	project string
 
 	// testCapBytes overrides cfg.MaxSizeMB in tests. 0 means use cfg.
 	testCapBytes int64
@@ -143,6 +142,10 @@ func newExtended(dir string, llm LLMClient, cfg Config, evictOnOpen bool) *Exten
 		return !errors.Is(err, ErrAtomNotFound)
 	})
 	em.recall.stats = &em.stats
+	// The rerank breaker outlives this instance: serve and Telegram build a
+	// new agent per connection, run or message, and each one opens the
+	// directory again.
+	em.recall.breaker = rerankBreakerFor(dir)
 	// Wire the hygiene sweep's atom-existence checker to the live atom store,
 	// before Load runs it. Only a definitive not-found counts as missing —
 	// transient read errors must not cause the sweep to drop entries.
@@ -704,8 +707,13 @@ func (em *ExtendedMemory) AnaphoraResolve(ctx context.Context, msg string) (stri
 	defer cancel()
 
 	// queryAtomsScored already filters by min score and ranks by the blended
-	// similarity/retention score, so the top candidate is the antecedent.
-	scored, err := em.recall.queryAtomsScored(ctx, msg, false)
+	// similarity/retention score, so the top candidate is the antecedent. The
+	// paid LLM rerank is skipped: the blended order is what picks it, and a
+	// rerank per pronoun-bearing turn would only add cost. The search uses the
+	// bounded principal text, like recall: embedding takes no context, so an
+	// unbounded paste would be embedded whole on every such turn. The pronoun
+	// is still replaced in the whole message below.
+	scored, err := em.recall.queryAtomsScored(ctx, principalQuery(msg), true)
 	if err != nil || len(scored) == 0 {
 		return msg, false
 	}
@@ -821,8 +829,26 @@ func (em *ExtendedMemory) PinAtom(id string) error {
 
 // FormatExtendedContext returns formatted Extended Memory context for the
 // query, or empty string if nothing matches or Extended Memory is disabled.
+//
+// The query is a user turn as the loop sees it, which can carry wrapped
+// untrusted content (@-refs, attachments, --ctx files, forwards, voice
+// transcripts, photo captions and descriptions, a fenced delegated task).
+// The local vector search embeds the turn with that content unwrapped
+// (recallSearchText), so it may decide which trusted atoms surface. The
+// memory LLM (intent prediction and rerank) only ever sees the principal's
+// own words (principalQuery). A turn with no principal words gets the vector
+// search alone: no memory-LLM call, and the previous turn's follow-up
+// suggestions are cleared. A turn with no text at all makes no recall.
 func (em *ExtendedMemory) FormatExtendedContext(ctx context.Context, query string) string {
 	if em == nil || !em.Enabled() {
+		return ""
+	}
+	principal := principalQuery(query)
+	search := recallSearchText(query)
+	if principal == "" {
+		em.recall.clearFollowUps()
+	}
+	if search == "" {
 		return ""
 	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -833,7 +859,7 @@ func (em *ExtendedMemory) FormatExtendedContext(ctx context.Context, query strin
 	copy(recent, em.recentUserMessages)
 	em.recentMu.Unlock()
 
-	context, err := em.recall.Query(ctx, query, recent, em.userModel.State())
+	context, err := em.recall.queryTurn(ctx, principal, search, recent, em.userModel.State())
 	if err != nil {
 		log.Printf("extended memory: format context failed: %v", err)
 		return ""
@@ -846,14 +872,16 @@ func (em *ExtendedMemory) FormatContext(ctx context.Context, query string) strin
 	return em.FormatExtendedContext(ctx, query)
 }
 
-// OnUserMessage extracts atoms from a user message and stores them.
+// OnUserMessage extracts atoms from a user message and stores them. The turn
+// is remembered for later predictions as the principal's own words only
+// (principalQuery); extraction strips untrusted regions itself.
 func (em *ExtendedMemory) OnUserMessage(ctx AtomContext, msg string) {
 	if em == nil || !em.Enabled() {
 		return
 	}
+	principal := principalQuery(msg)
 
 	em.mu.Lock()
-	em.lastUser = msg
 	if ctx.SessionID != "" {
 		em.session = ctx.SessionID
 	} else {
@@ -873,12 +901,14 @@ func (em *ExtendedMemory) OnUserMessage(ctx AtomContext, msg string) {
 	}
 	em.mu.Unlock()
 
-	em.recentMu.Lock()
-	em.recentUserMessages = append(em.recentUserMessages, msg)
-	if len(em.recentUserMessages) > recentUserMessageLimit {
-		em.recentUserMessages = em.recentUserMessages[len(em.recentUserMessages)-recentUserMessageLimit:]
+	if principal != "" {
+		em.recentMu.Lock()
+		em.recentUserMessages = append(em.recentUserMessages, principal)
+		if len(em.recentUserMessages) > recentUserMessageLimit {
+			em.recentUserMessages = em.recentUserMessages[len(em.recentUserMessages)-recentUserMessageLimit:]
+		}
+		em.recentMu.Unlock()
 	}
-	em.recentMu.Unlock()
 
 	if em.cfg.AutoExtractPerTurn == nil || !*em.cfg.AutoExtractPerTurn {
 		return

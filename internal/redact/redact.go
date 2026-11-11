@@ -49,7 +49,8 @@ var patternsHead = []*regexp.Regexp{
 	// \b anchors the key start: without it "sk-" inside ordinary words
 	// ("task-notes-...", "risk-assessment-...") matched and surrounding
 	// prose was corrupted to [REDACTED] in sessions and logs.
-	regexp.MustCompile(`\bsk-[a-zA-Z0-9_-]{32,}`),
+	// Gate: every match begins with "sk-".
+	gated(regexp.MustCompile(`\bsk-[a-zA-Z0-9_-]{32,}`), literals(exact("sk-"))),
 
 	// GitHub personal access tokens (classic + fine-grained) and the
 	// other ghp_/gho_/ghu_/ghs_/ghr_ families (OAuth, user-to-server,
@@ -91,7 +92,8 @@ var patternsTail = []*regexp.Regexp{
 	// header-line form (Authorization: Bearer …, Authorization: token …) and the JSON/JS header-object form
 	// ("Authorization": "Bearer …"), where a closing quote precedes the
 	// colon and an opening quote precedes the scheme.
-	regexp.MustCompile(`(?i)Authorization["'\x60]?\s*[:=]\s*["'\x60]?(?:Bearer|Token|ApiKey|Bot|OAuth|Negotiate|Digest)\s+([a-zA-Z0-9+/=._~-]{20,})`),
+	// Gate: every match begins with "authorization" in some letter case.
+	gated(regexp.MustCompile(`(?i)Authorization["'\x60]?\s*[:=]\s*["'\x60]?(?:Bearer|Token|ApiKey|Bot|OAuth|Negotiate|Digest)\s+([a-zA-Z0-9+/=._~-]{20,})`), literals(folded("authorization"))),
 
 	// Slack bot tokens: xoxb-, xoxp-
 	regexp.MustCompile(`xox[abpose]-[0-9]{10,}-[0-9]{10,}-[a-zA-Z0-9]{24,}`),
@@ -105,14 +107,17 @@ var patternsTail = []*regexp.Regexp{
 	// Stripe webhook signing secrets and live API keys (test-mode tk_/
 	// whsec_ look-alikes in fixtures stay short; live bodies are long).
 	regexp.MustCompile(`whsec_[A-Za-z0-9]{24,}`),
-	regexp.MustCompile(`(?:sk|rk)_live_[A-Za-z0-9]{20,}`),
+	// Gate: sk_live_ and rk_live_ both hold "k_live_".
+	gated(regexp.MustCompile(`(?:sk|rk)_live_[A-Za-z0-9]{20,}`), literals(exact("k_live_"))),
 
 	// Telegram bot tokens: <numeric bot id>:<35-char base64url secret>.
 	// e.g. 123456789:AAHfakeTokenValueExample0123456789abcdef
-	regexp.MustCompile(`\b[0-9]{5,}:[A-Za-z0-9_-]{30,}\b`),
+	// Gate: a ':' with five digits before it and 30 token bytes after it.
+	gated(regexp.MustCompile(`\b[0-9]{5,}:[A-Za-z0-9_-]{30,}\b`), shaped(digitColonShape)),
 
 	// Stripe keys: sk_live_, sk_test_, pk_live_, pk_test_
-	regexp.MustCompile(`[rs]k_(live|test)_[a-zA-Z0-9]{24,}`),
+	// Gate: [rs]k_ then live_ or test_, so "k_live_" or "k_test_".
+	gated(regexp.MustCompile(`[rs]k_(live|test)_[a-zA-Z0-9]{24,}`), literals(exact("k_live_", "k_test_"))),
 
 	// Google API keys: AIza + 35+ alphanumeric/hyphen/underscore
 	regexp.MustCompile(`AIza[0-9A-Za-z_-]{35,}`),
@@ -127,7 +132,8 @@ var patternsTail = []*regexp.Regexp{
 	// (1//0 prefix). 1// alone is too generic — refresh tokens always
 	// begin with the literal "1//0".
 	regexp.MustCompile(`ya29\.[A-Za-z0-9_.-]{20,}`),
-	regexp.MustCompile(`\b1//0[A-Za-z0-9_-]{30,}`),
+	// Gate: every match begins with "1//0".
+	gated(regexp.MustCompile(`\b1//0[A-Za-z0-9_-]{30,}`), literals(exact("1//0"))),
 
 	// SendGrid API keys — SG.<22-char id>.<43-char secret>.
 	regexp.MustCompile(`SG\.[A-Za-z0-9_-]{15,}\.[A-Za-z0-9_-]{30,}`),
@@ -138,14 +144,19 @@ var patternsTail = []*regexp.Regexp{
 	// segment-length structure avoids collisions with generic dotted
 	// base64 strings; real JWTs are already matched by the eyJ pattern
 	// above.
-	regexp.MustCompile(`\b[MNO][A-Za-z0-9_-]{22,27}\.[A-Za-z0-9_-]{5,7}\.[A-Za-z0-9_-]{27,40}\b`),
+	// Gate: the three segments as runs of token bytes around two dots.
+	gated(regexp.MustCompile(`\b[MNO][A-Za-z0-9_-]{22,27}\.[A-Za-z0-9_-]{5,7}\.[A-Za-z0-9_-]{27,40}\b`), shaped(dottedTokenShape)),
 
 	// Database connection URLs with embedded credentials. We require a
 	// scheme that genuinely carries DB creds (so this doesn't catch HTTP
 	// basic auth URLs that often appear legitimately in code). The
 	// password segment must be at least 6 chars to avoid matching common
 	// placeholders like `:x@`.
-	regexp.MustCompile(`(?i)\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|rediss?|amqps?|mssql|clickhouse)(?:\+[a-z0-9_]+)?://[^:\s/]*:[^@\s/]{6,}@[^\s'\x60"]+`),
+	// Gate: every match holds "://" and "@", and one scheme name in some
+	// letter case (postgresql holds postgres, mongodb+srv mongodb, rediss
+	// redis, amqps amqp).
+	gated(regexp.MustCompile(`(?i)\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|rediss?|amqps?|mssql|clickhouse)(?:\+[a-z0-9_]+)?://[^:\s/]*:[^@\s/]{6,}@[^\s'\x60"]+`),
+		literals(exact("://"), exact("@"), folded("postgres", "mysql", "mongodb", "redis", "amqp", "mssql", "clickhouse"))),
 }
 
 // Credential-named assignments (api_key, access_token, password,
@@ -177,20 +188,34 @@ var guardedPatterns = []guardedPattern{
 	// Lower-case, Capitalised and UPPER spellings of token/secret, but
 	// only lower-case/Capitalised "pass" (UPPER PASS is test-runner output)
 	// unless it ends an env-style name (DB_PASS).
-	{regexp.MustCompile(`(?:\b(?:token|secret|passphrase|Token|Secret|Passphrase|TOKEN|SECRET|PASSPHRASE)|_(?i:token|secret|passphrase|pwd|pass)|\b[a-z][a-z0-9]*(?:Token|Secret|Passphrase|Password))` + gSep + gVal), looksCredentialShape},
+	// Gate: every key ends with token, secret, passphrase, pwd, pass or
+	// password, in some letter case, and gSep follows it directly.
+	{gated(regexp.MustCompile(`(?:\b(?:token|secret|passphrase|Token|Secret|Passphrase|TOKEN|SECRET|PASSPHRASE)|_(?i:token|secret|passphrase|pwd|pass)|\b[a-z][a-z0-9]*(?:Token|Secret|Passphrase|Password))`+gSep+gVal),
+		keyed("token", "secret", "passphrase", "pwd", "pass", "password")), looksCredentialShape},
 	// Bare pwd/PWD keys (ODBC pwd=..., PWD=...): the shell's PWD variable
 	// holds a working directory, so path-shaped values are not credentials.
-	{regexp.MustCompile(`\b(?:pwd|Pwd|PWD)` + gSep + gVal), looksCredentialShapeNotPath},
+	// Gate: pwd in some letter case, directly followed by gSep.
+	{gated(regexp.MustCompile(`\b(?:pwd|Pwd|PWD)`+gSep+gVal), keyed("pwd")), looksCredentialShapeNotPath},
 	// Bare pass keys: test runners print `pass: TestX_Delete2`.
-	{regexp.MustCompile(`\b(?:pass|Pass)` + gSep + gVal), looksCredentialShapeNotTestName},
+	// Gate: pass in some letter case, directly followed by gSep.
+	{gated(regexp.MustCompile(`\b(?:pass|Pass)`+gSep+gVal), keyed("pass")), looksCredentialShapeNotTestName},
 	// CLI flags with a whitespace-separated value (--password VALUE,
 	// --secret-key VALUE, --private-key VALUE).
-	{regexp.MustCompile(`(?i)--?(?:password|passwd|passphrase|pwd|pass|token|secret|api[_-]?key|secret[_-]?key|private[_-]?key|access[_-]?key|client[_-]?secret)[ \t]+("[^"\n]{20,}"|'[^'\n]{20,}'|[^\s"']{20,})`), plausibleFlagValue},
+	// Gate: a '-' directly before the flag word, whose start is pass (password,
+	// passwd, passphrase), pwd, token, secret, api, private, access or client,
+	// in some letter case.
+	{gated(regexp.MustCompile(`(?i)--?(?:password|passwd|passphrase|pwd|pass|token|secret|api[_-]?key|secret[_-]?key|private[_-]?key|access[_-]?key|client[_-]?secret)[ \t]+("[^"\n]{20,}"|'[^'\n]{20,}'|[^\s"']{20,})`),
+		literals(folded("-pass", "-pwd", "-token", "-secret", "-api", "-private", "-access", "-client"))), plausibleFlagValue},
 	// .netrc lines: password VALUE.
-	{regexp.MustCompile(`(?i)\b(?:password|passwd|passphrase)[ \t]+("[^"\n]{20,}"|'[^'\n]{20,}'|[^\s"']{20,})`), looksSecret},
+	// Gate: password and passwd hold "passw"; or passphrase; in some letter case.
+	{gated(regexp.MustCompile(`(?i)\b(?:password|passwd|passphrase)[ \t]+("[^"\n]{20,}"|'[^'\n]{20,}'|[^\s"']{20,})`), literals(folded("passw", "passphrase"))), looksSecret},
 	// XML elements: <password>VALUE</password>, optional attributes and
 	// CDATA (Maven settings.xml, .NET config).
-	{regexp.MustCompile(`(?i)<(?:password|passwd|passphrase|pwd|secret|token|api[_-]?key|access[_-]?token|client[_-]?secret|secret[_-]?key)(?:\s[^<>]*)?>\s*((?:<!\[CDATA\[)?[^<\n]{20,}?(?:\]\]>)?)\s*</[A-Za-z_-]+>`), looksSecret},
+	// Gate: a '<' directly before the element name, whose start is pass
+	// (password, passwd, passphrase), pwd, secret, token, api, access or
+	// client, in some letter case.
+	{gated(regexp.MustCompile(`(?i)<(?:password|passwd|passphrase|pwd|secret|token|api[_-]?key|access[_-]?token|client[_-]?secret|secret[_-]?key)(?:\s[^<>]*)?>\s*((?:<!\[CDATA\[)?[^<\n]{20,}?(?:\]\]>)?)\s*</[A-Za-z_-]+>`),
+		literals(folded("<pass", "<pwd", "<secret", "<token", "<api", "<access", "<client"))), looksSecret},
 }
 
 // plausibleValue rejects values that are plainly code expressions.
@@ -212,8 +237,10 @@ func plausibleFlagValue(v string) bool {
 var valuePatterns = []guardedPattern{
 	// Chat incoming-webhook URLs: whoever holds the URL can post as the
 	// integration, so the secret path segment is a bearer credential.
-	{regexp.MustCompile(`(?:^|[^A-Za-z0-9.-])hooks\.slack\.com/(?:services|workflows|triggers)/(?:[A-Za-z0-9]+/){1,3}([A-Za-z0-9]{20,})`), plausibleWebhookToken},
-	{regexp.MustCompile(`(?:^|[^A-Za-z0-9.-])discord(?:app)?\.com/api/(?:v[0-9]+/)?webhooks/[0-9]+/([A-Za-z0-9_-]{40,})`), plausibleWebhookToken},
+	// Gate: every match holds "hooks.slack.com/".
+	{gated(regexp.MustCompile(`(?:^|[^A-Za-z0-9.-])hooks\.slack\.com/(?:services|workflows|triggers)/(?:[A-Za-z0-9]+/){1,3}([A-Za-z0-9]{20,})`), literals(exact("hooks.slack.com/"))), plausibleWebhookToken},
+	// Gate: every match holds "discord" and "webhooks/".
+	{gated(regexp.MustCompile(`(?:^|[^A-Za-z0-9.-])discord(?:app)?\.com/api/(?:v[0-9]+/)?webhooks/[0-9]+/([A-Za-z0-9_-]{40,})`), literals(exact("webhooks/"), exact("discord"))), plausibleWebhookToken},
 }
 
 // plausibleAuthPassword judges the PASSWORD of a USER:PASSWORD operand or a
@@ -585,16 +612,16 @@ var commandTools = []struct {
 // (--auth, -a USER:PASSWORD). Scoping to these commands keeps -u / -U /
 // -a as used by docker, sudo, rsync, pip and others readable. Command words
 // match in any case.
-func commandCredentialMatches(text string) [][2]int {
+func commandCredentialMatches(s *textScan) [][2]int {
+	text := s.text
 	var out [][2]int
 	for _, tool := range commandTools {
 		var inJSON jsonStringTracker
 		for pos := 0; pos < len(text); {
-			j := indexFoldASCII(text[pos:], tool.name)
+			j := s.indexFoldFrom(tool.name, pos)
 			if j < 0 {
 				break
 			}
-			j += pos
 			after := j + len(tool.name)
 			pos = after
 			if j > 0 && isCommandWordByte(text[j-1]) {
@@ -1276,8 +1303,8 @@ func looksSecretNotTestName(v string) bool {
 var goTestName = regexp.MustCompile(`^(?:Test|Benchmark|Fuzz|Example)[A-Za-z0-9]*(?:_[A-Za-z0-9]+)*$`)
 
 // guardedMatches returns the [start,end) offsets of every guarded match.
-func guardedMatches(text string) [][2]int {
-	return append(guardedPatternMatches(text), credentialMatches(text)...)
+func guardedMatches(s *textScan) [][2]int {
+	return append(guardedPatternMatches(s), credentialMatches(s)...)
 }
 
 // unquotedJudgeEnd corrects the end of an unquoted value that a guarded
@@ -1360,9 +1387,13 @@ func oddBackslashesBefore(text string, vs, i int) bool {
 
 // guardedPatternMatches is guardedMatches without the credential-named
 // assignments, which RedactSecrets handles in an earlier stage.
-func guardedPatternMatches(text string) [][2]int {
+func guardedPatternMatches(s *textScan) [][2]int {
+	text := s.text
 	var out [][2]int
 	for _, g := range guardedPatterns {
+		if !s.may(g.re) {
+			continue
+		}
 		var inJSON jsonStringTracker
 		last := 0 // end of the previous span: a match inside it is already covered
 		for _, m := range g.re.FindAllStringSubmatchIndex(text, -1) {
@@ -1407,21 +1438,25 @@ func guardedPatternMatches(text string) [][2]int {
 		}
 	}
 	for _, g := range valuePatterns {
+		if !s.may(g.re) {
+			continue
+		}
 		for _, m := range g.re.FindAllStringSubmatchIndex(text, -1) {
 			if m[2] >= 0 && g.ok(text[m[2]:m[3]]) {
 				out = append(out, [2]int{m[2], m[3]})
 			}
 		}
 	}
-	out = append(out, commandCredentialMatches(text)...)
+	out = append(out, commandCredentialMatches(s)...)
 	return append(out, cookieMatches(text)...)
 }
 
 // redactGuarded replaces every guarded match, merging overlaps.
-func redactGuarded(text string) string {
-	ms := guardedPatternMatches(text)
+func (s *textScan) redactGuarded() {
+	text := s.text
+	ms := guardedPatternMatches(s)
 	if len(ms) == 0 {
-		return text
+		return
 	}
 	sort.Slice(ms, func(i, j int) bool { return ms[i][0] < ms[j][0] })
 	var b strings.Builder
@@ -1438,7 +1473,7 @@ func redactGuarded(text string) string {
 		last = m[1]
 	}
 	b.WriteString(text[last:])
-	return b.String()
+	s.set(b.String())
 }
 
 // basicAuthPattern matches an HTTP Basic credential in a header line
@@ -1622,6 +1657,12 @@ func redactBasicAuth(text string) string {
 // The function is safe to call on empty strings and strings without secrets
 // (returns the original string unchanged in the common case).
 func RedactSecrets(text string) string {
+	return redactSecrets(text, false)
+}
+
+// redactSecrets is RedactSecrets; ungated runs every pattern whatever its
+// gate says (the reference the gates are checked against).
+func redactSecrets(text string, ungated bool) string {
 	if text == "" {
 		return text
 	}
@@ -1630,29 +1671,38 @@ func RedactSecrets(text string) string {
 	if r := currentReplacer(); r != nil {
 		result = r.Replace(result)
 	}
-	result = redactPatterns(result, patternsHead)
-	result = redactCredentials(result)
-	result = redactPatterns(result, patternsTail)
-	return redactBasicAuth(redactGuarded(result))
+	// Each stage runs on the previous stage's output; a stage that rewrites
+	// the text resets the facts the gates consult.
+	s := newScan(result, ungated)
+	s.redactPatterns(patternsHead)
+	s.redactCredentials()
+	s.redactPatterns(patternsTail)
+	s.redactGuarded()
+	return redactBasicAuth(s.text)
 }
 
-// redactPatterns applies each pattern in order.
-func redactPatterns(result string, ps []*regexp.Regexp) string {
+// redactPatterns applies each pattern in order, skipping a pattern whose gate
+// the text does not meet.
+func (s *textScan) redactPatterns(ps []*regexp.Regexp) {
 	for _, p := range ps {
 		// ReplaceAllString copies its input even when nothing matches, so
 		// only patterns that match pay for a rewrite.
-		if p.FindStringIndex(result) == nil {
+		if !s.may(p) || p.FindStringIndex(s.text) == nil {
 			continue
 		}
-		result = p.ReplaceAllString(result, "[REDACTED]")
+		s.set(p.ReplaceAllString(s.text, "[REDACTED]"))
 	}
-	return result
 }
 
 // HasSecrets returns true if the text contains any recognized secret pattern
 // or any registered known secret value.
 // Useful for quick pre-checks without allocating the full redacted string.
 func HasSecrets(text string) bool {
+	return hasSecrets(text, false)
+}
+
+// hasSecrets is HasSecrets; ungated as for redactSecrets.
+func hasSecrets(text string, ungated bool) bool {
 	if text == "" {
 		return false
 	}
@@ -1661,12 +1711,13 @@ func HasSecrets(text string) bool {
 			return true
 		}
 	}
+	s := newScan(text, ungated)
 	for _, p := range patterns {
-		if p.MatchString(text) {
+		if s.may(p) && p.MatchString(text) {
 			return true
 		}
 	}
-	return len(guardedMatches(text)) > 0 || len(basicAuthMatches(text)) > 0
+	return len(guardedMatches(s)) > 0 || len(basicAuthMatches(text)) > 0
 }
 
 // IsSafe returns true if the text contains no recognized secrets.
@@ -1680,6 +1731,11 @@ func IsSafe(text string) bool {
 // CountSecrets returns the number of secret patterns found in the text.
 // Useful for logging and metrics.
 func CountSecrets(text string) int {
+	return countSecrets(text, false)
+}
+
+// countSecrets is CountSecrets; ungated as for redactSecrets.
+func countSecrets(text string, ungated bool) int {
 	if text == "" {
 		return 0
 	}
@@ -1687,11 +1743,15 @@ func CountSecrets(text string) int {
 	for _, f := range currentForms() {
 		count += strings.Count(text, f)
 	}
+	s := newScan(text, ungated)
 	for _, p := range patterns {
+		if !s.may(p) {
+			continue
+		}
 		matches := p.FindAllString(text, -1)
 		count += len(matches)
 	}
-	count += len(guardedMatches(text)) + len(basicAuthMatches(text))
+	count += len(guardedMatches(s)) + len(basicAuthMatches(text))
 	return count
 }
 

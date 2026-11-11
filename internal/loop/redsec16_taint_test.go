@@ -876,7 +876,7 @@ func TestRED_TaintSpans_PersistAcrossRebuild(t *testing.T) {
 	// after the last gate is included.
 	state := New(nil, tool.NewRegistry(nil), 1, "", nil, 0).TaintSpanState(history)
 	byKind := map[string]bool{}
-	for _, sp := range state {
+	for _, sp := range state.Spans {
 		byKind[sp.Kind] = true
 		if sp.Kind == "token" && (sp.Value != "" || sp.Hash == "") {
 			t.Errorf("token persisted in the clear: %+v", sp)
@@ -907,14 +907,14 @@ func TestRED_TaintSpans_PersistAcrossRebuild(t *testing.T) {
 		if approver.taintPrompts() != 1 || shell.count() != 0 {
 			t.Errorf("%s: prompts=%d ran=%d after rebuild", cmd, approver.taintPrompts(), shell.count())
 		}
-		if got := eng.TaintSpanState(nil); len(got) < len(state) {
-			t.Errorf("seeded engine exports %d spans, want at least %d", len(got), len(state))
+		if got := eng.TaintSpanState(nil); len(got.Spans) < len(state.Spans) {
+			t.Errorf("seeded engine exports %d spans, want at least %d", len(got.Spans), len(state.Spans))
 		}
 	}
 }
 
 func TestTaintPersist_SeedAndExportEdges(t *testing.T) {
-	if (&Engine{}).TaintSpanState(nil) != nil {
+	if !(&Engine{}).TaintSpanState(nil).Empty() {
 		t.Fatal("an engine with no store exports spans")
 	}
 	s := newTaintSpanStore()
@@ -945,7 +945,7 @@ func TestTaintPersist_SeedAndExportEdges(t *testing.T) {
 	e := &Engine{taintSpans: newTaintSpanStore()}
 	e.taintSpans.spans[taintKey(taintKindURL, "https://x.example/"+strings.Repeat("a", session.MaxTaintSpanValueBytes))] = &taintSpan{seq: 1}
 	e.taintSpans.spans[taintKey(taintKindPath, "/opt/sk-ant-"+strings.Repeat("A1b2", 12))] = &taintSpan{seq: 2}
-	for _, sp := range e.TaintSpanState(nil) {
+	for _, sp := range e.TaintSpanState(nil).Spans {
 		if sp.Value != "" {
 			t.Errorf("over-long or secret-shaped value exported in the clear: %+v", sp)
 		}

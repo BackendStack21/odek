@@ -22,7 +22,7 @@ func TestRED_ScheduledTurnCarriesTaintSpansIntoChatSession(t *testing.T) {
 	defer func() { telegramScheduledHeadlessRun = prev }()
 	telegramScheduledHeadlessRun = func(ctx context.Context, _ config.ResolvedConfig, _, _ string, _ []odek.Tool) (string, int64, error) {
 		scheduledRunTaintFrom(ctx).set(scheduledRunTaintState{untrusted: true, episode: true,
-			spans: []session.TaintSpan{{Kind: "host", Value: "evil.example"}}})
+			spans: session.TaintState{Spans: []session.TaintSpan{{Kind: "host", Value: "evil.example"}}}})
 		return "digest", 10, nil
 	}
 	job := schedule.Job{ID: "jb-spans", Name: "digest", Task: "digest",
@@ -38,7 +38,7 @@ func TestRED_ScheduledTurnCarriesTaintSpansIntoChatSession(t *testing.T) {
 	if err != nil || cs == nil {
 		t.Fatalf("Load: %v %v", err, cs)
 	}
-	for _, sp := range cs.TaintSpans() {
+	for _, sp := range cs.TaintSpans().Spans {
 		if sp.Kind == "host" && sp.Value == "evil.example" {
 			return
 		}

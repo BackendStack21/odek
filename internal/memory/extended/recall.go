@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/BackendStack21/odek/internal/guard"
 )
@@ -32,6 +33,15 @@ type Recall struct {
 	guard     guard.Guard
 	guardCfg  guard.Config
 	stats     *recallStats
+
+	// breaker skips the rerank while the memory LLM keeps failing it. It is
+	// shared per extended-memory directory (rerankBreakerFor); nil disables
+	// it.
+	breaker *rerankBreaker
+	// rerankCap, when set, runs the rerank budget rule scaled down to that
+	// cap (rerankLimits.scaledTo); tests use it so budget timeouts take
+	// milliseconds, not seconds.
+	rerankCap time.Duration
 
 	// followUpSink receives the high-confidence predicted intents captured
 	// during recall so ExtendedMemory can surface them as follow-up
@@ -88,10 +98,18 @@ type QueryResult struct {
 // Query searches for relevant atoms. It returns a formatted context string
 // bounded by MemoryBudgetChars, or empty string if nothing matches.
 func (r *Recall) Query(ctx context.Context, query string, recent []string, state UserState) (string, error) {
+	return r.queryTurn(ctx, query, query, recent, state)
+}
+
+// queryTurn is Query with the turn split in two: search is embedded for the
+// vector search, principal is the only text handed to the memory LLM (intent
+// prediction and rerank). With an empty principal the vector search runs
+// alone, with no memory-LLM call.
+func (r *Recall) queryTurn(ctx context.Context, principal, search string, recent []string, state UserState) (string, error) {
 	if r.store == nil || r.index == nil {
 		return "", nil
 	}
-	res, err := r.queryAtomsWithPrediction(ctx, query, recent, state)
+	res, err := r.recallAtoms(ctx, principal, search, recent, state)
 	if err != nil {
 		log.Printf("extended memory: recall query failed: %v", err)
 		return "", err
@@ -117,19 +135,36 @@ func (r *Recall) trackErr(err error) {
 	}
 }
 
+// noteRerankSkipped counts a rerank that was due but not made (breaker open,
+// or too little of the recall budget left) in the counters backing
+// ExtendedMemory.Stats.
+func (r *Recall) noteRerankSkipped() {
+	if r.stats != nil {
+		r.stats.rerankSkipped.Add(1)
+	}
+}
+
 // queryAtomsWithPrediction unions literal-query results with predicted-intent
 // results when prediction is enabled. The union keeps, per atom ID, the best
 // composite score (0.6*similarity + 0.4*retention) computed by queryAtoms and
 // is sorted by that score, so predicted-intent matches cannot override the
 // blended ranking with a pure retention ordering.
 func (r *Recall) queryAtomsWithPrediction(ctx context.Context, query string, recent []string, state UserState) ([]MemoryAtom, error) {
+	return r.recallAtoms(ctx, query, query, recent, state)
+}
+
+// recallAtoms is queryAtomsWithPrediction with the turn split in two (see
+// queryTurn): the literal vector search embeds search, while prediction and
+// the rerank of the literal candidates use principal only, and are skipped
+// when it is empty.
+func (r *Recall) recallAtoms(ctx context.Context, principal, search string, recent []string, state UserState) ([]MemoryAtom, error) {
 	all := make(map[string]scoredAtomMeta)
 
 	// Run intent prediction concurrently with the literal query (which may
 	// include a paid LLM rerank). Sequentially, the rerank can consume most of
 	// the recall context deadline, starving the predictor of budget and making
 	// it fail with context-deadline-exceeded before its LLM call even starts.
-	predicting := r.predictor != nil && r.cfg.PredictiveIntents > 0 &&
+	predicting := principal != "" && r.predictor != nil && r.cfg.PredictiveIntents > 0 &&
 		r.cfg.FollowUpAnticipationEnabled != nil && *r.cfg.FollowUpAnticipationEnabled
 	type predictResult struct {
 		intents []PredictedIntent
@@ -139,12 +174,12 @@ func (r *Recall) queryAtomsWithPrediction(ctx context.Context, query string, rec
 	if predicting {
 		predCh = make(chan predictResult, 1)
 		go func() {
-			intents, err := r.predictor.Predict(ctx, query, recent, state)
+			intents, err := r.predictor.Predict(ctx, principal, recent, state)
 			predCh <- predictResult{intents, err}
 		}()
 	}
 
-	literal, err := r.queryAtomsScored(ctx, query, false)
+	literal, err := r.scoredCandidates(ctx, search, principal, principal == "")
 	if err != nil {
 		r.trackErr(err)
 		return nil, err
@@ -261,6 +296,13 @@ func (r *Recall) deliverFollowUpsGen(gen uint64, intents []PredictedIntent) {
 	r.deliverFollowUps(intents)
 }
 
+// clearFollowUps replaces the follow-up suggestions with none for a turn that
+// runs no prediction, stamped as the newest turn so a prediction still
+// running for an earlier turn cannot land after it.
+func (r *Recall) clearFollowUps() {
+	r.deliverFollowUpsGen(r.followUpGen.Add(1), nil)
+}
+
 func (r *Recall) deliverFollowUps(intents []PredictedIntent) {
 	if r.followUpSink == nil ||
 		r.cfg.FollowUpSuggestionsEnabled == nil || !*r.cfg.FollowUpSuggestionsEnabled {
@@ -330,6 +372,14 @@ func (r *Recall) queryAtoms(ctx context.Context, query string) ([]MemoryAtom, er
 // map. skipRerank suppresses the paid LLM rerank for auxiliary (predicted
 // intent) queries.
 func (r *Recall) queryAtomsScored(ctx context.Context, query string, skipRerank bool) ([]scoredAtomMeta, error) {
+	return r.scoredCandidates(ctx, query, query, skipRerank)
+}
+
+// scoredCandidates is queryAtomsScored with the vector-search text and the
+// rerank text apart: candidates come from embedding search, and the rerank
+// prompt, if any, is built from rerankQuery alone. An empty rerankQuery
+// skips the rerank.
+func (r *Recall) scoredCandidates(ctx context.Context, search, rerankQuery string, skipRerank bool) ([]scoredAtomMeta, error) {
 	k := r.cfg.SemanticSearchTopK
 	if k <= 0 {
 		k = DefaultConfig().SemanticSearchTopK
@@ -343,7 +393,7 @@ func (r *Recall) queryAtomsScored(ctx context.Context, query string, skipRerank 
 		minScore = DefaultConfig().SemanticSearchMinScore
 	}
 
-	candidates := r.index.search(query, k*overfetch)
+	candidates := r.index.search(search, k*overfetch)
 	if len(candidates) == 0 {
 		return nil, nil
 	}
@@ -375,8 +425,8 @@ func (r *Recall) queryAtomsScored(ctx context.Context, query string, skipRerank 
 		scored = append(scored, scoredAtomMeta{atom: atom, score: score})
 	}
 
-	if !skipRerank && r.cfg.SemanticSearchRerank != nil && *r.cfg.SemanticSearchRerank && r.llm != nil && len(scored) > 1 {
-		scored = r.rerank(ctx, query, scored)
+	if !skipRerank && rerankQuery != "" && r.cfg.SemanticSearchRerank != nil && *r.cfg.SemanticSearchRerank && r.llm != nil && len(scored) > 1 {
+		scored = r.rerank(ctx, rerankQuery, scored)
 	}
 
 	sort.SliceStable(scored, func(i, j int) bool {
@@ -397,7 +447,41 @@ type scoredAtomMeta struct {
 // rerank asks the memory LLM to order the candidate atoms by relevance and
 // rewrites their scores so that order survives a later sort by score. On an
 // LLM failure or a "none" answer the candidates are returned unchanged.
+//
+// The call gets what is left of ctx minus a reserve (rerankBudgetWithin), so
+// when the memory LLM does not answer recall still returns the blended order
+// in time. It is skipped, leaving the candidates unchanged, when that budget
+// is too small to be worth a call or the breaker is open. Its outcome counts
+// toward the breaker only when it says something about the memory LLM
+// (rerankInconclusive). Every timeout that is not a caller cancel counts as
+// a recall timeout in Stats; one under less than a fair budget is also
+// logged, at most once a minute.
 func (r *Recall) rerank(ctx context.Context, query string, scored []scoredAtomMeta) []scoredAtomMeta {
+	limits := defaultRerankLimits
+	if r.rerankCap > 0 {
+		limits = limits.scaledTo(r.rerankCap)
+	}
+	budget := rerankBudgetWithin(ctx, limits)
+	if budget < limits.min {
+		r.noteRerankSkipped()
+		return scored
+	}
+	allowed, probe := r.breaker.begin()
+	if !allowed {
+		r.noteRerankSkipped()
+		return scored
+	}
+	// A probe whose outcome is never recorded (the call panicked) must still
+	// free the probe slot, or no later turn could probe again.
+	recorded := false
+	if probe {
+		defer func() {
+			if !recorded {
+				r.breaker.releaseProbe()
+			}
+		}()
+	}
+
 	var b strings.Builder
 	fmt.Fprintf(&b, "Rank these memory atoms by relevance to: %s\n\n", query)
 	for i, s := range scored {
@@ -406,12 +490,24 @@ func (r *Recall) rerank(ctx context.Context, query string, scored []scoredAtomMe
 	b.WriteString("\nReturn only the indices of the most relevant entries, ordered by relevance (most relevant first).\n")
 	b.WriteString("Format: a single line of comma-separated numbers, e.g. \"3,0,1\". If none are relevant, return \"none\".")
 
-	resp, err := r.llm.SimpleCall(ctx,
+	callCtx, cancel := context.WithTimeout(ctx, budget)
+	resp, err := r.llm.SimpleCall(callCtx,
 		"You are a relevance ranking system. Return only a comma-separated list of indices or the word 'none'.",
 		b.String(),
 	)
+	timedOut := err != nil && (errors.Is(err, context.DeadlineExceeded) || errors.Is(callCtx.Err(), context.DeadlineExceeded))
+	cancel()
+	fair := budget >= limits.fair
+	r.breaker.end(probe, err, err != nil && rerankInconclusive(ctx, err, timedOut, fair))
+	recorded = true
+	if timedOut && !callerCancelled(ctx, err) {
+		r.trackErr(context.DeadlineExceeded)
+		if !fair && r.breaker.logShortTimeout() {
+			log.Printf("extended memory: rerank timed out with %v of recall budget left (a fair attempt gets %v); not counted against the memory LLM",
+				budget.Round(time.Millisecond), limits.fair)
+		}
+	}
 	if err != nil {
-		log.Printf("extended memory: rerank LLM call failed: %v", err)
 		return scored
 	}
 	resp = strings.TrimSpace(resp)
