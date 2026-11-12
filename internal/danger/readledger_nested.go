@@ -120,6 +120,10 @@ func nestedLanguageOfInterpreter(name string) string {
 const nestedUnanalyzed = "unanalyzed"
 
 func nestedLanguageOfFile(path, text string) string {
+	// The extension picks how a read script is inspected; it is not a
+	// protected-name check and is not folded: an extension recognised only
+	// after full folding falls through to the shebang and the shell reading,
+	// as for any unknown suffix.
 	switch strings.ToLower(filepath.Ext(path)) {
 	case ".tcl", ".ps1", ".psm1", ".r", ".scala", ".java", ".groovy", ".kts", ".applescript", ".scpt", ".nu", ".swift", ".jl", ".ex", ".exs", ".erl", ".hs", ".clj", ".dart":
 		return nestedUnanalyzed
@@ -353,6 +357,8 @@ func inlinePayloadTargets(key, cmd string) []string {
 // nestedIsShellScript reports whether text runs under a shell: a shell shebang,
 // a shell suffix, or no shebang at all (the ENOEXEC fallback).
 func nestedIsShellScript(path, text string) bool {
+	// Not folded, like nestedLanguageOfFile: the suffix is a hint about the
+	// content, and an unknown one is judged by the text.
 	switch strings.ToLower(filepath.Ext(path)) {
 	case ".sh", ".bash", ".zsh", ".ksh", ".dash":
 		return true

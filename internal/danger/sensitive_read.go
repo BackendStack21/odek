@@ -64,18 +64,25 @@ func IsSensitiveReadPath(root, path string) bool {
 		return false
 	}
 	abs := stripPrivate(filepath.Clean(path))
-	base := FoldPathCase(filepath.Base(abs))
-	dir := FoldPathCase(filepath.Dir(abs))
-	if root != "" {
-		r := FoldPathCase(stripPrivate(filepath.Clean(root)))
-		if dir == r {
-			dir = ""
-		} else if rest, ok := strings.CutPrefix(dir, r+"/"); ok {
-			dir = rest
+	// The credential-name tables carry exemptions (`.env.example`, source
+	// files in a secrets/ package), so a name is judged under its full fold
+	// and under its plain lower-case spelling, and is sensitive when either
+	// reading is: a spelling that is exempt only after full folding
+	// (`.env.diﬆ`) stays refused.
+	for _, fold := range []func(string) string{FoldPathCase, strings.ToLower} {
+		base := fold(filepath.Base(abs))
+		dir := fold(filepath.Dir(abs))
+		if root != "" {
+			r := fold(stripPrivate(filepath.Clean(root)))
+			if dir == r {
+				dir = ""
+			} else if rest, ok := strings.CutPrefix(dir, r+"/"); ok {
+				dir = rest
+			}
 		}
-	}
-	if sensitiveBase(base, dir) || sensitiveDir(dir, base) {
-		return true
+		if sensitiveBase(base, dir) || sensitiveDir(dir, base) {
+			return true
+		}
 	}
 	lower := FoldPathCase(abs)
 	if systemSecretPaths[lower] || strings.HasPrefix(lower, "/etc/sudoers.d/") ||

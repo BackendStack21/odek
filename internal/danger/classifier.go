@@ -859,6 +859,21 @@ func FoldPathCase(s string) string {
 	return b.String()
 }
 
+// foldReadings returns the readings under which a name is compared with
+// protected names: its lower-case form and, when different, its full case
+// fold (FoldPathCase), which a case-insensitive filesystem resolves to the same
+// file (`.pgpaß` opens `.pgpass`). A check is positive when either reading
+// matches, so it keeps every match the lower-case form made: an exclusion
+// (`.env.example`, a source-code extension) applies only when both readings
+// are excluded, and folding never lowers a verdict.
+func foldReadings(s string) []string {
+	lower := strings.ToLower(s)
+	if folded := FoldPathCase(s); folded != lower {
+		return []string{lower, folded}
+	}
+	return []string{lower}
+}
+
 // odekProtectedFiles and odekProtectedDirs name the entries of ~/.odek that are
 // trust anchors (folded, relative to ~/.odek); odekRotatedLogs are logs whose
 // numbered rotations are anchors too.
@@ -4223,6 +4238,9 @@ func knownSafeShellValue(val string) bool {
 	if v == "" {
 		return true
 	}
+	// An allowlist, not a protected-name check: it is not folded through
+	// FoldPathCase, so a spelling that only names a listed shell after full
+	// case folding (/bin/baſh) stays unlisted and keeps the stricter verdict.
 	base := strings.ToLower(filepath.Base(v))
 	if !safeShellBasenames[base] {
 		return false
@@ -4269,6 +4287,9 @@ func assignmentValueArmed(val string) bool {
 // pseudo-device network channels (/dev/tcp, /dev/udp — reverse shells) and
 // reads/writes of sensitive credential paths.
 func classifyResourceToken(tok string) RiskClass {
+	// /dev/tcp and /dev/udp are names bash itself recognises, not files a
+	// filesystem looks up, so lower-casing is already the wider match here;
+	// the credential checks below fold (isSensitivePath).
 	lt := strings.ToLower(tok)
 	if strings.Contains(lt, "/dev/tcp/") || strings.Contains(lt, "/dev/udp/") {
 		// A shell-opened raw socket carries data in both directions, so it
@@ -4320,16 +4341,17 @@ var sensitivePathFragments = []string{
 }
 
 func isSensitivePath(tok string) bool {
-	t := strings.ToLower(tok)
-	for _, prefix := range []string{"of=", "if="} {
-		if strings.HasPrefix(t, prefix) {
-			t = t[len(prefix):]
-			break
+	for _, t := range foldReadings(tok) {
+		for _, prefix := range []string{"of=", "if="} {
+			if strings.HasPrefix(t, prefix) {
+				t = t[len(prefix):]
+				break
+			}
 		}
-	}
-	for _, frag := range sensitivePathFragments {
-		if sensitiveFragmentMatch(t, frag) {
-			return true
+		for _, frag := range sensitivePathFragments {
+			if sensitiveFragmentMatch(t, frag) {
+				return true
+			}
 		}
 	}
 	return false

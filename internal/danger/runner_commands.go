@@ -286,7 +286,7 @@ func runnerRunsRelativeScript(cmd []string) bool {
 	}
 	relative := func(tok string) bool { return !filepath.IsAbs(expandShellTokenPath(tok)) }
 	first := cmd[0]
-	if strings.Contains(first, "/") || scriptFileExtensions[strings.ToLower(filepath.Ext(first))] {
+	if strings.Contains(first, "/") || hasScriptExtension(first) {
 		return relative(first)
 	}
 	name := commandName(first)

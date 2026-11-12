@@ -223,6 +223,139 @@ func TestToolOptionEnvBenignValuesKeepVerdict(t *testing.T) {
 	}
 }
 
+// Case-insensitive filesystems (APFS, NTFS) match names by full case folding:
+// `cat ./.pgpaß` opens ./.pgpass and `cat ./id_rſa` opens ./id_rsa. The trust
+// anchors already fold through FoldPathCase, but the credential-file checks
+// (credentialFileBase, credentialDirectory, isSensitivePath, the glob
+// samples) and the git-arming write check still used strings.ToLower, which
+// leaves ß, ſ and the ligatures alone, so the aliases classified safe while
+// the plain names are system_write.
+//
+// Correct behaviour: an alias that folds to a protected name is classified
+// exactly like that name.
+func TestRED_CredentialNamesFoldFullCase(t *testing.T) {
+	t.Setenv("HOME", "/home/user")
+	t.Chdir(t.TempDir())
+	for _, c := range []struct{ plain, folded string }{
+		{"cat ./.pgpass", "cat ./.pgpaß"},
+		{"cat ./.htpasswd", "cat ./.htpaßwd"},
+		{"cat ./secrets.json", "cat ./ſecrets.json"},
+		{"cat ./id_rsa", "cat ./id_rſa"},
+		{"cat ./server.key", "cat ./server.Key"},
+		{"cat ./.git-credentials", "cat ./.git-credentialſ"},
+		{"cat ./kubeconfig", "cat ./kubeconﬁg"},
+		{"cat ./prod.tfstate", "cat ./prod.tfﬆate"},
+		{"cat ./project/.ssh/config", "cat ./project/.ßh/config"},
+		{"cat ./.config/gh/hosts.yml", "cat ./.conﬁg/gh/hosts.yml"},
+		{"cat ./*.tfstate", "cat ./*.tfﬆate"},
+		{"cat /tmp/x/.m2/settings.xml", "cat /tmp/x/.m2/ſettings.xml"},
+		{"echo x >> .gitconfig; git status", "echo x >> .gitconﬁg; git status"},
+		{"echo x >> .git/config; git status", "echo x >> .git/conﬁg; git status"},
+		{"echo x >> ./.config/git/attributes; git status", "echo x >> ./.conﬁg/git/attributes; git status"},
+		{"grep -r token ~", "grep -r ﬆoken ~"},
+	} {
+		plain, folded := Classify(c.plain), Classify(c.folded)
+		if Rank(plain) <= Rank(LocalWrite) {
+			t.Fatalf("reference %q classified %s; test premise broken", c.plain, plain)
+		}
+		if Rank(folded) < Rank(plain) {
+			t.Errorf("%q classified %s, but the name it folds to (%q) is %s", c.folded, folded, c.plain, plain)
+		}
+	}
+}
+
+// An exemption from the credential-name tables (`.env.example`, `.env.dist`,
+// source files in a secrets/ package) holds only when the plain spelling is
+// exempt too: `.env.diﬆ` folds to the exempt `.env.dist`, but was refused as
+// an @-reference before full folding and must stay refused, while the plain
+// exempt names stay referenceable.
+func TestFoldExemptionsNeverLowerAVerdict(t *testing.T) {
+	t.Setenv("HOME", "/home/user")
+	t.Chdir(t.TempDir())
+	root := "/tmp/ws"
+	for path, want := range map[string]bool{
+		"/tmp/ws/.env.diﬆ":           true,
+		"/tmp/ws/.env.ſample":        true,
+		"/tmp/ws/secrets/notes.reﬆ":  true,
+		"/tmp/ws/.pgpaß":             true,
+		"/tmp/ws/.env.dist":          false,
+		"/tmp/ws/.env.example":       false,
+		"/tmp/ws/secrets/handler.go": false,
+	} {
+		if got := IsSensitiveReadPath(root, path); got != want {
+			t.Errorf("IsSensitiveReadPath(%q) = %v, want %v", path, got, want)
+		}
+	}
+	for _, c := range []struct{ cmd, plain string }{
+		{"cat ./.env.diﬆ", "cat ./.env.local"},
+		{"cat ./.env.ſample", "cat ./.env.local"},
+		{"cat ./secrets/notes.reﬆ", "cat ./secrets/notes.txt"},
+	} {
+		if got, want := Classify(c.cmd), Classify(c.plain); Rank(got) < Rank(want) {
+			t.Errorf("%q classified %s, want at least %s (the verdict of %q)", c.cmd, got, want, c.plain)
+		}
+	}
+	for _, cmd := range []string{"cat ./.env.example", "cat ./secrets/handler.go"} {
+		if got := Classify(cmd); got != Safe {
+			t.Errorf("%q classified %s, want safe (an exempt name)", cmd, got)
+		}
+	}
+}
+
+// Every protected name, run through each full-case-fold alias a
+// case-insensitive filesystem resolves to it, classifies exactly like the
+// plain spelling. A new path comparison that lower-cases instead of folding
+// fails here.
+func TestProtectedNamesFoldAliasesClassifyAlike(t *testing.T) {
+	t.Setenv("HOME", "/home/user")
+	t.Chdir(t.TempDir())
+	names := []string{
+		".env", ".env.local", "credentials", "credentials.json", "credentials.toml", ".netrc", "_netrc",
+		".npmrc", ".pypirc", ".git-credentials", "kubeconfig", "terraform.tfstate", ".htpasswd", ".pgpass",
+		".vault-token", "service-account.json", "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519", "id_rsa.old",
+		"site.pem", "site.key", "prod.kubeconfig", "prod.tfvars", "release.keystore", "release.jks",
+		"cert.p12", "cert.pfx", "prod.tfstate", "prod.tfstate.backup", "secrets.json", "secrets.yaml", "secrets",
+		".aws/credentials", ".aws/config", ".ssh/config", ".ssh/known_hosts", ".kube/config", ".docker/config.json",
+		".gnupg/pubring.kbx", ".azure/credentials", ".gcloud/x.json", ".secrets/token", "secrets/db.txt",
+		"credentials/db.txt", ".config/gcloud/x.json", ".config/gh/hosts.yml", ".my.cnf", ".mylogin.cnf",
+		".cargo/credentials", ".gem/credentials", ".password-store/x.gpg", ".terraform.d/credentials.tfrc.json",
+		".m2/settings.xml", ".m2/settings-security.xml", ".gradle/gradle.properties",
+	}
+	aliases := []struct{ from, to string }{
+		{"ss", "ß"}, {"ss", "ẞ"}, {"s", "ſ"}, {"fi", "ﬁ"}, {"st", "ﬆ"}, {"st", "ﬅ"},
+		{"ff", "ﬀ"}, {"fl", "ﬂ"}, {"ffi", "ﬃ"}, {"ffl", "ﬄ"}, {"k", "K"},
+	}
+	shapes := []string{"cat ./%s"}
+	if !testing.Short() {
+		shapes = append(shapes, "cp x /tmp/w/%s")
+	}
+	checked := 0
+	for _, name := range names {
+		for _, shape := range shapes {
+			plainCmd := strings.Replace(shape, "%s", name, 1)
+			plain := Classify(plainCmd)
+			for _, a := range aliases {
+				for i := strings.Index(name, a.from); i >= 0; {
+					alias := name[:i] + a.to + name[i+len(a.from):]
+					cmd := strings.Replace(shape, "%s", alias, 1)
+					if got := Classify(cmd); got != plain {
+						t.Errorf("%q classified %s, but %q is %s", cmd, got, plainCmd, plain)
+					}
+					checked++
+					next := strings.Index(name[i+1:], a.from)
+					if next < 0 {
+						break
+					}
+					i += 1 + next
+				}
+			}
+		}
+	}
+	if checked < 100*len(shapes) {
+		t.Fatalf("only %d aliases checked; the table no longer exercises the fold", checked)
+	}
+}
+
 // The nested-script scanner followed a substitution inside a ${...} default
 // or a here-document body by reading the rest of a whole shell word after
 // it, so the double quote closing "$(cmd)" was taken as an opening quote,
