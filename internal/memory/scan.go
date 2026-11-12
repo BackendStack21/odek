@@ -23,15 +23,34 @@ func ScanContent(content string) error {
 	return nil
 }
 
-// remoteExecRe / evalFetchRe match the download-and-execute / pipe-to-shell
-// class of instruction — the shape a poisoned "fact" would take to turn the
-// always-injected fact files into a persistent backdoor. They are deliberately
-// NARROW: legitimate command facts a session should remember (e.g. "go test
-// ./...", "make build", "uses Postgres on :5432") do not match — only a remote
-// fetch piped into a shell, or eval/source of a fetched command, do.
+// remoteExecRe / evalFetchRe / shellFetchRe match the download-and-execute /
+// pipe-to-shell class of instruction — the shape a poisoned "fact" would take
+// to turn the always-injected fact files into a persistent backdoor. They are
+// deliberately NARROW: legitimate command facts a session should remember
+// (e.g. "go test ./...", "make build", "uses Postgres on :5432", "prefers curl
+// over wget", "restarts with sudo systemctl") do not match — only a remote
+// fetch piped into a shell, or a shell/eval/source run on the output of a
+// fetch, do.
+//
+//   - remoteExecRe: a fetcher whose output is piped into a shell, optionally
+//     through wrapper words (sudo -E, doas, env VAR=x, nice, …) and with the
+//     shell spelled by path (/bin/sh, /usr/bin/env bash).
+//   - evalFetchRe: eval/exec/source applied to a command substitution of a
+//     fetcher.
+//   - shellFetchRe: a shell (with options such as -c) whose script is a
+//     command or process substitution of a fetcher: bash -c "$(curl …)",
+//     bash <(curl …), sh < <(wget …).
+const (
+	fetcherAlt = `(?:curl|wget|fetch|iwr|irm|invoke-webrequest|invoke-restmethod)`
+	shellWord  = `(?:[\w./-]*/)?\w*sh`
+	wrapperOpt = `(?:\s+-\S+(?:\s+[^-\s|]\S*)?|\s+\w+=\S+)*`
+	wrapperPre = `(?:(?:[\w./-]*/)?(?:sudo|doas|env|nice|nohup|time|exec|command)` + wrapperOpt + `\s+)*`
+)
+
 var (
-	remoteExecRe = regexp.MustCompile(`(?i)\b(curl|wget|fetch|iwr|invoke-webrequest)\b[^\n|]*\|\s*\w*sh\b`)
+	remoteExecRe = regexp.MustCompile(`(?i)\b` + fetcherAlt + `\b[^\n|]*\|\s*` + wrapperPre + shellWord + `\b`)
 	evalFetchRe  = regexp.MustCompile(`(?i)\b(eval|exec|source)\b[^\n]*\$\(\s*(curl|wget|fetch)\b`)
+	shellFetchRe = regexp.MustCompile("(?i)(?:^|[^\\w])" + shellWord + `\b(?:\s+-\S+)*\s*(?:<\s*)?["']?(?:\$\(|<\(|` + "`" + `)\s*` + fetcherAlt + `\b`)
 )
 
 // FactLooksUnsafe reports whether a fact embeds a download-and-execute /
@@ -42,5 +61,5 @@ var (
 // into durable memory has an irreducible residual risk — but it closes the
 // concrete download-and-run class.
 func FactLooksUnsafe(fact string) bool {
-	return remoteExecRe.MatchString(fact) || evalFetchRe.MatchString(fact)
+	return remoteExecRe.MatchString(fact) || evalFetchRe.MatchString(fact) || shellFetchRe.MatchString(fact)
 }
