@@ -240,3 +240,20 @@ func TestRED_DBURLListScalesLinearly(t *testing.T) {
 		t.Errorf("super-linear: %v then %v", small, large)
 	}
 }
+// A bare $name is a variable only in shell-variable shape (upper case,
+// digits, underscore); anything else after the $ is a literal password.
+func TestRED_DBURLBareDollarNameShape(t *testing.T) {
+	for _, pw := range []string{"$Passw0rdXyz", "$ecret123", "$password1", "$mypwd99", "$Secret_Key"} {
+		in := "postgres://app:" + pw + "@db:5432/app"
+		if out := RedactSecrets(in); strings.Contains(out, "@db") {
+			t.Errorf("literal password left readable: %q => %q", in, out)
+		}
+	}
+	for _, pw := range []string{"$DB_PASSWORD", "$PGPASS", "$_X1"} {
+		in := "postgres://app:" + pw + "@db:5432/app"
+		if out := RedactSecrets(in); out != in {
+			t.Errorf("variable reference rewritten: %q => %q", in, out)
+		}
+	}
+}
+

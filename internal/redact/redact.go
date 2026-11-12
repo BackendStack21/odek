@@ -231,7 +231,8 @@ var valuePatterns = []guardedPattern{
 	// placeholders like `:x@`. The whole URL is replaced, unless the
 	// password is only a variable or template reference (${DB_PASSWORD},
 	// $DB_PASSWORD, {password}, <password>, %(password)s), which holds no
-	// secret and leaves compose files and code readable.
+	// secret and leaves compose files and code readable. A short reference
+	// is matched too so a joined list is judged pair by pair.
 	// Gate: every match holds "://" and "@", and one scheme name in some
 	// letter case (postgresql holds postgres, mongodb+srv mongodb, rediss
 	// redis, amqps amqp).
@@ -301,11 +302,11 @@ func pwHoldsSecret(pw string) bool {
 		return true
 	}
 	if pw[0] == '$' && pw[1] != '{' {
-		name := pw[1:]
-		low := strings.ToLower(name)
-		return name != strings.ToUpper(name) &&
-			!strings.Contains(low, "pass") && !strings.Contains(low, "pwd") &&
-			!strings.Contains(low, "pw") && !strings.Contains(low, "secret")
+		for _, c := range pw[1:] {
+			if (c < 'A' || c > 'Z') && (c < '0' || c > '9') && c != '_' {
+				return true
+			}
+		}
 	}
 	return false
 }
