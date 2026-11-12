@@ -1007,12 +1007,25 @@ type wsDeltaCounters struct {
 	finalSeen      bool
 	finalReasoning bool
 	finalContent   bool
+
+	// cur is the answer text streamed since the last call boundary or
+	// superseded draft; last is the text of the final call. They let
+	// handlePrompt send a client the part of the stored answer that was
+	// appended after streaming (runtime notices). Bounded: past
+	// deltaTextLimit the text is dropped and the diff falls back to a
+	// replacement.
+	cur, last         string
+	curOver, lastOver bool
 }
+
+// deltaTextLimit bounds the streamed answer text kept per call.
+const deltaTextLimit = 8 << 20
 
 func (c *wsDeltaCounters) reset() {
 	c.mu.Lock()
 	c.reasoning, c.content = 0, 0
 	c.finalSeen, c.finalReasoning, c.finalContent = false, false, false
+	c.cur, c.last, c.curOver, c.lastOver = "", "", false, false
 	c.mu.Unlock()
 }
 
@@ -1026,6 +1039,67 @@ func (c *wsDeltaCounters) addContent() {
 	c.mu.Lock()
 	c.content++
 	c.mu.Unlock()
+}
+
+// addContentText counts one streamed answer fragment and keeps its text.
+func (c *wsDeltaCounters) addContentText(text string) {
+	c.mu.Lock()
+	c.content++
+	if !c.curOver {
+		if len(c.cur)+len(text) > deltaTextLimit {
+			c.cur, c.curOver = "", true
+		} else {
+			c.cur += text
+		}
+	}
+	c.mu.Unlock()
+}
+
+// endCall closes the text of the model call that just finished.
+func (c *wsDeltaCounters) endCall() {
+	c.mu.Lock()
+	c.last, c.lastOver = c.cur, c.curOver
+	c.cur, c.curOver = "", false
+	c.mu.Unlock()
+}
+
+// supersede drops the streamed draft the loop is replacing.
+func (c *wsDeltaCounters) supersede() {
+	c.mu.Lock()
+	c.cur, c.curOver = "", false
+	c.mu.Unlock()
+}
+
+// finalText returns the answer text the client streamed for the final call;
+// ok is false when it was not retained.
+func (c *wsDeltaCounters) finalText() (text string, ok bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.finalSeen {
+		return c.last, !c.lastOver
+	}
+	return c.cur, !c.curOver
+}
+
+// finalAnswerRemainder returns what a client that streamed streamed must still
+// receive to end the turn showing stored (the persisted final answer). A
+// leading verification-failed marker is not delivered as text (clients read
+// done.verified). replace is set when stored does not extend the streamed
+// text, so the client must drop its copy and take the whole answer.
+func finalAnswerRemainder(streamed string, streamedOK bool, stored string) (rest string, replace bool) {
+	stored = strings.TrimPrefix(stored, loop.VerifyFailedMarker+"\n\n")
+	if !streamedOK {
+		return stored, true
+	}
+	if rest, ok := strings.CutPrefix(stored, streamed); ok {
+		return rest, false
+	}
+	if trimmed := strings.TrimRight(streamed, " \t\r\n"); trimmed != streamed {
+		if rest, ok := strings.CutPrefix(stored, trimmed); ok {
+			return rest, false
+		}
+	}
+	return stored, true
 }
 
 // finalSnapshot uses the final call's delivery state, so deltas from a
@@ -1250,7 +1324,7 @@ func newServeAgent(resolved config.ResolvedConfig, system string, runKey string,
 				return ""
 			}
 			return built.RunID()
-		}),
+		}, deltas),
 		ToolDetailHandler: func(event loop.ToolDetailEvent) {
 			sendFn(map[string]any{"type": event.Type, "name": event.Name, "data": event.Data, "call_id": event.CallID, "outcome": event.Outcome})
 		},
@@ -1288,8 +1362,11 @@ func newServeAgent(resolved config.ResolvedConfig, system string, runKey string,
 		// suppressing only bodies already streamed by this iteration.
 		IterationCallback: func(info loop.IterationInfo) {
 			serveIterationProgress(sendFn, info)
-			if info.HasFinalAnswer && deltas != nil {
-				deltas.markFinal(info)
+			if deltas != nil {
+				deltas.endCall()
+				if info.HasFinalAnswer {
+					deltas.markFinal(info)
+				}
 			}
 			// Live usage: parent window for the ctx gauge, plus this-call
 			// speed fields. Providers that omit usage still emit a frame
@@ -1321,8 +1398,11 @@ func newServeAgent(resolved config.ResolvedConfig, system string, runKey string,
 
 // serveAnswerEventHandler forwards final-answer lifecycle events to a
 // WebSocket connection as frames (see answerEventFrame).
-func serveAnswerEventHandler(sendFn func(v any) error, runID func() string) func(loop.AnswerEvent) {
+func serveAnswerEventHandler(sendFn func(v any) error, runID func() string, deltas *wsDeltaCounters) func(loop.AnswerEvent) {
 	return func(event loop.AnswerEvent) {
+		if deltas != nil && event.Type == "answer_superseded" && event.Streamed {
+			deltas.supersede()
+		}
 		if frame, ok := answerEventFrame(event, runID()); ok {
 			sendFn(frame)
 		}
@@ -1395,7 +1475,7 @@ func serveDeltaHandler(sendFn func(v any) error, deltas *wsDeltaCounters) func(l
 			deltas.addReasoning()
 			sendFn(map[string]any{"type": "thinking_delta", "content": d.Text})
 		case llmclient.DeltaContent:
-			deltas.addContent()
+			deltas.addContentText(d.Text)
 			sendFn(map[string]any{"type": "token_delta", "content": d.Text})
 		}
 		return nil
@@ -2919,6 +2999,18 @@ func handlePrompt(
 		}
 		if msg.Content != "" && streamedContent == 0 {
 			send(map[string]any{"type": "token", "content": msg.Content})
+		} else if msg.Content != "" && deltas != nil {
+			// The answer streamed, but the runtime may have appended text to
+			// it afterwards (consistency or plan-check notice). Send what the
+			// client lacks so it ends the turn showing the stored answer.
+			streamed, ok := deltas.finalText()
+			rest, replace := finalAnswerRemainder(streamed, ok, msg.Content)
+			if replace {
+				send(map[string]any{"type": "answer_superseded", "reason": "reconciled"})
+			}
+			if rest != "" {
+				send(map[string]any{"type": "token", "content": rest})
+			}
 		}
 	}
 

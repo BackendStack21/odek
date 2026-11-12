@@ -119,7 +119,7 @@ func runAnswerTurn(t *testing.T, stream bool, verify *loop.VerifyConfig, answers
 		Verify: verify, Stream: stream, DeltaHandler: serveDeltaHandler(sendAny, deltas),
 		// serve always installs an event handler, which gives runs an id.
 		EventHandler:       func(events.Event) {},
-		AnswerEventHandler: serveAnswerEventHandler(sendAny, func() string { return built.RunID() }),
+		AnswerEventHandler: serveAnswerEventHandler(sendAny, func() string { return built.RunID() }, deltas),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -302,5 +302,86 @@ func TestAnswerSuperseded_IsTurnTagged(t *testing.T) {
 	send(map[string]any{"type": "answer_superseded", "reason": "completion_nudge", "cycle": 1})
 	if got["turn_id"] != "t_draft" {
 		t.Fatalf("answer_superseded not turn-tagged: %v", got)
+	}
+}
+
+func TestFinalAnswerRemainder(t *testing.T) {
+	marker := loop.VerifyFailedMarker + "\n\n"
+	cases := []struct {
+		name, streamed, stored, rest string
+		ok, replace                  bool
+	}{
+		{"equal", "All set.", "All set.", "", true, false},
+		{"appended notice", "All set.", "All set.\n\n---\nnotice\n", "\n\n---\nnotice\n", true, false},
+		{"marker never sent", "answer", marker + "answer", "", true, false},
+		{"marker and notice", "answer", marker + "answer\nnote", "\nnote", true, false},
+		{"streamed trailing space", "answer \n", "answer\nnote", "\nnote", true, false},
+		{"diverged", "abc", "xyz", "xyz", true, true},
+		{"streamed text dropped", "", "xyz", "xyz", false, true},
+	}
+	for _, c := range cases {
+		rest, replace := finalAnswerRemainder(c.streamed, c.ok, c.stored)
+		if rest != c.rest || replace != c.replace {
+			t.Errorf("%s: got (%q, %v), want (%q, %v)", c.name, rest, replace, c.rest, c.replace)
+		}
+	}
+}
+
+func TestWsDeltaCounters_FinalTextTracksCalls(t *testing.T) {
+	c := &wsDeltaCounters{}
+	c.addContentText("note ")
+	c.addContentText("one")
+	c.endCall() // a tool iteration ends the first call
+	c.addContentText("draft")
+	c.supersede()
+	c.addContentText("final ")
+	c.addContentText("answer")
+	c.endCall()
+	c.markFinal(loop.IterationInfo{StreamedContent: true})
+	if got, ok := c.finalText(); !ok || got != "final answer" {
+		t.Fatalf("finalText = %q, %v", got, ok)
+	}
+	c.reset()
+	c.addContentText(strings.Repeat("x", deltaTextLimit))
+	c.addContentText("y")
+	c.endCall()
+	c.markFinal(loop.IterationInfo{StreamedContent: true})
+	if _, ok := c.finalText(); ok {
+		t.Fatal("an over-limit answer must report its text as not retained")
+	}
+}
+
+// A streamed answer with no runtime addition is not sent a second time, and
+// the REST run result equals what the session stores.
+func TestServeStreamedAnswer_NoDuplicateAndRunResultMatches(t *testing.T) {
+	log, saved := runAnswerTurn(t, true, nil, []string{"plain answer"}, nil)
+	if got, want := fmt.Sprint(log.sequence()), "[token_delta:plain answer done:<nil>]"; got != want {
+		t.Fatalf("frames = %s, want %s", got, want)
+	}
+	stored, _ := turnAnswer(saved.Messages)
+	run := newTerminalTestRun()
+	for _, f := range log.frames {
+		run.record(f)
+	}
+	if run.Result != stored {
+		t.Fatalf("run result %q != stored %q", run.Result, stored)
+	}
+}
+
+// The remainder frames keep a run result equal to the stored answer, both
+// when the runtime appended text and when the streamed copy must be replaced.
+func TestServeRunRecord_AppendedNoticeAndReplacement(t *testing.T) {
+	run := newTerminalTestRun()
+	run.record(map[string]any{"type": "token_delta", "content": "All set."})
+	run.record(map[string]any{"type": "token", "content": "\n\n---\nnotice\n"})
+	if run.Result != "All set.\n\n---\nnotice\n" {
+		t.Fatalf("result = %q", run.Result)
+	}
+	run = newTerminalTestRun()
+	run.record(map[string]any{"type": "token_delta", "content": "abc"})
+	run.record(map[string]any{"type": "answer_superseded", "reason": "reconciled"})
+	run.record(map[string]any{"type": "token", "content": "xyz"})
+	if run.Result != "xyz" {
+		t.Fatalf("result = %q", run.Result)
 	}
 }

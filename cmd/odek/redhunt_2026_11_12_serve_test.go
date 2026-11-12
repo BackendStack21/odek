@@ -195,7 +195,7 @@ func TestRED_StreamedAnswerDropsConsistencyNotice(t *testing.T) {
 		Stream: true, DeltaHandler: serveDeltaHandler(sendAny, deltas),
 		Tools:              []odek.Tool{serveHuntWriteTool{}},
 		EventHandler:       func(events.Event) {},
-		AnswerEventHandler: serveAnswerEventHandler(sendAny, func() string { return built.RunID() }),
+		AnswerEventHandler: serveAnswerEventHandler(sendAny, func() string { return built.RunID() }, deltas),
 	})
 	if err != nil {
 		t.Fatal(err)
