@@ -187,6 +187,10 @@ var gateExamples = []struct {
 		"hooks.slack.com/workflows/T0/" + strings.Repeat("a1", 10),
 		"hooks.slack.com/triggers/T0/B0/C0/" + strings.Repeat("a1", 10),
 	}},
+	{`(?i)\bMYSQL_PWD=`, []string{
+		"MYSQL_PWD=" + gateTestValue, "mysql_pwd=" + gateTestValue, "Mysql_Pwd='" + gateTestValue + "'",
+		"MYSQL_PWD=\"" + gateTestValue + "\"",
+	}},
 	{`discord(?:app)?`, []string{
 		"discord.com/api/webhooks/123/" + strings.Repeat("a1", 20),
 		"discordapp.com/api/v10/webhooks/123/" + strings.Repeat("a1", 20),

@@ -238,6 +238,11 @@ var valuePatterns = []guardedPattern{
 	// redis, amqps amqp).
 	{gated(regexp.MustCompile(`(?i)\b((?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|rediss?|amqps?|mssql|clickhouse)(?:\+[a-z0-9_]+)?://[^:\s/]*:(?:[^@\s/]{6,}|[$%{<][^@\s/]*)@[^\s'\x60"]+)`),
 		literals(exact("://"), exact("@"), folded("postgres", "mysql", "mongodb", "redis", "amqp", "mssql", "clickhouse"))), dbURLHoldsSecret},
+	// MYSQL_PWD=VALUE: the MySQL/MariaDB clients read their password from
+	// this environment variable, in any value length. Variable references,
+	// placeholders and an empty value stay readable.
+	// Gate: every match holds mysql_pwd in some letter case.
+	{gated(regexp.MustCompile(`(?i)\bMYSQL_PWD=("[^"\n]+"|'[^'\n]+'|[^\s"']+)`), literals(folded("mysql_pwd"))), plausibleAuthPassword},
 	// Chat incoming-webhook URLs: whoever holds the URL can post as the
 	// integration, so the secret path segment is a bearer credential.
 	// Gate: every match holds "hooks.slack.com/".

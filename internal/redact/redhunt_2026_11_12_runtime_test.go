@@ -222,6 +222,7 @@ func TestRED_DBURLListJudgesEveryPassword(t *testing.T) {
 		"postgres://u:${A}@h1/db,postgres://u:${B}@h2/db",
 		"postgres://u:${A}@h1:5432/db;postgres://u:${B}@h2:5432/db",
 		"mongodb://u:${A}@h1,u:${B}@h2/db",
+		"mongodb://u:${A}@h1,@h2/db",
 	} {
 		if out := RedactSecrets(in); out != in {
 			t.Errorf("reference-only list rewritten: %q => %q", in, out)
@@ -240,6 +241,7 @@ func TestRED_DBURLListScalesLinearly(t *testing.T) {
 		t.Errorf("super-linear: %v then %v", small, large)
 	}
 }
+
 // A bare $name is a variable only in shell-variable shape (upper case,
 // digits, underscore); anything else after the $ is a literal password.
 func TestRED_DBURLBareDollarNameShape(t *testing.T) {
@@ -257,3 +259,23 @@ func TestRED_DBURLBareDollarNameShape(t *testing.T) {
 	}
 }
 
+// MYSQL_PWD carries the client password in the environment; a short literal
+// is redacted (value only), a reference or an empty value stays readable.
+func TestRED_MySQLPwdEnvValueRedacted(t *testing.T) {
+	const lit = "Tr0ub4dor9xQ"
+	for in, want := range map[string]string{
+		"MYSQL_PWD=" + lit + " mysql db":             "MYSQL_PWD=[REDACTED] mysql db",
+		"MYSQL_PWD='" + lit + "' mysql db":           "MYSQL_PWD=[REDACTED] mysql db",
+		"export MYSQL_PWD=" + lit:                    "export MYSQL_PWD=[REDACTED]",
+		"MYSQL_PWD=" + lit + " mysqldump -u root db": "MYSQL_PWD=[REDACTED] mysqldump -u root db",
+	} {
+		if out := RedactSecrets(in); out != want {
+			t.Errorf("%q => %q, want %q", in, out, want)
+		}
+	}
+	for _, in := range []string{"MYSQL_PWD=$VAR mysql db", "MYSQL_PWD=${VAR} mysql db", "MYSQL_PWD= mysql db", "MYSQL_PWD=\"\" mysql db"} {
+		if out := RedactSecrets(in); out != in {
+			t.Errorf("over-redaction: %q => %q", in, out)
+		}
+	}
+}
