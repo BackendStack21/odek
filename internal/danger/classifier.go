@@ -3877,6 +3877,9 @@ type unwrapped struct {
 	// scripts are script files a project runner hands to its interpreter
 	// (`uv run script.py`); the unread-script gate judges them.
 	scripts []string
+	// assigns are the NAME=value assignments the inner command runs with:
+	// the leading ones and those given to env or sudo.
+	assigns []string
 }
 
 func unwrapWrappersFull(tokens []string) unwrapped {
@@ -3911,6 +3914,7 @@ func unwrapWrappersFull(tokens []string) unwrapped {
 	}
 	out.inner = tokens[i:]
 	out.splits = splitValues
+	out.assigns = assignments
 	if len(assignments) > 0 {
 		// Evaluate after wrappers are stripped so ENV=/tmp/x env sh
 		// sees inner `sh`, not the `env` wrapper. Names like GIT_PAGER

@@ -143,6 +143,12 @@ type shellAnalysisState struct {
 	// that text alone: the analysis takes it out of its own state, so
 	// payloads it parses afresh (eval, sh -c) do not inherit it.
 	aliasSkip []string
+	// options records how the command line binds option-carrying
+	// variables (TAR_OPTIONS, ...); it is shared with nested payloads.
+	options *optionEnvState
+	// optionsApplied marks the analysis of a tool invocation whose option
+	// variables are already spliced into its words.
+	optionsApplied bool
 }
 
 // maxAnalysisTokens bounds the tokens one Analyze call examines across the
@@ -242,9 +248,14 @@ func analyzeWithStateWork(cmd string, depth int, inherited *shellAnalysisState, 
 		}
 		state.aliases = inherited.aliases
 		aliasSkip = inherited.aliasSkip
+		state.options = inherited.options
+		state.optionsApplied = inherited.optionsApplied
 	}
 	if state.aliases == nil {
 		state.aliases = newAliasTable()
+	}
+	if state.options == nil {
+		state.options = newOptionEnvState()
 	}
 	state.unquoted = unquotedVariableRefs(main)
 	prog := parseShell(tokens, ops)
@@ -380,6 +391,8 @@ func analyzeWithStateWork(cmd string, depth int, inherited *shellAnalysisState, 
 			payloadState.uncertain = state.uncertain || !cwdKnown
 			unwrappedStage := unwrapWrappersFull(stage)
 			inner, floor := unwrappedStage.inner, unwrappedStage.floor
+			state.options.noteStage(stage, inner)
+			payloadState.vars = withOptionAssignments(payloadState.vars, unwrappedStage.assigns)
 			for _, payload := range unwrappedStage.payloads {
 				result.merge(analyzeWithState(payload, depth+1, &payloadState))
 			}
@@ -480,6 +493,13 @@ func analyzeWithStateWork(cmd string, depth int, inherited *shellAnalysisState, 
 				if val, ok := state.vars[v]; ok && startupHomeOverride(v, val, inner) {
 					result.add(SystemWrite)
 				}
+			}
+			// Option-carrying variables in effect (TAR_OPTIONS, MAVEN_ARGS,
+			// ...) are spliced into the tool's argv and analysed like the
+			// options written out.
+			result.merge(state.optionEnvAnalysis(inner, unwrappedStage.assigns, payloadState, depth))
+			if declaresComputedName(name, inner) {
+				state.options.dynamic = true
 			}
 			if name == "gpg" || name == "gpg2" {
 				home, set := state.vars["GNUPGHOME"]
