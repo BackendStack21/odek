@@ -146,17 +146,6 @@ var patternsTail = []*regexp.Regexp{
 	// above.
 	// Gate: the three segments as runs of token bytes around two dots.
 	gated(regexp.MustCompile(`\b[MNO][A-Za-z0-9_-]{22,27}\.[A-Za-z0-9_-]{5,7}\.[A-Za-z0-9_-]{27,40}\b`), shaped(dottedTokenShape)),
-
-	// Database connection URLs with embedded credentials. We require a
-	// scheme that genuinely carries DB creds (so this doesn't catch HTTP
-	// basic auth URLs that often appear legitimately in code). The
-	// password segment must be at least 6 chars to avoid matching common
-	// placeholders like `:x@`.
-	// Gate: every match holds "://" and "@", and one scheme name in some
-	// letter case (postgresql holds postgres, mongodb+srv mongodb, rediss
-	// redis, amqps amqp).
-	gated(regexp.MustCompile(`(?i)\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|rediss?|amqps?|mssql|clickhouse)(?:\+[a-z0-9_]+)?://[^:\s/]*:[^@\s/]{6,}@[^\s'\x60"]+`),
-		literals(exact("://"), exact("@"), folded("postgres", "mysql", "mongodb", "redis", "amqp", "mssql", "clickhouse"))),
 }
 
 // Credential-named assignments (api_key, access_token, password,
@@ -235,12 +224,61 @@ func plausibleFlagValue(v string) bool {
 // group only (group 1), so the surrounding command or URL stays readable.
 // The group must also pass ok.
 var valuePatterns = []guardedPattern{
+	// Database connection URLs with embedded credentials. We require a
+	// scheme that genuinely carries DB creds (so this doesn't catch HTTP
+	// basic auth URLs that often appear legitimately in code). The
+	// password segment must be at least 6 chars to avoid matching common
+	// placeholders like `:x@`. The whole URL is replaced, unless the
+	// password is only a variable or template reference (${DB_PASSWORD},
+	// $DB_PASSWORD, {password}, <password>, %(password)s), which holds no
+	// secret and leaves compose files and code readable.
+	// Gate: every match holds "://" and "@", and one scheme name in some
+	// letter case (postgresql holds postgres, mongodb+srv mongodb, rediss
+	// redis, amqps amqp).
+	{gated(regexp.MustCompile(`(?i)\b((?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|rediss?|amqps?|mssql|clickhouse)(?:\+[a-z0-9_]+)?://[^:\s/]*:[^@\s/]{6,}@[^\s'\x60"]+)`),
+		literals(exact("://"), exact("@"), folded("postgres", "mysql", "mongodb", "redis", "amqp", "mssql", "clickhouse"))), dbURLHoldsSecret},
 	// Chat incoming-webhook URLs: whoever holds the URL can post as the
 	// integration, so the secret path segment is a bearer credential.
 	// Gate: every match holds "hooks.slack.com/".
 	{gated(regexp.MustCompile(`(?:^|[^A-Za-z0-9.-])hooks\.slack\.com/(?:services|workflows|triggers)/(?:[A-Za-z0-9]+/){1,3}([A-Za-z0-9]{20,})`), literals(exact("hooks.slack.com/"))), plausibleWebhookToken},
 	// Gate: every match holds "discord" and "webhooks/".
 	{gated(regexp.MustCompile(`(?:^|[^A-Za-z0-9.-])discord(?:app)?\.com/api/(?:v[0-9]+/)?webhooks/[0-9]+/([A-Za-z0-9_-]{40,})`), literals(exact("webhooks/"), exact("discord"))), plausibleWebhookToken},
+}
+
+// dbURLReferenceRe matches a password that is wholly a variable or template
+// reference. Anything mixing a reference with literal characters, or a
+// default-value form such as ${VAR:-literal}, does not match and is redacted.
+var dbURLReferenceRe = regexp.MustCompile(`^(?:\$\{[A-Za-z_][A-Za-z0-9_]*\}|\$[A-Za-z_][A-Za-z0-9_]*|\{\{?\s*[A-Za-z_][A-Za-z0-9_.-]*\s*\}\}?|<[A-Za-z_][A-Za-z0-9_ -]*>|%\([A-Za-z_][A-Za-z0-9_]*\)s|%[A-Za-z_][A-Za-z0-9_]*%)$`)
+
+// dbURLHoldsSecret judges a matched connection URL: it holds a secret unless
+// its password is only a reference.
+func dbURLHoldsSecret(url string) bool {
+	i := strings.Index(url, "://")
+	if i < 0 {
+		return true
+	}
+	rest := url[i+3:]
+	c := strings.IndexByte(rest, ':')
+	if c < 0 {
+		return true
+	}
+	rest = rest[c+1:]
+	if at := strings.IndexByte(rest, '@'); at >= 0 {
+		rest = rest[:at]
+	}
+	if !dbURLReferenceRe.MatchString(rest) {
+		return true
+	}
+	// A bare $name is a variable only when it is shaped like one (upper
+	// case, or named for a password); $ecret123 is a literal password.
+	if rest[0] == '$' && rest[1] != '{' {
+		name := rest[1:]
+		low := strings.ToLower(name)
+		return name != strings.ToUpper(name) &&
+			!strings.Contains(low, "pass") && !strings.Contains(low, "pwd") &&
+			!strings.Contains(low, "pw") && !strings.Contains(low, "secret")
+	}
+	return false
 }
 
 // plausibleAuthPassword judges the PASSWORD of a USER:PASSWORD operand or a
@@ -604,13 +642,20 @@ func (t *jsonStringTracker) at(text string, off int) bool {
 var commandTools = []struct {
 	name string
 	kind int
-}{{"curl", 0}, {"wget", 1}, {"http", 2}, {"https", 2}, {"xh", 2}}
+}{{"curl", 0}, {"wget", 1}, {"http", 2}, {"https", 2}, {"xh", 2}, {"sshpass", 4},
+	{"mysql", 3}, {"mariadb", 3}, {"mysqldump", 3}, {"mysqladmin", 3}, {"mysqlimport", 3},
+	{"mysqlshow", 3}, {"mysqlcheck", 3}, {"mysqlpump", 3}, {"mysqlslap", 3}, {"mysqlbinlog", 3},
+	{"mariadb-dump", 3}, {"mariadb-admin", 3}, {"mariadb-import", 3}, {"mariadb-show", 3},
+	{"mariadb-check", 3}, {"mariadb-slap", 3}, {"mariadb-binlog", 3}}
 
 // commandCredentialMatches returns the spans of passwords given on the
 // command line of curl (-u, -U, --user, --proxy-user USER:PASSWORD, also
 // attached and clustered), wget (--password and variants) and HTTPie/xh
-// (--auth, -a USER:PASSWORD). Scoping to these commands keeps -u / -U /
-// -a as used by docker, sudo, rsync, pip and others readable. Command words
+// (--auth, -a USER:PASSWORD), the MySQL/MariaDB clients (-pPASSWORD and
+// --password=PASSWORD attached; a bare -p prompts and the next word is a
+// database) and sshpass (-p PASSWORD, -pPASSWORD). Scoping to these commands
+// keeps -u / -U / -a / -p as used by docker, sudo, rsync, pip, ssh and
+// others readable. Command words
 // match in any case.
 func commandCredentialMatches(s *textScan) [][2]int {
 	text := s.text
@@ -662,6 +707,13 @@ func toolCredentialSpans(text string, kind int, json bool, words []cmdWord) [][2
 			}
 		}
 		cookie := false // the operand is a curl -b / --cookie cookie string
+		if kind >= 3 {
+			os, oe = dbClientPasswordOperand(text, kind, raw, w, words, k)
+			if os >= 0 {
+				add(wholePassword(text, os, oe, json, plausibleFlagPassword))
+			}
+			continue
+		}
 		if strings.HasPrefix(raw, "--") {
 			name, attS := raw, -1
 			if eq := strings.IndexByte(raw, '='); eq > 0 {
@@ -723,6 +775,49 @@ func toolCredentialSpans(text string, kind int, json bool, words []cmdWord) [][2
 		}
 	}
 	return out
+}
+
+// dbClientPasswordOperand returns the raw extent of the password operand of
+// word k for the MySQL/MariaDB clients (kind 3: -pPASSWORD, --password=...,
+// attached only) and sshpass (kind 4: -p PASSWORD or -pPASSWORD), or -1, -1.
+func dbClientPasswordOperand(text string, kind int, raw string, w cmdWord, words []cmdWord, k int) (int, int) {
+	if strings.HasPrefix(raw, "--") {
+		eq := strings.IndexByte(raw, '=')
+		if kind != 3 || eq < 0 || eq == len(raw)-1 {
+			return -1, -1
+		}
+		// The client accepts any unique prefix of --password.
+		if name := raw[2:eq]; len(name) < 3 || !strings.HasPrefix("password", name) {
+			return -1, -1
+		}
+		return w.s + eq + 1, w.e
+	}
+	if len(raw) < 2 || raw[0] != '-' || raw[1] != 'p' {
+		return -1, -1
+	}
+	if len(raw) > 2 {
+		return w.s + 2, w.e
+	}
+	if kind == 4 && k+1 < len(words) {
+		return words[k+1].s, words[k+1].e
+	}
+	return -1, -1
+}
+
+// plausibleFlagPassword judges an attached or flag-given command-line
+// password: unlike a USER:PASSWORD operand it may be short, since the flag
+// itself says the word is a password. Variable references, code and obvious
+// placeholder words stay readable.
+func plausibleFlagPassword(v string) bool {
+	t := unwrapValue(v)
+	if len(t) == 0 || strings.ContainsAny(t[:1], "$%{<") || strings.ContainsAny(t, "(){}") || strings.Contains(t, "://") {
+		return false
+	}
+	switch strings.ToLower(t) {
+	case "password", "passwd", "secret", "changeme", "yourpassword", "pa55word":
+		return false
+	}
+	return !placeholderShape(t)
 }
 
 // cookieOperandSpans returns the raw spans of the cookie values in a curl
