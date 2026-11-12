@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/BackendStack21/odek/internal/danger"
 )
@@ -976,5 +977,18 @@ func TestTelegramApprover_ElidedBatchApprovalDoesNotGrantTrustAll(t *testing.T) 
 			t.Errorf("%s: trustAll=%v, want %v", tc.name, got, tc.wantTrust)
 		}
 		ts.Close()
+	}
+}
+
+func TestElideMiddleTinyBudgetAndMultibyte(t *testing.T) {
+	if out, el := elideMiddle(strings.Repeat("é", 200), 10); !el || len(out) == 0 {
+		t.Fatalf("tiny budget: %q %v", out, el)
+	}
+	out, el := elideMiddle(strings.Repeat("日本語", 800), 700)
+	if !el || len(out) > 700 || !utf8.ValidString(out) {
+		t.Fatalf("multibyte cut invalid: len=%d valid=%v", len(out), utf8.ValidString(out))
+	}
+	if out, el := fitBatchCard(strings.Repeat("x\n", 50), 20); !el || len(out) == 0 {
+		t.Fatalf("many tiny lines: %q", out)
 	}
 }
