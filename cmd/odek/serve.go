@@ -3934,14 +3934,15 @@ func handleSessionList(store *session.Store) http.HandlerFunc {
 }
 
 // sessionDetailView returns the copy of sess that GET and POST
-// /api/sessions/{id} send to the client. It leaves out the untrusted-span
-// gate state (taint_spans, and taint_overflow, about 175 KB of base64 once a
-// span was dropped): the runtime reseeds the gate from the session file, and
-// no client reads either field. The stored session is never modified, and
-// the session file and the JSON export (the raw record) keep both fields.
+// /api/sessions/{id} send to the client. It leaves out all of the
+// untrusted-span gate state: taint_spans, taint_overflow (about 175 KB of
+// base64 once a span was dropped), taint_background and taint_coverage. The
+// runtime reseeds the gate from the session file, and no client reads any of
+// them. The stored session is never modified, and the session file and the
+// JSON export (the raw record) keep every field.
 func sessionDetailView(sess *session.Session) *session.Session {
 	view := *sess
-	view.TaintSpans, view.TaintOverflow = nil, nil
+	view.SetTaintState(session.TaintState{})
 	return &view
 }
 

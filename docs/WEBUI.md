@@ -365,8 +365,9 @@ The core session CRUD (session-token gated):
 
 - **GET** — the session record (messages, buffer, `auth_token`,
   `pinned`, `input_tokens`/`output_tokens`) without the untrusted-span gate
-  state (`taint_spans`, `taint_overflow`), which only the runtime reads; the
-  session file and the JSON export keep it. The effective session token is
+  state (`taint_spans`, `taint_overflow`, `taint_background`,
+  `taint_coverage`), which only the runtime reads; the session file and the
+  JSON export keep it. The effective session token is
   echoed in the `X-Session-Token` response header; presenting only the
   instance token bootstraps and returns it for sessions you didn't create.
   Rate-limited to 60 lookups/min per IP (**429** beyond that).
