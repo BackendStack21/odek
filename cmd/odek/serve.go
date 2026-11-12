@@ -1014,7 +1014,8 @@ type wsDeltaCounters struct {
 	// appended after streaming (runtime notices). Bounded: past
 	// deltaTextLimit the text is dropped and the diff falls back to a
 	// replacement.
-	cur, last         string
+	cur               []byte
+	last              string
 	curOver, lastOver bool
 }
 
@@ -1025,7 +1026,7 @@ func (c *wsDeltaCounters) reset() {
 	c.mu.Lock()
 	c.reasoning, c.content = 0, 0
 	c.finalSeen, c.finalReasoning, c.finalContent = false, false, false
-	c.cur, c.last, c.curOver, c.lastOver = "", "", false, false
+	c.cur, c.last, c.curOver, c.lastOver = nil, "", false, false
 	c.mu.Unlock()
 }
 
@@ -1047,9 +1048,9 @@ func (c *wsDeltaCounters) addContentText(text string) {
 	c.content++
 	if !c.curOver {
 		if len(c.cur)+len(text) > deltaTextLimit {
-			c.cur, c.curOver = "", true
+			c.cur, c.curOver = nil, true
 		} else {
-			c.cur += text
+			c.cur = append(c.cur, text...)
 		}
 	}
 	c.mu.Unlock()
@@ -1058,15 +1059,15 @@ func (c *wsDeltaCounters) addContentText(text string) {
 // endCall closes the text of the model call that just finished.
 func (c *wsDeltaCounters) endCall() {
 	c.mu.Lock()
-	c.last, c.lastOver = c.cur, c.curOver
-	c.cur, c.curOver = "", false
+	c.last, c.lastOver = string(c.cur), c.curOver
+	c.cur, c.curOver = nil, false
 	c.mu.Unlock()
 }
 
 // supersede drops the streamed draft the loop is replacing.
 func (c *wsDeltaCounters) supersede() {
 	c.mu.Lock()
-	c.cur, c.curOver = "", false
+	c.cur, c.curOver = nil, false
 	c.mu.Unlock()
 }
 
@@ -1078,7 +1079,7 @@ func (c *wsDeltaCounters) finalText() (text string, ok bool) {
 	if c.finalSeen {
 		return c.last, !c.lastOver
 	}
-	return c.cur, !c.curOver
+	return string(c.cur), !c.curOver
 }
 
 // finalAnswerRemainder returns what a client that streamed streamed must still
