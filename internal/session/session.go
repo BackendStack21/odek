@@ -164,6 +164,12 @@ type Session struct {
 	// and compaction never touch it.
 	TaintOverflow TaintOverflow `json:"taint_overflow,omitempty"`
 
+	// TaintBackground records that a background job whose bg_start call
+	// crossed the trust boundary ran in this session (TaintState.Background):
+	// every background notice and bg_output/bg_status result is then a span
+	// source, even after the call is trimmed away. Sticky like TaintSpans.
+	TaintBackground bool `json:"taint_background,omitempty"`
+
 	// EpisodeTaintTracked marks a session whose EpisodeUntrusted flag has
 	// been derived over its whole history. Files written before the flag
 	// existed lack it; Load derives the flag from their history once.

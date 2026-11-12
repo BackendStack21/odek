@@ -18,7 +18,9 @@ import (
 // matches such entries by hashing each candidate. The persisted list is
 // bounded (session.MaxTaintSpans); the store's overflow filter, which also
 // records every span the export cuts from the list, is exported and seeded
-// with it (session.Session.TaintOverflow), so no bound forgets a span.
+// with it (session.Session.TaintOverflow), so no bound forgets a span. The
+// fact that a tainting background job ran is exported and seeded the same
+// way (session.Session.TaintBackground).
 
 type taintSeedKey struct{}
 
@@ -42,9 +44,13 @@ func taintSpanSeedFrom(ctx context.Context) session.TaintState {
 func taintHash(v string) string { return session.TaintSpanHash(v) }
 
 // seedStateLocked seeds the store from persisted state it has not seeded
-// yet: the spans, and the overflow filter ORed into the store's own. A
-// filter that adds no bit changes nothing.
+// yet: the spans, the overflow filter ORed into the store's own, and the
+// background-job fact. A filter that adds no bit changes nothing.
 func (s *taintSpanStore) seedStateLocked(st session.TaintState) {
+	if st.Background && !s.bgTainted {
+		s.bgTainted = true
+		s.version++
+	}
 	if n := len(st.Spans); n > 0 && (s.seedLen != n || s.seedHead != &st.Spans[0]) {
 		s.seedLocked(st.Spans)
 		s.seedLen, s.seedHead = n, &st.Spans[0]
@@ -165,7 +171,7 @@ type taintExport struct {
 
 // cloneTaintState returns a copy of st that shares no backing array with it.
 func cloneTaintState(st session.TaintState) session.TaintState {
-	return session.TaintState{Spans: slices.Clone(st.Spans), Overflow: slices.Clone(st.Overflow)}
+	return session.TaintState{Spans: slices.Clone(st.Spans), Overflow: slices.Clone(st.Overflow), Background: st.Background}
 }
 
 // persistedLocked returns the span's persisted form — kind, value or hash,
@@ -259,12 +265,13 @@ func (e *Engine) TaintSpanState(messages []session.Message) session.TaintState {
 		entries = entries[:session.MaxTaintSpans]
 	}
 	overflow := slices.Clone(store.overflow)
+	background := store.bgTainted
 	store.mu.Unlock()
 	spans := make([]session.TaintSpan, len(entries))
 	for i, en := range entries {
 		spans[i] = en.sp
 	}
-	st := session.MergeTaintState(session.TaintState{Spans: spans, Overflow: overflow}, session.TaintState{})
+	st := session.MergeTaintState(session.TaintState{Spans: spans, Overflow: overflow, Background: background}, session.TaintState{})
 	store.mu.Lock()
 	if store.version == version {
 		store.export = &taintExport{state: st, version: version, gen: gen}

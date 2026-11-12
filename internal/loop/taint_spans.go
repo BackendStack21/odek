@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -250,7 +251,24 @@ type taintSpanStore struct {
 	scannedLen int
 	scannedTip taintDigest
 	principal  taintPrincipal
+	// bgTainted records that this session started a background job whose
+	// bg_start call crosses the trust boundary (session.ToolCallTaintsEpisode):
+	// from then on every background notice and bg_output/bg_status result is
+	// a span source. It is sticky and exported with the spans
+	// (session.TaintState.Background), because trimming can drop the
+	// bg_start call but never the fact.
+	bgTainted bool
+	// bgJobs maps the id of every background job this store saw started
+	// (the bg_start call and its result, in one observed history) to whether
+	// that call taints. Background content is judged by the jobs it names
+	// even after trimming dropped the calls; content naming a job missing
+	// here, or naming none, is a span source (see bgSourceLocked).
+	bgJobs map[string]bool
 }
+
+// maxTaintBgJobs bounds bgJobs. A full map is emptied: forgetting a job only
+// makes its content a span source.
+const maxTaintBgJobs = 4096
 
 // taintPrincipal is what the principal's own messages mention.
 type taintPrincipal struct {
@@ -266,6 +284,7 @@ func newTaintSpanStore() *taintSpanStore {
 		hashed:  make(map[string]*taintSpan),
 		links:   make(map[string]uint64),
 		scanned: make(map[taintDigest]struct{}),
+		bgJobs:  make(map[string]bool),
 	}
 }
 
@@ -660,18 +679,41 @@ type taintDigest [16]byte
 // crafted to collide with a message already scanned.
 var taintDigestSeeds = [2]maphash.Seed{maphash.MakeSeed(), maphash.MakeSeed()}
 
-func taintMessageDigest(m *session.Message) taintDigest {
+// taintMessageDigest digests everything the recording decision for m reads:
+// the message, its tool calls, and for a tool result the call it answers
+// (call, nil when the history does not hold it). Two messages share a digest
+// only when they would be judged alike, so skipping a message whose digest
+// was scanned never skips a decision that could come out differently.
+func taintMessageDigest(m *session.Message, call *session.ToolCall) taintDigest {
 	// Two independently seeded 64-bit hashes over length-prefixed fields:
 	// fields cannot run into each other, and a collision needs the seeds.
 	var out taintDigest
 	for i, seed := range taintDigestSeeds {
 		var h maphash.Hash
 		h.SetSeed(seed)
-		for _, f := range []string{m.Role, m.ToolCallID, m.Name, m.Content} {
+		field := func(f string) {
 			var n [8]byte
 			binary.BigEndian.PutUint64(n[:], uint64(len(f)))
 			h.Write(n[:])
 			h.WriteString(f)
+		}
+		field(m.Role)
+		field(m.ToolCallID)
+		field(m.Name)
+		field(m.Content)
+		field(strconv.Itoa(len(m.ToolCalls)))
+		for j := range m.ToolCalls {
+			tc := &m.ToolCalls[j]
+			field(tc.ID)
+			field(tc.Function.Name)
+			field(tc.Function.Arguments)
+		}
+		if call != nil {
+			field("call")
+			field(call.Function.Name)
+			field(call.Function.Arguments)
+		} else {
+			field("")
 		}
 		binary.BigEndian.PutUint64(out[i*8:], h.Sum64())
 	}
@@ -727,9 +769,59 @@ func loopUntrustedBodies(in []session.UntrustedBody, source string) []untrustedB
 	return out
 }
 
-// bgReadTool reports tools that surface background-job output; they inherit the taint of the
-// bg_start calls in the history.
+// bgReadTool reports tools that surface background-job output; they inherit
+// the taint of the job they read (see bgSourceLocked).
 func bgReadTool(name string) bool { return name == "bg_output" || name == "bg_status" }
+
+var (
+	// taintBgStartJobRe finds the job id in a bg_start result.
+	taintBgStartJobRe = regexp.MustCompile(`"job_id"\s*:\s*"([^"\\]{1,128})"`)
+	// taintBgNoticeJobRe finds the job ids a background notice names (the
+	// background manager's id format). Text inside the notice can only add
+	// ids, which only makes the notice more likely to count as a source.
+	taintBgNoticeJobRe = regexp.MustCompile(`\bbg_[0-9a-f]{8,16}\b`)
+)
+
+// bgStartedJob returns the job id a bg_start result reports.
+func bgStartedJob(result string) string {
+	if m := taintBgStartJobRe.FindStringSubmatch(result); m != nil {
+		return m[1]
+	}
+	return ""
+}
+
+// bgReadJobs returns the job a bg_output or bg_status call reads.
+func bgReadJobs(tc *session.ToolCall) []string {
+	var a struct {
+		JobID string `json:"job_id"`
+	}
+	if json.Unmarshal([]byte(tc.Function.Arguments), &a) != nil || a.JobID == "" {
+		return nil
+	}
+	return []string{a.JobID}
+}
+
+// bgNoticeJobs returns the job ids a background notice names.
+func bgNoticeJobs(body string) []string {
+	return taintBgNoticeJobRe.FindAllString(body, 64)
+}
+
+// bgSourceLocked reports whether background-job content naming jobs is a
+// span source: once any tainting job ran in this session, always; else when
+// it names no job, a job this store never saw started, or a job whose
+// bg_start call taints. Unknown origin fails closed: the decision never
+// depends on whether trimming left the bg_start call in view.
+func (s *taintSpanStore) bgSourceLocked(jobs []string) bool {
+	if s.bgTainted || len(jobs) == 0 {
+		return true
+	}
+	for _, id := range jobs {
+		if tainting, known := s.bgJobs[id]; !known || tainting {
+			return true
+		}
+	}
+	return false
+}
 
 // taintGoSource reports whether a tool call reads only Go sources or module
 // files: every path argument names a .go, go.mod or go.sum file, or lies in
@@ -766,27 +858,40 @@ func taintGoSource(tc *session.ToolCall) bool {
 	return seen && session.EpisodePathTools[tc.Function.Name]
 }
 
-// taintingToolCall reports whether a recorded call's result is a span
-// source: the episode rule says it crossed the trust boundary, or it reads
-// output of a background job that did.
-func taintingToolCall(tc *session.ToolCall, bgTaints bool) bool {
-	return session.ToolCallTaintsEpisode(tc.Function.Name, tc.Function.Arguments) ||
-		bgTaints && bgReadTool(tc.Function.Name)
-}
-
 // observe records spans from the messages not yet scanned and refreshes the
 // principal's mentions.
 func (s *taintSpanStore) observe(messages []session.Message, env taintEnv) {
-	calls := make(map[string]*session.ToolCall)
-	bgTaints := false
+	// Each tool result is judged by the call it answers: the nearest
+	// preceding call with its id (providers may reuse ids across turns).
+	paired := make([]*session.ToolCall, len(messages))
+	latest := make(map[string]*session.ToolCall)
+	bgStartTaints := make(map[*session.ToolCall]bool)
+	bgTainted := false
+	type bgJob struct {
+		id       string
+		tainting bool
+	}
+	var bgJobs []bgJob
 	var principal strings.Builder
 	for i := range messages {
 		m := &messages[i]
 		for j := range m.ToolCalls {
 			tc := &m.ToolCalls[j]
-			calls[tc.ID] = tc
-			if tc.Function.Name == "bg_start" && session.ToolCallTaintsEpisode(tc.Function.Name, tc.Function.Arguments) {
-				bgTaints = true
+			latest[tc.ID] = tc
+			if tc.Function.Name == "bg_start" {
+				taints := session.ToolCallTaintsEpisode(tc.Function.Name, tc.Function.Arguments)
+				bgStartTaints[tc] = taints
+				bgTainted = bgTainted || taints
+			}
+		}
+		if m.Role != "tool" {
+			continue
+		}
+		tc := latest[m.ToolCallID]
+		paired[i] = tc
+		if tc != nil && tc.Function.Name == "bg_start" {
+			if id := bgStartedJob(m.Content); id != "" {
+				bgJobs = append(bgJobs, bgJob{id, bgStartTaints[tc]})
 			}
 		}
 	}
@@ -822,13 +927,25 @@ func (s *taintSpanStore) observe(messages []session.Message, env taintEnv) {
 	}
 	var jobs []job
 	s.mu.Lock()
+	// The background facts are sticky: a bg_start call trimming later drops
+	// still decides the content of its job.
+	if bgTainted && !s.bgTainted {
+		s.bgTainted = true
+		s.version++
+	}
+	for _, j := range bgJobs {
+		if len(s.bgJobs) >= maxTaintBgJobs {
+			s.bgJobs = make(map[string]bool)
+		}
+		s.bgJobs[j.id] = s.bgJobs[j.id] || j.tainting
+	}
 	start := 0
-	if s.scannedLen > 0 && s.scannedLen <= len(messages) && taintMessageDigest(&messages[s.scannedLen-1]) == s.scannedTip {
-		start = s.scannedLen
+	if n := s.scannedLen; n > 0 && n <= len(messages) && taintMessageDigest(&messages[n-1], paired[n-1]) == s.scannedTip {
+		start = n
 	}
 	for i := start; i < len(messages); i++ {
 		m := &messages[i]
-		d := taintMessageDigest(m)
+		d := taintMessageDigest(m, paired[i])
 		if _, ok := s.scanned[d]; ok {
 			continue
 		}
@@ -840,9 +957,15 @@ func (s *taintSpanStore) observe(messages []session.Message, env taintEnv) {
 		case "assistant":
 			continue
 		case "tool":
-			tc := calls[m.ToolCallID]
-			if tc != nil && !taintingToolCall(tc, bgTaints) {
-				continue
+			tc := paired[i]
+			if tc != nil {
+				if bgReadTool(tc.Function.Name) {
+					if !s.bgSourceLocked(bgReadJobs(tc)) {
+						continue
+					}
+				} else if !session.ToolCallTaintsEpisode(tc.Function.Name, tc.Function.Arguments) {
+					continue
+				}
 			}
 			source := "tool output"
 			if tc != nil {
@@ -857,7 +980,7 @@ func (s *taintSpanStore) observe(messages []session.Message, env taintEnv) {
 			jobs = append(jobs, job{m.Content, source, tc != nil && taintGoSource(tc)})
 		default:
 			for _, w := range untrustedBodies(m.Content) {
-				if session.ExternalNonToolIngest(w.source) || (w.source == "bg" && bgTaints) {
+				if session.ExternalNonToolIngest(w.source) || (w.source == "bg" && s.bgSourceLocked(bgNoticeJobs(w.body))) {
 					jobs = append(jobs, job{w.body, w.source, false})
 				}
 			}
@@ -870,7 +993,7 @@ func (s *taintSpanStore) observe(messages []session.Message, env taintEnv) {
 	}
 	if n := len(messages); n > 0 {
 		s.scannedLen = n
-		s.scannedTip = taintMessageDigest(&messages[n-1])
+		s.scannedTip = taintMessageDigest(&messages[n-1], paired[n-1])
 	}
 	s.mu.Unlock()
 

@@ -83,23 +83,23 @@ func TestMergeTaintState_MatchesReference(t *testing.T) {
 		newer, older TaintState
 	}{
 		{"empty", TaintState{}, TaintState{}},
-		{"equal lists, equal filters", TaintState{full, ab}, TaintState{append([]TaintSpan{}, full...), bytes.Clone(ab)}},
-		{"same filter array", TaintState{full, ab}, TaintState{full, ab}},
-		{"new spans in front", TaintState{fresh, ab}, TaintState{full, a}},
-		{"a refreshed span", TaintState{refreshed, a}, TaintState{full, ab}},
-		{"older only", TaintState{}, TaintState{full, b}},
-		{"newer only", TaintState{full, nil}, TaintState{}},
-		{"disjoint filters", TaintState{spanList("x", 10), a}, TaintState{spanList("y", 10), b}},
-		{"newer filter inside older", TaintState{nil, a}, TaintState{nil, ab}},
-		{"all-zero filter", TaintState{spanList("x", 3), zero}, TaintState{}},
-		{"wrong-size filter", TaintState{nil, wrong}, TaintState{nil, a}},
-		{"messy entries", TaintState{messy, nil}, TaintState{append(spanList("p", 5), messy...), a}},
-		{"past the cap twice", TaintState{full, a}, TaintState{spanList("q", MaxTaintSpans), a}},
+		{"equal lists, equal filters", TaintState{Spans: full, Overflow: ab}, TaintState{Spans: append([]TaintSpan{}, full...), Overflow: bytes.Clone(ab)}},
+		{"same filter array", TaintState{Spans: full, Overflow: ab}, TaintState{Spans: full, Overflow: ab}},
+		{"new spans in front", TaintState{Spans: fresh, Overflow: ab}, TaintState{Spans: full, Overflow: a}},
+		{"a refreshed span", TaintState{Spans: refreshed, Overflow: a}, TaintState{Spans: full, Overflow: ab}},
+		{"older only", TaintState{}, TaintState{Spans: full, Overflow: b}},
+		{"newer only", TaintState{Spans: full}, TaintState{}},
+		{"disjoint filters", TaintState{Spans: spanList("x", 10), Overflow: a}, TaintState{Spans: spanList("y", 10), Overflow: b}},
+		{"newer filter inside older", TaintState{Overflow: a}, TaintState{Overflow: ab}},
+		{"all-zero filter", TaintState{Spans: spanList("x", 3), Overflow: zero}, TaintState{}},
+		{"wrong-size filter", TaintState{Overflow: wrong}, TaintState{Overflow: a}},
+		{"messy entries", TaintState{Spans: messy}, TaintState{Spans: append(spanList("p", 5), messy...), Overflow: a}},
+		{"past the cap twice", TaintState{Spans: full, Overflow: a}, TaintState{Spans: spanList("q", MaxTaintSpans), Overflow: a}},
 	}
 	for _, tc := range cases {
 		before := []TaintState{
-			{append([]TaintSpan(nil), tc.newer.Spans...), bytes.Clone(tc.newer.Overflow)},
-			{append([]TaintSpan(nil), tc.older.Spans...), bytes.Clone(tc.older.Overflow)},
+			{Spans: append([]TaintSpan(nil), tc.newer.Spans...), Overflow: bytes.Clone(tc.newer.Overflow)},
+			{Spans: append([]TaintSpan(nil), tc.older.Spans...), Overflow: bytes.Clone(tc.older.Overflow)},
 		}
 		got := MergeTaintState(tc.newer, tc.older)
 		want := referenceMergeTaintState(before[0], before[1])
@@ -124,7 +124,7 @@ func TestMergeTaintState_MatchesReference(t *testing.T) {
 func TestMergeTaintState_SteadyStateShares(t *testing.T) {
 	full := spanList("p", MaxTaintSpans)
 	f := overflowWith("old1", "old2")
-	got := MergeTaintState(TaintState{full, f}, TaintState{append([]TaintSpan{}, full...), bytes.Clone(f)})
+	got := MergeTaintState(TaintState{Spans: full, Overflow: f}, TaintState{Spans: append([]TaintSpan{}, full...), Overflow: bytes.Clone(f)})
 	if len(got.Overflow) == 0 || &got.Overflow[0] != &f[0] {
 		t.Error("an equal filter was copied instead of shared")
 	}
@@ -141,7 +141,7 @@ func TestMergeTaintState_SteadyStateShares(t *testing.T) {
 	// A span the cap drops is added to a copy, never to the shared filter.
 	shared := overflowWith("old1")
 	saved := bytes.Clone(shared)
-	cut := MergeTaintState(TaintState{full, shared}, TaintState{spanList("q", 1), nil})
+	cut := MergeTaintState(TaintState{Spans: full, Overflow: shared}, TaintState{Spans: spanList("q", 1)})
 	if !bytes.Equal(shared, saved) || !cut.Overflow.HasValue("host", "q0.example") {
 		t.Error("a dropped span was added to the shared input filter, or lost")
 	}
