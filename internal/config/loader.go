@@ -2023,6 +2023,12 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 		fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring sandbox=false from project config (%s); set sandbox policy via ~/.odek/config.json or the CLI\n", ProjectConfigPath())
 		project.Sandbox = nil
 	}
+	// A project may turn AGENTS.md loading off but not back on: a false value
+	// (which `odek init` files carry) is treated as unset, silently, so the
+	// operator's global no_agents choice survives.
+	if project.NoAgents != nil && !*project.NoAgents {
+		project.NoAgents = nil
+	}
 	if project.SandboxReadonly != nil && !*project.SandboxReadonly {
 		fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring sandbox_readonly=false from project config (%s); set it via ~/.odek/config.json or CLI\n", ProjectConfigPath())
 		project.SandboxReadonly = nil
