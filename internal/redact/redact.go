@@ -235,7 +235,7 @@ var valuePatterns = []guardedPattern{
 	// Gate: every match holds "://" and "@", and one scheme name in some
 	// letter case (postgresql holds postgres, mongodb+srv mongodb, rediss
 	// redis, amqps amqp).
-	{gated(regexp.MustCompile(`(?i)\b((?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|rediss?|amqps?|mssql|clickhouse)(?:\+[a-z0-9_]+)?://[^:\s/]*:[^@\s/]{6,}@[^\s'\x60"]+)`),
+	{gated(regexp.MustCompile(`(?i)\b((?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|rediss?|amqps?|mssql|clickhouse)(?:\+[a-z0-9_]+)?://[^:\s/]*:(?:[^@\s/]{6,}|[$%{<][^@\s/]*)@[^\s'\x60"]+)`),
 		literals(exact("://"), exact("@"), folded("postgres", "mysql", "mongodb", "redis", "amqp", "mssql", "clickhouse"))), dbURLHoldsSecret},
 	// Chat incoming-webhook URLs: whoever holds the URL can post as the
 	// integration, so the secret path segment is a bearer credential.
@@ -250,29 +250,58 @@ var valuePatterns = []guardedPattern{
 // default-value form such as ${VAR:-literal}, does not match and is redacted.
 var dbURLReferenceRe = regexp.MustCompile(`^(?:\$\{[A-Za-z_][A-Za-z0-9_]*\}|\$[A-Za-z_][A-Za-z0-9_]*|\{\{?\s*[A-Za-z_][A-Za-z0-9_.-]*\s*\}\}?|<[A-Za-z_][A-Za-z0-9_ -]*>|%\([A-Za-z_][A-Za-z0-9_]*\)s|%[A-Za-z_][A-Za-z0-9_]*%)$`)
 
-// dbURLHoldsSecret judges a matched connection URL: it holds a secret unless
-// its password is only a reference.
+// dbURLHoldsSecret judges a matched connection URL span: it holds a secret
+// unless every user:password pair in it carries only a reference. A span can
+// join several URLs or hosts with ',' or ';', so each '@' closes one pair.
 func dbURLHoldsSecret(url string) bool {
 	i := strings.Index(url, "://")
 	if i < 0 {
 		return true
 	}
 	rest := url[i+3:]
-	c := strings.IndexByte(rest, ':')
-	if c < 0 {
+	first := true
+	for {
+		at := strings.IndexByte(rest, '@')
+		if at < 0 {
+			return first
+		}
+		part := rest[:at]
+		rest = rest[at+1:]
+		if !first {
+			// Userinfo of a later pair follows the last list separator and
+			// any scheme of a joined URL.
+			k := strings.LastIndexAny(part, ",;")
+			if k < 0 {
+				continue
+			}
+			part = part[k+1:]
+			if k := strings.LastIndex(part, "://"); k >= 0 {
+				part = part[k+3:]
+			}
+		}
+		first = false
+		c := strings.IndexByte(part, ':')
+		if c < 0 {
+			if part == "" {
+				continue
+			}
+			return true
+		}
+		if pwHoldsSecret(part[c+1:]) {
+			return true
+		}
+	}
+}
+
+// pwHoldsSecret reports whether one URL password is anything but a pure
+// reference. A bare $name counts as a reference only in shell-variable
+// shape ($DB_PASSWORD); $Passw0rd and $ecret123 are literal passwords.
+func pwHoldsSecret(pw string) bool {
+	if !dbURLReferenceRe.MatchString(pw) {
 		return true
 	}
-	rest = rest[c+1:]
-	if at := strings.IndexByte(rest, '@'); at >= 0 {
-		rest = rest[:at]
-	}
-	if !dbURLReferenceRe.MatchString(rest) {
-		return true
-	}
-	// A bare $name is a variable only when it is shaped like one (upper
-	// case, or named for a password); $ecret123 is a literal password.
-	if rest[0] == '$' && rest[1] != '{' {
-		name := rest[1:]
+	if pw[0] == '$' && pw[1] != '{' {
+		name := pw[1:]
 		low := strings.ToLower(name)
 		return name != strings.ToUpper(name) &&
 			!strings.Contains(low, "pass") && !strings.Contains(low, "pwd") &&

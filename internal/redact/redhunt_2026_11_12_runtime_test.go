@@ -198,3 +198,45 @@ func TestRED_DBURLJudgeFailsClosedOnMalformedInput(t *testing.T) {
 		}
 	}
 }
+
+// Every user:password pair of a connection-URL span is judged: a reference
+// password first in a comma- or semicolon-joined list never hides a literal
+// one after it, while a list of references alone stays readable.
+func TestRED_DBURLListJudgesEveryPassword(t *testing.T) {
+	const lit = "Tr0ub4dor9xQ"
+	for _, in := range []string{
+		"postgres://u:${DB_PASS}@h1/db,postgres://u:" + lit + "@h2/db",
+		"postgres://u:" + lit + "@h1/db,postgres://u:${DB_PASS}@h2/db",
+		"postgres://u:${DB_PASS}@h1/db;postgres://u:" + lit + "@h2/db",
+		"postgres://u:" + lit + "@h1/db;postgres://u:${DB_PASS}@h2/db",
+		"mongodb://u:${P}@h1,u:" + lit + "@h2/db",
+		"mongodb://u:" + lit + "@h1,u:${P}@h2/db",
+		"redis://:${P}@h1:6379;redis://:" + lit + "@h2:6379",
+		"postgres://u:${A}@h1:5432/db,postgres://u:${B}@h2:5432/db,postgres://u:" + lit + "@h3/db",
+	} {
+		if out := RedactSecrets(in); strings.Contains(out, lit) {
+			t.Errorf("literal password leaked: %q => %q", in, out)
+		}
+	}
+	for _, in := range []string{
+		"postgres://u:${A}@h1/db,postgres://u:${B}@h2/db",
+		"postgres://u:${A}@h1:5432/db;postgres://u:${B}@h2:5432/db",
+		"mongodb://u:${A}@h1,u:${B}@h2/db",
+	} {
+		if out := RedactSecrets(in); out != in {
+			t.Errorf("reference-only list rewritten: %q => %q", in, out)
+		}
+	}
+}
+
+func TestRED_DBURLListScalesLinearly(t *testing.T) {
+	gen := func(n int) string { return strings.Repeat("postgres://u:${A}@h1/db,", n/25) + "x" }
+	base := 16 << 10
+	small, large := finalRedactTime(gen(base), 2), finalRedactTime(gen(4*base), 1)
+	if small < 2*time.Millisecond {
+		small = 2 * time.Millisecond
+	}
+	if large > 12*small {
+		t.Errorf("super-linear: %v then %v", small, large)
+	}
+}
