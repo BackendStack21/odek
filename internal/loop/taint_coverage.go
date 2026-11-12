@@ -28,13 +28,17 @@ import (
 // What a skip relies on, and how each part is bound:
 //   - The digest is HMAC-SHA256 over every field the recording decision
 //     reads (role, tool-call id, name, content, and each tool call's id,
-//     name and arguments), length-prefixed. It must be stable across
-//     processes, so it cannot use the process-keyed maphash of the scanned
-//     set. Content an attacker controls cannot make unscanned messages look
-//     covered: that needs two different prefixes with the same HMAC-SHA256,
-//     a SHA-256 collision. The key is derived, not secret (anyone who knows
-//     the inputs can recompute it); it is there to bind the digest to the
-//     span rules and the environment, not to hide it.
+//     name and arguments), length-prefixed; arguments are digested in the
+//     form the store writes them when that form decodes exactly like the
+//     original (taintCoverageArguments), so a reload keeps the coverage. It
+//     must be stable across processes, so it cannot use the process-keyed
+//     maphash of the scanned set. Content an attacker controls cannot make
+//     unscanned messages look covered: that needs two different prefixes
+//     with the same HMAC-SHA256, a SHA-256 collision. The key is derived,
+//     not secret (anyone who knows the inputs can recompute it); it is there
+//     to bind the digest to the span rules and the environment, not to hide
+//     it. Content the store changes on save (a redacted secret, invalid
+//     UTF-8 replaced) does not reproduce the digest: a full scan.
 //   - The key binds taintCoverageRules, the binary's build identity, and the
 //     home and working directories (path spans and the workspace trust rule
 //     depend on them). A coverage recorded by another release, or under
@@ -61,7 +65,7 @@ import (
 // taintCoverageRules names the recording rules a coverage was taken under.
 // Change it whenever extraction, the span rules or the source decision
 // change, so coverage recorded under the old rules never matches.
-const taintCoverageRules = "odek-taint-coverage-v1"
+const taintCoverageRules = "odek-taint-coverage-v2"
 
 // maxTaintBackfillBytes bounds the texts kept for link backfill. Past it the
 // rest are dropped: losing a link only removes its egress exemption, which
@@ -153,9 +157,43 @@ func (c *taintCoverageHash) add(m *session.Message) {
 		tc := &m.ToolCalls[j]
 		field(tc.ID)
 		field(tc.Function.Name)
-		field(tc.Function.Arguments)
+		// Arguments are digested in the form the store writes them, tagged
+		// so the two forms never share a digest (see taintCoverageArguments).
+		args, canonical := taintCoverageArguments(tc.Function.Arguments)
+		if canonical {
+			field("canonical")
+		} else {
+			field("raw")
+		}
+		field(args)
 	}
 	c.n++
+}
+
+// taintCoverageArguments returns the form a tool call's arguments are
+// digested in, and whether it is the canonical one.
+//
+// The store rewrites the arguments of every message it saves
+// (session.CanonicalToolArguments: decoded, keys sorted, compact, no HTML
+// escaping) while the engine records spans from the arguments as the
+// provider sent them, so a digest over the raw text would never reproduce
+// after a reload. Digesting the canonical form keeps the coverage across the
+// store, and it is sound because the recording decisions read the arguments
+// only through struct decodes (session.ToolCallTaintsEpisode,
+// taintGoSource, bgReadJobs): for arguments CanonicalToolArguments accepts,
+// every struct decode reads the same values from the original and from the
+// canonical form, so a history saved in either form is judged exactly as the
+// engine that recorded the coverage judged it. Arguments it refuses (invalid
+// JSON, text after the value, two keys one struct field would take) are
+// digested raw: the store rewrites them on save, so such a history never
+// reproduces the coverage and is scanned in full. Canonicalisation is
+// idempotent, and the file may hold either form (the store writes messages
+// it already saved as they are), so both digest alike.
+func taintCoverageArguments(args string) (string, bool) {
+	if canon, ok := session.CanonicalToolArguments(args); ok {
+		return canon, true
+	}
+	return args, false
 }
 
 func (c *taintCoverageHash) sum() string { return hex.EncodeToString(c.h.Sum(nil)) }
