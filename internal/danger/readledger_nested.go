@@ -520,7 +520,7 @@ func (s *shellScan) word() string {
 		case c == '$' && s.pos+1 < len(s.text) && s.text[s.pos+1] == '(':
 			if s.pos+2 < len(s.text) && s.text[s.pos+2] == '(' {
 				begin := s.pos + 3
-				s.skipBalanced('(', ')') // $(( arithmetic )), which can still hold a substitution
+				s.skipBalanced('(', ')', quote == '"') // $(( arithmetic )), which can still hold a substitution
 				s.scanRegion(begin, s.pos)
 				continue
 			}
@@ -546,9 +546,17 @@ func (s *shellScan) word() string {
 			s.failed = s.failed || !complete
 			s.pos += end + 2
 			continue
+		case quote == 0 && c == '$' && s.pos+1 < len(s.text) && s.text[s.pos+1] == '\'':
+			// $'...' reads backslash escapes, so \' does not end it.
+			end, ok := skipAnsiC(s.text, s.pos+1)
+			s.pos = end
+			if !ok {
+				s.failed = true
+			}
+			continue
 		case c == '$' && s.pos+1 < len(s.text) && s.text[s.pos+1] == '{':
 			begin := s.pos + 2
-			s.skipBalanced('{', '}') // ${X:-$(cmd)} runs cmd
+			s.skipBalanced('{', '}', quote == '"') // ${X:-$(cmd)} runs cmd
 			s.scanRegion(begin, s.pos)
 			continue
 		case quote == '"':
@@ -562,24 +570,129 @@ func (s *shellScan) word() string {
 		}
 		s.pos++
 	}
+	if quote != 0 {
+		s.failed = true // the text ends inside a quote: what follows cannot be told from data
+	}
 	return s.text[start:min(s.pos, len(s.text))]
 }
 
-func (s *shellScan) skipBalanced(open, closer byte) {
+// skipAnsiC returns the offset after the $'...' string whose opening quote is
+// at text[quote], and whether it was closed.
+func skipAnsiC(text string, quote int) (int, bool) {
+	for i := quote + 1; i < len(text); i++ {
+		switch text[i] {
+		case '\\':
+			i++
+		case '\'':
+			return i + 1, true
+		}
+	}
+	return len(text), false
+}
+
+// skipDoubleBracket returns the offset after the ]] that closes the [[ whose
+// opener ends at pos. A ]] inside quotes is data.
+func skipDoubleBracket(text string, pos int) (int, bool) {
+	var quote byte
+	for i := pos; i < len(text); i++ {
+		c := text[i]
+		switch {
+		case quote == '\'':
+			if c == '\'' {
+				quote = 0
+			}
+		case quote == '"':
+			if c == '\\' {
+				i++
+			} else if c == '"' {
+				quote = 0
+			}
+		case c == '\\':
+			i++
+		case c == '"' || c == '\'':
+			if c == '\'' && i > 0 && text[i-1] == '$' {
+				end, ok := skipAnsiC(text, i)
+				if !ok {
+					return len(text), false
+				}
+				i = end - 1
+				continue
+			}
+			quote = c
+		case c == ']' && i+1 < len(text) && text[i+1] == ']':
+			return i + 2, true
+		}
+	}
+	return len(text), false
+}
+
+// skipBalanced moves past the construct that starts at the open byte under the
+// pointer, to the byte after its matching closer. Quotes inside it hide the
+// delimiters they hold: '...', "...", $'...' (with backslash escapes) and
+// backslash-escaped bytes. Single quotes inside a double-quoted parameter
+// expansion are read differently by different shells, so when the text is
+// double-quoted and the two readings end in different places, or the construct
+// never ends, the scan is marked failed and callers treat the script as one
+// they cannot follow.
+func (s *shellScan) skipBalanced(open, closer byte, inDouble bool) {
+	end, ok := skipBalancedEnd(s.text, s.pos, open, closer, true)
+	if inDouble {
+		other, otherOK := skipBalancedEnd(s.text, s.pos, open, closer, false)
+		if ok != otherOK || other != end {
+			ok = false
+		}
+	}
+	s.pos = end
+	if !ok {
+		s.failed = true
+	}
+}
+
+// skipBalancedEnd returns the offset after the closer matching the open byte at
+// text[pos] and whether it was found. honorSingle says whether a single quote
+// begins a quoted string.
+func skipBalancedEnd(text string, pos int, open, closer byte, honorSingle bool) (int, bool) {
 	depth := 0
-	for s.pos < len(s.text) {
-		switch s.text[s.pos] {
-		case open:
+	var quote byte
+	for i := pos; i < len(text); i++ {
+		c := text[i]
+		switch {
+		case quote == '\'':
+			if c == '\'' {
+				quote = 0
+			}
+		case quote == 'a': // $'...': backslash escapes the next byte
+			if c == '\\' {
+				i++
+			} else if c == '\'' {
+				quote = 0
+			}
+		case quote == '"':
+			if c == '\\' {
+				i++
+			} else if c == '"' {
+				quote = 0
+			}
+		case c == '\\':
+			i++
+		case c == '"':
+			quote = '"'
+		case c == '\'' && honorSingle:
+			if i > 0 && text[i-1] == '$' {
+				quote = 'a'
+			} else {
+				quote = '\''
+			}
+		case c == open:
 			depth++
-		case closer:
+		case c == closer:
 			depth--
 			if depth == 0 {
-				s.pos++
-				return
+				return i + 1, true
 			}
 		}
-		s.pos++
 	}
+	return len(text), false
 }
 
 // scanCommand reads one simple command. It reports true when it reached the )
@@ -643,7 +756,7 @@ func (s *shellScan) scanCommand() (closed bool) {
 			if n := len(cmd.words); n > 0 && strings.HasSuffix(cmd.words[n-1], "=") {
 				begin := s.pos
 				s.pos--
-				s.skipBalanced('(', ')') // an array literal holds data, and perhaps a substitution
+				s.skipBalanced('(', ')', false) // an array literal holds data, and perhaps a substitution
 				s.scanRegion(begin, s.pos)
 				continue
 			}
@@ -666,10 +779,11 @@ func (s *shellScan) scanCommand() (closed bool) {
 		}
 		if word == "[[" {
 			begin := s.pos
-			if i := strings.Index(s.text[s.pos:], "]]"); i >= 0 {
-				s.pos += i + 2
+			if end, ok := skipDoubleBracket(s.text, s.pos); ok {
+				s.pos = end
 			} else {
 				s.pos = len(s.text)
+				s.failed = true
 			}
 			s.scanRegion(begin, s.pos)
 			cmd.words = append(cmd.words, word)
@@ -897,29 +1011,46 @@ func (c shellCommand) program() int {
 	for i := 0; i < len(c.words); {
 		word := c.words[i]
 		bare := strings.Trim(word, `"'`)
+		// A wrapper is known by its command name, however it is spelled:
+		// /usr/bin/env and "/usr/bin/env" are env.
+		name := commandName(bare)
 		switch {
-		case shellKeywords[bare] || shellAssignment.MatchString(word):
+		case shellAssignment.MatchString(word):
 			i++
-		case shellWrappers[bare]:
+		case shellKeywords[bare] && name != "time":
+			i++
+		case shellWrappers[name] || name == "time":
 			// command -v and friends ask about a name without running it.
-			if (bare == "command" || bare == "builtin") && i+1 < len(c.words) && strings.HasPrefix(c.words[i+1], "-v") {
+			if (name == "command" || name == "builtin") && i+1 < len(c.words) && strings.HasPrefix(c.words[i+1], "-v") {
 				return -1
 			}
-			if (bare == "command") && i+1 < len(c.words) && c.words[i+1] == "-V" {
+			if (name == "command") && i+1 < len(c.words) && c.words[i+1] == "-V" {
 				return -1
+			}
+			// time's options and the fixed operands of taskset, chrt, flock
+			// and script come from the grammar the classifier unwraps with.
+			if name == "time" || wrapperOperands[name] > 0 {
+				tokens := make([]string, len(c.words))
+				for k, w := range c.words {
+					tokens[k] = strings.Trim(w, `"'`)
+				}
+				if step, ok := wrapperAt(tokens, i); ok && step.payload == "" && len(step.splits) == 0 {
+					i = step.next
+					continue
+				}
 			}
 			i++
 			for i < len(c.words) && strings.HasPrefix(c.words[i], "-") {
 				flag := c.words[i]
 				i++
-				if shellWrapperTakesValue(bare, flag) && i < len(c.words) {
+				if shellWrapperTakesValue(name, flag) && i < len(c.words) {
 					i++
 				}
 			}
-			if (bare == "timeout" || bare == "gtimeout") && i < len(c.words) {
+			if (name == "timeout" || name == "gtimeout") && i < len(c.words) {
 				i++ // the duration
 			}
-			if bare == "chroot" && i < len(c.words) {
+			if name == "chroot" && i < len(c.words) {
 				i++ // the new root
 			}
 		default:

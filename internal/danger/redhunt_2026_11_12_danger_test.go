@@ -158,3 +158,163 @@ func TestRED_ToolOptionEnvVarsBypassOptionClassification(t *testing.T) {
 		}
 	}
 }
+
+// A command-table binding is recognised behind the builtin/command prefixes,
+// inside functions, groups and shell payloads, with bundled or attached -p
+// arguments, in zsh's NAME=FILE form, and for a use behind `command`.
+func TestHashBindingVariantsRebindName(t *testing.T) {
+	t.Setenv("HOME", "/home/user")
+	t.Chdir(t.TempDir())
+	for _, cmd := range []string{
+		"builtin hash -p ./p ls; ls",
+		"command hash -p ./p ls; ls",
+		"f() { hash -p ./p ls; }; f; ls",
+		"if true; then hash -p ./p ls; fi; ls",
+		"hash ls=./p; ls",
+		"hash -rp ./p ls; ls",
+		"hash -p./p ls; ls",
+		"bash -c 'hash -p ./p ls; ls'",
+		"hash -p ./p ls; echo x | ls",
+		"hash -p ./p ls; time ls",
+		"hash -p ./p ls; command ls",
+		"hash -p ./p ls; command -p ls",
+		"(hash -p ./p ls; ls)",
+		"hash -p ./p ls && ls",
+		"hash -p ./p $N; ls",
+		"hash -p \"$(command -v rm)\" ls; command ls -rf ~",
+	} {
+		if got := Classify(cmd); Rank(got) < Rank(CodeExecution) {
+			t.Errorf("%q classified %s; the later name runs the bound program", cmd, got)
+		}
+	}
+}
+
+// Ordinary uses of hash, and a binding that is never used, keep their verdict.
+func TestHashBindingBenignVerdictsUnchanged(t *testing.T) {
+	t.Setenv("HOME", "/home/user")
+	t.Chdir(t.TempDir())
+	for _, cmd := range []string{
+		"hash -r", "hash -r; ls", "hash ls", "hash -l", "hash -t ls", "hash -d ls",
+		"hash -p ./p ls", "hash -p ./p ls; echo hi", "hash -p ./p ls; env ls",
+		"time make", "env FOO=1 go test",
+	} {
+		want := Safe
+		switch cmd {
+		case "time make", "env FOO=1 go test":
+			want = CodeExecution
+		}
+		if got := Classify(cmd); got != want {
+			t.Errorf("%q classified %s, want %s", cmd, got, want)
+		}
+	}
+}
+
+// The option-carrying variables are judged through env, export and declare -x,
+// and a value that cannot be resolved statically is not auto-allowed.
+func TestToolOptionEnvVariantsEscalate(t *testing.T) {
+	t.Setenv("HOME", "/home/user")
+	t.Chdir(t.TempDir())
+	for _, cmd := range []string{
+		"env TAR_OPTIONS=--to-command=./evil tar xf a.tar",
+		"declare -x TAR_OPTIONS=--to-command=./evil; tar xf a.tar",
+		"export ZIPOPT=-m; zip a.zip /home/user/project",
+		"nice ZIPOPT=-m zip a.zip x",
+		"TAR_OPTIONS=$OPTS tar xf a.tar",
+		"ZIPOPT=\"$(cat o)\" zip a.zip x",
+		"MAVEN_OPTS=-agentlib:jdwp=transport=dt_socket mvn -v",
+		"JAVA_OPTS=@argfile java -version",
+		"GRADLE_OPTS='-Xmx2g -javaagent:./e.jar' gradle -v",
+		"SBT_OPTS=-Djava.system.class.loader=Evil sbt -version",
+		"export MAVEN_OPTS=-Xbootclasspath/a:./e.jar",
+	} {
+		if got := Classify(cmd); Rank(got) <= Rank(Classify("true")) || (&DangerousConfig{}).ActionForCommand(cmd) == Allow {
+			t.Errorf("%q classified %s; want it escalated and not auto-allowed", cmd, got)
+		}
+	}
+}
+
+// Plain option values keep the verdict of the option-free command.
+func TestToolOptionEnvPlainValuesUnchanged(t *testing.T) {
+	t.Setenv("HOME", "/home/user")
+	t.Chdir(t.TempDir())
+	for _, cmd := range []string{
+		"TAR_OPTIONS=-v echo hi",
+		"TAR_OPTIONS=--warning=no-timestamp tar xf a.tar",
+		"ZIPOPT=-q zip a.zip x",
+		"MAVEN_OPTS=-Xmx2g echo hi",
+		"MAVEN_OPTS='-Xmx2g -Dfile.encoding=UTF-8 -XX:+UseG1GC' mvn -v",
+		"export TAR_OPTIONS=-v",
+		"GRADLE_OPTS=-Xmx512m echo hi",
+	} {
+		plain := cmd
+		for _, prefix := range []string{"TAR_OPTIONS=-v ", "TAR_OPTIONS=--warning=no-timestamp ", "ZIPOPT=-q ", "MAVEN_OPTS='-Xmx2g -Dfile.encoding=UTF-8 -XX:+UseG1GC' ", "MAVEN_OPTS=-Xmx2g ", "GRADLE_OPTS=-Xmx512m "} {
+			plain = strings.TrimPrefix(plain, prefix)
+		}
+		if cmd == "export TAR_OPTIONS=-v" {
+			plain = "export X=1"
+		}
+		if got, want := Classify(cmd), Classify(plain); got != want {
+			t.Errorf("%q classified %s, want %s (the verdict of %q)", cmd, got, want, plain)
+		}
+	}
+}
+
+// Wrappers whose fixed operands precede the program are skipped by the nested
+// gate, so the program behind them is found.
+func TestNestedGateSkipsWrapperOperands(t *testing.T) {
+	t.Setenv("HOME", "/home/user")
+	for name, script := range map[string]string{
+		"taskset":      "#!/bin/sh\ntaskset 1 ./code_policies\n",
+		"chrt":         "#!/bin/sh\nchrt 10 ./code_policies\n",
+		"time keyword": "#!/bin/bash\ntime ./code_policies\n",
+		"nohup path":   "#!/bin/sh\n/usr/bin/nohup \"./code_policies\"\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := nestedFixture(t, script)
+			RecordRead(filepath.Join(dir, "security.sh"))
+			cls, targets := ClassifyScriptGate("bash security.sh")
+			if cls != UnreadExec || !strings.Contains(targetNames(targets), "code_policies") {
+				t.Errorf("class=%s targets=%v; want unread_exec naming code_policies", cls, targets)
+			}
+		})
+	}
+}
+
+// Well-formed quoting is followed exactly: the parse stays complete, the
+// commands after the construct are seen, and a malformed or ambiguous
+// construct fails the parse closed.
+func TestShellScanQuotedConstructsStayInSync(t *testing.T) {
+	for name, tc := range map[string]struct {
+		text     string
+		complete bool
+		last     string
+	}{
+		"single-quoted default":  {"echo ${x:-'a b'} ; ./p\n", true, "./p"},
+		"quoted brace":           {"echo ${x:-'}'} ; ./p\n", true, "./p"},
+		"double-quoted brace":    {"echo ${x:-\"}\"} ; ./p\n", true, "./p"},
+		"escaped brace":          {"echo ${x:-\\}} ; ./p\n", true, "./p"},
+		"ansi-c plain":           {"echo $'a\\nb' ; ./p\n", true, "./p"},
+		"ansi-c escaped quote":   {"echo $'\\'' ; ./p\n", true, "./p"},
+		"ansi-c in brace":        {"echo ${x:-$'\\''} ; ./p\n", true, "./p"},
+		"quoted close bracket":   {"[[ $x == \"]]\" ]]; ./p\n", true, "./p"},
+		"ansi-c in bracket":      {"[[ $x == $'\\']]' ]]; ./p\n", true, "./p"},
+		"escaped in bracket":     {"[[ $x == \\]] ]]; ./p\n", true, "./p"},
+		"double-quoted in brace": {"echo \"${x:-a}\" ; ./p\n", true, "./p"},
+		"unterminated quote":     {"echo 'abc\n./p\n", false, ""},
+		"unterminated ansi-c":    {"echo $'abc\n./p\n", false, ""},
+		"unterminated brace":     {"echo ${x:-abc\n./p\n", false, ""},
+		"unterminated bracket":   {"[[ $x == a\n./p\n", false, ""},
+		"unterminated bracket q": {"[[ $x == $'a\n./p\n", false, ""},
+		"ambiguous single quote": {"echo \"${x:-'}'}\" ; ./p\n", false, ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cmds, complete := parseShellCommands(tc.text)
+			if complete != tc.complete {
+				t.Fatalf("complete=%v, want %v (commands %v)", complete, tc.complete, cmds)
+			}
+			if tc.last != "" && (len(cmds) == 0 || cmds[len(cmds)-1].words[0] != tc.last) {
+				t.Errorf("commands %v; want the last to be %s", cmds, tc.last)
+			}
+		})
+	}
+}
