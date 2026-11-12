@@ -406,6 +406,13 @@ func analyzeWithStateWork(cmd string, depth int, inherited *shellAnalysisState, 
 				if name == "alias" && !state.aliases.define(inner[1:]) {
 					result.add(Unknown)
 				}
+				// `hash -p FILE NAME` rebinds NAME to FILE; a later use of
+				// NAME is analysed as FILE.
+				if name == "hash" {
+					if !state.aliases.bindHash(inner[1:]) {
+						result.add(Unknown)
+					}
+				}
 			}
 			if i > 0 {
 				pipeline = append(pipeline, "|")

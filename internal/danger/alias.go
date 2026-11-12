@@ -21,10 +21,14 @@ const maxAliasBodies = 16
 
 type aliasTable struct {
 	defs map[string][]string
+	// hashed names the entries that came from a command-table binding
+	// (hash -p): unlike an alias, the shell also resolves them behind the
+	// `command` builtin.
+	hashed map[string]bool
 }
 
 func newAliasTable() *aliasTable {
-	return &aliasTable{defs: make(map[string][]string)}
+	return &aliasTable{defs: make(map[string][]string), hashed: make(map[string]bool)}
 }
 
 // aliasExpansion is one reading of an aliased command: the shell text it
@@ -146,6 +150,19 @@ func (t *aliasTable) expansions(stage, skip []string) (out []aliasExpansion, unr
 		return nil, false
 	}
 	idx := aliasCommandWord(stage)
+	if idx < len(stage) && commandName(stage[idx]) == "command" {
+		// `command NAME` skips aliases but not a command-table binding.
+		j := idx + 1
+		for j < len(stage) && strings.HasPrefix(stage[j], "-") && stage[j] != "--" {
+			j++
+		}
+		if j < len(stage) && stage[j] == "--" {
+			j++
+		}
+		if j < len(stage) && t.hashed[stage[j]] {
+			idx = j
+		}
+	}
 	if idx >= len(stage) || len(t.lookup(stage[idx], skip)) == 0 {
 		return nil, false
 	}
