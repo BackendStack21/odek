@@ -53,6 +53,15 @@ func MergeTaintState(newer, older TaintState) TaintState {
 	var out TaintState
 	var owned bool
 	out.Background = newer.Background || older.Background
+	// The merged spans hold every span of either input, so either input's
+	// coverage stays true of the result; the newer one describes the
+	// current history. A malformed coverage is dropped.
+	switch {
+	case newer.Coverage.Valid():
+		out.Coverage = newer.Coverage
+	case older.Coverage.Valid():
+		out.Coverage = older.Coverage
+	}
 	out.Overflow, owned = mergeTaintOverflow(newer.Overflow, older.Overflow)
 	if len(newer.Spans) == 0 && len(older.Spans) == 0 {
 		return out

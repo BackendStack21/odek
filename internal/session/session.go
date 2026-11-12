@@ -170,6 +170,14 @@ type Session struct {
 	// source, even after the call is trimmed away. Sticky like TaintSpans.
 	TaintBackground bool `json:"taint_background,omitempty"`
 
+	// TaintCoverage names the history prefix whose spans TaintSpans and
+	// TaintOverflow already record (TaintState.Coverage), so a rebuilt
+	// engine does not extract them again. It is a keyed digest of that
+	// prefix: a history that no longer reproduces it is scanned in full.
+	// Written in the same file as the spans it vouches for, so a failed
+	// save never advances it past them.
+	TaintCoverage TaintCoverage `json:"taint_coverage,omitzero"`
+
 	// EpisodeTaintTracked marks a session whose EpisodeUntrusted flag has
 	// been derived over its whole history. Files written before the flag
 	// existed lack it; Load derives the flag from their history once.

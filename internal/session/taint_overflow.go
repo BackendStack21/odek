@@ -228,6 +228,37 @@ type TaintState struct {
 	// bg_output/bg_status result is then a span source, even once the call
 	// is trimmed away. Sticky: merges OR it.
 	Background bool
+	// Coverage names the history prefix whose spans the state already
+	// records, so a rebuilt engine need not extract them again (see
+	// TaintCoverage). It is a performance hint, not a record: Empty and
+	// Covers ignore it, and a merge keeps newer's when set, else older's.
+	Coverage TaintCoverage
+}
+
+// TaintCoverage binds a TaintState to the history it was recorded from: the
+// spans of the first Messages non-system messages of that history are in the
+// state. Digest is a keyed digest (internal/loop/taint_coverage.go) over
+// those messages, the span rules and the working environment; an engine
+// skips extracting a message only when the history it is handed reproduces
+// the digest. Any mismatch, a missing or malformed field, or a session file
+// written before the field existed means a full scan.
+type TaintCoverage struct {
+	Messages int    `json:"messages"`
+	Digest   string `json:"digest"`
+}
+
+// Valid reports whether c names a prefix and carries a well-formed digest
+// (64 lower-case hex characters).
+func (c TaintCoverage) Valid() bool {
+	if c.Messages <= 0 || len(c.Digest) != 64 {
+		return false
+	}
+	for i := 0; i < len(c.Digest); i++ {
+		if !isLowerHex(c.Digest[i]) {
+			return false
+		}
+	}
+	return true
 }
 
 // Empty reports whether st holds no span, no overflow record and no
@@ -274,10 +305,10 @@ func (s *Session) TaintState() TaintState {
 	if s == nil {
 		return TaintState{}
 	}
-	return TaintState{Spans: s.TaintSpans, Overflow: s.TaintOverflow, Background: s.TaintBackground}
+	return TaintState{Spans: s.TaintSpans, Overflow: s.TaintOverflow, Background: s.TaintBackground, Coverage: s.TaintCoverage}
 }
 
 // SetTaintState stores st as the session's untrusted-span state.
 func (s *Session) SetTaintState(st TaintState) {
-	s.TaintSpans, s.TaintOverflow, s.TaintBackground = st.Spans, st.Overflow, st.Background
+	s.TaintSpans, s.TaintOverflow, s.TaintBackground, s.TaintCoverage = st.Spans, st.Overflow, st.Background, st.Coverage
 }

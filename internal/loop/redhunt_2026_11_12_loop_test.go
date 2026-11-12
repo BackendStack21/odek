@@ -114,6 +114,65 @@ func TestRED_Loop_TaintGateBgNoticeAfterStartTrimmed(t *testing.T) {
 	}
 }
 
+// loopHuntFetchHistory is a session whose history holds n fetched pages
+// (http_request results, an untrusted-span source) of about 32 KB each.
+func loopHuntFetchHistory(n int) []session.Message {
+	page := strings.Repeat("Release notes: see https://docs.example.com/guide/install and mirror.example.org/pkg for details; contact ops@example.net. ", 280)
+	msgs := []session.Message{{Role: "system", Content: "sys"}, {Role: "user", Content: "research the release"}}
+	for i := 0; i < n; i++ {
+		id := fmt.Sprintf("f%d", i)
+		tc := session.ToolCall{ID: id, Type: "function"}
+		tc.Function.Name = "http_request"
+		tc.Function.Arguments = `{"url":"https://docs.example.com/guide/install"}`
+		msgs = append(msgs,
+			session.Message{Role: "assistant", ToolCalls: []session.ToolCall{tc}},
+			session.Message{Role: "tool", ToolCallID: id, Name: "http_request", Content: defaultUntrustedWrap("tool:http_request", page)},
+		)
+	}
+	return msgs
+}
+
+// Surfaces that rebuild the engine per turn (Telegram builds one per
+// message; serve per connection, odek continue per invocation) seed the new
+// span store from the session's persisted state, which already records every
+// span of the history. The first observe of the new engine still runs span
+// extraction (five regexps) over every untrusted message of the whole
+// history again, so each Telegram turn costs time proportional to the
+// session's accumulated tool output (about 0.25 s per MB measured here; a
+// 32 MiB session pays seconds per message) although the result is already
+// persisted. A seeded engine should only scan what the seed does not cover.
+func TestRED_Loop_TaintSeededEngineRescansWholeHistory(t *testing.T) {
+	history := loopHuntFetchHistory(8) // ~256 KB of fetched pages
+
+	// Turn N: the engine records the history; the save persists its state.
+	prev := New(nil, tool.NewRegistry(nil), 10, "sys", nil, 0)
+	persisted := prev.TaintSpanState(history)
+	if persisted.Empty() {
+		t.Fatal("precondition: the history should record spans")
+	}
+
+	// Turn N+1: the same history plus the new user message.
+	turn := append(session.CloneMessages(history), session.Message{Role: "user", Content: "summarize it"})
+	read := session.ToolCall{ID: "r1", Type: "function"}
+	read.Function.Name = "read_file"
+	read.Function.Arguments = `{"path":"notes.md"}`
+	calls := []session.ToolCall{read}
+	gate := func(ctx context.Context) func() {
+		return func() {
+			e := New(nil, tool.NewRegistry(nil), 10, "sys", nil, 0)
+			e.taintGate(ctx, turn, calls, 1, []string{"r1"}, 1)
+		}
+	}
+	// Allocation counts, not timings: deterministic under -race and on slow
+	// runners. Extraction allocates per match, so they track the bytes scanned.
+	unseeded := testing.AllocsPerRun(1, gate(context.Background()))
+	seeded := testing.AllocsPerRun(1, gate(WithTaintSpanSeed(context.Background(), persisted)))
+
+	if seeded > unseeded/4 {
+		t.Fatalf("an engine seeded with the persisted span state re-extracts the whole history: %.0f allocations vs %.0f for an unseeded engine (want under a quarter); the work grows with every turn of the session", seeded, unseeded)
+	}
+}
+
 // loopHuntShellArgs encodes a shell tool call's arguments.
 func loopHuntShellArgs(t *testing.T, cmd string) string {
 	t.Helper()

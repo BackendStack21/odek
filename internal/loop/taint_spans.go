@@ -245,12 +245,32 @@ type taintSpanStore struct {
 	// links are evicted without a record: losing one only removes the
 	// egress rule's exemption for that URL, which fails closed.
 	links map[string]uint64
-	// scanned holds digests of messages already scanned; scannedLen and
-	// scannedTail let an append-only history skip straight to new messages.
-	scanned    map[taintDigest]struct{}
-	scannedLen int
-	scannedTip taintDigest
-	principal  taintPrincipal
+	// scanned holds digests of messages already scanned. gateTrack and
+	// saveTrack let a history that extends the one last observed by the
+	// same caller skip straight to its new messages.
+	scanned   map[taintDigest]struct{}
+	gateTrack taintScanTrack
+	saveTrack taintScanTrack
+	principal taintPrincipal
+	// env is the environment the scan decisions were taken under; a change
+	// rescans everything (resetScanLocked).
+	env    taintEnv
+	envSet bool
+	// seedCov is the coverage of the persisted state last seeded
+	// (taint_coverage.go). Until a history reproduces it (seedCovApplied),
+	// the first observes try to verify it; covered then holds the digests
+	// of the messages it vouches for, whose extraction is skipped.
+	seedCov        session.TaintCoverage
+	seedCovApplied bool
+	seedCovTries   int
+	covered        map[taintDigest]struct{}
+	// backfill holds the texts of skipped sources whose links were not
+	// extracted (drainLinkBackfillLocked).
+	backfill      []string
+	backfillBytes int
+	// covMu guards cov, the coverage this store can vouch for.
+	covMu sync.Mutex
+	cov   taintCoverageTracker
 	// bgTainted records that this session started a background job whose
 	// bg_start call crosses the trust boundary (session.ToolCallTaintsEpisode):
 	// from then on every background notice and bg_output/bg_status result is
@@ -269,6 +289,40 @@ type taintSpanStore struct {
 // maxTaintBgJobs bounds bgJobs. A full map is emptied: forgetting a job only
 // makes its content a span source.
 const maxTaintBgJobs = 4096
+
+// taintScanTrack identifies the history one caller observed last: its length
+// and a chain digest over every message digest in it. A later history whose
+// first n messages reproduce the chain starts scanning at n; anything else
+// is checked message by message against the scanned set.
+type taintScanTrack struct {
+	n     int
+	chain [2]uint64
+}
+
+func taintDigestChain(d []taintDigest) [2]uint64 {
+	c := newTaintChain()
+	for _, x := range d {
+		c.add(x)
+	}
+	return c.sum()
+}
+
+// maxTaintSeedCoverageTries bounds the attempts to verify a seeded coverage:
+// the first observes are a run's first gate (on a possibly trimmed context)
+// and its first save (on the full history).
+const maxTaintSeedCoverageTries = 2
+
+// resetScanLocked forgets every scan decision (not the spans): the next
+// observe judges every message again.
+func (s *taintSpanStore) resetScanLocked() {
+	s.scanned = make(map[taintDigest]struct{})
+	s.gateTrack, s.saveTrack = taintScanTrack{}, taintScanTrack{}
+	s.covered = nil
+	s.seedCovApplied, s.seedCovTries = false, 0
+	s.covMu.Lock()
+	s.cov = taintCoverageTracker{}
+	s.covMu.Unlock()
+}
 
 // taintPrincipal is what the principal's own messages mention.
 type taintPrincipal struct {
@@ -859,8 +913,14 @@ func taintGoSource(tc *session.ToolCall) bool {
 }
 
 // observe records spans from the messages not yet scanned and refreshes the
-// principal's mentions.
+// principal's mentions, for the gate.
 func (s *taintSpanStore) observe(messages []session.Message, env taintEnv) {
+	s.observeTrack(messages, env, &s.gateTrack)
+}
+
+// observeTrack is observe for a caller with its own history track. It
+// returns each message's scan digest.
+func (s *taintSpanStore) observeTrack(messages []session.Message, env taintEnv, track *taintScanTrack) []taintDigest {
 	// Each tool result is judged by the call it answers: the nearest
 	// preceding call with its id (providers may reuse ids across turns).
 	paired := make([]*session.ToolCall, len(messages))
@@ -910,15 +970,38 @@ func (s *taintSpanStore) observe(messages []session.Message, env taintEnv) {
 		principal.WriteByte('\n')
 	}
 
+	// Every message's digest binds the call it answers, so equal digests
+	// mean equal decisions.
+	d := make([]taintDigest, len(messages))
+	for i := range messages {
+		d[i] = taintMessageDigest(&messages[i], paired[i])
+	}
+
 	// Extraction runs outside the mutex: only the scan bookkeeping and the
 	// span insertions hold it.
 	principalText := principal.String()
 	s.mu.Lock()
+	if s.envSet && s.env != env {
+		// Path spans and the workspace trust rule depend on the
+		// environment: decisions taken under another one do not carry.
+		s.resetScanLocked()
+	}
+	s.env, s.envSet = env, true
 	needPrincipal := principalText != s.principal.raw || s.principal.spans == nil
+	seedCov := s.seedCov
+	tryCoverage := seedCov.Valid() && !s.seedCovApplied && s.seedCovTries < maxTaintSeedCoverageTries
+	if tryCoverage {
+		s.seedCovTries++
+	}
 	s.mu.Unlock()
 	var principalSpans map[string]bool
 	if needPrincipal {
 		principalSpans = taintPrincipalSpans(principalText, env)
+	}
+	var covTracker taintCoverageTracker
+	covOK := false
+	if tryCoverage {
+		covOK, covTracker = verifySeedCoverage(messages, d, seedCov, env)
 	}
 
 	type job struct {
@@ -927,6 +1010,25 @@ func (s *taintSpanStore) observe(messages []session.Message, env taintEnv) {
 	}
 	var jobs []job
 	s.mu.Lock()
+	if covOK && s.seedCov == seedCov && s.env == env && !s.seedCovApplied {
+		// The seeded state records the spans of the first seedCov.Messages
+		// counted messages: their extraction is skipped below.
+		s.seedCovApplied = true
+		if s.covered == nil {
+			s.covered = make(map[taintDigest]struct{}, seedCov.Messages)
+		}
+		for i, counted := 0, 0; i < len(messages) && counted < seedCov.Messages; i++ {
+			if taintCountedMessage(&messages[i]) {
+				s.covered[d[i]] = struct{}{}
+				counted++
+			}
+		}
+		s.covMu.Lock()
+		if s.cov.hash == nil {
+			s.cov = covTracker
+		}
+		s.covMu.Unlock()
+	}
 	// The background facts are sticky: a bg_start call trimming later drops
 	// still decides the content of its job.
 	if bgTainted && !s.bgTainted {
@@ -940,32 +1042,40 @@ func (s *taintSpanStore) observe(messages []session.Message, env taintEnv) {
 		s.bgJobs[j.id] = s.bgJobs[j.id] || j.tainting
 	}
 	start := 0
-	if n := s.scannedLen; n > 0 && n <= len(messages) && taintMessageDigest(&messages[n-1], paired[n-1]) == s.scannedTip {
+	if n := track.n; n > 0 && n <= len(messages) && taintDigestChain(d[:n]) == track.chain {
 		start = n
 	}
 	for i := start; i < len(messages); i++ {
 		m := &messages[i]
-		d := taintMessageDigest(m, paired[i])
-		if _, ok := s.scanned[d]; ok {
+		if _, ok := s.scanned[d[i]]; ok {
 			continue
 		}
 		if len(s.scanned) >= maxTaintScanned {
 			s.scanned = make(map[taintDigest]struct{})
 		}
-		s.scanned[d] = struct{}{}
+		s.scanned[d[i]] = struct{}{}
+		// A source a verified coverage vouches for is not extracted again;
+		// only its links are kept for later. Background content is always
+		// judged and extracted afresh.
+		_, covered := s.covered[d[i]]
 		switch m.Role {
 		case "assistant":
 			continue
 		case "tool":
 			tc := paired[i]
+			bgContent := tc != nil && bgReadTool(tc.Function.Name)
 			if tc != nil {
-				if bgReadTool(tc.Function.Name) {
+				if bgContent {
 					if !s.bgSourceLocked(bgReadJobs(tc)) {
 						continue
 					}
 				} else if !session.ToolCallTaintsEpisode(tc.Function.Name, tc.Function.Arguments) {
 					continue
 				}
+			}
+			if covered && !bgContent {
+				s.addLinkBackfillLocked(m.Content)
+				continue
 			}
 			source := "tool output"
 			if tc != nil {
@@ -980,21 +1090,29 @@ func (s *taintSpanStore) observe(messages []session.Message, env taintEnv) {
 			jobs = append(jobs, job{m.Content, source, tc != nil && taintGoSource(tc)})
 		default:
 			for _, w := range untrustedBodies(m.Content) {
-				if session.ExternalNonToolIngest(w.source) || (w.source == "bg" && s.bgSourceLocked(bgNoticeJobs(w.body))) {
+				switch {
+				case session.ExternalNonToolIngest(w.source):
+					if covered {
+						s.addLinkBackfillLocked(w.body)
+					} else {
+						jobs = append(jobs, job{w.body, w.source, false})
+					}
+				case w.source == "bg" && s.bgSourceLocked(bgNoticeJobs(w.body)):
 					jobs = append(jobs, job{w.body, w.source, false})
 				}
 			}
 			if m.Role == "user" {
 				for _, w := range untrustedInputBodies(m.Content) {
-					jobs = append(jobs, job{w.body, w.source, false})
+					if covered {
+						s.addLinkBackfillLocked(w.body)
+					} else {
+						jobs = append(jobs, job{w.body, w.source, false})
+					}
 				}
 			}
 		}
 	}
-	if n := len(messages); n > 0 {
-		s.scannedLen = n
-		s.scannedTip = taintMessageDigest(&messages[n-1], paired[n-1])
-	}
+	*track = taintScanTrack{n: len(messages), chain: taintDigestChain(d)}
 	s.mu.Unlock()
 
 	extracted := make([][]taintRaw, len(jobs))
@@ -1010,6 +1128,7 @@ func (s *taintSpanStore) observe(messages []session.Message, env taintEnv) {
 	for i, j := range jobs {
 		s.insertLocked(extracted[i], j.source)
 	}
+	return d
 }
 
 // taintPrincipalSpans returns the span keys the principal's text mentions.
@@ -1318,7 +1437,14 @@ func (s *taintSpanStore) match(text string, kinds taintKinds, egress bool, env t
 			if c.kind != taintKindURL {
 				continue
 			}
-			if _, linked := s.links[c.link]; linked || !c.query {
+			_, linked := s.links[c.link]
+			if !linked && c.query && len(s.backfill) > 0 {
+				// The link may sit in a source a verified coverage let the
+				// store skip: extract the skipped links now.
+				s.drainLinkBackfillLocked()
+				_, linked = s.links[c.link]
+			}
+			if linked || !c.query {
 				exempt = append(exempt, [2]int{c.at, c.end})
 			}
 		}
@@ -1556,11 +1682,7 @@ func (e *Engine) taintGate(ctx context.Context, messages []session.Message, call
 	}
 	env := currentTaintEnv()
 	store := e.spanStore()
-	if seed := taintSpanSeedFrom(ctx); !seed.Empty() {
-		store.mu.Lock()
-		store.seedStateLocked(seed)
-		store.mu.Unlock()
-	}
+	e.seedTaintSpans(ctx)
 	store.observe(messages, env)
 	var denied []string
 	for i, tc := range calls {

@@ -27,10 +27,28 @@ type taintSeedKey struct{}
 // WithTaintSpanSeed returns a context whose runs seed the engine's span
 // store from st (a session's persisted TaintSpans and TaintOverflow).
 func WithTaintSpanSeed(ctx context.Context, st session.TaintState) context.Context {
-	if st.Empty() {
+	if taintSeedEmpty(st) {
 		return ctx
 	}
 	return context.WithValue(ctx, taintSeedKey{}, st)
+}
+
+// taintSeedEmpty reports whether st gives a store nothing to seed: no span
+// state and no coverage.
+func taintSeedEmpty(st session.TaintState) bool { return st.Empty() && !st.Coverage.Valid() }
+
+// seedTaintSpans seeds the engine's span store from the state ctx carries.
+// Seeding the same state again changes nothing.
+func (e *Engine) seedTaintSpans(ctx context.Context) {
+	if e.dangerousCfg != nil && !e.dangerousCfg.TaintEscalationEnabled() {
+		return
+	}
+	if seed := taintSpanSeedFrom(ctx); !taintSeedEmpty(seed) {
+		store := e.spanStore()
+		store.mu.Lock()
+		store.seedStateLocked(seed)
+		store.mu.Unlock()
+	}
 }
 
 func taintSpanSeedFrom(ctx context.Context) session.TaintState {
@@ -50,6 +68,12 @@ func (s *taintSpanStore) seedStateLocked(st session.TaintState) {
 	if st.Background && !s.bgTainted {
 		s.bgTainted = true
 		s.version++
+	}
+	if st.Coverage.Valid() && st.Coverage != s.seedCov {
+		// A history that reproduces the coverage skips extracting what
+		// these spans already record (taint_coverage.go).
+		s.seedCov = st.Coverage
+		s.seedCovApplied, s.seedCovTries = false, 0
 	}
 	if n := len(st.Spans); n > 0 && (s.seedLen != n || s.seedHead != &st.Spans[0]) {
 		s.seedLocked(st.Spans)
@@ -216,8 +240,15 @@ func (sp *taintSpan) persistedLocked(k string, hashed bool, gen uint64, redacted
 // generation, so an unchanged set costs a copy and a changed one redacts
 // only its new spans. The result is the caller's own copy.
 func (e *Engine) TaintSpanState(messages []session.Message) session.TaintState {
+	var coverage session.TaintCoverage
 	if len(messages) > 0 && (e.dangerousCfg == nil || e.dangerousCfg.TaintEscalationEnabled()) {
-		e.spanStore().observe(messages, currentTaintEnv())
+		store, env := e.spanStore(), currentTaintEnv()
+		d := store.observeTrack(messages, env, &store.saveTrack)
+		// Every message of messages is now judged and its spans held, so
+		// the store can vouch for them (taint_coverage.go).
+		store.covMu.Lock()
+		coverage = store.coverageLocked(messages, d, env)
+		store.covMu.Unlock()
 	}
 	e.taintMu.Lock()
 	store := e.taintSpans
@@ -225,6 +256,13 @@ func (e *Engine) TaintSpanState(messages []session.Message) session.TaintState {
 	if store == nil {
 		return session.TaintState{}
 	}
+	st := e.exportTaintState(store)
+	st.Coverage = coverage
+	return st
+}
+
+// exportTaintState exports store's span state (see TaintSpanState).
+func (e *Engine) exportTaintState(store *taintSpanStore) session.TaintState {
 	// The generation is read before anything is redacted: a secret
 	// registered while this export runs must not be stamped as applied.
 	gen := redact.Generation()
