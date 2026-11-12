@@ -3160,7 +3160,7 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	// env wins over the file value, per the priority chain. 0/unset uses
 	// the built-in 300s default so thinking models are not idle-aborted
 	// before the first SSE event.
-	sdk.SetStreamIdleTimeout(resolveStreamIdleTimeout(cfg.LLM, envIntPtr("ODEK_STREAM_IDLE_TIMEOUT_SECONDS")))
+	sdk.SetStreamIdleTimeout(resolveStreamIdleTimeout(cfg.LLM, envIntPtr("STREAM_IDLE_TIMEOUT_SECONDS")))
 
 	// v1 alias: infer provider from base_url when provider is unset.
 	if resolved.Provider == "" && resolved.BaseURL != "" {
