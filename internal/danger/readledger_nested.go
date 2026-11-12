@@ -510,6 +510,9 @@ func (s *shellScan) word() string {
 	var quote byte
 	for s.pos < len(s.text) {
 		c := s.text[s.pos]
+		if quote != '\'' && c != '\\' && s.expansion(quote == '"') {
+			continue
+		}
 		switch {
 		case quote == '\'':
 			if c == '\'' {
@@ -517,35 +520,6 @@ func (s *shellScan) word() string {
 			}
 		case c == '\\':
 			s.pos++
-		case c == '$' && s.pos+1 < len(s.text) && s.text[s.pos+1] == '(':
-			if s.pos+2 < len(s.text) && s.text[s.pos+2] == '(' {
-				begin := s.pos + 3
-				s.skipBalanced('(', ')', quote == '"') // $(( arithmetic )), which can still hold a substitution
-				s.scanRegion(begin, s.pos)
-				continue
-			}
-			if s.depth >= maxShellSubstitutionDepth {
-				s.failed = true
-				s.pos = len(s.text)
-				return s.text[start:]
-			}
-			s.pos += 2
-			s.depth++
-			s.scan()
-			s.depth--
-			continue
-		case c == '`':
-			end := strings.IndexByte(s.text[s.pos+1:], '`')
-			if end < 0 {
-				s.pos = len(s.text)
-				s.failed = true
-				return s.text[start:]
-			}
-			inner, complete := parseShellCommands(s.text[s.pos+1 : s.pos+1+end])
-			s.cmds = append(s.cmds, inner...)
-			s.failed = s.failed || !complete
-			s.pos += end + 2
-			continue
 		case quote == 0 && c == '$' && s.pos+1 < len(s.text) && s.text[s.pos+1] == '\'':
 			// $'...' reads backslash escapes, so \' does not end it.
 			end, ok := skipAnsiC(s.text, s.pos+1)
@@ -553,11 +527,6 @@ func (s *shellScan) word() string {
 			if !ok {
 				s.failed = true
 			}
-			continue
-		case c == '$' && s.pos+1 < len(s.text) && s.text[s.pos+1] == '{':
-			begin := s.pos + 2
-			s.skipBalanced('{', '}', quote == '"') // ${X:-$(cmd)} runs cmd
-			s.scanRegion(begin, s.pos)
 			continue
 		case quote == '"':
 			if c == '"' {
@@ -574,6 +543,63 @@ func (s *shellScan) word() string {
 		s.failed = true // the text ends inside a quote: what follows cannot be told from data
 	}
 	return s.text[start:min(s.pos, len(s.text))]
+}
+
+// expansion consumes exactly the expansion that starts at s.pos — $(command),
+// $((arithmetic)), `command` or ${parameter} — following the commands it
+// runs, and reports whether there was one. Nothing after its closing
+// delimiter is read, so the caller keeps its own quote context. inDouble says
+// the expansion sits inside double quotes or a here-document body, where
+// bash reads a single quote inside ${...} as an ordinary character.
+func (s *shellScan) expansion(inDouble bool) bool {
+	text, at := s.text, s.pos
+	if at+1 >= len(text) || (text[at] != '$' && text[at] != '`') {
+		return false
+	}
+	switch {
+	case text[at] == '`':
+		end := strings.IndexByte(text[at+1:], '`')
+		if end < 0 {
+			s.pos = len(text)
+			s.failed = true
+			return true
+		}
+		inner, complete := parseShellCommands(text[at+1 : at+1+end])
+		s.cmds = append(s.cmds, inner...)
+		s.failed = s.failed || !complete
+		s.pos = at + end + 2
+	case text[at+1] == '(' && at+2 < len(text) && text[at+2] == '(' && arithmeticExpansion(text, at):
+		// The arithmetic can still hold a substitution. Its end must be the
+		// same whether or not a single quote hides a parenthesis.
+		s.skipBalanced('(', ')', true)
+		s.scanRegion(at+3, s.pos, true)
+	case text[at+1] == '(':
+		if s.depth >= maxShellSubstitutionDepth {
+			s.failed = true
+			s.pos = len(text)
+			return true
+		}
+		s.pos = at + 2
+		s.depth++
+		s.scan()
+		s.depth--
+	case text[at+1] == '{':
+		s.skipBalanced('{', '}', inDouble) // ${X:-$(cmd)} runs cmd
+		s.scanRegion(at+2, s.pos, inDouble)
+	default:
+		return false
+	}
+	return true
+}
+
+// arithmeticExpansion reports whether the `$((` at text[at] is arithmetic:
+// bash reads it so only when the group the second parenthesis opens closes
+// right before the first one does. `$((cmd) )` and `$((cmd) | tr a b)` are a
+// command substitution holding a subshell, whose command runs.
+func arithmeticExpansion(text string, at int) bool {
+	inner, ok := skipBalancedEnd(text, at+2, '(', ')', true)
+	outer, outerOK := skipBalancedEnd(text, at+1, '(', ')', true)
+	return !ok || !outerOK || outer == inner+1
 }
 
 // skipAnsiC returns the offset after the $'...' string whose opening quote is
@@ -757,7 +783,7 @@ func (s *shellScan) scanCommand() (closed bool) {
 				begin := s.pos
 				s.pos--
 				s.skipBalanced('(', ')', false) // an array literal holds data, and perhaps a substitution
-				s.scanRegion(begin, s.pos)
+				s.scanRegion(begin, s.pos, false)
 				continue
 			}
 			return false
@@ -785,7 +811,7 @@ func (s *shellScan) scanCommand() (closed bool) {
 				s.pos = len(s.text)
 				s.failed = true
 			}
-			s.scanRegion(begin, s.pos)
+			s.scanRegion(begin, s.pos, false)
 			cmd.words = append(cmd.words, word)
 			continue
 		}
@@ -914,44 +940,63 @@ func (s *shellScan) readHeredocs() {
 	s.pending = nil
 }
 
-// scanRegion follows the substitutions inside text the parser otherwise treats as data.
-func (s *shellScan) scanRegion(begin, end int) {
+// scanRegion follows the substitutions inside text[begin:end], a construct the
+// parser otherwise treats as data whose end is already known: a ${...} body,
+// $((...)), [[ ... ]] or an array literal. Substitutions run unquoted and
+// inside double quotes; a single-quoted span hides them, except where a
+// single quote is an ordinary character — inside double quotes, and
+// throughout a construct that is itself double-quoted (inDouble), as bash
+// reads `"${x:-'$(cmd)'}"`.
+func (s *shellScan) scanRegion(begin, end int, inDouble bool) {
 	if begin >= end || end > len(s.text) {
 		return
 	}
-	// Single quotes make what they hold data here, unlike in a here-document.
-	region := []byte(s.text[begin:end])
-	inQuote := false
-	for i, c := range region {
+	sub := &shellScan{text: s.text[:end], pos: begin, depth: s.depth}
+	double := false
+	for sub.pos < end {
+		c := sub.text[sub.pos]
 		switch {
-		case c == '\'':
-			inQuote = !inQuote
-		case inQuote:
-			region[i] = ' '
+		case c == '\\':
+			sub.pos += 2
+		case sub.expansion(inDouble || double):
+		case c == '"':
+			double = !double
+			sub.pos++
+		case c == '\'' && !inDouble && !double:
+			if sub.pos > begin && sub.text[sub.pos-1] == '$' {
+				sub.pos, _ = skipAnsiC(sub.text, sub.pos)
+				continue
+			}
+			if close := strings.IndexByte(sub.text[sub.pos+1:], '\''); close >= 0 {
+				sub.pos += close + 2
+			} else {
+				sub.pos = end
+			}
+		default:
+			sub.pos++
 		}
 	}
-	s.scanHeredocBody(string(region))
+	s.cmds = append(s.cmds, sub.cmds...)
+	s.failed = s.failed || sub.failed
 }
 
 // scanHeredocBody follows the substitutions of an unquoted here-document, which
-// run even though the rest of it is data.
+// run even though the rest of it is data. Quotes are ordinary characters there:
+// only a backslash and the expansions ($(...), `...`, ${...}, $((...))) are
+// active, each read as one construct and never as the start of a shell word.
 func (s *shellScan) scanHeredocBody(body string) {
-	for i := 0; i < len(body); i++ {
-		if body[i] == '\\' {
-			i++
-			continue
-		}
-		if body[i] != '`' && !strings.HasPrefix(body[i:], "$(") {
-			continue
-		}
-		sub := &shellScan{text: body, pos: i, depth: s.depth}
-		sub.word()
-		s.cmds = append(s.cmds, sub.cmds...)
-		s.failed = s.failed || sub.failed
-		if sub.pos > i {
-			i = sub.pos - 1
+	sub := &shellScan{text: body, depth: s.depth}
+	for sub.pos < len(body) {
+		switch {
+		case body[sub.pos] == '\\':
+			sub.pos += 2
+		case sub.expansion(true):
+		default:
+			sub.pos++
 		}
 	}
+	s.cmds = append(s.cmds, sub.cmds...)
+	s.failed = s.failed || sub.failed
 }
 
 // shellProcessSubstitution stands in for a <( ) operand.

@@ -1,6 +1,8 @@
 package danger
 
 import (
+	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -218,5 +220,179 @@ func TestToolOptionEnvBenignValuesKeepVerdict(t *testing.T) {
 		if got := Classify(cmd); got != want {
 			t.Errorf("%q classified %s, want %s", cmd, got, want)
 		}
+	}
+}
+
+// The nested-script scanner followed a substitution inside a ${...} default
+// or a here-document body by reading the rest of a whole shell word after
+// it, so the double quote closing "$(cmd)" was taken as an opening quote,
+// the text ended "inside a quote" and the parse failed closed: scripts that
+// launch nothing local gated as unread_exec with the script as the target.
+// In an unquoted here-document body quotes are ordinary characters; only a
+// backslash and the expansions are active.
+//
+// Correct behaviour: these scripts parse completely and launch nothing, so a
+// read script stays licensed.
+func TestRED_NestedScannerQuotedSubstitutionDoesNotFailClosed(t *testing.T) {
+	t.Setenv("HOME", "/home/user")
+	for name, script := range map[string]string{
+		"quoted subst in default":      "#!/bin/bash\nV=${VER:-\"$(echo dev)\"}\n",
+		"quoted subst in := default":   "#!/bin/bash\n: \"${OUT:=\"$(pwd)/out\"}\"\n",
+		"heredoc quoted subst":         "#!/bin/bash\ncat <<EOF\nversion: \"$(git describe)\"\nEOF\n",
+		"heredoc apostrophe and subst": "#!/bin/bash\ncat <<EOF\nDear $USER, \"$(hostname)\" says: it's alive\nEOF\n",
+		"heredoc single-quoted subst":  "#!/bin/bash\ncat <<EOF\nname='$(whoami)'\nEOF\n",
+		"heredoc backtick in quotes":   "#!/bin/bash\ncat <<EOF\ndate: \"`date`\"\nEOF\n",
+		"heredoc braced default":       "#!/bin/bash\ncat <<-EOF\n\tpath: \"${PREFIX:-/usr/local}\"\nEOF\n",
+		"heredoc arithmetic in quotes": "#!/bin/bash\ncat <<EOF\nn: \"$((1 + 2))\"\nEOF\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, complete := parseShellCommands(script); !complete {
+				t.Errorf("script %q: parse failed closed; it is well formed", script)
+			}
+			d := nestedFixture(t, script)
+			RecordRead(filepath.Join(d, "security.sh"))
+			if cls, targets := ClassifyScriptGate("bash security.sh"); cls == UnreadExec {
+				t.Errorf("script %q: class=%s targets=%v; the script launches nothing local", script, cls, targets)
+			}
+		})
+	}
+}
+
+// A launch placed after each construct the scanner has to read quote-aware is
+// still found, or the parse fails closed: the quote-context fix must not let
+// a construct swallow what follows it.
+func TestNestedScannerLaunchAfterTrickyConstructStaysGated(t *testing.T) {
+	t.Setenv("HOME", "/home/user")
+	for name, construct := range map[string]string{
+		"double-quoted quote in default": `echo ${x:-"'"}`,
+		"escaped brace in default":       `echo ${x:-\}}`,
+		"quoted ]] in [[ ]]":             `[[ $x == "]]" ]]`,
+		"quoted ]] after =~":             `[[ $x =~ "a]]" ]]`,
+		"locale string apostrophe":       `echo $"it's"`,
+		"ansi-c escaped quote":           `echo $'a\''`,
+		"case pattern parenthesis":       "case $x in a\\)|\"b)\") echo hit;; esac",
+		"backtick with quote":            "echo `echo \"'\"`",
+		"comment with quote":             "# it's a comment \"",
+		"line continuation in quotes":    "echo \"a \\\nb\"",
+		"arithmetic with quotes":         `echo $(( '1' ))`,
+		"array literal parenthesis":      `arr=(a "b)" c)`,
+		"heredoc inside substitution":    "x=$(cat <<EOF\n'\nEOF\n)",
+		"quoted subst in default":        `V=${VER:-"$(echo dev)"}`,
+		"heredoc quoted subst":           "cat <<EOF\nversion: \"$(git describe)\"\nEOF",
+		"heredoc apostrophe":             "cat <<EOF\nit's \"$(hostname)\"\nEOF",
+		"quoted heredoc":                 "cat <<'EOF'\n$(\"'\nEOF",
+		"subshell in arithmetic form":    `echo $( (echo "'") )`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			script := "#!/bin/bash\n" + construct + "\n./code_policies\n"
+			cmds, complete := parseShellCommands(script)
+			if complete && (len(cmds) == 0 || cmds[len(cmds)-1].words[0] != "./code_policies") {
+				t.Errorf("script %q: parse complete but the last command is not the launch (%v)", script, cmds)
+			}
+			d := nestedFixture(t, script)
+			RecordRead(filepath.Join(d, "security.sh"))
+			if cls, targets := ClassifyScriptGate("bash security.sh"); cls != UnreadExec || len(targets) == 0 {
+				t.Errorf("script %q: class=%s targets=%v; want unread_exec (the launch after the construct runs)", script, cls, targets)
+			}
+		})
+	}
+}
+
+// `$((cmd) )` is a command substitution holding a subshell, not arithmetic:
+// bash only reads `$((` as arithmetic when the inner group closes right
+// before the outer one. The command inside runs.
+func TestNestedScannerSubshellSubstitutionIsNotArithmetic(t *testing.T) {
+	t.Setenv("HOME", "/home/user")
+	for _, script := range []string{
+		"#!/bin/bash\nx=$((./code_policies) )\n",
+		"#!/bin/bash\necho \"$((./code_policies) | tr a b)\"\n",
+	} {
+		d := nestedFixture(t, script)
+		RecordRead(filepath.Join(d, "security.sh"))
+		if cls, targets := ClassifyScriptGate("bash security.sh"); cls != UnreadExec || !strings.Contains(targetNames(targets), "code_policies") {
+			t.Errorf("script %q: class=%s targets=%v; want unread_exec naming code_policies", script, cls, targets)
+		}
+	}
+}
+
+// Realistic scripts — an installer with here-docs and ${VAR:-"$(cmd)"}
+// defaults, a CI script, a build script — parse completely and launch
+// nothing local, so a read copy stays licensed; the same script with a
+// launch appended is gated.
+func TestNestedScannerRealisticScriptsCorpus(t *testing.T) {
+	t.Setenv("HOME", "/home/user")
+	corpus := map[string]string{
+		"install": `#!/usr/bin/env bash
+set -euo pipefail
+# Installer: it's safe to re-run.
+VERSION=${VERSION:-"$(curl -fsSL https://example.com/latest | tr -d 'v')"}
+PREFIX="${PREFIX:-"$HOME/.local"}"
+OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
+ARCH="$(uname -m)"
+case "$ARCH" in
+  x86_64|amd64) ARCH=amd64 ;;
+  arm64|aarch64) ARCH=arm64 ;;
+  *) echo "unsupported arch: $ARCH" >&2; exit 1 ;;
+esac
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+cat > "$tmp/config.yaml" <<EOF
+# generated by the installer on $(date -u +%Y-%m-%dT%H:%M:%SZ)
+version: "${VERSION}"
+prefix: "$PREFIX"
+user: "$(id -un)"
+note: it's "quoted" here
+EOF
+cat <<'USAGE'
+Usage: tool [--help] "$(not run)"
+USAGE
+mkdir -p "$PREFIX/bin"
+echo "installed ${VERSION} for ${OS}/${ARCH} into ${PREFIX}"
+`,
+		"ci": `#!/bin/sh
+set -e
+: "${GOFLAGS:=-mod=readonly}"
+: "${CI_COMMIT_SHA:="$(git rev-parse HEAD)"}"
+echo "commit: ${CI_COMMIT_SHA:-unknown}"
+if [ -n "${CI:-}" ] && [ "$(git status --porcelain | wc -l)" -gt 0 ]; then
+  echo "tree is dirty" >&2
+  exit 1
+fi
+go vet ./...
+go test -race -count=1 ./... 2>&1 | tee "test-$(date +%s).log"
+cat <<EOF >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+### Tests passed on $(go version) ("$(uname -s)", it's green)
+EOF
+`,
+		"build": `#!/bin/bash
+NAME=${NAME:-"$(basename "$(pwd)")"}
+LDFLAGS="-s -w -X main.version=${VERSION:-"$(git describe --tags --always 2>/dev/null || echo dev)"}"
+targets=(linux/amd64 "darwin/arm64" windows/amd64)
+for t in "${targets[@]}"; do
+  os="${t%%/*}"; arch="${t##*/}"
+  out="dist/${NAME}_${os}_${arch}$([[ $os == windows ]] && echo .exe)"
+  GOOS=$os GOARCH=$arch go build -ldflags "$LDFLAGS" -o "$out" .
+done
+[[ -d dist ]] && ls -la dist
+echo "built $(( ${#targets[@]} )) targets"
+`,
+	}
+	for name, script := range corpus {
+		t.Run(name, func(t *testing.T) {
+			if _, complete := parseShellCommands(script); !complete {
+				t.Fatalf("parse failed closed on a well-formed script")
+			}
+			d := nestedFixture(t, script)
+			RecordRead(filepath.Join(d, "security.sh"))
+			if cls, targets := ClassifyScriptGate("bash security.sh"); cls == UnreadExec {
+				t.Errorf("class=%s targets=%v; the script launches nothing local", cls, targets)
+			}
+			launched := script + "./code_policies --scan\n"
+			d = nestedFixture(t, launched)
+			RecordRead(filepath.Join(d, "security.sh"))
+			if cls, targets := ClassifyScriptGate("bash security.sh"); cls != UnreadExec || !strings.Contains(targetNames(targets), "code_policies") {
+				t.Errorf("with a launch appended: class=%s targets=%v; want unread_exec naming code_policies", cls, targets)
+			}
+		})
 	}
 }
