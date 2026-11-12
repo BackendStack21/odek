@@ -200,6 +200,7 @@ The `Handler` struct routes incoming updates to the appropriate callback based o
 | `OnCommand` | Slash command (e.g. `/start`) | `(chatID int64, command, args string) (string, error)` |
 | `OnVoiceMessage` | Voice message (OGG Opus) | `(chatID int64, messageID int, fileID string, userID int64) (string, error)` |
 | `OnPhotoMessage` | Photo message | `(chatID int64, messageID int, fileIDs []string, caption string, userID int64) (string, error)` |
+| `OnDocumentMessage` | Document / file (a caption sent with it is the user's request, guard-scanned and wrapped as untrusted like a photo caption) | `(chatID int64, messageID int, fileID, fileName, caption string, userID int64) (string, error)` |
 | `OnCallbackQuery` | Inline keyboard callback | `(chatID int64, callbackData string, userID int64) (string, error)` |
 
 All callbacks return a response string (may be empty) and an error. The `Handle` method:

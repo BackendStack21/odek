@@ -1176,7 +1176,7 @@ func telegramCmd(args []string) error {
 		return "", nil
 	}
 
-	handler.OnDocumentMessage = func(chatID int64, messageID int, fileID string, fileName string, userID int64) (string, error) {
+	handler.OnDocumentMessage = func(chatID int64, messageID int, fileID string, fileName string, caption string, userID int64) (string, error) {
 		runChatMediaOffLoop(chatID, handlerLog, func(mctx context.Context) {
 			localPath, err := telegram.DownloadDocument(bot, chatID, fileID, fileName)
 			if err != nil {
@@ -1186,8 +1186,10 @@ func telegramCmd(args []string) error {
 					bot, handler, sessionManager, resolved, systemMessage, handlerLog)
 				return
 			}
+			caption = strings.TrimSpace(caption)
+			caption = telegramGuardScan(context.Background(), caption, "document caption")
 			handleChatMessageGated(mctx, chatID, messageID, userID,
-				telegramDocumentMessage(localPath, fileName),
+				telegramDocumentMessage(localPath, fileName, caption),
 				bot, handler, sessionManager, resolved, systemMessage, handlerLog)
 		})
 		return "", nil
@@ -3278,11 +3280,16 @@ func telegramVoiceMessage(chatID int64, transcript string) string {
 // so it stays outside the wrapper like the photo path: the agent's commands
 // on that file do not count as reusing untrusted content. The sender-chosen
 // file name is wrapped as untrusted, which keeps the external ingest recorded.
-func telegramDocumentMessage(localPath, senderName string) string {
+// The caption sent with the file is the user's request about it; like a photo
+// caption it is remote text and is wrapped as untrusted.
+func telegramDocumentMessage(localPath, senderName, caption string) string {
 	if senderName == "" {
 		senderName = "(none)"
 	}
 	name := wrapUntrusted(context.Background(), "telegram:document", "sender's file name: "+senderName)
+	if caption != "" {
+		return fmt.Sprintf("📄 Document received and saved to %q with this message from the user:\n%s\n%s\nUse shell tools to analyze and respond.", localPath, wrapUntrusted(context.Background(), "telegram:document:caption", caption), name)
+	}
 	return fmt.Sprintf("📄 Document received and saved to %q.\n%s\nUse shell tools to analyze and respond.", localPath, name)
 }
 

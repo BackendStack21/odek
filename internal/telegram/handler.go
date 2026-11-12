@@ -89,8 +89,10 @@ type Handler struct {
 	// Returns the response text (may be empty).
 	// fileID is the Telegram file ID. Callers should use DownloadDocument
 	// and pass the document's fileName to save the file locally.
+	// caption is the text the user sent with the file (often the request
+	// about it); it is remote-user text, handled like a photo caption.
 	// userID is the Telegram user who sent the document message.
-	OnDocumentMessage func(chatID int64, messageID int, fileID string, fileName string, userID int64) (string, error)
+	OnDocumentMessage func(chatID int64, messageID int, fileID string, fileName string, caption string, userID int64) (string, error)
 
 	// OnError is called when a processing error occurs.
 	OnError func(chatID int64, err error)
@@ -192,8 +194,8 @@ func defaultPhotoHandler(bot *Bot) func(int64, int, []string, string, int64) (st
 
 // defaultDocumentHandler returns a default OnDocumentMessage callback that
 // downloads the document and returns a MEDIA: response.
-func defaultDocumentHandler(bot *Bot) func(int64, int, string, string, int64) (string, error) {
-	return func(chatID int64, _ int, fileID string, fileName string, _ int64) (string, error) {
+func defaultDocumentHandler(bot *Bot) func(int64, int, string, string, string, int64) (string, error) {
+	return func(chatID int64, _ int, fileID string, fileName string, _ string, _ int64) (string, error) {
 		path, err := DownloadDocument(bot, chatID, fileID, fileName)
 		if err != nil {
 			return "", fmt.Errorf("telegram handler: download document: %w", err)
@@ -305,7 +307,7 @@ func (h *Handler) handleMessage(msg *Message) {
 		}
 	case msg.Document != nil:
 		if h.OnDocumentMessage != nil {
-			resp, err := h.OnDocumentMessage(msg.Chat.ID, msg.ID, msg.Document.FileID, msg.Document.FileName, userID)
+			resp, err := h.OnDocumentMessage(msg.Chat.ID, msg.ID, msg.Document.FileID, msg.Document.FileName, msg.Caption, userID)
 			if err != nil {
 				h.log.Error("document message handler failed", "chat_id", msg.Chat.ID, "error", err)
 				if h.OnError != nil {
