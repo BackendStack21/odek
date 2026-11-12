@@ -811,11 +811,26 @@ func LifecycleContentClass(path, content string, base RiskClass) (RiskClass, boo
 	return base, false
 }
 
+// fullFoldExpansions lists the characters whose full Unicode case folding is
+// an ASCII sequence of several letters, which simple folding leaves alone:
+// the Latin sharp s and f/s ligatures. Other multi-rune foldings (Greek
+// iota-subscript forms, Armenian ligatures, dotted capital I, ...) expand to
+// non-ASCII text that cannot equal an ASCII anchor name.
+var fullFoldExpansions = map[rune]string{
+	0x00DF: "ss", 0x1E9E: "ss",
+	0xFB00: "ff", 0xFB01: "fi", 0xFB02: "fl", 0xFB03: "ffi", 0xFB04: "ffl",
+	0xFB05: "st", 0xFB06: "st",
+}
+
 // FoldPathCase folds s the way case-insensitive filesystems match names:
 // every rune is mapped through its Unicode simple case-folding orbit, so
 // U+017F LONG S folds to 's' and U+212A KELVIN SIGN to 'k' as on APFS and
-// NTFS, which strings.ToLower alone does not do. Trust-anchor comparisons
-// must fold both sides with this function.
+// NTFS, which strings.ToLower alone does not do, and the characters whose
+// full folding is several ASCII letters (U+00DF sharp s to "ss", U+FB01 fi
+// ligature to "fi", ...) are expanded. Canonical decomposition adds no
+// further ASCII alias: the only singleton that decomposes to an ASCII
+// letter is the Kelvin sign. Trust-anchor comparisons must fold both sides
+// with this function.
 func FoldPathCase(s string) string {
 	ascii := true
 	for i := 0; i < len(s); i++ {
@@ -827,15 +842,21 @@ func FoldPathCase(s string) string {
 	if ascii {
 		return strings.ToLower(s)
 	}
-	return strings.Map(func(r rune) rune {
+	var b strings.Builder
+	for _, r := range s {
+		if exp, ok := fullFoldExpansions[r]; ok {
+			b.WriteString(exp)
+			continue
+		}
 		min := r
 		for f := unicode.SimpleFold(r); f != r; f = unicode.SimpleFold(f) {
 			if f < min {
 				min = f
 			}
 		}
-		return unicode.ToLower(min)
-	}, s)
+		b.WriteRune(unicode.ToLower(min))
+	}
+	return b.String()
 }
 
 // odekProtectedFiles and odekProtectedDirs name the entries of ~/.odek that are
