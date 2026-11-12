@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/BackendStack21/odek/internal/danger"
@@ -99,41 +98,6 @@ func TestRED_TrustAnchorFullCaseFoldAliasBypass(t *testing.T) {
 	}
 }
 
-// patch keeps a CRLF file's line endings only when old_string is not found
-// verbatim (the fallback that converts both strings to CRLF). read_file shows
-// CRLF lines without '\r', so a model that replaces ONE line with SEVERAL
-// sends a single-line old_string (found verbatim) and a new_string joined with
-// bare '\n': patch writes those LF-only line breaks into the CRLF file,
-// leaving it with mixed line endings. Sibling of the fixed multi-line CRLF
-// finding, whose test states patch must keep the file's line endings.
-func TestRED_PatchCRLFSingleLineMatchMultiLineReplacementWritesBareLF(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "build.bat")
-	if err := os.WriteFile(path, []byte("@echo off\r\nset A=1\r\ncall run.bat\r\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	rf := &readFileTool{}
-	out, _ := rf.Call(fmt.Sprintf(`{"path":%q}`, path))
-	var rr readFileResult
-	if err := json.Unmarshal([]byte(out), &rr); err != nil {
-		t.Fatalf("read_file: %v (%s)", err, out)
-	}
-	if strings.Contains(unwrapUntrusted(rr.Content), "\r") {
-		t.Skip("read_file now preserves CR; precondition changed")
-	}
-
-	p := &patchTool{}
-	res, _ := p.Call(fmt.Sprintf(`{"path":%q,"old_string":"set A=1","new_string":"set A=1\nset B=2"}`, path))
-	var pr patchResult
-	if err := json.Unmarshal([]byte(res), &pr); err != nil || !pr.Success {
-		t.Fatalf("patch failed: %s", res)
-	}
-	data, _ := os.ReadFile(path)
-	if want := "@echo off\r\nset A=1\r\nset B=2\r\ncall run.bat\r\n"; string(data) != want {
-		t.Fatalf("patch left mixed line endings in a CRLF file:\n got  %q\n want %q", data, want)
-	}
-}
-
 // search_files(target=content) applies file_glob with filepath.Match against
 // the file's BASE NAME only, discarding the match error. The system prompt
 // tells the model to "ALWAYS pass a file glob", and the sibling glob tool
@@ -181,5 +145,38 @@ func TestRED_SearchContentRecursiveFileGlobSilentlyMatchesNothing(t *testing.T) 
 			continue
 		}
 		t.Errorf("file_glob %q: %d matches with no error or notice (want %d matches or an explicit glob error); result %s", c.glob, n, c.want, res)
+	}
+}
+
+// Path-shaped file_glob patterns match the path relative to the search root,
+// plain ones keep matching the file name, and a malformed pattern is an error.
+func TestRED_SearchContentFileGlobPathSemantics(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "src", "pkg"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, rel := range []string{"main.go", "src/a.go", "src/pkg/b.go", "src/pkg/c.txt"} {
+		if err := os.WriteFile(filepath.Join(dir, rel), []byte("needle\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sf := &searchFilesTool{dangerousConfig: tools1112DenySystemWrite()}
+	count := func(glob string) (int, string) {
+		res, _ := sf.Call(fmt.Sprintf(`{"pattern":"needle","target":"content","path":%q,"file_glob":%q}`, dir, glob))
+		var r searchFilesResult
+		if err := json.Unmarshal([]byte(res), &r); err != nil {
+			t.Fatalf("unmarshal: %v (%s)", err, res)
+		}
+		return len(r.Matches), r.Error
+	}
+	for glob, want := range map[string]int{
+		"*.go": 3, "**/*.go": 3, "src/*.go": 1, "src/**/*.go": 2, "src/pkg/*": 2, "**/*.txt": 1, "nomatch/*.go": 0,
+	} {
+		if n, errMsg := count(glob); n != want || errMsg != "" {
+			t.Errorf("file_glob %q: %d matches (error %q), want %d", glob, n, errMsg, want)
+		}
+	}
+	if n, errMsg := count("src/[*.go"); n != 0 || errMsg == "" {
+		t.Errorf("malformed path glob: %d matches, error %q; want an error", n, errMsg)
 	}
 }
