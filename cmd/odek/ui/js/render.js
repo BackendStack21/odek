@@ -545,7 +545,7 @@ function sealPartialResponse() {
 // draft's last fragment; the draft folds into a collapsed row and the next
 // reply streams as the answer. History replays drafts the same way from
 // the record's `superseded` flag.
-const DRAFT_REASONS = { verify_retry: 'verification', completion_nudge: 'completion check', reconciled: 'runtime notice' };
+const DRAFT_REASONS = { verify_retry: 'verification', completion_nudge: 'completion check', reconciled: 'answer corrected' };
 
 // VERIFY_FAILED_MARKER mirrors loop.VerifyFailedMarker: persisted answers
 // that failed verification start with it.

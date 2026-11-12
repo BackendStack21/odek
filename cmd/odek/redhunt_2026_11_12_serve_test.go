@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/BackendStack21/odek"
+	"github.com/BackendStack21/odek/internal/budget"
 	"github.com/BackendStack21/odek/internal/events"
 	"github.com/BackendStack21/odek/internal/resource"
 	"github.com/BackendStack21/odek/internal/session"
@@ -125,6 +126,12 @@ func (serveHuntWriteTool) Call(string) (string, error) { return `{"success":true
 // a file, every later main call denies having changed anything. Side calls
 // (memory, titles) get a neutral reply.
 func serveHuntLedgerLLM(t *testing.T) *httptest.Server {
+	return serveHuntLedgerLLMUsage(t, 0)
+}
+
+// serveHuntLedgerLLMUsage is serveHuntLedgerLLM whose streamed replies also
+// report completionTokens of usage when it is positive.
+func serveHuntLedgerLLMUsage(t *testing.T, completionTokens int) *httptest.Server {
 	t.Helper()
 	var mu sync.Mutex
 	mainCalls := 0
@@ -159,7 +166,11 @@ func serveHuntLedgerLLM(t *testing.T) *httptest.Server {
 		if stream {
 			w.Header().Set("Content-Type", "text/event-stream")
 			fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{\"content\":%s}}]}\n\n", quoted)
-			fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
+			fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n")
+			if completionTokens > 0 {
+				fmt.Fprintf(w, "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":%d,\"total_tokens\":%d}}\n\n", completionTokens, completionTokens+10)
+			}
+			fmt.Fprint(w, "data: [DONE]\n\n")
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -288,5 +299,88 @@ func TestSweepStagingOrphans_OnlyRemovesOwnStagingDirs(t *testing.T) {
 		if _, err := os.Stat(p); err != nil {
 			t.Errorf("non-staging entry %s must survive: %v", p, err)
 		}
+	}
+}
+
+// A budget-exceeded turn keeps the streamed tool-less answer the loop
+// persisted, notice included. The client must receive that notice before the
+// terminal frame, exactly as on a successful turn.
+func TestRED_BudgetExceededTurnDeliversRuntimeNotice(t *testing.T) {
+	llm := serveHuntLedgerLLMUsage(t, 1000)
+	log := &frameLog{}
+	sendAny := func(v any) error {
+		if m, ok := v.(map[string]any); ok {
+			log.send(m)
+		}
+		return nil
+	}
+	deltas := &wsDeltaCounters{}
+	var built *odek.Agent
+	a, err := odek.New(odek.Config{
+		Provider: "deepseek", BaseURL: llm.URL, APIKey: "test-key", Model: "test-model",
+		SystemMessage: "Help", NoProjectFile: true, MemoryDir: t.TempDir(), MaxIterations: 6,
+		Stream: true, DeltaHandler: serveDeltaHandler(sendAny, deltas),
+		Tools:              []odek.Tool{serveHuntWriteTool{}},
+		EventHandler:       func(events.Event) {},
+		Limits:             budget.Limits{MaxOutputTokens: 500},
+		AnswerEventHandler: serveAnswerEventHandler(sendAny, func() string { return built.RunID() }, deltas),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	built = a
+	t.Cleanup(func() { a.Close() })
+	store := newTestSessionStore(t)
+	sess, err := store.Create(nil, "test-model", "fixture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rs := loadJSONMockResolved()
+	rs.Limits = budget.Limits{MaxOutputTokens: 500}
+	handlePrompt(context.Background(), log.send, store, resource.NewRegistry(), rs, a, nil, sess,
+		wsClientMsg{Type: "prompt", Content: "set up the notes file"}, new(int), new(int), nil, deltas, nil, nil)
+
+	saved, err := store.Load(sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored := false
+	for _, m := range saved.Messages {
+		if m.Role == "assistant" && strings.Contains(m.Content, "odek consistency notice") {
+			stored = true
+		}
+	}
+	if !stored {
+		t.Fatalf("precondition: no persisted assistant answer carries the consistency notice")
+	}
+	errAt, noticeAt := -1, -1
+	log.mu.Lock()
+	for i, f := range log.frames {
+		if f["type"] == "error" && errAt < 0 {
+			errAt = i
+		}
+		if raw, err := json.Marshal(f); err == nil && f["type"] != "error" && strings.Contains(string(raw), "odek consistency notice") && noticeAt < 0 {
+			noticeAt = i
+		}
+	}
+	log.mu.Unlock()
+	if errAt < 0 {
+		t.Fatal("precondition: the turn did not end in a budget error")
+	}
+	if noticeAt < 0 || noticeAt > errAt {
+		t.Fatalf("notice frame at %d, terminal error at %d: the client must see the notice before the turn ends", noticeAt, errAt)
+	}
+}
+
+// Appended text needs no replacement; a stored text that does not extend the
+// streamed one (redaction, marker stripping) replaces it whole.
+func TestFinalAnswerRemainderExtensionVersusReplacement(t *testing.T) {
+	rest, replace := finalAnswerRemainder("hello", true, "hello\n\nnotice")
+	if replace || rest != "\n\nnotice" {
+		t.Fatalf("extension: rest=%q replace=%v", rest, replace)
+	}
+	rest, replace = finalAnswerRemainder("key sk-123", true, "key [REDACTED]")
+	if !replace || rest != "key [REDACTED]" {
+		t.Fatalf("divergence: rest=%q replace=%v", rest, replace)
 	}
 }

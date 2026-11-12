@@ -1247,7 +1247,7 @@ test('a reconciled supersede folds the streamed copy and the full answer follows
   const answers = byId.messages.querySelectorAll('.msg.assistant');
   assert.equal(answers.length, 2);
   assert.ok(answers[0].classList.contains('draft'));
-  assert.equal(answers[0].querySelector('.draft-toggle').textContent, '⋯ draft revised (runtime notice)');
+  assert.equal(answers[0].querySelector('.draft-toggle').textContent, '⋯ draft revised (answer corrected)');
   assert.match(collectText(answers[1]).join(' '), /xyz/);
   assert.equal(collectText(answers[1]).join(' ').includes('abc'), false);
 });

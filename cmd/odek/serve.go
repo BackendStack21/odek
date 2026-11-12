@@ -1103,6 +1103,46 @@ func finalAnswerRemainder(streamed string, streamedOK bool, stored string) (rest
 	return stored, true
 }
 
+// sendAnswerContent brings a client's view of the turn's answer in line with
+// the persisted text. Every exit that leaves a stored answer calls it before
+// its terminal frame. streamedContent is the number of content fragments the
+// final call delivered live: none means the whole answer goes out as one
+// token frame; otherwise only what the client lacks is sent (text the runtime
+// appended after streaming), after a supersede when the stored text does not
+// extend what was streamed.
+func sendAnswerContent(send func(map[string]any), deltas *wsDeltaCounters, stored string, streamedContent int) {
+	if stored == "" {
+		return
+	}
+	if streamedContent == 0 {
+		send(map[string]any{"type": "token", "content": stored})
+		return
+	}
+	if deltas == nil {
+		return
+	}
+	streamed, ok := deltas.finalText()
+	rest, replace := finalAnswerRemainder(streamed, ok, stored)
+	if replace {
+		send(map[string]any{"type": "answer_superseded", "reason": "reconciled"})
+	}
+	if rest != "" {
+		send(map[string]any{"type": "token", "content": rest})
+	}
+}
+
+// turnFinalAnswer returns the turn's last tool-less, non-superseded assistant
+// text from msgs.
+func turnFinalAnswer(msgs []session.Message, turnID string) string {
+	for i := len(msgs) - 1; i >= 0; i-- {
+		m := msgs[i]
+		if m.Role == "assistant" && m.TurnID == turnID && len(m.ToolCalls) == 0 && !m.Superseded && m.Content != "" {
+			return m.Content
+		}
+	}
+	return ""
+}
+
 // finalSnapshot uses the final call's delivery state, so deltas from a
 // prior tool iteration cannot suppress a buffered final answer.
 func (c *wsDeltaCounters) finalSnapshot() (reasoning, content int) {
@@ -2938,6 +2978,7 @@ func handlePrompt(
 		// sees coherent context. The user prompt is already persisted above;
 		// returning sess (not currSess) also keeps the caller's run record
 		// and in-memory session pointer in sync with the persisted state.
+		sendAnswerContent(send, deltas, turnFinalAnswer(sess.Messages, turnID), streamedContent)
 		note := fmt.Sprintf("[Turn aborted: %s. The prompt above was preserved — send another message to retry or continue.]", providerFailureSummary(err))
 		sess.Messages = append(sess.Messages, session.Message{Role: "assistant", TurnID: turnID, Content: note})
 		markRunTaint(agent, sess)
@@ -2998,21 +3039,7 @@ func handlePrompt(
 		if msg.ReasoningContent != "" && streamedReasoning == 0 {
 			send(map[string]any{"type": "thinking", "content": msg.ReasoningContent})
 		}
-		if msg.Content != "" && streamedContent == 0 {
-			send(map[string]any{"type": "token", "content": msg.Content})
-		} else if msg.Content != "" && deltas != nil {
-			// The answer streamed, but the runtime may have appended text to
-			// it afterwards (consistency or plan-check notice). Send what the
-			// client lacks so it ends the turn showing the stored answer.
-			streamed, ok := deltas.finalText()
-			rest, replace := finalAnswerRemainder(streamed, ok, msg.Content)
-			if replace {
-				send(map[string]any{"type": "answer_superseded", "reason": "reconciled"})
-			}
-			if rest != "" {
-				send(map[string]any{"type": "token", "content": rest})
-			}
-		}
+		sendAnswerContent(send, deltas, msg.Content, streamedContent)
 	}
 
 	// Buffer the turn's answer: the last assistant reply, never a draft the
