@@ -18,7 +18,7 @@ func TestRED_FoldPathCaseFullFolding(t *testing.T) {
 		".ßh":                ".ssh",
 		"ſecrets.env":        "secrets.env",
 		"CONFIG.JSON":        "config.json",
-		"KELVIN-K":      "kelvin-k",
+		"KELVIN-K":           "kelvin-k",
 		"plain-ascii.txt":    "plain-ascii.txt",
 		"Ünïcode-ÄÖ":         "ünïcode-äö",
 	}
