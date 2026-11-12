@@ -56,6 +56,11 @@ import (
 //     as the spans it vouches for: they are saved in one file write, so a
 //     failed save never advances it past them. Every merge keeps all spans
 //     of both sides, so a coverage stays true of any merge it survives.
+//     The export that carries it is read from the store that observed the
+//     history, while no observe has spans still to insert for messages it
+//     marked scanned, and the store must still be the engine's record
+//     afterwards (TaintSpanState); otherwise the state goes out without
+//     coverage.
 //   - The principal's mentions are collected from every message on every
 //     observe, covered or not, so exemptions are rebuilt in full. Links (the
 //     egress rule's verbatim URLs) are not persisted: a covered source is

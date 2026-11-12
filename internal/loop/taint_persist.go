@@ -239,30 +239,46 @@ func (sp *taintSpan) persistedLocked(k string, hashed bool, gen uint64, redacted
 // registry generation, and each span's persisted form is computed once per
 // generation, so an unchanged set costs a copy and a changed one redacts
 // only its new spans. The result is the caller's own copy.
+//
+// The coverage (taint_coverage.go) is exported only with the spans it
+// vouches for: the state comes from the store that observed messages, and
+// carries the coverage only when, in the hold of the store's lock in which
+// the export reads its spans, no other observe still has spans to insert
+// for messages it marked scanned and no environment change reset the scan
+// decisions, and that store is still the engine's record afterwards (a
+// ResetTaintSpans in between leaves the export without coverage).
 func (e *Engine) TaintSpanState(messages []session.Message) session.TaintState {
-	var coverage session.TaintCoverage
-	if len(messages) > 0 && (e.dangerousCfg == nil || e.dangerousCfg.TaintEscalationEnabled()) {
-		store, env := e.spanStore(), currentTaintEnv()
-		d := store.observeTrack(messages, env, &store.saveTrack)
-		// Every message of messages is now judged and its spans held, so
-		// the store can vouch for them (taint_coverage.go).
-		store.covMu.Lock()
-		coverage = store.coverageLocked(messages, d, env)
-		store.covMu.Unlock()
+	if len(messages) == 0 || e.dangerousCfg != nil && !e.dangerousCfg.TaintEscalationEnabled() {
+		e.taintMu.Lock()
+		store := e.taintSpans
+		e.taintMu.Unlock()
+		if store == nil {
+			return session.TaintState{}
+		}
+		st, _ := e.exportTaintState(store, 0)
+		return st
 	}
+	store, env := e.spanStore(), currentTaintEnv()
+	d, gen := store.observeTrack(messages, env, &store.saveTrack)
+	// Every message of messages is now judged, and its spans are held
+	// unless another observe is still extracting them.
+	store.covMu.Lock()
+	coverage := store.coverageLocked(messages, d, env)
+	store.covMu.Unlock()
+	st, settled := e.exportTaintState(store, gen)
 	e.taintMu.Lock()
-	store := e.taintSpans
+	current := e.taintSpans == store
 	e.taintMu.Unlock()
-	if store == nil {
-		return session.TaintState{}
+	if settled && current {
+		st.Coverage = coverage
 	}
-	st := e.exportTaintState(store)
-	st.Coverage = coverage
 	return st
 }
 
-// exportTaintState exports store's span state (see TaintSpanState).
-func (e *Engine) exportTaintState(store *taintSpanStore) session.TaintState {
+// exportTaintState exports store's span state (see TaintSpanState). settled
+// reports that, when the spans were read, no observe had spans pending and
+// the store's scan generation was scanGen.
+func (e *Engine) exportTaintState(store *taintSpanStore, scanGen uint64) (session.TaintState, bool) {
 	// The generation is read before anything is redacted: a secret
 	// registered while this export runs must not be stamped as applied.
 	gen := redact.Generation()
@@ -277,10 +293,11 @@ func (e *Engine) exportTaintState(store *taintSpanStore) session.TaintState {
 	// eviction in between would move a span from the one not yet read into
 	// the one already read.
 	store.mu.Lock()
+	settled := store.pending == 0 && store.scanGen == scanGen
 	if m := store.export; m != nil && m.version == store.version && m.gen == gen {
 		st := cloneTaintState(m.state)
 		store.mu.Unlock()
-		return st
+		return st, settled
 	}
 	version := store.version
 	entries := make([]entry, 0, len(store.spans)+len(store.hashed))
@@ -315,7 +332,7 @@ func (e *Engine) exportTaintState(store *taintSpanStore) session.TaintState {
 		store.export = &taintExport{state: st, version: version, gen: gen}
 	}
 	store.mu.Unlock()
-	return cloneTaintState(st)
+	return cloneTaintState(st), settled
 }
 
 // cutTaintKey splits a taintKey back into kind and value.

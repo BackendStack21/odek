@@ -268,6 +268,14 @@ type taintSpanStore struct {
 	// covMu guards cov, the coverage this store can vouch for.
 	covMu sync.Mutex
 	cov   taintCoverageTracker
+	// pending counts the observes that marked messages scanned and have not
+	// yet inserted their spans (extraction runs outside mu); scanGen counts
+	// resetScanLocked calls. A coverage is exported only when, in the same
+	// hold of mu as the export reads the spans, no observe is pending and
+	// the scan state is the one the coverage was taken under: every message
+	// it counts then has its spans in the export (TaintSpanState).
+	pending int
+	scanGen uint64
 	// bgTainted records that this session started a background job whose
 	// bg_start call crosses the trust boundary (session.ToolCallTaintsEpisode):
 	// from then on every background notice and bg_output/bg_status result is
@@ -275,6 +283,10 @@ type taintSpanStore struct {
 	// (session.TaintState.Background), because trimming can drop the
 	// bg_start call but never the fact.
 	bgTainted bool
+	// extractHook, when set, runs in every observe after the messages are
+	// marked scanned and before their spans are extracted: the window in
+	// which other observes and exports run concurrently. Tests only.
+	extractHook func()
 	// bgJobs maps the id of every background job this store saw started
 	// (the bg_start call and its result, in one observed history) to whether
 	// that call taints. Background content is judged by the jobs it names
@@ -312,6 +324,7 @@ const maxTaintSeedCoverageTries = 2
 // resetScanLocked forgets every scan decision (not the spans): the next
 // observe judges every message again.
 func (s *taintSpanStore) resetScanLocked() {
+	s.scanGen++
 	s.scanned = make(map[taintDigest]struct{})
 	s.gateTrack, s.saveTrack = taintScanTrack{}, taintScanTrack{}
 	s.covered = nil
@@ -940,8 +953,9 @@ func (s *taintSpanStore) observe(messages []session.Message, env taintEnv) {
 }
 
 // observeTrack is observe for a caller with its own history track. It
-// returns each message's scan digest.
-func (s *taintSpanStore) observeTrack(messages []session.Message, env taintEnv, track *taintScanTrack) []taintDigest {
+// returns each message's scan digest and the scan generation (scanGen) its
+// decisions were taken under.
+func (s *taintSpanStore) observeTrack(messages []session.Message, env taintEnv, track *taintScanTrack) ([]taintDigest, uint64) {
 	// Each tool result is judged by the call it answers: the nearest
 	// preceding call with its id (providers may reuse ids across turns).
 	paired := make([]*session.ToolCall, len(messages))
@@ -1036,6 +1050,10 @@ func (s *taintSpanStore) observeTrack(messages []session.Message, env taintEnv, 
 	}
 	var jobs []job
 	s.mu.Lock()
+	// From here until the spans are inserted, messages this observe marks
+	// scanned have no spans in the store yet.
+	s.pending++
+	gen := s.scanGen
 	if covOK && s.seedCov == seedCov && s.env == env && !s.seedCovApplied {
 		// The seeded state records the spans of the first seedCov.Messages
 		// counted messages: their extraction is skipped below.
@@ -1131,8 +1149,12 @@ func (s *taintSpanStore) observeTrack(messages []session.Message, env taintEnv, 
 		}
 	}
 	*track = taintScanTrack{n: len(messages), chain: taintDigestChain(d)}
+	hook := s.extractHook
 	s.mu.Unlock()
 
+	if hook != nil {
+		hook()
+	}
 	extracted := make([][]taintRaw, len(jobs))
 	for i, j := range jobs {
 		if j.linksOnly {
@@ -1154,7 +1176,8 @@ func (s *taintSpanStore) observeTrack(messages []session.Message, env taintEnv, 
 			s.insertLocked(extracted[i], j.source)
 		}
 	}
-	return d
+	s.pending--
+	return d, gen
 }
 
 // taintPrincipalSpans returns the span keys the principal's text mentions.
