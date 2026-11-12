@@ -1,8 +1,12 @@
 package bgproc
 
 import (
+	"bytes"
+	"math/rand"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 // The output ring reserves its full steady-state capacity on the FIRST write,
@@ -50,5 +54,68 @@ func TestRED_OutputRingReservesTwoWindowsForTinyOutput(t *testing.T) {
 	m.mu.Unlock()
 	if pinned > jobs*smallCap {
 		t.Errorf("%d finished `echo ok` jobs pin %d KiB of output buffers (%d KiB each)", jobs, pinned>>10, pinned/jobs>>10)
+	}
+}
+
+// bgprocRefRing is the previous ring implementation (full steady-state
+// reservation on the first write); the live ring must keep and count exactly
+// the same bytes whatever its backing capacity.
+type bgprocRefRing struct {
+	buf, store []byte
+	limit      int
+	dropped    int64
+}
+
+func (r *bgprocRefRing) write(p []byte) {
+	n := len(r.buf)
+	switch {
+	case len(p) <= cap(r.buf)-n:
+		r.buf = append(r.buf, p...)
+	case len(p) <= cap(r.store)-n:
+		copy(r.store[:n], r.buf)
+		r.buf = append(r.store[:n], p...)
+	default:
+		store := append(make([]byte, 0, 2*r.limit), r.buf...)
+		r.buf = append(store, p...)
+		r.store = r.buf[:0]
+	}
+	if len(r.buf) > r.limit {
+		cut := len(r.buf) - r.limit
+		for i := 0; i < utf8.UTFMax-1 && cut > 0 && !utf8.RuneStart(r.buf[cut]); i++ {
+			cut--
+		}
+		r.dropped += int64(cut)
+		r.buf = r.buf[cut:]
+	}
+}
+
+func TestRED_OutputRingGrowthMatchesFullReservation(t *testing.T) {
+	for _, limit := range []int{1, 7, 100, 4096, 10000} {
+		rng := rand.New(rand.NewSource(int64(limit)))
+		live := &outputRing{limit: limit}
+		ref := &bgprocRefRing{limit: limit}
+		for i := 0; i < 400; i++ {
+			p := make([]byte, rng.Intn(limit*2/3+3))
+			for j := range p {
+				switch rng.Intn(4) {
+				case 0:
+					p[j] = byte(rng.Intn(256))
+				case 1:
+					p[j] = 0xc3
+				default:
+					p[j] = byte('a' + rng.Intn(26))
+				}
+			}
+			if _, err := live.Write(p); err != nil {
+				t.Fatal(err)
+			}
+			ref.write(p)
+			if !bytes.Equal(live.buf, ref.buf) || live.dropped != ref.dropped {
+				t.Fatalf("limit %d write %d: ring diverged (dropped %d vs %d, kept %d vs %d bytes)", limit, i, live.dropped, ref.dropped, len(live.buf), len(ref.buf))
+			}
+		}
+		if got, _ := live.readFrom(0, 0); live.dropped > 0 && !strings.Contains(got, "truncated") {
+			t.Fatalf("limit %d: truncation marker missing: %q", limit, got)
+		}
 	}
 }
