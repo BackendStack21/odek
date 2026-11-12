@@ -880,7 +880,7 @@ func (c *Client) CallTool(ctx context.Context, name string, argsJSON string) (st
 			}
 			for i := range env.Artifacts {
 				if _, err := artifact.Validate(env.Artifacts[i], c.artifactRoots); err != nil {
-					return "", fmt.Errorf("mcpclient %s: tool %s: artifact ref rejected: %w", c.name, name, err)
+					return "", c.artifactRejection(name, err)
 				}
 			}
 			artifact.Observe(ctx, env.Artifacts, c.artifactRoots)
@@ -893,7 +893,7 @@ func (c *Client) CallTool(ctx context.Context, name string, argsJSON string) (st
 			// local bookkeeping for a future event log and must
 			// never reach the model-facing result.
 			if _, err := artifact.Validate(env.Artifacts[i], c.artifactRoots); err != nil {
-				return "", fmt.Errorf("mcpclient %s: tool %s: artifact ref rejected: %w", c.name, name, err)
+				return "", c.artifactRejection(name, err)
 			}
 		}
 		// The per-server result cap applies to the FULL rendered envelope
@@ -944,6 +944,15 @@ func (c *Client) applyResultLimit(tool, text string) string {
 		return truncateRunes(notice, limit)
 	}
 	return truncateRunes(text, limit-noticeLen) + notice
+}
+
+// artifactRejection builds the error returned when an envelope's artifact ref
+// fails validation. The validation text embeds server-chosen fields (id,
+// schema, uri path), so it is sanitized and held to max_result_chars like every
+// other model-facing error channel.
+func (c *Client) artifactRejection(tool string, err error) error {
+	detail := c.applyResultLimit(tool, artifact.SanitizeText(err.Error()))
+	return fmt.Errorf("mcpclient %s: tool %s: artifact ref rejected: %s", c.name, tool, detail)
 }
 
 // renderCappedEnvelope renders a validated envelope and enforces the
