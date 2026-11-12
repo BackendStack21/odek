@@ -24,13 +24,19 @@ type Associations struct {
 	removed map[string]struct{}
 }
 
-// maxLinksPerAtom bounds how many neighbours one atom keeps when the
-// association map is persisted. Recall only surfaces an atom's neighbours as
-// its related-atom list, so the strongest (most recently created) links carry
-// the value; the cap keeps associations.json linear in the atom count. Stores
-// written before the cap existed (task atoms linked as a complete graph) load
-// unchanged and are pruned the next time the map is persisted.
+// maxLinksPerAtom is how many nearest-in-time neighbours each atom selects
+// when the association map is pruned; see pruneLocked. Recall only surfaces an
+// atom's neighbours as its related-atom list, so near-in-time links carry the
+// value and the bound keeps associations.json linear in the atom count.
+// Stores written before the bound existed (task atoms linked as a complete
+// graph) load unchanged and are pruned the next time the map is persisted
+// past the trigger line.
 const maxLinksPerAtom = 24
+
+// maxLinkFactor is the multiple of maxLinksPerAtom links per linked atom the
+// map may reach before a prune runs, so pruning (which reads every atom's
+// creation time) is amortised over many adds instead of firing on each one.
+const maxLinkFactor = 2
 
 // maxTaskLinksPerAtom is how many of the most recent same-project task atoms
 // a new goal/decision/convention/intent atom links to.
@@ -177,7 +183,7 @@ func (a *Associations) Persist() error {
 			add(to, from)
 		}
 	}
-	a.pruneLocked(merged)
+	merged = a.pruneLocked(merged)
 	// Adopt the merged view so later persists start from the shared state.
 	a.links = merged
 	data := make(map[string][]string, len(merged))
@@ -295,50 +301,80 @@ func (a *Associations) SetRecency(fn func() map[string]time.Time) {
 	a.mu.Unlock()
 }
 
-// pruneLocked drops links so that no atom keeps more than maxLinksPerAtom
-// neighbours, preferring the most recently created neighbours. A dropped link
-// is removed from both ends. Caller must hold a.mu.
-func (a *Associations) pruneLocked(links map[string]map[string]struct{}) {
-	var over []string
-	for id, related := range links {
-		if len(related) > maxLinksPerAtom {
-			over = append(over, id)
-		}
+// pruneLocked bounds the association map. It does nothing until the map holds
+// more than maxLinkFactor*maxLinksPerAtom links per linked atom, so a healthy
+// store never reads the atom recency table (a full chunk read); once over
+// that line each atom selects its maxLinksPerAtom nearest-in-time neighbours
+// and a link is kept when EITHER end selected it. Every atom that had a link
+// keeps at least one (its own selection), so pruning never strands an atom,
+// and the result is O(N): at most maxLinksPerAtom*N links after a prune and
+// at most maxLinkFactor*maxLinksPerAtom*N before the next one. A hub atom
+// kept by many other atoms may hold more than maxLinksPerAtom links. The order
+// is total (time distance, then id) so the outcome is deterministic, and
+// pruning an already pruned map changes nothing: a kept link stays within its
+// selecting end's nearest set when the other candidates only shrink.
+// Caller must hold a.mu.
+func (a *Associations) pruneLocked(links map[string]map[string]struct{}) map[string]map[string]struct{} {
+	total := 0
+	for _, related := range links {
+		total += len(related)
 	}
-	if len(over) == 0 {
-		return
+	// total counts each link from both ends.
+	if total <= 2*maxLinkFactor*maxLinksPerAtom*len(links) {
+		return links
 	}
-	sort.Strings(over)
 	var created map[string]time.Time
 	if a.recency != nil {
 		created = a.recency()
 	}
-	for _, id := range over {
-		related := links[id]
-		if len(related) <= maxLinksPerAtom {
-			continue
+	distance := func(x, y string) (int64, bool) {
+		tx, okx := created[x]
+		ty, oky := created[y]
+		if !okx || !oky || tx.IsZero() || ty.IsZero() {
+			return 0, false
 		}
+		d := int64(tx.Sub(ty))
+		if d < 0 {
+			d = -d
+		}
+		if d < 0 { // saturated Duration
+			d = 1<<63 - 1
+		}
+		return d, true
+	}
+	pruned := make(map[string]map[string]struct{}, len(links))
+	keep := func(x, y string) {
+		for _, p := range [2][2]string{{x, y}, {y, x}} {
+			if pruned[p[0]] == nil {
+				pruned[p[0]] = make(map[string]struct{})
+			}
+			pruned[p[0]][p[1]] = struct{}{}
+		}
+	}
+	for id, related := range links {
 		ids := make([]string, 0, len(related))
 		for to := range related {
 			ids = append(ids, to)
 		}
 		sort.Slice(ids, func(i, j int) bool {
-			ti, tj := created[ids[i]], created[ids[j]]
-			if !ti.Equal(tj) {
-				return ti.After(tj)
+			di, oki := distance(id, ids[i])
+			dj, okj := distance(id, ids[j])
+			if oki != okj {
+				return oki // a known distance beats an unknown one
+			}
+			if di != dj {
+				return di < dj
 			}
 			return ids[i] < ids[j]
 		})
-		for _, to := range ids[maxLinksPerAtom:] {
-			delete(related, to)
-			if back := links[to]; back != nil {
-				delete(back, id)
-				if len(back) == 0 {
-					delete(links, to)
-				}
-			}
+		if len(ids) > maxLinksPerAtom {
+			ids = ids[:maxLinksPerAtom]
+		}
+		for _, to := range ids {
+			keep(id, to)
 		}
 	}
+	return pruned
 }
 
 // FileSize returns the size of the persisted associations.json in bytes.

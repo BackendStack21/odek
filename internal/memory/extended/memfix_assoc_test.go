@@ -15,7 +15,7 @@ import (
 // time the associations are persisted.
 func TestAssociationsLegacyDenseGraphPrunedOnPersist(t *testing.T) {
 	dir := t.TempDir()
-	const n = 60
+	const n = 120
 	ids := make([]string, n)
 	created := map[string]time.Time{}
 	base := time.Now().Add(-time.Hour)
@@ -43,10 +43,16 @@ func TestAssociationsLegacyDenseGraphPrunedOnPersist(t *testing.T) {
 	if err := a.Persist(); err != nil {
 		t.Fatal(err)
 	}
+	total := 0
 	for _, id := range ids {
-		if got := len(a.Related(id)); got > maxLinksPerAtom {
-			t.Fatalf("atom %s keeps %d links, bound is %d", id, got, maxLinksPerAtom)
+		got := len(a.Related(id))
+		if got == 0 {
+			t.Fatalf("atom %s lost every link", id)
 		}
+		total += got
+	}
+	if total/2 > maxLinksPerAtom*n {
+		t.Fatalf("%d links remain, bound is %d", total/2, maxLinksPerAtom*n)
 	}
 	// The newest atom keeps its most recent neighbours.
 	newest := a.Related(ids[n-1])
