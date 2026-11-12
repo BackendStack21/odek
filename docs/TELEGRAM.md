@@ -259,7 +259,10 @@ shown in the prompt, and in denial messages returned to the model, have control
 characters, escape sequences, bidi overrides and invisible characters replaced
 by visible escapes (`\x1b`, `\u202e`), and an over-long command keeps its head
 and tail around a `…[N more bytes]` marker, so the chat shows the command that
-will run. Starting a fresh conversation with `/new` also drops that chat's
+will run. The model-supplied description is capped so it never crowds the
+command out, and a batch card that has to be shortened keeps a fair share of
+every entry; approving such a shortened card does not grant blanket trust, so
+each hidden-in-part entry still prompts on its own. Starting a fresh conversation with `/new` also drops that chat's
 unread-script read ledger, and so does `/resume` when it switches to a different conversation, so a script read in the archived session gates again.
 
 Every approval prompt states its deadline ("expires in 2m0s"). When the wait

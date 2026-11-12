@@ -65,8 +65,11 @@ type TelegramApprover struct {
 	mu       sync.Mutex
 	trusted  map[danger.RiskClass]bool
 	trustAll bool // when true, all PromptCommand calls auto-approve
-	log      Logger
-	cancel   chan struct{} // closed by Cancel() to interrupt waiting PromptCommand
+	// batchElided is set when an approved batch card hid part of an entry;
+	// SetTrustAll(true) is then ignored until it is cleared.
+	batchElided bool
+	log         Logger
+	cancel      chan struct{} // closed by Cancel() to interrupt waiting PromptCommand
 
 	// ChatID is the Telegram chat where approval prompts are sent.
 	ChatID int64
@@ -234,7 +237,7 @@ func (a *TelegramApprover) promptCommand(cls danger.RiskClass, cmd, description 
 
 	// Build the approval message — the full command is always shown so the
 	// user can make an informed decision.
-	text := buildApprovalText(cls, cmd, description)
+	text, elided := buildApprovalTextElided(cls, cmd, description)
 
 	// Send with inline keyboard. Hide the Trust Session button for classes
 	// that must be approved per-call.
@@ -309,6 +312,14 @@ func (a *TelegramApprover) promptCommand(cls danger.RiskClass, cmd, description 
 		switch action {
 		case "approve":
 			a.recordApproval(cls)
+			if elided && cls == danger.ToolBatchClass {
+				// The card could not be shown whole, so approving it must not
+				// grant blanket trust for the entries that were cut: each one
+				// prompts on its own.
+				a.mu.Lock()
+				a.batchElided = true
+				a.mu.Unlock()
+			}
 			return nil
 		case "trust":
 			if !allowTrust {
@@ -449,6 +460,23 @@ const telegramMaxMsgLen = 4096
 // exceed telegramMaxMsgLen, and when it is, the cut is explicit ("… [truncated]")
 // and made on a rune boundary.
 func buildApprovalText(cls danger.RiskClass, cmd, description string) string {
+	text, _ := buildApprovalTextElided(cls, cmd, description)
+	return text
+}
+
+// approvalDescriptionMax caps the model-supplied description shown in a
+// prompt, so a long description can never crowd the command out of the
+// message.
+const approvalDescriptionMax = 400
+
+// approvalTailBytes is the minimum tail of an over-long command that stays
+// visible: payloads sit at the end of a command, so the cut keeps head and
+// tail around an explicit marker with the omitted byte count.
+const approvalTailBytes = 1024
+
+// buildApprovalTextElided is buildApprovalText that also reports whether any
+// part of the command was left out of the message.
+func buildApprovalTextElided(cls danger.RiskClass, cmd, description string) (string, bool) {
 	// Control and bidi/invisible format characters in model-supplied text can
 	// make the chat show a different command from the one that runs; they are
 	// replaced by visible escapes before any Markdown handling.
@@ -458,32 +486,113 @@ func buildApprovalText(cls danger.RiskClass, cmd, description string) string {
 	b.WriteString("⚠️ *Approval Required*\n\n")
 	fmt.Fprintf(&b, "Risk: `%s`\n", escapeCodeBlock(string(cls)))
 	if d := strings.TrimSpace(description); d != "" {
+		if len(d) > approvalDescriptionMax {
+			d = strings.TrimSpace(truncateRunes(d, approvalDescriptionMax)) + "…"
+		}
 		b.WriteString("Why: " + EscapeMarkdown(d) + "\n")
 	}
 
 	// Reserve room for the fixed parts (including the expiry footer) so the
 	// command body can be budgeted against Telegram's hard limit. The fences
-	// and a possible truncation marker are accounted for here.
+	// are accounted for here; the command itself is cut head+tail to fit.
 	const openFence = "```\n"
 	const closeFence = "\n```"
 	footer := fmt.Sprintf("\n\n⏳ _This request expires in %s — after that it is denied and nothing runs_", approvalDeadlineText())
 	overhead := b.Len() + len(openFence) + len(closeFence) + len(footer)
 
-	body := escapeCodeBlock(cmd)
-	if budget := telegramMaxMsgLen - overhead; len(body) > budget {
-		const marker = "\n… [truncated]"
-		// truncateRunes clamps a negative budget to an empty string.
-		body = truncateRunes(body, budget-len(marker))
-		// A dangling backslash left by truncation would escape the closing
-		// fence and corrupt the whole message — strip any trailing run.
-		body = strings.TrimRight(body, `\`) + marker
+	budget := telegramMaxMsgLen - overhead
+	var body string
+	var elided bool
+	if cls == danger.ToolBatchClass {
+		body, elided = fitBatchCard(cmd, budget)
+	} else {
+		body, elided = elideMiddle(cmd, budget)
 	}
 
 	b.WriteString(openFence)
 	b.WriteString(body)
 	b.WriteString(closeFence)
 	b.WriteString(footer)
-	return b.String()
+	return b.String(), elided
+}
+
+// elideMiddle escapes s for a code block. When the escaped text exceeds
+// maxEsc bytes it keeps the head and the tail (at least approvalTailBytes
+// where the budget allows) around an "…[N more bytes]" marker. The second
+// result reports whether anything was left out.
+func elideMiddle(s string, maxEsc int) (string, bool) {
+	if e := escapeCodeBlock(s); len(e) <= maxEsc {
+		return e, false
+	}
+	keep := maxEsc
+	for keep > 0 {
+		tail := approvalTailBytes
+		if tail > keep/3 {
+			tail = keep / 3
+		}
+		head := keep - tail - 32 // room for the marker
+		if head < 0 {
+			head = 0
+		}
+		if head > len(s) {
+			head = len(s)
+		}
+		for head > 0 && head < len(s) && !utf8.RuneStart(s[head]) {
+			head--
+		}
+		tailStart := len(s) - tail
+		if tailStart < head {
+			tailStart = head
+		}
+		for tailStart < len(s) && !utf8.RuneStart(s[tailStart]) {
+			tailStart++
+		}
+		out := escapeCodeBlock(s[:head]) +
+			fmt.Sprintf("…[%d more bytes]", tailStart-head) +
+			escapeCodeBlock(s[tailStart:])
+		if len(out) <= maxEsc {
+			return out, true
+		}
+		keep = keep*9/10 - 1
+	}
+	return fmt.Sprintf("…[%d more bytes]", len(s)), true
+}
+
+// fitBatchCard fits a batch approval card into maxEsc bytes by giving every
+// line a fair share of the room (short lines keep theirs whole, the surplus
+// goes to the longer ones), so each entry stays visible: a long first entry
+// can never push a later one out of the prompt.
+func fitBatchCard(card string, maxEsc int) (string, bool) {
+	if e := escapeCodeBlock(card); len(e) <= maxEsc {
+		return e, false
+	}
+	lines := strings.Split(card, "\n")
+	share := make([]int, len(lines))
+	room := maxEsc - (len(lines) - 1) // newlines between lines
+	left := len(lines)
+	done := make([]bool, len(lines))
+	for changed := true; changed && left > 0; {
+		changed = false
+		per := room / left
+		for i, l := range lines {
+			if !done[i] && len(escapeCodeBlock(l)) <= per {
+				share[i], done[i] = len(escapeCodeBlock(l)), true
+				room -= share[i]
+				left--
+				changed = true
+			}
+		}
+	}
+	for i := range lines {
+		if !done[i] {
+			share[i] = room / left
+		}
+	}
+	out := make([]string, len(lines))
+	for i, l := range lines {
+		out[i], _ = elideMiddle(l, share[i])
+	}
+	return strings.Join(out, "\n"), true
 }
 
 // escapeCodeBlock escapes the two characters that are special inside a
@@ -538,6 +647,9 @@ func (a *TelegramApprover) ResetTrust() {
 // When enabled, PromptCommand returns nil for every call without prompting.
 func (a *TelegramApprover) SetTrustAll(enabled bool) {
 	a.mu.Lock()
-	a.trustAll = enabled
+	if !enabled {
+		a.batchElided = false
+	}
+	a.trustAll = enabled && !a.batchElided
 	a.mu.Unlock()
 }
