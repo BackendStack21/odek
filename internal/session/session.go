@@ -1844,6 +1844,36 @@ func (s *Store) removeRunLock(id string) {
 	release()
 }
 
+// leaseForRemoval takes the session's execution lock for a retention delete.
+// ok is false while a run holds the lease (the session is skipped); the lock
+// is a kernel flock, so a lock file left by a dead process is not a lease.
+// done unlinks the lock file while still holding the lock and releases it,
+// so no run can start between the removal and the unlink.
+func (s *Store) leaseForRemoval(id string) (done func(), ok bool) {
+	path := filepath.Join(s.dir, "."+id+".run.lock")
+	release, err := s.tryLockRunFile(path)
+	if err != nil {
+		return func() {}, !errors.Is(err, flock.ErrLocked)
+	}
+	return func() { _ = os.Remove(path); release() }, true
+}
+
+// ExecutionLeased reports whether a run currently holds the session's
+// execution lease. It never creates a lock file. Retention previews use it to
+// agree with Cleanup, which skips leased sessions.
+func (s *Store) ExecutionLeased(id string) bool {
+	path := filepath.Join(s.dir, "."+id+".run.lock")
+	if _, err := os.Stat(path); err != nil {
+		return false
+	}
+	release, err := s.tryLockRunFile(path)
+	if err != nil {
+		return errors.Is(err, flock.ErrLocked)
+	}
+	release()
+	return false
+}
+
 // removeVectors drops ids from the vector index with a single store write.
 // Best-effort, like every other vector-index removal.
 func (s *Store) removeVectors(ids []string) {
@@ -1861,7 +1891,8 @@ func CleanupExpired(updatedAt time.Time, pinned bool, before time.Time) bool {
 
 // Cleanup deletes all unpinned sessions whose UpdatedAt is before the given
 // time. Pinned (favorited) sessions are skipped so operator bookmarks
-// survive retention sweeps. Returns the count of deleted sessions.
+// survive retention sweeps, and so is a session whose execution lease a
+// running turn holds. Returns the count of deleted sessions.
 // Idempotent — nonexistent files are skipped silently.
 // Uses the session index for efficient batch operations. Falls back to
 // scanning individual session files when no index exists (backward compat).
@@ -1886,7 +1917,13 @@ func (s *Store) Cleanup(before time.Time) (int, error) {
 				continue
 			}
 			if CleanupExpired(e.UpdatedAt, e.Pinned, before) {
-				if err := s.removeFilesLocked(id); err != nil {
+				done, ok := s.leaseForRemoval(id)
+				if !ok {
+					continue // a running turn owns this session
+				}
+				err := s.removeFilesLocked(id)
+				done()
+				if err != nil {
 					unlock()
 					s.mu.Unlock()
 					s.removeVectors(cascaded)
@@ -1937,7 +1974,13 @@ func (s *Store) Cleanup(before time.Time) (int, error) {
 			continue // skip unreadable files
 		}
 		if CleanupExpired(sess.UpdatedAt, sess.Pinned, before) {
-			if err := s.Delete(sess.ID); err != nil {
+			done, ok := s.leaseForRemoval(sess.ID)
+			if !ok {
+				continue // a running turn owns this session
+			}
+			err := s.Delete(sess.ID)
+			done()
+			if err != nil {
 				return deleted, fmt.Errorf("session: delete %q: %w", sess.ID, err)
 			}
 			deleted++
