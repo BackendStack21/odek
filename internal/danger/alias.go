@@ -23,7 +23,8 @@ type aliasTable struct {
 	defs map[string][]string
 	// hashed names the entries that came from a command-table binding
 	// (hash -p): unlike an alias, the shell also resolves them behind the
-	// `command` builtin.
+	// lookup builtins (`command`, `exec`, `builtin command`; see
+	// tableLookupWords).
 	hashed map[string]bool
 }
 
@@ -142,27 +143,36 @@ func aliasCommandWord(stage []string) int {
 }
 
 // expansions returns the readings of a simple command whose command word (see
-// aliasCommandWord) is an alias. A body ending in a blank
-// makes the shell check the next word for an alias too. unresolved reports a
-// command whose readings exceed the bound.
+// aliasCommandWord) is an alias, and of one that runs a command-table binding
+// behind a chain of lookup builtins (`exec NAME`, `command exec NAME`; see
+// tableLookupWords), which skip aliases but not the table. A body ending in a
+// blank makes the shell check the next word for an alias too. unresolved
+// reports a command whose readings exceed the bound.
 func (t *aliasTable) expansions(stage, skip []string) (out []aliasExpansion, unresolved bool) {
 	if t == nil || len(t.defs) == 0 {
 		return nil, false
 	}
 	idx := aliasCommandWord(stage)
-	if idx < len(stage) && commandName(stage[idx]) == "command" {
-		// `command NAME` skips aliases but not a command-table binding.
-		j := idx + 1
-		for j < len(stage) && strings.HasPrefix(stage[j], "-") && stage[j] != "--" {
-			j++
-		}
-		if j < len(stage) && stage[j] == "--" {
-			j++
-		}
-		if j < len(stage) && t.hashed[stage[j]] {
-			idx = j
-		}
+	out, unresolved = t.expansionsAt(stage, skip, idx)
+	if unresolved {
+		return nil, true
 	}
+	for _, j := range tableLookupWords(stage) {
+		if j <= idx || !t.hashed[stage[j]] {
+			continue
+		}
+		bound, over := t.expansionsAt(stage, skip, j)
+		if over || len(out)+len(bound) > maxAliasBodies {
+			return nil, true
+		}
+		out = append(out, bound...)
+	}
+	return out, false
+}
+
+// expansionsAt returns the readings of the simple command when the word at idx
+// is replaced by its alias or command-table bodies.
+func (t *aliasTable) expansionsAt(stage, skip []string, idx int) (out []aliasExpansion, unresolved bool) {
 	if idx >= len(stage) || len(t.lookup(stage[idx], skip)) == 0 {
 		return nil, false
 	}

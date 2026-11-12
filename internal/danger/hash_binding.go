@@ -8,9 +8,11 @@ import "strings"
 // NAME in the shell's command table: every later NAME used as a command word
 // runs FILE. That is a rebinding exactly like an alias, so the binding is
 // recorded in the alias table and a later use is analysed as FILE followed by
-// the remaining words, alongside the literal command. A FILE only known at
-// run time binds to a body that classifies as unresolved, and a NAME only
-// known at run time fails the command closed.
+// the remaining words, alongside the literal command. The lookup builtins
+// (`exec`, `command`, `builtin command`) consult the same table for their
+// operand, so a NAME behind any chain of them resolves the binding too. A
+// FILE only known at run time binds to a body that classifies as unresolved,
+// and a NAME only known at run time fails the command closed.
 
 // hashUnresolvedBody is the alias body recorded for a binding whose file is
 // computed at run time: a command word that cannot be resolved statically.
@@ -79,6 +81,56 @@ func (t *aliasTable) bindHash(args []string) bool {
 		t.hashed[name] = true
 	}
 	return t.define(defs) && ok
+}
+
+// shellLookupBuiltins are the builtins that run their operand through the
+// shell's own command lookup, which reads the command table before PATH,
+// with their option grammars: `command [-p]`, `exec [-cl] [-a NAME]`, and
+// `builtin`, whose operand is run only when it names a builtin (so only a
+// lookup builtin there continues the chain). External wrappers (env, nohup,
+// nice, xargs, sudo, ...) search PATH on their own and never see the table.
+var shellLookupBuiltins = map[string]optSpec{
+	"command": {posix: true},
+	"exec":    {posix: true, short: "a"},
+	"builtin": {posix: true},
+}
+
+// tableLookupWords returns the indexes of the words of a simple command that
+// the shell looks up as commands, in order: the command word (after
+// assignments, `!` and `time`; see aliasCommandWord) and the operand of every
+// lookup builtin chained behind it (`exec NAME`, `command exec NAME`,
+// `builtin command exec -c NAME`). A `command -v`/`-V` query runs nothing and
+// ends the chain.
+func tableLookupWords(stage []string) []int {
+	idx := aliasCommandWord(stage)
+	var out []int
+	viaBuiltin := false
+	for idx < len(stage) {
+		name := commandName(stage[idx])
+		spec, lookup := shellLookupBuiltins[name]
+		if viaBuiltin && !lookup {
+			break // `builtin NAME` runs only builtins
+		}
+		out = append(out, idx)
+		if !lookup {
+			break
+		}
+		args := stage[idx+1:]
+		if name == "command" && commandIsLookup(args) {
+			break
+		}
+		r := spec.parse(args)
+		switch {
+		case r.operandAt >= 0:
+			idx += 1 + r.operandAt
+		case len(r.rest) > 0:
+			idx = len(stage) - len(r.rest)
+		default:
+			return out
+		}
+		viaBuiltin = name == "builtin"
+	}
+	return out
 }
 
 // hashBody renders the file a name is bound to as the body of an alias.
