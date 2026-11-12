@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/BackendStack21/odek/internal/diagnostics"
+	"github.com/BackendStack21/odek/internal/redact"
 )
 
 // Runner executes one scheduled job's task and returns the agent's final text,
@@ -436,18 +437,18 @@ func (s *Scheduler) execute(ctx context.Context, job Job, firedAt time.Time) {
 	switch {
 	case err != nil:
 		st.LastStatus = StatusError
-		st.LastError = err.Error()
+		st.LastError = redact.RedactSecrets(err.Error())
 		diagnostics.Report("schedule", "run_job", "", err)
 		s.log.Error("scheduler: job run failed", "id", job.ID, "name", job.Name, "error", err)
 	default:
 		if derr := s.deliverer.Deliver(runCtx, job, result); derr != nil {
 			st.LastStatus = StatusError
-			st.LastError = "delivery: " + derr.Error()
+			st.LastError = redact.RedactSecrets("delivery: " + derr.Error())
 			diagnostics.Report("schedule", "delivery", "", derr)
 			s.log.Error("scheduler: delivery failed", "id", job.ID, "name", job.Name, "error", derr)
 		} else {
 			st.LastStatus = StatusOK
-			st.LastResult = preview(result)
+			st.LastResult = preview(redact.RedactSecrets(result))
 			s.log.Info("scheduler: job delivered", "id", job.ID, "name", job.Name, "tokens", tokens)
 		}
 	}
