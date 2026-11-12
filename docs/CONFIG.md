@@ -1012,7 +1012,7 @@ The `telegram` section configures the Telegram bot integration and the `--delive
 | `poll_interval` | — | 1 | Seconds between poll cycles |
 | `poll_timeout` | — | 30 | Long-poll timeout (1-60 seconds) |
 | `max_msg_length` | — | 4096 | Max characters per message |
-| `daily_token_budget` | `ODEK_TELEGRAM_DAILY_TOKEN_BUDGET` | 0 (unlimited) | Daily token budget across bot chats |
+| `daily_token_budget` | `ODEK_TELEGRAM_DAILY_TOKEN_BUDGET` | 0 (unlimited) | Daily token budget across bot chats (input incl. cached input, plus output) |
 | `agent_timeout_seconds` | `ODEK_TELEGRAM_AGENT_TIMEOUT` | 900 (15 min; 0 = unlimited) | Max duration for a single bot-triggered agent run |
 | `session_ttl_hours` | — | 24 | Hours an inactive chat's session stays in the in-memory cache before being reloaded from disk. This is cache-only — on-disk session expiry is `maintenance.sessions_max_age_days` (see [MAINTENANCE.md](MAINTENANCE.md)) |
 | `fallback_urls` | `ODEK_TELEGRAM_FALLBACK_URLS` | — | Alternate Telegram API base URLs tried when the primary fails |

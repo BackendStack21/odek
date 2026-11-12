@@ -2580,7 +2580,7 @@ func runChatTurn(
 	recordTurnAudit(auditStore, cs.SessionID, auditTurn, auditUserText, auditTurnDelta(updatedMessages, auditHistLen))
 	// Bill actual token usage against the daily budget (if configured) on
 	// every outcome: failed and cancelled turns spent their tokens too.
-	billTelegramChatTurn(bot, log, chatID, messageID, int64(runInfo.InputTokens+runInfo.OutputTokens))
+	billTelegramChatTurn(bot, log, chatID, messageID, dailyBudgetTokens(runInfo))
 	if err != nil {
 		// Clean up any tool trace messages on error.
 		deleteToolTraceMessages(bot, chatID, &toolMsgIDs)
@@ -3043,6 +3043,13 @@ func sendAsync(bot *telegram.Bot, chatID int64, text string, opts *telegram.Send
 			fmt.Fprintf(os.Stderr, "odek telegram: async send failed: %v\n", err)
 		}
 	}()
+}
+
+// dailyBudgetTokens is the volume a run is billed against the daily token
+// budget: uncached input, cache reads and writes (real prompt tokens that the
+// provider normalizes out of the input count) and output.
+func dailyBudgetTokens(info loop.IterationInfo) int64 {
+	return int64(info.InputTokens) + int64(info.CacheReadTokens) + int64(info.CacheCreationTokens) + int64(info.OutputTokens)
 }
 
 // billTelegramChatTurn bills a chat turn's token usage against the daily

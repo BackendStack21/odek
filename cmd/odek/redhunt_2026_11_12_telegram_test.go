@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/BackendStack21/odek/internal/config"
+	"github.com/BackendStack21/odek/internal/loop"
 	"github.com/BackendStack21/odek/internal/session"
 	"github.com/BackendStack21/odek/internal/telegram"
 )
@@ -111,5 +112,12 @@ func TestRED_TelegramDailyBudgetBillsCachedInput(t *testing.T) {
 	}
 	if billed < 10_050 {
 		t.Fatalf("daily budget billed %d tokens for a turn that consumed 10050 (10000 input, 9000 of them cache reads, + 50 output): cached input is not counted", billed)
+	}
+}
+
+func TestDailyBudgetTokensCountsCacheTraffic(t *testing.T) {
+	got := dailyBudgetTokens(loop.IterationInfo{InputTokens: 1000, CacheReadTokens: 9000, CacheCreationTokens: 200, OutputTokens: 50})
+	if got != 10250 {
+		t.Fatalf("dailyBudgetTokens = %d, want 10250", got)
 	}
 }
