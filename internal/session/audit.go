@@ -203,7 +203,7 @@ func (s *AuditStore) RecordIngest(sessionID string, turn int, source, content st
 		Resources:   boundedAuditResources(content),
 		At:          time.Now().UTC(),
 	}
-	return s.appendRecord(sessionID, auditRecord{Type: "ingest", Ingest: &rec})
+	return s.appendRecord(sessionID, auditRecord{Type: auditTypeIngest, Ingest: &rec})
 }
 
 // RecordTurn appends a turn assessment for a session. The user message and
@@ -216,7 +216,7 @@ func (s *AuditStore) RecordTurn(sessionID string, turn AuditTurn) error {
 	turn.UserMessage = redact.RedactSecrets(turn.UserMessage)
 	turn.NovelResources = redactAuditList(turn.NovelResources)
 	turn.UntrustedResources = redactAuditList(turn.UntrustedResources)
-	return s.appendRecord(sessionID, auditRecord{Type: "turn", Turn: &turn})
+	return s.appendRecord(sessionID, auditRecord{Type: auditTypeTurn, Turn: &turn})
 }
 
 // auditEscalationFieldMax bounds each free-text field of an escalation record.
@@ -247,7 +247,7 @@ func (s *AuditStore) RecordEscalation(sessionID string, esc AuditEscalation) err
 	if esc.At.IsZero() {
 		esc.At = time.Now().UTC()
 	}
-	return s.appendRecord(sessionID, auditRecord{Type: "escalation", Escalation: &esc})
+	return s.appendRecord(sessionID, auditRecord{Type: auditTypeEscalation, Escalation: &esc})
 }
 
 // redactAuditList returns a redacted copy of list; the caller's slice is
@@ -261,6 +261,27 @@ func redactAuditList(list []string) []string {
 		out[i] = redact.RedactSecrets(v)
 	}
 	return out
+}
+
+// Audit record types. Every record the store can write is listed in
+// auditRecordTypes; the JSONL validator and the legacy-format discriminator
+// derive their accepted set from it, so a new type is accepted on reopen as
+// soon as it is added here.
+const (
+	auditTypeIngest     = "ingest"
+	auditTypeTurn       = "turn"
+	auditTypeEscalation = "escalation"
+)
+
+var auditRecordTypes = []string{auditTypeIngest, auditTypeTurn, auditTypeEscalation}
+
+func knownAuditRecordType(t string) bool {
+	for _, k := range auditRecordTypes {
+		if t == k {
+			return true
+		}
+	}
+	return false
 }
 
 // auditRecord is one JSONL line: a typed envelope around the per-record
@@ -379,17 +400,17 @@ func (s *AuditStore) appendRecord(sessionID string, rec auditRecord) error {
 			enc := json.NewEncoder(&buf)
 			writeRecords := func() error {
 				for i := range old.Ingests {
-					if err := enc.Encode(auditRecord{Type: "ingest", Ingest: &old.Ingests[i]}); err != nil {
+					if err := enc.Encode(auditRecord{Type: auditTypeIngest, Ingest: &old.Ingests[i]}); err != nil {
 						return err
 					}
 				}
 				for i := range old.Turns {
-					if err := enc.Encode(auditRecord{Type: "turn", Turn: &old.Turns[i]}); err != nil {
+					if err := enc.Encode(auditRecord{Type: auditTypeTurn, Turn: &old.Turns[i]}); err != nil {
 						return err
 					}
 				}
 				for i := range old.Escalations {
-					if err := enc.Encode(auditRecord{Type: "escalation", Escalation: &old.Escalations[i]}); err != nil {
+					if err := enc.Encode(auditRecord{Type: auditTypeEscalation, Escalation: &old.Escalations[i]}); err != nil {
 						return err
 					}
 				}
@@ -479,7 +500,7 @@ func corruptJSONLIndex(data []byte) bool {
 		}
 		lastNonEmpty = i
 		var rec auditRecord
-		if json.Unmarshal(line, &rec) != nil || (rec.Type != "ingest" && rec.Type != "turn") {
+		if json.Unmarshal(line, &rec) != nil || (!knownAuditRecordType(rec.Type)) {
 			invalid++
 		} else {
 			valid++
@@ -506,7 +527,7 @@ func corruptJSONLIndex(data []byte) bool {
 // isLegacyAuditJSON reports whether data is a legacy whole-file audit log
 // (a JSON object) rather than the append-only JSONL form (one typed record
 // per line). A JSONL record also starts with '{', so the discriminator is
-// the typed envelope: JSONL lines carry "type":"ingest"|"turn" while the
+// the typed envelope: JSONL lines carry "type":<record type> while the
 // legacy object carries the top-level "session_id" key.
 func isLegacyAuditJSON(data []byte) bool {
 	trimmed := bytes.TrimLeft(data, " \t\r\n")
@@ -517,8 +538,10 @@ func isLegacyAuditJSON(data []byte) bool {
 	if i := bytes.IndexByte(trimmed, '\n'); i >= 0 {
 		firstLine = trimmed[:i]
 	}
-	if bytes.Contains(firstLine, []byte(`"type":"ingest"`)) || bytes.Contains(firstLine, []byte(`"type":"turn"`)) {
-		return false
+	for _, t := range auditRecordTypes {
+		if bytes.Contains(firstLine, []byte(`"type":"`+t+`"`)) {
+			return false
+		}
 	}
 	return bytes.Contains(trimmed, []byte(`"session_id"`))
 }
@@ -558,15 +581,15 @@ func (s *AuditStore) loadLocked(sessionID string) (AuditLog, error) {
 			continue // torn or corrupt tail — keep the salvaged prefix
 		}
 		switch rec.Type {
-		case "ingest":
+		case auditTypeIngest:
 			if rec.Ingest != nil {
 				log.Ingests = append(log.Ingests, *rec.Ingest)
 			}
-		case "turn":
+		case auditTypeTurn:
 			if rec.Turn != nil {
 				log.Turns = append(log.Turns, *rec.Turn)
 			}
-		case "escalation":
+		case auditTypeEscalation:
 			if rec.Escalation != nil {
 				log.Escalations = append(log.Escalations, *rec.Escalation)
 			}
