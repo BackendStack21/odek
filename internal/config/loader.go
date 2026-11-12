@@ -3658,6 +3658,14 @@ func resolveTelegram(cfg *telegram.TelegramConfig) telegram.TelegramConfig {
 	if cfg.MediaQuotaPerChat > 0 {
 		base.MediaQuotaPerChat = cfg.MediaQuotaPerChat
 	}
+	// AgentTimeout: the file decoder seeds the default, so an explicit 0
+	// (unlimited) survives here.
+	base.AgentTimeout = cfg.AgentTimeout
+	if cfg.HealthAddr != "" {
+		base.HealthAddr = cfg.HealthAddr
+	}
+	// LogLevel/LogFile are retired: runtime logging is configured elsewhere.
+	base.AllowAllUsers = cfg.AllowAllUsers
 	// LinkPreview: false (default) keeps previews disabled.
 	base.LinkPreview = cfg.LinkPreview
 	return base
