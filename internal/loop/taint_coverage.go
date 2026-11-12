@@ -58,19 +58,24 @@ import (
 //     of both sides, so a coverage stays true of any merge it survives.
 //   - The principal's mentions are collected from every message on every
 //     observe, covered or not, so exemptions are rebuilt in full. Links (the
-//     egress rule's verbatim URLs) are not persisted: the texts of skipped
-//     source messages are kept and their links extracted the first time a
-//     match needs one (drainLinkBackfillLocked).
+//     egress rule's verbatim URLs) are not persisted: a covered source is
+//     queued links-only at the place a full scan would queue it, and its
+//     links are extracted through the same windows (taintRecordWindows) and
+//     recorded in the same order, so the link table, its eviction included,
+//     is the one a full scan builds.
+//
+// What a covered engine does not reproduce is the recency of the spans the
+// skipped sources hold: a full scan sees them again (newest, and a span
+// seeded as its hash becomes a plain span with the new source label), the
+// covered engine keeps their seeded order. That only decides which spans
+// eviction moves into the overflow filter first and which label a hit
+// shows; the filter records every evicted span, so whether a call escalates
+// is the same (up to the filter's false positives).
 
 // taintCoverageRules names the recording rules a coverage was taken under.
 // Change it whenever extraction, the span rules or the source decision
 // change, so coverage recorded under the old rules never matches.
 const taintCoverageRules = "odek-taint-coverage-v2"
-
-// maxTaintBackfillBytes bounds the texts kept for link backfill. Past it the
-// rest are dropped: losing a link only removes its egress exemption, which
-// fails closed.
-const maxTaintBackfillBytes = 64 << 20
 
 // taintCoverageBuild returns the build identity coverage is keyed by, or
 // false when this binary records and applies no coverage. A variable so the
@@ -300,38 +305,4 @@ func verifySeedCoverage(messages []session.Message, d []taintDigest, c session.T
 		return false, taintCoverageTracker{}
 	}
 	return true, taintCoverageTracker{hash: h, chain: chain.sum(), n: h.n}
-}
-
-// addLinkBackfillLocked keeps text, a source the store skipped because a
-// verified coverage vouches for its spans, for link extraction on demand.
-func (s *taintSpanStore) addLinkBackfillLocked(text string) {
-	if s.backfillBytes+len(text) > maxTaintBackfillBytes {
-		return
-	}
-	s.backfill = append(s.backfill, text)
-	s.backfillBytes += len(text)
-}
-
-// drainLinkBackfillLocked records the links of every kept text. A link a
-// full scan would have recorded earlier than anything this store saw gets a
-// sequence number below all others, so link eviction still takes the oldest
-// first; a link already held keeps its place.
-func (s *taintSpanStore) drainLinkBackfillLocked() {
-	texts := s.backfill
-	s.backfill, s.backfillBytes = nil, 0
-	for i := len(texts) - 1; i >= 0; i-- {
-		for _, r := range extractTaintURLs(texts[i]) {
-			if r.kind != taintKindURL {
-				continue
-			}
-			if _, held := s.links[r.link]; held {
-				continue
-			}
-			if len(s.links) >= maxTaintLinks {
-				s.evictLinksLocked()
-			}
-			s.low--
-			s.links[r.link] = s.low
-		}
-	}
 }

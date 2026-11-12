@@ -259,15 +259,12 @@ type taintSpanStore struct {
 	// seedCov is the coverage of the persisted state last seeded
 	// (taint_coverage.go). Until a history reproduces it (seedCovApplied),
 	// the first observes try to verify it; covered then holds the digests
-	// of the messages it vouches for, whose extraction is skipped.
+	// of the messages it vouches for, whose spans are not extracted again
+	// (only their links are).
 	seedCov        session.TaintCoverage
 	seedCovApplied bool
 	seedCovTries   int
 	covered        map[taintDigest]struct{}
-	// backfill holds the texts of skipped sources whose links were not
-	// extracted (drainLinkBackfillLocked).
-	backfill      []string
-	backfillBytes int
 	// covMu guards cov, the coverage this store can vouch for.
 	covMu sync.Mutex
 	cov   taintCoverageTracker
@@ -624,20 +621,44 @@ func taintGoModuleLine(text string, i int) bool {
 	return false
 }
 
-// extractTaintSpansForRecord extracts the spans of recorded content. Text
-// over taintScanMaxBytes is scanned in its first taintScanMaxBytes and its
-// last taintScanMaxBytes/4, so padding cannot push a trailing span out of
-// view; only the middle of such a message goes unscanned.
-func extractTaintSpansForRecord(text string, env taintEnv, goSource bool) []taintRaw {
+// taintRecordWindows returns the parts of recorded content that recording
+// scans: text over taintScanMaxBytes is scanned in its first
+// taintScanMaxBytes (head) and its last taintScanMaxBytes/4 (tail, from a
+// word boundary), so padding cannot push a trailing span out of view; only
+// the middle of such a message goes unscanned. Shorter text is all head.
+func taintRecordWindows(text string) (head, tail string) {
 	if len(text) <= taintScanMaxBytes {
-		return extractTaintSpansFrom(text, env, false, goSource)
+		return text, ""
 	}
-	head := extractTaintSpansFrom(text[:taintScanMaxBytes], env, false, goSource)
-	tail := text[len(text)-taintScanMaxBytes/4:]
+	tail = text[len(text)-taintScanMaxBytes/4:]
 	if i := strings.IndexAny(tail, " \t\r\n"); i >= 0 {
 		tail = tail[i:] // start at a word boundary
 	}
-	return append(head, extractTaintSpansFrom(tail, env, false, goSource)...)
+	return text[:taintScanMaxBytes], tail
+}
+
+// extractTaintSpansForRecord extracts the spans of recorded content, through
+// taintRecordWindows.
+func extractTaintSpansForRecord(text string, env taintEnv, goSource bool) []taintRaw {
+	head, tail := taintRecordWindows(text)
+	out := extractTaintSpansFrom(head, env, false, goSource)
+	if tail != "" {
+		out = append(out, extractTaintSpansFrom(tail, env, false, goSource)...)
+	}
+	return out
+}
+
+// extractTaintLinksForRecord extracts only the URLs of recorded content,
+// through the same windows and in the same order as
+// extractTaintSpansForRecord lists them: the links a full extraction would
+// record, for a source whose spans a verified coverage already vouches for.
+func extractTaintLinksForRecord(text string) []taintRaw {
+	head, tail := taintRecordWindows(text)
+	out := extractTaintURLs(head)
+	if tail != "" {
+		out = append(out, extractTaintURLs(tail)...)
+	}
+	return out
 }
 
 // inTaintIntervals reports whether i lies in one of spans, which are sorted
@@ -1004,9 +1025,14 @@ func (s *taintSpanStore) observeTrack(messages []session.Message, env taintEnv, 
 		covOK, covTracker = verifySeedCoverage(messages, d, seedCov, env)
 	}
 
+	// A job is one source to record. A source a verified coverage vouches
+	// for is queued links-only at the place a full scan would extract it,
+	// so the links (which are not persisted) are recorded in the same order
+	// and through the same windows as a full scan records them.
 	type job struct {
 		text, source string
 		goSource     bool
+		linksOnly    bool
 	}
 	var jobs []job
 	s.mu.Lock()
@@ -1054,9 +1080,9 @@ func (s *taintSpanStore) observeTrack(messages []session.Message, env taintEnv, 
 			s.scanned = make(map[taintDigest]struct{})
 		}
 		s.scanned[d[i]] = struct{}{}
-		// A source a verified coverage vouches for is not extracted again;
-		// only its links are kept for later. Background content is always
-		// judged and extracted afresh.
+		// A source a verified coverage vouches for has only its links
+		// extracted. Background content is always judged and extracted
+		// afresh.
 		_, covered := s.covered[d[i]]
 		switch m.Role {
 		case "assistant":
@@ -1074,7 +1100,7 @@ func (s *taintSpanStore) observeTrack(messages []session.Message, env taintEnv, 
 				}
 			}
 			if covered && !bgContent {
-				s.addLinkBackfillLocked(m.Content)
+				jobs = append(jobs, job{text: m.Content, linksOnly: true})
 				continue
 			}
 			source := "tool output"
@@ -1087,27 +1113,19 @@ func (s *taintSpanStore) observeTrack(messages []session.Message, env taintEnv, 
 					break
 				}
 			}
-			jobs = append(jobs, job{m.Content, source, tc != nil && taintGoSource(tc)})
+			jobs = append(jobs, job{text: m.Content, source: source, goSource: tc != nil && taintGoSource(tc)})
 		default:
 			for _, w := range untrustedBodies(m.Content) {
 				switch {
 				case session.ExternalNonToolIngest(w.source):
-					if covered {
-						s.addLinkBackfillLocked(w.body)
-					} else {
-						jobs = append(jobs, job{w.body, w.source, false})
-					}
+					jobs = append(jobs, job{text: w.body, source: w.source, linksOnly: covered})
 				case w.source == "bg" && s.bgSourceLocked(bgNoticeJobs(w.body)):
-					jobs = append(jobs, job{w.body, w.source, false})
+					jobs = append(jobs, job{text: w.body, source: w.source})
 				}
 			}
 			if m.Role == "user" {
 				for _, w := range untrustedInputBodies(m.Content) {
-					if covered {
-						s.addLinkBackfillLocked(w.body)
-					} else {
-						jobs = append(jobs, job{w.body, w.source, false})
-					}
+					jobs = append(jobs, job{text: w.body, source: w.source, linksOnly: covered})
 				}
 			}
 		}
@@ -1117,7 +1135,11 @@ func (s *taintSpanStore) observeTrack(messages []session.Message, env taintEnv, 
 
 	extracted := make([][]taintRaw, len(jobs))
 	for i, j := range jobs {
-		extracted[i] = extractTaintSpansForRecord(j.text, env, j.goSource)
+		if j.linksOnly {
+			extracted[i] = extractTaintLinksForRecord(j.text)
+		} else {
+			extracted[i] = extractTaintSpansForRecord(j.text, env, j.goSource)
+		}
 	}
 
 	s.mu.Lock()
@@ -1126,7 +1148,11 @@ func (s *taintSpanStore) observeTrack(messages []session.Message, env taintEnv, 
 		s.principal = taintPrincipal{raw: principalText, spans: principalSpans}
 	}
 	for i, j := range jobs {
-		s.insertLocked(extracted[i], j.source)
+		if j.linksOnly {
+			s.insertLinksLocked(extracted[i])
+		} else {
+			s.insertLocked(extracted[i], j.source)
+		}
 	}
 	return d
 }
@@ -1145,15 +1171,21 @@ func taintPrincipalSpans(text string, env taintEnv) map[string]bool {
 	return spans
 }
 
+// insertLinksLocked records the links of extracted spans exactly as
+// insertLocked records them, and nothing else.
+func (s *taintSpanStore) insertLinksLocked(spans []taintRaw) {
+	for _, r := range spans {
+		if r.kind == taintKindURL {
+			s.recordLinkLocked(r.link)
+		}
+	}
+}
+
 // insertLocked records extracted spans under source.
 func (s *taintSpanStore) insertLocked(spans []taintRaw, source string) {
 	for _, r := range spans {
 		if r.kind == taintKindURL {
-			if len(s.links) >= maxTaintLinks {
-				s.evictLinksLocked()
-			}
-			s.seq++
-			s.links[r.link] = s.seq
+			s.recordLinkLocked(r.link)
 			if r.value == "" {
 				continue
 			}
@@ -1244,6 +1276,16 @@ func (s *taintSpanStore) overflowSourceLocked() string {
 		return taintOverflowFullSource
 	}
 	return taintOverflowSource
+}
+
+// recordLinkLocked records link as the most recently seen link, evicting
+// first when the table is full (also when link is already held).
+func (s *taintSpanStore) recordLinkLocked(link string) {
+	if len(s.links) >= maxTaintLinks {
+		s.evictLinksLocked()
+	}
+	s.seq++
+	s.links[link] = s.seq
 }
 
 // evictLinksLocked drops the least recently seen eighth of the links. A
@@ -1437,14 +1479,7 @@ func (s *taintSpanStore) match(text string, kinds taintKinds, egress bool, env t
 			if c.kind != taintKindURL {
 				continue
 			}
-			_, linked := s.links[c.link]
-			if !linked && c.query && len(s.backfill) > 0 {
-				// The link may sit in a source a verified coverage let the
-				// store skip: extract the skipped links now.
-				s.drainLinkBackfillLocked()
-				_, linked = s.links[c.link]
-			}
-			if linked || !c.query {
+			if _, linked := s.links[c.link]; linked || !c.query {
 				exempt = append(exempt, [2]int{c.at, c.end})
 			}
 		}

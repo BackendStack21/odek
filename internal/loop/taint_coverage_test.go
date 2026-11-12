@@ -1,6 +1,7 @@
 package loop
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"runtime/debug"
@@ -285,7 +286,7 @@ func TestTaintCoverage_SeededEqualsFullRescan(t *testing.T) {
 }
 
 // Rescanning skipped work is what the seed avoids: the seeded engine's first
-// observe extracts nothing from the covered prefix.
+// observe records no span from the covered prefix, only its links.
 func TestTaintCoverage_CoveredPrefixNotExtracted(t *testing.T) {
 	history := covHistories()["fetched pages"]
 	prev := New(nil, tool.NewRegistry(nil), 10, "sys", nil, 0)
@@ -293,13 +294,13 @@ func TestTaintCoverage_CoveredPrefixNotExtracted(t *testing.T) {
 	e := New(nil, tool.NewRegistry(nil), 10, "sys", nil, 0)
 	e.seedTaintSpans(WithTaintSpanSeed(context.Background(), st))
 	store := e.spanStore()
-	before := store.seq
+	before := store.version
 	store.observe(append(session.CloneMessages(history), session.Message{Role: "user", Content: "next"}), currentTaintEnv())
-	if store.seq != before {
-		t.Fatalf("the covered prefix was extracted again (%d insertions)", store.seq-before)
+	if store.version != before {
+		t.Fatal("the covered prefix's spans were recorded again")
 	}
-	if len(store.backfill) == 0 {
-		t.Fatal("skipped sources were not kept for their links")
+	if _, ok := store.links["https://linked.example/get?id=7&v=2"]; !ok {
+		t.Fatal("the covered sources' links were not recorded")
 	}
 }
 
@@ -508,26 +509,61 @@ func TestTaintCoverage_SystemMessagesNotCounted(t *testing.T) {
 	}
 }
 
-// Draining the link backfill keeps a full scan's eviction order: skipped
-// links are older than every link the store recorded itself.
-func TestTaintCoverage_BackfillLinksAreOldest(t *testing.T) {
-	s := newTaintSpanStore()
-	s.insertLocked(extractTaintSpansForRecord("https://new.example/a?x=1", sec16TaintEnv, false), "web")
-	s.addLinkBackfillLocked("https://old.example/b?y=2 and https://new.example/a?x=1")
-	s.drainLinkBackfillLocked()
-	newSeq, okNew := s.links["https://new.example/a?x=1"]
-	oldSeq, okOld := s.links["https://old.example/b?y=2"]
-	if !okNew || !okOld || oldSeq >= newSeq {
-		t.Fatalf("backfilled link order: old=%d(%v) new=%d(%v)", oldSeq, okOld, newSeq, okNew)
+// covLinkOrder returns the store's links, oldest first.
+func covLinkOrder(s *taintSpanStore) []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	links := make([]string, 0, len(s.links))
+	for l := range s.links {
+		links = append(links, l)
 	}
-	if len(s.backfill) != 0 || s.backfillBytes != 0 {
-		t.Fatal("backfill not emptied")
+	slices.SortFunc(links, func(a, b string) int { return cmp.Compare(s.links[a], s.links[b]) })
+	return links
+}
+
+// The links of covered sources are recorded where a full scan records them:
+// the link table of a covered engine holds the same links in the same
+// order as that of an engine that rescans, whatever the sources (tool
+// results, wrapped user and system content, fenced delegated tasks, links
+// seen again later, a message over the scan window).
+func TestTaintCoverage_CoveredLinksMatchFullScan(t *testing.T) {
+	cases := covHistories()
+	for name, history := range cases {
+		cases[name] = append(session.CloneMessages(history), covGroup(covCall("w2", "http_request", map[string]string{"url": "https://docs.vendor.example/guide"}),
+			defaultUntrustedWrap("tool:http_request", "again https://linked.example/get?id=7&v=2 and https://win.example/a?h=1"))...)
 	}
-	// The bound drops texts past it.
-	s.backfillBytes = maxTaintBackfillBytes
-	s.addLinkBackfillLocked("x")
-	if len(s.backfill) != 0 {
-		t.Fatal("backfill grew past its bound")
+	// A message over the scan window: links only in its first 1 MiB and its
+	// last 256 KiB count. Blank filler keeps the extraction cheap.
+	big := "head https://win.example/a?h=1 " + strings.Repeat(" ", taintScanMaxBytes+100) +
+		" middle https://win.example/a?m=1 " + strings.Repeat(" ", taintScanMaxBytes/4+100) +
+		" tail https://win.example/a?t=1"
+	cases["over the scan window"] = append(append(session.CloneMessages(cases["mixed sources"]),
+		covGroup(covCall("w1", "http_request", map[string]string{"url": "https://win.example/"}), defaultUntrustedWrap("tool:http_request", big))...),
+		covGroup(covCall("w3", "http_request", map[string]string{"url": "https://win.example/"}),
+			defaultUntrustedWrap("tool:http_request", "again https://win.example/a?h=1"))...)
+	for name, history := range cases {
+		t.Run(name, func(t *testing.T) {
+			prev := New(nil, tool.NewRegistry(nil), 10, "sys", nil, 0)
+			st := covRoundTrip(t, prev.TaintSpanState(history))
+			noCov := st
+			noCov.Coverage = session.TaintCoverage{}
+			turn := covNextTurn(name, history)
+			_, covered := covGate(t, st, turn)
+			_, rescan := covGate(t, noCov, turn)
+			if len(covered.spanStore().covered) == 0 {
+				t.Fatal("precondition: the coverage did not apply")
+			}
+			a, b := covLinkOrder(covered.spanStore()), covLinkOrder(rescan.spanStore())
+			if !slices.Equal(a, b) {
+				t.Fatalf("link tables differ:\n covered: %q\n rescan:  %q", a, b)
+			}
+			if !slices.Contains(a, "https://win.example/a?h=1") {
+				t.Fatalf("a covered source's link was not recorded: %q", a)
+			}
+			if name == "over the scan window" && (slices.Contains(a, "https://win.example/a?m=1") || !slices.Contains(a, "https://win.example/a?t=1")) {
+				t.Fatalf("links outside the scan windows were recorded, or inside them not: %q", a)
+			}
+		})
 	}
 }
 
