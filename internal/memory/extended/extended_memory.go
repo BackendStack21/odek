@@ -141,6 +141,17 @@ func newExtended(dir string, llm LLMClient, cfg Config, evictOnOpen bool) *Exten
 		_, err := store.Get(id)
 		return !errors.Is(err, ErrAtomNotFound)
 	})
+	em.assoc.SetRecency(func() map[string]time.Time {
+		atoms, err := store.List()
+		if err != nil {
+			return nil
+		}
+		m := make(map[string]time.Time, len(atoms))
+		for _, a := range atoms {
+			m[a.ID] = a.CreatedAt
+		}
+		return m
+	})
 	em.recall.stats = &em.stats
 	// The rerank breaker outlives this instance: serve and Telegram build a
 	// new agent per connection, run or message, and each one opens the
@@ -520,12 +531,17 @@ func (em *ExtendedMemory) buildAssociations(atom MemoryAtom) {
 	// Task: same project and durable task-related types.
 	taskTypes := map[string]bool{TypeGoal: true, TypeDecision: true, TypeConvention: true, TypeIntent: true}
 	if atom.Context.Project != "" && taskTypes[atom.Type] {
+		// atoms is newest first, so the cap keeps the most recent task atoms.
+		linked := 0
 		for _, other := range atoms {
 			if other.ID == atom.ID {
 				continue
 			}
 			if other.Context.Project == atom.Context.Project && taskTypes[other.Type] {
 				em.assoc.Link(atom.ID, other.ID)
+				if linked++; linked >= maxTaskLinksPerAtom {
+					break
+				}
 			}
 		}
 	}
@@ -973,7 +989,7 @@ func (em *ExtendedMemory) enforceCap(ctx context.Context, newBytes int64) error 
 	for _, s := range sized {
 		existingEffective += s.size
 	}
-	total := existingEffective + quarantineSize + newBytes
+	total := existingEffective + quarantineSize + em.assoc.FileSize() + newBytes
 
 	if total <= maxBytes {
 		return nil
@@ -1058,7 +1074,7 @@ func (em *ExtendedMemory) Size() int64 {
 	storeSize, _ := em.store.Size()
 	quarantineSize, _ := em.quarantine.Size()
 	indexSize := em.index.Size()
-	return storeSize + quarantineSize + indexSize
+	return storeSize + quarantineSize + indexSize + em.assoc.FileSize()
 }
 
 // List returns all stored atoms (trusted only; quarantined atoms are separate).

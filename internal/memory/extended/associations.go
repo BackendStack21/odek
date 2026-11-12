@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/BackendStack21/odek/internal/flock"
 	"github.com/BackendStack21/odek/internal/fsatomic"
@@ -19,8 +20,21 @@ type Associations struct {
 	dir     string
 	links   map[string]map[string]struct{}
 	exists  func(id string) bool
+	recency func() map[string]time.Time
 	removed map[string]struct{}
 }
+
+// maxLinksPerAtom bounds how many neighbours one atom keeps when the
+// association map is persisted. Recall only surfaces an atom's neighbours as
+// its related-atom list, so the strongest (most recently created) links carry
+// the value; the cap keeps associations.json linear in the atom count. Stores
+// written before the cap existed (task atoms linked as a complete graph) load
+// unchanged and are pruned the next time the map is persisted.
+const maxLinksPerAtom = 24
+
+// maxTaskLinksPerAtom is how many of the most recent same-project task atoms
+// a new goal/decision/convention/intent atom links to.
+const maxTaskLinksPerAtom = 8
 
 // NewAssociations returns an in-memory association map.
 func NewAssociations() *Associations {
@@ -163,6 +177,7 @@ func (a *Associations) Persist() error {
 			add(to, from)
 		}
 	}
+	a.pruneLocked(merged)
 	// Adopt the merged view so later persists start from the shared state.
 	a.links = merged
 	data := make(map[string][]string, len(merged))
@@ -266,4 +281,74 @@ func (a *Associations) Restore(ids ...string) {
 	for _, id := range ids {
 		delete(a.removed, id)
 	}
+}
+
+// SetRecency installs the lookup used to rank an atom's links when the
+// per-atom bound applies: newer neighbours win. Without it, ties fall back to
+// the id order.
+func (a *Associations) SetRecency(fn func() map[string]time.Time) {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	a.recency = fn
+	a.mu.Unlock()
+}
+
+// pruneLocked drops links so that no atom keeps more than maxLinksPerAtom
+// neighbours, preferring the most recently created neighbours. A dropped link
+// is removed from both ends. Caller must hold a.mu.
+func (a *Associations) pruneLocked(links map[string]map[string]struct{}) {
+	var over []string
+	for id, related := range links {
+		if len(related) > maxLinksPerAtom {
+			over = append(over, id)
+		}
+	}
+	if len(over) == 0 {
+		return
+	}
+	sort.Strings(over)
+	var created map[string]time.Time
+	if a.recency != nil {
+		created = a.recency()
+	}
+	for _, id := range over {
+		related := links[id]
+		if len(related) <= maxLinksPerAtom {
+			continue
+		}
+		ids := make([]string, 0, len(related))
+		for to := range related {
+			ids = append(ids, to)
+		}
+		sort.Slice(ids, func(i, j int) bool {
+			ti, tj := created[ids[i]], created[ids[j]]
+			if !ti.Equal(tj) {
+				return ti.After(tj)
+			}
+			return ids[i] < ids[j]
+		})
+		for _, to := range ids[maxLinksPerAtom:] {
+			delete(related, to)
+			if back := links[to]; back != nil {
+				delete(back, id)
+				if len(back) == 0 {
+					delete(links, to)
+				}
+			}
+		}
+	}
+}
+
+// FileSize returns the size of the persisted associations.json in bytes.
+func (a *Associations) FileSize() int64 {
+	if a == nil || a.dir == "" {
+		return 0
+	}
+	info, err := os.Stat(filepath.Join(a.dir, "associations.json"))
+	if err != nil {
+		return 0
+	}
+	return info.Size()
 }
