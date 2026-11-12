@@ -2586,7 +2586,7 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 		if cfg.Tools == nil {
 			cfg.Tools = &ToolsConfig{}
 		}
-		cfg.Tools.Disabled = v
+		cfg.Tools.Disabled = append(cfg.Tools.Disabled, v...)
 	}
 
 	// Layer 4: CLI flags (highest priority)
