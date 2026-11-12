@@ -558,15 +558,42 @@ func elideMiddle(s string, maxEsc int) (string, bool) {
 	return fmt.Sprintf("…[%d more bytes]", len(s)), true
 }
 
+// batchMinEntryBytes is the smallest per-entry share a batch card shows. When
+// the entries cannot all get at least this much, only the leading entries are
+// listed and a final line states how many were left out.
+const batchMinEntryBytes = 48
+
+// batchMoreLine is the closing line of a card that lists only leading entries.
+func batchMoreLine(n int) string {
+	return fmt.Sprintf("… and %d more entries not shown", n)
+}
+
 // fitBatchCard fits a batch approval card into maxEsc bytes by giving every
 // line a fair share of the room (short lines keep theirs whole, the surplus
 // goes to the longer ones), so each entry stays visible: a long first entry
-// can never push a later one out of the prompt.
+// can never push a later one out of the prompt. When the share would fall
+// below batchMinEntryBytes the card lists as many leading entries as fit at
+// that minimum and ends with an explicit count of the hidden ones. The result
+// never exceeds maxEsc bytes.
 func fitBatchCard(card string, maxEsc int) (string, bool) {
 	if e := escapeCodeBlock(card); len(e) <= maxEsc {
 		return e, false
 	}
 	lines := strings.Split(card, "\n")
+	more := ""
+	if len(lines)*(batchMinEntryBytes+1) > maxEsc+1 {
+		// Room for the closing line (the count has at most 20 digits).
+		reserve := len(batchMoreLine(0)) + 20 + 1
+		k := (maxEsc - reserve) / (batchMinEntryBytes + 1)
+		if k < 1 {
+			k = 1
+		}
+		if k < len(lines) {
+			more = batchMoreLine(len(lines) - k)
+			lines = lines[:k]
+			maxEsc -= len(more) + 1
+		}
+	}
 	share := make([]int, len(lines))
 	room := maxEsc - (len(lines) - 1) // newlines between lines
 	left := len(lines)
@@ -591,6 +618,9 @@ func fitBatchCard(card string, maxEsc int) (string, bool) {
 	out := make([]string, len(lines))
 	for i, l := range lines {
 		out[i], _ = elideMiddle(l, share[i])
+	}
+	if more != "" {
+		out = append(out, more)
 	}
 	return strings.Join(out, "\n"), true
 }
