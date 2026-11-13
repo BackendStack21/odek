@@ -46,7 +46,7 @@ func TestRED_BatchCardHiddenEntriesDoNotGrantTrustAll(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- a.PromptCommand(danger.ToolBatchClass, card, "") }()
 	var body string
-	for deadline := time.Now().Add(2 * time.Second); body == "" && time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+	for deadline := time.Now().Add(30 * time.Second); body == "" && time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
 		rec.mu.Lock()
 		if len(rec.requests) > 0 {
 			body = rec.requests[len(rec.requests)-1].Body

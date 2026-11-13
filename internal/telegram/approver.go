@@ -65,8 +65,9 @@ type TelegramApprover struct {
 	mu       sync.Mutex
 	trusted  map[danger.RiskClass]bool
 	trustAll bool // when true, all PromptCommand calls auto-approve
-	// batchElided is set when an approved batch card hid part of an entry;
-	// SetTrustAll(true) is then ignored until it is cleared.
+	// batchElided records whether the most recent batch card hid part of an
+	// entry; while set, SetTrustAll(true) is ignored, so approving a
+	// shortened card never grants blanket trust for the entries it cut.
 	batchElided bool
 	log         Logger
 	cancel      chan struct{} // closed by Cancel() to interrupt waiting PromptCommand
@@ -238,6 +239,14 @@ func (a *TelegramApprover) promptCommand(cls danger.RiskClass, cmd, description 
 	// Build the approval message — the full command is always shown so the
 	// user can make an informed decision.
 	text, elided := buildApprovalTextElided(cls, cmd, description)
+	if cls == danger.ToolBatchClass {
+		// The flag describes the card now on screen and nothing older: a
+		// card shown whole clears what a previous shortened one left, and a
+		// shortened one is marked before its buttons exist.
+		a.mu.Lock()
+		a.batchElided = elided
+		a.mu.Unlock()
+	}
 
 	// Send with inline keyboard. Hide the Trust Session button for classes
 	// that must be approved per-call.
@@ -312,14 +321,6 @@ func (a *TelegramApprover) promptCommand(cls danger.RiskClass, cmd, description 
 		switch action {
 		case "approve":
 			a.recordApproval(cls)
-			if elided && cls == danger.ToolBatchClass {
-				// The card could not be shown whole, so approving it must not
-				// grant blanket trust for the entries that were cut: each one
-				// prompts on its own.
-				a.mu.Lock()
-				a.batchElided = true
-				a.mu.Unlock()
-			}
 			return nil
 		case "trust":
 			if !allowTrust {

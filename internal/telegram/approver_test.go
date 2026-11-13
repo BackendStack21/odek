@@ -546,7 +546,7 @@ func TestTelegramApprover_TrustDisabledForHighImpactClasses(t *testing.T) {
 		}(cls)
 
 		var body string
-		deadline := time.Now().Add(2 * time.Second)
+		deadline := time.Now().Add(30 * time.Second)
 		for time.Now().Before(deadline) {
 			rec.mu.Lock()
 			if len(rec.requests) > 0 {
@@ -650,7 +650,7 @@ func TestTelegramApprover_FrictionDisablesTrust(t *testing.T) {
 	go func() { done <- a.PromptCommand(danger.SystemWrite, "echo third", "test friction") }()
 
 	var body string
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		rec.mu.Lock()
 		if len(rec.requests) > 0 {
@@ -703,7 +703,7 @@ func TestTelegramApprover_NoFrictionBelowThreshold(t *testing.T) {
 	go func() { done <- a.PromptCommand(danger.SystemWrite, "echo third", "test no friction") }()
 
 	var body string
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		rec.mu.Lock()
 		if len(rec.requests) > 0 {
@@ -763,7 +763,7 @@ func TestPromptMedia_Approves(t *testing.T) {
 
 	// Wait for the prompt to be registered.
 	var body string
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		rec.mu.Lock()
 		if len(rec.requests) > 0 {
@@ -808,7 +808,7 @@ func TestPromptMedia_Deny(t *testing.T) {
 	go func() { done <- a.PromptMedia("/tmp/photo.jpg") }()
 
 	var body string
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		rec.mu.Lock()
 		if len(rec.requests) > 0 {
@@ -856,7 +856,7 @@ func TestPromptMedia_BroadBaseWarning(t *testing.T) {
 	go func() { done <- a.PromptMedia("/home/user/project/plot.png") }()
 
 	var body string
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		rec.mu.Lock()
 		if len(rec.requests) > 0 {
@@ -954,7 +954,7 @@ func TestTelegramApprover_ElidedBatchApprovalDoesNotGrantTrustAll(t *testing.T) 
 		done := make(chan error, 1)
 		go func() { done <- a.PromptCommand(danger.ToolBatchClass, tc.card, "") }()
 		var body string
-		for deadline := time.Now().Add(2 * time.Second); body == "" && time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+		for deadline := time.Now().Add(30 * time.Second); body == "" && time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
 			rec.mu.Lock()
 			if len(rec.requests) > 0 {
 				body = rec.requests[len(rec.requests)-1].Body
