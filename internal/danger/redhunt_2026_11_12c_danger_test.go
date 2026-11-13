@@ -490,3 +490,57 @@ func TestRED_HashBindingLastFileWinsAndCostIsBounded(t *testing.T) {
 		}
 	}
 }
+
+// bash 4+ keeps its command table in BASH_CMDS ("elements added to this array
+// appear in the hash table"), so an assignment to an element binds a command
+// name exactly like `hash -p FILE NAME` on hosts whose /bin/sh is bash
+// (Fedora, RHEL, Arch). These forms were not tracked: `BASH_CMDS=([ls]=/bin/rm);
+// ls -rf ~` classified safe while the hash -p spelling is destructive.
+//
+// Correct behaviour: every assignment form binds like hash -p; an element
+// filled from input, a computed name, a whole-array read and a nameref to the
+// array fail closed.
+func TestRED_BashCmdsBindsLikeHashP(t *testing.T) {
+	t.Setenv("HOME", "/home/user")
+	t.Chdir(t.TempDir())
+	want := Classify(`hash -p /bin/rm ls; ls -rf /home/user`)
+	if Rank(want) < Rank(Destructive) {
+		t.Fatalf("reference classified %s; test premise broken", want)
+	}
+	for _, cmd := range []string{
+		`BASH_CMDS=([ls]=/bin/rm); ls -rf /home/user`,
+		`BASH_CMDS+=([ls]=/bin/rm); ls -rf /home/user`,
+		`declare -A BASH_CMDS=([ls]=/bin/rm); ls -rf /home/user`,
+		`declare -A BASH_CMDS=([cat]=/bin/cat [ls]=/bin/rm); ls -rf /home/user`,
+		`BASH_CMDS[ls]=/bin/rm; ls -rf /home/user`,
+		`declare BASH_CMDS[ls]=/bin/rm; ls -rf /home/user`,
+		`typeset -g BASH_CMDS[ls]=/bin/rm; ls -rf /home/user`,
+		`BASH_CMDS[ls]=/bin/rm; command ls -rf /home/user`,
+		`eval 'BASH_CMDS[ls]=/bin/rm'; ls -rf /home/user`,
+		`f() { BASH_CMDS[ls]=/bin/rm; }; f; ls -rf /home/user`,
+	} {
+		if got := Classify(cmd); Rank(got) < Rank(want) {
+			t.Errorf("Classify(%q) = %s, want at least %s (as hash -p)", cmd, got, want)
+		}
+	}
+	for _, cmd := range []string{
+		`BASH_CMDS[$n]=/bin/rm; ls -rf /home/user`,
+		`BASH_CMDS=([$n]=/bin/rm); ls -rf /home/user`,
+		`BASH_CMDS[ls]=$(command -v rm); ls -rf /home/user`,
+		`printf -v 'BASH_CMDS[ls]' %s /bin/rm; ls -rf /home/user`,
+		`read 'BASH_CMDS[ls]' < f; ls -rf /home/user`,
+		`read -a BASH_CMDS < f; ls -rf /home/user`,
+		`mapfile BASH_CMDS < f; ls -rf /home/user`,
+		`declare -n r=BASH_CMDS; r[ls]=/bin/rm; ls -rf /home/user`,
+	} {
+		if got, action := Classify(cmd), (&DangerousConfig{}).ActionForCommand(cmd); Rank(got) < Rank(SystemWrite) || action == Allow {
+			t.Errorf("Classify(%q) = %s (action %s); a binding the analysis cannot resolve must fail closed", cmd, got, action)
+		}
+	}
+	// Reading the table or binding nothing keeps the verdict.
+	for _, cmd := range []string{`echo "${BASH_CMDS[ls]}"`, `declare -p BASH_CMDS`, `BASH_CMDS=(); ls`} {
+		if got, want := Classify(cmd), Classify(strings.Replace(cmd, "BASH_CMDS", "XS", -1)); got != want {
+			t.Errorf("Classify(%q) = %s, want %s", cmd, got, want)
+		}
+	}
+}

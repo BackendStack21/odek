@@ -77,11 +77,169 @@ func hashBindings(args []string) (defs []string, ok bool) {
 // It reports false when a binding cannot be resolved statically.
 func (t *aliasTable) bindHash(args []string) bool {
 	defs, ok := hashBindings(args)
+	return t.bindTable(defs) && ok
+}
+
+// bindTable records command-table definitions (NAME=BODY).
+func (t *aliasTable) bindTable(defs []string) bool {
 	for _, d := range defs {
 		name, _, _ := strings.Cut(d, "=")
 		t.hashed[name] = true
 	}
-	return t.define(defs) && ok
+	return t.define(defs)
+}
+
+// bashCmdsVar is bash's view of its command table (bash 4+): "elements added
+// to this array appear in the hash table", so BASH_CMDS[NAME]=FILE binds NAME
+// exactly like `hash -p FILE NAME`.
+const bashCmdsVar = "BASH_CMDS"
+
+// bindBashCmds records the command-table bindings one simple command makes
+// through BASH_CMDS: an assignment (`BASH_CMDS=([ls]=/bin/rm)`,
+// `BASH_CMDS[ls]=/bin/rm`, `+=` forms), a declaration operand (`declare -A
+// BASH_CMDS=(...)`, `declare BASH_CMDS[ls]=...`), and the builtins that store
+// input into an element (`printf -v 'BASH_CMDS[ls]'`, `read 'BASH_CMDS[ls]'`),
+// whose file is only known at run time. It reports false when a binding cannot
+// be resolved statically: a computed name, a whole-array read (`read -a`,
+// `mapfile`), or a nameref to the array.
+func (t *aliasTable) bindBashCmds(stage, inner []string) bool {
+	if t == nil || !strings.Contains(strings.Join(stage, " "), bashCmdsVar) {
+		return true
+	}
+	var words []string
+	if len(inner) == 0 {
+		words = stage
+	} else {
+		name := commandName(inner[0])
+		switch name {
+		case "declare", "typeset", "local", "export", "readonly":
+			nameref := false
+			for _, a := range inner[1:] {
+				if len(a) > 1 && a[0] == '-' && strings.ContainsRune(a[1:], 'n') && name != "export" {
+					nameref = true
+				}
+			}
+			if nameref {
+				// A later assignment through the nameref cannot be followed.
+				for _, a := range inner[1:] {
+					if strings.Contains(a, bashCmdsVar) {
+						return false
+					}
+				}
+				return true
+			}
+			words = inner[1:]
+		case "printf", "read", "mapfile", "readarray":
+			r := bindingBuiltinSpecs[name].parse(inner[1:])
+			var targets []string
+			for _, o := range r.opts {
+				// printf -v NAME and read -a NAME store into the variable
+				// the option names.
+				if o.has && ((name == "printf" && o.is("-v")) || (name == "read" && o.is("-a"))) {
+					targets = append(targets, o.value)
+				}
+			}
+			if name != "printf" {
+				targets = append(targets, r.args()...)
+			}
+			var defs []string
+			for _, target := range targets {
+				rest, ok := strings.CutPrefix(target, bashCmdsVar)
+				if !ok {
+					continue
+				}
+				key, isElem := bashCmdsSubscript(rest)
+				if !isElem || computedWord(key) {
+					return false // the whole array, or a computed element
+				}
+				if validAliasName(key) {
+					defs = append(defs, key+"="+hashUnresolvedBody)
+				}
+			}
+			return t.bindTable(defs)
+		default:
+			// BASH_CMDS[NAME]=FILE and BASH_CMDS+=(...) are not read as
+			// assignment words, so they reach here as the command word.
+			if !strings.HasPrefix(inner[0], bashCmdsVar+"[") && !strings.HasPrefix(inner[0], bashCmdsVar+"+=") {
+				return true
+			}
+			words = inner
+		}
+	}
+	defs, ok := bashCmdsDefinitions(words)
+	return t.bindTable(defs) && ok
+}
+
+// bashCmdsSubscript reads `[KEY]` at the start of rest and returns KEY; it
+// reports false when rest is not a single element.
+func bashCmdsSubscript(rest string) (string, bool) {
+	if !strings.HasPrefix(rest, "[") {
+		return "", false
+	}
+	end := strings.IndexByte(rest, ']')
+	if end < 0 || end != len(rest)-1 {
+		return "", false
+	}
+	return rest[1:end], true
+}
+
+// bashCmdsDefinitions returns the command-table definitions the assignment
+// words among words make to BASH_CMDS, following an array literal across the
+// words the tokenizer split it into. ok is false when an element's name is
+// only known at run time or the literal never closes.
+func bashCmdsDefinitions(words []string) (defs []string, ok bool) {
+	ok = true
+	element := func(e string) {
+		e = strings.TrimSpace(e)
+		if e == "" {
+			return
+		}
+		if !strings.HasPrefix(e, "[") {
+			return // an element without a subscript is not a command name
+		}
+		end := strings.IndexByte(e, ']')
+		if end < 0 {
+			ok = false
+			return
+		}
+		key, rest := e[1:end], e[end+1:]
+		value, assigned := strings.CutPrefix(strings.TrimPrefix(rest, "+"), "=")
+		switch {
+		case !assigned:
+			ok = false
+		case computedWord(key):
+			ok = false
+		case validAliasName(key):
+			defs = append(defs, key+"="+hashBody(value))
+		}
+	}
+	inLiteral := false
+	for _, w := range words {
+		if inLiteral {
+			body, closed := strings.CutSuffix(w, ")")
+			element(body)
+			inLiteral = !closed
+			continue
+		}
+		rest, named := strings.CutPrefix(w, bashCmdsVar)
+		if !named {
+			continue
+		}
+		switch {
+		case strings.HasPrefix(rest, "["):
+			// BASH_CMDS[NAME]=FILE or BASH_CMDS[NAME]+=FILE.
+			element(rest)
+		case strings.HasPrefix(rest, "=(") || strings.HasPrefix(rest, "+=("):
+			body := rest[strings.IndexByte(rest, '(')+1:]
+			body, closed := strings.CutSuffix(body, ")")
+			element(body)
+			inLiteral = !closed
+		}
+	}
+	if inLiteral {
+		ok = false
+	}
+	return defs, ok
 }
 
 // shellLookupBuiltins are the builtins that run their operand through the

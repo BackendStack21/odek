@@ -410,6 +410,11 @@ func analyzeWithStateWork(cmd string, depth int, inherited *shellAnalysisState, 
 			for _, payload := range unwrappedStage.payloads {
 				result.merge(analyzeWithState(payload, depth+1, &payloadState))
 			}
+			// BASH_CMDS elements are command-table entries (bash 4+): a
+			// later use of the name is analysed as the bound file.
+			if !state.aliases.bindBashCmds(stage, inner) {
+				result.add(Unknown)
+			}
 			if len(inner) > 0 {
 				name := commandName(inner[0])
 				if pipedShells[name] {
