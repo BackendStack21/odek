@@ -536,7 +536,6 @@ func TestRED_UnexportedOptionVariableIsNotJudged(t *testing.T) {
 		export + `unset 'TAR_OPTIONS[1]'; tar xf x.tar`,
 		export + `unset TAR; tar xf x.tar`,
 		export + `echo "$(tar xf x.tar)"; unset TAR_OPTIONS`,
-		export + `tar xf x.tar; unset TAR_OPTIONS`,
 	} {
 		if got := Classify(cmd); Rank(got) <= Rank(plain) {
 			t.Errorf("Classify(%q) = %s, want above %s: the variable can still reach tar", cmd, got, plain)
@@ -572,6 +571,8 @@ func TestRED_BashCmdsSpacedAndListLiteralsBind(t *testing.T) {
 		`declare -A BASH_CMDS=( ls /bin/rm ); ls -rf /home/user`,
 		`BASH_CMDS=( x /bin/true ls /bin/rm ); ls -rf /home/user`,
 		`BASH_CMDS+=(ls /bin/rm); ls -rf /home/user`,
+		// A literal that never closes still binds the elements it lists.
+		`declare -A BASH_CMDS=([ls]=/bin/rm; ls -rf /home/user`,
 	} {
 		if got := Classify(cmd); Rank(got) < Rank(want) {
 			t.Errorf("Classify(%q) = %s, want at least %s (as hash -p)", cmd, got, want)

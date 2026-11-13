@@ -295,6 +295,8 @@ func bashCmdsDefinitions(words []string) (defs []string, ok bool) {
 		}
 	}
 	if inLiteral {
+		// The elements read so far still bind.
+		closeLiteral()
 		ok = false
 	}
 	return defs, ok
