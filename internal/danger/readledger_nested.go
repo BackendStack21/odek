@@ -430,6 +430,10 @@ type shellScan struct {
 	failed  bool
 	// pipeNext marks the next command as reading from a pipe.
 	pipeNext bool
+	// parens counts the subshells (and function-definition parentheses)
+	// opened by `(` in the command list being scanned, so the `)` closing
+	// one is not read as the end of the substitution that holds it.
+	parens int
 	// honorSingle reads a single quote inside a double-quoted ${...} as a
 	// quote: the second reading paramExpansion compares against.
 	honorSingle bool
@@ -577,7 +581,7 @@ func (s *shellScan) expansion(inDouble bool) bool {
 		s.cmds = append(s.cmds, inner...)
 		s.failed = s.failed || !complete
 		s.pos = at + end + 2
-	case text[at+1] == '(' && at+2 < len(text) && text[at+2] == '(' && arithmeticExpansion(text, at):
+	case text[at+1] == '(' && at+2 < len(text) && text[at+2] == '(' && isArithmetic(text, at):
 		// The arithmetic can still hold a substitution. Its end must be the
 		// same whether or not a single quote hides a parenthesis.
 		s.skipBalanced('(', ')', true)
@@ -588,10 +592,16 @@ func (s *shellScan) expansion(inDouble bool) bool {
 			s.pos = len(text)
 			return true
 		}
+		if at+2 < len(text) && text[at+2] == '(' {
+			if _, balanced := arithmeticExpansion(text, at); !balanced {
+				// Neither reading can be confirmed: the parse fails
+				// closed, and the text is still followed as commands so
+				// what it would run is known.
+				s.failed = true
+			}
+		}
 		s.pos = at + 2
-		s.depth++
-		s.scan()
-		s.depth--
+		s.scanSubstitution()
 	case text[at+1] == '{':
 		s.paramExpansion(inDouble) // ${X:-$(cmd)} runs cmd
 	default:
@@ -671,14 +681,34 @@ func (s *shellScan) paramExpansion(inDouble bool) {
 	s.failed = true // the construct never ends
 }
 
+// scanSubstitution reads the commands of a substitution whose opening `$(` or
+// `<(` is behind s.pos, up to its closing `)`. Subshells opened inside it are
+// counted afresh, so their `)` does not end it early.
+func (s *shellScan) scanSubstitution() {
+	saved := s.parens
+	s.parens = 0
+	s.depth++
+	s.scan()
+	s.depth--
+	s.parens = saved
+}
+
 // arithmeticExpansion reports whether the `$((` at text[at] is arithmetic:
 // bash reads it so only when the group the second parenthesis opens closes
-// right before the first one does. `$((cmd) )` and `$((cmd) | tr a b)` are a
-// command substitution holding a subshell, whose command runs.
-func arithmeticExpansion(text string, at int) bool {
+// right before the first one does, and otherwise reads a command substitution
+// holding a subshell (`$((cmd) )`, `$((cmd) | tr a b)`), whose commands run.
+// balanced is false when the groups do not close, so neither reading can be
+// confirmed.
+func arithmeticExpansion(text string, at int) (arithmetic, balanced bool) {
 	inner, ok := skipBalancedEnd(text, at+2, '(', ')', true)
 	outer, outerOK := skipBalancedEnd(text, at+1, '(', ')', true)
-	return !ok || !outerOK || outer == inner+1
+	balanced = ok && outerOK
+	return balanced && outer == inner+1, balanced
+}
+
+func isArithmetic(text string, at int) bool {
+	arithmetic, _ := arithmeticExpansion(text, at)
+	return arithmetic
 }
 
 // skipAnsiC returns the offset after the $'...' string whose opening quote is
@@ -868,9 +898,14 @@ func (s *shellScan) scanCommand() (closed bool) {
 				s.scanRegion(begin, s.pos, false)
 				continue
 			}
+			s.parens++
 			return false
 		case ')':
 			s.pos++
+			if s.parens > 0 {
+				s.parens-- // the end of a subshell, not of the substitution
+				return false
+			}
 			return s.depth > 0
 		case '<', '>':
 			s.scanRedirect(&cmd)
@@ -968,9 +1003,7 @@ func (s *shellScan) scanRedirect(cmd *shellCommand) {
 		return
 	case strings.HasPrefix(rest, "<("):
 		s.pos += 2
-		s.depth++
-		s.scan()
-		s.depth--
+		s.scanSubstitution()
 		cmd.words = append(cmd.words, shellProcessSubstitution)
 		return
 	case rest[0] == '<':

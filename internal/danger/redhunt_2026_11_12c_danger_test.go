@@ -386,3 +386,55 @@ func TestRED_NestedScannerBraceExpansionFollowsNestedSubstitution(t *testing.T) 
 		}
 	}
 }
+
+// A `(` that opens a subshell inside a command substitution was not counted,
+// so the `)` closing the subshell ended the substitution: inside double
+// quotes or a here-document the rest of it was read as data and the launch
+// after the subshell was never followed (bash runs both commands: `echo
+// "$((echo hi) | tr h H)"` prints Hi).
+//
+// Correct behaviour: subshells are counted per substitution, so the whole
+// substitution is followed; real arithmetic stays arithmetic, and a `$((`
+// whose groups never close fails closed while its text is still followed.
+func TestRED_NestedScannerSubshellInsideSubstitution(t *testing.T) {
+	t.Setenv("HOME", "/home/user")
+	for _, script := range []string{
+		"#!/bin/bash\necho \"$((true) | ./code_policies)\"\n",
+		"#!/bin/bash\necho \"$( (true) | ./code_policies )\"\n",
+		"#!/bin/bash\ncat <<EOF\n$( (true); ./code_policies )\nEOF\n",
+		"#!/bin/bash\nx=\"$( (cd /tmp; true) && ./code_policies )\"\n",
+		"#!/bin/bash\necho \"$(f() { true; }; f; ./code_policies)\"\n",
+		"#!/bin/bash\ndiff <( (true) ; ./code_policies ) /dev/null\n",
+	} {
+		if _, complete := parseShellCommands(script); !complete {
+			t.Errorf("script %q: parse failed closed; it is well formed", script)
+		}
+		d := nestedFixture(t, script)
+		RecordRead(filepath.Join(d, "security.sh"))
+		if cls, targets := ClassifyScriptGate("bash security.sh"); cls != UnreadExec || !strings.Contains(targetNames(targets), "code_policies") {
+			t.Errorf("script %q: class=%s targets=%v; want unread_exec naming code_policies", script, cls, targets)
+		}
+	}
+	// Arithmetic is still arithmetic: nothing runs, and the parse completes.
+	for _, script := range []string{
+		"#!/bin/bash\necho \"$(( (1 + 2) * 3 ))\"\necho ok\n",
+		"#!/bin/bash\necho $((1+2))\necho ok\n",
+		"#!/bin/bash\n( cd /tmp && ls )\necho ok\n",
+	} {
+		cmds, complete := parseShellCommands(script)
+		if !complete || len(cmds) == 0 || cmds[len(cmds)-1].words[0] != "echo" {
+			t.Errorf("script %q: complete=%v commands=%v", script, complete, cmds)
+		}
+	}
+	// A `$((` whose groups never close is neither reading: the parse fails
+	// closed, and the launch inside is still named.
+	script := "#!/bin/bash\necho \"$((true | ./code_policies )\"\n"
+	if _, complete := parseShellCommands(script); complete {
+		t.Errorf("script %q: parse complete; an unbalanced $(( must fail closed", script)
+	}
+	d := nestedFixture(t, script)
+	RecordRead(filepath.Join(d, "security.sh"))
+	if cls, _ := ClassifyScriptGate("bash security.sh"); cls != UnreadExec {
+		t.Errorf("script %q: class=%s; want unread_exec", script, cls)
+	}
+}
