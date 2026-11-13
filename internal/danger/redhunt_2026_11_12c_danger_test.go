@@ -44,19 +44,21 @@ func TestRED_OptionEnvNamesAreCaseSensitive(t *testing.T) {
 		`read TAR_OPTIONS < f; export TAR_OPTIONS; tar_options=-v tar xf x.tar`:  SystemWrite,
 		`read TAR_OPTIONS < f; export TAR_OPTIONS; tar_options=-v; tar xf x.tar`: SystemWrite,
 	} {
-		// The old verdict depended on map order about one run in seven; each
-		// Classify costs tens of milliseconds, so the repeat count is kept
-		// modest (and smaller under the race detector).
-		runs := 40
-		if raceEnabled || testing.Short() {
-			runs = 10
-		}
-		seen := map[RiskClass]int{}
-		for i := 0; i < runs; i++ {
-			seen[Classify(cmd)]++
-		}
-		if len(seen) != 1 {
-			t.Errorf("Classify(%q) is not deterministic: %v", cmd, seen)
+		// The verdict of the statement forms depended on map order (about
+		// one run in seven). Each Classify costs tens of milliseconds, so the
+		// repeats are fewer under the race detector or -short.
+		if strings.Contains(cmd, "=-v; mvn") || strings.Contains(cmd, "=-v; tar") {
+			runs := 200
+			if raceEnabled || testing.Short() {
+				runs = 20
+			}
+			seen := map[RiskClass]int{}
+			for i := 0; i < runs; i++ {
+				seen[Classify(cmd)]++
+			}
+			if len(seen) != 1 {
+				t.Errorf("Classify(%q) is not deterministic: %v", cmd, seen)
+			}
 		}
 		if got := Classify(cmd); Rank(got) < Rank(want) {
 			t.Errorf("Classify(%q) = %s, want at least %s", cmd, got, want)
