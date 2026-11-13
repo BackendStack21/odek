@@ -383,6 +383,13 @@ func analyzeWithStateWork(cmd string, depth int, inherited *shellAnalysisState, 
 				payload.aliasSkip = append(append([]string(nil), aliasSkip...), exp.names...)
 				result.merge(analyzeWithState(exp.text, depth+1, &payload))
 			}
+			// bash reads `NAME+=value` in front of a command (or alone) as an
+			// append, which assigns when NAME is unset; the stage is also
+			// analysed with each append written as that assignment.
+			if variant, ok := appendPrefixAsAssignment(stage); ok {
+				payload := state
+				result.merge(analyzeWithState(variant, depth+1, &payload))
+			}
 			if call := functionCallAt(stage, funcs); call >= 0 {
 				// Assignments in front of a function call reach the commands
 				// it runs and, in POSIX mode, persist after it returns, like
@@ -1276,6 +1283,37 @@ func segmentOperators(tokens []string) []string {
 		ops = append(ops, current)
 	}
 	return ops
+}
+
+// appendPrefixAsAssignment returns the command text of a stage whose leading
+// assignment words include NAME+=value appends, with each append written as
+// NAME=value. The analysis reads such a word as the command name, so the
+// stage itself classifies unknown; the variant judges what the assignment
+// does. ok is false when the stage has no leading append.
+func appendPrefixAsAssignment(stage []string) (string, bool) {
+	words := make([]string, 0, len(stage))
+	appended := false
+	i := 0
+	for ; i < len(stage); i++ {
+		w := stage[i]
+		if isAssignment(w) {
+			words = append(words, aliasQuoteWord(w))
+			continue
+		}
+		lhs, value, found := strings.Cut(w, "+=")
+		if !found || !isValidVarName(lhs) {
+			break
+		}
+		words = append(words, aliasQuoteWord(lhs+"="+value))
+		appended = true
+	}
+	if !appended {
+		return "", false
+	}
+	for _, w := range stage[i:] {
+		words = append(words, aliasQuoteWord(w))
+	}
+	return strings.Join(words, " "), true
 }
 
 // assignedNames lists the variable names bound by the NAME=value words.

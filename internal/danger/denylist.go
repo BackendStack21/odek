@@ -9,6 +9,7 @@
 package danger
 
 import (
+	"os"
 	"sort"
 	"strings"
 )
@@ -256,12 +257,11 @@ func denyAssign(stage []string, vars map[string]string) {
 		}
 	}
 	for _, tok := range stage {
-		if !isAssignment(tok) {
+		if _, _, _, ok := denyAssignmentWord(tok); !ok {
 			if tok == dynamicSubstToken || tok == procSubstToken {
 				// `name=$(cmd)` leaves the marker as a word after `name=`.
 				for _, t := range stage {
-					if isAssignment(t) {
-						name, _, _ := strings.Cut(t, "=")
+					if name, _, _, ok := denyAssignmentWord(t); ok {
 						delete(vars, name)
 					}
 				}
@@ -273,17 +273,41 @@ func denyAssign(stage []string, vars map[string]string) {
 		}
 	}
 	for _, tok := range stage {
-		if !isAssignment(tok) {
+		name, value, appended, ok := denyAssignmentWord(tok)
+		if !ok {
 			continue
 		}
-		name, value, _ := strings.Cut(tok, "=")
 		value = denySubstitute(value, vars)
+		if appended {
+			// NAME+=value appends to a known value; to an unknown one it
+			// leaves a value only known at run time.
+			old, known := vars[name]
+			if !known && os.Getenv(name) != "" {
+				delete(vars, name)
+				continue
+			}
+			value = old + value
+		}
 		if strings.ContainsAny(value, "$`") || strings.Contains(value, dynamicSubstToken) || len(value) > maxStaticWordBytes {
 			delete(vars, name)
 			continue
 		}
 		vars[name] = value
 	}
+}
+
+// denyAssignmentWord splits an assignment word: NAME=value, or NAME+=value,
+// which appends to the value (and assigns when NAME is unset).
+func denyAssignmentWord(tok string) (name, value string, appended, ok bool) {
+	if isAssignment(tok) {
+		name, value, _ = strings.Cut(tok, "=")
+		return name, value, false, true
+	}
+	lhs, value, found := strings.Cut(tok, "+=")
+	if !found || !isValidVarName(lhs) {
+		return "", "", false, false
+	}
+	return lhs, value, true, true
 }
 
 // denyGroupWords are shell grammar words that may precede a command in the

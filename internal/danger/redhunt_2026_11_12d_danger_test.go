@@ -2,6 +2,8 @@ package danger
 
 import (
 	"os"
+	"sort"
+	"strings"
 	"testing"
 )
 
@@ -142,5 +144,144 @@ func TestRED_EveryKnownJVMLauncherReadsJavaEnv(t *testing.T) {
 	}
 	if known < 8 {
 		t.Fatalf("only %d JVM launchers are known to the classifier; the table walk is not exercising it", known)
+	}
+}
+
+// execVarCaseR4 is an exec-controlling variable, a value and a command that
+// reads it.
+type execVarCaseR4 struct{ name, value, reader string }
+
+// execVarCasesR4 lists every variable the package treats as controlling what
+// a program runs: the loader, hook and config names (envExecNames), pagers,
+// git config injection, the shell startup variables, the code variables and
+// the option-carrying variables, each with a reader.
+func execVarCasesR4() []execVarCaseR4 {
+	var out []execVarCaseR4
+	names := make([]string, 0, len(envExecNames))
+	for name := range envExecNames {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		reader := "ls"
+		switch {
+		case strings.HasPrefix(name, "GIT_"):
+			reader = "git log"
+		case name == "NODE_OPTIONS":
+			reader = "node -v"
+		case strings.Contains(name, "JAVA"):
+			reader = "java -version"
+		case strings.HasPrefix(name, "LESS"):
+			reader = "less x"
+		}
+		out = append(out, execVarCaseR4{name, "/tmp/x", reader})
+	}
+	return append(out,
+		execVarCaseR4{"GIT_PAGER", "'sh -c id'", "git log"},
+		execVarCaseR4{"MANPAGER", "/tmp/x", "man ls"},
+		execVarCaseR4{"GIT_CONFIG_KEY_0", "core.pager", "git log"},
+		execVarCaseR4{"GIT_CONFIG_VALUE_0", "'sh -c id'", "git log"},
+		execVarCaseR4{"ENV", "/tmp/x", "sh -c id"},
+		execVarCaseR4{"SHELL", "/tmp/x", "man ls"},
+		execVarCaseR4{"GIT_TRACE2", "/tmp/x", "git status"},
+		execVarCaseR4{"HOME", "/tmp", "bash -l"},
+		execVarCaseR4{"ZDOTDIR", "/tmp", "zsh -c id"},
+		execVarCaseR4{"XDG_CONFIG_HOME", "/tmp", "git log"},
+		execVarCaseR4{"PROMPT_COMMAND", "'rm -rf /home/user'", "bash -i"},
+		execVarCaseR4{"PS1", "'$(id)'", "bash -i"},
+		execVarCaseR4{"GNUPGHOME", "/tmp/g", "gpg --list-keys"},
+		execVarCaseR4{"TAR_OPTIONS", "--to-command=sh", "tar xf x.tar"},
+		execVarCaseR4{"ZIPOPT", "-m", "zip a.zip f"},
+		execVarCaseR4{"UNZIP", "'-o -d /etc'", "unzip a.zip"},
+		execVarCaseR4{"MAVEN_ARGS", "'-s evil.xml'", "mvn -v"},
+		execVarCaseR4{"MAVEN_CONFIG", "'-s evil.xml'", "mvnw -v"},
+		execVarCaseR4{"MAVEN_OPTS", "-javaagent:/tmp/x.jar", "mvn -v"},
+		execVarCaseR4{"GRADLE_OPTS", "-javaagent:/tmp/x.jar", "gradle --version"},
+		execVarCaseR4{"JAVA_OPTS", "-javaagent:/tmp/x.jar", "kotlinc -version"},
+		execVarCaseR4{"SBT_OPTS", "-javaagent:/tmp/x.jar", "sbt -version"},
+		execVarCaseR4{"JAVA_HOME", "/tmp/jdk", "mvn -v"},
+		execVarCaseR4{"JAVACMD", "/tmp/j", "mvnw -v"},
+	)
+}
+
+// bindFormsR4 are the ways a statement hands a variable to the commands after
+// it; op is "=" or "+=".
+var bindFormsR4 = map[string]func(name, op, value, reader string) string{
+	"export":          func(n, op, v, r string) string { return "export " + n + op + v + "; " + r },
+	"declare -x":      func(n, op, v, r string) string { return "declare -x " + n + op + v + "; " + r },
+	"typeset -x":      func(n, op, v, r string) string { return "typeset -x " + n + op + v + "; " + r },
+	"local -x":        func(n, op, v, r string) string { return "f() { local -x " + n + op + v + "; " + r + "; }; f" },
+	"readonly+export": func(n, op, v, r string) string { return "readonly " + n + op + v + "; export " + n + "; " + r },
+	"declare+export":  func(n, op, v, r string) string { return "declare " + n + op + v + "; export " + n + "; " + r },
+	"export --":       func(n, op, v, r string) string { return "export -- " + n + op + v + "; " + r },
+	"inline":          func(n, op, v, r string) string { return n + op + v + " " + r },
+}
+
+// `export NAME+=value` names NAME exactly like `export NAME=value` (with NAME
+// unset, bash and sh assign), but the exec-controlling check on the operands
+// of export, declare/typeset/local -x and readonly took only NAME=value words,
+// so `export LD_PRELOAD+=/tmp/x.so; ls` was safe; an append to an option
+// variable whose earlier value was unknown held only "a run-time value",
+// which dropped the --to-command the same words carry after `=`; and a value
+// set by readonly or a declare without -x and exported later by name was never
+// judged. The denylist's own variable tracking kept the value from before an
+// append, so `cmd=git; export cmd+=' push'; $cmd` missed a `git push` entry.
+//
+// Correct behaviour: every += form classifies at least as high as its = form,
+// a declaration that does not export judges the exec-controlling names it
+// sets as a plain assignment of them is judged, and the denylist follows the
+// append.
+func TestRED_AppendFormsJudgedLikeAssignments(t *testing.T) {
+	t.Setenv("HOME", "/home/user")
+	t.Chdir(t.TempDir())
+	unsetExecEnvR4(t)
+	for _, tc := range []struct{ cmd, ref string }{
+		{`export LD_PRELOAD+=/tmp/x.so; ls`, `export LD_PRELOAD=/tmp/x.so; ls`},
+		{`declare -x LD_PRELOAD+=/tmp/x.so; ls`, `export LD_PRELOAD=/tmp/x.so; ls`},
+		{`typeset -x LD_PRELOAD+=/tmp/x.so; ls`, `export LD_PRELOAD=/tmp/x.so; ls`},
+		{`export -- LD_PRELOAD+=/tmp/x.so; ls`, `export LD_PRELOAD=/tmp/x.so; ls`},
+		{`f() { local -x LD_PRELOAD+=/tmp/x.so; ls; }; f`, `export LD_PRELOAD=/tmp/x.so; ls`},
+		{`export LD_LIBRARY_PATH+=/tmp; ls`, `export LD_LIBRARY_PATH=/tmp; ls`},
+		{`export JAVA_TOOL_OPTIONS+=-javaagent:/tmp/x.jar; java -version`, `export JAVA_TOOL_OPTIONS=-javaagent:/tmp/x.jar; java -version`},
+		{`export NODE_OPTIONS+='--require /tmp/x.js'; node -v`, `export NODE_OPTIONS='--require /tmp/x.js'; node -v`},
+		{`export GIT_PAGER+='sh -c id'; git log`, `export GIT_PAGER='sh -c id'; git log`},
+		{`export LESSOPEN+='|sh -c id %s'; less x`, `export LESSOPEN='|sh -c id %s'; less x`},
+		{`base64 -d <<< UEsDBA== > /tmp/a.so; export LD_PRELOAD+=/tmp/a.so; ls`, `base64 -d <<< UEsDBA== > /tmp/a.so; export LD_PRELOAD=/tmp/a.so; ls`},
+		{`readonly LD_PRELOAD=/tmp/x.so; export LD_PRELOAD; ls`, `LD_PRELOAD=/tmp/x.so; export LD_PRELOAD; ls`},
+		{`declare LD_PRELOAD+=/tmp/x.so; export LD_PRELOAD; ls`, `LD_PRELOAD=/tmp/x.so; export LD_PRELOAD; ls`},
+		{`export TAR_OPTIONS+=--to-command=sh; tar xf x.tar`, `export TAR_OPTIONS=--to-command=sh; tar xf x.tar`},
+	} {
+		want := Classify(tc.ref)
+		if Rank(want) < Rank(SystemWrite) && !strings.Contains(tc.ref, "TAR_OPTIONS") {
+			t.Fatalf("reference %q classified %s; premise broken", tc.ref, want)
+		}
+		if got := Classify(tc.cmd); Rank(got) < Rank(want) {
+			t.Errorf("Classify(%q) = %s, want at least %s (the verdict of %q)", tc.cmd, got, want, tc.ref)
+		}
+	}
+	forms := make([]string, 0, len(bindFormsR4))
+	for form := range bindFormsR4 {
+		forms = append(forms, form)
+	}
+	sort.Strings(forms)
+	for _, c := range execVarCasesR4() {
+		for _, form := range forms {
+			build := bindFormsR4[form]
+			assign, appendCmd := build(c.name, "=", c.value, c.reader), build(c.name, "+=", c.value, c.reader)
+			want := Classify(assign)
+			if got := Classify(appendCmd); Rank(got) < Rank(want) {
+				t.Errorf("Classify(%q) = %s, want at least %s (the verdict of %q)", appendCmd, got, want, assign)
+			}
+			// A name judged by itself is judged however the value is bound.
+			if envExecNames[c.name] && Rank(want) < Rank(SystemWrite) {
+				t.Errorf("Classify(%q) = %s, want at least system_write", assign, want)
+			}
+		}
+	}
+	if !denylistMatch(`cmd=git; export cmd+=' push'; $cmd`, []string{"git push"}) {
+		t.Error("denylist `git push` must match a value completed by an append")
+	}
+	if denylistMatch(`cmd=git; export cmd+=' status'; $cmd`, []string{"git push"}) {
+		t.Error("denylist `git push` must not match `git status`")
 	}
 }

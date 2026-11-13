@@ -472,6 +472,12 @@ type optionEnvState struct {
 	// dynamic is set by a binding whose name is only known at run time and
 	// by a sourced file: any variable may be bound and exported.
 	dynamic bool
+	// tails holds, per variable, the text NAME+=value appended since its last
+	// plain assignment. When the earlier value is unknown the variable holds
+	// a run-time value ending in the tail, and the tail is judged as the
+	// value too: with the variable unset, the append is exactly the
+	// assignment of it.
+	tails map[string]string
 }
 
 // maxOptionEnvBinders bounds the scopes recorded per variable; past it the
@@ -479,7 +485,25 @@ type optionEnvState struct {
 const maxOptionEnvBinders = 16
 
 func newOptionEnvState() *optionEnvState {
-	return &optionEnvState{binders: make(map[string][]int), exported: make(map[string]bool)}
+	return &optionEnvState{binders: make(map[string][]int), exported: make(map[string]bool), tails: make(map[string]string)}
+}
+
+// noteAppend records the text a NAME+=value operand appends (appended) or the
+// plain assignment that replaces the value and the earlier appends.
+func (o *optionEnvState) noteAppend(name, value string, appended bool) {
+	if !optionEnvNames[name] {
+		return
+	}
+	if !appended {
+		delete(o.tails, name)
+		return
+	}
+	tail := o.tails[name] + value
+	if len(tail) > maxOptionEnvBytes {
+		// Kept just over the bound, so the tail still classifies unknown.
+		tail = tail[:maxOptionEnvBytes+1]
+	}
+	o.tails[name] = tail
 }
 
 // newScope returns the scope of an analysis starting under parent: its own id
@@ -553,6 +577,7 @@ func (s *shellAnalysisState) noteOptionBindings(stage, inner []string) {
 			if isAssignment(w) {
 				name, _, _ := strings.Cut(w, "=")
 				o.bind(name, s.optScope)
+				o.noteAppend(name, "", false)
 			}
 		}
 		return
@@ -563,6 +588,7 @@ func (s *shellAnalysisState) noteOptionBindings(stage, inner []string) {
 			if isAssignment(w) {
 				n, _, _ := strings.Cut(w, "=")
 				o.bind(n, s.optScope)
+				o.noteAppend(n, "", false)
 				o.exported[n] = o.exported[n] || optionEnvNames[n]
 			}
 		}
@@ -629,7 +655,7 @@ func (s *shellAnalysisState) noteDeclarationBindings(name string, args []string)
 	}
 	for _, op := range args[i:] {
 		varName, value, assigned := strings.Cut(op, "=")
-		varName = strings.TrimSuffix(varName, "+")
+		varName, appended := strings.CutSuffix(varName, "+")
 		if bracket := strings.IndexByte(varName, '['); bracket >= 0 {
 			varName = varName[:bracket]
 		}
@@ -648,6 +674,7 @@ func (s *shellAnalysisState) noteDeclarationBindings(name string, args []string)
 		}
 		if assigned {
 			o.bind(varName, s.optScope)
+			o.noteAppend(varName, value, appended)
 		}
 		if exports && optionEnvNames[varName] {
 			o.exported[varName] = true
@@ -822,6 +849,21 @@ func (s *shellAnalysisState) optionEnvAnalysis(inner, inline []string, payload s
 		}
 	}
 	var words []string
+	judge := func(v optionEnvVar, value string) {
+		if v.kind != optionArgv && v.kind != optionToolArgs {
+			result.add(v.valueRisk(value))
+			return
+		}
+		w, risk := optionValueWords(value)
+		if risk != Safe {
+			result.add(risk)
+			return
+		}
+		if v.kind == optionToolArgs && toolArgsBenign(w) {
+			return
+		}
+		words = append(words, w...)
+	}
 	for _, v := range readers {
 		value, state := s.optionEnvValue(v.name, inlineValues)
 		switch state {
@@ -829,21 +871,16 @@ func (s *shellAnalysisState) optionEnvAnalysis(inner, inline []string, payload s
 			continue
 		case optionUnresolved:
 			result.add(v.unresolvedRisk())
-			continue
+		default:
+			judge(v, value)
 		}
-		if v.kind != optionArgv && v.kind != optionToolArgs {
-			result.add(v.valueRisk(value))
-			continue
+		// An append to a value the analysis does not know: the appended
+		// text is what the variable holds when it was unset before.
+		if _, isInline := inlineValues[v.name]; !isInline && (state == optionUnresolved || computedWord(value)) {
+			if tail, ok := s.options.tails[v.name]; ok {
+				judge(v, tail)
+			}
 		}
-		w, risk := optionValueWords(value)
-		if risk != Safe {
-			result.add(risk)
-			continue
-		}
-		if v.kind == optionToolArgs && toolArgsBenign(w) {
-			continue
-		}
-		words = append(words, w...)
 	}
 	if len(words) == 0 {
 		return result

@@ -4186,26 +4186,28 @@ func startupHomeOverride(upper, val string, inner []string) bool {
 	return true
 }
 
-// exportedAssignmentRisk applies envAssignmentRisk to the NAME=value operands
+// exportedAssignmentRisk applies envAssignmentRisk to the assignment operands
 // of `export`, `declare -x`, `typeset -x` and `local -x`: the variable reaches
 // every later command of the same shell line exactly like a leading
 // assignment would. The inner command is not known here, so an exported ENV
-// with a path-like value is judged as if a POSIX shell consumed it.
+// with a path-like value is judged as if a POSIX shell consumed it. A
+// declaration that does not export (readonly, declare, typeset or local
+// without -x) still sets the variable, which a later `export NAME` or `set
+// -a` hands on: the names that change how a program runs by themselves are
+// judged as a plain assignment of them is.
 func exportedAssignmentRisk(tokens []string) RiskClass {
 	if len(tokens) == 0 {
 		return Safe
 	}
+	exports := false
 	switch commandName(tokens[0]) {
 	case "export":
-	case "declare", "typeset", "local":
-		exports := false
+		exports = true
+	case "declare", "typeset", "local", "readonly":
 		for _, t := range tokens[1:] {
 			if isShortFlagToken(t) && strings.ContainsRune(t[1:], 'x') {
 				exports = true
 			}
-		}
-		if !exports {
-			return Safe
 		}
 	default:
 		return Safe
@@ -4213,15 +4215,57 @@ func exportedAssignmentRisk(tokens []string) RiskClass {
 	var assignments []string
 	var inner []string
 	for _, t := range tokens[1:] {
-		if !isAssignment(t) {
+		a, ok := declarationAssignment(t)
+		if !ok {
 			continue
 		}
-		assignments = append(assignments, t)
-		if name, val, _ := strings.Cut(t, "="); strings.EqualFold(name, "ENV") && strings.ContainsAny(val, "/~.") {
+		name, val, _ := strings.Cut(a, "=")
+		if !exports && !execControlName(name) {
+			continue
+		}
+		assignments = append(assignments, a)
+		if strings.EqualFold(name, "ENV") && strings.ContainsAny(val, "/~.") {
 			inner = []string{"sh"}
 		}
 	}
 	return envAssignmentRisk(assignments, inner)
+}
+
+// declarationAssignment returns an operand of a variable-declaring builtin
+// (export, declare, typeset, local, readonly) that assigns as NAME=value:
+// NAME=value itself, NAME+=value (an append, which assigns when NAME is unset,
+// and whose result holds the appended text) and the element forms
+// NAME[sub]=value and NAME[sub]+=value. ok is false for any other operand.
+func declarationAssignment(tok string) (string, bool) {
+	if isAssignment(tok) {
+		return tok, true
+	}
+	lhs, value, found := strings.Cut(tok, "=")
+	if !found {
+		return "", false
+	}
+	lhs = strings.TrimSuffix(lhs, "+")
+	if i := strings.IndexByte(lhs, '['); i > 0 && strings.HasSuffix(lhs, "]") {
+		lhs = lhs[:i]
+	}
+	if !isValidVarName(lhs) {
+		return "", false
+	}
+	return lhs + "=" + value, true
+}
+
+// execControlName reports a variable envAssignmentNameRisk escalates by its
+// name, or by a rule of its own for its value or reader, rather than by the
+// shell structure of an arbitrary value.
+func execControlName(name string) bool {
+	upper := strings.ToUpper(name)
+	switch upper {
+	case "ENV", "SHELL", "HOME", "XDG_CONFIG_HOME", "ZDOTDIR":
+		return true
+	}
+	return envExecNames[upper] || strings.HasSuffix(upper, "PAGER") ||
+		strings.HasPrefix(upper, "GIT_CONFIG_KEY_") || strings.HasPrefix(upper, "GIT_CONFIG_VALUE_") ||
+		strings.HasPrefix(upper, "GIT_TRACE2")
 }
 
 // knownSafeShellValue reports whether val names a system shell rather than
