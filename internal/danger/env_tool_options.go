@@ -14,21 +14,22 @@ import (
 // GNU tar prepends $TAR_OPTIONS, Info-ZIP zip and unzip read $ZIPOPT/$ZIP and
 // $UNZIPOPT/$UNZIP, the Maven launcher adds $MAVEN_ARGS (Maven 3.9+) and the
 // Maven wrapper $MAVEN_CONFIG to its arguments, and the launchers of Maven,
-// Gradle, sbt, Ant and Tomcat hand $MAVEN_OPTS, $GRADLE_OPTS, $JAVA_OPTS, ...
-// to the JVM they start, even for `mvn -v`. They also run the java binary under
-// $JAVA_HOME, and the Maven launchers and Ant run $JAVACMD.
+// Gradle, sbt, Ant, Tomcat and the JVM languages hand $MAVEN_OPTS,
+// $GRADLE_OPTS, $JAVA_OPTS, ... to the JVM they start, even for `mvn -v`. They
+// also run the java binary under $JAVA_HOME or named by $JAVACMD, and the
+// JDK's own tools are, on macOS, /usr/bin stubs that pick the JDK from
+// $JAVA_HOME.
 //
-// A variable matters only to the programs that read it (optionEnvVars; names
-// match exactly, as the programs spell them), and only when such a program
-// runs later in the same command line with the variable in its environment:
-// assigned on that command (in front of it, or through env or sudo), or
-// exported by an earlier statement (export, declare/typeset/local -x, an
-// assignment after set -a), or a name odek's own environment already exports.
-// A shell variable that is never exported does not reach the program. A
-// variable the command line never assigns holds the inherited value, which is
-// outside the analysis. Any other command keeps its verdict: a program the
-// analysis cannot see into (a script, a local binary, a build runner) is
-// already judged as running code of its own choosing, whatever it inherits.
+// A variable matters only to the programs that read it (optionEnvReaders;
+// names match exactly, as the programs spell them), and only when such a
+// program runs later in the same command line with the variable in its
+// environment: assigned on that command (in front of it, or through env or
+// sudo), or exported by an earlier statement (export, declare/typeset/local
+// -x, an assignment after set -a), or a name odek's own environment already
+// exports. A shell running a launcher script (`sh mvnw`, `bash ./gradlew`) is
+// that launcher. A shell variable that is never exported does not reach the
+// program. A variable the command line never assigns holds the inherited
+// value, which is outside the analysis. Any other command keeps its verdict.
 //
 // The value is judged the way its reader takes it:
 //   - tar, zip and unzip options, and Maven arguments unless every word is
@@ -65,41 +66,78 @@ const (
 	optionJavaCmd
 )
 
-// optionEnvVar is one option-carrying variable and the programs that read it.
+// optionEnvVar is one option-carrying variable and how its readers take it.
 type optionEnvVar struct {
-	name    string
-	kind    optionEnvKind
-	readers []string
+	name string
+	kind optionEnvKind
 }
-
-var (
-	mavenLaunchers  = []string{"mvn", "mvnw", "mvnDebug"}
-	gradleLaunchers = []string{"gradle", "gradlew"}
-	javaLaunchers   = []string{"mvn", "mvnw", "mvnDebug", "gradle", "gradlew", "sbt", "ant", "catalina.sh"}
-)
 
 // optionEnvVars lists the option-carrying variables in a fixed order, so the
 // words of several variables are spliced deterministically.
 var optionEnvVars = []optionEnvVar{
-	{"TAR_OPTIONS", optionArgv, []string{"tar", "gtar"}},
-	{"ZIPOPT", optionArgv, []string{"zip"}},
-	{"ZIP", optionArgv, []string{"zip"}},
-	{"UNZIPOPT", optionArgv, []string{"unzip"}},
-	{"UNZIP", optionArgv, []string{"unzip"}},
-	{"MAVEN_ARGS", optionToolArgs, mavenLaunchers},
-	{"MAVEN_CONFIG", optionToolArgs, []string{"mvnw"}},
-	{"MAVEN_OPTS", optionJVM, mavenLaunchers},
-	{"MAVEN_DEBUG_OPTS", optionJVM, mavenLaunchers},
-	{"GRADLE_OPTS", optionJVM, gradleLaunchers},
-	{"JAVA_OPTS", optionJVM, []string{"gradle", "gradlew", "sbt", "catalina.sh"}},
-	{"SBT_OPTS", optionJVM, []string{"sbt"}},
-	{"ANT_OPTS", optionJVM, []string{"ant"}},
-	{"CATALINA_OPTS", optionJVM, []string{"catalina.sh"}},
-	{"JAVA_HOME", optionJavaHome, javaLaunchers},
-	// The Maven wrapper and Ant run an inherited $JAVACMD; the Maven launcher
-	// scripts set it themselves in current releases, which is not relied on.
-	{"JAVACMD", optionJavaCmd, []string{"mvn", "mvnw", "mvnDebug", "ant"}},
+	{"TAR_OPTIONS", optionArgv},
+	{"ZIPOPT", optionArgv},
+	{"ZIP", optionArgv},
+	{"UNZIPOPT", optionArgv},
+	{"UNZIP", optionArgv},
+	{"MAVEN_ARGS", optionToolArgs},
+	{"MAVEN_CONFIG", optionToolArgs},
+	{"MAVEN_OPTS", optionJVM},
+	{"MAVEN_DEBUG_OPTS", optionJVM},
+	{"GRADLE_OPTS", optionJVM},
+	{"JAVA_OPTS", optionJVM},
+	{"SBT_OPTS", optionJVM},
+	{"ANT_OPTS", optionJVM},
+	{"CATALINA_OPTS", optionJVM},
+	{"JAVA_HOME", optionJavaHome},
+	{"JAVACMD", optionJavaCmd},
 }
+
+var (
+	// jvmScriptVars are what a JVM launcher script whose variables are not
+	// verified one by one is taken to read: the JVM options and both ways of
+	// naming the java binary.
+	jvmScriptVars = []string{"JAVA_OPTS", "JAVA_HOME", "JAVACMD"}
+	// mavenVars are read by the Maven launchers; they run an inherited
+	// $JAVACMD (the launcher scripts set it themselves in current releases,
+	// which is not relied on) and take the JVM options from $MAVEN_OPTS only.
+	mavenVars = []string{"MAVEN_ARGS", "MAVEN_OPTS", "MAVEN_DEBUG_OPTS", "JAVA_HOME", "JAVACMD"}
+	// jdkToolVars are read by the JDK's own tools: they are native launchers,
+	// but on macOS /usr/bin/java and its siblings are stubs that run the tool
+	// of the JDK under $JAVA_HOME.
+	jdkToolVars = []string{"JAVA_HOME"}
+)
+
+// optionEnvReaders is the one table of the programs that read option-carrying
+// variables and the variables each reads. Every program that starts a JVM is
+// listed: the Gradle start scripts and catalina.sh set the java command
+// themselves and the Maven and Ant scripts take their own *_OPTS rather than
+// $JAVA_OPTS; any other launcher script reads jvmScriptVars.
+var optionEnvReaders = func() map[string][]string {
+	out := map[string][]string{
+		"tar": {"TAR_OPTIONS"}, "gtar": {"TAR_OPTIONS"},
+		"zip":   {"ZIPOPT", "ZIP"},
+		"unzip": {"UNZIPOPT", "UNZIP"},
+		"mvn":   mavenVars, "mvnDebug": mavenVars,
+		"mvnw":    append(append([]string(nil), mavenVars...), "MAVEN_CONFIG"),
+		"gradle":  {"GRADLE_OPTS", "JAVA_OPTS", "JAVA_HOME"},
+		"gradlew": {"GRADLE_OPTS", "JAVA_OPTS", "JAVA_HOME"},
+		"sbt":     append([]string{"SBT_OPTS"}, jvmScriptVars...),
+		"ant":     {"ANT_OPTS", "JAVA_HOME", "JAVACMD"},
+		// catalina.sh runs $JRE_HOME/bin/java or $JAVA_HOME/bin/java.
+		"catalina.sh": {"CATALINA_OPTS", "JAVA_OPTS", "JAVA_HOME"},
+	}
+	for _, name := range strings.Fields("kotlinc kotlinc-jvm kotlin scala scalac scala-cli amm groovy groovyc groovysh " +
+		"lein clojure clj jruby jirb jython jbang grails spring cs coursier sbtn mvnd") {
+		out[name] = jvmScriptVars
+	}
+	for _, name := range strings.Fields("java javac jar jarsigner javadoc javap jdeps jlink jmod jpackage jshell jdb jcmd " +
+		"jconsole jinfo jmap jps jstack jstat jstatd jhsdb jfr keytool serialver rmiregistry jwebserver jrunscript " +
+		"jdeprscan jimage native2ascii") {
+		out[name] = jdkToolVars
+	}
+	return out
+}()
 
 // optionEnvNames is the set of the variables' names.
 var optionEnvNames = func() map[string]bool {
@@ -112,9 +150,13 @@ var optionEnvNames = func() map[string]bool {
 
 // optionEnvReadBy returns the variables the program tool reads, in table order.
 func optionEnvReadBy(tool string) []optionEnvVar {
+	reads := optionEnvReaders[tool]
+	if len(reads) == 0 {
+		return nil
+	}
 	var out []optionEnvVar
 	for _, v := range optionEnvVars {
-		if hasString(v.readers, tool) {
+		if hasString(reads, v.name) {
 			out = append(out, v)
 		}
 	}
@@ -123,12 +165,67 @@ func optionEnvReadBy(tool string) []optionEnvVar {
 
 // optionEnvVarRead returns the variable name when tool reads it.
 func optionEnvVarRead(name, tool string) (optionEnvVar, bool) {
+	if !hasString(optionEnvReaders[tool], name) {
+		return optionEnvVar{}, false
+	}
 	for _, v := range optionEnvVars {
-		if v.name == name && hasString(v.readers, tool) {
+		if v.name == name {
 			return v, true
 		}
 	}
 	return optionEnvVar{}, false
+}
+
+// optionReaderArgv returns the argv of the program that reads the variables
+// when inner runs: inner itself, or, for a shell running a script file (`sh
+// mvnw -v`, `bash -e ./gradlew build`), the script and its arguments, since
+// the script is the launcher. An inline script (`sh -c`) or one read from
+// standard input names no launcher.
+func optionReaderArgv(inner []string) []string {
+	if len(inner) == 0 || !pipedShells[commandName(inner[0])] {
+		return inner
+	}
+	if i := shellScriptOperandIndex(inner); i > 0 {
+		return inner[i:]
+	}
+	return inner
+}
+
+// shellScriptOperandIndex returns the index of the script file a shell
+// invocation runs, or -1 when it runs an inline (-c) script, reads its program
+// from standard input (-s), or has no operand. tokens[0] is the shell; the
+// option grammar is shellInlineScriptIndex's.
+func shellScriptOperandIndex(tokens []string) int {
+	for i := 1; i < len(tokens); i++ {
+		t := tokens[i]
+		switch {
+		case t == "--":
+			if i+1 < len(tokens) {
+				return i + 1
+			}
+			return -1
+		case isRedirectToken(t):
+			i++ // skip the redirect target
+		case strings.HasPrefix(t, "--"):
+			if t == "--rcfile" || t == "--init-file" {
+				i++
+			}
+		case len(t) > 1 && (t[0] == '-' || t[0] == '+'):
+			for _, r := range t[1:] {
+				switch r {
+				case 'c', 's':
+					if t[0] == '-' {
+						return -1
+					}
+				case 'o', 'O':
+					i++ // option name follows as its own token
+				}
+			}
+		default:
+			return i
+		}
+	}
+	return -1
 }
 
 const (
@@ -237,6 +334,7 @@ var (
 // them. It is the per-stage judgement used wherever a single command is
 // classified; the full analysis also splices the words into the argv.
 func optionEnvFloor(assignments, inner []string) RiskClass {
+	inner = optionReaderArgv(inner)
 	if len(inner) == 0 {
 		return Safe
 	}
@@ -709,6 +807,7 @@ func (s *shellAnalysisState) optionEnvValue(name string, inline map[string]strin
 // that analysis starts from.
 func (s *shellAnalysisState) optionEnvAnalysis(inner, inline []string, payload shellAnalysisState, depth int) Analysis {
 	var result Analysis
+	inner = optionReaderArgv(inner)
 	if len(inner) == 0 || s.optionsApplied || s.options == nil {
 		return result
 	}
