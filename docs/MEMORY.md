@@ -88,7 +88,7 @@ The agent maintains its own fact files. When a fact file fills up, the **agent i
 
 Three affordances make this work:
 
-1. **Decision-ready cap errors.** When `add`/`replace` would exceed the cap, the error carries the full entry index — one-based index, size, preview — plus the instruction to free space with `memory remove`/`replace` and retry. The agent can pick an eviction target without an extra read.
+1. **Decision-ready cap errors.** When `add`/`replace` would exceed the cap, the error carries the full entry index — one-based index, size, preview — plus the instruction to free space with `memory remove`/`replace` and retry. The agent can pick an eviction target without an extra read. A fact longer than the whole cap of its target can never fit: it is refused with this error before the content scan and the download-and-run filter run on it.
 
    ```
    memory: adding entry (210 chars) would exceed cap (2500 chars); current: 2438, max: 2500.
