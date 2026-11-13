@@ -24,8 +24,10 @@ import (
 // covDiffGate runs the gate of a fresh engine seeded with st and returns the
 // resources it escalated, sorted, and the engine. With warm set, the engine
 // first gates warm (a trimmed context) and saves turn, as a rebuilt
-// engine's first iteration does, and gates calls on warm.
-func covDiffGate(t *testing.T, st session.TaintState, turn []session.Message, calls []session.ToolCall, warm []session.Message) ([]string, *Engine) {
+// engine's first iteration does, and gates calls on warm. With transcript
+// also set, turn is the run's transcript and the engine's first gate, on
+// warm, decides calls.
+func covDiffGate(t *testing.T, st session.TaintState, turn []session.Message, calls []session.ToolCall, warm []session.Message, transcript bool) ([]string, *Engine) {
 	t.Helper()
 	e := New(nil, tool.NewRegistry(nil), 10, "sys", nil, 0)
 	e.SetApprover(&covApprover{})
@@ -38,7 +40,11 @@ func covDiffGate(t *testing.T, st session.TaintState, turn []session.Message, ca
 		ids[i] = c.ID
 	}
 	gateOn := turn
-	if warm != nil {
+	switch {
+	case warm != nil && transcript:
+		e.startTranscript(session.CloneMessages(turn))
+		gateOn = warm
+	case warm != nil:
 		e.taintGate(ctx, warm, nil, 0, nil, 1)
 		e.TaintSpanState(turn)
 		gateOn = warm
@@ -310,12 +316,16 @@ func TestTaintCoverage_DifferentialIncrementalExporter(t *testing.T) {
 		noCov.Coverage = session.TaintCoverage{}
 		calls := c.candidates()
 		var warm []session.Message
-		if r.IntN(2) == 0 {
+		transcript := false
+		switch r.IntN(3) {
+		case 0:
 			warm = covDiffTrim(turn, 3)
+		case 1:
+			warm, transcript = covDiffTrim(turn, 3+r.IntN(4)), true
 		}
-		withCov, ce := covDiffGate(t, st, turn, calls, warm)
-		rescan, _ := covDiffGate(t, noCov, turn, calls, warm)
-		fresh, _ := covDiffGate(t, session.TaintState{}, turn, calls, warm)
+		withCov, ce := covDiffGate(t, st, turn, calls, warm, transcript)
+		rescan, _ := covDiffGate(t, noCov, turn, calls, warm, transcript)
+		fresh, _ := covDiffGate(t, session.TaintState{}, turn, calls, warm, transcript)
 		escalations += len(withCov)
 		if len(ce.spanStore().covered) > 0 {
 			applied++
@@ -443,9 +453,10 @@ func TestTaintCoverage_MultiHopThroughStore(t *testing.T) {
 		}
 		checks++
 		for _, warm := range warms {
-			withCov, e := covDiffGate(t, final.TaintState(), turn, calls, warm)
-			rescan, _ := covDiffGate(t, noCov, turn, calls, warm)
-			fresh, _ := covDiffGate(t, session.TaintState{}, turn, calls, warm)
+			transcript := warm != nil && checks%3 == 0
+			withCov, e := covDiffGate(t, final.TaintState(), turn, calls, warm, transcript)
+			rescan, _ := covDiffGate(t, noCov, turn, calls, warm, transcript)
+			fresh, _ := covDiffGate(t, session.TaintState{}, turn, calls, warm, transcript)
 			applied := len(e.spanStore().covered) > 0
 			if mustCover && !applied {
 				t.Errorf("%s (warm=%v): coverage not applied", label, warm != nil)

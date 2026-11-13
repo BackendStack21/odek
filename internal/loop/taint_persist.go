@@ -259,11 +259,11 @@ func (e *Engine) TaintSpanState(messages []session.Message) session.TaintState {
 		return st
 	}
 	store, env := e.spanStore(), currentTaintEnv()
-	d, gen := store.observeTrack(messages, env, &store.saveTrack)
+	seen, gen := store.observeTrack(messages, env, &store.saveTrack, nil)
 	// Every message of messages is now judged, and its spans are held
 	// unless another observe is still extracting them.
 	store.covMu.Lock()
-	coverage := store.coverageLocked(messages, d, env)
+	coverage := store.coverageLocked(messages, seen, env)
 	store.covMu.Unlock()
 	st, settled := e.exportTaintState(store, gen)
 	e.taintMu.Lock()

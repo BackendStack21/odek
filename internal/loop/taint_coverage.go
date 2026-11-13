@@ -6,7 +6,6 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"hash"
-	"hash/maphash"
 	"runtime/debug"
 	"strconv"
 	"strings"
@@ -135,9 +134,11 @@ func taintCoverageKey(env taintEnv) ([]byte, bool) {
 
 // taintCoverageHash digests counted messages in order.
 type taintCoverageHash struct {
-	h   hash.Hash
-	n   int
-	buf [4096]byte
+	h hash.Hash
+	n int
+	// bytes counts the field bytes digested.
+	bytes int64
+	buf   [4096]byte
 }
 
 // writeString feeds s through buf: the HMAC has no string writer, and
@@ -160,6 +161,7 @@ func (c *taintCoverageHash) add(m *session.Message) {
 		binary.BigEndian.PutUint64(c.buf[:8], uint64(len(f)))
 		c.h.Write(c.buf[:8])
 		c.writeString(f)
+		c.bytes += int64(len(f))
 	}
 	field(m.Role)
 	field(m.ToolCallID)
@@ -214,91 +216,145 @@ func (c *taintCoverageHash) sum() string { return hex.EncodeToString(c.h.Sum(nil
 // taintCountedMessage reports whether m counts toward coverage.
 func taintCountedMessage(m *session.Message) bool { return m.Role != "system" }
 
-// taintChainSeeds key the in-memory chain over message digests that tells a
-// coverage tracker its counted prefix is unchanged.
-var taintChainSeeds = [2]maphash.Seed{maphash.MakeSeed(), maphash.MakeSeed()}
-
-// taintChain digests a sequence of message digests.
-type taintChain struct{ h [2]maphash.Hash }
-
-func newTaintChain() *taintChain {
-	c := &taintChain{}
-	for i := range c.h {
-		c.h[i].SetSeed(taintChainSeeds[i])
+// taintCountedEnd returns the length of the shortest prefix of messages that
+// holds n counted messages, and false when messages hold fewer.
+func taintCountedEnd(messages []session.Message, n int) (int, bool) {
+	counted := 0
+	for i := range messages {
+		if counted == n {
+			return i, true
+		}
+		if taintCountedMessage(&messages[i]) {
+			counted++
+		}
 	}
-	return c
+	return len(messages), counted == n
 }
-
-func (c *taintChain) add(d taintDigest) {
-	for i := range c.h {
-		c.h[i].Write(d[:])
-	}
-}
-
-func (c *taintChain) sum() [2]uint64 { return [2]uint64{c.h[0].Sum64(), c.h[1].Sum64()} }
 
 // taintCoverageTracker is the coverage the store can vouch for: hash holds
-// the HMAC over the first n counted messages of the history it last
-// recorded, chain the in-memory digest of those messages.
+// the HMAC over the counted messages of the history it last recorded, digs
+// their scan digests in order (one per counted message), which tell the
+// next recording whether its history begins with them.
 type taintCoverageTracker struct {
-	hash  *taintCoverageHash
-	chain [2]uint64
-	n     int
+	hash *taintCoverageHash
+	digs []taintDigest
 }
 
-// coverageLocked returns the coverage of messages (with digests d, observed
-// just now under env), extending the tracker when its counted prefix is
-// unchanged and rebuilding it otherwise. The caller holds covMu.
-func (s *taintSpanStore) coverageLocked(messages []session.Message, d []taintDigest, env taintEnv) session.TaintCoverage {
+// coverageLocked returns the coverage of messages (with what was derived
+// from them, seen, observed just now under env), extending the tracker when
+// its counted prefix is unchanged and rebuilding it otherwise. The caller
+// holds covMu.
+func (s *taintSpanStore) coverageLocked(messages []session.Message, seen []taintSeen, env taintEnv) session.TaintCoverage {
 	key, ok := taintCoverageKey(env)
 	if !ok {
 		return session.TaintCoverage{}
 	}
 	t := &s.cov
-	chain := newTaintChain()
 	start := 0
 	if t.hash != nil {
 		// Extend only when this history begins with the counted messages
-		// the tracker already hashed.
+		// the tracker already hashed: equal scan digests mean the same
+		// fields, which the HMAC reads.
 		counted := 0
-		for start < len(messages) && counted < t.n {
+		for start < len(messages) && counted < len(t.digs) {
 			if taintCountedMessage(&messages[start]) {
-				chain.add(d[start])
+				if seen[start].d != t.digs[counted] {
+					break
+				}
 				counted++
 			}
 			start++
 		}
-		if counted != t.n || chain.sum() != t.chain {
+		if counted != len(t.digs) {
 			t.hash = nil
 		}
 	}
 	if t.hash == nil {
 		*t = taintCoverageTracker{hash: newTaintCoverageHash(key)}
-		chain, start = newTaintChain(), 0
+		start = 0
 	}
+	before := t.hash.bytes
 	for i := start; i < len(messages); i++ {
 		if taintCountedMessage(&messages[i]) {
 			t.hash.add(&messages[i])
-			chain.add(d[i])
+			t.digs = append(t.digs, seen[i].d)
 		}
 	}
-	t.chain, t.n = chain.sum(), t.hash.n
-	if t.n == 0 {
+	s.coverageWork.Add(t.hash.bytes - before)
+	if len(t.digs) == 0 {
 		return session.TaintCoverage{}
 	}
-	return session.TaintCoverage{Messages: t.n, Digest: t.hash.sum()}
+	return session.TaintCoverage{Messages: len(t.digs), Digest: t.hash.sum()}
 }
 
-// verifySeedCoverage reports whether messages reproduce the seeded coverage
-// c under env. On a match it also returns the tracker positioned after the
-// covered prefix, so recording the next coverage extends it.
-func verifySeedCoverage(messages []session.Message, d []taintDigest, c session.TaintCoverage, env taintEnv) (bool, taintCoverageTracker) {
+// taintSeedCheck is the outcome of checking a seeded coverage: applies when
+// it may be marked applied, verified when a history reproduced it (tracker
+// then holds the HMAC and digests of the covered messages).
+type taintSeedCheck struct {
+	applies, verified bool
+	tracker           taintCoverageTracker
+}
+
+// checkSeedCoverage checks the seeded coverage c for an observe of messages
+// (seen derived from them). A coverage equal to the one the store records
+// now is its own: those messages were observed here, and it applies without
+// a check. Otherwise the history checked is transcript when set (the run's
+// full history; messages may be a trimmed projection of it, which cannot
+// reproduce the coverage) and messages otherwise. A history with fewer
+// counted messages than c covers cannot reproduce it and costs nothing; any
+// other spends the store's one check of c.
+func (s *taintSpanStore) checkSeedCoverage(c session.TaintCoverage, messages []session.Message, seen []taintSeen, transcript []session.Message, env taintEnv) taintSeedCheck {
+	if s.ownCoverage(c) {
+		return taintSeedCheck{applies: true}
+	}
+	target := messages
+	if transcript != nil {
+		target, seen = transcript, nil
+	}
+	end, ok := taintCountedEnd(target, c.Messages)
+	if !ok {
+		return taintSeedCheck{}
+	}
+	s.mu.Lock()
+	check := s.seedCov == c && !s.seedCovApplied && s.seedCovTries < maxTaintSeedCoverageTries
+	if check {
+		s.seedCovTries++
+	}
+	s.mu.Unlock()
+	if !check {
+		return taintSeedCheck{}
+	}
+	target = target[:end]
+	if seen == nil {
+		var digested int64
+		seen, _, _, digested = taintSeenFor(target, taintScanTrack{})
+		s.digestWork.Add(digested)
+	}
+	ok, tracker, hashed := verifySeedCoverage(target, seen, c, env)
+	s.verifyWork.Add(hashed)
+	return taintSeedCheck{applies: ok, verified: ok, tracker: tracker}
+}
+
+// ownCoverage reports whether c is the coverage the store records now.
+func (s *taintSpanStore) ownCoverage(c session.TaintCoverage) bool {
+	s.covMu.Lock()
+	defer s.covMu.Unlock()
+	t := &s.cov
+	return t.hash != nil && len(t.digs) == c.Messages && hmac.Equal([]byte(t.hash.sum()), []byte(c.Digest))
+}
+
+// verifySeedCoverage reports whether messages (with what was derived from
+// them, seen) reproduce the seeded coverage c under env. On a match it also
+// returns the tracker positioned after the covered prefix, so recording the
+// next coverage extends it. hashed is the number of message bytes the check
+// digested.
+func verifySeedCoverage(messages []session.Message, seen []taintSeen, c session.TaintCoverage, env taintEnv) (bool, taintCoverageTracker, int64) {
 	key, ok := taintCoverageKey(env)
 	if !ok || !c.Valid() {
-		return false, taintCoverageTracker{}
+		return false, taintCoverageTracker{}, 0
 	}
 	h := newTaintCoverageHash(key)
-	chain := newTaintChain()
+	digs := make([]taintDigest, 0, c.Messages)
 	for i := range messages {
 		if h.n == c.Messages {
 			break
@@ -307,10 +363,10 @@ func verifySeedCoverage(messages []session.Message, d []taintDigest, c session.T
 			continue
 		}
 		h.add(&messages[i])
-		chain.add(d[i])
+		digs = append(digs, seen[i].d)
 	}
 	if h.n != c.Messages || !hmac.Equal([]byte(h.sum()), []byte(c.Digest)) {
-		return false, taintCoverageTracker{}
+		return false, taintCoverageTracker{}, h.bytes
 	}
-	return true, taintCoverageTracker{hash: h, chain: chain.sum(), n: h.n}
+	return true, taintCoverageTracker{hash: h, digs: digs}, h.bytes
 }

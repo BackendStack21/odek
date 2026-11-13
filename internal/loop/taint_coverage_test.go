@@ -345,17 +345,14 @@ func TestTaintCoverage_MismatchMeansFullScan(t *testing.T) {
 	}
 
 	// Another working directory never matches.
-	d := make([]taintDigest, len(history))
-	for i := range history {
-		d[i] = taintMessageDigest(&history[i], nil)
-	}
+	seen, _, _, _ := taintSeenFor(history, taintScanTrack{})
 	env := currentTaintEnv()
 	other := env
 	other.cwd = env.cwd + "-elsewhere"
-	if ok, _ := verifySeedCoverage(history, d, st.Coverage, env); !ok {
+	if ok, _, _ := verifySeedCoverage(history, seen, st.Coverage, env); !ok {
 		t.Fatal("precondition: the coverage verifies under its own environment")
 	}
-	if ok, _ := verifySeedCoverage(history, d, st.Coverage, other); ok {
+	if ok, _, _ := verifySeedCoverage(history, seen, st.Coverage, other); ok {
 		t.Fatal("a coverage verified under another working directory")
 	}
 }
