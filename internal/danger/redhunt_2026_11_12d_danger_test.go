@@ -415,3 +415,79 @@ func TestRED_JavaBinaryResolvedBeforeItIsJudged(t *testing.T) {
 		}
 	}
 }
+
+// A variable was judged for every later reader once any statement exported
+// it, also after a statement took it out of the environment again: `export
+// TAR_OPTIONS=--to-command=sh; unset TAR_OPTIONS; tar xf x.tar` runs a plain
+// tar, yet classified above it.
+//
+// Correct behaviour: after unset, export -n or declare/typeset +x at a place
+// every later command is certain to follow, the reader keeps its own verdict;
+// a later export counts again, and a removal the analysis cannot be sure of
+// (a branch, a subshell, a function, a read-only variable, a substitution
+// that runs earlier) changes nothing.
+func TestRED_UnexportedOptionVariableIsNotJudged(t *testing.T) {
+	t.Setenv("HOME", "/home/user")
+	t.Chdir(t.TempDir())
+	unsetExecEnvR4(t)
+	const export = `export TAR_OPTIONS=--to-command=sh; `
+	plain := Classify(`tar xf x.tar`)
+	judged := Classify(export + `tar xf x.tar`)
+	if Rank(judged) <= Rank(plain) {
+		t.Fatalf("premise: exported form classified %s, plain %s", judged, plain)
+	}
+	for cmd, ref := range map[string]string{
+		export + `export -n TAR_OPTIONS; tar xf x.tar`:                          `tar xf x.tar`,
+		export + `unset TAR_OPTIONS; tar xf x.tar`:                              `tar xf x.tar`,
+		export + `unset -v TAR_OPTIONS; tar xf x.tar`:                           `tar xf x.tar`,
+		export + `declare +x TAR_OPTIONS; tar xf x.tar`:                         `tar xf x.tar`,
+		export + `typeset +x TAR_OPTIONS; tar xf x.tar`:                         `tar xf x.tar`,
+		export + `unset TAR_OPTIONS; TAR_OPTIONS=--to-command=sh; tar xf x.tar`: `tar xf x.tar`,
+		export + `unset TAR_OPTIONS; bash -c 'tar xf x.tar'`:                    `bash -c 'tar xf x.tar'`,
+		`TAR_OPTIONS=--to-command=sh bash -c 'unset TAR_OPTIONS; tar xf x.tar'`: `bash -c 'tar xf x.tar'`,
+		`export ZIPOPT=-m; unset ZIPOPT; zip a.zip f`:                           `zip a.zip f`,
+		`export MAVEN_OPTS=-javaagent:/tmp/x.jar; export -n MAVEN_OPTS; mvn -v`: `mvn -v`,
+		`export JAVA_HOME=/tmp/jdk; unset JAVA_HOME; mvn -v`:                    `mvn -v`,
+		`export JAVACMD=/tmp/j; unset TAR_OPTIONS JAVACMD; mvn -v`:              `mvn -v`,
+	} {
+		if got, want := Classify(cmd), Classify(ref); got != want {
+			t.Errorf("Classify(%q) = %s, want %s (the verdict of %q)", cmd, got, want, ref)
+		}
+	}
+	// With the name in odek's own environment the removal counts the same.
+	t.Setenv("TAR_OPTIONS", "-v")
+	if got := Classify(export + `unset TAR_OPTIONS; tar xf x.tar`); got != plain {
+		t.Errorf("with TAR_OPTIONS inherited: unset form = %s, want %s", got, plain)
+	}
+	os.Unsetenv("TAR_OPTIONS")
+	for _, cmd := range []string{
+		export + `unset TAR_OPTIONS; export TAR_OPTIONS=--to-command=sh; tar xf x.tar`,
+		export + `export -n TAR_OPTIONS; export TAR_OPTIONS; tar xf x.tar`,
+		export + `declare +x TAR_OPTIONS; declare -x TAR_OPTIONS=--to-command=sh; tar xf x.tar`,
+		export + `unset TAR_OPTIONS; set -a; TAR_OPTIONS=--to-command=sh; tar xf x.tar`,
+		export + `unset TAR_OPTIONS; TAR_OPTIONS=--to-command=sh tar xf x.tar`,
+		export + `unset TAR_OPTIONS; eval 'export TAR_OPTIONS=--to-command=sh'; tar xf x.tar`,
+		export + `unset TAR_OPTIONS; . ./env.sh; tar xf x.tar`,
+		export + `if test -f nope; then unset TAR_OPTIONS; fi; tar xf x.tar`,
+		export + `(unset TAR_OPTIONS); tar xf x.tar`,
+		export + `{ unset TAR_OPTIONS; }; tar xf x.tar`,
+		export + `false && unset TAR_OPTIONS; tar xf x.tar`,
+		export + `true || unset TAR_OPTIONS; tar xf x.tar`,
+		export + `unset TAR_OPTIONS | cat; tar xf x.tar`,
+		export + `unset TAR_OPTIONS & tar xf x.tar`,
+		export + `f() { unset TAR_OPTIONS; }; tar xf x.tar; f`,
+		export + `for i in; do unset TAR_OPTIONS; done; tar xf x.tar`,
+		export + `bash -c 'unset TAR_OPTIONS'; tar xf x.tar`,
+		export + `readonly TAR_OPTIONS; unset TAR_OPTIONS; tar xf x.tar`,
+		export + `declare -r TAR_OPTIONS; unset TAR_OPTIONS; tar xf x.tar`,
+		export + `unset -f TAR_OPTIONS; tar xf x.tar`,
+		export + `unset 'TAR_OPTIONS[1]'; tar xf x.tar`,
+		export + `unset TAR; tar xf x.tar`,
+		export + `echo "$(tar xf x.tar)"; unset TAR_OPTIONS`,
+		export + `tar xf x.tar; unset TAR_OPTIONS`,
+	} {
+		if got := Classify(cmd); Rank(got) <= Rank(plain) {
+			t.Errorf("Classify(%q) = %s, want above %s: the variable can still reach tar", cmd, got, plain)
+		}
+	}
+}
