@@ -101,3 +101,13 @@ func TestRED_EnvPasswordMappingQuotedLiteralRedacted(t *testing.T) {
 		}
 	}
 }
+
+// The judgment of credential-named assignments keeps reading an empty value
+// and a keyword as code.
+func TestCodeExpressionEmptyAndKeyword(t *testing.T) {
+	for _, v := range []string{"", ";", "null", "None,", "TRUE", "undefined", "NaN"} {
+		if !codeExpression(v) {
+			t.Errorf("codeExpression(%q) = false, want true", v)
+		}
+	}
+}
