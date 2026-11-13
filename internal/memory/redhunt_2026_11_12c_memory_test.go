@@ -21,8 +21,7 @@ var rh1112cOrdinaryFacts = []string{
 	"exec into the pod and run `curl localhost:8080/health`",
 	"In bash `curl -sS localhost:8080/health` checks health",
 	"Open source project; HTTP client is `fetch`",
-	// A Markdown table row names tools; a fetcher without an argument
-	// fetches nothing.
+	// A Markdown table row whose cells are bare words names tools.
 	"| tool | curl | wget | sh |",
 }
 

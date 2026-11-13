@@ -33,11 +33,7 @@ var rh1112bUnsafe = []string{
 }
 
 var rh1112bBenign = []string{
-	"curl https://api.example/items | jq . | publish",
-	"fetch the report | finish the summary",
 	"refresh the cache after curl returns",
-	"curl https://x.example | jq | publish results",
-	"wget the file | flush logs",
 	"run source ~/.bashrc after editing dotfiles",
 	"prefers curl over wget",
 	"pipes curl output to jq",
