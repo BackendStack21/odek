@@ -212,3 +212,71 @@ func TestRED_OptionEnvBenignValuesKeepReaderVerdict(t *testing.T) {
 		}
 	}
 }
+
+// `export NAME+=word` and `declare -x NAME+=word` append to NAME (as plain
+// `NAME+=word` does), but the operand reader kept the `+` and looked up
+// `NAME+`, so the variable kept its earlier value: every tracked variable
+// (HOME for a login shell's startup files, a path used as a write target, the
+// option-carrying variables) was judged with a stale value.
+//
+// Correct behaviour: an append to a known value yields the joined value; an
+// append to an unknown one leaves it unknown.
+func TestRED_AppendDeclarationUpdatesTrackedValue(t *testing.T) {
+	t.Setenv("HOME", "/home/user")
+	t.Chdir(t.TempDir())
+	unsetOptionEnvForTest(t)
+	for cmd, ref := range map[string]string{
+		`export TAR_OPTIONS=-v; export TAR_OPTIONS+=' --to-command=sh'; tar xf x.tar`:     `tar --to-command=sh xf x.tar`,
+		`export TAR_OPTIONS=-v; declare -x TAR_OPTIONS+=' --to-command=sh'; tar xf x.tar`: `tar --to-command=sh xf x.tar`,
+		`export TAR_OPTIONS=-v TAR_OPTIONS+=' --to-command=sh'; tar xf x.tar`:             `tar --to-command=sh xf x.tar`,
+		`export UNZIP=-q; export UNZIP+=' -d /etc'; unzip a.zip`:                          `unzip -d /etc a.zip`,
+		`export MAVEN_OPTS=-Xmx1g; export MAVEN_OPTS+=' -javaagent:/tmp/x.jar'; mvn -v`:   `MAVEN_OPTS=-javaagent:/tmp/x.jar mvn -v`,
+		`export HOME=/home/user; export HOME+=/x; bash -l`:                                `HOME=/home/user/x bash -l`,
+		`declare -x HOME=/home/user; declare -x HOME+=/x; bash -l`:                        `HOME=/home/user/x bash -l`,
+		`export D=/home/user/w; export D+=/../../../etc; touch "$D/f"`:                    `touch /etc/f`,
+	} {
+		want := Classify(ref)
+		if Rank(want) <= Rank(LocalWrite) {
+			t.Fatalf("reference %q classified %s; test premise broken", ref, want)
+		}
+		if got := Classify(cmd); Rank(got) < Rank(want) {
+			t.Errorf("Classify(%q) = %s, want at least %s (the verdict of %q)", cmd, got, want, ref)
+		}
+	}
+	// An append that keeps the value harmless keeps the verdict.
+	if got, want := Classify(`export HOME=/home/user; export HOME+=''; bash -l`), Classify(`bash -l`); got != want {
+		t.Errorf("an empty append to HOME classified %s, want %s", got, want)
+	}
+}
+
+// ${NAME:=word} (and ${NAME=word} on an unset NAME) assigns NAME, but the
+// analysis kept the value NAME had before, so a later use was judged with it:
+// `export TAR_OPTIONS=; : ${TAR_OPTIONS:=--to-command=sh}; tar xf x.tar` ran
+// sh for each member yet classified local_write.
+//
+// Correct behaviour: the assignment drops the known value, so later uses are
+// unresolved (and a reader of an option-carrying variable fails closed).
+func TestRED_DefaultAssignmentDropsStaleValue(t *testing.T) {
+	t.Setenv("HOME", "/home/user")
+	t.Chdir(t.TempDir())
+	unsetOptionEnvForTest(t)
+	for cmd, want := range map[string]RiskClass{
+		`export TAR_OPTIONS=; : ${TAR_OPTIONS:=--to-command=sh}; tar xf x.tar`: Classify(`tar --to-command=sh xf x.tar`),
+		`D=; : ${D:=/etc}; touch "$D/f"`:                                       Classify(`touch /etc/f`),
+		`D=; echo "${D:=/etc}"; touch "$D/f"`:                                  Classify(`touch /etc/f`),
+	} {
+		if got := Classify(cmd); Rank(got) < Rank(want) {
+			t.Errorf("Classify(%q) = %s, want at least %s", cmd, got, want)
+		}
+	}
+	// The default does not apply to a variable that is set (and, without the
+	// colon, to one that is set but empty): the value stands.
+	for cmd, plain := range map[string]string{
+		`D=/home/user/w; : ${D:=/etc}; touch "$D/f"`:                          `touch /home/user/w/f`,
+		`export TAR_OPTIONS=; : ${TAR_OPTIONS=--to-command=sh}; tar xf x.tar`: `tar xf x.tar`,
+	} {
+		if got, want := Classify(cmd), Classify(plain); got != want {
+			t.Errorf("Classify(%q) = %s, want %s (the verdict of %q)", cmd, got, want, plain)
+		}
+	}
+}

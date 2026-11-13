@@ -1299,11 +1299,8 @@ func (s *shellAnalysisState) forget(names ...string) {
 // The declaring builtins (export, declare, typeset, local, readonly) record
 // a literal NAME=value when bind is set, and return the names they bound.
 func (s *shellAnalysisState) rebind(name string, inner []string, bind bool) (names []string) {
-	operandName := func(tok string) string {
-		tok, _, _ = strings.Cut(tok, "=")
-		tok, _, _ = strings.Cut(tok, "[")
-		return tok
-	}
+	// NAME, NAME[sub], NAME=value and NAME+=value all name NAME.
+	operandName := operandVarName
 	switch name {
 	case "read":
 		// The variables hold whatever the input supplies at run time; a
@@ -1344,6 +1341,12 @@ func (s *shellAnalysisState) rebind(name string, inner []string, bind bool) (nam
 		}
 	case "unset", "export", "declare", "typeset", "local", "readonly", "let":
 		bound := declarationBindings(name, inner)
+		before := make(map[string]string, len(bound.appendOrder))
+		for _, op := range bound.appendOrder {
+			if v, ok := s.vars[op]; ok {
+				before[op] = v
+			}
+		}
 		for _, tok := range inner[1:] {
 			if isShortFlagToken(tok) && strings.Contains(tok, "n") && name != "unset" && name != "let" && name != "export" {
 				// declare -n makes a name an alias of another variable.
@@ -1360,17 +1363,28 @@ func (s *shellAnalysisState) rebind(name string, inner []string, bind bool) (nam
 				s.vars[op] = value
 				names = append(names, op)
 			}
+			// NAME+=value appends to a known value; an unknown one stays
+			// unknown (it was forgotten above).
+			for _, op := range bound.appendOrder {
+				if old, ok := before[op]; ok && !strings.Contains(old, dynamicSubstToken) {
+					s.vars[op] = old + bound.appends[op]
+					names = append(names, op)
+				}
+			}
 		}
 	}
 	return names
 }
 
 // declarationBinding is the static outcome of an export/declare/readonly
-// operand list: the literal NAME=value pairs that bind a known value, and the
-// names whose existing value the builtin leaves alone.
+// operand list: the literal NAME=value pairs that bind a known value, the
+// literal NAME+=value pairs that append to the value, and the names whose
+// existing value the builtin leaves alone.
 type declarationBinding struct {
-	values map[string]string
-	keep   map[string]bool
+	values      map[string]string
+	appends     map[string]string
+	appendOrder []string
+	keep        map[string]bool
 }
 
 // declarationBindings reads the operands of a variable-declaring builtin. A
@@ -1379,7 +1393,7 @@ type declarationBinding struct {
 // retype the value (-i, -l, -u, -c, -a, -A), values built by substitutions
 // and array literals are not recorded, so those names are dropped.
 func declarationBindings(name string, inner []string) declarationBinding {
-	out := declarationBinding{values: map[string]string{}, keep: map[string]bool{}}
+	out := declarationBinding{values: map[string]string{}, appends: map[string]string{}, keep: map[string]bool{}}
 	transparent := "xrgpn"
 	if name == "unset" || name == "let" {
 		return out
@@ -1396,28 +1410,50 @@ func declarationBindings(name string, inner []string) declarationBinding {
 	if !plain {
 		return out
 	}
+	assignedHere := make(map[string]bool)
 	for i := 1; i < len(inner); i++ {
 		tok := inner[i]
 		if strings.HasPrefix(tok, "-") {
 			continue
 		}
 		varName, value, assigned := strings.Cut(tok, "=")
-		// A substitution glued to the value is split off into its own word
-		// by normalization, leaving a truncated value behind.
-		if assigned && i+1 < len(inner) && strings.Contains(inner[i+1], dynamicSubstToken) {
-			continue
+		appendForm := false
+		if assigned {
+			varName, appendForm = strings.CutSuffix(varName, "+")
 		}
 		if !isValidVarName(varName) {
 			continue
 		}
+		if assigned {
+			assignedHere[varName] = true
+			delete(out.keep, varName)
+		}
+		// A substitution glued to the value is split off into its own word
+		// by normalization, leaving a truncated value behind.
+		dynamic := assigned && i+1 < len(inner) && strings.Contains(inner[i+1], dynamicSubstToken)
 		switch {
 		case !assigned:
-			if name != "local" {
+			if name != "local" && !assignedHere[varName] {
 				out.keep[varName] = true
 			}
-		case strings.Contains(value, dynamicSubstToken) || strings.HasPrefix(value, "("):
+		case dynamic || strings.Contains(value, dynamicSubstToken) || strings.HasPrefix(value, "("):
+			// The value is not known: whatever was recorded is dropped.
+			delete(out.values, varName)
+			delete(out.appends, varName)
+			out.appendOrder = slices.DeleteFunc(out.appendOrder, func(n string) bool { return n == varName })
+		case appendForm:
+			if v, ok := out.values[varName]; ok {
+				out.values[varName] = v + expandEnvVars(value)
+			} else if v, ok := out.appends[varName]; ok {
+				out.appends[varName] = v + expandEnvVars(value)
+			} else {
+				out.appends[varName] = expandEnvVars(value)
+				out.appendOrder = append(out.appendOrder, varName)
+			}
 		default:
 			out.values[varName] = expandEnvVars(value)
+			delete(out.appends, varName)
+			out.appendOrder = slices.DeleteFunc(out.appendOrder, func(n string) bool { return n == varName })
 		}
 	}
 	return out
