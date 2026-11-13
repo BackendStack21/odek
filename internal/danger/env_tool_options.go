@@ -31,11 +31,11 @@ import (
 // already judged as running code of its own choosing, whatever it inherits.
 //
 // The value is judged the way its reader takes it:
-//   - tar, zip and unzip options, and Maven arguments other than a few output
-//     and mode flags, are spliced into the program's argv right after its name
-//     (and, for tools that read them in another order, appended) and the
-//     invocation is analysed again, so every option the per-tool adapters know
-//     is judged exactly like the same option typed out;
+//   - tar, zip and unzip options, and Maven arguments unless every word is
+//     one of a few output and mode flags, are spliced into the program's argv
+//     right after its name (and, for tools that read them in another order,
+//     appended) and the invocation is analysed again, so every option the
+//     per-tool adapters know is judged exactly like the same option typed out;
 //   - JVM options are plain when every word is a listed tuning option or a
 //     system property that is not in jvmCodeProperties; anything else (agents,
 //     class and module paths, argument files, error hooks, a main class)

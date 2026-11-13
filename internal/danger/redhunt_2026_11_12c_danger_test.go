@@ -577,3 +577,111 @@ func TestRED_UncomputedAppendOrDefaultLeavesValueUnresolved(t *testing.T) {
 		}
 	}
 }
+
+// The remaining binding and value forms of the option-carrying variables:
+// java binaries given empty, computed, absolute or working-directory values,
+// a JVM value option without its value, set's allexport spellings, getopts,
+// export -- and export -n, several variables spliced together, and a variable
+// bound by more payloads than the analysis records.
+func TestOptionEnvBindingAndValueForms(t *testing.T) {
+	t.Setenv("HOME", "/home/user")
+	t.Chdir(t.TempDir())
+	unsetOptionEnvForTest(t)
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	words := func(n int) string { return strings.TrimSpace(strings.Repeat("-q ", n)) }
+	var evals strings.Builder
+	evals.WriteString("export TAR_OPTIONS=-v; ")
+	for i := 0; i < maxOptionEnvBinders+2; i++ {
+		evals.WriteString("eval 'TAR_OPTIONS=-v'; ")
+	}
+	evals.WriteString("tar xf x.tar")
+	for cmd, want := range map[string]RiskClass{
+		`JAVA_HOME=$X mvn -v`:                                            CodeExecution,
+		`JAVACMD=$X mvnw -v`:                                             CodeExecution,
+		`JAVA_HOME=` + cwd + `/jdk mvn -v`:                               CodeExecution,
+		`JAVACMD=/var/tmp/java mvnw -v`:                                  CodeExecution,
+		`MAVEN_OPTS=--add-opens mvn -v`:                                  SystemWrite,
+		`MAVEN_OPTS='--add-opens a@b' mvn -v`:                            SystemWrite,
+		`set -o allexport; TAR_OPTIONS=--to-command=sh; tar xf x.tar`:    CodeExecution,
+		`set -ea; TAR_OPTIONS=--to-command=sh; tar xf x.tar`:             CodeExecution,
+		`getopts ab TAR_OPTIONS; export TAR_OPTIONS; tar xf x.tar`:       SystemWrite,
+		`export -- TAR_OPTIONS=--to-command=sh; tar xf x.tar`:            CodeExecution,
+		`ZIPOPT='` + words(40) + `' ZIP='` + words(40) + `' zip a.zip f`: Unknown,
+		evals.String(): SystemWrite,
+	} {
+		if got := Classify(cmd); Rank(got) < Rank(want) {
+			t.Errorf("Classify(%.80q) = %s, want at least %s", cmd, got, want)
+		}
+	}
+	for cmd, plain := range map[string]string{
+		`JAVA_HOME= mvn -v`: `mvn -v`,
+		`JAVACMD= mvnw -v`:  `mvnw -v`,
+		`JAVACMD=/usr/lib/jvm/java-17/bin/java mvnw -v`:              `mvnw -v`,
+		`set -o pipefail; TAR_OPTIONS=--to-command=sh; tar xf x.tar`: `tar xf x.tar`,
+		`set -- -a; TAR_OPTIONS=--to-command=sh; tar xf x.tar`:       `tar xf x.tar`,
+		`export -n TAR_OPTIONS=--to-command=sh; tar xf x.tar`:        `tar xf x.tar`,
+	} {
+		if got, want := Classify(cmd), Classify(plain); got != want {
+			t.Errorf("Classify(%q) = %s, want %s (the verdict of %q)", cmd, got, want, plain)
+		}
+	}
+}
+
+// The edge forms of BASH_CMDS assignments and hash bindings that cannot be
+// read statically fail closed, and an alias name past the body bound stops
+// collecting bodies.
+func TestCommandTableEdgeForms(t *testing.T) {
+	t.Setenv("HOME", "/home/user")
+	t.Chdir(t.TempDir())
+	for _, cmd := range []string{
+		`BASH_CMDS=([ls=/bin/rm); ls -rf /home/user`,
+		`BASH_CMDS=([ls]); ls -rf /home/user`,
+		`declare -A BASH_CMDS=([ls]=/bin/rm; ls -rf /home/user`,
+		`printf -v 'BASH_CMDS[ls]x' %s /bin/rm; ls -rf /home/user`,
+		`hash 'a/b=./x'; ls`,
+	} {
+		if got := Classify(cmd); Rank(got) < Rank(SystemWrite) {
+			t.Errorf("Classify(%q) = %s, want at least system_write", cmd, got)
+		}
+	}
+	table := newAliasTable()
+	for i := 0; i < 3*maxAliasBodies; i++ {
+		table.define([]string{fmt.Sprintf("x=body%d", i)})
+	}
+	if n := len(table.defs["x"]); n > maxAliasBodies+1 {
+		t.Errorf("alias x holds %d bodies; past the bound none are added", n)
+	}
+	if table.define([]string{"x=another"}) {
+		t.Error("a name past the body bound still defines cleanly")
+	}
+}
+
+// The ${...} reader fails closed on constructs it cannot finish: nesting past
+// the depth bound, an unterminated $'...' or '...' inside it; a single quote
+// whose two readings agree parses.
+func TestNestedScannerBraceExpansionEdges(t *testing.T) {
+	deep := "echo " + strings.Repeat("${a:-", maxShellSubstitutionDepth+2) + "x" + strings.Repeat("}", maxShellSubstitutionDepth+2) + "\n"
+	for _, text := range []string{
+		deep,
+		"echo ${x:-$'abc\n",
+		"echo ${x:-'abc\n",
+		"echo \"${x:-'}'}\"\n",
+	} {
+		if _, complete := parseShellCommands(text); complete {
+			t.Errorf("parse of %.60q completed; it must fail closed", text)
+		}
+	}
+	for _, text := range []string{
+		"echo \"${x:-'a'}\"\necho ok\n",
+		"echo ${x:-\"it's\"}\necho ok\n",
+		"echo ${x:-$'a\\'b'}\necho ok\n",
+	} {
+		cmds, complete := parseShellCommands(text)
+		if !complete || len(cmds) == 0 || cmds[len(cmds)-1].words[0] != "echo" {
+			t.Errorf("parse of %q: complete=%v commands=%v", text, complete, cmds)
+		}
+	}
+}
