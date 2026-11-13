@@ -29,7 +29,7 @@ import (
 // exports. A shell running a launcher script (`sh mvnw`, `bash ./gradlew`) is
 // that launcher. A shell variable that is never exported does not reach the
 // program, nor does one a statement the later commands are certain to follow
-// removed from the environment again (unset, export -n, declare +x). A variable the command line never assigns holds the inherited
+// removed from the environment again (unset, export -n). A variable the command line never assigns holds the inherited
 // value, which is outside the analysis. Any other command keeps its verdict.
 //
 // The value is judged the way its reader takes it:
@@ -666,8 +666,7 @@ type optionEnvState struct {
 	// assignment of it.
 	tails map[string]string
 	// unexported records, per variable, the scope of the analysis whose
-	// statement took it out of the environment (unset, export -n, declare
-	// +x) where every later command of that analysis is certain to see it.
+	// statement took it out of the environment (unset, export -n) where every later command of that analysis is certain to see it.
 	// A later export of the name, or anything after which any variable may
 	// be exported, removes the record.
 	unexported map[string]int
@@ -876,8 +875,9 @@ func (s *shellAnalysisState) noteOptionBindings(stage, inner []string, certain b
 func (s *shellAnalysisState) noteDeclarationBindings(name string, args []string, certain bool) {
 	o := s.options
 	exports, nameref := name == "export", false
-	// unexports: export -n and declare/typeset/local +x remove the export
-	// attribute of their operands.
+	// unexports: export -n removes the export attribute of its operands.
+	// declare/typeset +x is not honoured: a POSIX sh has no such builtin, so
+	// the statement fails there and the variable stays exported.
 	unexports, readonly := false, name == "readonly"
 	i := 0
 	for ; i < len(args); i++ {
@@ -893,8 +893,6 @@ func (s *shellAnalysisState) noteDeclarationBindings(name string, args []string,
 			exports = exports || strings.ContainsRune(a[1:], 'x')
 			nameref = nameref || strings.ContainsRune(a[1:], 'n')
 			readonly = readonly || strings.ContainsRune(a[1:], 'r')
-		} else if name != "export" && name != "readonly" {
-			unexports = unexports || strings.ContainsRune(a[1:], 'x')
 		}
 	}
 	if name == "export" && nameref {

@@ -485,7 +485,7 @@ func TestRED_JavaBinaryResolvedBeforeItIsJudged(t *testing.T) {
 // TAR_OPTIONS=--to-command=sh; unset TAR_OPTIONS; tar xf x.tar` runs a plain
 // tar, yet classified above it.
 //
-// Correct behaviour: after unset, export -n or declare/typeset +x at a place
+// Correct behaviour: after unset or export -n at a place
 // every later command is certain to follow, the reader keeps its own verdict;
 // a later export counts again, and a removal the analysis cannot be sure of
 // (a branch, a subshell, a function, a read-only variable, a substitution
@@ -504,8 +504,6 @@ func TestRED_UnexportedOptionVariableIsNotJudged(t *testing.T) {
 		export + `export -n TAR_OPTIONS; tar xf x.tar`:                          `tar xf x.tar`,
 		export + `unset TAR_OPTIONS; tar xf x.tar`:                              `tar xf x.tar`,
 		export + `unset -v TAR_OPTIONS; tar xf x.tar`:                           `tar xf x.tar`,
-		export + `declare +x TAR_OPTIONS; tar xf x.tar`:                         `tar xf x.tar`,
-		export + `typeset +x TAR_OPTIONS; tar xf x.tar`:                         `tar xf x.tar`,
 		export + `unset TAR_OPTIONS; TAR_OPTIONS=--to-command=sh; tar xf x.tar`: `tar xf x.tar`,
 		export + `unset TAR_OPTIONS; bash -c 'tar xf x.tar'`:                    `bash -c 'tar xf x.tar'`,
 		`TAR_OPTIONS=--to-command=sh bash -c 'unset TAR_OPTIONS; tar xf x.tar'`: `bash -c 'tar xf x.tar'`,
@@ -528,6 +526,10 @@ func TestRED_UnexportedOptionVariableIsNotJudged(t *testing.T) {
 		export + `unset TAR_OPTIONS; export TAR_OPTIONS=--to-command=sh; tar xf x.tar`,
 		export + `export -n TAR_OPTIONS; export TAR_OPTIONS; tar xf x.tar`,
 		export + `declare +x TAR_OPTIONS; declare -x TAR_OPTIONS=--to-command=sh; tar xf x.tar`,
+		// A POSIX sh has no declare or typeset: the statement fails there and
+		// the variable stays exported.
+		export + `declare +x TAR_OPTIONS; tar xf x.tar`,
+		export + `typeset +x TAR_OPTIONS; tar xf x.tar`,
 		export + `unset TAR_OPTIONS; set -a; TAR_OPTIONS=--to-command=sh; tar xf x.tar`,
 		export + `unset TAR_OPTIONS; TAR_OPTIONS=--to-command=sh tar xf x.tar`,
 		export + `unset TAR_OPTIONS; eval 'export TAR_OPTIONS=--to-command=sh'; tar xf x.tar`,
