@@ -255,10 +255,35 @@ var valuePatterns = []guardedPattern{
 	{gated(regexp.MustCompile(`(?:^|[^A-Za-z0-9.-])discord(?:app)?\.com/api/(?:v[0-9]+/)?webhooks/[0-9]+/([A-Za-z0-9_-]{40,})`), literals(exact("webhooks/"), exact("discord"))), plausibleWebhookToken},
 }
 
-// dbURLReferenceRe matches a password that is wholly a variable or template
-// reference. Anything mixing a reference with literal characters, or a
-// default-value form such as ${VAR:-literal}, does not match and is redacted.
-var dbURLReferenceRe = regexp.MustCompile(`^(?:\$\{[A-Za-z_][A-Za-z0-9_]*\}|\$[A-Za-z_][A-Za-z0-9_]*|\{\{?\s*[A-Za-z_][A-Za-z0-9_.-]*\s*\}\}?|<[A-Za-z_][A-Za-z0-9_ -]*>|%\([A-Za-z_][A-Za-z0-9_]*\)s|%[A-Za-z_][A-Za-z0-9_]*%)$`)
+// dbURLReferenceRe matches a password that is wholly a template reference
+// ({name}, {{ name }}, <name>, %(name)s, %NAME%); shellVariableRef judges the
+// '$' forms. Anything mixing a reference with literal characters does not
+// match and is redacted.
+var dbURLReferenceRe = regexp.MustCompile(`^(?:\{\{?\s*[A-Za-z_][A-Za-z0-9_.-]*\s*\}\}?|<[A-Za-z_][A-Za-z0-9_ -]*>|%\([A-Za-z_][A-Za-z0-9_]*\)s|%[A-Za-z_][A-Za-z0-9_]*%)$`)
+
+// shellVariableRe is the shape of a shell variable reference standing for a
+// password: ${NAME}, or a bare $NAME of upper-case letters, digits and '_'.
+// $Passw0rd, $ecret123 and a default-value form such as ${VAR:-literal} are
+// not in this shape.
+var shellVariableRe = regexp.MustCompile(`^\$(?:\{[A-Za-z_][A-Za-z0-9_]*\}|[A-Z_][A-Z0-9_]*)$`)
+
+// shellVariableRef reports whether v is wholly a shell variable reference.
+func shellVariableRef(v string) bool {
+	return shellVariableRe.MatchString(v)
+}
+
+// dollarExpands reports whether the shell expands a '$' that starts the value
+// written as raw: the '$' stands unquoted or in double quotes (also
+// JSON-escaped ones), not single-quoted, backslash-escaped or opening $'...'
+// or $"..." quoting.
+func dollarExpands(raw string) bool {
+	if strings.HasPrefix(raw, `\"`) {
+		raw = raw[2:]
+	} else if strings.HasPrefix(raw, `"`) {
+		raw = raw[1:]
+	}
+	return len(raw) >= 2 && raw[0] == '$' && raw[1] != '\'' && raw[1] != '"'
+}
 
 // dbURLHoldsSecret judges a matched connection URL span: it holds a secret
 // unless every '@' in it closes a userinfo whose password is only a reference.
@@ -307,20 +332,14 @@ func dbURLHoldsSecret(url string) bool {
 }
 
 // pwHoldsSecret reports whether one URL password is anything but a pure
-// reference. A bare $name counts as a reference only in shell-variable
-// shape ($DB_PASSWORD); $Passw0rd and $ecret123 are literal passwords.
+// reference. A '$' form counts as a reference only in shell-variable shape
+// ($DB_PASSWORD, ${db_password}); $Passw0rd and $ecret123 are literal
+// passwords.
 func pwHoldsSecret(pw string) bool {
-	if !dbURLReferenceRe.MatchString(pw) {
-		return true
+	if strings.HasPrefix(pw, "$") {
+		return !shellVariableRef(pw)
 	}
-	if pw[0] == '$' && pw[1] != '{' {
-		for _, c := range pw[1:] {
-			if (c < 'A' || c > 'Z') && (c < '0' || c > '9') && c != '_' {
-				return true
-			}
-		}
-	}
-	return false
+	return !dbURLReferenceRe.MatchString(pw)
 }
 
 // plausibleAuthPassword judges the PASSWORD of a USER:PASSWORD operand or a
@@ -873,23 +892,19 @@ func containerRunBefore(text string, j int) bool {
 func dbClientSpans(text string, j int, json bool, words []cmdWord) [][2]int {
 	var out [][2]int
 	run := 0 // 1: the command runs a container, -1: it does not, 0: not checked yet
-	portOK := func(v string) bool {
-		if portMappingRe.MatchString(unwrapValue(v)) {
-			if run == 0 {
-				run = -1
-				if containerRunBefore(text, j) {
-					run = 1
-				}
-			}
-			if run == 1 {
-				return false
+	runsContainer := func() bool {
+		if run == 0 {
+			run = -1
+			if containerRunBefore(text, j) {
+				run = 1
 			}
 		}
-		return plausibleFlagPassword(v)
+		return run == 1
 	}
 	for _, w := range words {
 		raw := text[w.s:w.e]
-		vs, ok := 0, plausibleFlagPassword
+		var vs int
+		short := false
 		switch {
 		case strings.HasPrefix(raw, "--"):
 			eq := strings.IndexByte(raw, '=')
@@ -902,9 +917,19 @@ func dbClientSpans(text string, j int, json bool, words []cmdWord) [][2]int {
 			}
 			vs = w.s + eq + 1
 		case len(raw) > 2 && raw[0] == '-' && raw[1] == 'p':
-			vs, ok = w.s+2, portOK
+			vs, short = w.s+2, true
 		default:
 			continue
+		}
+		judge := flagPasswordJudge(text[vs:w.e])
+		ok := judge
+		if short {
+			ok = func(v string) bool {
+				if portMappingRe.MatchString(unwrapValue(v)) && runsContainer() {
+					return false
+				}
+				return judge(v)
+			}
 		}
 		if ps, pe, found := wholePassword(text, vs, w.e, json, ok); found {
 			out = append(out, [2]int{ps, pe})
@@ -953,7 +978,7 @@ func sshpassSpans(text string, json bool, words []cmdWord) [][2]int {
 				if raw[i] != 'p' {
 					break cluster
 				}
-				if ps, pe, found := wholePassword(text, vs, ve, json, plausibleFlagPassword); found {
+				if ps, pe, found := wholePassword(text, vs, ve, json, flagPasswordJudge(text[vs:ve])); found {
 					out = append(out, [2]int{ps, pe})
 				}
 				break cluster
@@ -1047,11 +1072,26 @@ func toolCredentialSpans(text string, kind int, json bool, words []cmdWord) [][2
 
 // plausibleFlagPassword judges an attached or flag-given command-line
 // password: unlike a USER:PASSWORD operand it may be short, since the flag
-// itself says the word is a password. Variable references, code and obvious
-// placeholder words stay readable.
-func plausibleFlagPassword(v string) bool {
+// itself says the word is a password. Code and obvious placeholder words stay
+// readable, and so does a variable reference: a value starting with '$' is one
+// only in shell-variable shape (shellVariableRef) and only where the shell
+// expands that '$' (dollarExpands, judged on the value as written); any other
+// '$' value is a literal password. Command substitutions ($(...)) count as
+// code.
+func plausibleFlagPassword(v string, dollarExpands bool) bool {
 	t := unwrapValue(v)
-	if len(t) == 0 || strings.ContainsAny(t[:1], "$%{<") || strings.ContainsAny(t, "(){}") || strings.Contains(t, "://") {
+	if len(t) == 0 {
+		return false
+	}
+	if t[0] == '$' {
+		if !dollarExpands {
+			return true
+		}
+		if shellVariableRef(t) {
+			return false
+		}
+	}
+	if strings.ContainsAny(t[:1], "%{<") || strings.ContainsAny(t, "(){}") || strings.Contains(t, "://") {
 		return false
 	}
 	switch strings.ToLower(t) {
@@ -1061,14 +1101,22 @@ func plausibleFlagPassword(v string) bool {
 	return !placeholderShape(t)
 }
 
+// flagPasswordJudge returns the plausibleFlagPassword judge for a password
+// written as raw on the command line.
+func flagPasswordJudge(raw string) func(string) bool {
+	expands := dollarExpands(raw)
+	return func(v string) bool { return plausibleFlagPassword(v, expands) }
+}
+
 // plausibleEnvPassword judges a MYSQL_PWD value as the pattern matched it:
-// in quotes, bare, or the content of JSON-escaped quotes. The flag rule
-// applies, so a value of any length is a password.
+// in quotes, bare, or the content of JSON-escaped (double) quotes. The flag
+// rule applies, so a value of any length is a password.
 func plausibleEnvPassword(v string) bool {
+	expands := dollarExpands(v)
 	if len(v) >= 2 && (v[0] == '"' || v[0] == '\'') && v[len(v)-1] == v[0] {
 		v = v[1 : len(v)-1]
 	}
-	return plausibleFlagPassword(v)
+	return plausibleFlagPassword(v, expands)
 }
 
 // cookieOperandSpans returns the raw spans of the cookie values in a curl

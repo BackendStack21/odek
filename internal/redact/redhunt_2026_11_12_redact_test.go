@@ -218,6 +218,68 @@ func TestRED_DBClientAndSshpassScanScalesLinearly(t *testing.T) {
 	}
 }
 
+// A '$'-leading flag or MYSQL_PWD value is a variable reference only in
+// shell-variable shape ($NAME in upper case, digits and '_', or ${NAME}) and
+// only where the shell expands it: inside single quotes, after a backslash
+// or as $'...' it is a literal password, like the DB-URL rule judges it.
+func TestRED_SingleQuotedDollarPasswordIsLiteral(t *testing.T) {
+	for _, in := range []string{
+		"mysql -p'$ecret123' db",
+		"MYSQL_PWD='$ecret123' mysql db",
+		"mysql -p$ecret123 db",
+		"mysql -p\"$ecret123\" db",
+		"mysql -p\\$ecret123 db",
+		"mysql -p$'$ecret123' db",
+		"mysql --password='$ecret123' db",
+		"sshpass -p '$ecret123' ssh h",
+		"MYSQL_PWD=$ecret123 mysql db",
+		"MYSQL_PWD=\\$ecret123 mysql db",
+		`{"cmd":"mysql -p'$ecret123' db"}`,
+		`{"cmd":"MYSQL_PWD=\"$ecret123\" mysql db"}`,
+	} {
+		if out := RedactSecrets(in); strings.Contains(out, "ecret123") {
+			t.Errorf("leak: %q => %q", in, out)
+		}
+	}
+	for in, want := range map[string]string{
+		"mysql -p'$DB_PASS' db":         "mysql -p'[REDACTED]' db",
+		"MYSQL_PWD='${DB_PASS}' mysql":  "MYSQL_PWD=[REDACTED] mysql",
+		`mysql -u"$user" -p"$password"`: `mysql -u"$user" -p"[REDACTED]"`,
+		"sshpass -p '$SSHPASS' ssh h":   "sshpass -p '[REDACTED]' ssh h",
+		"mysql -p$'S3CRET' db":          "mysql -p[REDACTED]' db",
+		"mysql --password=\\$DB_PW db":  "mysql --password=\\[REDACTED] db",
+		`{"cmd":"mysql -p'$DB_PASS'"}`:  `{"cmd":"mysql -p'[REDACTED]'"}`,
+		"MYSQL_PWD=$Passw0rd mysql db":  "MYSQL_PWD=[REDACTED] mysql db",
+		"mysql -p'$(cat /run/pw)' db":   "mysql -p'[REDACTED]' db",
+		"sshpass -p'${X:-hunter2}' ssh": "sshpass -p'[REDACTED]' ssh",
+	} {
+		if out := RedactSecrets(in); out != want {
+			t.Errorf("%q => %q, want %q", in, out, want)
+		}
+	}
+	for _, in := range []string{
+		"mysql -p$DB_PASS db",
+		`mysql -p"$DB_PASS" db`,
+		"mysql -p${db_pass} db",
+		`mysql -p"${db_pass}" db`,
+		`mysql -p"${DB_PASS}" db`,
+		"mysql --password=$DB_PW db",
+		"sshpass -p $SSHPASS ssh h",
+		`sshpass -p "$SSHPASS" ssh h`,
+		"MYSQL_PWD=$MYSQL_ROOT_PASSWORD mysql db",
+		`MYSQL_PWD="${DB_PASS}" mysql db`,
+		`{"cmd":"mysql -p\"$DB_PASS\" db"}`,
+		`{"cmd":"MYSQL_PWD=\"$DB_PASS\" mysql db"}`,
+		"mysql -p$(cat /run/secrets/db) db",
+		`mysql -p"$(cat /run/secrets/db)" db`,
+		"mysql -p${DB_PASS:-} db",
+	} {
+		if out := RedactSecrets(in); out != in {
+			t.Errorf("reference rewritten: %q => %q", in, out)
+		}
+	}
+}
+
 func TestRED_MySQLPwdScalesLinearly(t *testing.T) {
 	redactR3Linear(t, "assignments", func(n int) string { return strings.Repeat("MYSQL_PWD=x ", n/12) })
 	redactR3Linear(t, "escaped quotes", func(n int) string { return strings.Repeat(`MYSQL_PWD=\"`, n/12) })
