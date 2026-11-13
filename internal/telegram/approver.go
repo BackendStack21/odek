@@ -577,8 +577,9 @@ func elideMiddleWith(s string, maxEsc int, esc func(string) string) (string, boo
 }
 
 // batchMinEntryBytes is the smallest per-entry share a batch card shows. When
-// the entries cannot all get at least this much, only some of them are
-// listed and a line states how many were left out.
+// the entries cannot all get at least this much, only the leading and the
+// trailing ones are listed and a line between them states how many were left
+// out.
 const batchMinEntryBytes = 96
 
 // batchMoreLine states how many entries a shortened card leaves out.
@@ -620,9 +621,10 @@ func batchCardParts(card string) (lead, entries, trail []string) {
 // giving every shown line a fair share of the room (short lines keep theirs
 // whole, the surplus goes to the longer ones), so each entry stays visible: a
 // long first entry can never push a later one out of the prompt. When the
-// share would fall below batchMinEntryBytes the card lists as many leading
-// entries as fit at that minimum, followed by a line with the exact number of
-// entries left out. Entries are chosen and counted on the card as received;
+// share would fall below batchMinEntryBytes the card lists as many entries as
+// fit at that minimum, a leading run and a trailing run that ends with the
+// last entry, with a line stating the exact number of entries left out
+// between them. Entries are chosen and counted on the card as received;
 // only the text shown is sanitized (batchDisplay). The result never exceeds
 // maxEsc bytes and is reported elided unless the card is shown whole.
 func fitBatchCard(card string, maxEsc int) (string, bool) {
@@ -642,17 +644,21 @@ func fitBatchCard(card string, maxEsc int) (string, bool) {
 		pinned += batchRowCost(l)
 	}
 	shown := entries
-	more := ""
+	more, at := "", 0
 	if pinned+len(entries)*(batchMinEntryBytes+1) > maxEsc+1 {
 		// Room for the hidden-entries line (its count has at most 20 digits).
 		reserve := len(batchMoreLine(0)) + 20 + 1
 		k := (maxEsc + 1 - pinned - reserve) / (batchMinEntryBytes + 1)
-		if k < 1 {
-			k = 1
+		if k < 2 {
+			k = 2 // the first and the last entry are always listed
 		}
 		if k < len(entries) {
-			more = batchMoreLine(len(entries) - k)
-			shown = entries[:k]
+			// Payloads sit at the end, so the omission is cut from the
+			// middle: a leading run, then a trailing run that ends with the
+			// last entry.
+			head := k / 2
+			more, at = batchMoreLine(len(entries)-k), len(lead)+head
+			shown = append(entries[:head:head], entries[len(entries)-(k-head):]...)
 		}
 	}
 	rows := make([]string, 0, len(lead)+len(shown)+len(trail))
@@ -663,7 +669,6 @@ func fitBatchCard(card string, maxEsc int) (string, bool) {
 	}
 	out := fitBatchRows(rows, room)
 	if more != "" {
-		at := len(lead) + len(shown)
 		out = append(out[:at], append([]string{more}, out[at:]...)...)
 	}
 	return strings.Join(out, "\n"), true
