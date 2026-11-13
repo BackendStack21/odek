@@ -132,7 +132,7 @@ func declaresComputedName(name string, inner []string) bool {
 	args := r.args()
 	for i, op := range args {
 		varName, value, _ := strings.Cut(op, "=")
-		if computedWord(varName) && !(varName == dynamicSubstToken && i > 0 && strings.HasSuffix(args[i-1], "=")) {
+		if computedWord(varName) && (varName != dynamicSubstToken || i == 0 || !strings.HasSuffix(args[i-1], "=")) {
 			// A substitution glued to an assignment's value is split off
 			// into its own word; that word is the value, not a name.
 			return true

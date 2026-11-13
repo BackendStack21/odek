@@ -634,9 +634,10 @@ func skipDoubleBracket(text string, pos int) (int, bool) {
 				quote = 0
 			}
 		case quote == '"':
-			if c == '\\' {
+			switch c {
+			case '\\':
 				i++
-			} else if c == '"' {
+			case '"':
 				quote = 0
 			}
 		case c == '\\':
@@ -694,15 +695,17 @@ func skipBalancedEnd(text string, pos int, open, closer byte, honorSingle bool) 
 				quote = 0
 			}
 		case quote == 'a': // $'...': backslash escapes the next byte
-			if c == '\\' {
+			switch c {
+			case '\\':
 				i++
-			} else if c == '\'' {
+			case '\'':
 				quote = 0
 			}
 		case quote == '"':
-			if c == '\\' {
+			switch c {
+			case '\\':
 				i++
-			} else if c == '"' {
+			case '"':
 				quote = 0
 			}
 		case c == '\\':
