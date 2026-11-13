@@ -201,6 +201,24 @@ func TestRED_DBClientNameCountsOnlyAsTheClient(t *testing.T) {
 	}
 }
 
+// The client-name rule looks back a bounded distance; a name whose word or
+// blank run does not fit counts as the client, so its password is redacted.
+func TestRED_DBClientNameLookBackFailsTowardRedaction(t *testing.T) {
+	const pw = "S3cretPW"
+	if out := RedactSecrets("install /a/mysql -p" + pw); out != "install /a/mysql -p"+pw {
+		t.Errorf("excluded name judged: %q", out)
+	}
+	for _, in := range []string{
+		"install /" + strings.Repeat("a", 300) + "/mysql -p" + pw,
+		"install" + strings.Repeat(" ", 300) + "mysql -p" + pw,
+		"   mysql -p" + pw,
+	} {
+		if out := RedactSecrets(in); strings.Contains(out, pw) {
+			t.Errorf("leak: %q", out)
+		}
+	}
+}
+
 func TestRED_DBClientAndSshpassScanScalesLinearly(t *testing.T) {
 	for name, unit := range map[string]string{
 		"--name mysql":     "--name mysql ",
