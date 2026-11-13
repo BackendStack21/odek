@@ -8,11 +8,12 @@ import (
 )
 
 // redactR3Linear fails when quadrupling the input grows the redaction time
-// more than 12x (quadratic growth is 16x).
+// more than 12x (quadratic growth is 16x). Both sizes take the best of two
+// runs, so one preempted run does not read as super-linear growth.
 func redactR3Linear(t *testing.T, name string, gen func(n int) string) {
 	t.Helper()
 	base := 16 << 10
-	small, large := finalRedactTime(gen(base), 2), finalRedactTime(gen(4*base), 1)
+	small, large := finalRedactTime(gen(base), 2), finalRedactTime(gen(4*base), 2)
 	if small < 2*time.Millisecond {
 		small = 2 * time.Millisecond
 	}
