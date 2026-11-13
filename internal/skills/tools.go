@@ -126,6 +126,20 @@ func (sm *SkillManager) MatchLazySkills(input string, maxSlots int) []Skill {
 	return nil
 }
 
+// MatchLazySkillsFor is MatchLazySkills for a message that carries the
+// principal's own request only inside an untrusted wrapper, such as a
+// Telegram voice transcript or photo/document caption: principal, that
+// request as the principal sent it, is matched together with the message's
+// unwrapped text, under the same bound. Only text the principal authored may
+// be passed — never tool output, fetched pages, file bodies or forwarded
+// messages.
+func (sm *SkillManager) MatchLazySkillsFor(input, principal string, maxSlots int) []Skill {
+	if principal = strings.TrimSpace(principal); principal != "" {
+		input = principal + "\n" + input
+	}
+	return sm.MatchLazySkills(input, maxSlots)
+}
+
 // maxSkillMatchRunes bounds the text skill matching looks at. The topic of a
 // request is carried by far less than a pasted document.
 const maxSkillMatchRunes = 2000

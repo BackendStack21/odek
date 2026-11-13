@@ -73,17 +73,21 @@ type Handler struct {
 	// OnVoiceMessage is called when a voice message is received.
 	// Returns the response text (may be empty).
 	// fileID is the Telegram file ID of the voice message in OGG format.
+	// forwarded is true when the message was forwarded from another chat or
+	// user: the recording is not the sender's own request.
 	// userID is the Telegram user who sent the voice message.
 	// Callers should use DownloadVoice to save the file locally.
-	OnVoiceMessage func(chatID int64, messageID int, fileID string, userID int64) (string, error)
+	OnVoiceMessage func(chatID int64, messageID int, fileID string, forwarded bool, userID int64) (string, error)
 
 	// OnPhotoMessage is called when a photo message is received.
 	// Returns the response text (may be empty).
 	// fileIDs contains all available sizes (last = largest).
 	// Callers should use DownloadPhoto with the last element.
 	// caption is the optional text the user attached to the photo (may be empty).
+	// forwarded is true when the message was forwarded from another chat or
+	// user: the caption is not the sender's own words.
 	// userID is the Telegram user who sent the photo message.
-	OnPhotoMessage func(chatID int64, messageID int, fileIDs []string, caption string, userID int64) (string, error)
+	OnPhotoMessage func(chatID int64, messageID int, fileIDs []string, caption string, forwarded bool, userID int64) (string, error)
 
 	// OnDocumentMessage is called when a document/file message is received.
 	// Returns the response text (may be empty).
@@ -91,8 +95,10 @@ type Handler struct {
 	// and pass the document's fileName to save the file locally.
 	// caption is the text the user sent with the file (often the request
 	// about it); it is remote-user text, handled like a photo caption.
+	// forwarded is true when the message was forwarded from another chat or
+	// user: the caption is not the sender's own words.
 	// userID is the Telegram user who sent the document message.
-	OnDocumentMessage func(chatID int64, messageID int, fileID string, fileName string, caption string, userID int64) (string, error)
+	OnDocumentMessage func(chatID int64, messageID int, fileID string, fileName string, caption string, forwarded bool, userID int64) (string, error)
 
 	// OnError is called when a processing error occurs.
 	OnError func(chatID int64, err error)
@@ -170,8 +176,8 @@ func defaultCommandHandler() func(int64, int, string, string, int64) (string, er
 
 // defaultVoiceHandler returns a default OnVoiceMessage callback that downloads
 // the voice file and returns a MEDIA: response.
-func defaultVoiceHandler(bot *Bot) func(int64, int, string, int64) (string, error) {
-	return func(chatID int64, _ int, fileID string, _ int64) (string, error) {
+func defaultVoiceHandler(bot *Bot) func(int64, int, string, bool, int64) (string, error) {
+	return func(chatID int64, _ int, fileID string, _ bool, _ int64) (string, error) {
 		path, err := DownloadVoice(bot, chatID, fileID)
 		if err != nil {
 			return "", fmt.Errorf("telegram handler: download voice: %w", err)
@@ -182,8 +188,8 @@ func defaultVoiceHandler(bot *Bot) func(int64, int, string, int64) (string, erro
 
 // defaultPhotoHandler returns a default OnPhotoMessage callback that downloads
 // the largest photo size and returns a MEDIA: response.
-func defaultPhotoHandler(bot *Bot) func(int64, int, []string, string, int64) (string, error) {
-	return func(chatID int64, _ int, fileIDs []string, _ string, _ int64) (string, error) {
+func defaultPhotoHandler(bot *Bot) func(int64, int, []string, string, bool, int64) (string, error) {
+	return func(chatID int64, _ int, fileIDs []string, _ string, _ bool, _ int64) (string, error) {
 		path, err := DownloadPhoto(bot, chatID, fileIDs)
 		if err != nil {
 			return "", fmt.Errorf("telegram handler: download photo: %w", err)
@@ -194,8 +200,8 @@ func defaultPhotoHandler(bot *Bot) func(int64, int, []string, string, int64) (st
 
 // defaultDocumentHandler returns a default OnDocumentMessage callback that
 // downloads the document and returns a MEDIA: response.
-func defaultDocumentHandler(bot *Bot) func(int64, int, string, string, string, int64) (string, error) {
-	return func(chatID int64, _ int, fileID string, fileName string, _ string, _ int64) (string, error) {
+func defaultDocumentHandler(bot *Bot) func(int64, int, string, string, string, bool, int64) (string, error) {
+	return func(chatID int64, _ int, fileID string, fileName string, _ string, _ bool, _ int64) (string, error) {
 		path, err := DownloadDocument(bot, chatID, fileID, fileName)
 		if err != nil {
 			return "", fmt.Errorf("telegram handler: download document: %w", err)
@@ -275,7 +281,7 @@ func (h *Handler) handleMessage(msg *Message) {
 		h.handleCommand(msg, userID)
 	case msg.Voice != nil:
 		if h.OnVoiceMessage != nil {
-			resp, err := h.OnVoiceMessage(msg.Chat.ID, msg.ID, msg.Voice.FileID, userID)
+			resp, err := h.OnVoiceMessage(msg.Chat.ID, msg.ID, msg.Voice.FileID, msg.isForwarded(), userID)
 			if err != nil {
 				h.log.Error("voice message handler failed", "chat_id", msg.Chat.ID, "error", err)
 				if h.OnError != nil {
@@ -293,7 +299,7 @@ func (h *Handler) handleMessage(msg *Message) {
 			for i, p := range msg.Photo {
 				fileIDs[i] = p.FileID
 			}
-			resp, err := h.OnPhotoMessage(msg.Chat.ID, msg.ID, fileIDs, msg.Caption, userID)
+			resp, err := h.OnPhotoMessage(msg.Chat.ID, msg.ID, fileIDs, msg.Caption, msg.isForwarded(), userID)
 			if err != nil {
 				h.log.Error("photo message handler failed", "chat_id", msg.Chat.ID, "error", err)
 				if h.OnError != nil {
@@ -307,7 +313,7 @@ func (h *Handler) handleMessage(msg *Message) {
 		}
 	case msg.Document != nil:
 		if h.OnDocumentMessage != nil {
-			resp, err := h.OnDocumentMessage(msg.Chat.ID, msg.ID, msg.Document.FileID, msg.Document.FileName, msg.Caption, userID)
+			resp, err := h.OnDocumentMessage(msg.Chat.ID, msg.ID, msg.Document.FileID, msg.Document.FileName, msg.Caption, msg.isForwarded(), userID)
 			if err != nil {
 				h.log.Error("document message handler failed", "chat_id", msg.Chat.ID, "error", err)
 				if h.OnError != nil {

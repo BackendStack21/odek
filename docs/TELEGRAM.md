@@ -198,9 +198,9 @@ The `Handler` struct routes incoming updates to the appropriate callback based o
 |---|---|---|
 | `OnTextMessage` | Plain text message | `(chatID int64, messageID int, text string, forwarded bool, userID int64) (string, error)` |
 | `OnCommand` | Slash command (e.g. `/start`) | `(chatID int64, command, args string) (string, error)` |
-| `OnVoiceMessage` | Voice message (OGG Opus) | `(chatID int64, messageID int, fileID string, userID int64) (string, error)` |
-| `OnPhotoMessage` | Photo message | `(chatID int64, messageID int, fileIDs []string, caption string, userID int64) (string, error)` |
-| `OnDocumentMessage` | Document / file (a caption sent with it is the user's request, guard-scanned and wrapped as untrusted like a photo caption) | `(chatID int64, messageID int, fileID, fileName, caption string, userID int64) (string, error)` |
+| `OnVoiceMessage` | Voice message (OGG Opus) | `(chatID int64, messageID int, fileID string, forwarded bool, userID int64) (string, error)` |
+| `OnPhotoMessage` | Photo message | `(chatID int64, messageID int, fileIDs []string, caption string, forwarded bool, userID int64) (string, error)` |
+| `OnDocumentMessage` | Document / file (a caption sent with it is the user's request, guard-scanned and wrapped as untrusted like a photo caption) | `(chatID int64, messageID int, fileID, fileName, caption string, forwarded bool, userID int64) (string, error)` |
 | `OnCallbackQuery` | Inline keyboard callback | `(chatID int64, callbackData string, userID int64) (string, error)` |
 
 All callbacks return a response string (may be empty) and an error. The `Handle` method:
@@ -516,6 +516,8 @@ Voice message received → DownloadVoice (OGG Opus to disk)
 ```
 
 **OGG Opus handling:** whisper.cpp uses `dr_wav`/`dr_mp3` internally and does not support OGG Opus. The transcribe tool auto-detects unsupported formats and converts via ffmpeg. If ffmpeg is unavailable, the original file is passed to whisper which produces a clear error message.
+
+**Lazy skills:** the transcript enters the user message wrapped as untrusted, and wrapped content never triggers a skill. Because a voice note the user recorded is their own request, the transcript is also handed to lazy-skill matching as the user's words (bounded like a typed message), so "deploy the staging site" spoken loads the same skill as typed. The same holds for a photo or document caption. A forwarded voice note or caption is not the user's own, and text the Telegram guard flagged is not used; a photo's vision description and a document's contents never are.
 
 **Fallback:** If auto-transcribe is disabled, no backend is installed (a warning is logged), or it fails (ffmpeg unavailable, corrupt audio, whisper error), the agent receives the file path. It is told to use the `transcribe` tool only when a transcription backend can run; otherwise it is told the note cannot be transcribed.
 

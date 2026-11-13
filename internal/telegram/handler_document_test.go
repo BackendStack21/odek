@@ -77,7 +77,7 @@ func TestHandleUpdate_Document(t *testing.T) {
 	h := NewHandler(bot)
 	h.Config.AllowAllUsers = true // routing test
 
-	h.OnDocumentMessage = func(chatID int64, messageID int, fileID string, fileName string, _ string, _ int64) (string, error) {
+	h.OnDocumentMessage = func(chatID int64, messageID int, fileID string, fileName string, _ string, _ bool, _ int64) (string, error) {
 		capturedFileID = fileID
 		capturedFileName = fileName
 		return "document received", nil

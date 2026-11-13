@@ -1082,7 +1082,7 @@ func telegramCmd(args []string) error {
 		return "", nil // approval callbacks are routed by the approver
 	}
 
-	handler.OnVoiceMessage = func(chatID int64, messageID int, fileID string, userID int64) (string, error) {
+	handler.OnVoiceMessage = func(chatID int64, messageID int, fileID string, forwarded bool, userID int64) (string, error) {
 		runChatMediaOffLoop(chatID, handlerLog, func(mctx context.Context) {
 			// Download the voice file.
 			localPath, err := telegram.DownloadVoice(bot, chatID, fileID)
@@ -1120,7 +1120,7 @@ func telegramCmd(args []string) error {
 						// Transcribed text crosses an external trust boundary; wrap it before
 						// injecting it into the user message stream (telegramVoiceMessage).
 						transcript := telegramGuardScan(context.Background(), r.Text, "voice transcript")
-						handleChatMessageGated(mctx, chatID, messageID, userID,
+						handleChatMessageGated(withTelegramSkillText(mctx, r.Text, transcript, forwarded), chatID, messageID, userID,
 							telegramVoiceMessage(chatID, transcript),
 							bot, handler, sessionManager, resolved, systemMessage, handlerLog)
 						return
@@ -1139,7 +1139,7 @@ func telegramCmd(args []string) error {
 		return "", nil
 	}
 
-	handler.OnPhotoMessage = func(chatID int64, messageID int, fileIDs []string, caption string, userID int64) (string, error) {
+	handler.OnPhotoMessage = func(chatID int64, messageID int, fileIDs []string, caption string, forwarded bool, userID int64) (string, error) {
 		runChatMediaOffLoop(chatID, handlerLog, func(mctx context.Context) {
 			localPath, err := telegram.DownloadPhoto(bot, chatID, fileIDs)
 			if err != nil {
@@ -1150,8 +1150,9 @@ func telegramCmd(args []string) error {
 				return
 			}
 
-			caption = strings.TrimSpace(caption)
-			caption = telegramGuardScan(context.Background(), caption, "photo caption")
+			rawCaption := strings.TrimSpace(caption)
+			caption = telegramGuardScan(context.Background(), rawCaption, "photo caption")
+			mctx = withTelegramSkillText(mctx, rawCaption, caption, forwarded)
 
 			// Queue auto-description inside the run so approvals, /stop, usage,
 			// and execution budgets cover both local and provider vision.
@@ -1176,7 +1177,7 @@ func telegramCmd(args []string) error {
 		return "", nil
 	}
 
-	handler.OnDocumentMessage = func(chatID int64, messageID int, fileID string, fileName string, caption string, userID int64) (string, error) {
+	handler.OnDocumentMessage = func(chatID int64, messageID int, fileID string, fileName string, caption string, forwarded bool, userID int64) (string, error) {
 		runChatMediaOffLoop(chatID, handlerLog, func(mctx context.Context) {
 			localPath, err := telegram.DownloadDocument(bot, chatID, fileID, fileName)
 			if err != nil {
@@ -1186,9 +1187,9 @@ func telegramCmd(args []string) error {
 					bot, handler, sessionManager, resolved, systemMessage, handlerLog)
 				return
 			}
-			caption = strings.TrimSpace(caption)
-			caption = telegramGuardScan(context.Background(), caption, "document caption")
-			handleChatMessageGated(mctx, chatID, messageID, userID,
+			rawCaption := strings.TrimSpace(caption)
+			caption = telegramGuardScan(context.Background(), rawCaption, "document caption")
+			handleChatMessageGated(withTelegramSkillText(mctx, rawCaption, caption, forwarded), chatID, messageID, userID,
 				telegramDocumentMessage(localPath, fileName, caption),
 				bot, handler, sessionManager, resolved, systemMessage, handlerLog)
 		})
@@ -2550,6 +2551,12 @@ func runChatTurn(
 	if len(photos) > 0 && photos[0] != nil {
 		agent.SetInitialToolCalls(telegramPhotoCalls(photos[0]))
 	}
+	// A voice transcript or a media caption is the member's own request, but
+	// this turn's message carries it only inside an untrusted wrapper: lazy
+	// skills are matched on it too (withTelegramSkillText).
+	if !wake {
+		agent.SetSkillMatchText(text, telegramSkillText(jobCtx))
+	}
 
 	// Include the final session save in the invocation outcome.
 	agent.BeginRun("", "")
@@ -3270,6 +3277,32 @@ func recordOpeningIngests(ctx context.Context, text string) {
 	for i, body := range bodies {
 		recordIngest(ctx, sources[i], body)
 	}
+}
+
+// telegramSkillTextKey carries a media turn's principal text on the turn's
+// context.
+type telegramSkillTextKey struct{}
+
+// withTelegramSkillText attaches the chat member's own words for a media turn
+// — an auto-transcribed voice note or a photo/document caption — to ctx, so
+// runChatTurn matches lazy skills on them (Agent.SetSkillMatchText). The
+// turn's message still carries them only inside an untrusted wrapper. raw is
+// the text as received and scanned what telegramGuardScan made of it. Nothing
+// is attached for a forwarded message, which the member did not author, or
+// for text the guard flagged (scanned differs from raw). A photo's vision
+// description and a document's body never come through here.
+func withTelegramSkillText(ctx context.Context, raw, scanned string, forwarded bool) context.Context {
+	if forwarded || strings.TrimSpace(raw) == "" || scanned != raw {
+		return ctx
+	}
+	return context.WithValue(ctx, telegramSkillTextKey{}, raw)
+}
+
+// telegramSkillText returns the principal text withTelegramSkillText
+// attached to ctx, or "".
+func telegramSkillText(ctx context.Context) string {
+	text, _ := ctx.Value(telegramSkillTextKey{}).(string)
+	return text
 }
 
 // telegramVoiceMessage builds the user-role content for an auto-transcribed
