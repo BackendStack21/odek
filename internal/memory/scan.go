@@ -227,11 +227,12 @@ func maskMakeVariables(text string) string {
 // labelledSubstitutionRunsFetch reports whether a line opens with a short
 // label or lead-in ("Setup: ", "To install, "; a prompt sigil, list marker or
 // opening quote may come first) that is followed, after optional wrappers, by
-// a $( substitution of a fetcher on the same line: the label introduces the
-// command. The label holds no quote, backslash, backtick, $, parenthesis or
-// brace, so text inside another command's argument (echo "IP: $(curl …)") is
-// no label. Only the first $( of a line is looked at; what follows it is read
-// with quotes and backslashes removed.
+// a $( substitution of a fetcher on the same line (when the $( ends its line,
+// the fetcher may stand on the next line that holds anything): the label
+// introduces the command. The label holds no quote, backslash, backtick, $,
+// parenthesis or brace, so text inside another command's argument
+// (echo "IP: $(curl …)") is no label. Only the first $( of a line is looked
+// at; what follows it is read with quotes and backslashes removed.
 func labelledSubstitutionRunsFetch(text string) bool {
 	for start := 0; start < len(text); {
 		end := strings.IndexByte(text[start:], '\n')
@@ -241,9 +242,21 @@ func labelledSubstitutionRunsFetch(text string) bool {
 			end += start
 		}
 		line := text[start:end]
-		if at := strings.Index(line, "$("); at > 0 && labelLeadRe.MatchString(line[:at]) &&
-			labelledFetchRe.MatchString(maskMakeVariables(unquoted.Replace(line[at:]))) {
-			return true
+		if at := strings.Index(line, "$("); at > 0 && labelLeadRe.MatchString(line[:at]) {
+			tailEnd := end
+			if strings.TrimSpace(line[at+2:]) == "" {
+				for tailEnd < len(text) && isSpace(text[tailEnd]) {
+					tailEnd++
+				}
+				if nl := strings.IndexByte(text[tailEnd:], '\n'); nl >= 0 {
+					tailEnd += nl
+				} else {
+					tailEnd = len(text)
+				}
+			}
+			if labelledFetchRe.MatchString(maskMakeVariables(unquoted.Replace(text[start+at : tailEnd]))) {
+				return true
+			}
 		}
 		start = end + 1
 	}
@@ -435,12 +448,28 @@ func isPipeFetcher(s string, i, j int) bool {
 
 // stageWrappers run the command that follows them, after their own options:
 // sudo -u root bash, env -i bash, xargs -n 1 sh, busybox sh, nice -n 10 sh.
-// The value lists the wrapper's short options that take an argument, which
-// is attached (-n1) or the next word (-n 1).
-var stageWrappers = map[string]string{
-	"sudo": "CDghpRrTtUu", "doas": "uC", "pkexec": "", "run0": "ugDpHM", "env": "uCP", "nice": "n",
-	"ionice": "cnp", "nohup": "", "setsid": "", "time": "fo", "timeout": "sk", "stdbuf": "ioe", "exec": "a",
-	"command": "", "builtin": "", "xargs": "adEILnPsJRS", "parallel": "jNnLISaPdEs", "busybox": "",
+// args lists the wrapper's short options that take an argument, which is
+// attached (-n1) or the next word (-n 1); flags lists those that take none.
+// A digit is a flag (nice -10). Any other letter may or may not take one.
+var stageWrappers = map[string]struct{ args, flags string }{
+	"sudo":     {"CDghpRrTtUu", "ABbEeHiKklNnPSsVv"},
+	"doas":     {"uCa", "Lnsi"},
+	"pkexec":   {"", ""},
+	"run0":     {"ugDpHM", "hV"},
+	"env":      {"uCP", "i0vS"},
+	"nice":     {"n", ""},
+	"ionice":   {"cnpPu", "t"},
+	"nohup":    {"", ""},
+	"setsid":   {"", "cfw"},
+	"time":     {"fo", "pvalh"},
+	"timeout":  {"sk", "vfp"},
+	"stdbuf":   {"ioe", ""},
+	"exec":     {"a", "cl"},
+	"command":  {"", "pvV"},
+	"builtin":  {"", ""},
+	"xargs":    {"adEILnPsJRS", "0rtpxoeil"},
+	"parallel": {"jNnLISaPdEs", "kqumXt0vr"},
+	"busybox":  {"", ""},
 }
 
 // wrapperLongArgs are the wrappers' long options whose argument is the next
@@ -488,8 +517,8 @@ var (
 // /proc/self/fd/0), or sudo/doas with -s/-i (a shell, also in a combined
 // flag such as -Es) and no command of its own. A wrapper option's argument
 // (sudo -u root, xargs -n 1, timeout 10s) is skipped, so the word after it is
-// the command: `xargs -n1 git push` runs git. After a long option the tables
-// do not know, the next word is skipped as its argument unless it runs its
+// the command: `xargs -n1 git push` runs git. After an option the tables do
+// not know, the next word is skipped as its argument unless it runs its
 // input. docker/podman/nerdctl/kubectl/oc … exec run the command that
 // follows the container or pod. In a group that opens the stage —
 // (cd /tmp && sh), { sh; } — every word is checked.
@@ -520,7 +549,8 @@ func stageRunsInput(line string, p int) bool {
 			continue
 		}
 		if wrapper != "" && tok[0] == '-' {
-			takesArg, startsShell, known := wrapperOption(tok, stageWrappers[wrapper])
+			opts := stageWrappers[wrapper]
+			takesArg, startsShell, known := wrapperOption(tok, opts.args, opts.flags)
 			shell = shell || (startsShell && (wrapper == "sudo" || wrapper == "doas"))
 			maybeArg = !known
 			if takesArg {
@@ -560,10 +590,10 @@ func stageRunsInput(line string, p int) bool {
 }
 
 // wrapperOption reads one option word of a wrapper whose short options with
-// an argument are argLetters. takesArg: the next word is its argument.
-// startsShell: it is, or combines, -s or -i (--shell, --login). known: the
-// tables cover it.
-func wrapperOption(tok, argLetters string) (takesArg, startsShell, known bool) {
+// an argument are argLetters and without one flagLetters. takesArg: the next
+// word is its argument. startsShell: it is, or combines, -s or -i (--shell,
+// --login). known: the tables cover it.
+func wrapperOption(tok, argLetters, flagLetters string) (takesArg, startsShell, known bool) {
 	if strings.HasPrefix(tok, "--") {
 		switch {
 		case tok == "--shell" || tok == "--login":
@@ -576,10 +606,13 @@ func wrapperOption(tok, argLetters string) (takesArg, startsShell, known bool) {
 		return false, false, false
 	}
 	for i := 1; i < len(tok); i++ {
-		if strings.IndexByte(argLetters, tok[i]) >= 0 {
+		c := tok[i]
+		switch {
+		case strings.IndexByte(argLetters, c) >= 0:
 			return i == len(tok)-1, startsShell, true
-		}
-		if tok[i] == 's' || tok[i] == 'i' {
+		case strings.IndexByte(flagLetters, c) < 0 && (c < '0' || c > '9'):
+			return false, startsShell, false
+		case c == 's' || c == 'i':
 			startsShell = true
 		}
 	}
