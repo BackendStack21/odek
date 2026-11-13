@@ -724,6 +724,7 @@ func commandCredentialMatches(s *textScan) [][2]int {
 	var out [][2]int
 	for _, tool := range commandTools {
 		var inJSON jsonStringTracker
+		containers := containerScan{word: -1}
 		for pos := 0; pos < len(text); {
 			j := s.indexFoldFrom(tool.name, pos)
 			if j < 0 {
@@ -744,7 +745,7 @@ func commandCredentialMatches(s *textScan) [][2]int {
 			words, end := commandWords(text, after, json)
 			switch tool.kind {
 			case 3:
-				out = append(out, dbClientSpans(text, j, json, words)...)
+				out = append(out, dbClientSpans(text, j, json, words, &containers)...)
 			case 4:
 				out = append(out, sshpassSpans(text, json, words)...)
 			default:
@@ -856,46 +857,78 @@ func dbClientNameAt(text string, j int) bool {
 // protocol. The colon is required, so a number alone is not a mapping.
 var portMappingRe = regexp.MustCompile(`^(?:(?:[0-9]{1,3}\.){3}[0-9]{1,3}:|\[[0-9A-Fa-f:.]+\]:)?(?:[0-9]{1,5}(?:-[0-9]{1,5})?)?:[0-9]{1,5}(?:-[0-9]{1,5})?(?:/(?:tcp|udp|sctp))?$`)
 
-// containerRunBefore reports whether the simple command holding text[j:]
-// runs or creates a container: between the start of the command (the last
-// newline, command separator, parenthesis or backquote before j, bounded by
-// commandScanMax) and j stand a docker or podman word and, later, a run or
-// create word. Quotes are not tracked; a missed start only shortens the
-// command, which keeps a port-shaped value redacted.
-func containerRunBefore(text string, j int) bool {
-	s := j
-	for s > 0 && j-s < commandScanMax && !strings.ContainsRune("\n\r;|&(`", rune(text[s-1])) {
-		s--
+// containerScan answers, for increasing offsets j, whether the simple command
+// holding text[j:] runs or creates a container: between the start of the
+// command (after the last newline, JSON \n or \r escape, command separator,
+// parenthesis or backquote) and j stand a docker or podman word and, later, a
+// run or create word. Words are split at blanks; quotes are not tracked, and
+// a missed start only shortens the command, which keeps a port-shaped value
+// redacted. It scans forward and keeps its state between queries, so a
+// sequence of queries reads the text once.
+type containerScan struct {
+	pos    int  // text[:pos] has been scanned
+	word   int  // start of the word in progress, or -1
+	oddBS  bool // text[:pos] ends in an odd run of backslashes
+	engine bool // a docker or podman word stands in the command so far
+	run    bool // a run or create word follows it
+}
+
+// note records one complete word of the current command.
+func (c *containerScan) note(w string) {
+	w = strings.TrimRight(w, `"'\`)
+	if k := strings.LastIndexAny(w, `/"'\`); k >= 0 {
+		w = w[k+1:]
 	}
-	engine := false
-	for _, f := range strings.Fields(text[s:j]) {
-		f = strings.TrimRight(f, `"'\`)
-		if k := strings.LastIndexAny(f, `/"'\`); k >= 0 {
-			f = f[k+1:]
-		}
+	switch {
+	case strings.EqualFold(w, "docker") || strings.EqualFold(w, "podman"):
+		c.engine = true
+	case c.engine && (w == "run" || w == "create"):
+		c.run = true
+	}
+}
+
+// runBefore reports whether the command holding text[j:] runs or creates a
+// container. j must not decrease between calls on the same text.
+func (c *containerScan) runBefore(text string, j int) bool {
+	for ; c.pos < j; c.pos++ {
+		ch := text[c.pos]
+		term := strings.IndexByte("\n\r;|&()`", ch) >= 0 || (c.oddBS && (ch == 'n' || ch == 'r'))
+		c.oddBS = ch == '\\' && !c.oddBS
 		switch {
-		case strings.EqualFold(f, "docker") || strings.EqualFold(f, "podman"):
-			engine = true
-		case engine && (f == "run" || f == "create"):
-			return true
+		case term:
+			c.word, c.engine, c.run = -1, false, false
+		case ch == ' ' || ch == '\t' || ch == '\v' || ch == '\f':
+			if c.word >= 0 {
+				c.note(text[c.word:c.pos])
+				c.word = -1
+			}
+		case c.word < 0:
+			c.word = c.pos
 		}
 	}
-	return false
+	if c.run || c.word < 0 {
+		return c.run
+	}
+	// The word in progress ends at j for this query only.
+	partial := *c
+	partial.note(text[c.word:j])
+	return partial.run
 }
 
 // dbClientSpans returns the spans of the passwords a MySQL/MariaDB client
 // whose name is at text[j:] takes in words (the rest of its command; the
 // client accepts options after positional arguments): -pPASSWORD and
 // --password=PASSWORD (or a prefix of it from --pas), attached only. Inside a
-// docker or podman run/create command a -p value shaped like a port mapping
-// is the container's published port, never a password.
-func dbClientSpans(text string, j int, json bool, words []cmdWord) [][2]int {
+// docker or podman run/create command (containers, queried in increasing j) a
+// -p value shaped like a port mapping is the container's published port, never
+// a password.
+func dbClientSpans(text string, j int, json bool, words []cmdWord, containers *containerScan) [][2]int {
 	var out [][2]int
 	run := 0 // 1: the command runs a container, -1: it does not, 0: not checked yet
 	runsContainer := func() bool {
 		if run == 0 {
 			run = -1
-			if containerRunBefore(text, j) {
+			if containers.runBefore(text, j) {
 				run = 1
 			}
 		}

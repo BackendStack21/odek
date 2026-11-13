@@ -1,6 +1,7 @@
 package redact
 
 import (
+	"math/rand"
 	"strings"
 	"testing"
 	"time"
@@ -201,6 +202,70 @@ func TestRED_DBClientNameCountsOnlyAsTheClient(t *testing.T) {
 	}
 }
 
+// A JSON \n or \r escape ends the command the docker/podman look-back
+// examines, as a raw newline does, so a port-shaped password of a separate
+// mysql command stays redacted.
+func TestRED_ContainerRunLookBackStopsAtJSONNewline(t *testing.T) {
+	for _, in := range []string{
+		`{"cmd":"docker run x\nmysql -p1234:5678"}`,
+		`{"cmd":"docker run x\r\nmysql -p1234:5678"}`,
+	} {
+		if out := RedactSecrets(in); strings.Contains(out, "1234:5678") {
+			t.Errorf("leak: %q => %q", in, out)
+		}
+	}
+	if in := `{"cmd":"docker run --name mysql -p3306:3306 mysql"}`; RedactSecrets(in) != in {
+		t.Errorf("over-redaction: %q", RedactSecrets(in))
+	}
+}
+
+// redactR3ContainerRunRef is the plain backward form of containerScan: find
+// the command start before j, split the words at blanks and look for a
+// docker/podman word followed by run/create.
+func redactR3ContainerRunRef(text string, j int) bool {
+	s := j
+	for s > 0 && strings.IndexByte("\n\r;|&()`", text[s-1]) < 0 &&
+		!(strings.IndexByte("nr", text[s-1]) >= 0 && oddBackslashesBefore(text, 0, s-1)) {
+		s--
+	}
+	c := containerScan{word: -1}
+	for _, f := range strings.FieldsFunc(text[s:j], func(r rune) bool { return r == ' ' || r == '\t' || r == '\v' || r == '\f' }) {
+		c.note(f)
+	}
+	return c.run
+}
+
+// The forward container scan answers every query exactly as a fresh backward
+// scan from that offset would.
+func TestRED_ContainerScanMatchesBackwardScan(t *testing.T) {
+	parts := []string{"docker", "Podman", "run", "create", "mysql", " ", "\t", "\\", "n", "r", ";", "(", ")",
+		"`", "|", "&", "\n", `"`, "'", "/", "x", "-p1:1", "\\n", "\\\\n", "\\r", "\\t",
+		"docker ", " docker ", "podman ", " run ", "run ", " create ", "/usr/bin/docker ", `"run" `, " -d ", " mysql "}
+	rng := rand.New(rand.NewSource(7))
+	seen := map[bool]int{}
+	for iter := 0; iter < 3000; iter++ {
+		var b strings.Builder
+		for k := rng.Intn(40); k >= 0; k-- {
+			b.WriteString(parts[rng.Intn(len(parts))])
+		}
+		text := b.String()
+		c := containerScan{word: -1}
+		for j := 0; j <= len(text); j += 1 + rng.Intn(4) {
+			got, want := c.runBefore(text, j), redactR3ContainerRunRef(text, j)
+			if got != want {
+				t.Fatalf("%q at %d: forward %v, backward %v", text, j, got, want)
+			}
+			seen[got]++
+		}
+	}
+	if testing.Verbose() {
+		t.Logf("outcomes: %v", seen)
+	}
+	if seen[true] < 100 || seen[false] < 100 {
+		t.Fatalf("corpus too one-sided: %v", seen)
+	}
+}
+
 // The client-name rule looks back a bounded distance; a name whose word or
 // blank run does not fit counts as the client, so its password is redacted.
 func TestRED_DBClientNameLookBackFailsTowardRedaction(t *testing.T) {
@@ -231,6 +296,11 @@ func TestRED_DBClientAndSshpassScanScalesLinearly(t *testing.T) {
 		"verb":             "install mysql ",
 		"json escape":      `\nmysql`,
 		"long word before": strings.Repeat("a", 300) + " mysql ",
+		// Port-shaped values of many clients in one long command line: the
+		// container look-back must not rescan the line for each of them.
+		"json array ports": `"mysql -p1:1",`,
+		"paren ports":      "mysql -p1:1)",
+		"docker array":     `["docker","run","x"],"mysql -p1:1",`,
 	} {
 		redactR3Linear(t, name, func(n int) string { return strings.Repeat(unit, n/len(unit)) })
 	}
