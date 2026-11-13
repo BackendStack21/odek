@@ -347,3 +347,56 @@ func TestRED_JavaSecurityEgdIsAPlainProperty(t *testing.T) {
 		}
 	}
 }
+
+// The denylist scan followed `x='shred -u'; $x f`, `x+='shred -u'` and
+// `x+=('shred -u')`, but an element assignment was no assignment to it: after
+// `x[0]='shred -u'` or `x[0]+='shred -u'`, `$x f` (which expands element 0)
+// ran the denied command unmatched.
+//
+// Correct behaviour: an assignment or append to element 0 is tracked like the
+// scalar form; another element leaves what $x expands to alone, and an
+// element whose subscript is not a literal number never replaces a value the
+// scan already knows.
+func TestRED_DenylistTracksElementAssignments(t *testing.T) {
+	t.Setenv("HOME", "/home/user")
+	t.Chdir(t.TempDir())
+	cfg := &DangerousConfig{Denylist: []string{"shred -u"}, Classes: map[RiskClass]Action{
+		Unknown: Allow, SystemWrite: Allow, LocalWrite: Allow, CodeExecution: Allow, Destructive: Allow}}
+	if got := cfg.ActionForCommand(`x='shred -u'; $x f`); got != Deny {
+		t.Fatalf("premise: the scalar form is %s", got)
+	}
+	for _, cmd := range []string{
+		`x[0]='shred -u'; $x f`,
+		`x[0]+='shred -u'; $x f`,
+		`x[0]=shred; x[0]+=' -u'; $x f`,
+		`x=shred; x[0]+=' -u'; $x f`,
+		`x[0]=shred; x+=' -u'; $x f`,
+		`declare x[0]='shred -u'; $x f`,
+		`export x[0]+='shred -u'; $x f`,
+		`x=ls; x[0]='shred -u'; $x f`,
+		`x[00]='shred -u'; $x f`,
+		`x[0]='shred -u'; ${x} f`,
+		`x[i]='shred -u'; $x f`,
+		`x[$i]='shred -u'; $x f`,
+		// Another element, or one the scan cannot place, replaces nothing.
+		`x='shred -u'; x[1]=ls; $x f`,
+		`x='shred -u'; x[i]=ls; $x f`,
+		`x='shred -u'; x[$i]=ls; $x f`,
+		`x='shred -u'; x[1]+=ls; $x f`,
+		`x[0]='shred -u'; x[1]=ls; $x f`,
+	} {
+		if got := cfg.ActionForCommand(cmd); got != Deny {
+			t.Errorf("ActionForCommand(%q) = %s, want deny", cmd, got)
+		}
+	}
+	for _, cmd := range []string{
+		`x[1]='shred -u'; echo $x f`,
+		`x[0]=ls; $x f`,
+		`x[0]='shred -u'; x[0]=ls; $x f`,
+		`x[0]='shred -u'; x=ls; $x f`,
+	} {
+		if got := cfg.ActionForCommand(cmd); got == Deny {
+			t.Errorf("ActionForCommand(%q) = deny, want it not matched", cmd)
+		}
+	}
+}
