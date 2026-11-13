@@ -144,7 +144,7 @@ func optionValueWords(value string) ([]string, RiskClass) {
 	if len(value) > maxOptionEnvBytes {
 		return nil, Unknown
 	}
-	if optionValueUnresolved(value) {
+	if computedWord(value) {
 		return nil, SystemWrite
 	}
 	words := tokenize(value)
@@ -152,11 +152,6 @@ func optionValueWords(value string) ([]string, RiskClass) {
 		return nil, Unknown
 	}
 	return words, Safe
-}
-
-// optionValueUnresolved reports a value whose words are only known at run time.
-func optionValueUnresolved(val string) bool {
-	return strings.Contains(val, dynamicSubstToken) || strings.ContainsAny(val, "$`")
 }
 
 // unresolvedRisk is the verdict of a variable whose value the analysis cannot
@@ -176,20 +171,22 @@ func (v optionEnvVar) valueRisk(value string) RiskClass {
 		return jvmOptionsRisk(value, 0)
 	case optionJavaHome:
 		home := strings.TrimSpace(value)
-		if home == "" {
+		switch {
+		case home == "":
 			return Safe
-		}
-		if optionValueUnresolved(home) {
+		case computedWord(home):
 			return CodeExecution
 		}
 		return javaBinaryRisk(filepath.Join(expandShellTokenPath(home), "bin", "java"))
 	case optionJavaCmd:
 		cmd := strings.TrimSpace(value)
-		if cmd == "" || !strings.ContainsAny(cmd, "/$`") && !strings.Contains(cmd, dynamicSubstToken) {
-			return Safe // a bare name is looked up on PATH
-		}
-		if optionValueUnresolved(cmd) {
+		switch {
+		case cmd == "":
+			return Safe
+		case computedWord(cmd):
 			return CodeExecution
+		case !strings.Contains(cmd, "/"):
+			return Safe // a bare name is looked up on PATH
 		}
 		return javaBinaryRisk(expandShellTokenPath(cmd))
 	}
