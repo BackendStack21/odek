@@ -2,6 +2,7 @@ package danger
 
 import (
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
@@ -338,6 +339,79 @@ func TestRED_JVMPropertiesThatRedirectCodeLocations(t *testing.T) {
 			if got, want := Classify(cmd), Classify(plain); got != want {
 				t.Errorf("Classify(%q) = %s, want %s (the verdict of %q)", cmd, got, want, plain)
 			}
+		}
+	}
+}
+
+// The java binary variables were tested for run-time text before the shell's
+// own expansion of the value, so a JAVA_HOME spelled with $HOME (how SDKMAN
+// and asdf write it) was code_execution while the same path spelled ~/ was
+// plain; and the binary was compared with the directory odek runs in, not the
+// one the launcher runs in after an earlier `cd`, which with the home
+// directory as the workspace made every JDK a manager installed under it a
+// working-directory binary.
+//
+// Correct behaviour: the value is resolved first, the directory is the one
+// the command runs in, and the directories JDKs are installed into are not
+// project files; a JDK in the project tree or a temporary directory stays
+// code_execution.
+func TestRED_JavaBinaryResolvedBeforeItIsJudged(t *testing.T) {
+	t.Setenv("HOME", "/home/user")
+	t.Chdir(t.TempDir())
+	unsetExecEnvR4(t)
+	for cmd, plain := range map[string]string{
+		`JAVA_HOME=$HOME/.sdkman/candidates/java/current mvn -v`:           `mvn -v`,
+		`JAVA_HOME=${HOME}/.asdf/installs/java/temurin-21 mvn -v`:          `mvn -v`,
+		`JAVACMD=$HOME/.sdkman/candidates/java/current/bin/java mvnw -v`:   `mvnw -v`,
+		`JAVA_HOME=~/.sdkman/candidates/java/current mvn -v`:               `mvn -v`,
+		`export JAVA_HOME=$HOME/.jenv/versions/21; mvn -v`:                 `mvn -v`,
+		`JAVA_HOME=/usr/lib/jvm/java-21-openjdk mvn -v`:                    `mvn -v`,
+		`JAVA_HOME=$HOME/tools/jdk-21 mvn -v`:                              `mvn -v`,
+		`JAVA_HOME=/Library/Java/JavaVirtualMachines/x/Contents/Home java`: `java`,
+	} {
+		if got, want := Classify(cmd), Classify(plain); got != want {
+			t.Errorf("Classify(%q) = %s, want %s (the verdict of %q)", cmd, got, want, plain)
+		}
+	}
+	for _, cmd := range []string{
+		`JAVA_HOME=./jdk mvn -v`,
+		`JAVA_HOME=$PWD/jdk mvn -v`,
+		`JAVA_HOME=/tmp/jdk mvn -v`,
+		`JAVA_HOME=$TMPDIR/jdk mvn -v`,
+		`JAVACMD=jdk/bin/java mvnw -v`,
+		`JAVA_HOME=$UNSET_BY_THE_RUNNER/jdk mvn -v`,
+		`JAVA_HOME=$(pwd)/jdk mvn -v`,
+		`HOME=/tmp/h JAVA_HOME=$HOME/.sdkman/candidates/java/current mvn -v`,
+		`read HOME; JAVA_HOME=$HOME/.sdkman/candidates/java/current mvn -v`,
+		`HOME=/tmp/h; JAVA_HOME=$HOME/.sdkman/candidates/java/current mvn -v`,
+	} {
+		if got := Classify(cmd); Rank(got) < Rank(CodeExecution) {
+			t.Errorf("Classify(%q) = %s, want at least code_execution", cmd, got)
+		}
+	}
+
+	// The directory the launcher runs in is the one an earlier cd names.
+	root := t.TempDir()
+	t.Setenv("HOME", root)
+	t.Setenv("TMPDIR", filepath.Join(root, "no-such-tmp"))
+	if strings.HasPrefix(root, "/tmp/") || strings.HasPrefix(root, "/var/tmp/") || strings.HasPrefix(root, "/private/") {
+		t.Skip("the test home is inside a temporary directory the classifier lists")
+	}
+	proj := filepath.Join(root, "proj")
+	if err := os.MkdirAll(proj, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(root)
+	for cmd, want := range map[string]RiskClass{
+		`cd ` + proj + `; JAVA_HOME=` + proj + `/jdk mvn -v`:                        CodeExecution,
+		`cd ` + proj + ` && export JAVA_HOME=` + proj + `/jdk && mvn -v`:            CodeExecution,
+		`JAVA_HOME=` + root + `/.sdkman/candidates/java/current mvn -v`:             Safe,
+		`export JAVA_HOME=$HOME/.asdf/installs/java/temurin-21; mvn -v`:             Safe,
+		`JAVA_HOME=` + root + `/jdk mvn -v`:                                         CodeExecution,
+		`cd .sdkman/candidates/java; JAVA_HOME=$HOME/.sdkman/candidates/java/x mvn`: CodeExecution,
+	} {
+		if got := Classify(cmd); Rank(got) < Rank(want) || (want == Safe && got != Classify(`mvn -v`)) {
+			t.Errorf("Classify(%q) = %s, want %s", cmd, got, want)
 		}
 	}
 }
