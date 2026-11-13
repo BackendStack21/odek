@@ -262,8 +262,8 @@ by visible escapes (`\x1b`, `\u202e`), and an over-long command keeps its head
 and tail around a `…[N more bytes]` marker, so the chat shows the command that
 will run. The model-supplied description is capped so it never crowds the
 command out, and a batch card that has to be shortened keeps a fair share of
-every entry (at least 48 bytes each); a batch with too many entries for that lists the leading entries and ends with
-`… and N more entries not shown`, so the message always stays within Telegram's 4096-byte limit. Approving such a shortened card does not grant blanket trust, so
+every entry (at least 96 bytes each, so the index, tool name and start of the command stay readable); a batch with too many entries for that lists the leading entries and ends with
+`… and N more entries not shown` (N is exactly the number of entries left out), so the message always stays within Telegram's 4096-byte limit. Approving such a shortened card does not grant blanket trust, so
 each hidden entry still prompts on its own. Starting a fresh conversation with `/new` also drops that chat's
 unread-script read ledger, and so does `/resume` when it switches to a different conversation, so a script read in the archived session gates again.
 

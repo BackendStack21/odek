@@ -526,12 +526,15 @@ func elideMiddle(s string, maxEsc int) (string, bool) {
 		return e, false
 	}
 	keep := maxEsc
+	// The marker's own width (its count has at most as many digits as len(s)),
+	// so a small budget is not over-reserved at the cost of the head.
+	markerLen := len(fmt.Sprintf("…[%d more bytes]", len(s)))
 	for keep > 0 {
 		tail := approvalTailBytes
 		if tail > keep/3 {
 			tail = keep / 3
 		}
-		head := keep - tail - 32 // room for the marker
+		head := keep - tail - markerLen
 		if head < 0 {
 			head = 0
 		}
@@ -562,7 +565,7 @@ func elideMiddle(s string, maxEsc int) (string, bool) {
 // batchMinEntryBytes is the smallest per-entry share a batch card shows. When
 // the entries cannot all get at least this much, only the leading entries are
 // listed and a final line states how many were left out.
-const batchMinEntryBytes = 48
+const batchMinEntryBytes = 96
 
 // batchMoreLine is the closing line of a card that lists only leading entries.
 func batchMoreLine(n int) string {
@@ -580,7 +583,8 @@ func fitBatchCard(card string, maxEsc int) (string, bool) {
 	if e := escapeCodeBlock(card); len(e) <= maxEsc {
 		return e, false
 	}
-	lines := strings.Split(card, "\n")
+	// A trailing newline ends the last entry; it is not an entry of its own.
+	lines := strings.Split(strings.TrimSuffix(card, "\n"), "\n")
 	more := ""
 	if len(lines)*(batchMinEntryBytes+1) > maxEsc+1 {
 		// Room for the closing line (the count has at most 20 digits).
