@@ -915,9 +915,13 @@ type revStamp struct {
 	revision   uint64
 	untrusted  bool
 	episode    bool
-	// spans: the revision carries TaintSpans or TaintOverflow, which the
-	// stamp does not hold, so a save must re-read the file to merge them.
-	spans bool
+	// spans: the revision carries TaintSpans, TaintOverflow or
+	// TaintBackground, which the stamp does not hold, so a save must
+	// re-read the file to merge them. coverage is the revision's
+	// TaintCoverage, which the stamp does hold: a save merges it like a
+	// re-read would without reading the file for it.
+	spans    bool
+	coverage TaintCoverage
 	// Metadata a later save of an older snapshot adopts (see MetaRevision).
 	metaRevision uint64
 	task         string
@@ -947,7 +951,7 @@ func (s *Store) cachedRevision(id string, info os.FileInfo, statErr error) *Sess
 		return nil
 	}
 	return &Session{ID: id, Generation: st.generation, Revision: st.revision, persistedID: id, UntrustedIngested: st.untrusted, EpisodeUntrusted: st.episode,
-		MetaRevision: st.metaRevision, Task: st.task, Pinned: st.pinned, AuthToken: st.authToken}
+		MetaRevision: st.metaRevision, Task: st.task, Pinned: st.pinned, AuthToken: st.authToken, TaintCoverage: st.coverage}
 }
 
 // rememberRevision stamps the file just written for sess.
@@ -966,6 +970,7 @@ func (s *Store) rememberRevision(sess *Session) {
 		untrusted:  sess.UntrustedIngested,
 		episode:    sess.EpisodeUntrusted,
 		spans:      !sess.TaintState().Empty(),
+		coverage:   sess.TaintCoverage,
 		size:       info.Size(),
 
 		metaRevision: sess.MetaRevision,
