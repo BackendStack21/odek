@@ -237,6 +237,9 @@ func TestRED_MysqlBareNameInSameCommandIsAClientWord(t *testing.T) {
 		"install /a/mysql -p" + narrowPW:    "install /a/mysql -p" + narrowPW,
 		"mysqladmin -ip5 status":            "mysqladmin -ip5 status",
 		"sh -c 'tar -cpf a.tar x' ; mysql":  "sh -c 'tar -cpf a.tar x' ; mysql",
+		// A client path outside bin and sbin that is another command's
+		// argument is not read as a client.
+		"docker exec db /opt/db/mysqldump -p" + narrowPW: "docker exec db /opt/db/mysqldump -p" + narrowPW,
 		// An unbalanced quote leaves the separators unreadable: none counts.
 		"echo don't; systemctl stop mysql; tar -cpf b.tar .": "echo don't; systemctl stop mysql; tar -cp[REDACTED] b.tar .",
 	} {
@@ -423,4 +426,85 @@ func TestRED_DocumentedShellPasswordOutcomes(t *testing.T) {
 			t.Errorf("%q\n got  %q\n want %q", in, out, want)
 		}
 	}
+}
+
+// Every combination of a way to reach a client, a client word, arguments that
+// hold separators inside quotes or substitutions, and a password option: the
+// password never survives, and a second pass changes nothing.
+func TestRED_MysqlClientPasswordNeverSurvivesProduct(t *testing.T) {
+	type wrap struct{ open, close, quote string }
+	wraps := []wrap{
+		{"", "", ""}, {"sudo ", "", ""}, {"sudo -u root ", "", ""}, {"docker exec -it db ", "", ""}, {"cd /x && ", "", ""},
+		{"echo hi; ", " | head", ""}, {"FOO=1 BAR=2 ", "", ""}, {"(", ")", ""}, {"$(", ")", ""}, {`sh -c "`, `"`, `"`},
+		{"bash -lc '", "'", "'"}, {`ssh h "`, `" ; echo done`, `"`}, {"time -p ", "", ""}, {"env -i A=b ", "", ""},
+		{"tar -cpf x.tar . && ", " && tar -xpf x.tar", ""}, {`{"cmd":"`, `"}`, `"`}, {"kubectl exec pod -- ", "", ""},
+		{"if ! ", "; then exit 1; fi", ""}, {"nohup ", " &", ""}, {"timeout -k 5 30 ", "", ""},
+	}
+	clients := []string{"mysql", "mysqldump", "mariadb", "mysqladmin", "mariadb-dump", "mysqlsh", "MYSQL", "mysql.exe", "/usr/bin/mysql", "/opt/db/mysqldump", `C:\db\mysql.exe`}
+	args := []string{
+		"", "-uroot ", "-h db -P 3306 ", `-e "select 1; select 2" `, "-e 'a|b && c' ", "--ssl 2>&1 ", "-h $(cat f; true) ",
+		"-h `cat f; true` ", "db >out.txt 2>&1 ", "-u root --protocol=tcp ",
+	}
+	options := []string{"-p" + narrowPW, "--password=" + narrowPW, "-p'" + narrowPW + "'", `-p"` + narrowPW + `"`, "-fp" + narrowPW, "--pass=" + narrowPW + ";"}
+	n := 0
+	for _, w := range wraps {
+		for _, c := range clients {
+			for _, a := range args {
+				for _, o := range options {
+					if w.quote != "" && (strings.Contains(a, w.quote) || strings.Contains(o, w.quote)) {
+						continue // the argument would close the wrapper's quote
+					}
+					if strings.HasPrefix(w.open, "docker exec") && strings.HasPrefix(c, "/opt/") {
+						continue // a path outside bin that is another command's argument
+					}
+					in := w.open + c + " " + a + o + w.close
+					out := RedactSecrets(in)
+					if strings.Contains(out, narrowPW) {
+						t.Fatalf("leak\n in =%s\n out=%s", in, out)
+					}
+					if again := RedactSecrets(out); again != out {
+						t.Fatalf("not stable\n once =%s\n twice=%s", out, again)
+					}
+					n++
+				}
+			}
+		}
+	}
+	t.Logf("%d commands", n)
+}
+
+// Every combination of a command that mentions a client name, a separator,
+// and another program with a -p option, bare and inside a quoted or
+// parenthesised script: nothing is rewritten.
+func TestRED_MysqlMentionLeavesOtherCommandsProduct(t *testing.T) {
+	firsts := []string{
+		"systemctl stop mysql", "cd /var/lib/mysql", "mysqldump db > d.sql", "docker stop mariadb", "ls /etc/mysql",
+		"service mysql restart", "mysql -e 'select 1'", "mysqladmin ping", "sudo -u mysql true", "/usr/bin/mysql db < in.sql",
+		"MYSQL_HOME=/etc/mysql mysqld_safe", "mariadb-dump --all-databases 2>&1",
+	}
+	seps := []string{" && ", "; ", " | ", " || ", " & ", ";", "&&", "|"}
+	seconds := []string{
+		"tar -cpzf b.tgz /var/lib/mysql", "ssh -Cp2222 host", "pv -petr", "find /var/lib/mysql -print", "patch -sp1 -i x.diff",
+		"rsync -ap /var/lib/mysql/ /mnt/", "ps -p1234", "nc -lp3306", "cp -rp /var/lib/mysql /backup", "gcc -pthread -pipe x.c",
+		"go test ./internal/mysql/... -cpuprofile cpu.out", "sudo -E tar -C /var/lib/mysql -cpf x.tar .",
+	}
+	wraps := [][2]string{{"", ""}, {`sh -c "`, `"`}, {"bash -c '", "'"}, {"(", ")"}, {`{"cmd":"`, `"}`}, {"$(", ")"}, {"echo `", "`"}}
+	n := 0
+	for _, f := range firsts {
+		for _, sep := range seps {
+			for _, sec := range seconds {
+				for _, w := range wraps {
+					if w[0] != "" && strings.ContainsAny(f, w[1]) {
+						continue // the command would close the wrapper's quote
+					}
+					in := w[0] + f + sep + sec + w[1]
+					if out := RedactSecrets(in); out != in {
+						t.Fatalf("altered\n in =%s\n out=%s", in, out)
+					}
+					n++
+				}
+			}
+		}
+	}
+	t.Logf("%d commands", n)
 }
