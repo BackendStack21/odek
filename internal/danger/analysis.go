@@ -347,7 +347,37 @@ func analyzeWithStateWork(cmd string, depth int, inherited *shellAnalysisState, 
 		endChain()
 		chain = outer
 	}
+	// A pipeline is one unit for the java binary exemption (see
+	// optionEnvState.noteUnit): its effects are collected apart from the rest
+	// of the command line, so a launcher's own effects can be told from what
+	// the other commands do. busy is set by a stage of the unit that neither
+	// is granted the exemption nor runs an inert command.
+	busy := false
+	var exemptUnits Analysis
+	var runPipeline func([]shStage, bool, pipeCtx)
 	runStages = func(stages []shStage, afterAnd bool, ctx pipeCtx) {
+		outer, outerBusy := result, busy
+		result, busy = Analysis{}, false
+		runPipeline(stages, afterAnd, ctx)
+		unit := result
+		result = outer
+		if state.options.noteUnit(unit, busy, len(stages) == 1 && stages[0].comp == nil) {
+			exemptUnits.merge(unit)
+		} else {
+			result.merge(unit)
+		}
+		busy = outerBusy
+	}
+	runPipeline = func(stages []shStage, afterAnd bool, ctx pipeCtx) {
+		// settle judges the stage analysed last, once everything it runs has
+		// been analysed.
+		stageOpen, stageInert, stageExempt := false, false, 0
+		settle := func() {
+			if stageOpen && !stageInert && state.options.javaExempt == stageExempt {
+				busy = true
+			}
+			stageOpen = false
+		}
 		prepared := make([][]string, 0, len(stages))
 		for _, st := range stages {
 			if st.comp != nil {
@@ -378,6 +408,8 @@ func analyzeWithStateWork(cmd string, depth int, inherited *shellAnalysisState, 
 			}
 			piped := i > 0 || ctx.piped
 			upstream := stageUpstream(ctx, prepared, i)
+			settle()
+			stageOpen, stageInert, stageExempt = true, false, state.options.javaExempt
 			// Option words written on the command are spliced into its argv
 			// and the result classified again, several times over. Past the
 			// budget of one analysis the values are not taken apart any more:
@@ -431,6 +463,7 @@ func analyzeWithStateWork(cmd string, depth int, inherited *shellAnalysisState, 
 			payloadState.uncertain = state.uncertain || !cwdKnown
 			unwrappedStage := unwrapWrappersFull(stage)
 			inner, floor := unwrappedStage.inner, unwrappedStage.floor
+			stageInert = len(inner) == 0 || inertCommands[commandName(inner[0])]
 			state.noteOptionBindings(stage, inner)
 			payloadState.vars, payloadState.optEnv = withOptionAssignments(payloadState.vars, payloadState.optEnv, unwrappedStage.assigns)
 			for _, payload := range unwrappedStage.payloads {
@@ -743,6 +776,7 @@ func analyzeWithStateWork(cmd string, depth int, inherited *shellAnalysisState, 
 				}
 			}
 		}
+		settle()
 		result.add(classifyPipelineIn(pipeline, repos))
 	}
 	// scanData classifies the words of a data region (a for list, a case word
@@ -1104,6 +1138,13 @@ func analyzeWithStateWork(cmd string, depth int, inherited *shellAnalysisState, 
 				result.addRewritten(path)
 			}
 		}
+	}
+	// What this analysis found outside the pipelines granted the java binary
+	// exemption counts against it; the command line as a whole decides.
+	state.options.noteOther(result)
+	result.merge(exemptUnits)
+	if inherited == nil && state.options.javaExemptionVoid() {
+		result.add(CodeExecution)
 	}
 	if len(result.Effects) == 0 {
 		result.add(Safe)

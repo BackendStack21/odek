@@ -48,7 +48,9 @@ import (
 //   - a java binary (JAVA_HOME/bin/java, JAVACMD) that is relative, in a
 //     temporary directory, in the directory the reader or odek runs in, or
 //     written by the command line itself classifies code_execution; the
-//     directories JDKs are installed into are otherwise exempt.
+//     system JDK directories are otherwise exempt, and a binary anywhere
+//     else (the per-user JDK directories included) only while every other
+//     command of the command line is inert and without effect.
 //
 // A value the analysis cannot follow fails closed when the reader runs: a
 // value only known at run time, a binding the analysis cannot follow (read,
@@ -339,6 +341,9 @@ type javaPathCtx struct {
 	// homeRebound: the command line binds, reads or unsets HOME, or may, so
 	// ~ and $HOME no longer name the home directory odek inherited.
 	homeRebound bool
+	// exempt counts the exemptions granted to binaries outside the system
+	// JDK directories; nil where a command is judged on its own.
+	exempt *int
 }
 
 // processJavaPathCtx is the context of a command judged on its own: the
@@ -482,8 +487,11 @@ func javaBinaryRisk(path string, ctx javaPathCtx) RiskClass {
 		planted = planted || within([]string{filepath.Clean(w)})
 	}
 	system, user := jdkInstallDirs()
-	if !planted && (within(system) || (!ctx.moved() && within(user))) {
+	if !planted && within(system) {
 		return Safe
+	}
+	if !planted && !ctx.moved() && within(user) {
+		return ctx.exemptOutsideSystem()
 	}
 	var cwds []string
 	if ctx.known {
@@ -495,7 +503,72 @@ func javaBinaryRisk(path string, ctx javaPathCtx) RiskClass {
 	if !ctx.known || planted || within(cwds) {
 		return CodeExecution
 	}
+	return ctx.exemptOutsideSystem()
+}
+
+// exemptOutsideSystem grants the exemption of a java binary outside the
+// system JDK directories. Anything else the command line runs can have put
+// the binary there, through more ways than the analysis lists writers for, so
+// the grant is recorded and holds only while the rest of the command line is
+// inert (optionEnvState.javaExemptionVoid).
+func (c javaPathCtx) exemptOutsideSystem() RiskClass {
+	if c.exempt != nil {
+		*c.exempt++
+	}
 	return Safe
+}
+
+// inertCommands are the commands that cannot put a file anywhere unless a
+// redirection does, which classifies as a write: shell builtins that only
+// change shell state, and display tools.
+var inertCommands = fieldSet(": true false echo printf test [ cd pushd popd pwd export declare typeset local readonly " +
+	"unset set shift sleep date uname whoami hostname which type ls cat head tail grep wc")
+
+// noteUnit records one pipeline of the command line for the java binary
+// exemption and reports whether the pipeline is a launcher granted it: a
+// single command, whose own effects do not count against its own JDK. Any
+// other pipeline counts when it has an effect or (busy) runs a command that
+// is neither granted the exemption nor inert.
+func (o *optionEnvState) noteUnit(unit Analysis, busy, single bool) bool {
+	granted := o.javaExempt > o.javaClaimed
+	o.javaClaimed = o.javaExempt
+	effects := analysisHasEffect(unit)
+	if granted && single {
+		o.exemptUnits++
+		if effects {
+			o.exemptUnitsWithEffects++
+		}
+		return true
+	}
+	if busy || effects {
+		o.javaOthers = true
+	}
+	return false
+}
+
+// noteOther records what an analysis found outside its exempt pipelines.
+func (o *optionEnvState) noteOther(rest Analysis) {
+	if analysisHasEffect(rest) {
+		o.javaOthers = true
+	}
+}
+
+// javaExemptionVoid reports whether a java binary outside the system JDK
+// directories was exempted although something else in the command line could
+// have prepared it: any other command that is not inert or has an effect, or
+// another exempted launcher with effects of its own.
+func (o *optionEnvState) javaExemptionVoid() bool {
+	return o.javaExempt > 0 && (o.javaOthers || (o.exemptUnits > 1 && o.exemptUnitsWithEffects > 0))
+}
+
+// analysisHasEffect reports an analysis with any effect other than safe.
+func analysisHasEffect(a Analysis) bool {
+	for _, effect := range a.Effects {
+		if effect != Safe {
+			return true
+		}
+	}
+	return false
 }
 
 // bothSpellings returns the cleaned path and, when it differs, the path with
@@ -710,6 +783,15 @@ type optionEnvState struct {
 	// homeRebound is set once a word of the command line or of a payload
 	// names HOME where a variable is bound (see homeBindingWord).
 	homeRebound bool
+	// javaExempt counts the java binaries outside the system JDK directories
+	// that were exempted, javaClaimed those already attributed to a pipeline.
+	// exemptUnits counts the pipelines granted an exemption, and
+	// exemptUnitsWithEffects those of them with effects of their own;
+	// javaOthers is set once anything else in the command line has an effect
+	// or runs a command that is not inert. See javaExemptionVoid.
+	javaExempt, javaClaimed             int
+	exemptUnits, exemptUnitsWithEffects int
+	javaOthers                          bool
 }
 
 // maxOptionEnvValues bounds the values recorded per variable; a variable
@@ -1124,7 +1206,7 @@ func (s *shellAnalysisState) optionEnvAnalysis(inner, inline []string, payload s
 	exportedWords := 0
 	// After a binding the analysis cannot follow, HOME may be rebound too.
 	javaCtx := javaPathCtx{cwd: payload.cwd, known: !payload.uncertain, written: payload.written,
-		homeRebound: s.options.homeRebound || s.options.dynamic}
+		homeRebound: s.options.homeRebound || s.options.dynamic, exempt: &s.options.javaExempt}
 	judge := func(v optionEnvVar, value string) {
 		if v.kind != optionArgv && v.kind != optionToolArgs {
 			if _, isInline := inlineValues[v.name]; isInline {

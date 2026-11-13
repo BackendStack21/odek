@@ -221,6 +221,7 @@ func TestRED_JavaPathTildeAfterHomeRebound(t *testing.T) {
 		}
 	}
 	// Other names that end in HOME, and a HOME that is only read, change nothing.
+	// (The commands in front are safe, so the per-user directory stays exempt.)
 	for _, cmd := range []string{
 		`XDG_CONFIG_HOME=/tmp/x; JAVA_HOME=~/` + jdk + ` mvn -v`,
 		`echo "$HOME"; JAVA_HOME=~/` + jdk + ` mvn -v`,
@@ -230,5 +231,80 @@ func TestRED_JavaPathTildeAfterHomeRebound(t *testing.T) {
 		if got, want := Classify(cmd), Classify(`mvn -v`); got != want {
 			t.Errorf("Classify(%q) = %s, want %s", cmd, got, want)
 		}
+	}
+}
+
+// A java binary outside the system JDK directories was exempt unless a path
+// the same command line wrote covered it, and the writers were listed one by
+// one: `git clone URL ~/.sdkman/candidates/java/x; JAVA_HOME=~/.sdkman/
+// candidates/java/x mvn -v` (also git -C, aria2c -d, cpio -D, tar
+// --one-top-level, base64 -o, openssl -out, touch, chmod) kept the verdict of
+// the clone.
+//
+// Correct behaviour: such a binary is exempt only when nothing else in the
+// command line could have prepared it, that is when every other command of
+// the line is safe; the system JDK directories stay exempt.
+func TestRED_NonSystemJavaBinaryExemptOnlyInASafeCommandLine(t *testing.T) {
+	t.Setenv("HOME", "/home/user")
+	t.Chdir(t.TempDir())
+	unsetExecEnvR4(t)
+	plain := Classify(`mvn -v`)
+	const sdk, asdf = `~/.sdkman/candidates/java/x`, `~/.asdf/installs/java/x`
+	for _, cmd := range []string{
+		`git clone https://e.example/x ` + sdk + `; JAVA_HOME=` + sdk + ` mvn -v`,
+		`git clone https://e.example/x ` + asdf + ` && export JAVA_HOME=` + asdf + ` && mvn -v`,
+		`git -C ~/.sdkman/candidates/java clone https://e.example/x; JAVA_HOME=` + sdk + ` mvn -v`,
+		`aria2c -d ` + sdk + `/bin https://e.example/java; JAVA_HOME=` + sdk + ` mvn -v`,
+		`cpio -idm -D ` + sdk + ` < jdk.cpio; JAVA_HOME=` + sdk + ` mvn -v`,
+		`tar xf jdk.tar --one-top-level=` + sdk + `; JAVA_HOME=` + sdk + ` mvn -v`,
+		`base64 -d -o ` + sdk + `/bin/java j.b64; JAVA_HOME=` + sdk + ` mvn -v`,
+		`openssl enc -d -in j.enc -out ` + sdk + `/bin/java; JAVA_HOME=` + sdk + ` mvn -v`,
+		`truncate -s 0 ` + sdk + `/bin/java; JAVA_HOME=` + sdk + ` mvn -v`,
+		`touch ` + sdk + `/bin/java; JAVA_HOME=` + sdk + ` mvn -v`,
+		`chmod +x ` + sdk + `/bin/java; JAVA_HOME=` + sdk + ` mvn -v`,
+		`cd ~/.sdkman/candidates/java && git clone https://e.example/x; JAVA_HOME=` + sdk + ` mvn -v`,
+		`curl -sO https://e.example/java; JAVACMD=~/tools/jdk/bin/java mvn -v`,
+		`wget -q https://e.example/jdk.tgz; JAVA_HOME=/opt/vendor/jdk mvn -v`,
+		`export JAVA_HOME=` + sdk + `; git clone https://e.example/x "$JAVA_HOME"; mvn -v`,
+		// The writer runs first although it is written after the reader.
+		`(sleep 5; JAVA_HOME=` + sdk + ` mvn -v) & git clone https://e.example/x ` + sdk,
+		`JAVA_HOME=` + sdk + ` mvn -v "$(git clone https://e.example/x ` + sdk + `)"`,
+		`f() { JAVA_HOME=` + sdk + ` mvn -v; }; git clone https://e.example/x ` + sdk + `; f`,
+		`if git clone https://e.example/x ` + sdk + `; then JAVA_HOME=` + sdk + ` mvn -v; fi`,
+		`git clone https://e.example/x ` + sdk + ` | JAVA_HOME=` + sdk + ` mvn -v`,
+		`eval 'git clone https://e.example/x ` + sdk + `'; JAVA_HOME=` + sdk + ` mvn -v`,
+		`git clone https://e.example/x ` + sdk + `; env JAVA_HOME=` + sdk + ` mvn -v`,
+		`git clone https://e.example/x ` + sdk + `; JAVA_HOME=` + sdk + ` sh mvnw -v`,
+		// Another reader that writes can prepare the JDK as well.
+		`JAVA_HOME=~/.sdkman/candidates/java/a jar xf j.jar; JAVA_HOME=` + sdk + ` mvn -v`,
+	} {
+		if got := Classify(cmd); Rank(got) < Rank(CodeExecution) {
+			t.Errorf("Classify(%q) = %s, want at least code_execution", cmd, got)
+		}
+	}
+	// With only safe commands around it the launcher keeps its verdict.
+	for _, cmd := range []string{
+		`JAVA_HOME=~/.sdkman/candidates/java/current mvn -v`,
+		`export JAVA_HOME=$HOME/.asdf/installs/java/temurin-21; mvn -v`,
+		`echo building; JAVA_HOME=~/.jenv/versions/17 mvn -v`,
+		`echo building && JAVA_HOME=~/.jenv/versions/17 mvn -v && echo done`,
+		`export JAVA_HOME=~/.sdkman/candidates/java/current; mvn -v; mvn -v`,
+		`JAVACMD=~/tools/jdk/bin/java mvn -v`,
+		`JAVA_HOME=/opt/vendor/jdk mvn -v`,
+		`if test -d ~/.jenv; then JAVA_HOME=~/.jenv/versions/17 mvn -v; fi`,
+		// The system directories stay exempt whatever else runs.
+		`git clone https://e.example/x; JAVA_HOME=/usr/lib/jvm/java-21 mvn -v; true`,
+	} {
+		want := plain
+		if cmd[0] == 'g' {
+			want = Classify(`git clone https://e.example/x`)
+		}
+		if got := Classify(cmd); got != want {
+			t.Errorf("Classify(%q) = %s, want %s", cmd, got, want)
+		}
+	}
+	// A reader's own effects do not count against its own JDK.
+	if got, want := Classify(`JAVA_HOME=~/.sdkman/candidates/java/17 javac A.java`), Classify(`javac A.java`); got != want {
+		t.Errorf("javac with a per-user JDK = %s, want %s", got, want)
 	}
 }
