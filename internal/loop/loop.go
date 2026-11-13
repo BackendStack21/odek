@@ -2838,6 +2838,9 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 	}()
 	ctx = withRunIngestTaint(ctx, messages)
 	e.bindRunTaint(ctx)
+	// Seed the span store before anything observes the history, so a run
+	// without tool calls still saves from the persisted state.
+	e.seedTaintSpans(ctx)
 	messages = e.ensureRuntimeSystem(messages)
 	messages = e.sanitizePersistedSystemMessages(ctx, messages)
 	e.startTranscript(messages)

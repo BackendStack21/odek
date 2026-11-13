@@ -1,6 +1,9 @@
 package danger
 
-import "testing"
+import (
+	"os"
+	"testing"
+)
 
 // Wrapper-carried command strings gate the scripts they run, and a read
 // script stays licensed.
@@ -17,6 +20,11 @@ func TestUnreadGateWrapperCommandStrings(t *testing.T) {
 		if !redGated(c) {
 			t.Errorf("unread script behind a wrapper command string must gate: %s", c)
 		}
+	}
+	// The fixture pipes the network into a shell, which no read can license now
+	// that the gate looks inside read scripts. This test is about wrapper parsing.
+	if err := os.WriteFile(p, []byte("echo hi\n"), 0o755); err != nil {
+		t.Fatal(err)
 	}
 	RecordRead(p)
 	if redGated("env -S 'bash " + p + "'") {

@@ -151,18 +151,23 @@ func newGitRepoCtx(cwd string, known bool, prefix []string, vars map[string]stri
 // writtenPathArmsGit reports whether a resolved path written by the command
 // line could change what git runs: anything under a .git directory (hooks,
 // config, info/attributes, modules), a git config file, or .gitattributes.
+// The path is compared under each fold reading (foldReadings), so
+// `.gitconﬁg` and `.conﬁg/git`, which a case-insensitive filesystem opens as
+// the real files, count too.
 func writtenPathArmsGit(path string) bool {
-	slashed := filepath.ToSlash(path)
-	lower := strings.ToLower(slashed)
-	if strings.Contains(lower, "/.git/") || strings.HasSuffix(lower, "/.git") {
-		return true
+	for _, folded := range foldReadings(filepath.ToSlash(path)) {
+		if strings.Contains(folded, "/.git/") || strings.HasSuffix(folded, "/.git") {
+			return true
+		}
+		switch filepath.Base(folded) {
+		case ".gitconfig", ".gitattributes", ".gitmodules", "gitconfig":
+			return true
+		}
+		if strings.Contains(folded, "/.config/git/") {
+			return true
+		}
 	}
-	base := strings.ToLower(filepath.Base(slashed))
-	switch base {
-	case ".gitconfig", ".gitattributes", ".gitmodules", "gitconfig":
-		return true
-	}
-	return strings.Contains(lower, "/.config/git/")
+	return false
 }
 
 // gitEnvNameRedirects reports whether an environment variable name changes

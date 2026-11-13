@@ -1783,8 +1783,8 @@ const localConfigTemplate = `{
   "stream": null,
   "compaction": null,
   "announce_budget": null,
-  "no_color": false,
-  "no_agents": false,
+  "no_color": null,
+  "no_agents": null,
   "planning": {
     "enabled": null,
     "max_steps": null,

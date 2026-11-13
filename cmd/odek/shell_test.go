@@ -574,3 +574,26 @@ func TestTruncateUTF8Safe_RuneBoundary(t *testing.T) {
 		t.Errorf("cut of empty string = %q, want empty", got)
 	}
 }
+
+// descriptionApprover captures what the user would be shown.
+type descriptionApprover struct {
+	danger.Approver
+	description string
+}
+
+func (r *descriptionApprover) PromptCommand(_ danger.RiskClass, _, description string) error {
+	r.description = description
+	return nil
+}
+
+// A model-supplied description must not hide what would run unread.
+func TestPromptUserGated_DescriptionCannotHideUnreadTargets(t *testing.T) {
+	rec := &descriptionApprover{}
+	st := &shellTool{approver: rec}
+	if err := st.promptUserGated("bash security.sh", "a harmless security check", []string{"/w/code_policies"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(rec.description, "/w/code_policies") || !strings.Contains(rec.description, "a harmless security check") {
+		t.Fatalf("description=%q", rec.description)
+	}
+}

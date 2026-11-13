@@ -1266,6 +1266,7 @@ body.workspace-wide #session-rail { box-shadow: none; animation: none; }
 .turn-stream > .msg:first-child { margin-top: 0; }
 .stream-content { min-height: 1.7em; }
 .msg.partial { opacity: .9; }
+.msg.assistant.held { display: none; }
 .msg.draft > .bubble { display: none; }
 .msg.draft.open > .bubble { display: block; opacity: .6; }
 .msg.draft { margin: 2px 0; }

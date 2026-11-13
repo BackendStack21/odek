@@ -1082,7 +1082,7 @@ func telegramCmd(args []string) error {
 		return "", nil // approval callbacks are routed by the approver
 	}
 
-	handler.OnVoiceMessage = func(chatID int64, messageID int, fileID string, userID int64) (string, error) {
+	handler.OnVoiceMessage = func(chatID int64, messageID int, fileID string, forwarded bool, userID int64) (string, error) {
 		runChatMediaOffLoop(chatID, handlerLog, func(mctx context.Context) {
 			// Download the voice file.
 			localPath, err := telegram.DownloadVoice(bot, chatID, fileID)
@@ -1120,7 +1120,7 @@ func telegramCmd(args []string) error {
 						// Transcribed text crosses an external trust boundary; wrap it before
 						// injecting it into the user message stream (telegramVoiceMessage).
 						transcript := telegramGuardScan(context.Background(), r.Text, "voice transcript")
-						handleChatMessageGated(mctx, chatID, messageID, userID,
+						handleChatMessageGated(withTelegramSkillText(mctx, r.Text, transcript, forwarded), chatID, messageID, userID,
 							telegramVoiceMessage(chatID, transcript),
 							bot, handler, sessionManager, resolved, systemMessage, handlerLog)
 						return
@@ -1139,7 +1139,7 @@ func telegramCmd(args []string) error {
 		return "", nil
 	}
 
-	handler.OnPhotoMessage = func(chatID int64, messageID int, fileIDs []string, caption string, userID int64) (string, error) {
+	handler.OnPhotoMessage = func(chatID int64, messageID int, fileIDs []string, caption string, forwarded bool, userID int64) (string, error) {
 		runChatMediaOffLoop(chatID, handlerLog, func(mctx context.Context) {
 			localPath, err := telegram.DownloadPhoto(bot, chatID, fileIDs)
 			if err != nil {
@@ -1150,8 +1150,9 @@ func telegramCmd(args []string) error {
 				return
 			}
 
-			caption = strings.TrimSpace(caption)
-			caption = telegramGuardScan(context.Background(), caption, "photo caption")
+			rawCaption := strings.TrimSpace(caption)
+			caption = telegramGuardScan(context.Background(), rawCaption, "photo caption")
+			mctx = withTelegramSkillText(mctx, rawCaption, caption, forwarded)
 
 			// Queue auto-description inside the run so approvals, /stop, usage,
 			// and execution budgets cover both local and provider vision.
@@ -1176,7 +1177,7 @@ func telegramCmd(args []string) error {
 		return "", nil
 	}
 
-	handler.OnDocumentMessage = func(chatID int64, messageID int, fileID string, fileName string, userID int64) (string, error) {
+	handler.OnDocumentMessage = func(chatID int64, messageID int, fileID string, fileName string, caption string, forwarded bool, userID int64) (string, error) {
 		runChatMediaOffLoop(chatID, handlerLog, func(mctx context.Context) {
 			localPath, err := telegram.DownloadDocument(bot, chatID, fileID, fileName)
 			if err != nil {
@@ -1186,8 +1187,10 @@ func telegramCmd(args []string) error {
 					bot, handler, sessionManager, resolved, systemMessage, handlerLog)
 				return
 			}
-			handleChatMessageGated(mctx, chatID, messageID, userID,
-				telegramDocumentMessage(localPath, fileName),
+			rawCaption := strings.TrimSpace(caption)
+			caption = telegramGuardScan(context.Background(), rawCaption, "document caption")
+			handleChatMessageGated(withTelegramSkillText(mctx, rawCaption, caption, forwarded), chatID, messageID, userID,
+				telegramDocumentMessage(localPath, fileName, caption),
 				bot, handler, sessionManager, resolved, systemMessage, handlerLog)
 		})
 		return "", nil
@@ -2537,7 +2540,7 @@ func runChatTurn(
 		if agent.UntrustedIngested() {
 			sessionManager.MarkUntrustedIngested(chatID)
 		}
-		sessionManager.MarkTaintSpans(chatID, agent.TaintSpans(trimmed))
+		sessionManager.MarkTaintSpans(chatID, agent.TaintState(trimmed))
 		if err := sessionManager.SaveNoIndexAt(chatID, turnGen, trimmed); err != nil {
 			checkpointErr = fmt.Errorf("persist Telegram checkpoint: %w", err)
 			agentCancel()
@@ -2547,6 +2550,12 @@ func runChatTurn(
 
 	if len(photos) > 0 && photos[0] != nil {
 		agent.SetInitialToolCalls(telegramPhotoCalls(photos[0]))
+	}
+	// A voice transcript or a media caption is the member's own request, but
+	// this turn's message carries it only inside an untrusted wrapper: lazy
+	// skills are matched on it too (withTelegramSkillText).
+	if !wake {
+		agent.SetSkillMatchText(text, telegramSkillText(jobCtx))
 	}
 
 	// Include the final session save in the invocation outcome.
@@ -2567,7 +2576,7 @@ func runChatTurn(
 		// Before the cancel-path and final saves below.
 		sessionManager.MarkUntrustedIngested(chatID)
 	}
-	sessionManager.MarkTaintSpans(chatID, agent.TaintSpans(updatedMessages))
+	sessionManager.MarkTaintSpans(chatID, agent.TaintState(updatedMessages))
 	// Drain the progress bubble before anything else is sent: every progress
 	// edit completes before the final answer (or error reply) goes out.
 	progress.finish(!resolved.ToolProgressCleanup)
@@ -2578,7 +2587,7 @@ func runChatTurn(
 	recordTurnAudit(auditStore, cs.SessionID, auditTurn, auditUserText, auditTurnDelta(updatedMessages, auditHistLen))
 	// Bill actual token usage against the daily budget (if configured) on
 	// every outcome: failed and cancelled turns spent their tokens too.
-	billTelegramChatTurn(bot, log, chatID, messageID, int64(runInfo.InputTokens+runInfo.OutputTokens))
+	billTelegramChatTurn(bot, log, chatID, messageID, dailyBudgetTokens(runInfo))
 	if err != nil {
 		// Clean up any tool trace messages on error.
 		deleteToolTraceMessages(bot, chatID, &toolMsgIDs)
@@ -3043,6 +3052,13 @@ func sendAsync(bot *telegram.Bot, chatID int64, text string, opts *telegram.Send
 	}()
 }
 
+// dailyBudgetTokens is the volume a run is billed against the daily token
+// budget: uncached input, cache reads and writes (real prompt tokens that the
+// provider normalizes out of the input count) and output.
+func dailyBudgetTokens(info loop.IterationInfo) int64 {
+	return int64(info.InputTokens) + int64(info.CacheReadTokens) + int64(info.CacheCreationTokens) + int64(info.OutputTokens)
+}
+
 // billTelegramChatTurn bills a chat turn's token usage against the daily
 // budget and warns the chat when the budget is exceeded.
 func billTelegramChatTurn(bot *telegram.Bot, log telegram.Logger, chatID int64, replyTo int, tokensUsed int64) {
@@ -3263,6 +3279,32 @@ func recordOpeningIngests(ctx context.Context, text string) {
 	}
 }
 
+// telegramSkillTextKey carries a media turn's principal text on the turn's
+// context.
+type telegramSkillTextKey struct{}
+
+// withTelegramSkillText attaches the chat member's own words for a media turn
+// — an auto-transcribed voice note or a photo/document caption — to ctx, so
+// runChatTurn matches lazy skills on them (Agent.SetSkillMatchText). The
+// turn's message still carries them only inside an untrusted wrapper. raw is
+// the text as received and scanned what telegramGuardScan made of it. Nothing
+// is attached for a forwarded message, which the member did not author, or
+// for text the guard flagged (scanned differs from raw). A photo's vision
+// description and a document's body never come through here.
+func withTelegramSkillText(ctx context.Context, raw, scanned string, forwarded bool) context.Context {
+	if forwarded || strings.TrimSpace(raw) == "" || scanned != raw {
+		return ctx
+	}
+	return context.WithValue(ctx, telegramSkillTextKey{}, raw)
+}
+
+// telegramSkillText returns the principal text withTelegramSkillText
+// attached to ctx, or "".
+func telegramSkillText(ctx context.Context) string {
+	text, _ := ctx.Value(telegramSkillTextKey{}).(string)
+	return text
+}
+
 // telegramVoiceMessage builds the user-role content for an auto-transcribed
 // voice message. The transcript is produced by a speech-to-text model from
 // attacker-influenceable audio, so it crosses an external trust boundary and
@@ -3278,11 +3320,16 @@ func telegramVoiceMessage(chatID int64, transcript string) string {
 // so it stays outside the wrapper like the photo path: the agent's commands
 // on that file do not count as reusing untrusted content. The sender-chosen
 // file name is wrapped as untrusted, which keeps the external ingest recorded.
-func telegramDocumentMessage(localPath, senderName string) string {
+// The caption sent with the file is the user's request about it; like a photo
+// caption it is remote text and is wrapped as untrusted.
+func telegramDocumentMessage(localPath, senderName, caption string) string {
 	if senderName == "" {
 		senderName = "(none)"
 	}
 	name := wrapUntrusted(context.Background(), "telegram:document", "sender's file name: "+senderName)
+	if caption != "" {
+		return fmt.Sprintf("📄 Document received and saved to %q with this message from the user:\n%s\n%s\nUse shell tools to analyze and respond.", localPath, wrapUntrusted(context.Background(), "telegram:document:caption", caption), name)
+	}
 	return fmt.Sprintf("📄 Document received and saved to %q.\n%s\nUse shell tools to analyze and respond.", localPath, name)
 }
 

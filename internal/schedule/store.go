@@ -15,6 +15,7 @@ import (
 
 	"github.com/BackendStack21/odek/internal/diagnostics"
 	"github.com/BackendStack21/odek/internal/fsatomic"
+	"github.com/BackendStack21/odek/internal/redact"
 )
 
 // File names under ~/.odek.
@@ -345,6 +346,13 @@ func (s *Store) LoadState() (map[string]RunState, error) {
 	sd, err := s.loadState()
 	if err != nil {
 		return nil, err
+	}
+	// State written by an earlier version may hold unredacted text; readers
+	// (API, Web UI, Telegram) get it redacted whatever the file contains.
+	for id, st := range sd.States {
+		st.LastResult = redact.RedactSecrets(st.LastResult)
+		st.LastError = redact.RedactSecrets(st.LastError)
+		sd.States[id] = st
 	}
 	return sd.States, nil
 }

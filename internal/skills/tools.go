@@ -19,6 +19,7 @@ import (
 	"github.com/BackendStack21/odek/internal/danger"
 	"github.com/BackendStack21/odek/internal/embedding"
 	"github.com/BackendStack21/odek/internal/guard"
+	"github.com/BackendStack21/odek/internal/session"
 )
 
 // ── Agent Tools ────────────────────────────────────────────────────────
@@ -99,6 +100,7 @@ func NewSkillManagerWithEmbedding(userDir, projectDir string, embCfg *embedding.
 // directly (the default), then the vector and trie matchers. This is the
 // single entry point the agent loop wires as its skill loader.
 func (sm *SkillManager) MatchLazySkills(input string, maxSlots int) []Skill {
+	input = skillMatchInput(input)
 	sm.mu.RLock()
 	vm, scored, trie := sm.VectorMatcher, sm.ScoredMatcher, sm.TrieIndex
 	sm.mu.RUnlock()
@@ -122,6 +124,43 @@ func (sm *SkillManager) MatchLazySkills(input string, maxSlots int) []Skill {
 		return trie.MatchSkills(input, maxSlots)
 	}
 	return nil
+}
+
+// MatchLazySkillsFor is MatchLazySkills for a message that carries the
+// principal's own request only inside an untrusted wrapper, such as a
+// Telegram voice transcript or photo/document caption: principal, that
+// request as the principal sent it, is matched together with the message's
+// unwrapped text, under the same bound. Only text the principal authored may
+// be passed — never tool output, fetched pages, file bodies or forwarded
+// messages.
+func (sm *SkillManager) MatchLazySkillsFor(input, principal string, maxSlots int) []Skill {
+	if principal = strings.TrimSpace(principal); principal != "" {
+		input = principal + "\n" + input
+	}
+	return sm.MatchLazySkills(input, maxSlots)
+}
+
+// maxSkillMatchRunes bounds the text skill matching looks at. The topic of a
+// request is carried by far less than a pasted document.
+const maxSkillMatchRunes = 2000
+
+// skillMatchInput returns the text lazy skills are matched against: the
+// principal's own words only. Attachments, @-resource bodies, context files
+// and delegated-task fences arrive wrapped as untrusted content, so they can
+// neither trigger a skill nor cost matching time. A text longer than
+// maxSkillMatchRunes keeps its head and tail halves (a paste followed by the
+// actual question is the commonest long message).
+func skillMatchInput(input string) string {
+	text := strings.TrimSpace(session.StripUntrustedBodies(input))
+	if len(text) <= maxSkillMatchRunes {
+		return text
+	}
+	r := []rune(text)
+	if len(r) <= maxSkillMatchRunes {
+		return text
+	}
+	half := maxSkillMatchRunes / 2
+	return string(r[:half]) + "\n" + string(r[len(r)-half:])
 }
 
 // SetNotifier replaces the current notifier. If n is nil, a NoopNotifier is used.

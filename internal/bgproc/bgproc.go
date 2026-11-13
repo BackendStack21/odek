@@ -31,7 +31,6 @@ import (
 	"math"
 	"os"
 	"os/exec"
-	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -779,6 +778,9 @@ func isBlank(s string) bool {
 // overflowing.
 const maxRingBytes = 1 << 30
 
+// ringInitialCap is the backing-array size of a ring's first write.
+const ringInitialCap = 4096
+
 type outputRing struct {
 	mu      sync.Mutex
 	buf     []byte // live window, a subslice of store
@@ -806,16 +808,27 @@ func (r *outputRing) appendLocked(p []byte) {
 		r.buf = append(r.buf, p...)
 		return
 	}
-	// Reserve two windows of capacity so the next compaction, not the next
-	// write, is the common case. Capacity is requested as one bounded size
-	// and then grown by that same size, never computed as a sum, so no size
-	// arithmetic can overflow; a write larger than a window simply lets
-	// append regrow the array once.
+	// Grow the backing array geometrically with the output, so a job that
+	// prints a line pins a few KiB, not a window. Once the array is a
+	// window long it is sized to two windows, so the next compaction, not
+	// the next write, is the common case and a full ring settles into
+	// steady state. Capacity is requested as one bounded size, never
+	// computed as a sum, so no size arithmetic can overflow; a write larger
+	// than the array simply lets append regrow it once.
 	headroom := r.limit
 	if headroom > maxRingBytes {
 		headroom = maxRingBytes
 	}
-	store := slices.Grow(make([]byte, headroom), headroom)[:0]
+	want := cap(r.store)
+	switch {
+	case want >= headroom:
+		want = headroom * 2
+	case want < ringInitialCap:
+		want = min(ringInitialCap, headroom*2)
+	default:
+		want *= 2
+	}
+	store := make([]byte, 0, want)
 	store = append(store, r.buf...)
 	r.buf = append(store, p...)
 	r.store = r.buf[:0]

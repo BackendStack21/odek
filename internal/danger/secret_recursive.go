@@ -254,10 +254,13 @@ func broadSearchPattern(p string, fixed bool) bool {
 	if !fixed && strings.ContainsAny(p, `\.[](){}*+?|^$`) {
 		return true
 	}
-	lower := strings.ToLower(p)
-	for _, w := range searchPatternSecretWords {
-		if strings.Contains(lower, w) {
-			return true
+	// A pattern is compared under each fold reading: `grep -ri ﬆoken` matches
+	// "token" in a UTF-8 locale, as a case-insensitive filesystem would.
+	for _, folded := range foldReadings(p) {
+		for _, w := range searchPatternSecretWords {
+			if strings.Contains(folded, w) {
+				return true
+			}
 		}
 	}
 	return false

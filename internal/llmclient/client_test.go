@@ -3,6 +3,8 @@ package llmclient
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -381,5 +383,43 @@ func TestPrincipalPromptMetadataNeverEntersProviderMessages(t *testing.T) {
 	}
 	if strings.Contains(string(data), principal) || strings.Contains(string(data), "principal_prompt") {
 		t.Fatalf("persistence metadata reached provider: %s", data)
+	}
+}
+
+// discoverWith serves /models with the given body and runs DiscoverContext.
+func discoverWith(t *testing.T, body, model string) int {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/models") {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(srv.Close)
+	c, err := Dial("legacy", model, "k", srv.URL+"/v1")
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	return DiscoverContext(ctx, c.Provider, model)
+}
+
+// A local server listing the model under its repository path, or another case,
+// still gives its window, as long as the name is unambiguous.
+func TestDiscoverContext_TolerantMatch(t *testing.T) {
+	list := `{"data":[{"id":"mlx-community/Qwen3.5-2B-4bit","context_length":262144},{"id":"other","context_length":8192}]}`
+	if got := discoverWith(t, list, "qwen3.5-2b-4bit"); got != 262144 {
+		t.Fatalf("basename match: %d, want 262144", got)
+	}
+	ambiguous := `{"data":[{"id":"a/Model","context_length":1000},{"id":"b/model","context_length":2000}]}`
+	if got := discoverWith(t, ambiguous, "model"); got != 0 {
+		t.Fatalf("ambiguous match: %d, want 0", got)
+	}
+	exact := `{"data":[{"id":"a/Model","context_length":1000},{"id":"Model","context_length":3000}]}`
+	if got := discoverWith(t, exact, "Model"); got != 3000 {
+		t.Fatalf("exact id must win: %d, want 3000", got)
 	}
 }

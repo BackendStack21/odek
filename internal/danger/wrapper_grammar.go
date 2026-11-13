@@ -410,6 +410,10 @@ func subcommandWrapper(name string, tokens []string, i int) (wrapperStep, bool) 
 			default:
 				step.next = len(tokens)
 			}
+			// Lower-cased, not folded through FoldPathCase: a word read as a
+			// script here is no longer judged as the command word, so a name
+			// that is a script only after full folding stays the command and
+			// keeps that stricter verdict.
 			if step.next < len(tokens) && scriptFileExtensions[strings.ToLower(filepath.Ext(tokens[step.next]))] &&
 				!strings.ContainsAny(tokens[step.next], "$`*?[{~") {
 				// `uv run script.py` (also `sub/script.py`, `./script.py`)

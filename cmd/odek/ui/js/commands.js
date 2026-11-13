@@ -302,7 +302,8 @@ export async function exportActiveSession(format) {
 }
 
 export function copyLastReply() {
-  const bubbles = document.querySelectorAll('#messages .msg.assistant .content');
+  // Held (not yet final) answers and folded drafts are not the reply.
+  const bubbles = document.querySelectorAll('#messages .msg.assistant:not(.held):not(.draft) .content');
   const last = bubbles[bubbles.length - 1];
   if (!last) { showToast('Nothing to copy'); return; }
   copyTextToClipboard(last.textContent || '').then(() => showToast('Copied reply'));

@@ -63,30 +63,27 @@ type ChatSession struct {
 	// the chat's history (a scheduled run's output) still taints episodes.
 	episodeUntrusted bool
 
-	// taintSpans carries the run's recorded untrusted spans (MarkTaintSpans)
-	// into the next save, which merges them into the stored session's
-	// sticky TaintSpans.
-	taintSpans []session.TaintSpan
+	// taintSpans carries the run's untrusted-span state (MarkTaintSpans:
+	// spans and overflow filter) into the next save, which merges it into
+	// the stored session's sticky TaintSpans and TaintOverflow.
+	taintSpans session.TaintState
 }
 
-// TaintSpans returns the chat's untrusted spans: those carried for the next
-// save and those already persisted (session.Session.TaintSpans).
-func (cs *ChatSession) TaintSpans() []session.TaintSpan {
+// TaintSpans returns the chat's untrusted-span state: the state carried for
+// the next save merged with what is already persisted
+// (session.Session.TaintSpans and TaintOverflow).
+func (cs *ChatSession) TaintSpans() session.TaintState {
 	if cs == nil {
-		return nil
+		return session.TaintState{}
 	}
-	var stored []session.TaintSpan
-	if cs.stored != nil {
-		stored = cs.stored.TaintSpans
-	}
-	return session.MergeTaintSpans(cs.taintSpans, stored)
+	return session.MergeTaintState(cs.taintSpans, cs.stored.TaintState())
 }
 
-// MarkTaintSpans records the run's untrusted spans for the chat. The next
-// save merges them into the session's sticky TaintSpans. It takes the same
-// locks as MarkUntrustedIngested.
-func (sm *SessionManager) MarkTaintSpans(chatID int64, spans []session.TaintSpan) {
-	if len(spans) == 0 {
+// MarkTaintSpans records the run's untrusted-span state for the chat. The
+// next save merges it into the session's sticky TaintSpans and
+// TaintOverflow. It takes the same locks as MarkUntrustedIngested.
+func (sm *SessionManager) MarkTaintSpans(chatID int64, st session.TaintState) {
+	if st.Empty() {
 		return
 	}
 	lock, _ := sm.saveLocks.LoadOrStore(chatID, new(sync.Mutex))
@@ -100,7 +97,7 @@ func (sm *SessionManager) MarkTaintSpans(chatID int64, spans []session.TaintSpan
 		return
 	}
 	marked := *cs
-	marked.taintSpans = session.MergeTaintSpans(spans, cs.taintSpans)
+	marked.taintSpans = session.MergeTaintState(st, cs.taintSpans)
 	sm.Cache[chatID] = &marked
 }
 
@@ -339,7 +336,7 @@ func (sm *SessionManager) saveLocked(chatID int64, messages []session.Message, c
 		stored = &copy
 	}
 	stored.Messages = session.CloneMessages(messages)
-	stored.TaintSpans = session.MergeTaintSpans(cs.taintSpans, stored.TaintSpans)
+	stored.SetTaintState(session.MergeTaintState(cs.taintSpans, stored.TaintState()))
 	if cs.untrusted {
 		stored.UntrustedIngested = true
 	}
@@ -471,7 +468,7 @@ func (sm *SessionManager) ArchiveAndDeleteID(chatID int64) (string, error) {
 		}
 		// In-run taint not yet persisted (MarkUntrustedIngested) goes into
 		// the archive with the history it belongs to.
-		sess.TaintSpans = session.MergeTaintSpans(cs.taintSpans, sess.TaintSpans)
+		sess.SetTaintState(session.MergeTaintState(cs.taintSpans, sess.TaintState()))
 		if cs.untrusted {
 			sess.UntrustedIngested = true
 		}
@@ -710,8 +707,8 @@ func (sm *SessionManager) resumeSession(chatID int64, sessionID string, archived
 			UntrustedIngested:   sess.UntrustedIngested,
 			EpisodeUntrusted:    sess.EpisodeUntrusted,
 			EpisodeTaintTracked: sess.EpisodeTaintTracked,
-			TaintSpans:          sess.TaintSpans,
 		}
+		stored.SetTaintState(sess.TaintState())
 		if err := sm.Store.Save(stored); err != nil {
 			return nil, fmt.Errorf("persist resumed session: %w", err)
 		}

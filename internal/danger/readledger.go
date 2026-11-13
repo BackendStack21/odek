@@ -488,14 +488,13 @@ func looksLikeScriptFile(tok string, interpreterOperand bool) bool {
 		// $-expanded: a script suffix gates in any execution context;
 		// extension-less expansions only gate when handed to an
 		// interpreter, which would execute them as code.
-		if scriptFileExtensions[strings.ToLower(filepath.Ext(path))] {
+		if hasScriptExtension(path) {
 			return true
 		}
 		return interpreterOperand
 	}
 	if strings.HasPrefix(tok, "./") || strings.HasPrefix(path, "/") {
-		ext := strings.ToLower(filepath.Ext(path))
-		if scriptFileExtensions[ext] {
+		if hasScriptExtension(path) {
 			return true
 		}
 		// ./tool or /abs/tool with a shebang: executed regardless of
@@ -506,8 +505,19 @@ func looksLikeScriptFile(tok string, interpreterOperand bool) bool {
 		// execution policy without being treated as text scripts.
 		return interpreterOperand || fileHasShebang(path) || executableTextFile(path)
 	}
-	ext := strings.ToLower(filepath.Ext(path))
-	return scriptFileExtensions[ext]
+	return hasScriptExtension(path)
+}
+
+// hasScriptExtension reports whether a file name carries a script extension
+// under either fold reading (foldReadings): `x.ſh` is `x.sh` on a
+// case-insensitive filesystem. Recognising more script names only gates more.
+func hasScriptExtension(name string) bool {
+	for _, ext := range foldReadings(filepath.Ext(name)) {
+		if scriptFileExtensions[ext] {
+			return true
+		}
+	}
+	return false
 }
 
 // ENOEXEC lets a shell execute extensionless text without a shebang. Binary
@@ -557,6 +567,7 @@ func UnreadScriptTargetsCtx(ctx context.Context, cmd string) []string {
 func unreadScriptTargetsKey(key, cmd string) []string {
 	var out []string
 	seen := map[string]bool{}
+	runner := nestedRunnerOfCommand(cmd)
 	collect := func(a Analysis) {
 		rewritten := map[string]bool{}
 		for _, path := range a.RewrittenFiles {
@@ -569,10 +580,24 @@ func unreadScriptTargetsKey(key, cmd string) []string {
 			if rewritten[path] || !wasReadFreshKey(key, path) {
 				seen[path] = true
 				out = append(out, path)
+				continue
+			}
+			// Reading a script licenses that script, not what it launches.
+			for _, nested := range nestedUnreadTargetsAs(key, path, map[string]bool{}, 0, runner) {
+				if !seen[nested] {
+					seen[nested] = true
+					out = append(out, nested)
+				}
 			}
 		}
 	}
 	collect(Analyze(cmd))
+	for _, target := range inlinePayloadTargets(key, cmd) {
+		if !seen[target] {
+			seen[target] = true
+			out = append(out, target)
+		}
+	}
 	// Brace groups distribute over their word before exec (`bash {x,y}.sh`
 	// runs x.sh). Analyze the distributed spelling as well so the operand
 	// the shell actually opens is the one that is gated.
@@ -1874,7 +1899,7 @@ func stageExecutionFilesWritten(stage []string, cwd string, written map[string]b
 		// Direct invocation: ./scripts/build.sh, path/to/tool
 		isExec = true
 		operands = cmdTokens[:1] // the direct execution target
-	case scriptFileExtensions[strings.ToLower(filepath.Ext(name))]:
+	case hasScriptExtension(name):
 		isExec = true
 	}
 	if len(helperTargets) > 0 {

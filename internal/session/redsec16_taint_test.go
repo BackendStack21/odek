@@ -107,11 +107,11 @@ func TestRED_SessionTaintSpans_StickyAndBounded(t *testing.T) {
 	for i := 0; i < MaxTaintSpans+50; i++ {
 		many = append(many, TaintSpan{Kind: "host", Value: fmt.Sprintf("h%d.example", i)})
 	}
-	merged := MergeTaintSpans(many, []TaintSpan{{Kind: "host", Value: "old.example"}, {Kind: "host", Value: strings.Repeat("a", MaxTaintSpanValueBytes+1)}})
+	merged := MergeTaintState(TaintState{Spans: many}, TaintState{Spans: []TaintSpan{{Kind: "host", Value: "old.example"}, {Kind: "host", Value: strings.Repeat("a", MaxTaintSpanValueBytes+1)}}}).Spans
 	if len(merged) != MaxTaintSpans || merged[0].Value != "h0.example" {
 		t.Fatalf("merge cap/order: len=%d first=%+v", len(merged), merged[0])
 	}
-	for _, sp := range MergeTaintSpans(nil, []TaintSpan{{Kind: "host", Value: strings.Repeat("a", MaxTaintSpanValueBytes+1)}, {Kind: "host", Value: "a.example"}, {Kind: "host", Value: "a.example"}}) {
+	for _, sp := range MergeTaintState(TaintState{}, TaintState{Spans: []TaintSpan{{Kind: "host", Value: strings.Repeat("a", MaxTaintSpanValueBytes+1)}, {Kind: "host", Value: "a.example"}, {Kind: "host", Value: "a.example"}}}).Spans {
 		if len(sp.Value) > MaxTaintSpanValueBytes {
 			t.Error("over-long span value kept")
 		}
@@ -120,17 +120,17 @@ func TestRED_SessionTaintSpans_StickyAndBounded(t *testing.T) {
 
 func TestMergeTaintSpans_Validation(t *testing.T) {
 	long := strings.Repeat("é", maxTaintSpanSourceBytes)
-	got := MergeTaintSpans([]TaintSpan{
+	got := MergeTaintState(TaintState{Spans: []TaintSpan{
 		{Kind: "", Value: "x"},                         // no kind
 		{Kind: "host", Value: "a", Hash: "b"},          // both
 		{Kind: "host"},                                 // neither
 		{Kind: "token", Hash: strings.Repeat("f", 65)}, // over-long hash
 		{Kind: "token", Hash: strings.Repeat("f", 64), Source: long},
-	}, nil)
+	}}, TaintState{}).Spans
 	if len(got) != 1 || len(got[0].Source) > maxTaintSpanSourceBytes || !utf8.ValidString(got[0].Source) {
 		t.Fatalf("merged = %+v", got)
 	}
-	if MergeTaintSpans(nil, nil) != nil {
+	if empty := MergeTaintState(TaintState{}, TaintState{}); empty.Spans != nil || empty.Overflow != nil {
 		t.Fatal("empty merge not nil")
 	}
 }

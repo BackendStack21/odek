@@ -153,9 +153,30 @@ type Session struct {
 	// TaintSpans are the spans the agent loop recorded from untrusted
 	// content (URLs, hosts, paths, hashed tokens; see TaintSpan). They are
 	// sticky like UntrustedIngested: every save merges in the spans already
-	// on disk (MergeTaintSpans, bounded), and trimming never touches them,
+	// on disk (MergeTaintState, bounded), and trimming never touches them,
 	// so a resumed or rebuilt engine still escalates their reuse.
 	TaintSpans []TaintSpan `json:"taint_spans,omitempty"`
+
+	// TaintOverflow records, as a fixed-size filter, every untrusted span
+	// that a bound dropped from TaintSpans or from the loop's span store
+	// (see TaintOverflow), so a span is never forgotten. It is sticky like
+	// TaintSpans: every save ORs in the filter already on disk, and trimming
+	// and compaction never touch it.
+	TaintOverflow TaintOverflow `json:"taint_overflow,omitempty"`
+
+	// TaintBackground records that a background job whose bg_start call
+	// crossed the trust boundary ran in this session (TaintState.Background):
+	// every background notice and bg_output/bg_status result is then a span
+	// source, even after the call is trimmed away. Sticky like TaintSpans.
+	TaintBackground bool `json:"taint_background,omitempty"`
+
+	// TaintCoverage names the history prefix whose spans TaintSpans and
+	// TaintOverflow already record (TaintState.Coverage), so a rebuilt
+	// engine does not extract them again. It is a keyed digest of that
+	// prefix: a history that no longer reproduces it is scanned in full.
+	// Written in the same file as the spans it vouches for, so a failed
+	// save never advances it past them.
+	TaintCoverage TaintCoverage `json:"taint_coverage,omitzero"`
 
 	// EpisodeTaintTracked marks a session whose EpisodeUntrusted flag has
 	// been derived over its whole history. Files written before the flag
@@ -801,6 +822,36 @@ func (s *Store) UpdateMeta(id string, fn func(*Session)) (*Session, error) {
 	}
 }
 
+// AddTaintState merges st into the stored session's sticky untrusted-span
+// state (TaintSpans, TaintOverflow) and writes the file only when st holds
+// something it does not. Like UpdateMeta it leaves the transcript Revision
+// alone, so a turn running on the session keeps saving, and it reloads and
+// retries when another writer commits in between. A missing session is an
+// error that unwraps to fs.ErrNotExist.
+func (s *Store) AddTaintState(id string, st TaintState) error {
+	if st.Empty() {
+		return nil
+	}
+	for attempt := 0; ; attempt++ {
+		s.mu.Lock()
+		sess, err := s.Load(id)
+		if err == nil {
+			current := sess.TaintState()
+			if current.Covers(st) {
+				s.mu.Unlock()
+				return nil
+			}
+			sess.SetTaintState(MergeTaintState(st, current))
+			err = s.saveLockedOpts(sess, true, true)
+		}
+		s.mu.Unlock()
+		if errors.Is(err, ErrConflict) && attempt < maxMetaRetries {
+			continue
+		}
+		return err
+	}
+}
+
 // SaveNoIndex persists a session exactly like Save — redaction, file-cap
 // trimming and atomic write all still happen, and index.json is refreshed
 // unless the indexed summary would trail by under indexLagWindow (only
@@ -864,9 +915,13 @@ type revStamp struct {
 	revision   uint64
 	untrusted  bool
 	episode    bool
-	// spans: the revision carries TaintSpans, which the stamp does not
-	// hold, so a save must re-read the file to merge them.
-	spans bool
+	// spans: the revision carries TaintSpans, TaintOverflow or
+	// TaintBackground, which the stamp does not hold, so a save must
+	// re-read the file to merge them. coverage is the revision's
+	// TaintCoverage, which the stamp does hold: a save merges it like a
+	// re-read would without reading the file for it.
+	spans    bool
+	coverage TaintCoverage
 	// Metadata a later save of an older snapshot adopts (see MetaRevision).
 	metaRevision uint64
 	task         string
@@ -896,7 +951,7 @@ func (s *Store) cachedRevision(id string, info os.FileInfo, statErr error) *Sess
 		return nil
 	}
 	return &Session{ID: id, Generation: st.generation, Revision: st.revision, persistedID: id, UntrustedIngested: st.untrusted, EpisodeUntrusted: st.episode,
-		MetaRevision: st.metaRevision, Task: st.task, Pinned: st.pinned, AuthToken: st.authToken}
+		MetaRevision: st.metaRevision, Task: st.task, Pinned: st.pinned, AuthToken: st.authToken, TaintCoverage: st.coverage}
 }
 
 // rememberRevision stamps the file just written for sess.
@@ -914,7 +969,8 @@ func (s *Store) rememberRevision(sess *Session) {
 		revision:   sess.Revision,
 		untrusted:  sess.UntrustedIngested,
 		episode:    sess.EpisodeUntrusted,
-		spans:      len(sess.TaintSpans) > 0,
+		spans:      !sess.TaintState().Empty(),
+		coverage:   sess.TaintCoverage,
 		size:       info.Size(),
 
 		metaRevision: sess.MetaRevision,
@@ -1060,7 +1116,7 @@ func (s *Store) saveLockedOpts(sess *Session, lazyIndex, metaOnly bool) (err err
 		if current.EpisodeUntrusted {
 			sess.EpisodeUntrusted = true
 		}
-		sess.TaintSpans = MergeTaintSpans(sess.TaintSpans, current.TaintSpans)
+		sess.SetTaintState(MergeTaintState(sess.TaintState(), current.TaintState()))
 		// A metadata edit must apply on top of the latest metadata: when
 		// another writer edited it since the load, conflict so UpdateMeta
 		// reloads and reapplies its edit instead of dropping one of them.
@@ -1807,6 +1863,36 @@ func (s *Store) removeRunLock(id string) {
 	release()
 }
 
+// leaseForRemoval takes the session's execution lock for a retention delete.
+// ok is false while a run holds the lease (the session is skipped); the lock
+// is a kernel flock, so a lock file left by a dead process is not a lease.
+// done unlinks the lock file while still holding the lock and releases it,
+// so no run can start between the removal and the unlink.
+func (s *Store) leaseForRemoval(id string) (done func(), ok bool) {
+	path := filepath.Join(s.dir, "."+id+".run.lock")
+	release, err := s.tryLockRunFile(path)
+	if err != nil {
+		return func() {}, !errors.Is(err, flock.ErrLocked)
+	}
+	return func() { _ = os.Remove(path); release() }, true
+}
+
+// ExecutionLeased reports whether a run currently holds the session's
+// execution lease. It never creates a lock file. Retention previews use it to
+// agree with Cleanup, which skips leased sessions.
+func (s *Store) ExecutionLeased(id string) bool {
+	path := filepath.Join(s.dir, "."+id+".run.lock")
+	if _, err := os.Stat(path); err != nil {
+		return false
+	}
+	release, err := s.tryLockRunFile(path)
+	if err != nil {
+		return errors.Is(err, flock.ErrLocked)
+	}
+	release()
+	return false
+}
+
 // removeVectors drops ids from the vector index with a single store write.
 // Best-effort, like every other vector-index removal.
 func (s *Store) removeVectors(ids []string) {
@@ -1824,7 +1910,8 @@ func CleanupExpired(updatedAt time.Time, pinned bool, before time.Time) bool {
 
 // Cleanup deletes all unpinned sessions whose UpdatedAt is before the given
 // time. Pinned (favorited) sessions are skipped so operator bookmarks
-// survive retention sweeps. Returns the count of deleted sessions.
+// survive retention sweeps, and so is a session whose execution lease a
+// running turn holds. Returns the count of deleted sessions.
 // Idempotent — nonexistent files are skipped silently.
 // Uses the session index for efficient batch operations. Falls back to
 // scanning individual session files when no index exists (backward compat).
@@ -1849,7 +1936,13 @@ func (s *Store) Cleanup(before time.Time) (int, error) {
 				continue
 			}
 			if CleanupExpired(e.UpdatedAt, e.Pinned, before) {
-				if err := s.removeFilesLocked(id); err != nil {
+				done, ok := s.leaseForRemoval(id)
+				if !ok {
+					continue // a running turn owns this session
+				}
+				err := s.removeFilesLocked(id)
+				done()
+				if err != nil {
 					unlock()
 					s.mu.Unlock()
 					s.removeVectors(cascaded)
@@ -1900,7 +1993,13 @@ func (s *Store) Cleanup(before time.Time) (int, error) {
 			continue // skip unreadable files
 		}
 		if CleanupExpired(sess.UpdatedAt, sess.Pinned, before) {
-			if err := s.Delete(sess.ID); err != nil {
+			done, ok := s.leaseForRemoval(sess.ID)
+			if !ok {
+				continue // a running turn owns this session
+			}
+			err := s.Delete(sess.ID)
+			done()
+			if err != nil {
 				return deleted, fmt.Errorf("session: delete %q: %w", sess.ID, err)
 			}
 			deleted++

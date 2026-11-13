@@ -1,9 +1,11 @@
 package telegram
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
+	"reflect"
 	"strconv"
 	"strings"
 )
@@ -42,6 +44,22 @@ type TelegramConfig struct {
 	// injected answer embeds in a link. Operator-only (the project
 	// odek.json telegram section is ignored). Env: ODEK_TELEGRAM_LINK_PREVIEW.
 	LinkPreview bool `json:"link_preview,omitempty"`
+}
+
+// UnmarshalJSON decodes the telegram section with the default agent timeout
+// as the starting value, so a section that omits agent_timeout_seconds keeps
+// the default while an explicit 0 still means unlimited.
+func (c *TelegramConfig) UnmarshalJSON(data []byte) error {
+	type plain TelegramConfig
+	p := plain(*c)
+	if reflect.DeepEqual(*c, TelegramConfig{}) {
+		p.AgentTimeout = DefaultConfig().AgentTimeout
+	}
+	if err := json.Unmarshal(data, &p); err != nil {
+		return err
+	}
+	*c = TelegramConfig(p)
+	return nil
 }
 
 // DefaultConfig returns a TelegramConfig with sensible defaults.

@@ -159,7 +159,7 @@ func (s *AtomStore) Get(id string) (MemoryAtom, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	metas, err := s.loadAtomsLocked()
+	metas, err := s.loadAtomsCachedLocked()
 	if err != nil {
 		return MemoryAtom{}, err
 	}
@@ -326,7 +326,7 @@ func (s *AtomStore) AtomSize(id string) (int64, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	metas, err := s.loadAtomsLocked()
+	metas, err := s.loadAtomsCachedLocked()
 	if err != nil {
 		return 0, err
 	}
@@ -360,6 +360,39 @@ func (s *AtomStore) AtomSize(id string) (int64, error) {
 	share := atomsJSONSize / int64(len(metas))
 
 	return chunkSize + share, nil
+}
+
+// AtomSizes returns AtomSize for every stored atom from a single read of the
+// metadata and a single stat of atoms.json. An atom whose chunk cannot be
+// statted is left out of the map.
+func (s *AtomStore) AtomSizes() (map[string]int64, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	metas, err := s.loadAtomsCachedLocked()
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]int64, len(metas))
+	if len(metas) == 0 {
+		return out, nil
+	}
+	atomsJSONSize, err := s.atomsJSONSizeLocked()
+	if err != nil {
+		return nil, err
+	}
+	share := atomsJSONSize / int64(len(metas))
+	for _, m := range metas {
+		if session.ValidateSessionID(m.ID) != nil {
+			continue
+		}
+		info, err := os.Stat(s.chunkPath(m.ID))
+		if err != nil {
+			continue
+		}
+		out[m.ID] = info.Size() + share
+	}
+	return out, nil
 }
 
 // Refresh reloads the store from disk. It is a no-op now that all reads go
