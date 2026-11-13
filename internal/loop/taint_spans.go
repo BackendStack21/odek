@@ -285,6 +285,15 @@ type taintSpanStore struct {
 	// (session.TaintState.Background), because trimming can drop the
 	// bg_start call but never the fact.
 	bgTainted bool
+	// bgSkipped holds the digests in scanned of background content judged
+	// not to be a span source. Those decisions rest on bgTainted and bgJobs:
+	// when either changes so that such content may be a source (a tainting
+	// job appears, the job record is emptied), rejudgeBgLocked takes them
+	// out of scanned and bumps bgGen, and every observe whose history holds
+	// that content judges it again. A track's leading run is skipped only
+	// under the bgGen its decisions were taken in.
+	bgSkipped map[taintDigest]struct{}
+	bgGen     uint64
 	// extractHook, when set, runs in every observe after the messages are
 	// marked scanned and before their spans are extracted: the window in
 	// which other observes and exports run concurrently. Tests only.
@@ -319,12 +328,33 @@ const maxTaintSeedCoverageTries = 1
 func (s *taintSpanStore) resetScanLocked() {
 	s.scanGen++
 	s.scanned = make(map[taintDigest]struct{})
+	s.bgSkipped = nil
 	s.gateTrack, s.saveTrack = taintScanTrack{}, taintScanTrack{}
 	s.covered = nil
 	s.seedCovApplied, s.seedCovTries = false, 0
 	s.covMu.Lock()
 	s.cov = taintCoverageTracker{}
 	s.covMu.Unlock()
+}
+
+// rejudgeBgLocked makes every observe judge the background content it
+// holds that was judged not to be a span source again: the facts that
+// decision rested on changed (bgSkipped).
+func (s *taintSpanStore) rejudgeBgLocked() {
+	for d := range s.bgSkipped {
+		delete(s.scanned, d)
+	}
+	s.bgSkipped = nil
+	s.bgGen++
+}
+
+// skipBgLocked records that the message with digest d holds background
+// content judged not to be a span source.
+func (s *taintSpanStore) skipBgLocked(d taintDigest) {
+	if s.bgSkipped == nil {
+		s.bgSkipped = make(map[taintDigest]struct{})
+	}
+	s.bgSkipped[d] = struct{}{}
 }
 
 // taintPrincipal is what the principal's own messages mention.
@@ -1034,22 +1064,26 @@ func (s *taintSpanStore) observeTrack(messages []session.Message, env taintEnv, 
 		}
 	}
 	// The background facts are sticky: a bg_start call trimming later drops
-	// still decides the content of its job.
+	// still decides the content of its job. Content judged under the old
+	// facts is judged again (a tainting job makes all of it a source, and so
+	// does forgetting the jobs).
 	if bgTainted && !s.bgTainted {
 		s.bgTainted = true
 		s.version++
+		s.rejudgeBgLocked()
 	}
 	for _, j := range bgJobs {
 		if len(s.bgJobs) >= maxTaintBgJobs {
 			s.bgJobs = make(map[string]bool)
+			s.rejudgeBgLocked()
 		}
 		s.bgJobs[j.id] = s.bgJobs[j.id] || j.tainting
 	}
 	// The leading messages equal to those of the track's history were
 	// decided by the observe that stored it, unless the scan decisions were
-	// reset since.
+	// reset since or background content is to be judged again.
 	start := 0
-	if prev.gen == s.scanGen {
+	if prev.gen == s.scanGen && prev.bgGen == s.bgGen {
 		start = lead
 	}
 	for i := start; i < len(messages); i++ {
@@ -1060,11 +1094,12 @@ func (s *taintSpanStore) observeTrack(messages []session.Message, env taintEnv, 
 		}
 		if len(s.scanned) >= maxTaintScanned {
 			s.scanned = make(map[taintDigest]struct{})
+			s.bgSkipped = nil
 		}
 		s.scanned[d] = struct{}{}
 		// A source a verified coverage vouches for has only its links
 		// extracted. Background content is always judged and extracted
-		// afresh.
+		// afresh, and judged again when the facts it was judged by change.
 		_, covered := s.covered[d]
 		switch m.Role {
 		case "assistant":
@@ -1075,6 +1110,7 @@ func (s *taintSpanStore) observeTrack(messages []session.Message, env taintEnv, 
 			if tc != nil {
 				if bgContent {
 					if !s.bgSourceLocked(bgReadJobs(tc)) {
+						s.skipBgLocked(d)
 						continue
 					}
 				} else if !session.ToolCallTaintsEpisode(tc.Function.Name, tc.Function.Arguments) {
@@ -1101,8 +1137,11 @@ func (s *taintSpanStore) observeTrack(messages []session.Message, env taintEnv, 
 				switch {
 				case session.ExternalNonToolIngest(w.source):
 					jobs = append(jobs, job{text: w.body, source: w.source, linksOnly: covered})
-				case w.source == "bg" && s.bgSourceLocked(bgNoticeJobs(w.body)):
+				case w.source != "bg":
+				case s.bgSourceLocked(bgNoticeJobs(w.body)):
 					jobs = append(jobs, job{text: w.body, source: w.source})
+				default:
+					s.skipBgLocked(d)
 				}
 			}
 			if m.Role == "user" {
@@ -1112,7 +1151,7 @@ func (s *taintSpanStore) observeTrack(messages []session.Message, env taintEnv, 
 			}
 		}
 	}
-	*track = taintScanTrack{seen: seen, issued: issued, gen: s.scanGen}
+	*track = taintScanTrack{seen: seen, issued: issued, gen: s.scanGen, bgGen: s.bgGen}
 	hook := s.extractHook
 	s.mu.Unlock()
 

@@ -52,7 +52,8 @@ import (
 //     counted, so a counted result's pairing is fixed by the counted prefix.
 //   - Background-job content (notices, bg_output/bg_status) is never
 //     skipped: its decision depends on facts about the whole history (see
-//     bgSourceLocked) and is always taken again.
+//     bgSourceLocked) and is always taken again, and taken once more
+//     whenever those facts change (rejudgeBgLocked).
 //   - The engine records coverage only for a history it has just observed,
 //     under one environment, and the coverage travels in the same TaintState
 //     as the spans it vouches for: they are saved in one file write, so a

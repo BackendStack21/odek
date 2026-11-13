@@ -68,6 +68,7 @@ func (s *taintSpanStore) seedStateLocked(st session.TaintState) {
 	if st.Background && !s.bgTainted {
 		s.bgTainted = true
 		s.version++
+		s.rejudgeBgLocked()
 	}
 	if st.Coverage.Valid() && st.Coverage != s.seedCov {
 		// A history that reproduces the coverage skips extracting what

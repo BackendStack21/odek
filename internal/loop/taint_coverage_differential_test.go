@@ -508,3 +508,166 @@ func TestTaintCoverage_MultiHopThroughStore(t *testing.T) {
 	session.MaxSessionFileBytes = oldCap
 	check("after write-time trim", false, "f0.flood.example", "writer-a-evil.example", "writer-b-evil.example", "hop3-evil.example", "hop4-evil.example")
 }
+
+// covDiffGateOn gates calls on messages with e and returns the escalated
+// resources, sorted.
+func covDiffGateOn(e *Engine, ctx context.Context, messages []session.Message, calls []session.ToolCall) []string {
+	var got []string
+	ctx = WithTaintEscalationRecorder(ctx, func(esc TaintEscalation) { got = append(got, esc.Resource) })
+	ids := make([]string, len(calls))
+	for i, c := range calls {
+		ids[i] = c.ID
+	}
+	e.taintGate(ctx, messages, calls, len(calls), ids, 1)
+	slices.Sort(got)
+	return got
+}
+
+// covDiffForget makes e's next observe judge every message it is handed
+// again (a full rescan), keeping the spans and the sticky facts.
+func covDiffForget(e *Engine) {
+	s := e.spanStore()
+	s.mu.Lock()
+	s.scanned = make(map[taintDigest]struct{})
+	s.gateTrack, s.saveTrack = taintScanTrack{}, taintScanTrack{}
+	s.mu.Unlock()
+}
+
+// covDiffSoak returns the soak's seed and iteration count: the default seed
+// and n (fewer under -short), or ODEK_TAINT_DIFF_SEED and more.
+func covDiffSoak(seed uint64, n int) (uint64, int) {
+	if testing.Short() {
+		n /= 5
+	}
+	if s := os.Getenv("ODEK_TAINT_DIFF_SEED"); s != "" {
+		fmt.Sscan(s, &seed)
+		n *= 3
+	}
+	return seed, n
+}
+
+// covDiffLongLivedStep runs one step of a long-lived engine e and of ref,
+// which forgets every scan decision before each observe: a gate on a
+// trimmed context, a gate on the whole history or a save.
+func covDiffLongLivedStep(r *rand.Rand, e, ref *Engine, ctxE, ctxR context.Context, h []session.Message) {
+	switch r.IntN(3) {
+	case 0:
+		k := 2 + r.IntN(6)
+		covDiffGateOn(e, ctxE, covDiffTrim(h, k), nil)
+		covDiffForget(ref)
+		covDiffGateOn(ref, ctxR, covDiffTrim(h, k), nil)
+	case 1:
+		covDiffGateOn(e, ctxE, h, nil)
+		covDiffForget(ref)
+		covDiffGateOn(ref, ctxR, h, nil)
+	default:
+		e.TaintSpanState(session.CloneMessages(h))
+		covDiffForget(ref)
+		ref.TaintSpanState(session.CloneMessages(h))
+	}
+}
+
+// A long-lived engine (REPL, serve connection) whose gate sees trimmed
+// contexts and whose saves see a history that grows and changes in place,
+// background jobs and their output included, never passes a call that an
+// engine observing the same sequence with every scan decision forgotten (a
+// full rescan per observe) escalates.
+func TestTaintCoverage_DifferentialLongLivedEngine(t *testing.T) {
+	seed, iters := covDiffSoak(777, 150)
+	r := rand.New(rand.NewPCG(seed, 5))
+	var jobSeq int
+	bad := 0
+	for it := 0; it < iters; it++ {
+		c := newCovDiffCorpus(r, &jobSeq)
+		h := c.history(r)
+		e := New(nil, tool.NewRegistry(nil), 10, "sys", nil, 0)
+		e.SetApprover(&covApprover{})
+		ref := New(nil, tool.NewRegistry(nil), 10, "sys", nil, 0)
+		ref.SetApprover(&covApprover{})
+		ctx := context.Background()
+		for step := 0; step < 8; step++ {
+			covDiffLongLivedStep(r, e, ref, ctx, ctx, h)
+			h = trackMutate(r, c, h)
+		}
+		calls := c.candidates()
+		got := covDiffGateOn(e, ctx, h, calls)
+		covDiffForget(ref)
+		want := covDiffGateOn(ref, ctx, h, calls)
+		if m := covDiffMinus(want, got); len(m) > 0 {
+			bad++
+			if bad <= 3 {
+				t.Errorf("iteration %d: an engine rescanning every observe escalates calls the long-lived engine passes: %q", it, m)
+			}
+		}
+	}
+	if bad > 0 {
+		t.Errorf("%d of %d iterations passed what a rescan escalates", bad, iters)
+	}
+}
+
+// The same for a long-lived engine seeded with an exporter's state, coverage
+// included: it gates trimmed and whole histories against the run's
+// transcript and saves while the history changes, and never passes what an
+// engine seeded with the same spans (no coverage) rescanning every observe
+// escalates.
+func TestTaintCoverage_DifferentialSeededLongLived(t *testing.T) {
+	seed, iters := covDiffSoak(4242, 120)
+	r := rand.New(rand.NewPCG(seed, 9))
+	var jobSeq int
+	bad, applied := 0, 0
+	for it := 0; it < iters; it++ {
+		c := newCovDiffCorpus(r, &jobSeq)
+		history := c.history(r)
+		exp := New(nil, tool.NewRegistry(nil), 10, "sys", nil, 0)
+		var st session.TaintState
+		env := currentTaintEnv()
+		for k := 2; k <= len(history); k++ {
+			prefix := history[:k]
+			if prefix[k-1].Role == "assistant" && len(prefix[k-1].ToolCalls) > 0 {
+				exp.spanStore().observe(covDiffTrim(prefix, 4), env)
+				continue
+			}
+			st = session.MergeTaintState(exp.TaintSpanState(session.CloneMessages(prefix)), st)
+		}
+		st = covRoundTrip(t, st)
+		noCov := st
+		noCov.Coverage = session.TaintCoverage{}
+		h := append(session.CloneMessages(history), session.Message{Role: "user", Content: "continue"})
+		if r.IntN(2) == 0 {
+			h = c.mutateSystemCalls(r, h)
+		}
+		e := New(nil, tool.NewRegistry(nil), 10, "sys", nil, 0)
+		e.SetApprover(&covApprover{})
+		ref := New(nil, tool.NewRegistry(nil), 10, "sys", nil, 0)
+		ref.SetApprover(&covApprover{})
+		ctxE := WithTaintSpanSeed(context.Background(), st)
+		ctxR := WithTaintSpanSeed(context.Background(), noCov)
+		e.seedTaintSpans(ctxE)
+		ref.seedTaintSpans(ctxR)
+		e.startTranscript(session.CloneMessages(h))
+		ref.startTranscript(session.CloneMessages(h))
+		for step := 0; step < 6; step++ {
+			covDiffLongLivedStep(r, e, ref, ctxE, ctxR, h)
+			if len(e.spanStore().covered) > 0 {
+				applied++
+			}
+			h = trackMutate(r, c, h)
+		}
+		calls := c.candidates()
+		got := covDiffGateOn(e, ctxE, h, calls)
+		covDiffForget(ref)
+		want := covDiffGateOn(ref, ctxR, h, calls)
+		if m := covDiffMinus(want, got); len(m) > 0 {
+			bad++
+			if bad <= 3 {
+				t.Errorf("iteration %d: the rescanning engine escalates calls the seeded long-lived engine passes: %q", it, m)
+			}
+		}
+	}
+	if applied == 0 {
+		t.Fatal("coverage never applied")
+	}
+	if bad > 0 {
+		t.Errorf("%d of %d iterations passed what a rescan escalates", bad, iters)
+	}
+}

@@ -171,8 +171,9 @@ type taintScanTrack struct {
 	seen   []taintSeen
 	issued map[string]session.ToolCall
 	// gen is the scan generation (scanGen) under which the observe that
-	// stored the track decided every message in it.
-	gen uint64
+	// stored the track decided every message in it, bgGen the generation of
+	// the background facts (taintSpanStore.bgGen).
+	gen, bgGen uint64
 }
 
 // taintSeenFor derives the entries of messages from prev, the track of the
