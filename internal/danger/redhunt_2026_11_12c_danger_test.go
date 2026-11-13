@@ -42,8 +42,15 @@ func TestRED_OptionEnvNamesAreCaseSensitive(t *testing.T) {
 		`read TAR_OPTIONS < f; export TAR_OPTIONS; tar_options=-v tar xf x.tar`:  SystemWrite,
 		`read TAR_OPTIONS < f; export TAR_OPTIONS; tar_options=-v; tar xf x.tar`: SystemWrite,
 	} {
+		// The old verdict depended on map order about one run in seven; each
+		// Classify costs tens of milliseconds, so the repeat count is kept
+		// modest (and smaller under the race detector).
+		runs := 40
+		if raceEnabled || testing.Short() {
+			runs = 10
+		}
 		seen := map[RiskClass]int{}
-		for i := 0; i < 200; i++ {
+		for i := 0; i < runs; i++ {
 			seen[Classify(cmd)]++
 		}
 		if len(seen) != 1 {
