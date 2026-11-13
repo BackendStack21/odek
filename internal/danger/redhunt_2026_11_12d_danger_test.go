@@ -285,3 +285,59 @@ func TestRED_AppendFormsJudgedLikeAssignments(t *testing.T) {
 		t.Error("denylist `git push` must not match `git status`")
 	}
 }
+
+// The JVM property table matched exact names and listed only some of the
+// properties that move where a build tool or the JVM loads code, JDKs,
+// plugins and repositories from, so `SBT_OPTS='-Dsbt.ivy.home=/tmp/ivy' sbt
+// -version` and `GRADLE_OPTS='-Dorg.gradle.java.installations.paths=/tmp/jdk'
+// gradle --version` kept the verdict of the tool alone.
+//
+// Correct behaviour: a property that redirects a code, JDK, plugin or
+// repository location is system_write; a property that names none stays
+// plain.
+func TestRED_JVMPropertiesThatRedirectCodeLocations(t *testing.T) {
+	t.Setenv("HOME", "/home/user")
+	t.Chdir(t.TempDir())
+	unsetExecEnvR4(t)
+	readers := map[string]string{
+		"SBT_OPTS": "sbt -version", "GRADLE_OPTS": "gradle --version", "MAVEN_OPTS": "mvn -v",
+		"JAVA_OPTS": "kotlinc -version", "ANT_OPTS": "ant -version",
+	}
+	vars := make([]string, 0, len(readers))
+	for v := range readers {
+		vars = append(vars, v)
+	}
+	sort.Strings(vars)
+	for _, prop := range []string{
+		"sbt.ivy.home=/tmp/ivy", "sbt.boot.directory=/tmp/b", "sbt.global.base=/tmp/g",
+		"sbt.repository.config=/tmp/repos", "sbt.override.build.repos=true",
+		"org.gradle.java.installations.paths=/tmp/jdk", "org.gradle.java.home=/tmp/jdk", "gradle.user.home=/tmp/g",
+		"maven.repo.local=/tmp/repo", "maven.home=/tmp/m", "settings.security=/tmp/s.xml",
+		"java.home=/tmp/jdk", "user.home=/tmp", "java.class.path=/tmp/x.jar", "java.system.class.loader=Evil",
+		"java.security.manager=Evil", "java.security.policy=/tmp/p", "java.security.properties=/tmp/p",
+		"java.security.egd=file:/tmp/x", "java.security.auth.login.config=/tmp/jaas.conf",
+	} {
+		for _, v := range vars {
+			for _, cmd := range []string{
+				v + "='-D" + prop + "' " + readers[v],
+				"export " + v + "=-D" + prop + "; " + readers[v],
+			} {
+				if got := Classify(cmd); Rank(got) < Rank(SystemWrite) {
+					t.Errorf("Classify(%q) = %s, want at least system_write", cmd, got)
+				}
+			}
+		}
+	}
+	for _, prop := range []string{
+		"context=dev", "next.token=1", "http.agent=x", "file.encoding=UTF-8", "user.timezone=UTC",
+		"spring.profiles.active=dev", "java.awt.headless=true", "user.language=en", "sbt.log.noformat=true",
+		"org.gradle.daemon=false", "maven.test.skip=true", "java.net.preferIPv4Stack=true",
+	} {
+		for _, v := range vars {
+			cmd, plain := v+"='-D"+prop+"' "+readers[v], readers[v]
+			if got, want := Classify(cmd), Classify(plain); got != want {
+				t.Errorf("Classify(%q) = %s, want %s (the verdict of %q)", cmd, got, want, plain)
+			}
+		}
+	}
+}

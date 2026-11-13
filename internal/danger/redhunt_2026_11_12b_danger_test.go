@@ -204,7 +204,7 @@ func TestToolOptionEnvBenignValuesKeepVerdict(t *testing.T) {
 		{"MAVEN_OPTS=-Djava.awt.headless=true mvn -v", "mvn -v"},
 		{"MAVEN_OPTS=-XX:+UseG1GC mvn -v", "mvn -v"},
 		{"MAVEN_OPTS=-Duser.timezone=Europe/Berlin mvn -v", "mvn -v"},
-		{"MAVEN_OPTS=-Dmaven.repo.local=.m2 mvn -v", "mvn -v"},
+		{"MAVEN_OPTS=-Dmaven.test.skip=true mvn -v", "mvn -v"},
 		{"JAVA_OPTS='-Dfile.encoding=UTF-8 -Djava.awt.headless=true -XX:+UseG1GC' java -version", "java -version"},
 		{"export JAVA_OPTS='-Xmx1g -Duser.timezone=Europe/Berlin'; gradle -v", "gradle -v"},
 		{"declare MAVEN_OPTS=-Xmx2g; export MAVEN_OPTS; mvn -v", "mvn -v"},

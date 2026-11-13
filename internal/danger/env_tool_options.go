@@ -441,17 +441,23 @@ var (
 	// jvmCodeProperties are the system properties that load code into the
 	// JVM or the build tool it runs, or point either at configuration that
 	// names code: extension, library, boot and module paths, the system class
-	// loader, the security manager and its policy, a remote codebase, the home
-	// directory the build tools read their settings, plugins and init scripts
-	// from, Maven core extensions and its native console library, and the
-	// Gradle and sbt directories that hold JVMs, init scripts and plugins.
+	// loader, a remote codebase, the JDK and the home directory the build
+	// tools read their settings, plugins and init scripts from, Maven's
+	// installation, core extensions, local repository, master-password file
+	// and native console library, and the Gradle and sbt directories and
+	// repository lists that hold JVMs, init scripts, plugins and the
+	// artifacts a build resolves.
 	jvmCodeProperties = fieldSet("java.ext.dirs java.endorsed.dirs java.library.path java.class.path " +
-		"java.system.class.loader java.security.manager java.security.policy java.security.properties " +
-		"java.rmi.server.codebase sun.boot.class.path sun.boot.library.path " +
+		"java.system.class.loader java.home java.rmi.server.codebase sun.boot.class.path sun.boot.library.path " +
 		"jdk.module.path jdk.module.upgrade.path jdk.module.main user.home " +
-		"maven.ext.class.path library.jansi.path " +
-		"org.gradle.java.home gradle.user.home sbt.global.base sbt.boot.directory sbt.boot.properties")
-	jvmCodePropertyPrefixes = []string{"jdk.module.patch"}
+		"maven.ext.class.path maven.home maven.repo.local settings.security library.jansi.path " +
+		"org.gradle.java.home org.gradle.java.installations.paths gradle.user.home " +
+		"sbt.global.base sbt.boot.directory sbt.boot.properties sbt.ivy.home sbt.repository.config " +
+		"sbt.override.build.repos")
+	// jvmCodePropertyPrefixes: module patches, and the security manager, its
+	// policy, the security properties file and the other java.security
+	// settings (providers, login configuration).
+	jvmCodePropertyPrefixes = []string{"jdk.module.patch", "java.security."}
 )
 
 // optionEnvState records, for one command line and every payload analysed
