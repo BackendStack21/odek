@@ -146,6 +146,13 @@ type shellAnalysisState struct {
 	// options records how the command line binds option-carrying
 	// variables (TAR_OPTIONS, ...); it is shared with nested payloads.
 	options *optionEnvState
+	// optScope identifies this analysis and the ones it runs inside, so a
+	// binding recorded in options by another analysis is told apart.
+	optScope []int
+	// optEnv names the option-carrying variables the command that started
+	// this payload was given (`TAR_OPTIONS=x bash -c '...'`); their values
+	// are in vars.
+	optEnv map[string]bool
 	// optionsApplied marks the analysis of a tool invocation whose option
 	// variables are already spliced into its words.
 	optionsApplied bool
@@ -250,6 +257,8 @@ func analyzeWithStateWork(cmd string, depth int, inherited *shellAnalysisState, 
 		aliasSkip = inherited.aliasSkip
 		state.options = inherited.options
 		state.optionsApplied = inherited.optionsApplied
+		state.optScope = inherited.optScope
+		state.optEnv = inherited.optEnv
 	}
 	if state.aliases == nil {
 		state.aliases = newAliasTable()
@@ -257,6 +266,7 @@ func analyzeWithStateWork(cmd string, depth int, inherited *shellAnalysisState, 
 	if state.options == nil {
 		state.options = newOptionEnvState()
 	}
+	state.optScope = state.options.newScope(state.optScope)
 	state.unquoted = unquotedVariableRefs(main)
 	prog := parseShell(tokens, ops)
 	if prog.bad {
@@ -374,6 +384,10 @@ func analyzeWithStateWork(cmd string, depth int, inherited *shellAnalysisState, 
 				result.merge(analyzeWithState(exp.text, depth+1, &payload))
 			}
 			if call := functionCallAt(stage, funcs); call >= 0 {
+				// Assignments in front of a function call reach the commands
+				// it runs and, in POSIX mode, persist after it returns, like
+				// those in front of a special builtin.
+				state.noteOptionBindings(append(append([]string(nil), stage[:call]...), ":"), []string{":"})
 				args := redirectFreeArguments(stage[call+1:])
 				runFunction(stage[call], args, pipeCtx{piped: piped, upstream: upstream})
 				for _, arg := range args {
@@ -391,8 +405,8 @@ func analyzeWithStateWork(cmd string, depth int, inherited *shellAnalysisState, 
 			payloadState.uncertain = state.uncertain || !cwdKnown
 			unwrappedStage := unwrapWrappersFull(stage)
 			inner, floor := unwrappedStage.inner, unwrappedStage.floor
-			state.options.noteStage(stage, inner)
-			payloadState.vars = withOptionAssignments(payloadState.vars, unwrappedStage.assigns)
+			state.noteOptionBindings(stage, inner)
+			payloadState.vars, payloadState.optEnv = withOptionAssignments(payloadState.vars, payloadState.optEnv, unwrappedStage.assigns)
 			for _, payload := range unwrappedStage.payloads {
 				result.merge(analyzeWithState(payload, depth+1, &payloadState))
 			}
@@ -498,9 +512,6 @@ func analyzeWithStateWork(cmd string, depth int, inherited *shellAnalysisState, 
 			// ...) are spliced into the tool's argv and analysed like the
 			// options written out.
 			result.merge(state.optionEnvAnalysis(inner, unwrappedStage.assigns, payloadState, depth))
-			if declaresComputedName(name, inner) {
-				state.options.dynamic = true
-			}
 			if name == "gpg" || name == "gpg2" {
 				home, set := state.vars["GNUPGHOME"]
 				for _, tok := range stage[:len(stage)-len(inner)] {

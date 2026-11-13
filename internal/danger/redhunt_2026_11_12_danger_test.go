@@ -222,10 +222,12 @@ func TestToolOptionEnvVariantsEscalate(t *testing.T) {
 		"TAR_OPTIONS=$OPTS tar xf a.tar",
 		"ZIPOPT=\"$(cat o)\" zip a.zip x",
 		"MAVEN_OPTS=-agentlib:jdwp=transport=dt_socket mvn -v",
-		"JAVA_OPTS=@argfile java -version",
+		// java itself does not read JAVA_OPTS; the Gradle launcher does.
+		"JAVA_OPTS=@argfile gradle --version",
 		"GRADLE_OPTS='-Xmx2g -javaagent:./e.jar' gradle -v",
 		"SBT_OPTS=-Djava.system.class.loader=Evil sbt -version",
-		"export MAVEN_OPTS=-Xbootclasspath/a:./e.jar",
+		// An export is judged where a program that reads it runs.
+		"export MAVEN_OPTS=-Xbootclasspath/a:./e.jar; mvn -v",
 	} {
 		if got := Classify(cmd); Rank(got) <= Rank(Classify("true")) || (&DangerousConfig{}).ActionForCommand(cmd) == Allow {
 			t.Errorf("%q classified %s; want it escalated and not auto-allowed", cmd, got)

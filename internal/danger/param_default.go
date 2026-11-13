@@ -82,10 +82,14 @@ func (d defaultExpansion) resolve(value string, known bool, expandWord func(stri
 // expandDefaultWord resolves a default expansion for expandToken. A resolved
 // word that the shell would split or glob cannot be one operand.
 func (s *shellAnalysisState) expandDefaultWord(token string, dollar int, separators string) (string, int, bool) {
+	d, ok := parseDefaultExpansion(token, dollar)
+	if ok && d.op == "=" && s.options != nil {
+		// ${NAME=word} and ${NAME:=word} assign NAME.
+		s.options.bind(d.name, s.optScope)
+	}
 	if s.work != nil && s.work.literalDefaults {
 		return "", 0, false
 	}
-	d, ok := parseDefaultExpansion(token, dollar)
 	if !ok {
 		return "", 0, false
 	}

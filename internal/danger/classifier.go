@@ -4047,13 +4047,7 @@ var safeShellDirs = map[string]bool{
 // default), not deny: legitimate uses like GIT_PAGER=less still work with
 // one approval.
 func envAssignmentRisk(assignments []string, inner []string) RiskClass {
-	risk := envAssignmentNameRisk(assignments, inner)
-	for _, a := range assignments {
-		if name, val, ok := strings.Cut(a, "="); ok && name != "" {
-			risk = worstOf(risk, toolOptionEnvRisk(strings.ToUpper(name), val, inner))
-		}
-	}
-	return risk
+	return worstOf(envAssignmentNameRisk(assignments, inner), optionEnvFloor(assignments, inner))
 }
 
 func envAssignmentNameRisk(assignments []string, inner []string) RiskClass {

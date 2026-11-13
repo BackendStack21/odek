@@ -160,7 +160,8 @@ func TestRED_ToolOptionEnvUndeterminedValueFailsClosed(t *testing.T) {
 	t.Chdir(t.TempDir())
 	cfg := &DangerousConfig{}
 	for _, cmd := range []string{
-		"[ -f x ] && TAR_OPTIONS=-C/etc; tar xf a.tar",
+		// Exported: a shell variable that is never exported does not reach tar.
+		"[ -f x ] && export TAR_OPTIONS=-C/etc; tar xf a.tar",
 		"if [ -f x ]; then TAR_OPTIONS=-C/etc; fi; export TAR_OPTIONS; tar xf a.tar",
 		"read TAR_OPTIONS; export TAR_OPTIONS; tar xf a.tar",
 		"declare \"$x=-C/etc\"; export \"$x\"; tar xf a.tar",
