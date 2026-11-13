@@ -327,7 +327,7 @@ func (s *taintSpanStore) checkSeedCoverage(c session.TaintCoverage, messages []s
 	target = target[:end]
 	if seen == nil {
 		var digested int64
-		seen, _, _, digested = taintSeenFor(target, taintScanTrack{})
+		seen, _, _, digested, _ = taintSeenFor(target, taintScanTrack{})
 		s.digestWork.Add(digested)
 	}
 	ok, tracker, hashed := verifySeedCoverage(target, seen, c, env)

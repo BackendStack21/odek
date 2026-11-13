@@ -345,7 +345,7 @@ func TestTaintCoverage_MismatchMeansFullScan(t *testing.T) {
 	}
 
 	// Another working directory never matches.
-	seen, _, _, _ := taintSeenFor(history, taintScanTrack{})
+	seen, _, _, _, _ := taintSeenFor(history, taintScanTrack{})
 	env := currentTaintEnv()
 	other := env
 	other.cwd = env.cwd + "-elsewhere"

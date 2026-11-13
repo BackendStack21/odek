@@ -1,10 +1,13 @@
 package loop
 
 import (
+	"context"
 	"fmt"
 	"math/rand/v2"
 	"slices"
+	"strings"
 	"testing"
+	"unsafe"
 
 	"github.com/BackendStack21/odek/internal/session"
 	"github.com/BackendStack21/odek/internal/tool"
@@ -15,7 +18,7 @@ import (
 func trackEntryEqual(a, b *taintSeen) bool {
 	return a.d == b.d && a.paired == b.paired && a.pair == b.pair && a.principal == b.principal &&
 		a.isPrincipal == b.isPrincipal && a.bgJob == b.bgJob && a.same(&session.Message{
-		Role: b.role, ToolCallID: b.toolCallID, Name: b.name, Content: b.content, ToolCalls: b.calls})
+		Role: b.role, ToolCallID: b.toolCallID, Name: b.name, Content: b.content, ToolCalls: b.calls}, &taintCompare{})
 }
 
 // trackMutate changes h the ways a caller's history changes between
@@ -87,8 +90,8 @@ func TestTaintTrack_ReuseEqualsFreshDerivation(t *testing.T) {
 		var track taintScanTrack
 		var prevHistory []session.Message
 		for step := 0; step < 12; step++ {
-			seen, issued, lead, _ := taintSeenFor(h, track)
-			fresh, _, _, _ := taintSeenFor(h, taintScanTrack{})
+			seen, issued, lead, _, _ := taintSeenFor(h, track)
+			fresh, _, _, _, _ := taintSeenFor(h, taintScanTrack{})
 			if len(seen) != len(h) || len(fresh) != len(h) {
 				t.Fatalf("iteration %d step %d: %d entries for %d messages", it, step, len(seen), len(h))
 			}
@@ -111,6 +114,141 @@ func TestTaintTrack_ReuseEqualsFreshDerivation(t *testing.T) {
 				prevHistory[i].ToolCalls = slices.Clone(prevHistory[i].ToolCalls)
 			}
 			h = trackMutate(r, c, h)
+		}
+	}
+}
+
+// trackReload returns h with the messages reload picks rebuilt in fresh
+// bytes (equal values), as a history reloaded from the store holds them.
+func trackReload(h []session.Message, reload func(int) bool) []session.Message {
+	out := slices.Clone(h)
+	for i := range out {
+		if !reload(i) {
+			continue
+		}
+		m := &out[i]
+		m.Role, m.ToolCallID, m.Name, m.Content = strings.Clone(m.Role), strings.Clone(m.ToolCallID), strings.Clone(m.Name), strings.Clone(m.Content)
+		calls := slices.Clone(m.ToolCalls)
+		for j := range calls {
+			tc := &calls[j]
+			tc.ID, tc.Type = strings.Clone(tc.ID), strings.Clone(tc.Type)
+			tc.Function.Name, tc.Function.Arguments = strings.Clone(tc.Function.Name), strings.Clone(tc.Function.Arguments)
+		}
+		m.ToolCalls = calls
+	}
+	return out
+}
+
+// trackShares reports whether a and b share their bytes (or are empty).
+func trackShares(a, b string) bool {
+	return len(a) == 0 && len(b) == 0 || len(a) == len(b) && unsafe.StringData(a) == unsafe.StringData(b)
+}
+
+// A history whose messages come back in fresh bytes (a reload from the
+// store, whole or in part) is reused exactly like one that shares its bytes,
+// and after the observe every kept field, the call a result answers and the
+// principal's whole-message text are the handed history's own strings.
+func TestTaintTrack_ReloadReuseEqualsFresh(t *testing.T) {
+	r := rand.New(rand.NewPCG(20261114, 7))
+	var jobSeq int
+	for it := 0; it < 60; it++ {
+		c := newCovDiffCorpus(r, &jobSeq)
+		h := c.history(r)
+		var track taintScanTrack
+		var prevHistory []session.Message
+		for step := 0; step < 12; step++ {
+			switch r.IntN(3) {
+			case 0:
+				h = trackReload(h, func(int) bool { return true })
+			case 1:
+				h = trackReload(h, func(int) bool { return r.IntN(3) == 0 })
+			}
+			seen, issued, lead, _, _ := taintSeenFor(h, track)
+			fresh, _, _, _, _ := taintSeenFor(h, taintScanTrack{})
+			for i := range fresh {
+				if !trackEntryEqual(&seen[i], &fresh[i]) {
+					t.Fatalf("iteration %d step %d: message %d (%s) reused a stale derivation", it, step, i, h[i].Role)
+				}
+				e, m := &seen[i], &h[i]
+				shared := trackShares(e.role, m.Role) && trackShares(e.toolCallID, m.ToolCallID) && trackShares(e.name, m.Name) && trackShares(e.content, m.Content)
+				for j := range e.calls {
+					shared = shared && trackShares(e.calls[j].ID, m.ToolCalls[j].ID) &&
+						trackShares(e.calls[j].Function.Name, m.ToolCalls[j].Function.Name) &&
+						trackShares(e.calls[j].Function.Arguments, m.ToolCalls[j].Function.Arguments)
+				}
+				if e.paired {
+					shared = shared && trackShares(e.pair.Function.Arguments, fresh[i].pair.Function.Arguments)
+				}
+				if e.isPrincipal && len(e.principal) == len(m.Content) {
+					shared = shared && trackShares(e.principal, m.Content)
+				}
+				if !shared {
+					t.Fatalf("iteration %d step %d: message %d (%s) keeps strings other than the handed history's", it, step, i, h[i].Role)
+				}
+			}
+			want := 0
+			for want < len(h) && want < len(prevHistory) && trackMessageEqual(&h[want], &prevHistory[want]) {
+				want++
+			}
+			if lead != want {
+				t.Fatalf("iteration %d step %d: lead %d, the histories share %d leading messages", it, step, lead, want)
+			}
+			for id, call := range issued {
+				var last *session.ToolCall
+				for i := range h {
+					if h[i].Role == "assistant" {
+						for j := range h[i].ToolCalls {
+							if h[i].ToolCalls[j].ID == id {
+								last = &h[i].ToolCalls[j]
+							}
+						}
+					}
+				}
+				if last == nil || call != *last || !trackShares(call.Function.Arguments, last.Function.Arguments) {
+					t.Fatalf("iteration %d step %d: issued call %q is not the history's last call with its id", it, step, id)
+				}
+			}
+			track = taintScanTrack{seen: seen, issued: issued}
+			prevHistory = session.CloneMessages(h)
+			for i := range prevHistory {
+				prevHistory[i].ToolCalls = slices.Clone(prevHistory[i].ToolCalls)
+			}
+			h = trackMutate(r, c, h)
+		}
+	}
+}
+
+// The store counts the bytes a comparison with a kept history reads: a
+// reloaded history costs each caller one pass over its bytes, and nothing
+// again until it changes.
+func TestTaintTrack_ReloadComparedOncePerCaller(t *testing.T) {
+	e := New(nil, tool.NewRegistry(nil), 10, "sys", nil, 0)
+	h := loopR3History(60)
+	e.taintGate(context.Background(), h, nil, 0, nil, 1)
+	e.TaintSpanState(session.CloneMessages(h))
+	store := e.spanStore()
+	if n := store.compareWork.Load(); n != 0 {
+		t.Fatalf("a history observed once per caller compared %d bytes", n)
+	}
+	reloaded := trackReload(h, func(int) bool { return true })
+	var size int64
+	for i := range reloaded {
+		m := &reloaded[i]
+		size += int64(len(m.Role) + len(m.ToolCallID) + len(m.Name) + len(m.Content))
+		for _, tc := range m.ToolCalls {
+			size += int64(len(tc.ID) + len(tc.Function.Name) + len(tc.Function.Arguments))
+		}
+	}
+	for step := 1; step <= 3; step++ {
+		before := store.compareWork.Load()
+		e.taintGate(context.Background(), reloaded, nil, 0, nil, 1)
+		e.TaintSpanState(session.CloneMessages(reloaded))
+		got := store.compareWork.Load() - before
+		if step == 1 && got != 2*size {
+			t.Fatalf("the first gate and save of the reloaded history compared %d bytes, want %d (one pass each)", got, 2*size)
+		}
+		if step > 1 && got != 0 {
+			t.Fatalf("step %d compared %d bytes of an unchanged history again", step, got)
 		}
 	}
 }

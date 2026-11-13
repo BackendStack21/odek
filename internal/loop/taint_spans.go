@@ -295,11 +295,12 @@ type taintSpanStore struct {
 	// even after trimming dropped the calls; content naming a job missing
 	// here, or naming none, is a span source (see bgSourceLocked).
 	bgJobs map[string]bool
-	// digestWork, verifyWork and coverageWork count the bytes read by the
-	// scan digests, by verifying a seeded coverage and by recording the
-	// coverage, so tests can pin that a step's work follows its new
+	// digestWork, compareWork, verifyWork and coverageWork count the bytes
+	// read by the scan digests, by comparing a history with the one a track
+	// kept (taint_track.go), by verifying a seeded coverage and by recording
+	// the coverage, so tests can pin that a step's work follows its new
 	// messages, not the whole history.
-	digestWork, verifyWork, coverageWork atomic.Int64
+	digestWork, compareWork, verifyWork, coverageWork atomic.Int64
 }
 
 // maxTaintBgJobs bounds bgJobs. A full map is emptied: forgetting a job only
@@ -970,8 +971,9 @@ func (s *taintSpanStore) observeTrack(messages []session.Message, env taintEnv, 
 	prev := *track
 	*track = taintScanTrack{}
 	s.mu.Unlock()
-	seen, issued, lead, digested := taintSeenFor(messages, prev)
+	seen, issued, lead, digested, compared := taintSeenFor(messages, prev)
 	s.digestWork.Add(digested)
+	s.compareWork.Add(compared)
 	principalText, bgTainted, bgJobs := taintHistoryFacts(seen)
 
 	// Extraction runs outside the mutex: only the scan bookkeeping and the
@@ -1168,6 +1170,9 @@ func (s *taintSpanStore) insertLinksLocked(spans []taintRaw) {
 
 // insertLocked records extracted spans under source.
 func (s *taintSpanStore) insertLocked(spans []taintRaw, source string) {
+	// A wrapper's label is a slice of its message's bytes: the spans
+	// recorded here share one copy of it, so no span keeps the message alive.
+	copied := false
 	for _, r := range spans {
 		if r.kind == taintKindURL {
 			s.recordLinkLocked(r.link)
@@ -1184,6 +1189,9 @@ func (s *taintSpanStore) insertLocked(spans []taintRaw, source string) {
 		if sp, ok := s.spans[k]; ok {
 			sp.seq = s.seq
 			continue
+		}
+		if !copied {
+			source, copied = strings.Clone(source), true
 		}
 		sp := &taintSpan{source: source, seq: s.seq}
 		// A span is held once. A copy seeded as its hash gives way to this
