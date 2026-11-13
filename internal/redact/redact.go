@@ -257,8 +257,14 @@ var valuePatterns = []guardedPattern{
 var dbURLReferenceRe = regexp.MustCompile(`^(?:\$\{[A-Za-z_][A-Za-z0-9_]*\}|\$[A-Za-z_][A-Za-z0-9_]*|\{\{?\s*[A-Za-z_][A-Za-z0-9_.-]*\s*\}\}?|<[A-Za-z_][A-Za-z0-9_ -]*>|%\([A-Za-z_][A-Za-z0-9_]*\)s|%[A-Za-z_][A-Za-z0-9_]*%)$`)
 
 // dbURLHoldsSecret judges a matched connection URL span: it holds a secret
-// unless every user:password pair in it carries only a reference. A span can
-// join several URLs or hosts with ',' or ';', so each '@' closes one pair.
+// unless every '@' in it closes a userinfo whose password is only a reference.
+// The span runs to the next blank or quote, so it can join several URLs or
+// hosts with any glue (',', ';', '?replica=', '|', '&&'). The userinfo an '@'
+// closes starts after the last "://", ',' or ';' since the previous '@', or is
+// all of that text when it holds none of them; everything after its first ':'
+// is its password. An '@' with no "://", '/', '?', '#', ',' or ';' since the
+// previous one may still belong to the password before it, so the span is
+// not judged and counts as a secret.
 func dbURLHoldsSecret(url string) bool {
 	i := strings.Index(url, "://")
 	if i < 0 {
@@ -274,25 +280,22 @@ func dbURLHoldsSecret(url string) bool {
 		part := rest[:at]
 		rest = rest[at+1:]
 		if !first {
-			// Userinfo of a later pair follows the last list separator and
-			// any scheme of a joined URL.
-			k := strings.LastIndexAny(part, ",;")
-			if k < 0 {
-				continue
-			}
-			part = part[k+1:]
 			if k := strings.LastIndex(part, "://"); k >= 0 {
 				part = part[k+3:]
+			} else if k := strings.LastIndexAny(part, ",;"); k >= 0 {
+				part = part[k+1:]
+			} else if !strings.ContainsAny(part, "/?#") {
+				return true
 			}
 		}
-		first = false
 		c := strings.IndexByte(part, ':')
 		if c < 0 {
-			if part == "" {
-				continue
+			if first {
+				return true // the pattern always matches a first password
 			}
-			return true
+			continue // a user name without a password
 		}
+		first = false
 		if pwHoldsSecret(part[c+1:]) {
 			return true
 		}
