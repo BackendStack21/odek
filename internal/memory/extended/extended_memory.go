@@ -989,6 +989,13 @@ func (em *ExtendedMemory) enforceCap(ctx context.Context, newBytes int64) error 
 	for _, s := range sized {
 		existingEffective += s.size
 	}
+	// associations.json counts toward the cap, but only atoms can be
+	// evicted: a dense map (a store written before links were bounded) is
+	// pruned first, so a legacy file can neither block every add nor cost a
+	// live atom for links the prune frees.
+	if err := em.assoc.PruneIfDense(); err != nil {
+		log.Printf("extended memory: association prune failed: %v", err)
+	}
 	total := existingEffective + quarantineSize + em.assoc.FileSize() + newBytes
 
 	if total <= maxBytes {

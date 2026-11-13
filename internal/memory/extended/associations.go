@@ -330,6 +330,22 @@ func needsPrune(links map[string]map[string]struct{}) bool {
 	return prunable > 2*maxLinkFactor*maxLinksPerAtom*crowded
 }
 
+// PruneIfDense persists the map when it is past the prune trigger, so the
+// size of associations.json reflects the pruned map before it is charged
+// against the store's size cap. Below the trigger it does nothing.
+func (a *Associations) PruneIfDense() error {
+	if a == nil || a.dir == "" {
+		return nil
+	}
+	a.mu.RLock()
+	dense := needsPrune(a.links)
+	a.mu.RUnlock()
+	if !dense {
+		return nil
+	}
+	return a.Persist()
+}
+
 // pruneLocked bounds the association map. It does nothing below the trigger
 // (needsPrune), so a healthy store never reads the atom recency table (a full
 // chunk read); past it each atom selects its maxLinksPerAtom nearest-in-time

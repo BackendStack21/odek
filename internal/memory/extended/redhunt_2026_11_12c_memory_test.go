@@ -1,10 +1,118 @@
 package extended
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
+
+// rh1112cWriteDense writes a legacy complete association graph over ids (the
+// layout the unbounded task linker produced), in Persist's format, and
+// returns the file size.
+func rh1112cWriteDense(t *testing.T, dir string, ids []string) int64 {
+	t.Helper()
+	dense := map[string][]string{}
+	for i, a := range ids {
+		for j, b := range ids {
+			if i != j {
+				dense[a] = append(dense[a], b)
+			}
+		}
+	}
+	raw, err := json.MarshalIndent(dense, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "associations.json"), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return int64(len(raw))
+}
+
+// rh1112cAtomFootprint is the atom footprint enforceCap compares with the cap.
+func rh1112cAtomFootprint(em *ExtendedMemory) int64 {
+	atoms, _ := em.store.List()
+	var total int64
+	for _, s := range buildSizedAtoms(em.store, atoms) {
+		total += s.size + vectorCost(len(atoms))
+	}
+	return total
+}
+
+func rh1112cIDs(atoms []MemoryAtom, n int) []string {
+	ids := make([]string, 0, n)
+	for _, a := range atoms[:n] {
+		ids = append(ids, a.ID)
+	}
+	return ids
+}
+
+// A store written before the association bound holds a dense legacy
+// associations.json. The cap counts that file, so it must be pruned before
+// the cap is judged: otherwise the add fails ("cannot free …") although the
+// atoms alone fit with room to spare, and the file is never pruned because
+// pruning happens only in the Persist the failed add never reaches.
+func TestRED_LegacyDenseAssociationsDoNotWedgeTheStore(t *testing.T) {
+	dir := t.TempDir()
+	rh1112MemSeedStore(t, dir, 200)
+	atoms, _ := rh1112MemOpen(t, dir, nil).store.List()
+	assocBytes := rh1112cWriteDense(t, dir, rh1112cIDs(atoms, len(atoms)))
+
+	em := rh1112MemOpen(t, dir, func(c *Config) { c.SemanticDedupThreshold = floatPtr(0) })
+	em.testCapBytes = rh1112cAtomFootprint(em) + 256<<10 // atoms fit with 256 KiB to spare
+
+	const text = "the user prefers short commit messages"
+	err := em.AddAtom(context.Background(), MemoryAtom{Text: text, SourceClass: SourceUserSaid, Type: TypePreference})
+	left, _ := em.store.List()
+	stored := false
+	for _, a := range left {
+		stored = stored || a.Text == text
+	}
+	if err != nil || !stored {
+		t.Fatalf("new atom not stored (err=%v, %d atoms left); associations.json %d B -> %d B",
+			err, len(left), assocBytes, em.assoc.FileSize())
+	}
+	if em.assoc.FileSize() >= assocBytes {
+		t.Fatalf("legacy associations.json was not pruned: %d B", em.assoc.FileSize())
+	}
+}
+
+// When the evictable atoms do cover the legacy file, no live atom may be
+// evicted to pay for association bytes a prune frees.
+func TestRED_LegacyDenseAssociationsEvictNoLiveAtom(t *testing.T) {
+	dir := t.TempDir()
+	rh1112MemSeedStore(t, dir, 600)
+	atoms, _ := rh1112MemOpen(t, dir, nil).store.List()
+	assocBytes := rh1112cWriteDense(t, dir, rh1112cIDs(atoms, 100))
+
+	em := rh1112MemOpen(t, dir, func(c *Config) { c.SemanticDedupThreshold = floatPtr(0) })
+	const headroom = 256 << 10
+	em.testCapBytes = rh1112cAtomFootprint(em) + headroom
+	reads := 0
+	recency := em.assoc.recency
+	em.assoc.SetRecency(func() map[string]time.Time { reads++; return recency() })
+	if err := em.AddAtom(context.Background(), MemoryAtom{
+		Text: "the user prefers short commit messages", SourceClass: SourceUserSaid, Type: TypePreference,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	left, _ := em.store.List()
+	after := em.assoc.FileSize()
+	if after >= headroom {
+		t.Fatalf("fixture: the pruned associations.json (%d B) does not fit the %d B headroom", after, headroom)
+	}
+	if len(left) != 601 {
+		t.Fatalf("%d live atoms evicted to pay for association bytes a prune frees (%d -> %d B)",
+			601-len(left), assocBytes, after)
+	}
+	if reads != 1 {
+		t.Fatalf("one add read the recency table %d times, want the single prune", reads)
+	}
+}
 
 // The prune trigger must see a dense cluster even when a large sparse part
 // of the store dilutes the store-wide link average: legacy stores are pruned
