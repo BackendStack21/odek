@@ -109,12 +109,13 @@ func (s *shellAnalysisState) expandDefaultWord(token string, dollar int, separat
 // when the default applies (NAME unset, or empty for the colon form, or not
 // known to the analysis). The new value is not carried: the expansion may sit
 // in a pipeline stage or a branch whose assignment does not outlive it, so the
-// name is dropped and later references stay unresolved, never stale.
+// name holds a value only known at run time (as after read), never the stale
+// or unset one, and later references stay unresolved.
 func (s *shellAnalysisState) defaultAssigns(d defaultExpansion) {
 	if value, known := s.vars[d.name]; known && (value != "" || !d.colon) {
 		return
 	}
-	s.forget(d.name)
+	s.vars[d.name] = dynamicSubstToken
 	if s.options != nil {
 		s.options.bind(d.name, s.optScope)
 	}

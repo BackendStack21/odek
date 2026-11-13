@@ -544,3 +544,33 @@ func TestRED_BashCmdsBindsLikeHashP(t *testing.T) {
 		}
 	}
 }
+
+// An append or a default assignment the analysis cannot compute (a computed
+// suffix, an unknown earlier value, ${NAME:=word} that applies) dropped the
+// variable, and the checks that escalate on a non-default value (HOME for a
+// login shell's startup files, GNUPGHOME for gpg) read a dropped variable as
+// unset: `export GNUPGHOME=/tmp/evil; export GNUPGHOME+=$(id -u); gpg` lost the
+// code_execution the stale value had carried.
+//
+// Correct behaviour: such a variable holds a value only known at run time,
+// which those checks treat as non-default.
+func TestRED_UncomputedAppendOrDefaultLeavesValueUnresolved(t *testing.T) {
+	t.Setenv("HOME", "/home/user")
+	t.Chdir(t.TempDir())
+	for cmd, ref := range map[string]string{
+		`export HOME=/tmp/evil; export HOME+=$(id -u); bash -l`:                   `HOME=/tmp/evil bash -l`,
+		`export HOME+=/x; bash -l`:                                                `HOME=/tmp/evil bash -l`,
+		`export GNUPGHOME=/tmp/evil; export GNUPGHOME+=$(id -u); gpg --list-keys`: `GNUPGHOME=/tmp/evil gpg --list-keys`,
+		`export GNUPGHOME+=-alt; gpg --list-keys`:                                 `GNUPGHOME=/tmp/evil gpg --list-keys`,
+		`GNUPGHOME=; : ${GNUPGHOME:=/tmp/evil}; gpg --list-keys`:                  `GNUPGHOME=/tmp/evil gpg --list-keys`,
+		`true || export HOME=/home/user HOME+=/x; bash -l`:                        `HOME=/tmp/evil bash -l`,
+	} {
+		want := Classify(ref)
+		if Rank(want) < Rank(CodeExecution) {
+			t.Fatalf("reference %q classified %s; test premise broken", ref, want)
+		}
+		if got := Classify(cmd); Rank(got) < Rank(want) {
+			t.Errorf("Classify(%q) = %s, want at least %s (the verdict of %q)", cmd, got, want, ref)
+		}
+	}
+}

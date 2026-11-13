@@ -1352,6 +1352,7 @@ func (s *shellAnalysisState) rebind(name string, inner []string, bind bool) (nam
 				before[op] = v
 			}
 		}
+		var appended []string
 		for _, tok := range inner[1:] {
 			if isShortFlagToken(tok) && strings.Contains(tok, "n") && name != "unset" && name != "let" && name != "export" {
 				// declare -n makes a name an alias of another variable.
@@ -1362,19 +1363,29 @@ func (s *shellAnalysisState) rebind(name string, inner []string, bind bool) (nam
 			if !bound.keep[op] {
 				s.forget(op)
 			}
+			if lhs, _, ok := strings.Cut(tok, "="); ok && strings.HasSuffix(lhs, "+") && isValidVarName(op) && name != "unset" && name != "let" {
+				appended = append(appended, op)
+			}
 		}
 		if bind {
 			for op, value := range bound.values {
 				s.vars[op] = value
 				names = append(names, op)
 			}
-			// NAME+=value appends to a known value; an unknown one stays
-			// unknown (it was forgotten above).
-			for _, op := range bound.appendOrder {
-				if old, ok := before[op]; ok && !strings.Contains(old, dynamicSubstToken) {
-					s.vars[op] = old + bound.appends[op]
-					names = append(names, op)
-				}
+		}
+		// NAME+=value appends to the value: a known one is joined, and one
+		// the analysis cannot compute (an unknown earlier value, a computed
+		// suffix, a branch) holds something only known at run time, never
+		// the unset or earlier value.
+		for _, op := range appended {
+			suffix, literal := bound.appends[op]
+			if old, ok := before[op]; bind && literal && ok && !strings.Contains(old, dynamicSubstToken) {
+				s.vars[op] = old + suffix
+			} else if _, joined := bound.values[op]; !bind || !joined {
+				s.vars[op] = dynamicSubstToken
+			}
+			if bind {
+				names = append(names, op)
 			}
 		}
 	}
