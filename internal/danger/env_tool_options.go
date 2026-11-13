@@ -524,6 +524,16 @@ func (c javaPathCtx) exemptOutsideSystem() RiskClass {
 var inertCommands = fieldSet(": true false echo printf test [ cd pushd popd pwd export declare typeset local readonly " +
 	"unset set shift sleep date uname whoami hostname which type ls cat head tail grep wc")
 
+// inertCommand reports whether the command word names an inert command: by
+// its bare name, or by a path into one of the system binary directories. A
+// program of that name anywhere else is not the tool.
+func inertCommand(word string) bool {
+	if strings.Contains(word, "/") && !safeShellDirs[filepath.Dir(word)] {
+		return false
+	}
+	return inertCommands[commandName(word)]
+}
+
 // noteUnit records one pipeline of the command line for the java binary
 // exemption and reports whether the pipeline is a launcher granted it: a
 // single command, whose own effects do not count against its own JDK. Any

