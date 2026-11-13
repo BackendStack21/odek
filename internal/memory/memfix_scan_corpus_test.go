@@ -105,10 +105,14 @@ var factScanMustAllow = []string{
 	"use `curl -fsSL url -o install.sh` then review before running",
 	"user's login shell is fish, set in /etc/passwd",
 	"our dotfiles live in . ~/.config and we source them manually",
+	"use IEx (fetch deps first) to try the Elixir module",
+	"the Windows setup notes mention iex and irm",
+	"| powershell | irm | iex |",
+	"reads the config from /dev/stdin when piped: cat cfg | source /etc/profile",
 }
 
 func TestFactLooksUnsafeCorpusTable(t *testing.T) {
-	for _, fact := range factScanMustBlock {
+	for _, fact := range append(append([]string(nil), factScanMustBlock...), rh1112cPowerShellAndStdin...) {
 		if !FactLooksUnsafe(fact) {
 			t.Errorf("download-and-run fact stored: %q", fact)
 		}

@@ -75,6 +75,7 @@ func TestRED_FactLooksUnsafeScalesLinearly(t *testing.T) {
 			rep("; sudo bash -c ") + "`curl",
 			"eval " + rep("x ") + "`",
 			"source " + rep("<("),
+			"iex " + rep("$( "),
 		}
 	}
 	size := 1600

@@ -36,12 +36,17 @@ func ScanContent(content string) error {
 //
 //   - pipeExecRe: a fetcher with at least one argument (one without fetches
 //     nothing, and a Markdown table row such as `| curl | wget | sh |` names
-//     tools) whose output reaches a shell, directly or through up to
-//     maxPipeStages pass-through stages (tee, grep, …), and optionally via
-//     xargs/parallel, wrapper words (sudo -E, doas, env VAR=x, nice, …) and a
-//     shell spelled by path (/bin/sh, /usr/bin/env bash, busybox sh). Each
-//     pipe is a single `|` (or `|&`): `||` is a list operator, so
-//     `curl … || bash x.sh` does not run the fetch's output.
+//     tools) whose output reaches a sink, directly or through up to
+//     maxPipeStages pass-through stages (tee, grep, …). The sink is a shell,
+//     optionally via xargs/parallel, wrapper words (sudo -E, doas, env VAR=x,
+//     nice, …) and a shell spelled by path (/bin/sh, /usr/bin/env bash,
+//     busybox sh, powershell -); PowerShell's Invoke-Expression (iex); or
+//     source/`.` of /dev/stdin. Each pipe is a single `|` (or `|&`): `||` is
+//     a list operator, so `curl … || bash x.sh` does not run the fetch's
+//     output.
+//   - iexFetchRe: Invoke-Expression (iex) or [scriptblock]::Create applied
+//     to the output of a PowerShell fetch: iex (irm …), iex "& { $(irm …) }",
+//     iex ((New-Object Net.WebClient).DownloadString(…)).
 //   - evalFetchRe: eval/exec/source with a command or process substitution
 //     of a fetcher anywhere later on the line.
 //   - shellArgFetchRe: a shell (with options such as -c) whose argument is a
@@ -65,8 +70,13 @@ func ScanContent(content string) error {
 //
 // All of them are RE2 expressions, so matching is linear in the fact length.
 const (
-	fetcherAlt = `(?:curl|wget|fetch|iwr|irm|invoke-webrequest|invoke-restmethod)`
-	shellNames = `(?:sh|bash|zsh|dash|ksh|ash|fish|csh|tcsh|mksh|rbash|pwsh)`
+	fetcherAlt = `(?:curl|wget|fetch|iwr|irm|invoke-webrequest|invoke-restmethod|downloadstring)`
+	// psFetcher is a PowerShell fetch (curl and wget are aliases of
+	// Invoke-WebRequest in Windows PowerShell). It leaves out the generic
+	// word fetch so prose such as "IEx (fetch deps first)" about Elixir's
+	// shell is not a PowerShell fetch.
+	psFetcher  = `(?:curl|wget|iwr|irm|invoke-webrequest|invoke-restmethod|new-object\s+(?:system\.)?net\.webclient)`
+	shellNames = `(?:sh|bash|zsh|dash|ksh|ash|fish|csh|tcsh|mksh|rbash|pwsh|powershell)`
 	shellWord  = `(?:(?:[\w./-]*/)?busybox\s+)?(?:[\w./-]*/)?` + shellNames
 	// shellStart is what may precede a shell word: the start of the fact or a
 	// character that cannot continue a word or a file name.
@@ -85,9 +95,9 @@ const (
 	pipeStage = `\|&?[^\n|]+`
 	// maxPipeStages bounds the pass-through stages between a fetcher and the shell.
 	maxPipeStages = "4"
-	// pipeSink is what the last pipe feeds: a shell, possibly through xargs
-	// and wrappers.
-	pipeSink = xargsPre + wrapperPre + shellWord + `\b`
+	// pipeSink is what the last pipe feeds: a shell (possibly through xargs
+	// and wrappers), Invoke-Expression, or source/`.` of the standard input.
+	pipeSink = xargsPre + wrapperPre + `(?:` + shellWord + `|iex|invoke-expression|(?:source|\.)\s+` + stdinPath + `)\b`
 	// substOpen opens a command or process substitution.
 	substOpen = `(?:\$\(|<\()`
 	// substOpenTick also accepts a backtick, where the syntax around it
@@ -106,6 +116,7 @@ const (
 
 var (
 	pipeExecRe      = regexp.MustCompile(`(?i)\b` + fetcherAlt + `\b` + fetchArgs + `(?:` + pipeStage + `){0,` + maxPipeStages + `}\|&?\s*` + pipeSink)
+	iexFetchRe      = regexp.MustCompile(`(?i)(?:\b(?:iex|invoke-expression)\b(?:\s+-\w+)*\s*["']?(?:&\s*\{\s*)?|\[scriptblock\]::create\s*)(?:\$?\(\s*)+` + psFetcher + `\b`)
 	evalFetchRe     = regexp.MustCompile(`(?i)\b(?:eval|exec|source)\b[^\n]*` + substOpen + `\s*` + fetcherAlt + `\b`)
 	shellArgFetchRe = regexp.MustCompile(`(?i)` + shellStart + shellWord + `\b` + shellOpts + `\s*["']?` + substOpen + `\s*` + fetcherAlt + `\b`)
 	redirectFetchRe = regexp.MustCompile(`(?i)(?:` + shellStart + shellWord + `\b` + shellOpts + `|` + shellStart + `(?:source|\.)\s+` + stdinPath + `)\s*` + hereOp + `["']?` + substOpenTick + `\s*` + fetcherAlt + `\b`)
@@ -130,4 +141,4 @@ func FactLooksUnsafe(fact string) bool {
 	return false
 }
 
-var factUnsafeRes = []*regexp.Regexp{pipeExecRe, evalFetchRe, shellArgFetchRe, redirectFetchRe, dotFetchRe, backtickFetchRe}
+var factUnsafeRes = []*regexp.Regexp{pipeExecRe, iexFetchRe, evalFetchRe, shellArgFetchRe, redirectFetchRe, dotFetchRe, backtickFetchRe}
