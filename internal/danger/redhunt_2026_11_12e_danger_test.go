@@ -308,3 +308,42 @@ func TestRED_NonSystemJavaBinaryExemptOnlyInASafeCommandLine(t *testing.T) {
 		t.Errorf("javac with a per-user JDK = %s, want %s", got, want)
 	}
 }
+
+// The java.security. prefix made -Djava.security.egd=file:/dev/./urandom, the
+// entropy-source setting Docker images and CI scripts carry, a system_write.
+// The property names where random seed bytes are read from and loads no code.
+//
+// Correct behaviour: exactly java.security.egd naming a kernel random device
+// is a plain property; any other value of it and every other java.security.*
+// property stay listed.
+func TestRED_JavaSecurityEgdIsAPlainProperty(t *testing.T) {
+	t.Setenv("HOME", "/home/user")
+	t.Chdir(t.TempDir())
+	unsetExecEnvR4(t)
+	for cmd, plain := range map[string]string{
+		`MAVEN_OPTS=-Djava.security.egd=file:/dev/./urandom mvn -v`:                `mvn -v`,
+		`JAVA_OPTS=-Djava.security.egd=file:/dev/./urandom gradle --version`:       `gradle --version`,
+		`export MAVEN_OPTS='-Xmx1g -Djava.security.egd=file:/dev/urandom'; mvn -v`: `mvn -v`,
+	} {
+		if got, want := Classify(cmd), Classify(plain); got != want {
+			t.Errorf("Classify(%q) = %s, want %s (the verdict of %q)", cmd, got, want, plain)
+		}
+	}
+	for _, cmd := range []string{
+		`MAVEN_OPTS=-Djava.security.manager=evil.Manager mvn -v`,
+		`MAVEN_OPTS=-Djava.security.policy=/tmp/all.policy mvn -v`,
+		`MAVEN_OPTS=-Djava.security.properties=/tmp/java.security mvn -v`,
+		`MAVEN_OPTS=-Djava.security.auth.login.config=/tmp/jaas.conf mvn -v`,
+		`MAVEN_OPTS=-Djava.security.egdx=file:/dev/urandom mvn -v`,
+		`MAVEN_OPTS=-Djava.security.egd=file:/tmp/seed mvn -v`,
+		`MAVEN_OPTS=-Djava.security.egd=file:/dev/urandom/../../tmp/seed mvn -v`,
+		`MAVEN_OPTS=-Djava.security.egd mvn -v`,
+		`MAVEN_OPTS=-Djava.security.egd.extra=x mvn -v`,
+		`MAVEN_OPTS='-Djava.security.egd=file:/dev/urandom -javaagent:/tmp/x.jar' mvn -v`,
+		`MAVEN_OPTS='-Djava.security.egd=$(id)' mvn -v`,
+	} {
+		if got := Classify(cmd); Rank(got) < Rank(SystemWrite) {
+			t.Errorf("Classify(%q) = %s, want at least system_write", cmd, got)
+		}
+	}
+}

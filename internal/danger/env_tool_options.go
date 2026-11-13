@@ -705,7 +705,10 @@ func jvmOptionPlain(w string, depth int) bool {
 		return false
 	}
 	for _, prefix := range jvmCodePropertyPrefixes {
-		if strings.HasPrefix(name, prefix) {
+		// java.security.egd names the source of random seed bytes; pointed
+		// at a kernel random device (the file:/dev/./urandom of container
+		// images) it loads nothing and weakens nothing.
+		if strings.HasPrefix(name, prefix) && (name != "java.security.egd" || !jvmEntropyDevice.MatchString(value)) {
 			return false
 		}
 	}
@@ -744,8 +747,12 @@ var (
 		"sbt.override.build.repos")
 	// jvmCodePropertyPrefixes: module patches, and the security manager, its
 	// policy, the security properties file and the other java.security
-	// settings (providers, login configuration).
+	// settings (providers, login configuration); java.security.egd is plain
+	// when it names a kernel random device.
 	jvmCodePropertyPrefixes = []string{"jdk.module.patch", "java.security."}
+	// jvmEntropyDevice matches the kernel random devices as java.security.egd
+	// names them.
+	jvmEntropyDevice = regexp.MustCompile(`^file:(//)?/dev/(\./)?u?random$`)
 )
 
 // optionEnvState records, for one command line and every payload analysed
