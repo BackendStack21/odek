@@ -44,9 +44,10 @@ import (
 //     working directory or in a temporary directory classifies code_execution.
 //
 // A value the analysis cannot follow fails closed when the reader runs: a
-// value only known at run time, or a binding the analysis cannot follow
-// (read, a nameref, a sourced file, eval, a declaration whose name is
-// computed, a value a nested payload changed).
+// value only known at run time, a binding the analysis cannot follow (read,
+// a nameref, a sourced file, eval, a declaration whose name is computed, a
+// value a nested payload changed), or a value over maxOptionEnvWords words or
+// maxOptionEnvBytes bytes, which classifies unknown.
 
 // optionEnvKind says how a variable's readers take its value.
 type optionEnvKind int
@@ -128,14 +129,29 @@ func optionEnvVarRead(name, tool string) (optionEnvVar, bool) {
 	return optionEnvVar{}, false
 }
 
+const (
+	// maxOptionEnvWords and maxOptionEnvBytes bound the value spliced into a
+	// reader's argv. Real values hold a few words; a longer one classifies
+	// unknown rather than being analysed again at a cost that grows with it.
+	maxOptionEnvWords = 64
+	maxOptionEnvBytes = 4 << 10
+)
+
 // optionValueWords returns the words of value as its reader splits them, or,
-// for a value the analysis does not take apart, the verdict it gets:
-// system_write when it is only known at run time.
+// for a value the analysis does not take apart, the verdict it gets: unknown
+// over the size bound, system_write when it is only known at run time.
 func optionValueWords(value string) ([]string, RiskClass) {
+	if len(value) > maxOptionEnvBytes {
+		return nil, Unknown
+	}
 	if optionValueUnresolved(value) {
 		return nil, SystemWrite
 	}
-	return tokenize(value), Safe
+	words := tokenize(value)
+	if len(words) > maxOptionEnvWords {
+		return nil, Unknown
+	}
+	return words, Safe
 }
 
 // optionValueUnresolved reports a value whose words are only known at run time.
@@ -732,6 +748,10 @@ func (s *shellAnalysisState) optionEnvAnalysis(inner, inline []string, payload s
 		words = append(words, w...)
 	}
 	if len(words) == 0 {
+		return result
+	}
+	if len(words) > maxOptionEnvWords {
+		result.add(Unknown)
 		return result
 	}
 	quote := func(ws []string) string {

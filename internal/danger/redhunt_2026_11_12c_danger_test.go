@@ -2,7 +2,9 @@ package danger
 
 import (
 	"os"
+	"strings"
 	"testing"
+	"time"
 )
 
 // unsetOptionEnvForTest removes the option-carrying variables from the test
@@ -278,5 +280,54 @@ func TestRED_DefaultAssignmentDropsStaleValue(t *testing.T) {
 		if got, want := Classify(cmd), Classify(plain); got != want {
 			t.Errorf("Classify(%q) = %s, want %s (the verdict of %q)", cmd, got, want, plain)
 		}
+	}
+}
+
+// Each run of a reader with an option-carrying variable was analysed again
+// with the value spliced in, and the per-stage check classified the spliced
+// argv, both without bounding the value: a 60 KB command of ten
+// `TAR_OPTIONS='-v ×2000' tar` stages took tens of seconds (every spliced word
+// is resolved as a path, several times per stage), and a 600-byte value of
+// 200 words cost over ten times a plain run.
+//
+// Correct behaviour: a value over maxOptionEnvWords words or
+// maxOptionEnvBytes bytes is not spliced and classifies unknown, so the cost
+// stays bounded and the verdict is never lower.
+func TestRED_OptionEnvSpliceBounded(t *testing.T) {
+	t.Setenv("HOME", "/home/user")
+	t.Chdir(t.TempDir())
+	unsetOptionEnvForTest(t)
+	value := func(n int) string { return strings.TrimSpace(strings.Repeat("-v ", n)) }
+	for _, cmd := range []string{
+		"TAR_OPTIONS='" + value(200) + "' tar xf x.tar",
+		"export TAR_OPTIONS='" + value(200) + "'; tar xf x.tar",
+		"MAVEN_OPTS='" + strings.TrimSpace(strings.Repeat("-Xmx1g ", 200)) + "' mvn -v",
+		"TAR_OPTIONS='--warning=" + strings.Repeat("x", 5000) + "' tar xf x.tar",
+	} {
+		if got := Classify(cmd); got != Unknown {
+			t.Errorf("Classify(%d-byte value over the bound) = %s, want unknown", len(cmd), got)
+		}
+	}
+	// Values within the bound are still judged.
+	for cmd, want := range map[string]RiskClass{
+		"TAR_OPTIONS='" + value(60) + "' tar xf x.tar":                 Classify("tar xf x.tar"),
+		"TAR_OPTIONS='" + value(60) + " --to-command=sh' tar xf x.tar": CodeExecution,
+	} {
+		if got := Classify(cmd); Rank(got) < Rank(want) || (want != CodeExecution && got != want) {
+			t.Errorf("Classify(%.60q…) = %s, want %s", cmd, got, want)
+		}
+	}
+	big := strings.Repeat("TAR_OPTIONS='"+value(2000)+"' tar; ", 10)
+	if len(big) > MaxCommandBytes {
+		t.Fatalf("input %d bytes over MaxCommandBytes", len(big))
+	}
+	start := time.Now()
+	got := Classify(big)
+	elapsed := time.Since(start)
+	if got != Unknown {
+		t.Errorf("Classify of the %d-byte command = %s, want unknown", len(big), got)
+	}
+	if !raceEnabled && !testing.Short() && elapsed > boundedAnalyzeSlow {
+		t.Errorf("Classify of a %d-byte TAR_OPTIONS command took %v (bound %v)", len(big), elapsed, boundedAnalyzeSlow)
 	}
 }
