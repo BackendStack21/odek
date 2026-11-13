@@ -65,8 +65,10 @@ type TelegramApprover struct {
 	mu       sync.Mutex
 	trusted  map[danger.RiskClass]bool
 	trustAll bool // when true, all PromptCommand calls auto-approve
-	// batchElided records whether the most recent batch card hid part of an
-	// entry; while set, SetTrustAll(true) is ignored, so approving a
+	// batchElided records whether the batch card the user approved most
+	// recently was shortened. It is set when the approval arrives, from that
+	// card's own prompt, so another card built or denied meanwhile never
+	// changes it. While set, SetTrustAll(true) is ignored: approving a
 	// shortened card never grants blanket trust for the entries it cut.
 	batchElided bool
 	log         Logger
@@ -239,14 +241,6 @@ func (a *TelegramApprover) promptCommand(cls danger.RiskClass, cmd, description 
 	// Build the approval message — the full command is always shown so the
 	// user can make an informed decision.
 	text, elided := buildApprovalTextElided(cls, cmd, description)
-	if cls == danger.ToolBatchClass {
-		// The flag describes the card now on screen and nothing older: a
-		// card shown whole clears what a previous shortened one left, and a
-		// shortened one is marked before its buttons exist.
-		a.mu.Lock()
-		a.batchElided = elided
-		a.mu.Unlock()
-	}
 
 	// Send with inline keyboard. Hide the Trust Session button for classes
 	// that must be approved per-call.
@@ -321,6 +315,15 @@ func (a *TelegramApprover) promptCommand(cls danger.RiskClass, cmd, description 
 		switch action {
 		case "approve":
 			a.recordApproval(cls)
+			if cls == danger.ToolBatchClass {
+				// Trust-all follows the card the user approved: this one,
+				// whatever other card was built or answered meanwhile. It is
+				// recorded before PromptCommand returns, so the caller's
+				// SetTrustAll(true) sees it.
+				a.mu.Lock()
+				a.batchElided = elided
+				a.mu.Unlock()
+			}
 			return nil
 		case "trust":
 			if !allowTrust {
@@ -680,6 +683,8 @@ func (a *TelegramApprover) ResetTrust() {
 
 // SetTrustAll enables or disables blanket trust for all risk classes.
 // When enabled, PromptCommand returns nil for every call without prompting.
+// Enabling is refused while the batch card approved most recently was
+// shortened; disabling clears that record.
 func (a *TelegramApprover) SetTrustAll(enabled bool) {
 	a.mu.Lock()
 	if !enabled {
