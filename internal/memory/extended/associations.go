@@ -315,8 +315,9 @@ func (a *Associations) SetRecency(fn func() map[string]time.Time) {
 // exceed maxLinkFactor times that. Counting links per crowded atom, not per
 // atom of the whole store, a dense cluster fires however large a sparse rest
 // of the store is, while a hub linked to many sparse atoms never does. Below
-// the trigger the map holds at most maxLinkFactor*maxLinksPerAtom links per
-// linked atom. It reads link counts only, never the recency table.
+// the trigger the map holds at most maxLinkFactor*maxLinksPerAtom times as
+// many links as it has linked atoms (a total; one atom may hold more). It
+// reads link counts only, never the recency table.
 func needsPrune(links map[string]map[string]struct{}) bool {
 	crowded, prunable := 0, 0
 	for _, related := range links {
