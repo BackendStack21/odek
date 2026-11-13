@@ -428,9 +428,9 @@ type cmdWord struct{ s, e int }
 // character. In JSON-encoded text (json) an unquoted \n, \r or \t escape
 // sequence also ends the word (and \n, \r end the command), and a double
 // quote with no closing quote ends the command: it closes the JSON string the
-// command sits in. It returns the words and the offset where scanning
-// stopped, bounded by commandScanMax bytes.
-func commandWords(text string, from int, json bool) ([]cmdWord, int) {
+// command sits in. No word starts at or after stop. It returns the words and
+// the offset where scanning stopped, bounded by commandScanMax bytes.
+func commandWords(text string, from int, json bool, stop int) ([]cmdWord, int) {
 	limit := len(text)
 	if limit-from > commandScanMax {
 		limit = from + commandScanMax
@@ -467,6 +467,9 @@ func commandWords(text string, from int, json bool) ([]cmdWord, int) {
 		case json && c == '\\' && i+1 < limit && (text[i+1] == 'n' || text[i+1] == 'r'):
 			return words, i
 		case c == '\n' || c == '\r' || c == '|' || c == ';' || c == '&':
+			return words, i
+		}
+		if i >= stop {
 			return words, i
 		}
 		s := i
@@ -717,33 +720,68 @@ var commandTools = []struct {
 // (--auth, -a USER:PASSWORD). Scoping to these commands keeps -u / -U / -a
 // as used by docker, sudo, rsync, pip and others readable. Command words
 // match in any case, also right after a JSON \n, \r or \t escape.
+//
+// Every command word is read as its own command. One that stands where no
+// earlier command of its tool reaches is read to the end of its command; the
+// words of a command can reach over a later command word (an unpaired quote
+// glues two commands, a quoted argument holds one), and that later word is
+// read as well, up to the next command word of its tool. Whether a word after
+// a JSON blank escape starts a command decides how far the commands before
+// and after it reach, so the commands are followed both ways: counting such a
+// word and not counting it. Each way reads the text once, and so do the
+// stretches between command words.
 func commandCredentialMatches(s *textScan) [][2]int {
 	text := s.text
 	var out [][2]int
 	for _, tool := range commandTools {
 		var inJSON jsonStringTracker
-		for pos := 0; pos < len(text); {
-			j := s.indexFoldFrom(tool.name, pos)
-			if j < 0 {
-				break
-			}
+		// Where the last command ends, counting a word after a JSON blank
+		// escape as a command word and not counting it.
+		var ends [2]int
+		for j := nextCommandWord(s, tool.name, 0); j >= 0; {
 			after := j + len(tool.name)
-			pos = after
-			if j > 0 && isCommandWordByte(text[j-1]) && !jsonBlankEscapeBefore(text, j) {
-				continue
-			}
-			if after < len(text) && !strings.ContainsRune(" \t\n\r\\", rune(text[after])) {
-				continue
+			next := nextCommandWord(s, tool.name, after)
+			plain := j == 0 || !isCommandWordByte(text[j-1])
+			stop := len(text)
+			if next >= 0 && j < ends[0] && (!plain || j < ends[1]) {
+				stop = next
 			}
 			json := inJSON.at(text, j)
-			words, end := commandWords(text, after, json)
+			words, end := commandWords(text, after, json, stop)
 			out = append(out, toolCredentialSpans(text, tool.kind, json, words)...)
-			if end > pos {
-				pos = end
+			if j >= ends[0] {
+				ends[0] = end
 			}
+			if plain && j >= ends[1] {
+				ends[1] = end
+			}
+			j = next
 		}
 	}
 	return out
+}
+
+// nextCommandWord returns the offset of the first command word name at or
+// after pos, in any letter case, or -1: the name does not continue a word
+// (it starts the text, or follows a byte that is no word character or a JSON
+// \n, \r or \t escape) and a blank, a line break or a backslash follows it.
+func nextCommandWord(s *textScan, name string, pos int) int {
+	text := s.text
+	for pos < len(text) {
+		j := s.indexFoldFrom(name, pos)
+		if j < 0 {
+			break
+		}
+		pos = j + len(name)
+		if j > 0 && isCommandWordByte(text[j-1]) && !jsonBlankEscapeBefore(text, j) {
+			continue
+		}
+		if pos < len(text) && !strings.ContainsRune(" \t\n\r\\", rune(text[pos])) {
+			continue
+		}
+		return j
+	}
+	return -1
 }
 
 func isCommandWordByte(c byte) bool {
