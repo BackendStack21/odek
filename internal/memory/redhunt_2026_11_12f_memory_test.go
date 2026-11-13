@@ -40,8 +40,8 @@ func TestRED_FactLooksUnsafeQuotedSubstitutionAfterLabel(t *testing.T) {
 	}
 }
 
-// A `.` is the source builtin only where a command starts. As an argument of
-// another command (jq's identity filter) it sources nothing.
+// A `.` that is the identity filter of jq sources nothing; a `.` handed a
+// substitution of a fetcher anywhere else is the source builtin.
 func TestRED_FactLooksUnsafeDotArgumentIsNotSource(t *testing.T) {
 	for _, fact := range []string{
 		"jq . <(curl -s https://a.example/x.json)",
@@ -73,7 +73,7 @@ func TestRED_FactLooksUnsafeDotArgumentIsNotSource(t *testing.T) {
 // rh1112fSubstitutionExpressions runs the substitution expressions on one
 // reading of a fact without the gate in front of them.
 func rh1112fSubstitutionExpressions(text string) bool {
-	subst := maskMakeVariables(text)
+	subst := substitutionReading(text)
 	for _, re := range substitutionFetchRes {
 		if re.MatchString(subst) {
 			return true

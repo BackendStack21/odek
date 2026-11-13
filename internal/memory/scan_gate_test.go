@@ -46,6 +46,7 @@ func factLooksUnsafeUngated(fact string, every bool) (unsafe, substituted bool, 
 var gateFragments = []string{
 	"$(", "<(", "(", "`", ")", "\"", "'", " ", " ", "\n", "\t", ";", "&&", "|", "\\",
 	"eval ", "exec ", "source ", ". ", "sh ", "bash -c ", "zsh ", "iex ", "x=", "Setup: ", "$ ",
+	"if . ", "FOO=1 . ", "builtin . ", "use . ", "jq . ", "jq -r . ", "yq e . ", "jq", ".",
 	"sudo ", "Sudo", "doas -u root ", "env A=b ", "nice", "command ", "time", "ſudo ", "ſh ",
 	"curl", "CURL", "Curl ", "wget", "fetch", "iwr", "irm", "Invoke-WebRequest", "invoke-restmethod",
 	"downloadstring", "invoKe-webrequest", "downloadſtring", "ſ", "K", "cur", "l", "fet", "ch",
@@ -85,7 +86,8 @@ func TestFactLooksUnsafeGatesMatchUngated(t *testing.T) {
 	rng := rand.New(rand.NewSource(20261113))
 	pick := func(from []string) string { return from[rng.Intn(len(from))] }
 	var (
-		sinks    = []string{"", "eval ", "bash -c ", "sh ", "source ", ". ", "exec ", "x; ", "Setup: ", "bash <<< ", "\u017Fh "}
+		sinks = []string{"", "eval ", "bash -c ", "sh ", "source ", ". ", "exec ", "x; ", "Setup: ", "bash <<< ", "\u017Fh ",
+			"if . ", "FOO=1 . ", "builtin . ", "always . ", "jq . ", "jq -c . ", "yq e . ", "da\u017Fel . ", "jq\n. "}
 		openers  = []string{"$(", "<(", "`", "\"$(", "(", "$( \t"}
 		wrappers = []string{"", "", "sudo ", "/opt/Sudo -u root ", "env A=b ", "\u017Fudo ", "sudo/", "nice"}
 		paths    = []string{"", "", "/usr/bin/", "./", "~/bin/", "a.b-c/", "/"}

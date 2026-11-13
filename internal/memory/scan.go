@@ -46,9 +46,10 @@ func ScanContent(content string) error {
 //     its input.
 //   - powerShellRunsFetch: a line both runs a string as code (iex,
 //     Invoke-Expression, [scriptblock]::Create) and makes a web request.
-//   - substitutionFetchRes: a shell, eval, exec, source or `.` (where a
-//     command starts) handed a command or process substitution of a fetcher, or such a substitution
-//     standing where a command starts. The fetcher may be spelled by path or
+//   - substitutionFetchRes: a shell, eval, exec, source or a standalone `.`
+//     (except the `.` argument of jq, yq, gojq, fx or dasel) handed a command
+//     or process substitution of a fetcher, or such a substitution standing
+//     where a command starts. The fetcher may be spelled by path or
 //     stand behind a wrapper ($(/usr/bin/curl …), <(sudo curl …)); a name that
 //     continues with a hyphen (fetch-completions) is another command, and
 //     $(CURL), an upper-case name closed at once, is a Make variable.
@@ -79,7 +80,7 @@ var unquoted = strings.NewReplacer(`'`, "", `"`, "", `\`, "")
 // fact.
 func runsFetch(text string) bool {
 	if substitutionMayFetch(text) {
-		subst := maskMakeVariables(text)
+		subst := substitutionReading(text)
 		for _, re := range substitutionFetchRes {
 			if re.MatchString(subst) {
 				return true
@@ -199,6 +200,29 @@ func isSpace(c byte) bool {
 // isPathByte reports whether c may be part of a command spelled by path.
 func isPathByte(c byte) bool {
 	return isWordByte(c) || c == '/' || c == '.' || c == '~' || c == '-'
+}
+
+// substitutionReading is the text the substitution expressions run on: text
+// with Make variable references and the `.` arguments of readers masked.
+func substitutionReading(text string) string {
+	return maskReaderDots(maskMakeVariables(text))
+}
+
+// readerDotRe matches a `.` that is an ordinary argument of a command which
+// only reads its file operands (the identity filter of jq, yq, gojq, fx or
+// dasel, option words and yq's e/ea between), followed on the same line by
+// the opening of a substitution. The command name is lower-case ASCII and
+// stands where a word starts; nothing else before a `.` is set aside.
+var readerDotRe = regexp.MustCompile(`((?:(?m:^)|[^\w./-])(?:jq|yq|gojq|fx|dasel)(?:[ \t]+(?:-[\w-]+|e|ea))*[ \t]+)\.([ \t]+["']?(?:\$\(|<\(|` + "`" + `))`)
+
+// maskReaderDots overwrites every `.` readerDotRe matches, so that the
+// expression for the `.` builtin does not take it for one: jq . <(curl …)
+// prints what it reads and sources nothing.
+func maskReaderDots(text string) string {
+	if !strings.Contains(text, " .") && !strings.Contains(text, "\t.") {
+		return text
+	}
+	return readerDotRe.ReplaceAllString(text, "${1}_${2}")
 }
 
 // maskMakeVariables overwrites the name in every $(NAME) whose name is
@@ -999,17 +1023,21 @@ var substitutionFetchRes = []*regexp.Regexp{
 	// fetcher through a redirect, a here-string or a here-doc: sh < <(wget …),
 	// bash <<< "$(curl …)", bash <<EOF $(curl …).
 	regexp.MustCompile(`(?i)(?:` + shellStart + shellWord + `\b` + shellOpts + `|` + shellStart + `(?:source|\.)\s+` + stdinPath + `)\s*` + hereOp + `["']?` + substOpenTick + substFetch),
-	// The `.` builtin, where a command starts (cmdLead; wrappers may come
-	// between), applied directly to a substitution of a fetcher. A `.` that
-	// is an argument of another command (jq . <(curl …)) sources nothing.
-	regexp.MustCompile(`(?i)` + cmdLead + wrapperPre + `\.\s+["']?` + substOpen + substFetch),
+	// The `.` builtin applied directly to a command, process or backtick
+	// substitution of a fetcher, wherever it stands: a `.` that is a word of
+	// its own (a line start or a character that cannot continue a word or a
+	// file name before it, a blank after it). Prose before it ("To load env
+	// use . <(curl …)"), a shell keyword, an assignment or another command
+	// word changes nothing; only the `.` argument of a reader, which
+	// maskReaderDots has overwritten (jq . <(curl …)), is left out.
+	regexp.MustCompile(`(?i)(?:(?m:^)|[^\w./-])\.\s+["']?` + substOpenTick + substFetch),
 	// A backtick substitution of a fetcher as the argument of a sink: anywhere
 	// after eval (which re-parses its arguments), after a shell's -c option,
-	// or right after a shell, exec, source or `.` that starts a command
+	// or right after a shell, exec or source that starts a command
 	// (cmdLead; wrappers such as sudo may come between). A shell or exec
 	// handed the output as words runs it.
 	regexp.MustCompile("(?i)(?:\\beval\\b[^\\n]*|" + shellStart + shellWord + `\b` + shellCOpts + `\s+["']?|` +
-		cmdLead + wrapperPre + `(?:` + shellWord + `\b` + shellOpts + `|exec|source|\.)\s+["']?)` + "`" + substFetch),
+		cmdLead + wrapperPre + `(?:` + shellWord + `\b` + shellOpts + `|exec|source)\s+["']?)` + "`" + substFetch),
 	// $( of a fetcher where a command starts — at a line start, after
 	// ; & | ( { or then/do/else, each optionally followed by a prompt sigil or
 	// list marker, or behind a wrapper: the downloaded text runs as a command.
