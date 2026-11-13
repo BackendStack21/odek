@@ -524,10 +524,21 @@ func (c javaPathCtx) exemptOutsideSystem() RiskClass {
 var inertCommands = fieldSet(": true false echo printf test [ cd pushd popd pwd export declare typeset local readonly " +
 	"unset set shift sleep date uname whoami hostname which type ls cat head tail grep wc")
 
-// inertCommand reports whether the command word names an inert command: by
-// its bare name, or by a path into one of the system binary directories. A
-// program of that name anywhere else is not the tool.
-func inertCommand(word string) bool {
+// inertStage reports whether a simple command is inert: it runs an inert
+// command, named by its bare name or by a path into one of the system binary
+// directories (a program of that name anywhere else is not the tool), or it
+// runs nothing and every word is an assignment. A wrapper that leaves no
+// command behind (`env -S '...'`, a script runner) is not inert.
+func inertStage(stage, inner []string) bool {
+	if len(inner) == 0 {
+		for _, w := range stage {
+			if _, _, _, _, ok := denyAssignmentWord(w); !ok && w != dynamicSubstToken {
+				return false
+			}
+		}
+		return true
+	}
+	word := inner[0]
 	if strings.Contains(word, "/") && !safeShellDirs[filepath.Dir(word)] {
 		return false
 	}

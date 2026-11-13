@@ -463,7 +463,7 @@ func analyzeWithStateWork(cmd string, depth int, inherited *shellAnalysisState, 
 			payloadState.uncertain = state.uncertain || !cwdKnown
 			unwrappedStage := unwrapWrappersFull(stage)
 			inner, floor := unwrappedStage.inner, unwrappedStage.floor
-			stageInert = len(inner) == 0 || inertCommand(inner[0])
+			stageInert = inertStage(stage, inner)
 			state.noteOptionBindings(stage, inner)
 			payloadState.vars, payloadState.optEnv = withOptionAssignments(payloadState.vars, payloadState.optEnv, unwrappedStage.assigns)
 			for _, payload := range unwrappedStage.payloads {

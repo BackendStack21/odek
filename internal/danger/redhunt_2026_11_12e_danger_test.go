@@ -279,6 +279,9 @@ func TestRED_NonSystemJavaBinaryExemptOnlyInASafeCommandLine(t *testing.T) {
 		// A program that only shares the name of an inert command.
 		`/home/user/bin/echo x; JAVA_HOME=` + sdk + ` mvn -v`,
 		`~/bin/cat j.b64; JAVA_HOME=` + sdk + ` mvn -v`,
+		// A wrapper that leaves no command word behind is not an assignment.
+		`env -S 'base64 -d -o ` + sdk + `/bin/java j.b64'; JAVA_HOME=` + sdk + ` mvn -v`,
+		`env -i; JAVA_HOME=` + sdk + ` mvn -v; uv run prep.py`,
 		// Another reader that writes can prepare the JDK as well.
 		`JAVA_HOME=~/.sdkman/candidates/java/a jar xf j.jar; JAVA_HOME=` + sdk + ` mvn -v`,
 	} {
@@ -295,6 +298,7 @@ func TestRED_NonSystemJavaBinaryExemptOnlyInASafeCommandLine(t *testing.T) {
 		`echo building && JAVA_HOME=~/.jenv/versions/17 mvn -v && echo done`,
 		`export JAVA_HOME=~/.sdkman/candidates/java/current; mvn -v; mvn -v`,
 		`JAVACMD=~/tools/jdk/bin/java mvn -v`,
+		`v=17 w=x; JAVA_HOME=~/.jenv/versions/17 mvn -v`,
 		`JAVA_HOME=/opt/vendor/jdk mvn -v`,
 		`if test -d ~/.jenv; then JAVA_HOME=~/.jenv/versions/17 mvn -v; fi`,
 		// The system directories stay exempt whatever else runs.
