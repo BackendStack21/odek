@@ -224,26 +224,82 @@ func plausibleFlagValue(v string) bool {
 // group only (group 1), so the surrounding command or URL stays readable.
 // The group must also pass ok.
 var valuePatterns = []guardedPattern{
-	// Database connection URLs with embedded credentials. We require a
-	// scheme that genuinely carries DB creds (so this doesn't catch HTTP
-	// basic auth URLs that often appear legitimately in code). The
-	// password segment must be at least 6 chars to avoid matching common
-	// placeholders like `:x@`, unless it holds a '/' or an '@'. The match
-	// runs to the next blank or quote and the whole of it is replaced,
-	// unless the password is only a variable or template reference
-	// (${DB_PASSWORD}, $DB_PASSWORD, {password}, <password>, %(password)s),
-	// which holds no secret and leaves compose files and code readable.
-	// Gate: every match holds "://" and "@", and one scheme name in some
-	// letter case (postgresql holds postgres, mongodb+srv mongodb, rediss
-	// redis, amqps amqp).
-	{gated(regexp.MustCompile(`(?i)\b((?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|rediss?|amqps?|mssql|clickhouse)(?:\+[a-z0-9_]+)?://[^:\s/]*:(?:[^@\s/]{6,}|[$%{<][^@\s/]*|[^@\s'"\x60/]*[/@][^\s'"\x60]*)@[^\s'\x60"]+)`),
-		literals(exact("://"), exact("@"), folded("postgres", "mysql", "mongodb", "redis", "amqp", "mssql", "clickhouse"))), dbURLHoldsSecret},
 	// Chat incoming-webhook URLs: whoever holds the URL can post as the
 	// integration, so the secret path segment is a bearer credential.
 	// Gate: every match holds "hooks.slack.com/".
 	{gated(regexp.MustCompile(`(?:^|[^A-Za-z0-9.-])hooks\.slack\.com/(?:services|workflows|triggers)/(?:[A-Za-z0-9]+/){1,3}([A-Za-z0-9]{20,})`), literals(exact("hooks.slack.com/"))), plausibleWebhookToken},
 	// Gate: every match holds "discord" and "webhooks/".
 	{gated(regexp.MustCompile(`(?:^|[^A-Za-z0-9.-])discord(?:app)?\.com/api/(?:v[0-9]+/)?webhooks/[0-9]+/([A-Za-z0-9_-]{40,})`), literals(exact("webhooks/"), exact("discord"))), plausibleWebhookToken},
+}
+
+// Database connection URLs with embedded credentials are redacted by two
+// patterns whose spans are joined (dbURLMatches).
+//
+// dbURLBasePattern requires a scheme that genuinely carries DB creds (so
+// this doesn't catch HTTP basic auth URLs that often appear legitimately in
+// code) and a password segment of at least 6 chars, to avoid matching common
+// placeholders like `:x@`. The match runs to the next blank or quote and the
+// whole of it is replaced, with one exception: a clean reference URL (see
+// dbURLHoldsSecret).
+// Gate: every match holds "://" and "@", and one scheme name in some letter
+// case (postgresql holds postgres, mongodb+srv mongodb, rediss redis, amqps
+// amqp).
+var dbURLBasePattern = gated(regexp.MustCompile(`(?i)\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|rediss?|amqps?|mssql|clickhouse)(?:\+[a-z0-9_]+)?://[^:\s/]*:[^@\s/]{6,}@[^\s'\x60"]+`),
+	literals(exact("://"), exact("@"), folded("postgres", "mysql", "mongodb", "redis", "amqp", "mssql", "clickhouse")))
+
+// dbURLWidePattern adds what the base pattern does not match: a password
+// that starts like a reference, or holds a '/' or an '@', at any length, and
+// a URL right after a JSON \n, \r or \t escape. Its span (group 1) is
+// replaced under the same exception. Gate: as the base pattern.
+var dbURLWidePattern = gated(regexp.MustCompile(`(?i)(?:\b|\\[nrt])((?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|rediss?|amqps?|mssql|clickhouse)(?:\+[a-z0-9_]+)?://[^:\s/]*:(?:[^@\s/]{6,}|[$%{<][^@\s/]*|[^@\s'"\x60/]*[/@][^\s'"\x60]*)@[^\s'\x60"]+)`),
+	literals(exact("://"), exact("@"), folded("postgres", "mysql", "mongodb", "redis", "amqp", "mssql", "clickhouse")))
+
+// dbURLMatches returns the spans of the connection URLs that hold a
+// password. Every match of the base pattern is a span unless it is a clean
+// reference URL, so nothing the base pattern would replace stays readable
+// but that; the wide pattern only adds spans.
+func dbURLMatches(s *textScan) [][2]int {
+	text := s.text
+	var out [][2]int
+	if s.may(dbURLBasePattern) {
+		var ahead atAhead
+		for _, m := range dbURLBasePattern.FindAllStringIndex(text, -1) {
+			if dbURLHoldsSecret(text[m[0]:m[1]]) || ahead.before(text, m[1]) {
+				out = append(out, [2]int{m[0], m[1]})
+			}
+		}
+	}
+	if s.may(dbURLWidePattern) {
+		var ahead atAhead
+		for _, m := range dbURLWidePattern.FindAllStringSubmatchIndex(text, -1) {
+			if dbURLHoldsSecret(text[m[2]:m[3]]) || ahead.before(text, m[3]) {
+				out = append(out, [2]int{m[2], m[3]})
+			}
+		}
+	}
+	return out
+}
+
+// atAhead answers, for increasing offsets, whether an '@' follows the offset
+// before the next blank: a span that a quote ended may go on as the password
+// of a later user:password pair. It keeps the next '@' and the next blank
+// found so far, so a sequence of queries scans the text once.
+type atAhead struct{ at, blank int }
+
+func (a *atAhead) before(text string, off int) bool {
+	if a.at < off {
+		a.at = len(text)
+		if k := strings.IndexByte(text[off:], '@'); k >= 0 {
+			a.at = off + k
+		}
+	}
+	if a.blank < off {
+		a.blank = len(text)
+		if k := strings.IndexAny(text[off:], " \t\n\f\r"); k >= 0 {
+			a.blank = off + k
+		}
+	}
+	return a.at < a.blank
 }
 
 // dbURLReferenceRe matches a password that is wholly a template reference
@@ -259,11 +315,14 @@ var dbURLReferenceRe = regexp.MustCompile(`^(?:\{\{?\s*[A-Za-z_][A-Za-z0-9_.-]*\
 var shellVariableRe = regexp.MustCompile(`^\$(?:\{[A-Za-z_][A-Za-z0-9_]*\}|[A-Z_][A-Z0-9_]*)$`)
 
 // dbURLHoldsSecret judges a matched connection URL span, which runs to the
-// next blank or quote: it holds no secret only when it holds exactly one '@'
-// and the password before it (everything after the first ':' of the
-// userinfo) is wholly a reference. A password may itself hold '@', ':', '/',
+// next blank or quote: it holds no secret only when it is a single URL (one
+// "://" and one '@') whose password (everything after the first ':' of the
+// userinfo) is wholly a reference (${DB_PASSWORD}, $DB_PASSWORD, {password},
+// {{ password }}, <password>, %(password)s, %DB_PASSWORD%), which leaves
+// compose files and code readable. A password may itself hold '@', ':', '/',
 // ',' or ';', so a second '@' can always belong to the password before it,
-// and a span with one is a secret whatever separates its parts.
+// and a span with one, or with a second URL, is a secret whatever separates
+// its parts.
 func dbURLHoldsSecret(url string) bool {
 	i := strings.Index(url, "://")
 	if i < 0 {
@@ -271,7 +330,7 @@ func dbURLHoldsSecret(url string) bool {
 	}
 	rest := url[i+3:]
 	at := strings.IndexByte(rest, '@')
-	if at < 0 || strings.IndexByte(rest[at+1:], '@') >= 0 {
+	if at < 0 || strings.IndexByte(rest[at+1:], '@') >= 0 || strings.Contains(rest, "://") {
 		return true
 	}
 	c := strings.IndexByte(rest[:at], ':')
@@ -1506,6 +1565,7 @@ func guardedPatternSpans(s *textScan) (out [][2]int, shell bool) {
 			}
 		}
 	}
+	out = append(out, dbURLMatches(s)...)
 	out = append(out, commandCredentialMatches(s)...)
 	out = append(out, cookieMatches(text)...)
 	sp := shellPasswordMatches(s)

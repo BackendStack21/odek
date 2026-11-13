@@ -28,7 +28,7 @@ func allRedactionPatterns() []*regexp.Regexp {
 	for _, g := range valuePatterns {
 		out = append(out, g.re)
 	}
-	return append(out, credentialNameRe)
+	return append(out, dbURLBasePattern, dbURLWidePattern, credentialNameRe)
 }
 
 // gatedRedactionPatterns lists the patterns that have a gate, in a stable
@@ -133,7 +133,13 @@ var gateExamples = []struct {
 		"N" + strings.Repeat("a", 27) + "." + strings.Repeat("b", 7) + "." + strings.Repeat("c", 40),
 		"O" + strings.Repeat("_", 22) + "." + strings.Repeat("-", 6) + "." + strings.Repeat("9", 30),
 	}},
-	{`postgres(?:ql)?`, []string{
+	{`*:[^@\s/]{6,}@[`, []string{
+		"postgres://u:secret1@db", "postgresql+psycopg2://u:secret1@db", "mysql://u:${DB_PW}@db", "mongodb+srv://u:secret1@db",
+		"rediss://:secret1@db", "amqps://u:secret1@db", "mssql://u:secret1@db", "CLICKHOUSE://u:secret1@db",
+		"poſtgres://u:secret1@db", "clicKhouse://u:secret1@db",
+	}},
+	{`[$%{<][^@\s/]*`, []string{
+		"postgres://u:$A@db", `\npostgres://u:secret1@db`, `\tmysql://u:{p}@db`,
 		"postgres://u:secret1@db", "postgresql://u:secret1@db", "postgresql+psycopg2://u:secret1@db",
 		"mysql://u:secret1@db", "mongodb://u:secret1@db", "mongodb+srv://u:secret1@db",
 		"redis://:secret1@db", "rediss://u:secret1@db", "amqp://u:secret1@db", "amqps://u:secret1@db",
