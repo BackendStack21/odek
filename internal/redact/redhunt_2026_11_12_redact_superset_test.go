@@ -184,6 +184,9 @@ func TestRED_DBURLSupersetOfRelease(t *testing.T) {
 	if testing.Short() {
 		n = 12000
 	}
+	if raceEnabled {
+		n = 2000
+	}
 	for iter := 0; iter < n; iter++ {
 		id++
 		var b strings.Builder
