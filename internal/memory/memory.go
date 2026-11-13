@@ -845,6 +845,13 @@ func (m *MemoryManager) AddFact(target, content string) error {
 	// duplicates can append phantom corpus entries.
 	content = redact.RedactSecrets(strings.TrimSpace(content))
 
+	// A fact longer than the whole cap of its target can never be stored.
+	// The store refuses it with the cap error, so the scans below, whose cost
+	// grows with the content, are not run on it under the facts lock.
+	if m.overFactsCap(target, content) {
+		return m.facts.Add(target, content)
+	}
+
 	// Serialize the whole read-modify-write across instances sharing this dir.
 	unlock, err := lockFactsDir(m.facts.dir)
 	if err != nil {
@@ -984,6 +991,13 @@ func (m *MemoryManager) AddFact(target, content string) error {
 	return nil
 }
 
+// overFactsCap reports whether content, as the store would keep it (trimmed),
+// is longer than the whole character cap of target, so that neither an add
+// nor a replacement can ever fit.
+func (m *MemoryManager) overFactsCap(target, content string) bool {
+	return len(strings.TrimSpace(content)) > m.facts.cap(target)
+}
+
 // ReplaceFact replaces an existing fact entry.
 func (m *MemoryManager) ReplaceFact(target, oldText, content string) error {
 	return m.ReplaceFactApproved(target, oldText, "", content)
@@ -996,6 +1010,11 @@ func (m *MemoryManager) ReplaceFactApproved(target, oldText, expected, content s
 		return fmt.Errorf("memory: disabled")
 	}
 	content = redact.RedactSecrets(content)
+	// As in AddFact: an over-cap replacement is refused by the store, before
+	// the scans and without the facts lock.
+	if m.overFactsCap(target, content) {
+		return m.facts.ReplaceApproved(target, oldText, expected, content)
+	}
 	unlock, err := lockFactsDir(m.facts.dir)
 	if err != nil {
 		return err
