@@ -153,9 +153,9 @@ func TestRED_MysqlClusteredShortOptionPassword(t *testing.T) {
 			t.Errorf("over-redaction: %s => %s", in, got)
 		}
 	}
-	// Accepted over-redaction: on a line that holds a client name, another
-	// command's cluster ending in p reads as the client's password option.
-	if got, want := RedactSecrets("cd /var/lib/mysql && tar -xpf b.tar"), "cd /var/lib/mysql && tar -xp[REDACTED] b.tar"; got != want {
+	// Another command's cluster ending in p is not the client's: the name is
+	// a path argument here, and a separator stands between the two.
+	if got, want := RedactSecrets("cd /var/lib/mysql && tar -xpf b.tar"), "cd /var/lib/mysql && tar -xpf b.tar"; got != want {
 		t.Errorf("got %s, want %s", got, want)
 	}
 }
@@ -220,6 +220,8 @@ var supersetCommands = []string{
 	`["sshpass", "-p", "`, `["sshpass","-v","-p","`, `"sshpass" -p `, "sshpass.exe -p ", "sshpass \\\n -p ", `sshpass "-p" "`,
 	"[sshpass, -p, ", `echo 5" ; sshpass -p "`, `echo 5" ; mysql -p"`, `echo 5' ; mysql -p'`, "mysql -sNp", "mysql -uroot -Bvp",
 	"MYSQL_PWD: ", `"MYSQL_PWD": "`, `os.Setenv("MYSQL_PWD", "`, `$env:MYSQL_PWD = "`, `{"MYSQL_PWD":"`,
+	`{"name":"MYSQL_PWD","value":"`, "- name: MYSQL_PWD\n  value: ", "MYSQL_PWD: str = ", "SSHPASS=", "SSHPASS: ", `("SSHPASS", "`,
+	"tar -cpf x && mysqldump -Rp", "/usr/bin/mysql -p", `sh -c "cd /x; mysqladmin -fp`, "ssh mysql 'mysql -sp",
 	"postgres://a:$A@h1/x,postgres://u:", `echo hi\npostgres://u:`, "psql postgres://u:",
 }
 
@@ -265,6 +267,7 @@ var supersetTokens = []string{
 	"sshpass", "sshpass.exe", "-p", "-vp", "-P", "-f", "-e", "--", "mysql", "-sNp", "MYSQL_PWD", "=", ":", ",", " ", " ", `"`, "'", `\"`, `\\\"`,
 	"[", "]", "(", ")", "{", "}", "\\\n", `\n`, `\\\n`, `\t`, "\n", "Zq7Xk9", "$PW", "${PW}", "[REDACTED]", "ssh", "u@h",
 	"postgres://a:", "$A", "@h1/x", "mysql://u:", "{{", "}}", ";", "|", "`", "=>", "x",
+	"SSHPASS", "mysqldump", "/usr/bin/mysql", "-Rp", "-pZq7", "&&", "name", "value", "sudo", "--entrypoint", "x.y", "f(", "null", "#", "!t",
 }
 
 // The scans this change added stay linear on their hot shapes.

@@ -222,11 +222,12 @@ func TestRED_SshpassJudgesOnlyItsOwnOptions(t *testing.T) {
 	}
 }
 
-// A MySQL/MariaDB client name counts wherever it stands, so a client run
-// through docker exec, kubectl exec, ssh or any wrapper keeps its password
-// redacted, and so does every later attached -p value on the line; a port
-// mapping (digits, dots and colons with a colon, optional /tcp or /udp) is
-// the only -p value shape that stays readable.
+// A bare MySQL/MariaDB client name counts wherever it stands in a simple
+// command, so a client run through docker exec, kubectl exec, ssh or any
+// wrapper keeps its password redacted, and so does every later attached -p
+// value of that command; a path counts when it is the command. A port mapping
+// (digits, dots and colons with a colon, optional /tcp or /udp) is the only
+// -p value shape that stays readable.
 func TestRED_DBClientNameCountsWhereverItStands(t *testing.T) {
 	for _, in := range []string{
 		"docker run --name mysql -p3306:3306 -d mysql:8",
@@ -262,8 +263,8 @@ func TestRED_DBClientNameCountsWhereverItStands(t *testing.T) {
 		"helm install mysql bitnami/mysql; mysql -p" + pw,
 		"helm install mysql -p" + pw + " bitnami/mysql",
 		"ssh root@mysql -p" + pw + " uptime",
-		"install /a/mysql -p" + pw,
-		"install /" + strings.Repeat("a", 300) + "/mysql -p" + pw,
+		"/a/mysql -p" + pw,
+		"/" + strings.Repeat("a", 300) + "/mysql -p" + pw,
 		"install" + strings.Repeat(" ", 300) + "mysql -p" + pw,
 		"podman create --network mysql -p13306-13307:" + pw + " mysql:8",
 		`{"cmd":"echo hi\nmysql -uroot -p` + pw + ` db"}`,
@@ -416,7 +417,7 @@ func TestRED_DBClientWordAnywhereOnTheLineJudgesLaterPasswords(t *testing.T) {
 		`ssh -t mysql 'mysql -p` + pw + `'`,
 		`su mysql -c "mysql -p` + pw + `"`,
 		"helm install mysql -p" + pw,
-		"install /a/mysql -p" + pw,
+		"/a/mysql -p" + pw,
 		"ssh mysql -p" + pw,
 		"ssh root@mysql -p" + pw,
 		"docker run --name mysql -p" + pw + " mysql:8",
@@ -434,17 +435,15 @@ func TestRED_DBClientWordAnywhereOnTheLineJudgesLaterPasswords(t *testing.T) {
 			t.Errorf("leak: %q => %q", in, out)
 		}
 	}
-	// Accepted over-redaction: a mysql word earlier on the line makes a later
-	// attached -p value a password whatever command it belongs to.
+	// Accepted over-redaction: a bare mysql word earlier in the simple command
+	// makes a later attached -p value a password whatever its role there.
 	for in, want := range map[string]string{
-		"helm install mysql -pfoo":           "helm install mysql -p[REDACTED]",
-		"Restart mysql then ps -p1234":       "Restart mysql then ps -p[REDACTED]",
-		"Connect to mysql via psql -p5432":   "Connect to mysql via psql -p[REDACTED]",
-		"DB_HOST=mysql ./server -p8080":      "DB_HOST=mysql ./server -p[REDACTED]",
-		"mysql -p1234 db":                    "mysql -p[REDACTED] db",
-		"mysql -p3306-3307:3306-3307 db":     "mysql -p[REDACTED] db",
-		"mysql --password=33:06 db":          "mysql --password=[REDACTED] db",
-		"systemctl status mysql.service -px": "systemctl status mysql.service -p[REDACTED]",
+		"helm install mysql -pfoo":         "helm install mysql -p[REDACTED]",
+		"Restart mysql then ps -p1234":     "Restart mysql then ps -p[REDACTED]",
+		"Connect to mysql via psql -p5432": "Connect to mysql via psql -p[REDACTED]",
+		"mysql -p1234 db":                  "mysql -p[REDACTED] db",
+		"mysql -p3306-3307:3306-3307 db":   "mysql -p[REDACTED] db",
+		"mysql --password=33:06 db":        "mysql --password=[REDACTED] db",
 	} {
 		if out := RedactSecrets(in); out != want {
 			t.Errorf("%q => %q, want %q", in, out, want)
@@ -452,6 +451,9 @@ func TestRED_DBClientWordAnywhereOnTheLineJudgesLaterPasswords(t *testing.T) {
 	}
 	for _, in := range []string{
 		"docker run --name mysql -p3306:3306 -d mysql:8",
+		"systemctl status mysql.service -px", // a longer word is no client name
+		"install /a/mysql -pfoo",             // nor is a path that is an argument
+		"DB_HOST=mysql ./server -p8080",      // nor the value of an assignment before a command
 		"DB_HOST=mysql docker run -p3306:3306 app",
 		"Start mysql with docker run -p3306:3306 mysql:8",
 		"docker run -d -p127.0.0.1:3306:3306/tcp mysql:8",
