@@ -111,6 +111,113 @@ func TestRED_MySQLPwdAnyLengthAndEscapedQuotes(t *testing.T) {
 	}
 }
 
+// sshpass parses its own options only up to the wrapped command (the first
+// non-option word or "--"): the wrapped command's options, such as an ssh
+// port, are not sshpass passwords, and -f/-d/-P values carry no password. An
+// sshpass word inside the wrapped command (a jump-host chain) starts another
+// option list.
+func TestRED_SshpassJudgesOnlyItsOwnOptions(t *testing.T) {
+	for in, want := range map[string]string{
+		"sshpass -p s3cretPW ssh -p 2222 user@host uptime":     "sshpass -p [REDACTED] ssh -p 2222 user@host uptime",
+		"sshpass -ps3cretPW ssh -p2222 user@host":              "sshpass -p[REDACTED] ssh -p2222 user@host",
+		"sshpass -vp s3cretPW scp -P 2222 -p f h:":             "sshpass -vp [REDACTED] scp -P 2222 -p f h:",
+		"sshpass -P assword: -p s3cretPW ssh -p 22 h":          "sshpass -P assword: -p [REDACTED] ssh -p 22 h",
+		"sshpass -p s3cretPW -- ssh -p 22 h":                   "sshpass -p [REDACTED] -- ssh -p 22 h",
+		"sshpass -p one1 ssh -p 22 jump sshpass -p two2 ssh t": "sshpass -p [REDACTED] ssh -p 22 jump sshpass -p [REDACTED] ssh t",
+		"sshpass -v -- /usr/bin/sshpass -p two2 ssh -p 22 t":   "sshpass -v -- /usr/bin/sshpass -p [REDACTED] ssh -p 22 t",
+		`{"cmd":"sshpass -p \"s3cretPW\" ssh -p 2222 h"}`:      `{"cmd":"sshpass -p \"[REDACTED]\" ssh -p 2222 h"}`,
+	} {
+		if out := RedactSecrets(in); out != want {
+			t.Errorf("%q => %q, want %q", in, out, want)
+		}
+	}
+	for _, in := range []string{
+		"sshpass -f /tmp/pw ssh -p 2222 user@host",
+		"sshpass -f/tmp/pw ssh -p2222 user@host",
+		"sshpass -d 3 ssh -p 2222 h",
+		"sshpass -e ssh -p 2222 h",
+		"sshpass -eSSHPASS_X ssh -p2222 h",
+		"sshpass ssh -p 2222 h",
+		"sshpass -v -- ssh -p 2222 h",
+		"sshpass -P",
+	} {
+		if out := RedactSecrets(in); out != in {
+			t.Errorf("over-redaction: %q => %q", in, out)
+		}
+	}
+}
+
+// A MySQL/MariaDB client name counts wherever it stands as a whole word
+// (also a path's last component), so a client run through docker exec,
+// kubectl exec, ssh or a wrapper keeps its password redacted; it does not
+// count after '@' (a host), as an --option= value, or right after --name,
+// --hostname, ssh or a package or release verb. Inside a docker/podman
+// run/create command a port-mapping -p value is never a password.
+func TestRED_DBClientNameCountsOnlyAsTheClient(t *testing.T) {
+	for _, in := range []string{
+		"docker run --name mysql -p3306:3306 -d mysql:8",
+		"docker run --name=mysql -p3306:3306 mysql",
+		`docker run --name="mysql" -p3306:3306 mysql`,
+		"docker run -d -v /var/lib/mysql -p127.0.0.1:3306:3306/tcp mysql:8",
+		"podman create --network mysql -p13306-13307:3306-3307 mysql:8",
+		"sudo docker container run -it --hostname mysql -p3306:3306 img",
+		`{"cmd":"docker run --link mysql -p8080:80 app"}`,
+		"helm install mysql -pvalues bitnami/mysql",
+		"helm upgrade mysql -pvalues bitnami/mysql",
+		"ssh root@mysql -p2222 uptime",
+		"ssh mysql -p2222 uptime",
+	} {
+		if out := RedactSecrets(in); out != in {
+			t.Errorf("over-redaction: %q => %q", in, out)
+		}
+	}
+	const pw = "S3cretPW"
+	for _, in := range []string{
+		"docker exec db mysql -p" + pw + " app",
+		"docker exec -it db mysql -uroot -p" + pw + " app",
+		"kubectl exec -it pod -- mysql -p" + pw,
+		"ssh host mysql -p" + pw + " -e 'select 1'",
+		"sudo -E mysql -p" + pw,
+		"sudo -n mysql -p" + pw,
+		"env -i mysql -p" + pw,
+		"time -p mysql -p" + pw,
+		"sudo -u mysql mysql -p" + pw,
+		"MYSQL=mysql -uroot -p" + pw,
+		"docker run --rm -it mysql mysql -hdb -p" + pw,
+		"docker run --name mysql --rm mysql:8 mysql -p" + pw,
+		"docker run --rm mysql:8 mysqldump -p" + pw + " db",
+		"/usr/bin/mysql -p" + pw,
+		"$(mysql -p" + pw + ")",
+		"mysql -p1234:5678 db",
+		"helm install mysql bitnami/mysql; mysql -p" + pw,
+		`{"cmd":"echo hi\nmysql -uroot -p` + pw + ` db"}`,
+		`{"cmd":"echo hi\tmysql -uroot -p` + pw + ` db"}`,
+		`{"cmd":"echo hi\ncurl -u admin:` + pw + `99 http://x"}`,
+		`{"cmd":"echo hi\nsshpass -p ` + pw + ` ssh h"}`,
+	} {
+		if out := RedactSecrets(in); strings.Contains(out, pw) || strings.Contains(out, "1234:5678") {
+			t.Errorf("leak: %q => %q", in, out)
+		}
+	}
+}
+
+func TestRED_DBClientAndSshpassScanScalesLinearly(t *testing.T) {
+	for name, unit := range map[string]string{
+		"--name mysql":     "--name mysql ",
+		"host@mysql":       "u@mysql ",
+		"option value":     "--x=mysql ",
+		"path":             "/a/b/mysql ",
+		"sshpass file":     "sshpass -f x ",
+		"sshpass chain":    "sshpass -v ",
+		"docker port":      "docker run mysql -p1:1;",
+		"verb":             "install mysql ",
+		"json escape":      `\nmysql`,
+		"long word before": strings.Repeat("a", 300) + " mysql ",
+	} {
+		redactR3Linear(t, name, func(n int) string { return strings.Repeat(unit, n/len(unit)) })
+	}
+}
+
 func TestRED_MySQLPwdScalesLinearly(t *testing.T) {
 	redactR3Linear(t, "assignments", func(n int) string { return strings.Repeat("MYSQL_PWD=x ", n/12) })
 	redactR3Linear(t, "escaped quotes", func(n int) string { return strings.Repeat(`MYSQL_PWD=\"`, n/12) })

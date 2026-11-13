@@ -399,7 +399,8 @@ type cmdWord struct{ s, e int }
 // commandWords tokenises the command that continues at from: words are
 // split on blanks and backslash-newline continuations; quotes group a word
 // (so a quoted & ; | or newline does not end the command); an unquoted
-// newline, |, ; or & ends it. A quote with no closing quote is an ordinary
+// newline, |, ;, &, ) or backquote ends it (the last two close a command
+// substitution). A quote with no closing quote is an ordinary
 // character. In JSON-encoded text (json) an unquoted \n, \r or \t escape
 // sequence also ends the word (and \n, \r end the command), and a double
 // quote with no closing quote ends the command: it closes the JSON string the
@@ -441,7 +442,7 @@ func commandWords(text string, from int, json bool) ([]cmdWord, int) {
 			continue
 		case json && c == '\\' && i+1 < limit && (text[i+1] == 'n' || text[i+1] == 'r'):
 			return words, i
-		case c == '\n' || c == '\r' || c == '|' || c == ';' || c == '&':
+		case c == '\n' || c == '\r' || c == '|' || c == ';' || c == '&' || c == ')' || c == '`':
 			return words, i
 		}
 		s := i
@@ -449,7 +450,7 @@ func commandWords(text string, from int, json bool) ([]cmdWord, int) {
 	word:
 		for i < limit {
 			switch c := text[i]; c {
-			case ' ', '\t', '\n', '\r', '|', ';', '&':
+			case ' ', '\t', '\n', '\r', '|', ';', '&', ')', '`':
 				break word
 			case '\\':
 				if i+1 < limit {
@@ -697,8 +698,8 @@ var commandTools = []struct {
 // --password=PASSWORD attached; a bare -p prompts and the next word is a
 // database) and sshpass (-p PASSWORD, -pPASSWORD). Scoping to these commands
 // keeps -u / -U / -a / -p as used by docker, sudo, rsync, pip, ssh and
-// others readable. Command words
-// match in any case.
+// others readable. Command words match in any case, also right after a JSON
+// \n, \r or \t escape.
 func commandCredentialMatches(s *textScan) [][2]int {
 	text := s.text
 	var out [][2]int
@@ -711,15 +712,25 @@ func commandCredentialMatches(s *textScan) [][2]int {
 			}
 			after := j + len(tool.name)
 			pos = after
-			if j > 0 && isCommandWordByte(text[j-1]) {
+			if j > 0 && isCommandWordByte(text[j-1]) && !jsonBlankEscapeBefore(text, j) {
 				continue
 			}
 			if after < len(text) && !strings.ContainsRune(" \t\n\r\\", rune(text[after])) {
 				continue
 			}
+			if tool.kind == 3 && !dbClientNameAt(text, j) {
+				continue
+			}
 			json := inJSON.at(text, j)
 			words, end := commandWords(text, after, json)
-			out = append(out, toolCredentialSpans(text, tool.kind, json, words)...)
+			switch tool.kind {
+			case 3:
+				out = append(out, dbClientSpans(text, j, json, words)...)
+			case 4:
+				out = append(out, sshpassSpans(text, json, words)...)
+			default:
+				out = append(out, toolCredentialSpans(text, tool.kind, json, words)...)
+			}
 			if end > pos {
 				pos = end
 			}
@@ -730,6 +741,228 @@ func commandCredentialMatches(s *textScan) [][2]int {
 
 func isCommandWordByte(c byte) bool {
 	return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_' || c == '-' || c == '.'
+}
+
+// jsonBlankEscapeBefore reports whether text[:i] ends in a JSON \n, \r or \t
+// escape (an odd run of backslashes before the letter), which separates the
+// word at i from what precedes it in the decoded text.
+func jsonBlankEscapeBefore(text string, i int) bool {
+	return i >= 2 && strings.IndexByte("nrt", text[i-1]) >= 0 && oddBackslashesBefore(text, 0, i-1)
+}
+
+// dbClientWindow bounds how far back the MySQL/MariaDB client name rule looks
+// for the start of the name's word and the word before it.
+const dbClientWindow = 256
+
+// shellWordStart reports whether a shell word cannot extend backwards past
+// text[i-1]: i is the start of the text, follows a blank, a command separator
+// or parenthesis, a backquote, or a JSON \n, \r or \t escape.
+func shellWordStart(text string, i int) bool {
+	if i == 0 {
+		return true
+	}
+	switch text[i-1] {
+	case ' ', '\t', '\n', '\r', ';', '|', '&', '(', ')', '`':
+		return true
+	}
+	return jsonBlankEscapeBefore(text, i)
+}
+
+// dbClientExcludedAfter are the words after which a MySQL/MariaDB client name
+// names something else: a container or host name (--name, --hostname, ssh's
+// host) or a package or release (install, upgrade, ...).
+var dbClientExcludedAfter = []string{"--name", "--hostname", "ssh", "install", "reinstall", "uninstall", "upgrade", "pull"}
+
+// dbClientNameAt reports whether the MySQL/MariaDB client name found as a
+// whole word at text[j:] (or as a path's last component) counts as the client.
+// It counts wherever it stands, so a client run through docker exec, kubectl
+// exec, ssh or any wrapper is judged, except where it plainly names something
+// else: right after '@' (user@mysql, a host), as the value of an option
+// (--name=mysql), or right after a word of dbClientExcludedAfter. A word that
+// does not fit the bounded look-back counts as the client.
+func dbClientNameAt(text string, j int) bool {
+	s := j
+	for !shellWordStart(text, s) {
+		if j-s >= dbClientWindow {
+			return true
+		}
+		s--
+	}
+	p := j
+	for p > s && (text[p-1] == '"' || text[p-1] == '\'') {
+		p--
+	}
+	if p > s {
+		switch text[p-1] {
+		case '@':
+			return false
+		case '=':
+			// --name=mysql is an option's value; MYSQL=mysql (an assignment, or
+			// a make variable holding a command line) still counts.
+			return strings.TrimLeft(text[s:p], `"'\`)[0] != '-'
+		}
+	}
+	// The word before the name's word, when only blanks separate them.
+	e := s
+	for e > 0 && (text[e-1] == ' ' || text[e-1] == '\t') {
+		if s-e >= dbClientWindow {
+			return true
+		}
+		e--
+	}
+	if e == s || e == 0 {
+		return true
+	}
+	b := e
+	for !shellWordStart(text, b) {
+		if e-b >= 16 {
+			return true
+		}
+		b--
+	}
+	prev := strings.Trim(text[b:e], `"'\`)
+	if k := strings.LastIndexByte(prev, '/'); k >= 0 {
+		prev = prev[k+1:]
+	}
+	for _, w := range dbClientExcludedAfter {
+		if strings.EqualFold(prev, w) {
+			return false
+		}
+	}
+	return true
+}
+
+// portMappingRe matches a container port mapping as docker and podman take it
+// with -p: [IP:][HOSTPORT]:CONTAINERPORT, ports or port ranges, an optional
+// protocol. The colon is required, so a number alone is not a mapping.
+var portMappingRe = regexp.MustCompile(`^(?:(?:[0-9]{1,3}\.){3}[0-9]{1,3}:|\[[0-9A-Fa-f:.]+\]:)?(?:[0-9]{1,5}(?:-[0-9]{1,5})?)?:[0-9]{1,5}(?:-[0-9]{1,5})?(?:/(?:tcp|udp|sctp))?$`)
+
+// containerRunBefore reports whether the simple command holding text[j:]
+// runs or creates a container: between the start of the command (the last
+// newline, command separator, parenthesis or backquote before j, bounded by
+// commandScanMax) and j stand a docker or podman word and, later, a run or
+// create word. Quotes are not tracked; a missed start only shortens the
+// command, which keeps a port-shaped value redacted.
+func containerRunBefore(text string, j int) bool {
+	s := j
+	for s > 0 && j-s < commandScanMax && !strings.ContainsRune("\n\r;|&(`", rune(text[s-1])) {
+		s--
+	}
+	engine := false
+	for _, f := range strings.Fields(text[s:j]) {
+		f = strings.TrimRight(f, `"'\`)
+		if k := strings.LastIndexAny(f, `/"'\`); k >= 0 {
+			f = f[k+1:]
+		}
+		switch {
+		case strings.EqualFold(f, "docker") || strings.EqualFold(f, "podman"):
+			engine = true
+		case engine && (f == "run" || f == "create"):
+			return true
+		}
+	}
+	return false
+}
+
+// dbClientSpans returns the spans of the passwords a MySQL/MariaDB client
+// whose name is at text[j:] takes in words (the rest of its command; the
+// client accepts options after positional arguments): -pPASSWORD and
+// --password=PASSWORD (or a prefix of it from --pas), attached only. Inside a
+// docker or podman run/create command a -p value shaped like a port mapping
+// is the container's published port, never a password.
+func dbClientSpans(text string, j int, json bool, words []cmdWord) [][2]int {
+	var out [][2]int
+	run := 0 // 1: the command runs a container, -1: it does not, 0: not checked yet
+	portOK := func(v string) bool {
+		if portMappingRe.MatchString(unwrapValue(v)) {
+			if run == 0 {
+				run = -1
+				if containerRunBefore(text, j) {
+					run = 1
+				}
+			}
+			if run == 1 {
+				return false
+			}
+		}
+		return plausibleFlagPassword(v)
+	}
+	for _, w := range words {
+		raw := text[w.s:w.e]
+		vs, ok := 0, plausibleFlagPassword
+		switch {
+		case strings.HasPrefix(raw, "--"):
+			eq := strings.IndexByte(raw, '=')
+			if eq < 0 || eq == len(raw)-1 {
+				continue
+			}
+			// The client accepts any unique prefix of --password.
+			if name := raw[2:eq]; len(name) < 3 || !strings.HasPrefix("password", name) {
+				continue
+			}
+			vs = w.s + eq + 1
+		case len(raw) > 2 && raw[0] == '-' && raw[1] == 'p':
+			vs, ok = w.s+2, portOK
+		default:
+			continue
+		}
+		if ps, pe, found := wholePassword(text, vs, w.e, json, ok); found {
+			out = append(out, [2]int{ps, pe})
+		}
+	}
+	return out
+}
+
+// sshpassSpans returns the spans of the passwords sshpass takes in words (the
+// rest of its command). sshpass parses options getopt-style up to the first
+// non-option word or "--", where the wrapped command starts: -p takes the
+// password attached or as the next word; -f, -d and -P take a value, attached
+// or as the next word; -e takes an optional attached name; other letters are
+// flags. The wrapped command's own options (ssh -p PORT) are not sshpass's,
+// but a later sshpass word (a jump-host chain) starts another option list.
+func sshpassSpans(text string, json bool, words []cmdWord) [][2]int {
+	var out [][2]int
+	opts := true
+	for k := 0; k < len(words); k++ {
+		w := words[k]
+		raw := text[w.s:w.e]
+		if !opts || raw == "--" || len(raw) < 2 || raw[0] != '-' {
+			if opts && raw == "--" {
+				opts = false
+				continue
+			}
+			name := strings.Trim(raw, `"'\`)
+			if i := strings.LastIndexByte(name, '/'); i >= 0 {
+				name = name[i+1:]
+			}
+			opts = strings.EqualFold(name, "sshpass")
+			continue
+		}
+	cluster:
+		for i := 1; i < len(raw); i++ {
+			switch raw[i] {
+			case 'p', 'f', 'd', 'P':
+				vs, ve := w.s+i+1, w.e
+				if i+1 == len(raw) {
+					if k+1 == len(words) {
+						break cluster
+					}
+					k++
+					vs, ve = words[k].s, words[k].e
+				}
+				if raw[i] != 'p' {
+					break cluster
+				}
+				if ps, pe, found := wholePassword(text, vs, ve, json, plausibleFlagPassword); found {
+					out = append(out, [2]int{ps, pe})
+				}
+				break cluster
+			case 'e':
+				break cluster
+			}
+		}
+	}
+	return out
 }
 
 func toolCredentialSpans(text string, kind int, json bool, words []cmdWord) [][2]int {
@@ -749,13 +982,6 @@ func toolCredentialSpans(text string, kind int, json bool, words []cmdWord) [][2
 			}
 		}
 		cookie := false // the operand is a curl -b / --cookie cookie string
-		if kind >= 3 {
-			os, oe = dbClientPasswordOperand(text, kind, raw, w, words, k)
-			if os >= 0 {
-				add(wholePassword(text, os, oe, json, plausibleFlagPassword))
-			}
-			continue
-		}
 		if strings.HasPrefix(raw, "--") {
 			name, attS := raw, -1
 			if eq := strings.IndexByte(raw, '='); eq > 0 {
@@ -817,33 +1043,6 @@ func toolCredentialSpans(text string, kind int, json bool, words []cmdWord) [][2
 		}
 	}
 	return out
-}
-
-// dbClientPasswordOperand returns the raw extent of the password operand of
-// word k for the MySQL/MariaDB clients (kind 3: -pPASSWORD, --password=...,
-// attached only) and sshpass (kind 4: -p PASSWORD or -pPASSWORD), or -1, -1.
-func dbClientPasswordOperand(text string, kind int, raw string, w cmdWord, words []cmdWord, k int) (int, int) {
-	if strings.HasPrefix(raw, "--") {
-		eq := strings.IndexByte(raw, '=')
-		if kind != 3 || eq < 0 || eq == len(raw)-1 {
-			return -1, -1
-		}
-		// The client accepts any unique prefix of --password.
-		if name := raw[2:eq]; len(name) < 3 || !strings.HasPrefix("password", name) {
-			return -1, -1
-		}
-		return w.s + eq + 1, w.e
-	}
-	if len(raw) < 2 || raw[0] != '-' || raw[1] != 'p' {
-		return -1, -1
-	}
-	if len(raw) > 2 {
-		return w.s + 2, w.e
-	}
-	if kind == 4 && k+1 < len(words) {
-		return words[k+1].s, words[k+1].e
-	}
-	return -1, -1
 }
 
 // plausibleFlagPassword judges an attached or flag-given command-line
