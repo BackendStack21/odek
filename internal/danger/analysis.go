@@ -149,12 +149,6 @@ type shellAnalysisState struct {
 	// optScope identifies this analysis and the ones it runs inside, so a
 	// binding recorded in options by another analysis is told apart.
 	optScope []int
-	// optUnexportFrom is the index in optScope from which a statement that
-	// removes a variable from the environment counts for this analysis. A
-	// substitution body is analysed against the state the command ends in,
-	// but runs before the statements after it: only what the body itself
-	// removes is certain there.
-	optUnexportFrom int
 	// optEnv names the option-carrying variables the command that started
 	// this payload was given (`TAR_OPTIONS=x bash -c '...'`); their values
 	// are in vars.
@@ -268,7 +262,6 @@ func analyzeWithStateWork(cmd string, depth int, inherited *shellAnalysisState, 
 		state.options = inherited.options
 		state.optionsApplied = inherited.optionsApplied
 		state.optScope = inherited.optScope
-		state.optUnexportFrom = inherited.optUnexportFrom
 		state.optEnv = inherited.optEnv
 	}
 	if state.aliases == nil {
@@ -328,8 +321,6 @@ func analyzeWithStateWork(cmd string, depth int, inherited *shellAnalysisState, 
 	var funcDefs []*shNode
 	funcCalled := make(map[*shNode]bool)
 	funcRunning := make(map[string]bool)
-	// nesting counts the compound commands and function bodies being run.
-	nesting := 0
 	var (
 		runList     func(shList, pipeCtx)
 		runNode     func(*shNode, pipeCtx)
@@ -419,7 +410,7 @@ func analyzeWithStateWork(cmd string, depth int, inherited *shellAnalysisState, 
 				// Assignments in front of a function call reach the commands
 				// it runs and, in POSIX mode, persist after it returns, like
 				// those in front of a special builtin.
-				state.noteOptionBindings(append(append([]string(nil), stage[:call]...), ":"), []string{":"}, false)
+				state.noteOptionBindings(append(append([]string(nil), stage[:call]...), ":"), []string{":"})
 				args := redirectFreeArguments(stage[call+1:])
 				runFunction(stage[call], args, pipeCtx{piped: piped, upstream: upstream})
 				for _, arg := range args {
@@ -437,16 +428,7 @@ func analyzeWithStateWork(cmd string, depth int, inherited *shellAnalysisState, 
 			payloadState.uncertain = state.uncertain || !cwdKnown
 			unwrappedStage := unwrapWrappersFull(stage)
 			inner, floor := unwrappedStage.inner, unwrappedStage.floor
-			// A statement of the command line itself, outside any compound
-			// command, pipeline or conditional list, is certain to have run
-			// in the shell of the commands after it. A builtin is certain
-			// to be the one that ran only as the bare command word: behind
-			// a wrapper (`env unset NAME`, `nice`, `xargs`) a program of that
-			// name runs instead, and an alias can stand in for the word.
-			certain := nesting == 0 && len(stages) == 1 && !afterAnd && !ambiguous && !ctx.piped && !ctx.subshell &&
-				len(inner) == len(stage) && len(inner) > 0 && !strings.Contains(inner[0], "/") &&
-				len(expansions) == 0 && !unresolved
-			state.noteOptionBindings(stage, inner, certain)
+			state.noteOptionBindings(stage, inner)
 			payloadState.vars, payloadState.optEnv = withOptionAssignments(payloadState.vars, payloadState.optEnv, unwrappedStage.assigns)
 			for _, payload := range unwrappedStage.payloads {
 				result.merge(analyzeWithState(payload, depth+1, &payloadState))
@@ -860,8 +842,6 @@ func analyzeWithStateWork(cmd string, depth int, inherited *shellAnalysisState, 
 		if bailed {
 			return
 		}
-		nesting++
-		defer func() { nesting-- }()
 		nested := pipeCtx{piped: ctx.piped, upstream: ctx.upstream}
 		var scope stateSnap
 		scoped := ctx.subshell || n.kind == nodeSubshell || n.kind == nodeCoproc
@@ -1092,7 +1072,6 @@ func analyzeWithStateWork(cmd string, depth int, inherited *shellAnalysisState, 
 	// A variable an unrolled loop rebinds on each iteration has no single
 	// value there, so it is dropped and the body treats it as unknown.
 	subState := state
-	subState.optUnexportFrom = len(state.optScope)
 	subState.vars = make(map[string]string, len(state.vars))
 	for name, value := range state.vars {
 		if !volatile[name] {

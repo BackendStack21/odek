@@ -28,9 +28,12 @@ import (
 // -x, an assignment after set -a), or a name odek's own environment already
 // exports. A shell running a launcher script (`sh mvnw`, `bash ./gradlew`) is
 // that launcher. A shell variable that is never exported does not reach the
-// program, nor does one a statement the later commands are certain to follow
-// removed from the environment again (unset, export -n). A variable the command line never assigns holds the inherited
+// program. A variable the command line never assigns holds the inherited
 // value, which is outside the analysis. Any other command keeps its verdict.
+// Nothing takes a variable out of the judgement again: unset, export -n and
+// declare +x between the assignment and the reader are not honoured, since a
+// run-time word can turn each into a statement that leaves the variable
+// exported (`unset $1 NAME` with -f, `export -fn NAME`).
 //
 // The value is judged the way its reader takes it:
 //   - tar, zip and unzip options, and Maven arguments unless every word is
@@ -665,15 +668,19 @@ type optionEnvState struct {
 	// value too: with the variable unset, the append is exactly the
 	// assignment of it.
 	tails map[string]string
-	// unexported records, per variable, the scope of the analysis whose
-	// statement took it out of the environment (unset, export -n) where every later command of that analysis is certain to see it.
-	// A later export of the name, or anything after which any variable may
-	// be exported, removes the record.
-	unexported map[string]int
-	// readonly names the variables some statement made read-only; unset
-	// fails on them, so they are never recorded as unexported.
-	readonly map[string]bool
+	// values holds, per variable, every literal value a statement of the
+	// command line or of a payload assigned to it, up to maxOptionEnvValues;
+	// dropped names the variables with more. A reader that runs when the
+	// analysis no longer knows the value (after unset, read, a payload that
+	// rebinds it) is judged with each of them: a statement that seems to
+	// remove or replace a value never lowers the verdict the value had.
+	values  map[string][]string
+	dropped map[string]bool
 }
+
+// maxOptionEnvValues bounds the values recorded per variable; a variable
+// assigned more often classifies unknown where its value is not known.
+const maxOptionEnvValues = 8
 
 // maxOptionEnvBinders bounds the scopes recorded per variable; past it the
 // variable is treated as bound where no analysis can follow it.
@@ -681,36 +688,19 @@ const maxOptionEnvBinders = 16
 
 func newOptionEnvState() *optionEnvState {
 	return &optionEnvState{binders: make(map[string][]int), exported: make(map[string]bool), tails: make(map[string]string),
-		unexported: make(map[string]int), readonly: make(map[string]bool)}
+		values: make(map[string][]string), dropped: make(map[string]bool)}
 }
 
-// export records that name is exported from here on.
-func (o *optionEnvState) export(name string) {
-	if !optionEnvNames[name] {
+// noteValue records a literal value assigned to name.
+func (o *optionEnvState) noteValue(name, value string) {
+	if !optionEnvNames[name] || value == "" || hasString(o.values[name], value) {
 		return
 	}
-	o.exported[name] = true
-	delete(o.unexported, name)
-}
-
-// setDynamic records that any variable may be bound, exported or made
-// read-only from here on.
-func (o *optionEnvState) setDynamic() {
-	o.dynamic = true
-	clear(o.unexported)
-}
-
-// unexport records that the statement of the analysis with the given scope
-// removes name from the environment of the commands after it. certain is
-// false for a statement the analysis cannot be sure runs in the shell of the
-// later commands (a branch, a loop or function body, a subshell, a pipeline
-// stage, an operand of && or ||); the variable then stays judged, as it does
-// when it may be read-only or was bound where the analysis cannot follow.
-func (o *optionEnvState) unexport(name string, scope []int, certain bool) {
-	if !certain || !optionEnvNames[name] || o.dynamic || o.readonly[name] || len(scope) == 0 || hasInt(o.binders[name], -1) {
+	if len(o.values[name]) >= maxOptionEnvValues {
+		o.dropped[name] = true
 		return
 	}
-	o.unexported[name] = scope[len(scope)-1]
+	o.values[name] = append(o.values[name], value)
 }
 
 // noteAppend records the text a NAME+=value operand appends (appended) or the
@@ -754,12 +744,9 @@ func (o *optionEnvState) bind(name string, scope []int) {
 			id = -1
 		}
 		o.binders[name] = append(list, id)
-		if id == -1 {
-			delete(o.unexported, name)
-		}
 	}
 	if o.allexport {
-		o.export(name)
+		o.exported[name] = true
 	}
 }
 
@@ -795,7 +782,7 @@ var posixSpecialBuiltins = fieldSet(": . break continue eval exec exit export re
 // readarray, printf -v, getopts), `set -a`, and a sourced file or a
 // computed name, after which any variable may be bound. Assignments in front
 // of any other command only reach that command.
-func (s *shellAnalysisState) noteOptionBindings(stage, inner []string, certain bool) {
+func (s *shellAnalysisState) noteOptionBindings(stage, inner []string) {
 	o := s.options
 	if o == nil {
 		return
@@ -803,9 +790,10 @@ func (s *shellAnalysisState) noteOptionBindings(stage, inner []string, certain b
 	if len(inner) == 0 {
 		for _, w := range stage {
 			if isAssignment(w) {
-				name, _, _ := strings.Cut(w, "=")
+				name, value, _ := strings.Cut(w, "=")
 				o.bind(name, s.optScope)
 				o.noteAppend(name, "", false)
+				o.noteValue(name, value)
 			}
 		}
 		return
@@ -814,40 +802,28 @@ func (s *shellAnalysisState) noteOptionBindings(stage, inner []string, certain b
 	if posixSpecialBuiltins[name] {
 		for _, w := range stage[:len(stage)-len(inner)] {
 			if isAssignment(w) {
-				n, _, _ := strings.Cut(w, "=")
+				n, value, _ := strings.Cut(w, "=")
 				o.bind(n, s.optScope)
 				o.noteAppend(n, "", false)
-				o.export(n)
+				o.noteValue(n, value)
+				o.exported[n] = o.exported[n] || optionEnvNames[n]
 			}
 		}
 	}
 	if declaresComputedName(name, inner) {
-		o.setDynamic()
+		o.dynamic = true
 	}
 	args := inner[1:]
 	switch name {
 	case "source", ".":
 		// The sourced file can bind and export anything.
-		o.setDynamic()
+		o.dynamic = true
 	case "set":
 		if setsAllexport(args) {
 			o.allexport = true
 		}
 	case "export", "declare", "typeset", "local", "readonly":
-		s.noteDeclarationBindings(name, args, certain)
-	case "unset":
-		// unset NAME (or -v NAME) removes the variable; -f and -n name
-		// functions and namerefs, and NAME[sub] one element.
-		variables := true
-		for _, a := range args {
-			if len(a) > 1 && a[0] == '-' {
-				variables = variables && !strings.ContainsAny(a[1:], "fn")
-				continue
-			}
-			if variables && isValidVarName(a) {
-				o.unexport(a, s.optScope, certain)
-			}
-		}
+		s.noteDeclarationBindings(name, args)
 	case "read", "mapfile", "readarray", "printf":
 		r := bindingBuiltinSpecs[name].parse(args)
 		for _, opt := range r.opts {
@@ -872,13 +848,9 @@ func (s *shellAnalysisState) noteOptionBindings(stage, inner []string, certain b
 // local and readonly: NAME=value and NAME+=value bind, -x (and export itself)
 // exports, and a nameref (-n) makes its target bound where no analysis can
 // follow it.
-func (s *shellAnalysisState) noteDeclarationBindings(name string, args []string, certain bool) {
+func (s *shellAnalysisState) noteDeclarationBindings(name string, args []string) {
 	o := s.options
 	exports, nameref := name == "export", false
-	// unexports: export -n removes the export attribute of its operands.
-	// declare/typeset +x is not honoured: a POSIX sh has no such builtin, so
-	// the statement fails there and the variable stays exported.
-	unexports, readonly := false, name == "readonly"
 	i := 0
 	for ; i < len(args); i++ {
 		a := args[i]
@@ -892,12 +864,12 @@ func (s *shellAnalysisState) noteDeclarationBindings(name string, args []string,
 		if a[0] == '-' {
 			exports = exports || strings.ContainsRune(a[1:], 'x')
 			nameref = nameref || strings.ContainsRune(a[1:], 'n')
-			readonly = readonly || strings.ContainsRune(a[1:], 'r')
 		}
 	}
-	if name == "export" && nameref {
-		// export -n removes the export attribute; the assignment still binds.
-		exports, nameref, unexports = false, false, true
+	if name == "export" {
+		// export has no nameref option, and its -n (remove the export
+		// attribute) is not honoured: the operands count as exported.
+		nameref = false
 	}
 	for _, op := range args[i:] {
 		varName, value, assigned := strings.Cut(op, "=")
@@ -907,30 +879,26 @@ func (s *shellAnalysisState) noteDeclarationBindings(name string, args []string,
 		}
 		if nameref {
 			if !assigned {
-				o.setDynamic() // the nameref's target is set later
+				o.dynamic = true // the nameref's target is set later
 				continue
 			}
 			if computedWord(value) {
-				o.setDynamic()
+				o.dynamic = true
 				continue
 			}
 			o.bind(value, []int{-1})
-			o.export(value)
+			o.exported[value] = o.exported[value] || optionEnvNames[value]
 			continue
 		}
 		if assigned {
 			o.bind(varName, s.optScope)
 			o.noteAppend(varName, value, appended)
+			if !appended {
+				o.noteValue(varName, value)
+			}
 		}
-		if readonly {
-			o.readonly[varName] = true
-			delete(o.unexported, varName)
-		}
-		switch {
-		case exports:
-			o.export(varName)
-		case unexports:
-			o.unexport(varName, s.optScope, certain)
+		if exports && optionEnvNames[varName] {
+			o.exported[varName] = true
 		}
 	}
 }
@@ -1059,11 +1027,6 @@ func (s *shellAnalysisState) optionEnvValue(name string, inline map[string]strin
 		return v, optionKnown
 	}
 	o := s.options
-	if id, ok := o.unexported[name]; ok && s.optUnexportFrom <= len(s.optScope) && hasInt(s.optScope[s.optUnexportFrom:], id) {
-		// Taken out of the environment by a statement this analysis, or one
-		// it runs inside, ran before the reader.
-		return "", optionAbsent
-	}
 	_, inherited := os.LookupEnv(name)
 	if !o.exported[name] && !s.optEnv[name] && !o.dynamic && !inherited {
 		return "", optionAbsent
@@ -1141,6 +1104,14 @@ func (s *shellAnalysisState) optionEnvAnalysis(inner, inline []string, payload s
 			continue
 		case optionUnresolved:
 			result.add(v.unresolvedRisk())
+			// Every value the command line gave the variable is one it may
+			// still hold.
+			for _, earlier := range s.options.values[v.name] {
+				judge(v, earlier)
+			}
+			if s.options.dropped[v.name] {
+				result.add(Unknown)
+			}
 		default:
 			judge(v, value)
 		}

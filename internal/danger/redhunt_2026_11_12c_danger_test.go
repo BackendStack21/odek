@@ -599,16 +599,18 @@ func TestOptionEnvBindingAndValueForms(t *testing.T) {
 	}
 	evals.WriteString("tar xf x.tar")
 	for cmd, want := range map[string]RiskClass{
-		`JAVA_HOME=$X mvn -v`:                                            CodeExecution,
-		`JAVACMD=$X mvnw -v`:                                             CodeExecution,
-		`JAVA_HOME=` + cwd + `/jdk mvn -v`:                               CodeExecution,
-		`JAVACMD=/var/tmp/java mvnw -v`:                                  CodeExecution,
-		`MAVEN_OPTS=--add-opens mvn -v`:                                  SystemWrite,
-		`MAVEN_OPTS='--add-opens a@b' mvn -v`:                            SystemWrite,
-		`set -o allexport; TAR_OPTIONS=--to-command=sh; tar xf x.tar`:    CodeExecution,
-		`set -ea; TAR_OPTIONS=--to-command=sh; tar xf x.tar`:             CodeExecution,
-		`getopts ab TAR_OPTIONS; export TAR_OPTIONS; tar xf x.tar`:       SystemWrite,
-		`export -- TAR_OPTIONS=--to-command=sh; tar xf x.tar`:            CodeExecution,
+		`JAVA_HOME=$X mvn -v`:                                         CodeExecution,
+		`JAVACMD=$X mvnw -v`:                                          CodeExecution,
+		`JAVA_HOME=` + cwd + `/jdk mvn -v`:                            CodeExecution,
+		`JAVACMD=/var/tmp/java mvnw -v`:                               CodeExecution,
+		`MAVEN_OPTS=--add-opens mvn -v`:                               SystemWrite,
+		`MAVEN_OPTS='--add-opens a@b' mvn -v`:                         SystemWrite,
+		`set -o allexport; TAR_OPTIONS=--to-command=sh; tar xf x.tar`: CodeExecution,
+		`set -ea; TAR_OPTIONS=--to-command=sh; tar xf x.tar`:          CodeExecution,
+		`getopts ab TAR_OPTIONS; export TAR_OPTIONS; tar xf x.tar`:    SystemWrite,
+		`export -- TAR_OPTIONS=--to-command=sh; tar xf x.tar`:         CodeExecution,
+		// export -n is not honoured as leaving the variable unexported.
+		`export -n TAR_OPTIONS=--to-command=sh; tar xf x.tar`:            CodeExecution,
 		`ZIPOPT='` + words(40) + `' ZIP='` + words(40) + `' zip a.zip f`: Unknown,
 		evals.String(): SystemWrite,
 	} {
@@ -622,7 +624,6 @@ func TestOptionEnvBindingAndValueForms(t *testing.T) {
 		`JAVACMD=/usr/lib/jvm/java-17/bin/java mvnw -v`:              `mvnw -v`,
 		`set -o pipefail; TAR_OPTIONS=--to-command=sh; tar xf x.tar`: `tar xf x.tar`,
 		`set -- -a; TAR_OPTIONS=--to-command=sh; tar xf x.tar`:       `tar xf x.tar`,
-		`export -n TAR_OPTIONS=--to-command=sh; tar xf x.tar`:        `tar xf x.tar`,
 	} {
 		if got, want := Classify(cmd), Classify(plain); got != want {
 			t.Errorf("Classify(%q) = %s, want %s (the verdict of %q)", cmd, got, want, plain)

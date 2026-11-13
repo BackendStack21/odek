@@ -1,0 +1,124 @@
+package danger
+
+import (
+	"os"
+	"slices"
+	"testing"
+)
+
+// lowersR5 returns the effects of the reference command that the analysis of
+// cmd lacks: a command that only adds statements to the reference must keep
+// every effect of it.
+func lowersR5(cmd, ref string) []RiskClass {
+	got := Analyze(cmd).Effects
+	var missing []RiskClass
+	for _, effect := range Analyze(ref).Effects {
+		if effect != Safe && !slices.Contains(got, effect) {
+			missing = append(missing, effect)
+		}
+	}
+	return missing
+}
+
+// A statement between the export of an option variable and its reader that
+// reads as taking the variable out of the environment was honoured: the
+// reader kept its own verdict. Real shells keep the variable in forms the
+// analysis read as a removal: `export -fn NAME`, `export -n -f NAME` and
+// `export -pn NAME` name a function or print the export list and go on, and
+// `unset $1 NAME`, `unset "$@" NAME` or `unset * NAME` remove a function when
+// the run-time word is -f.
+//
+// Correct behaviour: once a command line exports or assigns an option
+// variable for a reader, the reader is judged with it whatever unset, export
+// -n or declare +x statements come between.
+func TestRED_UnsetOrUnexportNeverLowersOptionVariable(t *testing.T) {
+	t.Setenv("HOME", "/home/user")
+	t.Chdir(t.TempDir())
+	unsetExecEnvR4(t)
+	removals := func(name string) []string {
+		return []string{
+			`unset ` + name, `unset -v ` + name, `export -n ` + name, `declare +x ` + name, `typeset +x ` + name,
+			`export -fn ` + name, `export -nf ` + name, `export -n -f ` + name, `export -pn ` + name,
+			`set -- -f; unset $1 ` + name, `set -- -f; unset "$@" ` + name, `read x < opt; unset $x ` + name,
+			`: ${x:=-f}; unset $x ` + name, `unset * ` + name, `export -n * ` + name, `unset -f ` + name,
+			`unset TAR_OPTIONS JAVACMD ` + name, `unset "$@"`, `unset $x`,
+			`env unset ` + name, `command unset ` + name, `builtin unset ` + name, `\unset ` + name,
+		}
+	}
+	for _, tc := range []struct{ export, name, reader string }{
+		{`export TAR_OPTIONS=--to-command=sh; `, "TAR_OPTIONS", `tar xf x.tar`},
+		{`export TAR_OPTIONS=--to-command=sh; `, "TAR_OPTIONS", `nice tar xf x.tar`},
+		{`export ZIPOPT=-m; `, "ZIPOPT", `zip a.zip f`},
+		{`export JAVA_HOME=/tmp/jdk; `, "JAVA_HOME", `mvn -v`},
+		{`export JAVACMD=/tmp/j; `, "JAVACMD", `mvn -v`},
+		{`export MAVEN_OPTS=-javaagent:/tmp/x.jar; `, "MAVEN_OPTS", `mvn -v`},
+		{`set -a; TAR_OPTIONS=--to-command=sh; `, "TAR_OPTIONS", `tar xf x.tar`},
+		{`declare -x TAR_OPTIONS=--to-command=sh; `, "TAR_OPTIONS", `tar xf x.tar`},
+	} {
+		want := Classify(tc.export + tc.reader)
+		if Rank(want) <= Rank(Classify(tc.reader)) {
+			t.Fatalf("premise: %q classified %s, no higher than %q", tc.export+tc.reader, want, tc.reader)
+		}
+		for _, removal := range removals(tc.name) {
+			cmd := tc.export + removal + `; ` + tc.reader
+			if missing := lowersR5(cmd, tc.export+tc.reader); len(missing) > 0 || Rank(Classify(cmd)) < Rank(want) {
+				t.Errorf("Classify(%q) = %s without %v, want at least %s and every effect of the command without the removal", cmd, Classify(cmd), missing, want)
+			}
+		}
+	}
+	// Inside the payload of a shell the assignment was given to.
+	const inline = `TAR_OPTIONS=--to-command=sh bash -c 'tar xf x.tar'`
+	for _, cmd := range []string{
+		`TAR_OPTIONS=--to-command=sh bash -c 'unset TAR_OPTIONS; tar xf x.tar'`,
+		`TAR_OPTIONS=--to-command=sh bash -c 'export -n TAR_OPTIONS; tar xf x.tar'`,
+	} {
+		if got, want := Classify(cmd), Classify(inline); Rank(got) < Rank(want) {
+			t.Errorf("Classify(%q) = %s, want at least %s", cmd, got, want)
+		}
+	}
+	// With the name in odek's own environment a plain assignment is exported.
+	t.Setenv("TAR_OPTIONS", "-v")
+	want := Classify(`TAR_OPTIONS=--to-command=sh; tar xf x.tar`)
+	for _, removal := range removals("TAR_OPTIONS") {
+		cmd := `TAR_OPTIONS=--to-command=sh; ` + removal + `; tar xf x.tar`
+		if got := Classify(cmd); Rank(got) < Rank(want) {
+			t.Errorf("with TAR_OPTIONS inherited: Classify(%q) = %s, want at least %s", cmd, got, want)
+		}
+	}
+	os.Unsetenv("TAR_OPTIONS")
+	// A removal that may not run, runs elsewhere or runs after the reader.
+	const export = `export TAR_OPTIONS=--to-command=sh; `
+	plain := Classify(`tar xf x.tar`)
+	for _, cmd := range []string{
+		export + `unset TAR_OPTIONS; export TAR_OPTIONS=--to-command=sh; tar xf x.tar`,
+		`export TAR_OPTIONS=-v; export -n TAR_OPTIONS=--to-command=sh; tar xf x.tar`,
+		`export -fn TAR_OPTIONS=--to-command=sh; tar xf x.tar`,
+		export + `export -n TAR_OPTIONS; export TAR_OPTIONS; tar xf x.tar`,
+		export + `unset TAR_OPTIONS; TAR_OPTIONS=--to-command=sh tar xf x.tar`,
+		export + `unset TAR_OPTIONS; TAR_OPTIONS=--to-command=sh; tar xf x.tar`,
+		export + `unset TAR_OPTIONS; . ./env.sh; tar xf x.tar`,
+		export + `if test -f nope; then unset TAR_OPTIONS; fi; tar xf x.tar`,
+		export + `(unset TAR_OPTIONS); tar xf x.tar`,
+		export + `{ unset TAR_OPTIONS; }; tar xf x.tar`,
+		export + `false && unset TAR_OPTIONS; tar xf x.tar`,
+		export + `true || unset TAR_OPTIONS; tar xf x.tar`,
+		export + `unset TAR_OPTIONS | cat; tar xf x.tar`,
+		export + `unset TAR_OPTIONS & tar xf x.tar`,
+		export + `f() { unset TAR_OPTIONS; }; tar xf x.tar; f`,
+		export + `for i in; do unset TAR_OPTIONS; done; tar xf x.tar`,
+		export + `bash -c 'unset TAR_OPTIONS'; tar xf x.tar`,
+		export + `readonly TAR_OPTIONS; unset TAR_OPTIONS; tar xf x.tar`,
+		export + `unset 'TAR_OPTIONS[1]'; tar xf x.tar`,
+		export + `unset TAR; tar xf x.tar`,
+		export + `echo "$(tar xf x.tar)"; unset TAR_OPTIONS`,
+		export + `timeout 1 export -n TAR_OPTIONS; tar xf x.tar`,
+		export + `/usr/bin/unset TAR_OPTIONS; tar xf x.tar`,
+		"alias unset=true\n" + export + "\nunset TAR_OPTIONS\ntar xf x.tar",
+		`unset() { :; }; ` + export + `unset TAR_OPTIONS; tar xf x.tar`,
+		export + `tar xf x.tar; unset TAR_OPTIONS`,
+	} {
+		if got := Classify(cmd); Rank(got) <= Rank(plain) {
+			t.Errorf("Classify(%q) = %s, want above %s: the variable can still reach tar", cmd, got, plain)
+		}
+	}
+}
