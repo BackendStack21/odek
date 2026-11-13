@@ -16,7 +16,7 @@ import (
 // Maven wrapper $MAVEN_CONFIG to its arguments, and the launchers of Maven,
 // Gradle, sbt, Ant and Tomcat hand $MAVEN_OPTS, $GRADLE_OPTS, $JAVA_OPTS, ...
 // to the JVM they start, even for `mvn -v`. They also run the java binary under
-// $JAVA_HOME, and the Maven wrapper and Ant run $JAVACMD.
+// $JAVA_HOME, and the Maven launchers and Ant run $JAVACMD.
 //
 // A variable matters only to the programs that read it (optionEnvVars; names
 // match exactly, as the programs spell them), and only when such a program
@@ -96,7 +96,9 @@ var optionEnvVars = []optionEnvVar{
 	{"ANT_OPTS", optionJVM, []string{"ant"}},
 	{"CATALINA_OPTS", optionJVM, []string{"catalina.sh"}},
 	{"JAVA_HOME", optionJavaHome, javaLaunchers},
-	{"JAVACMD", optionJavaCmd, []string{"mvnw", "ant"}},
+	// The Maven wrapper and Ant run an inherited $JAVACMD; the Maven launcher
+	// scripts set it themselves in current releases, which is not relied on.
+	{"JAVACMD", optionJavaCmd, []string{"mvn", "mvnw", "mvnDebug", "ant"}},
 }
 
 // optionEnvNames is the set of the variables' names.

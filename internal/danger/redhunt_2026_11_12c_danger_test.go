@@ -98,7 +98,7 @@ func TestRED_OptionEnvReachesOnlyItsReaders(t *testing.T) {
 		{`UNZIP=/usr/bin/unzip; $UNZIP -o a.zip`, `/usr/bin/unzip -o a.zip`},
 		{`TAR_OPTIONS=--to-command=sh; tar xf x.tar`, `tar xf x.tar`},
 		{`JAVA_OPTS=-Djava.ext.dirs=/tmp java -jar app.jar`, `java -jar app.jar`},
-		{`JAVACMD=./evil mvn -v`, `mvn -v`},
+		{`JAVACMD=./evil gradle --version`, `gradle --version`},
 	} {
 		if got, want := Classify(tc.cmd), Classify(tc.plain); got != want {
 			t.Errorf("Classify(%q) = %s, want %s (the verdict of %q)", tc.cmd, got, want, tc.plain)
@@ -218,6 +218,7 @@ func TestRED_OptionEnvBenignValuesKeepReaderVerdict(t *testing.T) {
 		`JAVA_HOME=./jdk gradle --version`:           CodeExecution,
 		`export JAVA_HOME=$(cat f); mvn -v`:          CodeExecution,
 		`JAVACMD=./evil mvnw -v`:                     CodeExecution,
+		`JAVACMD=./evil mvn -v`:                      CodeExecution,
 		`JAVACMD=/tmp/java ant -version`:             CodeExecution,
 	} {
 		if got := Classify(cmd); Rank(got) < Rank(want) {
