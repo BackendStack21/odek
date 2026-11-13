@@ -149,6 +149,57 @@ func TestRED_EveryKnownJVMLauncherReadsJavaEnv(t *testing.T) {
 	}
 }
 
+// nativeToolchainR4 are the entries of the toolchain table (projectCodeTools)
+// that start no JVM. Every other entry must be in the reader table, so a
+// launcher added to the toolchain table is either listed here on purpose or
+// read as a JVM launcher.
+var nativeToolchainR4 = fieldSet("cmake ninja meson rustc tsc eslint prettier mypy flake8 rubocop dotnet swift swiftc " +
+	"golangci-lint gdb lldb")
+
+// The toolchain table is walked whole: each entry that is not a known native
+// tool reads JAVA_HOME, and each launcher script among them the other java
+// variables its script is not verified to ignore.
+func TestRED_ToolchainTableJVMEntriesAreReaders(t *testing.T) {
+	t.Setenv("HOME", "/home/user")
+	t.Chdir(t.TempDir())
+	unsetExecEnvR4(t)
+	walked := 0
+	for name := range projectCodeTools {
+		if nativeToolchainR4[name] {
+			if _, reads := optionEnvReaders[name]; reads {
+				t.Errorf("%s is listed as a native tool and as a reader", name)
+			}
+			continue
+		}
+		walked++
+		reads := optionEnvReaders[name]
+		if !hasString(reads, "JAVA_HOME") {
+			t.Errorf("toolchain entry %s is not a reader of JAVA_HOME (readers: %v)", name, reads)
+			continue
+		}
+		for _, v := range []string{"JAVACMD", "JAVA_OPTS"} {
+			if !jdkNativeToolsR4[name] && !hasString(launcherDoesNotReadR4[name], v) && !hasString(reads, v) {
+				t.Errorf("toolchain launcher %s is not a reader of %s", name, v)
+			}
+		}
+		for _, form := range []string{"JAVA_HOME=/tmp/jdk " + name + " -version", "export JAVA_HOME=/tmp/jdk; " + name + " -version"} {
+			if got := Classify(form); Rank(got) < Rank(CodeExecution) {
+				t.Errorf("Classify(%q) = %s, want at least code_execution", form, got)
+			}
+		}
+	}
+	if walked < 6 {
+		t.Fatalf("only %d JVM entries in the toolchain table; the walk is not exercising it", walked)
+	}
+	// Every reader of a JVM variable is in the hand-kept list the per-launcher
+	// test walks, so the two cannot drift apart.
+	for name, reads := range optionEnvReaders {
+		if hasString(reads, "JAVA_HOME") && !hasString(jvmToolNamesR4, name) {
+			t.Errorf("reader %s is missing from jvmToolNamesR4", name)
+		}
+	}
+}
+
 // execVarCaseR4 is an exec-controlling variable, a value and a command that
 // reads it.
 type execVarCaseR4 struct{ name, value, reader string }
