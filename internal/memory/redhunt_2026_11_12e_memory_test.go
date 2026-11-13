@@ -209,9 +209,12 @@ func rh1112eBestOf(runs int, f func()) time.Duration {
 // A fact dense in substitution openers but without a fetcher inside one
 // costs about what the released filter cost on it, and the cost stays linear.
 func TestRED_FactLooksUnsafeOpenerFloodsStayCheap(t *testing.T) {
-	size := 256 << 10
+	// The ungated expressions cost well over a hundred times the released
+	// filter on these inputs. Instrumented code on a small input narrows that
+	// gap unevenly between machines, so the race build keeps a wider margin.
+	size, maxRatio := 256<<10, 12.0
 	if raceEnabled {
-		size = 8 << 10
+		size, maxRatio = 8<<10, 60.0
 	}
 	for _, s := range rh1112eFloods(size) {
 		if FactLooksUnsafe(s) != baseFactLooksUnsafe(s) {
@@ -223,7 +226,7 @@ func TestRED_FactLooksUnsafeOpenerFloodsStayCheap(t *testing.T) {
 		now := rh1112eBestOf(3, func() { FactLooksUnsafe(s) })
 		ratio := float64(now) / float64(release)
 		t.Logf("flood %q: %v, %.1fx the released filter (%v)", s[:6], now, ratio, release)
-		if ratio > 12 {
+		if ratio > maxRatio {
 			t.Errorf("flood %q: %v, %.1fx the released filter (%v)", s[:6], now, ratio, release)
 		}
 	}
