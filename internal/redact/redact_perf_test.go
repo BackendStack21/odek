@@ -32,7 +32,7 @@ func redactSecretsReference(text string) string {
 }
 
 // redactReferencePass is one unconditional pass; shell reports whether a
-// shell-password rule had a match.
+// connection-URL or shell-password rule had a match.
 func redactReferencePass(text string) (string, bool) {
 	result := text
 	if r := currentReplacer(); r != nil {
@@ -45,7 +45,7 @@ func redactReferencePass(text string) (string, bool) {
 	for _, p := range patternsTail {
 		result = p.ReplaceAllString(result, "[REDACTED]")
 	}
-	shell := len(shellPasswordMatches(newScan(result, true))) > 0
+	shell := len(shellPasswordMatches(newScan(result, true))) > 0 || len(dbURLMatches(newScan(result, true))) > 0
 	return redactBasicAuth(redactGuarded(result)), shell
 }
 

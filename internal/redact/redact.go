@@ -1504,9 +1504,10 @@ func guardedPatternMatches(s *textScan) [][2]int {
 	return out
 }
 
-// guardedPatternSpans is guardedPatternMatches; shell reports whether a
-// MySQL/MariaDB client, sshpass or MYSQL_PWD password is among the spans.
-func guardedPatternSpans(s *textScan) (out [][2]int, shell bool) {
+// guardedPatternSpans is guardedPatternMatches; repeat reports whether a
+// connection URL or a MySQL/MariaDB client, sshpass or MYSQL_PWD password is
+// among the spans.
+func guardedPatternSpans(s *textScan) (out [][2]int, repeat bool) {
 	text := s.text
 	for _, g := range guardedPatterns {
 		if !s.may(g.re) {
@@ -1565,23 +1566,24 @@ func guardedPatternSpans(s *textScan) (out [][2]int, shell bool) {
 			}
 		}
 	}
-	out = append(out, dbURLMatches(s)...)
+	db := dbURLMatches(s)
+	out = append(out, db...)
 	out = append(out, commandCredentialMatches(s)...)
 	out = append(out, cookieMatches(text)...)
 	sp := shellPasswordMatches(s)
-	return append(out, sp...), len(sp) > 0
+	return append(out, sp...), len(db) > 0 || len(sp) > 0
 }
 
 // redactGuarded replaces every guarded match, merging overlaps, and reports
-// whether a MySQL/MariaDB client, sshpass or MYSQL_PWD password was among
-// them.
+// whether a connection URL or a MySQL/MariaDB client, sshpass or MYSQL_PWD
+// password was among them.
 func (s *textScan) redactGuarded() bool {
-	ms, shell := guardedPatternSpans(s)
+	ms, repeat := guardedPatternSpans(s)
 	if len(ms) == 0 {
 		return false
 	}
 	s.set(replaceSpans(s.text, ms))
-	return shell
+	return repeat
 }
 
 // replaceSpans replaces every span of text with the redaction marker, merging
@@ -1795,15 +1797,18 @@ func redactSecrets(text string, ungated bool) string {
 	if text == "" {
 		return text
 	}
-	out, shell := redactPass(text, ungated)
+	out, repeat := redactPass(text, ungated)
 	// A shell-password word is judged as one shell word, from the quoting the
 	// text around it has, and replaced up to its quotes: a replacement made by
 	// another rule can change that quoting (or where a word another
 	// shell-password rule read ends), and a replaced word can read differently
-	// to another rule. A text that changed and holds a MySQL/MariaDB client or
-	// sshpass word is redacted again until it stays the same, so redacting the
-	// output again, as every session save does, changes nothing.
-	again := shell || (out != text && shellPasswordWordIn(out, ungated))
+	// to another rule. A replaced connection URL can likewise take a quote out
+	// of the password of a URL it stood in, which matches only then. A text in
+	// which one of these rules replaced something, or that changed and holds a
+	// MySQL/MariaDB client or sshpass word, is redacted again until it stays
+	// the same, so redacting the output again, as every session save does,
+	// changes nothing.
+	again := repeat || (out != text && shellPasswordWordIn(out, ungated))
 	for round := 0; again && round < redactRepeats; round++ {
 		next, _ := redactPass(out, ungated)
 		if next == out {
@@ -1814,8 +1819,8 @@ func redactSecrets(text string, ungated bool) string {
 	return out
 }
 
-// redactRepeats bounds the extra passes over a text in which a shell-password
-// rule replaced something.
+// redactRepeats bounds the extra passes over a text in which a connection-URL
+// or shell-password rule replaced something.
 const redactRepeats = 4
 
 // shellPasswordWordIn reports whether text holds mysql, mariadb or sshpass in
@@ -1830,8 +1835,8 @@ func shellPasswordWordIn(text string, ungated bool) bool {
 	return false
 }
 
-// redactPass runs every redaction stage once; shell reports whether a
-// MySQL/MariaDB client, sshpass or MYSQL_PWD password was replaced.
+// redactPass runs every redaction stage once and reports whether a connection
+// URL or a MySQL/MariaDB client, sshpass or MYSQL_PWD password was replaced.
 func redactPass(text string, ungated bool) (string, bool) {
 	result := text
 	if r := currentReplacer(); r != nil {

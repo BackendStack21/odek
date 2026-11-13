@@ -243,6 +243,28 @@ func TestRED_SupersetShapesAreIdempotent(t *testing.T) {
 		check(`{"command":"` + redactR4JSON(line) + `","x":1}`)
 		check(`cmd := exec.Command("sh", "-c", "` + redactR4JSON(line) + `")`)
 	}
+	// A replaced connection URL can make the URL it stood in match.
+	check("]postgres://a:postgres://a:`\"Zq7Xk9;@h1/x|`\\\"@h1/x")
+	// Any sequence of the words, separators and values the rules read.
+	for i := 0; i < 4*n; i++ {
+		var b strings.Builder
+		for k := 1 + rng.Intn(14); k > 0; k-- {
+			b.WriteString(supersetTokens[rng.Intn(len(supersetTokens))])
+		}
+		in := b.String()
+		check(in)
+		if gated, ungated := RedactSecrets(in), redactSecrets(in, true); gated != ungated {
+			t.Fatalf("gates change the result: %q\n  gated   %q\n  ungated %q", in, gated, ungated)
+		}
+	}
+}
+
+// supersetTokens are the words, separators and values the sshpass, MySQL,
+// MYSQL_PWD and connection-URL rules read.
+var supersetTokens = []string{
+	"sshpass", "sshpass.exe", "-p", "-vp", "-P", "-f", "-e", "--", "mysql", "-sNp", "MYSQL_PWD", "=", ":", ",", " ", " ", `"`, "'", `\"`, `\\\"`,
+	"[", "]", "(", ")", "{", "}", "\\\n", `\n`, `\\\n`, `\t`, "\n", "Zq7Xk9", "$PW", "${PW}", "[REDACTED]", "ssh", "u@h",
+	"postgres://a:", "$A", "@h1/x", "mysql://u:", "{{", "}}", ";", "|", "`", "=>", "x",
 }
 
 // The scans this change added stay linear on their hot shapes.
