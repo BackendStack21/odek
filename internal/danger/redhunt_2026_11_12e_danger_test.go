@@ -169,3 +169,66 @@ func TestRED_SetAllexportInEveryOptionWord(t *testing.T) {
 		}
 	}
 }
+
+// The tilde of a java binary variable was expanded with the home directory
+// odek inherited although the command line had given HOME another value, so
+// `HOME=/tmp/x; JAVA_HOME=~/.sdkman/candidates/java/x mvn -v` was judged as a
+// JDK in the per-user install directory while the shell runs /tmp/x/...
+//
+// Correct behaviour: once the command line binds, reads or unsets HOME, or may
+// have, a java path spelled with ~ or $HOME is a value only known at run time.
+func TestRED_JavaPathTildeAfterHomeRebound(t *testing.T) {
+	t.Setenv("HOME", "/home/user")
+	t.Chdir(t.TempDir())
+	unsetExecEnvR4(t)
+	const jdk = `.sdkman/candidates/java/x`
+	if got := Classify(`JAVA_HOME=~/` + jdk + ` mvn -v`); got != Classify(`mvn -v`) {
+		t.Fatalf("premise: the per-user JDK directory classified %s", got)
+	}
+	readers := []string{
+		`JAVA_HOME=~/` + jdk + ` mvn -v`,
+		`export JAVA_HOME=~/` + jdk + `; mvn -v`,
+		`JAVACMD=~/` + jdk + `/bin/java mvn -v`,
+		`export JAVACMD=~/` + jdk + `/bin/java; ant -version`,
+		`JAVA_HOME=$HOME/` + jdk + ` mvn -v`,
+		`JAVA_HOME=${HOME}/` + jdk + ` mvn -v`,
+		`JAVA_HOME=~/` + jdk + ` java -version`,
+	}
+	for _, rebind := range []string{
+		`HOME=/tmp/x`, `export HOME=/tmp/x`, `h=/tmp/x; HOME=$h`, `read HOME < f`, `read -r HOME < f`, `unset HOME`,
+		`declare HOME=/tmp/x`, `declare -x HOME=/tmp/x`, `printf -v HOME %s /tmp/x`, `: ${HOME:=/tmp/x}`, `: ${HOME=/tmp/x}`,
+		`eval 'HOME=/tmp/x'`, `eval HOME=/tmp/x`, `HOME+=/../../tmp/x`, `declare -n r=HOME; r=/tmp/x`,
+		`v=HOME; read $v < f`, `v=HOME; export $v=/tmp/x`, `getopts a HOME`, `HOME=/usr/lib/jvm; eval 'HOME=/tmp/x'`,
+		`mapfile HOME < f`, `. ./env.sh`,
+	} {
+		for _, reader := range readers {
+			cmd := rebind + `; ` + reader
+			if got := Classify(cmd); Rank(got) < Rank(CodeExecution) {
+				t.Errorf("Classify(%q) = %s, want at least code_execution", cmd, got)
+			}
+		}
+	}
+	for _, cmd := range []string{
+		`HOME=/tmp/x JAVA_HOME=~/` + jdk + ` mvn -v`,
+		`env HOME=/tmp/x JAVA_HOME=~/` + jdk + ` mvn -v`,
+		`for HOME in /tmp/x; do JAVA_HOME=~/` + jdk + ` mvn -v; done`,
+		`f() { HOME=/tmp/x; }; f; JAVA_HOME=~/` + jdk + ` mvn -v`,
+		`JAVA_HOME=~/` + jdk + ` mvn -v "$(HOME=/tmp/x)"; HOME=/tmp/x`,
+		`bash -c 'HOME=/tmp/x'; HOME=/tmp/x; JAVA_HOME=~/` + jdk + ` mvn -v`,
+	} {
+		if got := Classify(cmd); Rank(got) < Rank(CodeExecution) {
+			t.Errorf("Classify(%q) = %s, want at least code_execution", cmd, got)
+		}
+	}
+	// Other names that end in HOME, and a HOME that is only read, change nothing.
+	for _, cmd := range []string{
+		`XDG_CONFIG_HOME=/tmp/x; JAVA_HOME=~/` + jdk + ` mvn -v`,
+		`echo "$HOME"; JAVA_HOME=~/` + jdk + ` mvn -v`,
+		`MAVEN_HOME=/opt/maven; JAVA_HOME=$HOME/` + jdk + ` mvn -v`,
+		`export JAVA_HOME=~/` + jdk + `; mvn -v`,
+	} {
+		if got, want := Classify(cmd), Classify(`mvn -v`); got != want {
+			t.Errorf("Classify(%q) = %s, want %s", cmd, got, want)
+		}
+	}
+}

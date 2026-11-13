@@ -271,6 +271,7 @@ func analyzeWithStateWork(cmd string, depth int, inherited *shellAnalysisState, 
 		state.options = newOptionEnvState()
 	}
 	state.optScope = state.options.newScope(state.optScope)
+	state.options.noteHomeBindings(tokens)
 	state.unquoted = unquotedVariableRefs(main)
 	prog := parseShell(tokens, ops)
 	if prog.bad {
@@ -354,6 +355,8 @@ func analyzeWithStateWork(cmd string, depth int, inherited *shellAnalysisState, 
 				continue
 			}
 			prepared = append(prepared, state.expand(st.words))
+			// A name a variable supplies (`export $v=...`) is seen once expanded.
+			state.options.noteHomeBindings(prepared[len(prepared)-1])
 		}
 		var pipeline []string
 		var repos []*gitRepoCtx

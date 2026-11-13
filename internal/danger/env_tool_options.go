@@ -336,6 +336,9 @@ type javaPathCtx struct {
 	known   bool
 	inline  []string
 	written map[string]bool
+	// homeRebound: the command line binds, reads or unsets HOME, or may, so
+	// ~ and $HOME no longer name the home directory odek inherited.
+	homeRebound bool
 }
 
 // processJavaPathCtx is the context of a command judged on its own: the
@@ -371,8 +374,11 @@ func (c javaPathCtx) resolve(value string) string {
 	names := []string{}
 	for _, a := range c.inline {
 		if name, _, ok := strings.Cut(a, "="); ok && name != "" {
-			names = append(names, name)
+			names = append(names, strings.TrimSuffix(name, "+"))
 		}
+	}
+	if c.homeRebound {
+		names = append(names, "HOME")
 	}
 	if c.moved() {
 		if strings.HasPrefix(value, "~+") || strings.HasPrefix(value, "~-") {
@@ -384,8 +390,33 @@ func (c javaPathCtx) resolve(value string) string {
 		if strings.Contains(value, "$"+name) || strings.Contains(value, "${"+name) {
 			return value
 		}
+		// A leading tilde is $HOME.
+		if name == "HOME" && strings.HasPrefix(value, "~") {
+			return value
+		}
 	}
 	return expandEnvVars(expandTilde(value))
+}
+
+// homeBindingWord matches a word that names HOME where a statement binds,
+// reads into or unsets a variable: the bare name (`read HOME`, `unset HOME`,
+// `for HOME in`, a nameref target), an assignment or append to it, also
+// inside the text of a payload, and the ${HOME:=word} expansion that assigns.
+// Names that only end in HOME (JAVA_HOME, XDG_CONFIG_HOME) and plain
+// references ($HOME, ${HOME}) do not match.
+var homeBindingWord = regexp.MustCompile(`(^|[^A-Za-z0-9_${])HOME($|[^A-Za-z0-9_/])|\$\{HOME:?=`)
+
+// noteHomeBindings records whether any of the words rebinds HOME.
+func (o *optionEnvState) noteHomeBindings(words []string) {
+	if o == nil || o.homeRebound {
+		return
+	}
+	for _, w := range words {
+		if strings.Contains(w, "HOME") && homeBindingWord.MatchString(w) {
+			o.homeRebound = true
+			return
+		}
+	}
 }
 
 // valueRisk judges the value of a variable whose words are not spliced into
@@ -676,6 +707,9 @@ type optionEnvState struct {
 	// remove or replace a value never lowers the verdict the value had.
 	values  map[string][]string
 	dropped map[string]bool
+	// homeRebound is set once a word of the command line or of a payload
+	// names HOME where a variable is bound (see homeBindingWord).
+	homeRebound bool
 }
 
 // maxOptionEnvValues bounds the values recorded per variable; a variable
@@ -1088,7 +1122,9 @@ func (s *shellAnalysisState) optionEnvAnalysis(inner, inline []string, payload s
 	// exportedWords counts the spliced words that come from the environment;
 	// the ones written on the command were counted when its stage started.
 	exportedWords := 0
-	javaCtx := javaPathCtx{cwd: payload.cwd, known: !payload.uncertain, written: payload.written}
+	// After a binding the analysis cannot follow, HOME may be rebound too.
+	javaCtx := javaPathCtx{cwd: payload.cwd, known: !payload.uncertain, written: payload.written,
+		homeRebound: s.options.homeRebound || s.options.dynamic}
 	judge := func(v optionEnvVar, value string) {
 		if v.kind != optionArgv && v.kind != optionToolArgs {
 			if _, isInline := inlineValues[v.name]; isInline {
