@@ -391,3 +391,36 @@ func TestRED_NarrowedShellPasswordRulesScaleLinearly(t *testing.T) {
 		redactR3Linear(t, name, gen)
 	}
 }
+
+// Outcomes docs/SECURITY.md states for these rules.
+func TestRED_DocumentedShellPasswordOutcomes(t *testing.T) {
+	deep := func(n int) string {
+		return "mysql " + strings.Repeat("(", n) + "x" + strings.Repeat(")", n) + " ; tar -cpf b.tar ."
+	}
+	for in, want := range map[string]string{
+		// In a connection URL the reference shape alone is judged.
+		"postgres://app:<hunter2>@db/app": "postgres://app:<hunter2>@db/app",
+		"postgres://app:{hunter2}@db/app": "postgres://app:{hunter2}@db/app",
+		"postgres://app:%PASS1%@db/app":   "postgres://app:%PASS1%@db/app",
+		"postgres://app:$X1@db/app":       "postgres://app:$X1@db/app",
+		// Code-shaped literals stay readable in the mapping forms only.
+		"MYSQL_PWD: my.pass":                      "MYSQL_PWD: my.pass",
+		"MYSQL_PWD = settings.DB['PASSWORD']":     "MYSQL_PWD = settings.DB['PASSWORD']",
+		"MYSQL_PWD: undefined":                    "MYSQL_PWD: undefined",
+		"MYSQL_PWD: NaN":                          "MYSQL_PWD: NaN",
+		"MYSQL_PWD: the variable":                 "MYSQL_PWD: [REDACTED] variable",
+		"mysql -h $(a; b) -p" + narrowPW:          "mysql -h $(a; b) -p[REDACTED]",
+		"mysqlpump -Rp" + narrowPW:                "mysqlpump -Rp[REDACTED]",
+		"mysql -Rp" + narrowPW:                    "mysql -Rp" + narrowPW,
+		"timeout -s KILL 5 /opt/db/mysql -pfoo":   "timeout -s KILL 5 /opt/db/mysql -p[REDACTED]",
+		"mysql -p3306-3307:3306-3307 db":          "mysql -p[REDACTED] db",
+		"docker run --entrypoint mysqldump -pfoo": "docker run --entrypoint mysqldump -p[REDACTED]",
+		// Fifteen open parentheses are followed; one more and no separator counts.
+		deep(15): deep(15),
+		deep(16): "mysql " + strings.Repeat("(", 16) + "x" + strings.Repeat(")", 16) + " ; tar -cp[REDACTED] b.tar .",
+	} {
+		if out := RedactSecrets(in); out != want {
+			t.Errorf("%q\n got  %q\n want %q", in, out, want)
+		}
+	}
+}
