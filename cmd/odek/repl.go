@@ -314,7 +314,13 @@ func replCmd(args []string) error {
 			turn++
 			continue
 		}
-		ctx, stopTurnScope := replTurnScope(sigCh)
+		ctx, stopTurnScope := replTurnScope(sigCh, func() {
+			bgRT.Shutdown()
+			if mcpCleanup != nil {
+				mcpCleanup()
+			}
+			_ = agent.Close()
+		})
 		err = withSessionExecution(ctx, store, sess.ID, func() error {
 			latest, err := store.Load(sess.ID)
 			if err != nil {
@@ -438,15 +444,26 @@ func replCmd(args []string) error {
 	return nil
 }
 
-// replForceExit terminates the process on a repeated interrupt; a variable so
-// tests can observe it.
+// replForceExit terminates the process once forced-exit cleanup is done; a
+// variable so tests can observe it.
 var replForceExit = func() { os.Exit(130) }
 
+// replUnwindGrace is how long a turn gets to finish unwinding after a repeated
+// interrupt before the REPL cleans up and exits; replCleanupBound bounds that
+// cleanup. Variables so tests can shrink them.
+var (
+	replUnwindGrace  = 5 * time.Second
+	replCleanupBound = 5 * time.Second
+)
+
 // replTurnScope returns a context cancelled by the first interrupt received
-// on sigCh while the turn runs. A second interrupt before stop is called
-// forces the process to exit, so a turn stuck unwinding never makes the REPL
-// unkillable. Interrupts that arrived while the REPL was idle are discarded.
-func replTurnScope(sigCh chan os.Signal) (context.Context, func()) {
+// on sigCh while the turn runs. Further interrupts are absorbed so the turn
+// unwinds normally (partial history persisted, deferred cleanups run); only
+// if it is still unwinding replUnwindGrace after a repeated interrupt does
+// the REPL run forceCleanup (bounded by replCleanupBound) and exit, so a hung
+// turn never makes the REPL unkillable. Interrupts that arrived while the
+// REPL was idle are discarded.
+func replTurnScope(sigCh chan os.Signal, forceCleanup func()) (context.Context, func()) {
 	for drained := false; !drained; {
 		select {
 		case <-sigCh:
@@ -467,8 +484,28 @@ func replTurnScope(sigCh chan os.Signal) (context.Context, func()) {
 		}
 		select {
 		case <-sigCh:
-			replForceExit()
 		case <-done:
+			return
+		}
+		grace := time.NewTimer(replUnwindGrace)
+		defer grace.Stop()
+		for {
+			select {
+			case <-sigCh:
+			case <-done:
+				return
+			case <-grace.C:
+				if forceCleanup != nil {
+					cleaned := make(chan struct{})
+					go func() { defer close(cleaned); forceCleanup() }()
+					select {
+					case <-cleaned:
+					case <-time.After(replCleanupBound):
+					}
+				}
+				replForceExit()
+				return
+			}
 		}
 	}()
 	return ctx, func() {

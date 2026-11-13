@@ -69,12 +69,14 @@ func (m *opsReplLLM) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func TestOpsReplTurnScope(t *testing.T) {
 	sig := make(chan os.Signal, 2)
 	exited := make(chan struct{}, 1)
-	orig := replForceExit
+	cleaned := make(chan struct{}, 1)
+	orig, origGrace := replForceExit, replUnwindGrace
 	replForceExit = func() { exited <- struct{}{} }
-	defer func() { replForceExit = orig }()
+	replUnwindGrace = 50 * time.Millisecond
+	defer func() { replForceExit, replUnwindGrace = orig, origGrace }()
 
 	sig <- os.Interrupt // idle-time interrupt must not cancel the next turn
-	ctx, stop := replTurnScope(sig)
+	ctx, stop := replTurnScope(sig, func() { cleaned <- struct{}{} })
 	if ctx.Err() != nil {
 		t.Fatal("stale idle interrupt cancelled the new turn")
 	}
@@ -88,11 +90,29 @@ func TestOpsReplTurnScope(t *testing.T) {
 	select {
 	case <-exited:
 	case <-time.After(10 * time.Second):
-		t.Fatal("second interrupt did not force exit")
+		t.Fatal("a turn stuck unwinding after a repeated interrupt did not force exit")
+	}
+	select {
+	case <-cleaned:
+	default:
+		t.Fatal("forced exit skipped the cleanup")
 	}
 	stop()
 
-	ctx2, stop2 := replTurnScope(sig)
+	// A repeated interrupt while the turn unwinds in time is absorbed.
+	replUnwindGrace = time.Hour
+	ctx3, stop3 := replTurnScope(sig, func() { t.Error("cleanup ran for a turn that unwound") })
+	sig <- os.Interrupt
+	<-ctx3.Done()
+	sig <- os.Interrupt
+	stop3()
+	select {
+	case <-exited:
+		t.Fatal("repeated interrupt forced exit although the turn unwound")
+	default:
+	}
+
+	ctx2, stop2 := replTurnScope(sig, nil)
 	defer stop2()
 	if ctx2.Err() != nil {
 		t.Fatal("next turn starts cancelled")
