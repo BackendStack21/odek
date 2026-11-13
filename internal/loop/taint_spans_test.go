@@ -235,13 +235,14 @@ func TestTaintSpanStore_ObserveSources(t *testing.T) {
 		t.Error("wrapped @-ref body counted as principal text")
 	}
 	// Incremental: re-observing the same history scans nothing new; a trimmed
-	// history rescans without duplicating.
+	// history (trimming drops a tool-call group whole) rescans without
+	// duplicating.
 	before := s.seq
 	s.observe(msgs, sec16TaintEnv)
 	if s.seq != before {
 		t.Error("unchanged history rescanned")
 	}
-	s.observe(msgs[3:], sec16TaintEnv)
+	s.observe(append(msgs[:1:1], msgs[5:]...), sec16TaintEnv)
 	if s.seq != before {
 		t.Error("trimmed history re-recorded already scanned messages")
 	}

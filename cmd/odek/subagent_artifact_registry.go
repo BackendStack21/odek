@@ -572,6 +572,25 @@ func ensureStagingRoot(cwd string) {
 	_ = f.Close()
 }
 
+// isStagingTaskDirName reports whether name has the shape newTaskID gives a
+// staging directory ("task-" plus lowercase hex or base36 digits). The
+// staging root is shared with other stores (the Web UI upload store lives in
+// .odek-artifacts/uploads), so the sweep removes only entries it can
+// positively identify as its own.
+func isStagingTaskDirName(name string) bool {
+	rest, ok := strings.CutPrefix(name, "task-")
+	if !ok || rest == "" || len(rest) > 64 {
+		return false
+	}
+	for i := 0; i < len(rest); i++ {
+		c := rest[i]
+		if (c < '0' || c > '9') && (c < 'a' || c > 'z') {
+			return false
+		}
+	}
+	return true
+}
+
 // sweepStagingOrphans removes sibling staging task dirs older than maxAge —
 // crash/kill orphans the runner could not clean (the janitor only knows
 // ~/.odek, not user workspaces). The current task's dir is never touched,
@@ -596,7 +615,7 @@ func sweepStagingOrphans(cwd, currentTaskID string, maxAge time.Duration) int {
 	cutoff := time.Now().Add(-maxAge)
 	removed := 0
 	for _, e := range entries {
-		if !e.IsDir() || e.Name() == currentTaskID {
+		if !e.IsDir() || e.Name() == currentTaskID || !isStagingTaskDirName(e.Name()) {
 			continue
 		}
 		info, err := root.Lstat(e.Name())

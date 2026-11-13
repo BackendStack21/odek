@@ -728,7 +728,7 @@ func (t *searchFilesTool) Schema() any {
 			},
 			"file_glob": map[string]any{
 				"type":        "string",
-				"description": "Filter files by pattern in content mode (e.g. '*.go'). ALWAYS use this on broad paths — without it every file is scanned (slow on large trees).",
+				"description": "Filter files by pattern in content mode (e.g. '*.go'; a pattern with '/' or '**' such as 'src/**/*.go' matches the path relative to the search root; a malformed pattern is an error). ALWAYS use this on broad paths — without it every file is scanned (slow on large trees).",
 			},
 			"limit": map[string]any{
 				"type":        "integer",
@@ -866,6 +866,21 @@ func (t *searchFilesTool) searchContent(args searchFilesArgs) (string, error) {
 		return jsonError(fmt.Sprintf("invalid regex pattern %q: %v", args.Pattern, err))
 	}
 
+	// file_glob without a separator or "**" matches the file name; one with
+	// either matches the path relative to the search root, as the glob tool
+	// does. A malformed pattern is an error, never a silent empty result.
+	var globRe *regexp.Regexp
+	if args.FileGlob != "" {
+		if strings.Contains(args.FileGlob, "/") || strings.Contains(args.FileGlob, "**") {
+			globRe, err = globToRegex(args.FileGlob)
+			if err != nil {
+				return jsonError(fmt.Sprintf("invalid file_glob %q: %v", args.FileGlob, err))
+			}
+		} else if _, err := filepath.Match(args.FileGlob, ""); err != nil {
+			return jsonError(fmt.Sprintf("invalid file_glob %q: %v", args.FileGlob, err))
+		}
+	}
+
 	var matches []searchMatch
 	var skipped []string
 	limit := args.Limit
@@ -935,7 +950,13 @@ func (t *searchFilesTool) searchContent(args searchFilesArgs) (string, error) {
 		// Apply file_glob filter first: a file the glob excludes is never
 		// read or returned, so it needs no classification.
 		if args.FileGlob != "" {
-			match, _ := filepath.Match(args.FileGlob, info.Name())
+			var match bool
+			if globRe != nil {
+				rel, relErr := filepath.Rel(args.Path, path)
+				match = relErr == nil && globRe.MatchString(filepath.ToSlash(rel))
+			} else {
+				match, _ = filepath.Match(args.FileGlob, info.Name())
+			}
 			if !match {
 				return nil
 			}

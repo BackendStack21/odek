@@ -146,17 +146,6 @@ var patternsTail = []*regexp.Regexp{
 	// above.
 	// Gate: the three segments as runs of token bytes around two dots.
 	gated(regexp.MustCompile(`\b[MNO][A-Za-z0-9_-]{22,27}\.[A-Za-z0-9_-]{5,7}\.[A-Za-z0-9_-]{27,40}\b`), shaped(dottedTokenShape)),
-
-	// Database connection URLs with embedded credentials. We require a
-	// scheme that genuinely carries DB creds (so this doesn't catch HTTP
-	// basic auth URLs that often appear legitimately in code). The
-	// password segment must be at least 6 chars to avoid matching common
-	// placeholders like `:x@`.
-	// Gate: every match holds "://" and "@", and one scheme name in some
-	// letter case (postgresql holds postgres, mongodb+srv mongodb, rediss
-	// redis, amqps amqp).
-	gated(regexp.MustCompile(`(?i)\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|rediss?|amqps?|mssql|clickhouse)(?:\+[a-z0-9_]+)?://[^:\s/]*:[^@\s/]{6,}@[^\s'\x60"]+`),
-		literals(exact("://"), exact("@"), folded("postgres", "mysql", "mongodb", "redis", "amqp", "mssql", "clickhouse"))),
 }
 
 // Credential-named assignments (api_key, access_token, password,
@@ -241,6 +230,122 @@ var valuePatterns = []guardedPattern{
 	{gated(regexp.MustCompile(`(?:^|[^A-Za-z0-9.-])hooks\.slack\.com/(?:services|workflows|triggers)/(?:[A-Za-z0-9]+/){1,3}([A-Za-z0-9]{20,})`), literals(exact("hooks.slack.com/"))), plausibleWebhookToken},
 	// Gate: every match holds "discord" and "webhooks/".
 	{gated(regexp.MustCompile(`(?:^|[^A-Za-z0-9.-])discord(?:app)?\.com/api/(?:v[0-9]+/)?webhooks/[0-9]+/([A-Za-z0-9_-]{40,})`), literals(exact("webhooks/"), exact("discord"))), plausibleWebhookToken},
+}
+
+// Database connection URLs with embedded credentials are redacted by two
+// patterns whose spans are joined (dbURLMatches).
+//
+// dbURLBasePattern requires a scheme that genuinely carries DB creds (so
+// this doesn't catch HTTP basic auth URLs that often appear legitimately in
+// code) and a password segment of at least 6 chars, to avoid matching common
+// placeholders like `:x@`. The match runs to the next blank or quote and the
+// whole of it is replaced, with one exception: a clean reference URL (see
+// dbURLHoldsSecret).
+// Gate: every match holds "://" and "@", and one scheme name in some letter
+// case (postgresql holds postgres, mongodb+srv mongodb, rediss redis, amqps
+// amqp).
+var dbURLBasePattern = gated(regexp.MustCompile(`(?i)\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|rediss?|amqps?|mssql|clickhouse)(?:\+[a-z0-9_]+)?://[^:\s/]*:[^@\s/]{6,}@[^\s'\x60"]+`),
+	literals(exact("://"), exact("@"), folded("postgres", "mysql", "mongodb", "redis", "amqp", "mssql", "clickhouse")))
+
+// dbURLWidePattern adds what the base pattern does not match: a password
+// that starts like a reference, or holds a '/' or an '@', at any length, and
+// a URL right after a JSON \n, \r or \t escape. Its span (group 1) is
+// replaced under the same exception. Gate: as the base pattern.
+var dbURLWidePattern = gated(regexp.MustCompile(`(?i)(?:\b|\\[nrt])((?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|rediss?|amqps?|mssql|clickhouse)(?:\+[a-z0-9_]+)?://[^:\s/]*:(?:[^@\s/]{6,}|[$%{<][^@\s/]*|[^@\s'"\x60/]*[/@][^\s'"\x60]*)@[^\s'\x60"]+)`),
+	literals(exact("://"), exact("@"), folded("postgres", "mysql", "mongodb", "redis", "amqp", "mssql", "clickhouse")))
+
+// dbURLMatches returns the spans of the connection URLs that hold a
+// password. Every match of the base pattern is a span unless it is a clean
+// reference URL, so nothing the base pattern would replace stays readable
+// but that; the wide pattern only adds spans.
+func dbURLMatches(s *textScan) [][2]int {
+	text := s.text
+	var out [][2]int
+	if s.may(dbURLBasePattern) {
+		var ahead atAhead
+		for _, m := range dbURLBasePattern.FindAllStringIndex(text, -1) {
+			if dbURLHoldsSecret(text[m[0]:m[1]]) || ahead.before(text, m[1]) {
+				out = append(out, [2]int{m[0], m[1]})
+			}
+		}
+	}
+	if s.may(dbURLWidePattern) {
+		var ahead atAhead
+		for _, m := range dbURLWidePattern.FindAllStringSubmatchIndex(text, -1) {
+			if dbURLHoldsSecret(text[m[2]:m[3]]) || ahead.before(text, m[3]) {
+				out = append(out, [2]int{m[2], m[3]})
+			}
+		}
+	}
+	return out
+}
+
+// atAhead answers, for increasing offsets, whether an '@' follows the offset
+// before the next blank: a span that a quote ended may go on as the password
+// of a later user:password pair. It keeps the next '@' and the next blank
+// found so far, so a sequence of queries scans the text once.
+type atAhead struct{ at, blank int }
+
+func (a *atAhead) before(text string, off int) bool {
+	if a.at < off {
+		a.at = len(text)
+		if k := strings.IndexByte(text[off:], '@'); k >= 0 {
+			a.at = off + k
+		}
+	}
+	if a.blank < off {
+		a.blank = len(text)
+		if k := strings.IndexAny(text[off:], " \t\n\f\r"); k >= 0 {
+			a.blank = off + k
+		}
+	}
+	return a.at < a.blank
+}
+
+// dbURLReferenceRe matches a password that is wholly a template reference
+// ({name}, {{ name }}, <name>, %(name)s, %NAME%); shellVariableRe matches the
+// '$' forms. Anything mixing a reference with literal characters does not
+// match and is redacted.
+var dbURLReferenceRe = regexp.MustCompile(`^(?:\{\{?\s*[A-Za-z_][A-Za-z0-9_.-]*\s*\}\}?|<[A-Za-z_][A-Za-z0-9_ -]*>|%\([A-Za-z_][A-Za-z0-9_]*\)s|%[A-Za-z_][A-Za-z0-9_]*%)$`)
+
+// shellVariableRe is the shape of a shell variable reference standing for a
+// password: ${NAME}, or a bare $NAME of upper-case letters, digits and '_'.
+// $Passw0rd, $ecret123 and a default-value form such as ${VAR:-literal} are
+// not in this shape.
+var shellVariableRe = regexp.MustCompile(`^\$(?:\{[A-Za-z_][A-Za-z0-9_]*\}|[A-Z_][A-Z0-9_]*)$`)
+
+// dbURLHoldsSecret judges a matched connection URL span, which runs to the
+// next blank or quote: it holds no secret only when it is a single URL (one
+// "://" and one '@') whose password (everything after the first ':' of the
+// userinfo) is wholly a reference (${DB_PASSWORD}, $DB_PASSWORD, {password},
+// {{ password }}, <password>, %(password)s, %DB_PASSWORD%), which leaves
+// compose files and code readable. A password may itself hold '@', ':', '/',
+// ',' or ';', so a second '@' can always belong to the password before it,
+// and a span with one, or with a second URL, is a secret whatever separates
+// its parts.
+func dbURLHoldsSecret(url string) bool {
+	i := strings.Index(url, "://")
+	if i < 0 {
+		return true
+	}
+	rest := url[i+3:]
+	at := strings.IndexByte(rest, '@')
+	if at < 0 || strings.IndexByte(rest[at+1:], '@') >= 0 || strings.Contains(rest, "://") {
+		return true
+	}
+	c := strings.IndexByte(rest[:at], ':')
+	return c < 0 || pwHoldsSecret(rest[c+1:at])
+}
+
+// pwHoldsSecret reports whether one URL password is anything but a pure
+// reference. A '$' form counts as a reference only in shell-variable shape
+// ($DB_PASSWORD, ${db_password}); $Passw0rd and $ecret123 are literal
+// passwords.
+func pwHoldsSecret(pw string) bool {
+	if strings.HasPrefix(pw, "$") {
+		return !shellVariableRe.MatchString(pw)
+	}
+	return !dbURLReferenceRe.MatchString(pw)
 }
 
 // plausibleAuthPassword judges the PASSWORD of a USER:PASSWORD operand or a
@@ -609,9 +714,9 @@ var commandTools = []struct {
 // commandCredentialMatches returns the spans of passwords given on the
 // command line of curl (-u, -U, --user, --proxy-user USER:PASSWORD, also
 // attached and clustered), wget (--password and variants) and HTTPie/xh
-// (--auth, -a USER:PASSWORD). Scoping to these commands keeps -u / -U /
-// -a as used by docker, sudo, rsync, pip and others readable. Command words
-// match in any case.
+// (--auth, -a USER:PASSWORD). Scoping to these commands keeps -u / -U / -a
+// as used by docker, sudo, rsync, pip and others readable. Command words
+// match in any case, also right after a JSON \n, \r or \t escape.
 func commandCredentialMatches(s *textScan) [][2]int {
 	text := s.text
 	var out [][2]int
@@ -624,7 +729,7 @@ func commandCredentialMatches(s *textScan) [][2]int {
 			}
 			after := j + len(tool.name)
 			pos = after
-			if j > 0 && isCommandWordByte(text[j-1]) {
+			if j > 0 && isCommandWordByte(text[j-1]) && !jsonBlankEscapeBefore(text, j) {
 				continue
 			}
 			if after < len(text) && !strings.ContainsRune(" \t\n\r\\", rune(text[after])) {
@@ -643,6 +748,13 @@ func commandCredentialMatches(s *textScan) [][2]int {
 
 func isCommandWordByte(c byte) bool {
 	return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_' || c == '-' || c == '.'
+}
+
+// jsonBlankEscapeBefore reports whether text[:i] ends in a JSON \n, \r or \t
+// escape (an odd run of backslashes before the letter), which separates the
+// word at i from what precedes it in the decoded text.
+func jsonBlankEscapeBefore(text string, i int) bool {
+	return i >= 2 && strings.IndexByte("nrt", text[i-1]) >= 0 && oddBackslashesBefore(text, 0, i-1)
 }
 
 func toolCredentialSpans(text string, kind int, json bool, words []cmdWord) [][2]int {
@@ -1388,8 +1500,15 @@ func oddBackslashesBefore(text string, vs, i int) bool {
 // guardedPatternMatches is guardedMatches without the credential-named
 // assignments, which RedactSecrets handles in an earlier stage.
 func guardedPatternMatches(s *textScan) [][2]int {
+	out, _ := guardedPatternSpans(s)
+	return out
+}
+
+// guardedPatternSpans is guardedPatternMatches; repeat reports whether a
+// connection URL or a MySQL/MariaDB client, sshpass or MYSQL_PWD password is
+// among the spans.
+func guardedPatternSpans(s *textScan) (out [][2]int, repeat bool) {
 	text := s.text
-	var out [][2]int
 	for _, g := range guardedPatterns {
 		if !s.may(g.re) {
 			continue
@@ -1447,17 +1566,29 @@ func guardedPatternMatches(s *textScan) [][2]int {
 			}
 		}
 	}
+	db := dbURLMatches(s)
+	out = append(out, db...)
 	out = append(out, commandCredentialMatches(s)...)
-	return append(out, cookieMatches(text)...)
+	out = append(out, cookieMatches(text)...)
+	sp := shellPasswordMatches(s)
+	return append(out, sp...), len(db) > 0 || len(sp) > 0
 }
 
-// redactGuarded replaces every guarded match, merging overlaps.
-func (s *textScan) redactGuarded() {
-	text := s.text
-	ms := guardedPatternMatches(s)
+// redactGuarded replaces every guarded match, merging overlaps, and reports
+// whether a connection URL or a MySQL/MariaDB client, sshpass or MYSQL_PWD
+// password was among them.
+func (s *textScan) redactGuarded() bool {
+	ms, repeat := guardedPatternSpans(s)
 	if len(ms) == 0 {
-		return
+		return false
 	}
+	s.set(replaceSpans(s.text, ms))
+	return repeat
+}
+
+// replaceSpans replaces every span of text with the redaction marker, merging
+// overlaps.
+func replaceSpans(text string, ms [][2]int) string {
 	sort.Slice(ms, func(i, j int) bool { return ms[i][0] < ms[j][0] })
 	var b strings.Builder
 	last := 0
@@ -1473,7 +1604,7 @@ func (s *textScan) redactGuarded() {
 		last = m[1]
 	}
 	b.WriteString(text[last:])
-	s.set(b.String())
+	return b.String()
 }
 
 // basicAuthPattern matches an HTTP Basic credential in a header line
@@ -1666,7 +1797,47 @@ func redactSecrets(text string, ungated bool) string {
 	if text == "" {
 		return text
 	}
+	out, repeat := redactPass(text, ungated)
+	// A shell-password word is judged as one shell word, from the quoting the
+	// text around it has, and replaced up to its quotes: a replacement made by
+	// another rule can change that quoting (or where a word another
+	// shell-password rule read ends), and a replaced word can read differently
+	// to another rule. A replaced connection URL can likewise take a quote out
+	// of the password of a URL it stood in, which matches only then. A text in
+	// which one of these rules replaced something, or that changed and holds a
+	// MySQL/MariaDB client or sshpass word, is redacted again until it stays
+	// the same, so redacting the output again, as every session save does,
+	// changes nothing.
+	again := repeat || (out != text && shellPasswordWordIn(out, ungated))
+	for round := 0; again && round < redactRepeats; round++ {
+		next, _ := redactPass(out, ungated)
+		if next == out {
+			break
+		}
+		out = next
+	}
+	return out
+}
 
+// redactRepeats bounds the extra passes over a text in which a connection-URL
+// or shell-password rule replaced something.
+const redactRepeats = 4
+
+// shellPasswordWordIn reports whether text holds mysql, mariadb or sshpass in
+// any letter case (MYSQL_PWD holds mysql).
+func shellPasswordWordIn(text string, ungated bool) bool {
+	s := newScan(text, ungated)
+	for _, w := range []string{"mysql", "mariadb", "sshpass"} {
+		if s.indexFoldFrom(w, 0) >= 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// redactPass runs every redaction stage once and reports whether a connection
+// URL or a MySQL/MariaDB client, sshpass or MYSQL_PWD password was replaced.
+func redactPass(text string, ungated bool) (string, bool) {
 	result := text
 	if r := currentReplacer(); r != nil {
 		result = r.Replace(result)
@@ -1677,8 +1848,8 @@ func redactSecrets(text string, ungated bool) string {
 	s.redactPatterns(patternsHead)
 	s.redactCredentials()
 	s.redactPatterns(patternsTail)
-	s.redactGuarded()
-	return redactBasicAuth(s.text)
+	shell := s.redactGuarded()
+	return redactBasicAuth(s.text), shell
 }
 
 // redactPatterns applies each pattern in order, skipping a pattern whose gate

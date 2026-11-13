@@ -639,6 +639,8 @@ larger than a headline go as FLAT files into its per-task staging directory
 discarded). The runner relocates them to `~/.odek/artifacts/<session>/<task>/`,
 measures sha256/size, and returns `odek.artifact-ref/v1` references with the result.
 
+At start, a delegated run removes stale (over 24 hours) staging directories left by crashed runs. Only directories named like staging task dirs (`task-<id>`) are ever removed; every other entry under `.odek-artifacts/` (such as the Web UI `uploads/` store) is left alone, and symlinks are never followed.
+
 The parent sees one metadata line per artifact — id, media type, size, short hash, owning task, first-line summary — plus inlined content for small text artifacts (≤ 32 KiB) within a 128 KiB per-call inline budget (largest first; the rest degrade to their metadata line, never dropped). Everything larger is readable on demand via `artifact_read`:
 
 ```

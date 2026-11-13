@@ -361,6 +361,13 @@ type Agent struct {
 	invocationActive   bool
 	invocationExecuted bool
 	invocationStarted  time.Time
+
+	// skillText is the principal's own request for one user message that
+	// carries it only inside an untrusted wrapper (SetSkillMatchText). The
+	// skill loader reads it from the loop's goroutine.
+	skillTextMu  sync.Mutex
+	skillTextFor string
+	skillText    string
 }
 
 // ToolFilterConfig controls which tools are exposed to the LLM.
@@ -852,7 +859,7 @@ func New(cfg Config) (_ *Agent, setupErr error) {
 		maxSlots := cfg.Skills.MaxLazySlots
 
 		engine.SetSkillLoader(func(userInput string) string {
-			matched := sm.MatchLazySkills(userInput, maxSlots)
+			matched := sm.MatchLazySkillsFor(userInput, agent.skillMatchText(userInput), maxSlots)
 			if len(matched) == 0 {
 				return ""
 			}
@@ -1251,12 +1258,48 @@ func (a *Agent) TaintSpans(messages []session.Message) []session.TaintSpan {
 	return a.engine.TaintSpanState(messages).Spans
 }
 
+// SetSkillMatchText supplies the principal's own request for message, the
+// user message that opens the next run, when message carries that request
+// only inside an untrusted wrapper — a Telegram voice transcript or a
+// photo/document caption. Lazy skills for exactly that message are matched
+// on text as well (skills.SkillManager.MatchLazySkillsFor); the model still
+// sees only message, and any other input (another message, plan step
+// titles) is matched as before. Pass only text the principal authored:
+// never tool output, fetched pages, file bodies or forwarded messages. An
+// empty message or text clears it.
+func (a *Agent) SetSkillMatchText(message, text string) {
+	if a == nil {
+		return
+	}
+	a.skillTextMu.Lock()
+	defer a.skillTextMu.Unlock()
+	if message == "" || strings.TrimSpace(text) == "" {
+		a.skillTextFor, a.skillText = "", ""
+		return
+	}
+	a.skillTextFor, a.skillText = message, text
+}
+
+// skillMatchText returns the principal text SetSkillMatchText bound to
+// input, or "".
+func (a *Agent) skillMatchText(input string) string {
+	a.skillTextMu.Lock()
+	defer a.skillTextMu.Unlock()
+	if a.skillTextFor == "" || input != a.skillTextFor {
+		return ""
+	}
+	return a.skillText
+}
+
 // TaintState records the untrusted spans of messages (the history about to
-// be saved) and returns the engine's span state: the bounded span list and
-// the overflow filter of every span past the bound. Merge it into the
-// session (session.MergeTaintState, Session.SetTaintState) and seed later
+// be saved) and returns the engine's span state: the bounded span list, the
+// overflow filter of every span past the bound, whether a tainting
+// background job ran, and the coverage of messages the state vouches for.
+// Merge it into the session (session.MergeTaintState,
+// Session.SetTaintState) in the same save as the history and seed later
 // runs with loop.WithTaintSpanSeed(ctx, sess.TaintState()), so trimming or
-// rebuilding never forgets a span.
+// rebuilding never forgets a span and a rebuilt engine does not extract
+// again what the state already records.
 func (a *Agent) TaintState(messages []session.Message) session.TaintState {
 	return a.engine.TaintSpanState(messages)
 }

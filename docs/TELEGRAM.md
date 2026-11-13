@@ -115,7 +115,7 @@ Non-HTTPS, non-loopback, or non-Telegram URLs are rejected to prevent the bot to
 - Budget resets automatically at midnight UTC (the counter file is keyed by the UTC date); an unreadable counter file counts as a fully spent budget (fail closed)
 - **Upgrade note**: the counter file is keyed by the UTC date. Operators outside UTC who upgrade from a release that keyed it by the local date see the daily usage counter reset once, at the first run after the upgrade.
 - **Pre-flight check**: before each agent run (chat turns and scheduled jobs), a read-only check refuses the run when the recorded usage has reached the budget, avoiding wasted API calls
-- **Post-run billing**: after each agent run, actual token usage (`input + output`) is deducted from the daily budget — also for failed or cancelled chat turns and scheduled jobs that return an error, since those tokens were spent too. The usage is recorded even when it pushes the total past the budget, so the overshooting run exhausts the budget and later runs are refused
+- **Post-run billing**: after each agent run, actual token usage (`input + output`, where input includes cache reads and cache writes) is deducted from the daily budget — also for failed or cancelled chat turns and scheduled jobs that return an error, since those tokens were spent too. The usage is recorded even when it pushes the total past the budget, so the overshooting run exhausts the budget and later runs are refused
 - Returns a warning message to the chat if the budget is exceeded, but still delivers the response
 - No-op when budget is 0 (unlimited, the default)
 - Configurable via `ODEK_TELEGRAM_DAILY_TOKEN_BUDGET` env var or `daily_token_budget` in `odek.json`
@@ -198,9 +198,12 @@ The `Handler` struct routes incoming updates to the appropriate callback based o
 |---|---|---|
 | `OnTextMessage` | Plain text message | `(chatID int64, messageID int, text string, forwarded bool, userID int64) (string, error)` |
 | `OnCommand` | Slash command (e.g. `/start`) | `(chatID int64, command, args string) (string, error)` |
-| `OnVoiceMessage` | Voice message (OGG Opus) | `(chatID int64, messageID int, fileID string, userID int64) (string, error)` |
-| `OnPhotoMessage` | Photo message | `(chatID int64, messageID int, fileIDs []string, caption string, userID int64) (string, error)` |
+| `OnVoiceMessage` | Voice message (OGG Opus) | `(chatID int64, messageID int, fileID string, forwarded bool, userID int64) (string, error)` |
+| `OnPhotoMessage` | Photo message | `(chatID int64, messageID int, fileIDs []string, caption string, forwarded bool, userID int64) (string, error)` |
+| `OnDocumentMessage` | Document / file (a caption sent with it is the user's request, guard-scanned and wrapped as untrusted like a photo caption) | `(chatID int64, messageID int, fileID, fileName, caption string, forwarded bool, userID int64) (string, error)` |
 | `OnCallbackQuery` | Inline keyboard callback | `(chatID int64, callbackData string, userID int64) (string, error)` |
+
+`forwarded` is true when the sender did not author the content: the message was forwarded from another chat or user, or sent through an inline bot (`via_bot`), which produced its text, caption, voice note or file. Such a message is never routed to `OnCommand`, its text is wrapped as untrusted content, and its caption or transcript is not the sender's own words.
 
 All callbacks return a response string (may be empty) and an error. The `Handle` method:
 1. Sends `SendChatAction("typing")` immediately
@@ -259,7 +262,11 @@ shown in the prompt, and in denial messages returned to the model, have control
 characters, escape sequences, bidi overrides and invisible characters replaced
 by visible escapes (`\x1b`, `\u202e`), and an over-long command keeps its head
 and tail around a `…[N more bytes]` marker, so the chat shows the command that
-will run. Starting a fresh conversation with `/new` also drops that chat's
+will run. The model-supplied description is capped so it never crowds the
+command out, and a batch card that has to be shortened keeps a fair share of
+every entry (at least 96 bytes each, so the index, tool name and start of the command stay readable); a batch with too many entries for that lists a run of leading entries and a run of trailing entries that ends with the last one (payloads sit at the end), with
+`… and N more entries not shown` between them where the entries were left out (N is exactly the number of entries left out, counted on the card as received, before anything is cut for display; the card's header line and its sandbox-network note are always shown and never counted, and for a single command that is prompted as a batch each of its lines is an entry), so the message always stays within Telegram's 4096-byte limit. Every row shown has its control and invisible characters escaped as above. Approving such a shortened card does not grant blanket trust, so
+each hidden entry still prompts on its own; the decision follows the card the user actually approved, whichever other card was shown or answered meanwhile. Starting a fresh conversation with `/new` also drops that chat's
 unread-script read ledger, and so does `/resume` when it switches to a different conversation, so a script read in the archived session gates again.
 
 Every approval prompt states its deadline ("expires in 2m0s"). When the wait
@@ -511,6 +518,8 @@ Voice message received → DownloadVoice (OGG Opus to disk)
 ```
 
 **OGG Opus handling:** whisper.cpp uses `dr_wav`/`dr_mp3` internally and does not support OGG Opus. The transcribe tool auto-detects unsupported formats and converts via ffmpeg. If ffmpeg is unavailable, the original file is passed to whisper which produces a clear error message.
+
+**Lazy skills:** the transcript enters the user message wrapped as untrusted, and wrapped content never triggers a skill. When auto-transcribe is on and transcribes the note, the transcript is also handed to lazy-skill matching as the user's words, because a voice note the user recorded is their own request (bounded like a typed message), so "deploy the staging site" spoken loads the same skill as typed. With auto-transcribe off (the default), without a local whisper.cpp backend, or when it fails, no transcript is matched: if the agent then transcribes the note with the `transcribe` tool, the result is tool output and loads no skill. A photo or document caption is handed to lazy-skill matching as the user's words whatever the auto-transcribe and auto-describe settings. A forwarded voice note or caption, or one sent through an inline bot (`via_bot`), is not the user's own, and text the Telegram guard flagged is not used; a photo's vision description and a document's contents never are.
 
 **Fallback:** If auto-transcribe is disabled, no backend is installed (a warning is logged), or it fails (ffmpeg unavailable, corrupt audio, whisper error), the agent receives the file path. It is told to use the `transcribe` tool only when a transcription backend can run; otherwise it is told the note cannot be transcribed.
 

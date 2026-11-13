@@ -36,10 +36,11 @@ const (
 // MergeTaintState returns newer's spans followed by the spans of older it
 // does not already hold, deduplicated, with source labels bounded and at most
 // MaxTaintSpans entries — the newest kept — together with the union of both
-// overflow filters. A span the list does not keep (past the cap, an over-long
-// value, an entry with both or neither of value and hash) is added to the
-// overflow filter instead of being forgotten; only an entry without a kind,
-// which no lookup can name, is dropped. Neither input is modified.
+// overflow filters and the background-job fact of either. A span the list
+// does not keep (past the cap, an over-long value, an entry with both or
+// neither of value and hash) is added to the overflow filter instead of
+// being forgotten; only an entry without a kind, which no lookup can name,
+// is dropped. Neither input is modified.
 //
 // Every per-step save merges two nearly equal states, so the merge avoids
 // work that cannot change the result: the leading entries of older that
@@ -51,6 +52,16 @@ const (
 func MergeTaintState(newer, older TaintState) TaintState {
 	var out TaintState
 	var owned bool
+	out.Background = newer.Background || older.Background
+	// The merged spans hold every span of either input, so either input's
+	// coverage stays true of the result; the newer one describes the
+	// current history. A malformed coverage is dropped.
+	switch {
+	case newer.Coverage.Valid():
+		out.Coverage = newer.Coverage
+	case older.Coverage.Valid():
+		out.Coverage = older.Coverage
+	}
 	out.Overflow, owned = mergeTaintOverflow(newer.Overflow, older.Overflow)
 	if len(newer.Spans) == 0 && len(older.Spans) == 0 {
 		return out

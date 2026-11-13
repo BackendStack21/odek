@@ -131,7 +131,7 @@ func checkMediaPathSensitivity(resolved string) error {
 
 	// Also reject .env* files anywhere in the tree — they routinely contain API
 	// keys and secrets and may live inside an allowed project directory.
-	base := strings.ToLower(filepath.Base(resolved))
+	base := danger.FoldPathCase(filepath.Base(resolved))
 	if strings.HasPrefix(base, ".env") {
 		return fmt.Errorf("media path: rejected .env file: %s", resolved)
 	}
@@ -200,7 +200,7 @@ func isCredentialFile(resolved string) bool {
 	if len(parts) == 0 {
 		return false
 	}
-	if credentialBasenames[strings.ToLower(parts[len(parts)-1])] {
+	if credentialBasenames[danger.FoldPathCase(parts[len(parts)-1])] {
 		return true
 	}
 	for _, suffix := range credentialPathSuffixes {
@@ -210,7 +210,7 @@ func isCredentialFile(resolved string) bool {
 		tail := parts[len(parts)-len(suffix):]
 		match := true
 		for i, want := range suffix {
-			if !strings.EqualFold(tail[i], want) {
+			if danger.FoldPathCase(tail[i]) != danger.FoldPathCase(want) {
 				match = false
 				break
 			}

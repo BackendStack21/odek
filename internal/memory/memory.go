@@ -845,6 +845,13 @@ func (m *MemoryManager) AddFact(target, content string) error {
 	// duplicates can append phantom corpus entries.
 	content = redact.RedactSecrets(strings.TrimSpace(content))
 
+	// A fact longer than the whole cap of its target can never be stored.
+	// The store refuses it with the cap error, so the scans below, whose cost
+	// grows with the content, are not run on it under the facts lock.
+	if m.overFactsCap(target, content) {
+		return m.facts.Add(target, content)
+	}
+
 	// Serialize the whole read-modify-write across instances sharing this dir.
 	unlock, err := lockFactsDir(m.facts.dir)
 	if err != nil {
@@ -984,6 +991,13 @@ func (m *MemoryManager) AddFact(target, content string) error {
 	return nil
 }
 
+// overFactsCap reports whether content, as the store would keep it (trimmed),
+// is longer than the whole character cap of target, so that neither an add
+// nor a replacement can ever fit.
+func (m *MemoryManager) overFactsCap(target, content string) bool {
+	return len(strings.TrimSpace(content)) > m.facts.cap(target)
+}
+
 // ReplaceFact replaces an existing fact entry.
 func (m *MemoryManager) ReplaceFact(target, oldText, content string) error {
 	return m.ReplaceFactApproved(target, oldText, "", content)
@@ -996,6 +1010,11 @@ func (m *MemoryManager) ReplaceFactApproved(target, oldText, expected, content s
 		return fmt.Errorf("memory: disabled")
 	}
 	content = redact.RedactSecrets(content)
+	// As in AddFact: an over-cap replacement is refused by the store, before
+	// the scans and without the facts lock.
+	if m.overFactsCap(target, content) {
+		return m.facts.ReplaceApproved(target, oldText, expected, content)
+	}
 	unlock, err := lockFactsDir(m.facts.dir)
 	if err != nil {
 		return err
@@ -1145,6 +1164,12 @@ Entries for %s:
 		entry = strings.TrimSpace(entry)
 		if entry == "" {
 			continue
+		}
+		// An entry longer than the whole cap can never be written: the cap
+		// check below would refuse the pass. Refuse it here, before the
+		// scans, whose cost grows with the entry.
+		if m.overFactsCap(target, entry) {
+			return fmt.Errorf("memory: consolidated entry (%d chars) would exceed cap (%d chars); keeping existing entries", len(entry), m.facts.cap(target))
 		}
 		// Drop scan-rejected entries instead of failing the whole pass: a
 		// single poisoned entry must not block consolidation of the rest —
@@ -1519,7 +1544,11 @@ func (m *MemoryManager) addExtractedFacts(facts []scopedFact) {
 		// Drop download-and-execute / pipe-to-shell "facts": an injected session
 		// could try to persist one into the always-injected fact files.
 		// AddFact/ReplaceFact enforce the same filter on agent-driven writes.
-		if FactLooksUnsafe(fact) {
+		// A fact longer than the whole cap of its file is left to AddFact,
+		// which refuses it with the cap error before any scan — or, when
+		// redaction brings it under the cap, runs this filter on the text it
+		// would store — so the filter never reads more than a cap-sized fact.
+		if !m.overFactsCap(scope, fact) && FactLooksUnsafe(fact) {
 			continue
 		}
 		// AddFact handles ScanContent + merge-on-write dedup + cap rejection;

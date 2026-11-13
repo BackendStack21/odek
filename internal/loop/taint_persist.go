@@ -18,17 +18,37 @@ import (
 // matches such entries by hashing each candidate. The persisted list is
 // bounded (session.MaxTaintSpans); the store's overflow filter, which also
 // records every span the export cuts from the list, is exported and seeded
-// with it (session.Session.TaintOverflow), so no bound forgets a span.
+// with it (session.Session.TaintOverflow), so no bound forgets a span. The
+// fact that a tainting background job ran is exported and seeded the same
+// way (session.Session.TaintBackground).
 
 type taintSeedKey struct{}
 
 // WithTaintSpanSeed returns a context whose runs seed the engine's span
 // store from st (a session's persisted TaintSpans and TaintOverflow).
 func WithTaintSpanSeed(ctx context.Context, st session.TaintState) context.Context {
-	if st.Empty() {
+	if taintSeedEmpty(st) {
 		return ctx
 	}
 	return context.WithValue(ctx, taintSeedKey{}, st)
+}
+
+// taintSeedEmpty reports whether st gives a store nothing to seed: no span
+// state and no coverage.
+func taintSeedEmpty(st session.TaintState) bool { return st.Empty() && !st.Coverage.Valid() }
+
+// seedTaintSpans seeds the engine's span store from the state ctx carries.
+// Seeding the same state again changes nothing.
+func (e *Engine) seedTaintSpans(ctx context.Context) {
+	if e.dangerousCfg != nil && !e.dangerousCfg.TaintEscalationEnabled() {
+		return
+	}
+	if seed := taintSpanSeedFrom(ctx); !taintSeedEmpty(seed) {
+		store := e.spanStore()
+		store.mu.Lock()
+		store.seedStateLocked(seed)
+		store.mu.Unlock()
+	}
 }
 
 func taintSpanSeedFrom(ctx context.Context) session.TaintState {
@@ -42,9 +62,20 @@ func taintSpanSeedFrom(ctx context.Context) session.TaintState {
 func taintHash(v string) string { return session.TaintSpanHash(v) }
 
 // seedStateLocked seeds the store from persisted state it has not seeded
-// yet: the spans, and the overflow filter ORed into the store's own. A
-// filter that adds no bit changes nothing.
+// yet: the spans, the overflow filter ORed into the store's own, and the
+// background-job fact. A filter that adds no bit changes nothing.
 func (s *taintSpanStore) seedStateLocked(st session.TaintState) {
+	if st.Background && !s.bgTainted {
+		s.bgTainted = true
+		s.version++
+		s.rejudgeBgLocked()
+	}
+	if st.Coverage.Valid() && st.Coverage != s.seedCov {
+		// A history that reproduces the coverage skips extracting what
+		// these spans already record (taint_coverage.go).
+		s.seedCov = st.Coverage
+		s.seedCovApplied, s.seedCovTries = false, 0
+	}
 	if n := len(st.Spans); n > 0 && (s.seedLen != n || s.seedHead != &st.Spans[0]) {
 		s.seedLocked(st.Spans)
 		s.seedLen, s.seedHead = n, &st.Spans[0]
@@ -165,7 +196,7 @@ type taintExport struct {
 
 // cloneTaintState returns a copy of st that shares no backing array with it.
 func cloneTaintState(st session.TaintState) session.TaintState {
-	return session.TaintState{Spans: slices.Clone(st.Spans), Overflow: slices.Clone(st.Overflow)}
+	return session.TaintState{Spans: slices.Clone(st.Spans), Overflow: slices.Clone(st.Overflow), Background: st.Background}
 }
 
 // persistedLocked returns the span's persisted form — kind, value or hash,
@@ -209,16 +240,46 @@ func (sp *taintSpan) persistedLocked(k string, hashed bool, gen uint64, redacted
 // registry generation, and each span's persisted form is computed once per
 // generation, so an unchanged set costs a copy and a changed one redacts
 // only its new spans. The result is the caller's own copy.
+//
+// The coverage (taint_coverage.go) is exported only with the spans it
+// vouches for: the state comes from the store that observed messages, and
+// carries the coverage only when, in the hold of the store's lock in which
+// the export reads its spans, no other observe still has spans to insert
+// for messages it marked scanned and no environment change reset the scan
+// decisions, and that store is still the engine's record afterwards (a
+// ResetTaintSpans in between leaves the export without coverage).
 func (e *Engine) TaintSpanState(messages []session.Message) session.TaintState {
-	if len(messages) > 0 && (e.dangerousCfg == nil || e.dangerousCfg.TaintEscalationEnabled()) {
-		e.spanStore().observe(messages, currentTaintEnv())
+	if len(messages) == 0 || e.dangerousCfg != nil && !e.dangerousCfg.TaintEscalationEnabled() {
+		e.taintMu.Lock()
+		store := e.taintSpans
+		e.taintMu.Unlock()
+		if store == nil {
+			return session.TaintState{}
+		}
+		st, _ := e.exportTaintState(store, 0)
+		return st
 	}
+	store, env := e.spanStore(), currentTaintEnv()
+	seen, gen := store.observeTrack(messages, env, &store.saveTrack, nil)
+	// Every message of messages is now judged, and its spans are held
+	// unless another observe is still extracting them.
+	store.covMu.Lock()
+	coverage := store.coverageLocked(messages, seen, env)
+	store.covMu.Unlock()
+	st, settled := e.exportTaintState(store, gen)
 	e.taintMu.Lock()
-	store := e.taintSpans
+	current := e.taintSpans == store
 	e.taintMu.Unlock()
-	if store == nil {
-		return session.TaintState{}
+	if settled && current {
+		st.Coverage = coverage
 	}
+	return st
+}
+
+// exportTaintState exports store's span state (see TaintSpanState). settled
+// reports that, when the spans were read, no observe had spans pending and
+// the store's scan generation was scanGen.
+func (e *Engine) exportTaintState(store *taintSpanStore, scanGen uint64) (session.TaintState, bool) {
 	// The generation is read before anything is redacted: a secret
 	// registered while this export runs must not be stamped as applied.
 	gen := redact.Generation()
@@ -233,10 +294,11 @@ func (e *Engine) TaintSpanState(messages []session.Message) session.TaintState {
 	// eviction in between would move a span from the one not yet read into
 	// the one already read.
 	store.mu.Lock()
+	settled := store.pending == 0 && store.scanGen == scanGen
 	if m := store.export; m != nil && m.version == store.version && m.gen == gen {
 		st := cloneTaintState(m.state)
 		store.mu.Unlock()
-		return st
+		return st, settled
 	}
 	version := store.version
 	entries := make([]entry, 0, len(store.spans)+len(store.hashed))
@@ -259,18 +321,19 @@ func (e *Engine) TaintSpanState(messages []session.Message) session.TaintState {
 		entries = entries[:session.MaxTaintSpans]
 	}
 	overflow := slices.Clone(store.overflow)
+	background := store.bgTainted
 	store.mu.Unlock()
 	spans := make([]session.TaintSpan, len(entries))
 	for i, en := range entries {
 		spans[i] = en.sp
 	}
-	st := session.MergeTaintState(session.TaintState{Spans: spans, Overflow: overflow}, session.TaintState{})
+	st := session.MergeTaintState(session.TaintState{Spans: spans, Overflow: overflow, Background: background}, session.TaintState{})
 	store.mu.Lock()
 	if store.version == version {
 		store.export = &taintExport{state: st, version: version, gen: gen}
 	}
 	store.mu.Unlock()
-	return cloneTaintState(st)
+	return cloneTaintState(st), settled
 }
 
 // cutTaintKey splits a taintKey back into kind and value.

@@ -1007,12 +1007,26 @@ type wsDeltaCounters struct {
 	finalSeen      bool
 	finalReasoning bool
 	finalContent   bool
+
+	// cur is the answer text streamed since the last call boundary or
+	// superseded draft; last is the text of the final call. They let
+	// handlePrompt send a client the part of the stored answer that was
+	// appended after streaming (runtime notices). Bounded: past
+	// deltaTextLimit the text is dropped and the diff falls back to a
+	// replacement.
+	cur               []byte
+	last              string
+	curOver, lastOver bool
 }
+
+// deltaTextLimit bounds the streamed answer text kept per call.
+const deltaTextLimit = 8 << 20
 
 func (c *wsDeltaCounters) reset() {
 	c.mu.Lock()
 	c.reasoning, c.content = 0, 0
 	c.finalSeen, c.finalReasoning, c.finalContent = false, false, false
+	c.cur, c.last, c.curOver, c.lastOver = nil, "", false, false
 	c.mu.Unlock()
 }
 
@@ -1026,6 +1040,107 @@ func (c *wsDeltaCounters) addContent() {
 	c.mu.Lock()
 	c.content++
 	c.mu.Unlock()
+}
+
+// addContentText counts one streamed answer fragment and keeps its text.
+func (c *wsDeltaCounters) addContentText(text string) {
+	c.mu.Lock()
+	c.content++
+	if !c.curOver {
+		if len(c.cur)+len(text) > deltaTextLimit {
+			c.cur, c.curOver = nil, true
+		} else {
+			c.cur = append(c.cur, text...)
+		}
+	}
+	c.mu.Unlock()
+}
+
+// endCall closes the text of the model call that just finished.
+func (c *wsDeltaCounters) endCall() {
+	c.mu.Lock()
+	c.last, c.lastOver = string(c.cur), c.curOver
+	c.cur, c.curOver = nil, false
+	c.mu.Unlock()
+}
+
+// supersede drops the streamed draft the loop is replacing.
+func (c *wsDeltaCounters) supersede() {
+	c.mu.Lock()
+	c.cur, c.curOver = nil, false
+	c.mu.Unlock()
+}
+
+// finalText returns the answer text the client streamed for the final call;
+// ok is false when it was not retained.
+func (c *wsDeltaCounters) finalText() (text string, ok bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.finalSeen {
+		return c.last, !c.lastOver
+	}
+	return string(c.cur), !c.curOver
+}
+
+// finalAnswerRemainder returns what a client that streamed streamed must still
+// receive to end the turn showing stored (the persisted final answer). A
+// leading verification-failed marker is not delivered as text (clients read
+// done.verified). replace is set when stored does not extend the streamed
+// text, so the client must drop its copy and take the whole answer.
+func finalAnswerRemainder(streamed string, streamedOK bool, stored string) (rest string, replace bool) {
+	stored = strings.TrimPrefix(stored, loop.VerifyFailedMarker+"\n\n")
+	if !streamedOK {
+		return stored, true
+	}
+	if rest, ok := strings.CutPrefix(stored, streamed); ok {
+		return rest, false
+	}
+	if trimmed := strings.TrimRight(streamed, " \t\r\n"); trimmed != streamed {
+		if rest, ok := strings.CutPrefix(stored, trimmed); ok {
+			return rest, false
+		}
+	}
+	return stored, true
+}
+
+// sendAnswerContent brings a client's view of the turn's answer in line with
+// the persisted text. Every exit that leaves a stored answer calls it before
+// its terminal frame. streamedContent is the number of content fragments the
+// final call delivered live: none means the whole answer goes out as one
+// token frame; otherwise only what the client lacks is sent (text the runtime
+// appended after streaming), after a supersede when the stored text does not
+// extend what was streamed.
+func sendAnswerContent(send func(map[string]any), deltas *wsDeltaCounters, stored string, streamedContent int) {
+	if stored == "" {
+		return
+	}
+	if streamedContent == 0 {
+		send(map[string]any{"type": "token", "content": stored})
+		return
+	}
+	if deltas == nil {
+		return
+	}
+	streamed, ok := deltas.finalText()
+	rest, replace := finalAnswerRemainder(streamed, ok, stored)
+	if replace {
+		send(map[string]any{"type": "answer_superseded", "reason": "reconciled"})
+	}
+	if rest != "" {
+		send(map[string]any{"type": "token", "content": rest})
+	}
+}
+
+// turnFinalAnswer returns the turn's last tool-less, non-superseded assistant
+// text from msgs.
+func turnFinalAnswer(msgs []session.Message, turnID string) string {
+	for i := len(msgs) - 1; i >= 0; i-- {
+		m := msgs[i]
+		if m.Role == "assistant" && m.TurnID == turnID && len(m.ToolCalls) == 0 && !m.Superseded && m.Content != "" {
+			return m.Content
+		}
+	}
+	return ""
 }
 
 // finalSnapshot uses the final call's delivery state, so deltas from a
@@ -1250,7 +1365,7 @@ func newServeAgent(resolved config.ResolvedConfig, system string, runKey string,
 				return ""
 			}
 			return built.RunID()
-		}),
+		}, deltas),
 		ToolDetailHandler: func(event loop.ToolDetailEvent) {
 			sendFn(map[string]any{"type": event.Type, "name": event.Name, "data": event.Data, "call_id": event.CallID, "outcome": event.Outcome})
 		},
@@ -1288,8 +1403,11 @@ func newServeAgent(resolved config.ResolvedConfig, system string, runKey string,
 		// suppressing only bodies already streamed by this iteration.
 		IterationCallback: func(info loop.IterationInfo) {
 			serveIterationProgress(sendFn, info)
-			if info.HasFinalAnswer && deltas != nil {
-				deltas.markFinal(info)
+			if deltas != nil {
+				deltas.endCall()
+				if info.HasFinalAnswer {
+					deltas.markFinal(info)
+				}
 			}
 			// Live usage: parent window for the ctx gauge, plus this-call
 			// speed fields. Providers that omit usage still emit a frame
@@ -1321,8 +1439,11 @@ func newServeAgent(resolved config.ResolvedConfig, system string, runKey string,
 
 // serveAnswerEventHandler forwards final-answer lifecycle events to a
 // WebSocket connection as frames (see answerEventFrame).
-func serveAnswerEventHandler(sendFn func(v any) error, runID func() string) func(loop.AnswerEvent) {
+func serveAnswerEventHandler(sendFn func(v any) error, runID func() string, deltas *wsDeltaCounters) func(loop.AnswerEvent) {
 	return func(event loop.AnswerEvent) {
+		if deltas != nil && event.Type == "answer_superseded" && event.Streamed {
+			deltas.supersede()
+		}
 		if frame, ok := answerEventFrame(event, runID()); ok {
 			sendFn(frame)
 		}
@@ -1395,7 +1516,7 @@ func serveDeltaHandler(sendFn func(v any) error, deltas *wsDeltaCounters) func(l
 			deltas.addReasoning()
 			sendFn(map[string]any{"type": "thinking_delta", "content": d.Text})
 		case llmclient.DeltaContent:
-			deltas.addContent()
+			deltas.addContentText(d.Text)
 			sendFn(map[string]any{"type": "token_delta", "content": d.Text})
 		}
 		return nil
@@ -2857,6 +2978,7 @@ func handlePrompt(
 		// sees coherent context. The user prompt is already persisted above;
 		// returning sess (not currSess) also keeps the caller's run record
 		// and in-memory session pointer in sync with the persisted state.
+		sendAnswerContent(send, deltas, turnFinalAnswer(sess.Messages, turnID), streamedContent)
 		note := fmt.Sprintf("[Turn aborted: %s. The prompt above was preserved — send another message to retry or continue.]", providerFailureSummary(err))
 		sess.Messages = append(sess.Messages, session.Message{Role: "assistant", TurnID: turnID, Content: note})
 		markRunTaint(agent, sess)
@@ -2917,9 +3039,7 @@ func handlePrompt(
 		if msg.ReasoningContent != "" && streamedReasoning == 0 {
 			send(map[string]any{"type": "thinking", "content": msg.ReasoningContent})
 		}
-		if msg.Content != "" && streamedContent == 0 {
-			send(map[string]any{"type": "token", "content": msg.Content})
-		}
+		sendAnswerContent(send, deltas, msg.Content, streamedContent)
 	}
 
 	// Buffer the turn's answer: the last assistant reply, never a draft the
@@ -3814,14 +3934,15 @@ func handleSessionList(store *session.Store) http.HandlerFunc {
 }
 
 // sessionDetailView returns the copy of sess that GET and POST
-// /api/sessions/{id} send to the client. It leaves out the untrusted-span
-// gate state (taint_spans, and taint_overflow, about 175 KB of base64 once a
-// span was dropped): the runtime reseeds the gate from the session file, and
-// no client reads either field. The stored session is never modified, and
-// the session file and the JSON export (the raw record) keep both fields.
+// /api/sessions/{id} send to the client. It leaves out all of the
+// untrusted-span gate state: taint_spans, taint_overflow (about 175 KB of
+// base64 once a span was dropped), taint_background and taint_coverage. The
+// runtime reseeds the gate from the session file, and no client reads any of
+// them. The stored session is never modified, and the session file and the
+// JSON export (the raw record) keep every field.
 func sessionDetailView(sess *session.Session) *session.Session {
 	view := *sess
-	view.TaintSpans, view.TaintOverflow = nil, nil
+	view.SetTaintState(session.TaintState{})
 	return &view
 }
 

@@ -162,10 +162,13 @@ func (em *ExtendedMemory) mergeGroup(ctx context.Context, group []MemoryAtom) bo
 			break
 		}
 	}
+	// The record keeps at most maxLinksPerAtom related ids, like every atom's
+	// (relatedForRecord); the add path replaces them with the merged atom's
+	// own links when associations are enabled.
 	var related []string
 	for _, a := range group {
 		for _, id := range a.Context.RelatedAtomIDs {
-			if !inGroup[id] && !slices.Contains(related, id) {
+			if len(related) < maxLinksPerAtom && !inGroup[id] && !slices.Contains(related, id) {
 				related = append(related, id)
 			}
 		}

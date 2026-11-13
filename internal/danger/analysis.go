@@ -143,6 +143,19 @@ type shellAnalysisState struct {
 	// that text alone: the analysis takes it out of its own state, so
 	// payloads it parses afresh (eval, sh -c) do not inherit it.
 	aliasSkip []string
+	// options records how the command line binds option-carrying
+	// variables (TAR_OPTIONS, ...); it is shared with nested payloads.
+	options *optionEnvState
+	// optScope identifies this analysis and the ones it runs inside, so a
+	// binding recorded in options by another analysis is told apart.
+	optScope []int
+	// optEnv names the option-carrying variables the command that started
+	// this payload was given (`TAR_OPTIONS=x bash -c '...'`); their values
+	// are in vars.
+	optEnv map[string]bool
+	// optionsApplied marks the analysis of a tool invocation whose option
+	// variables are already spliced into its words.
+	optionsApplied bool
 }
 
 // maxAnalysisTokens bounds the tokens one Analyze call examines across the
@@ -155,6 +168,10 @@ const maxAnalysisTokens = 4096
 
 type analysisWork struct {
 	tokens int
+	// splice counts the option-variable words (TAR_OPTIONS, MAVEN_ARGS, ...)
+	// spliced into the argv of their readers so far; see
+	// maxOptionSpliceWords.
+	splice int
 	// literalDefaults keeps ${name:-word}-style expansions unresolved, which
 	// is how the literal spelling is judged alongside the resolved one.
 	literalDefaults bool
@@ -242,10 +259,19 @@ func analyzeWithStateWork(cmd string, depth int, inherited *shellAnalysisState, 
 		}
 		state.aliases = inherited.aliases
 		aliasSkip = inherited.aliasSkip
+		state.options = inherited.options
+		state.optionsApplied = inherited.optionsApplied
+		state.optScope = inherited.optScope
+		state.optEnv = inherited.optEnv
 	}
 	if state.aliases == nil {
 		state.aliases = newAliasTable()
 	}
+	if state.options == nil {
+		state.options = newOptionEnvState()
+	}
+	state.optScope = state.options.newScope(state.optScope)
+	state.options.noteHomeBindings(tokens)
 	state.unquoted = unquotedVariableRefs(main)
 	prog := parseShell(tokens, ops)
 	if prog.bad {
@@ -321,7 +347,37 @@ func analyzeWithStateWork(cmd string, depth int, inherited *shellAnalysisState, 
 		endChain()
 		chain = outer
 	}
+	// A pipeline is one unit for the java binary exemption (see
+	// optionEnvState.noteUnit): its effects are collected apart from the rest
+	// of the command line, so a launcher's own effects can be told from what
+	// the other commands do. busy is set by a stage of the unit that neither
+	// is granted the exemption nor runs an inert command.
+	busy := false
+	var exemptUnits Analysis
+	var runPipeline func([]shStage, bool, pipeCtx)
 	runStages = func(stages []shStage, afterAnd bool, ctx pipeCtx) {
+		outer, outerBusy := result, busy
+		result, busy = Analysis{}, false
+		runPipeline(stages, afterAnd, ctx)
+		unit := result
+		result = outer
+		if state.options.noteUnit(unit, busy, len(stages) == 1 && stages[0].comp == nil) {
+			exemptUnits.merge(unit)
+		} else {
+			result.merge(unit)
+		}
+		busy = outerBusy
+	}
+	runPipeline = func(stages []shStage, afterAnd bool, ctx pipeCtx) {
+		// settle judges the stage analysed last, once everything it runs has
+		// been analysed.
+		stageOpen, stageInert, stageExempt := false, false, 0
+		settle := func() {
+			if stageOpen && !stageInert && state.options.javaExempt == stageExempt {
+				busy = true
+			}
+			stageOpen = false
+		}
 		prepared := make([][]string, 0, len(stages))
 		for _, st := range stages {
 			if st.comp != nil {
@@ -329,6 +385,8 @@ func analyzeWithStateWork(cmd string, depth int, inherited *shellAnalysisState, 
 				continue
 			}
 			prepared = append(prepared, state.expand(st.words))
+			// A name a variable supplies (`export $v=...`) is seen once expanded.
+			state.options.noteHomeBindings(prepared[len(prepared)-1])
 		}
 		var pipeline []string
 		var repos []*gitRepoCtx
@@ -350,6 +408,20 @@ func analyzeWithStateWork(cmd string, depth int, inherited *shellAnalysisState, 
 			}
 			piped := i > 0 || ctx.piped
 			upstream := stageUpstream(ctx, prepared, i)
+			settle()
+			stageOpen, stageInert, stageExempt = true, false, state.options.javaExempt
+			// Option words written on the command are spliced into its argv
+			// and the result classified again, several times over. Past the
+			// budget of one analysis the values are not taken apart any more:
+			// the stage is unknown and analysed with values only known at
+			// run time, which costs what the command alone does.
+			if words := optionSpliceWords(stage); words > 0 {
+				if work.splice += words; work.splice > maxOptionSpliceWords {
+					result.add(Unknown)
+					stage = withoutOptionSpliceValues(stage)
+					prepared[i] = stage
+				}
+			}
 			// sh expands an alias defined earlier when its name is the
 			// command word: the expansion is analysed in addition to the
 			// literal stage (a definition may sit on a branch that never ran).
@@ -362,7 +434,18 @@ func analyzeWithStateWork(cmd string, depth int, inherited *shellAnalysisState, 
 				payload.aliasSkip = append(append([]string(nil), aliasSkip...), exp.names...)
 				result.merge(analyzeWithState(exp.text, depth+1, &payload))
 			}
+			// bash reads `NAME+=value` in front of a command (or alone) as an
+			// append, which assigns when NAME is unset; the stage is also
+			// analysed with each append written as that assignment.
+			if variant, ok := appendPrefixAsAssignment(stage); ok {
+				payload := state
+				result.merge(analyzeWithState(variant, depth+1, &payload))
+			}
 			if call := functionCallAt(stage, funcs); call >= 0 {
+				// Assignments in front of a function call reach the commands
+				// it runs and, in POSIX mode, persist after it returns, like
+				// those in front of a special builtin.
+				state.noteOptionBindings(append(append([]string(nil), stage[:call]...), ":"), []string{":"})
 				args := redirectFreeArguments(stage[call+1:])
 				runFunction(stage[call], args, pipeCtx{piped: piped, upstream: upstream})
 				for _, arg := range args {
@@ -380,8 +463,16 @@ func analyzeWithStateWork(cmd string, depth int, inherited *shellAnalysisState, 
 			payloadState.uncertain = state.uncertain || !cwdKnown
 			unwrappedStage := unwrapWrappersFull(stage)
 			inner, floor := unwrappedStage.inner, unwrappedStage.floor
+			stageInert = inertStage(stage, inner)
+			state.noteOptionBindings(stage, inner)
+			payloadState.vars, payloadState.optEnv = withOptionAssignments(payloadState.vars, payloadState.optEnv, unwrappedStage.assigns)
 			for _, payload := range unwrappedStage.payloads {
 				result.merge(analyzeWithState(payload, depth+1, &payloadState))
+			}
+			// BASH_CMDS elements are command-table entries (bash 4+): a
+			// later use of the name is analysed as the bound file.
+			if !state.aliases.bindBashCmds(stage, inner) {
+				result.add(Unknown)
 			}
 			if len(inner) > 0 {
 				name := commandName(inner[0])
@@ -405,6 +496,13 @@ func analyzeWithStateWork(cmd string, depth int, inherited *shellAnalysisState, 
 				// expansion. A definition alone runs nothing.
 				if name == "alias" && !state.aliases.define(inner[1:]) {
 					result.add(Unknown)
+				}
+				// `hash -p FILE NAME` rebinds NAME to FILE; a later use of
+				// NAME is analysed as FILE.
+				if name == "hash" {
+					if !state.aliases.bindHash(inner[1:]) {
+						result.add(Unknown)
+					}
 				}
 			}
 			if i > 0 {
@@ -474,6 +572,10 @@ func analyzeWithStateWork(cmd string, depth int, inherited *shellAnalysisState, 
 					result.add(SystemWrite)
 				}
 			}
+			// Option-carrying variables in effect (TAR_OPTIONS, MAVEN_ARGS,
+			// ...) are spliced into the tool's argv and analysed like the
+			// options written out.
+			result.merge(state.optionEnvAnalysis(inner, unwrappedStage.assigns, payloadState, depth))
 			if name == "gpg" || name == "gpg2" {
 				home, set := state.vars["GNUPGHOME"]
 				for _, tok := range stage[:len(stage)-len(inner)] {
@@ -674,6 +776,7 @@ func analyzeWithStateWork(cmd string, depth int, inherited *shellAnalysisState, 
 				}
 			}
 		}
+		settle()
 		result.add(classifyPipelineIn(pipeline, repos))
 	}
 	// scanData classifies the words of a data region (a for list, a case word
@@ -925,6 +1028,14 @@ func analyzeWithStateWork(cmd string, depth int, inherited *shellAnalysisState, 
 				result.merge(analyzeWithState(body, depth+1, &state))
 			}
 			for _, w := range n.words {
+				if strings.Contains(w, bashCmdsVar) {
+					// An arithmetic assignment to a command-table element
+					// binds a name to a file the analysis does not follow.
+					result.add(Unknown)
+					break
+				}
+			}
+			for _, w := range n.words {
 				for _, name := range variableNames(w) {
 					state.forget(name)
 				}
@@ -1027,6 +1138,13 @@ func analyzeWithStateWork(cmd string, depth int, inherited *shellAnalysisState, 
 				result.addRewritten(path)
 			}
 		}
+	}
+	// What this analysis found outside the pipelines granted the java binary
+	// exemption counts against it; the command line as a whole decides.
+	state.options.noteOther(result)
+	result.merge(exemptUnits)
+	if inherited == nil && state.options.javaExemptionVoid() {
+		result.add(CodeExecution)
 	}
 	if len(result.Effects) == 0 {
 		result.add(Safe)
@@ -1235,6 +1353,37 @@ func segmentOperators(tokens []string) []string {
 	return ops
 }
 
+// appendPrefixAsAssignment returns the command text of a stage whose leading
+// assignment words include NAME+=value appends, with each append written as
+// NAME=value. The analysis reads such a word as the command name, so the
+// stage itself classifies unknown; the variant judges what the assignment
+// does. ok is false when the stage has no leading append.
+func appendPrefixAsAssignment(stage []string) (string, bool) {
+	words := make([]string, 0, len(stage))
+	appended := false
+	i := 0
+	for ; i < len(stage); i++ {
+		w := stage[i]
+		if isAssignment(w) {
+			words = append(words, aliasQuoteWord(w))
+			continue
+		}
+		lhs, value, found := strings.Cut(w, "+=")
+		if !found || !isValidVarName(lhs) {
+			break
+		}
+		words = append(words, aliasQuoteWord(lhs+"="+value))
+		appended = true
+	}
+	if !appended {
+		return "", false
+	}
+	for _, w := range stage[i:] {
+		words = append(words, aliasQuoteWord(w))
+	}
+	return strings.Join(words, " "), true
+}
+
 // assignedNames lists the variable names bound by the NAME=value words.
 func assignedNames(tokens []string) []string {
 	var names []string
@@ -1261,11 +1410,8 @@ func (s *shellAnalysisState) forget(names ...string) {
 // The declaring builtins (export, declare, typeset, local, readonly) record
 // a literal NAME=value when bind is set, and return the names they bound.
 func (s *shellAnalysisState) rebind(name string, inner []string, bind bool) (names []string) {
-	operandName := func(tok string) string {
-		tok, _, _ = strings.Cut(tok, "=")
-		tok, _, _ = strings.Cut(tok, "[")
-		return tok
-	}
+	// NAME, NAME[sub], NAME=value and NAME+=value all name NAME.
+	operandName := operandVarName
 	switch name {
 	case "read":
 		// The variables hold whatever the input supplies at run time; a
@@ -1306,6 +1452,13 @@ func (s *shellAnalysisState) rebind(name string, inner []string, bind bool) (nam
 		}
 	case "unset", "export", "declare", "typeset", "local", "readonly", "let":
 		bound := declarationBindings(name, inner)
+		before := make(map[string]string, len(bound.appendOrder))
+		for _, op := range bound.appendOrder {
+			if v, ok := s.vars[op]; ok {
+				before[op] = v
+			}
+		}
+		var appended []string
 		for _, tok := range inner[1:] {
 			if isShortFlagToken(tok) && strings.Contains(tok, "n") && name != "unset" && name != "let" && name != "export" {
 				// declare -n makes a name an alias of another variable.
@@ -1316,10 +1469,28 @@ func (s *shellAnalysisState) rebind(name string, inner []string, bind bool) (nam
 			if !bound.keep[op] {
 				s.forget(op)
 			}
+			if lhs, _, ok := strings.Cut(tok, "="); ok && strings.HasSuffix(lhs, "+") && isValidVarName(op) && name != "unset" && name != "let" {
+				appended = append(appended, op)
+			}
 		}
 		if bind {
 			for op, value := range bound.values {
 				s.vars[op] = value
+				names = append(names, op)
+			}
+		}
+		// NAME+=value appends to the value: a known one is joined, and one
+		// the analysis cannot compute (an unknown earlier value, a computed
+		// suffix, a branch) holds something only known at run time, never
+		// the unset or earlier value.
+		for _, op := range appended {
+			suffix, literal := bound.appends[op]
+			if old, ok := before[op]; bind && literal && ok && !strings.Contains(old, dynamicSubstToken) {
+				s.vars[op] = old + suffix
+			} else if _, joined := bound.values[op]; !bind || !joined {
+				s.vars[op] = dynamicSubstToken
+			}
+			if bind {
 				names = append(names, op)
 			}
 		}
@@ -1328,11 +1499,14 @@ func (s *shellAnalysisState) rebind(name string, inner []string, bind bool) (nam
 }
 
 // declarationBinding is the static outcome of an export/declare/readonly
-// operand list: the literal NAME=value pairs that bind a known value, and the
-// names whose existing value the builtin leaves alone.
+// operand list: the literal NAME=value pairs that bind a known value, the
+// literal NAME+=value pairs that append to the value, and the names whose
+// existing value the builtin leaves alone.
 type declarationBinding struct {
-	values map[string]string
-	keep   map[string]bool
+	values      map[string]string
+	appends     map[string]string
+	appendOrder []string
+	keep        map[string]bool
 }
 
 // declarationBindings reads the operands of a variable-declaring builtin. A
@@ -1341,7 +1515,7 @@ type declarationBinding struct {
 // retype the value (-i, -l, -u, -c, -a, -A), values built by substitutions
 // and array literals are not recorded, so those names are dropped.
 func declarationBindings(name string, inner []string) declarationBinding {
-	out := declarationBinding{values: map[string]string{}, keep: map[string]bool{}}
+	out := declarationBinding{values: map[string]string{}, appends: map[string]string{}, keep: map[string]bool{}}
 	transparent := "xrgpn"
 	if name == "unset" || name == "let" {
 		return out
@@ -1358,28 +1532,50 @@ func declarationBindings(name string, inner []string) declarationBinding {
 	if !plain {
 		return out
 	}
+	assignedHere := make(map[string]bool)
 	for i := 1; i < len(inner); i++ {
 		tok := inner[i]
 		if strings.HasPrefix(tok, "-") {
 			continue
 		}
 		varName, value, assigned := strings.Cut(tok, "=")
-		// A substitution glued to the value is split off into its own word
-		// by normalization, leaving a truncated value behind.
-		if assigned && i+1 < len(inner) && strings.Contains(inner[i+1], dynamicSubstToken) {
-			continue
+		appendForm := false
+		if assigned {
+			varName, appendForm = strings.CutSuffix(varName, "+")
 		}
 		if !isValidVarName(varName) {
 			continue
 		}
+		if assigned {
+			assignedHere[varName] = true
+			delete(out.keep, varName)
+		}
+		// A substitution glued to the value is split off into its own word
+		// by normalization, leaving a truncated value behind.
+		dynamic := assigned && i+1 < len(inner) && strings.Contains(inner[i+1], dynamicSubstToken)
 		switch {
 		case !assigned:
-			if name != "local" {
+			if name != "local" && !assignedHere[varName] {
 				out.keep[varName] = true
 			}
-		case strings.Contains(value, dynamicSubstToken) || strings.HasPrefix(value, "("):
+		case dynamic || strings.Contains(value, dynamicSubstToken) || strings.HasPrefix(value, "("):
+			// The value is not known: whatever was recorded is dropped.
+			delete(out.values, varName)
+			delete(out.appends, varName)
+			out.appendOrder = slices.DeleteFunc(out.appendOrder, func(n string) bool { return n == varName })
+		case appendForm:
+			if v, ok := out.values[varName]; ok {
+				out.values[varName] = v + expandEnvVars(value)
+			} else if v, ok := out.appends[varName]; ok {
+				out.appends[varName] = v + expandEnvVars(value)
+			} else {
+				out.appends[varName] = expandEnvVars(value)
+				out.appendOrder = append(out.appendOrder, varName)
+			}
 		default:
 			out.values[varName] = expandEnvVars(value)
+			delete(out.appends, varName)
+			out.appendOrder = slices.DeleteFunc(out.appendOrder, func(n string) bool { return n == varName })
 		}
 	}
 	return out

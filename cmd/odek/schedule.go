@@ -1047,7 +1047,7 @@ func runTaskHeadless(ctx context.Context, resolved config.ResolvedConfig, system
 			spans:     agent.TaintState(messages),
 		})
 	}
-	tokens := int64(lastInfo.InputTokens + lastInfo.OutputTokens)
+	tokens := dailyBudgetTokens(lastInfo)
 	return result, tokens, err
 }
 

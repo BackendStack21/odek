@@ -1,0 +1,1630 @@
+[
+ {
+  "in": "curl -u admin:PW https://x",
+  "base": "curl -u admin:PW https://x"
+ },
+ {
+  "in": "curl -uadmin:PW https://x",
+  "base": "curl -uadmin:PW https://x"
+ },
+ {
+  "in": "curl -sSu admin:PW https://x",
+  "base": "curl -sSu admin:PW https://x"
+ },
+ {
+  "in": "curl --user admin:PW https://x",
+  "base": "curl --user admin:PW https://x"
+ },
+ {
+  "in": "curl --user=admin:PW https://x",
+  "base": "curl --user=admin:PW https://x"
+ },
+ {
+  "in": "curl -U proxy:PW -x http://p https://x",
+  "base": "curl -U proxy:PW -x http://p https://x"
+ },
+ {
+  "in": "curl --proxy-user proxy:PW -x http://p https://x",
+  "base": "curl --proxy-user proxy:PW -x http://p https://x"
+ },
+ {
+  "in": "curl -u \"admin:PW\" https://x",
+  "base": "curl -u \"admin:PW\" https://x"
+ },
+ {
+  "in": "curl -u 'admin:PW' https://x",
+  "base": "curl -u 'admin:PW' https://x"
+ },
+ {
+  "in": "curl -H \"X-Note: (draft)\" -u admin:PW https://x",
+  "base": "curl -H \"X-Note: (draft)\" -u admin:PW https://x"
+ },
+ {
+  "in": "curl -d \"f(x)\" -u admin:PW https://x",
+  "base": "curl -d \"f(x)\" -u admin:PW https://x"
+ },
+ {
+  "in": "curl -d `date` -u admin:PW https://x",
+  "base": "curl -d `date` -u admin:PW https://x"
+ },
+ {
+  "in": "curl https://en.wikipedia.org/wiki/Foo_(bar) -u admin:PW",
+  "base": "curl https://en.wikipedia.org/wiki/Foo_(bar) -u admin:PW"
+ },
+ {
+  "in": "$(curl -s -u admin:PW https://x)",
+  "base": "$(curl -s -u admin:PW https://x)"
+ },
+ {
+  "in": "echo `curl -s -u admin:PW https://x` done",
+  "base": "echo `curl -s -u admin:PW https://x` done"
+ },
+ {
+  "in": "curl -u admin:PW https://x | jq .",
+  "base": "curl -u admin:PW https://x | jq ."
+ },
+ {
+  "in": "curl -u admin:PW https://x; echo ok",
+  "base": "curl -u admin:PW https://x; echo ok"
+ },
+ {
+  "in": "curl -b \"session=PW\" https://x",
+  "base": "curl -b \"session=PW\" https://x"
+ },
+ {
+  "in": "curl --cookie \"sid=PW; theme=dark\" https://x",
+  "base": "curl --cookie \"sid=PW; theme=dark\" https://x"
+ },
+ {
+  "in": "wget --password=PW https://x",
+  "base": "wget --password=PW https://x"
+ },
+ {
+  "in": "wget --http-password PW https://x",
+  "base": "wget --http-password PW https://x"
+ },
+ {
+  "in": "wget --header=\"X: (a)\" --password=PW https://x",
+  "base": "wget --header=\"X: (a)\" --password=PW https://x"
+ },
+ {
+  "in": "http -a admin:PW POST x",
+  "base": "http -a admin:PW POST x"
+ },
+ {
+  "in": "http POST x \"q=f(x)\" -a admin:PW",
+  "base": "http POST x \"q=f(x)\" -a admin:PW"
+ },
+ {
+  "in": "https --auth admin:PW x",
+  "base": "https --auth admin:PW x"
+ },
+ {
+  "in": "xh --auth=admin:PW x",
+  "base": "xh --auth=admin:PW x"
+ },
+ {
+  "in": "curl",
+  "base": "curl"
+ },
+ {
+  "in": "wget",
+  "base": "wget"
+ },
+ {
+  "in": "http",
+  "base": "http"
+ },
+ {
+  "in": "https",
+  "base": "https"
+ },
+ {
+  "in": "xh",
+  "base": "xh"
+ },
+ {
+  "in": "CURL",
+  "base": "CURL"
+ },
+ {
+  "in": "Curl",
+  "base": "Curl"
+ },
+ {
+  "in": "WGET",
+  "base": "WGET"
+ },
+ {
+  "in": "HTTPS",
+  "base": "HTTPS"
+ },
+ {
+  "in": "XH",
+  "base": "XH"
+ },
+ {
+  "in": "curl -uadmin:Sup3rS3cretPw https://x.example",
+  "base": "curl -uadmin:[REDACTED] https://x.example"
+ },
+ {
+  "in": "curl -uadmin:[REDACTED] https://x.example",
+  "base": "curl -uadmin:[REDACTED] https://x.example"
+ },
+ {
+  "in": "curl -u admin:letmeinplease https://x.example",
+  "base": "curl -u admin:[REDACTED] https://x.example"
+ },
+ {
+  "in": "curl -u admin:[REDACTED] https://x.example",
+  "base": "curl -u admin:[REDACTED] https://x.example"
+ },
+ {
+  "in": "curl -sSLu admin:letmein https://x.example",
+  "base": "curl -sSLu admin:[REDACTED] https://x.example"
+ },
+ {
+  "in": "curl -sSLu admin:[REDACTED] https://x.example",
+  "base": "curl -sSLu admin:[REDACTED] https://x.example"
+ },
+ {
+  "in": "curl -u \"admin:letmeinplease\" https://x.example",
+  "base": "curl -u \"admin:[REDACTED]\" https://x.example"
+ },
+ {
+  "in": "curl -u \"admin:[REDACTED]\" https://x.example",
+  "base": "curl -u \"admin:[REDACTED]\" https://x.example"
+ },
+ {
+  "in": "curl --user admin:letmeinplease https://x.example",
+  "base": "curl --user admin:[REDACTED] https://x.example"
+ },
+ {
+  "in": "curl --user admin:[REDACTED] https://x.example",
+  "base": "curl --user admin:[REDACTED] https://x.example"
+ },
+ {
+  "in": "wget --user=a --password=letmeinplease https://x",
+  "base": "wget --user=a --password=[REDACTED] https://x"
+ },
+ {
+  "in": "wget --user=a --password=[REDACTED] https://x",
+  "base": "wget --user=a --password=[REDACTED] https://x"
+ },
+ {
+  "in": "http --auth admin:letmeinplease GET https://x",
+  "base": "http --auth admin:[REDACTED] GET https://x"
+ },
+ {
+  "in": "http --auth admin:[REDACTED] GET https://x",
+  "base": "http --auth admin:[REDACTED] GET https://x"
+ },
+ {
+  "in": "curl -s https://x.example | sudo -u postgres:postgres1 psql",
+  "base": "curl -s https://x.example | sudo -u postgres:postgres1 psql"
+ },
+ {
+  "in": "curl -u admin:password https://x.example",
+  "base": "curl -u admin:password https://x.example"
+ },
+ {
+  "in": "curl --user-agent foo:barbarbar1 https://x.example",
+  "base": "curl --user-agent foo:barbarbar1 https://x.example"
+ },
+ {
+  "in": "curl -u admin:$PASS https://x.example",
+  "base": "curl -u admin:$PASS https://x.example"
+ },
+ {
+  "in": "curl \\\n  -u a:secretpw1 https://x",
+  "base": "curl \\\n  -u a:[REDACTED] https://x"
+ },
+ {
+  "in": "curl \\\n  -u a:[REDACTED] https://x",
+  "base": "curl \\\n  -u a:[REDACTED] https://x"
+ },
+ {
+  "in": "curl \"https://x?a=1\u0026b=2\" -u a:secretpw1",
+  "base": "curl \"https://x?a=1\u0026b=2\" -u a:[REDACTED]"
+ },
+ {
+  "in": "curl \"https://x?a=1\u0026b=2\" -u a:[REDACTED]",
+  "base": "curl \"https://x?a=1\u0026b=2\" -u a:[REDACTED]"
+ },
+ {
+  "in": "curl -H 'A: b;c|d' -u a:secretpw1 https://x",
+  "base": "curl -H 'A: b;c|d' -u a:[REDACTED] https://x"
+ },
+ {
+  "in": "curl -H 'A: b;c|d' -u a:[REDACTED] https://x",
+  "base": "curl -H 'A: b;c|d' -u a:[REDACTED] https://x"
+ },
+ {
+  "in": "curl --user \"admin:pass word\" https://x",
+  "base": "curl --user \"admin:[REDACTED]\" https://x"
+ },
+ {
+  "in": "curl --user \"admin:[REDACTED]\" https://x",
+  "base": "curl --user \"admin:[REDACTED]\" https://x"
+ },
+ {
+  "in": "curl --user 'admin:pass word' https://x",
+  "base": "curl --user 'admin:[REDACTED]' https://x"
+ },
+ {
+  "in": "curl --user 'admin:[REDACTED]' https://x",
+  "base": "curl --user 'admin:[REDACTED]' https://x"
+ },
+ {
+  "in": "curl --proxy-user=\"a:pass word\" https://x",
+  "base": "curl --proxy-user=\"a:[REDACTED]\" https://x"
+ },
+ {
+  "in": "curl --proxy-user=\"a:[REDACTED]\" https://x",
+  "base": "curl --proxy-user=\"a:[REDACTED]\" https://x"
+ },
+ {
+  "in": "curl -u a:\"pa ss word\" https://x",
+  "base": "curl -u a:\"[REDACTED]\" https://x"
+ },
+ {
+  "in": "curl -u a:\"[REDACTED]\" https://x",
+  "base": "curl -u a:\"[REDACTED]\" https://x"
+ },
+ {
+  "in": "CURL -u a:secretpw1 https://x",
+  "base": "CURL -u a:[REDACTED] https://x"
+ },
+ {
+  "in": "CURL -u a:[REDACTED] https://x",
+  "base": "CURL -u a:[REDACTED] https://x"
+ },
+ {
+  "in": "Wget --PASSWORD",
+  "base": "Wget --PASSWORD"
+ },
+ {
+  "in": "Wget --PASSWORD x",
+  "base": "Wget --PASSWORD x"
+ },
+ {
+  "in": "WGET --password=letmeinplease https://x",
+  "base": "WGET --password=[REDACTED] https://x"
+ },
+ {
+  "in": "WGET --password=[REDACTED] https://x",
+  "base": "WGET --password=[REDACTED] https://x"
+ },
+ {
+  "in": "cd /tmp \u0026\u0026 /usr/bin/curl -sS -u a:secretpw1 https://x",
+  "base": "cd /tmp \u0026\u0026 /usr/bin/curl -sS -u a:[REDACTED] https://x"
+ },
+ {
+  "in": "cd /tmp \u0026\u0026 /usr/bin/curl -sS -u a:[REDACTED] https://x",
+  "base": "cd /tmp \u0026\u0026 /usr/bin/curl -sS -u a:[REDACTED] https://x"
+ },
+ {
+  "in": "curl https://x; curl -u a:secretpw1 https://y",
+  "base": "curl https://x; curl -u a:[REDACTED] https://y"
+ },
+ {
+  "in": "curl https://x; curl -u a:[REDACTED] https://y",
+  "base": "curl https://x; curl -u a:[REDACTED] https://y"
+ },
+ {
+  "in": "echo hi | curl -K - -u a:secretpw1",
+  "base": "echo hi | curl -K - -u a:[REDACTED]"
+ },
+ {
+  "in": "echo hi | curl -K - -u a:[REDACTED]",
+  "base": "echo hi | curl -K - -u a:[REDACTED]"
+ },
+ {
+  "in": "curl -s -o /dev/null https://x -u a:secretpw1 -w '%{h}'",
+  "base": "curl -s -o /dev/null https://x -u a:[REDACTED] -w '%{h}'"
+ },
+ {
+  "in": "curl -s -o /dev/null https://x -u a:[REDACTED] -w '%{h}'",
+  "base": "curl -s -o /dev/null https://x -u a:[REDACTED] -w '%{h}'"
+ },
+ {
+  "in": "curl -u me:YOUR_API_KEY https://x",
+  "base": "curl -u me:YOUR_API_KEY https://x"
+ },
+ {
+  "in": "curl -u me:API_TOKEN https://x",
+  "base": "curl -u me:API_TOKEN https://x"
+ },
+ {
+  "in": "curl -u me:PASSWORD_HERE https://x",
+  "base": "curl -u me:PASSWORD_HERE https://x"
+ },
+ {
+  "in": "curl https://x\nsudo -u postgres:postgres1 psql",
+  "base": "curl https://x\nsudo -u postgres:postgres1 psql"
+ },
+ {
+  "in": "curl https://x \u0026\u0026 sudo -u postgres:postgres1 psql",
+  "base": "curl https://x \u0026\u0026 sudo -u postgres:postgres1 psql"
+ },
+ {
+  "in": "curl -s https://x \\\n | sudo -u postgres:postgres1 psql",
+  "base": "curl -s https://x \\\n | sudo -u postgres:postgres1 psql"
+ },
+ {
+  "in": "{\"cmd\":\"curl -u admin:s3cretpw1\"}",
+  "base": "{\"cmd\":\"curl -u admin:[REDACTED]\"}"
+ },
+ {
+  "in": "{\"cmd\":\"curl -u admin:[REDACTED]\"}",
+  "base": "{\"cmd\":\"curl -u admin:[REDACTED]\"}"
+ },
+ {
+  "in": "{\"cmd\":\"curl -u a:s3cretpw1\",\"next\":\"x\"}",
+  "base": "{\"cmd\":\"curl -u a:[REDACTED]\",\"next\":\"x\"}"
+ },
+ {
+  "in": "{\"cmd\":\"curl -u a:[REDACTED]\",\"next\":\"x\"}",
+  "base": "{\"cmd\":\"curl -u a:[REDACTED]\",\"next\":\"x\"}"
+ },
+ {
+  "in": "{\"cmd\":\"curl -u admin:s3cretpw1\\nnext word\"}",
+  "base": "{\"cmd\":\"curl -u admin:[REDACTED]\\nnext word\"}"
+ },
+ {
+  "in": "{\"cmd\":\"curl -u admin:[REDACTED]\\nnext word\"}",
+  "base": "{\"cmd\":\"curl -u admin:[REDACTED]\\nnext word\"}"
+ },
+ {
+  "in": "{\"cmd\":\"curl -u admin:s3cretpw1\\tnext\"}",
+  "base": "{\"cmd\":\"curl -u admin:[REDACTED]\\tnext\"}"
+ },
+ {
+  "in": "{\"cmd\":\"curl -u admin:[REDACTED]\\tnext\"}",
+  "base": "{\"cmd\":\"curl -u admin:[REDACTED]\\tnext\"}"
+ },
+ {
+  "in": "{\"cmd\":\"curl -H \\\"A: b\\\" -u admin:s3cretpw1 https://x\"}",
+  "base": "{\"cmd\":\"curl -H \\\"A: b\\\" -u admin:[REDACTED] https://x\"}"
+ },
+ {
+  "in": "{\"cmd\":\"curl -H \\\"A: b\\\" -u admin:[REDACTED] https://x\"}",
+  "base": "{\"cmd\":\"curl -H \\\"A: b\\\" -u admin:[REDACTED] https://x\"}"
+ },
+ {
+  "in": "{\"cmd\":\"curl --user \\\"admin:s3cretpw1\\\" https://x\"}",
+  "base": "{\"cmd\":\"curl --user \\\"admin:[REDACTED]\\\" https://x\"}"
+ },
+ {
+  "in": "{\"cmd\":\"curl --user \\\"admin:[REDACTED]\\\" https://x\"}",
+  "base": "{\"cmd\":\"curl --user \\\"admin:[REDACTED]\\\" https://x\"}"
+ },
+ {
+  "in": "{\"cmd\":\"wget --password s3cretpw1\\nls\"}",
+  "base": "{\"cmd\":\"wget --password [REDACTED]\\nls\"}"
+ },
+ {
+  "in": "{\"cmd\":\"wget --password [REDACTED]\\nls\"}",
+  "base": "{\"cmd\":\"wget --password [REDACTED]\\nls\"}"
+ },
+ {
+  "in": "{\"cmd\":\"curl -u a:s3cretpw1\\nsudo -u postgres:postgres1 psql\"}",
+  "base": "{\"cmd\":\"curl -u a:[REDACTED]\\nsudo -u postgres:postgres1 psql\"}"
+ },
+ {
+  "in": "{\"cmd\":\"curl -u a:[REDACTED]\\nsudo -u postgres:postgres1 psql\"}",
+  "base": "{\"cmd\":\"curl -u a:[REDACTED]\\nsudo -u postgres:postgres1 psql\"}"
+ },
+ {
+  "in": "curl -u admin:pa'ss1234 https://x",
+  "base": "curl -u admin:[REDACTED] https://x"
+ },
+ {
+  "in": "curl -u admin:[REDACTED] https://x",
+  "base": "curl -u admin:[REDACTED] https://x"
+ },
+ {
+  "in": "curl -u admin:pa'ss1234 -H 'X: y' https://x",
+  "base": "curl -u admin:[REDACTED] -H 'X: y' https://x"
+ },
+ {
+  "in": "curl -u admin:[REDACTED] -H 'X: y' https://x",
+  "base": "curl -u admin:[REDACTED] -H 'X: y' https://x"
+ },
+ {
+  "in": "curl -u admin:s3cretpw1 -d '{\"a\":1}' https://x",
+  "base": "curl -u admin:[REDACTED] -d '{\"a\":1}' https://x"
+ },
+ {
+  "in": "curl -u admin:[REDACTED] -d '{\"a\":1}' https://x",
+  "base": "curl -u admin:[REDACTED] -d '{\"a\":1}' https://x"
+ },
+ {
+  "in": "curl -u \"admin:pass word\" https://x",
+  "base": "curl -u \"admin:[REDACTED]\" https://x"
+ },
+ {
+  "in": "curl -u \"admin:[REDACTED]\" https://x",
+  "base": "curl -u \"admin:[REDACTED]\" https://x"
+ },
+ {
+  "in": "{\"cmd\":\"curl https://x\\nsudo -u postgres:postgres1 psql\"}",
+  "base": "{\"cmd\":\"curl https://x\\nsudo -u postgres:postgres1 psql\"}"
+ },
+ {
+  "in": "curl -u admin:Xk9vQ2mL\"7pR4tY8wZ3nB6cF1\" https://x",
+  "base": "curl -u admin:[REDACTED]\" https://x"
+ },
+ {
+  "in": "curl -u admin:[REDACTED]\" https://x",
+  "base": "curl -u admin:[REDACTED]\" https://x"
+ },
+ {
+  "in": "curl -u admin:Xk9vQ2mL\"7pR4tY8wZ3nB6cF1 https://x",
+  "base": "curl -u admin:[REDACTED] https://x"
+ },
+ {
+  "in": "curl -u admin:Xk9vQ2mL\\t7pR4tY8wZ3nB6cF1 https://x",
+  "base": "curl -u admin:[REDACTED] https://x"
+ },
+ {
+  "in": "curl -u admin:Xk9vQ2mL\\n7pR4tY8wZ3nB6cF1 https://x",
+  "base": "curl -u admin:[REDACTED] https://x"
+ },
+ {
+  "in": "curl -u admin:Xk9vQ2mL'7pR4tY8wZ3nB6cF1 https://x",
+  "base": "curl -u admin:[REDACTED] https://x"
+ },
+ {
+  "in": "curl -u admin:pa\"ss word\" https://x",
+  "base": "curl -u admin:[REDACTED]\" https://x"
+ },
+ {
+  "in": "echo \"x\" \u0026\u0026 curl -u admin:Xk9v\"Q2mL7pR4tY8wZ\" https://x",
+  "base": "echo \"x\" \u0026\u0026 curl -u admin:[REDACTED]\" https://x"
+ },
+ {
+  "in": "echo \"x\" \u0026\u0026 curl -u admin:[REDACTED]\" https://x",
+  "base": "echo \"x\" \u0026\u0026 curl -u admin:[REDACTED]\" https://x"
+ },
+ {
+  "in": "curl https://x \"a b\" \u0026\u0026 sudo -u postgres:postgres1 psql",
+  "base": "curl https://x \"a b\" \u0026\u0026 sudo -u postgres:postgres1 psql"
+ },
+ {
+  "in": "grep -c '\"' data.csv \u0026\u0026 curl -u admin:Xk9vQ2mL\\t7pR4tY8wZ3nB6cF1 https://x",
+  "base": "grep -c '\"' data.csv \u0026\u0026 curl -u admin:[REDACTED] https://x"
+ },
+ {
+  "in": "echo '\"' '\"' '\"' \u0026\u0026 curl -u admin:Xk9vQ2mL\\n7pR4tY8wZ3nB6cF1 https://x",
+  "base": "echo '\"' '\"' '\"' \u0026\u0026 curl -u admin:[REDACTED] https://x"
+ },
+ {
+  "in": "echo don't say \"hi\" \u0026\u0026 curl -u admin:Xk9vQ2mL\\n7pR4tY8wZ3nB6cF1 https://x",
+  "base": "echo don't say \"hi\" \u0026\u0026 curl -u admin:[REDACTED] https://x"
+ },
+ {
+  "in": "{\"cmd\":\"grep -c '\\\"' f \u0026\u0026 curl -u a:s3cretpw1\\nls\"}",
+  "base": "{\"cmd\":\"grep -c '\\\"' f \u0026\u0026 curl -u a:[REDACTED]\\nls\"}"
+ },
+ {
+  "in": "{\"cmd\":\"grep -c '\\\"' f \u0026\u0026 curl -u a:[REDACTED]\\nls\"}",
+  "base": "{\"cmd\":\"grep -c '\\\"' f \u0026\u0026 curl -u a:[REDACTED]\\nls\"}"
+ },
+ {
+  "in": "curl -H \"Cookie: PHPSESSID=abcdefghijklmnop\" https://x.example",
+  "base": "curl -H \"Cookie: PHPSESSID=[REDACTED]\" https://x.example"
+ },
+ {
+  "in": "curl -H \"Cookie: PHPSESSID=[REDACTED]\" https://x.example",
+  "base": "curl -H \"Cookie: PHPSESSID=[REDACTED]\" https://x.example"
+ },
+ {
+  "in": "curl flags",
+  "base": "curl flags"
+ },
+ {
+  "in": "curl repeated",
+  "base": "curl repeated"
+ },
+ {
+  "in": "curl -x ",
+  "base": "curl -x "
+ },
+ {
+  "in": "curl continuations",
+  "base": "curl continuations"
+ },
+ {
+  "in": "curl \\\n",
+  "base": "curl \\\n"
+ },
+ {
+  "in": "curl quoted ops",
+  "base": "curl quoted ops"
+ },
+ {
+  "in": "curl ",
+  "base": "curl "
+ },
+ {
+  "in": "curl open quote",
+  "base": "curl open quote"
+ },
+ {
+  "in": "curl '",
+  "base": "curl '"
+ },
+ {
+  "in": "curl open dquote",
+  "base": "curl open dquote"
+ },
+ {
+  "in": "curl \"",
+  "base": "curl \""
+ },
+ {
+  "in": "curl many cmds",
+  "base": "curl many cmds"
+ },
+ {
+  "in": "curl -u a;",
+  "base": "curl -u a;"
+ },
+ {
+  "in": "curl json",
+  "base": "curl json"
+ },
+ {
+  "in": "{\"c\":\"curl -u a:pw1234\"}",
+  "base": "{\"c\":\"curl -u a:[REDACTED]\"}"
+ },
+ {
+  "in": "curl stray quotes",
+  "base": "curl stray quotes"
+ },
+ {
+  "in": "curl -u a:p'q ",
+  "base": "curl -u a:p'q "
+ },
+ {
+  "in": "curl json escapes",
+  "base": "curl json escapes"
+ },
+ {
+  "in": "curl -u a:\\\"b\\n",
+  "base": "curl -u a:\\\"b\\n"
+ },
+ {
+  "in": "curl no end",
+  "base": "curl no end"
+ },
+ {
+  "in": "wget http",
+  "base": "wget http"
+ },
+ {
+  "in": "wget http ",
+  "base": "wget http "
+ },
+ {
+  "in": "curl long user",
+  "base": "curl long user"
+ },
+ {
+  "in": "curl -u ",
+  "base": "curl -u "
+ },
+ {
+  "in": "curl -u admin:",
+  "base": "curl -u admin:"
+ },
+ {
+  "in": "curl --user admin:",
+  "base": "curl --user admin:"
+ },
+ {
+  "in": "curl -u admin https://api.example.com/v1/items",
+  "base": "curl -u admin https://api.example.com/v1/items"
+ },
+ {
+  "in": "curl -s https://api.example.com/v1/items",
+  "base": "curl -s https://api.example.com/v1/items"
+ },
+ {
+  "in": "curl --user=admin:",
+  "base": "curl --user=admin:"
+ },
+ {
+  "in": "curl -u \"admin:",
+  "base": "curl -u \"admin:"
+ },
+ {
+  "in": "curl --proxy-user px:",
+  "base": "curl --proxy-user px:"
+ },
+ {
+  "in": "curl -u admin:hunter2pw https://x.example",
+  "base": "curl -u admin:[REDACTED] https://x.example"
+ },
+ {
+  "in": "curl -u admin:$CURL_PASSWORD https://x.example",
+  "base": "curl -u admin:$CURL_PASSWORD https://x.example"
+ },
+ {
+  "in": "curl -u \"admin:${CURL_PASSWORD}\" https://x.example",
+  "base": "curl -u \"admin:${CURL_PASSWORD}\" https://x.example"
+ },
+ {
+  "in": "curl -H \"Cookie: sid=",
+  "base": "curl -H \"Cookie: sid="
+ },
+ {
+  "in": "http -a admin:letmeinplease GET https://x",
+  "base": "http -a admin:[REDACTED] GET https://x"
+ },
+ {
+  "in": "http -a admin:[REDACTED] GET https://x",
+  "base": "http -a admin:[REDACTED] GET https://x"
+ },
+ {
+  "in": "xh -v -a admin:letmeinplease https://x",
+  "base": "xh -v -a admin:[REDACTED] https://x"
+ },
+ {
+  "in": "xh -v -a admin:[REDACTED] https://x",
+  "base": "xh -v -a admin:[REDACTED] https://x"
+ },
+ {
+  "in": "https -b -a admin:letmeinplease POST https://x",
+  "base": "https -b -a admin:[REDACTED] POST https://x"
+ },
+ {
+  "in": "https -b -a admin:[REDACTED] POST https://x",
+  "base": "https -b -a admin:[REDACTED] POST https://x"
+ },
+ {
+  "in": "curl a;",
+  "base": "curl a;"
+ },
+ {
+  "in": "{\"cmd\":\"echo hi\\ncurl -u admin:",
+  "base": "{\"cmd\":\"echo hi\\ncurl -u admin:"
+ },
+ {
+  "in": "{\"command\":\"curl -H \\\"X-Note: (draft)\\\" -u admin:S3cretPass https://x\"}",
+  "base": "{\"command\":\"curl -H \\\"X-Note: (draft)\\\" -u admin:[REDACTED] https://x\"}"
+ },
+ {
+  "in": "{\"command\":\"curl -d \\\"f(x)\\\" -u admin:S3cretPass https://x\"}",
+  "base": "{\"command\":\"curl -d \\\"f(x)\\\" -u admin:[REDACTED] https://x\"}"
+ },
+ {
+  "in": "{\"command\":\"wget --header=\\\"X: (a)\\\" --password=S3cretPass https://x\"}",
+  "base": "{\"command\":\"wget --header=\\\"X: (a)\\\" [REDACTED] https://x\"}"
+ },
+ {
+  "in": "{\"command\":\"http POST x \\\"q=f(x)\\\" -a admin:S3cretPass\"}",
+  "base": "{\"command\":\"http POST x \\\"q=f(x)\\\" -a admin:[REDACTED]\"}"
+ },
+ {
+  "in": "curl -d `date` -u admin:S3cretPass https://x",
+  "base": "curl -d `date` -u admin:[REDACTED] https://x"
+ },
+ {
+  "in": "curl https://en.wikipedia.org/wiki/Foo_(bar) -u admin:S3cretPass",
+  "base": "curl https://en.wikipedia.org/wiki/Foo_(bar) -u admin:[REDACTED]"
+ },
+ {
+  "in": "curl -sS -H 'X: (a)' -u admin:",
+  "base": "curl -sS -H 'X: (a)' -u admin:"
+ },
+ {
+  "in": "wget --password=",
+  "base": "wget --password="
+ },
+ {
+  "in": "http -a admin:",
+  "base": "http -a admin:"
+ },
+ {
+  "in": "xh --auth=u:",
+  "base": "xh --auth=u:"
+ },
+ {
+  "in": "curl -H \"Cookie: theme=dark; uid=abcdefgh1234\" https://x.example",
+  "base": "curl -H \"Cookie: theme=dark; uid=[REDACTED]\" https://x.example"
+ },
+ {
+  "in": "{\"cmd\":\"curl -u \\\"admin:Xy7kLm9\\\\\\\"pQ2zz\\\" https://x.example\"}",
+  "base": "{\"cmd\":\"curl -u \\\"admin:[REDACTED]\\\" https://x.example\"}"
+ },
+ {
+  "in": "{\"cmd\":\"curl -u \\\"admin:[REDACTED]\\\" https://x.example\"}",
+  "base": "{\"cmd\":\"curl -u \\\"admin:[REDACTED]\\\" https://x.example\"}"
+ },
+ {
+  "in": "{\"cmd\":\"wget --password \\\"Xy7kLm9\\\\\\\"pQ2zz\\\" https://x.example\"}",
+  "base": "{\"cmd\":\"wget --password \\\"[REDACTED]\\\" https://x.example\"}"
+ },
+ {
+  "in": "{\"cmd\":\"wget --password \\\"[REDACTED]\\\" https://x.example\"}",
+  "base": "{\"cmd\":\"wget --password \\\"[REDACTED]\\\" https://x.example\"}"
+ },
+ {
+  "in": "curl dq escapes",
+  "base": "curl dq escapes"
+ },
+ {
+  "in": "{\"c\":\"curl -u \\\"a:",
+  "base": "{\"c\":\"curl -u \\\"a:"
+ },
+ {
+  "in": "curl cookies",
+  "base": "curl cookies"
+ },
+ {
+  "in": "curl -b a=abcdefgh1;b=c ",
+  "base": "curl -b a=[REDACTED];b=c "
+ },
+ {
+  "in": "curl -H 'Cookie: sid=abcdef123456789' https://x.example",
+  "base": "curl -H 'Cookie: sid=[REDACTED]' https://x.example"
+ },
+ {
+  "in": "curl -H 'Cookie: sid=[REDACTED]' https://x.example",
+  "base": "curl -H 'Cookie: sid=[REDACTED]' https://x.example"
+ },
+ {
+  "in": "curl -H \"Cookie: theme=dark; sid=abcdef123456789\" -v x",
+  "base": "curl -H \"Cookie: theme=dark; sid=[REDACTED]\" -v x"
+ },
+ {
+  "in": "curl -H \"Cookie: theme=dark; sid=[REDACTED]\" -v x",
+  "base": "curl -H \"Cookie: theme=dark; sid=[REDACTED]\" -v x"
+ },
+ {
+  "in": "curl -H \"Cookie: theme=dark\" https://x.example/abcdefghijklmnop",
+  "base": "curl -H \"Cookie: theme=dark\" https://x.example/abcdefghijklmnop"
+ },
+ {
+  "in": "curl --cookie foo=abcdefghijkl https://x.example",
+  "base": "curl --cookie foo=[REDACTED] https://x.example"
+ },
+ {
+  "in": "curl --cookie foo=[REDACTED] https://x.example",
+  "base": "curl --cookie foo=[REDACTED] https://x.example"
+ },
+ {
+  "in": "curl --cookie=foo=abcdefghijkl https://x.example",
+  "base": "curl --cookie=foo=[REDACTED] https://x.example"
+ },
+ {
+  "in": "curl --cookie=foo=[REDACTED] https://x.example",
+  "base": "curl --cookie=foo=[REDACTED] https://x.example"
+ },
+ {
+  "in": "curl -b 'foo=abcdefghijkl; theme=dark' https://x.example",
+  "base": "curl -b 'foo=[REDACTED]; theme=dark' https://x.example"
+ },
+ {
+  "in": "curl -b 'foo=[REDACTED]; theme=dark' https://x.example",
+  "base": "curl -b 'foo=[REDACTED]; theme=dark' https://x.example"
+ },
+ {
+  "in": "curl -sb \"sid=abcdef123456789\" https://x.example",
+  "base": "curl -sb \"sid=[REDACTED]\" https://x.example"
+ },
+ {
+  "in": "curl -sb \"sid=[REDACTED]\" https://x.example",
+  "base": "curl -sb \"sid=[REDACTED]\" https://x.example"
+ },
+ {
+  "in": "{\"cmd\":\"curl -b \\\"foo=abcdefghijkl\\\" https://x.example\"}",
+  "base": "{\"cmd\":\"curl -b \\\"foo=[REDACTED]\\\" https://x.example\"}"
+ },
+ {
+  "in": "{\"cmd\":\"curl -b \\\"foo=[REDACTED]\\\" https://x.example\"}",
+  "base": "{\"cmd\":\"curl -b \\\"foo=[REDACTED]\\\" https://x.example\"}"
+ },
+ {
+  "in": "curl -b cookies.txt https://x.example",
+  "base": "curl -b cookies.txt https://x.example"
+ },
+ {
+  "in": "curl -b /home/user/.cache/cookies-abcdefghijkl.txt https://x.example",
+  "base": "curl -b /home/user/.cache/cookies-abcdefghijkl.txt https://x.example"
+ },
+ {
+  "in": "curl -c jar.txt -b jar.txt https://x.example",
+  "base": "curl -c jar.txt -b jar.txt https://x.example"
+ },
+ {
+  "in": "curl -b 'theme=dark; lang=en-US' https://x.example",
+  "base": "curl -b 'theme=dark; lang=en-US' https://x.example"
+ },
+ {
+  "in": "curl -H 'Cookie: sid='abcdefghijkl x",
+  "base": "curl -H 'Cookie: sid='abcdefghijkl x"
+ },
+ {
+  "in": "curl -u admin:S3cretPass9 https://x",
+  "planted": "S3cretPass9",
+  "base": "curl -u admin:[REDACTED] https://x"
+ },
+ {
+  "in": "cmd := exec.Command(\"sh\", \"-c\", \"curl -u admin:S3cretPass9 https://x\")",
+  "planted": "S3cretPass9",
+  "base": "cmd := exec.Command(\"sh\", \"-c\", \"curl -u admin:[REDACTED] https://x\")"
+ },
+ {
+  "in": "{\"cmd\":\"echo hi\\ncurl -u admin:Tr0ub4dor\u00263x https://x\"}",
+  "planted": "Tr0ub4dor\u00263x",
+  "base": "{\"cmd\":\"echo hi\\ncurl -u admin:Tr0ub4dor\u00263x https://x\"}"
+ },
+ {
+  "in": "Run `curl -u admin:Tr0ub4dor\u00263x https://x` to check.",
+  "planted": "Tr0ub4dor\u00263x",
+  "base": "Run `curl -u admin:[REDACTED]\u00263x https://x` to check."
+ },
+ {
+  "in": "{\"command\":\"curl -u admin:hunter2hunter2 https://x\"}",
+  "planted": "hunter2hunter2",
+  "base": "{\"command\":\"curl -u admin:[REDACTED] https://x\"}"
+ },
+ {
+  "in": "sh -c 'curl -u admin:hunter2hunter2 https://x'",
+  "planted": "hunter2hunter2",
+  "base": "sh -c 'curl -u admin:[REDACTED] https://x'"
+ },
+ {
+  "in": "{\"cmd\":\"echo hi\\ncurl -uadmin:S3cretPass9 https://x\"}",
+  "planted": "S3cretPass9",
+  "base": "{\"cmd\":\"echo hi\\ncurl -uadmin:S3cretPass9 https://x\"}"
+ },
+ {
+  "in": "Run `curl -uadmin:S3cretPass9 https://x` to check.",
+  "planted": "S3cretPass9",
+  "base": "Run `curl -uadmin:[REDACTED] https://x` to check."
+ },
+ {
+  "in": "{\"command\":\"curl -uadmin:Tr0ub4dor\u00263x https://x\"}",
+  "planted": "Tr0ub4dor\u00263x",
+  "base": "{\"command\":\"curl -uadmin:[REDACTED]\u00263x https://x\"}"
+ },
+ {
+  "in": "sh -c 'curl -uadmin:Tr0ub4dor\u00263x https://x'",
+  "planted": "Tr0ub4dor\u00263x",
+  "base": "sh -c 'curl -uadmin:[REDACTED]\u00263x https://x'"
+ },
+ {
+  "in": "curl -uadmin:hunter2hunter2 https://x",
+  "planted": "hunter2hunter2",
+  "base": "curl -uadmin:[REDACTED] https://x"
+ },
+ {
+  "in": "cmd := exec.Command(\"sh\", \"-c\", \"curl -uadmin:hunter2hunter2 https://x\")",
+  "planted": "hunter2hunter2",
+  "base": "cmd := exec.Command(\"sh\", \"-c\", \"curl -uadmin:[REDACTED] https://x\")"
+ },
+ {
+  "in": "{\"command\":\"curl -sSu admin:S3cretPass9 https://x\"}",
+  "planted": "S3cretPass9",
+  "base": "{\"command\":\"curl -sSu admin:[REDACTED] https://x\"}"
+ },
+ {
+  "in": "sh -c 'curl -sSu admin:S3cretPass9 https://x'",
+  "planted": "S3cretPass9",
+  "base": "sh -c 'curl -sSu admin:[REDACTED] https://x'"
+ },
+ {
+  "in": "curl -sSu admin:Tr0ub4dor\u00263x https://x",
+  "planted": "Tr0ub4dor\u00263x",
+  "base": "curl -sSu admin:[REDACTED]\u00263x https://x"
+ },
+ {
+  "in": "cmd := exec.Command(\"sh\", \"-c\", \"curl -sSu admin:Tr0ub4dor\u00263x https://x\")",
+  "planted": "Tr0ub4dor\u00263x",
+  "base": "cmd := exec.Command(\"sh\", \"-c\", \"curl -sSu admin:[REDACTED]\u00263x https://x\")"
+ },
+ {
+  "in": "{\"cmd\":\"echo hi\\ncurl -sSu admin:hunter2hunter2 https://x\"}",
+  "planted": "hunter2hunter2",
+  "base": "{\"cmd\":\"echo hi\\ncurl -sSu admin:hunter2hunter2 https://x\"}"
+ },
+ {
+  "in": "Run `curl -sSu admin:hunter2hunter2 https://x` to check.",
+  "planted": "hunter2hunter2",
+  "base": "Run `curl -sSu admin:[REDACTED] https://x` to check."
+ },
+ {
+  "in": "curl --user admin:S3cretPass9 https://x",
+  "planted": "S3cretPass9",
+  "base": "curl --user admin:[REDACTED] https://x"
+ },
+ {
+  "in": "cmd := exec.Command(\"sh\", \"-c\", \"curl --user admin:S3cretPass9 https://x\")",
+  "planted": "S3cretPass9",
+  "base": "cmd := exec.Command(\"sh\", \"-c\", \"curl --user admin:[REDACTED] https://x\")"
+ },
+ {
+  "in": "{\"cmd\":\"echo hi\\ncurl --user admin:Tr0ub4dor\u00263x https://x\"}",
+  "planted": "Tr0ub4dor\u00263x",
+  "base": "{\"cmd\":\"echo hi\\ncurl --user admin:Tr0ub4dor\u00263x https://x\"}"
+ },
+ {
+  "in": "Run `curl --user admin:Tr0ub4dor\u00263x https://x` to check.",
+  "planted": "Tr0ub4dor\u00263x",
+  "base": "Run `curl --user admin:[REDACTED]\u00263x https://x` to check."
+ },
+ {
+  "in": "{\"command\":\"curl --user admin:hunter2hunter2 https://x\"}",
+  "planted": "hunter2hunter2",
+  "base": "{\"command\":\"curl --user admin:[REDACTED] https://x\"}"
+ },
+ {
+  "in": "sh -c 'curl --user admin:hunter2hunter2 https://x'",
+  "planted": "hunter2hunter2",
+  "base": "sh -c 'curl --user admin:[REDACTED] https://x'"
+ },
+ {
+  "in": "{\"cmd\":\"echo hi\\ncurl --user=admin:S3cretPass9 https://x\"}",
+  "planted": "S3cretPass9",
+  "base": "{\"cmd\":\"echo hi\\ncurl --user=admin:S3cretPass9 https://x\"}"
+ },
+ {
+  "in": "Run `curl --user=admin:S3cretPass9 https://x` to check.",
+  "planted": "S3cretPass9",
+  "base": "Run `curl --user=admin:[REDACTED] https://x` to check."
+ },
+ {
+  "in": "{\"command\":\"curl --user=admin:Tr0ub4dor\u00263x https://x\"}",
+  "planted": "Tr0ub4dor\u00263x",
+  "base": "{\"command\":\"curl --user=admin:[REDACTED]\u00263x https://x\"}"
+ },
+ {
+  "in": "sh -c 'curl --user=admin:Tr0ub4dor\u00263x https://x'",
+  "planted": "Tr0ub4dor\u00263x",
+  "base": "sh -c 'curl --user=admin:[REDACTED]\u00263x https://x'"
+ },
+ {
+  "in": "curl --user=admin:hunter2hunter2 https://x",
+  "planted": "hunter2hunter2",
+  "base": "curl --user=admin:[REDACTED] https://x"
+ },
+ {
+  "in": "cmd := exec.Command(\"sh\", \"-c\", \"curl --user=admin:hunter2hunter2 https://x\")",
+  "planted": "hunter2hunter2",
+  "base": "cmd := exec.Command(\"sh\", \"-c\", \"curl --user=admin:[REDACTED] https://x\")"
+ },
+ {
+  "in": "{\"command\":\"curl -U proxy:S3cretPass9 -x http://p https://x\"}",
+  "planted": "S3cretPass9",
+  "base": "{\"command\":\"curl -U proxy:[REDACTED] -x http://p https://x\"}"
+ },
+ {
+  "in": "sh -c 'curl -U proxy:S3cretPass9 -x http://p https://x'",
+  "planted": "S3cretPass9",
+  "base": "sh -c 'curl -U proxy:[REDACTED] -x http://p https://x'"
+ },
+ {
+  "in": "curl -U proxy:Tr0ub4dor\u00263x -x http://p https://x",
+  "planted": "Tr0ub4dor\u00263x",
+  "base": "curl -U proxy:[REDACTED]\u00263x -x http://p https://x"
+ },
+ {
+  "in": "cmd := exec.Command(\"sh\", \"-c\", \"curl -U proxy:Tr0ub4dor\u00263x -x http://p https://x\")",
+  "planted": "Tr0ub4dor\u00263x",
+  "base": "cmd := exec.Command(\"sh\", \"-c\", \"curl -U proxy:[REDACTED]\u00263x -x http://p https://x\")"
+ },
+ {
+  "in": "{\"cmd\":\"echo hi\\ncurl -U proxy:hunter2hunter2 -x http://p https://x\"}",
+  "planted": "hunter2hunter2",
+  "base": "{\"cmd\":\"echo hi\\ncurl -U proxy:hunter2hunter2 -x http://p https://x\"}"
+ },
+ {
+  "in": "Run `curl -U proxy:hunter2hunter2 -x http://p https://x` to check.",
+  "planted": "hunter2hunter2",
+  "base": "Run `curl -U proxy:[REDACTED] -x http://p https://x` to check."
+ },
+ {
+  "in": "curl --proxy-user proxy:S3cretPass9 -x http://p https://x",
+  "planted": "S3cretPass9",
+  "base": "curl --proxy-user proxy:[REDACTED] -x http://p https://x"
+ },
+ {
+  "in": "cmd := exec.Command(\"sh\", \"-c\", \"curl --proxy-user proxy:S3cretPass9 -x http://p https://x\")",
+  "planted": "S3cretPass9",
+  "base": "cmd := exec.Command(\"sh\", \"-c\", \"curl --proxy-user proxy:[REDACTED] -x http://p https://x\")"
+ },
+ {
+  "in": "{\"cmd\":\"echo hi\\ncurl --proxy-user proxy:Tr0ub4dor\u00263x -x http://p https://x\"}",
+  "planted": "Tr0ub4dor\u00263x",
+  "base": "{\"cmd\":\"echo hi\\ncurl --proxy-user proxy:Tr0ub4dor\u00263x -x http://p https://x\"}"
+ },
+ {
+  "in": "Run `curl --proxy-user proxy:Tr0ub4dor\u00263x -x http://p https://x` to check.",
+  "planted": "Tr0ub4dor\u00263x",
+  "base": "Run `curl --proxy-user proxy:[REDACTED]\u00263x -x http://p https://x` to check."
+ },
+ {
+  "in": "{\"command\":\"curl --proxy-user proxy:hunter2hunter2 -x http://p https://x\"}",
+  "planted": "hunter2hunter2",
+  "base": "{\"command\":\"curl --proxy-user proxy:[REDACTED] -x http://p https://x\"}"
+ },
+ {
+  "in": "sh -c 'curl --proxy-user proxy:hunter2hunter2 -x http://p https://x'",
+  "planted": "hunter2hunter2",
+  "base": "sh -c 'curl --proxy-user proxy:[REDACTED] -x http://p https://x'"
+ },
+ {
+  "in": "{\"cmd\":\"echo hi\\ncurl -u \\\"admin:S3cretPass9\\\" https://x\"}",
+  "planted": "S3cretPass9",
+  "base": "{\"cmd\":\"echo hi\\ncurl -u \\\"admin:S3cretPass9\\\" https://x\"}"
+ },
+ {
+  "in": "Run `curl -u \"admin:S3cretPass9\" https://x` to check.",
+  "planted": "S3cretPass9",
+  "base": "Run `curl -u \"admin:[REDACTED]\" https://x` to check."
+ },
+ {
+  "in": "{\"command\":\"curl -u \\\"admin:Tr0ub4dor\u00263x\\\" https://x\"}",
+  "planted": "Tr0ub4dor\u00263x",
+  "base": "{\"command\":\"curl -u \\\"admin:[REDACTED]\u00263x\\\" https://x\"}"
+ },
+ {
+  "in": "sh -c 'curl -u \"admin:Tr0ub4dor\u00263x\" https://x'",
+  "planted": "Tr0ub4dor\u00263x",
+  "base": "sh -c 'curl -u \"admin:[REDACTED]\" https://x'"
+ },
+ {
+  "in": "curl -u \"admin:hunter2hunter2\" https://x",
+  "planted": "hunter2hunter2",
+  "base": "curl -u \"admin:[REDACTED]\" https://x"
+ },
+ {
+  "in": "cmd := exec.Command(\"sh\", \"-c\", \"curl -u \\\"admin:hunter2hunter2\\\" https://x\")",
+  "planted": "hunter2hunter2",
+  "base": "cmd := exec.Command(\"sh\", \"-c\", \"curl -u \\\"admin:[REDACTED]\\\" https://x\")"
+ },
+ {
+  "in": "{\"command\":\"curl -u 'admin:S3cretPass9' https://x\"}",
+  "planted": "S3cretPass9",
+  "base": "{\"command\":\"curl -u 'admin:[REDACTED]' https://x\"}"
+ },
+ {
+  "in": "sh -c 'curl -u '\\''admin:S3cretPass9'\\'' https://x'",
+  "planted": "S3cretPass9",
+  "base": "sh -c 'curl -u '\\''admin:S3cretPass9'\\'' https://x'"
+ },
+ {
+  "in": "curl -u 'admin:Tr0ub4dor\u00263x' https://x",
+  "planted": "Tr0ub4dor\u00263x",
+  "base": "curl -u 'admin:[REDACTED]' https://x"
+ },
+ {
+  "in": "cmd := exec.Command(\"sh\", \"-c\", \"curl -u 'admin:Tr0ub4dor\u00263x' https://x\")",
+  "planted": "Tr0ub4dor\u00263x",
+  "base": "cmd := exec.Command(\"sh\", \"-c\", \"curl -u 'admin:[REDACTED]' https://x\")"
+ },
+ {
+  "in": "{\"cmd\":\"echo hi\\ncurl -u 'admin:hunter2hunter2' https://x\"}",
+  "planted": "hunter2hunter2",
+  "base": "{\"cmd\":\"echo hi\\ncurl -u 'admin:hunter2hunter2' https://x\"}"
+ },
+ {
+  "in": "Run `curl -u 'admin:hunter2hunter2' https://x` to check.",
+  "planted": "hunter2hunter2",
+  "base": "Run `curl -u 'admin:[REDACTED]' https://x` to check."
+ },
+ {
+  "in": "curl -H \"X-Note: (draft)\" -u admin:S3cretPass9 https://x",
+  "planted": "S3cretPass9",
+  "base": "curl -H \"X-Note: (draft)\" -u admin:[REDACTED] https://x"
+ },
+ {
+  "in": "cmd := exec.Command(\"sh\", \"-c\", \"curl -H \\\"X-Note: (draft)\\\" -u admin:S3cretPass9 https://x\")",
+  "planted": "S3cretPass9",
+  "base": "cmd := exec.Command(\"sh\", \"-c\", \"curl -H \\\"X-Note: (draft)\\\" -u admin:[REDACTED] https://x\")"
+ },
+ {
+  "in": "{\"cmd\":\"echo hi\\ncurl -H \\\"X-Note: (draft)\\\" -u admin:Tr0ub4dor\u00263x https://x\"}",
+  "planted": "Tr0ub4dor\u00263x",
+  "base": "{\"cmd\":\"echo hi\\ncurl -H \\\"X-Note: (draft)\\\" -u admin:Tr0ub4dor\u00263x https://x\"}"
+ },
+ {
+  "in": "Run `curl -H \"X-Note: (draft)\" -u admin:Tr0ub4dor\u00263x https://x` to check.",
+  "planted": "Tr0ub4dor\u00263x",
+  "base": "Run `curl -H \"X-Note: (draft)\" -u admin:[REDACTED]\u00263x https://x` to check."
+ },
+ {
+  "in": "{\"command\":\"curl -H \\\"X-Note: (draft)\\\" -u admin:hunter2hunter2 https://x\"}",
+  "planted": "hunter2hunter2",
+  "base": "{\"command\":\"curl -H \\\"X-Note: (draft)\\\" -u admin:[REDACTED] https://x\"}"
+ },
+ {
+  "in": "sh -c 'curl -H \"X-Note: (draft)\" -u admin:hunter2hunter2 https://x'",
+  "planted": "hunter2hunter2",
+  "base": "sh -c 'curl -H \"X-Note: (draft)\" -u admin:[REDACTED] https://x'"
+ },
+ {
+  "in": "{\"cmd\":\"echo hi\\ncurl -d \\\"f(x)\\\" -u admin:S3cretPass9 https://x\"}",
+  "planted": "S3cretPass9",
+  "base": "{\"cmd\":\"echo hi\\ncurl -d \\\"f(x)\\\" -u admin:S3cretPass9 https://x\"}"
+ },
+ {
+  "in": "Run `curl -d \"f(x)\" -u admin:S3cretPass9 https://x` to check.",
+  "planted": "S3cretPass9",
+  "base": "Run `curl -d \"f(x)\" -u admin:[REDACTED] https://x` to check."
+ },
+ {
+  "in": "{\"command\":\"curl -d \\\"f(x)\\\" -u admin:Tr0ub4dor\u00263x https://x\"}",
+  "planted": "Tr0ub4dor\u00263x",
+  "base": "{\"command\":\"curl -d \\\"f(x)\\\" -u admin:[REDACTED]\u00263x https://x\"}"
+ },
+ {
+  "in": "sh -c 'curl -d \"f(x)\" -u admin:Tr0ub4dor\u00263x https://x'",
+  "planted": "Tr0ub4dor\u00263x",
+  "base": "sh -c 'curl -d \"f(x)\" -u admin:[REDACTED]\u00263x https://x'"
+ },
+ {
+  "in": "curl -d \"f(x)\" -u admin:hunter2hunter2 https://x",
+  "planted": "hunter2hunter2",
+  "base": "curl -d \"f(x)\" -u admin:[REDACTED] https://x"
+ },
+ {
+  "in": "cmd := exec.Command(\"sh\", \"-c\", \"curl -d \\\"f(x)\\\" -u admin:hunter2hunter2 https://x\")",
+  "planted": "hunter2hunter2",
+  "base": "cmd := exec.Command(\"sh\", \"-c\", \"curl -d \\\"f(x)\\\" -u admin:[REDACTED] https://x\")"
+ },
+ {
+  "in": "{\"command\":\"curl -d `date` -u admin:S3cretPass9 https://x\"}",
+  "planted": "S3cretPass9",
+  "base": "{\"command\":\"curl -d `date` -u admin:[REDACTED] https://x\"}"
+ },
+ {
+  "in": "sh -c 'curl -d `date` -u admin:S3cretPass9 https://x'",
+  "planted": "S3cretPass9",
+  "base": "sh -c 'curl -d `date` -u admin:[REDACTED] https://x'"
+ },
+ {
+  "in": "curl -d `date` -u admin:Tr0ub4dor\u00263x https://x",
+  "planted": "Tr0ub4dor\u00263x",
+  "base": "curl -d `date` -u admin:[REDACTED]\u00263x https://x"
+ },
+ {
+  "in": "cmd := exec.Command(\"sh\", \"-c\", \"curl -d `date` -u admin:Tr0ub4dor\u00263x https://x\")",
+  "planted": "Tr0ub4dor\u00263x",
+  "base": "cmd := exec.Command(\"sh\", \"-c\", \"curl -d `date` -u admin:[REDACTED]\u00263x https://x\")"
+ },
+ {
+  "in": "{\"cmd\":\"echo hi\\ncurl -d `date` -u admin:hunter2hunter2 https://x\"}",
+  "planted": "hunter2hunter2",
+  "base": "{\"cmd\":\"echo hi\\ncurl -d `date` -u admin:hunter2hunter2 https://x\"}"
+ },
+ {
+  "in": "Run `curl -d `date` -u admin:hunter2hunter2 https://x` to check.",
+  "planted": "hunter2hunter2",
+  "base": "Run `curl -d `date` -u admin:[REDACTED] https://x` to check."
+ },
+ {
+  "in": "curl https://en.wikipedia.org/wiki/Foo_(bar) -u admin:S3cretPass9",
+  "planted": "S3cretPass9",
+  "base": "curl https://en.wikipedia.org/wiki/Foo_(bar) -u admin:[REDACTED]"
+ },
+ {
+  "in": "cmd := exec.Command(\"sh\", \"-c\", \"curl https://en.wikipedia.org/wiki/Foo_(bar) -u admin:S3cretPass9\")",
+  "planted": "S3cretPass9",
+  "base": "cmd := exec.Command(\"sh\", \"-c\", \"curl https://en.wikipedia.org/wiki/Foo_(bar) -u admin:[REDACTED]\")"
+ },
+ {
+  "in": "{\"cmd\":\"echo hi\\ncurl https://en.wikipedia.org/wiki/Foo_(bar) -u admin:Tr0ub4dor\u00263x\"}",
+  "planted": "Tr0ub4dor\u00263x",
+  "base": "{\"cmd\":\"echo hi\\ncurl https://en.wikipedia.org/wiki/Foo_(bar) -u admin:Tr0ub4dor\u00263x\"}"
+ },
+ {
+  "in": "Run `curl https://en.wikipedia.org/wiki/Foo_(bar) -u admin:Tr0ub4dor\u00263x` to check.",
+  "planted": "Tr0ub4dor\u00263x",
+  "base": "Run `curl https://en.wikipedia.org/wiki/Foo_(bar) -u admin:[REDACTED]\u00263x` to check."
+ },
+ {
+  "in": "{\"command\":\"curl https://en.wikipedia.org/wiki/Foo_(bar) -u admin:hunter2hunter2\"}",
+  "planted": "hunter2hunter2",
+  "base": "{\"command\":\"curl https://en.wikipedia.org/wiki/Foo_(bar) -u admin:[REDACTED]\"}"
+ },
+ {
+  "in": "sh -c 'curl https://en.wikipedia.org/wiki/Foo_(bar) -u admin:hunter2hunter2'",
+  "planted": "hunter2hunter2",
+  "base": "sh -c 'curl https://en.wikipedia.org/wiki/Foo_(bar) -u admin:[REDACTED]'"
+ },
+ {
+  "in": "{\"cmd\":\"echo hi\\n$(curl -s -u admin:S3cretPass9 https://x)\"}",
+  "planted": "S3cretPass9",
+  "base": "{\"cmd\":\"echo hi\\n$(curl -s -u admin:[REDACTED] https://x)\"}"
+ },
+ {
+  "in": "Run `$(curl -s -u admin:S3cretPass9 https://x)` to check.",
+  "planted": "S3cretPass9",
+  "base": "Run `$(curl -s -u admin:[REDACTED] https://x)` to check."
+ },
+ {
+  "in": "{\"command\":\"$(curl -s -u admin:Tr0ub4dor\u00263x https://x)\"}",
+  "planted": "Tr0ub4dor\u00263x",
+  "base": "{\"command\":\"$(curl -s -u admin:[REDACTED]\u00263x https://x)\"}"
+ },
+ {
+  "in": "sh -c '$(curl -s -u admin:Tr0ub4dor\u00263x https://x)'",
+  "planted": "Tr0ub4dor\u00263x",
+  "base": "sh -c '$(curl -s -u admin:[REDACTED]\u00263x https://x)'"
+ },
+ {
+  "in": "$(curl -s -u admin:hunter2hunter2 https://x)",
+  "planted": "hunter2hunter2",
+  "base": "$(curl -s -u admin:[REDACTED] https://x)"
+ },
+ {
+  "in": "cmd := exec.Command(\"sh\", \"-c\", \"$(curl -s -u admin:hunter2hunter2 https://x)\")",
+  "planted": "hunter2hunter2",
+  "base": "cmd := exec.Command(\"sh\", \"-c\", \"$(curl -s -u admin:[REDACTED] https://x)\")"
+ },
+ {
+  "in": "{\"command\":\"echo `curl -s -u admin:S3cretPass9 https://x` done\"}",
+  "planted": "S3cretPass9",
+  "base": "{\"command\":\"echo `curl -s -u admin:[REDACTED] https://x` done\"}"
+ },
+ {
+  "in": "sh -c 'echo `curl -s -u admin:S3cretPass9 https://x` done'",
+  "planted": "S3cretPass9",
+  "base": "sh -c 'echo `curl -s -u admin:[REDACTED] https://x` done'"
+ },
+ {
+  "in": "echo `curl -s -u admin:Tr0ub4dor\u00263x https://x` done",
+  "planted": "Tr0ub4dor\u00263x",
+  "base": "echo `curl -s -u admin:[REDACTED]\u00263x https://x` done"
+ },
+ {
+  "in": "cmd := exec.Command(\"sh\", \"-c\", \"echo `curl -s -u admin:Tr0ub4dor\u00263x https://x` done\")",
+  "planted": "Tr0ub4dor\u00263x",
+  "base": "cmd := exec.Command(\"sh\", \"-c\", \"echo `curl -s -u admin:[REDACTED]\u00263x https://x` done\")"
+ },
+ {
+  "in": "{\"cmd\":\"echo hi\\necho `curl -s -u admin:hunter2hunter2 https://x` done\"}",
+  "planted": "hunter2hunter2",
+  "base": "{\"cmd\":\"echo hi\\necho `curl -s -u admin:[REDACTED] https://x` done\"}"
+ },
+ {
+  "in": "Run `echo `curl -s -u admin:hunter2hunter2 https://x` done` to check.",
+  "planted": "hunter2hunter2",
+  "base": "Run `echo `curl -s -u admin:[REDACTED] https://x` done` to check."
+ },
+ {
+  "in": "curl -u admin:S3cretPass9 https://x | jq .",
+  "planted": "S3cretPass9",
+  "base": "curl -u admin:[REDACTED] https://x | jq ."
+ },
+ {
+  "in": "cmd := exec.Command(\"sh\", \"-c\", \"curl -u admin:S3cretPass9 https://x | jq .\")",
+  "planted": "S3cretPass9",
+  "base": "cmd := exec.Command(\"sh\", \"-c\", \"curl -u admin:[REDACTED] https://x | jq .\")"
+ },
+ {
+  "in": "{\"cmd\":\"echo hi\\ncurl -u admin:Tr0ub4dor\u00263x https://x | jq .\"}",
+  "planted": "Tr0ub4dor\u00263x",
+  "base": "{\"cmd\":\"echo hi\\ncurl -u admin:Tr0ub4dor\u00263x https://x | jq .\"}"
+ },
+ {
+  "in": "Run `curl -u admin:Tr0ub4dor\u00263x https://x | jq .` to check.",
+  "planted": "Tr0ub4dor\u00263x",
+  "base": "Run `curl -u admin:[REDACTED]\u00263x https://x | jq .` to check."
+ },
+ {
+  "in": "{\"command\":\"curl -u admin:hunter2hunter2 https://x | jq .\"}",
+  "planted": "hunter2hunter2",
+  "base": "{\"command\":\"curl -u admin:[REDACTED] https://x | jq .\"}"
+ },
+ {
+  "in": "sh -c 'curl -u admin:hunter2hunter2 https://x | jq .'",
+  "planted": "hunter2hunter2",
+  "base": "sh -c 'curl -u admin:[REDACTED] https://x | jq .'"
+ },
+ {
+  "in": "{\"cmd\":\"echo hi\\ncurl -u admin:S3cretPass9 https://x; echo ok\"}",
+  "planted": "S3cretPass9",
+  "base": "{\"cmd\":\"echo hi\\ncurl -u admin:S3cretPass9 https://x; echo ok\"}"
+ },
+ {
+  "in": "Run `curl -u admin:S3cretPass9 https://x; echo ok` to check.",
+  "planted": "S3cretPass9",
+  "base": "Run `curl -u admin:[REDACTED] https://x; echo ok` to check."
+ },
+ {
+  "in": "{\"command\":\"curl -u admin:Tr0ub4dor\u00263x https://x; echo ok\"}",
+  "planted": "Tr0ub4dor\u00263x",
+  "base": "{\"command\":\"curl -u admin:[REDACTED]\u00263x https://x; echo ok\"}"
+ },
+ {
+  "in": "sh -c 'curl -u admin:Tr0ub4dor\u00263x https://x; echo ok'",
+  "planted": "Tr0ub4dor\u00263x",
+  "base": "sh -c 'curl -u admin:[REDACTED]\u00263x https://x; echo ok'"
+ },
+ {
+  "in": "curl -u admin:hunter2hunter2 https://x; echo ok",
+  "planted": "hunter2hunter2",
+  "base": "curl -u admin:[REDACTED] https://x; echo ok"
+ },
+ {
+  "in": "cmd := exec.Command(\"sh\", \"-c\", \"curl -u admin:hunter2hunter2 https://x; echo ok\")",
+  "planted": "hunter2hunter2",
+  "base": "cmd := exec.Command(\"sh\", \"-c\", \"curl -u admin:[REDACTED] https://x; echo ok\")"
+ },
+ {
+  "in": "{\"command\":\"curl -b \\\"session=S3cretPass9\\\" https://x\"}",
+  "planted": "S3cretPass9",
+  "base": "{\"command\":\"curl -b \\\"session=[REDACTED]\\\" https://x\"}"
+ },
+ {
+  "in": "sh -c 'curl -b \"session=S3cretPass9\" https://x'",
+  "planted": "S3cretPass9",
+  "base": "sh -c 'curl -b \"session=[REDACTED]\" https://x'"
+ },
+ {
+  "in": "curl -b \"session=Tr0ub4dor\u00263x\" https://x",
+  "planted": "Tr0ub4dor\u00263x",
+  "base": "curl -b \"session=[REDACTED]\" https://x"
+ },
+ {
+  "in": "cmd := exec.Command(\"sh\", \"-c\", \"curl -b \\\"session=Tr0ub4dor\u00263x\\\" https://x\")",
+  "planted": "Tr0ub4dor\u00263x",
+  "base": "cmd := exec.Command(\"sh\", \"-c\", \"curl -b \\\"session=Tr0ub4dor\u00263x\\\" https://x\")"
+ },
+ {
+  "in": "{\"cmd\":\"echo hi\\ncurl -b \\\"session=hunter2hunter2\\\" https://x\"}",
+  "planted": "hunter2hunter2",
+  "base": "{\"cmd\":\"echo hi\\ncurl -b \\\"session=hunter2hunter2\\\" https://x\"}"
+ },
+ {
+  "in": "Run `curl -b \"session=hunter2hunter2\" https://x` to check.",
+  "planted": "hunter2hunter2",
+  "base": "Run `curl -b \"session=[REDACTED]\" https://x` to check."
+ },
+ {
+  "in": "curl --cookie \"sid=S3cretPass9; theme=dark\" https://x",
+  "planted": "S3cretPass9",
+  "base": "curl --cookie \"sid=[REDACTED]; theme=dark\" https://x"
+ },
+ {
+  "in": "cmd := exec.Command(\"sh\", \"-c\", \"curl --cookie \\\"sid=S3cretPass9; theme=dark\\\" https://x\")",
+  "planted": "S3cretPass9",
+  "base": "cmd := exec.Command(\"sh\", \"-c\", \"curl --cookie \\\"sid=S3cretPass9; theme=dark\\\" https://x\")"
+ },
+ {
+  "in": "{\"cmd\":\"echo hi\\ncurl --cookie \\\"sid=Tr0ub4dor\u00263x; theme=dark\\\" https://x\"}",
+  "planted": "Tr0ub4dor\u00263x",
+  "base": "{\"cmd\":\"echo hi\\ncurl --cookie \\\"sid=Tr0ub4dor\u00263x; theme=dark\\\" https://x\"}"
+ },
+ {
+  "in": "Run `curl --cookie \"sid=Tr0ub4dor\u00263x; theme=dark\" https://x` to check.",
+  "planted": "Tr0ub4dor\u00263x",
+  "base": "Run `curl --cookie \"sid=[REDACTED]; theme=dark\" https://x` to check."
+ },
+ {
+  "in": "{\"command\":\"curl --cookie \\\"sid=hunter2hunter2; theme=dark\\\" https://x\"}",
+  "planted": "hunter2hunter2",
+  "base": "{\"command\":\"curl --cookie \\\"sid=hunter2hunter2; theme=dark\\\" https://x\"}"
+ },
+ {
+  "in": "sh -c 'curl --cookie \"sid=hunter2hunter2; theme=dark\" https://x'",
+  "planted": "hunter2hunter2",
+  "base": "sh -c 'curl --cookie \"sid=[REDACTED]; theme=dark\" https://x'"
+ },
+ {
+  "in": "{\"cmd\":\"echo hi\\nwget --password=S3cretPass9 https://x\"}",
+  "planted": "S3cretPass9",
+  "base": "{\"cmd\":\"echo hi\\nwget [REDACTED] https://x\"}"
+ },
+ {
+  "in": "Run `wget --password=S3cretPass9 https://x` to check.",
+  "planted": "S3cretPass9",
+  "base": "Run `wget [REDACTED] https://x` to check."
+ },
+ {
+  "in": "{\"command\":\"wget --password=Tr0ub4dor\u00263x https://x\"}",
+  "planted": "Tr0ub4dor\u00263x",
+  "base": "{\"command\":\"wget [REDACTED] https://x\"}"
+ },
+ {
+  "in": "sh -c 'wget --password=Tr0ub4dor\u00263x https://x'",
+  "planted": "Tr0ub4dor\u00263x",
+  "base": "sh -c 'wget [REDACTED] https://x'"
+ },
+ {
+  "in": "wget --password=hunter2hunter2 https://x",
+  "planted": "hunter2hunter2",
+  "base": "wget [REDACTED] https://x"
+ },
+ {
+  "in": "cmd := exec.Command(\"sh\", \"-c\", \"wget --password=hunter2hunter2 https://x\")",
+  "planted": "hunter2hunter2",
+  "base": "cmd := exec.Command(\"sh\", \"-c\", \"wget [REDACTED] https://x\")"
+ },
+ {
+  "in": "{\"command\":\"wget --http-password S3cretPass9 https://x\"}",
+  "planted": "S3cretPass9",
+  "base": "{\"command\":\"wget --http-password [REDACTED] https://x\"}"
+ },
+ {
+  "in": "sh -c 'wget --http-password S3cretPass9 https://x'",
+  "planted": "S3cretPass9",
+  "base": "sh -c 'wget --http-password [REDACTED] https://x'"
+ },
+ {
+  "in": "wget --http-password Tr0ub4dor\u00263x https://x",
+  "planted": "Tr0ub4dor\u00263x",
+  "base": "wget --http-password [REDACTED]\u00263x https://x"
+ },
+ {
+  "in": "cmd := exec.Command(\"sh\", \"-c\", \"wget --http-password Tr0ub4dor\u00263x https://x\")",
+  "planted": "Tr0ub4dor\u00263x",
+  "base": "cmd := exec.Command(\"sh\", \"-c\", \"wget --http-password [REDACTED]\u00263x https://x\")"
+ },
+ {
+  "in": "{\"cmd\":\"echo hi\\nwget --http-password hunter2hunter2 https://x\"}",
+  "planted": "hunter2hunter2",
+  "base": "{\"cmd\":\"echo hi\\nwget --http-password hunter2hunter2 https://x\"}"
+ },
+ {
+  "in": "Run `wget --http-password hunter2hunter2 https://x` to check.",
+  "planted": "hunter2hunter2",
+  "base": "Run `wget --http-password [REDACTED] https://x` to check."
+ },
+ {
+  "in": "wget --header=\"X: (a)\" --password=S3cretPass9 https://x",
+  "planted": "S3cretPass9",
+  "base": "wget --header=\"X: (a)\" [REDACTED] https://x"
+ },
+ {
+  "in": "cmd := exec.Command(\"sh\", \"-c\", \"wget --header=\\\"X: (a)\\\" --password=S3cretPass9 https://x\")",
+  "planted": "S3cretPass9",
+  "base": "cmd := exec.Command(\"sh\", \"-c\", \"wget --header=\\\"X: (a)\\\" [REDACTED] https://x\")"
+ },
+ {
+  "in": "{\"cmd\":\"echo hi\\nwget --header=\\\"X: (a)\\\" --password=Tr0ub4dor\u00263x https://x\"}",
+  "planted": "Tr0ub4dor\u00263x",
+  "base": "{\"cmd\":\"echo hi\\nwget --header=\\\"X: (a)\\\" [REDACTED] https://x\"}"
+ },
+ {
+  "in": "Run `wget --header=\"X: (a)\" --password=Tr0ub4dor\u00263x https://x` to check.",
+  "planted": "Tr0ub4dor\u00263x",
+  "base": "Run `wget --header=\"X: (a)\" [REDACTED] https://x` to check."
+ },
+ {
+  "in": "{\"command\":\"wget --header=\\\"X: (a)\\\" --password=hunter2hunter2 https://x\"}",
+  "planted": "hunter2hunter2",
+  "base": "{\"command\":\"wget --header=\\\"X: (a)\\\" [REDACTED] https://x\"}"
+ },
+ {
+  "in": "sh -c 'wget --header=\"X: (a)\" --password=hunter2hunter2 https://x'",
+  "planted": "hunter2hunter2",
+  "base": "sh -c 'wget --header=\"X: (a)\" [REDACTED] https://x'"
+ },
+ {
+  "in": "{\"cmd\":\"echo hi\\nhttp -a admin:S3cretPass9 POST x\"}",
+  "planted": "S3cretPass9",
+  "base": "{\"cmd\":\"echo hi\\nhttp -a admin:S3cretPass9 POST x\"}"
+ },
+ {
+  "in": "Run `http -a admin:S3cretPass9 POST x` to check.",
+  "planted": "S3cretPass9",
+  "base": "Run `http -a admin:[REDACTED] POST x` to check."
+ },
+ {
+  "in": "{\"command\":\"http -a admin:Tr0ub4dor\u00263x POST x\"}",
+  "planted": "Tr0ub4dor\u00263x",
+  "base": "{\"command\":\"http -a admin:[REDACTED]\u00263x POST x\"}"
+ },
+ {
+  "in": "sh -c 'http -a admin:Tr0ub4dor\u00263x POST x'",
+  "planted": "Tr0ub4dor\u00263x",
+  "base": "sh -c 'http -a admin:[REDACTED]\u00263x POST x'"
+ },
+ {
+  "in": "http -a admin:hunter2hunter2 POST x",
+  "planted": "hunter2hunter2",
+  "base": "http -a admin:[REDACTED] POST x"
+ },
+ {
+  "in": "cmd := exec.Command(\"sh\", \"-c\", \"http -a admin:hunter2hunter2 POST x\")",
+  "planted": "hunter2hunter2",
+  "base": "cmd := exec.Command(\"sh\", \"-c\", \"http -a admin:[REDACTED] POST x\")"
+ },
+ {
+  "in": "{\"command\":\"http POST x \\\"q=f(x)\\\" -a admin:S3cretPass9\"}",
+  "planted": "S3cretPass9",
+  "base": "{\"command\":\"http POST x \\\"q=f(x)\\\" -a admin:[REDACTED]\"}"
+ },
+ {
+  "in": "sh -c 'http POST x \"q=f(x)\" -a admin:S3cretPass9'",
+  "planted": "S3cretPass9",
+  "base": "sh -c 'http POST x \"q=f(x)\" -a admin:[REDACTED]'"
+ },
+ {
+  "in": "http POST x \"q=f(x)\" -a admin:Tr0ub4dor\u00263x",
+  "planted": "Tr0ub4dor\u00263x",
+  "base": "http POST x \"q=f(x)\" -a admin:[REDACTED]\u00263x"
+ },
+ {
+  "in": "cmd := exec.Command(\"sh\", \"-c\", \"http POST x \\\"q=f(x)\\\" -a admin:Tr0ub4dor\u00263x\")",
+  "planted": "Tr0ub4dor\u00263x",
+  "base": "cmd := exec.Command(\"sh\", \"-c\", \"http POST x \\\"q=f(x)\\\" -a admin:[REDACTED]\u00263x\")"
+ },
+ {
+  "in": "{\"cmd\":\"echo hi\\nhttp POST x \\\"q=f(x)\\\" -a admin:hunter2hunter2\"}",
+  "planted": "hunter2hunter2",
+  "base": "{\"cmd\":\"echo hi\\nhttp POST x \\\"q=f(x)\\\" -a admin:hunter2hunter2\"}"
+ },
+ {
+  "in": "Run `http POST x \"q=f(x)\" -a admin:hunter2hunter2` to check.",
+  "planted": "hunter2hunter2",
+  "base": "Run `http POST x \"q=f(x)\" -a admin:[REDACTED] to check."
+ },
+ {
+  "in": "https --auth admin:S3cretPass9 x",
+  "planted": "S3cretPass9",
+  "base": "https --auth admin:[REDACTED] x"
+ },
+ {
+  "in": "cmd := exec.Command(\"sh\", \"-c\", \"https --auth admin:S3cretPass9 x\")",
+  "planted": "S3cretPass9",
+  "base": "cmd := exec.Command(\"sh\", \"-c\", \"https --auth admin:[REDACTED] x\")"
+ },
+ {
+  "in": "{\"cmd\":\"echo hi\\nhttps --auth admin:Tr0ub4dor\u00263x x\"}",
+  "planted": "Tr0ub4dor\u00263x",
+  "base": "{\"cmd\":\"echo hi\\nhttps --auth admin:Tr0ub4dor\u00263x x\"}"
+ },
+ {
+  "in": "Run `https --auth admin:Tr0ub4dor\u00263x x` to check.",
+  "planted": "Tr0ub4dor\u00263x",
+  "base": "Run `https --auth admin:[REDACTED]\u00263x x` to check."
+ },
+ {
+  "in": "{\"command\":\"https --auth admin:hunter2hunter2 x\"}",
+  "planted": "hunter2hunter2",
+  "base": "{\"command\":\"https --auth admin:[REDACTED] x\"}"
+ },
+ {
+  "in": "sh -c 'https --auth admin:hunter2hunter2 x'",
+  "planted": "hunter2hunter2",
+  "base": "sh -c 'https --auth admin:[REDACTED] x'"
+ },
+ {
+  "in": "{\"cmd\":\"echo hi\\nxh --auth=admin:S3cretPass9 x\"}",
+  "planted": "S3cretPass9",
+  "base": "{\"cmd\":\"echo hi\\nxh --auth=admin:S3cretPass9 x\"}"
+ },
+ {
+  "in": "Run `xh --auth=admin:S3cretPass9 x` to check.",
+  "planted": "S3cretPass9",
+  "base": "Run `xh --auth=admin:[REDACTED] x` to check."
+ },
+ {
+  "in": "{\"command\":\"xh --auth=admin:Tr0ub4dor\u00263x x\"}",
+  "planted": "Tr0ub4dor\u00263x",
+  "base": "{\"command\":\"xh --auth=admin:[REDACTED]\u00263x x\"}"
+ },
+ {
+  "in": "sh -c 'xh --auth=admin:Tr0ub4dor\u00263x x'",
+  "planted": "Tr0ub4dor\u00263x",
+  "base": "sh -c 'xh --auth=admin:[REDACTED]\u00263x x'"
+ },
+ {
+  "in": "xh --auth=admin:hunter2hunter2 x",
+  "planted": "hunter2hunter2",
+  "base": "xh --auth=admin:[REDACTED] x"
+ },
+ {
+  "in": "cmd := exec.Command(\"sh\", \"-c\", \"xh --auth=admin:hunter2hunter2 x\")",
+  "planted": "hunter2hunter2",
+  "base": "cmd := exec.Command(\"sh\", \"-c\", \"xh --auth=admin:[REDACTED] x\")"
+ }
+]

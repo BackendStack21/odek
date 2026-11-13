@@ -2023,6 +2023,12 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 		fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring sandbox=false from project config (%s); set sandbox policy via ~/.odek/config.json or the CLI\n", ProjectConfigPath())
 		project.Sandbox = nil
 	}
+	// A project may turn AGENTS.md loading off but not back on: a false value
+	// (which `odek init` files carry) is treated as unset, silently, so the
+	// operator's global no_agents choice survives.
+	if project.NoAgents != nil && !*project.NoAgents {
+		project.NoAgents = nil
+	}
 	if project.SandboxReadonly != nil && !*project.SandboxReadonly {
 		fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring sandbox_readonly=false from project config (%s); set it via ~/.odek/config.json or CLI\n", ProjectConfigPath())
 		project.SandboxReadonly = nil
@@ -2580,7 +2586,7 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 		if cfg.Tools == nil {
 			cfg.Tools = &ToolsConfig{}
 		}
-		cfg.Tools.Disabled = v
+		cfg.Tools.Disabled = append(cfg.Tools.Disabled, v...)
 	}
 
 	// Layer 4: CLI flags (highest priority)
@@ -3154,7 +3160,7 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	// env wins over the file value, per the priority chain. 0/unset uses
 	// the built-in 300s default so thinking models are not idle-aborted
 	// before the first SSE event.
-	sdk.SetStreamIdleTimeout(resolveStreamIdleTimeout(cfg.LLM, envIntPtr("ODEK_STREAM_IDLE_TIMEOUT_SECONDS")))
+	sdk.SetStreamIdleTimeout(resolveStreamIdleTimeout(cfg.LLM, envIntPtr("STREAM_IDLE_TIMEOUT_SECONDS")))
 
 	// v1 alias: infer provider from base_url when provider is unset.
 	if resolved.Provider == "" && resolved.BaseURL != "" {
@@ -3652,6 +3658,14 @@ func resolveTelegram(cfg *telegram.TelegramConfig) telegram.TelegramConfig {
 	if cfg.MediaQuotaPerChat > 0 {
 		base.MediaQuotaPerChat = cfg.MediaQuotaPerChat
 	}
+	// AgentTimeout: the file decoder seeds the default, so an explicit 0
+	// (unlimited) survives here.
+	base.AgentTimeout = cfg.AgentTimeout
+	if cfg.HealthAddr != "" {
+		base.HealthAddr = cfg.HealthAddr
+	}
+	// LogLevel/LogFile are retired: runtime logging is configured elsewhere.
+	base.AllowAllUsers = cfg.AllowAllUsers
 	// LinkPreview: false (default) keeps previews disabled.
 	base.LinkPreview = cfg.LinkPreview
 	return base

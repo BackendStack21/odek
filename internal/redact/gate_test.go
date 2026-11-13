@@ -28,7 +28,7 @@ func allRedactionPatterns() []*regexp.Regexp {
 	for _, g := range valuePatterns {
 		out = append(out, g.re)
 	}
-	return append(out, credentialNameRe)
+	return append(out, dbURLBasePattern, dbURLWidePattern, credentialNameRe)
 }
 
 // gatedRedactionPatterns lists the patterns that have a gate, in a stable
@@ -133,11 +133,18 @@ var gateExamples = []struct {
 		"N" + strings.Repeat("a", 27) + "." + strings.Repeat("b", 7) + "." + strings.Repeat("c", 40),
 		"O" + strings.Repeat("_", 22) + "." + strings.Repeat("-", 6) + "." + strings.Repeat("9", 30),
 	}},
-	{`postgres(?:ql)?`, []string{
+	{`*:[^@\s/]{6,}@[`, []string{
+		"postgres://u:secret1@db", "postgresql+psycopg2://u:secret1@db", "mysql://u:${DB_PW}@db", "mongodb+srv://u:secret1@db",
+		"rediss://:secret1@db", "amqps://u:secret1@db", "mssql://u:secret1@db", "CLICKHOUSE://u:secret1@db",
+		"poſtgres://u:secret1@db", "clicKhouse://u:secret1@db",
+	}},
+	{`[$%{<][^@\s/]*`, []string{
+		"postgres://u:$A@db", `\npostgres://u:secret1@db`, `\tmysql://u:{p}@db`,
 		"postgres://u:secret1@db", "postgresql://u:secret1@db", "postgresql+psycopg2://u:secret1@db",
 		"mysql://u:secret1@db", "mongodb://u:secret1@db", "mongodb+srv://u:secret1@db",
 		"redis://:secret1@db", "rediss://u:secret1@db", "amqp://u:secret1@db", "amqps://u:secret1@db",
 		"mssql://u:secret1@db", "clickhouse://u:secret1@db",
+		"mysql://u:a/b@db", "mysql://u:a@b@db", "redis://:p@ss/w@db",
 		"POSTGRES://u:secret1@db", "MySQL://u:secret1@db", "ClickHouse://u:secret1@db", "REDIS+tls://u:secret1@db",
 		"po\u017ftgres://u:secret1@db", "my\u017fql://u:secret1@db", "redi\u017f://u:secret1@db",
 		"m\u017f\u017fql://u:secret1@db", "clic\u212ahouse://u:secret1@db", "clickhou\u017fe://u:secret1@db",
@@ -536,16 +543,22 @@ func checkGatedMatchesUngated(t *testing.T, s string) {
 // The gates never change a result: for every string literal in the package's
 // tests (every known leak and over-redaction case) and its variants, the gated
 // and ungated paths agree. The corpus is checked in parallel shards to stay
-// inside the CI test timeout under -race.
+// inside the CI test timeout under -race. A lean run checks every fifth
+// input, which takes each literal's variants in turn; the plain literals all
+// run as the seeds of FuzzRedactGatedMatchesUngated.
 func TestGatedRedactionMatchesUngated(t *testing.T) {
 	t.Parallel()
 	corpus := gateCorpus(t)
-	t.Logf("differential corpus: %d inputs", len(corpus))
 	const shards = 4
+	step := shards
+	if leanRun() {
+		step = 5 * shards
+	}
+	t.Logf("differential corpus: %d of %d inputs", (len(corpus)+step/shards-1)/(step/shards), len(corpus))
 	for shard := 0; shard < shards; shard++ {
 		t.Run(strconv.Itoa(shard), func(t *testing.T) {
 			t.Parallel()
-			for i := shard; i < len(corpus); i += shards {
+			for i := shard; i < len(corpus); i += step {
 				checkGatedMatchesUngated(t, corpus[i])
 			}
 		})
