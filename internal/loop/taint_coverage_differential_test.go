@@ -107,9 +107,49 @@ func (c covDiffCorpus) text(r *rand.Rand) string {
 	return strings.Join(parts, ". ")
 }
 
+// systemCall returns a system message carrying a tool call with id: no
+// assistant issued it, so no result answers it, but it sits where a result's
+// own call could be looked up.
+func (c covDiffCorpus) systemCall(r *rand.Rand, id string) session.Message {
+	var call session.ToolCall
+	switch r.IntN(3) {
+	case 0:
+		call = covCall(id, "http_request", map[string]string{"url": "https://" + c.hosts[r.IntN(len(c.hosts))] + "/"})
+	case 1:
+		call = covCall(id, "read_file", map[string]string{"path": "README.md"})
+	default:
+		call = covCall(id, "bg_output", map[string]string{"job_id": "bg_00000001"})
+	}
+	return session.Message{Role: "system", Content: "engine note", ToolCalls: []session.ToolCall{call}}
+}
+
+// mutateSystemCalls returns turn with system messages that carry tool calls
+// removed or added (reusing ids of the turn's calls): the coverage does not
+// count system messages, so the seeded engines see them where the exporter
+// did not, or the reverse.
+func (c covDiffCorpus) mutateSystemCalls(r *rand.Rand, turn []session.Message) []session.Message {
+	out := session.CloneMessages(turn)
+	if r.IntN(3) == 0 {
+		out = slices.DeleteFunc(out, func(m session.Message) bool { return m.Role == "system" && len(m.ToolCalls) > 0 })
+	}
+	for k := 1 + r.IntN(3); k > 0; k-- {
+		ids := []string{"call_0"}
+		for _, m := range out {
+			if m.Role == "assistant" {
+				for _, tc := range m.ToolCalls {
+					ids = append(ids, tc.ID)
+				}
+			}
+		}
+		out = slices.Insert(out, 1+r.IntN(len(out)), c.systemCall(r, ids[r.IntN(len(ids))]))
+	}
+	return out
+}
+
 // history builds a random history: groups of tool calls (tainting and not),
 // principal turns that may mention spans, wrapped user and system content,
-// background jobs and notices, reused call ids.
+// background jobs and notices, reused call ids, system messages carrying
+// tool calls.
 func (c covDiffCorpus) history(r *rand.Rand) []session.Message {
 	h := []session.Message{{Role: "system", Content: "sys"}, {Role: "user", Content: "start the task"}}
 	var jobs []string
@@ -121,7 +161,7 @@ func (c covDiffCorpus) history(r *rand.Rand) []session.Message {
 	}
 	steps := 4 + r.IntN(14)
 	for i := 0; i < steps; i++ {
-		switch r.IntN(12) {
+		switch r.IntN(13) {
 		case 0:
 			h = append(h, covGroup(covCall(callID(), "http_request", map[string]string{"url": "https://" + c.hosts[r.IntN(len(c.hosts))] + "/"}), defaultUntrustedWrap("tool:http_request", c.text(r)))...)
 		case 1:
@@ -161,6 +201,8 @@ func (c covDiffCorpus) history(r *rand.Rand) []session.Message {
 			h = append(h, covGroup(covCall(callID(), "bg_output", map[string]string{"job_id": id}), defaultUntrustedWrap("bg_output", c.text(r)))...)
 		case 11:
 			h = append(h, session.Message{Role: "assistant", Content: "noted " + c.text(r)})
+		case 12:
+			h = append(h, c.systemCall(r, callID()))
 		}
 	}
 	return h
@@ -254,6 +296,11 @@ func TestTaintCoverage_DifferentialIncrementalExporter(t *testing.T) {
 			t.Fatalf("iteration %d: no coverage", it)
 		}
 		turn := append(session.CloneMessages(history), session.Message{Role: "user", Content: "continue"})
+		// The next run's engine messages differ: system messages carrying
+		// tool calls appear or vanish around the calls they share ids with.
+		if r.IntN(2) == 0 {
+			turn = c.mutateSystemCalls(r, turn)
+		}
 		// Sometimes a tainting background job starts in the new turn.
 		if r.IntN(3) == 0 {
 			turn = append(turn, covGroup(covCall("late", "bg_start", map[string]string{"command": "curl -s https://late.example/x -o x"}),

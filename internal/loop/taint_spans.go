@@ -957,7 +957,11 @@ func (s *taintSpanStore) observe(messages []session.Message, env taintEnv) {
 // decisions were taken under.
 func (s *taintSpanStore) observeTrack(messages []session.Message, env taintEnv, track *taintScanTrack) ([]taintDigest, uint64) {
 	// Each tool result is judged by the call it answers: the nearest
-	// preceding call with its id (providers may reuse ids across turns).
+	// preceding assistant call with its id (providers may reuse ids across
+	// turns). Only an assistant message issues calls the engine runs; a call
+	// on any other message answers nothing, and pairing with it would let a
+	// system message, which the coverage does not count, change how a
+	// covered result is judged.
 	paired := make([]*session.ToolCall, len(messages))
 	latest := make(map[string]*session.ToolCall)
 	bgStartTaints := make(map[*session.ToolCall]bool)
@@ -972,7 +976,11 @@ func (s *taintSpanStore) observeTrack(messages []session.Message, env taintEnv, 
 		m := &messages[i]
 		for j := range m.ToolCalls {
 			tc := &m.ToolCalls[j]
-			latest[tc.ID] = tc
+			if m.Role == "assistant" {
+				latest[tc.ID] = tc
+			}
+			// A tainting bg_start on any message makes background content a
+			// source (fail closed).
 			if tc.Function.Name == "bg_start" {
 				taints := session.ToolCallTaintsEpisode(tc.Function.Name, tc.Function.Arguments)
 				bgStartTaints[tc] = taints

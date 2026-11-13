@@ -47,7 +47,10 @@ import (
 //     modified source tree, records and applies no coverage at all.
 //   - System messages are not counted and are always scanned: the runtime
 //     prompt, memory block and other engine messages are rebuilt every run,
-//     and binding them would void every match.
+//     and binding them would void every match. Nothing on a system message
+//     feeds the decision for a counted one: a tool result pairs only with
+//     the assistant call that issued it, and every assistant message is
+//     counted, so a counted result's pairing is fixed by the counted prefix.
 //   - Background-job content (notices, bg_output/bg_status) is never
 //     skipped: its decision depends on facts about the whole history (see
 //     bgSourceLocked) and is always taken again.
@@ -80,7 +83,7 @@ import (
 // taintCoverageRules names the recording rules a coverage was taken under.
 // Change it whenever extraction, the span rules or the source decision
 // change, so coverage recorded under the old rules never matches.
-const taintCoverageRules = "odek-taint-coverage-v2"
+const taintCoverageRules = "odek-taint-coverage-v3"
 
 // taintCoverageBuild returns the build identity coverage is keyed by, or
 // false when this binary records and applies no coverage. A variable so the
