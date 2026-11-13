@@ -30,12 +30,13 @@ type Associations struct {
 // value and the bound keeps associations.json linear in the atom count.
 // Stores written before the bound existed (task atoms linked as a complete
 // graph) load unchanged and are pruned the next time the map is persisted
-// past the trigger line.
+// past the trigger line (needsPrune).
 const maxLinksPerAtom = 24
 
-// maxLinkFactor is the multiple of maxLinksPerAtom links per linked atom the
-// map may reach before a prune runs, so pruning (which reads every atom's
-// creation time) is amortised over many adds instead of firing on each one.
+// maxLinkFactor is the multiple of the links a freshly pruned map can hold
+// between crowded atoms that the map may reach before a prune runs, so
+// pruning (which reads every atom's creation time) is amortised over many
+// adds instead of firing on each one.
 const maxLinkFactor = 2
 
 // maxTaskLinksPerAtom is how many of the most recent same-project task atoms
@@ -301,26 +302,50 @@ func (a *Associations) SetRecency(fn func() map[string]time.Time) {
 	a.mu.Unlock()
 }
 
-// pruneLocked bounds the association map. It does nothing until the map holds
-// more than maxLinkFactor*maxLinksPerAtom links per linked atom, so a healthy
-// store never reads the atom recency table (a full chunk read); once over
-// that line each atom selects its maxLinksPerAtom nearest-in-time neighbours
-// and a link is kept when EITHER end selected it. Every atom that had a link
-// keeps at least one (its own selection), so pruning never strands an atom,
-// and the result is O(N): at most maxLinksPerAtom*N links after a prune and
-// at most maxLinkFactor*maxLinksPerAtom*N before the next one. A hub atom
-// kept by many other atoms may hold more than maxLinksPerAtom links. The order
-// is total (time distance, then id) so the outcome is deterministic, and
-// pruning an already pruned map changes nothing: a kept link stays within its
-// selecting end's nearest set when the other candidates only shrink.
+// needsPrune reports whether links (a symmetric map) is past the prune
+// trigger. Call an atom with more than maxLinksPerAtom links crowded: an atom
+// that is not crowded selects every one of its links, so only a link between
+// two crowded atoms can be dropped by a prune. A prune keeps such a link only
+// when one of its ends selected it, so a freshly pruned map holds at most
+// maxLinksPerAtom of them per crowded atom; the trigger fires once they
+// exceed maxLinkFactor times that. Counting links per crowded atom, not per
+// atom of the whole store, a dense cluster fires however large a sparse rest
+// of the store is, while a hub linked to many sparse atoms never does. Below
+// the trigger the map holds at most maxLinkFactor*maxLinksPerAtom links per
+// linked atom. It reads link counts only, never the recency table.
+func needsPrune(links map[string]map[string]struct{}) bool {
+	crowded, prunable := 0, 0
+	for _, related := range links {
+		if len(related) <= maxLinksPerAtom {
+			continue
+		}
+		crowded++
+		for to := range related {
+			if len(links[to]) > maxLinksPerAtom {
+				prunable++
+			}
+		}
+	}
+	// prunable counts each link between crowded atoms from both ends.
+	return prunable > 2*maxLinkFactor*maxLinksPerAtom*crowded
+}
+
+// pruneLocked bounds the association map. It does nothing below the trigger
+// (needsPrune), so a healthy store never reads the atom recency table (a full
+// chunk read); past it each atom selects its maxLinksPerAtom nearest-in-time
+// neighbours and a link is kept when EITHER end selected it. Every atom that
+// had a link keeps at least one (its own selection), so pruning never strands
+// an atom, and the result is O(N): at most maxLinksPerAtom*N links after a
+// prune and at most maxLinkFactor*maxLinksPerAtom*N before the next one. An
+// atom kept by many other atoms may hold more than maxLinksPerAtom links. A
+// freshly pruned map is below the trigger, so the next persist does not prune
+// again. The order is total (time distance, then id) so the outcome is
+// deterministic, and pruning an already pruned map changes nothing: a kept
+// link stays within its selecting end's nearest set when the other candidates
+// only shrink.
 // Caller must hold a.mu.
 func (a *Associations) pruneLocked(links map[string]map[string]struct{}) map[string]map[string]struct{} {
-	total := 0
-	for _, related := range links {
-		total += len(related)
-	}
-	// total counts each link from both ends.
-	if total <= 2*maxLinkFactor*maxLinksPerAtom*len(links) {
+	if !needsPrune(links) {
 		return links
 	}
 	var created map[string]time.Time
