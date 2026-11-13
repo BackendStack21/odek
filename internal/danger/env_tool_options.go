@@ -43,8 +43,9 @@ import (
 //     class and module paths, argument files, error hooks, a main class)
 //     classifies system_write, as JAVA_TOOL_OPTIONS does;
 //   - a java binary (JAVA_HOME/bin/java, JAVACMD) that is relative, in a
-//     temporary directory or in the directory the reader runs in classifies
-//     code_execution; the directories JDKs are installed into are exempt.
+//     temporary directory, in the directory the reader or odek runs in, or
+//     written by the command line itself classifies code_execution; the
+//     directories JDKs are installed into are otherwise exempt.
 //
 // A value the analysis cannot follow fails closed when the reader runs: a
 // value only known at run time, a binding the analysis cannot follow (read,
@@ -324,29 +325,60 @@ func (v optionEnvVar) unresolvedRisk() RiskClass {
 }
 
 // javaPathCtx is where a java binary variable is judged: the directory its
-// reader runs in (known is false when the analysis cannot tell) and the
-// assignments written on the reader's own command.
+// reader runs in (known is false when the analysis cannot tell), the
+// assignments written on the reader's own command and the paths the command
+// line wrote before the reader runs.
 type javaPathCtx struct {
-	cwd    string
-	known  bool
-	inline []string
+	cwd     string
+	known   bool
+	inline  []string
+	written map[string]bool
 }
 
 // processJavaPathCtx is the context of a command judged on its own: the
 // directory odek runs in.
 func processJavaPathCtx(inline []string) javaPathCtx {
-	cwd, err := os.Getwd()
+	cwd, err := memoGetwd()
 	return javaPathCtx{cwd: cwd, known: err == nil, inline: inline}
 }
 
+// moved reports whether the reader runs in a directory other than the one
+// odek runs in, or one the analysis cannot tell.
+func (c javaPathCtx) moved() bool {
+	process, err := memoGetwd()
+	if !c.known || err != nil {
+		return true
+	}
+	for _, a := range bothSpellings(c.cwd) {
+		for _, b := range bothSpellings(process) {
+			if a == b {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 // resolve expands a leading tilde and the environment variables of a path
-// value, as the shell does before it assigns. A reference to a variable
-// assigned on the same command stays as written: its value there is not the
-// inherited one.
+// value, as the shell does before it assigns. A reference the inherited
+// environment does not answer stays as written: a variable assigned on the
+// same command, and the working-directory forms ($PWD, $OLDPWD, ~+, ~-) once
+// an earlier cd moved the shell.
 func (c javaPathCtx) resolve(value string) string {
+	names := []string{}
 	for _, a := range c.inline {
-		name, _, ok := strings.Cut(a, "=")
-		if ok && name != "" && (strings.Contains(value, "$"+name) || strings.Contains(value, "${"+name)) {
+		if name, _, ok := strings.Cut(a, "="); ok && name != "" {
+			names = append(names, name)
+		}
+	}
+	if c.moved() {
+		if strings.HasPrefix(value, "~+") || strings.HasPrefix(value, "~-") {
+			return value
+		}
+		names = append(names, "PWD", "OLDPWD")
+	}
+	for _, name := range names {
+		if strings.Contains(value, "$"+name) || strings.Contains(value, "${"+name) {
 			return value
 		}
 	}
@@ -384,18 +416,20 @@ func (v optionEnvVar) valueRisk(value string, ctx javaPathCtx) RiskClass {
 }
 
 // javaBinaryRisk judges the java binary a launcher runs: one named by a
-// relative path, in a temporary directory or in the directory the launcher
-// runs in (or anywhere, when that directory is not known) is code the command
-// line can have put there. The directories JDKs are installed into are not
-// the project's files even when the working directory is the home directory
-// or the file system root above them.
+// relative path, in a temporary directory, in the directory the launcher runs
+// in or the one odek runs in, or anywhere when the launcher's directory is
+// not known, is code the command line can have put there. The directories
+// JDKs are installed into are not the project's files: the system ones
+// wherever the launcher runs, the per-user ones while the launcher runs where
+// odek does (so the home directory as the workspace does not make them
+// project files), and neither when the command line itself wrote there.
 func javaBinaryRisk(path string, ctx javaPathCtx) RiskClass {
 	if !filepath.IsAbs(path) {
 		return CodeExecution
 	}
 	// A directory reached through a symlink is the same directory: the path
-	// and the working directory are compared as written and as resolved.
-	paths, cwds := bothSpellings(path), bothSpellings(ctx.cwd)
+	// and the working directories are compared as written and as resolved.
+	paths := bothSpellings(path)
 	within := func(dirs []string) bool {
 		for _, p := range paths {
 			for _, dir := range dirs {
@@ -409,21 +443,22 @@ func javaBinaryRisk(path string, ctx javaPathCtx) RiskClass {
 	if within([]string{filepath.Clean(os.TempDir()), "/tmp", "/var/tmp", "/private/tmp", "/private/var/tmp", "/dev/shm"}) {
 		return CodeExecution
 	}
-	for _, dir := range jdkInstallDirs() {
-		// A working directory inside the install directory is a project
-		// tree like any other.
-		if !within([]string{dir}) {
-			continue
-		}
-		inside := false
-		for _, cwd := range cwds {
-			inside = inside || pathWithin(cwd, dir)
-		}
-		if !ctx.known || !inside {
-			return Safe
-		}
+	planted := false
+	for w := range ctx.written {
+		planted = planted || within([]string{filepath.Clean(w)})
 	}
-	if !ctx.known || within(cwds) {
+	system, user := jdkInstallDirs()
+	if !planted && (within(system) || (!ctx.moved() && within(user))) {
+		return Safe
+	}
+	var cwds []string
+	if ctx.known {
+		cwds = bothSpellings(ctx.cwd)
+	}
+	if process, err := memoGetwd(); err == nil {
+		cwds = append(cwds, bothSpellings(process)...)
+	}
+	if !ctx.known || planted || within(cwds) {
 		return CodeExecution
 	}
 	return Safe
@@ -443,18 +478,18 @@ func bothSpellings(path string) []string {
 }
 
 // jdkInstallDirs lists the directories JDKs are installed into: the system
-// locations and the per-user directories of the JDK managers (SDKMAN, asdf,
-// jenv, mise, jabba) and of the JDKs an IDE or Gradle downloads.
-func jdkInstallDirs() []string {
-	dirs := []string{"/usr/lib/jvm", "/usr/lib64/jvm", "/usr/java", "/usr/local/java", "/opt/java",
+// locations, and the per-user directories of the JDK managers (SDKMAN, asdf,
+// jenv, mise, jabba) and of the JDKs an IDE downloads.
+func jdkInstallDirs() (system, user []string) {
+	system = []string{"/usr/lib/jvm", "/usr/lib64/jvm", "/usr/java", "/usr/local/java", "/opt/java",
 		"/Library/Java/JavaVirtualMachines", "/System/Library/Java", "/opt/homebrew/opt", "/usr/local/opt"}
 	for _, home := range currentHomeDirs() {
 		for _, rel := range []string{".sdkman/candidates/java", ".asdf/installs/java", ".jenv/versions",
 			".local/share/mise/installs/java", ".jabba/jdk", "Library/Java/JavaVirtualMachines"} {
-			dirs = append(dirs, filepath.Join(home, rel))
+			user = append(user, filepath.Join(home, rel))
 		}
 	}
-	return dirs
+	return system, user
 }
 
 // toolArgsBenign reports whether every word of a Maven argument list is an
@@ -1077,7 +1112,7 @@ func (s *shellAnalysisState) optionEnvAnalysis(inner, inline []string, payload s
 	// exportedWords counts the spliced words that come from the environment;
 	// the ones written on the command were counted when its stage started.
 	exportedWords := 0
-	javaCtx := javaPathCtx{cwd: payload.cwd, known: !payload.uncertain}
+	javaCtx := javaPathCtx{cwd: payload.cwd, known: !payload.uncertain, written: payload.written}
 	judge := func(v optionEnvVar, value string) {
 		if v.kind != optionArgv && v.kind != optionToolArgs {
 			if _, isInline := inlineValues[v.name]; isInline {
