@@ -48,19 +48,24 @@ func ScanContent(content string) error {
 //     Invoke-Expression, [scriptblock]::Create) and makes a web request.
 //   - substitutionFetchRes: a shell, eval, exec, source or `.` handed a
 //     command or process substitution of a fetcher, or such a substitution
-//     standing where a command starts.
+//     standing where a command starts. The fetcher may be spelled by path or
+//     stand behind a wrapper ($(/usr/bin/curl …), <(sudo curl …)); a name that
+//     continues with a hyphen (fetch-completions) is another command, and
+//     $(CURL), an upper-case name closed at once, is a Make variable.
+//   - labelledSubstitutionRunsFetch: a $( substitution of a fetcher right
+//     after a short label or lead-in that opens its line ("Setup: $(curl …)").
 //
-// Backslash line continuations are joined before the last three checks, and
-// they run on the fact as written and again with every ', " and \ removed,
-// since c'u'rl and s\h are curl and sh to a shell. Every check is a regular
-// expression (RE2) or a scan that visits each byte a bounded number of times,
-// so the cost is linear in the fact length.
+// Backslash line continuations are joined before the checks after the release
+// rules, and those run on the fact as written and again with every ', " and \
+// removed, since c'u'rl and s\h are curl and sh to a shell. Every check is a
+// regular expression (RE2) or a scan that visits each byte a bounded number
+// of times, so the cost is linear in the fact length.
 func FactLooksUnsafe(fact string) bool {
 	if releasePipeRe.MatchString(blankBareTableRows(fact)) || releaseEvalRe.MatchString(fact) {
 		return true
 	}
 	joined := lineContinuations.Replace(fact)
-	if runsFetch(joined) {
+	if runsFetch(joined) || labelledSubstitutionRunsFetch(joined) {
 		return true
 	}
 	return strings.ContainsAny(joined, `'"\`) && runsFetch(unquoted.Replace(joined))
@@ -72,16 +77,177 @@ var unquoted = strings.NewReplacer(`'`, "", `"`, "", `\`, "")
 // runsFetch applies the checks after the release rules to one reading of a
 // fact.
 func runsFetch(text string) bool {
-	// Every substitution form contains a ( or a backtick.
-	if strings.ContainsAny(text, "(`") {
+	if substitutionMayFetch(text) {
+		subst := maskMakeVariables(text)
 		for _, re := range substitutionFetchRes {
-			if re.MatchString(text) {
+			if re.MatchString(subst) {
 				return true
 			}
 		}
 	}
 	scan := blankBareTableRows(text)
 	return pipelineRunsFetch(scan) || powerShellRunsFetch(scan)
+}
+
+// fetcherNames are the fetchers of fetcherAlt.
+var fetcherNames = [...]string{
+	"curl", "wget", "fetch", "iwr", "irm", "invoke-webrequest", "invoke-restmethod", "downloadstring",
+}
+
+// substWrapperNames are the wrappers of wrapperPre.
+var substWrapperNames = [...]string{"sudo", "doas", "env", "nice", "nohup", "time", "exec", "command"}
+
+// substitutionMayFetch is a cheap necessary condition for any expression of
+// substitutionFetchRes to match: each of them ends in an opening ( or
+// backtick, blanks, optional wrappers, an optional path and a fetcher name.
+// It reports whether some ( or backtick is followed that way by a fetcher
+// name, or by a wrapper name with a fetcher name anywhere after it. A fact
+// dense in parentheses or backticks that fetches nothing is thereby settled
+// in one pass, without running the expressions.
+func substitutionMayFetch(text string) bool {
+	if strings.IndexByte(text, '(') < 0 && strings.IndexByte(text, '`') < 0 {
+		return false
+	}
+	// The expressions fold case the Unicode way: ſ and the Kelvin sign match
+	// s and k. This scan folds ASCII only, so it stands aside for them.
+	if strings.Contains(text, "ſ") || strings.Contains(text, "K") {
+		return true
+	}
+	lastFetcher := -2
+	for i := 0; i < len(text); i++ {
+		if text[i] != '(' && text[i] != '`' {
+			continue
+		}
+		start := i + 1
+		for start < len(text) && isSpace(text[start]) {
+			start++
+		}
+		end := start
+		for end < len(text) && isPathByte(text[end]) {
+			if text[end] == '/' {
+				start = end + 1
+			}
+			end++
+		}
+		name := text[start:end]
+		for _, f := range fetcherNames {
+			if hasPrefixFold(name, f) {
+				return true
+			}
+		}
+		for _, w := range substWrapperNames {
+			if len(name) != len(w) || !hasPrefixFold(name, w) {
+				continue
+			}
+			if lastFetcher == -2 {
+				lastFetcher = lastFetcherIndex(text)
+			}
+			if lastFetcher > end {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// lastFetcherIndex returns the index of the last fetcher name in text, or -1.
+func lastFetcherIndex(text string) int {
+	for i := len(text) - 1; i >= 0; i-- {
+		switch text[i] | 0x20 {
+		case 'c', 'w', 'f', 'i', 'd':
+			for _, f := range fetcherNames {
+				if hasPrefixFold(text[i:], f) {
+					return i
+				}
+			}
+		}
+	}
+	return -1
+}
+
+// hasPrefixFold reports whether s starts with the lower-case ASCII prefix,
+// ignoring ASCII case.
+func hasPrefixFold(s, prefix string) bool {
+	if len(s) < len(prefix) {
+		return false
+	}
+	for i := 0; i < len(prefix); i++ {
+		c := s[i]
+		if 'A' <= c && c <= 'Z' {
+			c += 'a' - 'A'
+		}
+		if c != prefix[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// isSpace reports whether c is what \s matches in an expression.
+func isSpace(c byte) bool {
+	return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f'
+}
+
+// isPathByte reports whether c may be part of a command spelled by path.
+func isPathByte(c byte) bool {
+	return isWordByte(c) || c == '/' || c == '.' || c == '~' || c == '-'
+}
+
+// maskMakeVariables overwrites the name in every $(NAME) whose name is
+// upper-case letters, digits and underscores and is closed at once: a Make
+// variable reference such as $(CURL) or $(FETCH), not a command substitution
+// (which runs a lower-case command, or has arguments).
+func maskMakeVariables(text string) string {
+	var out []byte
+	for i := 0; i+3 < len(text); i++ {
+		if text[i] != '$' || text[i+1] != '(' {
+			continue
+		}
+		j := i + 2
+		for j < len(text) && (text[j] == '_' || ('A' <= text[j] && text[j] <= 'Z') || ('0' <= text[j] && text[j] <= '9')) {
+			j++
+		}
+		if j == i+2 || j == len(text) || text[j] != ')' {
+			continue
+		}
+		if out == nil {
+			out = []byte(text)
+		}
+		for k := i + 2; k < j; k++ {
+			out[k] = '_'
+		}
+		i = j
+	}
+	if out == nil {
+		return text
+	}
+	return string(out)
+}
+
+// labelledSubstitutionRunsFetch reports whether a line opens with a short
+// label or lead-in ("Setup: ", "To install, "; a prompt sigil, list marker or
+// opening quote may come first) that is followed, after optional wrappers, by
+// a $( substitution of a fetcher on the same line: the label introduces the
+// command. The label holds no quote, backslash, backtick, $, parenthesis or
+// brace, so text inside another command's argument (echo "IP: $(curl …)") is
+// no label. Only the first $( of a line is looked at; what follows it is read
+// with quotes and backslashes removed.
+func labelledSubstitutionRunsFetch(text string) bool {
+	for start := 0; start < len(text); {
+		end := strings.IndexByte(text[start:], '\n')
+		if end < 0 {
+			end = len(text)
+		} else {
+			end += start
+		}
+		line := text[start:end]
+		if at := strings.Index(line, "$("); at > 0 && labelLeadRe.MatchString(line[:at]) &&
+			labelledFetchRe.MatchString(maskMakeVariables(unquoted.Replace(line[at:]))) {
+			return true
+		}
+		start = end + 1
+	}
+	return false
 }
 
 // releasePipeRe and releaseEvalRe are the rules FactLooksUnsafe shipped with,
@@ -173,7 +339,8 @@ func isBareTableRow(line string) bool {
 //     xargs — marks the pipeline as carrying a download, which every later
 //     stage passes on.
 //   - A stage after the download, or an output process substitution such as
-//     tee >(sh), runs it when its command (see stageRunsInput) is a sink.
+//     tee >(sh) or `curl … > >(sh)`, runs it when its command (see
+//     stageRunsInput) is a sink.
 func pipelineRunsFetch(text string) bool {
 	for start := 0; start < len(text); {
 		end := pipelineLineEnd(text, start)
@@ -203,7 +370,7 @@ func pipelineLineEnd(text string, start int) int {
 }
 
 func pipelineLineRunsFetch(line string) bool {
-	if strings.IndexByte(line, '|') < 0 {
+	if strings.IndexByte(line, '|') < 0 && !strings.Contains(line, ">(") {
 		return false
 	}
 	sq0, sq1 := strings.IndexByte(line, '\''), strings.LastIndexByte(line, '\'')
@@ -266,72 +433,208 @@ func isPipeFetcher(s string, i, j int) bool {
 	return false
 }
 
-// stageWrappers run the command that follows them (after their own options):
+// stageWrappers run the command that follows them, after their own options:
 // sudo -u root bash, env -i bash, xargs -n 1 sh, busybox sh, nice -n 10 sh.
-var stageWrappers = map[string]bool{
-	"sudo": true, "doas": true, "pkexec": true, "run0": true, "env": true, "nice": true, "ionice": true,
-	"nohup": true, "setsid": true, "time": true, "timeout": true, "stdbuf": true, "exec": true,
-	"command": true, "builtin": true, "xargs": true, "parallel": true, "busybox": true,
+// The value lists the wrapper's short options that take an argument, which
+// is attached (-n1) or the next word (-n 1).
+var stageWrappers = map[string]string{
+	"sudo": "CDghpRrTtUu", "doas": "uC", "pkexec": "", "run0": "ugDpHM", "env": "uCP", "nice": "n",
+	"ionice": "cnp", "nohup": "", "setsid": "", "time": "fo", "timeout": "sk", "stdbuf": "ioe", "exec": "a",
+	"command": "", "builtin": "", "xargs": "adEILnPsJRS", "parallel": "jNnLISaPdEs", "busybox": "",
 }
+
+// wrapperLongArgs are the wrappers' long options whose argument is the next
+// word (unless attached with =); wrapperLongFlags take none. Any other long
+// option may or may not take one.
+var (
+	wrapperLongArgs = map[string]bool{
+		"--user": true, "--group": true, "--host": true, "--prompt": true, "--chdir": true, "--chroot": true,
+		"--role": true, "--type": true, "--close-from": true, "--command-timeout": true, "--other-user": true,
+		"--unset": true, "--signal": true, "--kill-after": true, "--adjustment": true, "--class": true,
+		"--classdata": true, "--format": true, "--output": true, "--input": true, "--error": true,
+		"--arg-file": true, "--delimiter": true, "--max-args": true, "--max-procs": true, "--max-chars": true,
+		"--process-slot-var": true, "--jobs": true, "--max-replace-args": true, "--sshlogin": true,
+		"--colsep": true, "--property": true, "--machine": true, "--unit": true, "--slice": true,
+	}
+	wrapperLongFlags = map[string]bool{
+		"--": true, "--preserve-env": true, "--non-interactive": true, "--stdin": true, "--background": true,
+		"--set-home": true, "--reset-timestamp": true, "--askpass": true, "--ignore-environment": true,
+		"--null": true, "--debug": true, "--foreground": true, "--preserve-status": true, "--verbose": true,
+		"--no-run-if-empty": true, "--interactive": true, "--exit": true, "--open-tty": true, "--wait": true,
+		"--fork": true, "--ctty": true, "--keep-order": true, "--quote": true, "--pipe": true,
+		"--split-string": true, "--portability": true, "--append": true, "--disable-internal-agent": true,
+	}
+)
+
+// execTargets start a command somewhere else with `exec`: docker exec -i c
+// sh, kubectl exec -i pod -- sh. execArgOptions are their long options
+// before the command that take an argument.
+var (
+	execTargets = map[string]bool{
+		"docker": true, "podman": true, "nerdctl": true, "kubectl": true, "oc": true,
+		"docker-compose": true, "podman-compose": true,
+	}
+	execArgOptions = map[string]bool{
+		"--env": true, "--user": true, "--workdir": true, "--env-file": true, "--detach-keys": true,
+		"--container": true, "--namespace": true, "--context": true, "--kubeconfig": true, "--cluster": true,
+		"--filename": true, "--pod-running-timeout": true, "--index": true,
+	}
+)
 
 // stageRunsInput reports whether the pipeline stage starting at p runs its
 // input. Its command — after VAR=value assignments, redirects and wrappers
 // with their options — must run what it reads (runsInput), or be
 // source/`.` of the standard input (nothing, -, /dev/stdin, /dev/fd/0,
-// /proc/self/fd/0), or sudo/doas with -s/-i (a shell). A wrapper option's
-// argument (sudo -u root, xargs -n 1, timeout 10s) is skipped. In a group
-// that opens the stage — (cd /tmp && sh), { sh; } — every word is checked.
+// /proc/self/fd/0), or sudo/doas with -s/-i (a shell, also in a combined
+// flag such as -Es) and no command of its own. A wrapper option's argument
+// (sudo -u root, xargs -n 1, timeout 10s) is skipped, so the word after it is
+// the command: `xargs -n1 git push` runs git. After a long option the tables
+// do not know, the next word is skipped as its argument unless it runs its
+// input. docker/podman/nerdctl/kubectl/oc … exec run the command that
+// follows the container or pod. In a group that opens the stage —
+// (cd /tmp && sh), { sh; } — every word is checked.
 func stageRunsInput(line string, p int) bool {
-	wrapper, optArg, group := "", false, false
+	// wrapper: the wrapper whose options are being read; shell: sudo/doas was
+	// asked for a shell; maybeArg: the next word may be the argument of an
+	// option the tables do not know.
+	wrapper, shell, maybeArg, group := "", false, false, false
 	for {
 		tok, next := stageWord(line, p)
 		if tok == "" {
-			return false
+			return shell
 		}
 		p = next
-		if runsInput(tok) {
-			return true
-		}
 		if group {
+			if runsInput(tok) {
+				return true
+			}
 			continue
 		}
 		if tok[0] == ';' || tok == "&" || tok == "&&" {
-			return false
+			return shell
+		}
+		if isRedirect(tok) {
+			if strings.TrimLeft(tok, "0123456789&<>") == "" {
+				_, p = stageWord(line, p)
+			}
+			continue
+		}
+		if wrapper != "" && tok[0] == '-' {
+			takesArg, startsShell, known := wrapperOption(tok, stageWrappers[wrapper])
+			shell = shell || (startsShell && (wrapper == "sudo" || wrapper == "doas"))
+			maybeArg = !known
+			if takesArg {
+				_, p = stageWord(line, p)
+			}
+			continue
+		}
+		if runsInput(tok) {
+			return true
+		}
+		if maybeArg {
+			maybeArg = false
+			continue
 		}
 		name := commandName(tok)
+		_, isWrapper := stageWrappers[name]
 		switch {
 		case name == "source" || name == ".":
 			arg, _ := stageWord(line, p)
 			return arg == "" || arg == "-" || stdinPaths[strings.Trim(arg, `'"`)]
-		case isRedirect(tok):
-			if strings.TrimLeft(tok, "0123456789&<>") == "" {
-				_, p = stageWord(line, p)
-			}
 		case tok[0] == '(' || tok[0] == '{':
 			group = true
 		case name == "" || isAssignment(tok):
-		case stageWrappers[name]:
-			wrapper, optArg = name, false
-		case wrapper == "":
-			return false
-		case tok[0] == '-':
-			if (wrapper == "sudo" || wrapper == "doas") && shellFlags[tok] {
-				return true
+		case isWrapper:
+			wrapper, shell = name, false
+		case execTargets[name]:
+			var ok bool
+			if p, ok = execCommandStart(line, p); !ok {
+				return false
 			}
-			optArg = true
-		case optArg || isCount(tok):
-			optArg = false
+			wrapper, shell = "", false
+		case wrapper != "" && isCount(tok):
 		default:
 			return false
 		}
 	}
 }
 
-var (
-	stdinPaths = map[string]bool{"/dev/stdin": true, "/dev/fd/0": true, "/proc/self/fd/0": true}
-	// shellFlags make sudo or doas start a shell, which reads the pipe.
-	shellFlags = map[string]bool{"-s": true, "-i": true, "--shell": true, "--login": true}
-)
+// wrapperOption reads one option word of a wrapper whose short options with
+// an argument are argLetters. takesArg: the next word is its argument.
+// startsShell: it is, or combines, -s or -i (--shell, --login). known: the
+// tables cover it.
+func wrapperOption(tok, argLetters string) (takesArg, startsShell, known bool) {
+	if strings.HasPrefix(tok, "--") {
+		switch {
+		case tok == "--shell" || tok == "--login":
+			return false, true, true
+		case strings.IndexByte(tok, '=') >= 0 || wrapperLongFlags[tok]:
+			return false, false, true
+		case wrapperLongArgs[tok]:
+			return true, false, true
+		}
+		return false, false, false
+	}
+	for i := 1; i < len(tok); i++ {
+		if strings.IndexByte(argLetters, tok[i]) >= 0 {
+			return i == len(tok)-1, startsShell, true
+		}
+		if tok[i] == 's' || tok[i] == 'i' {
+			startsShell = true
+		}
+	}
+	return false, startsShell, true
+}
+
+// execCommandStart returns the index of the command that an `exec` of an
+// execTargets tool runs: after the word exec, its options and the container
+// or pod (and a -- separator). ok is false when the stage has no such
+// command.
+func execCommandStart(line string, p int) (start int, ok bool) {
+	for {
+		tok, next := stageWord(line, p)
+		if tok == "" {
+			return p, false
+		}
+		p = next
+		if tok == "exec" {
+			break
+		}
+	}
+	target := false
+	for {
+		tok, next := stageWord(line, p)
+		switch {
+		case tok == "":
+			return p, false
+		case tok == "--":
+			if target {
+				return next, true
+			}
+		case tok[0] == '-':
+			if execOptionTakesArg(tok) {
+				_, next = stageWord(line, next)
+			}
+		case !target:
+			target = true
+		default:
+			return p, true
+		}
+		p = next
+	}
+}
+
+// execOptionTakesArg reports whether the next word is the option's argument:
+// a long option of execArgOptions without =, or a short flag ending in one of
+// -e -u -w (docker) or -c -n -f (kubectl).
+func execOptionTakesArg(tok string) bool {
+	if strings.HasPrefix(tok, "--") {
+		return execArgOptions[tok]
+	}
+	return len(tok) > 1 && strings.IndexByte("euwcnf", tok[len(tok)-1]) >= 0
+}
+
+var stdinPaths = map[string]bool{"/dev/stdin": true, "/dev/fd/0": true, "/proc/self/fd/0": true}
 
 // runsInput reports whether a command word runs what it reads: a word
 // ending in "sh" (sh, bash, zsh, tclsh, wish, ssh host, … as the release
@@ -586,42 +889,57 @@ const (
 	// is prose, and a dot or dash glued to the shell word is a file name
 	// (deploy.sh).
 	cmdLead = `(?:(?m:^)|[^\w\s./-]|[./-]\s|\b(?:run|then|do|else)\s)\s*`
-	// lineLead is a prompt sigil, list marker or short label or lead-in
-	// ("Setup: ", "To install, ") before a command.
-	lineLead = `(?:[$#%>]\s+|[-*+]\s+|\d+[.)]\s+|[^\n:;,|&]{1,40}[:,]\s+)?`
+	// promptLead is a prompt sigil or list marker before a command.
+	promptLead = `(?:[$#%>]\s+|[-*+]\s+|\d+[.)]\s+)?`
+	// fetcherEnd ends a fetcher name: any character that cannot continue a
+	// command name (fetch-completions is another command), or the end.
+	fetcherEnd = `(?:[^\w-]|$)`
+	// substFetch is what follows the opening of a substitution that runs a
+	// fetcher: optional wrappers, an optional path and the fetcher name.
+	substFetch = `\s*` + wrapperPre + `(?:[\w./~-]*/)?` + fetcherAlt + fetcherEnd
+)
+
+// labelLeadRe matches the part of a line before its first $( when that part
+// is a short label or lead-in ("Setup: ", "To install, ") and optional
+// wrappers; labelledFetchRe matches a $( substitution of a fetcher at the
+// start of the rest. See labelledSubstitutionRunsFetch.
+var (
+	labelLeadRe     = regexp.MustCompile(`(?i)^\s*["']?` + promptLead + "[^\\n:;,|&'\"`\\\\$(){}]{1,40}[:,]\\s+" + wrapperPre + `$`)
+	labelledFetchRe = regexp.MustCompile(`(?i)^\$\(` + substFetch)
 )
 
 var substitutionFetchRes = []*regexp.Regexp{
 	// eval, exec or source with a command or process substitution of a
 	// fetcher anywhere later on the line.
-	regexp.MustCompile(`(?i)\b(?:eval|exec|source)\b[^\n]*` + substOpen + `\s*` + fetcherAlt + `\b`),
+	regexp.MustCompile(`(?i)\b(?:eval|exec|source)\b[^\n]*` + substOpen + substFetch),
 	// A shell (with options such as -c) whose argument is a command or
 	// process substitution of a fetcher: bash -c "$(curl …)", bash <(curl …).
-	regexp.MustCompile(`(?i)` + shellStart + shellWord + `\b` + shellOpts + `\s*["']?` + substOpen + `\s*` + fetcherAlt + `\b`),
+	regexp.MustCompile(`(?i)` + shellStart + shellWord + `\b` + shellOpts + `\s*["']?` + substOpen + substFetch),
 	// A shell, or source/`.` of the standard input, fed a substitution of a
 	// fetcher through a redirect, a here-string or a here-doc: sh < <(wget …),
 	// bash <<< "$(curl …)", bash <<EOF $(curl …).
-	regexp.MustCompile(`(?i)(?:` + shellStart + shellWord + `\b` + shellOpts + `|` + shellStart + `(?:source|\.)\s+` + stdinPath + `)\s*` + hereOp + `["']?` + substOpenTick + `\s*` + fetcherAlt + `\b`),
+	regexp.MustCompile(`(?i)(?:` + shellStart + shellWord + `\b` + shellOpts + `|` + shellStart + `(?:source|\.)\s+` + stdinPath + `)\s*` + hereOp + `["']?` + substOpenTick + substFetch),
 	// The `.` builtin applied directly to a substitution of a fetcher.
-	regexp.MustCompile(`(?i)(?:^|[\s;&|(])\.\s+["']?` + substOpen + `\s*` + fetcherAlt + `\b`),
+	regexp.MustCompile(`(?i)(?:^|[\s;&|(])\.\s+["']?` + substOpen + substFetch),
 	// A backtick substitution of a fetcher as the argument of a sink: anywhere
 	// after eval (which re-parses its arguments), after a shell's -c option,
 	// or right after a shell, exec, source or `.` that starts a command
 	// (cmdLead; wrappers such as sudo may come between). A shell or exec
 	// handed the output as words runs it.
 	regexp.MustCompile("(?i)(?:\\beval\\b[^\\n]*|" + shellStart + shellWord + `\b` + shellCOpts + `\s+["']?|` +
-		cmdLead + wrapperPre + `(?:` + shellWord + `\b` + shellOpts + `|exec|source|\.)\s+["']?)` + "`\\s*" + fetcherAlt + `\b`),
-	// $( of a fetcher where a command starts — at a line start (after a prompt
-	// sigil, list marker or short label), after ; & | ( { or then/do/else, or
-	// behind a wrapper: the downloaded text runs as a command. An assignment
-	// (VERSION=$(curl …)) or an argument (echo $(curl …)) does not.
-	regexp.MustCompile(`(?i)(?:(?m:^)|[;&|({]|\b(?:then|do|else)\s)\s*` + lineLead + wrapperPre + `\$\(\s*` + fetcherAlt + `\b`),
+		cmdLead + wrapperPre + `(?:` + shellWord + `\b` + shellOpts + `|exec|source|\.)\s+["']?)` + "`" + substFetch),
+	// $( of a fetcher where a command starts — at a line start, after
+	// ; & | ( { or then/do/else, each optionally followed by a prompt sigil or
+	// list marker, or behind a wrapper: the downloaded text runs as a command.
+	// An assignment (VERSION=$(curl …)) or an argument (echo $(curl …),
+	// echo "IP: $(curl …)") does not.
+	regexp.MustCompile(`(?i)(?:(?m:^)|[;&|({]|\b(?:then|do|else)\s)\s*` + promptLead + wrapperPre + `\$\(` + substFetch),
 	// A backtick substitution of a fetcher at a line start (after a prompt
 	// sigil) or after ;, && or ||. Elsewhere a backtick span is a Markdown
 	// code span in prose.
-	regexp.MustCompile("(?i)(?:(?m:^)|;|&&|\\|\\|)\\s*(?:[$#%>]\\s+)?" + wrapperPre + "`\\s*" + fetcherAlt + `\b`),
+	regexp.MustCompile("(?i)(?:(?m:^)|;|&&|\\|\\|)\\s*(?:[$#%>]\\s+)?" + wrapperPre + "`" + substFetch),
 	// Invoke-Expression or [scriptblock]::Create applied directly to a
 	// PowerShell request, whatever its argument: iex (irm …),
 	// iex "& { $(irm …) }".
-	regexp.MustCompile(`(?i)(?:\b(?:iex|invoke-expression)\b(?:\s+-\w+)*\s*["']?(?:&\s*\{\s*)?|\[scriptblock\]::create\s*)(?:\$?\(\s*)+` + psFetcherAlt + `\b`),
+	regexp.MustCompile(`(?i)(?:\b(?:iex|invoke-expression)\b(?:\s+-\w+)*\s*["']?(?:&\s*\{\s*)?|\[scriptblock\]::create\s*)(?:\$?\(\s*)+` + psFetcherAlt + fetcherEnd),
 }
