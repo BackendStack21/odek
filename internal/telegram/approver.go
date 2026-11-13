@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -483,8 +484,9 @@ const approvalTailBytes = 1024
 func buildApprovalTextElided(cls danger.RiskClass, cmd, description string) (string, bool) {
 	// Control and bidi/invisible format characters in model-supplied text can
 	// make the chat show a different command from the one that runs; they are
-	// replaced by visible escapes before any Markdown handling.
-	cmd = danger.SanitizeForDisplay(cmd)
+	// replaced by visible escapes before any Markdown handling. A batch card
+	// is sanitized row by row as it is fitted (fitBatchCard), so its entries
+	// are counted before the display cap could cut any of them.
 	description = danger.SanitizeForDisplay(description)
 	var b strings.Builder
 	b.WriteString("⚠️ *Approval Required*\n\n")
@@ -510,7 +512,7 @@ func buildApprovalTextElided(cls danger.RiskClass, cmd, description string) (str
 	if cls == danger.ToolBatchClass {
 		body, elided = fitBatchCard(cmd, budget)
 	} else {
-		body, elided = elideMiddle(cmd, budget)
+		body, elided = elideMiddle(danger.SanitizeForDisplay(cmd), budget)
 	}
 
 	b.WriteString(openFence)
@@ -525,8 +527,17 @@ func buildApprovalTextElided(cls danger.RiskClass, cmd, description string) (str
 // where the budget allows) around an "…[N more bytes]" marker. The second
 // result reports whether anything was left out.
 func elideMiddle(s string, maxEsc int) (string, bool) {
-	if e := escapeCodeBlock(s); len(e) <= maxEsc {
-		return e, false
+	return elideMiddleWith(s, maxEsc, escapeCodeBlock)
+}
+
+// elideMiddleWith is elideMiddle with the rendering of the kept text given:
+// esc renders each piece that is shown (the head and the tail, never the
+// marker). esc must never make text shorter.
+func elideMiddleWith(s string, maxEsc int, esc func(string) string) (string, bool) {
+	if len(s) <= maxEsc {
+		if e := esc(s); len(e) <= maxEsc {
+			return e, false
+		}
 	}
 	keep := maxEsc
 	// The marker's own width (its count has at most as many digits as len(s)),
@@ -554,9 +565,9 @@ func elideMiddle(s string, maxEsc int) (string, bool) {
 		for tailStart < len(s) && !utf8.RuneStart(s[tailStart]) {
 			tailStart++
 		}
-		out := escapeCodeBlock(s[:head]) +
+		out := esc(s[:head]) +
 			fmt.Sprintf("…[%d more bytes]", tailStart-head) +
-			escapeCodeBlock(s[tailStart:])
+			esc(s[tailStart:])
 		if len(out) <= maxEsc {
 			return out, true
 		}
@@ -566,71 +577,141 @@ func elideMiddle(s string, maxEsc int) (string, bool) {
 }
 
 // batchMinEntryBytes is the smallest per-entry share a batch card shows. When
-// the entries cannot all get at least this much, only the leading entries are
-// listed and a final line states how many were left out.
+// the entries cannot all get at least this much, only some of them are
+// listed and a line states how many were left out.
 const batchMinEntryBytes = 96
 
-// batchMoreLine is the closing line of a card that lists only leading entries.
+// batchMoreLine states how many entries a shortened card leaves out.
 func batchMoreLine(n int) string {
 	return fmt.Sprintf("… and %d more entries not shown", n)
 }
 
-// fitBatchCard fits a batch approval card into maxEsc bytes by giving every
-// line a fair share of the room (short lines keep theirs whole, the surplus
-// goes to the longer ones), so each entry stays visible: a long first entry
-// can never push a later one out of the prompt. When the share would fall
-// below batchMinEntryBytes the card lists as many leading entries as fit at
-// that minimum and ends with an explicit count of the hidden ones. The result
-// never exceeds maxEsc bytes.
-func fitBatchCard(card string, maxEsc int) (string, bool) {
-	if e := escapeCodeBlock(card); len(e) <= maxEsc {
-		return e, false
-	}
-	// A trailing newline ends the last entry; it is not an entry of its own.
+// batchDisplay renders batch-card text for the prompt: control, bidi and
+// invisible characters made visible by danger.SanitizeForDisplay, then
+// escaped for the code block.
+func batchDisplay(s string) string {
+	return escapeCodeBlock(danger.SanitizeForDisplay(s))
+}
+
+// batchCardParts splits a batch card into lines. A card laid out by the agent
+// loop (a header line, a blank line, the entries "  1. …", "  2. …" in order
+// and optionally a blank line and a note) has its header and note lines
+// returned apart from the entries: they are always shown and never counted as
+// entries. Any other text, such as a single multi-line command prompted as a
+// batch, is all entries, one per line. A trailing newline ends the last line;
+// it is not a line of its own.
+func batchCardParts(card string) (lead, entries, trail []string) {
 	lines := strings.Split(strings.TrimSuffix(card, "\n"), "\n")
+	if len(lines) < 3 || lines[1] != "" {
+		return nil, lines, nil
+	}
+	j := 2
+	for j < len(lines) && strings.HasPrefix(lines[j], "  "+strconv.Itoa(j-1)+". ") {
+		j++
+	}
+	rest := lines[j:]
+	if j == 2 || (len(rest) != 0 && (len(rest) != 2 || rest[0] != "")) {
+		return nil, lines, nil
+	}
+	return lines[:2], lines[2:j], rest
+}
+
+// fitBatchCard fits a batch approval card, as received, into maxEsc bytes by
+// giving every shown line a fair share of the room (short lines keep theirs
+// whole, the surplus goes to the longer ones), so each entry stays visible: a
+// long first entry can never push a later one out of the prompt. When the
+// share would fall below batchMinEntryBytes the card lists as many leading
+// entries as fit at that minimum, followed by a line with the exact number of
+// entries left out. Entries are chosen and counted on the card as received;
+// only the text shown is sanitized (batchDisplay). The result never exceeds
+// maxEsc bytes and is reported elided unless the card is shown whole.
+func fitBatchCard(card string, maxEsc int) (string, bool) {
+	// Escapes only ever lengthen text, so a card longer than the room cannot
+	// fit and is never sanitized whole.
+	if len(card) <= maxEsc {
+		if e := batchDisplay(card); len(e) <= maxEsc {
+			return e, false
+		}
+	}
+	lead, entries, trail := batchCardParts(card)
+	pinned := 0 // the least room the header and note lines are planned with
+	for _, l := range lead {
+		pinned += batchRowCost(l)
+	}
+	for _, l := range trail {
+		pinned += batchRowCost(l)
+	}
+	shown := entries
 	more := ""
-	if len(lines)*(batchMinEntryBytes+1) > maxEsc+1 {
-		// Room for the closing line (the count has at most 20 digits).
+	if pinned+len(entries)*(batchMinEntryBytes+1) > maxEsc+1 {
+		// Room for the hidden-entries line (its count has at most 20 digits).
 		reserve := len(batchMoreLine(0)) + 20 + 1
-		k := (maxEsc - reserve) / (batchMinEntryBytes + 1)
+		k := (maxEsc + 1 - pinned - reserve) / (batchMinEntryBytes + 1)
 		if k < 1 {
 			k = 1
 		}
-		if k < len(lines) {
-			more = batchMoreLine(len(lines) - k)
-			lines = lines[:k]
-			maxEsc -= len(more) + 1
+		if k < len(entries) {
+			more = batchMoreLine(len(entries) - k)
+			shown = entries[:k]
 		}
 	}
-	share := make([]int, len(lines))
-	room := maxEsc - (len(lines) - 1) // newlines between lines
-	left := len(lines)
-	done := make([]bool, len(lines))
+	rows := make([]string, 0, len(lead)+len(shown)+len(trail))
+	rows = append(append(append(rows, lead...), shown...), trail...)
+	room := maxEsc - (len(rows) - 1) // newlines between rows
+	if more != "" {
+		room -= len(more) + 1
+	}
+	out := fitBatchRows(rows, room)
+	if more != "" {
+		at := len(lead) + len(shown)
+		out = append(out[:at], append([]string{more}, out[at:]...)...)
+	}
+	return strings.Join(out, "\n"), true
+}
+
+// batchRowCost is the least room a header or note line is planned with.
+func batchRowCost(l string) int {
+	if l == "" {
+		return 1
+	}
+	return batchMinEntryBytes + 1
+}
+
+// fitBatchRows renders rows within room bytes in total (newlines not
+// included) by giving each a fair share: rows that fit the share are shown
+// whole and the surplus goes to the longer ones, which keep their head and
+// tail around a "…[N more bytes]" marker.
+func fitBatchRows(rows []string, room int) []string {
+	size := make([]int, len(rows))
+	for i, l := range rows {
+		size[i] = room + 1 // longer than the room: never shown whole
+		if len(l) <= room {
+			size[i] = len(batchDisplay(l))
+		}
+	}
+	share := make([]int, len(rows))
+	done := make([]bool, len(rows))
+	left := len(rows)
 	for changed := true; changed && left > 0; {
 		changed = false
 		per := room / left
-		for i, l := range lines {
-			if !done[i] && len(escapeCodeBlock(l)) <= per {
-				share[i], done[i] = len(escapeCodeBlock(l)), true
-				room -= share[i]
+		for i := range rows {
+			if !done[i] && size[i] <= per {
+				share[i], done[i] = size[i], true
+				room -= size[i]
 				left--
 				changed = true
 			}
 		}
 	}
-	for i := range lines {
+	out := make([]string, len(rows))
+	for i, l := range rows {
 		if !done[i] {
 			share[i] = room / left
 		}
+		out[i], _ = elideMiddleWith(l, share[i], batchDisplay)
 	}
-	out := make([]string, len(lines))
-	for i, l := range lines {
-		out[i], _ = elideMiddle(l, share[i])
-	}
-	if more != "" {
-		out = append(out, more)
-	}
-	return strings.Join(out, "\n"), true
+	return out
 }
 
 // escapeCodeBlock escapes the two characters that are special inside a
