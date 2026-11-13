@@ -190,6 +190,7 @@ var gateExamples = []struct {
 	{`(?i)\bMYSQL_PWD=`, []string{
 		"MYSQL_PWD=" + gateTestValue, "mysql_pwd=" + gateTestValue, "Mysql_Pwd='" + gateTestValue + "'",
 		"MYSQL_PWD=\"" + gateTestValue + "\"",
+		`MYSQL_PWD=\"` + gateTestValue + `\"`, "MYSQL_PWD=x",
 	}},
 	{`discord(?:app)?`, []string{
 		"discord.com/api/webhooks/123/" + strings.Repeat("a1", 20),

@@ -71,3 +71,48 @@ func TestRED_DBURLJoinedSpanScalesLinearly(t *testing.T) {
 		return "postgres://u:${A}@h" + strings.Repeat("?mysql://u:${B}@h", n/17)
 	})
 }
+
+// MYSQL_PWD=VALUE carries the client password at any length: a short
+// literal and a value in JSON-escaped quotes are redacted (the value only,
+// inside its escaped quotes, so encoded JSON stays well-formed), while
+// references, command substitutions, placeholders and an empty value stay
+// readable.
+func TestRED_MySQLPwdAnyLengthAndEscapedQuotes(t *testing.T) {
+	for in, want := range map[string]string{
+		"MYSQL_PWD=r00t mysql -uroot db":              "MYSQL_PWD=[REDACTED] mysql -uroot db",
+		"MYSQL_PWD=abc12 mysqldump db":                "MYSQL_PWD=[REDACTED] mysqldump db",
+		"MYSQL_PWD=x mysql db":                        "MYSQL_PWD=[REDACTED] mysql db",
+		"MYSQL_PWD='r00t' mysql db":                   "MYSQL_PWD=[REDACTED] mysql db",
+		`MYSQL_PWD="r00t" mysql db`:                   "MYSQL_PWD=[REDACTED] mysql db",
+		`{"cmd":"MYSQL_PWD=\"hunter22\" mysql db"}`:   `{"cmd":"MYSQL_PWD=\"[REDACTED]\" mysql db"}`,
+		`{"cmd":"MYSQL_PWD=r00t\nmysql db"}`:          `{"cmd":"MYSQL_PWD=[REDACTED]\nmysql db"}`,
+		`{"cmd":"echo \"MYSQL_PWD=r00t\" > env"}`:     `{"cmd":"echo \"MYSQL_PWD=[REDACTED]\" > env"}`,
+		"MYSQL_PWD=pa\\$\\$w0rd mysql db":             "MYSQL_PWD=[REDACTED] mysql db",
+		"env MYSQL_PWD=r00t mysql db; MYSQL_PWD=x ls": "env MYSQL_PWD=[REDACTED] mysql db; MYSQL_PWD=[REDACTED] ls",
+	} {
+		if out := RedactSecrets(in); out != want {
+			t.Errorf("%q => %q, want %q", in, out, want)
+		}
+	}
+	for _, in := range []string{
+		`{"cmd":"MYSQL_PWD=\"\" mysql db"}`,
+		`{"cmd":"MYSQL_PWD=\"$DB_PASS\" mysql db"}`,
+		"MYSQL_PWD= mysql db",
+		"MYSQL_PWD='' mysql db",
+		"MYSQL_PWD=$(cat /run/secrets/db) mysql db",
+		`MYSQL_PWD="$(cat /run/secrets/db)" mysql db`,
+		"MYSQL_PWD=<password> mysql db",
+		"MYSQL_PWD=YOUR_PASSWORD mysql db",
+		"MYSQL_PWD=changeme mysql db",
+	} {
+		if out := RedactSecrets(in); out != in {
+			t.Errorf("over-redaction: %q => %q", in, out)
+		}
+	}
+}
+
+func TestRED_MySQLPwdScalesLinearly(t *testing.T) {
+	redactR3Linear(t, "assignments", func(n int) string { return strings.Repeat("MYSQL_PWD=x ", n/12) })
+	redactR3Linear(t, "escaped quotes", func(n int) string { return strings.Repeat(`MYSQL_PWD=\"`, n/12) })
+	redactR3Linear(t, "escapes", func(n int) string { return "MYSQL_PWD=" + strings.Repeat(`\$`, n/2) })
+}

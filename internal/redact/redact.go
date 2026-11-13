@@ -220,9 +220,9 @@ func plausibleFlagValue(v string) bool {
 	return plausibleValue(v) && !strings.HasPrefix(t, "$") && !strings.HasPrefix(t, "%")
 }
 
-// valuePatterns are context patterns whose redaction span is the capture
-// group only (group 1), so the surrounding command or URL stays readable.
-// The group must also pass ok.
+// valuePatterns are context patterns whose redaction span is the first
+// capture group that took part in the match, so the surrounding command or
+// URL stays readable. The group must also pass ok.
 var valuePatterns = []guardedPattern{
 	// Database connection URLs with embedded credentials. We require a
 	// scheme that genuinely carries DB creds (so this doesn't catch HTTP
@@ -239,10 +239,14 @@ var valuePatterns = []guardedPattern{
 	{gated(regexp.MustCompile(`(?i)\b((?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|rediss?|amqps?|mssql|clickhouse)(?:\+[a-z0-9_]+)?://[^:\s/]*:(?:[^@\s/]{6,}|[$%{<][^@\s/]*)@[^\s'\x60"]+)`),
 		literals(exact("://"), exact("@"), folded("postgres", "mysql", "mongodb", "redis", "amqp", "mssql", "clickhouse"))), dbURLHoldsSecret},
 	// MYSQL_PWD=VALUE: the MySQL/MariaDB clients read their password from
-	// this environment variable, in any value length. Variable references,
-	// placeholders and an empty value stay readable.
+	// this environment variable, in any value length. The value is quoted or
+	// bare; a bare value ends at a blank, a quote or a JSON \n \r \t \"
+	// escape. In the escaped quotes of JSON-encoded text only the content is
+	// matched (group 1), so the quotes stay and the JSON stays well-formed.
+	// Variable references, command substitutions, placeholders and an empty
+	// value stay readable.
 	// Gate: every match holds mysql_pwd in some letter case.
-	{gated(regexp.MustCompile(`(?i)\bMYSQL_PWD=("[^"\n]+"|'[^'\n]+'|[^\s"']+)`), literals(folded("mysql_pwd"))), plausibleAuthPassword},
+	{gated(regexp.MustCompile(`(?i)\bMYSQL_PWD=(?:\\"((?:[^"\\\n]|\\[^"\n])*)\\"|("[^"\n]*"|'[^'\n]*'|(?:[^\s"'\\]|\\[^\snrt"])+))`), literals(folded("mysql_pwd"))), plausibleEnvPassword},
 	// Chat incoming-webhook URLs: whoever holds the URL can post as the
 	// integration, so the secret path segment is a bearer credential.
 	// Gate: every match holds "hooks.slack.com/".
@@ -856,6 +860,16 @@ func plausibleFlagPassword(v string) bool {
 		return false
 	}
 	return !placeholderShape(t)
+}
+
+// plausibleEnvPassword judges a MYSQL_PWD value as the pattern matched it:
+// in quotes, bare, or the content of JSON-escaped quotes. The flag rule
+// applies, so a value of any length is a password.
+func plausibleEnvPassword(v string) bool {
+	if len(v) >= 2 && (v[0] == '"' || v[0] == '\'') && v[len(v)-1] == v[0] {
+		v = v[1 : len(v)-1]
+	}
+	return plausibleFlagPassword(v)
 }
 
 // cookieOperandSpans returns the raw spans of the cookie values in a curl
@@ -1575,8 +1589,12 @@ func guardedPatternMatches(s *textScan) [][2]int {
 			continue
 		}
 		for _, m := range g.re.FindAllStringSubmatchIndex(text, -1) {
-			if m[2] >= 0 && g.ok(text[m[2]:m[3]]) {
-				out = append(out, [2]int{m[2], m[3]})
+			k := 2
+			for k+2 < len(m) && m[k] < 0 {
+				k += 2
+			}
+			if m[k] >= 0 && g.ok(text[m[k]:m[k+1]]) {
+				out = append(out, [2]int{m[k], m[k+1]})
 			}
 		}
 	}
