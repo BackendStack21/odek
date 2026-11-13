@@ -637,6 +637,10 @@ type dbLine struct {
 	// pending is the kind of a NAME=client word in command position: it is a
 	// client word when an option follows it directly.
 	pending uint8
+	// carried is the kind of a NAME=client word in command position while only
+	// arguments and options of its simple command have followed it: it is a
+	// client word when a password option follows.
+	carried uint8
 	tok     int // start of the word in progress, or -1
 	opts    []dbOption
 }
@@ -645,6 +649,7 @@ type dbLine struct {
 // wrapper.
 func (l *dbLine) command(pos bool) {
 	l.cmdPos, l.wrapper, l.wrapOpts, l.value, l.named = pos, false, "", false, false
+	l.carried = 0
 }
 
 // open opens a nested quote or parenthesis, whose first word stands in
@@ -699,6 +704,21 @@ func (l *dbLine) client(kind uint8) {
 	l.any |= kind
 }
 
+// dbProgramOptions are the options whose value names the program a container
+// runs.
+var dbProgramOptions = [2]string{"--entrypoint", "--health-cmd"}
+
+// dottedName reports whether s is a name of letters, digits and '_', also
+// several joined by dots (healthcheck.test).
+func dottedName(s string) bool {
+	for _, part := range strings.Split(s, ".") {
+		if part == "" || !identWord(part) {
+			return false
+		}
+	}
+	return true
+}
+
 // dbProgramPath reports whether the path w, whose last component is a client
 // name, names a program wherever it stands: it ends in .exe, or its directory
 // is bin or sbin.
@@ -722,15 +742,18 @@ func (l *dbLine) endWord(e int) {
 	named, value := l.named, l.value
 	l.named, l.value = false, false
 	var kind, pending uint8
+	carried := l.carried
 	switch {
 	case w[0] == '-':
-		// An option is no client word, except the value of --entrypoint,
-		// which names the program a container runs.
-		if v, ok := strings.CutPrefix(w, "--entrypoint="); ok {
-			kind = dbClientKind(v[strings.LastIndexAny(v, `/\`)+1:])
+		// An option is no client word, except the value of --entrypoint and
+		// of --health-cmd, which name the program a container runs.
+		for _, name := range dbProgramOptions {
+			if v, ok := strings.CutPrefix(w, name+"="); ok {
+				kind = dbClientKind(v[strings.LastIndexAny(v, `/\`)+1:])
+			}
 		}
 		switch {
-		case w == "--entrypoint":
+		case w == dbProgramOptions[0] || w == dbProgramOptions[1]:
 			l.named = true
 		case w == "--":
 			l.command(true)
@@ -745,12 +768,26 @@ func (l *dbLine) endWord(e int) {
 	case strings.IndexByte(w, '=') >= 0:
 		// A word with '=' is an assignment: the command position stays as it
 		// is. NAME=client in command position may be a command written
-		// without its quotes (see pending).
-		if eq := strings.IndexByte(w, '='); l.cmdPos && !value && eq > 0 && identWord(w[:eq]) {
-			pending = dbClientKind(w[eq+1:])
+		// without its quotes (see pending and carried): the value, behind the
+		// prefixes a unit file puts before a program (- + !), is a client
+		// name or a path whose last component is one. A path in any directory
+		// counts when an option follows directly; behind arguments only one
+		// that names a program wherever it stands.
+		carried = 0
+		if eq := strings.IndexByte(w, '='); l.cmdPos && !value && dottedName(w[:eq]) {
+			v := strings.TrimLeft(w[eq+1:], "-+!")
+			vbase := v[strings.LastIndexAny(v, `/\`)+1:]
+			pending = dbClientKind(vbase)
+			if len(vbase) == len(v) || dbProgramPath(v, vbase) {
+				carried = pending
+			}
 		}
 	default:
 		path := len(base) != len(w)
+		if path {
+			// Another program: the assignment before it was its environment.
+			carried = 0
+		}
 		if k := dbClientKind(base); k != 0 && (!path || named || (l.cmdPos && !value) || dbProgramPath(w, base)) {
 			kind = k
 		}
@@ -766,7 +803,7 @@ func (l *dbLine) endWord(e int) {
 			l.command(false)
 		}
 	}
-	l.pending = pending
+	l.pending, l.carried = pending, carried
 	l.client(kind)
 }
 
@@ -863,6 +900,7 @@ func (l *dbLine) read(ls, le int, quotes *jsonStringTracker, out [][2]int) [][2]
 			}
 			if c == '-' && i >= floor && i+2 < len(text) && optionStartAt(text, i) {
 				if vs, cluster, port := l.option(i); vs >= 0 {
+					l.client(l.carried)
 					w := lexPasswordWord(text, vs, trackQuotes(quotes, text, i))
 					l.opts = append(l.opts, dbOption{word: w, cluster: cluster, port: port, kinds: l.kinds(), any: l.any})
 					floor = w.e
@@ -913,8 +951,9 @@ func nextDBClientName(s *textScan, pos int, next []int) int {
 // any quoting depth, when a client word governs it.
 //
 // A client word is a word that is exactly a client name (see dbClientKind),
-// bare, in any letter case — also as the value of --entrypoint, and of
-// NAME=client in command position when an option follows it directly — or a
+// bare, in any letter case — also as the value of --entrypoint and
+// --health-cmd, and of a NAME=value word in command position (see
+// dbLine.pending and dbLine.carried) — or a
 // path whose last component is one when the path stands in command position
 // (the first word of a simple command, of a quoted string, of a
 // parenthesised list or after "--", behind NAME=value words and the words of
