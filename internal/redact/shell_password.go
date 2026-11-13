@@ -63,18 +63,39 @@ type pwWord struct {
 // quotes are escaped (\"), a \n, \r or \t escape is a blank and an unescaped
 // double quote closes the JSON string, so it ends the word and every search.
 // Inside an outer single-quoted string (outer), the next single quote closes
-// it: no quote or substitution in the word reaches past it.
+// it: no quote or substitution in the word reaches past it. In a list (list),
+// a quoted string that a ',', ']', ')', '}' or ':' follows is the whole item.
+//
+// The quote state comes from counting the quotes before the word, and one
+// stray quote earlier on the line inverts it. A double quote that is not
+// followed the way a closed string is (see closesString) is therefore read
+// as the shell's, and the word as plain text from there on, so a quoted
+// password is never read as an empty word.
 type pwLexer struct {
 	text  string
 	json  bool
 	outer bool
+	list  bool
 	limit int
+}
+
+// closesString reports whether a double quote right before text[k] can close
+// a JSON or source-code string: the text ends there, or a blank, a line break
+// or one of , } ] : ) ; + . follows.
+func closesString(text string, k int) bool {
+	return k >= len(text) || strings.IndexByte(" \t\n\r,}]:);+.", text[k]) >= 0
 }
 
 // lexPasswordWord lexes the shell word that starts at text[vs]. A blank or a
 // line break ends it; a backslash-newline continues it.
 func lexPasswordWord(text string, vs int, q quoteState) pwWord {
-	l := pwLexer{text: text, json: q.json, outer: q.single && !q.json, limit: len(text)}
+	return lexPasswordItem(text, vs, q, false)
+}
+
+// lexPasswordItem is lexPasswordWord; list marks a word that may be an item
+// of an argument list or the value of a mapping.
+func lexPasswordItem(text string, vs int, q quoteState, list bool) pwWord {
+	l := pwLexer{text: text, json: q.json, outer: q.single && !q.json, list: list, limit: len(text)}
 	if l.limit-vs > pwWordMax {
 		l.limit = vs + pwWordMax
 	}
@@ -96,7 +117,7 @@ scan:
 	for i < l.limit {
 		c := text[i]
 		switch {
-		case c == '\n' || c == '\r' || c == ' ' || c == '\t' || (l.json && c == '"'):
+		case c == '\n' || c == '\r' || c == ' ' || c == '\t' || (l.json && c == '"' && closesString(text, i+1)):
 			break scan
 		case c == '\\' && i+1 < len(text):
 			n := text[i+1]
@@ -135,7 +156,10 @@ scan:
 				keep()
 				i++
 			}
-		case c == '"': // plain text only: in JSON-encoded text it ended the word
+		case c == '"':
+			// Plain text, or a quote that does not close a JSON string: the
+			// quote state was wrong, and the word is plain text from here.
+			l.json = false
 			if k := l.scanDouble(i + 1); k >= 0 {
 				add(segDouble, i, k+1, i+1, k)
 				i = k + 1
@@ -149,6 +173,8 @@ scan:
 		case (c == ';' || c == '|' || c == '&') && afterQuote(text, run, i):
 			// The quote delimited the value; elsewhere these characters are
 			// taken as part of it.
+			break scan
+		case l.list && (c == ',' || c == ']' || c == ')' || c == '}' || c == ':') && afterQuote(text, run, i):
 			break scan
 		case c == '$' && i+1 < len(text):
 			if g, ok := l.dollar(i); ok {
@@ -421,31 +447,6 @@ func (w pwWord) spans(port bool) [][2]int {
 	return out
 }
 
-// literal returns the word's text with its quotes removed, for reading an
-// option name; ok is false when the word holds anything but plain text,
-// quotes and escapes.
-func (w pwWord) literal() (string, bool) {
-	var b strings.Builder
-	for k, r := range w.runs {
-		if k > 0 {
-			return "", false
-		}
-		for _, g := range r {
-			switch g.kind {
-			case segText:
-				b.WriteString(w.text[g.s:g.e])
-			case segSingle, segDouble:
-				b.WriteString(w.text[g.cs:g.ce])
-			case segEscape:
-				b.WriteByte(w.text[g.e-1])
-			default:
-				return "", false
-			}
-		}
-	}
-	return b.String(), true
-}
-
 // shellPasswordMatches returns the spans of the MySQL/MariaDB client, sshpass
 // and MYSQL_PWD passwords.
 func shellPasswordMatches(s *textScan) [][2]int {
@@ -510,9 +511,32 @@ func optionStartAt(text string, i int) bool {
 	return text[i] == '-' && (i == 0 || !isCommandWordByte(text[i-1]) || jsonBlankEscapeBefore(text, i))
 }
 
+// dbClientFlags are the short options of the MySQL/MariaDB clients (mysql,
+// mysqldump, mysqladmin) that take no argument, so they can stand before p in
+// one option cluster (-sNpVALUE). The options that take a value (-u, -h, -P,
+// -D, -e, -S, ...) are not among them: what follows one is its value.
+const dbClientFlags = "?ABCEGHIJKLNTUVXbcfgijklnoqrstvwx"
+
+// dbClientFlagMax bounds the argument-less flags read before p in one option
+// cluster.
+const dbClientFlagMax = 16
+
+// dbClientFlagRun returns how many argument-less flags t starts with, or 0
+// when more than dbClientFlagMax do.
+func dbClientFlagRun(t string) int {
+	n := 0
+	for n < len(t) && strings.IndexByte(dbClientFlags, t[n]) >= 0 {
+		if n++; n > dbClientFlagMax {
+			return 0
+		}
+	}
+	return n
+}
+
 // dbClientPasswordMatches returns the spans of MySQL/MariaDB client passwords.
 // On a line that holds a client name anywhere (also inside quotes, as a path's
-// last component or as an option value), every later option word -pVALUE or
+// last component or as an option value), every later option word -pVALUE,
+// also after argument-less flags in one cluster (-sNpVALUE), or
 // --password=VALUE (or a prefix of it from --pas) at any quoting depth is the
 // client's password, whatever command it belongs to. An attached -p value
 // that is a port mapping is not; a bare -p prompts and -P is a port.
@@ -533,10 +557,11 @@ func dbClientPasswordMatches(s *textScan) [][2]int {
 				continue
 			}
 			vs, port := -1, false
-			switch text[i+1] {
-			case 'p':
-				vs, port = i+2, true
-			case '-':
+			flags := i + 1 + dbClientFlagRun(text[i+1:])
+			switch {
+			case flags < len(text) && text[flags] == 'p':
+				vs, port = flags+1, true
+			case text[i+1] == '-':
 				k := i + 2
 				for k < len(text) && k-i < 12 && (text[k] >= 'a' && text[k] <= 'z' || text[k] >= 'A' && text[k] <= 'Z') {
 					k++
@@ -561,22 +586,30 @@ func dbClientPasswordMatches(s *textScan) [][2]int {
 	return out
 }
 
-// sshpassMaxWords bounds how many words of one sshpass option list are read.
+// sshpassMaxWords bounds how many words after one sshpass word are read.
 const sshpassMaxWords = 32
 
+// sshpassEscapeMax bounds the backslashes read as one escape, which covers a
+// quote or a line continuation encoded in JSON twice.
+const sshpassEscapeMax = 8
+
 // sshpassMatches returns the spans of sshpass passwords. Every sshpass word
-// starts an option list of its own, also inside a quoted argument of another
-// command (a jump host's ProxyCommand, ssh's remote command). sshpass parses
-// options up to the word that names the program it runs (letters, digits and
-// _ . / + ~ -) or "--": -p takes the password attached or as the next word;
-// -f, -d and -P take a value; -e takes an optional attached name; other
-// letters are flags. A word that is neither an option nor a program name is
-// passed over, so a later -p is still judged; the wrapped program's own -p
-// (an ssh port) is not sshpass's.
+// (in any letter case, behind a path, with an .exe suffix, quoted or not) is
+// read on its own, also inside a quoted argument of another command (a jump
+// host's ProxyCommand, ssh's remote command), by one rule that does not
+// depend on the quoting around it. The words after it are whatever stands
+// between separators (sshpassSep): blanks, quotes, commas, square brackets,
+// line continuations and JSON blank escapes, so a command line, a JSON-encoded
+// command and an argv list read alike. The first -p takes the password,
+// attached (-pVALUE) or as the next word, and the reading ends there, so the
+// wrapped command's own -p (an ssh port) is not sshpass's. It ends without a
+// password at -f, -d or -e (the password comes from elsewhere), at "--" and
+// at the first word that names a program (letters, digits and _ . / + ~ -).
+// -P takes a value; any other option, and a word that is neither an option
+// nor a program name, is passed over.
 func sshpassMatches(s *textScan) [][2]int {
 	text := s.text
 	var out [][2]int
-	seen := map[[2]int]bool{}
 	var quotes jsonStringTracker
 	for pos := 0; pos < len(text); {
 		j := s.indexFoldFrom("sshpass", pos)
@@ -587,52 +620,87 @@ func sshpassMatches(s *textScan) [][2]int {
 		if j > 0 && isCommandWordByte(text[j-1]) && !jsonBlankEscapeBefore(text, j) {
 			continue
 		}
-		if pos < len(text) && isCommandWordByte(text[pos]) {
+		after := pos
+		if len(text)-after >= 4 && strings.EqualFold(text[after:after+4], ".exe") {
+			after += 4
+		}
+		if after < len(text) && isCommandWordByte(text[after]) {
 			continue
 		}
 		quotes.at(text, j)
-		for _, sp := range sshpassOptionSpans(text, pos, quotes) {
-			if !seen[sp] {
-				seen[sp] = true
-				out = append(out, sp)
-			}
-		}
+		out = append(out, sshpassPasswordSpans(text, after, quotes)...)
 	}
 	return out
 }
 
-// nextWordStart skips the blanks before the next word of a command at
-// text[i:] and returns its offset, or -1 when the command ends first (a line
-// break, and in JSON-encoded text a \n or \r escape or the quote that closes
-// the string). A backslash-newline continues the command.
-func nextWordStart(text string, i int, json bool) int {
-	for i < len(text) {
-		switch c := text[i]; {
-		case c == ' ' || c == '\t':
-			i++
-		case c == '\\' && i+1 < len(text) && (text[i+1] == '\n' || text[i+1] == '\r'):
-			i += 2
-			if text[i-1] == '\r' && i < len(text) && text[i] == '\n' {
-				i++
+// sshpassSep returns the length of the word separator at text[i], or 0, and
+// whether it is a quote. A separator is a blank, a comma, a square bracket, a
+// quote (' or ", also escaped as \"), a line continuation (a backslash and a
+// line break) or a JSON \n, \r or \t escape; the escaped forms may carry more
+// backslashes, as JSON encoding adds them. The bracket that opens the
+// redaction marker belongs to it, so a replaced password reads as one word.
+func sshpassSep(text string, i int) (n int, quote bool) {
+	switch text[i] {
+	case '[':
+		if strings.HasPrefix(text[i:], "[REDACTED]") {
+			return 0, false
+		}
+		return 1, false
+	case ' ', '\t', ',', ']':
+		return 1, false
+	case '\'', '"':
+		return 1, true
+	case '\\':
+		k := i + 1
+		for k < len(text) && k-i < sshpassEscapeMax && text[k] == '\\' {
+			k++
+		}
+		if k == len(text) {
+			return 0, false
+		}
+		switch text[k] {
+		case '"':
+			return k + 1 - i, true
+		case 'n', 'r', 't', '\n':
+			return k + 1 - i, false
+		case '\r':
+			if k+1 < len(text) && text[k+1] == '\n' {
+				k++
 			}
-		case json && c == '\\' && i+1 < len(text) && text[i+1] == 't':
-			i += 2
-		case c == '\n' || c == '\r' || (json && c == '"') ||
-			(json && c == '\\' && i+1 < len(text) && (text[i+1] == 'n' || text[i+1] == 'r')):
-			return -1
-		default:
-			return i
+			return k + 1 - i, false
 		}
 	}
-	return -1
+	return 0, false
 }
 
-// programName reports whether a word names a program: letters, digits and
-// _ . / + ~ -, not starting with '-'.
-func programName(w string) bool {
-	if w == "" || w[0] == '-' {
-		return false
+// sshpassSkip returns the offset after the separators at text[i:]; quotes
+// tells whether quotes are skipped too.
+func sshpassSkip(text string, i int, quotes bool) int {
+	for i < len(text) {
+		n, quote := sshpassSep(text, i)
+		if n == 0 || (quote && !quotes) {
+			break
+		}
+		i += n
 	}
+	return i
+}
+
+// sshpassWordEnd returns the end of the word at text[i:]: the next separator
+// or line break.
+func sshpassWordEnd(text string, i int) int {
+	for i < len(text) && text[i] != '\n' && text[i] != '\r' {
+		if n, _ := sshpassSep(text, i); n > 0 {
+			break
+		}
+		i++
+	}
+	return i
+}
+
+// programName reports whether a word that is not an option names a program:
+// letters, digits and _ . / + ~ -.
+func programName(w string) bool {
 	for i := 0; i < len(w); i++ {
 		if c := w[i]; !isIdentByte(c) && strings.IndexByte("./+~-", c) < 0 {
 			return false
@@ -641,92 +709,95 @@ func programName(w string) bool {
 	return true
 }
 
-// sshpassOptionSpans returns the password spans in the option list that
-// starts at text[from], right after an sshpass word. quotes is the quote
-// tracker at that word; a copy follows the option list. When a value word is
-// itself an sshpass word, the list is left to that word, which reads the same
-// options that follow.
-func sshpassOptionSpans(text string, from int, quotes jsonStringTracker) [][2]int {
-	var out [][2]int
-	// value reads the value word of an option at text[v:] and returns its end,
-	// or -1 when the value is a separate sshpass word; a -p value is a
-	// password.
-	value := func(v int, password, separate bool) int {
-		w := lexPasswordWord(text, v, trackQuotes(&quotes, text, v))
-		if password {
-			out = append(out, w.spans(false)...)
-		}
-		if separate && strings.EqualFold(text[v:w.e], "sshpass") {
-			return -1
-		}
-		return w.e
-	}
+// sshpassPasswordSpans returns the password spans of the sshpass word that
+// ends at text[from]. quotes is the quote tracker at that word; a copy
+// follows the text up to the password.
+func sshpassPasswordSpans(text string, from int, quotes jsonStringTracker) [][2]int {
 	i := from
 	for n := 0; n < sshpassMaxWords; n++ {
-		q := trackQuotes(&quotes, text, i)
-		if i = nextWordStart(text, i, q.json); i < 0 {
-			return out
+		s := sshpassSkip(text, i, true)
+		e := sshpassWordEnd(text, s)
+		if e == s {
+			return nil // the line ended
 		}
-		w := lexPasswordWord(text, i, trackQuotes(&quotes, text, i))
-		raw := text[i:w.e]
-		lit, plain := w.literal()
-		switch {
-		case plain && lit == "--":
-			return out
-		case len(raw) >= 2 && raw[0] == '-':
-			i = sshpassCluster(text, i, w.e, q.json, value)
-			if i < 0 {
-				return out
+		w := text[s:e]
+		i = e
+		if w[0] != '-' {
+			if programName(w) && !sshpassKeyEnd(text, e) {
+				return nil
 			}
-		case plain && lit == "-p": // a quoted "-p"
-			v := nextWordStart(text, w.e, q.json)
-			if v < 0 {
-				return out
-			}
-			if i = value(v, true, true); i < 0 {
-				return out
-			}
-		case plain && programName(lit):
-			return out
-		default:
-			i = w.e
+			continue
 		}
-	}
-	return out
-}
-
-// sshpassCluster reads the option cluster text[s:e] (a '-' and option
-// letters) and returns where the option list continues, or -1 when it ended:
-// an option's value is missing or is a separate sshpass word.
-func sshpassCluster(text string, s, e int, json bool, value func(v int, password, separate bool) int) int {
-	for k := s + 1; k < e; k++ {
-		switch c := text[k]; {
-		case c == 'p' || c == 'f' || c == 'd' || c == 'P':
-			if k+1 < e {
-				return value(k+1, c == 'p', false) // attached
+		if w == "--" {
+			return nil
+		}
+	cluster:
+		for k := 1; k < len(w); k++ {
+			switch c := w[k]; {
+			case c == 'p':
+				return sshpassValue(text, s, s+k+1, e, quotes)
+			case c == 'f' || c == 'd' || c == 'e':
+				return nil
+			case c == 'P':
+				if k+1 == len(w) { // the prompt is the next word
+					i = sshpassWordEnd(text, sshpassSkip(text, e, true))
+				}
+				break cluster
+			case c < 'A' || c > 'z' || (c > 'Z' && c < 'a'):
+				break cluster // not an option letter
 			}
-			v := nextWordStart(text, e, json)
-			if v < 0 {
-				return -1
-			}
-			return value(v, c == 'p', true)
-		case c == 'e':
-			return e // an optional attached name
-		case c < 'A' || c > 'z' || (c > 'Z' && c < 'a'):
-			return e // not an option letter
 		}
 	}
-	return e
+	return nil
 }
 
-// mysqlPwdMatches returns the spans of MYSQL_PWD=VALUE assignments, in any
-// letter case and at any value length: the MySQL/MariaDB clients read their
-// password from this environment variable.
+// sshpassKeyEnd reports whether the word that ends at text[e] is a quoted
+// mapping key (a quote and a ':' follow it), as in
+// {"command":"sshpass","args":["-p","VALUE"]}: the argument list comes after.
+func sshpassKeyEnd(text string, e int) bool {
+	if e >= len(text) {
+		return false
+	}
+	n, quote := sshpassSep(text, e)
+	return quote && e+n < len(text) && text[e+n] == ':'
+}
+
+// sshpassValue returns the spans of the password of a -p that stands in the
+// word text[s:e] with text[v:e] attached to it. With nothing attached the
+// password is the next word, unless a quote opens right after an unquoted
+// -p, which attaches a quoted value (-p"VALUE"); the quote that closes a
+// quoted "-p" is passed, and what follows is an item of an argument list.
+// The password is read as one shell word, whatever its shape.
+func sshpassValue(text string, s, v, e int, quotes jsonStringTracker) [][2]int {
+	list := false
+	if v == e {
+		opened := s > 0 && (text[s-1] == '"' || text[s-1] == '\'')
+		n, quote := 0, false
+		if e < len(text) {
+			n, quote = sshpassSep(text, e)
+		}
+		if quote && opened {
+			v, list = e+n, true
+		}
+		if !quote || opened {
+			v = sshpassSkip(text, v, false)
+		}
+	}
+	return lexPasswordItem(text, v, trackQuotes(&quotes, text, v), list).spans(false)
+}
+
+// mysqlPwdMatches returns the spans of MYSQL_PWD values, in any letter case
+// and at any value length: the MySQL/MariaDB clients read their password from
+// this environment variable. The value follows the name as a shell assignment
+// (MYSQL_PWD=VALUE), as a mapping entry or an assignment with blanks, whether
+// the name is quoted or subscripted (MYSQL_PWD: VALUE, "MYSQL_PWD": "VALUE",
+// environ["MYSQL_PWD"] = "VALUE", "MYSQL_PWD" => "VALUE"), or as the quoted
+// second argument of a call ("MYSQL_PWD", "VALUE").
 func mysqlPwdMatches(s *textScan) [][2]int {
 	text := s.text
 	var out [][2]int
 	var quotes jsonStringTracker
-	const key = "mysql_pwd="
+	const key = "mysql_pwd"
 	for pos := 0; pos < len(text); {
 		j := s.indexFoldFrom(key, pos)
 		if j < 0 {
@@ -736,13 +807,89 @@ func mysqlPwdMatches(s *textScan) [][2]int {
 		if j > 0 && isIdentByte(text[j-1]) && !jsonBlankEscapeBefore(text, j) {
 			continue
 		}
-		w := lexPasswordWord(text, pos, trackQuotes(&quotes, text, j))
+		vs, list := mysqlPwdValue(text, pos)
+		if vs < 0 {
+			continue
+		}
+		w := lexPasswordItem(text, vs, trackQuotes(&quotes, text, vs), list)
 		out = append(out, w.spans(false)...)
 		if w.e > pos {
 			pos = w.e
 		}
 	}
 	return out
+}
+
+// mysqlPwdValue returns where the value of the MYSQL_PWD name that ends at
+// text[i] starts, or -1, and whether it is the value of a mapping entry or a
+// call argument rather than of a shell assignment.
+func mysqlPwdValue(text string, i int) (vs int, list bool) {
+	if i < len(text) && text[i] == '=' {
+		return i + 1, false
+	}
+	quoted := false
+	if i < len(text) {
+		if n, quote := sshpassSep(text, i); quote {
+			i, quoted = i+n, true
+		}
+	}
+	if i < len(text) && text[i] == ']' {
+		i++
+	}
+	i = skipBlanks(text, i)
+	if i >= len(text) {
+		return -1, false
+	}
+	switch text[i] {
+	case '=', ':':
+		// Also ==, :=, => and the like.
+		for i++; i < len(text) && (text[i] == '=' || text[i] == '>'); i++ {
+		}
+		i = skipBlanks(text, i)
+		if templateExpression(text, i) {
+			return -1, false
+		}
+		return i, true
+	case ',':
+		i = skipBlanks(text, i+1)
+		if !quoted || i >= len(text) {
+			return -1, false
+		}
+		if _, quote := sshpassSep(text, i); !quote {
+			return -1, false
+		}
+		return i, true
+	}
+	return -1, false
+}
+
+// templateMax bounds the length of one template expression.
+const templateMax = 256
+
+// templateExpression reports whether text[i:] is one unquoted template
+// expression that ends its line ({{ .Values.db.password }}): it holds blanks,
+// so it is not one shell word, and it names a value rather than carrying one.
+func templateExpression(text string, i int) bool {
+	if !strings.HasPrefix(text[i:], "{{") {
+		return false
+	}
+	rest := text[i:]
+	if len(rest) > templateMax {
+		rest = rest[:templateMax]
+	}
+	k := strings.Index(rest, "}}")
+	if k < 0 || strings.ContainsAny(rest[:k], "\n\r") {
+		return false
+	}
+	return i+k+2 == len(text) || text[i+k+2] == '\n' || text[i+k+2] == '\r'
+}
+
+// skipBlanks returns the offset after the spaces and tabs at text[i:].
+func skipBlanks(text string, i int) int {
+	for i < len(text) && (text[i] == ' ' || text[i] == '\t') {
+		i++
+	}
+	return i
 }
 
 // isIdentByte reports whether c is a letter, a digit or '_'.
