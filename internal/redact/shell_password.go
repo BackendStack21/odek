@@ -637,10 +637,6 @@ type dbLine struct {
 	// pending is the kind of a NAME=client word in command position: it is a
 	// client word when an option follows it directly.
 	pending uint8
-	// carried is the kind of a NAME=client word in command position while only
-	// arguments and options of its simple command have followed it: it is a
-	// client word when a password option follows.
-	carried uint8
 	tok     int // start of the word in progress, or -1
 	opts    []dbOption
 }
@@ -649,7 +645,6 @@ type dbLine struct {
 // wrapper.
 func (l *dbLine) command(pos bool) {
 	l.cmdPos, l.wrapper, l.wrapOpts, l.value, l.named = pos, false, "", false, false
-	l.carried = 0
 }
 
 // open opens a nested quote or parenthesis, whose first word stands in
@@ -704,21 +699,6 @@ func (l *dbLine) client(kind uint8) {
 	l.any |= kind
 }
 
-// dbProgramOptions are the options whose value names the program a container
-// runs.
-var dbProgramOptions = [2]string{"--entrypoint", "--health-cmd"}
-
-// dottedName reports whether s is a name of letters, digits and '_', also
-// several joined by dots (healthcheck.test).
-func dottedName(s string) bool {
-	for _, part := range strings.Split(s, ".") {
-		if part == "" || !identWord(part) {
-			return false
-		}
-	}
-	return true
-}
-
 // dbProgramPath reports whether the path w, whose last component is a client
 // name, names a program wherever it stands: it ends in .exe, or its directory
 // is bin or sbin.
@@ -742,18 +722,15 @@ func (l *dbLine) endWord(e int) {
 	named, value := l.named, l.value
 	l.named, l.value = false, false
 	var kind, pending uint8
-	carried := l.carried
 	switch {
 	case w[0] == '-':
-		// An option is no client word, except the value of --entrypoint and
-		// of --health-cmd, which name the program a container runs.
-		for _, name := range dbProgramOptions {
-			if v, ok := strings.CutPrefix(w, name+"="); ok {
-				kind = dbClientKind(v[strings.LastIndexAny(v, `/\`)+1:])
-			}
+		// An option is no client word, except the value of --entrypoint,
+		// which names the program a container runs.
+		if v, ok := strings.CutPrefix(w, "--entrypoint="); ok {
+			kind = dbClientKind(v[strings.LastIndexAny(v, `/\`)+1:])
 		}
 		switch {
-		case w == dbProgramOptions[0] || w == dbProgramOptions[1]:
+		case w == "--entrypoint":
 			l.named = true
 		case w == "--":
 			l.command(true)
@@ -768,26 +745,12 @@ func (l *dbLine) endWord(e int) {
 	case strings.IndexByte(w, '=') >= 0:
 		// A word with '=' is an assignment: the command position stays as it
 		// is. NAME=client in command position may be a command written
-		// without its quotes (see pending and carried): the value, behind the
-		// prefixes a unit file puts before a program (- + !), is a client
-		// name or a path whose last component is one. A path in any directory
-		// counts when an option follows directly; behind arguments only one
-		// that names a program wherever it stands.
-		carried = 0
-		if eq := strings.IndexByte(w, '='); l.cmdPos && !value && dottedName(w[:eq]) {
-			v := strings.TrimLeft(w[eq+1:], "-+!")
-			vbase := v[strings.LastIndexAny(v, `/\`)+1:]
-			pending = dbClientKind(vbase)
-			if len(vbase) == len(v) || dbProgramPath(v, vbase) {
-				carried = pending
-			}
+		// without its quotes (see pending).
+		if eq := strings.IndexByte(w, '='); l.cmdPos && !value && eq > 0 && identWord(w[:eq]) {
+			pending = dbClientKind(w[eq+1:])
 		}
 	default:
 		path := len(base) != len(w)
-		if path {
-			// Another program: the assignment before it was its environment.
-			carried = 0
-		}
 		if k := dbClientKind(base); k != 0 && (!path || named || (l.cmdPos && !value) || dbProgramPath(w, base)) {
 			kind = k
 		}
@@ -803,7 +766,7 @@ func (l *dbLine) endWord(e int) {
 			l.command(false)
 		}
 	}
-	l.pending, l.carried = pending, carried
+	l.pending = pending
 	l.client(kind)
 }
 
@@ -900,7 +863,6 @@ func (l *dbLine) read(ls, le int, quotes *jsonStringTracker, out [][2]int) [][2]
 			}
 			if c == '-' && i >= floor && i+2 < len(text) && optionStartAt(text, i) {
 				if vs, cluster, port := l.option(i); vs >= 0 {
-					l.client(l.carried)
 					w := lexPasswordWord(text, vs, trackQuotes(quotes, text, i))
 					l.opts = append(l.opts, dbOption{word: w, cluster: cluster, port: port, kinds: l.kinds(), any: l.any})
 					floor = w.e
@@ -951,9 +913,8 @@ func nextDBClientName(s *textScan, pos int, next []int) int {
 // any quoting depth, when a client word governs it.
 //
 // A client word is a word that is exactly a client name (see dbClientKind),
-// bare, in any letter case — also as the value of --entrypoint and
-// --health-cmd, and of a NAME=value word in command position (see
-// dbLine.pending and dbLine.carried) — or a
+// bare, in any letter case — also as the value of --entrypoint, and of
+// NAME=client in command position when an option follows it directly — or a
 // path whose last component is one when the path stands in command position
 // (the first word of a simple command, of a quoted string, of a
 // parenthesised list or after "--", behind NAME=value words and the words of
@@ -1212,9 +1173,8 @@ var envPasswordNames = []struct {
 //   - as a shell assignment (NAME=VALUE): one shell word, whatever its shape;
 //   - as a mapping entry or an assignment with blanks, whether the name is
 //     quoted or subscripted (NAME: VALUE, "NAME": "VALUE",
-//     environ["NAME"] = "VALUE", "NAME" => "VALUE"): a quoted value that is
-//     not wholly one template expression, or an unquoted one that is not
-//     code (see envCodeValue);
+//     environ["NAME"] = "VALUE", "NAME" => "VALUE"): a quoted value, or an
+//     unquoted one that is not code (see envCodeValue);
 //   - as the quoted argument after the quoted name in a call
 //     (setenv("NAME", "VALUE")): a callee and its opening parenthesis stand
 //     before the name on the line;
@@ -1398,30 +1358,17 @@ func yamlNameKey(text string, j int) bool {
 
 // envMappingValue judges the value of a mapping entry that starts at text[i]
 // and returns where it starts, or -1 when it holds no password: a comment, a
-// YAML tag (after a ':') that names a core type or that a value or a block
-// indicator follows on its line, a quoted value that is one template expression, or code (see
-// envCodeValue). In a typed declaration (NAME: type = VALUE) the value after
-// the '=' is judged, and both the type and the value are returned when it is
-// not code. Any other value that starts with a quote, a reference or a
-// template is left to the word's own judgment.
+// YAML tag (after a ':'), or code (see envCodeValue). In a typed declaration
+// (NAME: type = VALUE) the value after the '=' is judged, and both the type
+// and the value are returned when it is not code. A value that starts with a
+// quote, a reference or a template is left to the word's own judgment.
 func envMappingValue(text string, i int, colon bool) (first, second int) {
-	if quotedTemplate(text, i) {
-		return -1, -1
-	}
 	if i >= len(text) || strings.IndexByte("\"'`\\$%{<[", text[i]) >= 0 {
 		return i, -1
 	}
 	word := envValueWord(text, i)
-	if text[i] == '#' {
+	if text[i] == '#' || (colon && yamlTagRe.MatchString(word)) {
 		return -1, -1
-	}
-	if colon && yamlTagRe.MatchString(word) {
-		// A tag stands before a value or a block indicator; alone on its
-		// line only a core type is one, anything else may be a literal.
-		k := skipBlanks(text, i+len(word))
-		if yamlCoreTagRe.MatchString(word) || (k > i+len(word) && k < len(text) && text[k] != '\n' && text[k] != '\r') {
-			return -1, -1
-		}
 	}
 	if k := skipBlanks(text, i+len(word)); colon && k > i+len(word) && k < len(text) && text[k] == '=' && (k+1 == len(text) || text[k+1] != '=') {
 		v := skipBlanks(text, k+1)
@@ -1439,9 +1386,6 @@ func envMappingValue(text string, i int, colon bool) (first, second int) {
 // yamlTagRe matches a YAML tag (!vault, !secret, !!str).
 var yamlTagRe = regexp.MustCompile(`^!{1,2}[A-Za-z][A-Za-z0-9_.:/-]*$`)
 
-// yamlCoreTagRe matches a YAML tag that names a core type.
-var yamlCoreTagRe = regexp.MustCompile(`^!!(?:str|binary|null|bool|int|float|seq|map|set|omap|pairs|timestamp)$`)
-
 // envValueWord returns the unquoted word that starts at text[i]: up to the
 // next blank or line break, and at most credentialJudgeWindow bytes.
 func envValueWord(text string, i int) string {
@@ -1452,58 +1396,20 @@ func envValueWord(text string, i int) string {
 	return text[i:e]
 }
 
-// envCodeRoots are the names a code expression starts with: the objects
-// that configuration and environment values are read from.
-var envCodeRoots = map[string]bool{
-	"os": true, "process": true, "env": true, "ENV": true, "Env": true, "environ": true,
-	"cfg": true, "config": true, "Config": true, "conf": true, "settings": true, "Settings": true,
-	"secrets": true, "Secrets": true, "self": true, "this": true, "var": true, "vars": true,
-	"local": true, "module": true, "data": true, "values": true, "Values": true, "params": true,
-	"props": true, "ctx": true, "context": true, "opts": true, "options": true, "args": true,
-	"kwargs": true, "inputs": true, "app": true, "request": true, "System": true,
-	"Environment": true, "str": true, "string": true, "String": true,
-}
-
-// envCodeWord reports whether the unquoted word v is code rather than a
-// literal: a keyword (null, None, nil, true, false, undefined, NaN, ~), a
-// member chain whose first name is one of envCodeRoots (cfg.Password), or a
-// call or a subscript that starts with such a name or holds something
-// between its brackets (os.getenv('X'), Field(default=None), cfg["pw"]).
-// Anything else — a literal that holds a dot (p4ss.w0rd), an empty call
-// (S3cret()) — is not.
-func envCodeWord(v string) bool {
-	switch strings.ToLower(v) {
-	case "", "null", "none", "nil", "true", "false", "undefined", "nan", "~":
-		return true
-	}
-	n := 0
-	for n < len(v) && isIdentByte(v[n]) {
-		n++
-	}
-	known := envCodeRoots[v[:n]]
-	if memberChainRe.MatchString(v) {
-		return known
-	}
-	if !callRe.MatchString(v) && !subscriptRe.MatchString(v) {
-		return false
-	}
-	open := strings.IndexAny(v, "([")
-	filled := open+1 < len(v) && v[open+1] != ')' && v[open+1] != ']'
-	return known || filled
-}
-
 // envCodeValue reports whether the unquoted value that starts at text[i] is
-// code rather than a literal (see envCodeWord), also right before the bracket
-// that closes the enclosing literal. A call or a subscript counts only when
-// its closing bracket ends the word or the line, so a literal that merely
-// holds a parenthesis is not one.
+// code rather than a literal, by the judgment of credential-named
+// assignments (codeExpression): a keyword (null, None, nil, true, false), a
+// member chain (cfg.Password), an environment lookup, a call or a subscript,
+// also right before the bracket that closes the enclosing literal. A call or
+// a subscript counts only when its closing bracket ends the word or the
+// line, so a literal that merely holds a parenthesis is not one.
 func envCodeValue(text string, i int) bool {
 	word := envValueWord(text, i)
 	if strings.IndexByte("\"'`\\$%{<[", text[i]) >= 0 {
 		return false
 	}
 	t := strings.TrimRight(word, ";,")
-	if u := strings.TrimRight(t, "}])"); !envCodeWord(t) && (u == "" || u == t || !envCodeWord(u)) {
+	if u := strings.TrimRight(t, "}])"); !codeExpression(t) && (u == "" || u == t || !codeExpression(u)) {
 		return false
 	}
 	if !callRe.MatchString(t) && !subscriptRe.MatchString(t) {
@@ -1546,28 +1452,6 @@ func templateExpression(text string, i int) bool {
 		return false
 	}
 	return i+k+2 == len(text) || text[i+k+2] == '\n' || text[i+k+2] == '\r'
-}
-
-// quotedTemplate reports whether text[i:] is a quoted value that is wholly
-// one template expression ("{{ .Values.db.password }}", also in escaped
-// quotes): it names a value rather than carrying one.
-func quotedTemplate(text string, i int) bool {
-	if i >= len(text) {
-		return false
-	}
-	n, quote := sshpassSep(text, i)
-	if !quote || !strings.HasPrefix(text[i+n:], "{{") {
-		return false
-	}
-	rest := text[i+n:]
-	if len(rest) > templateMax {
-		rest = rest[:templateMax]
-	}
-	k := strings.Index(rest, "}}")
-	if k < 0 || strings.ContainsAny(rest[:k], "\n\r") {
-		return false
-	}
-	return strings.HasPrefix(text[i+n+k+2:], text[i:i+n])
 }
 
 // skipBlanks returns the offset after the spaces and tabs at text[i:].

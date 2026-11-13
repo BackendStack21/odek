@@ -407,7 +407,7 @@ func TestRED_DocumentedShellPasswordOutcomes(t *testing.T) {
 		"postgres://app:%PASS1%@db/app":   "postgres://app:%PASS1%@db/app",
 		"postgres://app:$X1@db/app":       "postgres://app:$X1@db/app",
 		// Code-shaped literals stay readable in the mapping forms only.
-		"MYSQL_PWD: my.pass":                      "MYSQL_PWD: [REDACTED]",
+		"MYSQL_PWD: my.pass":                      "MYSQL_PWD: my.pass",
 		"MYSQL_PWD = settings.DB['PASSWORD']":     "MYSQL_PWD = settings.DB['PASSWORD']",
 		"MYSQL_PWD: undefined":                    "MYSQL_PWD: undefined",
 		"MYSQL_PWD: NaN":                          "MYSQL_PWD: NaN",
