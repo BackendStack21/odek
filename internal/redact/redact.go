@@ -289,11 +289,11 @@ func dollarExpands(raw string) bool {
 // unless every '@' in it closes a userinfo whose password is only a reference.
 // The span runs to the next blank or quote, so it can join several URLs or
 // hosts with any glue (',', ';', '?replica=', '|', '&&'). The userinfo an '@'
-// closes starts after the last "://", ',' or ';' since the previous '@', or is
-// all of that text when it holds none of them; everything after its first ':'
-// is its password. An '@' with no "://", '/', '?', '#', ',' or ';' since the
-// previous one may still belong to the password before it, so the span is
-// not judged and counts as a secret.
+// closes starts after the last "://" since the previous '@', or, when there
+// is none, after the last ',' or ';', or else is all of that text; everything
+// after its first ':' is its password. An '@' with none of "://", '/', '?',
+// '#', ',' or ';' since the previous one may still belong to the password
+// before it, so the span is not judged and counts as a secret.
 func dbURLHoldsSecret(url string) bool {
 	i := strings.Index(url, "://")
 	if i < 0 {
