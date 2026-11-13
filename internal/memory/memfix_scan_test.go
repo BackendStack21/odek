@@ -1,6 +1,9 @@
 package memory
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestFactLooksUnsafeMoreDownloadAndRunForms(t *testing.T) {
 	for _, fact := range []string{
@@ -48,10 +51,7 @@ func TestFactLooksUnsafeFalsePositiveCorpus(t *testing.T) {
 }
 
 func TestFactLooksUnsafeLinearTime(t *testing.T) {
-	long := "curl "
-	for i := 0; i < 20000; i++ {
-		long += "- sudo "
-	}
+	long := "curl " + strings.Repeat("- sudo ", 2000)
 	if FactLooksUnsafe(long) {
 		t.Fatal("padding without a pipe into a shell must not match")
 	}

@@ -60,34 +60,46 @@ func TestRED_FactLooksUnsafeDownloadAndRunCorpora(t *testing.T) {
 	}
 }
 
-// The matchers are RE2 (linear); a pathological pipeline of stages must scale
-// with its length, not with a power of it.
+// The matchers are RE2 (linear); pathological pipelines, wrapper chains and
+// substitution runs must scale with their length, not with a power of it.
 func TestRED_FactLooksUnsafeScalesLinearly(t *testing.T) {
-	cost := func(n int) time.Duration {
-		inputs := []string{
-			"curl " + strings.Repeat("a | ", n) + "tee",
-			strings.Repeat("bash ", n) + "<<",
-			strings.Repeat("xargs -n 1 ", n),
-			"source " + strings.Repeat("<(", n),
+	// Each input is about size bytes of one repeated unit. The race detector
+	// slows the regexp engine by an order of magnitude, so it gets smaller
+	// inputs; both sizes stay well above the engine's small-input path.
+	inputs := func(size int) []string {
+		rep := func(unit string) string { return strings.Repeat(unit, size/len(unit)) }
+		return []string{
+			"curl " + rep("a | ") + "tee",
+			"curl x" + rep(" ||") + " bash",
+			"curl x " + rep("bash -c ") + "<<",
+			rep("; sudo bash -c ") + "`curl",
+			"eval " + rep("x ") + "`",
+			"source " + rep("<("),
 		}
+	}
+	size := 1600
+	if raceEnabled {
+		size = 400
+	}
+	small, large := inputs(size), inputs(8*size)
+	cost := func(in []string, runs int) time.Duration {
 		best := time.Duration(1 << 62)
-		for r := 0; r < 3; r++ {
+		for r := 0; r < runs; r++ {
 			start := time.Now()
-			for _, in := range inputs {
-				FactLooksUnsafe(in)
+			for _, s := range in {
+				FactLooksUnsafe(s)
 			}
 			if d := time.Since(start); d < best {
 				best = d
 			}
 		}
+		if best < time.Microsecond {
+			best = time.Microsecond
+		}
 		return best
 	}
-	small, large := cost(2000), cost(16000)
-	if small < time.Microsecond {
-		small = time.Microsecond
-	}
-	// 8x the input: linear is ~8x; allow generous slack, quadratic is ~64x.
-	if ratio := float64(large) / float64(small); ratio > 30 {
-		t.Fatalf("cost grew %.1fx for 8x input (%v -> %v)", ratio, small, large)
+	// 8x the input: linear is ~8x, quadratic ~64x; the slack absorbs noise.
+	if ratio := float64(cost(large, 2)) / float64(cost(small, 3)); ratio > 24 {
+		t.Fatalf("cost grew %.1fx for 8x input", ratio)
 	}
 }
