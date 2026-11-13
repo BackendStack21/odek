@@ -157,13 +157,29 @@ func (t *aliasTable) bindBashCmds(stage, inner []string) bool {
 				}
 			}
 			return t.bindTable(defs)
+		case "let", "getopts":
+			// An element assigned by arithmetic, or filled from the options
+			// getopts parses, holds a file the analysis does not follow.
+			for _, a := range inner[1:] {
+				if strings.Contains(a, bashCmdsVar) {
+					return false
+				}
+			}
+			return true
 		default:
 			// BASH_CMDS[NAME]=FILE and BASH_CMDS+=(...) are not read as
-			// assignment words, so they reach here as the command word.
-			if !strings.HasPrefix(inner[0], bashCmdsVar+"[") && !strings.HasPrefix(inner[0], bashCmdsVar+"+=") {
+			// assignment words, so they reach here as the command word; an
+			// array literal with a space after its parenthesis
+			// (`BASH_CMDS=( [ls]=/bin/rm )`) leaves `BASH_CMDS=(` among the
+			// assignment words and its elements as the command.
+			switch {
+			case strings.HasPrefix(inner[0], bashCmdsVar+"["), strings.HasPrefix(inner[0], bashCmdsVar+"+="):
+				words = inner
+			case bashCmdsLiteralOpens(stage[:len(stage)-len(inner)]):
+				words = stage
+			default:
 				return true
 			}
-			words = inner
 		}
 	}
 	defs, ok := bashCmdsDefinitions(words)
@@ -183,20 +199,27 @@ func bashCmdsSubscript(rest string) (string, bool) {
 	return rest[1:end], true
 }
 
+// bashCmdsLiteralOpens reports whether one of the assignment words opens an
+// array literal of BASH_CMDS that the word itself does not close.
+func bashCmdsLiteralOpens(assignments []string) bool {
+	for _, w := range assignments {
+		rest, named := strings.CutPrefix(w, bashCmdsVar)
+		if named && (strings.HasPrefix(rest, "=(") || strings.HasPrefix(rest, "+=(")) && !strings.HasSuffix(rest, ")") {
+			return true
+		}
+	}
+	return false
+}
+
 // bashCmdsDefinitions returns the command-table definitions the assignment
 // words among words make to BASH_CMDS, following an array literal across the
-// words the tokenizer split it into. ok is false when an element's name is
-// only known at run time or the literal never closes.
+// words the tokenizer split it into. A literal lists [NAME]=FILE elements or,
+// with no subscript at all, alternating names and files (bash 5.1+). ok is
+// false when an element's name is only known at run time, a literal mixes the
+// two forms or names a key without a file, or the literal never closes.
 func bashCmdsDefinitions(words []string) (defs []string, ok bool) {
 	ok = true
 	element := func(e string) {
-		e = strings.TrimSpace(e)
-		if e == "" {
-			return
-		}
-		if !strings.HasPrefix(e, "[") {
-			return // an element without a subscript is not a command name
-		}
 		end := strings.IndexByte(e, ']')
 		if end < 0 {
 			ok = false
@@ -213,12 +236,45 @@ func bashCmdsDefinitions(words []string) (defs []string, ok bool) {
 			defs = append(defs, key+"="+hashBody(value))
 		}
 	}
+	// literal collects the elements of the array literal being read.
+	var literal []string
+	closeLiteral := func() {
+		var plain []string
+		for _, e := range literal {
+			if strings.HasPrefix(e, "[") {
+				element(e)
+			} else {
+				plain = append(plain, e)
+			}
+		}
+		if len(plain) > 0 && (len(plain) != len(literal) || len(plain)%2 != 0) {
+			ok = false
+		} else {
+			for k := 0; k+1 < len(plain); k += 2 {
+				key := plain[k]
+				switch {
+				case computedWord(key):
+					ok = false
+				case validAliasName(key):
+					defs = append(defs, key+"="+hashBody(plain[k+1]))
+				}
+			}
+		}
+		literal = nil
+	}
+	add := func(body string) {
+		if body = strings.TrimSpace(body); body != "" {
+			literal = append(literal, body)
+		}
+	}
 	inLiteral := false
 	for _, w := range words {
 		if inLiteral {
 			body, closed := strings.CutSuffix(w, ")")
-			element(body)
-			inLiteral = !closed
+			add(body)
+			if inLiteral = !closed; closed {
+				closeLiteral()
+			}
 			continue
 		}
 		rest, named := strings.CutPrefix(w, bashCmdsVar)
@@ -232,8 +288,10 @@ func bashCmdsDefinitions(words []string) (defs []string, ok bool) {
 		case strings.HasPrefix(rest, "=(") || strings.HasPrefix(rest, "+=("):
 			body := rest[strings.IndexByte(rest, '(')+1:]
 			body, closed := strings.CutSuffix(body, ")")
-			element(body)
-			inLiteral = !closed
+			add(body)
+			if inLiteral = !closed; closed {
+				closeLiteral()
+			}
 		}
 	}
 	if inLiteral {

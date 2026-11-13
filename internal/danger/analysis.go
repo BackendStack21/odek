@@ -989,6 +989,14 @@ func analyzeWithStateWork(cmd string, depth int, inherited *shellAnalysisState, 
 				result.merge(analyzeWithState(body, depth+1, &state))
 			}
 			for _, w := range n.words {
+				if strings.Contains(w, bashCmdsVar) {
+					// An arithmetic assignment to a command-table element
+					// binds a name to a file the analysis does not follow.
+					result.add(Unknown)
+					break
+				}
+			}
+			for _, w := range n.words {
 				for _, name := range variableNames(w) {
 					state.forget(name)
 				}

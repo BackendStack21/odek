@@ -491,3 +491,66 @@ func TestRED_UnexportedOptionVariableIsNotJudged(t *testing.T) {
 		}
 	}
 }
+
+// bash reads `BASH_CMDS=( [ls]=/bin/rm )` exactly like the unspaced literal,
+// but the words after `BASH_CMDS=(` reached the binding as a command of their
+// own and the entry was dropped, so `ls -rf /home/user` kept the verdict of
+// ls; the key/value list form (`declare -A BASH_CMDS=(ls /bin/rm)`, bash 5.1+)
+// and an arithmetic assignment (`let 'BASH_CMDS[ls]=1'`) bound nothing at all.
+//
+// Correct behaviour: the spaced literal and the key/value list bind like
+// `hash -p`, and an assignment to the table the analysis cannot follow fails
+// the command closed.
+func TestRED_BashCmdsSpacedAndListLiteralsBind(t *testing.T) {
+	t.Setenv("HOME", "/home/user")
+	t.Chdir(t.TempDir())
+	want := Classify(`hash -p /bin/rm ls; ls -rf /home/user`)
+	if Rank(want) < Rank(Destructive) {
+		t.Fatalf("premise: hash -p form classified %s", want)
+	}
+	for _, cmd := range []string{
+		`BASH_CMDS=([ls]=/bin/rm); ls -rf /home/user`,
+		`BASH_CMDS=( [ls]=/bin/rm ); ls -rf /home/user`,
+		`BASH_CMDS=( [ls]=/bin/rm); ls -rf /home/user`,
+		`BASH_CMDS=([ls]=/bin/rm ); ls -rf /home/user`,
+		`BASH_CMDS=( [x]=/bin/true [ls]=/bin/rm ); ls -rf /home/user`,
+		`BASH_CMDS+=( [ls]=/bin/rm ); ls -rf /home/user`,
+		`declare -A BASH_CMDS=( [ls]=/bin/rm ); ls -rf /home/user`,
+		`declare -A BASH_CMDS=(ls /bin/rm); ls -rf /home/user`,
+		`declare -A BASH_CMDS=( ls /bin/rm ); ls -rf /home/user`,
+		`BASH_CMDS=( x /bin/true ls /bin/rm ); ls -rf /home/user`,
+		`BASH_CMDS+=(ls /bin/rm); ls -rf /home/user`,
+	} {
+		if got := Classify(cmd); Rank(got) < Rank(want) {
+			t.Errorf("Classify(%q) = %s, want at least %s (as hash -p)", cmd, got, want)
+		}
+	}
+	for _, cmd := range []string{
+		`let 'BASH_CMDS[ls]=1'; ls`,
+		`let BASH_CMDS[ls]=1; ls`,
+		`(( BASH_CMDS[ls] = 1 )); ls`,
+		`declare -A BASH_CMDS=( [ls]=/bin/rm x ); ls`,
+		`BASH_CMDS=( $k /bin/rm ); ls`,
+		`BASH_CMDS=( ls ); ls`,
+		`BASH_CMDS=( [ls]=/bin/rm; ls`,
+		// A literal spread over lines is not followed element by element.
+		"BASH_CMDS=(\n[ls]=/bin/rm\n); ls -rf /home/user",
+	} {
+		if got := Classify(cmd); Rank(got) < Rank(Unknown) {
+			t.Errorf("Classify(%q) = %s, want at least unknown: the table entry cannot be followed", cmd, got)
+		}
+	}
+	// A table that binds other names, and an array that only looks alike,
+	// leave a command its own verdict.
+	for cmd, plain := range map[string]string{
+		`BASH_CMDS=( [x]=/bin/true ); ls`: `arr=( [x]=/bin/true ); ls`,
+		`BASH_CMDS=([x]=/bin/true); ls`:   `ls`,
+		`BASH_CMDS=(x /bin/true); ls`:     `arr=(x /bin/true); ls`,
+		`MY_BASH_CMDS=( ls /bin/rm ); ls`: `MY=( ls /bin/rm ); ls`,
+		`arr=( [ls]=/bin/rm ); ls`:        `arr=( [x]=/bin/rm ); ls`,
+	} {
+		if got, want := Classify(cmd), Classify(plain); got != want {
+			t.Errorf("Classify(%q) = %s, want %s (the verdict of %q)", cmd, got, want, plain)
+		}
+	}
+}
