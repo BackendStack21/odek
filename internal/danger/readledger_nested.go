@@ -430,6 +430,9 @@ type shellScan struct {
 	failed  bool
 	// pipeNext marks the next command as reading from a pipe.
 	pipeNext bool
+	// honorSingle reads a single quote inside a double-quoted ${...} as a
+	// quote: the second reading paramExpansion compares against.
+	honorSingle bool
 }
 
 type shellHeredoc struct {
@@ -590,12 +593,82 @@ func (s *shellScan) expansion(inDouble bool) bool {
 		s.scan()
 		s.depth--
 	case text[at+1] == '{':
-		s.skipBalanced('{', '}', inDouble) // ${X:-$(cmd)} runs cmd
-		s.scanRegion(at+2, s.pos, inDouble)
+		s.paramExpansion(inDouble) // ${X:-$(cmd)} runs cmd
 	default:
 		return false
 	}
 	return true
+}
+
+// paramExpansion consumes the ${...} whose `$` is at s.pos in one pass,
+// following the commands of the expansions nested in it ($(...), `...`,
+// ${...}, $((...)), each read as one construct, so a `}` inside a nested
+// substitution does not end it). As in bash, the construct ends at the first
+// `}` outside quotes and nested expansions; a bare `{` opens nothing.
+//
+// Inside a double-quoted construct (inDouble) bash reads a single quote as an
+// ordinary character, while other shells (and bash for some operators) read
+// it as a quote. When such a single quote occurs, the construct is read again
+// honouring it, over the same text only, and the parse fails closed if the two
+// readings end in different places.
+func (s *shellScan) paramExpansion(inDouble bool) {
+	start := s.pos
+	if s.depth >= maxShellSubstitutionDepth {
+		s.failed = true
+		s.pos = len(s.text)
+		return
+	}
+	s.depth++
+	defer func() { s.depth-- }()
+	s.pos += 2
+	double := false // inside "..." within the construct
+	ambiguous := false
+	for s.pos < len(s.text) {
+		c := s.text[s.pos]
+		switch {
+		case c == '\\':
+			s.pos += 2
+		case c == '}' && !double:
+			s.pos++
+			if ambiguous && !s.honorSingle {
+				alt := &shellScan{text: s.text[:s.pos], pos: start, depth: s.depth - 1, honorSingle: true}
+				alt.paramExpansion(true)
+				if alt.failed || alt.pos != s.pos {
+					s.failed = true
+				}
+			}
+			return
+		case s.expansion(inDouble || double):
+		case c == '"':
+			double = !double
+			s.pos++
+		case c == '\'' && double:
+			s.pos++ // an ordinary character inside "..."
+		case c == '\'' && inDouble && !s.honorSingle:
+			ambiguous = true
+			s.pos++
+		case c == '\'':
+			if s.pos > start+2 && s.text[s.pos-1] == '$' {
+				end, ok := skipAnsiC(s.text, s.pos)
+				s.pos = end
+				if !ok {
+					s.failed = true
+				}
+				continue
+			}
+			end := strings.IndexByte(s.text[s.pos+1:], '\'')
+			if end < 0 {
+				s.pos = len(s.text)
+				s.failed = true
+				return
+			}
+			s.pos += end + 2
+		default:
+			s.pos++
+		}
+	}
+	s.pos = len(s.text)
+	s.failed = true // the construct never ends
 }
 
 // arithmeticExpansion reports whether the `$((` at text[at] is arithmetic:

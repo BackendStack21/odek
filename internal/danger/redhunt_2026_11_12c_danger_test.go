@@ -2,6 +2,7 @@ package danger
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -336,5 +337,52 @@ func TestRED_OptionEnvSpliceBounded(t *testing.T) {
 	}
 	if !raceEnabled && !testing.Short() && elapsed > boundedAnalyzeSlow {
 		t.Errorf("Classify of a %d-byte TAR_OPTIONS command took %v (bound %v)", len(big), elapsed, boundedAnalyzeSlow)
+	}
+}
+
+// The nested-script scanner found the end of a ${...} by counting braces,
+// unaware of the expansions nested in it: in
+// `${x:-$(echo }; ./code_policies)}` the `}` inside the command substitution
+// ended the construct, the rest of the substitution was cut off and the
+// launch after it was never followed (bash runs it: the here-document line
+// prints `}` and runs the command). It also counted a bare `{` inside ${...},
+// which bash does not, so `"${FEATURE_GATES:-{\}}"` (from a real CI script)
+// never closed and the parse failed closed.
+//
+// Correct behaviour: a ${...} is read in one pass that consumes each nested
+// expansion as one construct and ends at the first `}` outside them; a bare
+// `{` opens nothing.
+func TestRED_NestedScannerBraceExpansionFollowsNestedSubstitution(t *testing.T) {
+	t.Setenv("HOME", "/home/user")
+	for _, script := range []string{
+		"#!/bin/bash\ncat <<EOF\n${x:-$(echo }; ./code_policies)}\nEOF\n",
+		"#!/bin/bash\ncat <<EOF\n${x:-$(echo } | ./code_policies)}\nEOF\n",
+		"#!/bin/bash\necho \"${x:-$(echo }; ./code_policies)}\"\n",
+		"#!/bin/bash\necho ${x:-$(echo }; ./code_policies)}\n",
+		"#!/bin/bash\necho ${x:-`echo }; ./code_policies`}\n",
+		"#!/bin/bash\necho ${x:-${y:-$(echo }; ./code_policies)}}\n",
+	} {
+		if _, complete := parseShellCommands(script); !complete {
+			t.Errorf("script %q: parse failed closed; it is well formed", script)
+		}
+		d := nestedFixture(t, script)
+		RecordRead(filepath.Join(d, "security.sh"))
+		if cls, targets := ClassifyScriptGate("bash security.sh"); cls != UnreadExec || !strings.Contains(targetNames(targets), "code_policies") {
+			t.Errorf("script %q: class=%s targets=%v; want unread_exec naming code_policies", script, cls, targets)
+		}
+	}
+	for _, script := range []string{
+		"#!/bin/bash\nfeature_gates=\"${FEATURE_GATES:-{\\}}\"\necho ok\n",
+		"#!/bin/bash\necho \"${x:-{a}b}\"\necho ok\n",
+		"#!/bin/bash\necho ${x:-{}\necho ok\n",
+	} {
+		cmds, complete := parseShellCommands(script)
+		if !complete {
+			t.Errorf("parse of %q failed closed; the script is well formed", script)
+			continue
+		}
+		if last := cmds[len(cmds)-1].words; len(last) != 2 || last[0] != "echo" || last[1] != "ok" {
+			t.Errorf("parse of %q: last command %v, want echo ok", script, last)
+		}
 	}
 }
