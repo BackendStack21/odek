@@ -359,10 +359,13 @@ func (a *Associations) PruneIfDense() error {
 // prune and at most maxLinkFactor*maxLinksPerAtom*N before the next one. An
 // atom kept by many other atoms may hold more than maxLinksPerAtom links. A
 // freshly pruned map is below the trigger, so the next persist does not prune
-// again. The order is total (time distance, then id) so the outcome is
-// deterministic, and pruning an already pruned map changes nothing: a kept
-// link stays within its selecting end's nearest set when the other candidates
-// only shrink.
+// again. The order is total (time distance, then distance in id order, then
+// id) so the outcome is deterministic, and pruning an already pruned map
+// changes nothing: a kept link stays within its selecting end's nearest set
+// when the other candidates only shrink. Ties (equal or unknown creation
+// times) go to the neighbours nearest in id order rather than to the lowest
+// ids, so a cluster without usable times does not turn its lowest ids into
+// hubs that every other atom selects.
 // Caller must hold a.mu.
 func (a *Associations) pruneLocked(links map[string]map[string]struct{}) map[string]map[string]struct{} {
 	if !needsPrune(links) {
@@ -387,6 +390,22 @@ func (a *Associations) pruneLocked(links map[string]map[string]struct{}) map[str
 		}
 		return d, true
 	}
+	order := make([]string, 0, len(links))
+	for id := range links {
+		order = append(order, id)
+	}
+	sort.Strings(order)
+	rank := make(map[string]int, len(order))
+	for i, id := range order {
+		rank[id] = i
+	}
+	rankDistance := func(x, y string) int {
+		d := rank[x] - rank[y]
+		if d < 0 {
+			d = -d
+		}
+		return d
+	}
 	pruned := make(map[string]map[string]struct{}, len(links))
 	keep := func(x, y string) {
 		for _, p := range [2][2]string{{x, y}, {y, x}} {
@@ -409,6 +428,9 @@ func (a *Associations) pruneLocked(links map[string]map[string]struct{}) map[str
 			}
 			if di != dj {
 				return di < dj
+			}
+			if ri, rj := rankDistance(id, ids[i]), rankDistance(id, ids[j]); ri != rj {
+				return ri < rj
 			}
 			return ids[i] < ids[j]
 		})

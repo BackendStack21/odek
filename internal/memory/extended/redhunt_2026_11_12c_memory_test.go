@@ -150,6 +150,48 @@ func TestRED_TemporalLinksBoundedPerSession(t *testing.T) {
 	}
 }
 
+// When creation times cannot rank a dense cluster's links (unknown, or all
+// equal), the tie-break must not send every atom's selection to the lowest
+// ids: that turns them into hubs that keep the whole cluster linked.
+func TestRED_PruneTiesDoNotBuildHubs(t *testing.T) {
+	id := func(i int) string { return fmt.Sprintf("%032x", i+1) }
+	same := time.Now().Add(-time.Hour)
+	for _, recency := range []func() map[string]time.Time{
+		nil,
+		func() map[string]time.Time {
+			m := map[string]time.Time{}
+			for i := 0; i < 100; i++ {
+				m[id(i)] = same
+			}
+			return m
+		},
+	} {
+		a := NewAssociationsWithDir(t.TempDir())
+		if recency != nil {
+			a.SetRecency(recency)
+		}
+		for i := 0; i < 100; i++ {
+			for j := i + 1; j < 100; j++ {
+				a.Link(id(i), id(j))
+			}
+		}
+		if err := a.Persist(); err != nil {
+			t.Fatal(err)
+		}
+		// Selections near the ends of the order are one-sided, so an atom
+		// may keep a few links beyond its own selection, never a hub's worth.
+		for i := 0; i < 100; i++ {
+			got := len(a.Related(id(i)))
+			if got == 0 || got > maxLinkFactor*maxLinksPerAtom {
+				t.Fatalf("recency=%v: cluster atom %d keeps %d links after the prune", recency != nil, i, got)
+			}
+		}
+		if got := len(a.Related(id(0))); got > maxLinksPerAtom {
+			t.Fatalf("recency=%v: the lowest id keeps %d links", recency != nil, got)
+		}
+	}
+}
+
 // The prune trigger must see a dense cluster even when a large sparse part
 // of the store dilutes the store-wide link average: legacy stores are pruned
 // the next time associations are persisted.
