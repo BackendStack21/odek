@@ -19,6 +19,21 @@ func redactSecretsReference(text string) string {
 	if text == "" {
 		return text
 	}
+	out, shell := redactReferencePass(text)
+	again := shell || (out != text && shellPasswordWordIn(out, true))
+	for round := 0; again && round < redactRepeats; round++ {
+		next, _ := redactReferencePass(out)
+		if next == out {
+			break
+		}
+		out = next
+	}
+	return out
+}
+
+// redactReferencePass is one unconditional pass; shell reports whether a
+// shell-password rule had a match.
+func redactReferencePass(text string) (string, bool) {
 	result := text
 	if r := currentReplacer(); r != nil {
 		result = r.Replace(result)
@@ -30,7 +45,8 @@ func redactSecretsReference(text string) string {
 	for _, p := range patternsTail {
 		result = p.ReplaceAllString(result, "[REDACTED]")
 	}
-	return redactBasicAuth(redactGuarded(result))
+	shell := len(shellPasswordMatches(newScan(result, true))) > 0
+	return redactBasicAuth(redactGuarded(result)), shell
 }
 
 func packageStringLiterals(t *testing.T) []string {

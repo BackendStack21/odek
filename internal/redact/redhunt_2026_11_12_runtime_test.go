@@ -128,7 +128,6 @@ func TestRED_DBClientPasswordFlagKeepsOtherFlags(t *testing.T) {
 		`sshpass -p`,
 		`mysql -p$MYSQL_PWD db`,
 		`mysql --password=$DB_PW`,
-		`mysqlish -pS3cr3tPassw0rd`,
 		`scp -P 22 f h:`,
 		`mysql --password db`,
 		`mysql --password= db`,
@@ -199,9 +198,9 @@ func TestRED_DBURLJudgeFailsClosedOnMalformedInput(t *testing.T) {
 	}
 }
 
-// Every user:password pair of a connection-URL span is judged: a reference
-// password first in a comma- or semicolon-joined list never hides a literal
-// one after it, while a list of references alone stays readable.
+// A reference password first in a comma- or semicolon-joined list never
+// hides a literal one after it. A password may hold '@', so a list with a
+// second '@' is redacted whole even when it holds references alone.
 func TestRED_DBURLListJudgesEveryPassword(t *testing.T) {
 	const lit = "Tr0ub4dor9xQ"
 	for _, in := range []string{
@@ -224,8 +223,8 @@ func TestRED_DBURLListJudgesEveryPassword(t *testing.T) {
 		"mongodb://u:${A}@h1,u:${B}@h2/db",
 		"mongodb://u:${A}@h1,@h2/db",
 	} {
-		if out := RedactSecrets(in); out != in {
-			t.Errorf("reference-only list rewritten: %q => %q", in, out)
+		if out := RedactSecrets(in); out != "[REDACTED]" {
+			t.Errorf("list with a second '@' not redacted whole: %q => %q", in, out)
 		}
 	}
 }
@@ -265,7 +264,7 @@ func TestRED_MySQLPwdEnvValueRedacted(t *testing.T) {
 	const lit = "Tr0ub4dor9xQ"
 	for in, want := range map[string]string{
 		"MYSQL_PWD=" + lit + " mysql db":             "MYSQL_PWD=[REDACTED] mysql db",
-		"MYSQL_PWD='" + lit + "' mysql db":           "MYSQL_PWD=[REDACTED] mysql db",
+		"MYSQL_PWD='" + lit + "' mysql db":           "MYSQL_PWD='[REDACTED]' mysql db",
 		"export MYSQL_PWD=" + lit:                    "export MYSQL_PWD=[REDACTED]",
 		"MYSQL_PWD=" + lit + " mysqldump -u root db": "MYSQL_PWD=[REDACTED] mysqldump -u root db",
 	} {

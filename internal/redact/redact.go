@@ -220,33 +220,24 @@ func plausibleFlagValue(v string) bool {
 	return plausibleValue(v) && !strings.HasPrefix(t, "$") && !strings.HasPrefix(t, "%")
 }
 
-// valuePatterns are context patterns whose redaction span is the first
-// capture group that took part in the match, so the surrounding command or
-// URL stays readable. The group must also pass ok.
+// valuePatterns are context patterns whose redaction span is the capture
+// group only (group 1), so the surrounding command or URL stays readable.
+// The group must also pass ok.
 var valuePatterns = []guardedPattern{
 	// Database connection URLs with embedded credentials. We require a
 	// scheme that genuinely carries DB creds (so this doesn't catch HTTP
 	// basic auth URLs that often appear legitimately in code). The
 	// password segment must be at least 6 chars to avoid matching common
-	// placeholders like `:x@`. The whole URL is replaced, unless the
-	// password is only a variable or template reference (${DB_PASSWORD},
-	// $DB_PASSWORD, {password}, <password>, %(password)s), which holds no
-	// secret and leaves compose files and code readable. A short reference
-	// is matched too so a joined list is judged pair by pair.
+	// placeholders like `:x@`, unless it holds a '/' or an '@'. The match
+	// runs to the next blank or quote and the whole of it is replaced,
+	// unless the password is only a variable or template reference
+	// (${DB_PASSWORD}, $DB_PASSWORD, {password}, <password>, %(password)s),
+	// which holds no secret and leaves compose files and code readable.
 	// Gate: every match holds "://" and "@", and one scheme name in some
 	// letter case (postgresql holds postgres, mongodb+srv mongodb, rediss
 	// redis, amqps amqp).
-	{gated(regexp.MustCompile(`(?i)\b((?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|rediss?|amqps?|mssql|clickhouse)(?:\+[a-z0-9_]+)?://[^:\s/]*:(?:[^@\s/]{6,}|[$%{<][^@\s/]*)@[^\s'\x60"]+)`),
+	{gated(regexp.MustCompile(`(?i)\b((?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|rediss?|amqps?|mssql|clickhouse)(?:\+[a-z0-9_]+)?://[^:\s/]*:(?:[^@\s/]{6,}|[$%{<][^@\s/]*|[^@\s'"\x60/]*[/@][^\s'"\x60]*)@[^\s'\x60"]+)`),
 		literals(exact("://"), exact("@"), folded("postgres", "mysql", "mongodb", "redis", "amqp", "mssql", "clickhouse"))), dbURLHoldsSecret},
-	// MYSQL_PWD=VALUE: the MySQL/MariaDB clients read their password from
-	// this environment variable, in any value length. The value is quoted or
-	// bare; a bare value ends at a blank, a quote or a JSON \n \r \t \"
-	// escape. In the escaped quotes of JSON-encoded text only the content is
-	// matched (group 1), so the quotes stay and the JSON stays well-formed.
-	// Variable references, command substitutions, placeholders and an empty
-	// value stay readable.
-	// Gate: every match holds mysql_pwd in some letter case.
-	{gated(regexp.MustCompile(`(?i)\bMYSQL_PWD=(?:\\"((?:[^"\\\n]|\\[^"\n])*)\\"|("[^"\n]*"|'[^'\n]*'|(?:[^\s"'\\]|\\[^\snrt"])+))`), literals(folded("mysql_pwd"))), plausibleEnvPassword},
 	// Chat incoming-webhook URLs: whoever holds the URL can post as the
 	// integration, so the secret path segment is a bearer credential.
 	// Gate: every match holds "hooks.slack.com/".
@@ -256,7 +247,7 @@ var valuePatterns = []guardedPattern{
 }
 
 // dbURLReferenceRe matches a password that is wholly a template reference
-// ({name}, {{ name }}, <name>, %(name)s, %NAME%); shellVariableRef judges the
+// ({name}, {{ name }}, <name>, %(name)s, %NAME%); shellVariableRe matches the
 // '$' forms. Anything mixing a reference with literal characters does not
 // match and is redacted.
 var dbURLReferenceRe = regexp.MustCompile(`^(?:\{\{?\s*[A-Za-z_][A-Za-z0-9_.-]*\s*\}\}?|<[A-Za-z_][A-Za-z0-9_ -]*>|%\([A-Za-z_][A-Za-z0-9_]*\)s|%[A-Za-z_][A-Za-z0-9_]*%)$`)
@@ -267,68 +258,24 @@ var dbURLReferenceRe = regexp.MustCompile(`^(?:\{\{?\s*[A-Za-z_][A-Za-z0-9_.-]*\
 // not in this shape.
 var shellVariableRe = regexp.MustCompile(`^\$(?:\{[A-Za-z_][A-Za-z0-9_]*\}|[A-Z_][A-Z0-9_]*)$`)
 
-// shellVariableRef reports whether v is wholly a shell variable reference.
-func shellVariableRef(v string) bool {
-	return shellVariableRe.MatchString(v)
-}
-
-// dollarExpands reports whether the shell expands a '$' that starts the value
-// written as raw: the '$' stands unquoted or in double quotes (also
-// JSON-escaped ones), not single-quoted, backslash-escaped or opening $'...'
-// or $"..." quoting.
-func dollarExpands(raw string) bool {
-	if strings.HasPrefix(raw, `\"`) {
-		raw = raw[2:]
-	} else if strings.HasPrefix(raw, `"`) {
-		raw = raw[1:]
-	}
-	return len(raw) >= 2 && raw[0] == '$' && raw[1] != '\'' && raw[1] != '"'
-}
-
-// dbURLHoldsSecret judges a matched connection URL span: it holds a secret
-// unless every '@' in it closes a userinfo whose password is only a reference.
-// The span runs to the next blank or quote, so it can join several URLs or
-// hosts with any glue (',', ';', '?replica=', '|', '&&'). The userinfo an '@'
-// closes starts after the last "://" since the previous '@', or, when there
-// is none, after the last ',' or ';', or else is all of that text; everything
-// after its first ':' is its password. An '@' with none of "://", '/', '?',
-// '#', ',' or ';' since the previous one may still belong to the password
-// before it, so the span is not judged and counts as a secret.
+// dbURLHoldsSecret judges a matched connection URL span, which runs to the
+// next blank or quote: it holds no secret only when it holds exactly one '@'
+// and the password before it (everything after the first ':' of the
+// userinfo) is wholly a reference. A password may itself hold '@', ':', '/',
+// ',' or ';', so a second '@' can always belong to the password before it,
+// and a span with one is a secret whatever separates its parts.
 func dbURLHoldsSecret(url string) bool {
 	i := strings.Index(url, "://")
 	if i < 0 {
 		return true
 	}
 	rest := url[i+3:]
-	first := true
-	for {
-		at := strings.IndexByte(rest, '@')
-		if at < 0 {
-			return first
-		}
-		part := rest[:at]
-		rest = rest[at+1:]
-		if !first {
-			if k := strings.LastIndex(part, "://"); k >= 0 {
-				part = part[k+3:]
-			} else if k := strings.LastIndexAny(part, ",;"); k >= 0 {
-				part = part[k+1:]
-			} else if !strings.ContainsAny(part, "/?#") {
-				return true
-			}
-		}
-		c := strings.IndexByte(part, ':')
-		if c < 0 {
-			if first {
-				return true // the pattern always matches a first password
-			}
-			continue // a user name without a password
-		}
-		first = false
-		if pwHoldsSecret(part[c+1:]) {
-			return true
-		}
+	at := strings.IndexByte(rest, '@')
+	if at < 0 || strings.IndexByte(rest[at+1:], '@') >= 0 {
+		return true
 	}
+	c := strings.IndexByte(rest[:at], ':')
+	return c < 0 || pwHoldsSecret(rest[c+1:at])
 }
 
 // pwHoldsSecret reports whether one URL password is anything but a pure
@@ -337,7 +284,7 @@ func dbURLHoldsSecret(url string) bool {
 // passwords.
 func pwHoldsSecret(pw string) bool {
 	if strings.HasPrefix(pw, "$") {
-		return !shellVariableRef(pw)
+		return !shellVariableRe.MatchString(pw)
 	}
 	return !dbURLReferenceRe.MatchString(pw)
 }
@@ -418,8 +365,7 @@ type cmdWord struct{ s, e int }
 // commandWords tokenises the command that continues at from: words are
 // split on blanks and backslash-newline continuations; quotes group a word
 // (so a quoted & ; | or newline does not end the command); an unquoted
-// newline, |, ;, &, ) or backquote ends it (the last two close a command
-// substitution). A quote with no closing quote is an ordinary
+// newline, |, ; or & ends it. A quote with no closing quote is an ordinary
 // character. In JSON-encoded text (json) an unquoted \n, \r or \t escape
 // sequence also ends the word (and \n, \r end the command), and a double
 // quote with no closing quote ends the command: it closes the JSON string the
@@ -461,7 +407,7 @@ func commandWords(text string, from int, json bool) ([]cmdWord, int) {
 			continue
 		case json && c == '\\' && i+1 < limit && (text[i+1] == 'n' || text[i+1] == 'r'):
 			return words, i
-		case c == '\n' || c == '\r' || c == '|' || c == ';' || c == '&' || c == ')' || c == '`':
+		case c == '\n' || c == '\r' || c == '|' || c == ';' || c == '&':
 			return words, i
 		}
 		s := i
@@ -469,7 +415,7 @@ func commandWords(text string, from int, json bool) ([]cmdWord, int) {
 	word:
 		for i < limit {
 			switch c := text[i]; c {
-			case ' ', '\t', '\n', '\r', '|', ';', '&', ')', '`':
+			case ' ', '\t', '\n', '\r', '|', ';', '&':
 				break word
 			case '\\':
 				if i+1 < limit {
@@ -704,27 +650,19 @@ func (t *jsonStringTracker) at(text string, off int) bool {
 var commandTools = []struct {
 	name string
 	kind int
-}{{"curl", 0}, {"wget", 1}, {"http", 2}, {"https", 2}, {"xh", 2}, {"sshpass", 4},
-	{"mysql", 3}, {"mariadb", 3}, {"mysqldump", 3}, {"mysqladmin", 3}, {"mysqlimport", 3},
-	{"mysqlshow", 3}, {"mysqlcheck", 3}, {"mysqlpump", 3}, {"mysqlslap", 3}, {"mysqlbinlog", 3},
-	{"mariadb-dump", 3}, {"mariadb-admin", 3}, {"mariadb-import", 3}, {"mariadb-show", 3},
-	{"mariadb-check", 3}, {"mariadb-slap", 3}, {"mariadb-binlog", 3}}
+}{{"curl", 0}, {"wget", 1}, {"http", 2}, {"https", 2}, {"xh", 2}}
 
 // commandCredentialMatches returns the spans of passwords given on the
 // command line of curl (-u, -U, --user, --proxy-user USER:PASSWORD, also
 // attached and clustered), wget (--password and variants) and HTTPie/xh
-// (--auth, -a USER:PASSWORD), the MySQL/MariaDB clients (-pPASSWORD and
-// --password=PASSWORD attached; a bare -p prompts and the next word is a
-// database) and sshpass (-p PASSWORD, -pPASSWORD). Scoping to these commands
-// keeps -u / -U / -a / -p as used by docker, sudo, rsync, pip, ssh and
-// others readable. Command words match in any case, also right after a JSON
-// \n, \r or \t escape.
+// (--auth, -a USER:PASSWORD). Scoping to these commands keeps -u / -U / -a
+// as used by docker, sudo, rsync, pip and others readable. Command words
+// match in any case, also right after a JSON \n, \r or \t escape.
 func commandCredentialMatches(s *textScan) [][2]int {
 	text := s.text
 	var out [][2]int
 	for _, tool := range commandTools {
 		var inJSON jsonStringTracker
-		containers := containerScan{word: -1}
 		for pos := 0; pos < len(text); {
 			j := s.indexFoldFrom(tool.name, pos)
 			if j < 0 {
@@ -738,19 +676,9 @@ func commandCredentialMatches(s *textScan) [][2]int {
 			if after < len(text) && !strings.ContainsRune(" \t\n\r\\", rune(text[after])) {
 				continue
 			}
-			if tool.kind == 3 && !dbClientNameAt(text, j) {
-				continue
-			}
 			json := inJSON.at(text, j)
 			words, end := commandWords(text, after, json)
-			switch tool.kind {
-			case 3:
-				out = append(out, dbClientSpans(text, j, json, words, &containers)...)
-			case 4:
-				out = append(out, sshpassSpans(text, json, words)...)
-			default:
-				out = append(out, toolCredentialSpans(text, tool.kind, json, words)...)
-			}
+			out = append(out, toolCredentialSpans(text, tool.kind, json, words)...)
 			if end > pos {
 				pos = end
 			}
@@ -768,259 +696,6 @@ func isCommandWordByte(c byte) bool {
 // word at i from what precedes it in the decoded text.
 func jsonBlankEscapeBefore(text string, i int) bool {
 	return i >= 2 && strings.IndexByte("nrt", text[i-1]) >= 0 && oddBackslashesBefore(text, 0, i-1)
-}
-
-// dbClientWindow bounds how far back the MySQL/MariaDB client name rule looks
-// for the start of the name's word and the word before it.
-const dbClientWindow = 256
-
-// shellWordStart reports whether a shell word cannot extend backwards past
-// text[i-1]: i is the start of the text, follows a blank, a command separator
-// or parenthesis, a backquote, or a JSON \n, \r or \t escape.
-func shellWordStart(text string, i int) bool {
-	if i == 0 {
-		return true
-	}
-	switch text[i-1] {
-	case ' ', '\t', '\n', '\r', ';', '|', '&', '(', ')', '`':
-		return true
-	}
-	return jsonBlankEscapeBefore(text, i)
-}
-
-// dbClientExcludedAfter are the words after which a MySQL/MariaDB client name
-// names something else: a container or host name (--name, --hostname, ssh's
-// host) or a package or release (install, upgrade, ...).
-var dbClientExcludedAfter = []string{"--name", "--hostname", "ssh", "install", "reinstall", "uninstall", "upgrade", "pull"}
-
-// dbClientNameAt reports whether the MySQL/MariaDB client name found as a
-// whole word at text[j:] (or as a path's last component) counts as the client.
-// It counts wherever it stands, so a client run through docker exec, kubectl
-// exec, ssh or any wrapper is judged, except where it plainly names something
-// else: right after '@' (user@mysql, a host), as the value of an option
-// (--name=mysql), or right after a word of dbClientExcludedAfter. A word that
-// does not fit the bounded look-back counts as the client.
-func dbClientNameAt(text string, j int) bool {
-	s := j
-	for !shellWordStart(text, s) {
-		if j-s >= dbClientWindow {
-			return true
-		}
-		s--
-	}
-	p := j
-	for p > s && (text[p-1] == '"' || text[p-1] == '\'') {
-		p--
-	}
-	if p > s {
-		switch text[p-1] {
-		case '@':
-			return false
-		case '=':
-			// --name=mysql is an option's value; MYSQL=mysql (an assignment, or
-			// a make variable holding a command line) still counts.
-			return strings.TrimLeft(text[s:p], `"'\`)[0] != '-'
-		}
-	}
-	// The word before the name's word, when only blanks separate them.
-	e := s
-	for e > 0 && (text[e-1] == ' ' || text[e-1] == '\t') {
-		if s-e >= dbClientWindow {
-			return true
-		}
-		e--
-	}
-	if e == s || e == 0 {
-		return true
-	}
-	b := e
-	for !shellWordStart(text, b) {
-		if e-b >= 16 {
-			return true
-		}
-		b--
-	}
-	prev := strings.Trim(text[b:e], `"'\`)
-	if k := strings.LastIndexByte(prev, '/'); k >= 0 {
-		prev = prev[k+1:]
-	}
-	for _, w := range dbClientExcludedAfter {
-		if strings.EqualFold(prev, w) {
-			return false
-		}
-	}
-	return true
-}
-
-// portMappingRe matches a container port mapping as docker and podman take it
-// with -p: [IP:][HOSTPORT]:CONTAINERPORT, ports or port ranges, an optional
-// protocol. The colon is required, so a number alone is not a mapping.
-var portMappingRe = regexp.MustCompile(`^(?:(?:[0-9]{1,3}\.){3}[0-9]{1,3}:|\[[0-9A-Fa-f:.]+\]:)?(?:[0-9]{1,5}(?:-[0-9]{1,5})?)?:[0-9]{1,5}(?:-[0-9]{1,5})?(?:/(?:tcp|udp|sctp))?$`)
-
-// containerScan answers, for increasing offsets j, whether the simple command
-// holding text[j:] runs or creates a container: between the start of the
-// command (after the last newline, JSON \n or \r escape, command separator,
-// parenthesis or backquote) and j stand a docker or podman word and, later, a
-// run or create word. Words are split at blanks; quotes are not tracked, and
-// a missed start only shortens the command, which keeps a port-shaped value
-// redacted. It scans forward and keeps its state between queries, so a
-// sequence of queries reads the text once.
-type containerScan struct {
-	pos    int  // text[:pos] has been scanned
-	word   int  // start of the word in progress, or -1
-	oddBS  bool // text[:pos] ends in an odd run of backslashes
-	engine bool // a docker or podman word stands in the command so far
-	run    bool // a run or create word follows it
-}
-
-// note records one complete word of the current command.
-func (c *containerScan) note(w string) {
-	w = strings.TrimRight(w, `"'\`)
-	if k := strings.LastIndexAny(w, `/"'\`); k >= 0 {
-		w = w[k+1:]
-	}
-	switch {
-	case strings.EqualFold(w, "docker") || strings.EqualFold(w, "podman"):
-		c.engine = true
-	case c.engine && (w == "run" || w == "create"):
-		c.run = true
-	}
-}
-
-// runBefore reports whether the command holding text[j:] runs or creates a
-// container. j must not decrease between calls on the same text.
-func (c *containerScan) runBefore(text string, j int) bool {
-	for ; c.pos < j; c.pos++ {
-		ch := text[c.pos]
-		term := strings.IndexByte("\n\r;|&()`", ch) >= 0 || (c.oddBS && (ch == 'n' || ch == 'r'))
-		c.oddBS = ch == '\\' && !c.oddBS
-		switch {
-		case term:
-			c.word, c.engine, c.run = -1, false, false
-		case ch == ' ' || ch == '\t' || ch == '\v' || ch == '\f':
-			if c.word >= 0 {
-				c.note(text[c.word:c.pos])
-				c.word = -1
-			}
-		case c.word < 0:
-			c.word = c.pos
-		}
-	}
-	if c.run || c.word < 0 {
-		return c.run
-	}
-	// The word in progress ends at j for this query only.
-	partial := *c
-	partial.note(text[c.word:j])
-	return partial.run
-}
-
-// dbClientSpans returns the spans of the passwords a MySQL/MariaDB client
-// whose name is at text[j:] takes in words (the rest of its command; the
-// client accepts options after positional arguments): -pPASSWORD and
-// --password=PASSWORD (or a prefix of it from --pas), attached only. Inside a
-// docker or podman run/create command (containers, queried in increasing j) a
-// -p value shaped like a port mapping is the container's published port, never
-// a password.
-func dbClientSpans(text string, j int, json bool, words []cmdWord, containers *containerScan) [][2]int {
-	var out [][2]int
-	run := 0 // 1: the command runs a container, -1: it does not, 0: not checked yet
-	runsContainer := func() bool {
-		if run == 0 {
-			run = -1
-			if containers.runBefore(text, j) {
-				run = 1
-			}
-		}
-		return run == 1
-	}
-	for _, w := range words {
-		raw := text[w.s:w.e]
-		var vs int
-		short := false
-		switch {
-		case strings.HasPrefix(raw, "--"):
-			eq := strings.IndexByte(raw, '=')
-			if eq < 0 || eq == len(raw)-1 {
-				continue
-			}
-			// The client accepts any unique prefix of --password.
-			if name := raw[2:eq]; len(name) < 3 || !strings.HasPrefix("password", name) {
-				continue
-			}
-			vs = w.s + eq + 1
-		case len(raw) > 2 && raw[0] == '-' && raw[1] == 'p':
-			vs, short = w.s+2, true
-		default:
-			continue
-		}
-		judge := flagPasswordJudge(text[vs:w.e])
-		ok := judge
-		if short {
-			ok = func(v string) bool {
-				if portMappingRe.MatchString(unwrapValue(v)) && runsContainer() {
-					return false
-				}
-				return judge(v)
-			}
-		}
-		if ps, pe, found := wholePassword(text, vs, w.e, json, ok); found {
-			out = append(out, [2]int{ps, pe})
-		}
-	}
-	return out
-}
-
-// sshpassSpans returns the spans of the passwords sshpass takes in words (the
-// rest of its command). sshpass parses options getopt-style up to the first
-// non-option word or "--", where the wrapped command starts: -p takes the
-// password attached or as the next word; -f, -d and -P take a value, attached
-// or as the next word; -e takes an optional attached name; other letters are
-// flags. The wrapped command's own options (ssh -p PORT) are not sshpass's,
-// but a later sshpass word (a jump-host chain) starts another option list.
-func sshpassSpans(text string, json bool, words []cmdWord) [][2]int {
-	var out [][2]int
-	opts := true
-	for k := 0; k < len(words); k++ {
-		w := words[k]
-		raw := text[w.s:w.e]
-		if !opts || raw == "--" || len(raw) < 2 || raw[0] != '-' {
-			if opts && raw == "--" {
-				opts = false
-				continue
-			}
-			name := strings.Trim(raw, `"'\`)
-			if i := strings.LastIndexByte(name, '/'); i >= 0 {
-				name = name[i+1:]
-			}
-			opts = strings.EqualFold(name, "sshpass")
-			continue
-		}
-	cluster:
-		for i := 1; i < len(raw); i++ {
-			switch raw[i] {
-			case 'p', 'f', 'd', 'P':
-				vs, ve := w.s+i+1, w.e
-				if i+1 == len(raw) {
-					if k+1 == len(words) {
-						break cluster
-					}
-					k++
-					vs, ve = words[k].s, words[k].e
-				}
-				if raw[i] != 'p' {
-					break cluster
-				}
-				if ps, pe, found := wholePassword(text, vs, ve, json, flagPasswordJudge(text[vs:ve])); found {
-					out = append(out, [2]int{ps, pe})
-				}
-				break cluster
-			case 'e':
-				break cluster
-			}
-		}
-	}
-	return out
 }
 
 func toolCredentialSpans(text string, kind int, json bool, words []cmdWord) [][2]int {
@@ -1101,55 +776,6 @@ func toolCredentialSpans(text string, kind int, json bool, words []cmdWord) [][2
 		}
 	}
 	return out
-}
-
-// plausibleFlagPassword judges an attached or flag-given command-line
-// password: unlike a USER:PASSWORD operand it may be short, since the flag
-// itself says the word is a password. Code and obvious placeholder words stay
-// readable, and so does a variable reference: a value starting with '$' is one
-// only in shell-variable shape (shellVariableRef) and only where the shell
-// expands that '$' (dollarExpands, judged on the value as written); any other
-// '$' value is a literal password. Command substitutions ($(...)) count as
-// code.
-func plausibleFlagPassword(v string, dollarExpands bool) bool {
-	t := unwrapValue(v)
-	if len(t) == 0 {
-		return false
-	}
-	if t[0] == '$' {
-		if !dollarExpands {
-			return true
-		}
-		if shellVariableRef(t) {
-			return false
-		}
-	}
-	if strings.ContainsAny(t[:1], "%{<") || strings.ContainsAny(t, "(){}") || strings.Contains(t, "://") {
-		return false
-	}
-	switch strings.ToLower(t) {
-	case "password", "passwd", "secret", "changeme", "yourpassword", "pa55word":
-		return false
-	}
-	return !placeholderShape(t)
-}
-
-// flagPasswordJudge returns the plausibleFlagPassword judge for a password
-// written as raw on the command line.
-func flagPasswordJudge(raw string) func(string) bool {
-	expands := dollarExpands(raw)
-	return func(v string) bool { return plausibleFlagPassword(v, expands) }
-}
-
-// plausibleEnvPassword judges a MYSQL_PWD value as the pattern matched it:
-// in quotes, bare, or the content of JSON-escaped (double) quotes. The flag
-// rule applies, so a value of any length is a password.
-func plausibleEnvPassword(v string) bool {
-	expands := dollarExpands(v)
-	if len(v) >= 2 && (v[0] == '"' || v[0] == '\'') && v[len(v)-1] == v[0] {
-		v = v[1 : len(v)-1]
-	}
-	return plausibleFlagPassword(v, expands)
 }
 
 // cookieOperandSpans returns the raw spans of the cookie values in a curl
@@ -1815,8 +1441,14 @@ func oddBackslashesBefore(text string, vs, i int) bool {
 // guardedPatternMatches is guardedMatches without the credential-named
 // assignments, which RedactSecrets handles in an earlier stage.
 func guardedPatternMatches(s *textScan) [][2]int {
+	out, _ := guardedPatternSpans(s)
+	return out
+}
+
+// guardedPatternSpans is guardedPatternMatches; shell reports whether a
+// MySQL/MariaDB client, sshpass or MYSQL_PWD password is among the spans.
+func guardedPatternSpans(s *textScan) (out [][2]int, shell bool) {
 	text := s.text
-	var out [][2]int
 	for _, g := range guardedPatterns {
 		if !s.may(g.re) {
 			continue
@@ -1869,26 +1501,32 @@ func guardedPatternMatches(s *textScan) [][2]int {
 			continue
 		}
 		for _, m := range g.re.FindAllStringSubmatchIndex(text, -1) {
-			k := 2
-			for k+2 < len(m) && m[k] < 0 {
-				k += 2
-			}
-			if m[k] >= 0 && g.ok(text[m[k]:m[k+1]]) {
-				out = append(out, [2]int{m[k], m[k+1]})
+			if m[2] >= 0 && g.ok(text[m[2]:m[3]]) {
+				out = append(out, [2]int{m[2], m[3]})
 			}
 		}
 	}
 	out = append(out, commandCredentialMatches(s)...)
-	return append(out, cookieMatches(text)...)
+	out = append(out, cookieMatches(text)...)
+	sp := shellPasswordMatches(s)
+	return append(out, sp...), len(sp) > 0
 }
 
-// redactGuarded replaces every guarded match, merging overlaps.
-func (s *textScan) redactGuarded() {
-	text := s.text
-	ms := guardedPatternMatches(s)
+// redactGuarded replaces every guarded match, merging overlaps, and reports
+// whether a MySQL/MariaDB client, sshpass or MYSQL_PWD password was among
+// them.
+func (s *textScan) redactGuarded() bool {
+	ms, shell := guardedPatternSpans(s)
 	if len(ms) == 0 {
-		return
+		return false
 	}
+	s.set(replaceSpans(s.text, ms))
+	return shell
+}
+
+// replaceSpans replaces every span of text with the redaction marker, merging
+// overlaps.
+func replaceSpans(text string, ms [][2]int) string {
 	sort.Slice(ms, func(i, j int) bool { return ms[i][0] < ms[j][0] })
 	var b strings.Builder
 	last := 0
@@ -1904,7 +1542,7 @@ func (s *textScan) redactGuarded() {
 		last = m[1]
 	}
 	b.WriteString(text[last:])
-	s.set(b.String())
+	return b.String()
 }
 
 // basicAuthPattern matches an HTTP Basic credential in a header line
@@ -2097,7 +1735,44 @@ func redactSecrets(text string, ungated bool) string {
 	if text == "" {
 		return text
 	}
+	out, shell := redactPass(text, ungated)
+	// A shell-password word is judged as one shell word, from the quoting the
+	// text around it has, and replaced up to its quotes: a replacement made by
+	// another rule can change that quoting (or where a word another
+	// shell-password rule read ends), and a replaced word can read differently
+	// to another rule. A text that changed and holds a MySQL/MariaDB client or
+	// sshpass word is redacted again until it stays the same, so redacting the
+	// output again, as every session save does, changes nothing.
+	again := shell || (out != text && shellPasswordWordIn(out, ungated))
+	for round := 0; again && round < redactRepeats; round++ {
+		next, _ := redactPass(out, ungated)
+		if next == out {
+			break
+		}
+		out = next
+	}
+	return out
+}
 
+// redactRepeats bounds the extra passes over a text in which a shell-password
+// rule replaced something.
+const redactRepeats = 4
+
+// shellPasswordWordIn reports whether text holds mysql, mariadb or sshpass in
+// any letter case (MYSQL_PWD holds mysql).
+func shellPasswordWordIn(text string, ungated bool) bool {
+	s := newScan(text, ungated)
+	for _, w := range []string{"mysql", "mariadb", "sshpass"} {
+		if s.indexFoldFrom(w, 0) >= 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// redactPass runs every redaction stage once; shell reports whether a
+// MySQL/MariaDB client, sshpass or MYSQL_PWD password was replaced.
+func redactPass(text string, ungated bool) (string, bool) {
 	result := text
 	if r := currentReplacer(); r != nil {
 		result = r.Replace(result)
@@ -2108,8 +1783,8 @@ func redactSecrets(text string, ungated bool) string {
 	s.redactPatterns(patternsHead)
 	s.redactCredentials()
 	s.redactPatterns(patternsTail)
-	s.redactGuarded()
-	return redactBasicAuth(s.text)
+	shell := s.redactGuarded()
+	return redactBasicAuth(s.text), shell
 }
 
 // redactPatterns applies each pattern in order, skipping a pattern whose gate

@@ -138,6 +138,7 @@ var gateExamples = []struct {
 		"mysql://u:secret1@db", "mongodb://u:secret1@db", "mongodb+srv://u:secret1@db",
 		"redis://:secret1@db", "rediss://u:secret1@db", "amqp://u:secret1@db", "amqps://u:secret1@db",
 		"mssql://u:secret1@db", "clickhouse://u:secret1@db",
+		"mysql://u:a/b@db", "mysql://u:a@b@db", "redis://:p@ss/w@db",
 		"POSTGRES://u:secret1@db", "MySQL://u:secret1@db", "ClickHouse://u:secret1@db", "REDIS+tls://u:secret1@db",
 		"po\u017ftgres://u:secret1@db", "my\u017fql://u:secret1@db", "redi\u017f://u:secret1@db",
 		"m\u017f\u017fql://u:secret1@db", "clic\u212ahouse://u:secret1@db", "clickhou\u017fe://u:secret1@db",
@@ -186,11 +187,6 @@ var gateExamples = []struct {
 		"hooks.slack.com/services/T0/B0/" + strings.Repeat("a1", 10),
 		"hooks.slack.com/workflows/T0/" + strings.Repeat("a1", 10),
 		"hooks.slack.com/triggers/T0/B0/C0/" + strings.Repeat("a1", 10),
-	}},
-	{`(?i)\bMYSQL_PWD=`, []string{
-		"MYSQL_PWD=" + gateTestValue, "mysql_pwd=" + gateTestValue, "Mysql_Pwd='" + gateTestValue + "'",
-		"MYSQL_PWD=\"" + gateTestValue + "\"",
-		`MYSQL_PWD=\"` + gateTestValue + `\"`, "MYSQL_PWD=x",
 	}},
 	{`discord(?:app)?`, []string{
 		"discord.com/api/webhooks/123/" + strings.Repeat("a1", 20),
