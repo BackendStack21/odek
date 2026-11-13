@@ -1165,6 +1165,12 @@ Entries for %s:
 		if entry == "" {
 			continue
 		}
+		// An entry longer than the whole cap can never be written: the cap
+		// check below would refuse the pass. Refuse it here, before the
+		// scans, whose cost grows with the entry.
+		if m.overFactsCap(target, entry) {
+			return fmt.Errorf("memory: consolidated entry (%d chars) would exceed cap (%d chars); keeping existing entries", len(entry), m.facts.cap(target))
+		}
 		// Drop scan-rejected entries instead of failing the whole pass: a
 		// single poisoned entry must not block consolidation of the rest —
 		// with the cooldown stamped only on success, a fatal path here
@@ -1538,7 +1544,11 @@ func (m *MemoryManager) addExtractedFacts(facts []scopedFact) {
 		// Drop download-and-execute / pipe-to-shell "facts": an injected session
 		// could try to persist one into the always-injected fact files.
 		// AddFact/ReplaceFact enforce the same filter on agent-driven writes.
-		if FactLooksUnsafe(fact) {
+		// A fact longer than the whole cap of its file is left to AddFact,
+		// which refuses it with the cap error before any scan — or, when
+		// redaction brings it under the cap, runs this filter on the text it
+		// would store — so the filter never reads more than a cap-sized fact.
+		if !m.overFactsCap(scope, fact) && FactLooksUnsafe(fact) {
 			continue
 		}
 		// AddFact handles ScanContent + merge-on-write dedup + cap rejection;
