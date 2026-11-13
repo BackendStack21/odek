@@ -46,14 +46,15 @@ func ScanContent(content string) error {
 //     its input.
 //   - powerShellRunsFetch: a line both runs a string as code (iex,
 //     Invoke-Expression, [scriptblock]::Create) and makes a web request.
-//   - substitutionFetchRes: a shell, eval, exec, source or `.` handed a
-//     command or process substitution of a fetcher, or such a substitution
+//   - substitutionFetchRes: a shell, eval, exec, source or `.` (where a
+//     command starts) handed a command or process substitution of a fetcher, or such a substitution
 //     standing where a command starts. The fetcher may be spelled by path or
 //     stand behind a wrapper ($(/usr/bin/curl …), <(sudo curl …)); a name that
 //     continues with a hyphen (fetch-completions) is another command, and
 //     $(CURL), an upper-case name closed at once, is a Make variable.
-//   - labelledSubstitutionRunsFetch: a $( substitution of a fetcher right
-//     after a short label or lead-in that opens its line ("Setup: $(curl …)").
+//   - labelledSubstitutionRunsFetch: a $( substitution of a fetcher, quoted
+//     or not, right after a short label or lead-in that opens its line
+//     ("Setup: $(curl …)", `Install (macOS): "$(curl …)"`).
 //
 // Backslash line continuations are joined before the checks after the release
 // rules, and those run on the fact as written and again with every ', " and \
@@ -100,10 +101,14 @@ var substWrapperNames = [...]string{"sudo", "doas", "env", "nice", "nohup", "tim
 // substitutionMayFetch is a cheap necessary condition for any expression of
 // substitutionFetchRes to match: each of them ends in an opening ( or
 // backtick, blanks, optional wrappers, an optional path and a fetcher name.
-// It reports whether some ( or backtick is followed that way by a fetcher
-// name, or by a wrapper name with a fetcher name anywhere after it. A fact
-// dense in parentheses or backticks that fetches nothing is thereby settled
-// in one pass, without running the expressions.
+// It reports whether some ( or backtick is followed, after blanks, by a run
+// of path characters that holds a fetcher name anywhere (so whatever the
+// expressions accept as the path before the name, or as the rest of the word
+// after it, is covered), or that ends in a wrapper name with a fetcher name
+// anywhere after it. It is deliberately wider than the expressions and never
+// narrower: it only skips work, it decides no verdict. A fact dense in
+// parentheses or backticks that fetches nothing is thereby settled in one
+// pass, without running the expressions.
 func substitutionMayFetch(text string) bool {
 	if strings.IndexByte(text, '(') < 0 && strings.IndexByte(text, '`') < 0 {
 		return false
@@ -124,17 +129,20 @@ func substitutionMayFetch(text string) bool {
 		}
 		end := start
 		for end < len(text) && isPathByte(text[end]) {
+			switch text[end] | 0x20 {
+			case 'c', 'w', 'f', 'i', 'd':
+				for _, f := range fetcherNames {
+					if hasPrefixFold(text[end:], f) {
+						return true
+					}
+				}
+			}
 			if text[end] == '/' {
 				start = end + 1
 			}
 			end++
 		}
 		name := text[start:end]
-		for _, f := range fetcherNames {
-			if hasPrefixFold(name, f) {
-				return true
-			}
-		}
 		for _, w := range substWrapperNames {
 			if len(name) != len(w) || !hasPrefixFold(name, w) {
 				continue
@@ -154,7 +162,7 @@ func substitutionMayFetch(text string) bool {
 func lastFetcherIndex(text string) int {
 	for i := len(text) - 1; i >= 0; i-- {
 		switch text[i] | 0x20 {
-		case 'c', 'w', 'f', 'i', 'd':
+		case 'c', 'w', 'f', 'i', 'd': // the first letters of fetcherNames
 			for _, f := range fetcherNames {
 				if hasPrefixFold(text[i:], f) {
 					return i
@@ -226,13 +234,16 @@ func maskMakeVariables(text string) string {
 
 // labelledSubstitutionRunsFetch reports whether a line opens with a short
 // label or lead-in ("Setup: ", "To install, "; a prompt sigil, list marker or
-// opening quote may come first) that is followed, after optional wrappers, by
-// a $( substitution of a fetcher on the same line (when the $( ends its line,
-// the fetcher may stand on the next line that holds anything): the label
-// introduces the command. The label holds no quote, backslash, backtick, $,
-// parenthesis or brace, so text inside another command's argument
-// (echo "IP: $(curl …)") is no label. Only the first $( of a line is looked
-// at; what follows it is read with quotes and backslashes removed.
+// opening quote may come first) that is followed, after optional wrappers and
+// an optional opening quote (Setup: "$(curl …)"), by a $( substitution of a
+// fetcher on the same line (when the $( ends its line, the fetcher may stand
+// on the next line that holds anything): the label introduces the command.
+// The label may hold an apostrophe inside a word and a parenthesised remark
+// ("Install (macOS) on the user's laptop: "), but no other quote or
+// parenthesis and no backslash, backtick, $ or brace, so text inside another
+// command's quoted argument (echo "IP: $(curl …)") is no label: there a
+// command word and an opening quote precede it. Only the first $( of a line
+// is looked at; what follows it is read with quotes and backslashes removed.
 func labelledSubstitutionRunsFetch(text string) bool {
 	for start := 0; start < len(text); {
 		end := strings.IndexByte(text[start:], '\n')
@@ -242,7 +253,7 @@ func labelledSubstitutionRunsFetch(text string) bool {
 			end += start
 		}
 		line := text[start:end]
-		if at := strings.Index(line, "$("); at > 0 && labelLeadRe.MatchString(line[:at]) {
+		if at := strings.Index(line, "$("); at > 0 && labelLeadRe.MatchString(plainLabelMarks(line[:at])) {
 			tailEnd := end
 			if strings.TrimSpace(line[at+2:]) == "" {
 				for tailEnd < len(text) && isSpace(text[tailEnd]) {
@@ -261,6 +272,42 @@ func labelledSubstitutionRunsFetch(text string) bool {
 		start = end + 1
 	}
 	return false
+}
+
+// plainLabelMarks overwrites with an underscore what a label may hold beyond
+// the characters labelLeadRe accepts: an apostrophe between two word
+// characters (user's), and the two parentheses of a remark that holds no
+// parenthesis itself ("(macOS)"). The remark's text stays, so it is checked
+// like the rest of the label.
+func plainLabelMarks(lead string) string {
+	var out []byte
+	mark := func(i int) {
+		if out == nil {
+			out = []byte(lead)
+		}
+		out[i] = '_'
+	}
+	open := -1
+	for i := 0; i < len(lead); i++ {
+		switch lead[i] {
+		case '\'':
+			if i > 0 && i+1 < len(lead) && isWordByte(lead[i-1]) && isWordByte(lead[i+1]) {
+				mark(i)
+			}
+		case '(':
+			open = i
+		case ')':
+			if open >= 0 {
+				mark(open)
+				mark(i)
+				open = -1
+			}
+		}
+	}
+	if out == nil {
+		return lead
+	}
+	return string(out)
 }
 
 // releasePipeRe and releaseEvalRe are the rules FactLooksUnsafe shipped with,
@@ -933,11 +980,11 @@ const (
 )
 
 // labelLeadRe matches the part of a line before its first $( when that part
-// is a short label or lead-in ("Setup: ", "To install, ") and optional
-// wrappers; labelledFetchRe matches a $( substitution of a fetcher at the
+// is a short label or lead-in ("Setup: ", "To install, "), optional wrappers
+// and an optional opening quote (it is applied after plainLabelMarks); labelledFetchRe matches a $( substitution of a fetcher at the
 // start of the rest. See labelledSubstitutionRunsFetch.
 var (
-	labelLeadRe     = regexp.MustCompile(`(?i)^\s*["']?` + promptLead + "[^\\n:;,|&'\"`\\\\$(){}]{1,40}[:,]\\s+" + wrapperPre + `$`)
+	labelLeadRe     = regexp.MustCompile(`(?i)^\s*["']?` + promptLead + "[^\\n:;,|&'\"`\\\\$(){}]{1,40}[:,]\\s+" + wrapperPre + `["']?$`)
 	labelledFetchRe = regexp.MustCompile(`(?i)^\$\(` + substFetch)
 )
 
@@ -952,8 +999,10 @@ var substitutionFetchRes = []*regexp.Regexp{
 	// fetcher through a redirect, a here-string or a here-doc: sh < <(wget …),
 	// bash <<< "$(curl …)", bash <<EOF $(curl …).
 	regexp.MustCompile(`(?i)(?:` + shellStart + shellWord + `\b` + shellOpts + `|` + shellStart + `(?:source|\.)\s+` + stdinPath + `)\s*` + hereOp + `["']?` + substOpenTick + substFetch),
-	// The `.` builtin applied directly to a substitution of a fetcher.
-	regexp.MustCompile(`(?i)(?:^|[\s;&|(])\.\s+["']?` + substOpen + substFetch),
+	// The `.` builtin, where a command starts (cmdLead; wrappers may come
+	// between), applied directly to a substitution of a fetcher. A `.` that
+	// is an argument of another command (jq . <(curl …)) sources nothing.
+	regexp.MustCompile(`(?i)` + cmdLead + wrapperPre + `\.\s+["']?` + substOpen + substFetch),
 	// A backtick substitution of a fetcher as the argument of a sink: anywhere
 	// after eval (which re-parses its arguments), after a shell's -c option,
 	// or right after a shell, exec, source or `.` that starts a command
