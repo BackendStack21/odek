@@ -543,16 +543,22 @@ func checkGatedMatchesUngated(t *testing.T, s string) {
 // The gates never change a result: for every string literal in the package's
 // tests (every known leak and over-redaction case) and its variants, the gated
 // and ungated paths agree. The corpus is checked in parallel shards to stay
-// inside the CI test timeout under -race.
+// inside the CI test timeout under -race. A lean run checks every fifth
+// input, which takes each literal's variants in turn; the plain literals all
+// run as the seeds of FuzzRedactGatedMatchesUngated.
 func TestGatedRedactionMatchesUngated(t *testing.T) {
 	t.Parallel()
 	corpus := gateCorpus(t)
-	t.Logf("differential corpus: %d inputs", len(corpus))
 	const shards = 4
+	step := shards
+	if leanRun() {
+		step = 5 * shards
+	}
+	t.Logf("differential corpus: %d of %d inputs", (len(corpus)+step/shards-1)/(step/shards), len(corpus))
 	for shard := 0; shard < shards; shard++ {
 		t.Run(strconv.Itoa(shard), func(t *testing.T) {
 			t.Parallel()
-			for i := shard; i < len(corpus); i += shards {
+			for i := shard; i < len(corpus); i += step {
 				checkGatedMatchesUngated(t, corpus[i])
 			}
 		})

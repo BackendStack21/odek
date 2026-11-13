@@ -239,6 +239,9 @@ func TestRED_SupersetShapesAreIdempotent(t *testing.T) {
 	if testing.Short() {
 		n = 4000
 	}
+	if leanRun() {
+		n = 1000
+	}
 	for i := 0; i < n; i++ {
 		line := redactR4Line(rng, supersetCommands)
 		check(line)

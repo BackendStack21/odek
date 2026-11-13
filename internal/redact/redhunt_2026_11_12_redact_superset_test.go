@@ -145,8 +145,13 @@ func supersetPassword(id, k, shape, special, where int) (string, []string) {
 // one exception is covered by TestRED_DBURLCleanReferenceURLStaysReadable.
 func TestRED_DBURLSupersetOfRelease(t *testing.T) {
 	cases, differing := 0, 0
-	run := func(span string, pieces []string) {
-		for _, wrap := range supersetContainers {
+	// A lean run puts each span in one container, taking them in turn.
+	lean := leanRun()
+	run := func(span string, pieces []string, turn int) {
+		for k, wrap := range supersetContainers {
+			if lean && k != turn%len(supersetContainers) {
+				continue
+			}
 			in := wrap(span)
 			cases++
 			if releaseDBURLRedact(in) != in {
@@ -172,7 +177,7 @@ func TestRED_DBURLSupersetOfRelease(t *testing.T) {
 						p1, l1 := supersetPassword(id, 0, s1, sp, w)
 						p2, l2 := supersetPassword(id, 1, s2, sp, w)
 						span := "postgres://a:" + p1 + "@h1/x" + g + supersetSchemes[id%len(supersetSchemes)] + "://u:" + p2 + "@h2/y"
-						run(span, append(l1, l2...))
+						run(span, append(l1, l2...), id)
 					}
 				}
 			}
@@ -199,7 +204,7 @@ func TestRED_DBURLSupersetOfRelease(t *testing.T) {
 			pieces = append(pieces, ps...)
 			b.WriteString(supersetSchemes[rng.Intn(len(supersetSchemes))] + "://u" + fmt.Sprint(k) + ":" + pw + "@" + hosts[rng.Intn(len(hosts))])
 		}
-		run(b.String(), pieces)
+		run(b.String(), pieces, id)
 	}
 	t.Logf("corpus: %d inputs, %d changed by the release rule, 0 violations", cases, differing)
 	if differing < cases/4 {

@@ -34,6 +34,9 @@ func TestRED_RejectedCredentialValuesScaleLinearly(t *testing.T) {
 	if raceEnabled {
 		base = 16 << 10
 	}
+	if leanRun() {
+		base = 8 << 10
+	}
 	for name, gen := range gens {
 		// Both sizes take the best of two runs: one preempted run of the
 		// larger input would otherwise read as super-linear growth.

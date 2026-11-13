@@ -14,6 +14,9 @@ import (
 func redactR3Linear(t *testing.T, name string, gen func(n int) string) {
 	t.Helper()
 	base := 16 << 10
+	if leanRun() {
+		base = 8 << 10
+	}
 	small, large := finalRedactTime(gen(base), 2), finalRedactTime(gen(4*base), 2)
 	if small < 2*time.Millisecond {
 		small = 2 * time.Millisecond
@@ -560,7 +563,11 @@ func TestRED_DBURLSpanPropertyNoLiteralSurvives(t *testing.T) {
 	host := func() string {
 		return []string{"db", "h1:5432", "db.example:3306/app", "h2/db?ssl=1", "[::1]:6379"}[rng.Intn(5)]
 	}
-	for iter := 0; iter < 20000; iter++ {
+	iters := 20000
+	if leanRun() {
+		iters = 5000
+	}
+	for iter := 0; iter < iters; iter++ {
 		n := 1 + rng.Intn(3)
 		var b strings.Builder
 		var lits []string
@@ -727,6 +734,9 @@ func TestRED_RedactionIsIdempotent(t *testing.T) {
 	n := 20000
 	if testing.Short() {
 		n = 4000
+	}
+	if leanRun() {
+		n = 1000
 	}
 	for i := 0; i < n; i++ {
 		line := redactR4Line(rng, redactR4Commands)
