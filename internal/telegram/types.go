@@ -32,6 +32,10 @@ type Message struct {
 	ForwardFrom   *User                 `json:"forward_from,omitempty"`
 	ForwardDate   int                   `json:"forward_date,omitempty"`
 	ForwardOrigin *ForwardOrigin        `json:"forward_origin,omitempty"`
+	// ViaBot is the inline bot the message was sent through: its content
+	// (text, caption, voice, file) was produced by that bot, not typed or
+	// recorded by the sender.
+	ViaBot *User `json:"via_bot,omitempty"`
 }
 
 // ForwardOrigin describes the original sender of a forwarded message.

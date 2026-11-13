@@ -1,6 +1,7 @@
 package telegram
 
 import (
+	"encoding/json"
 	"fmt"
 	"math/rand/v2"
 	"regexp"
@@ -331,6 +332,87 @@ func TestRED_ShortenedBatchCardKeepsItsLastEntries(t *testing.T) {
 			}
 			r4MarkerBetweenEnds(t, name, text, n)
 		}
+	}
+}
+
+// r4Dispatch decodes a Bot API update whose message object is base plus the
+// given media/text fields, runs it through the handler and reports the
+// forwarded flag the message callback received and whether a command was
+// dispatched instead.
+func r4Dispatch(t *testing.T, base string, fields map[string]any) (forwarded *bool, command bool) {
+	t.Helper()
+	ts := testServer(t, nil)
+	defer ts.Close()
+	h := NewHandler(testBot(t, ts))
+	h.Config.AllowAllUsers = true
+	set := func(f bool) { forwarded = &f }
+	h.OnVoiceMessage = func(_ int64, _ int, _ string, f bool, _ int64) (string, error) { set(f); return "", nil }
+	h.OnPhotoMessage = func(_ int64, _ int, _ []string, _ string, f bool, _ int64) (string, error) { set(f); return "", nil }
+	h.OnDocumentMessage = func(_ int64, _ int, _, _, _ string, f bool, _ int64) (string, error) { set(f); return "", nil }
+	h.OnTextMessage = func(_ int64, _ int, _ string, f bool, _ int64) (string, error) { set(f); return "", nil }
+	h.OnCommand = func(int64, int, string, string, int64) (string, error) { command = true; return "", nil }
+	var m map[string]any
+	if err := json.Unmarshal([]byte(base), &m); err != nil {
+		t.Fatal(err)
+	}
+	m["message_id"] = 5
+	m["chat"] = map[string]any{"id": 31, "type": "private"}
+	m["from"] = map[string]any{"id": 32}
+	for k, v := range fields {
+		m[k] = v
+	}
+	raw, _ := json.Marshal(map[string]any{"update_id": 1, "message": m})
+	var upd Update
+	if err := json.Unmarshal(raw, &upd); err != nil {
+		t.Fatal(err)
+	}
+	h.HandleUpdate(upd)
+	return forwarded, command
+}
+
+// Content the member did not author (forwarded, or produced by an inline bot
+// through via_bot) reaches every message callback flagged, so it is never
+// matched against lazy skills as the member's own words, and its text is
+// never a command.
+func TestRED_InlineBotMessagesAreNotTheSendersOwnWords(t *testing.T) {
+	origins := []struct {
+		name string
+		msg  string
+		want bool
+	}{
+		{"direct", `{}`, false},
+		{"forward_origin user", `{"forward_origin":{"type":"user","date":1,"sender_user":{"id":9}}}`, true},
+		{"forward_origin hidden_user", `{"forward_origin":{"type":"hidden_user","date":1,"sender_user_name":"x"}}`, true},
+		{"automatic forward", `{"is_automatic_forward":true,"forward_origin":{"type":"channel","date":1,"chat":{"id":-100}}}`, true},
+		{"legacy forward_from_chat", `{"forward_from_chat":{"id":-100},"forward_date":1}`, true},
+		{"legacy forward_sender_name", `{"forward_sender_name":"x","forward_date":1}`, true},
+		{"via inline bot", `{"via_bot":{"id":77,"is_bot":true,"first_name":"Voice","username":"somevoicebot"}}`, true},
+	}
+	kinds := map[string]map[string]any{
+		"voice":    {"voice": map[string]any{"file_id": "v", "duration": 2}},
+		"photo":    {"photo": []any{map[string]any{"file_id": "p", "width": 1, "height": 1}}, "caption": "deploy the staging site"},
+		"document": {"document": map[string]any{"file_id": "d", "file_name": "a.txt"}, "caption": "deploy the staging site"},
+		"text":     {"text": "deploy the staging site"},
+	}
+	for _, o := range origins {
+		for kind, fields := range kinds {
+			got, _ := r4Dispatch(t, o.msg, fields)
+			if got == nil {
+				t.Fatalf("%s %s: callback not called", o.name, kind)
+			}
+			if *got != o.want {
+				t.Errorf("%s %s: forwarded=%v, want %v", o.name, kind, *got, o.want)
+			}
+		}
+	}
+
+	cmd := map[string]any{"text": "/new", "entities": []any{map[string]any{"type": "bot_command", "offset": 0, "length": 4}}}
+	if _, command := r4Dispatch(t, `{}`, cmd); !command {
+		t.Fatal("a member's own /new is not dispatched as a command")
+	}
+	got, command := r4Dispatch(t, `{"via_bot":{"id":77,"is_bot":true,"first_name":"B"}}`, cmd)
+	if command || got == nil || !*got {
+		t.Fatalf("an inline bot's /new: dispatched as command=%v, forwarded=%v", command, got)
 	}
 }
 

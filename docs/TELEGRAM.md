@@ -203,6 +203,8 @@ The `Handler` struct routes incoming updates to the appropriate callback based o
 | `OnDocumentMessage` | Document / file (a caption sent with it is the user's request, guard-scanned and wrapped as untrusted like a photo caption) | `(chatID int64, messageID int, fileID, fileName, caption string, forwarded bool, userID int64) (string, error)` |
 | `OnCallbackQuery` | Inline keyboard callback | `(chatID int64, callbackData string, userID int64) (string, error)` |
 
+`forwarded` is true when the sender did not author the content: the message was forwarded from another chat or user, or sent through an inline bot (`via_bot`), which produced its text, caption, voice note or file. Such a message is never routed to `OnCommand`, its text is wrapped as untrusted content, and its caption or transcript is not the sender's own words.
+
 All callbacks return a response string (may be empty) and an error. The `Handle` method:
 1. Sends `SendChatAction("typing")` immediately
 2. Dispatches to the appropriate callback
@@ -517,7 +519,7 @@ Voice message received → DownloadVoice (OGG Opus to disk)
 
 **OGG Opus handling:** whisper.cpp uses `dr_wav`/`dr_mp3` internally and does not support OGG Opus. The transcribe tool auto-detects unsupported formats and converts via ffmpeg. If ffmpeg is unavailable, the original file is passed to whisper which produces a clear error message.
 
-**Lazy skills:** the transcript enters the user message wrapped as untrusted, and wrapped content never triggers a skill. Because a voice note the user recorded is their own request, the transcript is also handed to lazy-skill matching as the user's words (bounded like a typed message), so "deploy the staging site" spoken loads the same skill as typed. The same holds for a photo or document caption. A forwarded voice note or caption is not the user's own, and text the Telegram guard flagged is not used; a photo's vision description and a document's contents never are.
+**Lazy skills:** the transcript enters the user message wrapped as untrusted, and wrapped content never triggers a skill. Because a voice note the user recorded is their own request, the transcript is also handed to lazy-skill matching as the user's words (bounded like a typed message), so "deploy the staging site" spoken loads the same skill as typed. The same holds for a photo or document caption. A forwarded voice note or caption, or one sent through an inline bot (`via_bot`), is not the user's own, and text the Telegram guard flagged is not used; a photo's vision description and a document's contents never are.
 
 **Fallback:** If auto-transcribe is disabled, no backend is installed (a warning is logged), or it fails (ffmpeg unavailable, corrupt audio, whisper error), the agent receives the file path. It is told to use the `transcribe` tool only when a transcription backend can run; otherwise it is told the note cannot be transcribed.
 
