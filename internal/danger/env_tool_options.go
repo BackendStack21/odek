@@ -50,7 +50,8 @@ import (
 // value only known at run time, a binding the analysis cannot follow (read,
 // a nameref, a sourced file, eval, a declaration whose name is computed, a
 // value a nested payload changed), or a value over maxOptionEnvWords words or
-// maxOptionEnvBytes bytes, which classifies unknown.
+// maxOptionEnvBytes bytes, which classifies unknown, as does a command line
+// that splices more than maxOptionSpliceWords words in all.
 
 // optionEnvKind says how a variable's readers take its value.
 type optionEnvKind int
@@ -150,6 +151,18 @@ var optionEnvNames = func() map[string]bool {
 	return out
 }()
 
+// optionSpliceNames is the set of the variables whose words are spliced into
+// their reader's argv.
+var optionSpliceNames = func() map[string]bool {
+	out := make(map[string]bool)
+	for _, v := range optionEnvVars {
+		if v.kind == optionArgv || v.kind == optionToolArgs {
+			out[v.name] = true
+		}
+	}
+	return out
+}()
+
 // optionEnvReadBy returns the variables the program tool reads, in table order.
 func optionEnvReadBy(tool string) []optionEnvVar {
 	reads := optionEnvReaders[tool]
@@ -236,7 +249,53 @@ const (
 	// unknown rather than being analysed again at a cost that grows with it.
 	maxOptionEnvWords = 64
 	maxOptionEnvBytes = 4 << 10
+	// maxOptionSpliceWords bounds the words one Analyze call splices over all
+	// its commands and nested payloads. Each splice analyses the reader
+	// again, so without it a command of a few hundred short stages, each
+	// within the per-value bound, costs hundreds of analyses. Past it nothing
+	// more is spliced and the command classifies unknown. A real command line
+	// runs a few readers with a few option words each.
+	maxOptionSpliceWords = 4 * maxOptionEnvWords
 )
+
+// optionSpliceWords counts the words the NAME=value words of a command hold
+// for the variables whose words are spliced into the argv of a reader the
+// command names. A value over the per-value bound is not spliced and counts
+// nothing.
+func optionSpliceWords(stage []string) int {
+	total := 0
+	for _, tok := range stage {
+		name, value, ok := strings.Cut(tok, "=")
+		if !ok || !optionSpliceNames[name] || len(value) > maxOptionEnvBytes {
+			continue
+		}
+		n := len(strings.Fields(value))
+		if n == 0 || n > maxOptionEnvWords {
+			continue
+		}
+		for _, other := range stage {
+			if hasString(optionEnvReaders[commandName(other)], name) {
+				total += n
+				break
+			}
+		}
+	}
+	return total
+}
+
+// withoutOptionSpliceValues returns stage with the value of every spliced
+// option variable replaced by one only known at run time, which its reader
+// fails closed on without analysing anything again.
+func withoutOptionSpliceValues(stage []string) []string {
+	out := make([]string, len(stage))
+	for i, tok := range stage {
+		if name, _, ok := strings.Cut(tok, "="); ok && optionSpliceNames[name] {
+			tok = name + "=" + dynamicSubstToken
+		}
+		out[i] = tok
+	}
+	return out
+}
 
 // optionValueWords returns the words of value as its reader splits them, or,
 // for a value the analysis does not take apart, the verdict it gets: unknown
@@ -1015,6 +1074,9 @@ func (s *shellAnalysisState) optionEnvAnalysis(inner, inline []string, payload s
 		}
 	}
 	var words []string
+	// exportedWords counts the spliced words that come from the environment;
+	// the ones written on the command were counted when its stage started.
+	exportedWords := 0
 	javaCtx := javaPathCtx{cwd: payload.cwd, known: !payload.uncertain}
 	judge := func(v optionEnvVar, value string) {
 		if v.kind != optionArgv && v.kind != optionToolArgs {
@@ -1035,6 +1097,9 @@ func (s *shellAnalysisState) optionEnvAnalysis(inner, inline []string, payload s
 			return
 		}
 		words = append(words, w...)
+		if _, isInline := inlineValues[v.name]; !isInline {
+			exportedWords += len(w)
+		}
 	}
 	for _, v := range readers {
 		value, state := s.optionEnvValue(v.name, inlineValues)
@@ -1060,6 +1125,14 @@ func (s *shellAnalysisState) optionEnvAnalysis(inner, inline []string, payload s
 	if len(words) > maxOptionEnvWords {
 		result.add(Unknown)
 		return result
+	}
+	// The splice budget of the whole analysis: past it the reader is not
+	// analysed again.
+	if s.work != nil {
+		if s.work.splice += exportedWords; s.work.splice > maxOptionSpliceWords {
+			result.add(Unknown)
+			return result
+		}
 	}
 	quote := func(ws []string) string {
 		out := make([]string, len(ws))

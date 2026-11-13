@@ -174,6 +174,10 @@ const maxAnalysisTokens = 4096
 
 type analysisWork struct {
 	tokens int
+	// splice counts the option-variable words (TAR_OPTIONS, MAVEN_ARGS, ...)
+	// spliced into the argv of their readers so far; see
+	// maxOptionSpliceWords.
+	splice int
 	// literalDefaults keeps ${name:-word}-style expansions unresolved, which
 	// is how the literal spelling is judged alongside the resolved one.
 	literalDefaults bool
@@ -380,6 +384,18 @@ func analyzeWithStateWork(cmd string, depth int, inherited *shellAnalysisState, 
 			}
 			piped := i > 0 || ctx.piped
 			upstream := stageUpstream(ctx, prepared, i)
+			// Option words written on the command are spliced into its argv
+			// and the result classified again, several times over. Past the
+			// budget of one analysis the values are not taken apart any more:
+			// the stage is unknown and analysed with values only known at
+			// run time, which costs what the command alone does.
+			if words := optionSpliceWords(stage); words > 0 {
+				if work.splice += words; work.splice > maxOptionSpliceWords {
+					result.add(Unknown)
+					stage = withoutOptionSpliceValues(stage)
+					prepared[i] = stage
+				}
+			}
 			// sh expands an alias defined earlier when its name is the
 			// command word: the expansion is analysed in addition to the
 			// literal stage (a definition may sit on a branch that never ran).
