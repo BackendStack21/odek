@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -403,8 +404,7 @@ func (em *ExtendedMemory) addAtoms(ctx context.Context, atoms []MemoryAtom, skip
 	em.index.markDirty()
 	if em.cfg.AssociationsEnabled != nil && *em.cfg.AssociationsEnabled {
 		for _, atom := range stored {
-			em.buildAssociations(atom)
-			atom.Context.RelatedAtomIDs = em.assoc.Related(atom.ID)
+			atom.Context.RelatedAtomIDs = em.buildAssociations(atom)
 			// Metadata-only update: must NOT re-dirty the index.
 			if err := em.store.Add(atom, em.cfg.AtomMaxChars); err != nil {
 				log.Printf("extended memory: association context update failed: %v", err)
@@ -506,17 +506,22 @@ func (em *ExtendedMemory) AddAtoms(ctx context.Context, atoms []MemoryAtom) erro
 	return nil
 }
 
-// buildAssociations links a new atom to related atoms.
-func (em *ExtendedMemory) buildAssociations(atom MemoryAtom) {
+// buildAssociations links a new atom to related atoms and returns the
+// related ids to record on its atoms.json entry (relatedForRecord).
+func (em *ExtendedMemory) buildAssociations(atom MemoryAtom) []string {
 	if em.assoc == nil {
-		return
+		return nil
 	}
 	atoms, err := em.store.List()
 	if err != nil {
 		log.Printf("extended memory: list atoms for associations failed: %v", err)
-		return
+		return em.relatedForRecord(atom.ID, nil)
 	}
-	// Temporal: adjacent turns in the same session.
+	// Temporal: adjacent turns in the same session. The turn counter starts
+	// over with every agent (Telegram builds one per message, `odek
+	// continue` one per run), so a long session can hold any number of atoms
+	// within the window: link only the nearest turns, newest first.
+	var temporal []MemoryAtom
 	for _, other := range atoms {
 		if other.ID == atom.ID {
 			continue
@@ -525,8 +530,19 @@ func (em *ExtendedMemory) buildAssociations(atom MemoryAtom) {
 			continue
 		}
 		if abs(other.Context.Turn-atom.Context.Turn) <= 2 {
-			em.assoc.Link(atom.ID, other.ID)
+			temporal = append(temporal, other)
 		}
+	}
+	// atoms is newest first; the stable sort keeps that order within a turn
+	// distance.
+	sort.SliceStable(temporal, func(i, j int) bool {
+		return abs(temporal[i].Context.Turn-atom.Context.Turn) < abs(temporal[j].Context.Turn-atom.Context.Turn)
+	})
+	if len(temporal) > maxTemporalLinksPerAtom {
+		temporal = temporal[:maxTemporalLinksPerAtom]
+	}
+	for _, other := range temporal {
+		em.assoc.Link(atom.ID, other.ID)
 	}
 	// Task: same project and durable task-related types.
 	taskTypes := map[string]bool{TypeGoal: true, TypeDecision: true, TypeConvention: true, TypeIntent: true}
@@ -558,6 +574,37 @@ func (em *ExtendedMemory) buildAssociations(atom MemoryAtom) {
 			}
 		}
 	}
+	return em.relatedForRecord(atom.ID, atoms)
+}
+
+// relatedForRecord returns the related ids recorded on an atom's atoms.json
+// entry: every linked atom while there are at most maxLinksPerAtom, otherwise
+// the newest maxLinksPerAtom of them (atoms is newest first), so a record
+// never grows with the atom's link count. A refreshed duplicate keeps its old
+// id, which may already hold many links. The result is sorted by id.
+func (em *ExtendedMemory) relatedForRecord(id string, atoms []MemoryAtom) []string {
+	related := em.assoc.Related(id)
+	if len(related) <= maxLinksPerAtom {
+		return related
+	}
+	if atoms == nil {
+		return related[:maxLinksPerAtom]
+	}
+	linked := make(map[string]bool, len(related))
+	for _, r := range related {
+		linked[r] = true
+	}
+	out := make([]string, 0, maxLinksPerAtom)
+	for _, a := range atoms {
+		if linked[a.ID] {
+			out = append(out, a.ID)
+			if len(out) == maxLinksPerAtom {
+				break
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 func abs(a int) int {

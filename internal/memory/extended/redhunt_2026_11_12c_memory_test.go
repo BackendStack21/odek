@@ -114,6 +114,42 @@ func TestRED_LegacyDenseAssociationsEvictNoLiveAtom(t *testing.T) {
 	}
 }
 
+// Every agent builds its own MemoryManager, so a Telegram chat (one agent per
+// message) or an `odek continue` run stamps all its atoms with the same turn.
+// The temporal rule (|Δturn| <= 2, same session) then matches every earlier
+// atom of the session. Links created per add and the related list written
+// into atoms.json must stay bounded, so atoms.json grows linearly.
+func TestRED_TemporalLinksBoundedPerSession(t *testing.T) {
+	grow := func(n int) (related int, atomsJSON int64) {
+		dir := t.TempDir()
+		em := rh1112MemOpen(t, dir, func(c *Config) { c.SemanticDedupThreshold = floatPtr(0) })
+		for i := 0; i < n; i++ {
+			if err := em.AddAtom(context.Background(), MemoryAtom{
+				Text:        fmt.Sprintf("chat fact %d: the user mentioned item-%d-%x", i, i, i*7919),
+				SourceClass: SourceUserSaid, Type: TypeFact,
+				Context: AtomContext{SessionID: "tg-1001", Turn: 1},
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		atoms, _ := em.store.List()
+		for _, a := range atoms {
+			related = max(related, len(a.Context.RelatedAtomIDs))
+		}
+		info, err := os.Stat(filepath.Join(dir, "atoms.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return related, info.Size()
+	}
+	r1, s1 := grow(30)
+	r2, s2 := grow(60)
+	if r2 > maxLinksPerAtom || float64(s2) > 2.5*float64(s1) {
+		t.Fatalf("one session's temporal links form a complete graph: related list %d -> %d, atoms.json %d -> %d B (%.1fx for 2x atoms)",
+			r1, r2, s1, s2, float64(s2)/float64(s1))
+	}
+}
+
 // The prune trigger must see a dense cluster even when a large sparse part
 // of the store dilutes the store-wide link average: legacy stores are pruned
 // the next time associations are persisted.

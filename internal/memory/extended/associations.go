@@ -43,6 +43,10 @@ const maxLinkFactor = 2
 // a new goal/decision/convention/intent atom links to.
 const maxTaskLinksPerAtom = 8
 
+// maxTemporalLinksPerAtom is how many same-session atoms of nearby turns a new
+// atom links to: the nearest turns first, then the newest.
+const maxTemporalLinksPerAtom = 8
+
 // NewAssociations returns an in-memory association map.
 func NewAssociations() *Associations {
 	return &Associations{
