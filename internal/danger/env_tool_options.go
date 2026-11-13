@@ -903,23 +903,38 @@ func (s *shellAnalysisState) noteDeclarationBindings(name string, args []string)
 	}
 }
 
-// setsAllexport reports whether set's arguments turn on allexport (-a, or -o
-// allexport), before the positional parameters start.
+// setsAllexport reports whether set's arguments turn on allexport, or may:
+// every option word before the positional parameters is read, both the `-`
+// and the `+` ones; a in a `-` cluster turns it on, each o in a cluster takes
+// its option name from the next word (`-eo allexport`), and an option word or
+// name only known at run time (`set $x`, `set -o $name`) may be the one that
+// does. Nothing turns it off again: `set +a` is not followed.
 func setsAllexport(args []string) bool {
 	for i := 0; i < len(args); i++ {
 		a := args[i]
-		if a == "--" || len(a) < 2 || a[0] != '-' {
-			return false
-		}
-		if a == "-o" {
-			if i+1 < len(args) && args[i+1] == "allexport" {
-				return true
-			}
-			i++
-			continue
-		}
-		if strings.ContainsRune(a[1:], 'a') {
+		if computedWord(a) {
 			return true
+		}
+		if a == "--" || len(a) < 2 || (a[0] != '-' && a[0] != '+') {
+			return false // the positional parameters start
+		}
+		on := a[0] == '-'
+		for _, r := range a[1:] {
+			switch r {
+			case 'a':
+				if on {
+					return true
+				}
+			case 'o':
+				name := ""
+				if i++; i < len(args) {
+					// zsh also spells the option ALL_EXPORT.
+					name = strings.ToLower(strings.ReplaceAll(args[i], "_", ""))
+				}
+				if computedWord(name) || (on && name == "allexport") {
+					return true
+				}
+			}
 		}
 	}
 	return false

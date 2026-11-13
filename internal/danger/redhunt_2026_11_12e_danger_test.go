@@ -122,3 +122,50 @@ func TestRED_UnsetOrUnexportNeverLowersOptionVariable(t *testing.T) {
 		}
 	}
 }
+
+// `set -a` was recognised only while every word before it started with '-',
+// and `-eo allexport` was read as a cluster with no option name: `set +e -a`,
+// `set -e +x -a`, `set +o errexit -o allexport` and `set -eo allexport` turn
+// allexport on in sh, dash and bash, yet the assignment after them did not
+// count as exported and the reader kept its own verdict.
+//
+// Correct behaviour: every option word of set is read, a cluster with o takes
+// its name from the next word, and an option word only known at run time may
+// turn allexport on.
+func TestRED_SetAllexportInEveryOptionWord(t *testing.T) {
+	t.Setenv("HOME", "/home/user")
+	t.Chdir(t.TempDir())
+	unsetExecEnvR4(t)
+	tails := []struct{ tail, ref string }{
+		{`TAR_OPTIONS=--to-command=sh; tar xf x.tar`, `set -a; TAR_OPTIONS=--to-command=sh; tar xf x.tar`},
+		{`JAVA_HOME=/tmp/jdk; mvn -v`, `set -a; JAVA_HOME=/tmp/jdk; mvn -v`},
+		{`MAVEN_OPTS=-javaagent:/tmp/x.jar; mvn -v`, `set -a; MAVEN_OPTS=-javaagent:/tmp/x.jar; mvn -v`},
+	}
+	for _, set := range []string{
+		`set +e -a`, `set -e +x -a`, `set +o errexit -o allexport`, `set -eo allexport`, `set -oe allexport`,
+		`set +x -ea`, `set -o errexit -a`, `set -eo pipefail -a`, `set -euo pipefail -o allexport`,
+		`set -o pipefail -o allexport`, `set +a -a`, `set -a +a`, `set -a; set +a`, `set -a --`, `set -a -- x`,
+		`set $x`, `set -$x`, `set "$@"`, `set -o $x`, `set -o "$(cat f)"`, `set $(cat f)`, `set +e $x`,
+		`x=-a; set $x`, `set -o ALL_EXPORT`,
+	} {
+		for _, tc := range tails {
+			want := Classify(tc.ref)
+			if Rank(want) <= Rank(Classify(tc.tail)) {
+				t.Fatalf("premise: %q classified %s", tc.ref, want)
+			}
+			cmd := set + "; " + tc.tail
+			if got := Classify(cmd); Rank(got) < Rank(want) {
+				t.Errorf("Classify(%q) = %s, want at least %s (as %q)", cmd, got, want, tc.ref)
+			}
+		}
+	}
+	// Positional parameters and other options do not turn allexport on.
+	for _, set := range []string{`set -- -a`, `set -e`, `set -o pipefail`, `set -euo pipefail`, `set +a`, `set x -a`, `set - -a`, `set -- $x`} {
+		for _, tc := range tails {
+			cmd := set + "; " + tc.tail
+			if got, want := Classify(cmd), Classify(tc.tail); got != want {
+				t.Errorf("Classify(%q) = %s, want %s (the verdict of %q)", cmd, got, want, tc.tail)
+			}
+		}
+	}
+}
