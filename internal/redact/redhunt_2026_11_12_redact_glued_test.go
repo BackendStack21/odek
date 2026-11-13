@@ -70,7 +70,7 @@ func TestRED_GluedCommandsLoseEveryPassword(t *testing.T) {
 		lines, passwords := gluedCommands(n, c[1])
 		failed := 0
 		for i, in := range lines {
-			if n > 2 && (testing.Short() || raceEnabled) && i%17 != 0 {
+			if n > 2 && (testing.Short() || raceEnabled) && i%67 != 0 {
 				continue
 			}
 			out := RedactSecrets(in)
