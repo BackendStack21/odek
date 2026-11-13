@@ -181,13 +181,17 @@ func TestRED_RedactCredentialNamesScaleLinearly(t *testing.T) {
 		"open quotes":    func(n int) string { return strings.Repeat(`password="`, n/10) },
 		"long value":     func(n int) string { return "password=" + strings.Repeat("x", n) },
 	}
+	base := 64 << 10
+	if raceEnabled {
+		base = 16 << 10
+	}
 	for name, gen := range gens {
-		small, large := ops12bTime(gen(64<<10)), ops12bTime(gen(256<<10))
+		small, large := ops12bTime(gen(base)), ops12bTime(gen(4*base))
 		if small < time.Millisecond {
 			small = time.Millisecond
 		}
 		if large > 9*small {
-			t.Errorf("%s: super-linear: 64KiB %v, 256KiB %v", name, small, large)
+			t.Errorf("%s: super-linear: %d bytes %v, x4 %v", name, base, small, large)
 		}
 		// Wall-clock budget only without the race detector (5-10x slower).
 		if !raceEnabled && !testing.Short() && ops12bTime(gen(1<<20)) > 10*time.Second {

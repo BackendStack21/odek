@@ -1221,6 +1221,37 @@ test('a superseded draft is never shown; the replacement shows on a passing verd
   assert.equal(isHeld(final), false);
 });
 
+// The runtime appends notices to a streamed answer after it streamed; they
+// arrive as a trailing token frame and extend the same answer row.
+test('a notice token after streamed deltas extends the one answer row', () => {
+  deliver({ type: 'turn_started', turn_id: 't-notice' });
+  deliver({ type: 'token_delta', turn_id: 't-notice', content: 'All set.' });
+  deliver({ type: 'token', turn_id: 't-notice', content: '\n\n---\nodek consistency notice' });
+  deliver({ type: 'done', turn_id: 't-notice' });
+  render.streamFlush();
+  const answers = byId.messages.querySelectorAll('.msg.assistant');
+  assert.equal(answers.length, 1, 'the notice does not open a second answer row');
+  const text = collectText(answers[0]).join(' ');
+  assert.match(text, /All set\./);
+  assert.match(text, /odek consistency notice/);
+  assert.equal(text.split('All set.').length, 2, 'the answer is shown once');
+  assert.equal(isHeld(answers[0]), false, 'the committed answer is visible');
+});
+
+test('a reconciled supersede folds the streamed copy and the full answer follows', () => {
+  deliver({ type: 'turn_started', turn_id: 't-recon' });
+  deliver({ type: 'token_delta', turn_id: 't-recon', content: 'abc' });
+  deliver({ type: 'answer_superseded', turn_id: 't-recon', reason: 'reconciled' });
+  deliver({ type: 'token', turn_id: 't-recon', content: 'xyz' });
+  render.streamFlush();
+  const answers = byId.messages.querySelectorAll('.msg.assistant');
+  assert.equal(answers.length, 2);
+  assert.ok(answers[0].classList.contains('draft'));
+  assert.equal(answers[0].querySelector('.draft-toggle').textContent, '⋯ draft revised (answer corrected)');
+  assert.match(collectText(answers[1]).join(' '), /xyz/);
+  assert.equal(collectText(answers[1]).join(' ').includes('abc'), false);
+});
+
 test('a progress note shows when its tool call lands; bulk text shows on arrival', () => {
   deliver({ type: 'turn_started', turn_id: 't-note' });
   deliver({ type: 'token_delta', turn_id: 't-note', content: 'Reading the file.' });

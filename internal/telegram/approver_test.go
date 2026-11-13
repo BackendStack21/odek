@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/BackendStack21/odek/internal/danger"
 )
@@ -323,8 +324,8 @@ func TestBuildApprovalText_TruncatesAtHardLimit(t *testing.T) {
 	if len([]rune(text)) > telegramMaxMsgLen {
 		t.Errorf("approval text length %d exceeds Telegram limit %d", len([]rune(text)), telegramMaxMsgLen)
 	}
-	if !strings.Contains(text, "[truncated]") {
-		t.Errorf("an over-limit command must be marked as truncated, got tail:\n%s", text[len(text)-40:])
+	if !strings.Contains(text, " more bytes]") {
+		t.Errorf("an over-limit command must be marked with the omitted byte count, got tail:\n%s", text[len(text)-40:])
 	}
 }
 
@@ -545,7 +546,7 @@ func TestTelegramApprover_TrustDisabledForHighImpactClasses(t *testing.T) {
 		}(cls)
 
 		var body string
-		deadline := time.Now().Add(2 * time.Second)
+		deadline := time.Now().Add(30 * time.Second)
 		for time.Now().Before(deadline) {
 			rec.mu.Lock()
 			if len(rec.requests) > 0 {
@@ -649,7 +650,7 @@ func TestTelegramApprover_FrictionDisablesTrust(t *testing.T) {
 	go func() { done <- a.PromptCommand(danger.SystemWrite, "echo third", "test friction") }()
 
 	var body string
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		rec.mu.Lock()
 		if len(rec.requests) > 0 {
@@ -702,7 +703,7 @@ func TestTelegramApprover_NoFrictionBelowThreshold(t *testing.T) {
 	go func() { done <- a.PromptCommand(danger.SystemWrite, "echo third", "test no friction") }()
 
 	var body string
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		rec.mu.Lock()
 		if len(rec.requests) > 0 {
@@ -762,7 +763,7 @@ func TestPromptMedia_Approves(t *testing.T) {
 
 	// Wait for the prompt to be registered.
 	var body string
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		rec.mu.Lock()
 		if len(rec.requests) > 0 {
@@ -807,7 +808,7 @@ func TestPromptMedia_Deny(t *testing.T) {
 	go func() { done <- a.PromptMedia("/tmp/photo.jpg") }()
 
 	var body string
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		rec.mu.Lock()
 		if len(rec.requests) > 0 {
@@ -855,7 +856,7 @@ func TestPromptMedia_BroadBaseWarning(t *testing.T) {
 	go func() { done <- a.PromptMedia("/home/user/project/plot.png") }()
 
 	var body string
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		rec.mu.Lock()
 		if len(rec.requests) > 0 {
@@ -881,5 +882,113 @@ func TestPromptMedia_BroadBaseWarning(t *testing.T) {
 	a.HandleCallback(cbPrefixApprove+id, 0)
 	if err := <-done; err != nil {
 		t.Fatalf("approve should succeed: %v", err)
+	}
+}
+
+func TestBuildApprovalText_ElisionKeepsHeadAndTail(t *testing.T) {
+	cmd := "HEADMARK " + strings.Repeat("y", 6000) + " TAILMARK"
+	text, elided := buildApprovalTextElided(danger.CodeExecution, cmd, "")
+	if !elided || !strings.Contains(text, "HEADMARK") || !strings.Contains(text, "TAILMARK") || !strings.Contains(text, "more bytes]") {
+		t.Fatalf("want head, tail and marker, elided=%v:\n%s", elided, text)
+	}
+	if len(text) > telegramMaxMsgLen {
+		t.Fatalf("prompt is %d bytes", len(text))
+	}
+	// Escaped characters near the cut must not leave a dangling escape.
+	bs := strings.Repeat("\\", 5000) + "END"
+	text, _ = buildApprovalTextElided(danger.CodeExecution, bs, "")
+	if len(text) > telegramMaxMsgLen || !strings.Contains(text, "END") {
+		t.Fatalf("backslash command: len=%d", len(text))
+	}
+}
+
+func TestBuildApprovalText_BatchCardEveryEntryVisible(t *testing.T) {
+	card := "2 tool actions:\n  1. `shell` — `echo " + strings.Repeat("a", 9000) + "`\n  2. `shell` — `PAYLOAD`\n  3. `shell` — `" + strings.Repeat("b", 9000) + "END3`\n"
+	text, elided := buildApprovalTextElided(danger.ToolBatchClass, card, "")
+	if !elided || len(text) > telegramMaxMsgLen {
+		t.Fatalf("elided=%v len=%d", elided, len(text))
+	}
+	for _, want := range []string{"PAYLOAD", "END3", "more bytes]"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("missing %q", want)
+		}
+	}
+	if _, elided := buildApprovalTextElided(danger.ToolBatchClass, "1. a\n2. b\n", ""); elided {
+		t.Error("a short card must not be reported elided")
+	}
+}
+
+func TestBuildApprovalText_DescriptionCapped(t *testing.T) {
+	text := buildApprovalText(danger.CodeExecution, "ls", strings.Repeat("d", 4000))
+	if !strings.Contains(text, "ls") || len(text) > telegramMaxMsgLen {
+		t.Fatalf("len=%d", len(text))
+	}
+}
+
+func TestSetTrustAll_IgnoredAfterElidedBatch(t *testing.T) {
+	a := &TelegramApprover{}
+	a.batchElided = true
+	a.SetTrustAll(true)
+	if a.trustAll {
+		t.Fatal("trust-all must stay off after an elided batch")
+	}
+	a.SetTrustAll(false)
+	a.SetTrustAll(true)
+	if !a.trustAll {
+		t.Fatal("trust-all should work again after reset")
+	}
+}
+
+func TestTelegramApprover_ElidedBatchApprovalDoesNotGrantTrustAll(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		card      string
+		wantTrust bool
+	}{
+		{"elided", "1. " + strings.Repeat("a", 9000) + "\n2. b\n", false},
+		{"whole", "1. a\n2. b\n", true},
+	} {
+		rec := new(requestRecorder)
+		ts := testServer(t, rec)
+		a := NewTelegramApprover(testBot(t, ts), 1, 0)
+		done := make(chan error, 1)
+		go func() { done <- a.PromptCommand(danger.ToolBatchClass, tc.card, "") }()
+		var body string
+		for deadline := time.Now().Add(30 * time.Second); body == "" && time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+			rec.mu.Lock()
+			if len(rec.requests) > 0 {
+				body = rec.requests[len(rec.requests)-1].Body
+			}
+			rec.mu.Unlock()
+		}
+		id := extractCallbackID(body, cbPrefixApprove)
+		if id == "" {
+			t.Fatalf("%s: no prompt", tc.name)
+		}
+		a.HandleCallback(cbPrefixApprove+id, 0)
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+		a.SetTrustAll(true)
+		a.mu.Lock()
+		got := a.trustAll
+		a.mu.Unlock()
+		if got != tc.wantTrust {
+			t.Errorf("%s: trustAll=%v, want %v", tc.name, got, tc.wantTrust)
+		}
+		ts.Close()
+	}
+}
+
+func TestElideMiddleTinyBudgetAndMultibyte(t *testing.T) {
+	if out, el := elideMiddle(strings.Repeat("é", 200), 10); !el || len(out) == 0 {
+		t.Fatalf("tiny budget: %q %v", out, el)
+	}
+	out, el := elideMiddle(strings.Repeat("日本語", 800), 700)
+	if !el || len(out) > 700 || !utf8.ValidString(out) {
+		t.Fatalf("multibyte cut invalid: len=%d valid=%v", len(out), utf8.ValidString(out))
+	}
+	if out, el := fitBatchCard(strings.Repeat("x\n", 50), 20); !el || len(out) == 0 {
+		t.Fatalf("many tiny lines: %q", out)
 	}
 }

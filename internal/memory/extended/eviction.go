@@ -81,9 +81,10 @@ func (e *retentionDecayEvictor) SelectForEviction(sizedAtoms []sizedAtom, needBy
 // cannot provide a per-atom size, it falls back to len(text)+overhead.
 func buildSizedAtoms(store *AtomStore, atoms []MemoryAtom) []sizedAtom {
 	out := make([]sizedAtom, 0, len(atoms))
+	sizes, _ := store.AtomSizes()
 	for _, a := range atoms {
-		size, err := store.AtomSize(a.ID)
-		if err != nil {
+		size, ok := sizes[a.ID]
+		if !ok {
 			size = int64(len(a.Text)) + 256
 		}
 		out = append(out, sizedAtom{atom: a, size: size})

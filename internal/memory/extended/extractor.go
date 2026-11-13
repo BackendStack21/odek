@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/BackendStack21/odek/internal/session"
 )
@@ -108,13 +109,85 @@ func qualityViolation(text string) bool {
 	return ok
 }
 
-// untrustedRe matches nonce'd untrusted content wrappers so they can be
-// stripped before extraction.
-var untrustedRe = regexp.MustCompile(`(?s)<untrusted_content_[^\s>]*\s+source="[^"]*"\s*>.*?</untrusted_content_[^\s>]*>`)
-
-// StripUntrustedWrappers removes <untrusted_content_*> blocks from text.
+// StripUntrustedWrappers removes every untrusted region from text, leaving
+// only the principal's own words: nonce'd <untrusted_content_*> wrappers
+// (ended only by the close tag with the same nonce) and <untrusted_input_*>
+// fences around a delegated task. A region whose close tag is missing
+// (truncated content) runs to the end of the text. It is the same parser the
+// loop uses to tell the principal's text from ingested content.
 func StripUntrustedWrappers(text string) string {
-	return untrustedRe.ReplaceAllString(text, "")
+	return session.StripUntrustedBodies(text)
+}
+
+// maxRecallQueryRunes bounds the principal text recall hands to the memory
+// LLM (the intent-prediction and rerank prompts) and embeds as the query, and
+// each turn kept in the recent-message list that later predictions see. A
+// pasted log or document can run to hundreds of KB; the topic of a turn is
+// carried by far less. 2000 runes keep a long question with a short snippet
+// whole, and bound the predictor prompt (current turn plus ten recent turns)
+// to roughly 22K characters, which still fits the context of a small local
+// memory model. A longer text keeps both of its ends (elideMiddleRunes): the
+// commonest long principal message is a paste followed by the actual
+// question, and its opening usually says what the paste is. The same bound
+// applies to the wider vector-search text (recallSearchText).
+const maxRecallQueryRunes = 2000
+
+// recallQueryElision stands, on its own line, for the middle of a principal
+// text cut by elideMiddleRunes.
+const recallQueryElision = "\n…\n"
+
+// principalQuery returns the principal's own words in a user turn, as recall
+// may use them: untrusted regions removed, surrounding whitespace trimmed,
+// and at most maxRecallQueryRunes runes (elideMiddleRunes). It is empty when
+// nothing of the principal's remains.
+func principalQuery(msg string) string {
+	return elideMiddleRunes(strings.TrimSpace(StripUntrustedWrappers(msg)), maxRecallQueryRunes)
+}
+
+// recallSearchText returns the text the local vector search embeds for a
+// user turn: the principal's words together with the bodies of its untrusted
+// regions, tags removed, trimmed and bounded like principalQuery. A voice
+// transcript, a photo caption or an attached document can then still decide
+// which trusted atoms surface. It carries untrusted text, so it is only ever
+// embedded: it never reaches a memory-LLM prompt, the recent-message list or
+// a follow-up suggestion. It is empty when the turn has no text at all.
+func recallSearchText(msg string) string {
+	return elideMiddleRunes(strings.TrimSpace(session.UnwrapUntrustedBodies(msg)), maxRecallQueryRunes)
+}
+
+// elideMiddleRunes returns s unchanged when it has at most n runes.
+// Otherwise it keeps the first and the last part of s, splitting what the
+// recallQueryElision marker leaves of n between them (the head gets the odd
+// rune), so the result has exactly n runes and is cut on rune boundaries.
+// When n leaves no room beside the marker, s is cut to its first n runes.
+func elideMiddleRunes(s string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	total := utf8.RuneCountInString(s)
+	if total <= n {
+		return s
+	}
+	marker := utf8.RuneCountInString(recallQueryElision)
+	if n <= marker {
+		return clipRunes(s, n)
+	}
+	keep := n - marker
+	headRunes := keep - keep/2
+	tailFrom := total - keep/2 // rune index where the kept tail starts
+	headEnd, tailStart := len(s), len(s)
+	r := 0
+	for i := range s {
+		if r == headRunes {
+			headEnd = i
+		}
+		if r == tailFrom {
+			tailStart = i
+			break
+		}
+		r++
+	}
+	return s[:headEnd] + recallQueryElision + s[tailStart:]
 }
 
 // fenceRe matches a leading/trailing markdown code fence (``` or ```json)

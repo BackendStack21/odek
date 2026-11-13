@@ -82,11 +82,14 @@ func (d defaultExpansion) resolve(value string, known bool, expandWord func(stri
 // expandDefaultWord resolves a default expansion for expandToken. A resolved
 // word that the shell would split or glob cannot be one operand.
 func (s *shellAnalysisState) expandDefaultWord(token string, dollar int, separators string) (string, int, bool) {
-	if s.work != nil && s.work.literalDefaults {
-		return "", 0, false
-	}
 	d, ok := parseDefaultExpansion(token, dollar)
 	if !ok {
+		return "", 0, false
+	}
+	if d.op == "=" {
+		defer s.defaultAssigns(d)
+	}
+	if s.work != nil && s.work.literalDefaults {
 		return "", 0, false
 	}
 	value, known := s.vars[d.name]
@@ -100,4 +103,20 @@ func (s *shellAnalysisState) expandDefaultWord(token string, dollar int, separat
 		return dynamicSubstToken, d.end, true
 	}
 	return out, d.end, true
+}
+
+// defaultAssigns records the assignment ${NAME=word} and ${NAME:=word} make
+// when the default applies (NAME unset, or empty for the colon form, or not
+// known to the analysis). The new value is not carried: the expansion may sit
+// in a pipeline stage or a branch whose assignment does not outlive it, so the
+// name holds a value only known at run time (as after read), never the stale
+// or unset one, and later references stay unresolved.
+func (s *shellAnalysisState) defaultAssigns(d defaultExpansion) {
+	if value, known := s.vars[d.name]; known && (value != "" || !d.colon) {
+		return
+	}
+	s.vars[d.name] = dynamicSubstToken
+	if s.options != nil {
+		s.options.bind(d.name, s.optScope)
+	}
 }

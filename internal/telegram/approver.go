@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -65,8 +66,14 @@ type TelegramApprover struct {
 	mu       sync.Mutex
 	trusted  map[danger.RiskClass]bool
 	trustAll bool // when true, all PromptCommand calls auto-approve
-	log      Logger
-	cancel   chan struct{} // closed by Cancel() to interrupt waiting PromptCommand
+	// batchElided records whether the batch card the user approved most
+	// recently was shortened. It is set when the approval arrives, from that
+	// card's own prompt, so another card built or denied meanwhile never
+	// changes it. While set, SetTrustAll(true) is ignored: approving a
+	// shortened card never grants blanket trust for the entries it cut.
+	batchElided bool
+	log         Logger
+	cancel      chan struct{} // closed by Cancel() to interrupt waiting PromptCommand
 
 	// ChatID is the Telegram chat where approval prompts are sent.
 	ChatID int64
@@ -234,7 +241,7 @@ func (a *TelegramApprover) promptCommand(cls danger.RiskClass, cmd, description 
 
 	// Build the approval message — the full command is always shown so the
 	// user can make an informed decision.
-	text := buildApprovalText(cls, cmd, description)
+	text, elided := buildApprovalTextElided(cls, cmd, description)
 
 	// Send with inline keyboard. Hide the Trust Session button for classes
 	// that must be approved per-call.
@@ -309,6 +316,15 @@ func (a *TelegramApprover) promptCommand(cls danger.RiskClass, cmd, description 
 		switch action {
 		case "approve":
 			a.recordApproval(cls)
+			if cls == danger.ToolBatchClass {
+				// Trust-all follows the card the user approved: this one,
+				// whatever other card was built or answered meanwhile. It is
+				// recorded before PromptCommand returns, so the caller's
+				// SetTrustAll(true) sees it.
+				a.mu.Lock()
+				a.batchElided = elided
+				a.mu.Unlock()
+			}
 			return nil
 		case "trust":
 			if !allowTrust {
@@ -449,41 +465,258 @@ const telegramMaxMsgLen = 4096
 // exceed telegramMaxMsgLen, and when it is, the cut is explicit ("… [truncated]")
 // and made on a rune boundary.
 func buildApprovalText(cls danger.RiskClass, cmd, description string) string {
+	text, _ := buildApprovalTextElided(cls, cmd, description)
+	return text
+}
+
+// approvalDescriptionMax caps the model-supplied description shown in a
+// prompt, so a long description can never crowd the command out of the
+// message.
+const approvalDescriptionMax = 400
+
+// approvalTailBytes is the minimum tail of an over-long command that stays
+// visible: payloads sit at the end of a command, so the cut keeps head and
+// tail around an explicit marker with the omitted byte count.
+const approvalTailBytes = 1024
+
+// buildApprovalTextElided is buildApprovalText that also reports whether any
+// part of the command was left out of the message.
+func buildApprovalTextElided(cls danger.RiskClass, cmd, description string) (string, bool) {
 	// Control and bidi/invisible format characters in model-supplied text can
 	// make the chat show a different command from the one that runs; they are
-	// replaced by visible escapes before any Markdown handling.
-	cmd = danger.SanitizeForDisplay(cmd)
+	// replaced by visible escapes before any Markdown handling. A batch card
+	// is sanitized row by row as it is fitted (fitBatchCard), so its entries
+	// are counted before the display cap could cut any of them.
 	description = danger.SanitizeForDisplay(description)
 	var b strings.Builder
 	b.WriteString("⚠️ *Approval Required*\n\n")
 	fmt.Fprintf(&b, "Risk: `%s`\n", escapeCodeBlock(string(cls)))
 	if d := strings.TrimSpace(description); d != "" {
+		if len(d) > approvalDescriptionMax {
+			d = strings.TrimSpace(truncateRunes(d, approvalDescriptionMax)) + "…"
+		}
 		b.WriteString("Why: " + EscapeMarkdown(d) + "\n")
 	}
 
 	// Reserve room for the fixed parts (including the expiry footer) so the
 	// command body can be budgeted against Telegram's hard limit. The fences
-	// and a possible truncation marker are accounted for here.
+	// are accounted for here; the command itself is cut head+tail to fit.
 	const openFence = "```\n"
 	const closeFence = "\n```"
 	footer := fmt.Sprintf("\n\n⏳ _This request expires in %s — after that it is denied and nothing runs_", approvalDeadlineText())
 	overhead := b.Len() + len(openFence) + len(closeFence) + len(footer)
 
-	body := escapeCodeBlock(cmd)
-	if budget := telegramMaxMsgLen - overhead; len(body) > budget {
-		const marker = "\n… [truncated]"
-		// truncateRunes clamps a negative budget to an empty string.
-		body = truncateRunes(body, budget-len(marker))
-		// A dangling backslash left by truncation would escape the closing
-		// fence and corrupt the whole message — strip any trailing run.
-		body = strings.TrimRight(body, `\`) + marker
+	budget := telegramMaxMsgLen - overhead
+	var body string
+	var elided bool
+	if cls == danger.ToolBatchClass {
+		body, elided = fitBatchCard(cmd, budget)
+	} else {
+		body, elided = elideMiddle(danger.SanitizeForDisplay(cmd), budget)
 	}
 
 	b.WriteString(openFence)
 	b.WriteString(body)
 	b.WriteString(closeFence)
 	b.WriteString(footer)
-	return b.String()
+	return b.String(), elided
+}
+
+// elideMiddle escapes s for a code block. When the escaped text exceeds
+// maxEsc bytes it keeps the head and the tail (at least approvalTailBytes
+// where the budget allows) around an "…[N more bytes]" marker. The second
+// result reports whether anything was left out.
+func elideMiddle(s string, maxEsc int) (string, bool) {
+	return elideMiddleWith(s, maxEsc, escapeCodeBlock)
+}
+
+// elideMiddleWith is elideMiddle with the rendering of the kept text given:
+// esc renders each piece that is shown (the head and the tail, never the
+// marker). esc must never make text shorter.
+func elideMiddleWith(s string, maxEsc int, esc func(string) string) (string, bool) {
+	if len(s) <= maxEsc {
+		if e := esc(s); len(e) <= maxEsc {
+			return e, false
+		}
+	}
+	keep := maxEsc
+	// The marker's own width (its count has at most as many digits as len(s)),
+	// so a small budget is not over-reserved at the cost of the head.
+	markerLen := len(fmt.Sprintf("…[%d more bytes]", len(s)))
+	for keep > 0 {
+		tail := approvalTailBytes
+		if tail > keep/3 {
+			tail = keep / 3
+		}
+		head := keep - tail - markerLen
+		if head < 0 {
+			head = 0
+		}
+		if head > len(s) {
+			head = len(s)
+		}
+		for head > 0 && head < len(s) && !utf8.RuneStart(s[head]) {
+			head--
+		}
+		tailStart := len(s) - tail
+		if tailStart < head {
+			tailStart = head
+		}
+		for tailStart < len(s) && !utf8.RuneStart(s[tailStart]) {
+			tailStart++
+		}
+		out := esc(s[:head]) +
+			fmt.Sprintf("…[%d more bytes]", tailStart-head) +
+			esc(s[tailStart:])
+		if len(out) <= maxEsc {
+			return out, true
+		}
+		keep = keep*9/10 - 1
+	}
+	return fmt.Sprintf("…[%d more bytes]", len(s)), true
+}
+
+// batchMinEntryBytes is the smallest per-entry share a batch card shows. When
+// the entries cannot all get at least this much, only the leading and the
+// trailing ones are listed and a line between them states how many were left
+// out.
+const batchMinEntryBytes = 96
+
+// batchMoreLine states how many entries a shortened card leaves out.
+func batchMoreLine(n int) string {
+	return fmt.Sprintf("… and %d more entries not shown", n)
+}
+
+// batchDisplay renders batch-card text for the prompt: control, bidi and
+// invisible characters made visible by danger.SanitizeForDisplay, then
+// escaped for the code block.
+func batchDisplay(s string) string {
+	return escapeCodeBlock(danger.SanitizeForDisplay(s))
+}
+
+// batchCardParts splits a batch card into lines. A card laid out by the agent
+// loop (a header line, a blank line, the entries "  1. …", "  2. …" in order
+// and optionally a blank line and a note) has its header and note lines
+// returned apart from the entries: they are always shown and never counted as
+// entries. Any other text, such as a single multi-line command prompted as a
+// batch, is all entries, one per line. A trailing newline ends the last line;
+// it is not a line of its own.
+func batchCardParts(card string) (lead, entries, trail []string) {
+	lines := strings.Split(strings.TrimSuffix(card, "\n"), "\n")
+	if len(lines) < 3 || lines[1] != "" {
+		return nil, lines, nil
+	}
+	j := 2
+	for j < len(lines) && strings.HasPrefix(lines[j], "  "+strconv.Itoa(j-1)+". ") {
+		j++
+	}
+	rest := lines[j:]
+	if j == 2 || (len(rest) != 0 && (len(rest) != 2 || rest[0] != "")) {
+		return nil, lines, nil
+	}
+	return lines[:2], lines[2:j], rest
+}
+
+// fitBatchCard fits a batch approval card, as received, into maxEsc bytes by
+// giving every shown line a fair share of the room (short lines keep theirs
+// whole, the surplus goes to the longer ones), so each entry stays visible: a
+// long first entry can never push a later one out of the prompt. When the
+// share would fall below batchMinEntryBytes the card lists as many entries as
+// fit at that minimum, a leading run and a trailing run that ends with the
+// last entry, with a line stating the exact number of entries left out
+// between them. Entries are chosen and counted on the card as received;
+// only the text shown is sanitized (batchDisplay). The result never exceeds
+// maxEsc bytes and is reported elided unless the card is shown whole.
+func fitBatchCard(card string, maxEsc int) (string, bool) {
+	// Escapes only ever lengthen text, so a card longer than the room cannot
+	// fit and is never sanitized whole.
+	if len(card) <= maxEsc {
+		if e := batchDisplay(card); len(e) <= maxEsc {
+			return e, false
+		}
+	}
+	lead, entries, trail := batchCardParts(card)
+	pinned := 0 // the least room the header and note lines are planned with
+	for _, l := range lead {
+		pinned += batchRowCost(l)
+	}
+	for _, l := range trail {
+		pinned += batchRowCost(l)
+	}
+	shown := entries
+	more, at := "", 0
+	if pinned+len(entries)*(batchMinEntryBytes+1) > maxEsc+1 {
+		// Room for the hidden-entries line (its count has at most 20 digits).
+		reserve := len(batchMoreLine(0)) + 20 + 1
+		k := (maxEsc + 1 - pinned - reserve) / (batchMinEntryBytes + 1)
+		if k < 2 {
+			k = 2 // the first and the last entry are always listed
+		}
+		if k < len(entries) {
+			// Payloads sit at the end, so the omission is cut from the
+			// middle: a leading run, then a trailing run that ends with the
+			// last entry.
+			head := k / 2
+			more, at = batchMoreLine(len(entries)-k), len(lead)+head
+			shown = append(entries[:head:head], entries[len(entries)-(k-head):]...)
+		}
+	}
+	rows := make([]string, 0, len(lead)+len(shown)+len(trail))
+	rows = append(append(append(rows, lead...), shown...), trail...)
+	room := maxEsc - (len(rows) - 1) // newlines between rows
+	if more != "" {
+		room -= len(more) + 1
+	}
+	out := fitBatchRows(rows, room)
+	if more != "" {
+		out = append(out[:at], append([]string{more}, out[at:]...)...)
+	}
+	return strings.Join(out, "\n"), true
+}
+
+// batchRowCost is the least room a header or note line is planned with.
+func batchRowCost(l string) int {
+	if l == "" {
+		return 1
+	}
+	return batchMinEntryBytes + 1
+}
+
+// fitBatchRows renders rows within room bytes in total (newlines not
+// included) by giving each a fair share: rows that fit the share are shown
+// whole and the surplus goes to the longer ones, which keep their head and
+// tail around a "…[N more bytes]" marker.
+func fitBatchRows(rows []string, room int) []string {
+	size := make([]int, len(rows))
+	for i, l := range rows {
+		size[i] = room + 1 // longer than the room: never shown whole
+		if len(l) <= room {
+			size[i] = len(batchDisplay(l))
+		}
+	}
+	share := make([]int, len(rows))
+	done := make([]bool, len(rows))
+	left := len(rows)
+	for changed := true; changed && left > 0; {
+		changed = false
+		per := room / left
+		for i := range rows {
+			if !done[i] && size[i] <= per {
+				share[i], done[i] = size[i], true
+				room -= size[i]
+				left--
+				changed = true
+			}
+		}
+	}
+	out := make([]string, len(rows))
+	for i, l := range rows {
+		if !done[i] {
+			share[i] = room / left
+		}
+		out[i], _ = elideMiddleWith(l, share[i], batchDisplay)
+	}
+	return out
 }
 
 // escapeCodeBlock escapes the two characters that are special inside a
@@ -536,8 +769,13 @@ func (a *TelegramApprover) ResetTrust() {
 
 // SetTrustAll enables or disables blanket trust for all risk classes.
 // When enabled, PromptCommand returns nil for every call without prompting.
+// Enabling is refused while the batch card approved most recently was
+// shortened; disabling clears that record.
 func (a *TelegramApprover) SetTrustAll(enabled bool) {
 	a.mu.Lock()
-	a.trustAll = enabled
+	if !enabled {
+		a.batchElided = false
+	}
+	a.trustAll = enabled && !a.batchElided
 	a.mu.Unlock()
 }

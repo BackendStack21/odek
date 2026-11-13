@@ -159,9 +159,21 @@ var credentialDataExts = map[string]bool{
 }
 
 // credentialFileBase reports whether a path's final component names a file
-// that conventionally holds credentials, wherever it lives.
+// that conventionally holds credentials, wherever it lives. The name is
+// compared under each of its fold readings (foldReadings), so `.pgpaß` and
+// `id_rſa`, which a case-insensitive filesystem opens as `.pgpass` and
+// `id_rsa`, count too.
 func credentialFileBase(base string) bool {
-	b := strings.ToLower(base)
+	for _, b := range foldReadings(base) {
+		if credentialFileName(b) {
+			return true
+		}
+	}
+	return false
+}
+
+// credentialFileName is credentialFileBase for an already folded name.
+func credentialFileName(b string) bool {
 	switch b {
 	case ".env", "credentials", "credentials.json", "credentials.toml", ".netrc", "_netrc", ".npmrc", ".pypirc",
 		".git-credentials", "kubeconfig", "terraform.tfstate", ".htpasswd",
@@ -215,18 +227,24 @@ var (
 
 // credentialDirectory reports whether a file sits under a directory that
 // holds credentials. dir is the path before the file name; every component is
-// examined, not only the last.
+// examined, not only the last, under each fold reading of the directory
+// (`.aWſ`, `.ßh` and `.conﬁg/gh` name `.aws`, `.ssh` and `.config/gh` on a
+// case-insensitive filesystem). The source-code extension that exempts a file
+// in a plain secrets/ folder is only lower-cased: it is an exclusion, and a
+// spelling that is code only after full folding stays a credential.
 func credentialDirectory(dir, base string) bool {
-	parts := strings.Split(strings.ToLower(dir), "/")
 	ext := strings.TrimPrefix(strings.ToLower(filepath.Ext(base)), ".")
-	for i, p := range parts {
-		switch {
-		case credentialDotDirs[p]:
-			return true
-		case i+1 < len(parts) && credentialDirPairs[p+"/"+parts[i+1]]:
-			return true
-		case credentialPlainDirs[p] && !credentialCodeExts[ext] && base != "...":
-			return true
+	for _, folded := range foldReadings(dir) {
+		parts := strings.Split(folded, "/")
+		for i, p := range parts {
+			switch {
+			case credentialDotDirs[p]:
+				return true
+			case i+1 < len(parts) && credentialDirPairs[p+"/"+parts[i+1]]:
+				return true
+			case credentialPlainDirs[p] && !credentialCodeExts[ext] && base != "...":
+				return true
+			}
 		}
 	}
 	return false
@@ -286,9 +304,11 @@ func credentialPathToken(tok string) bool {
 		if longest < 3 {
 			return false
 		}
-		for _, sample := range credentialGlobSamples {
-			if ok, _ := filepath.Match(strings.ToLower(base), sample); ok {
-				return true
+		for _, pattern := range foldReadings(base) {
+			for _, sample := range credentialGlobSamples {
+				if ok, _ := filepath.Match(pattern, sample); ok {
+					return true
+				}
 			}
 		}
 	}

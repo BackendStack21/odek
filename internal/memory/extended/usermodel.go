@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"log"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/BackendStack21/odek/internal/guard"
 )
@@ -603,20 +605,123 @@ func filterScanned(in []string, scanner func(string) bool) []string {
 	return out
 }
 
+// The user model goes into every system prompt (Summary), into the intent
+// predictor's request and into the inference prompt, and inference adds to its
+// lists on most turns. Its size is therefore bounded where it is read and
+// written (boundUserState, applied by UserStateStore.Load and Save): each list
+// keeps its most recently seen entries, each string is cut to a bounded length,
+// and Summary gives each section its own budget.
+const (
+	maxUserModelListItems = 20
+	maxUserModelItemRunes = 300
+	// maxSummarySectionRunes bounds each rendered list and the pending-review
+	// section, so every section (and the closing delimiter) always renders.
+	maxSummarySectionRunes = 1500
+	// maxUserModelSummaryRunes bounds the rendered USER MODEL block as a whole.
+	maxUserModelSummaryRunes = 12000
+)
+
+// appendUnique returns base with add appended (see boundStrings): an entry
+// already present moves to the end, since it was just seen again, so the list
+// stays ordered by when each entry was last reinforced. Callers scan entries
+// before passing them in.
 func appendUnique(base, add []string) []string {
-	seen := make(map[string]bool, len(base))
-	for _, s := range base {
-		seen[s] = true
+	all := make([]string, 0, len(base)+len(add))
+	return boundStrings(append(append(all, base...), add...))
+}
+
+// boundStrings normalizes a list: entries trimmed and cut to
+// maxUserModelItemRunes, blanks dropped, duplicates collapsed to their last
+// position, and only the last maxUserModelListItems kept. One pass from the end,
+// so a list of any length costs one look at each entry until the limit is met.
+func boundStrings(list []string) []string {
+	if len(list) == 0 {
+		return list
 	}
-	for _, s := range add {
-		s = strings.TrimSpace(s)
+	kept := make([]string, 0, min(len(list), maxUserModelListItems))
+	seen := make(map[string]bool, cap(kept))
+	for i := len(list) - 1; i >= 0 && len(kept) < maxUserModelListItems; i-- {
+		s := clipRunes(strings.TrimSpace(list[i]), maxUserModelItemRunes)
 		if s == "" || seen[s] {
 			continue
 		}
 		seen[s] = true
-		base = append(base, s)
+		kept = append(kept, s)
 	}
-	return base
+	slices.Reverse(kept)
+	return kept
+}
+
+// boundUserState applies the size bounds to every list and free-text field.
+// It has no scanner: UserStateStore applies it to everything it reads and
+// writes, and the scan runs on the bounded result.
+func boundUserState(s UserState) UserState {
+	clip := func(v string) string { return clipRunes(v, maxUserModelItemRunes) }
+	s.Style.Verbosity = clip(s.Style.Verbosity)
+	s.Style.Humor = clip(s.Style.Humor)
+	s.Style.Formality = clip(s.Style.Formality)
+	s.Style.ExplanationDepth = clip(s.Style.ExplanationDepth)
+	s.Style.Tone = clip(s.Style.Tone)
+	s.Technical.Languages = boundStrings(s.Technical.Languages)
+	s.Technical.Patterns = boundStrings(s.Technical.Patterns)
+	s.Technical.Tools = boundStrings(s.Technical.Tools)
+	s.CurrentFocus.Project = clip(s.CurrentFocus.Project)
+	s.CurrentFocus.Task = clip(s.CurrentFocus.Task)
+	s.CurrentFocus.Blocker = clip(s.CurrentFocus.Blocker)
+	s.InteractionPatterns.CommonOpeners = boundStrings(s.InteractionPatterns.CommonOpeners)
+	s.InteractionPatterns.FollowupAfterRefactor = clip(s.InteractionPatterns.FollowupAfterRefactor)
+	s.InteractionPatterns.FollowupAfterBugfix = clip(s.InteractionPatterns.FollowupAfterBugfix)
+	if len(s.PendingReview) > 0 {
+		pending := make([]PendingReview, len(s.PendingReview))
+		for i, p := range s.PendingReview {
+			p.Value = clip(p.Value)
+			p.Evidence = clip(p.Evidence)
+			pending[i] = p
+		}
+		s.PendingReview = pending
+	}
+	return s
+}
+
+// clipRunes cuts s to at most n runes, on a rune boundary.
+func clipRunes(s string, n int) string {
+	if len(s) <= n || utf8.RuneCountInString(s) <= n {
+		return s
+	}
+	cut := 0
+	for i := range s {
+		if n == 0 {
+			cut = i
+			break
+		}
+		n--
+	}
+	return s[:cut]
+}
+
+// joinBounded joins items with ", " up to budget runes, ending in "…" when items
+// were left out.
+func joinBounded(items []string, budget int) string {
+	var b strings.Builder
+	used := 0
+	for i, it := range items {
+		sep := ""
+		if i > 0 {
+			sep = ", "
+		}
+		n := utf8.RuneCountInString(sep) + utf8.RuneCountInString(it)
+		if used+n > budget {
+			if i == 0 {
+				b.WriteString(clipRunes(it, budget))
+			}
+			b.WriteString(" …")
+			break
+		}
+		b.WriteString(sep)
+		b.WriteString(it)
+		used += n
+	}
+	return b.String()
 }
 
 // scanUserState scans every string value in a loaded UserState and clears
@@ -639,9 +744,11 @@ func scanUserState(s UserState, scanner func(string) bool) UserState {
 		s.Style.Tone = ""
 	}
 
-	s.Technical.Languages = filterScanned(s.Technical.Languages, scanner)
-	s.Technical.Patterns = filterScanned(s.Technical.Patterns, scanner)
-	s.Technical.Tools = filterScanned(s.Technical.Tools, scanner)
+	// Bounded first (normally already done by the store), then scanned: the
+	// scan sees exactly what can reach a prompt, at most a list's worth.
+	s.Technical.Languages = filterScanned(boundStrings(s.Technical.Languages), scanner)
+	s.Technical.Patterns = filterScanned(boundStrings(s.Technical.Patterns), scanner)
+	s.Technical.Tools = filterScanned(boundStrings(s.Technical.Tools), scanner)
 
 	if !scanner(s.CurrentFocus.Project) {
 		s.CurrentFocus.Project = ""
@@ -653,7 +760,7 @@ func scanUserState(s UserState, scanner func(string) bool) UserState {
 		s.CurrentFocus.Blocker = ""
 	}
 
-	s.InteractionPatterns.CommonOpeners = filterScanned(s.InteractionPatterns.CommonOpeners, scanner)
+	s.InteractionPatterns.CommonOpeners = filterScanned(boundStrings(s.InteractionPatterns.CommonOpeners), scanner)
 	if !scanner(s.InteractionPatterns.FollowupAfterRefactor) {
 		s.InteractionPatterns.FollowupAfterRefactor = ""
 	}
@@ -849,13 +956,13 @@ func (u *UserModel) Summary() string {
 	if len(state.Technical.Languages) > 0 || len(state.Technical.Patterns) > 0 || len(state.Technical.Tools) > 0 {
 		b.WriteString("Technical:\n")
 		if len(state.Technical.Languages) > 0 {
-			fmt.Fprintf(&b, "  languages: %s\n", strings.Join(state.Technical.Languages, ", "))
+			fmt.Fprintf(&b, "  languages: %s\n", joinBounded(state.Technical.Languages, maxSummarySectionRunes))
 		}
 		if len(state.Technical.Patterns) > 0 {
-			fmt.Fprintf(&b, "  patterns: %s\n", strings.Join(state.Technical.Patterns, ", "))
+			fmt.Fprintf(&b, "  patterns: %s\n", joinBounded(state.Technical.Patterns, maxSummarySectionRunes))
 		}
 		if len(state.Technical.Tools) > 0 {
-			fmt.Fprintf(&b, "  tools: %s\n", strings.Join(state.Technical.Tools, ", "))
+			fmt.Fprintf(&b, "  tools: %s\n", joinBounded(state.Technical.Tools, maxSummarySectionRunes))
 		}
 	}
 	if f := state.CurrentFocus; f.Project != "" || f.Task != "" || f.Blocker != "" {
@@ -873,7 +980,7 @@ func (u *UserModel) Summary() string {
 	if ip := state.InteractionPatterns; len(ip.CommonOpeners) > 0 || ip.FollowupAfterRefactor != "" || ip.FollowupAfterBugfix != "" {
 		b.WriteString("Interaction patterns:\n")
 		if len(ip.CommonOpeners) > 0 {
-			fmt.Fprintf(&b, "  common openers: %s\n", strings.Join(ip.CommonOpeners, ", "))
+			fmt.Fprintf(&b, "  common openers: %s\n", joinBounded(ip.CommonOpeners, maxSummarySectionRunes))
 		}
 		if ip.FollowupAfterRefactor != "" {
 			fmt.Fprintf(&b, "  follow-up after refactor: %s\n", ip.FollowupAfterRefactor)
@@ -884,12 +991,24 @@ func (u *UserModel) Summary() string {
 	}
 	if len(state.PendingReview) > 0 {
 		fmt.Fprintf(&b, "Pending review (%d):\n", len(state.PendingReview))
+		used := 0
 		for _, p := range state.PendingReview {
-			fmt.Fprintf(&b, "  • %s = %q (confidence %.2f)\n", p.Field, p.Value, p.Confidence)
+			line := fmt.Sprintf("  • %s = %q (confidence %.2f)\n", p.Field, p.Value, p.Confidence)
+			if used += utf8.RuneCountInString(line); used > maxSummarySectionRunes {
+				b.WriteString("  …\n")
+				break
+			}
+			b.WriteString(line)
 		}
 	}
-	b.WriteString("────────────────────\n")
+	const closing = "────────────────────\n"
 	summary := b.String()
+	if utf8.RuneCountInString(summary) > maxUserModelSummaryRunes {
+		// A backstop only: the section budgets keep the block well under it.
+		// The closing line always stays, so the block remains delimited.
+		summary = clipRunes(summary, maxUserModelSummaryRunes) + "\n…\n"
+	}
+	summary += closing
 	if err := u.scanContent(context.Background(), summary); err != nil {
 		log.Printf("extended memory: user-model summary rejected by scan: %v", err)
 		return ""

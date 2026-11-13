@@ -1,6 +1,7 @@
 package telegram
 
 import (
+	"encoding/json"
 	"os"
 	"testing"
 )
@@ -895,4 +896,22 @@ func searchString(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+func TestTelegramConfigUnmarshalJSON(t *testing.T) {
+	var c TelegramConfig
+	if err := json.Unmarshal([]byte(`{"bot_token":"t"}`), &c); err != nil || c.AgentTimeout != 900 {
+		t.Fatalf("omitted timeout: %v %+v", err, c)
+	}
+	c = TelegramConfig{}
+	if err := json.Unmarshal([]byte(`{"agent_timeout_seconds":0}`), &c); err != nil || c.AgentTimeout != 0 {
+		t.Fatalf("explicit zero: %v %+v", err, c)
+	}
+	c = TelegramConfig{Token: "keep", AgentTimeout: 5}
+	if err := json.Unmarshal([]byte(`{"health_addr":"h"}`), &c); err != nil || c.Token != "keep" || c.AgentTimeout != 5 || c.HealthAddr != "h" {
+		t.Fatalf("merge: %v %+v", err, c)
+	}
+	if err := json.Unmarshal([]byte(`{"bot_token":1}`), &c); err == nil {
+		t.Fatal("type error must surface")
+	}
 }

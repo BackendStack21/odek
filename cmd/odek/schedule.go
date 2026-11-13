@@ -643,11 +643,11 @@ func (d telegramDeliverer) recordScheduledTurn(chatID int64, job schedule.Job, r
 // scheduledRunTaintState is what a scheduled run's content may carry into the
 // chat it is delivered to: untrusted is the delegation taint (the run ingested
 // externally sourced content), episode the memory-gate taint, spans the
-// untrusted spans its content recorded.
+// untrusted-span state its content recorded (spans and overflow filter).
 type scheduledRunTaintState struct {
 	untrusted bool
 	episode   bool
-	spans     []session.TaintSpan
+	spans     session.TaintState
 }
 
 // scheduledRunTaint is a write-once-per-run sink the headless run fills in.
@@ -1044,10 +1044,10 @@ func runTaskHeadless(ctx context.Context, resolved config.ResolvedConfig, system
 		sink.set(scheduledRunTaintState{
 			untrusted: agent.UntrustedIngested(),
 			episode:   len(session.EpisodeTaintSources(messages)) > 0,
-			spans:     agent.TaintSpans(messages),
+			spans:     agent.TaintState(messages),
 		})
 	}
-	tokens := int64(lastInfo.InputTokens + lastInfo.OutputTokens)
+	tokens := dailyBudgetTokens(lastInfo)
 	return result, tokens, err
 }
 

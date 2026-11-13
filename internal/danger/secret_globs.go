@@ -162,7 +162,7 @@ func globNamesSensitivePath(tok string) bool {
 			}
 			continue
 		}
-		if globWindowMatch(pat, globSegments(strings.ToLower(frag))) {
+		if globWindowMatch(pat, globSegments(FoldPathCase(frag))) {
 			return true
 		}
 	}

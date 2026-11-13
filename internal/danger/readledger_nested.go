@@ -120,6 +120,10 @@ func nestedLanguageOfInterpreter(name string) string {
 const nestedUnanalyzed = "unanalyzed"
 
 func nestedLanguageOfFile(path, text string) string {
+	// The extension picks how a read script is inspected; it is not a
+	// protected-name check and is not folded: an extension recognised only
+	// after full folding falls through to the shebang and the shell reading,
+	// as for any unknown suffix.
 	switch strings.ToLower(filepath.Ext(path)) {
 	case ".tcl", ".ps1", ".psm1", ".r", ".scala", ".java", ".groovy", ".kts", ".applescript", ".scpt", ".nu", ".swift", ".jl", ".ex", ".exs", ".erl", ".hs", ".clj", ".dart":
 		return nestedUnanalyzed
@@ -353,6 +357,8 @@ func inlinePayloadTargets(key, cmd string) []string {
 // nestedIsShellScript reports whether text runs under a shell: a shell shebang,
 // a shell suffix, or no shebang at all (the ENOEXEC fallback).
 func nestedIsShellScript(path, text string) bool {
+	// Not folded, like nestedLanguageOfFile: the suffix is a hint about the
+	// content, and an unknown one is judged by the text.
 	switch strings.ToLower(filepath.Ext(path)) {
 	case ".sh", ".bash", ".zsh", ".ksh", ".dash":
 		return true
@@ -424,6 +430,13 @@ type shellScan struct {
 	failed  bool
 	// pipeNext marks the next command as reading from a pipe.
 	pipeNext bool
+	// parens counts the subshells (and function-definition parentheses)
+	// opened by `(` in the command list being scanned, so the `)` closing
+	// one is not read as the end of the substitution that holds it.
+	parens int
+	// honorSingle reads a single quote inside a double-quoted ${...} as a
+	// quote: the second reading paramExpansion compares against.
+	honorSingle bool
 }
 
 type shellHeredoc struct {
@@ -510,6 +523,9 @@ func (s *shellScan) word() string {
 	var quote byte
 	for s.pos < len(s.text) {
 		c := s.text[s.pos]
+		if quote != '\'' && c != '\\' && s.expansion(quote == '"') {
+			continue
+		}
 		switch {
 		case quote == '\'':
 			if c == '\'' {
@@ -517,39 +533,13 @@ func (s *shellScan) word() string {
 			}
 		case c == '\\':
 			s.pos++
-		case c == '$' && s.pos+1 < len(s.text) && s.text[s.pos+1] == '(':
-			if s.pos+2 < len(s.text) && s.text[s.pos+2] == '(' {
-				begin := s.pos + 3
-				s.skipBalanced('(', ')') // $(( arithmetic )), which can still hold a substitution
-				s.scanRegion(begin, s.pos)
-				continue
-			}
-			if s.depth >= maxShellSubstitutionDepth {
+		case quote == 0 && c == '$' && s.pos+1 < len(s.text) && s.text[s.pos+1] == '\'':
+			// $'...' reads backslash escapes, so \' does not end it.
+			end, ok := skipAnsiC(s.text, s.pos+1)
+			s.pos = end
+			if !ok {
 				s.failed = true
-				s.pos = len(s.text)
-				return s.text[start:]
 			}
-			s.pos += 2
-			s.depth++
-			s.scan()
-			s.depth--
-			continue
-		case c == '`':
-			end := strings.IndexByte(s.text[s.pos+1:], '`')
-			if end < 0 {
-				s.pos = len(s.text)
-				s.failed = true
-				return s.text[start:]
-			}
-			inner, complete := parseShellCommands(s.text[s.pos+1 : s.pos+1+end])
-			s.cmds = append(s.cmds, inner...)
-			s.failed = s.failed || !complete
-			s.pos += end + 2
-			continue
-		case c == '$' && s.pos+1 < len(s.text) && s.text[s.pos+1] == '{':
-			begin := s.pos + 2
-			s.skipBalanced('{', '}') // ${X:-$(cmd)} runs cmd
-			s.scanRegion(begin, s.pos)
 			continue
 		case quote == '"':
 			if c == '"' {
@@ -562,24 +552,285 @@ func (s *shellScan) word() string {
 		}
 		s.pos++
 	}
+	if quote != 0 {
+		s.failed = true // the text ends inside a quote: what follows cannot be told from data
+	}
 	return s.text[start:min(s.pos, len(s.text))]
 }
 
-func (s *shellScan) skipBalanced(open, closer byte) {
-	depth := 0
-	for s.pos < len(s.text) {
-		switch s.text[s.pos] {
-		case open:
-			depth++
-		case closer:
-			depth--
-			if depth == 0 {
-				s.pos++
-				return
+// expansion consumes exactly the expansion that starts at s.pos — $(command),
+// $((arithmetic)), `command` or ${parameter} — following the commands it
+// runs, and reports whether there was one. Nothing after its closing
+// delimiter is read, so the caller keeps its own quote context. inDouble says
+// the expansion sits inside double quotes or a here-document body, where
+// bash reads a single quote inside ${...} as an ordinary character.
+func (s *shellScan) expansion(inDouble bool) bool {
+	text, at := s.text, s.pos
+	if at+1 >= len(text) || (text[at] != '$' && text[at] != '`') {
+		return false
+	}
+	switch {
+	case text[at] == '`':
+		end := strings.IndexByte(text[at+1:], '`')
+		if end < 0 {
+			s.pos = len(text)
+			s.failed = true
+			return true
+		}
+		inner, complete := parseShellCommands(text[at+1 : at+1+end])
+		s.cmds = append(s.cmds, inner...)
+		s.failed = s.failed || !complete
+		s.pos = at + end + 2
+	case text[at+1] == '(' && at+2 < len(text) && text[at+2] == '(' && isArithmetic(text, at):
+		// The arithmetic can still hold a substitution. Its end must be the
+		// same whether or not a single quote hides a parenthesis.
+		s.skipBalanced('(', ')', true)
+		s.scanRegion(at+3, s.pos, true)
+	case text[at+1] == '(':
+		if s.depth >= maxShellSubstitutionDepth {
+			s.failed = true
+			s.pos = len(text)
+			return true
+		}
+		if at+2 < len(text) && text[at+2] == '(' {
+			if _, balanced := arithmeticExpansion(text, at); !balanced {
+				// Neither reading can be confirmed: the parse fails
+				// closed, and the text is still followed as commands so
+				// what it would run is known.
+				s.failed = true
 			}
 		}
-		s.pos++
+		s.pos = at + 2
+		s.scanSubstitution()
+	case text[at+1] == '{':
+		s.paramExpansion(inDouble) // ${X:-$(cmd)} runs cmd
+	default:
+		return false
 	}
+	return true
+}
+
+// paramExpansion consumes the ${...} whose `$` is at s.pos in one pass,
+// following the commands of the expansions nested in it ($(...), `...`,
+// ${...}, $((...)), each read as one construct, so a `}` inside a nested
+// substitution does not end it). As in bash, the construct ends at the first
+// `}` outside quotes and nested expansions; a bare `{` opens nothing.
+//
+// Inside a double-quoted construct (inDouble) bash reads a single quote as an
+// ordinary character, while other shells (and bash for some operators) read
+// it as a quote. When such a single quote occurs, the construct is read again
+// honouring it, over the same text only, and the parse fails closed if the two
+// readings end in different places.
+func (s *shellScan) paramExpansion(inDouble bool) {
+	start := s.pos
+	if s.depth >= maxShellSubstitutionDepth {
+		s.failed = true
+		s.pos = len(s.text)
+		return
+	}
+	s.depth++
+	defer func() { s.depth-- }()
+	s.pos += 2
+	double := false // inside "..." within the construct
+	ambiguous := false
+	for s.pos < len(s.text) {
+		c := s.text[s.pos]
+		switch {
+		case c == '\\':
+			s.pos += 2
+		case c == '}' && !double:
+			s.pos++
+			if ambiguous && !s.honorSingle {
+				alt := &shellScan{text: s.text[:s.pos], pos: start, depth: s.depth - 1, honorSingle: true}
+				alt.paramExpansion(true)
+				if alt.failed || alt.pos != s.pos {
+					s.failed = true
+				}
+			}
+			return
+		case s.expansion(inDouble || double):
+		case c == '"':
+			double = !double
+			s.pos++
+		case c == '\'' && double:
+			s.pos++ // an ordinary character inside "..."
+		case c == '\'' && inDouble && !s.honorSingle:
+			ambiguous = true
+			s.pos++
+		case c == '\'':
+			if s.pos > start+2 && s.text[s.pos-1] == '$' {
+				end, ok := skipAnsiC(s.text, s.pos)
+				s.pos = end
+				if !ok {
+					s.failed = true
+				}
+				continue
+			}
+			end := strings.IndexByte(s.text[s.pos+1:], '\'')
+			if end < 0 {
+				s.pos = len(s.text)
+				s.failed = true
+				return
+			}
+			s.pos += end + 2
+		default:
+			s.pos++
+		}
+	}
+	s.pos = len(s.text)
+	s.failed = true // the construct never ends
+}
+
+// scanSubstitution reads the commands of a substitution whose opening `$(` or
+// `<(` is behind s.pos, up to its closing `)`. Subshells opened inside it are
+// counted afresh, so their `)` does not end it early.
+func (s *shellScan) scanSubstitution() {
+	saved := s.parens
+	s.parens = 0
+	s.depth++
+	s.scan()
+	s.depth--
+	s.parens = saved
+}
+
+// arithmeticExpansion reports whether the `$((` at text[at] is arithmetic:
+// bash reads it so only when the group the second parenthesis opens closes
+// right before the first one does, and otherwise reads a command substitution
+// holding a subshell (`$((cmd) )`, `$((cmd) | tr a b)`), whose commands run.
+// balanced is false when the groups do not close, so neither reading can be
+// confirmed.
+func arithmeticExpansion(text string, at int) (arithmetic, balanced bool) {
+	inner, ok := skipBalancedEnd(text, at+2, '(', ')', true)
+	outer, outerOK := skipBalancedEnd(text, at+1, '(', ')', true)
+	balanced = ok && outerOK
+	return balanced && outer == inner+1, balanced
+}
+
+func isArithmetic(text string, at int) bool {
+	arithmetic, _ := arithmeticExpansion(text, at)
+	return arithmetic
+}
+
+// skipAnsiC returns the offset after the $'...' string whose opening quote is
+// at text[quote], and whether it was closed.
+func skipAnsiC(text string, quote int) (int, bool) {
+	for i := quote + 1; i < len(text); i++ {
+		switch text[i] {
+		case '\\':
+			i++
+		case '\'':
+			return i + 1, true
+		}
+	}
+	return len(text), false
+}
+
+// skipDoubleBracket returns the offset after the ]] that closes the [[ whose
+// opener ends at pos. A ]] inside quotes is data.
+func skipDoubleBracket(text string, pos int) (int, bool) {
+	var quote byte
+	for i := pos; i < len(text); i++ {
+		c := text[i]
+		switch {
+		case quote == '\'':
+			if c == '\'' {
+				quote = 0
+			}
+		case quote == '"':
+			switch c {
+			case '\\':
+				i++
+			case '"':
+				quote = 0
+			}
+		case c == '\\':
+			i++
+		case c == '"' || c == '\'':
+			if c == '\'' && i > 0 && text[i-1] == '$' {
+				end, ok := skipAnsiC(text, i)
+				if !ok {
+					return len(text), false
+				}
+				i = end - 1
+				continue
+			}
+			quote = c
+		case c == ']' && i+1 < len(text) && text[i+1] == ']':
+			return i + 2, true
+		}
+	}
+	return len(text), false
+}
+
+// skipBalanced moves past the construct that starts at the open byte under the
+// pointer, to the byte after its matching closer. Quotes inside it hide the
+// delimiters they hold: '...', "...", $'...' (with backslash escapes) and
+// backslash-escaped bytes. Single quotes inside a double-quoted parameter
+// expansion are read differently by different shells, so when the text is
+// double-quoted and the two readings end in different places, or the construct
+// never ends, the scan is marked failed and callers treat the script as one
+// they cannot follow.
+func (s *shellScan) skipBalanced(open, closer byte, inDouble bool) {
+	end, ok := skipBalancedEnd(s.text, s.pos, open, closer, true)
+	if inDouble {
+		other, otherOK := skipBalancedEnd(s.text, s.pos, open, closer, false)
+		if ok != otherOK || other != end {
+			ok = false
+		}
+	}
+	s.pos = end
+	if !ok {
+		s.failed = true
+	}
+}
+
+// skipBalancedEnd returns the offset after the closer matching the open byte at
+// text[pos] and whether it was found. honorSingle says whether a single quote
+// begins a quoted string.
+func skipBalancedEnd(text string, pos int, open, closer byte, honorSingle bool) (int, bool) {
+	depth := 0
+	var quote byte
+	for i := pos; i < len(text); i++ {
+		c := text[i]
+		switch {
+		case quote == '\'':
+			if c == '\'' {
+				quote = 0
+			}
+		case quote == 'a': // $'...': backslash escapes the next byte
+			switch c {
+			case '\\':
+				i++
+			case '\'':
+				quote = 0
+			}
+		case quote == '"':
+			switch c {
+			case '\\':
+				i++
+			case '"':
+				quote = 0
+			}
+		case c == '\\':
+			i++
+		case c == '"':
+			quote = '"'
+		case c == '\'' && honorSingle:
+			if i > 0 && text[i-1] == '$' {
+				quote = 'a'
+			} else {
+				quote = '\''
+			}
+		case c == open:
+			depth++
+		case c == closer:
+			depth--
+			if depth == 0 {
+				return i + 1, true
+			}
+		}
+	}
+	return len(text), false
 }
 
 // scanCommand reads one simple command. It reports true when it reached the )
@@ -643,13 +894,18 @@ func (s *shellScan) scanCommand() (closed bool) {
 			if n := len(cmd.words); n > 0 && strings.HasSuffix(cmd.words[n-1], "=") {
 				begin := s.pos
 				s.pos--
-				s.skipBalanced('(', ')') // an array literal holds data, and perhaps a substitution
-				s.scanRegion(begin, s.pos)
+				s.skipBalanced('(', ')', false) // an array literal holds data, and perhaps a substitution
+				s.scanRegion(begin, s.pos, false)
 				continue
 			}
+			s.parens++
 			return false
 		case ')':
 			s.pos++
+			if s.parens > 0 {
+				s.parens-- // the end of a subshell, not of the substitution
+				return false
+			}
 			return s.depth > 0
 		case '<', '>':
 			s.scanRedirect(&cmd)
@@ -666,12 +922,13 @@ func (s *shellScan) scanCommand() (closed bool) {
 		}
 		if word == "[[" {
 			begin := s.pos
-			if i := strings.Index(s.text[s.pos:], "]]"); i >= 0 {
-				s.pos += i + 2
+			if end, ok := skipDoubleBracket(s.text, s.pos); ok {
+				s.pos = end
 			} else {
 				s.pos = len(s.text)
+				s.failed = true
 			}
-			s.scanRegion(begin, s.pos)
+			s.scanRegion(begin, s.pos, false)
 			cmd.words = append(cmd.words, word)
 			continue
 		}
@@ -746,9 +1003,7 @@ func (s *shellScan) scanRedirect(cmd *shellCommand) {
 		return
 	case strings.HasPrefix(rest, "<("):
 		s.pos += 2
-		s.depth++
-		s.scan()
-		s.depth--
+		s.scanSubstitution()
 		cmd.words = append(cmd.words, shellProcessSubstitution)
 		return
 	case rest[0] == '<':
@@ -800,44 +1055,63 @@ func (s *shellScan) readHeredocs() {
 	s.pending = nil
 }
 
-// scanRegion follows the substitutions inside text the parser otherwise treats as data.
-func (s *shellScan) scanRegion(begin, end int) {
+// scanRegion follows the substitutions inside text[begin:end], a construct the
+// parser otherwise treats as data whose end is already known: a ${...} body,
+// $((...)), [[ ... ]] or an array literal. Substitutions run unquoted and
+// inside double quotes; a single-quoted span hides them, except where a
+// single quote is an ordinary character — inside double quotes, and
+// throughout a construct that is itself double-quoted (inDouble), as bash
+// reads `"${x:-'$(cmd)'}"`.
+func (s *shellScan) scanRegion(begin, end int, inDouble bool) {
 	if begin >= end || end > len(s.text) {
 		return
 	}
-	// Single quotes make what they hold data here, unlike in a here-document.
-	region := []byte(s.text[begin:end])
-	inQuote := false
-	for i, c := range region {
+	sub := &shellScan{text: s.text[:end], pos: begin, depth: s.depth}
+	double := false
+	for sub.pos < end {
+		c := sub.text[sub.pos]
 		switch {
-		case c == '\'':
-			inQuote = !inQuote
-		case inQuote:
-			region[i] = ' '
+		case c == '\\':
+			sub.pos += 2
+		case sub.expansion(inDouble || double):
+		case c == '"':
+			double = !double
+			sub.pos++
+		case c == '\'' && !inDouble && !double:
+			if sub.pos > begin && sub.text[sub.pos-1] == '$' {
+				sub.pos, _ = skipAnsiC(sub.text, sub.pos)
+				continue
+			}
+			if close := strings.IndexByte(sub.text[sub.pos+1:], '\''); close >= 0 {
+				sub.pos += close + 2
+			} else {
+				sub.pos = end
+			}
+		default:
+			sub.pos++
 		}
 	}
-	s.scanHeredocBody(string(region))
+	s.cmds = append(s.cmds, sub.cmds...)
+	s.failed = s.failed || sub.failed
 }
 
 // scanHeredocBody follows the substitutions of an unquoted here-document, which
-// run even though the rest of it is data.
+// run even though the rest of it is data. Quotes are ordinary characters there:
+// only a backslash and the expansions ($(...), `...`, ${...}, $((...))) are
+// active, each read as one construct and never as the start of a shell word.
 func (s *shellScan) scanHeredocBody(body string) {
-	for i := 0; i < len(body); i++ {
-		if body[i] == '\\' {
-			i++
-			continue
-		}
-		if body[i] != '`' && !strings.HasPrefix(body[i:], "$(") {
-			continue
-		}
-		sub := &shellScan{text: body, pos: i, depth: s.depth}
-		sub.word()
-		s.cmds = append(s.cmds, sub.cmds...)
-		s.failed = s.failed || sub.failed
-		if sub.pos > i {
-			i = sub.pos - 1
+	sub := &shellScan{text: body, depth: s.depth}
+	for sub.pos < len(body) {
+		switch {
+		case body[sub.pos] == '\\':
+			sub.pos += 2
+		case sub.expansion(true):
+		default:
+			sub.pos++
 		}
 	}
+	s.cmds = append(s.cmds, sub.cmds...)
+	s.failed = s.failed || sub.failed
 }
 
 // shellProcessSubstitution stands in for a <( ) operand.
@@ -897,29 +1171,46 @@ func (c shellCommand) program() int {
 	for i := 0; i < len(c.words); {
 		word := c.words[i]
 		bare := strings.Trim(word, `"'`)
+		// A wrapper is known by its command name, however it is spelled:
+		// /usr/bin/env and "/usr/bin/env" are env.
+		name := commandName(bare)
 		switch {
-		case shellKeywords[bare] || shellAssignment.MatchString(word):
+		case shellAssignment.MatchString(word):
 			i++
-		case shellWrappers[bare]:
+		case shellKeywords[bare] && name != "time":
+			i++
+		case shellWrappers[name] || name == "time":
 			// command -v and friends ask about a name without running it.
-			if (bare == "command" || bare == "builtin") && i+1 < len(c.words) && strings.HasPrefix(c.words[i+1], "-v") {
+			if (name == "command" || name == "builtin") && i+1 < len(c.words) && strings.HasPrefix(c.words[i+1], "-v") {
 				return -1
 			}
-			if (bare == "command") && i+1 < len(c.words) && c.words[i+1] == "-V" {
+			if (name == "command") && i+1 < len(c.words) && c.words[i+1] == "-V" {
 				return -1
+			}
+			// time's options and the fixed operands of taskset, chrt, flock
+			// and script come from the grammar the classifier unwraps with.
+			if name == "time" || wrapperOperands[name] > 0 {
+				tokens := make([]string, len(c.words))
+				for k, w := range c.words {
+					tokens[k] = strings.Trim(w, `"'`)
+				}
+				if step, ok := wrapperAt(tokens, i); ok && step.payload == "" && len(step.splits) == 0 {
+					i = step.next
+					continue
+				}
 			}
 			i++
 			for i < len(c.words) && strings.HasPrefix(c.words[i], "-") {
 				flag := c.words[i]
 				i++
-				if shellWrapperTakesValue(bare, flag) && i < len(c.words) {
+				if shellWrapperTakesValue(name, flag) && i < len(c.words) {
 					i++
 				}
 			}
-			if (bare == "timeout" || bare == "gtimeout") && i < len(c.words) {
+			if (name == "timeout" || name == "gtimeout") && i < len(c.words) {
 				i++ // the duration
 			}
-			if bare == "chroot" && i < len(c.words) {
+			if name == "chroot" && i < len(c.words) {
 				i++ // the new root
 			}
 		default:

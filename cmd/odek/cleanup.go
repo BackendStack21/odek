@@ -170,8 +170,8 @@ func collectCleanupCandidates(home string, cfg maintenance.Config) cleanupCandid
 
 // sessionCandidates lists the session files Store.Cleanup (and therefore the
 // sweep) would delete for cutoff: the store's own listing filtered by the
-// same session.CleanupExpired rule, so pinned sessions are kept out of the
-// preview exactly as the sweep keeps them. Unreadable sessions are skipped,
+// same session.CleanupExpired rule, so pinned sessions and sessions with a
+// running turn are kept out of the preview exactly as the sweep keeps them. Unreadable sessions are skipped,
 // mirroring Cleanup.
 func sessionCandidates(home string, cutoff time.Time) []string {
 	store, err := session.NewStoreWithDir(filepath.Join(home, "sessions"))
@@ -184,7 +184,7 @@ func sessionCandidates(home string, cutoff time.Time) []string {
 	}
 	var out []string
 	for _, s := range sessions {
-		if session.CleanupExpired(s.UpdatedAt, s.Pinned, cutoff) {
+		if session.CleanupExpired(s.UpdatedAt, s.Pinned, cutoff) && !store.ExecutionLeased(s.ID) {
 			out = append(out, store.Path(s.ID))
 		}
 	}

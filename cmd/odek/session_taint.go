@@ -16,9 +16,10 @@ func withSessionTaint(ctx context.Context, sess *session.Session) context.Contex
 	if sess == nil {
 		return ctx
 	}
-	// The persisted untrusted spans seed the untrusted-args gate for the
-	// same reason: the content they came from may be gone from the history.
-	ctx = loop.WithTaintSpanSeed(ctx, sess.TaintSpans)
+	// The persisted untrusted spans and overflow filter seed the
+	// untrusted-args gate for the same reason: the content they came from
+	// may be gone from the history.
+	ctx = loop.WithTaintSpanSeed(ctx, sess.TaintState())
 	if sess.UntrustedIngested && !loop.UntrustedIngested(ctx) {
 		return loop.WithUntrustedIngest(ctx)
 	}
@@ -36,6 +37,7 @@ func markRunTaint(a *odek.Agent, sess *session.Session) {
 	if a.UntrustedIngested() {
 		sess.UntrustedIngested = true
 	}
-	// The recorded untrusted spans (sticky; the store merges what is on disk).
-	sess.TaintSpans = session.MergeTaintSpans(a.TaintSpans(sess.Messages), sess.TaintSpans)
+	// The recorded untrusted spans and the overflow filter of spans past the
+	// bound (sticky; the store merges what is on disk).
+	sess.SetTaintState(session.MergeTaintState(a.TaintState(sess.Messages), sess.TaintState()))
 }

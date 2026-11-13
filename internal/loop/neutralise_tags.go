@@ -25,9 +25,12 @@ const (
 // (`<untrusted-content-policy>`, `List<Untrusted> content`) are left alone.
 // Padding is unbounded: skipping an invisible rune is constant work, and a
 // candidate is abandoned at its first mismatching rune, so the scan stays
-// linear.
+// linear. The exact spelling of the sub-agent fence tag, "untrusted_input",
+// becomes "untrusted·input" as well, so a wrapped body cannot carry a fence
+// opener either.
 func NeutraliseUntrustedLiterals(s string) string {
 	s = strings.ReplaceAll(s, "untrusted_content", "untrusted·content")
+	s = strings.ReplaceAll(s, "untrusted_input", "untrusted·input")
 	var b strings.Builder
 	last := 0
 	for i := 0; i < len(s); {

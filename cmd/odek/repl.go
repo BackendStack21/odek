@@ -269,8 +269,11 @@ func replCmd(args []string) error {
 	fmt.Fprintf(os.Stderr, "\nodek ⚡ %s · session %s\n\n", modelLabel, sess.ID)
 	fmt.Fprintf(os.Stderr, "  Type /help for commands, /exit to quit.\n\n")
 
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer cancel()
+	// Interrupts are delivered on a persistent channel and scoped to one turn
+	// at a time (replTurnScope), so Ctrl-C cancels the running turn only.
+	sigCh := make(chan os.Signal, 2)
+	signal.Notify(sigCh, os.Interrupt)
+	defer signal.Stop(sigCh)
 	auditStore := session.NewAuditStore(store.Dir())
 
 	turn := 0
@@ -311,7 +314,14 @@ func replCmd(args []string) error {
 			turn++
 			continue
 		}
-		if err := withSessionExecution(ctx, store, sess.ID, func() error {
+		ctx, stopTurnScope := replTurnScope(sigCh, func() {
+			bgRT.Shutdown()
+			if mcpCleanup != nil {
+				mcpCleanup()
+			}
+			_ = agent.Close()
+		})
+		err = withSessionExecution(ctx, store, sess.ID, func() error {
 			latest, err := store.Load(sess.ID)
 			if err != nil {
 				return err
@@ -399,7 +409,9 @@ func replCmd(args []string) error {
 				}
 			}
 			return nil
-		}); err != nil {
+		})
+		stopTurnScope()
+		if err != nil {
 			return err
 		}
 
@@ -430,6 +442,77 @@ func replCmd(args []string) error {
 	}
 
 	return nil
+}
+
+// replForceExit terminates the process once forced-exit cleanup is done; a
+// variable so tests can observe it.
+var replForceExit = func() { os.Exit(130) }
+
+// replUnwindGrace is how long a turn gets to finish unwinding after a repeated
+// interrupt before the REPL cleans up and exits; replCleanupBound bounds that
+// cleanup. Variables so tests can shrink them.
+var (
+	replUnwindGrace  = 5 * time.Second
+	replCleanupBound = 5 * time.Second
+)
+
+// replTurnScope returns a context cancelled by the first interrupt received
+// on sigCh while the turn runs. Further interrupts are absorbed so the turn
+// unwinds normally (partial history persisted, deferred cleanups run); only
+// if it is still unwinding replUnwindGrace after a repeated interrupt does
+// the REPL run forceCleanup (bounded by replCleanupBound) and exit, so a hung
+// turn never makes the REPL unkillable. Interrupts that arrived while the
+// REPL was idle are discarded.
+func replTurnScope(sigCh chan os.Signal, forceCleanup func()) (context.Context, func()) {
+	for drained := false; !drained; {
+		select {
+		case <-sigCh:
+		default:
+			drained = true
+		}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		select {
+		case <-sigCh:
+			cancel()
+		case <-done:
+			return
+		}
+		select {
+		case <-sigCh:
+		case <-done:
+			return
+		}
+		grace := time.NewTimer(replUnwindGrace)
+		defer grace.Stop()
+		for {
+			select {
+			case <-sigCh:
+			case <-done:
+				return
+			case <-grace.C:
+				if forceCleanup != nil {
+					cleaned := make(chan struct{})
+					go func() { defer close(cleaned); forceCleanup() }()
+					select {
+					case <-cleaned:
+					case <-time.After(replCleanupBound):
+					}
+				}
+				replForceExit()
+				return
+			}
+		}
+	}()
+	return ctx, func() {
+		close(done)
+		<-finished
+		cancel()
+	}
 }
 
 // replCommands lists the slash commands the REPL implements (tab

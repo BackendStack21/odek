@@ -811,11 +811,26 @@ func LifecycleContentClass(path, content string, base RiskClass) (RiskClass, boo
 	return base, false
 }
 
+// fullFoldExpansions lists the characters whose full Unicode case folding is
+// an ASCII sequence of several letters, which simple folding leaves alone:
+// the Latin sharp s and f/s ligatures. Other multi-rune foldings (Greek
+// iota-subscript forms, Armenian ligatures, dotted capital I, ...) expand to
+// non-ASCII text that cannot equal an ASCII anchor name.
+var fullFoldExpansions = map[rune]string{
+	0x00DF: "ss", 0x1E9E: "ss",
+	0xFB00: "ff", 0xFB01: "fi", 0xFB02: "fl", 0xFB03: "ffi", 0xFB04: "ffl",
+	0xFB05: "st", 0xFB06: "st",
+}
+
 // FoldPathCase folds s the way case-insensitive filesystems match names:
 // every rune is mapped through its Unicode simple case-folding orbit, so
 // U+017F LONG S folds to 's' and U+212A KELVIN SIGN to 'k' as on APFS and
-// NTFS, which strings.ToLower alone does not do. Trust-anchor comparisons
-// must fold both sides with this function.
+// NTFS, which strings.ToLower alone does not do, and the characters whose
+// full folding is several ASCII letters (U+00DF sharp s to "ss", U+FB01 fi
+// ligature to "fi", ...) are expanded. Canonical decomposition adds no
+// further ASCII alias: the only singleton that decomposes to an ASCII
+// letter is the Kelvin sign. Trust-anchor comparisons must fold both sides
+// with this function.
 func FoldPathCase(s string) string {
 	ascii := true
 	for i := 0; i < len(s); i++ {
@@ -827,15 +842,36 @@ func FoldPathCase(s string) string {
 	if ascii {
 		return strings.ToLower(s)
 	}
-	return strings.Map(func(r rune) rune {
+	var b strings.Builder
+	for _, r := range s {
+		if exp, ok := fullFoldExpansions[r]; ok {
+			b.WriteString(exp)
+			continue
+		}
 		min := r
 		for f := unicode.SimpleFold(r); f != r; f = unicode.SimpleFold(f) {
 			if f < min {
 				min = f
 			}
 		}
-		return unicode.ToLower(min)
-	}, s)
+		b.WriteRune(unicode.ToLower(min))
+	}
+	return b.String()
+}
+
+// foldReadings returns the readings under which a name is compared with
+// protected names: its lower-case form and, when different, its full case
+// fold (FoldPathCase), which a case-insensitive filesystem resolves to the same
+// file (`.pgpaß` opens `.pgpass`). A check is positive when either reading
+// matches, so it keeps every match the lower-case form made: an exclusion
+// (`.env.example`, a source-code extension) applies only when both readings
+// are excluded, and folding never lowers a verdict.
+func foldReadings(s string) []string {
+	lower := strings.ToLower(s)
+	if folded := FoldPathCase(s); folded != lower {
+		return []string{lower, folded}
+	}
+	return []string{lower}
 }
 
 // odekProtectedFiles and odekProtectedDirs name the entries of ~/.odek that are
@@ -3856,6 +3892,9 @@ type unwrapped struct {
 	// scripts are script files a project runner hands to its interpreter
 	// (`uv run script.py`); the unread-script gate judges them.
 	scripts []string
+	// assigns are the NAME=value assignments the inner command runs with:
+	// the leading ones and those given to env or sudo.
+	assigns []string
 }
 
 func unwrapWrappersFull(tokens []string) unwrapped {
@@ -3890,6 +3929,7 @@ func unwrapWrappersFull(tokens []string) unwrapped {
 	}
 	out.inner = tokens[i:]
 	out.splits = splitValues
+	out.assigns = assignments
 	if len(assignments) > 0 {
 		// Evaluate after wrappers are stripped so ENV=/tmp/x env sh
 		// sees inner `sh`, not the `env` wrapper. Names like GIT_PAGER
@@ -4007,6 +4047,10 @@ var safeShellDirs = map[string]bool{
 // default), not deny: legitimate uses like GIT_PAGER=less still work with
 // one approval.
 func envAssignmentRisk(assignments []string, inner []string) RiskClass {
+	return worstOf(envAssignmentNameRisk(assignments, inner), optionEnvFloor(assignments, inner))
+}
+
+func envAssignmentNameRisk(assignments []string, inner []string) RiskClass {
 	innerName := ""
 	if len(inner) > 0 {
 		innerName = commandName(inner[0])
@@ -4142,26 +4186,28 @@ func startupHomeOverride(upper, val string, inner []string) bool {
 	return true
 }
 
-// exportedAssignmentRisk applies envAssignmentRisk to the NAME=value operands
+// exportedAssignmentRisk applies envAssignmentRisk to the assignment operands
 // of `export`, `declare -x`, `typeset -x` and `local -x`: the variable reaches
 // every later command of the same shell line exactly like a leading
 // assignment would. The inner command is not known here, so an exported ENV
-// with a path-like value is judged as if a POSIX shell consumed it.
+// with a path-like value is judged as if a POSIX shell consumed it. A
+// declaration that does not export (readonly, declare, typeset or local
+// without -x) still sets the variable, which a later `export NAME` or `set
+// -a` hands on: the names that change how a program runs by themselves are
+// judged as a plain assignment of them is.
 func exportedAssignmentRisk(tokens []string) RiskClass {
 	if len(tokens) == 0 {
 		return Safe
 	}
+	exports := false
 	switch commandName(tokens[0]) {
 	case "export":
-	case "declare", "typeset", "local":
-		exports := false
+		exports = true
+	case "declare", "typeset", "local", "readonly":
 		for _, t := range tokens[1:] {
 			if isShortFlagToken(t) && strings.ContainsRune(t[1:], 'x') {
 				exports = true
 			}
-		}
-		if !exports {
-			return Safe
 		}
 	default:
 		return Safe
@@ -4169,15 +4215,57 @@ func exportedAssignmentRisk(tokens []string) RiskClass {
 	var assignments []string
 	var inner []string
 	for _, t := range tokens[1:] {
-		if !isAssignment(t) {
+		a, ok := declarationAssignment(t)
+		if !ok {
 			continue
 		}
-		assignments = append(assignments, t)
-		if name, val, _ := strings.Cut(t, "="); strings.EqualFold(name, "ENV") && strings.ContainsAny(val, "/~.") {
+		name, val, _ := strings.Cut(a, "=")
+		if !exports && !execControlName(name) {
+			continue
+		}
+		assignments = append(assignments, a)
+		if strings.EqualFold(name, "ENV") && strings.ContainsAny(val, "/~.") {
 			inner = []string{"sh"}
 		}
 	}
 	return envAssignmentRisk(assignments, inner)
+}
+
+// declarationAssignment returns an operand of a variable-declaring builtin
+// (export, declare, typeset, local, readonly) that assigns as NAME=value:
+// NAME=value itself, NAME+=value (an append, which assigns when NAME is unset,
+// and whose result holds the appended text) and the element forms
+// NAME[sub]=value and NAME[sub]+=value. ok is false for any other operand.
+func declarationAssignment(tok string) (string, bool) {
+	if isAssignment(tok) {
+		return tok, true
+	}
+	lhs, value, found := strings.Cut(tok, "=")
+	if !found {
+		return "", false
+	}
+	lhs = strings.TrimSuffix(lhs, "+")
+	if i := strings.IndexByte(lhs, '['); i > 0 && strings.HasSuffix(lhs, "]") {
+		lhs = lhs[:i]
+	}
+	if !isValidVarName(lhs) {
+		return "", false
+	}
+	return lhs + "=" + value, true
+}
+
+// execControlName reports a variable envAssignmentNameRisk escalates by its
+// name, or by a rule of its own for its value or reader, rather than by the
+// shell structure of an arbitrary value.
+func execControlName(name string) bool {
+	upper := strings.ToUpper(name)
+	switch upper {
+	case "ENV", "SHELL", "HOME", "XDG_CONFIG_HOME", "ZDOTDIR":
+		return true
+	}
+	return envExecNames[upper] || strings.HasSuffix(upper, "PAGER") ||
+		strings.HasPrefix(upper, "GIT_CONFIG_KEY_") || strings.HasPrefix(upper, "GIT_CONFIG_VALUE_") ||
+		strings.HasPrefix(upper, "GIT_TRACE2")
 }
 
 // knownSafeShellValue reports whether val names a system shell rather than
@@ -4188,6 +4276,9 @@ func knownSafeShellValue(val string) bool {
 	if v == "" {
 		return true
 	}
+	// An allowlist, not a protected-name check: it is not folded through
+	// FoldPathCase, so a spelling that only names a listed shell after full
+	// case folding (/bin/baſh) stays unlisted and keeps the stricter verdict.
 	base := strings.ToLower(filepath.Base(v))
 	if !safeShellBasenames[base] {
 		return false
@@ -4234,6 +4325,9 @@ func assignmentValueArmed(val string) bool {
 // pseudo-device network channels (/dev/tcp, /dev/udp — reverse shells) and
 // reads/writes of sensitive credential paths.
 func classifyResourceToken(tok string) RiskClass {
+	// /dev/tcp and /dev/udp are names bash itself recognises, not files a
+	// filesystem looks up, so lower-casing is already the wider match here;
+	// the credential checks below fold (isSensitivePath).
 	lt := strings.ToLower(tok)
 	if strings.Contains(lt, "/dev/tcp/") || strings.Contains(lt, "/dev/udp/") {
 		// A shell-opened raw socket carries data in both directions, so it
@@ -4285,16 +4379,17 @@ var sensitivePathFragments = []string{
 }
 
 func isSensitivePath(tok string) bool {
-	t := strings.ToLower(tok)
-	for _, prefix := range []string{"of=", "if="} {
-		if strings.HasPrefix(t, prefix) {
-			t = t[len(prefix):]
-			break
+	for _, t := range foldReadings(tok) {
+		for _, prefix := range []string{"of=", "if="} {
+			if strings.HasPrefix(t, prefix) {
+				t = t[len(prefix):]
+				break
+			}
 		}
-	}
-	for _, frag := range sensitivePathFragments {
-		if sensitiveFragmentMatch(t, frag) {
-			return true
+		for _, frag := range sensitivePathFragments {
+			if sensitiveFragmentMatch(t, frag) {
+				return true
+			}
 		}
 	}
 	return false

@@ -19,6 +19,21 @@ func redactSecretsReference(text string) string {
 	if text == "" {
 		return text
 	}
+	out, shell := redactReferencePass(text)
+	again := shell || (out != text && shellPasswordWordIn(out, true))
+	for round := 0; again && round < redactRepeats; round++ {
+		next, _ := redactReferencePass(out)
+		if next == out {
+			break
+		}
+		out = next
+	}
+	return out
+}
+
+// redactReferencePass is one unconditional pass; shell reports whether a
+// connection-URL or shell-password rule had a match.
+func redactReferencePass(text string) (string, bool) {
 	result := text
 	if r := currentReplacer(); r != nil {
 		result = r.Replace(result)
@@ -30,7 +45,8 @@ func redactSecretsReference(text string) string {
 	for _, p := range patternsTail {
 		result = p.ReplaceAllString(result, "[REDACTED]")
 	}
-	return redactBasicAuth(redactGuarded(result))
+	shell := len(shellPasswordMatches(newScan(result, true))) > 0 || len(dbURLMatches(newScan(result, true))) > 0
+	return redactBasicAuth(redactGuarded(result)), shell
 }
 
 func packageStringLiterals(t *testing.T) []string {
@@ -73,9 +89,14 @@ func TestRED_Redact_GatedPassesMatchUnconditionalPasses(t *testing.T) {
 			t.Fatalf("output differs for %q:\n got %q\nwant %q", s, got, want)
 		}
 	}
+	// Each literal is spliced with three others; a lean run splices one.
+	splices := 3
+	if leanRun() {
+		splices = 1
+	}
 	for _, s := range corpus {
 		check(s)
-		for i := 0; i < 3; i++ {
+		for i := 0; i < splices; i++ {
 			o := corpus[rng.Intn(len(corpus))]
 			a := rng.Intn(len(s) + 1)
 			b := a + rng.Intn(len(s)-a+1)

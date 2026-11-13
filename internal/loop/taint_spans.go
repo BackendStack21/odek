@@ -14,8 +14,10 @@ import (
 	"regexp"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/BackendStack21/odek/internal/danger"
 	"github.com/BackendStack21/odek/internal/events"
@@ -85,9 +87,17 @@ import (
 //
 // The store is bounded (spans, links and scanned-message digests are capped;
 // the least recently seen spans are evicted first) and lives on the engine,
-// so it survives context trimming within one engine; the set is exported as
-// sticky session state and seeds rebuilt engines (taint_persist.go). It is a
-// heuristic: a span the model
+// so it survives context trimming within one engine. Evicting a span must
+// not forget it: content that names an endpoint and then floods the store
+// with filler would otherwise push the endpoint out of the gate. Every span
+// the store evicts, and every span a persisted bound drops, goes into a
+// fixed-size Bloom filter (session.TaintOverflow) that a lookup missing the
+// held spans consults. A filter hit escalates like a held span (the
+// principal's mentions still exempt it), with a source saying the content is
+// no longer held; a false positive only adds an escalation. Spans and filter
+// are exported as sticky session state and seed rebuilt engines
+// (taint_persist.go), so a span recorded once keeps escalating for the life
+// of the session. It is a heuristic: a span the model
 // transforms (re-encodes, splits, retypes) is not recognised, and data
 // encoded into the path of a plain GET is not escalated.
 
@@ -148,30 +158,203 @@ func TaintEscalationRecorderFrom(ctx context.Context) func(TaintEscalation) {
 type taintSpan struct {
 	source string
 	seq    uint64
+	// overflowed marks a span already added to the store's overflow filter
+	// (an export cut it from the persisted list; see TaintSpanState).
+	overflowed bool
+	// persisted caches the span's exported form (value or hash, redacted
+	// source) as computed under redaction registry generation persistedGen;
+	// see taintSpan.persistedLocked.
+	persisted    session.TaintSpan
+	persistedGen uint64
+	persistedSet bool
+	// hash caches the hex SHA-256 of a plain span's value (hashOf), so a
+	// span is hashed at most once however often the store looks it up by
+	// its persisted hash.
+	hash string
 }
+
+// hashOf returns the hex SHA-256 of value, the plain span's value,
+// computing it once.
+func (sp *taintSpan) hashOf(value string) string {
+	if sp.hash == "" {
+		sp.hash = taintHash(value)
+	}
+	return sp.hash
+}
+
+// taintOverflowSource labels an escalation found only in the overflow
+// filter: the span was recorded from untrusted content this session no
+// longer holds.
+const taintOverflowSource = "earlier untrusted content (no longer held)"
+
+// taintOverflowFullSource replaces taintOverflowSource once the filter is
+// nearly full (session.TaintOverflowNearlyFull): the hit may be a false
+// match, and the filter is never cleared within a session, so the principal
+// is told how to reset it.
+const taintOverflowFullSource = "earlier untrusted content (no longer held; this session's untrusted-span record is nearly full, so this may be a false match: a new session resets it)"
 
 // taintSpan keys are kind + "\x00" + normalised value.
 func taintKey(kind taintSpanKind, v string) string { return string(kind) + "\x00" + v }
 
+// appendTaintKey appends taintKey(kind, v) to b, so a lookup can index a map
+// with string(b) without allocating.
+func appendTaintKey(b []byte, kind taintSpanKind, v string) []byte {
+	return append(append(append(b, kind...), 0), v...)
+}
+
+// taintSeqBase is where sequence numbers start. Recording counts up from it
+// and seeding counts down (taintSpanStore.low), so every seeded span is
+// older than every span this engine recorded itself.
+const taintSeqBase = 1 << 62
+
 // taintSpanStore holds the spans recorded from untrusted content.
 type taintSpanStore struct {
-	mu    sync.Mutex
-	seq   uint64
+	mu  sync.Mutex
+	seq uint64
+	// low is the sequence number of the oldest seeded span; the next span
+	// seeded gets low-1.
+	low   uint64
 	spans map[string]*taintSpan
 	// hashed holds persisted spans known only by their SHA-256 (tokens and
 	// secret-shaped values; see taint_persist.go), keyed taintKey(kind, hash).
 	hashed map[string]*taintSpan
-	// seedLen and seedHead identify the persisted span list last seeded, so
-	// a run does not re-seed it every iteration.
-	seedLen  int
-	seedHead *session.TaintSpan
-	links    map[string]uint64
-	// scanned holds digests of messages already scanned; scannedLen and
-	// scannedTail let an append-only history skip straight to new messages.
-	scanned    map[taintDigest]struct{}
-	scannedLen int
-	scannedTip taintDigest
-	principal  taintPrincipal
+	// plainByHash maps taintKey(kind, hash) to the key in spans of the
+	// plain span with that hash. It is built the first time a persisted hash
+	// meets held plain spans and kept current from then on (recording and
+	// evicting plain spans update it), so a re-seed never re-hashes them.
+	plainByHash map[string]string
+	// kbuf is scratch space for map lookups by a key built in place.
+	kbuf []byte
+	// overflow records every span evicted from spans or hashed, and every
+	// span an export cut from the persisted list (session.TaintOverflow).
+	// It is never cleared. overflowFill caches its Fill while
+	// overflowFillKnown is set; every change to the filter clears it.
+	overflow          session.TaintOverflow
+	overflowFill      float64
+	overflowFillKnown bool
+	// seedLen, seedHead and seedOverflow identify the persisted state last
+	// seeded, so a run does not re-seed it every iteration.
+	seedLen      int
+	seedHead     *session.TaintSpan
+	seedOverflow *byte
+	// version changes with every change to what TaintSpanState exports: a
+	// span recorded, seen again (its order changes), seeded or evicted, or
+	// the overflow filter merged with a seed. export memoizes the last
+	// export against it (taint_persist.go).
+	version uint64
+	export  *taintExport
+	// links are evicted without a record: losing one only removes the
+	// egress rule's exemption for that URL, which fails closed.
+	links map[string]uint64
+	// scanned holds digests of messages already scanned. gateTrack and
+	// saveTrack keep what the gate's and the saves' last observes derived
+	// from each message (taint_track.go), so a history that extends the one
+	// last observed by the same caller costs its new messages.
+	scanned   map[taintDigest]struct{}
+	gateTrack taintScanTrack
+	saveTrack taintScanTrack
+	principal taintPrincipal
+	// env is the environment the scan decisions were taken under; a change
+	// rescans everything (resetScanLocked).
+	env    taintEnv
+	envSet bool
+	// seedCov is the coverage of the persisted state last seeded
+	// (taint_coverage.go). Until it applies (seedCovApplied), observes check
+	// it, at most maxTaintSeedCoverageTries times (checkSeedCoverage);
+	// covered then holds the digests of the messages it vouches for, whose
+	// spans are not extracted again (only their links are).
+	seedCov        session.TaintCoverage
+	seedCovApplied bool
+	seedCovTries   int
+	covered        map[taintDigest]struct{}
+	// covMu guards cov, the coverage this store can vouch for.
+	covMu sync.Mutex
+	cov   taintCoverageTracker
+	// pending counts the observes that marked messages scanned and have not
+	// yet inserted their spans (extraction runs outside mu); scanGen counts
+	// resetScanLocked calls. A coverage is exported only when, in the same
+	// hold of mu as the export reads the spans, no observe is pending and
+	// the scan state is the one the coverage was taken under: every message
+	// it counts then has its spans in the export (TaintSpanState).
+	pending int
+	scanGen uint64
+	// bgTainted records that this session started a background job whose
+	// bg_start call crosses the trust boundary (session.ToolCallTaintsEpisode):
+	// from then on every background notice and bg_output/bg_status result is
+	// a span source. It is sticky and exported with the spans
+	// (session.TaintState.Background), because trimming can drop the
+	// bg_start call but never the fact.
+	bgTainted bool
+	// bgSkipped holds the digests in scanned of background content judged
+	// not to be a span source. Those decisions rest on bgTainted and bgJobs:
+	// when either changes so that such content may be a source (a tainting
+	// job appears, the job record is emptied), rejudgeBgLocked takes them
+	// out of scanned and bumps bgGen, and every observe whose history holds
+	// that content judges it again. A track's leading run is skipped only
+	// under the bgGen its decisions were taken in.
+	bgSkipped map[taintDigest]struct{}
+	bgGen     uint64
+	// extractHook, when set, runs in every observe after the messages are
+	// marked scanned and before their spans are extracted: the window in
+	// which other observes and exports run concurrently. Tests only.
+	extractHook func()
+	// bgJobs maps the id of every background job this store saw started
+	// (the bg_start call and its result, in one observed history) to whether
+	// that call taints. Background content is judged by the jobs it names
+	// even after trimming dropped the calls; content naming a job missing
+	// here, or naming none, is a span source (see bgSourceLocked).
+	bgJobs map[string]bool
+	// digestWork, compareWork, verifyWork and coverageWork count the bytes
+	// read by the scan digests, by comparing a history with the one a track
+	// kept (taint_track.go), by verifying a seeded coverage and by recording
+	// the coverage, so tests can pin that a step's work follows its new
+	// messages, not the whole history.
+	digestWork, compareWork, verifyWork, coverageWork atomic.Int64
+}
+
+// maxTaintBgJobs bounds bgJobs. A full map is emptied: forgetting a job only
+// makes its content a span source.
+const maxTaintBgJobs = 4096
+
+// maxTaintSeedCoverageTries bounds the checks of one seeded coverage: a
+// check reads the whole covered prefix, and a coverage that did not
+// reproduce once will not on a later step of the same run. Histories too
+// short to hold the covered prefix, and a coverage the store recorded
+// itself, cost no check (checkSeedCoverage).
+const maxTaintSeedCoverageTries = 1
+
+// resetScanLocked forgets every scan decision (not the spans): the next
+// observe judges every message again.
+func (s *taintSpanStore) resetScanLocked() {
+	s.scanGen++
+	s.scanned = make(map[taintDigest]struct{})
+	s.bgSkipped = nil
+	s.gateTrack, s.saveTrack = taintScanTrack{}, taintScanTrack{}
+	s.covered = nil
+	s.seedCovApplied, s.seedCovTries = false, 0
+	s.covMu.Lock()
+	s.cov = taintCoverageTracker{}
+	s.covMu.Unlock()
+}
+
+// rejudgeBgLocked makes every observe judge the background content it
+// holds that was judged not to be a span source again: the facts that
+// decision rested on changed (bgSkipped).
+func (s *taintSpanStore) rejudgeBgLocked() {
+	for d := range s.bgSkipped {
+		delete(s.scanned, d)
+	}
+	s.bgSkipped = nil
+	s.bgGen++
+}
+
+// skipBgLocked records that the message with digest d holds background
+// content judged not to be a span source.
+func (s *taintSpanStore) skipBgLocked(d taintDigest) {
+	if s.bgSkipped == nil {
+		s.bgSkipped = make(map[taintDigest]struct{})
+	}
+	s.bgSkipped[d] = struct{}{}
 }
 
 // taintPrincipal is what the principal's own messages mention.
@@ -182,10 +365,13 @@ type taintPrincipal struct {
 
 func newTaintSpanStore() *taintSpanStore {
 	return &taintSpanStore{
+		seq:     taintSeqBase,
+		low:     taintSeqBase,
 		spans:   make(map[string]*taintSpan),
 		hashed:  make(map[string]*taintSpan),
 		links:   make(map[string]uint64),
 		scanned: make(map[taintDigest]struct{}),
+		bgJobs:  make(map[string]bool),
 	}
 }
 
@@ -471,20 +657,44 @@ func taintGoModuleLine(text string, i int) bool {
 	return false
 }
 
-// extractTaintSpansForRecord extracts the spans of recorded content. Text
-// over taintScanMaxBytes is scanned in its first taintScanMaxBytes and its
-// last taintScanMaxBytes/4, so padding cannot push a trailing span out of
-// view; only the middle of such a message goes unscanned.
-func extractTaintSpansForRecord(text string, env taintEnv, goSource bool) []taintRaw {
+// taintRecordWindows returns the parts of recorded content that recording
+// scans: text over taintScanMaxBytes is scanned in its first
+// taintScanMaxBytes (head) and its last taintScanMaxBytes/4 (tail, from a
+// word boundary), so padding cannot push a trailing span out of view; only
+// the middle of such a message goes unscanned. Shorter text is all head.
+func taintRecordWindows(text string) (head, tail string) {
 	if len(text) <= taintScanMaxBytes {
-		return extractTaintSpansFrom(text, env, false, goSource)
+		return text, ""
 	}
-	head := extractTaintSpansFrom(text[:taintScanMaxBytes], env, false, goSource)
-	tail := text[len(text)-taintScanMaxBytes/4:]
+	tail = text[len(text)-taintScanMaxBytes/4:]
 	if i := strings.IndexAny(tail, " \t\r\n"); i >= 0 {
 		tail = tail[i:] // start at a word boundary
 	}
-	return append(head, extractTaintSpansFrom(tail, env, false, goSource)...)
+	return text[:taintScanMaxBytes], tail
+}
+
+// extractTaintSpansForRecord extracts the spans of recorded content, through
+// taintRecordWindows.
+func extractTaintSpansForRecord(text string, env taintEnv, goSource bool) []taintRaw {
+	head, tail := taintRecordWindows(text)
+	out := extractTaintSpansFrom(head, env, false, goSource)
+	if tail != "" {
+		out = append(out, extractTaintSpansFrom(tail, env, false, goSource)...)
+	}
+	return out
+}
+
+// extractTaintLinksForRecord extracts only the URLs of recorded content,
+// through the same windows and in the same order as
+// extractTaintSpansForRecord lists them: the links a full extraction would
+// record, for a source whose spans a verified coverage already vouches for.
+func extractTaintLinksForRecord(text string) []taintRaw {
+	head, tail := taintRecordWindows(text)
+	out := extractTaintURLs(head)
+	if tail != "" {
+		out = append(out, extractTaintURLs(tail)...)
+	}
+	return out
 }
 
 // inTaintIntervals reports whether i lies in one of spans, which are sorted
@@ -580,22 +790,58 @@ type taintDigest [16]byte
 // crafted to collide with a message already scanned.
 var taintDigestSeeds = [2]maphash.Seed{maphash.MakeSeed(), maphash.MakeSeed()}
 
-func taintMessageDigest(m *session.Message) taintDigest {
+// taintMessageDigest digests everything the recording decision for m reads:
+// the message, its tool calls, and for a tool result the call it answers
+// (call, nil when the history does not hold it). Two messages share a digest
+// only when they would be judged alike, so skipping a message whose digest
+// was scanned never skips a decision that could come out differently.
+func taintMessageDigest(m *session.Message, call *session.ToolCall) taintDigest {
 	// Two independently seeded 64-bit hashes over length-prefixed fields:
 	// fields cannot run into each other, and a collision needs the seeds.
 	var out taintDigest
 	for i, seed := range taintDigestSeeds {
 		var h maphash.Hash
 		h.SetSeed(seed)
-		for _, f := range []string{m.Role, m.ToolCallID, m.Name, m.Content} {
+		field := func(f string) {
 			var n [8]byte
 			binary.BigEndian.PutUint64(n[:], uint64(len(f)))
 			h.Write(n[:])
 			h.WriteString(f)
 		}
+		field(m.Role)
+		field(m.ToolCallID)
+		field(m.Name)
+		field(m.Content)
+		field(strconv.Itoa(len(m.ToolCalls)))
+		for j := range m.ToolCalls {
+			tc := &m.ToolCalls[j]
+			field(tc.ID)
+			field(tc.Function.Name)
+			field(tc.Function.Arguments)
+		}
+		if call != nil {
+			field("call")
+			field(call.Function.Name)
+			field(call.Function.Arguments)
+		} else {
+			field("")
+		}
 		binary.BigEndian.PutUint64(out[i*8:], h.Sum64())
 	}
 	return out
+}
+
+// taintMessageSize is the number of message bytes taintMessageDigest reads.
+func taintMessageSize(m *session.Message, call *session.ToolCall) int64 {
+	n := len(m.Role) + len(m.ToolCallID) + len(m.Name) + len(m.Content)
+	for j := range m.ToolCalls {
+		tc := &m.ToolCalls[j]
+		n += len(tc.ID) + len(tc.Function.Name) + len(tc.Function.Arguments)
+	}
+	if call != nil {
+		n += len(call.Function.Name) + len(call.Function.Arguments)
+	}
+	return int64(n)
 }
 
 // untrustedBody is one wrapper in a message.
@@ -606,116 +852,100 @@ type untrustedBody struct {
 	end    int
 }
 
-// untrustedBodies returns every real untrusted-content wrapper in s.
+// untrustedBodies returns every real untrusted-content wrapper in s
+// (session.UntrustedBodies).
 func untrustedBodies(s string) []untrustedBody {
-	var out []untrustedBody
-	const attr = ` source="`
-	off := 0
-	for {
-		i := strings.Index(s[off:], session.UntrustedWrapperPrefix)
-		if i < 0 {
-			return out
-		}
-		start := off + i
-		rest := s[start+len(session.UntrustedWrapperPrefix):]
-		n := 0
-		for n < len(rest) && (isDigit(rest[n]) || rest[n] >= 'a' && rest[n] <= 'f') {
-			n++
-		}
-		if n == 0 || !strings.HasPrefix(rest[n:], attr) {
-			off = start + len(session.UntrustedWrapperPrefix)
-			continue
-		}
-		nonce := rest[:n]
-		label := rest[n+len(attr):]
-		q := strings.Index(label, `">`)
-		if q < 0 {
-			out = append(out, untrustedBody{source: "", body: label, start: start, end: len(s)})
-			return out
-		}
-		bodyStart := start + len(session.UntrustedWrapperPrefix) + n + len(attr) + q + 2
-		closeTag := "</untrusted_content_" + nonce + ">"
-		c := strings.Index(s[bodyStart:], closeTag)
-		end := len(s)
-		body := s[bodyStart:]
-		if c >= 0 {
-			body = s[bodyStart : bodyStart+c]
-			end = bodyStart + c + len(closeTag)
-		}
-		out = append(out, untrustedBody{source: label[:q], body: body, start: start, end: end})
-		off = end
-		if off >= len(s) {
-			return out
-		}
-	}
+	return loopUntrustedBodies(session.UntrustedBodies(s), "")
 }
 
-// stripUntrustedBodies removes every wrapper from s, leaving the text the
-// principal wrote.
+// stripUntrustedBodies removes every wrapper and fence from s, leaving the
+// text the principal wrote (session.StripUntrustedBodies).
 func stripUntrustedBodies(s string) string {
-	bodies := append(untrustedBodies(s), untrustedInputBodies(s)...)
-	sort.Slice(bodies, func(i, j int) bool { return bodies[i].start < bodies[j].start })
-	if len(bodies) == 0 {
-		return s
-	}
-	var b strings.Builder
-	prev := 0
-	for _, w := range bodies {
-		if w.start < prev {
-			continue // nested in a wrapper already removed
-		}
-		b.WriteString(s[prev:w.start])
-		b.WriteByte('\n')
-		prev = w.end
-	}
-	b.WriteString(s[prev:])
-	return b.String()
+	return session.StripUntrustedBodies(s)
 }
 
 // untrustedInputSource labels spans recorded from a delegated task that its
 // parent fenced as untrusted input.
 const untrustedInputSource = "delegated task (untrusted input)"
 
-// untrustedInputBodies returns every <untrusted_input_<nonce>> fence in s:
-// the boundary a parent puts around a delegated task derived from untrusted
-// content. Its body is untrusted in the child, never the principal's words.
+// untrustedInputBodies returns every <untrusted_input_<nonce>> fence in s
+// (session.UntrustedInputBodies): the boundary a parent puts around a
+// delegated task derived from untrusted content, labelled
+// untrustedInputSource.
 func untrustedInputBodies(s string) []untrustedBody {
-	const open = "<untrusted_input_"
-	var out []untrustedBody
-	off := 0
-	for {
-		i := strings.Index(s[off:], open)
-		if i < 0 {
-			return out
-		}
-		start := off + i
-		rest := s[start+len(open):]
-		n := 0
-		for n < len(rest) && (isDigit(rest[n]) || rest[n] >= 'a' && rest[n] <= 'f') {
-			n++
-		}
-		if n == 0 || n >= len(rest) || rest[n] != '>' {
-			off = start + len(open)
-			continue
-		}
-		bodyStart := start + len(open) + n + 1
-		closeTag := "</untrusted_input_" + rest[:n] + ">"
-		end, body := len(s), s[bodyStart:]
-		if c := strings.Index(s[bodyStart:], closeTag); c >= 0 {
-			body = s[bodyStart : bodyStart+c]
-			end = bodyStart + c + len(closeTag)
-		}
-		out = append(out, untrustedBody{source: untrustedInputSource, body: body, start: start, end: end})
-		off = end
-		if off >= len(s) {
-			return out
-		}
-	}
+	return loopUntrustedBodies(session.UntrustedInputBodies(s), untrustedInputSource)
 }
 
-// bgReadTool reports tools that surface background-job output; they inherit the taint of the
-// bg_start calls in the history.
+// loopUntrustedBodies converts the shared parser's regions, labelling each
+// with source when source is set.
+func loopUntrustedBodies(in []session.UntrustedBody, source string) []untrustedBody {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]untrustedBody, len(in))
+	for i, b := range in {
+		src := b.Source
+		if source != "" {
+			src = source
+		}
+		out[i] = untrustedBody{source: src, body: b.Body, start: b.Start, end: b.End}
+	}
+	return out
+}
+
+// bgReadTool reports tools that surface background-job output; they inherit
+// the taint of the job they read (see bgSourceLocked).
 func bgReadTool(name string) bool { return name == "bg_output" || name == "bg_status" }
+
+var (
+	// taintBgStartJobRe finds the job id in a bg_start result.
+	taintBgStartJobRe = regexp.MustCompile(`"job_id"\s*:\s*"([^"\\]{1,128})"`)
+	// taintBgNoticeJobRe finds the job ids a background notice names (the
+	// background manager's id format). Text inside the notice can only add
+	// ids, which only makes the notice more likely to count as a source.
+	taintBgNoticeJobRe = regexp.MustCompile(`\bbg_[0-9a-f]{8,16}\b`)
+)
+
+// bgStartedJob returns the job id a bg_start result reports.
+func bgStartedJob(result string) string {
+	if m := taintBgStartJobRe.FindStringSubmatch(result); m != nil {
+		return m[1]
+	}
+	return ""
+}
+
+// bgReadJobs returns the job a bg_output or bg_status call reads.
+func bgReadJobs(tc *session.ToolCall) []string {
+	var a struct {
+		JobID string `json:"job_id"`
+	}
+	if json.Unmarshal([]byte(tc.Function.Arguments), &a) != nil || a.JobID == "" {
+		return nil
+	}
+	return []string{a.JobID}
+}
+
+// bgNoticeJobs returns the job ids a background notice names.
+func bgNoticeJobs(body string) []string {
+	return taintBgNoticeJobRe.FindAllString(body, 64)
+}
+
+// bgSourceLocked reports whether background-job content naming jobs is a
+// span source: once any tainting job ran in this session, always; else when
+// it names no job, a job this store never saw started, or a job whose
+// bg_start call taints. Unknown origin fails closed: the decision never
+// depends on whether trimming left the bg_start call in view.
+func (s *taintSpanStore) bgSourceLocked(jobs []string) bool {
+	if s.bgTainted || len(jobs) == 0 {
+		return true
+	}
+	for _, id := range jobs {
+		if tainting, known := s.bgJobs[id]; !known || tainting {
+			return true
+		}
+	}
+	return false
+}
 
 // taintGoSource reports whether a tool call reads only Go sources or module
 // files: every path argument names a .go, go.mod or go.sum file, or lies in
@@ -752,82 +982,143 @@ func taintGoSource(tc *session.ToolCall) bool {
 	return seen && session.EpisodePathTools[tc.Function.Name]
 }
 
-// taintingToolCall reports whether a recorded call's result is a span
-// source: the episode rule says it crossed the trust boundary, or it reads
-// output of a background job that did.
-func taintingToolCall(tc *session.ToolCall, bgTaints bool) bool {
-	return session.ToolCallTaintsEpisode(tc.Function.Name, tc.Function.Arguments) ||
-		bgTaints && bgReadTool(tc.Function.Name)
+// observe records spans from the messages not yet scanned and refreshes the
+// principal's mentions, for the gate.
+func (s *taintSpanStore) observe(messages []session.Message, env taintEnv) {
+	s.observeTrack(messages, env, &s.gateTrack, nil)
 }
 
-// observe records spans from the messages not yet scanned and refreshes the
-// principal's mentions.
-func (s *taintSpanStore) observe(messages []session.Message, env taintEnv) {
-	calls := make(map[string]*session.ToolCall)
-	bgTaints := false
-	var principal strings.Builder
-	for i := range messages {
-		m := &messages[i]
-		for j := range m.ToolCalls {
-			tc := &m.ToolCalls[j]
-			calls[tc.ID] = tc
-			if tc.Function.Name == "bg_start" && session.ToolCallTaintsEpisode(tc.Function.Name, tc.Function.Arguments) {
-				bgTaints = true
-			}
-		}
-	}
-	// The principal's messages are collected newest first, so the latest
-	// instructions always fit the budget however long an early paste was.
-	for i := len(messages) - 1; i >= 0 && principal.Len() < taintPrincipalMaxBytes; i-- {
-		m := &messages[i]
-		if m.Role != "user" || session.IsSyntheticUserName(m.Name) {
-			continue
-		}
-		text := stripUntrustedBodies(m.Content)
-		if room := taintPrincipalMaxBytes - principal.Len(); len(text) > room {
-			text = text[:room]
-		}
-		principal.WriteString(text)
-		principal.WriteByte('\n')
-	}
+// observeTrack is observe for a caller with its own history track
+// (taint_track.go). transcript, when set, is the full history the run's
+// saves will hand (the engine's transcript, of which messages may be a
+// trimmed projection): a seeded coverage is checked against it rather than
+// against messages. It returns what was derived from each message and the
+// scan generation (scanGen) its decisions were taken under.
+func (s *taintSpanStore) observeTrack(messages []session.Message, env taintEnv, track *taintScanTrack, transcript []session.Message) ([]taintSeen, uint64) {
+	// The track is taken while this observe derives from it; an observe on
+	// the same track meanwhile derives from nothing.
+	s.mu.Lock()
+	prev := *track
+	*track = taintScanTrack{}
+	s.mu.Unlock()
+	seen, issued, lead, digested, compared := taintSeenFor(messages, prev)
+	s.digestWork.Add(digested)
+	s.compareWork.Add(compared)
+	principalText, bgTainted, bgJobs := taintHistoryFacts(seen)
 
 	// Extraction runs outside the mutex: only the scan bookkeeping and the
 	// span insertions hold it.
-	principalText := principal.String()
 	s.mu.Lock()
+	if s.envSet && s.env != env {
+		// Path spans and the workspace trust rule depend on the
+		// environment: decisions taken under another one do not carry.
+		s.resetScanLocked()
+	}
+	s.env, s.envSet = env, true
 	needPrincipal := principalText != s.principal.raw || s.principal.spans == nil
+	seedCov := s.seedCov
+	tryCoverage := seedCov.Valid() && !s.seedCovApplied && s.seedCovTries < maxTaintSeedCoverageTries
 	s.mu.Unlock()
 	var principalSpans map[string]bool
 	if needPrincipal {
 		principalSpans = taintPrincipalSpans(principalText, env)
 	}
+	var cov taintSeedCheck
+	if tryCoverage {
+		cov = s.checkSeedCoverage(seedCov, messages, seen, transcript, env)
+	}
 
+	// A job is one source to record. A source a verified coverage vouches
+	// for is queued links-only at the place a full scan would extract it,
+	// so the links (which are not persisted) are recorded in the same order
+	// and through the same windows as a full scan records them.
 	type job struct {
 		text, source string
 		goSource     bool
+		linksOnly    bool
 	}
 	var jobs []job
 	s.mu.Lock()
+	// From here until the spans are inserted, messages this observe marks
+	// scanned have no spans in the store yet.
+	s.pending++
+	gen := s.scanGen
+	if cov.applies && s.seedCov == seedCov && s.env == env && !s.seedCovApplied {
+		s.seedCovApplied = true
+		if cov.verified {
+			// The seeded state records the spans of the first
+			// seedCov.Messages counted messages: a message with the digest
+			// of one of them (the same fields answering the same call) has
+			// only its links extracted below.
+			if s.covered == nil {
+				s.covered = make(map[taintDigest]struct{}, len(cov.tracker.digs))
+			}
+			for _, d := range cov.tracker.digs {
+				s.covered[d] = struct{}{}
+			}
+			s.covMu.Lock()
+			if s.cov.hash == nil {
+				s.cov = cov.tracker
+			}
+			s.covMu.Unlock()
+		}
+	}
+	// The background facts are sticky: a bg_start call trimming later drops
+	// still decides the content of its job. Content judged under the old
+	// facts is judged again (a tainting job makes all of it a source, and so
+	// does forgetting the jobs).
+	if bgTainted && !s.bgTainted {
+		s.bgTainted = true
+		s.version++
+		s.rejudgeBgLocked()
+	}
+	for _, j := range bgJobs {
+		if len(s.bgJobs) >= maxTaintBgJobs {
+			s.bgJobs = make(map[string]bool)
+			s.rejudgeBgLocked()
+		}
+		s.bgJobs[j.id] = s.bgJobs[j.id] || j.tainting
+	}
+	// The leading messages equal to those of the track's history were
+	// decided by the observe that stored it, unless the scan decisions were
+	// reset since or background content is to be judged again.
 	start := 0
-	if s.scannedLen > 0 && s.scannedLen <= len(messages) && taintMessageDigest(&messages[s.scannedLen-1]) == s.scannedTip {
-		start = s.scannedLen
+	if prev.gen == s.scanGen && prev.bgGen == s.bgGen {
+		start = lead
 	}
 	for i := start; i < len(messages); i++ {
 		m := &messages[i]
-		d := taintMessageDigest(m)
+		d := seen[i].d
 		if _, ok := s.scanned[d]; ok {
 			continue
 		}
 		if len(s.scanned) >= maxTaintScanned {
 			s.scanned = make(map[taintDigest]struct{})
+			s.bgSkipped = nil
 		}
 		s.scanned[d] = struct{}{}
+		// A source a verified coverage vouches for has only its links
+		// extracted. Background content is always judged and extracted
+		// afresh, and judged again when the facts it was judged by change.
+		_, covered := s.covered[d]
 		switch m.Role {
 		case "assistant":
 			continue
 		case "tool":
-			tc := calls[m.ToolCallID]
-			if tc != nil && !taintingToolCall(tc, bgTaints) {
+			tc := seen[i].call()
+			bgContent := tc != nil && bgReadTool(tc.Function.Name)
+			if tc != nil {
+				if bgContent {
+					if !s.bgSourceLocked(bgReadJobs(tc)) {
+						s.skipBgLocked(d)
+						continue
+					}
+				} else if !session.ToolCallTaintsEpisode(tc.Function.Name, tc.Function.Arguments) {
+					continue
+				}
+			}
+			if covered && !bgContent {
+				jobs = append(jobs, job{text: m.Content, linksOnly: true})
 				continue
 			}
 			source := "tool output"
@@ -840,29 +1131,40 @@ func (s *taintSpanStore) observe(messages []session.Message, env taintEnv) {
 					break
 				}
 			}
-			jobs = append(jobs, job{m.Content, source, tc != nil && taintGoSource(tc)})
+			jobs = append(jobs, job{text: m.Content, source: source, goSource: tc != nil && taintGoSource(tc)})
 		default:
 			for _, w := range untrustedBodies(m.Content) {
-				if session.ExternalNonToolIngest(w.source) || (w.source == "bg" && bgTaints) {
-					jobs = append(jobs, job{w.body, w.source, false})
+				switch {
+				case session.ExternalNonToolIngest(w.source):
+					jobs = append(jobs, job{text: w.body, source: w.source, linksOnly: covered})
+				case w.source != "bg":
+				case s.bgSourceLocked(bgNoticeJobs(w.body)):
+					jobs = append(jobs, job{text: w.body, source: w.source})
+				default:
+					s.skipBgLocked(d)
 				}
 			}
 			if m.Role == "user" {
 				for _, w := range untrustedInputBodies(m.Content) {
-					jobs = append(jobs, job{w.body, w.source, false})
+					jobs = append(jobs, job{text: w.body, source: w.source, linksOnly: covered})
 				}
 			}
 		}
 	}
-	if n := len(messages); n > 0 {
-		s.scannedLen = n
-		s.scannedTip = taintMessageDigest(&messages[n-1])
-	}
+	*track = taintScanTrack{seen: seen, issued: issued, gen: s.scanGen, bgGen: s.bgGen}
+	hook := s.extractHook
 	s.mu.Unlock()
 
+	if hook != nil {
+		hook()
+	}
 	extracted := make([][]taintRaw, len(jobs))
 	for i, j := range jobs {
-		extracted[i] = extractTaintSpansForRecord(j.text, env, j.goSource)
+		if j.linksOnly {
+			extracted[i] = extractTaintLinksForRecord(j.text)
+		} else {
+			extracted[i] = extractTaintSpansForRecord(j.text, env, j.goSource)
+		}
 	}
 
 	s.mu.Lock()
@@ -871,8 +1173,14 @@ func (s *taintSpanStore) observe(messages []session.Message, env taintEnv) {
 		s.principal = taintPrincipal{raw: principalText, spans: principalSpans}
 	}
 	for i, j := range jobs {
-		s.insertLocked(extracted[i], j.source)
+		if j.linksOnly {
+			s.insertLinksLocked(extracted[i])
+		} else {
+			s.insertLocked(extracted[i], j.source)
+		}
 	}
+	s.pending--
+	return seen, gen
 }
 
 // taintPrincipalSpans returns the span keys the principal's text mentions.
@@ -889,15 +1197,24 @@ func taintPrincipalSpans(text string, env taintEnv) map[string]bool {
 	return spans
 }
 
-// insertLocked records extracted spans under source.
-func (s *taintSpanStore) insertLocked(spans []taintRaw, source string) {
+// insertLinksLocked records the links of extracted spans exactly as
+// insertLocked records them, and nothing else.
+func (s *taintSpanStore) insertLinksLocked(spans []taintRaw) {
 	for _, r := range spans {
 		if r.kind == taintKindURL {
-			if len(s.links) >= maxTaintLinks {
-				s.evictLinksLocked()
-			}
-			s.seq++
-			s.links[r.link] = s.seq
+			s.recordLinkLocked(r.link)
+		}
+	}
+}
+
+// insertLocked records extracted spans under source.
+func (s *taintSpanStore) insertLocked(spans []taintRaw, source string) {
+	// A wrapper's label is a slice of its message's bytes: the spans
+	// recorded here share one copy of it, so no span keeps the message alive.
+	copied := false
+	for _, r := range spans {
+		if r.kind == taintKindURL {
+			s.recordLinkLocked(r.link)
 			if r.value == "" {
 				continue
 			}
@@ -907,14 +1224,28 @@ func (s *taintSpanStore) insertLocked(spans []taintRaw, source string) {
 		}
 		k := taintKey(r.kind, r.value)
 		s.seq++
+		s.version++
 		if sp, ok := s.spans[k]; ok {
 			sp.seq = s.seq
 			continue
 		}
-		if len(s.spans) >= maxTaintSpans {
-			s.evictSpansLocked()
+		if !copied {
+			source, copied = strings.Clone(source), true
 		}
-		s.spans[k] = &taintSpan{source: source, seq: s.seq}
+		sp := &taintSpan{source: source, seq: s.seq}
+		// A span is held once. A copy seeded as its hash gives way to this
+		// sighting, which is newer and carries a real source label.
+		if len(s.hashed) > 0 || s.plainByHash != nil {
+			hk := taintKey(r.kind, sp.hashOf(r.value))
+			delete(s.hashed, hk)
+			if s.plainByHash != nil {
+				s.plainByHash[hk] = k
+			}
+		}
+		if len(s.spans) >= maxTaintSpans {
+			s.evictTableLocked(s.spans, false)
+		}
+		s.spans[k] = sp
 	}
 }
 
@@ -929,21 +1260,69 @@ func eighthCutoff(seqs []uint64) uint64 {
 	return seqs[n-1]
 }
 
-// evictSpansLocked drops the least recently seen eighth of the spans.
-func (s *taintSpanStore) evictSpansLocked() {
-	seqs := make([]uint64, 0, len(s.spans))
-	for _, sp := range s.spans {
+// evictTableLocked moves the least recently seen eighth of table (s.spans,
+// or s.hashed when hashed is set) into the overflow filter.
+func (s *taintSpanStore) evictTableLocked(table map[string]*taintSpan, hashed bool) {
+	seqs := make([]uint64, 0, len(table))
+	for _, sp := range table {
 		seqs = append(seqs, sp.seq)
 	}
 	cutoff := eighthCutoff(seqs)
-	for k, sp := range s.spans {
+	for k, sp := range table {
 		if sp.seq <= cutoff {
-			delete(s.spans, k)
+			s.overflowLocked(k, sp, hashed)
+			if !hashed && s.plainByHash != nil {
+				kind, value, _ := cutTaintKey(k)
+				delete(s.plainByHash, taintKey(taintSpanKind(kind), sp.hashOf(value)))
+			}
+			delete(table, k)
 		}
 	}
+	s.version++
 }
 
-// evictLinksLocked drops the least recently seen eighth of the links.
+// overflowLocked adds the span keyed k (in the hashed table when hashed is
+// set) to the overflow filter, once.
+func (s *taintSpanStore) overflowLocked(k string, sp *taintSpan, hashed bool) {
+	if sp.overflowed {
+		return
+	}
+	kind, value, _ := cutTaintKey(k)
+	if hashed {
+		s.overflow.AddHash(kind, value)
+	} else {
+		s.overflow.AddValue(kind, value)
+	}
+	sp.overflowed = true
+	s.overflowFillKnown = false
+}
+
+// overflowSourceLocked returns the source label of a hit found only in the
+// overflow filter: taintOverflowFullSource once the filter is nearly full,
+// taintOverflowSource before. The fill is counted once per filter change.
+func (s *taintSpanStore) overflowSourceLocked() string {
+	if !s.overflowFillKnown {
+		s.overflowFill, s.overflowFillKnown = s.overflow.Fill(), true
+	}
+	if s.overflowFill >= session.TaintOverflowNearlyFull {
+		return taintOverflowFullSource
+	}
+	return taintOverflowSource
+}
+
+// recordLinkLocked records link as the most recently seen link, evicting
+// first when the table is full (also when link is already held).
+func (s *taintSpanStore) recordLinkLocked(link string) {
+	if len(s.links) >= maxTaintLinks {
+		s.evictLinksLocked()
+	}
+	s.seq++
+	s.links[link] = s.seq
+}
+
+// evictLinksLocked drops the least recently seen eighth of the links. A
+// dropped link is not recorded anywhere: it only exempted a URL under the
+// egress rule, so losing it fails closed.
 func (s *taintSpanStore) evictLinksLocked() {
 	seqs := make([]uint64, 0, len(s.links))
 	for _, seq := range s.links {
@@ -1013,17 +1392,26 @@ func (s *taintSpanStore) principalLocked(kind taintSpanKind, v string) bool {
 	}
 }
 
-// lookupLocked finds a recorded span covering candidate r.
+// lookupLocked finds a recorded span covering candidate r: a held span, or
+// one the overflow filter records.
 func (s *taintSpanStore) lookupLocked(r taintRaw) (taintHit, bool) {
 	try := func(kind taintSpanKind, v string) (taintHit, bool) {
+		var source string
 		sp, ok := s.spans[taintKey(kind, v)]
-		if !ok && len(s.hashed) > 0 {
-			sp, ok = s.hashed[taintKey(kind, taintHash(v))]
+		if ok {
+			source = sp.source
+		} else if len(s.hashed) > 0 || len(s.overflow) > 0 {
+			h := taintHash(v)
+			if sp, ok = s.hashed[taintKey(kind, h)]; ok {
+				source = sp.source
+			} else if s.overflow.HasHash(string(kind), h) {
+				ok, source = true, s.overflowSourceLocked()
+			}
 		}
 		if !ok || s.principalLocked(kind, v) {
 			return taintHit{}, false
 		}
-		return taintHit{kind: kind, span: v, source: sp.source}, true
+		return taintHit{kind: kind, span: v, source: source}, true
 	}
 	switch r.kind {
 	case taintKindHost:
@@ -1089,15 +1477,22 @@ func (k taintKinds) has(kind taintSpanKind) bool {
 	}
 }
 
+// emptyLocked reports whether the store has recorded no span at all: none
+// held and none in the overflow filter.
+func (s *taintSpanStore) emptyLocked() bool {
+	return len(s.spans) == 0 && len(s.hashed) == 0 && len(s.overflow) == 0
+}
+
 // match returns the first recorded span text reuses. With egress set, the
 // egress rule applies to the URLs in text.
 func (s *taintSpanStore) match(text string, kinds taintKinds, egress bool, env taintEnv) (taintHit, bool) {
 	if len(text) > taintMatchCeiling {
-		// Too large to match in full: with any span recorded, fail closed.
+		// Too large to match in full: with any span recorded (held or in
+		// the overflow filter), fail closed.
 		s.mu.Lock()
-		n := len(s.spans) + len(s.hashed)
+		empty := s.emptyLocked()
 		s.mu.Unlock()
-		if n == 0 {
+		if empty {
 			return taintHit{}, false
 		}
 		return taintHit{kind: taintKindOversize, span: fmt.Sprintf("%d-byte argument", len(text)), source: "an argument too large to check"}, true
@@ -1105,7 +1500,7 @@ func (s *taintSpanStore) match(text string, kinds taintKinds, egress bool, env t
 	cands := extractTaintSpans(text, env, true)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if len(s.spans) == 0 && len(s.hashed) == 0 {
+	if s.emptyLocked() {
 		return taintHit{}, false
 	}
 	// URLs the content linked verbatim, and path-only URLs, are browsing
@@ -1309,6 +1704,20 @@ func taintArgumentStrings(args string) string {
 	return b.String()
 }
 
+// ResetTaintSpans empties the engine's untrusted-span record: both span
+// tables, the overflow filter, the links, the scan bookkeeping, the
+// principal's mentions, the export memo and the seed identity. The record
+// belongs to one session; an engine that serves several in turn (a Web UI
+// connection) calls this when its session changes, so the next run starts
+// from the new session's persisted state only (WithTaintSpanSeed) and the
+// previous session's record never reaches the new one's file. Call it
+// between runs, after the previous session's state was saved.
+func (e *Engine) ResetTaintSpans() {
+	e.taintMu.Lock()
+	e.taintSpans = nil
+	e.taintMu.Unlock()
+}
+
 // spanStore returns the engine's untrusted-span store, creating it.
 func (e *Engine) spanStore() *taintSpanStore {
 	e.taintMu.Lock()
@@ -1340,15 +1749,10 @@ func (e *Engine) taintGate(ctx context.Context, messages []session.Message, call
 	}
 	env := currentTaintEnv()
 	store := e.spanStore()
-	if seed := taintSpanSeedFrom(ctx); len(seed) > 0 {
-		store.mu.Lock()
-		if store.seedLen != len(seed) || store.seedHead != &seed[0] {
-			store.seedLocked(seed)
-			store.seedLen, store.seedHead = len(seed), &seed[0]
-		}
-		store.mu.Unlock()
-	}
-	store.observe(messages, env)
+	e.seedTaintSpans(ctx)
+	// A seeded coverage is checked against the run's transcript: messages
+	// is the model's context, which trimming may have rewritten.
+	store.observeTrack(messages, env, &store.gateTrack, e.durableTranscript)
 	var denied []string
 	for i, tc := range calls {
 		if i >= admitted {

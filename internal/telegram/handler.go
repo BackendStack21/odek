@@ -51,8 +51,10 @@ type Handler struct {
 	approvers sync.Map
 
 	// OnTextMessage is called when a plain text message is received.
-	// forwarded is true when the message was forwarded from another chat or
-	// user; callers should treat the text as crossing an external trust boundary.
+	// forwarded is true when the sender did not author the text: the message
+	// was forwarded from another chat or user, or sent through an inline bot
+	// (via_bot). Callers should treat the text as crossing an external trust
+	// boundary.
 	// Returns the response text (may be empty).
 	// Should run asynchronously if it starts the agent loop — callers
 	// should dispatch to a goroutine to avoid blocking the update loop.
@@ -73,24 +75,35 @@ type Handler struct {
 	// OnVoiceMessage is called when a voice message is received.
 	// Returns the response text (may be empty).
 	// fileID is the Telegram file ID of the voice message in OGG format.
+	// forwarded is true when the message was forwarded from another chat or
+	// user, or sent through an inline bot (via_bot): the recording is not the
+	// sender's own request.
 	// userID is the Telegram user who sent the voice message.
 	// Callers should use DownloadVoice to save the file locally.
-	OnVoiceMessage func(chatID int64, messageID int, fileID string, userID int64) (string, error)
+	OnVoiceMessage func(chatID int64, messageID int, fileID string, forwarded bool, userID int64) (string, error)
 
 	// OnPhotoMessage is called when a photo message is received.
 	// Returns the response text (may be empty).
 	// fileIDs contains all available sizes (last = largest).
 	// Callers should use DownloadPhoto with the last element.
 	// caption is the optional text the user attached to the photo (may be empty).
+	// forwarded is true when the message was forwarded from another chat or
+	// user, or sent through an inline bot (via_bot): the caption is not the
+	// sender's own words.
 	// userID is the Telegram user who sent the photo message.
-	OnPhotoMessage func(chatID int64, messageID int, fileIDs []string, caption string, userID int64) (string, error)
+	OnPhotoMessage func(chatID int64, messageID int, fileIDs []string, caption string, forwarded bool, userID int64) (string, error)
 
 	// OnDocumentMessage is called when a document/file message is received.
 	// Returns the response text (may be empty).
 	// fileID is the Telegram file ID. Callers should use DownloadDocument
 	// and pass the document's fileName to save the file locally.
+	// caption is the text the user sent with the file (often the request
+	// about it); it is remote-user text, handled like a photo caption.
+	// forwarded is true when the message was forwarded from another chat or
+	// user, or sent through an inline bot (via_bot): the caption is not the
+	// sender's own words.
 	// userID is the Telegram user who sent the document message.
-	OnDocumentMessage func(chatID int64, messageID int, fileID string, fileName string, userID int64) (string, error)
+	OnDocumentMessage func(chatID int64, messageID int, fileID string, fileName string, caption string, forwarded bool, userID int64) (string, error)
 
 	// OnError is called when a processing error occurs.
 	OnError func(chatID int64, err error)
@@ -168,8 +181,8 @@ func defaultCommandHandler() func(int64, int, string, string, int64) (string, er
 
 // defaultVoiceHandler returns a default OnVoiceMessage callback that downloads
 // the voice file and returns a MEDIA: response.
-func defaultVoiceHandler(bot *Bot) func(int64, int, string, int64) (string, error) {
-	return func(chatID int64, _ int, fileID string, _ int64) (string, error) {
+func defaultVoiceHandler(bot *Bot) func(int64, int, string, bool, int64) (string, error) {
+	return func(chatID int64, _ int, fileID string, _ bool, _ int64) (string, error) {
 		path, err := DownloadVoice(bot, chatID, fileID)
 		if err != nil {
 			return "", fmt.Errorf("telegram handler: download voice: %w", err)
@@ -180,8 +193,8 @@ func defaultVoiceHandler(bot *Bot) func(int64, int, string, int64) (string, erro
 
 // defaultPhotoHandler returns a default OnPhotoMessage callback that downloads
 // the largest photo size and returns a MEDIA: response.
-func defaultPhotoHandler(bot *Bot) func(int64, int, []string, string, int64) (string, error) {
-	return func(chatID int64, _ int, fileIDs []string, _ string, _ int64) (string, error) {
+func defaultPhotoHandler(bot *Bot) func(int64, int, []string, string, bool, int64) (string, error) {
+	return func(chatID int64, _ int, fileIDs []string, _ string, _ bool, _ int64) (string, error) {
 		path, err := DownloadPhoto(bot, chatID, fileIDs)
 		if err != nil {
 			return "", fmt.Errorf("telegram handler: download photo: %w", err)
@@ -192,8 +205,8 @@ func defaultPhotoHandler(bot *Bot) func(int64, int, []string, string, int64) (st
 
 // defaultDocumentHandler returns a default OnDocumentMessage callback that
 // downloads the document and returns a MEDIA: response.
-func defaultDocumentHandler(bot *Bot) func(int64, int, string, string, int64) (string, error) {
-	return func(chatID int64, _ int, fileID string, fileName string, _ int64) (string, error) {
+func defaultDocumentHandler(bot *Bot) func(int64, int, string, string, string, bool, int64) (string, error) {
+	return func(chatID int64, _ int, fileID string, fileName string, _ string, _ bool, _ int64) (string, error) {
 		path, err := DownloadDocument(bot, chatID, fileID, fileName)
 		if err != nil {
 			return "", fmt.Errorf("telegram handler: download document: %w", err)
@@ -266,14 +279,14 @@ func (h *Handler) handleMessage(msg *Message) {
 	}
 
 	switch {
-	// A forwarded message crosses a trust boundary: its text is never an
-	// operator command, it falls through to the text handler flagged as
-	// forwarded.
-	case msg.IsCommand() && !msg.isForwarded():
+	// A forwarded message, or one an inline bot produced, crosses a trust
+	// boundary: its text is never an operator command, it falls through to
+	// the text handler flagged as forwarded.
+	case msg.IsCommand() && !msg.isRelayed():
 		h.handleCommand(msg, userID)
 	case msg.Voice != nil:
 		if h.OnVoiceMessage != nil {
-			resp, err := h.OnVoiceMessage(msg.Chat.ID, msg.ID, msg.Voice.FileID, userID)
+			resp, err := h.OnVoiceMessage(msg.Chat.ID, msg.ID, msg.Voice.FileID, msg.isRelayed(), userID)
 			if err != nil {
 				h.log.Error("voice message handler failed", "chat_id", msg.Chat.ID, "error", err)
 				if h.OnError != nil {
@@ -291,7 +304,7 @@ func (h *Handler) handleMessage(msg *Message) {
 			for i, p := range msg.Photo {
 				fileIDs[i] = p.FileID
 			}
-			resp, err := h.OnPhotoMessage(msg.Chat.ID, msg.ID, fileIDs, msg.Caption, userID)
+			resp, err := h.OnPhotoMessage(msg.Chat.ID, msg.ID, fileIDs, msg.Caption, msg.isRelayed(), userID)
 			if err != nil {
 				h.log.Error("photo message handler failed", "chat_id", msg.Chat.ID, "error", err)
 				if h.OnError != nil {
@@ -305,7 +318,7 @@ func (h *Handler) handleMessage(msg *Message) {
 		}
 	case msg.Document != nil:
 		if h.OnDocumentMessage != nil {
-			resp, err := h.OnDocumentMessage(msg.Chat.ID, msg.ID, msg.Document.FileID, msg.Document.FileName, userID)
+			resp, err := h.OnDocumentMessage(msg.Chat.ID, msg.ID, msg.Document.FileID, msg.Document.FileName, msg.Caption, msg.isRelayed(), userID)
 			if err != nil {
 				h.log.Error("document message handler failed", "chat_id", msg.Chat.ID, "error", err)
 				if h.OnError != nil {
@@ -319,7 +332,7 @@ func (h *Handler) handleMessage(msg *Message) {
 		}
 	case msg.Text != "":
 		if h.OnTextMessage != nil {
-			resp, err := h.OnTextMessage(msg.Chat.ID, msg.ID, msg.Text, msg.isForwarded(), userID)
+			resp, err := h.OnTextMessage(msg.Chat.ID, msg.ID, msg.Text, msg.isRelayed(), userID)
 			if err != nil {
 				h.log.Error("text message handler failed", "chat_id", msg.Chat.ID, "error", err)
 				if h.OnError != nil {
@@ -639,9 +652,12 @@ func (h *Handler) isAllowed(chatID int64, userID int64) bool {
 
 // ─── Message Helpers ──────────────────────────────────────────────────────
 
-// isForwarded reports whether the message was forwarded from elsewhere.
-func (m *Message) isForwarded() bool {
-	return m.ForwardOrigin != nil || m.ForwardFrom != nil || m.ForwardDate != 0
+// isRelayed reports whether the message carries content its sender did not
+// author: it was forwarded from another chat or user, or sent through an
+// inline bot (via_bot), which produced it. Such content crosses an external
+// trust boundary; the message callbacks receive this as their forwarded flag.
+func (m *Message) isRelayed() bool {
+	return m.ForwardOrigin != nil || m.ForwardFrom != nil || m.ForwardDate != 0 || m.ViaBot != nil
 }
 
 // IsCommand reports whether the message is a bot command.

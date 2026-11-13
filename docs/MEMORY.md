@@ -88,7 +88,7 @@ The agent maintains its own fact files. When a fact file fills up, the **agent i
 
 Three affordances make this work:
 
-1. **Decision-ready cap errors.** When `add`/`replace` would exceed the cap, the error carries the full entry index — one-based index, size, preview — plus the instruction to free space with `memory remove`/`replace` and retry. The agent can pick an eviction target without an extra read.
+1. **Decision-ready cap errors.** When `add`/`replace` would exceed the cap, the error carries the full entry index — one-based index, size, preview — plus the instruction to free space with `memory remove`/`replace` and retry. The agent can pick an eviction target without an extra read. A fact longer than the whole cap of its target can never fit: it is refused with this error before the content scan and the download-and-run filter run on it. Session-end fact extraction skips such a fact the same way.
 
    ```
    memory: adding entry (210 chars) would exceed cap (2500 chars); current: 2438, max: 2500.
@@ -108,7 +108,7 @@ Additionally, the system-prompt memory block appends a one-line warning when a f
 ⚠ env fact file 97% full — evict stale entries via memory remove before your next add.
 ```
 
-Caps are configured via `facts_limit_user` / `facts_limit_env` (defaults: 4,000 / 8,000 chars, counted as bytes — consistent with cap accounting). When a fact file reaches `consolidate_at_cap_pct` (default 80%, `0` disables) of its cap, a background LLM consolidation pass merges redundant entries — the merge output is re-scanned and applied only if the file has not changed since the snapshot, so concurrent writes conflict instead of being overwritten. Deliberately **not** built: date-based auto-eviction (age alone says nothing about value — a days-old pointer to untracked work can be the only durable record of it).
+Caps are configured via `facts_limit_user` / `facts_limit_env` (defaults: 4,000 / 8,000 chars, counted as bytes — consistent with cap accounting). When a fact file reaches `consolidate_at_cap_pct` (default 80%, `0` disables) of its cap, a background LLM consolidation pass merges redundant entries — the merge output is re-scanned (an entry longer than the whole cap refuses the pass before it is scanned, and the existing entries stay) and applied only if the file has not changed since the snapshot, so concurrent writes conflict instead of being overwritten. Deliberately **not** built: date-based auto-eviction (age alone says nothing about value — a days-old pointer to untracked work can be the only durable record of it).
 
 ## Merge-on-Write (go-vector Integration)
 
@@ -124,7 +124,7 @@ RP.embed(newEntry) → cos similarity vs each existing entry
 
 This saves ~80% of LLM calls on memory writes.
 
-An auto-merge result is new text, so it goes through the same pipe-to-shell filter (`FactLooksUnsafe`) and content scan as a fresh fact. If the combination fails them, the merge is skipped: the existing entry stays untouched and the new fact, which passed those checks on its own, is stored as a separate entry. A new fact that is unsafe by itself is still rejected.
+An auto-merge result is new text, so it goes through the same download-and-run filter (`FactLooksUnsafe`, which rejects a fetch piped or substituted into a shell or Invoke-Expression; see [SECURITY.md](SECURITY.md)) and content scan as a fresh fact. If the combination fails them, the merge is skipped: the existing entry stays untouched and the new fact, which passed those checks on its own, is stored as a separate entry. A new fact that is unsafe by itself is still rejected.
 
 **Implementation:** `internal/memory/merge.go` imports `github.com/BackendStack21/go-vector/pkg/vector` for `RandomProjections` and `Cosine`. The embedder is fit on existing facts when the detector is created, and re-fit whenever facts change. With `memory.embedding` configured (see *Pluggable Embeddings* below), the same classification runs over real semantic vectors from an OpenAI-compatible API instead of RP.
 

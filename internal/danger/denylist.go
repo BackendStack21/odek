@@ -9,6 +9,7 @@
 package danger
 
 import (
+	"os"
 	"sort"
 	"strings"
 )
@@ -256,12 +257,11 @@ func denyAssign(stage []string, vars map[string]string) {
 		}
 	}
 	for _, tok := range stage {
-		if !isAssignment(tok) {
+		if _, _, _, _, ok := denyAssignmentWord(tok); !ok {
 			if tok == dynamicSubstToken || tok == procSubstToken {
 				// `name=$(cmd)` leaves the marker as a word after `name=`.
 				for _, t := range stage {
-					if isAssignment(t) {
-						name, _, _ := strings.Cut(t, "=")
+					if name, _, _, _, ok := denyAssignmentWord(t); ok {
 						delete(vars, name)
 					}
 				}
@@ -273,17 +273,86 @@ func denyAssign(stage []string, vars map[string]string) {
 		}
 	}
 	for _, tok := range stage {
-		if !isAssignment(tok) {
+		name, value, appended, element, ok := denyAssignmentWord(tok)
+		if !ok || element == denyOtherElement {
+			// Another element leaves what $NAME expands to alone.
 			continue
 		}
-		name, value, _ := strings.Cut(tok, "=")
+		if _, known := vars[name]; known && element == denyUnplacedElement {
+			// The element may be any: a value the scan knows is kept.
+			continue
+		}
 		value = denySubstitute(value, vars)
+		if appended {
+			// NAME+=value appends to a known value; to an unknown one it
+			// leaves a value only known at run time.
+			old, known := vars[name]
+			if !known && os.Getenv(name) != "" {
+				delete(vars, name)
+				continue
+			}
+			value = old + value
+		}
 		if strings.ContainsAny(value, "$`") || strings.Contains(value, dynamicSubstToken) || len(value) > maxStaticWordBytes {
 			delete(vars, name)
 			continue
 		}
 		vars[name] = value
 	}
+}
+
+// denyElement says which part of a variable an assignment word writes.
+type denyElement int
+
+const (
+	// denyWhole: NAME=value. Element 0 of an array is the same thing: it is
+	// what $NAME expands to.
+	denyWhole denyElement = iota
+	// denyOtherElement: NAME[n]=value with a literal n other than 0.
+	denyOtherElement
+	// denyUnplacedElement: a subscript that is not a literal number (an
+	// arithmetic name, an expansion), which may evaluate to 0.
+	denyUnplacedElement
+)
+
+// denyAssignmentWord splits an assignment word: NAME=value, NAME+=value,
+// which appends to the value (and assigns when NAME is unset), and the
+// element forms NAME[sub]=value and NAME[sub]+=value.
+func denyAssignmentWord(tok string) (name, value string, appended bool, element denyElement, ok bool) {
+	end := 0
+	for end < len(tok) && isShellVarByte(tok[end]) {
+		end++
+	}
+	name, rest := tok[:end], tok[end:]
+	if !isValidVarName(name) {
+		return "", "", false, denyWhole, false
+	}
+	if strings.HasPrefix(rest, "[") {
+		closing := strings.Index(rest, "]=")
+		if at := strings.Index(rest, "]+="); at >= 0 && (closing < 0 || at < closing) {
+			closing = at
+		}
+		if closing < 0 {
+			return "", "", false, denyWhole, false
+		}
+		sub := rest[1:closing]
+		switch {
+		case sub != "" && strings.Trim(sub, "0") == "":
+			element = denyWhole
+		case sub != "" && isAllDigits(sub):
+			element = denyOtherElement
+		default:
+			element = denyUnplacedElement
+		}
+		rest = rest[closing+1:]
+	}
+	if value, ok = strings.CutPrefix(rest, "+="); ok {
+		return name, value, true, element, true
+	}
+	if value, ok = strings.CutPrefix(rest, "="); ok {
+		return name, value, false, element, true
+	}
+	return "", "", false, denyWhole, false
 }
 
 // denyGroupWords are shell grammar words that may precede a command in the

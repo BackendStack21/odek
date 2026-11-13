@@ -177,14 +177,14 @@ func TestNewHandler_defaults(t *testing.T) {
 		t.Errorf("default OnCommand = %q, want %q", cmdResp, "Not implemented yet: command")
 	}
 
-	voiceResp, voiceErr := h.OnVoiceMessage(1, 0, "file_id", 0)
+	voiceResp, voiceErr := h.OnVoiceMessage(1, 0, "file_id", false, 0)
 	// Voice and photo defaults now try to download via Bot (no real client in test).
 	// They should return an error, not a placeholder string.
 	if voiceResp != "" || voiceErr == nil {
 		t.Logf("onVoiceMessage returned: %q (err=%v)", voiceResp, voiceErr)
 	}
 
-	photoResp, photoErr := h.OnPhotoMessage(1, 0, []string{"f1", "f2"}, "", 0)
+	photoResp, photoErr := h.OnPhotoMessage(1, 0, []string{"f1", "f2"}, "", false, 0)
 	if photoResp != "" || photoErr == nil {
 		t.Logf("onPhotoMessage returned: %q (err=%v)", photoResp, photoErr)
 	}
@@ -275,7 +275,7 @@ func TestHandleUpdate_CaptionTooLong(t *testing.T) {
 	h := NewHandler(bot)
 	h.Config.AllowAllUsers = true
 	h.Config.MaxMsgLength = 10
-	h.OnPhotoMessage = func(_ int64, _ int, _ []string, _ string, _ int64) (string, error) {
+	h.OnPhotoMessage = func(_ int64, _ int, _ []string, _ string, _ bool, _ int64) (string, error) {
 		called = true
 		return "should not fire", nil
 	}
@@ -392,7 +392,7 @@ func TestHandleUpdate_VoiceMessage(t *testing.T) {
 	bot := testBot(t, ts)
 	h := NewHandler(bot)
 	h.Config.AllowAllUsers = true // routing test — access control covered by TestIsAllowed_*
-	h.OnVoiceMessage = func(chatID int64, messageID int, fileID string, _ int64) (string, error) {
+	h.OnVoiceMessage = func(chatID int64, messageID int, fileID string, _ bool, _ int64) (string, error) {
 		capturedChatID = chatID
 		capturedFileID = fileID
 		return "voice received", nil
@@ -432,7 +432,7 @@ func TestHandleUpdate_PhotoMessage(t *testing.T) {
 	bot := testBot(t, ts)
 	h := NewHandler(bot)
 	h.Config.AllowAllUsers = true // routing test — access control covered by TestIsAllowed_*
-	h.OnPhotoMessage = func(chatID int64, messageID int, fileIDs []string, caption string, _ int64) (string, error) {
+	h.OnPhotoMessage = func(chatID int64, messageID int, fileIDs []string, caption string, _ bool, _ int64) (string, error) {
 		capturedChatID = chatID
 		capturedFileIDs = fileIDs
 		capturedCaption = caption
@@ -1720,7 +1720,7 @@ func TestHandler_HandleMessage_OnErrorCalledOnVoiceFailure(t *testing.T) {
 
 	chatID := int64(333)
 	expectedErr := assertError("voice processing failed")
-	h.OnVoiceMessage = func(_ int64, _ int, _ string, _ int64) (string, error) {
+	h.OnVoiceMessage = func(_ int64, _ int, _ string, _ bool, _ int64) (string, error) {
 		return "", expectedErr
 	}
 
@@ -1762,7 +1762,7 @@ func TestHandler_HandleMessage_OnErrorCalledOnPhotoFailure(t *testing.T) {
 
 	chatID := int64(555)
 	expectedErr := assertError("photo processing failed")
-	h.OnPhotoMessage = func(_ int64, _ int, _ []string, _ string, _ int64) (string, error) {
+	h.OnPhotoMessage = func(_ int64, _ int, _ []string, _ string, _ bool, _ int64) (string, error) {
 		return "", expectedErr
 	}
 
