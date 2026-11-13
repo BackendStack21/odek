@@ -4,7 +4,7 @@ go 1.27.0
 
 require (
 	github.com/BackendStack21/go-llm-sdk v1.1.1
-	github.com/BackendStack21/go-mcp v1.4.0
+	github.com/BackendStack21/go-mcp v1.5.0
 	github.com/BackendStack21/go-vector v1.4.0
 	golang.org/x/image v0.47.0
 	golang.org/x/net v0.61.0
