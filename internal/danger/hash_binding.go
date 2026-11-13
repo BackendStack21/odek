@@ -19,16 +19,18 @@ import "strings"
 const hashUnresolvedBody = "\"$odek_unresolved_hash_target\""
 
 // hashBindings returns the alias-table definitions (NAME=BODY) made by the
-// arguments of a `hash` invocation. ok is false when a bound name is only
-// known at run time.
+// arguments of a `hash` invocation. bash binds every NAME to the file of the
+// last -p (an earlier -p is overridden), so each name gets one definition.
+// ok is false when a bound name is only known at run time.
 func hashBindings(args []string) (defs []string, ok bool) {
 	ok = true
-	var files, names []string
+	var names []string
+	file, hasFile := "", false
 	pending := false // the next word is the argument of -p
 	options := true
 	for _, a := range args {
 		if pending {
-			files = append(files, a)
+			file, hasFile = a, true
 			pending = false
 			continue
 		}
@@ -39,7 +41,7 @@ func hashBindings(args []string) (defs []string, ok bool) {
 			}
 			if i := strings.IndexByte(a, 'p'); i > 0 {
 				if rest := a[i+1:]; rest != "" {
-					files = append(files, rest)
+					file, hasFile = rest, true
 				} else {
 					pending = true
 				}
@@ -47,27 +49,26 @@ func hashBindings(args []string) (defs []string, ok bool) {
 			continue
 		}
 		options = false
-		if name, file, bound := strings.Cut(a, "="); bound && name != "" {
+		if name, f, bound := strings.Cut(a, "="); bound && name != "" {
 			if !validAliasName(name) {
 				ok = false
 				continue
 			}
-			defs = append(defs, name+"="+hashBody(file))
+			defs = append(defs, name+"="+hashBody(f))
 			continue
 		}
 		names = append(names, a)
 	}
-	if len(files) == 0 {
+	if !hasFile {
 		return defs, ok
 	}
+	body := hashBody(file)
 	for _, name := range names {
 		if !validAliasName(name) {
 			ok = false
 			continue
 		}
-		for _, file := range files {
-			defs = append(defs, name+"="+hashBody(file))
-		}
+		defs = append(defs, name+"="+body)
 	}
 	return defs, ok
 }

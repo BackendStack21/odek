@@ -90,8 +90,14 @@ func (t *aliasTable) define(args []string) bool {
 	defs, ok := aliasDefinitions(args)
 	for _, d := range defs {
 		for _, body := range d.bodies {
-			if !hasString(t.defs[d.name], body) {
-				t.defs[d.name] = append(t.defs[d.name], body)
+			list := t.defs[d.name]
+			if len(list) > maxAliasBodies {
+				// Past the bound the name already fails closed; storing
+				// more bodies would only make each later check slower.
+				break
+			}
+			if !hasString(list, body) {
+				t.defs[d.name] = append(list, body)
 			}
 		}
 		if len(t.defs[d.name]) > maxAliasBodies {

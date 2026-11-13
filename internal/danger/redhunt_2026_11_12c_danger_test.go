@@ -1,6 +1,7 @@
 package danger
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -436,5 +437,56 @@ func TestRED_NestedScannerSubshellInsideSubstitution(t *testing.T) {
 	RecordRead(filepath.Join(d, "security.sh"))
 	if cls, _ := ClassifyScriptGate("bash security.sh"); cls != UnreadExec {
 		t.Errorf("script %q: class=%s; want unread_exec", script, cls)
+	}
+}
+
+// `hash -p FILE NAME...` bindings were built as the cross product of every
+// -p file and every name, and each definition scanned the name's whole body
+// list before the bound was checked: 1950 files and 1950 names (52 KB) took
+// seconds. bash binds every NAME to the file of the last -p.
+//
+// Correct behaviour: each name gets the last -p file, so the bindings are
+// linear in the names, and the cost stays bounded.
+func TestRED_HashBindingLastFileWinsAndCostIsBounded(t *testing.T) {
+	t.Setenv("HOME", "/home/user")
+	t.Chdir(t.TempDir())
+	var b strings.Builder
+	b.WriteString("hash")
+	var args []string
+	for i := 0; i < 1950; i++ {
+		arg := fmt.Sprintf("-p./aaaaaaaaaaaa%04d", i)
+		b.WriteString(" " + arg)
+		args = append(args, arg)
+	}
+	for i := 0; i < 1950; i++ {
+		name := fmt.Sprintf("n%04d", i)
+		b.WriteString(" " + name)
+		args = append(args, name)
+	}
+	if defs, ok := hashBindings(args); !ok || len(defs) != 1950 {
+		t.Errorf("hashBindings made %d definitions (ok=%v), want one per name (1950)", len(defs), ok)
+	}
+	b.WriteString("; n0007 -rf ~")
+	cmd := b.String()
+	if len(cmd) > MaxCommandBytes {
+		t.Fatalf("input %d bytes over MaxCommandBytes", len(cmd))
+	}
+	start := time.Now()
+	got := Classify(cmd)
+	elapsed := time.Since(start)
+	if want := Classify("./aaaaaaaaaaaa1949 -rf ~"); Rank(got) < Rank(want) {
+		t.Errorf("Classify of the bound name = %s, want at least %s (the last -p file)", got, want)
+	}
+	if !raceEnabled && !testing.Short() && elapsed > boundedAnalyzeSlow {
+		t.Errorf("Classify of a %d-byte hash command took %v (bound %v)", len(cmd), elapsed, boundedAnalyzeSlow)
+	}
+	for cmd, ref := range map[string]string{
+		"hash -p ./benign -p /bin/rm ls; ls -rf /home/user": "/bin/rm -rf /home/user",
+		"hash -p /bin/rm ls cat; cat -rf /home/user":        "/bin/rm -rf /home/user",
+		"hash -p/bin/rm ls; ls -rf /home/user":              "/bin/rm -rf /home/user",
+	} {
+		if got, want := Classify(cmd), Classify(ref); Rank(got) < Rank(want) {
+			t.Errorf("Classify(%q) = %s, want at least %s (the verdict of %q)", cmd, got, want, ref)
+		}
 	}
 }

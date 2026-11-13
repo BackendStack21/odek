@@ -157,6 +157,7 @@ internal/
     param_default.go            ${name:-word} / ${name:=word} / ${name:+word} default words classified as the commands they can run
     env_dump_tools.go           jq/yq/ps environment disclosure → system_write
     env_code.go                 PROMPT_COMMAND / PS0-PS4 / BASH_FUNC_ assignments: values classified as commands
+    hash_binding.go             Command-table bindings (hash -p FILE NAME, zsh hash NAME=FILE) tracked like aliases, also behind exec/command
     env_tool_options.go         Option-carrying env vars (TAR_OPTIONS, MAVEN_ARGS, MAVEN_OPTS, JAVA_HOME, …) judged where a program that reads them runs
     gpg_adapter.go              gpg classified by operation (keyring mutation, photo viewer, non-default homedir)
     kill_broadcast.go           pkill/killall broadcast detection (match-everything patterns, user selectors, -P 1)
