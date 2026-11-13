@@ -439,8 +439,14 @@ func analyzeWithStateWork(cmd string, depth int, inherited *shellAnalysisState, 
 			inner, floor := unwrappedStage.inner, unwrappedStage.floor
 			// A statement of the command line itself, outside any compound
 			// command, pipeline or conditional list, is certain to have run
-			// in the shell of the commands after it.
-			state.noteOptionBindings(stage, inner, nesting == 0 && len(stages) == 1 && !afterAnd && !ambiguous && !ctx.piped && !ctx.subshell)
+			// in the shell of the commands after it. A builtin is certain
+			// to be the one that ran only as the bare command word: behind
+			// a wrapper (`env unset NAME`, `nice`, `xargs`) a program of that
+			// name runs instead, and an alias can stand in for the word.
+			certain := nesting == 0 && len(stages) == 1 && !afterAnd && !ambiguous && !ctx.piped && !ctx.subshell &&
+				len(inner) == len(stage) && len(inner) > 0 && !strings.Contains(inner[0], "/") &&
+				len(expansions) == 0 && !unresolved
+			state.noteOptionBindings(stage, inner, certain)
 			payloadState.vars, payloadState.optEnv = withOptionAssignments(payloadState.vars, payloadState.optEnv, unwrappedStage.assigns)
 			for _, payload := range unwrappedStage.payloads {
 				result.merge(analyzeWithState(payload, depth+1, &payloadState))

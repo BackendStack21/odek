@@ -536,6 +536,21 @@ func TestRED_UnexportedOptionVariableIsNotJudged(t *testing.T) {
 		export + `unset 'TAR_OPTIONS[1]'; tar xf x.tar`,
 		export + `unset TAR; tar xf x.tar`,
 		export + `echo "$(tar xf x.tar)"; unset TAR_OPTIONS`,
+		// A wrapper runs a program of that name, not the builtin, and an
+		// alias or a function can stand in for it.
+		export + `env unset TAR_OPTIONS; tar xf x.tar`,
+		export + `nice unset TAR_OPTIONS; tar xf x.tar`,
+		export + `xargs unset TAR_OPTIONS; tar xf x.tar`,
+		export + `timeout 1 export -n TAR_OPTIONS; tar xf x.tar`,
+		export + `exec unset TAR_OPTIONS; tar xf x.tar`,
+		export + `/usr/bin/unset TAR_OPTIONS; tar xf x.tar`,
+		"alias unset=true\n" + export + "\nunset TAR_OPTIONS\ntar xf x.tar",
+		"alias declare=true\n" + export + "\ndeclare +x TAR_OPTIONS\ntar xf x.tar",
+		`declare() { :; }; ` + export + `declare +x TAR_OPTIONS; tar xf x.tar`,
+		`unset() { :; }; ` + export + `unset TAR_OPTIONS; tar xf x.tar`,
+		export + `unset TAR_OPTIONS; declare -x TAR_OPTIONS; TAR_OPTIONS=--to-command=sh; tar xf x.tar`,
+		export + `declare -n ref=TAR_OPTIONS; unset TAR_OPTIONS; export ref; ref=--to-command=sh; tar xf x.tar`,
+		export + `tar xf x.tar; unset TAR_OPTIONS`,
 	} {
 		if got := Classify(cmd); Rank(got) <= Rank(plain) {
 			t.Errorf("Classify(%q) = %s, want above %s: the variable can still reach tar", cmd, got, plain)
