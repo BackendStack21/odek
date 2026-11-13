@@ -541,12 +541,25 @@ func dbClientKind(name string) uint8 {
 }
 
 // dbWrappers are the commands that run the command given after their own
-// options, and the builtins that take NAME=value words: the word after them
-// still stands in command position.
-var dbWrappers = map[string]bool{
-	"sudo": true, "doas": true, "env": true, "exec": true, "time": true, "nice": true, "nohup": true,
-	"command": true, "timeout": true,
-	"export": true, "declare": true, "typeset": true, "local": true, "readonly": true, "alias": true,
+// options, the builtins that take NAME=value words and the shell keywords a
+// command follows: the word after them still stands in command position.
+// The value names the short options that take a value in a word of its own.
+var dbWrappers = map[string]string{
+	"sudo": "ughpCDRTUrt", "doas": "uC", "env": "uCS", "exec": "a", "time": "of", "nice": "n", "nohup": "",
+	"command": "", "builtin": "", "timeout": "sk", "xargs": "nIPLsdEa", "watch": "n", "stdbuf": "ioe",
+	"ionice": "cnp", "setsid": "",
+	"export": "", "declare": "", "typeset": "", "local": "", "readonly": "", "alias": "",
+	"if": "", "then": "", "else": "", "elif": "", "do": "", "while": "", "until": "", "!": "",
+}
+
+// dbWrapperLongValues are the long options of the wrappers that take a value
+// in a word of its own.
+var dbWrapperLongValues = map[string]bool{
+	"--user": true, "--group": true, "--host": true, "--prompt": true, "--chdir": true, "--chroot": true,
+	"--close-from": true, "--role": true, "--type": true, "--other-user": true, "--command-timeout": true,
+	"--signal": true, "--kill-after": true, "--unset": true, "--split-string": true, "--adjustment": true,
+	"--output": true, "--format": true, "--interval": true, "--max-args": true, "--max-procs": true,
+	"--replace": true, "--delimiter": true, "--arg-file": true,
 }
 
 // optionStartAt reports whether an option word starts at text[i]: text[i] is
@@ -583,14 +596,13 @@ func dbClusterOf(cluster string, kinds uint8) bool {
 	return false
 }
 
-// dbQuoteDepth is the deepest the quotes of one line nest, the unquoted text
-// included: ', " and the escaped \" of each JSON encoding depth read (an odd
-// run of at most sshpassEscapeMax backslashes). A quote of a kind that is
-// open closes it, so no kind is open twice.
-const dbQuoteDepth = 3 + (sshpassEscapeMax+1)/2
+// dbQuoteDepth is the deepest the quotes and parentheses of one line are
+// followed, the unquoted text included.
+const dbQuoteDepth = 16
 
-// dbFrame is one open quote of a line (the first frame is the unquoted text)
-// and the kinds of the client words that govern what follows inside it.
+// dbFrame is one open quote or parenthesis of a line (the first frame is the
+// unquoted text) and the kinds of the client words that govern what follows
+// inside it.
 type dbFrame struct {
 	quote int
 	kinds uint8
@@ -611,10 +623,17 @@ type dbLine struct {
 	text   string
 	frames [dbQuoteDepth]dbFrame
 	depth  int
+	broken bool  // the line nests deeper than is followed
 	any    uint8 // every client word so far, whatever separates it
 	// Command position: the next word is the command of a simple command,
 	// also behind assignments and wrappers with their options.
-	cmdPos, wrapper, afterOpt, named bool
+	cmdPos bool
+	// Behind a wrapper: the short options of it that take a value, and
+	// whether the next word is such a value.
+	wrapper  bool
+	wrapOpts string
+	value    bool
+	named    bool // the next word is the value of --entrypoint
 	// pending is the kind of a NAME=client word in command position: it is a
 	// client word when an option follows it directly.
 	pending uint8
@@ -622,29 +641,49 @@ type dbLine struct {
 	opts    []dbOption
 }
 
-// quote reads a quote character of the given kind. One that matches an open
-// quote closes it together with the quotes nested in it, and the client words
-// read inside govern the rest of the enclosing text; any other opens a nested
-// quote, whose first word stands in command position.
-func (l *dbLine) quote(kind int) {
-	for d := l.depth - 1; d >= 1; d-- {
-		if l.frames[d].quote != kind {
-			continue
-		}
-		for k := d; k < l.depth; k++ {
-			l.frames[d-1].kinds |= l.frames[k].kinds
-		}
-		l.depth = d
-		l.cmdPos, l.wrapper, l.afterOpt, l.named = false, false, false, false
+// command sets whether the next word stands in command position, behind no
+// wrapper.
+func (l *dbLine) command(pos bool) {
+	l.cmdPos, l.wrapper, l.wrapOpts, l.value, l.named = pos, false, "", false, false
+}
+
+// open opens a nested quote or parenthesis, whose first word stands in
+// command position.
+func (l *dbLine) open(kind int) {
+	if l.depth == dbQuoteDepth {
+		l.broken = true
 		return
 	}
 	l.frames[l.depth] = dbFrame{quote: kind}
 	l.depth++
-	l.cmdPos, l.wrapper, l.afterOpt, l.named = true, false, false, false
+	l.command(true)
+}
+
+// close closes the frames from depth d on: the client words read inside
+// govern the rest of the enclosing text.
+func (l *dbLine) close(d int) {
+	for k := d; k < l.depth; k++ {
+		l.frames[d-1].kinds |= l.frames[k].kinds
+	}
+	l.depth = d
+	l.command(false)
+}
+
+// quote reads a quote character of the given kind: one that matches an open
+// quote closes it together with everything nested in it, any other opens a
+// nested quote.
+func (l *dbLine) quote(kind int) {
+	for d := l.depth - 1; d >= 1; d-- {
+		if l.frames[d].quote == kind {
+			l.close(d)
+			return
+		}
+	}
+	l.open(kind)
 }
 
 // kinds returns the client kinds that govern the current position: the
-// client words of the text around it at every quoting depth that no separator
+// client words of the text around it at every nesting depth that no separator
 // of their own depth has ended.
 func (l *dbLine) kinds() uint8 {
 	var k uint8
@@ -654,25 +693,34 @@ func (l *dbLine) kinds() uint8 {
 	return k
 }
 
-// separator reads an unquoted command separator, or one inside a quote: it
-// ends the simple command of the text at its own quoting depth, not that of
-// the text around the quote.
-func (l *dbLine) separator() {
-	l.frames[l.depth-1].kinds = 0
-	l.cmdPos, l.wrapper, l.afterOpt, l.named = true, false, false, false
+// client records a client word of the given kind at the current position.
+func (l *dbLine) client(kind uint8) {
+	l.frames[l.depth-1].kinds |= kind
+	l.any |= kind
+}
+
+// dbProgramPath reports whether the path w, whose last component is a client
+// name, names a program wherever it stands: it ends in .exe, or its directory
+// is bin or sbin.
+func dbProgramPath(w, base string) bool {
+	if strings.HasSuffix(lowerASCII(base), ".exe") {
+		return true
+	}
+	dir := strings.TrimRight(w[:len(w)-len(base)], `/\`)
+	dir = dir[strings.LastIndexAny(dir, `/\`)+1:]
+	return dir == "bin" || dir == "sbin"
 }
 
 // endWord judges the word text[l.tok:e], if one is in progress.
 func (l *dbLine) endWord(e int) {
-	if l.tok < 0 || l.tok >= e {
-		l.tok = -1
+	if l.tok < 0 {
 		return
 	}
 	w := l.text[l.tok:e]
 	l.tok = -1
 	base := w[strings.LastIndexAny(w, `/\`)+1:]
-	named := l.named
-	l.named = false
+	named, value := l.named, l.value
+	l.named, l.value = false, false
 	var kind, pending uint8
 	switch {
 	case w[0] == '-':
@@ -681,40 +729,45 @@ func (l *dbLine) endWord(e int) {
 		if v, ok := strings.CutPrefix(w, "--entrypoint="); ok {
 			kind = dbClientKind(v[strings.LastIndexAny(v, `/\`)+1:])
 		}
-		l.named = w == "--entrypoint"
-		if w == "--" {
-			l.cmdPos, l.wrapper = true, false
+		switch {
+		case w == "--entrypoint":
+			l.named = true
+		case w == "--":
+			l.command(true)
+		case l.wrapper && strings.HasPrefix(w, "--"):
+			l.value = dbWrapperLongValues[w]
+		case l.wrapper:
+			// The first option of the cluster that takes a value takes the
+			// rest of the word, or the next word when it ends the cluster.
+			k := strings.IndexAny(w[1:], l.wrapOpts)
+			l.value = k >= 0 && k+2 == len(w)
 		}
-		l.afterOpt = l.wrapper
 	case strings.IndexByte(w, '=') >= 0:
 		// A word with '=' is an assignment: the command position stays as it
 		// is. NAME=client in command position may be a command written
 		// without its quotes (see pending).
-		if eq := strings.IndexByte(w, '='); l.cmdPos && eq > 0 && identWord(w[:eq]) {
+		if eq := strings.IndexByte(w, '='); l.cmdPos && !value && eq > 0 && identWord(w[:eq]) {
 			pending = dbClientKind(w[eq+1:])
 		}
 	default:
 		path := len(base) != len(w)
-		if k := dbClientKind(base); k != 0 && (!path || l.cmdPos || named || strings.HasSuffix(lowerASCII(base), ".exe")) {
+		if k := dbClientKind(base); k != 0 && (!path || named || (l.cmdPos && !value) || dbProgramPath(w, base)) {
 			kind = k
 		}
+		opts, wrapper := dbWrappers[base]
 		switch {
-		case dbWrappers[base]:
-			l.cmdPos, l.wrapper, l.afterOpt = true, true, false
-		case l.wrapper && (l.afterOpt || (w[0] >= '0' && w[0] <= '9')):
-			l.afterOpt = false // an option's value, or a duration or priority
+		case value:
+			// The value of a wrapper's option.
+		case wrapper && l.cmdPos:
+			l.cmdPos, l.wrapper, l.wrapOpts = true, true, opts
+		case l.wrapper && w[0] >= '0' && w[0] <= '9':
+			// A duration or a priority.
 		default:
-			l.cmdPos, l.wrapper, l.afterOpt = false, false, false
+			l.command(false)
 		}
 	}
 	l.pending = pending
 	l.client(kind)
-}
-
-// client records a client word of the given kind at the current position.
-func (l *dbLine) client(kind uint8) {
-	l.frames[l.depth-1].kinds |= kind
-	l.any |= kind
 }
 
 // option reads the option word that starts at text[i] and returns where its
@@ -770,7 +823,7 @@ func (l *dbLine) read(ls, le int, quotes *jsonStringTracker, out [][2]int) [][2]
 				// after an encoded line break a command starts.
 				l.endWord(i)
 				if text[k] == 'n' || text[k] == 'r' {
-					l.cmdPos, l.wrapper, l.afterOpt = true, false, false
+					l.command(true)
 				}
 			default:
 				if l.tok < 0 {
@@ -779,16 +832,30 @@ func (l *dbLine) read(ls, le int, quotes *jsonStringTracker, out [][2]int) [][2]
 			}
 			i = k + 1
 			continue
-		case '\'', '"':
+		case '\'', '"', '`':
 			l.endWord(i)
 			l.quote(int(c))
+		case '(':
+			l.endWord(i)
+			l.open('(')
+		case ')':
+			l.endWord(i)
+			if l.frames[l.depth-1].quote == '(' {
+				l.close(l.depth - 1)
+			}
 		case ';', '|', '&':
 			l.endWord(i)
-			l.separator()
-		case '(', '`':
+			if c == '&' && ((i > ls && strings.IndexByte("<>", text[i-1]) >= 0) || (i+1 < le && text[i+1] == '>')) {
+				break // a redirection (2>&1, &>file), not a separator
+			}
+			// A separator ends the simple command of its own nesting depth,
+			// not that of the text around the quote it stands in.
+			l.frames[l.depth-1].kinds = 0
+			l.command(true)
+		case '{':
 			l.endWord(i)
-			l.cmdPos, l.wrapper, l.afterOpt = true, false, false
-		case ' ', '\t', '\n', '\r', ')', '<', '>', ',', '[', ']', '{', '}', '@', '$':
+			l.command(true)
+		case ' ', '\t', '\n', '\r', '<', '>', ',', '[', ']', '}', '@', '$':
 			l.endWord(i)
 		default:
 			if c == '-' && l.tok < 0 {
@@ -808,8 +875,9 @@ func (l *dbLine) read(ls, le int, quotes *jsonStringTracker, out [][2]int) [][2]
 		i++
 	}
 	l.endWord(le)
-	// A quote left open leaves the separators unreadable: none counts.
-	unreadable := l.depth > 1
+	// A quote or parenthesis left open, or nesting deeper than is followed,
+	// leaves the separators unreadable: none counts.
+	unreadable := l.depth > 1 || l.broken
 	for _, o := range l.opts {
 		kinds := o.kinds
 		if unreadable {
@@ -847,23 +915,24 @@ func nextDBClientName(s *textScan, pos int, next []int) int {
 // A client word is a word that is exactly a client name (see dbClientKind),
 // bare, in any letter case — also as the value of --entrypoint, and of
 // NAME=client in command position when an option follows it directly — or a
-// path whose last component is one when the path stands
-// in command position (the first word of a simple command, of a quoted
-// string or after "--", behind NAME=value words and the wrappers of
-// dbWrappers with their options) or ends in .exe. Words end at blanks,
-// quotes, separators and the characters ( ) < > , [ ] { } @ $, so a name
-// inside a longer word (mysql.service, mysql-backup.tar, db-mysql-01,
-// --db=mysql) and a path that is an argument (/var/lib/mysql) are not client
-// words.
+// path whose last component is one when the path stands in command position
+// (the first word of a simple command, of a quoted string, of a
+// parenthesised list or after "--", behind NAME=value words and the words of
+// dbWrappers with their options), ends in .exe or lies in a bin or sbin
+// directory. Words end at blanks, quotes, separators and the characters
+// ( ) < > , [ ] { } @ $, so a name inside a longer word (mysql.service,
+// mysql-backup.tar, db-mysql-01, --db=mysql) and a path that is an argument
+// (/var/lib/mysql) are not client words.
 //
 // A client word governs the option words after it on its line up to the next
-// command separator (| ; & and their doubles) of its own quoting depth: a
-// separator inside a quoted argument does not end the command the quote
-// belongs to, and a separator after a quoted script does not reach into it.
-// A line whose quotes do not pair is read as if it held no separator. A
-// cluster is the client's only when each of its flags is an argument-less
-// option of one governing client kind. An attached -p value that is a port
-// mapping is not a password; a bare -p prompts and -P is a port.
+// command separator (| ; & and their doubles) of its own nesting depth: a
+// separator inside a quoted argument or a parenthesised list does not end the
+// command around it, and a separator after a quoted script does not reach
+// into it. A line whose quotes or parentheses do not pair is read as if it
+// held no separator. A cluster is the client's only when each of its flags is
+// an argument-less option of one governing client kind. An attached -p value
+// that is a port mapping is not a password; a bare -p prompts and -P is a
+// port.
 func dbClientPasswordMatches(s *textScan) [][2]int {
 	text := s.text
 	var out [][2]int
