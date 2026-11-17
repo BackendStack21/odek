@@ -411,3 +411,21 @@ test('assistant text that only resembles the abort marker stays an answer', () =
   assert.equal(byId.messages.querySelectorAll('.msg.assistant').length, 1);
   assert.equal(systemLines().length, 0);
 });
+
+// ── Counts ──
+test('result counts use singular forms for one', () => {
+  const one = render1({ name: 'shell', output: SHELL });
+  assert.equal(one.querySelector('.result-count').textContent, '1 line');
+  const two = render1({ name: 'terminal', output: 'a\nb' });
+  assert.equal(two.querySelector('.result-count').textContent, '2 lines');
+  const view = render1({ name: 'glob', output: JSON.stringify({ matches: [{ path: 'a.go', size: 1 }, { path: 'b.go', size: 2 }] }) });
+  const search = view.querySelector('.result-search');
+  search.value = 'a.go';
+  search.dispatch('input');
+  assert.equal(view.querySelector('.result-count').textContent, '1 match');
+  const long = render1({ name: 'terminal', output: Array.from({ length: 201 }, (_, i) => 'l' + i).join('\n') });
+  assert.equal(long.querySelector('.result-more').textContent, 'Show next 1 line');
+  const diff = render1({ name: 'diff', output: '@@ -1 +1 @@\n-a\n+b' });
+  diff.querySelectorAll('.result-action').find(b => b.textContent === 'Split').click();
+  assert.equal(diff.querySelector('.result-count').textContent, '2 rows');
+});
