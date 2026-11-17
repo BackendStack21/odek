@@ -694,3 +694,28 @@ test('an untitled session is named by its short id', () => {
   const text = askDelete({ id: '20261117abcdef01', task: '' });
   assert.match(text, /untitled session 20261117/);
 });
+
+// ── Inspector tab focus ring ──
+// `inset var(--ring)` only insets the first of the ring's two shadows; the
+// outer amber one was clipped by the scrolling tab strip into corner marks.
+test('inspector tabs draw a fully inset focus ring in every theme', () => {
+  assert.doesNotMatch(css, /inset var\(--ring\)/, 'no partially inset ring');
+  assert.match(cssRule('.ptab:focus-visible'), /box-shadow:\s*var\(--ring-inset\)/);
+  const defs = [...css.matchAll(/--ring-inset:\s*([^;]+);/g)].map((m) => m[1]);
+  assert.ok(defs.length >= 2, 'defined beside each --ring (default and high contrast)');
+  assert.equal(defs.length, [...css.matchAll(/--ring:\s*[^;]+;/g)].length, 'one inset ring per ring definition');
+  // Top-level commas separate shadows; commas inside color-mix() do not.
+  const shadows = (value) => {
+    const out = [''];
+    let depth = 0;
+    for (const ch of value) {
+      if (ch === '(') depth++;
+      if (ch === ')') depth--;
+      if (ch === ',' && depth === 0) out.push(''); else out[out.length - 1] += ch;
+    }
+    return out.map((s) => s.trim());
+  };
+  for (const def of defs) {
+    for (const shadow of shadows(def)) assert.match(shadow, /^inset\b/, 'every shadow is inset: ' + def);
+  }
+});

@@ -86,6 +86,7 @@
 body {
   --shadow-pop: 0 16px 48px rgba(0, 0, 0, .5), 0 4px 12px rgba(0, 0, 0, .3), 0 0 0 1px var(--line-2);
   --ring: 0 0 0 2px var(--bg-0), 0 0 0 4px color-mix(in srgb, var(--amber) 70%, transparent);
+  --ring-inset: inset 0 0 0 2px color-mix(in srgb, var(--amber) 70%, transparent); /* inside clipping containers */
 }
 
 /* ── Porcelain (light) ─────────────────────────────────────────────── */
@@ -182,6 +183,7 @@ body.theme-high-contrast {
   --ember-grad: linear-gradient(135deg, #fff38a, #ffe14a);
   --code-ink: #fff38a;
   --ring: 0 0 0 2px #000, 0 0 0 4px #ffe14a;
+  --ring-inset: inset 0 0 0 2px #ffe14a;
   --shadow-pop: 0 0 0 1px var(--line-3);
 }
 
@@ -828,7 +830,7 @@ body.workspace-wide #session-rail { box-shadow: none; animation: none; }
 .ptab:hover { color: var(--text); }
 .ptab.active { color: var(--text); }
 .ptab.active::after { content: ''; position: absolute; left: 10px; right: 10px; bottom: -1px; height: 2px; border-radius: 2px 2px 0 0; background: var(--amber); }
-.ptab:focus-visible { box-shadow: inset var(--ring); border-radius: var(--r-sm); }
+.ptab:focus-visible { box-shadow: var(--ring-inset); border-radius: var(--r-sm); }
 .ptab.live::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--amber); order: 2; }
 #output-count { min-width: 18px; padding: 0 5px; border-radius: var(--r-pill); background: var(--bg-3); color: var(--text-3); font: 500 var(--fs-2xs)/16px var(--code); text-align: center; }
 #panels-close { font-size: 14px; }
