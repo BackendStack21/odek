@@ -3649,11 +3649,15 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 			}
 
 			if len(risky) > 0 {
+				// Every approval surface shows the card through
+				// danger.SanitizeForDisplay and draws its own warning icon, so
+				// the header is plain text: an emoji presentation selector
+				// (U+FE0F) would be shown escaped as ️.
 				var sb strings.Builder
 				if len(risky) == 1 {
-					sb.WriteString("⚠️ The following tool action requires approval:\n\n")
+					sb.WriteString("The following tool action requires approval:\n\n")
 				} else {
-					sb.WriteString(fmt.Sprintf("⚠️ %d tool actions require approval:\n\n", len(risky)))
+					sb.WriteString(fmt.Sprintf("%d tool actions require approval:\n\n", len(risky)))
 				}
 				for i, rc := range risky {
 					// Show the full resource/command. Telegram/Web UI renderers

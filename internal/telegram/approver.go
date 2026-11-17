@@ -231,7 +231,10 @@ func (a *TelegramApprover) promptCommand(cls danger.RiskClass, cmd, description 
 	// operations is designed to exploit.
 	if a.shouldFriction(cls) {
 		allowTrust = false
-		warning := fmt.Sprintf("⚠️ You have approved %d %s operations in the last %s. Trust Session is disabled for this request.", a.FrictionThreshold, cls, a.FrictionWindow)
+		// The warning joins the description, which is shown through
+		// danger.SanitizeForDisplay: no emoji presentation selector
+		// (U+FE0F), which would show as ️.
+		warning := fmt.Sprintf("⚠ You have approved %d %s operations in the last %s. Trust Session is disabled for this request.", a.FrictionThreshold, cls, a.FrictionWindow)
 		if description != "" {
 			description = warning + "\n" + description
 		} else {
@@ -373,7 +376,8 @@ func (a *TelegramApprover) PromptOperation(op danger.ToolOperation) error {
 func (a *TelegramApprover) PromptMedia(path string) error {
 	desc := "Outbound Telegram media upload"
 	if w := BroadBaseWarning(); w != "" {
-		desc += "\n⚠️ " + w
+		// Plain warning sign: the description is display-sanitized.
+		desc += "\n⚠ " + w
 	}
 	return a.promptCommand(danger.NetworkUpload, path, desc, true)
 }
