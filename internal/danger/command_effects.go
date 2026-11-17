@@ -98,9 +98,14 @@ func adapterRunsCode(name string, tokens []string, repo *gitRepoCtx) bool {
 		// native code at load time (a classic GTFOBins escape). ssh-keygen is a
 		// write prefix, so without this gate `ssh-keygen -D ./evil.so` read as
 		// local_write and auto-allowed.
-		if optionPresent(tokens, "-D", "-w") {
+		if sshKeygenSyntax.parse(tokens[1:]).has("-D", "-w") {
 			return true
 		}
+	}
+	if name == "ssh-add" && sshAddSyntax.parse(tokens[1:]).has("-s", "-S") {
+		// -s <lib> and -S <lib> ask the running ssh-agent to load a PKCS#11
+		// or security-key provider library into the agent process.
+		return true
 	}
 	if name == "openssl" && opensslLoadsModule(tokens) {
 		return true
@@ -120,10 +125,15 @@ func adapterRunsCode(name string, tokens []string, repo *gitRepoCtx) bool {
 // directory. It is used to tell an attacker-planted module/program path
 // (`-engine ./evil.so`, `--pdf-engine=/tmp/x`) from a trusted bare name
 // (`-provider legacy`, `--pdf-engine xelatex`) that loads from a system
-// location the agent cannot write.
+// location the agent cannot write. A value only known at run time (a
+// variable reference or a command substitution) can be either, so it counts
+// as path-like.
 func valueIsPathLike(v string) bool {
 	if v == "" {
 		return false
+	}
+	if hasVariableReference(v) || hasDynamicSubstitution(v) {
+		return true
 	}
 	return strings.ContainsRune(v, '/') || strings.HasPrefix(v, ".")
 }
@@ -144,23 +154,80 @@ func optionValue(tokens []string, i int, opt string) (string, bool) {
 	return "", false
 }
 
-// pandocRunsProgram reports whether a pandoc invocation shells out to an
-// attacker-chosen program or script. --filter/-F names an external JSON
-// filter and --lua-filter names a Lua script (pandoc's Lua exposes
-// os.execute); both run whatever they name, so any value escalates.
-// --pdf-engine names the PDF backend pandoc exec's — a bare engine name
-// (`xelatex`) is a trusted PATH lookup, but a path value runs that binary
-// directly, so only a path-like value escalates.
+// pandocSyntax is pandoc's option grammar (pandoc 3): the short letters that
+// take a value, every long option (pandoc accepts any unambiguous prefix, and
+// an ambiguous one resolves to every candidate here), and the short letters
+// that stand for a long option, so -L, -Lx.lua and -sLx.lua all read as
+// --lua-filter.
+var pandocSyntax = optSpec{
+	short: "frtwoMdVHBATcFLD",
+	long: longTable(
+		"from read to write output data-dir metadata metadata-file defaults template variable wrap "+
+			"toc-depth number-offset top-level-division extract-media resource-path include-in-header "+
+			"include-before-body include-after-body highlight-style syntax-definition dpi eol columns tab-stop "+
+			"pdf-engine pdf-engine-opt reference-doc request-header abbreviations indented-code-classes "+
+			"default-image-extension filter lua-filter shift-heading-level-by base-header-level track-changes "+
+			"reference-location markdown-headings slide-level email-obfuscation id-prefix title-prefix css "+
+			"epub-subdirectory epub-cover-image epub-title-page epub-metadata epub-embed-font split-level "+
+			"chunk-template epub-chapter-level ipynb-output bibliography csl citation-abbreviations log "+
+			"print-default-template print-default-data-file print-highlight-style",
+		"file-scope sandbox standalone ascii toc table-of-contents number-sections no-highlight preserve-tabs "+
+			"self-contained embed-resources no-check-certificate strip-comments reference-links list-tables "+
+			"listings incremental section-divs html-q-tags citeproc natbib biblatex mathml webtex mathjax katex "+
+			"gladtex trace dump-args ignore-args verbose quiet fail-if-warnings bash-completion "+
+			"list-input-formats list-output-formats list-extensions list-highlight-languages "+
+			"list-highlight-styles version help"),
+	alias: map[byte]string{
+		'f': "--from", 'r': "--read", 't': "--to", 'w': "--write", 'o': "--output", 'M': "--metadata",
+		'd': "--defaults", 'V': "--variable", 'H': "--include-in-header", 'B': "--include-before-body",
+		'A': "--include-after-body", 'T': "--title-prefix", 'c': "--css", 'F': "--filter", 'L': "--lua-filter",
+		'D': "--print-default-template",
+	},
+	abbrev:         true,
+	ignoreDashDash: true,
+}
+
+// sshKeygenSyntax is ssh-keygen's option grammar: the short letters that take
+// a value, so a library path fused into a cluster (`-vD lib.so`, `-qD./lib.so`)
+// is read as the value of -D, and a word another option consumes (`-N -D`,
+// where -D is the passphrase) is not.
+var sshKeygenSyntax = optSpec{short: "abCDEFfGIJjMmNnOPRrSsTtVWwYzZ", ignoreDashDash: true}
+
+// sshAddSyntax is ssh-add's option grammar (value-taking short letters).
+var sshAddSyntax = optSpec{short: "EeHhSst", ignoreDashDash: true}
+
+// pandocRunsProgram reports whether a pandoc invocation runs attacker-chosen
+// code. `pandoc lua` is a Lua interpreter (pandoc's Lua exposes os.execute).
+// --filter/-F names an external JSON filter, --lua-filter/-L a Lua script and
+// --defaults/-d a defaults file whose filters list runs filters; all three
+// run whatever they name, so any value escalates. -f/-r/-t/-w name a custom
+// Lua reader or writer when the value is a .lua file or a path. --pdf-engine
+// names the PDF backend pandoc runs: a bare engine name (`xelatex`) is a
+// trusted PATH lookup, a path or run-time value runs that binary.
+// --pdf-engine-opt hands words to that engine (`-shell-escape` lets a LaTeX
+// document run shell commands), so any use escalates.
 func pandocRunsProgram(tokens []string) bool {
-	if optionPresent(tokens, "--filter", "-F", "--lua-filter") {
+	if len(tokens) > 1 && tokens[1] == "lua" {
 		return true
 	}
-	for i := 1; i < len(tokens); i++ {
-		if v, ok := optionValue(tokens, i, "--pdf-engine"); ok && valueIsPathLike(v) {
+	for _, o := range pandocSyntax.parse(tokens[1:]).opts {
+		switch {
+		case o.is("--filter", "--lua-filter", "--defaults", "--pdf-engine-opt"):
+			return true
+		case o.is("--from", "--read", "--to", "--write") && o.has && pandocCustomFormat(o.value):
+			return true
+		case o.is("--pdf-engine") && o.has && valueIsPathLike(o.value):
 			return true
 		}
 	}
 	return false
+}
+
+// pandocCustomFormat reports whether a pandoc format value names a custom Lua
+// reader or writer rather than a built-in format: a .lua file (with or without
+// +/- extension toggles) or a path. Built-in format names have neither.
+func pandocCustomFormat(v string) bool {
+	return valueIsPathLike(v) || strings.Contains(strings.ToLower(v), ".lua")
 }
 
 // opensslLoadsModule reports whether an openssl invocation loads native code
@@ -172,20 +239,58 @@ func pandocRunsProgram(tokens []string) bool {
 // name then loads from the attacker location). -config names a configuration
 // file whose openssl_conf section can activate an arbitrary engine/provider
 // module; the file is uninspectable here, so it fails closed like curl -K.
+// The engine command loads modules itself: an engine id that is a path is
+// loaded from that path, and -pre/-post control commands (SO_PATH:…, LOAD)
+// drive the dynamic engine to load any library.
 func opensslLoadsModule(tokens []string) bool {
+	tokens = opensslSingleDash(tokens)
+	if opensslEngineCommandLoads(tokens) {
+		return true
+	}
 	for i := 1; i < len(tokens); i++ {
 		tok := tokens[i]
 		switch {
 		case tok == "-provider-path" || strings.HasPrefix(tok, "-provider-path="):
 			return true
-		case tok == "-config" || tok == "--config" ||
-			strings.HasPrefix(tok, "-config=") || strings.HasPrefix(tok, "--config="):
+		case tok == "-config" || strings.HasPrefix(tok, "-config="):
 			return true
 		}
 		if v, ok := optionValue(tokens, i, "-engine"); ok && valueIsPathLike(v) {
 			return true
 		}
 		if v, ok := optionValue(tokens, i, "-provider"); ok && valueIsPathLike(v) {
+			return true
+		}
+	}
+	return false
+}
+
+// opensslSingleDash rewrites `--name` options to openssl's `-name`: OpenSSL's
+// option parser accepts either spelling (`openssl dgst --engine x`).
+func opensslSingleDash(tokens []string) []string {
+	out := make([]string, len(tokens))
+	for i, tok := range tokens {
+		if i > 0 && len(tok) > 2 && strings.HasPrefix(tok, "--") {
+			tok = tok[1:]
+		}
+		out[i] = tok
+	}
+	return out
+}
+
+// opensslEngineCommandLoads reports whether `openssl engine …` loads a library
+// of the caller's choosing: any -pre/-post control command, or an engine id
+// that is a path (or only known at run time). Listing (`openssl engine`,
+// `-t -c`) and bare built-in ids (`rdrand`) load nothing from the caller.
+func opensslEngineCommandLoads(tokens []string) bool {
+	if len(tokens) < 2 || tokens[1] != "engine" {
+		return false
+	}
+	for _, tok := range tokens[2:] {
+		switch {
+		case tok == "-pre" || tok == "-post" || strings.HasPrefix(tok, "-pre=") || strings.HasPrefix(tok, "-post="):
+			return true
+		case !strings.HasPrefix(tok, "-") && valueIsPathLike(tok):
 			return true
 		}
 	}
@@ -618,7 +723,9 @@ func transferClientRunsProgram(name string, tokens []string) bool {
 	if len(tokens) == 0 {
 		return false
 	}
-	spec := map[string]optSpec{"ssh": sshSyntax, "scp": scpSyntax, "sftp": sftpSyntax, "rsync": rsyncSyntax}[name]
+	// ssh stops reading options at the remote command, so a -F, -I or -o
+	// belonging to that command (`ssh host grep -I x`) is not ssh's.
+	spec := map[string]optSpec{"ssh": sshCommandSyntax, "scp": scpSyntax, "sftp": sftpSyntax, "rsync": rsyncSyntax}[name]
 	for _, o := range spec.parse(tokens[1:]).opts {
 		switch {
 		case name == "rsync":
@@ -629,6 +736,10 @@ func transferClientRunsProgram(name string, tokens []string) bool {
 				return true
 			}
 		case o.is("-F"):
+			return true
+		case name == "ssh" && o.is("-I"):
+			// -I <lib> is the PKCS#11 provider library the client loads, the
+			// short spelling of -o PKCS11Provider=.
 			return true
 		case o.is("-o") && sshConfigOptionRunsProgram(o.value):
 			return true
@@ -1314,7 +1425,7 @@ var writeOptions = map[string]writeOption{
 	"7z":      {spec: optSpec{short: "o"}, names: []string{"-o"}},
 	"7za":     {spec: optSpec{short: "o"}, names: []string{"-o"}},
 	"7zz":     {spec: optSpec{short: "o"}, names: []string{"-o"}},
-	"pandoc":  {spec: optSpec{short: "o", long: valueOpts("output"), abbrev: true}, names: []string{"-o", "--output"}},
+	"pandoc":  {spec: pandocSyntax, names: []string{"-o", "--output", "--extract-media", "--log"}},
 }
 
 var (

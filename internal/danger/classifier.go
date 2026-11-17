@@ -4003,12 +4003,36 @@ var envExecNames = map[string]bool{
 	"LESSOPEN": true, "LESSCLOSE": true,
 	"SSH_ASKPASS": true, "SSH_ASKPASS_REQUIRE": true,
 	"GCONV_PATH": true,
+	// OpenSSL reads a configuration (OPENSSL_CONF) whose openssl_conf section
+	// activates any provider or engine module, and loads bare module names
+	// from OPENSSL_MODULES / OPENSSL_ENGINES: every program linked to libcrypto
+	// can load a library of the caller's choosing (`openssl version` too).
+	"OPENSSL_CONF": true, "OPENSSL_MODULES": true, "OPENSSL_ENGINES": true,
+	// SSH_SK_PROVIDER names the security-key middleware library ssh,
+	// ssh-add and ssh-keygen load, the variable spelling of `ssh-keygen -w`.
+	"SSH_SK_PROVIDER": true,
 	// Path hijacks: retarget metadata/worktree/index so a planted repo
 	// or corrupt index is what a later "safe" git verb actually sees.
 	"GIT_DIR": true, "GIT_WORK_TREE": true, "GIT_INDEX_FILE": true,
 	"GIT_OBJECT_DIRECTORY": true, "GIT_ALTERNATE_OBJECT_DIRECTORIES": true,
 	"GIT_COMMON_DIR": true, "GIT_NAMESPACE": true,
 }
+
+// envLibraryPathNames are interpreter library search paths. They decide which
+// module a program written in that language imports first (sitecustomize, a
+// .pth file, a shadowed core module), so any Python, Perl or Ruby program run
+// with one, such as `pip --version`, `shasum` or `gem --version`, runs code
+// from that directory. They escalate the statement that sets them like
+// envExecNames, but unlike those they do not redirect git or mark the
+// environment itself as running code: git and the C programs it starts do not
+// read them, and the program that does (a Python test runner, say) carries its
+// own class.
+var envLibraryPathNames = fieldSet("PYTHONPATH PYTHONHOME PYTHONUSERBASE PERL5LIB PERLLIB RUBYLIB")
+
+// transferRCNames are variables that name the rc file a transfer client reads
+// (CURL_HOME for curl's .curlrc, WGETRC and wget2's WGET2RC). They matter only
+// to that client and are judged where it runs (see startupHomeOverride).
+var transferRCNames = fieldSet("CURL_HOME WGETRC WGET2RC")
 
 // posixShells source $ENV (and honour $SHELL for some features). Used so
 // ENV=/tmp/x sh escalates while ENV=production node app.js does not.
@@ -4062,7 +4086,7 @@ func envAssignmentNameRisk(assignments []string, inner []string) RiskClass {
 		}
 		name, val := a[:eq], a[eq+1:]
 		upper := strings.ToUpper(name)
-		if envExecNames[upper] || strings.HasSuffix(upper, "PAGER") {
+		if envExecNames[upper] || strings.HasSuffix(upper, "PAGER") || envLibraryPathNames[upper] {
 			return SystemWrite
 		}
 		if strings.HasPrefix(upper, "GIT_CONFIG_KEY_") || strings.HasPrefix(upper, "GIT_CONFIG_VALUE_") {
@@ -4087,11 +4111,16 @@ func envAssignmentNameRisk(assignments []string, inner []string) RiskClass {
 	return Safe
 }
 
-// gitConfigHomeOverride reports whether a HOME or XDG_CONFIG_HOME value moves
-// the directory git reads its global configuration from away from the real
-// one. That configuration can name code to run (core.fsmonitor, core.pager,
-// aliases), exactly as GIT_CONFIG_GLOBAL does.
-func gitConfigHomeOverride(upper, val string) bool {
+// configHomeOverride reports whether a HOME or XDG_CONFIG_HOME value (or
+// CURL_HOME, which curl reads in place of HOME) moves the directory a tool
+// reads its configuration from away from the real one. For git that
+// configuration can name code to run (core.fsmonitor, core.pager, aliases),
+// exactly as GIT_CONFIG_GLOBAL does; for curl and wget it sets any option,
+// exactly as `curl -K FILE` does.
+func configHomeOverride(upper, val string) bool {
+	if upper == "CURL_HOME" {
+		upper = "HOME"
+	}
 	v := strings.Trim(strings.TrimSpace(val), `"'`)
 	if v == "" {
 		return false
@@ -4126,9 +4155,11 @@ func gitConfigHomeOverride(upper, val string) bool {
 // $HOME/.bashrc, .profile and friends, zsh reads $HOME/.zshenv (and .zshrc
 // interactively) even for -c, fish reads its config. A shell that only runs a
 // -c string or a script file with no -i/-l does not source them. Without
-// operands the shell is judged interactive.
+// operands the shell is judged interactive. The same moved home reaches the
+// configuration git reads, and the rc files of curl and wget, which the rc
+// variables CURL_HOME, WGETRC and WGET2RC also select (see transferRCNames).
 func startupHomeOverride(upper, val string, inner []string) bool {
-	if upper != "HOME" && upper != "XDG_CONFIG_HOME" && upper != "ZDOTDIR" {
+	if upper != "HOME" && upper != "XDG_CONFIG_HOME" && upper != "ZDOTDIR" && !transferRCNames[upper] {
 		return false
 	}
 	if len(inner) == 0 {
@@ -4136,7 +4167,21 @@ func startupHomeOverride(upper, val string, inner []string) bool {
 	}
 	name := commandName(inner[0])
 	if name == "git" {
-		return gitConfigHomeOverride(upper, val)
+		return configHomeOverride(upper, val)
+	}
+	// curl reads .curlrc from $CURL_HOME, $XDG_CONFIG_HOME or $HOME. wget reads
+	// $WGETRC or $HOME/.wgetrc, and wget2 (installed as wget on some systems)
+	// $WGET2RC or $XDG_CONFIG_HOME/wget/wget2rc.
+	switch {
+	case name == "curl" && (upper == "HOME" || upper == "XDG_CONFIG_HOME" || upper == "CURL_HOME"):
+		return configHomeOverride(upper, val)
+	case name == "wget" && (upper == "HOME" || upper == "XDG_CONFIG_HOME"):
+		return configHomeOverride(upper, val)
+	case name == "wget" && (upper == "WGETRC" || upper == "WGET2RC"):
+		return strings.Trim(strings.TrimSpace(val), `"'`) != ""
+	}
+	if transferRCNames[upper] {
+		return false
 	}
 	if !posixShells[name] {
 		return false
@@ -4263,7 +4308,7 @@ func execControlName(name string) bool {
 	case "ENV", "SHELL", "HOME", "XDG_CONFIG_HOME", "ZDOTDIR":
 		return true
 	}
-	return envExecNames[upper] || strings.HasSuffix(upper, "PAGER") ||
+	return envExecNames[upper] || strings.HasSuffix(upper, "PAGER") || envLibraryPathNames[upper] || transferRCNames[upper] ||
 		strings.HasPrefix(upper, "GIT_CONFIG_KEY_") || strings.HasPrefix(upper, "GIT_CONFIG_VALUE_") ||
 		strings.HasPrefix(upper, "GIT_TRACE2")
 }
