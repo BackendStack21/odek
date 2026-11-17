@@ -11,7 +11,7 @@ import {
   addToolCall, addToolResult, addSubagentGroup, completeSubagents,
   appendSubagentLog, addSystemMessage, updateSubagentState,
   lastAssistantBubble, supersedeStream, markTurnUnverified, stripVerifyMarker,
-  commitStream, onVerificationEvent,
+  onVerificationEvent, streamAnswer, stopNotice,
 } from './render.js';
 import { queueApproval, dismissApproval, clearApprovals, expireApproval } from './approvals.js';
 import { queueClarify, dismissClarify, clearClarify, expireClarify, rejectClarify } from './clarify.js';
@@ -266,10 +266,9 @@ export function connect() {
         setIntent('composing');
         const [text, marked] = stripVerifyMarker(event.content);
         if (marked) S.turnUnverified = true;
-        streamToken(text);
         // Bulk text is final: a buffered pre-tool note, or the answer sent
         // after verification — only streamed drafts are ever superseded.
-        if (text) commitStream();
+        streamAnswer(text);
         break;
       }
 
@@ -344,11 +343,12 @@ export function connect() {
         if (retiredSessionFrame(event)) break;
         if (!sameTurn || (event.session_id && S.sessionId && event.session_id !== S.sessionId)) break;
         S.pauseQueue?.();
-        if(event.idle){clearApprovals({drain:false});clearClarify();endStream('cancelled');addSystemMessage('No active execution to stop.');break;}
+        // The stop is one status line (stopNotice) updated in place.
+        if(event.idle){clearApprovals({drain:false});clearClarify();endStream('cancelled');stopNotice('No active execution to stop.');break;}
         S.stopRequested=true;setIntent('stopping');
         clearApprovals({drain:false});clearClarify();
-        if(event.requested){addSystemMessage('Stop accepted · waiting for execution to settle.');announce('Stop requested');}
-        else {endStream('interrupted');addSystemMessage('Stop outcome requires review.');S.onRecoveryNeeded?.('Stop outcome requires review');}
+        if(event.requested){stopNotice('⏹ Stopping… · waiting for execution to settle');announce('Stop requested');}
+        else {endStream('interrupted');stopNotice('⏹ Stop outcome requires review.');S.onRecoveryNeeded?.('Stop outcome requires review');}
         S.refreshSupervision?.();
         break;
 
@@ -357,9 +357,17 @@ export function connect() {
         if(event.session_id && S.sessionId && event.session_id!==S.sessionId)break;
         if(event.turn_id && S.currentTurnId && event.turn_id!==S.currentTurnId)break;
         if(S.stopRequested && event.status==='cancelled'){
-          streamFlush();endThinking();endStream('cancelled');addSystemMessage('Execution stopped. Review saved progress before continuing.');announce('Execution stopped');
+          streamFlush();endThinking();endStream('cancelled');stopNotice('⏹ Stopped · review saved progress before continuing.');announce('Execution stopped');
           S.onRecoveryNeeded?.('Execution stopped');kickJobsFetch();
+        } else if(S.stopRequested && event.status==='failed'){
+          // The run failed on its own while stopping: show the error held
+          // back while the stop was pending.
+          streamFlush();endThinking();endStream('interrupted');stopNotice('⏹ Stop requested · the run ended with an error');
+          if(S.stopError)addSystemMessage('⚠ ' + formatErrorMessage(S.stopError) + ' — Review saved progress before continuing or running again.');
+          announce('Turn failed');S.onRecoveryNeeded?.('Work failed');
         } else if(event.status!=='completed') {S.onRecoveryNeeded?.('Work interrupted');}
+        else if(S.stopRequested && S.stopNoticeEl){stopNotice('Finished before the stop took effect.');}
+        S.stopError=null;
         S.paintEvidence?.();S.refreshSupervision?.();
         break;
 
@@ -422,16 +430,19 @@ export function connect() {
         streamFlush(); endThinking();
         if(S.stopRequested){setIntent('stopping');}else{endStream('interrupted');setIntent('');}
         S.lastFailedPrompt = S.lastPrompt;
-        S.onRecoveryNeeded?.('Work failed');
         // The run is unwinding on error — same approval teardown as
         // 'cancelled': a pending card would wait for an ack that never
         // comes and block the queue.
         clearApprovals();
         clearClarify();
-        addSystemMessage('⚠ ' + formatErrorMessage(event.message) + ' — Review saved progress before continuing or running again.');
         stopPlanLiveIfIdle();
-        notifyUser('turn failed', 'A turn failed');
         badgeNow();
+        // An error while the operator's stop is pending is usually the stop
+        // itself; turn_settled decides, and shows it only if the run failed.
+        if (S.stopRequested && !S.turnEnded) { S.stopError = event.message; break; }
+        S.onRecoveryNeeded?.('Work failed');
+        addSystemMessage('⚠ ' + formatErrorMessage(event.message) + ' — Review saved progress before continuing or running again.');
+        notifyUser('turn failed', 'A turn failed');
         announce('Turn failed');
         break;
 

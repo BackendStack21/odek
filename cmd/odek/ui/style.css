@@ -1288,6 +1288,7 @@ body.workspace-wide #session-rail { box-shadow: none; animation: none; }
 .draft-toggle { font-size: var(--fs-xs); }
 .verify-chip { margin-left: 8px; font-weight: 600; }
 .verify-chip.fail { color: var(--red); }
+.verify-chip.partial-chip { color: var(--amber); font-weight: 500; }
 
 .arrow {
   display: inline-flex;

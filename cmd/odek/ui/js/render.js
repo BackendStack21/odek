@@ -26,6 +26,9 @@ export function resetTurnState() {
   settlePendingWork("interrupted");
   S.turnEnded = false;
   S.stopRequested = false;
+  S.stopNoticeEl = null;
+  S.stopError = null;
+  S.reconciledDraft = null;
   messagesEl.querySelectorAll('.turn-stream.live').forEach((el) => {
     el.classList.remove('live');
   });
@@ -221,6 +224,9 @@ export function syncLiveChrome() {
 export function openTurn(event) {
   S.turnEnded = false;
   S.stopRequested = false;
+  S.stopNoticeEl = null;
+  S.stopError = null;
+  S.reconciledDraft = null;
   S.currentTurnId = (event && event.turn_id) || S.currentTurnId;
   S.currentTurnInitiated = (event && event.initiated) || 'operator';
   S.turnReceipt = { files: [], plus: 0, minus: 0, tests: '', tools: 0 };
@@ -577,8 +583,51 @@ export function supersedeStream(reason) {
   streamFlush();
   const msg = S.streamBubbleEl;
   if (!msg) return;
+  const streamed = S.streamText;
   sealPartialResponse();
   foldDraft(msg, reason);
+  // A reconciled copy can differ from the stream only by a leading partial
+  // marker; streamAnswer drops the folded draft when the answer repeats it.
+  S.reconciledDraft = reason === 'reconciled' ? { msg, text: streamed } : null;
+}
+
+// PARTIAL_MARKER matches the prefix loop.PartialResponseError answers carry
+// ("[Partial response: <termination>]") when the provider did not finish.
+const PARTIAL_MARKER = /^\[Partial response: (interrupted|truncated|refused)\](?:\n\n| |$)/;
+
+// stripPartialMarker removes a leading partial-response marker so the answer
+// shows a chip instead of bracket text. Returns [text, reason] ('' if none).
+export function stripPartialMarker(text) {
+  const s = String(text || '');
+  const m = s.match(PARTIAL_MARKER);
+  return m ? [s.slice(m[0].length), m[1]] : [s, ''];
+}
+
+// markPartial tags an answer bubble the provider ended early.
+export function markPartial(bubble, reason) {
+  if (!bubble || !reason || bubble.querySelector('.partial-chip')) return;
+  const chip = document.createElement('span');
+  chip.className = 'verify-chip partial-chip';
+  chip.title = 'The model response ended early (' + reason + '); this is the text received so far';
+  chip.textContent = '◐ partial · ' + reason;
+  const sender = bubble.querySelector('.sender');
+  if (sender) sender.appendChild(chip);
+  else bubble.insertBefore(chip, (bubble.children && bubble.children[0]) || null);
+}
+
+// streamAnswer appends bulk answer text, which is final (never superseded).
+// A leading partial marker becomes a chip on the answer, and a reconciled
+// draft that the marked text only repeats is removed instead of staying
+// folded above the same words.
+export function streamAnswer(content) {
+  const [text, partial] = stripPartialMarker(content);
+  const draft = S.reconciledDraft;
+  S.reconciledDraft = null;
+  if (partial && draft && draft.text && text.startsWith(draft.text.trimEnd())) draft.msg.remove();
+  streamToken(text);
+  if (!text) return;
+  commitStream();
+  if (partial && S.streamBubbleEl) markPartial(S.streamBubbleEl.querySelector('.bubble'), partial);
 }
 
 // ── Held answers ──
@@ -753,6 +802,18 @@ export function requestTurnStop() {
   S.pauseQueue?.();
   settlePendingWork('stopping');
   setIntent('stopping');
+  stopNotice('⏹ Stopping…');
+}
+
+// stopNotice writes the turn's stop status. A stop is one system line that
+// changes in place — stopping, then stopped or the outcome — not a log of
+// narration lines.
+export function stopNotice(text) {
+  const el = S.stopNoticeEl;
+  const content = el && nodeHolds(messagesEl, el) ? el.querySelector('.content') : null;
+  if (content) { content.textContent = text; return el; }
+  S.stopNoticeEl = addSystemMessage(text);
+  return S.stopNoticeEl;
 }
 
 export function endStream(reason = "interrupted") {
@@ -768,6 +829,7 @@ export function endStream(reason = "interrupted") {
   revealStream(); // every turn end shows the held answer
   endThinking(); // an interrupted turn leaves no row marked live
   sealTurnStream();
+  S.reconciledDraft = null;
   // The live answer is the latest — never fold it. Older long replies
   // were already compacted when this bubble opened.
   S.streamBubbleEl = null;
@@ -835,6 +897,7 @@ export function addSystemMessage(content) {
   messagesEl.appendChild(el);
   pruneMessages();
   scrollBottom();
+  return el;
 }
 
 export function addDivider(text) {
@@ -1755,12 +1818,14 @@ function renderHistoricalUser(content) {
 }
 
 function renderHistoricalAssistant(raw) {
-  const [content, unverified] = stripVerifyMarker(raw);
+  const [verified, unverified] = stripVerifyMarker(raw);
+  const [content, partial] = stripPartialMarker(verified);
   const wrapper = buildMessage('assistant', content);
   ensureHistoryStream().appendChild(historyRow(wrapper));
   const bubble = wrapper.querySelector('.bubble');
   if (bubble) addCopyButton(bubble);
   if (bubble && unverified) markUnverified(bubble);
+  if (bubble && partial) markPartial(bubble, partial);
   return wrapper;
 }
 

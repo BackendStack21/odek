@@ -237,7 +237,13 @@ and are kept separate from model context. Temporary trust survives session
 switches on that connection, and can be revoked in Preferences.
 
 Stops show **Stopping…** on the request acknowledgement, then **Stopped** only
-on execution settlement. Completed side effects are preserved and background
+on execution settlement — one transcript status line that updates in place.
+The error frame a stopped run unwinds with is not shown as a failure; only a
+run that settles `failed` while stopping shows its error. An answer the
+provider did not finish (`[Partial response: interrupted|truncated|refused]`
+in the stored text) shows a `◐ partial · <reason>` chip on its sender line
+instead of the marker, live and on reload, and a stopped stream is not kept
+as a folded duplicate beside it. Completed side effects are preserved and background
 jobs have independent lifetimes. Recovery waits for execution ownership to be
 released and lists recorded returns, failures and uncertain outcomes. Continue
 uses persisted context plus a checked revision/generation; Prepare to run again

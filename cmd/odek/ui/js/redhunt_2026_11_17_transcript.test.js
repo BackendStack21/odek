@@ -317,3 +317,64 @@ test('an http_request result shows status and size as a card', () => {
   assert.equal(failed.items[0].sections[0].output, 'dial tcp: refused');
   assert.equal(toolView('http_request', '{"url":"https://x.test/","status":404}').items[0].status, '', 'a returned status is not a tool failure');
 });
+
+// ── User stop ──
+const systemLines = () => byId.messages.querySelectorAll('.msg.system').map(el => collectText(el).join(' '));
+
+test('a user stop is one status line that updates in place', () => {
+  S.sessionId = 'sess-stop';
+  deliver({ type: 'turn_started', turn_id: 't-stop', session_id: 'sess-stop' });
+  deliver({ type: 'token_delta', turn_id: 't-stop', content: 'Paragraph 1. Lorem ipsum' });
+  render.streamFlush();
+  render.requestTurnStop(); // the Stop button
+  assert.deepEqual(systemLines().length, 1, 'the stop request shows at once');
+  assert.match(systemLines()[0], /Stopping/);
+  deliver({ type: 'cancelled', turn_id: 't-stop', session_id: 'sess-stop', requested: true });
+  deliver({ type: 'answer_superseded', turn_id: 't-stop', reason: 'reconciled' });
+  deliver({ type: 'token', turn_id: 't-stop', content: '[Partial response: interrupted]\n\nParagraph 1. Lorem ipsum' });
+  deliver({ type: 'error', turn_id: 't-stop', message: 'model response incomplete: interrupted' });
+  deliver({ type: 'turn_settled', turn_id: 't-stop', session_id: 'sess-stop', status: 'cancelled' });
+  const lines = systemLines();
+  assert.equal(lines.length, 1, 'stop narration: ' + JSON.stringify(lines));
+  assert.match(lines[0], /Stopped/);
+  assert.doesNotMatch(lines[0], /model response incomplete|⚠/);
+});
+
+test('a stopped answer shows once, with a partial chip instead of the marker', () => {
+  deliver({ type: 'turn_started', turn_id: 't-part' });
+  deliver({ type: 'token_delta', turn_id: 't-part', content: 'Paragraph 1. Lorem ipsum' });
+  render.streamFlush();
+  render.requestTurnStop();
+  deliver({ type: 'cancelled', turn_id: 't-part', requested: true });
+  deliver({ type: 'answer_superseded', turn_id: 't-part', reason: 'reconciled' });
+  deliver({ type: 'token', turn_id: 't-part', content: '[Partial response: interrupted]\n\nParagraph 1. Lorem ipsum' });
+  deliver({ type: 'turn_settled', turn_id: 't-part', status: 'cancelled' });
+  const answers = byId.messages.querySelectorAll('.msg.assistant');
+  assert.equal(answers.length, 1, 'the streamed copy is not kept folded beside the same text');
+  const text = collectText(answers[0]).join(' ');
+  assert.doesNotMatch(text, /\[Partial response/, text);
+  assert.match(text, /Paragraph 1\. Lorem ipsum/);
+  assert.ok(answers[0].querySelector('.partial-chip'), 'partial chip on the answer');
+});
+
+test('a reloaded partial answer shows the chip instead of the marker', () => {
+  render.renderSessionHistory([
+    { role: 'system', content: '' },
+    { role: 'user', content: 'write', turn_id: 'h1' },
+    { role: 'assistant', turn_id: 'h1', content: '[Partial response: truncated]\n\nHalf an answer' },
+  ], { record: false });
+  const answer = byId.messages.querySelector('.msg.assistant');
+  const text = collectText(answer).join(' ');
+  assert.doesNotMatch(text, /\[Partial response/, text);
+  assert.match(text, /Half an answer/);
+  assert.match(answer.querySelector('.partial-chip').textContent, /truncated/);
+});
+
+test('an error that is not the stop still shows once the stop settles as failed', () => {
+  deliver({ type: 'turn_started', turn_id: 't-stop-fail' });
+  render.requestTurnStop();
+  deliver({ type: 'error', turn_id: 't-stop-fail', message: 'provider exploded' });
+  assert.doesNotMatch(systemLines().join(' '), /provider exploded/, 'held until the outcome is known');
+  deliver({ type: 'turn_settled', turn_id: 't-stop-fail', status: 'failed' });
+  assert.match(systemLines().join(' '), /provider exploded/);
+});
