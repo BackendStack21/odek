@@ -119,8 +119,9 @@ func hasVariableReference(v string) bool {
 // transferVerdict is the set of extra effects a network client invocation
 // carries beyond plain egress.
 type transferVerdict struct {
-	// egress is set for a tool that is not a network prefix but contacts
-	// the network for this invocation (a URL operand of ffmpeg or pandoc).
+	// egress is set for a tool that is not a network prefix, and so carries
+	// no egress of its own, but contacts the network for this invocation (a
+	// URL operand of ffmpeg or pandoc).
 	egress  bool
 	upload  bool
 	code    bool
@@ -222,31 +223,50 @@ var urlFetchTools = fieldSet("pandoc ffmpeg ffprobe ffplay convert magick identi
 // layered schemes (hls+https, tls, srt, …) are matched on their last
 // component.
 var networkURLSchemes = fieldSet("http https ftp ftps sftp tftp rtmp rtmps rtmpe rtmpt rtmpte rtmpts rtsp rtsps " +
-	"rtp srtp srt udp tcp tls sctp mms mmsh mmst gopher gophers ws wss icecast zmq rist ipfs ipns smb dav davs")
+	"rtp srtp srt udp tcp tls sctp mms mmsh mmst gopher gophers ws wss icecast zmq rist ipfs ipns smb dav davs " +
+	"sap amqp amqps prompeg")
 
 // networkURL reports whether s (an operand, or the value after `=` of an
-// option word) is a URL whose scheme reaches another host.
+// option word) holds a URL whose scheme reaches another host. Every `://` in
+// the word is checked, and the scheme is the run of scheme characters just
+// before it, so wrapped spellings count too: ffmpeg's protocol layers
+// (`concat:http://`, `cache:http://`, `async:tcp://`, `hls+https://`) and
+// ImageMagick's coder prefixes (`jpg:https://`, `url:http://`).
 func networkURL(s string) bool {
-	s = strings.Trim(s, `"'`)
-	i := strings.Index(s, "://")
-	if i <= 0 {
-		return false
-	}
-	scheme := strings.ToLower(s[:i])
-	for _, r := range scheme {
-		if !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '+' || r == '-' || r == '.') {
+	for rest := s; ; {
+		i := strings.Index(rest, "://")
+		if i < 0 {
 			return false
 		}
+		j := i
+		for j > 0 && isURLSchemeByte(rest[j-1]) {
+			j--
+		}
+		scheme := strings.ToLower(rest[j:i])
+		if k := strings.LastIndexByte(scheme, '+'); k >= 0 {
+			scheme = scheme[k+1:]
+		}
+		if networkURLSchemes[scheme] {
+			return true
+		}
+		rest = rest[i+3:]
 	}
-	if j := strings.LastIndexByte(scheme, '+'); j >= 0 {
-		scheme = scheme[j+1:]
-	}
-	return networkURLSchemes[scheme]
 }
+
+func isURLSchemeByte(c byte) bool {
+	return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '+' || c == '-' || c == '.'
+}
+
+// ffmpegURLStringOptions take a URL as a string that ffmpeg writes into its
+// output or request rather than a destination it sends media to: a URL given
+// to one is egress at most, never an upload.
+var ffmpegURLStringOptions = fieldSet("-hls_base_url -base_url -utc_timing_url -http_proxy -referer -headers " +
+	"-user_agent -metadata")
 
 // urlFetchToolTransfer judges a URL-opening tool: any network URL is egress.
 // ffmpeg writes its outputs to the URLs it is not reading from (every URL not
-// given to -i), which sends local media to that host, so those are uploads.
+// given to -i or to an option that only records it as a string), which sends
+// local media to that host, so those are uploads.
 func urlFetchToolTransfer(name string, args []string) transferVerdict {
 	var v transferVerdict
 	for i, tok := range args {
@@ -262,7 +282,7 @@ func urlFetchToolTransfer(name string, args []string) transferVerdict {
 			continue
 		}
 		v.egress = true
-		if name == "ffmpeg" && (i == 0 || args[i-1] != "-i") {
+		if name == "ffmpeg" && (i == 0 || (args[i-1] != "-i" && !ffmpegURLStringOptions[args[i-1]])) {
 			v.upload = true
 		}
 	}

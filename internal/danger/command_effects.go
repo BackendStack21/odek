@@ -243,6 +243,7 @@ func pandocCustomFormat(v string) bool {
 // loaded from that path, and -pre/-post control commands (SO_PATH:…, LOAD)
 // drive the dynamic engine to load any library.
 func opensslLoadsModule(tokens []string) bool {
+	tokens = opensslSingleDash(tokens)
 	if opensslEngineCommandLoads(tokens) {
 		return true
 	}
@@ -251,8 +252,7 @@ func opensslLoadsModule(tokens []string) bool {
 		switch {
 		case tok == "-provider-path" || strings.HasPrefix(tok, "-provider-path="):
 			return true
-		case tok == "-config" || tok == "--config" ||
-			strings.HasPrefix(tok, "-config=") || strings.HasPrefix(tok, "--config="):
+		case tok == "-config" || strings.HasPrefix(tok, "-config="):
 			return true
 		}
 		if v, ok := optionValue(tokens, i, "-engine"); ok && valueIsPathLike(v) {
@@ -263,6 +263,19 @@ func opensslLoadsModule(tokens []string) bool {
 		}
 	}
 	return false
+}
+
+// opensslSingleDash rewrites `--name` options to openssl's `-name`: OpenSSL's
+// option parser accepts either spelling (`openssl dgst --engine x`).
+func opensslSingleDash(tokens []string) []string {
+	out := make([]string, len(tokens))
+	for i, tok := range tokens {
+		if i > 0 && len(tok) > 2 && strings.HasPrefix(tok, "--") {
+			tok = tok[1:]
+		}
+		out[i] = tok
+	}
+	return out
 }
 
 // opensslEngineCommandLoads reports whether `openssl engine …` loads a library
@@ -710,7 +723,9 @@ func transferClientRunsProgram(name string, tokens []string) bool {
 	if len(tokens) == 0 {
 		return false
 	}
-	spec := map[string]optSpec{"ssh": sshSyntax, "scp": scpSyntax, "sftp": sftpSyntax, "rsync": rsyncSyntax}[name]
+	// ssh stops reading options at the remote command, so a -F, -I or -o
+	// belonging to that command (`ssh host grep -I x`) is not ssh's.
+	spec := map[string]optSpec{"ssh": sshCommandSyntax, "scp": scpSyntax, "sftp": sftpSyntax, "rsync": rsyncSyntax}[name]
 	for _, o := range spec.parse(tokens[1:]).opts {
 		switch {
 		case name == "rsync":

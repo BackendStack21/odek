@@ -111,6 +111,8 @@ func TestRED_OpenSSLEngineCommandLoadsLibrary(t *testing.T) {
 		`openssl engine -t -pre SO_PATH:/tmp/e.so -pre LOAD dynamic`,
 		`openssl engine dynamic -pre SO_PATH:e.so -pre LOAD`,
 		`openssl engine -vvv -post X dynamic`,
+		`openssl engine --pre SO_PATH:e.so --pre LOAD dynamic`,
+		`openssl engine --t ./e.so`,
 	)
 	hunt1117Allowed(t,
 		`openssl engine`,
@@ -133,6 +135,10 @@ func TestRED_OpenSSLModuleRuntimeValueAndEnv(t *testing.T) {
 		`openssl dgst -provider "$P" -sha256 f`,
 		`openssl dgst -provider ${P} -sha256 f`,
 		`openssl dgst -provider $(cat p) -sha256 f`,
+		`openssl dgst --engine /tmp/e.so -sha256 f`,
+		`openssl dgst --provider=./x.so -sha256 f`,
+		`openssl req --config x.cnf -new`,
+		`openssl list --provider-path . --provider x`,
 	)
 	hunt1117NotAllowed(t, SystemWrite,
 		`OPENSSL_CONF=/tmp/e.cnf openssl version`,
@@ -143,6 +149,7 @@ func TestRED_OpenSSLModuleRuntimeValueAndEnv(t *testing.T) {
 	)
 	hunt1117Allowed(t,
 		`openssl dgst -provider legacy -sha256 f`,
+		`openssl dgst --provider legacy -sha256 f`,
 		`openssl version`,
 	)
 }
@@ -177,14 +184,24 @@ func TestRED_SSHProviderLibraryShortOptions(t *testing.T) {
 		`ssh -I /tmp/evil.so host`,
 		`ssh -I./e.so host`,
 		`ssh -vI /tmp/e.so host`,
+		`ssh host -I /tmp/e.so`,
 		`ssh-add -s /tmp/evil.so`,
 		`ssh-add -vs /tmp/evil.so`,
 		`ssh-add -S /tmp/e.so`,
 	)
+	hunt1117NotAllowed(t, SystemWrite,
+		`SSH_SK_PROVIDER=/tmp/e.so ssh-keygen -t ed25519-sk`,
+		`SSH_SK_PROVIDER=/tmp/e.so ssh-add -K`,
+		`export SSH_SK_PROVIDER=/tmp/e.so; ssh host`,
+	)
+	// Words of the remote command are not ssh options: grep's -I on the
+	// remote side loads nothing locally.
 	hunt1117Allowed(t,
 		`ssh-add -l`,
 		`ssh-add -L`,
 		`ssh -V`,
+		`ssh host grep -I foo .`,
+		`ssh host ls -I '*.o'`,
 	)
 }
 
@@ -209,6 +226,14 @@ func TestRED_InterpreterLibraryPathEnvLoadsCode(t *testing.T) {
 		`PYTHONDONTWRITEBYTECODE=1 pip list`,
 		`PYTHONUNBUFFERED=1 python3 --version`,
 	)
+	// git and the programs it starts do not read these, so they neither
+	// unsettle git's repository context nor add a code_execution effect of
+	// their own: the statement prompts once, as system_write.
+	for _, cmd := range []string{`PYTHONPATH=src git log --oneline -1`, `export PYTHONPATH=$PWD`} {
+		if effects := Analyze(cmd).Effects; slices.Contains(effects, CodeExecution) {
+			t.Errorf("Analyze(%q).Effects = %v, want no code_execution from a library path", cmd, effects)
+		}
+	}
 }
 
 // curl reads .curlrc from $CURL_HOME, $XDG_CONFIG_HOME or $HOME, and wget
@@ -226,11 +251,22 @@ func TestRED_TransferClientRCFileEnv(t *testing.T) {
 		`HOME=/tmp/h wget https://example.com`,
 		`export CURL_HOME=/tmp/c; curl https://example.com`,
 		`HOME=/tmp/h; curl https://example.com`,
+		`env CURL_HOME=/tmp/c curl https://example.com`,
+		`WGET2RC=/tmp/w wget https://example.com`,
+		// wget2, installed as wget on some systems, reads
+		// $XDG_CONFIG_HOME/wget/wget2rc.
+		`XDG_CONFIG_HOME=/tmp/x wget https://example.com`,
 	)
+	// The real home is the default, and a variable only matters to the
+	// client that reads it.
 	hunt1117Allowed(t,
 		`HOME=/home/user curl https://example.com`,
+		`CURL_HOME=$HOME curl https://example.com`,
+		`CURL_HOME=/home/user curl https://example.com`,
 		`curl -s https://example.com`,
-		`XDG_CONFIG_HOME=/tmp/x wget https://example.com`,
+		`CURL_HOME=/tmp/c wget https://example.com`,
+		`WGETRC=/tmp/w curl https://example.com`,
+		`CURL_HOME=/tmp/c ls`,
 	)
 }
 
@@ -252,11 +288,19 @@ func TestRED_URLFetchingToolsCarryNetworkEffects(t *testing.T) {
 		`magick https://example.com/a.png b.png`,
 		`identify http://10.0.0.1/a.png`,
 		`xmllint http://10.0.0.1/a.xml`,
+		`ffmpeg -i concat:http://169.254.169.254/a o.mp4`,
+		`ffmpeg -i cache:http://10.0.0.1/a o.mp4`,
+		`convert jpg:https://example.com/a b.png`,
+		`identify url:http://10.0.0.1/a.png`,
+		`ffmpeg -i in.mp4 -hls_base_url http://cdn.example/ out.m3u8`,
 	}
 	upload := []string{
 		`ffmpeg -i in.wav -f wav -method POST http://example.com/up`,
 		`ffmpeg -i in.mp4 -f mpegts udp://10.0.0.1:1234`,
 		`ffmpeg -re -i in.mp4 -f flv rtmp://example.com/live/key`,
+		`ffmpeg -i in.mp4 -f mpegts async:tcp://10.0.0.1:1234`,
+		`ffmpeg -i in.mp4 -f rtp_mpegts sap://224.0.0.1`,
+		`ffmpeg -i in.mp4 -f mpegts amqp://h/x`,
 	}
 	denyEgress := &DangerousConfig{Classes: map[RiskClass]Action{NetworkEgress: Deny}}
 	for _, cmd := range append(append([]string{}, egress...), upload...) {
@@ -283,8 +327,14 @@ func TestRED_URLFetchingToolsCarryNetworkEffects(t *testing.T) {
 			t.Errorf("Analyze(%q).Effects = %v, want no network_egress for local files", cmd, effects)
 		}
 	}
-	// An input URL is egress, not an upload.
-	for _, cmd := range []string{`ffmpeg -i http://example.com/a.mp4 o.mp4`, `ffprobe http://example.com/a.mp4`} {
+	// An input URL, or a URL ffmpeg only writes into its output as a string,
+	// is egress, not an upload.
+	for _, cmd := range []string{
+		`ffmpeg -i http://example.com/a.mp4 o.mp4`,
+		`ffprobe http://example.com/a.mp4`,
+		`ffmpeg -i in.mp4 -hls_base_url http://cdn.example/ out.m3u8`,
+		`ffmpeg -i in.mp4 -metadata comment=https://example.com o.mp4`,
+	} {
 		if slices.Contains(Analyze(cmd).Effects, NetworkUpload) {
 			t.Errorf("Analyze(%q).Effects = %v, want no network_upload for an input URL", cmd, Analyze(cmd).Effects)
 		}
