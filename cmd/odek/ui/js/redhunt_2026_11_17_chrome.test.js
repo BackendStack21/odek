@@ -660,3 +660,37 @@ test('the health popover tokens row shows "—" until there are totals, then the
   assert.equal($('m-tok').textContent, '⇥ 1.2k  ↦ 300');
   metrics.resetMetrics();
 });
+
+// ── Delete confirmation ──
+// The dialog named a truncated id ("Delete session 20261117...?").
+function askDelete(session) {
+  S.sessionPages = [session];
+  const list = $('session-list');
+  list.innerHTML = '<div class="session-item" data-id="' + session.id + '"><span class="si-actions"><button class="del-btn" type="button">x</button></span></div>';
+  fire(list.querySelector('.del-btn'), 'click');
+  const text = $('confirm-msg').textContent;
+  utils.closeDialog();
+  S.pendingDeleteId = null;
+  S.sessionPages = [];
+  return text;
+}
+
+test('the delete confirmation names the session by its title', () => {
+  const text = askDelete({ id: '20261117abcdef01', task: 'Fix the login redirect' });
+  assert.match(text, /Fix the login redirect/);
+  assert.doesNotMatch(text, /20261117/);
+});
+
+test('the delete confirmation shortens long titles and escapes bidi controls', () => {
+  const text = askDelete({ id: 'sess-long', task: 'Refactor ' + 'x'.repeat(200) + ' ‮txt.exe' });
+  assert.ok(text.includes('…'), 'shortened with an ellipsis: ' + text);
+  assert.ok(text.length < 140, 'bounded: ' + text.length);
+  const spoof = askDelete({ id: 'sess-bidi', task: 'notes‮txt.sh' });
+  assert.ok(!spoof.includes('‮'), 'bidi override shown as an escape: ' + JSON.stringify(spoof));
+  assert.match(spoof, /\\u\{202E\}/);
+});
+
+test('an untitled session is named by its short id', () => {
+  const text = askDelete({ id: '20261117abcdef01', task: '' });
+  assert.match(text, /untitled session 20261117/);
+});

@@ -13,6 +13,7 @@ import { clearClarify } from './clarify.js';
 import { metricsFromSession, resetMetrics } from './metrics.js';
 import { resetPlanPanel } from './plan.js';
 import { cancelSessionNewRetry } from './ws.js';
+import { displayLabel } from './untrusted.js';
 
 const PAGE_SIZE = 50;
 const moreBtn = document.getElementById('sessions-more');
@@ -472,6 +473,18 @@ async function exportSession(sid, format) {
 }
 
 // ── Confirm Dialog ──
+// deletePrompt names the session by its title, with control and bidi
+// characters shown as escapes and long titles shortened, so the operator
+// can tell which session goes. Untitled sessions fall back to the short id.
+const DELETE_TITLE_MAX = 60;
+function deletePrompt(sid) {
+  const task = (S.sessionPages.find(s => s.id === sid) || {}).task;
+  if (!task) return 'Delete the untitled session ' + displayLabel(sid.slice(0, 8)) + '? This cannot be undone.';
+  const chars = Array.from(displayLabel(task));
+  const title = chars.length > DELETE_TITLE_MAX ? chars.slice(0, DELETE_TITLE_MAX).join('') + '…' : chars.join('');
+  return 'Delete “' + title + '”? This cannot be undone.';
+}
+
 export function hideConfirmDialog() {
   const overlay = document.getElementById('confirm-overlay');
   if (isDialogOpen(overlay)) closeDialog();
@@ -532,7 +545,7 @@ sessionListEl.addEventListener('click', (e) => {
   if (e.target.closest('.del-btn')) {
     e.stopPropagation();
     S.pendingDeleteId = sid;
-    document.getElementById('confirm-msg').textContent = 'Delete session ' + sid.slice(0, 8) + '...?';
+    document.getElementById('confirm-msg').textContent = deletePrompt(sid);
     openDialog(document.getElementById('confirm-overlay'));
     return;
   }
