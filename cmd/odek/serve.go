@@ -4278,12 +4278,31 @@ func modelListEntry(id, display string, maxCtx int, current bool) modelEntry {
 		display = id
 	}
 	e := modelEntry{ID: id, MaxContext: maxCtx, Description: display, Current: current}
-	if maxCtx > 0 && maxCtx%1_000_000 == 0 {
-		e.Description = fmt.Sprintf("%s — %dM ctx", display, maxCtx/1_000_000)
-	} else if maxCtx > 0 {
-		e.Description = fmt.Sprintf("%s — %dK ctx", display, maxCtx/1024)
+	if maxCtx > 0 {
+		e.Description = fmt.Sprintf("%s — %s ctx", display, contextSizeLabel(maxCtx))
 	}
 	return e
+}
+
+// contextSizeLabel renders a context window the way providers advertise it:
+// decimal windows in thousands or millions (128000 → 128K, 1000000 → 1M),
+// power-of-two windows in binary units (131072 → 128K, 1048576 → 1M), and
+// anything else rounded to the nearest thousand.
+func contextSizeLabel(n int) string {
+	switch {
+	case n%1_000_000 == 0:
+		return strconv.Itoa(n/1_000_000) + "M"
+	case n%1000 == 0:
+		return strconv.Itoa(n/1000) + "K"
+	case n%(1<<20) == 0:
+		return strconv.Itoa(n>>20) + "M"
+	case n%1024 == 0:
+		return strconv.Itoa(n/1024) + "K"
+	case n >= 1000:
+		return strconv.Itoa((n+500)/1000) + "K"
+	default:
+		return strconv.Itoa(n)
+	}
 }
 
 // handleModelList is GET /api/models. The payload is the provider's

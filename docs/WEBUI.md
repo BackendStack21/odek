@@ -361,12 +361,12 @@ server resolves and wraps it as untrusted content.
 
 ### `GET /api/models`
 
-The provider's `ListModels` catalog plus the configured model (always present, `current: true`). Context windows come from the provider, then the last-resort table, else 0. Capped at 256 entries. `/api/profiles` is retired.
+The provider's `ListModels` catalog plus the configured model (always present, `current: true`). Context windows come from the provider, then the last-resort table, else 0. The description labels a window as providers advertise it: decimal sizes in thousands or millions (`128000` → `128K`, `1000000` → `1M`), power-of-two sizes in binary units (`131072` → `128K`). Capped at 256 entries. `/api/profiles` is retired.
 
 ```jsonc
 [
-  { "id": "glm-5.3-flash", "max_context": 1000000, "description": "GLM 5.3 Flash — 976K ctx", "current": true },
-  { "id": "glm-5.3", "max_context": 1000000, "description": "GLM 5.3 — 976K ctx" }
+  { "id": "glm-5.3-flash", "max_context": 1000000, "description": "GLM 5.3 Flash — 1M ctx", "current": true },
+  { "id": "glm-5.3", "max_context": 128000, "description": "GLM 5.3 — 128K ctx" }
 ]
 ```
 
