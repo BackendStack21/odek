@@ -471,3 +471,15 @@ test('top-bar rules keep Stop and the persistent controls on screen', () => {
   assert.match(tablet, /#topbar:has\(#attention-chip:not\(\[hidden\]\)\) \.dot\.connected \+ #ws-status \{ display: none; \}/,
     'below 1100px a waiting decision replaces the connected word');
 });
+
+// Stop was the last top-bar control, so showing it shifted run settings,
+// preferences, palette and inspector left by its width. It sits before
+// them (in focus order too), so the persistent controls never move.
+test('Stop comes before the persistent top-bar controls', () => {
+  const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+  const controls = html.slice(html.indexOf('<div class="top-controls">'), html.indexOf('</header>'));
+  const at = (id) => controls.indexOf('id="' + id + '"');
+  for (const id of ['cancel-btn', 'run-settings', 'prefs-btn', 'palette-btn', 'panels-btn']) assert.ok(at(id) >= 0, id + ' in .top-controls');
+  assert.ok(at('cancel-btn') < at('run-settings'), 'Stop precedes run settings');
+  assert.doesNotMatch(cssRule('#cancel-btn.visible'), /margin-left/, 'Stop keeps its gap on the side facing the controls');
+});

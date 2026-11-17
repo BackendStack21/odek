@@ -561,14 +561,15 @@ select { appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmln
 #effective-limits { font-size: var(--fs-xs); color: var(--text-3); }
 #model-picker, #thinking-picker { display: block !important; max-width: 100%; min-width: 0; }
 
-/* Stop: a clear, labelled destructive control while a turn runs */
+/* Stop: a clear, labelled destructive control while a turn runs. It sits
+   before the persistent controls so showing it never moves them. */
 #cancel-btn { display: none; }
 #cancel-btn.visible {
   display: inline-flex;
   align-items: center;
   gap: 6px;
   height: 28px;
-  margin-left: 4px;
+  margin-right: 4px;
   padding: 0 11px 0 9px;
   border: 1px solid color-mix(in srgb, var(--red) 40%, transparent);
   border-radius: var(--r-pill);
