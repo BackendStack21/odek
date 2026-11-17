@@ -158,9 +158,11 @@ validation evidence and durable decision receipts. **Activity** contains searcha
 raw tool returns with completed, failed or unknown execution outcomes.
 
 **Settings** contains preferences, knowledge and tool administration, runtime
-diagnostics and storage maintenance. **Schedules** has its own workspace. The
+diagnostics and storage maintenance. **Schedules** has its own section on the Server tab. The
 command palette (`⌘K` / `Ctrl+K`) and slash completions share destinations;
-clear-transcript and duplicate navigation actions are removed. `/clear` gives a
+**Schedules**, **Maintenance** and **Tools** (`/schedules`, `/maintenance`,
+`/tools`) each open their section of the Server tab expanded and scrolled into
+view. Clear-transcript and duplicate navigation actions are removed. `/clear` gives a
 New session hint. `/retry` prepares the previous prompt for review without sending.
 
 **Run settings** in the top bar shows the workspace, execution mode and

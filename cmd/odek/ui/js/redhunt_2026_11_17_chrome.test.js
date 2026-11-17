@@ -211,6 +211,22 @@ globalThis.fetch = (...a) => fetchImpl(...a);
 globalThis.requestAnimationFrame = (fn) => setTimeout(fn, 0);
 globalThis.cancelAnimationFrame = (t) => clearTimeout(t);
 
+// Static inspector markup the drawer module binds at load: its tab buttons
+// and panels, registered by id like index.html elements.
+function mountStatic(parentId, html) {
+  const parent = document.getElementById(parentId);
+  parent.innerHTML = html;
+  const register = (el) => { for (const c of el.children) { if (c.id) byId[c.id] = c; register(c); } };
+  register(parent);
+}
+mountStatic('panels', '<div id="panels-tabs">' +
+  '<button class="ptab active" id="ptab-now" data-surface="task" data-tab="now"></button>' +
+  '<button class="ptab" id="ptab-outputs" data-surface="task" data-tab="outputs"></button>' +
+  '<button class="ptab" id="ptab-memory" data-surface="admin" data-tab="memory"></button>' +
+  '<button class="ptab" id="ptab-ops" data-surface="admin" data-tab="ops"></button></div>' +
+  '<section class="ppanel active" data-panel="now"></section><section class="ppanel" data-panel="outputs"></section>' +
+  '<section class="ppanel" data-panel="memory"></section><section class="ppanel" data-panel="ops"></section>');
+
 const S = (await import('./state.js')).S;
 const utils = await import('./utils.js');
 const render = await import('./render.js');
@@ -718,4 +734,44 @@ test('inspector tabs draw a fully inset focus ring in every theme', () => {
   for (const def of defs) {
     for (const shadow of shadows(def)) assert.match(shadow, /^inset\b/, 'every shadow is inset: ' + def);
   }
+});
+
+// ── Palette destinations ──
+// "Schedules" and "Maintenance" matched one Server command that opened the
+// tab with both sections collapsed; "Tools" matched nothing, and /tools
+// opened the Knowledge tab although the tool list lives on Server.
+const DESTINATIONS = [['Schedules', 'schedules-details'], ['Maintenance', 'maintenance-details'], ['Tools', 'tools-details']];
+function resetDestinations() {
+  for (const [, id] of DESTINATIONS) { $(id).open = false; $(id).scrolledIntoView = 0; }
+  panels.togglePanels(false);
+}
+
+test('the palette offers Schedules, Maintenance and Tools as their own destinations', async () => {
+  const commands = await import('./commands.js');
+  for (const [query, detailsId] of DESTINATIONS) {
+    resetDestinations();
+    const row = commands.paletteItems(query)[0];
+    assert.equal(row?.kind, 'cmd', query + ' matches a command');
+    assert.equal(row.title, query, query + ' is the top match');
+    row.run();
+    assert.equal($('panels').classList.contains('active'), true, query + ' opens the inspector');
+    assert.equal($('ptab-ops').getAttribute('aria-selected'), 'true', query + ' opens the Server tab');
+    assert.equal($(detailsId).open, true, query + ' expands its section');
+    assert.ok($(detailsId).scrolledIntoView > 0, query + ' scrolls its section into view');
+  }
+  resetDestinations();
+});
+
+test('the slash verbs reach the same destinations', async () => {
+  const commands = await import('./commands.js');
+  commands.setCommandHandlers({}); // main.js installs these; workspace verbs need none
+  for (const [query, detailsId] of DESTINATIONS) {
+    resetDestinations();
+    const verb = '/' + query.toLowerCase();
+    assert.equal(commands.isComposerSlashInput(verb), true, verb + ' is a verb');
+    commands.dispatchSlash(verb);
+    assert.equal($('ptab-ops').getAttribute('aria-selected'), 'true', verb + ' opens the Server tab');
+    assert.equal($(detailsId).open, true, verb + ' expands its section');
+  }
+  resetDestinations();
 });

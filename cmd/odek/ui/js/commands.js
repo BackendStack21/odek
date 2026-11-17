@@ -27,12 +27,15 @@ const COMMANDS = [
   { id: 'tab-now', title: 'Task overview', hint: '⌘.', run: () => openTab('now') },
   { id: 'tab-memory', title: 'Knowledge settings', hint: '⌘.', run: () => openTab('memory') },
   { id: 'tab-ops', title: 'Runtime diagnostics', hint: '⌘.', run: () => openTab('ops') },
+  { id: 'schedules', title: 'Schedules', hint: '/schedules', run: () => openTab('schedules') },
+  { id: 'maintenance', title: 'Maintenance', hint: '/maintenance', run: () => openTab('maintenance') },
+  { id: 'tools', title: 'Tools', hint: '/tools', run: () => openTab('tools') },
 ];
 
 const SLASH_VERBS = new Set([
   'help', 'new', 'copy', 'export', 'retry', 'queue', 'theme',
   'stats', 'cancel', 'notify', 'shutdown', 'model', 'thinking',
-  'outputs', 'activity', 'preferences', 'manage', 'maintenance', 'now', 'memory', 'ops', 'plan', 'jobs', 'agents', 'skills', 'tools',
+  'outputs', 'activity', 'preferences', 'manage', 'maintenance', 'schedules', 'now', 'memory', 'ops', 'plan', 'jobs', 'agents', 'skills', 'tools',
   'runs', 'events', 'config', 'sessions', 'session', 'stop',
 ]);
 
@@ -56,17 +59,24 @@ export function isComposerSlashInput(val, cursor) {
   return false;
 }
 export const WORKSPACES = { now: {id:'ptab-now', surface:'task'}, outputs:{id:'ptab-outputs',surface:'task'}, memory:{id:'ptab-memory',surface:'admin'}, ops:{id:'ptab-ops',surface:'admin'} };
-for (const [id,title] of [['outputs','Deliverables and evidence'],['server','Server: runs, events, schedules, maintenance']]) COMMANDS.push({id:'tab-'+id,title,hint:'workspace',run:()=>openTab(id)});
+for (const [id,title] of [['outputs','Deliverables and evidence'],['server','Server: runs, events, config']]) COMMANDS.push({id:'tab-'+id,title,hint:'workspace',run:()=>openTab(id)});
 
 const TAB_WS = {
   sessions: 'sessions', session: 'sessions',
   plan: 'now', jobs: 'now', agents: 'now', now: 'now',
-  memory: 'memory', skills: 'memory', tools: 'memory',
-  runs: 'ops', events: 'ops', config: 'ops', ops: 'ops', server: 'ops',
+  memory: 'memory', skills: 'memory',
+  runs: 'ops', events: 'ops', config: 'ops', ops: 'ops', server: 'ops', tools: 'ops',
   // Removed tabs keep their slash verbs working by retargeting:
   manage: 'ops', maintenance: 'ops', schedules: 'ops',
   activity: 'outputs',
   preferences: 'preferences',
+};
+// Destinations that live in a collapsible section of a workspace: opening
+// one expands its section and scrolls it into view.
+const SECTION_ID = {
+  schedules: 'schedules-details',
+  maintenance: 'maintenance-details',
+  tools: 'tools-details',
 };
 const TAB_ID = {
   now: 'ptab-now',
@@ -86,6 +96,29 @@ export function openTab(name) {
   togglePanels(true);
   const btn = document.getElementById(WORKSPACES[ws]?.id || TAB_ID[ws] || 'ptab-now');
   if (btn) {btn.click();btn.focus?.();}
+  const section = SECTION_ID[name] && document.getElementById(SECTION_ID[name]);
+  if (section) revealSection(section);
+}
+
+// revealSection expands a workspace section and scrolls it into view. The
+// lists above it load after the tab opens and push it down, so it is kept in
+// view while they settle (up to 2s) unless the operator scrolls first.
+function revealSection(section) {
+  section.open = true;
+  const reveal = () => section.scrollIntoView?.({ block: 'start' });
+  reveal();
+  section.querySelector?.('summary')?.focus?.({ preventScroll: true });
+  const scroller = section.closest?.('.ppanel-scroll');
+  if (!scroller || typeof ResizeObserver !== 'function') return;
+  const observer = new ResizeObserver(reveal);
+  const userEvents = ['wheel', 'touchstart', 'keydown', 'pointerdown'];
+  const stop = () => {
+    observer.disconnect();
+    userEvents.forEach((type) => scroller.removeEventListener(type, stop));
+  };
+  for (const child of scroller.children) observer.observe(child);
+  userEvents.forEach((type) => scroller.addEventListener(type, stop, { once: true, passive: true }));
+  setTimeout(stop, 2000);
 }
 S.openSessionsPanel = () => openTab('sessions');
 
@@ -263,6 +296,7 @@ export function dispatchSlash(raw) {
     case 'activity':
     case 'manage':
     case 'maintenance':
+    case 'schedules':
     case 'preferences':
       openTab(cmd);
       break;
