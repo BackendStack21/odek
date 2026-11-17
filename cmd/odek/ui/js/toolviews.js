@@ -128,7 +128,7 @@ export function toolView(name, raw, input = '') {
       kind = 'files'; items = list(data.matches).map(m => entry(pathLabel(m.path), '', m.is_dir ? 'directory' : byteSize(m.size))); break;
     case 'read_file':
       if (typeof data.content !== 'string' && !data.error) return null;
-      kind = 'file'; items = [entry(pathLabel(args.path || 'File content'),data.error ? 'failed' : '',data.total_lines != null ? `${data.total_lines} lines` : '',[section(data.error ? 'Error' : 'Content',data.error ? 'text' : 'code',data.error || data.content)])]; break;
+      kind = 'file'; items = [entry(pathLabel(args.path || 'File content'),data.error ? 'failed' : '',data.total_lines != null ? `${displayValue(data.total_lines)} ${data.total_lines === 1 ? 'line' : 'lines'}` : '',[section(data.error ? 'Error' : 'Content',data.error ? 'text' : 'code',data.error || data.content)])]; break;
     case 'patch': case 'write_file':
       if (typeof data.success !== 'boolean' && !data.error) return null;
       // write_file returns no content, only its outcome; patch returns its diff.

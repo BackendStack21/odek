@@ -476,6 +476,8 @@ test('result counts use singular forms for one', () => {
   const diff = render1({ name: 'diff', output: '@@ -1 +1 @@\n-a\n+b' });
   diff.querySelectorAll('.result-action').find(b => b.textContent === 'Split').click();
   assert.equal(diff.querySelector('.result-count').textContent, '2 rows');
+  assert.equal(toolView('read_file', '{"content":"x","total_lines":1}', '{"path":"a"}').items[0].meta, '1 line');
+  assert.equal(toolView('read_file', '{"content":"x\\ny","total_lines":2}', '{"path":"a"}').items[0].meta, '2 lines');
 });
 
 // ── Tool-head previews ──
