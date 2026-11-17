@@ -119,6 +119,9 @@ func hasVariableReference(v string) bool {
 // transferVerdict is the set of extra effects a network client invocation
 // carries beyond plain egress.
 type transferVerdict struct {
+	// egress is set for a tool that is not a network prefix but contacts
+	// the network for this invocation (a URL operand of ffmpeg or pandoc).
+	egress  bool
 	upload  bool
 	code    bool
 	system  bool
@@ -129,6 +132,9 @@ type transferVerdict struct {
 
 func (v transferVerdict) effects() []RiskClass {
 	var out []RiskClass
+	if v.egress {
+		out = append(out, NetworkEgress)
+	}
 	if v.upload {
 		out = append(out, NetworkUpload)
 	}
@@ -196,8 +202,71 @@ func networkTransferEffects(name string, inner []string, feed stdinFeed) []RiskC
 		v.upload = registryPublish(name, args)
 	case "dig", "nslookup", "host", "drill", "ping", "ping6", "traceroute", "traceroute6":
 		v.unknown = dnsQueryCarriesRuntimeData(name, args)
+	default:
+		if urlFetchTools[name] {
+			v = urlFetchToolTransfer(name, args)
+		}
 	}
 	return v.effects()
+}
+
+// urlFetchTools are document, media and markup tools that are not network
+// clients by name but open a URL given as an operand or option value: pandoc
+// (inputs, --template=URL, …), ffmpeg/ffprobe/ffplay, ImageMagick and
+// libxml2/libxslt. Without the effect a policy denying egress or uploads did
+// not see the request.
+var urlFetchTools = fieldSet("pandoc ffmpeg ffprobe ffplay convert magick identify mogrify composite montage " +
+	"compare stream xmllint xsltproc")
+
+// networkURLSchemes are URL schemes that reach another host. ffmpeg's
+// layered schemes (hls+https, tls, srt, …) are matched on their last
+// component.
+var networkURLSchemes = fieldSet("http https ftp ftps sftp tftp rtmp rtmps rtmpe rtmpt rtmpte rtmpts rtsp rtsps " +
+	"rtp srtp srt udp tcp tls sctp mms mmsh mmst gopher gophers ws wss icecast zmq rist ipfs ipns smb dav davs")
+
+// networkURL reports whether s (an operand, or the value after `=` of an
+// option word) is a URL whose scheme reaches another host.
+func networkURL(s string) bool {
+	s = strings.Trim(s, `"'`)
+	i := strings.Index(s, "://")
+	if i <= 0 {
+		return false
+	}
+	scheme := strings.ToLower(s[:i])
+	for _, r := range scheme {
+		if !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '+' || r == '-' || r == '.') {
+			return false
+		}
+	}
+	if j := strings.LastIndexByte(scheme, '+'); j >= 0 {
+		scheme = scheme[j+1:]
+	}
+	return networkURLSchemes[scheme]
+}
+
+// urlFetchToolTransfer judges a URL-opening tool: any network URL is egress.
+// ffmpeg writes its outputs to the URLs it is not reading from (every URL not
+// given to -i), which sends local media to that host, so those are uploads.
+func urlFetchToolTransfer(name string, args []string) transferVerdict {
+	var v transferVerdict
+	for i, tok := range args {
+		candidate := tok
+		if strings.HasPrefix(tok, "-") {
+			eq := strings.IndexByte(tok, '=')
+			if eq < 0 {
+				continue
+			}
+			candidate = tok[eq+1:]
+		}
+		if !networkURL(candidate) {
+			continue
+		}
+		v.egress = true
+		if name == "ffmpeg" && (i == 0 || args[i-1] != "-i") {
+			v.upload = true
+		}
+	}
+	return v
 }
 
 // registryPublishVerbs are the subcommands that send the local package to a

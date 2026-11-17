@@ -4003,6 +4003,21 @@ var envExecNames = map[string]bool{
 	"LESSOPEN": true, "LESSCLOSE": true,
 	"SSH_ASKPASS": true, "SSH_ASKPASS_REQUIRE": true,
 	"GCONV_PATH": true,
+	// OpenSSL reads a configuration (OPENSSL_CONF) whose openssl_conf section
+	// activates any provider or engine module, and loads bare module names
+	// from OPENSSL_MODULES / OPENSSL_ENGINES: every program linked to libcrypto
+	// can load a library of the caller's choosing (`openssl version` too).
+	"OPENSSL_CONF": true, "OPENSSL_MODULES": true, "OPENSSL_ENGINES": true,
+	// Interpreter library search paths decide which module a program written
+	// in that language imports first (sitecustomize, a .pth file, a shadowed
+	// core module), so any Python, Perl or Ruby program run with one, such as
+	// `pip --version`, `shasum` or `gem --version`, runs code from there.
+	"PYTHONPATH": true, "PYTHONHOME": true, "PYTHONUSERBASE": true,
+	"PERL5LIB": true, "PERLLIB": true, "RUBYLIB": true,
+	// curl reads .curlrc from $CURL_HOME and wget reads $WGETRC: a config
+	// file sets any option (output file, upload, another config), exactly
+	// like `curl -K FILE`.
+	"CURL_HOME": true, "WGETRC": true,
 	// Path hijacks: retarget metadata/worktree/index so a planted repo
 	// or corrupt index is what a later "safe" git verb actually sees.
 	"GIT_DIR": true, "GIT_WORK_TREE": true, "GIT_INDEX_FILE": true,
@@ -4087,11 +4102,12 @@ func envAssignmentNameRisk(assignments []string, inner []string) RiskClass {
 	return Safe
 }
 
-// gitConfigHomeOverride reports whether a HOME or XDG_CONFIG_HOME value moves
-// the directory git reads its global configuration from away from the real
-// one. That configuration can name code to run (core.fsmonitor, core.pager,
-// aliases), exactly as GIT_CONFIG_GLOBAL does.
-func gitConfigHomeOverride(upper, val string) bool {
+// configHomeOverride reports whether a HOME or XDG_CONFIG_HOME value moves the
+// directory a tool reads its configuration from away from the real one. For
+// git that configuration can name code to run (core.fsmonitor, core.pager,
+// aliases), exactly as GIT_CONFIG_GLOBAL does; for curl and wget it sets any
+// option, exactly as `curl -K FILE` does.
+func configHomeOverride(upper, val string) bool {
 	v := strings.Trim(strings.TrimSpace(val), `"'`)
 	if v == "" {
 		return false
@@ -4126,7 +4142,9 @@ func gitConfigHomeOverride(upper, val string) bool {
 // $HOME/.bashrc, .profile and friends, zsh reads $HOME/.zshenv (and .zshrc
 // interactively) even for -c, fish reads its config. A shell that only runs a
 // -c string or a script file with no -i/-l does not source them. Without
-// operands the shell is judged interactive.
+// operands the shell is judged interactive. The same moved home reaches the
+// configuration git, curl (.curlrc under $XDG_CONFIG_HOME or $HOME) and wget
+// ($HOME/.wgetrc) read.
 func startupHomeOverride(upper, val string, inner []string) bool {
 	if upper != "HOME" && upper != "XDG_CONFIG_HOME" && upper != "ZDOTDIR" {
 		return false
@@ -4136,7 +4154,12 @@ func startupHomeOverride(upper, val string, inner []string) bool {
 	}
 	name := commandName(inner[0])
 	if name == "git" {
-		return gitConfigHomeOverride(upper, val)
+		return configHomeOverride(upper, val)
+	}
+	// curl reads .curlrc from $XDG_CONFIG_HOME or $HOME, and wget reads
+	// $HOME/.wgetrc.
+	if (name == "curl" && upper != "ZDOTDIR") || (name == "wget" && upper == "HOME") {
+		return configHomeOverride(upper, val)
 	}
 	if !posixShells[name] {
 		return false
