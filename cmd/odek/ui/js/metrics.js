@@ -341,9 +341,11 @@ export function renderMetrics() {
 
   const tok = document.getElementById('m-tok');
   if (tok) {
+    // "—" like speed and cost until the session has totals (a stored session
+    // seeds them from its record).
     tok.textContent = m.sessIn > 0 || m.sessOut > 0
       ? '⇥ ' + formatNum(m.sessIn) + '  ↦ ' + formatNum(m.sessOut)
-      : '';
+      : '—';
     tok.title = 'Session totals: ' + formatNum(m.sessIn) + ' in · ' + formatNum(m.sessOut) + ' out';
   }
 

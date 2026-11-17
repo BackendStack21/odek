@@ -646,3 +646,17 @@ test('UI counts never fall back to "(s)" placeholders', () => {
   const workspace = readFileSync(new URL('./workspace.js', import.meta.url), 'utf8');
   assert.doesNotMatch(workspace, /\+' failed tool calls · '/, 'evidence summary counts use plural()');
 });
+
+// ── Health popover ──
+// The tokens row was blank (speed and cost read "—") for a session opened
+// from history before any turn ran on the page.
+test('the health popover tokens row shows "—" until there are totals, then the stored totals', async () => {
+  const metrics = await import('./metrics.js');
+  metrics.resetMetrics();
+  assert.equal($('m-tok').textContent, '—');
+  metrics.metricsFromSession({ id: 'sess-stored', input_tokens: 0, output_tokens: 0 });
+  assert.equal($('m-tok').textContent, '—', 'a stored session without totals');
+  metrics.metricsFromSession({ id: 'sess-stored', input_tokens: 1200, output_tokens: 300 });
+  assert.equal($('m-tok').textContent, '⇥ 1.2k  ↦ 300');
+  metrics.resetMetrics();
+});
