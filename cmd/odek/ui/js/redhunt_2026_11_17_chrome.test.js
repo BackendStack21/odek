@@ -483,3 +483,42 @@ test('Stop comes before the persistent top-bar controls', () => {
   assert.ok(at('cancel-btn') < at('run-settings'), 'Stop precedes run settings');
   assert.doesNotMatch(cssRule('#cancel-btn.visible'), /margin-left/, 'Stop keeps its gap on the side facing the controls');
 });
+
+// ── Prompt queue ──
+// The pause flag outlived the interrupted turn: after a failure (or a stop)
+// a fresh session's queue started paused and never drained.
+function sendText(text) {
+  $('prompt').value = text;
+  input.send();
+}
+
+test('a queue started after an interruption is not paused by it', () => {
+  S.pauseQueue(); // a failure or stop with nothing queued
+  sessions.newSession();
+  S.ws.sent.length = 0;
+  sendText('first prompt in the new session');
+  assert.equal(S.busy, true);
+  sendText('queued behind it');
+  assert.equal(S.promptQueue.length, 1);
+  assert.equal(S.queuePaused, false, 'the new queue does not inherit the old pause');
+  assert.equal($('queue-strip').querySelector('.management-action'), null, 'no resume control on a running queue');
+  S.busy = false;
+  input.drainQueue();
+  assert.deepEqual(sentOfType('prompt').map(m => m.content), ['first prompt in the new session', 'queued behind it']);
+});
+
+test('a queue that existed at the interruption stays paused when more is queued', () => {
+  S.sessionId = 'sess-queue';
+  S.busy = true;
+  sendText('waiting before the failure');
+  S.pauseQueue();
+  sendText('added after the failure');
+  assert.equal(S.promptQueue.length, 2);
+  assert.equal(S.queuePaused, true, 'the interrupted queue still needs an explicit resume');
+  S.busy = false;
+  S.ws.sent.length = 0;
+  input.drainQueue();
+  assert.equal(sentOfType('prompt').length, 0);
+  $('queue-strip').querySelector('.management-action').click();
+  assert.deepEqual(sentOfType('prompt').map(m => m.content), ['waiting before the failure']);
+});

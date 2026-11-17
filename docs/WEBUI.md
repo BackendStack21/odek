@@ -172,7 +172,8 @@ or supply prices. Cost caps need configured input and output prices.
 The composer supports pointer Send/Queue, Enter to send, Shift+Enter for newlines,
 IME composition, ordinary multiline cursor editing and Alt+Up/Down history with
 draft restoration. Queued messages retain their model, reasoning and limit
-choices. Failures, stops and disconnects pause the queue.
+choices. Failures, stops and disconnects pause the messages queued at that
+moment; a queue started afterwards by a new send is not paused.
 
 Preferences include themes, reading size, density, notifications and connection
 permission grants with revocation. Mobile inspectors trap focus, make the
@@ -1113,7 +1114,7 @@ omit mode to retain immediate consolidation.
 Text drafts survive reloads within the browser tab. Attachment drafts survive
 session switches in memory; reattach them after a reload. Queues pause on
 interruption and session changes and require an explicit resume in their owning
-session. Uploads that finish after a session switch cannot attach to the new
+session; once a paused queue is empty, the next send starts an unpaused one. Uploads that finish after a session switch cannot attach to the new
 conversation. Plan result links show temporal association with an active step;
 they do not claim that a tool result validates the step.
 

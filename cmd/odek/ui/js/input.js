@@ -146,6 +146,10 @@ export function send(recoveryCheckpoint) {
   S.saveDraft?.();
   promptEl.style.height = 'auto';
 
+  // A pause belongs to the queue that was waiting when work was interrupted.
+  // With nothing waiting, this explicit send starts a fresh, unpaused queue.
+  if (!S.promptQueue.length && S.queuePaused) S.queuePaused = false;
+
   if (S.busy) {
     S.promptQueue.push({
       id: queueId(),
