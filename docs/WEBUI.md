@@ -236,8 +236,9 @@ or interrupted decisions, are redacted and bounded to the latest 128 per session
 and are kept separate from model context. Temporary trust survives session
 switches on that connection, and can be revoked in Preferences.
 
-Stops show **Stopping…** on the request acknowledgement, then **Stopped** only
-on execution settlement — one transcript status line that updates in place.
+Stops show **Stopping…** as soon as Stop is pressed (kept through the server's
+acknowledgement), then **Stopped** only on execution settlement — one
+transcript status line that updates in place.
 The error frame a stopped run unwinds with is not shown as a failure; only a
 run that settles `failed` while stopping shows its error. An answer the
 provider did not finish (`[Partial response: interrupted|truncated|refused]`

@@ -409,6 +409,15 @@ test('a reloaded partial answer shows the chip instead of the marker', () => {
   assert.match(answer.querySelector('.partial-chip').textContent, /truncated/);
 });
 
+test('a partial chip does not suppress the unverified chip', () => {
+  const bubble = document.createElement('div');
+  bubble.innerHTML = '<div class="sender">⬡ odek</div><div class="content">x</div>';
+  render.markPartial(bubble, 'interrupted');
+  render.markUnverified(bubble);
+  assert.ok(bubble.querySelector('.partial-chip'));
+  assert.ok(bubble.querySelector('.verify-chip.fail'), 'unverified chip added beside the partial one');
+});
+
 test('an error that is not the stop still shows once the stop settles as failed', () => {
   deliver({ type: 'turn_started', turn_id: 't-stop-fail' });
   render.requestTurnStop();

@@ -690,7 +690,7 @@ export function markTurnUnverified(turnId) {
 // markUnverified tags an answer bubble that shipped despite a failing
 // verification verdict.
 export function markUnverified(bubble) {
-  if (!bubble || bubble.querySelector('.verify-chip')) return;
+  if (!bubble || bubble.querySelector('.verify-chip.fail')) return;
   const chip = document.createElement('span');
   chip.className = 'verify-chip fail';
   chip.title = 'This answer failed verification and was returned unverified';
