@@ -36,7 +36,16 @@ export function toolPreview(name, input) {
         if (entry) text = Array.isArray(entry[1]) ? `${entry[1].length} ${entry[0]}` : displayValue(entry[1]);
       }
   }
-  return displayValue(text).replace(/\s+/g, ' ').slice(0, 100);
+  return clip(displayValue(text).replace(/\s+/g, ' '), 100);
+}
+// clip shortens text to at most max UTF-16 units, ending with an ellipsis
+// when cut and never splitting a surrogate pair.
+function clip(text, max) {
+  if (text.length <= max) return text;
+  let cut = max - 1;
+  const last = text.charCodeAt(cut - 1);
+  if (last >= 0xD800 && last <= 0xDBFF) cut--;
+  return text.slice(0, cut).trimEnd() + '…';
 }
 const section = (label, name, value) => ({label, name, output:displayValue(value)});
 function entry(title, status = '', meta = '', sections = []) { return {title:displayValue(title), status:displayValue(status), meta:displayValue(meta), sections}; }

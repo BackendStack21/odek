@@ -429,3 +429,15 @@ test('result counts use singular forms for one', () => {
   diff.querySelectorAll('.result-action').find(b => b.textContent === 'Split').click();
   assert.equal(diff.querySelector('.result-count').textContent, '2 rows');
 });
+
+// ── Tool-head previews ──
+test('a shortened tool-head preview ends with an ellipsis and never splits a character', () => {
+  const question = 'Which environment should I deploy to? Answer with staging or production and tell me whether to run migrations first.';
+  const preview = toolPreview('clarify', JSON.stringify({ question }));
+  assert.ok(preview.length <= 100, preview.length);
+  assert.ok(preview.endsWith('…'), preview);
+  assert.equal(toolPreview('clarify', JSON.stringify({ question: 'Short?' })), 'Short?');
+  const emoji = toolPreview('shell', JSON.stringify({ command: 'a'.repeat(98) + '😀' + 'b'.repeat(10) }));
+  assert.ok(emoji.endsWith('…'), emoji);
+  assert.doesNotMatch(emoji, /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/, 'lone surrogate in ' + JSON.stringify(emoji));
+});
