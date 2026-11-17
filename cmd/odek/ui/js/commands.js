@@ -2,7 +2,7 @@
 // type in the composer — palette/slash live on chords and a leading `/`.
 import { S, getSessionToken } from './state.js';
 import { promptEl } from './dom.js';
-import { escapeHtml, showToast, copyTextToClipboard, openDialog, closeDialog, isDialogOpen } from './utils.js';
+import { escapeHtml, showToast, copyTextToClipboard, openDialog, closeDialog, isDialogOpen, plural } from './utils.js';
 import { newSession } from './sessions.js';
 import { togglePanels } from './panels.js';
 import { downloadExport } from './api.js';
@@ -152,7 +152,7 @@ function collectItems(q) {
       score,
       id: 'sess:' + s.id,
       title: label,
-      hint: (s.pinned ? '📌 ' : '') + (s.model || '') + ' · ' + (s.turns || 0) + ' turns',
+      hint: (s.pinned ? '📌 ' : '') + (s.model || '') + ' · ' + plural(s.turns || 0, 'turn'),
       run: () => onDispatch && onDispatch.openSession(s.id),
     });
   });

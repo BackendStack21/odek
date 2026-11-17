@@ -611,3 +611,38 @@ test('the status rail says it is waiting for an answer while a question is open'
     render.setIntent('');
   }
 });
+
+// ── Wording ──
+// Counts read "1 need attention", "1 turns", "0 job(s)" and similar.
+test('plural formats a count with the right noun form', () => {
+  assert.equal(utils.plural(1, 'job'), '1 job');
+  assert.equal(utils.plural(0, 'job'), '0 jobs');
+  assert.equal(utils.plural(2, 'sub-agent'), '2 sub-agents');
+  assert.equal(utils.plural(1, 'needs attention', 'need attention'), '1 needs attention');
+  assert.equal(utils.plural(3, 'needs attention', 'need attention'), '3 need attention');
+});
+
+test('the attention chip and the palette session hint agree in number', async () => {
+  const chip = $('attention-chip');
+  utils.paintAttentionChip(chip, 1);
+  assert.equal(chip.getAttribute('aria-label'), '1 needs attention');
+  assert.equal(chip.querySelector('.attention-label').textContent, 'needs attention');
+  utils.paintAttentionChip(chip, 2);
+  assert.equal(chip.getAttribute('aria-label'), '2 need attention');
+  const commands = await import('./commands.js');
+  S.sessionPages = [{ id: 'sess-one-turn', task: 'one turn session', turns: 1, model: 'stub-large' }];
+  const row = commands.paletteItems('one turn session').find((r) => r.kind === 'session');
+  assert.equal(row.hint, 'stub-large · 1 turn');
+  S.sessionPages = [];
+});
+
+test('UI counts never fall back to "(s)" placeholders', () => {
+  for (const file of ['panels.js', 'input.js', 'commands.js', 'workspace.js', 'supervision.js']) {
+    const src = readFileSync(new URL('./' + file, import.meta.url), 'utf8');
+    assert.doesNotMatch(src, /[a-z]\(s\)/, file + ' still formats a count as "(s)"');
+  }
+  const supervision = readFileSync(new URL('./supervision.js', import.meta.url), 'utf8');
+  assert.doesNotMatch(supervision, /\+' failed checks|\+' background jobs/, 'supervision counts use plural()');
+  const workspace = readFileSync(new URL('./workspace.js', import.meta.url), 'utf8');
+  assert.doesNotMatch(workspace, /\+' failed tool calls · '/, 'evidence summary counts use plural()');
+});

@@ -1,5 +1,6 @@
 // Workspace navigation, per-session drafts and the inspectable result collection.
 import { S } from './state.js';
+import { plural } from './utils.js';
 import { renderResult, resultKind, ACTIVITY_MAX_RESULTS, ACTIVITY_MAX_BYTES } from './results.js';
 import { toolPreview } from './toolviews.js';
 import { openTab } from './commands.js';
@@ -219,7 +220,7 @@ function paintEvidence(){
   if(check.previous.length)row.appendChild(textNode('span','management-note','Earlier attempts: '+check.previous.join(', ')+' · superseded for this exact command.'));
   row.addEventListener('click',()=>inspect(check.item));root.appendChild(row);
  }
- if(summary.failed || summary.unknown)root.appendChild(textNode('p','management-note',summary.failed+' failed tool calls · '+summary.unknown+' calls with unavailable outcomes. Review Activity for unresolved work.'));
+ if(summary.failed || summary.unknown)root.appendChild(textNode('p','management-note',plural(summary.failed,'failed tool call')+' · '+plural(summary.unknown,'call')+' with unavailable outcomes. Review Activity for unresolved work.'));
  const count=byId('output-count');if(count)count.textContent=String(summary.files.length+summary.checks.length+(S.artifactCount||0));
  S.refreshSupervision?.();
 }

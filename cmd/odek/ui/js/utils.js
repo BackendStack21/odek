@@ -21,6 +21,13 @@ export function formatNum(n) {
   return String(n);
 }
 
+// plural formats a count with the matching noun (or verb) form:
+// plural(1, 'job') → '1 job', plural(2, 'job') → '2 jobs'. Irregular forms
+// pass the plural explicitly.
+export function plural(n, one, many = one + 's') {
+  return n + ' ' + (n === 1 ? one : many);
+}
+
 export function formatFileSize(bytes) {
   if (bytes < 1024) return bytes + ' B';
   if (bytes < 1024*1024) return (bytes/1024).toFixed(1) + ' KB';
@@ -214,7 +221,7 @@ export function hideCancel() {
 export function paintAttentionChip(chip, count) {
   if (!chip) return;
   const n = Math.max(0, Math.floor(Number(count) || 0));
-  const label = 'need attention';
+  const label = n === 1 ? 'needs attention' : 'need attention';
   chip.hidden = !n;
   chip.textContent = '';
   const num = document.createElement('span');

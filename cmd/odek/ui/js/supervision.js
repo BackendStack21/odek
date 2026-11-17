@@ -2,7 +2,7 @@ import { S, getSessionToken, ensureSessionToken } from './state.js';
 import { apiFetch, getSession } from './api.js';
 import { apiHeaders, wsSend } from './net.js';
 import { openTab } from './commands.js';
-import { openDialog, closeDialog, announce, showToast, paintAttentionChip } from './utils.js';
+import { openDialog, closeDialog, announce, showToast, paintAttentionChip, plural } from './utils.js';
 import { send } from './input.js';
 import { setWorkspaceRoot } from './toolviews.js';
 
@@ -44,11 +44,11 @@ S.refreshSupervision=()=>{
  const approvalCount = S.approvalQueue?.length || (S.activeApprovalId ? 1 : 0);
  if(S.activeClarifyCard)items.push(['Answer the agent',()=>{S.closePanels?.();S.activeClarifyCard.scrollIntoView?.({block:'center'});S.activeClarifyCard.querySelector('textarea')?.focus();}]);
  for(const step of S.plan?.steps||[])if(step.status==='blocked')items.push(['Blocked: '+step.title,()=>S.requestFollowup('Help resolve blocked step '+step.id+': '+step.title)]);
- if(S.failedChecks)items.push([S.failedChecks+' failed checks · review evidence',()=>openTab('outputs')]);
+ if(S.failedChecks)items.push([plural(S.failedChecks,'failed check')+' · review evidence',()=>openTab('outputs')]);
  if(S.recoveryReason)items.push(['Interrupted work · review saved progress',()=>reviewRecovery()]);
  if(S.knowledgeNeedsReview)items.push(['Review memory before allowing reuse',()=>openTab('memory')]);
  for(const item of S.agentAttention?.values() || [])items.push([item.label+' · '+item.status,()=>S.requestFollowup('Review delegated work: '+item.label+'. Verify its evidence and continue unfinished work.')]);
- const activeJobs=(S.jobs||[]).filter(job=>job.status==='running');if(!S.busy && activeJobs.length)items.push([activeJobs.length+' background jobs still running',()=>openTab('now')]);
+ const activeJobs=(S.jobs||[]).filter(job=>job.status==='running');if(!S.busy && activeJobs.length)items.push([plural(activeJobs.length,'background job')+' still running',()=>openTab('now')]);
  if(!items.length && !approvalCount)root.appendChild(node('p','management-note','Nothing needs your decision.'));
  for(const [label,fn] of items)root.appendChild(action(label,fn));
  paintAttentionChip(byId('attention-chip'),items.length+approvalCount);

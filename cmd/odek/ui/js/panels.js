@@ -2,7 +2,7 @@
 // lives in the topbar session rail, not in the inspector.
 // Opened via the topbar button or ⌘. All data flows through js/api.js.
 import { S, getSessionToken } from './state.js';
-import { showToast, announce, escapeHtml, isDialogOpen } from './utils.js';
+import { showToast, announce, escapeHtml, isDialogOpen, plural } from './utils.js';
 import {
   getMemory, previewMemory, applyMemoryPreview, addMemoryFact, removeMemoryFact, promoteEpisode, discardEpisode, consolidateMemory,
   getSkills, getTools, promoteSkill,
@@ -242,7 +242,7 @@ function renderPending(container, pending) {
     body.className = 'mf-episode-body';
     const meta = document.createElement('div');
     meta.className = 'mf-episode-meta';
-    meta.textContent = (ep.session_id || '').slice(0, 12) + ' · ' + (ep.turns || 0) + ' turns' +
+    meta.textContent = (ep.session_id || '').slice(0, 12) + ' · ' + plural(ep.turns || 0, 'turn') +
       (ep.created_at ? ' · ' + new Date(ep.created_at).toLocaleString() : '') +
       (ep.summary_sha256 ? ' · sha256 ' + shortHash(ep.summary_sha256) : '');
     const summary = document.createElement('div');
@@ -489,7 +489,7 @@ async function loadTools() {
     const header = document.createElement('div');
     header.className = 'tools-summary';
     header.textContent = tools.filter(t => t.enabled).length + ' of ' + tools.length +
-      ' enabled' + (data && data.mcp_servers ? ' · ' + data.mcp_servers + ' MCP server(s)' : '');
+      ' enabled' + (data && data.mcp_servers ? ' · ' + plural(data.mcp_servers, 'MCP server') : '');
     list.appendChild(header);
     const query=(document.getElementById('tools-search')?.value || '').toLowerCase();
     tools.filter(t=>!query||(t.name+' '+(t.description||'')).toLowerCase().includes(query)).forEach(t => {
@@ -566,7 +566,7 @@ async function refreshRuns() {
     list.textContent = '';
     const header = document.createElement('div');
     header.className = 'tools-summary';
-    header.textContent = runs.length + ' run(s) · ' + ((data && data.active) || 0) + ' active';
+    header.textContent = plural(runs.length, 'run') + ' · ' + ((data && data.active) || 0) + ' active';
     list.appendChild(header);
     if (!runs.length) {
       const el = document.createElement('div');
@@ -730,7 +730,7 @@ async function loadEvents() {
     list.textContent = '';
     const header = document.createElement('div');
     header.className = 'tools-summary';
-    header.textContent = evs.length + ' recent event(s) — newest last';
+    header.textContent = plural(evs.length, 'recent event') + ' — newest last';
     list.appendChild(header);
     if (!evs.length) {
       const el = document.createElement('div');
@@ -822,7 +822,7 @@ async function refreshJobs() {
     list.textContent = '';
     const header = document.createElement('div');
     header.className = 'tools-summary';
-    header.textContent = jobs.length + ' job(s)';
+    header.textContent = plural(jobs.length, 'job');
     list.appendChild(header);
     if (!jobs.length) {
       const el = document.createElement('div');
@@ -933,7 +933,7 @@ async function refreshAgents() {
     list.textContent = '';
     const header = document.createElement('div');
     header.className = 'tools-summary';
-    header.textContent = entries.length + ' sub-agent(s)';
+    header.textContent = plural(entries.length, 'sub-agent');
     list.appendChild(header);
     if (!entries.length) {
       const el = document.createElement('div');

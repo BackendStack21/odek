@@ -10,7 +10,7 @@ import {
 } from './dom.js';
 import {
   escapeHtml, escapeAttr, formatFileSize,   scrollToBottom,
-  showCancel, syncScrollBottomButton, teach, showToast, announce,
+  showCancel, syncScrollBottomButton, teach, showToast, announce, plural,
 } from './utils.js';
 import { addMessage, resetTurnState, showLoading, paintIntent, setSendMode } from './render.js';
 import { maybeHandleComposerEnter, paletteItems, isComposerSlashInput } from './commands.js';
@@ -37,7 +37,7 @@ export function renderQueueStrip() {
     row.className = 'queue-row';
     const text = document.createElement('span');
     text.className = 'queue-text';
-    text.textContent = item.text || (item.attachments.length ? item.attachments.length + ' file(s)' : '(empty)');
+    text.textContent = item.text || (item.attachments.length ? plural(item.attachments.length, 'file') : '(empty)');
     const up = document.createElement('button');
     up.type = 'button';
     up.className = 'queue-btn';
