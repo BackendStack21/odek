@@ -10,7 +10,7 @@ import {
 } from './dom.js';
 import {
   escapeHtml, escapeAttr, formatFileSize,   scrollToBottom,
-  showCancel, toggleShortcuts, SCROLL_THRESHOLD, teach, showToast, announce,
+  showCancel, SCROLL_THRESHOLD, teach, showToast, announce,
 } from './utils.js';
 import { addMessage, resetTurnState, showLoading, paintIntent, setSendMode } from './render.js';
 import { maybeHandleComposerEnter, paletteItems, isComposerSlashInput } from './commands.js';
@@ -436,12 +436,8 @@ promptEl.addEventListener('keydown', (e) => {
     return;
   }
 
-  // ? = toggle shortcuts
-  if (e.key === '?' && !e.shiftKey && promptEl.value === '') {
-    e.preventDefault();
-    toggleShortcuts();
-    return;
-  }
+  // `?` on the empty composer toggles the shortcut sheet through the
+  // document-level handler in utils.js (isShortcutSheetKey).
 
   // History up/down (only when completion is hidden)
   if (completionEl.classList.contains('visible')) return;

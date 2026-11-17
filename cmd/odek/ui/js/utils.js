@@ -203,6 +203,26 @@ export function toggleShortcuts() {
   else openDialog(overlay);
 }
 
+// isShortcutSheetKey reports whether a keydown toggles the shortcut sheet:
+// the `?` character on any layout (Shift, AltGr or Option included, never a
+// Cmd/Ctrl chord), outside text fields or in the empty composer. Text typed
+// into any other field, a composer with content or a contenteditable keeps
+// its `?`, and another open dialog is never replaced.
+export function isShortcutSheetKey(e) {
+  if (!e || e.key !== '?' || e.isComposing || e.metaKey || (e.ctrlKey && !e.altKey)) return false;
+  if (isDialogOpen() && !isDialogOpen(document.getElementById('shortcuts-overlay'))) return false;
+  const target = e.target;
+  if (!target || target.isContentEditable) return false;
+  const tag = target.tagName || '';
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return target.id === 'prompt' && target.value === '';
+  return true;
+}
+document.addEventListener('keydown', (e) => {
+  if (e.defaultPrevented || !isShortcutSheetKey(e)) return;
+  e.preventDefault();
+  toggleShortcuts();
+});
+
 // ── Screen-reader announcements ──
 // announce writes to the visually-hidden #sr-status live region. The clear-
 // then-set cycle forces re-announcement of identical consecutive messages.

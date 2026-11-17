@@ -189,7 +189,7 @@ User-requested action confirmations and actionable errors remain visible.
 ### Chat interface
 
 - **Plain text input** — type your prompt, press `Enter` to send (or queue), `Shift+Enter` for a newline
-- **Slash / palette** — typing `/` in the composer autocompletes the same items as `⌘K` (commands, sessions, models). Palette verbs also dispatch from the composer on Enter. Printable keys always type in the composer. Bodek-style JIT tips (`💡 tip: …`) dwell 8s the first time a queue, tool step, or swarm appears.
+- **Slash / palette** — typing `/` in the composer autocompletes the same items as `⌘K` (commands, sessions, models). Palette verbs also dispatch from the composer on Enter. Printable keys always type in the composer, except `?` in an empty composer, which opens the shortcut sheet. Bodek-style JIT tips (`💡 tip: …`) dwell 8s the first time a queue, tool step, or swarm appears.
 - **Long replies** — the latest assistant answer is never folded. Older overflows get a sticky `Show more ↓` / `Show less ↑` fold under the content (not a floating pill). History reload keeps the last reply open.
 - **Multi-turn sessions** — each prompt continues the same conversation (the inspector **Sessions** tab lists history)
 - **Turn evidence** — recorded file edits and checks on the assistant head; checks are aggregated by exact command, with failed or unverified outcomes retained
@@ -206,7 +206,7 @@ User-requested action confirmations and actionable errors remain visible.
 - **Cancel** — the ✕ button cancels the running prompt over the WebSocket (`cancel` message), with the REST endpoint as fallback
 - **Model switching** — the picker lists `GET /api/models` (provider `ListModels` catalog, configured model marked current, with context sizes) plus an "Other…" free-text entry; switches apply from the next prompt
 - **History navigation** — `↑`/`↓` arrows cycle through your previous prompts (stored in `localStorage`)
-- **Keyboard shortcuts** — `?` toggles the cheat sheet (`Enter`, `@` completion, `⌘K` palette, `⌘.` inspector, `Alt+R` retry, `A/D/T` approvals). Browser `⌘F` / `⌘R` are left alone.
+- **Keyboard shortcuts** — `?` toggles the cheat sheet (`Enter`, `@` completion, `⌘K` palette, `⌘.` inspector, `Alt+R` retry, `A/D/T` approvals) when focus is outside a text field or in the empty composer, on any keyboard layout; a `?` typed into other fields or after text is left alone. Browser `⌘F` / `⌘R` are left alone.
 - **File attachments** — drag-and-drop files onto the chat area, or use the paperclip button. Attached files appear as chips with filename, size, and a remove button. 5 MB per file, 10 MB total per prompt; content crosses the trust boundary wrapped in the untrusted-content envelope
 
 ### Server status & heartbeat
