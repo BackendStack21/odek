@@ -378,3 +378,36 @@ test('an error that is not the stop still shows once the stop settles as failed'
   deliver({ type: 'turn_settled', turn_id: 't-stop-fail', status: 'failed' });
   assert.match(systemLines().join(' '), /provider exploded/);
 });
+
+// ── Reloaded aborted turns ──
+test('a reloaded aborted turn renders its marker as a system notice, not an answer', () => {
+  render.renderSessionHistory([
+    { role: 'system', content: '' },
+    { role: 'user', content: 'go', turn_id: 'a1' },
+    { role: 'assistant', turn_id: 'a1', content: '[Partial response: interrupted]\n\nSaved text' },
+    { role: 'assistant', turn_id: 'a1', content: '[Turn aborted: cancelled. The prompt above was preserved — send another message to retry or continue.]' },
+    { role: 'user', content: 'again', turn_id: 'a2' },
+    { role: 'assistant', turn_id: 'a2', content: '[Turn aborted: iteration 0: llm: fixture: HTTP 500: stub upstream failure [retryable]. The prompt above was preserved — send another message to retry or continue.]' },
+    { role: 'user', content: 'third', turn_id: 'a3' },
+    { role: 'assistant', turn_id: 'a3', content: '[Turn aborted: internal error. Completed checkpoints were preserved.]' },
+  ], { record: false });
+  const answers = byId.messages.querySelectorAll('.msg.assistant').map(el => collectText(el).join(' '));
+  assert.equal(answers.length, 1, JSON.stringify(answers));
+  assert.match(answers[0], /Saved text/, 'saved partial text stays an answer');
+  const notices = systemLines();
+  assert.equal(notices.length, 3, JSON.stringify(notices));
+  assert.match(notices[0], /Turn aborted: cancelled/);
+  assert.match(notices[1], /HTTP 500/);
+  assert.match(notices[2], /internal error/);
+  for (const n of notices) assert.doesNotMatch(n, /\[Turn aborted/, n);
+});
+
+test('assistant text that only resembles the abort marker stays an answer', () => {
+  render.renderSessionHistory([
+    { role: 'system', content: '' },
+    { role: 'user', content: 'quote it', turn_id: 'q1' },
+    { role: 'assistant', turn_id: 'q1', content: '[Turn aborted: by me] — just kidding, here is the answer.' },
+  ], { record: false });
+  assert.equal(byId.messages.querySelectorAll('.msg.assistant').length, 1);
+  assert.equal(systemLines().length, 0);
+});

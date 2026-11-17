@@ -1709,7 +1709,10 @@ function renderHistoryRange(messages, from, to) {
 
       // Content before tools: the model streams the visible reply first,
       // then acts. Putting tools first parked every partial after the log.
-      if (msg.content) {
+      const aborted = !msg.tool_calls?.length && turnAbortNotice(msg.content);
+      if (aborted) {
+        renderHistoricalNotice(aborted);
+      } else if (msg.content) {
         const wrapper = renderHistoricalAssistant(msg.content);
         if (msg.superseded) foldDraft(wrapper, msg.superseded_reason);
       }
@@ -1809,6 +1812,29 @@ export function showEarlierHistory() {
   }
 }
 S.showEarlierHistory = showEarlierHistory;
+
+// The server closes a failed or cancelled turn with an assistant-role note
+// (serve.go) so the stored context stays coherent: "[Turn aborted: <reason>.
+// The prompt above was preserved — …]" or "[Turn aborted: internal error.
+// Completed checkpoints were preserved.]". On reload it is shown as the
+// system notice the live failure line was, not as the agent's answer. Only
+// a whole message with one of those exact tails matches.
+const TURN_ABORTED = /^\[Turn aborted: [^\n]+?\. (?:The prompt above was preserved — send another message to retry or continue|Completed checkpoints were preserved)\.\]$/;
+
+// turnAbortNotice returns the notice text for a turn-abort note, or ''.
+function turnAbortNotice(content) {
+  const text = String(content || '').trim();
+  if (!TURN_ABORTED.test(text)) return '';
+  const body = text.slice(1, -1);
+  return (body.startsWith('Turn aborted: cancelled.') ? '⏹ ' : '⚠ ') + body;
+}
+
+function renderHistoricalNotice(text) {
+  const el = document.createElement('div');
+  el.className = 'msg system';
+  el.innerHTML = '<div class="bubble"><div class="content">' + escapeHtml(text) + '</div></div>';
+  historyTarget().appendChild(historyRow(el));
+}
 
 function renderHistoricalUser(content) {
   const wrapper = buildMessage('user', content);

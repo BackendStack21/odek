@@ -243,7 +243,10 @@ run that settles `failed` while stopping shows its error. An answer the
 provider did not finish (`[Partial response: interrupted|truncated|refused]`
 in the stored text) shows a `◐ partial · <reason>` chip on its sender line
 instead of the marker, live and on reload, and a stopped stream is not kept
-as a folded duplicate beside it. Completed side effects are preserved and background
+as a folded duplicate beside it. On reload, the server's `[Turn aborted: …]`
+note that closes a failed or cancelled turn is shown as a system notice, as
+the live failure line was, never as the agent's answer; the saved partial text
+before it stays an answer. Completed side effects are preserved and background
 jobs have independent lifetimes. Recovery waits for execution ownership to be
 released and lists recorded returns, failures and uncertain outcomes. Continue
 uses persisted context plus a checked revision/generation; Prepare to run again
