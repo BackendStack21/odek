@@ -570,3 +570,44 @@ test('the scroll button follows window resizes', () => {
   for (const fn of windowListeners.resize || []) fn({ type: 'resize' });
   assert.equal(scrollButtonShown(), false);
 });
+
+// ── Status rail ──
+// While a decision card waits on the operator the rail kept saying the
+// tool was "running".
+const railText = () => $('intent-rail').querySelector('.ir-text')?.textContent || $('intent-rail').textContent;
+
+test('the status rail says it is waiting for an approval, then resumes the tool label', async () => {
+  const approvals = await import('./approvals.js');
+  S.busy = true;
+  try {
+    render.setIntent('running tests');
+    assert.match(railText(), /^running tests/);
+    approvals.queueApproval({ id: 'rail-approval', risk: 'code_execution', command: 'go test ./...' });
+    assert.match(railText(), /^waiting for your approval/);
+    approvals.dismissApproval('rail-approval');
+    assert.match(railText(), /^running tests/);
+    approvals.queueApproval({ id: 'rail-approval-2', risk: 'code_execution', command: 'make' });
+    approvals.clearApprovals({ drain: false });
+    assert.match(railText(), /^running tests/);
+  } finally {
+    approvals.clearApprovals({ drain: false }); // stops the expiry sweep
+    S.busy = false;
+    render.setIntent('');
+  }
+});
+
+test('the status rail says it is waiting for an answer while a question is open', async () => {
+  const clarify = await import('./clarify.js');
+  S.busy = true;
+  try {
+    render.setIntent('clarify · running');
+    clarify.queueClarify({ id: 'rail-question', question: 'Which environment?' });
+    assert.match(railText(), /^waiting for your answer/);
+    clarify.clearClarify();
+    assert.match(railText(), /^clarify · running/);
+  } finally {
+    clarify.clearClarify(); // stops the expiry sweep
+    S.busy = false;
+    render.setIntent('');
+  }
+});

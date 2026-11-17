@@ -127,7 +127,9 @@ function stopSpin() {
 
 export function paintIntent() {
   syncLiveChrome();
-  const label = S.currentIntent || (S.busy ? 'reasoning' : '');
+  // An open decision card means the run waits on the operator, not a tool.
+  const waiting = S.activeApprovalId ? 'waiting for your approval' : S.activeClarifyCard ? 'waiting for your answer' : '';
+  const label = (S.busy && waiting) || S.currentIntent || (S.busy ? 'reasoning' : '');
   const rail = document.getElementById('intent-rail');
   const top = document.getElementById('busy-spin');
   if (!label) {

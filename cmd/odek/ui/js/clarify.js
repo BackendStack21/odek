@@ -2,7 +2,7 @@
 // Reuses approval-card CSS. One pending question at a time — a later request
 // replaces the card. Cancel / session switch / expiry dismiss without sending.
 import { S } from './state.js';
-import { hideEmptyState, addSystemMessage, insertTurnWork } from './render.js';
+import { hideEmptyState, addSystemMessage, insertTurnWork, paintIntent } from './render.js';
 import { forceScrollBottom, announce } from './utils.js';
 import { wsSend } from './net.js';
 
@@ -58,6 +58,7 @@ export function clearClarify() {
   removeCard();
   S.refreshSupervision?.();
   syncSweep();
+  paintIntent();
 }
 
 export function dismissClarify(id,action) {
@@ -146,7 +147,7 @@ function renderCard(event) {
     e.stopPropagation();
   });
 
-  activeCard = card;S.activeClarifyCard=card;S.refreshSupervision?.();
+  activeCard = card;S.activeClarifyCard=card;S.refreshSupervision?.();paintIntent();
   hideEmptyState();
   insertTurnWork(card, 'tool');
   forceScrollBottom();
