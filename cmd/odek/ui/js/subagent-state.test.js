@@ -193,7 +193,7 @@ test('started keeps the card running; active shows tool + step', () => {
 
   render.updateSubagentState({ task_idx: 0, phase: 'active', step: 3, tool: 'read_file' });
   assert.equal(cs[0].querySelector('.sa-status').textContent, '⟳ read_file · 3');
-  assert.equal(cs[0].querySelector('.sa-goal').textContent, 'SA1 read_file', 'live chip prefers the current tool');
+  assert.equal(cs[0].querySelector('.sa-goal').textContent, 'SA1 task alpha', 'the goal stays the label; the tool is in the status');
 
   // Sibling untouched.
   assert.equal(cs[1].querySelector('.sa-status').textContent, 'queued');

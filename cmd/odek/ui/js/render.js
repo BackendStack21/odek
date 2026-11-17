@@ -1391,9 +1391,8 @@ export function updateSubagentState(ev) {
       armStop();
       break;
     case 'active': {
+      // The goal stays the chip's label; the current tool is the status.
       statusEl.textContent = '⟳ ' + (ev.tool || 'working') + (ev.step ? ' · ' + ev.step : '');
-      const goalEl = card.querySelector('.sa-goal');
-      if (goalEl && ev.tool) goalEl.textContent = saChipLabel(ev.task_idx, ev.tool);
       if (meta && ev.step) meta.textContent = 'step ' + ev.step + (ev.tool ? ' · ' + ev.tool : '');
       armStop();
       break;

@@ -1,6 +1,6 @@
 // Web UI transcript and tool-result rendering regressions.
 // Run: node --test cmd/odek/ui/js/redhunt_2026_11_17_transcript.test.js
-import { test, beforeEach } from 'node:test';
+import { test, beforeEach, after } from 'node:test';
 import assert from 'node:assert/strict';
 
 // ── Mini-DOM (redhunt_2026_10_17_ui.test.js shape) ──
@@ -197,6 +197,14 @@ beforeEach(() => {
   S.promptQueue.length = 0;
   S.sessionId = null;
   S.recoveryReason = '';
+});
+
+// A turn left open by a failing test keeps the spinner and plan-poll timers
+// alive; end it so the file exits.
+after(async () => {
+  render.endStream('cancelled');
+  (await import('./plan.js')).stopPlanLiveIfIdle();
+  health.stopHeartbeat();
 });
 
 // ── Envelope framing in result bodies ──
@@ -440,4 +448,18 @@ test('a shortened tool-head preview ends with an ellipsis and never splits a cha
   const emoji = toolPreview('shell', JSON.stringify({ command: 'a'.repeat(98) + '😀' + 'b'.repeat(10) }));
   assert.ok(emoji.endsWith('…'), emoji);
   assert.doesNotMatch(emoji, /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/, 'lone surrogate in ' + JSON.stringify(emoji));
+});
+
+// ── Sub-agent chips ──
+test('a live sub-agent chip keeps its goal while the current tool is secondary', () => {
+  deliver({ type: 'turn_started', turn_id: 't-chip' });
+  deliver({ type: 'tool_call', turn_id: 't-chip', name: 'delegate_tasks', data: JSON.stringify({ tasks: [{ goal: 'Audit the README for typos' }] }) });
+  const card = byId.messages.querySelector('.subagent-card');
+  deliver({ type: 'subagent_state', turn_id: 't-chip', task_idx: 0, phase: 'started', task_id: 'tk1' });
+  deliver({ type: 'subagent_state', turn_id: 't-chip', task_idx: 0, phase: 'active', tool: 'shell', step: 2 });
+  assert.equal(card.querySelector('.sa-goal').textContent, 'SA1 Audit the README for typos');
+  assert.match(card.querySelector('.sa-status').textContent, /shell/);
+  deliver({ type: 'subagent_state', turn_id: 't-chip', task_idx: 0, phase: 'finished', status: 'success' });
+  assert.equal(card.querySelector('.sa-goal').textContent, 'SA1 Audit the README for typos', 'finished live chip matches the reloaded one');
+  assert.equal(card.querySelector('.sa-status').textContent, 'done');
 });
