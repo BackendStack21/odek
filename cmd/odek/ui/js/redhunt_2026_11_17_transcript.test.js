@@ -288,3 +288,32 @@ test('a sub-agent result log line excerpts the output, not its envelope', () => 
   assert.doesNotMatch(line.textContent, /untrusted/, line.textContent);
   assert.match(line.textContent, /ok/);
 });
+
+// ── http_request status card ──
+const HTTP_OK = '<untrusted_content_e1 source="tool:http_request">\n{"url":"https://example.com/","status":200,"content_length":577}\n</untrusted_content_e1>';
+const HTTP_ERR = "<untrusted_content_d3b1a289da78f2cb source=\"tool:http_request\">\n{\"url\":\"https://example.com/\",\"status\":0,\"error\":\"\\u003cuntrusted·content_79beea974c9cfd20 source=\\\"https://example.com/\\\"\\u003e\\ndial tcp: refused\\n\\u003c/untrusted·content_79beea974c9cfd20\\u003e\"}\n</untrusted_content_d3b1a289da78f2cb>";
+
+test('source link lists never share a class with the result view that holds them', () => {
+  for (const [name, output] of [['http_request', HTTP_OK], ['browser', BROWSER], ['web_search', '{"results":[{"url":"https://example.org/a"}]}']]) {
+    const root = render1({ name, output });
+    const link = root.querySelector('.result-source');
+    assert.ok(link, name + ' renders a source card');
+    assert.equal(root.children[0].className, 'result-toolbar', name + ' toolbar comes first');
+    for (const cls of link.parentNode.className.split(/\s+/)) {
+      assert.equal(root.classList.contains(cls), false, name + ': the view and its link list share ' + cls);
+    }
+  }
+});
+
+test('an http_request result shows status and size as a card', () => {
+  const ok = render1({ name: 'http_request', output: HTTP_OK, args: JSON.stringify({ url: 'https://example.com/' }) });
+  const meta = ok.querySelector('.tool-item-meta');
+  assert.ok(meta, 'status card rendered');
+  assert.match(meta.textContent, /HTTP 200/);
+  assert.match(meta.textContent, /577 B/);
+  assert.equal(ok.querySelector('.result-source').href, 'https://example.com/');
+  const failed = toolView('http_request', resultText(HTTP_ERR));
+  assert.equal(failed.items[0].status, 'failed');
+  assert.equal(failed.items[0].sections[0].output, 'dial tcp: refused');
+  assert.equal(toolView('http_request', '{"url":"https://x.test/","status":404}').items[0].status, '', 'a returned status is not a tool failure');
+});

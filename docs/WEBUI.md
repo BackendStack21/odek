@@ -1147,6 +1147,7 @@ Live, historical and Results inspector views use the same presentation models.
 | `plan` | Version/progress summary and step states: pending, in progress, done, blocked. Requested changes remain distinct from returned state. |
 | `read_file`, `write_file`, `patch`, `diff` | Content extracted from the actual tool DTO, write outcomes, and unified/split diff rendering. |
 | `search_files` | File matches with counts/skipped paths. |
+| `http_request` | Status card (returned HTTP status and response size; failed only on a transport error) with the checked URL as a source link. |
 | `checksum`, `head_tail` | Per-file detail groups. |
 
 Nested result bodies are built only when opened. Inline collections initially

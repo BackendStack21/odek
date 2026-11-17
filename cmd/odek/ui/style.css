@@ -1404,7 +1404,7 @@ input.result-search { flex: 1 1 110px; width: 110px; max-width: 200px; min-heigh
 .result-split-cell { display: flex; min-width: 0; padding: 2px 4px; border-right: 1px solid var(--line); white-space: pre-wrap; overflow-wrap: anywhere; }
 .result-split-cell .result-line-number { flex-basis: 28px; padding: 0 6px; }
 .result-split-cell > span:last-child { min-width: 0; }
-.result-sources { display: flex; flex-wrap: wrap; gap: 8px; padding: 12px; border-bottom: 1px solid var(--line); }
+.result-source-list { display: flex; flex-wrap: wrap; gap: 8px; padding: 12px; border-bottom: 1px solid var(--line); }
 .result-source { display: flex; flex-direction: column; gap: 4px; max-width: 100%; padding: 10px 12px; border: 1px solid var(--line-2); border-radius: var(--r-md); color: var(--text); text-decoration: none; font-size: var(--fs-xs); line-height: 1.5; overflow-wrap: anywhere; }
 .result-source span { color: var(--text-3); }
 .result-source:hover { border-color: color-mix(in srgb, var(--amber) 55%, transparent); }

@@ -168,6 +168,7 @@ export function renderResult(host, { name = '', output = '', args = '', compact 
   search.addEventListener('input', () => { limit = RESULT_PAGE; draw(); });
   more.addEventListener('click', () => { limit += RESULT_PAGE; draw(); });
   root.append(bar);
+  if (view && view.links) renderSources(root, view.links.join('\n'));
   if (!view && kind === 'sources') renderSources(root, text);
   if (!view && kind === 'search') renderSearchLinks(root, text);
   if (!view && kind === 'json' && data !== undefined) {
@@ -192,8 +193,10 @@ export function sourceURLs(text) {
   }
   return [...found];
 }
+// Link lists use their own class: the view root carries 'result-' + kind,
+// and a 'sources' view must not pick up the list layout.
 function renderSources(root, text) {
-  const list=node('div','result-sources');
+  const list=node('div','result-source-list');
   for(const href of sourceURLs(text)) {
     const link=node('a','result-source');link.href=href;link.target='_blank';link.rel='noopener noreferrer';
     const url=new URL(href);link.append(node('strong','',url.hostname),node('span','',url.pathname+url.search));list.appendChild(link);
@@ -203,7 +206,7 @@ function renderSources(root, text) {
 function renderSearchLinks(root,text) {
   const paths=[...new Set(text.split('\n').map(line=>line.match(/^([^\s:]+\.[a-zA-Z0-9]+):(\d+):/)).filter(Boolean).map(match=>match[1]))].slice(0,30);
   if(!paths.length)return;
-  const list=node('div','result-sources');
+  const list=node('div','result-source-list');
   for(const path of paths){const button=node('button','result-action',path);button.type='button';button.title='Reference this file in your next message';button.addEventListener('click',()=>{const input=document.getElementById('prompt');if(input){input.value+=(input.value?' ':'')+'@'+path;input.dispatchEvent(new Event('input',{bubbles:true}));input.focus();}});list.appendChild(button);}root.appendChild(list);
 }
 function renderJSONNode(root,value,label,depth=0) {

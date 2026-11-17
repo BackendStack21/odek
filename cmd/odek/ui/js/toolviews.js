@@ -73,6 +73,14 @@ export function toolView(name, raw, input = '') {
   if (data.matches && (!Array.isArray(data.matches) || data.matches.some(r=>!object(r)))) return null;
   let items, kind;
   switch (name) {
+    case 'http_request': {
+      // {url,status,content_length,error}: the status is what the server
+      // returned; only a transport error fails the call.
+      if (typeof data.url !== 'string' || (typeof data.status !== 'number' && !data.error)) return null;
+      const meta = [data.status ? `HTTP ${data.status}` : '', byteSize(data.content_length)].filter(Boolean).join(' · ');
+      const card = entry(pathLabel(data.url), data.error ? 'failed' : '', meta, data.error ? [section('Error','text',data.error)] : []);
+      return {kind:'http', summary:data.error ? 'request failed' : meta || 'response', items:[card], links:[data.url]};
+    }
     case 'search_files':
       if (!Array.isArray(data.matches)) return null;
       kind = 'matches'; items = list(data.matches).map(r => entry(pathLabel(r.path), '', r.line ? `Line ${r.line}` : '', [section('Match','text',r.content)])); break;
