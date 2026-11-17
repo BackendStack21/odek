@@ -5,7 +5,7 @@ import { icon } from './icons.js';
 import { S, getSessionToken, clearSessionToken, ensureSessionToken } from './state.js';
 import { listSessions, getSession, renameSession as renameSessionAPI, deleteSession, downloadExport, pinSession } from './api.js';
 import { messagesEl, promptEl, sendBtn, sessionListEl, sidebarSearch, cancelBtn } from './dom.js';
-import { escapeHtml, escapeAttr, relativeTime, formatNum, showToast, forceScrollBottom, hideCancel, announce, openDialog, closeDialog, isDialogOpen } from './utils.js';
+import { escapeHtml, escapeAttr, relativeTime, formatNum, showToast, forceScrollBottom, hideCancel, announce, openDialog, closeDialog, isDialogOpen, syncScrollBottomButton } from './utils.js';
 import { resetTurnState, hideLoading, renderSessionHistory } from './render.js';
 import { resetTranscriptTrim } from './transcript.js';
 import { clearApprovals } from './approvals.js';
@@ -274,6 +274,7 @@ export function newSession(opts) {
   messagesEl.innerHTML = '';
   resetTranscriptTrim();
   if (S.savedEmptyStateNode) messagesEl.appendChild(S.savedEmptyStateNode);
+  syncScrollBottomButton();
 
   sessionListEl.querySelectorAll('.session-item').forEach(s => s.classList.remove('active'));
   showToast('New session');
@@ -354,6 +355,7 @@ export async function loadAndRenderSession(sid) {
 
     if (visible.length === 0) {
       if (S.savedEmptyStateNode) messagesEl.appendChild(S.savedEmptyStateNode);
+      syncScrollBottomButton();
       showToast('Empty session');
       return;
     }
@@ -388,6 +390,7 @@ S.reloadSession = async () => {
     renderSessionHistory(sess.messages || [], { record: false });
     S.stickBottom = false;
     messagesEl.scrollTop = 0;
+    syncScrollBottomButton();
   } catch {
     showToast('Error reloading history');
   }

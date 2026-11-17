@@ -10,7 +10,7 @@ import {
 } from './dom.js';
 import {
   escapeHtml, escapeAttr, formatFileSize,   scrollToBottom,
-  showCancel, SCROLL_THRESHOLD, teach, showToast, announce,
+  showCancel, syncScrollBottomButton, teach, showToast, announce,
 } from './utils.js';
 import { addMessage, resetTurnState, showLoading, paintIntent, setSendMode } from './render.js';
 import { maybeHandleComposerEnter, paletteItems, isComposerSlashInput } from './commands.js';
@@ -372,11 +372,7 @@ fileInput.addEventListener('change', () => {
 });
 
 // ── Scroll-to-bottom button visibility ──
-messagesEl.addEventListener('scroll', () => {
-  if (!scrollBottomBtn) return;
-  const atBottom = messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight < SCROLL_THRESHOLD;
-  scrollBottomBtn.classList.toggle('visible', !atBottom);
-});
+messagesEl.addEventListener('scroll', syncScrollBottomButton);
 scrollBottomBtn.addEventListener('click', scrollToBottom);
 
 // Drag and drop on messages area

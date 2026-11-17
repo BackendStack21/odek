@@ -522,3 +522,51 @@ test('a queue that existed at the interruption stays paused when more is queued'
   $('queue-strip').querySelector('.management-action').click();
   assert.deepEqual(sentOfType('prompt').map(m => m.content), ['waiting before the failure']);
 });
+
+// ── Scroll-to-bottom button ──
+// Visibility was only recomputed on scroll events, so it survived a switch
+// to a session (or a new one) with nothing to scroll.
+function setScroll({ height, client = 100, top = 0 }) {
+  const m = $('messages');
+  m.scrollHeight = height; m.clientHeight = client; m.scrollTop = top;
+}
+const scrollButtonShown = () => $('scroll-bottom-btn').classList.contains('visible');
+
+test('the scroll button hides when a new session has nothing to scroll', () => {
+  setScroll({ height: 2000, top: 0 });
+  fire($('messages'), 'scroll');
+  assert.equal(scrollButtonShown(), true, 'shown while reading up');
+  setScroll({ height: 100 }); // the new conversation fits
+  sessions.newSession();
+  assert.equal(scrollButtonShown(), false);
+});
+
+test('the scroll button is recomputed when a session loads', async () => {
+  fetchImpl = async (url) => {
+    const body = String(url).includes('/api/sessions/sess-short')
+      ? { id: 'sess-short', messages: [{ role: 'user', content: 'hi' }, { role: 'assistant', content: 'hello' }] }
+      : { id: 'sess-empty', messages: [] };
+    return { ok: true, status: 200, headers: { get: (h) => (/content-type/i.test(h) ? 'application/json' : 'tok') }, json: async () => body, text: async () => JSON.stringify(body) };
+  };
+  for (const sid of ['sess-short', 'sess-empty']) {
+    S.sessionId = null;
+    setScroll({ height: 2000, top: 0 });
+    fire($('messages'), 'scroll');
+    assert.equal(scrollButtonShown(), true);
+    setScroll({ height: 100 });
+    await sessions.loadAndRenderSession(sid);
+    assert.equal(scrollButtonShown(), false, sid + ' fits, so no button');
+  }
+});
+
+test('the scroll button follows window resizes', () => {
+  setScroll({ height: 300, client: 400, top: 0 });
+  fire($('messages'), 'scroll');
+  assert.equal(scrollButtonShown(), false, 'everything fits');
+  setScroll({ height: 300, client: 150, top: 0 }); // the window got shorter
+  for (const fn of windowListeners.resize || []) fn({ type: 'resize' });
+  assert.equal(scrollButtonShown(), true, 'content now extends below the view');
+  setScroll({ height: 300, client: 400, top: 0 }); // and taller again
+  for (const fn of windowListeners.resize || []) fn({ type: 'resize' });
+  assert.equal(scrollButtonShown(), false);
+});

@@ -160,7 +160,18 @@ export function forceScrollBottom() {
   }
   S.stickBottom = true;
   messagesEl.scrollTop = messagesEl.scrollHeight;
+  syncScrollBottomButton();
 }
+
+// syncScrollBottomButton shows the scroll-to-bottom button only while the
+// transcript extends below the view. Scroll events cover reading; session
+// loads, a new session, transcript replacement and resizes change the
+// geometry without one, so they call this too.
+export function syncScrollBottomButton() {
+  if (!scrollBottomBtn || !messagesEl) return;
+  scrollBottomBtn.classList.toggle('visible', !isNearBottom());
+}
+globalThis.addEventListener?.('resize', syncScrollBottomButton, { passive: true });
 
 // Scroll-to-bottom button handler: smooth jump (user-initiated — the CSS
 // default is auto so streaming autoscroll never animates), then hide.
