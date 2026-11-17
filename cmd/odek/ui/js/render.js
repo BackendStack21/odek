@@ -1655,6 +1655,32 @@ function historyTurnIdBefore(messages, from) {
   return '';
 }
 
+// Wake turns are opened by a system-initiated user record named "bg-wake"
+// (serve.go sets the name only for type-gated wake prompts). As live, the
+// turn's first assistant reply carries the "⬡ odek · wake" label. Drained
+// notices (bg-notice, return-after-break) never open a turn.
+function isNoticeUser(msg) {
+  return msg.name === 'bg-notice' || msg.name === 'return-after-break';
+}
+
+// historyWakePending reports whether a window starting at `from` begins
+// inside a wake turn whose first reply has not been rendered yet.
+function historyWakePending(messages, from) {
+  for (let i = from - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (!m) continue;
+    if (m.role === 'assistant' && m.content) return false;
+    if (m.role === 'user' && !isNoticeUser(m)) return m.name === 'bg-wake';
+  }
+  return false;
+}
+
+function markHistoricalWake(wrapper) {
+  wrapper.classList.add('wake-turn');
+  const sender = wrapper.querySelector('.sender');
+  if (sender) sender.textContent = '⬡ odek · wake';
+}
+
 // recordHistoricalResults feeds tool results outside the rendered window
 // to the Activity panel in transcript order, so its evidence summary covers
 // the session and not only the visible window. Only the newest results the
@@ -1692,12 +1718,15 @@ function renderHistoryRange(messages, from, to) {
   historyHost = document.createElement('div');
   try {
     let historyTurnId = historyTurnIdBefore(messages, from);
+    let wakePending = historyWakePending(messages, from);
     for (let messageIndex = from; messageIndex < to; messageIndex++) {
       const msg = messages[messageIndex];
       if (!msg) continue;
       historyIdx = messageIndex;
       if (msg.role === 'user') {
         historyTurnId = msg.turn_id || 'history-' + messageIndex;
+        if (msg.name === 'bg-wake') wakePending = true;
+        else if (!isNoticeUser(msg)) wakePending = false;
         if (isSyntheticUser(msg)) continue;
         renderHistoricalUser(historyUserText(msg.content, msg.principal_prompt));
         continue;
@@ -1713,6 +1742,8 @@ function renderHistoryRange(messages, from, to) {
         renderHistoricalNotice(aborted);
       } else if (msg.content) {
         const wrapper = renderHistoricalAssistant(msg.content);
+        if (wakePending) markHistoricalWake(wrapper);
+        wakePending = false;
         if (msg.superseded) foldDraft(wrapper, msg.superseded_reason);
       }
 

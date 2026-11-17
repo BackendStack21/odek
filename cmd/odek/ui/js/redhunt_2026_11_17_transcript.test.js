@@ -450,6 +450,25 @@ test('a shortened tool-head preview ends with an ellipsis and never splits a cha
   assert.doesNotMatch(emoji, /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/, 'lone surrogate in ' + JSON.stringify(emoji));
 });
 
+// ── Wake turns on reload ──
+test('a reloaded wake turn keeps its wake label on the first reply only', () => {
+  render.renderSessionHistory([
+    { role: 'system', content: '' },
+    { role: 'user', content: 'hello', turn_id: 'w0' },
+    { role: 'assistant', turn_id: 'w0', content: 'Started the build in the background.' },
+    { role: 'user', name: 'bg-wake', content: 'Background job bg-1 finished.', turn_id: 'w1' },
+    { role: 'assistant', turn_id: 'w1', content: '', tool_calls: [{ id: 'c9', type: 'function', function: { name: 'bg_output', arguments: '{"id":"bg-1"}' } }] },
+    { role: 'tool', tool_call_id: 'c9', content: 'ok', tool_outcome: 'completed' },
+    { role: 'user', name: 'bg-notice', content: 'notice', turn_id: 'w1' },
+    { role: 'assistant', turn_id: 'w1', content: 'The build passed.' },
+    { role: 'assistant', turn_id: 'w1', content: 'Anything else?' },
+    { role: 'user', content: 'thanks', turn_id: 'w2' },
+    { role: 'assistant', turn_id: 'w2', content: 'You are welcome.' },
+  ], { record: false });
+  const senders = byId.messages.querySelectorAll('.msg.assistant').map(el => el.querySelector('.sender').textContent);
+  assert.deepEqual(senders, ['⬡ odek', '⬡ odek · wake', '⬡ odek', '⬡ odek']);
+});
+
 // ── Sub-agent chips ──
 test('a live sub-agent chip keeps its goal while the current tool is secondary', () => {
   deliver({ type: 'turn_started', turn_id: 't-chip' });
