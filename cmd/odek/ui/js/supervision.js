@@ -2,7 +2,7 @@ import { S, getSessionToken, ensureSessionToken } from './state.js';
 import { apiFetch, getSession } from './api.js';
 import { apiHeaders, wsSend } from './net.js';
 import { openTab } from './commands.js';
-import { openDialog, closeDialog, announce, showToast } from './utils.js';
+import { openDialog, closeDialog, announce, showToast, paintAttentionChip } from './utils.js';
 import { send } from './input.js';
 import { setWorkspaceRoot } from './toolviews.js';
 
@@ -51,7 +51,7 @@ S.refreshSupervision=()=>{
  const activeJobs=(S.jobs||[]).filter(job=>job.status==='running');if(!S.busy && activeJobs.length)items.push([activeJobs.length+' background jobs still running',()=>openTab('now')]);
  if(!items.length && !approvalCount)root.appendChild(node('p','management-note','Nothing needs your decision.'));
  for(const [label,fn] of items)root.appendChild(action(label,fn));
- const chip=byId('attention-chip');if(chip){chip.hidden=!(items.length||approvalCount);chip.textContent=(items.length+approvalCount)+' need attention';}
+ paintAttentionChip(byId('attention-chip'),items.length+approvalCount);
 };
 
 let recoveryVersion=0;

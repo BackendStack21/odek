@@ -197,6 +197,26 @@ export function hideCancel() {
   if (cancelBtn) cancelBtn.classList.remove('visible');
 }
 
+// paintAttentionChip shows how many decisions wait. Count and label are
+// separate elements so a narrow top bar can show the count alone; the full
+// phrase stays the chip's accessible name and tooltip.
+export function paintAttentionChip(chip, count) {
+  if (!chip) return;
+  const n = Math.max(0, Math.floor(Number(count) || 0));
+  const label = 'need attention';
+  chip.hidden = !n;
+  chip.textContent = '';
+  const num = document.createElement('span');
+  num.className = 'attention-count';
+  num.textContent = String(n);
+  const text = document.createElement('span');
+  text.className = 'attention-label';
+  text.textContent = label;
+  chip.append(num, text);
+  chip.setAttribute('aria-label', n + ' ' + label);
+  chip.title = n + ' ' + label;
+}
+
 export function toggleShortcuts() {
   const overlay = document.getElementById('shortcuts-overlay');
   if (isDialogOpen(overlay)) closeDialog();

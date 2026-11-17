@@ -73,11 +73,14 @@ class FakeEl {
             if (!/\/>$/.test(tok) && !/^<(input|br|img)\b/.test(tok)) stack.push(el);
             continue;
           }
-          parent.textContent += tok;
+          parent._text += tok;
         }
       },
     });
   }
+  // Setting textContent replaces the children, as in the DOM.
+  get textContent() { return this._text; }
+  set textContent(v) { this._text = v == null ? '' : String(v); this.children = []; }
   get id() { return this._id || ''; }
   set id(v) { this._id = v; }
   get isConnected() { return true; }
@@ -217,6 +220,7 @@ const ws = await import('./ws.js');
 const health = await import('./health.js');
 await import('./workspace.js');
 const panels = await import('./panels.js');
+await import('./supervision.js');
 
 const $ = (id) => document.getElementById(id);
 const wait = (ms) => new Promise(r => setTimeout(r, ms));
@@ -410,4 +414,60 @@ test('closing an inspector that is not open leaves focus where it is', () => {
   $('ptab-now').focus();
   panels.togglePanels(false);
   assert.notEqual(document.activeElement, $('ptab-now'), 'closing an open inspector still restores its opener');
+});
+
+// ── Top bar ──
+// At phone widths the attention chip pushed Stop and the inspector button
+// off-screen. The chip carries its count and label separately so the label
+// can collapse, and only the chip and the metrics cluster give way.
+const css = readFileSync(new URL('../style.css', import.meta.url), 'utf8');
+function escapeRe(text) { return text.replace(/[.*+?^${}()|[\]\\#]/g, '\\$&'); }
+// cssRule returns the body of the first rule whose whole selector is
+// `selector` (after a closing brace, a comment or the start of the scope).
+function cssRule(selector, scope = css) {
+  const m = scope.match(new RegExp('(^|[}/{])\\s*' + escapeRe(selector) + '\\s*\\{([^}]*)\\}'));
+  return m ? m[2] : '';
+}
+function mediaBlock(query) {
+  const start = css.indexOf('@media (' + query + ') {');
+  assert.ok(start >= 0, 'media block ' + query);
+  let depth = 0;
+  for (let i = css.indexOf('{', start); i < css.length; i++) {
+    if (css[i] === '{') depth++;
+    else if (css[i] === '}' && --depth === 0) return css.slice(start, i + 1);
+  }
+  return '';
+}
+
+test('the attention chip carries a count and a label, with the full phrase as its name', () => {
+  S.approvalQueue.push({ id: 'chip-approval', risk: 'code_execution', command: 'x' });
+  S.activeApprovalId = 'chip-approval';
+  try {
+    S.refreshSupervision();
+    const chip = $('attention-chip');
+    assert.equal(chip.hidden, false);
+    assert.equal(chip.querySelector('.attention-count')?.textContent, '1');
+    assert.ok(chip.querySelector('.attention-label')?.textContent, 'label span present');
+    assert.match(chip.getAttribute('aria-label') || '', /^1 need/);
+  } finally {
+    S.approvalQueue.length = 0;
+    S.activeApprovalId = null;
+  }
+  S.refreshSupervision();
+  assert.equal($('attention-chip').hidden, true);
+});
+
+test('top-bar rules keep Stop and the persistent controls on screen', () => {
+  assert.match(cssRule('.top-controls'), /flex:\s*none/, 'controls never shrink');
+  assert.match(cssRule('#attention-chip'), /flex:\s*none/, 'the chip keeps its count whole');
+  const metrics = cssRule('#metrics');
+  assert.match(metrics, /min-width:\s*0/, 'metrics cluster gives way');
+  assert.match(metrics, /overflow:\s*hidden/, 'metrics clip instead of overflowing');
+  const phone = mediaBlock('max-width: 767px');
+  assert.match(cssRule('#attention-chip .attention-label', phone), /display:\s*none/, 'phones show the count alone');
+  assert.match(cssRule('#ws-status', phone), /text-overflow:\s*ellipsis/, 'the status word yields on phones');
+  assert.match(cssRule('.top-status-group', phone), /min-width:\s*0/);
+  const tablet = mediaBlock('max-width: 1099px');
+  assert.match(tablet, /#topbar:has\(#attention-chip:not\(\[hidden\]\)\) \.dot\.connected \+ #ws-status \{ display: none; \}/,
+    'below 1100px a waiting decision replaces the connected word');
 });

@@ -445,8 +445,12 @@ select { appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmln
 .top-spacer { flex: 1; min-width: 8px; }
 .model { display: none; }
 
+/* Stop and the controls always stay on screen: the chip keeps its count
+   whole while the metrics chips drop and the status word yields; on phones
+   the chip shows its count alone (the phrase stays its accessible name). */
 #attention-chip {
   display: inline-flex;
+  flex: none;
   align-items: center;
   gap: 6px;
   height: 28px;
@@ -460,6 +464,7 @@ select { appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmln
   white-space: nowrap;
 }
 #attention-chip::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--amber); animation: pulse-amber 1.6s var(--ease) infinite; }
+#attention-chip .attention-count { margin-right: -2px; }
 @keyframes pulse-amber {
   0% { box-shadow: 0 0 0 0 var(--amber-glow); }
   70% { box-shadow: 0 0 0 6px transparent; }
@@ -478,7 +483,10 @@ select { appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmln
 }
 #busy-spin { flex: none; }
 
-#metrics { display: flex; align-items: center; gap: 6px; }
+/* Plan/jobs chips give way before the attention chip: a chip that no longer
+   fits wraps onto a clipped second row, so chips drop whole rather than cut.
+   The padding keeps focus rings inside the clip box without moving them. */
+#metrics { display: flex; flex: 0 1000 auto; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; height: 34px; overflow: hidden; padding: 4px; margin: -4px; }
 .m-chip {
   display: inline-flex;
   align-items: center;
@@ -498,7 +506,7 @@ select { appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmln
 .m-chip.hot { color: var(--red); border-color: color-mix(in srgb, var(--red) 45%, transparent); }
 .m-tok, .m-cost { font-size: var(--fs-xs); color: var(--text-3); white-space: nowrap; }
 
-.top-controls { display: flex; align-items: center; gap: 2px; margin-left: 4px; }
+.top-controls { display: flex; flex: none; align-items: center; gap: 2px; margin-left: 4px; }
 
 /* Run settings: a compact trigger with a floating panel */
 #run-settings { position: relative; flex: none; }
@@ -1942,6 +1950,7 @@ body:has(#approval-overlay:not([hidden]):not(:empty)) .toast { top: auto; bottom
   }
   #panels { width: min(100vw, 520px); box-shadow: var(--shadow-pop); }
   #inspector-resize { display: none; }
+  #topbar:has(#attention-chip:not([hidden])) .dot.connected + #ws-status { display: none; }
 }
 @keyframes rail-in { from { transform: translateX(-16px); opacity: 0; } to { transform: none; opacity: 1; } }
 
@@ -1953,10 +1962,12 @@ body:has(#approval-overlay:not([hidden]):not(:empty)) .toast { top: auto; bottom
   #topbar { gap: 2px; padding: 0 6px; }
   .top-brand { margin: 0 4px; }
   .top-brand-text { font-size: 15px; }
-  .top-status-group { padding: 0 6px; }
+  .top-status-group { min-width: 0; padding: 0 6px; }
   .dot.connected + #ws-status { display: none; }
+  #ws-status { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #metrics, #busy-spin { display: none !important; }
   #attention-chip { padding: 0 9px; }
+  #attention-chip .attention-label { display: none; }
   #topbar:has(#attention-chip:not([hidden])) .top-brand-text { display: none; }
   #run-settings > summary { width: var(--control); padding: 0; justify-content: center; font-size: 0; gap: 0; border-color: transparent; }
   #run-settings > summary::before { width: 17px; height: 17px; }
