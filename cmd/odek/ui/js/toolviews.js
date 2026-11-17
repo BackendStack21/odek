@@ -15,6 +15,28 @@ function parse(value) {
 }
 // File names and paths are untrusted single-line labels.
 const pathLabel = value => displayLabel(displayValue(value));
+
+// Edit cards name files relative to the server's workspace (set from
+// /api/workspace), so write_file's resolved absolute path and patch's
+// requested path read alike. Paths outside the workspace stay absolute.
+let workspaceRoot = '';
+export function setWorkspaceRoot(path) {
+  workspaceRoot = typeof path === 'string' ? path.replace(/\/+$/, '') : '';
+}
+function workspacePath(value) {
+  const path = displayValue(value);
+  if (!workspaceRoot || !path.startsWith(workspaceRoot + '/')) return path;
+  return path.slice(workspaceRoot.length + 1) || path;
+}
+// diffSize counts added and removed lines of a unified diff ("+2 −1").
+function diffSize(diff) {
+  let plus = 0, minus = 0;
+  for (const line of displayValue(diff).split('\n')) {
+    if (line.startsWith('+') && !line.startsWith('+++ ')) plus++;
+    else if (line.startsWith('-') && !line.startsWith('--- ')) minus++;
+  }
+  return plus || minus ? `+${plus} −${minus}` : '';
+}
 function byteSize(n) {
   const v = Number(n);
   if (!Number.isFinite(v) || v < 0) return '';
@@ -103,7 +125,8 @@ export function toolView(name, raw, input = '') {
       kind = 'file'; items = [entry(pathLabel(args.path || 'File content'),data.error ? 'failed' : '',data.total_lines != null ? `${data.total_lines} lines` : '',[section(data.error ? 'Error' : 'Content',data.error ? 'text' : 'code',data.error || data.content)])]; break;
     case 'patch': case 'write_file':
       if (typeof data.success !== 'boolean' && !data.error) return null;
-      kind = 'edit'; items = [entry(pathLabel(data.path || args.path || name),status(data),'',data.error ? [section('Error','text',data.error)] : data.diff ? [section('Diff','diff',data.diff)] : [])]; break;
+      // write_file returns no content, only its outcome; patch returns its diff.
+      kind = 'edit'; items = [entry(displayLabel(workspacePath(data.path || args.path || name)),status(data),data.diff && !data.error ? diffSize(data.diff) : '',data.error ? [section('Error','text',data.error)] : data.diff ? [section('Diff','diff',data.diff)] : [])]; break;
     case 'diff':
       if (!Array.isArray(data.hunks) || data.hunks.some(h=>!object(h) || !Array.isArray(h.lines) || h.lines.some(l=>!object(l)))) return null;
       kind = 'diff'; items = [entry(`${pathLabel(data.path_a)} → ${pathLabel(data.path_b)}`,'','',[section('Changes','diff',unifiedDiff(data))])]; break;

@@ -450,6 +450,30 @@ test('a shortened tool-head preview ends with an ellipsis and never splits a cha
   assert.doesNotMatch(emoji, /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/, 'lone surrogate in ' + JSON.stringify(emoji));
 });
 
+// ── Edit views ──
+test('a patch card summarises its diff and edit paths are workspace-relative', async () => {
+  const tv = await import('./toolviews.js');
+  const patch = "{\"success\":true,\"diff\":\"\\u003cuntrusted·content_1a934cc9fb68285c source=\\\"patch:notes.md\\\"\\u003e\\n--- a/notes.md\\n+++ b/notes.md\\n@@ -1 +1,2 @@\\n-a\\n+b\\n+c\\n\\u003c/untrusted·content_1a934cc9fb68285c\\u003e\"}";
+  const view = tv.toolView('patch', patch, JSON.stringify({ path: '/w/proj/notes.md' }));
+  assert.equal(view.items[0].meta, '+2 −1', 'collapsed card shows the diff size');
+  assert.equal(view.items[0].sections[0].name, 'diff');
+  assert.equal(typeof tv.setWorkspaceRoot, 'function');
+  tv.setWorkspaceRoot('/w/proj');
+  try {
+    assert.equal(tv.toolView('patch', patch, JSON.stringify({ path: '/w/proj/notes.md' })).items[0].title, 'notes.md');
+    assert.equal(tv.toolView('write_file', '{"success":true,"path":"/w/proj/docs/notes.md"}', '{"path":"docs/notes.md"}').items[0].title, 'docs/notes.md');
+    assert.equal(tv.toolView('write_file', '{"success":true,"path":"/w/project2/x.md"}').items[0].title, '/w/project2/x.md', 'a sibling directory is not inside the workspace');
+    assert.equal(tv.toolView('write_file', '{"success":true,"path":"/etc/hosts"}').items[0].title, '/etc/hosts');
+  } finally { tv.setWorkspaceRoot(''); }
+});
+
+test('an expandable tool card shows a disclosure marker', async () => {
+  const { readFileSync } = await import('node:fs');
+  const css = readFileSync(new URL('../style.css', import.meta.url), 'utf8');
+  assert.match(css, /summary\.tool-item-head::before\s*\{[^}]*content:/, 'expandable cards need a visible marker');
+  assert.match(css, /details\.tool-item\[open\]\s*>\s*summary\.tool-item-head::before\s*\{[^}]*transform:/);
+});
+
 // ── Wake turns on reload ──
 test('a reloaded wake turn keeps its wake label on the first reply only', () => {
   render.renderSessionHistory([

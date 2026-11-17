@@ -4,6 +4,7 @@ import { apiHeaders, wsSend } from './net.js';
 import { openTab } from './commands.js';
 import { openDialog, closeDialog, announce, showToast } from './utils.js';
 import { send } from './input.js';
+import { setWorkspaceRoot } from './toolviews.js';
 
 const byId=id=>document.getElementById(id);
 const runSettings=byId('run-settings');
@@ -24,7 +25,7 @@ function paintLimits(){
 }
 for(const [,,id] of DIMENSIONS)byId(id)?.addEventListener('input',paintLimits);
 byId('model-picker')?.addEventListener('change',()=>queueMicrotask(paintLimits));
-apiFetch('/api/workspace').then(data=>{workspace=data;S.workspace=data;byId('execution-scope').textContent=data.workspace+' · '+(data.sandbox?'Docker sandbox':'Local execution');
+apiFetch('/api/workspace').then(data=>{workspace=data;S.workspace=data;setWorkspaceRoot(data.workspace);byId('execution-scope').textContent=data.workspace+' · '+(data.sandbox?'Docker sandbox':'Local execution');
  const policy=node('details','permission-policy');policy.appendChild(node('summary','','Permission policy'));
  for(const [cls,value] of Object.entries(data.policy||{}))policy.appendChild(node('p','management-note',cls.replaceAll('_',' ')+': '+value));byId('effective-limits').parentNode.appendChild(policy);paintLimits();
 }).catch(()=>{byId('execution-scope').textContent='Execution context unavailable · check server connection';});

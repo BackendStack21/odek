@@ -1416,6 +1416,8 @@ input.result-search { flex: 1 1 110px; width: 110px; max-width: 200px; min-heigh
 .tool-item { min-width: 0; margin: 6px 8px; border: 1px solid var(--line); border-left: 2px solid var(--line-3); border-radius: var(--r-md); background: var(--bg-2); }
 .tool-item-head { display: block; padding: 10px 12px; font-size: var(--fs-sm); line-height: 1.6; overflow-wrap: anywhere; cursor: pointer; list-style: none; }
 .tool-item-head::-webkit-details-marker { display: none; }
+summary.tool-item-head::before { content: '▸'; display: inline-block; margin-right: 6px; font-size: 9px; color: var(--text-3); transition: transform var(--dur) var(--ease); }
+details.tool-item[open] > summary.tool-item-head::before { transform: rotate(90deg); }
 .tool-item > div.tool-item-head { cursor: default; }
 .tool-item-title { font-weight: 550; color: var(--text); white-space: pre-wrap; }
 .tool-item-status { margin-left: 8px; vertical-align: 1px; }
