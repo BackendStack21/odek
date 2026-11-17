@@ -25,42 +25,22 @@ function readNonce(text, at) {
   return e > at ? text.slice(at, e) : '';
 }
 
-// glyphs lists the characters an envelope tag may open with. A tag opened
-// with one glyph closes only with the same glyph and nonce. All glyphs are
-// read in one pass, so a matched envelope's body is never scanned again: a
-// forged envelope inside a real one stays visible text.
-function scanEnvelopes(text, tag, glyphs = ['<']) {
-  const forms = glyphs.map((g) => ({ g, open: g + tag + '_', close: g + '/' + tag + '_', at: -1 }))
-    .filter((f) => text.includes(f.close));
-  if (!forms.length) return [{ source: null, body: text }];
+function scanEnvelopes(text, tag) {
+  const open = '<' + tag + '_';
+  const close = '</' + tag + '_';
+  if (!text.includes(close)) return [{ source: null, body: text }];
 
-  const closers = new Map(); // glyph + nonce -> ascending closer offsets
-  for (const { g, close } of forms) {
-    for (let c = text.indexOf(close); c >= 0; c = text.indexOf(close, c + 1)) {
-      const nonce = readNonce(text, c + close.length);
-      if (nonce && text[c + close.length + nonce.length] === '>') {
-        if (!closers.has(g + nonce)) closers.set(g + nonce, []);
-        closers.get(g + nonce).push(c);
-      }
+  const closers = new Map(); // nonce -> ascending closer offsets
+  for (let c = text.indexOf(close); c >= 0; c = text.indexOf(close, c + 1)) {
+    const nonce = readNonce(text, c + close.length);
+    if (nonce && text[c + close.length + nonce.length] === '>') {
+      if (!closers.has(nonce)) closers.set(nonce, []);
+      closers.get(nonce).push(c);
     }
   }
-  // nextOpener returns the earliest opener at or after `at` among the forms.
-  // Each form's position only moves forward, so every form scans the text
-  // at most once overall.
-  const nextOpener = (at) => {
-    let best = null;
-    for (const f of forms) {
-      if (f.at < at) {
-        const k = text.indexOf(f.open, at);
-        f.at = k < 0 ? text.length : k;
-      }
-      if (f.at < text.length && (!best || f.at < best.at)) best = f;
-    }
-    return best;
-  };
 
   const segments = [];
-  const cursor = new Map(); // glyph + nonce -> next unused closer index
+  const cursor = new Map(); // nonce -> next unused closer index
   let plainFrom = 0; // start of pending plain text
   let from = 0;      // where to look for the next opener
   // Forward-only pointers, each recomputed only once it falls behind the
@@ -76,14 +56,12 @@ function scanEnvelopes(text, tag, glyphs = ['<']) {
     return ahead[key];
   };
   for (;;) {
-    const form = nextOpener(from);
-    if (!form) break;
-    const j = form.at;
-    from = j + form.open.length;
+    const j = text.indexOf(open, from);
+    if (j < 0) break;
+    from = j + open.length;
     const nonce = readNonce(text, from);
     const attr = from + nonce.length;
-    const key = form.g + nonce;
-    const list = nonce && closers.get(key);
+    const list = nonce && closers.get(nonce);
     if (!list || !text.startsWith(' source="', attr)) continue;
     const srcStart = attr + 9;
     const term = next('term', '">', srcStart);
@@ -91,17 +69,17 @@ function scanEnvelopes(text, tag, glyphs = ['<']) {
     if (next('quote', '"', srcStart) !== term || next('lt', '<', srcStart) < term || next('nl', '\n', srcStart) < term) continue;
     let bodyStart = term + 2;
     if (text[bodyStart] === '\n') bodyStart++;
-    let c = cursor.get(key) || 0;
+    let c = cursor.get(nonce) || 0;
     while (c < list.length && list[c] < bodyStart) c++;
-    cursor.set(key, c);
+    cursor.set(nonce, c);
     if (c >= list.length) continue;
     const closeAt = list[c];
-    cursor.set(key, c + 1);
+    cursor.set(nonce, c + 1);
     let body = text.slice(bodyStart, closeAt);
     if (body.endsWith('\n')) body = body.slice(0, -1);
     if (j > plainFrom) segments.push({ source: null, body: text.slice(plainFrom, j) });
     segments.push({ source: text.slice(srcStart, term), body });
-    plainFrom = from = closeAt + form.close.length + nonce.length + 1;
+    plainFrom = from = closeAt + close.length + nonce.length + 1;
   }
   if (plainFrom < text.length) segments.push({ source: null, body: text.slice(plainFrom) });
   if (segments.length === 0) segments.push({ source: null, body: text });
@@ -119,19 +97,55 @@ export function parseUntrusted(text) {
 
 // Envelopes nested inside an outer envelope reach the client neutralised:
 // the server rewrites their "untrusted_content" to "untrusted·content" so an
-// inner tag can never close the outer one, and the '<' that opens a tag
-// becomes '‹' (U+2039). A tool's own envelope around plain-text output
-// (shell, bg_output, delegate_tasks) arrives as ‹untrusted·content_N …›;
-// one inside a JSON string field (a search match path, a read_file body)
-// keeps its '<', which json.Marshal escaped before the neutraliser ran. For
-// display only, both framings are removed — the body is still shown as
-// escaped untrusted text, so stripping the tags grants it nothing. Hostile
-// bodies can carry these forms themselves, which is why they share the
-// linear, nonce-matched scanner, and why both glyphs are read in one pass:
-// a forged envelope inside a real envelope's body is never unwrapped.
+// inner tag can never close the outer one. Tool fields (a search match path,
+// a read_file body) carry such inner envelopes. For display only, the
+// neutralised framing is removed too — the body is still shown as escaped
+// untrusted text, so stripping the tags grants it nothing. Hostile bodies can
+// carry this form themselves, which is why it shares the linear scanner.
+//
+// In a JSON string field a real inner envelope keeps its '<' (json.Marshal
+// escaped it before the neutraliser ran), while one forged by the wrapped
+// text had its '<' rewritten to '‹' (U+2039) when that text was wrapped — so
+// this field-level pass reads the '<' form only, and a forged envelope in a
+// field stays visible. Apply it once per field: display text is never
+// unwrapped again.
 export function unwrapForDisplay(text) {
   if (!text) return '';
-  return scanEnvelopes(unwrapUntrusted(text), 'untrusted·content', ['<', '‹']).map((seg) => seg.body).join('');
+  return scanEnvelopes(unwrapUntrusted(text), 'untrusted·content').map((seg) => seg.body).join('');
+}
+
+// A tool that wraps its own output (shell, bg_output, delegate_tasks, MCP
+// tools) is wrapped again by the engine, so the engine envelope's body is the
+// tool's envelope in neutralised form, '<' rewritten to '‹':
+//   ‹untrusted·content_N source="…">\n…\n‹/untrusted·content_N>
+// possibly after the guard's notice or an "error: " prefix. unwrapToolOutput
+// removes exactly that shape from one real envelope's body: the tool's
+// envelope must close at the very end of the body and open at the start of a
+// line (or after "error: "), with matching nonces. Anything else, including
+// an envelope forged inside the output, stays visible. Linear: a fixed number
+// of searches.
+const TOOL_OPEN = '‹untrusted·content_';
+const TOOL_CLOSE = '‹/untrusted·content_';
+export function unwrapToolOutput(body) {
+  const text = String(body || '');
+  const end = text.trimEnd();
+  const c = end.lastIndexOf(TOOL_CLOSE);
+  if (c < 0) return text;
+  const nonce = readNonce(end, c + TOOL_CLOSE.length);
+  if (!nonce || c + TOOL_CLOSE.length + nonce.length + 1 !== end.length || !end.endsWith('>')) return text;
+  const opener = TOOL_OPEN + nonce + ' source="';
+  const o = end.indexOf(opener);
+  if (o < 0 || o >= c) return text;
+  const prefix = end.slice(0, o);
+  if (prefix && !prefix.endsWith('\n') && prefix !== 'error: ') return text;
+  const srcStart = o + opener.length;
+  const term = end.indexOf('">', srcStart);
+  if (term < 0 || term > c || /["<\n]/.test(end.slice(srcStart, term))) return text;
+  let bodyStart = term + 2;
+  if (end[bodyStart] === '\n') bodyStart++;
+  let inner = end.slice(bodyStart, c);
+  if (inner.endsWith('\n')) inner = inner.slice(0, -1);
+  return prefix + inner;
 }
 
 // displayJSON returns value with every string passed through

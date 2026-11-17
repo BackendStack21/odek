@@ -69,8 +69,14 @@ function clip(text, max) {
   if (last >= 0xD800 && last <= 0xDBFF) cut--;
   return text.slice(0, cut).trimEnd() + '…';
 }
+// Every untrusted string is unwrapped exactly once: section() takes a raw
+// DTO field, shownSection() text already built from displayed pieces, and
+// entry() strings as given (callers pass displayed labels). Unwrapping
+// display text again could strip an envelope forged by the content itself.
 const section = (label, name, value) => ({label, name, output:displayValue(value)});
-function entry(title, status = '', meta = '', sections = []) { return {title:displayValue(title), status:displayValue(status), meta:displayValue(meta), sections}; }
+const shownSection = (label, name, output) => ({label, name, output});
+const shown = value => typeof value === 'string' ? value : displayValue(value);
+function entry(title, status = '', meta = '', sections = []) { return {title:shown(title), status:shown(status), meta:shown(meta), sections}; }
 function status(item) {
   if (item.error || item.success === false || (typeof item.exit_code === 'number' && item.exit_code !== 0)) return 'failed';
   if (item.success === true || item.exit_code === 0) return 'completed';
@@ -129,12 +135,12 @@ export function toolView(name, raw, input = '') {
       kind = 'edit'; items = [entry(displayLabel(workspacePath(data.path || args.path || name)),status(data),data.diff && !data.error ? diffSize(data.diff) : '',data.error ? [section('Error','text',data.error)] : data.diff ? [section('Diff','diff',data.diff)] : [])]; break;
     case 'diff':
       if (!Array.isArray(data.hunks) || data.hunks.some(h=>!object(h) || !Array.isArray(h.lines) || h.lines.some(l=>!object(l)))) return null;
-      kind = 'diff'; items = [entry(`${pathLabel(data.path_a)} → ${pathLabel(data.path_b)}`,'','',[section('Changes','diff',unifiedDiff(data))])]; break;
+      kind = 'diff'; items = [entry(`${pathLabel(data.path_a)} → ${pathLabel(data.path_b)}`,'','',[shownSection('Changes','diff',unifiedDiff(data))])]; break;
     case 'count_lines': case 'word_count': case 'checksum': case 'sort': case 'head_tail':
       // count_lines/word_count/sort tools were removed; cases kept so persisted
       // old-session transcripts still render.
       if (!Array.isArray(data.results)) return null;
-      kind = 'files'; items = results.map(r => entry(pathLabel(r.path),r.error ? 'failed' : '', '', [section('Details','text',Object.entries(r).filter(([k])=>k!=='path').map(([k,v])=>`${k.replace(/_/g,' ')}: ${displayValue(v)}`).join('\n'))])); break;
+      kind = 'files'; items = results.map(r => entry(pathLabel(r.path),r.error ? 'failed' : '', '', [shownSection('Details','text',Object.entries(r).filter(([k])=>k!=='path').map(([k,v])=>`${k.replace(/_/g,' ')}: ${displayValue(v)}`).join('\n'))])); break;
     default: return null;
   }
   const failed = items.filter(item=>item.status==='failed').length;

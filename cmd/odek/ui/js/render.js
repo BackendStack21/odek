@@ -11,10 +11,10 @@ import {
 } from './utils.js';
 import { pruneMessages, syncTrimMarker, setHistoryBacklog, trimState, holdView, HISTORY_UNITS } from './transcript.js';
 import { markdownToHtml, CODE_COPY_LABEL, CODE_COPIED_LABEL } from './markdown.js';
-import { parseUntrusted, unwrapForDisplay } from './untrusted.js';
+import { parseUntrusted, unwrapToolOutput } from './untrusted.js';
 import { classifyToolResult, chipsHtml, prettyToolBody, collectReceipt, formatReceipt } from './tools.js';
 import { toolIcon } from './icons.js';
-import { renderResult, resultText, ACTIVITY_MAX_RESULTS, ACTIVITY_MAX_BYTES } from './results.js';
+import { renderResult, resultText, resultDisplayText, ACTIVITY_MAX_RESULTS, ACTIVITY_MAX_BYTES } from './results.js';
 import { toolPreview, toolArguments, toolView, renderToolItems } from './toolviews.js';
 import { metricsNoteOutput } from './metrics.js';
 
@@ -1076,7 +1076,7 @@ function fillToolResult(resultEl, output, truncate) {
   const MAX_RESULT = 600;
   const segments = parseUntrusted(output);
   for (const seg of segments) {
-    const body = unwrapForDisplay(seg.body);
+    const body = seg.source === null ? seg.body : unwrapToolOutput(seg.body);
     if (truncate && body.length > MAX_RESULT) {
       resultEl.appendChild(document.createTextNode(body.slice(0, MAX_RESULT)));
       const more = document.createElement('span');
@@ -1266,7 +1266,7 @@ export function addSubagentGroup(command) {
 // the tool's own envelope and the engine's; both are removed first so their
 // closing tags never land in the last task's summary.
 function parseSubagentResults(output) {
-  const lines = unwrapForDisplay(resultText(output || '')).split('\n');
+  const lines = resultDisplayText(output || '').split('\n');
   let currentTaskIdx = -1;
   const taskResults = {};
 
@@ -1546,7 +1546,7 @@ export function appendSubagentLog(taskIdx, event) {
     text = toolGlyph(event.name) + ' ' + (event.name || 'tool') +
       (event.data ? ' · ' + truncateStr(event.data, 60) : '');
   } else if (event.event === 'tool_result') {
-    text = '⎿ ' + truncateStr(unwrapForDisplay(resultText(event.data || '')), 100);
+    text = '⎿ ' + truncateStr(resultDisplayText(event.data || ''), 100);
   }
   if (!text) return;
 

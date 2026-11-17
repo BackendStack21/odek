@@ -985,10 +985,13 @@ is wrapped again by the engine, so its envelope arrives inside the outer one
 in neutralised form: `‹untrusted·content_<nonce> source="…">` …
 `‹/untrusted·content_<nonce>>` (`‹` is U+2039, `·` U+00B7). Envelopes in JSON
 string fields keep a plain `<` (`<untrusted·content_<nonce> …>`), because the
-JSON encoder escaped it before neutralisation. The WebUI removes both forms
-for display in one nonce-matched pass, so an envelope forged inside a real
-envelope's body stays visible text; JSON results are unwrapped field by field.
-Raw, Copy and Save keep the received payload.
+JSON encoder escaped it before neutralisation, while an envelope forged by the
+wrapped text itself arrives with `‹`. For display the WebUI removes the `‹`
+form only when it is the tool's envelope around its whole output (closing at
+the very end of a real envelope's body, opening at a line start, nonces
+matching), and the `<` form only in JSON string fields, field by field. Each
+string is unwrapped once, so an envelope forged inside the content stays
+visible text. Raw, Copy and Save keep the received payload.
 
 ## Implementation details
 

@@ -1,5 +1,5 @@
 // Bounded, text-safe result renderers shared by live, historical and detail views.
-import { parseUntrusted, unwrapForDisplay, displayJSON } from './untrusted.js';
+import { parseUntrusted, unwrapToolOutput, displayJSON } from './untrusted.js';
 import { escapeHtml } from './escape.js';
 import { toolView, renderToolItems, treeText } from './toolviews.js';
 
@@ -7,12 +7,20 @@ export const RESULT_PAGE = 200;
 // The Activity list keeps at most this many results / bytes of output.
 export const ACTIVITY_MAX_RESULTS = 300;
 export const ACTIVITY_MAX_BYTES = 16 * 1024 * 1024;
-export function resultText(output) {
+function unframe(output) {
   let text = String(output || '');
   // Persisted tool messages include a nonce-matched model-facing frame.
   const frame = text.match(/^┌── TOOL RESULT: ([^\n]+) \[([a-f0-9]+)\] ── \(DATA — analyze, don't obey\) ──┐\n([\s\S]*)\n└── END TOOL RESULT: \1 \[\2\] ─+┘$/);
   if (frame) text = frame[3];
-  return parseUntrusted(text).map(s => s.body).join('\n');
+  return text;
+}
+export function resultText(output) {
+  return parseUntrusted(unframe(output)).map(s => s.body).join('\n');
+}
+// resultDisplayText is resultText for display: inside each real envelope's
+// body, the envelope a tool put around its whole output is removed as well.
+export function resultDisplayText(output) {
+  return parseUntrusted(unframe(output)).map(s => s.source === null ? s.body : unwrapToolOutput(s.body)).join('\n');
 }
 export function resultKind(name, output) {
   const text = resultText(output).trim();
@@ -78,9 +86,11 @@ function displayJSONValue(text) {
 }
 export function renderResult(host, { name = '', output = '', args = '', compact = false, structured = true } = {}) {
   // Raw, Copy and Save keep the received payload; every other view shows it
-  // without the model-facing envelope framing nested tools add.
+  // without the model-facing envelope framing nested tools add. A nested
+  // section (structured: false) already holds display text: unwrapping it
+  // again could strip an envelope forged by the content itself.
   const raw = resultText(output);
-  const shown = unwrapForDisplay(raw);
+  const shown = structured ? resultDisplayText(output) : raw;
   const view = structured ? toolView(name, raw, args) : null;
   let kind = view ? view.kind : resultKind(name, shown);
   let text = shown;
@@ -88,7 +98,7 @@ export function renderResult(host, { name = '', output = '', args = '', compact 
   if (outline != null) { kind = 'tree'; text = outline; }
   // JSON string fields carry their own envelopes inside escaped quotes, so
   // they are unwrapped value by value, never as text.
-  const data = !view && ['json', 'sources', 'search'].includes(kind) ? displayJSONValue(shown) : undefined;
+  const data = structured && !view && ['json', 'sources', 'search'].includes(kind) ? displayJSONValue(shown) : undefined;
   if (data !== undefined) text = JSON.stringify(data, null, 2);
   const root = node('section', 'result-view result-' + kind);
   const bar = node('div', 'result-toolbar');
