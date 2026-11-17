@@ -38,8 +38,9 @@ S.setPanelSurface = surface => {
 };
 S.setPanelSurface('task');
 export function togglePanels(force) {
-  const want = force != null ? force : !drawer.classList.contains('active');
-  if(want && !drawer.classList.contains('active')) panelOpener=document.activeElement;
+  const wasOpen = drawer.classList.contains('active');
+  const want = force != null ? force : !wasOpen;
+  if(want && !wasOpen) panelOpener=document.activeElement;
   drawer.inert=!want;
   drawer.classList.toggle('active', want);
   document.body.classList.toggle('inspector-open', want);
@@ -57,7 +58,9 @@ export function togglePanels(force) {
     stopPlanPolling();
     stopJobsPolling();
     stopAgentsPolling();
-    if (panelOpener?.isConnected && panelOpener.focus) panelOpener.focus(); else if(pbtn?.focus) pbtn.focus();
+    // Only a drawer that was open hands focus back to its opener; closing
+    // an already-closed inspector (session switches) leaves focus alone.
+    if (wasOpen) { if (panelOpener?.isConnected && panelOpener.focus) panelOpener.focus(); else if(pbtn?.focus) pbtn.focus(); }
   }
 }
 S.closePanels = () => togglePanels(false);
@@ -126,10 +129,6 @@ drawer.querySelectorAll('.ptab').forEach(btn => {
     });
     btn.scrollIntoView?.({block:'nearest',inline:'nearest'});
     refreshActivePanel();
-    const hamburger = document.getElementById('hamburger-btn');
-    if (hamburger) {
-      hamburger.setAttribute('aria-expanded', String(drawer.classList.contains('active') && btn.dataset.tab === 'sessions'));
-    }
   });
 });
 const tabsEl = document.getElementById('panels-tabs');

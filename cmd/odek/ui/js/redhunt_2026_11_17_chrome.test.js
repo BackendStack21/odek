@@ -215,6 +215,8 @@ const input = await import('./input.js');
 const sessions = await import('./sessions.js');
 const ws = await import('./ws.js');
 const health = await import('./health.js');
+await import('./workspace.js');
+const panels = await import('./panels.js');
 
 const $ = (id) => document.getElementById(id);
 const wait = (ms) => new Promise(r => setTimeout(r, ms));
@@ -305,4 +307,107 @@ test('? does not replace another open dialog', () => {
   assert.equal(utils.isDialogOpen(confirmOverlay), true, 'the confirm dialog stays open');
   assert.equal(utils.isDialogOpen($('shortcuts-overlay')), false);
   utils.closeDialog();
+});
+
+// ── Session drawer ──
+// Below the wide-rail breakpoint the session rail is a drawer over the
+// transcript; picking a session (or starting a new one) must close it.
+function drawerState() {
+  return {
+    hidden: $('session-rail').hidden,
+    expanded: $('hamburger-btn').getAttribute('aria-expanded'),
+    open: document.body.classList.contains('sessions-open'),
+  };
+}
+function sessionRow(id) {
+  const list = $('session-list');
+  if (list.parentNode !== $('sidebar')) $('sidebar').appendChild(list);
+  list.innerHTML = '<div class="session-item" data-id="' + id + '"><button class="si-body" type="button">row</button></div>';
+  return list.querySelector('.si-body');
+}
+function openDrawer() {
+  if (!S.sessionRailOpen) S.toggleSessionRail();
+  assert.deepEqual(drawerState(), { hidden: false, expanded: 'true', open: true });
+}
+
+test('picking a session closes the drawer below the wide-rail width and returns focus to its opener', async () => {
+  setWide(false);
+  openDrawer();
+  const row = sessionRow('sess-picked');
+  row.focus();
+  fire(row, 'click');
+  await wait(0);
+  assert.deepEqual(drawerState(), { hidden: true, expanded: 'false', open: false });
+  await wait(10);
+  assert.equal(document.activeElement, $('hamburger-btn'), 'focus leaves the hidden drawer for the menu button');
+});
+
+test('tapping the already-open session row also closes the drawer', () => {
+  setWide(false);
+  S.sessionId = 'sess-current';
+  openDrawer();
+  fire(sessionRow('sess-current'), 'click');
+  assert.deepEqual(drawerState(), { hidden: true, expanded: 'false', open: false });
+});
+
+test('New session closes the drawer below the wide-rail width', () => {
+  setWide(false);
+  openDrawer();
+  fire(document.querySelector('.new-session-btn'), 'click');
+  assert.deepEqual(drawerState(), { hidden: true, expanded: 'false', open: false });
+});
+
+test('the docked rail stays open when a session is picked at the wide width', async () => {
+  setWide(true);
+  openDrawer();
+  fire(sessionRow('sess-wide'), 'click');
+  await wait(0);
+  fire(document.querySelector('.new-session-btn'), 'click');
+  assert.deepEqual(drawerState(), { hidden: false, expanded: 'true', open: true });
+  S.toggleSessionRail();
+  setWide(false);
+  await wait(10);
+});
+
+test('cancelling the busy-turn confirmation keeps the drawer open', () => {
+  setWide(false);
+  openDrawer();
+  S.busy = true;
+  globalThis.confirm = () => false;
+  try {
+    fire(sessionRow('sess-other'), 'click');
+    fire(document.querySelector('.new-session-btn'), 'click');
+  } finally { globalThis.confirm = () => true; }
+  assert.deepEqual(drawerState(), { hidden: false, expanded: 'true', open: true });
+  S.busy = false;
+  S.toggleSessionRail();
+});
+
+test('deleting the open session from the drawer keeps the drawer open', async () => {
+  setWide(false);
+  S.sessionId = 'sess-doomed';
+  S.sessionPages = [{ id: 'sess-doomed', task: 'doomed' }];
+  openDrawer();
+  S.pendingDeleteId = 'sess-doomed';
+  await sessions.executeDeleteSession();
+  assert.equal(S.sessionId, null, 'the deleted session was left for a new one');
+  assert.deepEqual(drawerState(), { hidden: false, expanded: 'true', open: true }, 'the operator keeps managing sessions');
+  S.toggleSessionRail();
+  S.sessionPages = [];
+  await wait(250);
+});
+
+test('closing an inspector that is not open leaves focus where it is', () => {
+  $('prompt').focus();
+  S.closePanels();
+  assert.equal(document.activeElement, $('prompt'));
+  setWide(false);
+  openDrawer();
+  $('sidebar-search').focus();
+  fire(document.querySelector('.new-session-btn'), 'click');
+  assert.equal(document.activeElement, $('prompt'), 'a new session leaves focus in the composer');
+  panels.togglePanels(true);
+  $('ptab-now').focus();
+  panels.togglePanels(false);
+  assert.notEqual(document.activeElement, $('ptab-now'), 'closing an open inspector still restores its opener');
 });

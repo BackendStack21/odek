@@ -132,6 +132,17 @@ function syncSessionRail() {
   if (button) { button.setAttribute('aria-expanded', String(open)); button.setAttribute('aria-controls','session-rail'); }
 }
 S.toggleSessionRail = () => { S.sessionRailOpen = !S.sessionRailOpen; syncSessionRail(); };
+// Below the wide-rail width the rail is a drawer over the transcript, so
+// choosing a session or starting a new one closes it; focus held inside the
+// hidden drawer moves to its opener. The docked rail stays as it is.
+S.closeSessionDrawer = () => {
+  if (!S.sessionRailOpen || document.body.classList.contains('workspace-wide')) return;
+  const rail = byId('session-rail');
+  const focusInside = !!(rail && document.activeElement && rail.contains(document.activeElement));
+  S.sessionRailOpen = false;
+  syncSessionRail();
+  if (focusInside) byId('hamburger-btn')?.focus();
+};
 // Below the three-column width the rail is a drawer: its scrim closes it.
 byId('sidebar-overlay')?.addEventListener('click', () => { if (S.sessionRailOpen) S.toggleSessionRail(); });
 

@@ -218,7 +218,9 @@ A dropped socket is **not** lamp-only. The top-bar word turns amber (`reconnecti
 ### Inspector (`⌘.`)
 
 The task drawer has Overview, Deliverables and Activity tabs. Sessions use the
-left rail on wide screens and a drawer on smaller screens. Settings separates
+left rail on wide screens and a drawer on smaller screens; choosing a session or
+starting a new one closes the drawer and returns focus to the menu button (the
+composer for a new session). Settings separates
 Preferences, Knowledge, Runtime diagnostics and Maintenance; Schedules opens
 scheduled work separately. Existing memory, skill promotion, tool schemas,
 headless runs, events, config and connection controls remain available there.

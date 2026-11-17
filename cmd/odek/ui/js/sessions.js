@@ -227,7 +227,9 @@ function resetSessionViews() {
 let sessionLoadVersion = 0;
 
 // ── New Session ──
-export function newSession() {
+// opts.keepDrawer leaves the session drawer open (deleting the open session
+// replaces it while the operator is still managing the list).
+export function newSession(opts) {
   // F-A2: a live turn owns the transcript and the socket. Ask before
   // tearing it down; the cancel goes through the same stop control the
   // user would click (main.js cancelAgent). Never silently force busy off.
@@ -236,6 +238,7 @@ export function newSession() {
     if (cancelBtn) cancelBtn.click();
   }
   sessionLoadVersion++;
+  if (!(opts && opts.keepDrawer === true)) S.closeSessionDrawer?.();
   S.pauseQueue?.();
   S.saveDraft?.();
   S.saveAttachments?.();
@@ -294,6 +297,7 @@ export async function loadAndRenderSession(sid) {
     if (cancelBtn) cancelBtn.click();
   }
   const loadVersion = ++sessionLoadVersion;
+  S.closeSessionDrawer?.();
   try {
     // Bootstrap the session token when missing (ensureSessionToken captures
     // the server's X-Session-Token echo on its detail fetch).
@@ -499,7 +503,7 @@ export async function executeDeleteSession() {
     const token = await ensureSessionToken(sid);
     await deleteSession(sid, token || undefined);
     clearSessionToken(sid);
-    if (S.sessionId === sid) newSession();
+    if (S.sessionId === sid) newSession({ keepDrawer: true });
     await loadSessions();
     announce('Session deleted');
     showToast('Session deleted');
@@ -553,7 +557,7 @@ sessionListEl.addEventListener('click', (e) => {
 
   // Load and render session (click on the item body)
   if (e.target.closest('.si-body')) {
-    if (sid === S.sessionId) return;
+    if (sid === S.sessionId) { S.closeSessionDrawer?.(); return; }
     sessionListEl.querySelectorAll('.session-item').forEach(s => s.classList.remove('active'));
     item.classList.add('active');
     loadAndRenderSession(sid);
