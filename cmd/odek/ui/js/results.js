@@ -1,5 +1,5 @@
 // Bounded, text-safe result renderers shared by live, historical and detail views.
-import { parseUntrusted } from './untrusted.js';
+import { parseUntrusted, unwrapForDisplay, displayJSON } from './untrusted.js';
 import { escapeHtml } from './escape.js';
 import { toolView, renderToolItems, treeText } from './toolviews.js';
 
@@ -67,14 +67,25 @@ function node(tag, cls, text) {
   if (text != null) el.textContent = text;
   return el;
 }
+// displayJSONValue parses JSON result text and returns it with every string
+// field shown without envelope framing, or undefined when text is not JSON.
+function displayJSONValue(text) {
+  try { return displayJSON(JSON.parse(text)); } catch { return undefined; }
+}
 export function renderResult(host, { name = '', output = '', args = '', compact = false, structured = true } = {}) {
+  // Raw, Copy and Save keep the received payload; every other view shows it
+  // without the model-facing envelope framing nested tools add.
   const raw = resultText(output);
+  const shown = unwrapForDisplay(raw);
   const view = structured ? toolView(name, raw, args) : null;
-  let kind = view ? view.kind : resultKind(name, raw);
-  let text = raw;
+  let kind = view ? view.kind : resultKind(name, shown);
+  let text = shown;
   const outline = !view && name === 'tree' ? treeText(raw) : null;
   if (outline != null) { kind = 'tree'; text = outline; }
-  if (kind === 'json') { try { text = JSON.stringify(JSON.parse(raw), null, 2); } catch { /* raw fallback */ } }
+  // JSON string fields carry their own envelopes inside escaped quotes, so
+  // they are unwrapped value by value, never as text.
+  const data = !view && ['json', 'sources', 'search'].includes(kind) ? displayJSONValue(shown) : undefined;
+  if (data !== undefined) text = JSON.stringify(data, null, 2);
   const root = node('section', 'result-view result-' + kind);
   const bar = node('div', 'result-toolbar');
   const badge = node('span', 'result-kind', kind);
@@ -157,10 +168,10 @@ export function renderResult(host, { name = '', output = '', args = '', compact 
   search.addEventListener('input', () => { limit = RESULT_PAGE; draw(); });
   more.addEventListener('click', () => { limit += RESULT_PAGE; draw(); });
   root.append(bar);
-  if (!view && kind === 'sources') renderSources(root, raw);
-  if (!view && kind === 'search') renderSearchLinks(root, raw);
-  if (!view && kind === 'json') {
-    try { const tree=node('details','result-json-tree');tree.appendChild(node('summary','','Explore JSON'));const value=JSON.parse(raw);let built=false;tree.addEventListener('toggle',()=>{if(tree.open&&!built){built=true;renderJSONNode(tree,value,'root');}});root.appendChild(tree); } catch { /* fallback */ }
+  if (!view && kind === 'sources') renderSources(root, text);
+  if (!view && kind === 'search') renderSearchLinks(root, text);
+  if (!view && kind === 'json' && data !== undefined) {
+    const tree=node('details','result-json-tree');tree.appendChild(node('summary','','Explore JSON'));let built=false;tree.addEventListener('toggle',()=>{if(tree.open&&!built){built=true;renderJSONNode(tree,data,'root');}});root.appendChild(tree);
   }
   root.append(body, more);
   if (args && !compact) {

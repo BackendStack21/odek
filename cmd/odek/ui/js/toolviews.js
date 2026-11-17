@@ -1,12 +1,13 @@
 // Tool-specific presentation models. Never infer success from optimistic prose.
-import { unwrapForDisplay, displayLabel } from './untrusted.js';
+import { unwrapForDisplay, displayLabel, displayJSON } from './untrusted.js';
 
 const object = value => value && typeof value === 'object' && !Array.isArray(value);
 const list = value => Array.isArray(value) ? value : [];
+// Strings nested in arrays and objects (head_tail lines) carry their own
+// envelopes inside escaped quotes; they are unwrapped before serializing.
 export function displayValue(value) {
   if (value == null) return '';
-  const text = typeof value === 'string' ? value : JSON.stringify(value);
-  return unwrapForDisplay(text);
+  return typeof value === 'string' ? unwrapForDisplay(value) : JSON.stringify(displayJSON(value));
 }
 function parse(value) {
   if (object(value)) return value;

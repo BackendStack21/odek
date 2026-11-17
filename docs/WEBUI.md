@@ -971,6 +971,16 @@ closing tag repeats the opening nonce — treat envelopes whose nonces don't
 match as plain text. The bundled WebUI implements this in
 `cmd/odek/ui/js/untrusted.js`.
 
+A tool that wraps its own output (`shell`, `bg_output`, `delegate_tasks`, …)
+is wrapped again by the engine, so its envelope arrives inside the outer one
+in neutralised form: `‹untrusted·content_<nonce> source="…">` …
+`‹/untrusted·content_<nonce>>` (`‹` is U+2039, `·` U+00B7). Envelopes in JSON
+string fields keep a plain `<` (`<untrusted·content_<nonce> …>`), because the
+JSON encoder escaped it before neutralisation. The WebUI removes both forms
+for display in one nonce-matched pass, so an envelope forged inside a real
+envelope's body stays visible text; JSON results are unwrapped field by field.
+Raw, Copy and Save keep the received payload.
+
 ## Implementation details
 
 ### Server stack (`cmd/odek/`)
