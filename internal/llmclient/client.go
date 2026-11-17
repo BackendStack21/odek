@@ -94,7 +94,11 @@ func NewSDK(opts Options) (*sdk.SDK, error) {
 	}
 	sdkOpts := []sdk.Option{
 		sdk.WithRequestTimeout(timeout),
-		sdk.WithTransport(transport.PooledTransport()),
+		// The shared pool, wrapped so a call carrying TrackAttempts sees
+		// each HTTP attempt (and so each SDK retry) as it starts.
+		sdk.WithTransport(attemptTransport{base: transport.PooledTransport()}),
+		// The SDK's default ladder, stated so retry reports can name it.
+		sdk.WithRetryPolicy(sdk.RetryPolicy{MaxAttempts: MaxModelAttempts}),
 		sdk.WithAttemptObserver(reportAttempt),
 	}
 	for id, ov := range opts.Providers {

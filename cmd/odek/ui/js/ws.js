@@ -665,6 +665,13 @@ function handleAgentSignal(event) {
     case 'tool_running':
       setIntent((event.tool ? event.tool + ' · ' : '') + (event.detail || 'running'));
       break;
+    case 'llm_retry':
+      // The engine is retrying a failed provider call. Status rail only:
+      // automatic recovery adds no transcript notice or toast. The next
+      // reasoning, tool or answer frame replaces the label. A requested
+      // stop keeps its own label.
+      if (S.busy && !S.stopRequested) setIntent('provider error · retrying' + (event.detail ? ' (' + event.detail + ')' : ''));
+      break;
     case 'provider_learn_fallback':
       // Rare (once per provider per fallback flag, process lifetime) and
       // actionable: the provider stopped streaming, so live reasoning and

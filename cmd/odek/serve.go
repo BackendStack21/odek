@@ -117,15 +117,16 @@ func filterPersistSnapshot(head, snapshot []session.Message) []session.Message {
 // providerFailureSummary renders a short, safe failure classification for
 // the persisted turn-abort note. It deliberately excludes the provider's raw
 // error body — it can be large and may echo prompt content back into the
-// transcript. Typed llm errors (rate limit) get a precise, actionable line;
-// everything else is truncated to a single line.
+// transcript. A provider failure is phrased for a person
+// (llmclient.DescribeFailure: provider, HTTP status, the first line of the
+// provider's message, attempts made); everything else is truncated to a
+// single line.
 func providerFailureSummary(err error) string {
-	var rle *llmclient.RateLimitError
-	if errors.As(err, &rle) {
-		return fmt.Sprintf("provider rate limit (HTTP %d) after %d attempts", rle.Status, rle.Attempts)
-	}
 	if errors.Is(err, context.Canceled) {
 		return "cancelled"
+	}
+	if desc, ok := llmclient.DescribeFailure(err); ok {
+		return desc
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
 		return "timed out"
@@ -138,6 +139,17 @@ func providerFailureSummary(err error) string {
 		msg = msg[:160]
 	}
 	return strings.ToValidUTF8(msg, "")
+}
+
+// turnFailureMessage is the error frame text for a failed turn: a provider
+// failure phrased for a person (no "iteration N:" prefix, no "[retryable]"
+// tag), anything else as the error reads. The error itself still reaches the
+// run record, events and logs unchanged.
+func turnFailureMessage(err error) string {
+	if desc, ok := llmclient.DescribeFailure(err); ok {
+		return desc
+	}
+	return err.Error()
 }
 
 // modelIDPattern restricts model IDs to printable ASCII characters commonly
@@ -2970,7 +2982,11 @@ func handlePrompt(
 	if err != nil {
 		outcomeErr = err
 		if sess == nil {
-			sendError(send, err.Error())
+			sendError(send, turnFailureMessage(err))
+			// The frame carries the phrased text (and the send wrapper
+			// records that text); the run record keeps the typed error
+			// for its events and logs.
+			outcomeErr = err
 			return currSess
 		}
 		// Soft-fail: close the turn with an assistant-visible note so the
@@ -2985,7 +3001,8 @@ func handlePrompt(
 		if err := store.SaveNoIndex(sess); err != nil {
 			fmt.Fprintf(os.Stderr, "odek: warning: failed to persist session: %v\n", err)
 		}
-		sendError(send, outcomeErr.Error())
+		sendError(send, turnFailureMessage(err))
+		outcomeErr = err
 		return sess
 	}
 

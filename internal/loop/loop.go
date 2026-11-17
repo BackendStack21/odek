@@ -796,7 +796,11 @@ func (e *Engine) SetDeltaHandler(cb DeltaHandler) { e.deltaHandler = cb }
 // docs/STREAMING.md) and dispatches to CallStream when streaming is enabled.
 // Tool-argument deltas are suppressed: they are partial JSON and noise for
 // terminal consumers (the assembled calls still arrive via the result).
-func (e *Engine) callLLM(ctx context.Context, messages []session.Message, tools []llmclient.ToolDef) (result *llmclient.CallResult, callErr error) {
+//
+// Every HTTP attempt of the call is counted: each retry the SDK starts after a
+// failed attempt fires an llm_retry signal, and the returned counter lets the
+// caller annotate a final failure with the attempts made.
+func (e *Engine) callLLM(ctx context.Context, messages []session.Message, tools []llmclient.ToolDef) (result *llmclient.CallResult, attempts *llmclient.Attempts, callErr error) {
 	observedStart := time.Now()
 	e.emitEvent(events.Event{Type: "llm_call_started"})
 	defer func() {
@@ -823,6 +827,9 @@ func (e *Engine) callLLM(ctx context.Context, messages []session.Message, tools 
 		callCtx, cancel = context.WithTimeout(ctx, t)
 		defer cancel()
 	}
+	callCtx, attempts = llmclient.TrackAttempts(callCtx, e.client.ProviderID(), func(r llmclient.Retry) {
+		e.emitSignal(SignalEvent{Type: "llm_retry", Count: r.Attempt, Detail: r.Detail()})
+	})
 
 	e.streamedReasoning, e.streamedContent = false, false
 	start := time.Now()
@@ -841,7 +848,7 @@ func (e *Engine) callLLM(ctx context.Context, messages []session.Message, tools 
 	if !e.stream || e.deltaHandler == nil {
 		res, err := e.client.Call(callCtx, messages, tools)
 		stamp(res, time.Time{})
-		return res, err
+		return res, attempts, err
 	}
 
 	var firstDelta time.Time
@@ -863,7 +870,7 @@ func (e *Engine) callLLM(ctx context.Context, messages []session.Message, tools 
 	// Termination is normalized in the adapter (mapResult): endpoints that
 	// omit finish_reason on ordinary responses are Complete by contract.
 	// A genuinely cut stream surfaces as a transport error handled upstream.
-	return res, err
+	return res, attempts, err
 }
 
 // SetEventHandler sets the optional structured runtime event sink
@@ -3144,6 +3151,7 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 		messages = e.trimContext(ctx, messages, tools)
 
 		var result *llmclient.CallResult
+		var callAttempts *llmclient.Attempts
 		var err error
 		isInitial := len(initialCalls) > 0
 		if isInitial {
@@ -3151,7 +3159,7 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 			initialCalls = nil
 			e.streamedReasoning, e.streamedContent = false, false
 		} else {
-			result, err = e.callLLM(ctx, messages, tools)
+			result, callAttempts, err = e.callLLM(ctx, messages, tools)
 		}
 		if err != nil {
 			if result != nil {
@@ -3207,7 +3215,9 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 					continue // retry this iteration
 				}
 			}
-			return "", messages, fmt.Errorf("iteration %d: %w", i, err)
+			// The provider and attempt count ride along (same text, same
+			// errors.Is/As) so surfaces can phrase the failure for a person.
+			return "", messages, fmt.Errorf("iteration %d: %w", i, callAttempts.Wrap(err))
 		}
 
 		// Render turn statistics (re-draw iteration header with stats).

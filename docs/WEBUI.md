@@ -183,8 +183,9 @@ background inert, close with Escape and restore their opener. Async completion
 does not steal composer focus. Context browsing discovers files and sessions
 through the existing authenticated resolver.
 
-Automatic context trimming, tool recovery, memory maintenance and skill events
-do not create transcript notices, toasts or screen-reader announcements. Memory
+Automatic context trimming, tool recovery, provider retries, memory maintenance
+and skill events do not create transcript notices, toasts or screen-reader
+announcements; a provider retry only relabels the status rail. Memory
 that requires a decision adds a direct Knowledge review action. Connection loss
 offers Reconnect now; only interrupted work prompts saved-progress review.
 User-requested action confirmations and actionable errors remain visible.
@@ -286,7 +287,7 @@ Each assistant message's stats footer also gains a per-turn cost (`◈`) when pr
 
 ### Inline loading indicator
 
-While a turn is running, Bodek's braille spinner (`⠋⠙⠹…`, 12 fps) appears in the top bar (`#busy-spin`) and the composer status rail (`#intent-rail`); operator sends also get a compact `.loading-indicator` under the last message until the first thinking/tool/answer lands. The spinner keeps moving while tools, approvals, or long LLM calls are in flight — dropping the transcript placeholder does not freeze it. The label stays stable (`reasoning` → tool progress → `composing`) with elapsed time and the live plan strip — it does not cycle verbs. `prefers-reduced-motion` freezes the braille glyph at `⠿`; tool-head CSS spinners still rotate (they are wait-state status). Wake and remote turns arm the top-bar and rail. The chrome clears on `done` / cancel / error.
+While a turn is running, Bodek's braille spinner (`⠋⠙⠹…`, 12 fps) appears in the top bar (`#busy-spin`) and the composer status rail (`#intent-rail`); operator sends also get a compact `.loading-indicator` under the last message until the first thinking/tool/answer lands. The spinner keeps moving while tools, approvals, or long LLM calls are in flight — dropping the transcript placeholder does not freeze it. The label stays stable (`reasoning` → tool progress → `composing`) with elapsed time and the live plan strip — it does not cycle verbs. While the engine retries a failed provider call the label reads `provider error · retrying (HTTP 503, attempt 2 of 8)` (from the `llm_retry` signal) until the next reasoning, tool or answer frame replaces it; the retry adds nothing to the transcript. `prefers-reduced-motion` freezes the braille glyph at `⠿`; tool-head CSS spinners still rotate (they are wait-state status). Wake and remote turns arm the top-bar and rail. The chrome clears on `done` / cancel / error.
 
 ### Smart autoscroll
 
@@ -608,7 +609,10 @@ Failed runs keep their session linkage: the user prompt is persisted to the
 session before the first LLM call, and a failed turn closes with an explicit
 `[Turn aborted: …]` assistant note instead of ending on a dangling tool call —
 `run.session_id` is therefore always populated and the transcript never loses
-the prompt. Operational diagnostics, including provider failures after retries,
+the prompt. For a provider failure the note, the WebSocket `error` frame and
+the run's `error` carry the same phrased text (provider, HTTP status, the
+provider's message, attempts made); the run's runtime events keep the typed
+error class and HTTP status. Operational diagnostics, including provider failures after retries,
 are written to the unified `~/.odek/runtime.log` and can be queried with
 `odek logs`. The metadata-only log records run/turn lifecycle, statuses,
 durations, and bounded error codes, never prompt or completion content. See
@@ -816,7 +820,7 @@ The UI communicates entirely over a single WebSocket at `/ws`. Messages are newl
 | `subagent_state` | Per-task sub-agent lifecycle transition (`started`/`active`/`finished`); child emits `subagent_started`/`subagent_progress`/`subagent_finished` records over the same protocol. A sub-agent killed without reporting (user stop, turn cancel, timeout, flood-kill, crash) gets its terminal `finished` transition emitted by the parent instead, so cards never stay `running` | `task_idx`, `task_id`, `run_key`, `phase`, `status`, `step`, `iterations`, `tool`, `duration_seconds`, `tokens_used` |
 | `done` | Agent finishes — **emitted only after the session is persisted**, so refreshing session state on `done` is race-free | `latency` (seconds), `windowTokens` (final parent conversation window), `maxContextTokens` (resolved model limit; omitted when unknown), `inputTokens` (run-cumulative input across all calls, incl. sub-agent spend — billing), `outputTokens`, `cacheCreationTokens`, `cacheReadTokens`, `cachedTokens`, `sessionContextTokens`, `sessionOutputTokens`, plus optional last-call speed fields (see [Generation speed](#generation-speed-external-clients)), `llmDurationMs` (sum of main think-step LLM calls this run) and `verified` (`pass`/`fail`/`uncertain`/`skipped`; omitted when verification did not run) |
 | `usage` | After each LLM iteration of a running turn | `windowTokens`, `maxContextTokens` (omitted when the model limit is unknown), `inputTokens` (run-cumulative billing input), `outputTokens` (run-cumulative) (camelCase — `windowTokens` is the parent-only window size that drives the metrics gauge; child rounds and side-call summaries never move it), plus optional this-call speed fields (see [Generation speed](#generation-speed-external-clients)) |
-| `error` | Agent or server error | `message` |
+| `error` | Agent or server error. A failed provider call reads as a sentence: provider, HTTP status, the first line of the provider's message (redacted, escaped, shortened) and the attempts made — e.g. `provider openai returned HTTP 500: upstream unavailable (retries exhausted after 8 attempts)` — without the engine's `iteration N:` prefix or the SDK's `[retryable]` tag; the raw error stays in the runtime log and events | `message` |
 | `approval_request` | Agent needs user approval for dangerous operation; blocks the run up to `timeout_seconds` (60s default) | `id`, `risk` (class name), `command` (or resource), `description`, `is_operation`, `allow_trust`, `friction`, `friction_approvals`, `timeout_seconds` (the effective server-enforced wait in seconds — render the card's countdown from it) |
 | `approval_ack` | Server confirms an approval response | `id`, `action` |
 | `approval_expired` | Server declares the approval dead after `timeout_seconds` elapsed with no response — autoclose the matching card; late `approval_response` frames for the id are dropped | `id` |
@@ -828,7 +832,7 @@ The UI communicates entirely over a single WebSocket at `/ws`. Messages are newl
 | `clarify_expired` | Server declares the question dead after `timeout_seconds` with no answer | `id` |
 | `skill_event` | Skill lifecycle event (`loaded`/`autoloaded`/`used`/`deleted` — `skill_save`/`skill_patch` were removed with the self-learning feature) | `event`, `skill_name`, `skills`, `heuristic` |
 | `memory_event` | Memory lifecycle event | `event`, `target`, `session_id`, `content`, `count`, `new_count`, `untrusted` |
-| `agent_signal` | Agent self-observability signal. `provider_learn_fallback` (once per provider per SDK fallback flag, per connected client) means the provider rejected streaming or a request parameter — e.g. the buffered downgrade ends live reasoning/token deltas for that provider; the WebUI toasts `detail`. Frames are process-global: every connected client sees them and a client connecting after the fallback does not get a replay | `event`, `detail`, `tool`, `count`, `kind`/`provider` (learn fallback only) |
+| `agent_signal` | Agent self-observability signal. `provider_learn_fallback` (once per provider per SDK fallback flag, per connected client) means the provider rejected streaming or a request parameter — e.g. the buffered downgrade ends live reasoning/token deltas for that provider; the WebUI toasts `detail`. Frames are process-global: every connected client sees them and a client connecting after the fallback does not get a replay. `llm_retry` is sent to the connection running the turn each time the main model call starts another HTTP attempt after a failed one: `count` is the number of the attempt starting, `detail` names the failed status and the attempt budget (`HTTP 503, attempt 2 of 8`; `no response, attempt 3 of 8` when the attempt got no HTTP reply); the WebUI shows it on the status rail only | `event`, `detail`, `tool`, `count`, `kind`/`provider` (learn fallback only) |
 | `bg_job` | Background-job transition (start / exit). Upsert by `job_id`. Terminal frames add `exit_code`, `duration_ms`, `output_bytes`, `command_head` | `job_id`, `session_id`, `status` |
 | `bg_wake` | Server is starting a system-initiated wake turn after an idle job completes | `session_id` |
 

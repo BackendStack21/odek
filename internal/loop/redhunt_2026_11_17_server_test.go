@@ -6,9 +6,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/BackendStack21/odek/internal/danger"
+	"github.com/BackendStack21/odek/internal/llmclient"
 	"github.com/BackendStack21/odek/internal/tool"
 )
 
@@ -94,6 +96,68 @@ func TestRED_BatchCardFirstPartyTextNeedsNoDisplayEscapes(t *testing.T) {
 			}
 			if first := strings.SplitN(card, "\n", 2)[0]; first != tc.header {
 				t.Fatalf("card header = %q, want %q", first, tc.header)
+			}
+		})
+	}
+}
+
+// serverFlakyProvider answers the first model call with HTTP 503 (Retry-After:
+// 1 keeps the SDK's backoff short) and every later call with then(w).
+func serverFlakyProvider(t *testing.T, then func(w http.ResponseWriter)) (*httptest.Server, *int) {
+	t.Helper()
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "application/json")
+		if calls == 1 {
+			w.Header().Set("Retry-After", "1")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			fmt.Fprint(w, `{"error":{"message":"upstream busy","type":"server_error"}}`)
+			return
+		}
+		then(w)
+	}))
+	return srv, &calls
+}
+
+// While the SDK retries a failed model call, the engine reports each new
+// attempt as an llm_retry signal (attempt number, attempt budget and the
+// status that failed), so a client can show that the provider is being
+// retried instead of an unexplained wait.
+func TestRED_ProviderRetryIsSignalled(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		t.Run(fmt.Sprintf("stream=%v", stream), func(t *testing.T) {
+			srv, calls := serverFlakyProvider(t, func(w http.ResponseWriter) {
+				fmt.Fprint(w, `{"choices":[{"message":{"content":"done"}}]}`)
+			})
+			defer srv.Close()
+			engine := New(testChatClient(t, srv.URL), tool.NewRegistry(nil), 3, "", nil, 0)
+			if stream {
+				engine.SetStream(true)
+				engine.SetDeltaHandler(func(llmclient.Delta) error { return nil })
+			}
+			var mu sync.Mutex
+			var retries []SignalEvent
+			engine.SetSignalHandler(func(ev SignalEvent) {
+				if ev.Type == "llm_retry" {
+					mu.Lock()
+					retries = append(retries, ev)
+					mu.Unlock()
+				}
+			})
+			if _, err := engine.Run(context.Background(), "hello"); err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			if *calls != 2 {
+				t.Fatalf("provider saw %d requests, want 2 (one retry)", *calls)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if len(retries) != 1 {
+				t.Fatalf("llm_retry signals = %+v, want exactly one", retries)
+			}
+			if got := retries[0]; got.Count != 2 || got.Detail != "HTTP 503, attempt 2 of 8" {
+				t.Fatalf("llm_retry = {Count:%d Detail:%q}, want {Count:2 Detail:%q}", got.Count, got.Detail, "HTTP 503, attempt 2 of 8")
 			}
 		})
 	}

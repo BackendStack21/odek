@@ -115,7 +115,7 @@ internal/
                               pass; completion_checks.go — engine-outcome check recording (never claims
                               from tool output); effects.go + reconcile.go — effect evidence and
                               post-batch reconciliation; signal.go — SignalEvent observability
-                              (context_trimmed, tool_recovery, tool_running heartbeat, taint_escalation);
+                              (context_trimmed, tool_recovery, tool_running heartbeat, llm_retry, taint_escalation);
                               taint_spans.go — untrusted-span escalation (spans from untrusted content
                               reused in tool arguments → untrusted_args prompt; taint_track.go keeps what
                               each caller's last observe derived per message, so a step costs its new
