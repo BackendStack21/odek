@@ -625,6 +625,14 @@ test('result counts use singular forms for one', () => {
   assert.equal(toolView('read_file', '{"content":"x\\ny","total_lines":2}', '{"path":"a"}').items[0].meta, '2 lines');
 });
 
+test('every count reads alike, large ones grouped', async () => {
+  const { plural } = await import('./utils.js');
+  assert.equal(plural(1200, 'job'), '1,200 jobs');
+  const lines = render1({ name: 'terminal', output: Array.from({ length: 1200 }, (_, i) => 'l' + i).join('\n') });
+  assert.equal(lines.querySelector('.result-count').textContent, '1,200 lines');
+  assert.equal(toolPreview('plan', JSON.stringify({ verb: 'create', steps: Array.from({ length: 1200 }, (_, i) => ({ id: 's' + i })) })), 'create · 1,200 steps');
+});
+
 // ── Tool-head previews ──
 test('a shortened tool-head preview ends with an ellipsis and never splits a character', () => {
   const question = 'Which environment should I deploy to? Answer with staging or production and tell me whether to run migrations first.';

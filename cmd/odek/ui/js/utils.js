@@ -21,12 +21,8 @@ export function formatNum(n) {
   return String(n);
 }
 
-// plural formats a count with the matching noun (or verb) form:
-// plural(1, 'job') → '1 job', plural(2, 'job') → '2 jobs'. Irregular forms
-// pass the plural explicitly.
-export function plural(n, one, many = one + 's') {
-  return n + ' ' + (n === 1 ? one : many);
-}
+// plural (count.js) formats a count with the matching noun form.
+export { plural } from './count.js';
 
 export function formatFileSize(bytes) {
   if (bytes < 1024) return bytes + ' B';

@@ -1,5 +1,6 @@
 // Tool-specific presentation models. Never infer success from optimistic prose.
 import { displayLabel, displayJSON } from './untrusted.js';
+import { plural } from './count.js';
 
 const object = value => value && typeof value === 'object' && !Array.isArray(value);
 const list = value => Array.isArray(value) ? value : [];
@@ -45,13 +46,12 @@ function byteSize(n) {
   if (v < 1024 * 1024) return (v / 1024).toFixed(1) + ' KB';
   return (v / (1024 * 1024)).toFixed(1) + ' MB';
 }
-function quantity(items, label) { return `${items.length} ${label}${items.length === 1 ? '' : 's'}`; }
 export function toolPreview(name, input) {
   const args = parse(input);
   let text;
   switch (name) {
     case 'plan':
-      text = [displayValue(args.verb) || 'plan', args.steps ? quantity(list(args.steps), 'step') : args.updates ? quantity(list(args.updates), 'update') : args.step_id].filter(Boolean).map(displayValue).join(' · '); break;
+      text = [displayValue(args.verb) || 'plan', args.steps ? plural(list(args.steps).length, 'step') : args.updates ? plural(list(args.updates).length, 'update') : args.step_id].filter(Boolean).map(displayValue).join(' · '); break;
     default:
       text = args.path ?? args.command ?? args.query ?? args.pattern ?? args.url;
       if (text == null) {

@@ -1,6 +1,7 @@
 // Bounded, text-safe result renderers shared by live, historical and detail views.
 import { parseUntrusted, unwrapToolOutput, displayJSON } from './untrusted.js';
 import { escapeHtml } from './escape.js';
+import { plural } from './count.js';
 import { toolView, renderToolItems, treeText } from './toolviews.js';
 
 export const RESULT_PAGE = 200;
@@ -76,10 +77,6 @@ function node(tag, cls, text) {
   if (text != null) el.textContent = text;
   return el;
 }
-// counted formats a count with the singular word for exactly one.
-function counted(n, word, plural = word + 's') {
-  return n.toLocaleString() + ' ' + (n === 1 ? word : plural);
-}
 // displayJSONValue parses JSON result text of tool name and returns it with
 // the fields that tool wraps one by one shown without their envelope, or
 // undefined when text is not JSON.
@@ -138,7 +135,7 @@ export function renderResult(host, { name = '', output = '', args = '', compact 
       const query = (search.value || '').toLowerCase();
       const items = view.items.filter(item => !query || JSON.stringify(item).toLowerCase().includes(query));
       body.classList.remove('result-split');
-      count.textContent = query ? counted(items.length, 'match', 'matches') : view.summary;
+      count.textContent = query ? plural(items.length, 'match', 'matches') : view.summary;
       renderToolItems(body, items.slice(0, limit), renderResult);
       if (!items.length) body.appendChild(node('p','result-empty',query ? 'No matching items' : 'Nothing returned'));
       more.hidden = items.length <= limit;
@@ -147,11 +144,11 @@ export function renderResult(host, { name = '', output = '', args = '', compact 
     }
     const lines = resultLines(plain ? raw : text, search.value || '');
     body.classList.toggle('result-split', split && !plain);
-    count.textContent = counted(lines.length, 'line');
+    count.textContent = plural(lines.length, 'line');
     if (split && !plain && kind === 'diff') {
       const query = (search.value || '').toLowerCase();
       const pairs = splitDiffRows(text).filter(row => !query || (row.left + row.right).toLowerCase().includes(query));
-      count.textContent = counted(pairs.length, 'row');
+      count.textContent = plural(pairs.length, 'row');
       for (const pair of pairs.slice(0, limit)) {
         const row = node('div', 'result-line');
         for (const [side, number] of [['left','oldNumber'], ['right','newNumber']]) {
@@ -179,7 +176,7 @@ export function renderResult(host, { name = '', output = '', args = '', compact 
     }
     if (!lines.length) body.appendChild(node('div', 'result-empty', raw ? 'No matching lines' : 'No output returned'));
     more.hidden = lines.length <= limit;
-    more.textContent = 'Show next ' + counted(Math.min(RESULT_PAGE, Math.max(0, lines.length - limit)), 'line');
+    more.textContent = 'Show next ' + plural(Math.min(RESULT_PAGE, Math.max(0, lines.length - limit)), 'line');
   };
   search.addEventListener('input', () => { limit = RESULT_PAGE; draw(); });
   more.addEventListener('click', () => { limit += RESULT_PAGE; draw(); });
@@ -227,7 +224,7 @@ function renderSearchLinks(root,text) {
 }
 function renderJSONNode(root,value,label,depth=0) {
   if(value===null||typeof value!=='object'||depth>=12){root.appendChild(node('div','result-json-value',label+': '+JSON.stringify(value)));return;}
-  const details=node('details','result-json-node');const entries=Object.entries(value);details.appendChild(node('summary','',label+' · '+counted(entries.length,Array.isArray(value)?'item':'field')));
+  const details=node('details','result-json-node');const entries=Object.entries(value);details.appendChild(node('summary','',label+' · '+plural(entries.length,Array.isArray(value)?'item':'field')));
   let built=false;details.addEventListener('toggle',()=>{if(!details.open||built)return;built=true;let offset=0;const more=node('button','result-action','Load more fields');more.type='button';const draw=()=>{for(const [key,item] of entries.slice(offset,offset+100))renderJSONNode(details,item,key,depth+1);offset+=100;more.hidden=offset>=entries.length;details.appendChild(more);};more.addEventListener('click',draw);draw();});root.appendChild(details);
 }
 
