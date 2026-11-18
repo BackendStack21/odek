@@ -115,17 +115,18 @@ func filterPersistSnapshot(head, snapshot []session.Message) []session.Message {
 }
 
 // providerFailureSummary renders a short, safe failure classification for
-// the persisted turn-abort note. It never carries the provider's raw error
-// body, which can be large and may echo prompt content back into the
-// transcript. A provider failure is phrased for a person
-// (llmclient.DescribeFailure: provider, HTTP status, attempts made, and the
-// first line of the provider's message, redacted, escaped and length-capped);
-// everything else is truncated to a single line.
+// the persisted turn-abort note. The note stays in the session and is read
+// back by the model on the next turn, so it never carries what the provider
+// said: a failed model call is phrased by llmclient.SummarizeFailure as the
+// provider, the HTTP status and the attempts made, and a failed call it
+// cannot classify only as having failed. The provider's message reaches the
+// live error frame and the run record instead. Any other error is truncated
+// to a single line.
 func providerFailureSummary(err error) string {
 	if errors.Is(err, context.Canceled) {
 		return "cancelled"
 	}
-	if desc, ok := llmclient.DescribeFailure(err); ok {
+	if desc, ok := llmclient.SummarizeFailure(err); ok {
 		return desc
 	}
 	if errors.Is(err, context.DeadlineExceeded) {

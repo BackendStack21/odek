@@ -616,9 +616,14 @@ Failed runs keep their session linkage: the user prompt is persisted to the
 session before the first LLM call, and a failed turn closes with an explicit
 `[Turn aborted: …]` assistant note instead of ending on a dangling tool call —
 `run.session_id` is therefore always populated and the transcript never loses
-the prompt. For a provider failure the note, the WebSocket `error` frame and
-the run's `error` carry the same phrased text (provider, HTTP status, the
-provider's message, attempts made); the run's runtime events keep the typed
+the prompt. For a provider failure the WebSocket `error` frame and the run's
+`error` carry the same phrased text (provider, HTTP status, the provider's
+message, attempts made). The note stays in the session and is read back by
+the model on the next turn, so it names only the provider, the HTTP status and
+the attempts (`[Turn aborted: provider openai returned HTTP 500 (retries
+exhausted after 8 attempts). …]`); a failed model call the server cannot
+classify, whose error text may be the provider's own words, is noted only as
+`the call to provider <id> failed`. The run's runtime events keep the typed
 error class and HTTP status. Operational diagnostics, including provider failures after retries,
 are written to the unified `~/.odek/runtime.log` and can be queried with
 `odek logs`. The metadata-only log records run/turn lifecycle, statuses,

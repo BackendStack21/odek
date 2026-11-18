@@ -33,6 +33,34 @@ const maxFailureMessageRunes = 200
 // The provider message is untrusted: only its first line is used, secrets are
 // redacted, control and invisible characters are escaped and it is shortened.
 func DescribeFailure(err error) (string, bool) {
+	return describeFailure(err, true)
+}
+
+// SummarizeFailure phrases a failed model call for text that is stored and
+// read back by the model later, such as a session's turn-abort note: the
+// provider, the HTTP status and the attempts made, never the provider's own
+// message, e.g. "provider openai returned HTTP 500 (retries exhausted after
+// 8 attempts)". A failed call DescribeFailure cannot classify keeps only the
+// fact ("the call to provider anthropic failed"), since its error text can
+// be the provider's words (an error event inside the stream). It reports
+// false for errors that are not a failed model call and for cancellation.
+func SummarizeFailure(err error) (string, bool) {
+	if desc, ok := describeFailure(err, false); ok {
+		return desc, true
+	}
+	var call *AttemptsError
+	if err == nil || errors.Is(err, context.Canceled) || !errors.As(err, &call) {
+		return "", false
+	}
+	desc := fmt.Sprintf("the call to %s failed", providerSubject("", call.Provider))
+	if clause := attemptsClause(call.Attempts, errors.Is(err, context.DeadlineExceeded)); clause != "" {
+		desc += " (" + clause + ")"
+	}
+	return desc, true
+}
+
+// describeFailure is DescribeFailure; quote adds the provider's message.
+func describeFailure(err error, quote bool) (string, bool) {
 	if err == nil || errors.Is(err, context.Canceled) {
 		return "", false
 	}
@@ -49,13 +77,13 @@ func DescribeFailure(err error) (string, bool) {
 	case errors.As(err, &rate):
 		attempts = max(attempts, rate.Attempts)
 		desc = fmt.Sprintf("%s returned HTTP %d", providerSubject(rate.Provider, provider), rate.Status)
-		if msg := failureMessage(rate.Message); msg != "" {
+		if msg := failureMessage(rate.Message); quote && msg != "" {
 			desc += ": " + msg
 		}
 		note = "rate limited"
 	case errors.As(err, &api):
 		desc = fmt.Sprintf("%s returned HTTP %d", providerSubject(api.Provider, provider), api.Status)
-		if msg := failureMessage(api.Message); msg != "" {
+		if msg := failureMessage(api.Message); quote && msg != "" {
 			desc += ": " + msg
 		}
 	case call != nil && networkFailure(err) != "":
