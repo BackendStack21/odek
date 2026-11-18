@@ -539,6 +539,28 @@ test('a queue that existed at the interruption stays paused when more is queued'
   assert.deepEqual(sentOfType('prompt').map(m => m.content), ['waiting before the failure']);
 });
 
+test('a prompt queued while a stop settles keeps a visible resume control', () => {
+  S.sessionId = 'sess-stop-window';
+  S.busy = true;
+  S.pauseQueue(); // Stop pressed with nothing queued; the turn has not settled
+  sendText('typed before the stop settled');
+  assert.equal(S.promptQueue.length, 1);
+  assert.equal(S.queuePaused, true, 'nothing drains a stopped turn, so the queue must not look live');
+  assert.ok($('queue-strip').querySelector('.management-action'), 'the operator can resume it');
+  S.busy = false;
+  S.ws.sent.length = 0;
+  $('queue-strip').querySelector('.management-action').click();
+  assert.deepEqual(sentOfType('prompt').map(m => m.content), ['typed before the stop settled']);
+});
+
+test('holding the ? key does not flicker the shortcut sheet', () => {
+  assert.equal(utils.isShortcutSheetKey({ key: '?', repeat: true, target: { tagName: 'BODY' } }), false);
+});
+
+test('the metrics strip cannot be scrolled to its clipped row by focus', () => {
+  assert.match(cssRule('#metrics'), /overflow:\s*clip/);
+});
+
 // ── Scroll-to-bottom button ──
 // Visibility was only recomputed on scroll events, so it survived a switch
 // to a session (or a new one) with nothing to scroll.

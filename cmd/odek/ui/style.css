@@ -488,7 +488,7 @@ select { appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmln
 /* Plan/jobs chips give way before the attention chip: a chip that no longer
    fits wraps onto a clipped second row, so chips drop whole rather than cut.
    The padding keeps focus rings inside the clip box without moving them. */
-#metrics { display: flex; flex: 0 1000 auto; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; height: 34px; overflow: hidden; padding: 4px; margin: -4px; }
+#metrics { display: flex; flex: 0 1000 auto; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; height: 34px; overflow: hidden; overflow: clip; padding: 4px; margin: -4px; }
 .m-chip {
   display: inline-flex;
   align-items: center;

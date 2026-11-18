@@ -247,7 +247,7 @@ export function toggleShortcuts() {
 // into any other field, a composer with content or a contenteditable keeps
 // its `?`, and another open dialog is never replaced.
 export function isShortcutSheetKey(e) {
-  if (!e || e.key !== '?' || e.isComposing || e.metaKey || (e.ctrlKey && !e.altKey)) return false;
+  if (!e || e.key !== '?' || e.repeat || e.isComposing || e.metaKey || (e.ctrlKey && !e.altKey)) return false;
   if (isDialogOpen() && !isDialogOpen(document.getElementById('shortcuts-overlay'))) return false;
   const target = e.target;
   if (!target || target.isContentEditable) return false;

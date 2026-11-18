@@ -147,8 +147,10 @@ export function send(recoveryCheckpoint) {
   promptEl.style.height = 'auto';
 
   // A pause belongs to the queue that was waiting when work was interrupted.
-  // With nothing waiting, this explicit send starts a fresh, unpaused queue.
-  if (!S.promptQueue.length && S.queuePaused) S.queuePaused = false;
+  // With nothing waiting and no turn running, this explicit send starts a
+  // fresh, unpaused queue. While a turn is still settling (a stop in flight)
+  // the pause stays, so the queued prompt keeps its resume control.
+  if (!S.busy && !S.promptQueue.length && S.queuePaused) S.queuePaused = false;
 
   if (S.busy) {
     S.promptQueue.push({

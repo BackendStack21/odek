@@ -175,7 +175,8 @@ The composer supports pointer Send/Queue, Enter to send, Shift+Enter for newline
 IME composition, ordinary multiline cursor editing and Alt+Up/Down history with
 draft restoration. Queued messages retain their model, reasoning and limit
 choices. Failures, stops and disconnects pause the messages queued at that
-moment; a queue started afterwards by a new send is not paused.
+moment; a queue started afterwards by a new send is not paused. A message sent
+while a stop is still settling is queued paused, with its resume control.
 
 Preferences include themes, reading size, density, notifications and connection
 permission grants with revocation. Mobile inspectors trap focus, make the
