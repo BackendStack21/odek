@@ -1,6 +1,7 @@
 package main
 
-// Tests for server-side text shown in the Web UI, review 2026-11-17.
+// Tests for server-side text shown in the Web UI: approval descriptions,
+// failed-turn error frames and the persisted turn-abort note.
 
 import (
 	"context"
