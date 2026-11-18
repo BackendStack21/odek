@@ -2465,7 +2465,8 @@ func handlePrompt(
 	runID, _ := ctx.Value(serveRunIDKey{}).(string)
 	agent.BeginRun(runID, turnID)
 	requestCtx := ctx
-	outcomeErr := errors.New("serve turn did not complete")
+	errTurnIncomplete := errors.New("serve turn did not complete")
+	outcomeErr := errTurnIncomplete
 	promptCounted, promptCompleted := false, false
 	originalSend := send
 	send = func(frame map[string]any) {
@@ -2474,7 +2475,10 @@ func handlePrompt(
 		case "done":
 			outcomeErr = nil
 		case "error":
-			if message, ok := frame["message"].(string); ok {
+			// A failure path that recorded its typed error before sending
+			// the frame keeps it for the run record; the frame's text stands
+			// in only when no error was recorded.
+			if message, ok := frame["message"].(string); ok && (outcomeErr == nil || outcomeErr == errTurnIncomplete) {
 				outcomeErr = errors.New(message)
 			}
 		}
@@ -2983,10 +2987,6 @@ func handlePrompt(
 		outcomeErr = err
 		if sess == nil {
 			sendError(send, turnFailureMessage(err))
-			// The frame carries the phrased text (and the send wrapper
-			// records that text); the run record keeps the typed error
-			// for its events and logs.
-			outcomeErr = err
 			return currSess
 		}
 		// Soft-fail: close the turn with an assistant-visible note so the
@@ -3002,7 +3002,6 @@ func handlePrompt(
 			fmt.Fprintf(os.Stderr, "odek: warning: failed to persist session: %v\n", err)
 		}
 		sendError(send, turnFailureMessage(err))
-		outcomeErr = err
 		return sess
 	}
 
@@ -3084,8 +3083,8 @@ func handlePrompt(
 		}
 		markRunTaint(agent, sess)
 		if err := store.Save(sess); err != nil {
-			sendError(send, "failed to save completed turn: "+err.Error())
 			outcomeErr = err
+			sendError(send, "failed to save completed turn: "+err.Error())
 			return sess
 		}
 	}
