@@ -142,15 +142,18 @@ func providerFailureSummary(err error) string {
 	return strings.ToValidUTF8(msg, "")
 }
 
-// turnFailureMessage is the error frame text for a failed turn: a provider
-// failure phrased for a person (no "iteration N:" prefix, no "[retryable]"
-// tag), anything else as the error reads. The error itself still reaches the
-// run record, events and logs unchanged.
-func turnFailureMessage(err error) string {
+// sendTurnFailure sends the error frame for a failed turn. A provider failure
+// is phrased for a person (no "iteration N:" prefix, no "[retryable]" tag)
+// and marked phrased, so clients show it as sent instead of rewriting it;
+// anything else is sent as the error reads. The error itself still reaches
+// the run record, events and logs unchanged.
+func sendTurnFailure(send func(map[string]any), err error) {
+	diagnostics.Warning("serve", "request_rejected", nil)
+	frame := map[string]any{"type": "error", "message": err.Error()}
 	if desc, ok := llmclient.DescribeFailure(err); ok {
-		return desc
+		frame["message"], frame["phrased"] = desc, true
 	}
-	return err.Error()
+	send(frame)
 }
 
 // modelIDPattern restricts model IDs to printable ASCII characters commonly
@@ -2987,7 +2990,7 @@ func handlePrompt(
 	if err != nil {
 		outcomeErr = err
 		if sess == nil {
-			sendError(send, turnFailureMessage(err))
+			sendTurnFailure(send, err)
 			return currSess
 		}
 		// Soft-fail: close the turn with an assistant-visible note so the
@@ -3002,7 +3005,7 @@ func handlePrompt(
 		if err := store.SaveNoIndex(sess); err != nil {
 			fmt.Fprintf(os.Stderr, "odek: warning: failed to persist session: %v\n", err)
 		}
-		sendError(send, turnFailureMessage(err))
+		sendTurnFailure(send, err)
 		return sess
 	}
 

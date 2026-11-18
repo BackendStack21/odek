@@ -162,3 +162,32 @@ test('an llm_retry signal outside a running turn leaves the idle rail alone', ()
   assert.equal(S.currentIntent, '');
   assert.equal(srvFixEl('messages').children.length, 0);
 });
+
+// A provider failure the server already phrased (error frame marked phrased)
+// is shown as sent: no substring rule rewrites it into a generic hint or cuts
+// it at a quoted "message" field. Unphrased runtime errors keep their hints.
+const PHRASED = 'provider openai returned HTTP 408: Request timed out. "message":"upstream" (retries exhausted after 8 attempts)';
+
+test('a phrased provider failure is shown as the server sent it', () => {
+  srvDeliver({ type: 'turn_started', turn_id: 't-phrased' });
+  srvDeliver({ type: 'error', turn_id: 't-phrased', message: PHRASED, phrased: true });
+  const html = srvFixEl('messages').children.at(-1).innerHTML;
+  assert.ok(html.includes(PHRASED), html);
+  assert.ok(!html.includes('raise llm.request_timeout_seconds'), html);
+});
+
+test('a phrased failure held while stopping is shown as sent once the run fails', async () => {
+  const render = await import('./render.js');
+  srvDeliver({ type: 'turn_started', turn_id: 't-phrased-stop' });
+  render.requestTurnStop();
+  srvDeliver({ type: 'error', turn_id: 't-phrased-stop', message: PHRASED, phrased: true });
+  srvDeliver({ type: 'turn_settled', turn_id: 't-phrased-stop', status: 'failed' });
+  const html = srvFixEl('messages').children.at(-1).innerHTML;
+  assert.ok(html.includes(PHRASED), html);
+});
+
+test('an unphrased request deadline still gets the request timeout hint', () => {
+  srvDeliver({ type: 'turn_started', turn_id: 't-deadline' });
+  srvDeliver({ type: 'error', turn_id: 't-deadline', message: 'iteration 0: context deadline exceeded' });
+  assert.match(srvFixEl('messages').children.at(-1).innerHTML, /raise llm\.request_timeout_seconds/);
+});

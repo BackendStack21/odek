@@ -363,7 +363,7 @@ export function connect() {
           // The run failed on its own while stopping: show the error held
           // back while the stop was pending.
           streamFlush();endThinking();endStream('interrupted');stopNotice('⏹ Stop requested · the run ended with an error', true);
-          if(S.stopError)addSystemMessage('⚠ ' + formatErrorMessage(S.stopError.message) + ' — Review saved progress before continuing or running again.');
+          if(S.stopError)addSystemMessage('⚠ ' + formatErrorMessage(S.stopError.message, S.stopError.phrased) + ' — Review saved progress before continuing or running again.');
           announce('Turn failed');S.onRecoveryNeeded?.('Work failed');
         } else if(event.status!=='completed') {S.onRecoveryNeeded?.('Work interrupted');}
         else if(S.stopRequested && S.stopNoticeEl){stopNotice('Finished before the stop took effect.', true);}
@@ -447,7 +447,7 @@ export function connect() {
         // shown at once.
         if (S.stopRequested && !S.turnEnded && event.turn_id) { S.stopError = event; break; }
         S.onRecoveryNeeded?.('Work failed');
-        addSystemMessage('⚠ ' + formatErrorMessage(event.message) + ' — Review saved progress before continuing or running again.');
+        addSystemMessage('⚠ ' + formatErrorMessage(event.message, event.phrased) + ' — Review saved progress before continuing or running again.');
         notifyUser('turn failed', 'A turn failed');
         announce('Turn failed');
         break;

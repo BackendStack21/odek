@@ -187,8 +187,12 @@ export function scrollToBottom() {
 }
 
 // ── Error message normalization ──
-export function formatErrorMessage(msg) {
+// A message the server already phrased for a person (an error frame marked
+// phrased: a provider failure with its status, message and attempts) is shown
+// as sent. Other messages get the hints below for raw runtime errors.
+export function formatErrorMessage(msg, phrased = false) {
   if (!msg) return 'Unknown error';
+  if (phrased) return String(msg);
   const lower = msg.toLowerCase();
   if (lower.includes('stream idle') || lower.includes('without an event')) {
     return 'Provider stream stalled — the model went silent before the idle timeout. Retry, or raise llm.stream_idle_timeout_seconds.';

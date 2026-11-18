@@ -364,3 +364,74 @@ func TestRED_TurnAbortNoteCarriesAMarkerTheProviderNeverSees(t *testing.T) {
 		}
 	}
 }
+
+// A provider failure's error frame is marked phrased: the server already put
+// it in words for a person, so the Web UI shows it as sent. An error the
+// server did not phrase (a request that timed out with no reply) is not
+// marked and keeps the client's hints.
+func TestRED_PhrasedProviderFailureIsMarkedOnItsFrame(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		handler http.HandlerFunc
+		timeout time.Duration
+		phrased bool
+		message string
+	}{
+		{"provider rejected the request", func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			fmt.Fprint(w, `{"error":{"message":"Request timed out. \"message\":\"x\""}}`)
+		}, 0, true, `provider deepseek returned HTTP 400: Request timed out. "message":"x"`},
+		{"no reply before the request time limit", nil, 300 * time.Millisecond, false, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// A nil handler never replies; release ends the requests still
+			// waiting (memory side calls run after the turn) so Close returns.
+			release := make(chan struct{})
+			llm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case r.Method != http.MethodPost:
+					http.NotFound(w, r)
+				case tc.handler == nil:
+					select {
+					case <-r.Context().Done():
+					case <-release:
+					}
+				default:
+					tc.handler(w, r)
+				}
+			}))
+			defer llm.Close()
+			defer close(release)
+			store := newTestSessionStore(t)
+			sess, err := store.Create(nil, "test-model", "fixture")
+			if err != nil {
+				t.Fatal(err)
+			}
+			a, err := odek.New(odek.Config{
+				Provider: "deepseek", BaseURL: llm.URL, APIKey: "test-key", Model: "test-model",
+				SystemMessage: "Help", NoProjectFile: true, MemoryDir: t.TempDir(), MaxIterations: 1,
+				RequestTimeout: tc.timeout,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer a.Close()
+			var frame map[string]any
+			handlePrompt(context.Background(), func(f map[string]any) {
+				if f["type"] == "error" {
+					frame = f
+				}
+			}, store, resource.NewRegistry(), loadJSONMockResolved(), a, nil, sess, wsClientMsg{Type: "prompt", Content: "hello"}, new(int), new(int), nil, nil, nil, nil)
+			if frame == nil {
+				t.Fatal("no error frame")
+			}
+			if got, _ := frame["phrased"].(bool); got != tc.phrased {
+				t.Fatalf("phrased = %v, want %v: %v", frame["phrased"], tc.phrased, frame)
+			}
+			if tc.message != "" && frame["message"] != tc.message {
+				t.Fatalf("message = %q, want %q", frame["message"], tc.message)
+			}
+		})
+	}
+}
