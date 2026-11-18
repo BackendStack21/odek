@@ -628,6 +628,24 @@ test('a run that fails while stopping notifies like any failed turn', () => {
   }
 });
 
+test('a stop answer that arrives after the next prompt is sent does not touch that prompt', () => {
+  S.sessionId = 'sess-next-prompt';
+  deliver({ type: 'turn_started', turn_id: 't-next-prompt', session_id: 'sess-next-prompt' });
+  render.requestTurnStop(); // pressed as the turn ends
+  deliver({ type: 'done', turn_id: 't-next-prompt', session_id: 'sess-next-prompt' });
+  deliver({ type: 'turn_settled', turn_id: 't-next-prompt', session_id: 'sess-next-prompt', status: 'completed' });
+  render.resetTurnState(); // the operator sends the next prompt
+  S.queuePaused = false;
+  S.busy = true;
+  deliver({ type: 'cancelled', session_id: 'sess-next-prompt', idle: true }); // answers the earlier stop
+  const lines = systemLines();
+  assert.equal(lines.length, 1, JSON.stringify(lines));
+  assert.match(lines[0], /Finished before the stop took effect/);
+  assert.equal(S.busy, true, 'the new prompt is still running');
+  assert.equal(S.queuePaused, false, 'the new prompt\'s queue is not paused');
+  S.busy = false;
+});
+
 test('a later stop gets its own line and leaves a settled stop line as it was', () => {
   S.sessionId = 'sess-settled';
   deliver({ type: 'turn_started', turn_id: 't-settled', session_id: 'sess-settled' });

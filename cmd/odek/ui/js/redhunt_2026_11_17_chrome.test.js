@@ -661,7 +661,7 @@ test('the status rail says stopping once Stop is pressed, even with a decision c
     assert.match(railText(), /^waiting for your approval/);
     render.requestTurnStop();
     assert.match(railText(), /^stopping/);
-    render.setIntent('composing'); // a frame the stop does not hold
+    render.setIntent('composing'); // a frame the stop does not drop
     assert.match(railText(), /^stopping/, 'a pending stop keeps its label');
   } finally {
     approvals.clearApprovals({ drain: false });

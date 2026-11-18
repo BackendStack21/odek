@@ -27,9 +27,8 @@ export function resetTurnState() {
   S.stopRequested = false;
   S.stopNoticeEl = null;
   S.stopError = null;
-  // A new turn's stop answers are its own: an ack that arrives now is applied.
-  S.stopAwaiting = false;
-  S.stopSettled = false;
+  // The stop-answer flags stay until the turn opens: an answer that arrives
+  // between a send and its turn_started belongs to the previous stop.
   S.reconciledDraft = null;
   messagesEl.querySelectorAll('.turn-stream.live').forEach((el) => {
     el.classList.remove('live');
