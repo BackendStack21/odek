@@ -260,7 +260,11 @@ instead of the marker, live and on reload, and a stopped stream is not kept
 as a folded duplicate beside it. On reload, the server's `[Turn aborted: …]`
 note that closes a failed or cancelled turn is shown as a system notice, as
 the live failure line was, never as the agent's answer; the saved partial text
-before it stays an answer. Completed side effects are preserved and background
+before it stays an answer. The server stamps that note with the message name
+`turn-abort` (`session.TurnAbortNoteName`), which model replies never carry
+and providers never receive, and the client keys on the name, never on the
+text: assistant text in the same format, and notes saved before the stamp
+existed, stay the agent's text. Completed side effects are preserved and background
 jobs have independent lifetimes. Recovery waits for execution ownership to be
 released and lists recorded returns, failures and uncertain outcomes. Continue
 uses persisted context plus a checked revision/generation; Prepare to run again

@@ -153,6 +153,13 @@ func UnknownRole(role string) bool {
 // notices, it is derived context, never the principal's input or a turn.
 const ReturnAfterBreakName = "return-after-break"
 
+// TurnAbortNoteName marks the assistant-role note the serve surface appends
+// when a turn fails or is cancelled ("[Turn aborted: …]"). The name is
+// persistence metadata: replies the model writes never carry it, and it is
+// not sent to providers, so a client can tell the server's note from model
+// text in the same format.
+const TurnAbortNoteName = "turn-abort"
+
 // IsSyntheticUserName reports whether a user-role message with this Name was
 // injected by the runtime (background notices and wakes, return-after-break)
 // rather than typed by the principal. Hooks that key on the principal's

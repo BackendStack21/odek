@@ -1782,7 +1782,7 @@ function renderHistoryRange(messages, from, to) {
 
       // Content before tools: the model streams the visible reply first,
       // then acts. Putting tools first parked every partial after the log.
-      const aborted = !msg.tool_calls?.length && turnAbortNotice(msg.content);
+      const aborted = turnAbortNotice(msg);
       if (aborted) {
         renderHistoricalNotice(aborted);
       } else if (msg.content) {
@@ -1891,15 +1891,17 @@ S.showEarlierHistory = showEarlierHistory;
 // (serve.go) so the stored context stays coherent: "[Turn aborted: <reason>.
 // The prompt above was preserved — …]" or "[Turn aborted: internal error.
 // Completed checkpoints were preserved.]". On reload it is shown as the
-// system notice the live failure line was, not as the agent's answer. Only
-// a whole message with one of those exact tails matches.
-const TURN_ABORTED = /^\[Turn aborted: [^\n]+?\. (?:The prompt above was preserved — send another message to retry or continue|Completed checkpoints were preserved)\.\]$/;
+// system notice the live failure line was, not as the agent's answer. The
+// server marks the note with the message name 'turn-abort', which model
+// replies never carry; text alone is never trusted, so model output in the
+// same format, and notes saved before the marker existed, stay agent text.
+const TURN_ABORT_NAME = 'turn-abort';
 
 // turnAbortNotice returns the notice text for a turn-abort note, or ''.
-function turnAbortNotice(content) {
-  const text = String(content || '').trim();
-  if (!TURN_ABORTED.test(text)) return '';
-  const body = text.slice(1, -1);
+function turnAbortNotice(msg) {
+  if (!msg || msg.name !== TURN_ABORT_NAME || msg.tool_calls?.length) return '';
+  let body = String(msg.content || '').trim();
+  if (body.startsWith('[') && body.endsWith(']')) body = body.slice(1, -1);
   return (body.startsWith('Turn aborted: cancelled.') ? '⏹ ' : '⚠ ') + body;
 }
 

@@ -5,8 +5,10 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -271,5 +273,94 @@ func TestRED_TurnAbortNoteLeavesOutTheProviderMessage(t *testing.T) {
 	}
 	if got := providerFailureSummary(errors.New("persist session: disk full\nmore")); got != "persist session: disk full" {
 		t.Errorf("local error: summary = %q", got)
+	}
+}
+
+// The turn-abort note is marked as the server's own record by its message
+// name, a field the model cannot produce: model text in the same format is
+// never taken for it. The session API hands the name to the Web UI, and the
+// name is never sent to the provider when the next turn replays the note.
+func TestRED_TurnAbortNoteCarriesAMarkerTheProviderNeverSees(t *testing.T) {
+	var mu sync.Mutex
+	var bodies []string
+	llm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.NotFound(w, r)
+			return
+		}
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		bodies = append(bodies, string(body))
+		first := len(bodies) == 1
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		if first {
+			w.WriteHeader(http.StatusBadRequest)
+			fmt.Fprint(w, `{"error":{"message":"model does not support this input"}}`)
+			return
+		}
+		fmt.Fprint(w, `{"choices":[{"message":{"content":"ok"}}]}`)
+	}))
+	defer llm.Close()
+	store := newTestSessionStore(t)
+	sess, err := store.Create(nil, "test-model", "fixture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := odek.New(odek.Config{
+		Provider: "deepseek", BaseURL: llm.URL, APIKey: "test-key", Model: "test-model",
+		SystemMessage: "Help", NoProjectFile: true, MemoryDir: t.TempDir(), MaxIterations: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	turn := func(cur *session.Session, prompt string) *session.Session {
+		return handlePrompt(context.Background(), func(map[string]any) {}, store, resource.NewRegistry(), loadJSONMockResolved(), a, nil, cur,
+			wsClientMsg{Type: "prompt", Content: prompt, SessionID: sess.ID, AuthToken: sess.AuthToken}, new(int), new(int), nil, nil, nil, nil)
+	}
+	cur := turn(sess, "hello")
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions/"+sess.ID, nil)
+	req.Header.Set("X-Session-Token", sess.AuthToken)
+	handleSessionByID(store, nil, "")(w, req)
+	var got session.Session
+	if err := json.NewDecoder(w.Body).Decode(&got); err != nil {
+		t.Fatalf("decode session: %v", err)
+	}
+	notes := 0
+	for _, m := range got.Messages {
+		if strings.HasPrefix(m.Content, "[Turn aborted:") {
+			notes++
+			if m.Role != "assistant" || m.Name != session.TurnAbortNoteName {
+				t.Fatalf("turn-abort note = %+v, want an assistant message named %q", m, session.TurnAbortNoteName)
+			}
+		}
+	}
+	if notes != 1 {
+		t.Fatalf("session holds %d turn-abort notes, want 1: %+v", notes, got.Messages)
+	}
+
+	turn(cur, "again")
+	mu.Lock()
+	defer mu.Unlock()
+	if len(bodies) != 2 {
+		t.Fatalf("provider saw %d chat requests, want 2", len(bodies))
+	}
+	if !strings.Contains(bodies[1], "Turn aborted: provider deepseek returned HTTP 400") {
+		t.Fatalf("the next turn did not replay the note: %s", bodies[1])
+	}
+	if strings.Contains(bodies[1], session.TurnAbortNoteName) {
+		t.Fatalf("the note's marker reached the provider: %s", bodies[1])
+	}
+	saved, err := store.Load(sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range saved.Messages {
+		if strings.HasPrefix(m.Content, "[Turn aborted:") && m.Name != session.TurnAbortNoteName {
+			t.Fatalf("the next turn's save dropped the note's marker: %+v", m)
+		}
 	}
 }

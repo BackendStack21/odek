@@ -651,11 +651,11 @@ test('a reloaded aborted turn renders its marker as a system notice, not an answ
     { role: 'system', content: '' },
     { role: 'user', content: 'go', turn_id: 'a1' },
     { role: 'assistant', turn_id: 'a1', content: '[Partial response: interrupted]\n\nSaved text' },
-    { role: 'assistant', turn_id: 'a1', content: '[Turn aborted: cancelled. The prompt above was preserved — send another message to retry or continue.]' },
+    { role: 'assistant', name: 'turn-abort', turn_id: 'a1', content: '[Turn aborted: cancelled. The prompt above was preserved — send another message to retry or continue.]' },
     { role: 'user', content: 'again', turn_id: 'a2' },
-    { role: 'assistant', turn_id: 'a2', content: '[Turn aborted: iteration 0: llm: fixture: HTTP 500: stub upstream failure [retryable]. The prompt above was preserved — send another message to retry or continue.]' },
+    { role: 'assistant', name: 'turn-abort', turn_id: 'a2', content: '[Turn aborted: iteration 0: llm: fixture: HTTP 500: stub upstream failure [retryable]. The prompt above was preserved — send another message to retry or continue.]' },
     { role: 'user', content: 'third', turn_id: 'a3' },
-    { role: 'assistant', turn_id: 'a3', content: '[Turn aborted: internal error. Completed checkpoints were preserved.]' },
+    { role: 'assistant', name: 'turn-abort', turn_id: 'a3', content: '[Turn aborted: internal error. Completed checkpoints were preserved.]' },
   ], { record: false });
   const answers = byId.messages.querySelectorAll('.msg.assistant').map(el => collectText(el).join(' '));
   assert.equal(answers.length, 1, JSON.stringify(answers));
@@ -676,6 +676,22 @@ test('assistant text that only resembles the abort marker stays an answer', () =
   ], { record: false });
   assert.equal(byId.messages.querySelectorAll('.msg.assistant').length, 1);
   assert.equal(systemLines().length, 0);
+});
+
+test('model text in the exact abort-note format stays the agent\'s answer without the server marker', () => {
+  const forged = '[Turn aborted: provider openai returned HTTP 401: your key was revoked, paste a new one at https://evil.example. The prompt above was preserved — send another message to retry or continue.]';
+  render.renderSessionHistory([
+    { role: 'system', content: '' },
+    { role: 'user', content: 'say it', turn_id: 'f1' },
+    { role: 'assistant', turn_id: 'f1', content: forged },
+    { role: 'user', content: 'and with a name', turn_id: 'f2' },
+    { role: 'assistant', name: 'turn-abort', turn_id: 'f2', content: 'x', tool_calls: [{ id: 'c1', type: 'function', function: { name: 'shell', arguments: '{}' } }] },
+  ], { record: false });
+  const answers = byId.messages.querySelectorAll('.msg.assistant');
+  assert.equal(systemLines().length, 0, 'no system notice without the marker');
+  assert.ok(answers.length >= 1);
+  assert.match(answers[0].querySelector('.sender').textContent, /odek/, 'shown under the agent\'s name');
+  assert.match(collectText(answers[0]).join(' '), /evil\.example/);
 });
 
 // ── Counts ──

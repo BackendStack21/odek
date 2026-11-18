@@ -2496,7 +2496,7 @@ func handlePrompt(
 			diagnostics.Emit(events.Event{Type: "panic_recovered", SessionID: sid, TurnID: turnID, Data: map[string]any{"component": "serve", "operation": "turn", "error_class": "panic"}})
 			if sess != nil {
 				collectDecisions()
-				sess.Messages = append(sess.Messages, session.Message{Role: "assistant", TurnID: turnID, Content: "[Turn aborted: internal error. Completed checkpoints were preserved.]"})
+				sess.Messages = append(sess.Messages, session.Message{Role: "assistant", Name: session.TurnAbortNoteName, TurnID: turnID, Content: "[Turn aborted: internal error. Completed checkpoints were preserved.]"})
 				_ = store.SaveNoIndex(sess)
 				result = sess
 			} else {
@@ -2997,7 +2997,7 @@ func handlePrompt(
 		// and in-memory session pointer in sync with the persisted state.
 		sendAnswerContent(send, deltas, turnFinalAnswer(sess.Messages, turnID), streamedContent)
 		note := fmt.Sprintf("[Turn aborted: %s. The prompt above was preserved — send another message to retry or continue.]", providerFailureSummary(err))
-		sess.Messages = append(sess.Messages, session.Message{Role: "assistant", TurnID: turnID, Content: note})
+		sess.Messages = append(sess.Messages, session.Message{Role: "assistant", Name: session.TurnAbortNoteName, TurnID: turnID, Content: note})
 		markRunTaint(agent, sess)
 		if err := store.SaveNoIndex(sess); err != nil {
 			fmt.Fprintf(os.Stderr, "odek: warning: failed to persist session: %v\n", err)
