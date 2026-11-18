@@ -837,6 +837,29 @@ export function stopNotice(text, final = false) {
   return el;
 }
 
+// stopRefused takes back a stop that did not go through (the server refused
+// the cancel, or the REST fallback failed): the run goes on, so its frames
+// show again, steps marked stopping show as running, Stop comes back and the
+// stop line says why. The queue stays paused as the stop left it; the queue
+// strip offers resume.
+export function stopRefused(reason) {
+  S.stopRequested = false;
+  for (const queue of S.toolBlockQueues.values()) {
+    for (const block of queue) {
+      if (block.dataset.pendingState !== 'stopping') continue;
+      delete block.dataset.pendingState;
+      block.querySelector('.tb-spinner')?.classList.add('running');
+      const status = block.querySelector('.tb-status');
+      if (status) { status.textContent = '▸'; status.title = ''; }
+      const latency = block.querySelector('.tb-latency');
+      if (latency) latency.textContent = '';
+    }
+  }
+  setIntent('');
+  if (S.busy) showCancel();
+  stopNotice('⏹ Stop not applied: ' + (reason || 'refused') + (S.busy ? ' · press Stop to try again' : ''), true);
+}
+
 export function endStream(reason = "interrupted") {
   settlePendingWork(reason);
   S.turnEnded = true;

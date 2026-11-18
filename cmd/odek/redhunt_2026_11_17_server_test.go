@@ -17,6 +17,7 @@ import (
 	"github.com/BackendStack21/odek/internal/danger"
 	"github.com/BackendStack21/odek/internal/events"
 	"github.com/BackendStack21/odek/internal/resource"
+	"github.com/BackendStack21/odek/internal/session"
 )
 
 // The unread-script approval adds its own note to the description when the
@@ -160,4 +161,52 @@ func TestRED_ProviderFailureIsPhrasedForPeople(t *testing.T) {
 			t.Fatalf("run_failed lost the typed provider error: %+v", failed.Data)
 		}
 	})
+}
+
+// A cancel or sub-agent stop the server will not apply is answered with an
+// error frame marked with the refused message type, so a client can tell the
+// refusal from the run's own failure: the run it targeted, if any, goes on.
+func TestRED_RefusedStopIsMarkedOnItsErrorFrame(t *testing.T) {
+	llmSrv := mockLLM(t, func(w http.ResponseWriter, _ int) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}]}`))
+	})
+	defer llmSrv.Close()
+	defer setTestEnv(t, llmSrv.URL)()
+	store := newTestSessionStore(t)
+	sess, err := store.Create([]session.Message{{Role: "user", Content: "hi"}}, "m", "refusal target")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln, mux := buildServeMuxV2(t, store, nil)
+	defer startServeTest(t, ln, mux)()
+	waitForHTTP(t, ln.Addr().String())
+	wsUpgradeLimiter.reset()
+	sessionLookupLimiter.reset()
+	t.Cleanup(sessionLookupLimiter.reset)
+	conn := dialTestWS(t, ln.Addr().String())
+	defer conn.Close()
+	readWSUntil(t, conn, 10*time.Second, func(e map[string]any) bool { return e["type"] == "server_info" })
+
+	for _, tc := range []struct {
+		name    string
+		frame   map[string]any
+		refused string
+		message string
+	}{
+		{"cancel without a session", map[string]any{"type": "cancel"}, "cancel", "cancel: missing session_id"},
+		{"cancel of an unknown session", map[string]any{"type": "cancel", "session_id": "20990101-nosuch", "auth_token": "x"}, "cancel", "cancel: session not found"},
+		{"cancel with a wrong token", map[string]any{"type": "cancel", "session_id": sess.ID, "auth_token": "wrong"}, "cancel", "cancel: invalid session token"},
+		{"sub-agent stop without a task", map[string]any{"type": "subagent_cancel", "session_id": sess.ID, "auth_token": sess.AuthToken}, "subagent_cancel", "subagent_cancel: missing task_id"},
+		{"sub-agent stop with a wrong token", map[string]any{"type": "subagent_cancel", "session_id": sess.ID, "auth_token": "wrong", "task_id": "t1"}, "subagent_cancel", "subagent_cancel: invalid session token"},
+	} {
+		writeJSON(conn, tc.frame)
+		evt := readWSUntil(t, conn, 10*time.Second, func(e map[string]any) bool { return e["type"] == "error" })
+		if evt["message"] != tc.message || evt["refused"] != tc.refused {
+			t.Errorf("%s: frame = %v, want message %q refused %q", tc.name, evt, tc.message, tc.refused)
+		}
+		if _, tagged := evt["turn_id"]; tagged {
+			t.Errorf("%s: a refusal belongs to no turn: %v", tc.name, evt)
+		}
+	}
 }

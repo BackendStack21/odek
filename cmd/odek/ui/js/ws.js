@@ -11,7 +11,7 @@ import {
   addToolCall, addToolResult, addSubagentGroup, completeSubagents,
   appendSubagentLog, addSystemMessage, updateSubagentState,
   lastAssistantBubble, supersedeStream, markTurnUnverified, stripVerifyMarker,
-  onVerificationEvent, streamAnswer, stopNotice,
+  onVerificationEvent, streamAnswer, stopNotice, stopRefused,
 } from './render.js';
 import { queueApproval, dismissApproval, clearApprovals, expireApproval } from './approvals.js';
 import { queueClarify, dismissClarify, clearClarify, expireClarify, rejectClarify } from './clarify.js';
@@ -363,7 +363,7 @@ export function connect() {
           // The run failed on its own while stopping: show the error held
           // back while the stop was pending.
           streamFlush();endThinking();endStream('interrupted');stopNotice('⏹ Stop requested · the run ended with an error', true);
-          if(S.stopError)addSystemMessage('⚠ ' + formatErrorMessage(S.stopError) + ' — Review saved progress before continuing or running again.');
+          if(S.stopError)addSystemMessage('⚠ ' + formatErrorMessage(S.stopError.message) + ' — Review saved progress before continuing or running again.');
           announce('Turn failed');S.onRecoveryNeeded?.('Work failed');
         } else if(event.status!=='completed') {S.onRecoveryNeeded?.('Work interrupted');}
         else if(S.stopRequested && S.stopNoticeEl){stopNotice('Finished before the stop took effect.', true);}
@@ -426,6 +426,10 @@ export function connect() {
 
       case 'error':
         if (!sameTurn) break;
+        // A refused cancel or sub-agent stop is about that control message,
+        // not the run: the run goes on, so nothing is torn down.
+        if (event.refused === 'cancel') { stopRefused(event.message); announce('Stop not applied'); break; }
+        if (event.refused) { showToast('⚠ ' + event.message, 8000); break; }
         S.pauseQueue?.();
         streamFlush(); endThinking();
         if(S.stopRequested){setIntent('stopping');}else{endStream('interrupted');setIntent('');}
@@ -437,9 +441,11 @@ export function connect() {
         clearClarify();
         stopPlanLiveIfIdle();
         badgeNow();
-        // An error while the operator's stop is pending is usually the stop
-        // itself; turn_settled decides, and shows it only if the run failed.
-        if (S.stopRequested && !S.turnEnded) { S.stopError = event.message; break; }
+        // The turn's own error while the operator's stop is pending is
+        // usually the stop itself; turn_settled decides, and shows it only if
+        // the run failed. An error the turn did not send (no turn_id) is
+        // shown at once.
+        if (S.stopRequested && !S.turnEnded && event.turn_id) { S.stopError = event; break; }
         S.onRecoveryNeeded?.('Work failed');
         addSystemMessage('⚠ ' + formatErrorMessage(event.message) + ' — Review saved progress before continuing or running again.');
         notifyUser('turn failed', 'A turn failed');

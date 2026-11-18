@@ -587,6 +587,64 @@ test('a later stop gets its own line and leaves a settled stop line as it was', 
   assert.match(lines[1], /No active execution to stop/);
 });
 
+test('a refused stop is shown at once, the run is followed again and Stop comes back', () => {
+  const cancelBtn = document.getElementById('cancel-btn');
+  S.sessionId = 'sess-refused';
+  S.busy = true;
+  deliver({ type: 'turn_started', turn_id: 't-refused', session_id: 'sess-refused' });
+  deliver({ type: 'tool_call', turn_id: 't-refused', name: 'shell', data: '{}', call_id: 'c-before' });
+  const before = S.currentToolBlock;
+  render.requestTurnStop(); // the Stop button
+  cancelBtn.classList.remove('visible');
+  assert.equal(before.querySelector('.tb-latency').textContent, 'Stopping…');
+  deliver({ type: 'error', message: 'cancel: invalid session token', refused: 'cancel' });
+  assert.equal(S.stopRequested, false, 'the stop is no longer pending');
+  assert.equal(cancelBtn.classList.contains('visible'), true, 'Stop is offered again');
+  assert.equal(S.queuePaused, true, 'the queue stays paused as the stop left it');
+  assert.equal(S.turnEnded, false, 'the running turn is not torn down');
+  const lines = systemLines();
+  assert.equal(lines.length, 1, JSON.stringify(lines));
+  assert.match(lines[0], /Stop not applied: cancel: invalid session token · press Stop to try again/);
+  assert.equal(before.querySelector('.tb-latency').textContent, '', 'a step marked stopping runs again');
+  assert.equal(before.querySelector('.tb-spinner').classList.contains('running'), true);
+  deliver({ type: 'tool_call', turn_id: 't-refused', name: 'shell', data: '{}', call_id: 'c-after' });
+  assert.ok(S.toolBlockQueues.has('c-after'), 'the run is followed again');
+  deliver({ type: 'token', turn_id: 't-refused', content: 'the answer' });
+  deliver({ type: 'done', turn_id: 't-refused' });
+  deliver({ type: 'turn_settled', turn_id: 't-refused', session_id: 'sess-refused', status: 'completed' });
+  assert.doesNotMatch(systemLines().join(' '), /Finished before the stop took effect/);
+  S.busy = false;
+});
+
+test('an error the turn did not send is shown at once while a stop is pending', () => {
+  deliver({ type: 'turn_started', turn_id: 't-untagged' });
+  render.requestTurnStop();
+  deliver({ type: 'error', message: 'busy: session_switch dropped (queue full)' });
+  assert.match(systemLines().join(' '), /busy: session_switch dropped/, 'not held for the stop outcome');
+  deliver({ type: 'turn_settled', turn_id: 't-untagged', status: 'failed' });
+  assert.equal(systemLines().filter(l => /busy: session_switch dropped/.test(l)).length, 1, 'shown once');
+});
+
+test('a refused sub-agent stop is a notice and leaves the turn running', () => {
+  deliver({ type: 'turn_started', turn_id: 't-sa-refused' });
+  deliver({ type: 'token_delta', turn_id: 't-sa-refused', content: 'working' });
+  render.streamFlush();
+  deliver({ type: 'error', message: 'subagent_cancel: invalid session token', refused: 'subagent_cancel' });
+  assert.equal(S.turnEnded, false, 'the turn is not ended');
+  assert.equal(systemLines().length, 0, 'no failure line');
+  assert.match(document.getElementById('toast').textContent, /subagent_cancel: invalid session token/);
+});
+
+test('a stop whose REST fallback fails is taken back', () => {
+  S.busy = true;
+  deliver({ type: 'turn_started', turn_id: 't-rest' });
+  render.requestTurnStop();
+  render.stopRefused('cancel failed: HTTP 503');
+  assert.equal(S.stopRequested, false);
+  assert.match(systemLines().join(' '), /Stop not applied: cancel failed: HTTP 503/);
+  S.busy = false;
+});
+
 // ── Reloaded aborted turns ──
 test('a reloaded aborted turn renders its marker as a system notice, not an answer', () => {
   render.renderSessionHistory([

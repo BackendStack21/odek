@@ -2372,16 +2372,16 @@ func endWSSessionMemory(mm *memory.MemoryManager, sess *session.Session) {
 // until the 60s approval timeout.
 func handleWSCancel(store *session.Store, conn *golangws.Conn, msg wsClientMsg) {
 	if msg.SessionID == "" {
-		writeWSError(conn, "cancel: missing session_id")
+		writeWSRefusal(conn, "cancel", "cancel: missing session_id")
 		return
 	}
 	sess, err := store.Load(msg.SessionID)
 	if err != nil {
-		writeWSError(conn, wsLookupRejectMsg(conn, "cancel: session not found"))
+		writeWSRefusal(conn, "cancel", wsLookupRejectMsg(conn, "cancel: session not found"))
 		return
 	}
 	if !validateSessionTokenStrict(store, sess, msg.AuthToken) {
-		writeWSError(conn, wsLookupRejectMsg(conn, "cancel: invalid session token"))
+		writeWSRefusal(conn, "cancel", wsLookupRejectMsg(conn, "cancel: invalid session token"))
 		return
 	}
 	if cancelPrompt(msg.SessionID) {
@@ -2398,20 +2398,20 @@ func handleWSCancel(store *session.Store, conn *golangws.Conn, msg wsClientMsg) 
 // the stop arrived), not an error.
 func handleWSSubagentCancel(store *session.Store, conn *golangws.Conn, msg wsClientMsg) {
 	if msg.SessionID == "" {
-		writeWSError(conn, "subagent_cancel: missing session_id")
+		writeWSRefusal(conn, "subagent_cancel", "subagent_cancel: missing session_id")
 		return
 	}
 	if msg.TaskID == "" {
-		writeWSError(conn, "subagent_cancel: missing task_id")
+		writeWSRefusal(conn, "subagent_cancel", "subagent_cancel: missing task_id")
 		return
 	}
 	sess, err := store.Load(msg.SessionID)
 	if err != nil {
-		writeWSError(conn, wsLookupRejectMsg(conn, "subagent_cancel: session not found"))
+		writeWSRefusal(conn, "subagent_cancel", wsLookupRejectMsg(conn, "subagent_cancel: session not found"))
 		return
 	}
 	if !validateSessionTokenStrict(store, sess, msg.AuthToken) {
-		writeWSError(conn, wsLookupRejectMsg(conn, "subagent_cancel: invalid session token"))
+		writeWSRefusal(conn, "subagent_cancel", wsLookupRejectMsg(conn, "subagent_cancel: invalid session token"))
 		return
 	}
 	// The token proves access to msg.SessionID only; the task must have been
@@ -3801,6 +3801,15 @@ func (w *connWriteState) run(conn *golangws.Conn) {
 
 func writeWSError(conn *golangws.Conn, msg string) {
 	writeWSJSON(conn, map[string]string{"type": "error", "message": msg})
+}
+
+// writeWSRefusal answers a control message the server will not apply (a
+// cancel or subagent_cancel with a missing or unknown session, a wrong token
+// or no task) with an error frame whose refused field names that message
+// type. A refusal belongs to no turn: the run it targeted, if any, goes on,
+// and the client can offer the stop again.
+func writeWSRefusal(conn *golangws.Conn, msgType, msg string) {
+	writeWSJSON(conn, map[string]string{"type": "error", "message": msg, "refused": msgType})
 }
 
 // writeWSSessionNewRejected refuses a session_new the connection could not

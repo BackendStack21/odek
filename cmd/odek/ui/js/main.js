@@ -3,7 +3,7 @@
 import { S, getSessionToken } from './state.js';
 import { promptEl, skeletonEl } from './dom.js';
 import { escapeHtml, escapeAttr, showToast, toggleShortcuts, hideCancel, closeDialog, formatNum, openDialog } from './utils.js';
-import { addSystemMessage, requestTurnStop, endStream, stopNotice } from './render.js';
+import { addSystemMessage, requestTurnStop, endStream, stopNotice, stopRefused } from './render.js';
 import { loadSessions, loadAndRenderSession } from './sessions.js';
 import { connect, wsSend } from './ws.js';
 import { togglePanels } from './panels.js';
@@ -241,7 +241,10 @@ function cancelAgent() {
   cancelSession(sid, token || undefined).then(() => {
     if (S.sessionId !== sid) return;
     stopNotice('⏹ Stop requested. Reconnect and review saved progress to confirm the outcome.', true);
-  }).catch(err => { showToast('Cancel failed: ' + err.message); });
+  }).catch(err => {
+    if (S.sessionId === sid) stopRefused('cancel failed: ' + err.message);
+    else showToast('Cancel failed: ' + err.message);
+  });
 }
 document.getElementById('cancel-btn').addEventListener('click', cancelAgent);
 
