@@ -855,6 +855,7 @@ function releaseCardStatus(card) {
 export function requestTurnStop() {
   S.stopRequested = true;
   S.stopHeld ||= [];
+  S.stopAwaiting = true;
   S.pauseQueue?.();
   settlePendingWork('stopping');
   setIntent('stopping');
@@ -864,13 +865,15 @@ export function requestTurnStop() {
 // stopNotice writes the turn's stop status. A stop is one system line that
 // changes in place — stopping, then stopped or the outcome — not a log of
 // narration lines. A final text (the outcome) ends that line: the next stop
-// writes a line of its own instead of rewriting a settled one.
+// writes a line of its own instead of rewriting a settled one, and the
+// server's answer to a stop already settled adds nothing (S.stopSettled).
 export function stopNotice(text, final = false) {
   let el = S.stopNoticeEl;
   const content = el && nodeHolds(messagesEl, el) ? el.querySelector('.content') : null;
   if (content) content.textContent = text;
   else el = addSystemMessage(text);
   S.stopNoticeEl = final ? null : el;
+  S.stopSettled = final;
   return el;
 }
 
@@ -882,6 +885,7 @@ export function stopNotice(text, final = false) {
 // own error (held in S.stopError) is not offered another stop.
 export function stopRefused(reason) {
   S.stopRequested = false;
+  S.stopAwaiting = false;
   for (const queue of S.toolBlockQueues.values()) {
     for (const block of queue) {
       if (block.dataset.pendingState !== 'stopping') continue;

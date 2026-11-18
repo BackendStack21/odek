@@ -240,7 +240,8 @@ function cancelAgent() {
   requestTurnStop();
   cancelSession(sid, token || undefined).then(() => {
     if (S.sessionId !== sid) return;
-    stopNotice('⏹ Stop requested. Reconnect and review saved progress to confirm the outcome.', true);
+    // The outcome is unknown: the line stays open for it.
+    stopNotice('⏹ Stop requested. Reconnect and review saved progress to confirm the outcome.');
   }).catch(err => {
     if (S.sessionId === sid) stopRefused('cancel failed: ' + err.message);
     else showToast('Cancel failed: ' + err.message);

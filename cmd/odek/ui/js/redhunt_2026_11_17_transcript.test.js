@@ -625,6 +625,42 @@ test('a later stop gets its own line and leaves a settled stop line as it was', 
   assert.match(lines[1], /No active execution to stop/);
 });
 
+// One stop request is one line: the server's answer to a stop whose line
+// already shows the outcome adds nothing.
+test('a stop pressed as the turn ends keeps one line through the late answer', () => {
+  for (const late of [{ idle: true }, { requested: true }]) {
+    const turn = 't-late-' + Object.keys(late)[0];
+    byId.messages.children.length = 0;
+    S.sessionId = 'sess-late';
+    deliver({ type: 'turn_started', turn_id: turn, session_id: 'sess-late' });
+    S.busy = true;
+    render.requestTurnStop();
+    deliver({ type: 'token', turn_id: turn, content: 'Done.' });
+    deliver({ type: 'done', turn_id: turn });
+    deliver({ type: 'turn_settled', turn_id: turn, session_id: 'sess-late', status: 'completed' });
+    deliver({ type: 'cancelled', session_id: 'sess-late', ...late });
+    const lines = systemLines();
+    assert.equal(lines.length, 1, JSON.stringify(late) + ': ' + JSON.stringify(lines));
+    assert.match(lines[0], /Finished before the stop took effect/);
+    assert.equal(S.currentIntent, '', 'the ended turn is not marked stopping');
+    assert.equal(S.busy, false);
+  }
+});
+
+test('a stop sent by the REST fallback leaves its line open for the outcome', async () => {
+  const { readFileSync } = await import('node:fs');
+  const main = readFileSync(new URL('./main.js', import.meta.url), 'utf8');
+  const line = main.match(/stopNotice\('⏹ Stop requested\. Reconnect[^)]*\)/);
+  assert.ok(line, 'REST fallback stop line found');
+  assert.doesNotMatch(line[0], /,\s*true\s*\)$/, 'the outcome is unknown, so the line is not final: ' + line[0]);
+  render.requestTurnStop();
+  render.stopNotice('⏹ Stop requested. Reconnect and review saved progress to confirm the outcome.');
+  deliver({ type: 'turn_settled', status: 'cancelled' });
+  const lines = systemLines();
+  assert.equal(lines.length, 1, JSON.stringify(lines));
+  assert.match(lines[0], /Stopped/);
+});
+
 test('a refused stop is shown at once, the run is followed again and Stop comes back', () => {
   const cancelBtn = document.getElementById('cancel-btn');
   S.sessionId = 'sess-refused';

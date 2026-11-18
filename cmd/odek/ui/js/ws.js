@@ -76,6 +76,7 @@ function noteDisconnect() {
   // held went with the socket: the frames are dropped with the turn, an
   // error is shown now.
   S.stopHeld = null;
+  S.stopAwaiting = false;
   releaseStopError();
 
   paintConnBanner();
@@ -363,6 +364,10 @@ export function connect() {
       case 'cancelled':
         if (retiredSessionFrame(event)) break;
         if (!sameTurn || (event.session_id && S.sessionId && event.session_id !== S.sessionId)) break;
+        // The answer to a stop whose line already shows the outcome (the turn
+        // ended first) adds nothing: one stop, one line.
+        if (S.stopAwaiting && S.stopSettled) { S.stopAwaiting = false; break; }
+        S.stopAwaiting = false;
         S.pauseQueue?.();
         // The answer to the stop: whatever was held for it is dropped.
         S.stopHeld = null;
