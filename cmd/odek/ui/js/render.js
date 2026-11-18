@@ -25,7 +25,6 @@ export function resetTurnState() {
   settlePendingWork("interrupted");
   S.turnEnded = false;
   S.stopRequested = false;
-  S.stopHeld = null;
   S.stopNoticeEl = null;
   S.stopError = null;
   S.reconciledDraft = null;
@@ -227,7 +226,6 @@ export function syncLiveChrome() {
 export function openTurn(event) {
   S.turnEnded = false;
   S.stopRequested = false;
-  S.stopHeld = null;
   S.stopNoticeEl = null;
   S.stopError = null;
   S.reconciledDraft = null;
@@ -849,12 +847,8 @@ function releaseCardStatus(card) {
   delete card.dataset.runningBefore;
 }
 
-// requestTurnStop marks the turn stopping as Stop is pressed. Until the
-// server answers, the frames a stop drops are held (ws.js), so a refused
-// stop can still show them.
 export function requestTurnStop() {
   S.stopRequested = true;
-  S.stopHeld ||= [];
   S.stopAwaiting = true;
   S.pauseQueue?.();
   settlePendingWork('stopping');

@@ -249,20 +249,21 @@ transcript status line that updates in place. Once it shows the outcome the
 line is final: a later stop writes a line of its own, and the server's answer
 to a stop whose line already shows the outcome (the turn ended first) adds
 nothing. A stop sent through the REST fallback, whose outcome the socket can
-no longer report, keeps its line open for it. Until the server answers
-the stop, the new work the run sends (tool calls with their results,
-reasoning, sub-agent progress, approval and question requests) is held: an
-acknowledged stop drops it as a stop in effect does, a refused stop shows it
-in arrival order (an approval the run waits on included), and a turn that
-finishes before the answer shows it with its answer.
+no longer report, keeps its line open for it. From the moment Stop is
+pressed, new work the run sends (tool calls, reasoning, sub-agent progress,
+approval and question requests) is not shown; results of steps already shown,
+answer text and sub-agent finishes still land, so a turn that finishes before
+the stop takes effect ends on its ordinary answer.
 The error frame a stopped run unwinds with is not shown as a failure; only a
 run that settles `failed` while stopping shows its error (and notifies like any
 failed turn), and a held error is shown when the connection drops before the
 run settles. Only the turn's own
 error (one carrying its `turn_id`) is held for that; any other error shows at
 once. A stop the server refuses (an `error` with `refused: "cancel"`), or whose
-REST fallback fails, is taken back: the run's frames show again, steps and
-sub-agent cards marked stopping show as they were (cards with their stop
+REST fallback fails, is taken back: the run is followed again from the
+refusal on (work it sent while the stop was pending is not shown live;
+reloading the session shows it), steps and sub-agent cards marked stopping
+show as they were (cards with their stop
 button armed again), Stop returns, and the stop line reads **Stop not
 applied: …** with the reason. An error the turn sent while that stop was
 pending is then shown as the run's failure. The prompt queue stays paused,

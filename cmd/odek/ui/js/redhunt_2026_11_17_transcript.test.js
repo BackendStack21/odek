@@ -776,72 +776,51 @@ test('a turn error held when the stop is refused is shown and ends the turn', ()
   S.busy = false;
 });
 
-// Frames that arrive between pressing Stop and the server's answer wait for
-// that answer: an acknowledged stop drops new work as before, a refused one
-// shows everything the run did meanwhile, in order.
-test('work that arrives before a refused stop is answered is shown once it is refused', () => {
+// Frames a stop drops are dropped from the click: content that arrives while
+// the stop is pending never lands out of order, and a turn that finishes
+// before the stop takes effect ends on an ordinary answer.
+const turnOrder = () => byId.messages.querySelectorAll('.msg.assistant, .tool-block')
+  .map(el => (el.classList.contains('tool-block') ? 'tool:' + el.dataset.callId : 'answer' + (el.classList.contains('partial') ? ' (partial)' : '') + ':' + collectText(el.querySelector('.content')).join('')));
+
+test('a turn that finishes while its stop is pending ends on an ordinary answer', () => {
   S.busy = true;
-  S.sessionId = 'sess-held';
-  deliver({ type: 'turn_started', turn_id: 't-held', session_id: 'sess-held' });
+  deliver({ type: 'turn_started', turn_id: 't-pending-done' });
+  deliver({ type: 'tool_call', turn_id: 't-pending-done', name: 'shell', data: '{}', call_id: 'c-before' });
+  deliver({ type: 'tool_result', turn_id: 't-pending-done', name: 'shell', data: 'ok', call_id: 'c-before', outcome: 'completed' });
   render.requestTurnStop();
-  deliver({ type: 'tool_call', turn_id: 't-held', name: 'shell', data: '{"command":"make"}', call_id: 'c-held' });
-  deliver({ type: 'tool_result', turn_id: 't-held', name: 'shell', data: 'built', call_id: 'c-held', outcome: 'completed' });
-  deliver({ type: 'tool_call', turn_id: 't-held', name: 'shell', data: '{"command":"rm -rf build"}', call_id: 'c-ask' });
-  deliver({ type: 'approval_request', turn_id: 't-held', id: 'apr-held', risk: 'destructive', command: 'rm -rf build' });
-  deliver({ type: 'approval_request', turn_id: 't-held', id: 'apr-gone', risk: 'destructive', command: 'rm -rf dist' });
-  deliver({ type: 'approval_expired', id: 'apr-gone' });
-  assert.equal(byId.messages.querySelectorAll('.tool-block').length, 0, 'nothing shown before the answer');
-  assert.equal(S.activeApprovalId, null);
-  deliver({ type: 'error', message: 'cancel: invalid session token', refused: 'cancel' });
-  const blocks = byId.messages.querySelectorAll('.tool-block');
-  assert.deepEqual(blocks.map(b => b.dataset.callId), ['c-held', 'c-ask'], 'the held calls show in order');
-  assert.equal(blocks[0].querySelector('.tb-status').textContent, '✓', 'with the result that waited for its block');
-  assert.equal(S.activeApprovalId, 'apr-held', 'the run waits on an approval the operator can now see');
-  assert.equal(S.approvalQueue.some(a => a.id === 'apr-gone'), false, 'an approval that expired meanwhile does not come back');
-  render.endStream('cancelled');
+  deliver({ type: 'tool_call', turn_id: 't-pending-done', name: 'shell', data: '{}', call_id: 'c1' });
+  deliver({ type: 'tool_result', turn_id: 't-pending-done', name: 'shell', data: 'ok', call_id: 'c1', outcome: 'completed' });
+  deliver({ type: 'token', turn_id: 't-pending-done', content: 'All done.' });
+  deliver({ type: 'done', turn_id: 't-pending-done' });
+  deliver({ type: 'turn_settled', turn_id: 't-pending-done', status: 'completed' });
+  assert.deepEqual(turnOrder(), ['tool:c-before', 'answer:All done.'], 'the answer comes last and is not sealed as a progress note');
+  assert.match(systemLines().join(' '), /Finished before the stop took effect/);
   S.busy = false;
 });
 
-test('a sub-agent that finishes while its delegation is held shows finished once the stop is refused', () => {
-  S.busy = true;
-  deliver({ type: 'turn_started', turn_id: 't-held-sa' });
+test('a stop drops new work from the click, and a result for an earlier step still lands', () => {
+  deliver({ type: 'turn_started', turn_id: 't-drop-ack' });
+  deliver({ type: 'tool_call', turn_id: 't-drop-ack', name: 'shell', data: '{}', call_id: 'c-before' });
   render.requestTurnStop();
-  deliver({ type: 'tool_call', turn_id: 't-held-sa', name: 'delegate_tasks', data: JSON.stringify({ tasks: [{ goal: 'Audit' }] }) });
-  deliver({ type: 'subagent_state', turn_id: 't-held-sa', task_idx: 0, phase: 'started', task_id: 'tk-held' });
-  deliver({ type: 'subagent_state', turn_id: 't-held-sa', task_idx: 0, phase: 'finished', task_id: 'tk-held', status: 'success' });
-  deliver({ type: 'error', message: 'cancel: invalid session token', refused: 'cancel' });
-  const card = byId.messages.querySelector('.subagent-card');
-  assert.ok(card, 'the held delegation shows');
-  assert.equal(card.querySelector('.sa-status').textContent, 'done', 'with the finish that waited for it');
-  render.endStream('cancelled');
-  S.busy = false;
-});
-
-test('work held for a stop the server acknowledges is dropped, and a result for an earlier step still lands', () => {
-  deliver({ type: 'turn_started', turn_id: 't-held-ack' });
-  deliver({ type: 'tool_call', turn_id: 't-held-ack', name: 'shell', data: '{}', call_id: 'c-before' });
-  render.requestTurnStop();
-  deliver({ type: 'tool_result', turn_id: 't-held-ack', name: 'shell', data: 'ok', call_id: 'c-before', outcome: 'completed' });
-  deliver({ type: 'tool_call', turn_id: 't-held-ack', name: 'shell', data: '{}', call_id: 'c-new' });
-  deliver({ type: 'cancelled', turn_id: 't-held-ack', requested: true });
+  deliver({ type: 'tool_result', turn_id: 't-drop-ack', name: 'shell', data: 'ok', call_id: 'c-before', outcome: 'completed' });
+  deliver({ type: 'tool_call', turn_id: 't-drop-ack', name: 'shell', data: '{}', call_id: 'c-new' });
+  deliver({ type: 'cancelled', turn_id: 't-drop-ack', requested: true });
   const blocks = byId.messages.querySelectorAll('.tool-block');
   assert.deepEqual(blocks.map(b => b.dataset.callId), ['c-before']);
   assert.equal(blocks[0].querySelector('.tb-status').textContent, '✓');
-  assert.equal(S.stopHeld, null);
 });
 
-test('work held for a stop the turn finished before is shown with the answer', () => {
-  deliver({ type: 'turn_started', turn_id: 't-held-done' });
+test('after a refused stop the run is followed from the refusal on', () => {
+  S.busy = true;
+  deliver({ type: 'turn_started', turn_id: 't-refused-follow' });
   render.requestTurnStop();
-  deliver({ type: 'tool_call', turn_id: 't-held-done', name: 'shell', data: '{}', call_id: 'c-last' });
-  deliver({ type: 'tool_result', turn_id: 't-held-done', name: 'shell', data: 'ok', call_id: 'c-last', outcome: 'completed' });
-  deliver({ type: 'token', turn_id: 't-held-done', content: 'All done.' });
-  deliver({ type: 'done', turn_id: 't-held-done' });
-  deliver({ type: 'turn_settled', turn_id: 't-held-done', status: 'completed' });
-  const blocks = byId.messages.querySelectorAll('.tool-block');
-  assert.deepEqual(blocks.map(b => b.dataset.callId), ['c-last'], 'the step the stop never reached is shown');
-  assert.equal(blocks[0].querySelector('.tb-status').textContent, '✓');
-  assert.match(systemLines().join(' '), /Finished before the stop took effect/);
+  deliver({ type: 'tool_call', turn_id: 't-refused-follow', name: 'shell', data: '{}', call_id: 'c-round-trip' });
+  deliver({ type: 'error', message: 'cancel: invalid session token', refused: 'cancel' });
+  deliver({ type: 'tool_call', turn_id: 't-refused-follow', name: 'shell', data: '{}', call_id: 'c-after' });
+  deliver({ type: 'token', turn_id: 't-refused-follow', content: 'Done.' });
+  deliver({ type: 'done', turn_id: 't-refused-follow' });
+  assert.deepEqual(turnOrder(), ['tool:c-after', 'answer:Done.'], 'what arrived during the round trip is not shown; what follows is');
+  S.busy = false;
 });
 
 test('a stop whose REST fallback fails is taken back', () => {
