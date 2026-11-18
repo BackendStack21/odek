@@ -647,6 +647,33 @@ test('a stop pressed as the turn ends keeps one line through the late answer', (
   }
 });
 
+test('a stop pressed as a turn ends is applied to the turn the server cancels next', () => {
+  S.sessionId = 'sess-next';
+  S.notifyEnabled = true;
+  document.title = 'odek';
+  try {
+    deliver({ type: 'turn_started', turn_id: 't-end-1', session_id: 'sess-next' });
+    S.busy = true;
+    render.requestTurnStop();
+    deliver({ type: 'token', turn_id: 't-end-1', content: 'Done.' });
+    deliver({ type: 'done', turn_id: 't-end-1' });
+    deliver({ type: 'turn_settled', turn_id: 't-end-1', session_id: 'sess-next', status: 'completed' });
+    document.title = 'odek'; // the finished turn's own notification
+    deliver({ type: 'turn_started', turn_id: 't-wake-2', session_id: 'sess-next', initiated: 'system' });
+    deliver({ type: 'cancelled', session_id: 'sess-next', requested: true }); // the cancel landed on the wake turn
+    assert.equal(S.stopRequested, true, 'the new turn is stopping');
+    deliver({ type: 'error', turn_id: 't-wake-2', message: 'context canceled' });
+    deliver({ type: 'turn_settled', turn_id: 't-wake-2', session_id: 'sess-next', status: 'cancelled' });
+    const lines = systemLines();
+    assert.doesNotMatch(lines.join(' '), /context canceled/, 'the stop is not shown as a failure: ' + JSON.stringify(lines));
+    assert.match(lines.at(-1), /Stopped/);
+    assert.equal(document.title, 'odek', 'no failure notification');
+  } finally {
+    S.notifyEnabled = false;
+    S.busy = false;
+  }
+});
+
 test('a stop sent by the REST fallback leaves its line open for the outcome', async () => {
   const { readFileSync } = await import('node:fs');
   const main = readFileSync(new URL('./main.js', import.meta.url), 'utf8');

@@ -27,6 +27,9 @@ export function resetTurnState() {
   S.stopRequested = false;
   S.stopNoticeEl = null;
   S.stopError = null;
+  // A new turn's stop answers are its own: an ack that arrives now is applied.
+  S.stopAwaiting = false;
+  S.stopSettled = false;
   S.reconciledDraft = null;
   messagesEl.querySelectorAll('.turn-stream.live').forEach((el) => {
     el.classList.remove('live');
@@ -228,6 +231,9 @@ export function openTurn(event) {
   S.stopRequested = false;
   S.stopNoticeEl = null;
   S.stopError = null;
+  // A new turn's stop answers are its own: an ack that arrives now is applied.
+  S.stopAwaiting = false;
+  S.stopSettled = false;
   S.reconciledDraft = null;
   S.currentTurnId = (event && event.turn_id) || S.currentTurnId;
   S.currentTurnInitiated = (event && event.initiated) || 'operator';
