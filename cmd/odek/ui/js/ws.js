@@ -103,6 +103,15 @@ function releaseStopError() {
   if (held) reportTurnError(held);
 }
 
+// lateStopAnswer takes the server's answer (ack or refusal) to the pending
+// stop and reports whether its line already shows the outcome, the turn
+// having ended first: such an answer adds nothing — one stop, one line.
+function lateStopAnswer() {
+  const late = S.stopAwaiting && S.stopSettled;
+  S.stopAwaiting = false;
+  return late;
+}
+
 // A cancel ack or settle frame that names a session we have since left (New
 // session nulls S.sessionId) must not paint stop narration or recovery state
 // into the conversation now on screen.
@@ -367,10 +376,7 @@ export function connect() {
       case 'cancelled':
         if (retiredSessionFrame(event)) break;
         if (!sameTurn || (event.session_id && S.sessionId && event.session_id !== S.sessionId)) break;
-        // The answer to a stop whose line already shows the outcome (the turn
-        // ended first) adds nothing: one stop, one line.
-        if (S.stopAwaiting && S.stopSettled) { S.stopAwaiting = false; break; }
-        S.stopAwaiting = false;
+        if (lateStopAnswer()) break;
         S.pauseQueue?.();
         // The stop is one status line (stopNotice) updated in place.
         if(event.idle){clearApprovals({drain:false});clearClarify();endStream('cancelled');stopNotice('No active execution to stop.', true);break;}
@@ -459,6 +465,7 @@ export function connect() {
         // not the run: the run goes on, so nothing is torn down. An error the
         // turn sent while the stop was pending was the run's own failure.
         if (event.refused === 'cancel') {
+          if (lateStopAnswer()) break;
           stopRefused(event.message); announce('Stop not applied');
           if (S.stopError) { endStream('interrupted'); setIntent(''); releaseStopError(); }
           break;

@@ -665,6 +665,21 @@ test('a stop pressed as the turn ends keeps one line through the late answer', (
   }
 });
 
+test('a refusal of a stop whose turn already finished adds no second line', () => {
+  S.sessionId = 'sess-late-refusal';
+  deliver({ type: 'turn_started', turn_id: 't-late-refusal', session_id: 'sess-late-refusal' });
+  S.busy = true;
+  render.requestTurnStop();
+  deliver({ type: 'token', turn_id: 't-late-refusal', content: 'Done.' });
+  deliver({ type: 'done', turn_id: 't-late-refusal' });
+  deliver({ type: 'turn_settled', turn_id: 't-late-refusal', session_id: 'sess-late-refusal', status: 'completed' });
+  deliver({ type: 'error', message: 'cancel: rate limit exceeded', refused: 'cancel' });
+  const lines = systemLines();
+  assert.equal(lines.length, 1, JSON.stringify(lines));
+  assert.match(lines[0], /Finished before the stop took effect/);
+  S.busy = false;
+});
+
 test('a stop pressed as a turn ends is applied to the turn the server cancels next', () => {
   S.sessionId = 'sess-next';
   S.notifyEnabled = true;

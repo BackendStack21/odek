@@ -247,8 +247,8 @@ Stops show **Stopping…** as soon as Stop is pressed (kept through the server's
 acknowledgement), then **Stopped** only on execution settlement — one
 transcript status line that updates in place. Once it shows the outcome the
 line is final: a later stop writes a line of its own, and the server's answer
-to a stop whose line already shows the outcome (the turn ended first) adds
-nothing — unless another turn has opened since, in which case the server's
+(an acknowledgement or a refusal) to a stop whose line already shows the
+outcome (the turn ended first) adds nothing — unless another turn has opened since, in which case the server's
 cancel landed on that turn and its answer is applied there. A stop sent through the REST fallback, whose outcome the socket can
 no longer report, keeps its line open for it. From the moment Stop is
 pressed, new work the run sends (tool calls, reasoning, sub-agent progress,
