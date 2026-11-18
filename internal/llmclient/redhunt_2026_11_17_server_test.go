@@ -78,7 +78,8 @@ func TestRED_AttemptTransportReportsEachRetryOfATrackedCall(t *testing.T) {
 // reasoning_effort, the Responses API or streaming itself) resend the request
 // at once with the offending part changed. Like reportAttempt, the counter
 // treats only failures the SDK backs off on as retries: a fallback request is
-// neither an attempt nor an llm_retry.
+// neither an attempt nor an llm_retry, but it takes a request of the ladder,
+// so the budget later retries name is one lower.
 func TestRED_AttemptTransportDoesNotCountLearnOnceFallbacks(t *testing.T) {
 	for name, tc := range map[string]struct {
 		statuses []int
@@ -86,7 +87,7 @@ func TestRED_AttemptTransportDoesNotCountLearnOnceFallbacks(t *testing.T) {
 		retries  []Retry
 	}{
 		"fallback then success":        {[]int{400, 200}, 1, nil},
-		"fallback, server error, done": {[]int{400, 503, 200}, 2, []Retry{{Attempt: 2, MaxAttempts: MaxModelAttempts, Status: 503}}},
+		"fallback, server error, done": {[]int{400, 503, 200}, 2, []Retry{{Attempt: 2, MaxAttempts: MaxModelAttempts - 1, Status: 503}}},
 		"rate limited then success":    {[]int{429, 200}, 2, []Retry{{Attempt: 2, MaxAttempts: MaxModelAttempts, Status: 429}}},
 		"request timeout then success": {[]int{408, 200}, 2, []Retry{{Attempt: 2, MaxAttempts: MaxModelAttempts, Status: 408}}},
 	} {
@@ -107,12 +108,85 @@ func TestRED_AttemptTransportDoesNotCountLearnOnceFallbacks(t *testing.T) {
 }
 
 // The failure text counts attempts the same way: after a learn-once fallback
-// the SDK's rate-limit count includes the resend, the call's count does not.
+// the SDK's rate-limit count includes the resend, the call's count does not,
+// and the resend took a slot of the attempt budget, so seven attempts
+// exhausted it.
 func TestRED_DescribeFailureCountsAttemptsLikeTheRetrySignal(t *testing.T) {
 	rate := &sdk.RateLimitError{APIError: sdk.APIError{Provider: "gw", Status: 429, Message: "slow down"}, Attempts: 8}
-	got, _ := DescribeFailure(&AttemptsError{Provider: "gw", Attempts: 7, Err: rate})
-	if want := "provider gw returned HTTP 429: slow down (rate limited; after 7 attempts)"; got != want {
+	got, _ := DescribeFailure(&AttemptsError{Provider: "gw", Attempts: 7, Budget: 7, Err: rate})
+	if want := "provider gw returned HTTP 429: slow down (rate limited; retries exhausted after 7 attempts)"; got != want {
 		t.Fatalf("DescribeFailure = %q, want %q", got, want)
+	}
+}
+
+// requestAccepting is a tracked request that asks for accept, as the SDK's
+// streamed (text/event-stream) and buffered (application/json) requests do.
+func requestAccepting(t *testing.T, ctx context.Context, accept string) *http.Request {
+	t.Helper()
+	req := serverRequest(t, ctx)
+	req.Header.Set("Accept", accept)
+	return req
+}
+
+// A learn-once fallback takes a slot of the SDK's attempt ladder without being
+// an attempt, so the budget the retries are numbered against, and the one the
+// failure text compares with, is what the ladder has left for attempts. The
+// SDK's switch from streaming to buffered requests runs a ladder of its own.
+// The request sequences are the ones the SDK sends (go-llm-sdk callStream and
+// withRetryN) against a provider that keeps failing with 503.
+func TestRED_AttemptBudgetLeavesOutTheSlotsFallbacksTook(t *testing.T) {
+	const stream, buffered = "text/event-stream", "application/json"
+	for name, tc := range map[string]struct {
+		accepts  []string
+		statuses []int
+		count    int
+		budget   int
+	}{
+		// stream_options rejected, resent without it in the same ladder.
+		"fallback in the ladder": {
+			[]string{stream, stream, stream, stream, stream, stream, stream, stream},
+			[]int{400, 503, 503, 503, 503, 503, 503, 503}, 7, 7,
+		},
+		// streaming rejected: the buffered resend starts a ladder of eight.
+		"switch to buffered requests": {
+			[]string{stream, buffered, buffered, buffered, buffered, buffered, buffered, buffered, buffered},
+			[]int{400, 503, 503, 503, 503, 503, 503, 503, 503}, 8, 8,
+		},
+		// another call learned buffered mode after this one's first retry.
+		"switch to buffered after a retry": {
+			[]string{stream, stream, buffered, buffered, buffered, buffered, buffered, buffered, buffered, buffered},
+			[]int{503, 503, 503, 503, 503, 503, 503, 503, 503, 503}, 10, 10,
+		},
+		"no fallback": {
+			[]string{stream, stream, stream, stream, stream, stream, stream, stream},
+			[]int{503, 503, 503, 503, 503, 503, 503, 503}, 8, 8,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			rt := attemptTransport{base: &serverRoundTripper{statuses: tc.statuses}}
+			var retries []Retry
+			ctx, attempts := TrackAttempts(context.Background(), "fixture", func(r Retry) { retries = append(retries, r) })
+			for _, accept := range tc.accepts {
+				if resp, err := rt.RoundTrip(requestAccepting(t, ctx, accept)); err == nil {
+					resp.Body.Close()
+				}
+			}
+			if attempts.Count() != tc.count || len(retries) != tc.count-1 {
+				t.Fatalf("count=%d retries=%d, want %d attempts", attempts.Count(), len(retries), tc.count)
+			}
+			last := retries[len(retries)-1]
+			if want := fmt.Sprintf("HTTP 503, attempt %d of %d", tc.count, tc.budget); last.Detail() != want {
+				t.Fatalf("last retry reads %q, want %q (all: %+v)", last.Detail(), want, retries)
+			}
+			err := attempts.Wrap(&sdk.APIError{Provider: "fixture", Status: 503, Message: "busy", Retryable: true})
+			want := fmt.Sprintf("provider fixture returned HTTP 503: busy (retries exhausted after %d attempts)", tc.count)
+			if got, _ := DescribeFailure(err); got != want {
+				t.Fatalf("DescribeFailure = %q, want %q", got, want)
+			}
+			if got, _ := SummarizeFailure(err); !strings.HasSuffix(got, fmt.Sprintf("(retries exhausted after %d attempts)", tc.count)) {
+				t.Fatalf("SummarizeFailure = %q", got)
+			}
+		})
 	}
 }
 
@@ -154,6 +228,61 @@ func TestRED_NewSDKLearnOnceFallbackIsNotARetry(t *testing.T) {
 	}
 	if attempts.Count() != 1 || len(retries) != 0 {
 		t.Fatalf("count=%d retries=%+v, want one attempt and no retry", attempts.Count(), retries)
+	}
+}
+
+// Through the real SDK, a retry after a fallback names the budget the ladder
+// has left: one request lower after a stream_options resend, a ladder of its
+// own after the switch to buffered requests.
+func TestRED_NewSDKRetryAfterAFallbackNamesTheBudgetLeft(t *testing.T) {
+	for name, tc := range map[string]struct {
+		rejected string
+		budget   int
+	}{
+		"stream_options resend": {"Unrecognized request argument supplied: stream_options", MaxModelAttempts - 1},
+		"switch to buffered":    {"streaming is not supported for this model", MaxModelAttempts},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			var mu sync.Mutex
+			calls := 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				mu.Lock()
+				calls++
+				n := calls
+				mu.Unlock()
+				w.Header().Set("Content-Type", "application/json")
+				switch n {
+				case 1:
+					w.WriteHeader(http.StatusBadRequest)
+					fmt.Fprintf(w, `{"error":{"message":%q}}`, tc.rejected)
+				case 2:
+					w.Header().Set("Retry-After", "1")
+					w.WriteHeader(http.StatusServiceUnavailable)
+					fmt.Fprint(w, `{"error":{"message":"busy"}}`)
+				default:
+					if strings.Contains(r.Header.Get("Accept"), "text/event-stream") {
+						w.Header().Set("Content-Type", "text/event-stream")
+						fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
+						return
+					}
+					fmt.Fprint(w, `{"choices":[{"message":{"content":"ok"}}]}`)
+				}
+			}))
+			defer srv.Close()
+			c, err := Dial("", "m", "k", srv.URL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var retries []Retry
+			ctx, _ := TrackAttempts(context.Background(), c.ProviderID(), func(r Retry) { retries = append(retries, r) })
+			if _, err := c.CallStream(ctx, nil, nil, func(Delta) error { return nil }); err != nil {
+				t.Fatalf("CallStream: %v", err)
+			}
+			if want := []Retry{{Attempt: 2, MaxAttempts: tc.budget, Status: 503}}; fmt.Sprint(retries) != fmt.Sprint(want) {
+				t.Fatalf("retries = %+v, want %+v", retries, want)
+			}
+		})
 	}
 }
 

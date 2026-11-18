@@ -4,19 +4,21 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 )
 
-// MaxModelAttempts is the attempt budget of one model call: the first attempt
-// plus seven retries, the SDK's default ladder. NewSDK sets it explicitly so
-// the attempt numbers reported while a call is retried can name the budget.
+// MaxModelAttempts is the SDK's retry ladder for one model call: the first
+// attempt plus seven retries, its default. NewSDK sets it explicitly so the
+// attempt numbers reported while a call is retried can name the budget, which
+// a learn-once fallback lowers (see Attempts).
 const MaxModelAttempts = 8
 
 // Retry describes a model call whose next HTTP attempt is starting after a
 // failed one.
 type Retry struct {
 	Attempt     int // 1-based number of the attempt that is starting (2 or more)
-	MaxAttempts int // the call's attempt budget
+	MaxAttempts int // the call's attempt budget (see Attempts)
 	Status      int // HTTP status of the failed attempt; 0 when it got no response
 }
 
@@ -42,13 +44,22 @@ func (r Retry) Detail() string {
 // fallback (the request resent at once after a provider 400 named a part it
 // rejects) is not a retry and is not counted. Calls without a tracker are
 // not observed.
+//
+// The budget is how many attempts the call can make. The SDK's ladder has
+// MaxModelAttempts requests and a fallback resend takes one of them, so each
+// fallback lowers the budget by one. When the SDK gives up streaming and
+// resends the call as buffered requests, the buffered requests run a ladder
+// of their own after the attempts made so far; the switch shows as a request
+// that no longer asks for an event stream after one that did.
 type Attempts struct {
 	provider string
 	onRetry  func(Retry)
 
 	mu         sync.Mutex
 	n          int
+	budget     int
 	lastStatus int
+	lastStream bool
 }
 
 type attemptsKey struct{}
@@ -57,7 +68,7 @@ type attemptsKey struct{}
 // provider. onRetry, when set, runs on the request goroutine as each attempt
 // after the first starts; it must not block.
 func TrackAttempts(ctx context.Context, provider string, onRetry func(Retry)) (context.Context, *Attempts) {
-	a := &Attempts{provider: provider, onRetry: onRetry}
+	a := &Attempts{provider: provider, onRetry: onRetry, budget: MaxModelAttempts}
 	return context.WithValue(ctx, attemptsKey{}, a), a
 }
 
@@ -75,24 +86,37 @@ func (a *Attempts) Count() int {
 // attempts made (see AttemptsError). A nil error, a nil counter or a call
 // that never reached the transport returns err unchanged.
 func (a *Attempts) Wrap(err error) error {
-	n := a.Count()
-	if err == nil || n == 0 {
+	if a == nil || err == nil {
 		return err
 	}
-	return &AttemptsError{Provider: a.provider, Attempts: n, Err: err}
+	a.mu.Lock()
+	n, budget := a.n, a.budget
+	a.mu.Unlock()
+	if n == 0 {
+		return err
+	}
+	return &AttemptsError{Provider: a.provider, Attempts: n, Budget: budget, Err: err}
 }
 
-func (a *Attempts) begin() {
+func (a *Attempts) begin(req *http.Request) {
+	stream := strings.Contains(req.Header.Get("Accept"), "text/event-stream")
 	a.mu.Lock()
+	if a.n > 0 && a.lastStream && !stream {
+		// The SDK resends the call as buffered requests: a new ladder.
+		a.budget = a.n + MaxModelAttempts
+	}
+	a.lastStream = stream
 	if a.n > 0 && learnOnceStatus(a.lastStatus) {
 		// The SDK's learn-once fallback resending the request at once with
 		// the rejected part changed: not a retry, as reportAttempt also
-		// treats it, so it is neither counted nor signalled.
+		// treats it, so it is neither counted nor signalled, but it used a
+		// request of the ladder.
+		a.budget--
 		a.mu.Unlock()
 		return
 	}
 	a.n++
-	r := Retry{Attempt: a.n, MaxAttempts: MaxModelAttempts, Status: a.lastStatus}
+	r := Retry{Attempt: a.n, MaxAttempts: a.budget, Status: a.lastStatus}
 	a.mu.Unlock()
 	if r.Attempt > 1 && a.onRetry != nil {
 		a.onRetry(r)
@@ -127,7 +151,10 @@ func (a *Attempts) end(resp *http.Response, err error) {
 type AttemptsError struct {
 	Provider string
 	Attempts int
-	Err      error
+	// Budget is the number of attempts the call could make (see Attempts);
+	// 0 means MaxModelAttempts.
+	Budget int
+	Err    error
 }
 
 func (e *AttemptsError) Error() string { return e.Err.Error() }
@@ -143,7 +170,7 @@ func (t attemptTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if a == nil || req.Response != nil {
 		return t.base.RoundTrip(req)
 	}
-	a.begin()
+	a.begin(req)
 	resp, err := t.base.RoundTrip(req)
 	a.end(resp, err)
 	return resp, err

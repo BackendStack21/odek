@@ -53,7 +53,7 @@ func SummarizeFailure(err error) (string, bool) {
 		return "", false
 	}
 	desc := fmt.Sprintf("the call to %s failed", providerSubject("", call.Provider))
-	if clause := attemptsClause(call.Attempts, errors.Is(err, context.DeadlineExceeded)); clause != "" {
+	if clause := attemptsClause(call.Attempts, call.Budget, errors.Is(err, context.DeadlineExceeded)); clause != "" {
 		desc += " (" + clause + ")"
 	}
 	return desc, true
@@ -66,9 +66,9 @@ func describeFailure(err error, quote bool) (string, bool) {
 	}
 	var call *AttemptsError
 	errors.As(err, &call)
-	attempts, provider := 0, ""
+	attempts, budget, provider := 0, 0, ""
 	if call != nil {
-		attempts, provider = call.Attempts, call.Provider
+		attempts, budget, provider = call.Attempts, call.Budget, call.Provider
 	}
 	var desc, note string
 	var rate *sdk.RateLimitError
@@ -101,7 +101,7 @@ func describeFailure(err error, quote bool) (string, bool) {
 	default:
 		return "", false
 	}
-	clause := attemptsClause(attempts, errors.Is(err, context.DeadlineExceeded))
+	clause := attemptsClause(attempts, budget, errors.Is(err, context.DeadlineExceeded))
 	switch {
 	case note != "" && clause != "":
 		desc += " (" + note + "; " + clause + ")"
@@ -143,11 +143,15 @@ func failureMessage(msg string) string {
 }
 
 // attemptsClause says how many attempts a failed call made and why retrying
-// stopped. A deadline means the request time limit ended the retries before
-// the attempt budget did.
-func attemptsClause(attempts int, deadline bool) string {
+// stopped. budget is the attempts the call could make (0: MaxModelAttempts);
+// a deadline means the request time limit ended the retries before the
+// budget did.
+func attemptsClause(attempts, budget int, deadline bool) string {
+	if budget <= 0 {
+		budget = MaxModelAttempts
+	}
 	switch {
-	case attempts >= MaxModelAttempts:
+	case attempts >= budget:
 		return fmt.Sprintf("retries exhausted after %d attempts", attempts)
 	case attempts > 1 && deadline:
 		return fmt.Sprintf("stopped retrying after %d attempts: request time limit reached", attempts)
