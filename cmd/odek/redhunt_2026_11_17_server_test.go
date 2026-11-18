@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -49,24 +50,35 @@ func TestRED_UnreadScriptScanNoteNeedsNoDisplayEscapes(t *testing.T) {
 }
 
 // serverFailingProvider answers every model call with status and an
-// OpenAI-style error body carrying message. Retry-After: 1 keeps the SDK's
-// backoff short for retryable statuses.
-func serverFailingProvider(t *testing.T, status int, message string) *httptest.Server {
+// OpenAI-style error body carrying message, and counts the requests. For a
+// retryable status the first reply asks for a retry after one second and
+// every later one after two minutes, longer than any request time limit the
+// tests set, so the SDK makes exactly two attempts however slow the machine.
+func serverFailingProvider(t *testing.T, status int, message string) (*httptest.Server, *atomic.Int32) {
 	t.Helper()
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	var requests atomic.Int32
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.NotFound(w, r) // model discovery: no catalog
+			return
+		}
+		retryAfter := "120"
+		if requests.Add(1) == 1 {
+			retryAfter = "1"
+		}
 		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("Retry-After", "1")
+		w.Header().Set("Retry-After", retryAfter)
 		w.WriteHeader(status)
 		fmt.Fprintf(w, `{"error":{"message":%q,"type":"server_error"}}`, message)
-	}))
+	})), &requests
 }
 
 // serverFailedTurn runs one serve turn against a provider that always fails
-// and returns the error frame's message, the persisted turn-abort note and
-// the run_failed runtime event.
-func serverFailedTurn(t *testing.T, status int, message string, timeout time.Duration) (string, string, events.Event) {
+// and returns the error frame's message, the persisted turn-abort note, the
+// run_failed runtime event and the number of requests the provider saw.
+func serverFailedTurn(t *testing.T, status int, message string, timeout time.Duration) (string, string, events.Event, int) {
 	t.Helper()
-	llm := serverFailingProvider(t, status, message)
+	llm, requests := serverFailingProvider(t, status, message)
 	defer llm.Close()
 	store := newTestSessionStore(t)
 	sess, err := store.Create(nil, "test-model", "fixture")
@@ -119,7 +131,7 @@ func serverFailedTurn(t *testing.T, status int, message string, timeout time.Dur
 			time.Sleep(10 * time.Millisecond)
 		}
 	}
-	return failure, note, failed
+	return failure, note, failed, int(requests.Load())
 }
 
 // A provider failure reaches the person as a sentence about the provider —
@@ -129,7 +141,7 @@ func serverFailedTurn(t *testing.T, status int, message string, timeout time.Dur
 // and the run record keeps the typed error for events and logs.
 func TestRED_ProviderFailureIsPhrasedForPeople(t *testing.T) {
 	t.Run("rejected request", func(t *testing.T) {
-		failure, note, failed := serverFailedTurn(t, http.StatusBadRequest, "model does not support this input", 0)
+		failure, note, failed, _ := serverFailedTurn(t, http.StatusBadRequest, "model does not support this input", 0)
 		want := "provider deepseek returned HTTP 400: model does not support this input"
 		if failure != want {
 			t.Fatalf("error frame = %q, want %q", failure, want)
@@ -142,16 +154,17 @@ func TestRED_ProviderFailureIsPhrasedForPeople(t *testing.T) {
 		}
 	})
 	t.Run("retried server error", func(t *testing.T) {
-		failure, note, failed := serverFailedTurn(t, http.StatusInternalServerError, "stub upstream failure: the provider is unavailable", 2500*time.Millisecond)
-		t.Logf("error frame: %s", failure)
-		t.Logf("turn-abort note: %s", note)
+		failure, note, failed, requests := serverFailedTurn(t, http.StatusInternalServerError, "stub upstream failure: the provider is unavailable", time.Minute)
+		if requests != 2 {
+			t.Fatalf("provider saw %d requests, want 2 (one retry)", requests)
+		}
 		for name, text := range map[string]string{"error frame": failure, "turn-abort note": note} {
 			for _, bad := range []string{"iteration ", "llm:", "[retryable]"} {
 				if strings.Contains(text, bad) {
 					t.Errorf("%s %q contains %q", name, text, bad)
 				}
 			}
-			for _, want := range []string{"provider deepseek returned HTTP 500: stub upstream failure: the provider is unavailable", "attempts"} {
+			for _, want := range []string{"provider deepseek returned HTTP 500: stub upstream failure: the provider is unavailable", "after 2 attempts"} {
 				if !strings.Contains(text, want) {
 					t.Errorf("%s %q lacks %q", name, text, want)
 				}
