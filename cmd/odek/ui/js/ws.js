@@ -344,7 +344,7 @@ export function connect() {
         if (!sameTurn || (event.session_id && S.sessionId && event.session_id !== S.sessionId)) break;
         S.pauseQueue?.();
         // The stop is one status line (stopNotice) updated in place.
-        if(event.idle){clearApprovals({drain:false});clearClarify();endStream('cancelled');stopNotice('No active execution to stop.');break;}
+        if(event.idle){clearApprovals({drain:false});clearClarify();endStream('cancelled');stopNotice('No active execution to stop.', true);break;}
         S.stopRequested=true;setIntent('stopping');
         clearApprovals({drain:false});clearClarify();
         if(event.requested){stopNotice('⏹ Stopping… · waiting for execution to settle');announce('Stop requested');}
@@ -357,16 +357,16 @@ export function connect() {
         if(event.session_id && S.sessionId && event.session_id!==S.sessionId)break;
         if(event.turn_id && S.currentTurnId && event.turn_id!==S.currentTurnId)break;
         if(S.stopRequested && event.status==='cancelled'){
-          streamFlush();endThinking();endStream('cancelled');stopNotice('⏹ Stopped · review saved progress before continuing.');announce('Execution stopped');
+          streamFlush();endThinking();endStream('cancelled');stopNotice('⏹ Stopped · review saved progress before continuing.', true);announce('Execution stopped');
           S.onRecoveryNeeded?.('Execution stopped');kickJobsFetch();
         } else if(S.stopRequested && event.status==='failed'){
           // The run failed on its own while stopping: show the error held
           // back while the stop was pending.
-          streamFlush();endThinking();endStream('interrupted');stopNotice('⏹ Stop requested · the run ended with an error');
+          streamFlush();endThinking();endStream('interrupted');stopNotice('⏹ Stop requested · the run ended with an error', true);
           if(S.stopError)addSystemMessage('⚠ ' + formatErrorMessage(S.stopError) + ' — Review saved progress before continuing or running again.');
           announce('Turn failed');S.onRecoveryNeeded?.('Work failed');
         } else if(event.status!=='completed') {S.onRecoveryNeeded?.('Work interrupted');}
-        else if(S.stopRequested && S.stopNoticeEl){stopNotice('Finished before the stop took effect.');}
+        else if(S.stopRequested && S.stopNoticeEl){stopNotice('Finished before the stop took effect.', true);}
         S.stopError=null;
         S.paintEvidence?.();S.refreshSupervision?.();
         break;

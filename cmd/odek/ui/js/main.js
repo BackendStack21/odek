@@ -221,7 +221,7 @@ function switchModel(modelId) {
 // the REST endpoint when the socket is down but the session is known.
 function cancelAgent() {
   if (!S.sessionId) {
-    if (S.busy) { requestTurnStop(); S.ws?.close(); endStream('interrupted'); stopNotice('⏹ Stop requested; execution outcome requires reconciliation.'); return; }
+    if (S.busy) { requestTurnStop(); S.ws?.close(); endStream('interrupted'); stopNotice('⏹ Stop requested; execution outcome requires reconciliation.', true); return; }
     hideCancel();
     addSystemMessage('⏹ No active session to cancel');
     return;
@@ -240,7 +240,7 @@ function cancelAgent() {
   requestTurnStop();
   cancelSession(sid, token || undefined).then(() => {
     if (S.sessionId !== sid) return;
-    stopNotice('⏹ Stop requested. Reconnect and review saved progress to confirm the outcome.');
+    stopNotice('⏹ Stop requested. Reconnect and review saved progress to confirm the outcome.', true);
   }).catch(err => { showToast('Cancel failed: ' + err.message); });
 }
 document.getElementById('cancel-btn').addEventListener('click', cancelAgent);

@@ -245,7 +245,8 @@ switches on that connection, and can be revoked in Preferences.
 
 Stops show **Stopping…** as soon as Stop is pressed (kept through the server's
 acknowledgement), then **Stopped** only on execution settlement — one
-transcript status line that updates in place.
+transcript status line that updates in place. Once it shows the outcome the
+line is final: a later stop writes a line of its own.
 The error frame a stopped run unwinds with is not shown as a failure; only a
 run that settles `failed` while stopping shows its error. An answer the
 provider did not finish (`[Partial response: interrupted|truncated|refused]`

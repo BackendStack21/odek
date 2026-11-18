@@ -572,6 +572,21 @@ test('an error that is not the stop still shows once the stop settles as failed'
   assert.match(systemLines().join(' '), /provider exploded/);
 });
 
+test('a later stop gets its own line and leaves a settled stop line as it was', () => {
+  S.sessionId = 'sess-settled';
+  deliver({ type: 'turn_started', turn_id: 't-settled', session_id: 'sess-settled' });
+  render.requestTurnStop();
+  deliver({ type: 'cancelled', session_id: 'sess-settled', requested: true });
+  deliver({ type: 'turn_settled', turn_id: 't-settled', session_id: 'sess-settled', status: 'cancelled' });
+  assert.match(systemLines()[0], /Stopped/);
+  render.requestTurnStop(); // /stop with nothing running
+  deliver({ type: 'cancelled', session_id: 'sess-settled', idle: true });
+  const lines = systemLines();
+  assert.equal(lines.length, 2, JSON.stringify(lines));
+  assert.match(lines[0], /Stopped · review saved progress/, 'the settled turn keeps its outcome');
+  assert.match(lines[1], /No active execution to stop/);
+});
+
 // ── Reloaded aborted turns ──
 test('a reloaded aborted turn renders its marker as a system notice, not an answer', () => {
   render.renderSessionHistory([

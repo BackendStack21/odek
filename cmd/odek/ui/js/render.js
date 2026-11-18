@@ -826,13 +826,15 @@ export function requestTurnStop() {
 
 // stopNotice writes the turn's stop status. A stop is one system line that
 // changes in place — stopping, then stopped or the outcome — not a log of
-// narration lines.
-export function stopNotice(text) {
-  const el = S.stopNoticeEl;
+// narration lines. A final text (the outcome) ends that line: the next stop
+// writes a line of its own instead of rewriting a settled one.
+export function stopNotice(text, final = false) {
+  let el = S.stopNoticeEl;
   const content = el && nodeHolds(messagesEl, el) ? el.querySelector('.content') : null;
-  if (content) { content.textContent = text; return el; }
-  S.stopNoticeEl = addSystemMessage(text);
-  return S.stopNoticeEl;
+  if (content) content.textContent = text;
+  else el = addSystemMessage(text);
+  S.stopNoticeEl = final ? null : el;
+  return el;
 }
 
 export function endStream(reason = "interrupted") {
