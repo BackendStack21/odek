@@ -339,7 +339,7 @@ func (t *shellTool) checkApprovalGated(cmd, description string, targets []string
 			// read-only, ledger-neutral — rides in the approval description.
 			// The approvers show the description through the display
 			// sanitizer, so the note's warning sign carries no emoji
-			// presentation selector (U+FE0F), which would show as ️.
+			// presentation selector (U+FE0F), which would show as \ufe0f.
 			if findings := scanUnreadScripts(targets); len(findings) > 0 {
 				description += " — ⚠ injection scan: " + strings.Join(findings, "; ")
 			}

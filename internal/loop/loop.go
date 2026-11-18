@@ -3662,7 +3662,7 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 				// Every approval surface shows the card through
 				// danger.SanitizeForDisplay and draws its own warning icon, so
 				// the header is plain text: an emoji presentation selector
-				// (U+FE0F) would be shown escaped as ️.
+				// (U+FE0F) would be shown escaped as \ufe0f.
 				var sb strings.Builder
 				if len(risky) == 1 {
 					sb.WriteString("The following tool action requires approval:\n\n")

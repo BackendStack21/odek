@@ -69,7 +69,7 @@ func serverCardsFor(t *testing.T, note string, commands ...string) []string {
 // Every approval surface (Web UI, Telegram, terminal, denial errors) shows
 // the batch card through the display sanitizer. The card's own text is
 // first-party, so the sanitizer must have nothing to escape in it: an escape
-// such as ️ on the card is noise the person has to read past.
+// such as \ufe0f on the card is noise the person has to read past.
 func TestRED_BatchCardFirstPartyTextNeedsNoDisplayEscapes(t *testing.T) {
 	for name, tc := range map[string]struct {
 		note     string

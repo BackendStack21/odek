@@ -233,7 +233,7 @@ func (a *TelegramApprover) promptCommand(cls danger.RiskClass, cmd, description 
 		allowTrust = false
 		// The warning joins the description, which is shown through
 		// danger.SanitizeForDisplay: no emoji presentation selector
-		// (U+FE0F), which would show as ️.
+		// (U+FE0F), which would show as \ufe0f.
 		warning := fmt.Sprintf("⚠ You have approved %d %s operations in the last %s. Trust Session is disabled for this request.", a.FrictionThreshold, cls, a.FrictionWindow)
 		if description != "" {
 			description = warning + "\n" + description
