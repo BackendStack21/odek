@@ -18,9 +18,10 @@ export function resultText(output) {
   return parseUntrusted(unframe(output)).map(s => s.body).join('\n');
 }
 // resultDisplayText is resultText for display: inside each real envelope's
-// body, the envelope a tool put around its whole output is removed as well.
-export function resultDisplayText(output) {
-  return parseUntrusted(unframe(output)).map(s => s.source === null ? s.body : unwrapToolOutput(s.body)).join('\n');
+// body, the envelope tool name put around its whole output is removed as
+// well (unwrapToolOutput).
+export function resultDisplayText(output, name) {
+  return parseUntrusted(unframe(output)).map(s => s.source === null ? s.body : unwrapToolOutput(s.body, name)).join('\n');
 }
 export function resultKind(name, output) {
   const text = resultText(output).trim();
@@ -91,7 +92,7 @@ export function renderResult(host, { name = '', output = '', args = '', compact 
   // section (structured: false) already holds display text: unwrapping it
   // again could strip an envelope forged by the content itself.
   const raw = resultText(output);
-  const shown = structured ? resultDisplayText(output) : raw;
+  const shown = structured ? resultDisplayText(output, name) : raw;
   const view = structured ? toolView(name, raw, args) : null;
   let kind = view ? view.kind : resultKind(name, shown);
   let text = shown;

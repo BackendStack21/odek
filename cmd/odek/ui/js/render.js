@@ -1074,11 +1074,11 @@ function renderPendingResult(block) {
 // is inserted as text (never HTML). Envelope source is model-facing trust
 // metadata and is not shown. When truncate is true, long bodies are cut
 // behind a "show all" expander carrying the full output.
-function fillToolResult(resultEl, output, truncate) {
+function fillToolResult(resultEl, output, truncate, name) {
   const MAX_RESULT = 600;
   const segments = parseUntrusted(output);
   for (const seg of segments) {
-    const body = seg.source === null ? seg.body : unwrapToolOutput(seg.body);
+    const body = seg.source === null ? seg.body : unwrapToolOutput(seg.body, name);
     if (truncate && body.length > MAX_RESULT) {
       resultEl.appendChild(document.createTextNode(body.slice(0, MAX_RESULT)));
       const more = document.createElement('span');
@@ -1153,7 +1153,8 @@ function expandToolResult(el) {
   const resultEl = el.parentElement;
   if (resultEl) {
     resultEl.textContent = '';
-    fillToolResult(resultEl, full, false);
+    const block = resultEl.closest && resultEl.closest('.tool-block');
+    fillToolResult(resultEl, full, false, block ? block.dataset.toolName : '');
   }
 }
 
@@ -1268,7 +1269,7 @@ export function addSubagentGroup(command) {
 // the tool's own envelope and the engine's; both are removed first so their
 // closing tags never land in the last task's summary.
 function parseSubagentResults(output) {
-  const lines = resultDisplayText(output || '').split('\n');
+  const lines = resultDisplayText(output || '', 'delegate_tasks').split('\n');
   let currentTaskIdx = -1;
   const taskResults = {};
 
@@ -1548,7 +1549,7 @@ export function appendSubagentLog(taskIdx, event) {
     text = toolGlyph(event.name) + ' ' + (event.name || 'tool') +
       (event.data ? ' · ' + truncateStr(event.data, 60) : '');
   } else if (event.event === 'tool_result') {
-    text = '⎿ ' + truncateStr(resultDisplayText(event.data || ''), 100);
+    text = '⎿ ' + truncateStr(resultDisplayText(event.data || '', event.name), 100);
   }
   if (!text) return;
 

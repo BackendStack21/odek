@@ -1001,10 +1001,14 @@ tool wrapped on its own (an envelope forged inside such a field arrives with
 `‹`), but equally of an envelope the text itself carried where nothing
 neutralised it: a tool that marshals first and wraps its whole output
 (`web_search`, MCP tools), a field the tool never wraps (a `write_file` path,
-an error quoting a URL), tool arguments. For display the WebUI removes the `‹`
-form only when it is the tool's envelope around its whole output (closing at
-the very end of a real envelope's body, opening at a line start, nonces
-matching), and the `<` form only in the fields the server wraps one by one
+an error quoting a URL), tool arguments. Content inside a tool's own envelope
+is neutralised the same way, so the `‹` form alone proves nothing either. For
+display the WebUI removes the `‹` form only for a tool that wraps its whole
+output (`shell`, `bg_output`, `delegate_tasks`, `artifact_read`, `web_search`,
+`session_search`, `skill_load`, and MCP tools, named `<server>__<tool>`), and
+only when that envelope opens a real envelope's body — preceded by nothing,
+`error: ` or the guard's security notice — and closes at its very end with the
+same nonce; and the `<` form only in the fields the server wraps one by one
 (the `WRAPPED_FIELDS` table in `untrusted.js`: `read_file` `content`,
 `search_files` match paths and lines, `browser` `title`/`url`/`content`, …)
 when the whole value is one envelope. Every other field is shown as received,
