@@ -1744,8 +1744,7 @@ function renderHistoryRange(messages, from, to) {
       if (aborted) {
         renderHistoricalNotice(aborted);
       } else if (msg.content) {
-        const wrapper = renderHistoricalAssistant(msg.content);
-        if (wakePending) markHistoricalWake(wrapper);
+        const wrapper = renderHistoricalAssistant(msg.content, wakePending);
         wakePending = false;
         if (msg.superseded) foldDraft(wrapper, msg.superseded_reason);
       }
@@ -1876,10 +1875,14 @@ function renderHistoricalUser(content) {
   if (bubble) addCopyButton(bubble);
 }
 
-function renderHistoricalAssistant(raw) {
+// renderHistoricalAssistant renders a reloaded answer; wake labels a wake
+// turn's first reply. The label replaces the sender text, so it is set
+// before the verification and partial chips join the sender.
+function renderHistoricalAssistant(raw, wake = false) {
   const [verified, unverified] = stripVerifyMarker(raw);
   const [content, partial] = stripPartialMarker(verified);
   const wrapper = buildMessage('assistant', content);
+  if (wake) markHistoricalWake(wrapper);
   ensureHistoryStream().appendChild(historyRow(wrapper));
   const bubble = wrapper.querySelector('.bubble');
   if (bubble) addCopyButton(bubble);

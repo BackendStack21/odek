@@ -65,7 +65,7 @@ class FakeEl {
             if (!/^<(br|img|input|hr)\b/.test(tok) && !tok.endsWith('/>')) stack.push(el);
             continue;
           }
-          parent.textContent += tok.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, '&');
+          parent._text += tok.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, '&');
         }
       },
     });
@@ -128,6 +128,15 @@ class FakeEl {
   }
   focus() {}
   click() { if (!this.disabled) this.dispatch('click'); }
+  // While FakeEl.textClearsChildren is set, assigning textContent replaces
+  // the children as a DOM does; the markup parser appends to _text directly.
+  get textContent() { return this._text; }
+  set textContent(v) {
+    this._text = v == null ? '' : String(v);
+    if (!FakeEl.textClearsChildren) return;
+    for (const c of this.children) c.parentNode = null;
+    this.children = [];
+  }
 }
 
 const store = new Map();
@@ -635,6 +644,23 @@ test('a reloaded wake turn keeps its wake label on the first reply only', () => 
   ], { record: false });
   const senders = byId.messages.querySelectorAll('.msg.assistant').map(el => el.querySelector('.sender').textContent);
   assert.deepEqual(senders, ['⬡ odek', '⬡ odek · wake', '⬡ odek', '⬡ odek']);
+});
+
+test('a reloaded wake reply keeps its unverified and partial chips', () => {
+  FakeEl.textClearsChildren = true;
+  try {
+    render.renderSessionHistory([
+      { role: 'system', content: '' },
+      { role: 'user', name: 'bg-wake', content: 'Background job bg-1 finished.', turn_id: 'w1' },
+      { role: 'assistant', turn_id: 'w1', content: render.VERIFY_FAILED_MARKER + '\n\n[Partial response: truncated]\n\nThe build half passed.' },
+    ], { record: false });
+  } finally {
+    FakeEl.textClearsChildren = false;
+  }
+  const sender = byId.messages.querySelector('.msg.assistant').querySelector('.sender');
+  assert.equal(sender.textContent, '⬡ odek · wake');
+  assert.ok(sender.querySelector('.partial-chip'), 'partial chip kept');
+  assert.ok(sender.querySelector('.verify-chip.fail'), 'unverified chip kept');
 });
 
 // ── Sub-agent chips ──
