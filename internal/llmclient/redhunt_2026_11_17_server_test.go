@@ -171,6 +171,10 @@ func TestRED_DescribeFailurePhrasesProviderFailures(t *testing.T) {
 			fmt.Errorf("iteration 0: %w", &AttemptsError{Provider: "local", Attempts: 8, Err: refused}),
 			"could not reach provider local: connection refused (retries exhausted after 8 attempts)",
 		},
+		"reply cut short": {
+			&AttemptsError{Provider: "local", Attempts: 1, Err: fmt.Errorf("decode: %w", io.ErrUnexpectedEOF)},
+			"connection to provider local closed before a complete reply",
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			got, ok := DescribeFailure(tc.err)

@@ -59,7 +59,13 @@ func DescribeFailure(err error) (string, bool) {
 			desc += ": " + msg
 		}
 	case call != nil && networkFailure(err) != "":
-		desc = fmt.Sprintf("could not reach %s: %s", providerSubject("", provider), networkFailure(err))
+		// A closed connection may follow a reply that had already started,
+		// so it is not reported as the provider being unreachable.
+		if reason := networkFailure(err); reason == connectionClosed {
+			desc = fmt.Sprintf("connection to %s closed before a complete reply", providerSubject("", provider))
+		} else {
+			desc = fmt.Sprintf("could not reach %s: %s", providerSubject("", provider), reason)
+		}
 	default:
 		return "", false
 	}
@@ -121,6 +127,8 @@ func attemptsClause(attempts int, deadline bool) string {
 	return ""
 }
 
+const connectionClosed = "connection closed"
+
 // networkFailure names a transport failure that kept a request from getting
 // a reply, or returns "" for anything else (a context deadline included: the
 // caller reports a plain timeout as it always has).
@@ -139,7 +147,7 @@ func networkFailure(err error) string {
 		return "connection refused"
 	case errors.Is(err, syscall.ECONNRESET), errors.Is(err, syscall.EPIPE),
 		errors.Is(err, io.EOF), errors.Is(err, io.ErrUnexpectedEOF):
-		return "connection closed"
+		return connectionClosed
 	case errors.As(err, &dns) && dns.IsNotFound:
 		return "host not found"
 	case errors.As(err, &dns):
