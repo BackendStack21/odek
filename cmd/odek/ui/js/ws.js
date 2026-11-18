@@ -72,8 +72,10 @@ function noteDisconnect() {
   clearApprovals({ drain: false });
   clearClarify();
   stopPlanLiveIfIdle();
-  // The turn_settled that would decide on an error held for a pending stop
-  // went with the socket: show it now.
+  // The answer and turn_settled that would decide on what a pending stop
+  // held went with the socket: the frames are dropped with the turn, an
+  // error is shown now.
+  S.stopHeld = null;
   releaseStopError();
 
   paintConnBanner();
@@ -174,11 +176,10 @@ export function connect() {
     if (S.ws && S.ws.readyState === WebSocket.OPEN) S.ws.close();
   };
 
-  S.ws.onmessage = (e) => {
-    let event;
-    try { event = JSON.parse(e.data); } catch { return; }
-
-
+  // onFrame applies one server frame. replayed marks a frame held while a
+  // stop waited for the server's answer and released by that answer, which
+  // already decided that it shows.
+  const onFrame = (event, replayed = false) => {
     if (S.pendingSessionNew) {
       // Session-bearing frames queued server-side before session_new belong
       // to the session the user left: drop them, and close their turns so
@@ -192,8 +193,7 @@ export function connect() {
     }
     if (event.type!=='turn_settled' && event.turn_id && S.closedTurnIds?.has(event.turn_id)) return;
     if (S.turnEnded && ['tool_call','tool_result','thinking','thinking_delta','token','token_delta','subagent_state','subagent_log','approval_request','clarify_request','done'].includes(event.type)) return;
-    if (S.stopRequested && ['tool_call','subagent_log','thinking','thinking_delta','approval_request','clarify_request'].includes(event.type)) return;
-    if (S.stopRequested && event.type === 'subagent_state' && event.phase !== 'finished') return;
+    if (!replayed && holdForStop(event)) return;
     const sameTurn = !event.turn_id || !S.currentTurnId || event.turn_id === S.currentTurnId;
 
     switch (event.type) {
@@ -364,6 +364,8 @@ export function connect() {
         if (retiredSessionFrame(event)) break;
         if (!sameTurn || (event.session_id && S.sessionId && event.session_id !== S.sessionId)) break;
         S.pauseQueue?.();
+        // The answer to the stop: whatever was held for it is dropped.
+        S.stopHeld = null;
         // The stop is one status line (stopNotice) updated in place.
         if(event.idle){clearApprovals({drain:false});clearClarify();endStream('cancelled');stopNotice('No active execution to stop.', true);break;}
         S.stopRequested=true;setIntent('stopping');
@@ -377,6 +379,9 @@ export function connect() {
         if (retiredSessionFrame(event)) break;
         if(event.session_id && S.sessionId && event.session_id!==S.sessionId)break;
         if(event.turn_id && S.currentTurnId && event.turn_id!==S.currentTurnId)break;
+        // Settled before the stop was answered: a cancelled run drops what
+        // was held for the stop; a run that ended otherwise shows it.
+        if(S.stopHeld){if(event.status==='cancelled')S.stopHeld=null;else releaseStopHeld(onFrame,false);}
         if(S.stopRequested && event.status==='cancelled'){
           streamFlush();endThinking();endStream('cancelled');stopNotice('⏹ Stopped · review saved progress before continuing.', true);announce('Execution stopped');
           S.onRecoveryNeeded?.('Execution stopped');kickJobsFetch();
@@ -405,6 +410,9 @@ export function connect() {
 
       case 'done':
         if (!sameTurn) break;
+        // The turn finished before its stop was answered: the work held for
+        // the stop happened, so it is shown before the turn closes.
+        if (S.stopHeld) releaseStopHeld(onFrame, false);
         streamFlush();
         endThinking();
         sealTurn(event);
@@ -452,6 +460,9 @@ export function connect() {
         // turn sent while the stop was pending was the run's own failure.
         if (event.refused === 'cancel') {
           stopRefused(event.message); announce('Stop not applied');
+          // The run went on: what it sent meanwhile shows, decisions too
+          // unless the run has failed since.
+          releaseStopHeld(onFrame, !S.stopError);
           if (S.stopError) { endStream('interrupted'); setIntent(''); releaseStopError(); }
           break;
         }
@@ -525,6 +536,64 @@ export function connect() {
         break;
     }
   };
+  S.ws.onmessage = (e) => {
+    let event;
+    try { event = JSON.parse(e.data); } catch { return; }
+    onFrame(event);
+  };
+}
+
+// While a stop waits for the server's answer, the frames a stop in effect
+// drops are held instead, with the results and decisions that answer them so
+// they keep their order. The answer decides: an acknowledged stop drops them
+// as before, a refused one replays them, and a turn that ends before the
+// answer shows the work it did. Approval and question requests are replayed
+// only while the run can still wait on them.
+const STOP_HOLD_MAX = 2000;
+const DECISION_FRAMES = ['approval_request', 'approval_ack', 'approval_expired', 'clarify_request', 'clarify_ack', 'clarify_expired', 'clarify_rejected'];
+
+function stopDrops(event) {
+  return ['tool_call', 'subagent_log', 'thinking', 'thinking_delta', 'approval_request', 'clarify_request'].includes(event.type)
+    || (event.type === 'subagent_state' && event.phase !== 'finished');
+}
+
+// answersHeld reports whether event answers a held frame: the result of a
+// held call (a step shown before the stop takes its result live) or the
+// ack or expiry of a held approval or question.
+function answersHeld(event) {
+  const held = S.stopHeld;
+  switch (event.type) {
+    case 'tool_result': {
+      const key = event.call_id || event.name;
+      if (event.name === 'delegate_tasks' ? S.subagentGroup : S.toolBlockQueues.get(key)?.length) return false;
+      return held.some((h) => h.type === 'tool_call' && (h.call_id || h.name) === key);
+    }
+    case 'approval_ack': case 'approval_expired':
+      return held.some((h) => h.type === 'approval_request' && h.id === event.id);
+    case 'clarify_ack': case 'clarify_expired': case 'clarify_rejected':
+      return held.some((h) => h.type === 'clarify_request' && h.id === event.id);
+  }
+  return false;
+}
+
+// holdForStop reports whether a frame is kept from the transcript because a
+// stop is pending (held) or in effect (dropped).
+function holdForStop(event) {
+  if (!S.stopRequested) return false;
+  if (!S.stopHeld) return stopDrops(event);
+  if (!stopDrops(event) && !answersHeld(event)) return false;
+  if (S.stopHeld.length < STOP_HOLD_MAX || event.type === 'approval_request' || event.type === 'clarify_request') S.stopHeld.push(event);
+  return true;
+}
+
+// releaseStopHeld ends the hold: apply gets every held frame, in order, or,
+// without decisions, every one but the approval and question frames.
+function releaseStopHeld(apply, decisions) {
+  const held = S.stopHeld;
+  S.stopHeld = null;
+  for (const event of held || []) {
+    if (decisions || !DECISION_FRAMES.includes(event.type)) apply(event, true);
+  }
 }
 
 // wsSend safely sends a JSON message when the socket is open.

@@ -246,7 +246,12 @@ switches on that connection, and can be revoked in Preferences.
 Stops show **Stopping…** as soon as Stop is pressed (kept through the server's
 acknowledgement), then **Stopped** only on execution settlement — one
 transcript status line that updates in place. Once it shows the outcome the
-line is final: a later stop writes a line of its own.
+line is final: a later stop writes a line of its own. Until the server answers
+the stop, the new work the run sends (tool calls with their results,
+reasoning, sub-agent progress, approval and question requests) is held: an
+acknowledged stop drops it as a stop in effect does, a refused stop shows it
+in arrival order (an approval the run waits on included), and a turn that
+finishes before the answer shows it with its answer.
 The error frame a stopped run unwinds with is not shown as a failure; only a
 run that settles `failed` while stopping shows its error (and notifies like any
 failed turn), and a held error is shown when the connection drops before the
