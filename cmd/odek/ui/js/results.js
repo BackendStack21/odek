@@ -79,10 +79,11 @@ function node(tag, cls, text) {
 function counted(n, word, plural = word + 's') {
   return n.toLocaleString() + ' ' + (n === 1 ? word : plural);
 }
-// displayJSONValue parses JSON result text and returns it with every string
-// field shown without envelope framing, or undefined when text is not JSON.
-function displayJSONValue(text) {
-  try { return displayJSON(JSON.parse(text)); } catch { return undefined; }
+// displayJSONValue parses JSON result text of tool name and returns it with
+// the fields that tool wraps one by one shown without their envelope, or
+// undefined when text is not JSON.
+function displayJSONValue(text, name) {
+  try { return displayJSON(JSON.parse(text), name); } catch { return undefined; }
 }
 export function renderResult(host, { name = '', output = '', args = '', compact = false, structured = true } = {}) {
   // Raw, Copy and Save keep the received payload; every other view shows it
@@ -96,9 +97,9 @@ export function renderResult(host, { name = '', output = '', args = '', compact 
   let text = shown;
   const outline = !view && name === 'tree' ? treeText(raw) : null;
   if (outline != null) { kind = 'tree'; text = outline; }
-  // JSON string fields carry their own envelopes inside escaped quotes, so
-  // they are unwrapped value by value, never as text.
-  const data = structured && !view && ['json', 'sources', 'search'].includes(kind) ? displayJSONValue(shown) : undefined;
+  // JSON string fields carry envelopes inside escaped quotes; only the
+  // fields the tool wraps one by one are unwrapped, value by value.
+  const data = structured && !view && ['json', 'sources', 'search'].includes(kind) ? displayJSONValue(shown, name) : undefined;
   if (data !== undefined) text = JSON.stringify(data, null, 2);
   const root = node('section', 'result-view result-' + kind);
   const bar = node('div', 'result-toolbar');

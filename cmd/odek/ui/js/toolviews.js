@@ -1,13 +1,14 @@
 // Tool-specific presentation models. Never infer success from optimistic prose.
-import { unwrapForDisplay, displayLabel, displayJSON } from './untrusted.js';
+import { displayLabel, displayJSON } from './untrusted.js';
 
 const object = value => value && typeof value === 'object' && !Array.isArray(value);
 const list = value => Array.isArray(value) ? value : [];
-// Strings nested in arrays and objects (head_tail lines) carry their own
-// envelopes inside escaped quotes; they are unwrapped before serializing.
+// displayValue renders one value as text, as it stands: results are
+// prepared once by displayJSON (only the fields the tool wraps one by one
+// lose their envelope), and arguments are never wrapped.
 export function displayValue(value) {
   if (value == null) return '';
-  return typeof value === 'string' ? unwrapForDisplay(value) : JSON.stringify(displayJSON(value));
+  return typeof value === 'string' ? value : JSON.stringify(value);
 }
 function parse(value) {
   if (object(value)) return value;
@@ -69,10 +70,10 @@ function clip(text, max) {
   if (last >= 0xD800 && last <= 0xDBFF) cut--;
   return text.slice(0, cut).trimEnd() + '…';
 }
-// Every untrusted string is unwrapped exactly once: section() takes a raw
-// DTO field, shownSection() text already built from displayed pieces, and
-// entry() strings as given (callers pass displayed labels). Unwrapping
-// display text again could strip an envelope forged by the content itself.
+// Every untrusted string is unwrapped at most once, by displayJSON in
+// toolView: section() takes a prepared DTO field, shownSection() text built
+// from displayed pieces, and entry() strings as given. Unwrapping display
+// text again could strip an envelope forged by the content itself.
 const section = (label, name, value) => ({label, name, output:displayValue(value)});
 const shownSection = (label, name, output) => ({label, name, output});
 const shown = value => typeof value === 'string' ? value : displayValue(value);
@@ -103,7 +104,7 @@ function planView(raw, args) {
 export function toolView(name, raw, input = '') {
   const args = parse(input);
   if (name === 'plan') return planView(raw, args);
-  const data = parse(raw);
+  const data = displayJSON(parse(raw), name);
   if (!Object.keys(data).length) return null;
   const results = list(data.results);
   if (results.some(r => !object(r))) return null;
@@ -203,7 +204,7 @@ export function toolArguments(name, input) {
 // an indented outline (├── / └──) with directory file counts and sizes.
 // Returns null when the payload is not a tree, so callers fall back to raw.
 export function treeText(raw) {
-  const data = parse(raw);
+  const data = displayJSON(parse(raw), 'tree');
   if (!object(data.tree)) return data.error ? 'error: ' + displayValue(data.error) : null;
   const trim = path => displayValue(path).replace(/[\\/]+$/, '');
   // Split on separators before escaping: escapes contain backslashes.

@@ -95,23 +95,66 @@ export function parseUntrusted(text) {
   return scanEnvelopes(String(text), 'untrusted_content');
 }
 
-// Envelopes nested inside an outer envelope reach the client neutralised:
-// the server rewrites their "untrusted_content" to "untrusted·content" so an
-// inner tag can never close the outer one. Tool fields (a search match path,
-// a read_file body) carry such inner envelopes. For display only, the
-// neutralised framing is removed too — the body is still shown as escaped
-// untrusted text, so stripping the tags grants it nothing. Hostile bodies can
-// carry this form themselves, which is why it shares the linear scanner.
-//
-// In a JSON string field a real inner envelope keeps its '<' (json.Marshal
-// escaped it before the neutraliser ran), while one forged by the wrapped
-// text had its '<' rewritten to '‹' (U+2039) when that text was wrapped — so
-// this field-level pass reads the '<' form only, and a forged envelope in a
-// field stays visible. Apply it once per field: display text is never
-// unwrapped again.
-export function unwrapForDisplay(text) {
-  if (!text) return '';
-  return scanEnvelopes(unwrapUntrusted(text), 'untrusted·content').map((seg) => seg.body).join('');
+// JSON string fields can hold an envelope in two ways that look alike once
+// parsed. json.Marshal escapes '<' as \u003c, so no neutraliser sees it and
+// the engine envelope only renames "untrusted_content" to "untrusted·content":
+//   - the tool wrapped that field on its own before marshalling (a read_file
+//     body, a search match path). The field's text was neutralised when it
+//     was wrapped, so an envelope forged inside it arrives as
+//     '‹untrusted·content_…' (U+2039) and stays visible;
+//   - the text itself carried an envelope: a tool that marshals first and
+//     wraps its whole output (web_search, MCP tools, session_search), a field
+//     the tool never wraps (a write_file path, an error quoting a URL), tool
+//     arguments. That text was never neutralised, so a forged envelope
+//     arrives as '<untrusted·content_…', exactly like a real one.
+// The bytes cannot tell them apart, so only the fields the server wraps one
+// by one are unwrapped. WRAPPED_FIELDS mirrors the per-field wrapUntrusted /
+// wrapUntrustedBatch call sites in cmd/odek; a field missing from it shows
+// its framing, which is the safe direction. Paths are JSON keys from the
+// result root joined by '.'; '*' matches one key or array index and '**'
+// any number of levels.
+const WRAPPED_FIELDS = {
+  read_file: ['content'],
+  patch: ['diff'],
+  file_info: ['path'],
+  search_files: ['matches.*.path', 'matches.*.content', 'skipped.*'],
+  glob: ['matches.*.path'],
+  tree: ['tree.**.path'],
+  head_tail: ['results.*.lines.*'],
+  diff: ['hunks.*.lines.*.content'],
+  json_query: ['value.**'],
+  base64: ['encoded', 'decoded'],
+  browser: ['title', 'url', 'content', 'error', 'elements.*.text', 'elements.*.url'],
+  http_request: ['error'],
+  session_search: ['task', 'sessions.*.task', 'buffer.*', 'session_messages.*.content'],
+  transcribe: ['text', 'segments.*.text'],
+  vision: ['description'],
+};
+const WRAPPED_PATHS = new Map(Object.entries(WRAPPED_FIELDS).map(([tool, paths]) => [tool, paths.map((p) => p.split('.'))]));
+
+function matchPath(pattern, path, i = 0, j = 0) {
+  for (; i < pattern.length; i++, j++) {
+    if (pattern[i] === '**') {
+      for (let k = j; k <= path.length; k++) if (matchPath(pattern, path, i + 1, k)) return true;
+      return false;
+    }
+    if (j >= path.length || (pattern[i] !== '*' && pattern[i] !== String(path[j]))) return false;
+  }
+  return j === path.length;
+}
+
+// unwrapField returns the body of a field value that is exactly one
+// envelope, the shape a per-field wrap produces; any other value, including
+// text around an envelope, is returned as received. Display text is never
+// unwrapped again. The '_' form is a field from a result the engine did not
+// wrap again.
+export function unwrapField(text) {
+  const value = String(text == null ? '' : text);
+  for (const tag of ['untrusted·content', 'untrusted_content']) {
+    const segments = scanEnvelopes(value, tag);
+    if (segments.length === 1 && segments[0].source !== null) return segments[0].body;
+  }
+  return value;
 }
 
 // A tool that wraps its own output (shell, bg_output, delegate_tasks, MCP
@@ -148,15 +191,20 @@ export function unwrapToolOutput(body) {
   return prefix + inner;
 }
 
-// displayJSON returns value with every string passed through
-// unwrapForDisplay, so a JSON result can be shown without the envelopes its
-// string fields carry. Nesting deeper than the bound is left as received.
-export function displayJSON(value, depth = 0) {
-  if (typeof value === 'string') return unwrapForDisplay(value);
-  if (!value || typeof value !== 'object' || depth >= 64) return value;
-  if (Array.isArray(value)) return value.map((item) => displayJSON(item, depth + 1));
-  // fromEntries defines own properties, so a "__proto__" key stays data.
-  return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, displayJSON(item, depth + 1)]));
+// displayJSON returns the parsed result of tool name with each field the
+// tool wraps one by one unwrapped (unwrapField); every other value is kept
+// as received. Nesting deeper than the bound is left as received.
+export function displayJSON(value, name = '') {
+  const patterns = WRAPPED_PATHS.get(name);
+  if (!patterns) return value;
+  const walk = (item, path) => {
+    if (typeof item === 'string') return patterns.some((p) => matchPath(p, path)) ? unwrapField(item) : item;
+    if (!item || typeof item !== 'object' || path.length >= 64) return item;
+    if (Array.isArray(item)) return item.map((child, i) => walk(child, [...path, i]));
+    // fromEntries defines own properties, so a "__proto__" key stays data.
+    return Object.fromEntries(Object.entries(item).map(([key, child]) => [key, walk(child, [...path, key])]));
+  };
+  return walk(value, []);
 }
 
 // displayLabel renders an untrusted single-line label (a file name or path)

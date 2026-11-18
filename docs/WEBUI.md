@@ -996,13 +996,20 @@ is wrapped again by the engine, so its envelope arrives inside the outer one
 in neutralised form: `‹untrusted·content_<nonce> source="…">` …
 `‹/untrusted·content_<nonce>>` (`‹` is U+2039, `·` U+00B7). Envelopes in JSON
 string fields keep a plain `<` (`<untrusted·content_<nonce> …>`), because the
-JSON encoder escaped it before neutralisation, while an envelope forged by the
-wrapped text itself arrives with `‹`. For display the WebUI removes the `‹`
+JSON encoder escaped it before neutralisation. That is true of a field the
+tool wrapped on its own (an envelope forged inside such a field arrives with
+`‹`), but equally of an envelope the text itself carried where nothing
+neutralised it: a tool that marshals first and wraps its whole output
+(`web_search`, MCP tools), a field the tool never wraps (a `write_file` path,
+an error quoting a URL), tool arguments. For display the WebUI removes the `‹`
 form only when it is the tool's envelope around its whole output (closing at
 the very end of a real envelope's body, opening at a line start, nonces
-matching), and the `<` form only in JSON string fields, field by field. Each
-string is unwrapped once, so an envelope forged inside the content stays
-visible text. Raw, Copy and Save keep the received payload.
+matching), and the `<` form only in the fields the server wraps one by one
+(the `WRAPPED_FIELDS` table in `untrusted.js`: `read_file` `content`,
+`search_files` match paths and lines, `browser` `title`/`url`/`content`, …)
+when the whole value is one envelope. Every other field is shown as received,
+framing included. Each string is unwrapped once, so an envelope forged inside
+the content stays visible text. Raw, Copy and Save keep the received payload.
 
 ## Implementation details
 
