@@ -529,6 +529,40 @@ test('a partial chip does not suppress the unverified chip', () => {
   assert.ok(bubble.querySelector('.verify-chip.fail'), 'unverified chip added beside the partial one');
 });
 
+test('a partial answer with no text shows its chip and a placeholder, live and reloaded', () => {
+  const check = (where) => {
+    const answers = byId.messages.querySelectorAll('.msg.assistant');
+    assert.equal(answers.length, 1, where);
+    assert.match(answers[0].querySelector('.partial-chip').textContent, /refused/, where);
+    const empty = answers[0].querySelector('.answer-empty');
+    assert.ok(empty, where + ': placeholder shown');
+    assert.equal(empty.textContent, 'no content', where);
+    assert.doesNotMatch(collectText(answers[0]).join(' '), /\[Partial response/, where);
+  };
+  deliver({ type: 'turn_started', turn_id: 't-refused' });
+  deliver({ type: 'token', turn_id: 't-refused', content: '[Partial response: refused]' });
+  deliver({ type: 'done', turn_id: 't-refused' });
+  check('live');
+  byId.messages.children.length = 0;
+  render.renderSessionHistory([
+    { role: 'system', content: '' },
+    { role: 'user', content: 'write', turn_id: 'h-refused' },
+    { role: 'assistant', turn_id: 'h-refused', content: '[Partial response: refused]' },
+  ], { record: false });
+  check('reloaded');
+});
+
+test('text after a marker-only partial answer replaces the placeholder', () => {
+  deliver({ type: 'turn_started', turn_id: 't-refused-2' });
+  deliver({ type: 'token', turn_id: 't-refused-2', content: '[Partial response: refused]' });
+  deliver({ type: 'token', turn_id: 't-refused-2', content: 'Late text.' });
+  render.streamFlush();
+  const answer = byId.messages.querySelector('.msg.assistant');
+  assert.equal(answer.querySelector('.answer-empty'), null);
+  assert.match(collectText(answer).join(' '), /Late text\./);
+  deliver({ type: 'done', turn_id: 't-refused-2' });
+});
+
 test('an error that is not the stop still shows once the stop settles as failed', () => {
   deliver({ type: 'turn_started', turn_id: 't-stop-fail' });
   render.requestTurnStop();

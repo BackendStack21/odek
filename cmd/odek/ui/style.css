@@ -1300,6 +1300,7 @@ body.workspace-wide #session-rail { box-shadow: none; animation: none; }
 .verify-chip { margin-left: 8px; font-weight: 600; }
 .verify-chip.fail { color: var(--red); }
 .verify-chip.partial-chip { color: var(--amber); font-weight: 500; }
+.answer-empty { color: var(--text-3); font-style: italic; }
 
 .arrow {
   display: inline-flex;

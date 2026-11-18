@@ -249,7 +249,7 @@ transcript status line that updates in place.
 The error frame a stopped run unwinds with is not shown as a failure; only a
 run that settles `failed` while stopping shows its error. An answer the
 provider did not finish (`[Partial response: interrupted|truncated|refused]`
-in the stored text) shows a `◐ partial · <reason>` chip on its sender line
+in the stored text) shows a `◐ partial · <reason>` chip (and a muted *no content* placeholder when it has no text) on its sender line
 instead of the marker, live and on reload, and a stopped stream is not kept
 as a folded duplicate beside it. On reload, the server's `[Turn aborted: …]`
 note that closes a failed or cancelled turn is shown as a system notice, as

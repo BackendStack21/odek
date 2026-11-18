@@ -617,17 +617,34 @@ export function markPartial(bubble, reason) {
   else bubble.insertBefore(chip, (bubble.children && bubble.children[0]) || null);
 }
 
+// markEmptyAnswer puts a muted placeholder in an answer that has no text,
+// so a partial answer that ended before any text still shows as a reply.
+// Streamed text re-renders the content and replaces it.
+function markEmptyAnswer(content) {
+  if (!content || content.querySelector('.answer-empty')) return;
+  const empty = document.createElement('span');
+  empty.className = 'answer-empty';
+  empty.textContent = 'no content';
+  content.appendChild(empty);
+}
+
 // streamAnswer appends bulk answer text, which is final (never superseded).
 // A leading partial marker becomes a chip on the answer, and a reconciled
 // draft that the marked text only repeats is removed instead of staying
-// folded above the same words.
+// folded above the same words. A marker with no text still opens the
+// answer, with a placeholder.
 export function streamAnswer(content) {
   const [text, partial] = stripPartialMarker(content);
   const draft = S.reconciledDraft;
   S.reconciledDraft = null;
   if (partial && draft && draft.text && text.startsWith(draft.text.trimEnd())) draft.msg.remove();
   streamToken(text);
-  if (!text) return;
+  if (!text && !partial) return;
+  if (!text) {
+    streamFlush();
+    ensureStreamBubble();
+    if (!S.streamText) markEmptyAnswer(S.streamContentEl);
+  }
   commitStream();
   if (partial && S.streamBubbleEl) markPartial(S.streamBubbleEl.querySelector('.bubble'), partial);
 }
@@ -1888,6 +1905,7 @@ function renderHistoricalAssistant(raw, wake = false) {
   if (bubble) addCopyButton(bubble);
   if (bubble && unverified) markUnverified(bubble);
   if (bubble && partial) markPartial(bubble, partial);
+  if (!content.trim()) markEmptyAnswer(wrapper.querySelector('.content'));
   return wrapper;
 }
 
