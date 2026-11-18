@@ -34,6 +34,9 @@
     <span class="m-chip" id="cost-chip" hidden role="button" tabindex="0" title="Session cost"></span>
     <span class="model" id="model-label"></span>
     <div class="top-controls">
+      <button id="cancel-btn" type="button" aria-label="Stop">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
       <details id="run-settings"><summary>Run settings</summary><div class="run-settings-fields"><p id="execution-scope" class="management-note">Loading execution context…</p>      <select id="model-picker" title="Switch model" aria-label="Model">
         <option value="">Loading...</option>
       </select>
@@ -54,9 +57,6 @@
       </button>
       <button id="panels-btn" type="button" title="Inspector (⌘.)" aria-label="Inspector" aria-expanded="false">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
-      </button>
-      <button id="cancel-btn" type="button" aria-label="Stop">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
       </button>
     </div>
   </header>

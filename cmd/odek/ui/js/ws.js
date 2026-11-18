@@ -11,7 +11,7 @@ import {
   addToolCall, addToolResult, addSubagentGroup, completeSubagents,
   appendSubagentLog, addSystemMessage, updateSubagentState,
   lastAssistantBubble, supersedeStream, markTurnUnverified, stripVerifyMarker,
-  commitStream, onVerificationEvent,
+  onVerificationEvent, streamAnswer, stopNotice, stopRefused, subagentStopRefused,
 } from './render.js';
 import { queueApproval, dismissApproval, clearApprovals, expireApproval } from './approvals.js';
 import { queueClarify, dismissClarify, clearClarify, expireClarify, rejectClarify } from './clarify.js';
@@ -72,10 +72,44 @@ function noteDisconnect() {
   clearApprovals({ drain: false });
   clearClarify();
   stopPlanLiveIfIdle();
+  // The turn_settled that would decide on an error held for a stop went with
+  // the socket. While the stop was unanswered the error is shown now; once
+  // the server applied the stop it is the stop's own unwinding, dropped as
+  // turn_settled cancelled would drop it.
+  if (S.stopAwaiting) releaseStopError();
+  else S.stopError = null;
+  S.stopAwaiting = false;
 
   paintConnBanner();
 
   if (droppedBusy) S.onRecoveryNeeded?.('Connection interrupted the turn');
+}
+
+// reportTurnError shows a failed turn's error the one way every path does:
+// a transcript line, the recovery prompt, a notification and an
+// announcement.
+function reportTurnError(event) {
+  S.onRecoveryNeeded?.('Work failed');
+  addSystemMessage('⚠ ' + formatErrorMessage(event.message, event.phrased) + ' — Review saved progress before continuing or running again.');
+  notifyUser('turn failed', 'A turn failed');
+  announce('Turn failed');
+}
+
+// releaseStopError shows the turn's error held while a stop was pending,
+// once nothing will decide on it any more.
+function releaseStopError() {
+  const held = S.stopError;
+  S.stopError = null;
+  if (held) reportTurnError(held);
+}
+
+// lateStopAnswer takes the server's answer (ack or refusal) to the pending
+// stop and reports whether its line already shows the outcome, the turn
+// having ended first: such an answer adds nothing — one stop, one line.
+function lateStopAnswer() {
+  const late = S.stopAwaiting && S.stopSettled;
+  S.stopAwaiting = false;
+  return late;
 }
 
 // A cancel ack or settle frame that names a session we have since left (New
@@ -266,10 +300,9 @@ export function connect() {
         setIntent('composing');
         const [text, marked] = stripVerifyMarker(event.content);
         if (marked) S.turnUnverified = true;
-        streamToken(text);
         // Bulk text is final: a buffered pre-tool note, or the answer sent
         // after verification — only streamed drafts are ever superseded.
-        if (text) commitStream();
+        streamAnswer(text);
         break;
       }
 
@@ -343,12 +376,14 @@ export function connect() {
       case 'cancelled':
         if (retiredSessionFrame(event)) break;
         if (!sameTurn || (event.session_id && S.sessionId && event.session_id !== S.sessionId)) break;
+        if (lateStopAnswer()) break;
         S.pauseQueue?.();
-        if(event.idle){clearApprovals({drain:false});clearClarify();endStream('cancelled');addSystemMessage('No active execution to stop.');break;}
+        // The stop is one status line (stopNotice) updated in place.
+        if(event.idle){clearApprovals({drain:false});clearClarify();endStream('cancelled');stopNotice('No active execution to stop.', true);break;}
         S.stopRequested=true;setIntent('stopping');
         clearApprovals({drain:false});clearClarify();
-        if(event.requested){addSystemMessage('Stop accepted · waiting for execution to settle.');announce('Stop requested');}
-        else {endStream('interrupted');addSystemMessage('Stop outcome requires review.');S.onRecoveryNeeded?.('Stop outcome requires review');}
+        if(event.requested){stopNotice('⏹ Stopping… · waiting for execution to settle');announce('Stop requested');}
+        else {endStream('interrupted');stopNotice('⏹ Stop outcome requires review.');S.onRecoveryNeeded?.('Stop outcome requires review');}
         S.refreshSupervision?.();
         break;
 
@@ -357,9 +392,17 @@ export function connect() {
         if(event.session_id && S.sessionId && event.session_id!==S.sessionId)break;
         if(event.turn_id && S.currentTurnId && event.turn_id!==S.currentTurnId)break;
         if(S.stopRequested && event.status==='cancelled'){
-          streamFlush();endThinking();endStream('cancelled');addSystemMessage('Execution stopped. Review saved progress before continuing.');announce('Execution stopped');
+          streamFlush();endThinking();endStream('cancelled');stopNotice('⏹ Stopped · review saved progress before continuing.', true);announce('Execution stopped');
           S.onRecoveryNeeded?.('Execution stopped');kickJobsFetch();
+        } else if(S.stopRequested && event.status==='failed'){
+          // The run failed on its own while stopping: show the error held
+          // back while the stop was pending.
+          streamFlush();endThinking();endStream('interrupted');stopNotice('⏹ Stop requested · the run ended with an error', true);
+          if(S.stopError)releaseStopError();
+          else {announce('Turn failed');S.onRecoveryNeeded?.('Work failed');}
         } else if(event.status!=='completed') {S.onRecoveryNeeded?.('Work interrupted');}
+        else if(S.stopRequested && S.stopNoticeEl){stopNotice('Finished before the stop took effect.', true);}
+        S.stopError=null;
         S.paintEvidence?.();S.refreshSupervision?.();
         break;
 
@@ -418,21 +461,34 @@ export function connect() {
 
       case 'error':
         if (!sameTurn) break;
+        // A refused cancel or sub-agent stop is about that control message,
+        // not the run: the run goes on, so nothing is torn down. An error the
+        // turn sent while the stop was pending was the run's own failure.
+        if (event.refused === 'cancel') {
+          if (lateStopAnswer()) break;
+          stopRefused(event.message); announce('Stop not applied');
+          if (S.stopError) { endStream('interrupted'); setIntent(''); releaseStopError(); }
+          break;
+        }
+        if (event.refused === 'subagent_cancel') subagentStopRefused(event.task_id);
+        if (event.refused) { showToast('⚠ ' + event.message, 8000); break; }
         S.pauseQueue?.();
         streamFlush(); endThinking();
         if(S.stopRequested){setIntent('stopping');}else{endStream('interrupted');setIntent('');}
         S.lastFailedPrompt = S.lastPrompt;
-        S.onRecoveryNeeded?.('Work failed');
         // The run is unwinding on error — same approval teardown as
         // 'cancelled': a pending card would wait for an ack that never
         // comes and block the queue.
         clearApprovals();
         clearClarify();
-        addSystemMessage('⚠ ' + formatErrorMessage(event.message) + ' — Review saved progress before continuing or running again.');
         stopPlanLiveIfIdle();
-        notifyUser('turn failed', 'A turn failed');
         badgeNow();
-        announce('Turn failed');
+        // The turn's own error while the operator's stop is pending is
+        // usually the stop itself; turn_settled decides, and shows it only if
+        // the run failed. An error the turn did not send (no turn_id) is
+        // shown at once.
+        if (S.stopRequested && !S.turnEnded && event.turn_id) { S.stopError = event; break; }
+        reportTurnError(event);
         break;
 
       case 'approval_request':
@@ -653,6 +709,13 @@ function handleAgentSignal(event) {
       break;
     case 'tool_running':
       setIntent((event.tool ? event.tool + ' · ' : '') + (event.detail || 'running'));
+      break;
+    case 'llm_retry':
+      // The engine is retrying a failed provider call. Status rail only:
+      // automatic recovery adds no transcript notice or toast. The next
+      // reasoning, tool or answer frame replaces the label. A requested
+      // stop keeps its own label.
+      if (S.busy && !S.stopRequested) setIntent('provider error · retrying' + (event.detail ? ' (' + event.detail + ')' : ''));
       break;
     case 'provider_learn_fallback':
       // Rare (once per provider per fallback flag, process lifetime) and

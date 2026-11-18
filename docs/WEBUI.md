@@ -158,9 +158,11 @@ validation evidence and durable decision receipts. **Activity** contains searcha
 raw tool returns with completed, failed or unknown execution outcomes.
 
 **Settings** contains preferences, knowledge and tool administration, runtime
-diagnostics and storage maintenance. **Schedules** has its own workspace. The
+diagnostics and storage maintenance. **Schedules** has its own section on the Server tab. The
 command palette (`⌘K` / `Ctrl+K`) and slash completions share destinations;
-clear-transcript and duplicate navigation actions are removed. `/clear` gives a
+**Schedules**, **Maintenance** and **Tools** (`/schedules`, `/maintenance`,
+`/tools`) each open their section of the Server tab expanded and scrolled into
+view. Clear-transcript and duplicate navigation actions are removed. `/clear` gives a
 New session hint. `/retry` prepares the previous prompt for review without sending.
 
 **Run settings** in the top bar shows the workspace, execution mode and
@@ -172,7 +174,9 @@ or supply prices. Cost caps need configured input and output prices.
 The composer supports pointer Send/Queue, Enter to send, Shift+Enter for newlines,
 IME composition, ordinary multiline cursor editing and Alt+Up/Down history with
 draft restoration. Queued messages retain their model, reasoning and limit
-choices. Failures, stops and disconnects pause the queue.
+choices. Failures, stops and disconnects pause the messages queued at that
+moment; a queue started afterwards by a new send is not paused. A message sent
+while a stop is still settling is queued paused, with its resume control.
 
 Preferences include themes, reading size, density, notifications and connection
 permission grants with revocation. Mobile inspectors trap focus, make the
@@ -180,8 +184,9 @@ background inert, close with Escape and restore their opener. Async completion
 does not steal composer focus. Context browsing discovers files and sessions
 through the existing authenticated resolver.
 
-Automatic context trimming, tool recovery, memory maintenance and skill events
-do not create transcript notices, toasts or screen-reader announcements. Memory
+Automatic context trimming, tool recovery, provider retries, memory maintenance
+and skill events do not create transcript notices, toasts or screen-reader
+announcements; a provider retry only relabels the status rail. Memory
 that requires a decision adds a direct Knowledge review action. Connection loss
 offers Reconnect now; only interrupted work prompts saved-progress review.
 User-requested action confirmations and actionable errors remain visible.
@@ -189,24 +194,24 @@ User-requested action confirmations and actionable errors remain visible.
 ### Chat interface
 
 - **Plain text input** — type your prompt, press `Enter` to send (or queue), `Shift+Enter` for a newline
-- **Slash / palette** — typing `/` in the composer autocompletes the same items as `⌘K` (commands, sessions, models). Palette verbs also dispatch from the composer on Enter. Printable keys always type in the composer. Bodek-style JIT tips (`💡 tip: …`) dwell 8s the first time a queue, tool step, or swarm appears.
+- **Slash / palette** — typing `/` in the composer autocompletes the same items as `⌘K` (commands, sessions, models). Palette verbs also dispatch from the composer on Enter. Printable keys always type in the composer, except `?` in an empty composer, which opens the shortcut sheet. Bodek-style JIT tips (`💡 tip: …`) dwell 8s the first time a queue, tool step, or swarm appears.
 - **Long replies** — the latest assistant answer is never folded. Older overflows get a sticky `Show more ↓` / `Show less ↑` fold under the content (not a floating pill). History reload keeps the last reply open.
 - **Multi-turn sessions** — each prompt continues the same conversation (the inspector **Sessions** tab lists history)
 - **Turn evidence** — recorded file edits and checks on the assistant head; checks are aggregated by exact command, with failed or unverified outcomes retained
-- **Wake turns** — `turn_started.initiated=system` renders as `⬡ odek · wake` on the assistant head, never as a user message
-- **Busy spinner** — Bodek braille spinner in the top bar, composer rail, and transcript while a turn runs (`reasoning · 4s`). The spinner keeps moving across thinking, tools, and approval waits — removing the transcript placeholder does not freeze it.
+- **Wake turns** — `turn_started.initiated=system` renders as `⬡ odek · wake` on the assistant head, never as a user message; on reload, the turn opened by the persisted `bg-wake` record gets the same label on its first reply
+- **Busy spinner** — Bodek braille spinner in the top bar, composer rail, and transcript while a turn runs (`reasoning · 4s`). The spinner keeps moving across thinking, tools, and approval waits — removing the transcript placeholder does not freeze it. While an approval or question card is open the label reads `waiting for your approval` / `waiting for your answer` instead of the tool that asked; once Stop is pressed it reads `stopping`, card or not, until the stop is refused or the turn ends.
 - **Live plan & jobs** — Bodek header chips (`plan 1/4`, `● 2 jobs` / `✗ job`) stay visible when idle; click opens the inspector Now tab. While a turn runs the status rail appends `▸ plan 2/5 · <active step> · ⛔N`. Plan progress is agent-reported; the UI refreshes persisted state after tool results and provides a verification action.
 - **Markdown** — hand-written tokenizer (zero deps, no CDN): headings, lists, task lists, quotes, GFM tables, fenced code with copy, emphasis, strikethrough, allowlisted links/autolinks (autolink candidates are capped at 2048 characters so rendering stays linear on hostile text). Images are caption links, never `<img>` (CSP + no remote fetch). Streaming-safe: an open fence still renders; an open `**` stays literal. Reloaded user turns show the text the operator typed (`principal_prompt`) with attachment chips; expanded `@`-reference bodies and system-initiated `bg-*` records are never rendered as operator text.
 - **Live streaming** *(on by default; `--no-stream` / `stream: false` / `ODEK_STREAM=false`)* — answer and reasoning fragments arrive as they are generated (`token_delta` / `thinking_delta`) and render through the same rAF-batched pipeline; streaming state is in the health popover. Providers that reject SSE fall back silently to the bulk path.
-- **Reasoning, partial replies, and tools** — one sequential log per turn. Reasoning is collapsed behind a **▶ thinking** toggle (hidden by default; click to expand). Visible assistant text (`token_delta` / `token`, including DeepSeek/GLM mid-turn “Let me look…” replies) is a timeline row sealed when a tool starts so the next tokens open a new row instead of concatenating the turn. Tool heads sit in that same stream in arrival order. Tool args and results stay collapsed until the head is opened; long results truncate behind “show all”. History replays the same interleaved log.
+- **Reasoning, partial replies, and tools** — one sequential log per turn. Reasoning is collapsed behind a **▶ thinking** toggle (hidden by default; click to expand). Visible assistant text (`token_delta` / `token`, including DeepSeek/GLM mid-turn “Let me look…” replies) is a timeline row sealed when a tool starts so the next tokens open a new row instead of concatenating the turn. Tool heads sit in that same stream in arrival order. Tool args and results stay collapsed until the head is opened (the head shows the result's summary, such as `3 matches`); long results show a page of lines at a time behind “Show next … lines”. History replays the same interleaved log.
 - **Revised drafts and unverified answers** — the loop can re-ask the model after a final-looking reply (`answer_superseded`), so a streamed reply stays hidden until it is final (the status reads `composing`, then `verifying answer`). It shows when a tool call proves it a progress note, verification returns `pass` or `uncertain`, bulk `token` text arrives (never superseded), or the turn ends. An answer is never shown, folded, and re-streamed: the replaced draft appears only as a collapsed `⋯ draft revised (verification|completion check)` row (click to expand), and the revised reply is the answer. `done.verified == "fail"` adds a `✗ unverified` chip to the answer's sender line. Every turn that ends with a stored answer (including a budget-exceeded, failed or cancelled one) sends any missing answer text before its terminal frame, so the client and a REST run result end on the stored text. History replays both: `superseded` records fold the same way, and answers persisted with the verification-failed marker show the chip instead of the marker text.
-- **Sub-agent swarm** — `delegate_tasks` uses the same spine as a tool step (`▶ ▸ ⑂ delegate_tasks · 1/2 agents`) plus an always-on chip strip (`⟳ SA1 <goal|tool>`). Click a chip (or the head) for the `⎿` log and summary; the inspector Now tab still lists every agent.
+- **Sub-agent swarm** — `delegate_tasks` uses the same spine as a tool step (`▶ ▸ ⑂ delegate_tasks · 1/2 agents`) plus an always-on chip strip (`⟳ SA1 <goal>`, with the current tool and step as the chip's status while it runs; live and reloaded chips carry the same goal label). Click a chip (or the head) for the `⎿` log and summary; the inspector Now tab still lists every agent.
 - **Inline approvals** — dangerous operations block the run and show a decision card (risk class, plain-language explanation, verbatim command). Friction mode (after 3 same-class approvals in 60s) requires typing the literal word `approve`; a Trust click counts as an approval toward that window, so trust granted on the third approval within 60s is overridden by friction (the next prompt of that class still asks) until the window expires; `trust session` is hidden for destructive, blocked, unknown, persistence, unread_exec and multi-tool batch cards. Class badges: `network_upload` shows 📤 (warn: sends local files or data out, uses credentials, or opens a listener or tunnel) beside `network_egress` 🌐, `destructive`/`unknown`/`blocked`/`persistence` (🪝)/`unread_exec` (📜) are danger-level, and a class without its own badge falls back to the generic 🛡️ warn card with the class name in the header. The command and description are shown with control, escape, bidi and invisible characters replaced by visible escapes, and an over-long command keeps its head and tail around a `…[N more bytes]` marker. Keyboard: `A` approve, `D` deny, `T` trust
 - **Clarify** — when the agent needs a decision, a question card waits for a typed answer (5 minute wait). Bound to that WebSocket session; headless REST runs do not register the tool.
-- **Cancel** — the ✕ button cancels the running prompt over the WebSocket (`cancel` message), with the REST endpoint as fallback
+- **Cancel** — the Stop button cancels the running prompt over the WebSocket (`cancel` message), with the REST endpoint as fallback. It appears to the left of the persistent top-bar controls, so showing it never moves them
 - **Model switching** — the picker lists `GET /api/models` (provider `ListModels` catalog, configured model marked current, with context sizes) plus an "Other…" free-text entry; switches apply from the next prompt
 - **History navigation** — `↑`/`↓` arrows cycle through your previous prompts (stored in `localStorage`)
-- **Keyboard shortcuts** — `?` toggles the cheat sheet (`Enter`, `@` completion, `⌘K` palette, `⌘.` inspector, `Alt+R` retry, `A/D/T` approvals). Browser `⌘F` / `⌘R` are left alone.
+- **Keyboard shortcuts** — `?` toggles the cheat sheet (`Enter`, `@` completion, `⌘K` palette, `⌘.` inspector, `Alt+R` retry, `A/D/T` approvals) when focus is outside a text field or in the empty composer, on any keyboard layout; a `?` typed into other fields or after text is left alone. Browser `⌘F` / `⌘R` are left alone.
 - **File attachments** — drag-and-drop files onto the chat area, or use the paperclip button. Attached files appear as chips with filename, size, and a remove button. 5 MB per file, 10 MB total per prompt; content crosses the trust boundary wrapped in the untrusted-content envelope
 
 ### Server status & heartbeat
@@ -218,7 +223,9 @@ A dropped socket is **not** lamp-only. The top-bar word turns amber (`reconnecti
 ### Inspector (`⌘.`)
 
 The task drawer has Overview, Deliverables and Activity tabs. Sessions use the
-left rail on wide screens and a drawer on smaller screens. Settings separates
+left rail on wide screens and a drawer on smaller screens; choosing a session or
+starting a new one closes the drawer and returns focus to the menu button (the
+composer for a new session). Settings separates
 Preferences, Knowledge, Runtime diagnostics and Maintenance; Schedules opens
 scheduled work separately. Existing memory, skill promotion, tool schemas,
 headless runs, events, config and connection controls remain available there.
@@ -236,8 +243,48 @@ or interrupted decisions, are redacted and bounded to the latest 128 per session
 and are kept separate from model context. Temporary trust survives session
 switches on that connection, and can be revoked in Preferences.
 
-Stops show **Stopping…** on the request acknowledgement, then **Stopped** only
-on execution settlement. Completed side effects are preserved and background
+Stops show **Stopping…** as soon as Stop is pressed (kept through the server's
+acknowledgement), then **Stopped** only on execution settlement — one
+transcript status line that updates in place. Once it shows the outcome the
+line is final: a later stop writes a line of its own, and the server's answer
+(an acknowledgement or a refusal) to a stop whose line already shows the
+outcome (the turn ended first) adds nothing — unless another turn has opened
+since, in which case the answer is applied to that turn. The REST fallback is
+used only while the socket is down, and a dropped socket already cancels the
+running prompt on the server, so its line asks to reconnect and review saved
+progress; that line is not final, so a stop sent again before the next turn
+updates it instead of writing another. From the moment Stop is pressed, new
+work the run sends (tool calls, reasoning, sub-agent progress, approval and
+question requests) is not shown; results of steps already shown, answer text
+and sub-agent finishes still land, so a turn that finishes before the stop
+takes effect ends on its ordinary answer.
+The error frame a stopped run unwinds with is not shown as a failure; only a
+run that settles `failed` while stopping shows its error (and notifies like any
+failed turn), and a held error is shown when the connection drops while the
+stop is still unanswered (once the server has acknowledged the stop, the error
+is the stop's own unwinding and is dropped). Only the turn's own error (one
+carrying its `turn_id`) is held for that; any other error shows at once. A stop
+the server refuses (an `error` with `refused: "cancel"`), or whose REST
+fallback fails, is taken back: the run is followed again from the refusal on
+(work it sent while the stop was pending is not shown live; reloading the
+session shows it; an approval or question requested in that time is not shown
+either, and the run waits on it until it expires), steps and sub-agent cards
+marked stopping show as they were (cards with their stop button armed again),
+Stop returns, and the stop line reads **Stop not applied: …** with the reason.
+An error the turn sent while that stop was pending is then shown as the run's
+failure. The prompt queue stays paused, with its resume control.
+An answer the
+provider did not finish (`[Partial response: interrupted|truncated|refused]`
+in the stored text) shows a `◐ partial · <reason>` chip (and a muted *no content* placeholder when it has no text) on its sender line
+instead of the marker, live and on reload, and a stopped stream is not kept
+as a folded duplicate beside it. On reload, the server's `[Turn aborted: …]`
+note that closes a failed or cancelled turn is shown as a system notice, as
+the live failure line was, never as the agent's answer; the saved partial text
+before it stays an answer. The server stamps that note with the message name
+`turn-abort` (`session.TurnAbortNoteName`), which model replies never carry
+and providers never receive, and the client keys on the name, never on the
+text: assistant text in the same format, and notes saved before the stamp
+existed, stay the agent's text. Completed side effects are preserved and background
 jobs have independent lifetimes. Recovery waits for execution ownership to be
 released and lists recorded returns, failures and uncertain outcomes. Continue
 uses persisted context plus a checked revision/generation; Prepare to run again
@@ -271,7 +318,7 @@ Each assistant message's stats footer also gains a per-turn cost (`◈`) when pr
 
 ### Inline loading indicator
 
-While a turn is running, Bodek's braille spinner (`⠋⠙⠹…`, 12 fps) appears in the top bar (`#busy-spin`) and the composer status rail (`#intent-rail`); operator sends also get a compact `.loading-indicator` under the last message until the first thinking/tool/answer lands. The spinner keeps moving while tools, approvals, or long LLM calls are in flight — dropping the transcript placeholder does not freeze it. The label stays stable (`reasoning` → tool progress → `composing`) with elapsed time and the live plan strip — it does not cycle verbs. `prefers-reduced-motion` freezes the braille glyph at `⠿`; tool-head CSS spinners still rotate (they are wait-state status). Wake and remote turns arm the top-bar and rail. The chrome clears on `done` / cancel / error.
+While a turn is running, Bodek's braille spinner (`⠋⠙⠹…`, 12 fps) appears in the top bar (`#busy-spin`) and the composer status rail (`#intent-rail`); operator sends also get a compact `.loading-indicator` under the last message until the first thinking/tool/answer lands. The spinner keeps moving while tools, approvals, or long LLM calls are in flight — dropping the transcript placeholder does not freeze it. The label stays stable (`reasoning` → tool progress → `composing`) with elapsed time and the live plan strip — it does not cycle verbs. While the engine retries a failed provider call the label reads `provider error · retrying (HTTP 503, attempt 2 of 8)` (from the `llm_retry` signal) until the next reasoning, tool or answer frame replaces it; the retry adds nothing to the transcript. `prefers-reduced-motion` freezes the braille glyph at `⠿`; tool-head CSS spinners still rotate (they are wait-state status). Wake and remote turns arm the top-bar and rail. The chrome clears on `done` / cancel / error.
 
 ### Smart autoscroll
 
@@ -348,12 +395,12 @@ server resolves and wraps it as untrusted content.
 
 ### `GET /api/models`
 
-The provider's `ListModels` catalog plus the configured model (always present, `current: true`). Context windows come from the provider, then the last-resort table, else 0. Capped at 256 entries. `/api/profiles` is retired.
+The provider's `ListModels` catalog plus the configured model (always present, `current: true`). Context windows come from the provider, then the last-resort table, else 0. The description labels a window as providers advertise it: decimal sizes in thousands or millions (`128000` → `128K`, `1000000` → `1M`), power-of-two sizes in binary units (`131072` → `128K`). Capped at 256 entries. `/api/profiles` is retired.
 
 ```jsonc
 [
-  { "id": "glm-5.3-flash", "max_context": 1000000, "description": "GLM 5.3 Flash — 976K ctx", "current": true },
-  { "id": "glm-5.3", "max_context": 1000000, "description": "GLM 5.3 — 976K ctx" }
+  { "id": "glm-5.3-flash", "max_context": 1000000, "description": "GLM 5.3 Flash — 1M ctx", "current": true },
+  { "id": "glm-5.3", "max_context": 128000, "description": "GLM 5.3 — 128K ctx" }
 ]
 ```
 
@@ -593,7 +640,15 @@ Failed runs keep their session linkage: the user prompt is persisted to the
 session before the first LLM call, and a failed turn closes with an explicit
 `[Turn aborted: …]` assistant note instead of ending on a dangling tool call —
 `run.session_id` is therefore always populated and the transcript never loses
-the prompt. Operational diagnostics, including provider failures after retries,
+the prompt. For a provider failure the WebSocket `error` frame and the run's
+`error` carry the same phrased text (provider, HTTP status, the provider's
+message, attempts made). The note stays in the session and is read back by
+the model on the next turn, so it names only the provider, the HTTP status and
+the attempts (`[Turn aborted: provider openai returned HTTP 500 (retries
+exhausted after 8 attempts). …]`); a failed model call the server cannot
+classify, whose error text may be the provider's own words, is noted only as
+`the call to provider <id> failed`. The run's runtime events keep the typed
+error class and HTTP status. Operational diagnostics, including provider failures after retries,
 are written to the unified `~/.odek/runtime.log` and can be queried with
 `odek logs`. The metadata-only log records run/turn lifecycle, statuses,
 durations, and bounded error codes, never prompt or completion content. See
@@ -801,7 +856,7 @@ The UI communicates entirely over a single WebSocket at `/ws`. Messages are newl
 | `subagent_state` | Per-task sub-agent lifecycle transition (`started`/`active`/`finished`); child emits `subagent_started`/`subagent_progress`/`subagent_finished` records over the same protocol. A sub-agent killed without reporting (user stop, turn cancel, timeout, flood-kill, crash) gets its terminal `finished` transition emitted by the parent instead, so cards never stay `running` | `task_idx`, `task_id`, `run_key`, `phase`, `status`, `step`, `iterations`, `tool`, `duration_seconds`, `tokens_used` |
 | `done` | Agent finishes — **emitted only after the session is persisted**, so refreshing session state on `done` is race-free | `latency` (seconds), `windowTokens` (final parent conversation window), `maxContextTokens` (resolved model limit; omitted when unknown), `inputTokens` (run-cumulative input across all calls, incl. sub-agent spend — billing), `outputTokens`, `cacheCreationTokens`, `cacheReadTokens`, `cachedTokens`, `sessionContextTokens`, `sessionOutputTokens`, plus optional last-call speed fields (see [Generation speed](#generation-speed-external-clients)), `llmDurationMs` (sum of main think-step LLM calls this run) and `verified` (`pass`/`fail`/`uncertain`/`skipped`; omitted when verification did not run) |
 | `usage` | After each LLM iteration of a running turn | `windowTokens`, `maxContextTokens` (omitted when the model limit is unknown), `inputTokens` (run-cumulative billing input), `outputTokens` (run-cumulative) (camelCase — `windowTokens` is the parent-only window size that drives the metrics gauge; child rounds and side-call summaries never move it), plus optional this-call speed fields (see [Generation speed](#generation-speed-external-clients)) |
-| `error` | Agent or server error | `message` |
+| `error` | Agent or server error. A failed provider call reads as a sentence: provider, HTTP status, the first line of the provider's message (redacted, escaped, shortened) and the attempts made — e.g. `provider openai returned HTTP 500: upstream unavailable (retries exhausted after 8 attempts)` — without the engine's `iteration N:` prefix or the SDK's `[retryable]` tag; the raw error stays in the runtime log and events. Such a frame carries `phrased: true` and the WebUI shows it as sent; other errors (a request that timed out with no reply, a stalled stream) keep the WebUI's hints, such as raising `llm.request_timeout_seconds`. A `cancel` or `subagent_cancel` the server will not apply (missing or unknown session, wrong token, no task, or `rate limit exceeded` once the lookup budget is spent) is answered with an `error` that carries `refused` (the refused message type) and no `turn_id`: the targeted run goes on. A refused `subagent_cancel` also names its `task_id` (when the message carried one). The WebUI takes such a stop back — Stop shows again and the stop line says why — and shows a refused sub-agent stop as a toast, giving that card its status and stop button back, without ending the turn | `message`, `phrased` (provider failures only), `refused` (`cancel` or `subagent_cancel`, refusals only), `task_id` (refused `subagent_cancel` only) |
 | `approval_request` | Agent needs user approval for dangerous operation; blocks the run up to `timeout_seconds` (60s default) | `id`, `risk` (class name), `command` (or resource), `description`, `is_operation`, `allow_trust`, `friction`, `friction_approvals`, `timeout_seconds` (the effective server-enforced wait in seconds — render the card's countdown from it) |
 | `approval_ack` | Server confirms an approval response | `id`, `action` |
 | `approval_expired` | Server declares the approval dead after `timeout_seconds` elapsed with no response — autoclose the matching card; late `approval_response` frames for the id are dropped | `id` |
@@ -813,7 +868,7 @@ The UI communicates entirely over a single WebSocket at `/ws`. Messages are newl
 | `clarify_expired` | Server declares the question dead after `timeout_seconds` with no answer | `id` |
 | `skill_event` | Skill lifecycle event (`loaded`/`autoloaded`/`used`/`deleted` — `skill_save`/`skill_patch` were removed with the self-learning feature) | `event`, `skill_name`, `skills`, `heuristic` |
 | `memory_event` | Memory lifecycle event | `event`, `target`, `session_id`, `content`, `count`, `new_count`, `untrusted` |
-| `agent_signal` | Agent self-observability signal. `provider_learn_fallback` (once per provider per SDK fallback flag, per connected client) means the provider rejected streaming or a request parameter — e.g. the buffered downgrade ends live reasoning/token deltas for that provider; the WebUI toasts `detail`. Frames are process-global: every connected client sees them and a client connecting after the fallback does not get a replay | `event`, `detail`, `tool`, `count`, `kind`/`provider` (learn fallback only) |
+| `agent_signal` | Agent self-observability signal. `provider_learn_fallback` (once per provider per SDK fallback flag, per connected client) means the provider rejected streaming or a request parameter — e.g. the buffered downgrade ends live reasoning/token deltas for that provider; the WebUI toasts `detail`. Frames are process-global: every connected client sees them and a client connecting after the fallback does not get a replay. `llm_retry` is sent to the connection running the turn each time the main model call starts another HTTP attempt after a failed one the SDK backs off on (a learn-once fallback resend after a provider 400 is not a retry and is not counted, but it uses a request of the ladder, so the budget named after it is one lower): `count` is the number of the attempt starting, `detail` names the failed status and the attempt budget (`HTTP 503, attempt 2 of 8`; `no response, attempt 3 of 8` when the attempt got no HTTP reply); the WebUI shows it on the status rail only | `event`, `detail`, `tool`, `count`, `kind`/`provider` (learn fallback only) |
 | `bg_job` | Background-job transition (start / exit). Upsert by `job_id`. Terminal frames add `exit_code`, `duration_ms`, `output_bytes`, `command_head` | `job_id`, `session_id`, `status` |
 | `bg_wake` | Server is starting a system-initiated wake turn after an idle job completes | `session_id` |
 
@@ -971,6 +1026,30 @@ closing tag repeats the opening nonce — treat envelopes whose nonces don't
 match as plain text. The bundled WebUI implements this in
 `cmd/odek/ui/js/untrusted.js`.
 
+A tool that wraps its own output (`shell`, `bg_output`, `delegate_tasks`, …)
+is wrapped again by the engine, so its envelope arrives inside the outer one
+in neutralised form: `‹untrusted·content_<nonce> source="…">` …
+`‹/untrusted·content_<nonce>>` (`‹` is U+2039, `·` U+00B7). Envelopes in JSON
+string fields keep a plain `<` (`<untrusted·content_<nonce> …>`), because the
+JSON encoder escaped it before neutralisation. That is true of a field the
+tool wrapped on its own (an envelope forged inside such a field arrives with
+`‹`), but equally of an envelope the text itself carried where nothing
+neutralised it: a tool that marshals first and wraps its whole output
+(`web_search`, MCP tools), a field the tool never wraps (a `write_file` path,
+an error quoting a URL), tool arguments. Content inside a tool's own envelope
+is neutralised the same way, so the `‹` form alone proves nothing either. For
+display the WebUI removes the `‹` form only for a tool that wraps its whole
+output (`shell`, `bg_output`, `delegate_tasks`, `artifact_read`, `web_search`,
+`session_search`, `skill_load`, and MCP tools, named `<server>__<tool>`), and
+only when that envelope opens a real envelope's body — preceded by nothing,
+`error: ` or the guard's security notice — and closes at its very end with the
+same nonce; and the `<` form only in the fields the server wraps one by one
+(the `WRAPPED_FIELDS` table in `untrusted.js`: `read_file` `content`,
+`search_files` match paths and lines, `browser` `title`/`url`/`content`, …)
+when the whole value is one envelope. Every other field is shown as received,
+framing included. Each string is unwrapped once, so an envelope forged inside
+the content stays visible text. Raw, Copy and Save keep the received payload.
+
 ## Implementation details
 
 ### Server stack (`cmd/odek/`)
@@ -999,7 +1078,7 @@ match as plain text. The bundled WebUI implements this in
 - Vanilla JS + CSS SPA split into native ES modules under `js/` — no build step, no bundler, no CDN. Module map: `main` (init/theme/keyboard) · `commands` (⌘K palette + 5 composer slash verbs) · `tools` (typed result chips) · `ws` (protocol v2 + `turn_started`/`bg_job`) · `api` (typed REST client) · `sessions` · `panels` (inspector workspaces: sessions / now / results / memory / ops / manage) · `plan` · `health` (heartbeat + notifications) · `render`/`markdown`/`untrusted` · `transcript` (DOM budget, history windows) · `approvals` · `input` (send, queue, `@`, attachments) · `state`/`dom`/`utils`/`net`/`escape`
 - **Escaping**: all server-controlled strings are inserted escaped (`escapeHtml`/`escapeAttr`/`textContent`); `markdownToHtml` HTML-escapes all input by default and allowlists link schemes — see "Content sanitization contract" above. No inline scripts or handlers anywhere (CSP `script-src 'self'`); generated content uses event delegation
 - **Untrusted envelope**: `js/untrusted.js` unwraps the model-facing `<untrusted_content_*>` envelope before display (body shown; source discarded)
-- **Design**: self-contained themes — Match system (the default: Ember dark or Porcelain light, following the OS colour scheme live), Ember, Porcelain, Midnight and High contrast. Locally bundled Geist serves reading/interface text, Space Grotesk the display headline and Geist Mono code (ligatures off, 4-space tabs). Reading text defaults to 15px (17/19px selectable); compact density tightens the interface scale. One header row on every width (52px, 44px in compact density); below 1100px the session rail and inspector are drawers with a scrim that closes them, from 1100px they dock as columns and the inspector is resizable. One token set per theme defines colours, spacing, radii and type; reduced motion is respected. Structured tool views render `glob` as a file list and `tree` as an indented outline (Raw shows the original JSON). No CDN or font network request is required.
+- **Design**: self-contained themes — Match system (the default: Ember dark or Porcelain light, following the OS colour scheme live), Ember, Porcelain, Midnight and High contrast. Locally bundled Geist serves reading/interface text, Space Grotesk the display headline and Geist Mono code (ligatures off, 4-space tabs). Reading text defaults to 15px (17/19px selectable); compact density tightens the interface scale. One header row on every width (52px, 44px in compact density) that never scrolls sideways: Stop and the persistent controls always stay visible, plan/jobs chips drop whole when space runs out, below 1100px a waiting decision replaces the `connected` word, and phones show the attention chip's count alone (the full phrase is its accessible name); below 1100px the session rail and inspector are drawers with a scrim that closes them, from 1100px they dock as columns and the inspector is resizable. One token set per theme defines colours, spacing, radii and type; reduced motion is respected. Structured tool views render `glob` as a file list and `tree` as an indented outline (Raw shows the original JSON). No CDN or font network request is required.
 - **Streaming**: fragments (`token_delta`/`thinking_delta`) and bulk `token` events share one rAF-batched render pipeline
 - **DOM budget** (`js/transcript.js`): the transcript is capped at 300 rendered rows (`MAX_UNITS`), counting every row inside a turn's stream as well as top-level messages, so one long turn with hundreds of tool steps stays bounded. The oldest rows are trimmed first; live work (the streaming answer, open reasoning, running sub-agents, tool steps still waiting for a result) is never trimmed. While you are scrolled up reading, trimming waits until 600 rows, then removes only rows wholly above the screen and keeps your view in place (past 1,200 rows the oldest go regardless). A note at the top says when earlier rows are hidden
 - **Long sessions**: opening a session renders only its newest ~150 rows; **Show earlier** at the top renders the previous window above, without moving what is on screen. Rows trimmed from a live turn come back with **Reload earlier history** once the turn finishes (the session is persisted every step; the reload re-renders the transcript only — the connection, queue and plan are untouched — and opens at the top of its window, beside **Show earlier**). Long replies fold once measured and are re-measured when the window, inspector width, reading size or density changes. Tool output is rendered when a step is first expanded, reasoning blocks keep their newest 400 lines and sub-agent chip logs their newest 200; the persisted session always holds everything
@@ -1088,7 +1167,7 @@ omit mode to retain immediate consolidation.
 Text drafts survive reloads within the browser tab. Attachment drafts survive
 session switches in memory; reattach them after a reload. Queues pause on
 interruption and session changes and require an explicit resume in their owning
-session. Uploads that finish after a session switch cannot attach to the new
+session; once a paused queue is empty, the next send starts an unpaused one. Uploads that finish after a session switch cannot attach to the new
 conversation. Plan result links show temporal association with an active step;
 they do not claim that a tool result validates the step.
 
@@ -1135,8 +1214,9 @@ Live, historical and Results inspector views use the same presentation models.
 | Tools | Structured presentation |
 | --- | --- |
 | `plan` | Version/progress summary and step states: pending, in progress, done, blocked. Requested changes remain distinct from returned state. |
-| `read_file`, `write_file`, `patch`, `diff` | Content extracted from the actual tool DTO, write outcomes, and unified/split diff rendering. |
+| `read_file`, `write_file`, `patch`, `diff` | Content extracted from the actual tool DTO, write outcomes, and unified/split diff rendering. A `patch` card shows its `+N −M` size and expands (▸) to the diff; `write_file` returns only its outcome and path, so its card has no content. Edited paths are shown relative to the workspace. |
 | `search_files` | File matches with counts/skipped paths. |
+| `http_request` | Status card (returned HTTP status and response size; failed only on a transport error) with the checked URL as a source link. |
 | `checksum`, `head_tail` | Per-file detail groups. |
 
 Nested result bodies are built only when opened. Inline collections initially

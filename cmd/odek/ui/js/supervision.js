@@ -2,8 +2,9 @@ import { S, getSessionToken, ensureSessionToken } from './state.js';
 import { apiFetch, getSession } from './api.js';
 import { apiHeaders, wsSend } from './net.js';
 import { openTab } from './commands.js';
-import { openDialog, closeDialog, announce, showToast } from './utils.js';
+import { openDialog, closeDialog, announce, showToast, paintAttentionChip, plural } from './utils.js';
 import { send } from './input.js';
+import { setWorkspaceRoot } from './toolviews.js';
 
 const byId=id=>document.getElementById(id);
 const runSettings=byId('run-settings');
@@ -24,7 +25,7 @@ function paintLimits(){
 }
 for(const [,,id] of DIMENSIONS)byId(id)?.addEventListener('input',paintLimits);
 byId('model-picker')?.addEventListener('change',()=>queueMicrotask(paintLimits));
-apiFetch('/api/workspace').then(data=>{workspace=data;S.workspace=data;byId('execution-scope').textContent=data.workspace+' · '+(data.sandbox?'Docker sandbox':'Local execution');
+apiFetch('/api/workspace').then(data=>{workspace=data;S.workspace=data;setWorkspaceRoot(data.workspace);byId('execution-scope').textContent=data.workspace+' · '+(data.sandbox?'Docker sandbox':'Local execution');
  const policy=node('details','permission-policy');policy.appendChild(node('summary','','Permission policy'));
  for(const [cls,value] of Object.entries(data.policy||{}))policy.appendChild(node('p','management-note',cls.replaceAll('_',' ')+': '+value));byId('effective-limits').parentNode.appendChild(policy);paintLimits();
 }).catch(()=>{byId('execution-scope').textContent='Execution context unavailable · check server connection';});
@@ -43,14 +44,14 @@ S.refreshSupervision=()=>{
  const approvalCount = S.approvalQueue?.length || (S.activeApprovalId ? 1 : 0);
  if(S.activeClarifyCard)items.push(['Answer the agent',()=>{S.closePanels?.();S.activeClarifyCard.scrollIntoView?.({block:'center'});S.activeClarifyCard.querySelector('textarea')?.focus();}]);
  for(const step of S.plan?.steps||[])if(step.status==='blocked')items.push(['Blocked: '+step.title,()=>S.requestFollowup('Help resolve blocked step '+step.id+': '+step.title)]);
- if(S.failedChecks)items.push([S.failedChecks+' failed checks · review evidence',()=>openTab('outputs')]);
+ if(S.failedChecks)items.push([plural(S.failedChecks,'failed check')+' · review evidence',()=>openTab('outputs')]);
  if(S.recoveryReason)items.push(['Interrupted work · review saved progress',()=>reviewRecovery()]);
  if(S.knowledgeNeedsReview)items.push(['Review memory before allowing reuse',()=>openTab('memory')]);
  for(const item of S.agentAttention?.values() || [])items.push([item.label+' · '+item.status,()=>S.requestFollowup('Review delegated work: '+item.label+'. Verify its evidence and continue unfinished work.')]);
- const activeJobs=(S.jobs||[]).filter(job=>job.status==='running');if(!S.busy && activeJobs.length)items.push([activeJobs.length+' background jobs still running',()=>openTab('now')]);
+ const activeJobs=(S.jobs||[]).filter(job=>job.status==='running');if(!S.busy && activeJobs.length)items.push([plural(activeJobs.length,'background job')+' still running',()=>openTab('now')]);
  if(!items.length && !approvalCount)root.appendChild(node('p','management-note','Nothing needs your decision.'));
  for(const [label,fn] of items)root.appendChild(action(label,fn));
- const chip=byId('attention-chip');if(chip){chip.hidden=!(items.length||approvalCount);chip.textContent=(items.length+approvalCount)+' need attention';}
+ paintAttentionChip(byId('attention-chip'),items.length+approvalCount);
 };
 
 let recoveryVersion=0;

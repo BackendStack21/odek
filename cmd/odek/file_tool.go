@@ -2022,36 +2022,36 @@ func (t *fileInfoTool) Call(argsJSON string) (result string, err error) {
 		return jsonError(err.Error())
 	}
 
+	// The reported path is wrapped as untrusted on every branch: the Web UI
+	// shows this field without its envelope, so it must always have one.
+	wrappedPath := func() string { return wrapUntrusted(t.toolCtx(), "file_info:"+args.Path, args.Path) }
+
 	// Lstat — doesn't follow symlinks, tells us if it's a symlink
 	lInfo, err := os.Lstat(args.Path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return jsonResult(fileInfoResult{
-				Path:  args.Path,
+				Path:  wrappedPath(),
 				Error: fmt.Sprintf("file not found: %s", args.Path),
 			})
 		}
 		return jsonResult(fileInfoResult{
-			Path:  args.Path,
+			Path:  wrappedPath(),
 			Error: fmt.Sprintf("cannot stat %q: %v", args.Path, err),
 		})
 	}
 
-	fi := fileInfoResult{
-		Path:      args.Path,
+	// file_info output originates from the filesystem trust boundary, so
+	// the returned path is marked as untrusted.
+	return jsonResult(fileInfoResult{
+		Path:      wrappedPath(),
 		Size:      lInfo.Size(),
 		ModTime:   lInfo.ModTime().UTC().Format(time.RFC3339),
 		Mode:      lInfo.Mode().String(),
 		IsDir:     lInfo.IsDir(),
 		IsSymlink: lInfo.Mode()&os.ModeSymlink != 0,
 		IsRegular: lInfo.Mode().IsRegular(),
-	}
-
-	// file_info output originates from the filesystem trust boundary, so
-	// mark the returned path as untrusted.
-	fi.Path = wrapUntrusted(t.toolCtx(), "file_info:"+args.Path, fi.Path)
-
-	return jsonResult(fi)
+	})
 }
 
 // Ensure tools implement odek.Tool

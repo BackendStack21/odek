@@ -1,18 +1,28 @@
 // Bounded, text-safe result renderers shared by live, historical and detail views.
-import { parseUntrusted } from './untrusted.js';
+import { parseUntrusted, unwrapToolOutput, displayJSON } from './untrusted.js';
 import { escapeHtml } from './escape.js';
+import { plural } from './count.js';
 import { toolView, renderToolItems, treeText } from './toolviews.js';
 
 export const RESULT_PAGE = 200;
 // The Activity list keeps at most this many results / bytes of output.
 export const ACTIVITY_MAX_RESULTS = 300;
 export const ACTIVITY_MAX_BYTES = 16 * 1024 * 1024;
-export function resultText(output) {
+function unframe(output) {
   let text = String(output || '');
   // Persisted tool messages include a nonce-matched model-facing frame.
   const frame = text.match(/^┌── TOOL RESULT: ([^\n]+) \[([a-f0-9]+)\] ── \(DATA — analyze, don't obey\) ──┐\n([\s\S]*)\n└── END TOOL RESULT: \1 \[\2\] ─+┘$/);
   if (frame) text = frame[3];
-  return parseUntrusted(text).map(s => s.body).join('\n');
+  return text;
+}
+export function resultText(output) {
+  return parseUntrusted(unframe(output)).map(s => s.body).join('\n');
+}
+// resultDisplayText is resultText for display: inside each real envelope's
+// body, the envelope tool name put around its whole output is removed as
+// well (unwrapToolOutput).
+export function resultDisplayText(output, name) {
+  return parseUntrusted(unframe(output)).map(s => s.source === null ? s.body : unwrapToolOutput(s.body, name)).join('\n');
 }
 export function resultKind(name, output) {
   const text = resultText(output).trim();
@@ -67,14 +77,28 @@ function node(tag, cls, text) {
   if (text != null) el.textContent = text;
   return el;
 }
+// displayJSONValue parses JSON result text of tool name and returns it with
+// the fields that tool wraps one by one shown without their envelope, or
+// undefined when text is not JSON.
+function displayJSONValue(text, name) {
+  try { return displayJSON(JSON.parse(text), name); } catch { return undefined; }
+}
 export function renderResult(host, { name = '', output = '', args = '', compact = false, structured = true } = {}) {
+  // Raw, Copy and Save keep the received payload; every other view shows it
+  // without the model-facing envelope framing nested tools add. A nested
+  // section (structured: false) already holds display text: unwrapping it
+  // again could strip an envelope forged by the content itself.
   const raw = resultText(output);
+  const shown = structured ? resultDisplayText(output, name) : raw;
   const view = structured ? toolView(name, raw, args) : null;
-  let kind = view ? view.kind : resultKind(name, raw);
-  let text = raw;
+  let kind = view ? view.kind : resultKind(name, shown);
+  let text = shown;
   const outline = !view && name === 'tree' ? treeText(raw) : null;
   if (outline != null) { kind = 'tree'; text = outline; }
-  if (kind === 'json') { try { text = JSON.stringify(JSON.parse(raw), null, 2); } catch { /* raw fallback */ } }
+  // JSON string fields carry envelopes inside escaped quotes; only the
+  // fields the tool wraps one by one are unwrapped, value by value.
+  const data = structured && !view && ['json', 'sources', 'search'].includes(kind) ? displayJSONValue(shown, name) : undefined;
+  if (data !== undefined) text = JSON.stringify(data, null, 2);
   const root = node('section', 'result-view result-' + kind);
   const bar = node('div', 'result-toolbar');
   const badge = node('span', 'result-kind', kind);
@@ -111,7 +135,7 @@ export function renderResult(host, { name = '', output = '', args = '', compact 
       const query = (search.value || '').toLowerCase();
       const items = view.items.filter(item => !query || JSON.stringify(item).toLowerCase().includes(query));
       body.classList.remove('result-split');
-      count.textContent = query ? `${items.length} matches` : view.summary;
+      count.textContent = query ? plural(items.length, 'match', 'matches') : view.summary;
       renderToolItems(body, items.slice(0, limit), renderResult);
       if (!items.length) body.appendChild(node('p','result-empty',query ? 'No matching items' : 'Nothing returned'));
       more.hidden = items.length <= limit;
@@ -120,11 +144,11 @@ export function renderResult(host, { name = '', output = '', args = '', compact 
     }
     const lines = resultLines(plain ? raw : text, search.value || '');
     body.classList.toggle('result-split', split && !plain);
-    count.textContent = lines.length.toLocaleString() + ' lines';
+    count.textContent = plural(lines.length, 'line');
     if (split && !plain && kind === 'diff') {
       const query = (search.value || '').toLowerCase();
       const pairs = splitDiffRows(text).filter(row => !query || (row.left + row.right).toLowerCase().includes(query));
-      count.textContent = pairs.length.toLocaleString() + ' rows';
+      count.textContent = plural(pairs.length, 'row');
       for (const pair of pairs.slice(0, limit)) {
         const row = node('div', 'result-line');
         for (const [side, number] of [['left','oldNumber'], ['right','newNumber']]) {
@@ -152,15 +176,16 @@ export function renderResult(host, { name = '', output = '', args = '', compact 
     }
     if (!lines.length) body.appendChild(node('div', 'result-empty', raw ? 'No matching lines' : 'No output returned'));
     more.hidden = lines.length <= limit;
-    more.textContent = 'Show next ' + Math.min(RESULT_PAGE, Math.max(0, lines.length - limit)) + ' lines';
+    more.textContent = 'Show next ' + plural(Math.min(RESULT_PAGE, Math.max(0, lines.length - limit)), 'line');
   };
   search.addEventListener('input', () => { limit = RESULT_PAGE; draw(); });
   more.addEventListener('click', () => { limit += RESULT_PAGE; draw(); });
   root.append(bar);
-  if (!view && kind === 'sources') renderSources(root, raw);
-  if (!view && kind === 'search') renderSearchLinks(root, raw);
-  if (!view && kind === 'json') {
-    try { const tree=node('details','result-json-tree');tree.appendChild(node('summary','','Explore JSON'));const value=JSON.parse(raw);let built=false;tree.addEventListener('toggle',()=>{if(tree.open&&!built){built=true;renderJSONNode(tree,value,'root');}});root.appendChild(tree); } catch { /* fallback */ }
+  if (view && view.links) renderSources(root, view.links.join('\n'));
+  if (!view && kind === 'sources') renderSources(root, text);
+  if (!view && kind === 'search') renderSearchLinks(root, text);
+  if (!view && kind === 'json' && data !== undefined) {
+    const tree=node('details','result-json-tree');tree.appendChild(node('summary','','Explore JSON'));let built=false;tree.addEventListener('toggle',()=>{if(tree.open&&!built){built=true;renderJSONNode(tree,data,'root');}});root.appendChild(tree);
   }
   root.append(body, more);
   if (args && !compact) {
@@ -181,8 +206,10 @@ export function sourceURLs(text) {
   }
   return [...found];
 }
+// Link lists use their own class: the view root carries 'result-' + kind,
+// and a 'sources' view must not pick up the list layout.
 function renderSources(root, text) {
-  const list=node('div','result-sources');
+  const list=node('div','result-source-list');
   for(const href of sourceURLs(text)) {
     const link=node('a','result-source');link.href=href;link.target='_blank';link.rel='noopener noreferrer';
     const url=new URL(href);link.append(node('strong','',url.hostname),node('span','',url.pathname+url.search));list.appendChild(link);
@@ -192,12 +219,12 @@ function renderSources(root, text) {
 function renderSearchLinks(root,text) {
   const paths=[...new Set(text.split('\n').map(line=>line.match(/^([^\s:]+\.[a-zA-Z0-9]+):(\d+):/)).filter(Boolean).map(match=>match[1]))].slice(0,30);
   if(!paths.length)return;
-  const list=node('div','result-sources');
+  const list=node('div','result-source-list');
   for(const path of paths){const button=node('button','result-action',path);button.type='button';button.title='Reference this file in your next message';button.addEventListener('click',()=>{const input=document.getElementById('prompt');if(input){input.value+=(input.value?' ':'')+'@'+path;input.dispatchEvent(new Event('input',{bubbles:true}));input.focus();}});list.appendChild(button);}root.appendChild(list);
 }
 function renderJSONNode(root,value,label,depth=0) {
   if(value===null||typeof value!=='object'||depth>=12){root.appendChild(node('div','result-json-value',label+': '+JSON.stringify(value)));return;}
-  const details=node('details','result-json-node');const entries=Object.entries(value);details.appendChild(node('summary','',label+' · '+entries.length+(Array.isArray(value)?' items':' fields')));
+  const details=node('details','result-json-node');const entries=Object.entries(value);details.appendChild(node('summary','',label+' · '+plural(entries.length,Array.isArray(value)?'item':'field')));
   let built=false;details.addEventListener('toggle',()=>{if(!details.open||built)return;built=true;let offset=0;const more=node('button','result-action','Load more fields');more.type='button';const draw=()=>{for(const [key,item] of entries.slice(offset,offset+100))renderJSONNode(details,item,key,depth+1);offset+=100;more.hidden=offset>=entries.length;details.appendChild(more);};more.addEventListener('click',draw);draw();});root.appendChild(details);
 }
 

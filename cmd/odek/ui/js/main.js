@@ -3,7 +3,7 @@
 import { S, getSessionToken } from './state.js';
 import { promptEl, skeletonEl } from './dom.js';
 import { escapeHtml, escapeAttr, showToast, toggleShortcuts, hideCancel, closeDialog, formatNum, openDialog } from './utils.js';
-import { addSystemMessage, requestTurnStop, endStream } from './render.js';
+import { addSystemMessage, requestTurnStop, endStream, stopNotice, stopRefused } from './render.js';
 import { loadSessions, loadAndRenderSession } from './sessions.js';
 import { connect, wsSend } from './ws.js';
 import { togglePanels } from './panels.js';
@@ -221,7 +221,7 @@ function switchModel(modelId) {
 // the REST endpoint when the socket is down but the session is known.
 function cancelAgent() {
   if (!S.sessionId) {
-    if (S.busy) { requestTurnStop(); S.ws?.close(); endStream('interrupted'); addSystemMessage('⏹ Stop requested; execution outcome requires reconciliation.'); return; }
+    if (S.busy) { requestTurnStop(); S.ws?.close(); endStream('interrupted'); stopNotice('⏹ Stop requested; execution outcome requires reconciliation.', true); return; }
     hideCancel();
     addSystemMessage('⏹ No active session to cancel');
     return;
@@ -234,15 +234,18 @@ function cancelAgent() {
   })) {
     requestTurnStop();
     hideCancel();
-    addSystemMessage('⏹ Cancel requested');
     return;
   }
   const sid = S.sessionId;
   requestTurnStop();
   cancelSession(sid, token || undefined).then(() => {
     if (S.sessionId !== sid) return;
-    addSystemMessage('⏹ Stop requested. Reconnect and review saved progress to confirm the outcome.');
-  }).catch(err => { showToast('Cancel failed: ' + err.message); });
+    // The outcome is unknown: the line stays open for it.
+    stopNotice('⏹ Stop requested. Reconnect and review saved progress to confirm the outcome.');
+  }).catch(err => {
+    if (S.sessionId === sid) stopRefused('cancel failed: ' + err.message);
+    else showToast('Cancel failed: ' + err.message);
+  });
 }
 document.getElementById('cancel-btn').addEventListener('click', cancelAgent);
 

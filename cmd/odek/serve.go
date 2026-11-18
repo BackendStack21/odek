@@ -115,17 +115,19 @@ func filterPersistSnapshot(head, snapshot []session.Message) []session.Message {
 }
 
 // providerFailureSummary renders a short, safe failure classification for
-// the persisted turn-abort note. It deliberately excludes the provider's raw
-// error body — it can be large and may echo prompt content back into the
-// transcript. Typed llm errors (rate limit) get a precise, actionable line;
-// everything else is truncated to a single line.
+// the persisted turn-abort note. The note stays in the session and is read
+// back by the model on the next turn, so it never carries what the provider
+// said: a failed model call is phrased by llmclient.SummarizeFailure as the
+// provider, the HTTP status and the attempts made, and a failed call it
+// cannot classify only as having failed. The provider's message reaches the
+// live error frame and the run record instead. Any other error is truncated
+// to a single line.
 func providerFailureSummary(err error) string {
-	var rle *llmclient.RateLimitError
-	if errors.As(err, &rle) {
-		return fmt.Sprintf("provider rate limit (HTTP %d) after %d attempts", rle.Status, rle.Attempts)
-	}
 	if errors.Is(err, context.Canceled) {
 		return "cancelled"
+	}
+	if desc, ok := llmclient.SummarizeFailure(err); ok {
+		return desc
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
 		return "timed out"
@@ -138,6 +140,20 @@ func providerFailureSummary(err error) string {
 		msg = msg[:160]
 	}
 	return strings.ToValidUTF8(msg, "")
+}
+
+// sendTurnFailure sends the error frame for a failed turn. A provider failure
+// is phrased for a person (no "iteration N:" prefix, no "[retryable]" tag)
+// and marked phrased, so clients show it as sent instead of rewriting it;
+// anything else is sent as the error reads. The error itself still reaches
+// the run record, events and logs unchanged.
+func sendTurnFailure(send func(map[string]any), err error) {
+	diagnostics.Warning("serve", "request_rejected", nil)
+	frame := map[string]any{"type": "error", "message": err.Error()}
+	if desc, ok := llmclient.DescribeFailure(err); ok {
+		frame["message"], frame["phrased"] = desc, true
+	}
+	send(frame)
 }
 
 // modelIDPattern restricts model IDs to printable ASCII characters commonly
@@ -2360,16 +2376,16 @@ func endWSSessionMemory(mm *memory.MemoryManager, sess *session.Session) {
 // until the 60s approval timeout.
 func handleWSCancel(store *session.Store, conn *golangws.Conn, msg wsClientMsg) {
 	if msg.SessionID == "" {
-		writeWSError(conn, "cancel: missing session_id")
+		writeWSRefusal(conn, "cancel", "cancel: missing session_id", "")
 		return
 	}
 	sess, err := store.Load(msg.SessionID)
 	if err != nil {
-		writeWSError(conn, wsLookupRejectMsg(conn, "cancel: session not found"))
+		writeWSRefusal(conn, "cancel", wsLookupRejectMsg(conn, "cancel: session not found"), "")
 		return
 	}
 	if !validateSessionTokenStrict(store, sess, msg.AuthToken) {
-		writeWSError(conn, wsLookupRejectMsg(conn, "cancel: invalid session token"))
+		writeWSRefusal(conn, "cancel", wsLookupRejectMsg(conn, "cancel: invalid session token"), "")
 		return
 	}
 	if cancelPrompt(msg.SessionID) {
@@ -2385,21 +2401,22 @@ func handleWSCancel(store *session.Store, conn *golangws.Conn, msg wsClientMsg) 
 // auth token. Accepted=false is a normal race (the task finished before
 // the stop arrived), not an error.
 func handleWSSubagentCancel(store *session.Store, conn *golangws.Conn, msg wsClientMsg) {
+	refuse := func(text string) { writeWSRefusal(conn, "subagent_cancel", text, msg.TaskID) }
 	if msg.SessionID == "" {
-		writeWSError(conn, "subagent_cancel: missing session_id")
+		refuse("subagent_cancel: missing session_id")
 		return
 	}
 	if msg.TaskID == "" {
-		writeWSError(conn, "subagent_cancel: missing task_id")
+		refuse("subagent_cancel: missing task_id")
 		return
 	}
 	sess, err := store.Load(msg.SessionID)
 	if err != nil {
-		writeWSError(conn, wsLookupRejectMsg(conn, "subagent_cancel: session not found"))
+		refuse(wsLookupRejectMsg(conn, "subagent_cancel: session not found"))
 		return
 	}
 	if !validateSessionTokenStrict(store, sess, msg.AuthToken) {
-		writeWSError(conn, wsLookupRejectMsg(conn, "subagent_cancel: invalid session token"))
+		refuse(wsLookupRejectMsg(conn, "subagent_cancel: invalid session token"))
 		return
 	}
 	// The token proves access to msg.SessionID only; the task must have been
@@ -2453,7 +2470,8 @@ func handlePrompt(
 	runID, _ := ctx.Value(serveRunIDKey{}).(string)
 	agent.BeginRun(runID, turnID)
 	requestCtx := ctx
-	outcomeErr := errors.New("serve turn did not complete")
+	errTurnIncomplete := errors.New("serve turn did not complete")
+	outcomeErr := errTurnIncomplete
 	promptCounted, promptCompleted := false, false
 	originalSend := send
 	send = func(frame map[string]any) {
@@ -2462,7 +2480,10 @@ func handlePrompt(
 		case "done":
 			outcomeErr = nil
 		case "error":
-			if message, ok := frame["message"].(string); ok {
+			// A failure path that recorded its typed error before sending
+			// the frame keeps it for the run record; the frame's text stands
+			// in only when no error was recorded.
+			if message, ok := frame["message"].(string); ok && (outcomeErr == nil || outcomeErr == errTurnIncomplete) {
 				outcomeErr = errors.New(message)
 			}
 		}
@@ -2479,7 +2500,7 @@ func handlePrompt(
 			diagnostics.Emit(events.Event{Type: "panic_recovered", SessionID: sid, TurnID: turnID, Data: map[string]any{"component": "serve", "operation": "turn", "error_class": "panic"}})
 			if sess != nil {
 				collectDecisions()
-				sess.Messages = append(sess.Messages, session.Message{Role: "assistant", TurnID: turnID, Content: "[Turn aborted: internal error. Completed checkpoints were preserved.]"})
+				sess.Messages = append(sess.Messages, session.Message{Role: "assistant", Name: session.TurnAbortNoteName, TurnID: turnID, Content: "[Turn aborted: internal error. Completed checkpoints were preserved.]"})
 				_ = store.SaveNoIndex(sess)
 				result = sess
 			} else {
@@ -2970,7 +2991,7 @@ func handlePrompt(
 	if err != nil {
 		outcomeErr = err
 		if sess == nil {
-			sendError(send, err.Error())
+			sendTurnFailure(send, err)
 			return currSess
 		}
 		// Soft-fail: close the turn with an assistant-visible note so the
@@ -2980,12 +3001,12 @@ func handlePrompt(
 		// and in-memory session pointer in sync with the persisted state.
 		sendAnswerContent(send, deltas, turnFinalAnswer(sess.Messages, turnID), streamedContent)
 		note := fmt.Sprintf("[Turn aborted: %s. The prompt above was preserved — send another message to retry or continue.]", providerFailureSummary(err))
-		sess.Messages = append(sess.Messages, session.Message{Role: "assistant", TurnID: turnID, Content: note})
+		sess.Messages = append(sess.Messages, session.Message{Role: "assistant", Name: session.TurnAbortNoteName, TurnID: turnID, Content: note})
 		markRunTaint(agent, sess)
 		if err := store.SaveNoIndex(sess); err != nil {
 			fmt.Fprintf(os.Stderr, "odek: warning: failed to persist session: %v\n", err)
 		}
-		sendError(send, outcomeErr.Error())
+		sendTurnFailure(send, err)
 		return sess
 	}
 
@@ -3067,8 +3088,8 @@ func handlePrompt(
 		}
 		markRunTaint(agent, sess)
 		if err := store.Save(sess); err != nil {
-			sendError(send, "failed to save completed turn: "+err.Error())
 			outcomeErr = err
+			sendError(send, "failed to save completed turn: "+err.Error())
 			return sess
 		}
 	}
@@ -3786,6 +3807,21 @@ func writeWSError(conn *golangws.Conn, msg string) {
 	writeWSJSON(conn, map[string]string{"type": "error", "message": msg})
 }
 
+// writeWSRefusal answers a control message the server will not apply (a
+// cancel or subagent_cancel with a missing or unknown session, a wrong token
+// or no task) with an error frame whose refused field names that message
+// type. A refused subagent_cancel passes the task it named as taskID, so the
+// client can take back that card's stop; "" adds no task_id. A refusal
+// belongs to no turn: the run it targeted, if any, goes on, and the client
+// can offer the stop again.
+func writeWSRefusal(conn *golangws.Conn, msgType, msg, taskID string) {
+	frame := map[string]string{"type": "error", "message": msg, "refused": msgType}
+	if taskID != "" {
+		frame["task_id"] = taskID
+	}
+	writeWSJSON(conn, frame)
+}
+
 // writeWSSessionNewRejected refuses a session_new the connection could not
 // queue. The connection stays attached to its current session; the typed frame
 // lets the client stop waiting for session_new_ok and retry.
@@ -4278,12 +4314,31 @@ func modelListEntry(id, display string, maxCtx int, current bool) modelEntry {
 		display = id
 	}
 	e := modelEntry{ID: id, MaxContext: maxCtx, Description: display, Current: current}
-	if maxCtx > 0 && maxCtx%1_000_000 == 0 {
-		e.Description = fmt.Sprintf("%s — %dM ctx", display, maxCtx/1_000_000)
-	} else if maxCtx > 0 {
-		e.Description = fmt.Sprintf("%s — %dK ctx", display, maxCtx/1024)
+	if maxCtx > 0 {
+		e.Description = fmt.Sprintf("%s — %s ctx", display, contextSizeLabel(maxCtx))
 	}
 	return e
+}
+
+// contextSizeLabel renders a context window the way providers advertise it:
+// decimal windows in thousands or millions (128000 → 128K, 1000000 → 1M),
+// power-of-two windows in binary units (131072 → 128K, 1048576 → 1M), and
+// anything else rounded to the nearest thousand.
+func contextSizeLabel(n int) string {
+	switch {
+	case n%1_000_000 == 0:
+		return strconv.Itoa(n/1_000_000) + "M"
+	case n%1000 == 0:
+		return strconv.Itoa(n/1000) + "K"
+	case n%(1<<20) == 0:
+		return strconv.Itoa(n>>20) + "M"
+	case n%1024 == 0:
+		return strconv.Itoa(n/1024) + "K"
+	case n >= 1000:
+		return strconv.Itoa((n+500)/1000) + "K"
+	default:
+		return strconv.Itoa(n)
+	}
 }
 
 // handleModelList is GET /api/models. The payload is the provider's

@@ -3,7 +3,7 @@
 import { S } from './state.js';
 import { messagesEl } from './dom.js';
 import { forceScrollBottom, announce } from './utils.js';
-import { hideEmptyState, addSystemMessage, insertTurnWork } from './render.js';
+import { hideEmptyState, addSystemMessage, insertTurnWork, paintIntent } from './render.js';
 import { wsSend } from './net.js';
 
 // Approval requests are queued and rendered one at a time as an inline
@@ -158,11 +158,13 @@ function showNextApproval() {
   if (!event) {
     S.activeApprovalId = null;
     S.activeApprovalCard = null;
+    paintIntent();
     if (S.drainQueue) S.drainQueue();
     return;
   }
   S.activeApprovalId = event.id;
   renderApprovalCard(event);
+  paintIntent();
   S.refreshSupervision?.();
 }
 
@@ -194,6 +196,7 @@ export function clearApprovals(opts) {
   removeActiveApprovalCard();
   S.activeApprovalId = null;
   syncSweep();
+  paintIntent();
   if (opts && opts.drain === false) return;
   if (S.drainQueue) S.drainQueue();
 }

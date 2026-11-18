@@ -11,11 +11,10 @@ import {
 } from './utils.js';
 import { pruneMessages, syncTrimMarker, setHistoryBacklog, trimState, holdView, HISTORY_UNITS } from './transcript.js';
 import { markdownToHtml, CODE_COPY_LABEL, CODE_COPIED_LABEL } from './markdown.js';
-import { parseUntrusted } from './untrusted.js';
 import { classifyToolResult, chipsHtml, prettyToolBody, collectReceipt, formatReceipt } from './tools.js';
 import { toolIcon } from './icons.js';
-import { renderResult, resultText, ACTIVITY_MAX_RESULTS, ACTIVITY_MAX_BYTES } from './results.js';
-import { toolPreview, toolArguments, toolView, renderToolItems } from './toolviews.js';
+import { renderResult, resultText, resultDisplayText, ACTIVITY_MAX_RESULTS, ACTIVITY_MAX_BYTES } from './results.js';
+import { toolPreview, toolArguments, toolSummary, renderToolItems } from './toolviews.js';
 import { metricsNoteOutput } from './metrics.js';
 
 // ── Turn state ──
@@ -26,6 +25,11 @@ export function resetTurnState() {
   settlePendingWork("interrupted");
   S.turnEnded = false;
   S.stopRequested = false;
+  S.stopNoticeEl = null;
+  S.stopError = null;
+  // The stop-answer flags stay until the turn opens: an answer that arrives
+  // between a send and its turn_started belongs to the previous stop.
+  S.reconciledDraft = null;
   messagesEl.querySelectorAll('.turn-stream.live').forEach((el) => {
     el.classList.remove('live');
   });
@@ -124,7 +128,10 @@ function stopSpin() {
 
 export function paintIntent() {
   syncLiveChrome();
-  const label = S.currentIntent || (S.busy ? 'reasoning' : '');
+  // A pending stop is what the run is doing, whatever frame came last; an
+  // open decision card means the run waits on the operator, not a tool.
+  const waiting = S.activeApprovalId ? 'waiting for your approval' : S.activeClarifyCard ? 'waiting for your answer' : '';
+  const label = (S.busy && S.stopRequested && 'stopping') || (S.busy && waiting) || S.currentIntent || (S.busy ? 'reasoning' : '');
   const rail = document.getElementById('intent-rail');
   const top = document.getElementById('busy-spin');
   if (!label) {
@@ -221,6 +228,12 @@ export function syncLiveChrome() {
 export function openTurn(event) {
   S.turnEnded = false;
   S.stopRequested = false;
+  S.stopNoticeEl = null;
+  S.stopError = null;
+  // A new turn's stop answers are its own: an ack that arrives now is applied.
+  S.stopAwaiting = false;
+  S.stopSettled = false;
+  S.reconciledDraft = null;
   S.currentTurnId = (event && event.turn_id) || S.currentTurnId;
   S.currentTurnInitiated = (event && event.initiated) || 'operator';
   S.turnReceipt = { files: [], plus: 0, minus: 0, tests: '', tools: 0 };
@@ -577,8 +590,68 @@ export function supersedeStream(reason) {
   streamFlush();
   const msg = S.streamBubbleEl;
   if (!msg) return;
+  const streamed = S.streamText;
   sealPartialResponse();
   foldDraft(msg, reason);
+  // A reconciled copy can differ from the stream only by a leading partial
+  // marker; streamAnswer drops the folded draft when the answer repeats it.
+  S.reconciledDraft = reason === 'reconciled' ? { msg, text: streamed } : null;
+}
+
+// PARTIAL_MARKER matches the prefix loop.PartialResponseError answers carry
+// ("[Partial response: <termination>]") when the provider did not finish.
+const PARTIAL_MARKER = /^\[Partial response: (interrupted|truncated|refused)\](?:\n\n| |$)/;
+
+// stripPartialMarker removes a leading partial-response marker so the answer
+// shows a chip instead of bracket text. Returns [text, reason] ('' if none).
+export function stripPartialMarker(text) {
+  const s = String(text || '');
+  const m = s.match(PARTIAL_MARKER);
+  return m ? [s.slice(m[0].length), m[1]] : [s, ''];
+}
+
+// markPartial tags an answer bubble the provider ended early.
+export function markPartial(bubble, reason) {
+  if (!bubble || !reason || bubble.querySelector('.partial-chip')) return;
+  const chip = document.createElement('span');
+  chip.className = 'verify-chip partial-chip';
+  chip.title = 'The model response ended early (' + reason + '); this is the text received so far';
+  chip.textContent = '◐ partial · ' + reason;
+  const sender = bubble.querySelector('.sender');
+  if (sender) sender.appendChild(chip);
+  else bubble.insertBefore(chip, (bubble.children && bubble.children[0]) || null);
+}
+
+// markEmptyAnswer puts a muted placeholder in an answer that has no text,
+// so a partial answer that ended before any text still shows as a reply.
+// Streamed text re-renders the content and replaces it.
+function markEmptyAnswer(content) {
+  if (!content || content.querySelector('.answer-empty')) return;
+  const empty = document.createElement('span');
+  empty.className = 'answer-empty';
+  empty.textContent = 'no content';
+  content.appendChild(empty);
+}
+
+// streamAnswer appends bulk answer text, which is final (never superseded).
+// A leading partial marker becomes a chip on the answer, and a reconciled
+// draft that the marked text only repeats is removed instead of staying
+// folded above the same words. A marker with no text still opens the
+// answer, with a placeholder.
+export function streamAnswer(content) {
+  const [text, partial] = stripPartialMarker(content);
+  const draft = S.reconciledDraft;
+  S.reconciledDraft = null;
+  if (partial && draft && draft.text && text.startsWith(draft.text.trimEnd())) draft.msg.remove();
+  streamToken(text);
+  if (!text && !partial) return;
+  if (!text) {
+    streamFlush();
+    ensureStreamBubble();
+    if (!S.streamText) markEmptyAnswer(S.streamContentEl);
+  }
+  commitStream();
+  if (partial && S.streamBubbleEl) markPartial(S.streamBubbleEl.querySelector('.bubble'), partial);
 }
 
 // ── Held answers ──
@@ -641,7 +714,7 @@ export function markTurnUnverified(turnId) {
 // markUnverified tags an answer bubble that shipped despite a failing
 // verification verdict.
 export function markUnverified(bubble) {
-  if (!bubble || bubble.querySelector('.verify-chip')) return;
+  if (!bubble || bubble.querySelector('.verify-chip.fail')) return;
   const chip = document.createElement('span');
   chip.className = 'verify-chip fail';
   chip.title = 'This answer failed verification and was returned unverified';
@@ -738,21 +811,112 @@ export function settlePendingWork(reason = 'interrupted') {
   if (S.subagentGroup) {
     S.subagentGroup.querySelectorAll('.subagent-card').forEach(card => {
       if (card.dataset.finalized === '1') return;
+      if (stopping) {
+        // The server may still refuse the stop: keep what the card showed,
+        // and its stop button, disarmed, for stopRefused to give back.
+        holdCardStatus(card);
+        card.dataset.pendingState = 'stopping';
+        const btn = card.querySelector('.sa-stop');
+        if (btn) btn.disabled = true;
+      } else {
+        card.querySelector('.sa-stop')?.remove();
+        card.dataset.finalized = '1'; card.classList.add('stopped');
+      }
       card.classList.remove('running');
-      card.querySelector('.sa-stop')?.remove();
       const status = card.querySelector('.sa-status');
       if (status) status.textContent = label.toLowerCase();
-      if (!stopping) { card.dataset.finalized = '1'; card.classList.add('stopped'); }
     });
     refreshSubagentHead(S.subagentGroup);
   }
 }
 
+// holdCardStatus keeps what a sub-agent card showed before a stop (the turn's
+// or the card's own) marked it stopping, unless a stop already holds it.
+function holdCardStatus(card) {
+  if (card.dataset.stopping === '1' || card.dataset.pendingState === 'stopping') return;
+  card.dataset.statusBefore = card.querySelector('.sa-status')?.textContent || '';
+  card.dataset.runningBefore = card.classList.contains('running') ? '1' : '';
+}
+
+// releaseCardStatus gives a card back what it showed once no stop holds it:
+// its status (unless a later frame changed it), its running state and an
+// armed stop button.
+function releaseCardStatus(card) {
+  if (card.dataset.finalized === '1' || card.dataset.stopping === '1' || card.dataset.pendingState === 'stopping') return;
+  const status = card.querySelector('.sa-status');
+  if (status && status.textContent === 'stopping…') status.textContent = card.dataset.statusBefore || 'running';
+  if (card.dataset.runningBefore === '1') card.classList.add('running');
+  const btn = card.querySelector('.sa-stop');
+  if (btn) btn.disabled = !card.dataset.taskId;
+  delete card.dataset.statusBefore;
+  delete card.dataset.runningBefore;
+}
+
 export function requestTurnStop() {
   S.stopRequested = true;
+  S.stopAwaiting = true;
   S.pauseQueue?.();
   settlePendingWork('stopping');
   setIntent('stopping');
+  stopNotice('⏹ Stopping…');
+}
+
+// stopNotice writes the turn's stop status. A stop is one system line that
+// changes in place — stopping, then stopped or the outcome — not a log of
+// narration lines. A final text (the outcome) ends that line: the next stop
+// writes a line of its own instead of rewriting a settled one, and the
+// server's answer to a stop already settled adds nothing (S.stopSettled).
+export function stopNotice(text, final = false) {
+  let el = S.stopNoticeEl;
+  const content = el && nodeHolds(messagesEl, el) ? el.querySelector('.content') : null;
+  if (content) content.textContent = text;
+  else el = addSystemMessage(text);
+  S.stopNoticeEl = final ? null : el;
+  S.stopSettled = final;
+  return el;
+}
+
+// stopRefused takes back a stop that did not go through (the server refused
+// the cancel, or the REST fallback failed): the run goes on, so its frames
+// show again, steps and sub-agent cards marked stopping show as they were,
+// Stop comes back and the stop line says why. The queue stays paused as the
+// stop left it; the queue strip offers resume. A turn that already sent its
+// own error (held in S.stopError) is not offered another stop.
+export function stopRefused(reason) {
+  S.stopRequested = false;
+  S.stopAwaiting = false;
+  for (const queue of S.toolBlockQueues.values()) {
+    for (const block of queue) {
+      if (block.dataset.pendingState !== 'stopping') continue;
+      delete block.dataset.pendingState;
+      block.querySelector('.tb-spinner')?.classList.add('running');
+      const status = block.querySelector('.tb-status');
+      if (status) { status.textContent = '▸'; status.title = ''; }
+      const latency = block.querySelector('.tb-latency');
+      if (latency) latency.textContent = '';
+    }
+  }
+  S.subagentGroup?.querySelectorAll('.subagent-card').forEach(card => {
+    if (card.dataset.pendingState !== 'stopping') return;
+    delete card.dataset.pendingState;
+    releaseCardStatus(card);
+  });
+  if (S.subagentGroup) refreshSubagentHead(S.subagentGroup);
+  setIntent('');
+  const live = S.busy && !S.stopError;
+  if (live) showCancel();
+  stopNotice('⏹ Stop not applied: ' + (reason || 'refused') + (live ? ' · press Stop to try again' : ''), true);
+}
+
+// subagentStopRefused takes back a per-card stop the server refused: the
+// card named by taskId (every card waiting on a stop when the refusal names
+// none) shows as it was, with its stop button armed again.
+export function subagentStopRefused(taskId) {
+  S.subagentGroup?.querySelectorAll('.subagent-card').forEach(card => {
+    if (card.dataset.stopping !== '1' || (taskId && card.dataset.taskId !== taskId)) return;
+    delete card.dataset.stopping;
+    releaseCardStatus(card);
+  });
 }
 
 export function endStream(reason = "interrupted") {
@@ -768,6 +932,7 @@ export function endStream(reason = "interrupted") {
   revealStream(); // every turn end shows the held answer
   endThinking(); // an interrupted turn leaves no row marked live
   sealTurnStream();
+  S.reconciledDraft = null;
   // The live answer is the latest — never fold it. Older long replies
   // were already compacted when this bubble opened.
   S.streamBubbleEl = null;
@@ -835,6 +1000,7 @@ export function addSystemMessage(content) {
   messagesEl.appendChild(el);
   pruneMessages();
   scrollBottom();
+  return el;
 }
 
 export function addDivider(text) {
@@ -971,15 +1137,16 @@ export function addToolCall(name, data, callId = '') {
 }
 
 // appendToolResultContent renders a tool result into the collapsed .tb-body
-// (same toggle as args), truncating long output behind a "show all" expander.
+// (same toggle as args); the result view pages long output itself.
 // Shared by the live path (addToolResult) and session-history rendering.
 // The result view (toolbar, search, line rows) is built on the first expand:
 // most steps are never opened, and eagerly rendered bodies were the bulk of
-// a long session's DOM. Until then the output waits on the block itself.
+// a long session's DOM. Until then the output waits on the block itself; the
+// head shows the view's summary, which needs no display copy of the result.
 function appendToolResultContent(block, output, record = true) {
-  const view = toolView(block.dataset.toolName || '', resultText(output), block.dataset.toolArgs || '');
+  const summary = toolSummary(block.dataset.toolName || '', resultText(output), block.dataset.toolArgs || '');
   const preview = block.querySelector('.tb-preview');
-  if (view && preview) { preview.textContent = view.summary; preview.title = view.summary; }
+  if (summary && preview) { preview.textContent = summary; preview.title = summary; }
 
   (block.pendingResults ||= []).push(output);
   const body = block.querySelector('.tb-body');
@@ -1001,32 +1168,6 @@ function renderPendingResult(block) {
     else (body || block).appendChild(resultEl);
     renderResult(resultEl, { name: block.dataset.toolName || '', output, args:block.dataset.toolArgs || '', compact: true });
   });
-}
-
-// fillToolResult renders tool output into resultEl. The server sends raw,
-// unsanitized content; tool output may embed the model-facing
-// <untrusted_content_*> envelope, which is unwrapped for display — the body
-// is inserted as text (never HTML). Envelope source is model-facing trust
-// metadata and is not shown. When truncate is true, long bodies are cut
-// behind a "show all" expander carrying the full output.
-function fillToolResult(resultEl, output, truncate) {
-  const MAX_RESULT = 600;
-  const segments = parseUntrusted(output);
-  for (const seg of segments) {
-    const body = seg.body;
-    if (truncate && body.length > MAX_RESULT) {
-      resultEl.appendChild(document.createTextNode(body.slice(0, MAX_RESULT)));
-      const more = document.createElement('span');
-      more.className = 'tb-result-more';
-      more.setAttribute('role', 'button');
-      more.tabIndex = 0;
-      more.dataset.full = output;
-      more.textContent = ' …show all (' + body.length + ' chars)';
-      resultEl.appendChild(more);
-    } else {
-      resultEl.appendChild(document.createTextNode(body));
-    }
-  }
 }
 
 export function addToolResult(name, output, callId = '', outcome = 'unknown') {
@@ -1081,15 +1222,6 @@ export function addToolResult(name, output, callId = '', outcome = 'unknown') {
     S.turnReceipt.files.push(...piece.files);
   }
   scrollBottom();
-}
-
-function expandToolResult(el) {
-  const full = el.dataset.full || '';
-  const resultEl = el.parentElement;
-  if (resultEl) {
-    resultEl.textContent = '';
-    fillToolResult(resultEl, full, false);
-  }
 }
 
 function toggleToolBody(header) {
@@ -1199,9 +1331,11 @@ export function addSubagentGroup(command) {
 
 // parseSubagentResults parses delegate_tasks output text of the form
 // "📋 Sub-agent results:\n\n─── Task 1: goal ───\nstatus: success..."
-// into a map of task index → parsed result object.
+// into a map of task index → parsed result object. The text arrives inside
+// the tool's own envelope and the engine's; both are removed first so their
+// closing tags never land in the last task's summary.
 function parseSubagentResults(output) {
-  const lines = (output || '').split('\n');
+  const lines = resultDisplayText(output || '', 'delegate_tasks').split('\n');
   let currentTaskIdx = -1;
   const taskResults = {};
 
@@ -1316,7 +1450,7 @@ export function updateSubagentState(ev) {
   if (ev.task_id) card.dataset.taskId = ev.task_id;
   const armStop = () => {
     const stopBtn = card.querySelector('.sa-stop');
-    if (stopBtn) stopBtn.disabled = !card.dataset.taskId || card.dataset.stopping === '1';
+    if (stopBtn) stopBtn.disabled = !card.dataset.taskId || card.dataset.stopping === '1' || card.dataset.pendingState === 'stopping';
   };
 
   switch (ev.phase) {
@@ -1326,9 +1460,8 @@ export function updateSubagentState(ev) {
       armStop();
       break;
     case 'active': {
+      // The goal stays the chip's label; the current tool is the status.
       statusEl.textContent = '⟳ ' + (ev.tool || 'working') + (ev.step ? ' · ' + ev.step : '');
-      const goalEl = card.querySelector('.sa-goal');
-      if (goalEl && ev.tool) goalEl.textContent = saChipLabel(ev.task_idx, ev.tool);
       if (meta && ev.step) meta.textContent = 'step ' + ev.step + (ev.tool ? ' · ' + ev.tool : '');
       armStop();
       break;
@@ -1382,6 +1515,7 @@ export function requestSubagentStop(taskIdx) {
   if (!card || card.dataset.finalized === '1' || card.dataset.stopping === '1') return;
   const taskID = card.dataset.taskId;
   if (!taskID) return;
+  holdCardStatus(card);
   card.dataset.stopping = '1';
   const stopBtn = card.querySelector('.sa-stop');
   if (stopBtn) stopBtn.disabled = true;
@@ -1482,7 +1616,7 @@ export function appendSubagentLog(taskIdx, event) {
     text = toolGlyph(event.name) + ' ' + (event.name || 'tool') +
       (event.data ? ' · ' + truncateStr(event.data, 60) : '');
   } else if (event.event === 'tool_result') {
-    text = '⎿ ' + truncateStr(event.data || '', 100);
+    text = '⎿ ' + truncateStr(resultDisplayText(event.data || '', event.name), 100);
   }
   if (!text) return;
 
@@ -1591,6 +1725,32 @@ function historyTurnIdBefore(messages, from) {
   return '';
 }
 
+// Wake turns are opened by a system-initiated user record named "bg-wake"
+// (serve.go sets the name only for type-gated wake prompts). As live, the
+// turn's first assistant reply carries the "⬡ odek · wake" label. Drained
+// notices (bg-notice, return-after-break) never open a turn.
+function isNoticeUser(msg) {
+  return msg.name === 'bg-notice' || msg.name === 'return-after-break';
+}
+
+// historyWakePending reports whether a window starting at `from` begins
+// inside a wake turn whose first reply has not been rendered yet.
+function historyWakePending(messages, from) {
+  for (let i = from - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (!m) continue;
+    if (m.role === 'assistant' && m.content) return false;
+    if (m.role === 'user' && !isNoticeUser(m)) return m.name === 'bg-wake';
+  }
+  return false;
+}
+
+function markHistoricalWake(wrapper) {
+  wrapper.classList.add('wake-turn');
+  const sender = wrapper.querySelector('.sender');
+  if (sender) sender.textContent = '⬡ odek · wake';
+}
+
 // recordHistoricalResults feeds tool results outside the rendered window
 // to the Activity panel in transcript order, so its evidence summary covers
 // the session and not only the visible window. Only the newest results the
@@ -1628,12 +1788,15 @@ function renderHistoryRange(messages, from, to) {
   historyHost = document.createElement('div');
   try {
     let historyTurnId = historyTurnIdBefore(messages, from);
+    let wakePending = historyWakePending(messages, from);
     for (let messageIndex = from; messageIndex < to; messageIndex++) {
       const msg = messages[messageIndex];
       if (!msg) continue;
       historyIdx = messageIndex;
       if (msg.role === 'user') {
         historyTurnId = msg.turn_id || 'history-' + messageIndex;
+        if (msg.name === 'bg-wake') wakePending = true;
+        else if (!isNoticeUser(msg)) wakePending = false;
         if (isSyntheticUser(msg)) continue;
         renderHistoricalUser(historyUserText(msg.content, msg.principal_prompt));
         continue;
@@ -1644,8 +1807,12 @@ function renderHistoryRange(messages, from, to) {
 
       // Content before tools: the model streams the visible reply first,
       // then acts. Putting tools first parked every partial after the log.
-      if (msg.content) {
-        const wrapper = renderHistoricalAssistant(msg.content);
+      const aborted = turnAbortNotice(msg);
+      if (aborted) {
+        renderHistoricalNotice(aborted);
+      } else if (msg.content) {
+        const wrapper = renderHistoricalAssistant(msg.content, wakePending);
+        wakePending = false;
         if (msg.superseded) foldDraft(wrapper, msg.superseded_reason);
       }
 
@@ -1745,6 +1912,31 @@ export function showEarlierHistory() {
 }
 S.showEarlierHistory = showEarlierHistory;
 
+// The server closes a failed or cancelled turn with an assistant-role note
+// (serve.go) so the stored context stays coherent: "[Turn aborted: <reason>.
+// The prompt above was preserved — …]" or "[Turn aborted: internal error.
+// Completed checkpoints were preserved.]". On reload it is shown as the
+// system notice the live failure line was, not as the agent's answer. The
+// server marks the note with the message name 'turn-abort', which model
+// replies never carry; text alone is never trusted, so model output in the
+// same format, and notes saved before the marker existed, stay agent text.
+const TURN_ABORT_NAME = 'turn-abort';
+
+// turnAbortNotice returns the notice text for a turn-abort note, or ''.
+function turnAbortNotice(msg) {
+  if (!msg || msg.name !== TURN_ABORT_NAME || msg.tool_calls?.length) return '';
+  let body = String(msg.content || '').trim();
+  if (body.startsWith('[') && body.endsWith(']')) body = body.slice(1, -1);
+  return (body.startsWith('Turn aborted: cancelled.') ? '⏹ ' : '⚠ ') + body;
+}
+
+function renderHistoricalNotice(text) {
+  const el = document.createElement('div');
+  el.className = 'msg system';
+  el.innerHTML = '<div class="bubble"><div class="content">' + escapeHtml(text) + '</div></div>';
+  historyTarget().appendChild(historyRow(el));
+}
+
 function renderHistoricalUser(content) {
   const wrapper = buildMessage('user', content);
   historyTarget().appendChild(historyRow(wrapper));
@@ -1752,13 +1944,20 @@ function renderHistoricalUser(content) {
   if (bubble) addCopyButton(bubble);
 }
 
-function renderHistoricalAssistant(raw) {
-  const [content, unverified] = stripVerifyMarker(raw);
+// renderHistoricalAssistant renders a reloaded answer; wake labels a wake
+// turn's first reply. The label replaces the sender text, so it is set
+// before the verification and partial chips join the sender.
+function renderHistoricalAssistant(raw, wake = false) {
+  const [verified, unverified] = stripVerifyMarker(raw);
+  const [content, partial] = stripPartialMarker(verified);
   const wrapper = buildMessage('assistant', content);
+  if (wake) markHistoricalWake(wrapper);
   ensureHistoryStream().appendChild(historyRow(wrapper));
   const bubble = wrapper.querySelector('.bubble');
   if (bubble) addCopyButton(bubble);
   if (bubble && unverified) markUnverified(bubble);
+  if (bubble && partial) markPartial(bubble, partial);
+  if (!content.trim()) markEmptyAnswer(wrapper.querySelector('.content'));
   return wrapper;
 }
 
@@ -2028,9 +2227,6 @@ function addCopyButton(bubble) {
 // onclick attributes anywhere in generated HTML.
 messagesEl.addEventListener('click', (e) => {
   const t = e.target;
-
-  const tbResultMore = t.closest('.tb-result-more');
-  if (tbResultMore) { expandToolResult(tbResultMore); return; }
 
   const cbCopy = t.closest('.cb-copy');
   if (cbCopy) { copyCode(cbCopy); return; }

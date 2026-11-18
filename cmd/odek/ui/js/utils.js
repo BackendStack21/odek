@@ -21,6 +21,9 @@ export function formatNum(n) {
   return String(n);
 }
 
+// plural (count.js) formats a count with the matching noun form.
+export { plural } from './count.js';
+
 export function formatFileSize(bytes) {
   if (bytes < 1024) return bytes + ' B';
   if (bytes < 1024*1024) return (bytes/1024).toFixed(1) + ' KB';
@@ -160,7 +163,18 @@ export function forceScrollBottom() {
   }
   S.stickBottom = true;
   messagesEl.scrollTop = messagesEl.scrollHeight;
+  syncScrollBottomButton();
 }
+
+// syncScrollBottomButton shows the scroll-to-bottom button only while the
+// transcript extends below the view. Scroll events cover reading; session
+// loads, a new session, transcript replacement and resizes change the
+// geometry without one, so they call this too.
+export function syncScrollBottomButton() {
+  if (!scrollBottomBtn || !messagesEl) return;
+  scrollBottomBtn.classList.toggle('visible', !isNearBottom());
+}
+globalThis.addEventListener?.('resize', syncScrollBottomButton, { passive: true });
 
 // Scroll-to-bottom button handler: smooth jump (user-initiated — the CSS
 // default is auto so streaming autoscroll never animates), then hide.
@@ -173,8 +187,12 @@ export function scrollToBottom() {
 }
 
 // ── Error message normalization ──
-export function formatErrorMessage(msg) {
+// A message the server already phrased for a person (an error frame marked
+// phrased: a provider failure with its status, message and attempts) is shown
+// as sent. Other messages get the hints below for raw runtime errors.
+export function formatErrorMessage(msg, phrased = false) {
   if (!msg) return 'Unknown error';
+  if (phrased) return String(msg);
   const lower = msg.toLowerCase();
   if (lower.includes('stream idle') || lower.includes('without an event')) {
     return 'Provider stream stalled — the model went silent before the idle timeout. Retry, or raise llm.stream_idle_timeout_seconds.';
@@ -197,11 +215,51 @@ export function hideCancel() {
   if (cancelBtn) cancelBtn.classList.remove('visible');
 }
 
+// paintAttentionChip shows how many decisions wait. Count and label are
+// separate elements so a narrow top bar can show the count alone; the full
+// phrase stays the chip's accessible name and tooltip.
+export function paintAttentionChip(chip, count) {
+  if (!chip) return;
+  const n = Math.max(0, Math.floor(Number(count) || 0));
+  const label = n === 1 ? 'needs attention' : 'need attention';
+  chip.hidden = !n;
+  chip.textContent = '';
+  const num = document.createElement('span');
+  num.className = 'attention-count';
+  num.textContent = String(n);
+  const text = document.createElement('span');
+  text.className = 'attention-label';
+  text.textContent = label;
+  chip.append(num, text);
+  chip.setAttribute('aria-label', n + ' ' + label);
+  chip.title = n + ' ' + label;
+}
+
 export function toggleShortcuts() {
   const overlay = document.getElementById('shortcuts-overlay');
   if (isDialogOpen(overlay)) closeDialog();
   else openDialog(overlay);
 }
+
+// isShortcutSheetKey reports whether a keydown toggles the shortcut sheet:
+// the `?` character on any layout (Shift, AltGr or Option included, never a
+// Cmd/Ctrl chord), outside text fields or in the empty composer. Text typed
+// into any other field, a composer with content or a contenteditable keeps
+// its `?`, and another open dialog is never replaced.
+export function isShortcutSheetKey(e) {
+  if (!e || e.key !== '?' || e.repeat || e.isComposing || e.metaKey || (e.ctrlKey && !e.altKey)) return false;
+  if (isDialogOpen() && !isDialogOpen(document.getElementById('shortcuts-overlay'))) return false;
+  const target = e.target;
+  if (!target || target.isContentEditable) return false;
+  const tag = target.tagName || '';
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return target.id === 'prompt' && target.value === '';
+  return true;
+}
+document.addEventListener('keydown', (e) => {
+  if (e.defaultPrevented || !isShortcutSheetKey(e)) return;
+  e.preventDefault();
+  toggleShortcuts();
+});
 
 // ── Screen-reader announcements ──
 // announce writes to the visually-hidden #sr-status live region. The clear-

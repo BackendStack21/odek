@@ -10,7 +10,7 @@ import {
 } from './dom.js';
 import {
   escapeHtml, escapeAttr, formatFileSize,   scrollToBottom,
-  showCancel, toggleShortcuts, SCROLL_THRESHOLD, teach, showToast, announce,
+  showCancel, syncScrollBottomButton, teach, showToast, announce, plural,
 } from './utils.js';
 import { addMessage, resetTurnState, showLoading, paintIntent, setSendMode } from './render.js';
 import { maybeHandleComposerEnter, paletteItems, isComposerSlashInput } from './commands.js';
@@ -37,7 +37,7 @@ export function renderQueueStrip() {
     row.className = 'queue-row';
     const text = document.createElement('span');
     text.className = 'queue-text';
-    text.textContent = item.text || (item.attachments.length ? item.attachments.length + ' file(s)' : '(empty)');
+    text.textContent = item.text || (item.attachments.length ? plural(item.attachments.length, 'file') : '(empty)');
     const up = document.createElement('button');
     up.type = 'button';
     up.className = 'queue-btn';
@@ -145,6 +145,12 @@ export function send(recoveryCheckpoint) {
   promptEl.value = '';
   S.saveDraft?.();
   promptEl.style.height = 'auto';
+
+  // A pause belongs to the queue that was waiting when work was interrupted.
+  // With nothing waiting and no turn running, this explicit send starts a
+  // fresh, unpaused queue. While a turn is still settling (a stop in flight)
+  // the pause stays, so the queued prompt keeps its resume control.
+  if (!S.busy && !S.promptQueue.length && S.queuePaused) S.queuePaused = false;
 
   if (S.busy) {
     S.promptQueue.push({
@@ -368,11 +374,7 @@ fileInput.addEventListener('change', () => {
 });
 
 // ── Scroll-to-bottom button visibility ──
-messagesEl.addEventListener('scroll', () => {
-  if (!scrollBottomBtn) return;
-  const atBottom = messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight < SCROLL_THRESHOLD;
-  scrollBottomBtn.classList.toggle('visible', !atBottom);
-});
+messagesEl.addEventListener('scroll', syncScrollBottomButton);
 scrollBottomBtn.addEventListener('click', scrollToBottom);
 
 // Drag and drop on messages area
@@ -436,12 +438,8 @@ promptEl.addEventListener('keydown', (e) => {
     return;
   }
 
-  // ? = toggle shortcuts
-  if (e.key === '?' && !e.shiftKey && promptEl.value === '') {
-    e.preventDefault();
-    toggleShortcuts();
-    return;
-  }
+  // `?` on the empty composer toggles the shortcut sheet through the
+  // document-level handler in utils.js (isShortcutSheetKey).
 
   // History up/down (only when completion is hidden)
   if (completionEl.classList.contains('visible')) return;

@@ -286,7 +286,8 @@ fire from the post-session background goroutines.
 The agent loop also emits `loop.SignalEvent`s for previously-silent self-healing
 (`context_trimmed` when message groups are dropped to fit the context window,
 `tool_recovery` when a repeatedly-failing tool triggers a corrective hint,
-`tool_running` while a call is still executing, `budget_warning` at 50/75/90% of
+`tool_running` while a call is still executing, `llm_retry` when a failed model
+call is retried, `budget_warning` at 50/75/90% of
 a budget, `reply_ledger_mismatch` when a final reply denies completed mutations),
 surfaced the same way via `Config.AgentSignalHandler`.
 

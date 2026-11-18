@@ -86,6 +86,7 @@
 body {
   --shadow-pop: 0 16px 48px rgba(0, 0, 0, .5), 0 4px 12px rgba(0, 0, 0, .3), 0 0 0 1px var(--line-2);
   --ring: 0 0 0 2px var(--bg-0), 0 0 0 4px color-mix(in srgb, var(--amber) 70%, transparent);
+  --ring-inset: inset 0 0 0 2px color-mix(in srgb, var(--amber) 70%, transparent); /* inside clipping containers */
 }
 
 /* ── Porcelain (light) ─────────────────────────────────────────────── */
@@ -182,6 +183,7 @@ body.theme-high-contrast {
   --ember-grad: linear-gradient(135deg, #fff38a, #ffe14a);
   --code-ink: #fff38a;
   --ring: 0 0 0 2px #000, 0 0 0 4px #ffe14a;
+  --ring-inset: inset 0 0 0 2px #ffe14a;
   --shadow-pop: 0 0 0 1px var(--line-3);
 }
 
@@ -445,8 +447,12 @@ select { appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmln
 .top-spacer { flex: 1; min-width: 8px; }
 .model { display: none; }
 
+/* Stop and the controls always stay on screen: the chip keeps its count
+   whole while the metrics chips drop and the status word yields; on phones
+   the chip shows its count alone (the phrase stays its accessible name). */
 #attention-chip {
   display: inline-flex;
+  flex: none;
   align-items: center;
   gap: 6px;
   height: 28px;
@@ -460,6 +466,7 @@ select { appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmln
   white-space: nowrap;
 }
 #attention-chip::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--amber); animation: pulse-amber 1.6s var(--ease) infinite; }
+#attention-chip .attention-count { margin-right: -2px; }
 @keyframes pulse-amber {
   0% { box-shadow: 0 0 0 0 var(--amber-glow); }
   70% { box-shadow: 0 0 0 6px transparent; }
@@ -478,7 +485,10 @@ select { appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmln
 }
 #busy-spin { flex: none; }
 
-#metrics { display: flex; align-items: center; gap: 6px; }
+/* Plan/jobs chips give way before the attention chip: a chip that no longer
+   fits wraps onto a clipped second row, so chips drop whole rather than cut.
+   The padding keeps focus rings inside the clip box without moving them. */
+#metrics { display: flex; flex: 0 1000 auto; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; height: 34px; overflow: hidden; overflow: clip; padding: 4px; margin: -4px; }
 .m-chip {
   display: inline-flex;
   align-items: center;
@@ -498,7 +508,7 @@ select { appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmln
 .m-chip.hot { color: var(--red); border-color: color-mix(in srgb, var(--red) 45%, transparent); }
 .m-tok, .m-cost { font-size: var(--fs-xs); color: var(--text-3); white-space: nowrap; }
 
-.top-controls { display: flex; align-items: center; gap: 2px; margin-left: 4px; }
+.top-controls { display: flex; flex: none; align-items: center; gap: 2px; margin-left: 4px; }
 
 /* Run settings: a compact trigger with a floating panel */
 #run-settings { position: relative; flex: none; }
@@ -553,14 +563,15 @@ select { appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmln
 #effective-limits { font-size: var(--fs-xs); color: var(--text-3); }
 #model-picker, #thinking-picker { display: block !important; max-width: 100%; min-width: 0; }
 
-/* Stop: a clear, labelled destructive control while a turn runs */
+/* Stop: a clear, labelled destructive control while a turn runs. It sits
+   before the persistent controls so showing it never moves them. */
 #cancel-btn { display: none; }
 #cancel-btn.visible {
   display: inline-flex;
   align-items: center;
   gap: 6px;
   height: 28px;
-  margin-left: 4px;
+  margin-right: 4px;
   padding: 0 11px 0 9px;
   border: 1px solid color-mix(in srgb, var(--red) 40%, transparent);
   border-radius: var(--r-pill);
@@ -819,7 +830,7 @@ body.workspace-wide #session-rail { box-shadow: none; animation: none; }
 .ptab:hover { color: var(--text); }
 .ptab.active { color: var(--text); }
 .ptab.active::after { content: ''; position: absolute; left: 10px; right: 10px; bottom: -1px; height: 2px; border-radius: 2px 2px 0 0; background: var(--amber); }
-.ptab:focus-visible { box-shadow: inset var(--ring); border-radius: var(--r-sm); }
+.ptab:focus-visible { box-shadow: var(--ring-inset); border-radius: var(--r-sm); }
 .ptab.live::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--amber); order: 2; }
 #output-count { min-width: 18px; padding: 0 5px; border-radius: var(--r-pill); background: var(--bg-3); color: var(--text-3); font: 500 var(--fs-2xs)/16px var(--code); text-align: center; }
 #panels-close { font-size: 14px; }
@@ -1288,6 +1299,8 @@ body.workspace-wide #session-rail { box-shadow: none; animation: none; }
 .draft-toggle { font-size: var(--fs-xs); }
 .verify-chip { margin-left: 8px; font-weight: 600; }
 .verify-chip.fail { color: var(--red); }
+.verify-chip.partial-chip { color: var(--amber); font-weight: 500; }
+.answer-empty { color: var(--text-3); font-style: italic; }
 
 .arrow {
   display: inline-flex;
@@ -1365,8 +1378,6 @@ body.workspace-wide #session-rail { box-shadow: none; animation: none; }
 }
 .tb-body.open { display: block; animation: fade-slide var(--dur) var(--ease) both; }
 .tb-result { margin: 0; padding: 0; border: 0; font-size: var(--fs-xs); color: var(--text-2); white-space: pre-wrap; overflow-wrap: anywhere; }
-.tb-result-more { color: var(--blue); cursor: pointer; font-size: var(--fs-xs); }
-.tb-result-more:hover { text-decoration: underline; }
 
 /* Structured tool results */
 .result-arguments { margin: 0 0 8px; font: var(--fs-xs)/1.6 var(--code); }
@@ -1404,7 +1415,7 @@ input.result-search { flex: 1 1 110px; width: 110px; max-width: 200px; min-heigh
 .result-split-cell { display: flex; min-width: 0; padding: 2px 4px; border-right: 1px solid var(--line); white-space: pre-wrap; overflow-wrap: anywhere; }
 .result-split-cell .result-line-number { flex-basis: 28px; padding: 0 6px; }
 .result-split-cell > span:last-child { min-width: 0; }
-.result-sources { display: flex; flex-wrap: wrap; gap: 8px; padding: 12px; border-bottom: 1px solid var(--line); }
+.result-source-list { display: flex; flex-wrap: wrap; gap: 8px; padding: 12px; border-bottom: 1px solid var(--line); }
 .result-source { display: flex; flex-direction: column; gap: 4px; max-width: 100%; padding: 10px 12px; border: 1px solid var(--line-2); border-radius: var(--r-md); color: var(--text); text-decoration: none; font-size: var(--fs-xs); line-height: 1.5; overflow-wrap: anywhere; }
 .result-source span { color: var(--text-3); }
 .result-source:hover { border-color: color-mix(in srgb, var(--amber) 55%, transparent); }
@@ -1415,6 +1426,8 @@ input.result-search { flex: 1 1 110px; width: 110px; max-width: 200px; min-heigh
 .tool-item { min-width: 0; margin: 6px 8px; border: 1px solid var(--line); border-left: 2px solid var(--line-3); border-radius: var(--r-md); background: var(--bg-2); }
 .tool-item-head { display: block; padding: 10px 12px; font-size: var(--fs-sm); line-height: 1.6; overflow-wrap: anywhere; cursor: pointer; list-style: none; }
 .tool-item-head::-webkit-details-marker { display: none; }
+summary.tool-item-head::before { content: '▸'; display: inline-block; margin-right: 6px; font-size: 9px; color: var(--text-3); transition: transform var(--dur) var(--ease); }
+details.tool-item[open] > summary.tool-item-head::before { transform: rotate(90deg); }
 .tool-item > div.tool-item-head { cursor: default; }
 .tool-item-title { font-weight: 550; color: var(--text); white-space: pre-wrap; }
 .tool-item-status { margin-left: 8px; vertical-align: 1px; }
@@ -1939,6 +1952,7 @@ body:has(#approval-overlay:not([hidden]):not(:empty)) .toast { top: auto; bottom
   }
   #panels { width: min(100vw, 520px); box-shadow: var(--shadow-pop); }
   #inspector-resize { display: none; }
+  #topbar:has(#attention-chip:not([hidden])) .dot.connected + #ws-status { display: none; }
 }
 @keyframes rail-in { from { transform: translateX(-16px); opacity: 0; } to { transform: none; opacity: 1; } }
 
@@ -1950,10 +1964,12 @@ body:has(#approval-overlay:not([hidden]):not(:empty)) .toast { top: auto; bottom
   #topbar { gap: 2px; padding: 0 6px; }
   .top-brand { margin: 0 4px; }
   .top-brand-text { font-size: 15px; }
-  .top-status-group { padding: 0 6px; }
+  .top-status-group { min-width: 0; padding: 0 6px; }
   .dot.connected + #ws-status { display: none; }
+  #ws-status { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #metrics, #busy-spin { display: none !important; }
   #attention-chip { padding: 0 9px; }
+  #attention-chip .attention-label { display: none; }
   #topbar:has(#attention-chip:not([hidden])) .top-brand-text { display: none; }
   #run-settings > summary { width: var(--control); padding: 0; justify-content: center; font-size: 0; gap: 0; border-color: transparent; }
   #run-settings > summary::before { width: 17px; height: 17px; }

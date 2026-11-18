@@ -5,7 +5,7 @@ import { icon } from './icons.js';
 import { S, getSessionToken, clearSessionToken, ensureSessionToken } from './state.js';
 import { listSessions, getSession, renameSession as renameSessionAPI, deleteSession, downloadExport, pinSession } from './api.js';
 import { messagesEl, promptEl, sendBtn, sessionListEl, sidebarSearch, cancelBtn } from './dom.js';
-import { escapeHtml, escapeAttr, relativeTime, formatNum, showToast, forceScrollBottom, hideCancel, announce, openDialog, closeDialog, isDialogOpen } from './utils.js';
+import { escapeHtml, escapeAttr, relativeTime, formatNum, showToast, forceScrollBottom, hideCancel, announce, openDialog, closeDialog, isDialogOpen, syncScrollBottomButton } from './utils.js';
 import { resetTurnState, hideLoading, renderSessionHistory } from './render.js';
 import { resetTranscriptTrim } from './transcript.js';
 import { clearApprovals } from './approvals.js';
@@ -13,6 +13,7 @@ import { clearClarify } from './clarify.js';
 import { metricsFromSession, resetMetrics } from './metrics.js';
 import { resetPlanPanel } from './plan.js';
 import { cancelSessionNewRetry } from './ws.js';
+import { displayLabel } from './untrusted.js';
 
 const PAGE_SIZE = 50;
 const moreBtn = document.getElementById('sessions-more');
@@ -227,7 +228,9 @@ function resetSessionViews() {
 let sessionLoadVersion = 0;
 
 // ── New Session ──
-export function newSession() {
+// opts.keepDrawer leaves the session drawer open (deleting the open session
+// replaces it while the operator is still managing the list).
+export function newSession(opts) {
   // F-A2: a live turn owns the transcript and the socket. Ask before
   // tearing it down; the cancel goes through the same stop control the
   // user would click (main.js cancelAgent). Never silently force busy off.
@@ -236,6 +239,7 @@ export function newSession() {
     if (cancelBtn) cancelBtn.click();
   }
   sessionLoadVersion++;
+  if (!(opts && opts.keepDrawer === true)) S.closeSessionDrawer?.();
   S.pauseQueue?.();
   S.saveDraft?.();
   S.saveAttachments?.();
@@ -271,6 +275,7 @@ export function newSession() {
   messagesEl.innerHTML = '';
   resetTranscriptTrim();
   if (S.savedEmptyStateNode) messagesEl.appendChild(S.savedEmptyStateNode);
+  syncScrollBottomButton();
 
   sessionListEl.querySelectorAll('.session-item').forEach(s => s.classList.remove('active'));
   showToast('New session');
@@ -294,6 +299,7 @@ export async function loadAndRenderSession(sid) {
     if (cancelBtn) cancelBtn.click();
   }
   const loadVersion = ++sessionLoadVersion;
+  S.closeSessionDrawer?.();
   try {
     // Bootstrap the session token when missing (ensureSessionToken captures
     // the server's X-Session-Token echo on its detail fetch).
@@ -350,6 +356,7 @@ export async function loadAndRenderSession(sid) {
 
     if (visible.length === 0) {
       if (S.savedEmptyStateNode) messagesEl.appendChild(S.savedEmptyStateNode);
+      syncScrollBottomButton();
       showToast('Empty session');
       return;
     }
@@ -384,6 +391,7 @@ S.reloadSession = async () => {
     renderSessionHistory(sess.messages || [], { record: false });
     S.stickBottom = false;
     messagesEl.scrollTop = 0;
+    syncScrollBottomButton();
   } catch {
     showToast('Error reloading history');
   }
@@ -465,6 +473,18 @@ async function exportSession(sid, format) {
 }
 
 // ── Confirm Dialog ──
+// deletePrompt names the session by its title, with control and bidi
+// characters shown as escapes and long titles shortened, so the operator
+// can tell which session goes. Untitled sessions fall back to the short id.
+const DELETE_TITLE_MAX = 60;
+function deletePrompt(sid) {
+  const task = (S.sessionPages.find(s => s.id === sid) || {}).task;
+  if (!task) return 'Delete the untitled session ' + displayLabel(sid.slice(0, 8)) + '? This cannot be undone.';
+  const chars = Array.from(displayLabel(task));
+  const title = chars.length > DELETE_TITLE_MAX ? chars.slice(0, DELETE_TITLE_MAX).join('') + '…' : chars.join('');
+  return 'Delete “' + title + '”? This cannot be undone.';
+}
+
 export function hideConfirmDialog() {
   const overlay = document.getElementById('confirm-overlay');
   if (isDialogOpen(overlay)) closeDialog();
@@ -499,7 +519,7 @@ export async function executeDeleteSession() {
     const token = await ensureSessionToken(sid);
     await deleteSession(sid, token || undefined);
     clearSessionToken(sid);
-    if (S.sessionId === sid) newSession();
+    if (S.sessionId === sid) newSession({ keepDrawer: true });
     await loadSessions();
     announce('Session deleted');
     showToast('Session deleted');
@@ -525,7 +545,7 @@ sessionListEl.addEventListener('click', (e) => {
   if (e.target.closest('.del-btn')) {
     e.stopPropagation();
     S.pendingDeleteId = sid;
-    document.getElementById('confirm-msg').textContent = 'Delete session ' + sid.slice(0, 8) + '...?';
+    document.getElementById('confirm-msg').textContent = deletePrompt(sid);
     openDialog(document.getElementById('confirm-overlay'));
     return;
   }
@@ -553,7 +573,7 @@ sessionListEl.addEventListener('click', (e) => {
 
   // Load and render session (click on the item body)
   if (e.target.closest('.si-body')) {
-    if (sid === S.sessionId) return;
+    if (sid === S.sessionId) { S.closeSessionDrawer?.(); return; }
     sessionListEl.querySelectorAll('.session-item').forEach(s => s.classList.remove('active'));
     item.classList.add('active');
     loadAndRenderSession(sid);

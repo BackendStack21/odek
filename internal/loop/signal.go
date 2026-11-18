@@ -27,6 +27,13 @@ type SignalEvent struct {
 	//                        human-readable elapsed, e.g. "running for 2m0s").
 	//                        Fires every interval until the call returns, so
 	//                        long-running tools no longer look like a hang.
+	//   "llm_retry"        — the main model call failed and the SDK is
+	//                        starting another HTTP attempt (Count = number of
+	//                        the attempt starting, Detail = the failed status
+	//                        and the attempt budget, e.g. "HTTP 503, attempt 2
+	//                        of 8", or "no response, …" when the failed
+	//                        attempt got no HTTP reply). Fires once per retry;
+	//                        a learn-once fallback resend is not a retry.
 	//   "plan_reassessment" — repeated observed failures warrant reviewing
 	//                        the current plan (Detail = fixed reason code,
 	//                        Count = failure-batch threshold).

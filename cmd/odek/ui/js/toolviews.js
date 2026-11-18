@@ -1,12 +1,15 @@
 // Tool-specific presentation models. Never infer success from optimistic prose.
-import { unwrapForDisplay, displayLabel } from './untrusted.js';
+import { displayLabel, displayJSON } from './untrusted.js';
+import { plural } from './count.js';
 
 const object = value => value && typeof value === 'object' && !Array.isArray(value);
 const list = value => Array.isArray(value) ? value : [];
+// displayValue renders one value as text, as it stands: results are
+// prepared once by displayJSON (only the fields the tool wraps one by one
+// lose their envelope), and arguments are never wrapped.
 export function displayValue(value) {
   if (value == null) return '';
-  const text = typeof value === 'string' ? value : JSON.stringify(value);
-  return unwrapForDisplay(text);
+  return typeof value === 'string' ? value : JSON.stringify(value);
 }
 function parse(value) {
   if (object(value)) return value;
@@ -14,6 +17,28 @@ function parse(value) {
 }
 // File names and paths are untrusted single-line labels.
 const pathLabel = value => displayLabel(displayValue(value));
+
+// Edit cards name files relative to the server's workspace (set from
+// /api/workspace), so write_file's resolved absolute path and patch's
+// requested path read alike. Paths outside the workspace stay absolute.
+let workspaceRoot = '';
+export function setWorkspaceRoot(path) {
+  workspaceRoot = typeof path === 'string' ? path.replace(/\/+$/, '') : '';
+}
+function workspacePath(value) {
+  const path = displayValue(value);
+  if (!workspaceRoot || !path.startsWith(workspaceRoot + '/')) return path;
+  return path.slice(workspaceRoot.length + 1) || path;
+}
+// diffSize counts added and removed lines of a unified diff ("+2 −1").
+function diffSize(diff) {
+  let plus = 0, minus = 0;
+  for (const line of displayValue(diff).split('\n')) {
+    if (line.startsWith('+') && !line.startsWith('+++ ')) plus++;
+    else if (line.startsWith('-') && !line.startsWith('--- ')) minus++;
+  }
+  return plus || minus ? `+${plus} −${minus}` : '';
+}
 function byteSize(n) {
   const v = Number(n);
   if (!Number.isFinite(v) || v < 0) return '';
@@ -21,13 +46,12 @@ function byteSize(n) {
   if (v < 1024 * 1024) return (v / 1024).toFixed(1) + ' KB';
   return (v / (1024 * 1024)).toFixed(1) + ' MB';
 }
-function quantity(items, label) { return `${items.length} ${label}${items.length === 1 ? '' : 's'}`; }
 export function toolPreview(name, input) {
   const args = parse(input);
   let text;
   switch (name) {
     case 'plan':
-      text = [displayValue(args.verb) || 'plan', args.steps ? quantity(list(args.steps), 'step') : args.updates ? quantity(list(args.updates), 'update') : args.step_id].filter(Boolean).map(displayValue).join(' · '); break;
+      text = [displayValue(args.verb) || 'plan', args.steps ? plural(list(args.steps).length, 'step') : args.updates ? plural(list(args.updates).length, 'update') : args.step_id].filter(Boolean).map(displayValue).join(' · '); break;
     default:
       text = args.path ?? args.command ?? args.query ?? args.pattern ?? args.url;
       if (text == null) {
@@ -35,8 +59,21 @@ export function toolPreview(name, input) {
         if (entry) text = Array.isArray(entry[1]) ? `${entry[1].length} ${entry[0]}` : displayValue(entry[1]);
       }
   }
-  return displayValue(text).replace(/\s+/g, ' ').slice(0, 100);
+  return clip(displayValue(text).replace(/\s+/g, ' '), 100);
 }
+// clip shortens text to at most max UTF-16 units, ending with an ellipsis
+// when cut and never splitting a surrogate pair.
+function clip(text, max) {
+  if (text.length <= max) return text;
+  let cut = max - 1;
+  const last = text.charCodeAt(cut - 1);
+  if (last >= 0xD800 && last <= 0xDBFF) cut--;
+  return text.slice(0, cut).trimEnd() + '…';
+}
+// Every untrusted string is unwrapped at most once, by displayJSON in
+// toolView; section() and entry() take prepared fields or text built from
+// them as they stand (displayValue never unwraps). Unwrapping display text
+// again could strip an envelope forged by the content itself.
 const section = (label, name, value) => ({label, name, output:displayValue(value)});
 function entry(title, status = '', meta = '', sections = []) { return {title:displayValue(title), status:displayValue(status), meta:displayValue(meta), sections}; }
 function status(item) {
@@ -62,16 +99,38 @@ function planView(raw, args) {
   return {kind:'plan',summary:'Requested plan changes',items:steps.map(s => entry(s.title || s.id, 'requested', displayValue(s.status || s.id), s.note ? [section('Note','text',s.note)] : []))};
 }
 
-export function toolView(name, raw, input = '') {
+// toolSummary is the collapsed head's text for a result: the summary of
+// toolView without preparing the result for display. The summary counts
+// items and failures, which unwrapping a field cannot change, so the copy
+// displayJSON makes is left to toolView, built when the result is opened.
+export function toolSummary(name, raw, input = '') {
+  return toolView(name, raw, input, false)?.summary || '';
+}
+
+// VIEW_TOOLS lists the tools toolView's switch has a case for: any other
+// result has no view, so it is neither parsed nor prepared here.
+const VIEW_TOOLS = new Set(['http_request', 'search_files', 'glob', 'read_file', 'patch', 'write_file', 'diff', 'count_lines', 'word_count', 'checksum', 'sort', 'head_tail']);
+
+export function toolView(name, raw, input = '', prepare = true) {
   const args = parse(input);
   if (name === 'plan') return planView(raw, args);
-  const data = parse(raw);
+  if (!VIEW_TOOLS.has(name)) return null;
+  const parsed = parse(raw);
+  const data = prepare ? displayJSON(parsed, name) : parsed;
   if (!Object.keys(data).length) return null;
   const results = list(data.results);
   if (results.some(r => !object(r))) return null;
   if (data.matches && (!Array.isArray(data.matches) || data.matches.some(r=>!object(r)))) return null;
   let items, kind;
   switch (name) {
+    case 'http_request': {
+      // {url,status,content_length,error}: the status is what the server
+      // returned; only a transport error fails the call.
+      if (typeof data.url !== 'string' || (typeof data.status !== 'number' && !data.error)) return null;
+      const meta = [data.status ? `HTTP ${data.status}` : '', byteSize(data.content_length)].filter(Boolean).join(' · ');
+      const card = entry(pathLabel(data.url), data.error ? 'failed' : '', meta, data.error ? [section('Error','text',data.error)] : []);
+      return {kind:'http', summary:data.error ? 'request failed' : meta || 'response', items:[card], links:[data.url]};
+    }
     case 'search_files':
       if (!Array.isArray(data.matches)) return null;
       kind = 'matches'; items = list(data.matches).map(r => entry(pathLabel(r.path), '', r.line ? `Line ${r.line}` : '', [section('Match','text',r.content)])); break;
@@ -82,10 +141,11 @@ export function toolView(name, raw, input = '') {
       kind = 'files'; items = list(data.matches).map(m => entry(pathLabel(m.path), '', m.is_dir ? 'directory' : byteSize(m.size))); break;
     case 'read_file':
       if (typeof data.content !== 'string' && !data.error) return null;
-      kind = 'file'; items = [entry(pathLabel(args.path || 'File content'),data.error ? 'failed' : '',data.total_lines != null ? `${data.total_lines} lines` : '',[section(data.error ? 'Error' : 'Content',data.error ? 'text' : 'code',data.error || data.content)])]; break;
+      kind = 'file'; items = [entry(pathLabel(args.path || 'File content'),data.error ? 'failed' : '',data.total_lines != null ? `${displayValue(data.total_lines)} ${data.total_lines === 1 ? 'line' : 'lines'}` : '',[section(data.error ? 'Error' : 'Content',data.error ? 'text' : 'code',data.error || data.content)])]; break;
     case 'patch': case 'write_file':
       if (typeof data.success !== 'boolean' && !data.error) return null;
-      kind = 'edit'; items = [entry(pathLabel(data.path || args.path || name),status(data),'',data.error ? [section('Error','text',data.error)] : data.diff ? [section('Diff','diff',data.diff)] : [])]; break;
+      // write_file returns no content, only its outcome; patch returns its diff.
+      kind = 'edit'; items = [entry(displayLabel(workspacePath(data.path || args.path || name)),status(data),data.diff && !data.error ? diffSize(data.diff) : '',data.error ? [section('Error','text',data.error)] : data.diff ? [section('Diff','diff',data.diff)] : [])]; break;
     case 'diff':
       if (!Array.isArray(data.hunks) || data.hunks.some(h=>!object(h) || !Array.isArray(h.lines) || h.lines.some(l=>!object(l)))) return null;
       kind = 'diff'; items = [entry(`${pathLabel(data.path_a)} → ${pathLabel(data.path_b)}`,'','',[section('Changes','diff',unifiedDiff(data))])]; break;
@@ -156,7 +216,7 @@ export function toolArguments(name, input) {
 // an indented outline (├── / └──) with directory file counts and sizes.
 // Returns null when the payload is not a tree, so callers fall back to raw.
 export function treeText(raw) {
-  const data = parse(raw);
+  const data = displayJSON(parse(raw), 'tree');
   if (!object(data.tree)) return data.error ? 'error: ' + displayValue(data.error) : null;
   const trim = path => displayValue(path).replace(/[\\/]+$/, '');
   // Split on separators before escaping: escapes contain backslashes.

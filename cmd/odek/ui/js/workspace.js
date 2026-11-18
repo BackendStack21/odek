@@ -1,5 +1,6 @@
 // Workspace navigation, per-session drafts and the inspectable result collection.
 import { S } from './state.js';
+import { plural } from './utils.js';
 import { renderResult, resultKind, ACTIVITY_MAX_RESULTS, ACTIVITY_MAX_BYTES } from './results.js';
 import { toolPreview } from './toolviews.js';
 import { openTab } from './commands.js';
@@ -132,6 +133,17 @@ function syncSessionRail() {
   if (button) { button.setAttribute('aria-expanded', String(open)); button.setAttribute('aria-controls','session-rail'); }
 }
 S.toggleSessionRail = () => { S.sessionRailOpen = !S.sessionRailOpen; syncSessionRail(); };
+// Below the wide-rail width the rail is a drawer over the transcript, so
+// choosing a session or starting a new one closes it; focus held inside the
+// hidden drawer moves to its opener. The docked rail stays as it is.
+S.closeSessionDrawer = () => {
+  if (!S.sessionRailOpen || document.body.classList.contains('workspace-wide')) return;
+  const rail = byId('session-rail');
+  const focusInside = !!(rail && document.activeElement && rail.contains(document.activeElement));
+  S.sessionRailOpen = false;
+  syncSessionRail();
+  if (focusInside) byId('hamburger-btn')?.focus();
+};
 // Below the three-column width the rail is a drawer: its scrim closes it.
 byId('sidebar-overlay')?.addEventListener('click', () => { if (S.sessionRailOpen) S.toggleSessionRail(); });
 
@@ -208,7 +220,7 @@ function paintEvidence(){
   if(check.previous.length)row.appendChild(textNode('span','management-note','Earlier attempts: '+check.previous.join(', ')+' · superseded for this exact command.'));
   row.addEventListener('click',()=>inspect(check.item));root.appendChild(row);
  }
- if(summary.failed || summary.unknown)root.appendChild(textNode('p','management-note',summary.failed+' failed tool calls · '+summary.unknown+' calls with unavailable outcomes. Review Activity for unresolved work.'));
+ if(summary.failed || summary.unknown)root.appendChild(textNode('p','management-note',plural(summary.failed,'failed tool call')+' · '+plural(summary.unknown,'call')+' with unavailable outcomes. Review Activity for unresolved work.'));
  const count=byId('output-count');if(count)count.textContent=String(summary.files.length+summary.checks.length+(S.artifactCount||0));
  S.refreshSupervision?.();
 }
