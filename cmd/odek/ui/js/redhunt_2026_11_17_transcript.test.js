@@ -539,9 +539,9 @@ test('a partial answer with no text shows its chip and a placeholder, live and r
     assert.equal(empty.textContent, 'no content', where);
     assert.doesNotMatch(collectText(answers[0]).join(' '), /\[Partial response/, where);
   };
-  deliver({ type: 'turn_started', turn_id: 't-refused' });
-  deliver({ type: 'token', turn_id: 't-refused', content: '[Partial response: refused]' });
-  deliver({ type: 'done', turn_id: 't-refused' });
+  deliver({ type: 'turn_started', turn_id: 't-empty-partial' });
+  deliver({ type: 'token', turn_id: 't-empty-partial', content: '[Partial response: refused]' });
+  deliver({ type: 'done', turn_id: 't-empty-partial' });
   check('live');
   byId.messages.children.length = 0;
   render.renderSessionHistory([
