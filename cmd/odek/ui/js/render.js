@@ -806,14 +806,45 @@ export function settlePendingWork(reason = 'interrupted') {
   if (S.subagentGroup) {
     S.subagentGroup.querySelectorAll('.subagent-card').forEach(card => {
       if (card.dataset.finalized === '1') return;
+      if (stopping) {
+        // The server may still refuse the stop: keep what the card showed,
+        // and its stop button, disarmed, for stopRefused to give back.
+        holdCardStatus(card);
+        card.dataset.pendingState = 'stopping';
+        const btn = card.querySelector('.sa-stop');
+        if (btn) btn.disabled = true;
+      } else {
+        card.querySelector('.sa-stop')?.remove();
+        card.dataset.finalized = '1'; card.classList.add('stopped');
+      }
       card.classList.remove('running');
-      card.querySelector('.sa-stop')?.remove();
       const status = card.querySelector('.sa-status');
       if (status) status.textContent = label.toLowerCase();
-      if (!stopping) { card.dataset.finalized = '1'; card.classList.add('stopped'); }
     });
     refreshSubagentHead(S.subagentGroup);
   }
+}
+
+// holdCardStatus keeps what a sub-agent card showed before a stop (the turn's
+// or the card's own) marked it stopping, unless a stop already holds it.
+function holdCardStatus(card) {
+  if (card.dataset.stopping === '1' || card.dataset.pendingState === 'stopping') return;
+  card.dataset.statusBefore = card.querySelector('.sa-status')?.textContent || '';
+  card.dataset.runningBefore = card.classList.contains('running') ? '1' : '';
+}
+
+// releaseCardStatus gives a card back what it showed once no stop holds it:
+// its status (unless a later frame changed it), its running state and an
+// armed stop button.
+function releaseCardStatus(card) {
+  if (card.dataset.finalized === '1' || card.dataset.stopping === '1' || card.dataset.pendingState === 'stopping') return;
+  const status = card.querySelector('.sa-status');
+  if (status && status.textContent === 'stopping…') status.textContent = card.dataset.statusBefore || 'running';
+  if (card.dataset.runningBefore === '1') card.classList.add('running');
+  const btn = card.querySelector('.sa-stop');
+  if (btn) btn.disabled = !card.dataset.taskId;
+  delete card.dataset.statusBefore;
+  delete card.dataset.runningBefore;
 }
 
 export function requestTurnStop() {
@@ -839,9 +870,10 @@ export function stopNotice(text, final = false) {
 
 // stopRefused takes back a stop that did not go through (the server refused
 // the cancel, or the REST fallback failed): the run goes on, so its frames
-// show again, steps marked stopping show as running, Stop comes back and the
-// stop line says why. The queue stays paused as the stop left it; the queue
-// strip offers resume.
+// show again, steps and sub-agent cards marked stopping show as they were,
+// Stop comes back and the stop line says why. The queue stays paused as the
+// stop left it; the queue strip offers resume. A turn that already sent its
+// own error (held in S.stopError) is not offered another stop.
 export function stopRefused(reason) {
   S.stopRequested = false;
   for (const queue of S.toolBlockQueues.values()) {
@@ -855,9 +887,27 @@ export function stopRefused(reason) {
       if (latency) latency.textContent = '';
     }
   }
+  S.subagentGroup?.querySelectorAll('.subagent-card').forEach(card => {
+    if (card.dataset.pendingState !== 'stopping') return;
+    delete card.dataset.pendingState;
+    releaseCardStatus(card);
+  });
+  if (S.subagentGroup) refreshSubagentHead(S.subagentGroup);
   setIntent('');
-  if (S.busy) showCancel();
-  stopNotice('⏹ Stop not applied: ' + (reason || 'refused') + (S.busy ? ' · press Stop to try again' : ''), true);
+  const live = S.busy && !S.stopError;
+  if (live) showCancel();
+  stopNotice('⏹ Stop not applied: ' + (reason || 'refused') + (live ? ' · press Stop to try again' : ''), true);
+}
+
+// subagentStopRefused takes back a per-card stop the server refused: the
+// card named by taskId (every card waiting on a stop when the refusal names
+// none) shows as it was, with its stop button armed again.
+export function subagentStopRefused(taskId) {
+  S.subagentGroup?.querySelectorAll('.subagent-card').forEach(card => {
+    if (card.dataset.stopping !== '1' || (taskId && card.dataset.taskId !== taskId)) return;
+    delete card.dataset.stopping;
+    releaseCardStatus(card);
+  });
 }
 
 export function endStream(reason = "interrupted") {
@@ -1426,7 +1476,7 @@ export function updateSubagentState(ev) {
   if (ev.task_id) card.dataset.taskId = ev.task_id;
   const armStop = () => {
     const stopBtn = card.querySelector('.sa-stop');
-    if (stopBtn) stopBtn.disabled = !card.dataset.taskId || card.dataset.stopping === '1';
+    if (stopBtn) stopBtn.disabled = !card.dataset.taskId || card.dataset.stopping === '1' || card.dataset.pendingState === 'stopping';
   };
 
   switch (ev.phase) {
@@ -1491,6 +1541,7 @@ export function requestSubagentStop(taskIdx) {
   if (!card || card.dataset.finalized === '1' || card.dataset.stopping === '1') return;
   const taskID = card.dataset.taskId;
   if (!taskID) return;
+  holdCardStatus(card);
   card.dataset.stopping = '1';
   const stopBtn = card.querySelector('.sa-stop');
   if (stopBtn) stopBtn.disabled = true;

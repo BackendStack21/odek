@@ -2401,21 +2401,30 @@ func handleWSCancel(store *session.Store, conn *golangws.Conn, msg wsClientMsg) 
 // auth token. Accepted=false is a normal race (the task finished before
 // the stop arrived), not an error.
 func handleWSSubagentCancel(store *session.Store, conn *golangws.Conn, msg wsClientMsg) {
+	// A refusal names the task it was for, so the client can take back that
+	// card's stop and offer it again.
+	refuse := func(text string) {
+		frame := map[string]string{"type": "error", "message": text, "refused": "subagent_cancel"}
+		if msg.TaskID != "" {
+			frame["task_id"] = msg.TaskID
+		}
+		writeWSJSON(conn, frame)
+	}
 	if msg.SessionID == "" {
-		writeWSRefusal(conn, "subagent_cancel", "subagent_cancel: missing session_id")
+		refuse("subagent_cancel: missing session_id")
 		return
 	}
 	if msg.TaskID == "" {
-		writeWSRefusal(conn, "subagent_cancel", "subagent_cancel: missing task_id")
+		refuse("subagent_cancel: missing task_id")
 		return
 	}
 	sess, err := store.Load(msg.SessionID)
 	if err != nil {
-		writeWSRefusal(conn, "subagent_cancel", wsLookupRejectMsg(conn, "subagent_cancel: session not found"))
+		refuse(wsLookupRejectMsg(conn, "subagent_cancel: session not found"))
 		return
 	}
 	if !validateSessionTokenStrict(store, sess, msg.AuthToken) {
-		writeWSRefusal(conn, "subagent_cancel", wsLookupRejectMsg(conn, "subagent_cancel: invalid session token"))
+		refuse(wsLookupRejectMsg(conn, "subagent_cancel: invalid session token"))
 		return
 	}
 	// The token proves access to msg.SessionID only; the task must have been
@@ -3809,8 +3818,9 @@ func writeWSError(conn *golangws.Conn, msg string) {
 // writeWSRefusal answers a control message the server will not apply (a
 // cancel or subagent_cancel with a missing or unknown session, a wrong token
 // or no task) with an error frame whose refused field names that message
-// type. A refusal belongs to no turn: the run it targeted, if any, goes on,
-// and the client can offer the stop again.
+// type (a refused subagent_cancel also names its task_id). A refusal belongs
+// to no turn: the run it targeted, if any, goes on, and the client can offer
+// the stop again.
 func writeWSRefusal(conn *golangws.Conn, msgType, msg string) {
 	writeWSJSON(conn, map[string]string{"type": "error", "message": msg, "refused": msgType})
 }

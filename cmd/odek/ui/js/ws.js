@@ -11,7 +11,7 @@ import {
   addToolCall, addToolResult, addSubagentGroup, completeSubagents,
   appendSubagentLog, addSystemMessage, updateSubagentState,
   lastAssistantBubble, supersedeStream, markTurnUnverified, stripVerifyMarker,
-  onVerificationEvent, streamAnswer, stopNotice, stopRefused,
+  onVerificationEvent, streamAnswer, stopNotice, stopRefused, subagentStopRefused,
 } from './render.js';
 import { queueApproval, dismissApproval, clearApprovals, expireApproval } from './approvals.js';
 import { queueClarify, dismissClarify, clearClarify, expireClarify, rejectClarify } from './clarify.js';
@@ -448,8 +448,14 @@ export function connect() {
       case 'error':
         if (!sameTurn) break;
         // A refused cancel or sub-agent stop is about that control message,
-        // not the run: the run goes on, so nothing is torn down.
-        if (event.refused === 'cancel') { stopRefused(event.message); announce('Stop not applied'); break; }
+        // not the run: the run goes on, so nothing is torn down. An error the
+        // turn sent while the stop was pending was the run's own failure.
+        if (event.refused === 'cancel') {
+          stopRefused(event.message); announce('Stop not applied');
+          if (S.stopError) { endStream('interrupted'); setIntent(''); releaseStopError(); }
+          break;
+        }
+        if (event.refused === 'subagent_cancel') subagentStopRefused(event.task_id);
         if (event.refused) { showToast('⚠ ' + event.message, 8000); break; }
         S.pauseQueue?.();
         streamFlush(); endThinking();

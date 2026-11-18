@@ -217,12 +217,15 @@ func TestRED_RefusedStopIsMarkedOnItsErrorFrame(t *testing.T) {
 		frame   map[string]any
 		refused string
 		message string
+		taskID  string // the sub-agent task a refused stop names, so the client can take that card's stop back
 	}{
-		{"cancel without a session", map[string]any{"type": "cancel"}, "cancel", "cancel: missing session_id"},
-		{"cancel of an unknown session", map[string]any{"type": "cancel", "session_id": "20990101-nosuch", "auth_token": "x"}, "cancel", "cancel: session not found"},
-		{"cancel with a wrong token", map[string]any{"type": "cancel", "session_id": sess.ID, "auth_token": "wrong"}, "cancel", "cancel: invalid session token"},
-		{"sub-agent stop without a task", map[string]any{"type": "subagent_cancel", "session_id": sess.ID, "auth_token": sess.AuthToken}, "subagent_cancel", "subagent_cancel: missing task_id"},
-		{"sub-agent stop with a wrong token", map[string]any{"type": "subagent_cancel", "session_id": sess.ID, "auth_token": "wrong", "task_id": "t1"}, "subagent_cancel", "subagent_cancel: invalid session token"},
+		{"cancel without a session", map[string]any{"type": "cancel"}, "cancel", "cancel: missing session_id", ""},
+		{"cancel of an unknown session", map[string]any{"type": "cancel", "session_id": "20990101-nosuch", "auth_token": "x"}, "cancel", "cancel: session not found", ""},
+		{"cancel with a wrong token", map[string]any{"type": "cancel", "session_id": sess.ID, "auth_token": "wrong"}, "cancel", "cancel: invalid session token", ""},
+		{"sub-agent stop without a task", map[string]any{"type": "subagent_cancel", "session_id": sess.ID, "auth_token": sess.AuthToken}, "subagent_cancel", "subagent_cancel: missing task_id", ""},
+		{"sub-agent stop with a wrong token", map[string]any{"type": "subagent_cancel", "session_id": sess.ID, "auth_token": "wrong", "task_id": "t1"}, "subagent_cancel", "subagent_cancel: invalid session token", "t1"},
+		{"sub-agent stop without a session", map[string]any{"type": "subagent_cancel", "task_id": "t2"}, "subagent_cancel", "subagent_cancel: missing session_id", "t2"},
+		{"sub-agent stop of an unknown session", map[string]any{"type": "subagent_cancel", "session_id": "20990101-nosuch", "auth_token": "x", "task_id": "t3"}, "subagent_cancel", "subagent_cancel: session not found", "t3"},
 	} {
 		writeJSON(conn, tc.frame)
 		evt := readWSUntil(t, conn, 10*time.Second, func(e map[string]any) bool { return e["type"] == "error" })
@@ -231,6 +234,9 @@ func TestRED_RefusedStopIsMarkedOnItsErrorFrame(t *testing.T) {
 		}
 		if _, tagged := evt["turn_id"]; tagged {
 			t.Errorf("%s: a refusal belongs to no turn: %v", tc.name, evt)
+		}
+		if got, _ := evt["task_id"].(string); got != tc.taskID {
+			t.Errorf("%s: task_id = %q, want %q: %v", tc.name, got, tc.taskID, evt)
 		}
 	}
 }

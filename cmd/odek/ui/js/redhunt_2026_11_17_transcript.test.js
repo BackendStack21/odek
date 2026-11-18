@@ -673,6 +673,73 @@ test('a refused sub-agent stop is a notice and leaves the turn running', () => {
   assert.match(document.getElementById('toast').textContent, /subagent_cancel: invalid session token/);
 });
 
+function startAgents(turn) {
+  deliver({ type: 'turn_started', turn_id: turn });
+  deliver({ type: 'tool_call', turn_id: turn, name: 'delegate_tasks', data: JSON.stringify({ tasks: [{ goal: 'Audit' }, { goal: 'Lint' }] }) });
+  deliver({ type: 'subagent_state', turn_id: turn, task_idx: 0, phase: 'started', task_id: 'tk-a' });
+  deliver({ type: 'subagent_state', turn_id: turn, task_idx: 0, phase: 'active', task_id: 'tk-a', tool: 'shell', step: 2 });
+  return byId.messages.querySelectorAll('.subagent-card');
+}
+
+test('a refused stop gives the sub-agent cards back, ready to stop again', () => {
+  S.busy = true;
+  const [running, queued] = startAgents('t-sa-turn-refused');
+  render.requestTurnStop();
+  assert.equal(running.querySelector('.sa-status').textContent, 'stopping…');
+  assert.equal(running.classList.contains('running'), false);
+  deliver({ type: 'error', message: 'cancel: invalid session token', refused: 'cancel' });
+  assert.equal(running.querySelector('.sa-status').textContent, '⟳ shell · 2', 'the live status comes back');
+  assert.equal(running.classList.contains('running'), true);
+  const stop = running.querySelector('.sa-stop');
+  assert.ok(stop, 'the card keeps its stop button');
+  assert.equal(stop.disabled, false, 'and it can be pressed again');
+  assert.equal(queued.querySelector('.sa-status').textContent, 'queued');
+  assert.equal(queued.querySelector('.sa-stop').disabled, true, 'a card with no task yet stays disarmed');
+  const prev = S.onSubagentStop;
+  S.onSubagentStop = () => {};
+  render.requestSubagentStop(0);
+  S.onSubagentStop = prev;
+  assert.equal(running.querySelector('.sa-status').textContent, 'stopping…', 'the per-card stop works again');
+  S.busy = false;
+});
+
+test('a refused sub-agent stop gives that card back', () => {
+  const sent = [];
+  const prev = S.onSubagentStop;
+  S.onSubagentStop = (id) => sent.push(id);
+  try {
+    const [card] = startAgents('t-sa-card-refused');
+    render.requestSubagentStop(0);
+    assert.equal(card.querySelector('.sa-stop').disabled, true);
+    deliver({ type: 'error', message: 'subagent_cancel: invalid session token', refused: 'subagent_cancel', task_id: 'tk-other' });
+    assert.equal(card.dataset.stopping, '1', 'a refusal for another task leaves this card alone');
+    deliver({ type: 'error', message: 'subagent_cancel: invalid session token', refused: 'subagent_cancel', task_id: 'tk-a' });
+    assert.equal(card.dataset.stopping, undefined);
+    assert.equal(card.querySelector('.sa-status').textContent, '⟳ shell · 2');
+    assert.equal(card.querySelector('.sa-stop').disabled, false);
+    render.requestSubagentStop(0);
+    deliver({ type: 'error', message: 'subagent_cancel: missing session_id', refused: 'subagent_cancel' });
+    assert.equal(card.dataset.stopping, undefined, 'a refusal naming no task gives back every pending card stop');
+    assert.deepEqual(sent, ['tk-a', 'tk-a'], 'the stop can be retried');
+  } finally {
+    S.onSubagentStop = prev;
+  }
+});
+
+test('a turn error held when the stop is refused is shown and ends the turn', () => {
+  S.busy = true;
+  deliver({ type: 'turn_started', turn_id: 't-refused-err' });
+  render.requestTurnStop();
+  deliver({ type: 'error', turn_id: 't-refused-err', message: 'provider exploded' });
+  deliver({ type: 'error', message: 'cancel: invalid session token', refused: 'cancel' });
+  const lines = systemLines();
+  assert.match(lines.join(' '), /provider exploded/, JSON.stringify(lines));
+  assert.doesNotMatch(lines.join(' '), /press Stop to try again/, 'nothing is left to stop');
+  assert.equal(S.turnEnded, true, 'the failed turn ends');
+  assert.equal(S.stopError, null);
+  S.busy = false;
+});
+
 test('a stop whose REST fallback fails is taken back', () => {
   S.busy = true;
   deliver({ type: 'turn_started', turn_id: 't-rest' });
