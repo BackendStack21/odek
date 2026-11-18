@@ -650,6 +650,27 @@ test('the status rail says it is waiting for an answer while a question is open'
   }
 });
 
+// A stop pressed while a decision card is open is what the rail reports:
+// the card stays until the server acknowledges the stop.
+test('the status rail says stopping once Stop is pressed, even with a decision card open', async () => {
+  const approvals = await import('./approvals.js');
+  S.busy = true;
+  try {
+    render.setIntent('running tests');
+    approvals.queueApproval({ id: 'rail-stop', risk: 'code_execution', command: 'go test ./...' });
+    assert.match(railText(), /^waiting for your approval/);
+    render.requestTurnStop();
+    assert.match(railText(), /^stopping/);
+    render.setIntent('composing'); // a frame the stop does not hold
+    assert.match(railText(), /^stopping/, 'a pending stop keeps its label');
+  } finally {
+    approvals.clearApprovals({ drain: false });
+    render.resetTurnState();
+    S.busy = false;
+    render.setIntent('');
+  }
+});
+
 // ── Wording ──
 // Counts read "1 need attention", "1 turns", "0 job(s)" and similar.
 test('plural formats a count with the right noun form', () => {

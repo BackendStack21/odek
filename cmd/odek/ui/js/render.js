@@ -128,9 +128,10 @@ function stopSpin() {
 
 export function paintIntent() {
   syncLiveChrome();
-  // An open decision card means the run waits on the operator, not a tool.
+  // A pending stop is what the run is doing, whatever frame came last; an
+  // open decision card means the run waits on the operator, not a tool.
   const waiting = S.activeApprovalId ? 'waiting for your approval' : S.activeClarifyCard ? 'waiting for your answer' : '';
-  const label = (S.busy && waiting) || S.currentIntent || (S.busy ? 'reasoning' : '');
+  const label = (S.busy && S.stopRequested && 'stopping') || (S.busy && waiting) || S.currentIntent || (S.busy ? 'reasoning' : '');
   const rail = document.getElementById('intent-rail');
   const top = document.getElementById('busy-spin');
   if (!label) {
