@@ -75,7 +75,11 @@ func describeFailure(err error, quote bool) (string, bool) {
 	var api *sdk.APIError
 	switch {
 	case errors.As(err, &rate):
-		attempts = max(attempts, rate.Attempts)
+		// The SDK's own count includes learn-once fallback resends, which
+		// the call's counter leaves out; it stands in only without one.
+		if call == nil {
+			attempts = rate.Attempts
+		}
 		desc = fmt.Sprintf("%s returned HTTP %d", providerSubject(rate.Provider, provider), rate.Status)
 		if msg := failureMessage(rate.Message); quote && msg != "" {
 			desc += ": " + msg

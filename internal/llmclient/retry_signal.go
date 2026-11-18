@@ -36,10 +36,12 @@ func (r Retry) Detail() string {
 }
 
 // Attempts counts the HTTP attempts of one model call. TrackAttempts attaches
-// it to the call's context; the SDK transport installed by NewSDK counts every
+// it to the call's context; the SDK transport installed by NewSDK sees every
 // request made under that context, so retries the SDK makes on its own (5xx,
-// 408 and 429 replies, network errors, learn-once fallbacks) are seen as they
-// start. Calls without a tracker are not observed.
+// 408 and 429 replies, network errors) are seen as they start. A learn-once
+// fallback (the request resent at once after a provider 400 named a part it
+// rejects) is not a retry and is not counted. Calls without a tracker are
+// not observed.
 type Attempts struct {
 	provider string
 	onRetry  func(Retry)
@@ -82,12 +84,31 @@ func (a *Attempts) Wrap(err error) error {
 
 func (a *Attempts) begin() {
 	a.mu.Lock()
+	if a.n > 0 && learnOnceStatus(a.lastStatus) {
+		// The SDK's learn-once fallback resending the request at once with
+		// the rejected part changed: not a retry, as reportAttempt also
+		// treats it, so it is neither counted nor signalled.
+		a.mu.Unlock()
+		return
+	}
 	a.n++
 	r := Retry{Attempt: a.n, MaxAttempts: MaxModelAttempts, Status: a.lastStatus}
 	a.mu.Unlock()
 	if r.Attempt > 1 && a.onRetry != nil {
 		a.onRetry(r)
 	}
+}
+
+// learnOnceStatus reports whether a request that follows a reply with this
+// status, within one call, is one of the SDK's learn-once fallbacks rather
+// than a retry. The SDK backs off and retries transport errors, 408, 429 and
+// 5xx replies and streams that failed before any output; it never retries
+// another 4xx after a delay. Its learn-once fallbacks (stream_options,
+// reasoning_effort, the Responses API, buffered mode) are all triggered by a
+// provider 400 and resend at once. So a request after a 4xx other than 408
+// and 429 is such a fallback.
+func learnOnceStatus(status int) bool {
+	return status >= 400 && status < 500 && status != http.StatusRequestTimeout && status != http.StatusTooManyRequests
 }
 
 func (a *Attempts) end(resp *http.Response, err error) {

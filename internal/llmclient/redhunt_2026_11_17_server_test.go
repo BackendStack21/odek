@@ -74,6 +74,89 @@ func TestRED_AttemptTransportReportsEachRetryOfATrackedCall(t *testing.T) {
 	}
 }
 
+// The SDK's learn-once fallbacks (a provider 400 naming stream_options,
+// reasoning_effort, the Responses API or streaming itself) resend the request
+// at once with the offending part changed. Like reportAttempt, the counter
+// treats only failures the SDK backs off on as retries: a fallback request is
+// neither an attempt nor an llm_retry.
+func TestRED_AttemptTransportDoesNotCountLearnOnceFallbacks(t *testing.T) {
+	for name, tc := range map[string]struct {
+		statuses []int
+		count    int
+		retries  []Retry
+	}{
+		"fallback then success":        {[]int{400, 200}, 1, nil},
+		"fallback, server error, done": {[]int{400, 503, 200}, 2, []Retry{{Attempt: 2, MaxAttempts: MaxModelAttempts, Status: 503}}},
+		"rate limited then success":    {[]int{429, 200}, 2, []Retry{{Attempt: 2, MaxAttempts: MaxModelAttempts, Status: 429}}},
+		"request timeout then success": {[]int{408, 200}, 2, []Retry{{Attempt: 2, MaxAttempts: MaxModelAttempts, Status: 408}}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			rt := attemptTransport{base: &serverRoundTripper{statuses: tc.statuses}}
+			var retries []Retry
+			ctx, attempts := TrackAttempts(context.Background(), "fixture", func(r Retry) { retries = append(retries, r) })
+			for range tc.statuses {
+				if resp, err := rt.RoundTrip(serverRequest(t, ctx)); err == nil {
+					resp.Body.Close()
+				}
+			}
+			if attempts.Count() != tc.count || fmt.Sprint(retries) != fmt.Sprint(tc.retries) {
+				t.Fatalf("count=%d retries=%+v, want count=%d retries=%+v", attempts.Count(), retries, tc.count, tc.retries)
+			}
+		})
+	}
+}
+
+// The failure text counts attempts the same way: after a learn-once fallback
+// the SDK's rate-limit count includes the resend, the call's count does not.
+func TestRED_DescribeFailureCountsAttemptsLikeTheRetrySignal(t *testing.T) {
+	rate := &sdk.RateLimitError{APIError: sdk.APIError{Provider: "gw", Status: 429, Message: "slow down"}, Attempts: 8}
+	got, _ := DescribeFailure(&AttemptsError{Provider: "gw", Attempts: 7, Err: rate})
+	if want := "provider gw returned HTTP 429: slow down (rate limited; after 7 attempts)"; got != want {
+		t.Fatalf("DescribeFailure = %q, want %q", got, want)
+	}
+}
+
+// Through the real SDK: a stream request rejected for stream_options is
+// resent without it at once, and the call reports one attempt and no retry.
+func TestRED_NewSDKLearnOnceFallbackIsNotARetry(t *testing.T) {
+	var mu sync.Mutex
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		calls++
+		n := calls
+		mu.Unlock()
+		if n == 1 {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			fmt.Fprint(w, `{"error":{"message":"Unrecognized request argument supplied: stream_options"}}`)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n")
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer srv.Close()
+	c, err := Dial("", "m", "k", srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var retries []Retry
+	ctx, attempts := TrackAttempts(context.Background(), c.ProviderID(), func(r Retry) { retries = append(retries, r) })
+	if _, err := c.CallStream(ctx, nil, nil, func(Delta) error { return nil }); err != nil {
+		t.Fatalf("CallStream: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if calls != 2 {
+		t.Fatalf("provider saw %d requests, want 2 (the fallback resend)", calls)
+	}
+	if attempts.Count() != 1 || len(retries) != 0 {
+		t.Fatalf("count=%d retries=%+v, want one attempt and no retry", attempts.Count(), retries)
+	}
+}
+
 func TestRED_AttemptTransportIgnoresUntrackedCallsAndRedirects(t *testing.T) {
 	base := &serverRoundTripper{statuses: []int{500}}
 	rt := attemptTransport{base: base}
