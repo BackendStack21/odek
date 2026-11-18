@@ -248,28 +248,32 @@ acknowledgement), then **Stopped** only on execution settlement — one
 transcript status line that updates in place. Once it shows the outcome the
 line is final: a later stop writes a line of its own, and the server's answer
 (an acknowledgement or a refusal) to a stop whose line already shows the
-outcome (the turn ended first) adds nothing — unless another turn has opened since, in which case the server's
-cancel landed on that turn and its answer is applied there. A stop sent through the REST fallback, whose outcome the socket can
-no longer report, keeps its line open for it. From the moment Stop is
-pressed, new work the run sends (tool calls, reasoning, sub-agent progress,
-approval and question requests) is not shown; results of steps already shown,
-answer text and sub-agent finishes still land, so a turn that finishes before
-the stop takes effect ends on its ordinary answer.
+outcome (the turn ended first) adds nothing — unless another turn has opened
+since, in which case the answer is applied to that turn. The REST fallback is
+used only while the socket is down, and a dropped socket already cancels the
+running prompt on the server, so its line asks to reconnect and review saved
+progress; that line is not final, so a stop sent again before the next turn
+updates it instead of writing another. From the moment Stop is pressed, new
+work the run sends (tool calls, reasoning, sub-agent progress, approval and
+question requests) is not shown; results of steps already shown, answer text
+and sub-agent finishes still land, so a turn that finishes before the stop
+takes effect ends on its ordinary answer.
 The error frame a stopped run unwinds with is not shown as a failure; only a
 run that settles `failed` while stopping shows its error (and notifies like any
 failed turn), and a held error is shown when the connection drops while the
 stop is still unanswered (once the server has acknowledged the stop, the error
-is the stop's own unwinding and is dropped). Only the turn's own
-error (one carrying its `turn_id`) is held for that; any other error shows at
-once. A stop the server refuses (an `error` with `refused: "cancel"`), or whose
-REST fallback fails, is taken back: the run is followed again from the
-refusal on (work it sent while the stop was pending is not shown live;
-reloading the session shows it), steps and sub-agent cards marked stopping
-show as they were (cards with their stop
-button armed again), Stop returns, and the stop line reads **Stop not
-applied: …** with the reason. An error the turn sent while that stop was
-pending is then shown as the run's failure. The prompt queue stays paused,
-with its resume control. An answer the
+is the stop's own unwinding and is dropped). Only the turn's own error (one
+carrying its `turn_id`) is held for that; any other error shows at once. A stop
+the server refuses (an `error` with `refused: "cancel"`), or whose REST
+fallback fails, is taken back: the run is followed again from the refusal on
+(work it sent while the stop was pending is not shown live; reloading the
+session shows it; an approval or question requested in that time is not shown
+either, and the run waits on it until it expires), steps and sub-agent cards
+marked stopping show as they were (cards with their stop button armed again),
+Stop returns, and the stop line reads **Stop not applied: …** with the reason.
+An error the turn sent while that stop was pending is then shown as the run's
+failure. The prompt queue stays paused, with its resume control.
+An answer the
 provider did not finish (`[Partial response: interrupted|truncated|refused]`
 in the stored text) shows a `◐ partial · <reason>` chip (and a muted *no content* placeholder when it has no text) on its sender line
 instead of the marker, live and on reload, and a stopped stream is not kept

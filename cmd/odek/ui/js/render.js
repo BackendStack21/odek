@@ -1138,7 +1138,7 @@ export function addToolCall(name, data, callId = '') {
 }
 
 // appendToolResultContent renders a tool result into the collapsed .tb-body
-// (same toggle as args), truncating long output behind a "show all" expander.
+// (same toggle as args); the result view pages long output itself.
 // Shared by the live path (addToolResult) and session-history rendering.
 // The result view (toolbar, search, line rows) is built on the first expand:
 // most steps are never opened, and eagerly rendered bodies were the bulk of
