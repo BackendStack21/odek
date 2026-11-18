@@ -585,6 +585,31 @@ test('an error that is not the stop still shows once the stop settles as failed'
   assert.match(systemLines().join(' '), /provider exploded/);
 });
 
+test('a turn error held for a pending stop is shown when the socket drops', () => {
+  deliver({ type: 'turn_started', turn_id: 't-held-drop' });
+  render.requestTurnStop();
+  deliver({ type: 'error', turn_id: 't-held-drop', message: 'provider exploded' });
+  assert.doesNotMatch(systemLines().join(' '), /provider exploded/, 'held while the stop is pending');
+  S.ws.onclose();
+  assert.match(systemLines().join(' '), /provider exploded/, 'the socket that would carry the outcome is gone');
+  assert.equal(S.stopError, null);
+});
+
+test('a run that fails while stopping notifies like any failed turn', () => {
+  S.notifyEnabled = true;
+  document.title = 'odek';
+  try {
+    deliver({ type: 'turn_started', turn_id: 't-stop-notify' });
+    render.requestTurnStop();
+    deliver({ type: 'error', turn_id: 't-stop-notify', message: 'provider exploded' });
+    assert.equal(document.title, 'odek', 'nothing to notify while the outcome is unknown');
+    deliver({ type: 'turn_settled', turn_id: 't-stop-notify', status: 'failed' });
+    assert.equal(document.title, '(1) odek', 'the failed turn notifies');
+  } finally {
+    S.notifyEnabled = false;
+  }
+});
+
 test('a later stop gets its own line and leaves a settled stop line as it was', () => {
   S.sessionId = 'sess-settled';
   deliver({ type: 'turn_started', turn_id: 't-settled', session_id: 'sess-settled' });

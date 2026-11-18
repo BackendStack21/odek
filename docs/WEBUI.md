@@ -248,7 +248,9 @@ acknowledgement), then **Stopped** only on execution settlement — one
 transcript status line that updates in place. Once it shows the outcome the
 line is final: a later stop writes a line of its own.
 The error frame a stopped run unwinds with is not shown as a failure; only a
-run that settles `failed` while stopping shows its error. Only the turn's own
+run that settles `failed` while stopping shows its error (and notifies like any
+failed turn), and a held error is shown when the connection drops before the
+run settles. Only the turn's own
 error (one carrying its `turn_id`) is held for that; any other error shows at
 once. A stop the server refuses (an `error` with `refused: "cancel"`), or whose
 REST fallback fails, is taken back: the run's frames show again, Stop

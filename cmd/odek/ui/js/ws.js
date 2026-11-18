@@ -72,10 +72,31 @@ function noteDisconnect() {
   clearApprovals({ drain: false });
   clearClarify();
   stopPlanLiveIfIdle();
+  // The turn_settled that would decide on an error held for a pending stop
+  // went with the socket: show it now.
+  releaseStopError();
 
   paintConnBanner();
 
   if (droppedBusy) S.onRecoveryNeeded?.('Connection interrupted the turn');
+}
+
+// reportTurnError shows a failed turn's error the one way every path does:
+// a transcript line, the recovery prompt, a notification and an
+// announcement.
+function reportTurnError(event) {
+  S.onRecoveryNeeded?.('Work failed');
+  addSystemMessage('⚠ ' + formatErrorMessage(event.message, event.phrased) + ' — Review saved progress before continuing or running again.');
+  notifyUser('turn failed', 'A turn failed');
+  announce('Turn failed');
+}
+
+// releaseStopError shows the turn's error held while a stop was pending,
+// once nothing will decide on it any more.
+function releaseStopError() {
+  const held = S.stopError;
+  S.stopError = null;
+  if (held) reportTurnError(held);
 }
 
 // A cancel ack or settle frame that names a session we have since left (New
@@ -363,8 +384,8 @@ export function connect() {
           // The run failed on its own while stopping: show the error held
           // back while the stop was pending.
           streamFlush();endThinking();endStream('interrupted');stopNotice('⏹ Stop requested · the run ended with an error', true);
-          if(S.stopError)addSystemMessage('⚠ ' + formatErrorMessage(S.stopError.message, S.stopError.phrased) + ' — Review saved progress before continuing or running again.');
-          announce('Turn failed');S.onRecoveryNeeded?.('Work failed');
+          if(S.stopError)releaseStopError();
+          else {announce('Turn failed');S.onRecoveryNeeded?.('Work failed');}
         } else if(event.status!=='completed') {S.onRecoveryNeeded?.('Work interrupted');}
         else if(S.stopRequested && S.stopNoticeEl){stopNotice('Finished before the stop took effect.', true);}
         S.stopError=null;
@@ -446,10 +467,7 @@ export function connect() {
         // the run failed. An error the turn did not send (no turn_id) is
         // shown at once.
         if (S.stopRequested && !S.turnEnded && event.turn_id) { S.stopError = event; break; }
-        S.onRecoveryNeeded?.('Work failed');
-        addSystemMessage('⚠ ' + formatErrorMessage(event.message, event.phrased) + ' — Review saved progress before continuing or running again.');
-        notifyUser('turn failed', 'A turn failed');
-        announce('Turn failed');
+        reportTurnError(event);
         break;
 
       case 'approval_request':
