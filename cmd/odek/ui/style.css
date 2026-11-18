@@ -1378,8 +1378,6 @@ body.workspace-wide #session-rail { box-shadow: none; animation: none; }
 }
 .tb-body.open { display: block; animation: fade-slide var(--dur) var(--ease) both; }
 .tb-result { margin: 0; padding: 0; border: 0; font-size: var(--fs-xs); color: var(--text-2); white-space: pre-wrap; overflow-wrap: anywhere; }
-.tb-result-more { color: var(--blue); cursor: pointer; font-size: var(--fs-xs); }
-.tb-result-more:hover { text-decoration: underline; }
 
 /* Structured tool results */
 .result-arguments { margin: 0 0 8px; font: var(--fs-xs)/1.6 var(--code); }

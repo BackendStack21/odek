@@ -11,11 +11,10 @@ import {
 } from './utils.js';
 import { pruneMessages, syncTrimMarker, setHistoryBacklog, trimState, holdView, HISTORY_UNITS } from './transcript.js';
 import { markdownToHtml, CODE_COPY_LABEL, CODE_COPIED_LABEL } from './markdown.js';
-import { parseUntrusted, unwrapToolOutput } from './untrusted.js';
 import { classifyToolResult, chipsHtml, prettyToolBody, collectReceipt, formatReceipt } from './tools.js';
 import { toolIcon } from './icons.js';
 import { renderResult, resultText, resultDisplayText, ACTIVITY_MAX_RESULTS, ACTIVITY_MAX_BYTES } from './results.js';
-import { toolPreview, toolArguments, toolView, renderToolItems } from './toolviews.js';
+import { toolPreview, toolArguments, toolSummary, renderToolItems } from './toolviews.js';
 import { metricsNoteOutput } from './metrics.js';
 
 // ── Turn state ──
@@ -1143,11 +1142,12 @@ export function addToolCall(name, data, callId = '') {
 // Shared by the live path (addToolResult) and session-history rendering.
 // The result view (toolbar, search, line rows) is built on the first expand:
 // most steps are never opened, and eagerly rendered bodies were the bulk of
-// a long session's DOM. Until then the output waits on the block itself.
+// a long session's DOM. Until then the output waits on the block itself; the
+// head shows the view's summary, which needs no display copy of the result.
 function appendToolResultContent(block, output, record = true) {
-  const view = toolView(block.dataset.toolName || '', resultText(output), block.dataset.toolArgs || '');
+  const summary = toolSummary(block.dataset.toolName || '', resultText(output), block.dataset.toolArgs || '');
   const preview = block.querySelector('.tb-preview');
-  if (view && preview) { preview.textContent = view.summary; preview.title = view.summary; }
+  if (summary && preview) { preview.textContent = summary; preview.title = summary; }
 
   (block.pendingResults ||= []).push(output);
   const body = block.querySelector('.tb-body');
@@ -1169,32 +1169,6 @@ function renderPendingResult(block) {
     else (body || block).appendChild(resultEl);
     renderResult(resultEl, { name: block.dataset.toolName || '', output, args:block.dataset.toolArgs || '', compact: true });
   });
-}
-
-// fillToolResult renders tool output into resultEl. The server sends raw,
-// unsanitized content; tool output may embed the model-facing
-// <untrusted_content_*> envelope, which is unwrapped for display — the body
-// is inserted as text (never HTML). Envelope source is model-facing trust
-// metadata and is not shown. When truncate is true, long bodies are cut
-// behind a "show all" expander carrying the full output.
-function fillToolResult(resultEl, output, truncate, name) {
-  const MAX_RESULT = 600;
-  const segments = parseUntrusted(output);
-  for (const seg of segments) {
-    const body = seg.source === null ? seg.body : unwrapToolOutput(seg.body, name);
-    if (truncate && body.length > MAX_RESULT) {
-      resultEl.appendChild(document.createTextNode(body.slice(0, MAX_RESULT)));
-      const more = document.createElement('span');
-      more.className = 'tb-result-more';
-      more.setAttribute('role', 'button');
-      more.tabIndex = 0;
-      more.dataset.full = output;
-      more.textContent = ' …show all (' + body.length + ' chars)';
-      resultEl.appendChild(more);
-    } else {
-      resultEl.appendChild(document.createTextNode(body));
-    }
-  }
 }
 
 export function addToolResult(name, output, callId = '', outcome = 'unknown') {
@@ -1249,16 +1223,6 @@ export function addToolResult(name, output, callId = '', outcome = 'unknown') {
     S.turnReceipt.files.push(...piece.files);
   }
   scrollBottom();
-}
-
-function expandToolResult(el) {
-  const full = el.dataset.full || '';
-  const resultEl = el.parentElement;
-  if (resultEl) {
-    resultEl.textContent = '';
-    const block = resultEl.closest && resultEl.closest('.tool-block');
-    fillToolResult(resultEl, full, false, block ? block.dataset.toolName : '');
-  }
 }
 
 function toggleToolBody(header) {
@@ -2264,9 +2228,6 @@ function addCopyButton(bubble) {
 // onclick attributes anywhere in generated HTML.
 messagesEl.addEventListener('click', (e) => {
   const t = e.target;
-
-  const tbResultMore = t.closest('.tb-result-more');
-  if (tbResultMore) { expandToolResult(tbResultMore); return; }
 
   const cbCopy = t.closest('.cb-copy');
   if (cbCopy) { copyCode(cbCopy); return; }

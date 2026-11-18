@@ -71,13 +71,11 @@ function clip(text, max) {
   return text.slice(0, cut).trimEnd() + '…';
 }
 // Every untrusted string is unwrapped at most once, by displayJSON in
-// toolView: section() takes a prepared DTO field, shownSection() text built
-// from displayed pieces, and entry() strings as given. Unwrapping display
-// text again could strip an envelope forged by the content itself.
+// toolView; section() and entry() take prepared fields or text built from
+// them as they stand (displayValue never unwraps). Unwrapping display text
+// again could strip an envelope forged by the content itself.
 const section = (label, name, value) => ({label, name, output:displayValue(value)});
-const shownSection = (label, name, output) => ({label, name, output});
-const shown = value => typeof value === 'string' ? value : displayValue(value);
-function entry(title, status = '', meta = '', sections = []) { return {title:shown(title), status:shown(status), meta:shown(meta), sections}; }
+function entry(title, status = '', meta = '', sections = []) { return {title:displayValue(title), status:displayValue(status), meta:displayValue(meta), sections}; }
 function status(item) {
   if (item.error || item.success === false || (typeof item.exit_code === 'number' && item.exit_code !== 0)) return 'failed';
   if (item.success === true || item.exit_code === 0) return 'completed';
@@ -101,10 +99,24 @@ function planView(raw, args) {
   return {kind:'plan',summary:'Requested plan changes',items:steps.map(s => entry(s.title || s.id, 'requested', displayValue(s.status || s.id), s.note ? [section('Note','text',s.note)] : []))};
 }
 
-export function toolView(name, raw, input = '') {
+// toolSummary is the collapsed head's text for a result: the summary of
+// toolView without preparing the result for display. The summary counts
+// items and failures, which unwrapping a field cannot change, so the copy
+// displayJSON makes is left to toolView, built when the result is opened.
+export function toolSummary(name, raw, input = '') {
+  return toolView(name, raw, input, false)?.summary || '';
+}
+
+// VIEW_TOOLS lists the tools toolView's switch has a case for: any other
+// result has no view, so it is neither parsed nor prepared here.
+const VIEW_TOOLS = new Set(['http_request', 'search_files', 'glob', 'read_file', 'patch', 'write_file', 'diff', 'count_lines', 'word_count', 'checksum', 'sort', 'head_tail']);
+
+export function toolView(name, raw, input = '', prepare = true) {
   const args = parse(input);
   if (name === 'plan') return planView(raw, args);
-  const data = displayJSON(parse(raw), name);
+  if (!VIEW_TOOLS.has(name)) return null;
+  const parsed = parse(raw);
+  const data = prepare ? displayJSON(parsed, name) : parsed;
   if (!Object.keys(data).length) return null;
   const results = list(data.results);
   if (results.some(r => !object(r))) return null;
@@ -136,12 +148,12 @@ export function toolView(name, raw, input = '') {
       kind = 'edit'; items = [entry(displayLabel(workspacePath(data.path || args.path || name)),status(data),data.diff && !data.error ? diffSize(data.diff) : '',data.error ? [section('Error','text',data.error)] : data.diff ? [section('Diff','diff',data.diff)] : [])]; break;
     case 'diff':
       if (!Array.isArray(data.hunks) || data.hunks.some(h=>!object(h) || !Array.isArray(h.lines) || h.lines.some(l=>!object(l)))) return null;
-      kind = 'diff'; items = [entry(`${pathLabel(data.path_a)} → ${pathLabel(data.path_b)}`,'','',[shownSection('Changes','diff',unifiedDiff(data))])]; break;
+      kind = 'diff'; items = [entry(`${pathLabel(data.path_a)} → ${pathLabel(data.path_b)}`,'','',[section('Changes','diff',unifiedDiff(data))])]; break;
     case 'count_lines': case 'word_count': case 'checksum': case 'sort': case 'head_tail':
       // count_lines/word_count/sort tools were removed; cases kept so persisted
       // old-session transcripts still render.
       if (!Array.isArray(data.results)) return null;
-      kind = 'files'; items = results.map(r => entry(pathLabel(r.path),r.error ? 'failed' : '', '', [shownSection('Details','text',Object.entries(r).filter(([k])=>k!=='path').map(([k,v])=>`${k.replace(/_/g,' ')}: ${displayValue(v)}`).join('\n'))])); break;
+      kind = 'files'; items = results.map(r => entry(pathLabel(r.path),r.error ? 'failed' : '', '', [section('Details','text',Object.entries(r).filter(([k])=>k!=='path').map(([k,v])=>`${k.replace(/_/g,' ')}: ${displayValue(v)}`).join('\n'))])); break;
     default: return null;
   }
   const failed = items.filter(item=>item.status==='failed').length;

@@ -945,6 +945,36 @@ test('a patch card summarises its diff and edit paths are workspace-relative', a
   } finally { tv.setWorkspaceRoot(''); }
 });
 
+// The collapsed preview needs only the view's summary, which unwrapping
+// cannot change; the unwrapped copy of a result is made once, when its view
+// is built on expand, and never for a tool that has no view.
+test('a result is walked for display only when its view is built', async () => {
+  const tv = await import('./toolviews.js');
+  let walked = 0;
+  const watched = (obj) => new Proxy(obj, { ownKeys(t) { walked++; return Reflect.ownKeys(t); } });
+  const glob = { matches: [watched({ path: 'a.go', size: 1 }), watched({ path: 'b.go', size: 2 })] };
+  assert.equal(tv.toolSummary('glob', glob), '2 files', 'the collapsed preview');
+  assert.equal(walked, 0, 'the preview does not walk the result');
+  for (const name of ['tree', 'browser', 'session_search', 'json_query', 'base64', 'file_info']) {
+    assert.equal(tv.toolView(name, { tree: watched({ path: 'x' }), title: 't', value: watched({ a: 1 }) }), null, name);
+    assert.equal(tv.toolSummary(name, { tree: watched({ path: 'x' }) }), '', name);
+  }
+  assert.equal(walked, 0, 'a tool with no view is not walked');
+  assert.equal(tv.toolView('glob', glob).summary, '2 files');
+  assert.ok(walked > 0, 'building the view does');
+});
+
+test('a live result head shows its view summary', () => {
+  deliver({ type: 'turn_started', turn_id: 't-summary' });
+  deliver({ type: 'tool_call', turn_id: 't-summary', name: 'glob', data: '{"pattern":"*.go"}', call_id: 'c-glob' });
+  const out = '<untrusted_content_ab source="tool:glob">\n{"matches":[{"path":"\\u003cuntrusted·content_cd source=\\"glob:.\\"\\u003e\\na.go\\n\\u003c/untrusted·content_cd\\u003e","size":1}]}\n</untrusted_content_ab>';
+  deliver({ type: 'tool_result', turn_id: 't-summary', name: 'glob', data: out, call_id: 'c-glob', outcome: 'completed' });
+  const block = byId.messages.querySelectorAll('.tool-block')[0];
+  assert.equal(block.querySelector('.tb-preview').textContent, '1 file');
+  block.querySelector('.tb-header').dispatch('click');
+  assert.equal(block.querySelector('.tool-item-title').textContent, 'a.go', 'the expanded view unwraps the path');
+});
+
 test('an expandable tool card shows a disclosure marker', async () => {
   const { readFileSync } = await import('node:fs');
   const css = readFileSync(new URL('../style.css', import.meta.url), 'utf8');
