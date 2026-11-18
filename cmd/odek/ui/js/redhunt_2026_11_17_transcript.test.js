@@ -595,6 +595,24 @@ test('a turn error held for a pending stop is shown when the socket drops', () =
   assert.equal(S.stopError, null);
 });
 
+test('the unwinding error of an acknowledged stop is not shown as a failure when the socket drops', () => {
+  S.sessionId = 'sess-ack-drop';
+  S.notifyEnabled = true;
+  document.title = 'odek';
+  try {
+    deliver({ type: 'turn_started', turn_id: 't-ack-drop', session_id: 'sess-ack-drop' });
+    render.requestTurnStop();
+    deliver({ type: 'cancelled', session_id: 'sess-ack-drop', requested: true });
+    deliver({ type: 'error', turn_id: 't-ack-drop', message: 'context canceled' });
+    S.ws.onclose();
+    assert.doesNotMatch(systemLines().join(' '), /context canceled/, JSON.stringify(systemLines()));
+    assert.equal(document.title, 'odek', 'no failure notification');
+    assert.equal(S.stopError, null);
+  } finally {
+    S.notifyEnabled = false;
+  }
+});
+
 test('a run that fails while stopping notifies like any failed turn', () => {
   S.notifyEnabled = true;
   document.title = 'odek';

@@ -257,8 +257,9 @@ answer text and sub-agent finishes still land, so a turn that finishes before
 the stop takes effect ends on its ordinary answer.
 The error frame a stopped run unwinds with is not shown as a failure; only a
 run that settles `failed` while stopping shows its error (and notifies like any
-failed turn), and a held error is shown when the connection drops before the
-run settles. Only the turn's own
+failed turn), and a held error is shown when the connection drops while the
+stop is still unanswered (once the server has acknowledged the stop, the error
+is the stop's own unwinding and is dropped). Only the turn's own
 error (one carrying its `turn_id`) is held for that; any other error shows at
 once. A stop the server refuses (an `error` with `refused: "cancel"`), or whose
 REST fallback fails, is taken back: the run is followed again from the

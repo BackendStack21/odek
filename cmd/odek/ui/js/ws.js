@@ -72,10 +72,13 @@ function noteDisconnect() {
   clearApprovals({ drain: false });
   clearClarify();
   stopPlanLiveIfIdle();
-  // The turn_settled that would decide on an error held for a pending stop
-  // went with the socket: show it now.
+  // The turn_settled that would decide on an error held for a stop went with
+  // the socket. While the stop was unanswered the error is shown now; once
+  // the server applied the stop it is the stop's own unwinding, dropped as
+  // turn_settled cancelled would drop it.
+  if (S.stopAwaiting) releaseStopError();
+  else S.stopError = null;
   S.stopAwaiting = false;
-  releaseStopError();
 
   paintConnBanner();
 
