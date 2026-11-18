@@ -563,11 +563,14 @@ function stopDrops(event) {
 }
 
 // answersHeld reports whether event answers a held frame: the result of a
-// held call (a step shown before the stop takes its result live) or the
-// ack or expiry of a held approval or question.
+// held call (a step shown before the stop takes its result live), a
+// sub-agent's finish while its delegation is held, or the ack or expiry of a
+// held approval or question.
 function answersHeld(event) {
   const held = S.stopHeld;
   switch (event.type) {
+    case 'subagent_state':
+      return !S.subagentGroup && held.some((h) => h.type === 'tool_call' && h.name === 'delegate_tasks');
     case 'tool_result': {
       const key = event.call_id || event.name;
       if (event.name === 'delegate_tasks' ? S.subagentGroup : S.toolBlockQueues.get(key)?.length) return false;

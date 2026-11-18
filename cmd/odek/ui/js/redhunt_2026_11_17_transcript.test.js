@@ -802,6 +802,21 @@ test('work that arrives before a refused stop is answered is shown once it is re
   S.busy = false;
 });
 
+test('a sub-agent that finishes while its delegation is held shows finished once the stop is refused', () => {
+  S.busy = true;
+  deliver({ type: 'turn_started', turn_id: 't-held-sa' });
+  render.requestTurnStop();
+  deliver({ type: 'tool_call', turn_id: 't-held-sa', name: 'delegate_tasks', data: JSON.stringify({ tasks: [{ goal: 'Audit' }] }) });
+  deliver({ type: 'subagent_state', turn_id: 't-held-sa', task_idx: 0, phase: 'started', task_id: 'tk-held' });
+  deliver({ type: 'subagent_state', turn_id: 't-held-sa', task_idx: 0, phase: 'finished', task_id: 'tk-held', status: 'success' });
+  deliver({ type: 'error', message: 'cancel: invalid session token', refused: 'cancel' });
+  const card = byId.messages.querySelector('.subagent-card');
+  assert.ok(card, 'the held delegation shows');
+  assert.equal(card.querySelector('.sa-status').textContent, 'done', 'with the finish that waited for it');
+  render.endStream('cancelled');
+  S.busy = false;
+});
+
 test('work held for a stop the server acknowledges is dropped, and a result for an earlier step still lands', () => {
   deliver({ type: 'turn_started', turn_id: 't-held-ack' });
   deliver({ type: 'tool_call', turn_id: 't-held-ack', name: 'shell', data: '{}', call_id: 'c-before' });
